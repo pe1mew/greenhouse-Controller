@@ -29,10 +29,32 @@ No hardware target; design is language-agnostic at this stage.
 
 ### 1.3 Sensors
 
-| Sensor | Measured variable | Location |
-|---|---|---|
-| Temperature sensor | T [°C] | Inside greenhouse |
-| Humidity sensor | RH [%] | Inside greenhouse |
+#### Temperature sensor — Munters P-RTS-2
+
+| Parameter | Value |
+|---|---|
+| Part number | 1212.0.42592 / P-RTS-2 |
+| Type | 30 kΩ thermistor (2-wire) |
+| Operating range | −40°C to +70°C |
+| Typical accuracy | ±0.3°C |
+| Max tolerance at 25°C | ±3% |
+| Max cable length | 300 m |
+| Min wire size | 22 AWG, shielded |
+| Interface | Passive resistive (requires ADC or bridge circuit) |
+
+#### Humidity sensor — Rotem RHS-10 SE
+
+| Parameter | Value |
+|---|---|
+| Brand / Model | Rotem RHS-10 SE (Plus) |
+| Operating range | −10°C to +70°C |
+| RH range | 0–100% |
+| Accuracy | ±2% (10–90% RH), ±3.5% (90–100% RH) |
+| Supply voltage | 9–12 V AC or DC |
+| Output (selected) | 0–3 VDC (linear, 0% → 0 V, 100% → 3 V) |
+| Also available as | 4–20 mA or 0–10 VDC |
+| Max cable length | 300 m |
+| Interface | Analogue voltage output (requires ADC) |
 
 No outside sensors are available. Outside conditions are treated as unknown disturbances.
 
@@ -46,6 +68,51 @@ The only actuators are three motorised windows. There is no heating, cooling, hu
 | Window 2 | Roof | Ventilation (lowers T) | Lowers RH when outside is drier |
 | Window 3 | Side wall | Ventilation (lowers T) | Lowers RH when outside is drier |
 
+#### Motor relay box — Hotraco RRK-3
+
+The three motors are driven by a **Hotraco RRK-3** 3-fold window relay box.
+
+| Parameter | Value |
+|---|---|
+| Model | RRK-3 (3-voudige raamrelaiskast) |
+| Manufacturer | Hotraco Industrial BV |
+| Motor supply | 3 × 400 VAC / 50 Hz |
+| Motor power (standard) | 3 × 0.37 kW / ±1.2 A |
+| Motor power (maximum) | 3 × 0.75 kW / ±2.1 A |
+| Thermal protection | 3 × 0.85 / 1.3 A (standard) |
+| Control voltage | 24 VAC or 24 VDC |
+| Enclosure | IP54 |
+| Dimensions (L × W × H) | 220 × 270 × 105 mm |
+| Alarm relay contact | 0.5 A / 24 V |
+
+**Per motor channel, the RRK-3 accepts these control signals (24 V):**
+
+| Terminal | Signal | Direction |
+|---|---|---|
+| OPEN sturing | Open command | Controller → RRK-3 |
+| DICHT sturing | Close command | Controller → RRK-3 |
+| COMM. sturing | Common / return | Controller → RRK-3 |
+| eindsch. OPEN | End-switch fully open | Motor mechanism → RRK-3 |
+| eindsch. DICHT | End-switch fully closed | Motor mechanism → RRK-3 |
+| eindsch. NOODSTOP | Emergency stop | Motor mechanism → RRK-3 |
+
+**Critical observation from the wiring diagram:** The end-switches connect directly to the RRK-3, not to the controller. The RRK-3 cuts motor power autonomously when an end-switch is triggered. The controller **receives no end-switch signal** and has no way to know that the motor has stopped.
+
+**Controller output requirements:** 6 × 24 V digital outputs (or relay contacts) — one OPEN and one CLOSE per window motor.
+
+#### Interface relay — Finder 56.34.8.024.0040
+
+| Parameter | Value |
+|---|---|
+| Manufacturer part | 56.34.8.024.0040 |
+| Type | 4-pole changeover (4 × wisselcontact) |
+| Control voltage | 24 VAC |
+| Contact rating | 12 A |
+| Mounting | Plug-in |
+| Enclosure | IP40 |
+
+These relays serve as the interface between the controller's 24 V digital outputs and the RRK-3 control inputs.
+
 **Motor interface:**
 
 Each window motor accepts two commands: `OPEN` and `CLOSE`. The motor runs until an end-switch stops it (fully open or fully closed position). The controller has **no feedback** on:
@@ -54,7 +121,7 @@ Each window motor accepts two commands: `OPEN` and `CLOSE`. The motor runs until
 
 **Implication:** The controller cannot modulate window opening proportionally. Each window is effectively a binary actuator: **fully open** or **fully closed**. Intermediate positions are possible by timing the motor, but are unreliable without position feedback.
 
-**Estimated state:** The controller must maintain a software-tracked estimated state for each window (`OPEN` / `CLOSED` / `UNKNOWN`). State is inferred from commands issued and elapsed time using a conservative motor run-time estimate (a fixed timeout after which the window is assumed to have reached its end position).
+**Estimated state:** The controller must maintain a software-tracked estimated state for each window (`OPEN` / `CLOSED` / `MOVING`). State is inferred from commands issued and elapsed time using a conservative motor run-time estimate (a fixed timeout after which the window is assumed to have reached its end position).
 
 ### 1.5 Control Limitations
 
@@ -159,6 +226,19 @@ This tight coupling means T and RH cannot be controlled independently.
 | ACH_side | Air change rate for open side window | TBD | h⁻¹ | |
 | m_transp | Plant transpiration rate | TBD | kg/s | |
 | t_motor | Motor run-time to reach end position | TBD | s | |
+
+### 2.7 Sensor Signal Conditioning
+
+The controller must read both sensors via analogue inputs.
+
+**Temperature (P-RTS-2 thermistor):**
+- The 30 kΩ NTC thermistor requires a resistor voltage-divider or Wheatstone bridge to produce a voltage readable by an ADC.
+- Resolution needed: ≤0.1°C → ADC resolution must be sufficient to resolve the non-linear thermistor curve across the relevant operating range.
+
+**Humidity (RHS-10 SE, 0–3 VDC output):**
+- Direct analogue voltage input (0 V = 0% RH, 3 V = 100% RH).
+- Sensor accuracy: ±2% RH in the 10–90% range; ±3.5% at extremes.
+- The ±2% inherent sensor uncertainty sets the floor on controllable precision — hysteresis bands in the control logic should be wider than this.
 
 ---
 
@@ -307,14 +387,23 @@ Motor commands are not re-issued while a window is `MOVING` to prevent conflicti
 
 ## 5. Open Questions
 
+**Resolved:**
+- [x] Sensor types and specifications confirmed (Munters P-RTS-2 thermistor, Rotem RHS-10 SE)
+- [x] Motor drive confirmed (Hotraco RRK-3 relay box, 24 V control interface)
+- [x] No end-switch feedback to controller confirmed (RRK-3 wiring diagram)
+- [x] Controller output interface confirmed (6 × 24 V digital outputs, OPEN + CLOSE per motor)
+- [x] Interface relay confirmed (Finder 56.34.8.024.0040, 4-pole, 24 VAC)
+
+**Still open:**
 - [ ] Confirm setpoints for T and RH
-- [ ] Confirm greenhouse dimensions (to derive V, C, UA)
-- [ ] Estimate motor run-time to fully open/close each window
+- [ ] Confirm greenhouse dimensions (floor area, height → air volume V)
+- [ ] Estimate motor run-time to fully open/close each window (measure on physical system)
 - [ ] Decide whether partial window opening (timed motor stop) should be supported
-- [ ] Define outside T and RH profiles for simulation
+- [ ] Define outside T and RH profiles for simulation (sinusoidal day/night approximation)
 - [ ] Estimate plant transpiration rate
-- [ ] Confirm window priority order (roof vs. side)
+- [ ] Confirm window priority order (roof vs. side first)
 - [ ] Choose simulation language/tool
+- [ ] Confirm controller hardware platform (what will generate the 24 V digital outputs and read analogue inputs)
 
 ---
 
@@ -324,3 +413,4 @@ Motor commands are not re-issued while a window is `MOVING` to prevent conflicti
 |---|---|
 | 2026-03-05 | Initial draft — requirements and design structure |
 | 2026-03-05 | Major revision — updated to reflect actual hardware: 3 motorised windows, no position/end-switch feedback, ventilation-only actuation, rule-based hysteresis controller replacing PID |
+| 2026-03-05 | Added hardware specifications from documentation: Munters P-RTS-2 temperature sensor, Rotem RHS-10 SE humidity sensor, Hotraco RRK-3 relay box, Finder 56.34.8.024.0040 interface relay; added sensor signal conditioning notes; updated open questions |
