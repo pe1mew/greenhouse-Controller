@@ -285,7 +285,34 @@ This tight coupling means T and RH cannot be controlled independently.
 | m_transp | Plant transpiration rate | TBD | kg/s | |
 | t_motor | Motor run-time to reach end position | TBD | s | |
 
-### 2.7 Sensor Signal Conditioning
+### 2.7 Outside Environmental Conditions
+
+For simulation purposes, outside temperature and humidity profiles are derived from historical weather data.
+
+**Data source:**
+- File: `Environment/airTemperature_2025-05-01_to_2025-09-01.csv`
+- Period: May 1 to September 1, 2025 (growing season)
+- Sampling interval: Approximately 30 minutes
+- Total data points: 5540
+- Temperature range: 5.1°C to 33.8°C
+- Humidity range: 33.1% to 94.2%
+
+**Implementation:**
+A Python module (`Environment/outside_conditions.py`) provides interpolated values for T_out(t) and RH_out(t) at any simulation time. The module supports:
+- Linear interpolation between data points
+- Cyclic repetition for simulations longer than the dataset
+- Direct access functions: `T_out(t)` and `RH_out(t)` where t is elapsed time in seconds
+- Extraction of complete day profiles for analysis
+
+**Usage in simulation:**
+```python
+from Environment.outside_conditions import get_conditions
+
+# Get outside temperature and humidity at time t (seconds)
+T_out, RH_out = get_conditions(t)
+```
+
+### 2.8 Sensor Signal Conditioning
 
 The controller must read both sensors via analogue inputs.
 
@@ -437,9 +464,9 @@ Motor commands are not re-issued while a window is `MOVING` to prevent conflicti
 ### 4.3 Simulation Parameters
 
 - Time step: TBD (e.g. 10 s)
-- Simulation duration: TBD (e.g. 86400 s for 24-hour runs)
+- Simulation duration: TBD (e.g. 86400 s for 24-hour runs; up to 10,656,000 s for full 123-day dataset)
 - Solver: TBD (e.g. Euler or RK4 for the ODEs)
-- Outside T and RH profiles: TBD (e.g. sinusoidal approximation for day/night)
+- Outside T and RH profiles: Historical weather data from May–September 2025 (see section 2.7), interpolated via `Environment/outside_conditions.py`
 
 ---
 
@@ -461,7 +488,7 @@ Motor commands are not re-issued while a window is `MOVING` to prevent conflicti
 - [ ] Confirm greenhouse dimensions (floor area, height → air volume V)
 - [ ] Estimate motor run-time to fully open/close each window (measure on physical system)
 - [ ] Decide whether partial window opening (timed motor stop) should be supported
-- [ ] Define outside T and RH profiles for simulation (sinusoidal day/night approximation)
+- [x] Define outside T and RH profiles for simulation — using historical data from May–September 2025 (`Environment/airTemperature_2025-05-01_to_2025-09-01.csv`), interpolated via Python module
 - [ ] Estimate plant transpiration rate
 - [ ] Choose simulation language/tool
 - [ ] Confirm controller hardware platform (what will generate the 24 V digital outputs and read analogue inputs)
@@ -476,3 +503,4 @@ Motor commands are not re-issued while a window is `MOVING` to prevent conflicti
 | 2026-03-05 | Major revision — updated to reflect actual hardware: 3 motorised windows, no position/end-switch feedback, ventilation-only actuation, rule-based hysteresis controller replacing PID |
 | 2026-03-05 | Added hardware specifications from documentation: Munters P-RTS-2 temperature sensor, Rotem RHS-10 SE humidity sensor, Hotraco RRK-3 relay box, Finder 56.34.8.024.0040 interface relay; added sensor signal conditioning notes; updated open questions |
 | 2026-03-06 | Added greenhouse physical layout (section 1.4): rectangular shape, length east–west, north long wall on left; floor plan and cross-section diagrams; window positions at ¼ and ¾ of N–S width (roof) and full north wall length (side); confirmed motor-to-window mapping M1/M2/M3 with Dutch names; added circuit schematic reference (denboer engineering, 12-2-2026); updated plant model, control priority, and open questions accordingly |
+| 2026-03-06 | Added outside environmental conditions (section 2.7): historical weather data from May–September 2025 (5540 data points, 30-min intervals); created Python interpolation module (`Environment/outside_conditions.py`) for T_out(t) and RH_out(t) in simulation; updated simulation parameters and marked outside profile question as resolved |
