@@ -2,7 +2,7 @@
 Greenhouse Controller Simulation
 =================================
 Implements the plant model (design.md §2.3–2.4), rule-based hysteresis controller
-(§3), and simulation scenarios S1–S5 (§4.1).
+(§3, §3.8 anti-oscillation), and simulation scenarios S1–S5 (§4.1).
 
 Outside temperature and humidity come from historical weather data (May–Sep 2025)
 via Environment/outside_conditions.py.
@@ -109,6 +109,11 @@ class ControlParameters:
     # Control update interval
     ctrl_interval: float = 60.0  # s — re-evaluate demand every 60 s
 
+    # Anti-oscillation: minimum time a window must stay in OPEN or CLOSED before
+    # it can be commanded again.  Prevents rapid open-close cycling when the
+    # measured value hovers near a threshold.  (design.md §3.8)
+    t_min_dwell: float = 600.0  # s — 10 minutes
+
 
 # ---------------------------------------------------------------------------
 # Window state
@@ -133,6 +138,10 @@ class Window:
     # Physical state (what the plant model uses — may differ in stall scenario S5)
     physically_open: bool = False
 
+    # Anti-oscillation: simulation time [s] when this window last settled into
+    # OPEN or CLOSED.  A new command is blocked until t_min_dwell has elapsed.
+    last_settled_time: float = 0.0
+
     def is_open(self) -> bool:
         return self.state == WindowState.OPEN
 
@@ -153,6 +162,9 @@ class SimulationState:
     # Demand memory for hysteresis deadband
     T_demand_prev:  int = 0
     RH_demand_prev: int = 0
+
+    # Anti-oscillation: count of commands suppressed by t_min_dwell guard
+    commands_blocked: int = 0
 
     # Recorded history (sampled every ~60 s)
     t_hist:       List[float]               = field(default_factory=list)
@@ -273,6 +285,8 @@ def update_window_states(state: SimulationState, plant: PlantParameters) -> None
                 # S5 overrides physically_open before calling this function.
                 if not w.is_moving():
                     w.physically_open = (w.state == WindowState.OPEN)
+                    # Record when this window settled — used by anti-oscillation guard.
+                    w.last_settled_time = state.t
 
 
 def command_window(
@@ -280,12 +294,23 @@ def command_window(
     desired: WindowState,
     t: float,
     plant: PlantParameters,
+    ctrl: "ControlParameters",
+    state: "SimulationState",
 ) -> None:
     """
     Issue OPEN or CLOSE command to a window.
-    Ignored if already in desired state or currently moving (§3.5).
+
+    Ignored if:
+    - already in desired state (§3.5), or
+    - currently moving (§3.5), or
+    - minimum dwell time has not elapsed since last state change (§3.8 anti-oscillation).
     """
     if window.state == desired or window.is_moving():
+        return
+
+    # Anti-oscillation guard (§3.8): suppress command if window settled too recently.
+    if (t - window.last_settled_time) < ctrl.t_min_dwell:
+        state.commands_blocked += 1
         return
 
     window.target_state    = desired
@@ -356,7 +381,7 @@ def apply_control(
 
     for rank, w in enumerate(priority):
         desired = WindowState.OPEN if rank < V_demand else WindowState.CLOSED
-        command_window(w, desired, state.t, plant)
+        command_window(w, desired, state.t, plant, ctrl, state)
 
 
 # ---------------------------------------------------------------------------
@@ -496,6 +521,7 @@ def _print_metrics(state: SimulationState, ctrl: ControlParameters) -> None:
     print(f"  Time RH within ±{RH_tol}% of RH_sp : {RH_in_band:.1f}%")
     print(f"  Time T > T_sp + dT_high            : {worst_T:.1f}%")
     print(f"  Window actuations                  : {actuations}")
+    print(f"  Commands blocked (dwell guard)     : {state.commands_blocked}")
 
 
 # ---------------------------------------------------------------------------

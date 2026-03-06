@@ -443,6 +443,7 @@ Motor commands are not re-issued while a window is `MOVING` to prevent conflicti
 | dRH_hyst | RH hysteresis band (close threshold) | TBD % below RH_sp |
 | RH_critical | RH level forcing ventilation even when T < T_sp | TBD % |
 | t_motor | Motor run time to reach end position | TBD s |
+| t_min_dwell | Minimum time a window must stay OPEN or CLOSED before a new command is accepted (anti-oscillation) | 600 s |
 
 ### 3.7 Farmer-Accessible Configuration Parameters
 
@@ -463,6 +464,7 @@ Not all parameters are intended for the farmer to adjust. The table below distin
 | `dRH_low` | How far above target before the first window opens | 3 – 8 % |
 | `dRH_hyst` | How far below target before open windows close again | 3 – 8 % |
 | `RH_critical` | Humidity level at which a window is forced open even when the temperature is already below target, to prevent mould | 82 – 92 % |
+| `t_min_dwell` | Minimum time (seconds) a window must remain in its current state before it can be commanded to change; prevents rapid open-close cycling when a sensor reading hovers near a threshold | 300 – 1200 s |
 
 **Installer/commissioning parameters** — these reflect physical properties of the building and motors. They are set once during installation and should not need to change unless hardware is replaced.
 
@@ -475,6 +477,37 @@ Not all parameters are intended for the farmer to adjust. The table below distin
 | `m_transp` | Plant water vapour output rate | Measured by water balance or estimated from crop type (see `plantTranspirationRateConsiderations.md`) |
 
 **Key principle:** the farmer interacts only with climate targets and tolerance bands. The controller translates those targets into window commands automatically. Tightening the bands (smaller `dT_low`, `dRH_low`) makes the controller respond sooner but increases window actuation frequency and motor wear. Widening the bands reduces wear but allows larger swings around the setpoint.
+
+### 3.8 Anti-Oscillation Guard (Minimum Dwell Time)
+
+When a measured value hovers near a control threshold, the hysteresis deadband alone may not prevent rapid open-close cycling. Each window command evaluation happens every `ctrl_interval` (60 s), and if the indoor T or RH stays within a threshold band, the controller can issue alternating OPEN/CLOSE commands faster than the physical system can usefully respond.
+
+**Solution — minimum dwell timer (`t_min_dwell`):**
+
+After a window settles into `OPEN` or `CLOSED` (i.e., the motor timeout completes), a timer starts. Any command to change that window's state is suppressed until `t_min_dwell` seconds have elapsed since the last settled transition. Suppressed commands are counted for diagnostics.
+
+```
+command_window(w, desired):
+    if w.is_moving():               return   # motor busy — ignored
+    if w.state == desired:          return   # already there — no-op
+    if t - w.last_settled < t_min_dwell:
+        commands_blocked += 1
+        return                               # anti-oscillation guard
+    # proceed: issue command, start motor timer
+```
+
+**Parameter guidance:**
+
+| Condition | Suggested `t_min_dwell` |
+|---|---|
+| Stable climate, low crop load | 300 – 600 s |
+| Default (general use) | 600 s (10 min) |
+| High humidity risk crop (cucumber) | 600 – 900 s |
+| Very stable conditions expected | up to 1200 s |
+
+Setting `t_min_dwell` shorter than `t_motor` (motor travel time) is pointless — the motor guard already blocks re-commands while moving. Effective values start at `t_motor + ctrl_interval` and upward.
+
+**Interaction with the state machine:** the dwell guard operates at the `command_window` layer (§3.5). It does not modify the window state machine itself; it simply suppresses the request before it reaches the machine. The state machine transitions are unchanged.
 
 ---
 
@@ -498,6 +531,7 @@ Not all parameters are intended for the farmer to adjust. The table below distin
 | Time T within tolerance | Fraction of simulation time T is within ± tolerance of T_sp |
 | Time RH within tolerance | Fraction of simulation time RH is within ± tolerance of RH_sp |
 | Window actuation count | Number of open/close commands issued (proxy for motor wear) |
+| Commands blocked by dwell guard | Count of commands suppressed by `t_min_dwell` anti-oscillation guard |
 | Conflict events | Count of T/RH conflict situations triggered |
 
 ### 4.3 Simulation Parameters
@@ -552,3 +586,4 @@ python Simulation/greenhouse_simulation.py [S1|S2|S3|S4|S5|ALL]
 | 2026-03-06 | Created Python simulation (`Simulation/greenhouse_simulation.py`): Euler-integrated plant model (§2.3–2.4), rule-based hysteresis controller (§3), all 5 scenarios (§4.1); outside T/RH driven by historical weather data via `OutsideConditions`; outputs per-scenario CSV and PNG |
 | 2026-03-06 | Decision recorded: partial window opening (timed motor stop) not supported — no position feedback, poor repeatability; graduated ventilation achieved by opening additional windows (§1.5, §5) |
 | 2026-03-06 | Added §3.7 Farmer-Accessible Configuration Parameters: distinguishes farmer-configurable climate targets (T_sp, RH_sp, hysteresis bands, RH_critical) from installer/commissioning parameters (t_motor, ACH, V, C, UA, m_transp); explains trade-off between band width and motor wear |
+| 2026-03-06 | Added §3.8 Anti-Oscillation Guard: `t_min_dwell` parameter (default 600 s) suppresses window commands issued before the dwell timer expires; prevents rapid open-close cycling near thresholds; implemented in simulation `command_window()` with `commands_blocked` diagnostic counter |

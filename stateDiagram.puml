@@ -18,7 +18,7 @@ skinparam title {
     FontStyle           bold
 }
 
-title Greenhouse Controller — State Diagram\n(design.md §3.3–3.5)
+title Greenhouse Controller — State Diagram\n(design.md §3.3–3.5, §3.8)
 
 ' ============================================================
 ' WINDOW STATE MACHINE  (identical for M1, M2, M3)
@@ -31,6 +31,7 @@ state "Window State Machine  (applies to M1, M2, and M3 independently)" as Windo
     state CLOSED {
         CLOSED : Motor at rest — window fully closed
         CLOSED : ACH contribution = 0
+        CLOSED : last_settled_time recorded on entry
     }
 
     state MOVING_OPEN {
@@ -42,6 +43,7 @@ state "Window State Machine  (applies to M1, M2, and M3 independently)" as Windo
     state OPEN {
         OPEN : Motor at rest — window fully open
         OPEN : ACH contribution = ACH_i [h⁻¹]
+        OPEN : last_settled_time recorded on entry
     }
 
     state MOVING_CLOSE {
@@ -50,13 +52,15 @@ state "Window State Machine  (applies to M1, M2, and M3 independently)" as Windo
         MOVING_CLOSE : ACH contribution = ACH_i (still open physically)
     }
 
-    CLOSED       --> MOVING_OPEN  : OPEN command\n[guard: estimated state == CLOSED]
-    MOVING_OPEN  --> OPEN         : t_motor timeout\nestimated state ← OPEN
-    OPEN         --> MOVING_CLOSE : CLOSE command\n[guard: estimated state == OPEN]
-    MOVING_CLOSE --> CLOSED       : t_motor timeout\nestimated state ← CLOSED
+    CLOSED       --> MOVING_OPEN  : OPEN command\n[guard: t − last_settled ≥ t_min_dwell]
+    MOVING_OPEN  --> OPEN         : t_motor timeout\nlast_settled_time ← now
+    OPEN         --> MOVING_CLOSE : CLOSE command\n[guard: t − last_settled ≥ t_min_dwell]
+    MOVING_CLOSE --> CLOSED       : t_motor timeout\nlast_settled_time ← now
 
     MOVING_OPEN  -[#grey]-> MOVING_OPEN  : OPEN or CLOSE command\n[ignored — motor already running]
     MOVING_CLOSE -[#grey]-> MOVING_CLOSE : OPEN or CLOSE command\n[ignored — motor already running]
+    CLOSED       -[#orange]-> CLOSED     : OPEN command\n[blocked — dwell timer active]
+    OPEN         -[#orange]-> OPEN       : CLOSE command\n[blocked — dwell timer active]
 }
 
 note right of MOVING_OPEN
@@ -65,6 +69,16 @@ note right of MOVING_OPEN
     motor power at the end-switch, but
     the controller relies solely on
     t_motor timeout to infer position.
+end note
+
+note left of CLOSED
+    Anti-oscillation guard (§3.8):
+    last_settled_time is recorded
+    when a window reaches CLOSED or OPEN.
+    Commands are suppressed until
+    t − last_settled_time ≥ t_min_dwell.
+    Suppressed commands increment the
+    commands_blocked diagnostic counter.
 end note
 
 note right of MOVING_CLOSE
@@ -117,6 +131,7 @@ state "Controller Decision Loop  (runs every ctrl_interval = 60 s)" as Controlle
         CommandWindows :   rank 2 → M1  Dakbeluchting Zuid  (south roof)
         CommandWindows :   rank 3 → M3  Zijwandbeluchting   (north wall)
         CommandWindows : Windows in MOVING state: command ignored
+        CommandWindows : Dwell timer active: command suppressed (§3.8)
         CommandWindows : V_demand = 0 → issue CLOSE to all open windows
     }
 
@@ -148,6 +163,8 @@ note right of CommandWindows
     V_demand = 1  →  M2 open only
     V_demand = 2  →  M2 + M1 open
     V_demand = 3  →  M2 + M1 + M3 open
+    Orange self-loops = commands blocked
+    by dwell guard (t_min_dwell = 600 s)
 end note
 
 @enduml
