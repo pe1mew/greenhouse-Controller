@@ -463,10 +463,16 @@ Motor commands are not re-issued while a window is `MOVING` to prevent conflicti
 
 ### 4.3 Simulation Parameters
 
-- Time step: TBD (e.g. 10 s)
-- Simulation duration: TBD (e.g. 86400 s for 24-hour runs; up to 10,656,000 s for full 123-day dataset)
-- Solver: TBD (e.g. Euler or RK4 for the ODEs)
+- Time step: 10 s (Euler integration)
+- Simulation duration: 86400 s (24-hour runs for S1–S3); 14400 s (S4); 28800 s (S5)
+- Solver: Euler (first-order explicit)
 - Outside T and RH profiles: Historical weather data from May–September 2025 (see section 2.7), interpolated via `Environment/outside_conditions.py`
+- Implementation: `Simulation/greenhouse_simulation.py` — runs all 5 scenarios; outputs per-scenario CSV and PNG
+
+**Usage:**
+```bash
+python Simulation/greenhouse_simulation.py [S1|S2|S3|S4|S5|ALL]
+```
 
 ---
 
@@ -490,7 +496,7 @@ Motor commands are not re-issued while a window is `MOVING` to prevent conflicti
 - [ ] Decide whether partial window opening (timed motor stop) should be supported
 - [x] Define outside T and RH profiles for simulation — using historical data from May–September 2025 (`Environment/airTemperature_2025-05-01_to_2025-09-01.csv`), interpolated via Python module
 - [ ] Estimate plant transpiration rate
-- [ ] Choose simulation language/tool
+- [x] Choose simulation language/tool — Python; see `Simulation/greenhouse_simulation.py`
 - [ ] Confirm controller hardware platform (what will generate the 24 V digital outputs and read analogue inputs)
 
 ---
@@ -503,4 +509,5 @@ Motor commands are not re-issued while a window is `MOVING` to prevent conflicti
 | 2026-03-05 | Major revision — updated to reflect actual hardware: 3 motorised windows, no position/end-switch feedback, ventilation-only actuation, rule-based hysteresis controller replacing PID |
 | 2026-03-05 | Added hardware specifications from documentation: Munters P-RTS-2 temperature sensor, Rotem RHS-10 SE humidity sensor, Hotraco RRK-3 relay box, Finder 56.34.8.024.0040 interface relay; added sensor signal conditioning notes; updated open questions |
 | 2026-03-06 | Added greenhouse physical layout (section 1.4): rectangular shape, length east–west, north long wall on left; floor plan and cross-section diagrams; window positions at ¼ and ¾ of N–S width (roof) and full north wall length (side); confirmed motor-to-window mapping M1/M2/M3 with Dutch names; added circuit schematic reference (denboer engineering, 12-2-2026); updated plant model, control priority, and open questions accordingly |
+| 2026-03-06 | Created Python simulation (`Simulation/greenhouse_simulation.py`): Euler-integrated plant model (§2.3–2.4), rule-based hysteresis controller (§3), all 5 scenarios (§4.1); outside T/RH driven by historical weather data via `OutsideConditions`; outputs per-scenario CSV and PNG |
 | 2026-03-06 | Added outside environmental conditions (section 2.7): historical weather data from May–September 2025 (5540 data points, 30-min intervals); created Python interpolation module (`Environment/outside_conditions.py`) for T_out(t) and RH_out(t) in simulation; updated simulation parameters and marked outside profile question as resolved |
