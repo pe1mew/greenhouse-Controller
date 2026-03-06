@@ -444,6 +444,38 @@ Motor commands are not re-issued while a window is `MOVING` to prevent conflicti
 | RH_critical | RH level forcing ventilation even when T < T_sp | TBD % |
 | t_motor | Motor run time to reach end position | TBD s |
 
+### 3.7 Farmer-Accessible Configuration Parameters
+
+Not all parameters are intended for the farmer to adjust. The table below distinguishes between parameters the farmer can configure to match crop and seasonal needs, and parameters that are fixed at commissioning time by the installer based on physical measurements of the greenhouse and motors.
+
+**Farmer-configurable parameters** — these express the desired climate and the tolerance around it. They should be revisited when the crop changes or at the start of a new growing season.
+
+| Parameter | Plain meaning | Typical range |
+|---|---|---|
+| `T_sp` | Target indoor temperature | 18 – 28 °C |
+| `dT_high` | How far above target before all windows open (emergency cooling) | 5 – 10 °C |
+| `dT_mid` | How far above target before a second window opens | 3 – 6 °C |
+| `dT_low` | How far above target before the first window opens | 1 – 4 °C |
+| `dT_hyst` | How far below target before open windows close again | 1 – 3 °C |
+| `RH_sp` | Target indoor relative humidity | 65 – 80 % |
+| `dRH_high` | How far above target before all windows open (emergency dehumidification) | 10 – 20 % |
+| `dRH_mid` | How far above target before a second window opens | 5 – 12 % |
+| `dRH_low` | How far above target before the first window opens | 3 – 8 % |
+| `dRH_hyst` | How far below target before open windows close again | 3 – 8 % |
+| `RH_critical` | Humidity level at which a window is forced open even when the temperature is already below target, to prevent mould | 82 – 92 % |
+
+**Installer/commissioning parameters** — these reflect physical properties of the building and motors. They are set once during installation and should not need to change unless hardware is replaced.
+
+| Parameter | Plain meaning | How to determine |
+|---|---|---|
+| `t_motor` | Time for a motor to travel from fully closed to fully open (or back) | Measure on the physical system with a stopwatch |
+| `ACH_M1`, `ACH_M2`, `ACH_M3` | Ventilation capacity of each window when fully open | Derived from window dimensions and airflow measurements or literature values |
+| `V` | Internal air volume of the greenhouse | Calculated from floor dimensions and average roof height |
+| `C`, `UA` | Thermal mass and envelope heat-loss coefficient | Estimated from construction materials or identified from temperature measurements |
+| `m_transp` | Plant water vapour output rate | Measured by water balance or estimated from crop type (see `plantTranspirationRateConsiderations.md`) |
+
+**Key principle:** the farmer interacts only with climate targets and tolerance bands. The controller translates those targets into window commands automatically. Tightening the bands (smaller `dT_low`, `dRH_low`) makes the controller respond sooner but increases window actuation frequency and motor wear. Widening the bands reduces wear but allows larger swings around the setpoint.
+
 ---
 
 ## 4. Simulation Plan
@@ -519,3 +551,4 @@ python Simulation/greenhouse_simulation.py [S1|S2|S3|S4|S5|ALL]
 | 2026-03-06 | Added outside environmental conditions (section 2.7): historical weather data from May–September 2025 (5538 data points, ~30-min intervals, −1.8–40.6°C, 30.3–95.7% RH); created Python interpolation module (`Environment/outside_conditions.py`) for T_out(t) and RH_out(t) in simulation |
 | 2026-03-06 | Created Python simulation (`Simulation/greenhouse_simulation.py`): Euler-integrated plant model (§2.3–2.4), rule-based hysteresis controller (§3), all 5 scenarios (§4.1); outside T/RH driven by historical weather data via `OutsideConditions`; outputs per-scenario CSV and PNG |
 | 2026-03-06 | Decision recorded: partial window opening (timed motor stop) not supported — no position feedback, poor repeatability; graduated ventilation achieved by opening additional windows (§1.5, §5) |
+| 2026-03-06 | Added §3.7 Farmer-Accessible Configuration Parameters: distinguishes farmer-configurable climate targets (T_sp, RH_sp, hysteresis bands, RH_critical) from installer/commissioning parameters (t_motor, ACH, V, C, UA, m_transp); explains trade-off between band width and motor wear |
