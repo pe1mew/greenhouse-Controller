@@ -1,0 +1,153 @@
+@startuml Greenhouse Controller — State Diagram
+
+skinparam state {
+    BackgroundColor     #EAF4FB
+    BorderColor         #2980B9
+    ArrowColor          #2C3E50
+    FontName            Arial
+    FontSize            11
+}
+skinparam note {
+    BackgroundColor     #FEFDE8
+    BorderColor         #C8B400
+    FontName            Arial
+    FontSize            10
+}
+skinparam title {
+    FontSize            14
+    FontStyle           bold
+}
+
+title Greenhouse Controller — State Diagram\n(design.md §3.3–3.5)
+
+' ============================================================
+' WINDOW STATE MACHINE  (identical for M1, M2, M3)
+' ============================================================
+
+state "Window State Machine  (applies to M1, M2, and M3 independently)" as Window {
+
+    [*] --> CLOSED
+
+    state CLOSED {
+        CLOSED : Motor at rest — window fully closed
+        CLOSED : ACH contribution = 0
+    }
+
+    state MOVING_OPEN {
+        MOVING_OPEN : Motor energised — opening direction
+        MOVING_OPEN : t_motor countdown running
+        MOVING_OPEN : ACH contribution = 0
+    }
+
+    state OPEN {
+        OPEN : Motor at rest — window fully open
+        OPEN : ACH contribution = ACH_i [h⁻¹]
+    }
+
+    state MOVING_CLOSE {
+        MOVING_CLOSE : Motor energised — closing direction
+        MOVING_CLOSE : t_motor countdown running
+        MOVING_CLOSE : ACH contribution = ACH_i (still open physically)
+    }
+
+    CLOSED       --> MOVING_OPEN  : OPEN command\n[guard: estimated state == CLOSED]
+    MOVING_OPEN  --> OPEN         : t_motor timeout\nestimated state ← OPEN
+    OPEN         --> MOVING_CLOSE : CLOSE command\n[guard: estimated state == OPEN]
+    MOVING_CLOSE --> CLOSED       : t_motor timeout\nestimated state ← CLOSED
+
+    MOVING_OPEN  -[#grey]-> MOVING_OPEN  : OPEN or CLOSE command\n[ignored — motor already running]
+    MOVING_CLOSE -[#grey]-> MOVING_CLOSE : OPEN or CLOSE command\n[ignored — motor already running]
+}
+
+note right of MOVING_OPEN
+    No end-switch signal reaches the
+    controller (§1.5). The RRK-3 cuts
+    motor power at the end-switch, but
+    the controller relies solely on
+    t_motor timeout to infer position.
+end note
+
+note right of MOVING_CLOSE
+    Physical window may have stopped
+    before timeout (end-switch tripped).
+    Controller still assumes it reaches
+    the target state at t_motor elapsed.
+    A stalled motor is indistinguishable
+    from normal operation (S5 scenario).
+end note
+
+' ============================================================
+' CONTROLLER DECISION LOOP
+' ============================================================
+
+state "Controller Decision Loop  (runs every ctrl_interval = 60 s)" as Controller {
+
+    [*] --> ReadSensors
+
+    state ReadSensors {
+        ReadSensors : Sample indoor T [°C] via P-RTS-2 thermistor
+        ReadSensors : Sample indoor RH [%] via RHS-10 SE voltage output
+    }
+
+    state ComputeTDemand {
+        ComputeTDemand : T > T_sp + dT_high  →  T_demand = 3
+        ComputeTDemand : T > T_sp + dT_mid   →  T_demand = 2
+        ComputeTDemand : T > T_sp + dT_low   →  T_demand = 1
+        ComputeTDemand : T < T_sp − dT_hyst  →  T_demand = 0
+        ComputeTDemand : else                 →  T_demand unchanged (deadband)
+    }
+
+    state ComputeRHDemand {
+        ComputeRHDemand : RH > RH_sp + dRH_high  →  RH_demand = 3
+        ComputeRHDemand : RH > RH_sp + dRH_mid   →  RH_demand = 2
+        ComputeRHDemand : RH > RH_sp + dRH_low   →  RH_demand = 1
+        ComputeRHDemand : RH < RH_sp − dRH_hyst  →  RH_demand = 0
+        ComputeRHDemand : else                    →  RH_demand unchanged (deadband)
+    }
+
+    state ConflictResolve {
+        ConflictResolve : V_demand = max(T_demand, RH_demand)
+        ConflictResolve : Exception: T < T_sp  AND  RH > RH_critical
+        ConflictResolve :   → V_demand = max(1, RH_demand)
+    }
+
+    state CommandWindows {
+        CommandWindows : Open top V_demand windows by priority:
+        CommandWindows :   rank 1 → M2  Dakbeluchting Noord (north roof)
+        CommandWindows :   rank 2 → M1  Dakbeluchting Zuid  (south roof)
+        CommandWindows :   rank 3 → M3  Zijwandbeluchting   (north wall)
+        CommandWindows : Windows in MOVING state: command ignored
+        CommandWindows : V_demand = 0 → issue CLOSE to all open windows
+    }
+
+    state WaitInterval {
+        WaitInterval : Idle for ctrl_interval (60 s)
+        WaitInterval : Window state manager runs concurrently:
+        WaitInterval :   transitions MOVING → target on t_motor timeout
+    }
+
+    ReadSensors     --> ComputeTDemand
+    ComputeTDemand  --> ComputeRHDemand
+    ComputeRHDemand --> ConflictResolve
+    ConflictResolve --> CommandWindows
+    CommandWindows  --> WaitInterval
+    WaitInterval    --> ReadSensors
+}
+
+note right of ConflictResolve
+    T takes priority over RH
+    (heat stress is more immediately
+    harmful than excess humidity).
+    Exception forces minimum ventilation
+    when mould risk is critical even
+    though T is below setpoint (§3.3).
+end note
+
+note right of CommandWindows
+    V_demand = 0  →  all windows closed
+    V_demand = 1  →  M2 open only
+    V_demand = 2  →  M2 + M1 open
+    V_demand = 3  →  M2 + M1 + M3 open
+end note
+
+@enduml
