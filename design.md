@@ -69,11 +69,11 @@ The greenhouse is rectangular. When viewed on a floor plan with north at the top
                          ↑
    ╔══════════════════ M3 (Zijwandbeluchting) ════════════════╗  ← North wall
    ║  W                                                     E ║
-   ║ ─ ─ ─ ─ ─ ─ ─ ─ M2 Dakbeluchting noord ─ ─ ─ ─ ─ ─ ─ ║  ← ¼ width from N
+   ║ ─ ─ ─ ─ ─ ─ ─ ─ ─ M2 Dakbeluchting noord ─ ─ ─ ─ ─ ─ ─ ─ ║  ← ¼ width from N
    ║                                                          ║
-   ║ · · · · · · · · · · · ·  ridge  · · · · · · · · · · · · ║  ← ½ width
+   ║  · · · · · · · · · · · ·  ridge  · · · · · · · · · · · · ║  ← ½ width
    ║                                                          ║
-   ║ ─ ─ ─ ─ ─ ─ ─ ─ M1 Dakbeluchting Zuid  ─ ─ ─ ─ ─ ─ ─ ║  ← ¾ width from N
+   ║ ─ ─ ─ ─ ─ ─ ─ ─ ─ M1 Dakbeluchting Zuid  ─ ─ ─ ─ ─ ─ ─ ─ ║  ← ¾ width from N
    ║                                                          ║
    ╚══════════════════════════════════════════════════════════╝  ← South wall
                          ↓
