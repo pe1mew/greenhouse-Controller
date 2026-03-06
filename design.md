@@ -58,15 +58,64 @@ No hardware target; design is language-agnostic at this stage.
 
 No outside sensors are available. Outside conditions are treated as unknown disturbances.
 
-### 1.4 Actuators
+### 1.4 Physical Layout
 
-The only actuators are three motorised windows. There is no heating, cooling, humidification, or dehumidification equipment.
+The greenhouse is rectangular. When viewed on a floor plan with north at the top, the **north wall is the long left wall** (the building length runs east–west). The left side pointing north means: standing inside looking east along the length, the north long wall is on your left.
 
-| Actuator | Location | Primary effect | Secondary effect |
-|---|---|---|---|
-| Window 1 | Roof | Ventilation (lowers T) | Lowers RH when outside is drier |
-| Window 2 | Roof | Ventilation (lowers T) | Lowers RH when outside is drier |
-| Window 3 | Side wall | Ventilation (lowers T) | Lowers RH when outside is drier |
+**Floor plan (top view):**
+
+```
+                         N
+                         ↑
+   ╔══════════════════ M3 (Zijwandbeluchting) ════════════════╗  ← North wall
+   ║  W                                                     E ║
+   ║ ─ ─ ─ ─ ─ ─ ─ ─ M2 Dakbeluchting noord ─ ─ ─ ─ ─ ─ ─ ║  ← ¼ width from N
+   ║                                                          ║
+   ║ · · · · · · · · · · · ·  ridge  · · · · · · · · · · · · ║  ← ½ width
+   ║                                                          ║
+   ║ ─ ─ ─ ─ ─ ─ ─ ─ M1 Dakbeluchting Zuid  ─ ─ ─ ─ ─ ─ ─ ║  ← ¾ width from N
+   ║                                                          ║
+   ╚══════════════════════════════════════════════════════════╝  ← South wall
+                         ↓
+                         S
+         ←──────── Length (east–west) ────────►
+```
+
+**Cross-section (looking east along the length, N at left):**
+
+```
+  N wall                 ridge                   S wall
+  ║                       /\                        ║
+  ║   M2 vent            /  \           M1 vent     ║
+  ║  [─────]            /    \         [─────]      ║
+  ║         \          /      \       /             ║
+  ╠══════════╲════════/════════\═════/══════════════╣
+  ║  [M3 win] ────────────────────────────────────  ║
+  ║  (north wall, full length)                      ║
+  ╚═════════════════════════════════════════════════╝
+  │←─ ¼W ─→│←─────── ¼W ───────→│←─ ¼W ─→│
+```
+
+**Window positions:**
+
+| Dimension | Description |
+|---|---|
+| Greenhouse orientation | Length east–west; north long wall on the left when facing east |
+| Roof type | Gabled; ridge runs east–west along the full length |
+| M2 vent position on roof | North roof slope, at ¼ of the N–S width from the north wall |
+| M1 vent position on roof | South roof slope, at ¾ of the N–S width from the north wall (¼ from south wall) |
+| M1 and M2 vent extent | Full length of the greenhouse (east to west) |
+| M3 vent position | North wall (long wall), over the full east–west length of that wall |
+
+### 1.5 Actuators
+
+The only actuators are three motorised ventilation windows. There is no heating, cooling, humidification, or dehumidification equipment.
+
+| Actuator | Dutch name | Location | Primary effect | Secondary effect |
+|---|---|---|---|---|
+| M1 | Dakbeluchting Zuid | South roof slope, ¾ width from N, full length | Ventilation (lowers T) | Lowers RH when outside is drier |
+| M2 | Dakbeluchting Noord | North roof slope, ¼ width from N, full length | Ventilation (lowers T) | Lowers RH when outside is drier |
+| M3 | Zijwandbeluchting | North wall (side wall), full length | Ventilation (lowers T) | Lowers RH when outside is drier |
 
 #### Motor relay box — Hotraco RRK-3
 
@@ -100,6 +149,14 @@ The three motors are driven by a **Hotraco RRK-3** 3-fold window relay box.
 
 **Controller output requirements:** 6 × 24 V digital outputs (or relay contacts) — one OPEN and one CLOSE per window motor.
 
+**Circuit documentation:**
+
+| Document | File | Description |
+|---|---|---|
+| Electrical schematic | `documentation/VentilationSystem/ElectriscSchema_001.jpg` | Full electrical schematic — denboer engineering, 12-2-2026, scheme 04, first release |
+| Connection diagram | `documentation/VentilationSystem/AansluitSchema_001.jpg` | Hotraco RRK-3 connection diagram with motor labels (M1 = LUCHING R ZUID, M2 = LUCHING L NORD, M3 = SCHERM/ZIJ) |
+| Full schematic PDF | `documentation/VentilationSystem/Kasventilatiesysteem schema rev 1.pdf` | Greenhouse ventilation system schematic, revision 1 |
+
 #### Interface relay — Finder 56.34.8.024.0040
 
 | Parameter | Value |
@@ -123,7 +180,7 @@ Each window motor accepts two commands: `OPEN` and `CLOSE`. The motor runs until
 
 **Estimated state:** The controller must maintain a software-tracked estimated state for each window (`OPEN` / `CLOSED` / `MOVING`). State is inferred from commands issued and elapsed time using a conservative motor run-time estimate (a fixed timeout after which the window is assumed to have reached its end position).
 
-### 1.5 Control Limitations
+### 1.6 Control Limitations
 
 Because the only actuators are ventilation windows:
 
@@ -132,7 +189,7 @@ Because the only actuators are ventilation windows:
 - Opening windows is beneficial only when outside conditions are more favourable than inside. If outside is hotter or more humid, opening windows makes things worse. Since there are no outside sensors, this is a fundamental uncertainty.
 - When T and RH call for conflicting actions (e.g. T too high but RH already too low), a conflict resolution strategy is needed.
 
-### 1.6 Disturbances
+### 1.7 Disturbances
 
 | Disturbance | Symbol | Notes |
 |---|---|---|
@@ -158,10 +215,10 @@ Coupling: a change in T shifts the saturation vapour pressure, which changes RH 
 
 Each window, when open, creates an air exchange with the outside. The effective ventilation rate depends on window area, wind speed, and stack effect (especially for roof windows). Since none of these are measured, an aggregate effective air change rate is used:
 
-- `ACH_i` — air changes per hour contributed by window i when fully open [h⁻¹]
+- `ACH_i` — air changes per hour contributed by window i when fully open [h⁻¹], where i ∈ {M1, M2, M3}
 - Total ventilation rate: `ACH_total(t) = sum of ACH_i for all open windows`
 
-Roof windows benefit from stack effect (hot air rises), making them more effective for heat removal than the side window.
+Roof windows benefit from stack effect (hot air rises), making them more effective for heat removal than the side wall window. Between the two roof windows, M2 (north slope) and M1 (south slope) are assumed to have equal ventilation effectiveness; any asymmetry due to prevailing wind direction is not modelled.
 
 ### 2.3 Temperature Dynamics
 
@@ -222,8 +279,9 @@ This tight coupling means T and RH cannot be controlled independently.
 | C | Thermal capacitance | TBD | J/°C | |
 | UA | Envelope heat loss coefficient | TBD | W/°C | |
 | V | Air volume | TBD | m³ | |
-| ACH_roof | Air change rate per open roof window | TBD | h⁻¹ | |
-| ACH_side | Air change rate for open side window | TBD | h⁻¹ | |
+| ACH_M1 | Air change rate for M1 (Dakbeluchting Zuid, south roof slope) | TBD | h⁻¹ | |
+| ACH_M2 | Air change rate for M2 (Dakbeluchting Noord, north roof slope) | TBD | h⁻¹ | |
+| ACH_M3 | Air change rate for M3 (Zijwandbeluchting, north wall) | TBD | h⁻¹ | |
 | m_transp | Plant transpiration rate | TBD | kg/s | |
 | t_motor | Motor run-time to reach end position | TBD | s | |
 
@@ -309,9 +367,9 @@ Exception: if T is below setpoint and RH is above setpoint, opening windows risk
 
 When `V_demand` windows should be open, the selection order is:
 
-1. Roof window 1 (highest stack-effect benefit)
-2. Roof window 2
-3. Side window (lowest stack-effect; also provides cross-ventilation)
+1. **M2 — Dakbeluchting Noord** (north roof slope): highest stack-effect benefit; hot air naturally exits toward the roof ridge and out the north-facing vent.
+2. **M1 — Dakbeluchting Zuid** (south roof slope): equal stack-effect to M2; south-facing slope additionally benefits from solar-driven thermal buoyancy during daytime.
+3. **M3 — Zijwandbeluchting** (north wall): lowest stack-effect; provides cross-ventilation through the side wall when both roof windows are already open.
 
 ### 3.5 Window State Manager
 
@@ -393,6 +451,10 @@ Motor commands are not re-issued while a window is `MOVING` to prevent conflicti
 - [x] No end-switch feedback to controller confirmed (RRK-3 wiring diagram)
 - [x] Controller output interface confirmed (6 × 24 V digital outputs, OPEN + CLOSE per motor)
 - [x] Interface relay confirmed (Finder 56.34.8.024.0040, 4-pole, 24 VAC)
+- [x] Greenhouse shape and orientation confirmed: rectangular, length east–west, north long wall on left when facing east
+- [x] Motor-to-window mapping confirmed: M1 = Dakbeluchting Zuid (south roof), M2 = Dakbeluchting Noord (north roof), M3 = Zijwandbeluchting (north wall)
+- [x] Window positions confirmed: roof vents at ¼ and ¾ of N–S width, both running full length; north wall vent running full length of north wall
+- [x] Circuit schematic available: `documentation/VentilationSystem/ElectriscSchema_001.jpg` (denboer engineering, 12-2-2026)
 
 **Still open:**
 - [ ] Confirm setpoints for T and RH
@@ -401,7 +463,6 @@ Motor commands are not re-issued while a window is `MOVING` to prevent conflicti
 - [ ] Decide whether partial window opening (timed motor stop) should be supported
 - [ ] Define outside T and RH profiles for simulation (sinusoidal day/night approximation)
 - [ ] Estimate plant transpiration rate
-- [ ] Confirm window priority order (roof vs. side first)
 - [ ] Choose simulation language/tool
 - [ ] Confirm controller hardware platform (what will generate the 24 V digital outputs and read analogue inputs)
 
@@ -414,3 +475,4 @@ Motor commands are not re-issued while a window is `MOVING` to prevent conflicti
 | 2026-03-05 | Initial draft — requirements and design structure |
 | 2026-03-05 | Major revision — updated to reflect actual hardware: 3 motorised windows, no position/end-switch feedback, ventilation-only actuation, rule-based hysteresis controller replacing PID |
 | 2026-03-05 | Added hardware specifications from documentation: Munters P-RTS-2 temperature sensor, Rotem RHS-10 SE humidity sensor, Hotraco RRK-3 relay box, Finder 56.34.8.024.0040 interface relay; added sensor signal conditioning notes; updated open questions |
+| 2026-03-06 | Added greenhouse physical layout (section 1.4): rectangular shape, length east–west, north long wall on left; floor plan and cross-section diagrams; window positions at ¼ and ¾ of N–S width (roof) and full north wall length (side); confirmed motor-to-window mapping M1/M2/M3 with Dutch names; added circuit schematic reference (denboer engineering, 12-2-2026); updated plant model, control priority, and open questions accordingly |
