@@ -178,6 +178,13 @@ Each window motor accepts two commands: `OPEN` and `CLOSE`. The motor runs until
 
 **Implication:** The controller cannot modulate window opening proportionally. Each window is effectively a binary actuator: **fully open** or **fully closed**. Intermediate positions are possible by timing the motor, but are unreliable without position feedback.
 
+**Decision — partial opening not supported:** Timed motor stop to achieve an intermediate window position is explicitly **not implemented**. The reasons are:
+- No position feedback is available; a timed stop gives no guarantee of actual opening fraction.
+- Repeatability is poor: friction, wear, and temperature affect motor speed over time.
+- The control strategy (§3) achieves graduated ventilation by selecting how many windows to open, not by modulating individual window position.
+
+Each window is therefore commanded only to its fully-open or fully-closed end position.
+
 **Estimated state:** The controller must maintain a software-tracked estimated state for each window (`OPEN` / `CLOSED` / `MOVING`). State is inferred from commands issued and elapsed time using a conservative motor run-time estimate (a fixed timeout after which the window is assumed to have reached its end position).
 
 ### 1.6 Control Limitations
@@ -490,12 +497,12 @@ python Simulation/greenhouse_simulation.py [S1|S2|S3|S4|S5|ALL]
 - [x] Circuit schematic available: `documentation/VentilationSystem/ElectriscSchema_001.jpg` (denboer engineering, 12-2-2026)
 - [x] Define outside T and RH profiles for simulation — using historical data from May–September 2025 (`Environment/airTemperature_2025-05-01_to_2025-09-01.csv`), interpolated via Python module
 - [x] Choose simulation language/tool — Python; see `Simulation/greenhouse_simulation.py`
+- [x] Decide whether partial window opening (timed motor stop) should be supported — **not supported**: no position feedback, poor repeatability; graduated ventilation achieved by opening more windows instead (see §1.5)
 
 **Still open:**
 - [ ] Confirm setpoints for T and RH
 - [ ] Confirm greenhouse dimensions (floor area, height → air volume V)
 - [ ] Estimate motor run-time to fully open/close each window (measure on physical system)
-- [ ] Decide whether partial window opening (timed motor stop) should be supported
 - [ ] Estimate plant transpiration rate
 - [ ] Confirm controller hardware platform (what will generate the 24 V digital outputs and read analogue inputs)
 
@@ -511,3 +518,4 @@ python Simulation/greenhouse_simulation.py [S1|S2|S3|S4|S5|ALL]
 | 2026-03-06 | Added greenhouse physical layout (section 1.4): rectangular shape, length east–west, north long wall on left; floor plan and cross-section diagrams; window positions at ¼ and ¾ of N–S width (roof) and full north wall length (side); confirmed motor-to-window mapping M1/M2/M3 with Dutch names; added circuit schematic reference (denboer engineering, 12-2-2026); updated plant model, control priority, and open questions accordingly |
 | 2026-03-06 | Added outside environmental conditions (section 2.7): historical weather data from May–September 2025 (5538 data points, ~30-min intervals, −1.8–40.6°C, 30.3–95.7% RH); created Python interpolation module (`Environment/outside_conditions.py`) for T_out(t) and RH_out(t) in simulation |
 | 2026-03-06 | Created Python simulation (`Simulation/greenhouse_simulation.py`): Euler-integrated plant model (§2.3–2.4), rule-based hysteresis controller (§3), all 5 scenarios (§4.1); outside T/RH driven by historical weather data via `OutsideConditions`; outputs per-scenario CSV and PNG |
+| 2026-03-06 | Decision recorded: partial window opening (timed motor stop) not supported — no position feedback, poor repeatability; graduated ventilation achieved by opening additional windows (§1.5, §5) |
