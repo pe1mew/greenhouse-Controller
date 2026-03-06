@@ -293,9 +293,9 @@ For simulation purposes, outside temperature and humidity profiles are derived f
 - File: `Environment/airTemperature_2025-05-01_to_2025-09-01.csv`
 - Period: May 1 to September 1, 2025 (growing season)
 - Sampling interval: Approximately 30 minutes
-- Total data points: 5540
-- Temperature range: 5.1°C to 33.8°C
-- Humidity range: 33.1% to 94.2%
+- Total data points: 5538
+- Temperature range: −1.8°C to 40.6°C
+- Humidity range: 30.3% to 95.7%
 
 **Implementation:**
 A Python module (`Environment/outside_conditions.py`) provides interpolated values for T_out(t) and RH_out(t) at any simulation time. The module supports:
@@ -488,15 +488,15 @@ python Simulation/greenhouse_simulation.py [S1|S2|S3|S4|S5|ALL]
 - [x] Motor-to-window mapping confirmed: M1 = Dakbeluchting Zuid (south roof), M2 = Dakbeluchting Noord (north roof), M3 = Zijwandbeluchting (north wall)
 - [x] Window positions confirmed: roof vents at ¼ and ¾ of N–S width, both running full length; north wall vent running full length of north wall
 - [x] Circuit schematic available: `documentation/VentilationSystem/ElectriscSchema_001.jpg` (denboer engineering, 12-2-2026)
+- [x] Define outside T and RH profiles for simulation — using historical data from May–September 2025 (`Environment/airTemperature_2025-05-01_to_2025-09-01.csv`), interpolated via Python module
+- [x] Choose simulation language/tool — Python; see `Simulation/greenhouse_simulation.py`
 
 **Still open:**
 - [ ] Confirm setpoints for T and RH
 - [ ] Confirm greenhouse dimensions (floor area, height → air volume V)
 - [ ] Estimate motor run-time to fully open/close each window (measure on physical system)
 - [ ] Decide whether partial window opening (timed motor stop) should be supported
-- [x] Define outside T and RH profiles for simulation — using historical data from May–September 2025 (`Environment/airTemperature_2025-05-01_to_2025-09-01.csv`), interpolated via Python module
 - [ ] Estimate plant transpiration rate
-- [x] Choose simulation language/tool — Python; see `Simulation/greenhouse_simulation.py`
 - [ ] Confirm controller hardware platform (what will generate the 24 V digital outputs and read analogue inputs)
 
 ---
@@ -509,5 +509,5 @@ python Simulation/greenhouse_simulation.py [S1|S2|S3|S4|S5|ALL]
 | 2026-03-05 | Major revision — updated to reflect actual hardware: 3 motorised windows, no position/end-switch feedback, ventilation-only actuation, rule-based hysteresis controller replacing PID |
 | 2026-03-05 | Added hardware specifications from documentation: Munters P-RTS-2 temperature sensor, Rotem RHS-10 SE humidity sensor, Hotraco RRK-3 relay box, Finder 56.34.8.024.0040 interface relay; added sensor signal conditioning notes; updated open questions |
 | 2026-03-06 | Added greenhouse physical layout (section 1.4): rectangular shape, length east–west, north long wall on left; floor plan and cross-section diagrams; window positions at ¼ and ¾ of N–S width (roof) and full north wall length (side); confirmed motor-to-window mapping M1/M2/M3 with Dutch names; added circuit schematic reference (denboer engineering, 12-2-2026); updated plant model, control priority, and open questions accordingly |
+| 2026-03-06 | Added outside environmental conditions (section 2.7): historical weather data from May–September 2025 (5538 data points, ~30-min intervals, −1.8–40.6°C, 30.3–95.7% RH); created Python interpolation module (`Environment/outside_conditions.py`) for T_out(t) and RH_out(t) in simulation |
 | 2026-03-06 | Created Python simulation (`Simulation/greenhouse_simulation.py`): Euler-integrated plant model (§2.3–2.4), rule-based hysteresis controller (§3), all 5 scenarios (§4.1); outside T/RH driven by historical weather data via `OutsideConditions`; outputs per-scenario CSV and PNG |
-| 2026-03-06 | Added outside environmental conditions (section 2.7): historical weather data from May–September 2025 (5540 data points, 30-min intervals); created Python interpolation module (`Environment/outside_conditions.py`) for T_out(t) and RH_out(t) in simulation; updated simulation parameters and marked outside profile question as resolved |
