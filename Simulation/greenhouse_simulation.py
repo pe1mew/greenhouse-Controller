@@ -15,10 +15,12 @@ Outputs per scenario:
     results_<scenario>.csv   — time-series of T, RH, window states
     results_<scenario>.png   — plot (requires matplotlib)
 
-Plant parameters
-----------------
-All values marked TBD in design.md §2.6 are set to reasonable placeholder
-estimates. Tune against physical measurements when available.
+Plant model
+-----------
+Steady-state (algebraic) model — no ODE integration. C and UA are eliminated.
+T and AH are computed as equilibrium values at each time step given the current
+window configuration and outside conditions. Background infiltration (ACH_INF)
+prevents division by zero when all windows are closed.
 """
 
 import math
@@ -57,6 +59,7 @@ from Environment.outside_conditions import OutsideConditions  # noqa: E402
 RHO_AIR = 1.2      # kg/m³   — air density
 CP_AIR  = 1005.0   # J/kg/°C — specific heat of air
 P_ATM   = 101325.0 # Pa      — atmospheric pressure
+ACH_INF = 0.5      # h⁻¹    — background infiltration (greenhouse leakage, always present)
 
 
 # ---------------------------------------------------------------------------
@@ -64,24 +67,20 @@ P_ATM   = 101325.0 # Pa      — atmospheric pressure
 # ---------------------------------------------------------------------------
 @dataclass
 class PlantParameters:
-    # Greenhouse geometry & thermal mass  (design.md §1.4, §2.6)
-    V:   float = 2400.0         # m³     — 40×16×3 (base) + ½×16×1.5×40 (roof); gutter 3 m, ridge 4.5 m
-    C:   float = 2_000_000.0    # J/°C   — thermal capacitance (air + structure + soil + plants) — TBD
-    UA:  float = 100.0          # W/°C   — envelope heat-loss coefficient — TBD
+    # Greenhouse air volume (design.md §1.4, §2.6) — fixed from geometry, not a free parameter
+    V: float = 2400.0   # m³ — 40×16×3 (base) + ½×16×1.5×40 (roof); gutter 3 m, ridge 4.5 m
 
-    # Ventilation — air changes per hour when window is fully open (design.md §2.2, §2.6)
-    # Typical greenhouse values; implied effective air velocity:
-    #   M1/M2: ACH×V/(A×3600) = 8×2400/(8×3600) ≈ 0.67 m/s  (stack effect + mild wind)
-    #   M3:    ACH×V/(A×3600) = 40×2400/(80×3600) ≈ 0.33 m/s  (wind-driven, conservative)
-    ACH_M1: float =  8.0   # h⁻¹ — M1 Dakbeluchting Zuid  (south roof slope, A=8 m²)
-    ACH_M2: float =  8.0   # h⁻¹ — M2 Dakbeluchting Noord (north roof slope, A=8 m²)
-    ACH_M3: float = 40.0   # h⁻¹ — M3 Zijwandbeluchting  (north wall, A=80 m²; 10× larger opening)
+    # Ventilation — air changes per hour per window type when fully open (design.md §2.6)
+    # M1 and M2 are symmetric roof vents → single ACH_roof parameter
+    # ACH_inf background infiltration is a fixed constant (ACH_INF), not listed here
+    ACH_roof: float =  8.0   # h⁻¹ — each roof vent (M1 or M2); A=8 m², ≈0.67 m/s effective
+    ACH_wall: float = 40.0   # h⁻¹ — north wall vent (M3);      A=80 m², ≈0.33 m/s effective
 
     # Transpiration — continuous moisture source from plants (design.md §2.6, §3.7)
-    m_transp: float = 0.010     # kg/s — general default (≈1.35 mm/m²/day over 640 m²); farmer-configurable
+    m_transp: float = 0.010  # kg/s — general default (≈1.35 mm/m²/day over 640 m²); farmer-configurable
 
     # Solar heat gain peak (clear-sky noon, through glazing)
-    Q_solar_peak: float = 20_000.0  # W
+    Q_solar_peak: float = 20_000.0  # W — tunable; co-calibrate with ACH values
 
 
 # ---------------------------------------------------------------------------
@@ -89,19 +88,27 @@ class PlantParameters:
 # ---------------------------------------------------------------------------
 @dataclass
 class ControlParameters:
-    # Temperature setpoint and hysteresis thresholds [°C]
-    T_sp:    float = 26.0   # setpoint
-    dT_low:  float =  2.0   # threshold for 1 window above T_sp
-    dT_mid:  float =  4.0   # threshold for 2 windows
-    dT_high: float =  6.0   # threshold for 3 windows (all open)
-    dT_hyst: float =  1.0   # close threshold below T_sp
+    # Temperature setpoints [°C] — farmer-configurable (design.md §3.7)
+    T_sp_day:   float = 24.0   # daytime setpoint   (06:00–20:00)
+    T_sp_night: float = 18.0   # night-time setpoint (20:00–06:00)
 
-    # Relative humidity setpoint and hysteresis thresholds [%]
-    RH_sp:     float = 70.0  # setpoint
-    dRH_low:   float =  5.0  # threshold for 1 window above RH_sp
-    dRH_mid:   float = 10.0  # threshold for 2 windows
-    dRH_high:  float = 15.0  # threshold for 3 windows
-    dRH_hyst:  float =  5.0  # close threshold below RH_sp
+    # Temperature hysteresis thresholds (relative to active T_sp)
+    # Evenly spaced: 1 window at T_sp+dT_step, 2 at +2×step, 3 at +3×step
+    dT_step: float =  2.0   # °C — spacing between window-opening levels
+    dT_hyst: float =  1.0   # °C — close threshold below T_sp
+
+    # Relative humidity setpoints [%] — farmer-configurable
+    RH_sp_day:   float = 65.0   # daytime setpoint
+    RH_sp_night: float = 75.0   # night-time setpoint
+
+    # RH hysteresis thresholds (relative to active RH_sp)
+    # Evenly spaced: 1 window at RH_sp+dRH_step, 2 at +2×step, 3 at +3×step
+    dRH_step: float =  5.0  # % — spacing between window-opening levels
+    dRH_hyst: float =  5.0  # % — close threshold below RH_sp
+
+    # Day/night boundary — aligned with Q_solar model (06:00–20:00)
+    day_start: float =  6.0   # hour (local)
+    day_end:   float = 20.0   # hour (local)
 
     # Critical RH: force minimum ventilation even when T < T_sp
     RH_critical: float = 88.0  # %
@@ -224,9 +231,14 @@ def Q_solar(t_elapsed: float, Q_peak: float) -> float:
 # ---------------------------------------------------------------------------
 # Plant model — ODE right-hand side (design.md §2.3, §2.4)
 # ---------------------------------------------------------------------------
-def _ach_total(windows: List[Window], plant: PlantParameters) -> float:
-    """Total ventilation rate [s⁻¹] from physically-open windows."""
-    total = 0.0
+def _ach_total(windows: List[Window]) -> float:
+    """
+    Total ventilation rate [s⁻¹].
+
+    Always includes ACH_INF (background infiltration) so the denominator in
+    the steady-state equations is never zero even when all windows are closed.
+    """
+    total = ACH_INF / 3600.0  # infiltration baseline, h⁻¹ → s⁻¹
     for w in windows:
         if w.physically_open:
             total += w.ach / 3600.0  # h⁻¹ → s⁻¹
@@ -238,36 +250,28 @@ def plant_step(
     T_out: float,
     RH_out: float,
     plant: PlantParameters,
-    dt: float,
+    dt: float,  # unused in steady-state model; kept for API compatibility
 ) -> None:
     """
-    Advance plant model one time step via Euler integration.
+    Update greenhouse state using the steady-state plant model (design.md §2.3, §2.4).
+
+    Setting dT/dt = 0 and d(AH)/dt = 0 gives algebraic equilibrium:
 
     Temperature (§2.3):
-        C * dT/dt = Q_solar(t) - UA*(T - T_out) - ACH*V*rho*cp*(T - T_out)
+        T = T_out + Q_solar / (ACH_total * V * rho * cp)
 
     Absolute humidity (§2.4):
-        V * d(AH)/dt = m_transp - ACH*V*(AH - AH_out)
+        AH = AH_out + m_transp / (ACH_total * V)
+
+    C and UA are eliminated. ACH_total always includes ACH_INF (infiltration)
+    so the denominator is never zero.
     """
-    T  = state.T
-    AH = state.AH
     AH_out = AH_from_RH(RH_out, T_out)
-    ACH    = _ach_total(state.windows, plant)          # s⁻¹
-    Qs     = Q_solar(state.t, plant.Q_solar_peak)      # W
+    ACH    = _ach_total(state.windows)           # s⁻¹  (includes infiltration)
+    Qs     = Q_solar(state.t, plant.Q_solar_peak)  # W
 
-    dT_dt = (
-        Qs
-        - plant.UA * (T - T_out)
-        - ACH * plant.V * RHO_AIR * CP_AIR * (T - T_out)
-    ) / plant.C
-
-    dAH_dt = (
-        plant.m_transp
-        - ACH * plant.V * (AH - AH_out)
-    ) / plant.V
-
-    state.T  = T  + dT_dt  * dt
-    state.AH = max(0.0, AH + dAH_dt * dt)
+    state.T  = T_out + Qs / (ACH * plant.V * RHO_AIR * CP_AIR)
+    state.AH = max(0.0, AH_out + plant.m_transp / (ACH * plant.V))
 
 
 # ---------------------------------------------------------------------------
@@ -328,18 +332,28 @@ def command_window(
 def _demand(
     value: float,
     sp: float,
-    d_low: float,
-    d_mid: float,
-    d_high: float,
+    d_step: float,
     d_hyst: float,
     prev: int,
 ) -> int:
-    """Generic 0–3 demand level with hysteresis deadband."""
-    if   value > sp + d_high: return 3
-    elif value > sp + d_mid:  return 2
-    elif value > sp + d_low:  return 1
-    elif value < sp - d_hyst: return 0
-    else:                     return prev  # deadband — no change
+    """
+    Generic 0–3 demand level with evenly-spaced thresholds and hysteresis deadband.
+
+    Thresholds above sp: 1×d_step → 1 window, 2×d_step → 2, 3×d_step → 3 (all open).
+    """
+    if   value > sp + 3 * d_step: return 3
+    elif value > sp + 2 * d_step: return 2
+    elif value > sp +     d_step: return 1
+    elif value < sp - d_hyst:     return 0
+    else:                         return prev  # deadband — no change
+
+
+def _active_setpoints(t_elapsed: float, ctrl: ControlParameters):
+    """Return (T_sp, RH_sp) for the current hour of day."""
+    hour = (t_elapsed / 3600.0) % 24.0
+    if ctrl.day_start <= hour < ctrl.day_end:
+        return ctrl.T_sp_day, ctrl.RH_sp_day
+    return ctrl.T_sp_night, ctrl.RH_sp_night
 
 
 def apply_control(
@@ -355,21 +369,22 @@ def apply_control(
     """
     T  = state.T
     RH = RH_from_AH(state.AH, state.T)
+    T_sp, RH_sp = _active_setpoints(state.t, ctrl)
 
     T_demand = _demand(
-        T, ctrl.T_sp,
-        ctrl.dT_low, ctrl.dT_mid, ctrl.dT_high, ctrl.dT_hyst,
+        T, T_sp,
+        ctrl.dT_step, ctrl.dT_hyst,
         state.T_demand_prev,
     )
     RH_demand = _demand(
-        RH, ctrl.RH_sp,
-        ctrl.dRH_low, ctrl.dRH_mid, ctrl.dRH_high, ctrl.dRH_hyst,
+        RH, RH_sp,
+        ctrl.dRH_step, ctrl.dRH_hyst,
         state.RH_demand_prev,
     )
 
     # Conflict resolution (§3.3):
     # T takes priority. Exception: T < T_sp but RH > RH_critical → force ≥1 window.
-    if T < ctrl.T_sp and RH > ctrl.RH_critical:
+    if T < T_sp and RH > ctrl.RH_critical:
         V_demand = max(1, RH_demand)
     else:
         V_demand = max(T_demand, RH_demand)
@@ -421,9 +436,9 @@ def run_simulation(
 
     # Initialise state
     windows = [
-        Window("M1_Dakbeluchting_Zuid",  plant.ACH_M1, t_motor=21.0),
-        Window("M2_Dakbeluchting_Noord", plant.ACH_M2, t_motor=21.0),
-        Window("M3_Zijwandbeluchting",   plant.ACH_M3, t_motor=171.0),
+        Window("M1_Dakbeluchting_Zuid",  plant.ACH_roof, t_motor=21.0),
+        Window("M2_Dakbeluchting_Noord", plant.ACH_roof, t_motor=21.0),
+        Window("M3_Zijwandbeluchting",   plant.ACH_wall, t_motor=171.0),
     ]
     state = SimulationState(
         T=T0,
@@ -502,10 +517,14 @@ def _print_metrics(state: SimulationState, ctrl: ControlParameters) -> None:
     RH_tol = 5.0   # ±%  tolerance (TBD in design)
     n      = len(state.T_hist)
 
-    T_in_band  = sum(1 for T  in state.T_hist  if abs(T  - ctrl.T_sp)  <= T_tol)  / n * 100
-    RH_in_band = sum(1 for RH in state.RH_hist if abs(RH - ctrl.RH_sp) <= RH_tol) / n * 100
+    # Compute active setpoint at each recorded time step
+    T_sp_hist  = [_active_setpoints(t, ctrl)[0] for t in state.t_hist]
+    RH_sp_hist = [_active_setpoints(t, ctrl)[1] for t in state.t_hist]
 
-    worst_T = sum(1 for T in state.T_hist if T > ctrl.T_sp + ctrl.dT_high) / n * 100
+    T_in_band  = sum(1 for T,  sp in zip(state.T_hist,  T_sp_hist)  if abs(T  - sp) <= T_tol)  / n * 100
+    RH_in_band = sum(1 for RH, sp in zip(state.RH_hist, RH_sp_hist) if abs(RH - sp) <= RH_tol) / n * 100
+
+    worst_T = sum(1 for T, sp in zip(state.T_hist, T_sp_hist) if T > sp + 3 * ctrl.dT_step) / n * 100
 
     # Count window state changes (proxy for actuations)
     actuations = 0
@@ -518,9 +537,9 @@ def _print_metrics(state: SimulationState, ctrl: ControlParameters) -> None:
     print(f"  Final: T={state.T:.1f}°C  RH={RH_f:.1f}%")
     print(f"  T range : {min(state.T_hist):.1f}–{max(state.T_hist):.1f}°C")
     print(f"  RH range: {min(state.RH_hist):.1f}–{max(state.RH_hist):.1f}%")
-    print(f"  Time T within ±{T_tol}°C of T_sp : {T_in_band:.1f}%")
-    print(f"  Time RH within ±{RH_tol}% of RH_sp : {RH_in_band:.1f}%")
-    print(f"  Time T > T_sp + dT_high            : {worst_T:.1f}%")
+    print(f"  Time T within ±{T_tol}°C of active T_sp  : {T_in_band:.1f}%")
+    print(f"  Time RH within ±{RH_tol}% of active RH_sp : {RH_in_band:.1f}%")
+    print(f"  Time T > active T_sp + dT_high          : {worst_T:.1f}%")
     print(f"  Window actuations                  : {actuations}")
     print(f"  Commands blocked (dwell guard)     : {state.commands_blocked}")
 
@@ -576,9 +595,10 @@ def plot_results(
     ax1 = fig.add_subplot(gs[0])
     ax1.plot(t_h, state.T_hist,     "r-",  lw=2,   label="Indoor T")
     ax1.plot(t_h, state.T_out_hist, "r--", lw=1.2, alpha=0.55, label="Outside T")
-    ax1.axhline(ctrl.T_sp,                 color="k",    ls=":", lw=1,   label=f"T_sp = {ctrl.T_sp}°C")
-    ax1.axhline(ctrl.T_sp + ctrl.dT_high,  color="red",  ls=":", lw=0.8, alpha=0.5, label=f"T_sp + dT_high")
-    ax1.axhline(ctrl.T_sp - ctrl.dT_hyst,  color="blue", ls=":", lw=0.8, alpha=0.5, label=f"T_sp − dT_hyst")
+    ax1.axhline(ctrl.T_sp_day,                    color="k",    ls=":",  lw=1,   label=f"T_sp day = {ctrl.T_sp_day}°C")
+    ax1.axhline(ctrl.T_sp_night,                  color="grey", ls=":",  lw=1,   label=f"T_sp night = {ctrl.T_sp_night}°C")
+    ax1.axhline(ctrl.T_sp_day   + 3 * ctrl.dT_step, color="red",  ls=":",  lw=0.8, alpha=0.5, label=f"T_sp_day + 3×dT_step")
+    ax1.axhline(ctrl.T_sp_night - ctrl.dT_hyst,     color="blue", ls=":",  lw=0.8, alpha=0.5, label=f"T_sp_night − dT_hyst")
     ax1.set_ylabel("Temperature [°C]")
     ax1.legend(fontsize=8, loc="upper right", ncol=3)
     ax1.grid(True, alpha=0.25)
@@ -587,8 +607,9 @@ def plot_results(
     ax2 = fig.add_subplot(gs[1], sharex=ax1)
     ax2.plot(t_h, state.RH_hist,     "b-",  lw=2,   label="Indoor RH")
     ax2.plot(t_h, state.RH_out_hist, "b--", lw=1.2, alpha=0.55, label="Outside RH")
-    ax2.axhline(ctrl.RH_sp,                  color="k",    ls=":", lw=1,   label=f"RH_sp = {ctrl.RH_sp}%")
-    ax2.axhline(ctrl.RH_sp + ctrl.dRH_high,  color="blue", ls=":", lw=0.8, alpha=0.5)
+    ax2.axhline(ctrl.RH_sp_day,                   color="k",    ls=":",  lw=1,   label=f"RH_sp day = {ctrl.RH_sp_day}%")
+    ax2.axhline(ctrl.RH_sp_night,                 color="grey", ls=":",  lw=1,   label=f"RH_sp night = {ctrl.RH_sp_night}%")
+    ax2.axhline(ctrl.RH_sp_day  + 3 * ctrl.dRH_step, color="blue", ls=":",  lw=0.8, alpha=0.5)
     ax2.axhline(ctrl.RH_critical,             color="purple", ls="--", lw=0.8, alpha=0.5, label=f"RH_critical")
     ax2.set_ylabel("Relative Humidity [%]")
     ax2.set_ylim(0, 105)

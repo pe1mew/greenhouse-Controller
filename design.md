@@ -22,10 +22,12 @@ No hardware target; design is language-agnostic at this stage.
 
 ### 1.2 Setpoints
 
-| Variable | Setpoint | Tolerance |
-|---|---|---|
-| Temperature (T) | TBD °C | ± TBD °C |
-| Relative Humidity (RH) | TBD % | ± TBD % |
+Setpoints are time-varying: the farmer configures separate day and night targets, as well as the hours at which the day and night periods begin.
+
+| Variable | Day setpoint (06:00–20:00) | Night setpoint (20:00–06:00) | Tolerance |
+|---|---|---|---|
+| Temperature (T) | 24 °C (75 °F) | 18 °C (65 °F) | ± TBD °C |
+| Relative Humidity (RH) | 65 % | 75 % | ± TBD % |
 
 ### 1.3 Sensors
 
@@ -247,47 +249,46 @@ Coupling: a change in T shifts the saturation vapour pressure, which changes RH 
 
 ### 2.2 Window Ventilation Model
 
-Each window, when open, creates an air exchange with the outside. The effective ventilation rate depends on window area, wind speed, and stack effect (especially for roof windows). Since none of these are measured, an aggregate effective air change rate is used:
+Each window, when open, creates an air exchange with the outside. The effective ventilation rate depends on window area, wind speed, and stack effect (especially for roof windows). Since none of these are measured, an aggregate effective air change rate per window type is used:
 
-- `ACH_i` — air changes per hour contributed by window i when fully open [h⁻¹], where i ∈ {M1, M2, M3}
-- Total ventilation rate: `ACH_total(t) = sum of ACH_i for all open windows`
+- `ACH_roof` — air changes per hour for each roof vent (M1 or M2) when fully open [h⁻¹]
+- `ACH_wall` — air changes per hour for the north wall vent (M3) when fully open [h⁻¹]
+- `ACH_inf` — fixed background infiltration rate (greenhouse leakage), always present [h⁻¹]
+- Total ventilation rate: `ACH_total = ACH_inf + Σ(ACH of each open window)`
 
-Roof windows benefit from stack effect (hot air rises), making them more effective for heat removal than the side wall window. Between the two roof windows, M2 (north slope) and M1 (south slope) are assumed to have equal ventilation effectiveness; any asymmetry due to prevailing wind direction is not modelled.
+M1 and M2 are structurally symmetric (same area, same construction) and are assumed to have equal ventilation effectiveness — they share a single parameter `ACH_roof`. M3 has a 10× larger opening area and uses a separate parameter `ACH_wall`. The background infiltration `ACH_inf = 0.5 h⁻¹` is a fixed constant representing unavoidable leakage; it ensures `ACH_total > 0` at all times.
 
-### 2.3 Temperature Dynamics
+### 2.3 Temperature Model (steady-state)
 
-First-order thermal model:
+Setting dT/dt = 0 in the energy balance and dropping `UA` (envelope conduction is small compared to ventilation losses and `UA` is unmeasurable without instrumentation) gives the equilibrium temperature for any given window configuration:
 
 ```
-C * dT/dt = Q_solar(t) - UA * (T - T_out) - ACH_total * V * rho * cp * (T - T_out)
+T = T_out + Q_solar(t) / (ACH_total · V · rho · cp)
 ```
 
 Where:
-- `C` — thermal capacitance of greenhouse air and contents [J/°C]
 - `Q_solar(t)` — solar heat gain through glazing [W]
-- `UA` — envelope heat loss coefficient (conduction + infiltration) [W/°C]
-- `ACH_total` — total ventilation air change rate from open windows [s⁻¹]
+- `ACH_total` — total ventilation rate [s⁻¹] (includes infiltration; see §2.2)
 - `V` — greenhouse air volume [m³]
 - `rho` — air density [≈ 1.2 kg/m³]
 - `cp` — specific heat of air [≈ 1005 J/(kg·°C)]
 - `T_out` — outside temperature [°C] (disturbance, not measured)
 
-The term `UA * (T - T_out)` captures passive envelope losses/gains.
-The term `ACH * V * rho * cp * (T - T_out)` captures active ventilation through open windows.
+**Consequence:** The greenhouse is assumed to settle instantly to its equilibrium temperature at each evaluation step. Thermal capacitance `C` and envelope loss `UA` are eliminated — neither is measurable without instrumentation, and both would remain TBD calibration parameters.
 
-### 2.4 Humidity Dynamics
+### 2.4 Humidity Model (steady-state)
 
-Mass balance on water vapour, using absolute humidity (AH) as the internal state:
+Setting d(AH)/dt = 0 in the moisture balance gives the equilibrium absolute humidity:
 
 ```
-V * d(AH)/dt = m_transp(t) - ACH_total * V * (AH - AH_out)
+AH = AH_out + m_transp / (ACH_total · V)
 ```
 
 Where:
 - `AH` — indoor absolute humidity [kg/m³]
 - `AH_out` — outside absolute humidity [kg/m³] (derived from T_out, RH_out; disturbance)
-- `m_transp(t)` — plant transpiration rate [kg/s] (disturbance)
-- `ACH_total` — ventilation rate from open windows [s⁻¹]
+- `m_transp` — plant transpiration rate [kg/s] (farmer-configurable; see §3.7)
+- `ACH_total` — ventilation rate [s⁻¹] (includes infiltration)
 
 **Converting AH to RH** using the Magnus formula:
 
@@ -308,21 +309,25 @@ This tight coupling means T and RH cannot be controlled independently.
 
 ### 2.6 Plant Parameters
 
+**Fixed constants** (derived from geometry or physics; not free parameters):
+
 | Symbol | Description | Value | Unit | Source |
 |---|---|---|---|---|
-| C | Thermal capacitance | TBD | J/°C | |
-| UA | Envelope heat loss coefficient | TBD | W/°C | |
-| V | Air volume | 2400 | m³ | Rectangular base (40 × 16 × 3) + triangular roof (½ × 16 × 1.5 × 40); gutter height 3.0 m, ridge height 4.5 m |
-| A_M1 | Opening area for M1 (fully open) | 8 | m² | 0.20 m × 40 m; measured |
-| A_M2 | Opening area for M2 (fully open) | 8 | m² | 0.20 m × 40 m; measured |
-| A_M3 | Opening area for M3 (fully open) | 80 | m² | 2.0 m × 40 m; measured |
-| ACH_M1 | Air change rate for M1 (Dakbeluchting Zuid, south roof slope) | 8 | h⁻¹ | Typical greenhouse value; implies ≈ 0.67 m/s effective velocity through 8 m² opening (stack effect + mild wind) |
-| ACH_M2 | Air change rate for M2 (Dakbeluchting Noord, north roof slope) | 8 | h⁻¹ | Same as M1 (symmetric assumption) |
-| ACH_M3 | Air change rate for M3 (Zijwandbeluchting, north wall) | 40 | h⁻¹ | Typical for large side wall opening; implies ≈ 0.33 m/s effective velocity through 80 m² (wind-driven, conservative); 10× larger area than M1/M2 |
-| m_transp | Plant transpiration rate | 0.010 (default) | kg/s | General conservative default (≈ 1.35 mm/m²/day over 640 m²); farmer-configurable — increase for high-demand crops (tomato/cucumber in summer); see `plantTranspirationRateConsiderations.md` |
-| t_motor_M1 | Motor run-time for M1 to reach end position | 21 | s | Measured on physical system |
-| t_motor_M2 | Motor run-time for M2 to reach end position | 21 | s | Measured on physical system |
-| t_motor_M3 | Motor run-time for M3 to reach end position | 171 | s | Measured on physical system (2 min 51 s) |
+| V | Air volume | 2400 | m³ | Rectangular base (40 × 16 × 3) + triangular roof (½ × 16 × 1.5 × 40) |
+| ACH_inf | Background infiltration rate (leakage) | 0.5 | h⁻¹ | Fixed constant; prevents zero denominator; realistic for Dutch greenhouse construction |
+| A_M1, A_M2 | Opening area for each roof vent (fully open) | 8 | m² | 0.20 m × 40 m; measured |
+| A_M3 | Opening area for north wall vent (fully open) | 80 | m² | 2.0 m × 40 m; measured |
+
+**Tunable parameters** (typical values; verify against physical measurements):
+
+| Symbol | Description | Value | Unit | Source |
+|---|---|---|---|---|
+| ACH_roof | Air change rate per roof vent (M1 or M2) when fully open | 8 | h⁻¹ | Typical greenhouse value; ≈ 0.67 m/s effective velocity through 8 m² |
+| ACH_wall | Air change rate for north wall vent (M3) when fully open | 40 | h⁻¹ | Typical for large wall opening; ≈ 0.33 m/s effective velocity through 80 m² |
+| m_transp | Plant transpiration rate | 0.010 (default) | kg/s | General conservative default (≈ 1.35 mm/m²/day over 640 m²); farmer-configurable |
+| Q_solar_peak | Peak solar heat gain at clear-sky noon | TBD | W | Co-calibrate with ACH values against measured temperature response |
+| t_motor_roof | Motor run-time for M1 or M2 to reach end position | 21 | s | Measured on physical system (same for both roof vents) |
+| t_motor_wall | Motor run-time for M3 to reach end position | 171 | s | Measured on physical system (2 min 51 s) |
 
 ### 2.7 Outside Environmental Conditions
 
@@ -401,24 +406,31 @@ Given binary actuators and high uncertainty, a **rule-based hysteresis controlle
 
 Define ventilation demand as an integer level `V_demand ∈ {0, 1, 2, 3}` representing the number of windows to open.
 
-**Temperature rule** (primary):
+**Active setpoints** — `T_sp` and `RH_sp` used in the rules below are time-varying. The day/night boundary is farmer-configurable via `day_start` and `day_end`:
 
 ```
-if T > T_sp + dT_high:   T_demand = 3          (all windows open)
-elif T > T_sp + dT_mid:  T_demand = 2
-elif T > T_sp + dT_low:  T_demand = 1
-elif T < T_sp - dT_hyst: T_demand = 0          (close all, retain heat)
-else:                     T_demand = current    (deadband, no change)
+if day_start ≤ hour < day_end:   T_sp = T_sp_day;   RH_sp = RH_sp_day
+else:                              T_sp = T_sp_night; RH_sp = RH_sp_night
 ```
 
-**Humidity rule** (secondary):
+**Temperature rule** (primary) — thresholds evenly spaced by `dT_step`:
 
 ```
-if RH > RH_sp + dRH_high: RH_demand = 3
-elif RH > RH_sp + dRH_mid: RH_demand = 2
-elif RH > RH_sp + dRH_low: RH_demand = 1
-elif RH < RH_sp - dRH_hyst: RH_demand = 0
-else:                        RH_demand = current
+if T > T_sp + 3·dT_step: T_demand = 3          (all windows open)
+elif T > T_sp + 2·dT_step: T_demand = 2
+elif T > T_sp +   dT_step: T_demand = 1
+elif T < T_sp - dT_hyst:   T_demand = 0          (close all, retain heat)
+else:                        T_demand = current    (deadband, no change)
+```
+
+**Humidity rule** (secondary) — thresholds evenly spaced by `dRH_step`:
+
+```
+if RH > RH_sp + 3·dRH_step: RH_demand = 3
+elif RH > RH_sp + 2·dRH_step: RH_demand = 2
+elif RH > RH_sp +   dRH_step: RH_demand = 1
+elif RH < RH_sp - dRH_hyst:   RH_demand = 0
+else:                           RH_demand = current
 ```
 
 **Conflict resolution** (T takes priority over RH, as excessive heat is more immediately harmful):
@@ -465,20 +477,19 @@ Motor commands are not re-issued while a window is `MOVING` to prevent conflicti
 
 | Parameter | Description | Initial value |
 |---|---|---|
-| T_sp | Temperature setpoint | TBD °C |
-| dT_low | T threshold for 1 window | TBD °C above T_sp |
-| dT_mid | T threshold for 2 windows | TBD °C above T_sp |
-| dT_high | T threshold for 3 windows | TBD °C above T_sp |
-| dT_hyst | T hysteresis band (close threshold) | TBD °C below T_sp |
-| RH_sp | Humidity setpoint | TBD % |
-| dRH_low | RH threshold for 1 window | TBD % above RH_sp |
-| dRH_mid | RH threshold for 2 windows | TBD % above RH_sp |
-| dRH_high | RH threshold for 3 windows | TBD % above RH_sp |
-| dRH_hyst | RH hysteresis band (close threshold) | TBD % below RH_sp |
+| day_start | Hour at which day period begins (24 h clock) | 6.0 (06:00) |
+| day_end | Hour at which night period begins (24 h clock) | 20.0 (20:00) |
+| T_sp_day | Daytime temperature setpoint | 24 °C |
+| T_sp_night | Night-time temperature setpoint | 18 °C |
+| dT_step | Uniform spacing between T window-opening levels (1st window at T_sp + dT_step, 2nd at +2×, 3rd at +3×) | 2.0 °C |
+| dT_hyst | T close threshold below active T_sp | 1.0 °C |
+| RH_sp_day | Daytime RH setpoint | 65 % |
+| RH_sp_night | Night-time RH setpoint | 75 % |
+| dRH_step | Uniform spacing between RH window-opening levels | 5.0 % |
+| dRH_hyst | RH close threshold below active RH_sp | 5.0 % |
 | RH_critical | RH level forcing ventilation even when T < T_sp | TBD % |
-| t_motor_M1 | Motor run-time for M1 (Dakbeluchting Zuid) to reach end position | 21 s |
-| t_motor_M2 | Motor run-time for M2 (Dakbeluchting Noord) to reach end position | 21 s |
-| t_motor_M3 | Motor run-time for M3 (Zijwandbeluchting) to reach end position | 171 s |
+| t_motor_roof | Motor run-time for M1 or M2 (roof vents) to reach end position | 21 s |
+| t_motor_wall | Motor run-time for M3 (north wall vent) to reach end position | 171 s |
 | t_min_dwell | Minimum time a window must stay OPEN or CLOSED before a new command is accepted (anti-oscillation) | 600 s |
 
 ### 3.7 Farmer-Accessible Configuration Parameters
@@ -489,16 +500,16 @@ Not all parameters are intended for the farmer to adjust. The table below distin
 
 | Parameter | Plain meaning | Typical range |
 |---|---|---|
-| `T_sp` | Target indoor temperature | 18 – 28 °C |
-| `dT_high` | How far above target before all windows open (emergency cooling) | 5 – 10 °C |
-| `dT_mid` | How far above target before a second window opens | 3 – 6 °C |
-| `dT_low` | How far above target before the first window opens | 1 – 4 °C |
-| `dT_hyst` | How far below target before open windows close again | 1 – 3 °C |
-| `RH_sp` | Target indoor relative humidity | 65 – 80 % |
-| `dRH_high` | How far above target before all windows open (emergency dehumidification) | 10 – 20 % |
-| `dRH_mid` | How far above target before a second window opens | 5 – 12 % |
-| `dRH_low` | How far above target before the first window opens | 3 – 8 % |
-| `dRH_hyst` | How far below target before open windows close again | 3 – 8 % |
+| `day_start` | Hour at which the day period begins (24 h clock). Controls when the day setpoints take effect and when the solar gain model starts. Default 6.0 (06:00) | 5.0 – 8.0 |
+| `day_end` | Hour at which the night period begins. Default 20.0 (20:00) | 17.0 – 22.0 |
+| `T_sp_day` | Target indoor temperature during the day — **set to 24 °C** | 18 – 28 °C |
+| `T_sp_night` | Target indoor temperature at night — **set to 18 °C** | 14 – 22 °C |
+| `dT_step` | Step size between T window-opening levels. First window opens when indoor T exceeds T_sp by one step; second at two steps; all three at three steps | 1 – 4 °C |
+| `dT_hyst` | How far below active target before open windows close again | 1 – 3 °C |
+| `RH_sp_day` | Target indoor relative humidity during the day — **set to 65 %** | 55 – 75 % |
+| `RH_sp_night` | Target indoor relative humidity at night — **set to 75 %** | 65 – 85 % |
+| `dRH_step` | Step size between RH window-opening levels (same logic as dT_step) | 3 – 8 % |
+| `dRH_hyst` | How far below active target before open windows close again | 3 – 8 % |
 | `RH_critical` | Humidity level at which a window is forced open even when the temperature is already below target, to prevent mould | 82 – 92 % |
 | `t_min_dwell` | Minimum time (seconds) a window must remain in its current state before it can be commanded to change; prevents rapid open-close cycling when a sensor reading hovers near a threshold | 300 – 1200 s |
 | `m_transp` | Estimated plant water vapour output rate. Because various crops are grown throughout the year, a single general value is used rather than measuring each crop. Default 0.010 kg/s (conservative mid-range). Increase to 0.015–0.030 kg/s for high-demand crops (tomato, cucumber) in peak summer; decrease toward 0.007 kg/s for leafy crops. See `plantTranspirationRateConsiderations.md` | 0.007 – 0.030 kg/s |
@@ -507,13 +518,13 @@ Not all parameters are intended for the farmer to adjust. The table below distin
 
 | Parameter | Plain meaning | How to determine |
 |---|---|---|
-| `t_motor_M1`, `t_motor_M2` | Time for a roof window motor to travel from fully closed to fully open (or back) — **measured: 21 s** | Verify after any motor replacement |
-| `t_motor_M3` | Time for the north wall motor to travel from fully closed to fully open (or back) — **measured: 171 s** | Verify after any motor replacement |
-| `ACH_M1`, `ACH_M2`, `ACH_M3` | Ventilation capacity of each window when fully open — simulation defaults: M1 = M2 = 8 h⁻¹, M3 = 40 h⁻¹ | Verify against physical measurement; can be adjusted if observed climate behaviour does not match simulation |
+| `t_motor_roof` | Time for a roof window motor (M1 or M2) to travel from fully closed to fully open (or back) — **measured: 21 s** | Verify after any motor replacement |
+| `t_motor_wall` | Time for the north wall motor (M3) to travel from fully closed to fully open (or back) — **measured: 171 s** | Verify after any motor replacement |
+| `ACH_roof` | Ventilation capacity of each roof vent (M1 or M2) when fully open — simulation default: 8 h⁻¹ | Verify against physical measurement; can be adjusted if observed climate behaviour does not match simulation |
+| `ACH_wall` | Ventilation capacity of the north wall vent (M3) when fully open — simulation default: 40 h⁻¹ | Verify against physical measurement; M3 opening is 10× larger than each roof vent |
 | `V` | Internal air volume of the greenhouse | 2400 m³ (gutter 3.0 m, ridge 4.5 m; see §1.4) |
-| `C`, `UA` | Thermal mass and envelope heat-loss coefficient | Estimated from construction materials or identified from temperature measurements |
 
-**Key principle:** the farmer interacts only with climate targets and tolerance bands. The controller translates those targets into window commands automatically. Tightening the bands (smaller `dT_low`, `dRH_low`) makes the controller respond sooner but increases window actuation frequency and motor wear. Widening the bands reduces wear but allows larger swings around the setpoint.
+**Key principle:** the farmer interacts only with climate targets and tolerance bands. The controller translates those targets into window commands automatically. Tightening the bands (smaller `dT_step`, `dRH_step`) makes the controller respond sooner but increases window actuation frequency and motor wear. Widening the bands reduces wear but allows larger swings around the setpoint.
 
 ### 3.8 Anti-Oscillation Guard (Minimum Dwell Time)
 
@@ -573,9 +584,9 @@ Setting `t_min_dwell` shorter than the relevant `t_motor` (motor travel time) is
 
 ### 4.3 Simulation Parameters
 
-- Time step: 10 s (Euler integration)
+- Evaluation interval: 10 s
 - Simulation duration: 86400 s (24-hour runs for S1–S3); 14400 s (S4); 28800 s (S5)
-- Solver: Euler (first-order explicit)
+- Plant model: steady-state algebraic (no ODE integration — T and AH computed directly from current ACH_total at each step; see §2.3–2.4)
 - Outside T and RH profiles: Historical weather data from May–September 2025 (see section 2.7), interpolated via `Environment/outside_conditions.py`
 - Implementation: `Simulation/greenhouse_simulation.py` — runs all 5 scenarios; outputs per-scenario CSV and PNG
 
@@ -601,12 +612,12 @@ python Simulation/greenhouse_simulation.py [S1|S2|S3|S4|S5|ALL]
 - [x] Define outside T and RH profiles for simulation — using historical data from May–September 2025 (`Environment/airTemperature_2025-05-01_to_2025-09-01.csv`), interpolated via Python module
 - [x] Choose simulation language/tool — Python; see `Simulation/greenhouse_simulation.py`
 - [x] Decide whether partial window opening (timed motor stop) should be supported — **not supported**: no position feedback, poor repeatability; graduated ventilation achieved by opening more windows instead (see §1.5)
-- [x] Confirm greenhouse dimensions — 40 m (L) × 16 m (W) × 4.5 m (ridge height); floor area 640 m²; air volume ≈ 2880 m³ (rectangular approx., see §1.4 and §2.6)
+- [x] Confirm greenhouse dimensions — 40 m (L) × 16 m (W) × 4.5 m (ridge height), gutter 3.0 m; floor area 640 m²; air volume 2400 m³ (see §1.4 and §2.6)
 - [x] Confirm window opening areas — M1/M2 roof vents: 0.20 m × 40 m = 8 m² each; M3 north wall: 2.0 m × 40 m = 80 m² (see §1.5)
 - [x] Measure motor run-times — M1 and M2: 21 s; M3: 171 s (2 min 51 s); both directions equal (see §1.5 and §2.6)
 
 **Still open:**
-- [ ] Confirm setpoints for T and RH
+- [x] Confirm setpoints for T and RH — day: 24 °C / 65 % RH; night: 18 °C / 75 % RH; farmer-configurable, separate day/night values (see §1.2, §3.6, §3.7)
 - [x] Confirm eaves/gutter height — gutter at 3.0 m, ridge at 4.5 m; exact air volume V = 2400 m³ (see §1.4, §2.6)
 - [x] Plant transpiration rate — treated as farmer-configurable general parameter; default 0.010 kg/s (≈ 1.35 mm/m²/day over 640 m²); farmer adjusts for crop type/season (see §3.7, `plantTranspirationRateConsiderations.md`)
 - [ ] Confirm controller hardware platform (what will generate the 24 V digital outputs and read analogue inputs)
@@ -630,4 +641,6 @@ python Simulation/greenhouse_simulation.py [S1|S2|S3|S4|S5|ALL]
 | 2026-03-07 | Recorded measured physical parameters: greenhouse dimensions 40 m × 16 m × 4.5 m (ridge), floor area 640 m², air volume ≈ 2880 m³; window opening areas M1/M2 = 8 m² (0.20 m × 40 m), M3 = 80 m² (2.0 m × 40 m); motor run-times M1/M2 = 21 s, M3 = 171 s; updated §1.4, §1.5, §2.6, §3.5, §3.6, §3.7, §3.8, §5 accordingly; per-window `t_motor` now explicit throughout |
 | 2026-03-07 | Confirmed gutter height 3.0 m; exact air volume V = 2400 m³ (rectangular base 1920 m³ + triangular roof 480 m³); replaced rectangular approximation throughout (§1.4, §2.6, §3.7); resolved final geometry open question |
 | 2026-03-07 | Plant transpiration rate treated as farmer-configurable general parameter (not crop-specific measured value); default 0.010 kg/s; moved `m_transp` from installer to farmer parameters (§3.7); updated §2.6 with default; scaled typical values in `plantTranspirationRateConsiderations.md` to 640 m² floor area |
+| 2026-03-07 | Confirmed setpoints: day 24 °C / 65 % RH, night 18 °C / 75 % RH; split T_sp/RH_sp into day/night pairs throughout (§1.2, §3.3, §3.6, §3.7); simulation updated with _active_setpoints() helper selecting day/night setpoint by time of day |
 | 2026-03-07 | Set simulation ACH values to typical greenhouse literature values: ACH_M1 = ACH_M2 = 8 h⁻¹ (roof vents), ACH_M3 = 40 h⁻¹ (north wall; 10× larger opening); corrected V from 500 to 2400 m³ and m_transp from 0.003 to 0.010 kg/s in simulation; moved t_motor from PlantParameters to per-window field (21 s for M1/M2, 171 s for M3) |
+| 2026-03-07 | Model simplification applied throughout: (1) replaced ODE plant model with steady-state algebraic equations — eliminates unmeasurable parameters C and UA (§2.3–2.4); (2) merged symmetric roof vents into single parameter ACH_roof, renamed wall vent to ACH_wall; (3) added fixed background infiltration ACH_inf = 0.5 h⁻¹; (4) replaced three unevenly-spaced thresholds dT_low/mid/high with single step parameter dT_step, same for dRH; (5) updated installer parameters table to remove C/UA and use new ACH/t_motor names; reduced tunable parameter count from 19 to 9 |
