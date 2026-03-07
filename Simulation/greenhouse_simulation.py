@@ -64,21 +64,21 @@ P_ATM   = 101325.0 # Pa      — atmospheric pressure
 # ---------------------------------------------------------------------------
 @dataclass
 class PlantParameters:
-    # Greenhouse geometry & thermal mass
-    V:   float = 500.0          # m³     — air volume (e.g. 25 m × 10 m × 2.5 m avg height)
-    C:   float = 2_000_000.0    # J/°C   — thermal capacitance (air + structure + soil + plants)
-    UA:  float = 100.0          # W/°C   — envelope heat-loss coefficient (conduction + infiltration)
+    # Greenhouse geometry & thermal mass  (design.md §1.4, §2.6)
+    V:   float = 2400.0         # m³     — 40×16×3 (base) + ½×16×1.5×40 (roof); gutter 3 m, ridge 4.5 m
+    C:   float = 2_000_000.0    # J/°C   — thermal capacitance (air + structure + soil + plants) — TBD
+    UA:  float = 100.0          # W/°C   — envelope heat-loss coefficient — TBD
 
-    # Ventilation — air changes per hour when window is fully open (design.md §2.2)
-    ACH_M1: float = 10.0   # h⁻¹ — M1 Dakbeluchting Zuid  (south roof slope)
-    ACH_M2: float = 10.0   # h⁻¹ — M2 Dakbeluchting Noord (north roof slope)
-    ACH_M3: float =  5.0   # h⁻¹ — M3 Zijwandbeluchting  (north wall, lower stack effect)
+    # Ventilation — air changes per hour when window is fully open (design.md §2.2, §2.6)
+    # Typical greenhouse values; implied effective air velocity:
+    #   M1/M2: ACH×V/(A×3600) = 8×2400/(8×3600) ≈ 0.67 m/s  (stack effect + mild wind)
+    #   M3:    ACH×V/(A×3600) = 40×2400/(80×3600) ≈ 0.33 m/s  (wind-driven, conservative)
+    ACH_M1: float =  8.0   # h⁻¹ — M1 Dakbeluchting Zuid  (south roof slope, A=8 m²)
+    ACH_M2: float =  8.0   # h⁻¹ — M2 Dakbeluchting Noord (north roof slope, A=8 m²)
+    ACH_M3: float = 40.0   # h⁻¹ — M3 Zijwandbeluchting  (north wall, A=80 m²; 10× larger opening)
 
-    # Transpiration — continuous moisture source from plants
-    m_transp: float = 0.003     # kg/s — plant transpiration rate
-
-    # Motor run time — time to fully open or close a window
-    t_motor: float = 120.0      # s
+    # Transpiration — continuous moisture source from plants (design.md §2.6, §3.7)
+    m_transp: float = 0.010     # kg/s — general default (≈1.35 mm/m²/day over 640 m²); farmer-configurable
 
     # Solar heat gain peak (clear-sky noon, through glazing)
     Q_solar_peak: float = 20_000.0  # W
@@ -127,8 +127,9 @@ class WindowState(Enum):
 
 @dataclass
 class Window:
-    name: str
-    ach:  float              # h⁻¹ — ventilation rate when fully open
+    name:    str
+    ach:     float           # h⁻¹ — ventilation rate when fully open
+    t_motor: float           # s   — time to reach end position (M1/M2: 21 s, M3: 171 s)
 
     # Estimated state (what the controller believes)
     state:          WindowState = WindowState.CLOSED
@@ -272,14 +273,14 @@ def plant_step(
 # ---------------------------------------------------------------------------
 # Window state manager (design.md §3.5)
 # ---------------------------------------------------------------------------
-def update_window_states(state: SimulationState, plant: PlantParameters) -> None:
+def update_window_states(state: SimulationState) -> None:
     """
-    Transition MOVING windows to their target state after t_motor seconds.
+    Transition MOVING windows to their target state after w.t_motor seconds.
     Also synchronises the physical state (used by plant model).
     """
     for w in state.windows:
         if w.is_moving():
-            if (state.t - w.move_start_time) >= plant.t_motor:
+            if (state.t - w.move_start_time) >= w.t_motor:
                 w.state = w.target_state
                 # Physical state follows estimated state (nominal case).
                 # S5 overrides physically_open before calling this function.
@@ -420,9 +421,9 @@ def run_simulation(
 
     # Initialise state
     windows = [
-        Window("M1_Dakbeluchting_Zuid",  plant.ACH_M1),
-        Window("M2_Dakbeluchting_Noord", plant.ACH_M2),
-        Window("M3_Zijwandbeluchting",   plant.ACH_M3),
+        Window("M1_Dakbeluchting_Zuid",  plant.ACH_M1, t_motor=21.0),
+        Window("M2_Dakbeluchting_Noord", plant.ACH_M2, t_motor=21.0),
+        Window("M3_Zijwandbeluchting",   plant.ACH_M3, t_motor=171.0),
     ]
     state = SimulationState(
         T=T0,
@@ -466,7 +467,7 @@ def run_simulation(
 
         # --- Window state manager ---
         # For S5: if this window just timed out, force physically_open=False after update
-        update_window_states(state, plant)
+        update_window_states(state)
         if stalled and stall_window_idx is not None:
             state.windows[stall_window_idx].physically_open = False
 

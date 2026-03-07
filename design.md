@@ -107,6 +107,17 @@ The greenhouse is rectangular. When viewed on a floor plan with north at the top
 | M1 and M2 vent extent | Full length of the greenhouse (east to west) |
 | M3 vent position | North wall (long wall), over the full east–west length of that wall |
 
+**Greenhouse dimensions:**
+
+| Parameter | Value |
+|---|---|
+| Length (east–west) | 40 m |
+| Width (north–south) | 16 m |
+| Gutter (eaves) height | 3.0 m |
+| Ridge height | 4.5 m |
+| Floor area | 640 m² |
+| Air volume | 2400 m³ (rectangular base 40 × 16 × 3 = 1920 m³ + triangular roof ½ × 16 × 1.5 × 40 = 480 m³) |
+
 ### 1.5 Actuators
 
 The only actuators are three motorised ventilation windows. There is no heating, cooling, humidification, or dehumidification equipment.
@@ -116,6 +127,22 @@ The only actuators are three motorised ventilation windows. There is no heating,
 | M1 | Dakbeluchting Zuid | South roof slope, ¾ width from N, full length | Ventilation (lowers T) | Lowers RH when outside is drier |
 | M2 | Dakbeluchting Noord | North roof slope, ¼ width from N, full length | Ventilation (lowers T) | Lowers RH when outside is drier |
 | M3 | Zijwandbeluchting | North wall (side wall), full length | Ventilation (lowers T) | Lowers RH when outside is drier |
+
+**Window opening dimensions (fully open):**
+
+| Actuator | Opening width / height | Length | Opening area |
+|---|---|---|---|
+| M1 (Dakbeluchting Zuid) | 0.20 m (roof gap) | 40 m | 8 m² |
+| M2 (Dakbeluchting Noord) | 0.20 m (roof gap) | 40 m | 8 m² |
+| M3 (Zijwandbeluchting) | 2.0 m (wall height) | 40 m | 80 m² |
+
+**Motor run-times (measured):**
+
+| Actuator | Closed → Open | Open → Closed |
+|---|---|---|
+| M1 (Dakbeluchting Zuid) | 21 s | 21 s |
+| M2 (Dakbeluchting Noord) | 21 s | 21 s |
+| M3 (Zijwandbeluchting) | 171 s | 171 s |
 
 #### Motor relay box — Hotraco RRK-3
 
@@ -285,12 +312,17 @@ This tight coupling means T and RH cannot be controlled independently.
 |---|---|---|---|---|
 | C | Thermal capacitance | TBD | J/°C | |
 | UA | Envelope heat loss coefficient | TBD | W/°C | |
-| V | Air volume | TBD | m³ | |
-| ACH_M1 | Air change rate for M1 (Dakbeluchting Zuid, south roof slope) | TBD | h⁻¹ | |
-| ACH_M2 | Air change rate for M2 (Dakbeluchting Noord, north roof slope) | TBD | h⁻¹ | |
-| ACH_M3 | Air change rate for M3 (Zijwandbeluchting, north wall) | TBD | h⁻¹ | |
-| m_transp | Plant transpiration rate | TBD | kg/s | |
-| t_motor | Motor run-time to reach end position | TBD | s | |
+| V | Air volume | 2400 | m³ | Rectangular base (40 × 16 × 3) + triangular roof (½ × 16 × 1.5 × 40); gutter height 3.0 m, ridge height 4.5 m |
+| A_M1 | Opening area for M1 (fully open) | 8 | m² | 0.20 m × 40 m; measured |
+| A_M2 | Opening area for M2 (fully open) | 8 | m² | 0.20 m × 40 m; measured |
+| A_M3 | Opening area for M3 (fully open) | 80 | m² | 2.0 m × 40 m; measured |
+| ACH_M1 | Air change rate for M1 (Dakbeluchting Zuid, south roof slope) | 8 | h⁻¹ | Typical greenhouse value; implies ≈ 0.67 m/s effective velocity through 8 m² opening (stack effect + mild wind) |
+| ACH_M2 | Air change rate for M2 (Dakbeluchting Noord, north roof slope) | 8 | h⁻¹ | Same as M1 (symmetric assumption) |
+| ACH_M3 | Air change rate for M3 (Zijwandbeluchting, north wall) | 40 | h⁻¹ | Typical for large side wall opening; implies ≈ 0.33 m/s effective velocity through 80 m² (wind-driven, conservative); 10× larger area than M1/M2 |
+| m_transp | Plant transpiration rate | 0.010 (default) | kg/s | General conservative default (≈ 1.35 mm/m²/day over 640 m²); farmer-configurable — increase for high-demand crops (tomato/cucumber in summer); see `plantTranspirationRateConsiderations.md` |
+| t_motor_M1 | Motor run-time for M1 to reach end position | 21 | s | Measured on physical system |
+| t_motor_M2 | Motor run-time for M2 to reach end position | 21 | s | Measured on physical system |
+| t_motor_M3 | Motor run-time for M3 to reach end position | 171 | s | Measured on physical system (2 min 51 s) |
 
 ### 2.7 Outside Environmental Conditions
 
@@ -414,7 +446,7 @@ on command OPEN  window i:
     if estimated_state[i] == CLOSED:
         issue motor OPEN command
         set estimated_state[i] = MOVING
-        start timeout timer(t_motor)
+        start timeout timer(t_motor[i])   # per-window: 21 s for M1/M2, 171 s for M3
     elif estimated_state[i] == MOVING:
         wait (do not issue new command)
 
@@ -426,6 +458,8 @@ on command CLOSE window i:
 ```
 
 Motor commands are not re-issued while a window is `MOVING` to prevent conflicting signals.
+
+**Note on per-window timeouts:** M1 and M2 (roof vents) use a 21 s timeout; M3 (north wall) uses a 171 s timeout. The state manager stores a timeout value per window rather than a single global `t_motor`.
 
 ### 3.6 Hysteresis Parameters (to be tuned)
 
@@ -442,7 +476,9 @@ Motor commands are not re-issued while a window is `MOVING` to prevent conflicti
 | dRH_high | RH threshold for 3 windows | TBD % above RH_sp |
 | dRH_hyst | RH hysteresis band (close threshold) | TBD % below RH_sp |
 | RH_critical | RH level forcing ventilation even when T < T_sp | TBD % |
-| t_motor | Motor run time to reach end position | TBD s |
+| t_motor_M1 | Motor run-time for M1 (Dakbeluchting Zuid) to reach end position | 21 s |
+| t_motor_M2 | Motor run-time for M2 (Dakbeluchting Noord) to reach end position | 21 s |
+| t_motor_M3 | Motor run-time for M3 (Zijwandbeluchting) to reach end position | 171 s |
 | t_min_dwell | Minimum time a window must stay OPEN or CLOSED before a new command is accepted (anti-oscillation) | 600 s |
 
 ### 3.7 Farmer-Accessible Configuration Parameters
@@ -465,16 +501,17 @@ Not all parameters are intended for the farmer to adjust. The table below distin
 | `dRH_hyst` | How far below target before open windows close again | 3 – 8 % |
 | `RH_critical` | Humidity level at which a window is forced open even when the temperature is already below target, to prevent mould | 82 – 92 % |
 | `t_min_dwell` | Minimum time (seconds) a window must remain in its current state before it can be commanded to change; prevents rapid open-close cycling when a sensor reading hovers near a threshold | 300 – 1200 s |
+| `m_transp` | Estimated plant water vapour output rate. Because various crops are grown throughout the year, a single general value is used rather than measuring each crop. Default 0.010 kg/s (conservative mid-range). Increase to 0.015–0.030 kg/s for high-demand crops (tomato, cucumber) in peak summer; decrease toward 0.007 kg/s for leafy crops. See `plantTranspirationRateConsiderations.md` | 0.007 – 0.030 kg/s |
 
 **Installer/commissioning parameters** — these reflect physical properties of the building and motors. They are set once during installation and should not need to change unless hardware is replaced.
 
 | Parameter | Plain meaning | How to determine |
 |---|---|---|
-| `t_motor` | Time for a motor to travel from fully closed to fully open (or back) | Measure on the physical system with a stopwatch |
-| `ACH_M1`, `ACH_M2`, `ACH_M3` | Ventilation capacity of each window when fully open | Derived from window dimensions and airflow measurements or literature values |
-| `V` | Internal air volume of the greenhouse | Calculated from floor dimensions and average roof height |
+| `t_motor_M1`, `t_motor_M2` | Time for a roof window motor to travel from fully closed to fully open (or back) — **measured: 21 s** | Verify after any motor replacement |
+| `t_motor_M3` | Time for the north wall motor to travel from fully closed to fully open (or back) — **measured: 171 s** | Verify after any motor replacement |
+| `ACH_M1`, `ACH_M2`, `ACH_M3` | Ventilation capacity of each window when fully open — simulation defaults: M1 = M2 = 8 h⁻¹, M3 = 40 h⁻¹ | Verify against physical measurement; can be adjusted if observed climate behaviour does not match simulation |
+| `V` | Internal air volume of the greenhouse | 2400 m³ (gutter 3.0 m, ridge 4.5 m; see §1.4) |
 | `C`, `UA` | Thermal mass and envelope heat-loss coefficient | Estimated from construction materials or identified from temperature measurements |
-| `m_transp` | Plant water vapour output rate | Measured by water balance or estimated from crop type (see `plantTranspirationRateConsiderations.md`) |
 
 **Key principle:** the farmer interacts only with climate targets and tolerance bands. The controller translates those targets into window commands automatically. Tightening the bands (smaller `dT_low`, `dRH_low`) makes the controller respond sooner but increases window actuation frequency and motor wear. Widening the bands reduces wear but allows larger swings around the setpoint.
 
@@ -505,7 +542,7 @@ command_window(w, desired):
 | High humidity risk crop (cucumber) | 600 – 900 s |
 | Very stable conditions expected | up to 1200 s |
 
-Setting `t_min_dwell` shorter than `t_motor` (motor travel time) is pointless — the motor guard already blocks re-commands while moving. Effective values start at `t_motor + ctrl_interval` and upward.
+Setting `t_min_dwell` shorter than the relevant `t_motor` (motor travel time) is pointless — the motor guard already blocks re-commands while moving. With `t_motor_M3 = 171 s` and `ctrl_interval = 60 s`, the practical minimum is 231 s. The default of 600 s is well above this for all windows.
 
 **Interaction with the state machine:** the dwell guard operates at the `command_window` layer (§3.5). It does not modify the window state machine itself; it simply suppresses the request before it reaches the machine. The state machine transitions are unchanged.
 
@@ -564,13 +601,16 @@ python Simulation/greenhouse_simulation.py [S1|S2|S3|S4|S5|ALL]
 - [x] Define outside T and RH profiles for simulation — using historical data from May–September 2025 (`Environment/airTemperature_2025-05-01_to_2025-09-01.csv`), interpolated via Python module
 - [x] Choose simulation language/tool — Python; see `Simulation/greenhouse_simulation.py`
 - [x] Decide whether partial window opening (timed motor stop) should be supported — **not supported**: no position feedback, poor repeatability; graduated ventilation achieved by opening more windows instead (see §1.5)
+- [x] Confirm greenhouse dimensions — 40 m (L) × 16 m (W) × 4.5 m (ridge height); floor area 640 m²; air volume ≈ 2880 m³ (rectangular approx., see §1.4 and §2.6)
+- [x] Confirm window opening areas — M1/M2 roof vents: 0.20 m × 40 m = 8 m² each; M3 north wall: 2.0 m × 40 m = 80 m² (see §1.5)
+- [x] Measure motor run-times — M1 and M2: 21 s; M3: 171 s (2 min 51 s); both directions equal (see §1.5 and §2.6)
 
 **Still open:**
 - [ ] Confirm setpoints for T and RH
-- [ ] Confirm greenhouse dimensions (floor area, height → air volume V)
-- [ ] Estimate motor run-time to fully open/close each window (measure on physical system)
-- [ ] Estimate plant transpiration rate
+- [x] Confirm eaves/gutter height — gutter at 3.0 m, ridge at 4.5 m; exact air volume V = 2400 m³ (see §1.4, §2.6)
+- [x] Plant transpiration rate — treated as farmer-configurable general parameter; default 0.010 kg/s (≈ 1.35 mm/m²/day over 640 m²); farmer adjusts for crop type/season (see §3.7, `plantTranspirationRateConsiderations.md`)
 - [ ] Confirm controller hardware platform (what will generate the 24 V digital outputs and read analogue inputs)
+- [x] ACH values for simulation — M1 = M2 = 8 h⁻¹ (roof vents, ≈ 0.67 m/s effective), M3 = 40 h⁻¹ (north wall, ≈ 0.33 m/s effective); typical greenhouse values used as simulation starting point; to be verified against physical measurement
 
 ---
 
@@ -587,3 +627,7 @@ python Simulation/greenhouse_simulation.py [S1|S2|S3|S4|S5|ALL]
 | 2026-03-06 | Decision recorded: partial window opening (timed motor stop) not supported — no position feedback, poor repeatability; graduated ventilation achieved by opening additional windows (§1.5, §5) |
 | 2026-03-06 | Added §3.7 Farmer-Accessible Configuration Parameters: distinguishes farmer-configurable climate targets (T_sp, RH_sp, hysteresis bands, RH_critical) from installer/commissioning parameters (t_motor, ACH, V, C, UA, m_transp); explains trade-off between band width and motor wear |
 | 2026-03-06 | Added §3.8 Anti-Oscillation Guard: `t_min_dwell` parameter (default 600 s) suppresses window commands issued before the dwell timer expires; prevents rapid open-close cycling near thresholds; implemented in simulation `command_window()` with `commands_blocked` diagnostic counter |
+| 2026-03-07 | Recorded measured physical parameters: greenhouse dimensions 40 m × 16 m × 4.5 m (ridge), floor area 640 m², air volume ≈ 2880 m³; window opening areas M1/M2 = 8 m² (0.20 m × 40 m), M3 = 80 m² (2.0 m × 40 m); motor run-times M1/M2 = 21 s, M3 = 171 s; updated §1.4, §1.5, §2.6, §3.5, §3.6, §3.7, §3.8, §5 accordingly; per-window `t_motor` now explicit throughout |
+| 2026-03-07 | Confirmed gutter height 3.0 m; exact air volume V = 2400 m³ (rectangular base 1920 m³ + triangular roof 480 m³); replaced rectangular approximation throughout (§1.4, §2.6, §3.7); resolved final geometry open question |
+| 2026-03-07 | Plant transpiration rate treated as farmer-configurable general parameter (not crop-specific measured value); default 0.010 kg/s; moved `m_transp` from installer to farmer parameters (§3.7); updated §2.6 with default; scaled typical values in `plantTranspirationRateConsiderations.md` to 640 m² floor area |
+| 2026-03-07 | Set simulation ACH values to typical greenhouse literature values: ACH_M1 = ACH_M2 = 8 h⁻¹ (roof vents), ACH_M3 = 40 h⁻¹ (north wall; 10× larger opening); corrected V from 500 to 2400 m³ and m_transp from 0.003 to 0.010 kg/s in simulation; moved t_motor from PlantParameters to per-window field (21 s for M1/M2, 171 s for M3) |
