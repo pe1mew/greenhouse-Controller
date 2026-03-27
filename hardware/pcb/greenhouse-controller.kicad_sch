@@ -2663,26 +2663,16 @@
 					)
 				)
 			)
-<<<<<<< HEAD
-			(property "Value" "SIT65HVD08P"
-				(at -2.54 11.43 0)
-=======
 			(property "Value" ""
 				(at 0 0 0)
->>>>>>> b5d3c6c168b3f9c08ee064742a9f46f7968a552e
 				(effects
 					(font
 						(size 1.27 1.27)
 					)
 				)
 			)
-<<<<<<< HEAD
-			(property "Footprint" "Package_DIP:DIP-8_W7.62mm_LongPads"
-				(at 2.286 -11.43 0)
-=======
 			(property "Footprint" ""
 				(at 0 0 0)
->>>>>>> b5d3c6c168b3f9c08ee064742a9f46f7968a552e
 				(effects
 					(font
 						(size 1.27 1.27)
@@ -2720,9 +2710,6 @@
 						(type background)
 					)
 				)
-<<<<<<< HEAD
-				(pin output line
-=======
 				(text "SIT65HVD08P"
 					(at 0.254 11.176 0)
 					(effects
@@ -2732,7 +2719,6 @@
 					)
 				)
 				(pin input line
->>>>>>> b5d3c6c168b3f9c08ee064742a9f46f7968a552e
 					(at -11.43 5.08 0)
 					(length 2.54)
 					(name "RO"
@@ -6550,95 +6536,6 @@
 		)
 	)
 	(symbol
-<<<<<<< HEAD
-		(lib_id "my-KiCad-library:SIT65HVD08P")
-		(at 162.56 184.15 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "b80ecbc3-5ea8-4b98-861f-02fa4ae89d7d")
-		(property "Reference" "U3"
-			(at 163.195 168.91 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "SIT65HVD08P"
-			(at 163.195 171.45 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" "Package_DIP:DIP-8_W7.62mm_LongPads"
-			(at 164.846 195.58 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" ""
-			(at 162.56 184.15 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" ""
-			(at 162.56 184.15 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "6"
-			(uuid "d8a98003-2417-4dc7-a4be-9d03c8662fef")
-		)
-		(pin "4"
-			(uuid "d4fe072e-bbfe-4ff5-bfc5-f79da336f632")
-		)
-		(pin "2"
-			(uuid "357433e0-7d32-4718-b51b-13eb1c04ae1a")
-		)
-		(pin "8"
-			(uuid "7670dced-04f8-4d02-8fcb-f12dc071360f")
-		)
-		(pin "5"
-			(uuid "ce620422-5e99-4e34-bafe-b86738e44152")
-		)
-		(pin "3"
-			(uuid "729e99e6-773f-4339-a0ab-f3f3952f5833")
-		)
-		(pin "7"
-			(uuid "f901e83c-9303-452b-a938-7489188c8d38")
-		)
-		(pin "1"
-			(uuid "cfd7d259-1ac0-46f8-8a81-5201573f843b")
-		)
-		(instances
-			(project ""
-				(path "/2be5eb1b-bfdc-4766-9909-5178f7452cd9"
-					(reference "U3")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-=======
->>>>>>> b5d3c6c168b3f9c08ee064742a9f46f7968a552e
 		(lib_id "Connector_Generic:Conn_01x04")
 		(at 90.17 237.49 0)
 		(unit 1)
@@ -6879,8 +6776,6 @@
 		)
 	)
 	(symbol
-<<<<<<< HEAD
-=======
 		(lib_id "my-KiCad-library:SIT65HVD08P")
 		(at 162.56 184.15 0)
 		(unit 1)
@@ -6967,7 +6862,6 @@
 		)
 	)
 	(symbol
->>>>>>> b5d3c6c168b3f9c08ee064742a9f46f7968a552e
 		(lib_id "Connector:Screw_Terminal_01x02")
 		(at 36.83 185.42 180)
 		(unit 1)
