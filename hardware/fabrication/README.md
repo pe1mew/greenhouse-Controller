@@ -10,7 +10,7 @@ A new set of fabrication outputs is generated and committed here for every tagge
 |---------------|-------------|
 | `gerbers/` | Gerber files for all copper layers, silkscreen, soldermask, and board outline |
 | `drill/` | Excellon drill file(s) |
-| `bom.csv` | Bill of Materials — component references, values, footprints, and supplier part numbers |
+| `bom.md` | Bill of Materials — component references, values, footprints, and supplier part numbers |
 | `pick-and-place.csv` | Component placement file for SMT assembly |
 | `fabrication-notes.md` | Board stackup, surface finish, quantity, and any special instructions for the PCB manufacturer |
 
