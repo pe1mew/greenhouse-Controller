@@ -70,16 +70,16 @@ This version covers the architecture principles (§2) and the complete hardware 
 
 This section defines the overarching principles that govern how the project is built, shared, and maintained. These principles apply to both the hardware and software parts of the project.
 
-### 2.1 Open Source
+### 2.1 Project Licences
 
-The complete project — firmware, PCB design, and documentation — is published as open source.
+The project uses separate licences for software and for all other project artefacts (hardware design files, documentation, and images).
 
-| Aspect | Principle |
-|--------|-----------|
-| **Software licence** | MIT Licence. Permits free use, modification, and redistribution with attribution. |
-| **Hardware licence** | CERN Open Hardware Licence v2 — Permissive (CERN-OHL-P). Permits free use and modification of the hardware design files. |
-| **Documentation** | Published alongside the design files in the repository. No proprietary formats for primary documents; Markdown preferred. |
-| **Rationale** | Open source maximises reuse, enables community contributions, and avoids lock-in to any single vendor or developer. |
+| Aspect | Licence |
+|--------|---------|
+| **Software licence** | Source-available, non-commercial licence. Free to use and modify for personal and non-commercial purposes. Redistribution and commercial use are **not** permitted. |
+| **Hardware design licence** | Creative Commons Attribution-NonCommercial-NoDerivatives 4.0 International (CC BY-NC-ND 4.0). Permits sharing with attribution for non-commercial purposes; no modifications to the hardware design files are permitted. |
+| **Documentation and images** | Creative Commons Attribution-NonCommercial-NoDerivatives 4.0 International (CC BY-NC-ND 4.0). Permits sharing with attribution for non-commercial purposes; no derivatives permitted. |
+| **Rationale** | The CC BY-NC-ND 4.0 licence protects the integrity of the hardware design and documentation while permitting personal, educational, and non-commercial sharing. The software licence allows inspection and personal adaptation without enabling commercial exploitation or unauthorised redistribution. |
 
 ### 2.2 Version Control — GitHub / GitLab
 
@@ -133,7 +133,22 @@ greenhouse-controller/          ← Git repository root (GitHub / GitLab)
 │   ├── pcb/                    ← KiCad project files (.kicad_sch, .kicad_pcb, ...)
 │   └── fabrication/            ← Gerbers, BOM, pick-and-place (generated per release)
 │
-└── design/                     ← Markdown documentation (this file and FRS)
+├── design/                     ← Markdown design documents (FRS, TDS, TS)
+│
+├── documentation/              ← Component reference material
+│   ├── Sensors/                ← Sensor datasheets and integration notes
+│   ├── Motors/                 ← Motor and relay box documentation
+│   └── VentilationSystem/      ← Ventilation system reference material
+│
+├── Archive/                    ← Historical design iterations (read-only reference)
+│   └── Iteration1/             ← First design iteration: concept, simulation, environment data
+│
+├── README.md
+├── LICENSE
+├── license.md
+├── changelog.md
+├── contributing.md
+└── code_of_conduct.md
 ```
 
 ---
