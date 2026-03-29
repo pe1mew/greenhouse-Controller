@@ -1,15 +1,15 @@
-# Technical Design Specification
+# Technical Hardware Design Specification
 ## Greenhouse Ventilation Controller
 
-| Field        | Value                                    |
-|--------------|------------------------------------------|
-| Document     | Technical Design Specification           |
-| Project      | Greenhouse Ventilation Controller        |
-| Version      | 0.2 (draft)                             |
-| Date         | 2026-03-26                              |
-| Status       | Draft — Hardware section complete; Software section pending |
-| Related docs | `functionalRequirementsSpecification.md` |
-|              | `technicalSpecification.md`              |
+| Field        | Value                                          |
+|--------------|------------------------------------------------|
+| Document     | Technical Hardware Design Specification        |
+| Project      | Greenhouse Ventilation Controller              |
+| Version      | 0.3 (draft)                                   |
+| Date         | 2026-03-29                                    |
+| Status       | Draft                                         |
+| Related docs | `functionalRequirementsSpecification.md`       |
+|              | `technicalSoftwareDesignSpecification.md`      |
 
 ---
 
@@ -30,31 +30,17 @@
    - 4.9 Status LEDs
    - 4.10 Enclosure
    - 4.11 GPIO and Peripheral Assignment Summary
-5. [Software Design](#5-software-design)
-   - 5.1 Items from FRS Requiring Technical Design Decisions
-   - 5.2 Firmware Architecture
-   - 5.3 Sensor Polling — Modbus RTU
-   - 5.4 Climate Control Logic
-   - 5.5 Event Log Manager
-   - 5.6 Access Control and Session Management
-   - 5.7 Local User Interface
-   - 5.8 WiFi — Access Point Mode
-   - 5.9 WiFi — Client Mode (Optional)
-   - 5.10 Web Interface
-   - 5.11 OTA Firmware Update
-   - 5.12 NVS Configuration Storage Layout
-   - 5.13 Watchdog and Fault Handling
-6. [Open Issues](#6-open-issues)
+5. [Open Issues](#5-open-issues)
 
 ---
 
 ## 1. Introduction
 
 ### 1.1 Purpose
-This document describes the technical design of the greenhouse ventilation controller: the selected hardware components, their interconnections, and — once completed — the software architecture. It translates the requirements in the Functional Requirements Specification (FRS) into concrete implementation decisions.
+This document describes the hardware design of the greenhouse ventilation controller: the selected components, their interconnections, and the rationale for each design decision. It translates the hardware-related requirements in the Functional Requirements Specification (FRS) into concrete implementation choices.
 
 ### 1.2 Scope
-This version covers the architecture principles (§2) and the complete hardware design (§4). The software design (§5) is to be added in a subsequent revision.
+This document covers the architecture principles (§2) and the complete hardware design (§4). The software design is documented separately in `technicalSoftwareDesignSpecification.md`.
 
 ### 1.3 Definitions
 
@@ -76,23 +62,23 @@ This version covers the architecture principles (§2) and the complete hardware 
 | PlatformIO | Open-source embedded development platform and IDE extension |
 | VSCode | Visual Studio Code — open-source code editor by Microsoft |
 | OTA | Over-The-Air firmware update |
+| SIT65HVD08P | Selected RS485 half-duplex transceiver IC; 3.3 V supply, 3.3 V logic levels, 8-pin package |
 
 ---
 
 ## 2. Architecture and Development Principles
 
-This section defines the overarching principles that govern how the project is built, shared, and maintained. These principles apply to both the hardware and software parts of the project.
+This section defines the overarching principles that govern how the project is built, shared, and maintained. These principles apply to both hardware and software parts of the project.
 
 ### 2.1 Project Licences
 
-The project uses separate licences for software and for all other project artefacts (hardware design files, documentation, and images).
+The hardware design files, documentation, and images are covered by a Creative Commons licence. The software licence is documented separately in `technicalSoftwareDesignSpecification.md` §2.1.
 
 | Aspect | Licence |
 |--------|---------|
-| **Software licence** | Source-available, non-commercial licence. Free to use and modify for personal and non-commercial purposes. Redistribution and commercial use are **not** permitted. |
 | **Hardware design licence** | Creative Commons Attribution-NonCommercial-NoDerivatives 4.0 International (CC BY-NC-ND 4.0). Permits sharing with attribution for non-commercial purposes; no modifications to the hardware design files are permitted. |
 | **Documentation and images** | Creative Commons Attribution-NonCommercial-NoDerivatives 4.0 International (CC BY-NC-ND 4.0). Permits sharing with attribution for non-commercial purposes; no derivatives permitted. |
-| **Rationale** | The CC BY-NC-ND 4.0 licence protects the integrity of the hardware design and documentation while permitting personal, educational, and non-commercial sharing. The software licence allows inspection and personal adaptation without enabling commercial exploitation or unauthorised redistribution. |
+| **Rationale** | The CC BY-NC-ND 4.0 licence protects the integrity of the hardware design and documentation while permitting personal, educational, and non-commercial sharing. |
 
 ### 2.2 Version Control — GitHub / GitLab
 
@@ -103,7 +89,7 @@ All project artefacts (firmware source, KiCad files, documentation) are managed 
 | **Single repository** | Firmware, hardware (KiCad), and documentation are kept in one monorepo for traceability between hardware revisions and firmware versions. |
 | **Branch strategy** | `main` holds stable releases; feature work is developed on feature branches and merged via pull requests (GitHub) or merge requests (GitLab). |
 | **Releases and tags** | Hardware and firmware releases are tagged (e.g. `hw-v1.0`, `fw-v1.0`) so that the exact design state that was manufactured or deployed is always reproducible. |
-| **Issues and discussions** | GitHub Issues (or GitLab Issues) are used to track bugs, open design questions, and the open issues listed in §6 of this document. |
+| **Issues and discussions** | GitHub Issues (or GitLab Issues) are used to track bugs, open design questions, and the open issues listed in §5 of this document. |
 | **Repository structure** | See the top-level README for the folder layout convention. |
 
 ### 2.3 Firmware Toolchain — PlatformIO + Visual Studio Code
@@ -114,7 +100,7 @@ The firmware is developed using **PlatformIO** as the build system and package m
 |------|------|-----------|
 | **Visual Studio Code** | Source code editor | Free, open-source, cross-platform, widely used; rich extension ecosystem |
 | **PlatformIO** | Build system, library manager, upload, serial monitor, unit test runner | Abstracts the ESP-IDF / Arduino toolchain; handles library dependencies via `platformio.ini`; built-in support for ESP32-S3; integrates directly into VSCode as an extension |
-| **ESP-IDF / Arduino framework** | Underlying MCU framework | PlatformIO supports both; the choice between them is a software design decision (§5) |
+| **ESP-IDF / Arduino framework** | Underlying MCU framework | PlatformIO supports both; the choice is documented in `technicalSoftwareDesignSpecification.md` |
 | **Unity / GoogleTest** | Unit test framework | Supported natively by PlatformIO's test runner for on-host unit testing of logic modules |
 
 The `platformio.ini` at the root of the firmware project defines the target board (`lolin_s3`), framework, upload port, and all library dependencies. This ensures every developer uses identical build settings without manual toolchain setup.
@@ -134,35 +120,7 @@ The PCB schematic and layout are designed in **KiCad**.
 
 ### 2.5 Repository Structure
 
-```
-greenhouse-controller/          ← Git repository root (GitHub / GitLab)
-│
-├── firmware/                   ← PlatformIO project (edit in VSCode)
-│   ├── platformio.ini          ← Board, framework, library dependencies
-│   ├── src/                    ← Application source code
-│   └── test/                   ← Unit tests (PlatformIO test runner)
-│
-├── hardware/
-│   ├── pcb/                    ← KiCad project files (.kicad_sch, .kicad_pcb, ...)
-│   └── fabrication/            ← Gerbers, BOM, pick-and-place (generated per release)
-│
-├── design/                     ← Markdown design documents (FRS, TDS, TS)
-│
-├── documentation/              ← Component reference material
-│   ├── Sensors/                ← Sensor datasheets and integration notes
-│   ├── Motors/                 ← Motor and relay box documentation
-│   └── VentilationSystem/      ← Ventilation system reference material
-│
-├── Archive/                    ← Historical design iterations (read-only reference)
-│   └── Iteration1/             ← First design iteration: concept, simulation, environment data
-│
-├── README.md
-├── LICENSE
-├── license.md
-├── changelog.md
-├── contributing.md
-└── code_of_conduct.md
-```
+The full repository folder layout is documented in `technicalSoftwareDesignSpecification.md` §2.4.
 
 ---
 
@@ -188,7 +146,7 @@ greenhouse-controller/          ← Git repository root (GitHub / GitLab)
    ┌──────────┴─────────────────────────────┐               │
    │            LOLIN S3 (ESP32-S3)         │──[HB LED]     │
    │                                        │   (amber)     │
-   │RS485 (UART + SIT65HVD08P transceiver) ──────┤◄────────── sensors (data)
+   │RS485 (UART + SIT65HVD08P transceiver) ─┤◄────────── sensors (data)
    │                                        │
    │8 GPIO ◄── [4×4 Keypad]                 │
    │I2C    ──► [LCD1602]   ──► Display      │
@@ -309,7 +267,7 @@ Both sensors communicate over a single shared Modbus RTU RS485 bus. Each sensor 
 #### 4.3.1 Bus Topology
 
 ```
-  LOLIN S3 UART ──► SIT65HVD08P transceiver ──┬── RS485 cable (A/B + GND shield)
+  LOLIN S3 UART ──► SIT65HVD08P ─────────┬── RS485 cable (A/B + GND shield)
                     (TTL ↔ RS485)        │
                                          ├── SenseCAP S200  (address 1)  [outside, on mast]
                                          └── FG6485A T/RH   (address 2)  [inside greenhouse]
@@ -317,7 +275,15 @@ Both sensors communicate over a single shared Modbus RTU RS485 bus. Each sensor 
 
 #### 4.3.2 RS485 Transceiver
 
-The **SIT65HVD08P** RS485 half-duplex transceiver converts the ESP32-S3 UART signals (3.3 V TTL) to the differential RS485 bus levels. It operates from the 3.3 V rail (LOLIN S3 LDO), directly compatible with ESP32-S3 logic levels.
+The **SIT65HVD08P** is the selected RS485 half-duplex transceiver. It converts the ESP32-S3 UART signals (3.3 V TTL) to the differential RS485 bus levels and operates from the 3.3 V rail supplied by the LOLIN S3 on-board LDO, making it directly compatible with the ESP32-S3 logic levels without level shifting.
+
+| Parameter | Value |
+|-----------|-------|
+| Part | SIT65HVD08P |
+| Supply voltage | 3.3 V |
+| Logic levels | 3.3 V (directly compatible with ESP32-S3 GPIO) |
+| Mode | Half-duplex |
+| Package | 8-pin |
 
 | Signal | Direction | Description |
 |--------|-----------|-------------|
@@ -399,7 +365,7 @@ A relay module board with 6 independent relay channels (opto-isolated input stag
 
 The relay coil is driven by the 5 V logic supply via the MCU GPIO. The relay provides galvanic isolation between the MCU logic circuit (5 V) and the RRK-3 control circuit (24 V), satisfying the isolation requirement. The contact rating must be ≥ 0.5 A / 30 VDC.
 
-> **Safety constraint:** The firmware must never energise the OPEN and CLOSE relay of the same motor simultaneously. This is enforced in software (see Software Design §5). A future hardware interlock using the relay common terminals could provide an additional layer of protection.
+> **Safety constraint:** The firmware must never energise the OPEN and CLOSE relay of the same motor simultaneously. This is enforced in software (see `technicalSoftwareDesignSpecification.md` §5.4). A future hardware interlock using the relay common terminals could provide an additional layer of protection.
 
 #### 4.5.2 Feedback Input (Motor Controller Status)
 
@@ -455,7 +421,7 @@ DCF77 is a German long-wave time signal broadcast on 77.5 kHz from Mainflingen, 
 
 #### 4.6.2 Design Decision
 
-> **⚠ Open Issue #7 — Time source selection:** See §6. A decision is required before PCB layout can be finalised.
+> **⚠ Open Issue #7 — Time source selection:** See §5. A decision is required before PCB layout can be finalised.
 
 If no external hardware time source is used, the minimum viable fallback is NTP-on-boot (requires WiFi to be available and connected). In this case TR-HW08 cannot be met when WiFi is unavailable, and log timestamps will be absent or incorrect after any power interruption until network time is re-acquired. This trade-off must be explicitly accepted if the external RTC or an alternative is omitted.
 
@@ -479,7 +445,7 @@ The system uses a **two-stage power architecture**: a single AC–DC converter p
                                                   5 VDC ──► LOLIN S3 (→ 3.3 V LDO)
                                                        ├──► Relay coils (6-ch module)
                                                        ├──► LCD backlight
-                                                       ├──► RS485 transceiver
+                                                       ├──► SIT65HVD08P (3.3 V via LOLIN S3 LDO)
                                                        ├──► DS3231 RTC
                                                        └──► Status LEDs
 ```
@@ -523,7 +489,7 @@ The 5 V output feeds:
 - The LOLIN S3 board (5 V in; on-board LDO produces 3.3 V for the MCU core)
 - The 6-channel relay module (5 V coil supply)
 - The LCD module backlight
-- The RS485 transceiver (5 V supply; 3.3 V logic from the LOLIN S3 LDO)
+- The SIT65HVD08P RS485 transceiver (3.3 V supply from the LOLIN S3 on-board LDO)
 - The DS3231 RTC module
 - The status LEDs (via current-limiting resistors; see §4.9)
 
@@ -548,7 +514,7 @@ The 5 V output feeds:
 | LOLIN S3 (ESP32-S3, WiFi active) | ~250 mA |
 | 6-channel relay module (all 6 relays energised) | ~360 mA (60 mA × 6) |
 | LCD module (backlight on) | ~40 mA |
-| RS485 transceiver | ~10 mA |
+| SIT65HVD08P RS485 transceiver (3.3 V via LOLIN S3 LDO — included in LOLIN S3 figure) | — |
 | DS3231 RTC | ~2 mA |
 | Status LEDs (PWR + HB + 6 relay, all on) | ~16 mA (2 mA × 8) |
 | **Total 5 V (worst case)** | **~678 mA** |
@@ -692,7 +658,7 @@ The MC001110 (55 mm depth) is the preferred choice. The MC001111 (75 mm depth, +
 | Cutouts in cover | 1 × membrane keypad area (4×4 key matrix, bonded to cover) |
 | Cable entries (housing body) | IP67-rated cable glands: mains cable, RS485 sensor cable, RRK-3 control cables |
 | Fuse access | Panel-mount fuse holder in housing body, accessible without opening cover |
-| Internal mounting | Main PCB (LOLIN S3, relay module, RS485 transceiver, screw terminals), PSU module, RTC module, LCD module on standoff screws |
+| Internal mounting | Main PCB (LOLIN S3, relay module, SIT65HVD08P RS485 transceiver, screw terminals), PSU module, RTC module, LCD module on standoff screws |
 
 **Transparent cover — key design consequence:**
 The transparent cover eliminates the need for any openings, LED holders, or light pipes for the status indicators. The LCD display and all PCB-mounted LEDs are directly visible through the cover from outside without any cutouts other than the keypad opening. This:
@@ -747,211 +713,7 @@ The ESP32-S3 has up to 45 usable GPIO pins; the design uses at most 25, leaving 
 
 ---
 
-## 5. Software Design
-
-> **Status: To be completed.**
-
-### 5.1 Items from FRS Requiring Technical Design Decisions
-
-The following items originate from system-level and functional requirements in the FRS. Each represents a design decision or implementation constraint that must be addressed and documented in this section when it is written. The source requirement ID is noted for traceability.
-
-**User interface**
-- Menu depth: max 4 key presses from the main screen to any first-level setting (FR-UI07)
-
-**Credential storage**
-- User credentials shall be stored using a one-way hashing algorithm (e.g. bcrypt or SHA-256 with salt); plain-text storage is not permitted (FR-AC06)
-- Configurable login lockout after a set number of failed attempts (FR-AC07)
-
-**Event log**
-- Minimum 1000 entries retained in persistent storage using a ring buffer; SD card preferred when present, internal flash as fallback (FR-LG06, FR-LG07, FR-LG08)
-
-**Settings persistence**
-- All configuration settings stored in ESP32-S3 NVS flash partition; retained across power cycles and restarts (FR-CF06, TR-SW01)
-
-**Timekeeping and timezone**
-- Time source selection is an open design decision (Open Issue #7, §4.6); the chosen hardware solution must satisfy TR-HW08
-- When WiFi is available: synchronise system time via NTP on boot and periodically; configure timezone (Europe/Amsterdam, CET/CEST) and automatic DST transitions
-- When WiFi is unavailable or before first sync: use the hardware time source (RTC, GNSS, or DCF77 per the decision in §4.6) as the authoritative clock
-- If no hardware time source is fitted: log timestamps shall be marked as invalid until NTP sync succeeds; the firmware shall not block startup waiting for time
-
-**Firmware update**
-- Firmware updates supported without opening the enclosure: OTA over WiFi and via native USB connection (TR-SW02, TR-IF05)
-
-**Fault recovery**
-- Hardware watchdog timer: automatically resets the MCU on a software hang; controlled restart sequence re-synchronises window states on recovery (TR-SW03)
-
-**Testability**
-- Control logic modules (climate control, wind safety, conflict resolution, window state machine) shall be decoupled from hardware drivers to enable host-side unit testing via PlatformIO test runner (TR-SW05)
-
-**WiFi security**
-- WiFi connections protected with WPA2 minimum; higher standards (WPA3) preferred if supported by ESP32-S3 SDK (TR-NW01)
-- Web interface: data in transit protected; HTTPS or TLS-over-HTTP where feasible on target hardware (TR-NW04)
-
-**Manual override detection**
-- Mechanism for detecting manual window override via RRK-3 feedback signal (opto-isolated input provisioned in hardware); software response to override detection and calibration cycle on resumption of control (FR-M08–FR-M11, Open Issue #1)
-
----
-
-### 5.2 Firmware Architecture
-
-> *To be completed.*
-
-- FreeRTOS task structure: defined in `tasks.md` — authoritative reference for all task identities, priorities, core assignments, and inter-task communication
-- Partition between time-critical tasks (relay control, keypad scan) and background tasks (WiFi, MQTT, web server, OTA)
-- Framework selection: Arduino framework over ESP-IDF via PlatformIO (decision to be confirmed)
-
----
-
-### 5.3 Sensor Polling — Modbus RTU
-
-> *To be completed.*
-
-- Modbus RTU master driver on UART1 + SIT65HVD08P transceiver; DE/RE direction control
-- Poll schedule: SenseCAP S200 (wind speed + direction) and FG6485A (temperature + humidity) at configurable interval
-- Fault detection: missing response, CRC error, out-of-range value; link to FR-S04, FR-W03
-
----
-
-### 5.4 Climate Control Logic
-
-> *To be completed.*
-
-- Control state machine: **Automatic** / **Standby** / **Wind-override** / **Manual-override**
-- Window state machine per channel: `CLOSED` / `MOVING` / `OPEN`, dwell timers (open-dwell, close-dwell)
-- Graduated ventilation strategy and hysteresis (FR-C09, FR-C10)
-- Conflict resolution algorithm: temperature vs. humidity opposing demands (FR-CR01–FR-CR04)
-- Manual override detection on RRK-3 feedback input; calibration cycle on resumption of control (FR-M08–FR-M11)
-
----
-
-### 5.5 Event Log Manager
-
-> *To be completed.*
-
-- NVS ring buffer: minimum 1000 entries; circular overwrite of oldest entries
-- SD card: preferred primary storage when card is present; NVS as fallback (FR-LG07, FR-LG08)
-- Log entry structure: timestamp, initiator (user role / SYSTEM), event type, sensor values where applicable
-- Retrieval: web interface and USB serial diagnostic port (FR-LG05)
-
----
-
-### 5.6 Access Control and Session Management
-
-> *To be completed.*
-
-The controller operates in three states:
-
-| State | Description |
-|-------|-------------|
-| **Normal operation** | No user logged in. Windows are controlled, status is displayed. No settings can be changed. |
-| **Farmer session** | Farmer PIN accepted. Farmer-level parameters are editable. Admin-only parameters are hidden from display. |
-| **Administrator session** | Admin PIN accepted. All parameters accessible: farmer parameters in read-only; admin parameters in read-write. |
-
-- **Farmer PIN**: 4-digit numeric code, entered via keyboard
-- **Administrator PIN**: 8-digit numeric code, entered via keyboard
-- **Session timeout**: configurable idle period; on expiry the session closes and the controller returns to normal operation
-- **PIN management**: farmer may change own PIN only; administrator may change both the farmer PIN and the administrator PIN
-- **Administrator password recovery**: a recovery procedure shall be implemented that requires deliberate physical action (to be defined — candidate: hold specific key combination at power-on while a hardware jumper is fitted); the procedure must not be easily triggered accidentally
-- **Role-based parameter visibility**:
-  - *Free* parameters: visible and readable in all states
-  - *Farmer* parameters: visible and editable in farmer and administrator sessions; hidden in normal operation
-  - *Administrator* parameters: visible and editable in administrator session only; hidden in farmer session and normal operation
-- The web interface applies the same three-state model and the same PIN codes as the local keyboard interface
-
----
-
-### 5.7 Local User Interface
-
-> *To be completed.*
-
-- Keypad matrix scan (4×4, interrupt or polled), debounce, key-repeat handling
-- LCD rendering: main status screen (T, RH, wind, window states, active mode, active session, alarms)
-- Menu finite state machine (FSM): navigation depth ≤ 4 key presses to any first-level setting from main screen (FR-UI07)
-- Display of WiFi AP and WiFi client status (see §5.8 and §5.9)
-- Alarm display: sensor fault, wind safety override, manual override detected
-
----
-
-### 5.8 WiFi — Access Point Mode
-
-> *To be completed.*
-
-- WiFi AP mode is **mandatory** (Must)
-- AP is enabled by the administrator via the local keyboard menu; it does not start automatically on boot
-- AP has a configurable automatic timeout; the AP disables itself when the timeout expires without client activity
-- The timeout value is configurable by the administrator
-- While the AP is active, a dedicated indication is shown on the LCD display
-- The HTTP configuration web interface (§5.10) is accessible to clients connected to the AP
-
----
-
-### 5.9 WiFi — Client Mode (Optional)
-
-> *To be completed.*
-
-- WiFi client (station) mode is **optional**
-- The HTTP configuration web interface (§5.10) is accessible to clients on the same network when the client is connected
-- TCP/IP settings are configurable by the administrator:
-  - DHCP (automatic address assignment) or static IP
-  - Static configuration: IP address, subnet mask, default gateway, DNS server
-- The LCD display shows the current WiFi client status:
-  - *Disconnected* — client mode enabled but no network connection
-  - *Connected* — connected to AP; displays assigned IP address (DHCP) or configured static IP
-
----
-
-### 5.10 Web Interface
-
-> *To be completed.*
-
-- The web interface mirrors the local keyboard interface exactly: same three operating states (§5.6), same PIN codes, same parameter visibility rules
-- HTML, CSS, and JavaScript files for the administrative pages are stored in the NVS filesystem (LittleFS or SPIFFS) on the ESP32-S3 flash, separate from the firmware binary
-- Web server runs on the ESP32-S3 (e.g. ESPAsyncWebServer or equivalent); accessible via WiFi AP and/or WiFi client
-- Authentication required before any page is served or any setting is changed (FR-NW06)
-- MQTT client (optional): publish sensor data and window states; subscribe to command topics (FR-MQ01–FR-MQ05)
-- MQTT broker connection uses username/password authentication; broker address, port, and credentials are configurable via the web interface only — not via the local keyboard menu (FR-MQ04)
-
----
-
-### 5.11 OTA Firmware Update
-
-> *To be completed.*
-
-- Firmware is updatable Over The Air (OTA) via the administrative web interface, without opening the enclosure (TR-SW02)
-- Flash memory is partitioned into:
-  - **Bank A** — firmware image slot A
-  - **Bank B** — firmware image slot B
-  - **NVS** — configuration settings (persistent across updates)
-  - **LittleFS / SPIFFS** — HTML and web asset files for the administrative interface
-- The system boots from whichever bank is marked **active**
-- **Update procedure (firmware)**: new image is uploaded to the inactive bank via the web interface; on successful upload the inactive bank is marked active; the system reboots and executes the new image
-- **Failsafe rollback**: if the newly booted firmware fails to complete startup 3 consecutive times, the active bank is automatically reverted to the previous bank and the system reboots into the known-good firmware
-- **Web file update**: HTML and web asset files stored in the LittleFS/SPIFFS partition are updated separately via the same OTA mechanism and follow the same dual-slot strategy as firmware
-- When an update includes both firmware and UI changes, both the firmware image and the web file package must be applied
-
----
-
-### 5.12 NVS Configuration Storage Layout
-
-> *To be completed.*
-
-- NVS namespace and key layout for all configurable parameters (setpoints, thresholds, dwell times, WiFi credentials, PIN hashes, display language, etc.)
-- Default values to be applied on first boot or after a factory reset
-
----
-
-### 5.13 Watchdog and Fault Handling
-
-> *To be completed.*
-
-- Hardware watchdog timer: kicks on software hang; MCU resets automatically (TR-SW03)
-- On watchdog reset: controlled restart sequence closes all windows to re-synchronise estimated position (FR-ST02)
-- Sensor fault handling: maintain last known window state; display alert (FR-S05, FR-W04)
-- Manual override detection: suspend control; calibration cycle on resumption unless wind alarm active (FR-M08–FR-M11)
-
----
-
-## 6. Open Issues
+## 5. Open Issues
 
 | # | Issue | Owner | Status |
 |---|-------|-------|--------|
@@ -962,8 +724,7 @@ The controller operates in three states:
 | 5 | **Relay module selection** — The specific 6-channel relay module (opto-isolated, 5 V coil, potential-free contacts ≥ 0.5 A / 24 V) must be selected and its PCB footprint confirmed. | Hardware designer | Open |
 | 6 | **LED panel integration** — ~~Resolved~~. LEDs are on the PCB and visible through the transparent enclosure cover. No panel-mount LED holders or light pipes are required. | Hardware designer | **Closed** |
 | 7 | **Time source selection** — Four options exist to satisfy TR-HW08 (accurate time during/after power interruptions): (a) ESP32 internal RTC + NTP only — no extra hardware but fails TR-HW08 when WiFi is unavailable; (b) external RTC DS3231 — €1–3, I2C, battery-backed, lowest complexity; (c) GNSS receiver — highly accurate, provides sunrise/sunset data, but costly and complex for this application; (d) DCF77 receiver — atomic accuracy, handles DST, but reception reliability in a greenhouse environment must be verified. A decision is required before PCB layout is finalised. See §4.6 for full analysis. | Hardware designer | Open |
-| 8 | **MQTT authentication and configuration scope** — ~~Resolved~~. MQTT broker connection uses username/password authentication. MQTT configuration (broker address, port, and credentials) is accessible via the web configuration interface only; it is not present in the local keyboard menu. FR-MQ04 updated accordingly. | Software designer | **Closed** |
 
 ---
 
-*End of document — version 0.2 draft*
+*End of document — version 0.3 draft*

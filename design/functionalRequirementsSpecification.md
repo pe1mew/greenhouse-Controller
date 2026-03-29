@@ -26,14 +26,14 @@
    - 5.5 Wind Safety
    - 5.6 Conflict Resolution
    - 5.7 Window State Tracking
-   - 5.8 Operating Modes
+   - 5.8 Operating Modes (incl. Manual Override Detection)
    - 5.9 Local User Interface (Keyboard & Display)
    - 5.10 Configuration and Settings
    - 5.11 WiFi Connectivity
    - 5.12 MQTT Integration
    - 5.13 Access Control and Security
    - 5.14 Logging
-6. [Technical Requirements](#6-technical-requirements)
+6. [System-Level Requirements](#6-system-level-requirements)
 7. [Constraints and Assumptions](#7-constraints-and-assumptions)
 8. [MoSCoW Priority Reference](#8-moscow-priority-reference)
 
@@ -238,6 +238,12 @@ When temperature and humidity call for opposing window actions (e.g. temperature
 | FR-M05 | The farmer **shall** be able to switch between Automatic and Standby mode via the local keyboard. | Must |
 | FR-M06 | The display **shall** clearly indicate the current operating mode (AUTO / STANDBY) at all times. | Must |
 | FR-M07 | A mode change **shall** be logged with a timestamp and the identity of the operator who initiated the change (see §5.14). | Must |
+| FR-M08 | The system **shall** be able to detect when a manual override of a window has been performed (i.e., a window has been operated via the Hotraco RRK-3 independently of the controller). | Must |
+| FR-M09 | When a manual override is detected, the system **shall** suspend automatic climate control. | Must |
+| FR-M10 | When the system resumes automatic climate control after a manual override, it **shall** perform a full open–close calibration cycle on all windows to re-synchronise the estimated window positions before resuming normal control. | Must |
+| FR-M11 | The calibration cycle on resumption of control (FR-M10) **shall not** be executed when the system is in an active wind safety alarm state. | Must |
+
+> **Note on FR-M08:** Detection of manual override depends on feedback from the Hotraco RRK-3 (e.g. an alarm or status relay output). This is subject to the open issue described in Constraint C8. The mechanism for override detection must be resolved during detailed electrical design.
 
 ### 5.9 Local User Interface (Keyboard & Display)
 
@@ -249,7 +255,7 @@ When temperature and humidity call for opposing window actions (e.g. temperature
 | FR-UI04 | The display **shall** show the estimated state (OPEN/CLOSED/MOVING) of each window. | Must |
 | FR-UI05 | The display **shall** show an alarm indication when a sensor fault or wind safety event is active. | Must |
 | FR-UI06 | The keyboard **shall** allow navigation through a menu structure to access settings, mode switching, and status views. | Must |
-| FR-UI07 | Menu navigation **shall** be achievable without requiring more than 4 key presses from the main screen to any first-level setting. | Should |
+| FR-UI07 | The system **shall** provide efficient menu navigation, enabling the farmer and administrator to reach any first-level setting from the main screen with a minimal number of key presses. | Should |
 | FR-UI08 | The display **should** show the current wind speed and wind direction on a status screen. | Should |
 | FR-UI09 | All prompts and labels **shall** be displayed in a language configurable by the administrator (default: Dutch). | Could |
 
@@ -262,7 +268,7 @@ When temperature and humidity call for opposing window actions (e.g. temperature
 | FR-CF03 | The administrator **shall** be able to set the wind speed closure threshold (v_max). | Must |
 | FR-CF04 | The administrator **shall** be able to set the wind direction exclusion zone (centre bearing and half-width angle). | Must |
 | FR-CF05 | The administrator **shall** be able to set motor run-times per window (used for state estimation). | Must |
-| FR-CF06 | All settings **shall** be stored in non-volatile memory so they are retained after a power cycle. | Must |
+| FR-CF06 | All settings **shall** be retained after a power cycle or controller restart. | Must |
 | FR-CF07 | The administrator **should** be able to set the sensor sampling interval. | Should |
 | FR-CF08 | The administrator **should** be able to set hysteresis values for temperature and humidity control. | Should |
 | FR-CF09 | The administrator **should** be able to set the wind safety hysteresis timer (FR-WS08). | Should |
@@ -288,8 +294,10 @@ When temperature and humidity call for opposing window actions (e.g. temperature
 | FR-MQ01 | The controller **could** connect to a user-configured MQTT broker when WiFi is available. | Could |
 | FR-MQ02 | The controller **should** publish current temperature, humidity, window states, and alarm status to the MQTT broker at regular intervals. | Could |
 | FR-MQ03 | The controller **could** accept window commands and setpoint changes via subscribed MQTT topics. | Could |
-| FR-MQ04 | MQTT broker address, port, and credentials **shall** be configurable by the administrator. | Could |
+| FR-MQ04 | MQTT broker address, port, and credentials (username and password) **shall** be configurable by the administrator via the web configuration interface. | Could |
 | FR-MQ05 | MQTT connectivity **shall** be optional; the controller **shall** operate fully without an MQTT broker. | Must |
+
+> **Design decision:** MQTT configuration (broker address, port, and credentials) is accessible only through the web configuration interface; it is not available in the local keyboard menu.
 
 ### 5.13 Access Control and Security
 
@@ -300,7 +308,7 @@ When temperature and humidity call for opposing window actions (e.g. temperature
 | FR-AC03 | The administrator **shall** be able to change the administrator password. | Must |
 | FR-AC04 | The farmer role **should** be protected by a farmer PIN or password to prevent unintended setpoint changes. | Should |
 | FR-AC05 | Web interface access **shall** require authentication; credentials **shall** be separate from local keyboard access. | Should |
-| FR-AC06 | Passwords **shall** be stored in a hashed form; plain-text storage of passwords is not permitted. | Should |
+| FR-AC06 | The system **shall** store user credentials securely, protecting them against unauthorised disclosure. | Should |
 | FR-AC07 | After a configurable number of failed login attempts, the system **should** impose a lockout delay. | Could |
 
 ### 5.14 Logging
@@ -308,33 +316,35 @@ When temperature and humidity call for opposing window actions (e.g. temperature
 | ID | Requirement | MoSCoW |
 |----|-------------|--------|
 | FR-LG01 | The system **shall** maintain an event log. Each log entry **shall** include a timestamp (date and time) and the identity of the operator or the system component that triggered the event. | Must |
-| FR-LG02 | The following events **shall** be logged: window state changes (open/close command issued), operating mode changes (AUTO ↔ STANDBY), setpoint changes, wind safety overrides (start and end), sensor faults (start and end), and controller restart. | Must |
+| FR-LG02 | The following events **shall** be logged: window state changes (open/close command issued), operating mode changes (AUTO ↔ STANDBY), setpoint changes, wind safety overrides (start and end), sensor faults (start and end), controller restart, and manual override events (detection of override and resumption of automatic control). | Must |
 | FR-LG03 | For events triggered by an operator action (mode change, setpoint change), the log entry **shall** record which user role (Farmer / Administrator) and, where applicable, which user account performed the action. | Must |
 | FR-LG04 | For events triggered automatically by the control logic, the log entry **shall** record "SYSTEM" as the initiator and include the sensor values that triggered the event. | Must |
 | FR-LG05 | The log **shall** be retrievable via the web interface (when WiFi is available) and via the serial/USB diagnostic port. | Should |
-| FR-LG06 | The log **should** store a minimum of 1000 entries in non-volatile memory (ring buffer; oldest entries are overwritten when full). | Should |
+| FR-LG06 | The system **should** retain event log entries persistently across power cycles using a circular strategy, so that the log is maintained automatically without manual management; oldest entries are overwritten when capacity is reached. | Should |
 | FR-LG07 | The system **could** write the event log to an SD card for extended retention and offline retrieval. | Could |
 | FR-LG08 | If an SD card is present and functional, the system **should** prefer the SD card as the primary log storage; internal non-volatile memory acts as fallback. | Could |
 | FR-LG09 | The log **should** include periodic sensor-value snapshots (temperature, humidity, wind speed, wind direction) at a configurable interval, to provide a climate history. | Should |
 
 ---
 
-## 6. Technical Requirements
+## 6. System-Level Requirements
 
-### 6.1 Hardware and Enclosure
+> These requirements express system-level properties that constrain the overall design. They do not describe specific control behaviour but define what the system must be capable of in terms of its physical, environmental, interface, power, software, and communication properties. The technical implementation decisions that satisfy these requirements are recorded in the Technical Design Specification (TDS).
+
+### 6.1 Environmental and Physical
 
 | ID | Requirement | MoSCoW |
 |----|-------------|--------|
-| TR-HW01 | The controller **shall** be housed in an enclosure rated IP67 or higher. | Must |
-| TR-HW02 | The enclosure **shall** be suitable for wall mounting. | Must |
-| TR-HW03 | All motor control signals **shall** be through potential-free relay contacts (volt-free). | Must |
-| TR-HW04 | The controller **shall** provide 6 relay output channels — one OPEN and one CLOSE for each of M1, M2, and M3. | Must |
-| TR-HW05 | The controller **shall** accept 24 VDC or 24 VAC control voltage for the relay interface to the RRK-3. | Must |
-| TR-HW06 | The controller **shall** include a 4×4 matrix keyboard. | Must |
-| TR-HW07 | The controller **shall** include a 16×2 LCD character display. | Must |
-| TR-HW08 | The controller **shall** include a real-time clock (RTC) to provide accurate timestamps for the event log and sensor snapshots (see §5.14). | Must |
-| TR-HW09 | The controller **should** include a WiFi-capable microcontroller or module. | Should |
-| TR-HW10 | The controller **could** include an SD card slot for extended log storage. | Could |
+| TR-HW01 | The system **shall** be suitable for continuous installation in a greenhouse environment. | Must |
+| TR-HW02 | The system **shall** be mountable on a vertical surface within the greenhouse. | Must |
+| TR-HW03 | All motor control outputs **shall** be electrically isolated from the controller's internal circuitry. | Must |
+| TR-HW04 | The system **shall** provide independent OPEN and CLOSE actuator outputs for each of the three window channels (M1, M2, M3). | Must |
+| TR-HW05 | The controller's motor control outputs **shall** be compatible with the Hotraco RRK-3 relay box control input specification. | Must |
+| TR-HW06 | The system **shall** include a local keyboard for operator input. *(See also FR-UI01.)* | Must |
+| TR-HW07 | The system **shall** include a local display for presenting status and menu information to the operator. *(See also FR-UI02.)* | Must |
+| TR-HW08 | The system **shall** maintain accurate time for event logging, including during and after mains power interruptions. | Must |
+| TR-HW09 | WiFi connectivity, when implemented, **should** be provided as an integrated function of the controller without requiring a separate external module. | Should |
+| TR-HW10 | The system **could** support optional removable storage for extended log retention. *(See also FR-LG07/FR-LG08.)* | Could |
 
 ### 6.2 Interfaces
 
@@ -343,35 +353,35 @@ When temperature and humidity call for opposing window actions (e.g. temperature
 | TR-IF01 | The controller **shall** interface with the internal temperature and humidity sensor. | Must |
 | TR-IF02 | The controller **shall** interface with the external wind speed sensor. | Must |
 | TR-IF03 | The controller **shall** interface with the external wind direction sensor. | Must |
-| TR-IF04 | The interface to the Hotraco RRK-3 **shall** comply with the RRK-3 control input specification (24 V, potential-free). | Must |
-| TR-IF05 | The controller **should** expose a local serial/USB port for firmware updates and diagnostic access. | Should |
+| TR-IF04 | The controller's motor control output interface **shall** be compatible with the Hotraco RRK-3 control input specification. | Must |
+| TR-IF05 | The controller **should** provide a local connection point for firmware updates and diagnostic access without requiring opening of the enclosure. | Should |
 
 ### 6.3 Power Supply
 
 | ID | Requirement | MoSCoW |
 |----|-------------|--------|
-| TR-PS01 | The controller **shall** operate from a standard 230 VAC / 50 Hz supply or a regulated 24 VDC supply. | Must |
-| TR-PS02 | The controller **should** survive a brief power interruption (< 1 s) without resetting, using an appropriate buffer capacitor or UPS. | Could |
-| TR-PS03 | On power restoration, the controller **shall** restore all settings from non-volatile memory and resume automatic operation. | Must |
+| TR-PS01 | The system **shall** operate from standard mains power supply as available in a greenhouse installation. | Must |
+| TR-PS02 | The system **shall** maintain operation during brief mains power interruptions without resetting. | Could |
+| TR-PS03 | On restoration of mains power, the system **shall** resume automatic operation with all settings intact. *(See also FR-CF06.)* | Must |
 
 ### 6.4 Software and Firmware
 
 | ID | Requirement | MoSCoW |
 |----|-------------|--------|
-| TR-SW01 | All configuration settings **shall** be stored in non-volatile memory (EEPROM or flash). | Must |
-| TR-SW02 | The firmware **shall** be updateable without opening the enclosure (e.g. via WiFi OTA or USB). | Should |
-| TR-SW03 | The system **shall** implement a watchdog timer to recover from software lockups by performing a controlled restart. | Must |
+| TR-SW01 | All configuration settings **shall** be retained after a power cycle. *(See FR-CF06.)* | Must |
+| TR-SW02 | The system **shall** support firmware updates without requiring physical access to the interior of the controller. | Should |
+| TR-SW03 | The system **shall** automatically recover from software faults without requiring manual intervention. | Must |
 | TR-SW04 | The system **shall** maintain a time-stamped, operator-attributed event log as defined in §5.14. | Must |
-| TR-SW05 | The firmware **should** be structured to allow unit testing of the control logic independently of hardware. | Should |
+| TR-SW05 | The control logic **should** be structured to allow independent verification, separate from hardware dependencies. | Should |
 
 ### 6.5 Networking
 
 | ID | Requirement | MoSCoW |
 |----|-------------|--------|
-| TR-NW01 | When WiFi is enabled, the controller **shall** support WPA2 (or higher) security. | Should |
-| TR-NW02 | The controller **shall** be configurable as a WiFi client (STA) connecting to an existing network. | Should |
-| TR-NW03 | The controller **shall** be able to host a local WiFi Access Point (AP mode) for initial setup. | Should |
-| TR-NW04 | The web interface **shall** be served over HTTPS, or at minimum over HTTP with TLS where feasible on the target hardware. | Could |
+| TR-NW01 | WiFi connections **shall** be protected against unauthorised access using current security standards. | Should |
+| TR-NW02 | The controller **shall** support connection to an existing WiFi network as a client. *(See also FR-NW01/FR-NW02.)* | Should |
+| TR-NW03 | The controller **shall** be capable of hosting a local WiFi access point for initial network configuration. *(See also FR-NW02.)* | Should |
+| TR-NW04 | Data exchanged via the web interface **shall** be protected against interception. | Could |
 
 ---
 
@@ -387,7 +397,7 @@ When temperature and humidity call for opposing window actions (e.g. temperature
 | C6 | WiFi, MQTT, and SD card functionality are optional; the controller must be fully functional as a standalone unit without any of these. |
 | C7 | The system is installed inside the greenhouse (IP67 enclosure required due to the greenhouse environment). |
 | C8 | **OPEN ISSUE — Motor feedback:** It is currently unknown whether and how status signals from the Hotraco RRK-3 (e.g. alarm relay output) can be fed back to the controller. Additional input interface requirements may arise once this is resolved. |
-| C9 | Manual window control (individual open/close of M1, M2, M3) is outside the scope of this controller. It is performed directly on the Hotraco RRK-3 motor relay box. The controller provides only automatic climate control (and wind safety override). |
+| C9 | Initiating manual window control (individual open/close of M1, M2, M3) is outside the scope of this controller; it is performed directly on the Hotraco RRK-3 motor relay box. However, the controller **shall** detect when a manual override has occurred and respond accordingly (see FR-M08–FR-M11). |
 | C10 | At startup, the controller commands all windows to close to establish a known baseline state. This means a power cycle will always result in a brief window-close sequence. |
 
 ---
