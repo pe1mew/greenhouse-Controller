@@ -31,3 +31,5 @@
 | 27 | Sensor | Battery holder CR2032 | 1 | CR2032 / LIR2032 Batterijhouder voor Printplaat — Liggend | [Tinytronics](https://www.tinytronics.nl/nl/power/batterijhouders-en-clips/2032/cr2032-lir2032-batterij-houder-voor-printplaat-liggend) | 0.50 |
 | 28 | Controller | PCB mounting screws *(todo)* | 4 | Parker screws to fix PCB | — | — |
 | 29 | Controller | Cable glands *(todo)* | — | Wartels voor kabeldoorvoer | — | — |
+| 30 | Controller | SD Memory Card Connector | 1 | Hirose, DM1 9 Way Right Angle Push-Push SD Memory Card Connector, Solder | [RS-Components](https://nl.rs-online.com/web/p/memory-card-connectors/6850779) | 4,79 |
+

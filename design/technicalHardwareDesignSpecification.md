@@ -30,6 +30,8 @@
    - 4.9 Status LEDs
    - 4.10 Enclosure
    - 4.11 GPIO and Peripheral Assignment Summary
+     - 4.11.1 Function Count Overview
+     - 4.11.2 Pin Assignment — LOLIN S3
 5. [Open Issues](#5-open-issues)
 
 ---
@@ -677,7 +679,9 @@ The membrane keypad is bonded to the outer face of the transparent cover. Its fl
 
 ### 4.11 GPIO and Peripheral Assignment Summary
 
-The table below lists all allocated functions on the ESP32-S3. Specific GPIO numbers are indicative; final assignment is confirmed during PCB layout to avoid conflicts with reserved pins (USB D+/D− on GPIO 19/20, boot strapping pins on GPIO 0/45/46).
+#### 4.11.1 Function Count Overview
+
+The table below lists all allocated functions on the ESP32-S3. Specific GPIO numbers are given in §4.11.2.
 
 | Function | Interface | ESP32-S3 peripheral | GPIO count |
 |----------|-----------|---------------------|-----------|
@@ -710,6 +714,68 @@ The table below lists all allocated functions on the ESP32-S3. Specific GPIO num
 > The PWR LED requires no GPIO (resistor from 5 V rail). The 6 relay LEDs share the existing relay-drive GPIO lines. Only the HB heartbeat LED adds 1 GPIO to the mandatory count.
 
 The ESP32-S3 has up to 45 usable GPIO pins; the design uses at most 25, leaving substantial margin for future expansion.
+
+#### 4.11.2 Pin Assignment — LOLIN S3
+
+This section maps every peripheral signal to a specific GPIO number on the LOLIN S3 board. This mapping is the primary reference for both the PCB schematic and the firmware pin definitions (`pins.h` or equivalent).
+
+**Reserved / unavailable pins — must not be used:**
+
+| GPIO | Reason |
+|------|--------|
+| GPIO 0 | Boot strapping pin (pull-down forces download mode); avoid general use |
+| GPIO 19, 20 | Native USB D−, D+ — reserved for USB console and OTA |
+| GPIO 26–32 | Internally connected to QSPI flash — not accessible on header |
+| GPIO 33–37 | Internally connected to QSPI PSRAM (8 MB) — not accessible on header |
+| GPIO 43, 44 | UART0 TX/RX — reserved for debug console (serial monitor) |
+| GPIO 45, 46 | Boot strapping pins — avoid general use |
+
+**Proposed GPIO assignment:**
+
+| Signal | GPIO | Direction | ESP32-S3 peripheral | Notes |
+|--------|------|-----------|---------------------|-------|
+| RS485 UART TX | **GPIO 17** | Output | UART1 TX | To SIT65HVD08P pin DI |
+| RS485 UART RX | **GPIO 18** | Input | UART1 RX | From SIT65HVD08P pin RO |
+| RS485 DE/RE | **GPIO 8** | Output | GPIO | High = transmit; Low = receive |
+| I2C SDA | **GPIO 1** | Bidirectional | I2C0 SDA | Shared: LCD PCF8574 (0x27) + DS3231 (0x68) |
+| I2C SCL | **GPIO 2** | Output | I2C0 SCL | Shared: LCD + RTC |
+| Keypad ROW 1 | **GPIO 3** | Output | GPIO | Drive low to scan |
+| Keypad ROW 2 | **GPIO 4** | Output | GPIO | Drive low to scan |
+| Keypad ROW 3 | **GPIO 5** | Output | GPIO | Drive low to scan |
+| Keypad ROW 4 | **GPIO 6** | Output | GPIO | Drive low to scan |
+| Keypad COL 1 | **GPIO 7** | Input | GPIO (pull-up) | Read key press |
+| Keypad COL 2 | **GPIO 9** | Input | GPIO (pull-up) | Read key press |
+| Keypad COL 3 | **GPIO 10** | Input | GPIO (pull-up) | Read key press |
+| Keypad COL 4 | **GPIO 11** | Input | GPIO (pull-up) | Read key press |
+| Relay OPEN M1 | **GPIO 12** | Output | GPIO | Active-low relay driver input |
+| Relay CLOSE M1 | **GPIO 13** | Output | GPIO | Active-low relay driver input |
+| Relay OPEN M2 | **GPIO 14** | Output | GPIO | Active-low relay driver input |
+| Relay CLOSE M2 | **GPIO 15** | Output | GPIO | Active-low relay driver input |
+| Relay OPEN M3 | **GPIO 16** | Output | GPIO | Active-low relay driver input |
+| Relay CLOSE M3 | **GPIO 21** | Output | GPIO | Active-low relay driver input |
+| RRK-3 feedback input | **GPIO 42** | Input | GPIO | Opto-coupler output; active level TBD (Open Issue #1) |
+| Heartbeat LED (HB) | **GPIO 41** | Output | GPIO | ~1.5 kΩ series resistor to amber LED |
+| SD card MOSI *(optional)* | **GPIO 47** | Output | SPI2 MOSI | Fitted only when SD feature is enabled |
+| SD card MISO *(optional)* | **GPIO 48** | Input | SPI2 MISO | Fitted only when SD feature is enabled |
+| SD card CLK *(optional)* | **GPIO 39** | Output | SPI2 CLK | Fitted only when SD feature is enabled |
+| SD card CS *(optional)* | **GPIO 40** | Output | SPI2 CS | Fitted only when SD feature is enabled |
+
+> **Note:** GPIO 38 is the LOLIN S3 on-board WS2812 RGB LED and is not used by this design. GPIO 43/44 remain available as UART0 for the serial debug console.
+
+**GPIO usage summary:**
+
+| Pin range | Used | Purpose |
+|-----------|------|---------|
+| GPIO 1–2 | 2 | I2C bus |
+| GPIO 3–11 | 9 | Keypad (4 rows + 4 cols) + RS485 DE/RE |
+| GPIO 12–18 | 7 | Relays (6) + RS485 TX/RX |
+| GPIO 21 | 1 | Relay CLOSE M3 |
+| GPIO 39–42 | 4 | SD CLK, SD CS, SD MISO→48, feedback + HB |
+| GPIO 47–48 | 2 | SD MOSI/MISO *(optional)* |
+| **Total mandatory** | **21** | All except SD card signals |
+| **Total with SD** | **25** | Full feature set |
+
+> **PCB design constraint:** Confirm that the chosen GPIO numbers are routable to the correct connector positions on the LOLIN S3 header before finalising the schematic. Verify no conflicts remain with any board-specific boot-time strapping requirements by checking the LOLIN S3 schematic revision in use.
 
 ---
 
