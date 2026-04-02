@@ -787,6 +787,15 @@ The following items originate from system-level and functional requirements in t
 - WiFi connections protected with WPA2 minimum; higher standards (WPA3) preferred if supported by ESP32-S3 SDK (TR-NW01)
 - Web interface: data in transit protected; HTTPS or TLS-over-HTTP where feasible on target hardware (TR-NW04)
 
+**Setpoint and threshold data types**
+- All user-configurable setpoints and thresholds (temperature, relative humidity, wind speed, wind direction, dwell/timer durations in minutes) are stored and processed as **integers** (no fractional part). Fractional sensor readings are rounded to the nearest integer before comparison with setpoints. This applies to: T_min, T_max (°C), RH_min, RH_max (%), v_max (m/s or Beaufort), wind direction exclusion centre and half-width (degrees), hysteresis bands, and dwell times (minutes). (FR-CF01–FR-CF11)
+
+**Feature enable/disable flags**
+- Temperature-based climate control is always active; no enable/disable flag is required or stored.
+- Humidity-based climate control can be enabled or disabled by the administrator; state is persisted as a boolean flag in NVS (FR-C12, FR-CF12).
+- Wind protection (wind speed and wind direction safety) can be enabled or disabled by the administrator; state is persisted as a boolean flag in NVS (FR-WS09, FR-CF13). When wind protection is disabled, T3 (Safety Monitor) must remain dormant and must not issue CLOSE_ALL commands.
+- Both flags default to **enabled** on first boot and after factory reset.
+
 **Manual override detection**
 - Mechanism for detecting manual window override via RRK-3 feedback signal (opto-isolated input provisioned in hardware); software response to override detection and calibration cycle on resumption of control (FR-M08–FR-M11, Open Issue #1)
 

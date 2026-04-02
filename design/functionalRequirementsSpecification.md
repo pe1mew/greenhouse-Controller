@@ -191,6 +191,10 @@ Windows are driven by a Hotraco RRK-3 relay box. The controller sends an OPEN or
 | FR-C08 | When the measured relative humidity is below RH_min, the system **shall** close windows to reduce moisture loss. | Must |
 | FR-C09 | The system **should** use a graduated ventilation strategy — opening additional windows as the deviation from setpoint increases — rather than opening all windows at once. | Should |
 | FR-C10 | The system **should** apply hysteresis to window open/close decisions to prevent rapid toggling (short-cycling). | Should |
+| FR-C11 | Temperature-based climate control **shall** always be active; it cannot be disabled. | Must |
+| FR-C12 | The administrator **shall** be able to enable or disable humidity-based climate control. When humidity control is disabled, the system **shall** ignore RH measurements for window open/close decisions; temperature control continues to operate normally. | Must |
+
+> **Note on FR-C12:** When humidity control is disabled, no T–RH conflict (§5.6) can occur. Conflict resolution logic is therefore only active when humidity control is enabled.
 
 ### 5.5 Wind Safety
 
@@ -204,6 +208,9 @@ Windows are driven by a Hotraco RRK-3 relay box. The controller sends an OPEN or
 | FR-WS06 | When a wind safety override is active, the system **shall** show a dedicated wind-override alarm message on the LCD display, indicating which condition triggered the override (wind speed or wind direction). This indication **shall** remain visible on the display for as long as the override is active. | Must |
 | FR-WS07 | When wind conditions return to safe values, the system **shall** resume automatic climate control. | Must |
 | FR-WS08 | The administrator **should** be able to set a minimum duration that wind must be within safe limits before windows are re-opened (wind hysteresis timer). | Should |
+| FR-WS09 | The administrator **shall** be able to enable or disable wind protection (both wind speed and wind direction safety). When wind protection is disabled, the system **shall** not issue wind-safety close commands; climate control operates without wind override. | Must |
+| FR-WS10 | When wind protection is disabled, the system **shall** show a persistent warning on the LCD display to inform the operator that wind safety is inactive. | Must |
+| FR-WS11 | Disabling wind protection **shall** be an administrator-only action; it **shall** be logged with a timestamp and the administrator's identity. | Must |
 
 ### 5.6 Conflict Resolution
 
@@ -211,7 +218,7 @@ When temperature and humidity call for opposing window actions (e.g. temperature
 
 | ID | Requirement | MoSCoW |
 |----|-------------|--------|
-| FR-CR01 | The system **shall** implement a defined conflict resolution strategy when temperature and humidity setpoints require opposing window actions. | Must |
+| FR-CR01 | The system **shall** implement a defined conflict resolution strategy when temperature and humidity setpoints require opposing window actions. Conflict resolution is only active when humidity control is enabled (FR-C12). | Must |
 | FR-CR02 | The default conflict resolution strategy **shall** prioritise the condition with the greater relative deviation from its setpoint. | Should |
 | FR-CR03 | The administrator **shall** be able to configure the conflict resolution priority (T takes priority / RH takes priority / deviation-based). | Could |
 | FR-CR04 | The system **shall** log or display a conflict event so the farmer is aware of the trade-off being made. | Should |
@@ -274,6 +281,8 @@ When temperature and humidity call for opposing window actions (e.g. temperature
 | FR-CF09 | The administrator **should** be able to set the wind safety hysteresis timer (FR-WS08). | Should |
 | FR-CF10 | The administrator **shall** be able to set the open-dwell time for each window (M1, M2, M3) — the minimum time a window must remain open before it may be closed. | Must |
 | FR-CF11 | The administrator **shall** be able to set the close-dwell time for each window (M1, M2, M3) — the minimum time a window must remain closed before it may be opened. | Must |
+| FR-CF12 | The administrator **shall** be able to enable or disable humidity-based climate control (see FR-C12). | Must |
+| FR-CF13 | The administrator **shall** be able to enable or disable wind protection (see FR-WS09). | Must |
 
 ### 5.11 WiFi Connectivity (Optional)
 
@@ -399,6 +408,8 @@ When temperature and humidity call for opposing window actions (e.g. temperature
 | C8 | **OPEN ISSUE — Motor feedback:** It is currently unknown whether and how status signals from the Hotraco RRK-3 (e.g. alarm relay output) can be fed back to the controller. Additional input interface requirements may arise once this is resolved. |
 | C9 | Initiating manual window control (individual open/close of M1, M2, M3) is outside the scope of this controller; it is performed directly on the Hotraco RRK-3 motor relay box. However, the controller **shall** detect when a manual override has occurred and respond accordingly (see FR-M08–FR-M11). |
 | C10 | At startup, the controller commands all windows to close to establish a known baseline state. This means a power cycle will always result in a brief window-close sequence. |
+| C11 | All user-configurable setpoints and thresholds — including temperature (°C), relative humidity (%), wind speed (m/s or Beaufort), wind direction (degrees), and time durations (minutes) — are expressed and stored as **integers**. Fractional values are not supported. Fractional sensor readings are rounded to the nearest integer before comparison with setpoints. |
+| C12 | Temperature-based climate control is permanently active and cannot be disabled. Humidity-based climate control and wind protection are each independently enable/disable configurable by the administrator. The enable/disable state of both features is persisted across power cycles. |
 
 ---
 

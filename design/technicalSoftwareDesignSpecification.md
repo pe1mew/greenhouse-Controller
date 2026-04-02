@@ -179,6 +179,16 @@ The following items originate from system-level and functional requirements in t
 - WPA2 minimum; WPA3 preferred (TR-NW01).
 - HTTPS on the web interface is **not implemented**; see §6 Open Issue #4 for the accepted threat model (TR-NW04).
 
+**Setpoint and threshold data types**
+- All user-configurable setpoints and thresholds are stored and processed as **integers** (no fractional part): T_min, T_max (°C), RH_min, RH_max (%), v_max (m/s or Beaufort), wind direction exclusion centre and half-width (degrees), hysteresis bands, and dwell/timer durations (minutes). Fractional sensor readings are rounded to the nearest integer before comparison with setpoints. NVS keys for these parameters use `int16_t` (signed 16-bit integer). (FRS C11, FR-CF01–FR-CF11)
+
+**Feature enable/disable flags**
+- Temperature-based climate control is permanently active; no enable/disable flag is stored or checked.
+- Humidity-based climate control has an administrator-configurable enable/disable flag (`rh_ctrl_en`, boolean, NVS namespace `climate`). When disabled, T6 skips RH evaluation entirely; conflict resolution (FR-CR01) is also suppressed. (FRS C12, FR-C12, FR-CF12)
+- Wind protection has an administrator-configurable enable/disable flag (`wind_prot_en`, boolean, NVS namespace `wind`). When disabled, T3 reads wind data but issues no CLOSE_ALL or RESUME commands; the WIND_OVERRIDE event group bit is never set. The LCD warning must remain visible while the flag is false (FR-WS10). (FRS C12, FR-WS09, FR-CF13)
+- Both flags default to **enabled** (`true`) on first boot and after factory reset.
+- Changes to either flag are logged with timestamp and administrator identity (FR-WS11).
+
 **Manual override detection**
 - Mechanism for detecting manual window override via RRK-3 opto-isolated feedback input; software response and calibration cycle on resumption of control (FR-M08–FR-M11, Open Issue #1).
 
@@ -247,10 +257,12 @@ The firmware is structured as a set of FreeRTOS tasks. Each logical function is 
 
 - Wakes on notification from T4 whenever new wind data is available.
 - Reads current wind speed and wind direction from T4.
-- Compares against v_max threshold and wind direction exclusion zone (configuration from T4).
+- Checks the `wind_prot_en` flag (from T4) before evaluating thresholds. If wind protection is disabled, T3 takes no action and clears EG1.WIND_OVERRIDE if previously set.
+- Compares against v_max threshold and wind direction exclusion zone (configuration from T4) — only when `wind_prot_en` is true.
 - Posts a `CLOSE_ALL` actuation command to T2 immediately when a threshold is exceeded.
 - Posts a `RESUME` notification to T6 when conditions return to safe limits.
-- Always active, independent of Automatic / Standby operating mode.
+- Always active (task remains scheduled), but evaluation and actuation are suppressed when wind protection is disabled.
+- Independent of Automatic / Standby operating mode.
 - Priority equal to T2; must preempt T6 to ensure a safety response is never delayed by climate logic.
 - **Synchronization:** wakes on TN1 (from T4, new wind data); acquires MX2 to read wind speed and direction; posts to Q1 (CLOSE_ALL or RESUME actuation command); sets/clears EG1.WIND_OVERRIDE; posts to Q3 (log events).
 
@@ -592,16 +604,18 @@ Link to FRS requirements: FR-S04 (sensor fault detection), FR-W03 (wind sensor f
 - OPEN + CLOSE mutual exclusion is enforced in T2 before asserting any relay output.
 
 **Climate setpoints and hysteresis:**
-- T_min, T_max: temperature range for window open/close (configurable, farmer level).
-- RH_min, RH_max: humidity range for window open/close (configurable, farmer level).
-- Hysteresis band on each setpoint prevents rapid toggling near threshold.
+- T_min, T_max: temperature range for window open/close (configurable, farmer level). Stored and compared as integer °C. Always active; cannot be disabled.
+- RH_min, RH_max: humidity range for window open/close (configurable, farmer level). Stored and compared as integer %. Only evaluated when the `rh_ctrl_en` flag is true.
+- All setpoints are integers; fractional sensor readings are rounded to the nearest integer before comparison.
+- Hysteresis band on each setpoint prevents rapid toggling near threshold. Hysteresis values are also integers.
 - Graduated ventilation: windows opened in steps proportional to deviation from setpoint (FR-C09, FR-C10).
 
 **Conflict resolution (FR-CR01–FR-CR04):**
 When temperature demands OPEN and humidity demands CLOSE (or vice versa), the conflict resolution algorithm selects the safer action:
-1. Wind safety always overrides both (T3 issues CLOSE_ALL regardless of climate demand).
+1. Wind safety always overrides both (T3 issues CLOSE_ALL regardless of climate demand) — unless wind protection is disabled (`wind_prot_en` = false).
 2. When temperature and humidity conflict, priority is configurable: default is temperature priority.
-3. The active conflict and the resolution applied are logged to Q3.
+3. Conflict resolution is only active when humidity control is enabled (`rh_ctrl_en` = true).
+4. The active conflict and the resolution applied are logged to Q3.
 
 **Manual override detection (FR-M08–FR-M11):**
 - T2 detects a state change on the RRK-3 opto-isolated feedback input.
@@ -623,8 +637,8 @@ When temperature demands OPEN and humidity demands CLOSE (or vice versa), the co
 | event_type | uint8 enum | Category: SENSOR, RELAY, MODE_CHANGE, SETPOINT, SESSION, ALARM, SYSTEM |
 | initiator | uint8 enum | SYSTEM, USER_FARMER, USER_ADMIN, MQTT, WEB |
 | channel | uint8 | Motor channel (M1/M2/M3) or 0 for non-motor events |
-| value_a | int16 | Optional: sensor value or setpoint (scaled, e.g. °C × 10) |
-| value_b | int16 | Optional: second sensor value or threshold |
+| value_a | int16 | Optional: sensor value or setpoint (integer; sensor readings rounded to nearest integer before logging) |
+| value_b | int16 | Optional: second sensor value or threshold (integer) |
 | reserved | uint8[2] | Padding to maintain fixed record size |
 
 **Storage:**
@@ -822,16 +836,18 @@ Where `Mxx` encodes active window states (e.g. `M1O` = M1 open, `M2C` = M2 close
 
 NVS uses ESP-IDF namespaces to separate configuration domains. All keys use UTF-8 strings of ≤ 15 characters (ESP-IDF NVS limit).
 
-| Namespace | Key examples | Description |
-|-----------|-------------|-------------|
-| `climate` | `t_min`, `t_max`, `rh_min`, `rh_max`, `hyst_t`, `hyst_rh` | Temperature and humidity setpoints and hysteresis |
-| `wind` | `v_max`, `dir_excl_low`, `dir_excl_high` | Wind speed threshold and direction exclusion zone |
-| `motor` | `dwell_open_m1`, `dwell_close_m1`, … `dwell_close_m3` | Per-channel dwell times (ms) |
-| `access` | `pin_farmer_hash`, `pin_admin_hash`, `pin_salt`, `lockout_count`, `lockout_time` | PIN hashes, lockout configuration |
-| `wifi` | `ssid`, `psk_hash`, `ap_ssid`, `ap_psk`, `ip_mode`, `ip_addr`, `ip_mask`, `ip_gw`, `ip_dns` | WiFi client and AP credentials and network settings |
-| `mqtt` | `broker_url`, `port`, `username`, `password_hash`, `topic_prefix`, `interval` | MQTT broker connection and publish settings |
-| `system` | `poll_interval`, `session_timeout`, `ap_timeout`, `lang`, `log_pointer` | System-wide configuration |
-| `log` | Ring buffer entries (binary blob, fixed record size) | Event log fallback when SD card absent |
+Setpoint and threshold values (temperature, humidity, wind speed, wind direction, dwell/timer durations) are stored as **`int16_t`** (signed 16-bit integer). Fractional values are not stored; the UI and sensor reading pipeline round to the nearest integer before writing to NVS.
+
+| Namespace | Key examples | Type | Description |
+|-----------|-------------|------|-------------|
+| `climate` | `t_min`, `t_max`, `rh_min`, `rh_max`, `hyst_t`, `hyst_rh`, `rh_ctrl_en` | `int16_t` / `uint8_t` | Temperature (°C) and humidity (%) setpoints and hysteresis (integers); `rh_ctrl_en`: humidity control enable flag (0 = disabled, 1 = enabled, default 1) |
+| `wind` | `v_max`, `dir_excl_low`, `dir_excl_high`, `wind_prot_en` | `int16_t` / `uint8_t` | Wind speed threshold (m/s or Beaufort) and direction exclusion zone (degrees) (integers); `wind_prot_en`: wind protection enable flag (0 = disabled, 1 = enabled, default 1) |
+| `motor` | `dwell_open_m1`, `dwell_close_m1`, … `dwell_close_m3` | `int16_t` | Per-channel dwell times (minutes) — integers only |
+| `access` | `pin_farmer_hash`, `pin_admin_hash`, `pin_salt`, `lockout_count`, `lockout_time` | string / uint8 | PIN hashes, lockout configuration |
+| `wifi` | `ssid`, `psk_hash`, `ap_ssid`, `ap_psk`, `ip_mode`, `ip_addr`, `ip_mask`, `ip_gw`, `ip_dns` | string | WiFi client and AP credentials and network settings |
+| `mqtt` | `broker_url`, `port`, `username`, `password_hash`, `topic_prefix`, `interval` | string / uint16 | MQTT broker connection and publish settings |
+| `system` | `poll_interval`, `session_timeout`, `ap_timeout`, `lang`, `log_pointer` | uint16 / string | System-wide configuration |
+| `log` | Ring buffer entries (binary blob, fixed record size) | blob | Event log fallback when SD card absent |
 
 **Default values:**
 - Applied on first boot (no NVS key present) or after factory reset.
