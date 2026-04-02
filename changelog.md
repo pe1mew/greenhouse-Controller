@@ -6,9 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
-## [Unreleased] — 2026-03-27
+## [Unreleased] — 2026-04-02
 
 ### Added
+- `design/functionalRequirementsSpecification.md` — new constraints and requirements:
+  - **C11** — all user-configurable setpoints and thresholds (temperature °C, humidity %, wind speed, wind direction degrees, time durations in minutes) are expressed and stored as integers; fractional values are not supported; fractional sensor readings are rounded before comparison
+  - **C12** — temperature control is permanently active; humidity control and wind protection are each independently enable/disable configurable by the administrator; both default to enabled and are persisted across power cycles
+  - **FR-C11** — temperature-based climate control shall always be active; it cannot be disabled
+  - **FR-C12** — administrator can enable or disable humidity-based climate control; when disabled, RH is ignored for window decisions and conflict resolution is suppressed
+  - **FR-WS09** — administrator can enable or disable wind protection (speed and direction); when disabled, no wind-safety close commands are issued
+  - **FR-WS10** — persistent LCD warning shown whenever wind protection is inactive
+  - **FR-WS11** — disabling wind protection is an admin-only action and shall be logged
+  - **FR-CF12** — administrator setting to enable/disable humidity control
+  - **FR-CF13** — administrator setting to enable/disable wind protection
+  - FR-CR01 updated: conflict resolution is only active when humidity control is enabled
+- `design/technicalDesignSpecification.md` §5.1 — added "Setpoint and threshold data types" and "Feature enable/disable flags" design constraints with NVS key names (`rh_ctrl_en`, `wind_prot_en`) and default values
+- `design/technicalSoftwareDesignSpecification.md`:
+  - §3 Design Constraints — added integer setpoint constraint (`int16_t` NVS storage, rounding rule) and feature enable/disable flag constraints
+  - §4.3 T3 Safety Monitor — updated to check `wind_prot_en` flag before evaluating thresholds; suppresses CLOSE_ALL when wind protection is disabled
+  - §5.2 Climate Control Logic — RH evaluation conditional on `rh_ctrl_en`; conflict resolution suppressed when humidity disabled; CLOSE_ALL from T3 conditional on `wind_prot_en`; log entry `value_a`/`value_b` fields updated to reflect integer values without scaling
+  - §5.10 NVS Configuration Storage Layout — added Type column; `rh_ctrl_en` added to `climate` namespace; `wind_prot_en` added to `wind` namespace; types specified for all namespaces
 - `firmware/` directory with PlatformIO project skeleton:
   - `firmware/platformio.ini` — board (`lolin_s3`), Arduino framework, 115200 baud monitor, commented library dependency stubs
   - `firmware/src/README.md` — describes expected source modules and their responsibilities
