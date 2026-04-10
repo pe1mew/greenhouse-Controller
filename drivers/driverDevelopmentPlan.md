@@ -10,7 +10,7 @@ The driver subdirectories already exist and use the following names:
 |---------|-----------|----------|
 | LIB-1 | `gpio/` | Relay outputs, LEDs, RS485 DE/RE, opto input, SD button |
 | LIB-2 | `i2c/` | Shared I2C bus (SDA/SCL) |
-| LIB-3 | `DS3231_RTC/` | DS3231 real-time clock module |
+| LIB-3 | `DS3231_RTC/` | DS1307 real-time clock module |
 | LIB-4 | `LCD1602_I2C/` | Waveshare LCD1602 via PCF8574 |
 | LIB-5 | `keyPad/` | 4×4 membrane keypad |
 | LIB-6 | `modBus/` | SIT65HVD08P RS485 transceiver, Modbus RTU |
@@ -34,7 +34,7 @@ Wave 1 (all parallel — no inter-driver dependencies):
     LIB-9  littleFS/
 
 Wave 2 (after respective Wave 1 board tests pass):
-    LIB-3  DS3231_RTC/     ← requires LIB-2 board-tested
+    LIB-3  DS3231_RTC/     ← requires LIB-2 board-tested  (DS1307 chip)
     LIB-4  LCD1602_I2C/    ← requires LIB-2 board-tested
     LIB-6  modBus/         ← requires LIB-1 board-tested
 ```
@@ -476,10 +476,10 @@ Provides a fake `TwoWire` class and global `Wire` instance. An in-memory byte FI
 
 ---
 
-## LIB-3 — DS3231 RTC (`DS3231_RTC/`)
+## LIB-3 — DS1307 RTC (`DS3231_RTC/`)
 
 ### Purpose
-Driver for the DS3231 battery-backed real-time clock. Used by T4 (Data Manager) to read the current timestamp at startup and periodically.
+Driver for the DS1307 battery-backed real-time clock. Used by T4 (Data Manager) to read the current timestamp at startup and periodically.
 
 ### Dependency
 Requires LIB-2 (`i2c/`) to be board-tested. Reference in `platformio.ini`:
@@ -488,10 +488,10 @@ Requires LIB-2 (`i2c/`) to be board-tested. Reference in `platformio.ini`:
 lib_deps = file://../i2c
 ```
 
-### API (`ds3231_rtc.h`)
+### API (`ds1307_rtc.h`)
 
 ```cpp
-#define DS3231_I2C_ADDR  0x68
+#define DS1307_I2C_ADDR  0x68
 
 typedef struct {
     uint8_t  second;       // 0–59
@@ -513,36 +513,35 @@ typedef enum {
 rtc_status_t rtc_init(void);
 rtc_status_t rtc_get_time(rtc_datetime_t *dt);
 rtc_status_t rtc_set_time(const rtc_datetime_t *dt);
-rtc_status_t rtc_get_temperature(int16_t *temp_tenths); // e.g. 245 = 24.5 °C
-bool         rtc_oscillator_stopped(void);              // true if OSF bit set (battery removed)
+bool         rtc_oscillator_stopped(void);  // true if CH bit set (oscillator halted)
 ```
 
 ### Implementation notes
-- All time fields are BCD-encoded in DS3231 registers 0x00–0x06.
-- Temperature: register 0x11 (MSB, integer) + 0x12 (bits 7:6, 0.25 °C steps).
-- OSF (Oscillator Stop Flag): bit 7 of status register 0x0F. Set on first power-up or after battery loss.
+- All time fields are BCD-encoded in DS1307 registers 0x00–0x06.
+- **Clock Halt (CH) bit:** bit 7 of the seconds register (0x00). Set at power-up (oscillator disabled); cleared automatically when `rtc_set_time` writes BCD seconds 0–59 (bit 7 is always 0 for valid BCD seconds). CH set = time invalid.
+- DS1307 has **no temperature sensor** (unlike DS3231).
 - Implement private `bcd_to_dec` and `dec_to_bcd` helpers.
 
 ### Mock strategy (`test/mock_i2c_bus.h`)
-A byte array representing DS3231 registers (0x00–0x12). `i2c_write_read` reads from the array at offset `tx[0]`; `i2c_write` writes to the array at offset `data[0]`. Helper `mock_rtc_set_register(reg, val)` presets register values for test setup.
+A byte array representing DS1307 registers (0x00–0x06). `i2c_write_read` reads from the array at offset `tx[0]`; `i2c_write` writes to the array at offset `data[0]`. Helper `mock_rtc_set_register(reg, val)` presets register values for test setup.
 
-### Unit tests (13)
+### Unit tests (11)
 
-| ID | Test case | Assertion |
-|----|-----------|-----------|
-| UT-RTC-001 | `rtc_init` returns `RTC_OK` when mock ACKs | No error |
-| UT-RTC-002 | `rtc_init` → `RTC_ERR_NO_DEVICE` on NACK | NACK flag set; correct error |
-| UT-RTC-003 | BCD decode seconds: reg 0x00 = 0x45 → `second = 45` | Correct decimal |
-| UT-RTC-004 | BCD decode minutes: reg 0x01 = 0x30 → `minute = 30` | Correct decimal |
-| UT-RTC-005 | BCD decode hours: reg 0x02 = 0x23 → `hour = 23` | 24-hour format |
-| UT-RTC-006 | BCD decode full date (day, month, year) | All fields correct |
-| UT-RTC-007 | `rtc_set_time` encodes `second = 45` → reg 0x00 = 0x45 | BCD encode correct |
-| UT-RTC-008 | `rtc_set_time` encodes year 2026 correctly | High/low byte correct |
-| UT-RTC-009 | Temperature positive: 0x18 / 0x40 → `temp_tenths = 242` (24.2 °C) | Correct decode |
-| UT-RTC-010 | Temperature negative value decodes correctly | Signed result correct |
-| UT-RTC-011 | OSF bit 7 set → `rtc_oscillator_stopped()` true | Flag detected |
-| UT-RTC-012 | OSF bit 7 clear → `rtc_oscillator_stopped()` false | Flag not set |
-| UT-RTC-013 | Invalid BCD (seconds reg = 0x60) → `RTC_ERR_INVALID` | Out-of-range rejected |
+Run: `pio test -e native` — all 11 passed on 2026-04-10 (3.57 s, MinGW/native).
+
+| ID | Test case | Assertion | Result |
+|----|-----------|-----------|--------|
+| UT-RTC-001 | `rtc_init` returns OK on ACK | No error | ✅ PASS |
+| UT-RTC-002 | `rtc_init` returns `RTC_ERR_NO_DEVICE` on NACK | NACK flag set; correct error | ✅ PASS |
+| UT-RTC-003 | BCD decode seconds (0x45 → 45) | Correct decimal | ✅ PASS |
+| UT-RTC-004 | BCD decode minutes (0x30 → 30) | Correct decimal | ✅ PASS |
+| UT-RTC-005 | BCD decode hours (0x23 → 23) | 24-hour format | ✅ PASS |
+| UT-RTC-006 | BCD decode full date (2026-04-10, dow 5) | All fields correct | ✅ PASS |
+| UT-RTC-007 | `rtc_set_time` encodes seconds (45 → 0x45) | BCD encode correct | ✅ PASS |
+| UT-RTC-008 | `rtc_set_time` encodes year (2026 → 0x26) | High/low byte correct | ✅ PASS |
+| UT-RTC-011 | CH bit set → `rtc_oscillator_stopped()` true | Flag detected | ✅ PASS |
+| UT-RTC-012 | CH bit clear → `rtc_oscillator_stopped()` false | Flag not set | ✅ PASS |
+| UT-RTC-013 | Invalid BCD seconds (0x60) → `RTC_ERR_INVALID` | Out-of-range rejected | ✅ PASS |
 
 ### Hardware verification
 
@@ -550,34 +549,33 @@ A byte array representing DS3231 registers (0x00–0x12). `i2c_write_read` reads
 
 | Field | Value |
 |-------|-------|
-| Driver | LIB-3 — DS3231 RTC |
+| Driver | LIB-3 — DS1307 RTC |
 | Directory | `DS3231_RTC/` |
-| Firmware version | |
-| Board ID / revision | |
-| Tester | |
-| Date | |
-| Equipment | LOLIN S3; DS3231 RTC module; CR2032 battery (inserted before test); LIB-2 board-tested |
+| Firmware version | 0.1.0 |
+| Board ID / revision | LOLIN S3 |
+| Tester | drasv |
+| Date | 2026-04-10 |
+| Equipment | LOLIN S3; DS1307 RTC module; CR2032 battery (inserted before test); LIB-2 board-tested |
 
-**Wiring:** DS3231 SDA → GPIO 1, SCL → GPIO 2, VCC → 3.3 V, GND → GND.
+**Wiring:** DS1307 SDA → GPIO 1, SCL → GPIO 2, VCC → 3.3 V, GND → GND.
 
 #### Test cases
 
 | ID | Description | Procedure | Expected result | Actual result | P/F |
 |----|-------------|-----------|-----------------|---------------|-----|
-| HW-RTC-001 | Driver initialises and detects device | Upload sketch; open serial monitor | "DS3231 init OK" printed within 3 s | | |
-| HW-RTC-002 | Oscillator stop flag is clear | Read OSF flag from serial output | "Oscillator stop flag: CLEAR" printed (confirms battery present and valid) | | |
-| HW-RTC-003 | Time can be set | Sketch writes 2026-04-10 12:00:00 to RTC | "Set time: 2026-04-10 12:00:00" confirmed on serial; no error | | |
-| HW-RTC-004 | Time is advancing | Sketch reads time twice, 3 s apart; prints both readings | Second reading is 3 s (±1 s) later than first. Record delta: ___ s | | |
-| HW-RTC-005 | Temperature sensor readable | Sketch reads and prints on-chip temperature | Value printed; between 0.0 °C and 50.0 °C. Record: ___ °C | | |
-| HW-RTC-006 | Time retained across power cycle | Power off board; wait ≥ 10 s; power on; read time | Time differs from set value by elapsed seconds — not reset to 00:00:00. Record time at power-off: ___; time at power-on: ___ | | |
+| HW-RTC-001 | Driver initialises and detects device | Upload sketch; open serial monitor | "DS1307 init OK" printed within 3 s | Init OK printed | ✅ PASS |
+| HW-RTC-002 | Clock Halt flag is clear | Read CH flag from serial output | "Oscillator stop flag: CLEAR" printed (CH cleared by set_time) | "Oscillator stop flag: CLEAR" printed | ✅ PASS |
+| HW-RTC-003 | Time can be set | Sketch writes 2026-04-10 12:00:00 to RTC | "Set time: 2026-04-10 12:00:00" confirmed on serial; no error | Set time confirmed; no error | ✅ PASS |
+| HW-RTC-004 | Time is advancing | Sketch reads time twice, 3 s apart; prints both readings | Second reading is 3 s (±1 s) later than first | Delta within 2–4 s | ✅ PASS |
+| HW-RTC-006 | Battery backup: time retained across RTC power cycle | Disconnect DS1307 VCC only (keep GND, SDA, SCL, CR2032); wait 10 s; reconnect; read time | Elapsed ≥ 18 s, CH bit CLEAR after reconnect | Elapsed 22 s; OSF CLEAR after reconnect | ✅ PASS |
 
 #### Overall result
 
 | Field | Value |
 |-------|-------|
-| Result | PASS / FAIL / INCOMPLETE |
+| Result | PASS |
 | Failed test IDs | |
-| Notes | |
+| Notes | DS1307 has no temperature sensor — HW-RTC-005 removed from plan. Battery backup confirmed: elapsed 22 s, CH bit CLEAR after DS1307 VCC reconnect. |
 
 ---
 
@@ -1227,7 +1225,7 @@ For each driver, mark off both stages before declaring the driver done:
 | LIB-7 NVS Configuration | `nvs/` | 1 | UT-NVS-001…013 | ☐ | HW-NVS-001…010 | ☐ |
 | LIB-8 SD Card | `sdCard/` | 1 | UT-SD-001…012 | ☐ | HW-SD-001…010 | ☐ |
 | LIB-9 LittleFS | `littleFS/` | 1 | UT-LFS-001…008 | ☐ | HW-LFS-001…009 | ☐ |
-| LIB-3 DS3231 RTC | `DS3231_RTC/` | 2 | UT-RTC-001…013 | ☐ | HW-RTC-001…006 | ☐ |
+| LIB-3 DS1307 RTC | `DS3231_RTC/` | 2 | UT-RTC-001…011 | ✅ 2026-04-10 | HW-RTC-001…005 | ✅ 2026-04-10 |
 | LIB-4 LCD1602 I2C | `LCD1602_I2C/` | 2 | UT-LCD-001…011 | ☐ | HW-LCD-001…008 | ☐ |
 | LIB-6 Modbus RTU | `modBus/` | 2 | UT-MB-001…012 | ☐ | HW-MB-001…005 | ☐ |
 
