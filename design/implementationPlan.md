@@ -130,7 +130,7 @@ The two tracks can proceed partially in parallel; hardware bring-up requires a w
 | A4.9 | Verify relay outputs: energise each relay individually via firmware | Audible click; continuity measured across contact |
 | A4.10 | Verify opto-coupler input: apply 24 V to input; read GPIO | GPIO transitions from low to high (or inverse per schematic) |
 | A4.11 | Verify WiFi: connect to AP; ping test | AP visible in scan; HTTP response received |
-| A4.12 | Verify SD card (if populated): mount LittleFS; write/read 1 kB file | File contents match after power cycle |
+| A4.12 | Verify SD card (if populated): mount FAT32 filesystem; write/read 1 kB file | File contents match; LittleFS partition verified separately in software bring-up |
 | A4.13 | Verify status LEDs: toggle each LED independently via firmware | All three LEDs illuminate at correct colour |
 | A4.14 | Full thermal test at rated load for 30 min | No component exceeds 70 °C case temperature |
 
@@ -325,25 +325,54 @@ Libraries are listed in order of development priority. Libraries that are depend
 
 ---
 
-#### LIB-8 — SD Card / LittleFS Library
+#### LIB-8 — SD Card Library
 
-**Description:** Optional library providing file I/O on the SD card (SPI) and LittleFS (internal flash). Used by T9 (event log) and T11 (web server static files).
+**Description:** Optional library providing file I/O on the SPI SD card (FAT32). Used exclusively by T9 (event log). Optional — absent when the SD card feature is not fitted.
 
 **API surface:**
-- `storage_init(sd_cs_pin)` — mount SD card (SPI); mount LittleFS; report available space
+- `storage_init()` — initialise SPI bus with project pin assignment (MOSI=47, MISO=48, CLK=39, CS=40) and mount SD card (FAT32)
 - `storage_sd_write_append(path, data, len)` — append bytes to file on SD card
 - `storage_sd_read(path, buf, max_len)` — read file from SD card
-- `littlefs_read(path, buf, max_len)` — read file from LittleFS
+- `storage_sd_file_size(path)` — return current size in bytes of a file on the SD card
+- `storage_sd_free_bytes()` — return available free space in bytes on the SD card
+- `storage_sd_list_csv(dir, out_names[], max_count)` — return sorted list of `*.csv` filenames in `dir`
+- `storage_sd_delete(path)` — delete a file from the SD card
 - `storage_sd_available()` — returns bool; false if SD card not present or failed to mount
 
-**FreeRTOS compatibility:** File operations are blocking. Callers serialise via MX5 (LittleFS) or a dedicated SD mutex.
+**FreeRTOS compatibility:** File operations are blocking. T9 is the sole caller; no additional mutex required at library level.
 
 **Unit tests:**
-- `test_littlefs_read_existing_file` — place known file in LittleFS image; verify read content
 - `test_sd_write_append_creates_file` — write to new path; verify file exists after flush
 - `test_sd_write_append_grows_file` — append twice; verify file length doubles
 - `test_sd_available_false_when_absent` — stub SPI returns no card; verify returns false
-- `test_storage_sd_not_blocking_littlefs` — SD unavailable; verify LittleFS reads still succeed
+- `test_sd_file_size_returns_correct_length` — write known byte count; verify `storage_sd_file_size` matches
+- `test_sd_list_csv_sorted` — create three CSV files out of order; verify returned list is lexicographically sorted
+- `test_sd_delete_removes_file` — create file; delete it; verify `storage_sd_list_csv` no longer returns it
+
+---
+
+#### LIB-9 — LittleFS Library
+
+**Description:** Library providing read/write access to the LittleFS partition on the ESP32-S3 internal flash. Used by T11 (web server static files) and T13 (OTA web-file update). Always present — the LittleFS partition is part of the standard firmware image.
+
+**API surface:**
+- `littlefs_init()` — mount LittleFS partition; call once at startup
+- `littlefs_read(path, buf, max_len)` — read file from LittleFS into buffer
+- `littlefs_write(path, data, len)` — write (overwrite) a file in LittleFS
+- `littlefs_exists(path)` — returns bool; true if file exists
+- `littlefs_free_bytes()` — return available free space in the LittleFS partition
+
+**FreeRTOS compatibility:** File operations are blocking. Callers serialise via MX5 (LittleFS mutex). T13 acquires MX5 exclusively during a web-file update; T11 acquires MX5 for each file serve request.
+
+**Unit tests:**
+- `test_littlefs_init_ok` — mount succeeds with mock partition
+- `test_littlefs_read_existing_file` — place known file in mock; verify read content matches
+- `test_littlefs_read_missing_file` — read non-existent path; verify error returned, no crash
+- `test_littlefs_write_creates_file` — write bytes; verify file exists and content correct
+- `test_littlefs_write_overwrites_file` — write twice to same path; verify only second content remains
+- `test_littlefs_exists_true` — write file; call exists; verify true
+- `test_littlefs_exists_false` — call exists on non-existent path; verify false
+- `test_littlefs_free_bytes_decreases_after_write` — verify free space decreases after writing a file
 
 ---
 
@@ -389,20 +418,27 @@ These tasks have no inter-task dependencies and can be implemented and tested fi
 
 ##### TASK-T9 — Event Logger
 
-**Depends on:** LIB-7 (NVS), LIB-8 (SD Card / LittleFS)
+**Depends on:** LIB-7 (NVS), LIB-8 (SD Card)
 **Depends on tasks:** None (but queue Q3 must exist)
 
 **Implementation:**
 - Waits on queue Q3 for `log_event_t` messages from any task.
 - Writes each entry to the NVS ring buffer via `nvs_log_append()`.
-- If SD card is available, also appends a CSV line to the log file.
-- Decouples all log I/O from real-time tasks.
+- If SD card is available, also appends a CSV line to the current log file.
+- On SD mount: scan root directory for `*.csv` files; resume the most recent if below 512 KB, otherwise create a new file named `YYYYMMDDHHSS.csv` with a CSV header row.
+- On each write: if current file size reaches 512 KB, rotate — flush and close current file, create new `YYYYMMDDHHSS.csv`, write header, delete oldest file if total count exceeds 10.
+- If SD free space < 2 MB and file count ≤ 3, suspend SD writes and activate NVS fallback.
+- Decouples all log I/O from real-time tasks; queue overflow policy: drop oldest.
 
 **Acceptance tests:**
 - `test_t9_receives_log_event` — post event to Q3; verify entry appears in NVS log.
-- `test_t9_sd_write_when_available` — stub SD available; verify CSV line written.
+- `test_t9_sd_write_when_available` — stub SD available; verify CSV line written with correct fields.
 - `test_t9_sd_skip_when_unavailable` — stub SD absent; verify NVS write still succeeds.
 - `test_t9_queue_depth_not_blocking` — post 10 events in rapid succession; verify none dropped.
+- `test_t9_sd_rotation_at_512k` — write entries until file reaches 512 KB; verify new file created with header, old file closed, filename matches `YYYYMMDDHHSS.csv` pattern.
+- `test_t9_sd_rotation_deletes_oldest` — fill 10 files then rotate; verify oldest file is deleted and total count remains 10.
+- `test_t9_sd_resume_on_mount` — create a 200 KB log file; remount; verify T9 resumes writing to existing file without creating a new one.
+- `test_t9_sd_low_space_fallback` — stub free space < 2 MB with file count ≤ 3; verify T9 falls back to NVS without crash.
 
 ---
 
@@ -626,7 +662,7 @@ Network tasks run on Core 0. They depend on Group 2 (Data Manager) but are indep
 
 ##### TASK-T11 — Web Server
 
-**Depends on:** LIB-8 (LittleFS for static files), T4 (data accessors and Q4 for config), T2 (Q1 for manual window commands)
+**Depends on:** LIB-9 (LittleFS for static files), T4 (data accessors and Q4 for config), T2 (Q1 for manual window commands)
 **Depends on tasks:** T10 (WiFi connected), T4 (running)
 
 **Implementation:**
@@ -667,7 +703,7 @@ Network tasks run on Core 0. They depend on Group 2 (Data Manager) but are indep
 
 ##### TASK-T13 — OTA Update
 
-**Depends on:** T11 (web server trigger), LIB-8 (LittleFS update)
+**Depends on:** T11 (web server trigger), LIB-9 (LittleFS update)
 **Depends on tasks:** T11 (running), T10 (WiFi connected)
 
 **Implementation:**
@@ -717,7 +753,8 @@ Libraries (Phase 1)
 ├── LIB-5 Keypad Matrix
 ├── LIB-6 Modbus RTU  ←── uses LIB-1 (RS485 direction)
 ├── LIB-7 NVS Config
-└── LIB-8 SD / LittleFS
+├── LIB-8 SD Card
+└── LIB-9 LittleFS
 
 FreeRTOS Tasks (Phase 2)
 ├── Group 1 (Foundation)
@@ -741,9 +778,9 @@ FreeRTOS Tasks (Phase 2)
 │
 └── Group 6 (Network)
     ├── T10 Network Manager│ needs T4, T9
-    ├── T11 Web Server     ← LIB-8 | needs T10, T4
+    ├── T11 Web Server     ← LIB-9 | needs T10, T4
     ├── T12 MQTT Client    │ needs T10, T4
-    └── T13 OTA            │ needs T11, T10
+    └── T13 OTA            ← LIB-9 | needs T11, T10
 ```
 
 ---

@@ -628,9 +628,49 @@ When temperature demands OPEN and humidity demands CLOSE (or vice versa), the co
 | reserved | uint8[2] | Padding to maintain fixed record size |
 
 **Storage:**
-- Primary: SD card (FAT32), when present. Circular file with header tracking write pointer.
+- Primary: SD card (FAT32), when present. See log rotation policy below.
 - Fallback: NVS dedicated log namespace. Ring buffer of minimum 1000 fixed-size entries; oldest entry overwritten when full.
 - T9 checks SD card presence on startup and on each write cycle; falls back to NVS if card is absent or returns an error (FR-LG07, FR-LG08).
+
+**SD card log file format:**
+- CSV text file; first line is a fixed header row: `timestamp,event_type,initiator,channel,value_a,value_b`
+- Each subsequent line is one log entry. Example: `2024-06-15T10:30:00,SENSOR,SYSTEM,0,235,650`
+- Average line length: ~60 bytes. Estimated daily volume: ~90 KB (1 440 sensor snapshots at 1-minute default interval + ~100 discrete events).
+
+**SD card log file naming:**
+Files are named `YYYYMMDDHHSS.csv`, where:
+
+| Token | Meaning |
+|-------|---------|
+| YYYY | 4-digit year |
+| MM | 2-digit month (01–12) |
+| DD | 2-digit day (01–31) |
+| HH | 2-digit hour, 24-hour clock (00–23) |
+| SS | 2-digit second (00–59) |
+
+The timestamp encodes the moment the file was created. Files are stored in the root directory of the SD card. Lexicographic sort of filenames yields chronological order, which is used by the startup scan and the web log retrieval interface.
+
+**SD card log rotation policy:**
+
+| Parameter | Value | Rationale |
+|-----------|-------|-----------|
+| Maximum file size | 512 KB | At ~90 KB/day typical rate, each file spans ~5–6 days. A power-loss event can corrupt only the currently open file; all closed files are intact. |
+| Files retained | 10 most recent | 10 × 512 KB = 5 MB maximum log footprint. Minimum guaranteed history: 9 closed files + 1 partial current file ≈ 45–60 days. |
+| Minimum retention floor | 3 files | Files are never deleted below this count, regardless of free space. |
+| Low free-space threshold | 2 MB | If SD free space drops below 2 MB and the file count is already at the minimum retention floor, SD logging is suspended; NVS fallback is activated. SD logging resumes on the next successful mount when space has been reclaimed. |
+
+**Rotation procedure (triggered when current file reaches 512 KB):**
+1. Flush and close the current log file.
+2. Create a new file named with the current timestamp (`YYYYMMDDHHSS.csv`).
+3. Write the CSV header row to the new file.
+4. If the total file count now exceeds 10, delete the oldest file (lowest lexicographic filename).
+
+**Startup / resume behaviour:**
+On SD card mount, T9 scans the log directory for `*.csv` files and sorts them by filename (lexicographic = chronological). If the most recent file is below 512 KB, T9 resumes appending to it. Otherwise a new file is created immediately. If no log files exist, a new file is created.
+
+**Corruption resilience:**
+- Power loss during a write may leave the last partial CSV line incomplete; all preceding complete lines remain parseable.
+- FAT32 sector-level corruption (512 B) within a closed file affects at most one log entry; the remainder of the file is unaffected because each CSV line is self-contained and line-delimited.
 
 **Retrieval:**
 - Web interface: paginated log view, filterable by event type and time range (FR-LG05).

@@ -186,8 +186,9 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 - Receives log events from all tasks via a dedicated queue; senders post and return immediately
 - Serialises all writes to the NVS ring buffer and, when present, to the SD card
 - The queue decouples log I/O from higher-priority tasks; no task is blocked by log write latency
-- Queue overflow policy: **to be decided** (drop oldest is generally preferred over drop newest)
+- Queue overflow policy: drop oldest (most recent events are preserved)
 - Writes periodic sensor-value snapshots by reading current measurement data from T4 at a configurable interval
+- **SD card log rotation:** writes CSV files named `YYYYMMDDHHSS.csv`; rotates at 512 KB; retains 10 most recent files (~45–60 days history); deletes oldest file on rotation when count exceeds 10; falls back to NVS when free space < 2 MB and file count is at the 3-file minimum retention floor. See §5.3 of the software design specification for full policy.
 - **Synchronization:** receives Q3 (log events from all tasks); acquires MX3 to read ring buffers for periodic sensor snapshots; no I2C or GPIO access
 
 ---
