@@ -10,7 +10,7 @@ The driver subdirectories already exist and use the following names:
 |---------|-----------|----------|
 | LIB-1 | `gpio/` | Relay outputs, LEDs, RS485 DE/RE, opto input, SD button |
 | LIB-2 | `i2c/` | Shared I2C bus (SDA/SCL) |
-| LIB-3 | `DS3231_RTC/` | DS1307 real-time clock module |
+| LIB-3 | `DS1307_RTC/` | DS1307 real-time clock module |
 | LIB-4 | `LCD1602_I2C/` | Waveshare LCD1602 via PCF8574 |
 | LIB-5 | `keyPad/` | 4×4 membrane keypad |
 | LIB-6 | `modBus/` | SIT65HVD08P RS485 transceiver, Modbus RTU |
@@ -34,7 +34,7 @@ Wave 1 (all parallel — no inter-driver dependencies):
     LIB-9  littleFS/
 
 Wave 2 (after respective Wave 1 board tests pass):
-    LIB-3  DS3231_RTC/     ← requires LIB-2 board-tested  (DS1307 chip)
+    LIB-3  DS1307_RTC/     ← requires LIB-2 board-tested  (DS1307 chip)
     LIB-4  LCD1602_I2C/    ← requires LIB-2 board-tested
     LIB-6  modBus/         ← requires LIB-1 board-tested
 ```
@@ -476,7 +476,7 @@ Provides a fake `TwoWire` class and global `Wire` instance. An in-memory byte FI
 
 ---
 
-## LIB-3 — DS1307 RTC (`DS3231_RTC/`)
+## LIB-3 — DS1307 RTC (`DS1307_RTC/`)
 
 ### Purpose
 Driver for the DS1307 battery-backed real-time clock. Used by T4 (Data Manager) to read the current timestamp at startup and periodically.
@@ -550,7 +550,7 @@ Run: `pio test -e native` — all 11 passed on 2026-04-10 (3.57 s, MinGW/native)
 | Field | Value |
 |-------|-------|
 | Driver | LIB-3 — DS1307 RTC |
-| Directory | `DS3231_RTC/` |
+| Directory | `DS1307_RTC/` |
 | Firmware version | 0.1.0 |
 | Board ID / revision | LOLIN S3 |
 | Tester | drasv |
@@ -749,10 +749,10 @@ char keypad_scan(void);
 |-------|-------|
 | Driver | LIB-5 — Keypad Matrix |
 | Directory | `keyPad/` |
-| Firmware version | |
-| Board ID / revision | |
-| Tester | |
-| Date | |
+| Firmware version | 0.1.0 |
+| Board ID / revision | LOLIN S3 |
+| Tester | Remko Welling |
+| Date | 2026-04-10 |
 | Equipment | LOLIN S3; 4×4 membrane keypad |
 
 **Wiring:** Row wires → GPIO 3, 4, 5, 6. Column wires → GPIO 7, 9, 10, 11. Internal pull-ups configured by `keypad_init()`; no external resistors needed.
@@ -761,18 +761,123 @@ char keypad_scan(void);
 
 | ID | Description | Procedure | Expected result | Actual result | P/F |
 |----|-------------|-----------|-----------------|---------------|-----|
-| HW-KP-001 | All 16 keys produce the correct character | Press each key once in the order 1 2 3 A 4 5 6 B 7 8 9 C * 0 # D; observe serial | Each key prints its expected character; all 16 verified. Record any mismatches: ___ | | |
-| HW-KP-002 | No debounce artifacts | For each key, press firmly once and release; observe serial | Each physical press produces exactly one character; no duplicate or missing characters | | |
-| HW-KP-003 | Idle keypad produces no output | Leave keypad unpressed for 5 s; observe serial | No spurious characters appear during idle period | | |
-| HW-KP-004 | All four rows decoded | Press one key per row: '1' (row 1), '4' (row 2), '7' (row 3), '*' (row 4) | Each prints correct character; confirms all row GPIOs active | | |
+| HW-KP-003 | Idle keypad produces no output | Leave keypad unpressed for 5 s; observe serial | No spurious characters appear during idle period | No spurious output detected | ✅ PASS |
+| HW-KP-005 | Multi-press discarded | Hold any two keys simultaneously for 5 s; observe serial | KP_NO_KEY throughout — no character reported | A character was produced during multi-press; discard did not work on hardware | ❌ FAIL |
+| HW-KP-004 | Key '1' (Row 1, Col 1) correct character | Press key as requested | `[PASS] key [ 1 ]` | `[PASS] key [ 1 ]` | ✅ PASS |
+| HW-KP-004 | Key '2' (Row 1, Col 2) correct character | Press key as requested | `[PASS] key [ 2 ]` | `[PASS] key [ 2 ]` | ✅ PASS |
+| HW-KP-004 | Key '3' (Row 1, Col 3) correct character | Press key as requested | `[PASS] key [ 3 ]` | `[PASS] key [ 3 ]` | ✅ PASS |
+| HW-KP-004 | Key 'A' (Row 1, Col 4) correct character | Press key as requested | `[PASS] key [ A ]` | `[PASS] key [ A ]` | ✅ PASS |
+| HW-KP-004 | Key '4' (Row 2, Col 1) correct character | Press key as requested | `[PASS] key [ 4 ]` | `[PASS] key [ 4 ]` | ✅ PASS |
+| HW-KP-004 | Key '5' (Row 2, Col 2) correct character | Press key as requested | `[PASS] key [ 5 ]` | `[PASS] key [ 5 ]` | ✅ PASS |
+| HW-KP-004 | Key '6' (Row 2, Col 3) correct character | Press key as requested | `[PASS] key [ 6 ]` | `[PASS] key [ 6 ]` | ✅ PASS |
+| HW-KP-004 | Key 'B' (Row 2, Col 4) correct character | Press key as requested | `[PASS] key [ B ]` | `[PASS] key [ B ]` | ✅ PASS |
+| HW-KP-004 | Key '7' (Row 3, Col 1) correct character | Press key as requested | `[PASS] key [ 7 ]` | `[PASS] key [ 7 ]` | ✅ PASS |
+| HW-KP-004 | Key '8' (Row 3, Col 2) correct character | Press key as requested | `[PASS] key [ 8 ]` | `[PASS] key [ 8 ]` | ✅ PASS |
+| HW-KP-004 | Key '9' (Row 3, Col 3) correct character | Press key as requested | `[PASS] key [ 9 ]` | `[PASS] key [ 9 ]` | ✅ PASS |
+| HW-KP-004 | Key 'C' (Row 3, Col 4) correct character | Press key as requested | `[PASS] key [ C ]` | `[PASS] key [ C ]` | ✅ PASS |
+| HW-KP-004 | Key '*' (Row 4, Col 1) correct character | Press key as requested | `[PASS] key [ * ]` | `[PASS] key [ * ]` | ✅ PASS |
+| HW-KP-004 | Key '0' (Row 4, Col 2) correct character | Press key as requested | `[PASS] key [ 0 ]` | `[PASS] key [ 0 ]` | ✅ PASS |
+| HW-KP-004 | Key '#' (Row 4, Col 3) correct character | Press key as requested | `[PASS] key [ # ]` | `[PASS] key [ # ]` | ✅ PASS |
+| HW-KP-004 | Key 'D' (Row 4, Col 4) correct character | Press key as requested | `[PASS] key [ D ]` | `[PASS] key [ D ]` | ✅ PASS |
+
+#### Expected full serial output
+
+```
+================================================
+  LIB-5 Keypad Matrix — hardware verification
+================================================
+Press each key when requested (30 s timeout).
+Pressing multiple keys simultaneously is discarded;
+release all keys and press only the requested one.
+------------------------------------------------
+[HW-KP-003] Idle test — do NOT press any key for 5 s ...
+[PASS] HW-KP-003: no spurious output during idle period
+------------------------------------------------
+[HW-KP-005] Multi-press test — hold ANY TWO keys simultaneously for 5 s ...
+  Waiting for two keys to be held down...
+  Multi-press detected — verifying discard for 5 s...
+[PASS] HW-KP-005: multi-press correctly discarded (KP_NO_KEY)
+  Release all keys...
+------------------------------------------------
+Press key [ 1 ]  (Row1/Col1)  — timeout 30 s
+[PASS]    HW-KP-004: key [ 1 ]
+...
+[PASS]    HW-KP-0019: key [ D ]
+================================================
+  PASSED:  18
+  FAILED:  0
+  TIMEOUT: 0
+  RESULT: PASS
+================================================
+```
+
+#### Actual serial output (2026-04-10)
+
+```
+================================================
+  LIB-5 Keypad Matrix — hardware verification
+================================================
+Press each key when requested (30 s timeout).
+Pressing multiple keys simultaneously is discarded;
+release all keys and press only the requested one.
+------------------------------------------------
+[HW-KP-003] Idle test — do NOT press any key for 5 s ...
+[PASS] HW-KP-003: no spurious output during idle period
+------------------------------------------------
+[HW-KP-005] Multi-press test — hold ANY TWO keys simultaneously for 5 s ...
+  Waiting for two keys to be held down...
+  Multi-press detected — verifying discard for 5 s...
+[FAIL] HW-KP-005: multi-press produced a character — not discarded
+  Release all keys...
+------------------------------------------------
+Press key [ 1 ]  (Row1/Col1)  — timeout 30 s
+[PASS]    HW-KP-004: key [ 1 ]
+Press key [ 2 ]  (Row1/Col2)  — timeout 30 s
+[PASS]    HW-KP-005: key [ 2 ]
+Press key [ 3 ]  (Row1/Col3)  — timeout 30 s
+[PASS]    HW-KP-006: key [ 3 ]
+Press key [ A ]  (Row1/Col4)  — timeout 30 s
+[PASS]    HW-KP-007: key [ A ]
+Press key [ 4 ]  (Row2/Col1)  — timeout 30 s
+[PASS]    HW-KP-008: key [ 4 ]
+Press key [ 5 ]  (Row2/Col2)  — timeout 30 s
+[PASS]    HW-KP-009: key [ 5 ]
+Press key [ 6 ]  (Row2/Col3)  — timeout 30 s
+[PASS]    HW-KP-0010: key [ 6 ]
+Press key [ B ]  (Row2/Col4)  — timeout 30 s
+[PASS]    HW-KP-0011: key [ B ]
+Press key [ 7 ]  (Row3/Col1)  — timeout 30 s
+[PASS]    HW-KP-0012: key [ 7 ]
+Press key [ 8 ]  (Row3/Col2)  — timeout 30 s
+[PASS]    HW-KP-0013: key [ 8 ]
+Press key [ 9 ]  (Row3/Col3)  — timeout 30 s
+[PASS]    HW-KP-0014: key [ 9 ]
+Press key [ C ]  (Row3/Col4)  — timeout 30 s
+[PASS]    HW-KP-0015: key [ C ]
+Press key [ * ]  (Row4/Col1)  — timeout 30 s
+[PASS]    HW-KP-0016: key [ * ]
+Press key [ 0 ]  (Row4/Col2)  — timeout 30 s
+[PASS]    HW-KP-0017: key [ 0 ]
+Press key [ # ]  (Row4/Col3)  — timeout 30 s
+[PASS]    HW-KP-0018: key [ # ]
+Press key [ D ]  (Row4/Col4)  — timeout 30 s
+[PASS]    HW-KP-0019: key [ D ]
+================================================
+  PASSED:  17
+  FAILED:  1
+  TIMEOUT: 0
+  RESULT: FAIL
+================================================
+Verification complete. Board is idle.
+```
 
 #### Overall result
 
 | Field | Value |
 |-------|-------|
-| Result | PASS / FAIL / INCOMPLETE |
-| Failed test IDs | |
-| Notes | |
+| Result | FAIL |
+| Failed test IDs | HW-KP-005 |
+| Notes | All 16 individual keys verified correct (HW-KP-004); idle test passed (HW-KP-003). **Defect:** HW-KP-005 FAILED — when two keys are held simultaneously on the physical keypad, the driver produced a character instead of discarding the input. Root cause is likely a hardware ghost-key path in the membrane keypad matrix: pressing two keys that share a row or column creates a current path that makes a third (ghost) key appear pressed on one row at a time, satisfying the single-key-per-row check in the driver and bypassing multi-press detection. **Action required:** investigate ghost-key behaviour and add a blocking diode scheme or revise the scanning algorithm to detect ghost keys across rows before committing to a character. Re-test HW-KP-005 after fix. |
 
 ---
 
@@ -1227,7 +1332,7 @@ For each driver, mark off both stages before declaring the driver done:
 | LIB-7 NVS Configuration | `nvs/` | 1 | UT-NVS-001…013 | ☐ | HW-NVS-001…010 | ☐ |
 | LIB-8 SD Card | `sdCard/` | 1 | UT-SD-001…012 | ☐ | HW-SD-001…010 | ☐ |
 | LIB-9 LittleFS | `littleFS/` | 1 | UT-LFS-001…008 | ☐ | HW-LFS-001…009 | ☐ |
-| LIB-3 DS1307 RTC | `DS3231_RTC/` | 2 | UT-RTC-001…011 | ✅ 2026-04-10 | HW-RTC-001…005 | ✅ 2026-04-10 |
+| LIB-3 DS1307 RTC | `DS1307_RTC/` | 2 | UT-RTC-001…011 | ✅ 2026-04-10 | HW-RTC-001…005 | ✅ 2026-04-10 |
 | LIB-4 LCD1602 I2C | `LCD1602_I2C/` | 2 | UT-LCD-001…011 | ✅ 2026-04-10 | HW-LCD-001…008 | ✅ 2026-04-10 |
 | LIB-6 Modbus RTU | `modBus/` | 2 | UT-MB-001…012 | ☐ | HW-MB-001…005 | ☐ |
 

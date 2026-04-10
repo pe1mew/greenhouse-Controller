@@ -1,0 +1,8 @@
+{
+  "name": "keypad_matrix",
+  "version": "0.1.0",
+  "build": {
+    "srcDir": "src",
+    "srcFilter": ["+<*.cpp>", "-<main.cpp>"]
+  }
+}

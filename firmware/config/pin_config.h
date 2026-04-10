@@ -65,3 +65,41 @@
 
 /** @brief I2C clock line (SCL). */
 #define PIN_I2C_SCL          2
+
+/* ---------------------------------------------------------------------------
+ * 4×4 membrane keypad (LIB-5)
+ *
+ * Row pins are driven LOW one at a time during scanning (OUTPUT, idle HIGH).
+ * Column pins are read with internal pull-ups (INPUT_PULLUP); LOW = pressed.
+ *
+ * Key layout:
+ *   Col:     1    2    3    4
+ *   Row 1:  '1'  '2'  '3'  'A'
+ *   Row 2:  '4'  '5'  '6'  'B'
+ *   Row 3:  '7'  '8'  '9'  'C'
+ *   Row 4:  '*'  '0'  '#'  'D'
+ * --------------------------------------------------------------------------- */
+
+/** @brief Keypad row 1 — OUTPUT, driven LOW to scan row 1. */
+#define KP_ROW1              3
+
+/** @brief Keypad row 2 — OUTPUT, driven LOW to scan row 2. */
+#define KP_ROW2              4
+
+/** @brief Keypad row 3 — OUTPUT, driven LOW to scan row 3. */
+#define KP_ROW3              5
+
+/** @brief Keypad row 4 — OUTPUT, driven LOW to scan row 4. */
+#define KP_ROW4              6
+
+/** @brief Keypad column 1 — INPUT_PULLUP; LOW when key in column 1 is pressed. */
+#define KP_COL1              7
+
+/** @brief Keypad column 2 — INPUT_PULLUP; LOW when key in column 2 is pressed. */
+#define KP_COL2              9
+
+/** @brief Keypad column 3 — INPUT_PULLUP; LOW when key in column 3 is pressed. */
+#define KP_COL3             10
+
+/** @brief Keypad column 4 — INPUT_PULLUP; LOW when key in column 4 is pressed. */
+#define KP_COL4             11
