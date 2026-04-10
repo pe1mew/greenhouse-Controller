@@ -128,12 +128,13 @@ pio run -e lolin_s3 -t upload && pio device monitor  # upload and watch serial o
 ## LIB-1 — GPIO Utility (`gpio/`)
 
 ### Purpose
-Wraps all GPIO operations and defines every project pin constant in a single place. All other drivers that drive or read a GPIO use this library rather than calling Arduino GPIO functions directly.
+Wraps all GPIO operations. Pin constants are defined in `firmware/config/pin_config.h` — the single authoritative source for all project GPIO numbers. All other drivers that drive or read a GPIO use this library rather than calling Arduino GPIO functions directly.
 
-### API (`gpio_util.h`)
+### API (`firmware/config/pin_config.h`)
 
 ```cpp
-// Pin constants — single authoritative source for all project GPIOs
+// Single authoritative source for all project GPIO numbers.
+// Include this header wherever a project GPIO number is needed.
 #define PIN_RELAY_M1_OPEN   12
 #define PIN_RELAY_M1_CLOSE  13
 #define PIN_RELAY_M2_OPEN   14
@@ -143,9 +144,13 @@ Wraps all GPIO operations and defines every project pin constant in a single pla
 #define PIN_OPTO_INPUT      42
 #define PIN_HB_LED          41
 #define PIN_RS485_DE_RE      8
-#define PIN_SD_STATUS_LED   22
-#define PIN_SD_MOUNT_BTN    23
+```
 
+### API (`gpio_util.h`)
+
+`gpio_util.h` exposes the pin constants above by including `pin_config.h`. Callers need only include `gpio_util.h`.
+
+```cpp
 typedef enum { GPIO_INPUT = 0, GPIO_OUTPUT, GPIO_INPUT_PULLUP } gpio_mode_t;
 typedef enum { GPIO_LOW = 0, GPIO_HIGH = 1 }                   gpio_level_t;
 
@@ -172,7 +177,7 @@ A static array `uint8_t pin_state[48]` records the last written level per pin. S
 | UT-GPIO-006 | `gpio_toggle` LOW → HIGH | State flips to HIGH |
 | UT-GPIO-007 | `gpio_set_rs485_direction(true)` | `pin_state[PIN_RS485_DE_RE] == HIGH` |
 | UT-GPIO-008 | `gpio_set_rs485_direction(false)` | `pin_state[PIN_RS485_DE_RE] == LOW` |
-| UT-GPIO-009 | All 11 pin constants are unique values | No two constants share the same GPIO number |
+| UT-GPIO-009 | All 10 pin constants are unique values | No two constants share the same GPIO number |
 | UT-GPIO-010 | No defined pin falls in the reserved set | Reserved: {0, 19, 20, 26–37, 43, 44, 45, 46} |
 
 ### Running the unit tests
@@ -271,9 +276,7 @@ Both headers run top-to-bottom with the USB-C connectors at the bottom of the bo
 | W6  | 21 RELAY_M3_CLOSE | Right row 13 | 6       | Left  row 6  | Output loopback |
 | W7  | 8  RS485 DE/RE    | Left  row 8  | 7       | Left  row 7  | Output loopback |
 | W8  | 41 HB LED         | Right row 7  | 9       | Left  row 13 | Output loopback |
-| W9  | 39 SD status LED  | Right row 9  | 10      | Left  row 14 | Output loopback |
 | W10 | 11 (driver)       | Left  row 15 | 42 OPTO_INPUT    | Right row 6  | Input driver |
-| W11 | 17 (driver)       | Left  row 11 | 40 SD_MOUNT_BTN  | Right row 8  | Input driver |
 
 **Serial adapter**
 
@@ -294,24 +297,18 @@ Both headers run top-to-bottom with the USB-C connectors at the bottom of the bo
 | 6 | GPIO 21 — RELAY_M3_CLOSE | GPIO 6  | HW-GPIO-007 |
 | 7 | GPIO  8 — RS485 DE/RE    | GPIO 7  | HW-GPIO-009, HW-GPIO-010 |
 | 8 | GPIO 41 — HB LED         | GPIO 9  | HW-GPIO-008 |
-| 9 | GPIO 39 — SD status LED  | GPIO 10 | HW-GPIO-011 |
 
-**Input driver — 2 wires**
+**Input driver — 1 wire**
 
 | Wire | From (loopback driver) | To (project input pin) | Tests |
 |------|------------------------|------------------------|-------|
 | 10 | GPIO 11 | GPIO 42 — OPTO_INPUT    | HW-GPIO-012 |
-| 11 | GPIO 17 | GPIO 40 — SD_MOUNT_BTN  | HW-GPIO-013 |
 
-> **Loopback pin selection rationale:** GPIO 1–7, 9–11 and 17 are valid
+> **Loopback pin selection rationale:** GPIO 1–7, 9–11 are valid
 > general-purpose I/O on the ESP32-S3. They are free of project assignments,
-> PSRAM (GPIO 26, 30), USB (GPIO 19, 20), UART0 (GPIO 43, 44), the on-board
+> PSRAM (GPIO 26–37), USB (GPIO 19, 20), UART0 (GPIO 43, 44), the on-board
 > RGB LED (GPIO 38), and the strapping pins (GPIO 0, 45, 46).
-> GPIOs 33–37 are bonded to the internal SPI flash on the LOLIN S3 module and
-> are not accessible on the board header despite appearing valid in the SoC's
-> `SOC_GPIO_VALID_GPIO_MASK`. Project pins `PIN_SD_STATUS_LED` and
-> `PIN_SD_MOUNT_BTN` are therefore assigned to GPIO 39 and GPIO 40, which are
-> on the right-side header of the LOLIN S3.
+> GPIOs 22–25 are not accessible on the LOLIN S3 header pins.
 
 > **Safety note:** Do not connect a relay module during loopback testing.
 > The relay output pins are wired to loopback inputs only. If later validating
@@ -344,9 +341,7 @@ Both headers run top-to-bottom with the USB-C connectors at the bottom of the bo
 | HW-GPIO-008 | GPIO 41 HB LED output HIGH/LOW          | Loopback via GPIO 9  | `[PASS] HW-GPIO-008` | [PASS] | PASS |
 | HW-GPIO-009 | GPIO 8 RS485 DE/RE HIGH (TX mode)       | Loopback via GPIO 7  | `[PASS] HW-GPIO-009` | [PASS] | PASS |
 | HW-GPIO-010 | GPIO 8 RS485 DE/RE LOW  (RX mode)       | Loopback via GPIO 7  | `[PASS] HW-GPIO-010` | [PASS] | PASS |
-| HW-GPIO-011 | GPIO 39 SD status LED output HIGH/LOW   | Loopback via GPIO 10 | `[PASS] HW-GPIO-011` | [PASS] | PASS |
 | HW-GPIO-012 | GPIO 42 OPTO_INPUT reads LOW and HIGH   | Driven by GPIO 11    | `[PASS] HW-GPIO-012` | [PASS] | PASS |
-| HW-GPIO-013 | GPIO 40 SD_MOUNT_BTN reads LOW and HIGH | Driven by GPIO 17    | `[PASS] HW-GPIO-013` | [PASS] | PASS |
 
 #### Expected full serial output
 
@@ -367,14 +362,10 @@ Both headers run top-to-bottom with the USB-C connectors at the bottom of the bo
 --- RS485 DE/RE loopback ---
 [PASS] HW-GPIO-009: GPIO 8 RS485_DE_RE HIGH (TX mode) loopback
 [PASS] HW-GPIO-010: GPIO 8 RS485_DE_RE LOW (RX mode) loopback
---- SD status LED loopback ---
-[PASS] HW-GPIO-011: GPIO 33 SD_STATUS_LED HIGH/LOW loopback
 --- Opto input loopback ---
 [PASS] HW-GPIO-012: GPIO 42 OPTO_INPUT LOW/HIGH via GPIO 11 driver
---- SD mount button loopback ---
-[PASS] HW-GPIO-013: GPIO 34 SD_MOUNT_BTN LOW/HIGH via GPIO 17 driver
 ================================================
-  PASSED: 13
+  PASSED: 11
   FAILED: 0
   RESULT: PASS
 ================================================
@@ -387,7 +378,7 @@ Entering heartbeat loop (HB LED blinks at 0.5 Hz).
 |-------|-------|
 | Result | PASS |
 | Failed test IDs | — |
-| Notes | All 13 tests passed automatically via loopback wiring. Ran twice (two RST cycles) with identical results. Serial output via UART0 (GPIO 43 TX, 115200 baud). |
+| Notes | HW-GPIO-001–010, 012 all passed automatically via loopback wiring. Serial output via UART0 (GPIO 43 TX, 115200 baud). **Defect found and fixed (2026-04-10):** loopback input pins were configured as plain `INPUT` (floating), allowing false PASSes when no wire was connected. Fixed by using `INPUT_PULLDOWN` for HIGH read-back checks and `INPUT_PULLUP` for LOW read-back checks. Re-tested after fix: all 11 tests PASS with wires fitted; correctly FAIL when wires are removed. |
 
 ---
 
@@ -1221,7 +1212,7 @@ For each driver, mark off both stages before declaring the driver done:
 
 | Driver | Directory | Wave | Unit test IDs | Host tests pass | Hardware test IDs | HW tests pass |
 |--------|-----------|------|---------------|-----------------|-------------------|---------------|
-| LIB-1 GPIO Utility | `gpio/` | 1 | UT-GPIO-001…011 | ☐ | HW-GPIO-001…011 | ☐ |
+| LIB-1 GPIO Utility | `gpio/` | 1 | UT-GPIO-001…011 | ✅ 2026-04-10 | HW-GPIO-001…011 | ✅ 2026-04-10 |
 | LIB-2 I2C Bus | `i2c/` | 1 | UT-I2C-001…008 | ☐ | HW-I2C-001…005 | ☐ |
 | LIB-5 Keypad Matrix | `keyPad/` | 1 | UT-KP-001…010 | ☐ | HW-KP-001…004 | ☐ |
 | LIB-7 NVS Configuration | `nvs/` | 1 | UT-NVS-001…013 | ☐ | HW-NVS-001…010 | ☐ |

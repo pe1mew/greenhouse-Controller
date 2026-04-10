@@ -1,12 +1,10 @@
 /**
  * @file gpio_util.h
- * @brief GPIO utility driver — pin constants, types and API for LIB-1.
+ * @brief GPIO utility driver — types and API for LIB-1.
  *
- * Single authoritative source for all project GPIO numbers and the thin
- * abstraction layer over the Arduino GPIO API used by every other driver.
- *
- * @par Reserved ESP32-S3 pins (must not be used)
- *   0, 19, 20, 26–37, 43, 44, 45, 46
+ * Thin abstraction layer over the Arduino GPIO API used by every other driver.
+ * Pin assignments are centralised in firmware/config/pin_config.h and exposed
+ * here by inclusion so callers need only include this header.
  *
  * @author Greenhouse Controller project
  * @version 0.1.0
@@ -14,48 +12,9 @@
 
 #pragma once
 
+#include "pin_config.h"
 #include <stdint.h>
 #include <stdbool.h>
-
-/* ---------------------------------------------------------------------------
- * @defgroup gpio_pins GPIO pin assignments
- * @{
- * --------------------------------------------------------------------------- */
-
-/** @brief Relay output — motor 1 OPEN direction. */
-#define PIN_RELAY_M1_OPEN   12
-
-/** @brief Relay output — motor 1 CLOSE direction. */
-#define PIN_RELAY_M1_CLOSE  13
-
-/** @brief Relay output — motor 2 OPEN direction. */
-#define PIN_RELAY_M2_OPEN   14
-
-/** @brief Relay output — motor 2 CLOSE direction. */
-#define PIN_RELAY_M2_CLOSE  15
-
-/** @brief Relay output — motor 3 OPEN direction. */
-#define PIN_RELAY_M3_OPEN   16
-
-/** @brief Relay output — motor 3 CLOSE direction. */
-#define PIN_RELAY_M3_CLOSE  21
-
-/** @brief Digital input — opto-coupler feedback from RRK-3 motor controller. */
-#define PIN_OPTO_INPUT      42
-
-/** @brief Digital output — heartbeat / status LED (amber). */
-#define PIN_HB_LED          41
-
-/** @brief Digital output — RS-485 transceiver DE/RE direction control. */
-#define PIN_RS485_DE_RE      8
-
-/** @brief Digital output — SD card status LED. */
-#define PIN_SD_STATUS_LED   39
-
-/** @brief Digital input — SD card safe-unmount button. */
-#define PIN_SD_MOUNT_BTN    40
-
-/** @} */ /* end gpio_pins */
 
 /* ---------------------------------------------------------------------------
  * @defgroup gpio_types GPIO types

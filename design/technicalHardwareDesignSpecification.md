@@ -518,7 +518,7 @@ The 5 V output feeds:
 | LCD module (backlight on) | ~40 mA |
 | SIT65HVD08P RS485 transceiver (3.3 V via LOLIN S3 LDO — included in LOLIN S3 figure) | — |
 | DS3231 RTC | ~2 mA |
-| Status LEDs (PWR + HB + SD-STATUS + 6 relay, all on) | ~18 mA (2 mA × 9) |
+| Status LEDs (PWR + HB + 6 relay, all on) | ~16 mA (2 mA × 8) |
 | **Total 5 V (worst case)** | **~680 mA** |
 
 > The DC–DC buck converter is rated at 1000 mA. Load is approximately 680 mA, giving ~32% headroom.
@@ -541,27 +541,7 @@ The ESP32-S3 SPI peripheral supports SD cards in SPI mode without additional har
 
 #### 4.8.1 SD Card Mount/Unmount Control
 
-Safe removal of the SD card is managed via a dedicated PCB-mounted push button and a yellow status LED. This prevents file-system corruption that would result from removing the card while a write is in progress.
-
-| Element | Component | GPIO |
-|---------|-----------|------|
-| Mount/unmount button | PCB-mounted push button (active-low, internal pull-up) | GPIO 23 *(optional)* |
-| SD card status LED | Yellow LED, ~1.5 kΩ series resistor, ~2 mA at 3.3 V | GPIO 22 *(optional)* |
-
-**Button behaviour:**
-- A single press toggles the SD card file system between mounted and unmounted states.
-- When unmounting, the firmware completes any pending write before closing the file system.
-- While the unmount sequence is running, the LED blinks at 0.5 Hz until the operation completes and the card is safe to remove.
-
-**LED behaviour:**
-
-| LED state | Meaning |
-|-----------|---------|
-| Steady ON (yellow) | File system mounted; do not remove card |
-| Blink 0.5 Hz (yellow) | File access in progress (write or read cycle) |
-| OFF | File system unmounted; card may be safely removed |
-
-> **Safety rule:** Remove the SD card only when the yellow LED is off. Removing the card while the LED is on or blinking may corrupt the file system and cause data loss.
+Safe removal of the SD card is managed in software. The operator or technician mounts and unmounts the SD card file system through the **LCD menu** or **web interface**. There is no dedicated hardware button and no status LED. The SD card state is reflected in the LCD status screen and web interface.
 
 ---
 
@@ -575,14 +555,13 @@ Status LEDs on the PCB provide instant visual feedback on the operating state of
 |-----------|--------|----------|-------------|------------|
 | PWR | Green | 1 | 5 V rail via resistor (hardware) | None |
 | HB (Heartbeat) | Amber | 1 | Dedicated MCU GPIO | 1 |
-| SD-STATUS *(optional)* | Yellow | 1 | Dedicated MCU GPIO | 1 |
 | M1-OPEN | Red | 1 | Shared with relay M1-OPEN GPIO driver | None |
 | M1-CLOSE | Red | 1 | Shared with relay M1-CLOSE GPIO driver | None |
 | M2-OPEN | Red | 1 | Shared with relay M2-OPEN GPIO driver | None |
 | M2-CLOSE | Red | 1 | Shared with relay M2-CLOSE GPIO driver | None |
 | M3-OPEN | Red | 1 | Shared with relay M3-OPEN GPIO driver | None |
 | M3-CLOSE | Red | 1 | Shared with relay M3-CLOSE GPIO driver | None |
-| **Total** | | **9** | | **2 additional GPIO** |
+| **Total** | | **8** | | **1 additional GPIO** |
 
 #### 4.9.2 LED Descriptions
 
@@ -603,15 +582,6 @@ Status LEDs on the PCB provide instant visual feedback on the operating state of
 | Steady ON | Firmware has stopped — watchdog has not yet fired; indicates a software hang |
 | Steady OFF | MCU not running (power fault or crash before LED initialisation) |
 
-**SD-STATUS — SD card status (yellow)** *(optional, fitted with SD card feature)*
-- Driven by one dedicated MCU GPIO output (GPIO 22) via a series resistor (~1.5 kΩ for ~2 mA at 3.3 V).
-- Provides visual feedback on the SD card file system state (see §4.8.1):
-
-| LED state | Meaning |
-|-----------|---------|
-| Steady ON | File system mounted; card must not be removed |
-| Blink 0.5 Hz | File access in progress (write or read cycle) |
-| OFF | File system unmounted; card may be safely removed |
 
 **Relay LEDs — M1-OPEN, M1-CLOSE, M2-OPEN, M2-CLOSE, M3-OPEN, M3-CLOSE (red)**
 - Each LED is connected in parallel with the corresponding relay coil drive transistor output, via its own current-limiting resistor.
@@ -651,7 +621,7 @@ The enclosure cover carries **only the membrane keypad**. Everything else — LE
 **Visible through transparent cover (internal PCB components):**
 ```
 ┌─────────────────────────────────┐
-│  [PWR]  [HB]  [SD] [MOUNT/BTN] │  ← Power / Heartbeat / SD status LEDs + mount button (on PCB)
+│  [PWR]  [HB]                     │  ← Power / Heartbeat LEDs (on PCB)
 │                                 │
 │  M1: [OPEN] [CLOSE]             │  ← Relay status LEDs (on PCB)
 │  M2: [OPEN] [CLOSE]             │
@@ -741,14 +711,12 @@ The table below lists all allocated functions on the ESP32-S3. Specific GPIO num
 | SD card MISO *(optional)* | SPI | SPI2 MISO | 1 |
 | SD card CLK *(optional)* | SPI | SPI2 CLK | 1 |
 | SD card CS *(optional)* | SPI | SPI2 CS | 1 |
-| SD card status LED *(optional)* | GPIO output | — | 1 |
-| SD card mount/unmount button *(optional)* | GPIO input | — | 1 |
 | WiFi | Internal | Radio (no GPIO) | — |
 | USB (diagnostic / OTA) | Native USB | GPIO 19/20 (reserved) | — |
 | **Total (mandatory)** | | | **21** |
-| **Total (with optional SD)** | | | **27** |
+| **Total (with optional SD)** | | | **25** |
 
-> The PWR LED requires no GPIO (resistor from 5 V rail). The 6 relay LEDs share the existing relay-drive GPIO lines. The HB heartbeat LED adds 1 GPIO to the mandatory count. The SD-STATUS LED and mount/unmount button each add 1 GPIO when the SD card feature is fitted.
+> The PWR LED requires no GPIO (resistor from 5 V rail). The 6 relay LEDs share the existing relay-drive GPIO lines. The HB heartbeat LED adds 1 GPIO to the mandatory count. SD card uses 4 SPI GPIOs when fitted; mount/unmount is managed via the LCD and web interface (no button, no status LED).
 
 The ESP32-S3 has up to 45 usable GPIO pins; the design uses at most 25, leaving substantial margin for future expansion.
 
@@ -762,6 +730,7 @@ This section maps every peripheral signal to a specific GPIO number on the LOLIN
 |------|--------|
 | GPIO 0 | Boot strapping pin (pull-down forces download mode); avoid general use |
 | GPIO 19, 20 | Native USB D−, D+ — reserved for USB console and OTA |
+| GPIO 22–25 | Not accessible on LOLIN S3 board header pins |
 | GPIO 26–32 | Internally connected to QSPI flash — not accessible on header |
 | GPIO 33–37 | Internally connected to QSPI PSRAM (8 MB) — not accessible on header |
 | GPIO 43, 44 | UART0 TX/RX — reserved for debug console (serial monitor) |
@@ -796,10 +765,8 @@ This section maps every peripheral signal to a specific GPIO number on the LOLIN
 | SD card MISO *(optional)* | **GPIO 48** | Input | SPI2 MISO | Fitted only when SD feature is enabled |
 | SD card CLK *(optional)* | **GPIO 39** | Output | SPI2 CLK | Fitted only when SD feature is enabled |
 | SD card CS *(optional)* | **GPIO 40** | Output | SPI2 CS | Fitted only when SD feature is enabled |
-| SD card status LED *(optional)* | **GPIO 22** | Output | GPIO | ~1.5 kΩ series resistor to yellow LED; see §4.8.1 |
-| SD card mount/unmount button *(optional)* | **GPIO 23** | Input | GPIO (pull-up) | Active-low; see §4.8.1 |
 
-> **Note:** GPIO 38 is the LOLIN S3 on-board WS2812 RGB LED and is not used by this design. GPIO 43/44 remain available as UART0 for the serial debug console.
+> **Note:** GPIO 38 is the LOLIN S3 on-board WS2812 RGB LED data line and is not used by this design. GPIO 43/44 remain available as UART0 for the serial debug console.
 
 **GPIO usage summary:**
 
@@ -809,11 +776,10 @@ This section maps every peripheral signal to a specific GPIO number on the LOLIN
 | GPIO 3–11 | 9 | Keypad (4 rows + 4 cols) + RS485 DE/RE |
 | GPIO 12–18 | 7 | Relays (6) + RS485 TX/RX |
 | GPIO 21 | 1 | Relay CLOSE M3 |
-| GPIO 22–23 | 2 | SD status LED, SD mount button *(optional)* |
 | GPIO 39–42 | 4 | SD CLK, SD CS, SD MISO→48, feedback + HB |
 | GPIO 47–48 | 2 | SD MOSI/MISO *(optional)* |
 | **Total mandatory** | **21** | All except SD card signals |
-| **Total with SD** | **27** | Full feature set (SD SPI + LED + button) |
+| **Total with SD** | **25** | Full feature set (SD SPI only) |
 
 > **PCB design constraint:** Confirm that the chosen GPIO numbers are routable to the correct connector positions on the LOLIN S3 header before finalising the schematic. Verify no conflicts remain with any board-specific boot-time strapping requirements by checking the LOLIN S3 schematic revision in use.
 

@@ -184,7 +184,7 @@ Libraries are listed in order of development priority. Libraries that are depend
 
 #### LIB-2 — I2C Bus Library
 
-**Description:** Wraps the Arduino Wire library for the shared I2C bus (GPIO 21 SDA, GPIO 22 SCL). Provides mutex-aware access so multiple tasks can safely call I2C peripherals.
+**Description:** Wraps the Arduino Wire library for the shared I2C bus (GPIO 1 SDA, GPIO 2 SCL). Provides mutex-aware access so multiple tasks can safely call I2C peripherals.
 
 **API surface:**
 - `i2c_init(sda_pin, scl_pin, freq_hz)` — initialise bus

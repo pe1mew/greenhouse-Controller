@@ -7,9 +7,10 @@
 | Project      | Greenhouse Ventilation Controller        |
 | Version      | 0.2 (draft)                             |
 | Date         | 2026-03-26                              |
-| Status       | Draft — Hardware section complete; Software section pending |
-| Related docs | `functionalRequirementsSpecification.md` |
-|              | `technicalSpecification.md`              |
+| Status       | **SUPERSEDED** — replaced by `technicalHardwareDesignSpecification.md` (v0.3) and `technicalSoftwareDesignSpecification.md` (v0.1). Do not use for reference. |
+| Related docs | `technicalHardwareDesignSpecification.md` |
+|              | `technicalSoftwareDesignSpecification.md` |
+|              | `functionalRequirementsSpecification.md` |
 
 ---
 
@@ -550,7 +551,7 @@ The 5 V output feeds:
 | LCD module (backlight on) | ~40 mA |
 | RS485 transceiver | ~10 mA |
 | DS3231 RTC | ~2 mA |
-| Status LEDs (PWR + HB + SD-STATUS + 6 relay, all on) | ~18 mA (2 mA × 9) |
+| Status LEDs (PWR + HB + 6 relay, all on) | ~16 mA (2 mA × 8) |
 | **Total 5 V (worst case)** | **~680 mA** |
 
 > The DC–DC buck converter is rated at 1000 mA. Load is approximately 680 mA, giving ~32% headroom.
@@ -573,27 +574,7 @@ The ESP32-S3 SPI peripheral supports SD cards in SPI mode without additional har
 
 #### 4.8.1 SD Card Mount/Unmount Control
 
-Safe removal of the SD card is managed via a dedicated PCB-mounted push button and a yellow status LED. This prevents file-system corruption that would result from removing the card while a write is in progress.
-
-| Element | Component | GPIO |
-|---------|-----------|------|
-| Mount/unmount button | PCB-mounted push button (active-low, internal pull-up) | GPIO 23 *(optional)* |
-| SD card status LED | Yellow LED, ~1.5 kΩ series resistor, ~2 mA at 3.3 V | GPIO 22 *(optional)* |
-
-**Button behaviour:**
-- A single press toggles the SD card file system between mounted and unmounted states.
-- When unmounting, the firmware completes any pending write before closing the file system.
-- While the unmount sequence is running, the LED blinks at 0.5 Hz until the operation completes and the card is safe to remove.
-
-**LED behaviour:**
-
-| LED state | Meaning |
-|-----------|---------|
-| Steady ON (yellow) | File system mounted; do not remove card |
-| Blink 0.5 Hz (yellow) | File access in progress (write or read cycle) |
-| OFF | File system unmounted; card may be safely removed |
-
-> **Safety rule:** Remove the SD card only when the yellow LED is off. Removing the card while the LED is on or blinking may corrupt the file system and cause data loss.
+> **SUPERSEDED** — See `technicalHardwareDesignSpecification.md` §4.8.1. Mount/unmount is managed via LCD menu and web interface. No hardware button and no status LED.
 
 ---
 
@@ -607,14 +588,13 @@ Status LEDs on the PCB provide instant visual feedback on the operating state of
 |-----------|--------|----------|-------------|------------|
 | PWR | Green | 1 | 5 V rail via resistor (hardware) | None |
 | HB (Heartbeat) | Amber | 1 | Dedicated MCU GPIO | 1 |
-| SD-STATUS *(optional)* | Yellow | 1 | Dedicated MCU GPIO | 1 |
 | M1-OPEN | Red | 1 | Shared with relay M1-OPEN GPIO driver | None |
 | M1-CLOSE | Red | 1 | Shared with relay M1-CLOSE GPIO driver | None |
 | M2-OPEN | Red | 1 | Shared with relay M2-OPEN GPIO driver | None |
 | M2-CLOSE | Red | 1 | Shared with relay M2-CLOSE GPIO driver | None |
 | M3-OPEN | Red | 1 | Shared with relay M3-OPEN GPIO driver | None |
 | M3-CLOSE | Red | 1 | Shared with relay M3-CLOSE GPIO driver | None |
-| **Total** | | **9** | | **2 additional GPIO** |
+| **Total** | | **8** | | **1 additional GPIO** |
 
 #### 4.9.2 LED Descriptions
 
@@ -634,16 +614,6 @@ Status LEDs on the PCB provide instant visual feedback on the operating state of
 | Fast blink (4 Hz) | Startup / initialisation (windows closing to home position) |
 | Steady ON | Firmware has stopped — watchdog has not yet fired; indicates a software hang |
 | Steady OFF | MCU not running (power fault or crash before LED initialisation) |
-
-**SD-STATUS — SD card status (yellow)** *(optional, fitted with SD card feature)*
-- Driven by one dedicated MCU GPIO output (GPIO 22) via a series resistor (~1.5 kΩ for ~2 mA at 3.3 V).
-- Provides visual feedback on the SD card file system state (see §4.8.1):
-
-| LED state | Meaning |
-|-----------|---------|
-| Steady ON | File system mounted; card must not be removed |
-| Blink 0.5 Hz | File access in progress (write or read cycle) |
-| OFF | File system unmounted; card may be safely removed |
 
 **Relay LEDs — M1-OPEN, M1-CLOSE, M2-OPEN, M2-CLOSE, M3-OPEN, M3-CLOSE (red)**
 - Each LED is connected in parallel with the corresponding relay coil drive transistor output, via its own current-limiting resistor.
@@ -683,7 +653,7 @@ The enclosure cover carries **only the membrane keypad**. Everything else — LE
 **Visible through transparent cover (internal PCB components):**
 ```
 ┌─────────────────────────────────┐
-│  [PWR]  [HB]  [SD] [MOUNT/BTN] │  ← Power / Heartbeat / SD status LEDs + mount button (on PCB)
+│  [PWR]  [HB]                     │  ← Power / Heartbeat LEDs (on PCB)
 │                                 │
 │  M1: [OPEN] [CLOSE]             │  ← Relay status LEDs (on PCB)
 │  M2: [OPEN] [CLOSE]             │
@@ -771,16 +741,14 @@ The table below lists all allocated functions on the ESP32-S3. Specific GPIO num
 | SD card MISO *(optional)* | SPI | SPI2 MISO | 1 |
 | SD card CLK *(optional)* | SPI | SPI2 CLK | 1 |
 | SD card CS *(optional)* | SPI | SPI2 CS | 1 |
-| SD card status LED *(optional)* | GPIO output | — | 1 |
-| SD card mount/unmount button *(optional)* | GPIO input | — | 1 |
 | WiFi | Internal | Radio (no GPIO) | — |
 | USB (diagnostic / OTA) | Native USB | GPIO 19/20 (reserved) | — |
 | **Total (mandatory)** | | | **21** |
-| **Total (with optional SD)** | | | **27** |
+| **Total (with optional SD)** | | | **25** |
 
-> The PWR LED requires no GPIO (resistor from 5 V rail). The 6 relay LEDs share the existing relay-drive GPIO lines. The HB heartbeat LED adds 1 GPIO to the mandatory count. The SD-STATUS LED and mount/unmount button each add 1 GPIO when the SD card feature is fitted.
+> The PWR LED requires no GPIO (resistor from 5 V rail). The 6 relay LEDs share the existing relay-drive GPIO lines. The HB heartbeat LED adds 1 GPIO to the mandatory count. SD card uses 4 SPI GPIOs when fitted; mount/unmount via LCD and web interface.
 
-The ESP32-S3 has up to 45 usable GPIO pins; the design uses at most 27, leaving substantial margin for future expansion.
+The ESP32-S3 has up to 45 usable GPIO pins; the design uses at most 25, leaving substantial margin for future expansion.
 
 ---
 

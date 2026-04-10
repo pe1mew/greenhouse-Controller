@@ -385,7 +385,7 @@ A single FreeRTOS event group (`xEventGroupCreate`) holds all system-wide boolea
 | Task | Acquires (mutex) | Posts to (queue) | Receives from (queue) | Sends (notification) | Receives (notification) | Reads/Sets (event group) |
 |------|-----------------|------------------|-----------------------|----------------------|-------------------------|--------------------------|
 | T1   | —               | —                | —                     | —                    | —                       | —                        |
-| T2   | —               | Q1 (recv), Q3   | Q1                    | TN3 → T6             | —                       | Sets EG1.MANUAL_OVERRIDE |
+| T2   | —               | Q3              | Q1                    | TN3 → T6             | —                       | Sets EG1.MANUAL_OVERRIDE |
 | T3   | MX2             | Q1, Q3           | —                     | —                    | TN1 ← T4               | Sets/clears EG1.WIND_OVERRIDE; reads EG1.SENSOR_FAULT_W |
 | T4   | MX1, MX2, MX3, MX4 | —            | Q4, Q6                | TN1 → T3, TN2 → T6   | TN4 ← T10              | —                        |
 | T5   | —               | Q3, Q6           | —                     | —                    | —                       | Sets/clears EG1.SENSOR_FAULT_T, EG1.SENSOR_FAULT_W |

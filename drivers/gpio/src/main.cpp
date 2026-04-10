@@ -1,9 +1,9 @@
 /**
  * LIB-1 GPIO Utility — hardware verification sketch
  *
- * Covers HW-GPIO-001 through HW-GPIO-013.
+ * Covers HW-GPIO-001 through HW-GPIO-010 and HW-GPIO-012.
  *
- * Uses loopback wiring (11 jumper wires between project pins and spare GPIOs)
+ * Uses loopback wiring (9 jumper wires between project pins and spare GPIOs)
  * so that every output and input is verified automatically with a PASS/FAIL
  * result printed on Serial0 (UART0, GPIO 43 TX / GPIO 44 RX, 115200 baud).
  * No relay module or multimeter is required.
@@ -26,11 +26,9 @@
  *   GPIO 21 (M3-CLOSE) → GPIO  6          [6]
  *   GPIO  8 (RS485 DE) → GPIO  7          [7]
  *   GPIO 41 (HB LED)   → GPIO  9          [8]
- *   GPIO 39 (SD LED)   → GPIO 10          [9]
  *
  *   Loopback driver         Input under test
- *   GPIO 11 (driver) → GPIO 42 (OPTO_INPUT)    [10]
- *   GPIO 17 (driver) → GPIO 40 (SD_MOUNT_BTN)  [11]
+ *   GPIO 11 (driver) -> GPIO 42 (OPTO_INPUT)    [9]
  *
  * All loopback pins are spare ESP32-S3 GPIOs not used by any project function.
  * GPIO 1-7, 9-11, 17 are valid general-purpose I/O on ESP32-S3.
@@ -58,9 +56,7 @@
 #define LB_M3_CLOSE   6   /**< Reads back GPIO 21 (RELAY_M3_CLOSE) */
 #define LB_RS485      7   /**< Reads back GPIO  8 (RS485 DE/RE)    */
 #define LB_HB_LED     9   /**< Reads back GPIO 41 (HB LED)         */
-#define LB_SD_LED    10   /**< Reads back GPIO 33 (SD status LED)  */
 #define DRV_OPTO     11   /**< Drives  GPIO 42 (OPTO_INPUT)        */
-#define DRV_BTN      17   /**< Drives  GPIO 34 (SD_MOUNT_BTN)      */
 
 /* ---------------------------------------------------------------------------
  * Test helpers
@@ -85,13 +81,22 @@ static void check(const char *id, const char *description, bool condition)
 /**
  * Drive an output HIGH then LOW and read back via the loopback input.
  * Returns true if both states are read back correctly.
+ *
+ * The loopback pin is pulled DOWN before the HIGH check (so an unconnected
+ * wire reads LOW and fails) and pulled UP before the LOW check (so an
+ * unconnected wire reads HIGH and fails).  This prevents floating inputs
+ * from producing false PASSes when no wire is fitted.
  */
 static bool loopback_output(uint8_t out_pin, uint8_t lb_pin)
 {
+    /* HIGH check — pulldown defeats floating-pin false pass */
+    pinMode(lb_pin, INPUT_PULLDOWN);
     gpio_write((uint8_t)out_pin, GPIO_HIGH);
     delay(2);
     bool hi_ok = (digitalRead(lb_pin) == HIGH);
 
+    /* LOW check — pullup defeats floating-pin false pass */
+    pinMode(lb_pin, INPUT_PULLUP);
     gpio_write((uint8_t)out_pin, GPIO_LOW);
     delay(2);
     bool lo_ok = (digitalRead(lb_pin) == LOW);
@@ -143,9 +148,7 @@ void setup()
     gpio_set_pin_mode(PIN_RELAY_M3_CLOSE, GPIO_OUTPUT);
     gpio_set_pin_mode(PIN_HB_LED,         GPIO_OUTPUT);
     gpio_set_pin_mode(PIN_RS485_DE_RE,    GPIO_OUTPUT);
-    gpio_set_pin_mode(PIN_SD_STATUS_LED,  GPIO_OUTPUT);
     gpio_set_pin_mode(PIN_OPTO_INPUT,     GPIO_INPUT_PULLUP);
-    gpio_set_pin_mode(PIN_SD_MOUNT_BTN,   GPIO_INPUT_PULLUP);
 
     /* All relay outputs deactivated */
     gpio_write(PIN_RELAY_M1_OPEN,  GPIO_LOW);
@@ -164,8 +167,7 @@ void setup()
     pinMode(LB_M3_CLOSE, INPUT);
     pinMode(LB_RS485,    INPUT);
     pinMode(LB_HB_LED,   INPUT);
-    pinMode(LB_SD_LED,   INPUT);
-    /* DRV_OPTO and DRV_BTN are configured per-test inside loopback_input() */
+    /* DRV_OPTO is configured per-test inside loopback_input() */
 
     check("HW-GPIO-001", "GPIO init complete — no invalid pin errors", true);
 
@@ -206,23 +208,17 @@ void setup()
      * HW-GPIO-009/010 — RS485 DE/RE output loopback
      * ----------------------------------------------------------------- */
     Serial0.println("--- RS485 DE/RE loopback ---");
+    pinMode(LB_RS485, INPUT_PULLDOWN);   /* floating wire reads LOW → fail */
     gpio_set_rs485_direction(true);
     delay(2);
     check("HW-GPIO-009", "GPIO 8 RS485_DE_RE HIGH (TX mode) loopback",
           digitalRead(LB_RS485) == HIGH);
 
+    pinMode(LB_RS485, INPUT_PULLUP);    /* floating wire reads HIGH → fail */
     gpio_set_rs485_direction(false);
     delay(2);
     check("HW-GPIO-010", "GPIO 8 RS485_DE_RE LOW (RX mode) loopback",
           digitalRead(LB_RS485) == LOW);
-
-    /* -----------------------------------------------------------------
-     * HW-GPIO-011 — SD status LED output loopback
-     * ----------------------------------------------------------------- */
-    Serial0.println("--- SD status LED loopback ---");
-    check("HW-GPIO-011", "GPIO 39 SD_STATUS_LED HIGH/LOW loopback",
-          loopback_output(PIN_SD_STATUS_LED, LB_SD_LED));
-    gpio_write(PIN_SD_STATUS_LED, GPIO_LOW);
 
     /* -----------------------------------------------------------------
      * HW-GPIO-012 — opto-coupler input (driven by loopback output GPIO 11)
@@ -230,13 +226,6 @@ void setup()
     Serial0.println("--- Opto input loopback ---");
     check("HW-GPIO-012", "GPIO 42 OPTO_INPUT LOW/HIGH via GPIO 11 driver",
           loopback_input(DRV_OPTO, PIN_OPTO_INPUT));
-
-    /* -----------------------------------------------------------------
-     * HW-GPIO-013 — SD mount button input (driven by loopback output GPIO 17)
-     * ----------------------------------------------------------------- */
-    Serial0.println("--- SD mount button loopback ---");
-    check("HW-GPIO-013", "GPIO 40 SD_MOUNT_BTN LOW/HIGH via GPIO 17 driver",
-          loopback_input(DRV_BTN, PIN_SD_MOUNT_BTN));
 
     /* -----------------------------------------------------------------
      * Summary

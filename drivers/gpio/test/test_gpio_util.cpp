@@ -109,11 +109,11 @@ void test_rs485_direction_receive(void)
 }
 
 /* -------------------------------------------------------------------------
- * UT-GPIO-009 — all 11 pin constants are unique GPIO numbers
+ * UT-GPIO-009 — all 9 pin constants are unique GPIO numbers
  * ------------------------------------------------------------------------- */
 void test_pin_constants_are_unique(void)
 {
-    const uint8_t pins[11] = {
+    const uint8_t pins[9] = {
         PIN_RELAY_M1_OPEN,
         PIN_RELAY_M1_CLOSE,
         PIN_RELAY_M2_OPEN,
@@ -122,13 +122,11 @@ void test_pin_constants_are_unique(void)
         PIN_RELAY_M3_CLOSE,
         PIN_OPTO_INPUT,
         PIN_HB_LED,
-        PIN_RS485_DE_RE,
-        PIN_SD_STATUS_LED,
-        PIN_SD_MOUNT_BTN
+        PIN_RS485_DE_RE
     };
 
-    for (int i = 0; i < 11; i++) {
-        for (int j = i + 1; j < 11; j++) {
+    for (int i = 0; i < 9; i++) {
+        for (int j = i + 1; j < 9; j++) {
             TEST_ASSERT_NOT_EQUAL_MESSAGE(pins[i], pins[j],
                 "Two pin constants share the same GPIO number");
         }
@@ -149,7 +147,7 @@ void test_no_pin_in_reserved_set(void)
     };
     const uint8_t reserved_count = sizeof(reserved) / sizeof(reserved[0]);
 
-    const uint8_t pins[11] = {
+    const uint8_t pins[9] = {
         PIN_RELAY_M1_OPEN,
         PIN_RELAY_M1_CLOSE,
         PIN_RELAY_M2_OPEN,
@@ -158,12 +156,10 @@ void test_no_pin_in_reserved_set(void)
         PIN_RELAY_M3_CLOSE,
         PIN_OPTO_INPUT,
         PIN_HB_LED,
-        PIN_RS485_DE_RE,
-        PIN_SD_STATUS_LED,
-        PIN_SD_MOUNT_BTN
+        PIN_RS485_DE_RE
     };
 
-    for (int i = 0; i < 11; i++) {
+    for (int i = 0; i < 9; i++) {
         for (int r = 0; r < reserved_count; r++) {
             TEST_ASSERT_NOT_EQUAL_MESSAGE(reserved[r], pins[i],
                 "A pin constant uses a reserved ESP32-S3 GPIO");
