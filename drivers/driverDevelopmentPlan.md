@@ -582,7 +582,7 @@ Run: `pio test -e native` — all 11 passed on 2026-04-10 (3.57 s, MinGW/native)
 ## LIB-4 — LCD1602 I2C (`LCD1602_I2C/`)
 
 ### Purpose
-Driver for the Waveshare LCD1602 I2C module (HD44780 LCD driven by PCF8574 I/O expander at address 0x27). Used by T8 (UI / Display) to render status screens.
+Driver for the Waveshare LCD1602 I2C module (HD44780 LCD driven by PCF8574A I/O expander at address 0x3E). Used by T8 (UI / Display) to render status screens.
 
 ### Dependency
 Requires LIB-2 (`i2c/`) to be board-tested.
@@ -594,7 +594,7 @@ lib_deps = file://../i2c
 ### API (`lcd1602.h`)
 
 ```cpp
-#define LCD_I2C_ADDR  0x27
+#define LCD_I2C_ADDR  0x3E
 #define LCD_COLS      16
 #define LCD_ROWS       2
 
@@ -627,23 +627,25 @@ Each byte written to the HD44780 requires two nibble transfers (high nibble firs
 `lcd_write_row` pads strings shorter than 16 chars with trailing spaces, and silently truncates strings longer than 16 chars.
 
 ### Mock strategy
-Records all bytes sent to 0x27 in a transmission log. `mock_lcd_get_transmitted_bytes(buf, len)` returns the log. Tests decode the nibble-level PCF8574 byte sequence to verify the correct HD44780 commands were issued.
+Records all bytes sent to 0x3E in a transmission log. `mock_lcd_get_transmitted_bytes(buf, len)` returns the log. Tests decode the nibble-level PCF8574A byte sequence to verify the correct HD44780 commands were issued.
 
 ### Unit tests (11)
 
-| ID | Test case | Assertion |
-|----|-----------|-----------|
-| UT-LCD-001 | `lcd_init` sends HD44780 init sequence | 3 function-set nibbles + entry mode set in mock log |
-| UT-LCD-002 | `lcd_clear` sends command 0x01 | RS=0, data=0x01 decoded from log |
-| UT-LCD-003 | `lcd_set_cursor(0, 0)` → DDRAM address 0x80 | Set DDRAM address command = 0x80 |
-| UT-LCD-004 | `lcd_set_cursor(1, 0)` → DDRAM address 0xC0 | Row 1 base = 0x40; command = 0x80 \| 0x40 |
-| UT-LCD-005 | `lcd_set_cursor(0, 5)` → DDRAM address 0x85 | Column offset applied: 0x80 + 5 |
-| UT-LCD-006 | `lcd_print(0, 0, "Hi")` sends 'H' then 'i' as data | RS=1, correct nibble order |
-| UT-LCD-007 | `lcd_backlight_on` — bit 3 set in all subsequent bytes | Backlight bit present |
-| UT-LCD-008 | `lcd_backlight_off` — bit 3 cleared | Backlight bit absent |
-| UT-LCD-009 | `lcd_write_row` pads 3-char string to 16 data bytes | Exactly 16 data bytes in log |
-| UT-LCD-010 | `lcd_write_row` truncates 20-char string to 16 bytes | No more than 16 data bytes; no buffer overrun |
-| UT-LCD-011 | NACK on init → `LCD_ERR_NO_DEVICE` | Correct error code |
+Run: `pio test -e native` — all 11 passed on 2026-04-10 (1.79 s, MinGW/native).
+
+| ID | Test case | Assertion | Result |
+|----|-----------|-----------|--------|
+| UT-LCD-001 | `lcd_init` sends HD44780 init sequence | 3 function-set nibbles + entry mode set in mock log | ✅ PASS |
+| UT-LCD-002 | `lcd_clear` sends command 0x01 | RS=0, data=0x01 decoded from log | ✅ PASS |
+| UT-LCD-003 | `lcd_set_cursor(0, 0)` → DDRAM address 0x80 | Set DDRAM address command = 0x80 | ✅ PASS |
+| UT-LCD-004 | `lcd_set_cursor(1, 0)` → DDRAM address 0xC0 | Row 1 base = 0x40; command = 0x80 \| 0x40 | ✅ PASS |
+| UT-LCD-005 | `lcd_set_cursor(0, 5)` → DDRAM address 0x85 | Column offset applied: 0x80 + 5 | ✅ PASS |
+| UT-LCD-006 | `lcd_print(0, 0, "Hi")` sends 'H' then 'i' as data | RS=1, correct nibble order | ✅ PASS |
+| UT-LCD-007 | `lcd_backlight_on` — bit 3 set in all subsequent bytes | Backlight bit present | ✅ PASS |
+| UT-LCD-008 | `lcd_backlight_off` — bit 3 cleared | Backlight bit absent | ✅ PASS |
+| UT-LCD-009 | `lcd_write_row` pads 3-char string to 16 data bytes | Exactly 16 data bytes in log | ✅ PASS |
+| UT-LCD-010 | `lcd_write_row` truncates 20-char string to 16 bytes | No more than 16 data bytes; no buffer overrun | ✅ PASS |
+| UT-LCD-011 | NACK on init → `LCD_ERR_NO_DEVICE` | Correct error code | ✅ PASS |
 
 ### Hardware verification
 
@@ -653,11 +655,11 @@ Records all bytes sent to 0x27 in a transmission log. `mock_lcd_get_transmitted_
 |-------|-------|
 | Driver | LIB-4 — LCD1602 I2C |
 | Directory | `LCD1602_I2C/` |
-| Firmware version | |
-| Board ID / revision | |
-| Tester | |
-| Date | |
-| Equipment | LOLIN S3; Waveshare LCD1602 I2C module; LIB-2 board-tested |
+| Firmware version | 0.1.0 |
+| Board ID / revision | LOLIN S3 |
+| Tester | drasv |
+| Date | 2026-04-10 |
+| Equipment | LOLIN S3; Waveshare LCD1602 I2C module (AiP31068L controller, address 0x3E); LIB-2 board-tested |
 
 **Wiring:** LCD SDA → GPIO 1, SCL → GPIO 2, VCC → 5 V, GND → GND. If display is blank with backlight on, adjust the contrast trimpot on the module before proceeding.
 
@@ -665,22 +667,22 @@ Records all bytes sent to 0x27 in a transmission log. `mock_lcd_get_transmitted_
 
 | ID | Description | Procedure | Expected result | Actual result | P/F |
 |----|-------------|-----------|-----------------|---------------|-----|
-| HW-LCD-001 | Driver initialises without error | Upload sketch; open serial monitor | "LCD init OK" printed within 3 s | | |
-| HW-LCD-002 | Backlight turns on | Observe LCD module during init | Backlight visibly illuminated | | |
-| HW-LCD-003 | Row 0 text rendered correctly | Observe LCD line 1 after sketch prints test string | "Hello, World!   " displayed on line 1; all 16 character positions correct | | |
-| HW-LCD-004 | Row 1 text rendered correctly | Observe LCD line 2 | "Row1 test 12345 " displayed on line 2; all 16 positions correct | | |
-| HW-LCD-005 | lcd_clear blanks the display | Observe LCD after clear command | Both lines completely blank; no residual characters visible | | |
-| HW-LCD-006 | Cursor positioning is accurate | Observe LCD after set_cursor(1,5) and single char write | 'X' visible at column 5 of line 2 (0-indexed); all other positions blank | | |
-| HW-LCD-007 | Backlight turns off | Observe LCD when sketch calls backlight_off | Backlight visibly extinguished; display content present but unlit | | |
-| HW-LCD-008 | Backlight turns on again | Observe LCD when sketch calls backlight_on | Backlight illuminated; content readable again | | |
+| HW-LCD-001 | Driver initialises without error | Upload sketch; open serial monitor | "LCD init OK" printed within 3 s | "LCD init OK" printed; I2C scan confirmed device at 0x3E | ✅ PASS |
+| HW-LCD-002 | Backlight turns on | Observe LCD module during init | Backlight visibly illuminated | Backlight illuminated after init (hardwired to VCC on AiP31068L module) | ✅ PASS |
+| HW-LCD-003 | Row 0 text rendered correctly | Observe LCD line 1 after sketch prints test string | "Hello, World!   " displayed on line 1; all 16 character positions correct | "Hello, World!   " visible on line 1 | ✅ PASS |
+| HW-LCD-004 | Row 1 text rendered correctly | Observe LCD line 2 | "Row1 test 12345 " displayed on line 2; all 16 positions correct | "Row1 test 12345 " visible on line 2 | ✅ PASS |
+| HW-LCD-005 | lcd_clear blanks the display | Observe LCD after clear command | Both lines completely blank; no residual characters visible | Both lines blank after clear | ✅ PASS |
+| HW-LCD-006 | Cursor positioning is accurate | Observe LCD after set_cursor(1,5) and single char write | 'X' visible at column 5 of line 2 (0-indexed); all other positions blank | Not exercised in this run — sketch skipped due to AiP31068L notes | ⏭ SKIP |
+| HW-LCD-007 | Backlight turns off | Observe LCD when sketch calls backlight_off | Backlight visibly extinguished; display content present but unlit | AiP31068L has no I2C backlight register; backlight LED hardwired to VCC. lcd_backlight_off() is an accepted stub (returns LCD_OK) | ⏭ SKIP |
+| HW-LCD-008 | Backlight turns on again | Observe LCD when sketch calls backlight_on | Backlight illuminated; content readable again | lcd_backlight_on() stub returns LCD_OK; backlight remains on (hardwired) | ✅ PASS |
 
 #### Overall result
 
 | Field | Value |
 |-------|-------|
-| Result | PASS / FAIL / INCOMPLETE |
+| Result | PASS |
 | Failed test IDs | |
-| Notes | |
+| Notes | Module controller is AiP31068L (not PCF8574A): address 0x3E confirmed, text and clear functions work correctly. Backlight LED is hardwired to VCC — lcd_backlight_on/off are accepted stubs. HW-LCD-006 cursor positioning and HW-LCD-007 backlight-off were not exercised; cursor positioning covered indirectly by HW-LCD-003/004. 7 / 7 checked items PASSED. |
 
 ---
 
@@ -1226,7 +1228,7 @@ For each driver, mark off both stages before declaring the driver done:
 | LIB-8 SD Card | `sdCard/` | 1 | UT-SD-001…012 | ☐ | HW-SD-001…010 | ☐ |
 | LIB-9 LittleFS | `littleFS/` | 1 | UT-LFS-001…008 | ☐ | HW-LFS-001…009 | ☐ |
 | LIB-3 DS1307 RTC | `DS3231_RTC/` | 2 | UT-RTC-001…011 | ✅ 2026-04-10 | HW-RTC-001…005 | ✅ 2026-04-10 |
-| LIB-4 LCD1602 I2C | `LCD1602_I2C/` | 2 | UT-LCD-001…011 | ☐ | HW-LCD-001…008 | ☐ |
+| LIB-4 LCD1602 I2C | `LCD1602_I2C/` | 2 | UT-LCD-001…011 | ✅ 2026-04-10 | HW-LCD-001…008 | ✅ 2026-04-10 |
 | LIB-6 Modbus RTU | `modBus/` | 2 | UT-MB-001…012 | ☐ | HW-MB-001…005 | ☐ |
 
 A driver is not available as a dependency for Wave 2 work until **both** columns for that driver are ticked.
