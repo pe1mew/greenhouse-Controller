@@ -387,15 +387,24 @@ Entering heartbeat loop (HB LED blinks at 0.5 Hz).
 ### Purpose
 Mutex-aware wrapper around the Arduino Wire library for the shared I2C bus. All I2C peripherals (LCD at 0x27, RTC at 0x68) use this library; no driver calls Wire directly.
 
-### API (`i2c_bus.h`)
+### API (`firmware/config/pin_config.h`)
+
+Pin assignments are centralised in `pin_config.h` alongside all other project GPIOs:
 
 ```cpp
-#define I2C_SDA_PIN   1
-#define I2C_SCL_PIN   2
+#define PIN_I2C_SDA   1   // I2C data line
+#define PIN_I2C_SCL   2   // I2C clock line
+```
+
+### API (`i2c_bus.h`)
+
+`i2c_bus.h` exposes the pin constants above by including `pin_config.h`. Callers need only include `i2c_bus.h`. The bus frequency is a protocol constant, not a pin assignment, so it remains here:
+
+```cpp
 #define I2C_FREQ_HZ   400000UL
 
 typedef enum {
-    I2C_OK = 0,
+    I2C_OK       = 0,
     I2C_ERR_TIMEOUT,
     I2C_ERR_NACK,
     I2C_ERR_BUS_BUSY
@@ -416,7 +425,7 @@ void         i2c_unlock(void);
 
 ### Mock strategy (`test/mock_wire.h`)
 
-An in-memory byte FIFO serves preloaded response data on `requestFrom`. Transmitted bytes are recorded for assertion. A `mock_nack_next` flag causes the next write to report NACK.
+Provides a fake `TwoWire` class and global `Wire` instance. An in-memory byte FIFO (`mock_rx_buf`) serves preloaded response data on `requestFrom`. Transmitted bytes are recorded in `mock_tx_buf` for assertion. A `mock_nack_next` flag causes the next `endTransmission()` call to return 2 (NACK) and then resets. A `mock_ack_addrs[]` list controls which addresses ACK during `i2c_scan()` — useful for UT-I2C-006. Call `mock_wire_reset()` in `setUp()`.
 
 ### Unit tests (8)
 
@@ -439,10 +448,10 @@ An in-memory byte FIFO serves preloaded response data on `requestFrom`. Transmit
 |-------|-------|
 | Driver | LIB-2 — I2C Bus |
 | Directory | `i2c/` |
-| Firmware version | |
-| Board ID / revision | |
-| Tester | |
-| Date | |
+| Firmware version | 0.1.0 |
+| Board ID / revision | LOLIN S3 |
+| Tester | drasv |
+| Date | 2026-04-10 |
 | Equipment | LOLIN S3; Waveshare LCD1602 I2C module; DS3231 RTC module |
 
 **Wiring:** SDA → GPIO 1, SCL → GPIO 2, 3.3 V, GND to both modules. Both modules include their own 4.7 kΩ pull-up resistors; no external resistors needed. Both devices must be connected simultaneously to confirm bus sharing and address non-conflict.
@@ -451,19 +460,19 @@ An in-memory byte FIFO serves preloaded response data on `requestFrom`. Transmit
 
 | ID | Description | Procedure | Expected result | Actual result | P/F |
 |----|-------------|-----------|-----------------|---------------|-----|
-| HW-I2C-001 | Bus initialises at correct speed | Upload sketch; open serial monitor | "I2C init: SDA=GPIO1 SCL=GPIO2 400 kHz" printed within 3 s | | |
-| HW-I2C-002 | LCD PCF8574 detected on scan | Run `i2c_scan` with both modules connected | Address 0x27 reported as found | | |
-| HW-I2C-003 | DS3231 RTC detected on scan | Run `i2c_scan` with both modules connected | Address 0x68 reported as found | | |
-| HW-I2C-004 | Write to 0x27 succeeds | Sketch writes 1 byte to LCD I2C address | "Write 1 byte to 0x27: OK" printed; no NACK error | | |
-| HW-I2C-005 | Write-read from 0x68 succeeds | Sketch writes register address then reads 1 byte from RTC | "Write-read from 0x68: OK, value = 0xXX" printed. Record value: 0x___ | | |
+| HW-I2C-001 | Bus initialises at correct speed | Upload sketch; open serial monitor | "I2C init: SDA=GPIO1 SCL=GPIO2 400 kHz" printed within 3 s | "I2C init: SDA=GPIO1 SCL=GPIO2 400 kHz" printed | ✅ PASS |
+| HW-I2C-002 | LCD PCF8574A detected on scan | Run `i2c_scan` with both modules connected | Address 0x3E reported as found | Address 0x3E found ✓ (re-run after address fix) | ✅ PASS |
+| HW-I2C-003 | DS3231 RTC detected on scan | Run `i2c_scan` with both modules connected | Address 0x68 reported as found | Address 0x68 found | ✅ PASS |
+| HW-I2C-004 | Write to 0x3E succeeds | Sketch writes 1 byte to LCD I2C address | "Write 1 byte to 0x3E: OK" printed; no NACK error | "Write 1 byte to 0x3E: OK" printed | ✅ PASS |
+| HW-I2C-005 | Write-read from 0x68 succeeds | Sketch writes register address then reads 1 byte from RTC | "Write-read from 0x68: OK, value = 0xXX" printed | "Write-read from 0x68: OK, value = 0x80" printed | ✅ PASS |
 
 #### Overall result
 
 | Field | Value |
 |-------|-------|
-| Result | PASS / FAIL / INCOMPLETE |
+| Result | PASS |
 | Failed test IDs | |
-| Notes | |
+| Notes | LCD module has a **PCF8574A** backpack (address **0x3E**). RTC OSF bit set (0x80) on first run — expected on new battery insertion. |
 
 ---
 
@@ -1213,7 +1222,7 @@ For each driver, mark off both stages before declaring the driver done:
 | Driver | Directory | Wave | Unit test IDs | Host tests pass | Hardware test IDs | HW tests pass |
 |--------|-----------|------|---------------|-----------------|-------------------|---------------|
 | LIB-1 GPIO Utility | `gpio/` | 1 | UT-GPIO-001…011 | ✅ 2026-04-10 | HW-GPIO-001…011 | ✅ 2026-04-10 |
-| LIB-2 I2C Bus | `i2c/` | 1 | UT-I2C-001…008 | ☐ | HW-I2C-001…005 | ☐ |
+| LIB-2 I2C Bus | `i2c/` | 1 | UT-I2C-001…008 | ✅ 2026-04-10 | HW-I2C-001…005 | ✅ 2026-04-10 |
 | LIB-5 Keypad Matrix | `keyPad/` | 1 | UT-KP-001…010 | ☐ | HW-KP-001…004 | ☐ |
 | LIB-7 NVS Configuration | `nvs/` | 1 | UT-NVS-001…013 | ☐ | HW-NVS-001…010 | ☐ |
 | LIB-8 SD Card | `sdCard/` | 1 | UT-SD-001…012 | ☐ | HW-SD-001…010 | ☐ |

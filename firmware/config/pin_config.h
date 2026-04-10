@@ -55,3 +55,13 @@
 
 /** @brief Digital output — RS-485 transceiver DE/RE direction control. */
 #define PIN_RS485_DE_RE      8
+
+/* ---------------------------------------------------------------------------
+ * I2C bus (shared — LCD at 0x27, RTC at 0x68)
+ * --------------------------------------------------------------------------- */
+
+/** @brief I2C data line (SDA). */
+#define PIN_I2C_SDA          1
+
+/** @brief I2C clock line (SCL). */
+#define PIN_I2C_SCL          2
