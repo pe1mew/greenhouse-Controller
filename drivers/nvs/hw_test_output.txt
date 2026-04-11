@@ -1,0 +1,54 @@
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x1 (POWERON),boot:0x8 (SPI_FAST_FLASH_BOOT)
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce3808,len:0x4bc
+load:0x403c9700,len:0xbd8
+load:0x403cc700,len:0x2a0c
+entry 0x403c98d0
+[    89][I][esp32-hal-psram.c:96] psramInit(): PSRAM enabled
+
+================================================
+  LIB-7 NVS Configuration — hardware verification
+================================================
+[PASS] HW-NVS-001: NVS init OK
+[INFO] schema_ver stored = 1
+[PASS] HW-NVS-011: schema_ver == NVS_SCHEMA_VERSION
+[INFO] fw_version stored = "0.1.0"
+[INFO] FIRMWARE_VERSION   = "0.1.0"
+[PASS] HW-NVS-013: fw_version == FIRMWARE_VERSION
+[INFO] climate/t_min get = 200
+[PASS] HW-NVS-002: integer set/get round-trip (t_min=200)
+[INFO] wifi/ssid get = "Greenhouse1"
+[PASS] HW-NVS-003: string set/get round-trip (ssid=Greenhouse1)
+[INFO] get missing key = NOT_FOUND
+[PASS] HW-NVS-004: missing key returns NOT_FOUND
+[PASS] HW-NVS-005: erase climate ns → t_min NOT_FOUND
+[INFO] t_max via _or_default = 350
+[PASS] HW-NVS-012a: _or_default absent: returns default (350)
+[PASS] HW-NVS-012b: _or_default present: returns stored (350), ignores 999
+[INFO] log_count after 10 appends = 10
+[PASS] HW-NVS-006: log ring buffer count = 10
+[INFO] log entries read = 5; entry[0][0] = 0x0
+[PASS] HW-NVS-007: log read returns 5 entries; entry[0][0]=0x00
+[INFO] CONFIG_NVS_LOG_CAPACITY = 100
+[INFO] Appending 95 more log entries (total 105) ...
+[INFO] log_count after 105 appends = 100
+[PASS] HW-NVS-008: log count capped at CONFIG_NVS_LOG_CAPACITY
+------------------------------------------------
+[HW-NVS-009] Pre-power-cycle state:
+  wifi/ssid    = "Greenhouse1"
+  climate/t_min = NOT_FOUND (erased — correct)
+  climate/t_max = 350
+Power board OFF, then ON to verify HW-NVS-010.
+------------------------------------------------
+[HW-NVS-010] Post-power-cycle read (compare with previous run):
+  wifi/ssid    = "Greenhouse1"  ← PASS
+  climate/t_max = 350  ← PASS
+================================================
+  PASSED: 12
+  FAILED: 0
+  RESULT: PASS
+================================================
+Verification complete. Board is idle.

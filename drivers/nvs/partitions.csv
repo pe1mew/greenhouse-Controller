@@ -1,0 +1,13 @@
+# Greenhouse Controller NVS test — LOLIN S3 (16 MB flash)
+#
+# NVS enlarged to 64 KB (16 pages, 2016 items max) so that 1000 log
+# ring-buffer blobs (32 bytes NVS overhead each ≈ 32 KB) plus all other
+# configuration keys fit comfortably.
+#
+# ESP32 requires app partitions to be 64 KB-aligned, so factory is placed at
+# 0x20000. The 24 KB gap between phy_init and factory is unused flash.
+#
+# Name,     Type, SubType, Offset,   Size
+nvs,        data, nvs,     0x9000,   0x10000,
+phy_init,   data, phy,     0x19000,  0x1000,
+factory,    app,  factory, 0x20000,  0x7E0000,

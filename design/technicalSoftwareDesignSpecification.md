@@ -341,7 +341,7 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 
 **Priority:** Medium | **Core:** 1
 
-- Manages the LCD1602 display via I2C (shared bus with RTC).
+- Manages the LCD1602 display via I2C (shared bus with RTC). Any `delay()` calls in the LCD1602 driver must be replaced with `vTaskDelay(pdMS_TO_TICKS(ms))` so T8 yields to the scheduler rather than spinning.
 - Renders the main status screen: T, RH, wind speed and direction, window states, operating mode, active session, active alarms.
 - Runs the menu finite state machine (FSM); navigation depth ≤ 4 key presses from the main screen to any first-level setting.
 - Manages session state: PIN entry via keyboard, session timeout, PIN validation against T4.

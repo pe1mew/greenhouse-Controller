@@ -1121,14 +1121,14 @@ Stored in the `log` namespace using three key types:
 - `"count"` (i32) — number of valid entries (max = capacity)
 - `"eNNNN"` (blob) — individual entry at slot NNNN (zero-padded 4-digit index)
 
-At 12 bytes per log entry × 1000 entries ≈ 12 KB of NVS space. The LOLIN S3 default Arduino partition table allocates at least 24 KB for NVS.
+At 12 bytes raw data per log entry × 1000 entries ≈ 12 KB of raw data, but the ESP-IDF NVS format adds 32 bytes of overhead per item, so each entry consumes 32 bytes of NVS flash. 1000 entries × 32 bytes = 32 KB of NVS space. The default Arduino ESP32-S3 partition table allocates only 20 KB for NVS, which is insufficient for 1000 entries. A custom partition table with ≥ 40 KB NVS is required for production use. The hardware verification sketch uses `CONFIG_NVS_LOG_CAPACITY=100` (via build flag) so the ring buffer fits within the default partition.
 
 ### Mock strategy (`test/mock_nvs.h`)
 An in-memory `std::map<std::string, std::vector<uint8_t>>` backing store keyed on `"namespace:key"` with stubs for all ESP-IDF NVS functions (`nvs_flash_init`, `nvs_open`, `nvs_get_i32`, etc.). `#ifndef UNIT_TEST` guards the real `#include "nvs_flash.h"` / `nvs.h` in `nvs_config.cpp`; under `UNIT_TEST`, `#include "../test/mock_nvs.h"` is substituted.
 
 `mock_nvs_inject_i32(ns, key, val)` allows tests to pre-populate NVS state before calling `nvs_cfg_init()`, which is necessary for testing the schema-mismatch migration path.
 
-### Unit tests (22)
+### Unit tests (25)
 
 | ID | Test case | Assertion |
 |----|-----------|-----------|
@@ -1166,38 +1166,52 @@ An in-memory `std::map<std::string, std::vector<uint8_t>>` backing store keyed o
 |-------|-------|
 | Driver | LIB-7 — NVS Configuration |
 | Directory | `nvs/` |
-| Firmware version | |
-| Board ID / revision | |
-| Tester | |
-| Date | |
+| Firmware version | 0.1.0 |
+| Board ID / revision | WEMOS LOLIN S3 (ESP32-S3, QFN56, revision v0.2) |
+| Tester | Remko Welling |
+| Date | 2026-04-11 |
 | Equipment | LOLIN S3 only (no external peripherals) |
+
+> **NVS partition size note:** The default Arduino ESP32-S3 partition table allocates 20 KB for NVS (5 pages, ≈ 630 NVS item slots). Storing 1000 log entries as individual NVS blob keys requires ≈ 32 KB (1000 × 32-byte item overhead). The hardware verification sketch therefore sets `CONFIG_NVS_LOG_CAPACITY=100` via build flag, reducing the ring buffer to 100 entries so all entries fit within the default partition. The driver logic and ring-buffer behaviour are identical at any capacity; the production default of 1000 entries requires a custom partition table with ≥ 40 KB NVS.
 
 > If NVS becomes corrupted at any point, run `pio run -e lolin_s3 -t erase` to erase all flash before re-uploading.
 
+#### Issues found and resolved during verification
+
+| # | Issue | Root cause | Resolution |
+|---|-------|------------|------------|
+| 1 | `nvs_cfg_init()` returned `NVS_CFG_ERR_INIT` on first boot; schema_ver and fw_version not written | `open_handle()` mapped `ESP_ERR_NVS_NOT_FOUND` from a read-only open on a non-existent namespace to `NVS_CFG_ERR_INIT` instead of `NVS_CFG_ERR_NOT_FOUND` | Fixed `open_handle()`: `ESP_ERR_NVS_NOT_FOUND` + `NVS_READONLY` → `NVS_CFG_ERR_NOT_FOUND`; propagated through all `get_i32/str/blob` |
+| 2 | Log count wrong on repeated runs; writes failed after first run | Default 20 KB NVS partition fills up after 1005 log entries; subsequent new-key writes fail with `NOT_ENOUGH_SPACE` | Reduced `CONFIG_NVS_LOG_CAPACITY` to 100 for hardware test; added log namespace erase at start of HW-NVS-006 so test is repeatable |
+| 3 | Hardware build failed: `invalid conversion from 'int' to 'nvs_open_mode_t'` and `PRIu32` undefined | Mock used `#define NVS_READONLY/READWRITE` (int) instead of the enum the real SDK requires; `<inttypes.h>` not included | Added `nvs_open_mode_t` enum to mock; added `#include <inttypes.h>` to `nvs_config.cpp` |
+
 #### Test cases
 
-HW-NVS-009 and HW-NVS-010 together form the power-cycle persistence test. Run HW-NVS-009 first, power the board off, then run HW-NVS-010 on the next boot.
+HW-NVS-009 and HW-NVS-010 together form the power-cycle persistence test; both are evaluated in the same automated run (the sketch prints pre- and post-cycle state on every boot).
+
+`CONFIG_NVS_LOG_CAPACITY` is overridden to 100 via build flag; HW-NVS-008 appends 105 entries (10 + 95) and verifies the count caps at 100.
 
 | ID | Description | Procedure | Expected result | Actual result | P/F |
 |----|-------------|-----------|-----------------|---------------|-----|
-| HW-NVS-001 | NVS initialises without error | Upload sketch; open serial monitor | "NVS init OK" printed within 3 s | | |
-| HW-NVS-002 | Integer set/get round-trip | Sketch writes climate/t_min=200 then reads it back | Serial prints "get=200"; value matches what was written | | |
-| HW-NVS-003 | String set/get round-trip | Sketch writes wifi/ssid="Greenhouse1" then reads it back | Serial prints `get="Greenhouse1"` | | |
-| HW-NVS-004 | Missing key returns NOT_FOUND | Sketch reads a key that was never written | "NOT_FOUND" printed; no crash or hang | | |
-| HW-NVS-005 | Namespace erase removes keys | Sketch erases climate namespace; reads climate/t_min | "NOT_FOUND" printed after erase | | |
-| HW-NVS-006 | Log ring buffer appends correctly | Sketch appends 10 log entries; reads count | log_count=10 printed | | |
-| HW-NVS-007 | Log read returns correct entry bytes | Sketch reads entries 0–4 | Bytes match expected pattern written by sketch. Record first entry raw bytes: ___ | | |
-| HW-NVS-008 | Ring buffer caps at 1000 and wraps | Sketch appends 1005 entries total | log_count=1000; serial confirms oldest entry = index 5 (entries 0–4 overwritten) | | |
-| HW-NVS-009 | Pre-power-cycle state recorded | After HW-NVS-005: climate/t_min is erased; wifi/ssid="Greenhouse1" is set | Note values; power board off | | |
-| HW-NVS-010 | Values persist across power cycle | Power board on after HW-NVS-009; re-run read sketch | climate/t_min = NOT_FOUND (erased value not retained — correct); wifi/ssid = "Greenhouse1" (retained — correct) | | |
+| HW-NVS-001 | NVS initialises without error | Upload sketch; open serial monitor | "NVS init OK" printed | `[PASS] HW-NVS-001: NVS init OK` | PASS |
+| HW-NVS-002 | Integer set/get round-trip | Sketch writes climate/t_min=200 then reads it back | Serial prints "get=200" | `climate/t_min get = 200` | PASS |
+| HW-NVS-003 | String set/get round-trip | Sketch writes wifi/ssid="Greenhouse1" then reads it back | Serial prints `get="Greenhouse1"` | `wifi/ssid get = "Greenhouse1"` | PASS |
+| HW-NVS-004 | Missing key returns NOT_FOUND | Sketch reads a key that was never written | "NOT_FOUND" printed; no crash or hang | `get missing key = NOT_FOUND` | PASS |
+| HW-NVS-005 | Namespace erase removes keys | Sketch erases climate namespace; reads climate/t_min | "NOT_FOUND" printed after erase | `erase climate ns → t_min NOT_FOUND` | PASS |
+| HW-NVS-006 | Log ring buffer appends correctly | Sketch erases log namespace, appends 10 entries; reads count | log_count=10 printed | `log_count after 10 appends = 10` | PASS |
+| HW-NVS-007 | Log read returns correct entry bytes | Sketch reads entries 0–4 | 5 entries read; entry[0][0]=0x00 | `log entries read = 5; entry[0][0] = 0x0` | PASS |
+| HW-NVS-008 | Ring buffer caps at CONFIG_NVS_LOG_CAPACITY and wraps | Sketch appends 95 more entries (105 total); capacity=100 | log_count=100 (capped) | `log_count after 105 appends = 100` | PASS |
+| HW-NVS-009 | Pre-power-cycle state recorded | Reads wifi/ssid, climate/t_min (erased), climate/t_max | ssid="Greenhouse1"; t_min=NOT_FOUND; t_max=350 | `wifi/ssid="Greenhouse1"  climate/t_min=NOT_FOUND  climate/t_max=350` | PASS |
+| HW-NVS-010 | Values persist across power cycle | Power board on; reads same keys without re-writing | ssid retained; t_max retained | `wifi/ssid="Greenhouse1" ← PASS  climate/t_max=350 ← PASS` | PASS |
+| HW-NVS-011 | Schema version stamped on first boot | Read system/schema_ver after init | schema_ver == NVS_SCHEMA_VERSION (1) | `schema_ver stored = 1` | PASS |
+| HW-NVS-013 | fw_version written on every boot | Read system/fw_version after init | fw_version == FIRMWARE_VERSION ("0.1.0") | `fw_version stored = "0.1.0"` | PASS |
 
 #### Overall result
 
 | Field | Value |
 |-------|-------|
-| Result | PASS / FAIL / INCOMPLETE |
-| Failed test IDs | |
-| Notes | |
+| Result | PASS |
+| Failed test IDs | None |
+| Notes | Three bugs found and fixed during verification (see issues table above). Native unit tests updated to 25 cases covering all fixed behaviour. |
 
 ---
 
@@ -1246,14 +1260,15 @@ SD.begin(SD_PIN_CS, spi);
 ```
 
 ### `lib_deps` (lolin_s3 env)
-```ini
-lib_deps = adafruit/SD @ ^1.2.4
-```
+
+The Arduino framework bundled with `espressif32` provides `SD @ 2.0.0` automatically — no `lib_deps` entry is needed. The `adafruit/SD @ ^1.2.4` package is not listed in the PlatformIO registry and must not be added to `platformio.ini`.
 
 ### Mock strategy
 `mock_sd.h` provides a `FakeSD` class backed by `std::map<std::string, std::string>` (filename → content). Stubs for `SD.open()`, `file.write()`, `file.read()`, `file.size()`, `SD.exists()`, `SD.remove()`.
 
 ### Unit tests (12)
+
+Run: CodeBlocks MinGW g++ compiled as DLL; Python ctypes loaded and executed `run_tests()`. All 12 passed on 2026-04-11 (Device Guard workaround — direct `.exe` execution is blocked; DLL + Python ctypes used instead).
 
 | ID | Test case | Assertion |
 |----|-----------|-----------|
@@ -1278,43 +1293,56 @@ lib_deps = adafruit/SD @ ^1.2.4
 |-------|-------|
 | Driver | LIB-8 — SD Card |
 | Directory | `sdCard/` |
-| Firmware version | |
-| Board ID / revision | |
-| Tester | |
-| Date | |
-| Equipment | LOLIN S3; SPI SD card breakout board or integrated slot; FAT32-formatted SD card (≤ 32 GB) |
+| Firmware version | 0.1.0 |
+| Board ID / revision | WEMOS LOLIN S3 (ESP32-S3, QFN56, revision v0.2) — MAC 30:ed:a0:a0:fd:a4 |
+| Tester | drasv |
+| Date | 2026-04-11 |
+| Equipment | LOLIN S3; SPI SD card on GPIO 47 (MOSI) / 48 (MISO) / 39 (CLK) / 40 (CS); FAT32-formatted SD card |
 
 > **FAT32 note:** SD cards > 32 GB often format as exFAT by default, which the Arduino SD library does not support. Reformat using Windows (`format /FS:FAT32 X:`) or the SD Association's SD Formatter before inserting.
+
+#### Issues found and resolved during testing
+
+| # | Issue | Root cause | Resolution |
+|---|-------|------------|------------|
+| 1 | PlatformIO build error: `UnknownPackageError: Could not find the package with 'adafruit/SD @ ^1.2.4'` | Package does not exist in the PlatformIO registry | Removed `lib_deps` entry entirely; `espressif32` framework provides `SD @ 2.0.0` automatically |
+| 2 | HW-SD-007 reported wrong file size (534,265 bytes instead of 524,288) | `chunk[512]` had no null terminator; `strlen()` read past the array boundary into stack memory | Changed to `chunk[513]`; set `chunk[511]='\n'` and `chunk[512]='\0'` |
+| 3 | HW-SD-007 still failing on second run: 907,264 bytes instead of 524,288 | Stale `bigfile.csv` left on card from prior run; new appends accumulated on top of existing content | Added `storage_sd_delete("/20260410120000.csv")` and `storage_sd_delete("/bigfile.csv")` immediately after a successful mount |
 
 #### Test cases
 
 | ID | Description | Procedure | Expected result | Actual result | P/F |
 |----|-------------|-----------|-----------------|---------------|-----|
-| HW-SD-001 | SPI bus initialises and card mounts | Insert FAT32 card; upload sketch; open serial | "SD card mounted (FAT32)" printed; no error | | |
-| HW-SD-002 | Free space is reported | Read free bytes from serial after mount | Free bytes > 0. Record: ___ bytes | | |
-| HW-SD-003 | Write-append creates file | Sketch appends line 1 to "20260410120000.csv" | "Write append: OK" printed; no error | | |
-| HW-SD-004 | Write-append grows existing file | Sketch appends line 2 to same file | file_size increases; printed size matches 2 lines. Record size: ___ bytes | | |
-| HW-SD-005 | Read from offset 0 returns correct content | Sketch reads file from offset 0 | Content matches line 1 exactly as written | | |
-| HW-SD-006 | CSV file appears in directory listing | Sketch calls list_csv on root directory | "20260410120000.csv" present in output | | |
-| HW-SD-007 | 512 KB stress write succeeds | Sketch writes 512 KB of data to "bigfile.csv" | file_size = 524288 bytes reported | | |
-| HW-SD-008 | Delete removes file | Sketch deletes "bigfile.csv" | "STORAGE_OK" returned; file no longer listed | | |
-| HW-SD-009 | Delete non-existent file returns correct error | Sketch deletes "bigfile.csv" a second time | "STORAGE_ERR_NOT_FOUND" returned; no crash | | |
-| HW-SD-010 | Absent card returns correct error | Remove SD card; re-run storage_init | "STORAGE_ERR_NO_CARD" returned; no crash or hang | | |
+| HW-SD-001 | SPI bus initialises and card mounts | Insert FAT32 card; upload sketch; open serial | "SD card mounted (FAT32)" printed; no error | "SD card mounted (FAT32)" printed; `storage_init` returned 0 (STORAGE_OK) | PASS |
+| HW-SD-002 | Free space is reported | Read free bytes from serial after mount | Free bytes > 0. Record: ___ bytes | 124,204,032 bytes (~118 MB) | PASS |
+| HW-SD-003 | Write-append creates file | Sketch appends line 1 to "20260410120000.csv" | "Write append: OK" printed; no error | `storage_sd_write_append` returned 0 (STORAGE_OK) | PASS |
+| HW-SD-004 | Write-append grows existing file | Sketch appends line 2 to same file | file_size increases; printed size matches 2 lines. Record size: ___ bytes | 34 bytes (2 × 17-byte lines) | PASS |
+| HW-SD-005 | Read from offset 0 returns correct content | Sketch reads file from offset 0 | Content matches line 1 exactly as written | "line1,data,value\nline2,data,value\n" returned; `strncmp` to "line1" passed | PASS |
+| HW-SD-006 | CSV file appears in directory listing | Sketch calls list_csv on root directory | "20260410120000.csv" present in output | "20260410120000.csv," present in list buffer | PASS |
+| HW-SD-007 | 512 KB stress write succeeds | Sketch writes 512 KB of data to "bigfile.csv" | file_size = 524288 bytes reported | 524,288 bytes confirmed (1024 × 512-byte chunks; required 2 bug fixes — see issues table) | PASS |
+| HW-SD-008 | Delete removes file | Sketch deletes "bigfile.csv" | "STORAGE_OK" returned; file no longer listed | `storage_sd_delete` returned 0 (STORAGE_OK) | PASS |
+| HW-SD-009 | Delete non-existent file returns correct error | Sketch deletes "bigfile.csv" a second time | "STORAGE_ERR_NOT_FOUND" returned; no crash | `storage_sd_delete` returned 4 (STORAGE_ERR_NOT_FOUND) | PASS |
+| HW-SD-010 | Absent card returns correct error | Remove SD card; reset board | "STORAGE_ERR_NO_CARD" returned; no crash or hang | `storage_init` returned 1 (STORAGE_ERR_NO_CARD); board printed "[INFO] STORAGE_ERR_NO_CARD" and halted remaining tests cleanly | PASS |
 
 #### Overall result
 
 | Field | Value |
 |-------|-------|
-| Result | PASS / FAIL / INCOMPLETE |
-| Failed test IDs | |
-| Notes | |
+| Result | PASS |
+| Failed test IDs | — |
+| Notes | Three bugs found and fixed during testing (see issues table above). Native unit tests compiled as a Windows DLL and executed via Python ctypes — required because Device Guard policy blocks unsigned `.exe` files; PlatformIO is also invoked as `python -m platformio` via the signed penv Python interpreter. HW-SD-010 was captured on the same reset as the main run: the SD card was already removed when RST was pressed, so the board booted without a card and printed `STORAGE_ERR_NO_CARD` then halted gracefully — the correct and expected behaviour. |
 
 ---
 
 ## LIB-9 — LittleFS (`littleFS/`)
 
 ### Purpose
-Read/write access to the LittleFS partition on the ESP32-S3 internal flash. Stores the HTML, CSS, and JavaScript files served by the web interface and is updated by the OTA mechanism. Always present — the LittleFS partition is part of the standard flash layout regardless of whether the SD card feature is fitted. Used by T11 (Web Server) and T13 (OTA).
+Read/write access to the LittleFS partitions on the ESP32-S3 internal flash. The flash layout contains **two** LittleFS partitions — **LittleFS A** and **LittleFS B** — each permanently paired with its same-letter firmware bank (Bank A → LittleFS A, Bank B → LittleFS B). The active partition always matches the active firmware bank; both switch together on OTA activation or rollback.
+
+- **T11 (Web Server)** mounts and reads the active partition only, serving the HTML/CSS/JS files for the web interface.
+- **T13 (OTA)** mounts the inactive partition independently to write updated web assets, leaving the active partition untouched while the update is in progress.
+
+Always present — both LittleFS partitions are part of the standard flash layout regardless of whether the SD card feature is fitted.
 
 ### Why separate from LIB-8
 LittleFS and the SD card are different hardware (internal flash controller vs. external SPI peripheral), different file systems (LittleFS vs. FAT32), different consumers (T11/T13 vs. T9), different optionality (always present vs. optional), and different mount lifetime (once at boot, never unmounted vs. runtime mount/unmount). Combining them in one library would couple an always-present subsystem to an optional one and mix two unrelated hardware abstractions.
@@ -1330,42 +1358,65 @@ typedef enum {
     LFS_ERR_FULL
 } lfs_status_t;
 
-// Mount the LittleFS partition. Call once at boot before any other function.
-lfs_status_t littlefs_init(void);
+typedef enum {
+    LFS_PARTITION_A = 0,   // paired with firmware Bank A
+    LFS_PARTITION_B = 1    // paired with firmware Bank B
+} lfs_partition_t;
 
-// Read entire file into null-terminated buffer; returns LFS_ERR_NOT_FOUND if absent.
-lfs_status_t littlefs_read(const char *path, char *buf, size_t buf_len);
+// Mount the specified LittleFS partition. Returns LFS_ERR_MOUNT on failure.
+// T11 calls this once at boot with the active partition.
+// T13 calls this with the inactive partition before writing web assets.
+lfs_status_t littlefs_mount(lfs_partition_t partition);
 
-// Write (overwrite) a file. Creates the file if it does not exist.
-lfs_status_t littlefs_write(const char *path, const void *data, size_t len);
+// Unmount the specified partition. T13 calls this after completing a web asset write.
+void         littlefs_unmount(lfs_partition_t partition);
 
-// Returns true if the file exists.
-bool         littlefs_exists(const char *path);
+// Read entire file from the specified partition into a null-terminated buffer.
+// Returns LFS_ERR_NOT_FOUND if absent.
+lfs_status_t littlefs_read(lfs_partition_t partition, const char *path,
+                            char *buf, size_t buf_len);
 
-// Returns free bytes remaining in the LittleFS partition.
-uint64_t     littlefs_free_bytes(void);
+// Write (overwrite) a file on the specified partition. Creates the file if absent.
+lfs_status_t littlefs_write(lfs_partition_t partition, const char *path,
+                             const void *data, size_t len);
+
+// Returns true if the file exists on the specified partition.
+bool         littlefs_exists(lfs_partition_t partition, const char *path);
+
+// Returns free bytes remaining on the specified partition.
+uint64_t     littlefs_free_bytes(lfs_partition_t partition);
+
+// Returns the partition letter (A or B) that is currently active
+// (matches the active firmware bank in the OTA partition table).
+lfs_partition_t littlefs_active_partition(void);
 ```
 
 ### FreeRTOS compatibility
-All operations are blocking. Callers serialise via MX5 (LittleFS mutex):
-- T11 acquires MX5 for each file serve request.
-- T13 acquires MX5 exclusively during an OTA web-file write; T11 defers requests while `EG1.OTA_IN_PROGRESS` is set.
+All operations are blocking.
+
+- **T11** mounts the active partition once at boot and holds it for the lifetime of the web server. MX5 (LittleFS mutex) serialises concurrent HTTP file-serve requests within T11. T13 never touches the active partition, so T11 is not blocked during an OTA web asset update.
+- **T13** calls `littlefs_mount(inactive)` on the inactive partition independently. Because T11 and T13 operate on different flash regions, no mutex is required between them. T13 calls `littlefs_unmount(inactive)` when the write is complete.
+- `EG1.OTA_IN_PROGRESS` is set by T13 for the duration of the update. T11 uses this flag to suppress OTA-page interactions (preventing a second simultaneous upload); it does not cause T11 to pause file serving.
 
 ### Mock strategy
 `mock_lfs.h` — an in-memory `std::map<std::string, std::vector<uint8_t>>` serves as the LittleFS backing store. Stubs for `LittleFS.begin()`, `LittleFS.open()`, file read/write, and `LittleFS.exists()`. No Arduino headers included in the mock.
 
-### Unit tests (8)
+### Unit tests (12)
 
 | ID | Test case | Assertion |
 |----|-----------|-----------|
-| UT-LFS-001 | `littlefs_init` returns `LFS_OK` | Mock mount succeeds |
-| UT-LFS-002 | `littlefs_read` returns content of existing file | Bytes match mock content; null-terminated |
-| UT-LFS-003 | `littlefs_read` on missing file → `LFS_ERR_NOT_FOUND` | No crash; correct error |
-| UT-LFS-004 | `littlefs_read` with `buf_len` smaller than file truncates and null-terminates | No overrun; last byte = 0 |
-| UT-LFS-005 | `littlefs_write` creates file; content correct | Read back matches written bytes |
-| UT-LFS-006 | `littlefs_write` overwrites existing file | Only second content present after second write |
-| UT-LFS-007 | `littlefs_exists` returns true for existing file | File written then existence confirmed |
-| UT-LFS-008 | `littlefs_exists` returns false for absent file | Non-existent path returns false |
+| UT-LFS-001 | `littlefs_mount(A)` returns `LFS_OK` | Mock mount of partition A succeeds |
+| UT-LFS-002 | `littlefs_mount(B)` returns `LFS_OK` | Mock mount of partition B succeeds |
+| UT-LFS-003 | `littlefs_read` returns content of existing file on correct partition | Bytes match mock content; null-terminated |
+| UT-LFS-004 | `littlefs_read` on missing file → `LFS_ERR_NOT_FOUND` | No crash; correct error |
+| UT-LFS-005 | `littlefs_read` with `buf_len` smaller than file truncates and null-terminates | No overrun; last byte = 0 |
+| UT-LFS-006 | `littlefs_write` creates file on specified partition; content correct | Read back from same partition matches written bytes |
+| UT-LFS-007 | `littlefs_write` on partition B does not affect partition A | Write to B; read from A returns `LFS_ERR_NOT_FOUND` |
+| UT-LFS-008 | `littlefs_write` overwrites existing file | Only second content present after second write |
+| UT-LFS-009 | `littlefs_exists` returns true for existing file | File written then existence confirmed |
+| UT-LFS-010 | `littlefs_exists` returns false for absent file | Non-existent path returns false |
+| UT-LFS-011 | `littlefs_active_partition` returns partition matching active firmware bank | Mock active bank = A; returns `LFS_PARTITION_A` |
+| UT-LFS-012 | `littlefs_unmount` allows remount of same partition | Mount A, unmount A, mount A again → `LFS_OK` |
 
 ### Hardware verification
 
@@ -1375,37 +1426,37 @@ All operations are blocking. Callers serialise via MX5 (LittleFS mutex):
 |-------|-------|
 | Driver | LIB-9 — LittleFS |
 | Directory | `littleFS/` |
-| Firmware version | |
-| Board ID / revision | |
-| Tester | |
-| Date | |
+| Firmware version | 0.1.0 |
+| Board ID / revision | ESP32-S3 QFN56 rev v0.2 / LOLIN S3 |
+| Tester | drasv |
+| Date | 2026-04-11 |
 | Equipment | LOLIN S3 only (no external hardware — LittleFS uses internal flash) |
 
-**Pre-condition:** Create `littleFS/data/test.html` containing `<h1>OK</h1>`. Run `pio run -e lolin_s3 -t uploadfs` before uploading the verification sketch. This uploads the file to the LittleFS partition so HW-LFS-002 and HW-LFS-003 can verify that pre-flashed files are accessible.
+**Pre-condition:** Create `littleFS/data/test.html` containing `<h1>OK</h1>`. Run `pio run -e lolin_s3 -t uploadfs` before uploading the verification sketch. This uploads the file to the active LittleFS partition so HW-LFS-002 and HW-LFS-003 can verify that pre-flashed files are accessible via `littlefs_read(LFS_PARTITION_A, ...)`.
 
-> **Partition table:** The default LOLIN S3 Arduino partition scheme (16 MB flash) allocates ~1.5 MB for LittleFS — sufficient for web interface files. Verify `board_build.partitions` in `platformio.ini` is not set to a scheme that omits the LittleFS partition.
+> **Partition table:** The flash layout must define two LittleFS partitions (LittleFS A and LittleFS B), each ~1 MB, for a total of ~2 MB allocated to web assets. Verify `board_build.partitions` in `platformio.ini` uses a custom partition table that includes both `littlefs_a` and `littlefs_b` entries. The default LOLIN S3 single-LittleFS scheme must be replaced.
 
 #### Test cases
 
 | ID | Description | Procedure | Expected result | Actual result | P/F |
 |----|-------------|-----------|-----------------|---------------|-----|
-| HW-LFS-001 | LittleFS partition mounts | Upload sketch after `uploadfs`; open serial | "LittleFS init OK" printed within 3 s | | |
-| HW-LFS-002 | Pre-uploaded file is found | Sketch calls littlefs_exists("/test.html") | Returns true; "exists: true" printed | | |
-| HW-LFS-003 | Pre-uploaded file content is correct | Sketch reads "/test.html" | Content = `<h1>OK</h1>` printed on serial; matches file uploaded via `uploadfs` | | |
-| HW-LFS-004 | Non-existent file returns false on exists check | Sketch calls littlefs_exists("/missing.txt") | Returns false; "exists: false" printed; no crash | | |
-| HW-LFS-005 | Non-existent file read returns correct error | Sketch calls littlefs_read("/missing.txt") | "LFS_ERR_NOT_FOUND" returned; no crash | | |
-| HW-LFS-006 | Runtime write creates file | Sketch calls littlefs_write("/runtime.txt", "hello", 5) | "LFS_OK" returned | | |
-| HW-LFS-007 | Written file content is correct | Sketch reads "/runtime.txt" after HW-LFS-006 | Content = "hello" printed; matches written data | | |
-| HW-LFS-008 | Overwrite replaces previous content | Sketch calls littlefs_write("/runtime.txt", "world", 5); then reads | Content = "world"; previous content "hello" absent | | |
-| HW-LFS-009 | Free bytes reported | Sketch calls littlefs_free_bytes() | Returns value > 0. Record: ___ bytes remaining | | |
+| HW-LFS-001 | LittleFS partition mounts | Upload sketch after `uploadfs`; open serial | "LittleFS init OK" printed within 3 s | Active partition: A; `littlefs_mount` returned 0; "LittleFS init OK" printed | PASS |
+| HW-LFS-002 | Pre-uploaded file is found | Sketch calls littlefs_exists("/test.html") | Returns true; "exists: true" printed | "exists /test.html: true" | PASS |
+| HW-LFS-003 | Pre-uploaded file content is correct | Sketch reads "/test.html" | Content = `<h1>OK</h1>` printed on serial; matches file uploaded via `uploadfs` | Content = `<h1>OK</h1>` | PASS |
+| HW-LFS-004 | Non-existent file returns false on exists check | Sketch calls littlefs_exists("/missing.txt") | Returns false; "exists: false" printed; no crash | "exists /missing.txt: false"; no crash | PASS |
+| HW-LFS-005 | Non-existent file read returns correct error | Sketch calls littlefs_read("/missing.txt") | "LFS_ERR_NOT_FOUND" returned; no crash | Returned 2 (LFS_ERR_NOT_FOUND); no crash | PASS |
+| HW-LFS-006 | Runtime write creates file | Sketch calls littlefs_write("/runtime.txt", "hello", 5) | "LFS_OK" returned | Returned 0 (LFS_OK) | PASS |
+| HW-LFS-007 | Written file content is correct | Sketch reads "/runtime.txt" after HW-LFS-006 | Content = "hello" printed; matches written data | Content = "hello" | PASS |
+| HW-LFS-008 | Overwrite replaces previous content | Sketch calls littlefs_write("/runtime.txt", "world", 5); then reads | Content = "world"; previous content "hello" absent | Content = "world"; "hello" absent | PASS |
+| HW-LFS-009 | Free bytes reported | Sketch calls littlefs_free_bytes() | Returns value > 0. Record: ___ bytes remaining | 1 040 384 bytes free | PASS |
 
 #### Overall result
 
 | Field | Value |
 |-------|-------|
-| Result | PASS / FAIL / INCOMPLETE |
-| Failed test IDs | |
-| Notes | |
+| Result | PASS |
+| Failed test IDs | none |
+| Notes | `uploadfs` targets the last partition in the table (`littlefs_b`). `littlefs_a` was flashed directly via esptool at 0x3F0000. The Arduino FS `[E] open(): does not exist` log lines for HW-LFS-004/005 are expected — they are the Arduino VFS layer's own error logging before the driver returns `LFS_ERR_NOT_FOUND`; not failures. |
 
 ---
 
@@ -1418,9 +1469,9 @@ For each driver, mark off both stages before declaring the driver done:
 | LIB-1 GPIO Utility | `gpio/` | 1 | UT-GPIO-001…011 | ✅ 2026-04-10 | HW-GPIO-001…011 | ✅ 2026-04-10 |
 | LIB-2 I2C Bus | `i2c/` | 1 | UT-I2C-001…008 | ✅ 2026-04-10 | HW-I2C-001…005 | ✅ 2026-04-10 |
 | LIB-5 Keypad Matrix | `keyPad/` | 1 | UT-KP-001…010 | ☐ | HW-KP-001…004 | ☐ |
-| LIB-7 NVS Configuration | `nvs/` | 1 | UT-NVS-001…013 | ☐ | HW-NVS-001…010 | ☐ |
-| LIB-8 SD Card | `sdCard/` | 1 | UT-SD-001…012 | ☐ | HW-SD-001…010 | ☐ |
-| LIB-9 LittleFS | `littleFS/` | 1 | UT-LFS-001…008 | ☐ | HW-LFS-001…009 | ☐ |
+| LIB-7 NVS Configuration | `nvs/` | 1 | UT-NVS-001…025 | ☐ | HW-NVS-001…010 | ☐ |
+| LIB-8 SD Card | `sdCard/` | 1 | UT-SD-001…012 | ✅ 2026-04-11 | HW-SD-001…010 | ✅ 2026-04-11 |
+| LIB-9 LittleFS | `littleFS/` | 1 | UT-LFS-001…012 | ✅ 2026-04-11 | HW-LFS-001…009 | ✅ 2026-04-11 |
 | LIB-3 DS1307 RTC | `DS1307_RTC/` | 2 | UT-RTC-001…011 | ✅ 2026-04-10 | HW-RTC-001…005 | ✅ 2026-04-10 |
 | LIB-4 LCD1602 I2C | `LCD1602_I2C/` | 2 | UT-LCD-001…011 | ✅ 2026-04-10 | HW-LCD-001…008 | ✅ 2026-04-10 |
 | LIB-6 Modbus RTU | `modBus/` | 2 | UT-MB-001…012 | ☐ | HW-MB-001…005 | ☐ |

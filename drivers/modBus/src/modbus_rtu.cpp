@@ -1,0 +1,171 @@
+/**
+ * @file modbus_rtu.cpp
+ * @brief Modbus RTU master driver implementation (LIB-6).
+ *
+ * Transaction sequence per request:
+ *  1. Assert DE/RE HIGH via gpio_set_rs485_direction(true).
+ *  2. Write 8-byte request frame to Serial1.
+ *  3. Call Serial1.flush() to wait for TX to complete.
+ *  4. Assert DE/RE LOW via gpio_set_rs485_direction(false).
+ *  5. Read bytes with per-frame timeout until (count*2 + 5) bytes received.
+ *     After byte 1: if fc|0x80, adjust expected length to 5 (exception frame).
+ *  6. Validate CRC16 (polynomial 0xA001).
+ *  7. Return parsed register values, or an error code.
+ *
+ * Frame format:
+ *   Request  (8 bytes): [addr][fc][reg_hi][reg_lo][cnt_hi][cnt_lo][crc_lo][crc_hi]
+ *   Response           : [addr][fc][byte_cnt][data...][crc_lo][crc_hi]
+ *   Exception (5 bytes): [addr][fc|0x80][exc_code][crc_lo][crc_hi]
+ *
+ * @author Greenhouse Controller project
+ * @version 0.1.0
+ */
+
+#ifndef UNIT_TEST
+  #include <Arduino.h>
+  #include "gpio_util.h"
+#else
+  #include "../test/mock_uart.h"
+  #include "../test/mock_gpio.h"
+#endif
+
+#include "modbus_rtu.h"
+
+/* ---------------------------------------------------------------------------
+ * CRC16 — Modbus (polynomial 0xA001, init 0xFFFF)
+ * Static in production; exported as modbus_crc16() in unit-test builds.
+ * --------------------------------------------------------------------------- */
+#ifdef UNIT_TEST
+uint16_t modbus_crc16(const uint8_t *buf, uint8_t len)
+#else
+static uint16_t modbus_crc16(const uint8_t *buf, uint8_t len)
+#endif
+{
+    uint16_t crc = 0xFFFF;
+    for (uint8_t i = 0; i < len; i++) {
+        crc ^= (uint16_t)buf[i];
+        for (uint8_t b = 0; b < 8; b++) {
+            if (crc & 0x0001) {
+                crc = (crc >> 1) ^ 0xA001;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    return crc;
+}
+
+/* ---------------------------------------------------------------------------
+ * Public API
+ * --------------------------------------------------------------------------- */
+
+void modbus_init(void)
+{
+    Serial1.begin(MODBUS_BAUD, SERIAL_8N1, MODBUS_UART_RX, MODBUS_UART_TX);
+    gpio_set_rs485_direction(false);   /* start in receive mode */
+}
+
+/* ---------------------------------------------------------------------------
+ * Internal transaction helper — shared by FC03 and FC04.
+ * --------------------------------------------------------------------------- */
+static modbus_status_t modbus_transaction(uint8_t  device_addr,
+                                           uint8_t  fc,
+                                           uint16_t start_reg,
+                                           uint8_t  count,
+                                           uint16_t *out)
+{
+    /* Parameter validation */
+    if (device_addr == 0) {
+        return MODBUS_ERR_PARAM;   /* broadcast address not allowed for reads */
+    }
+    if (count == 0 || count > 125) {
+        return MODBUS_ERR_PARAM;   /* FC03/FC04 register-count limit */
+    }
+
+    /* Build 8-byte request frame */
+    uint8_t req[8];
+    req[0] = device_addr;
+    req[1] = fc;
+    req[2] = (uint8_t)(start_reg >> 8);
+    req[3] = (uint8_t)(start_reg & 0xFF);
+    req[4] = 0x00;
+    req[5] = count;
+    uint16_t req_crc = modbus_crc16(req, 6);
+    req[6] = (uint8_t)(req_crc & 0xFF);  /* CRC low byte first */
+    req[7] = (uint8_t)(req_crc >> 8);    /* CRC high byte second */
+
+    /* Transmit */
+    gpio_set_rs485_direction(true);   /* DE/RE HIGH — driver enable */
+    Serial1.write(req, 8);
+    Serial1.flush();                  /* wait for TX FIFO to drain */
+    /* Guard: one extra character time so the shift register finishes
+     * clocking out the stop bit before DE/RE is deasserted.
+     * At 9600 baud, 1 character ≈ 1.04 ms → 2 ms is ample. */
+    delayMicroseconds(2000);
+    gpio_set_rs485_direction(false);  /* DE/RE LOW — receiver enable */
+
+    /* Receive response */
+    uint8_t  resp[256];
+    uint8_t  received     = 0;
+    uint8_t  expected_len = (uint8_t)(count * 2 + 5);  /* normal response length */
+    uint32_t start        = millis();
+
+    while (received < expected_len) {
+        if (millis() - start > MODBUS_TIMEOUT_MS) {
+            return MODBUS_ERR_TIMEOUT;
+        }
+        if (Serial1.available()) {
+            resp[received++] = (uint8_t)Serial1.read();
+            /* After the function-code byte: check for exception response */
+            if (received == 2 && (resp[1] & 0x80)) {
+                expected_len = 5;   /* exception frame: addr+fc+exc_code+crc_lo+crc_hi */
+            }
+        }
+    }
+
+    /* Validate CRC over all bytes except the trailing two CRC bytes */
+    uint16_t recv_crc = (uint16_t)resp[expected_len - 2]
+                      | ((uint16_t)resp[expected_len - 1] << 8);
+    uint16_t calc_crc = modbus_crc16(resp, (uint8_t)(expected_len - 2));
+    if (recv_crc != calc_crc) {
+        return MODBUS_ERR_CRC;
+    }
+
+    /* Detect exception after CRC is confirmed valid */
+    if (resp[1] & 0x80) {
+        return MODBUS_ERR_EXCEPTION;
+    }
+
+    /* Validate address and function code */
+    if (resp[0] != device_addr || resp[1] != fc) {
+        return MODBUS_ERR_FRAMING;
+    }
+
+    /* Validate data byte count */
+    if (resp[2] != (uint8_t)(count * 2)) {
+        return MODBUS_ERR_FRAMING;
+    }
+
+    /* Parse register values (big-endian pairs starting at byte 3) */
+    for (uint8_t i = 0; i < count; i++) {
+        out[i] = ((uint16_t)resp[3 + i * 2] << 8) | resp[4 + i * 2];
+    }
+
+    return MODBUS_OK;
+}
+
+modbus_status_t modbus_read_holding_registers(uint8_t  device_addr,
+                                               uint16_t start_reg,
+                                               uint8_t  count,
+                                               uint16_t *out)
+{
+    return modbus_transaction(device_addr, 0x03, start_reg, count, out);
+}
+
+modbus_status_t modbus_read_input_registers(uint8_t  device_addr,
+                                             uint16_t start_reg,
+                                             uint8_t  count,
+                                             uint16_t *out)
+{
+    return modbus_transaction(device_addr, 0x04, start_reg, count, out);
+}

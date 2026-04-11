@@ -1,0 +1,131 @@
+/**
+ * @file littlefs_storage.h
+ * @brief LittleFS dual-partition driver — internal flash (LIB-9).
+ *
+ * Provides read/write access to the two LittleFS partitions on the ESP32-S3
+ * internal flash.  Each partition is permanently paired with its same-letter
+ * OTA firmware bank (Bank A ↔ LittleFS A, Bank B ↔ LittleFS B).
+ *
+ * Consumers:
+ *   - T11 (Web Server)  mounts the active partition once at boot to serve
+ *                       HTML/CSS/JS assets.
+ *   - T13 (OTA)         independently mounts the inactive partition to write
+ *                       updated web assets during an OTA update cycle.
+ *
+ * Both partitions are always present in the flash layout — the driver is not
+ * optional.
+ *
+ * @author Greenhouse Controller project
+ * @version 0.1.0
+ */
+
+#pragma once
+
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+
+/* ---------------------------------------------------------------------------
+ * Status codes
+ * --------------------------------------------------------------------------- */
+typedef enum {
+    LFS_OK = 0,         /**< Operation succeeded */
+    LFS_ERR_MOUNT,      /**< Partition could not be mounted */
+    LFS_ERR_NOT_FOUND,  /**< File or path does not exist on the partition */
+    LFS_ERR_IO,         /**< Read / write error */
+    LFS_ERR_FULL        /**< Partition is full */
+} lfs_status_t;
+
+/* ---------------------------------------------------------------------------
+ * Partition selector
+ * --------------------------------------------------------------------------- */
+typedef enum {
+    LFS_PARTITION_A = 0,  /**< LittleFS partition A — paired with OTA Bank A */
+    LFS_PARTITION_B = 1   /**< LittleFS partition B — paired with OTA Bank B */
+} lfs_partition_t;
+
+/* ---------------------------------------------------------------------------
+ * Public API
+ * --------------------------------------------------------------------------- */
+
+/**
+ * @brief Mount the specified LittleFS partition.
+ *
+ * Safe to call on an already-mounted partition (no-op, returns LFS_OK).
+ * T11 calls this once at boot with the active partition.
+ * T13 calls this with the inactive partition before writing web assets.
+ *
+ * @param partition  Partition to mount (LFS_PARTITION_A or LFS_PARTITION_B).
+ * @return LFS_OK on success, LFS_ERR_MOUNT on failure.
+ */
+lfs_status_t littlefs_mount(lfs_partition_t partition);
+
+/**
+ * @brief Unmount the specified partition.
+ *
+ * T13 calls this after completing a web asset write.
+ * Safe to call on an already-unmounted partition (no-op).
+ *
+ * @param partition  Partition to unmount.
+ */
+void littlefs_unmount(lfs_partition_t partition);
+
+/**
+ * @brief Read an entire file into a NUL-terminated buffer.
+ *
+ * At most @p buf_len−1 bytes are copied; the result is always NUL-terminated.
+ * Partial reads due to a small buffer are not an error.
+ *
+ * @param partition  Partition to read from.
+ * @param path       Absolute path on the partition, e.g. "/index.html".
+ * @param buf        Destination buffer (at least @p buf_len bytes).
+ * @param buf_len    Buffer size including the NUL terminator.
+ * @return LFS_OK, LFS_ERR_NOT_FOUND, LFS_ERR_IO.
+ */
+lfs_status_t littlefs_read(lfs_partition_t partition, const char *path,
+                            char *buf, size_t buf_len);
+
+/**
+ * @brief Write (overwrite) a file on the specified partition.
+ *
+ * Creates the file if it does not exist.  Truncates and replaces existing
+ * content if the file already exists.
+ *
+ * @param partition  Partition to write to.
+ * @param path       Absolute path on the partition.
+ * @param data       Data to write (may contain binary bytes).
+ * @param len        Number of bytes to write.
+ * @return LFS_OK, LFS_ERR_IO, LFS_ERR_FULL.
+ */
+lfs_status_t littlefs_write(lfs_partition_t partition, const char *path,
+                             const void *data, size_t len);
+
+/**
+ * @brief Check whether a file exists on the specified partition.
+ *
+ * @param partition  Partition to query.
+ * @param path       Absolute path to check.
+ * @return true if the file exists, false otherwise.
+ */
+bool littlefs_exists(lfs_partition_t partition, const char *path);
+
+/**
+ * @brief Return free bytes remaining on the specified partition.
+ *
+ * @param partition  Partition to query.
+ * @return Free bytes available, or 0 on error / not mounted.
+ */
+uint64_t littlefs_free_bytes(lfs_partition_t partition);
+
+/**
+ * @brief Return the partition letter that matches the active OTA firmware bank.
+ *
+ * Queries the ESP-IDF OTA API to determine which app partition is currently
+ * running, then maps it to the paired LittleFS partition.
+ *
+ * In the native unit-test build the result is controlled by
+ * mock_lfs_set_active_partition().
+ *
+ * @return LFS_PARTITION_A or LFS_PARTITION_B.
+ */
+lfs_partition_t littlefs_active_partition(void);

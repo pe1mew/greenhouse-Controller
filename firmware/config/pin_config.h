@@ -103,3 +103,19 @@
 
 /** @brief Keypad column 4 — INPUT_PULLUP; LOW when key in column 4 is pressed. */
 #define KP_COL4             11
+
+/* ---------------------------------------------------------------------------
+ * SPI SD card (LIB-8)
+ * --------------------------------------------------------------------------- */
+
+/** @brief SPI MOSI — SD card data out. */
+#define PIN_SD_MOSI         47
+
+/** @brief SPI MISO — SD card data in. */
+#define PIN_SD_MISO         48
+
+/** @brief SPI clock — SD card clock. */
+#define PIN_SD_CLK          39
+
+/** @brief SPI chip-select — SD card CS (active-low). */
+#define PIN_SD_CS           40
