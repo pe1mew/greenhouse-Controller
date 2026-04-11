@@ -1014,6 +1014,13 @@ Typed get/set access to the ESP32-S3 NVS flash for all system configuration sett
 #define NVS_NS_SYSTEM   "system"
 #define NVS_NS_LOG      "log"
 
+// Schema versioning — see section below
+#ifndef NVS_SCHEMA_VERSION
+  #define NVS_SCHEMA_VERSION  1
+#endif
+#define NVS_KEY_SCHEMA_VER  "schema_ver"
+#define NVS_KEY_FW_VERSION  "fw_version"   // string "MAJOR.MINOR.PATCH", written on every boot
+
 #ifndef CONFIG_NVS_LOG_CAPACITY
   #define CONFIG_NVS_LOG_CAPACITY  1000
 #endif
@@ -1022,10 +1029,17 @@ typedef enum {
     NVS_CFG_OK = 0,
     NVS_CFG_ERR_NOT_FOUND,
     NVS_CFG_ERR_WRITE,
-    NVS_CFG_ERR_INIT
+    NVS_CFG_ERR_INIT,
+    NVS_CFG_ERR_MIGRATION    // schema mismatch — defaults applied; caller should log
 } nvs_cfg_status_t;
 
+// Initialisation (includes schema version check)
 nvs_cfg_status_t nvs_cfg_init(void);
+
+// Schema version query
+nvs_cfg_status_t nvs_cfg_get_schema_version(int32_t *ver);
+
+// Typed get / set
 nvs_cfg_status_t nvs_cfg_get_i32(const char *ns, const char *key, int32_t *val);
 nvs_cfg_status_t nvs_cfg_set_i32(const char *ns, const char *key, int32_t val);
 nvs_cfg_status_t nvs_cfg_get_str(const char *ns, const char *key, char *buf, size_t buf_len);
@@ -1034,24 +1048,87 @@ nvs_cfg_status_t nvs_cfg_get_blob(const char *ns, const char *key, void *buf, si
 nvs_cfg_status_t nvs_cfg_set_blob(const char *ns, const char *key, const void *data, size_t len);
 nvs_cfg_status_t nvs_cfg_erase_namespace(const char *ns);
 
+// _or_default helpers — write the default when the key is absent; never return NOT_FOUND
+nvs_cfg_status_t nvs_cfg_get_i32_or_default(const char *ns, const char *key,
+                                              int32_t default_val, int32_t *val);
+nvs_cfg_status_t nvs_cfg_get_str_or_default(const char *ns, const char *key,
+                                              const char *default_val,
+                                              char *buf, size_t buf_len);
+nvs_cfg_status_t nvs_cfg_get_blob_or_default(const char *ns, const char *key,
+                                               const void *default_data, size_t default_len,
+                                               void *buf, size_t *len);
+
 // Ring buffer log (stored in NVS_NS_LOG namespace)
 nvs_cfg_status_t nvs_log_append(const void *entry, size_t entry_size);
 nvs_cfg_status_t nvs_log_read(uint32_t offset, void *buf, uint32_t count, uint32_t *count_out);
 uint32_t         nvs_log_count(void);
 ```
 
+### Schema versioning
+
+The driver enforces a schema version to detect when the on-flash NVS layout differs from the current firmware build and to log the migration event.
+
+**How it works:**
+
+| Boot condition | `nvs_cfg_init()` behaviour | Return value |
+|----------------|---------------------------|--------------|
+| First boot / blank flash | Writes `system/schema_ver = NVS_SCHEMA_VERSION`; writes `system/fw_version = FIRMWARE_VERSION` | `NVS_CFG_OK` |
+| Stored version == `NVS_SCHEMA_VERSION` | Overwrites `system/fw_version` with current `FIRMWARE_VERSION` | `NVS_CFG_OK` |
+| Stored version ≠ `NVS_SCHEMA_VERSION` | Writes new `system/schema_ver`; overwrites `system/fw_version`; **all other namespaces are preserved** | `NVS_CFG_ERR_MIGRATION` |
+
+`system/fw_version` is overwritten on **every** boot so it always reflects the currently running firmware, regardless of whether a migration occurred. This allows T11 (web server) and T9 (event logger) to read the running firmware version directly from NVS without requiring it to be embedded only in the binary image.
+
+**Migration strategy — preserve, add, ignore removed:**
+
+On a schema version mismatch, namespaces are **not erased**. The three cases are handled as follows:
+
+| Situation | Outcome |
+|-----------|---------|
+| Key present in NVS and still used by firmware | Read as-is — **user setting is preserved** |
+| Key absent in NVS (new setting added in this firmware) | First `_or_default` call writes the factory default — **new key gets default** |
+| Key present in NVS but no longer used by firmware | Never read — becomes an orphaned entry; causes no harm; NVS partition reclaims space over time |
+
+**Type-change exception:** If a key's storage type changes between firmware versions (e.g. `i32` → `blob`), the ESP-IDF NVS API returns `ESP_ERR_NVS_TYPE_MISMATCH`. This is the one case that requires explicit per-key handling in the firmware (erase and rewrite the individual key). A blanket namespace erase is not used; only the affected key must be migrated.
+
+**Caller contract:** The caller (typically T4 — Data Manager) checks the return value of `nvs_cfg_init()`. If `NVS_CFG_ERR_MIGRATION` is returned, it logs the event and proceeds normally. All subsequent `_or_default` calls preserve existing user values or write factory defaults for newly absent keys.
+
+**Bumping the version:** Increment `NVS_SCHEMA_VERSION` in `nvs_config.h` when releasing firmware that changes the NVS layout, so that the migration event is logged on the first boot. This is informational — the driver does not erase on mismatch. The version must also be bumped when a key's type changes, so the firmware can detect the condition and handle the affected key explicitly.
+
+### `_or_default` helpers
+
+These combine get + conditional-write into one call, eliminating boilerplate at every call site:
+
+```cpp
+// Without _or_default (4 lines):
+int32_t t_min;
+if (nvs_cfg_get_i32(NVS_NS_CLIMATE, "t_min", &t_min) == NVS_CFG_ERR_NOT_FOUND) {
+    t_min = 180;
+    nvs_cfg_set_i32(NVS_NS_CLIMATE, "t_min", t_min);
+}
+
+// With _or_default (1 line):
+int32_t t_min;
+nvs_cfg_get_i32_or_default(NVS_NS_CLIMATE, "t_min", 180, &t_min);
+```
+
+If the key is present the stored value is returned and the default is ignored.  
+If the key is absent the default is written to NVS and returned.  
+The caller receives `NVS_CFG_OK` in both cases.
+
 ### Ring buffer implementation
 Stored in the `log` namespace using three key types:
-- `"head"` (uint32) — next write slot index (0-based, wraps at `CONFIG_NVS_LOG_CAPACITY`)
-- `"count"` (uint32) — number of valid entries (max = capacity)
+- `"head"` (i32) — next write slot index (0-based, wraps at `CONFIG_NVS_LOG_CAPACITY`)
+- `"count"` (i32) — number of valid entries (max = capacity)
 - `"eNNNN"` (blob) — individual entry at slot NNNN (zero-padded 4-digit index)
 
 At 12 bytes per log entry × 1000 entries ≈ 12 KB of NVS space. The LOLIN S3 default Arduino partition table allocates at least 24 KB for NVS.
 
 ### Mock strategy (`test/mock_nvs.h`)
-An in-memory `std::map<std::string, std::vector<uint8_t>>` backing store with stubs for all ESP-IDF NVS functions (`nvs_flash_init`, `nvs_open`, `nvs_get_i32`, etc.). `#ifndef UNIT_TEST` guards the real `#include "nvs_flash.h"` in `nvs_config.cpp`; under `UNIT_TEST`, `#include "../test/mock_nvs.h"` is substituted.
+An in-memory `std::map<std::string, std::vector<uint8_t>>` backing store keyed on `"namespace:key"` with stubs for all ESP-IDF NVS functions (`nvs_flash_init`, `nvs_open`, `nvs_get_i32`, etc.). `#ifndef UNIT_TEST` guards the real `#include "nvs_flash.h"` / `nvs.h` in `nvs_config.cpp`; under `UNIT_TEST`, `#include "../test/mock_nvs.h"` is substituted.
 
-### Unit tests (13)
+`mock_nvs_inject_i32(ns, key, val)` allows tests to pre-populate NVS state before calling `nvs_cfg_init()`, which is necessary for testing the schema-mismatch migration path.
+
+### Unit tests (22)
 
 | ID | Test case | Assertion |
 |----|-----------|-----------|
@@ -1068,6 +1145,18 @@ An in-memory `std::map<std::string, std::vector<uint8_t>>` backing store with st
 | UT-NVS-011 | After wrap, `offset=0` reads oldest surviving entry | Correct oldest after wrap |
 | UT-NVS-012 | Read count > available clamps to available | `count_out` ≤ actual entries |
 | UT-NVS-013 | Key longer than 15 chars: consistent behaviour | Defined: reject or truncate — not both |
+| UT-NVS-014 | `nvs_cfg_init` on first boot writes `schema_ver = NVS_SCHEMA_VERSION` | `get_schema_version()` returns current compile-time version |
+| UT-NVS-015 | Second `nvs_cfg_init` with matching version → `NVS_CFG_OK` | No migration, version unchanged |
+| UT-NVS-016 | `nvs_cfg_init` with stale version → `NVS_CFG_ERR_MIGRATION`; version updated | Mock pre-loads version N-1; init returns MIGRATION; stored ver = NVS_SCHEMA_VERSION |
+| UT-NVS-017 | After migration, existing config keys are **preserved** | Pre-set `climate/t_min = 100`; trigger migration; `get_i32` still returns 100 |
+| UT-NVS-018 | `get_i32_or_default` absent key → writes default, returns it | Key absent; default 180 written and returned; plain `get_i32` also returns 180 |
+| UT-NVS-019 | `get_i32_or_default` present key → returns stored, ignores default | Pre-set to 42; default 99; returns 42 |
+| UT-NVS-020 | `get_str_or_default` absent key → writes default string, returns it | Key absent; "Greenhouse1" written and returned |
+| UT-NVS-021 | `get_str_or_default` present key → returns stored, ignores default | Pre-set "OfficeNet"; default "Default"; returns "OfficeNet" |
+| UT-NVS-022 | `get_blob_or_default` absent key → writes default blob, returns it | Absent blob; default bytes written and returned |
+| UT-NVS-023 | `nvs_cfg_init` on first boot writes `fw_version` string | `get_str(system, fw_version)` returns `FIRMWARE_VERSION` |
+| UT-NVS-024 | `nvs_cfg_init` on normal boot (no migration) overwrites `fw_version` | Pre-set `fw_version = "0.0.1"`; init with matching schema; `fw_version` updated to `FIRMWARE_VERSION` |
+| UT-NVS-025 | `nvs_cfg_init` on migration boot overwrites `fw_version` | Pre-set stale schema + old `fw_version`; init returns MIGRATION; `fw_version` updated to `FIRMWARE_VERSION` |
 
 ### Hardware verification
 

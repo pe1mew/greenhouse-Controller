@@ -387,7 +387,7 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 - Posts actuation commands to T2 (manual window commands from web UI).
 - Available on both WiFi AP and WiFi client interfaces simultaneously.
 - Authentication required before any page is served or any setting is changed.
-- **Synchronization:** acquires MX5 (LittleFS) to serve HTML files; reads EG1.OTA_IN_PROGRESS before serving files (defers requests while OTA is active); acquires MX2 to read current measurements; acquires MX4 to read configuration; posts to Q4 (validated config/state updates to T4); posts to Q1 (actuation commands from web UI); posts to Q3 (log events).
+- **Synchronization:** acquires MX5 (LittleFS) to serialise concurrent HTTP file-serve requests against the active LittleFS partition; reads EG1.OTA_IN_PROGRESS (informational — T13 writes only to the inactive partition so T11 is not blocked during OTA, but the flag may be used to suppress OTA-page interactions); acquires MX2 to read current measurements; acquires MX4 to read configuration; posts to Q4 (validated config/state updates to T4); posts to Q1 (actuation commands from web UI); posts to Q3 (log events).
 
 ---
 
@@ -408,12 +408,13 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 **Priority:** Low (spawned on demand) | **Core:** 0
 
 - Activated via the web interface (T11).
-- Writes incoming firmware image to the inactive flash bank (A or B).
-- Writes incoming LittleFS image to the inactive web-files slot.
-- On successful write: marks the inactive bank active and triggers a controlled system restart.
-- Implements 3-consecutive-fail rollback: if the new firmware fails to complete startup 3 times, the previous bank is restored as active and the system boots the known-good version.
-- Firmware and web-file updates belonging to the same release must both be applied in the same update session before either is activated.
-- **Synchronization:** acquires MX5 (LittleFS) exclusively during web-file write — T11 is blocked from serving HTML while this is held; sets EG1.OTA_IN_PROGRESS on start, clears on completion or failure; posts to Q3 (log events).
+- Writes incoming firmware image to the inactive firmware bank (A or B).
+- Receives web asset zip, buffers it in PSRAM, and extracts it file-by-file to the **inactive** LittleFS partition (the partition paired with the inactive firmware bank). Writes `manifest.json` last.
+- The active LittleFS partition is never written during an update; T11 continues to serve the active partition uninterrupted while T13 writes to the inactive one.
+- On successful write of both firmware and web assets: marks the inactive firmware bank (and its paired LittleFS partition) as active and triggers a controlled system restart.
+- Implements 3-consecutive-fail rollback: if the new firmware fails to complete startup 3 times, the previous bank is restored as active — this also automatically restores the previous matching LittleFS partition.
+- Firmware and web asset updates belonging to the same release must both complete before either is activated.
+- **Synchronization:** does **not** acquire MX5 during web asset write (inactive LittleFS is not accessed by T11); sets EG1.OTA_IN_PROGRESS on start, clears on completion or failure; posts to Q3 (log events).
 
 ---
 
@@ -469,7 +470,7 @@ FreeRTOS mutexes (`xSemaphoreCreateMutex`) implement priority inheritance, which
 | MX2 | Current measurement data  | Latest T, RH, wind speed, wind direction values in T4                   | T4 (on write from T5)         | T3, T6, T8, T9, T11, T12            |
 | MX3 | Measurement ring buffers  | History ring buffers for T, RH, wind speed, wind direction in T4        | T4 (on write from T5)         | T8, T9, T11, T12                    |
 | MX4 | Configuration settings    | All configurable parameters in T4                                        | T4 (on validated write from Q4) | T3, T6, T8, T11, T12             |
-| MX5 | LittleFS filesystem       | LittleFS partition (HTML and web asset files)                            | T13 (OTA web-file write)      | T11 (serving HTML files)            |
+| MX5 | LittleFS filesystem       | Active LittleFS partition (HTML and web asset files served by T11)       | T11 (concurrent HTTP requests) | T11 (concurrent HTTP requests)     |
 
 > **MX2 and MX3 are separate** to ensure T3 (safety-critical) is never delayed by a long ring-buffer read in T9 or T11. T3 only acquires MX2 (current values); it never acquires MX3.
 
@@ -846,27 +847,56 @@ Where `Mxx` encodes active window states (e.g. `M1O` = M1 open, `M2C` = M2 close
 | Bank A | Firmware image slot A |
 | Bank B | Firmware image slot B |
 | NVS | Configuration settings (persistent across updates) |
-| LittleFS | HTML and web asset files for the administrative interface |
+| LittleFS A | Web asset files paired with firmware Bank A |
+| LittleFS B | Web asset files paired with firmware Bank B |
 
-- The system boots from whichever bank is marked **active** in the partition table.
+- The system boots from whichever firmware bank is marked **active** in the partition table.
+- The active LittleFS partition is always the one with the same letter as the active firmware bank: Bank A → LittleFS A, Bank B → LittleFS B. This coupling is fixed and unconditional.
+- T11 mounts only the active LittleFS partition. The inactive LittleFS partition is never mounted by T11.
 
 **Firmware update procedure:**
 1. Administrator uploads new firmware image via web interface (admin session required).
-2. T13 writes the image to the inactive bank.
+2. T13 writes the image to the inactive firmware bank.
 3. On successful write and integrity check: inactive bank is marked active.
-4. System reboots into the new firmware.
+4. System reboots. Both the firmware bank and the paired LittleFS partition switch together.
 
 **Failsafe rollback:**
 - If the newly booted firmware fails to complete its startup health check 3 consecutive times, the previous bank is automatically restored as active and the system reboots into the known-good firmware.
+- Because LittleFS is coupled to the firmware bank, rolling back the firmware bank automatically restores the matching web assets. No separate web asset rollback is needed.
 - Rollback events are logged.
 
-**Web file update:**
-- HTML and web asset files in LittleFS are updated separately via the same OTA mechanism.
-- MX5 is held exclusively during the write; T11 defers file-serve requests while EG1.OTA_IN_PROGRESS is set.
+**Web asset update procedure:**
+1. Administrator uploads a `.zip` archive of HTML/CSS/JS files via the web interface (admin session required).
+2. T13 receives the zip and buffers it entirely in PSRAM.
+3. T13 sets **EG1.OTA_IN_PROGRESS**.
+4. T13 mounts the **inactive** LittleFS partition independently. The active partition remains mounted by T11 and continues to serve requests uninterrupted — MX5 is not acquired during this phase.
+5. T13 extracts each file from the zip and writes it to the inactive LittleFS partition. Existing files are overwritten; new files are created; files absent from the zip are left as orphans (or the partition is formatted first for a clean state — implementation choice).
+6. T13 writes `manifest.json` to the inactive partition as the **last step**, only after all files have been extracted and verified:
+
+   ```json
+   {
+     "asset_version": "MAJOR.MINOR.PATCH",
+     "checksum":      "<hex string — CRC32 or SHA-256 of the zip archive>"
+   }
+   ```
+
+7. T13 unmounts the inactive LittleFS partition and clears **EG1.OTA_IN_PROGRESS**.
+8. The inactive LittleFS is now ready. It is activated on the next firmware bank switch (step 3 of the firmware update procedure above), or immediately if only web assets are being updated (T13 switches the active bank pointer without a firmware image change).
+
+**Web asset version tracking:**
+- On startup, T11 reads `manifest.json` from its active LittleFS partition and compares `asset_version` against `system/fw_version` (from NVS):
+
+  | Condition | T11 behaviour |
+  |-----------|---------------|
+  | `manifest.json` absent | Assets are incomplete; T11 serves a fallback error page and logs the event |
+  | `asset_version` ≠ `fw_version` | Version mismatch; T11 serves pages but shows a warning on the dashboard and logs the event |
+  | `asset_version` == `fw_version` | Normal operation |
+
+- Because firmware and web assets are always activated together as a pair, a version mismatch after a clean update is not expected. A mismatch indicates either a partial update or a manual intervention.
 
 **Combined firmware + web file update:**
-- When a release includes both firmware and UI changes, both packages must be transferred and verified before either is activated.
-- T13 does not switch the active bank until both writes have completed successfully.
+- When a release includes both firmware and web asset changes, both must be written to their respective inactive partitions and verified before either is activated.
+- T13 performs the firmware write and the web asset zip extraction in sequence. The firmware bank switch (and paired LittleFS activation) happens only after both have completed and `manifest.json` has been written.
 
 ---
 
@@ -886,12 +916,38 @@ Setpoint and threshold values (temperature, humidity, wind speed, wind direction
 | `access` | `pin_farmer_hash`, `pin_admin_hash`, `pin_salt`, `lockout_count`, `lockout_time` | string / uint8 | PIN hashes, lockout configuration |
 | `wifi` | `ssid`, `psk_hash`, `ap_ssid`, `ap_psk`, `ip_mode`, `ip_addr`, `ip_mask`, `ip_gw`, `ip_dns` | string | WiFi client and AP credentials and network settings |
 | `mqtt` | `broker_url`, `port`, `username`, `password_hash`, `topic_prefix`, `interval` | string / uint16 | MQTT broker connection and publish settings |
-| `system` | `poll_interval`, `session_timeout`, `ap_timeout`, `lang`, `log_pointer` | uint16 / string | System-wide configuration |
+| `system` | `poll_interval`, `session_timeout`, `ap_timeout`, `lang`, `log_pointer`, `schema_ver`, `fw_version` | uint16 / string | System-wide configuration; `schema_ver` (int32) tracks NVS layout version; `fw_version` (string `"MAJOR.MINOR.PATCH"`) is overwritten on every boot with the running firmware version |
 | `log` | Ring buffer entries (binary blob, fixed record size) | blob | Event log fallback when SD card absent |
 
 **Default values:**
 - Applied on first boot (no NVS key present) or after factory reset.
 - Factory reset clears all NVS namespaces and restores defaults; requires deliberate admin action and is logged.
+
+**Schema versioning and firmware update behaviour:**
+
+A `schema_ver` integer is stored in the `system` namespace. `nvs_cfg_init()` compares it to the compile-time `NVS_SCHEMA_VERSION` on every boot.
+
+| Boot condition | Behaviour | Return value |
+|----------------|-----------|--------------|
+| First boot / blank flash | Writes `system/schema_ver`; writes `system/fw_version` | `NVS_CFG_OK` |
+| Stored version matches firmware | Overwrites `system/fw_version` with current version | `NVS_CFG_OK` |
+| Stored version differs from firmware | Writes new `system/schema_ver`; overwrites `system/fw_version`; **namespaces are not erased** | `NVS_CFG_ERR_MIGRATION` |
+
+`system/fw_version` is a `"MAJOR.MINOR.PATCH"` string that is overwritten on **every** boot. It always reflects the currently running firmware and can be read by T11 (web dashboard) and T9 (event logger) without parsing the binary image.
+
+Migration strategy across firmware updates:
+
+| Situation | Outcome |
+|-----------|---------|
+| Key exists in NVS and is still used | Read as-is — **user setting is preserved** |
+| Key absent in NVS (new setting in this firmware) | First `_or_default` call writes the factory default |
+| Key exists in NVS but is no longer used | Never read — orphaned; no functional impact |
+
+The `log` namespace is never touched by schema migration. Event history is always preserved.
+
+**Type-change exception:** If a key's storage type changes between firmware versions, ESP-IDF returns `ESP_ERR_NVS_TYPE_MISMATCH`. That individual key must be erased and rewritten explicitly by T4 on startup; a blanket namespace erase is not used.
+
+T4 checks the return of `nvs_cfg_init()`. If `NVS_CFG_ERR_MIGRATION` is returned it logs the event via Q3 and continues normal startup.
 
 ---
 
