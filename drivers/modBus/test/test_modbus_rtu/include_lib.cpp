@@ -8,11 +8,11 @@
  * without changing the project structure or relying on a self-referencing
  * lib_deps entry (which triggers a Windows lock-file bug in PlatformIO 6).
  *
- * This file is only active in the native build (UNIT_TEST defined).
+ * This file is only active in the native build (NATIVE_TEST defined).
  * It must never be compiled for the target board — it is excluded from the
  * exported library by library.json's srcFilter (this directory is not src/).
  */
 
-#ifdef UNIT_TEST
-  #include "../src/modbus_rtu.cpp"
+#ifdef NATIVE_TEST
+  #include "../../src/modbus_rtu.cpp"
 #endif

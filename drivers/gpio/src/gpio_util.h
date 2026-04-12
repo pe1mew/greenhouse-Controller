@@ -80,6 +80,15 @@ gpio_util_level_t gpio_read(uint8_t pin);
 void gpio_toggle(uint8_t pin);
 
 /**
+ * @brief Initialise the RS-485 direction pin.
+ *
+ * Configures @ref PIN_RS485_DE_RE as a push-pull output and drives it LOW
+ * (receiver enabled).  Must be called once before any call to
+ * @ref gpio_set_rs485_direction().
+ */
+void gpio_rs485_init(void);
+
+/**
  * @brief Set the RS-485 transceiver direction.
  *
  * Controls the DE/RE line on the SIT65HVD08P (or equivalent) transceiver

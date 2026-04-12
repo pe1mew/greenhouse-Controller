@@ -2,6 +2,11 @@
 
 static bool s_direction = false;   /* false = RX (power-on default) */
 
+void gpio_rs485_init(void)
+{
+    /* No-op: no real hardware in the native test build. */
+}
+
 void gpio_set_rs485_direction(bool transmit)
 {
     s_direction = transmit;

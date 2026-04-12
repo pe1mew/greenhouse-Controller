@@ -10,7 +10,7 @@
  *    mock_gpio to record the order of DE/RE toggles vs. UART reads/writes,
  *    enabling ordering assertions in UT-MB-009 and UT-MB-010.
  *
- * This header is included automatically by modbus_rtu.cpp when UNIT_TEST is
+ * This header is included automatically by modbus_rtu.cpp when NATIVE_TEST is
  * defined. Do NOT include it in production (target) builds.
  *
  * @note Do **not** include this header in production (target) builds.
@@ -215,7 +215,10 @@ void mock_uart_queue_response(const uint8_t *bytes, uint8_t len);
 int mock_uart_get_transmitted(uint8_t *buf, int max_len);
 
 /* ---------------------------------------------------------------------------
- * delay() stub (unused by the driver but required to link in some toolchains)
+ * Arduino timing stubs (no-op — not needed for correctness in native tests)
  * --------------------------------------------------------------------------- */
 /** @brief No-op delay stub for the native build. */
 void delay(uint32_t ms);
+
+/** @brief No-op delayMicroseconds stub for the native build. */
+void delayMicroseconds(uint32_t us);

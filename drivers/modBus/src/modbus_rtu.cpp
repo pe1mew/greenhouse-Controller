@@ -21,7 +21,7 @@
  * @version 0.1.0
  */
 
-#ifndef UNIT_TEST
+#ifndef NATIVE_TEST
   #include <Arduino.h>
   #include "gpio_util.h"
 #else
@@ -35,7 +35,7 @@
  * CRC16 — Modbus (polynomial 0xA001, init 0xFFFF)
  * Static in production; exported as modbus_crc16() in unit-test builds.
  * --------------------------------------------------------------------------- */
-#ifdef UNIT_TEST
+#ifdef NATIVE_TEST
 uint16_t modbus_crc16(const uint8_t *buf, uint8_t len)
 #else
 static uint16_t modbus_crc16(const uint8_t *buf, uint8_t len)
@@ -61,6 +61,7 @@ static uint16_t modbus_crc16(const uint8_t *buf, uint8_t len)
 
 void modbus_init(void)
 {
+    gpio_rs485_init();                 /* configure DE/RE pin as output, LOW */
     Serial1.begin(MODBUS_BAUD, SERIAL_8N1, MODBUS_UART_RX, MODBUS_UART_TX);
     gpio_set_rs485_direction(false);   /* start in receive mode */
 }
@@ -94,7 +95,12 @@ static modbus_status_t modbus_transaction(uint8_t  device_addr,
     req[6] = (uint8_t)(req_crc & 0xFF);  /* CRC low byte first */
     req[7] = (uint8_t)(req_crc >> 8);    /* CRC high byte second */
 
-    /* Transmit */
+    /* Transmit
+     * Enforce the Modbus RTU inter-frame silent interval (3.5 character
+     * times) before asserting DE/RE so the slave can detect the start of
+     * a new frame.  At 9600 baud, 1 char ≈ 1.04 ms → 3.5 chars ≈ 3.65 ms;
+     * 5 ms gives comfortable margin. */
+    delayMicroseconds(5000);
     gpio_set_rs485_direction(true);   /* DE/RE HIGH — driver enable */
     Serial1.write(req, 8);
     Serial1.flush();                  /* wait for TX FIFO to drain */
@@ -104,6 +110,13 @@ static modbus_status_t modbus_transaction(uint8_t  device_addr,
     delayMicroseconds(2000);
     gpio_set_rs485_direction(false);  /* DE/RE LOW — receiver enable */
 
+    /* Wait one full character time (≈1.04 ms at 9600 baud) so the last
+     * echoed stop bit has settled into the RX FIFO, then discard any
+     * bytes that arrived during TX (half-duplex echo). */
+    delayMicroseconds(1500);
+    while (Serial1.available())
+        (void)Serial1.read();
+
     /* Receive response */
     uint8_t  resp[256];
     uint8_t  received     = 0;
@@ -112,6 +125,10 @@ static modbus_status_t modbus_transaction(uint8_t  device_addr,
 
     while (received < expected_len) {
         if (millis() - start > MODBUS_TIMEOUT_MS) {
+            /* Drain any late-arriving bytes before returning so the next
+             * transaction starts with a clean buffer. */
+            delayMicroseconds(5000);
+            while (Serial1.available()) (void)Serial1.read();
             return MODBUS_ERR_TIMEOUT;
         }
         if (Serial1.available()) {
@@ -150,6 +167,11 @@ static modbus_status_t modbus_transaction(uint8_t  device_addr,
     for (uint8_t i = 0; i < count; i++) {
         out[i] = ((uint16_t)resp[3 + i * 2] << 8) | resp[4 + i * 2];
     }
+
+    /* Drain any surplus bytes (e.g. interleaved echoes) so the next
+     * transaction starts with a clean buffer. */
+    delayMicroseconds(2000);
+    while (Serial1.available()) (void)Serial1.read();
 
     return MODBUS_OK;
 }

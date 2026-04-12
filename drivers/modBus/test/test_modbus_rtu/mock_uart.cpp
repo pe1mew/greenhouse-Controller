@@ -122,9 +122,15 @@ int mock_uart_get_transmitted(uint8_t *buf, int max_len)
 }
 
 /* ---------------------------------------------------------------------------
- * delay() stub
+ * Arduino timing stubs
  * --------------------------------------------------------------------------- */
 void delay(uint32_t /*ms*/)
 {
     /* no-op */
+}
+
+void delayMicroseconds(uint32_t /*us*/)
+{
+    /* no-op — the 2 ms guard delay in modbus_transaction() is irrelevant
+     * in the native (simulated) build; timing is controlled by millis(). */
 }

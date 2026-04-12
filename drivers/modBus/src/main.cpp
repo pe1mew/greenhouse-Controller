@@ -35,15 +35,15 @@ static int fail_count = 0;
 static void check(const char *id, const char *description, bool condition)
 {
     if (condition) {
-        Serial0.print("[PASS] ");
+        Serial.print("[PASS] ");
         pass_count++;
     } else {
-        Serial0.print("[FAIL] ");
+        Serial.print("[FAIL] ");
         fail_count++;
     }
-    Serial0.print(id);
-    Serial0.print(": ");
-    Serial0.println(description);
+    Serial.print(id);
+    Serial.print(": ");
+    Serial.println(description);
 }
 
 static const char *status_str(modbus_status_t s)
@@ -64,71 +64,73 @@ static const char *status_str(modbus_status_t s)
  * --------------------------------------------------------------------------- */
 void setup()
 {
-    Serial0.begin(115200);
+    Serial.begin(115200);
     delay(500);
 
-    Serial0.println();
-    Serial0.println("================================================");
-    Serial0.println("  LIB-6 Modbus RTU — hardware verification");
-    Serial0.println("================================================");
+    Serial.println();
+    Serial.println("================================================");
+    Serial.println("  LIB-6 Modbus RTU — hardware verification");
+    Serial.println("================================================");
 
     /* -----------------------------------------------------------------
      * HW-MB-001 — driver initialises on correct UART pins
      * ----------------------------------------------------------------- */
     modbus_init();
-    Serial0.println("Modbus init: UART1 TX=GPIO17 RX=GPIO18 baud=9600 DE/RE=GPIO8");
+    Serial.println("Modbus init: UART1 TX=GPIO17 RX=GPIO18 baud=9600 DE/RE=GPIO8");
     check("HW-MB-001", "modbus_init() completed — init message printed above", true);
 
     /* -----------------------------------------------------------------
      * HW-MB-002 — FC03 reads correct holding register values
      *             (also covers HW-MB-005: probe GPIO 8 during this call)
      * ----------------------------------------------------------------- */
-    Serial0.println("--- FC03 holding registers (addr=1) ---");
+    Serial.println("--- FC03 holding registers (addr=1) ---");
     uint16_t hold[2] = {0, 0};
     modbus_status_t s = modbus_read_holding_registers(1, 0, 2, hold);
-    Serial0.print("  status : "); Serial0.println(status_str(s));
-    Serial0.print("  val[0] = 0x"); Serial0.println(hold[0], HEX);
-    Serial0.print("  val[1] = 0x"); Serial0.println(hold[1], HEX);
+    Serial.print("  status : "); Serial.println(status_str(s));
+    Serial.print("  val[0] = 0x"); Serial.println(hold[0], HEX);
+    Serial.print("  val[1] = 0x"); Serial.println(hold[1], HEX);
     check("HW-MB-002", "FC03 val[0]=0x1234 val[1]=0x5678",
           s == MODBUS_OK && hold[0] == 0x1234 && hold[1] == 0x5678);
 
     /* -----------------------------------------------------------------
      * HW-MB-003 — FC04 reads correct input register values
      * ----------------------------------------------------------------- */
-    Serial0.println("--- FC04 input registers (addr=2) ---");
+    delay(200);   /* give slave time to return to idle before next frame */
+    Serial.println("--- FC04 input registers (addr=2) ---");
     uint16_t inp[2] = {0, 0};
     s = modbus_read_input_registers(2, 0, 2, inp);
-    Serial0.print("  status : "); Serial0.println(status_str(s));
-    Serial0.print("  val[0] = 0x"); Serial0.println(inp[0], HEX);
-    Serial0.print("  val[1] = 0x"); Serial0.println(inp[1], HEX);
+    Serial.print("  status : "); Serial.println(status_str(s));
+    Serial.print("  val[0] = 0x"); Serial.println(inp[0], HEX);
+    Serial.print("  val[1] = 0x"); Serial.println(inp[1], HEX);
     check("HW-MB-003", "FC04 val[0]=0x00E6 val[1]=0x028F",
           s == MODBUS_OK && inp[0] == 0x00E6 && inp[1] == 0x028F);
 
     /* -----------------------------------------------------------------
      * HW-MB-004 — timeout returned for absent device (addr=99)
      * ----------------------------------------------------------------- */
-    Serial0.println("--- Timeout test (addr=99, no device) ---");
+    Serial.println("--- Timeout test (addr=99, no device) ---");
     uint16_t dummy[2] = {0, 0};
     uint32_t t0 = millis();
     s = modbus_read_holding_registers(99, 0, 2, dummy);
     uint32_t elapsed = millis() - t0;
-    Serial0.print("  status  : "); Serial0.println(status_str(s));
-    Serial0.print("  elapsed : "); Serial0.print(elapsed); Serial0.println(" ms");
+    Serial.print("  status  : "); Serial.println(status_str(s));
+    Serial.print("  elapsed : "); Serial.print(elapsed); Serial.println(" ms");
     check("HW-MB-004", "MODBUS_ERR_TIMEOUT returned; no crash; elapsed < 300 ms",
           s == MODBUS_ERR_TIMEOUT && elapsed < 300);
 
     /* -----------------------------------------------------------------
      * Summary
      * ----------------------------------------------------------------- */
-    Serial0.println("================================================");
-    Serial0.print("  PASSED: "); Serial0.println(pass_count);
-    Serial0.print("  FAILED: "); Serial0.println(fail_count);
-    Serial0.println(fail_count == 0 ? "  RESULT: PASS" : "  RESULT: FAIL");
-    Serial0.println("================================================");
-    Serial0.println("Entering idle loop.");
+    Serial.println("================================================");
+    Serial.print("  PASSED: "); Serial.println(pass_count);
+    Serial.print("  FAILED: "); Serial.println(fail_count);
+    Serial.println(fail_count == 0 ? "  RESULT: PASS" : "  RESULT: FAIL");
+    Serial.println("================================================");
+    Serial.println("Entering idle loop.");
 }
 
 void loop()
 {
     delay(1000);
 }
+

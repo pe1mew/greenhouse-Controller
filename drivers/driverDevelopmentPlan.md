@@ -887,7 +887,7 @@ Verification complete. Board is idle.
 Modbus RTU master driver over UART1 and the SIT65HVD08P RS485 transceiver. Reads sensor data from the SenseCAP S200 (wind) and FG6485A (temperature/humidity). Used by T5 (Sensor Poll).
 
 ### Dependency
-Requires LIB-1 (`gpio/`) to be board-tested (`gpio_set_rs485_direction` is called from `modbus_init`).
+Requires LIB-1 (`gpio/`) to be board-tested. `modbus_init` calls `gpio_rs485_init()` (declared in `gpio_util.h`) to configure the DE/RE pin as OUTPUT and drive it LOW before the UART is opened. `gpio_set_rs485_direction` is used for all subsequent DE/RE transitions.
 ```ini
 [env:lolin_s3]
 lib_deps = file://../gpio
@@ -922,13 +922,18 @@ modbus_status_t modbus_read_input_registers(uint8_t device_addr,
 ```
 
 ### Implementation sequence (per transaction)
-1. Assert DE/RE HIGH via `gpio_set_rs485_direction(true)`.
-2. Write 8-byte request frame to `Serial1`.
-3. Call `Serial1.flush()` to wait for transmission to complete.
-4. Assert DE/RE LOW via `gpio_set_rs485_direction(false)`.
-5. Read bytes with per-byte timeout until `byte_count + 5` bytes received or timeout.
-6. Validate CRC16 (polynomial 0xA001).
-7. Return parsed register values, or an error code.
+1. `delayMicroseconds(5000)` — enforce ≥3.5 character-time inter-frame gap at 9600 baud (~3.65 ms minimum; 5 ms used for margin).
+2. Assert DE/RE HIGH via `gpio_set_rs485_direction(true)`.
+3. Write 8-byte request frame to `Serial1`.
+4. Call `Serial1.flush()` to wait for the UART shift register to finish.
+5. `delayMicroseconds(2000)` — guard to ensure the last stop bit has left the wire.
+6. Assert DE/RE LOW via `gpio_set_rs485_direction(false)`.
+7. `delayMicroseconds(1500)` then drain `Serial1` — the half-duplex transceiver echoes TX bytes into the RX FIFO while DE is HIGH; this settle + drain removes them before listening for the response.
+8. Read bytes with per-byte timeout until `byte_count + 5` bytes received or timeout.
+   - On timeout: drain `Serial1` (late arriving echo bytes) then return `MODBUS_ERR_TIMEOUT`.
+9. Validate CRC16 (polynomial 0xA001).
+10. `delayMicroseconds(2000)` then drain `Serial1` — remove any trailing bytes before the next transaction.
+11. Return parsed register values, or an error code.
 
 ### Frame format
 ```
@@ -938,25 +943,27 @@ Response:           [addr][fc][byte_cnt][data...][crc_lo][crc_hi]
 
 ### Mock strategy
 `mock_uart.h` — `mock_uart_queue_response(bytes, len)` preloads response bytes; `mock_uart_get_transmitted(buf, len)` records what was sent.  
-`mock_gpio.h` — records DE/RE transitions for timing assertions.  
-In the native build, `gpio/` is not linked; the mock provides the `gpio_set_rs485_direction` stub directly.
+`mock_gpio.h` — records DE/RE transitions for timing assertions; provides no-op stubs for both `gpio_set_rs485_direction` and `gpio_rs485_init`.  
+In the native build, `gpio/` is not linked; the mock provides all gpio stubs directly. Guard macro `NATIVE_TEST` (defined only on the `native` PlatformIO env) controls which implementation is compiled — this project uses `#ifndef NATIVE_TEST` (not `#ifndef UNIT_TEST`) because `UNIT_TEST` is also defined on hardware test envs where the real gpio driver must be linked.
 
 ### Unit tests (12)
 
-| ID | Test case | Assertion |
-|----|-----------|-----------|
-| UT-MB-001 | CRC16 of `{0x01,0x03,0x00,0x00,0x00,0x02}` = 0xC40B | Known Modbus CRC test vector |
-| UT-MB-002 | CRC16 of single byte `{0xFF}` = known value | Boundary case |
-| UT-MB-003 | FC03 request frame bytes are correct | Address, function code, register, count, CRC all verified |
-| UT-MB-004 | FC03 response parsed to correct `uint16_t` values | Two register values decoded correctly |
-| UT-MB-005 | FC04 request uses function code 0x04 | Frame byte[1] = 0x04 |
-| UT-MB-006 | No response → `MODBUS_ERR_TIMEOUT` | Timeout fires; correct error |
-| UT-MB-007 | Response with flipped CRC byte → `MODBUS_ERR_CRC` | CRC validation rejects frame |
-| UT-MB-008 | Exception response (FC \| 0x80) → `MODBUS_ERR_EXCEPTION` | Exception code detected |
-| UT-MB-009 | DE/RE HIGH before first TX byte | Mock GPIO log shows HIGH before UART write |
-| UT-MB-010 | DE/RE LOW before RX | Mock GPIO log shows LOW before `read()` |
-| UT-MB-011 | Device address 0 → `MODBUS_ERR_PARAM` | Broadcast address rejected for reads |
-| UT-MB-012 | Register count > 125 → `MODBUS_ERR_PARAM` | FC03/FC04 maximum enforced |
+Run: `pio test -e native` — all 12 passed (MinGW/native).
+
+| ID | Test case | Assertion | Result |
+|----|-----------|-----------|--------|
+| UT-MB-001 | CRC16 of `{0x01,0x03,0x00,0x00,0x00,0x02}` = 0xC40B | Known Modbus CRC test vector | ✅ PASS |
+| UT-MB-002 | CRC16 of single byte `{0xFF}` = known value | Boundary case | ✅ PASS |
+| UT-MB-003 | FC03 request frame bytes are correct | Address, function code, register, count, CRC all verified | ✅ PASS |
+| UT-MB-004 | FC03 response parsed to correct `uint16_t` values | Two register values decoded correctly | ✅ PASS |
+| UT-MB-005 | FC04 request uses function code 0x04 | Frame byte[1] = 0x04 | ✅ PASS |
+| UT-MB-006 | No response → `MODBUS_ERR_TIMEOUT` | Timeout fires; correct error | ✅ PASS |
+| UT-MB-007 | Response with flipped CRC byte → `MODBUS_ERR_CRC` | CRC validation rejects frame | ✅ PASS |
+| UT-MB-008 | Exception response (FC \| 0x80) → `MODBUS_ERR_EXCEPTION` | Exception code detected | ✅ PASS |
+| UT-MB-009 | DE/RE HIGH before first TX byte | Mock GPIO log shows HIGH before UART write | ✅ PASS |
+| UT-MB-010 | DE/RE LOW before RX | Mock GPIO log shows LOW before `read()` | ✅ PASS |
+| UT-MB-011 | Device address 0 → `MODBUS_ERR_PARAM` | Broadcast address rejected for reads | ✅ PASS |
+| UT-MB-012 | Register count > 125 → `MODBUS_ERR_PARAM` | FC03/FC04 maximum enforced | ✅ PASS |
 
 ### Hardware verification
 
@@ -966,33 +973,35 @@ In the native build, `gpio/` is not linked; the mock provides the `gpio_set_rs48
 |-------|-------|
 | Driver | LIB-6 — Modbus RTU |
 | Directory | `modBus/` |
-| Firmware version | |
-| Board ID / revision | |
-| Tester | |
-| Date | |
-| Equipment | LOLIN S3; SIT65HVD08P RS485 transceiver; 120 Ω termination resistor; PC with USB-RS485 adapter; oscilloscope or logic analyser (for HW-MB-005) |
+| Firmware version | 0.1.0 |
+| Board ID / revision | ESP32-S3 (QFN56) revision v0.2 — LOLIN S3, MAC 30:ed:a0:a0:fd:a4 |
+| Tester | drasv |
+| Date | 2026-04-10 |
+| Equipment | LOLIN S3; SIT65HVD08P RS485 transceiver; 120 Ω termination resistor; PC with USB-RS485 adapter running pymodbus simulator; oscilloscope |
 
 **Wiring:** SIT65HVD08P DI → GPIO 17, RO → GPIO 18, DE+RE tied → GPIO 8, VCC → 3.3 V, GND → GND. 120 Ω resistor across RS485 A/B at far end of cable.
 
 **Simulator setup:** Start Python `pymodbus` slave server on the PC before uploading. Configure address 1 with holding registers 0–1 = `{0x1234, 0x5678}`; address 2 with input registers 0–1 = `{0x00E6, 0x028F}`.
 
+**Hardware loopback pre-check:** Before the real-slave session, `pio test -e lolin_s3_loopback` was run to verify driver framing, CRC, DE/RE sequencing, and error paths against loopback wires — 11/11 Unity tests PASSED.
+
 #### Test cases
 
 | ID | Description | Procedure | Expected result | Actual result | P/F |
 |----|-------------|-----------|-----------------|---------------|-----|
-| HW-MB-001 | Driver initialises on correct UART pins | Upload sketch; open serial monitor | "Modbus init: UART1 TX=GPIO17 RX=GPIO18 baud=9600 DE/RE=GPIO8" printed | | |
-| HW-MB-002 | FC03 reads correct holding register values | Sketch sends FC03 to addr=1, reg=0, count=2; simulator responds | Serial shows val[0]=0x1234 val[1]=0x5678. Record actual: val[0]=0x___ val[1]=0x___ | | |
-| HW-MB-003 | FC04 reads correct input register values | Sketch sends FC04 to addr=2, reg=0, count=2; simulator responds | Serial shows val[0]=0x00E6 val[1]=0x028F. Record actual: val[0]=0x___ val[1]=0x___ | | |
-| HW-MB-004 | Timeout returned for absent device | Sketch queries addr=99 (no device on bus) | "MODBUS_ERR_TIMEOUT" returned; no crash; response within 300 ms of request | | |
-| HW-MB-005 | DE/RE toggles correctly during transaction | Probe GPIO 8 with oscilloscope or logic analyser during an FC03 transaction | GPIO 8 HIGH during TX frame; transitions LOW before RX window opens. Record transition timing: TX→LOW delay: ___ µs | | |
+| HW-MB-001 | Driver initialises on correct UART pins | Upload sketch; open serial monitor | "Modbus init: UART1 TX=GPIO17 RX=GPIO18 baud=9600 DE/RE=GPIO8" printed | Init message printed; UART1 opened on correct pins | ✅ PASS |
+| HW-MB-002 | FC03 reads correct holding register values | Sketch sends FC03 to addr=1, reg=0, count=2; simulator responds | Serial shows val[0]=0x1234 val[1]=0x5678. Record actual: val[0]=0x___ val[1]=0x___ | val[0]=0x1234 val[1]=0x5678 | ✅ PASS |
+| HW-MB-003 | FC04 reads correct input register values | Sketch sends FC04 to addr=2, reg=0, count=2; simulator responds | Serial shows val[0]=0x00E6 val[1]=0x028F. Record actual: val[0]=0x___ val[1]=0x___ | val[0]=0x00E6 val[1]=0x028F | ✅ PASS |
+| HW-MB-004 | Timeout returned for absent device | Sketch queries addr=99 (no device on bus) | "MODBUS_ERR_TIMEOUT" returned; no crash; response within 300 ms of request | MODBUS_ERR_TIMEOUT returned; no crash | ✅ PASS |
+| HW-MB-005 | DE/RE toggles correctly during transaction | Probe GPIO 8 with oscilloscope or logic analyser during an FC03 transaction | GPIO 8 HIGH during TX frame; transitions LOW before RX window opens. Record transition timing: TX→LOW delay: ___ µs | GPIO 8 confirmed HIGH during TX and LOW during RX via oscilloscope during debug session. Exact µs transition time not recorded; correct operation confirmed by successful FC03/FC04 transactions. | ✅ PASS |
 
 #### Overall result
 
 | Field | Value |
 |-------|-------|
-| Result | PASS / FAIL / INCOMPLETE |
-| Failed test IDs | |
-| Notes | |
+| Result | PASS |
+| Failed test IDs | — |
+| Notes | **Defect found and fixed during this session:** (1) `gpio_rs485_init()` was missing — `modbus_init` did not configure PIN_RS485_DE_RE as OUTPUT, so DE/RE was never driven. Fixed by adding `gpio_rs485_init()` to `gpio_util.cpp`/`gpio_util.h` and calling it from `modbus_init`; modbus layer now makes zero direct Arduino GPIO calls. (2) No inter-frame gap between consecutive transactions — slave never saw the second FC04 request. Fixed by `delayMicroseconds(5000)` before every TX assertion. (3) TX echo corruption — the SIT65HVD08P echoes TX bytes into RX FIFO while DE is HIGH. Fixed by 1.5 ms settle + RX drain after DE/RE goes LOW, and a 2 ms drain after each successful receive. (4) `Serial0` was not available with `ARDUINO_USB_CDC_ON_BOOT=0`; all references changed to `Serial`. Hardware loopback verification (`lolin_s3_loopback` env): 11/11 Unity tests PASSED. Real-slave verification (`lolin_s3` env): HW-MB-001–005 all PASSED. |
 
 ---
 
@@ -1474,7 +1483,7 @@ For each driver, mark off both stages before declaring the driver done:
 | LIB-9 LittleFS | `littleFS/` | 1 | UT-LFS-001…012 | ✅ 2026-04-11 | HW-LFS-001…009 | ✅ 2026-04-11 |
 | LIB-3 DS1307 RTC | `DS1307_RTC/` | 2 | UT-RTC-001…011 | ✅ 2026-04-10 | HW-RTC-001…005 | ✅ 2026-04-10 |
 | LIB-4 LCD1602 I2C | `LCD1602_I2C/` | 2 | UT-LCD-001…011 | ✅ 2026-04-10 | HW-LCD-001…008 | ✅ 2026-04-10 |
-| LIB-6 Modbus RTU | `modBus/` | 2 | UT-MB-001…012 | ☐ | HW-MB-001…005 | ☐ |
+| LIB-6 Modbus RTU | `modBus/` | 2 | UT-MB-001…012 | ✅ 2026-04-10 | HW-MB-001…005 | ✅ 2026-04-10 |
 
 A driver is not available as a dependency for Wave 2 work until **both** columns for that driver are ticked.
 

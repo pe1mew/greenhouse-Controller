@@ -17,6 +17,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "pin_config.h"
 
 /* ---------------------------------------------------------------------------
  * @defgroup modbus_pins UART / transceiver pin assignments
@@ -24,10 +25,10 @@
  * --------------------------------------------------------------------------- */
 
 /** @brief UART1 TX pin — connected to SIT65HVD08P DI. */
-#define MODBUS_UART_TX      17
+#define MODBUS_UART_TX      PIN_RS485_TX
 
 /** @brief UART1 RX pin — connected to SIT65HVD08P RO. */
-#define MODBUS_UART_RX      18
+#define MODBUS_UART_RX      PIN_RS485_RX
 
 /** @brief Baud rate for Modbus RTU (SenseCAP S200, FG6485A). */
 #define MODBUS_BAUD         9600
@@ -109,12 +110,12 @@ modbus_status_t modbus_read_input_registers(uint8_t  device_addr,
 /* ---------------------------------------------------------------------------
  * CRC helper — exposed only in unit-test builds for direct verification.
  * --------------------------------------------------------------------------- */
-#ifdef UNIT_TEST
+#ifdef NATIVE_TEST
 /**
  * @brief Compute the Modbus CRC16 of a byte buffer.
  *
  * Polynomial 0xA001 (reflected 0x8005), initial value 0xFFFF.
- * Exposed for unit testing (UT-MB-001, UT-MB-002) only.
+ * Exposed for native unit testing (UT-MB-001, UT-MB-002) only.
  *
  * @param buf Pointer to data bytes.
  * @param len Number of bytes.

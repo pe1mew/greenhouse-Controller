@@ -2,7 +2,7 @@
  * @file mock_gpio.h
  * @brief gpio_set_rs485_direction() stub for the native unit-test build of LIB-6.
  *
- * In the native (UNIT_TEST) build, the gpio/ library is not linked.  This
+ * In the native (NATIVE_TEST) build, the gpio/ library is not linked.  This
  * header provides the gpio_set_rs485_direction() stub that modbus_rtu.cpp
  * calls, and records each DE/RE transition into the shared event log defined
  * in mock_uart.h (MOCK_EVT_GPIO_HIGH / MOCK_EVT_GPIO_LOW).
@@ -22,6 +22,14 @@
 
 #include <stdbool.h>
 #include "mock_uart.h"   /* for mock_log_event / mock_event_t */
+
+/**
+ * @brief Stub for gpio_rs485_init() from LIB-1 gpio/.
+ *
+ * No-op in the native test build — pin mode configuration is irrelevant
+ * when there is no real hardware.
+ */
+void gpio_rs485_init(void);
 
 /**
  * @brief Stub for gpio_set_rs485_direction() from LIB-1 gpio/.

@@ -1,4 +1,4 @@
-#ifndef UNIT_TEST
+#ifndef NATIVE_TEST
   #include <Arduino.h>
 #else
   #include "../test/mock_gpio.h"
@@ -28,6 +28,12 @@ gpio_util_level_t gpio_read(uint8_t pin)
 void gpio_toggle(uint8_t pin)
 {
     gpio_write(pin, (gpio_read(pin) == GPIO_HIGH) ? GPIO_LOW : GPIO_HIGH);
+}
+
+void gpio_rs485_init(void)
+{
+    gpio_set_pin_mode(PIN_RS485_DE_RE, GPIO_OUTPUT);
+    gpio_write(PIN_RS485_DE_RE, GPIO_LOW);
 }
 
 void gpio_set_rs485_direction(bool transmit)

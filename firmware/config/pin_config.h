@@ -56,6 +56,12 @@
 /** @brief Digital output — RS-485 transceiver DE/RE direction control. */
 #define PIN_RS485_DE_RE      8
 
+/** @brief UART1 TX — RS-485 transceiver DI (driver input). */
+#define PIN_RS485_TX        17
+
+/** @brief UART1 RX — RS-485 transceiver RO (receiver output). */
+#define PIN_RS485_RX        18
+
 /* ---------------------------------------------------------------------------
  * I2C bus (shared — LCD at 0x27, RTC at 0x68)
  * --------------------------------------------------------------------------- */
