@@ -105,6 +105,28 @@ modbus_status_t modbus_read_input_registers(uint8_t  device_addr,
                                              uint8_t  count,
                                              uint16_t *out);
 
+/**
+ * @brief Write multiple holding registers (FC16 / 0x10).
+ *
+ * Sends a Modbus FC16 request to @p device_addr, writing @p count register
+ * values starting at @p start_reg from @p values.
+ *
+ * Request frame (header + data):
+ *   [addr][0x10][reg_hi][reg_lo][cnt_hi][cnt_lo][byte_cnt][data...][crc_lo][crc_hi]
+ * Response frame (8 bytes):
+ *   [addr][0x10][reg_hi][reg_lo][cnt_hi][cnt_lo][crc_lo][crc_hi]
+ *
+ * @param device_addr Slave address (1–247; 0 = broadcast, rejected).
+ * @param start_reg   First register address.
+ * @param count       Number of registers to write (1–123).
+ * @param values      Caller-supplied buffer of @p count uint16_t values.
+ * @return @ref MODBUS_OK on success, or a @ref modbus_status_t error code.
+ */
+modbus_status_t modbus_write_multiple_registers(uint8_t         device_addr,
+                                                 uint16_t        start_reg,
+                                                 uint8_t         count,
+                                                 const uint16_t *values);
+
 /** @} */ /* end modbus_api */
 
 /* ---------------------------------------------------------------------------
