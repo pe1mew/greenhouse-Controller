@@ -5,7 +5,8 @@
 |14| 1 | Controller | Relay | 6 | SRD-05VDC-SL-C | [Tinytronics](https://www.tinytronics.nl/nl/schakelaars/relais/relais/relais-5v-250vac-10a) | 1.00 |
 |14| 2 | Controller | 2N7000 MOSFET | 6 | 2N7000 FET 60V 200mA | [Tinytronics](https://www.tinytronics.nl/nl/schakelaars/transistoren-en-mosfet's/mosfet's-fet's/2n7000-fet-60v-200ma) | 0.50 |
 |14| 3 | Controller | Diode | 6 | Diode 1N4007 | [Tinytronics](https://www.tinytronics.nl/nl/componenten/diodes/diode-1n4007) | 0.10 |
-|-| 4 | Controller | Resistor 1 kΩ | 8 | 1KΩ weerstand | [Tinytronics](https://www.tinytronics.nl/nl/componenten/weerstanden/weerstanden/1k%CF%89-weerstand) | 0.05 |
+|-| 4 | Controller | Resistor 1 kΩ | 8 | 1KΩ weerstand *(relay LED series ×6, PWR LED, spare)* | [Tinytronics](https://www.tinytronics.nl/nl/componenten/weerstanden/weerstanden/1k%CF%89-weerstand) | 0.05 |
+|-| 4a | Controller | Resistor 560 Ω | 1 | 560Ω weerstand *(HB LED series resistor, 3.3 V output → ~2 mA)* | [Tinytronics](https://www.tinytronics.nl/nl/componenten/weerstanden/weerstanden/560%CF%89-weerstand) | 0.05 |
 |X| 5 | Controller | Keypad 4×4 matrix | 1 | Keypad 4×4 matrix | [Tinytronics](https://www.tinytronics.nl/nl/schakelaars/manuele-schakelaars/keypads/keypad-4x4-matrix) | 2.00 |
 |6| 6 | Controller | Header 1×8 male | 1 | 40 Pins header Male — Geel | [Tinytronics](https://www.tinytronics.nl/nl/kabels-en-connectoren/connectoren/pin-headers/male/40-pins-header-male-geel) | 0.00 |
 |2| 7 | Controller | LCD Display | 1 | Waveshare 16×2 LCD Display met RGB Backlight — I2C | [Tinytronics](https://www.tinytronics.nl/nl/displays/lcd/waveshare-16x2-lcd-display-met-rgb-blacklight-i2c) | 11.50 |
@@ -17,9 +18,9 @@
 |Niet op voorraad| 13 | Controller | Terminal block 3-pin (mains input) | 1 | 3 Pin Schroef Terminal Block Connector 2.54 mm | [Tinytronics](https://www.tinytronics.nl/nl/kabels-en-connectoren/connectoren/schroefterminals/3-pin-schroef-terminal-block-connector-2.54mm-afstand) | 0.40 |
 |8| 14 | Controller | Terminal block 4-pin (motor control) | 3 | 4 Pin Schroef Terminal Block Connector 2.54 mm | [Tinytronics](https://www.tinytronics.nl/nl/kabels-en-connectoren/connectoren/schroefterminals/4-pin-schroef-terminal-block-connector-2.54mm-afstand) | 0.45 |
 |3| 15 | Controller | Terminal block 8-pin (Modbus) | 2 | 8 Pin Schroef Terminal Block Connector 2.54 mm | [Tinytronics](https://www.tinytronics.nl/nl/kabels-en-connectoren/connectoren/schroefterminals/8-pin-schroef-terminal-block-connector-2.54mm-afstand) | 0.80 |
-|1| 16 | Controller | LED SMD 0805 red | 10 | Tuozhan LED SMD 0805 — Rood — 10 stuks | [Tinytronics](https://www.tinytronics.nl/nl/componenten/led's/led's/tuozhan-led-smd-0805-rood-10-stuks) | 1.00 |
+|1| 16 | Controller | LED SMD 0805 amber | 10 | Tuozhan LED SMD 0805 — Amber — 10 stuks *(relay activity LEDs ×6; same part as item 18)* | [Tinytronics](https://www.tinytronics.nl/nl/componenten/led's/led's/tuozhan-led-smd-0805-amber-10-stuks) | 1.00 |
 |1| 17 | Controller | LED SMD 0805 green | 10 | Tuozhan LED SMD 0805 — Groen — 10 stuks | [Tinytronics](https://www.tinytronics.nl/nl/componenten/led's/led's/tuozhan-led-smd-0805-groen-10-stuks) | 1.00 |
-|1| 18 | Controller | LED SMD 0805 yellow | 10 | Tuozhan LED SMD 0805 — Geel — 10 stuks | [Tinytronics](https://www.tinytronics.nl/nl/componenten/led's/led's/tuozhan-led-smd-0805-geel-10-stuks) | 1.00 |
+|1| 18 | Controller | LED SMD 0805 amber | 10 | Tuozhan LED SMD 0805 — Amber — 10 stuks *(HB LED ×1; same part as item 16)* | [Tinytronics](https://www.tinytronics.nl/nl/componenten/led's/led's/tuozhan-led-smd-0805-amber-10-stuks) | 1.00 |
 |3| 19 | Controller | PSU 5 V (DC-DC buck) | 1 | DC-DC Step-down Buck Converter 1.5 A — 5 V output | [Tinytronics](https://www.tinytronics.nl/nl/power/spanningsconverters/buck-(step-down)-converters/dc-dc-step-down-buck-converter-1.5a-5v-output) | 3.00 |
 |2| 20 | Controller | PSU 24 V (AC-DC) | 1 | Mean Well RS-15-24 — 24 V 0.625 A Switching Power Supply | [Tinytronics](https://www.tinytronics.nl/nl/power/voedingen/24v/mean-well-voeding-24v-0.625a-switching-power-supply-rs-15-24) | 11.50 |
 || 21 | Controller | Enclosure | 1 | MC001110 — Plastic Enclosure, Wall Mount, Polycarbonate, 222 × 146 × 55 mm, IP65 | [Farnell](https://nl.farnell.com/multicomp-pro/mc001110/enclosure-ip65-pc-grey/dp/2544938) | 25.56 |

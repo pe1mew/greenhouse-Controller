@@ -66,7 +66,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   - §4.3 Modbus RS485 bus topology and parameters
   - §4.4 User interface: 4×4 membrane keypad and Waveshare LCD1602 I2C (PCF8574)
   - §4.5 Motor controller interface: 6-ch relay board, potential-free contacts, opto-isolated feedback input
-  - §4.6 Real-Time Clock: DS3231, I2C, CR2032 battery backup
+  - §4.6 Real-Time Clock: DS1307, I2C, CR2032 battery backup, external 32.768 kHz crystal
   - §4.7 Power supply: two-stage architecture (230 VAC → 24 VDC → 5 VDC), power budget analysis
   - §4.8 SD card (optional, SPI, FAT32)
   - §4.9 Status LEDs: PWR (green), HB heartbeat (amber), 6 × relay activity (red, shared GPIO)

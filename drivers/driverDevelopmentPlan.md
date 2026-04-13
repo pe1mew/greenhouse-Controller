@@ -452,7 +452,7 @@ Provides a fake `TwoWire` class and global `Wire` instance. An in-memory byte FI
 | Board ID / revision | LOLIN S3 |
 | Tester | drasv |
 | Date | 2026-04-10 |
-| Equipment | LOLIN S3; Waveshare LCD1602 I2C module; DS3231 RTC module |
+| Equipment | LOLIN S3; Waveshare LCD1602 I2C module; DS1307 RTC module |
 
 **Wiring:** SDA → GPIO 1, SCL → GPIO 2, 3.3 V, GND to both modules. Both modules include their own 4.7 kΩ pull-up resistors; no external resistors needed. Both devices must be connected simultaneously to confirm bus sharing and address non-conflict.
 
@@ -462,7 +462,7 @@ Provides a fake `TwoWire` class and global `Wire` instance. An in-memory byte FI
 |----|-------------|-----------|-----------------|---------------|-----|
 | HW-I2C-001 | Bus initialises at correct speed | Upload sketch; open serial monitor | "I2C init: SDA=GPIO1 SCL=GPIO2 400 kHz" printed within 3 s | "I2C init: SDA=GPIO1 SCL=GPIO2 400 kHz" printed | ✅ PASS |
 | HW-I2C-002 | LCD PCF8574A detected on scan | Run `i2c_scan` with both modules connected | Address 0x3E reported as found | Address 0x3E found ✓ (re-run after address fix) | ✅ PASS |
-| HW-I2C-003 | DS3231 RTC detected on scan | Run `i2c_scan` with both modules connected | Address 0x68 reported as found | Address 0x68 found | ✅ PASS |
+| HW-I2C-003 | DS1307 RTC detected on scan | Run `i2c_scan` with both modules connected | Address 0x68 reported as found | Address 0x68 found | ✅ PASS |
 | HW-I2C-004 | Write to 0x3E succeeds | Sketch writes 1 byte to LCD I2C address | "Write 1 byte to 0x3E: OK" printed; no NACK error | "Write 1 byte to 0x3E: OK" printed | ✅ PASS |
 | HW-I2C-005 | Write-read from 0x68 succeeds | Sketch writes register address then reads 1 byte from RTC | "Write-read from 0x68: OK, value = 0xXX" printed | "Write-read from 0x68: OK, value = 0x80" printed | ✅ PASS |
 
@@ -519,7 +519,7 @@ bool         rtc_oscillator_stopped(void);  // true if CH bit set (oscillator ha
 ### Implementation notes
 - All time fields are BCD-encoded in DS1307 registers 0x00–0x06.
 - **Clock Halt (CH) bit:** bit 7 of the seconds register (0x00). Set at power-up (oscillator disabled); cleared automatically when `rtc_set_time` writes BCD seconds 0–59 (bit 7 is always 0 for valid BCD seconds). CH set = time invalid.
-- DS1307 has **no temperature sensor** (unlike DS3231).
+- DS1307 has **no temperature sensor** (unlike DS1307).
 - Implement private `bcd_to_dec` and `dec_to_bcd` helpers.
 
 ### Mock strategy (`test/mock_i2c_bus.h`)

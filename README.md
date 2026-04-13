@@ -10,7 +10,7 @@ An embedded controller for automated ventilation management of a single greenhou
 - Interface to Hotraco RRK-3 three-channel relay box via potential-free relay contacts
 - Modbus RTU / RS485 sensors: Seeed SenseCAP S200 (wind speed + direction) and FG6485A (T/RH)
 - Local user interface: 4×4 membrane keypad and Waveshare LCD1602 I2C display
-- Battery-backed DS3231 RTC for accurate timestamping
+- Battery-backed DS1307 RTC for accurate timestamping
 - Event logging to internal NVS flash; optional SD card for extended retention
 - Optional WiFi connectivity and MQTT telemetry
 - Status LEDs: power indicator, firmware heartbeat, per-relay activity
@@ -27,7 +27,7 @@ An embedded controller for automated ventilation management of a single greenhou
 | Relay output board | 6-channel, opto-isolated, 5 V coil |
 | Display | Waveshare LCD1602 I2C (PCF8574 expander), 16×2 characters |
 | Keypad | 4×4 membrane matrix keypad |
-| RTC | DS3231 (I2C, CR2032 backup, ±2 ppm) |
+| RTC | DS1307 (I2C, CR2032 backup, external 32.768 kHz crystal, ±20 ppm) |
 | Power supply | 230 VAC → 24 VDC (Hi-Link HLK-10M24 or equivalent) + 24 V → 5 V buck converter |
 | Enclosure | Multicomp Pro MC001110, 222 × 146 × 55 mm, IP67, transparent polycarbonate cover |
 | PCB design | KiCad EDA v8+ |

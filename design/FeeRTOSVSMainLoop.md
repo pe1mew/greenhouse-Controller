@@ -214,7 +214,7 @@ The ESP32-S3 has two cores (Core 0 and Core 1).
 The startup sequence is implemented in `setup()` before tasks are launched:
 
 1. Initialise hardware peripherals (UART, I2C, SPI, GPIO).
-2. Read DS3231 RTC; if WiFi later syncs NTP, update RTC.
+2. Read DS1307 RTC; if WiFi later syncs NTP, update RTC.
 3. Close all three windows (issue CLOSE relay pulse for M1, M2, M3) and wait for their respective motor run-times to elapse (21 s + 21 s + 171 s, serialised) — satisfies FR-ST02.
 4. Set all window estimated states to `CLOSED`.
 5. Create queues and semaphores.

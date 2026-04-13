@@ -295,7 +295,7 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 - Holds current operating mode (Automatic / Standby / Wind-override / Manual-override).
 - Holds current session state (Normal / Farmer / Admin).
 - Updated by T8 and T11; read by any task that gates behaviour on mode or session.
-- **Synchronization:** acquires MX1 (I2C) to read DS3231 RTC; holds MX2 while writing current measurement data; holds MX3 while writing ring buffer entries; holds MX4 while reading or writing configuration settings; receives Q4 (config/state updates from T8 and T11); receives Q6 (sensor readings from T5); sends TN1 to T3 after writing new wind data; sends TN2 to T6 after writing new sensor data.
+- **Synchronization:** acquires MX1 (I2C) to read DS1307 RTC; holds MX2 while writing current measurement data; holds MX3 while writing ring buffer entries; holds MX4 while reading or writing configuration settings; receives Q4 (config/state updates from T8 and T11); receives Q6 (sensor readings from T5); sends TN1 to T3 after writing new wind data; sends TN2 to T6 after writing new sensor data.
 
 ---
 
@@ -466,7 +466,7 @@ FreeRTOS mutexes (`xSemaphoreCreateMutex`) implement priority inheritance, which
 
 | ID  | Name                      | Protects                                                                 | Writers                       | Readers                              |
 |-----|---------------------------|--------------------------------------------------------------------------|-------------------------------|--------------------------------------|
-| MX1 | I2C bus                   | Shared I2C bus (SDA/SCL) — LCD display and DS3231 RTC on the same wires | T8 (LCD write), T4 (RTC read) | —                                    |
+| MX1 | I2C bus                   | Shared I2C bus (SDA/SCL) — LCD display and DS1307 RTC on the same wires | T8 (LCD write), T4 (RTC read) | —                                    |
 | MX2 | Current measurement data  | Latest T, RH, wind speed, wind direction values in T4                   | T4 (on write from T5)         | T3, T6, T8, T9, T11, T12            |
 | MX3 | Measurement ring buffers  | History ring buffers for T, RH, wind speed, wind direction in T4        | T4 (on write from T5)         | T8, T9, T11, T12                    |
 | MX4 | Configuration settings    | All configurable parameters in T4                                        | T4 (on validated write from Q4) | T3, T6, T8, T11, T12             |

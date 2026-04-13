@@ -56,13 +56,13 @@ The two tracks can proceed partially in parallel; hardware bring-up requires a w
 
 | Step | Action | Notes |
 |------|--------|-------|
-| A1.1 | Resolve Open Issue #7: confirm time source (DS3231 assumed) | Affects RTC schematic symbol and power net |
+| A1.1 | Resolve Open Issue #7: confirm time source (DS1307 assumed) | Affects RTC schematic symbol and power net |
 | A1.2 | Resolve Open Issue #1: confirm RRK-3 alarm relay output signal type | Affects opto-coupler input circuit |
 | A1.3 | Complete relay output section (6 relays, opto-isolated 5 V drive, screw terminals) | Verify coil current against 5 V rail budget |
 | A1.4 | Complete power supply section (AC-DC HLK-10M24, DC-DC 24 V → 5 V, buffer capacitor) | Size buffer cap for ≥ 1 s sustain at full load |
 | A1.5 | Complete RS485 transceiver circuit (SIT65HVD08P, DE/RE control, termination) | Include bus termination resistor (120 Ω) |
 | A1.6 | Add ESD and TVS protection on all external-facing connectors | RS485, 24 V sensor supply, relay screw terminals |
-| A1.7 | Add decoupling capacitors to all ICs following datasheet recommendations | DS3231, SIT65HVD08P, relay driver |
+| A1.7 | Add decoupling capacitors to all ICs following datasheet recommendations | DS1307, SIT65HVD08P, relay driver |
 | A1.8 | Add test points on key signals (UART TX/RX, I2C SDA/SCL, 5 V and 3.3 V rails) | Required for bring-up and production test |
 | A1.9 | Perform schematic ERC in KiCad; resolve all errors | No unconnected pins without explicit no-connect markers |
 | A1.10 | Peer-review schematic against technicalHardwareDesignSpecification.md | Cross-check all GPIO assignments and voltage levels |
@@ -82,7 +82,7 @@ The two tracks can proceed partially in parallel; hardware bring-up requires a w
 | A2.3 | Place connectors first: screw terminals (relay, sensor, power), USB-C, SD card | Connectors define board edge orientations |
 | A2.4 | Place LOLIN S3 module centrally; reserve keep-out zone for WiFi antenna | Antenna must not be shielded by copper planes |
 | A2.5 | Place relay module(s) in a block, isolated from logic circuitry | Route high-current paths with wide traces |
-| A2.6 | Place I2C peripherals (DS3231, LCD header) close to MCU I2C pins | Keep I2C traces short (< 50 mm) |
+| A2.6 | Place I2C peripherals (DS1307, LCD header) close to MCU I2C pins | Keep I2C traces short (< 50 mm) |
 | A2.7 | Place RS485 transceiver adjacent to UART pins and RS485 screw terminal | Minimise stub length on differential pair |
 | A2.8 | Route power planes (24 V, 5 V, GND) before signal traces | Use poured copper fills; check via stitching for ground plane |
 | A2.9 | Route high-current traces (relay coil drive, 24 V input) at ≥ 1 mm width | Calculate trace width from IPC-2221 for operating temperature |
@@ -104,7 +104,7 @@ The two tracks can proceed partially in parallel; hardware bring-up requires a w
 | A3.1 | Order PCB (prototype quantity: 5) | Use approved Gerber files from A2 |
 | A3.2 | Order all components per BOM | Source from BOM; verify footprints match ordered variants |
 | A3.3 | Solder SMD components (DC-DC converter, resistors, capacitors, SIT65HVD08P) | Hot air or reflow; inspect with magnification |
-| A3.4 | Solder through-hole components (relay module, screw terminals, DS3231 module) | Mechanical stability required for screw terminals |
+| A3.4 | Solder through-hole components (relay module, screw terminals, DS1307 module) | Mechanical stability required for screw terminals |
 | A3.5 | Solder LOLIN S3 module (pin headers or direct SMD pads) | Double-check orientation; module not reversible |
 | A3.6 | Install LCD module on standoffs inside enclosure | Connect via ribbon or jumper cable |
 | A3.7 | Final assembly into enclosure; dress all cables | Verify cable glands seal correctly for IP67 |
@@ -122,8 +122,8 @@ The two tracks can proceed partially in parallel; hardware bring-up requires a w
 | A4.1 | Bench power-on: apply 24 VDC (current limited); measure 5 V and 3.3 V rails | 5 V: 4.9–5.1 V; 3.3 V: 3.25–3.35 V; no smoke |
 | A4.2 | Measure quiescent current from 24 V rail | Within calculated budget (< 200 mA with no sensors) |
 | A4.3 | Flash minimal firmware; verify UART output on serial console | Boot messages appear; no crash |
-| A4.4 | Verify I2C bus: scan for DS3231 (0x68) and LCD (0x27) | Both addresses detected |
-| A4.5 | Verify DS3231: set time, power-cycle, read back correct time | Time is retained without main power |
+| A4.4 | Verify I2C bus: scan for DS1307 (0x68) and LCD (0x27) | Both addresses detected |
+| A4.5 | Verify DS1307: set time, power-cycle, read back correct time | Time is retained without main power |
 | A4.6 | Verify LCD: display test pattern on all 32 character positions | All positions visible through enclosure cover |
 | A4.7 | Verify keypad: read all 16 keys individually | Each key generates correct row/column code |
 | A4.8 | Verify RS485: connect one Modbus sensor; read a single register | Valid Modbus response received |
@@ -206,15 +206,14 @@ Libraries are listed in order of development priority. Libraries that are depend
 
 ---
 
-#### LIB-3 — DS3231 RTC Library
+#### LIB-3 — DS1307 RTC Library
 
-**Description:** Driver for the DS3231 real-time clock over I2C (address 0x68). Provides time read/write and alarm functions. Uses LIB-2 for bus access.
+**Description:** Driver for the DS1307 real-time clock over I2C (address 0x68). Provides time read/write. Uses LIB-2 for bus access. Note: the DS1307 has no internal temperature sensor.
 
 **API surface:**
-- `rtc_init()` — initialise; verify DS3231 is present
+- `rtc_init()` — initialise; verify DS1307 is present; clear Clock Halt (CH) bit
 - `rtc_get_time(datetime_t *dt)` — read current time into struct
-- `rtc_set_time(const datetime_t *dt)` — write time to RTC
-- `rtc_get_temperature()` — read DS3231 internal temperature (float °C)
+- `rtc_set_time(const datetime_t *dt)` — write time to RTC; clears CH bit automatically
 
 **FreeRTOS compatibility:** Calls `i2c_acquire()`; is blocking; must not be called from ISR.
 
@@ -446,12 +445,12 @@ These tasks have no inter-task dependencies and can be implemented and tested fi
 
 ##### TASK-T4 — Data Manager
 
-**Depends on:** LIB-7 (NVS Configuration), LIB-3 (DS3231 RTC)
+**Depends on:** LIB-7 (NVS Configuration), LIB-3 (DS1307 RTC)
 **Depends on tasks:** T1 (must be running to ensure WDT is active before T4 initialises NVS)
 
 **Implementation:**
 - Reads all configuration from NVS at startup via LIB-7; populates the in-memory config struct.
-- Reads current time from DS3231 via LIB-3 at startup.
+- Reads current time from DS1307 via LIB-3 at startup.
 - Owns and protects all shared state behind MX2 (sensor readings), MX3 (ring buffer history), and MX4 (configuration).
 - Receives new sensor readings from T5 via Q6; updates shared state; sends TN1 to T3 and TN2 to T6.
 - Receives configuration update messages from T8 and T11 via Q4; validates values; persists to NVS.
@@ -607,7 +606,7 @@ Both T7 and T8 can be developed in parallel with Group 4, as they only interact 
 
 ##### TASK-T8 — UI / Display
 
-**Depends on:** LIB-4 (LCD1602), LIB-2 (I2C), LIB-3 (DS3231), T4 (data accessors), T7 (Q2 key events)
+**Depends on:** LIB-4 (LCD1602), LIB-2 (I2C), LIB-3 (DS1307), T4 (data accessors), T7 (Q2 key events)
 **Depends on tasks:** T4 (running), T9 (running for UI log events), T10 (for network status, but T8 must start before T10)
 
 **Implementation:**
@@ -646,14 +645,14 @@ Network tasks run on Core 0. They depend on Group 2 (Data Manager) but are indep
 **Implementation:**
 - Starts in Access Point mode if no client credentials are configured.
 - Connects as client if credentials are stored in NVS.
-- On client connect: triggers NTP synchronisation; updates DS3231 via LIB-3; posts time to T4.
+- On client connect: triggers NTP synchronisation; updates DS1307 via LIB-3; posts time to T4.
 - Posts `net_status_event_t` to Q5 (consumed by T8).
 - Reconnects automatically on disconnect.
 
 **Acceptance tests:**
 - `test_t10_starts_ap_mode_without_credentials` — empty NVS; verify AP mode started.
 - `test_t10_connects_client_with_credentials` — credentials in NVS; verify client connect attempt.
-- `test_t10_ntp_sync_on_connect` — stub NTP response; verify DS3231 time set.
+- `test_t10_ntp_sync_on_connect` — stub NTP response; verify DS1307 time set.
 - `test_t10_posts_status_to_q5_on_connect` — verify Q5 receives CONNECTED event.
 - `test_t10_posts_status_to_q5_on_disconnect` — simulate disconnect; verify Q5 receives DISCONNECTED event.
 - `test_t10_reconnects_after_timeout` — simulate disconnect then available again; verify reconnect.
@@ -734,7 +733,7 @@ After all tasks are individually validated, the following integration tests veri
 | INT-05 | Manual override via RRK-3 | RRK-3 relay de-energises; opto input changes state; T2 detects manual override; T6 inhibited; UI shows alarm |
 | INT-06 | Keypad menu — setpoint change | Operator navigates menu; changes T setpoint; T4 persists to NVS; T6 uses new value |
 | INT-07 | Web UI — window manual command | Administrator opens M1 via web UI; T11 posts command to Q1; T2 opens window |
-| INT-08 | Power interruption | Disconnect 24 V for 5 s; restore; verify DS3231 retains time; NVS retains configuration; system resumes |
+| INT-08 | Power interruption | Disconnect 24 V for 5 s; restore; verify DS1307 retains time; NVS retains configuration; system resumes |
 | INT-09 | MQTT publish | Broker connected; verify T, RH, wind, window state published every interval |
 | INT-10 | OTA update | Upload firmware image via web UI; verify successful flash and boot from new partition |
 | INT-11 | Conflict resolution | T high and RH low simultaneously; verify window behaviour follows priority defined in FR-CC06 |
@@ -748,7 +747,7 @@ After all tasks are individually validated, the following integration tests veri
 Libraries (Phase 1)
 ├── LIB-1 GPIO Utility
 ├── LIB-2 I2C Bus
-│   ├── LIB-3 DS3231 RTC
+│   ├── LIB-3 DS1307 RTC
 │   └── LIB-4 LCD1602
 ├── LIB-5 Keypad Matrix
 ├── LIB-6 Modbus RTU  ←── uses LIB-1 (RS485 direction)
@@ -792,9 +791,9 @@ The following open issues from the design documents must be resolved before the 
 | Issue | Blocks | Decision Required |
 |-------|--------|-------------------|
 | Open Issue #1 — RRK-3 alarm relay output signal type | A1 (schematic), LIB-1 unit tests, T2 acceptance tests | Confirm signal polarity (NO/NC) and voltage level of RRK-3 alarm output |
-| Open Issue #7 — Time source (DS3231 vs GNSS vs DCF77) | A1 (schematic), LIB-3 development, T4 time initialisation | Confirm DS3231 as primary time source (current design assumption) |
+| ~~Open Issue #7 — Time source~~ | ~~A1 (schematic), LIB-3 development, T4 time initialisation~~ | **Closed — DS1307 selected as primary time source.** |
 
-Both issues are expected to be resolved in favour of the current design assumptions (DS3231; opto-coupled feedback input). If a different time source is selected, LIB-3 and the T4 initialisation sequence must be revised accordingly.
+Open Issue #1 is expected to be resolved in favour of the opto-coupled feedback input assumption. Open Issue #7 is closed: DS1307 is the selected RTC.
 
 ---
 

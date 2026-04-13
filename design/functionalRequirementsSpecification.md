@@ -27,7 +27,8 @@
    - 5.6 Conflict Resolution
    - 5.7 Window State Tracking
    - 5.8 Operating Modes (incl. Manual Override Detection)
-   - 5.9 Local User Interface (Keyboard & Display)
+   - 5.9 Local User Interface (Keyboard, Display & Status LEDs)
+     - 5.9.1 Status LED Indicators
    - 5.10 Configuration and Settings
    - 5.11 WiFi Connectivity
    - 5.12 MQTT Integration
@@ -252,7 +253,7 @@ When temperature and humidity call for opposing window actions (e.g. temperature
 
 > **Note on FR-M08:** Detection of manual override depends on feedback from the Hotraco RRK-3 (e.g. an alarm or status relay output). This is subject to the open issue described in Constraint C8. The mechanism for override detection must be resolved during detailed electrical design.
 
-### 5.9 Local User Interface (Keyboard & Display)
+### 5.9 Local User Interface (Keyboard, Display & Status LEDs)
 
 | ID | Requirement | MoSCoW |
 |----|-------------|--------|
@@ -265,6 +266,33 @@ When temperature and humidity call for opposing window actions (e.g. temperature
 | FR-UI07 | The system **shall** provide efficient menu navigation, enabling the farmer and administrator to reach any first-level setting from the main screen with a minimal number of key presses. | Should |
 | FR-UI08 | The display **should** show the current wind speed and wind direction on a status screen. | Should |
 | FR-UI09 | All prompts and labels **shall** be displayed in a language configurable by the administrator (default: Dutch). | Could |
+
+#### 5.9.1 Status LED Indicators
+
+The controller shall include hardware status LEDs mounted on the PCB, visible through the transparent enclosure cover, to provide instant visual feedback on operating state without requiring the LCD or any connected device.
+
+**LED colour convention**
+
+All LED colour usage in this system shall follow the convention defined in the table below. This convention applies to every LED in the current design and to any LED added in future revisions.
+
+| Colour | Meaning | LED off means |
+|--------|---------|---------------|
+| **Green** | Operation is OK — the associated function is powered and working correctly. | The associated function is not operating (e.g. no mains power). |
+| **Amber** | An intended event is actively occurring — the system is doing its work. Amber is an activity indicator, not an alarm. | The associated activity is not currently taking place. |
+| **Red** | A fault or error is present — something requires attention. A red LED lit indicates a malfunction or error condition. | No active fault for the associated function. |
+
+> **Note:** The current hardware design uses green (power) and amber (heartbeat, relay activity) LEDs only. Red LEDs are reserved for future fault-indication functions. No red LEDs are fitted in the v0.3 hardware.
+
+**LED requirements**
+
+| ID | Requirement | MoSCoW |
+|----|-------------|--------|
+| FR-UI10 | The controller **shall** provide hardware status LEDs that give instant visual feedback on operating state without requiring the LCD or a connected device. | Must |
+| FR-UI11 | All LED colour usage **shall** conform to the LED colour convention defined in §5.9.1: green = OK, amber = intended activity in progress, red = fault or error. | Must |
+| FR-UI12 | The controller **shall** include a green power indicator LED that is lit whenever mains power is present and the PSU is operational. The power LED **shall** remain lit even if the MCU is in reset or has faulted. | Must |
+| FR-UI13 | The controller **shall** include an amber heartbeat LED driven by the firmware. The heartbeat LED **shall** blink at 1 Hz during normal operation, blink at 4 Hz during start-up initialisation, remain steady-on if the firmware has stopped (watchdog not yet fired), and be off if the MCU is not running. | Must |
+| FR-UI14 | The controller **shall** include one amber relay activity LED per relay output (six total). Each relay LED **shall** be lit for exactly as long as the corresponding relay is energised, directly mirroring the relay state. | Must |
+| FR-UI15 | A red LED, when fitted, **shall** only be used to indicate a fault or error condition. Red **shall not** be used for power indication or normal-activity indication. | Must |
 
 ### 5.10 Configuration and Settings
 

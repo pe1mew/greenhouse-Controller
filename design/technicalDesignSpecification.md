@@ -193,7 +193,7 @@ greenhouse-controller/          ← Git repository root (GitHub / GitLab)
    │                                        │
    │8 GPIO ◄── [4×4 Keypad]                 │
    │I2C    ──► [LCD1602]   ──► Display      │
-   │I2C    ──► [DS3231 RTC]                 │
+   │I2C    ──► [DS1307 RTC]                 │
    │                                        │
    │6 GPIO → [Relay board, 6 ch] ───────────┤── 24V switched ──► RRK-3 OPEN/CLOSE
    │      ↳ [6 relay LEDs] (red, shared)    │
@@ -438,18 +438,18 @@ Accurate, persistent time is required for event log timestamps and, if implement
 | Option | Running accuracy | Survives power-off | Additional hardware | Approx. cost | Complexity |
 |--------|-----------------|-------------------|---------------------|-------------|------------|
 | ESP32 internal RTC + NTP only | Good while online; ±100–200 ppm offline | No — time lost on every power cycle | None | None | Low |
-| External RTC — DS3231 | ±2 ppm (±1 min/year, TCXO) | Yes — CR2032 battery backup | I2C module, 2 shared GPIO | €1–3 | Low |
+| External RTC — DS1307 | ±2 ppm (±1 min/year, TCXO) | Yes — CR2032 battery backup | I2C module, 2 shared GPIO | €1–3 | Low |
 | GNSS receiver | < 1 µs (GPS atomic) | Yes — after fix re-acquired | GNSS module + antenna | €10–30 | Medium–High |
 | DCF77 receiver | ±1 ms (atomic reference) | Yes — continuous reception | DCF77 module + ferrite antenna | €5–15 | Medium |
 
 **ESP32 internal RTC + NTP only**
 The ESP32-S3 contains an internal RTC counter that is not battery-backed. Time is lost on every power cycle and must be restored via NTP. While running, the internal oscillator drifts ±100–200 ppm (hardware- and temperature-dependent), producing up to ±17 s per 24 hours. Since WiFi is optional in this system, NTP alone cannot satisfy TR-HW08: log timestamps will be invalid after any power interruption until a network connection is re-established.
 
-**External RTC — DS3231**
-The DS3231 is a temperature-compensated crystal oscillator (TCXO) with I2C interface and a CR2032 coin-cell backup. Accuracy is ±2 ppm (approximately ±1 minute per year). The backup cell maintains the clock through power interruptions of any duration. Connection uses the shared I2C bus with the LCD display (addresses 0x27 and 0x68 do not conflict); no additional GPIO is needed. Module cost is €1–3. This is the lowest-cost, lowest-complexity option that fully satisfies TR-HW08. NTP synchronisation over WiFi, when available, can further correct long-term drift.
+**External RTC — DS1307**
+The DS1307 is a temperature-compensated crystal oscillator (TCXO) with I2C interface and a CR2032 coin-cell backup. Accuracy is ±2 ppm (approximately ±1 minute per year). The backup cell maintains the clock through power interruptions of any duration. Connection uses the shared I2C bus with the LCD display (addresses 0x27 and 0x68 do not conflict); no additional GPIO is needed. Module cost is €1–3. This is the lowest-cost, lowest-complexity option that fully satisfies TR-HW08. NTP synchronisation over WiFi, when available, can further correct long-term drift.
 
 **GNSS receiver**
-A GNSS (GPS/GLONASS) module provides highly accurate time (< 1 µs) and date independently of network connectivity. Geographic position is also available, from which sunrise and sunset times — including seasonal correction for summer/winter time — can be computed in firmware for any date, without a separate DST table. Disadvantages for this application: modules cost €10–30 and require an antenna (patch or external); a cold start takes 30 s to several minutes to acquire a fix; signal attenuation inside a greenhouse is moderate (polycarbonate and glass are largely transparent to L1 GPS frequencies, but a clear sky view is not guaranteed); switching-mode power supplies and motor drives in the greenhouse may cause RF interference; power consumption is significantly higher than an RTC. For an application where the sole benefit over a DS3231 is removing a €2 component, the cost and complexity are disproportionate.
+A GNSS (GPS/GLONASS) module provides highly accurate time (< 1 µs) and date independently of network connectivity. Geographic position is also available, from which sunrise and sunset times — including seasonal correction for summer/winter time — can be computed in firmware for any date, without a separate DST table. Disadvantages for this application: modules cost €10–30 and require an antenna (patch or external); a cold start takes 30 s to several minutes to acquire a fix; signal attenuation inside a greenhouse is moderate (polycarbonate and glass are largely transparent to L1 GPS frequencies, but a clear sky view is not guaranteed); switching-mode power supplies and motor drives in the greenhouse may cause RF interference; power consumption is significantly higher than an RTC. For an application where the sole benefit over a DS1307 is removing a €2 component, the cost and complexity are disproportionate.
 
 **DCF77 receiver**
 DCF77 is a German long-wave time signal broadcast on 77.5 kHz from Mainflingen, covering most of Western Europe (including the Netherlands) with a range of up to 2000 km. It provides UTC plus a daylight-saving-time (CET/CEST) flag, referenced to the German atomic clock — eliminating the need for a firmware DST table for Dutch installations. Receiver modules cost €5–15 and use a compact ferrite rod antenna. Disadvantages: greenhouse environments contain significant interference sources (switching power supplies, frequency inverters, motor drives, fluorescent or LED grow lights) that can degrade or completely block reception of the 77.5 kHz signal; reception reliability must be verified on-site before this option can be relied upon. The option is geographically restricted to Europe.
@@ -481,7 +481,7 @@ The system uses a **two-stage power architecture**: a single AC–DC converter p
                                                        ├──► Relay coils (6-ch module)
                                                        ├──► LCD backlight
                                                        ├──► RS485 transceiver
-                                                       ├──► DS3231 RTC
+                                                       ├──► DS1307 RTC
                                                        └──► Status LEDs
 ```
 
@@ -525,7 +525,7 @@ The 5 V output feeds:
 - The 6-channel relay module (5 V coil supply)
 - The LCD module backlight
 - The RS485 transceiver (5 V supply; 3.3 V logic from the LOLIN S3 LDO)
-- The DS3231 RTC module
+- The DS1307 RTC module
 - The status LEDs (via current-limiting resistors; see §4.9)
 
 #### 4.7.5 Power Budget
@@ -550,7 +550,7 @@ The 5 V output feeds:
 | 6-channel relay module (all 6 relays energised) | ~360 mA (60 mA × 6) |
 | LCD module (backlight on) | ~40 mA |
 | RS485 transceiver | ~10 mA |
-| DS3231 RTC | ~2 mA |
+| DS1307 RTC | ~2 mA |
 | Status LEDs (PWR + HB + 6 relay, all on) | ~16 mA (2 mA × 8) |
 | **Total 5 V (worst case)** | **~680 mA** |
 
@@ -725,8 +725,8 @@ The table below lists all allocated functions on the ESP32-S3. Specific GPIO num
 | RS485 direction (DE/RE) | GPIO output | — | 1 |
 | LCD display (SDA) | I2C | I2C0 SDA | 1 |
 | LCD display (SCL) | I2C | I2C0 SCL | 1 |
-| RTC DS3231 (SDA) | I2C | I2C0 SDA (shared) | — |
-| RTC DS3231 (SCL) | I2C | I2C0 SCL (shared) | — |
+| RTC DS1307 (SDA) | I2C | I2C0 SDA (shared) | — |
+| RTC DS1307 (SCL) | I2C | I2C0 SCL (shared) | — |
 | Keypad rows (4) | GPIO output | — | 4 |
 | Keypad columns (4) | GPIO input (pull-up) | — | 4 |
 | Relay OPEN M1 | GPIO output | — | 1 |
@@ -975,7 +975,7 @@ The controller operates in three states:
 | 4 | **Enclosure model selection** — Candidate housings identified: Multicomp Pro MC001110 (222 × 146 × 55 mm, €22 ex, Farnell) preferred; MC001111 (222 × 146 × 75 mm, €24 ex) as fallback if depth is insufficient. Final choice to be confirmed after PCB layout and 3D component-height clearance check. See §4.10. | Hardware designer | Pending PCB layout |
 | 5 | **Relay module selection** — The specific 6-channel relay module (opto-isolated, 5 V coil, potential-free contacts ≥ 0.5 A / 24 V) must be selected and its PCB footprint confirmed. | Hardware designer | Open |
 | 6 | **LED panel integration** — ~~Resolved~~. LEDs are on the PCB and visible through the transparent enclosure cover. No panel-mount LED holders or light pipes are required. | Hardware designer | **Closed** |
-| 7 | **Time source selection** — Four options exist to satisfy TR-HW08 (accurate time during/after power interruptions): (a) ESP32 internal RTC + NTP only — no extra hardware but fails TR-HW08 when WiFi is unavailable; (b) external RTC DS3231 — €1–3, I2C, battery-backed, lowest complexity; (c) GNSS receiver — highly accurate, provides sunrise/sunset data, but costly and complex for this application; (d) DCF77 receiver — atomic accuracy, handles DST, but reception reliability in a greenhouse environment must be verified. A decision is required before PCB layout is finalised. See §4.6 for full analysis. | Hardware designer | Open |
+| 7 | **Time source selection** — Four options exist to satisfy TR-HW08 (accurate time during/after power interruptions): (a) ESP32 internal RTC + NTP only — no extra hardware but fails TR-HW08 when WiFi is unavailable; (b) external RTC DS1307 — €1–3, I2C, battery-backed, lowest complexity; (c) GNSS receiver — highly accurate, provides sunrise/sunset data, but costly and complex for this application; (d) DCF77 receiver — atomic accuracy, handles DST, but reception reliability in a greenhouse environment must be verified. A decision is required before PCB layout is finalised. See §4.6 for full analysis. | Hardware designer | Open |
 | 8 | **MQTT authentication and configuration scope** — ~~Resolved~~. MQTT broker connection uses username/password authentication. MQTT configuration (broker address, port, and credentials) is accessible via the web configuration interface only; it is not present in the local keyboard menu. FR-MQ04 updated accordingly. | Software designer | **Closed** |
 
 ---

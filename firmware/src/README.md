@@ -15,7 +15,7 @@ Refer to [`../platformio.ini`](../platformio.ini) for board configuration, frame
 | `windSafety.*` | Wind speed / direction safety override |
 | `windowController.*` | Relay output management, timed motor run, dwell-time enforcement |
 | `ui.*` | Keypad scan and LCD1602 display driver |
-| `rtc.*` | DS3231 RTC interface (I2C) |
+| `rtc.*` | DS1307 RTC interface (I2C) |
 | `logger.*` | Event log — NVS ring buffer and optional SD card write |
 | `mqtt.*` | Optional MQTT client for remote telemetry |
 | `config.*` | NVS-backed configuration store (setpoints, thresholds, credentials) |

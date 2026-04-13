@@ -152,10 +152,10 @@ The full repository folder layout is documented in `technicalSoftwareDesignSpeci
    │                                        │
    │8 GPIO ◄── [4×4 Keypad]                 │
    │I2C    ──► [LCD1602]   ──► Display      │
-   │I2C    ──► [DS3231 RTC]                 │
+   │I2C    ──► [DS1307 RTC]                 │
    │                                        │
    │6 GPIO → [Relay board, 6 ch] ───────────┤── 24V switched ──► RRK-3 OPEN/CLOSE
-   │      ↳ [6 relay LEDs] (red, shared)    │
+   │      ↳ [6 relay LEDs] (amber, shared)  │
    │                                        │
    │1 GPIO ← [Opto-input]                   │◄── RRK-3 alarm/feedback
    │                  ! see Open Issue #1   │
@@ -405,27 +405,27 @@ Accurate, persistent time is required for event log timestamps and, if implement
 | Option | Running accuracy | Survives power-off | Additional hardware | Approx. cost | Complexity |
 |--------|-----------------|-------------------|---------------------|-------------|------------|
 | ESP32 internal RTC + NTP only | Good while online; ±100–200 ppm offline | No — time lost on every power cycle | None | None | Low |
-| External RTC — DS3231 | ±2 ppm (±1 min/year, TCXO) | Yes — CR2032 battery backup | I2C module, 2 shared GPIO | €1–3 | Low |
+| External RTC — DS1307 | ±20 ppm (crystal dependent) | Yes — CR2032 battery backup | I2C module + 32.768 kHz crystal, 2 shared GPIO | €1–3 | Low |
 | GNSS receiver | < 1 µs (GPS atomic) | Yes — after fix re-acquired | GNSS module + antenna | €10–30 | Medium–High |
 | DCF77 receiver | ±1 ms (atomic reference) | Yes — continuous reception | DCF77 module + ferrite antenna | €5–15 | Medium |
 
 **ESP32 internal RTC + NTP only**
 The ESP32-S3 contains an internal RTC counter that is not battery-backed. Time is lost on every power cycle and must be restored via NTP. While running, the internal oscillator drifts ±100–200 ppm (hardware- and temperature-dependent), producing up to ±17 s per 24 hours. Since WiFi is optional in this system, NTP alone cannot satisfy TR-HW08: log timestamps will be invalid after any power interruption until a network connection is re-established.
 
-**External RTC — DS3231**
-The DS3231 is a temperature-compensated crystal oscillator (TCXO) with I2C interface and a CR2032 coin-cell backup. Accuracy is ±2 ppm (approximately ±1 minute per year). The backup cell maintains the clock through power interruptions of any duration. Connection uses the shared I2C bus with the LCD display (addresses 0x27 and 0x68 do not conflict); no additional GPIO is needed. Module cost is €1–3. This is the lowest-cost, lowest-complexity option that fully satisfies TR-HW08. NTP synchronisation over WiFi, when available, can further correct long-term drift.
+**External RTC — DS1307**
+The DS1307 is a real-time clock IC with I2C interface and a CR2032 coin-cell backup. It requires an external 32.768 kHz crystal for oscillator operation. Accuracy is ±20 ppm (crystal dependent; approximately ±10 minutes per year). The backup cell maintains the clock through power interruptions of any duration. Connection uses the shared I2C bus with the LCD display (addresses 0x27 and 0x68 do not conflict); no additional GPIO is needed. The DS1307 operates from the 5 V rail. Module cost is €1–3. This is the lowest-cost, lowest-complexity option that satisfies TR-HW08. NTP synchronisation over WiFi, when available, can further correct long-term drift.
 
 **GNSS receiver**
-A GNSS (GPS/GLONASS) module provides highly accurate time (< 1 µs) and date independently of network connectivity. Geographic position is also available, from which sunrise and sunset times — including seasonal correction for summer/winter time — can be computed in firmware for any date, without a separate DST table. Disadvantages for this application: modules cost €10–30 and require an antenna (patch or external); a cold start takes 30 s to several minutes to acquire a fix; signal attenuation inside a greenhouse is moderate (polycarbonate and glass are largely transparent to L1 GPS frequencies, but a clear sky view is not guaranteed); switching-mode power supplies and motor drives in the greenhouse may cause RF interference; power consumption is significantly higher than an RTC. For an application where the sole benefit over a DS3231 is removing a €2 component, the cost and complexity are disproportionate.
+A GNSS (GPS/GLONASS) module provides highly accurate time (< 1 µs) and date independently of network connectivity. Geographic position is also available, from which sunrise and sunset times — including seasonal correction for summer/winter time — can be computed in firmware for any date, without a separate DST table. Disadvantages for this application: modules cost €10–30 and require an antenna (patch or external); a cold start takes 30 s to several minutes to acquire a fix; signal attenuation inside a greenhouse is moderate (polycarbonate and glass are largely transparent to L1 GPS frequencies, but a clear sky view is not guaranteed); switching-mode power supplies and motor drives in the greenhouse may cause RF interference; power consumption is significantly higher than an RTC. For an application where the sole benefit over a DS1307 is removing a €2 component, the cost and complexity are disproportionate.
 
 **DCF77 receiver**
 DCF77 is a German long-wave time signal broadcast on 77.5 kHz from Mainflingen, covering most of Western Europe (including the Netherlands) with a range of up to 2000 km. It provides UTC plus a daylight-saving-time (CET/CEST) flag, referenced to the German atomic clock — eliminating the need for a firmware DST table for Dutch installations. Receiver modules cost €5–15 and use a compact ferrite rod antenna. Disadvantages: greenhouse environments contain significant interference sources (switching power supplies, frequency inverters, motor drives, fluorescent or LED grow lights) that can degrade or completely block reception of the 77.5 kHz signal; reception reliability must be verified on-site before this option can be relied upon. The option is geographically restricted to Europe.
 
 #### 4.6.2 Design Decision
 
-> **⚠ Open Issue #7 — Time source selection:** See §5. A decision is required before PCB layout can be finalised.
+**Selected: DS1307** (Open Issue #7 resolved).
 
-If no external hardware time source is used, the minimum viable fallback is NTP-on-boot (requires WiFi to be available and connected). In this case TR-HW08 cannot be met when WiFi is unavailable, and log timestamps will be absent or incorrect after any power interruption until network time is re-acquired. This trade-off must be explicitly accepted if the external RTC or an alternative is omitted.
+The DS1307 is used as the primary time source. It satisfies TR-HW08 at minimal cost and complexity. NTP synchronisation over WiFi, when available, corrects accumulated crystal drift. The DS1307 module (dev board variant) is listed in the BOM; the production PCB uses the bare DS1307 IC with an external 32.768 kHz crystal and CR2032 holder.
 
 ---
 
@@ -448,7 +448,7 @@ The system uses a **two-stage power architecture**: a single AC–DC converter p
                                                        ├──► Relay coils (6-ch module)
                                                        ├──► LCD backlight
                                                        ├──► SIT65HVD08P (3.3 V via LOLIN S3 LDO)
-                                                       ├──► DS3231 RTC
+                                                       ├──► DS1307 RTC
                                                        └──► Status LEDs
 ```
 
@@ -492,7 +492,7 @@ The 5 V output feeds:
 - The 6-channel relay module (5 V coil supply)
 - The LCD module backlight
 - The SIT65HVD08P RS485 transceiver (3.3 V supply from the LOLIN S3 on-board LDO)
-- The DS3231 RTC module
+- The DS1307 RTC module
 - The status LEDs (via current-limiting resistors; see §4.9)
 
 #### 4.7.5 Power Budget
@@ -517,7 +517,7 @@ The 5 V output feeds:
 | 6-channel relay module (all 6 relays energised) | ~360 mA (60 mA × 6) |
 | LCD module (backlight on) | ~40 mA |
 | SIT65HVD08P RS485 transceiver (3.3 V via LOLIN S3 LDO — included in LOLIN S3 figure) | — |
-| DS3231 RTC | ~2 mA |
+| DS1307 RTC | ~2 mA |
 | Status LEDs (PWR + HB + 6 relay, all on) | ~16 mA (2 mA × 8) |
 | **Total 5 V (worst case)** | **~680 mA** |
 
@@ -555,12 +555,12 @@ Status LEDs on the PCB provide instant visual feedback on the operating state of
 |-----------|--------|----------|-------------|------------|
 | PWR | Green | 1 | 5 V rail via resistor (hardware) | None |
 | HB (Heartbeat) | Amber | 1 | Dedicated MCU GPIO | 1 |
-| M1-OPEN | Red | 1 | Shared with relay M1-OPEN GPIO driver | None |
-| M1-CLOSE | Red | 1 | Shared with relay M1-CLOSE GPIO driver | None |
-| M2-OPEN | Red | 1 | Shared with relay M2-OPEN GPIO driver | None |
-| M2-CLOSE | Red | 1 | Shared with relay M2-CLOSE GPIO driver | None |
-| M3-OPEN | Red | 1 | Shared with relay M3-OPEN GPIO driver | None |
-| M3-CLOSE | Red | 1 | Shared with relay M3-CLOSE GPIO driver | None |
+| M1-OPEN | Amber | 1 | Shared with relay M1-OPEN GPIO driver | None |
+| M1-CLOSE | Amber | 1 | Shared with relay M1-CLOSE GPIO driver | None |
+| M2-OPEN | Amber | 1 | Shared with relay M2-OPEN GPIO driver | None |
+| M2-CLOSE | Amber | 1 | Shared with relay M2-CLOSE GPIO driver | None |
+| M3-OPEN | Amber | 1 | Shared with relay M3-OPEN GPIO driver | None |
+| M3-CLOSE | Amber | 1 | Shared with relay M3-CLOSE GPIO driver | None |
 | **Total** | | **8** | | **1 additional GPIO** |
 
 #### 4.9.2 LED Descriptions
@@ -572,7 +572,7 @@ Status LEDs on the PCB provide instant visual feedback on the operating state of
 - Provides immediate confirmation that the unit is powered before any other diagnostic step.
 
 **HB — Heartbeat (amber)**
-- Driven by one dedicated MCU GPIO output via a series resistor (~1.5 kΩ for ~2 mA at 3.3 V).
+- Driven by one dedicated MCU GPIO output via a series resistor (560 Ω for ~2 mA at 3.3 V).
 - The firmware toggles this LED to indicate software state:
 
 | Blink pattern | Meaning |
@@ -583,7 +583,7 @@ Status LEDs on the PCB provide instant visual feedback on the operating state of
 | Steady OFF | MCU not running (power fault or crash before LED initialisation) |
 
 
-**Relay LEDs — M1-OPEN, M1-CLOSE, M2-OPEN, M2-CLOSE, M3-OPEN, M3-CLOSE (red)**
+**Relay LEDs — M1-OPEN, M1-CLOSE, M2-OPEN, M2-CLOSE, M3-OPEN, M3-CLOSE (amber)**
 - Each LED is connected in parallel with the corresponding relay coil drive transistor output, via its own current-limiting resistor.
 - The LED illuminates whenever the corresponding relay is energised, directly mirroring the relay state in real time.
 - No additional GPIO is required; the relay-drive GPIO signals are shared.
@@ -595,10 +595,10 @@ Status LEDs on the PCB provide instant visual feedback on the operating state of
   MCU GPIO ──► [relay driver transistor] ──► relay coil ──► GND
                         │
                    (collector)
-                        ├──[R_LED ~470 Ω]──► [LED red] ──► GND
+                        ├──[R_LED ~1 kΩ]──► [LED amber] ──► GND
 ```
 
-The LED and series resistor are placed from the transistor collector to ground, so the LED lights when the transistor conducts (relay energised). The resistor is sized for approximately 2 mA LED current when the relay coil is active.
+The LED and series resistor are placed from the transistor collector to ground, so the LED lights when the transistor conducts (relay energised). The resistor is sized for approximately 3 mA LED current at 5 V when the relay coil is active.
 
 #### 4.9.4 Layout (indicative)
 
@@ -695,8 +695,8 @@ The table below lists all allocated functions on the ESP32-S3. Specific GPIO num
 | RS485 direction (DE/RE) | GPIO output | — | 1 |
 | LCD display (SDA) | I2C | I2C0 SDA | 1 |
 | LCD display (SCL) | I2C | I2C0 SCL | 1 |
-| RTC DS3231 (SDA) | I2C | I2C0 SDA (shared) | — |
-| RTC DS3231 (SCL) | I2C | I2C0 SCL (shared) | — |
+| RTC DS1307 (SDA) | I2C | I2C0 SDA (shared) | — |
+| RTC DS1307 (SCL) | I2C | I2C0 SCL (shared) | — |
 | Keypad rows (4) | GPIO output | — | 4 |
 | Keypad columns (4) | GPIO input (pull-up) | — | 4 |
 | Relay OPEN M1 | GPIO output | — | 1 |
@@ -743,7 +743,7 @@ This section maps every peripheral signal to a specific GPIO number on the LOLIN
 | RS485 UART TX | **GPIO 17** | Output | UART1 TX | To SIT65HVD08P pin DI |
 | RS485 UART RX | **GPIO 18** | Input | UART1 RX | From SIT65HVD08P pin RO |
 | RS485 DE/RE | **GPIO 8** | Output | GPIO | High = transmit; Low = receive |
-| I2C SDA | **GPIO 1** | Bidirectional | I2C0 SDA | Shared: LCD PCF8574 (0x27) + DS3231 (0x68) |
+| I2C SDA | **GPIO 1** | Bidirectional | I2C0 SDA | Shared: LCD PCF8574 (0x27) + DS1307 (0x68) |
 | I2C SCL | **GPIO 2** | Output | I2C0 SCL | Shared: LCD + RTC |
 | Keypad ROW 1 | **GPIO 3** | Output | GPIO | Drive low to scan |
 | Keypad ROW 2 | **GPIO 4** | Output | GPIO | Drive low to scan |
@@ -760,7 +760,7 @@ This section maps every peripheral signal to a specific GPIO number on the LOLIN
 | Relay OPEN M3 | **GPIO 16** | Output | GPIO | Active-low relay driver input |
 | Relay CLOSE M3 | **GPIO 21** | Output | GPIO | Active-low relay driver input |
 | RRK-3 feedback input | **GPIO 42** | Input | GPIO | Opto-coupler output; active level TBD (Open Issue #1) |
-| Heartbeat LED (HB) | **GPIO 41** | Output | GPIO | ~1.5 kΩ series resistor to amber LED |
+| Heartbeat LED (HB) | **GPIO 41** | Output | GPIO | 560 Ω series resistor to amber LED |
 | SD card MOSI *(optional)* | **GPIO 47** | Output | SPI2 MOSI | Fitted only when SD feature is enabled |
 | SD card MISO *(optional)* | **GPIO 48** | Input | SPI2 MISO | Fitted only when SD feature is enabled |
 | SD card CLK *(optional)* | **GPIO 39** | Output | SPI2 CLK | Fitted only when SD feature is enabled |
@@ -795,7 +795,7 @@ This section maps every peripheral signal to a specific GPIO number on the LOLIN
 | 4 | **Enclosure model selection** — Candidate housings identified: Multicomp Pro MC001110 (222 × 146 × 55 mm, €22 ex, Farnell) preferred; MC001111 (222 × 146 × 75 mm, €24 ex) as fallback if depth is insufficient. Final choice to be confirmed after PCB layout and 3D component-height clearance check. See §4.10. | Hardware designer | Pending PCB layout |
 | 5 | **Relay module selection** — The specific 6-channel relay module (opto-isolated, 5 V coil, potential-free contacts ≥ 0.5 A / 24 V) must be selected and its PCB footprint confirmed. | Hardware designer | Open |
 | 6 | **LED panel integration** — ~~Resolved~~. LEDs are on the PCB and visible through the transparent enclosure cover. No panel-mount LED holders or light pipes are required. | Hardware designer | **Closed** |
-| 7 | **Time source selection** — Four options exist to satisfy TR-HW08 (accurate time during/after power interruptions): (a) ESP32 internal RTC + NTP only — no extra hardware but fails TR-HW08 when WiFi is unavailable; (b) external RTC DS3231 — €1–3, I2C, battery-backed, lowest complexity; (c) GNSS receiver — highly accurate, provides sunrise/sunset data, but costly and complex for this application; (d) DCF77 receiver — atomic accuracy, handles DST, but reception reliability in a greenhouse environment must be verified. A decision is required before PCB layout is finalised. See §4.6 for full analysis. | Hardware designer | Open |
+| 7 | **Time source selection** — Four options exist to satisfy TR-HW08 (accurate time during/after power interruptions): (a) ESP32 internal RTC + NTP only — no extra hardware but fails TR-HW08 when WiFi is unavailable; (b) external RTC DS1307 — €1–3, I2C, battery-backed, lowest complexity; (c) GNSS receiver — highly accurate, provides sunrise/sunset data, but costly and complex for this application; (d) DCF77 receiver — atomic accuracy, handles DST, but reception reliability in a greenhouse environment must be verified. A decision is required before PCB layout is finalised. See §4.6 for full analysis. | Hardware designer | Open |
 
 ---
 
