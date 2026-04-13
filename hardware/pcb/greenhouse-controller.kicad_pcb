@@ -5880,6 +5880,162 @@
 			)
 		)
 	)
+	(footprint "my-KiCad-library:LCD1602 I2C Module mechanical"
+		(layer "F.Cu")
+		(uuid "6ced9c15-7598-4473-9281-b0b9e877d078")
+		(at -47 0)
+		(property "Reference" "M1"
+			(at 0 -0.5 0)
+			(unlocked yes)
+			(layer "F.SilkS")
+			(uuid "57567fd1-302f-47a7-84f2-424389aa767c")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.1)
+				)
+			)
+		)
+		(property "Value" "LCD1602 I2C Module mechanical"
+			(at 0 1 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(uuid "b7213a70-02a2-4a4e-8830-e4de630892b1")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.15)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "9fb0c900-1d88-45df-b702-8fefec39fa3d")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.15)
+				)
+			)
+		)
+		(property "Description" ""
+			(at 0 0 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(hide yes)
+			(uuid "713ded19-4f15-4b6b-a356-437e0be6c73e")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.15)
+				)
+			)
+		)
+		(path "/4288d0df-a197-4e8f-97e7-40567413fcc1")
+		(sheetname "/")
+		(sheetfile "greenhouse-controller.kicad_sch")
+		(attr through_hole)
+		(fp_rect
+			(start -43.5 -16)
+			(end 43.5 16)
+			(stroke
+				(width 0.1)
+				(type dash)
+			)
+			(fill no)
+			(layer "F.SilkS")
+			(uuid "04fbf182-8491-416e-92b0-f2b8a7feb81b")
+		)
+		(fp_rect
+			(start -43.5 -7)
+			(end -38 7)
+			(stroke
+				(width 0.1)
+				(type dot)
+			)
+			(fill no)
+			(layer "F.SilkS")
+			(uuid "38b07bfc-6a89-490f-9c43-c744987d5bbd")
+		)
+		(fp_rect
+			(start -35.65 -13.4)
+			(end 35.65 13.4)
+			(stroke
+				(width 0.05)
+				(type solid)
+			)
+			(fill no)
+			(layer "F.Fab")
+			(uuid "9e26874c-0046-4299-84a7-0a5f24315e01")
+		)
+		(fp_rect
+			(start -32.25 -8)
+			(end 32.25 8)
+			(stroke
+				(width 0.05)
+				(type solid)
+			)
+			(fill no)
+			(layer "F.Fab")
+			(uuid "7603c73e-a4d5-4f28-8930-15065a24eb2f")
+		)
+		(fp_text user "LCD1602 I2C Module mechanical"
+			(at -20 15 0)
+			(unlocked yes)
+			(layer "F.SilkS")
+			(uuid "015abc04-b7ce-4230-af65-54ca7551c9d9")
+			(effects
+				(font
+					(size 1.27 1.27)
+					(thickness 0.15)
+				)
+			)
+		)
+		(fp_text user "${REFERENCE}"
+			(at 0 2.5 0)
+			(unlocked yes)
+			(layer "F.Fab")
+			(uuid "03fe18ee-5f10-4347-95a2-569a68807eef")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.15)
+				)
+			)
+		)
+		(pad "" np_thru_hole circle
+			(at -40 -12.5)
+			(size 7 7)
+			(drill 3.2)
+			(layers "*.Cu" "*.Mask")
+			(uuid "31b6b93f-32eb-4488-a6f5-d752965c3f02")
+		)
+		(pad "" np_thru_hole circle
+			(at -40 12.5)
+			(size 7 7)
+			(drill 3.2)
+			(layers "*.Cu" "*.Mask")
+			(uuid "03ee9217-bbcd-49dc-b92e-05431f8df7f0")
+		)
+		(pad "" np_thru_hole circle
+			(at 40 -12.5)
+			(size 7 7)
+			(drill 3.2)
+			(layers "*.Cu" "*.Mask")
+			(uuid "0e580e35-527a-4f1e-97d5-86fb36292f01")
+		)
+		(pad "" np_thru_hole circle
+			(at 40 12.5)
+			(size 7 7)
+			(drill 3.2)
+			(layers "*.Cu" "*.Mask")
+			(uuid "57f76f81-d763-4c1b-9ffb-ae8877d0fed9")
+		)
+		(embedded_fonts no)
+	)
 	(footprint "Resistor_SMD:R_1206_3216Metric_Pad1.30x1.75mm_HandSolder"
 		(layer "F.Cu")
 		(uuid "759fe418-6259-4877-8dcf-af67c53748b9")
@@ -13487,7 +13643,7 @@
 	(footprint "my-KiCad-library:Meanwell RS-15 Mechanical"
 		(layer "F.Cu")
 		(uuid "d598f863-2069-49f4-bffa-4a23b4e3e92d")
-		(at 77.274 32 90)
+		(at 76.25 34 90)
 		(property "Reference" "P1"
 			(at 31.25 -1.5 90)
 			(unlocked yes)
