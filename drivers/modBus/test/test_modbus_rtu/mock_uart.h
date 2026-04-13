@@ -173,9 +173,13 @@ public:
 private:
     static const int BUF_SIZE = 256;
 
-    uint8_t  rx_buf[BUF_SIZE]; /**< Pre-queued RX bytes. */
-    int      rx_head;          /**< Read index. */
-    int      rx_tail;          /**< Write index (one past last queued byte). */
+    uint8_t  rx_buf[BUF_SIZE]; /**< Pre-queued RX bytes (slave response). */
+    int      rx_head;          /**< Read index into rx_buf. */
+    int      rx_tail;          /**< Write index into rx_buf (one past last byte). */
+
+    uint8_t  echo_buf[BUF_SIZE]; /**< Half-duplex echo bytes injected by write(). */
+    int      echo_head;          /**< Read index into echo_buf. */
+    int      echo_tail;          /**< Write index into echo_buf. */
 
     uint8_t  tx_buf[BUF_SIZE]; /**< Bytes transmitted by the driver. */
     int      tx_count;         /**< Number of bytes in tx_buf. */
@@ -222,3 +226,6 @@ void delay(uint32_t ms);
 
 /** @brief No-op delayMicroseconds stub for the native build. */
 void delayMicroseconds(uint32_t us);
+
+/** @brief micros() stub for the native build — returns millis() * 1000. */
+uint32_t micros(void);

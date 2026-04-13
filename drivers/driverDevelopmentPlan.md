@@ -17,6 +17,7 @@ The driver subdirectories already exist and use the following names:
 | LIB-7 | `nvs/` | ESP32-S3 internal NVS flash |
 | LIB-8 | `sdCard/` | SPI SD card (external, FAT32) |
 | LIB-9 | `littleFS/` | Internal ESP32-S3 flash (LittleFS partition) |
+| LIB-10 | `FG6485A/` | ASAIR FG6485A RS485 temperature/humidity sensor |
 
 ---
 
@@ -37,6 +38,9 @@ Wave 2 (after respective Wave 1 board tests pass):
     LIB-3  DS1307_RTC/     ← requires LIB-2 board-tested  (DS1307 chip)
     LIB-4  LCD1602_I2C/    ← requires LIB-2 board-tested
     LIB-6  modBus/         ← requires LIB-1 board-tested
+
+Wave 3 (after LIB-6 board-tested):
+    LIB-10 FG6485A/        ← requires LIB-6 board-tested  (Modbus RTU)
 ```
 
 Unit test development for Wave 2 drivers can begin immediately using mocks; only the hardware verification step depends on Wave 1 completion.
@@ -922,18 +926,21 @@ modbus_status_t modbus_read_input_registers(uint8_t device_addr,
 ```
 
 ### Implementation sequence (per transaction)
-1. `delayMicroseconds(5000)` — enforce ≥3.5 character-time inter-frame gap at 9600 baud (~3.65 ms minimum; 5 ms used for margin).
+1. Enforce ≥3.5 character-time inter-frame gap relative to the actual end of the previous frame on the wire: `if (micros() - s_frame_end_us < MODBUS_IFG_US) delayMicroseconds(MODBUS_IFG_US - elapsed)`. `MODBUS_IFG_US = 4000 µs` (≈ 10% margin above the 3.5-char minimum of 3646 µs at 9600 baud 8N1).
 2. Assert DE/RE HIGH via `gpio_set_rs485_direction(true)`.
-3. Write 8-byte request frame to `Serial1`.
-4. Call `Serial1.flush()` to wait for the UART shift register to finish.
+3. Write request frame to `Serial1`.
+4. Call `Serial1.flush()` to wait for the UART shift register to finish; record `s_frame_end_us = micros()` immediately after.
 5. `delayMicroseconds(2000)` — guard to ensure the last stop bit has left the wire.
 6. Assert DE/RE LOW via `gpio_set_rs485_direction(false)`.
-7. `delayMicroseconds(1500)` then drain `Serial1` — the half-duplex transceiver echoes TX bytes into the RX FIFO while DE is HIGH; this settle + drain removes them before listening for the response.
-8. Read bytes with per-byte timeout until `byte_count + 5` bytes received or timeout.
-   - On timeout: drain `Serial1` (late arriving echo bytes) then return `MODBUS_ERR_TIMEOUT`.
-9. Validate CRC16 (polynomial 0xA001).
-10. `delayMicroseconds(2000)` then drain `Serial1` — remove any trailing bytes before the next transaction.
-11. Return parsed register values, or an error code.
+7. `delayMicroseconds(1500)` then **counted drain** — discard exactly the number of bytes transmitted (equal to the frame length) from `Serial1`. The SIT65HVD08P echoes every TX byte into the RX FIFO while DE is HIGH; the counted drain removes exactly those bytes without accidentally consuming an early slave response.
+8. Read bytes with per-byte timeout until the expected frame length is received or the timeout fires.
+   - On timeout: `delayMicroseconds(2000)`, drain `Serial1`, record `s_frame_end_us = micros()`, return `MODBUS_ERR_TIMEOUT`.
+9. Record `s_frame_end_us = micros()` as soon as the last expected byte arrives.
+10. Validate CRC16 (polynomial 0xA001).
+11. `delayMicroseconds(2000)` then drain `Serial1` — remove any surplus bytes before the next transaction.
+12. Return parsed register values, or an error code.
+
+`s_frame_end_us` is a file-scope `uint32_t` static, initialised to `micros()` in `modbus_init()`. All four exit paths from the receive loop (normal, timeout, FC03/FC04, FC16) update it, guaranteeing the IFG is enforced from any real wire event.
 
 ### Frame format
 ```
@@ -942,13 +949,14 @@ Response:           [addr][fc][byte_cnt][data...][crc_lo][crc_hi]
 ```
 
 ### Mock strategy
-`mock_uart.h` — `mock_uart_queue_response(bytes, len)` preloads response bytes; `mock_uart_get_transmitted(buf, len)` records what was sent.  
+`mock_uart.h` — `mock_uart_queue_response(bytes, len)` preloads response bytes; `mock_uart_get_transmitted(buf, len)` records what was sent. `MockSerial::write()` also enqueues the written bytes into a separate `echo_buf` FIFO that `read()` serves first, accurately simulating the SIT65HVD08P half-duplex echo. The counted drain in `modbus_transaction` therefore consumes exactly the echo bytes, leaving the pre-queued slave response intact for the receive loop.  
 `mock_gpio.h` — records DE/RE transitions for timing assertions; provides no-op stubs for both `gpio_set_rs485_direction` and `gpio_rs485_init`.  
+`micros()` stub returns `millis_val × 1000` so the timestamp-based IFG guard scales consistently with the controllable `millis()` clock used by timeout tests.  
 In the native build, `gpio/` is not linked; the mock provides all gpio stubs directly. Guard macro `NATIVE_TEST` (defined only on the `native` PlatformIO env) controls which implementation is compiled — this project uses `#ifndef NATIVE_TEST` (not `#ifndef UNIT_TEST`) because `UNIT_TEST` is also defined on hardware test envs where the real gpio driver must be linked.
 
 ### Unit tests (12)
 
-Run: `pio test -e native` — all 12 passed (MinGW/native).
+Run: `pio test -e native` — all 12 passed on 2026-04-13 (1.76 s, MinGW/native) after IFG timing fix.
 
 | ID | Test case | Assertion | Result |
 |----|-----------|-----------|--------|
@@ -1001,7 +1009,7 @@ Run: `pio test -e native` — all 12 passed (MinGW/native).
 |-------|-------|
 | Result | PASS |
 | Failed test IDs | — |
-| Notes | **Defect found and fixed during this session:** (1) `gpio_rs485_init()` was missing — `modbus_init` did not configure PIN_RS485_DE_RE as OUTPUT, so DE/RE was never driven. Fixed by adding `gpio_rs485_init()` to `gpio_util.cpp`/`gpio_util.h` and calling it from `modbus_init`; modbus layer now makes zero direct Arduino GPIO calls. (2) No inter-frame gap between consecutive transactions — slave never saw the second FC04 request. Fixed by `delayMicroseconds(5000)` before every TX assertion. (3) TX echo corruption — the SIT65HVD08P echoes TX bytes into RX FIFO while DE is HIGH. Fixed by 1.5 ms settle + RX drain after DE/RE goes LOW, and a 2 ms drain after each successful receive. (4) `Serial0` was not available with `ARDUINO_USB_CDC_ON_BOOT=0`; all references changed to `Serial`. Hardware loopback verification (`lolin_s3_loopback` env): 11/11 Unity tests PASSED. Real-slave verification (`lolin_s3` env): HW-MB-001–005 all PASSED. |
+| Notes | **Defects found and fixed during initial verification session (2026-04-10):** (1) `gpio_rs485_init()` was missing — `modbus_init` did not configure PIN_RS485_DE_RE as OUTPUT, so DE/RE was never driven. Fixed by adding `gpio_rs485_init()` to `gpio_util.cpp`/`gpio_util.h` and calling it from `modbus_init`; modbus layer now makes zero direct Arduino GPIO calls. (2) No inter-frame gap between consecutive transactions — slave never saw the second FC04 request. Initially fixed by `delayMicroseconds(5000)` before every TX assertion. (3) TX echo corruption — the SIT65HVD08P echoes TX bytes into RX FIFO while DE is HIGH. Fixed by 1.5 ms settle + drain after DE/RE goes LOW, and a 2 ms drain after each successful receive. (4) `Serial0` was not available with `ARDUINO_USB_CDC_ON_BOOT=0`; all references changed to `Serial`. Hardware loopback verification (`lolin_s3_loopback` env): 11/11 Unity tests PASSED. Real-slave verification (`lolin_s3` env): HW-MB-001–005 all PASSED. **Post-board-test defect found (2026-04-13) — IFG timing violation:** received-data analysis showed the master violated the Modbus 3.5-char-time rule between slave response and next poll (gap < 1823 µs threshold). Root cause: the fixed `delayMicroseconds(5000)` at the start of `modbus_transaction` measured elapsed time from when the function was *called*, not from when the last bit of the previous frame left or arrived on the wire; any caller-side processing between back-to-back calls consumed part of that budget. **Fix:** replaced fixed delay with a timestamp-based IFG guard — `s_frame_end_us` (file-scope `uint32_t`) is updated by `micros()` at every wire event (post-`flush()` for TX; on receive-loop completion; on timeout path). Each new transaction spin-waits only the remaining time to reach `MODBUS_IFG_US = 4000 µs` from that timestamp. Additionally changed the echo drain from unbounded `while (available()) read()` to a counted drain of exactly `frame_length` bytes, preventing accidental consumption of early slave-response bytes. Native mock updated: `MockSerial::write()` now injects echo bytes into a separate FIFO served by `read()` before the pre-queued slave response; `micros()` stub added returning `millis_val × 1000`; `#include` guards in `modbus_rtu.cpp` corrected from `"../test/mock_uart.h"` to `"mock_uart.h"` (resolved via the existing `-I test/test_modbus_rtu` build flag). All 12 native unit tests re-ran and passed (2026-04-13, 1.76 s). |
 
 ---
 
@@ -1469,6 +1477,296 @@ All operations are blocking.
 
 ---
 
+## LIB-10 — FG6485A T/RH Sensor (`FG6485A/`)
+
+### Purpose
+Thin driver over LIB-6 (modBus) for the ASAIR FG6485A RS485 Modbus temperature and humidity transmitter. Provides measurement reads, device-info reads, alarm configuration read/write, correction register writes, and a FreeRTOS periodic polling task. Used by T5 (Sensor Poll) to collect climate data.
+
+Sensor specifications (FG6485A datasheet v1.0):
+- Temperature range: −40 to 120 °C, accuracy ±0.3 °C, resolution 0.1 °C
+- Humidity range: 0 to 99.9 %RH, accuracy ±3 %RH, resolution 0.1 %RH
+- Communication: Modbus RTU, 9600 baud, 8N1, RS-485
+- Raw register values: integer × 10 of the actual engineering value
+- Slave address: 1–255, set via 8-position DIP switch on PCB
+
+### Dependency
+Requires LIB-6 (`modBus/`) to be board-tested. The caller must call `modbus_init()` once before using any function in this driver.
+
+```ini
+[env:lolin_s3]
+lib_deps =
+    file://../gpio
+    file://../modBus
+```
+
+### Register map
+
+| Register | Address | Access | Description |
+|----------|---------|--------|-------------|
+| `FG6485A_REG_HUMIDITY` | 0x0000 | FC03 | Relative humidity raw × 10 (%RH) |
+| `FG6485A_REG_TEMPERATURE` | 0x0001 | FC03 | Temperature raw × 10 (°C, signed int16) |
+| `FG6485A_REG_DEVICE_TYPE` | 0x0008 | FC03 | Device type identifier |
+| `FG6485A_REG_VERSION` | 0x0009 | FC03 | Firmware version |
+| `FG6485A_REG_DEVICE_ID_HIGH` | 0x000A | FC03 | Device ID high 16 bits |
+| `FG6485A_REG_DEVICE_ID_LOW` | 0x000B | FC03 | Device ID low 16 bits |
+| `FG6485A_REG_TEMP_ALARM_HI` | 0x000C | FC03/FC16 | Temperature upper alarm threshold × 10 (°C, signed) |
+| `FG6485A_REG_TEMP_ALARM_HI_EN` | 0x000D | FC03/FC16 | Temperature upper alarm enable (1=on) |
+| `FG6485A_REG_TEMP_ALARM_LO` | 0x000E | FC03/FC16 | Temperature lower alarm threshold × 10 (°C, signed) |
+| `FG6485A_REG_TEMP_ALARM_LO_EN` | 0x000F | FC03/FC16 | Temperature lower alarm enable (1=on) |
+| `FG6485A_REG_HUM_ALARM_HI` | 0x0010 | FC03/FC16 | Humidity upper alarm threshold × 10 (%RH) |
+| `FG6485A_REG_HUM_ALARM_HI_EN` | 0x0011 | FC03/FC16 | Humidity upper alarm enable (1=on) |
+| `FG6485A_REG_HUM_ALARM_LO` | 0x0012 | FC03/FC16 | Humidity lower alarm threshold × 10 (%RH) |
+| `FG6485A_REG_HUM_ALARM_LO_EN` | 0x0013 | FC03/FC16 | Humidity lower alarm enable (1=on) |
+| `FG6485A_REG_TEMP_CORRECTION` | 0x001D | FC16 | Temperature correction offset × 10 (°C, signed) |
+| `FG6485A_REG_HUM_CORRECTION` | 0x001E | FC16 | Humidity correction offset × 10 (%RH, signed) |
+
+### API (`fg6485a.h`)
+
+```cpp
+#define FG6485A_DEFAULT_ADDR  1u
+
+typedef enum {
+    FG6485A_OK        = 0,
+    FG6485A_ERR_COMM  = 1,   // Modbus timeout / CRC / exception
+    FG6485A_ERR_PARAM = 2    // NULL pointer or addr=0
+} fg6485a_status_t;
+
+typedef struct {
+    float temperature_c;   // °C (resolution 0.1 °C, range -40…120)
+    float humidity_pct;    // %RH (resolution 0.1 %RH, range 0…99.9)
+} fg6485a_measurement_t;
+
+typedef struct {
+    uint16_t device_type;  // register 0x0008
+    uint16_t version;      // register 0x0009
+    uint32_t device_id;    // (reg_0x000A << 16) | reg_0x000B
+} fg6485a_info_t;
+
+typedef struct {
+    float temp_alarm_high;    bool temp_alarm_high_en;
+    float temp_alarm_low;     bool temp_alarm_low_en;
+    float hum_alarm_high;     bool hum_alarm_high_en;
+    float hum_alarm_low;      bool hum_alarm_low_en;
+} fg6485a_alarm_config_t;
+
+// Reads registers 0x0000–0x0001 (FC03); divides raw values by 10.
+fg6485a_status_t fg6485a_read_measurements(uint8_t slave_addr,
+                                            fg6485a_measurement_t *out);
+
+// Reads registers 0x0008–0x000B (FC03); assembles 32-bit device_id.
+fg6485a_status_t fg6485a_read_info(uint8_t slave_addr, fg6485a_info_t *out);
+
+// Issues up to two FC03 reads. Either pointer may be NULL to skip that read.
+fg6485a_status_t fg6485a_read_all(uint8_t slave_addr,
+                                   fg6485a_measurement_t *meas,
+                                   fg6485a_info_t        *info);
+
+// Reads registers 0x000C–0x0013 (FC03, 8 regs); converts raw × 10 to float.
+fg6485a_status_t fg6485a_read_alarm_config(uint8_t slave_addr,
+                                            fg6485a_alarm_config_t *out);
+
+// Writes registers 0x000C–0x0013 (FC16, 8 regs); multiplies floats by 10 → int16.
+fg6485a_status_t fg6485a_write_alarm_config(uint8_t slave_addr,
+                                             const fg6485a_alarm_config_t *cfg);
+
+// Writes register 0x001D (FC16); multiplies correction_c by 10 → int16.
+fg6485a_status_t fg6485a_write_temp_correction(uint8_t slave_addr, float correction_c);
+
+// Writes register 0x001E (FC16); multiplies correction_pct by 10 → int16.
+fg6485a_status_t fg6485a_write_humidity_correction(uint8_t slave_addr, float correction_pct);
+
+// FreeRTOS periodic polling task (target build only — excluded by NATIVE_TEST guard).
+void fg6485a_task(void *pvParameters);  // pvParameters → fg6485a_task_param_t*
+```
+
+### Implementation notes
+- All register reads use `modbus_read_holding_registers` (FC03); all writes use `modbus_write_multiple_registers` (FC16).
+- Raw integer values are always `× 10` of the engineering value. Conversion: `float_val = (int16_t)raw / 10.0f`. Negative temperatures are stored as signed 16-bit two's-complement values.
+- `device_id` is assembled as `(reg[0x000A] << 16) | reg[0x000B]`.
+- Alarm write encoding: `int16_t raw = (int16_t)roundf(float_val * 10.0f)`.
+- The `NATIVE_TEST` guard (not `UNIT_TEST`) suppresses FreeRTOS and Arduino includes. This is consistent with `modBus/` — `NATIVE_TEST` is defined only in the `native` PlatformIO env, whereas `UNIT_TEST` would also be defined on hardware test envs where the real dependencies must be linked.
+
+### Mock strategy (`test/test_fg6485a/mock_modbus.h`)
+Stubs for `modbus_read_holding_registers` and `modbus_write_multiple_registers`. `mock_modbus_queue_response(regs, count)` preloads register values to return on the next read call. `mock_modbus_get_last_write(regs, count)` retrieves the register values sent by the last write call. A `mock_modbus_set_next_error(code)` flag causes the next modbus call to return that error code. Call `mock_modbus_reset()` in `setUp()`.
+
+### Unit tests (20)
+
+Run: `pio test -e native` — all 20 passed on 2026-04-13 (3.65 s, MinGW/native).
+
+| ID | Test case | Assertion | Result |
+|----|-----------|-----------|--------|
+| UT-FG-001 | Positive humidity raw÷10 conversion | `0x0182` (386) → 38.6 %RH | ✅ PASS |
+| UT-FG-002 | Positive temperature raw÷10 conversion | `0x00E9` (233) → 23.3 °C | ✅ PASS |
+| UT-FG-003 | Negative temperature raw÷10 conversion | Signed int16 two's-complement → negative float | ✅ PASS |
+| UT-FG-004 | Timeout error maps to `FG6485A_ERR_COMM` | `MODBUS_ERR_TIMEOUT` propagated correctly | ✅ PASS |
+| UT-FG-005 | CRC error maps to `FG6485A_ERR_COMM` | `MODBUS_ERR_CRC` propagated correctly | ✅ PASS |
+| UT-FG-006 | NULL pointer rejected with `FG6485A_ERR_PARAM` | `out=NULL` → `FG6485A_ERR_PARAM`, no crash | ✅ PASS |
+| UT-FG-007 | Address 0 rejected with `FG6485A_ERR_PARAM` | `slave_addr=0` → `FG6485A_ERR_PARAM` | ✅ PASS |
+| UT-FG-008 | Device info parsing and `device_id` assembly | `device_type`, `version`, and 32-bit `device_id` decoded correctly | ✅ PASS |
+| UT-FG-009 | Device info error propagation | Modbus error from info read → `FG6485A_ERR_COMM` | ✅ PASS |
+| UT-FG-010 | `read_all` reads both measurements and info | Both structs populated from two FC03 reads | ✅ PASS |
+| UT-FG-011 | `read_all` skips NULL `meas` | Only info read issued; meas pointer not dereferenced | ✅ PASS |
+| UT-FG-012 | `read_all` skips NULL `info` | Only meas read issued; info pointer not dereferenced | ✅ PASS |
+| UT-FG-013 | Alarm config decode | All 4 threshold raw÷10 conversions and 4 enable bits correct | ✅ PASS |
+| UT-FG-014 | Alarm config write encoding | `float × 10 → int16` for all 4 thresholds; enable values correct | ✅ PASS |
+| UT-FG-015 | NULL `cfg` rejected | `write_alarm_config(addr, NULL)` → `FG6485A_ERR_PARAM` | ✅ PASS |
+| UT-FG-016 | Temperature correction positive encoding | `+2.5 °C` → raw `25` written to 0x001D | ✅ PASS |
+| UT-FG-017 | Temperature correction negative encoding | `−1.0 °C` → raw `−10` (two's-complement) written to 0x001D | ✅ PASS |
+| UT-FG-018 | Humidity correction encoding | `+3.0 %RH` → raw `30` written to 0x001E | ✅ PASS |
+| UT-FG-019 | Write error from modbus layer → `FG6485A_ERR_COMM` | Injected modbus write error propagated | ✅ PASS |
+| UT-FG-020 | Driver reads correct register range for measurements | FC03 request spans exactly 0x0000–0x0001 (count=2) | ✅ PASS |
+
+### Hardware verification
+
+#### Test session
+
+| Field | Value |
+|-------|-------|
+| Driver | LIB-10 — FG6485A T/RH Sensor |
+| Directory | `FG6485A/` |
+| Firmware version | 0.1.0 |
+| Board ID / revision | ESP32-S3 (QFN56) revision v0.2 — LOLIN S3, MAC 30:ed:a0:a0:fd:a4 |
+| Tester | drasv |
+| Date | 2026-04-13 |
+| Equipment | LOLIN S3; SIT65HVD08P RS485 transceiver; FG6485A sensor (DIP address = 1); 9–36 V DC supply for sensor |
+
+**Wiring:**  
+SIT65HVD08P DI → GPIO 17, RO → GPIO 18, DE+RE tied → GPIO 8, VCC → 3.3 V, GND → GND.  
+FG6485A A+ (yellow) → RS-485 A+, B− (white) → RS-485 B−, V+ (red) → 12 V DC, GND (black) → GND.  
+Sensor DIP switch: H = ON, all others OFF (slave address 1).
+
+**Pre-condition:** LIB-6 board-tested. `modbus_init()` is called by the verification sketch before any FG6485A function.
+
+#### Diagnostic output (from verification run)
+
+```
+[    88][I][esp32-hal-psram.c:96] psramInit(): PSRAM enabled
+
+================================================
+  FG6485A T/RH — hardware verification
+================================================
+modbus_init(): UART1 TX=GPIO17 RX=GPIO18 baud=9600 DE/RE=GPIO8
+[PASS] HW-FG-001: modbus_init() completed
+
+=== DIAG-1: Raw receive (addr=1, FC03, reg=0, count=2) ===
+  Sending: 01 03 00 00 00 02 C4 0B
+  Response bytes: 01 03 04 01 82 00 E9 9A 69
+  Total bytes received: 9
+=========================================================
+
+=== DIAG-2: Address scan (1-20) ===
+  Trying address  1 ... RESPONSE!
+    raw hum  reg (0x0000) = 0x0182  → 38.6 %RH
+    raw temp reg (0x0001) = 0x00E9  → 23.3 C
+  Trying address  2 ... timeout
+  ...
+  Trying address 20 ... timeout
+===================================
+```
+
+#### Test cases
+
+| ID | Description | How verified | Expected result | Actual result | P/F |
+|----|-------------|--------------|-----------------|---------------|-----|
+| HW-FG-001 | `modbus_init()` completes on correct UART pins | Automatic — serial output | `[PASS] HW-FG-001: modbus_init() completed` | `[PASS]` printed; UART1 on GPIO17/18, DE/RE on GPIO8 | PASS |
+| HW-FG-002 | `read_measurements` returns `FG6485A_OK` | Automatic | `[PASS] HW-FG-002: read_measurements returned FG6485A_OK` | `[PASS]`; temp 23.4 °C, hum 38.7 %RH | PASS |
+| HW-FG-002a | Temperature in operating range −40…120 °C | Range check on reading | `[PASS] HW-FG-002a` | 23.4 °C — within range | PASS |
+| HW-FG-002b | Humidity in operating range 0…99.9 %RH | Range check on reading | `[PASS] HW-FG-002b` | 38.7 %RH — within range | PASS |
+| HW-FG-003 | `read_info` returns `FG6485A_OK`; device info parsed | Automatic | `[PASS] HW-FG-003`; device_type=0x8D9D, version=0xD, device_id=0x0 | `[PASS]`; values match | PASS |
+| HW-FG-004 | `read_all` returns `FG6485A_OK` for both structs | Automatic | `[PASS] HW-FG-004`; temp 23.4 °C, hum 38.7 %RH | `[PASS]` | PASS |
+| HW-FG-005 | `read_alarm_config` returns `FG6485A_OK`; factory defaults parsed | Automatic | `[PASS] HW-FG-005`; defaults: T_hi=40, T_lo=10, H_hi=80, H_lo=20 (all enabled) | `[PASS]`; values match | PASS |
+| HW-FG-006a | `write_alarm_config` returns `FG6485A_OK` | Automatic | `[PASS] HW-FG-006a: write_alarm_config returned FG6485A_OK` | `[PASS]` | PASS |
+| HW-FG-006b | Alarm threshold read-back matches written values | Automatic — write then read and compare | `[PASS] HW-FG-006b`; T_hi=38.0, T_lo=12.0, H_hi=75.0, H_lo=25.0 | `[PASS]`; all 4 thresholds match | PASS |
+| HW-FG-007 | Both correction writes return `FG6485A_OK` (0.0 °C / 0.0 %RH) | Automatic | `[PASS] HW-FG-007: both correction writes returned FG6485A_OK` | `[PASS]` | PASS |
+| HW-FG-008 | `FG6485A_ERR_COMM` for absent device; elapsed < 300 ms | Automatic — query addr=99 (no device) | `[PASS] HW-FG-008`; status=FG6485A_ERR_COMM, elapsed < 300 ms | `[PASS]`; elapsed 222 ms | PASS |
+
+#### Full serial output
+
+```
+================================================
+  FG6485A T/RH — hardware verification
+================================================
+modbus_init(): UART1 TX=GPIO17 RX=GPIO18 baud=9600 DE/RE=GPIO8
+[PASS] HW-FG-001: modbus_init() completed
+
+=== DIAG-1: Raw receive (addr=1, FC03, reg=0, count=2) ===
+  Sending: 01 03 00 00 00 02 C4 0B
+  Response bytes: 01 03 04 01 82 00 E9 9A 69
+  Total bytes received: 9
+=========================================================
+
+=== DIAG-2: Address scan (1-20) ===
+  Trying address  1 ... RESPONSE!
+    raw hum  reg (0x0000) = 0x0182  → 38.6 %RH
+    raw temp reg (0x0001) = 0x00E9  → 23.3 C
+  Trying address  2 ... timeout
+  Trying address  3 ... timeout
+  ...
+  Trying address 20 ... timeout
+===================================
+
+--- Formal hardware tests ---
+--- Measurements (addr=1) ---
+  status      : FG6485A_OK
+  temperature : 23.4 C
+  humidity    : 38.7 %RH
+[PASS] HW-FG-002: read_measurements returned FG6485A_OK
+[PASS] HW-FG-002a: temperature in operating range (-40..120 C)
+[PASS] HW-FG-002b: humidity in operating range (0..99.9 %RH)
+--- Device info (addr=1) ---
+  status      : FG6485A_OK
+  device_type : 0x8D9D
+  version     : 0xD
+  device_id   : 0x0
+[PASS] HW-FG-003: read_info returned FG6485A_OK
+--- Read all (measurements + info, addr=1) ---
+  status      : FG6485A_OK
+  temperature : 23.4 C
+  humidity    : 38.7 %RH
+[PASS] HW-FG-004: read_all returned FG6485A_OK
+--- Alarm config read (addr=1) ---
+  status            : FG6485A_OK
+  temp_alarm_hi     : 40.0 C (en=1)
+  temp_alarm_lo     : 10.0 C (en=1)
+  hum_alarm_hi      : 80.0 %RH (en=1)
+  hum_alarm_lo      : 20.0 %RH (en=1)
+[PASS] HW-FG-005: read_alarm_config returned FG6485A_OK
+--- Alarm config write + verify (addr=1) ---
+  write status : FG6485A_OK
+[PASS] HW-FG-006a: write_alarm_config returned FG6485A_OK
+  read status  : FG6485A_OK
+  field               written   read-back
+  temp_alarm_high     38.0       38.0
+  temp_alarm_low      12.0       12.0
+  hum_alarm_high      75.0       75.0
+  hum_alarm_low       25.0       25.0
+[PASS] HW-FG-006b: alarm threshold read-back matches written values
+--- Corrections write (addr=1, 0.0 C / 0.0 %RH) ---
+  temp correction status : FG6485A_OK
+  hum  correction status : FG6485A_OK
+[PASS] HW-FG-007: both correction writes returned FG6485A_OK
+--- Timeout test (addr=99, no device) ---
+  status  : FG6485A_ERR_COMM
+  elapsed : 222 ms
+[PASS] HW-FG-008: FG6485A_ERR_COMM for absent device; elapsed < 300 ms
+================================================
+  PASSED: 11
+  FAILED: 0
+  RESULT: PASS
+================================================
+Entering idle loop.
+```
+
+#### Overall result
+
+| Field | Value |
+|-------|-------|
+| Result | PASS |
+| Failed test IDs | — |
+| Notes | All 11 hardware tests (HW-FG-001 through HW-FG-008, with HW-FG-002 split into 002a/002b) passed on first attempt. Sensor responded at address 1 only (address scan 1–20 confirmed). Device identification: type=0x8D9D, firmware version=0xD. Alarm threshold write+read-back verified (HW-FG-006b). Correction registers written at 0.0 °C / 0.0 %RH (factory-neutral). Absent-device timeout confirmed at 222 ms (< 300 ms limit). No software defects found. |
+
+---
+
 ## Completion Checklist
 
 For each driver, mark off both stages before declaring the driver done:
@@ -1484,6 +1782,7 @@ For each driver, mark off both stages before declaring the driver done:
 | LIB-3 DS1307 RTC | `DS1307_RTC/` | 2 | UT-RTC-001…011 | ✅ 2026-04-10 | HW-RTC-001…005 | ✅ 2026-04-10 |
 | LIB-4 LCD1602 I2C | `LCD1602_I2C/` | 2 | UT-LCD-001…011 | ✅ 2026-04-10 | HW-LCD-001…008 | ✅ 2026-04-10 |
 | LIB-6 Modbus RTU | `modBus/` | 2 | UT-MB-001…012 | ✅ 2026-04-10 | HW-MB-001…005 | ✅ 2026-04-10 |
+| LIB-10 FG6485A T/RH | `FG6485A/` | 3 | UT-FG-001…020 | ✅ 2026-04-13 | HW-FG-001…008 | ✅ 2026-04-13 |
 
 A driver is not available as a dependency for Wave 2 work until **both** columns for that driver are ticked.
 

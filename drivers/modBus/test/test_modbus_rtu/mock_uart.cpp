@@ -27,6 +27,13 @@ uint32_t millis(void)
     return v;
 }
 
+uint32_t micros(void)
+{
+    /* Return millis() * 1000 so timing-based guards scale consistently
+     * with the controllable millis() clock used by timeout tests. */
+    return s_millis_val * 1000u;
+}
+
 void mock_set_millis(uint32_t initial, uint32_t step)
 {
     s_millis_val  = initial;
@@ -50,6 +57,13 @@ size_t MockSerial::write(const uint8_t *buf, size_t len)
     for (size_t i = 0; i < len && tx_count < BUF_SIZE; i++) {
         tx_buf[tx_count++] = buf[i];
     }
+    /* Simulate the SIT65HVD08P half-duplex echo: while DE is HIGH the
+     * transceiver mirrors DI onto RO, so every transmitted byte also appears
+     * in the UART RX FIFO.  The echo drain in modbus_transaction() consumes
+     * these bytes; the pre-queued slave response remains untouched. */
+    for (size_t i = 0; i < len && echo_tail < BUF_SIZE; i++) {
+        echo_buf[echo_tail++] = buf[i];
+    }
     return len;
 }
 
@@ -60,11 +74,16 @@ void MockSerial::flush(void)
 
 int MockSerial::available(void)
 {
-    return (rx_tail - rx_head);
+    return (echo_tail - echo_head) + (rx_tail - rx_head);
 }
 
 int MockSerial::read(void)
 {
+    /* Echo bytes are served first (simulates bytes arriving during TX). */
+    if (echo_head < echo_tail) {
+        mock_log_event(MOCK_EVT_UART_READ);
+        return (int)(uint8_t)echo_buf[echo_head++];
+    }
     if (rx_head >= rx_tail) {
         return -1;
     }
@@ -77,6 +96,9 @@ void MockSerial::reset(void)
     memset(rx_buf, 0, sizeof(rx_buf));
     rx_head  = 0;
     rx_tail  = 0;
+    memset(echo_buf, 0, sizeof(echo_buf));
+    echo_head = 0;
+    echo_tail = 0;
     memset(tx_buf, 0, sizeof(tx_buf));
     tx_count = 0;
 }

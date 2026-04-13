@@ -25,8 +25,8 @@
   #include <Arduino.h>
   #include "gpio_util.h"
 #else
-  #include "../test/mock_uart.h"
-  #include "../test/mock_gpio.h"
+  #include "mock_uart.h"
+  #include "mock_gpio.h"
 #endif
 
 #include "modbus_rtu.h"
@@ -56,6 +56,23 @@ static uint16_t modbus_crc16(const uint8_t *buf, uint8_t len)
 }
 
 /* ---------------------------------------------------------------------------
+ * Inter-frame gap enforcement
+ *
+ * Modbus RTU requires at least 3.5 character-times of silence between
+ * frames.  At 9600 baud, 8N1 (10 bits/char): 3.5 × (10/9600) × 1e6 = 3646 μs.
+ * MODBUS_IFG_US = 4000 μs gives a comfortable margin above this floor.
+ *
+ * s_frame_end_us records micros() at the moment the last bit of each frame
+ * arrived or left the wire.  The IFG guard at the start of every transmission
+ * spin-waits only as long as needed to reach MODBUS_IFG_US from that
+ * timestamp, so the gap is enforced against the actual wire event regardless
+ * of how long the caller takes between transactions.
+ * --------------------------------------------------------------------------- */
+#define MODBUS_IFG_US  4000u
+
+static uint32_t s_frame_end_us = 0u;
+
+/* ---------------------------------------------------------------------------
  * Public API
  * --------------------------------------------------------------------------- */
 
@@ -64,6 +81,7 @@ void modbus_init(void)
     gpio_rs485_init();                 /* configure DE/RE pin as output, LOW */
     Serial1.begin(MODBUS_BAUD, SERIAL_8N1, MODBUS_UART_RX, MODBUS_UART_TX);
     gpio_set_rs485_direction(false);   /* start in receive mode */
+    s_frame_end_us = micros();         /* start IFG timer from driver init */
 }
 
 /* ---------------------------------------------------------------------------
@@ -96,14 +114,18 @@ static modbus_status_t modbus_transaction(uint8_t  device_addr,
     req[7] = (uint8_t)(req_crc >> 8);    /* CRC high byte second */
 
     /* Transmit
-     * Enforce the Modbus RTU inter-frame silent interval (3.5 character
-     * times) before asserting DE/RE so the slave can detect the start of
-     * a new frame.  At 9600 baud, 1 char ≈ 1.04 ms → 3.5 chars ≈ 3.65 ms;
-     * 5 ms gives comfortable margin. */
-    delayMicroseconds(5000);
+     * Enforce the Modbus RTU 3.5-char-time inter-frame gap relative to the
+     * actual end of the last frame on the wire, regardless of caller latency. */
+    {
+        uint32_t elapsed = micros() - s_frame_end_us;
+        if (elapsed < MODBUS_IFG_US) {
+            delayMicroseconds(MODBUS_IFG_US - elapsed);
+        }
+    }
     gpio_set_rs485_direction(true);   /* DE/RE HIGH — driver enable */
     Serial1.write(req, 8);
     Serial1.flush();                  /* wait for TX FIFO to drain */
+    s_frame_end_us = micros();        /* last TX bit left the wire */
     /* Guard: one extra character time so the shift register finishes
      * clocking out the stop bit before DE/RE is deasserted.
      * At 9600 baud, 1 character ≈ 1.04 ms → 2 ms is ample. */
@@ -111,11 +133,14 @@ static modbus_status_t modbus_transaction(uint8_t  device_addr,
     gpio_set_rs485_direction(false);  /* DE/RE LOW — receiver enable */
 
     /* Wait one full character time (≈1.04 ms at 9600 baud) so the last
-     * echoed stop bit has settled into the RX FIFO, then discard any
-     * bytes that arrived during TX (half-duplex echo). */
+     * echoed stop bit has settled into the RX FIFO, then discard exactly
+     * the 8 echo bytes produced by the half-duplex transceiver during TX.
+     * A counted drain (not a "drain all") avoids discarding an early slave
+     * response byte that may have arrived before DE/RE settled. */
     delayMicroseconds(1500);
-    while (Serial1.available())
-        (void)Serial1.read();
+    for (uint8_t i = 0; i < 8u; i++) {
+        if (Serial1.available()) (void)Serial1.read();
+    }
 
     /* Receive response */
     uint8_t  resp[256];
@@ -127,8 +152,9 @@ static modbus_status_t modbus_transaction(uint8_t  device_addr,
         if (millis() - start > MODBUS_TIMEOUT_MS) {
             /* Drain any late-arriving bytes before returning so the next
              * transaction starts with a clean buffer. */
-            delayMicroseconds(5000);
+            delayMicroseconds(2000);
             while (Serial1.available()) (void)Serial1.read();
+            s_frame_end_us = micros();   /* IFG measured from here */
             return MODBUS_ERR_TIMEOUT;
         }
         if (Serial1.available()) {
@@ -139,6 +165,9 @@ static modbus_status_t modbus_transaction(uint8_t  device_addr,
             }
         }
     }
+    /* Record the wire timestamp as soon as the last response byte is in hand.
+     * This is used by the IFG guard at the start of the next transaction. */
+    s_frame_end_us = micros();
 
     /* Validate CRC over all bytes except the trailing two CRC bytes */
     uint16_t recv_crc = (uint16_t)resp[expected_len - 2]
@@ -211,18 +240,26 @@ modbus_status_t modbus_write_multiple_registers(uint8_t         device_addr,
     req[payload_len]     = (uint8_t)(req_crc & 0xFF);
     req[payload_len + 1] = (uint8_t)(req_crc >> 8);
 
-    /* Transmit — same timing discipline as FC03/FC04 */
-    delayMicroseconds(5000);
+    /* Transmit — same IFG discipline as FC03/FC04 */
+    {
+        uint32_t elapsed = micros() - s_frame_end_us;
+        if (elapsed < MODBUS_IFG_US) {
+            delayMicroseconds(MODBUS_IFG_US - elapsed);
+        }
+    }
     gpio_set_rs485_direction(true);
     Serial1.write(req, (size_t)(payload_len + 2));
     Serial1.flush();
+    s_frame_end_us = micros();        /* last TX bit left the wire */
     delayMicroseconds(2000);
     gpio_set_rs485_direction(false);
 
-    /* Discard half-duplex echo */
+    /* Counted drain: discard exactly the echo bytes produced during TX.
+     * For FC16 the frame is (payload_len + 2) bytes long. */
     delayMicroseconds(1500);
-    while (Serial1.available())
-        (void)Serial1.read();
+    for (uint8_t i = 0; i < (uint8_t)(payload_len + 2u); i++) {
+        if (Serial1.available()) (void)Serial1.read();
+    }
 
     /* Receive 8-byte normal response (or 5-byte exception) */
     uint8_t  resp[8];
@@ -232,8 +269,9 @@ modbus_status_t modbus_write_multiple_registers(uint8_t         device_addr,
 
     while (received < expected_len) {
         if (millis() - start > MODBUS_TIMEOUT_MS) {
-            delayMicroseconds(5000);
+            delayMicroseconds(2000);
             while (Serial1.available()) (void)Serial1.read();
+            s_frame_end_us = micros();
             return MODBUS_ERR_TIMEOUT;
         }
         if (Serial1.available()) {
@@ -243,6 +281,7 @@ modbus_status_t modbus_write_multiple_registers(uint8_t         device_addr,
             }
         }
     }
+    s_frame_end_us = micros();   /* last response bit received */
 
     /* Validate CRC */
     uint16_t recv_crc = (uint16_t)resp[expected_len - 2]
