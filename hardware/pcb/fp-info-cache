@@ -1,4 +1,4 @@
-27150294292883961
+27157398635143304
 Audio_Module
 Reverb_BTDR-1H
 Digital Reverberation Unit, http://www.belton.co.kr/inc/downfile.php?seq=17&file=pdf (footprint from http://www.uk-electronic.de/PDF/BTDR-1.pdf)
@@ -107471,6 +107471,13 @@ DE10Lite Shield Arduino form factor
 32
 32
 my-KiCad-library
+DM1AA-SF-PEJ72_HIR
+
+DM1AA-SF-PEJ72 
+0
+16
+16
+my-KiCad-library
 HAN_Hydromotive_logo_30x12mm
 
 
@@ -107520,6 +107527,13 @@ IDK Kiesschijf
 3
 3
 my-KiCad-library
+LCD1602 I2C Module mechanical
+
+
+0
+0
+0
+my-KiCad-library
 LOGO_LogoRFSee_28x5-6mm
 Logo RFSee Silkscreen front
 
@@ -107549,6 +107563,20 @@ MINIDCDCBOOST5V
 3
 my-KiCad-library
 MadeByESE_30x6
+
+
+0
+0
+0
+my-KiCad-library
+Meanwell RS-15 Mechanical
+
+
+0
+5
+5
+my-KiCad-library
+Naamloos
 
 
 0
