@@ -176,6 +176,97 @@ static modbus_status_t modbus_transaction(uint8_t  device_addr,
     return MODBUS_OK;
 }
 
+modbus_status_t modbus_write_multiple_registers(uint8_t         device_addr,
+                                                 uint16_t        start_reg,
+                                                 uint8_t         count,
+                                                 const uint16_t *values)
+{
+    if (device_addr == 0) {
+        return MODBUS_ERR_PARAM;
+    }
+    if (count == 0 || count > 123) {
+        return MODBUS_ERR_PARAM;   /* FC16 data limit: 246 bytes max → 123 registers */
+    }
+    if (values == nullptr) {
+        return MODBUS_ERR_PARAM;
+    }
+
+    /* Build request frame: 7-byte header + count*2 data bytes + 2 CRC bytes */
+    uint8_t  req[256];
+    uint8_t  byte_count   = (uint8_t)(count * 2);
+    uint8_t  payload_len  = (uint8_t)(7 + byte_count);
+
+    req[0] = device_addr;
+    req[1] = 0x10;                          /* FC16 */
+    req[2] = (uint8_t)(start_reg >> 8);
+    req[3] = (uint8_t)(start_reg & 0xFF);
+    req[4] = 0x00;
+    req[5] = count;
+    req[6] = byte_count;
+    for (uint8_t i = 0; i < count; i++) {
+        req[7 + i * 2]     = (uint8_t)(values[i] >> 8);
+        req[7 + i * 2 + 1] = (uint8_t)(values[i] & 0xFF);
+    }
+    uint16_t req_crc = modbus_crc16(req, payload_len);
+    req[payload_len]     = (uint8_t)(req_crc & 0xFF);
+    req[payload_len + 1] = (uint8_t)(req_crc >> 8);
+
+    /* Transmit — same timing discipline as FC03/FC04 */
+    delayMicroseconds(5000);
+    gpio_set_rs485_direction(true);
+    Serial1.write(req, (size_t)(payload_len + 2));
+    Serial1.flush();
+    delayMicroseconds(2000);
+    gpio_set_rs485_direction(false);
+
+    /* Discard half-duplex echo */
+    delayMicroseconds(1500);
+    while (Serial1.available())
+        (void)Serial1.read();
+
+    /* Receive 8-byte normal response (or 5-byte exception) */
+    uint8_t  resp[8];
+    uint8_t  received     = 0;
+    uint8_t  expected_len = 8;  /* addr+fc+reg_hi+reg_lo+cnt_hi+cnt_lo+crc_lo+crc_hi */
+    uint32_t start        = millis();
+
+    while (received < expected_len) {
+        if (millis() - start > MODBUS_TIMEOUT_MS) {
+            delayMicroseconds(5000);
+            while (Serial1.available()) (void)Serial1.read();
+            return MODBUS_ERR_TIMEOUT;
+        }
+        if (Serial1.available()) {
+            resp[received++] = (uint8_t)Serial1.read();
+            if (received == 2 && (resp[1] & 0x80)) {
+                expected_len = 5;   /* exception frame */
+            }
+        }
+    }
+
+    /* Validate CRC */
+    uint16_t recv_crc = (uint16_t)resp[expected_len - 2]
+                      | ((uint16_t)resp[expected_len - 1] << 8);
+    uint16_t calc_crc = modbus_crc16(resp, (uint8_t)(expected_len - 2));
+    if (recv_crc != calc_crc) {
+        return MODBUS_ERR_CRC;
+    }
+
+    if (resp[1] & 0x80) {
+        return MODBUS_ERR_EXCEPTION;
+    }
+
+    if (resp[0] != device_addr || resp[1] != 0x10) {
+        return MODBUS_ERR_FRAMING;
+    }
+
+    /* Drain surplus bytes */
+    delayMicroseconds(2000);
+    while (Serial1.available()) (void)Serial1.read();
+
+    return MODBUS_OK;
+}
+
 modbus_status_t modbus_read_holding_registers(uint8_t  device_addr,
                                                uint16_t start_reg,
                                                uint8_t  count,
