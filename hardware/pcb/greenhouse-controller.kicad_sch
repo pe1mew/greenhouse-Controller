@@ -9545,7 +9545,7 @@
 		)
 		(uuid "1968e134-2c50-41c6-ade8-69bf4af10433")
 	)
-	(label "24V_GND"
+	(label "GND"
 		(at 67.31 245.11 0)
 		(effects
 			(font
@@ -10119,7 +10119,7 @@
 		)
 		(uuid "a722b74f-2c5e-4899-a7eb-9b73360252be")
 	)
-	(label "24V_GND"
+	(label "GND"
 		(at 45.72 165.1 0)
 		(effects
 			(font
@@ -10259,7 +10259,7 @@
 		)
 		(uuid "cacc6a64-dd2c-4d49-b28b-23b7646a9c2f")
 	)
-	(label "24V_GND"
+	(label "GND"
 		(at 105.41 130.81 180)
 		(effects
 			(font
