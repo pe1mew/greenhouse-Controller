@@ -281,18 +281,46 @@ All LED colour usage in this system shall follow the convention defined in the t
 | **Amber** | An intended event is actively occurring — the system is doing its work. Amber is an activity indicator, not an alarm. | The associated activity is not currently taking place. |
 | **Red** | A fault or error is present — something requires attention. A red LED lit indicates a malfunction or error condition. | No active fault for the associated function. |
 
-> **Note:** The current hardware design uses green (power) and amber (heartbeat, relay activity) LEDs only. Red LEDs are reserved for future fault-indication functions. No red LEDs are fitted in the v0.3 hardware.
+> **Note:** The current hardware design uses green (power) and amber (heartbeat, relay activity) discrete LEDs. In addition, the on-board WS2812 RGB LED (see §5.9.2) provides system-level status indication using a separate colour convention specific to that LED.
 
-**LED requirements**
+**LED requirements — discrete PCB LEDs**
 
 | ID | Requirement | MoSCoW |
 |----|-------------|--------|
 | FR-UI10 | The controller **shall** provide hardware status LEDs that give instant visual feedback on operating state without requiring the LCD or a connected device. | Must |
-| FR-UI11 | All LED colour usage **shall** conform to the LED colour convention defined in §5.9.1: green = OK, amber = intended activity in progress, red = fault or error. | Must |
+| FR-UI11 | All discrete LED colour usage **shall** conform to the LED colour convention defined in §5.9.1: green = OK, amber = intended activity in progress, red = fault or error. | Must |
 | FR-UI12 | The controller **shall** include a green power indicator LED that is lit whenever mains power is present and the PSU is operational. The power LED **shall** remain lit even if the MCU is in reset or has faulted. | Must |
 | FR-UI13 | The controller **shall** include an amber heartbeat LED driven by the firmware. The heartbeat LED **shall** blink at 1 Hz during normal operation, blink at 4 Hz during start-up initialisation, remain steady-on if the firmware has stopped (watchdog not yet fired), and be off if the MCU is not running. | Must |
 | FR-UI14 | The controller **shall** include one amber relay activity LED per relay output (six total). Each relay LED **shall** be lit for exactly as long as the corresponding relay is energised, directly mirroring the relay state. | Must |
 | FR-UI15 | A red LED, when fitted, **shall** only be used to indicate a fault or error condition. Red **shall not** be used for power indication or normal-activity indication. | Must |
+
+#### 5.9.2 RGB System Status Indicator
+
+The controller shall include one RGB LED that shows the overall operational status of the greenhouse controller as a single, instantly readable colour. The LED is the on-board WS2812 RGB LED of the LOLIN S3 module, lit from inside the enclosure and visible through the transparent cover without any additional hardware.
+
+**RGB LED colour convention**
+
+The RGB LED uses the following colour semantics, which differ from the discrete PCB LED convention in §5.9.1. The RGB LED indicates system health, not individual component activity.
+
+| Colour | Meaning | Examples |
+|--------|---------|---------|
+| **Green** | System operating normally — no active alarms or faults. | Automatic mode running; all sensors responding; windows operating within setpoints. |
+| **Amber** | Non-critical alarm or warning — system continues to operate but attention is recommended. | Sensor reading out of expected range; humidity control disabled; wind protection disabled; SD card absent or full. |
+| **Red** | Critical alarm — greenhouse controller operation is halted. Immediate attention required. | Wind safety override active (all windows closed); sensor communication fault preventing safe control; firmware watchdog recovery in progress. |
+
+**State priority:** Red takes precedence over Amber; Amber takes precedence over Green. If any critical condition is active the LED is red, regardless of non-critical conditions.
+
+**RGB LED requirements**
+
+| ID | Requirement | MoSCoW |
+|----|-------------|--------|
+| FR-UI16 | The controller **shall** include one RGB LED that displays the overall system status using the colour convention defined in §5.9.2. | Must |
+| FR-UI17 | The RGB LED **shall** display green when the system is operating normally with no active alarms or warnings. | Must |
+| FR-UI18 | The RGB LED **shall** display amber when one or more non-critical alarms or warnings are active and the controller continues operating. | Must |
+| FR-UI19 | The RGB LED **shall** display red when a critical alarm is active that has caused the greenhouse controller to halt normal operation. | Must |
+| FR-UI20 | The RGB LED **shall** be lit internally and visible through the transparent enclosure cover without any opening, light pipe, or modification to the enclosure. | Must |
+| FR-UI21 | The RGB LED illumination intensity **should** be reduced during night-time hours to avoid unnecessary light disturbance in the greenhouse. | Should |
+| FR-CF14 | The administrator **should** be able to configure the night-time dimming schedule (start time and end time) and the night-time brightness level for the RGB status LED. | Should |
 
 ### 5.10 Configuration and Settings
 

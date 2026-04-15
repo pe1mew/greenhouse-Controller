@@ -188,18 +188,17 @@ greenhouse-controller/          ← Git repository root (GitHub / GitLab)
               │                                             │
    ┌──────────┴─────────────────────────────┐               │
    │            LOLIN S3 (ESP32-S3)         │──[HB LED]     │
-   │                                        │   (amber)     │
+   │                                        │   (green)     │
    │RS485 (UART + SIT65HVD08P transceiver) ──────┤◄────────── sensors (data)
    │                                        │
    │8 GPIO ◄── [4×4 Keypad]                 │
    │I2C    ──► [LCD1602]   ──► Display      │
    │I2C    ──► [DS1307 RTC]                 │
    │                                        │
-   │6 GPIO → [Relay board, 6 ch] ───────────┤── 24V switched ──► RRK-3 OPEN/CLOSE
-   │      ↳ [6 relay LEDs] (red, shared)    │
+   │6 GPIO → [6 × SRD-05VDC relay + 2N7000] ─┤── 24V switched ──► RRK-3 OPEN/CLOSE
+   │      ↳ [6 relay LEDs] (amber, shared)  │
    │                                        │
-   │1 GPIO ← [Opto-input]                   │◄── RRK-3 alarm/feedback
-   │                  ! see Open Issue #1   │
+   │1 GPIO ← [Opto-input]                   │◄── RRK-3 alarm relay contact
    │                                        │
    │SPI → [SD card slot]  (optional)        │
    │                                        │
@@ -387,10 +386,10 @@ The controller interfaces to the Hotraco RRK-3 via six relay outputs (OPEN and C
 | Number of relay channels | 6 (OPEN M1, CLOSE M1, OPEN M2, CLOSE M2, OPEN M3, CLOSE M3) |
 | Contact type | Potential-free (volt-free) normally-open contacts |
 | Contact rating | ≥ 0.5 A / 24 V (to match RRK-3 control input rating) |
-| Coil drive | 5 VDC coil, driven by ESP32-S3 GPIO via transistor or relay driver IC |
+| Coil drive | 5 VDC coil, driven by ESP32-S3 GPIO via 2N7000 N-channel MOSFET (one per channel) |
 | Connection | Screw terminals (OPEN, CLOSE, COMMON per channel) |
 
-A relay module board with 6 independent relay channels (opto-isolated input stage, active-low trigger) is used. The relay contacts switch the internal **24 V DC** supply to the RRK-3 OPEN/CLOSE sturing terminals. The wiring is:
+Six **SRD-05VDC-SL-C** relays are integrated directly on the PCB, each driven by a dedicated **2N7000 N-channel MOSFET**. The MCU GPIO pulls the MOSFET gate high to energise the relay coil (5 V); the relay contact then switches the **24 V DC** supply to the corresponding RRK-3 OPEN/CLOSE sturing terminal. The wiring is:
 
 ```
   Internal 24V+ ──► Relay COM
@@ -398,7 +397,7 @@ A relay module board with 6 independent relay channels (opto-isolated input stag
   Internal 24V− ──────────────► RRK-3 COMM sturing
 ```
 
-The relay coil is driven by the 5 V logic supply via the MCU GPIO. The relay provides galvanic isolation between the MCU logic circuit (5 V) and the RRK-3 control circuit (24 V), satisfying the isolation requirement. The contact rating must be ≥ 0.5 A / 30 VDC.
+The relay provides galvanic isolation between the MCU logic circuit (5 V) and the RRK-3 control circuit (24 V), satisfying the isolation requirement (TR-HW03). The SRD-05VDC-SL-C contact rating is 10 A / 250 VAC, well above the ≥ 0.5 A / 24 V required.
 
 > **Safety constraint:** The firmware must never energise the OPEN and CLOSE relay of the same motor simultaneously. This is enforced in software (see Software Design §5). A future hardware interlock using the relay common terminals could provide an additional layer of protection.
 
@@ -412,7 +411,7 @@ The relay coil is driven by the 5 V logic supply via the MCU GPIO. The relay pro
 | Interface to MCU | 1 GPIO pin (opto-coupler output) |
 | Connection | Screw terminal |
 
-> **⚠ OPEN ISSUE #1 — Motor feedback signal definition:** The exact nature of the RRK-3 feedback signal to be connected to this input (e.g. alarm relay contact, fault indication) is currently undefined. The hardware provision (screw terminal + opto-input) is included in the design. The software behaviour triggered by this input is to be defined once the RRK-3 alarm relay wiring has been confirmed. See also FRS Constraint C8.
+> **✅ Issue #1 — Motor feedback signal definition — Closed.** The RRK-3 feedback input is driven by an **external relay contact** that closes when the motor controller signals an alarm condition. The opto-isolated input on the PCB (J10, OPTO_INPUT) receives this dry contact and passes a logic-level signal to the MCU GPIO. Signal definition is specified in the RRK-3 interface documentation. See also FRS Constraint C8.
 
 #### 4.5.3 Screw Terminals
 
@@ -456,9 +455,7 @@ DCF77 is a German long-wave time signal broadcast on 77.5 kHz from Mainflingen, 
 
 #### 4.6.2 Design Decision
 
-> **⚠ Open Issue #7 — Time source selection:** See §6. A decision is required before PCB layout can be finalised.
-
-If no external hardware time source is used, the minimum viable fallback is NTP-on-boot (requires WiFi to be available and connected). In this case TR-HW08 cannot be met when WiFi is unavailable, and log timestamps will be absent or incorrect after any power interruption until network time is re-acquired. This trade-off must be explicitly accepted if the external RTC or an alternative is omitted.
+> **✅ Issue #7 — Time source selection — Closed.** The **DS1307 external RTC** with CR2032 battery backup is fitted on the PCB. This fully satisfies TR-HW08: accurate time is maintained through power interruptions of any duration. NTP synchronisation over WiFi, when available, corrects long-term drift.
 
 ---
 
@@ -587,13 +584,13 @@ Status LEDs on the PCB provide instant visual feedback on the operating state of
 | LED label | Colour | Quantity | Drive source | Extra GPIO |
 |-----------|--------|----------|-------------|------------|
 | PWR | Green | 1 | 5 V rail via resistor (hardware) | None |
-| HB (Heartbeat) | Amber | 1 | Dedicated MCU GPIO | 1 |
-| M1-OPEN | Red | 1 | Shared with relay M1-OPEN GPIO driver | None |
-| M1-CLOSE | Red | 1 | Shared with relay M1-CLOSE GPIO driver | None |
-| M2-OPEN | Red | 1 | Shared with relay M2-OPEN GPIO driver | None |
-| M2-CLOSE | Red | 1 | Shared with relay M2-CLOSE GPIO driver | None |
-| M3-OPEN | Red | 1 | Shared with relay M3-OPEN GPIO driver | None |
-| M3-CLOSE | Red | 1 | Shared with relay M3-CLOSE GPIO driver | None |
+| HB (Heartbeat) | Green | 1 | Dedicated MCU GPIO | 1 |
+| M1-OPEN | Amber | 1 | Shared with relay M1-OPEN GPIO driver | None |
+| M1-CLOSE | Amber | 1 | Shared with relay M1-CLOSE GPIO driver | None |
+| M2-OPEN | Amber | 1 | Shared with relay M2-OPEN GPIO driver | None |
+| M2-CLOSE | Amber | 1 | Shared with relay M2-CLOSE GPIO driver | None |
+| M3-OPEN | Amber | 1 | Shared with relay M3-OPEN GPIO driver | None |
+| M3-CLOSE | Amber | 1 | Shared with relay M3-CLOSE GPIO driver | None |
 | **Total** | | **8** | | **1 additional GPIO** |
 
 #### 4.9.2 LED Descriptions
@@ -604,7 +601,7 @@ Status LEDs on the PCB provide instant visual feedback on the operating state of
 - No MCU involvement; remains lit even if the MCU is in reset or has faulted.
 - Provides immediate confirmation that the unit is powered before any other diagnostic step.
 
-**HB — Heartbeat (amber)**
+**HB — Heartbeat (green)**
 - Driven by one dedicated MCU GPIO output via a series resistor (~1.5 kΩ for ~2 mA at 3.3 V).
 - The firmware toggles this LED to indicate software state:
 
@@ -615,7 +612,7 @@ Status LEDs on the PCB provide instant visual feedback on the operating state of
 | Steady ON | Firmware has stopped — watchdog has not yet fired; indicates a software hang |
 | Steady OFF | MCU not running (power fault or crash before LED initialisation) |
 
-**Relay LEDs — M1-OPEN, M1-CLOSE, M2-OPEN, M2-CLOSE, M3-OPEN, M3-CLOSE (red)**
+**Relay LEDs — M1-OPEN, M1-CLOSE, M2-OPEN, M2-CLOSE, M3-OPEN, M3-CLOSE (amber)**
 - Each LED is connected in parallel with the corresponding relay coil drive transistor output, via its own current-limiting resistor.
 - The LED illuminates whenever the corresponding relay is energised, directly mirroring the relay state in real time.
 - No additional GPIO is required; the relay-drive GPIO signals are shared.
@@ -627,7 +624,7 @@ Status LEDs on the PCB provide instant visual feedback on the operating state of
   MCU GPIO ──► [relay driver transistor] ──► relay coil ──► GND
                         │
                    (collector)
-                        ├──[R_LED ~470 Ω]──► [LED red] ──► GND
+                        ├──[R_LED ~470 Ω]──► [LED amber] ──► GND
 ```
 
 The LED and series resistor are placed from the transistor collector to ground, so the LED lights when the transistor conducts (relay energised). The resistor is sized for approximately 2 mA LED current when the relay coil is active.
@@ -969,13 +966,14 @@ The controller operates in three states:
 
 | # | Issue | Owner | Status |
 |---|-------|-------|--------|
-| 1 | **Motor feedback signal** — It is unknown what signal from the RRK-3 is available for the feedback input and what its electrical characteristics are (voltage level, NO/NC, fault vs. position indication). Hardware provision (opto-isolated input + screw terminal) is in place; software response is undefined pending resolution. | Electrical engineer | Open |
+| 1 | **Motor feedback signal** — ~~Resolved~~. The feedback input (J10, OPTO_INPUT) is driven by an external relay contact that closes when the motor controller signals an alarm state. The opto-isolated input on the PCB converts this dry contact to a logic-level MCU GPIO signal. Signal definition is specified in the RRK-3 interface documentation. | Electrical engineer | **Closed** |
 | 2 | **Sensor supply voltage** — ~~Resolved~~. Internal 24 VDC rail confirmed compatible with both sensors: SenseCAP S200 rated 5–30 VDC; FG6485A rated 9–36 VDC, ≤ 15 mA (datasheet confirmed). | Hardware designer | **Closed** |
-| 3 | **RS485 sensor cable routing** — Physical routing from the controller enclosure (inside the greenhouse) to the SenseCAP S200 (outside, on mast) needs to be designed, including weather-proof cable glands and UV-resistant cable selection. | Installer | Open |
-| 4 | **Enclosure model selection** — Candidate housings identified: Multicomp Pro MC001110 (222 × 146 × 55 mm, €22 ex, Farnell) preferred; MC001111 (222 × 146 × 75 mm, €24 ex) as fallback if depth is insufficient. Final choice to be confirmed after PCB layout and 3D component-height clearance check. See §4.10. | Hardware designer | Pending PCB layout |
-| 5 | **Relay module selection** — The specific 6-channel relay module (opto-isolated, 5 V coil, potential-free contacts ≥ 0.5 A / 24 V) must be selected and its PCB footprint confirmed. | Hardware designer | Open |
+| 3 | **RS485 sensor cable routing** — ~~Out of scope~~. Physical routing from the controller enclosure to the SenseCAP S200 (outside, on mast), including weather-proof cable glands and UV-resistant cable selection, is to be resolved during installation by the installer. This is outside the scope of the controller project. | Installer | **Out of scope** |
+| 9 | **J5 heater supply (HEATING_POS / HEATING_NEG)** — Pins 5–6 of J5 carry HEATING_POS and HEATING_NEG nets on the PCB, providing a heater supply connection for the SenseCAP S200. This feature is not documented in the TDS and no design decision has been recorded. To be decided: whether the heater supply is required, what voltage/current it carries, and whether it needs to be documented in the hardware specification. | Hardware designer | Open |
+| 4 | **Enclosure model selection** — ~~Resolved~~. **MC001110** (222 × 146 × 55 mm, IP67, transparent polycarbonate cover, €22 ex VAT, Farnell) selected and confirmed after PCB layout and 3D clearance check. See §4.10. | Hardware designer | **Closed** |
+| 5 | **Relay module selection** — ~~Resolved~~. Six **SRD-05VDC-SL-C** relays are integrated directly on the PCB, each driven by a **2N7000 N-channel MOSFET**. No separate relay module board is used. Contact rating 10 A / 250 VAC; coil 5 VDC. See §4.5.1. | Hardware designer | **Closed** |
 | 6 | **LED panel integration** — ~~Resolved~~. LEDs are on the PCB and visible through the transparent enclosure cover. No panel-mount LED holders or light pipes are required. | Hardware designer | **Closed** |
-| 7 | **Time source selection** — Four options exist to satisfy TR-HW08 (accurate time during/after power interruptions): (a) ESP32 internal RTC + NTP only — no extra hardware but fails TR-HW08 when WiFi is unavailable; (b) external RTC DS1307 — €1–3, I2C, battery-backed, lowest complexity; (c) GNSS receiver — highly accurate, provides sunrise/sunset data, but costly and complex for this application; (d) DCF77 receiver — atomic accuracy, handles DST, but reception reliability in a greenhouse environment must be verified. A decision is required before PCB layout is finalised. See §4.6 for full analysis. | Hardware designer | Open |
+| 7 | **Time source selection** — ~~Resolved~~. **DS1307 external RTC** with CR2032 battery backup fitted on the PCB. Fully satisfies TR-HW08; NTP synchronisation over WiFi corrects long-term drift when available. See §4.6 for full analysis. | Hardware designer | **Closed** |
 | 8 | **MQTT authentication and configuration scope** — ~~Resolved~~. MQTT broker connection uses username/password authentication. MQTT configuration (broker address, port, and credentials) is accessible via the web configuration interface only; it is not present in the local keyboard menu. FR-MQ04 updated accordingly. | Software designer | **Closed** |
 
 ---

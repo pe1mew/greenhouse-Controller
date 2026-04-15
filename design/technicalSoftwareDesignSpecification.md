@@ -44,6 +44,7 @@
    - 5.9 OTA Firmware Update
    - 5.10 NVS Configuration Storage Layout
    - 5.11 Watchdog and Fault Handling
+   - 5.12 System Status RGB LED
 6. [Open Issues](#6-open-issues)
 
 ---
@@ -161,10 +162,9 @@ The following items originate from system-level and functional requirements in t
 - All configuration settings stored in ESP32-S3 NVS flash partition; retained across power cycles and restarts (FR-CF06, TR-SW01).
 
 **Timekeeping and timezone**
-- Time source selection is an open design decision (Open Issue #7 in `technicalHardwareDesignSpecification.md` §5); the chosen hardware solution must satisfy TR-HW08.
-- When WiFi is available: synchronise system time via NTP on boot and periodically; configure timezone (Europe/Amsterdam, CET/CEST) with automatic DST transitions.
-- When WiFi is unavailable or before first sync: use the hardware time source (RTC, GNSS, or DCF77) as the authoritative clock.
-- If no hardware time source is fitted: log timestamps shall be marked as invalid until NTP sync succeeds; firmware shall not block startup waiting for time.
+- Time source: **DS1307 RTC** with CR2032 backup fitted on PCB (THDS Open Issue #7 resolved; see THDS §4.6). DS1307 is the authoritative clock when WiFi is unavailable. TR-HW08 is satisfied.
+- When WiFi is available: synchronise system time via NTP on boot and periodically; configure timezone (Europe/Amsterdam, CET/CEST) with automatic DST transitions using POSIX TZ string `CET-1CEST,M3.5.0,M10.5.0/3` (see Open Issue #3).
+- When WiFi is unavailable: DS1307 is authoritative; no timestamp gap on power interruption.
 
 **Firmware update**
 - Firmware updates supported without opening the enclosure: OTA over WiFi and via native USB (TR-SW02, TR-IF05).
@@ -190,7 +190,7 @@ The following items originate from system-level and functional requirements in t
 - Changes to either flag are logged with timestamp and administrator identity (FR-WS11).
 
 **Manual override detection**
-- Mechanism for detecting manual window override via RRK-3 opto-isolated feedback input; software response and calibration cycle on resumption of control (FR-M08–FR-M11, Open Issue #1).
+- The RRK-3 signals alarm via an external dry relay contact wired to J10; the opto-isolated input drives GPIO 42 (logic HIGH = alarm active). THDS Open Issue #1 resolved. Software response — edge detection in T2, debounce duration, and T6 calibration cycle on alarm clearance — remains to be implemented (see Open Issue #1 below; FR-M08–FR-M11).
 
 **Mutual exclusion of relay commands**
 - The firmware must never energise the OPEN and CLOSE relay of the same motor simultaneously. T2 (Relay Controller) is the sole owner of relay GPIO and enforces this constraint before asserting any relay (see §4.3).
@@ -209,7 +209,7 @@ The firmware is structured as a set of FreeRTOS tasks. Each logical function is 
 
 | ID  | Task Name            | Priority          | Core | Function |
 |-----|----------------------|-------------------|------|----------|
-| T1  | Watchdog / Heartbeat | Highest           | 1    | Hardware watchdog kick; HB LED toggling |
+| T1  | Watchdog / Heartbeat | Highest           | 1    | Hardware watchdog kick; HB LED toggling; RGB status LED update |
 | T2  | Relay Controller     | High              | 1    | Relay GPIO; window state machines; dwell timers; mutual exclusion; manual override detection |
 | T3  | Safety Monitor       | High              | 1    | Wind safety evaluation; issues CLOSE_ALL; overrides climate control |
 | T4  | Data Manager         | Medium-high       | 1    | Central store for all configuration settings and measurement data; ring buffers for sensor history |
@@ -231,9 +231,10 @@ The firmware is structured as a set of FreeRTOS tasks. Each logical function is 
 
 - Kicks the hardware watchdog timer at a fixed interval (e.g. every 500 ms).
 - Toggles the HB LED: 1 Hz in normal operation; 4 Hz during startup / initialisation.
+- Drives the WS2812B RGB status LED (GPIO 38) on each watchdog kick: reads EG1 to determine the current system state, maps it to Green / Amber / Red (see §5.12), and writes the colour with the appropriate brightness (day or night level). Event group reads are lock-free and impose no additional synchronisation cost.
 - Must never be starved by lower-priority tasks; its liveness confirms the whole system is running.
 - Can be implemented as a FreeRTOS software timer callback rather than a full task.
-- **Synchronization:** none — no shared data access; timer callback requires no additional primitives.
+- **Synchronization:** reads EG1 (all bits — lock-free) for RGB LED colour; acquires MX4 to read LED brightness and night-schedule settings from T4 (cached in local variables; refreshed on each tick or on config update).
 
 ---
 
@@ -520,7 +521,7 @@ A single FreeRTOS event group (`xEventGroupCreate`) holds all system-wide boolea
 
 | Task | Acquires (mutex) | Posts to (queue) | Receives from (queue) | Sends (notification) | Receives (notification) | Reads/Sets (event group) |
 |------|-----------------|------------------|-----------------------|----------------------|-------------------------|--------------------------|
-| T1   | —               | —                | —                     | —                    | —                       | —                        |
+| T1   | MX4             | —                | —                     | —                    | —                       | Reads EG1 (all — for RGB status LED colour)  |
 | T2   | —               | Q3               | Q1                    | TN3 → T6             | —                       | Sets EG1.MANUAL_OVERRIDE |
 | T3   | MX2             | Q1, Q3           | —                     | —                    | TN1 ← T4               | Sets/clears EG1.WIND_OVERRIDE; reads EG1.SENSOR_FAULT_W |
 | T4   | MX1, MX2, MX3, MX4 | —            | Q4, Q6                | TN1 → T3, TN2 → T6   | TN4 ← T10              | —                        |
@@ -548,8 +549,8 @@ A single FreeRTOS event group (`xEventGroupCreate`) holds all system-wide boolea
 - Bus parameters: 9600 baud, 8N1 (configurable via NVS; default matches sensor factory settings).
 
 **Poll schedule:**
-- SenseCAP S200 (Modbus address 1): reads wind speed register and wind direction register each cycle.
-- FG6485A (Modbus address 2): reads temperature register and humidity register each cycle.
+- SenseCAP S200 (Modbus address 1): reads wind speed register and wind direction register each cycle. **No dedicated S200 driver library exists.** T5 calls LIB-6 (`modbus_read_holding_registers()`) directly with the S200 register map from the sensor user guide (`documentation/Sensors/W-Sensecap-S200/`).
+- FG6485A (Modbus address 2): reads temperature register and humidity register each cycle. **LIB-10** (`drivers/FG6485A/`) provides the driver. LIB-10 also exposes `fg6485a_task()` — a standalone FreeRTOS periodic polling task. T5 may integrate this directly or call the driver read API within its own loop; the integration approach is to be decided during implementation.
 - Poll interval configurable via NVS (default 60 s); minimum interval to be determined during integration testing.
 
 **Fault detection and response:**
@@ -749,6 +750,8 @@ The web interface applies the same three-state model and the same PIN codes as t
 
 **Implemented by:** T7 (Keypad Scan) and T8 (UI / Display)
 
+**LCD driver note:** The Waveshare LCD1602 module uses an **AiP31068L** I2C-to-parallel bridge at address **0x3E** (not PCF8574 at 0x27 as originally assumed). LIB-4 (`drivers/LCD1602_I2C/`) is implemented for this module and address.
+
 **Keypad handling:**
 - Matrix scan period: ~20 ms (software timer or dedicated task).
 - Software debounce: key must be stable for 2 consecutive scan cycles before it is accepted.
@@ -916,7 +919,7 @@ Setpoint and threshold values (temperature, humidity, wind speed, wind direction
 | `access` | `pin_farmer_hash`, `pin_admin_hash`, `pin_salt`, `lockout_count`, `lockout_time` | string / uint8 | PIN hashes, lockout configuration |
 | `wifi` | `ssid`, `psk_hash`, `ap_ssid`, `ap_psk`, `ip_mode`, `ip_addr`, `ip_mask`, `ip_gw`, `ip_dns` | string | WiFi client and AP credentials and network settings |
 | `mqtt` | `broker_url`, `port`, `username`, `password_hash`, `topic_prefix`, `interval` | string / uint16 | MQTT broker connection and publish settings |
-| `system` | `poll_interval`, `session_timeout`, `ap_timeout`, `lang`, `log_pointer`, `schema_ver`, `fw_version` | uint16 / string | System-wide configuration; `schema_ver` (int32) tracks NVS layout version; `fw_version` (string `"MAJOR.MINOR.PATCH"`) is overwritten on every boot with the running firmware version |
+| `system` | `poll_interval`, `session_timeout`, `ap_timeout`, `lang`, `log_pointer`, `schema_ver`, `fw_version`, `led_day_brt`, `led_nite_brt`, `led_nite_from`, `led_nite_to` | uint16 / string / uint8 | System-wide configuration; `schema_ver` (int32) tracks NVS layout version; `fw_version` (string `"MAJOR.MINOR.PATCH"`) is overwritten on every boot with the running firmware version; `led_day_brt` / `led_nite_brt` (uint8, 0–255, defaults 200 / 20): RGB LED brightness for day and night; `led_nite_from` / `led_nite_to` (uint8, hour 0–23, defaults 22 / 6): night period start/end (FR-UI21, FR-CF14) |
 | `log` | Ring buffer entries (binary blob, fixed record size) | blob | Event log fallback when SD card absent |
 
 **Default values:**
@@ -979,13 +982,73 @@ T4 checks the return of `nvs_cfg_init()`. If `NVS_CFG_ERR_MIGRATION` is returned
 
 ---
 
+### 5.12 System Status RGB LED
+
+**Implemented by:** T1 (Watchdog / Heartbeat)
+
+**Hardware:**
+- WS2812B single-wire addressable LED integrated on the **LOLIN S3** module at **GPIO 38** (`LED_BUILTIN`).
+- Driven by the FastLED library (or Adafruit NeoPixel) via the single-wire protocol; no level-shifting or external wiring required.
+- LED is mounted on the MCU board inside the MC001110 enclosure; it is visible through the transparent cover (FR-UI20).
+
+**Colour convention and state priority:**
+
+| Priority | Colour | Hex | Condition | FRS |
+|----------|--------|-----|-----------|-----|
+| Highest | **Red** | `#FF0000` | Critical alarm; system operation halted (e.g. 3 consecutive watchdog resets without startup completion; future halt-state EG1 flag) | FR-UI19 |
+| Middle | **Amber** | `#FF8000` | Non-critical alarm or warning: `EG1.SENSOR_FAULT_T`, `EG1.SENSOR_FAULT_W`, `EG1.WIND_OVERRIDE`, `EG1.MANUAL_OVERRIDE`, wind protection disabled (`wind_prot_en == false`), or humidity control disabled (`rh_ctrl_en == false`) | FR-UI18 |
+| Lowest | **Green** | `#00FF00` | All above conditions false; system operating normally | FR-UI17 |
+
+If multiple conditions apply simultaneously, the highest-priority colour is shown (FR-UI16).
+
+**State evaluation logic (executed in T1 on each watchdog kick):**
+
+```
+if (halt_flag):
+    colour ← RED
+
+else if (EG1.SENSOR_FAULT_T OR EG1.SENSOR_FAULT_W
+         OR EG1.WIND_OVERRIDE OR EG1.MANUAL_OVERRIDE
+         OR (rh_ctrl_en == false) OR (wind_prot_en == false)):
+    colour ← AMBER
+
+else:
+    colour ← GREEN
+```
+
+`halt_flag` is set after 3 consecutive watchdog resets without completing the startup health check; it can also be set by any future mechanism that places the system in a fully halted state.
+
+**Day/night brightness dimming (Should — FR-UI21, FR-CF14):**
+
+| Condition | Brightness applied |
+|-----------|-------------------|
+| Current local hour ∈ [`led_nite_from`, `led_nite_to`) — wrapping midnight | `led_nite_brt` (default 20 / 255) |
+| All other hours | `led_day_brt` (default 200 / 255) |
+
+- Brightness is applied to the currently active colour via the FastLED `setBrightness()` API or equivalent.
+- T1 reads the four NVS settings (`led_day_brt`, `led_nite_brt`, `led_nite_from`, `led_nite_to`) from T4 via MX4; values are cached in T1 local variables and refreshed on each tick to pick up any runtime configuration change.
+- Current local time is read from the ESP32 system clock (maintained by T4 after DS1307 read and NTP sync); no additional mutex is required for a `time()` / `localtime()` call on ESP32.
+
+**NVS keys (all in `system` namespace):**
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `led_day_brt` | `uint8_t` | 200 | RGB LED brightness during daytime (0–255) |
+| `led_nite_brt` | `uint8_t` | 20 | RGB LED brightness during night hours (0–255) |
+| `led_nite_from` | `uint8_t` | 22 | Night period start hour, local time (0–23) |
+| `led_nite_to` | `uint8_t` | 6 | Night period end hour, local time (0–23) |
+
+These four keys are part of the "Should" feature set (FR-UI21, FR-CF14); they default to sensible values on first boot and can be changed by the administrator via the keypad menu or web interface.
+
+---
+
 ## 6. Open Issues
 
 | # | Issue | Owner | Status |
 |---|-------|-------|--------|
-| 1 | **Motor feedback signal — software response** — The exact nature of the RRK-3 feedback signal is undefined (see hardware open issue #1). Once the signal is characterised, the software response in T2 (edge-triggered vs. level-triggered detection, debounce duration) and the T6 calibration cycle behaviour must be defined and implemented. | Software engineer | Blocked on HW issue #1 |
+| 1 | **Motor feedback signal — software response** — Hardware signal now characterised (THDS Issue #1 closed): RRK-3 alarm relay dry contact → J10 opto input → GPIO 42; logic HIGH = alarm active. Remaining software work: (a) T2 edge detection (rising edge triggers alarm); (b) debounce duration to be defined (candidate 50–100 ms); (c) T6 calibration cycle on alarm clearance to be implemented per FR-M08–FR-M11. | Software engineer | **Open** |
 | 2 | **Ring buffer depth** — The depth of the T4 measurement history ring buffers (T, RH, wind speed, wind direction) is to be defined when the data model and RAM budget are finalised. Depth determines RAM usage and the length of history available for web trend view, MQTT history, and periodic log snapshots. | Software engineer | Open |
-| 3 | **NTP timezone handling** — The firmware must handle CET/CEST (Europe/Amsterdam) DST transitions automatically. The implementation approach (POSIX TZ string, manual transition table, or DCF77 DST flag) depends on the time source decision (hardware open issue #7). | Software engineer | Blocked on HW issue #7 |
+| 3 | **NTP timezone handling** — Hardware time source resolved (THDS Issue #7 closed): DS1307 RTC is the authoritative offline clock; NTP synchronises on WiFi connect. DST handling: implement using POSIX TZ string **`CET-1CEST,M3.5.0,M10.5.0/3`** via `setenv("TZ", ...)` / `tzset()` on ESP32. No DCF77 or manual transition table required. | Software engineer | **Open** |
 | 4 | **Web interface HTTPS — not implemented (TR-NW04 accepted)** — TLS termination on the ESP32-S3 is not feasible: the RAM and CPU overhead of a TLS stack would leave insufficient headroom for concurrent real-time tasks. **Decision:** HTTPS will not be implemented. **Accepted threat model:** the web interface is served over plain HTTP. The risk is mitigated by the following constraints: (a) the WiFi AP is disabled by default and enabled only on explicit admin command; (b) the AP has a configurable automatic timeout; (c) the controller is intended for use on a private, physically controlled greenhouse network and is not exposed to the public internet; (d) all credentials are stored as salted hashes and are never transmitted in plaintext; (e) session cookies are short-lived and invalidated on logout or timeout. This residual risk is accepted by the project owner. | Software engineer | **Closed — accepted** |
 | 5 | **MQTT authentication method** — Username/password or client certificate authentication for the MQTT client. The choice depends on the broker environment; both options should be configurable. | Software engineer | Open |
 

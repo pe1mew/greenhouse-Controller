@@ -154,11 +154,10 @@ The full repository folder layout is documented in `technicalSoftwareDesignSpeci
    │I2C    ──► [LCD1602]   ──► Display      │
    │I2C    ──► [DS1307 RTC]                 │
    │                                        │
-   │6 GPIO → [Relay board, 6 ch] ───────────┤── 24V switched ──► RRK-3 OPEN/CLOSE
+   │6 GPIO → [6 × SRD-05VDC relay + 2N7000] ─┤── 24V switched ──► RRK-3 OPEN/CLOSE
    │      ↳ [6 relay LEDs] (amber, shared)  │
    │                                        │
-   │1 GPIO ← [Opto-input]                   │◄── RRK-3 alarm/feedback
-   │                  ! see Open Issue #1   │
+   │1 GPIO ← [Opto-input]                   │◄── RRK-3 alarm relay contact
    │                                        │
    │SPI → [SD card slot]  (optional)        │
    │                                        │
@@ -304,8 +303,27 @@ The DE and RE pins of the transceiver are tied together and driven by a single G
 | Data format | 8N1 (8 data bits, no parity, 1 stop bit) |
 | Cable type | Twisted pair with shield (e.g. Belden 3105A or equivalent) |
 | Maximum cable length | 1200 m (RS485 specification) |
-| Termination | 120 Ω termination resistor at the far end of the bus |
+| Termination | 120 Ω resistor R21, switchable via jumper J8 (see §4.3.4) |
 | Number of devices | 2 (SenseCAP S200 + FG6485A) |
+
+#### 4.3.4 RS485 Line Protection and Termination
+
+**Line protection — SM712 TVS diode array (D13)**
+
+A SM712 dual-rail TVS diode array is fitted on the RS485 A and B lines to protect the SIT65HVD08P transceiver against ESD and cable transients. The SM712 clamps differential and common-mode overvoltage events before they reach the transceiver.
+
+**Bus bias resistors (R19, R20 — 20 kΩ)**
+
+Two 20 kΩ resistors bias the RS485 A and B lines to defined idle-state voltage levels, ensuring the bus remains in a valid idle state when no device is actively driving it.
+
+**Termination jumper (J8 — Load enable)**
+
+A 2-pin jumper J8 connects in series with the 120 Ω termination resistor R21. This makes termination field-configurable without modifying the PCB.
+
+| J8 state | Effect |
+|----------|--------|
+| Jumper fitted | 120 Ω termination enabled — use when this PCB is the **last device** on the RS485 bus |
+| Jumper removed | Termination disabled — use when this PCB is **mid-bus** with further devices downstream |
 
 ---
 
@@ -330,12 +348,12 @@ The DE and RE pins of the transceiver are tied together and driven by a single G
 | Model | Waveshare LCD1602 I2C Module |
 | Display type | 16 characters × 2 lines, character LCD |
 | Backlight | LED backlight (controllable) |
-| Interface | I2C (PCF8574 I/O expander on the module) |
-| I2C address | 0x27 (default; A0–A2 solder jumpers configurable) |
+| Interface | I2C (AiP31068L I2C-to-parallel bridge on the Waveshare module) |
+| I2C address | 0x3E (fixed; AiP31068L — confirmed in LIB-4 driver) |
 | Supply voltage | 5 V (backlight) / 3.3–5 V (logic) |
 | Interface to MCU | 2 GPIO pins (SDA + SCL) shared with RTC |
 
-The LCD module integrates a PCF8574 I/O expander that converts I2C commands to the 4-bit parallel interface of the HD44780-compatible LCD controller. This reduces the wiring from the original 6–10 GPIO pins to just 2 (shared I2C bus).
+The LCD module integrates an **AiP31068L** I2C-to-parallel bridge that converts I2C commands to the 4-bit parallel interface of the HD44780-compatible LCD controller. This reduces the wiring from the original 6–10 GPIO pins to just 2 (shared I2C bus at address 0x3E, not conflicting with DS1307 at 0x68).
 
 **Mounting:** The LCD module is installed **inside the enclosure**, elevated above the main PCB on four supporting standoff screws. This keeps the display level, at a consistent height, and at a comfortable viewing angle through the transparent enclosure cover. No cutout in the cover is required for the display.
 
@@ -353,11 +371,11 @@ The controller interfaces to the Hotraco RRK-3 via six relay outputs (OPEN and C
 |-----------|-------|
 | Number of relay channels | 6 (OPEN M1, CLOSE M1, OPEN M2, CLOSE M2, OPEN M3, CLOSE M3) |
 | Contact type | Potential-free (volt-free) normally-open contacts |
-| Contact rating | ≥ 0.5 A / 24 V (to match RRK-3 control input rating) |
-| Coil drive | 5 VDC coil, driven by ESP32-S3 GPIO via transistor or relay driver IC |
+| Contact rating | 10 A / 250 VAC (SRD-05VDC-SL-C rating; well above the ≥ 0.5 A / 24 V required by RRK-3) |
+| Coil drive | 5 VDC coil, driven by ESP32-S3 GPIO via dedicated 2N7000 N-channel MOSFET per channel |
 | Connection | Screw terminals (OPEN, CLOSE, COMMON per channel) |
 
-A relay module board with 6 independent relay channels (opto-isolated input stage, active-low trigger) is used. The relay contacts switch the internal **24 V DC** supply to the RRK-3 OPEN/CLOSE sturing terminals. The wiring is:
+Six **SRD-05VDC-SL-C** relays are integrated directly on the PCB. Each relay is driven by a dedicated **2N7000 N-channel MOSFET**: the MCU GPIO pulls the gate high to energise the 5 V coil; the relay contact then switches the 24 V DC supply to the RRK-3 OPEN/CLOSE sturing terminal. A **1N4007 flyback diode** is fitted across each relay coil to suppress the back-EMF transient when the coil is de-energised. A **10 kΩ gate pull-down resistor** ensures each MOSFET remains off when the GPIO is tri-stated or undriven.
 
 ```
   Internal 24V+ ──► Relay COM
@@ -365,7 +383,7 @@ A relay module board with 6 independent relay channels (opto-isolated input stag
   Internal 24V− ──────────────► RRK-3 COMM sturing
 ```
 
-The relay coil is driven by the 5 V logic supply via the MCU GPIO. The relay provides galvanic isolation between the MCU logic circuit (5 V) and the RRK-3 control circuit (24 V), satisfying the isolation requirement. The contact rating must be ≥ 0.5 A / 30 VDC.
+The relay provides galvanic isolation between the MCU logic circuit (3.3 V GPIO, 5 V coil) and the RRK-3 control circuit (24 V), satisfying TR-HW03. The SRD-05VDC-SL-C contact rating (10 A / 250 VAC) is well above the RRK-3 requirement of ≥ 0.5 A / 24 V.
 
 > **Safety constraint:** The firmware must never energise the OPEN and CLOSE relay of the same motor simultaneously. This is enforced in software (see `technicalSoftwareDesignSpecification.md` §5.4). A future hardware interlock using the relay common terminals could provide an additional layer of protection.
 
@@ -379,7 +397,7 @@ The relay coil is driven by the 5 V logic supply via the MCU GPIO. The relay pro
 | Interface to MCU | 1 GPIO pin (opto-coupler output) |
 | Connection | Screw terminal |
 
-> **⚠ OPEN ISSUE #1 — Motor feedback signal definition:** The exact nature of the RRK-3 feedback signal to be connected to this input (e.g. alarm relay contact, fault indication) is currently undefined. The hardware provision (screw terminal + opto-input) is included in the design. The software behaviour triggered by this input is to be defined once the RRK-3 alarm relay wiring has been confirmed. See also FRS Constraint C8.
+> **✅ Issue #1 — Motor feedback signal — Closed.** The RRK-3 motor controller signals an alarm condition via an **external relay contact** that closes on alarm. This dry contact is wired to screw terminal J10 (OPTO_INPUT / GND) and drives the opto-isolated input on the PCB, producing a logic-level signal on MCU GPIO 42 (active when alarm is present). Signal definition is documented in the RRK-3 interface specification. See also FRS Constraint C8.
 
 #### 4.5.3 Screw Terminals
 
@@ -413,7 +431,7 @@ Accurate, persistent time is required for event log timestamps and, if implement
 The ESP32-S3 contains an internal RTC counter that is not battery-backed. Time is lost on every power cycle and must be restored via NTP. While running, the internal oscillator drifts ±100–200 ppm (hardware- and temperature-dependent), producing up to ±17 s per 24 hours. Since WiFi is optional in this system, NTP alone cannot satisfy TR-HW08: log timestamps will be invalid after any power interruption until a network connection is re-established.
 
 **External RTC — DS1307**
-The DS1307 is a real-time clock IC with I2C interface and a CR2032 coin-cell backup. It requires an external 32.768 kHz crystal for oscillator operation. Accuracy is ±20 ppm (crystal dependent; approximately ±10 minutes per year). The backup cell maintains the clock through power interruptions of any duration. Connection uses the shared I2C bus with the LCD display (addresses 0x27 and 0x68 do not conflict); no additional GPIO is needed. The DS1307 operates from the 5 V rail. Module cost is €1–3. This is the lowest-cost, lowest-complexity option that satisfies TR-HW08. NTP synchronisation over WiFi, when available, can further correct long-term drift.
+The DS1307 is a real-time clock IC with I2C interface and a CR2032 coin-cell backup. It requires an external 32.768 kHz crystal for oscillator operation. Accuracy is ±20 ppm (crystal dependent; approximately ±10 minutes per year). The backup cell maintains the clock through power interruptions of any duration. Connection uses the shared I2C bus with the LCD display (addresses 0x3E and 0x68 do not conflict); no additional GPIO is needed. The DS1307 operates from the 5 V rail. Module cost is €1–3. This is the lowest-cost, lowest-complexity option that satisfies TR-HW08. NTP synchronisation over WiFi, when available, can further correct long-term drift.
 
 **GNSS receiver**
 A GNSS (GPS/GLONASS) module provides highly accurate time (< 1 µs) and date independently of network connectivity. Geographic position is also available, from which sunrise and sunset times — including seasonal correction for summer/winter time — can be computed in firmware for any date, without a separate DST table. Disadvantages for this application: modules cost €10–30 and require an antenna (patch or external); a cold start takes 30 s to several minutes to acquire a fix; signal attenuation inside a greenhouse is moderate (polycarbonate and glass are largely transparent to L1 GPS frequencies, but a clear sky view is not guaranteed); switching-mode power supplies and motor drives in the greenhouse may cause RF interference; power consumption is significantly higher than an RTC. For an application where the sole benefit over a DS1307 is removing a €2 component, the cost and complexity are disproportionate.
@@ -489,7 +507,7 @@ The 24 V rail feeds the sensors directly and the relay switching circuit. It als
 
 The 5 V output feeds:
 - The LOLIN S3 board (5 V in; on-board LDO produces 3.3 V for the MCU core)
-- The 6-channel relay module (5 V coil supply)
+- The 6 × SRD-05VDC-SL-C relay coils (5 V, via 2N7000 MOSFET drivers)
 - The LCD module backlight
 - The SIT65HVD08P RS485 transceiver (3.3 V supply from the LOLIN S3 on-board LDO)
 - The DS1307 RTC module
@@ -514,7 +532,7 @@ The 5 V output feeds:
 | Consumer | Current at 5 V |
 |----------|---------------|
 | LOLIN S3 (ESP32-S3, WiFi active) | ~250 mA |
-| 6-channel relay module (all 6 relays energised) | ~360 mA (60 mA × 6) |
+| 6 × SRD-05VDC-SL-C relays (all energised) | ~360 mA (~60 mA per relay coil × 6) |
 | LCD module (backlight on) | ~40 mA |
 | SIT65HVD08P RS485 transceiver (3.3 V via LOLIN S3 LDO — included in LOLIN S3 figure) | — |
 | DS1307 RTC | ~2 mA |
@@ -655,7 +673,7 @@ The enclosure cover carries **only the membrane keypad**. Everything else — LE
 | Price (ex VAT) | MC001110: €22 / MC001111: €24 (Farnell) |
 | Supplier | Farnell |
 
-The MC001110 (55 mm depth) is the preferred choice. The MC001111 (75 mm depth, +€2) is the fallback if the internal component stack — PCB, relay module, PSU module, LCD on standoffs — exceeds the available depth. Final selection to be confirmed after PCB layout and 3D clearance check.
+The **MC001110** (55 mm depth) is selected and confirmed following PCB layout and 3D component-height clearance check. The MC001111 (75 mm depth, +€2) remains the fallback if the internal stack — PCB with integrated relay circuits, PSU module, LCD on standoffs — does not fit.
 
 #### 4.10.2 Enclosure Properties
 
@@ -665,7 +683,7 @@ The MC001110 (55 mm depth) is the preferred choice. The MC001111 (75 mm depth, +
 | Cutouts in cover | 1 × membrane keypad area (4×4 key matrix, bonded to cover) |
 | Cable entries (housing body) | IP67-rated cable glands: mains cable, RS485 sensor cable, RRK-3 control cables |
 | Fuse access | Panel-mount fuse holder in housing body, accessible without opening cover |
-| Internal mounting | Main PCB (LOLIN S3, relay module, SIT65HVD08P RS485 transceiver, screw terminals), PSU module, RTC module, LCD module on standoff screws |
+| Internal mounting | Main PCB (LOLIN S3, discrete relay circuits SRD-05VDC-SL-C + 2N7000, SIT65HVD08P RS485 transceiver, screw terminals), PSU module (RS-15-24), LCD module on standoff screws |
 
 **Transparent cover — key design consequence:**
 The transparent cover eliminates the need for any openings, LED holders, or light pipes for the status indicators. The LCD display and all PCB-mounted LEDs are directly visible through the cover from outside without any cutouts other than the keypad opening. This:
@@ -743,7 +761,7 @@ This section maps every peripheral signal to a specific GPIO number on the LOLIN
 | RS485 UART TX | **GPIO 17** | Output | UART1 TX | To SIT65HVD08P pin DI |
 | RS485 UART RX | **GPIO 18** | Input | UART1 RX | From SIT65HVD08P pin RO |
 | RS485 DE/RE | **GPIO 8** | Output | GPIO | High = transmit; Low = receive |
-| I2C SDA | **GPIO 1** | Bidirectional | I2C0 SDA | Shared: LCD PCF8574 (0x27) + DS1307 (0x68) |
+| I2C SDA | **GPIO 1** | Bidirectional | I2C0 SDA | Shared: LCD AiP31068L (0x3E) + DS1307 (0x68) |
 | I2C SCL | **GPIO 2** | Output | I2C0 SCL | Shared: LCD + RTC |
 | Keypad ROW 1 | **GPIO 3** | Output | GPIO | Drive low to scan |
 | Keypad ROW 2 | **GPIO 4** | Output | GPIO | Drive low to scan |
@@ -759,7 +777,7 @@ This section maps every peripheral signal to a specific GPIO number on the LOLIN
 | Relay CLOSE M2 | **GPIO 15** | Output | GPIO | Active-low relay driver input |
 | Relay OPEN M3 | **GPIO 16** | Output | GPIO | Active-low relay driver input |
 | Relay CLOSE M3 | **GPIO 21** | Output | GPIO | Active-low relay driver input |
-| RRK-3 feedback input | **GPIO 42** | Input | GPIO | Opto-coupler output; active level TBD (Open Issue #1) |
+| RRK-3 feedback input | **GPIO 42** | Input | GPIO | Opto-coupler output; logic HIGH when RRK-3 alarm relay contact is closed |
 | Heartbeat LED (HB) | **GPIO 41** | Output | GPIO | 560 Ω series resistor to amber LED |
 | SD card MOSI *(optional)* | **GPIO 47** | Output | SPI2 MOSI | Fitted only when SD feature is enabled |
 | SD card MISO *(optional)* | **GPIO 48** | Input | SPI2 MISO | Fitted only when SD feature is enabled |
@@ -789,13 +807,14 @@ This section maps every peripheral signal to a specific GPIO number on the LOLIN
 
 | # | Issue | Owner | Status |
 |---|-------|-------|--------|
-| 1 | **Motor feedback signal** — It is unknown what signal from the RRK-3 is available for the feedback input and what its electrical characteristics are (voltage level, NO/NC, fault vs. position indication). Hardware provision (opto-isolated input + screw terminal) is in place; software response is undefined pending resolution. | Electrical engineer | Open |
+| 1 | **Motor feedback signal** — ~~Resolved~~. The RRK-3 signals an alarm condition via an external relay contact that closes on alarm. This dry contact drives the opto-isolated input J10 (OPTO_INPUT / GND), producing a logic-level signal on GPIO 42 (HIGH = alarm active). Signal definition is documented in the RRK-3 interface specification. See also FRS Constraint C8. | Electrical engineer | **Closed** |
 | 2 | **Sensor supply voltage** — ~~Resolved~~. Internal 24 VDC rail confirmed compatible with both sensors: SenseCAP S200 rated 5–30 VDC; FG6485A rated 9–36 VDC, ≤ 15 mA (datasheet confirmed). | Hardware designer | **Closed** |
-| 3 | **RS485 sensor cable routing** — Physical routing from the controller enclosure (inside the greenhouse) to the SenseCAP S200 (outside, on mast) needs to be designed, including weather-proof cable glands and UV-resistant cable selection. | Installer | Open |
-| 4 | **Enclosure model selection** — Candidate housings identified: Multicomp Pro MC001110 (222 × 146 × 55 mm, €22 ex, Farnell) preferred; MC001111 (222 × 146 × 75 mm, €24 ex) as fallback if depth is insufficient. Final choice to be confirmed after PCB layout and 3D component-height clearance check. See §4.10. | Hardware designer | Pending PCB layout |
-| 5 | **Relay module selection** — The specific 6-channel relay module (opto-isolated, 5 V coil, potential-free contacts ≥ 0.5 A / 24 V) must be selected and its PCB footprint confirmed. | Hardware designer | Open |
+| 3 | **RS485 sensor cable routing** — ~~Out of scope~~. Physical routing from the controller enclosure to the SenseCAP S200 (outside, on mast), including weather-proof cable glands and UV-resistant cable selection, is to be resolved during installation. This is outside the scope of the controller project. | Installer | **Out of scope** |
+| 4 | **Enclosure model selection** — ~~Resolved~~. **MC001110** (222 × 146 × 55 mm, IP67, transparent polycarbonate cover, €22 ex VAT, Farnell) confirmed after PCB layout and 3D component-height clearance check. See §4.10. | Hardware designer | **Closed** |
+| 5 | **Relay module selection** — ~~Resolved~~. Six **SRD-05VDC-SL-C** relays are integrated directly on the PCB, each driven by a **2N7000 N-channel MOSFET** with 1N4007 flyback diode and 10 kΩ gate pull-down resistor. No separate relay module board is used. Contact rating 10 A / 250 VAC; coil 5 VDC. See §4.5.1. | Hardware designer | **Closed** |
 | 6 | **LED panel integration** — ~~Resolved~~. LEDs are on the PCB and visible through the transparent enclosure cover. No panel-mount LED holders or light pipes are required. | Hardware designer | **Closed** |
-| 7 | **Time source selection** — Four options exist to satisfy TR-HW08 (accurate time during/after power interruptions): (a) ESP32 internal RTC + NTP only — no extra hardware but fails TR-HW08 when WiFi is unavailable; (b) external RTC DS1307 — €1–3, I2C, battery-backed, lowest complexity; (c) GNSS receiver — highly accurate, provides sunrise/sunset data, but costly and complex for this application; (d) DCF77 receiver — atomic accuracy, handles DST, but reception reliability in a greenhouse environment must be verified. A decision is required before PCB layout is finalised. See §4.6 for full analysis. | Hardware designer | Open |
+| 7 | **Time source selection** — ~~Resolved~~. **DS1307 external RTC** with CR2032 battery backup fitted on the PCB. Fully satisfies TR-HW08; NTP synchronisation over WiFi corrects long-term drift when available. See §4.6 for full analysis. | Hardware designer | **Closed** |
+| 8 | **J5 heater supply (HEATING_POS / HEATING_NEG)** — Pins 5–6 of connector J5 carry HEATING_POS and HEATING_NEG nets on the PCB, providing a heater supply connection for the SenseCAP S200. This feature is not yet specified in the THDS. To be decided: whether the heater supply is required, what voltage and current it provides, and whether the heater is permanently powered or firmware-controlled. | Hardware designer | Open |
 
 ---
 

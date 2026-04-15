@@ -18,7 +18,11 @@ Connector locations are shown in [`hardware/pcb/20260414_PCB.png`](../hardware/p
 
 ### J2 — 24 V DC input (2-pin screw terminal)
 
-Connects the external 24 V DC power supply (e.g. Mean Well RS-15-24).
+Connects the external 24 V DC power supply (e.g. Mean Well RS-15-24) when the internal PSU is not installed.
+
+> **CAUTION** — No polarity protection or over-current protection is provided. Verify supply polarity before applying power.
+
+This connector may also be used to feed 24 V DC to an external motor controller. In that configuration, use the potential-free relay contacts on J7 (M1), J1 (M2) and J6 (M3) to issue the OPEN and CLOSE commands to the external controller.
 
 | Pin | Label | Wire |
 |-----|-------|------|
@@ -93,17 +97,21 @@ See [`documentation/Sensors/T-RH_ FG6485A/`](../documentation/Sensors/T-RH_%20FG
 
 ### J5 — RS485 / MODBUS — SenseCAP S200 wind speed & direction sensor (8-pin screw terminal)
 
-The S200 supports both MODBUS-RTU and SDI-12. When used via RS485, connect as below.  
+The S200 supports both MODBUS-RTU and SDI-12.  
 See [`documentation/Sensors/W-Sensecap-S200/`](../documentation/Sensors/W-Sensecap-S200/) for the user guide.
+
+*Currently, SDI-12_DATA, HEATING_NEG and HEATING_POS are not wired on the PCB.*
 
 | Pin | Label | Function |
 |-----|-------|---------|
-| 1 | +24 V | Sensor supply positive |
-| 2 | GND | Sensor supply negative / common |
-| 3 | RS485-A | RS485 A (Data+) |
-| 4 | RS485-B | RS485 B (Data−) |
-| 5 | SDI-12_DATA | SDI-12 data line (alternative interface) |
-| 6–8 | — | Reserved / not connected |
+| 1 | RS485-B | RS485 B (Data−) |
+| 2 | GND | Signal / supply common |
+| 3 | GND | Signal / supply common |
+| 4 | SDI-12_DATA | SDI-12 data line (alternative interface) (not interfaced) |
+| 5 | HEATING_NEG | Sensor heater supply negative (not powered from PCB) |
+| 6 | HEATING_POS | Sensor heater supply positive (not powered from PCB) |
+| 7 | RS485-A | RS485 A (Data+) |
+| 8 | +24 V | Sensor supply positive |
 
 ---
 
@@ -146,7 +154,7 @@ See [`documentation/Sensors/keypad/`](../documentation/Sensors/keypad/) for the 
 
 ### J10 — Alarm contact output (2-pin screw terminal)
 
-Provides an optoisolated alarm signal output that can drive an external indicator or alarm relay.
+Provides an alarm signal input from the motor controller as an external indicator or alarm relay.
 
 | Pin | Label | Connection |
 |-----|-------|------------|
@@ -173,7 +181,7 @@ Remove the jumper if the board is in the **middle** of the RS485 bus.
 The SD card socket is soldered directly to the PCB and uses the SPI interface internally.  
 Insert a standard micro SD card (FAT32 formatted) into the socket for data logging.
 
-No external wiring is required.
+*No external wiring is required.*
 
 ---
 

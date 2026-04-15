@@ -9758,7 +9758,7 @@
 		)
 		(uuid "248cb6ab-6e34-4cbb-9e4e-81e307001a47")
 	)
-	(label "3V3"
+	(label "5V"
 		(at 179.07 158.75 0)
 		(effects
 			(font
