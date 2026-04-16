@@ -786,7 +786,8 @@ Where `Mxx` encodes active window states (e.g. `M1O` = M1 open, `M2C` = M2 close
 
 - WiFi AP mode is **mandatory** (Must have).
 - The AP does not start automatically on boot; it is enabled by the administrator via the local keyboard menu or web interface.
-- AP SSID and password are configurable by the administrator (stored in NVS; password hashed).
+- AP SSID is auto-generated as `"Greenhouse-"` followed by the hexadecimal representation of the last 2 bytes of the WiFi NIC MAC address (e.g., `"Greenhouse-A3F2"` if MAC ends in `A3:F2`). The SSID is not stored in NVS; it is regenerated from the MAC address on each AP start.
+- AP password is configurable by the administrator (stored in NVS; password hashed).
 - Automatic AP shutdown timeout is configurable by the administrator; the AP disables itself when the timeout expires with no active client connections.
 - While the AP is active, the LCD displays "AP active" and the assigned AP IP address.
 - The HTTP configuration web interface (§5.8) is accessible to clients connected to the AP.
@@ -917,7 +918,7 @@ Setpoint and threshold values (temperature, humidity, wind speed, wind direction
 | `wind` | `v_max`, `dir_excl_low`, `dir_excl_high`, `wind_prot_en` | `int16_t` / `uint8_t` | Wind speed threshold (m/s or Beaufort) and direction exclusion zone (degrees) (integers); `wind_prot_en`: wind protection enable flag (0 = disabled, 1 = enabled, default 1) |
 | `motor` | `dwell_open_m1`, `dwell_close_m1`, … `dwell_close_m3` | `int16_t` | Per-channel dwell times (minutes) — integers only |
 | `access` | `pin_farmer_hash`, `pin_admin_hash`, `pin_salt`, `lockout_count`, `lockout_time` | string / uint8 | PIN hashes, lockout configuration |
-| `wifi` | `ssid`, `psk_hash`, `ap_ssid`, `ap_psk`, `ip_mode`, `ip_addr`, `ip_mask`, `ip_gw`, `ip_dns` | string | WiFi client and AP credentials and network settings |
+| `wifi` | `ssid`, `psk_hash`, `ap_psk`, `ip_mode`, `ip_addr`, `ip_mask`, `ip_gw`, `ip_dns` | string | WiFi client and AP credentials and network settings; AP SSID is auto-generated from MAC address and not stored |
 | `mqtt` | `broker_url`, `port`, `username`, `password_hash`, `topic_prefix`, `interval` | string / uint16 | MQTT broker connection and publish settings |
 | `system` | `poll_interval`, `session_timeout`, `ap_timeout`, `lang`, `log_pointer`, `schema_ver`, `fw_version`, `led_day_brt`, `led_nite_brt`, `led_nite_from`, `led_nite_to` | uint16 / string / uint8 | System-wide configuration; `schema_ver` (int32) tracks NVS layout version; `fw_version` (string `"MAJOR.MINOR.PATCH"`) is overwritten on every boot with the running firmware version; `led_day_brt` / `led_nite_brt` (uint8, 0–255, defaults 200 / 20): RGB LED brightness for day and night; `led_nite_from` / `led_nite_to` (uint8, hour 0–23, defaults 22 / 6): night period start/end (FR-UI21, FR-CF14) |
 | `log` | Ring buffer entries (binary blob, fixed record size) | blob | Event log fallback when SD card absent |

@@ -124,7 +124,8 @@ The WEB-GUI provides a user-friendly interface for monitoring and controlling th
 ├── Settings
 │   ├── Climate Control
 │   ├── Schedules
-│   └── Alarms
+│   ├── Alarms
+│   └── Account
 └── Logout
 ```
 
@@ -139,7 +140,8 @@ The WEB-GUI provides a user-friendly interface for monitoring and controlling th
 │   ├── Alarms
 │   ├── Hardware Config
 │   ├── System Settings
-│   └── Diagnostics
+│   ├── Diagnostics
+│   └── Account
 └── Logout
 ```
 
@@ -655,12 +657,61 @@ There is ongoing discussion about whether alarm functionality is relevant for th
 │  Network Configuration              │
 │  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━    │
 │                                     │
-│  WiFi Settings                      │
+│  WiFi Client Settings               │
 │  SSID: [GreenHouse_WiFi]            │
 │  Status: 🟢 Connected               │
 │  Signal: -45 dBm (Excellent)        │
-│  IP: 192.168.1.150                  │
 │  [Change Network]                   │
+│                                     │
+│  IP Configuration:                  │
+│  ● DHCP (Automatic)                 │
+│  ○ Static (Manual)                  │
+│                                     │
+│  Current IP: 192.168.1.150          │
+│  Gateway: 192.168.1.1               │
+│  DNS: 192.168.1.1                   │
+│                                     │
+│  ━━━ Static IP Settings ━━━         │
+│  (Available when Static selected)   │
+│                                     │
+│  IP Address                         │
+│  [192.168.1.___]                    │
+│                                     │
+│  Subnet Mask                        │
+│  [255.255.255.0 ▼]                  │
+│  Common: /24, /16, /8               │
+│                                     │
+│  Default Gateway                    │
+│  [192.168.1.1]                      │
+│                                     │
+│  DNS Server                         │
+│  [192.168.1.1]                      │
+│  (Primary)                          │
+│                                     │
+├─────────────────────────────────────┤
+│                                     │
+│  WiFi Access Point Settings         │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━    │
+│                                     │
+│  AP Status                          │
+│  ● Disabled (On demand)             │
+│  ○ Enabled                          │
+│  ℹ️ AP starts on admin command only │
+│                                     │
+│  AP SSID (Auto-generated)           │
+│  Greenhouse-A3F2                    │
+│  ℹ️ Based on device MAC address     │
+│                                     │
+│  AP Password                        │
+│  [●●●●●●●●●●●●●●●●●]                │
+│  👁️ Show                            │
+│  Minimum 8 characters               │
+│                                     │
+│  Auto-Shutdown Timeout              │
+│  [15] minutes                       │
+│  Range: 5 - 120 minutes             │
+│  ℹ️ AP disables when no clients     │
+│     connected for this duration     │
 │                                     │
 │  ℹ️ Web server runs on port 80      │
 │                                     │
@@ -726,6 +777,10 @@ There is ongoing discussion about whether alarm functionality is relevant for th
 │  ☑️ Require unique PINs             │
 │  ☑️ Lock after 3 failed attempts    │
 │                                     │
+│  PIN Management (Administrative)    │
+│  ℹ️ Set user PINs without requiring │
+│     current PIN (admin function)    │
+│                                     │
 │  [Change Farmer PIN]                │
 │  [Change Technician PIN]            │
 │                                     │
@@ -757,7 +812,136 @@ There is ongoing discussion about whether alarm functionality is relevant for th
 └─────────────────────────────────────┘
 ```
 
-#### 5.4.1 Network Configuration Flow (Change Network)
+#### 5.4.1 PIN Management (Administrative)
+
+**Purpose**: Technician can administratively set PINs for both Farmer and Technician roles
+**Access**: Technician only
+**Trigger**: Clicking [Change Farmer PIN] or [Change Technician PIN] in System Settings
+**Key Difference**: Administrative PIN change does NOT require the current PIN (unlike user self-service PIN change in Account Settings)
+
+---
+
+**Change Farmer PIN (Administrative)**
+
+```
+┌─────────────────────────────────────┐
+│ ← Back    Change Farmer PIN   👤 T │
+├─────────────────────────────────────┤
+│                                     │
+│  Set New Farmer PIN                 │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━    │
+│                                     │
+│  ⚠️ Administrative Function         │
+│  You are setting a new PIN for the  │
+│  Farmer role. Current PIN is NOT    │
+│  required for this operation.       │
+│                                     │
+│  New Farmer PIN                     │
+│  [  ●  ●  ●  ●  ●  ●  ]             │
+│  👁️ Show                            │
+│  6 digits required                  │
+│                                     │
+│  Confirm New PIN                    │
+│  [  ●  ●  ●  ●  ●  ●  ]             │
+│  👁️ Show                            │
+│                                     │
+│  ℹ️ Requirements:                   │
+│  • Exactly 6 digits (0-9)           │
+│  • Must differ from Technician PIN  │
+│    (if unique PINs enforced)        │
+│                                     │
+│         [ Set PIN ]                 │
+│        [ Cancel ]                   │
+│                                     │
+├─────────────────────────────────────┤
+│  ℹ️ Ready                           │
+└─────────────────────────────────────┘
+```
+
+**Change Technician PIN (Administrative)**
+
+```
+┌─────────────────────────────────────┐
+│ ← Back  Change Technician PIN 👤 T │
+├─────────────────────────────────────┤
+│                                     │
+│  Set New Technician PIN             │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━    │
+│                                     │
+│  ⚠️ Administrative Function         │
+│  You are setting a new PIN for the  │
+│  Technician role. Current PIN is    │
+│  NOT required for this operation.   │
+│                                     │
+│  ⚠️ Warning: After setting a new    │
+│  Technician PIN, you will be logged │
+│  out and must login with the new    │
+│  PIN.                               │
+│                                     │
+│  New Technician PIN                 │
+│  [  ●  ●  ●  ●  ●  ●  ]             │
+│  👁️ Show                            │
+│  6 digits required                  │
+│                                     │
+│  Confirm New PIN                    │
+│  [  ●  ●  ●  ●  ●  ●  ]             │
+│  👁️ Show                            │
+│                                     │
+│  ℹ️ Requirements:                   │
+│  • Exactly 6 digits (0-9)           │
+│  • Must differ from Farmer PIN      │
+│    (if unique PINs enforced)        │
+│                                     │
+│         [ Set PIN ]                 │
+│        [ Cancel ]                   │
+│                                     │
+├─────────────────────────────────────┤
+│  ℹ️ Ready                           │
+└─────────────────────────────────────┘
+```
+
+**Administrative PIN Change Workflow**:
+
+1. **Technician clicks** [Change Farmer PIN] or [Change Technician PIN] in System Settings
+2. **Form appears** with new PIN entry fields (NO current PIN required)
+3. **Technician enters** new PIN and confirmation
+4. **Click [Set PIN]**: Sends request to backend
+5. **Backend validation**:
+   - New PIN is exactly 6 digits
+   - New PIN matches confirmation
+   - New PIN differs from other role PIN (if unique PINs enforced)
+6. **Result**:
+   - **Farmer PIN changed**: "✅ Farmer PIN updated successfully" → returns to System Settings
+   - **Technician PIN changed**: "✅ Technician PIN updated - logging out..." → auto-logout after 3 seconds (must re-login with new PIN)
+
+**Footer States**:
+- Idle: "ℹ️ Ready"
+- New PIN invalid: "❌ PIN must be exactly 6 digits" (red)
+- PINs don't match: "❌ New PIN and confirmation don't match" (red)
+- PIN not unique: "❌ New PIN must differ from [other role] PIN" (red)
+- Success (Farmer): "✅ Farmer PIN updated successfully" (green, auto-hides)
+- Success (Technician): "✅ Technician PIN updated - logging out..." (green, auto-logout)
+
+**Security & Logging**:
+- All administrative PIN changes are logged with timestamp and technician identity
+- No current PIN validation required (administrative privilege)
+- Changing Technician's own PIN via this method forces immediate logout
+- Changing Farmer PIN does not affect current Technician session
+
+**Key Distinctions**:
+
+| Feature | Account Settings (User Self-Service) | System Settings (Administrative) |
+|---------|-------------------------------------|----------------------------------|
+| **Access** | Farmer or Technician (own PIN only) | Technician only (both PINs) |
+| **Current PIN Required** | ✅ Yes | ❌ No |
+| **Can Change Farmer PIN** | Farmer only | Technician (admin) |
+| **Can Change Technician PIN** | Technician only | Technician (admin) |
+| **Force Logout** | ✅ Always | ✅ Only if changing own (Technician) PIN |
+| **Use Case** | Regular user PIN maintenance | Administrative reset / recovery |
+
+---
+
+#### 5.4.2 Network Configuration Flow (Change Network)
 
 **Purpose**: Connect to a different WiFi network
 **Access**: Technician only
@@ -790,7 +974,7 @@ After scan completes (typically 5-10 seconds):
 │  Available Networks (8 found)       │
 │  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━    │
 │                                     │
-│  📶 GreenHouse_WiFi  ✓              │
+│  📶 GreenHouse_WiFi  ✓             │
 │  🔒 -45 dBm (Excellent) Connected   │
 │                                     │
 │  📶 HomeNetwork_5G                  │
@@ -949,7 +1133,7 @@ After clicking [Connect]:
 
 ```
 ┌─────────────────────────────────────┐
-│       Connection Failed       👤 T │
+│       Connection Failed       👤 T  │
 ├─────────────────────────────────────┤
 │                                     │
 │  ❌ Connection Failed               │
@@ -1057,6 +1241,135 @@ After clicking [Connect]:
 - Connecting: "⏳ Connecting..."
 - Success: "✅ Connected successfully" (green, auto-hides)
 - Failure: "❌ [Error message]" (red, persists)
+
+---
+
+### 5.5 Account Settings (Farmer & Technician)
+
+**Purpose**: User account management - change own PIN
+**Access**: Both Farmer and Technician roles
+
+```
+┌─────────────────────────────────────┐
+│ ☰ Menu    Account Settings    👤 F │
+├─────────────────────────────────────┤
+│                                     │
+│  User Information                   │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━    │
+│                                     │
+│  Role: Farmer                       │
+│  Session Started: 14:23             │
+│  Session Timeout: 30 minutes        │
+│                                     │
+├─────────────────────────────────────┤
+│                                     │
+│  Change My PIN                      │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━    │
+│                                     │
+│  Current PIN                        │
+│  [  ●  ●  ●  ●  ●  ●  ]             │
+│  👁️ Show                            │
+│                                     │
+│  New PIN                            │
+│  [  ●  ●  ●  ●  ●  ●  ]             │
+│  👁️ Show                            │
+│  6 digits required                  │
+│                                     │
+│  Confirm New PIN                    │
+│  [  ●  ●  ●  ●  ●  ●  ]             │
+│  👁️ Show                            │
+│                                     │
+│  ℹ️ Requirements:                   │
+│  • Exactly 6 digits (0-9)           │
+│  • Must differ from current PIN     │
+│  • Must differ from other role PIN  │
+│    (if unique PINs enforced)        │
+│                                     │
+│         [ Change PIN ]              │
+│                                     │
+├─────────────────────────────────────┤
+│  ℹ️ Ready                           │
+└─────────────────────────────────────┘
+```
+
+**For Technician** (same page with role indicator showing "Technician"):
+
+```
+┌─────────────────────────────────────┐
+│ ☰ Menu    Account Settings    👤 T │
+├─────────────────────────────────────┤
+│                                     │
+│  User Information                   │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━    │
+│                                     │
+│  Role: Technician                   │
+│  Session Started: 14:23             │
+│  Session Timeout: 30 minutes        │
+│                                     │
+├─────────────────────────────────────┤
+│                                     │
+│  Change My PIN                      │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━    │
+│                                     │
+│  Current PIN                        │
+│  [  ●  ●  ●  ●  ●  ●  ]             │
+│  👁️ Show                            │
+│                                     │
+│  New PIN                            │
+│  [  ●  ●  ●  ●  ●  ●  ]             │
+│  👁️ Show                            │
+│  6 digits required                  │
+│                                     │
+│  Confirm New PIN                    │
+│  [  ●  ●  ●  ●  ●  ●  ]             │
+│  👁️ Show                            │
+│                                     │
+│  ℹ️ Requirements:                   │
+│  • Exactly 6 digits (0-9)           │
+│  • Must differ from current PIN     │
+│  • Must differ from Farmer PIN      │
+│    (if unique PINs enforced)        │
+│                                     │
+│         [ Change PIN ]              │
+│                                     │
+├─────────────────────────────────────┤
+│  ℹ️ Ready                           │
+└─────────────────────────────────────┘
+```
+
+**PIN Change Workflow**:
+
+1. **User enters current PIN**: Validated against stored hash
+2. **User enters new PIN**: Client-side validation (6 digits)
+3. **User confirms new PIN**: Must match new PIN exactly
+4. **Click [Change PIN]**: Sends request to backend
+5. **Backend validation**:
+   - Current PIN correct
+   - New PIN meets requirements (6 digits)
+   - New PIN differs from current PIN
+   - New PIN differs from other role PIN (if unique PINs enforced)
+6. **Result**:
+   - **Success**: "✅ PIN changed successfully - please login again" → auto-logout after 3 seconds
+   - **Failure**: "❌ [Error message]" with specific reason
+
+**Footer States**:
+- Idle: "ℹ️ Ready"
+- Current PIN wrong: "❌ Current PIN incorrect" (red)
+- New PIN invalid: "❌ PIN must be exactly 6 digits" (red)
+- PINs don't match: "❌ New PIN and confirmation don't match" (red)
+- PIN not unique: "❌ New PIN must differ from Farmer PIN" (red, technician only)
+- Success: "✅ PIN changed successfully - logging out..." (green, auto-logout)
+
+**Security Notes**:
+- Changing PIN requires re-authentication with current PIN
+- Successful PIN change forces immediate logout (user must login with new PIN)
+- Failed attempts are logged and count toward lockout threshold
+- Session remains active during PIN change process (until success)
+
+**Access Control**:
+- **Farmer**: Can change only their own PIN via this page
+- **Technician**: Can change only their own PIN via this page
+- **Technician** (via System Settings): Can change both Farmer PIN and Technician PIN (administrative function)
 
 ---
 
@@ -1284,30 +1597,7 @@ WS   /ws/live-data
 
 ---
 
-## 9. Future Enhancements
-
-### 9.1 Advanced Features (Phase 2)
-
-- **Graphs & Analytics**: Historical data visualization with zoom/pan
-- **Predictive Alerts**: Machine learning-based recommendations
-- **Multi-Greenhouse**: Support for multiple greenhouse units
-- **Energy Monitoring**: Power consumption tracking
-- **Camera Integration**: Live view of greenhouse interior
-- **Weather Forecast**: Integration with weather API
-- **Reports**: Automated daily/weekly/monthly reports
-- **Export Data**: CSV/Excel export for analysis
-
-### 9.2 Mobile App (Phase 3)
-
-- Native iOS/Android apps
-- Push notifications
-- Offline mode with sync
-- Widget support
-- Biometric authentication
-
----
-
-## 10. Design Mockup Summary
+## 9. Design Mockup Summary
 
 ### Color Scheme (Recommended)
 
@@ -1345,7 +1635,7 @@ WS   /ws/live-data
 
 ---
 
-## 11. Conclusion
+## 10. Conclusion
 
 This WEB-GUI design provides:
 - ✅ Mobile-first approach with vertical scrolling

@@ -165,7 +165,7 @@ The NVS partition is never erased by the OTA process itself. All namespaces surv
 | `wind` | v_max, dir_excl_low, dir_excl_high, wind_prot_en |
 | `motor` | dwell_open_m1–m3, dwell_close_m1–m3 |
 | `access` | PIN hashes (farmer & admin), lockout config |
-| `wifi` | SSID, PSK hash, AP credentials, IP settings |
+| `wifi` | Client SSID, PSK hash, AP password hash, IP settings (AP SSID auto-generated from MAC) |
 | `mqtt` | Broker URL, port, auth, topic prefix, publish interval |
 | `system` | poll_interval, session_timeout, ap_timeout, language, log_pointer |
 | `log` | Ring-buffer of up to 1000 event records |

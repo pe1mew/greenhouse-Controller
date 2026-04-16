@@ -353,8 +353,8 @@ TSDS reference: §5.6 | FRS: TR-NW01
 
 | ID | Level | Description | Steps | Expected result |
 |----|-------|-------------|-------|-----------------|
-| IT-WA-001 | IT | AP does not start on boot | Power cycle DUT; scan for AP SSID for 30 s | AP SSID not visible until explicitly enabled |
-| IT-WA-002 | IT | AP starts when enabled via admin menu | Enter admin session; enable AP via menu | AP SSID visible on WiFi scan within 10 s; LCD shows "AP active" |
+| IT-WA-001 | IT | AP does not start on boot | Power cycle DUT; scan for AP SSID (format: "Greenhouse-XXXX") for 30 s | AP SSID not visible until explicitly enabled |
+| IT-WA-002 | IT | AP starts when enabled via admin menu | Enter admin session; enable AP via menu | AP SSID (format: "Greenhouse-" + last 2 MAC bytes in hex) visible on WiFi scan within 10 s; LCD shows "AP active" |
 | IT-WA-003 | IT | Client can connect to AP | Connect test PC to AP | DHCP address assigned; web interface reachable |
 | IT-WA-004 | IT | AP uses WPA2 security minimum | Scan AP and inspect security type | WPA2 or WPA3 reported; open/WEP not accepted |
 | IT-WA-005 | IT | AP shuts down after configured timeout with no client | Enable AP; leave idle; wait for timeout | AP SSID disappears after configured timeout; LCD clears AP indicator |

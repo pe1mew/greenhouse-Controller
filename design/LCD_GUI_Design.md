@@ -24,6 +24,7 @@ The LCD-GUI provides a local user interface for monitoring and basic control of 
   - Temperature, humidity, wind readings
   - Ventilation positions (roof, side)
   - Day/night setpoints (view only)
+  - WiFi AP and client status
   - Active alarms (if any)
 
 ### 2.2 Farmer (PIN-based Login)
@@ -194,7 +195,60 @@ The LCD-GUI provides a local user interface for monitoring and basic control of 
 
 **Note**: Press # to jump to PIN entry for editing (Farmer access required)
 
-### 4.7 Screen 7: Active Alarms (if any)
+### 4.7 Screen 7: WiFi Status
+
+```
+   +----------------+
+   |WiFi AP: ON     |
+   |SSID:Green.-XXXX|
+   +----------------+
+```
+
+**AP Status Values**:
+- **ON**: Access Point is enabled (for technician access)
+- **OFF**: Access Point is disabled
+
+**Client Status Values**:
+- **Connected**: Shows network SSID name (up to 10 characters)
+- **Disconnected**: No WiFi connection
+- **Connecting...**: Attempting to connect
+
+**State Examples**:
+WiFi client disbled:
+```
+   +----------------+
+   |WiFi: OFF SSID: |
+   |DISCONNECTED    |
+   +----------------+
+```
+
+WiFi client enabled, connecting to AP:
+```
+   +----------------+
+   |WiFi: ON  SSID: |
+   |CONNECTING      |
+   +----------------+
+```
+
+WiFi client enabled, connected to ssid "HomeWifi":
+```
+   +----------------+
+   |WiFi: ON  SSID: |
+   |HomeWifi        |
+   +----------------+
+```
+
+WiFi client enabled, connected to ssid "HomeWifi" received ip address 10.0.12.11:
+```
+   +----------------+
+   |WiFi: ON  IP:   |
+   |10.0.12.11      |
+   +----------------+
+```
+
+**Note**: AP can be toggled by technician (requires PIN login)
+
+### 4.8 Screen 8: Active Alarms (if any)
 
 ```
    +----------------+
@@ -367,7 +421,7 @@ Navigate through screens showing current farmer settings:
 ```
    +----------------+
    |WiFi AP: [OFF]  |
-   |C:ON D:OFF      |
+   |C:ON D:X        |
    +----------------+
 ```
 
@@ -417,8 +471,9 @@ Press C (ENTER) to logout, D (BACK) to cancel
 3. Side Ventilation (5 seconds)
 4. Day Setpoints (5 seconds)
 5. Night Setpoints (5 seconds)
-6. Active Alarms (3 seconds each, if any)
-7. Return to System Status
+6. WiFi Status (5 seconds)
+7. Active Alarms (3 seconds each, if any)
+8. Return to System Status
 
 **Pause Auto-Rotation**:
 - Press ▲ or ▼ to manually navigate (pauses rotation for 30 seconds)
