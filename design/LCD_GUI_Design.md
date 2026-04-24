@@ -28,24 +28,38 @@ The LCD-GUI provides a local user interface for monitoring and basic control of 
   - Active alarms (if any)
 
 ### 2.2 Farmer (PIN-based Login)
-- **Access**: Basic operational control
+- **Access**: Basic operational control and climate safety settings
 - **Authentication**: 6-digit PIN
 - **Available Settings**:
-  - Day temperature setpoint
-  - Night temperature setpoint
-  - Day humidity setpoint
-  - Night humidity setpoint
+  - Day temperature minimum (T_min_day)
+  - Day temperature maximum (T_max_day)
+  - Night temperature minimum (T_min_night)
+  - Night temperature maximum (T_max_night)
+  - Day humidity minimum (RH_min_day)
+  - Day humidity maximum (RH_max_day)
+  - Night humidity minimum (RH_min_night)
+  - Night humidity maximum (RH_max_night)
+  - Enable/disable humidity control
+  - Wind protection: Enable / Disable (confirmation required; action is logged)
+  - Conflict resolution priority: Temperature first (default) / Humidity first / Auto (deviation-based)
   - Change farmer PIN
   - Logout
 
+> **Note:** Geographic location (for sunrise/sunset calculation), sensor poll interval, sliding average window, and window dwell times are configurable via the web GUI only — they are not accessible through the LCD menu.
+
+> **Note:** The current day/night period and the computed sunrise/sunset times for today can be viewed in the web GUI.
+
 ### 2.3 Technician (PIN-based Login)
-- **Access**: System configuration (view farmer settings, manage AP)
+- **Access**: System configuration (view farmer settings, manage AP and wind protection)
 - **Authentication**: 6-digit PIN (different from Farmer PIN)
 - **Available Settings**:
   - View farmer settings (read-only)
   - Enable/disable WiFi Access Point
+  - Wind protection: Enable / Disable (confirmation required; action is logged)
   - Change technician PIN
   - Logout
+
+> **Note:** Sensor poll interval (150–3600 s), sliding average window (1–60 min), and window dwell times are configurable via the web GUI only — they are not accessible through the LCD menu.
 
 ---
 
@@ -612,6 +626,8 @@ When critical alarm occurs:
 - LOW TEMP
 - HIGH HUM
 - LOW HUM
+- WIND PROT OFF (persistent; shown every rotation cycle for as long as wind protection is disabled — cannot be acknowledged/dismissed; cleared automatically when wind protection is re-enabled)
+- HUM CTRL OFF (shown in rotation when humidity control is disabled; informational)
 
 ### 9.2 Priority Sequence
 

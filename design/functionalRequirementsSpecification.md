@@ -100,8 +100,8 @@ The controller is operated locally via a 4×4 keyboard and a 16×2 LCD display. 
 
 | Role | Description |
 |------|-------------|
-| **Farmer** | Daily operator. Sets acceptable temperature and humidity ranges for the crop. Views current status. |
-| **Administrator** | Technical configurator. Sets wind safety thresholds, wind direction exclusion angle, network settings, and system parameters. Has elevated access rights. |
+| **Farmer** | Daily operator. Sets acceptable temperature and humidity ranges for the crop. Can enable or disable humidity-based climate control, enable or disable wind protection, and choose the conflict resolution priority. Views current status. |
+| **Administrator** | Technical configurator. Sets wind safety thresholds, wind direction exclusion angle, network settings, and system parameters. Can also enable or disable wind protection. Has elevated access rights. |
 | **Maintenance technician** | Not a software user; works on the physical hardware. Requirements for this role are not in scope. |
 
 ---
@@ -144,9 +144,11 @@ Windows are driven by a Hotraco RRK-3 relay box. The controller sends an OPEN or
 |----|-------------|--------|
 | FR-S01 | The system **shall** measure the internal greenhouse temperature. | Must |
 | FR-S02 | The system **shall** measure the internal greenhouse relative humidity. | Must |
-| FR-S03 | The system **shall** sample temperature and humidity at a configurable interval (default: 60 s). | Should |
+| FR-S03 | The system **shall** poll all sensors (temperature, humidity, and wind) at a single configurable interval. The default interval is 60 s. The technician **shall** be able to set the interval in the range 150 to 3600 s via the web GUI. | Must |
 | FR-S04 | The system **shall** detect and report a sensor fault (e.g. disconnected or out-of-range sensor). | Must |
 | FR-S05 | On a sensor fault, the system **shall** maintain the last known window states and alert the user. | Must |
+| FR-S06 | The system **should** compute a sliding (moving) average of temperature and humidity readings to reduce the effect of measurement noise before comparing with setpoints. | Should |
+| FR-S07 | The averaging window for the sliding average **should** be configurable by the technician in the range of 1 to 60 minutes, via the web GUI only. The default window is 1 minute (effectively no averaging). | Should |
 
 ### 5.2 Sensing — External Weather
 
@@ -169,8 +171,8 @@ Windows are driven by a Hotraco RRK-3 relay box. The controller sends an OPEN or
 | FR-A06 | After issuing a command, the system **shall** set the estimated state to `MOVING` and transition to the target state after the known motor run-time has elapsed. | Must |
 | FR-A07 | The system **should** support partial window opening by timed motor stop (percentage of full travel). | Could |
 | FR-A08 | If partial opening is implemented, the system **shall** clearly indicate to the user that the position is an estimate, not a measured value. | Could |
-| FR-A09 | The administrator **shall** be able to configure a dwell time per window — the minimum time a window must remain fully open before it may be commanded to close. | Must |
-| FR-A10 | The administrator **shall** be able to configure a dwell time per window — the minimum time a window must remain fully closed before it may be commanded to open. | Must |
+| FR-A09 | The technician **shall** be able to configure a dwell time per window — the minimum time a window must remain fully open before it may be commanded to close. This setting is available via the web GUI only. | Must |
+| FR-A10 | The technician **shall** be able to configure a dwell time per window — the minimum time a window must remain fully closed before it may be commanded to open. This setting is available via the web GUI only. | Must |
 | FR-A11 | The system **shall** not issue a new open or close command to a window until the applicable dwell time has elapsed since the window reached its last end position. | Must |
 | FR-A12 | Dwell times **shall** be configurable independently for each window (M1, M2, M3) and independently for the open-dwell and close-dwell directions. | Should |
 
@@ -182,20 +184,32 @@ Windows are driven by a Hotraco RRK-3 relay box. The controller sends an OPEN or
 
 | ID | Requirement | MoSCoW |
 |----|-------------|--------|
-| FR-C01 | The farmer **shall** be able to set a minimum acceptable temperature (T_min). | Must |
-| FR-C02 | The farmer **shall** be able to set a maximum acceptable temperature (T_max). | Must |
-| FR-C03 | The farmer **shall** be able to set a minimum acceptable relative humidity (RH_min). | Must |
-| FR-C04 | The farmer **shall** be able to set a maximum acceptable relative humidity (RH_max). | Must |
-| FR-C05 | When the measured temperature exceeds T_max, the system **shall** open one or more windows to lower the temperature. | Must |
-| FR-C06 | When the measured relative humidity exceeds RH_max, the system **shall** open one or more windows to lower the humidity. | Must |
-| FR-C07 | When the measured temperature is below T_min, the system **shall** close windows to reduce heat loss. | Must |
-| FR-C08 | When the measured relative humidity is below RH_min, the system **shall** close windows to reduce moisture loss. | Must |
+| FR-C01 | The farmer **shall** be able to set a minimum acceptable temperature for the daytime period (T_min_day) and a separate minimum for the night-time period (T_min_night). | Must |
+| FR-C02 | The farmer **shall** be able to set a maximum acceptable temperature for the daytime period (T_max_day) and a separate maximum for the night-time period (T_max_night). | Must |
+| FR-C03 | The farmer **shall** be able to set a minimum acceptable relative humidity for the daytime period (RH_min_day) and a separate minimum for the night-time period (RH_min_night). | Must |
+| FR-C04 | The farmer **shall** be able to set a maximum acceptable relative humidity for the daytime period (RH_max_day) and a separate maximum for the night-time period (RH_max_night). | Must |
+| FR-C05 | When the measured temperature exceeds the applicable T_max (day or night), the system **shall** open one or more windows to lower the temperature. | Must |
+| FR-C06 | When the measured relative humidity exceeds the applicable RH_max (day or night), the system **shall** open one or more windows to lower the humidity. | Must |
+| FR-C07 | When the measured temperature is below the applicable T_min (day or night), the system **shall** close windows to reduce heat loss. | Must |
+| FR-C08 | When the measured relative humidity is below the applicable RH_min (day or night), the system **shall** close windows to reduce moisture loss. | Must |
 | FR-C09 | The system **should** use a graduated ventilation strategy — opening additional windows as the deviation from setpoint increases — rather than opening all windows at once. | Should |
 | FR-C10 | The system **should** apply hysteresis to window open/close decisions to prevent rapid toggling (short-cycling). | Should |
 | FR-C11 | Temperature-based climate control **shall** always be active; it cannot be disabled. | Must |
-| FR-C12 | The administrator **shall** be able to enable or disable humidity-based climate control. When humidity control is disabled, the system **shall** ignore RH measurements for window open/close decisions; temperature control continues to operate normally. | Must |
+| FR-C12 | The farmer **shall** be able to enable or disable humidity-based climate control. When humidity control is disabled, the system **shall** ignore RH measurements for window open/close decisions; temperature control continues to operate normally. | Must |
 
 > **Note on FR-C12:** When humidity control is disabled, no T–RH conflict (§5.6) can occur. Conflict resolution logic is therefore only active when humidity control is enabled.
+
+### 5.4a Day/Night Period
+
+The system operates with two climate setpoint profiles — daytime and night-time. The active profile depends on whether the current time falls within the daytime or night-time period.
+
+| ID | Requirement | MoSCoW |
+|----|-------------|--------|
+| FR-DN01 | The system **shall** automatically determine whether the current time is daytime or night-time based on calculated local sunrise and sunset times. | Must |
+| FR-DN02 | Sunrise and sunset times **shall** be calculated from a configurable geographic location (latitude and longitude) and the current date, using a standard solar-position algorithm. | Must |
+| FR-DN03 | The farmer **shall** be able to view and configure the geographic location (latitude and longitude) via the web GUI. This setting is not available on the LCD. | Must |
+| FR-DN04 | The calculated sunrise and sunset times for the current day **shall** be visible to the farmer in the web GUI, so the expected day/night transition times can be verified. | Must |
+| FR-DN05 | If no location has been configured, the system **shall** apply the daytime setpoints as the default until location is set. | Should |
 
 ### 5.5 Wind Safety
 
@@ -209,9 +223,9 @@ Windows are driven by a Hotraco RRK-3 relay box. The controller sends an OPEN or
 | FR-WS06 | When a wind safety override is active, the system **shall** show a dedicated wind-override alarm message on the LCD display, indicating which condition triggered the override (wind speed or wind direction). This indication **shall** remain visible on the display for as long as the override is active. | Must |
 | FR-WS07 | When wind conditions return to safe values, the system **shall** resume automatic climate control. | Must |
 | FR-WS08 | The administrator **should** be able to set a minimum duration that wind must be within safe limits before windows are re-opened (wind hysteresis timer). | Should |
-| FR-WS09 | The administrator **shall** be able to enable or disable wind protection (both wind speed and wind direction safety). When wind protection is disabled, the system **shall** not issue wind-safety close commands; climate control operates without wind override. | Must |
-| FR-WS10 | When wind protection is disabled, the system **shall** show a persistent warning on the LCD display to inform the operator that wind safety is inactive. | Must |
-| FR-WS11 | Disabling wind protection **shall** be an administrator-only action; it **shall** be logged with a timestamp and the administrator's identity. | Must |
+| FR-WS09 | The farmer and the administrator **shall** each be able to enable or disable wind protection (both wind speed and wind direction safety). When wind protection is disabled, the system **shall** not issue wind-safety close commands; climate control operates without wind override. | Must |
+| FR-WS10 | When wind protection is disabled, the system **shall** show a persistent warning on the LCD display to inform the operator that wind safety is inactive. This warning **shall** remain visible for as long as wind protection is disabled. | Must |
+| FR-WS11 | Disabling or re-enabling wind protection **shall** be available to both the farmer and the administrator; the action **shall** be logged with a timestamp and the operator's identity. | Must |
 
 ### 5.6 Conflict Resolution
 
@@ -220,8 +234,8 @@ When temperature and humidity call for opposing window actions (e.g. temperature
 | ID | Requirement | MoSCoW |
 |----|-------------|--------|
 | FR-CR01 | The system **shall** implement a defined conflict resolution strategy when temperature and humidity setpoints require opposing window actions. Conflict resolution is only active when humidity control is enabled (FR-C12). | Must |
-| FR-CR02 | The default conflict resolution strategy **shall** prioritise the condition with the greater relative deviation from its setpoint. | Should |
-| FR-CR03 | The administrator **shall** be able to configure the conflict resolution priority (T takes priority / RH takes priority / deviation-based). | Could |
+| FR-CR02 | The default conflict resolution strategy **shall** give priority to temperature-based control over humidity-based control. | Must |
+| FR-CR03 | The farmer **shall** be able to configure the conflict resolution priority (T takes priority / RH takes priority / deviation-based). | Should |
 | FR-CR04 | The system **shall** log or display a conflict event so the farmer is aware of the trade-off being made. | Should |
 
 ### 5.7 Window State Tracking
@@ -326,19 +340,21 @@ The RGB LED uses the following colour semantics, which differ from the discrete 
 
 | ID | Requirement | MoSCoW |
 |----|-------------|--------|
-| FR-CF01 | The farmer **shall** be able to set T_min and T_max via the local keyboard. | Must |
-| FR-CF02 | The farmer **shall** be able to set RH_min and RH_max via the local keyboard. | Must |
-| FR-CF03 | The administrator **shall** be able to set the wind speed closure threshold (v_max). | Must |
-| FR-CF04 | The administrator **shall** be able to set the wind direction exclusion zone (centre bearing and half-width angle). | Must |
-| FR-CF05 | The administrator **shall** be able to set motor run-times per window (used for state estimation). | Must |
+| FR-CF01 | The farmer **shall** be able to set T_min_day, T_max_day, T_min_night, and T_max_night via the local keyboard and via the web GUI. | Must |
+| FR-CF02 | The farmer **shall** be able to set RH_min_day, RH_max_day, RH_min_night, and RH_max_night via the local keyboard and via the web GUI. | Must |
+| FR-CF03 | The technician **shall** be able to set the wind speed closure threshold (v_max, in Beaufort). | Must |
+| FR-CF04 | The technician **shall** be able to set the wind direction exclusion zone (centre bearing and half-width angle). | Must |
+| FR-CF05 | The technician **shall** be able to set motor run-times per window (used for state estimation). | Must |
 | FR-CF06 | All settings **shall** be retained after a power cycle or controller restart. | Must |
-| FR-CF07 | The administrator **should** be able to set the sensor sampling interval. | Should |
-| FR-CF08 | The administrator **should** be able to set hysteresis values for temperature and humidity control. | Should |
-| FR-CF09 | The administrator **should** be able to set the wind safety hysteresis timer (FR-WS08). | Should |
-| FR-CF10 | The administrator **shall** be able to set the open-dwell time for each window (M1, M2, M3) — the minimum time a window must remain open before it may be closed. | Must |
-| FR-CF11 | The administrator **shall** be able to set the close-dwell time for each window (M1, M2, M3) — the minimum time a window must remain closed before it may be opened. | Must |
-| FR-CF12 | The administrator **shall** be able to enable or disable humidity-based climate control (see FR-C12). | Must |
-| FR-CF13 | The administrator **shall** be able to enable or disable wind protection (see FR-WS09). | Must |
+| FR-CF07 | The technician **shall** be able to set the sensor poll interval in the range 150 to 3600 s, via the web GUI only. The factory default is 60 s. | Must |
+| FR-CF08 | The technician **should** be able to set hysteresis values for temperature and humidity control. | Should |
+| FR-CF09 | The technician **should** be able to set the wind safety hysteresis timer (FR-WS08). | Should |
+| FR-CF10 | The technician **shall** be able to set the open-dwell time for each window (M1, M2, M3) via the web GUI only — the minimum time a window must remain open before it may be closed. | Must |
+| FR-CF11 | The technician **shall** be able to set the close-dwell time for each window (M1, M2, M3) via the web GUI only — the minimum time a window must remain closed before it may be opened. | Must |
+| FR-CF12 | The farmer **shall** be able to enable or disable humidity-based climate control (see FR-C12). | Must |
+| FR-CF13 | The farmer and the administrator **shall** each be able to enable or disable wind protection (see FR-WS09). | Must |
+| FR-CF16 | The farmer **shall** be able to set the geographic location (latitude and longitude) for sunrise/sunset calculation via the web GUI only (FR-DN02, FR-DN03). | Must |
+| FR-CF17 | The technician **should** be able to set the sliding average window for temperature and humidity measurements in the range 1 to 60 minutes, via the web GUI only (FR-S06, FR-S07). | Should |
 
 ### 5.11 WiFi Connectivity (Optional)
 
@@ -465,7 +481,7 @@ The RGB LED uses the following colour semantics, which differ from the discrete 
 | C9 | Initiating manual window control (individual open/close of M1, M2, M3) is outside the scope of this controller; it is performed directly on the Hotraco RRK-3 motor relay box. However, the controller **shall** detect when a manual override has occurred and respond accordingly (see FR-M08–FR-M11). |
 | C10 | At startup, the controller commands all windows to close to establish a known baseline state. This means a power cycle will always result in a brief window-close sequence. |
 | C11 | All user-configurable setpoints and thresholds — including temperature (°C), relative humidity (%), wind speed (m/s or Beaufort), wind direction (degrees), and time durations (minutes) — are expressed and stored as **integers**. Fractional values are not supported. Fractional sensor readings are rounded to the nearest integer before comparison with setpoints. |
-| C12 | Temperature-based climate control is permanently active and cannot be disabled. Humidity-based climate control and wind protection are each independently enable/disable configurable by the administrator. The enable/disable state of both features is persisted across power cycles. |
+| C12 | Temperature-based climate control is permanently active and cannot be disabled. Humidity-based climate control can be enabled or disabled by the farmer. Wind protection can be enabled or disabled by either the farmer or the administrator. The enable/disable state of both features is persisted across power cycles. |
 
 ---
 

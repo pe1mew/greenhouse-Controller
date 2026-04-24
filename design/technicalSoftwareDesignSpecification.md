@@ -184,10 +184,10 @@ The following items originate from system-level and functional requirements in t
 
 **Feature enable/disable flags**
 - Temperature-based climate control is permanently active; no enable/disable flag is stored or checked.
-- Humidity-based climate control has an administrator-configurable enable/disable flag (`rh_ctrl_en`, boolean, NVS namespace `climate`). When disabled, T6 skips RH evaluation entirely; conflict resolution (FR-CR01) is also suppressed. (FRS C12, FR-C12, FR-CF12)
-- Wind protection has an administrator-configurable enable/disable flag (`wind_prot_en`, boolean, NVS namespace `wind`). When disabled, T3 reads wind data but issues no CLOSE_ALL or RESUME commands; the WIND_OVERRIDE event group bit is never set. The LCD warning must remain visible while the flag is false (FR-WS10). (FRS C12, FR-WS09, FR-CF13)
+- Humidity-based climate control has a farmer-configurable enable/disable flag (`rh_ctrl_en`, boolean, NVS namespace `climate`). When disabled, T6 skips RH evaluation entirely; conflict resolution (FR-CR01) is also suppressed. (FRS C12, FR-C12, FR-CF12)
+- Wind protection has a farmer- and administrator-configurable enable/disable flag (`wind_prot_en`, boolean, NVS namespace `wind`). When disabled, T3 reads wind data but issues no CLOSE_ALL or RESUME commands; the WIND_OVERRIDE event group bit is never set. The LCD warning must remain visible while the flag is false (FR-WS10). (FRS C12, FR-WS09, FR-CF13)
 - Both flags default to **enabled** (`true`) on first boot and after factory reset.
-- Changes to either flag are logged with timestamp and administrator identity (FR-WS11).
+- Changes to either flag are logged with timestamp and the operator's identity (FR-WS11).
 
 **Manual override detection**
 - The RRK-3 signals alarm via an external dry relay contact wired to J10; the opto-isolated input drives GPIO 42 (logic HIGH = alarm active). THDS Open Issue #1 resolved. Software response — edge detection in T2, debounce duration, and T6 calibration cycle on alarm clearance — remains to be implemented (see Open Issue #1 below; FR-M08–FR-M11).
@@ -276,14 +276,22 @@ The firmware is structured as a set of FreeRTOS tasks. Each logical function is 
 T4 is the single source of truth for all runtime data and configuration. All tasks that need to read or write system state do so through T4. This eliminates distributed per-variable mutexes and provides a single serialisation point for NVS persistence.
 
 **Configuration settings**
-- Holds all configurable parameters in RAM: setpoints (T_min, T_max, RH_min, RH_max), wind thresholds, dwell times, hysteresis values, WiFi credentials, PIN hashes, display language, session timeout, WiFi AP timeout.
+- Holds all configurable parameters in RAM: setpoints (T_min_day, T_max_day, T_min_night, T_max_night, RH_min_day, RH_max_day, RH_min_night, RH_max_night), wind thresholds, dwell times, hysteresis values, sliding average windows, geographic location (lat/lon), WiFi credentials, PIN hashes, display language, session timeout, WiFi AP timeout.
 - Accepts write requests from T8 (UI) and T11 (web server); validates range before accepting.
 - Persists changed settings to NVS flash immediately on write.
 - Loads all settings from NVS on startup; applies defined defaults for any missing keys.
 
+**Day/night period management**
+- Computes sunrise and sunset times daily from geographic location (latitude, longitude) and current date using a solar-position algorithm (e.g. the SPA algorithm or a lightweight equivalent suitable for embedded use).
+- Determines current period (day or night) from the computed sunrise/sunset times and the current RTC time.
+- Exposes `is_daytime` (boolean) and `sunrise_time` / `sunset_time` (time-of-day) to all tasks via shared state.
+- T6 reads `is_daytime` to select the correct setpoint pair (day or night) before each evaluation cycle.
+
 **Current measurement data**
-- Holds the most recent readings: temperature (T), relative humidity (RH), wind speed, wind direction.
+- Holds the most recent raw readings: temperature (T), relative humidity (RH), wind speed, wind direction.
+- Also holds the sliding-average values for T and RH (T_avg, RH_avg), updated incrementally on each new poll result.
 - Updated by T5 after each successful Modbus poll cycle.
+- T6 uses the averaged values (T_avg, RH_avg) for setpoint comparison; raw values are logged and displayed.
 - Read by T3, T6, T8, T9, T11, T12; no task accesses sensor data except through T4.
 
 **Measurement history ring buffers**
@@ -305,10 +313,10 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 **Priority:** Medium-high | **Core:** 1
 
 - Modbus RTU master on UART1 with SIT65HVD08P transceiver; manages DE/RE direction control pin.
-- Polls SenseCAP S200 (wind speed + direction) and FG6485A (T + RH) on a configurable interval (default 60 s).
-- On successful read: writes new values to T4; T4 then notifies T3 and T6.
+- Polls SenseCAP S200 (wind speed + direction) and FG6485A (T + RH) on a configurable interval (factory default 60 s; technician-configurable 150–3600 s via web GUI).
+- On successful read: computes updated sliding-average values for T and RH (ring buffer of size = `avg_window_min × 60 / poll_interval` samples; default window 1 minute = effectively no averaging); writes raw and averaged values to T4; T4 then notifies T3 and T6.
 - On fault (timeout, CRC error, out-of-range value): posts a sensor fault event to T9 (logger) and triggers alarm display via T8.
-- **Synchronization:** posts to Q6 (sensor readings to T4); sets/clears EG1.SENSOR_FAULT_T and EG1.SENSOR_FAULT_W; posts to Q3 (log events); no mutexes held — T4 owns all measurement storage.
+- **Synchronization:** posts to Q6 (sensor readings and updated sliding averages to T4); sets/clears EG1.SENSOR_FAULT_T and EG1.SENSOR_FAULT_W; posts to Q3 (log events); no mutexes held — T4 owns all measurement storage.
 
 ---
 
@@ -317,8 +325,8 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 **Priority:** Medium | **Core:** 1
 
 - Wakes on notification from T4 that new sensor data is available.
-- Reads current T and RH from T4; reads setpoints and hysteresis values from T4.
-- Evaluates temperature and humidity against setpoints with hysteresis bands.
+- Reads sliding-average T (T_avg) and RH (RH_avg) from T4; reads current day/night period (`is_daytime`) from T4; selects the applicable setpoint pair (T_min_day/T_max_day or T_min_night/T_max_night; RH_min_day/RH_max_day or RH_min_night/RH_max_night).
+- Evaluates temperature and humidity against the active setpoints with hysteresis bands.
 - Runs conflict resolution algorithm when T and RH demand opposing window actions.
 - Posts open/close actuation commands to T2 via command queue.
 - Checks operating mode from T4 before acting; inhibited in Standby, Wind-override, and Manual-override states.
@@ -606,8 +614,8 @@ Link to FRS requirements: FR-S04 (sensor fault detection), FR-W03 (wind sensor f
 - OPEN + CLOSE mutual exclusion is enforced in T2 before asserting any relay output.
 
 **Climate setpoints and hysteresis:**
-- T_min, T_max: temperature range for window open/close (configurable, farmer level). Stored and compared as integer °C. Always active; cannot be disabled.
-- RH_min, RH_max: humidity range for window open/close (configurable, farmer level). Stored and compared as integer %. Only evaluated when the `rh_ctrl_en` flag is true.
+- T_min_day / T_max_day and T_min_night / T_max_night: day and night temperature thresholds (configurable, farmer level). T6 selects the active pair based on `is_daytime` from T4. Stored and compared as integer °C. Always active; cannot be disabled.
+- RH_min_day / RH_max_day and RH_min_night / RH_max_night: day and night humidity thresholds (configurable, farmer level). T6 selects the active pair based on `is_daytime`. Stored and compared as integer %. Only evaluated when the `rh_ctrl_en` flag is true.
 - All setpoints are integers; fractional sensor readings are rounded to the nearest integer before comparison.
 - Hysteresis band on each setpoint prevents rapid toggling near threshold. Hysteresis values are also integers.
 - Graduated ventilation: windows opened in steps proportional to deviation from setpoint (FR-C09, FR-C10).
@@ -615,7 +623,7 @@ Link to FRS requirements: FR-S04 (sensor fault detection), FR-W03 (wind sensor f
 **Conflict resolution (FR-CR01–FR-CR04):**
 When temperature demands OPEN and humidity demands CLOSE (or vice versa), the conflict resolution algorithm selects the safer action:
 1. Wind safety always overrides both (T3 issues CLOSE_ALL regardless of climate demand) — unless wind protection is disabled (`wind_prot_en` = false).
-2. When temperature and humidity conflict, priority is configurable: default is temperature priority.
+2. When temperature and humidity conflict, temperature takes priority by default. The farmer may change this to RH priority or deviation-based priority via the conflict resolution priority setting (`cr_priority`, NVS namespace `climate`).
 3. Conflict resolution is only active when humidity control is enabled (`rh_ctrl_en` = true).
 4. The active conflict and the resolution applied are logged to Q3.
 
@@ -741,6 +749,8 @@ On SD card mount, T9 scans the log directory for `*.csv` files and sorts them by
 | *Free* parameters | Read-only | Read-only | Read-only |
 | *Farmer* parameters | Hidden | Read-write | Read-write |
 | *Administrator* parameters | Hidden | Hidden | Read-write |
+
+Farmer-level parameters include: day and night temperature setpoints (T_min_day, T_max_day, T_min_night, T_max_night), day and night humidity setpoints (RH_min_day, RH_max_day, RH_min_night, RH_max_night), humidity control enable/disable (`rh_ctrl_en`), wind protection enable/disable (`wind_prot_en`), conflict resolution priority (`cr_priority`), and geographic location for sunrise/sunset calculation (`lat_*`, `lon_*`) — web GUI only (FR-CF16). Administrator/technician-level parameters include: wind safety thresholds (v_max, direction exclusion zone), hysteresis values, dwell times (web GUI only, FR-CF10/CF11), motor run-times, sensor poll interval (web GUI only, 150–3600 s, FR-CF07), sliding average windows (web GUI only, 1–60 min, FR-CF17), network configuration, and access control settings.
 
 The web interface applies the same three-state model and the same PIN codes as the local keyboard interface.
 
@@ -914,13 +924,13 @@ Setpoint and threshold values (temperature, humidity, wind speed, wind direction
 
 | Namespace | Key examples | Type | Description |
 |-----------|-------------|------|-------------|
-| `climate` | `t_min`, `t_max`, `rh_min`, `rh_max`, `hyst_t`, `hyst_rh`, `rh_ctrl_en` | `int16_t` / `uint8_t` | Temperature (°C) and humidity (%) setpoints and hysteresis (integers); `rh_ctrl_en`: humidity control enable flag (0 = disabled, 1 = enabled, default 1) |
+| `climate` | `t_min_day`, `t_max_day`, `t_min_ngt`, `t_max_ngt`, `rh_min_day`, `rh_max_day`, `rh_min_ngt`, `rh_max_ngt`, `hyst_t`, `hyst_rh`, `rh_ctrl_en`, `cr_priority`, `avg_win_t`, `avg_win_rh` | `int16_t` / `uint8_t` | Day and night setpoints for temperature (°C) and humidity (%) (integers); hysteresis bands (integers); `rh_ctrl_en`: humidity control enable (0 = disabled, 1 = enabled, default 1); `cr_priority`: conflict resolution (0 = temperature first [default], 1 = humidity first, 2 = deviation-based); `avg_win_t` / `avg_win_rh`: sliding average window in minutes for T and RH (1–60, default 1) |
 | `wind` | `v_max`, `dir_excl_low`, `dir_excl_high`, `wind_prot_en` | `int16_t` / `uint8_t` | Wind speed threshold (m/s or Beaufort) and direction exclusion zone (degrees) (integers); `wind_prot_en`: wind protection enable flag (0 = disabled, 1 = enabled, default 1) |
 | `motor` | `dwell_open_m1`, `dwell_close_m1`, … `dwell_close_m3` | `int16_t` | Per-channel dwell times (minutes) — integers only |
 | `access` | `pin_farmer_hash`, `pin_admin_hash`, `pin_salt`, `lockout_count`, `lockout_time` | string / uint8 | PIN hashes, lockout configuration |
 | `wifi` | `ssid`, `psk_hash`, `ap_psk`, `ip_mode`, `ip_addr`, `ip_mask`, `ip_gw`, `ip_dns` | string | WiFi client and AP credentials and network settings; AP SSID is auto-generated from MAC address and not stored |
 | `mqtt` | `broker_url`, `port`, `username`, `password_hash`, `topic_prefix`, `interval` | string / uint16 | MQTT broker connection and publish settings |
-| `system` | `poll_interval`, `session_timeout`, `ap_timeout`, `lang`, `log_pointer`, `schema_ver`, `fw_version`, `led_day_brt`, `led_nite_brt`, `led_nite_from`, `led_nite_to` | uint16 / string / uint8 | System-wide configuration; `schema_ver` (int32) tracks NVS layout version; `fw_version` (string `"MAJOR.MINOR.PATCH"`) is overwritten on every boot with the running firmware version; `led_day_brt` / `led_nite_brt` (uint8, 0–255, defaults 200 / 20): RGB LED brightness for day and night; `led_nite_from` / `led_nite_to` (uint8, hour 0–23, defaults 22 / 6): night period start/end (FR-UI21, FR-CF14) |
+| `system` | `poll_interval`, `session_timeout`, `ap_timeout`, `lang`, `log_pointer`, `schema_ver`, `fw_version`, `led_day_brt`, `led_nite_brt`, `led_nite_from`, `led_nite_to`, `lat_deg`, `lat_frac`, `lon_deg`, `lon_frac` | uint16 / string / uint8 / int16 | System-wide configuration; `poll_interval` (uint16, seconds, default 60, technician-settable 150–3600 via web GUI); `lat_deg` + `lat_frac` / `lon_deg` + `lon_frac`: geographic location stored as integer degree and fractional milli-degree parts (e.g. 52.0907°N stored as lat_deg=52, lat_frac=907) for sunrise/sunset calculation (FR-DN02); `schema_ver` (int32) tracks NVS layout version; `fw_version` (string `"MAJOR.MINOR.PATCH"`) overwritten on every boot; `led_day_brt` / `led_nite_brt` (uint8, 0–255, defaults 200/20); `led_nite_from` / `led_nite_to` (uint8, hour 0–23, defaults 22/6) |
 | `log` | Ring buffer entries (binary blob, fixed record size) | blob | Event log fallback when SD card absent |
 
 **Default values:**

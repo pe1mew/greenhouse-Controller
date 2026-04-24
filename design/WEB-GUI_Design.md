@@ -26,10 +26,13 @@ The WEB-GUI provides a user-friendly interface for monitoring and controlling th
   - Event logs
 
 ### 2.2 Farmer (PIN-based Login)
-- **Access**: Configuration of operational parameters
+- **Access**: Configuration of operational parameters and safety toggles
 - **Authentication**: 6-digit PIN
 - **Available Settings**:
   - Setpoint configuration (temperature, humidity)
+  - Humidity control: Enable / Disable
+  - Wind protection: Enable / Disable (two-step Apply → Commit; action is logged with identity)
+  - Conflict resolution priority: Temperature first (default) / Humidity first / Auto (deviation-based)
   - Operation schedules
   - Ventilation preferences
   - Alarm thresholds
@@ -40,6 +43,7 @@ The WEB-GUI provides a user-friendly interface for monitoring and controlling th
 - **Authentication**: 6-digit PIN (different from Farmer PIN)
 - **Available Settings**:
   - Climate Control (view-only, configured by farmer)
+  - Wind protection: Enable / Disable (two-step Apply → Commit; action is logged with identity)
   - All farmer settings (schedules, alarms)
   - Hardware calibration
   - Sensor configuration
@@ -365,34 +369,59 @@ The WEB-GUI provides a user-friendly interface for monitoring and controlling th
 │                                     │
 │  Temperature Control                │
 │  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━    │
+│  (temperature control cannot be     │
+│   disabled)                         │
 │                                     │
-│  Day Setpoint                       │
-│  [22] °C                            │
-│  Range: 15 - 30                     │
+│  Day — Minimum                      │
+│  [15] °C                            │
 │                                     │
-│  Night Setpoint                     │
-│  [18] °C                            │
-│  Range: 10 - 25                     │
+│  Day — Maximum                      │
+│  [28] °C                            │
+│                                     │
+│  Night — Minimum                    │
+│  [10] °C                            │
+│                                     │
+│  Night — Maximum                    │
+│  [20] °C                            │
 │                                     │
 │  Deadband (Hysteresis)              │
 │  [± 1] °C                           │
-│  Range: 1 - 3                       │
+│  Range: 1 - 5                       │
 │                                     │
 ├─────────────────────────────────────┤
 │                                     │
 │  Humidity Control                   │
 │  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━    │
 │                                     │
-│  Target Humidity                    │
-│  [70] %                             │
-│  Range: 40 - 90                     │
+│  Humidity control                   │
+│  [ Enabled ▼ ]  (Enabled / Disabled)│
 │                                     │
-│  Maximum Humidity                   │
+│  Day — Minimum                      │
+│  [50] %                             │
+│                                     │
+│  Day — Maximum                      │
 │  [85] %                             │
-│  Range: 60 - 95                     │
 │                                     │
-│  Dehumidify Action                  │
-│  [✓] Enable ventilation             │
+│  Night — Minimum                    │
+│  [45] %                             │
+│                                     │
+│  Night — Maximum                    │
+│  [90] %                             │
+│                                     │
+│  Deadband (Hysteresis)              │
+│  [± 5] %                            │
+│  Range: 1 - 10                      │
+│                                     │
+├─────────────────────────────────────┤
+│                                     │
+│  Conflict Resolution                │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━    │
+│                                     │
+│  Priority when T and RH conflict    │
+│  [Temperature first ▼]              │
+│  Options: Temperature first         │
+│           Humidity first            │
+│           Auto (deviation-based)    │
 │                                     │
 ├─────────────────────────────────────┤
 │                                     │
@@ -434,16 +463,20 @@ When a technician accesses Climate Control, the same page is displayed but:
 │  Temperature Control                │
 │  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━    │
 │                                     │
-│  Day Setpoint: 22 °C                │
-│  Night Setpoint: 18 °C              │
+│  Day Min: 15°C   Day Max: 28°C      │
+│  Night Min: 10°C Night Max: 20°C    │
 │  Deadband: ± 1 °C                   │
 │                                     │
 │  Humidity Control                   │
 │  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━    │
 │                                     │
-│  Target Humidity: 70%               │
-│  Maximum Humidity: 85%              │
-│  Dehumidify: Ventilation enabled    │
+│  Humidity control: Enabled          │
+│  Day Min: 50%   Day Max: 85%        │
+│  Night Min: 45% Night Max: 90%      │
+│  Deadband: ± 5%                     │
+│                                     │
+│  Conflict Resolution                │
+│  Priority: Temperature first        │
 │                                     │
 │  Last modified: 2024-04-15 14:23    │
 │  Modified by: Farmer                │
@@ -453,54 +486,54 @@ When a technician accesses Climate Control, the same page is displayed but:
 └─────────────────────────────────────┘
 ```
 
-### 5.2 Schedules (Farmer)
+### 5.2 Day/Night Transition (Farmer)
+
+**Purpose**: View computed sunrise/sunset times and configure the geographic location used for the calculation. Day/night transitions are always determined automatically from location and date — no fixed time override is available.
+**Access**: Farmer (and technician, read-only)
 
 ```
 ┌─────────────────────────────────────┐
-│ ☰ Menu    Schedules           👤 F │
+│ ☰ Menu  Day/Night Transition  👤 F │
 ├─────────────────────────────────────┤
 │                                     │
-│  Day/Night Cycle                    │
+│  Current Period                     │
 │  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━    │
+│  🌤 Day  (until 20:47)              │
 │                                     │
-│  Day Start Time                     │
-│  ● Sunrise (auto)                   │
-│  ○ Fixed: [06:00]                   │
-│                                     │
-│  Night Start Time                   │
-│  ● Sunset (auto)                    │
-│  ○ Fixed: [20:00]                   │
-│                                     │
-│  Current: Day (until 18:34)         │
+│  Today's calculated times:          │
+│  Sunrise:  05:13                    │
+│  Sunset:   20:47                    │
+│  Date:     2026-04-18               │
 │                                     │
 ├─────────────────────────────────────┤
 │                                     │
-│  Climate Profiles                   │
+│  Location                           │
 │  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━    │
+│  ℹ️ Sunrise and sunset are          │
+│  calculated from this location.     │
 │                                     │
-│  Standard Profile                   │
-│  Temp: 22°C Day / 18°C Night        │
-│  Humidity: 70%                      │
-│  [Edit]                             │
+│  Latitude                           │
+│  [52.0907] °N                       │
+│  Range: -90.000 to +90.000          │
 │                                     │
-│  Weekend Profile                    │
-│  Temp: 20°C Day / 16°C Night        │
-│  Humidity: 65%                      │
-│  [Edit]                             │
+│  Longitude                          │
+│  [5.1214] °E                        │
+│  Range: -180.000 to +180.000        │
 │                                     │
-│  [+ Create New Profile]             │
+│  ℹ️ Positive = North/East           │
+│     Negative = South/West           │
 │                                     │
 ├─────────────────────────────────────┤
 │                                     │
 │  Validation Status                  │
 │  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━    │
-│  ✅ Schedule valid                  │
+│  ✅ Location valid                  │
 │                                     │
 │         [   Apply   ]               │
 │                                     │
 │       [   ✓ Commit   ]              │
 ├─────────────────────────────────────┤
-│  ✅ Schedule valid - ready to apply │
+│  ✅ Input validated successfully    │
 └─────────────────────────────────────┘
 ```
 
@@ -647,7 +680,55 @@ There is ongoing discussion about whether alarm functionality is relevant for th
 └─────────────────────────────────────┘
 ```
 
-### 5.4 System Settings (Technician Only)
+### 5.4 Wind Protection Settings (Farmer & Technician)
+
+Wind protection can be enabled or disabled by either the farmer or the technician. The two-step Apply → Commit workflow applies. Every change is logged with a timestamp and the operator's identity. A banner warning is shown on all pages when wind protection is disabled.
+
+```
+┌─────────────────────────────────────┐
+│ ☰ Menu   Wind Protection      👤 F │
+├─────────────────────────────────────┤
+│                                     │
+│  ⚠️ WARNING: Disabling wind         │
+│  protection allows windows to stay  │
+│  open in high winds.                │
+│                                     │
+├─────────────────────────────────────┤
+│                                     │
+│  Wind Protection                    │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━    │
+│                                     │
+│  Status: [ Enabled ▼ ]              │
+│  Options: Enabled / Disabled        │
+│                                     │
+│  (Accessible to: Farmer, Technician)│
+│  (Change is logged with identity)   │
+│                                     │
+├─────────────────────────────────────┤
+│                                     │
+│  Validation Status                  │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━    │
+│  ✅ Ready                           │
+│                                     │
+│         [   Apply   ]               │
+│                                     │
+│       [   ✓ Commit   ]              │
+├─────────────────────────────────────┤
+│  ✅ Input validated successfully    │
+└─────────────────────────────────────┘
+```
+
+**Dashboard Warning Banner** (shown to all roles when wind protection is disabled):
+```
+┌─────────────────────────────────────┐
+│ ⚠️ WIND PROTECTION IS DISABLED      │
+│    Windows will not close on high   │
+│    wind. Enable via Wind Protection  │
+│    settings to restore safety.      │
+└─────────────────────────────────────┘
+```
+
+### 5.5 System Settings (Technician Only)
 
 ```
 ┌─────────────────────────────────────┐
@@ -717,7 +798,7 @@ There is ongoing discussion about whether alarm functionality is relevant for th
 │                                     │
 ├─────────────────────────────────────┤
 │                                     │
-│  Time & Location                    │
+│  Time & NTP                         │
 │  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━    │
 │                                     │
 │  Time Zone                          │
@@ -728,9 +809,10 @@ There is ongoing discussion about whether alarm functionality is relevant for th
 │  Server: [pool.ntp.org]             │
 │  Last Sync: 2024-04-16 12:34        │
 │                                     │
-│  Location (for sunrise/sunset)      │
-│  Latitude:  [52.0907] °N            │
-│  Longitude: [5.1214] °E             │
+│  ℹ️ Geographic location for          │
+│  sunrise/sunset is configured       │
+│  by the farmer in Day/Night         │
+│  Transition settings.               │
 │                                     │
 ├─────────────────────────────────────┤
 │                                     │
@@ -783,6 +865,46 @@ There is ongoing discussion about whether alarm functionality is relevant for th
 │                                     │
 │  [Change Farmer PIN]                │
 │  [Change Technician PIN]            │
+│                                     │
+├─────────────────────────────────────┤
+│                                     │
+│  Sensor Settings                    │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━    │
+│                                     │
+│  Poll Interval                      │
+│  [60] s                             │
+│  Range: 150 - 3600 s                │
+│  ℹ️ Time between sensor reads       │
+│     Default: 60 s (factory)         │
+│                                     │
+│  Temp. sliding average window       │
+│  [1] min                            │
+│  Range: 1 - 60 min                  │
+│  ℹ️ 1 min = no smoothing (default)  │
+│                                     │
+│  Humidity sliding average window    │
+│  [1] min                            │
+│  Range: 1 - 60 min                  │
+│                                     │
+├─────────────────────────────────────┤
+│                                     │
+│  Window Dwell Times                 │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━    │
+│  ℹ️ Minimum time a window must      │
+│  stay at end position before next   │
+│  command is accepted.               │
+│                                     │
+│  M1 (South roof)                    │
+│  Open dwell:  [10] min              │
+│  Close dwell: [10] min              │
+│                                     │
+│  M2 (North roof)                    │
+│  Open dwell:  [10] min              │
+│  Close dwell: [10] min              │
+│                                     │
+│  M3 (North side wall)               │
+│  Open dwell:  [10] min              │
+│  Close dwell: [10] min              │
 │                                     │
 ├─────────────────────────────────────┤
 │                                     │
@@ -953,7 +1075,7 @@ There is ongoing discussion about whether alarm functionality is relevant for th
 
 ```
 ┌─────────────────────────────────────┐
-│ ← Back    WiFi Networks       👤 T │
+│ ← Back    WiFi Networks       👤 T  │
 ├─────────────────────────────────────┤
 │                                     │
 │  Scanning for networks...           │
@@ -1244,7 +1366,7 @@ After clicking [Connect]:
 
 ---
 
-### 5.5 Account Settings (Farmer & Technician)
+### 5.6 Account Settings (Farmer & Technician)
 
 **Purpose**: User account management - change own PIN
 **Access**: Both Farmer and Technician roles
