@@ -9,11 +9,12 @@
 	(paper "A4")
 	(title_block
 		(title "PCB Kas-controller Wenumseveld")
-		(date "2026-04-15")
+		(date "2026-04-24")
 		(rev "Remko Welling")
 		(company "RFSee")
 		(comment 1 "remko@rfsee.nl")
 		(comment 2 "https://www.rfsee.nl")
+		(comment 3 "V 1.0.0")
 	)
 	(layers
 		(0 "F.Cu" signal)
@@ -294,7 +295,7 @@
 			)
 		)
 		(property "Value" "SIT65HVD08P"
-			(at 3.81 9.95 90)
+			(at -2.54 3.81 180)
 			(layer "F.Fab")
 			(uuid "6e4268ac-eb43-45d0-9f26-270b11a44c92")
 			(effects
@@ -1881,8 +1882,8 @@
 				)
 			)
 		)
-		(property "Value" "LED Amber"
-			(at 0 1.65 0)
+		(property "Value" "Green"
+			(at 0.635 1.65 0)
 			(layer "F.Fab")
 			(uuid "a86b4ed6-f4d6-4c64-b232-b1525f32b0fa")
 			(effects
@@ -3098,7 +3099,7 @@
 			)
 		)
 		(property "Value" "Keypad"
-			(at 0 20.16 90)
+			(at 0 22.86 180)
 			(layer "F.Fab")
 			(uuid "426f9e6b-2ef8-45c4-8e48-49aa8d539fab")
 			(effects
@@ -3752,7 +3753,7 @@
 			)
 		)
 		(property "Value" "120"
-			(at 0 1.83 0)
+			(at -4.165 0 0)
 			(layer "F.Fab")
 			(uuid "0f707bc6-59ff-4e11-893f-7bc2befbd344")
 			(effects
@@ -4646,7 +4647,7 @@
 			)
 		)
 		(property "Value" "20K"
-			(at 0 1.83 90)
+			(at 2.54 0 180)
 			(layer "F.Fab")
 			(uuid "a5ea642e-12b6-4338-ad3a-6d9a36193926")
 			(effects
@@ -7992,7 +7993,7 @@
 			)
 		)
 		(property "Value" "AC-Mains"
-			(at 5 5.72 0)
+			(at 5 9.271 0)
 			(layer "F.Fab")
 			(uuid "1b85ecf3-1462-4a38-9b26-be24808b1f29")
 			(effects
@@ -8309,7 +8310,7 @@
 			(uuid "a477b05a-131a-421f-beba-33c9546a7079")
 		)
 		(fp_text user "${REFERENCE}"
-			(at 5 3.2 0)
+			(at -0.619143 6.731 0)
 			(layer "F.Fab")
 			(uuid "c7412b0b-ad62-46a3-9ac9-f611b93aa364")
 			(effects
@@ -8732,7 +8733,7 @@
 			)
 		)
 		(property "Value" "20K"
-			(at 0 1.83 90)
+			(at -2.54 0 180)
 			(layer "F.Fab")
 			(uuid "01f2643e-66e8-4ead-9d00-347fec76aaab")
 			(effects
@@ -8874,7 +8875,7 @@
 			)
 		)
 		(property "Value" "Load enable"
-			(at -2.54 4.419 180)
+			(at -2.54 0.355 0)
 			(layer "F.Fab")
 			(uuid "68c49df8-8fad-4a5d-a304-62c5513a0289")
 			(effects
@@ -9099,7 +9100,7 @@
 			)
 		)
 		(property "Value" "MODBUS RS485 FG6485A"
-			(at 7.5 5.72 0)
+			(at 7.5 9.271 0)
 			(layer "F.Fab")
 			(uuid "05b558b9-f250-4a43-b2be-9c62bd579c35")
 			(effects
@@ -9447,7 +9448,7 @@
 			(uuid "fa044c5c-a643-4146-b1e1-7653d6c461a9")
 		)
 		(fp_text user "${REFERENCE}"
-			(at 7.5 3.2 0)
+			(at -0.650857 6.731 0)
 			(layer "F.Fab")
 			(uuid "e9175813-491c-46e9-843b-a966229a58d4")
 			(effects
@@ -11031,7 +11032,7 @@
 			)
 		)
 		(property "Value" "Motor 1"
-			(at 7.5 5.72 0)
+			(at 7.5 9.271 0)
 			(layer "F.Fab")
 			(uuid "ee74c3b0-ff1e-4477-92b7-cb60f24cdba4")
 			(effects
@@ -11379,7 +11380,7 @@
 			(uuid "ce688b92-dc40-4b9b-bd75-de37794a0ee4")
 		)
 		(fp_text user "${REFERENCE}"
-			(at 7.5 3.2 0)
+			(at -0.853429 6.731 0)
 			(layer "F.Fab")
 			(uuid "06ab7382-029e-46b6-8786-a62f9746496d")
 			(effects
@@ -13144,7 +13145,7 @@
 			)
 		)
 		(property "Value" "Motor 2"
-			(at 7.5 5.72 0)
+			(at 7.5 9.271 0)
 			(layer "F.Fab")
 			(uuid "dba665c4-5953-4162-9890-34d9d9255c04")
 			(effects
@@ -13492,7 +13493,7 @@
 			(uuid "f6fd931d-0da5-4185-b84f-879b02f31b09")
 		)
 		(fp_text user "${REFERENCE}"
-			(at 7.5 3.2 0)
+			(at -0.362572 6.731 0)
 			(layer "F.Fab")
 			(uuid "befb9719-d58f-411d-b784-187996649a1c")
 			(effects
@@ -14975,7 +14976,7 @@
 			)
 		)
 		(property "Value" "ALARM contact"
-			(at 2.5 5.72 0)
+			(at 2.625714 9.271 0)
 			(layer "F.Fab")
 			(uuid "f2524c05-4de2-4360-a7b5-6af547beb6db")
 			(effects
@@ -15261,7 +15262,7 @@
 			(uuid "da25dcd8-7ae3-4828-95a2-b4f0f2d20ba3")
 		)
 		(fp_text user "${REFERENCE}"
-			(at 2.5 3.2 0)
+			(at -1.184286 6.731 0)
 			(layer "F.Fab")
 			(uuid "cb0d2012-567b-4aa3-a14e-85fbc7ab9787")
 			(effects
@@ -15325,7 +15326,7 @@
 			)
 		)
 		(property "Value" "Motor 3"
-			(at 7.5 5.72 0)
+			(at 7.5 9.271 0)
 			(layer "F.Fab")
 			(uuid "7385b046-95f5-4100-83a2-1f15f4f6efe9")
 			(effects
@@ -15673,7 +15674,7 @@
 			(uuid "e7d5998e-e1eb-4184-81a4-29f28aa6a42c")
 		)
 		(fp_text user "${REFERENCE}"
-			(at 7.5 3.2 0)
+			(at 0.128285 6.731 0)
 			(layer "F.Fab")
 			(uuid "51ba7b6f-9ebc-4632-91cd-1d53eb378579")
 			(effects
@@ -16451,7 +16452,7 @@
 			)
 		)
 		(property "Value" "MODBUS RS485 S200"
-			(at 17.5 5.72 0)
+			(at 17.5 9.271 0)
 			(layer "F.Fab")
 			(uuid "ed1ec3c6-48b5-43fc-8a7c-e5f69d33ec4c")
 			(effects
@@ -16923,7 +16924,7 @@
 			(uuid "c362b249-9ddc-414e-b152-5dfbf791c764")
 		)
 		(fp_text user "${REFERENCE}"
-			(at 17.5 3.2 0)
+			(at -1.43 6.731 0)
 			(layer "F.Fab")
 			(uuid "95c03ecb-8517-41bf-8e43-8ebca8ff89ab")
 			(effects
@@ -17687,7 +17688,7 @@
 			)
 		)
 		(property "Value" "100n"
-			(at 0 -1.905 90)
+			(at 3.175 0 0)
 			(layer "F.Fab")
 			(uuid "43cf2375-bf4b-43e1-8b49-898dadfb3277")
 			(effects
@@ -18981,7 +18982,7 @@
 			)
 		)
 		(property "Value" "24V in"
-			(at 2.5 5.72 0)
+			(at 2.5 9.271 0)
 			(layer "F.Fab")
 			(uuid "5108c512-822a-4aab-96dc-be1639571b3c")
 			(effects
@@ -19267,7 +19268,7 @@
 			(uuid "2fc237ab-bf0d-44ad-8162-8a1c98a8b45b")
 		)
 		(fp_text user "${REFERENCE}"
-			(at 2.5 3.2 0)
+			(at -1.478286 6.731 0)
 			(layer "F.Fab")
 			(uuid "f83c82b6-4ae4-4271-982a-189633947830")
 			(effects
