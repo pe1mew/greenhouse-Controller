@@ -102,11 +102,11 @@
           ""
         ],
         [
-          "silk_over_copper|60955000|106170000|04fbf182-8491-416e-92b0-f2b8a7feb81b|03ee9217-bbcd-49dc-b92e-05431f8df7f0",
+          "silk_over_copper|57455000|102670000|04fbf182-8491-416e-92b0-f2b8a7feb81b|03ee9217-bbcd-49dc-b92e-05431f8df7f0",
           ""
         ],
         [
-          "silk_over_copper|60955000|74170000|04fbf182-8491-416e-92b0-f2b8a7feb81b|31b6b93f-32eb-4488-a6f5-d752965c3f02",
+          "silk_over_copper|57455000|77670000|04fbf182-8491-416e-92b0-f2b8a7feb81b|31b6b93f-32eb-4488-a6f5-d752965c3f02",
           ""
         ],
         [
@@ -179,10 +179,6 @@
         ],
         [
           "silk_overlap|93255000|106170000|04fbf182-8491-416e-92b0-f2b8a7feb81b|9ce4ab15-7c96-4827-82b7-2f2bb6922528",
-          ""
-        ],
-        [
-          "starved_thermal|152344987|91875013|bc6f110e-7113-4f40-9f20-52675616fd1a|d1544343-3c1c-4c7b-93ca-a8edf5eb27e2|F.Cu",
           ""
         ]
       ],
