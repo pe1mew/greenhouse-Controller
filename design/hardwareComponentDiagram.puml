@@ -1,0 +1,201 @@
+@startuml hardwareComponentDiagram
+' ============================================================
+' Greenhouse Ventilation Controller
+' Hardware Component Diagram
+' Source: technicalHardwareDesignSpecification.md v0.3
+' ============================================================
+
+title Greenhouse Ventilation Controller\nHardware Component Diagram
+
+skinparam componentStyle rectangle
+skinparam defaultTextAlignment center
+skinparam component {
+  BackgroundColor #FEFEFE
+  BorderColor #444444
+  FontSize 11
+}
+skinparam package {
+  BackgroundColor #F0F4FF
+  BorderColor #5566AA
+  FontStyle bold
+}
+skinparam interface {
+  BackgroundColor #FFFBE6
+  BorderColor #AA8800
+}
+skinparam arrow {
+  Color #333333
+  FontSize 9
+}
+skinparam note {
+  BackgroundColor #FFFFF0
+  BorderColor #AAAAAA
+  FontSize 9
+}
+
+' ============================================================
+' External supply
+' ============================================================
+component "Mains Supply\n230 VAC / 50 Hz" as MAINS <<external>>
+
+' ============================================================
+' Power Subsystem
+' ============================================================
+package "Power Subsystem" {
+  component "AC-DC PSU\n230 VAC → 24 VDC\n(HiLink or equivalent)" as PSU
+  component "DC-DC Buck\n24 VDC → 5 VDC\n(buffer cap ≥ 1 s hold-up)" as BUCK
+}
+
+component "PWR LED\n(green)\n5 V via ~1 kΩ · ~5 mA\n[no MCU GPIO]" as PWRLED
+
+' ============================================================
+' Microcontroller
+' ============================================================
+component "**WEMOS LOLIN S3**\n(ESP32-S3)\n16 MB Flash (QSPI) · 8 MB PSRAM (Octal)\nDual-core LX7 @ 240 MHz\nWiFi 802.11 b/g/n · BLE 5.0\n3.3 V I/O (on-board LDO from 5 V)" as MCU
+
+' ============================================================
+' RS-485 / Modbus Subsystem
+' ============================================================
+package "Modbus RS485 Bus" {
+  component "SIT65HVD08P\nRS485 Half-Duplex Transceiver\n3.3 V supply · 3.3 V logic\n8-pin DIP/SOIC" as XCVR
+}
+
+' ============================================================
+' Sensors  (external — on RS485 cable)
+' ============================================================
+component "**Seeed SenseCAP S200**\nWind Speed + Direction\nUltrasonic · Modbus RTU\naddr 1 · 24 VDC supply" as WIND <<external>>
+
+component "**FG6485A**\nTemperature + Humidity\nModbus RTU\naddr 2 · 24 VDC supply" as TH <<external>>
+
+' ============================================================
+' Local User Interface
+' ============================================================
+package "Local User Interface" {
+  component "4×4 Membrane Keypad\n(16 keys, matrix scan)" as KPD
+  component "Waveshare LCD1602 I2C\nPCF8574 I/O expander · addr 0x27\n16 chars × 2 lines\n(A0-A2 jumpers configurable)" as LCD
+}
+
+' ============================================================
+' Timekeeping
+' ============================================================
+component "**DS1307 RTC Module**\nExternal 32.768 kHz crystal · ±20 ppm\nI2C addr 0x68\nCR2032 battery backup" as RTC
+
+' ============================================================
+' Motor Control Interface
+' ============================================================
+package "Motor Control Interface" {
+  component "6-Channel Relay Board\n5 VDC coil · opto-isolated input\nActive-low trigger\nContact rating ≥ 0.5 A / 30 VDC" as RELAYS
+  component "Opto-Coupler Input\n24 VDC → 3.3 V isolation\n(RRK-3 alarm/feedback)" as OPTO
+}
+
+' ============================================================
+' External Motor Controller
+' ============================================================
+component "**Hotraco RRK-3**\n3-Channel Window Relay Box\n24 VDC sturing input\n(OPEN / CLOSE per channel)" as RRK3 <<external>>
+
+' ============================================================
+' Status LEDs
+' ============================================================
+package "Status LEDs (PCB-mounted)" {
+  component "HB LED\n(amber) · GPIO 41\n560 Ω series · ~2 mA at 3.3 V\n[see blink-pattern table]" as HBLED
+  component "Relay Activity LEDs ×6\n(amber) · shared relay GPIO\n~1 kΩ series · ~3 mA at 5 V\n[lit = relay energised]" as RLEDS
+}
+
+' ============================================================
+' Optional SD Card
+' ============================================================
+component "SD Card Slot\n(optional)\nSPI mode · FAT32\nExtended log retention" as SDCARD
+
+' ============================================================
+' Connectivity (internal to MCU)
+' ============================================================
+component "WiFi 802.11 b/g/n\n(internal ESP32-S3 radio)\nAP mode · Station mode · MQTT" as WIFI
+
+component "USB 2.0 Full-Speed OTG\n(native, no external chip)\nOTA firmware update\nSerial debug console" as USB
+
+' ============================================================
+' Interfaces (connections with protocol / signal labels)
+' ============================================================
+
+' --- Power chain ---
+MAINS -down-> PSU           : "230 VAC / 50 Hz\n(fused)"
+PSU   -down-> BUCK          : "24 VDC"
+PSU   -right-> PWRLED       : "5 VDC via ~1 kΩ\n[hardware only]"
+BUCK  -down-> MCU           : "5 VDC\n→ on-board LDO → 3.3 V"
+BUCK  -right-> RELAYS       : "5 VDC\n(relay coil supply)"
+PSU   -right-> RELAYS       : "24 VDC\n(contact switching rail)"
+PSU   -right-> WIND         : "24 VDC\n(sensor supply)"
+PSU   -right-> TH           : "24 VDC\n(sensor supply)"
+
+' --- RS-485 / Modbus ---
+MCU   -right-> XCVR         : "UART1 TX → GPIO 17 → DI\nUART1 RX → GPIO 18 ← RO\nDE/RE dir → GPIO 8\n[3.3 V TTL]"
+XCVR  -right-> WIND         : "RS485 A/B differential\nModbus RTU · 9600-8N1\naddr 1"
+XCVR  -right-> TH           : "RS485 A/B differential\nModbus RTU · 9600-8N1\naddr 2"
+
+note bottom of XCVR
+  Half-duplex bus.
+  DE and RE pins tied together.
+  HIGH = transmit, LOW = receive.
+  Max cable length: 1200 m.
+end note
+
+' --- I²C bus (shared) ---
+MCU   -down-> LCD           : "I2C0  SDA: GPIO 1 · SCL: GPIO 2\naddr 0x27"
+MCU   -down-> RTC           : "I2C0  SDA: GPIO 1 · SCL: GPIO 2\naddr 0x68  [shared bus]"
+
+' --- Keypad (matrix scan) ---
+KPD   -up-> MCU             : "GPIO matrix scan\nROW 1-4 out: GPIO 3,4,5,6  (drive-low)\nCOL 1-4 in:  GPIO 7,9,10,11  (pull-up)"
+
+' --- Relay outputs ---
+MCU   -down-> RELAYS        : "6× GPIO output (active-low)\nM1-OPEN:  GPIO 12\nM1-CLOSE: GPIO 13\nM2-OPEN:  GPIO 14\nM2-CLOSE: GPIO 15\nM3-OPEN:  GPIO 16\nM3-CLOSE: GPIO 21"
+RELAYS -right-> RRK3        : "6× volt-free contacts\n24 VDC switched\nOPEN + CLOSE × M1, M2, M3"
+RELAYS -down-> RLEDS        : "Shared relay GPIO drive lines\n(parallel LED + 1 kΩ to GND)"
+
+note right of RELAYS
+  Safety constraint: firmware must
+  never simultaneously energise
+  OPEN and CLOSE of the same channel.
+end note
+
+' --- Feedback input ---
+RRK3  -down-> OPTO          : "24 VDC alarm/feedback\n(RRK-3 alarm relay output)"
+OPTO  -left-> MCU           : "GPIO 42 input\n3.3 V logic\n[active level TBD — Open Issue #1]"
+
+' --- HB LED ---
+MCU   -right-> HBLED        : "GPIO 41 output\n560 Ω series resistor"
+
+' --- SD card (optional) ---
+MCU   -down-> SDCARD        : "SPI2  [optional]\nMOSI: GPIO 47\nMISO: GPIO 48\nCLK:  GPIO 39\nCS:   GPIO 40"
+
+' --- USB ---
+MCU   -right-> USB          : "Native USB D− / D+\nGPIO 19 / GPIO 20\n[reserved]"
+
+' --- WiFi ---
+MCU   -up-> WIFI            : "Internal radio\n[no GPIO]"
+
+' ============================================================
+' GPIO summary note
+' ============================================================
+note as GPIONOTE
+  **GPIO usage summary (LOLIN S3)**
+  ──────────────────────────────────
+  GPIO 1–2      I²C SDA / SCL
+  GPIO 3–6      Keypad rows (output)
+  GPIO 7,9–11   Keypad cols (input, pull-up)
+  GPIO 8        RS485 DE/RE direction
+  GPIO 12–16    Relay M1-OPEN…M3-OPEN
+  GPIO 17–18    UART1 RS485 TX / RX
+  GPIO 21       Relay M3-CLOSE
+  GPIO 39–40    SD CLK / CS  (optional)
+  GPIO 41       HB LED (output)
+  GPIO 42       RRK-3 feedback (input)
+  GPIO 47–48    SD MOSI / MISO  (optional)
+  GPIO 19,20    USB D−/D+ (reserved)
+  GPIO 43,44    UART0 debug console (reserved)
+  ──────────────────────────────────
+  Mandatory: 21 GPIOs used
+  With SD card: 25 GPIOs used
+  Available headroom: ≥ 20 GPIOs
+end note
+
+@enduml

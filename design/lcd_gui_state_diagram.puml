@@ -1,0 +1,148 @@
+@startuml lcd_gui_state_diagram
+title LCD GUI — Overview\n(16×2 LCD + 4×4 Keypad)
+
+[*] --> PIN_ENTRY : Power On
+
+state PIN_ENTRY {
+  [*] --> AwaitingPIN
+  AwaitingPIN --> PINInProgress   : digit (0–9)
+  PINInProgress --> PINInProgress : digit (0–9)
+  PINInProgress --> AwaitingPIN   : D (BACK)
+  PINInProgress --> ValidatingPIN : C or # (6 digits)
+  ValidatingPIN --> FARMER_MENU   : valid Farmer PIN
+  ValidatingPIN --> TECH_MENU     : valid Technician PIN
+  ValidatingPIN --> WrongPIN      : invalid (attempt 1–2)
+  ValidatingPIN --> PIN_LOCKED    : invalid (attempt 3)
+  WrongPIN --> AwaitingPIN        : 2 s
+}
+
+PIN_ENTRY --> IDLE_AUTO_ROTATE : B/▼ (guest)\nor 60 s timeout
+
+state PIN_LOCKED {
+  [*] --> Locked : 5 min countdown
+}
+PIN_LOCKED --> PIN_ENTRY : 5 min expired
+
+state ALARM_DISPLAY {
+  [*] --> ShowingAlarm : flashing backlight
+  ShowingAlarm --> [*] : any key (acknowledge)
+}
+ALARM_DISPLAY --> IDLE_AUTO_ROTATE : acknowledged
+
+state IDLE_AUTO_ROTATE {
+  [*] --> S2_SystemStatus
+  S2_SystemStatus   --> S3_RoofVent       : 5 s
+  S3_RoofVent       --> S4_SideVent       : 5 s
+  S4_SideVent       --> S5_DaySetpoints   : 5 s
+  S5_DaySetpoints   --> S6_NightSetpoints : 5 s
+  S6_NightSetpoints --> S7_WiFiStatus     : 5 s
+  S7_WiFiStatus     --> S8_Alarms         : 5 s [alarms active]
+  S7_WiFiStatus     --> S2_SystemStatus   : 5 s [no alarms]
+  S8_Alarms         --> S2_SystemStatus   : 3 s per alarm
+}
+
+IDLE_AUTO_ROTATE --> IDLE_MANUAL_NAV : A/▲ or B/▼
+IDLE_AUTO_ROTATE --> PIN_ENTRY       : # (login)
+IDLE_AUTO_ROTATE --> ALARM_DISPLAY  : critical alarm
+
+state IDLE_MANUAL_NAV {
+  [*] --> ManualScreen
+  ManualScreen --> ManualScreen : A/▲ or B/▼
+}
+
+IDLE_MANUAL_NAV --> IDLE_AUTO_ROTATE : * (CLR) or 30 s timeout
+IDLE_MANUAL_NAV --> PIN_ENTRY        : # (login)
+IDLE_MANUAL_NAV --> ALARM_DISPLAY   : critical alarm
+
+state FARMER_MENU {
+  [*]          --> FM_DayTemp
+  FM_DayTemp    --> FM_NightTemp   : B/▼
+  FM_NightTemp  --> FM_DayHumid   : B/▼
+  FM_DayHumid   --> FM_NightHumid : B/▼
+  FM_NightHumid --> FM_ChangePIN  : B/▼
+  FM_ChangePIN  --> FM_Logout     : B/▼
+  FM_Logout     --> FM_DayTemp    : B/▼ (wrap)
+  FM_NightTemp  --> FM_DayTemp    : A/▲
+  FM_DayHumid   --> FM_NightTemp  : A/▲
+  FM_NightHumid --> FM_DayHumid   : A/▲
+  FM_ChangePIN  --> FM_NightHumid : A/▲
+  FM_Logout     --> FM_ChangePIN  : A/▲
+  FM_DayTemp    --> FM_Logout     : A/▲ (wrap)
+}
+
+FARMER_MENU --> FARMER_EDIT      : C or # (select)
+FARMER_MENU --> IDLE_AUTO_ROTATE : * (CLR) or Logout confirmed
+FARMER_MENU --> PIN_ENTRY        : 120 s timeout (auto-logout)
+FARMER_MENU --> ALARM_DISPLAY   : critical alarm
+
+state FARMER_EDIT {
+  [*] --> FE_Editing
+  FE_Editing  --> FE_Editing   : A/▲ (inc) / B/▼ (dec)
+  FE_Editing  --> FE_OutRange  : C or # [out of range]
+  FE_Editing  --> FE_SavedOK   : C or # [valid]
+  FE_OutRange --> FE_Editing   : 2 s
+  FE_SavedOK  --> [*]          : 1 s
+
+  FE_EnterNew    --> FE_ConfirmNew  : C or # (6 digits)
+  FE_ConfirmNew  --> FE_PINOk      : PINs match
+  FE_ConfirmNew  --> FE_PINMismatch: PINs differ
+  FE_PINMismatch --> FE_EnterNew   : 2 s
+  FE_PINOk       --> [*]           : 1 s
+}
+
+FARMER_EDIT --> FARMER_MENU : D (cancel)\nor 60 s timeout\nor confirm done
+
+state TECH_MENU {
+  [*]           --> TM_ViewFarmer
+  TM_ViewFarmer --> TM_WiFiAP    : B/▼
+  TM_WiFiAP     --> TM_ChangePIN : B/▼
+  TM_ChangePIN  --> TM_Logout    : B/▼
+  TM_Logout     --> TM_ViewFarmer: B/▼ (wrap)
+  TM_WiFiAP     --> TM_ViewFarmer: A/▲
+  TM_ChangePIN  --> TM_WiFiAP   : A/▲
+  TM_Logout     --> TM_ChangePIN : A/▲
+  TM_ViewFarmer --> TM_Logout    : A/▲ (wrap)
+}
+
+TECH_MENU --> TECH_EDIT         : C or # (select)
+TECH_MENU --> IDLE_AUTO_ROTATE  : * (CLR) or Logout confirmed
+TECH_MENU --> PIN_ENTRY         : 120 s timeout (auto-logout)
+TECH_MENU --> ALARM_DISPLAY    : critical alarm
+
+state TECH_EDIT {
+  [*] --> TE_Toggling
+  TE_Toggling --> TE_Toggling : A/▲ or B/▼ (toggle)
+  TE_Toggling --> TE_SavedOK  : C or # (confirm)
+  TE_SavedOK  --> [*]         : 1 s
+
+  TE_EnterNew    --> TE_ConfirmNew  : C or # (6 digits)
+  TE_ConfirmNew  --> TE_PINOk      : PINs match
+  TE_ConfirmNew  --> TE_PINMismatch: PINs differ
+  TE_PINMismatch --> TE_EnterNew   : 2 s
+  TE_PINOk       --> [*]           : 1 s
+}
+
+TECH_EDIT --> TECH_MENU : D (cancel)\nor 60 s timeout\nor confirm done
+
+note top of PIN_LOCKED
+  Priority (highest → lowest):
+  1. PIN_LOCKED
+  2. ALARM_DISPLAY
+  3. FARMER/TECH menus
+  4. IDLE_MANUAL_NAV
+  5. IDLE_AUTO_ROTATE
+
+  Critical alarms (interrupt):
+  SENSOR FAIL, POWER FAIL, WIND ALARM
+
+  Non-critical (rotation only):
+  HIGH/LOW TEMP, HIGH/LOW HUM,
+  WIND PROT OFF, HUM CTRL OFF
+end note
+
+note bottom of IDLE_AUTO_ROTATE
+  Backlight: keypress → full brightness
+  30 s inactivity → dimmed (50%), never off
+end note
+
+@enduml

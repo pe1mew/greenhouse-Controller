@@ -1,0 +1,103 @@
+@startuml web_gui_state_diagram_settings
+title Web GUI — Settings Pages\n(Apply → Commit workflow, PIN change)
+
+' ============================================================
+' Reusable Apply → Commit pattern (shown once for reference)
+' ============================================================
+note as ApplyCommitNote
+  Apply → Commit (used on all editable settings pages):
+  1. User edits field(s)
+  2. [Apply]  – client-side validation
+       OK   → footer: "Changes applied – ready to commit" (green)
+       Fail → footer: error detail (red, persists)
+  3. [Commit] – sends to controller
+       OK   → footer: "Configuration committed" (green, 5 s)
+       Fail → footer: "Commit failed" (red)
+end note
+
+' ============================================================
+' Farmer: Climate Control
+' ============================================================
+state FS_Climate {
+  [*]          --> FC_Viewing
+  FC_Viewing   --> FC_Editing   : user changes field
+  FC_Editing   --> FC_Applied   : [Apply] valid
+  FC_Editing   --> FC_Editing   : [Apply] invalid\n(red footer)
+  FC_Applied   --> FC_Committed : [Commit] OK
+  FC_Applied   --> FC_Editing   : [Commit] failed\n(red footer)
+  FC_Committed --> FC_Viewing   : 5 s
+
+  FC_Viewing  : T day/night min+max\nRH day/night min+max\ndeadband, conflict priority\nApply active, Commit disabled
+  FC_Applied  : Changes pending\nCommit enabled
+}
+
+' ============================================================
+' Farmer: Day/Night Transition
+' ============================================================
+state FS_DayNight {
+  [*]          --> FD_Viewing
+  FD_Viewing   --> FD_Editing   : change lat / lon
+  FD_Editing   --> FD_Applied   : [Apply] valid
+  FD_Editing   --> FD_Editing   : [Apply] invalid
+  FD_Applied   --> FD_Committed : [Commit]
+  FD_Committed --> FD_Viewing   : 5 s
+
+  FD_Viewing : Shows current period\n(Day/Night), sunrise/sunset\nEditable: latitude, longitude
+}
+
+' ============================================================
+' Farmer & Technician: Wind Protection
+' ============================================================
+state WindProt {
+  [*]          --> WP_Viewing
+  WP_Viewing   --> WP_Editing   : toggle Enabled/Disabled
+  WP_Editing   --> WP_Applied   : [Apply]
+  WP_Applied   --> WP_Committed : [Commit]\n(logged with operator identity)
+  WP_Committed --> WP_Viewing   : 5 s
+
+  WP_Viewing : Warning banner shown\non ALL pages while disabled
+}
+
+' ============================================================
+' Farmer & Technician: Alarm Settings
+' ============================================================
+state AlarmSettings {
+  [*]          --> AS_Viewing
+  AS_Viewing   --> AS_Editing   : change threshold / toggle
+  AS_Editing   --> AS_Applied   : [Apply] valid
+  AS_Editing   --> AS_Editing   : [Apply] invalid
+  AS_Applied   --> AS_Committed : [Commit]
+  AS_Committed --> AS_Viewing   : 5 s
+}
+
+' ============================================================
+' Self-service PIN change (Farmer Account / Tech Account)
+' ============================================================
+state SelfServicePIN {
+  [*]              --> SP_Idle
+  SP_Idle          --> SP_EnterCurrent : [Change PIN]
+  SP_EnterCurrent  --> SP_EnterNew     : current PIN correct
+  SP_EnterCurrent  --> SP_Idle         : current PIN wrong\n(red footer)
+  SP_EnterNew      --> SP_Confirm      : 6 digits
+  SP_Confirm       --> SP_Success      : PINs match & valid
+  SP_Confirm       --> SP_EnterNew     : PINs don't match\n(red footer)
+  SP_Success       --> [*]             : auto-logout 3 s\nfooter: "PIN changed – logging out"
+
+  SP_Idle : Shows role, session start\nsession timeout
+}
+
+' ============================================================
+' Technician: System Settings (non-WiFi, non-PIN sections)
+' ============================================================
+state TS_SysSettings {
+  [*]          --> SS_Viewing
+  SS_Viewing   --> SS_Editing   : change field
+  SS_Editing   --> SS_Applied   : [Apply] valid
+  SS_Editing   --> SS_Editing   : [Apply] invalid
+  SS_Applied   --> SS_Committed : [Commit]
+  SS_Committed --> SS_Viewing   : 5 s
+
+  SS_Viewing : Network (WiFi client, AP)\nTime & NTP\nData / logging\nSensor poll & averaging\nWindow dwell times\nSecurity / session timeout\nFirmware version\nFactory reset (danger zone)
+}
+
+@enduml

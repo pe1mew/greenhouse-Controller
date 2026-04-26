@@ -1,0 +1,88 @@
+@startuml web_gui_state_diagram_tech
+title Web GUI — Technician: WiFi Wizard & Admin PIN Management
+
+' ============================================================
+' WiFi Network Change Wizard
+' (Technician > System Settings > [Change Network])
+' ============================================================
+state WIFI_WIZARD {
+  [*]           --> WW_Scanning
+  WW_Scanning   --> WW_Results     : scan complete (5–10 s)
+  WW_Results    --> WW_Password    : tap secured network (locked)
+  WW_Results    --> WW_OpenWarn    : tap open network (unlocked)
+  WW_Results    --> WW_Scanning    : [Scan Again]
+  WW_Password   --> WW_Connecting  : [Connect]
+  WW_OpenWarn   --> WW_Connecting  : [Connect]
+  WW_Connecting --> WW_Success     : connected
+  WW_Connecting --> WW_FailPwd     : wrong password
+  WW_Connecting --> WW_FailNF      : network not found
+  WW_Connecting --> WW_FailTO      : timeout (30 s)
+  WW_FailPwd    --> WW_Password    : [Try Again]
+  WW_FailPwd    --> WW_Results     : [Choose Different Network]
+  WW_FailNF     --> WW_Scanning    : [Scan Again]
+  WW_FailNF     --> WW_Results     : [Choose Different Network]
+  WW_FailTO     --> WW_Password    : [Try Again]
+  WW_FailTO     --> WW_Results     : [Choose Different Network]
+  WW_Success    --> [*]            : 5 s auto-return to\nSystem Settings
+
+  WW_Scanning  : footer: "Scanning..."
+  WW_Results   : Networks sorted by signal\nstrength. Shows lock icon,\ndBm, connected indicator.
+  WW_Password  : Network name + signal shown\nPassword field (masked)\n[Connect] button
+  WW_OpenWarn  : Warning: unencrypted network\n[Connect] / [Cancel]
+  WW_Connecting: footer: "Connecting..."\nOriginal network stays\nactive until success.
+  WW_Success   : Shows IP, gateway, DNS\nfooter: "Connected" (green)
+  WW_FailPwd   : footer: "Wrong password" (red)\n[Try Again] / [Different]
+  WW_FailNF    : footer: "Network not found" (red)\n[Scan Again] / [Different]
+  WW_FailTO    : footer: "Connection timeout" (red)\n[Try Again] / [Different]
+}
+
+WIFI_WIZARD --> SysSettings_View : ← Back (any step)\nor WW_Success done
+
+[*] --> SysSettings_View
+SysSettings_View --> WIFI_WIZARD       : [Change Network]
+SysSettings_View --> ADMIN_FARMER_PIN  : [Change Farmer PIN]
+SysSettings_View --> ADMIN_TECH_PIN    : [Change Technician PIN]
+
+' ============================================================
+' Admin PIN Management — Change Farmer PIN
+' (no current PIN required — administrative function)
+' ============================================================
+state ADMIN_FARMER_PIN {
+  [*]          --> AFP_EnterNew
+  AFP_EnterNew --> AFP_Confirm    : 6 digits entered
+  AFP_Confirm  --> AFP_Success    : PINs match & valid\nMust differ from Tech PIN
+  AFP_Confirm  --> AFP_EnterNew   : PINs don't match\n(red footer)
+  AFP_Success  --> [*]            : footer: "Farmer PIN updated" (green)\nreturns to System Settings
+
+  AFP_EnterNew : New Farmer PIN field\nConfirm field\nNo current PIN required\n(admin privilege)
+}
+
+ADMIN_FARMER_PIN --> SysSettings_View : [Cancel] or done
+
+' ============================================================
+' Admin PIN Management — Change Technician PIN
+' (forces logout on success — changing own PIN)
+' ============================================================
+state ADMIN_TECH_PIN {
+  [*]          --> ATP_EnterNew
+  ATP_EnterNew --> ATP_Confirm    : 6 digits entered
+  ATP_Confirm  --> ATP_Success    : PINs match & valid\nMust differ from Farmer PIN
+  ATP_Confirm  --> ATP_EnterNew   : PINs don't match\n(red footer)
+  ATP_Success  --> [*]            : footer: "PIN updated – logging out"\nauto-logout after 3 s\nmust re-login with new PIN
+
+  ATP_EnterNew : Warning shown:\n"After setting, you will\nbe logged out."
+}
+
+ADMIN_TECH_PIN --> SysSettings_View : [Cancel]
+
+note right of ADMIN_FARMER_PIN
+  Key distinction vs self-service:
+  • No current PIN required
+  • Technician can reset both PINs
+  • Farmer PIN change: no forced logout
+  • Tech PIN change: forced logout (own PIN)
+  • All changes logged with timestamp
+    and technician identity
+end note
+
+@enduml

@@ -1,0 +1,88 @@
+@startuml web_gui_state_diagram_auth
+title Web GUI — Authentication & Session Overview
+
+[*] --> PUBLIC : Browser open
+
+state PUBLIC {
+  [*] --> PUB_Dashboard
+  PUB_Dashboard --> PUB_Status : navigate
+  PUB_Dashboard --> PUB_Logs   : navigate
+  PUB_Status    --> PUB_Logs   : navigate
+  PUB_Logs      --> PUB_Status : navigate
+}
+
+PUBLIC --> LOGIN : Login menu item
+
+state LOGIN {
+  [*]         --> LP_Idle
+  LP_Idle     --> LP_Entering   : first digit
+  LP_Entering --> LP_Entering   : digit (< 6)
+  LP_Entering --> LP_Validating : 6th digit entered
+  LP_Validating --> LP_WrongPIN : invalid (attempt 1–2)
+  LP_WrongPIN --> LP_Idle       : 5 s
+}
+
+LOGIN --> FARMER_SESSION : valid Farmer PIN
+LOGIN --> TECH_SESSION   : valid Technician PIN
+LOGIN --> LOGIN_LOCKED   : invalid (attempt 3)
+LOGIN --> PUBLIC         : "View as guest"
+
+state LOGIN_LOCKED {
+  [*] --> LL_Waiting : footer: "Locked 5 minutes" (red)
+}
+LOGIN_LOCKED --> LOGIN : 5 min expired
+
+state FARMER_SESSION {
+  [*] --> FS_Dashboard
+  FS_Dashboard --> FS_Status      : navigate
+  FS_Dashboard --> FS_Logs        : navigate
+  FS_Dashboard --> FS_Climate     : Settings
+  FS_Dashboard --> FS_DayNight    : Settings
+  FS_Dashboard --> FS_Alarms      : Settings
+  FS_Dashboard --> FS_WindProt    : Settings
+  FS_Dashboard --> FS_Account     : Settings
+
+  FS_Dashboard : Dashboard\n(wind-prot disabled banner\nwhen wind protection off)
+  FS_Climate   : Climate Control\n(Apply → Commit)
+  FS_DayNight  : Day/Night Transition\n(Apply → Commit)
+  FS_Alarms    : Alarm Settings\n(Apply → Commit)
+  FS_WindProt  : Wind Protection\n(Apply → Commit, logged)
+  FS_Account   : Account\n(self-service PIN change)
+}
+
+FARMER_SESSION --> PUBLIC : Logout\nor 30 min timeout
+
+state TECH_SESSION {
+  [*] --> TS_Dashboard
+  TS_Dashboard --> TS_Status      : navigate
+  TS_Dashboard --> TS_Logs        : navigate
+  TS_Dashboard --> TS_Climate     : Settings (view-only)
+  TS_Dashboard --> TS_DayNight    : Settings (view-only)
+  TS_Dashboard --> TS_Alarms      : Settings
+  TS_Dashboard --> TS_WindProt    : Settings
+  TS_Dashboard --> TS_SysSettings : Settings
+  TS_Dashboard --> TS_Diagnostics : Settings
+  TS_Dashboard --> TS_Account     : Settings
+
+  TS_Dashboard    : Dashboard\n(wind-prot disabled banner\nwhen wind protection off)
+  TS_Climate      : Climate Control\n(VIEW ONLY)
+  TS_DayNight     : Day/Night Transition\n(VIEW ONLY)
+  TS_Alarms       : Alarm Settings\n(Apply → Commit)
+  TS_WindProt     : Wind Protection\n(Apply → Commit, logged)
+  TS_SysSettings  : System Settings\n(Apply → Commit\n+ WiFi wizard\n+ Admin PIN mgmt)
+  TS_Diagnostics  : Diagnostics\n(calibration, factory reset)
+  TS_Account      : Account\n(self-service PIN change)
+}
+
+TECH_SESSION --> PUBLIC : Logout\nor 30 min timeout
+TECH_SESSION --> LOGIN  : own PIN changed\n(forced logout)
+
+note right of LOGIN
+  Footer states:
+  Idle (gray)   → "Ready"
+  Error (red)   → "Invalid PIN – try again"
+  Locked (red)  → "Locked for 5 minutes"
+  Success (green) → "Login successful" (5 s)
+end note
+
+@enduml
