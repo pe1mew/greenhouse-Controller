@@ -6,7 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
-## [Unreleased] — 2026-04-15
+## [1.1.0] — 2026-05-01
+
+*PCB v1.1.0 released following first hardware board test; S200 driver completed; design documentation extended.*
+
+### Added
+- `drivers/relay_sequence_test/` — new PlatformIO test project for hardware GPIO verification: sequences all 6 relay outputs (M1/M2/M3 OPEN/CLOSE, GPIO 12–16 and 21), heartbeat LED (GPIO 41), and opto-isolated input (OPTO_INPUT → M1 OPEN follow); includes `README.md` with wiring and usage
+- `drivers/s200/` — complete SenseCAP S200 wind sensor driver (LIB-10): `s200.h` / `s200.cpp`, 11 unit tests (UT-S200-001..011), mock Modbus layer, `S200.md` driver documentation
+- `hardware/Testing/20250501_HardwareTest.md` — first hardware board test report for PCB v1.1.0: 53 tests across 6 subsystems (voltages, GPIO relays/LEDs/input, 4×4 keyboard, SD card, RTC, LCD); Modbus hardware test pending
+- `design/greenhouse_nvs_variables.xlsx` — NVS variable overview spreadsheet covering all namespaces, keys, types, and default values
+- `design/hardwareComponentDiagram.puml` + `.png` — hardware component architecture diagram (PlantUML)
+- `design/lcd_gui_state_diagram.puml` + `.png` — LCD GUI state diagram (PlantUML)
+- `design/web_gui_state_diagram_auth.puml` + `.png` — web GUI authentication flow state diagram (PlantUML)
+- `design/web_gui_state_diagram_settings.puml` + `.png` — web GUI settings state diagram (PlantUML)
+- `design/web_gui_state_diagram_tech.puml` + `.png` — web GUI technical/admin state diagram (PlantUML)
+- `hardware/pcb/Output/20260501_Schema.pdf` — updated schematic PDF
+- `hardware/pcb/Output/20260501_Bestukkingstekening.pdf` — updated component placement drawing
+- `hardware/pcb/Output/20260501_PrintBedrukkingVoorzijde.pdf` — updated silk screen front PDF
+
+### Changed
+- `hardware/pcb/` — PCB design bumped to **v1.1.0**; schematic and layout updated following hardware assembly and test
+- `documentation/Sensors/W-Sensecap-S200/` — connector photo replaced (`image.jpg` → `Connector.png`)
+- `drivers/driverDevelopmentPlan.md` — updated to reflect all drivers completed
+
+### Removed
+- `hardware/pcb/Output/20260424_*.pdf` — superseded by 20260501 fabrication outputs
+
+---
+
+## [1.0.0] — 2026-04-24
 
 ### Added
 - `realisation/installation.md` — new connector wiring guide covering all 12 PCB connectors (J1–J12): 24 V DC input, AC mains input, motor relay outputs M1/M2/M3, RS485 sensor connections (FG6485A and SenseCAP S200), I2C display, 4×4 keypad, alarm output, RS485 termination jumper, and SD card
