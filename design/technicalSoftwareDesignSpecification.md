@@ -140,7 +140,7 @@ Control logic modules (climate control, wind safety, conflict resolution, window
 
 - WiFi connections are protected with WPA2 minimum; WPA3 preferred if supported by the ESP32-S3 SDK (TR-NW01).
 - HTTPS on the web interface is **not implemented**. TLS termination on the ESP32-S3 is not feasible given the available RAM and CPU headroom. The threat model for TR-NW04 has been assessed and accepted — see §6 Open Issue #4 (TR-NW04).
-- User credentials are stored using a one-way hashing algorithm (bcrypt or SHA-256 with salt); plain-text storage is not permitted (FR-AC06).
+- User credentials are stored as salted SHA-256 hashes (`SHA-256(salt || pin_ascii)`, mbedTLS); plain-text storage is not permitted (FR-AC06).
 
 ---
 
@@ -152,7 +152,7 @@ The following items originate from system-level and functional requirements in t
 - Menu depth: max 4 key presses from the main screen to any first-level setting (FR-UI07).
 
 **Credential storage**
-- User credentials stored using one-way hashing (bcrypt or SHA-256 with salt); plain-text storage not permitted (FR-AC06).
+- User credentials stored as salted SHA-256 hashes (`SHA-256(salt || pin_ascii)`, mbedTLS); plain-text storage not permitted (FR-AC06).
 - Configurable login lockout after a set number of failed attempts (FR-AC07).
 
 **Event log**
@@ -282,10 +282,14 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 - Loads all settings from NVS on startup; applies defined defaults for any missing keys.
 
 **Day/night period management**
-- Computes sunrise and sunset times daily from geographic location (latitude, longitude) and current date using a solar-position algorithm (e.g. the SPA algorithm or a lightweight equivalent suitable for embedded use).
-- Determines current period (day or night) from the computed sunrise/sunset times and the current RTC time.
-- Exposes `is_daytime` (boolean) and `sunrise_time` / `sunset_time` (time-of-day) to all tasks via shared state.
+- Computes sunrise and sunset times from geographic location (latitude, longitude) and the current UTC date using the **NOAA General Solar Position Equations** (simplified, ±2 min accuracy; sufficient for ≤60° latitude). Implemented in `firmware/src/data_manager/sunrise.h/.cpp` (FR-DN01, FR-DN02).
+- Algorithm steps: Julian Day → Julian Century → geometric mean longitude / anomaly → equation of center → apparent longitude → declination → equation of time → hour angle at sunrise → UTC minutes from midnight. Accuracy for the Netherlands (≈52°N): within ±1–2 minutes year-round.
+- Inputs: `lat_deg + lat_frac / 1000.0f` and `lon_deg + lon_frac / 1000.0f` from NVS `system` namespace; Unix timestamp from DS1307 RTC.
+- FR-DN05: if latitude and longitude are both zero (no location configured), daytime setpoints are applied as the safe default.
+- Determines current period by comparing the UTC time-of-day (derived from the Unix timestamp) against the computed sunrise/sunset windows.
+- Exposes `is_daytime` (boolean) and `sunrise_mins_utc` / `sunset_mins_utc` (minutes from midnight UTC) to all tasks via shared state under MX4.
 - T6 reads `is_daytime` to select the correct setpoint pair (day or night) before each evaluation cycle.
+- Web GUI displays `sunrise_mins_utc` and `sunset_mins_utc` converted to local time for farmer verification (FR-DN04).
 
 **Current measurement data**
 - Holds the most recent raw readings: temperature (T), relative humidity (RH), wind speed, wind direction.
@@ -725,7 +729,7 @@ On SD card mount, T9 scans the log directory for `*.csv` files and sorts them by
 | Farmer | Numeric | 4 digits |
 | Administrator | Numeric | 8 digits |
 
-- PINs are stored in NVS as salted SHA-256 hashes; plain-text is never stored or transmitted.
+- PINs are stored in NVS as salted SHA-256 hashes; plain-text is never stored or transmitted (FR-AC06). Implementation: `SHA-256(salt || pin_ascii)` using `mbedtls/sha256.h` (bundled with ESP-IDF — no extra library dependency). The 16-byte random salt is generated once at first boot via `esp_fill_random()` and stored in NVS `access/pin_salt`. See `firmware/src/auth/pin_auth.h`.
 - PIN entry via the 4×4 keypad (numeric keys 0–9).
 - Session timeout: configurable idle period (admin setting); on expiry the session closes and the controller returns to Normal operation.
 
@@ -854,18 +858,22 @@ Where `Mxx` encodes active window states (e.g. `M1O` = M1 open, `M2C` = M2 close
 
 **Implemented by:** T13 (OTA)
 
-**Flash partition layout:**
+**Flash partition layout** (`firmware/partitions.csv`, 16 MB QSPI flash):
 
-| Partition | Role |
-|-----------|------|
-| Bank A | Firmware image slot A |
-| Bank B | Firmware image slot B |
-| NVS | Configuration settings (persistent across updates) |
-| LittleFS A | Web asset files paired with firmware Bank A |
-| LittleFS B | Web asset files paired with firmware Bank B |
+| Label | Type | SubType | Offset | Size | Role |
+|-------|------|---------|--------|------|------|
+| `nvs` | data | nvs | 0x009000 | 84 KB (0x15000) | Config namespaces + event-log ring buffer |
+| `otadata` | data | ota | 0x01E000 | 8 KB (0x2000) | Active/inactive bank metadata (ESP-IDF OTA) |
+| `app0` | app | ota_0 | 0x020000 | 2 MB (0x200000) | Firmware Bank A |
+| `app1` | app | ota_1 | 0x220000 | 2 MB (0x200000) | Firmware Bank B |
+| `lfs0` | data | spiffs | 0x420000 | 1 MB (0x100000) | LittleFS A — web assets paired with Bank A |
+| `lfs1` | data | spiffs | 0x520000 | 1 MB (0x100000) | LittleFS B — web assets paired with Bank B |
+| *(unused)* | — | — | 0x620000 | ~9.9 MB | Reserved for future expansion |
 
-- The system boots from whichever firmware bank is marked **active** in the partition table.
-- The active LittleFS partition is always the one with the same letter as the active firmware bank: Bank A → LittleFS A, Bank B → LittleFS B. This coupling is fixed and unconditional.
+> **LittleFS subtype note:** The ESP-IDF partition table has no dedicated `littlefs` subtype. Both `lfs0` and `lfs1` use subtype `spiffs`; the LittleFS library locates the partition by label (name), not subtype.
+
+- The system boots from whichever firmware bank is marked **active** in `otadata`.
+- The active LittleFS partition is always the one with the same letter as the active firmware bank: Bank A (`app0`) → `lfs0`; Bank B (`app1`) → `lfs1`. This coupling is fixed and unconditional; T13 enforces it on every bank switch.
 - T11 mounts only the active LittleFS partition. The inactive LittleFS partition is never mounted by T11.
 
 **Firmware update procedure:**
@@ -927,7 +935,7 @@ Setpoint and threshold values (temperature, humidity, wind speed, wind direction
 | `climate` | `t_min_day`, `t_max_day`, `t_min_ngt`, `t_max_ngt`, `rh_min_day`, `rh_max_day`, `rh_min_ngt`, `rh_max_ngt`, `hyst_t`, `hyst_rh`, `rh_ctrl_en`, `cr_priority`, `avg_win_t`, `avg_win_rh` | `int16_t` / `uint8_t` | Day and night setpoints for temperature (°C) and humidity (%) (integers); hysteresis bands (integers); `rh_ctrl_en`: humidity control enable (0 = disabled, 1 = enabled, default 1); `cr_priority`: conflict resolution (0 = temperature first [default], 1 = humidity first, 2 = deviation-based); `avg_win_t` / `avg_win_rh`: sliding average window in minutes for T and RH (1–60, default 1) |
 | `wind` | `v_max`, `dir_excl_low`, `dir_excl_high`, `wind_prot_en` | `int16_t` / `uint8_t` | Wind speed threshold (m/s or Beaufort) and direction exclusion zone (degrees) (integers); `wind_prot_en`: wind protection enable flag (0 = disabled, 1 = enabled, default 1) |
 | `motor` | `dwell_open_m1`, `dwell_close_m1`, … `dwell_close_m3` | `int16_t` | Per-channel dwell times (minutes) — integers only |
-| `access` | `pin_farmer_hash`, `pin_admin_hash`, `pin_salt`, `lockout_count`, `lockout_time` | string / uint8 | PIN hashes, lockout configuration |
+| `access` | `pin_salt` (blob[16]), `pin_farmer_hash` (blob[32]), `pin_admin_hash` (blob[32]), `fail_cnt_f`, `fail_cnt_a`, `lockout_f`, `lockout_a`, `lockout_max`, `lockout_secs` | blob / int32 | `pin_salt`: 16-byte random salt, generated once at first boot. `pin_farmer_hash` / `pin_admin_hash`: SHA-256(salt \|\| pin_ascii) digest. `fail_cnt_f` / `fail_cnt_a`: per-role consecutive failure count. `lockout_f` / `lockout_a`: per-role lockout expiry as Unix timestamp (0 = not locked). `lockout_max`: threshold before lockout (default 5). `lockout_secs`: lockout duration (default 300 s). |
 | `wifi` | `ssid`, `psk_hash`, `ap_psk`, `ip_mode`, `ip_addr`, `ip_mask`, `ip_gw`, `ip_dns` | string | WiFi client and AP credentials and network settings; AP SSID is auto-generated from MAC address and not stored |
 | `mqtt` | `broker_url`, `port`, `username`, `password_hash`, `topic_prefix`, `interval` | string / uint16 | MQTT broker connection and publish settings |
 | `system` | `poll_interval`, `session_timeout`, `ap_timeout`, `lang`, `log_pointer`, `schema_ver`, `fw_version`, `led_day_brt`, `led_nite_brt`, `led_nite_from`, `led_nite_to`, `lat_deg`, `lat_frac`, `lon_deg`, `lon_frac` | uint16 / string / uint8 / int16 | System-wide configuration; `poll_interval` (uint16, seconds, default 60, technician-settable 150–3600 via web GUI); `lat_deg` + `lat_frac` / `lon_deg` + `lon_frac`: geographic location stored as integer degree and fractional milli-degree parts (e.g. 52.0907°N stored as lat_deg=52, lat_frac=907) for sunrise/sunset calculation (FR-DN02); `schema_ver` (int32) tracks NVS layout version; `fw_version` (string `"MAJOR.MINOR.PATCH"`) overwritten on every boot; `led_day_brt` / `led_nite_brt` (uint8, 0–255, defaults 200/20); `led_nite_from` / `led_nite_to` (uint8, hour 0–23, defaults 22/6) |

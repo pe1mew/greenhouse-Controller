@@ -206,7 +206,7 @@ The system operates with two climate setpoint profiles — daytime and night-tim
 | ID | Requirement | MoSCoW |
 |----|-------------|--------|
 | FR-DN01 | The system **shall** automatically determine whether the current time is daytime or night-time based on calculated local sunrise and sunset times. | Must |
-| FR-DN02 | Sunrise and sunset times **shall** be calculated from a configurable geographic location (latitude and longitude) and the current date, using a standard solar-position algorithm. | Must |
+| FR-DN02 | Sunrise and sunset times **shall** be calculated from a configurable geographic location (latitude and longitude) and the current date, using a standard solar-position algorithm. Implementation: NOAA General Solar Position Equations (simplified), ±2 min accuracy; see `firmware/src/data_manager/sunrise.h`. | Must |
 | FR-DN03 | The farmer **shall** be able to view and configure the geographic location (latitude and longitude) via the web GUI. This setting is not available on the LCD. | Must |
 | FR-DN04 | The calculated sunrise and sunset times for the current day **shall** be visible to the farmer in the web GUI, so the expected day/night transition times can be verified. | Must |
 | FR-DN05 | If no location has been configured, the system **shall** apply the daytime setpoints as the default until location is set. | Should |

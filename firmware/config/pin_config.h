@@ -49,6 +49,9 @@
 /** @brief Digital output — heartbeat / status LED (amber). */
 #define PIN_HB_LED          41
 
+/** @brief Digital output — on-board WS2812B RGB status LED (driven via RMT). */
+#define PIN_RGB_LED         38
+
 /* ---------------------------------------------------------------------------
  * RS-485 direction control
  * --------------------------------------------------------------------------- */
@@ -63,7 +66,7 @@
 #define PIN_RS485_RX        18
 
 /* ---------------------------------------------------------------------------
- * I2C bus (shared — LCD at 0x27, RTC at 0x68)
+ * I2C bus (shared — LCD AiP31068L at 0x3E, RTC DS1307 at 0x68)
  * --------------------------------------------------------------------------- */
 
 /** @brief I2C data line (SDA). */

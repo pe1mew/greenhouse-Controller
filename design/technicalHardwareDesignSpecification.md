@@ -205,7 +205,7 @@ The LOLIN S3 is a compact development/prototype board from WEMOS built around th
 
 #### 4.1.2 Non-Volatile Storage
 
-The ESP32-S3 flash is partitioned using the ESP-IDF NVS (Non-Volatile Storage) library. Configuration settings (setpoints, thresholds, dwell times, credentials) are stored in the NVS partition. The event log ring buffer is stored in a dedicated log partition. The SD card, when present, provides supplemental log storage.
+The 16 MB QSPI flash uses a custom partition table (`firmware/partitions.csv`) with six partitions: an NVS partition (84 KB) holding all configuration namespaces and the event-log ring buffer, an OTA metadata partition (8 KB), two firmware image banks of 2 MB each (`app0`/`app1`), and two LittleFS partitions of 1 MB each (`lfs0`/`lfs1`) storing web assets paired with their respective firmware bank. The SD card, when present, provides supplemental log storage.
 
 #### 4.1.3 Rationale for Selection
 
@@ -214,7 +214,7 @@ The ESP32-S3 flash is partitioned using the ESP-IDF NVS (Non-Volatile Storage) l
 | Processing power | Dual LX7 cores at 240 MHz easily handles all real-time tasks: Modbus polling, relay control, display updates, WiFi stack, and MQTT client simultaneously |
 | Integrated WiFi | No separate WiFi module required (satisfies TR-HW09) |
 | Native USB | Provides built-in serial console and firmware update path without additional USB-UART chip (satisfies TR-IF05) |
-| Large flash | 16 MB accommodates firmware, NVS, web server files, and a substantial on-chip log partition |
+| Large flash | 16 MB accommodates two 2 MB firmware banks, two 1 MB LittleFS web-asset partitions, and an 84 KB NVS partition; ~9.9 MB remains unused for future expansion |
 | Ecosystem | Mature Arduino / ESP-IDF toolchain via PlatformIO; extensive library support for Modbus, I2C, MQTT, and web server |
 | Availability | Widely available; approximate cost €10–15 |
 

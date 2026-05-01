@@ -108,6 +108,14 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 - Persists changed settings to NVS flash immediately on write
 - Loads all settings from NVS on startup; applies defined defaults for any missing keys
 
+**Day/night period management**
+- Computes sunrise and sunset from geographic location (lat/lon) and the current UTC date using the **NOAA General Solar Position Equations** (±2 min accuracy); implemented in `firmware/src/data_manager/sunrise.h/.cpp` (FR-DN01, FR-DN02).
+- Inputs: `lat_deg + lat_frac / 1000.0f` and `lon_deg + lon_frac / 1000.0f` from NVS `system` namespace; Unix timestamp from DS1307 RTC.
+- If latitude and longitude are both zero (no location configured), daytime setpoints are applied as the safe default (FR-DN05).
+- Exposes `is_daytime` (boolean) and `sunrise_mins_utc` / `sunset_mins_utc` (minutes from midnight UTC) under MX4.
+- T6 reads `is_daytime` before each climate evaluation to select the correct setpoint pair.
+- Web GUI reads `sunrise_mins_utc` / `sunset_mins_utc` for display and farmer verification (FR-DN04).
+
 **Current measurement data**
 - Holds the most recent readings: temperature (T), relative humidity (RH), wind speed, wind direction
 - Updated by T5 after each successful Modbus poll cycle
