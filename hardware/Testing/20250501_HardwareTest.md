@@ -1,34 +1,75 @@
 # Board Test
 
+**Date:** 2026-05-01  
+**Board:** Greenhouse Controller v1.0.0  
+**Tester:** Remko Welling
+
+## Test Overview
+
+| Section | Component | Test IDs | Pass | Fail | Skip | Pending | Result |
+|---|---|---|---|---|---|---|---|
+| Voltages | Power rails | HW-VLT-001..007 | 7 | 0 | 0 | 0 | **PASS** |
+| GPIO | Relays / LEDs / Input | HW-GPIO-001..014 | 14 | 0 | 0 | 0 | **PASS** |
+| Keyboard | LIB-5 keyPad/ | HW-KP-003..HW-KP-0019 | 18 | 0 | 0 | 0 | **PASS** |
+| SD Card | LIB-8 sdCard/ | HW-SD-001..010 | 9 | 0 | 0 | 1 | **PASS\*** |
+| RTC | LIB-3 DS1307_RTC/ | HW-RTC-001..006 | 5 | 0 | 0 | 1 | **PASS\*** |
+| LCD | LIB-4 LCD1602_I2C/ | HW-LCD-001..008 | 7 | 0 | 1 | 0 | **PASS** |
+| Modbus | modBus/ | HW-MB-xxx | — | — | — | ALL | **PENDING** |
+
+\* SD-010 (absent-card) not yet executed. RTC-006 battery backup tested in breadboard setup only; full PCB power-cycle test pending.
+
+### Coverage assessment
+
+Overall coverage is **satisfactory** for a first board bring-up session:
+- All power rails verified at nominal values.
+- All relay outputs and indicator LEDs confirmed with hardware.
+- Full 4×4 keypad matrix exercised key-by-key including idle and multi-press rejection.
+- SD card covers mount, read, write, append, delete, and 512 KB stress write.
+- RTC covers init, set, advance, and battery backup by DS1307 VCC disconnect (breadboard setup); full PCB power-cycle test pending.
+- LCD driver verified: 7/7 PASS, 1 SKIP (backlight hardwired to VCC).
+- **Gap:** Modbus RS485 connector and bus communication not yet tested on hardware.
+
+---
+
 ## Voltages
 
- - *Apply 220V*
-    - Test LED D15: shall be ON is ON: PASS (Note: too bright, 1K shall be increase to dim light)
-    - Test J2: shall be 24V is 24V: PASS
-    - Test J3: shall be 5V is 4,9V: PASS
-    - Test U2: Shall be 5V is 4,9V: PASS
- - *Insert LOLIN board* 
-    - Test 3,3V out on LOLIN board: shall be 3,3V is 3,29V: PASS
-	- Test VCC J12 pin 4: shall be 3,3V is 3,29V: PASS
-    - Test VCC U4 pin 8: shall be 3,3V is 3,29V: PASS
- 
-## GPIO Relay, LED and input 
+*Apply 220V, measure with multimeter.*
 
- - * While running the test code, relay contact was observed with an ohm meter*
-	- at activation of M1 OPEN  Screw terminal presents closed contact: PASS
-	- at activation of M1 CLOSE Screw terminal presents closed contact: PASS
-	- at activation of M2 OPEN  Screw terminal presents closed contact: PASS
-	- at activation of M2 CLOSE Screw terminal presents closed contact: PASS
-	- at activation of M3 OPEN  Screw terminal presents closed contact: PASS
-	- at activation of M3 CLOSE Screw terminal presents closed contact: PASS
-	- at activation of M1 OPEN  LED is ON: PASS
-	- at activation of M1 CLOSE LED is ON: PASS
-	- at activation of M2 OPEN  LED is ON: PASS
-	- at activation of M2 CLOSE LED is ON: PASS
-	- at activation of M3 OPEN  LED is ON: PASS
-	- at activation of M3 CLOSE LED is ON: PASS
- - Hartbeat led works independently from other GPIO: PASS
- - INPUT is read correctly and controls M1 OPEN during this test: PASS
+- [HW-VLT-001] Test LED D15: shall be ON — is ON: **PASS** *(Note: too bright, R1K should be increased to dim light)*
+- [HW-VLT-002] Test J2: shall be 24V — is 24V: **PASS**
+- [HW-VLT-003] Test J3: shall be 5V — is 4.9V: **PASS**
+- [HW-VLT-004] Test U2: shall be 5V — is 4.9V: **PASS**
+
+*Insert LOLIN board.*
+
+- [HW-VLT-005] Test 3.3V out on LOLIN board: shall be 3.3V — is 3.29V: **PASS**
+- [HW-VLT-006] Test VCC J12 pin 4: shall be 3.3V — is 3.29V: **PASS**
+- [HW-VLT-007] Test VCC U4 pin 8: shall be 3.3V — is 3.29V: **PASS**
+
+```
+PASS: 7 / 7
+```
+
+---
+
+## GPIO Relay, LED and Input
+
+*While running the test code, relay contacts observed with an ohm meter; LEDs observed visually.*
+
+- [HW-GPIO-001] Activation of M1 OPEN  — screw terminal presents closed contact: **PASS**
+- [HW-GPIO-002] Activation of M1 CLOSE — screw terminal presents closed contact: **PASS**
+- [HW-GPIO-003] Activation of M2 OPEN  — screw terminal presents closed contact: **PASS**
+- [HW-GPIO-004] Activation of M2 CLOSE — screw terminal presents closed contact: **PASS**
+- [HW-GPIO-005] Activation of M3 OPEN  — screw terminal presents closed contact: **PASS**
+- [HW-GPIO-006] Activation of M3 CLOSE — screw terminal presents closed contact: **PASS**
+- [HW-GPIO-007] Activation of M1 OPEN  — LED is ON: **PASS**
+- [HW-GPIO-008] Activation of M1 CLOSE — LED is ON: **PASS**
+- [HW-GPIO-009] Activation of M2 OPEN  — LED is ON: **PASS**
+- [HW-GPIO-010] Activation of M2 CLOSE — LED is ON: **PASS**
+- [HW-GPIO-011] Activation of M3 OPEN  — LED is ON: **PASS**
+- [HW-GPIO-012] Activation of M3 CLOSE — LED is ON: **PASS**
+- [HW-GPIO-013] Heartbeat LED works independently from other GPIO: **PASS**
+- [HW-GPIO-014] INPUT is read correctly and controls M1 OPEN during test: **PASS**
 
 ```
 ================================================
@@ -50,8 +91,17 @@ M1 OPEN relay input test complete.
 ================================================
 ```
 
-## keyboard (LIB-5  keyPad/)
-Running test that was developed for testing keyboard driver. Results below:
+```
+PASS: 14 / 14
+```
+
+---
+
+## Keyboard (LIB-5  keyPad/)
+
+Running test developed for keyboard driver verification.
+
+**Note:** HW-KP-005 appears twice in the firmware output — once for the multi-press test and once for key [2]. This is a known firmware numbering defect in the test suite. The numbering format also changes from three digits (HW-KP-003..009) to four digits with a leading zero (HW-KP-0010..0019); both are firmware artefacts.
 
 ```
 ================================================
@@ -111,7 +161,9 @@ Press key [ D ]  (Row4/Col4)  — timeout 30 s
 Verification complete. Board is idle.
 ```
 
-## SD-card (LIB-8  sdCard/)
+---
+
+## SD Card (LIB-8  sdCard/)
 
 ```
 ================================================
@@ -144,18 +196,15 @@ line2,data,value
 PASS: 9
 FAIL: 0
 ------------------------------------------------
-Note: HW-SD-010 (absent card) — remove card, reset board.
+Note: HW-SD-010 (absent card) — remove card, reset board. PENDING
 ```
 
-
-
-
-
-
-
+---
 
 ## RTC (LIB-3  DS1307_RTC/)
-**NOTE: during the test the VCC was not disconnected and battery operation was not tested. This shall be tested late with a full power cycle of the system.**
+
+**Note:** HW-RTC-006 (battery backup) was executed by disconnecting only the DS1307 VCC wire during a breadboard/development setup — this does not represent a full system power cycle. A complete PCB power-down test shall be performed later to verify that the CR2032 retains time when the entire board is de-energised. HW-RTC-005 is not defined in this test suite (sequence goes 004 → 006).
+
 ```
 === LIB-3 DS1307 RTC — hardware verification ===
 
@@ -206,7 +255,11 @@ Result: 5 passed, 0 failed
 === PASS ===
 ```
 
-## LCD display (LIB-4  LCD1602_I2C/)
+---
+
+## LCD Display (LIB-4  LCD1602_I2C/)
+
+**Note:** Serial log captures only the last two entries; tests HW-LCD-001 through HW-LCD-006 output is not shown. Firmware summary confirms 7 / 7 PASS. HW-LCD-007 (backlight control) is SKIP — backlight LED is hardwired to VCC on this module. Conclusion: **PASS**.
 
 ```
 ----------------------------------------
@@ -222,4 +275,31 @@ HW-LCD-008: Backlight on
 PASS: 7 / 7
 FAIL: 0 / 7
 All hardware tests PASSED.
+```
+
+```
+PASS: 7 / 7
+```
+
+---
+
+## Modbus (modBus/)
+
+**Status: PENDING**
+
+Hardware testing of the Modbus RS485 interface has not yet been performed. The on-board connector, transceiver (U4), and DE/RE control line require verification with a real RS485 slave device on the bus.
+
+Planned test IDs: HW-MB-001..HW-MB-011 (aligned with the HIL loopback suite in `drivers/modBus/test/test_hw_loopback/`).
+
+**Prerequisites before testing:**
+- RS485 slave device (e.g. S200 wind sensor or FG6485A T/RH sensor) connected to J12.
+- Run `pio test -e lolin_s3_loopback` for automated loopback verification (requires three jumper wires: GPIO17→GPIO38, GPIO21→GPIO18, GPIO8→GPIO16).
+- Alternatively, connect a live slave and run the manual verification sketch (`lolin_s3` environment).
+
+**Existing automated coverage (not a substitute for hardware test):**
+- Unit tests with mocks: `pio test -e native` (HW-MB-001..012 in `drivers/modBus/test/test_modbus_rtu/`).
+- HIL loopback tests verify driver timing and CRC on real silicon but do not test the PCB RS485 transceiver circuit.
+
+```
+PASS: 0 / 0   PENDING: ALL
 ```
