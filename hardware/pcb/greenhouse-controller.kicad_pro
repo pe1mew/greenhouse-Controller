@@ -94,11 +94,11 @@
           ""
         ],
         [
-          "silk_over_copper|140955000|74170000|04fbf182-8491-416e-92b0-f2b8a7feb81b|0e580e35-527a-4f1e-97d5-86fb36292f01",
+          "silk_over_copper|144455000|102670000|04fbf182-8491-416e-92b0-f2b8a7feb81b|57f76f81-d763-4c1b-9ffb-ae8877d0fed9",
           ""
         ],
         [
-          "silk_over_copper|144455000|102670000|04fbf182-8491-416e-92b0-f2b8a7feb81b|57f76f81-d763-4c1b-9ffb-ae8877d0fed9",
+          "silk_over_copper|144455000|77670000|04fbf182-8491-416e-92b0-f2b8a7feb81b|0e580e35-527a-4f1e-97d5-86fb36292f01",
           ""
         ],
         [
@@ -364,7 +364,7 @@
       "internal_id": "",
       "mfg": "",
       "mpn": "",
-      "sch_revision": "0.1.0"
+      "sch_revision": "1.1.0"
     },
     "layer_pairs": [],
     "layer_presets": [],
@@ -790,7 +790,7 @@
         "uuid": "2be5eb1b-bfdc-4766-9909-5178f7452cd9"
       }
     ],
-    "used_designators": "",
+    "used_designators": "J13",
     "variants": []
   },
   "sheets": [

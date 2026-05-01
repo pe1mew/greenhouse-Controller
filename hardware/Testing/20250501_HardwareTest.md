@@ -29,7 +29,6 @@
 	- at activation of M3 CLOSE LED is ON: PASS
  - Hartbeat led works independently from other GPIO: PASS
  - INPUT is read correctly and controls M1 OPEN during this test: PASS
-	
 
 ```
 ================================================
@@ -114,6 +113,39 @@ Verification complete. Board is idle.
 
 ## SD-card (LIB-8  sdCard/)
 
+```
+================================================
+  LIB-8 SD Card — hardware verification
+================================================
+[  3125][W][sd_diskio.cpp:186] sdCommand(): token error [8] 0x5
+[INFO] storage_init returned: 0
+[INFO] SD card mounted (FAT32)
+[PASS] HW-SD-001: SPI bus initialises and card mounts
+[INFO] Free bytes: 124201984
+[PASS] HW-SD-002: Free bytes > 0
+[INFO] Write append line 1: 0
+[PASS] HW-SD-003: Write-append creates file
+[INFO] File size after 2 appends: 34 bytes
+[PASS] HW-SD-004: Write-append grows existing file
+[INFO] Read offset 0: "line1,data,value
+line2,data,value
+"
+[PASS] HW-SD-005: Read from offset 0 returns correct content
+[INFO] list_csv: 20260410120000.csv,
+[PASS] HW-SD-006: CSV file appears in directory listing
+[INFO] bigfile.csv size: 524288 bytes
+[PASS] HW-SD-007: 512 KB stress write succeeds
+[INFO] Delete bigfile.csv: 0
+[PASS] HW-SD-008: Delete removes file
+[INFO] Delete bigfile.csv (2nd time): 4
+[PASS] HW-SD-009: Delete non-existent file → STORAGE_ERR_NOT_FOUND
+
+------------------------------------------------
+PASS: 9
+FAIL: 0
+------------------------------------------------
+Note: HW-SD-010 (absent card) — remove card, reset board.
+```
 
 
 

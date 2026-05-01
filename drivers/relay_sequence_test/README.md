@@ -1,4 +1,4 @@
-# Relay Sequence Test
+# GPIO on board Test
 
 Hardware acceptance test for the six motor relay outputs, the opto-coupler feedback input, and the heartbeat LED on the Greenhouse Controller board.
 
