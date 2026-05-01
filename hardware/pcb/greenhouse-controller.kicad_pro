@@ -364,7 +364,7 @@
       "internal_id": "",
       "mfg": "",
       "mpn": "",
-      "sch_revision": ""
+      "sch_revision": "0.1.0"
     },
     "layer_pairs": [],
     "layer_presets": [],
@@ -787,7 +787,7 @@
       {
         "filename": "greenhouse-controller.kicad_sch",
         "name": "greenhouse-controller",
-        "uuid": "00000000-0000-0000-0000-000000000000"
+        "uuid": "2be5eb1b-bfdc-4766-9909-5178f7452cd9"
       }
     ],
     "used_designators": "",
@@ -796,7 +796,7 @@
   "sheets": [
     [
       "2be5eb1b-bfdc-4766-9909-5178f7452cd9",
-      "Root"
+      "greenhouse-controller"
     ]
   ],
   "text_variables": {},
