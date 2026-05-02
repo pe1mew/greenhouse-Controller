@@ -190,7 +190,7 @@ The following items originate from system-level and functional requirements in t
 - Changes to either flag are logged with timestamp and the operator's identity (FR-WS11).
 
 **Manual override detection**
-- The RRK-3 signals alarm via an external dry relay contact wired to J10; the opto-isolated input drives GPIO 42 (logic HIGH = alarm active). THDS Open Issue #1 resolved. Software response — edge detection in T2, debounce duration, and T6 calibration cycle on alarm clearance — remains to be implemented (see Open Issue #1 below; FR-M08–FR-M11).
+- The RRK-3 signals manual activity via an external dry relay contact wired to J10; the opto-isolated input drives GPIO 42 (logic HIGH = active). Resolved — see Open Issue #1 (Closed). T2 uses a deferred-ISR pattern: `attachInterrupt(PIN_OPTO_INPUT, isr_handler, CHANGE)`; the ISR (`IRAM_ATTR`) records only the first edge (volatile flag + tick timestamp) and returns immediately; T2 confirms after 75 ms by reading the live pin state; transitions are ignored if any channel FSM is in a MOVING state (T2-commanded move). On confirmation: T2 sets EG1.MANUAL_OVERRIDE, sends TN3 to T6, and posts a log event to Q3 (FR-M08–FR-M11).
 
 **Mutual exclusion of relay commands**
 - The firmware must never energise the OPEN and CLOSE relay of the same motor simultaneously. T2 (Relay Controller) is the sole owner of relay GPIO and enforces this constraint before asserting any relay (see §4.3).
@@ -246,9 +246,11 @@ The firmware is structured as a set of FreeRTOS tasks. Each logical function is 
 - All actuation requests arrive via command queue Q1 (from T3, T6, T8, T11, T12).
 - Runs the per-channel window state machine: `CLOSED` → `MOVING` → `OPEN` and reverse.
 - Enforces OPEN + CLOSE mutual exclusion on each channel before asserting any relay.
-- Manages dwell timers: minimum open-dwell and close-dwell per channel before accepting the next command.
-- Monitors the RRK-3 opto-isolated feedback input; detects manual override and notifies T6 and T9.
-- **Synchronization:** receives Q1 (actuation commands); posts to Q3 (log events); sets EG1.MANUAL_OVERRIDE on feedback input trigger; sends TN3 to T6 (manual override detected).
+- Reads motor travel times (`travel_mN`, seconds) and dwell times (`dwell_open_mN`, `dwell_close_mN`, minutes) from T4 (MX4) on startup and on each config update; converts travel time to ms for `vTaskDelay`.
+- **Travel timer:** energises each relay for exactly `travel_mN * 1000` ms; de-energises on expiry; window is at end position.
+- **Dwell timer:** after travel completes, enforces the minimum hold time before accepting the next command on that channel (FR-A09–FR-A12).
+- Monitors the RRK-3 opto-isolated feedback input via a deferred-ISR pattern: `IRAM_ATTR` ISR records first edge only (volatile flag + tick timestamp); T2 task loop confirms after 75 ms by reading live pin state; transition suppressed while any channel FSM is MOVING (T2-commanded move). On confirmation: sets EG1.MANUAL_OVERRIDE, sends TN3 to T6, posts log event to Q3 (FR-M08–FR-M11).
+- **Synchronization:** receives Q1 (actuation commands); posts to Q3 (log events via `log_post()`); sets EG1.MANUAL_OVERRIDE on feedback confirmation; sends TN3 to T6 (manual override detected).
 
 ---
 
@@ -276,7 +278,7 @@ The firmware is structured as a set of FreeRTOS tasks. Each logical function is 
 T4 is the single source of truth for all runtime data and configuration. All tasks that need to read or write system state do so through T4. This eliminates distributed per-variable mutexes and provides a single serialisation point for NVS persistence.
 
 **Configuration settings**
-- Holds all configurable parameters in RAM: setpoints (T_min_day, T_max_day, T_min_night, T_max_night, RH_min_day, RH_max_day, RH_min_night, RH_max_night), wind thresholds, dwell times, hysteresis values, sliding average windows, geographic location (lat/lon), WiFi credentials, PIN hashes, display language, session timeout, WiFi AP timeout.
+- Holds all configurable parameters in RAM: setpoints (T_min_day, T_max_day, T_min_night, T_max_night, RH_min_day, RH_max_day, RH_min_night, RH_max_night), wind thresholds, per-channel motor travel times (`travel_mN`, seconds — relay energisation duration) and dwell times (`dwell_open_mN` / `dwell_close_mN`, minutes — minimum hold after travel), hysteresis values, sliding average windows, geographic location (lat/lon), WiFi credentials, PIN hashes, display language, session timeout, WiFi AP timeout.
 - Accepts write requests from T8 (UI) and T11 (web server); validates range before accepting.
 - Persists changed settings to NVS flash immediately on write.
 - Loads all settings from NVS on startup; applies defined defaults for any missing keys.
@@ -296,13 +298,13 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 - Also holds the sliding-average values for T and RH (T_avg, RH_avg), updated incrementally on each new poll result.
 - Updated by T5 after each successful Modbus poll cycle.
 - T6 uses the averaged values (T_avg, RH_avg) for setpoint comparison; raw values are logged and displayed.
-- Read by T3, T6, T8, T9, T11, T12; no task accesses sensor data except through T4.
+- Read by T3, T6, T8, T11, T12; no task accesses sensor data except through T4. T9 does not read MX2 directly — current measurement values reach T9 as fields inside `LOG_SENSOR` events posted to Q3 by T4.
 
 **Measurement history ring buffers**
 - Maintains a separate ring buffer for each measured quantity: T, RH, wind speed, wind direction.
 - Each entry contains: timestamp and measured value.
-- Ring buffer depth: to be defined when the data model is finalised.
-- Read by T8 (display history), T9 (periodic log snapshots), T11 (web trend view), T12 (MQTT history).
+- Ring buffer depth: **360 entries per channel** (T, RH, wind speed, wind direction) = 11.5 KB total internal RAM. Resolved — see Open Issue #2 (Closed).
+- Read by T8 (display history), T11 (web trend view), T12 (MQTT history). T9 no longer reads ring buffers for snapshots — T4 posts a `LOG_SENSOR` event to Q3 on each new poll result instead.
 
 **Operating state**
 - Holds current operating mode (Automatic / Standby / Wind-override / Manual-override).
@@ -371,9 +373,9 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 - Receives log events from all tasks via a dedicated queue; senders post and return immediately.
 - Serialises all writes to the NVS ring buffer and, when present, to the SD card.
 - The queue decouples log I/O from higher-priority tasks; no task is blocked by log write latency.
-- Queue overflow policy: drop-oldest is preferred over drop-newest (recent events are more operationally relevant in an overflow situation).
-- Writes periodic sensor-value snapshots by reading current measurement data from T4 at a configurable interval.
-- **Synchronization:** receives Q3 (log events from all tasks); acquires MX3 to read ring buffers for periodic sensor snapshots; no I2C or GPIO access.
+- Queue overflow policy: drop-oldest enforced by `log_post()` in `event_logger.h` (Gap H); see §5.3 for the two-step evict-and-retry mechanism.
+- Periodic sensor-value snapshots: T4 posts a `LOG_SENSOR` event to Q3 every time it receives new sensor data from T5 via Q6. T9 consumes these like any other event — no separate timer or MX3 access required.
+- **Synchronization:** receives Q3 (log events from all tasks); no mutexes held; no I2C or GPIO access.
 
 ---
 
@@ -480,8 +482,8 @@ FreeRTOS mutexes (`xSemaphoreCreateMutex`) implement priority inheritance, which
 | ID  | Name                      | Protects                                                                 | Writers                       | Readers                              |
 |-----|---------------------------|--------------------------------------------------------------------------|-------------------------------|--------------------------------------|
 | MX1 | I2C bus                   | Shared I2C bus (SDA/SCL) — LCD display and DS1307 RTC on the same wires | T8 (LCD write), T4 (RTC read) | —                                    |
-| MX2 | Current measurement data  | Latest T, RH, wind speed, wind direction values in T4                   | T4 (on write from T5)         | T3, T6, T8, T9, T11, T12            |
-| MX3 | Measurement ring buffers  | History ring buffers for T, RH, wind speed, wind direction in T4        | T4 (on write from T5)         | T8, T9, T11, T12                    |
+| MX2 | Current measurement data  | Latest T, RH, wind speed, wind direction values in T4                   | T4 (on write from T5)         | T3, T6, T8, T11, T12                |
+| MX3 | Measurement ring buffers  | History ring buffers for T, RH, wind speed, wind direction in T4        | T4 (on write from T5)         | T8, T11, T12                        |
 | MX4 | Configuration settings    | All configurable parameters in T4                                        | T4 (on validated write from Q4) | T3, T6, T8, T11, T12             |
 | MX5 | LittleFS filesystem       | Active LittleFS partition (HTML and web asset files served by T11)       | T11 (concurrent HTTP requests) | T11 (concurrent HTTP requests)     |
 
@@ -541,7 +543,7 @@ A single FreeRTOS event group (`xEventGroupCreate`) holds all system-wide boolea
 | T6   | MX2, MX4        | Q1, Q3           | —                     | —                    | TN2 ← T4, TN3 ← T2    | Reads EG1 (all); clears EG1.MANUAL_OVERRIDE |
 | T7   | —               | Q2               | —                     | —                    | —                       | —                        |
 | T8   | MX1, MX2, MX3, MX4 | Q1, Q3, Q4  | Q2, Q5                | —                    | —                       | Reads EG1 (all)          |
-| T9   | MX3             | —                | Q3                    | —                    | —                       | —                        |
+| T9   | —               | —                | Q3                    | —                    | —                       | —                        |
 | T10  | —               | Q3, Q4, Q5       | —                     | TN4 → T4             | —                       | —                        |
 | T11  | MX2, MX4, MX5  | Q1, Q3, Q4       | —                     | —                    | —                       | Reads EG1.OTA_IN_PROGRESS |
 | T12  | MX2, MX4        | Q1, Q3, Q4       | —                     | —                    | —                       | —                        |
@@ -576,6 +578,9 @@ A single FreeRTOS event group (`xEventGroupCreate`) holds all system-wide boolea
 
 Link to FRS requirements: FR-S04 (sensor fault detection), FR-W03 (wind sensor fault).
 
+**FG6485A internal heater supply (J5 — always-on hardware):**
+The FG6485A sensor contains an internal heating element to prevent condensation on the sensing element. This heater is powered via connector J5 on the PCB as a permanently-on supply — no GPIO control is assigned or required. T5 reads the `heating_temperature_c` register from the sensor on each poll cycle and posts the value in the sensor reading. If `heating_temperature_c` falls outside the expected operating range (indicating heater failure or sensor fault), T5 logs a `LOG_ALARM` event to Q3. No software enable/disable is implemented for the heater.
+
 ---
 
 ### 5.2 Climate Control Logic
@@ -608,34 +613,82 @@ Link to FRS requirements: FR-S04 (sensor fault detection), FR-W03 (wind sensor f
 
 **Window state machine (per channel M1, M2, M3):**
 
-| State   | Entry condition | Exit condition | Action |
-|---------|----------------|----------------|--------|
-| CLOSED  | Power-on; close command completes dwell | Open command received | Assert OPEN relay |
-| MOVING  | Relay energised | Dwell timer expires | Deassert relay; transition to OPEN or CLOSED |
-| OPEN    | Open dwell complete | Close command received | Assert CLOSE relay |
+| State         | Entry condition | Exit condition | T2 action |
+|---------------|----------------|----------------|-----------|
+| `UNKNOWN`     | Boot | CLOSE_ALL boot sequence completes | Assert CLOSE relay; advance to `MOVING_CLOSE` |
+| `CLOSED`      | Travel timer expired after CLOSE command; or boot CLOSE_ALL complete | OPEN command received AND close-dwell elapsed | Assert OPEN relay; advance to `MOVING_OPEN` |
+| `MOVING_OPEN` | OPEN relay energised | **Travel timer** (`MOTOR_MN_TRAVEL_MS`) expires | De-energise relay; advance to `OPEN` |
+| `OPEN`        | Travel timer expired after OPEN command | CLOSE command received AND open-dwell elapsed | Assert CLOSE relay; advance to `MOVING_CLOSE` |
+| `MOVING_CLOSE`| CLOSE relay energised | **Travel timer** (`MOTOR_MN_TRAVEL_MS`) expires | De-energise relay; advance to `CLOSED` |
 
-- Open-dwell and close-dwell times are configurable per channel via NVS.
-- OPEN + CLOSE mutual exclusion is enforced in T2 before asserting any relay output.
+**Travel timer vs. dwell timer — critical distinction:**
+
+| Timer | What it times | Value source | Unit | Purpose |
+|-------|--------------|--------------|------|---------|
+| Travel timer | Relay energisation (window in motion) | NVS `motor/travel_mN`; default `MOTOR_MN_TRAVEL_S_DEFAULT` (`app_types.h`); read by T2 from T4 (MX4) | seconds | De-energise relay at end-stop; prevents motor stall |
+| Open-dwell timer | Hold period at `OPEN` before CLOSE accepted | NVS `motor/dwell_open_mN`; read by T2 from T4 (MX4) | minutes | Prevents rapid reversal; protects mechanics |
+| Close-dwell timer | Hold period at `CLOSED` before OPEN accepted | NVS `motor/dwell_close_mN`; read by T2 from T4 (MX4) | minutes | Prevents rapid reversal; protects mechanics |
+
+- OPEN + CLOSE mutual exclusion is enforced in T2 before asserting any relay output; a 100 ms gap is inserted after de-energising the outgoing relay.
+- Dwell timers start when the travel timer expires (window reaches end position), not when the command is issued (FR-A09–FR-A12).
 
 **Climate setpoints and hysteresis:**
 - T_min_day / T_max_day and T_min_night / T_max_night: day and night temperature thresholds (configurable, farmer level). T6 selects the active pair based on `is_daytime` from T4. Stored and compared as integer °C. Always active; cannot be disabled.
 - RH_min_day / RH_max_day and RH_min_night / RH_max_night: day and night humidity thresholds (configurable, farmer level). T6 selects the active pair based on `is_daytime`. Stored and compared as integer %. Only evaluated when the `rh_ctrl_en` flag is true.
 - All setpoints are integers; fractional sensor readings are rounded to the nearest integer before comparison.
 - Hysteresis band on each setpoint prevents rapid toggling near threshold. Hysteresis values are also integers.
-- Graduated ventilation: windows opened in steps proportional to deviation from setpoint (FR-C09, FR-C10).
+
+**Graduated ventilation (FR-C09, FR-C10) — `NUM_VENT_STEPS = 3`:**
+
+Windows are opened in up to 3 cumulative steps, each adding one more channel:
+
+| Step | Channels open |
+|------|--------------|
+| 0    | None (fully closed) |
+| 1    | M1 only |
+| 2    | M1 + M2 |
+| 3    | M1 + M2 + M3 |
+
+The channel assignment is a compile-time table in `climate_control.cpp` (`VENT_STEP_TABLE[]`). `NUM_VENT_STEPS` is defined in `app_types.h`.
+
+**Step selection algorithm** (used for both temperature and RH-open demands):
+
+```
+step_width    = max(hyst / NUM_VENT_STEPS, 1)          -- integer division, floor to 1
+deviation     = value − setpoint_max                    -- may be negative
+raw_step      = ceil(deviation / step_width)            -- integer ceiling; 0 if deviation ≤ 0
+required_step = clamp(raw_step, 0, NUM_VENT_STEPS)
+```
+
+**Close-hysteresis guard:** once any step > 0 is active, T6 will NOT reduce to step 0 until the measured value falls below `setpoint_max − hyst`. Step reductions within the active range (e.g. 3 → 2 → 1) are applied immediately. This guard prevents oscillation near the setpoint.
+
+**Humidity-close demand (Gap G design decision):** when RH < RH_min (too dry), the required step is always 0 — graduated closing is **not** implemented. A step-0 close demand keeps conflict resolution symmetric: both T and RH demands are expressed as a step number (0 = close, 1–N = open at step N), with the sentinel `VENT_STEP_NEUTRAL` (−1) meaning "RH is in range — no demand from this source."
+
+**Humidity-open demand:** when RH > RH_max (too humid), the same graduated step algorithm is applied using `hyst_rh` as the hysteresis band.
+
+**Humidity disabled:** when `rh_ctrl_en` is false, `vent_step_required_rh()` always returns `VENT_STEP_NEUTRAL`; conflict resolution and RH evaluation are skipped entirely.
+
+The functions `vent_step_required_t()`, `vent_step_required_rh()`, and `vent_resolve_conflict()` are declared in `climate_control.h` and implemented in `climate_control.cpp`.
 
 **Conflict resolution (FR-CR01–FR-CR04):**
-When temperature demands OPEN and humidity demands CLOSE (or vice versa), the conflict resolution algorithm selects the safer action:
-1. Wind safety always overrides both (T3 issues CLOSE_ALL regardless of climate demand) — unless wind protection is disabled (`wind_prot_en` = false).
-2. When temperature and humidity conflict, temperature takes priority by default. The farmer may change this to RH priority or deviation-based priority via the conflict resolution priority setting (`cr_priority`, NVS namespace `climate`).
-3. Conflict resolution is only active when humidity control is enabled (`rh_ctrl_en` = true).
-4. The active conflict and the resolution applied are logged to Q3.
+
+Rules applied in order by `vent_resolve_conflict(step_t, step_rh, cr_priority)`:
+
+1. **Wind safety override:** T3 issues CLOSE_ALL regardless of climate demand (independent of this algorithm) — unless wind protection is disabled (`wind_prot_en` = false).
+2. **RH neutral:** if `step_rh == VENT_STEP_NEUTRAL`, return `step_t` unchanged (RH has no vote).
+3. **Both demand OPEN** (`step_t > 0` and `step_rh > 0`): return the higher step regardless of `cr_priority` — more ventilation satisfies both demands.
+4. **No conflict** (`step_t == step_rh`): return as-is.
+5. **Genuine conflict** (one OPEN, one CLOSE=0) — apply `cr_priority`:
+   - `0 = CR_TEMP_FIRST` — temperature wins (return `step_t`).
+   - `1 = CR_RH_FIRST` — humidity wins (return `step_rh`, which may be 0).
+   - `2 = CR_DEVIATION` — higher step wins (return `max(step_t, step_rh)`).
+
+Conflict resolution is only active when `rh_ctrl_en` is true. The active conflict and the resolution applied are logged to Q3.
 
 **Manual override detection (FR-M08–FR-M11):**
-- T2 detects a state change on the RRK-3 opto-isolated feedback input.
-- T2 sets EG1.MANUAL_OVERRIDE and sends TN3 to T6.
-- T6 transitions to Manual-override state; climate commands are inhibited.
-- On operator resumption: T6 initiates a calibration cycle (close all windows to re-synchronise position estimate), then returns to Automatic mode — unless WIND_OVERRIDE is active.
+- T2 detects a state change on the RRK-3 opto-isolated feedback input using a deferred-ISR pattern: `IRAM_ATTR` ISR records first edge (volatile flag + FreeRTOS tick timestamp); T2 task loop polls the flag with a ≤10 ms resolution and confirms after 75 ms by reading the live pin state; suppressed if any channel FSM is in a MOVING state (T2-commanded move). On confirmation: T2 sets EG1.MANUAL_OVERRIDE and sends TN3 to T6.
+- T6 transitions to Manual-override state on TN3; all climate actuation commands are inhibited.
+- **Calibration cycle on resumption:** T6 posts CMD_CLOSE_ALL to Q1, reads `travel_m3` (seconds) from T4 (MX4) at runtime, and waits `travel_m3 × 1000 + 10 000 ms` to allow the slowest motor (M3 ridge vent) to reach the fully-closed position. T6 then clears EG1.MANUAL_OVERRIDE and resumes Automatic mode — unless WIND_OVERRIDE is also active.
 
 ---
 
@@ -704,9 +757,27 @@ On SD card mount, T9 scans the log directory for `*.csv` files and sorts them by
 - Web interface: paginated log view, filterable by event type and time range (FR-LG05).
 - USB serial diagnostic port: raw log dump command.
 
-**Queue management:**
-- All tasks post to Q3 non-blocking; T9 is the sole consumer.
-- Overflow policy: drop-oldest entry in the queue (most recent events preserved).
+**Queue management and drop-oldest overflow policy (Gap H):**
+
+FreeRTOS queues have no native drop-oldest mode for multi-element queues (`xQueueOverwrite()` is valid only for depth-1 queues). All producers post to Q3 through the `log_post()` helper declared in `event_logger.h`. Calling `xQueueSend(Q3, ...)` directly from any task is prohibited; `log_post()` is the single enforcement point for the overflow policy.
+
+`log_post()` implements the two-step evict-and-retry pattern:
+
+```
+1. xQueueSend(Q3, evt, 0)
+   → pdPASS → done (common path)
+   → pdFAIL → queue full; continue
+
+2. xQueueReceive(Q3, &discard, 0)   -- evict oldest; drop counter ++
+3. xQueueSend(Q3, evt, 0)           -- retry
+   → pdFAIL → rare concurrent-sender race; new event lost; drop counter ++
+```
+
+The drop counter (`g_q3_dropped`) is a `volatile uint32_t` protected by a FreeRTOS spinlock (`portMUX_TYPE`). The spinlock critical sections are sub-microsecond on the ESP32-S3; they do not materially affect the latency of calling tasks.
+
+The `xQueueReceive` and retry `xQueueSend` are not atomic. If two tasks simultaneously reach step 2, one may take the freed slot and the other's retry will fail. This is an accepted trade-off given Q3's depth (32 entries) and T9's drain rate; both the evicted old entry and the second sender's new event are counted in the drop counter. A mutex around the full evict-and-retry sequence would eliminate the race at the cost of added latency in high-priority callers (T3, T6); this is deferred until load testing demonstrates it is necessary.
+
+T9 calls `log_take_dropped_count()` (which atomically reads and resets `g_q3_dropped`) after each drain pass. If the count is non-zero, T9 emits one synthetic `LOG_SYSTEM` event with `value_a` = drop count using `xQueueSend(Q3, ..., 0)` directly (not via `log_post()`, to avoid re-entrant eviction). This makes queue pressure visible in the log record without losing a current event to report it.
 
 ---
 
@@ -754,7 +825,7 @@ On SD card mount, T9 scans the log directory for `*.csv` files and sorts them by
 | *Farmer* parameters | Hidden | Read-write | Read-write |
 | *Administrator* parameters | Hidden | Hidden | Read-write |
 
-Farmer-level parameters include: day and night temperature setpoints (T_min_day, T_max_day, T_min_night, T_max_night), day and night humidity setpoints (RH_min_day, RH_max_day, RH_min_night, RH_max_night), humidity control enable/disable (`rh_ctrl_en`), wind protection enable/disable (`wind_prot_en`), conflict resolution priority (`cr_priority`), and geographic location for sunrise/sunset calculation (`lat_*`, `lon_*`) — web GUI only (FR-CF16). Administrator/technician-level parameters include: wind safety thresholds (v_max, direction exclusion zone), hysteresis values, dwell times (web GUI only, FR-CF10/CF11), motor run-times, sensor poll interval (web GUI only, 150–3600 s, FR-CF07), sliding average windows (web GUI only, 1–60 min, FR-CF17), network configuration, and access control settings.
+Farmer-level parameters include: day and night temperature setpoints (T_min_day, T_max_day, T_min_night, T_max_night), day and night humidity setpoints (RH_min_day, RH_max_day, RH_min_night, RH_max_night), humidity control enable/disable (`rh_ctrl_en`), wind protection enable/disable (`wind_prot_en`), conflict resolution priority (`cr_priority`), and geographic location for sunrise/sunset calculation (`lat_*`, `lon_*`) — web GUI only (FR-CF16). Administrator/technician-level parameters include: wind safety thresholds (v_max, direction exclusion zone), hysteresis values, dwell times (web GUI only, FR-CF10/CF11), motor travel times (`travel_m1`, `travel_m2`, `travel_m3`, web GUI only, 5–600 s, FR-CF05; defaults `MOTOR_MN_TRAVEL_S_DEFAULT` in `app_types.h`), sensor poll interval (web GUI only, 150–3600 s, FR-CF07), sliding average windows (web GUI only, 1–60 min, FR-CF17), network configuration, and access control settings.
 
 The web interface applies the same three-state model and the same PIN codes as the local keyboard interface.
 
@@ -830,7 +901,7 @@ Where `Mxx` encodes active window states (e.g. `M1O` = M1 open, `M2C` = M2 close
 **Implemented by:** T11 (Web Server)
 
 **Technology:**
-- Web server: ESPAsyncWebServer (callback-driven, non-blocking).
+- Web server: **`mathieucarbou/ESPAsyncWebServer @ ^3.3.6`** (callback-driven, non-blocking), with **`mathieucarbou/AsyncTCP @ ^3.3.2`** as its TCP layer. The `mathieucarbou` fork is used instead of the original `me-no-dev/ESPAsyncWebServer` because it is actively maintained for ESP-IDF 5.x / Arduino 3.x compatibility; the original fork does not build cleanly against the ESP32 Arduino 3 core. Both are declared in `firmware/platformio.ini` `lib_deps`.
 - HTML, CSS, and JavaScript files stored in LittleFS partition on ESP32-S3 flash, separate from the firmware binary.
 - The web interface mirrors the local keyboard interface exactly: same three operating states (§5.4), same PIN codes, same parameter visibility rules.
 
@@ -840,11 +911,27 @@ Where `Mxx` encodes active window states (e.g. `M1O` = M1 open, `M2C` = M2 close
 - HTTPS is **not implemented** (TR-NW04 — not feasible on target hardware; threat model accepted, see §6 Open Issue #4).
 
 **Pages:**
-- Dashboard: live T, RH, wind speed, wind direction, window states, operating mode, active alarms.
-- Settings: farmer parameters (farmer/admin session) and admin parameters (admin session only).
-- Log viewer: paginated event log, filterable by event type and time range.
-- OTA update: firmware and web-file upload (admin session only).
-- Network: WiFi AP and client configuration (admin session only).
+
+- **Dashboard** *(any authenticated session)*: live T, RH, wind speed, wind direction, window states (OPEN / MOVING / CLOSED per channel), operating mode, sunrise/sunset times for current day (FR-DN04), active alarms.
+
+- **Settings** *(sub-sections; access level per row)*:
+
+  | Sub-section | Access | Parameters |
+  |-------------|--------|------------|
+  | **Climate** | Farmer / Admin | T_min_day, T_max_day, T_min_night, T_max_night (°C); RH_min_day, RH_max_day, RH_min_night, RH_max_night (%); humidity control enable (`rh_ctrl_en`); conflict resolution priority (`cr_priority`); geographic location lat/lon for sunrise/sunset (FR-CF16) |
+  | **Wind** | Farmer (enable/disable only) / Admin (all) | Wind protection enable (`wind_prot_en`); v_max (Beaufort); direction exclusion zone centre and half-width (°); wind hysteresis timer (FR-CF09) |
+  | **Motors** | Admin only | Motor travel times: M1, M2, M3 individually (seconds, range 5–600 s, factory defaults 21/21/171 s, FR-CF05); open-dwell time per window M1–M3 (minutes, FR-CF10); close-dwell time per window M1–M3 (minutes, FR-CF11) |
+  | **Sensors** | Admin only | Sensor poll interval (150–3600 s, factory default 60 s, FR-CF07); sliding average window for T and RH (1–60 min, FR-CF17) |
+  | **System** | Admin only | Session timeout (minutes); RGB LED day/night brightness and schedule (`led_day_brt`, `led_nite_brt`, `led_nite_from`, `led_nite_to`, FR-CF14); NTP timezone string |
+  | **Access** | Admin only | Change farmer PIN; change admin PIN; lockout threshold and duration |
+
+  Each editable field shows its current value, the valid range, and the factory default. A **Restore defaults** button is available per sub-section (admin only); factory reset of all settings requires physical confirmation (admin only).
+
+- **Log viewer** *(farmer / admin)*: paginated event log, filterable by event type and time range (FR-LG05).
+
+- **OTA update** *(admin only)*: firmware binary upload and web-asset `.zip` upload (T13).
+
+- **Network** *(admin only)*: WiFi AP configuration (SSID suffix, password, auto-shutdown timeout); WiFi client configuration (SSID, PSK, DHCP / static IP); MQTT broker settings.
 
 **MQTT client (optional, FR-MQ01–FR-MQ05):**
 - Configured via the web interface (admin session).
@@ -928,16 +1015,19 @@ Where `Mxx` encodes active window states (e.g. `M1O` = M1 open, `M2C` = M2 close
 
 NVS uses ESP-IDF namespaces to separate configuration domains. All keys use UTF-8 strings of ≤ 15 characters (ESP-IDF NVS limit).
 
-Setpoint and threshold values (temperature, humidity, wind speed, wind direction, dwell/timer durations) are stored as **`int16_t`** (signed 16-bit integer). Fractional values are not stored; the UI and sensor reading pipeline round to the nearest integer before writing to NVS.
+Setpoint and threshold values (temperature, humidity, wind speed, wind direction, dwell durations) are stored as **`int16_t`** (signed 16-bit integer). Fractional values are not stored; the UI and sensor reading pipeline round to the nearest integer before writing to NVS.
+
+**Factory-default constants in `app_types.h`:**
+Motor full-travel time defaults (`MOTOR_M1_TRAVEL_S_DEFAULT 21`, `MOTOR_M2_TRAVEL_S_DEFAULT 21`, `MOTOR_M3_TRAVEL_S_DEFAULT 171`, unit: seconds) are defined in `firmware/src/types/app_types.h`. They are written to NVS on first boot and after factory reset. At runtime T2 reads the live travel times from T4 (MX4) — i.e. the current NVS `motor/travel_mN` values — and converts to milliseconds for `vTaskDelay`. Technicians can adjust travel times via the web GUI (FR-CF05). See §5.2 for the travel timer / dwell timer distinction.
 
 | Namespace | Key examples | Type | Description |
 |-----------|-------------|------|-------------|
 | `climate` | `t_min_day`, `t_max_day`, `t_min_ngt`, `t_max_ngt`, `rh_min_day`, `rh_max_day`, `rh_min_ngt`, `rh_max_ngt`, `hyst_t`, `hyst_rh`, `rh_ctrl_en`, `cr_priority`, `avg_win_t`, `avg_win_rh` | `int16_t` / `uint8_t` | Day and night setpoints for temperature (°C) and humidity (%) (integers); hysteresis bands (integers); `rh_ctrl_en`: humidity control enable (0 = disabled, 1 = enabled, default 1); `cr_priority`: conflict resolution (0 = temperature first [default], 1 = humidity first, 2 = deviation-based); `avg_win_t` / `avg_win_rh`: sliding average window in minutes for T and RH (1–60, default 1) |
 | `wind` | `v_max`, `dir_excl_low`, `dir_excl_high`, `wind_prot_en` | `int16_t` / `uint8_t` | Wind speed threshold (m/s or Beaufort) and direction exclusion zone (degrees) (integers); `wind_prot_en`: wind protection enable flag (0 = disabled, 1 = enabled, default 1) |
-| `motor` | `dwell_open_m1`, `dwell_close_m1`, … `dwell_close_m3` | `int16_t` | Per-channel dwell times (minutes) — integers only |
+| `motor` | `travel_m1`, `travel_m2`, `travel_m3`, `dwell_open_m1`, `dwell_open_m2`, `dwell_open_m3`, `dwell_close_m1`, `dwell_close_m2`, `dwell_close_m3` | `int16_t` | **Travel times** (`travel_mN`, seconds, range 5–600): how long T2 energises the relay to move a window from one end-stop to the other. Read by T2 from T4 (MX4); converted to ms for `vTaskDelay`. Defaults: M1=21, M2=21, M3=171 (`MOTOR_MN_TRAVEL_S_DEFAULT` in `app_types.h`). Configurable by technician via web GUI (FR-CF05, admin level). **Dwell times** (`dwell_open_mN` / `dwell_close_mN`, minutes): minimum hold period T2 enforces after travel completes before accepting the next command on that channel. `dwell_open_mN`: min hold at `OPEN` before CLOSE accepted. `dwell_close_mN`: min hold at `CLOSED` before OPEN accepted. Dwell timer starts when the travel timer expires (FR-A09–FR-A12). Default: 0 (no hold enforced). Configurable by technician via web GUI only (FR-CF10, FR-CF11). |
 | `access` | `pin_salt` (blob[16]), `pin_farmer_hash` (blob[32]), `pin_admin_hash` (blob[32]), `fail_cnt_f`, `fail_cnt_a`, `lockout_f`, `lockout_a`, `lockout_max`, `lockout_secs` | blob / int32 | `pin_salt`: 16-byte random salt, generated once at first boot. `pin_farmer_hash` / `pin_admin_hash`: SHA-256(salt \|\| pin_ascii) digest. `fail_cnt_f` / `fail_cnt_a`: per-role consecutive failure count. `lockout_f` / `lockout_a`: per-role lockout expiry as Unix timestamp (0 = not locked). `lockout_max`: threshold before lockout (default 5). `lockout_secs`: lockout duration (default 300 s). |
 | `wifi` | `ssid`, `psk_hash`, `ap_psk`, `ip_mode`, `ip_addr`, `ip_mask`, `ip_gw`, `ip_dns` | string | WiFi client and AP credentials and network settings; AP SSID is auto-generated from MAC address and not stored |
-| `mqtt` | `broker_url`, `port`, `username`, `password_hash`, `topic_prefix`, `interval` | string / uint16 | MQTT broker connection and publish settings |
+| `mqtt` | `broker_url`, `port`, `username`, `password`, `topic_prefix`, `interval` | string / uint16 | MQTT broker connection and publish settings. `password` stored as plaintext in NVS (MQTT protocol requires the actual password to authenticate to the broker; hashing is not possible). Accepted risk — same basis as no-HTTPS decision (Issue #5 closed). |
 | `system` | `poll_interval`, `session_timeout`, `ap_timeout`, `lang`, `log_pointer`, `schema_ver`, `fw_version`, `led_day_brt`, `led_nite_brt`, `led_nite_from`, `led_nite_to`, `lat_deg`, `lat_frac`, `lon_deg`, `lon_frac` | uint16 / string / uint8 / int16 | System-wide configuration; `poll_interval` (uint16, seconds, default 60, technician-settable 150–3600 via web GUI); `lat_deg` + `lat_frac` / `lon_deg` + `lon_frac`: geographic location stored as integer degree and fractional milli-degree parts (e.g. 52.0907°N stored as lat_deg=52, lat_frac=907) for sunrise/sunset calculation (FR-DN02); `schema_ver` (int32) tracks NVS layout version; `fw_version` (string `"MAJOR.MINOR.PATCH"`) overwritten on every boot; `led_day_brt` / `led_nite_brt` (uint8, 0–255, defaults 200/20); `led_nite_from` / `led_nite_to` (uint8, hour 0–23, defaults 22/6) |
 | `log` | Ring buffer entries (binary blob, fixed record size) | blob | Event log fallback when SD card absent |
 
@@ -1065,11 +1155,11 @@ These four keys are part of the "Should" feature set (FR-UI21, FR-CF14); they de
 
 | # | Issue | Owner | Status |
 |---|-------|-------|--------|
-| 1 | **Motor feedback signal — software response** — Hardware signal now characterised (THDS Issue #1 closed): RRK-3 alarm relay dry contact → J10 opto input → GPIO 42; logic HIGH = alarm active. Remaining software work: (a) T2 edge detection (rising edge triggers alarm); (b) debounce duration to be defined (candidate 50–100 ms); (c) T6 calibration cycle on alarm clearance to be implemented per FR-M08–FR-M11. | Software engineer | **Open** |
-| 2 | **Ring buffer depth** — The depth of the T4 measurement history ring buffers (T, RH, wind speed, wind direction) is to be defined when the data model and RAM budget are finalised. Depth determines RAM usage and the length of history available for web trend view, MQTT history, and periodic log snapshots. | Software engineer | Open |
-| 3 | **NTP timezone handling** — Hardware time source resolved (THDS Issue #7 closed): DS1307 RTC is the authoritative offline clock; NTP synchronises on WiFi connect. DST handling: implement using POSIX TZ string **`CET-1CEST,M3.5.0,M10.5.0/3`** via `setenv("TZ", ...)` / `tzset()` on ESP32. No DCF77 or manual transition table required. | Software engineer | **Open** |
+| 1 | **Motor feedback signal — software response** — Hardware signal characterised (THDS Issue #1 closed): RRK-3 dry relay contact → J10 opto input → GPIO 42; logic HIGH = active. **Resolution:** T2 uses a deferred-ISR pattern: `attachInterrupt(PIN_OPTO_INPUT, isr_handler, CHANGE)`; `IRAM_ATTR` ISR records first edge only (volatile flag + FreeRTOS tick timestamp); T2 task loop confirms after 75 ms by reading live pin state; suppressed while any channel FSM is MOVING (T2-commanded move). On confirmation: sets EG1.MANUAL_OVERRIDE, sends TN3 to T6, posts log event to Q3. T6 calibration cycle: posts CMD_CLOSE_ALL, reads `travel_m3` from T4 (MX4), waits `travel_m3 × 1000 + 10 000 ms`, clears EG1.MANUAL_OVERRIDE, resumes Automatic. | Software engineer | **Closed** |
+| 2 | **Ring buffer depth** — **Resolution:** 360 entries per channel (T, RH, wind speed, wind direction) = 11.5 KB total internal RAM. Based on: default 60 s poll interval × 360 = 6 hours of history; fits comfortably in ESP32-S3 internal SRAM with substantial headroom. Sufficient for web trend view, MQTT history, and periodic log snapshots. | Software engineer | **Closed** |
+| 3 | **NTP timezone handling** — Hardware time source resolved (THDS Issue #7 closed): DS1307 RTC is the authoritative offline clock; NTP synchronises on WiFi connect. **Resolution:** DST handling via POSIX TZ string `CET-1CEST,M3.5.0,M10.5.0/3` — `setenv("TZ", tz_str, 1); tzset();` after `configTime(0, 0, "pool.ntp.org")`. TZ string stored in NVS `system/tz_str` with `CET-1CEST,M3.5.0,M10.5.0/3` as factory default; technician-configurable via web GUI. | Software engineer | **Closed** |
 | 4 | **Web interface HTTPS — not implemented (TR-NW04 accepted)** — TLS termination on the ESP32-S3 is not feasible: the RAM and CPU overhead of a TLS stack would leave insufficient headroom for concurrent real-time tasks. **Decision:** HTTPS will not be implemented. **Accepted threat model:** the web interface is served over plain HTTP. The risk is mitigated by the following constraints: (a) the WiFi AP is disabled by default and enabled only on explicit admin command; (b) the AP has a configurable automatic timeout; (c) the controller is intended for use on a private, physically controlled greenhouse network and is not exposed to the public internet; (d) all credentials are stored as salted hashes and are never transmitted in plaintext; (e) session cookies are short-lived and invalidated on logout or timeout. This residual risk is accepted by the project owner. | Software engineer | **Closed — accepted** |
-| 5 | **MQTT authentication method** — Username/password or client certificate authentication for the MQTT client. The choice depends on the broker environment; both options should be configurable. | Software engineer | Open |
+| 5 | **MQTT authentication method** — **Resolution:** plain username + password over TCP. Client certificate authentication is not implemented. The MQTT `password` field is stored as plaintext in NVS `mqtt/password` (MQTT protocol requires the actual password; hashing is not applicable). Accepted risk: same threat model as Issue #4 (no-HTTPS decision) — controller is on a private greenhouse network. Risk documented and accepted by the project owner. | Software engineer | **Closed — accepted** |
 
 ---
 

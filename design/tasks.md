@@ -73,11 +73,12 @@ This document is the authoritative reference for the software task architecture.
 
 - Sole owner of all 6 relay GPIO output pins (OPEN/CLOSE for M1, M2, M3); no other task may assert relay signals directly
 - All actuation requests arrive via a command queue (from T3, T6, T8, T11, T12)
-- Runs the per-channel window state machine: `CLOSED` → `MOVING` → `OPEN` and reverse
-- Enforces OPEN + CLOSE mutual exclusion on each channel before asserting any relay
-- Manages dwell timers: minimum open-dwell and close-dwell per channel before accepting the next command
-- Monitors the RRK-3 opto-isolated feedback input; detects manual override and notifies T6 and T9
-- **Synchronization:** receives Q1 (actuation commands); posts to Q3 (log events); sets EG1.MANUAL_OVERRIDE on feedback input trigger; sends TN3 to T6 (manual override detected)
+- Runs the per-channel window state machine: `UNKNOWN` → `CLOSED` ↔ `MOVING_OPEN` / `MOVING_CLOSE` ↔ `OPEN`
+- Enforces OPEN + CLOSE mutual exclusion on each channel before asserting any relay; inserts 100 ms gap after de-energising the outgoing relay
+- **Travel timer:** reads `travel_mN` (seconds) from T4 (MX4); energises relay for `travel_mN × 1000 ms`; de-energises on expiry; window is now at end position. Defaults `MOTOR_MN_TRAVEL_S_DEFAULT` in `app_types.h`; technician-adjustable via web GUI (FR-CF05)
+- **Dwell timer:** after travel completes, enforces the minimum hold time (`dwell_open_mN` / `dwell_close_mN` from T4 (MX4), minutes) before accepting the next command on that channel (FR-A09–FR-A12)
+- Monitors the RRK-3 opto-isolated feedback input via deferred-ISR pattern: `attachInterrupt(PIN_OPTO_INPUT, isr_handler, CHANGE)`; `IRAM_ATTR` ISR records first edge only (volatile flag + FreeRTOS tick timestamp); T2 task loop (≤10 ms polling via Q1 timeout) confirms after 75 ms by reading live pin state; suppressed while any channel FSM is MOVING (T2-commanded move). On confirmation: sets EG1.MANUAL_OVERRIDE, sends TN3 to T6, posts log event to Q3 (FR-M08–FR-M11)
+- **Synchronization:** receives Q1 (actuation commands); posts to Q3 (log events via `log_post()`); sets EG1.MANUAL_OVERRIDE on feedback confirmation; sends TN3 to T6 (manual override detected)
 
 ---
 
@@ -103,7 +104,7 @@ This document is the authoritative reference for the software task architecture.
 T4 is the single source of truth for all runtime data and configuration. All tasks that need to read or write system state do so through T4. This eliminates distributed per-variable mutexes and provides a single serialisation point for NVS persistence.
 
 **Configuration settings**
-- Holds all configurable parameters in RAM: setpoints (T_min, T_max, RH_min, RH_max), wind thresholds, dwell times, hysteresis values, WiFi credentials, PIN hashes, display language, session timeout, WiFi AP timeout
+- Holds all configurable parameters in RAM: setpoints (T_min, T_max, RH_min, RH_max), wind thresholds, per-channel motor travel times (`travel_mN`, seconds — relay energisation duration; defaults `MOTOR_MN_TRAVEL_S_DEFAULT`) and dwell times (`dwell_open_mN` / `dwell_close_mN`, minutes — minimum hold after travel), hysteresis values, WiFi credentials, PIN hashes, display language, session timeout, WiFi AP timeout
 - Accepts write requests from T8 (UI) and T11 (web server); validates range before accepting
 - Persists changed settings to NVS flash immediately on write
 - Loads all settings from NVS on startup; applies defined defaults for any missing keys
@@ -124,8 +125,8 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 **Measurement history ring buffers**
 - Maintains a separate ring buffer for each measured quantity: T, RH, wind speed, wind direction
 - Each entry contains: timestamp and measured value
-- Ring buffer depth: **to be defined when the data model is finalised**
-- Read by T8 (display history), T9 (periodic log snapshots), T11 (web trend view), T12 (MQTT history)
+- Ring buffer depth: **360 entries per channel** (T, RH, wind speed, wind direction) = 11.5 KB total internal RAM; ~6 hours of history at default 60 s poll interval
+- Read by T8 (display history), T11 (web trend view), T12 (MQTT history). T9 does not read ring buffers — T4 posts `LOG_SENSOR` events to Q3 on each new poll result instead
 
 **Operating state**
 - Holds current operating mode (Automatic / Standby / Wind-override / Manual-override)
@@ -151,12 +152,18 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 
 **Priority:** Medium | **Core:** 1
 
-- Wakes on notification from T4 that new sensor data is available
-- Reads current T and RH from T4; reads setpoints and hysteresis values from T4
-- Evaluates temperature and humidity against setpoints with hysteresis bands
-- Runs conflict resolution algorithm when T and RH demand opposing window actions
-- Posts open/close actuation commands to T2 via command queue
-- Checks operating mode from T4 before acting; inhibited in Standby, Wind-override, and Manual-override states
+- Wakes on TN2 (new sensor data from T4) or TN3 (manual override from T2)
+- On TN3 (manual override): posts CLOSE_ALL to Q1, starts calibration timer (`travel_m3 * 1000 + 10 000 ms`), then resumes automatic mode
+- On TN2: checks EG1 flags; skips evaluation if WIND_OVERRIDE, MANUAL_OVERRIDE, or SENSOR_FAULT_T is set
+- Reads T_avg and RH_avg from T4 (MX2); reads `is_daytime`, active setpoints, and hysteresis values from T4 (MX4)
+- **Graduated ventilation (`NUM_VENT_STEPS = 3`):** calls `vent_step_required_t()` and `vent_step_required_rh()` to compute per-source step demands, then `vent_resolve_conflict()` to produce a single resolved step; calls `vent_step_channels()` to convert step → channel bitmask
+  - Step selection: `step_width = max(hyst / 3, 1)`; `required = clamp(ceil(deviation / step_width), 0, 3)`
+  - Close-hysteresis guard: step held ≥ 1 until value < setpoint_max − hyst
+  - RH > RH_max → graduated OPEN (same algorithm as temperature)
+  - RH < RH_min → step 0 (full close demand; no graduated closing — Gap G design decision)
+  - RH in [RH_min, RH_max] → `VENT_STEP_NEUTRAL` (−1): RH has no vote
+- Posts incremental channel commands to Q1 (CMD_OPEN for newly opened channels; CMD_CLOSE for newly closed channels; CMD_CLOSE_ALL when resolved step is 0)
+- Maintains task-local `current_step_t` and `current_step_rh` to track the last commanded step per source; both reset to 0 on entry to Manual-override
 - **Synchronization:** wakes on TN2 (from T4, new sensor data); acquires MX2 to read current T and RH; acquires MX4 to read setpoints and hysteresis; reads EG1 (WIND_OVERRIDE, MANUAL_OVERRIDE, SENSOR_FAULT_T, SENSOR_FAULT_W) before issuing any command; posts to Q1 (actuation commands); receives TN3 (from T2, manual override detected); clears EG1.MANUAL_OVERRIDE after calibration cycle completes; posts to Q3 (log events)
 
 ---
@@ -191,13 +198,13 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 
 **Priority:** Low | **Core:** 1
 
-- Receives log events from all tasks via a dedicated queue; senders post and return immediately
+- Sole consumer of Q3; all other tasks post log events via `log_post()` from `event_logger.h` — never via `xQueueSend(Q3, ...)` directly
+- Receives log events from all tasks via Q3; senders call `log_post()` and return immediately; no task is blocked by log write latency
 - Serialises all writes to the NVS ring buffer and, when present, to the SD card
-- The queue decouples log I/O from higher-priority tasks; no task is blocked by log write latency
-- Queue overflow policy: drop oldest (most recent events are preserved)
-- Writes periodic sensor-value snapshots by reading current measurement data from T4 at a configurable interval
+- **Drop-oldest overflow policy (Gap H):** `log_post()` implements a two-step evict-and-retry: on a full queue, it evicts the oldest entry via `xQueueReceive(Q3, &discard, 0)` then retries `xQueueSend`; a `g_q3_dropped` counter is incremented for each dropped event (evicted entry + rare concurrent-sender retry miss). T9 calls `log_take_dropped_count()` after each drain pass; if non-zero, emits one `LOG_SYSTEM` event with `value_a` = drop count (posted directly via `xQueueSend`, not `log_post()`, to avoid re-entrant eviction)
+- Writes periodic sensor-value snapshots: T4 posts a `LOG_SENSOR` event to Q3 every time it receives new data from T5; no separate timer required in T9
 - **SD card log rotation:** writes CSV files named `YYYYMMDDHHSS.csv`; rotates at 512 KB; retains 10 most recent files (~45–60 days history); deletes oldest file on rotation when count exceeds 10; falls back to NVS when free space < 2 MB and file count is at the 3-file minimum retention floor. See §5.3 of the software design specification for full policy.
-- **Synchronization:** receives Q3 (log events from all tasks); acquires MX3 to read ring buffers for periodic sensor snapshots; no I2C or GPIO access
+- **Synchronization:** receives Q3 (log events from all tasks); no mutexes held; no I2C or GPIO access
 
 ---
 
@@ -310,10 +317,10 @@ Only T2 may assert relay GPIO signals. The command queue into T2 is the single a
 If stack usage is low and execution time is short, T7 (keypad scan) and T1 (watchdog/heartbeat) can be implemented as FreeRTOS software timer callbacks on the shared timer service task rather than full tasks, reducing memory overhead.
 
 **Ring buffer depth (T4)**
-The history depth for the T, RH, wind speed, and wind direction ring buffers is to be defined when the data model is finalised. The depth determines RAM usage and the length of the history available for the web trend view, MQTT history, and periodic log snapshots.
+360 entries per channel (T, RH, wind speed, wind direction) = 11.5 KB total internal RAM. At the default 60 s poll interval this provides ~6 hours of history — sufficient for the web trend view, MQTT history display, and diagnostic use. Resolved — see Open Issue #2 (Closed in TSDS).
 
 **Queue overflow policy (T9)**
-Drop-oldest is generally preferred over drop-newest for the event log queue: recent events are more operationally relevant than older ones in an overflow situation.
+Drop-oldest enforced by `log_post()` in `event_logger.h` (Gap H). All producers must call `log_post()` — never `xQueueSend(Q3, ...)` directly. T9 surfaces the drop count via a synthetic `LOG_SYSTEM` event after each drain pass.
 
 **OTA sequencing (T13)**
 If an update release contains both firmware and web-file changes, both packages must be transferred and verified before either is activated. T13 shall not switch the active bank until both writes have completed successfully.
@@ -331,8 +338,8 @@ FreeRTOS mutexes (`xSemaphoreCreateMutex`) implement priority inheritance, which
 | ID  | Name                      | Protects                                                                 | Writers (hold for write)     | Readers (hold for read)              |
 |-----|---------------------------|--------------------------------------------------------------------------|------------------------------|--------------------------------------|
 | MX1 | I2C bus                   | Shared I2C bus (SDA/SCL) — LCD display and DS1307 RTC on the same wires | T8 (LCD write), T4 (RTC read) | —                                   |
-| MX2 | Current measurement data  | Latest T, RH, wind speed, wind direction values in T4                   | T4 (on write from T5)        | T3, T6, T8, T9, T11, T12            |
-| MX3 | Measurement ring buffers  | History ring buffers for T, RH, wind speed, wind direction in T4        | T4 (on write from T5)        | T8, T9, T11, T12                    |
+| MX2 | Current measurement data  | Latest T, RH, wind speed, wind direction values in T4                   | T4 (on write from T5)        | T3, T6, T8, T11, T12                |
+| MX3 | Measurement ring buffers  | History ring buffers for T, RH, wind speed, wind direction in T4        | T4 (on write from T5)        | T8, T11, T12                        |
 | MX4 | Configuration settings    | All configurable parameters in T4                                        | T4 (on validated write from Q4) | T3, T6, T8, T11, T12             |
 | MX5 | LittleFS filesystem       | LittleFS partition (HTML and web asset files)                            | T13 (OTA web-file write)     | T11 (serving HTML files)            |
 
@@ -400,7 +407,7 @@ A single FreeRTOS event group (`xEventGroupCreate`) holds all system-wide boolea
 | T6   | MX2, MX4        | Q1, Q3           | —                     | —                    | TN2 ← T4, TN3 ← T2    | Reads EG1 (all); clears EG1.MANUAL_OVERRIDE |
 | T7   | —               | Q2               | —                     | —                    | —                       | —                        |
 | T8   | MX1, MX2, MX3, MX4 | Q1, Q3, Q4  | Q2, Q5                | —                    | —                       | Reads EG1 (all)          |
-| T9   | MX3             | —                | Q3                    | —                    | —                       | —                        |
+| T9   | —               | —                | Q3                    | —                    | —                       | —                        |
 | T10  | —               | Q3, Q4, Q5       | —                     | TN4 → T4             | —                       | —                        |
 | T11  | MX2, MX4, MX5  | Q1, Q3, Q4       | —                     | —                    | —                       | Reads EG1.OTA_IN_PROGRESS |
 | T12  | MX2, MX4        | Q1, Q3, Q4       | —                     | —                    | —                       | —                        |

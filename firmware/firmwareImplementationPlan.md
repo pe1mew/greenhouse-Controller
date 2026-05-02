@@ -51,22 +51,22 @@ firmware/src/
 | **B** | `PIN_RGB_LED` (GPIO38) missing from `pin_config.h` | ✅ Solved | `#define PIN_RGB_LED 38` added to `firmware/config/pin_config.h` (Indicators section); `adafruit/Adafruit NeoPixel @ ^1.12.3` added to `lib_deps`; I2C comment corrected (0x27 → 0x3E). |
 | **C** | No SHA-256 library specified for PIN hashing | ✅ Solved | `firmware/src/auth/pin_auth.h/.cpp` created. Hash: `SHA-256(salt \|\| pin_ascii)` via `mbedtls/sha256.h` (bundled, no extra lib). 16-byte salt from `esp_fill_random()` stored in NVS `access/pin_salt` at first boot. Per-role lockout with NVS-persisted expiry timestamps. TSDS §5.4 and NVS table updated. |
 | **D** | No sunrise/sunset algorithm specified | ✅ Solved | `firmware/src/data_manager/sunrise.h/.cpp` created. NOAA General Solar Position Equations (10 steps, ±2 min accuracy). Outputs UTC minutes from midnight. Handles polar day/night and FR-DN05 (zero lat/lon → daytime default). TSDS §4.3, `tasks.md` T4, and FRS FR-DN02 updated. |
-| **E** | `ESPAsyncWebServer` / `AsyncTCP` not in `lib_deps` | ⬜ Pending | Add `mathieucarbou/ESPAsyncWebServer` (IDF5-compatible fork) + `AsyncTCP` to `platformio.ini` before Phase 9. |
-| **F** | Motor travel time vs. dwell time conflated in NVS schema | ⬜ Pending | Motor travel times → compile-time constants in `app_types.h` (`MOTOR_M1_TRAVEL_MS 21000`, `MOTOR_M2_TRAVEL_MS 21000`, `MOTOR_M3_TRAVEL_MS 171000`); NVS `dwell_open_mN`/`dwell_close_mN` = minimum hold times only. |
-| **G** | Graduated ventilation channel assignment undefined | ⬜ Pending | Default step table: Step 1 = M1, Step 2 = M1+M2, Step 3 = M1+M2+M3; compile-time lookup in `climate_control.cpp`. |
-| **H** | Q3 drop-oldest not achievable with plain FreeRTOS queue | ⬜ Pending | In `log_post()`: if `xQueueSend(..., 0)` fails, call `xQueueReceive(..., 0)` to evict oldest, then retry send. |
+| **E** | `ESPAsyncWebServer` / `AsyncTCP` not in `lib_deps` | ✅ Solved | `mathieucarbou/ESPAsyncWebServer @ ^3.3.6` and `mathieucarbou/AsyncTCP @ ^3.3.2` added to `platformio.ini`; IDF5/Arduino-3 compatible fork chosen. TSDS §5.8 updated with library identity and rationale. |
+| **F** | Motor travel time vs. dwell time conflated in NVS schema | ✅ Solved | `firmware/src/types/app_types.h` defines `MOTOR_M1_TRAVEL_S_DEFAULT 21`, `MOTOR_M2_TRAVEL_S_DEFAULT 21`, `MOTOR_M3_TRAVEL_S_DEFAULT 171` (seconds) as factory defaults plus `MOTOR_TRAVEL_S_MIN 5` / `MOTOR_TRAVEL_S_MAX 600` bounds. NVS `motor` namespace adds `travel_m1/m2/m3` (int16_t, seconds, range 5–600) loaded by T4 on boot; T2 reads from MX4 at runtime (FR-CF05 satisfied). NVS `dwell_*` = minimum hold times only. TSDS §5.2, §4.3 T2/T4, §5.4, §5.10 updated; tasks.md updated. |
+| **G** | Graduated ventilation channel assignment undefined | ✅ Solved | `firmware/src/climate_control/climate_control.h/.cpp` created. `NUM_VENT_STEPS 3` added to `app_types.h`. Compile-time `VENT_STEP_TABLE[]`: step 1 = M1, step 2 = M1+M2, step 3 = M1+M2+M3. `vent_step_required_t()` and `vent_step_required_rh()` implement the graduated step algorithm with close-hysteresis guard. RH < RH_min → step 0 (full close; no graduated closing — Gap G design decision). RH in range → `VENT_STEP_NEUTRAL` (−1). `vent_resolve_conflict()` handles neutral / both-open / no-conflict / genuine-conflict cases. TSDS §5.2 updated with full algorithm; tasks.md T6 updated. |
+| **H** | Q3 drop-oldest not achievable with plain FreeRTOS queue | ✅ Solved | `firmware/src/event_logger/event_logger.h/.cpp` created. `log_post()` implements two-step evict-and-retry: `xQueueSend` → on fail: `xQueueReceive` (evict oldest) + `g_q3_dropped++` → retry `xQueueSend` → on fail: `g_q3_dropped++`. Counter protected by `portMUX_TYPE` spinlock. `log_take_dropped_count()` atomically reads and resets counter for T9. T9 emits `LOG_SYSTEM` event when count > 0. All producers must use `log_post()`; direct `xQueueSend(Q3,...)` is prohibited. TSDS §5.3 and tasks.md T9 updated. |
 
 ### Open Issue Resolutions
 
 | Issue | Resolution |
 |-------|------------|
-| **#1 GPIO42 debounce** | `attachInterrupt(PIN_OPTO_INPUT, isr_handler, CHANGE)` in T2; deferred-ISR pattern: ISR only sets volatile flag + timestamp; T2 loop confirms after 75 ms |
-| **#1 Calibration cycle** | On `MANUAL_OVERRIDE` clear, T6 posts `CLOSE_ALL` then waits `MOTOR_M3_TRAVEL_MS + 10s` margin before resuming AUTOMATIC |
+| **#1a GPIO42 debounce** | `attachInterrupt(PIN_OPTO_INPUT, isr_handler, CHANGE)` in T2; deferred-ISR pattern: ISR (`IRAM_ATTR`) sets volatile flag + timestamp on first edge only; T2 loop confirms after 75 ms by reading current pin state; transition ignored if any channel FSM is in MOVING state (T2 commanded move) |
+| **#1b Calibration cycle** | On `MANUAL_OVERRIDE` clear, T6 posts `CLOSE_ALL` to Q1, then reads `travel_m3` (seconds) from T4 (MX4) at runtime and waits `travel_m3 × 1000 + 10 000 ms` before resuming AUTOMATIC |
 | **#2 Ring buffer depth** | 360 entries per channel (T, RH, wind_speed, wind_dir) = 11.5 KB total; fits in internal RAM with headroom |
 | **#3 NTP timezone** | `setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1); tzset();` after `configTime()`; store TZ string in NVS `system/tz_str` with that default |
 | **#4 MQTT auth** | Username + password over plain TCP (same accepted-risk basis as no-HTTPS); store password in NVS `mqtt/password`; document accepted risk |
 | **#5 J5 heater supply** | No GPIO assigned in `pin_config.h` → always-on hardware solution; T5 logs anomalous `heating_temperature_c` values only |
-| **#6 Snapshot interval** | Snapshot triggered by sensor data arrival via Q3; period = `poll_interval`; no separate configurable parameter |
+| **#6 Snapshot interval** | T4 posts a `LOG_SENSOR` event to Q3 each time it receives new sensor data from T5 via Q6; T9 consumes it like any other event; period = `poll_interval`; no separate configurable parameter |
 
 ---
 
@@ -79,7 +79,7 @@ Files to create/modify:
 - `firmware/partitions.csv` — ✅ **done** (Gap A)
 - `firmware/platformio.ini` — ✅ **done** (Gap A: `board_build.partitions`; Gap B: `Adafruit NeoPixel` lib); still needs driver include paths added when src/ layout is finalised
 - `firmware/config/pin_config.h` — ✅ **done** (Gap B: `PIN_RGB_LED 38`, I2C address corrected)
-- `firmware/src/types/app_types.h` — **create**: complete shared type system (all structs, queue depths, task stack sizes, EG1 bits, extern handles)
+- `firmware/src/types/app_types.h` — ✅ **created** (Gap F: motor travel constants + Phase 0 stubs); Phase 0 completes Sections 2–5 (handles, structs, enums, EG1 bits)
 - `firmware/src/main.cpp` — **create**: `setup()`: driver inits, create all RTOS primitives, spawn all tasks; `loop()`: empty
 - All task `.h/.cpp` files — **create**: stub implementations (`vTaskDelay(portMAX_DELAY)`)
 - **T1 fully implemented:** 500ms watchdog kick, HB LED toggle (GPIO41), WS2812 status LED (GPIO38 via `PIN_RGB_LED`) driven from EG1 state using `Adafruit NeoPixel`
@@ -118,8 +118,8 @@ Implementation:
 - Boot sequence: issue CLOSE_ALL on all channels (establishes known CLOSED state; waits full travel time per channel)
 - Window FSM per channel: `UNKNOWN → CLOSED → MOVING_OPEN → OPEN → MOVING_CLOSE → CLOSED`
 - Before asserting any relay: de-energise complementary relay + 100ms gap
-- Motor timer: `vTaskDelay(MOTOR_MN_TRAVEL_MS)` while relay energised; then de-energise and advance FSM
-- Dwell timer: load `dwell_open_mN` / `dwell_close_mN` from T4 (MX4); reject commands arriving too early
+- Motor travel timer: read `travel_mN` (seconds) from T4 (MX4) at startup; `vTaskDelay(pdMS_TO_TICKS(travel_s * 1000))` while relay energised; de-energise on expiry and advance FSM
+- Dwell timer: read `dwell_open_mN` / `dwell_close_mN` (minutes) from T4 (MX4); reject commands arriving before dwell elapsed
 - Q1 consumer: T3 CLOSE_ALL commands preempt pending T6 commands (check source field)
 - GPIO42 ISR: volatile flag + timestamp; T2 main loop confirms after 75ms debounce; on confirmation, set EG1 MANUAL_OVERRIDE, send TN3 to T6, post LOG event to Q3
 
@@ -171,41 +171,44 @@ Verification: Inject wind > v_max via Q6 from test harness; verify CLOSE_ALL on 
 ### Phase 5 — Event Logger (T9)
 **Goal:** All events persistently recorded before automation goes live.
 
-Files: `event_logger.h/.cpp`
+Files: `event_logger.h` — ✅ **done** (Gap H); `event_logger.cpp` — ✅ **done** (Gap H); Phase 5 completes the T9 task body.
 
 Implementation:
-- `log_post(log_event_t*)` helper: if `xQueueSend(Q3, ..., 0)` fails → evict oldest via `xQueueReceive(Q3, &discard, 0)` → retry send (drop-oldest policy)
+- `log_post()` and `log_take_dropped_count()` are fully implemented (Gap H ✅); all other tasks must use `log_post()` — never `xQueueSend(Q3, ...)` directly
 - T9 task loop: `xQueueReceive(Q3, &evt, portMAX_DELAY)` → `nvs_log_append(&evt)`; if SD available → `storage_sd_write_append(current_file, csv_line)`
+- After each drain pass: call `log_take_dropped_count()`; if > 0 → construct `LOG_SYSTEM` event with `value_a = (int16_t)count`; post via `xQueueSend(Q3, &sys_evt, 0)` directly (not `log_post()` — avoids re-entrant eviction)
 - SD rotation: track file size via `storage_sd_file_size()`; rotate at 512 KB; delete oldest when count > 10 (`storage_sd_list_csv()` + `storage_sd_delete()`)
 - No SD card: graceful fallback to NVS ring buffer; log SYSTEM event on mount failure
-- Periodic snapshot: T4 posts a SENSOR log_event_t to Q3 every time it receives fresh data from Q6 (eliminates separate timer)
+- Periodic snapshot: T4 posts a `LOG_SENSOR` event to Q3 every time it receives new data from Q6 (no separate timer in T9 required)
 
 Drivers used: LIB-7 (nvs_log_append), LIB-8 (storage_sd_*)
 
-Verification: CSV file created on SD; 5 manual events appear; rotate test at 512 KB; NVS fallback without SD.
+Verification: CSV file created on SD; 5 manual events appear; rotate test at 512 KB; NVS fallback without SD; fill Q3 to trigger overflow → drop counter > 0 → `LOG_SYSTEM` event in log.
 
 ---
 
 ### Phase 6 — Climate Control (T6)
 **Goal:** Autonomous temperature/humidity-driven ventilation with conflict resolution.
 
-Files: `climate_control.h/.cpp`
+Files: `climate_control.h` — ✅ **done** (Gap G); `climate_control.cpp` — ✅ **done** (Gap G); Phase 6 completes the T6 task body.
 
 Implementation:
 - Block on TN2 (new sensor data) and TN3 (manual override signal from T2)
-- On TN3: enter MANUAL_OVERRIDE inhibit; post CLOSE_ALL to Q1; start calibration timer (`MOTOR_M3_TRAVEL_MS + 10s`); on timer expiry, clear EG1 MANUAL_OVERRIDE, post log, resume AUTOMATIC
+- On TN3: enter MANUAL_OVERRIDE inhibit; post CLOSE_ALL to Q1; read `travel_m3` (seconds) from T4 (MX4); start calibration timer (`travel_m3 * 1000 + 10 000 ms` margin); on timer expiry, clear EG1 MANUAL_OVERRIDE, post log, resume AUTOMATIC
 - On TN2: check EG1 flags (WIND_OVERRIDE, MANUAL_OVERRIDE, SENSOR_FAULT_T) — skip if any set
-- Acquire MX2: read T_avg, RH_avg; acquire MX4: read active setpoints (day vs. night via T4's `is_daytime`)
-- Temperature evaluation with hysteresis (`hyst_t`); graduated steps per Gap G step table
-- Humidity evaluation (only when `rh_ctrl_en = true`) with hysteresis (`hyst_rh`)
-- Conflict resolution via `cr_priority` (CR_TEMP_FIRST / CR_RH_FIRST / CR_DEVIATION)
-- Post resolved `window_cmd_t` items to Q1; post log to Q3
+- Acquire MX2: read T_avg, RH_avg; acquire MX4: read `is_daytime`, active setpoints, `hyst_t`, `hyst_rh`, `rh_ctrl_en`, `cr_priority`
+- Call `vent_step_required_t(t_avg, t_max, hyst_t, current_step_t)` → `step_t`
+- Call `vent_step_required_rh(rh_avg, rh_max, rh_min, hyst_rh, rh_ctrl_en, current_step_rh)` → `step_rh`
+- Call `vent_resolve_conflict(step_t, step_rh, cr_priority)` → `resolved_step`
+- Call `vent_step_channels(resolved_step)` → `new_mask`; diff against `vent_step_channels(current_step)` → `cur_mask`
+- Post incremental commands to Q1: channels in `new_mask & ~cur_mask` → CMD_OPEN; channels in `cur_mask & ~new_mask` → CMD_CLOSE; `new_mask == 0` → CMD_CLOSE_ALL (single command)
+- Update `current_step_t` and `current_step_rh`; post log event to Q3 on any step change
 
-Stub acceptable: Graduated ventilation can initially be all-or-nothing (all 3 channels); graduated step table added in a follow-on commit.
+Graduated ventilation functions are fully implemented in `climate_control.cpp` (Gap G ✅). No stub required for the step table.
 
 Drivers used: None directly
 
-Verification: Inject T > T_max_day via Q6; confirm OPEN commands on Q1; inject conflicting T+RH demands; confirm conflict resolution per `cr_priority`.
+Verification: Inject T > T_max_day via Q6; confirm graduated OPEN commands on Q1 (step 1 then 2 then 3 as T rises); inject conflicting T+RH demands; confirm conflict resolution per `cr_priority`; verify close-hysteresis guard (no step-0 until T < T_max − hyst_t).
 
 ---
 
@@ -258,7 +261,7 @@ Verification: AP appears in phone scan; auto-shuts after timeout; client connect
 ### Phase 9 — Web Server (T11)
 **Goal:** Browser-accessible dashboard and configuration.
 
-Files: `web_server.h/.cpp`
+Files: `web_server.h/.cpp`; `platformio.ini` — ✅ **done** (Gap E: `ESPAsyncWebServer` + `AsyncTCP` added)
 
 Implementation:
 - Mount active LittleFS via `littlefs_active_partition()` + `littlefs_mount()`; verify `manifest.json`
@@ -354,5 +357,9 @@ Verification: Subscribe on broker; verify publish; publish command; verify relay
 | `firmware/config/pin_config.h` | PIN_RGB_LED 38, corrected I2C address | ✅ Done (Gap B) |
 | `firmware/src/auth/pin_auth.h/.cpp` | Salted SHA-256 PIN hashing + lockout | ✅ Done (Gap C) |
 | `firmware/src/data_manager/sunrise.h/.cpp` | NOAA sunrise/sunset algorithm | ✅ Done (Gap D) |
-| `firmware/src/types/app_types.h` | All shared types; everything else depends on it | ⬜ Phase 0 |
+| `firmware/src/types/app_types.h` | Motor travel constants (Gap F) + `NUM_VENT_STEPS 3` (Gap G) + Phase 0 stubs | ✅ Constants done; Phase 0 completes handles/structs/enums |
+| `firmware/src/climate_control/climate_control.h` | Graduated ventilation API declarations | ✅ Done (Gap G) |
+| `firmware/src/climate_control/climate_control.cpp` | VENT_STEP_TABLE, step algorithm, conflict resolution, T6 stub | ✅ Done (Gap G) |
+| `firmware/src/event_logger/event_logger.h` | `log_post()` and `log_take_dropped_count()` API | ✅ Done (Gap H) |
+| `firmware/src/event_logger/event_logger.cpp` | Drop-oldest evict-and-retry, spinlock counter, T9 stub | ✅ Done (Gap H) |
 | `firmware/src/main.cpp` | RTOS primitives, task spawn, extern handle definitions | ⬜ Phase 0 |
