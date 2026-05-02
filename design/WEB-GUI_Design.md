@@ -873,7 +873,7 @@ Wind protection can be enabled or disabled by either the farmer or the technicia
 │                                     │
 │  Poll Interval                      │
 │  [60] s                             │
-│  Range: 150 - 3600 s                │
+│  Range: 30 - 3600 s                 │
 │  ℹ️ Time between sensor reads       │
 │     Default: 60 s (factory)         │
 │                                     │

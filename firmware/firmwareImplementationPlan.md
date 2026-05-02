@@ -52,7 +52,7 @@ firmware/src/
 | **C** | No SHA-256 library specified for PIN hashing | ✅ Solved | `firmware/src/auth/pin_auth.h/.cpp` created. Hash: `SHA-256(salt \|\| pin_ascii)` via `mbedtls/sha256.h` (bundled, no extra lib). 16-byte salt from `esp_fill_random()` stored in NVS `access/pin_salt` at first boot. Per-role lockout with NVS-persisted expiry timestamps. TSDS §5.4 and NVS table updated. |
 | **D** | No sunrise/sunset algorithm specified | ✅ Solved | `firmware/src/data_manager/sunrise.h/.cpp` created. NOAA General Solar Position Equations (10 steps, ±2 min accuracy). Outputs UTC minutes from midnight. Handles polar day/night and FR-DN05 (zero lat/lon → daytime default). TSDS §4.3, `tasks.md` T4, and FRS FR-DN02 updated. |
 | **E** | `ESPAsyncWebServer` / `AsyncTCP` not in `lib_deps` | ✅ Solved | `mathieucarbou/ESPAsyncWebServer @ ^3.3.6` and `mathieucarbou/AsyncTCP @ ^3.3.2` added to `platformio.ini`; IDF5/Arduino-3 compatible fork chosen. TSDS §5.8 updated with library identity and rationale. |
-| **F** | Motor travel time vs. dwell time conflated in NVS schema | ✅ Solved | `firmware/src/types/app_types.h` defines `MOTOR_M1_TRAVEL_S_DEFAULT 21`, `MOTOR_M2_TRAVEL_S_DEFAULT 21`, `MOTOR_M3_TRAVEL_S_DEFAULT 171` (seconds) as factory defaults plus `MOTOR_TRAVEL_S_MIN 5` / `MOTOR_TRAVEL_S_MAX 600` bounds. NVS `motor` namespace adds `travel_m1/m2/m3` (int16_t, seconds, range 5–600) loaded by T4 on boot; T2 reads from MX4 at runtime (FR-CF05 satisfied). NVS `dwell_*` = minimum hold times only. TSDS §5.2, §4.3 T2/T4, §5.4, §5.10 updated; tasks.md updated. |
+| **F** | Motor travel time vs. dwell time conflated in NVS schema | ✅ Solved | `firmware/src/types/app_types.h` defines `MOTOR_M1_TRAVEL_S_DEFAULT 21`, `MOTOR_M2_TRAVEL_S_DEFAULT 21`, `MOTOR_M3_TRAVEL_S_DEFAULT 171` (seconds) as factory defaults plus `MOTOR_TRAVEL_S_MIN 5` / `MOTOR_TRAVEL_S_MAX 600` bounds, and `MOTOR_TRAVEL_MARGIN_S_DEFAULT 5` (fixed margin added to every relay pulse). NVS `motor` namespace adds `travel_m1/m2/m3` (int16_t, seconds, range 5–600) loaded by T4 on boot; T2 reads from MX4 at runtime (FR-CF05 satisfied). The relay energisation time is `(travel_mN + MOTOR_TRAVEL_MARGIN_S_DEFAULT) × 1000 ms`; the margin ensures the end-switch fires before the relay drops. De-energising the relay before the end-switch fires stops the window immediately at its current (intermediate) position — therefore only full open/close commands are ever issued. NVS `dwell_*` = minimum hold times only. TSDS §5.2, §4.3 T2/T4, §5.4, §5.10 updated; tasks.md updated. |
 | **G** | Graduated ventilation channel assignment undefined | ✅ Solved | `firmware/src/climate_control/climate_control.h/.cpp` created. `NUM_VENT_STEPS 3` added to `app_types.h`. Compile-time `VENT_STEP_TABLE[]`: step 1 = M1, step 2 = M1+M2, step 3 = M1+M2+M3. `vent_step_required_t()` and `vent_step_required_rh()` implement the graduated step algorithm with close-hysteresis guard. RH < RH_min → step 0 (full close; no graduated closing — Gap G design decision). RH in range → `VENT_STEP_NEUTRAL` (−1). `vent_resolve_conflict()` handles neutral / both-open / no-conflict / genuine-conflict cases. TSDS §5.2 updated with full algorithm; tasks.md T6 updated. |
 | **H** | Q3 drop-oldest not achievable with plain FreeRTOS queue | ✅ Solved | `firmware/src/event_logger/event_logger.h/.cpp` created. `log_post()` implements two-step evict-and-retry: `xQueueSend` → on fail: `xQueueReceive` (evict oldest) + `g_q3_dropped++` → retry `xQueueSend` → on fail: `g_q3_dropped++`. Counter protected by `portMUX_TYPE` spinlock. `log_take_dropped_count()` atomically reads and resets counter for T9. T9 emits `LOG_SYSTEM` event when count > 0. All producers must use `log_post()`; direct `xQueueSend(Q3,...)` is prohibited. TSDS §5.3 and tasks.md T9 updated. |
 
@@ -60,13 +60,13 @@ firmware/src/
 
 | Issue | Resolution |
 |-------|------------|
-| **#1a GPIO42 debounce** | `attachInterrupt(PIN_OPTO_INPUT, isr_handler, CHANGE)` in T2; deferred-ISR pattern: ISR (`IRAM_ATTR`) sets volatile flag + timestamp on first edge only; T2 loop confirms after 75 ms by reading current pin state; transition ignored if any channel FSM is in MOVING state (T2 commanded move) |
-| **#1b Calibration cycle** | On `MANUAL_OVERRIDE` clear, T6 posts `CLOSE_ALL` to Q1, then reads `travel_m3` (seconds) from T4 (MX4) at runtime and waits `travel_m3 × 1000 + 10 000 ms` before resuming AUTOMATIC |
+| **#1a GPIO42 motor alarm** | `attachInterrupt(PIN_OPTO_INPUT, isr_handler, CHANGE)` in T2; deferred-ISR pattern: ISR (`IRAM_ATTR`) sets volatile flag + timestamp on first edge; T2 loop confirms after 75 ms by reading current pin state. **Not suppressed during MOVING** — a motor hitting the emergency switch during a T2-commanded move is the primary alarm scenario. On alarm assert: de-energise all 6 relays via `gpio_write()`, set EG1.MOTOR_ALARM, post log to Q3. On alarm release: clear EG1.MOTOR_ALARM, post CLOSE_ALL to Q1 for re-calibration, post log to Q3. |
+| **#1b Post-alarm re-calibration** | On `MOTOR_ALARM` clear, T2 posts CLOSE_ALL to Q1; T2 then waits `(travel_m3 + MOTOR_TRAVEL_MARGIN_S_DEFAULT) × 1000 + 10 000 ms` before marking re-calibration complete and resuming AUTOMATIC |
 | **#2 Ring buffer depth** | 360 entries per channel (T, RH, wind_speed, wind_dir) = 11.5 KB total; fits in internal RAM with headroom |
 | **#3 NTP timezone** | `setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1); tzset();` after `configTime()`; store TZ string in NVS `system/tz_str` with that default |
 | **#4 MQTT auth** | Username + password over plain TCP (same accepted-risk basis as no-HTTPS); store password in NVS `mqtt/password`; document accepted risk |
-| **#5 J5 heater supply** | No GPIO assigned in `pin_config.h` → always-on hardware solution; T5 logs anomalous `heating_temperature_c` values only |
-| **#6 Snapshot interval** | T4 posts a `LOG_SENSOR` event to Q3 each time it receives new sensor data from T5 via Q6; T9 consumes it like any other event; period = `poll_interval`; no separate configurable parameter |
+| **#5 J5 heater supply** | ~~Dropped~~ — heater supply connection removed from PCB; no GPIO, no T5 logging required |
+| **#6 Snapshot interval** | T4 posts a `LOG_SENSOR` event to Q3 on every Q6 reception (FR-LG09: snapshot interval = poll interval; 30–3600 s, default 60 s); no separate configurable parameter. Ring buffer minimum 250 entries (FR-LG06: worst-case 216 events/h at 30 s poll + headroom); `CONFIG_NVS_LOG_CAPACITY = 250`. |
 
 ---
 
@@ -118,10 +118,10 @@ Implementation:
 - Boot sequence: issue CLOSE_ALL on all channels (establishes known CLOSED state; waits full travel time per channel)
 - Window FSM per channel: `UNKNOWN → CLOSED → MOVING_OPEN → OPEN → MOVING_CLOSE → CLOSED`
 - Before asserting any relay: de-energise complementary relay + 100ms gap
-- Motor travel timer: read `travel_mN` (seconds) from T4 (MX4) at startup; `vTaskDelay(pdMS_TO_TICKS(travel_s * 1000))` while relay energised; de-energise on expiry and advance FSM
+- Motor travel timer: read `travel_mN` (seconds) from T4 (MX4) at startup; `vTaskDelay(pdMS_TO_TICKS((travel_s + MOTOR_TRAVEL_MARGIN_S_DEFAULT) * 1000))` while relay energised; the margin guarantees the end-switch fires before the relay drops; de-energise on expiry and advance FSM. The relay must remain energised for the full duration — de-energising it early stops the window at an intermediate (unknown) position.
 - Dwell timer: read `dwell_open_mN` / `dwell_close_mN` (minutes) from T4 (MX4); reject commands arriving before dwell elapsed
-- Q1 consumer: T3 CLOSE_ALL commands preempt pending T6 commands (check source field)
-- GPIO42 ISR: volatile flag + timestamp; T2 main loop confirms after 75ms debounce; on confirmation, set EG1 MANUAL_OVERRIDE, send TN3 to T6, post LOG event to Q3
+- Q1 consumer: check EG1.MOTOR_ALARM before executing any command — discard if alarm is active; T3 CLOSE_ALL commands preempt pending T6 commands (check source field)
+- GPIO42 ISR (MOTOR_ALARM): volatile flag + timestamp; T2 main loop confirms after 75ms debounce; NOT suppressed during MOVING. On alarm assert: de-energise all 6 relays immediately, set EG1.MOTOR_ALARM, post LOG event to Q3 (FR-MA01–FR-MA02). On alarm release: clear EG1.MOTOR_ALARM, post CLOSE_ALL to Q1 for re-calibration, post LOG event to Q3 (FR-MA06–FR-MA07).
 
 Drivers used: LIB-1 (gpio_write for 6 relays + gpio_read for GPIO42)
 
@@ -193,9 +193,8 @@ Verification: CSV file created on SD; 5 manual events appear; rotate test at 512
 Files: `climate_control.h` — ✅ **done** (Gap G); `climate_control.cpp` — ✅ **done** (Gap G); Phase 6 completes the T6 task body.
 
 Implementation:
-- Block on TN2 (new sensor data) and TN3 (manual override signal from T2)
-- On TN3: enter MANUAL_OVERRIDE inhibit; post CLOSE_ALL to Q1; read `travel_m3` (seconds) from T4 (MX4); start calibration timer (`travel_m3 * 1000 + 10 000 ms` margin); on timer expiry, clear EG1 MANUAL_OVERRIDE, post log, resume AUTOMATIC
-- On TN2: check EG1 flags (WIND_OVERRIDE, MANUAL_OVERRIDE, SENSOR_FAULT_T) — skip if any set
+- Block on TN2 (new sensor data from T4)
+- On TN2: check EG1 flags (MOTOR_ALARM, WIND_OVERRIDE, SENSOR_FAULT_T) — skip if any set
 - Acquire MX2: read T_avg, RH_avg; acquire MX4: read `is_daytime`, active setpoints, `hyst_t`, `hyst_rh`, `rh_ctrl_en`, `cr_priority`
 - Call `vent_step_required_t(t_avg, t_max, hyst_t, current_step_t)` → `step_t`
 - Call `vent_step_required_rh(rh_avg, rh_max, rh_min, hyst_rh, rh_ctrl_en, current_step_rh)` → `step_rh`
@@ -228,7 +227,6 @@ Files: `keypad_scan.h/.cpp`, `ui_display.h/.cpp` — **create**; `auth/pin_auth.
 - Max 4 keypresses from status screen to any first-level setting (FR-UI07)
 - PIN entry: numeric; call `pin_auth_verify(PIN_ROLE_FARMER/ADMIN, entered_str)` — hashing, salt, and lockout all handled by `auth/pin_auth.h` (Gap C ✅)
 - Config edit: read current from T4 (MX4), accept input, validate range, post `config_update_t` to Q4
-- Manual window commands: in farmer/admin session, post `window_cmd_t` to Q1
 - Receive Q5 (network status); display WiFi state
 - Session timeout: software timer reset on each keypress; on expiry, log session close, return to STATUS_DISPLAY
 - **LCD I2C address: 0x3E (AiP31068L bridge)** — not 0x27
@@ -327,9 +325,8 @@ Verification: Subscribe on broker; verify publish; publish command; verify relay
 | Q6 | Queue `sensor_reading_t` | 1 | T5 → T4 (overwrite) |
 | TN1 | TaskNotify | — | T4 → T3 (new wind data) |
 | TN2 | TaskNotify | — | T4 → T6 (new sensor data) |
-| TN3 | TaskNotify | — | T2 → T6 (manual override) |
 | TN4 | TaskNotify | — | T10 → T4 (WiFi connected) |
-| EG1 | EventGroup | 5 bits | WIND_OVERRIDE, MANUAL_OVERRIDE, SENSOR_FAULT_T, SENSOR_FAULT_W, OTA_IN_PROGRESS |
+| EG1 | EventGroup | 6 bits | WIND_OVERRIDE, *(bit 1 reserved)*, SENSOR_FAULT_T, SENSOR_FAULT_W, OTA_IN_PROGRESS, MOTOR_ALARM |
 | MX1 | Mutex | — | I2C bus (T4 RTC, T8 LCD) |
 | MX2 | Mutex | — | Current measurements |
 | MX3 | Mutex | — | Ring buffers |
@@ -343,7 +340,7 @@ Verification: Subscribe on broker; verify publish; publish command; verify relay
 1. **Wind safety end-to-end:** Live wind > v_max → all windows close → wind drops → climate resumes
 2. **Power-loss recovery:** Cut power mid-operation → restore → CLOSE_ALL boot sequence → NVS intact → log entry for restart
 3. **RTC battery backup:** Disconnect mains 30s → restore → DS1307 time intact
-4. **Manual override + calibration:** Toggle GPIO42 → MANUAL_OVERRIDE set → calibration CLOSE_ALL → resume AUTOMATIC after M3 travel time
+4. **Motor alarm end-to-end:** Assert GPIO42 externally → verify EG1.MOTOR_ALARM set → verify all relays de-energised → release GPIO42 → verify CLOSE_ALL re-calibration → verify resume to AUTOMATIC → log entries present for alarm onset and clearance
 5. **Endurance:** 24-hour run; serial log `ESP.getFreeHeap()` every 5 min (via T9 snapshot); no watchdog resets, no heap leak
 
 ---

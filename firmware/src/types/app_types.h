@@ -4,19 +4,15 @@
  *        FreeRTOS handle declarations used across all firmware tasks.
  *
  * This is the single header every firmware module includes for inter-task
- * communication types and system-wide constants.  It must compile cleanly
- * on both the ESP32-S3 target and a host-side PlatformIO test runner.
+ * communication types and system-wide constants.
  *
  * ## Sections
  *  1. Factory-default hardware constants — NVS-backed at runtime; these
  *     macros are the factory defaults written on first boot.
- *  2. FreeRTOS RTOS handle externs       — declared here, defined in main.cpp.
- *  3. Queue / message struct types       — one struct per queue.
- *  4. Enumeration types                  — FSM states, modes, roles.
- *  5. Event group bit definitions        — EG1 system-state flags.
- *
- * Sections 2–5 are stubbed with TODO comments; they will be populated
- * during Phase 0 (project scaffold) once the full type system is finalised.
+ *  2. FreeRTOS includes + RTOS handle externs — declared here, defined in main.cpp.
+ *  3. Enumeration types — FSM states, modes, roles, log types.
+ *  4. Queue / message struct types — one struct per queue.
+ *  5. Event group bit definitions — EG1 system-state flags.
  *
  * @author  Greenhouse Controller project
  */
@@ -33,251 +29,261 @@
 /**
  * @defgroup motor_travel Motor full-travel time — factory defaults
  *
- * These macros define the **factory-default** motor full-travel times in
- * **seconds**.  They are written to NVS on first boot (or after factory
- * reset) and can subsequently be adjusted by a technician via the web GUI
- * (FR-CF05, admin access level).
+ * Factory-default motor full-travel times in seconds.  Written to NVS on
+ * first boot; adjustable via web GUI (FR-CF05, admin).  T2 reads runtime
+ * values from T4 (MX4), not these macros.
  *
- * ### Runtime behaviour
- * T2 (Relay Controller) reads the *live* travel times from T4 (MX4) —
- * i.e. the values currently held in NVS `motor/travel_mN` — not these
- * macros.  T2 converts seconds to milliseconds for `vTaskDelay`:
- * @code
- *   uint32_t travel_ms = (uint32_t)travel_s * 1000UL;
- *   vTaskDelay(pdMS_TO_TICKS(travel_ms));
- * @endcode
- *
- * T6 reads the M3 travel time from T4 (MX4) to size the calibration wait
- * after a manual override is cleared:
- * @code
- *   uint32_t cal_wait_ms = (uint32_t)travel_m3_s * 1000UL + 10000UL;
- * @endcode
+ * Relay energisation time = (travel_mN + MOTOR_TRAVEL_MARGIN_S_DEFAULT) × 1000 ms.
+ * De-energising before expiry stops the motor immediately — only full
+ * open/close commands are ever issued.
  *
  * ### NVS keys (namespace `motor`)
- * | Key          | Type     | Default                    | Range (s) |
- * |--------------|----------|----------------------------|-----------|
- * | `travel_m1`  | int16_t  | MOTOR_M1_TRAVEL_S_DEFAULT  | 5 – 600   |
- * | `travel_m2`  | int16_t  | MOTOR_M2_TRAVEL_S_DEFAULT  | 5 – 600   |
- * | `travel_m3`  | int16_t  | MOTOR_M3_TRAVEL_S_DEFAULT  | 5 – 600   |
- *
- * ### Relationship to dwell time
- * Dwell time is a *separate* configurable hold period (NVS keys
- * `dwell_open_mN` / `dwell_close_mN`, unit: **minutes**).  It is the
- * minimum time T2 must wait *after* travel completes before accepting the
- * next command on that channel (FR-A09–FR-A12).  The two parameters are
- * independent and must never be confused:
- *
- * | Parameter          | What it times                          | NVS key / source          | Unit |
- * |--------------------|----------------------------------------|---------------------------|------|
- * | `travel_mN`        | Relay energisation (window in motion)  | NVS `motor/travel_mN`     | s    |
- * | `dwell_open_mN`    | Min hold at OPEN before CLOSE accepted | NVS `motor/dwell_open_mN` | min  |
- * | `dwell_close_mN`   | Min hold at CLOSED before OPEN accepted| NVS `motor/dwell_close_mN`| min  |
- *
- * Source: FRS §4.3 motor run-time table; FR-CF05; FR-A09–FR-A12.
+ * | Key         | Type    | Default                   | Range (s) |
+ * |-------------|---------|---------------------------|-----------|
+ * | `travel_m1` | int16_t | MOTOR_M1_TRAVEL_S_DEFAULT | 5 – 600   |
+ * | `travel_m2` | int16_t | MOTOR_M2_TRAVEL_S_DEFAULT | 5 – 600   |
+ * | `travel_m3` | int16_t | MOTOR_M3_TRAVEL_S_DEFAULT | 5 – 600   |
  * @{
  */
-
-/** M1 (window 1) factory-default full-travel time: 21 s. */
-#define MOTOR_M1_TRAVEL_S_DEFAULT    21
-
-/** M2 (window 2) factory-default full-travel time: 21 s. */
-#define MOTOR_M2_TRAVEL_S_DEFAULT    21
-
-/**
- * M3 (ridge vent) factory-default full-travel time: 171 s.
- * T6 uses the *runtime* M3 travel time from T4 (MX4) for the
- * post-manual-override calibration wait (travel_m3_s * 1000 + 10 000 ms).
- */
-#define MOTOR_M3_TRAVEL_S_DEFAULT   171
-
-/** Minimum permitted travel time (seconds) — enforced by T4 on NVS write. */
-#define MOTOR_TRAVEL_S_MIN            5
-
-/** Maximum permitted travel time (seconds) — enforced by T4 on NVS write. */
-#define MOTOR_TRAVEL_S_MAX          600
-
+#define MOTOR_M1_TRAVEL_S_DEFAULT    21   /**< M1 factory default full-travel: 21 s */
+#define MOTOR_M2_TRAVEL_S_DEFAULT    21   /**< M2 factory default full-travel: 21 s */
+#define MOTOR_M3_TRAVEL_S_DEFAULT   171   /**< M3 (ridge vent) factory default: 171 s */
+#define MOTOR_TRAVEL_S_MIN            5   /**< Minimum allowed travel time (s) */
+#define MOTOR_TRAVEL_S_MAX          600   /**< Maximum allowed travel time (s) */
+#define MOTOR_TRAVEL_MARGIN_S_DEFAULT 5   /**< Fixed safety margin added to every relay pulse (s) */
 /** @} */
 
-/* -----------------------------------------------------------------------
- * Graduated ventilation — number of opening steps (FR-C09, FR-C10)
- *
- * Each step adds one more channel to the open set (compile-time table in
- * climate_control.cpp):
- *   Step 1 — M1 only
- *   Step 2 — M1 + M2
- *   Step 3 — M1 + M2 + M3
- *
- * Changing this constant requires a matching update to VENT_STEP_TABLE[]
- * in climate_control.cpp.
- * ----------------------------------------------------------------------- */
-#define NUM_VENT_STEPS   3
+/** Graduated ventilation steps (Step 1=M1, Step 2=M1+M2, Step 3=M1+M2+M3). */
+#define NUM_VENT_STEPS  3
 
 /* ============================================================
- * Section 2 — FreeRTOS RTOS handle externs
+ * Section 2 — FreeRTOS includes + RTOS handle externs
  *
- * All handles are defined (created) in main.cpp and declared extern here
- * so every task file can reference them without passing handles as
- * function arguments.
- *
- * TODO (Phase 0): uncomment after adding FreeRTOS includes.
+ * All primitives are created in main.cpp and declared extern here so
+ * every task module can reference them without handle-passing boilerplate.
  * ============================================================ */
 
-/*
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/task.h>
 #include <freertos/event_groups.h>
 #include <freertos/semphr.h>
 
-// Queues (defined in main.cpp)
-extern QueueHandle_t Q1;   // window_cmd_t      — T3/T6/T8/T11/T12 → T2
-extern QueueHandle_t Q2;   // key_event_t        — T7 → T8
-extern QueueHandle_t Q3;   // log_event_t        — all tasks → T9
-extern QueueHandle_t Q4;   // config_update_t    — T8/T10/T11 → T4
-extern QueueHandle_t Q5;   // net_status_t       — T10 → T8
-extern QueueHandle_t Q6;   // sensor_reading_t   — T5 → T4 (overwrite)
+/* Queues (defined in main.cpp) */
+extern QueueHandle_t Q1;   /**< window_cmd_t   — T3/T6 → T2 only (C9: manual window commands out of scope) */
+extern QueueHandle_t Q2;   /**< key_event_t    — T7 → T8 */
+extern QueueHandle_t Q3;   /**< log_event_t    — all tasks → T9 (use log_post(), never xQueueSend directly) */
+extern QueueHandle_t Q4;   /**< config_update_t — T8/T10/T11 → T4 */
+extern QueueHandle_t Q5;   /**< net_status_t   — T10 → T8 (depth 1, xQueueOverwrite) */
+extern QueueHandle_t Q6;   /**< sensor_reading_t — T5 → T4 (depth 1, xQueueOverwrite) */
 
-// Task handles (defined in main.cpp)
-extern TaskHandle_t task_t1;   // Watchdog / Heartbeat
-extern TaskHandle_t task_t2;   // Relay Controller
-extern TaskHandle_t task_t3;   // Safety Monitor
-extern TaskHandle_t task_t4;   // Data Manager
-extern TaskHandle_t task_t5;   // Sensor Poll
-extern TaskHandle_t task_t6;   // Climate Control
-extern TaskHandle_t task_t7;   // Keypad Scan
-extern TaskHandle_t task_t8;   // UI / Display
-extern TaskHandle_t task_t9;   // Event Logger
-extern TaskHandle_t task_t10;  // Network Manager
-extern TaskHandle_t task_t11;  // Web Server
-extern TaskHandle_t task_t12;  // MQTT Client
-// task_t13 (OTA) is created on demand by T11; no permanent handle
+/* Task handles (defined in main.cpp) */
+extern TaskHandle_t task_t1;   /**< Watchdog / Heartbeat */
+extern TaskHandle_t task_t2;   /**< Relay Controller */
+extern TaskHandle_t task_t3;   /**< Safety Monitor */
+extern TaskHandle_t task_t4;   /**< Data Manager */
+extern TaskHandle_t task_t5;   /**< Sensor Poll */
+extern TaskHandle_t task_t6;   /**< Climate Control */
+extern TaskHandle_t task_t7;   /**< Keypad Scan */
+extern TaskHandle_t task_t8;   /**< UI / Display */
+extern TaskHandle_t task_t9;   /**< Event Logger */
+extern TaskHandle_t task_t10;  /**< Network Manager */
+extern TaskHandle_t task_t11;  /**< Web Server */
+extern TaskHandle_t task_t12;  /**< MQTT Client */
+/* task_t13 (OTA) is created on demand by T11; no permanent handle */
 
-// Event group
-extern EventGroupHandle_t EG1; // System state flags (see Section 5)
+/* Event group (defined in main.cpp) */
+extern EventGroupHandle_t EG1; /**< System state flags — see Section 5 */
 
-// Mutexes
-extern SemaphoreHandle_t MX1;  // I2C bus (T4 RTC + T8 LCD)
-extern SemaphoreHandle_t MX2;  // Current measurement data
-extern SemaphoreHandle_t MX3;  // Measurement ring buffers
-extern SemaphoreHandle_t MX4;  // Configuration settings (NVS shadow)
-extern SemaphoreHandle_t MX5;  // LittleFS active partition
-*/
-
-/* ============================================================
- * Section 3 — Queue / message struct types
- *
- * TODO (Phase 0): define the following structs.
- * ============================================================ */
-
-/*
-typedef struct {
-    // Q1 — actuation command
-    // cmd_action_t action;   CMD_OPEN / CMD_CLOSE / CMD_CLOSE_ALL / CMD_RESUME
-    // uint8_t      channel;  0 = all channels; 1 = M1; 2 = M2; 3 = M3
-    // cmd_source_t source;   SRC_T3 / SRC_T6 / SRC_T8 / SRC_T11 / SRC_T12
-} window_cmd_t;
-
-typedef struct {
-    // Q2 — keypad key event
-    // char     key;          KP_NO_KEY or ASCII character from keypad_scan()
-    // bool     repeated;     true if key-repeat generated this event
-} key_event_t;
-
-typedef struct {
-    // Q3 — event log entry (see TSDS §5.3 for field descriptions)
-    // uint32_t        timestamp;
-    // log_type_t      event_type;
-    // log_initiator_t initiator;
-    // uint8_t         channel;
-    // int16_t         value_a;
-    // int16_t         value_b;
-    // uint8_t         reserved[2];
-} log_event_t;
-
-typedef struct {
-    // Q4 — NVS configuration update request
-    // char     ns[16];       NVS namespace (e.g. "climate")
-    // char     key[16];      NVS key (e.g. "t_max_day")
-    // int32_t  value;        new value (cast to the appropriate NVS type by T4)
-} config_update_t;
-
-typedef struct {
-    // Q5 — network status from T10 to T8
-    // bool     client_connected;
-    // bool     ap_active;
-    // char     ip_str[16];   dotted-decimal IPv4 string
-} net_status_t;
-
-typedef struct {
-    // Q6 — sensor reading snapshot from T5 to T4
-    // int16_t  temperature_c;        raw (rounded to nearest integer)
-    // uint8_t  humidity_pct;         raw
-    // uint16_t wind_speed_ms10;      wind speed × 10 (e.g. 35 = 3.5 m/s)
-    // uint16_t wind_dir_deg;         0–359
-    // int16_t  t_avg_c;              sliding average (rounded)
-    // uint8_t  rh_avg_pct;           sliding average
-    // uint16_t wind_speed_avg_ms10;  sliding average × 10
-    // uint16_t wind_dir_avg_deg;     sliding average
-    // uint32_t timestamp;
-} sensor_reading_t;
-*/
+/* Mutexes (defined in main.cpp) */
+extern SemaphoreHandle_t MX1;  /**< I2C bus (T4 RTC + T8 LCD) */
+extern SemaphoreHandle_t MX2;  /**< Current measurement data */
+extern SemaphoreHandle_t MX3;  /**< Measurement ring buffers */
+extern SemaphoreHandle_t MX4;  /**< Configuration settings (NVS shadow) */
+extern SemaphoreHandle_t MX5;  /**< LittleFS active partition */
 
 /* ============================================================
- * Section 4 — Enumeration types
+ * Section 3 — Enumeration types
  *
- * TODO (Phase 0): define the following enums.
+ * Enums are declared before the queue structs that reference them.
  * ============================================================ */
 
-/*
+/** Per-channel window position state (T2 state machine). */
 typedef enum {
-    WIN_UNKNOWN,
-    WIN_CLOSED,
-    WIN_MOVING_OPEN,
-    WIN_OPEN,
-    WIN_MOVING_CLOSE,
+    WIN_UNKNOWN,        /**< Position not yet established (before CLOSE_ALL calibration) */
+    WIN_CLOSED,         /**< Window fully closed (at close end-switch) */
+    WIN_MOVING_OPEN,    /**< Relay energised in OPEN direction; travel timer running */
+    WIN_OPEN,           /**< Window fully open (travel timer expired) */
+    WIN_MOVING_CLOSE,   /**< Relay energised in CLOSE direction; travel timer running */
 } window_state_t;
 
+/** System operating mode (highest-priority active state wins). */
 typedef enum {
-    MODE_AUTOMATIC,
-    MODE_STANDBY,
-    MODE_WIND_OVERRIDE,
-    MODE_MANUAL_OVERRIDE,
+    MODE_AUTOMATIC,      /**< Normal climate control active */
+    MODE_STANDBY,        /**< Climate control paused by operator */
+    MODE_WIND_OVERRIDE,  /**< Wind safety has forced all windows closed */
+    MODE_MOTOR_ALARM,    /**< RRK-3 emergency stop active; all control suspended */
 } op_mode_t;
 
+/** Authenticated session level for LCD and web UI. */
 typedef enum {
-    SESSION_NONE,
-    SESSION_FARMER,
-    SESSION_ADMIN,
+    SESSION_NONE,    /**< No active session */
+    SESSION_FARMER,  /**< Farmer-level access (setpoints, mode) */
+    SESSION_ADMIN,   /**< Admin-level access (all settings) */
 } session_t;
 
+/** Event log entry type — stored as `event_type` field in log_entry_t. */
 typedef enum {
-    LOG_SENSOR, LOG_RELAY, LOG_MODE_CHANGE,
-    LOG_SETPOINT, LOG_SESSION, LOG_ALARM, LOG_SYSTEM,
+    LOG_SENSOR,       /**< Periodic sensor snapshot (T, RH, wind) */
+    LOG_RELAY,        /**< Relay state change (window open/close/stop) */
+    LOG_MODE_CHANGE,  /**< Operating mode transition */
+    LOG_SETPOINT,     /**< Configuration parameter change */
+    LOG_SESSION,      /**< User session open/close */
+    LOG_ALARM,        /**< Alarm onset or clearance (motor alarm, sensor fault, wind) */
+    LOG_SYSTEM,       /**< System event (boot, NVS migration, Q3 drop-overflow count) */
 } log_type_t;
 
+/** Log initiator — who or what triggered the event. */
 typedef enum {
-    LOG_BY_SYSTEM, LOG_BY_FARMER, LOG_BY_ADMIN, LOG_BY_MQTT, LOG_BY_WEB,
+    LOG_BY_SYSTEM,  /**< Firmware-internal (T2, T3, T5, T6, etc.) */
+    LOG_BY_FARMER,  /**< Farmer session via LCD */
+    LOG_BY_ADMIN,   /**< Admin session via LCD */
+    LOG_BY_MQTT,    /**< MQTT message (T12) */
+    LOG_BY_WEB,     /**< Web session (T11) */
 } log_initiator_t;
 
+/**
+ * @brief Log param_id — identifies which config parameter changed in a
+ *        LOG_SETPOINT event (C1–C22 from logAnalysis.md).
+ *
+ * For C18/C19 the motor channel is identified by the `channel` field (1/2/3).
+ * Non-CONFIG events use LOG_PARAM_NONE (0).
+ */
 typedef enum {
-    SRC_T3, SRC_T6, SRC_T8, SRC_T11, SRC_T12,
+    LOG_PARAM_NONE         =  0,  /**< Non-CONFIG events */
+    LOG_PARAM_T_MIN_DAY    =  1,  /**< C1  t_min_day */
+    LOG_PARAM_T_MAX_DAY    =  2,  /**< C2  t_max_day */
+    LOG_PARAM_T_MIN_NGT    =  3,  /**< C3  t_min_ngt */
+    LOG_PARAM_T_MAX_NGT    =  4,  /**< C4  t_max_ngt */
+    LOG_PARAM_RH_MIN_DAY   =  5,  /**< C5  rh_min_day */
+    LOG_PARAM_RH_MAX_DAY   =  6,  /**< C6  rh_max_day */
+    LOG_PARAM_RH_MIN_NGT   =  7,  /**< C7  rh_min_ngt */
+    LOG_PARAM_RH_MAX_NGT   =  8,  /**< C8  rh_max_ngt */
+    LOG_PARAM_HYST_T       =  9,  /**< C9  hyst_t */
+    LOG_PARAM_HYST_RH      = 10,  /**< C10 hyst_rh */
+    LOG_PARAM_RH_CTRL_EN   = 11,  /**< C11 rh_ctrl_en */
+    LOG_PARAM_CR_PRIORITY  = 12,  /**< C12 cr_priority */
+    LOG_PARAM_AVG_WIN_T    = 13,  /**< C13 avg_win_t */
+    LOG_PARAM_AVG_WIN_RH   = 14,  /**< C14 avg_win_rh */
+    LOG_PARAM_V_MAX        = 15,  /**< C15 v_max */
+    LOG_PARAM_DIR_EXCL_LOW = 16,  /**< C16 dir_excl_low */
+    LOG_PARAM_DIR_EXCL_HI  = 17,  /**< C17 dir_excl_high */
+    LOG_PARAM_DWELL_OPEN   = 18,  /**< C18 dwell_open_mX  (channel = motor 1/2/3) */
+    LOG_PARAM_DWELL_CLOSE  = 19,  /**< C19 dwell_close_mX (channel = motor 1/2/3) */
+    LOG_PARAM_POLL_INTV    = 20,  /**< C20 poll_interval */
+    LOG_PARAM_LAT_LON      = 21,  /**< C21 lat / lon */
+    LOG_PARAM_CR_APPLIED   = 22,  /**< C22 automatic T vs RH conflict resolution */
+} log_param_id_t;
+
+/**
+ * @brief Q1 actuation command source.
+ * Only T3 (Safety Monitor) and T6 (Climate Control) post to Q1.
+ * Manual window commands from LCD/web/MQTT are out of scope (C9).
+ */
+typedef enum {
+    SRC_T3,  /**< Safety Monitor (wind safety, CLOSE_ALL) */
+    SRC_T6,  /**< Climate Control (graduated ventilation) */
 } cmd_source_t;
 
+/** Q1 actuation command action. */
 typedef enum {
-    CMD_OPEN, CMD_CLOSE, CMD_CLOSE_ALL, CMD_RESUME,
+    CMD_OPEN,       /**< Open the specified channel (full travel) */
+    CMD_CLOSE,      /**< Close the specified channel (full travel) */
+    CMD_CLOSE_ALL,  /**< Close all channels (calibration / safety) */
+    CMD_RESUME,     /**< Resume automatic mode after wind override */
 } cmd_action_t;
-*/
+
+/* ============================================================
+ * Section 4 — Queue / message struct types
+ * ============================================================ */
+
+/** Q1 — actuation command (T3/T6 → T2). */
+typedef struct {
+    cmd_action_t action;   /**< CMD_OPEN / CMD_CLOSE / CMD_CLOSE_ALL / CMD_RESUME */
+    uint8_t      channel;  /**< 0 = all channels; 1 = M1; 2 = M2; 3 = M3 */
+    cmd_source_t source;   /**< SRC_T3 or SRC_T6 */
+} window_cmd_t;
+
+/** Q2 — keypad key event (T7 → T8). */
+typedef struct {
+    char key;       /**< ASCII character from keypad_scan(), or '\0' for no key */
+    bool repeated;  /**< true if key-repeat generated this event */
+} key_event_t;
+
+/**
+ * @brief Q3 — fixed 12-byte log record (all tasks → T9 via log_post()).
+ *
+ * Layout is packed: 4+1+1+1+1+2+2 = 12 bytes with no compiler padding.
+ * The binary layout is used for NVS blob storage and SD card CSV export.
+ *
+ * | Offset | Field      | Type    | Description |
+ * |--------|------------|---------|-------------|
+ * | 0      | timestamp  | uint32  | Unix epoch seconds |
+ * | 4      | event_type | uint8   | log_type_t |
+ * | 5      | initiator  | uint8   | log_initiator_t |
+ * | 6      | channel    | uint8   | motor 1/2/3, or 0 for non-motor events |
+ * | 7      | param_id   | uint8   | log_param_id_t; 0 for non-CONFIG events |
+ * | 8      | value_a    | int16   | first payload (sensor value, old setting, reason code) |
+ * | 10     | value_b    | int16   | second payload (new setting, threshold, etc.) |
+ */
+typedef struct {
+    uint32_t timestamp;   /**< Unix epoch seconds */
+    uint8_t  event_type;  /**< log_type_t */
+    uint8_t  initiator;   /**< log_initiator_t */
+    uint8_t  channel;     /**< motor 1/2/3, or 0 for non-motor events */
+    uint8_t  param_id;    /**< log_param_id_t; 0 for non-CONFIG events */
+    int16_t  value_a;     /**< first payload */
+    int16_t  value_b;     /**< second payload */
+} log_entry_t;
+
+typedef log_entry_t log_event_t;  /**< Alias used by Q3 producers */
+
+/** Q4 — NVS configuration update request (T8/T10/T11 → T4). */
+typedef struct {
+    char    ns[16];   /**< NVS namespace (e.g. "climate") */
+    char    key[16];  /**< NVS key (e.g. "t_max_day") */
+    int32_t value;    /**< New value (cast to appropriate NVS type by T4) */
+} config_update_t;
+
+/** Q5 — network status (T10 → T8; depth 1, xQueueOverwrite). */
+typedef struct {
+    bool client_connected;  /**< true if connected to a WiFi AP as client */
+    bool ap_active;         /**< true if AP mode is currently running */
+    char ip_str[16];        /**< dotted-decimal IPv4 address string */
+} net_status_t;
+
+/** Q6 — sensor reading snapshot (T5 → T4; depth 1, xQueueOverwrite). */
+typedef struct {
+    int16_t  temperature_c;         /**< Raw temperature, integer °C */
+    uint8_t  humidity_pct;          /**< Raw relative humidity, 0–100 % */
+    uint8_t  _reserved;             /**< Alignment padding */
+    uint16_t wind_speed_ms10;       /**< Wind speed × 10 (e.g. 35 = 3.5 m/s) */
+    uint16_t wind_dir_deg;          /**< Wind direction, 0–359 ° */
+    int16_t  t_avg_c;               /**< Sliding-average temperature, integer °C */
+    uint8_t  rh_avg_pct;            /**< Sliding-average humidity, 0–100 % */
+    uint8_t  _reserved2;            /**< Alignment padding */
+    uint16_t wind_speed_avg_ms10;   /**< Sliding-average wind speed × 10 */
+    uint16_t wind_dir_avg_deg;      /**< Sliding-average wind direction, 0–359 ° */
+    uint32_t timestamp;             /**< Unix epoch seconds of this reading */
+} sensor_reading_t;
 
 /* ============================================================
  * Section 5 — Event group bit definitions (EG1)
- *
- * TODO (Phase 0): uncomment after adding FreeRTOS includes.
  * ============================================================ */
 
-/*
-#define EG1_BIT_WIND_OVERRIDE    (1 << 0)  // Set/cleared by T3
-#define EG1_BIT_MANUAL_OVERRIDE  (1 << 1)  // Set by T2; cleared by T6
-#define EG1_BIT_SENSOR_FAULT_T   (1 << 2)  // Set/cleared by T5
-#define EG1_BIT_SENSOR_FAULT_W   (1 << 3)  // Set/cleared by T5
-#define EG1_BIT_OTA_IN_PROGRESS  (1 << 4)  // Set/cleared by T13
-*/
+#define EG1_BIT_WIND_OVERRIDE    (1 << 0)  /**< Set/cleared by T3 — wind safety active */
+/* bit 1 reserved — was MANUAL_OVERRIDE; removed (hardware does not support manual op detection) */
+#define EG1_BIT_SENSOR_FAULT_T   (1 << 2)  /**< Set/cleared by T5 — T/RH sensor fault */
+#define EG1_BIT_SENSOR_FAULT_W   (1 << 3)  /**< Set/cleared by T5 — wind sensor fault */
+#define EG1_BIT_OTA_IN_PROGRESS  (1 << 4)  /**< Set/cleared by T13 — OTA update in progress */
+#define EG1_BIT_MOTOR_ALARM      (1 << 5)  /**< Set/cleared by T2 — RRK-3 emergency stop active */

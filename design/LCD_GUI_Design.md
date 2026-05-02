@@ -59,7 +59,7 @@ The LCD-GUI provides a local user interface for monitoring and basic control of 
   - Change technician PIN
   - Logout
 
-> **Note:** Sensor poll interval (150–3600 s), sliding average window (1–60 min), and window dwell times are configurable via the web GUI only — they are not accessible through the LCD menu.
+> **Note:** Sensor poll interval (30–3600 s), sliding average window (1–60 min), and window dwell times are configurable via the web GUI only — they are not accessible through the LCD menu.
 
 ---
 

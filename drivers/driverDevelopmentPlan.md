@@ -1054,7 +1054,7 @@ Run: `pio test -e native` — all 12 passed on 2026-04-13 (1.76 s, MinGW/native)
 ## LIB-7 — NVS Configuration (`nvs/`)
 
 ### Purpose
-Typed get/set access to the ESP32-S3 NVS flash for all system configuration settings, plus a 1000-entry ring buffer for the event log fallback when no SD card is present. Used by T4 (Data Manager) and T9 (Event Logger).
+Typed get/set access to the ESP32-S3 NVS flash for all system configuration settings, plus a ring buffer for the event log fallback when no SD card is present. Minimum capacity 250 entries (FR-LG06: worst-case 216 events/hour at 30 s poll + headroom). Used by T4 (Data Manager) and T9 (Event Logger).
 
 ### API (`nvs_config.h`)
 
@@ -1077,7 +1077,7 @@ Typed get/set access to the ESP32-S3 NVS flash for all system configuration sett
 #define NVS_KEY_FW_VERSION  "fw_version"   // string "MAJOR.MINOR.PATCH", written on every boot
 
 #ifndef CONFIG_NVS_LOG_CAPACITY
-  #define CONFIG_NVS_LOG_CAPACITY  1000
+  #define CONFIG_NVS_LOG_CAPACITY  250   // FR-LG06: worst-case 216 events/h at 30 s poll + headroom
 #endif
 
 typedef enum {
@@ -1176,7 +1176,7 @@ Stored in the `log` namespace using three key types:
 - `"count"` (i32) — number of valid entries (max = capacity)
 - `"eNNNN"` (blob) — individual entry at slot NNNN (zero-padded 4-digit index)
 
-At 12 bytes raw data per log entry × 1000 entries ≈ 12 KB of raw data, but the ESP-IDF NVS format adds 32 bytes of overhead per item, so each entry consumes 32 bytes of NVS flash. 1000 entries × 32 bytes = 32 KB of NVS space. The default Arduino ESP32-S3 partition table allocates only 20 KB for NVS, which is insufficient for 1000 entries. A custom partition table with ≥ 40 KB NVS is required for production use. The hardware verification sketch uses `CONFIG_NVS_LOG_CAPACITY=100` (via build flag) so the ring buffer fits within the default partition.
+Each log entry is 12 bytes of raw data (`log_entry_t`: 4 × uint8 + 2 × int16 — no padding). The ESP-IDF NVS format adds approximately 32 bytes of overhead per blob key, so each entry occupies ~32 bytes of NVS flash. At `CONFIG_NVS_LOG_CAPACITY = 250`: 250 × 32 bytes = 8 KB of NVS space — fits within the default 20 KB Arduino ESP32-S3 NVS partition with headroom. No custom partition table is required for the log ring buffer alone (a custom `partitions.csv` is still needed for the dual OTA + LittleFS layout — see Gap A). The hardware verification sketch uses `CONFIG_NVS_LOG_CAPACITY=100` via build flag.
 
 ### Mock strategy (`test/mock_nvs.h`)
 An in-memory `std::map<std::string, std::vector<uint8_t>>` backing store keyed on `"namespace:key"` with stubs for all ESP-IDF NVS functions (`nvs_flash_init`, `nvs_open`, `nvs_get_i32`, etc.). `#ifndef UNIT_TEST` guards the real `#include "nvs_flash.h"` / `nvs.h` in `nvs_config.cpp`; under `UNIT_TEST`, `#include "../test/mock_nvs.h"` is substituted.

@@ -163,7 +163,7 @@ TSDS reference: §4
 |----|-------|-------------|-------|-----------------|
 | UT-FA-009 | UT | MX2 prevents concurrent write and read of current measurement data | Simulate simultaneous T4 write and T3 read via stubs | No data torn read; both operations complete correctly |
 | UT-FA-010 | UT | MX2 and MX3 independence: T3 not blocked by long MX3 hold | Hold MX3 stub for 200 ms; trigger T3 wind evaluation simultaneously | T3 acquires MX2 and completes wind safety check without waiting for MX3 |
-| UT-FA-011 | UT | EG1 flags set and cleared by designated owner tasks only | Verify flag ownership by checking set/clear calls in stubs | EG1.WIND_OVERRIDE set/cleared only by T3 stub; EG1.MANUAL_OVERRIDE set by T2, cleared by T6 |
+| UT-FA-011 | UT | EG1 flags set and cleared by designated owner tasks only | Verify flag ownership by checking set/clear calls in stubs | EG1.WIND_OVERRIDE set/cleared only by T3 stub; EG1.MOTOR_ALARM set/cleared only by T2 |
 | IT-FA-012 | IT | Priority inheritance: T3 not starved when T4 holds MX2 | Trigger T3 wind evaluation while T4 stub holds MX2 briefly | T4 priority temporarily raised; MX2 released promptly; T3 completes within 50 ms |
 
 ---
@@ -195,7 +195,7 @@ TSDS reference: §5.1 | FRS: FR-S04, FR-W03
 
 ## 6. Test Cases — Climate Control Logic
 
-TSDS reference: §5.2 | FRS: FR-C09, FR-C10, FR-CR01–FR-CR04, FR-M08–FR-M11
+TSDS reference: §5.2 | FRS: FR-C09, FR-C10, FR-CR01–FR-CR04, FR-MA01–FR-MA08
 
 ### 6.1 Operating Mode State Machine
 
@@ -206,9 +206,9 @@ TSDS reference: §5.2 | FRS: FR-C09, FR-C10, FR-CR01–FR-CR04, FR-M08–FR-M11
 | UT-CC-003 | UT | Transition Standby → Automatic on admin command | Reverse of CC-002 | Mode = Automatic; climate evaluation resumes on next sensor data |
 | UT-CC-004 | UT | Wind-override state entered when T3 sets EG1.WIND_OVERRIDE | Set EG1.WIND_OVERRIDE in stub; trigger T6 evaluation | T6 inhibits all open commands; issues CLOSE_ALL; mode = Wind-override |
 | UT-CC-005 | UT | Wind-override clears when EG1.WIND_OVERRIDE cleared | Clear EG1.WIND_OVERRIDE; trigger T6 | Mode returns to Automatic; normal climate evaluation resumes |
-| UT-CC-006 | UT | Manual-override entered on TN3 notification | Send TN3 to T6 stub | Mode = Manual-override; climate commands inhibited; calibration cycle initiated |
-| UT-CC-007 | UT | Calibration cycle closes all channels then resumes Automatic | TN3 received; monitor relay commands from T2 stub | CLOSE_ALL issued on all three channels; after dwell timers expire mode = Automatic |
-| UT-CC-008 | UT | Calibration deferred if WIND_OVERRIDE active when manual override clears | Set both WIND_OVERRIDE and MANUAL_OVERRIDE; clear MANUAL_OVERRIDE; assert calibration deferred | Calibration cycle not started until WIND_OVERRIDE also cleared |
+| UT-CC-006 | UT | Motor-alarm state entered when EG1.MOTOR_ALARM set | Set EG1.MOTOR_ALARM in stub; trigger T6 evaluation | Mode = Motor-alarm; all window commands inhibited; all relays de-energised |
+| UT-CC-007 | UT | CLOSE_ALL re-calibration runs after motor alarm clears | Set then clear EG1.MOTOR_ALARM; monitor relay commands from T2 stub | CLOSE_ALL issued on all three channels; after dwell timers expire mode = Automatic |
+| UT-CC-008 | UT | Motor alarm overrides WIND_OVERRIDE (highest priority) | Set both WIND_OVERRIDE and MOTOR_ALARM; assert motor alarm takes priority | All relays de-energised; no window commands from any source; MOTOR_ALARM state active |
 
 ### 6.2 Window State Machine
 
@@ -251,7 +251,7 @@ TSDS reference: §5.3 | FRS: FR-LG05, FR-LG06, FR-LG07, FR-LG08
 |----|-------|-------------|-------|-----------------|
 | UT-EL-001 | UT | Log entry struct has correct fixed size | Assert `sizeof(log_entry_t)` in unit test | Size matches documented fixed record size |
 | IT-EL-002 | IT | Event posted to Q3 is written to NVS ring buffer | Post a MODE_CHANGE event; read NVS log namespace | Entry present in NVS with correct event_type, initiator, and timestamp |
-| IT-EL-003 | IT | NVS ring buffer wraps after 1000 entries | Write 1001 events; read ring buffer | 1000 entries retained; entry #1 overwritten by entry #1001; entry #2 intact |
+| IT-EL-003 | IT | NVS ring buffer wraps at CONFIG_NVS_LOG_CAPACITY | Write capacity+1 events; read ring buffer | capacity entries retained; entry #1 overwritten by entry #(capacity+1); entry #2 intact |
 | IT-EL-004 | IT | SD card preferred over NVS when present | Insert formatted SD card; write 10 events | Events written to SD card file; NVS log not updated |
 | IT-EL-005 | IT | Fallback to NVS when SD card absent | Remove SD card; write 10 events | Events written to NVS ring buffer; no crash or error halt |
 | IT-EL-006 | IT | SD card presence detected at runtime | Boot without SD; insert card mid-operation; observe log destination | T9 detects card on next write cycle; subsequent events go to SD card |
@@ -397,7 +397,7 @@ TSDS reference: §5.8 | FRS: FR-NW06
 | ST-WI-005 | ST | Dashboard shows live sensor values | Open dashboard; compare with LCD main screen | T, RH, wind speed, direction, window states, mode all match LCD; updates within 5 s |
 | ST-WI-006 | ST | Setpoint change via web reflected in firmware | Set T_max = 28 °C via web settings page | T4 configuration updated; LCD settings screen shows new value; persisted to NVS |
 | ST-WI-007 | ST | Admin-only parameters not visible in farmer session | Login as farmer; inspect settings page | Admin-only parameters absent from page DOM and HTTP responses |
-| ST-WI-008 | ST | Manual window command from web triggers relay | Issue OPEN M1 from web dashboard | M1-OPEN relay energises; T2 state machine transitions to MOVING |
+| ST-WI-008 | ST | Web dashboard does not expose window open/close controls | Open dashboard as farmer; inspect page DOM | No window open/close buttons or controls present; manual window commands out of scope (C9) |
 
 ### 12.3 MQTT Client
 
@@ -467,13 +467,13 @@ TSDS reference: §5.11 | FRS: TR-SW03, FR-ST02, FR-S05, FR-W04
 | IT-WD-005 | IT | Wind safety CLOSE_ALL on wind sensor fault | Set EG1.SENSOR_FAULT_W | T3 issues CLOSE_ALL; all windows close; fault alarm on LCD |
 | IT-WD-006 | IT | Last known window state maintained during T/RH fault | Open M1; simulate T/RH sensor fault | M1 remains OPEN (state retained); no spurious CLOSE command |
 
-### 15.3 Manual Override
+### 15.3 Motor Alarm
 
 | ID | Level | Description | Steps | Expected result |
 |----|-------|-------------|-------|-----------------|
-| IT-WD-007 | IT | Manual override detected on feedback input | Assert RRK-3 feedback GPIO; observe system response | EG1.MANUAL_OVERRIDE set; T6 inhibits commands; LCD shows manual override; event logged |
-| IT-WD-008 | IT | Calibration cycle runs after manual override clears | Assert then deassert feedback input; observe relay commands | CLOSE_ALL issued on all channels; dwell timers run; mode returns to Automatic |
-| IT-WD-009 | IT | Calibration deferred when wind override also active | Assert feedback input while WIND_OVERRIDE is set; deassert feedback | Calibration not started until WIND_OVERRIDE also cleared |
+| IT-WD-007 | IT | Motor alarm detected on RRK-3 emergency stop signal | Assert GPIO42 externally; observe system response | EG1.MOTOR_ALARM set; all relays de-energised; T6 inhibits all commands; LCD shows motor alarm; onset event logged |
+| IT-WD-008 | IT | CLOSE_ALL re-calibration runs after motor alarm clears | Assert then deassert GPIO42; observe relay commands | EG1.MOTOR_ALARM cleared; CLOSE_ALL issued on all channels; dwell timers run; clearance event logged; mode returns to Automatic |
+| IT-WD-009 | IT | Motor alarm asserted during T2-commanded OPEN move de-energises relays immediately | Start M1 OPEN command; assert GPIO42 mid-move | Relay de-energised immediately; MOTOR_ALARM set; move does not complete |
 
 ---
 
@@ -498,7 +498,7 @@ TSDS reference: §2.4, §3 | FRS: TR-NW01, TR-NW04, FR-AC06
 |--------------|-----------------|---------------|
 | §4 Firmware Architecture | TR-SW05 | IT-FA-001 to IT-FA-004, UT-FA-005 to UT-FA-012 |
 | §5.1 Sensor Polling | FR-S04, FR-W03 | IT-SP-001 to IT-SP-009, UT-SP-007, UT-SP-008 |
-| §5.2 Climate Control Logic | FR-C09, FR-C10, FR-CR01–FR-CR04, FR-M08–FR-M11 | UT-CC-001 to UT-CC-022 |
+| §5.2 Climate Control Logic | FR-C09, FR-C10, FR-CR01–FR-CR04, FR-MA01–FR-MA08 | UT-CC-001 to UT-CC-022 |
 | §5.3 Event Log Manager | FR-LG05, FR-LG06, FR-LG07, FR-LG08 | UT-EL-001, IT-EL-002 to IT-EL-008, ST-EL-009 to ST-EL-011 |
 | §5.4 Access Control | FR-AC06, FR-AC07 | UT-AC-001 to UT-AC-014, IT-AC-006, IT-AC-007, IT-AC-015, IT-AC-016 |
 | §5.5 Local User Interface | FR-UI07 | UT-UI-001 to UT-UI-004, IT-UI-005 to IT-UI-011 |

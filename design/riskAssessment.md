@@ -594,7 +594,7 @@ Out-of-range value → T5 range check fails → reading discarded → if persist
 
 **Chain of affected components:** Same as RSK-014; permanent `SENSOR_FAULT_T`.
 
-**Greenhouse operation impact:** Climate control suspended indefinitely until sensor replaced. Wind protection continues. Manual window operation available via keypad.
+**Greenhouse operation impact:** Climate control suspended indefinitely until sensor replaced. Wind protection continues. Window operation resumes automatically when sensor is replaced and fault clears.
 
 **Mitigation in firmware:** T5 logs `SENSOR / Error`. Admin can disable `rh_ctrl_en` to acknowledge operating without T/RH control (LED remains Amber; `SETPOINT / Warning` logged).
 
@@ -943,7 +943,7 @@ SD card (SPI, FAT32) is optional. T9 (Event Logger) prefers SD when present; fal
 **Failure mode:** No SD card is installed (by choice or card removed during operation). `storage_init()` returns `STORAGE_ERR_NO_CARD`.
 
 **Chain of affected components:**
-No SD card → T9 uses NVS ring buffer (capacity ~1000 entries) → older events are overwritten when full → SD logs unavailable for external retrieval.
+No SD card → T9 uses NVS ring buffer (minimum 250 entries; FR-LG06) → older events are overwritten when full → SD logs unavailable for external retrieval.
 
 **Greenhouse operation impact:** No impact on control. Logging continues but with reduced retention. Events are still available via web interface and MQTT.
 
@@ -1578,7 +1578,7 @@ Mechanical shock → connector loosening → SD card ejected (RSK-033) / I2C con
 **Failure mode:** An attacker with access to the MQTT broker (misconfigured broker, no broker authentication, compromised broker credentials) publishes window OPEN/CLOSE commands or setpoint changes to the controller's subscribed topics.
 
 **Chain of affected components:**
-Malicious MQTT message → T12 receives → posts relay command to Q1 → T2 executes → window moves → potentially open during storm or closed during heat event.
+Malicious MQTT message → T12 receives → T12 ignores window commands (C9: manual window control out of scope; T12 does not post to Q1) → no relay actuation. Remaining attack surface: T12 posts `config_update_t` to Q4 (setpoint changes, enable/disable flags) — a compromised broker could alter climate setpoints.
 
 **Greenhouse operation impact:** Unauthorized window commands could lead to storm damage (windows opened) or crop heat stress (windows closed), depending on attack timing.
 

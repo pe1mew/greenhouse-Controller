@@ -531,22 +531,25 @@ Both T5 and T3 depend on T4 being operational. T3 depends on T5 for data.
 
 **Implementation:**
 - Sole owner of all 6 relay GPIO outputs; no other task may call relay GPIO functions directly.
-- Receives `actuation_cmd_t` messages from Q1 (producers: T3, T6, T8, T11, T12).
+- Receives `actuation_cmd_t` messages from Q1 (producers: T3, T6 only).
 - Per-channel state machine: `CLOSED` → `MOVING` → `OPEN` and reverse.
 - Enforces mutual exclusion: OPEN and CLOSE relays for the same channel are never asserted simultaneously. A direction change requires asserting CLOSE first, waiting for travel time, then de-asserting.
 - Dwell timer: minimum dwell time in each end state before the next command is accepted.
-- Monitors opto-coupler input; on transition: sets EG1.MANUAL_OVERRIDE; sends TN3 to T6; posts log event to Q3.
-- Motor travel times: M1 = 21 s, M2 = 21 s, M3 = 171 s.
+- Monitors RRK-3 opto-coupler alarm input (GPIO42): on alarm assert, immediately de-energise all relays, set EG1.MOTOR_ALARM, post log to Q3; on alarm release, clear EG1.MOTOR_ALARM, post CLOSE_ALL re-calibration to Q1, post log to Q3.
+- Checks EG1.MOTOR_ALARM before executing any Q1 command; discards command if alarm is active.
+- Motor travel times: M1 = 21 s, M2 = 21 s, M3 = 171 s (plus `MOTOR_TRAVEL_MARGIN_S_DEFAULT` = 5 s).
 
 **Acceptance tests:**
 - `test_t2_default_state_all_closed` — startup; verify all relay GPIO deasserted.
 - `test_t2_open_command_asserts_open_relay` — post OPEN M1 command; verify OPEN relay GPIO asserted.
 - `test_t2_mutual_exclusion_no_simultaneous_open_close` — verify OPEN and CLOSE never simultaneously asserted.
-- `test_t2_travel_time_m1` — post OPEN M1; verify relay de-asserts after 21 s.
-- `test_t2_travel_time_m3` — post OPEN M3; verify relay de-asserts after 171 s.
+- `test_t2_travel_time_m1` — post OPEN M1; verify relay de-asserts after 26 s (21 + 5 margin).
+- `test_t2_travel_time_m3` — post OPEN M3; verify relay de-asserts after 176 s (171 + 5 margin).
 - `test_t2_dwell_timer_blocks_rapid_reversal` — OPEN then immediate CLOSE; verify CLOSE deferred until dwell expires.
 - `test_t2_close_all_preempts_dwell` — WIND_OVERRIDE CLOSE_ALL; verify all relays closed immediately.
-- `test_t2_opto_input_triggers_manual_override` — assert opto input; verify EG1.MANUAL_OVERRIDE set and TN3 sent.
+- `test_t2_motor_alarm_assert_deenergises_relays` — assert opto input; verify all 6 relays de-energised and EG1.MOTOR_ALARM set.
+- `test_t2_motor_alarm_discards_q1_commands` — assert alarm, post OPEN command; verify command discarded.
+- `test_t2_motor_alarm_release_triggers_recalibration` — release opto input; verify CLOSE_ALL posted and EG1.MOTOR_ALARM cleared.
 - `test_t2_logs_every_command_execution` — verify Q3 receives log event for each relay transition.
 
 ---
@@ -562,8 +565,7 @@ Both T5 and T3 depend on T4 being operational. T3 depends on T5 for data.
 - Evaluates temperature and humidity against setpoints with hysteresis.
 - Runs conflict resolution algorithm when temperature and humidity demands conflict (per FR-CC06–CC08).
 - Posts OPEN or CLOSE commands for M1, M2, M3 to Q1.
-- Inhibited (posts no commands) when EG1.WIND_OVERRIDE, EG1.MANUAL_OVERRIDE, or system is in Standby mode.
-- On receiving TN3 (manual override detected): reads EG1.MANUAL_OVERRIDE; stops issuing commands until cleared.
+- Inhibited (posts no commands) when EG1.MOTOR_ALARM, EG1.WIND_OVERRIDE, or system is in Standby mode.
 
 **Acceptance tests:**
 - `test_t6_no_action_within_setpoint_band` — T and RH within deadband; verify no command posted.
@@ -572,7 +574,7 @@ Both T5 and T3 depend on T4 being operational. T3 depends on T5 for data.
 - `test_t6_opens_window_on_high_humidity` — RH > RH_max setpoint; verify OPEN command.
 - `test_t6_conflict_resolution_temperature_wins` — T high and RH low simultaneously; verify temperature demand takes priority per spec.
 - `test_t6_inhibited_during_wind_override` — EG1.WIND_OVERRIDE set; verify no commands posted.
-- `test_t6_inhibited_during_manual_override` — EG1.MANUAL_OVERRIDE set; verify no commands posted.
+- `test_t6_inhibited_during_motor_alarm` — EG1.MOTOR_ALARM set; verify no commands posted.
 - `test_t6_inhibited_in_standby_mode` — system in Standby; verify no commands posted.
 - `test_t6_resumes_after_override_cleared` — override cleared; new sensor data arrives; verify commands resume.
 
@@ -661,22 +663,20 @@ Network tasks run on Core 0. They depend on Group 2 (Data Manager) but are indep
 
 ##### TASK-T11 — Web Server
 
-**Depends on:** LIB-9 (LittleFS for static files), T4 (data accessors and Q4 for config), T2 (Q1 for manual window commands)
+**Depends on:** LIB-9 (LittleFS for static files), T4 (data accessors and Q4 for config)
 **Depends on tasks:** T10 (WiFi connected), T4 (running)
 
 **Implementation:**
 - ESPAsyncWebServer serving HTML/CSS/JS from LittleFS.
 - Implements three-state session model: Normal / Farmer / Administrator (session cookie, bcrypt PIN hash).
-- Endpoints for sensor data (JSON), window status (JSON), configuration GET/POST, manual window commands, log download.
-- Posts configuration changes to Q4; posts manual commands to Q1.
+- Endpoints for sensor data (JSON), window status (JSON), configuration GET/POST, log download. Manual window open/close commands are not provided — window control is fully automatic (C9).
+- Posts configuration changes to Q4; posts to Q3 (log events).
 
 **Acceptance tests:**
 - `test_t11_serves_index_html` — GET /; verify 200 response with HTML content.
 - `test_t11_serves_sensor_data_json` — GET /api/sensors; verify JSON contains T, RH, wind fields.
 - `test_t11_requires_auth_for_config` — unauthenticated POST /config; verify 401 response.
 - `test_t11_config_post_accepted_with_session` — authenticated POST; verify Q4 receives update.
-- `test_t11_manual_command_requires_farmer_role` — Normal session posts OPEN; verify rejected.
-- `test_t11_manual_command_posts_to_q1` — Farmer session posts OPEN M1; verify Q1 receives command.
 
 ---
 
@@ -695,8 +695,7 @@ Network tasks run on Core 0. They depend on Group 2 (Data Manager) but are indep
 - `test_t12_disabled_when_not_configured` — MQTT disabled in NVS; verify no connection attempt.
 - `test_t12_publishes_sensor_data` — stub MQTT broker; verify publish called with correct topic and payload.
 - `test_t12_subscribes_to_command_topic` — verify subscribe called on connect.
-- `test_t12_command_received_posts_to_q1` — receive valid OPEN command on topic; verify Q1 receives it.
-- `test_t12_ignores_invalid_command_payload` — receive malformed payload; verify Q1 not updated.
+- `test_t12_ignores_window_command_topic` — receive OPEN command on window topic; verify Q1 not posted and no relay action (manual window commands out of scope, C9).
 
 ---
 
@@ -730,9 +729,9 @@ After all tasks are individually validated, the following integration tests veri
 | INT-02 | Temperature-driven window opening | T rises above setpoint; T6 posts OPEN; T2 runs relay for correct travel time |
 | INT-03 | Wind override | Wind speed breaches threshold mid-opening; T3 posts CLOSE_ALL; windows close; climate control inhibited |
 | INT-04 | Wind override clears | Wind drops; hold-off expires; climate control resumes |
-| INT-05 | Manual override via RRK-3 | RRK-3 relay de-energises; opto input changes state; T2 detects manual override; T6 inhibited; UI shows alarm |
+| INT-05 | Motor alarm via RRK-3 | Assert GPIO42 externally; T2 detects alarm (75 ms confirm); all relays de-energised; EG1.MOTOR_ALARM set; T6 inhibited; LCD shows motor alarm; event logged |
 | INT-06 | Keypad menu — setpoint change | Operator navigates menu; changes T setpoint; T4 persists to NVS; T6 uses new value |
-| INT-07 | Web UI — window manual command | Administrator opens M1 via web UI; T11 posts command to Q1; T2 opens window |
+| INT-07 | Web UI — setpoint change | Farmer changes T_max via web settings page; T11 posts config update to Q4; T4 persists to NVS; T6 uses new value on next evaluation |
 | INT-08 | Power interruption | Disconnect 24 V for 5 s; restore; verify DS1307 retains time; NVS retains configuration; system resumes |
 | INT-09 | MQTT publish | Broker connected; verify T, RH, wind, window state published every interval |
 | INT-10 | OTA update | Upload firmware image via web UI; verify successful flash and boot from new partition |

@@ -49,6 +49,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   - **Issue #5 closed** — relay module selection resolved by discrete relay integration on PCB (see §4.5.1)
   - **Issue #7 closed** — time source confirmed as **DS1307 RTC** with CR2032 backup, fitted on PCB; TR-HW08 satisfied
   - **Issue #9 added (open)** — J5 pins 5–6 carry HEATING_POS / HEATING_NEG nets for the SenseCAP S200 heater supply; feature not yet documented in TDS; decision on voltage, current, and specification deferred
+  - **Issue #8/#9 closed — dropped** — J5 heater supply connection (HEATING_POS / HEATING_NEG, pins 5–6) removed from PCB; no firmware support or documentation required; pins 5–6 of J5 left unconnected
 
 ### Added (earlier — 2026-04-02)
 - `design/functionalRequirementsSpecification.md` — new constraints and requirements:

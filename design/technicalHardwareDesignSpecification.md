@@ -365,6 +365,8 @@ The LCD module integrates an **AiP31068L** I2C-to-parallel bridge that converts 
 
 The controller interfaces to the Hotraco RRK-3 via six relay outputs (OPEN and CLOSE for each of M1, M2, M3) and one optically isolated digital input for feedback from the RRK-3.
 
+> **Motor control timing:** The relay must remain energised for the full motor travel time **plus a fixed margin** (see §4.3 Motor Run-Times in the FRS) to ensure the window reliably reaches the physical end-stop before the relay is released. De-energising a relay immediately stops the motor at its current position. The controller therefore only issues complete open or complete close commands — partial positioning is not supported.
+
 #### 4.5.1 Relay Outputs (Motor Commands)
 
 | Parameter | Value |
@@ -397,7 +399,7 @@ The relay provides galvanic isolation between the MCU logic circuit (3.3 V GPIO,
 | Interface to MCU | 1 GPIO pin (opto-coupler output) |
 | Connection | Screw terminal |
 
-> **✅ Issue #1 — Motor feedback signal — Closed.** The RRK-3 motor controller signals an alarm condition via an **external relay contact** that closes on alarm. This dry contact is wired to screw terminal J10 (OPTO_INPUT / GND) and drives the opto-isolated input on the PCB, producing a logic-level signal on MCU GPIO 42 (active when alarm is present). Signal definition is documented in the RRK-3 interface specification. See also FRS Constraint C8.
+> **✅ Issue #1 — Motor feedback signal — Closed.** The RRK-3 signals a motor emergency stop via a single alarm relay output (dry contact, closes on alarm). This contact closes when any motor fails to stop at its normal end-switch and runs on to the emergency switch, which cuts motor power. The dry contact is wired to J10 (OPTO_INPUT / GND) and drives the opto-isolated input on the PCB, producing a logic-level signal on MCU GPIO 42 (active high when alarm is present). The alarm covers all three motor channels combined; channel identification is not possible from this signal. Normal manual window operation does not trigger this signal. See FRS §5.3a and Constraint C8.
 
 #### 4.5.3 Screw Terminals
 
@@ -814,7 +816,7 @@ This section maps every peripheral signal to a specific GPIO number on the LOLIN
 | 5 | **Relay module selection** — ~~Resolved~~. Six **SRD-05VDC-SL-C** relays are integrated directly on the PCB, each driven by a **2N7000 N-channel MOSFET** with 1N4007 flyback diode and 10 kΩ gate pull-down resistor. No separate relay module board is used. Contact rating 10 A / 250 VAC; coil 5 VDC. See §4.5.1. | Hardware designer | **Closed** |
 | 6 | **LED panel integration** — ~~Resolved~~. LEDs are on the PCB and visible through the transparent enclosure cover. No panel-mount LED holders or light pipes are required. | Hardware designer | **Closed** |
 | 7 | **Time source selection** — ~~Resolved~~. **DS1307 external RTC** with CR2032 battery backup fitted on the PCB. Fully satisfies TR-HW08; NTP synchronisation over WiFi corrects long-term drift when available. See §4.6 for full analysis. | Hardware designer | **Closed** |
-| 8 | **J5 heater supply (HEATING_POS / HEATING_NEG)** — Pins 5–6 of connector J5 carry HEATING_POS and HEATING_NEG nets on the PCB, providing a heater supply connection for the SenseCAP S200. This feature is not yet specified in the THDS. To be decided: whether the heater supply is required, what voltage and current it provides, and whether the heater is permanently powered or firmware-controlled. | Hardware designer | Open |
+| 8 | **J5 heater supply (HEATING_POS / HEATING_NEG)** — ~~Dropped~~. Heater supply connection removed from PCB. Pins 5–6 of J5 are not present on the board. The SenseCAP S200 does not require external heater supply in this installation. | Hardware designer | **Closed — dropped** |
 
 ---
 

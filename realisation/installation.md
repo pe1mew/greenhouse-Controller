@@ -100,18 +100,14 @@ See [`documentation/Sensors/T-RH_ FG6485A/`](../documentation/Sensors/T-RH_%20FG
 The S200 supports both MODBUS-RTU and SDI-12.  
 See [`documentation/Sensors/W-Sensecap-S200/`](../documentation/Sensors/W-Sensecap-S200/) for the user guide.
 
-*Currently, SDI-12_DATA, HEATING_NEG and HEATING_POS are not wired on the PCB.*
+| Pin | Label | Wire |
+|-----|-------|------|
+| 1 | +24 V | Sensor supply positive |
+| 2 | GND | Sensor supply negative / common |
+| 3 | RS485-A | RS485 A (Data+) |
+| 4 | RS485-B | RS485 B (Data−) |
 
-| Pin | Label | Function |
-|-----|-------|---------|
-| 1 | RS485-B | RS485 B (Data−) |
-| 2 | GND | Signal / supply common |
-| 3 | GND | Signal / supply common |
-| 4 | SDI-12_DATA | SDI-12 data line (alternative interface) (not interfaced) |
-| 5 | HEATING_NEG | Sensor heater supply negative (not powered from PCB) |
-| 6 | HEATING_POS | Sensor heater supply positive (not powered from PCB) |
-| 7 | RS485-A | RS485 A (Data+) |
-| 8 | +24 V | Sensor supply positive |
+> Use shielded twisted-pair cable. Connect the shield to earth at one end only.
 
 ---
 

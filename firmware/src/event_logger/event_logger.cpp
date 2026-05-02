@@ -107,10 +107,6 @@ uint32_t log_take_dropped_count(void)
  *
  * ----------------------------------------------------------------------- */
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 void task_event_logger(void *pvParameters)
 {
     (void)pvParameters;
@@ -120,7 +116,3 @@ void task_event_logger(void *pvParameters)
         vTaskDelay(portMAX_DELAY);
     }
 }
-
-#ifdef __cplusplus
-}
-#endif

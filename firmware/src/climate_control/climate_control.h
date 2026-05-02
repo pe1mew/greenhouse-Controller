@@ -38,7 +38,7 @@
  * ### State T6 must maintain
  * T6 keeps two task-local static integers (current_step_t, current_step_rh)
  * that track the step last commanded.  Both are reset to 0 on entry to
- * WIND_OVERRIDE or MANUAL_OVERRIDE; T2's boot CLOSE_ALL ensures actual
+ * WIND_OVERRIDE or MOTOR_ALARM; T2's boot CLOSE_ALL ensures actual
  * window positions are known.
  *
  * ### Incremental command posting
@@ -162,9 +162,9 @@ int vent_resolve_conflict(int step_t, int step_rh, uint8_t cr_priority);
 /**
  * @brief T6 — Climate Control task.
  *
- * Wakes on TN2 (new sensor data from T4) and TN3 (manual override from T2).
+ * Wakes on TN2 (new sensor data from T4).
  * On each wake:
- *   1. Checks EG1 flags; skips evaluation if WIND_OVERRIDE, MANUAL_OVERRIDE,
+ *   1. Checks EG1 flags; skips evaluation if WIND_OVERRIDE, MOTOR_ALARM,
  *      or SENSOR_FAULT_T is set.
  *   2. Reads T_avg, RH_avg, is_daytime, setpoints, hyst values from T4 (MX4).
  *   3. Calls vent_step_required_t() and vent_step_required_rh().
@@ -174,8 +174,8 @@ int vent_resolve_conflict(int step_t, int step_rh, uint8_t cr_priority);
  *      to Q1 (or CMD_CLOSE_ALL if new step is 0).
  *   7. Updates current_step_t and current_step_rh.
  *
- * On TN3 (manual override): resets both current steps to 0, posts
- * CMD_CLOSE_ALL to Q1, starts calibration timer, then resumes above loop.
+ * Motor alarm (EG1.MOTOR_ALARM set by T2): T6 sees the flag on next
+ * TN2 wake; all evaluation skipped; no Q1 posts while flag is active.
  *
  * @param pvParameters  Unused; pass NULL.
  */

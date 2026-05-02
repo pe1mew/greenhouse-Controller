@@ -26,7 +26,7 @@
    - 5.5 Wind Safety
    - 5.6 Conflict Resolution
    - 5.7 Window State Tracking
-   - 5.8 Operating Modes (incl. Manual Override Detection)
+   - 5.8 Operating Modes
    - 5.9 Local User Interface (Keyboard, Display & Status LEDs)
      - 5.9.1 Status LED Indicators
    - 5.10 Configuration and Settings
@@ -128,11 +128,15 @@ The greenhouse is rectangular (40 m × 16 m), oriented with the long axis east�
 | M2 | 21 s | 21 s |
 | M3 | 171 s | 171 s |
 
+> **Note:** These are the measured travel times from one end-stop to the other. The controller adds a fixed margin (default: 5 s) to each relay pulse so the window reliably reaches the physical end-stop before the relay is de-energised. The end-switches wired to the RRK-3 stop the motor automatically; the margin accommodates mechanical variation.
+
 ### 4.4 Motor Interface
 
 Windows are driven by a Hotraco RRK-3 relay box. The controller sends an OPEN or CLOSE pulse (24 V potential-free contact) per window. End-switches are wired to the RRK-3 directly and stop the motor automatically at the fully-open and fully-closed positions. **The controller receives no end-switch feedback and has no direct knowledge of the actual window position.**
 
-> **⚠ OPEN ISSUE — Motor feedback:** It is currently unknown whether and how any status or feedback signal from the Hotraco RRK-3 (e.g. motor fault, alarm relay output) can be wired back to the controller. This must be resolved during detailed electrical design. Depending on the outcome, additional input requirements may be added. See also Constraint C8.
+The relay command must remain active for the full travel time plus a margin; de-energising the relay before the end-switch fires stops the window motor immediately at its current position. The controller therefore only issues complete open or complete close commands — partial positioning is not supported.
+
+The RRK-3 provides a single alarm output (potential-free contact) that closes when any motor fails to stop at its normal end-switch and continues running to the emergency switch, which cuts motor power. This alarm signal is wired to the opto-coupler input on the controller PCB (GPIO 42). The alarm covers all three motor channels; the controller cannot identify which motor triggered it from this signal alone. See §5.3a and Constraint C8.
 
 ---
 
@@ -144,7 +148,7 @@ Windows are driven by a Hotraco RRK-3 relay box. The controller sends an OPEN or
 |----|-------------|--------|
 | FR-S01 | The system **shall** measure the internal greenhouse temperature. | Must |
 | FR-S02 | The system **shall** measure the internal greenhouse relative humidity. | Must |
-| FR-S03 | The system **shall** poll all sensors (temperature, humidity, and wind) at a single configurable interval. The default interval is 60 s. The technician **shall** be able to set the interval in the range 150 to 3600 s via the web GUI. | Must |
+| FR-S03 | The system **shall** poll all sensors (temperature, humidity, and wind) at a single configurable interval. The default interval is 60 s. The technician **shall** be able to set the interval in the range 30 to 3600 s via the web GUI. | Must |
 | FR-S04 | The system **shall** detect and report a sensor fault (e.g. disconnected or out-of-range sensor). | Must |
 | FR-S05 | On a sensor fault, the system **shall** maintain the last known window states and alert the user. | Must |
 | FR-S06 | The system **should** compute a sliding (moving) average of temperature and humidity readings to reduce the effect of measurement noise before comparing with setpoints. | Should |
@@ -165,7 +169,7 @@ Windows are driven by a Hotraco RRK-3 relay box. The controller sends an OPEN or
 |----|-------------|--------|
 | FR-A01 | The system **shall** be able to command each window (M1, M2, M3) to fully open. | Must |
 | FR-A02 | The system **shall** be able to command each window (M1, M2, M3) to fully close. | Must |
-| FR-A03 | Window commands **shall** be issued as timed relay pulses for the duration of full opening or closing; the motor is stopped automatically by the RRK-3 end-switches. | Must |
+| FR-A03 | Window commands **shall** be issued as timed relay pulses for the duration of full opening or closing **plus a fixed margin**; the relay must remain energised until the window reaches the end-switch position. **De-energising the relay before travel is complete stops the motor immediately at the current (intermediate) position.** The motor is stopped by the RRK-3 end-switches at the fully-open and fully-closed positions. | Must |
 | FR-A04 | The system **shall** not issue an OPEN and CLOSE command simultaneously to the same window. | Must |
 | FR-A05 | The system **shall** maintain an estimated state for each window: `OPEN`, `CLOSED`, or `MOVING`. | Must |
 | FR-A06 | After issuing a command, the system **shall** set the estimated state to `MOVING` and transition to the target state after the known motor run-time has elapsed. | Must |
@@ -176,9 +180,24 @@ Windows are driven by a Hotraco RRK-3 relay box. The controller sends an OPEN or
 | FR-A11 | The system **shall** not issue a new open or close command to a window until the applicable dwell time has elapsed since the window reached its last end position. | Must |
 | FR-A12 | Dwell times **shall** be configurable independently for each window (M1, M2, M3) and independently for the open-dwell and close-dwell directions. | Should |
 
-> **Note on FR-A07/FR-A08:** The technical specification explicitly cautions that partial opening via timed stop is unreliable without position feedback. Implementation is a "Could have" and requires an explicit design decision before the feature is included.
+> **Note on FR-A07/FR-A08:** Partial opening via timed stop is not achievable with the current hardware: de-energising the relay stops the window immediately at the current position, so any timed-stop approach would require precise timing to reach a predictable intermediate position — which is not reliable without position feedback. FR-A07 and FR-A08 remain "Could have" but are considered impractical with the current design.
 
 > **Note on FR-A09–FR-A12 (dwell time):** Dwell time prevents the motors from being cycled too rapidly, protecting mechanical components and reducing wear. The dwell timer starts when the estimated end-position state is entered (i.e. after the motor run-time has elapsed), not when the command is issued.
+
+### 5.3a Motor Emergency Alarm
+
+The Hotraco RRK-3 provides a single alarm output that activates when any motor fails to stop at its normal end-switch and reaches the emergency switch. The controller monitors this signal continuously and enters **Motor Alarm** state on activation.
+
+| ID | Requirement | MoSCoW |
+|----|-------------|--------|
+| FR-MA01 | The system **shall** continuously monitor the RRK-3 alarm signal (GPIO 42 opto-coupler input). | Must |
+| FR-MA02 | When the RRK-3 alarm is detected, the system **shall** immediately enter **Motor Alarm** state and de-energise all relay outputs. | Must |
+| FR-MA03 | In Motor Alarm state, the system **shall not** issue any window commands from any source — including climate control, wind safety, manual keyboard commands, MQTT, or web interface. | Must |
+| FR-MA04 | Motor Alarm state **shall** have the highest priority and **shall** override all other operating states, including Wind Safety override and Standby. | Must |
+| FR-MA05 | The system **shall** display a dedicated Motor Alarm message on the LCD for as long as the alarm is active. The display **shall** indicate that all window control is suspended. | Must |
+| FR-MA06 | Motor Alarm state **shall** clear automatically when the RRK-3 alarm signal is released (alarm reset on the RRK-3). | Must |
+| FR-MA07 | When Motor Alarm state clears, the system **shall** automatically perform a CLOSE_ALL re-calibration cycle to re-establish a known window position, then resume normal operation. | Must |
+| FR-MA08 | Motor Alarm onset and clearance events **shall** each be logged with a timestamp and "SYSTEM" as the initiator. | Must |
 
 ### 5.4 Automatic Climate Control
 
@@ -219,7 +238,7 @@ The system operates with two climate setpoint profiles — daytime and night-tim
 | FR-WS02 | When the measured wind speed exceeds v_max, the system **shall** immediately close all windows, overriding the climate control logic. | Must |
 | FR-WS03 | The administrator **shall** be able to define a wind direction exclusion zone as a centre angle and a half-width (e.g. "close if wind is within ±30° of 315°N"). | Must |
 | FR-WS04 | When the measured wind direction falls within the configured exclusion zone, the system **shall** close all windows, overriding the climate control logic. | Must |
-| FR-WS05 | Wind safety closures **shall** take priority over all other window commands, including manual commands. | Must |
+| FR-WS05 | Wind safety closures **shall** take priority over all other window commands (climate control, MOTOR_ALARM resume). Manual window commands from LCD, web GUI, or MQTT are out of scope (C9). | Must |
 | FR-WS06 | When a wind safety override is active, the system **shall** show a dedicated wind-override alarm message on the LCD display, indicating which condition triggered the override (wind speed or wind direction). This indication **shall** remain visible on the display for as long as the override is active. | Must |
 | FR-WS07 | When wind conditions return to safe values, the system **shall** resume automatic climate control. | Must |
 | FR-WS08 | The administrator **should** be able to set a minimum duration that wind must be within safe limits before windows are re-opened (wind hysteresis timer). | Should |
@@ -249,23 +268,17 @@ When temperature and humidity call for opposing window actions (e.g. temperature
 
 ### 5.8 Operating Modes
 
-> **Scope note:** Manual window control (physically opening or closing individual windows) is **outside the scope** of this controller. Manual window operation is performed directly on the Hotraco RRK-3 motor relay box. The controller provides only two operating modes for its own automatic control logic.
+> **Scope note:** Manual window control (physically opening or closing individual windows) is **outside the scope** of this controller. Manual window operation is performed directly on the Hotraco RRK-3 motor relay box. The controller provides two operating modes for its own automatic control logic, plus override states that take priority over both.
 
 | ID | Requirement | MoSCoW |
 |----|-------------|--------|
-| FR-M01 | The controller **shall** support two operating modes: **Automatic** and **Standby**. | Must |
+| FR-M01 | The controller **shall** support two operating modes: **Automatic** and **Standby**. In addition, the controller has two override states — Wind Safety override (§5.5) and Motor Alarm (§5.3a) — that take priority over both modes. Motor Alarm has the highest priority of all states. | Must |
 | FR-M02 | In **Automatic** mode, the controller **shall** continuously evaluate climate conditions and issue window commands according to the control logic. | Must |
 | FR-M03 | In **Standby** mode, the controller **shall** suspend all automatic climate control commands; no open or close commands are issued by the control logic. | Must |
 | FR-M04 | In **Standby** mode, wind safety logic **shall** remain fully active; the controller **shall** still issue close commands when wind conditions exceed safe thresholds. | Must |
 | FR-M05 | The farmer **shall** be able to switch between Automatic and Standby mode via the local keyboard. | Must |
 | FR-M06 | The display **shall** clearly indicate the current operating mode (AUTO / STANDBY) at all times. | Must |
 | FR-M07 | A mode change **shall** be logged with a timestamp and the identity of the operator who initiated the change (see §5.14). | Must |
-| FR-M08 | The system **shall** be able to detect when a manual override of a window has been performed (i.e., a window has been operated via the Hotraco RRK-3 independently of the controller). | Must |
-| FR-M09 | When a manual override is detected, the system **shall** suspend automatic climate control. | Must |
-| FR-M10 | When the system resumes automatic climate control after a manual override, it **shall** perform a full open–close calibration cycle on all windows to re-synchronise the estimated window positions before resuming normal control. | Must |
-| FR-M11 | The calibration cycle on resumption of control (FR-M10) **shall not** be executed when the system is in an active wind safety alarm state. | Must |
-
-> **Note on FR-M08:** Detection of manual override depends on feedback from the Hotraco RRK-3 (e.g. an alarm or status relay output). This is subject to the open issue described in Constraint C8. The mechanism for override detection must be resolved during detailed electrical design.
 
 ### 5.9 Local User Interface (Keyboard, Display & Status LEDs)
 
@@ -275,7 +288,7 @@ When temperature and humidity call for opposing window actions (e.g. temperature
 | FR-UI02 | The controller **shall** have a 16×2 character LCD display. | Must |
 | FR-UI03 | The display **shall** show, in normal operation: current temperature, current humidity, and current operation mode (auto/manual). | Must |
 | FR-UI04 | The display **shall** show the estimated state (OPEN/CLOSED/MOVING) of each window. | Must |
-| FR-UI05 | The display **shall** show an alarm indication when a sensor fault or wind safety event is active. | Must |
+| FR-UI05 | The display **shall** show an alarm indication when a sensor fault, wind safety event, or motor alarm is active. | Must |
 | FR-UI06 | The keyboard **shall** allow navigation through a menu structure to access settings, mode switching, and status views. | Must |
 | FR-UI07 | The system **shall** provide efficient menu navigation, enabling the farmer and administrator to reach any first-level setting from the main screen with a minimal number of key presses. | Should |
 | FR-UI08 | The display **should** show the current wind speed and wind direction on a status screen. | Should |
@@ -346,7 +359,7 @@ The RGB LED uses the following colour semantics, which differ from the discrete 
 | FR-CF04 | The technician **shall** be able to set the wind direction exclusion zone (centre bearing and half-width angle). | Must |
 | FR-CF05 | The technician **shall** be able to set the motor travel time (run-time) per window (M1, M2, M3) individually via the **web GUI only** (administrator session). Each value represents the duration the controller energises the relay to move the window from one end-stop to the other. Range: 5–600 s per window. Factory defaults: M1 = 21 s, M2 = 21 s, M3 = 171 s. | Must |
 | FR-CF06 | All settings **shall** be retained after a power cycle or controller restart. | Must |
-| FR-CF07 | The technician **shall** be able to set the sensor poll interval in the range 150 to 3600 s, via the web GUI only. The factory default is 60 s. | Must |
+| FR-CF07 | The technician **shall** be able to set the sensor poll interval in the range 30 to 3600 s, via the web GUI only. The factory default is 60 s. | Must |
 | FR-CF08 | The technician **should** be able to set hysteresis values for temperature and humidity control. | Should |
 | FR-CF09 | The technician **should** be able to set the wind safety hysteresis timer (FR-WS08). | Should |
 | FR-CF10 | The technician **shall** be able to set the open-dwell time for each window (M1, M2, M3) via the web GUI only — the minimum time a window must remain open before it may be closed. | Must |
@@ -397,14 +410,14 @@ The RGB LED uses the following colour semantics, which differ from the discrete 
 | ID | Requirement | MoSCoW |
 |----|-------------|--------|
 | FR-LG01 | The system **shall** maintain an event log. Each log entry **shall** include a timestamp (date and time) and the identity of the operator or the system component that triggered the event. | Must |
-| FR-LG02 | The following events **shall** be logged: window state changes (open/close command issued), operating mode changes (AUTO ↔ STANDBY), setpoint changes, wind safety overrides (start and end), sensor faults (start and end), controller restart, and manual override events (detection of override and resumption of automatic control). | Must |
+| FR-LG02 | The following events **shall** be logged: window state changes (open/close command issued), operating mode changes (AUTO ↔ STANDBY), setpoint changes, wind safety overrides (start and end), motor alarm events (onset and clearance), sensor faults (start and end), and controller restart. | Must |
 | FR-LG03 | For events triggered by an operator action (mode change, setpoint change), the log entry **shall** record which user role (Farmer / Administrator) and, where applicable, which user account performed the action. | Must |
 | FR-LG04 | For events triggered automatically by the control logic, the log entry **shall** record "SYSTEM" as the initiator and include the sensor values that triggered the event. | Must |
 | FR-LG05 | The log **shall** be retrievable via the web interface (when WiFi is available) and via the serial/USB diagnostic port. | Should |
-| FR-LG06 | The system **should** retain event log entries persistently across power cycles using a circular strategy, so that the log is maintained automatically without manual management; oldest entries are overwritten when capacity is reached. | Should |
+| FR-LG06 | The system **should** retain event log entries persistently across power cycles using a circular strategy, so that the log is maintained automatically without manual management; oldest entries are overwritten when capacity is reached. The ring buffer **shall** be sized to retain at least 1 hour of all event types combined under worst-case activity at the minimum poll interval (30 s). Worst-case hourly budget: 120 `LOG_SENSOR` events (1 per 30 s poll) + 72 `LOG_RELAY` events (wind-storm cycling, 3 channels × 2 directions every 5 min) + 24 `LOG_MODE_CHANGE` events = 216 events/hour. Minimum capacity: **250 entries** (216 + ~16 % headroom). | Should |
 | FR-LG07 | The system **could** write the event log to an SD card for extended retention and offline retrieval. | Could |
 | FR-LG08 | If an SD card is present and functional, the system **should** prefer the SD card as the primary log storage; internal non-volatile memory acts as fallback. | Could |
-| FR-LG09 | The log **should** include periodic sensor-value snapshots (temperature, humidity, wind speed, wind direction) at a configurable interval, to provide a climate history. | Should |
+| FR-LG09 | The log **shall** include a sensor-value snapshot (temperature, humidity, wind speed, wind direction) on every sensor poll cycle. The snapshot interval therefore equals the poll interval (FR-S03); no separate snapshot interval is configurable. | Must |
 
 ---
 
@@ -472,13 +485,13 @@ The RGB LED uses the following colour semantics, which differ from the discrete 
 |---|------------------------|
 | C1 | The only actuators are the three motorised ventilation windows. There is no heating, cooling, humidification, or dehumidification equipment. |
 | C2 | The RRK-3 end-switches are not connected to the controller. The controller has no physical feedback of actual window position. All window states are estimated. |
-| C3 | Partial opening via timed motor stop is unreliable without position feedback. The default design uses only fully-open and fully-closed end positions. See FR-A07/FR-A08. |
+| C3 | The controller can only open or close windows completely. De-energising the relay stops the window immediately at whatever position it is in. Partial positioning is not supported because it would require precise timed stops to reach a predictable position, which is unreliable without position feedback. Only fully-open and fully-closed end positions are used. See FR-A07/FR-A08. |
 | C4 | Opening windows helps only when outside conditions (T and/or RH) are more favourable than inside. The controller has no outside temperature or humidity sensor. This is a recognised limitation. |
 | C5 | The controller cannot actively raise temperature or humidity; it can only try to slow the rate of decrease by closing windows. |
 | C6 | WiFi, MQTT, and SD card functionality are optional; the controller must be fully functional as a standalone unit without any of these. |
 | C7 | The system is installed inside the greenhouse (IP67 enclosure required due to the greenhouse environment). |
-| C8 | **OPEN ISSUE — Motor feedback:** It is currently unknown whether and how status signals from the Hotraco RRK-3 (e.g. alarm relay output) can be fed back to the controller. Additional input interface requirements may arise once this is resolved. |
-| C9 | Initiating manual window control (individual open/close of M1, M2, M3) is outside the scope of this controller; it is performed directly on the Hotraco RRK-3 motor relay box. However, the controller **shall** detect when a manual override has occurred and respond accordingly (see FR-M08–FR-M11). |
+| C8 | **✅ Resolved — Motor feedback:** The RRK-3 provides a single alarm relay output (dry contact, closes on alarm) that fires when any motor fails to stop at its normal end-switch and reaches the emergency switch. This signal is wired to the opto-coupler input on the controller PCB (GPIO 42). Detection of normal manual window operation via this signal is not possible — the alarm relay does not fire on normal manual operation. Manual override detection (previously FR-M08–M11) has been removed from scope. See §4.4 and §5.3a. |
+| C9 | Initiating manual window control (individual open/close of M1, M2, M3) is outside the scope of this controller; it is performed directly on the Hotraco RRK-3 motor relay box. Detection of manual window operation by the controller is not supported — the RRK-3 alarm relay (GPIO 42) signals motor emergency stop only, not normal manual operation. |
 | C10 | At startup, the controller commands all windows to close to establish a known baseline state. This means a power cycle will always result in a brief window-close sequence. |
 | C11 | All user-configurable setpoints and thresholds — including temperature (°C), relative humidity (%), wind speed (m/s or Beaufort), wind direction (degrees), and time durations (minutes) — are expressed and stored as **integers**. Fractional values are not supported. Fractional sensor readings are rounded to the nearest integer before comparison with setpoints. |
 | C12 | Temperature-based climate control is permanently active and cannot be disabled. Humidity-based climate control can be enabled or disabled by the farmer. Wind protection can be enabled or disabled by either the farmer or the administrator. The enable/disable state of both features is persisted across power cycles. |

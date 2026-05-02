@@ -156,7 +156,7 @@ The following items originate from system-level and functional requirements in t
 - Configurable login lockout after a set number of failed attempts (FR-AC07).
 
 **Event log**
-- Minimum 1000 entries retained in persistent storage using a ring buffer; SD card preferred when present, internal flash as fallback (FR-LG06, FR-LG07, FR-LG08).
+- Minimum 250 entries retained in persistent storage using a ring buffer (FR-LG06: worst-case 216 events/hour at 30 s poll + headroom); SD card preferred when present, internal flash as fallback (FR-LG07, FR-LG08).
 
 **Settings persistence**
 - All configuration settings stored in ESP32-S3 NVS flash partition; retained across power cycles and restarts (FR-CF06, TR-SW01).
@@ -189,8 +189,8 @@ The following items originate from system-level and functional requirements in t
 - Both flags default to **enabled** (`true`) on first boot and after factory reset.
 - Changes to either flag are logged with timestamp and the operator's identity (FR-WS11).
 
-**Manual override detection**
-- The RRK-3 signals manual activity via an external dry relay contact wired to J10; the opto-isolated input drives GPIO 42 (logic HIGH = active). Resolved — see Open Issue #1 (Closed). T2 uses a deferred-ISR pattern: `attachInterrupt(PIN_OPTO_INPUT, isr_handler, CHANGE)`; the ISR (`IRAM_ATTR`) records only the first edge (volatile flag + tick timestamp) and returns immediately; T2 confirms after 75 ms by reading the live pin state; transitions are ignored if any channel FSM is in a MOVING state (T2-commanded move). On confirmation: T2 sets EG1.MANUAL_OVERRIDE, sends TN3 to T6, and posts a log event to Q3 (FR-M08–FR-M11).
+**Motor alarm detection**
+- The RRK-3 alarm relay (dry contact, closes on alarm) is wired to J10; the opto-isolated input drives GPIO 42 (logic HIGH = alarm active). The alarm fires when any motor fails to stop at its normal end-switch and reaches the emergency switch. Resolved — see Open Issue #1 (Closed). T2 uses a deferred-ISR pattern: `attachInterrupt(PIN_OPTO_INPUT, isr_handler, CHANGE)`; the ISR (`IRAM_ATTR`) records the first edge (volatile flag + tick timestamp) and returns immediately; T2 confirms after 75 ms by reading the live pin state. **Not suppressed during MOVING states** — a motor hitting the emergency switch during a T2-commanded move is the primary alarm scenario. On alarm assert confirmed: T2 immediately de-energises all 6 relays, sets EG1.MOTOR_ALARM, posts log event to Q3 (FR-MA01–FR-MA02). On alarm release confirmed: T2 clears EG1.MOTOR_ALARM, posts CLOSE_ALL to Q1 for re-calibration, posts log event to Q3, then resumes AUTOMATIC (FR-MA06–FR-MA07). T2 checks EG1.MOTOR_ALARM before executing any Q1 command and discards the command if the alarm is active.
 
 **Mutual exclusion of relay commands**
 - The firmware must never energise the OPEN and CLOSE relay of the same motor simultaneously. T2 (Relay Controller) is the sole owner of relay GPIO and enforces this constraint before asserting any relay (see §4.3).
@@ -210,7 +210,7 @@ The firmware is structured as a set of FreeRTOS tasks. Each logical function is 
 | ID  | Task Name            | Priority          | Core | Function |
 |-----|----------------------|-------------------|------|----------|
 | T1  | Watchdog / Heartbeat | Highest           | 1    | Hardware watchdog kick; HB LED toggling; RGB status LED update |
-| T2  | Relay Controller     | High              | 1    | Relay GPIO; window state machines; dwell timers; mutual exclusion; manual override detection |
+| T2  | Relay Controller     | High              | 1    | Relay GPIO; window state machines; dwell timers; mutual exclusion; RRK-3 motor alarm detection |
 | T3  | Safety Monitor       | High              | 1    | Wind safety evaluation; issues CLOSE_ALL; overrides climate control |
 | T4  | Data Manager         | Medium-high       | 1    | Central store for all configuration settings and measurement data; ring buffers for sensor history |
 | T5  | Sensor Poll          | Medium-high       | 1    | Modbus RTU master; polls sensors; posts readings to T4 |
@@ -243,14 +243,14 @@ The firmware is structured as a set of FreeRTOS tasks. Each logical function is 
 **Priority:** High | **Core:** 1
 
 - Sole owner of all 6 relay GPIO output pins (OPEN/CLOSE for M1, M2, M3); no other task may assert relay signals directly.
-- All actuation requests arrive via command queue Q1 (from T3, T6, T8, T11, T12).
+- All actuation requests arrive via command queue Q1 (from T3 and T6 only — manual window commands from LCD/web/MQTT are out of scope, C9).
 - Runs the per-channel window state machine: `CLOSED` → `MOVING` → `OPEN` and reverse.
 - Enforces OPEN + CLOSE mutual exclusion on each channel before asserting any relay.
 - Reads motor travel times (`travel_mN`, seconds) and dwell times (`dwell_open_mN`, `dwell_close_mN`, minutes) from T4 (MX4) on startup and on each config update; converts travel time to ms for `vTaskDelay`.
-- **Travel timer:** energises each relay for exactly `travel_mN * 1000` ms; de-energises on expiry; window is at end position.
+- **Travel timer:** energises each relay for `(travel_mN + MOTOR_TRAVEL_MARGIN_S_DEFAULT) * 1000` ms; de-energises on expiry; window is at end position. The margin ensures the end-switch fires before the relay drops. **De-energising the relay before expiry stops the motor immediately at the current (intermediate) position — therefore only complete open or close commands are issued.**
 - **Dwell timer:** after travel completes, enforces the minimum hold time before accepting the next command on that channel (FR-A09–FR-A12).
-- Monitors the RRK-3 opto-isolated feedback input via a deferred-ISR pattern: `IRAM_ATTR` ISR records first edge only (volatile flag + tick timestamp); T2 task loop confirms after 75 ms by reading live pin state; transition suppressed while any channel FSM is MOVING (T2-commanded move). On confirmation: sets EG1.MANUAL_OVERRIDE, sends TN3 to T6, posts log event to Q3 (FR-M08–FR-M11).
-- **Synchronization:** receives Q1 (actuation commands); posts to Q3 (log events via `log_post()`); sets EG1.MANUAL_OVERRIDE on feedback confirmation; sends TN3 to T6 (manual override detected).
+- Monitors the RRK-3 opto-isolated alarm input (GPIO42) via a deferred-ISR pattern: `IRAM_ATTR` ISR records first edge (volatile flag + tick timestamp); T2 task loop confirms after 75 ms by reading live pin state. **Not suppressed during MOVING — a motor reaching the emergency switch during a T2-commanded move is the primary alarm scenario.** On alarm assert confirmed: de-energise all 6 relays immediately, set EG1.MOTOR_ALARM, post log event to Q3 (FR-MA01–FR-MA02). On alarm release confirmed: clear EG1.MOTOR_ALARM, post CLOSE_ALL to Q1 for re-calibration, post log event to Q3, resume AUTOMATIC (FR-MA06–FR-MA07). Checks EG1.MOTOR_ALARM before executing any Q1 command; discards the command if alarm is active.
+- **Synchronization:** receives Q1 (actuation commands); checks EG1.MOTOR_ALARM before executing commands; posts to Q3 (log events via `log_post()`); sets/clears EG1.MOTOR_ALARM on GPIO42 alarm assert/release.
 
 ---
 
@@ -319,7 +319,7 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 **Priority:** Medium-high | **Core:** 1
 
 - Modbus RTU master on UART1 with SIT65HVD08P transceiver; manages DE/RE direction control pin.
-- Polls SenseCAP S200 (wind speed + direction) and FG6485A (T + RH) on a configurable interval (factory default 60 s; technician-configurable 150–3600 s via web GUI).
+- Polls SenseCAP S200 (wind speed + direction) and FG6485A (T + RH) on a configurable interval (factory default 60 s; technician-configurable 30–3600 s via web GUI).
 - On successful read: computes updated sliding-average values for T and RH (ring buffer of size = `avg_window_min × 60 / poll_interval` samples; default window 1 minute = effectively no averaging); writes raw and averaged values to T4; T4 then notifies T3 and T6.
 - On fault (timeout, CRC error, out-of-range value): posts a sensor fault event to T9 (logger) and triggers alarm display via T8.
 - **Synchronization:** posts to Q6 (sensor readings and updated sliding averages to T4); sets/clears EG1.SENSOR_FAULT_T and EG1.SENSOR_FAULT_W; posts to Q3 (log events); no mutexes held — T4 owns all measurement storage.
@@ -335,8 +335,8 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 - Evaluates temperature and humidity against the active setpoints with hysteresis bands.
 - Runs conflict resolution algorithm when T and RH demand opposing window actions.
 - Posts open/close actuation commands to T2 via command queue.
-- Checks operating mode from T4 before acting; inhibited in Standby, Wind-override, and Manual-override states.
-- **Synchronization:** wakes on TN2 (from T4, new sensor data); acquires MX2 to read current T and RH; acquires MX4 to read setpoints and hysteresis; reads EG1 (WIND_OVERRIDE, MANUAL_OVERRIDE, SENSOR_FAULT_T, SENSOR_FAULT_W) before issuing any command; posts to Q1 (actuation commands); receives TN3 (from T2, manual override detected); clears EG1.MANUAL_OVERRIDE after calibration cycle completes; posts to Q3 (log events).
+- Checks operating mode from T4 before acting; inhibited in Standby and Wind-override states.
+- **Synchronization:** wakes on TN2 (from T4, new sensor data); acquires MX2 to read current T and RH; acquires MX4 to read setpoints and hysteresis; reads EG1 (MOTOR_ALARM, WIND_OVERRIDE, SENSOR_FAULT_T, SENSOR_FAULT_W) before issuing any command; posts to Q1 (actuation commands); posts to Q3 (log events).
 
 ---
 
@@ -362,7 +362,7 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 - Manages session state: PIN entry via keyboard, session timeout, PIN validation against T4.
 - Posts validated configuration changes and mode changes to T4.
 - Receives WiFi status updates from T10 and displays AP active / client connected / IP address.
-- **Synchronization:** acquires MX1 (I2C) to write LCD; acquires MX2 to read current measurements for display refresh; acquires MX3 to read ring buffers for history view; acquires MX4 to read configuration for settings screens; receives Q2 (key events from T7); receives Q5 (network status from T10); reads EG1 (alarm flags for display and alarm indication); posts to Q4 (config/mode updates to T4); posts to Q1 (manual window commands); posts to Q3 (log events: mode changes, setpoint changes, session events).
+- **Synchronization:** acquires MX1 (I2C) to write LCD; acquires MX2 to read current measurements for display refresh; acquires MX3 to read ring buffers for history view; acquires MX4 to read configuration for settings screens; receives Q2 (key events from T7); receives Q5 (network status from T10); reads EG1 (alarm flags for display and alarm indication); posts to Q4 (config/mode updates to T4); posts to Q3 (log events: mode changes, setpoint changes, session events).
 
 ---
 
@@ -399,10 +399,9 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 - Serves HTML, CSS, and JavaScript from LittleFS via ESPAsyncWebServer (callback-driven).
 - Applies the same three-state session model (Normal / Farmer / Admin) and PIN codes as T8.
 - Reads configuration and current measurement data from T4; posts validated setting changes to T4.
-- Posts actuation commands to T2 (manual window commands from web UI).
 - Available on both WiFi AP and WiFi client interfaces simultaneously.
 - Authentication required before any page is served or any setting is changed.
-- **Synchronization:** acquires MX5 (LittleFS) to serialise concurrent HTTP file-serve requests against the active LittleFS partition; reads EG1.OTA_IN_PROGRESS (informational — T13 writes only to the inactive partition so T11 is not blocked during OTA, but the flag may be used to suppress OTA-page interactions); acquires MX2 to read current measurements; acquires MX4 to read configuration; posts to Q4 (validated config/state updates to T4); posts to Q1 (actuation commands from web UI); posts to Q3 (log events).
+- **Synchronization:** acquires MX5 (LittleFS) to serialise concurrent HTTP file-serve requests against the active LittleFS partition; reads EG1.OTA_IN_PROGRESS (informational — T13 writes only to the inactive partition so T11 is not blocked during OTA, but the flag may be used to suppress OTA-page interactions); acquires MX2 to read current measurements; acquires MX4 to read configuration; posts to Q4 (validated config/state updates to T4); posts to Q3 (log events).
 
 ---
 
@@ -467,8 +466,8 @@ T4 is the single source of truth for all runtime data and configuration. All tas
   T10 Network ─── status ─────────────────────────► T8 UI / Display
   T10 Network ─── NTP sync ───────────────────────► system clock
 
-  T11 Web ─────── actuation commands ─────────────► T2 Relay Controller
-  T12 MQTT ───── actuation commands ──────────────► T2 Relay Controller
+  T11 Web ─────── config/mode changes ────────────► T4 Data Manager
+  T12 MQTT ───── config/mode changes ─────────────► T4 Data Manager
 
   T11 Web ─────── OTA trigger ────────────────────► T13 OTA
 ```
@@ -497,9 +496,9 @@ FreeRTOS queues (`xQueueCreate`) are thread-safe by design. All queue operations
 
 | ID | Name                        | Direction   | Senders                                    | Receiver | Item                     | Notes                                          |
 |----|-----------------------------|-------------|--------------------------------------------|----------|--------------------------|------------------------------------------------|
-| Q1 | Actuation command queue     | → T2        | T3, T6, T8, T11, T12                       | T2       | Actuation command struct | T3 posts with highest urgency; never blocking  |
+| Q1 | Actuation command queue     | → T2        | T3, T6                                      | T2       | Actuation command struct | T3 posts with highest urgency; never blocking  |
 | Q2 | Key event queue             | → T8        | T7                                         | T8       | Key code                 | Depth to match max burst; T7 drops on full     |
-| Q3 | Log event queue             | → T9        | T2, T3, T5, T6, T8, T10, T11, T12, T13    | T9       | Log event struct         | Generous depth; drop-oldest on overflow        |
+| Q3 | Log event queue             | → T9        | T2, T3, T5, T6, T8, T10, T11, T12, T13     | T9       | Log event struct         | Generous depth; drop-oldest on overflow        |
 | Q4 | Config / state update queue | → T4        | T8, T11, T10                               | T4       | Config update struct     | T4 validates range; persists to NVS on accept  |
 | Q5 | Network status queue        | → T8        | T10                                        | T8       | Network status struct    | Small depth (1–2); latest status always relevant |
 | Q6 | Sensor reading queue        | → T4        | T5                                         | T4       | Sensor reading struct    | Depth 1; overwrite semantics — only latest matters |
@@ -512,7 +511,6 @@ FreeRTOS task notifications (`xTaskNotifyGive` / `xTaskNotify`) are used for poi
 |-----|--------|----------|----------------------------------------------|----------------------------------------------------------------|
 | TN1 | T4     | T3       | New wind data written to T4                  | Wake T3 immediately to re-evaluate wind safety conditions      |
 | TN2 | T4     | T6       | New sensor data (T or RH) written to T4      | Wake T6 to re-evaluate climate control decisions               |
-| TN3 | T2     | T6       | Manual override detected on RRK-3 feedback   | T6 transitions to Manual-override state and begins calibration |
 | TN4 | T10    | T4       | WiFi client connection established           | T4 triggers NTP synchronisation and updates system time        |
 
 #### 4.6.4 Event Group — System State Flags
@@ -523,30 +521,33 @@ A single FreeRTOS event group (`xEventGroupCreate`) holds all system-wide boolea
 
 | Bit | Flag name          | Set by | Cleared by | Read by                 | Meaning when set                                         |
 |-----|--------------------|--------|------------|-------------------------|----------------------------------------------------------|
-| 0   | WIND_OVERRIDE      | T3     | T3         | T6, T8, T11, T12        | Wind safety threshold exceeded; all windows being closed |
-| 1   | MANUAL_OVERRIDE    | T2     | T6         | T3, T6, T8, T11         | Manual window operation detected on RRK-3 feedback       |
+| 0   | WIND_OVERRIDE      | T3     | T3         | T6, T8, T11, T12 (display only) | Wind safety threshold exceeded; all windows being closed |
+| 1   | *(reserved)*       | —      | —          | —                       | Previously MANUAL_OVERRIDE — removed; hardware does not support manual operation detection |
 | 2   | SENSOR_FAULT_T     | T5     | T5         | T6, T8, T9              | Temperature/humidity sensor fault active                  |
 | 3   | SENSOR_FAULT_W     | T5     | T5         | T3, T8, T9              | Wind sensor fault active; T3 treats wind as worst-case   |
 | 4   | OTA_IN_PROGRESS    | T13    | T13        | T11                     | OTA update active; T11 defers LittleFS file requests     |
+| 5   | MOTOR_ALARM        | T2     | T2         | T3, T6, T8, T11, T12 (display only) | RRK-3 motor emergency stop active; all relays de-energised; all window control suspended; highest priority override |
 
 > **T3 and SENSOR_FAULT_W:** when the wind sensor fault flag is set, T3 shall treat the wind condition as exceeding all thresholds (safe-fail: close all windows) until the fault clears.
+
+> **T2 and MOTOR_ALARM:** MOTOR_ALARM takes priority over all other states. T2 discards all incoming Q1 commands while this flag is set. T3 CLOSE_ALL commands are also discarded — the relays are already de-energised and the alarm state persists until the RRK-3 alarm clears.
 
 #### 4.6.5 Primitive Cross-reference by Task
 
 | Task | Acquires (mutex) | Posts to (queue) | Receives from (queue) | Sends (notification) | Receives (notification) | Reads/Sets (event group) |
 |------|-----------------|------------------|-----------------------|----------------------|-------------------------|--------------------------|
 | T1   | MX4             | —                | —                     | —                    | —                       | Reads EG1 (all — for RGB status LED colour)  |
-| T2   | —               | Q3               | Q1                    | TN3 → T6             | —                       | Sets EG1.MANUAL_OVERRIDE |
-| T3   | MX2             | Q1, Q3           | —                     | —                    | TN1 ← T4               | Sets/clears EG1.WIND_OVERRIDE; reads EG1.SENSOR_FAULT_W |
+| T2   | —               | Q3               | Q1                    | —                    | —                       | Sets/clears EG1.MOTOR_ALARM |
+| T3   | MX2             | Q1, Q3           | —                     | —                    | TN1 ← T4               | Sets/clears EG1.WIND_OVERRIDE; reads EG1.SENSOR_FAULT_W, EG1.MOTOR_ALARM |
 | T4   | MX1, MX2, MX3, MX4 | —            | Q4, Q6                | TN1 → T3, TN2 → T6   | TN4 ← T10              | —                        |
 | T5   | —               | Q3, Q6           | —                     | —                    | —                       | Sets/clears EG1.SENSOR_FAULT_T, EG1.SENSOR_FAULT_W |
-| T6   | MX2, MX4        | Q1, Q3           | —                     | —                    | TN2 ← T4, TN3 ← T2    | Reads EG1 (all); clears EG1.MANUAL_OVERRIDE |
+| T6   | MX2, MX4        | Q1, Q3           | —                     | —                    | TN2 ← T4               | Reads EG1 (MOTOR_ALARM, WIND_OVERRIDE, SENSOR_FAULT_T, SENSOR_FAULT_W) |
 | T7   | —               | Q2               | —                     | —                    | —                       | —                        |
-| T8   | MX1, MX2, MX3, MX4 | Q1, Q3, Q4  | Q2, Q5                | —                    | —                       | Reads EG1 (all)          |
+| T8   | MX1, MX2, MX3, MX4 | Q3, Q4      | Q2, Q5                | —                    | —                       | Reads EG1 (all)          |
 | T9   | —               | —                | Q3                    | —                    | —                       | —                        |
 | T10  | —               | Q3, Q4, Q5       | —                     | TN4 → T4             | —                       | —                        |
-| T11  | MX2, MX4, MX5  | Q1, Q3, Q4       | —                     | —                    | —                       | Reads EG1.OTA_IN_PROGRESS |
-| T12  | MX2, MX4        | Q1, Q3, Q4       | —                     | —                    | —                       | —                        |
+| T11  | MX2, MX4, MX5  | Q3, Q4           | —                     | —                    | —                       | Reads EG1.OTA_IN_PROGRESS |
+| T12  | MX2, MX4        | Q3, Q4           | —                     | —                    | —                       | —                        |
 | T13  | MX5             | Q3               | —                     | —                    | —                       | Sets/clears EG1.OTA_IN_PROGRESS |
 
 ---
@@ -565,7 +566,7 @@ A single FreeRTOS event group (`xEventGroupCreate`) holds all system-wide boolea
 **Poll schedule:**
 - SenseCAP S200 (Modbus address 1): reads wind speed register and wind direction register each cycle. **No dedicated S200 driver library exists.** T5 calls LIB-6 (`modbus_read_holding_registers()`) directly with the S200 register map from the sensor user guide (`documentation/Sensors/W-Sensecap-S200/`).
 - FG6485A (Modbus address 2): reads temperature register and humidity register each cycle. **LIB-10** (`drivers/FG6485A/`) provides the driver. LIB-10 also exposes `fg6485a_task()` — a standalone FreeRTOS periodic polling task. T5 may integrate this directly or call the driver read API within its own loop; the integration approach is to be decided during implementation.
-- Poll interval configurable via NVS (default 60 s); minimum interval to be determined during integration testing.
+- Poll interval configurable via NVS (default 60 s; range 30–3600 s). T4 posts one `LOG_SENSOR` event to Q3 on every Q6 reception — snapshot interval equals poll interval (FR-LG09); no separate snapshot timer.
 
 **Fault detection and response:**
 
@@ -578,8 +579,8 @@ A single FreeRTOS event group (`xEventGroupCreate`) holds all system-wide boolea
 
 Link to FRS requirements: FR-S04 (sensor fault detection), FR-W03 (wind sensor fault).
 
-**FG6485A internal heater supply (J5 — always-on hardware):**
-The FG6485A sensor contains an internal heating element to prevent condensation on the sensing element. This heater is powered via connector J5 on the PCB as a permanently-on supply — no GPIO control is assigned or required. T5 reads the `heating_temperature_c` register from the sensor on each poll cycle and posts the value in the sensor reading. If `heating_temperature_c` falls outside the expected operating range (indicating heater failure or sensor fault), T5 logs a `LOG_ALARM` event to Q3. No software enable/disable is implemented for the heater.
+**FG6485A heater supply — not implemented:**
+The J5 heater supply connection (HEATING_POS / HEATING_NEG) has been removed from the PCB. The FG6485A heater element is not powered. T5 does not read or log `heating_temperature_c`. No heater-related fault detection is implemented.
 
 ---
 
@@ -602,11 +603,11 @@ The FG6485A sensor contains an internal heating element to prevent condensation 
          │                                  │
          │                             [Automatic]
          │
-         │                manual detected (T2 → TN3)
+         │                RRK-3 alarm assert (T2 → EG1.MOTOR_ALARM)
          │                                  │
-         │                        [Manual-override]
+         │                        [Motor-alarm]
          │                                  │
-         │              calibration complete AND wind safe
+         │              alarm clears → CLOSE_ALL re-calibration
          │                                  │
          └──────────────────────────────────┘
 ```
@@ -617,15 +618,15 @@ The FG6485A sensor contains an internal heating element to prevent condensation 
 |---------------|----------------|----------------|-----------|
 | `UNKNOWN`     | Boot | CLOSE_ALL boot sequence completes | Assert CLOSE relay; advance to `MOVING_CLOSE` |
 | `CLOSED`      | Travel timer expired after CLOSE command; or boot CLOSE_ALL complete | OPEN command received AND close-dwell elapsed | Assert OPEN relay; advance to `MOVING_OPEN` |
-| `MOVING_OPEN` | OPEN relay energised | **Travel timer** (`MOTOR_MN_TRAVEL_MS`) expires | De-energise relay; advance to `OPEN` |
+| `MOVING_OPEN` | OPEN relay energised | **Travel timer** (`(MOTOR_MN_TRAVEL_S_DEFAULT + MOTOR_TRAVEL_MARGIN_S_DEFAULT) × 1000 ms`) expires | De-energise relay; advance to `OPEN` |
 | `OPEN`        | Travel timer expired after OPEN command | CLOSE command received AND open-dwell elapsed | Assert CLOSE relay; advance to `MOVING_CLOSE` |
-| `MOVING_CLOSE`| CLOSE relay energised | **Travel timer** (`MOTOR_MN_TRAVEL_MS`) expires | De-energise relay; advance to `CLOSED` |
+| `MOVING_CLOSE`| CLOSE relay energised | **Travel timer** (`(MOTOR_MN_TRAVEL_S_DEFAULT + MOTOR_TRAVEL_MARGIN_S_DEFAULT) × 1000 ms`) expires | De-energise relay; advance to `CLOSED` |
 
 **Travel timer vs. dwell timer — critical distinction:**
 
 | Timer | What it times | Value source | Unit | Purpose |
 |-------|--------------|--------------|------|---------|
-| Travel timer | Relay energisation (window in motion) | NVS `motor/travel_mN`; default `MOTOR_MN_TRAVEL_S_DEFAULT` (`app_types.h`); read by T2 from T4 (MX4) | seconds | De-energise relay at end-stop; prevents motor stall |
+| Travel timer | Relay energisation (window in motion) | NVS `motor/travel_mN` + `MOTOR_TRAVEL_MARGIN_S_DEFAULT` (`app_types.h`); read by T2 from T4 (MX4) | seconds | De-energise relay after end-stop is reached; margin ensures end-switch fires before relay drops; de-energising early stops the motor at an intermediate position |
 | Open-dwell timer | Hold period at `OPEN` before CLOSE accepted | NVS `motor/dwell_open_mN`; read by T2 from T4 (MX4) | minutes | Prevents rapid reversal; protects mechanics |
 | Close-dwell timer | Hold period at `CLOSED` before OPEN accepted | NVS `motor/dwell_close_mN`; read by T2 from T4 (MX4) | minutes | Prevents rapid reversal; protects mechanics |
 
@@ -685,10 +686,13 @@ Rules applied in order by `vent_resolve_conflict(step_t, step_rh, cr_priority)`:
 
 Conflict resolution is only active when `rh_ctrl_en` is true. The active conflict and the resolution applied are logged to Q3.
 
-**Manual override detection (FR-M08–FR-M11):**
-- T2 detects a state change on the RRK-3 opto-isolated feedback input using a deferred-ISR pattern: `IRAM_ATTR` ISR records first edge (volatile flag + FreeRTOS tick timestamp); T2 task loop polls the flag with a ≤10 ms resolution and confirms after 75 ms by reading the live pin state; suppressed if any channel FSM is in a MOVING state (T2-commanded move). On confirmation: T2 sets EG1.MANUAL_OVERRIDE and sends TN3 to T6.
-- T6 transitions to Manual-override state on TN3; all climate actuation commands are inhibited.
-- **Calibration cycle on resumption:** T6 posts CMD_CLOSE_ALL to Q1, reads `travel_m3` (seconds) from T4 (MX4) at runtime, and waits `travel_m3 × 1000 + 10 000 ms` to allow the slowest motor (M3 ridge vent) to reach the fully-closed position. T6 then clears EG1.MANUAL_OVERRIDE and resumes Automatic mode — unless WIND_OVERRIDE is also active.
+**Motor alarm detection (FR-MA01–FR-MA08):**
+- T2 detects the RRK-3 alarm relay (GPIO42) using a deferred-ISR pattern: `IRAM_ATTR` ISR records first edge (volatile flag + FreeRTOS tick timestamp); T2 task loop polls the flag with a ≤10 ms resolution and confirms after 75 ms by reading the live pin state. **Not suppressed during MOVING states** — a motor hitting the emergency switch during a T2-commanded move is the primary alarm scenario.
+- **On alarm assert confirmed:** T2 immediately de-energises all 6 relays, sets EG1.MOTOR_ALARM, posts log event to Q3. T2 then discards all incoming Q1 commands while MOTOR_ALARM is set.
+- **On alarm release confirmed:** T2 clears EG1.MOTOR_ALARM, posts CLOSE_ALL re-calibration to Q1, posts log event to Q3, then resumes AUTOMATIC.
+- T6 checks EG1.MOTOR_ALARM on every TN2 wake and skips evaluation if the alarm is active.
+
+*Note: Manual override detection (formerly FR-M08–FR-M11) has been removed. The RRK-3 alarm relay does not signal normal manual window operation; it signals motor emergency stop only. Detection of manual window operation is not achievable with the current hardware.*
 
 ---
 
@@ -698,24 +702,26 @@ Conflict resolution is only active when `rh_ctrl_en` is true. The active conflic
 
 **Log entry structure:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| timestamp | uint32 (Unix epoch) | Time of event; marked invalid if no time source has synced |
-| event_type | uint8 enum | Category: SENSOR, RELAY, MODE_CHANGE, SETPOINT, SESSION, ALARM, SYSTEM |
-| initiator | uint8 enum | SYSTEM, USER_FARMER, USER_ADMIN, MQTT, WEB |
-| channel | uint8 | Motor channel (M1/M2/M3) or 0 for non-motor events |
-| value_a | int16 | Optional: sensor value or setpoint (integer; sensor readings rounded to nearest integer before logging) |
-| value_b | int16 | Optional: second sensor value or threshold (integer) |
-| reserved | uint8[2] | Padding to maintain fixed record size |
+| Field | Type | Offset | Description |
+|-------|------|--------|-------------|
+| timestamp | uint32 | 0 | Unix epoch seconds; marked invalid if no time source has synced |
+| event_type | uint8 | 4 | Category: SENSOR, RELAY, MODE_CHANGE, SETPOINT, SESSION, ALARM, SYSTEM |
+| initiator | uint8 | 5 | SYSTEM, USER_FARMER, USER_ADMIN, MQTT, WEB |
+| channel | uint8 | 6 | Motor channel (M1/M2/M3) or 0 for non-motor events |
+| param_id | uint8 | 7 | `log_param_id_t`: identifies the specific CONFIG parameter (C1–C22); 0 for all non-CONFIG events. For C18/C19, `channel` identifies the motor and `param_id` distinguishes open vs close dwell. |
+| value_a | int16 | 8 | First payload (sensor value, old setting, reason code) |
+| value_b | int16 | 10 | Second payload (new setting, threshold, parameter) |
+
+Total: 12 bytes. No padding needed — four uint8 fields (offset 4–7) fill the alignment gap before `value_a`.
 
 **Storage:**
 - Primary: SD card (FAT32), when present. See log rotation policy below.
-- Fallback: NVS dedicated log namespace. Ring buffer of minimum 1000 fixed-size entries; oldest entry overwritten when full.
+- Fallback: NVS dedicated log namespace. Ring buffer of minimum 250 fixed-size entries (FR-LG06); oldest entry overwritten when full.
 - T9 checks SD card presence on startup and on each write cycle; falls back to NVS if card is absent or returns an error (FR-LG07, FR-LG08).
 
 **SD card log file format:**
-- CSV text file; first line is a fixed header row: `timestamp,event_type,initiator,channel,value_a,value_b`
-- Each subsequent line is one log entry. Example: `2024-06-15T10:30:00,SENSOR,SYSTEM,0,235,650`
+- CSV text file; first line is a fixed header row: `timestamp,event_type,initiator,channel,param_id,value_a,value_b`
+- Each subsequent line is one log entry. Example: `2024-06-15T10:30:00,SENSOR,SYSTEM,0,0,235,650`
 - Average line length: ~60 bytes. Estimated daily volume: ~90 KB (1 440 sensor snapshots at 1-minute default interval + ~100 discrete events).
 
 **SD card log file naming:**
@@ -858,9 +864,9 @@ Where `Mxx` encodes active window states (e.g. `M1O` = M1 open, `M2C` = M2 close
 - On session timeout: menu FSM resets to main screen and session closes.
 
 **Alarm display:**
+- Motor alarm active (`EG1.MOTOR_ALARM`): displayed prominently on line 1 with "MOTOR ALARM — CONTROL SUSPENDED" message (FR-MA05).
 - Sensor fault (T or wind): displayed on line 2 with blinking indicator.
 - Wind safety override active: displayed prominently with wind speed reading.
-- Manual override detected: displayed on line 2.
 - WiFi AP active: displayed on line 2 with IP address if in client mode.
 
 ---
@@ -921,7 +927,7 @@ Where `Mxx` encodes active window states (e.g. `M1O` = M1 open, `M2C` = M2 close
   | **Climate** | Farmer / Admin | T_min_day, T_max_day, T_min_night, T_max_night (°C); RH_min_day, RH_max_day, RH_min_night, RH_max_night (%); humidity control enable (`rh_ctrl_en`); conflict resolution priority (`cr_priority`); geographic location lat/lon for sunrise/sunset (FR-CF16) |
   | **Wind** | Farmer (enable/disable only) / Admin (all) | Wind protection enable (`wind_prot_en`); v_max (Beaufort); direction exclusion zone centre and half-width (°); wind hysteresis timer (FR-CF09) |
   | **Motors** | Admin only | Motor travel times: M1, M2, M3 individually (seconds, range 5–600 s, factory defaults 21/21/171 s, FR-CF05); open-dwell time per window M1–M3 (minutes, FR-CF10); close-dwell time per window M1–M3 (minutes, FR-CF11) |
-  | **Sensors** | Admin only | Sensor poll interval (150–3600 s, factory default 60 s, FR-CF07); sliding average window for T and RH (1–60 min, FR-CF17) |
+  | **Sensors** | Admin only | Sensor poll interval (30–3600 s, factory default 60 s, FR-CF07); sliding average window for T and RH (1–60 min, FR-CF17) |
   | **System** | Admin only | Session timeout (minutes); RGB LED day/night brightness and schedule (`led_day_brt`, `led_nite_brt`, `led_nite_from`, `led_nite_to`, FR-CF14); NTP timezone string |
   | **Access** | Admin only | Change farmer PIN; change admin PIN; lockout threshold and duration |
 
@@ -1083,11 +1089,11 @@ T4 checks the return of `nvs_cfg_init()`. If `NVS_CFG_ERR_MIGRATION` is returned
 - When EG1.SENSOR_FAULT_W is set: T3 treats wind as exceeding all thresholds (safe-fail: CLOSE_ALL) (FR-W04).
 - Faults clear automatically when T5 receives a valid reading.
 
-**Manual override handling:**
-- T2 detects a change on the RRK-3 feedback input and sets EG1.MANUAL_OVERRIDE.
-- T6 receives TN3, transitions to Manual-override state, inhibits all climate commands, and logs the event.
-- After the operator releases manual control: T6 initiates a calibration cycle (CLOSE_ALL on all channels, wait for dwell timers, resume Automatic mode).
-- If WIND_OVERRIDE is also active when manual override clears, the calibration cycle is deferred until WIND_OVERRIDE also clears.
+**Motor alarm handling (FR-MA01–FR-MA08):**
+- T2 detects the RRK-3 alarm signal on GPIO42 and immediately de-energises all relays, sets EG1.MOTOR_ALARM, and logs the alarm onset.
+- While MOTOR_ALARM is set: T2 discards all incoming Q1 commands; T6 and T3 are inhibited from issuing any window commands.
+- LCD displays "MOTOR ALARM — CONTROL SUSPENDED" (FR-MA05); RGB LED shows Red (FR-UI19).
+- When the alarm clears: T2 clears EG1.MOTOR_ALARM, posts CLOSE_ALL re-calibration to Q1, logs alarm clearance, and resumes Automatic mode (FR-MA07).
 
 ---
 
@@ -1104,8 +1110,8 @@ T4 checks the return of `nvs_cfg_init()`. If `NVS_CFG_ERR_MIGRATION` is returned
 
 | Priority | Colour | Hex | Condition | FRS |
 |----------|--------|-----|-----------|-----|
-| Highest | **Red** | `#FF0000` | Critical alarm; system operation halted (e.g. 3 consecutive watchdog resets without startup completion; future halt-state EG1 flag) | FR-UI19 |
-| Middle | **Amber** | `#FF8000` | Non-critical alarm or warning: `EG1.SENSOR_FAULT_T`, `EG1.SENSOR_FAULT_W`, `EG1.WIND_OVERRIDE`, `EG1.MANUAL_OVERRIDE`, wind protection disabled (`wind_prot_en == false`), or humidity control disabled (`rh_ctrl_en == false`) | FR-UI18 |
+| Highest | **Red** | `#FF0000` | Critical alarm — `EG1.MOTOR_ALARM` active (RRK-3 emergency stop; all window control suspended), OR system halted (3 consecutive watchdog resets without startup completion) | FR-UI19 |
+| Middle | **Amber** | `#FF8000` | Non-critical alarm or warning: `EG1.SENSOR_FAULT_T`, `EG1.SENSOR_FAULT_W`, `EG1.WIND_OVERRIDE`, wind protection disabled (`wind_prot_en == false`), or humidity control disabled (`rh_ctrl_en == false`) | FR-UI18 |
 | Lowest | **Green** | `#00FF00` | All above conditions false; system operating normally | FR-UI17 |
 
 If multiple conditions apply simultaneously, the highest-priority colour is shown (FR-UI16).
@@ -1113,11 +1119,11 @@ If multiple conditions apply simultaneously, the highest-priority colour is show
 **State evaluation logic (executed in T1 on each watchdog kick):**
 
 ```
-if (halt_flag):
+if (halt_flag OR EG1.MOTOR_ALARM):
     colour ← RED
 
 else if (EG1.SENSOR_FAULT_T OR EG1.SENSOR_FAULT_W
-         OR EG1.WIND_OVERRIDE OR EG1.MANUAL_OVERRIDE
+         OR EG1.WIND_OVERRIDE
          OR (rh_ctrl_en == false) OR (wind_prot_en == false)):
     colour ← AMBER
 
@@ -1155,8 +1161,8 @@ These four keys are part of the "Should" feature set (FR-UI21, FR-CF14); they de
 
 | # | Issue | Owner | Status |
 |---|-------|-------|--------|
-| 1 | **Motor feedback signal — software response** — Hardware signal characterised (THDS Issue #1 closed): RRK-3 dry relay contact → J10 opto input → GPIO 42; logic HIGH = active. **Resolution:** T2 uses a deferred-ISR pattern: `attachInterrupt(PIN_OPTO_INPUT, isr_handler, CHANGE)`; `IRAM_ATTR` ISR records first edge only (volatile flag + FreeRTOS tick timestamp); T2 task loop confirms after 75 ms by reading live pin state; suppressed while any channel FSM is MOVING (T2-commanded move). On confirmation: sets EG1.MANUAL_OVERRIDE, sends TN3 to T6, posts log event to Q3. T6 calibration cycle: posts CMD_CLOSE_ALL, reads `travel_m3` from T4 (MX4), waits `travel_m3 × 1000 + 10 000 ms`, clears EG1.MANUAL_OVERRIDE, resumes Automatic. | Software engineer | **Closed** |
-| 2 | **Ring buffer depth** — **Resolution:** 360 entries per channel (T, RH, wind speed, wind direction) = 11.5 KB total internal RAM. Based on: default 60 s poll interval × 360 = 6 hours of history; fits comfortably in ESP32-S3 internal SRAM with substantial headroom. Sufficient for web trend view, MQTT history, and periodic log snapshots. | Software engineer | **Closed** |
+| 1 | **Motor alarm signal — software response** — Hardware signal characterised (THDS Issue #1 closed): RRK-3 alarm relay (dry contact, closes on motor emergency stop) → J10 opto input → GPIO 42; logic HIGH = alarm active. Normal manual window operation does NOT trigger this signal. **Resolution:** T2 uses a deferred-ISR pattern: `attachInterrupt(PIN_OPTO_INPUT, isr_handler, CHANGE)`; `IRAM_ATTR` ISR records first edge (volatile flag + FreeRTOS tick timestamp); T2 task loop confirms after 75 ms by reading live pin state; NOT suppressed during MOVING. On alarm assert: de-energise all 6 relays, set EG1.MOTOR_ALARM, post log to Q3. On alarm release: clear EG1.MOTOR_ALARM, post CLOSE_ALL re-calibration to Q1, post log to Q3, resume AUTOMATIC. Manual override detection (formerly FR-M08–FR-M11) removed — hardware does not support it. | Software engineer | **Closed** |
+| 2 | **Ring buffer depth** — **Resolution:** 360 entries per channel (T, RH, wind speed, wind direction) = 11.5 KB total internal RAM. At the default 60 s poll interval: 6 hours of in-memory history; at the minimum 30 s poll interval: 3 hours. Fits comfortably in ESP32-S3 internal SRAM with substantial headroom. Sufficient for web trend view and MQTT history. | Software engineer | **Closed** |
 | 3 | **NTP timezone handling** — Hardware time source resolved (THDS Issue #7 closed): DS1307 RTC is the authoritative offline clock; NTP synchronises on WiFi connect. **Resolution:** DST handling via POSIX TZ string `CET-1CEST,M3.5.0,M10.5.0/3` — `setenv("TZ", tz_str, 1); tzset();` after `configTime(0, 0, "pool.ntp.org")`. TZ string stored in NVS `system/tz_str` with `CET-1CEST,M3.5.0,M10.5.0/3` as factory default; technician-configurable via web GUI. | Software engineer | **Closed** |
 | 4 | **Web interface HTTPS — not implemented (TR-NW04 accepted)** — TLS termination on the ESP32-S3 is not feasible: the RAM and CPU overhead of a TLS stack would leave insufficient headroom for concurrent real-time tasks. **Decision:** HTTPS will not be implemented. **Accepted threat model:** the web interface is served over plain HTTP. The risk is mitigated by the following constraints: (a) the WiFi AP is disabled by default and enabled only on explicit admin command; (b) the AP has a configurable automatic timeout; (c) the controller is intended for use on a private, physically controlled greenhouse network and is not exposed to the public internet; (d) all credentials are stored as salted hashes and are never transmitted in plaintext; (e) session cookies are short-lived and invalidated on logout or timeout. This residual risk is accepted by the project owner. | Software engineer | **Closed — accepted** |
 | 5 | **MQTT authentication method** — **Resolution:** plain username + password over TCP. Client certificate authentication is not implemented. The MQTT `password` field is stored as plaintext in NVS `mqtt/password` (MQTT protocol requires the actual password; hashing is not applicable). Accepted risk: same threat model as Issue #4 (no-HTTPS decision) — controller is on a private greenhouse network. Risk documented and accepted by the project owner. | Software engineer | **Closed — accepted** |

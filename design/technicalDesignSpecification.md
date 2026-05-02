@@ -765,7 +765,7 @@ The following items originate from system-level and functional requirements in t
 - Configurable login lockout after a set number of failed attempts (FR-AC07)
 
 **Event log**
-- Minimum 1000 entries retained in persistent storage using a ring buffer; SD card preferred when present, internal flash as fallback (FR-LG06, FR-LG07, FR-LG08)
+- Minimum 250 entries retained in persistent storage using a ring buffer (FR-LG06: worst-case 216 events/hour at 30 s poll + headroom); SD card preferred when present, internal flash as fallback (FR-LG07, FR-LG08)
 
 **Settings persistence**
 - All configuration settings stored in ESP32-S3 NVS flash partition; retained across power cycles and restarts (FR-CF06, TR-SW01)
@@ -798,8 +798,8 @@ The following items originate from system-level and functional requirements in t
 - Wind protection (wind speed and wind direction safety) can be enabled or disabled by the administrator; state is persisted as a boolean flag in NVS (FR-WS09, FR-CF13). When wind protection is disabled, T3 (Safety Monitor) must remain dormant and must not issue CLOSE_ALL commands.
 - Both flags default to **enabled** on first boot and after factory reset.
 
-**Manual override detection**
-- Mechanism for detecting manual window override via RRK-3 feedback signal (opto-isolated input provisioned in hardware); software response to override detection and calibration cycle on resumption of control (FR-M08–FR-M11, Open Issue #1)
+**Motor alarm detection**
+- The RRK-3 alarm relay (GPIO 42 opto-coupler) fires when any motor fails to stop at the end-switch and hits the emergency switch. T2 detects this via deferred ISR (75 ms confirm, not suppressed during MOVING), de-energises all relays, sets EG1.MOTOR_ALARM, and logs the event. On alarm release, T2 clears the flag, initiates CLOSE_ALL re-calibration, and resumes AUTOMATIC (FR-MA01–FR-MA08). Manual override detection (FR-M08–FR-M11) removed — hardware does not support it.
 
 ---
 
@@ -827,11 +827,11 @@ The following items originate from system-level and functional requirements in t
 
 > *To be completed.*
 
-- Control state machine: **Automatic** / **Standby** / **Wind-override** / **Manual-override**
+- Control state machine: **Automatic** / **Standby** / **Wind-override** / **Motor-alarm** (highest priority)
 - Window state machine per channel: `CLOSED` / `MOVING` / `OPEN`, dwell timers (open-dwell, close-dwell)
 - Graduated ventilation strategy and hysteresis (FR-C09, FR-C10)
 - Conflict resolution algorithm: temperature vs. humidity opposing demands (FR-CR01–FR-CR04)
-- Manual override detection on RRK-3 feedback input; calibration cycle on resumption of control (FR-M08–FR-M11)
+- Motor alarm detection on RRK-3 alarm input; CLOSE_ALL re-calibration on alarm release (FR-MA01–FR-MA08)
 
 ---
 
@@ -839,7 +839,7 @@ The following items originate from system-level and functional requirements in t
 
 > *To be completed.*
 
-- NVS ring buffer: minimum 1000 entries; circular overwrite of oldest entries
+- NVS ring buffer: minimum 250 entries (FR-LG06); circular overwrite of oldest entries
 - SD card: preferred primary storage when card is present; NVS as fallback (FR-LG07, FR-LG08)
 - Log entry structure: timestamp, initiator (user role / SYSTEM), event type, sensor values where applicable
 - Retrieval: web interface and USB serial diagnostic port (FR-LG05)
@@ -879,7 +879,7 @@ The controller operates in three states:
 - LCD rendering: main status screen (T, RH, wind, window states, active mode, active session, alarms)
 - Menu finite state machine (FSM): navigation depth ≤ 4 key presses to any first-level setting from main screen (FR-UI07)
 - Display of WiFi AP and WiFi client status (see §5.8 and §5.9)
-- Alarm display: sensor fault, wind safety override, manual override detected
+- Alarm display: sensor fault, wind safety override, motor alarm (highest priority)
 
 ---
 
@@ -958,7 +958,7 @@ The controller operates in three states:
 - Hardware watchdog timer: kicks on software hang; MCU resets automatically (TR-SW03)
 - On watchdog reset: controlled restart sequence closes all windows to re-synchronise estimated position (FR-ST02)
 - Sensor fault handling: maintain last known window state; display alert (FR-S05, FR-W04)
-- Manual override detection: suspend control; calibration cycle on resumption unless wind alarm active (FR-M08–FR-M11)
+- Motor alarm detection (FR-MA01–FR-MA08): assert GPIO42 (RRK-3 emergency stop) → immediately de-energise all relays, set EG1.MOTOR_ALARM, block all window commands; on alarm release → clear EG1.MOTOR_ALARM, issue CLOSE_ALL re-calibration, resume AUTOMATIC. Note: FR-M08–FR-M11 removed — alarm relay does not signal normal manual operation.
 
 ---
 
@@ -969,7 +969,7 @@ The controller operates in three states:
 | 1 | **Motor feedback signal** — ~~Resolved~~. The feedback input (J10, OPTO_INPUT) is driven by an external relay contact that closes when the motor controller signals an alarm state. The opto-isolated input on the PCB converts this dry contact to a logic-level MCU GPIO signal. Signal definition is specified in the RRK-3 interface documentation. | Electrical engineer | **Closed** |
 | 2 | **Sensor supply voltage** — ~~Resolved~~. Internal 24 VDC rail confirmed compatible with both sensors: SenseCAP S200 rated 5–30 VDC; FG6485A rated 9–36 VDC, ≤ 15 mA (datasheet confirmed). | Hardware designer | **Closed** |
 | 3 | **RS485 sensor cable routing** — ~~Out of scope~~. Physical routing from the controller enclosure to the SenseCAP S200 (outside, on mast), including weather-proof cable glands and UV-resistant cable selection, is to be resolved during installation by the installer. This is outside the scope of the controller project. | Installer | **Out of scope** |
-| 9 | **J5 heater supply (HEATING_POS / HEATING_NEG)** — Pins 5–6 of J5 carry HEATING_POS and HEATING_NEG nets on the PCB, providing a heater supply connection for the SenseCAP S200. This feature is not documented in the TDS and no design decision has been recorded. To be decided: whether the heater supply is required, what voltage/current it carries, and whether it needs to be documented in the hardware specification. | Hardware designer | Open |
+| 9 | **J5 heater supply (HEATING_POS / HEATING_NEG)** — ~~Dropped~~. Heater supply connection removed from PCB. No firmware or hardware action required. | Hardware designer | **Closed — dropped** |
 | 4 | **Enclosure model selection** — ~~Resolved~~. **MC001110** (222 × 146 × 55 mm, IP67, transparent polycarbonate cover, €22 ex VAT, Farnell) selected and confirmed after PCB layout and 3D clearance check. See §4.10. | Hardware designer | **Closed** |
 | 5 | **Relay module selection** — ~~Resolved~~. Six **SRD-05VDC-SL-C** relays are integrated directly on the PCB, each driven by a **2N7000 N-channel MOSFET**. No separate relay module board is used. Contact rating 10 A / 250 VAC; coil 5 VDC. See §4.5.1. | Hardware designer | **Closed** |
 | 6 | **LED panel integration** — ~~Resolved~~. LEDs are on the PCB and visible through the transparent enclosure cover. No panel-mount LED holders or light pipes are required. | Hardware designer | **Closed** |

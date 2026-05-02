@@ -177,13 +177,6 @@ int vent_resolve_conflict(int step_t, int step_rh, uint8_t cr_priority)
  * The stub keeps the scheduler happy and holds the task in a blocked state.
  * ----------------------------------------------------------------------- */
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
-
 void task_climate_control(void *pvParameters)
 {
     (void)pvParameters;
@@ -193,7 +186,3 @@ void task_climate_control(void *pvParameters)
         vTaskDelay(portMAX_DELAY);
     }
 }
-
-#ifdef __cplusplus
-}
-#endif
