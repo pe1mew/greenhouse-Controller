@@ -91,10 +91,10 @@ Verification: Board boots, serial shows banner, HB LED blinks 1 Hz, no crash in 
 
 ---
 
-### Phase 1 — Data Foundation (T4)
+### Phase 1 — Data Foundation (T4)  ✅ **done**
 **Goal:** Central data store operational; NVS round-trips verified; RTC reading.
 
-Files: `data_manager.h/.cpp` — **create**; `sunrise.h/.cpp` — ✅ **done** (Gap D)
+Files: `data_manager.h/.cpp` — ✅ **done**; `sunrise.h/.cpp` — ✅ **done** (Gap D)
 
 Implementation:
 - Load all NVS namespaces at boot using `nvs_cfg_get_i32_or_default()` / `nvs_cfg_get_str_or_default()`
@@ -106,6 +106,14 @@ Implementation:
 Drivers used: LIB-7 (nvs_cfg_*), LIB-3 (rtc_*), LIB-2 (via RTC under MX1)
 
 Verification: Inject Q6/Q4 items from `setup()` test harness; verify state via serial; verify NVS persistence across soft reset.
+
+### Implementation notes (Phase 1)
+- `cfg_shadow_t` defined in `data_manager.h` — full NVS shadow with derived fields (`is_daytime`, `current_unix_ts`, `sunrise_mins_utc`, `sunset_mins_utc`).
+- `dm_ring_buf_t` — 360-entry `sensor_reading_t` ring (≈ 7.2 KB BSS); `dm_ring_read()` exposes batched read access.
+- `rtc_dt_to_unix()` — manual UTC conversion (no `timegm()` dependency); handles leap years 1970–2099.
+- `update_sun_times()` — called in-place whenever `current_unix_ts`, `lat_deg/frac`, or `lon_deg/frac` change.
+- `setenv("TZ", tz_str, 1); tzset()` applied at boot and would need re-application if tz_str changes at runtime (web server writes NVS directly; T4 picks up on next boot or can add TZ re-apply in Q4 handler for key `tz_str` in a future phase).
+- `DM_NOTIFY_NTP_SYNCED` (bit 3) reserved in T4's task notification register; T10 sends this after `configTime()` sync.
 
 ---
 

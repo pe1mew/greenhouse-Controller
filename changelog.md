@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.4.0] — 2026-05-03
+
+*Phase 1 — Data Foundation (T4) implemented: central NVS config store, sensor ring buffers, RTC read/write, sunrise/sunset, Q4/Q6/TN4 handling, and thread-safe getter API for T1/T2/T3/T6.*
+
+### Added
+- `firmware/src/data_manager/data_manager.h` — full T4 public API:
+  - `cfg_shadow_t` struct: all NVS-backed config fields plus derived fields (`is_daytime`, `current_unix_ts`, `sunrise_mins_utc`, `sunset_mins_utc`)
+  - `dm_ring_buf_t` / `DM_RING_DEPTH = 360` — sensor history ring buffer type
+  - `DM_NOTIFY_NTP_SYNCED` — TN4 task notification bit for T10 → T4 NTP sync signal
+  - Thread-safe getters: `dm_cfg_snapshot()`, `dm_meas_snapshot()`, `dm_ring_read()`, `dm_get_is_daytime()`, `dm_get_unix_time()`, `dm_get_poll_interval_s()`, `dm_get_travel_s()`, `dm_get_dwell_open_min()`, `dm_get_dwell_close_min()`, `dm_get_led_config()`
+- `firmware/src/data_manager/data_manager.cpp` — full T4 implementation:
+  - Boot: loads all NVS namespaces (`climate`, `wind`, `motor`, `system`) into `cfg_shadow_t`; applies TZ string via `setenv/tzset`; reads DS1307 RTC under MX1 and calls `settimeofday()` to seed system clock
+  - `rtc_dt_to_unix()` — manual UTC-correct conversion (leap year aware, no `timegm()` dependency)
+  - Main loop: Q6 handler updates MX2 + MX3 ring, posts `LOG_SENSOR` to Q3, notifies T3 (TN1) and T6 (TN2); Q4 handler validates and applies config updates to NVS + MX4 shadow; TN4 handler syncs DS1307 from NTP time; periodic (~60 s) RTC re-read refreshes `current_unix_ts` and `is_daytime`
+  - Location change in Q4 immediately recomputes sunrise/sunset via `update_sun_times()`
+  - Boot `LOG_SYSTEM` event posted to Q3
+
+### Changed
+- `firmware/firmwareImplementationPlan.md` — Phase 1 marked ✅ done; implementation notes added
+
+### Verified on hardware
+- T4 periodic RTC re-read observed at t=60 s and t=120 s: `[T4] RTC: 2026-04-12 17:24:15 UTC  unix=1776014655  daytime=yes`
+- DS1307 I2C read functional under MX1; `rtc_dt_to_unix()` produces consistent unix timestamps (Δ between reads matches elapsed wall-clock time)
+- `sunrise_is_daytime()` returns correct result (`daytime=yes` at 17:19–17:24 UTC, 52°N)
+- No WDT resets, panics, or crashes in 155 s continuous run
+- Early boot messages (NVS load log line, boot RTC read) are not visible via USB-CDC due to USB re-enumeration delay (~3–5 s); this is a known USB-CDC limitation, not a code defect — documented as Finding 1 in `firmwareImplementationResults.md`
+
+---
+
 ## [1.3.4] — 2026-05-03
 
 *T2 relay controller integration tests expanded to 13 tests (IT-01–IT-13), two structural test defects fixed, and the full suite verified on hardware — all 13 tests pass.*
