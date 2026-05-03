@@ -779,7 +779,7 @@ This section maps every peripheral signal to a specific GPIO number on the LOLIN
 | Relay CLOSE M2 | **GPIO 15** | Output | GPIO | Active-low relay driver input |
 | Relay OPEN M3 | **GPIO 16** | Output | GPIO | Active-low relay driver input |
 | Relay CLOSE M3 | **GPIO 21** | Output | GPIO | Active-low relay driver input |
-| RRK-3 feedback input | **GPIO 42** | Input | GPIO | Opto-coupler output; logic HIGH when RRK-3 alarm relay contact is closed |
+| RRK-3 feedback input | **GPIO 42** | Input | GPIO (pull-up) | Opto-coupler output; active-low — logic LOW when RRK-3 alarm relay contact is closed (alarm active); logic HIGH when contact is open (no alarm) |
 | Heartbeat LED (HB) | **GPIO 41** | Output | GPIO | 560 Ω series resistor to amber LED |
 | SD card MOSI *(optional)* | **GPIO 47** | Output | SPI2 MOSI | Fitted only when SD feature is enabled |
 | SD card MISO *(optional)* | **GPIO 48** | Input | SPI2 MISO | Fitted only when SD feature is enabled |
@@ -809,7 +809,7 @@ This section maps every peripheral signal to a specific GPIO number on the LOLIN
 
 | # | Issue | Owner | Status |
 |---|-------|-------|--------|
-| 1 | **Motor feedback signal** — ~~Resolved~~. The RRK-3 signals an alarm condition via an external relay contact that closes on alarm. This dry contact drives the opto-isolated input J10 (OPTO_INPUT / GND), producing a logic-level signal on GPIO 42 (HIGH = alarm active). Signal definition is documented in the RRK-3 interface specification. See also FRS Constraint C8. | Electrical engineer | **Closed** |
+| 1 | **Motor feedback signal** — ~~Resolved~~. The RRK-3 signals an alarm condition via an external relay contact that closes on alarm. This dry contact drives the opto-isolated input J10 (OPTO_INPUT / GND). The opto-coupler output is **active-low**: contact closed (alarm active) → GPIO 42 **LOW**; contact open (no alarm) → GPIO 42 **HIGH** (INPUT_PULLUP). Signal definition is documented in the RRK-3 interface specification. See also FRS Constraint C8. | Electrical engineer | **Closed** |
 | 2 | **Sensor supply voltage** — ~~Resolved~~. Internal 24 VDC rail confirmed compatible with both sensors: SenseCAP S200 rated 5–30 VDC; FG6485A rated 9–36 VDC, ≤ 15 mA (datasheet confirmed). | Hardware designer | **Closed** |
 | 3 | **RS485 sensor cable routing** — ~~Out of scope~~. Physical routing from the controller enclosure to the SenseCAP S200 (outside, on mast), including weather-proof cable glands and UV-resistant cable selection, is to be resolved during installation. This is outside the scope of the controller project. | Installer | **Out of scope** |
 | 4 | **Enclosure model selection** — ~~Resolved~~. **MC001110** (222 × 146 × 55 mm, IP67, transparent polycarbonate cover, €22 ex VAT, Farnell) confirmed after PCB layout and 3D component-height clearance check. See §4.10. | Hardware designer | **Closed** |

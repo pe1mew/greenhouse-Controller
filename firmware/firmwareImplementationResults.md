@@ -352,7 +352,7 @@ E (91) esp_core_dump_flash: No core dump partition found!
 
 ---
 
-## Phase 0 → Phase 1 Handover State
+## Phase 0 → Phase 2 Handover State
 
 | Item | State |
 |------|-------|
@@ -367,4 +367,303 @@ E (91) esp_core_dump_flash: No core dump partition found!
 | LittleFS partitions | Erased; no content yet |
 | WiFi | Not initialised (Phase 8) |
 
-**Next phase:** Phase 1 — Data Foundation (T4): NVS round-trips, RTC reading, ring buffers, Q6/Q4 consumers.
+**Note:** Phase 1 (T4 — Data Foundation) was deferred; Phase 2 (T2 — Relay Controller) was implemented next because T2 has no dependency on T4 in Phase 2: travel and dwell times are read directly from NVS by T2 at startup; T4's MX4 sharing is only required from Phase 3 onwards.
+
+---
+
+---
+
+## Phase 2 — Relay Controller (T2)
+
+**Date completed:** 2026-05-03
+**Target board:** WEMOS LOLIN S3 (ESP32-S3, 16 MB flash, 8 MB OPI PSRAM)
+**Framework:** Arduino-ESP32 v3.20017 (IDF 5.x base)
+**PlatformIO platform:** espressif32 @ 6.12.0
+
+---
+
+### Scope
+
+Phase 2 goal per `firmwareImplementationPlan.md`:
+
+> Safe, timing-correct motor control; mutual exclusion enforced; GPIO42 feedback working.
+
+All items listed below were completed. Phase 1 (T4) was deferred; T2 reads travel/dwell times directly from NVS at startup, removing the MX4 dependency for this phase.
+
+---
+
+### Files Created / Modified
+
+| File | Change |
+|------|--------|
+| `firmware/src/relay_controller/relay_controller.cpp` | Full Phase 2 implementation (stub replaced) |
+| `firmware/src/relay_controller/relay_controller.h` | Full Doxygen header |
+| `firmware/test/test_t2_relay/test_t2_relay.cpp` | New on-device Unity integration test suite (9 tests, IT-01–IT-09) |
+| `firmware/platformio.ini` | Added `[env:test_t2_relay]` section |
+
+---
+
+### T2 Implementation — Design Summary
+
+#### Per-channel FSM
+
+T2 extends the public `window_state_t` with two transient internal states that enforce the 2 s inter-relay gap:
+
+```
+CH_UNKNOWN → CH_CLOSED ↔ CH_GAP_TO_OPEN → CH_MOVING_OPEN → CH_OPEN
+                       ↔ CH_GAP_TO_CLOSE → CH_MOVING_CLOSE ↓
+                       ←————————————————————————————————————
+```
+
+| State | Relays | Condition |
+|-------|--------|-----------|
+| `CH_UNKNOWN` | Both LOW | Position not established (boot or post-alarm) |
+| `CH_CLOSED` | Both LOW | Fully closed; dwell timer may be running |
+| `CH_GAP_TO_CLOSE` | Both LOW | 2 s gap before energising CLOSE relay |
+| `CH_MOVING_CLOSE` | CLOSE HIGH, OPEN LOW | Travel timer running |
+| `CH_CLOSED` | Both LOW | Travel timer expired |
+| `CH_GAP_TO_OPEN` | Both LOW | 2 s gap before energising OPEN relay |
+| `CH_MOVING_OPEN` | OPEN HIGH, CLOSE LOW | Travel timer running |
+| `CH_OPEN` | Both LOW | Travel timer expired; dwell timer may be running |
+
+#### Timer parameters (read from NVS at startup)
+
+| Parameter | NVS key | Factory default | Range | Notes |
+|-----------|---------|-----------------|-------|-------|
+| M1 travel | `motor/travel_m1` | 21 s | 5–600 s | Relay pulse = travel + 5 s margin |
+| M2 travel | `motor/travel_m2` | 21 s | 5–600 s | Relay pulse = travel + 5 s margin |
+| M3 travel | `motor/travel_m3` | 171 s | 5–600 s | Relay pulse = travel + 5 s margin |
+| M1–M3 dwell open | `motor/dwell_open_mN` | 0 s | ≥0 s | Minimum rest after reaching OPEN |
+| M1–M3 dwell close | `motor/dwell_close_mN` | 0 s | ≥0 s | Minimum rest after reaching CLOSED |
+
+Effective relay energisation durations at factory defaults:
+- M1, M2: (21 + 5) × 1000 = **26 000 ms**
+- M3: (171 + 5) × 1000 = **176 000 ms**
+
+#### Dwell timer source bypass
+
+| Command source | Dwell timer | Reason |
+|----------------|-------------|--------|
+| `SRC_T3` (Safety Monitor) | **Bypassed** | Safety close must be immediate |
+| `SRC_T6` (Climate Control) | **Enforced** | Prevents motor over-cycling |
+
+#### Motor Alarm (GPIO42 / RRK-3)
+
+| Step | Action |
+|------|--------|
+| ISR fires (CHANGE, any state including MOVING) | Sets `volatile s_alarm_edge = true`; records tick timestamp |
+| T2 loop polls after 75 ms debounce | Reads live pin state |
+| GPIO42 LOW → alarm asserted (opto active-low, contact closed) | De-energises all 6 relays; sets `EG1_BIT_MOTOR_ALARM`; logs alarm onset |
+| GPIO42 HIGH → alarm cleared (contact open, INPUT_PULLUP) | Clears `EG1_BIT_MOTOR_ALARM`; logs alarm clearance; starts 60 s guard (`ALARM_GUARD_MS`) |
+| Guard expires (60 s) — pin re-check HIGH | Runs `calib_close_all()`; resumes AUTOMATIC |
+| Guard expires (60 s) — pin re-check LOW (re-asserted) | Aborts re-calibration; returns to main loop; loop re-enters alarm onset |
+| Any Q1 command received while alarm active | Discarded (FR-MA03) |
+
+#### Boot / re-calibration (`calib_close_all()`)
+
+Energises all CLOSE relays simultaneously. Each channel's relay is de-energised **individually** when its own travel deadline expires (not the global maximum), so M1/M2 (26 s) stop well before M3 (176 s). The slowest channel determines when the function returns.
+
+#### Loop structure
+
+| Step | Period | Description |
+|------|--------|-------------|
+| 4a: Alarm debounce | 20 ms tick | Poll `s_alarm_edge`; confirm after 75 ms |
+| 4b: FSM update | 20 ms tick | Check travel/gap timer expiry on all 3 channels |
+| 4c: Q1 drain | 20 ms tick | Non-blocking; consume all pending commands |
+| Sleep | 20 ms | `vTaskDelay(pdMS_TO_TICKS(20))` |
+
+---
+
+### Test Environment (`[env:test_t2_relay]`)
+
+#### PlatformIO configuration — key additions
+
+| Setting | Value | Purpose |
+|---------|-------|---------|
+| `test_build_src` | `yes` | Include `src/` in test builds (PlatformIO gate — disabled by default) |
+| `build_src_filter` | `+<**> -<main.cpp>` | Include all task sources; exclude `main.cpp` to avoid duplicate `setup()` |
+
+**Root cause of `test_build_src` requirement:** `pio test` uses a separate build pipeline from `pio run`. The internal `piobuild.py` gate at line 178 is:
+```python
+if "test" not in env["BUILD_TYPE"] or env.GetProjectOption("test_build_src"):
+    plb.env.BuildSources("$BUILD_SRC_DIR", "$PROJECT_SRC_DIR", env.get("SRC_FILTER"))
+```
+Without `test_build_src = yes`, the entire `src/` directory is silently skipped regardless of `build_src_filter`.
+
+#### Test suite — IT-01 through IT-13
+
+| ID | Name | Type | Duration | Relay/LED behaviour |
+|----|------|------|----------|---------------------|
+| IT-01 | NVS factory defaults | Automated | < 1 s | None |
+| IT-02 | Boot calibration | Automated | ~185 s | M1+M2 CLOSE LEDs off at ~26 s; M3 CLOSE LED off at ~176 s |
+| IT-03 | CMD_OPEN energises relay | Automated | < 1 s | M1 OPEN LED lights |
+| IT-04 | Direction reversal gap (OPEN→CLOSE) | Automated | ~3 s | Click-off … 2 s silence … click-on (M1 OPEN → M1 CLOSE) |
+| IT-05 | No simultaneous relays | Automated | ~200 ms | No visible double-click |
+| IT-06 | CLOSE_ALL T3 override | Automated | ~200 ms | M2 OPEN LED extinguishes |
+| IT-07 | Alarm onset during MOVING | **Interactive** | 15 s window | Connect GPIO42 to GND; hold ≥1 s; all lit CLOSE LEDs extinguish |
+| IT-08 | Command rejected during alarm | Automated | < 1 s | No relay change |
+| IT-09 | Alarm clearance + 60 s guard + re-calibration | **Interactive** | 15 s window + ~240 s | Remove jumper; all 3 CLOSE LEDs relight at guard expiry; extinguish when recal done |
+| IT-10 | OPEN travel expiry + dwell enforcement | Automated | ~30 s | M1 OPEN LED on → off at ~26 s; M1 CLOSE LED on ~3.5 s later |
+| IT-11 | CLOSE→OPEN reversal gap | Automated | ~3 s | Click-off … 2 s silence … click-on (M1 CLOSE → M1 OPEN) |
+| IT-12 | CMD_RESUME no-op | Automated | < 1 s | No relay change |
+| IT-13 | Invalid channel discarded | Automated | < 1 s | No relay change |
+
+Interactive tests (IT-07, IT-09) require a jumper wire: IT-07 connects GPIO42 to GND (hold still ≥1 s for the 75 ms debounce to confirm); IT-09 removes the jumper. IT-09 blocks until re-calibration is fully complete before IT-10 starts.
+
+---
+
+### Test Results
+
+**Status: ALL 13 TESTS PASSED — fully verified on hardware (2026-05-03).**  
+Serial output and logic analyser CSV captured and cross-verified. See Issues 4 and 5 below for problems encountered during test development.
+
+| ID | Name | Result | Key measurement |
+|----|------|--------|-----------------|
+| IT-01 | NVS factory defaults | ✅ PASS | travel_m1/m2 = 21 s, travel_m3 = 171 s, dwell_open_m1 = 3 s |
+| IT-02 | Boot calibration + per-channel stop | ✅ PASS | CH1+CH2 CLOSE LOW at 26.034/26.042 s; CH3 CLOSE LOW at 176.059 s from cal start |
+| IT-03 | CMD_OPEN energises relay | ✅ PASS | M1_OPEN HIGH within 7 ms of cmd dispatch |
+| IT-04 | Direction reversal gap (OPEN→CLOSE) | ✅ PASS | Gap = 2.000 s; M1_CLOSE HIGH 2000 ms after OPEN de-energise |
+| IT-05 | Mutual exclusion | ✅ PASS | No simultaneous HIGH in 10 × 20 ms samples |
+| IT-06 | CLOSE_ALL T3 override | ✅ PASS | M2_OPEN LOW within 50 ms; CH2 gap = 2.000 s |
+| IT-07 | Alarm onset during MOVING | ✅ PASS | Alarm confirmed 83 ms after stable LOW (75 ms nominal); 329 ms contact bounce correctly filtered |
+| IT-08 | Command rejected during alarm | ✅ PASS | CMD_OPEN ch3 discarded and logged at \[W\] level |
+| IT-09 | Alarm clearance + 60 s guard + re-calibration | ✅ PASS | Guard = 60.1 s; re-cal CH1+CH2 = 26.034/26.043 s; re-cal CH3 = 176.038 s |
+| IT-10 | OPEN travel expiry + dwell enforcement | ✅ PASS | Travel = 26.010 s; SRC_T6 blocked during dwell; allowed after 3 s expiry |
+| IT-11 | CLOSE→OPEN reversal gap | ✅ PASS | Gap = 1.999 s; M1_OPEN HIGH 1999 ms after M1_CLOSE LOW |
+| IT-12 | CMD_RESUME no-op | ✅ PASS | M1_OPEN unchanged after CMD_RESUME |
+| IT-13 | Invalid channel discarded | ✅ PASS | ch=0 and ch=4 logged as \[W\]; no relay change |
+
+#### Logic analyser verification
+
+All relay transitions captured on a Saleae logic analyser (8 channels: M1_OPEN, M1_CLOSE, M2_OPEN, M2_CLOSE, M3_OPEN, M3_CLOSE, ALARM_IN) and cross-verified against the serial timestamp log. All deltas within 35 ms — consistent with T2's 20 ms loop tick. No anomalies.
+
+| Transition | CSV (s from boot cal start) | Serial (ms from boot) | Delta |
+|---|---|---|---|
+| Boot cal M1+M2 CLOSE LOW | 26.034 / 26.042 | 26476 / 26485 | +2 ms |
+| Boot cal M3 CLOSE LOW | 176.059 | 176493 | +10 ms |
+| IT-07 alarm — all relays LOW | 191.761 | 192194 | +13 ms |
+| IT-09 guard complete — CLOSE relays HIGH | 264.422 | 264843 | +12 ms |
+| IT-09 re-cal CH1+CH2 CLOSE LOW | 290.456 / 290.465 | 290883 / 290892 | +14 ms |
+| IT-09 re-cal CH3 CLOSE LOW | 440.482 | 440909 | +14 ms |
+| IT-10 M1_OPEN LOW (travel complete) | 466.589 | 467006 | +3 ms |
+| IT-10 M1_CLOSE HIGH (dwell expired) | 470.211 | 470628 | +31 ms |
+| IT-11 M1_CLOSE LOW (CMD_OPEN reversal) | 470.267 | 470676 | +31 ms |
+| IT-11 M1_OPEN HIGH (gap expired) | 472.266 | 472683 | +2 ms |
+
+#### Contact bounce measurement (IT-07 — relevant to open issue #1c)
+
+| Measurement | Value |
+|---|---|
+| First contact (jumper inserted) | t = 191.349 s |
+| Bounce duration | 329 ms (~40 transitions) |
+| Stable LOW achieved | t = 191.678 s |
+| Alarm confirmed by T2 | t = 191.761 s (+83 ms after stable LOW; 75 ms nominal ✓) |
+| Alarm clearance debounce (jumper removed) | +79 ms (75 ms nominal ✓) |
+
+The 75 ms debounce correctly filtered the entire 329 ms bounce window. This run does not exercise the jitter scenario from open issue #1c (re-assertion during the guard), but the bounce data provides a reference for the contact quality of a typical jumper wire.
+
+#### Test run duration
+
+| Milestone | Time from boot |
+|---|---|
+| Boot calibration complete | 176 s |
+| IT-03–06 complete | 188 s |
+| IT-07 alarm confirmed | 192 s |
+| IT-09 alarm cleared by user | 205 s |
+| IT-09 guard + re-calibration complete | 441 s |
+| IT-10–13 complete; UNITY_END | 473 s |
+| Final relay edge (IT-11 CH1 travel done) | 498 s |
+| Logic analyser capture window | 600 s |
+
+---
+
+### Build Output
+
+Production environment (`lolin_s3`), after Phase 2:
+
+```
+RAM:   [=         ]   6.1% (used 20 108 bytes from 327 680 bytes)
+Flash: [==        ]  15.3% (used 320 025 bytes from 2 097 152 bytes)
+```
+
+Δ vs Phase 0: +488 bytes RAM, +7 481 bytes Flash. Both remain well within the 2 MB app0 partition.
+
+---
+
+### Issues Encountered and Resolved
+
+#### Issue 1 — `pio test` silently skips `src/` without `test_build_src = yes`
+
+**Symptom:** `undefined reference to 'task_relay_controller(void*)'` at link time despite `build_src_filter = +<**> -<main.cpp>` being set. The `.pio/build/test_t2_relay/` directory contained no compiled objects from `src/`.
+
+**Root cause:** PlatformIO's `piobuild.py` conditionally compiles `src/` during test builds:
+```python
+if "test" not in env["BUILD_TYPE"] or env.GetProjectOption("test_build_src"):
+    BuildSources(...)
+```
+`test_build_src` defaults to `False`, so the entire `src/` directory is skipped. The `build_src_filter` option has no effect when this gate is closed.
+
+**Fix:**
+```ini
+test_build_src   = yes
+build_src_filter = +<**> -<main.cpp>
+```
+
+**Lesson:** PlatformIO's `pio test` documentation does not prominently describe this gate. When `task_relay_controller` is undefined in a test build, check whether `src/` is being compiled at all before debugging filter syntax.
+
+---
+
+#### Issue 2 — `calib_close_all()` ran all channels for M3's full 176 s
+
+**Symptom:** M1 and M2 CLOSE relays stayed energised for 176 s instead of de-energising at their individual deadlines (26 s). All three CLOSE LEDs extinguished simultaneously at 176 s.
+
+**Root cause:** Original implementation used a single blocking loop waiting for `max_travel_ms`, then de-energised all relays simultaneously. Correct behaviour is to de-energise each channel as soon as its own travel timer expires.
+
+**Fix:** Rewrote `calib_close_all()` to poll in 400 ms chunks and de-energise each channel individually when `now_ms >= deadline_ms[ch]`. The function returns when the last channel's deadline passes.
+
+---
+
+#### Issue 4 — IT-09 structural defect: Q1 commands batch-processed while T2 blocked in guard+recal
+
+**Symptom (first two test runs):** IT-10a produced a false pass (M1_OPEN was LOW because T2 hadn't processed CMD_OPEN yet, not because travel had expired). IT-10c outcome was unknown (serial truncated). IT-11 through IT-13 assertions were evaluated against the wrong GPIO state. UNITY_END result was unavailable or showed incorrect failures.
+
+**Root cause:** IT-09's original two-phase poll used a 65 s timeout for "at least one CLOSE relay goes HIGH" (step b — guard complete, recal started) followed by a 185 s poll for "all relays LOW" (step c — recal done). In the first test run a second alarm fired during the guard, resetting T2's 60 s guard from zero. The recal start was therefore pushed beyond the 65 s window. The `TEST_ASSERT_TRUE(recal_started)` assertion failed; Unity's `longjmp` exit from IT-09 bypassed step (c) entirely. IT-10 started while T2 was still blocked inside `handle_alarm_clearance()` (T2 unavailable for ~296 s). All IT-10 through IT-13 commands queued in Q1 and were batch-processed within 47 ms of each other when T2 finally returned to AUTOMATIC, producing nonsensical assertion timing.
+
+**Fix:** Replaced the two-phase poll with a single 300 s completion loop: polls every 1 s; detects recal start via any CLOSE HIGH (logged but not asserted); declares completion when `recal_started && all_relays_low() && !alarm_active()`; logs the current phase ("guard running", "re-cal running", "alarm active — guard will restart") every 30 s. Single final assertion: `recal_done == true`. Timeout covers 60 s guard + 176 s recal + 60 s safety margin. IT-10 onwards are guaranteed to start from a fully CLOSED, AUTOMATIC board.
+
+---
+
+#### Issue 5 — `Serial.println()` silently dropped: interactive test prompts invisible
+
+**Symptom (second test run):** IT-07 and IT-09 manual step prompts were never visible in the serial monitor despite the monitor being open and DTR asserted throughout. Both tests ran their 15 s wait with no user interaction; IT-07 failed (alarm never connected); IT-09 timed out after 300 s (no alarm ever set). UNITY_END showed 4+ failures.
+
+**Root cause:** `Serial.println()` writes to the USB-CDC TX FIFO. With `Serial.setTxTimeoutMs(0)`, if the FIFO is momentarily unable to accept data (due to competing writes from `ESP_LOGI` routed through the same CDC path, or preemption by T2 at priority 7), the write returns 0 and the data is silently discarded. `ESP_LOGI` uses the IDF `vprintf` infrastructure which has a separate code path not subject to the same TX-timeout gating — all `ESP_LOGI` output appeared correctly in both failing runs. This is a known asymmetry in arduino-esp32 v3.x between `Serial.write()` (respects `setTxTimeoutMs`) and `esp_log_write()` (does not).
+
+**Fix:** Replaced all `Serial.println()` in interactive test sections (IT-07 prompt, IT-09 prompt, IT-09 completion message, end-of-test banner) with `ESP_LOGI()`. Timestamp-prefixed log format is acceptable for test diagnostic output and has proven reliable across all test runs.
+
+---
+
+#### Issue 3 — Heartbeat LED did not blink during tests
+
+**Symptom:** PIN_HB_LED (GPIO41) remained static during test runs. The 1 Hz blink expected from T1 was absent.
+
+**Root cause:** `task_watchdog_heartbeat` is defined as `static` inside `main.cpp`, which is excluded from the test build by `build_src_filter`. T1 was never spawned.
+
+**Fix:** Added `task_test_heartbeat()` (toggle-only, no WDT registration since WDT is disabled in the test) and added `gpio_set_pin_mode(PIN_HB_LED, GPIO_OUTPUT)` to the test `setup()`. T1 handle is assigned the test heartbeat task.
+
+---
+
+### Phase 2 → Phase 3 Handover State
+
+| Item | State |
+|------|-------|
+| T1 | Fully implemented and verified |
+| T2 | Fully implemented; integration tests IT-01–IT-13 all pass; hardware-verified |
+| T3–T13 | Stubs |
+| Phase 1 (T4) | **Deferred** — T2 reads NVS directly at startup; MX4 sharing deferred to Phase 3 |
+| NVS motor namespace | Written at T2 startup with factory defaults (travel, dwell keys) |
+| GPIO 12–16, 21 (relays) | Configured OUTPUT, managed exclusively by T2 |
+| GPIO 42 (OPTO_INPUT) | Configured INPUT_PULLUP; CHANGE ISR attached by T2 |
+| EG1_BIT_MOTOR_ALARM | Operational — set/cleared by T2 on GPIO42 transitions |
+
+**Next phase:** Phase 1 (T4) — Data Foundation, or Phase 3 (T5) — Sensor Polling. T5 → Q6 → T4 → MX4 is the natural next chain; implementing T4 first remains the recommended order.

@@ -60,8 +60,9 @@ firmware/src/
 
 | Issue | Resolution |
 |-------|------------|
-| **#1a GPIO42 motor alarm** | `attachInterrupt(PIN_OPTO_INPUT, isr_handler, CHANGE)` in T2; deferred-ISR pattern: ISR (`IRAM_ATTR`) sets volatile flag + timestamp on first edge; T2 loop confirms after 75 ms by reading current pin state. **Not suppressed during MOVING** — a motor hitting the emergency switch during a T2-commanded move is the primary alarm scenario. On alarm assert: de-energise all 6 relays via `gpio_write()`, set EG1.MOTOR_ALARM, post log to Q3. On alarm release: clear EG1.MOTOR_ALARM, post CLOSE_ALL to Q1 for re-calibration, post log to Q3. |
-| **#1b Post-alarm re-calibration** | On `MOTOR_ALARM` clear, T2 posts CLOSE_ALL to Q1; T2 then waits `(travel_m3 + MOTOR_TRAVEL_MARGIN_S_DEFAULT) × 1000 + 10 000 ms` before marking re-calibration complete and resuming AUTOMATIC |
+| **#1a GPIO42 motor alarm** | `attachInterrupt(PIN_OPTO_INPUT, isr_handler, CHANGE)` in T2; deferred-ISR pattern: ISR (`IRAM_ATTR`) sets volatile flag + timestamp on first edge; T2 loop confirms after 75 ms by reading current pin state. **Not suppressed during MOVING** — a motor hitting the emergency switch during a T2-commanded move is the primary alarm scenario. On alarm assert: de-energise all 6 relays via `gpio_write()`, set EG1.MOTOR_ALARM, post log to Q3. On alarm release: clear EG1.MOTOR_ALARM, post log to Q3, then observe 60 s guard before re-calibration (see #1b). |
+| **#1b Post-alarm re-calibration** | On `MOTOR_ALARM` clear: (1) clear `EG1.MOTOR_ALARM` and log clearance immediately; (2) wait `ALARM_GUARD_MS = 60 000 ms` — motor may still be coasting when operator resets the contact; T2 is blocked, relays remain off; (3) re-check pin at guard expiry — if LOW (re-asserted), abort and return (main loop re-enters onset); (4) if HIGH, call `calib_close_all()` directly (per-channel deadlines); (5) resume AUTOMATIC. |
+| **#1c Alarm contact jitter** | **⚠ OPEN ISSUE — needs discussion.** The 60 s guard detects only a re-assertion that is *still present* at guard expiry. If the RRK-3 contact bounces (clears → re-asserts → clears again within the 60 s window), the end-of-guard pin check sees HIGH and proceeds to re-calibrate even though a real alarm may have been present mid-guard. Possible mitigations: (a) latch the alarm until an explicit operator acknowledge command; (b) count ISR edges during guard and abort if any assert edge is seen; (c) extend the guard; (d) require the pin to remain HIGH for N seconds before clearing alarm. Decision deferred — needs discussion with project owner. |
 | **#2 Ring buffer depth** | 360 entries per channel (T, RH, wind_speed, wind_dir) = 11.5 KB total; fits in internal RAM with headroom |
 | **#3 NTP timezone** | `setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1); tzset();` after `configTime()`; store TZ string in NVS `system/tz_str` with that default |
 | **#4 MQTT auth** | Username + password over plain TCP (same accepted-risk basis as no-HTTPS); store password in NVS `mqtt/password`; document accepted risk |
@@ -117,15 +118,15 @@ Implementation:
 - Init: 6 relay GPIOs as OUTPUT, all de-energised; GPIO42 as INPUT_PULLUP
 - Boot sequence: issue CLOSE_ALL on all channels (establishes known CLOSED state; waits full travel time per channel)
 - Window FSM per channel: `UNKNOWN → CLOSED → MOVING_OPEN → OPEN → MOVING_CLOSE → CLOSED`
-- Before asserting any relay: de-energise complementary relay + 100ms gap
+- Before asserting any relay: de-energise complementary relay + 2 s gap
 - Motor travel timer: read `travel_mN` (seconds) from T4 (MX4) at startup; `vTaskDelay(pdMS_TO_TICKS((travel_s + MOTOR_TRAVEL_MARGIN_S_DEFAULT) * 1000))` while relay energised; the margin guarantees the end-switch fires before the relay drops; de-energise on expiry and advance FSM. The relay must remain energised for the full duration — de-energising it early stops the window at an intermediate (unknown) position.
 - Dwell timer: read `dwell_open_mN` / `dwell_close_mN` (minutes) from T4 (MX4); reject commands arriving before dwell elapsed
 - Q1 consumer: check EG1.MOTOR_ALARM before executing any command — discard if alarm is active; T3 CLOSE_ALL commands preempt pending T6 commands (check source field)
-- GPIO42 ISR (MOTOR_ALARM): volatile flag + timestamp; T2 main loop confirms after 75ms debounce; NOT suppressed during MOVING. On alarm assert: de-energise all 6 relays immediately, set EG1.MOTOR_ALARM, post LOG event to Q3 (FR-MA01–FR-MA02). On alarm release: clear EG1.MOTOR_ALARM, post CLOSE_ALL to Q1 for re-calibration, post LOG event to Q3 (FR-MA06–FR-MA07).
+- GPIO42 ISR (MOTOR_ALARM): volatile flag + timestamp; T2 main loop confirms after 75 ms debounce; NOT suppressed during MOVING. On alarm assert: de-energise all 6 relays immediately, set EG1.MOTOR_ALARM, post LOG event to Q3 (FR-MA01–FR-MA02). On alarm release: clear EG1.MOTOR_ALARM, post LOG event to Q3, wait 60 s guard (`ALARM_GUARD_MS`), re-check pin, then call `calib_close_all()` (FR-MA06–FR-MA07). See open issue #1c for jitter limitations.
 
 Drivers used: LIB-1 (gpio_write for 6 relays + gpio_read for GPIO42)
 
-Verification: Logic analyser — never simultaneous OPEN+CLOSE on same channel; confirm 100ms gap; confirm travel timing; confirm GPIO42 debounce with bench toggle.
+Verification: Logic analyser — never simultaneous OPEN+CLOSE on same channel; confirm 2 s gap; confirm travel timing; confirm GPIO42 debounce with bench toggle.
 
 ---
 
@@ -340,7 +341,7 @@ Verification: Subscribe on broker; verify publish; publish command; verify relay
 1. **Wind safety end-to-end:** Live wind > v_max → all windows close → wind drops → climate resumes
 2. **Power-loss recovery:** Cut power mid-operation → restore → CLOSE_ALL boot sequence → NVS intact → log entry for restart
 3. **RTC battery backup:** Disconnect mains 30s → restore → DS1307 time intact
-4. **Motor alarm end-to-end:** Assert GPIO42 externally → verify EG1.MOTOR_ALARM set → verify all relays de-energised → release GPIO42 → verify CLOSE_ALL re-calibration → verify resume to AUTOMATIC → log entries present for alarm onset and clearance
+4. **Motor alarm end-to-end:** Assert GPIO42 externally → verify EG1.MOTOR_ALARM set → verify all relays de-energised → release GPIO42 → verify EG1.MOTOR_ALARM cleared immediately → verify 60 s guard (relays remain off) → verify CLOSE_ALL re-calibration starts after guard → verify resume to AUTOMATIC → log entries present for alarm onset and clearance
 5. **Endurance:** 24-hour run; serial log `ESP.getFreeHeap()` every 5 min (via T9 snapshot); no watchdog resets, no heap leak
 
 ---

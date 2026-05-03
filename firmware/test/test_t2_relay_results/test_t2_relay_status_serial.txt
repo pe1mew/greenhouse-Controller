@@ -1,0 +1,133 @@
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x1 (POWERON),boot:0x2b (SPI_FAST_FLASH_BOOT)
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce3808,len:0x4bc
+load:0x403c9700,len:0xbd8
+load:0x403cc700,len:0x2a0c
+entry 0x403c98d0
+E (89) esp_core_dump_flash: No core dump partition found!
+E (89) esp_core_dump_flash: No core dump partition found!
+[    90][I][esp32-hal-psram.c:96] psramInit(): PSRAM enabled
+[   315][I][test_t2_relay.cpp:786] setup(): [T2TEST] ========================================
+[   324][I][test_t2_relay.cpp:787] setup(): [T2TEST]  T2 Relay Controller Integration Tests
+[   332][I][test_t2_relay.cpp:788] setup(): [T2TEST] ========================================
+[   340][I][test_t2_relay.cpp:811] setup(): [T2TEST] GPIO: HB LED, relay outputs de-energised, GPIO42 input configured
+[   351][I][test_t2_relay.cpp:822] setup(): [T2TEST] NVS: OK
+[   357][I][test_t2_relay.cpp:831] setup(): [T2TEST] NVS: motor/dwell_open_m1 = 3 s (for IT-10 dwell test)
+[   367][I][test_t2_relay.cpp:850] setup(): [T2TEST] RTOS primitives created
+[   374][I][test_t2_relay.cpp:857] setup(): [T2TEST] T1 heartbeat spawned (HB LED blinks at 1 Hz; WDT disabled)
+[   383][I][relay_controller.cpp:561] task_relay_controller(): [T2] T2 starting
+[   391][I][relay_controller.cpp:598] task_relay_controller(): [T2] CH1: travel=21 s  dwell_open=3 s  dwell_close=0 s
+[   402][I][relay_controller.cpp:598] task_relay_controller(): [T2] CH2: travel=21 s  dwell_open=0 s  dwell_close=0 s
+[   413][I][relay_controller.cpp:598] task_relay_controller(): [T2] CH3: travel=171 s  dwell_open=0 s  dwell_close=0 s
+[   424][I][relay_controller.cpp:610] task_relay_controller(): [T2] GPIO42 ISR attached (MOTOR_ALARM, CHANGE, not suppressed during MOVING)
+[   436][I][relay_controller.cpp:380] calib_close_all(): [T2] CLOSE_ALL calibration start
+[   444][I][relay_controller.cpp:399] calib_close_all(): [T2] CH1: CLOSE relay energised (deadline 26355 ms from boot)
+[   455][I][relay_controller.cpp:399] calib_close_all(): [T2] CH2: CLOSE relay energised (deadline 26355 ms from boot)
+[   465][I][relay_controller.cpp:399] calib_close_all(): [T2] CH3: CLOSE relay energised (deadline 176355 ms from boot)
+[   476][I][test_t2_relay.cpp:861] setup(): [T2TEST] T2 spawned — boot calibration starting
+[   484][I][test_t2_relay.cpp:862] setup(): [T2TEST] Relay board: watch CLOSE LEDs for all 3 channels
+[   495][I][test_t2_relay.cpp:266] test_boot_calibration(): [T2TEST] IT-02: waiting for boot calibration (~176 s)...
+[   505][I][test_t2_relay.cpp:267] test_boot_calibration(): [T2TEST]   Watch CLOSE LEDs: M1+M2 extinguish at ~26 s, M3 at ~176 s
+[ 26476][I][relay_controller.cpp:415] calib_close_all(): [T2] CH1: CLOSED (calibration complete)
+[ 26485][I][relay_controller.cpp:415] calib_close_all(): [T2] CH2: CLOSED (calibration complete)
+[ 30516][I][test_t2_relay.cpp:278] test_boot_calibration(): [T2TEST]   ...30 s elapsed
+[ 30524][I][test_t2_relay.cpp:285] test_boot_calibration(): [T2TEST] IT-02: intermediate check at ~30 s
+[ 30533][I][test_t2_relay.cpp:300] test_boot_calibration(): [T2TEST] IT-02: per-channel stop assertion passed — M3 still travelling
+[ 60545][I][test_t2_relay.cpp:278] test_boot_calibration(): [T2TEST]   ...60 s elapsed
+[ 90553][I][test_t2_relay.cpp:278] test_boot_calibration(): [T2TEST]   ...90 s elapsed
+[120561][I][test_t2_relay.cpp:278] test_boot_calibration(): [T2TEST]   ...120 s elapsed
+[150569][I][test_t2_relay.cpp:278] test_boot_calibration(): [T2TEST]   ...150 s elapsed
+[176493][I][relay_controller.cpp:415] calib_close_all(): [T2] CH3: CLOSED (calibration complete)
+[176502][I][relay_controller.cpp:424] calib_close_all(): [T2] CLOSE_ALL calibration complete — all channels CLOSED
+[180577][I][test_t2_relay.cpp:278] test_boot_calibration(): [T2TEST]   ...180 s elapsed
+[185585][I][test_t2_relay.cpp:305] test_boot_calibration(): [T2TEST] IT-02: 185 s elapsed — checking all relay pins
+[185612][I][relay_controller.cpp:524] process_command(): [T2] CMD_OPEN ch1 from T6
+[185620][I][relay_controller.cpp:295] ch_start_open(): [T2] CH1: → MOVING_OPEN  (travel 26000 ms)
+[185648][I][relay_controller.cpp:534] process_command(): [T2] CMD_CLOSE ch1 from T6
+[187655][I][relay_controller.cpp:351] ch_update(): [T2] CH1: gap ended → MOVING_CLOSE
+[188503][I][relay_controller.cpp:524] process_command(): [T2] CMD_OPEN ch2 from T6
+[188511][I][relay_controller.cpp:295] ch_start_open(): [T2] CH2: → MOVING_OPEN  (travel 26000 ms)
+[188559][I][relay_controller.cpp:515] process_command(): [T2] CMD_CLOSE_ALL from T3
+[188600][I][test_t2_relay.cpp:463] test_alarm_onset_interactive(): [T2TEST] ======================================
+[188610][I][test_t2_relay.cpp:464] test_alarm_onset_interactive(): [T2TEST] IT-07: *** MANUAL STEP REQUIRED ***
+[188620][I][test_t2_relay.cpp:465] test_alarm_onset_interactive(): [T2TEST]   Connect GPIO42 (pin 42) to GND using a jumper wire.
+[188632][I][test_t2_relay.cpp:466] test_alarm_onset_interactive(): [T2TEST]   HOLD STILL for >= 1 s  (75 ms debounce; brief contact ignored).
+[188644][I][test_t2_relay.cpp:467] test_alarm_onset_interactive(): [T2TEST]   Relay board: lit CLOSE LEDs should extinguish within ~1 s.
+[188656][I][test_t2_relay.cpp:468] test_alarm_onset_interactive(): [T2TEST]   Keep jumper in place — IT-09 will ask you to remove it.
+[188668][I][test_t2_relay.cpp:469] test_alarm_onset_interactive(): [T2TEST]   You have 15 seconds. Waiting...
+[188678][I][test_t2_relay.cpp:470] test_alarm_onset_interactive(): [T2TEST] ======================================
+[190566][I][relay_controller.cpp:351] ch_update(): [T2] CH2: gap ended → MOVING_CLOSE
+[192194][E][relay_controller.cpp:445] handle_alarm_onset(): [T2] MOTOR_ALARM asserted — all relays de-energised, all window control suspended (FR-MA01–FR-MA04)
+[203708][W][relay_controller.cpp:508] process_command(): [T2] Q1 cmd (action=0 ch=3 src=1) discarded — MOTOR_ALARM active
+[203740][I][test_t2_relay.cpp:539] test_alarm_clearance_starts_recal(): [T2TEST] ======================================
+[203751][I][test_t2_relay.cpp:540] test_alarm_clearance_starts_recal(): [T2TEST] IT-09: *** MANUAL STEP REQUIRED ***
+[203761][I][test_t2_relay.cpp:541] test_alarm_clearance_starts_recal(): [T2TEST]   Remove the jumper from GPIO42 (pull wire free from GND).
+[203773][I][test_t2_relay.cpp:542] test_alarm_clearance_starts_recal(): [T2TEST]   Keep wire CLEAR — do NOT reconnect to GND.
+[203785][I][test_t2_relay.cpp:543] test_alarm_clearance_starts_recal(): [T2TEST]   GPIO42 must stay HIGH for the 60 s guard + ~176 s re-calibration.
+[203798][I][test_t2_relay.cpp:544] test_alarm_clearance_starts_recal(): [T2TEST]   You have 15 seconds. Waiting...
+[203808][I][test_t2_relay.cpp:545] test_alarm_clearance_starts_recal(): [T2TEST] ======================================
+[204719][I][relay_controller.cpp:474] handle_alarm_clearance(): [T2] MOTOR_ALARM cleared — 60 s guard before re-calibration (motor may still be coasting; see jitter open issue)
+[209735][I][relay_controller.cpp:481] handle_alarm_clearance(): [T2]   alarm guard: 5 s / 60 s
+[214743][I][relay_controller.cpp:481] handle_alarm_clearance(): [T2]   alarm guard: 10 s / 60 s
+[218818][I][test_t2_relay.cpp:572] test_alarm_clearance_starts_recal(): [T2TEST] IT-09: waiting for 60 s guard + re-calibration to complete (up to 300 s)...
+[218832][I][test_t2_relay.cpp:573] test_alarm_clearance_starts_recal(): [T2TEST]   No relay activity during the 60 s guard.
+[218843][I][test_t2_relay.cpp:574] test_alarm_clearance_starts_recal(): [T2TEST]   Watch CLOSE LEDs: all 3 light at guard expiry;
+[218854][I][test_t2_relay.cpp:575] test_alarm_clearance_starts_recal(): [T2TEST]   M1+M2 extinguish ~26 s later, M3 ~176 s later.
+[219751][I][relay_controller.cpp:481] handle_alarm_clearance(): [T2]   alarm guard: 15 s / 60 s
+[224759][I][relay_controller.cpp:481] handle_alarm_clearance(): [T2]   alarm guard: 20 s / 60 s
+[229767][I][relay_controller.cpp:481] handle_alarm_clearance(): [T2]   alarm guard: 25 s / 60 s
+[234775][I][relay_controller.cpp:481] handle_alarm_clearance(): [T2]   alarm guard: 30 s / 60 s
+[239783][I][relay_controller.cpp:481] handle_alarm_clearance(): [T2]   alarm guard: 35 s / 60 s
+[244791][I][relay_controller.cpp:481] handle_alarm_clearance(): [T2]   alarm guard: 40 s / 60 s
+[248866][I][test_t2_relay.cpp:602] test_alarm_clearance_starts_recal(): [T2TEST]   ...guard running (30 s elapsed)
+[249799][I][relay_controller.cpp:481] handle_alarm_clearance(): [T2]   alarm guard: 45 s / 60 s
+[254807][I][relay_controller.cpp:481] handle_alarm_clearance(): [T2]   alarm guard: 50 s / 60 s
+[259815][I][relay_controller.cpp:481] handle_alarm_clearance(): [T2]   alarm guard: 55 s / 60 s
+[264823][I][relay_controller.cpp:481] handle_alarm_clearance(): [T2]   alarm guard: 60 s / 60 s
+[264832][I][relay_controller.cpp:494] handle_alarm_clearance(): [T2] Guard complete — starting CLOSE_ALL re-calibration (FR-MA07)
+[264843][I][relay_controller.cpp:380] calib_close_all(): [T2] CLOSE_ALL calibration start
+[264851][I][relay_controller.cpp:399] calib_close_all(): [T2] CH1: CLOSE relay energised (deadline 290762 ms from boot)
+[264862][I][relay_controller.cpp:399] calib_close_all(): [T2] CH2: CLOSE relay energised (deadline 290762 ms from boot)
+[264873][I][relay_controller.cpp:399] calib_close_all(): [T2] CH3: CLOSE relay energised (deadline 440762 ms from boot)
+[264883][I][test_t2_relay.cpp:589] test_alarm_clearance_starts_recal(): [T2TEST]   Re-calibration started (+46 s).
+[278893][I][test_t2_relay.cpp:602] test_alarm_clearance_starts_recal(): [T2TEST]   ...re-cal running (60 s elapsed)
+[290883][I][relay_controller.cpp:415] calib_close_all(): [T2] CH1: CLOSED (calibration complete)
+[290892][I][relay_controller.cpp:415] calib_close_all(): [T2] CH2: CLOSED (calibration complete)
+[308903][I][test_t2_relay.cpp:602] test_alarm_clearance_starts_recal(): [T2TEST]   ...re-cal running (90 s elapsed)
+[338913][I][test_t2_relay.cpp:602] test_alarm_clearance_starts_recal(): [T2TEST]   ...re-cal running (120 s elapsed)
+[368923][I][test_t2_relay.cpp:602] test_alarm_clearance_starts_recal(): [T2TEST]   ...re-cal running (150 s elapsed)
+[398933][I][test_t2_relay.cpp:602] test_alarm_clearance_starts_recal(): [T2TEST]   ...re-cal running (180 s elapsed)
+[428943][I][test_t2_relay.cpp:602] test_alarm_clearance_starts_recal(): [T2TEST]   ...re-cal running (210 s elapsed)
+[440900][I][relay_controller.cpp:415] calib_close_all(): [T2] CH3: CLOSED (calibration complete)
+[440909][I][relay_controller.cpp:424] calib_close_all(): [T2] CLOSE_ALL calibration complete — all channels CLOSED
+[440919][I][relay_controller.cpp:496] handle_alarm_clearance(): [T2] Re-calibration complete — resuming AUTOMATIC
+[440953][I][test_t2_relay.cpp:594] test_alarm_clearance_starts_recal(): [T2TEST]   Re-calibration complete (+222 s).
+[440964][I][test_t2_relay.cpp:613] test_alarm_clearance_starts_recal(): [T2TEST] IT-09: complete. Board in CH_CLOSED. Proceeding to IT-10.
+[440977][I][test_t2_relay.cpp:640] test_open_travel_expiry_and_dwell(): [T2TEST] IT-10a: CMD_OPEN ch1 sent — waiting 26.5 s for travel timer expiry
+[440989][I][relay_controller.cpp:524] process_command(): [T2] CMD_OPEN ch1 from T6
+[440997][I][relay_controller.cpp:295] ch_start_open(): [T2] CH1: → MOVING_OPEN  (travel 26000 ms)
+[441006][I][test_t2_relay.cpp:641] test_open_travel_expiry_and_dwell(): [T2TEST]   Watch M1 OPEN LED: should extinguish at ~26 s.
+[467006][I][relay_controller.cpp:321] ch_update(): [T2] CH1: OPEN (travel complete)
+[467517][I][test_t2_relay.cpp:652] test_open_travel_expiry_and_dwell(): [T2TEST] IT-10a: PASS — M1_OPEN LOW, CH_OPEN state reached
+[467529][I][test_t2_relay.cpp:655] test_open_travel_expiry_and_dwell(): [T2TEST] IT-10b: testing T6 CMD_CLOSE while open-dwell is unexpired (~2.5 s left)
+[467553][I][relay_controller.cpp:534] process_command(): [T2] CMD_CLOSE ch1 from T6
+[467592][I][test_t2_relay.cpp:665] test_open_travel_expiry_and_dwell(): [T2TEST] IT-10c: waiting 3 s for open-dwell to expire...
+[470620][I][relay_controller.cpp:534] process_command(): [T2] CMD_CLOSE ch1 from T6
+[470628][I][relay_controller.cpp:246] ch_start_close(): [T2] CH1: → MOVING_CLOSE  (travel 26000 ms)
+[470653][I][test_t2_relay.cpp:676] test_open_travel_expiry_and_dwell(): [T2TEST] IT-10: PASS — CH_OPEN reached, dwell blocked T6, dwell expiry allowed T6
+[470676][I][relay_controller.cpp:524] process_command(): [T2] CMD_OPEN ch1 from T6
+[472683][I][relay_controller.cpp:341] ch_update(): [T2] CH1: gap ended → MOVING_OPEN
+[473331][I][relay_controller.cpp:544] process_command(): [T2] CMD_RESUME — acknowledged (no T2 action)
+[473380][W][relay_controller.cpp:527] process_command(): [T2] CMD_OPEN: invalid channel 0
+[473388][W][relay_controller.cpp:527] process_command(): [T2] CMD_OPEN: invalid channel 4
+[473422][I][test_t2_relay.cpp:894] setup(): [T2TEST] ########################################
+[473430][I][test_t2_relay.cpp:896] setup(): [T2TEST] #                                      #
+[473439][I][test_t2_relay.cpp:897] setup(): [T2TEST] #   ALL TESTS PASSED                   #
+[473447][I][test_t2_relay.cpp:898] setup(): [T2TEST] #                                      #
+[473455][I][test_t2_relay.cpp:904] setup(): [T2TEST] #   T2 Integration Test Complete       #
+[473464][I][test_t2_relay.cpp:905] setup(): [T2TEST] #   Relay board: safe to disconnect    #
+[473472][I][test_t2_relay.cpp:906] setup(): [T2TEST] ########################################
+[498696][I][relay_controller.cpp:321] ch_update(): [T2] CH1: OPEN (travel complete)
