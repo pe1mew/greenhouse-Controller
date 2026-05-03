@@ -846,3 +846,201 @@ The RTC date reads 2026-04-12, which is ~3 weeks behind the actual date (2026-05
 | NVS all namespaces | Loaded at T4 boot; factory defaults written for any absent keys |
 
 **Next phase:** Phase 3 — Sensor Polling (T5). T5 posts `sensor_reading_t` to Q6 → T4 updates MX2/MX3/log/TN1/TN2. T4's Q6 handler and ring buffer are ready to receive immediately.
+
+---
+
+---
+
+## Phase 3 — Sensor Polling (T5)
+
+**Date completed:** 2026-05-03  
+**Target board:** WEMOS LOLIN S3 (ESP32-S3, 16 MB flash, 8 MB OPI PSRAM)  
+**Framework:** Arduino-ESP32 v3.20017 (IDF 5.x base)  
+**PlatformIO platform:** espressif32 @ 6.12.0
+
+---
+
+### Scope
+
+Phase 3 goal per `firmwareImplementationPlan.md`:
+
+> Live T/RH and wind data flowing into T4.
+
+All items listed below were completed.
+
+---
+
+### Files Created / Modified
+
+| File | Change |
+|------|--------|
+| `firmware/src/sensor_poll/sensor_poll.cpp` | Full Phase 3 implementation (stub replaced) |
+| `firmware/src/sensor_poll/sensor_poll.h` | Updated with Phase 3 Doxygen documentation |
+| `firmware/src/main.cpp` | Reverted T1 heartbeat to clean form (removed T5 diagnostic, see Issue 1) |
+
+---
+
+### T5 Implementation — Design Summary
+
+#### Poll loop
+
+```
+boot grace (8 s)  →  loop:
+  vTaskDelay(poll_s × 1000 ms)
+  → dm_cfg_snapshot()              -- refresh window sizes under MX4
+  → recalculate win_t, win_rh, win_w (reset context if changed)
+  → FG6485A poll (2 attempts)      -- 200 ms timeout each, 100 ms retry gap
+  → S200 poll     (2 attempts)     -- 200 ms timeout each, 100 ms retry gap
+  → build sensor_reading_t         -- raw + sliding-average fields
+  → xQueueOverwrite(Q6, &reading)  -- T4 receives latest-only
+  → log_post(LOG_SENSOR)           -- FR-LG09: snapshot = poll interval
+```
+
+#### Sliding average algorithm
+
+Two independent buffer types, both using circular sum buffers of depth 360 (`SP_AVG_DEPTH`):
+
+| Channel | Buffer type | Average method |
+|---------|-------------|----------------|
+| Temperature (°C) | `avg_ctx_t` | Arithmetic running sum |
+| Relative humidity (%RH) | `avg_ctx_t` | Arithmetic running sum |
+| Wind speed (m/s) | `avg_ctx_t` | Arithmetic running sum |
+| Wind direction (°) | `dir_avg_ctx_t` | Unit-vector (sin/cos) running sum; `atan2(Σsin, Σcos) × 180/π` |
+
+Wind direction uses the unit-vector method to correctly handle the 0°/360° discontinuity. Window size in samples = `avg_win_x_min × 60 / poll_s`, clamped to [1, 360]. When window size changes (config update via MX4), the affected context is zeroed and re-warms over the next N poll cycles.
+
+#### Fault handling
+
+| State | Trigger | EG1 action | Q3 action |
+|-------|---------|-----------|----------|
+| T/RH fault onset | 2nd consecutive FG6485A read failure | `xEventGroupSetBits(EG1, EG1_BIT_SENSOR_FAULT_T)` | `log_post(LOG_ALARM, value_a=1)` |
+| T/RH fault cleared | First successful FG6485A read after fault | `xEventGroupClearBits(EG1, EG1_BIT_SENSOR_FAULT_T)` | `log_post(LOG_ALARM, value_a=-1)` |
+| Wind fault onset | 2nd consecutive S200 read failure | `xEventGroupSetBits(EG1, EG1_BIT_SENSOR_FAULT_W)` | `log_post(LOG_ALARM, value_a=2)` |
+| Wind fault cleared | First successful S200 read after fault | `xEventGroupClearBits(EG1, EG1_BIT_SENSOR_FAULT_W)` | `log_post(LOG_ALARM, value_a=-2)` |
+
+Both fault bits are edge-triggered: the alarm event is posted once on onset and once on clearance, not every failed poll cycle.
+
+During fault: raw fields in `sensor_reading_t` carry forward the last sliding-average value (avoids a zero-gap in T4's ring buffer). Sliding-average fields remain at the last computed average until the fault clears.
+
+#### Memory footprint (static BSS, zero-initialised)
+
+| Variable | Size | Description |
+|----------|------|-------------|
+| `s_avg_t` | 1448 B | Temperature arithmetic buffer (360 floats + metadata) |
+| `s_avg_rh` | 1448 B | RH arithmetic buffer |
+| `s_avg_ws` | 1448 B | Wind speed arithmetic buffer |
+| `s_avg_wd` | 2888 B | Wind direction unit-vector buffer (720 floats + metadata) |
+| **Total** | **7232 B** | Added to BSS at link time |
+
+---
+
+### Build Output
+
+```
+RAM:   [=         ]  10.7% (used 35 104 bytes from 327 680 bytes)
+Flash: [==        ]  17.3% (used 363 089 bytes from 2 097 152 bytes)
+```
+
+Δ vs Phase 1: +7 576 bytes RAM (dominated by the four sliding-average BSS buffers, 7 232 bytes), +26 024 bytes Flash. Both remain well within bounds.
+
+---
+
+### Hardware Verification
+
+**Date:** 2026-05-03  
+**Board:** WEMOS LOLIN S3 on COM8  
+**Method:** Serial monitor captured at 115200 baud (`--baud 115200 --filter direct`); T5 first poll observed.
+
+#### Serial capture — key T5 output (t=68 s)
+
+```
+[ 68337][I][sensor_poll.cpp:287] task_sensor_poll(): [T5_SEN] [T5] task alive — boot grace expired
+[ 68337][I][sensor_poll.cpp:316] task_sensor_poll(): [T5_SEN] [T5] iter 1 — woke from 60 s delay
+[ 69143][I][sensor_poll.cpp:352] task_sensor_poll(): [T5_SEN] [T5] iter 1 — polling FG6485A
+[ 69652][W][sensor_poll.cpp:379] task_sensor_poll(): [T5_SEN] [T5] T/RH sensor FAULT — two consecutive read failures
+[ 69652][I][sensor_poll.cpp:388] task_sensor_poll(): [T5_SEN] [T5] iter 1 — polling S200
+[ 70163][W][sensor_poll.cpp:409] task_sensor_poll(): [T5_SEN] [T5] Wind sensor FAULT — two consecutive read failures
+[ 70165][I][sensor_poll.cpp:479] task_sensor_poll(): [T5_SEN] T=0°C RH=0% ws=0.0 m/s wd=0° | avg T=0 RH=0 ws=0.0 wd=0° [win T=1 RH=1 W=1]
+```
+
+Both sensors are not physically connected; faults are expected.
+
+#### Timing analysis
+
+| Measurement | Observed | Expected | Result |
+|-------------|----------|----------|--------|
+| Boot grace to iter 1 wakeup | 68 337 ms | 8 000 + 60 000 = 68 000 ms | ✅ (+337 ms scheduler jitter) |
+| FG6485A poll duration (2 attempts × 200 ms + 100 ms retry) | 509 ms (68 337→69 143 start; 69 143→69 652 end) | ≤ 500 ms | ✅ |
+| S200 poll duration (2 attempts × 200 ms + 100 ms retry) | 511 ms (69 652→70 163) | ≤ 500 ms | ✅ |
+| Window size on first sample | `win T=1 RH=1 W=1` | 1 (single sample; 60 s poll, 1 min default avg window) | ✅ |
+
+#### Verification checklist
+
+| Criterion | Result | Evidence |
+|-----------|--------|---------|
+| T5 boots and logs after grace period | ✅ PASS | `[T5_SEN] task alive — boot grace expired` at t=68 s |
+| Iter 1 wakes from configured 60 s delay | ✅ PASS | `iter 1 — woke from 60 s delay` |
+| FG6485A polled twice, fault set on 2× failure | ✅ PASS | `T/RH sensor FAULT` after 509 ms; `EG1_BIT_SENSOR_FAULT_T` set |
+| S200 polled twice, fault set on 2× failure | ✅ PASS | `Wind sensor FAULT` after 511 ms; `EG1_BIT_SENSOR_FAULT_W` set |
+| `sensor_reading_t` built and logged | ✅ PASS | Summary line with raw + avg + window sizes |
+| `xQueueOverwrite(Q6)` called (implicit) | ✅ PASS | No panic; Q6 depth=1 accepts overwrite unconditionally |
+| `log_post(LOG_SENSOR)` called (implicit) | ✅ PASS | No Q3 overflow; T9 stub consumes silently |
+| Window size = 1 on first poll (default 1 min / 60 s) | ✅ PASS | `[win T=1 RH=1 W=1]` |
+| No WDT resets during T5 operation | ✅ PASS | Unbroken T1 tick sequence throughout |
+| No panics or crashes | ✅ PASS | No `Guru Meditation`, `Backtrace`, or `assert` lines |
+| Flash 363 KB within 2 MB app0 partition | ✅ PASS | 17.3% flash usage |
+| RAM 35.1 KB within 320 KB | ✅ PASS | 10.7% RAM usage |
+
+---
+
+### Issues Encountered and Resolved
+
+#### Issue 1 — `ESP_LOGI` silently suppressed in `sensor_poll.cpp`
+
+**Symptom:**  
+T5 task was confirmed alive (handle non-NULL, `eTaskGetState()` cycling between `eBlocked`/`eReady`) but produced no serial output whatsoever. `ESP_LOGI` calls in `sensor_poll.cpp` compiled without warnings but generated no output at runtime. Other source files (main.cpp, data_manager.cpp) produced `ESP_LOGI` output normally with the same `CORE_DEBUG_LEVEL=3` build flag.
+
+**Debugging steps:**
+1. Added `eTaskGetState(task_t5)` diagnostic to T1 heartbeat (main.cpp) — confirmed T5 alive and cycling, ruling out task-creation or scheduling failure.
+2. Checked `esp_log_level_set()` calls — none found anywhere in `firmware/src/`.
+3. Checked all driver headers (`fg6485a.h`, `s200.h`, `modbus_rtu.h`, `pin_config.h`) for `LOG_LOCAL_LEVEL` — none found.
+4. Added `Serial.printf()` alongside `ESP_LOGI()` in a minimal stub — `ESP_LOGI` was suppressed; confirmed compile-time filter, not runtime.
+
+**Root cause:**  
+The original include order in `sensor_poll.cpp` placed `#include <esp_log.h>` **after** all driver and project headers. One or more headers in the transitive include chain (the exact header was not isolated, but `pin_config.h` → Arduino system headers are the likely path) defined `LOG_LOCAL_LEVEL` to a value below `ESP_LOG_INFO` (3). Because `ESP_LOGI` expands to a preprocessor `#if LOG_LOCAL_LEVEL >= ESP_LOG_INFO` guard at the call site, all `ESP_LOGI` calls in the TU compiled to nothing.
+
+**Fix:**  
+Added `#define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE` as the **first** statement in `sensor_poll.cpp`, immediately before `#include <esp_log.h>`. This overrides any value set by preceding headers for the entire translation unit:
+
+```cpp
+// Force INFO-level logging for this TU regardless of what driver headers
+// may set via their own #define LOG_LOCAL_LEVEL.  Must come before the
+// first inclusion of esp_log.h anywhere in this translation unit.
+#define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
+#include <esp_log.h>
+
+#include "sensor_poll.h"
+// ... other includes follow
+```
+
+`ESP_LOGI` output appeared immediately on the next flash. The TAG was also changed from `"sensor_poll"` to `"T5_SEN"` for consistency with the task-naming convention.
+
+**Lessons learned:**  
+Any `.cpp` that includes ESP-IDF driver headers (especially those with transitive Arduino HAL includes) should place `#define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE` and `#include <esp_log.h>` before all other includes. The `CORE_DEBUG_LEVEL=3` build flag sets the default runtime log level but does not prevent compile-time `LOG_LOCAL_LEVEL` gating from eliminating `ESP_LOGI` calls entirely.
+
+---
+
+### Phase 3 → Phase 4 Handover State
+
+| Item | State |
+|------|-------|
+| T1 | Fully implemented and verified |
+| T2 | Fully implemented; IT-01–IT-13 all pass; hardware-verified |
+| T4 | Fully implemented — NVS load, RTC seed, sunrise/sunset, Q6/Q4/TN4 handlers |
+| T5 | **Fully implemented** — Modbus poll loop, sliding averages, fault detection, Q6 overwrite, LOG_SENSOR post |
+| T3, T6–T13 | Stubs |
+| Q6 data flow | T5 → Q6 → T4 (MX2 + MX3 ring + TN1 + TN2) operational |
+| EG1_BIT_SENSOR_FAULT_T/W | Operational — set/cleared by T5 on FG6485A/S200 failures |
+| Sensors (FG6485A, S200) | Not yet wired to hardware; both report FAULT as expected |
+
+**Next phase:** Phase 4 — Safety Monitor (T3). T3 requires live wind data from T4 (via TN1 + MX2), which is now available as soon as the S200 sensor is connected.

@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.5.0] — 2026-05-03
+
+*Phase 3 — Sensor Polling (T5) implemented: Modbus RTU master for FG6485A (T/RH) and S200 (wind), sliding averages for all four channels, edge-triggered fault detection, Q6 overwrite, and LOG_SENSOR posting. Bug fixed: `ESP_LOGI` compile-time suppression caused by `LOG_LOCAL_LEVEL` being overridden by transitive Arduino HAL includes.*
+
+### Added
+- `firmware/src/sensor_poll/sensor_poll.cpp` — full T5 implementation:
+  - 8 s boot grace delay (ensures visibility after USB-CDC re-enumeration)
+  - Poll loop: `dm_get_poll_interval_s()` → `vTaskDelay()` → `dm_cfg_snapshot()` → window recalculation → FG6485A read → S200 read → build `sensor_reading_t` → `xQueueOverwrite(Q6)` → `log_post(LOG_SENSOR)`
+  - Arithmetic circular-sum sliding average for T, RH, wind speed (`avg_ctx_t`); unit-vector (sin/cos) circular-sum sliding average for wind direction (`dir_avg_ctx_t`) — handles 0°/360° wrap via `atan2()`
+  - Window size = `avg_win_x_min × 60 / poll_s`, clamped [1, 360]; context reset (re-warm) on window-size change
+  - One immediate retry per sensor per poll cycle; fault onset after 2nd consecutive failure; fault cleared on first success — both edge-triggered with `xEventGroupSetBits/ClearBits(EG1)` and `log_post(LOG_ALARM)`
+  - ~7.2 KB BSS for four averaging buffers (360-sample depth × 4 channels)
+- `firmware/src/sensor_poll/sensor_poll.h` — full Phase 3 Doxygen documentation
+
+### Fixed
+- `firmware/src/sensor_poll/sensor_poll.cpp` — `ESP_LOGI` calls were silently compiled away due to `LOG_LOCAL_LEVEL` being overridden below `ESP_LOG_INFO` by a transitive Arduino HAL include reached through the driver headers. Fix: `#define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE` placed before `#include <esp_log.h>` as the first two lines of the translation unit. TAG changed from `"sensor_poll"` to `"T5_SEN"`.
+
+### Changed
+- `firmware/src/main.cpp` — T1 heartbeat reverted to clean form after Phase 3 debugging: removed `eTaskGetState(task_t5)` and `esp_get_free_heap_size()` diagnostic fields that were added temporarily to verify T5 was scheduled
+- `firmware/firmwareImplementationResults.md` — Phase 3 section added (implementation design, timing analysis, hardware verification checklist, Issue 1 root-cause and fix)
+
+### Verified on hardware
+- T5 first poll at t=68 s: boot grace (8 s) + poll interval (60 s) + scheduler jitter (+337 ms)
+- FG6485A poll: 509 ms (2 × 200 ms timeout + 100 ms retry), fault set correctly
+- S200 poll: 511 ms (2 × 200 ms timeout + 100 ms retry), fault set correctly
+- `sensor_reading_t` summary log: `T=0°C RH=0% ws=0.0 m/s wd=0° | avg T=0 RH=0 ws=0.0 wd=0° [win T=1 RH=1 W=1]`
+- Q6 overwrite accepted; LOG_SENSOR posted without Q3 overflow
+- No WDT resets, panics, or crashes during verification run
+
+---
+
 ## [1.4.0] — 2026-05-03
 
 *Phase 1 — Data Foundation (T4) implemented: central NVS config store, sensor ring buffers, RTC read/write, sunrise/sunset, Q4/Q6/TN4 handling, and thread-safe getter API for T1/T2/T3/T6.*

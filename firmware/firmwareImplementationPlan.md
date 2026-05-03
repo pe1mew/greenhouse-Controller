@@ -138,7 +138,7 @@ Verification: Logic analyser — never simultaneous OPEN+CLOSE on same channel; 
 
 ---
 
-### Phase 3 — Sensor Polling (T5)
+### Phase 3 — Sensor Polling (T5) ✅ done
 **Goal:** Live T/RH and wind data flowing into T4.
 
 Files: `sensor_poll.h/.cpp`
@@ -147,13 +147,15 @@ Implementation:
 - Poll loop: wait `poll_interval_ms` (read from T4 MX4)
 - Read FG6485A via `fg6485a_read_measurements(FG6485A_ADDR, &meas)` — retry once on failure; on second failure set `EG1_BIT_SENSOR_FAULT_T`, post fault log to Q3
 - Read S200 via `s200_read_measurements(S200_ADDR, &wind)` — same retry/fault logic for `EG1_BIT_SENSOR_FAULT_W`
-- Compute sliding average: circular sum buffer, size = `avg_window_min * 60 / poll_interval`, clamped 1–360
+- Compute sliding average: circular sum buffer (arithmetic) for T/RH/wind-speed; unit-vector (sin/cos) buffer for wind direction; size = `avg_window_min × 60 / poll_interval`, clamped 1–360
 - Post `sensor_reading_t` to Q6 via `xQueueOverwrite()` (depth-1 queue, latest only)
 - **Do not use** `fg6485a_task()` or `s200_task()` from LIB-10/11 — T5 is the sole Modbus master
 
 Drivers used: LIB-6 (modbus_rtu), LIB-10 (fg6485a_read_measurements), LIB-11 (s200_read_measurements)
 
-Verification: Serial log shows readings at configured interval; unplug sensor → fault flag within one cycle; replug → clears on next success.
+**Implementation note:** `#define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE` must be the first line in `sensor_poll.cpp` (before all includes) to prevent transitive Arduino HAL headers from silently gating all `ESP_LOGI` calls at compile time. See `firmwareImplementationResults.md` Phase 3 Issue 1.
+
+Verification: Serial log shows readings at configured interval; sensors not yet connected → fault flags set correctly. Full clearance test deferred to hardware bring-up (sensor wiring).
 
 ---
 
