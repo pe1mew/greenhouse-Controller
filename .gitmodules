@@ -1,3 +1,6 @@
 [submodule "hardware/pcb/my-KiCad-library"]
 	path = hardware/pcb/my-KiCad-library
 	url = git@github.com:pe1mew/my-KiCad-library.git
+[submodule "hardware/ModBusRS485CableJunction/pcb/my-KiCad-library"]
+	path = hardware/ModBusRS485CableJunction/pcb/my-KiCad-library
+	url = git@github.com:pe1mew/my-KiCad-library.git

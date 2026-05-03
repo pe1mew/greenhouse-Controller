@@ -138,10 +138,11 @@ static void task_watchdog_heartbeat(void *pvParameters)
         /* Toggle heartbeat LED. */
         gpio_toggle(PIN_HB_LED);
 
-        /* Log a heartbeat line every 10 ticks (5 s) — Phase 0 verification only. */
+        /* Log a heartbeat line every 10 ticks (5 s). */
         if (tick_count % 10 == 0) {
             ESP_LOGI(TAG, "T1 tick %lu  uptime %lu s",
-                     (unsigned long)tick_count, (unsigned long)(millis() / 1000));
+                     (unsigned long)tick_count,
+                     (unsigned long)(millis() / 1000));
         }
         tick_count++;
 
