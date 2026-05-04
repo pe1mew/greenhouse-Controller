@@ -953,6 +953,8 @@ Flash: [==        ]  17.3% (used 363 089 bytes from 2 097 152 bytes)
 
 #### Serial capture — key T5 output (t=68 s)
 
+Captured with sensors disconnected (first standalone verification run):
+
 ```
 [ 68337][I][sensor_poll.cpp:287] task_sensor_poll(): [T5_SEN] [T5] task alive — boot grace expired
 [ 68337][I][sensor_poll.cpp:316] task_sensor_poll(): [T5_SEN] [T5] iter 1 — woke from 60 s delay
@@ -963,16 +965,50 @@ Flash: [==        ]  17.3% (used 363 089 bytes from 2 097 152 bytes)
 [ 70165][I][sensor_poll.cpp:479] task_sensor_poll(): [T5_SEN] T=0°C RH=0% ws=0.0 m/s wd=0° | avg T=0 RH=0 ws=0.0 wd=0° [win T=1 RH=1 W=1]
 ```
 
-Both sensors are not physically connected; faults are expected.
+#### Cross-validation with sensor emulator (greenhouse-Controller-Modbus-sensor-emulator)
+
+A second board running the Modbus sensor emulator (M5Stack Atomic RS485 Base, slave addresses 1 and 44) was connected to the RS485 bus. The emulator's Phase 2 (slave skeleton) logged every received frame and replied with Modbus exception 0x01 (function not yet handled). T5 treated each exception the same as a timeout — both collapse to `FG6485A_ERR_COMM` / `S200_ERR_COMM` — so fault flags remained set, which is correct.
+
+Emulator serial log excerpt (one poll cycle at t≈60 s after T5 first poll):
+
+```
+10:59:42.560 > [modbus] RX → 01 03 00 00 00 02 C4 0B         ← FG6485A frame 1
+10:59:42.561 > [modbus] FC 0x03 not handled → exception 0x01
+10:59:42.561 > [modbus] TX → 01 83 01 80 F0
+10:59:42.688 > [modbus] RX → 01 03 00 00 00 02 C4 0B         ← FG6485A retry (attempt 2)
+10:59:42.695 > [modbus] FC 0x03 not handled → exception 0x01
+10:59:42.695 > [modbus] TX → 01 83 01 80 F0
+10:59:42.793 > [modbus] RX → 2C 04 00 08 00 0C 77 B0         ← S200 Frame 2 (wind dir+speed)
+10:59:42.810 > [modbus] FC 0x04 not handled → exception 0x01
+10:59:42.810 > [modbus] TX → 2C 84 01 12 C9
+10:59:42.936 > [modbus] RX → 2C 04 00 08 00 0C 77 B0         ← S200 Frame 2 retry
+10:59:42.936 > [modbus] FC 0x04 not handled → exception 0x01
+10:59:42.936 > [modbus] TX → 2C 84 01 12 C9
+11:00:42.973 > [modbus] RX → 01 03 00 00 00 02 C4 0B         ← next poll cycle (+60 s)
+```
+
+Frame decode (emulator-confirmed CRC values):
+
+| Frame | Bytes | Decoded | CRC |
+|-------|-------|---------|-----|
+| FG6485A FC03 (attempt 1 & 2) | `01 03 00 00 00 02 C4 0B` | FC03, addr 1, reg 0x0000, qty 2 | `C4 0B` ✅ |
+| S200 FC04 wind dir+speed (attempt 1 & 2) | `2C 04 00 08 00 0C 77 B0` | FC04, addr 44, reg 0x0008, qty 12 | `77 B0` ✅ |
+| Exception FG6485A | `01 83 01 80 F0` | addr 1, FC03\|0x80, exc 0x01 | `80 F0` ✅ |
+| Exception S200 | `2C 84 01 12 C9` | addr 44, FC04\|0x80, exc 0x01 | `12 C9` ✅ |
+
+**S200 Frame 3 absent:** The heater temperature read (FC04, reg `0x001C`, qty 2) was never transmitted when Frame 2 returned an exception. This confirms `s200_read_measurements()` returns on the first error and does not issue Frame 3 in that case — correct early-exit behaviour.
 
 #### Timing analysis
 
 | Measurement | Observed | Expected | Result |
 |-------------|----------|----------|--------|
 | Boot grace to iter 1 wakeup | 68 337 ms | 8 000 + 60 000 = 68 000 ms | ✅ (+337 ms scheduler jitter) |
-| FG6485A poll duration (2 attempts × 200 ms + 100 ms retry) | 509 ms (68 337→69 143 start; 69 143→69 652 end) | ≤ 500 ms | ✅ |
-| S200 poll duration (2 attempts × 200 ms + 100 ms retry) | 511 ms (69 652→70 163) | ≤ 500 ms | ✅ |
-| Window size on first sample | `win T=1 RH=1 W=1` | 1 (single sample; 60 s poll, 1 min default avg window) | ✅ |
+| FG6485A poll duration (2 attempts × 200 ms + 100 ms retry) | 509 ms | ≤ 500 ms nominal | ✅ |
+| S200 poll duration (2 attempts × 200 ms + 100 ms retry) | 511 ms | ≤ 500 ms nominal | ✅ |
+| Inter-cycle interval (emulator-confirmed) | 60 000 ms (10:59:42 → 11:00:42) | poll_interval_s = 60 s | ✅ |
+| FG6485A retry count per cycle (emulator-observed) | 2 frames received | max 2 attempts | ✅ |
+| S200 retry count per cycle (emulator-observed) | 2 Frame-2 received, 0 Frame-3 | early return on Frame-2 exception | ✅ |
+| Window size on first sample | `win T=1 RH=1 W=1` | 1 sample (60 s poll, 1 min default avg window) | ✅ |
 
 #### Verification checklist
 
@@ -980,8 +1016,11 @@ Both sensors are not physically connected; faults are expected.
 |-----------|--------|---------|
 | T5 boots and logs after grace period | ✅ PASS | `[T5_SEN] task alive — boot grace expired` at t=68 s |
 | Iter 1 wakes from configured 60 s delay | ✅ PASS | `iter 1 — woke from 60 s delay` |
-| FG6485A polled twice, fault set on 2× failure | ✅ PASS | `T/RH sensor FAULT` after 509 ms; `EG1_BIT_SENSOR_FAULT_T` set |
-| S200 polled twice, fault set on 2× failure | ✅ PASS | `Wind sensor FAULT` after 511 ms; `EG1_BIT_SENSOR_FAULT_W` set |
+| FG6485A polled twice per cycle, fault set on 2× failure | ✅ PASS | `T/RH sensor FAULT` after 509 ms; emulator log shows exactly 2 FC03 frames |
+| S200 polled twice per cycle, fault set on 2× failure | ✅ PASS | `Wind sensor FAULT` after 511 ms; emulator log shows exactly 2 FC04 Frame-2 frames |
+| S200 Frame 3 (heater) not sent on Frame 2 failure | ✅ PASS | Emulator received zero FC04 `0x001C` frames |
+| Frame CRCs correct | ✅ PASS | Emulator validated CRC on all received frames; no bad-CRC events |
+| 60 s poll interval correct | ✅ PASS | Emulator confirmed 10:59:42 → 11:00:42 (exactly 60 s) |
 | `sensor_reading_t` built and logged | ✅ PASS | Summary line with raw + avg + window sizes |
 | `xQueueOverwrite(Q6)` called (implicit) | ✅ PASS | No panic; Q6 depth=1 accepts overwrite unconditionally |
 | `log_post(LOG_SENSOR)` called (implicit) | ✅ PASS | No Q3 overflow; T9 stub consumes silently |

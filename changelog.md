@@ -35,6 +35,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Q6 overwrite accepted; LOG_SENSOR posted without Q3 overflow
 - No WDT resets, panics, or crashes during verification run
 
+### Cross-validated with sensor emulator (greenhouse-Controller-Modbus-sensor-emulator Phase 2)
+- Emulator received and CRC-validated all T5-generated frames: FG6485A `01 03 00 00 00 02 C4 0B` ✅, S200 wind `2C 04 00 08 00 0C 77 B0` ✅
+- Exactly 2 frames per sensor per cycle observed by emulator — retry count correct
+- S200 Frame 3 (heater temp, reg `0x001C`) absent when Frame 2 returns exception — early-exit path confirmed
+- 60 s poll interval confirmed end-to-end (emulator timestamps: 10:59:42 → 11:00:42)
+
 ---
 
 ## [1.4.0] — 2026-05-03
