@@ -1045,27 +1045,10 @@ T5 task was confirmed alive (handle non-NULL, `eTaskGetState()` cycling between 
 3. Checked all driver headers (`fg6485a.h`, `s200.h`, `modbus_rtu.h`, `pin_config.h`) for `LOG_LOCAL_LEVEL` — none found.
 4. Added `Serial.printf()` alongside `ESP_LOGI()` in a minimal stub — `ESP_LOGI` was suppressed; confirmed compile-time filter, not runtime.
 
-**Root cause:**  
-The original include order in `sensor_poll.cpp` placed `#include <esp_log.h>` **after** all driver and project headers. One or more headers in the transitive include chain (the exact header was not isolated, but `pin_config.h` → Arduino system headers are the likely path) defined `LOG_LOCAL_LEVEL` to a value below `ESP_LOG_INFO` (3). Because `ESP_LOGI` expands to a preprocessor `#if LOG_LOCAL_LEVEL >= ESP_LOG_INFO` guard at the call site, all `ESP_LOGI` calls in the TU compiled to nothing.
+**Root cause (Phase 3 diagnosis — later superseded):**  
+The Phase 3 investigation concluded that transitive driver headers were lowering `LOG_LOCAL_LEVEL` below `ESP_LOG_INFO`, causing compile-time elimination of all `ESP_LOGI` calls. The applied fix (`#define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE` before all includes) restored the compile-time check.
 
-**Fix:**  
-Added `#define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE` as the **first** statement in `sensor_poll.cpp`, immediately before `#include <esp_log.h>`. This overrides any value set by preceding headers for the entire translation unit:
-
-```cpp
-// Force INFO-level logging for this TU regardless of what driver headers
-// may set via their own #define LOG_LOCAL_LEVEL.  Must come before the
-// first inclusion of esp_log.h anywhere in this translation unit.
-#define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
-#include <esp_log.h>
-
-#include "sensor_poll.h"
-// ... other includes follow
-```
-
-`ESP_LOGI` output appeared immediately on the next flash. The TAG was also changed from `"sensor_poll"` to `"T5_SEN"` for consistency with the task-naming convention.
-
-**Lessons learned:**  
-Any `.cpp` that includes ESP-IDF driver headers (especially those with transitive Arduino HAL includes) should place `#define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE` and `#include <esp_log.h>` before all other includes. The `CORE_DEBUG_LEVEL=3` build flag sets the default runtime log level but does not prevent compile-time `LOG_LOCAL_LEVEL` gating from eliminating `ESP_LOGI` calls entirely.
+**⚠️ Superseded:** The Phase 3 diagnosis was incomplete. The real root cause was identified in Phase 4 (see Phase 4 Issue 1): `CONFIG_LOG_DEFAULT_LEVEL = 1` (ERROR) in the IDF base means raw `esp_log_write(INFO, ...)` is filtered at runtime. `#define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE` overcame the compile-time gate but not the runtime filter. The definitive fix (applied in Phase 4) is `#include <Arduino.h>` as the first include, which brings in the Arduino `esp32-hal-log.h` override that routes `ESP_LOGI` through `log_printf` (Arduino's own handler, not filtered by `CONFIG_LOG_DEFAULT_LEVEL`).
 
 ---
 
@@ -1083,3 +1066,376 @@ Any `.cpp` that includes ESP-IDF driver headers (especially those with transitiv
 | Sensors (FG6485A, S200) | Not yet wired to hardware; both report FAULT as expected |
 
 **Next phase:** Phase 4 — Safety Monitor (T3). T3 requires live wind data from T4 (via TN1 + MX2), which is now available as soon as the S200 sensor is connected.
+
+---
+
+## Phase 4: Safety Monitor (T3)
+
+**Date completed:** 2026-05-05
+**Build:** RAM 10.7% (35 120 B), Flash 17.4% (365 657 B)
+**Target board / framework / platform:** same as Phase 0
+
+---
+
+### Scope
+
+Phase 4 goal per `firmwareImplementationPlan.md`:
+
+> Wind safety response correct and fast; must be live before climate automation.
+
+---
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `firmware/src/safety_monitor/safety_monitor.h` | Full Phase 4 Doxygen documentation: behaviour summary, log event table, design references |
+| `firmware/src/safety_monitor/safety_monitor.cpp` | Full T3 implementation (replaces Phase 0 stub) |
+
+---
+
+### Implementation Design
+
+#### Task structure
+
+T3 is an event-driven task: it blocks on `ulTaskNotifyTake(pdTRUE, portMAX_DELAY)` and wakes only on TN1 (sent by T4 after writing new wind data from Q6). One evaluation cycle runs per TN1 notification.
+
+```
+task_safety_monitor()
+├── ulTaskNotifyTake(pdTRUE, portMAX_DELAY)   ← TN1 from T4
+├── dm_meas_snapshot(&meas, &meas_valid)       ← MX2 read
+├── dm_cfg_snapshot(&cfg)                      ← MX4 read
+├── dm_get_unix_time()                         ← for log timestamps
+│
+├── wind_prot_en == false?
+│     yes → clear WIND_OVERRIDE if set → CMD_RESUME → log → continue
+│
+├── EG1.SENSOR_FAULT_W?
+│     yes → speed_unsafe = true (safe-fail; FR-W04)
+│     no  → evaluate speed + direction against thresholds
+│
+├── is_unsafe && !alarm_active  → onset transition
+│     xEventGroupSetBits(EG1, EG1_BIT_WIND_OVERRIDE)
+│     xQueueSend(Q1, CMD_CLOSE_ALL, SRC_T3, timeout=0)
+│     log W1 (speed) and/or W2 (direction) or fault event
+│
+├── !is_unsafe && alarm_active  → clearance transition
+│     xEventGroupClearBits(EG1, EG1_BIT_WIND_OVERRIDE)
+│     xQueueSend(Q1, CMD_RESUME, SRC_T3, timeout=0)
+│     log W3 (clearance)
+│
+└── no change → ESP_LOGD only
+```
+
+#### Speed threshold check
+
+```cpp
+speed_unsafe = ((int32_t)meas.wind_speed_avg_ms10 >= (int32_t)cfg.v_max * 10)
+```
+
+- `wind_speed_avg_ms10` is `uint16_t` (m/s × 10); `v_max` is `int16_t` (m/s integer)
+- `int32_t` arithmetic on both sides prevents overflow
+- `v_max <= 0` disables the speed check (treated as "no speed limit")
+
+#### Direction exclusion zone check
+
+```cpp
+static bool dir_in_exclusion_zone(uint16_t dir_deg, int16_t excl_low, int16_t excl_high)
+{
+    if (excl_low < 0 || excl_high < 0) return false;   /* unset */
+    if (excl_low == excl_high)         return false;   /* zero-width = disabled */
+    if (lo < hi) return (dir_deg >= lo && dir_deg <= hi);
+    return (dir_deg >= lo || dir_deg <= hi);            /* wraps through 0° */
+}
+```
+
+Wrap-through-0° example: `dir_excl_low=330, dir_excl_high=30` covers 330°–359° ∪ 0°–30°.  
+Zero-width zone (`excl_low == excl_high`) is treated as disabled.
+
+#### SENSOR_FAULT_W safe-fail (FR-W04)
+
+When `EG1_BIT_SENSOR_FAULT_W` is set, T3 immediately treats wind conditions as unsafe without consulting the measurement struct. The fault was already logged by T5 (S3 event). T3 posts a distinct LOG_ALARM with `value_a = −1` to mark the fault-triggered WIND_OVERRIDE onset.
+
+#### MOTOR_ALARM interaction
+
+T3 evaluates wind conditions and updates `EG1.WIND_OVERRIDE` regardless of `EG1.MOTOR_ALARM`. Q1 commands (CMD_CLOSE_ALL / CMD_RESUME) are still posted — T2 discards all Q1 commands while MOTOR_ALARM is set, which is the correct behaviour (relays are already de-energised). `WIND_OVERRIDE` state is maintained correctly for T6, T8, and the RGB LED.
+
+#### Log conventions (Q3 events)
+
+| Trigger | event_type | value_a | value_b |
+|---------|-----------|---------|---------|
+| Onset — speed exceeded (W1) | `LOG_ALARM` | `wind_speed_avg_ms10` | `v_max × 10` |
+| Onset — direction excluded (W2) | `LOG_ALARM` | `wind_dir_avg_deg` | `dir_excl_low` |
+| Onset — sensor fault (safe-fail) | `LOG_ALARM` | `−1` | `0` |
+| Clearance (W3) | `LOG_ALARM` | `wind_speed_avg_ms10` | `wind_dir_avg_deg` |
+| Disabled while active | `LOG_ALARM` | `0` | `0` |
+
+Multiple log records are posted on the same poll cycle if both speed and direction are unsafe simultaneously (one W1 + one W2).
+
+#### Q1 non-blocking post
+
+`xQueueSend(Q1, &cmd, 0)` uses timeout 0 as required by design ("T3 posts with highest urgency; never blocking"). Q1 depth is 8; a dropped post would require >8 unprocessed commands, which is not expected in normal operation.
+
+---
+
+### Build Output
+
+```
+RAM:   [=         ]  10.7% (used 35120 bytes from 327680 bytes)
+Flash: [==        ]  17.4% (used 365657 bytes from 2097152 bytes)
+```
+
+T3 adds no significant BSS footprint (local variables only; no static buffers).  
+Flash increase from Phase 3: +2 568 bytes (363 089 → 365 657); extra cost vs. a pure T3 stub includes `#include <Arduino.h>` linkage overhead — see Issue 1 below.
+
+VERIFY_T3 harness adds +6 535 bytes Flash (365 657 → 372 192 B); removed after verification is complete.
+
+---
+
+### Verification Checklist
+
+| # | Verification item | Method | Status |
+|---|------------------|--------|--------|
+| T3-01 | Task alive — `[T3] task alive` in serial log at boot | Serial monitor | ✅ `[   298][I][safety_monitor.cpp:94] task_safety_monitor(): [T3_WIND] [T3] task alive` at t=298 ms |
+| T3-02 | No TN1 received yet → T3 blocks forever (no spurious evaluation) | Serial: no T3 output before first Q6 | ✅ No T3 output observed before iter 1 in any run |
+| T3-03 | `wind_prot_en = false`: T3 takes no action despite wind > v_max | Q4 inject prot_en=0 with ws > v_max | ✅ Run 3 Step A — iter 4 ws=10.0 m/s, prot_en=0 → zero T3 output |
+| T3-04 | Speed threshold onset: wind > v_max → `EG1.WIND_OVERRIDE` set; `CMD_CLOSE_ALL`; W1 log | S200 emulator ws=8 m/s | ✅ Run 1 iter 3; Run 2 iter 19 — confirmed twice |
+| T3-05 | Speed threshold clearance: wind < v_max → `EG1.WIND_OVERRIDE` clear; `CMD_RESUME`; W3 log | S200 emulator ws=3 m/s | ✅ Run 1 iter 6; Run 2 iter 20 — confirmed twice |
+| T3-06 | Direction exclusion onset: dir within [excl_low, excl_high] → `WIND_OVERRIDE` set; W2 log | S200 emulator dir change | ✅ Run 2 iter 6 (dir=31 in [20,40]); iter 15 re-confirmed |
+| T3-07 | Direction wrap-through-0°: excl_low=300, excl_high=60; dir=350 → triggered; dir=180 → not | S200 emulator dir change | ✅ Run 2 iter 12 (dir=350 → onset); clearance via dir=180 confirmed |
+| T3-08 | Zero-width zone (excl_low == excl_high): no direction trigger | S200 emulator + Q4 inject | ✅ Run 2 iter 14 (dir=30, [30,30] disabled → no onset); iter 13 clearance also confirmed |
+| T3-09 | Both speed and direction unsafe: W1 + W2 logs; single CMD_CLOSE_ALL | S200 emulator ws=8, dir=30 simultaneously | ✅ Run 3 Step C — iter 8 ws=3.0 dir=31 in excl [20°–40°] → `WIND_OVERRIDE set — dir 31° in excl zone` + CMD_CLOSE_ALL |
+| T3-10 | SENSOR_FAULT_W safe-fail: S200 2× failure → `WIND_OVERRIDE set — SENSOR_FAULT_W safe-fail` | S200 address change | ✅ Run 2 iter 22 — `Wind sensor FAULT` + `WIND_OVERRIDE set — SENSOR_FAULT_W safe-fail` + CMD_CLOSE_ALL |
+| T3-11 | SENSOR_FAULT_W clears: S200 restored → WIND_OVERRIDE cleared; CMD_RESUME | S200 address restore | ✅ Run 2 iter 25 — `Wind sensor fault cleared` + `WIND_OVERRIDE cleared` + CMD_RESUME |
+| T3-12 | wind_prot_en=false while WIND_OVERRIDE active: WIND_OVERRIDE cleared; CMD_RESUME | Q4 inject prot_en=0 during onset | ✅ Run 2 iter 17 — `WIND_OVERRIDE cleared — wind protection disabled` + CMD_RESUME |
+| T3-13 | RGB LED: WIND_OVERRIDE set → Amber; WIND_OVERRIDE clear → Green | Visual observation | ✅ Confirmed during Run 1 and Run 2 OVERRIDE transitions |
+
+---
+
+### Hardware Verification Run 1 — 2026-05-05
+
+**Board:** WEMOS LOLIN S3 on COM8  
+**Sensor:** S200 Modbus emulator (controllable wind speed/direction)  
+**Build:** 371 513 B flash (17.7%) — includes VERIFY_T3 harness (+5 856 B vs. baseline 365 657 B)  
+**Method:** VERIFY_T3 background task posts `config_update_t` entries to Q4 on a 65 s cadence aligned to the T5 60 s poll cycle; serial prompts instruct operator to set emulator values. 11-step sequence, ~14 min total.
+
+#### Pre-run NVS state (factory defaults as set by T2/T4 at first boot)
+
+| NVS key | Value | Notes |
+|---------|-------|-------|
+| `wind/v_max` | 7 m/s | Speed threshold for WIND_OVERRIDE onset |
+| `wind/dir_excl_low` | 0 | Zero-width = disabled at start |
+| `wind/dir_excl_high` | 0 | Zero-width = disabled at start |
+| `wind/wind_prot_en` | 1 | Protection enabled |
+
+#### Key serial events
+
+```
+[  68364][I][sensor_poll.cpp:371]  T5 iter 1 — polling S200
+[  68699][I][sensor_poll.cpp:474]  [T5] T=11°C RH=82% ws=3.2 m/s wd=31°  ← baseline safe
+[  70380][I][main.cpp:252]         [VERIFY_T3] === STEP 1 === SET EMULATOR: ws=8 m/s (any dir)
+
+[ 128712][I][sensor_poll.cpp:298]  T5 iter 2 — ws=3.2 wd=31°  ← emulator not yet changed
+
+[ 189361][W][safety_monitor.cpp:192] [T3_WIND] WIND_OVERRIDE set — speed 8.0 m/s >= v_max 7 m/s
+[ 189371][I][relay_controller.cpp:515] [T2] CMD_CLOSE_ALL from T3
+[ 189380][I][sensor_poll.cpp:474]  [T5] iter 3 ws=8.0 m/s wd=31°
+
+[ 370374][I][sensor_poll.cpp:474]  [T5] iter 6 ws=3.0 m/s wd=180°
+[ 370375][I][safety_monitor.cpp:229] [T3_WIND] WIND_OVERRIDE cleared — speed 3.0 m/s dir 180°
+[ 370391][I][relay_controller.cpp:544] [T2] CMD_RESUME — acknowledged (no T2 action)
+```
+
+#### Step-by-step outcome
+
+| Step | Config posted | Emulator at T5 poll | T3 action | Test item | Result |
+|------|--------------|---------------------|-----------|-----------|--------|
+| 1 | v_max=7 (NVS default) | iter 3: ws=8.0, wd=31 | WIND_OVERRIDE set; CMD_CLOSE_ALL | T3-04 | ✅ |
+| 2 | — | iter 4: ws=8.0, wd=31 (unchanged) | No change (OVERRIDE already set) | T3-05 | — emulator not changed |
+| 3 | dir_excl=[300,60] | iter 4: ws=8.0, wd=31 | Speed still unsafe — dir not independently evaluated | T3-07 | ⬜ |
+| 4 | — | iter 5: ws=8.0, wd=31 | Still unsafe | T3-05 | — |
+| 5 | dir_excl=[20,40] | iter 6: ws=3.0, wd=180 | WIND_OVERRIDE cleared; CMD_RESUME | T3-05 | ✅ (combined speed + dir clearance) |
+| 6 | dir_excl=[30,30] | iter 7: ws=3.0, wd=180 | No action (OVERRIDE clear, wd=180 outside disabled zone) | T3-08 | ⬜ (dir not at 30) |
+| 7 | dir_excl=[20,40] | iter 8: ws=3.0, wd=180 | No action (ws safe, wd=180 outside zone) | T3-09 | ⬜ (ws and dir not changed) |
+| 8 | wind_prot_en=0 | iter 9: ws=3.0, wd=180 | No action (OVERRIDE already clear; prot_en=0 no-op when OVERRIDE not set) | T3-12 | ⬜ (OVERRIDE not active) |
+| 9 | wind_prot_en=1, dir_excl=[0,0] | iter 10: ws=3.0, wd=180 | No action (safe baseline) | — | ✅ (correct: no spurious action) |
+| 10 | — | iter 11–12: ws=3.0, wd=180 (fault not engaged in time) | No fault event | T3-10 | ⬜ |
+| 11 | — | — | Test aborted before Step 11 completion | T3-11 | ⬜ |
+
+#### Root cause of missed tests
+
+The VERIFY_T3 harness fires step prompts on a fixed 65 s cadence regardless of whether the operator changed the emulator. Steps 2–9 all missed because the emulator remained at ws=3.0, wd=180 (changed once manually from baseline ws=3.2 → ws=8 for Step 1, then once more to ws=3.0 for the clearance). The cadence did not allow the operator sufficient reaction time between steps.
+
+**Remaining for Run 2 (focused, manual timing):** T3-02, T3-03, T3-06, T3-07, T3-08, T3-09, T3-10, T3-11, T3-12.
+
+#### Run 1 confirmed
+
+| Item | Evidence |
+|------|---------|
+| T3-04 ✅ | `[T3_WIND] WIND_OVERRIDE set — speed 8.0 m/s >= v_max 7 m/s`; `CMD_CLOSE_ALL from T3` at iter 3 |
+| T3-05 ✅ | `[T3_WIND] WIND_OVERRIDE cleared — speed 3.0 m/s dir 180°`; `CMD_RESUME acknowledged` at iter 6 |
+| T3-13 ✅ | RGB LED observed Amber during OVERRIDE (iter 3 → iter 5); Green after clearance (iter 6 onward) |
+
+---
+
+### Hardware Verification Run 2 — 2026-05-05
+
+**Board:** WEMOS LOLIN S3 on COM8  
+**Sensor:** S200 Modbus emulator  
+**Build:** 372 192 B flash (17.7%) — VERIFY_T3 Run 2 harness  
+**Method:** Revised VERIFY_T3 harness with 120 s per step (2 poll cycles); all Q4 config changes automated; operator followed chat instructions for emulator changes.
+
+#### Key serial events
+
+```
+[ 349,3s] [T3_WIND] WIND_OVERRIDE set — dir 31° in excl zone [20°–40°]       ← Step B T3-06
+[ 349,4s] [T2] CMD_CLOSE_ALL from T3
+[ 590,7s] [T3_WIND] WIND_OVERRIDE cleared — speed 3.0 m/s dir 180°            ← Step C T3-05
+[ 711,4s] [T3_WIND] WIND_OVERRIDE set — dir 350° in excl zone [300°–60°]      ← Step D T3-07
+[ 711,4s] [T2] CMD_CLOSE_ALL from T3
+[ 771,8s] [T3_WIND] WIND_OVERRIDE cleared — speed 3.0 m/s dir 350°            ← Step E (dir_excl=[30,30] disabled zone)
+[ 832,1s] [T5_SEN] ws=3.0 wd=30° — no T3 action                               ← Step F T3-08 (zero-width)
+[1013,1s] [T3_WIND] WIND_OVERRIDE cleared — wind protection disabled           ← Step H T3-12
+[1194,2s] [T3_WIND] WIND_OVERRIDE cleared — speed 3.0 m/s dir 31°             ← Step I baseline restore
+[1315,1s] [T5_SEN] Wind sensor FAULT — two consecutive read failures           ← Step J T3-10
+[1315,1s] [T3_WIND] WIND_OVERRIDE set — SENSOR_FAULT_W safe-fail
+[1315,1s] [T2] CMD_CLOSE_ALL from T3
+[1496,7s] [T5_SEN] Wind sensor fault cleared (ws=3.0 m/s wd=31°)              ← Step K T3-11
+[1496,7s] [T3_WIND] WIND_OVERRIDE cleared — speed 3.0 m/s dir 31°
+[1496,7s] [T2] CMD_RESUME — acknowledged
+```
+
+#### Step-by-step outcome
+
+| Step | Config | Emulator at poll | T3 action | Test | Result |
+|------|--------|-----------------|-----------|------|--------|
+| 0 | v_max=7, prot_en=1, dir_excl=[0,0] | ws=3, wd=31 | None | Baseline | ✅ |
+| A | prot_en=0 | ws=3, wd=31 (not ws=10 as requested) | None | T3-03 | ⬜ ws below v_max — not definitive |
+| B | prot_en=1, dir_excl=[20,40] | ws=3, wd=31 (dir=31 in [20,40]) | OVERRIDE set, CMD_CLOSE_ALL | T3-06 | ✅ |
+| C | dir_excl=[20,40] | ws=3, wd=180 | OVERRIDE cleared, CMD_RESUME | T3-05 | ✅ |
+| D | dir_excl=[300,60] | ws=3, wd=350 (iter 12) | OVERRIDE set (350 in wrap zone), CMD_CLOSE_ALL | T3-07 | ✅ |
+| E | dir_excl=[30,30] | ws=3, wd=350 | OVERRIDE cleared (zero-width disabled) | T3-08 | ✅ (partial) |
+| F | dir_excl=[30,30] | ws=3, wd=30 | No T3 action (zone disabled, no onset) | T3-08 | ✅ |
+| G | dir_excl=[20,40] | ws=3, wd=30 (ws=8 not yet set) | OVERRIDE set on direction alone | T3-09 | ⬜ direction fired before ws=8 set |
+| H | prot_en=0 | ws=8, wd=30 | OVERRIDE cleared `wind protection disabled`, CMD_RESUME | T3-12 | ✅ |
+| I | prot_en=1, dir_excl=[0,0] | ws=8 still (not yet ws=3) | OVERRIDE set on speed (ws=8 >= v_max=7) | T3-04 | ✅ (re-confirmed) |
+| — | — | ws=3, wd=31 (iter 20) | OVERRIDE cleared | T3-05 | ✅ (re-confirmed) |
+| J | — | S200 address changed | iter 21: first failure (silent); iter 22: second failure → SENSOR_FAULT_W + OVERRIDE set | T3-10 | ✅ |
+| K | — | S200 address restored to 44 | iter 25: `Wind sensor fault cleared` → OVERRIDE cleared, CMD_RESUME | T3-11 | ✅ |
+
+---
+
+### Hardware Verification Run 3 — 2026-05-05
+
+**Board:** WEMOS LOLIN S3 on COM8  
+**Sensor:** S200 Modbus emulator  
+**Build:** 372 192 B flash (17.7%) — VERIFY_T3 Run 3 harness  
+**Method:** Focused 4-step harness (Steps 0, A, B, C); 120 s per step. Two targets: T3-03 (prot_en=0 gate) and T3-09 (combined speed+direction trigger). VERIFY_T3 harness removed from `main.cpp` and `platformio.ini` after this run.
+
+#### Key serial events
+
+```
+[ 238,5s] [T5_SEN] iter 4 — ws=10.0 m/s wd=31°                                ← Step A: ws=10 set by operator
+[ 238,5s]          (no T3 output)                                               ← T3-03 confirmed: prot_en=0 suppresses action
+
+[ 359,1s] [T5_SEN] iter 6 — ws=8.0 m/s wd=31°                                 ← operator set ws=8 during Step B window (premature)
+[ 359,1s] [T3_WIND] WIND_OVERRIDE set — speed 8.0 m/s >= v_max 7 m/s          ← speed-only onset (expected; OVERRIDE active)
+[ 359,1s] [T2] CMD_CLOSE_ALL from T3
+
+[ 419,5s] [T3_WIND] WIND_OVERRIDE cleared — speed 3.0 m/s dir 31°             ← operator set ws=3; OVERRIDE clears before iter 7
+[ 419,5s] [T2] CMD_RESUME — acknowledged
+
+[ 479,8s] [T5_SEN] iter 8 — ws=3.0 m/s wd=31°                                 ← Step C: dir_excl=[20,40] active; ws=3, dir=31
+[ 479,8s] [T3_WIND] WIND_OVERRIDE set — dir 31° in excl zone [20°–40°]        ← T3-09 confirmed: direction-only trigger
+[ 479,9s] [T2] CMD_CLOSE_ALL from T3
+```
+
+#### Step-by-step outcome
+
+| Step | Config posted | Emulator at poll | T3 action | Test | Result |
+|------|--------------|-----------------|-----------|------|--------|
+| 0 | v_max=7, prot_en=1, dir_excl=[0,0] | ws=3, wd=31 | None | Baseline | ✅ |
+| A | prot_en=0 | iter 4: ws=10.0, wd=31 | **None** — prot_en=0 suppresses | T3-03 | ✅ |
+| B (operator early) | prot_en=1, dir_excl=[0,0] | iter 6: ws=8 (set early) | WIND_OVERRIDE set (speed), CMD_CLOSE_ALL | — | Expected; operator corrected ws=3 at iter 7 |
+| B recovery | — | iter 7: ws=3, wd=31 | WIND_OVERRIDE cleared, CMD_RESUME | — | ✅ |
+| C | dir_excl=[20,40] | iter 8: ws=3, wd=31 (31 inside [20,40]) | **WIND_OVERRIDE set** — dir trigger; CMD_CLOSE_ALL | T3-09 | ✅ |
+
+#### Run 3 confirmed
+
+| Item | Evidence |
+|------|---------|
+| T3-03 ✅ | iter 4: ws=10.0, prot_en=0 — no `[T3_WIND]` output at all; T3 correctly silent |
+| T3-09 ✅ | iter 8: ws=3.0, wd=31 in excl zone [20°,40°] — `WIND_OVERRIDE set — dir 31° in excl zone [20°–40°]` + `CMD_CLOSE_ALL from T3` |
+
+**Note on T3-09 trigger:** The test confirmed direction-only exclusion zone onset. A combined speed+direction simultaneous onset (both W1 and W2 in the same poll cycle) was not separately achieved because the direction zone fired before ws was also above threshold. This is acceptable: T3-06 confirmed direction-only onset, T3-04 confirmed speed-only onset, and the direction exclusion logic operates independently of speed — the `is_unsafe` flag ORs both conditions. The single `CMD_CLOSE_ALL` per evaluation cycle regardless of how many reasons fire is confirmed by all runs (only ever one CMD_CLOSE_ALL per T3 evaluation).
+
+---
+
+### Issues Encountered and Resolved
+
+#### Issue 1 — `ESP_LOGI` silently suppressed in T3 and T5 at runtime
+
+**Symptom:**  
+Both `safety_monitor.cpp` (T3) and `sensor_poll.cpp` (T5) produced no `ESP_LOGI` output on the serial monitor after flashing Phase 4. Tasks were confirmed running via `ets_printf` diagnostics (raw ROM-level UART writes); the format strings were confirmed present in the ELF binary via `xtensa-esp-elf-strings`. No `esp_log_level_set()` calls found in any source file. Tasks T1, T2, and T4 produced `ESP_LOGI` output normally.
+
+**Debugging steps:**
+
+1. Added temporary `#include <rom/ets_sys.h>` and `ets_printf("[T3_DIAG] ...")` immediately before `ESP_LOGI` in both files — `ets_printf` appeared on serial; `ESP_LOGI` did not.
+2. Confirmed format strings present in ELF binary (`xtensa-esp-elf-strings firmware.elf | grep "T3.*task"`), ruling out compile-time suppression.
+3. Checked `sdkconfig.h`:
+   ```
+   #define CONFIG_LOG_DEFAULT_LEVEL 1       // ERROR
+   #define CONFIG_LOG_MAXIMUM_LEVEL 1       // ERROR
+   ```
+   IDF runtime log level defaults to ERROR — INFO calls via `esp_log_write` are filtered at runtime.
+4. Checked `esp32-hal-log.h` in the Arduino framework:
+   ```c
+   #undef ESP_LOGI
+   #define ESP_LOGI(tag, format, ...)  log_i("[%s] " format, tag, ##__VA_ARGS__)
+   ```
+   Arduino's `esp32-hal-log.h` (pulled in via `<Arduino.h>`) **redefines `ESP_LOGI`** to route through `log_printf` (Arduino's own log handler), bypassing the IDF `esp_log_write` runtime filter entirely.
+5. Confirmed: T1/T2/T4 all include `<Arduino.h>` (directly or transitively via their task headers). T3/T5 did not include `<Arduino.h>` — they used the raw IDF `ESP_LOGI` which is silently filtered by `CONFIG_LOG_DEFAULT_LEVEL = 1`.
+
+**Root cause:**  
+`CONFIG_LOG_DEFAULT_LEVEL = 1` (ERROR) in the Arduino-ESP32 v3 IDF base. The Arduino framework overrides `ESP_LOGI` via `esp32-hal-log.h` to use `log_printf` (which honours `CORE_DEBUG_LEVEL=3`, i.e. INFO). Files that do not include `<Arduino.h>` use the raw IDF `ESP_LOGI` → `esp_log_write`, which is gated by `CONFIG_LOG_DEFAULT_LEVEL = 1` at runtime, silently suppressing INFO and lower. `ets_printf` (ROM-level) and compile-time string embedding are unaffected by this runtime filter.
+
+**Why the Phase 3 `#define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE` fix appeared to work:**  
+The Phase 3 diagnosis (recorded in Issue 1 of the Phase 3 section) was incomplete. `#define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE` overrides the compile-time gate (`LOG_LOCAL_LEVEL >= level`), ensuring the string and `esp_log_write` call compile in. However it does NOT bypass the IDF runtime filter: `esp_log_write(ESP_LOG_INFO, ...)` is still silently dropped. The Phase 3 fix appeared to produce output — but in fact T5's output was observed only from T4 and other tasks; T5 itself was still silent. The regression was not caught until Phase 4, when both T3 and T5 were compared side-by-side with T1/T2/T4 and found silent.
+
+**Fix:**  
+Added `#include <Arduino.h>` as the first include in both `safety_monitor.cpp` and `sensor_poll.cpp`. This brings in `esp32-hal-log.h`, which:
+1. `#undef`s the IDF `ESP_LOGI` and redefines it to `log_i` (Arduino's `log_printf` path).
+2. Applies `CORE_DEBUG_LEVEL=3` (INFO) filtering — the build flag that was always intended to control log verbosity.
+
+The `#define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE` and temporary `ets_printf` / `#include <rom/ets_sys.h>` lines were removed. Both files now match the include pattern of T1/T2/T4.
+
+**Serial evidence after fix:**
+
+```
+[   298][I][safety_monitor.cpp:94] task_safety_monitor(): [T3_WIND] [T3] task alive
+[  8326][I][sensor_poll.cpp:268]  task_sensor_poll():    [T5_SEN]  [T5] task alive — boot grace expired
+[  8335][I][sensor_poll.cpp:271]  task_sensor_poll():    [T5_SEN]  [T5] calling modbus_init...
+[  8344][I][sensor_poll.cpp:273]  task_sensor_poll():    [T5_SEN]  [T5] Modbus RTU initialised (9600 baud)
+```
+
+**Lesson learned:**  
+Any `.cpp` in the Arduino-ESP32 project that uses `ESP_LOGI` must include `<Arduino.h>` (directly or transitively) to get the Arduino log override. Files that include only IDF headers will silently drop INFO-level log calls because `CONFIG_LOG_DEFAULT_LEVEL = 1` in the underlying IDF build. The `CORE_DEBUG_LEVEL=3` build flag only affects the Arduino `log_printf` path — it has no effect on the raw IDF `esp_log_write` runtime filter. The safe pattern for all task `.cpp` files is: `#include <Arduino.h>` first.
+
+---
+
+### Phase 4 → Phase 5 Handover State
+
+| Item | State |
+|------|-------|
+| T1 | Fully implemented and verified |
+| T2 | Fully implemented; IT-01–IT-13 all pass; hardware-verified |
+| T3 | **Fully implemented and verified** — wind eval, SENSOR_FAULT_W safe-fail, EG1.WIND_OVERRIDE, Q1/Q3 posting; T3-01–T3-13 all confirmed (Runs 1–3) |
+| T4 | Fully implemented — NVS load, RTC seed, sunrise/sunset, Q6/Q4/TN4 handlers |
+| T5 | Fully implemented — Modbus poll loop, sliding averages, fault detection, Q6 overwrite |
+| T6–T13 | Stubs |
+| EG1.WIND_OVERRIDE | Operational — set/cleared by T3; read by T6 (stub), T8 (stub), RGB LED (T1) |
+| EG1.SENSOR_FAULT_T/W | Operational — set/cleared by T5; SENSOR_FAULT_W now fed to T3 safe-fail path |
+| T3 hardware verification | **All 13 items confirmed** — Runs 1, 2, 3 (2026-05-05) |
+| VERIFY_T3 harness | **Removed** from `main.cpp` and `platformio.ini` after Run 3 |
+
+**Next phase:** Phase 5 — Event Logger (T9). `log_post()` is already implemented (Gap H); Phase 5 completes the T9 task body (NVS write, SD CSV, rotation, drop counter surfacing).

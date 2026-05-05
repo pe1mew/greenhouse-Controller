@@ -153,13 +153,13 @@ Implementation:
 
 Drivers used: LIB-6 (modbus_rtu), LIB-10 (fg6485a_read_measurements), LIB-11 (s200_read_measurements)
 
-**Implementation note:** `#define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE` must be the first line in `sensor_poll.cpp` (before all includes) to prevent transitive Arduino HAL headers from silently gating all `ESP_LOGI` calls at compile time. See `firmwareImplementationResults.md` Phase 3 Issue 1.
+**Implementation note (updated Phase 4):** `#include <Arduino.h>` must be the first include in any task `.cpp` that uses `ESP_LOGI`. Without it, `ESP_LOGI` routes through raw IDF `esp_log_write`, silently filtered by `CONFIG_LOG_DEFAULT_LEVEL = 1` (ERROR). `<Arduino.h>` brings in `esp32-hal-log.h` which redefines `ESP_LOGI` → `log_printf` (Arduino handler, honouring `CORE_DEBUG_LEVEL=3`). `#define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE` only fixes the compile-time gate — it does not bypass the runtime filter. See `firmwareImplementationResults.md` Phase 4 Issue 1.
 
 Verification: Serial log shows readings at configured interval; sensors not yet connected → fault flags set correctly. Full clearance test deferred to hardware bring-up (sensor wiring).
 
 ---
 
-### Phase 4 — Safety Monitor (T3)
+### Phase 4 — Safety Monitor (T3) ✅ done
 **Goal:** Wind safety response correct and fast; must be live before climate automation.
 
 Files: `safety_monitor.h/.cpp`

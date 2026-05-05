@@ -16,6 +16,7 @@
 #include <esp_task_wdt.h>
 #include <esp_log.h>
 #include <time.h>
+#include <string.h>
 #include <Adafruit_NeoPixel.h>
 
 static const char *TAG = "GHC";

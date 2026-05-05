@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.6.0] — 2026-05-05
+
+*Phase 4 — Safety Monitor (T3) implemented: wind speed threshold check, direction exclusion zone (with wrap-through-0°), SENSOR_FAULT_W safe-fail, EG1.WIND_OVERRIDE management, CMD_CLOSE_ALL / CMD_RESUME to Q1, and LOG_ALARM events (W1/W2/W3) to Q3.*
+
+### Added
+- `firmware/src/safety_monitor/safety_monitor.cpp` — full T3 implementation (replaces Phase 0 stub):
+  - Wakes on TN1 (`ulTaskNotifyTake`, pdTRUE) from T4 after each new wind measurement
+  - Reads `sensor_reading_t` via `dm_meas_snapshot()` (MX2) and config via `dm_cfg_snapshot()` (MX4)
+  - `wind_prot_en = false` → clears WIND_OVERRIDE if previously set, posts CMD_RESUME, skips evaluation
+  - `EG1_BIT_SENSOR_FAULT_W` → safe-fail: sets WIND_OVERRIDE without consulting measurements; `value_a = −1` log marker (FR-W04)
+  - Speed check: `wind_speed_avg_ms10 >= v_max × 10` (int32 arithmetic; `v_max ≤ 0` disables check)
+  - Direction check: `dir_in_exclusion_zone()` handles non-wrapping and wrap-through-0° arcs; zero-width zone disabled
+  - Onset (safe → unsafe): `xEventGroupSetBits(EG1, EG1_BIT_WIND_OVERRIDE)` → `xQueueSend(Q1, CMD_CLOSE_ALL, SRC_T3, 0)` → log W1 and/or W2
+  - Both speed and direction unsafe simultaneously → two separate LOG_ALARM records (W1 + W2), one CMD_CLOSE_ALL
+  - Clearance (unsafe → safe): `xEventGroupClearBits` → `xQueueSend(Q1, CMD_RESUME, SRC_T3, 0)` → log W3 with current speed + direction
+  - MOTOR_ALARM interaction: T3 evaluates and posts normally; T2 discards Q1 commands while MOTOR_ALARM is set; WIND_OVERRIDE bit maintained correctly
+  - `#define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE` before all includes (same fix as Phase 3 T5 Issue 1)
+- `firmware/src/safety_monitor/safety_monitor.h` — full Phase 4 Doxygen documentation: behaviour summary, log event table, design references
+
+### Verified (build)
+- Clean build: RAM 10.7% (35 120 B), Flash 17.4% (364 525 B); zero warnings
+- Flash delta from Phase 3: +1 436 B
+
+---
+
 ## [1.5.0] — 2026-05-03
 
 *Phase 3 — Sensor Polling (T5) implemented: Modbus RTU master for FG6485A (T/RH) and S200 (wind), sliding averages for all four channels, edge-triggered fault detection, Q6 overwrite, and LOG_SENSOR posting. Bug fixed: `ESP_LOGI` compile-time suppression caused by `LOG_LOCAL_LEVEL` being overridden by transitive Arduino HAL includes.*

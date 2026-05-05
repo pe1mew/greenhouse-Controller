@@ -38,10 +38,7 @@
  * @author  Greenhouse Controller project
  */
 
-/* Force INFO-level logging for this TU regardless of what driver headers
- * may set via their own #define LOG_LOCAL_LEVEL.  Must come before the
- * first inclusion of esp_log.h anywhere in this translation unit. */
-#define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
+#include <Arduino.h>
 #include <esp_log.h>
 
 #include "sensor_poll.h"
