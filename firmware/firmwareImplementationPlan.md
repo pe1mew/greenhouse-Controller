@@ -222,10 +222,10 @@ Verification: Inject T > T_max_day via Q6; confirm graduated OPEN commands on Q1
 
 ---
 
-### Phase 7 — UI Layer (T7 + T8)
+### Phase 7 — UI Layer (T7 + T8)  ✅ done
 **Goal:** Local keypad and LCD interface for commissioning and daily operation.
 
-Files: `keypad_scan.h/.cpp`, `ui_display.h/.cpp` — **create**; `auth/pin_auth.h/.cpp` — ✅ **done** (Gap C)
+Files: `keypad_scan.h/.cpp` — ✅ **done**; `ui_display.h/.cpp` — ✅ **done**; `auth/pin_auth.h/.cpp` — ✅ **done** (Gap C)
 
 **T7:**
 - `keypad_scan()` every 20ms; if char returned ≠ `KP_NO_KEY`, post `key_event_t` to Q2 (non-blocking)
@@ -370,4 +370,6 @@ Verification: Subscribe on broker; verify publish; publish command; verify relay
 | `firmware/src/climate_control/climate_control.cpp` | VENT_STEP_TABLE, step algorithm, conflict resolution, T6 stub | ✅ Done (Gap G) |
 | `firmware/src/event_logger/event_logger.h` | `log_post()` / `log_take_dropped_count()` API + full T9 Doxygen | ✅ Done (Gap H + Phase 5) |
 | `firmware/src/event_logger/event_logger.cpp` | Full T9 implementation: drain loop, NVS ring buffer, SD CSV append, rotation, drop-counter surfacing | ✅ Done (Phase 5) |
-| `firmware/src/main.cpp` | RTOS primitives, task spawn, extern handle definitions | ✅ Done (Phase 0) |
+| `firmware/src/keypad_scan/keypad_scan.h/.cpp` | T7: 20 ms scan, key-repeat, Q2 post | ✅ Done (Phase 7) |
+| `firmware/src/ui_display/ui_display.h/.cpp` | T8: LCD FSM, status pages, menu nav, PIN auth, Q4 config post, session timeout | ✅ Done (Phase 7) |
+| `firmware/src/main.cpp` | RTOS primitives, task spawn, pin_auth_init(), extern handle definitions | ✅ Done (Phase 0 + Phase 7) |

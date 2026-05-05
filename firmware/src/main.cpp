@@ -27,6 +27,7 @@ static const char *TAG = "GHC";
 #include "ds1307_rtc.h"
 #include "nvs_config.h"
 
+#include "auth/pin_auth.h"
 #include "relay_controller/relay_controller.h"
 #include "safety_monitor/safety_monitor.h"
 #include "data_manager/data_manager.h"
@@ -252,6 +253,15 @@ void setup()
         ESP_LOGE(TAG, "NVS init failed (status %d)", (int)nvs_stat);
     } else {
         ESP_LOGI(TAG, "NVS OK");
+    }
+
+    /* ---- PIN auth (must follow NVS init) ---- */
+    pin_auth_result_t pin_stat = pin_auth_init();
+    if (pin_stat != PIN_AUTH_OK) {
+        ESP_LOGW(TAG, "pin_auth_init failed (status %d) — defaults may not be set",
+                 (int)pin_stat);
+    } else {
+        ESP_LOGI(TAG, "PIN auth OK");
     }
 
     /* ---- WDT: subscribe T1 after task spawn (done inside the task). ---- */

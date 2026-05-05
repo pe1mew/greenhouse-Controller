@@ -7,7 +7,7 @@
  * management, and config change posting to Q4.  Receives key events from
  * Q2 and network status from Q5.
  *
- * Full implementation: Phase 4 of firmwareImplementationPlan.md.
+ * Full implementation: Phase 7 of firmwareImplementationPlan.md.
  *
  * @author  Greenhouse Controller project
  */

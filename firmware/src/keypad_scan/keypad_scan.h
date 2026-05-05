@@ -5,7 +5,7 @@
  * Scans the 4×4 membrane keypad every 20 ms, debounces key presses,
  * generates key-repeat events, and posts key_event_t to Q2.
  *
- * Full implementation: Phase 4 of firmwareImplementationPlan.md.
+ * Full implementation: Phase 7 of firmwareImplementationPlan.md.
  *
  * @author  Greenhouse Controller project
  */

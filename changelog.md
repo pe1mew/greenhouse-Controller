@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.9.0] — 2026-05-05
+
+*Phase 7 — UI Layer (T7 + T8) implemented: 4×4 keypad scan with key-repeat and full LCD menu FSM with PIN authentication, config editing, and session management.*
+
+### Added
+- `firmware/src/keypad_scan/keypad_scan.cpp` — full T7 task body (replaces Phase 0 stub):
+  - 20 ms scan period via `vTaskDelay(pdMS_TO_TICKS(20))` + `keypad_scan()` from LIB-5
+  - Key-repeat: same key held ≥ 500 ms → repeat events every 100 ms (`repeated=true`)
+  - Posts `key_event_t` to Q2 non-blocking; first-press overflow → `ESP_LOGW`, repeat overflow → `ESP_LOGD`
+- `firmware/src/ui_display/ui_display.cpp` — full T8 task body (replaces Phase 0 stub):
+  - LCD init via `lcd_init()` under MX1 at task entry; 2 s boot splash
+  - 100 ms main loop: Q2 key receive, Q5 network status poll, session timeout tick, FSM dispatch, status page rotation, dirty-flag render
+  - 8-state FSM: `UI_STATUS` → `UI_MENU_ROOT` → `UI_MENU_CLIMATE` / `UI_MENU_WIND` / `UI_MENU_ACCESS` / `UI_MENU_SYSTEM` → `UI_PIN_ENTRY` / `UI_EDIT_VALUE`
+  - Status display: 4 pages × 5 s auto-rotate (T/RH, wind, mode/session, network)
+  - Parameter table: 11 climate params + 2 wind params; 2 params per sub-menu page; `#` cycles pages; current NVS value shown alongside label
+  - PIN entry: masked display, `pin_auth_verify()`, lockout seconds shown on lock, pending-edit preserved through PIN flow
+  - Config edit: digit builder, `B`=sign toggle for negative temps, `#` confirm → `xQueueSend(Q4)` + `log_post(LOG_SETPOINT)`
+  - Session: `session_open()` / `session_close()` log `LOG_SESSION`; timeout from `cfg.session_timeout_min` (default 5 min); idle counter reset on non-repeat keys only
+  - `show_msg()` helper: fills rows, flushes LCD under MX1, blocks for delay, sets dirty for re-render
+  - FR-UI07 satisfied: ≤ 4 keypresses from status screen to any first-level setting when authenticated
+
+### Changed
+- `firmware/src/keypad_scan/keypad_scan.h` — phase reference updated to Phase 7
+- `firmware/src/ui_display/ui_display.h` — phase reference updated to Phase 7
+- `firmware/src/main.cpp` — added `#include "auth/pin_auth.h"` and `pin_auth_init()` call after `nvs_cfg_init()`; logs `PIN auth OK` on success
+- `firmware/firmwareImplementationPlan.md` — Phase 7 marked ✅ done; `keypad_scan` and `ui_display` added to Critical Files Summary
+- `firmware/firmwareImplementationResults.md` — Phase 7 section added
+
+### Verified on hardware (boot capture, 340 s runtime)
+- T8-02: LCD init OK — no `ESP_LOGE` from `T8_UI` in 340 s capture ✅
+- T8-03: MX1 not deadlocked — T4 periodic RTC read completes at t=297 s ✅
+- All tasks stable: T1 heartbeat continuous, T5/T6 nominal at t=309/310 s, no watchdog resets ✅
+- T7-01/T8-01 (task alive), T7-02/03, T8-04–09: deferred to integration testing (USB-CDC pre-connect window / physical keypresses required)
+
+---
+
 ## [1.8.0] — 2026-05-05
 
 *Phase 6 — Climate Control (T6) implemented: autonomous graduated ventilation driven by live T/RH sensor data, EG1 inhibit gate, conflict resolution, and incremental Q1 command posting.*
