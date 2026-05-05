@@ -73,7 +73,7 @@ firmware/src/
 
 ## Implementation Phases
 
-### Phase 0 — Project Scaffold & Watchdog/Heartbeat (T1)
+### Phase 0 — Project Scaffold & Watchdog/Heartbeat (T1)  ✅ done
 **Goal:** Builds, boots, watchdog kicking, HB LED blinking, all tasks present as stubs.
 
 Files to create/modify:
@@ -117,7 +117,7 @@ Verification: Inject Q6/Q4 items from `setup()` test harness; verify state via s
 
 ---
 
-### Phase 2 — Relay Controller (T2)
+### Phase 2 — Relay Controller (T2)  ✅ done
 **Goal:** Safe, timing-correct motor control; mutual exclusion enforced; GPIO42 feedback working.
 
 Files: `relay_controller.h/.cpp`
@@ -179,10 +179,10 @@ Verification: Inject wind > v_max via Q6 from test harness; verify CLOSE_ALL on 
 
 ---
 
-### Phase 5 — Event Logger (T9)
+### Phase 5 — Event Logger (T9)  ✅ done
 **Goal:** All events persistently recorded before automation goes live.
 
-Files: `event_logger.h` — ✅ **done** (Gap H); `event_logger.cpp` — ✅ **done** (Gap H); Phase 5 completes the T9 task body.
+Files: `event_logger.h` — ✅ **done**; `event_logger.cpp` — ✅ **done**.
 
 Implementation:
 - `log_post()` and `log_take_dropped_count()` are fully implemented (Gap H ✅); all other tasks must use `log_post()` — never `xQueueSend(Q3, ...)` directly
@@ -368,6 +368,6 @@ Verification: Subscribe on broker; verify publish; publish command; verify relay
 | `firmware/src/types/app_types.h` | Motor travel constants (Gap F) + `NUM_VENT_STEPS 3` (Gap G) + Phase 0 stubs | ✅ Constants done; Phase 0 completes handles/structs/enums |
 | `firmware/src/climate_control/climate_control.h` | Graduated ventilation API declarations | ✅ Done (Gap G) |
 | `firmware/src/climate_control/climate_control.cpp` | VENT_STEP_TABLE, step algorithm, conflict resolution, T6 stub | ✅ Done (Gap G) |
-| `firmware/src/event_logger/event_logger.h` | `log_post()` and `log_take_dropped_count()` API | ✅ Done (Gap H) |
-| `firmware/src/event_logger/event_logger.cpp` | Drop-oldest evict-and-retry, spinlock counter, T9 stub | ✅ Done (Gap H) |
-| `firmware/src/main.cpp` | RTOS primitives, task spawn, extern handle definitions | ⬜ Phase 0 |
+| `firmware/src/event_logger/event_logger.h` | `log_post()` / `log_take_dropped_count()` API + full T9 Doxygen | ✅ Done (Gap H + Phase 5) |
+| `firmware/src/event_logger/event_logger.cpp` | Full T9 implementation: drain loop, NVS ring buffer, SD CSV append, rotation, drop-counter surfacing | ✅ Done (Phase 5) |
+| `firmware/src/main.cpp` | RTOS primitives, task spawn, extern handle definitions | ✅ Done (Phase 0) |

@@ -5,8 +5,9 @@
  * Modbus RTU master for the FG6485A (T/RH) and S200 (wind) sensors.
  * Polls at the configured interval (30–3600 s, default 60 s), maintains
  * per-sensor sliding averages, builds a sensor_reading_t, and overwrites Q6.
- * Posts a LOG_SENSOR event to Q3 on every poll cycle (FR-LG09: snapshot
- * interval equals poll interval).
+ * LOG_SENSOR is posted by T4 (data_manager) on receipt of the Q6 update —
+ * not by T5 — to avoid duplicate log entries (FR-LG09: one snapshot per
+ * poll interval).
  *
  * ## Fault handling
  *  - Each sensor is read up to twice per cycle (one immediate retry).
@@ -443,18 +444,11 @@ void task_sensor_poll(void *pvParameters)
         xQueueOverwrite(Q6, &reading);
 
         /* ================================================================
-         * Step 7 — Post LOG_SENSOR to Q3 (FR-LG09)
-         *    value_a = temperature_c (°C integer)
-         *    value_b = humidity_pct  (%)
+         * Step 7 — LOG_SENSOR is posted by T4 (data_manager) on receipt of
+         * this Q6 update (FR-LG09: one snapshot per poll interval).
+         * T5 does NOT post LOG_SENSOR directly — doing so would duplicate
+         * the log entry (Finding 1, Phase 5 hardware verification).
          * ================================================================ */
-        log_event_t log_evt;
-        memset(&log_evt, 0, sizeof(log_evt));
-        log_evt.timestamp  = reading.timestamp;
-        log_evt.event_type = (uint8_t)LOG_SENSOR;
-        log_evt.initiator  = (uint8_t)LOG_BY_SYSTEM;
-        log_evt.value_a    = reading.temperature_c;
-        log_evt.value_b    = (int16_t)reading.humidity_pct;
-        log_post(&log_evt);
 
         ESP_LOGI(TAG,
                  "[T5] T=%d°C RH=%u%% ws=%u.%u m/s wd=%u° | "

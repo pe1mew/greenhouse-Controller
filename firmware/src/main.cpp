@@ -292,7 +292,7 @@ void setup()
     xTaskCreatePinnedToCore(task_climate_control,   "T6_CLI",  4096, NULL, TASK_PRIO_MEDIUM,   &task_t6,  1);
     xTaskCreatePinnedToCore(task_keypad_scan,       "T7_KPD",  4096, NULL, TASK_PRIO_MED_HIGH, &task_t7,  1);
     xTaskCreatePinnedToCore(task_ui_display,        "T8_UI",   8192, NULL, TASK_PRIO_MEDIUM,   &task_t8,  1);
-    xTaskCreatePinnedToCore(task_event_logger,      "T9_LOG",  4096, NULL, TASK_PRIO_LOW,      &task_t9,  1);
+    xTaskCreatePinnedToCore(task_event_logger,      "T9_LOG",  6144, NULL, TASK_PRIO_LOW,      &task_t9,  1);
     xTaskCreatePinnedToCore(task_network_manager,   "T10_NET", 8192, NULL, TASK_PRIO_LOW,      &task_t10, 0);
     xTaskCreatePinnedToCore(task_web_server,        "T11_WEB", 8192, NULL, TASK_PRIO_LOW,      &task_t11, 0);
     xTaskCreatePinnedToCore(task_mqtt_client,       "T12_MQT", 8192, NULL, TASK_PRIO_LOW,      &task_t12, 0);

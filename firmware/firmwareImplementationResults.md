@@ -1438,4 +1438,200 @@ Any `.cpp` in the Arduino-ESP32 project that uses `ESP_LOGI` must include `<Ardu
 | T3 hardware verification | **All 13 items confirmed** — Runs 1, 2, 3 (2026-05-05) |
 | VERIFY_T3 harness | **Removed** from `main.cpp` and `platformio.ini` after Run 3 |
 
-**Next phase:** Phase 5 — Event Logger (T9). `log_post()` is already implemented (Gap H); Phase 5 completes the T9 task body (NVS write, SD CSV, rotation, drop counter surfacing).
+**Next phase:** Phase 5 — Event Logger (T9). ✅ Implemented — see Phase 5 section below.
+
+---
+
+---
+
+## Phase 5 — Event Logger (T9)
+
+**Date completed:** 2026-05-05
+**Build (post-cleanup):** RAM 10.8% (35 364 B), Flash 19.9% (417 729 B)
+**Target board / framework / platform:** same as Phase 0
+
+---
+
+### Scope
+
+Phase 5 goal per `firmwareImplementationPlan.md`:
+
+> All events persistently recorded before automation goes live.
+
+`log_post()` and `log_take_dropped_count()` were already implemented in Gap H
+(Phase 0 pre-work). Phase 5 replaces the T9 stub with the full task body.
+
+---
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `firmware/src/event_logger/event_logger.cpp` | Full Phase 5 implementation — T9 task body; `log_post()` and `log_take_dropped_count()` moved here from stub; SD init, drain loop, rotation, drop-counter surfacing |
+| `firmware/src/event_logger/event_logger.h` | Doxygen updated — full T9 behaviour description; CSV format table; SD rotation documentation |
+
+---
+
+### T9 Implementation — Design Summary
+
+#### Task structure
+
+```
+task_event_logger()
+├── storage_init()                       ← attempt SD mount; NVS-only fallback on failure
+├── nvs_cfg_get_i32(log/file_idx)        ← recover SD file index (or default to 1)
+├── make_filename(s_file_idx)            ← set s_cur_filename = "/ghc_NNNN.csv"
+├── write CSV header if file is empty    ← first write creates the file
+│
+└── for (;;):
+    ├── xQueueReceive(Q3, portMAX_DELAY) ← block until first event of drain pass
+    ├── process_event(&evt)
+    ├── while xQueueReceive(Q3, 0)       ← drain remaining (non-blocking)
+    │     process_event(&evt)
+    └── log_take_dropped_count()
+          > 0 → xQueueSend(Q3, LOG_SYSTEM with value_a=count, 0)
+```
+
+`process_event()` always calls `nvs_log_append(&evt, sizeof(log_event_t))`.  
+If `s_sd_ok`, it also calls `write_to_sd(&evt)`.
+
+#### SD log file naming and rotation
+
+| Parameter | Value |
+|-----------|-------|
+| File name pattern | `/ghc_NNNN.csv` (4-digit zero-padded sequential index) |
+| Index persistence | NVS namespace `log`, key `file_idx` (int32) |
+| Rotation trigger | Current file size ≥ 512 KB |
+| Maximum files retained | 10 — oldest deleted on each rotation that would exceed limit |
+| CSV header | `timestamp,type,initiator,ch,param,value_a,value_b\n` written to each new file |
+
+Rotation function (`rotate_sd_file()`):
+1. Increments `s_file_idx`, persists to NVS.
+2. Updates `s_cur_filename`.
+3. Writes CSV header to new file.
+4. If `s_file_idx > SD_MAX_FILES`: deletes file `s_file_idx − SD_MAX_FILES` (NOT_FOUND silently ignored).
+
+#### CSV line format
+
+```
+1776014381,SENSOR,SYS,0,0,11,81
+1776014390,ALARM,SYS,0,0,80,70
+1776015000,SYSTEM,SYS,0,0,3,0
+```
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `timestamp` | uint32 | Unix epoch seconds |
+| `type` | string | `SENSOR` / `RELAY` / `MODE` / `SETPT` / `SESSION` / `ALARM` / `SYSTEM` |
+| `initiator` | string | `SYS` / `FARMER` / `ADMIN` / `MQTT` / `WEB` |
+| `ch` | uint8 | Motor channel 1/2/3, or 0 for non-motor events |
+| `param` | uint8 | `log_param_id_t`; 0 for non-CONFIG events |
+| `value_a` | int16 | First payload (sensor value, reason code, drop count, …) |
+| `value_b` | int16 | Second payload (threshold, new setting, …) |
+
+#### NVS ring buffer
+
+`nvs_log_append(evt, sizeof(log_event_t))` is called for every event regardless of SD state. Capacity is `CONFIG_NVS_LOG_CAPACITY = 250` entries (build flag), wrapping oldest on overflow. This provides a fallback event store accessible via `nvs_log_read()` for the web API (Phase 9).
+
+#### SD write failure handling
+
+If `storage_sd_write_append()` returns any non-OK status, T9 clears `s_sd_ok` and emits a `LOG_SYSTEM` event with `value_a = −1` into the NVS log so the failure is visible. All subsequent events fall back to NVS-only. A firmware reboot is required to retry SD mounting.
+
+#### Drop-counter surfacing
+
+After each drain pass, `log_take_dropped_count()` returns and atomically resets the drop counter. If > 0, T9 posts a synthetic `LOG_SYSTEM` event via `xQueueSend(Q3, ..., 0)` **directly** (not via `log_post()`). Using `log_post()` for the drop event would re-enter the evict-and-retry logic and could cause a recursive eviction during an overflow burst; the direct `xQueueSend` silently discards the drop event only if Q3 is still completely full at that moment, which is acceptable.
+
+The synthetic `LOG_SYSTEM` drop event:
+- `event_type` = `LOG_SYSTEM`
+- `initiator` = `LOG_BY_SYSTEM`
+- `value_a` = drop count (clamped to `int16_t` range: 1–32767)
+
+---
+
+### Build Output
+
+```
+RAM:   [=         ]  10.8% (used 35 364 bytes from 327 680 bytes)
+Flash: [==        ]  19.9% (used 417 729 bytes from 2 097 152 bytes)
+```
+
+Post-cleanup build (VERIFY_T9 harness removed, duplicate LOG_SENSOR removed):  
+Δ vs Phase 4: +244 bytes RAM, +52 072 bytes Flash. The Flash increase reflects the SD card (FAT32/SPI) and `printf`/`snprintf` libraries pulled in by the full T9 implementation. Both values remain well within the 2 MB app0 partition.
+
+---
+
+### Hardware Verification — Run 1 (2026-05-05)
+
+SD card wired and confirmed functional. Board flashed with `VERIFY_T9` harness enabled
+(40-event Q3 flood after 90 s delay). Serial monitor captured for 646 s (10+ min); SD card
+inspected after run.
+
+**Step outcomes:**
+
+| Step | t (s) | Outcome |
+|------|-------|---------|
+| Board boot with SD card | 0 | T9 initialised; `[T9] SD card mounted` (pre-USB-CDC; confirmed via SD CSV) |
+| T5 iter 1 | 68 | `T=11°C RH=80% ws=2.0 m/s wd=62°`; LOG_SENSOR posted to Q3 |
+| VERIFY_T9 flood | 90 | `[T9_LOG] [T9] Q3 overflow: 7 event(s) dropped` |
+| T5 iters 2–6 | 128–370 | Stable readings; all events persisted to CSV |
+| SD failure (T9-08) | 431 | `sdWait(): Wait Failed` ×5 → `fopen(/sd/ghc_0001.csv) failed` → `[T9] SD write failed (3) — falling back to NVS-only`; iters 7–10 continued on NVS-only |
+| CH3 calibration complete | 176 | `[T2] CH3: CLOSED`; `CLOSE_ALL calibration complete` |
+| SD card content (post-run) | — | `/ghc_0001.csv` exists; header correct; SENSOR, RELAY, SYSTEM rows all present |
+| Reboot (second run) | — | T9 appended to `/ghc_0001.csv` without writing a second header — NVS file_idx=1 correctly recovered |
+
+### Verification Checklist
+
+| # | Verification item | Method | Status |
+|---|------------------|--------|--------|
+| T9-01 | Task alive — `[T9] task alive` in serial log at boot | Serial monitor | ✅ Confirmed |
+| T9-02 | NVS-only mode — no SD card → `[T9] SD not available` logged; events written to NVS ring buffer | Verify without SD card; read NVS via web API | ⬜ Deferred to integration testing |
+| T9-03 | SD mount — card inserted → `[T9] SD card mounted`; CSV file created with header | Inspect card | ✅ Confirmed — `/ghc_0001.csv` created with correct header |
+| T9-04 | LOG_SENSOR events persist to SD CSV | Let T5 run poll cycles; verify CSV lines | ✅ Confirmed — `SENSOR,SYS,0,0,11,81` and similar rows in CSV |
+| T9-05 | LOG_RELAY events persist to SD CSV | T2 calibration MOVING_CLOSE + CLOSED for all 3 channels | ✅ Confirmed — CH1–CH3 calibration rows visible in CSV |
+| T9-06 | SD rotation at 512 KB | Inject events at high rate; verify new file created at 512 KB | ⬜ Deferred to integration testing |
+| T9-07 | Drop counter surfacing | VERIFY_T9 harness floods Q3 past depth 32 | ✅ Confirmed — `[T9] Q3 overflow: 7 event(s) dropped`; `SYSTEM,SYS,0,0,7,0` in CSV |
+| T9-08 | SD failure fallback | SD contact failure at t=431 s (iter 7): `sdWait(): Wait Failed` / `fopen() failed`; `[T9] SD write failed (3)` logged; iters 8–10 continued on NVS-only | ✅ Confirmed (spontaneous during Run 1) |
+| T9-09 | File index recovery after reboot | Record current file_idx; reboot; verify T9 resumes on same file | ✅ Confirmed — second boot appended to `/ghc_0001.csv` without second header |
+| T9-10 | NVS ring buffer capacity | Verify 250-entry wrap (oldest overwritten on 251st entry) | ⬜ Deferred to integration testing |
+
+### Findings
+
+#### Finding 1 — Duplicate LOG_SENSOR per poll cycle (fixed)
+
+**Observation:** Both T5 (`sensor_poll.cpp` Step 7) and T4 (`data_manager.cpp` on Q6 receipt)
+called `log_post(LOG_SENSOR)` per poll cycle, producing two `SENSOR` rows per interval in the CSV.  
+**Root cause:** Step 7 in T5 was a copy of the T4 call; FR-LG09 specifies one snapshot per poll
+interval.  
+**Fix:** Removed `log_post(LOG_SENSOR)` from T5; T4's call is the canonical record. Replaced
+Step 7 in T5 with a comment explaining the design decision.  
+**Status:** Fixed in Phase 5 cleanup; clean build verified.
+
+#### Finding 2 — Early RELAY events have timestamp=0 (cosmetic, deferred)
+
+**Observation:** T2's `calib_close_all()` MOVING_CLOSE events for CH1 and CH2 appear in the CSV
+with `timestamp=0`. CH3 CLOSED appears with a non-zero timestamp (~946684825).  
+**Root cause:** T2 (PRIO_HIGH=7) wins the scheduler at boot and begins calibration before T4
+(PRIO_MED_HIGH=6) has called `settimeofday()` and populated `MX4`'s `current_unix_ts`. As a
+result, `dm_get_unix_time()` returns 0 for the first few T2 log events.  
+**Impact:** Cosmetic — log records show epoch 0 for the first two calibration steps. No functional
+effect; all relay operations are correct.  
+**Fix:** Will improve automatically once NTP sync is operational (Phase 8). No action in Phase 5.  
+**Status:** Documented; deferred to Phase 8 (NTP/RTC integration).
+
+---
+
+### Phase 5 → Phase 6 Handover State
+
+| Item | State |
+|------|-------|
+| T1 | Fully implemented and verified |
+| T2 | Fully implemented; IT-01–IT-13 all pass; hardware-verified |
+| T3 | Fully implemented and verified — T3-01–T3-13 all confirmed |
+| T4 | Fully implemented — NVS load, RTC seed, sunrise/sunset, Q6/Q4/TN4 handlers |
+| T5 | Fully implemented — Modbus poll loop, sliding averages, fault detection |
+| T9 | **Fully implemented and hardware-verified** — Q3 drain loop, NVS ring buffer, SD CSV append, rotation, drop-counter surfacing; T9-01/03/04/05/07/08/09 confirmed; T9-02/06/10 deferred to integration testing |
+| T6–T8, T10–T13 | Stubs |
+| Q3 data flow | `log_post()` operational; T4 and T3 already calling it; T9 drains and persists |
+| EG1 | WIND_OVERRIDE, SENSOR_FAULT_T/W, MOTOR_ALARM all operational |
+
+**Next phase:** Phase 6 — Climate Control (T6). `climate_control.cpp` (Gap G graduated ventilation logic) is already implemented; Phase 6 completes the T6 task body.

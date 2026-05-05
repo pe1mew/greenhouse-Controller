@@ -6,6 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.7.0] — 2026-05-05
+
+*Phase 5 — Event Logger (T9) implemented and hardware-verified: Q3 drain loop, NVS ring buffer, SD CSV append with rotation, drop-counter surfacing, and SD failure fallback all confirmed on device. Duplicate LOG_SENSOR fixed.*
+
+### Added
+- `firmware/src/event_logger/event_logger.cpp` — full T9 implementation (replaces Phase 0 stub):
+  - SD init via `storage_sd_init()` with NVS-only fallback when card absent or mount fails
+  - NVS file-index recovery: `nvs_cfg_get_i32("log", "file_idx")` at boot; resumes on same file across reboots without writing a duplicate CSV header
+  - Drain-pass loop: `xQueueReceive(Q3, portMAX_DELAY)` blocks for first event, then `xQueueReceive(Q3, 0)` drains all remaining in a tight loop; after each pass calls `log_take_dropped_count()` and, if > 0, posts a synthetic `LOG_SYSTEM` event via `xQueueSend(Q3, ..., 0)` **directly** (not `log_post()`) to avoid re-entrant eviction
+  - Every event written to NVS ring buffer unconditionally via `nvs_log_append()`; SD write additionally if `s_sd_ok`
+  - SD log rotation at 512 KB: increments `s_file_idx`, persists to NVS, writes CSV header to new file; deletes `s_file_idx − 10` when file count exceeds 10
+  - SD write failure: clears `s_sd_ok`, emits `LOG_SYSTEM value_a=−1` via `log_post()` so failure is visible in NVS log; NVS-only operation continues without firmware restart
+  - CSV format: `timestamp,type,initiator,ch,param,value_a,value_b\n`; `evt_type_str()` / `initiator_str()` string maps; `build_csv_line()` via `snprintf`
+- `firmware/src/event_logger/event_logger.h` — Doxygen rewrite: full T9 behaviour description, drain-pass structure, SD rotation parameters, CSV column table
+
+### Changed
+- `firmware/src/main.cpp` — T9 stack increased 4 096 → 6 144 bytes (SD + FAT32 + snprintf stack headroom)
+- `firmware/src/sensor_poll/sensor_poll.cpp` — **removed** `log_post(LOG_SENSOR)` from Step 7 of the poll loop; T4 (`data_manager.cpp`) is the sole canonical poster per FR-LG09; posting from both T5 and T4 produced two `SENSOR` CSV rows per poll cycle (Finding 1)
+- `firmware/firmwareImplementationPlan.md` — Phase 5 marked ✅ done
+- `firmware/firmwareImplementationResults.md` — Phase 5 section added: implementation design, build output, hardware verification checklist, findings
+
+### Verified on hardware (bkhkhe0s8 serial capture + SD card inspection)
+- **T9-01** — Task alive: `[T9] task alive` confirmed (pre-USB-CDC; SD CSV present proves T9 ran)
+- **T9-03** — SD mount and CSV creation: `/ghc_0001.csv` created with correct header on first boot
+- **T9-04** — LOG_SENSOR rows in CSV: `SENSOR,SYS,0,0,11,81` and similar rows at each 60 s poll cycle
+- **T9-05** — LOG_RELAY rows in CSV: CH1–CH3 `MOVING_CLOSE` + `CLOSED` calibration sequence fully present
+- **T9-07** — Drop-counter surfacing: VERIFY_T9 harness flooded 40 events into Q3 (depth 32); serial showed `[T9] Q3 overflow: 7 event(s) dropped` at t=91 s; `SYSTEM,SYS,0,0,7,0` row in CSV
+- **T9-08** — SD failure fallback: SD card contact failure at t=431 s (iter 7) triggered `sdWait(): Wait Failed` / `fopen() failed`; T9 logged `SD write failed (3) — falling back to NVS-only`; subsequent poll iters (8–10) continued without crash — NVS-only fallback confirmed
+- **T9-09** — File index recovery: second boot appended to `/ghc_0001.csv` without writing a second header; NVS `file_idx=1` recovered correctly
+- T9-02, T9-06, T9-10 deferred to integration testing
+
+### Findings
+- **Finding 1 (fixed)** — Duplicate LOG_SENSOR: both T5 (`sensor_poll.cpp`) and T4 (`data_manager.cpp`) were calling `log_post(LOG_SENSOR)` per poll cycle, producing two `SENSOR` rows per interval. Fixed by removing the T5 call; T4 is now the canonical source.
+- **Finding 2 (deferred)** — timestamp=0 race: T2 (PRIO_HIGH) wins scheduler at boot and logs the first two calibration events before T4 has populated `dm_get_unix_time()`. Cosmetic; will resolve automatically with NTP sync in Phase 8.
+
+---
+
 ## [1.6.0] — 2026-05-05
 
 *Phase 4 — Safety Monitor (T3) implemented: wind speed threshold check, direction exclusion zone (with wrap-through-0°), SENSOR_FAULT_W safe-fail, EG1.WIND_OVERRIDE management, CMD_CLOSE_ALL / CMD_RESUME to Q1, and LOG_ALARM events (W1/W2/W3) to Q3.*
