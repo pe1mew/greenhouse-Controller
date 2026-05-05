@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.8.0] — 2026-05-05
+
+*Phase 6 — Climate Control (T6) implemented: autonomous graduated ventilation driven by live T/RH sensor data, EG1 inhibit gate, conflict resolution, and incremental Q1 command posting.*
+
+### Added
+- `firmware/src/climate_control/climate_control.cpp` — full T6 task body (replaces Phase 0 stub):
+  - Blocks on TN2 (`ulTaskNotifyTake(pdTRUE, portMAX_DELAY)`) — wakes only when T4 has new Q6 data
+  - EG1 gate: skips evaluation and resets `current_step_t/rh = 0` if `WIND_OVERRIDE`, `MOTOR_ALARM`, or `SENSOR_FAULT_T` is set; logs inhibit transitions; resumes from step 0 on clearance
+  - Snapshots `cfg_shadow_t` under MX4 (`dm_cfg_snapshot()`) and `sensor_reading_t` under MX2 (`dm_meas_snapshot()`)
+  - Selects day vs. night setpoints (`t_max`, `rh_max`, `rh_min`) from `cfg.is_daytime`
+  - Calls `vent_step_required_t()` and `vent_step_required_rh()` (already implemented, Gap G); resolves with `vent_resolve_conflict()`
+  - `apply_step_delta()`: posts CLOSE commands before OPEN commands for changed channels; single `CMD_CLOSE_ALL ch=0` when resolved step == 0
+  - `post_log_mode()`: posts `LOG_MODE_CHANGE` to Q3 on every step change with `value_a=resolved_step`, `value_b=(step_t<<8)|step_rh`
+  - `post_q1()`: non-blocking `xQueueSend(Q1, ..., 0)` with LOGW on queue-full (never blocks T6)
+  - Defensive hysteresis clamp: `hyst_t/rh` clamped to ≥ 1 to prevent division by zero in `step_from_deviation()`
+
+### Changed
+- `firmware/src/climate_control/climate_control.h` — Doxygen updated: per-wake sequence documented (8 steps), inhibit behaviour and step-reset logic described
+- `firmware/firmwareImplementationPlan.md` — Phase 6 marked ✅ done
+- `firmware/firmwareImplementationResults.md` — Phase 6 section added
+
+### Verified on hardware (VERIFY_T6 harness, 471 s capture)
+- Clean build: RAM 10.8% (35 364 B), Flash 20.0% (419 869 B); zero warnings
+- **T6-04/05** — VERIFY_T6 Phase A: Q4 `t_max_ngt=5` injected at t=15 s; T5 iter 1 at t=68.8 s fired TN2; T6 evaluated `T_avg=12 t_max=5 hyst=2 → step_t=3 | step_rh=−1 (NEUTRAL) | resolved=3`; CMD_OPEN ch=1, CMD_OPEN ch=2, CMD_OPEN ch=3 posted to Q1
+- **T6-07** — VERIFY_T6 Phase B: Q4 `t_max_ngt=22` injected at t=106 s; T5 iter 2 at t=129 s fired TN2; T6 evaluated `deviation=−10 < −hyst=−2` → close-hysteresis guard cleared → step 0 → CMD_CLOSE_ALL
+- **T2 Q1 acceptance** — T2 drained queued commands at t=176 s (post-calib); CMD_OPEN ch1/2/3 then CMD_CLOSE_ALL accepted; SRC_T6 correctly identified in T2 log
+- **Stable idle** — T6 held step=0 with no Q1 posts for iters 3–7 (t=189–430 s); no WDT resets or crashes
+- T6-02/03/06/08/09/10 deferred to integration testing
+
+---
+
 ## [1.7.0] — 2026-05-05
 
 *Phase 5 — Event Logger (T9) implemented and hardware-verified: Q3 drain loop, NVS ring buffer, SD CSV append with rotation, drop-counter surfacing, and SD failure fallback all confirmed on device. Duplicate LOG_SENSOR fixed.*

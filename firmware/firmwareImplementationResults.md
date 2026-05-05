@@ -1634,4 +1634,181 @@ effect; all relay operations are correct.
 | Q3 data flow | `log_post()` operational; T4 and T3 already calling it; T9 drains and persists |
 | EG1 | WIND_OVERRIDE, SENSOR_FAULT_T/W, MOTOR_ALARM all operational |
 
-**Next phase:** Phase 6 — Climate Control (T6). `climate_control.cpp` (Gap G graduated ventilation logic) is already implemented; Phase 6 completes the T6 task body.
+**Next phase:** Phase 7 — UI Layer (T7 + T8). Keypad scan and LCD display tasks.
+
+---
+
+## Phase 6 — Climate Control (T6)
+
+**Date completed:** 2026-05-05
+**Build:** RAM 10.8% (35 364 B), Flash 20.0% (419 869 B)
+**Target board / framework / platform:** same as Phase 0
+
+---
+
+### Scope
+
+Phase 6 goal per `firmwareImplementationPlan.md`:
+
+> Autonomous temperature/humidity-driven ventilation with conflict resolution.
+
+The step-evaluation functions and step table were already implemented (Gap G, Phase 0 pre-work).
+Phase 6 replaces the T6 stub with the full task body connecting those functions to the live sensor
+data, EG1 flags, and Q1 command queue.
+
+---
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `firmware/src/climate_control/climate_control.cpp` | Full T6 task body: EG1 gate, cfg/meas snapshots, setpoint selection, step evaluation, conflict resolution, incremental delta application, LOG_MODE_CHANGE posting |
+| `firmware/src/climate_control/climate_control.h` | Doxygen updated — full per-wake sequence documented; inhibit behaviour described |
+
+---
+
+### T6 Implementation — Design Summary
+
+#### Task structure
+
+```
+task_climate_control()
+├── ulTaskNotifyTake(pdTRUE, portMAX_DELAY)     ← block on TN2 from T4
+│
+├── EG1 gate ────────────────────────────────── skip if WIND_OVERRIDE |
+│     inhibited? → reset current_step_t/rh=0    MOTOR_ALARM | SENSOR_FAULT_T
+│     → continue (no Q1 post)
+│
+├── dm_cfg_snapshot(&cfg)                        ← MX4
+├── dm_meas_snapshot(&meas, &valid)              ← MX2
+│
+├── select setpoints (is_daytime: day vs. night t_max, rh_max, rh_min)
+│
+├── vent_step_required_t(t_avg, t_max, hyst_t, current_step_t)   → step_t
+├── vent_step_required_rh(rh_avg, rh_max, rh_min, hyst_rh, ...)  → step_rh
+├── vent_resolve_conflict(step_t, step_rh, cr_priority)           → resolved
+│
+├── apply_step_delta(prev_resolved, resolved)
+│     new_step==0   → CMD_CLOSE_ALL ch=0
+│     changed bits  → CMD_CLOSE ch=N first, then CMD_OPEN ch=N
+│
+├── post_log_mode(resolved, step_t, step_rh)    ← LOG_MODE_CHANGE to Q3
+│     value_a = resolved step
+│     value_b = (step_t << 8) | (uint8)step_rh
+│
+└── update current_step_t = step_t, current_step_rh = step_rh
+```
+
+#### EG1 inhibit gate
+
+| Flag set | T6 behaviour |
+|----------|-------------|
+| `WIND_OVERRIDE` | Skip evaluation; reset steps to 0; no Q1 post — T3 handles CLOSE_ALL |
+| `MOTOR_ALARM` | Skip evaluation; reset steps to 0; no Q1 post — T2 handles relay de-energisation |
+| `SENSOR_FAULT_T` | Skip evaluation; steps not reset (wind/RH may still be valid in future phases) |
+
+On inhibit clearance, steps are 0 and T6 re-evaluates from step 0 — windows open gradually
+as conditions demand rather than jumping to the previous step.
+
+#### Q1 command encoding
+
+| Situation | Commands posted |
+|-----------|----------------|
+| resolved step == 0 | Single `CMD_CLOSE_ALL, ch=0, src=SRC_T6` |
+| step widening (e.g. 1→2) | `CMD_OPEN ch=2` (ch=1 already open) |
+| step narrowing (e.g. 3→2) | `CMD_CLOSE ch=3` |
+| step reversal (e.g. 2→0) | Single `CMD_CLOSE_ALL` |
+| CLOSE bits before OPEN bits | Safer sequencing — relays de-energise before new energisation |
+
+#### LOG_MODE_CHANGE encoding
+
+```
+event_type = LOG_MODE_CHANGE
+initiator  = LOG_BY_SYSTEM
+channel    = 0
+param_id   = 0
+value_a    = resolved step (0..3)
+value_b    = (step_t << 8) | (uint8_t)step_rh
+             step_rh == VENT_STEP_NEUTRAL (-1) encodes as 0xFF in the low byte
+```
+
+---
+
+### Build Output
+
+```
+RAM:   [=         ]  10.8% (used 35 364 bytes from 327 680 bytes)
+Flash: [==        ]  20.0% (used 419 869 bytes from 2 097 152 bytes)
+```
+
+Δ vs Phase 5: +0 bytes RAM, +2 140 bytes Flash. Both values remain well within the 2 MB app0 partition.
+
+---
+
+### Hardware Verification — Run 1 (2026-05-05)
+
+VERIFY_T6 harness injected a Q4 config update to lower `t_max_ngt` from 22°C to 5°C
+(well below current T=12°C), then restored it to 22°C after one T5 poll cycle.
+Serial monitor captured for 471 s.
+
+**Step outcomes:**
+
+| Step | t (s) | Outcome |
+|------|-------|---------|
+| Phase A: Q4 `t_max_ngt=5` | 15.0 | T4 applied: `climate/t_max_ngt = 5` |
+| T5 iter 1 → TN2 → T6 eval | 68.8 | `T_avg=12 t_max=5 hyst=2 → step_t=3 \| step_rh=−1 \| resolved=3` |
+| T6 → CMD_OPEN ch=1,2,3 | 68.8 | All three CMD_OPEN posted to Q1 |
+| Phase B: Q4 `t_max_ngt=22` | 106.0 | T4 applied: `climate/t_max_ngt = 22` |
+| T5 iter 2 → TN2 → T6 eval | 129.1 | `T_avg=12 t_max=22 hyst=2 → step_t=0 \| resolved=0 (was 3)` |
+| T6 → CMD_CLOSE_ALL | 129.1 | Single CMD_CLOSE_ALL posted to Q1 |
+| T2 drains Q1 (post-calib) | 176.4 | CMD_OPEN ch1/2/3 + CMD_CLOSE_ALL accepted; ch1/2/3 MOVING_OPEN → gap → MOVING_CLOSE |
+| Iters 3–7 | 189–430 | T6 stable at step=0; no Q1 posts; no crashes |
+
+### Verification Checklist
+
+| # | Verification item | Method | Status |
+|---|------------------|--------|--------|
+| T6-01 | Task alive — `[T6] task alive` in serial log at boot | Serial monitor | ⬜ Not visible (USB-CDC timing — same as T9; confirmed alive via first eval log at t=68 s) |
+| T6-02 | EG1 gate — no Q1 commands posted while WIND_OVERRIDE active | Assert WIND_OVERRIDE via T3 trigger; verify no CMD_OPEN in T2 serial | ⬜ Deferred to integration testing |
+| T6-03 | EG1 gate — no Q1 commands posted while MOTOR_ALARM active | Assert GPIO42 LOW; verify no CMD_OPEN in T2 serial | ⬜ Deferred to integration testing |
+| T6-04 | Step-up — T_avg=12 > t_max=5 → step_t=3, CMD_OPEN ch=1 | VERIFY_T6 Phase A | ✅ Confirmed — `step_t=3`, CMD_OPEN ch=1,2,3 at t=68.8 s |
+| T6-05 | Graduated step — CMD_OPEN ch=1, ch=2, ch=3 in order | VERIFY_T6 Phase A (step 0→3 in one jump from large deviation) | ✅ Confirmed — all three CMD_OPEN posted correctly |
+| T6-06 | Close-hysteresis guard — step holds at 1 while −hyst < deviation < 0 | Not specifically tested (deviation jumped from +7 to −10) | ⬜ Deferred to integration testing |
+| T6-07 | Full close — deviation well below −hyst_t → CMD_CLOSE_ALL | VERIFY_T6 Phase B; T_avg=12, t_max=22, deviation=−10 < −2 | ✅ Confirmed — `CMD_CLOSE_ALL (step 3 → 0)` at t=129.1 s |
+| T6-08 | LOG_MODE_CHANGE in CSV on step change | Code confirmed; SD not read for this run | ⬜ Deferred to integration testing |
+| T6-09 | RH conflict resolution — RH < rh_min vs T > t_max | Not triggered (RH=72% in [50,85] → VENT_STEP_NEUTRAL throughout) | ⬜ Deferred to integration testing |
+| T6-10 | SENSOR_FAULT_T inhibit — no evaluation while T sensor faulted | Not triggered | ⬜ Deferred to integration testing |
+
+### Findings
+
+#### Finding 1 — Q1 batch processing on T2 calib exit (expected behaviour)
+
+**Observation:** T6 posted CMD_OPEN ch=1,2,3 to Q1 at t=68.8 s, while T2 was still in boot
+`calib_close_all()` (CH3 travel = 176 s). T2 did not process Q1 until calib completed at t=176.4 s.
+At that point T2 drained all queued commands: CMD_OPEN ch1 → CMD_OPEN ch2 → CMD_OPEN ch3 →
+CMD_CLOSE_ALL. With `dwell_open_min=0`, the CLOSE_ALL was accepted immediately, producing a brief
+MOVING_OPEN → 2 s gap → MOVING_CLOSE sequence on all three channels.
+
+**Assessment:** Correct behaviour. T2's Q1 consumer is blocked during `calib_close_all()`; queued
+commands are processed FIFO when calib exits. With real dwell times (`dwell_open_min > 0`), T2
+would hold channels OPEN for the dwell period before accepting a CLOSE from T6. No code change
+required.
+
+---
+
+### Phase 6 → Phase 7 Handover State
+
+| Item | State |
+|------|-------|
+| T1 | Fully implemented and verified |
+| T2 | Fully implemented; IT-01–IT-13 all pass; hardware-verified |
+| T3 | Fully implemented and verified — T3-01–T3-13 all confirmed |
+| T4 | Fully implemented — NVS load, RTC seed, sunrise/sunset, Q6/Q4/TN4 handlers |
+| T5 | Fully implemented — Modbus poll loop, sliding averages, fault detection |
+| T6 | **Fully implemented and hardware-verified** — EG1 gate, setpoint selection, graduated step evaluation, conflict resolution, incremental Q1 commands, LOG_MODE_CHANGE; T6-04/05/07 confirmed; T6-02/03/06/08/09/10 deferred to integration testing |
+| T9 | Fully implemented and hardware-verified (T9-01/03/04/05/07/08/09 confirmed) |
+| T7–T8, T10–T13 | Stubs |
+| Core automation loop | T4 → TN2 → T6 → Q1 → T2 fully wired; T4 → TN1 → T3 → Q1 → T2 fully wired |
+| EG1 | WIND_OVERRIDE, SENSOR_FAULT_T/W, MOTOR_ALARM all operational |
+
+**Next phase:** Phase 7 — UI Layer (T7 + T8). Keypad scan and LCD display tasks.

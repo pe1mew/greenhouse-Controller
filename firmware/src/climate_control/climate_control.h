@@ -160,22 +160,27 @@ int vent_resolve_conflict(int step_t, int step_rh, uint8_t cr_priority);
  * ----------------------------------------------------------------------- */
 
 /**
- * @brief T6 — Climate Control task.
+ * @brief T6 — Climate Control task (Phase 6, fully implemented).
  *
- * Wakes on TN2 (new sensor data from T4).
- * On each wake:
- *   1. Checks EG1 flags; skips evaluation if WIND_OVERRIDE, MOTOR_ALARM,
- *      or SENSOR_FAULT_T is set.
- *   2. Reads T_avg, RH_avg, is_daytime, setpoints, hyst values from T4 (MX4).
- *   3. Calls vent_step_required_t() and vent_step_required_rh().
- *   4. Calls vent_resolve_conflict() to get the final step.
- *   5. Calls vent_step_channels() to convert step → channel bitmask.
- *   6. Posts incremental CMD_OPEN / CMD_CLOSE commands for changed channels
- *      to Q1 (or CMD_CLOSE_ALL if new step is 0).
- *   7. Updates current_step_t and current_step_rh.
+ * Wakes on TN2 (ulTaskNotifyTake from T4 after every new Q6 reading).
  *
- * Motor alarm (EG1.MOTOR_ALARM set by T2): T6 sees the flag on next
- * TN2 wake; all evaluation skipped; no Q1 posts while flag is active.
+ * ### Per-wake sequence
+ *  1. **EG1 gate** — skips evaluation while WIND_OVERRIDE, MOTOR_ALARM, or
+ *     SENSOR_FAULT_T is set.  Resets current_step_t/rh to 0 on inhibit onset
+ *     so re-evaluation starts from step 0 when the flag clears.
+ *  2. **Snapshot** — dm_cfg_snapshot() under MX4; dm_meas_snapshot() under MX2.
+ *  3. **Setpoint selection** — selects t_max, rh_max, rh_min from is_daytime.
+ *  4. **Step evaluation** — vent_step_required_t() and vent_step_required_rh().
+ *  5. **Conflict resolution** — vent_resolve_conflict() → resolved step.
+ *  6. **Delta application** — apply_step_delta(): CMD_CLOSE first, then CMD_OPEN,
+ *     or a single CMD_CLOSE_ALL when resolved step == 0.
+ *  7. **Logging** — LOG_MODE_CHANGE posted to Q3 on every step change.
+ *  8. **State update** — current_step_t and current_step_rh updated.
+ *
+ * ### Inhibit behaviour
+ * When EG1 WIND_OVERRIDE or MOTOR_ALARM is set, T6 posts nothing to Q1.
+ * T3 and T2 respectively issue their own CLOSE_ALL commands.  T6 steps are
+ * reset to 0 so that on clearance it re-opens gradually from scratch.
  *
  * @param pvParameters  Unused; pass NULL.
  */

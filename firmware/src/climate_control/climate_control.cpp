@@ -1,15 +1,58 @@
 /**
  * @file climate_control.cpp
  * @brief Graduated ventilation implementation — step table, evaluation
- *        functions, conflict resolution, and T6 task stub.
+ *        functions, conflict resolution, and T6 Climate Control task (Phase 6).
+ *
+ * ## T6 task structure
+ *
+ * T6 wakes on TN2 (task notification from T4 after each new Q6 reading).
+ * On every wake it:
+ *   1. Reads EG1 flags; skips evaluation if WIND_OVERRIDE, MOTOR_ALARM, or
+ *      SENSOR_FAULT_T is set (window commands must not fight T3 or T2).
+ *   2. Snapshots cfg_shadow_t under MX4; snapshots sensor_reading_t under MX2.
+ *   3. Selects the active T and RH setpoints from is_daytime.
+ *   4. Evaluates vent_step_required_t() and vent_step_required_rh().
+ *   5. Resolves the two steps with vent_resolve_conflict().
+ *   6. Converts old and new steps to channel bitmasks; posts only the
+ *      incremental delta to Q1 via window_cmd_t.
+ *   7. Logs a MODE_CHANGE event on every step change.
+ *
+ * ## State variables
+ *
+ * Two task-local statics:
+ *   current_step_t  — last step T6 commanded for temperature.
+ *   current_step_rh — last step T6 commanded for humidity.
+ *
+ * Both are reset to 0 on transitions to WIND_OVERRIDE or MOTOR_ALARM so that
+ * when the flag clears T6 starts fresh from step 0 (T2's boot CLOSE_ALL keeps
+ * the actual window position known).
+ *
+ * ## Q1 command encoding
+ *
+ * window_cmd_t fields for T6:
+ *   .source  = SRC_T6
+ *   .action  = CMD_OPEN  / CMD_CLOSE / CMD_CLOSE_ALL
+ *   .channel = 1/2/3 for per-channel commands; 0 for CMD_CLOSE_ALL
+ *
+ * Only channels that changed are sent; no-op transitions post nothing.
  *
  * @author  Greenhouse Controller project
  */
 
+#define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
+#include <Arduino.h>
+#include <esp_log.h>
+
 #include "climate_control.h"
 #include "../types/app_types.h"
+#include "../data_manager/data_manager.h"
+#include "../event_logger/event_logger.h"
+
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
+
+static const char *TAG = "T6_CLI";
 
 /* -----------------------------------------------------------------------
  * Compile-time step → channel-mask table (Gap G)
@@ -171,18 +214,221 @@ int vent_resolve_conflict(int step_t, int step_rh, uint8_t cr_priority)
 }
 
 /* -----------------------------------------------------------------------
- * T6 task — stub (Phase 6 implementation)
+ * post_q1() — send one window_cmd_t to Q1 (non-blocking, warn on full)
+ * ----------------------------------------------------------------------- */
+static void post_q1(cmd_action_t action, uint8_t channel)
+{
+    window_cmd_t cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.action  = action;
+    cmd.channel = channel;
+    cmd.source  = SRC_T6;
+
+    if (xQueueSend(Q1, &cmd, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "[T6] Q1 full — command action=%d ch=%u dropped",
+                 (int)action, (unsigned)channel);
+    }
+}
+
+/* -----------------------------------------------------------------------
+ * post_log_mode() — emit a LOG_MODE_CHANGE record to Q3
  *
- * Full implementation: Phase 6 of firmwareImplementationPlan.md.
- * The stub keeps the scheduler happy and holds the task in a blocked state.
+ * value_a = resolved step (0..NUM_VENT_STEPS)
+ * value_b = packed: high byte = step_t, low byte = step_rh (cast to int16)
+ * ----------------------------------------------------------------------- */
+static void post_log_mode(int resolved_step, int step_t, int step_rh)
+{
+    log_event_t evt;
+    memset(&evt, 0, sizeof(evt));
+    evt.timestamp  = dm_get_unix_time();
+    evt.event_type = (uint8_t)LOG_MODE_CHANGE;
+    evt.initiator  = (uint8_t)LOG_BY_SYSTEM;
+    evt.channel    = 0;
+    evt.param_id   = 0;
+    evt.value_a    = (int16_t)resolved_step;
+    /* Pack step_t (high byte) and step_rh (low byte) into value_b.
+     * step_rh may be VENT_STEP_NEUTRAL (−1); clamp to −1..3 for int8. */
+    int8_t b_t  = (int8_t)(step_t  < -128 ? -128 : (step_t  > 127 ? 127 : step_t));
+    int8_t b_rh = (int8_t)(step_rh < -128 ? -128 : (step_rh > 127 ? 127 : step_rh));
+    evt.value_b = (int16_t)(((uint16_t)(uint8_t)b_t << 8) | (uint8_t)b_rh);
+    log_post(&evt);
+}
+
+/* -----------------------------------------------------------------------
+ * apply_step_delta() — post incremental Q1 commands for step change
+ *
+ * new_step and old_step are expressed as resolved steps (0..NUM_VENT_STEPS).
+ * Only changed channels are sent.  If new_step == 0 a single CMD_CLOSE_ALL
+ * is issued (covers all three channels in one command; T2 handles it).
+ * ----------------------------------------------------------------------- */
+static void apply_step_delta(int old_step, int new_step)
+{
+    if (old_step == new_step) {
+        return;  /* Nothing to do */
+    }
+
+    uint8_t old_mask = vent_step_channels(old_step);
+    uint8_t new_mask = vent_step_channels(new_step);
+
+    if (new_mask == 0) {
+        /* Full close — one CMD_CLOSE_ALL command is sufficient. */
+        post_q1(CMD_CLOSE_ALL, 0);
+        ESP_LOGI(TAG, "[T6] → CMD_CLOSE_ALL (step %d → 0)", old_step);
+        return;
+    }
+
+    /* Per-channel open/close commands for channels that changed. */
+    uint8_t open_bits  = (uint8_t)(new_mask & ~old_mask);
+    uint8_t close_bits = (uint8_t)(old_mask & ~new_mask);
+
+    /* Post CLOSE commands first (narrowing before widening is safer). */
+    for (uint8_t ch = 1; ch <= 3; ch++) {
+        if (close_bits & (1u << (ch - 1u))) {
+            post_q1(CMD_CLOSE, ch);
+            ESP_LOGI(TAG, "[T6] → CMD_CLOSE ch=%u (step %d → %d)",
+                     (unsigned)ch, old_step, new_step);
+        }
+    }
+    for (uint8_t ch = 1; ch <= 3; ch++) {
+        if (open_bits & (1u << (ch - 1u))) {
+            post_q1(CMD_OPEN, ch);
+            ESP_LOGI(TAG, "[T6] → CMD_OPEN  ch=%u (step %d → %d)",
+                     (unsigned)ch, old_step, new_step);
+        }
+    }
+}
+
+/* -----------------------------------------------------------------------
+ * T6 task — Climate Control (Phase 6)
  * ----------------------------------------------------------------------- */
 
 void task_climate_control(void *pvParameters)
 {
     (void)pvParameters;
-    /* TODO Phase 6: block on TN2 / TN3; read MX2 + MX4; call evaluation
-     * functions; post incremental window commands to Q1; update current steps. */
+
+    ESP_LOGI(TAG, "[T6] task alive");
+
+    /* Task-local state — tracks last commanded step from each source.
+     * Initialised to 0; T2's boot CLOSE_ALL ensures windows are CLOSED. */
+    int current_step_t  = 0;
+    int current_step_rh = 0;
+
+    /* Track whether we were inhibited on the previous cycle so we can log
+     * mode transitions (inhibit onset / inhibit clearance). */
+    bool prev_inhibited = false;
+
     for (;;) {
-        vTaskDelay(portMAX_DELAY);
+        /* ----------------------------------------------------------------
+         * 1. Block on TN2 — T4 notifies after every new Q6 reading.
+         *    portMAX_DELAY: T6 has nothing to do between sensor updates.
+         * ---------------------------------------------------------------- */
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        /* ----------------------------------------------------------------
+         * 2. Check EG1 inhibit flags.
+         *    Skip evaluation while any of these are active:
+         *      WIND_OVERRIDE  — T3 has forced all windows closed
+         *      MOTOR_ALARM    — T2 has de-energised all relays (emergency)
+         *      SENSOR_FAULT_T — T/RH sensor unreliable; cannot evaluate T
+         * ---------------------------------------------------------------- */
+        EventBits_t bits = xEventGroupGetBits(EG1);
+        bool inhibited = (bits & (EG1_BIT_WIND_OVERRIDE |
+                                  EG1_BIT_MOTOR_ALARM   |
+                                  EG1_BIT_SENSOR_FAULT_T)) != 0;
+
+        if (inhibited) {
+            if (!prev_inhibited) {
+                /* Transition into inhibited state — reset steps so T6
+                 * re-evaluates from scratch when inhibit clears. */
+                current_step_t  = 0;
+                current_step_rh = 0;
+                ESP_LOGI(TAG, "[T6] inhibited (EG1=0x%02lx) — evaluation suspended",
+                         (unsigned long)bits);
+            }
+            prev_inhibited = true;
+            continue;
+        }
+
+        if (prev_inhibited) {
+            ESP_LOGI(TAG, "[T6] inhibit cleared — resuming evaluation from step 0");
+        }
+        prev_inhibited = false;
+
+        /* ----------------------------------------------------------------
+         * 3. Snapshot configuration and current measurement.
+         * ---------------------------------------------------------------- */
+        cfg_shadow_t cfg;
+        dm_cfg_snapshot(&cfg);
+
+        sensor_reading_t meas;
+        bool meas_valid = false;
+        dm_meas_snapshot(&meas, &meas_valid);
+
+        if (!meas_valid) {
+            /* No sensor data yet — wait for the first Q6 message. */
+            ESP_LOGD(TAG, "[T6] no measurement yet — skipping");
+            continue;
+        }
+
+        /* ----------------------------------------------------------------
+         * 4. Select active setpoints (day vs. night).
+         * ---------------------------------------------------------------- */
+        int16_t t_max  = cfg.is_daytime ? cfg.t_max_day  : cfg.t_max_ngt;
+        int16_t rh_max = cfg.is_daytime ? cfg.rh_max_day : cfg.rh_max_ngt;
+        int16_t rh_min = cfg.is_daytime ? cfg.rh_min_day : cfg.rh_min_ngt;
+
+        /* Defensively ensure hysteresis values are positive; fall back to 1
+         * so step_from_deviation never divides by zero. */
+        int16_t hyst_t  = (cfg.hyst_t  > 0) ? cfg.hyst_t  : 1;
+        int16_t hyst_rh = (cfg.hyst_rh > 0) ? cfg.hyst_rh : 1;
+
+        bool rh_ctrl_en = (cfg.rh_ctrl_en != 0);
+
+        /* ----------------------------------------------------------------
+         * 5. Evaluate required steps.
+         * ---------------------------------------------------------------- */
+        int step_t  = vent_step_required_t(meas.t_avg_c, t_max, hyst_t,
+                                           current_step_t);
+        int step_rh = vent_step_required_rh(meas.rh_avg_pct, rh_max, rh_min,
+                                            hyst_rh, rh_ctrl_en,
+                                            current_step_rh);
+
+        /* ----------------------------------------------------------------
+         * 6. Resolve conflict → single resolved step.
+         * ---------------------------------------------------------------- */
+        int resolved = vent_resolve_conflict(step_t, step_rh,
+                                             (uint8_t)cfg.cr_priority);
+
+        ESP_LOGI(TAG,
+                 "[T6] T_avg=%d t_max=%d hyst=%d → step_t=%d | "
+                 "RH_avg=%u rh_max=%d rh_min=%d hyst=%d rh_en=%d → step_rh=%d | "
+                 "resolved=%d (was cur_t=%d cur_rh=%d)",
+                 (int)meas.t_avg_c, (int)t_max, (int)hyst_t, step_t,
+                 (unsigned)meas.rh_avg_pct, (int)rh_max, (int)rh_min,
+                 (int)hyst_rh, (int)rh_ctrl_en, step_rh,
+                 resolved, current_step_t, current_step_rh);
+
+        /* ----------------------------------------------------------------
+         * 7. Compute previous resolved step and apply incremental delta.
+         * ---------------------------------------------------------------- */
+        int prev_resolved = vent_resolve_conflict(current_step_t,
+                                                   (current_step_rh == 0 && !rh_ctrl_en)
+                                                       ? VENT_STEP_NEUTRAL
+                                                       : current_step_rh,
+                                                   (uint8_t)cfg.cr_priority);
+
+        if (resolved != prev_resolved) {
+            apply_step_delta(prev_resolved, resolved);
+            post_log_mode(resolved, step_t, step_rh);
+        }
+
+        /* ----------------------------------------------------------------
+         * 8. Update state.
+         * ---------------------------------------------------------------- */
+        current_step_t  = step_t;
+        /* Preserve VENT_STEP_NEUTRAL semantics: if rh returned NEUTRAL,
+         * keep the rh step at NEUTRAL so future hysteresis is evaluated
+         * correctly from the NEUTRAL baseline. */
+        current_step_rh = step_rh;
     }
 }

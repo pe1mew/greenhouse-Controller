@@ -198,10 +198,10 @@ Verification: CSV file created on SD; 5 manual events appear; rotate test at 512
 
 ---
 
-### Phase 6 — Climate Control (T6)
+### Phase 6 — Climate Control (T6)  ✅ done
 **Goal:** Autonomous temperature/humidity-driven ventilation with conflict resolution.
 
-Files: `climate_control.h` — ✅ **done** (Gap G); `climate_control.cpp` — ✅ **done** (Gap G); Phase 6 completes the T6 task body.
+Files: `climate_control.h` — ✅ **done** (Gap G + Phase 6); `climate_control.cpp` — ✅ **done** (Gap G + Phase 6).
 
 Implementation:
 - Block on TN2 (new sensor data from T4)

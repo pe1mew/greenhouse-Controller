@@ -1,0 +1,2 @@
+In the data directory a example of the webgui for teh sensor emulator can be found that shall be used as a template.
+This example is retrieved from [greenhouse-Controller-Modbus-sensor-emulator](https://github.com/pe1mew/greenhouse-Controller-Modbus-sensor-emulator)
