@@ -254,3 +254,38 @@ footer {
 }
 footer a { color: var(--muted); text-decoration: none; }
 footer a:hover { color: var(--fg); }
+
+/* ── Tooltips (data-tip) ─────────────────────────────────────────── */
+[data-tip] {
+  position: relative;
+  cursor: help;
+}
+[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 100;
+  background: #222;
+  color: #eee;
+  font-size: .78rem;
+  line-height: 1.4;
+  padding: .35em .6em;
+  border-radius: 4px;
+  white-space: normal;
+  width: 260px;
+  box-shadow: 0 2px 8px rgba(0,0,0,.5);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .15s;
+}
+[data-tip]:hover::after {
+  opacity: 1;
+}
+.tip-icon {
+  font-size: .75rem;
+  color: #888;
+  cursor: help;
+  user-select: none;
+  vertical-align: super;
+}
