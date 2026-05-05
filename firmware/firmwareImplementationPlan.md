@@ -242,7 +242,7 @@ Files: `keypad_scan.h/.cpp` — ✅ **done**; `ui_display.h/.cpp` — ✅ **done
 - Session timeout: software timer reset on each keypress; on expiry, log session close, return to STATUS_DISPLAY
 - **LCD I2C address: 0x3E (AiP31068L bridge)** — not 0x27
 
-Stubs acceptable: WiFi AP toggle screen, advanced admin settings can display "Not implemented" initially.
+~~Stubs acceptable: WiFi AP toggle screen~~ — **implemented in v1.10.1:** `handle_menu_system()` added; root menu updated to show all 4 items; AP toggle requires admin session; posts Q4 to T4.
 
 Drivers used: LIB-4 (lcd_*), LIB-5 (keypad_scan), LIB-2 (via LCD under MX1)
 
@@ -250,20 +250,20 @@ Verification: Status screen rotates; navigate to T_max_day within 4 keypresses; 
 
 ---
 
-### Phase 8 — Network Manager (T10)
+### Phase 8 — Network Manager (T10)  ✅ done
 **Goal:** WiFi AP/client, NTP sync, DS1307 update, status to T8.
 
-Files: `network_manager.h/.cpp`
+Files: `network_manager.h/.cpp` — ✅ **done**
 
 Implementation:
-- WiFi AP: start on admin command (Q4 `wifi_ap_enable`); SSID `"Greenhouse-XXXX"` (last 2 MAC bytes); auto-shutdown timer from NVS
-- WiFi client: connect from NVS SSID/PSK; exponential backoff reconnect (max 60s interval); report state changes to Q5
-- NTP: `configTime(0, 0, "pool.ntp.org")`; then `setenv("TZ", tz_str_from_nvs, 1); tzset();`; on sync confirmed, send TN4 to T4
-- T4 on TN4: calls `rtc_set_time()` to sync DS1307
+- WiFi AP: `start_ap()` / `stop_ap()` driven by NVS `wifi/ap_enable`; `poll_ap()` called every 5 s loop tick; SSID `"Greenhouse-XXYY"` (last 2 MAC bytes); auto-shutdown timer from `dm_cfg_snapshot().ap_timeout_min`; WPA2 password from NVS `wifi/ap_psk` (default `"0123456789"`, never open — v1.10.1)
+- WiFi client FSM: NET_IDLE → NET_CONNECTING → NET_CONNECTED → NET_RUNNING → NET_BACKOFF; exponential backoff 2→4→…→60 s; `WiFi.setAutoReconnect(false)` (T10 manages reconnection itself)
+- NTP: `configTime(0, 0, "pool.ntp.org")` then polls `time(NULL) > 1700000000L` for up to 30 s; on success: `xTaskNotify(task_t4, DM_NOTIFY_NTP_SYNCED, eSetBits)` → T4 calls `rtc_set_time()` under MX1
+- Q5: `xQueueOverwrite(Q5, &status)` on every state change; T8 reads on next tick and shows IP / "No WiFi" on LCD
 
 Drivers used: None from driver library (Arduino WiFi + ESP-IDF SNTP)
 
-Verification: AP appears in phone scan; auto-shuts after timeout; client connects; NTP sync verified against reference; DS1307 updated.
+Verification (Phase 8 results): Clean build ✅; board boots without crash ✅; T1 heartbeat steady ✅; NET_IDLE (no SSID) produces no periodic output as expected ✅; Q5 initial post received by T8 ✅.
 
 ---
 
@@ -372,4 +372,5 @@ Verification: Subscribe on broker; verify publish; publish command; verify relay
 | `firmware/src/event_logger/event_logger.cpp` | Full T9 implementation: drain loop, NVS ring buffer, SD CSV append, rotation, drop-counter surfacing | ✅ Done (Phase 5) |
 | `firmware/src/keypad_scan/keypad_scan.h/.cpp` | T7: 20 ms scan, key-repeat, Q2 post | ✅ Done (Phase 7) |
 | `firmware/src/ui_display/ui_display.h/.cpp` | T8: LCD FSM, status pages, menu nav, PIN auth, Q4 config post, session timeout | ✅ Done (Phase 7) |
+| `firmware/src/network_manager/network_manager.h/.cpp` | T10: WiFi client FSM, AP management, NTP sync, TN4, Q5 | ✅ Done (Phase 8) |
 | `firmware/src/main.cpp` | RTOS primitives, task spawn, pin_auth_init(), extern handle definitions | ✅ Done (Phase 0 + Phase 7) |

@@ -6,6 +6,65 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.10.1] — 2026-05-05
+
+*Post-Phase 8 corrections: AP enable/disable added to T8 system menu; root menu now shows all four items; AP password defaulted to `0123456789`; TSDS AP password description corrected.*
+
+### Added
+- `firmware/src/ui_display/ui_display.cpp` — `handle_menu_system()` and updated `render_menu_system()`:
+  - Root menu row 1 changed from `"3:Access  *:Back"` to `"3:Access 4:Sys *"` so item 4 (System) is visible
+  - System menu shows `"1=WiFi AP   *:Bk"` (or `"1=AP(on)    *:Bk"` when AP is already active)
+  - Pressing `1` with admin session toggles AP on/off: posts `Q4 {ns="wifi", key="ap_enable", value=0/1}` → T4 persists → T10 acts on next 5 s poll
+  - Without admin session: shows `"Admin login req. / 3=Access menu"` for 2 s, returns to system menu
+
+### Changed
+- `firmware/src/network_manager/network_manager.cpp`:
+  - Added `#define AP_PSK_DEFAULT "0123456789"` — AP is never started open/passwordless
+  - `nvs_cfg_get_str_or_default` for `ap_psk` seeds NVS with `AP_PSK_DEFAULT` on first boot (was empty string)
+  - `start_ap()` uses NVS password when set, falls back to `AP_PSK_DEFAULT` if empty
+- `design/technicalSoftwareDesignSpecification.md`:
+  - §WiFi AP mode: corrected "password hashed" to plaintext with rationale (WPA2 requires raw key); documented default `0123456789`; noted it is configurable by admin via web interface
+  - NVS schema `wifi` row: `ap_psk` annotated as plaintext with default; contrast with `psk_hash` (client, hashed) made explicit
+
+### Verified on hardware
+- AP `Greenhouse-XXYY` visible in WiFi scan after enabling via LCD system menu ✅
+- AP requires password `0123456789` ✅
+- LCD system menu shows `"1=AP(on)    *:Bk"` when AP is active ✅
+- Admin session required; non-admin press shows prompt ✅
+
+---
+
+## [1.10.0] — 2026-05-05
+
+*Phase 8 — Network Manager (T10) implemented: WiFi station FSM with exponential backoff, soft-AP management, NTP synchronisation with DS1307 update via TN4, and Q5 network status to T8.*
+
+### Added
+- `firmware/src/network_manager/network_manager.cpp` — full T10 task body (replaces Phase 0 stub):
+  - 5-state client FSM: `NET_IDLE` → `NET_CONNECTING` → `NET_CONNECTED` → `NET_RUNNING` → `NET_BACKOFF`
+  - `NET_IDLE`: polls NVS `wifi/ssid` every 5 s; advances to `NET_CONNECTING` when SSID appears (supports post-boot provisioning via web server)
+  - `NET_CONNECTING`: 30 s hard timeout; `WiFi.setAutoReconnect(false)` — T10 owns reconnection
+  - `NET_CONNECTED`: posts Q5 with IP; runs `run_ntp_sync()` inline (blocks up to 30 s for plausible `time(NULL) > 1 700 000 000`); advances to `NET_RUNNING`
+  - `NET_RUNNING`: monitors `WiFi.status()` every 5 s for connection drop
+  - `NET_BACKOFF`: exponential wait 2 → 4 → 8 → 16 → 32 → 60 s (capped); re-reads NVS credentials before retry
+  - AP management: `poll_ap()` reads NVS `wifi/ap_enable` every loop tick; starts/stops `WiFi.softAP()` on change; enforces `cfg.ap_timeout_min` auto-shutdown (writes `ap_enable=0` back to NVS on expiry)
+  - AP SSID: `"Greenhouse-XXYY"` from last two MAC bytes
+  - NTP sync: `configTime(0, 0, "pool.ntp.org")` → on success: `xTaskNotify(task_t4, DM_NOTIFY_NTP_SYNCED, eSetBits)` → T4 calls `rtc_set_time()` under MX1
+  - Q5: `xQueueOverwrite(Q5, &status)` on every state change; `net_status_t {client_connected, ap_active, ip_str[16]}`
+  - LOG_SYSTEM events: STA connect/disconnect (value_a=1), NTP success/timeout (value_a=2), AP start/stop (value_a=3)
+
+### Changed
+- `firmware/firmwareImplementationPlan.md` — Phase 8 marked ✅ done; `network_manager` added to Critical Files Summary
+- `firmware/firmwareImplementationResults.md` — Phase 8 section added
+
+### Verified on hardware (runtime capture)
+- T10-01: Build clean — 0 errors, 0 warnings ✅
+- T10-02: Upload and boot without crash ✅
+- T10-03: T1 heartbeat steady at t=15–40 s; no Guru Meditation ✅
+- T10-04: NET_IDLE (no SSID configured) — no periodic log output (expected behaviour) ✅
+- T10-05: Q5 initial post received by T8 — LCD network page shows "No WiFi" ✅
+
+---
+
 ## [1.9.0] — 2026-05-05
 
 *Phase 7 — UI Layer (T7 + T8) implemented: 4×4 keypad scan with key-repeat and full LCD menu FSM with PIN authentication, config editing, and session management.*

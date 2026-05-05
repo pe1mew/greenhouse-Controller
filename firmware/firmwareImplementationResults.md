@@ -2020,3 +2020,179 @@ relies on indirect serial evidence and physical observation.
 | PIN auth | Initialised in `setup()`; default farmer PIN "1234", admin PIN "12345678" |
 
 **Next phase:** Phase 8 — Network Manager (T10). WiFi AP/client, NTP, DS1307 update, Q5 status to T8.
+
+---
+
+## Phase 8 — Network Manager (T10)
+
+**Date completed:** 2026-05-05
+**Target board:** WEMOS LOLIN S3 (ESP32-S3, 16 MB flash, 8 MB OPI PSRAM)
+**Framework:** Arduino-ESP32 v3.20017 (IDF 5.x base)
+**PlatformIO platform:** espressif32 @ 6.12.0
+
+---
+
+### Scope
+
+Phase 8 goal per `firmwareImplementationPlan.md`:
+
+> WiFi station + soft-AP lifecycle, NTP synchronisation, DS1307 update via TN4, Q5 network status to T8.
+
+Replaces the T10 stub with the full task implementation.
+
+---
+
+### Files Created / Modified
+
+| File | Change |
+|------|--------|
+| `firmware/src/network_manager/network_manager.cpp` | Full T10 implementation (stub replaced) |
+
+---
+
+### Design summary
+
+T10 runs on core 0 at priority TASK_PRIO_LOW with a 5-second main loop tick.
+
+**Client FSM (5 states):**
+
+| State | Entry condition | Action |
+|-------|-----------------|--------|
+| `NET_IDLE` | No SSID in NVS | Re-read NVS every 5 s; advance to CONNECTING if SSID appears |
+| `NET_CONNECTING` | `WiFi.begin()` called | Poll `WiFi.status()` every 5 s; 30 s hard timeout → `NET_BACKOFF` |
+| `NET_CONNECTED` | `WL_CONNECTED` observed | Post Q5 (IP visible); call `run_ntp_sync()` inline; advance to `NET_RUNNING` |
+| `NET_RUNNING` | NTP resolved (or timed out) | Monitor for connection drop every 5 s |
+| `NET_BACKOFF` | Connection lost / connect timeout | Wait exponential backoff (2→4→8→…→60 s cap); re-`WiFi.begin()` → `NET_CONNECTING` |
+
+**AP management:**
+- AP SSID: `"Greenhouse-XXYY"` built from last two MAC bytes.
+- `poll_ap()` called every loop tick; reads `NVS_NS_WIFI / "ap_enable"` (i32). Starts/stops soft-AP on change.
+- Auto-shutdown: reads `cfg.ap_timeout_min` from `dm_cfg_snapshot()`; if non-zero and elapsed ≥ limit, writes `ap_enable=0` to NVS and calls `stop_ap()`.
+- T8 / T11 enable the AP by posting `{ns="wifi", key="ap_enable", value=1}` to Q4 → T4 persists to NVS → T10 reads on next poll.
+
+**NTP synchronisation:**
+- Called inline from `NET_CONNECTING → NET_CONNECTED` transition.
+- `configTime(0, 0, "pool.ntp.org")` then polls `time(NULL) > 1 700 000 000` for up to 30 s (1 s steps).
+- On success: `xTaskNotify(task_t4, DM_NOTIFY_NTP_SYNCED, eSetBits)` — T4 writes time to DS1307 under MX1.
+- Logs `LOG_SYSTEM {value_a=2, value_b=1}` on success, `{value_b=0}` on timeout.
+
+**Q5 posts** (`xQueueOverwrite`) on every state change: `{client_connected, ap_active, ip_str[16]}`.
+
+**LOG_SYSTEM events:**
+
+| value_a | value_b | Meaning |
+|---------|---------|---------|
+| 1 | 1 | STA connected |
+| 1 | 0 | STA disconnected |
+| 2 | 1 | NTP sync success |
+| 2 | 0 | NTP sync timeout |
+| 3 | 1 | AP started |
+| 3 | 0 | AP stopped |
+
+---
+
+### Build output
+
+```
+RAM:   [==        ]  18.8% (used 61520 bytes from 327680 bytes)
+Flash: [====      ]  40.7% (used 852745 bytes from 2097152 bytes)
+[SUCCESS] Took 9.03 seconds
+```
+
+No warnings or errors. Flash usage increased ~12 kB vs Phase 7 (WiFi stack link-in).
+
+---
+
+### Verification
+
+| Check | Method | Result |
+|-------|--------|--------|
+| T10-01 | Build: `pio run -e lolin_s3` clean (0 errors, 0 warnings) | ✅ PASS |
+| T10-02 | Upload succeeds; board boots without crash | ✅ PASS |
+| T10-03 | T1 heartbeat steady after upload (t=15–40 s); no Guru Meditation | ✅ PASS |
+| T10-04 | NET_IDLE state: no SSID in NVS → no periodic log output (expected); no crash | ✅ PASS |
+| T10-05 | Q5 initial post (not-connected) visible in T8 network status page | ✅ (LCD shows "No WiFi" on network status rotation) |
+| T10-06 | T4 `DM_NOTIFY_NTP_SYNCED` path: not reachable without SSID; path verified by code review | ✅ Code review |
+| T10-07 | AP SSID construction (`snprintf("Greenhouse-%02X%02X", mac[4], mac[5])`) | ✅ Code review |
+| T10-08 | Exponential backoff cap: `BACKOFF_MAX_MS = 60000`; doubling terminates at cap | ✅ Code review |
+
+---
+
+### Phase 8 → Phase 9 Handover State
+
+| Item | State |
+|------|-------|
+| T1 | Fully implemented and verified |
+| T2 | Fully implemented; IT-01–IT-13 all pass; hardware-verified |
+| T3 | Fully implemented and verified |
+| T4 | Fully implemented — NVS load, RTC seed, sunrise/sunset, Q6/Q4/TN4 handlers |
+| T5 | Fully implemented — Modbus poll loop, sliding averages, fault detection |
+| T6 | Fully implemented and hardware-verified |
+| T7 | Fully implemented — 20 ms scan, key-repeat, Q2 post |
+| T8 | Fully implemented — LCD FSM, status pages, menu nav, PIN auth, Q4 config post, session timeout; system menu AP toggle (v1.10.1) |
+| T9 | Fully implemented and hardware-verified |
+| T10 | **Fully implemented** — WiFi client FSM, AP management (default PSK `0123456789`), NTP sync, TN4, Q5 |
+| T11–T13 | Stubs |
+| Core automation loop | T4→TN2→T6→Q1→T2 and T4→TN1→T3→Q1→T2 fully wired |
+| EG1 | All bits operational |
+| Network status | Q5 wired T10 → T8; T8 shows IP / "No WiFi" on LCD network page |
+
+**Next phase:** Phase 9 — Web Server (T11). Async REST/WebSocket API, AP-mode commissioning UI, config read/write via Q4.
+
+---
+
+## Post-Phase 8 Corrections (v1.10.1)
+
+**Date:** 2026-05-05
+
+Three defects found during hardware verification after Phase 8:
+
+### Defect 1 — Root menu item 4 invisible
+
+**Problem:** `render_menu_root()` displayed `"1:Climate 2:Wind" / "3:Access  *:Back"` — item 4 (System) was never shown, making the system menu unreachable by a new user without reading source code.
+
+**Fix:** Changed to `"1:Clim  2:Wind  " / "3:Access 4:Sys *"` — all four items and back indicator visible on two rows.
+
+**File:** `firmware/src/ui_display/ui_display.cpp` — `render_menu_root()`
+
+---
+
+### Defect 2 — No way to enable AP from LCD
+
+**Problem:** `UI_MENU_SYSTEM` was a stub (`"See web UI  *:Bk"`). The only way to enable the AP was to write `wifi/ap_enable=1` directly to NVS. The web server (T11) does not exist yet.
+
+**Fix:** Added `handle_menu_system()`:
+- Displays `"1=WiFi AP   *:Bk"` (or `"1=AP(on)    *:Bk"` when AP already active)
+- `1` toggles AP: posts `Q4 {ns="wifi", key="ap_enable", value=0/1}` (admin session required)
+- Without admin session: `"Admin login req. / 3=Access menu"` shown for 2 s
+
+**File:** `firmware/src/ui_display/ui_display.cpp` — `render_menu_system()`, `handle_menu_system()`
+
+---
+
+### Defect 3 — AP started open (no password) when NVS key absent
+
+**Problem:** `start_ap()` passed `nullptr` to `WiFi.softAP()` when `s_ap_psk` was empty (NVS key not yet written). This created an open, passwordless AP — a security risk.
+
+**Root cause:** TSDS incorrectly stated AP password was "stored in NVS; password hashed". WPA2 requires the raw passphrase; hashing is not applicable. No default had been defined.
+
+**Fix:**
+- Defined `AP_PSK_DEFAULT "0123456789"` in `network_manager.cpp`
+- `nvs_cfg_get_str_or_default` seeds NVS with `AP_PSK_DEFAULT` on first boot
+- `start_ap()` uses NVS value if set, falls back to `AP_PSK_DEFAULT` — AP is never open
+- TSDS §WiFi AP mode corrected; NVS schema `wifi` row updated
+
+**Files:** `firmware/src/network_manager/network_manager.cpp`; `design/technicalSoftwareDesignSpecification.md`
+
+---
+
+### Verification (v1.10.1)
+
+| Check | Result |
+|-------|--------|
+| Build clean (0 errors, 0 warnings) | ✅ |
+| Root menu shows `"3:Access 4:Sys *"` | ✅ |
+| System menu `1` enables AP (admin session); `"1=AP(on)"` shown when active | ✅ |
+| System menu `1` without admin session shows prompt | ✅ |
+| AP `Greenhouse-XXYY` visible in WiFi scan after enabling | ✅ |
+| AP requires password `0123456789` | ✅ |

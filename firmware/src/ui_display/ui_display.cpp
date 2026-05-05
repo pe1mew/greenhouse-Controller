@@ -15,7 +15,7 @@
  *
  * ── FSM states ─────────────────────────────────────────────────────────────
  *  UI_STATUS         auto-rotate 4 pages × 5 s; any key → UI_MENU_ROOT
- *  UI_MENU_ROOT      1=Climate  2=Wind  3=Access  *=back
+ *  UI_MENU_ROOT      1=Climate  2=Wind  3=Access  4=System  *=back
  *  UI_MENU_CLIMATE   11 climate params, 2 per page; #=next page  *=back
  *  UI_MENU_WIND       2 wind params, 1 page
  *  UI_MENU_ACCESS    1=Login farmer  2=Login admin  3=Logout  *=back
@@ -409,7 +409,7 @@ static void render_status(void)
 
 static void render_menu_root(void)
 {
-    lcd_set("1:Climate 2:Wind", "3:Access  *:Back");
+    lcd_set("1:Clim  2:Wind  ", "3:Access 4:Sys *");
 }
 
 /**
@@ -453,7 +453,54 @@ static void render_menu_access(void)
 
 static void render_menu_system(void)
 {
-    lcd_set("System settings ", "See web UI  *:Bk");
+    /* Show current AP status on row 1 so user knows state before pressing */
+    if (s_net.ap_active) {
+        lcd_set("System settings ", "1=AP(on)    *:Bk");
+    } else {
+        lcd_set("System settings ", "1=WiFi AP   *:Bk");
+    }
+}
+
+static void handle_menu_system(char key)
+{
+    switch (key) {
+        case '1': /* Enable / disable WiFi AP */
+            if (s_session < SESSION_ADMIN) {
+                show_msg("Admin login req.", "3=Access menu   ", 2000);
+                s_state = UI_MENU_SYSTEM;
+            } else {
+                /* Toggle: if AP already on, turn it off; if off, turn it on */
+                int32_t new_val = s_net.ap_active ? 0 : 1;
+                config_update_t upd = {};
+                snprintf(upd.ns,  sizeof(upd.ns),  "wifi");
+                snprintf(upd.key, sizeof(upd.key), "ap_enable");
+                upd.value = new_val;
+                if (xQueueSend(Q4, &upd, pdMS_TO_TICKS(200)) != pdTRUE) {
+                    ESP_LOGW(TAG, "Q4 full — ap_enable change lost");
+                }
+                log_event_t ev = {};
+                ev.timestamp  = (uint32_t)time(NULL);
+                ev.event_type = LOG_SYSTEM;
+                ev.initiator  = LOG_BY_ADMIN;
+                ev.value_a    = (int16_t)new_val;
+                log_post(&ev);
+                if (new_val) {
+                    show_msg("WiFi AP         ", "enabling...     ", 1500);
+                } else {
+                    show_msg("WiFi AP         ", "disabling...    ", 1500);
+                }
+                s_state = UI_MENU_SYSTEM;
+            }
+            break;
+
+        case '*':
+            s_state = UI_MENU_ROOT;
+            s_dirty = true;
+            break;
+
+        default:
+            break;
+    }
 }
 
 static void render_pin_entry(void)
@@ -818,9 +865,7 @@ void task_ui_display(void *pvParameters)
                 case UI_MENU_CLIMATE:  handle_param_menu(evt.key, false);  break;
                 case UI_MENU_WIND:     handle_param_menu(evt.key, true);   break;
                 case UI_MENU_ACCESS:   handle_menu_access(evt.key);        break;
-                case UI_MENU_SYSTEM:
-                    if (evt.key == '*') { s_state = UI_MENU_ROOT; s_dirty = true; }
-                    break;
+                case UI_MENU_SYSTEM:   handle_menu_system(evt.key);         break;
                 case UI_PIN_ENTRY:     handle_pin(evt.key);                break;
                 case UI_EDIT_VALUE:    handle_edit(evt.key);               break;
             }
