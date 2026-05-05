@@ -445,14 +445,14 @@ static void render_status(void)
                 struct tm t;
                 time_t ts = (time_t)cfg_t.current_unix_ts;
                 localtime_r(&ts, &t);
-                snprintf(r0, sizeof(r0), "%04d-%02d-%02d %02d:%02d",
-                         t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
+                snprintf(r0, sizeof(r0), "%02d-%02d-%04d %02d:%02d",
+                         t.tm_mday, t.tm_mon + 1, t.tm_year + 1900,
                          t.tm_hour, t.tm_min);
             } else {
-                snprintf(r0, sizeof(r0), "----/--/-- --:--");
+                snprintf(r0, sizeof(r0), "--/--/---- --:--");
             }
             const char *src = s_net.ntp_synced ? "NTP" : "RTC";
-            snprintf(r1, sizeof(r1), "Src:%-3s  #=SetTm", src);
+            snprintf(r1, sizeof(r1), "Src:%-3s     #=Set", src);
             break;
         }
 
@@ -562,20 +562,23 @@ static void handle_menu_system(char key)
 
 static void render_set_date(void)
 {
-    /* Row 0: current date for reference */
+    /* Row 0: current date for reference (DD-MM-YYYY) */
     char r0[17], r1[17];
     time_t now = time(NULL);
     struct tm tn;
     localtime_r(&now, &tn);
-    snprintf(r0, sizeof(r0), "Now %04d-%02d-%02d  ",
-             tn.tm_year + 1900, tn.tm_mon + 1, tn.tm_mday);
+    snprintf(r0, sizeof(r0), "Now %02d-%02d-%04d ",
+             tn.tm_mday, tn.tm_mon + 1, tn.tm_year + 1900);
 
-    /* Row 1: entry DD/MM/YY with underscores for missing digits */
-    char d[7];
-    for (int i = 0; i < 6; i++) d[i] = (i < (int)s_dt_len) ? s_dt_buf[i] : '_';
-    d[6] = '\0';
-    snprintf(r1, sizeof(r1), "%c%c/%c%c/%c%c #OK *Bk",
-             d[0], d[1], d[2], d[3], d[4], d[5]);
+    /* Row 1: template "DD-MM-YY"; typed digits overwrite the template letters */
+    char c0 = (s_dt_len > 0) ? s_dt_buf[0] : 'D';
+    char c1 = (s_dt_len > 1) ? s_dt_buf[1] : 'D';
+    char c2 = (s_dt_len > 2) ? s_dt_buf[2] : 'M';
+    char c3 = (s_dt_len > 3) ? s_dt_buf[3] : 'M';
+    char c4 = (s_dt_len > 4) ? s_dt_buf[4] : 'Y';
+    char c5 = (s_dt_len > 5) ? s_dt_buf[5] : 'Y';
+    snprintf(r1, sizeof(r1), "%c%c-%c%c-%c%c #OK *Bk",
+             c0, c1, c2, c3, c4, c5);
     lcd_set(r0, r1);
 }
 
@@ -589,12 +592,13 @@ static void render_set_time(void)
     snprintf(r0, sizeof(r0), "Now:  %02d:%02d      ",
              tn.tm_hour, tn.tm_min);
 
-    /* Row 1: entry HH:MM with underscores for missing digits */
-    char d[5];
-    for (int i = 0; i < 4; i++) d[i] = (i < (int)s_dt_len) ? s_dt_buf[i] : '_';
-    d[4] = '\0';
+    /* Row 1: template "HH:mm"; typed digits overwrite the template letters */
+    char c0 = (s_dt_len > 0) ? s_dt_buf[0] : 'H';
+    char c1 = (s_dt_len > 1) ? s_dt_buf[1] : 'H';
+    char c2 = (s_dt_len > 2) ? s_dt_buf[2] : 'm';
+    char c3 = (s_dt_len > 3) ? s_dt_buf[3] : 'm';
     snprintf(r1, sizeof(r1), "%c%c:%c%c    #OK *Bk",
-             d[0], d[1], d[2], d[3]);
+             c0, c1, c2, c3);
     lcd_set(r0, r1);
 }
 
