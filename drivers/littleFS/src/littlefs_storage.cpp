@@ -32,8 +32,8 @@
   static fs::LittleFSFS g_lfs_a;
   static fs::LittleFSFS g_lfs_b;
 
-  static const char * const LABEL_A = "littlefs_a";
-  static const char * const LABEL_B = "littlefs_b";
+  static const char * const LABEL_A = "lfs0";
+  static const char * const LABEL_B = "lfs1";
 #else
   #include "mock_lfs.h"
 #endif

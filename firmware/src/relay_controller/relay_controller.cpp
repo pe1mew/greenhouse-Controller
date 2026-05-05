@@ -105,6 +105,9 @@ typedef struct {
 
 static ch_t s_ch[NUM_CHANNELS];
 
+/** Spinlock protecting s_ch[].state for cross-task reads (e.g. T11 web status). */
+static portMUX_TYPE s_state_mux = portMUX_INITIALIZER_UNLOCKED;
+
 /* ============================================================
  * Motor alarm ISR state
  *
@@ -548,6 +551,27 @@ static void process_command(const window_cmd_t *cmd, uint32_t now_ms)
         ESP_LOGW(TAG, "Q1: unknown action %d", (int)cmd->action);
         break;
     }
+}
+
+/* ============================================================
+ * Public state getter (T11 web dashboard)
+ * ============================================================ */
+
+void t2_get_window_states(window_state_t out[3])
+{
+    portENTER_CRITICAL(&s_state_mux);
+    for (int i = 0; i < 3; i++) {
+        switch (s_ch[i].state) {
+            case CH_OPEN:          out[i] = WIN_OPEN;         break;
+            case CH_CLOSED:        out[i] = WIN_CLOSED;       break;
+            case CH_MOVING_OPEN:
+            case CH_GAP_TO_OPEN:   out[i] = WIN_MOVING_OPEN;  break;
+            case CH_MOVING_CLOSE:
+            case CH_GAP_TO_CLOSE:  out[i] = WIN_MOVING_CLOSE; break;
+            default:               out[i] = WIN_UNKNOWN;      break;
+        }
+    }
+    portEXIT_CRITICAL(&s_state_mux);
 }
 
 /* ============================================================

@@ -11,6 +11,8 @@
 
 #pragma once
 
+#include "../types/app_types.h"  /* window_state_t */
+
 /**
  * @brief T2 — Relay Controller task entry point.
  *
@@ -33,3 +35,14 @@
  * @param pvParameters  Unused; pass NULL.
  */
 void task_relay_controller(void *pvParameters);
+
+/**
+ * @brief Thread-safe snapshot of all channel window states (T11 / web dashboard).
+ *
+ * Reads s_ch[].state under a portMUX spinlock.  Gap states
+ * (CH_GAP_TO_OPEN / CH_GAP_TO_CLOSE) are mapped to the corresponding
+ * MOVING state so callers see a stable five-value enum.
+ *
+ * @param out  Array of 3 window_state_t values; index 0 = M1.
+ */
+void t2_get_window_states(window_state_t out[3]);

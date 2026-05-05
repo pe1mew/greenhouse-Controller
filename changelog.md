@@ -6,6 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.11.0] — 2026-05-05
+
+*Phase 9 — Web Server (T11) implemented: ESPAsyncWebServer with LittleFS file serving, cookie-session auth (farmer/admin roles), REST API, WebSocket status push, config read/write, PIN management, WiFi provisioning.*
+
+### Added
+- `firmware/data/index.html` — single-page web application:
+  - Login overlay with role select (farmer/admin) and PIN entry
+  - Header: connection badge (WS Online/Offline), role badge, Logout button
+  - Status section: 8 cards — Temperature (raw + average), Humidity (raw + average), Wind (speed/direction/average), Windows M1/M2/M3, Mode + sunrise/sunset, Alarms (EG1 bits decoded as badges), Clock + NTP status, WiFi (RSSI + IP)
+  - Settings section with 6 tabs: Climate (farmer+), Wind (farmer for enable, admin for wind speed/direction limits), Motors (admin only), System (admin only), Network (admin only), Access / PIN change (admin only)
+  - Sensor history table (last 60 readings)
+- `firmware/data/style.css` — dark-theme CSS:
+  - CSS custom properties: `--bg #1a1a2e`, `--card #16213e`, `--accent #0f3460`
+  - Login overlay, status card grid, badge styles, tab system, form rows
+  - Role-gated visibility: `.admin-only { display: none }` / `body.is-admin .admin-only { display: flex }`; farmer equivalent for `.farmer-hidden`
+- `firmware/data/app.js` — web application logic:
+  - Auth: `setRole()`, `doLogin()` (POST /api/login), `doLogout()` (POST /api/logout), session check on load via `fetch('/api/whoami')`
+  - WebSocket: `wsConnect()` with 3 s auto-reconnect; `handleStatus()` updates all DOM elements from WS push
+  - Config: `loadConfig()` (GET /api/config); `postCfg()`, `postCfgSelect()`, `postCfgStr()`, `postLocation()`, `postWifi()`, `postApPsk()`, `postPinChange()`
+  - History: `loadHistory()` (GET /api/history?n=60) → table rows
+  - Tab system: `showTab()` toggles `.active` class on pane + button
+- `firmware/src/web_server/web_server.cpp` — full T11 implementation:
+  - 4-slot cookie session map (`s_sessions[MAX_SESSIONS]`), FreeRTOS mutex, 16-byte hex token from `esp_fill_random()`
+  - LittleFS file serving via `serve_lfs()` — PSRAM-allocated 32 KB read buffer, MIME type from extension
+  - `build_status_json()` / `build_config_json()` — PSRAM 1 KB JSON builders
+  - `AsyncWebSocket s_ws("/ws")` with 2 s push loop in T11 task
+  - `t2_get_window_states()` cross-task window state read via spinlock
+  - Farmer-key whitelist for partial access: climate setpoints + `rh_ctrl_en` + `wind_prot_en`
+  - Body parser: `json_get_str()` / `json_get_int()` — strstr-based, no cJSON dependency
+  - Routes: 11 endpoints (see firmwareImplementationResults.md for full table)
+
+### Modified
+- `firmware/src/relay_controller/relay_controller.h` — added `t2_get_window_states(window_state_t out[3])` declaration
+- `firmware/src/relay_controller/relay_controller.cpp` — added `portMUX_TYPE s_state_mux` spinlock and `t2_get_window_states()` implementation
+- `firmware/platformio.ini` — added `board_build.filesystem = littlefs` for `pio run -t uploadfs`
+
+### Fixed
+- `pin_auth_set_pin` → `pin_auth_set` (correct API name discovered on first build)
+
+### Build metrics
+- Flash: 46.4% (973 kB / 2 MB)
+- RAM: 19.0% (62 kB / 320 kB)
+- Build time: 46 s
+
+---
+
 ## [1.10.1] — 2026-05-05
 
 *Post-Phase 8 corrections: AP enable/disable added to T8 system menu; root menu now shows all four items; AP password defaulted to `0123456789`; TSDS AP password description corrected.*

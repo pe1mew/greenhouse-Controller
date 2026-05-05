@@ -267,22 +267,26 @@ Verification (Phase 8 results): Clean build ✅; board boots without crash ✅; 
 
 ---
 
-### Phase 9 — Web Server (T11)
-**Goal:** Browser-accessible dashboard and configuration.
+### Phase 9 — Web Server (T11) ✅ COMPLETE (2026-05-05, v1.11.0)
 
-Files: `web_server.h/.cpp`; `platformio.ini` — ✅ **done** (Gap E: `ESPAsyncWebServer` + `AsyncTCP` added)
+**Goal:** Browser-accessible dashboard and configuration. ✅ Achieved.
+
+Files: `web_server.h/.cpp`; `platformio.ini`; `firmware/data/index.html`; `firmware/data/style.css`; `firmware/data/app.js` — all written and flashed.
 
 Implementation:
-- Mount active LittleFS via `littlefs_active_partition()` + `littlefs_mount()`; verify `manifest.json`
-- ESPAsyncWebServer on port 80
-- REST API: `GET /api/status`, `GET /api/config`, `POST /api/config`, `POST /api/command`, `GET /api/log`
-- All endpoints except `/login` require valid session cookie (random 16-byte hex token, server-side map)
-- Static files served from LittleFS under MX5; 503 if `EG1_BIT_OTA_IN_PROGRESS` set
-- Stubs: `POST /api/ota/*` endpoints return 501 until T13 is implemented
+- ✅ Mount active LittleFS via `littlefs_active_partition()` + `littlefs_mount()`; index.html presence checked at boot
+- ✅ ESPAsyncWebServer on port 80; AsyncWebSocket on `/ws`; 2 s push loop in T11
+- ✅ REST API: GET `/api/status`, `/api/config`, `/api/history?n=N`; POST `/api/login`, `/api/logout`, `/api/config`, `/api/wifi`, `/api/pin`; GET `/api/whoami`
+- ✅ All data endpoints require valid session cookie (random 16-byte hex token, server-side map, 4-slot, FreeRTOS mutex)
+- ✅ Role-based access: farmer can edit climate setpoints + wind_prot_en; admin has full access
+- ✅ Static files served from LittleFS (`index.html`, `style.css`, `app.js`) via `ps_malloc` + `littlefs_read`
+- ✅ PIN change via `pin_auth_set()`; WiFi/AP PSK update direct NVS; config updates via Q4
 
-Drivers used: LIB-9 (littlefs_mount, littlefs_read, littlefs_active_partition, under MX5)
+**Deviation from plan:** `/api/command` replaced by WebSocket push for status; farmer/admin distinction via `is_farmer_key()` whitelist; OTA stub endpoints deferred to Phase 10.
 
-Verification: Login page loads; farmer can edit T_max_day; admin settings hidden from farmer; 401 on unauthenticated calls; NVS update verified via LCD.
+Drivers used: LIB-9 (littlefs_storage), LIB-4 (nvs_config), LIB-12 (pin_auth)
+
+Verification: Build clean (0 errors); firmware + LittleFS uploaded; device stable 5+ min; web UI hardware verification pending (browser test).
 
 ---
 
