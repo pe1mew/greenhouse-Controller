@@ -39,12 +39,14 @@
 
 #define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
 #include <Arduino.h>
+#include <WiFi.h>
 #include <esp_log.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
 
+#include "nvs_config.h"
 #include "ui_display.h"
 #include "../types/app_types.h"
 #include "../data_manager/data_manager.h"
@@ -59,7 +61,7 @@ static const char *TAG = "T8_UI";
  * ============================================================ */
 #define UI_LOOP_MS          100u   /**< Main-loop tick (ms) */
 #define STATUS_PAGE_TICKS    50u   /**< 5 s auto-rotate = 50 × 100 ms */
-#define STATUS_PAGES          4u   /**< Number of status pages */
+#define STATUS_PAGES          5u   /**< Number of status pages (0-3 sensors/net, 4=time) */
 #define MX1_TIMEOUT_MS      200u   /**< MX1 acquire timeout */
 #define DEF_SESSION_MIN       5    /**< Session timeout default (minutes) */
 
@@ -112,6 +114,8 @@ typedef enum {
     UI_MENU_SYSTEM,
     UI_PIN_ENTRY,
     UI_EDIT_VALUE,
+    UI_SET_DATE,     /**< Admin: enter date DDMMYY; # applies, * cancels */
+    UI_SET_TIME,     /**< Admin: enter time HHMM;   # writes RTC, * back to date */
 } ui_state_t;
 
 /* ============================================================
@@ -151,6 +155,14 @@ static bool         s_edit_neg      = false;
 static char         s_pin_buf[12]   = {0};
 static uint8_t      s_pin_len       = 0;
 static pin_role_t   s_pin_role      = PIN_ROLE_FARMER;
+
+/* Manual date/time set state (UI_SET_DATE / UI_SET_TIME) */
+static bool         s_pending_settime = false; /**< # on time status page pending admin PIN */
+static char         s_dt_buf[9]       = {0};   /**< Digit accumulator for date/time entry */
+static uint8_t      s_dt_len          = 0;     /**< Digits entered so far */
+static int          s_dt_saved_year   = 0;     /**< Year from date entry, passed to time entry */
+static int          s_dt_saved_mon    = 0;     /**< Month (1–12) from date entry */
+static int          s_dt_saved_mday   = 0;     /**< Day (1–31) from date entry */
 
 /* LCD row buffers (always 16 visible chars) */
 static char s_row0[17] = {0};
@@ -333,6 +345,28 @@ static void begin_edit(bool is_wind, int param_idx)
 }
 
 /* ============================================================
+ * Render helpers
+ * ============================================================ */
+
+/**
+ * @brief Convert a wind direction in degrees to an 8-point cardinal string.
+ * @param deg  Wind direction 0–359 (values ≥ 360 are wrapped).
+ * @return  Pointer to a literal string: "N","NE","E","SE","S","SW","W","NW".
+ */
+static const char *deg_to_cardinal(uint16_t deg)
+{
+    uint16_t d = deg % 360u;
+    if (d <=  22u || d >= 338u) return "N";
+    if (d <=  67u)               return "NE";
+    if (d <= 112u)               return "E";
+    if (d <= 157u)               return "SE";
+    if (d <= 202u)               return "S";
+    if (d <= 247u)               return "SW";
+    if (d <= 292u)               return "W";
+    return "NW";
+}
+
+/* ============================================================
  * Render functions — fill s_row0 / s_row1; no flush
  * ============================================================ */
 
@@ -364,11 +398,12 @@ static void render_status(void)
                 snprintf(r0, sizeof(r0), "Wind:%2d.%1d m/s   ",
                          (int)(meas.wind_speed_avg_ms10 / 10),
                          (int)(meas.wind_speed_avg_ms10 % 10));
-                snprintf(r1, sizeof(r1), "Dir: %3d deg    ",
-                         (int)meas.wind_dir_avg_deg);
+                snprintf(r1, sizeof(r1), " Dir:%3d \xDF (%-2s) ",
+                         (int)meas.wind_dir_avg_deg,
+                         deg_to_cardinal((uint16_t)meas.wind_dir_avg_deg));
             } else {
                 snprintf(r0, sizeof(r0), "Wind: -- m/s    ");
-                snprintf(r1, sizeof(r1), "Dir:  ---       ");
+                snprintf(r1, sizeof(r1), " Dir: --- \xDF     ");
             }
             break;
 
@@ -391,13 +426,35 @@ static void render_status(void)
                 snprintf(r0, sizeof(r0), "WiFi: connected ");
                 snprintf(r1, sizeof(r1), "%-16.16s", s_net.ip_str);
             } else if (s_net.ap_active) {
+                uint8_t mac[6] = {};
+                WiFi.macAddress(mac);
+                char ap_ssid[17] = {};
+                snprintf(ap_ssid, sizeof(ap_ssid), "Greenhouse-%02X%02X", mac[4], mac[5]);
                 snprintf(r0, sizeof(r0), "WiFi: AP active ");
-                snprintf(r1, sizeof(r1), "                ");
+                snprintf(r1, sizeof(r1), "%-16.16s", ap_ssid);
             } else {
                 snprintf(r0, sizeof(r0), "WiFi: --------  ");
                 snprintf(r1, sizeof(r1), "                ");
             }
             break;
+
+        case 4: { /* Time + NTP/RTC source */
+            cfg_shadow_t cfg_t;
+            dm_cfg_snapshot(&cfg_t);
+            if (cfg_t.current_unix_ts > 100000u) {
+                struct tm t;
+                time_t ts = (time_t)cfg_t.current_unix_ts;
+                localtime_r(&ts, &t);
+                snprintf(r0, sizeof(r0), "%04d-%02d-%02d %02d:%02d",
+                         t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
+                         t.tm_hour, t.tm_min);
+            } else {
+                snprintf(r0, sizeof(r0), "----/--/-- --:--");
+            }
+            const char *src = s_net.ntp_synced ? "NTP" : "RTC";
+            snprintf(r1, sizeof(r1), "Src:%-3s  #=SetTm", src);
+            break;
+        }
 
         default:
             snprintf(r0, sizeof(r0), "Greenhouse Ctrl ");
@@ -503,6 +560,44 @@ static void handle_menu_system(char key)
     }
 }
 
+static void render_set_date(void)
+{
+    /* Row 0: current date for reference */
+    char r0[17], r1[17];
+    time_t now = time(NULL);
+    struct tm tn;
+    localtime_r(&now, &tn);
+    snprintf(r0, sizeof(r0), "Now %04d-%02d-%02d  ",
+             tn.tm_year + 1900, tn.tm_mon + 1, tn.tm_mday);
+
+    /* Row 1: entry DD/MM/YY with underscores for missing digits */
+    char d[7];
+    for (int i = 0; i < 6; i++) d[i] = (i < (int)s_dt_len) ? s_dt_buf[i] : '_';
+    d[6] = '\0';
+    snprintf(r1, sizeof(r1), "%c%c/%c%c/%c%c #OK *Bk",
+             d[0], d[1], d[2], d[3], d[4], d[5]);
+    lcd_set(r0, r1);
+}
+
+static void render_set_time(void)
+{
+    /* Row 0: current time for reference */
+    char r0[17], r1[17];
+    time_t now = time(NULL);
+    struct tm tn;
+    localtime_r(&now, &tn);
+    snprintf(r0, sizeof(r0), "Now:  %02d:%02d      ",
+             tn.tm_hour, tn.tm_min);
+
+    /* Row 1: entry HH:MM with underscores for missing digits */
+    char d[5];
+    for (int i = 0; i < 4; i++) d[i] = (i < (int)s_dt_len) ? s_dt_buf[i] : '_';
+    d[4] = '\0';
+    snprintf(r1, sizeof(r1), "%c%c:%c%c    #OK *Bk",
+             d[0], d[1], d[2], d[3]);
+    lcd_set(r0, r1);
+}
+
 static void render_pin_entry(void)
 {
     int max_len = (s_pin_role == PIN_ROLE_FARMER) ? PIN_FARMER_DIGITS : PIN_ADMIN_DIGITS;
@@ -555,6 +650,8 @@ static void render(void)
         case UI_MENU_SYSTEM:   render_menu_system();         break;
         case UI_PIN_ENTRY:     render_pin_entry();           break;
         case UI_EDIT_VALUE:    render_edit_value();          break;
+        case UI_SET_DATE:      render_set_date();            break;
+        case UI_SET_TIME:      render_set_time();            break;
     }
 }
 
@@ -562,9 +659,33 @@ static void render(void)
  * Key handlers — one per FSM state
  * ============================================================ */
 
-static void handle_status(char /*key*/)
+static void enter_set_date(void)
 {
-    /* Any key leaves status and enters menu */
+    memset(s_dt_buf, 0, sizeof(s_dt_buf));
+    s_dt_len = 0;
+    s_state  = UI_SET_DATE;
+    s_dirty  = true;
+}
+
+static void handle_status(char key)
+{
+    /* # on the time page (page 4) → set date/time (admin only) */
+    if (key == '#' && (s_status_page % STATUS_PAGES) == 4u) {
+        if (s_session >= SESSION_ADMIN) {
+            enter_set_date();
+        } else {
+            s_pin_role        = PIN_ROLE_ADMIN;
+            s_pin_len         = 0;
+            memset(s_pin_buf, 0, sizeof(s_pin_buf));
+            s_pending_param   = -1;
+            s_pending_settime = true;
+            s_return_menu     = UI_STATUS;
+            s_state           = UI_PIN_ENTRY;
+            s_dirty           = true;
+        }
+        return;
+    }
+    /* Any other key → main menu */
     s_state    = UI_MENU_ROOT;
     s_sub_page = 0;
     s_dirty    = true;
@@ -697,8 +818,12 @@ static void handle_pin(char key)
             session_open(lvl);
             show_msg("Access granted  ", "Welcome!        ", 1500);
 
-            if (s_pending_param >= 0) {
-                /* Resume pending edit */
+            if (s_pending_settime) {
+                /* Resume pending date/time set */
+                s_pending_settime = false;
+                enter_set_date();
+            } else if (s_pending_param >= 0) {
+                /* Resume pending param edit */
                 begin_edit(s_pending_wind, s_pending_param);
             } else {
                 s_state = s_return_menu;
@@ -785,6 +910,101 @@ static void handle_edit(char key)
     }
 }
 
+static void handle_set_date(char key)
+{
+    if (key >= '0' && key <= '9') {
+        if (s_dt_len < 6u) {
+            s_dt_buf[s_dt_len++] = key;
+            s_dirty = true;
+        }
+    } else if (key == '*') {
+        if (s_dt_len > 0u) {
+            s_dt_buf[--s_dt_len] = '\0';
+            s_dirty = true;
+        } else {
+            go_status();   /* Cancel — back to status */
+        }
+    } else if (key == '#') {
+        if (s_dt_len < 6u) {
+            show_msg("Enter DDMMYY    ", "6 digits + #    ", 1500);
+            return;
+        }
+        int dd = (s_dt_buf[0] - '0') * 10 + (s_dt_buf[1] - '0');
+        int mm = (s_dt_buf[2] - '0') * 10 + (s_dt_buf[3] - '0');
+        int yy = (s_dt_buf[4] - '0') * 10 + (s_dt_buf[5] - '0');
+        if (dd < 1 || dd > 31 || mm < 1 || mm > 12) {
+            show_msg("Invalid date    ", "DD 01-31 MM 1-12", 1800);
+            s_dt_len = 0;
+            memset(s_dt_buf, 0, sizeof(s_dt_buf));
+            s_dirty = true;
+            return;
+        }
+        s_dt_saved_mday = dd;
+        s_dt_saved_mon  = mm;
+        s_dt_saved_year = 2000 + yy;
+        /* Advance to time entry */
+        memset(s_dt_buf, 0, sizeof(s_dt_buf));
+        s_dt_len = 0;
+        s_state  = UI_SET_TIME;
+        s_dirty  = true;
+    }
+}
+
+static void handle_set_time(char key)
+{
+    if (key >= '0' && key <= '9') {
+        if (s_dt_len < 4u) {
+            s_dt_buf[s_dt_len++] = key;
+            s_dirty = true;
+        }
+    } else if (key == '*') {
+        if (s_dt_len > 0u) {
+            s_dt_buf[--s_dt_len] = '\0';
+            s_dirty = true;
+        } else {
+            /* Back to date entry — restore previously typed date */
+            snprintf(s_dt_buf, sizeof(s_dt_buf), "%02d%02d%02d",
+                     s_dt_saved_mday, s_dt_saved_mon,
+                     s_dt_saved_year % 100);
+            s_dt_len = 6;
+            s_state  = UI_SET_DATE;
+            s_dirty  = true;
+        }
+    } else if (key == '#') {
+        if (s_dt_len < 4u) {
+            show_msg("Enter HHMM      ", "4 digits + #    ", 1500);
+            return;
+        }
+        int hh = (s_dt_buf[0] - '0') * 10 + (s_dt_buf[1] - '0');
+        int mn = (s_dt_buf[2] - '0') * 10 + (s_dt_buf[3] - '0');
+        if (hh > 23 || mn > 59) {
+            show_msg("Invalid time    ", "HH 0-23 MM 0-59 ", 1800);
+            s_dt_len = 0;
+            memset(s_dt_buf, 0, sizeof(s_dt_buf));
+            s_dirty = true;
+            return;
+        }
+        /* Build local struct tm → convert to UTC epoch via mktime() */
+        struct tm t = {};
+        t.tm_year  = s_dt_saved_year - 1900;
+        t.tm_mon   = s_dt_saved_mon  - 1;
+        t.tm_mday  = s_dt_saved_mday;
+        t.tm_hour  = hh;
+        t.tm_min   = mn;
+        t.tm_sec   = 0;
+        t.tm_isdst = -1;   /* let mktime determine DST */
+        time_t new_ts = mktime(&t);
+
+        dm_set_manual_time(new_ts);
+
+        char saved[17];
+        snprintf(saved, sizeof(saved), "%02d/%02d/%04d %02d:%02d",
+                 s_dt_saved_mday, s_dt_saved_mon, s_dt_saved_year, hh, mn);
+        show_msg("Time set OK     ", saved, 2000);
+        go_status();
+    }
+}
+
 /* ============================================================
  * T8 task entry point
  * ============================================================ */
@@ -811,8 +1031,12 @@ void task_ui_display(void *pvParameters)
         }
     }
 
-    /* Boot splash */
-    show_msg("Greenhouse Ctrl ", "  Initialising..", 2000);
+    /* Boot splash — row 0: product name, row 1: version + "Init." */
+    {
+        char r1[17];
+        snprintf(r1, sizeof(r1), "v%-5.5s Init...", FIRMWARE_VERSION);
+        show_msg("Greenhouse Ctrl ", r1, 2000);
+    }
 
     /* Start in STATUS state */
     s_state        = UI_STATUS;
@@ -868,6 +1092,8 @@ void task_ui_display(void *pvParameters)
                 case UI_MENU_SYSTEM:   handle_menu_system(evt.key);         break;
                 case UI_PIN_ENTRY:     handle_pin(evt.key);                break;
                 case UI_EDIT_VALUE:    handle_edit(evt.key);               break;
+                case UI_SET_DATE:      handle_set_date(evt.key);           break;
+                case UI_SET_TIME:      handle_set_time(evt.key);           break;
             }
         }
 

@@ -6,8 +6,8 @@
 |--------------|------------------------------------------|
 | Document     | Task Structure                           |
 | Project      | Greenhouse Ventilation Controller        |
-| Version      | 0.1 (draft)                              |
-| Date         | 2026-03-29                               |
+| Version      | 0.2 (draft)                              |
+| Date         | 2026-05-05                               |
 | Status       | Draft                                    |
 | Related docs | `technicalDesignSpecification.md`        |
 
@@ -104,10 +104,11 @@ This document is the authoritative reference for the software task architecture.
 T4 is the single source of truth for all runtime data and configuration. All tasks that need to read or write system state do so through T4. This eliminates distributed per-variable mutexes and provides a single serialisation point for NVS persistence.
 
 **Configuration settings**
-- Holds all configurable parameters in RAM: setpoints (T_min, T_max, RH_min, RH_max), wind thresholds, per-channel motor travel times (`travel_mN`, seconds — relay energisation duration; defaults `MOTOR_MN_TRAVEL_S_DEFAULT`) and dwell times (`dwell_open_mN` / `dwell_close_mN`, minutes — minimum hold after travel), hysteresis values, WiFi credentials, PIN hashes, display language, session timeout, WiFi AP timeout
-- Accepts write requests from T8 (UI) and T11 (web server); validates range before accepting
+- Holds all configurable parameters in RAM: setpoints (T_min, T_max, RH_min, RH_max), wind thresholds, per-channel motor travel times (`travel_mN`, seconds — relay energisation duration; defaults `MOTOR_MN_TRAVEL_S_DEFAULT`) and dwell times (`dwell_open_mN` / `dwell_close_mN`, minutes — minimum hold after travel), hysteresis values, WiFi credentials, PIN hashes, display language, session timeout, WiFi AP timeout, geographic location (`lat_deg/frac`, `lon_deg/frac`), POSIX TZ string (`tz_str`)
+- Accepts write requests from T8 (UI), T10 (geolocation results), and T11 (web server); validates range before accepting
 - Persists changed settings to NVS flash immediately on write
-- Loads all settings from NVS on startup; applies defined defaults for any missing keys
+- Loads all settings from NVS on startup; applies `tz_str` via `setenv("TZ", tz_str, 1); tzset()` at boot; applies defined defaults for any missing keys
+- **`dm_set_manual_time(unix_ts)`** — public API callable by T8 after manual date/time entry: (1) updates POSIX system clock via `settimeofday()`; (2) writes new time to DS1307 RTC under MX1; (3) updates `current_unix_ts` in MX4 configuration shadow. Caller converts user-entered local time to UTC via `mktime()` using the currently active TZ (FR-UI23)
 
 **Day/night period management**
 - Computes sunrise and sunset from geographic location (lat/lon) and the current UTC date using the **NOAA General Solar Position Equations** (±2 min accuracy); implemented in `firmware/src/data_manager/sunrise.h/.cpp` (FR-DN01, FR-DN02).
@@ -186,11 +187,16 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 
 - Manages the LCD1602 display via I2C (shared bus with RTC)
 - Renders the main status screen: T, RH, wind speed and direction, window states, operating mode, active session, active alarms
-- Runs the menu finite state machine (FSM); navigation depth ≤ 4 key presses from the main screen to any first-level setting
+- **Cyclic status pages (STATUS_PAGES = 5):** auto-rotates every 5 s through: (0) T/RH, (1) wind, (2) window states, (3) network/AP, (4) current date/time + source
+  - Page 4 shows current local date/time (via `localtime_r`) and source label: "NTP" when `net_status_t.ntp_synced` is true, "RTC" otherwise. Pressing `#` on page 4 initiates the manual time-set flow (FR-UI22, FR-UI23)
+- Runs the menu FSM; navigation depth ≤ 4 key presses from the main screen to any first-level setting
+  - **FSM states include:** `UI_STATUS`, `UI_MENU_ROOT`, `UI_MENU_CLIMATE`, `UI_MENU_WIND`, `UI_MENU_SYSTEM`, `UI_MENU_ACCESS`, `UI_EDIT_VALUE`, `UI_PIN_ENTRY`, **`UI_SET_DATE`**, **`UI_SET_TIME`**
+  - `UI_SET_DATE`: 6-digit DDMMYY entry with inline cursor; validates DD 01–31, MM 01–12; saved to `s_dt_saved_*` on `#`; returns to status page on `*`
+  - `UI_SET_TIME`: 4-digit HHMM entry; validates HH 0–23, MM 0–59; `*` returns to `UI_SET_DATE`; `#` calls `mktime()` + `dm_set_manual_time()` with constructed UTC epoch; `s_pending_settime` flag defers entry to `UI_SET_DATE` until PIN check completes
 - Manages session state: PIN entry via keyboard, session timeout, PIN validation against T4
 - Posts validated configuration changes and mode changes to T4
-- Receives WiFi status updates from T10 and displays AP active / client connected / IP address
-- **Synchronization:** acquires MX1 (I2C) to write LCD; acquires MX2 to read current measurements for display refresh; acquires MX3 to read ring buffers for history view; acquires MX4 to read configuration for settings screens; receives Q2 (key events from T7); receives Q5 (network status from T10); reads EG1 (alarm flags for display and alarm indication); posts to Q4 (config/mode updates to T4); posts to Q3 (log events: mode changes, setpoint changes, session events)
+- Receives WiFi status updates from T10 and displays AP active / client connected / IP address; uses `net_status_t.ntp_synced` for time page source label
+- **Synchronization:** acquires MX1 (I2C) to write LCD; acquires MX2 to read current measurements for display refresh; acquires MX3 to read ring buffers for history view; acquires MX4 to read configuration for settings screens; receives Q2 (key events from T7); receives Q5 (network status from T10, including `ntp_synced`); reads EG1 (alarm flags for display and alarm indication); posts to Q4 (config/mode updates to T4); posts to Q3 (log events: mode changes, setpoint changes, session events)
 
 ---
 
@@ -212,12 +218,17 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 
 **Priority:** Low | **Core:** 0
 
-- Manages WiFi AP lifecycle: enable on admin command from T8 or T11; automatic shutdown after configurable timeout
-- Manages WiFi client: connect to configured SSID; monitor connection; reconnect on drop; supports DHCP and static IP
-- Posts connection state changes (connected / disconnected / assigned IP) to T8 for display
-- Triggers NTP time synchronisation when a client connection is established
+- Manages WiFi AP lifecycle: enable on admin command from T8 or T11; automatic shutdown after configurable timeout (timeout and SSID/PSK managed independently; AP can run while client is connected)
+- Manages WiFi client: connect to configured SSID; monitor connection; reconnect on drop; supports DHCP and static IP; exponential backoff on repeated failures
+- Posts connection state changes (connected / disconnected / assigned IP / NTP synced) to T8 via Q5; `net_status_t` includes: `client_connected`, `ap_active`, `ntp_synced` (bool, set after first successful NTP sync), `ip_str[16]`
+- Triggers NTP time synchronisation (`configTime(0,0,"pool.ntp.org")`) when a client connection is established; sends TN4 to T4 on success
+- **Geolocation (`do_geo_sync()`)** — called automatically after each successful NTP sync (FR-DN06):
+  - HTTP GET `http://ip-api.com/json?fields=status,lat,lon,timezone` (5 s timeout; no SSL)
+  - Parses JSON response: lat/lon as float → `float_to_deg_frac()` → posts `lat_deg`, `lat_frac`, `lon_deg`, `lon_frac` via Q4 to T4 (T4 updates NVS + shadow + calls `update_sun_times()`)
+  - IANA timezone name → `iana_to_posix()` (linear scan of ~100-entry `s_tz_table[]`) → writes POSIX string to NVS `system/tz_str`; applies immediately via `setenv("TZ", posix_tz, 1); tzset()`
+  - On parse failure or unknown timezone: silently skips the corresponding update; last stored values are retained
 - Runs on Core 0 alongside the ESP32-S3 internal WiFi stack
-- **Synchronization:** posts to Q5 (network status to T8); posts to Q4 (NTP sync trigger to T4 on client connection); posts to Q3 (log events); no mutexes held
+- **Synchronization:** posts to Q5 (network status to T8); posts to Q4 (geolocation lat/lon/TZ updates to T4); sends TN4 to T4 on NTP sync success; posts to Q3 (log events); no mutexes held
 
 ---
 
@@ -358,7 +369,7 @@ FreeRTOS queues (`xQueueCreate`) are thread-safe by design. All queue operations
 | Q2 | Key event queue          | → T8           | T7                   | T8       | Key code                        | Depth to match max burst; T7 drops on full         |
 | Q3 | Log event queue          | → T9           | T2, T3, T5, T6, T8, T10, T11, T12, T13 | T9 | Log event struct | Generous depth; drop-oldest on overflow           |
 | Q4 | Config / state update queue | → T4        | T8, T11, T10         | T4       | Config update struct            | T4 validates range; persists to NVS on accept      |
-| Q5 | Network status queue     | → T8           | T10                  | T8       | Network status struct           | Small depth (1–2); latest status always relevant   |
+| Q5 | Network status queue     | → T8           | T10                  | T8       | `net_status_t` struct           | Depth 1 (`xQueueOverwrite`); latest status always relevant; struct fields: `client_connected`, `ap_active`, `ntp_synced` (bool), `ip_str[16]` |
 | Q6 | Sensor reading queue     | → T4           | T5                   | T4       | Sensor reading struct           | Depth 1; overwrite semantics — only latest matters |
 
 ---

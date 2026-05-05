@@ -5,8 +5,8 @@
 |--------------|------------------------------------------------|
 | Document     | Technical Software Design Specification        |
 | Project      | Greenhouse Ventilation Controller              |
-| Version      | 0.1 (draft)                                   |
-| Date         | 2026-03-29                                    |
+| Version      | 0.2 (draft)                                   |
+| Date         | 2026-05-05                                    |
 | Status       | Draft                                         |
 | Related docs | `functionalRequirementsSpecification.md`       |
 |              | `technicalHardwareDesignSpecification.md`      |
@@ -163,8 +163,9 @@ The following items originate from system-level and functional requirements in t
 
 **Timekeeping and timezone**
 - Time source: **DS1307 RTC** with CR2032 backup fitted on PCB (THDS Open Issue #7 resolved; see THDS §4.6). DS1307 is the authoritative clock when WiFi is unavailable. TR-HW08 is satisfied.
-- When WiFi is available: synchronise system time via NTP on boot and periodically; configure timezone (Europe/Amsterdam, CET/CEST) with automatic DST transitions using POSIX TZ string `CET-1CEST,M3.5.0,M10.5.0/3` (see Open Issue #3).
-- When WiFi is unavailable: DS1307 is authoritative; no timestamp gap on power interruption.
+- When WiFi is available: synchronise system time via NTP on boot; on NTP success, T10 calls `do_geo_sync()` to auto-detect timezone via ip-api.com (FR-DN07); POSIX TZ string applied immediately via `setenv/tzset`; persisted to NVS `system/tz_str`. See §4.3 T10 and Open Issue #3.
+- When WiFi is unavailable: DS1307 is authoritative; no timestamp gap on power interruption; TZ string from last successful geolocation (or factory default `CET-1CEST,M3.5.0,M10.5.0/3`) applied from NVS at boot.
+- Administrator may manually set date/time via the LCD keyboard (FR-UI23) — see §5.5 and `dm_set_manual_time()` in §4.3 T4.
 
 **Firmware update**
 - Firmware updates supported without opening the enclosure: OTA over WiFi and via native USB (TR-SW02, TR-IF05).
@@ -310,7 +311,14 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 - Holds current operating mode (Automatic / Standby / Wind-override / Manual-override).
 - Holds current session state (Normal / Farmer / Admin).
 - Updated by T8 and T11; read by any task that gates behaviour on mode or session.
-- **Synchronization:** acquires MX1 (I2C) to read DS1307 RTC; holds MX2 while writing current measurement data; holds MX3 while writing ring buffer entries; holds MX4 while reading or writing configuration settings; receives Q4 (config/state updates from T8 and T11); receives Q6 (sensor readings from T5); sends TN1 to T3 after writing new wind data; sends TN2 to T6 after writing new sensor data.
+- **Synchronization:** acquires MX1 (I2C) to read DS1307 RTC; holds MX2 while writing current measurement data; holds MX3 while writing ring buffer entries; holds MX4 while reading or writing configuration settings; receives Q4 (config/state updates from T8, T10, and T11); receives Q6 (sensor readings from T5); sends TN1 to T3 after writing new wind data; sends TN2 to T6 after writing new sensor data.
+
+**`dm_set_manual_time(time_t unix_ts)` — public API (FR-UI23)**
+- Called by T8 after the operator confirms a manual date/time entry via `UI_SET_DATE` → `UI_SET_TIME`.
+- Step 1: Updates the POSIX system clock via `settimeofday(&tv, NULL)`.
+- Step 2: Converts `unix_ts` → `rtc_datetime_t` using `gmtime_r()` (DS1307 stores UTC); writes to DS1307 via `rtc_set_time()` under MX1 (500 ms timeout).
+- Step 3: Updates `s_cfg.current_unix_ts` under MX4 (200 ms timeout).
+- T8 calls `mktime(tm_isdst=-1)` before calling this function to convert user-entered local time to a UTC epoch using the currently active TZ environment variable. This ensures DS1307 always stores UTC regardless of the configured timezone.
 
 ---
 
@@ -358,11 +366,21 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 
 - Manages the LCD1602 display via I2C (shared bus with RTC). Any `delay()` calls in the LCD1602 driver must be replaced with `vTaskDelay(pdMS_TO_TICKS(ms))` so T8 yields to the scheduler rather than spinning.
 - Renders the main status screen: T, RH, wind speed and direction, window states, operating mode, active session, active alarms.
-- Runs the menu finite state machine (FSM); navigation depth ≤ 4 key presses from the main screen to any first-level setting.
+- **Cyclic status pages (`STATUS_PAGES = 5`):** auto-rotates every 5 s through pages 0–4:
+  - 0: temperature and humidity
+  - 1: wind speed and direction
+  - 2: window states (OPEN / MOVING / CLOSED per channel)
+  - 3: network status (AP / client / IP)
+  - 4: current date/time (local, via `localtime_r`) and time source label ("NTP" when `s_net.ntp_synced` true; "RTC" otherwise); pressing `#` on this page initiates the manual time-set flow (FR-UI22, FR-UI23)
+- Runs the menu FSM; navigation depth ≤ 4 key presses from the main screen to any first-level setting.
+  - **FSM states:** `UI_STATUS`, `UI_MENU_ROOT`, `UI_MENU_CLIMATE`, `UI_MENU_WIND`, `UI_MENU_SYSTEM`, `UI_MENU_ACCESS`, `UI_EDIT_VALUE`, `UI_PIN_ENTRY`, **`UI_SET_DATE`**, **`UI_SET_TIME`**
+  - `UI_SET_DATE`: 6-digit DDMMYY entry with inline `_` cursor placeholder; validates DD 01–31, MM 01–12; saves to `s_dt_saved_{year,mon,mday}` on `#`; advances to `UI_SET_TIME`. `*` returns to `UI_STATUS`.
+  - `UI_SET_TIME`: 4-digit HHMM entry; validates HH 0–23, MM 0–59. `*` re-enters `UI_SET_DATE` restoring the previously typed digits. `#` builds a `struct tm` from the saved date + typed time, calls `mktime(tm_isdst=-1)` to produce a UTC epoch, then calls `dm_set_manual_time(unix_ts)`.
+  - `s_pending_settime` flag: set when `#` is pressed on page 4 without an active admin session; clears and calls `enter_set_date()` after PIN is accepted in `handle_pin()`.
 - Manages session state: PIN entry via keyboard, session timeout, PIN validation against T4.
 - Posts validated configuration changes and mode changes to T4.
-- Receives WiFi status updates from T10 and displays AP active / client connected / IP address.
-- **Synchronization:** acquires MX1 (I2C) to write LCD; acquires MX2 to read current measurements for display refresh; acquires MX3 to read ring buffers for history view; acquires MX4 to read configuration for settings screens; receives Q2 (key events from T7); receives Q5 (network status from T10); reads EG1 (alarm flags for display and alarm indication); posts to Q4 (config/mode updates to T4); posts to Q3 (log events: mode changes, setpoint changes, session events).
+- Receives WiFi status updates from T10 via Q5; stores in `s_net` (`net_status_t`); uses `s_net.ntp_synced` for page-4 source label.
+- **Synchronization:** acquires MX1 (I2C) to write LCD; acquires MX2 to read current measurements for display refresh; acquires MX3 to read ring buffers for history view; acquires MX4 to read configuration for settings screens; receives Q2 (key events from T7); receives Q5 (network status from T10, including `ntp_synced`); reads EG1 (alarm flags for display and alarm indication); posts to Q4 (config/mode updates to T4); posts to Q3 (log events: mode changes, setpoint changes, session events).
 
 ---
 
@@ -383,12 +401,18 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 
 **Priority:** Low | **Core:** 0
 
-- Manages WiFi AP lifecycle: enable on admin command from T8 or T11; automatic shutdown after configurable timeout.
-- Manages WiFi client: connect to configured SSID; monitor connection; reconnect on drop; supports DHCP and static IP.
-- Posts connection state changes (connected / disconnected / assigned IP) to T8 for display.
-- Triggers NTP time synchronisation when a client connection is established.
+- Manages WiFi AP lifecycle: enable on admin command from T8 or T11; automatic shutdown after configurable timeout (timeout and SSID/PSK managed independently; AP can run concurrently with client connection).
+- Manages WiFi client: connect to configured SSID; monitor connection; reconnect on drop; supports DHCP and static IP; exponential backoff (2→4→…→60 s) on repeated failures; `WiFi.setAutoReconnect(false)` (T10 manages reconnection itself).
+- Posts connection state changes (connected / disconnected / assigned IP / NTP synced) to T8 via Q5 (`xQueueOverwrite`); `net_status_t` fields: `client_connected` (bool), `ap_active` (bool), `ntp_synced` (bool, latched true after first successful NTP sync), `ip_str[16]` (current IP as string).
+- Triggers NTP time synchronisation (`configTime(0, 0, "pool.ntp.org")`) when a client connection is established; polls `time(NULL) > 1700000000L` for up to 30 s; on success: sends TN4 to T4, sets `s_ntp_synced = true`, then calls `do_geo_sync()`.
+- **`do_geo_sync()` — automatic geolocation and timezone (FR-DN06, FR-DN07):**
+  - Performs HTTP GET `http://ip-api.com/json?fields=status,lat,lon,timezone` (5 s timeout; no SSL; `HTTPClient` from Arduino core — no additional `lib_deps` required).
+  - Parses JSON for `status`, `lat` (float), `lon` (float), `timezone` (IANA name string).
+  - Converts lat/lon to integer degree + millidegree parts via `float_to_deg_frac()`; posts `lat_deg`, `lat_frac`, `lon_deg`, `lon_frac` as `config_update_t` items to Q4 → T4 updates NVS + shadow + calls `update_sun_times()`.
+  - Looks up the IANA timezone name in `s_tz_table[]` (~100-entry static array mapping IANA names to POSIX strings) via `iana_to_posix()`; writes the resolved POSIX string to NVS `system/tz_str`; applies immediately via `setenv("TZ", posix_tz, 1); tzset()`.
+  - On HTTP failure, JSON parse failure, or unknown timezone name: silently skips the corresponding update; last stored values in NVS are retained.
 - Runs on Core 0 alongside the ESP32-S3 internal WiFi stack.
-- **Synchronization:** posts to Q5 (network status to T8); posts to Q4 (NTP sync trigger to T4 on client connection); posts to Q3 (log events); no mutexes held.
+- **Synchronization:** posts to Q5 (network status to T8); posts to Q4 (geolocation lat/lon updates to T4); sends TN4 to T4 on NTP sync success; posts to Q3 (log events); no mutexes held.
 
 ---
 
@@ -500,7 +524,7 @@ FreeRTOS queues (`xQueueCreate`) are thread-safe by design. All queue operations
 | Q2 | Key event queue             | → T8        | T7                                         | T8       | Key code                 | Depth to match max burst; T7 drops on full     |
 | Q3 | Log event queue             | → T9        | T2, T3, T5, T6, T8, T10, T11, T12, T13     | T9       | Log event struct         | Generous depth; drop-oldest on overflow        |
 | Q4 | Config / state update queue | → T4        | T8, T11, T10                               | T4       | Config update struct     | T4 validates range; persists to NVS on accept  |
-| Q5 | Network status queue        | → T8        | T10                                        | T8       | Network status struct    | Small depth (1–2); latest status always relevant |
+| Q5 | Network status queue        | → T8        | T10                                        | T8       | `net_status_t` struct    | Depth 1 (`xQueueOverwrite`); latest status always relevant; struct fields: `client_connected` (bool), `ap_active` (bool), `ntp_synced` (bool), `ip_str[16]` |
 | Q6 | Sensor reading queue        | → T4        | T5                                         | T4       | Sensor reading struct    | Depth 1; overwrite semantics — only latest matters |
 
 #### 4.6.3 Task Notifications
@@ -863,6 +887,18 @@ Where `Mxx` encodes active window states (e.g. `M1O` = M1 open, `M2C` = M2 close
 - `#` key: confirm / enter. `*` key: cancel / back. Numeric keys: input values. `A`/`B`: scroll up/down in lists.
 - On session timeout: menu FSM resets to main screen and session closes.
 
+**Status page cycling (`STATUS_PAGES = 5`):**
+- Page 0: temperature and humidity readings
+- Page 1: wind speed and direction
+- Page 2: estimated window states (OPEN / MOVING / CLOSED per channel)
+- Page 3: network status (AP active / client IP)
+- Page 4: current local date/time (via `localtime_r`); source label "NTP" or "RTC" (from `s_net.ntp_synced`); pressing `#` enters the manual time-set flow (FR-UI22, FR-UI23)
+
+**Manual time-set flow (FR-UI23, admin session required):**
+1. `#` pressed on status page 4 → if no admin session active: enter PIN flow first (`s_pending_settime = true`); else: enter `UI_SET_DATE` directly.
+2. `UI_SET_DATE`: row 0 shows current date as reference (`YYYY-MM-DD`); row 1 shows `DD/MM/YY #OK *Bk` with `_` for untyped digits. Accepts exactly 6 numeric digits (DDMMYY). `#` validates and saves date to `s_dt_saved_*`; advances to `UI_SET_TIME`. `*` returns to `UI_STATUS`.
+3. `UI_SET_TIME`: row 0 shows `Now: HH:MM`; row 1 shows `HH:MM #OK *Bk`. Accepts exactly 4 numeric digits (HHMM). `*` returns to `UI_SET_DATE`. `#` builds `struct tm` from saved date + typed time with `tm_isdst = -1`, calls `mktime()` to produce UTC epoch, calls `dm_set_manual_time(unix_ts)`, then returns to `UI_STATUS`.
+
 **Alarm display:**
 - Motor alarm active (`EG1.MOTOR_ALARM`): displayed prominently on line 1 with "MOTOR ALARM — CONTROL SUSPENDED" message (FR-MA05).
 - Sensor fault (T or wind): displayed on line 2 with blinking indicator.
@@ -898,7 +934,8 @@ Where `Mxx` encodes active window states (e.g. `M1O` = M1 open, `M2C` = M2 close
 - LCD display shows current WiFi client status:
   - *Disconnected* — client mode enabled but no network connection.
   - *Connected* — connected to AP; displays assigned IP (DHCP) or configured static IP.
-- On client connection: T10 sends TN4 to T4, triggering NTP synchronisation.
+- On client connection: T10 triggers NTP synchronisation; on NTP success: sends TN4 to T4 and calls `do_geo_sync()` to auto-detect location and timezone (FR-DN06, FR-DN07). See §4.3 T10 for full `do_geo_sync()` description.
+- Time display in all contexts (web dashboard, LCD page 4) uses `localtime_r()` after the TZ string has been applied, so the displayed time automatically reflects the correct timezone and DST offset.
 
 ---
 
@@ -1034,7 +1071,7 @@ Motor full-travel time defaults (`MOTOR_M1_TRAVEL_S_DEFAULT 21`, `MOTOR_M2_TRAVE
 | `access` | `pin_salt` (blob[16]), `pin_farmer_hash` (blob[32]), `pin_admin_hash` (blob[32]), `fail_cnt_f`, `fail_cnt_a`, `lockout_f`, `lockout_a`, `lockout_max`, `lockout_secs` | blob / int32 | `pin_salt`: 16-byte random salt, generated once at first boot. `pin_farmer_hash` / `pin_admin_hash`: SHA-256(salt \|\| pin_ascii) digest. `fail_cnt_f` / `fail_cnt_a`: per-role consecutive failure count. `lockout_f` / `lockout_a`: per-role lockout expiry as Unix timestamp (0 = not locked). `lockout_max`: threshold before lockout (default 5). `lockout_secs`: lockout duration (default 300 s). |
 | `wifi` | `ssid`, `psk_hash`, `ap_psk`, `ip_mode`, `ip_addr`, `ip_mask`, `ip_gw`, `ip_dns` | string | WiFi client and AP credentials and network settings; AP SSID is auto-generated from MAC address and not stored. `ap_psk` stored as **plaintext** (WPA2 requires raw key); default `"0123456789"`; configurable by admin via web interface. `psk_hash` (client password) stored as salted SHA-256 hash. |
 | `mqtt` | `broker_url`, `port`, `username`, `password`, `topic_prefix`, `interval` | string / uint16 | MQTT broker connection and publish settings. `password` stored as plaintext in NVS (MQTT protocol requires the actual password to authenticate to the broker; hashing is not possible). Accepted risk — same basis as no-HTTPS decision (Issue #5 closed). |
-| `system` | `poll_interval`, `session_timeout`, `ap_timeout`, `lang`, `log_pointer`, `schema_ver`, `fw_version`, `led_day_brt`, `led_nite_brt`, `led_nite_from`, `led_nite_to`, `lat_deg`, `lat_frac`, `lon_deg`, `lon_frac` | uint16 / string / uint8 / int16 | System-wide configuration; `poll_interval` (uint16, seconds, default 60, technician-settable 150–3600 via web GUI); `lat_deg` + `lat_frac` / `lon_deg` + `lon_frac`: geographic location stored as integer degree and fractional milli-degree parts (e.g. 52.0907°N stored as lat_deg=52, lat_frac=907) for sunrise/sunset calculation (FR-DN02); `schema_ver` (int32) tracks NVS layout version; `fw_version` (string `"MAJOR.MINOR.PATCH"`) overwritten on every boot; `led_day_brt` / `led_nite_brt` (uint8, 0–255, defaults 200/20); `led_nite_from` / `led_nite_to` (uint8, hour 0–23, defaults 22/6) |
+| `system` | `poll_interval`, `session_timeout`, `ap_timeout`, `lang`, `log_pointer`, `schema_ver`, `fw_version`, `led_day_brt`, `led_nite_brt`, `led_nite_from`, `led_nite_to`, `lat_deg`, `lat_frac`, `lon_deg`, `lon_frac`, `tz_str` | uint16 / string / uint8 / int16 | System-wide configuration; `poll_interval` (uint16, seconds, default 60, technician-settable 30–3600 via web GUI); `lat_deg` + `lat_frac` / `lon_deg` + `lon_frac`: geographic location stored as integer degree and fractional milli-degree parts (e.g. 52.0907°N stored as lat_deg=52, lat_frac=907) for sunrise/sunset calculation; populated manually via web GUI (FR-CF16) or automatically by `do_geo_sync()` (FR-DN06); `tz_str` (string[64]): POSIX TZ string e.g. `"CET-1CEST,M3.5.0,M10.5.0/3"`, factory default `"CET-1CEST,M3.5.0,M10.5.0/3"`, applied at boot via `setenv/tzset` and on each geolocation update (FR-DN07, FR-CF18); `schema_ver` (int32) tracks NVS layout version; `fw_version` (string `"MAJOR.MINOR.PATCH"`) overwritten on every boot; `led_day_brt` / `led_nite_brt` (uint8, 0–255, defaults 200/20); `led_nite_from` / `led_nite_to` (uint8, hour 0–23, defaults 22/6) |
 | `log` | Ring buffer entries (binary blob, fixed record size) | blob | Event log fallback when SD card absent |
 
 **Default values:**
@@ -1163,7 +1200,7 @@ These four keys are part of the "Should" feature set (FR-UI21, FR-CF14); they de
 |---|-------|-------|--------|
 | 1 | **Motor alarm signal — software response** — Hardware signal characterised (THDS Issue #1 closed): RRK-3 alarm relay (dry contact, closes on motor emergency stop) → J10 opto input → GPIO 42 (active-low: GPIO LOW = alarm active, INPUT_PULLUP). Normal manual window operation does NOT trigger this signal. **Resolution:** T2 uses a deferred-ISR pattern: `attachInterrupt(PIN_OPTO_INPUT, isr_handler, CHANGE)`; `IRAM_ATTR` ISR records first edge (volatile flag + FreeRTOS tick timestamp); T2 task loop confirms after 75 ms by reading live pin state; NOT suppressed during MOVING. On alarm assert: de-energise all 6 relays, set EG1.MOTOR_ALARM, post log to Q3. On alarm release: clear EG1.MOTOR_ALARM, post CLOSE_ALL re-calibration to Q1, post log to Q3, resume AUTOMATIC. Manual override detection (formerly FR-M08–FR-M11) removed — hardware does not support it. | Software engineer | **Closed** |
 | 2 | **Ring buffer depth** — **Resolution:** 360 entries per channel (T, RH, wind speed, wind direction) = 11.5 KB total internal RAM. At the default 60 s poll interval: 6 hours of in-memory history; at the minimum 30 s poll interval: 3 hours. Fits comfortably in ESP32-S3 internal SRAM with substantial headroom. Sufficient for web trend view and MQTT history. | Software engineer | **Closed** |
-| 3 | **NTP timezone handling** — Hardware time source resolved (THDS Issue #7 closed): DS1307 RTC is the authoritative offline clock; NTP synchronises on WiFi connect. **Resolution:** DST handling via POSIX TZ string `CET-1CEST,M3.5.0,M10.5.0/3` — `setenv("TZ", tz_str, 1); tzset();` after `configTime(0, 0, "pool.ntp.org")`. TZ string stored in NVS `system/tz_str` with `CET-1CEST,M3.5.0,M10.5.0/3` as factory default; technician-configurable via web GUI. | Software engineer | **Closed** |
+| 3 | **NTP timezone handling** — Hardware time source resolved (THDS Issue #7 closed): DS1307 RTC is the authoritative offline clock; NTP synchronises on WiFi connect. **Resolution:** DST handling via POSIX TZ string — `setenv("TZ", tz_str, 1); tzset()` applied at boot and on every geolocation update. TZ string stored in NVS `system/tz_str`; factory default `"CET-1CEST,M3.5.0,M10.5.0/3"` (Europe/Amsterdam). **Auto-TZ from geolocation (FR-DN07):** after successful NTP sync, `do_geo_sync()` queries ip-api.com and resolves the IANA timezone name to a POSIX string via a ~100-entry lookup table (`s_tz_table[]` in `network_manager.cpp`); the resolved POSIX string is applied immediately and persisted to NVS. If geolocation or lookup fails, the NVS value from the previous run is used. Technician-configurable via web GUI (FR-CF18). | Software engineer | **Closed** |
 | 4 | **Web interface HTTPS — not implemented (TR-NW04 accepted)** — TLS termination on the ESP32-S3 is not feasible: the RAM and CPU overhead of a TLS stack would leave insufficient headroom for concurrent real-time tasks. **Decision:** HTTPS will not be implemented. **Accepted threat model:** the web interface is served over plain HTTP. The risk is mitigated by the following constraints: (a) the WiFi AP is disabled by default and enabled only on explicit admin command; (b) the AP has a configurable automatic timeout; (c) the controller is intended for use on a private, physically controlled greenhouse network and is not exposed to the public internet; (d) all credentials are stored as salted hashes and are never transmitted in plaintext; (e) session cookies are short-lived and invalidated on logout or timeout. This residual risk is accepted by the project owner. | Software engineer | **Closed — accepted** |
 | 5 | **MQTT authentication method** — **Resolution:** plain username + password over TCP. Client certificate authentication is not implemented. The MQTT `password` field is stored as plaintext in NVS `mqtt/password` (MQTT protocol requires the actual password; hashing is not applicable). Accepted risk: same threat model as Issue #4 (no-HTTPS decision) — controller is on a private greenhouse network. Risk documented and accepted by the project owner. | Software engineer | **Closed — accepted** |
 

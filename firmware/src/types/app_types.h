@@ -259,6 +259,7 @@ typedef struct {
 typedef struct {
     bool client_connected;  /**< true if connected to a WiFi AP as client */
     bool ap_active;         /**< true if AP mode is currently running */
+    bool ntp_synced;        /**< true if NTP has successfully synced this session */
     char ip_str[16];        /**< dotted-decimal IPv4 address string */
 } net_status_t;
 

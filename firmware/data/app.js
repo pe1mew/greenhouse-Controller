@@ -206,6 +206,7 @@ function loadConfig() {
       if (cfg.lon_deg !== undefined && cfg.lon_frac !== undefined) {
         setVal('cfg-lon', (cfg.lon_deg + cfg.lon_frac / 1000.0).toFixed(3));
       }
+      applyRhCtrl();
     });
 }
 
@@ -225,6 +226,15 @@ function postCfgSelect(ns, key, inputId) {
   const value = parseInt(el.value, 10);
   post('/api/config', { ns, key, value })
     .then(r => feedback('fb-' + inputId.replace('cfg-',''), r && r.ok));
+  if (inputId === 'cfg-rh-ctrl-en') applyRhCtrl();
+}
+
+function applyRhCtrl() {
+  const el = document.getElementById('cfg-rh-ctrl-en');
+  const enabled = el && el.value === '1';
+  document.querySelectorAll('.rh-dep').forEach(function(row) {
+    row.classList.toggle('rh-disabled', !enabled);
+  });
 }
 
 function postCfgStr(ns, key, inputId) {

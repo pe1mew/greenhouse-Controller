@@ -6,6 +6,85 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.13.0] — 2026-05-05
+
+*Geolocation + automatic timezone; local-time clock display fix; LCD time status page; LCD manual date/time set (admin).*
+
+### Added
+- `firmware/src/network_manager/network_manager.cpp` — **automatic geolocation and timezone** (`do_geo_sync()`):
+  - After every successful NTP sync, performs HTTP GET `http://ip-api.com/json?fields=status,lat,lon,timezone` (5 s timeout)
+  - Parses JSON response (strstr/atof, no cJSON dependency) for latitude, longitude, and IANA timezone name
+  - Lookup table of ~100 IANA timezone names → POSIX TZ strings (Europe, Americas, Asia, Australia, Pacific)
+  - Posts `lat_deg`, `lat_frac`, `lon_deg`, `lon_frac` to Q4 → T4 updates shadow + sunrise/sunset immediately
+  - Writes POSIX TZ string to NVS `system/tz_str`; calls `setenv("TZ", …, 1)` + `tzset()` immediately without reboot
+  - Falls back gracefully on HTTP error or unknown IANA name (logs warning, leaves TZ unchanged)
+- `firmware/src/types/app_types.h` — `net_status_t` extended with `bool ntp_synced` field
+- `firmware/src/data_manager/data_manager.h/.cpp` — **`dm_set_manual_time(time_t unix_ts)`** public API:
+  - Updates POSIX system clock via `settimeofday()`
+  - Writes UTC time to DS1307 RTC under MX1 via `rtc_set_time()`
+  - Updates `current_unix_ts` in MX4 configuration shadow
+- `firmware/src/ui_display/ui_display.cpp` — **LCD time status page** (page 4 of 5):
+  - Row 0: `YYYY-MM-DD HH:MM` (local time via `localtime_r`)
+  - Row 1: `Src:NTP  #=SetTm` or `Src:RTC  #=SetTm` — source from `net_status_t.ntp_synced`
+- `firmware/src/ui_display/ui_display.cpp` — **LCD manual date/time set** (admin only, two-screen flow):
+  - `#` on time status page (page 4) → admin PIN required → `UI_SET_DATE`
+  - **Date screen** (`UI_SET_DATE`): row 0 shows current date; row 1 entry `DD/MM/YY #OK *Bk`; 6 digits DDMMYY; `#` advances to time screen; `*` backtracks/cancels to status
+  - **Time screen** (`UI_SET_TIME`): row 0 shows current time; row 1 entry `HH:MM #OK *Bk`; 4 digits HHMM; `#` converts entered local time via `mktime()` to UTC epoch, calls `dm_set_manual_time()`, writes to DS1307, returns to status; `*` backtracks to date screen (date digits restored)
+  - Validation: day 01–31, month 01–12, hour 00–23, minute 00–59; error messages on bad input
+  - New FSM states: `UI_SET_DATE`, `UI_SET_TIME`; `s_pending_settime` flag for deferred PIN flow
+
+### Changed
+- `firmware/src/web_server/web_server.cpp` — **time display fix**: `gmtime_r` → `localtime_r`; format `"%Y-%m-%dT%H:%M:%SZ"` → `"%Y-%m-%dT%H:%M:%S"` — clock in web UI now shows local time with DST applied instead of UTC
+- `firmware/src/network_manager/network_manager.cpp` — `post_q5()` now sets `st.ntp_synced = s_ntp_synced`
+- `firmware/src/ui_display/ui_display.cpp` — `STATUS_PAGES` constant 4 → 5
+
+### Build metrics
+- Flash: 54.3% (1 138 kB / 2 MB)
+- RAM: 19.3% (63 kB / 320 kB)
+
+---
+
+## [1.12.0] — 2026-05-05
+
+*NVS partition fix (critical); AP lifecycle hardening; LCD display improvements; web GUI tab restructure and RH-dependent grayout.*
+
+### Fixed
+- **Critical — `firmware/partitions.csv`**: The Arduino ESP32 toolchain unconditionally flashes `boot_app0.bin` to the hardcoded address 0xe000. The old partition table placed NVS at 0x9000–0x1DFFF (84 KB), so 0xe000 landed inside NVS page 5 and corrupted the entire namespace on every firmware flash. Fixed by redesigning the partition layout:
+
+  | Name    | Type | Sub-type | Offset   | Size    |
+  |---------|------|----------|----------|---------|
+  | otadata | data | ota      | 0xe000   | 0x2000  |
+  | nvs     | data | nvs      | 0x10000  | 0x10000 |
+  | app0    | app  | ota_0    | 0x20000  | 0x200000|
+  | app1    | app  | ota_1    | 0x220000 | 0x200000|
+  | lfs0    | data | spiffs   | 0x420000 | 0x100000|
+  | lfs1    | data | spiffs   | 0x520000 | 0x100000|
+
+  `board_upload.offset_address = 0x20000` in `platformio.ini` updated accordingly.
+- `firmware/src/ui_display/ui_display.cpp` — `UI_MENU_SYSTEM` / `UI_MENU_MOTORS` tab panes no longer use `admin-only-block` CSS class (was forcing `display:block` for both when admin, overriding tab show/hide logic); both are now plain `tab-pane`
+
+### Added
+- `firmware/src/network_manager/network_manager.cpp`:
+  - **AP auto-stop on client connect**: when `WL_CONNECTED` is reached, if AP is active the NVS `wifi/ap_enable` flag is cleared and `stop_ap()` is called immediately
+  - **AP non-persistent on reboot**: at T10 startup `nvs_cfg_set_i32(NVS_NS_WIFI, "ap_enable", 0)` unconditionally forces AP disabled; admin must explicitly enable it each boot via LCD or web GUI
+- `firmware/src/ui_display/ui_display.cpp`:
+  - **Boot splash**: shows `"Greenhouse Ctrl "` / `"v0.1.0 Init... "` on LCD for 2 s using `FIRMWARE_VERSION` macro
+  - **Network status page — AP SSID**: when AP is active, row 1 shows computed SSID `"Greenhouse-XXYY"` (last 2 MAC bytes) instead of blank
+  - **Wind direction cardinal**: row 1 of wind page now shows `" Dir:%3d ° (%-2s) "` — degree value, degree symbol (`\xDF`), and 8-point cardinal name (N/NE/E/SE/S/SW/W/NW); helper `deg_to_cardinal()` added
+- `firmware/data/index.html`, `app.js`, `style.css` — **web GUI restructure**:
+  - `<h1>` badge: WS online/offline badge moved inside `<h1>` title element
+  - RH-dependent rows (6 rows) carry `.rh-dep` class; `applyRhCtrl()` in JS toggles `.rh-disabled` on all `.rh-dep` rows when humidity control is disabled; CSS: `.rh-dep.rh-disabled { opacity: 0.35; pointer-events: none }`
+  - **System tab** (admin): session & timing sliders, WiFi AP settings, WiFi client settings, NTP timezone, location (lat/lon)
+  - **Access tab** (admin): Farmer PIN change, Admin PIN change
+  - Standalone "System" and "Access control" sections removed (content consolidated into tabs)
+  - Motors tab and System tab content correctly separated (removed duplicate content)
+
+### Changed
+- `firmware/src/ui_display/ui_display.cpp`:
+  - Wind status page: valid sensors: `" Dir:%3d \xDF (%-2s) "` (space before degree symbol); invalid sensors: `" Dir: --- \xDF     "` (consistent column alignment with valid case)
+
+---
+
 ## [1.11.0] — 2026-05-05
 
 *Phase 9 — Web Server (T11) implemented: ESPAsyncWebServer with LittleFS file serving, cookie-session auth (farmer/admin roles), REST API, WebSocket status push, config read/write, PIN management, WiFi provisioning.*

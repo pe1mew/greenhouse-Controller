@@ -27,8 +27,7 @@
 
 <!-- ── Header ───────────────────────────────────────────────────── -->
 <header>
-  <h1>Greenhouse Controller</h1>
-  <span id="ws-badge" class="badge offline">Offline</span>
+  <h1>Greenhouse Controller <span id="ws-badge" class="badge offline">Offline</span></h1>
   <span id="role-badge" class="badge" style="background:#444;display:none"></span>
   <button onclick="doLogout()" style="margin-left:auto">Logout</button>
 </header>
@@ -73,7 +72,7 @@
     <div class="card">
       <h3>Clock</h3>
       <p id="st-time">—</p>
-      <span id="st-ntp" class="badge ntp-off">NTP pending</span>
+      <p><span id="st-ntp" class="badge ntp-off">NTP pending</span></p>
     </div>
     <div class="card">
       <h3>WiFi</h3>
@@ -91,6 +90,7 @@
     <button class="tab-btn" onclick="showTab('tab-wind')">Wind</button>
     <button class="tab-btn admin-only" onclick="showTab('tab-motor')">Motors</button>
     <button class="tab-btn admin-only" onclick="showTab('tab-system')">System</button>
+    <button class="tab-btn admin-only" onclick="showTab('tab-access')">Access</button>
   </div>
 
   <!-- Climate tab -->
@@ -110,14 +110,14 @@
       <button onclick="postCfg('climate','t_min_day','cfg-t-min-day','int')">Apply</button>
       <span class="save-ok" id="fb-t-min-day"></span>
     </div>
-    <div class="slider-row farmer-hidden">
+    <div class="slider-row farmer-hidden rh-dep">
       <label>RH max day (%)</label>
       <input type="range"  id="cfg-rh-max-day-sl" min="0" max="100" step="1">
       <input type="number" id="cfg-rh-max-day"    min="0" max="100" class="short">
       <button onclick="postCfg('climate','rh_max_day','cfg-rh-max-day','int')">Apply</button>
       <span class="save-ok" id="fb-rh-max-day"></span>
     </div>
-    <div class="slider-row farmer-hidden">
+    <div class="slider-row farmer-hidden rh-dep">
       <label>RH min day (%)</label>
       <input type="range"  id="cfg-rh-min-day-sl" min="0" max="100" step="1">
       <input type="number" id="cfg-rh-min-day"    min="0" max="100" class="short">
@@ -139,14 +139,14 @@
       <button onclick="postCfg('climate','t_min_ngt','cfg-t-min-ngt','int')">Apply</button>
       <span class="save-ok" id="fb-t-min-ngt"></span>
     </div>
-    <div class="slider-row farmer-hidden">
+    <div class="slider-row farmer-hidden rh-dep">
       <label>RH max night (%)</label>
       <input type="range"  id="cfg-rh-max-ngt-sl" min="0" max="100" step="1">
       <input type="number" id="cfg-rh-max-ngt"    min="0" max="100" class="short">
       <button onclick="postCfg('climate','rh_max_ngt','cfg-rh-max-ngt','int')">Apply</button>
       <span class="save-ok" id="fb-rh-max-ngt"></span>
     </div>
-    <div class="slider-row farmer-hidden">
+    <div class="slider-row farmer-hidden rh-dep">
       <label>RH min night (%)</label>
       <input type="range"  id="cfg-rh-min-ngt-sl" min="0" max="100" step="1">
       <input type="number" id="cfg-rh-min-ngt"    min="0" max="100" class="short">
@@ -170,7 +170,7 @@
       <button onclick="postCfg('climate','hyst_t','cfg-hyst-t','int')">Apply</button>
       <span class="save-ok" id="fb-hyst-t"></span>
     </div>
-    <div class="slider-row admin-only">
+    <div class="slider-row admin-only rh-dep">
       <label>RH hysteresis (%)</label>
       <input type="range"  id="cfg-hyst-rh-sl" min="0" max="20" step="1">
       <input type="number" id="cfg-hyst-rh"    min="0" max="20" class="short">
@@ -184,7 +184,7 @@
       <button onclick="postCfg('climate','avg_win_t','cfg-avg-win-t','int')">Apply</button>
       <span class="save-ok" id="fb-avg-win-t"></span>
     </div>
-    <div class="slider-row admin-only">
+    <div class="slider-row admin-only rh-dep">
       <label>RH avg window (min)</label>
       <input type="range"  id="cfg-avg-win-rh-sl" min="1" max="60" step="1">
       <input type="number" id="cfg-avg-win-rh"    min="1" max="60" class="short">
@@ -228,7 +228,7 @@
   </div>
 
   <!-- Motors tab (admin only) -->
-  <div id="tab-motor" class="tab-pane admin-only-block">
+  <div id="tab-motor" class="tab-pane">
     <h3>Travel times (seconds)</h3>
     <div class="slider-row">
       <label>M1 travel (s)</label>
@@ -297,8 +297,9 @@
     </div>
   </div>
 
-  <!-- System tab (admin only) — session / timing parameters -->
-  <div id="tab-system" class="tab-pane admin-only-block">
+  <!-- System tab (admin only) -->
+  <div id="tab-system" class="tab-pane">
+    <h3>Session &amp; timing</h3>
     <div class="slider-row">
       <label>Session timeout (min)</label>
       <input type="range"  id="cfg-session-timeout-sl" min="1" max="120" step="1">
@@ -320,85 +321,80 @@
       <button onclick="postCfg('system','poll_interval','cfg-poll-interval','int')">Apply</button>
       <span class="save-ok" id="fb-poll-interval"></span>
     </div>
-  </div>
-</section>
 
-<!-- ── System (admin only) ───────────────────────────────────────── -->
-<section class="admin-only-block">
-  <h2>System</h2>
+    <hr>
+    <h3>WiFi AP</h3>
+    <div class="row">
+      <label>SSID</label>
+      <span id="cfg-ap-ssid" style="font-family:monospace;color:var(--fg)">—</span>
+    </div>
+    <div class="row">
+      <label>AP password</label>
+      <input type="password" id="cfg-ap-psk" class="wide" maxlength="63">
+      <button onclick="postApPsk()">Apply</button>
+      <span class="save-ok" id="fb-ap-psk"></span>
+    </div>
+    <p class="hint">Default: <code>0123456789</code>. Takes effect on next AP start.</p>
 
-  <h3>WiFi AP</h3>
-  <div class="row">
-    <label>SSID</label>
-    <span id="cfg-ap-ssid" style="font-family:monospace;color:var(--fg)">—</span>
-  </div>
-  <div class="row">
-    <label>AP password</label>
-    <input type="password" id="cfg-ap-psk" class="wide" maxlength="63">
-    <button onclick="postApPsk()">Apply</button>
-    <span class="save-ok" id="fb-ap-psk"></span>
-  </div>
-  <p class="hint">Default: <code>0123456789</code>. Takes effect on next AP start.</p>
+    <hr>
+    <h3>WiFi client</h3>
+    <div class="row">
+      <label>SSID</label>
+      <input type="text" id="cfg-wifi-ssid" class="wide" maxlength="32" autocomplete="off">
+    </div>
+    <div class="row">
+      <label>Password</label>
+      <input type="password" id="cfg-wifi-psk" class="wide" maxlength="63" autocomplete="new-password">
+    </div>
+    <button onclick="postWifi()">Connect</button>
+    <span class="save-ok" id="fb-wifi"></span>
+    <p class="hint">Leave Password blank to keep the stored password. Device reconnects within ~30 s.</p>
 
-  <hr>
-  <h3>WiFi client</h3>
-  <div class="row">
-    <label>SSID</label>
-    <input type="text" id="cfg-wifi-ssid" class="wide" maxlength="32" autocomplete="off">
-  </div>
-  <div class="row">
-    <label>Password</label>
-    <input type="password" id="cfg-wifi-psk" class="wide" maxlength="63" autocomplete="new-password">
-  </div>
-  <button onclick="postWifi()">Connect</button>
-  <span class="save-ok" id="fb-wifi"></span>
-  <p class="hint">Leave Password blank to keep the stored password. Device reconnects within ~30 s.</p>
+    <hr>
+    <h3>NTP timezone</h3>
+    <div class="row">
+      <label>POSIX TZ string</label>
+      <input type="text" id="cfg-tz" class="wide" placeholder="CET-1CEST,M3.5.0,M10.5.0/3">
+      <button onclick="postCfgStr('system','tz_str','cfg-tz')">Apply</button>
+      <span class="save-ok" id="fb-tz"></span>
+    </div>
+    <p class="hint">Netherlands: <code>CET-1CEST,M3.5.0,M10.5.0/3</code></p>
 
-  <hr>
-  <h3>NTP timezone</h3>
-  <div class="row">
-    <label>POSIX TZ string</label>
-    <input type="text" id="cfg-tz" class="wide" placeholder="CET-1CEST,M3.5.0,M10.5.0/3">
-    <button onclick="postCfgStr('system','tz_str','cfg-tz')">Apply</button>
-    <span class="save-ok" id="fb-tz"></span>
-  </div>
-  <p class="hint">Netherlands: <code>CET-1CEST,M3.5.0,M10.5.0/3</code></p>
-
-  <hr>
-  <h3>Location (for sunrise/sunset)</h3>
-  <div class="row">
-    <label>Latitude (decimal °)</label>
-    <input type="number" id="cfg-lat" class="short" step="0.001" min="-90"  max="90">
-  </div>
-  <div class="row">
-    <label>Longitude (decimal °)</label>
-    <input type="number" id="cfg-lon" class="short" step="0.001" min="-180" max="180">
-  </div>
-  <div class="row" style="margin-top:.25rem">
-    <button onclick="postLocation()">Apply location</button>
-    <span class="save-ok" id="fb-location"></span>
-  </div>
-</section>
-
-<!-- ── Access control (admin only) ──────────────────────────────── -->
-<section class="admin-only-block">
-  <h2>Access control</h2>
-
-  <h3>Farmer PIN</h3>
-  <div class="row">
-    <label>New PIN (4 digits)</label>
-    <input type="password" id="cfg-pin-farmer" class="short" maxlength="4" pattern="[0-9]{4}">
-    <button onclick="postPinChange('farmer')">Set</button>
-    <span class="save-ok" id="fb-pin-farmer"></span>
+    <hr>
+    <h3>Location (for sunrise/sunset)</h3>
+    <div class="row">
+      <label>Latitude (decimal °)</label>
+      <input type="number" id="cfg-lat" class="short" step="0.001" min="-90"  max="90">
+    </div>
+    <div class="row">
+      <label>Longitude (decimal °)</label>
+      <input type="number" id="cfg-lon" class="short" step="0.001" min="-180" max="180">
+    </div>
+    <div class="row" style="margin-top:.25rem">
+      <button onclick="postLocation()">Apply location</button>
+      <span class="save-ok" id="fb-location"></span>
+    </div>
   </div>
 
-  <h3>Admin PIN</h3>
-  <div class="row">
-    <label>New PIN (8 digits)</label>
-    <input type="password" id="cfg-pin-admin" class="short" maxlength="8" pattern="[0-9]{8}">
-    <button onclick="postPinChange('admin')">Set</button>
-    <span class="save-ok" id="fb-pin-admin"></span>
+  <!-- Access tab (admin only) -->
+  <div id="tab-access" class="tab-pane">
+    <h3>Farmer PIN</h3>
+    <div class="row">
+      <label>New PIN (4 digits)</label>
+      <input type="password" id="cfg-pin-farmer" class="short" maxlength="4" pattern="[0-9]{4}">
+      <button onclick="postPinChange('farmer')">Set</button>
+      <span class="save-ok" id="fb-pin-farmer"></span>
+    </div>
+
+    <h3>Admin PIN</h3>
+    <div class="row">
+      <label>New PIN (8 digits)</label>
+      <input type="password" id="cfg-pin-admin" class="short" maxlength="8" pattern="[0-9]{8}">
+      <button onclick="postPinChange('admin')">Set</button>
+      <span class="save-ok" id="fb-pin-admin"></span>
+    </div>
   </div>
+
 </section>
 
 <!-- ── Sensor history ────────────────────────────────────────────── -->

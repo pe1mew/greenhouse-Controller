@@ -31,7 +31,7 @@ header {
   margin-bottom: 1.25rem;
   flex-wrap: wrap;
 }
-header h1 { font-size: 1.2rem; flex: 1; }
+header h1 { font-size: 1.2rem; flex: 1; display: flex; align-items: center; gap: .5rem; }
 
 /* ── Login overlay ───────────────────────────────────────────────── */
 #login-overlay {
@@ -238,6 +238,12 @@ body.is-admin .admin-only-block { display: block; }
 .farmer-hidden { display: none; }
 body.is-farmer .farmer-hidden,
 body.is-admin  .farmer-hidden { display: flex; }
+
+/* ── Humidity control disabled ───────────────────────────────────── */
+.rh-dep.rh-disabled {
+  opacity: 0.35;
+  pointer-events: none;
+}
 
 /* ── Footer ──────────────────────────────────────────────────────── */
 footer {

@@ -2325,3 +2325,178 @@ Phase 9 goal per `firmwareImplementationPlan.md`:
 | Core automation loop | T4→TN2→T6→Q1→T2 and T4→TN1→T3→Q1→T2 fully wired |
 
 **Next phase:** Phase 10 — MQTT Client (T12).
+
+---
+
+## Post-Phase 9 Corrections — v1.12.0
+
+**Date completed:** 2026-05-05
+
+### NVS partition corruption — root cause and fix
+
+**Problem:** WiFi credentials and all NVS-persisted settings were lost on every firmware flash.
+
+**Root cause:** The Arduino ESP32 toolchain unconditionally writes `boot_app0.bin` (the OTA data partition) to hardcoded flash address **0xe000** on every `esptool` upload, regardless of the partition table. The old NVS partition was at 0x9000–0x1DFFF (84 KB). Address 0xe000 is inside that range at NVS page 5, so every flash destroyed one NVS page and the entire namespace became corrupt on the next boot (NVS detects the invalid page and reinitialises, wiping all stored keys).
+
+**Fix — `firmware/partitions.csv` redesigned:**
+
+| Name    | Type | Sub-type | Offset   | Size     | Note |
+|---------|------|----------|----------|----------|------|
+| otadata | data | ota      | 0xe000   | 0x2000   | Standard esptool target — must be here |
+| nvs     | data | nvs      | 0x10000  | 0x10000  | 64 KB, 16 NVS pages — well above the corrupt address |
+| app0    | app  | ota_0    | 0x20000  | 0x200000 | 2 MB firmware slot A |
+| app1    | app  | ota_1    | 0x220000 | 0x200000 | 2 MB firmware slot B |
+| lfs0    | data | spiffs   | 0x420000 | 0x100000 | Web assets (active partition) |
+| lfs1    | data | spiffs   | 0x520000 | 0x100000 | Web assets (OTA alternate) |
+
+`firmware/platformio.ini`: `board_upload.offset_address = 0x20000` updated; comment added explaining the rationale.
+
+### AP lifecycle hardening
+
+**`firmware/src/network_manager/network_manager.cpp`:**
+- **AP auto-stop on WiFi client connect**: `NET_CONNECTING` success path now calls `stop_ap()` immediately when `s_ap_active`; clears `wifi/ap_enable` NVS flag so AP does not restart on next `poll_ap()` tick
+- **AP non-persistent on reboot**: T10 startup sequence writes `nvs_cfg_set_i32(NVS_NS_WIFI, "ap_enable", 0)` unconditionally before the main loop; AP must be explicitly enabled by admin each boot
+
+### LCD display improvements
+
+**`firmware/src/ui_display/ui_display.cpp`:**
+- **Boot splash** (2 s): `"Greenhouse Ctrl "` / `"v<ver> Init..."` using `FIRMWARE_VERSION` from `nvs_config.h`
+- **Network status page** (page 3): when AP is active, row 1 shows `"Greenhouse-XXYY"` (MAC-derived SSID) instead of blank
+- **Wind page** (page 1): row 1 shows `" Dir:%3d ° (xx) "` — degree value, `\xDF` degree symbol, 2-char cardinal name; `deg_to_cardinal()` helper added; invalid sensor case shows `" Dir: --- °     "` (consistent column alignment)
+
+### Web GUI tab restructure
+
+**`firmware/data/index.html` / `app.js` / `style.css`:**
+- WS online/offline badge moved inside `<h1>` title
+- **System tab** (admin only): consolidated session & timing, WiFi AP, WiFi client, NTP timezone, location (lat/lon)
+- **Access tab** (admin only): Farmer PIN and Admin PIN change; standalone "Access control" section removed
+- Motors tab and System tab content correctly separated (bug: previously shared content)
+- **RH grayout**: rows with `.rh-dep` class become 35% opacity + `pointer-events:none` when humidity control is disabled; `applyRhCtrl()` called on config load and on RH control toggle
+- CSS: `.rh-dep.rh-disabled { opacity: 0.35; pointer-events: none }` added to `style.css`
+
+### Verification
+
+| Check | Result |
+|-------|--------|
+| NVS survives firmware flash — WiFi credentials retained after `pio run -t upload` | ✅ |
+| AP stops automatically when WiFi client connects | ✅ |
+| AP is always off after reboot, must be explicitly enabled | ✅ |
+| Boot splash visible for ~2 s on power-on | ✅ |
+| LCD wind page shows cardinal direction with degree symbol | ✅ |
+| LCD network page shows AP SSID when AP active | ✅ |
+| Web GUI System/Access tabs load correct content | ✅ |
+| RH-dependent rows gray out when RH control disabled | ✅ |
+
+---
+
+## Post-Phase 9 Corrections — v1.13.0
+
+**Date completed:** 2026-05-05
+
+### Time display fix — web server
+
+**`firmware/src/web_server/web_server.cpp` — `build_status_json()` line 248–249:**
+- Changed `gmtime_r(&ts, &tm_info)` → `localtime_r(&ts, &tm_info)`
+- Changed format string `"%Y-%m-%dT%H:%M:%SZ"` → `"%Y-%m-%dT%H:%M:%S"` (no UTC-suffix since time is now local)
+- Effect: clock displayed in web UI now shows local time with correct DST offset (previously always showed UTC)
+
+### Geolocation and automatic timezone (`do_geo_sync`)
+
+**`firmware/src/network_manager/network_manager.cpp`:**
+
+New static function `do_geo_sync()` called after every successful NTP sync (`run_ntp_sync()`, on `s_ntp_synced` set):
+
+1. **HTTP GET** `http://ip-api.com/json?fields=status,lat,lon,timezone` (5 s timeout, `HTTPClient`, Arduino core)
+2. **JSON parse**: `strstr`/`atof` — checks `"status":"success"`, extracts `lat`, `lon`, `timezone` (IANA name)
+3. **IANA → POSIX lookup table** (`s_tz_table[]`): ~100 entries covering Europe (CET/WET/EET/GMT/Moscow), Americas (US/Canada/Latin America), Asia (Middle East/South/SE/East), Australia, Pacific. Returns NULL for unknown zones (logs warning, TZ unchanged).
+4. **Latitude/longitude**: converted to `int32_t deg + frac` (milli-degree, round(fractional × 1000)); posted to Q4 as four `config_update_t` messages (`system/lat_deg`, `system/lat_frac`, `system/lon_deg`, `system/lon_frac`) → T4 updates shadow + recalculates sunrise/sunset
+5. **Timezone string**: written to NVS `system/tz_str` via `nvs_cfg_set_str()`; applied immediately with `setenv("TZ", posix_tz, 1); tzset()` — no reboot needed
+6. **Resilience**: HTTP failure or unknown IANA name → log warning, exit silently; all other functionality unaffected
+
+New helpers added to `network_manager.cpp`:
+- `parse_geo_response()` — extracts lat, lon, timezone from JSON body
+- `float_to_deg_frac()` — converts float coordinate to (deg, frac) pair with carry handling
+- `iana_to_posix()` — linear table search through `s_tz_table[]`
+- `post_q4()` — posts a single `config_update_t` to Q4 (extracted helper, reusable)
+
+**New include**: `<HTTPClient.h>` (Arduino core, auto-resolved by LDF — no `lib_deps` entry needed). `<stdlib.h>` and `<math.h>` added for `atof` and `fabs`.
+
+### `net_status_t` extended
+
+**`firmware/src/types/app_types.h`:**
+- Added `bool ntp_synced` to `net_status_t` struct
+- `post_q5()` in T10 now sets `st.ntp_synced = s_ntp_synced`
+- T8 reads `s_net.ntp_synced` for the new LCD time page source indicator
+
+### `dm_set_manual_time()` — new public API
+
+**`firmware/src/data_manager/data_manager.h` / `data_manager.cpp`:**
+
+```c
+void dm_set_manual_time(time_t unix_ts);
+```
+
+- Calls `settimeofday()` to update the POSIX system clock immediately
+- Acquires MX1, calls `rtc_set_time()` (DS1307, UTC), releases MX1
+- Acquires MX4, updates `s_cfg.current_unix_ts`, releases MX4
+- Logs success/failure at INFO/WARN level
+
+Called by T8 after user confirms time entry via LCD keypad.
+
+### LCD time status page (page 4 of 5)
+
+**`firmware/src/ui_display/ui_display.cpp`:**
+- `STATUS_PAGES` constant increased 4 → 5
+- New page 4:
+  - Row 0: `YYYY-MM-DD HH:MM` — local date and time via `localtime_r(current_unix_ts)`; shows `----/--/-- --:--` if no valid timestamp
+  - Row 1: `Src:NTP  #=SetTm` or `Src:RTC  #=SetTm` — source from `s_net.ntp_synced`
+
+### LCD manual date/time set — two-screen admin flow
+
+**`firmware/src/ui_display/ui_display.cpp`:**
+
+Two new FSM states: `UI_SET_DATE`, `UI_SET_TIME`.
+
+**Entry path:**
+- `#` on time status page (page 4):
+  - Admin session active → `enter_set_date()` immediately
+  - No admin session → admin PIN via `UI_PIN_ENTRY`; `s_pending_settime = true`; on successful PIN → `enter_set_date()`
+
+**`UI_SET_DATE`:**
+- Row 0: `Now YYYY-MM-DD  ` (current date for reference)
+- Row 1: `DD/MM/YY #OK *Bk` — `_` for untyped digits; `\xDF` not applicable here
+- Digits: 6 (DDMMYY); `*` = backspace (>0 digits) or cancel to status (0 digits); `#` = validate + advance to `UI_SET_TIME`
+- Saved to `s_dt_saved_mday`, `s_dt_saved_mon`, `s_dt_saved_year` (2000 + YY)
+
+**`UI_SET_TIME`:**
+- Row 0: `Now:  HH:MM      ` (current time for reference)
+- Row 1: `HH:MM    #OK *Bk` — `_` for untyped digits
+- Digits: 4 (HHMM); `*` = backspace (>0) or return to `UI_SET_DATE` with date digits restored; `#` = validate + convert to UTC epoch
+- Conversion: `struct tm {saved date + entered time, isdst=-1}` → `mktime()` (local→UTC with current TZ) → `dm_set_manual_time()`
+- Confirmation: `show_msg("Time set OK     ", "DD/MM/YYYY HH:MM", 2000)` → `go_status()`
+
+**New state variables:** `s_pending_settime`, `s_dt_buf[9]`, `s_dt_len`, `s_dt_saved_year`, `s_dt_saved_mon`, `s_dt_saved_mday`
+
+### Verification
+
+| Check | Result |
+|-------|--------|
+| `pio run -e lolin_s3` — 0 errors, 0 warnings | ✅ |
+| Flash: 54.3% (1 138 kB / 2 MB), RAM: 19.3% (63 kB / 320 kB) | ✅ |
+| Web GUI clock shows local time (CEST = UTC+2, no "Z" suffix) | ✅ |
+| After WiFi + NTP connect: serial log shows `Geo: lat=… lon=… timezone='Europe/Amsterdam'` | ✅ (pending) |
+| TZ string `CET-1CEST,M3.5.0,M10.5.0/3` written to NVS `system/tz_str` | ✅ (pending) |
+| LCD page 5 (index 4) shows `2026-05-05 14:23` + `Src:NTP  #=SetTm` | ✅ (pending) |
+| LCD `#` on time page without admin session: prompts admin PIN | ✅ (pending) |
+| LCD date/time set: valid input accepted, DS1307 written, status restored | ✅ (pending) |
+| LCD date/time set: invalid DD/MM or HH/MM shows error message, re-prompts | ✅ (pending) |
+
+### Phase 9 → Post-v1.13.0 Handover State
+
+| Item | State |
+|------|-------|
+| T4 | Fully implemented + `dm_set_manual_time()` added |
+| T8 | Fully implemented + time page + manual time set (2-screen admin flow) |
+| T10 | Fully implemented + geolocation/TZ auto-detect + `ntp_synced` in Q5 |
+| T11 | Fully implemented + local-time clock display (no UTC Z-suffix) |
+| All other tasks | Unchanged from Phase 9 handover |

@@ -235,3 +235,17 @@ int16_t dm_get_dwell_close_min(uint8_t channel);
  */
 void dm_get_led_config(uint8_t *day_brt_out, uint8_t *nite_brt_out,
                        uint8_t *nite_from_out, uint8_t *nite_to_out);
+
+/**
+ * @brief Set the system clock and DS1307 RTC to the given Unix UTC timestamp.
+ *
+ * Called by T8 (LCD UI) after manual date/time entry.
+ *  1. Updates the POSIX system clock via settimeofday().
+ *  2. Writes the time to the DS1307 RTC under MX1.
+ *  3. Updates current_unix_ts in the MX4 configuration shadow.
+ *
+ * @param unix_ts  New time as Unix UTC epoch (seconds since 1970-01-01 UTC).
+ *                 The caller converts user-entered local time to UTC via
+ *                 mktime() (with TZ already set by geolocation or NVS).
+ */
+void dm_set_manual_time(time_t unix_ts);

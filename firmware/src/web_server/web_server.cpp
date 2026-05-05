@@ -245,8 +245,8 @@ static void build_status_json(char *buf, size_t len)
     if (cfg.current_unix_ts > 1000000) {
         struct tm tm_info;
         time_t ts = (time_t)cfg.current_unix_ts;
-        gmtime_r(&ts, &tm_info);
-        strftime(tstr, sizeof(tstr), "%Y-%m-%dT%H:%M:%SZ", &tm_info);
+        localtime_r(&ts, &tm_info);
+        strftime(tstr, sizeof(tstr), "%Y-%m-%dT%H:%M:%S", &tm_info);
     }
 
     /* Wifi */

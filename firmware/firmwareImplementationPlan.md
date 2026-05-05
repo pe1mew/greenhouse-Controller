@@ -64,7 +64,7 @@ firmware/src/
 | **#1b Post-alarm re-calibration** | On `MOTOR_ALARM` clear: (1) clear `EG1.MOTOR_ALARM` and log clearance immediately; (2) wait `ALARM_GUARD_MS = 60 000 ms` — motor may still be coasting when operator resets the contact; T2 is blocked, relays remain off; (3) re-check pin at guard expiry — if LOW (re-asserted), abort and return (main loop re-enters onset); (4) if HIGH, call `calib_close_all()` directly (per-channel deadlines); (5) resume AUTOMATIC. |
 | **#1c Alarm contact jitter** | **⚠ OPEN ISSUE — needs discussion.** The 60 s guard detects only a re-assertion that is *still present* at guard expiry. If the RRK-3 contact bounces (clears → re-asserts → clears again within the 60 s window), the end-of-guard pin check sees HIGH and proceeds to re-calibrate even though a real alarm may have been present mid-guard. Possible mitigations: (a) latch the alarm until an explicit operator acknowledge command; (b) count ISR edges during guard and abort if any assert edge is seen; (c) extend the guard; (d) require the pin to remain HIGH for N seconds before clearing alarm. Decision deferred — needs discussion with project owner. |
 | **#2 Ring buffer depth** | 360 entries per channel (T, RH, wind_speed, wind_dir) = 11.5 KB total; fits in internal RAM with headroom |
-| **#3 NTP timezone** | `setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1); tzset();` after `configTime()`; store TZ string in NVS `system/tz_str` with that default |
+| **#3 NTP timezone** | TZ string stored in NVS `system/tz_str`; applied at boot via `setenv("TZ", tz_str, 1); tzset()`. **Auto-TZ from geolocation (v1.13.0):** `do_geo_sync()` in T10 calls ip-api.com after NTP success; looks up IANA timezone via `s_tz_table[]` (~100-entry static map in `network_manager.cpp`); writes resolved POSIX string to NVS and applies immediately via `setenv/tzset`. Factory default `"CET-1CEST,M3.5.0,M10.5.0/3"`. Technician-configurable via web GUI. |
 | **#4 MQTT auth** | Username + password over plain TCP (same accepted-risk basis as no-HTTPS); store password in NVS `mqtt/password`; document accepted risk |
 | **#5 J5 heater supply** | ~~Dropped~~ — heater supply connection removed from PCB; no GPIO, no T5 logging required |
 | **#6 Snapshot interval** | T4 posts a `LOG_SENSOR` event to Q3 on every Q6 reception (FR-LG09: snapshot interval = poll interval; 30–3600 s, default 60 s); no separate configurable parameter. Ring buffer minimum 250 entries (FR-LG06: worst-case 216 events/h at 30 s poll + headroom); `CONFIG_NVS_LOG_CAPACITY = 250`. |
@@ -233,13 +233,18 @@ Files: `keypad_scan.h/.cpp` — ✅ **done**; `ui_display.h/.cpp` — ✅ **done
 
 **T8:**
 - `lcd_init()` under MX1 at boot
-- Status screen: auto-rotate every 5s through T/RH, wind, window states, alarms, network
-- Menu FSM states: `STATUS_DISPLAY → MENU_ROOT → MENU_[CLIMATE|WIND|ACCESS|WIFI] → EDIT_VALUE / PIN_ENTRY`
+- **Status pages (`STATUS_PAGES = 5`):** auto-rotate every 5 s through pages 0–4: (0) T/RH, (1) wind, (2) window states, (3) network/AP, (4) current local time + source label
+- Menu FSM states: `UI_STATUS → UI_MENU_ROOT → UI_MENU_[CLIMATE|WIND|SYSTEM|ACCESS] → UI_EDIT_VALUE / UI_PIN_ENTRY`; plus new states **`UI_SET_DATE`** and **`UI_SET_TIME`** (v1.13.0)
+- **Time page (page 4, v1.13.0, FR-UI22):** row 0 = local date/time via `localtime_r`; row 1 = `"Src:NTP  #=SetTm"` or `"Src:RTC  #=SetTm"` depending on `s_net.ntp_synced`
+- **Manual time set (v1.13.0, FR-UI23):** `#` on page 4 → check admin session; if not: set `s_pending_settime = true`, enter `UI_PIN_ENTRY`; on PIN pass: `handle_pin()` detects `s_pending_settime`, clears it, calls `enter_set_date()`
+  - `UI_SET_DATE`: row 0 = current date reference; row 1 = `"DD/MM/YY #OK *Bk"` with `_` for untyped. Accepts 6 digits (DDMMYY); `#` validates + saves to `s_dt_saved_*`; advances to `UI_SET_TIME`. `*` → `UI_STATUS`
+  - `UI_SET_TIME`: row 0 = `"Now: HH:MM"`; row 1 = `"HH:MM    #OK *Bk"`. Accepts 4 digits (HHMM); `*` → back to `UI_SET_DATE`; `#` → `mktime(tm_isdst=-1)` → `dm_set_manual_time(unix_ts)` → `UI_STATUS`
+  - `s_dt_len`, `s_dt_buf[9]`, `s_dt_saved_year/mon/mday` are module-static state variables in `ui_display.cpp`
 - Max 4 keypresses from status screen to any first-level setting (FR-UI07)
 - PIN entry: numeric; call `pin_auth_verify(PIN_ROLE_FARMER/ADMIN, entered_str)` — hashing, salt, and lockout all handled by `auth/pin_auth.h` (Gap C ✅)
 - Config edit: read current from T4 (MX4), accept input, validate range, post `config_update_t` to Q4
-- Receive Q5 (network status); display WiFi state
-- Session timeout: software timer reset on each keypress; on expiry, log session close, return to STATUS_DISPLAY
+- Receive Q5 (network status including `ntp_synced`); display WiFi state; use `ntp_synced` for time page source label
+- Session timeout: software timer reset on each keypress; on expiry, log session close, return to `UI_STATUS`
 - **LCD I2C address: 0x3E (AiP31068L bridge)** — not 0x27
 
 ~~Stubs acceptable: WiFi AP toggle screen~~ — **implemented in v1.10.1:** `handle_menu_system()` added; root menu updated to show all 4 items; AP toggle requires admin session; posts Q4 to T4.
@@ -256,14 +261,24 @@ Verification: Status screen rotates; navigate to T_max_day within 4 keypresses; 
 Files: `network_manager.h/.cpp` — ✅ **done**
 
 Implementation:
-- WiFi AP: `start_ap()` / `stop_ap()` driven by NVS `wifi/ap_enable`; `poll_ap()` called every 5 s loop tick; SSID `"Greenhouse-XXYY"` (last 2 MAC bytes); auto-shutdown timer from `dm_cfg_snapshot().ap_timeout_min`; WPA2 password from NVS `wifi/ap_psk` (default `"0123456789"`, never open — v1.10.1)
+- WiFi AP: `start_ap()` / `stop_ap()` driven by NVS `wifi/ap_enable`; `poll_ap()` called every 5 s loop tick; SSID `"Greenhouse-XXYY"` (last 2 MAC bytes); auto-shutdown timer from `dm_cfg_snapshot().ap_timeout_min`; WPA2 password from NVS `wifi/ap_psk` (default `"0123456789"`, never open — v1.10.1); AP lifecycle managed independently from client — both can be active simultaneously
 - WiFi client FSM: NET_IDLE → NET_CONNECTING → NET_CONNECTED → NET_RUNNING → NET_BACKOFF; exponential backoff 2→4→…→60 s; `WiFi.setAutoReconnect(false)` (T10 manages reconnection itself)
-- NTP: `configTime(0, 0, "pool.ntp.org")` then polls `time(NULL) > 1700000000L` for up to 30 s; on success: `xTaskNotify(task_t4, DM_NOTIFY_NTP_SYNCED, eSetBits)` → T4 calls `rtc_set_time()` under MX1
-- Q5: `xQueueOverwrite(Q5, &status)` on every state change; T8 reads on next tick and shows IP / "No WiFi" on LCD
+- NTP: `configTime(0, 0, "pool.ntp.org")` then polls `time(NULL) > 1700000000L` for up to 30 s; on success: sets `s_ntp_synced = true`, `xTaskNotify(task_t4, DM_NOTIFY_NTP_SYNCED, eSetBits)` → T4 calls `rtc_set_time()` under MX1; then calls `do_geo_sync()`
+- **Geolocation (`do_geo_sync()`, v1.13.0, FR-DN06/DN07):**
+  - `HTTPClient http; http.begin("http://ip-api.com/json?fields=status,lat,lon,timezone"); http.setTimeout(5000); int code = http.GET();`
+  - Parse JSON body: extract `status` (must be "success"), `lat` (float), `lon` (float), `timezone` (IANA string)
+  - `float_to_deg_frac(lat, &deg, &frac)` — handles negative values and carry; posts `lat_deg` + `lat_frac` to Q4 via `post_q4(NVS_NS_SYSTEM, "lat_deg", deg)` and `post_q4(NVS_NS_SYSTEM, "lat_frac", frac)`; same for lon
+  - `iana_to_posix(iana_str)` — linear search of `s_tz_table[]` (~100 entries, `{NULL,NULL}` sentinel); returns POSIX string or NULL if not found
+  - If found: `nvs_cfg_set_str(NVS_NS_SYSTEM, "tz_str", posix)` → NVS persisted; `setenv("TZ", posix, 1); tzset()` → applied immediately (affects all `localtime_r()` calls globally; no reboot needed)
+  - On any failure (HTTP error, JSON parse error, unknown timezone): log and skip; last stored NVS values retained
+  - No additional `lib_deps` required: `HTTPClient.h` is part of the Arduino-ESP32 core (resolved automatically by LDF)
+- Q5: `net_status_t` struct extended with `bool ntp_synced` field; `xQueueOverwrite(Q5, &status)` on every state change; T8 reads on next tick and shows IP / "No WiFi" on LCD and uses `ntp_synced` for time page source label
+- **Web server time display (v1.13.0):** `web_server.cpp` changed from `gmtime_r` + `"...Z"` suffix to `localtime_r` + no suffix — web dashboard now shows local time
 
-Drivers used: None from driver library (Arduino WiFi + ESP-IDF SNTP)
+Drivers used: None from driver library (Arduino WiFi + ESP-IDF SNTP + Arduino HTTPClient)
 
 Verification (Phase 8 results): Clean build ✅; board boots without crash ✅; T1 heartbeat steady ✅; NET_IDLE (no SSID) produces no periodic output as expected ✅; Q5 initial post received by T8 ✅.
+Additional verification (v1.13.0): NTP sync triggers `do_geo_sync()`; lat/lon visible in web GUI after sync; local time shown on LCD page 4; web dashboard time matches local clock.
 
 ---
 
@@ -336,7 +351,7 @@ Verification: Subscribe on broker; verify publish; publish command; verify relay
 | Q2 | Queue `key_event_t` | 16 | T7 → T8 |
 | Q3 | Queue `log_event_t` | 32 | All tasks → T9 |
 | Q4 | Queue `config_update_t` | 8 | T8/T10/T11 → T4 |
-| Q5 | Queue `net_status_t` | 2 | T10 → T8 |
+| Q5 | Queue `net_status_t` | 1 (overwrite) | T10 → T8; `net_status_t` fields: `client_connected`, `ap_active`, `ntp_synced` (bool, v1.13.0), `ip_str[16]` |
 | Q6 | Queue `sensor_reading_t` | 1 | T5 → T4 (overwrite) |
 | TN1 | TaskNotify | — | T4 → T3 (new wind data) |
 | TN2 | TaskNotify | — | T4 → T6 (new sensor data) |
@@ -376,5 +391,6 @@ Verification: Subscribe on broker; verify publish; publish command; verify relay
 | `firmware/src/event_logger/event_logger.cpp` | Full T9 implementation: drain loop, NVS ring buffer, SD CSV append, rotation, drop-counter surfacing | ✅ Done (Phase 5) |
 | `firmware/src/keypad_scan/keypad_scan.h/.cpp` | T7: 20 ms scan, key-repeat, Q2 post | ✅ Done (Phase 7) |
 | `firmware/src/ui_display/ui_display.h/.cpp` | T8: LCD FSM, status pages, menu nav, PIN auth, Q4 config post, session timeout | ✅ Done (Phase 7) |
-| `firmware/src/network_manager/network_manager.h/.cpp` | T10: WiFi client FSM, AP management, NTP sync, TN4, Q5 | ✅ Done (Phase 8) |
+| `firmware/src/network_manager/network_manager.h/.cpp` | T10: WiFi client FSM, AP management, NTP sync, TN4, Q5; `do_geo_sync()`, `s_tz_table[]`, `iana_to_posix()`, `float_to_deg_frac()`, `post_q4()` (v1.13.0) | ✅ Done (Phase 8 + v1.13.0) |
+| `firmware/src/web_server/web_server.cpp` | T11: time display corrected to use `localtime_r` + no UTC suffix (v1.13.0) | ✅ Done (Phase 9 + v1.13.0) |
 | `firmware/src/main.cpp` | RTOS primitives, task spawn, pin_auth_init(), extern handle definitions | ✅ Done (Phase 0 + Phase 7) |

@@ -49,8 +49,11 @@
 #include <esp_log.h>
 #include <time.h>
 #include <string.h>
+#include <stdlib.h>    /* atof */
+#include <math.h>      /* fabs, floorf */
 
 #include <WiFi.h>      /* Arduino-ESP32 WiFi */
+#include <HTTPClient.h> /* HTTP geo/timezone lookup */
 
 #include "network_manager.h"
 #include "../types/app_types.h"
@@ -105,6 +108,209 @@ static char s_ap_psk[64] = {0};
 static char s_ap_ssid[24] = {0};  /**< "Greenhouse-XXYY", built from MAC */
 
 /* ============================================================
+ * IANA → POSIX TZ lookup table
+ * ============================================================ */
+
+static const struct { const char *iana; const char *posix; } s_tz_table[] = {
+    /* UTC */
+    { "UTC",                              "UTC0" },
+    { "Etc/UTC",                          "UTC0" },
+    { "Etc/GMT",                          "UTC0" },
+    /* Europe — CET/CEST (UTC+1/+2) */
+    { "Europe/Amsterdam",                 "CET-1CEST,M3.5.0,M10.5.0/3" },
+    { "Europe/Berlin",                    "CET-1CEST,M3.5.0,M10.5.0/3" },
+    { "Europe/Brussels",                  "CET-1CEST,M3.5.0,M10.5.0/3" },
+    { "Europe/Copenhagen",                "CET-1CEST,M3.5.0,M10.5.0/3" },
+    { "Europe/Luxembourg",                "CET-1CEST,M3.5.0,M10.5.0/3" },
+    { "Europe/Madrid",                    "CET-1CEST,M3.5.0,M10.5.0/3" },
+    { "Europe/Malta",                     "CET-1CEST,M3.5.0,M10.5.0/3" },
+    { "Europe/Oslo",                      "CET-1CEST,M3.5.0,M10.5.0/3" },
+    { "Europe/Paris",                     "CET-1CEST,M3.5.0,M10.5.0/3" },
+    { "Europe/Prague",                    "CET-1CEST,M3.5.0,M10.5.0/3" },
+    { "Europe/Rome",                      "CET-1CEST,M3.5.0,M10.5.0/3" },
+    { "Europe/Stockholm",                 "CET-1CEST,M3.5.0,M10.5.0/3" },
+    { "Europe/Vienna",                    "CET-1CEST,M3.5.0,M10.5.0/3" },
+    { "Europe/Warsaw",                    "CET-1CEST,M3.5.0,M10.5.0/3" },
+    { "Europe/Zurich",                    "CET-1CEST,M3.5.0,M10.5.0/3" },
+    { "Africa/Algiers",                   "CET-1" },
+    { "Africa/Tunis",                     "CET-1" },
+    /* Europe — WET/WEST (UTC+0/+1) */
+    { "Europe/Lisbon",                    "WET0WEST,M3.5.0/1,M10.5.0" },
+    { "Atlantic/Canary",                  "WET0WEST,M3.5.0/1,M10.5.0" },
+    { "Atlantic/Madeira",                 "WET0WEST,M3.5.0/1,M10.5.0" },
+    /* Europe — GMT/BST (UTC+0/+1) */
+    { "Europe/London",                    "GMT0BST,M3.5.0/1,M10.5.0" },
+    { "Europe/Dublin",                    "IST-1GMT0,M10.5.0,M3.5.0/1" },
+    /* Europe — EET/EEST (UTC+2/+3) */
+    { "Europe/Athens",                    "EET-2EEST,M3.5.0/3,M10.5.0/4" },
+    { "Europe/Bucharest",                 "EET-2EEST,M3.5.0/3,M10.5.0/4" },
+    { "Europe/Helsinki",                  "EET-2EEST,M3.5.0/3,M10.5.0/4" },
+    { "Europe/Kiev",                      "EET-2EEST,M3.5.0/3,M10.5.0/4" },
+    { "Europe/Kyiv",                      "EET-2EEST,M3.5.0/3,M10.5.0/4" },
+    { "Europe/Riga",                      "EET-2EEST,M3.5.0/3,M10.5.0/4" },
+    { "Europe/Sofia",                     "EET-2EEST,M3.5.0/3,M10.5.0/4" },
+    { "Europe/Tallinn",                   "EET-2EEST,M3.5.0/3,M10.5.0/4" },
+    { "Europe/Vilnius",                   "EET-2EEST,M3.5.0/3,M10.5.0/4" },
+    { "Asia/Nicosia",                     "EET-2EEST,M3.5.0/3,M10.5.0/4" },
+    { "Asia/Famagusta",                   "EET-2EEST,M3.5.0/3,M10.5.0/4" },
+    /* Europe — no DST */
+    { "Europe/Moscow",                    "MSK-3" },
+    { "Europe/Minsk",                     "FET-3" },
+    { "Europe/Istanbul",                  "TRT-3" },
+    { "Asia/Istanbul",                    "TRT-3" },
+    /* Africa */
+    { "Africa/Cairo",                     "EET-2" },
+    { "Africa/Johannesburg",              "SAST-2" },
+    { "Africa/Harare",                    "CAT-2" },
+    { "Africa/Nairobi",                   "EAT-3" },
+    { "Africa/Addis_Ababa",               "EAT-3" },
+    { "Africa/Lagos",                     "WAT-1" },
+    { "Africa/Casablanca",                "WET0" },
+    { "Africa/Abidjan",                   "GMT0" },
+    { "Africa/Accra",                     "GMT0" },
+    /* Asia — Middle East */
+    { "Asia/Dubai",                       "GST-4" },
+    { "Asia/Muscat",                      "GST-4" },
+    { "Asia/Riyadh",                      "AST-3" },
+    { "Asia/Baghdad",                     "AST-3" },
+    { "Asia/Kuwait",                      "AST-3" },
+    { "Asia/Beirut",                      "EET-2EEST,M3.5.0/0,M10.5.0/0" },
+    { "Asia/Amman",                       "AST-3" },
+    { "Asia/Jerusalem",                   "IST-2IDT,M3.4.4/26,M10.5.0" },
+    { "Asia/Tehran",                      "IRST-3:30IRDT,80/0,264/0" },
+    { "Asia/Kabul",                       "AFT-4:30" },
+    /* Asia — South */
+    { "Asia/Karachi",                     "PKT-5" },
+    { "Asia/Kolkata",                     "IST-5:30" },
+    { "Asia/Calcutta",                    "IST-5:30" },
+    { "Asia/Colombo",                     "IST-5:30" },
+    { "Asia/Kathmandu",                   "NPT-5:45" },
+    { "Asia/Dhaka",                       "BDT-6" },
+    { "Asia/Tashkent",                    "UZT-5" },
+    { "Asia/Almaty",                      "ALMT-6" },
+    /* Asia — SE */
+    { "Asia/Bangkok",                     "ICT-7" },
+    { "Asia/Ho_Chi_Minh",                 "ICT-7" },
+    { "Asia/Phnom_Penh",                  "ICT-7" },
+    { "Asia/Vientiane",                   "ICT-7" },
+    { "Asia/Jakarta",                     "WIB-7" },
+    { "Asia/Singapore",                   "SGT-8" },
+    { "Asia/Kuala_Lumpur",                "MYT-8" },
+    { "Asia/Manila",                      "PHT-8" },
+    /* Asia — East */
+    { "Asia/Shanghai",                    "CST-8" },
+    { "Asia/Hong_Kong",                   "HKT-8" },
+    { "Asia/Taipei",                      "CST-8" },
+    { "Asia/Seoul",                       "KST-9" },
+    { "Asia/Tokyo",                       "JST-9" },
+    /* Australia */
+    { "Australia/Perth",                  "AWST-8" },
+    { "Australia/Darwin",                 "ACST-9:30" },
+    { "Australia/Adelaide",               "ACST-9:30ACDT,M10.1.0,M4.1.0/3" },
+    { "Australia/Brisbane",               "AEST-10" },
+    { "Australia/Sydney",                 "AEST-10AEDT,M10.1.0,M4.1.0/3" },
+    { "Australia/Melbourne",              "AEST-10AEDT,M10.1.0,M4.1.0/3" },
+    { "Australia/Hobart",                 "AEST-10AEDT,M10.1.0,M4.1.0/3" },
+    /* Pacific */
+    { "Pacific/Honolulu",                 "HST10" },
+    { "Pacific/Auckland",                 "NZST-12NZDT,M9.5.0,M4.1.0/3" },
+    { "Pacific/Fiji",                     "FJT-12" },
+    { "Pacific/Guam",                     "ChST-10" },
+    { "Pacific/Port_Moresby",             "PGT-10" },
+    /* Americas */
+    { "America/New_York",                 "EST5EDT,M3.2.0,M11.1.0" },
+    { "America/Detroit",                  "EST5EDT,M3.2.0,M11.1.0" },
+    { "America/Toronto",                  "EST5EDT,M3.2.0,M11.1.0" },
+    { "America/Indiana/Indianapolis",     "EST5EDT,M3.2.0,M11.1.0" },
+    { "America/Chicago",                  "CST6CDT,M3.2.0,M11.1.0" },
+    { "America/Winnipeg",                 "CST6CDT,M3.2.0,M11.1.0" },
+    { "America/Denver",                   "MST7MDT,M3.2.0,M11.1.0" },
+    { "America/Edmonton",                 "MST7MDT,M3.2.0,M11.1.0" },
+    { "America/Phoenix",                  "MST7" },
+    { "America/Los_Angeles",              "PST8PDT,M3.2.0,M11.1.0" },
+    { "America/Vancouver",                "PST8PDT,M3.2.0,M11.1.0" },
+    { "America/Anchorage",                "AKST9AKDT,M3.2.0,M11.1.0" },
+    { "America/Halifax",                  "AST4ADT,M3.2.0,M11.1.0" },
+    { "America/Mexico_City",              "CST6CDT,M4.1.0,M10.5.0" },
+    { "America/Bogota",                   "COT5" },
+    { "America/Lima",                     "PET5" },
+    { "America/Caracas",                  "VET4:30" },
+    { "America/Santiago",                 "CLT4CLST,M10.2.6/24,M3.2.6/24" },
+    { "America/Sao_Paulo",                "BRT3" },
+    { "America/Argentina/Buenos_Aires",   "ART3" },
+    { "America/Montevideo",               "UYT3" },
+    { "America/Manaus",                   "AMT4" },
+    { NULL, NULL }
+};
+
+/** Look up a POSIX TZ string for the given IANA timezone name.
+ *  Returns NULL if not found in the table. */
+static const char *iana_to_posix(const char *iana)
+{
+    for (int i = 0; s_tz_table[i].iana != NULL; i++) {
+        if (strcmp(s_tz_table[i].iana, iana) == 0) {
+            return s_tz_table[i].posix;
+        }
+    }
+    return NULL;
+}
+
+/** Convert a float coordinate to integer degrees + millidegree fraction.
+ *  Example: 52.3676 → deg=52, frac=368  (frac = round(fractional * 1000))
+ *  Negative latitudes/longitudes: deg is negative, frac is always non-negative. */
+static void float_to_deg_frac(float val, int32_t *deg, int32_t *frac)
+{
+    bool neg = (val < 0.0f);
+    if (neg) val = -val;
+    *deg  = (int32_t)val;
+    *frac = (int32_t)((val - (float)*deg) * 1000.0f + 0.5f);
+    if (*frac >= 1000) { *deg += 1; *frac -= 1000; }  /* carry */
+    if (neg) *deg = -*deg;
+}
+
+/** Parse the ip-api.com JSON response.
+ *  Expected: {"status":"success","lat":52.37,"lon":4.90,"timezone":"Europe/Amsterdam"}
+ *  Returns true on success. */
+static bool parse_geo_response(const char *body,
+                                float *out_lat, float *out_lon,
+                                char *out_tz, size_t tz_len)
+{
+    if (!strstr(body, "\"status\":\"success\"")) return false;
+
+    const char *p = strstr(body, "\"lat\":");
+    if (!p) return false;
+    *out_lat = (float)atof(p + 6);
+
+    p = strstr(body, "\"lon\":");
+    if (!p) return false;
+    *out_lon = (float)atof(p + 6);
+
+    p = strstr(body, "\"timezone\":\"");
+    if (!p) return false;
+    p += 12;
+    const char *end = strchr(p, '"');
+    if (!end) return false;
+    size_t len = (size_t)(end - p);
+    if (len >= tz_len) len = tz_len - 1;
+    memcpy(out_tz, p, len);
+    out_tz[len] = '\0';
+
+    return true;
+}
+
+/** Post a single i32 update to Q4 (T4 — Data Manager).
+ *  T4 writes to NVS and updates the in-RAM shadow. */
+static void post_q4(const char *ns, const char *key, int32_t value)
+{
+    config_update_t upd;
+    memset(&upd, 0, sizeof(upd));
+    snprintf(upd.ns,  sizeof(upd.ns),  "%s", ns);
+    snprintf(upd.key, sizeof(upd.key), "%s", key);
+    upd.value = value;
+    xQueueSend(Q4, &upd, pdMS_TO_TICKS(200));
+}
+
+/* ============================================================
  * Helpers
  * ============================================================ */
 
@@ -113,6 +319,7 @@ static void post_q5(bool client_conn, bool ap_active, const char *ip)
     net_status_t st;
     st.client_connected = client_conn;
     st.ap_active        = ap_active;
+    st.ntp_synced       = s_ntp_synced;
     snprintf(st.ip_str, sizeof(st.ip_str), "%s", ip ? ip : "");
     xQueueOverwrite(Q5, &st);
 }
@@ -204,6 +411,71 @@ static void poll_ap(void)
 }
 
 /* ============================================================
+ * Geolocation + timezone sync
+ *
+ * Fetches location and IANA timezone from ip-api.com using the
+ * device's public IP address.  On success:
+ *  - lat/lon are posted to Q4 so T4 updates s_cfg and recalculates
+ *    sunrise/sunset (and persists to NVS via apply_config_update).
+ *  - tz_str is written to NVS directly and applied immediately via
+ *    setenv/tzset so localtime_r returns the correct local time.
+ *
+ * Called once after a successful NTP sync, while T10 still holds
+ * the WiFi connection.  Timeout is 5 s.
+ * ============================================================ */
+
+static void do_geo_sync(void)
+{
+    ESP_LOGI(TAG, "Starting geo/timezone sync via ip-api.com");
+
+    HTTPClient http;
+    http.begin("http://ip-api.com/json?fields=status,lat,lon,timezone");
+    http.setTimeout(5000);
+    int code = http.GET();
+    if (code != 200) {
+        ESP_LOGW(TAG, "Geo sync HTTP GET failed (code=%d)", code);
+        http.end();
+        return;
+    }
+
+    String body = http.getString();
+    http.end();
+
+    float lat = 0.0f, lon = 0.0f;
+    char  iana_tz[64] = {};
+    if (!parse_geo_response(body.c_str(), &lat, &lon, iana_tz, sizeof(iana_tz))) {
+        ESP_LOGW(TAG, "Geo sync: failed to parse response: %s", body.c_str());
+        return;
+    }
+
+    ESP_LOGI(TAG, "Geo: lat=%.4f lon=%.4f timezone='%s'", lat, lon, iana_tz);
+
+    /* Convert to deg + millidegree fraction for NVS storage */
+    int32_t lat_deg, lat_frac, lon_deg, lon_frac;
+    float_to_deg_frac(lat, &lat_deg, &lat_frac);
+    float_to_deg_frac(lon, &lon_deg, &lon_frac);
+
+    /* Update lat/lon via Q4 — T4 writes NVS, updates shadow, recalcs sunrise */
+    post_q4(NVS_NS_SYSTEM, "lat_deg",  lat_deg);
+    post_q4(NVS_NS_SYSTEM, "lat_frac", lat_frac);
+    post_q4(NVS_NS_SYSTEM, "lon_deg",  lon_deg);
+    post_q4(NVS_NS_SYSTEM, "lon_frac", lon_frac);
+
+    /* Look up POSIX TZ string and apply */
+    const char *posix_tz = iana_to_posix(iana_tz);
+    if (posix_tz) {
+        nvs_cfg_set_str(NVS_NS_SYSTEM, "tz_str", posix_tz);
+        setenv("TZ", posix_tz, 1);
+        tzset();
+        ESP_LOGI(TAG, "TZ applied: '%s'  (IANA='%s')", posix_tz, iana_tz);
+    } else {
+        ESP_LOGW(TAG, "Geo sync: IANA zone '%s' not in table — TZ not changed", iana_tz);
+    }
+
+    log_sys(4, 1);   /* value_a=4: geo event; value_b=1: success */
+}
+
+/* ============================================================
  * NTP sync (called once when WL_CONNECTED fires)
  * ============================================================ */
 
@@ -225,6 +497,8 @@ static void run_ntp_sync(void)
         /* Notify T4 to write the new time to the DS1307 */
         xTaskNotify(task_t4, DM_NOTIFY_NTP_SYNCED, eSetBits);
         log_sys(2, 1);   /* value_a=2: NTP event; value_b=1: synced */
+        /* Fetch geolocation and apply timezone */
+        do_geo_sync();
     } else {
         ESP_LOGW(TAG, "NTP sync timeout after %d s", NTP_WAIT_STEPS);
         log_sys(2, 0);   /* value_a=2: NTP event; value_b=0: timeout */
@@ -269,6 +543,16 @@ static uint32_t step_client(void)
                 run_ntp_sync();
                 s_state      = NET_RUNNING;
                 s_backoff_ms = BACKOFF_INIT_MS;   /* Reset backoff on success */
+
+                /* Auto-stop AP when client is up: AP was only needed for
+                 * initial configuration.  Clear NVS flag so it does not
+                 * restart on the next boot or poll_ap() call. */
+                if (s_ap_active) {
+                    nvs_cfg_set_i32(NVS_NS_WIFI, "ap_enable", 0);
+                    s_ap_enabled_nvs = 0;
+                    stop_ap();
+                }
+
                 post_q5(true, s_ap_active, WiFi.localIP().toString().c_str());
 
             } else {
@@ -364,11 +648,9 @@ void task_network_manager(void *pvParameters)
         ESP_LOGI(TAG, "AP SSID will be '%s'", s_ap_ssid);
     }
 
-    /* ── Read initial ap_enable from NVS ── */
-    nvs_cfg_get_i32_or_default(NVS_NS_WIFI, "ap_enable", 0, &s_ap_enabled_nvs);
-    if (s_ap_enabled_nvs) {
-        start_ap();
-    }
+    /* ── AP always starts disabled — admin must enable explicitly each boot ── */
+    nvs_cfg_set_i32(NVS_NS_WIFI, "ap_enable", 0);
+    s_ap_enabled_nvs = 0;
 
     /* ── Start client if SSID is configured ── */
     if (s_ssid[0] != '\0') {

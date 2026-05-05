@@ -728,3 +728,44 @@ void dm_get_led_config(uint8_t *day_brt_out, uint8_t *nite_brt_out,
         xSemaphoreGive(MX4);
     }
 }
+
+void dm_set_manual_time(time_t unix_ts)
+{
+    /* 1. Update the POSIX system clock immediately */
+    struct timeval tv = {};
+    tv.tv_sec  = unix_ts;
+    tv.tv_usec = 0;
+    settimeofday(&tv, NULL);
+
+    /* 2. Write UTC time to the DS1307 RTC under MX1 */
+    struct tm t;
+    gmtime_r(&unix_ts, &t);
+    rtc_datetime_t dt = {};
+    dt.year        = (uint16_t)(t.tm_year + 1900);
+    dt.month       = (uint8_t) (t.tm_mon  + 1);
+    dt.day         = (uint8_t)  t.tm_mday;
+    dt.hour        = (uint8_t)  t.tm_hour;
+    dt.minute      = (uint8_t)  t.tm_min;
+    dt.second      = (uint8_t)  t.tm_sec;
+    dt.day_of_week = (uint8_t) (t.tm_wday + 1);  /* 1 = Sunday */
+
+    if (xSemaphoreTake(MX1, pdMS_TO_TICKS(500u)) == pdTRUE) {
+        rtc_status_t st = rtc_set_time(&dt);
+        xSemaphoreGive(MX1);
+        if (st == RTC_OK) {
+            ESP_LOGI(TAG, "Manual time set: %04u-%02u-%02u %02u:%02u:%02u UTC",
+                     (unsigned)dt.year,  (unsigned)dt.month,  (unsigned)dt.day,
+                     (unsigned)dt.hour,  (unsigned)dt.minute, (unsigned)dt.second);
+        } else {
+            ESP_LOGW(TAG, "rtc_set_time failed (st=%d) after manual time set", (int)st);
+        }
+    } else {
+        ESP_LOGW(TAG, "MX1 timeout — DS1307 write skipped in dm_set_manual_time");
+    }
+
+    /* 3. Update the MX4 configuration shadow */
+    if (xSemaphoreTake(MX4, pdMS_TO_TICKS(200u)) == pdTRUE) {
+        s_cfg.current_unix_ts = (uint32_t)unix_ts;
+        xSemaphoreGive(MX4);
+    }
+}

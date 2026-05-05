@@ -6,8 +6,8 @@
 |---------------|-------------------------------|
 | Document      | Functional Requirements Specification |
 | Project       | Greenhouse Ventilation Controller |
-| Version       | 0.2 (draft)                   |
-| Date          | 2026-03-26                    |
+| Version       | 0.3 (draft)                   |
+| Date          | 2026-05-05                    |
 | Status        | Draft                         |
 
 ---
@@ -226,9 +226,11 @@ The system operates with two climate setpoint profiles — daytime and night-tim
 |----|-------------|--------|
 | FR-DN01 | The system **shall** automatically determine whether the current time is daytime or night-time based on calculated local sunrise and sunset times. | Must |
 | FR-DN02 | Sunrise and sunset times **shall** be calculated from a configurable geographic location (latitude and longitude) and the current date, using a standard solar-position algorithm. Implementation: NOAA General Solar Position Equations (simplified), ±2 min accuracy; see `firmware/src/data_manager/sunrise.h`. | Must |
-| FR-DN03 | The farmer **shall** be able to view and configure the geographic location (latitude and longitude) via the web GUI. This setting is not available on the LCD. | Must |
+| FR-DN03 | The farmer **shall** be able to view and configure the geographic location (latitude and longitude) via the web GUI. This setting is not available on the LCD. The location may also be populated automatically via geolocation (FR-DN06); the web GUI always shows the currently stored values, whether auto-detected or manually entered. | Must |
 | FR-DN04 | The calculated sunrise and sunset times for the current day **shall** be visible to the farmer in the web GUI, so the expected day/night transition times can be verified. | Must |
 | FR-DN05 | If no location has been configured, the system **shall** apply the daytime setpoints as the default until location is set. | Should |
+| FR-DN06 | When WiFi is available and NTP sync succeeds, the system **should** automatically determine its geographic location from the public IP address using an external geolocation service (ip-api.com). The resolved latitude, longitude, and IANA timezone name shall be stored in NVS and applied immediately; the web GUI lat/lon fields shall reflect the auto-detected values. If geolocation fails, the last stored values are retained. | Should |
+| FR-DN07 | When a timezone is resolved — whether via automatic geolocation (FR-DN06) or manual configuration by the administrator — the system **shall** apply the corresponding POSIX TZ string immediately (without reboot) so that all local-time displays are correct. The POSIX TZ string shall be stored in NVS `system/tz_str` as a fallback for offline operation. | Should |
 
 ### 5.5 Wind Safety
 
@@ -293,6 +295,8 @@ When temperature and humidity call for opposing window actions (e.g. temperature
 | FR-UI07 | The system **shall** provide efficient menu navigation, enabling the farmer and administrator to reach any first-level setting from the main screen with a minimal number of key presses. | Should |
 | FR-UI08 | The display **should** show the current wind speed and wind direction on a status screen. | Should |
 | FR-UI09 | All prompts and labels **shall** be displayed in a language configurable by the administrator (default: Dutch). | Could |
+| FR-UI22 | The LCD status screen rotation **should** include a time page showing the current date and time (local, from DS1307 or NTP) and the active time source ("NTP" when synced, "RTC" otherwise). | Should |
+| FR-UI23 | An administrator **should** be able to set the system date and time from the LCD keyboard. The flow shall require an active administrator session, then present a date entry screen (DDMMYY format) and a time entry screen (HHMM format), each confirmed with `#` and cancellable with `*`. The entered time is interpreted as local time and written to the DS1307 RTC via `dm_set_manual_time()`. | Should |
 
 #### 5.9.1 Status LED Indicators
 
@@ -368,6 +372,7 @@ The RGB LED uses the following colour semantics, which differ from the discrete 
 | FR-CF13 | The farmer and the administrator **shall** each be able to enable or disable wind protection (see FR-WS09). | Must |
 | FR-CF16 | The farmer **shall** be able to set the geographic location (latitude and longitude) for sunrise/sunset calculation via the web GUI only (FR-DN02, FR-DN03). | Must |
 | FR-CF17 | The technician **should** be able to set the sliding average window for temperature and humidity measurements in the range 1 to 60 minutes, via the web GUI only (FR-S06, FR-S07). | Should |
+| FR-CF18 | The administrator **should** be able to view and manually set the POSIX timezone string via the web GUI (System settings). The timezone is also set automatically when geolocation succeeds (FR-DN06, FR-DN07). The factory default is `CET-1CEST,M3.5.0,M10.5.0/3` (Europe/Amsterdam). | Should |
 
 ### 5.11 WiFi Connectivity (Optional)
 

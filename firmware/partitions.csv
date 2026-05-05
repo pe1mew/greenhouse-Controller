@@ -4,8 +4,13 @@
 # Layout overview (all sizes in bytes, hex):
 #   0x0000–0x7FFF   Bootloader (reserved by ESP-IDF, not listed here)
 #   0x8000–0x8FFF   Partition table (reserved by ESP-IDF, not listed here)
-#   0x9000–0x1DFFF  NVS   — config namespaces + event-log ring buffer (84 KB)
-#   0x1E000–0x1FFFF OTA data — active/inactive bank metadata (8 KB)
+#   0x9000–0xDFFF   (unallocated — 20 KB gap; not touched by firmware or upload)
+#   0xE000–0xFFFF   OTA data — active/inactive bank metadata (8 KB)
+#                   NOTE: PlatformIO/esptool ALWAYS writes boot_app0.bin to
+#                   0xE000 regardless of the partition table.  This partition
+#                   MUST stay at 0xE000 or every "pio upload" will corrupt the
+#                   NVS partition (see previous layout bug).
+#   0x10000–0x1FFFF NVS   — config namespaces + event-log ring buffer (64 KB)
 #   0x20000–0x21FFFF  app0 / Bank A — firmware image slot A (2 MB)
 #   0x220000–0x41FFFF app1 / Bank B — firmware image slot B (2 MB)
 #   0x420000–0x51FFFF lfs0 / LittleFS A — web assets paired with Bank A (1 MB)
@@ -23,8 +28,8 @@
 #   the partition by label (name), not subtype.
 
 # Name,     Type,  SubType,  Offset,     Size,       Flags
-nvs,        data,  nvs,      0x9000,     0x15000,
-otadata,    data,  ota,      0x1E000,    0x2000,
+otadata,    data,  ota,      0xe000,     0x2000,
+nvs,        data,  nvs,      0x10000,    0x10000,
 app0,       app,   ota_0,    0x20000,    0x200000,
 app1,       app,   ota_1,    0x220000,   0x200000,
 lfs0,       data,  spiffs,   0x420000,   0x100000,
