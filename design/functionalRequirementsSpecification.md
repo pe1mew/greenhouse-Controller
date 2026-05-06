@@ -297,6 +297,7 @@ When temperature and humidity call for opposing window actions (e.g. temperature
 | FR-UI09 | All prompts and labels **shall** be displayed in a language configurable by the administrator (default: Dutch). | Could |
 | FR-UI22 | The LCD status screen rotation **should** include a time page showing the current date and time (local, from DS1307 or NTP) and the active time source ("NTP" when synced, "RTC" otherwise). | Should |
 | FR-UI23 | An administrator **should** be able to set the system date and time from the LCD keyboard. The flow shall require an active administrator session, then present a date entry screen (DDMMYY format) and a time entry screen (HHMM format), each confirmed with `#` and cancellable with `*`. The entered time is interpreted as local time and written to the DS1307 RTC via `dm_set_manual_time()`. | Should |
+| FR-UI24 | While the hardware recovery button (FR-AC08) is held, the LCD **shall** display an animated progress indicator instead of the normal status display. Row 1 **shall** show a growing bar of filled characters advancing left to right; each 25% of the full bar width corresponds to 5 seconds of hold time. Row 0 **shall** show a contextual stage label: no label for the first 5 s, `Reset PIN?` from 5–10 s, `Reset settings?` from 10–15 s, `Restarting?` from 15–20 s. All normal LCD status updates, page rotation, and keypad input **shall** be suppressed for the duration of the button hold. On release, the stage-specific confirmation message **shall** be displayed for 5 seconds before the normal display cycle resumes. | Should |
 
 #### 5.9.1 Status LED Indicators
 
@@ -409,6 +410,8 @@ The RGB LED uses the following colour semantics, which differ from the discrete 
 | FR-AC05 | Web interface access **shall** require authentication; credentials **shall** be separate from local keyboard access. | Should |
 | FR-AC06 | The system **shall** store user credentials securely, protecting them against unauthorised disclosure. | Should |
 | FR-AC07 | After a configurable number of failed login attempts, the system **should** impose a lockout delay. | Could |
+| FR-AC08 | The system **shall** provide a hardware credential recovery mechanism accessible without any prior authentication, requiring only physical access to the controller. The mechanism **shall** allow resetting PIN codes to factory defaults at minimum. A deliberate, sustained hardware button press (≥ 5 seconds) **shall** be required to prevent accidental activation. | Should |
+| FR-AC09 | The hardware recovery mechanism **shall** support three escalating levels, each triggered by a progressively longer button hold: (1) **PIN reset** — resets all PIN codes to factory defaults; system continues operating; (2) **full settings reset** — resets all PIN codes and all stored configuration to factory defaults; system continues operating with new settings; (3) **factory reset with restart** — resets all PIN codes and all stored configuration, then restarts the system. Each level **shall** require the button to be held into its corresponding time window before release. | Should |
 
 ### 5.14 Logging
 

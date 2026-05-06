@@ -6,6 +6,90 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.16.3] — 2026-05-06
+
+*LCD I2C bus reliability fix (AiP31068L silent-drop), LCD display polish, "Window Cal." mode on LCD and web GUI, and web GUI public-access redesign (Status + Sensor history + SD card without login; Login modal replaces full-page overlay).*
+
+### Added
+- `drivers/LCD1602_I2C/src/lcd1602.h/.cpp` — **`lcd_display_on()`**: sends CMD_DISP_ON (0x0C, ~37 µs busy) as an idempotent sacrificial preamble write before every `lcd_flush()`. Absorbs the AiP31068L silent first-transaction drop that occurs after ~2.5 s of I2C bus inactivity, without the 1.52 ms cursor-positioning side-effect of CMD_HOME that caused a 4-character row-0 shift artifact.
+- `firmware/src/types/app_types.h` — **`EG1_BIT_CALIBRATING` (bit 6)**: new EG1 system-state flag; set/cleared by T2 around `calib_close_all()`. Highest display priority after MOTOR_ALARM and WIND_OVERRIDE. Allows all display consumers to detect the calibration window without polling relay state.
+- `firmware/src/relay_controller/relay_controller.cpp` — `calib_close_all()` now **sets `EG1_BIT_CALIBRATING`** at entry (`CLOSE_ALL calibration start` log line) and **clears it** on completion (`CLOSE_ALL calibration complete` log line). Called at boot and after the 60 s motor-alarm guard.
+
+### Changed
+- `firmware/src/ui_display/ui_display.cpp` — **`lcd_flush()` preamble**: replaced `lcd_home()` call with `lcd_display_on()`; eliminates the 4-character cursor-shift artifact that appeared after 2.5 s of screen-message display (e.g. after returning from a timed message screen).
+- `firmware/src/ui_display/ui_display.cpp` — **`show_group_summary()` removed**: the 2.5 s intermediate summary screen (`Day T28..27°C / RH   80.. 80%`) shown when pressing `*` in a browse state was removed entirely. `*` now navigates directly to `UI_MENU_CLIMATE` (the group selector). Eliminates the associated timing complexity and AiP31068L first-transaction glitch window.
+- `firmware/src/ui_display/ui_display.cpp` — **Session label format**: `"SESS:%-4s %s"` with `"ADMN"` / `"FRMR"` / `"NONE"` replaced by `"Sess: %-6s%s"` with `"Admin"` / `"Farmer"` / `"NONE"` — a space is now always present after the colon, and the role names use readable mixed-case.
+- `firmware/src/ui_display/ui_display.cpp` — **Mode display**: single `snprintf` with a `mode_str` variable replaced by per-case `snprintf` calls that check EG1 bits directly: `MOTOR_ALARM` → `"Mode: ALARM     "`, `WIND_OVERRIDE` → `"Mode: WIND      "`, `EG1_BIT_CALIBRATING` → `"Mode:Window Cal."`, default → `"Mode: AUTO      "`.
+- `firmware/src/web_server/web_server.cpp` — **`/api/status`**: auth check removed — endpoint is now public (no session required). Mode derivation updated: added `else if (eg1 & EG1_BIT_CALIBRATING) mode_str = "WINDOW_CAL"` before the `AUTOMATIC` fallback.
+- `firmware/src/web_server/web_server.cpp` — **`/api/history`**: auth check removed — endpoint is now public.
+- `firmware/src/web_server/web_server.cpp` — **`/api/sd/status`**: auth check removed — endpoint is now public.
+- `firmware/data/app.js` — **`setRole(role)`**: rewritten to show/hide `#btn-login`, `#btn-logout`, `#role-badge`, and `#section-settings` based on auth state instead of hiding/showing the full-page overlay. Logged-in: settings visible, Login hidden, role badge + Logout shown. Logged-out: settings hidden, Login shown.
+- `firmware/data/app.js` — **`showLogin()`** (session expiry handler): no longer re-displays a login overlay; now simply calls `setRole(null)` to drop back to the unauthenticated public view.
+- `firmware/data/app.js` — **`doLogout()`**: calls `setRole(null)` directly instead of `showLogin()`.
+- `firmware/data/app.js` — **`doLogin()`**: calls `hideLoginModal()` on success before `setRole()`.
+- `firmware/data/app.js` — **`showLoginModal()` / `hideLoginModal()` / `modalBackdropClick()`**: new modal management functions replacing the full-page overlay show/hide. `modalBackdropClick` closes the modal only when the semi-transparent backdrop is clicked, not the login box.
+- `firmware/data/app.js` — **`loadHistory()`**: 401 guard removed; SD card status and history now load on page load regardless of auth. Periodic 30 s SD and 120 s history refresh intervals no longer guarded by `if (g_role === null) return`.
+- `firmware/data/app.js` — **`WINDOW_CAL`** added to `modeNames` map → `'Window Cal.'`.
+- `firmware/data/app.js` — **Page-load init**: `wsConnect()`, `loadHistory()`, and `loadSdStatus()` now called immediately on page load; `/api/whoami` check follows to restore an existing session if present.
+- `firmware/data/style.css` — CSS rule renamed `#login-overlay` → `#login-modal`.
+- `firmware/data/index.html` — **Full restructure for public-access pattern**: full-page blocking overlay replaced by a dismissible modal (`<div id="login-modal" style="display:none" onclick="modalBackdropClick(event)">`). Header gains `#btn-login` (visible by default) and `#btn-logout` + `#role-badge` (hidden by default). Status and Sensor history sections always visible. Settings section wrapped in `<section id="section-settings" style="display:none">` — revealed only after login.
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.16.2` → `1.16.3` in both `lolin_s3` and `test_t2_relay` environments.
+
+### Build metrics
+- Flash: 55.2% (1157 kB / 2 MB)
+- RAM: 19.4% (63 kB / 320 kB)
+
+---
+
+## [1.16.2] — 2026-05-06
+
+*Day/Night setpoint browse interface on LCD: farmer can now browse and edit the 4 day setpoints (T max/min, RH max/min) and 4 night setpoints directly from the keypad. Two new FSM states `UI_BROWSE_DAY` and `UI_BROWSE_NIGHT`. Climate menu converted from a flat 11-param paginated list to a Day/Night group selector.*
+
+### Added
+- `firmware/src/ui_display/ui_display.cpp` — **`UI_BROWSE_DAY` / `UI_BROWSE_NIGHT` FSM states**: browse one setpoint at a time; row 0 shows the parameter label; row 1 shows value, position counter (1/4…4/4), and key hints. Navigation: `A`=previous, `B`=next, `#`=edit, `*`=group min/max summary (2.5 s) then back to the group selector.
+- `firmware/src/ui_display/ui_display.cpp` — **`render_menu_climate()`**: replaces old flat climate param menu with a two-line group selector (`1=Day  2=Ngt  *`).
+- `firmware/src/ui_display/ui_display.cpp` — **`render_browse_setpoints(bool is_day)`**: renders the current browse slot using the parameter's `edit_lbl` on row 0 and `"<val> N/4 A B #* "` on row 1.
+- `firmware/src/ui_display/ui_display.cpp` — **`show_group_summary(bool is_day)`**: displays T min..max °C and RH min..max % on the LCD for 2.5 s when `*` is pressed in a browse state.
+- `firmware/src/ui_display/ui_display.cpp` — **`DAY_PARAM_IDX[4]` / `NIGHT_PARAM_IDX[4]`**: map browse position (0–3) to `CLIMATE_PARAMS` indices (`{0,2,4,6}` / `{1,3,5,7}`).
+- `firmware/src/ui_display/ui_display.cpp` — **`handle_menu_climate()`** and **`handle_browse_setpoints()`**: key handlers for the two new states.
+
+### Changed
+- `firmware/src/ui_display/ui_display.cpp` — **`begin_edit()` signature extended**: third parameter `ui_state_t return_to` replaces the hardcoded `is_wind ? UI_MENU_WIND : UI_MENU_CLIMATE` logic, allowing browse states to be preserved through the PIN→edit chain. All callers updated.
+- `firmware/src/ui_display/ui_display.cpp` — **`handle_pin()` pending-edit resume**: passes `s_return_menu` (set by the initial `begin_edit()` before PIN entry) so editing returns to the correct browse state after successful authentication.
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.16.1` → `1.16.2` in both `lolin_s3` and `test_t2_relay` environments.
+
+### Build metrics
+- Flash: 55.1% (approx.)
+- RAM: 19.4% (approx.)
+
+---
+
+## [1.16.1] — 2026-05-06
+
+*IO0 BOOT button factory-reset sequence with animated LCD progress bar. LCD rendering muted during button hold. `lcd_create_char()` added to the LCD1602 I2C driver.*
+
+### Added
+- `drivers/LCD1602_I2C/src/lcd1602.h/.cpp` — **`lcd_create_char(slot, pattern[8])`**: programs one of the 8 HD44780 CGRAM custom-character slots. Sets the CGRAM address (`0x40 | slot<<3`), writes the 8 pixel rows (5 LSBs used per row), then issues CMD_HOME to return the cursor to DDRAM so subsequent text writes target the visible display area.
+- `firmware/src/ui_display/ui_display.cpp` — **IO0 factory-reset sequence**: holding the LOLIN S3 BOOT button (GPIO0, active-low) displays an animated growing bar on LCD row 1; row 0 shows a contextual stage label. Four stages of 5 s each (200 ticks at 100 ms/tick):
+  - **0–5 s** — no label. Release restores normal display with no action.
+  - **5–10 s** — `Reset PIN?`. Release resets farmer and admin PINs to defaults (`1234` / `12345678`) by erasing NVS namespace `access` and calling `pin_auth_init()`; system continues operating.
+  - **10–15 s** — `Reset settings?`. Release erases all NVS namespaces (climate, wind, motor, access, wifi, mqtt, system), resets PINs to defaults, closes any open session; system continues with factory defaults.
+  - **15–20 s** — `Restarting?`. Release performs the same full NVS erase then calls `ESP.restart()`. Holding for the full 20 s auto-executes the restart stage without requiring release.
+  - Bar fills left-to-right using `\xFF` (HD44780 ROM A00 full-block glyph) for filled cells and CGRAM slot 1 (5×8 outline-square pattern `{0x1F,0x11,0x11,0x11,0x11,0x11,0x1F,0x00}`) for unfilled cells. Slot 0 is avoided because it is the C null terminator.
+  - CGRAM slot 1 is programmed under MX1 immediately after `lcd_init()` at T8 startup via the new `lcd_create_char()` API.
+
+### Fixed
+- `firmware/src/ui_display/ui_display.cpp` — **LCD updates muted while IO0 is held**: the main loop previously continued executing Q5 network-status renders, status-page rotation, and key dispatch every 100 ms tick while the reset bar was displayed, causing brief status-page flashes to appear behind the bar. Fixed by `continue`-ing the loop after `render_reset_bar()` whenever the button is still held (and the 20 s limit not yet reached), skipping steps 3–6 entirely until release.
+
+### Changed
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.16.0` → `1.16.1` in both `lolin_s3` and `test_t2_relay` environments.
+
+### Build metrics
+- Flash: 55.1% (1157 kB / 2 MB)
+- RAM: 19.4% (63 kB / 320 kB)
+
+---
+
 ## [1.16.0] — 2026-05-06
 
 *LCD display improvements: T/RH page reformatted, WiFi page `#`-shortcut to AP enable, boot splash version alignment. Web GUI poll-interval label clarified. Sensor timestamp bug fixed (duplicate log rows). Integration test suite development started.*

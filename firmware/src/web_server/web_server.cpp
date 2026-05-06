@@ -244,6 +244,7 @@ static void build_status_json(char *buf, size_t len)
     const char *mode_str;
     if      (eg1 & EG1_BIT_MOTOR_ALARM)   mode_str = "MOTOR_ALARM";
     else if (eg1 & EG1_BIT_WIND_OVERRIDE)  mode_str = "WIND_OVERRIDE";
+    else if (eg1 & EG1_BIT_CALIBRATING)    mode_str = "WINDOW_CAL";
     else                                    mode_str = "AUTOMATIC";
 
     static const char * const WIN_STR[] = {
@@ -533,9 +534,6 @@ static void register_routes(AsyncWebServer &srv)
 
     /* ── Status ─────────────────────────────────────────────── */
     srv.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *req) {
-        if (req_role(req) == SESSION_NONE) {
-            req->send(401, "application/json", "{\"ok\":false}"); return;
-        }
         char *buf = (char *)ps_malloc(1024);
         if (!buf) { req->send(500); return; }
         build_status_json(buf, 1024);
@@ -654,9 +652,6 @@ static void register_routes(AsyncWebServer &srv)
 
     /* ── Sensor history ─────────────────────────────────────── */
     srv.on("/api/history", HTTP_GET, [](AsyncWebServerRequest *req) {
-        if (req_role(req) == SESSION_NONE) {
-            req->send(401, "application/json", "{\"ok\":false}"); return;
-        }
         int n = HIST_MAX_ROWS;
         if (req->hasParam("n")) n = req->getParam("n")->value().toInt();
         if (n < 1 || n > HIST_MAX_ROWS) n = HIST_MAX_ROWS;
@@ -698,10 +693,7 @@ static void register_routes(AsyncWebServer &srv)
 
     /* ── SD card status ─────────────────────────────────────── */
     srv.on("/api/sd/status", HTTP_GET, [](AsyncWebServerRequest *req) {
-        if (req_role(req) == SESSION_NONE) {
-            req->send(401, "application/json", "{\"ok\":false}");
-            return;
-        }
+        /* Public — visible on the status page without login. */
         bool mounted   = storage_sd_available();
         uint64_t total = mounted ? storage_sd_total_bytes() : 0;
         uint64_t free_b = mounted ? storage_sd_free_bytes()  : 0;

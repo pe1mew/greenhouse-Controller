@@ -14,9 +14,12 @@
  *  6. If display_dirty: render → lcd_flush
  *
  * ── FSM states ─────────────────────────────────────────────────────────────
- *  UI_STATUS         auto-rotate 4 pages × 5 s; any key → UI_MENU_ROOT
+ *  UI_STATUS         auto-rotate 5 pages × 5 s; any key → UI_MENU_ROOT
  *  UI_MENU_ROOT      1=Climate  2=Wind  3=Access  4=System  *=back
- *  UI_MENU_CLIMATE   11 climate params, 2 per page; #=next page  *=back
+ *  UI_MENU_CLIMATE   Day/Night group selector: 1=Day  2=Night  *=back
+ *  UI_BROWSE_DAY     Browse 4 day setpoints one at a time; A/B=prev/next
+ *                    #=edit (farmer PIN if not logged in); *=group summary→back
+ *  UI_BROWSE_NIGHT   Same as UI_BROWSE_DAY for the night setpoints
  *  UI_MENU_WIND       2 wind params, 1 page
  *  UI_MENU_ACCESS    1=Login farmer  2=Login admin  3=Logout  *=back
  *  UI_MENU_SYSTEM    stub — "See web UI"
@@ -65,6 +68,21 @@ static const char *TAG = "T8_UI";
 #define MX1_TIMEOUT_MS      200u   /**< MX1 acquire timeout */
 #define DEF_SESSION_MIN       5    /**< Session timeout default (minutes) */
 
+/* IO0 factory-reset sequence */
+#define RESET_PIN_IO0         0u    /**< GPIO0 = LOLIN S3 BOOT button (active-low) */
+#define RESET_TICKS_PER_STAGE 50u   /**< 50 × 100 ms = 5 s per stage */
+#define RESET_MAX_TICKS       200u  /**< 4 stages × 50 ticks = 20 s total */
+#define RESET_BAR_FULL        '\xFF'/**< HD44780 full-block glyph (ROM A00) */
+#define RESET_CGRAM_SLOT      1u    /**< CGRAM slot for the outline-square glyph */
+
+/* Browse-setpoint key-hint glyphs (CGRAM slot 3 only)
+ *   \x7F = ← (ROM A00 left  arrow)  used for  A key label (previous)
+ *   \x7E = → (ROM A00 right arrow)  used for  B key label (next)
+ *   \x03 = CGRAM slot 3 (↩ return arrow)   used for # (edit/confirm) label
+ *   '^'  = ASCII 0x5E (caret)               used for * (back) label
+ */
+#define BROWSE_CGRAM_BACK     3u    /**< CGRAM slot — ↩ (enter/confirm)  */
+
 /* ============================================================
  * Parameter descriptor
  * ============================================================ */
@@ -102,20 +120,31 @@ static const param_def_t WIND_PARAMS[] = {
 };
 #define N_WIND  (int)(sizeof(WIND_PARAMS) / sizeof(WIND_PARAMS[0]))
 
+/**
+ * @brief CLIMATE_PARAMS indices for the day and night browse menus (4 each).
+ *
+ * Day:   T_max_day(0) T_min_day(2) RH_max_day(4) RH_min_day(6)
+ * Night: T_max_ngt(1) T_min_ngt(3) RH_max_ngt(5) RH_min_ngt(7)
+ */
+static const uint8_t DAY_PARAM_IDX[4]   = {0, 2, 4, 6};
+static const uint8_t NIGHT_PARAM_IDX[4] = {1, 3, 5, 7};
+
 /* ============================================================
  * FSM state enum
  * ============================================================ */
 typedef enum {
     UI_STATUS,
     UI_MENU_ROOT,
-    UI_MENU_CLIMATE,
+    UI_MENU_CLIMATE,   /**< Day/Night group selector */
+    UI_BROWSE_DAY,     /**< Browse 4 day setpoints; A/B navigate, #=edit, *=summary+back */
+    UI_BROWSE_NIGHT,   /**< Browse 4 night setpoints; A/B navigate, #=edit, *=summary+back */
     UI_MENU_WIND,
     UI_MENU_ACCESS,
     UI_MENU_SYSTEM,
     UI_PIN_ENTRY,
     UI_EDIT_VALUE,
-    UI_SET_DATE,     /**< Admin: enter date DDMMYY; # applies, * cancels */
-    UI_SET_TIME,     /**< Admin: enter time HHMM;   # writes RTC, * back to date */
+    UI_SET_DATE,       /**< Admin: enter date DDMMYY; # applies, * cancels */
+    UI_SET_TIME,       /**< Admin: enter time HHMM;   # writes RTC, * back to date */
 } ui_state_t;
 
 /* ============================================================
@@ -169,21 +198,85 @@ static int          s_dt_saved_mday   = 0;     /**< Day (1–31) from date entry
 static char s_row0[17] = {0};
 static char s_row1[17] = {0};
 
+/* Transient message timing — non-blocking show_msg.
+ * show_msg() writes to the LCD immediately and sets s_msg_ticks_remaining
+ * to the desired display duration expressed in main-loop ticks
+ * (1 tick = UI_LOOP_MS = 100 ms).  While the counter is > 0 the main loop
+ * suppresses key dispatch and dirty-flag rendering so the message stays on
+ * screen.  When the counter reaches 0 the accumulated Q2 events are drained,
+ * s_suppress_repeats is armed, and s_dirty is set so the next render()
+ * call draws whatever state the FSM is now in. */
+static uint32_t s_msg_ticks_remaining = 0;
+
+/* Suppress key-repeat events that arrive just after a transient message.
+ * Armed when s_msg_ticks_remaining reaches 0; cleared on the next
+ * first-press (repeated=false) event that arrives after the real-time
+ * suppression window has elapsed. */
+static bool s_suppress_repeats = false;
+
+/* Real-time post-message all-key suppression.
+ * After a transient message expires, ALL key events (including fresh
+ * repeated=false presses) are suppressed for POST_MSG_SUPPRESS_MS.
+ * Uses FreeRTOS wall-clock ticks so it is not affected by how quickly
+ * T7 fills Q2 (which shortens loop iterations below 100 ms). */
+#define POST_MSG_SUPPRESS_MS  600u
+static TickType_t s_post_msg_suppress_until = 0;
+
+/* IO0 factory-reset sequence */
+/** @brief 5×8 outline-square pattern stored in CGRAM slot RESET_CGRAM_SLOT. */
+static const uint8_t RESET_EMPTY_GLYPH[8] = {
+    0x1F, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1F, 0x00
+};
+/** @brief Running tick count while the BOOT button is held (0 = not pressed). */
+static uint32_t s_reset_ticks = 0u;
+
+/* Browse-setpoint key-hint glyphs */
+/** @brief ↩ return/back arrow (CGRAM slot BROWSE_CGRAM_BACK).
+ *  Vertical stub on the right descends then turns left into a horizontal arrow.
+ *  Used as a visual prefix on the * (back) key hint in browse screens. */
+static const uint8_t BROWSE_BACK_GLYPH[8] = {
+    0x01, 0x01, 0x09, 0x0F, 0x1C, 0x08, 0x00, 0x00
+};
+
 /* ============================================================
  * LCD helpers
  * ============================================================ */
 
 /**
  * @brief Write s_row0 and s_row1 to the LCD under MX1.
+ *
+ * @return true  LCD was updated successfully.
+ * @return false MX1 mutex timed out; caller should keep s_dirty=true and
+ *               retry on the next tick.
  */
-static void lcd_flush(void)
+static bool lcd_flush(void)
 {
+    ESP_LOGD(TAG, "lcd_flush r0='%.16s' r1='%.16s'", s_row0, s_row1);
     if (xSemaphoreTake(MX1, pdMS_TO_TICKS(MX1_TIMEOUT_MS)) == pdTRUE) {
-        lcd_write_row(0, s_row0);
-        lcd_write_row(1, s_row1);
+        /* Preamble: one CMD_DISP_ON write before the row data.
+         * The AiP31068L silently drops the first I2C transaction that arrives
+         * after ~2.5 s of bus inactivity on its address (the I2C master gets
+         * an ACK, but the chip does not apply the write to DDRAM).
+         * lcd_display_on() sends CMD_DISP_ON (0x0C) which is idempotent
+         * (display stays on) and has only ~37 µs busy time — safely covered
+         * by the ~70 µs I2C transaction overhead, so no extra delay is needed.
+         * This absorbs the one-shot silent drop; the subsequent lcd_write_row
+         * calls then always land correctly. */
+        lcd_status_t sp = lcd_display_on();
+        if (sp != LCD_OK) {
+            ESP_LOGW(TAG, "lcd_display_on preamble failed: %d", (int)sp);
+        }
+        lcd_status_t s0 = lcd_write_row(0, s_row0);
+        lcd_status_t s1 = lcd_write_row(1, s_row1);
         xSemaphoreGive(MX1);
+        if (s0 != LCD_OK || s1 != LCD_OK) {
+            ESP_LOGE(TAG, "lcd_write_row failed: r0=%d r1=%d — will retry", (int)s0, (int)s1);
+            return false;
+        }
+        return true;
     } else {
-        ESP_LOGW(TAG, "MX1 timeout — LCD flush skipped");
+        ESP_LOGW(TAG, "MX1 timeout — LCD flush skipped, will retry");
+        return false;
     }
 }
 
@@ -198,15 +291,22 @@ static void lcd_set(const char *row0, const char *row1)
 }
 
 /**
- * @brief Show a transient message, flush immediately, block for delay_ms,
- *        then mark display dirty so the main loop re-renders the current state.
+ * @brief Show a transient message and schedule its duration non-blocking.
+ *
+ * Writes r0/r1 to the LCD immediately (via lcd_flush) then sets
+ * s_msg_ticks_remaining so the main loop knows a message is active.
+ * While the counter is non-zero the main loop suppresses key dispatch and
+ * dirty-flag rendering; when it reaches zero it drains Q2, arms
+ * s_suppress_repeats, and sets s_dirty so the FSM state is re-rendered.
+ *
+ * The caller MUST set s_state / s_dirty / s_sub_page as required both before
+ * and after this call — the FSM state is not touched here.
  */
 static void show_msg(const char *r0, const char *r1, uint32_t delay_ms)
 {
     lcd_set(r0, r1);
-    lcd_flush();
-    vTaskDelay(pdMS_TO_TICKS(delay_ms));
-    s_dirty = true;
+    (void)lcd_flush();
+    s_msg_ticks_remaining = (delay_ms + UI_LOOP_MS - 1) / UI_LOOP_MS;
 }
 
 /* ============================================================
@@ -315,8 +415,14 @@ static void go_status(void)
 /**
  * @brief Begin editing a parameter.  If session is insufficient, enter
  *        PIN_ENTRY and store the pending param for later.
+ *
+ * @param is_wind   True if editing a WIND_PARAMS entry, false for CLIMATE_PARAMS.
+ * @param param_idx Index into the relevant params array.
+ * @param return_to FSM state to return to after editing (or after PIN cancel).
+ *                  The caller decides this so that browse states are correctly
+ *                  preserved through the PIN→edit chain.
  */
-static void begin_edit(bool is_wind, int param_idx)
+static void begin_edit(bool is_wind, int param_idx, ui_state_t return_to)
 {
     const param_def_t *p = is_wind ? &WIND_PARAMS[param_idx] : &CLIMATE_PARAMS[param_idx];
 
@@ -327,7 +433,7 @@ static void begin_edit(bool is_wind, int param_idx)
         memset(s_pin_buf, 0, sizeof(s_pin_buf));
         s_pending_param = param_idx;
         s_pending_wind  = is_wind;
-        s_return_menu   = is_wind ? UI_MENU_WIND : UI_MENU_CLIMATE;
+        s_return_menu   = return_to;   /* preserved through PIN→edit chain */
         s_state         = UI_PIN_ENTRY;
         s_dirty         = true;
         return;
@@ -340,7 +446,7 @@ static void begin_edit(bool is_wind, int param_idx)
     s_edit_len     = 0;
     s_edit_neg     = false;
     memset(s_edit_buf, 0, sizeof(s_edit_buf));
-    s_return_menu  = is_wind ? UI_MENU_WIND : UI_MENU_CLIMATE;
+    s_return_menu  = return_to;
     s_state        = UI_EDIT_VALUE;
     s_dirty        = true;
 }
@@ -365,6 +471,101 @@ static const char *deg_to_cardinal(uint16_t deg)
     if (d <= 247u)               return "SW";
     if (d <= 292u)               return "W";
     return "NW";
+}
+
+/* ============================================================
+ * IO0 factory-reset helpers
+ * ============================================================ */
+
+/**
+ * @brief Render the IO0 reset progress bar directly to the LCD.
+ *
+ * Row 0: contextual stage label (empty for stage 0).
+ * Row 1: growing bar — filled blocks ('\xFF') followed by outline-square
+ *         glyphs ('\x01' = CGRAM slot 1).
+ *
+ * Calls lcd_flush() directly so the bar updates every 100 ms tick regardless
+ * of the normal dirty-flag render path.
+ */
+static void render_reset_bar(void)
+{
+    static const char * const STAGE_LABELS[] = {
+        "",               /**< stage 0 (0–4 s): no hint */
+        "Reset PIN?      ",
+        "Reset settings? ",
+        "Restarting?     ",
+    };
+
+    uint8_t stage = (uint8_t)(s_reset_ticks / RESET_TICKS_PER_STAGE);
+    if (stage >= 4u) stage = 3u;
+
+    snprintf(s_row0, sizeof(s_row0), "%-16.16s", STAGE_LABELS[stage]);
+
+    uint8_t filled = (uint8_t)((s_reset_ticks * 16u) / RESET_MAX_TICKS);
+    if (filled > 16u) filled = 16u;
+    for (uint8_t i = 0u; i < 16u; i++) {
+        s_row1[i] = (i < filled) ? RESET_BAR_FULL : (char)RESET_CGRAM_SLOT;
+    }
+    s_row1[16] = '\0';
+
+    (void)lcd_flush();
+}
+
+/**
+ * @brief Execute the factory-reset action for the given stage.
+ *
+ * @param stage  0 = no action; 1 = PIN reset; 2 = full settings reset;
+ *               3 = full reset + reboot.
+ */
+static void execute_reset_action(uint8_t stage)
+{
+    switch (stage) {
+
+        case 1: /* Reset PIN codes to defaults; continue operation */
+            nvs_cfg_erase_namespace(NVS_NS_ACCESS);
+            pin_auth_init();
+            session_close(false);
+            ESP_LOGW(TAG, "IO0: PIN reset to defaults");
+            show_msg("PIN Reset!      ", "Default PINs set", 5000);
+            break;
+
+        case 2: /* Reset all NVS namespaces + PINs; no reboot */
+            nvs_cfg_erase_namespace(NVS_NS_CLIMATE);
+            nvs_cfg_erase_namespace(NVS_NS_WIND);
+            nvs_cfg_erase_namespace(NVS_NS_MOTOR);
+            nvs_cfg_erase_namespace(NVS_NS_ACCESS);
+            nvs_cfg_erase_namespace(NVS_NS_WIFI);
+            nvs_cfg_erase_namespace(NVS_NS_MQTT);
+            nvs_cfg_erase_namespace(NVS_NS_SYSTEM);
+            pin_auth_init();
+            session_close(false);
+            ESP_LOGW(TAG, "IO0: full settings reset to defaults");
+            show_msg("Settings Reset! ", "Defaults loaded ", 5000);
+            break;
+
+        case 3: /* Full reset + reboot */
+            nvs_cfg_erase_namespace(NVS_NS_CLIMATE);
+            nvs_cfg_erase_namespace(NVS_NS_WIND);
+            nvs_cfg_erase_namespace(NVS_NS_MOTOR);
+            nvs_cfg_erase_namespace(NVS_NS_ACCESS);
+            nvs_cfg_erase_namespace(NVS_NS_WIFI);
+            nvs_cfg_erase_namespace(NVS_NS_MQTT);
+            nvs_cfg_erase_namespace(NVS_NS_SYSTEM);
+            pin_auth_init();
+            session_close(false);
+            ESP_LOGW(TAG, "IO0: full reset — restarting");
+            /* Restart is immediate — use a blocking delay here so the message
+             * is actually visible; non-blocking show_msg won't work because
+             * ESP.restart() is called right after. */
+            lcd_set("Restart!        ", "Restarting...   ");
+            (void)lcd_flush();
+            vTaskDelay(pdMS_TO_TICKS(3000));
+            ESP.restart();
+            break;
+
+        default: /* stage 0 — released before 5 s, no action */
+            break;
+    }
 }
 
 /* ============================================================
@@ -413,15 +614,13 @@ static void render_status(void)
             break;
 
         case 2: { /* Mode / alarms */
-            const char *mode;
-            if      (bits & EG1_BIT_MOTOR_ALARM)    mode = "ALARM";
-            else if (bits & EG1_BIT_WIND_OVERRIDE)  mode = "WIND ";
-            else                                     mode = "AUTO ";
-
-            snprintf(r0, sizeof(r0), "Mode: %-5s      ", mode);
-            snprintf(r1, sizeof(r1), "Sess:%-4s %s",
-                     (s_session == SESSION_ADMIN)  ? "ADMN" :
-                     (s_session == SESSION_FARMER) ? "FRMR" : "NONE",
+            if      (bits & EG1_BIT_MOTOR_ALARM)   snprintf(r0, sizeof(r0), "Mode: ALARM     ");
+            else if (bits & EG1_BIT_WIND_OVERRIDE) snprintf(r0, sizeof(r0), "Mode: WIND      ");
+            else if (bits & EG1_BIT_CALIBRATING)   snprintf(r0, sizeof(r0), "Mode:Window Cal.");
+            else                                    snprintf(r0, sizeof(r0), "Mode: AUTO      ");
+            snprintf(r1, sizeof(r1), "Sess: %-6s%s",
+                     (s_session == SESSION_ADMIN)  ? "Admin"  :
+                     (s_session == SESSION_FARMER) ? "Farmer" : "NONE",
                      (bits & EG1_BIT_OTA_IN_PROGRESS) ? " OTA" : "    ");
             break;
         }
@@ -472,6 +671,51 @@ static void render_status(void)
 static void render_menu_root(void)
 {
     lcd_set("1:Clim  2:Wind  ", "3:Access 4:Sys *");
+}
+
+/** @brief Render the Day/Night climate group selector. */
+static void render_menu_climate(void)
+{
+    lcd_set("Day/Night setpts", "1=Day  2=Ngt  * ");
+}
+
+/**
+ * @brief Render one browse-setpoint screen.
+ *
+ * Row 0: parameter label (16 chars, from edit_lbl).
+ * Row 1: "<value> <n>/4 A B #* " — current value, position counter, key hints.
+ *
+ * @param is_day  True for day setpoints, false for night.
+ */
+static void render_browse_setpoints(bool is_day)
+{
+    const uint8_t *idx_map = is_day ? DAY_PARAM_IDX : NIGHT_PARAM_IDX;
+    uint8_t cidx = idx_map[s_sub_page % 4u];
+    const param_def_t *p = &CLIMATE_PARAMS[cidx];
+    int32_t val = param_get(false, cidx);
+
+    char r1[17];
+    /* Row 1: 4-char value, position N/4, then four symbol+key pairs.
+     *
+     * IMPORTANT — hex-escape termination: in a C string literal \xNN consumes
+     * ALL following hex digits (0-9, a-f, A-F).  'A' and 'B' are hex digits,
+     * so "\x7FA" would be parsed as a single escape \x7FA (= 0xFA, katakana)
+     * with 'A' consumed.  Adjacent-literal splitting "\x7F" "A" forces the
+     * escape to stop at the closing quote.
+     *
+     *   \x7F = ← (AIP31068L ROM A00, char 0x7F)  — prefix for A (previous)
+     *   \x7E = → (AIP31068L ROM A00, char 0x7E)  — prefix for B (next)
+     *   \x03 = CGRAM slot 3 (↩ return-arrow)      — prefix for # (edit/confirm)
+     *   '^'  = ASCII 0x5E caret                    — prefix for * (back/up)
+     *
+     * Hex-escape splitting: \x7F/\x7E are followed by the adjacent-literal
+     * trick ("\x7F" "A") so 'A' and 'B' are not consumed as hex digits.
+     * \x03 is safe — '#' is not a hex digit.
+     *
+     * Total rendered: 4+3+1+2+2+2+2 = 16 chars; fills the display exactly. */
+    snprintf(r1, sizeof(r1), "%-4ld%d/4 \x7F" "A\x7E" "B\x03#^*",
+             (long)val, (int)(s_sub_page % 4u) + 1);
+    lcd_set(p->edit_lbl, r1);
 }
 
 /**
@@ -651,16 +895,18 @@ static void render_edit_value(void)
 static void render(void)
 {
     switch (s_state) {
-        case UI_STATUS:        render_status();              break;
-        case UI_MENU_ROOT:     render_menu_root();           break;
-        case UI_MENU_CLIMATE:  render_param_menu(false);     break;
-        case UI_MENU_WIND:     render_param_menu(true);      break;
-        case UI_MENU_ACCESS:   render_menu_access();         break;
-        case UI_MENU_SYSTEM:   render_menu_system();         break;
-        case UI_PIN_ENTRY:     render_pin_entry();           break;
-        case UI_EDIT_VALUE:    render_edit_value();          break;
-        case UI_SET_DATE:      render_set_date();            break;
-        case UI_SET_TIME:      render_set_time();            break;
+        case UI_STATUS:        render_status();                 break;
+        case UI_MENU_ROOT:     render_menu_root();              break;
+        case UI_MENU_CLIMATE:  render_menu_climate();           break;
+        case UI_BROWSE_DAY:    render_browse_setpoints(true);   break;
+        case UI_BROWSE_NIGHT:  render_browse_setpoints(false);  break;
+        case UI_MENU_WIND:     render_param_menu(true);         break;
+        case UI_MENU_ACCESS:   render_menu_access();            break;
+        case UI_MENU_SYSTEM:   render_menu_system();            break;
+        case UI_PIN_ENTRY:     render_pin_entry();              break;
+        case UI_EDIT_VALUE:    render_edit_value();             break;
+        case UI_SET_DATE:      render_set_date();               break;
+        case UI_SET_TIME:      render_set_time();               break;
     }
 }
 
@@ -729,18 +975,76 @@ static void handle_menu_root(char key)
     }
 }
 
+/** @brief Handle keypresses in UI_MENU_CLIMATE (Day/Night group selector). */
+static void handle_menu_climate(char key)
+{
+    switch (key) {
+        case '1':
+            s_state    = UI_BROWSE_DAY;
+            s_sub_page = 0;
+            s_dirty    = true;
+            break;
+        case '2':
+            s_state    = UI_BROWSE_NIGHT;
+            s_sub_page = 0;
+            s_dirty    = true;
+            break;
+        case '*':
+            s_state = UI_MENU_ROOT;
+            s_dirty = true;
+            break;
+        default:
+            break;
+    }
+}
+
+/**
+ * @brief Handle keypresses in UI_BROWSE_DAY / UI_BROWSE_NIGHT.
+ *
+ * A = previous setpoint, B = next setpoint,
+ * # = edit (farmer PIN requested if not authenticated),
+ * * = show group min/max summary for 2.5 s then return to climate group menu.
+ */
+static void handle_browse_setpoints(char key, bool is_day)
+{
+    const uint8_t *idx_map = is_day ? DAY_PARAM_IDX : NIGHT_PARAM_IDX;
+    ui_state_t  this_state = is_day ? UI_BROWSE_DAY : UI_BROWSE_NIGHT;
+
+    switch (key) {
+        case 'A':  /* Previous setpoint */
+            s_sub_page = (s_sub_page == 0u) ? 3u : (uint8_t)(s_sub_page - 1u);
+            s_dirty    = true;
+            break;
+        case 'B':  /* Next setpoint */
+            s_sub_page = (uint8_t)((s_sub_page + 1u) % 4u);
+            s_dirty    = true;
+            break;
+        case '#':  /* Edit current setpoint */
+            begin_edit(false, idx_map[s_sub_page % 4u], this_state);
+            break;
+        case '*':  /* Back to group selector */
+            s_state    = UI_MENU_CLIMATE;
+            s_sub_page = 0;
+            s_dirty    = true;
+            break;
+        default:
+            break;
+    }
+}
+
 static void handle_param_menu(char key, bool is_wind)
 {
     const int n     = is_wind ? N_WIND   : N_CLIMATE;
     const int base  = s_sub_page * 2;
     const int pages = (n + 1) / 2;
+    ui_state_t ret  = is_wind ? UI_MENU_WIND : UI_MENU_CLIMATE;
 
     switch (key) {
         case '1':
-            if (base < n) begin_edit(is_wind, base);
+            if (base < n) begin_edit(is_wind, base, ret);
             break;
         case '2':
-            if (base + 1 < n) begin_edit(is_wind, base + 1);
+            if (base + 1 < n) begin_edit(is_wind, base + 1, ret);
             break;
         case '#':
             /* Next page (wrap) */
@@ -854,8 +1158,10 @@ static void handle_pin(char key)
                 s_pending_settime = false;
                 enter_set_date();
             } else if (s_pending_param >= 0) {
-                /* Resume pending param edit */
-                begin_edit(s_pending_wind, s_pending_param);
+                /* Resume pending param edit; s_return_menu already holds the
+                 * browse state that was set when begin_edit() first redirected
+                 * to PIN_ENTRY, so passing it here keeps the return chain intact. */
+                begin_edit(s_pending_wind, s_pending_param, s_return_menu);
             } else {
                 s_state = s_return_menu;
                 s_dirty = true;
@@ -1062,12 +1368,35 @@ void task_ui_display(void *pvParameters)
         }
     }
 
+    /* ---- Load custom CGRAM characters under MX1 ---- */
+    {
+        struct { uint8_t slot; const uint8_t *glyph; const char *name; } cgram[] = {
+            { RESET_CGRAM_SLOT,   RESET_EMPTY_GLYPH,  "outline-sq" },
+            { BROWSE_CGRAM_BACK,  BROWSE_BACK_GLYPH,  "back-arrow" },
+        };
+        if (xSemaphoreTake(MX1, pdMS_TO_TICKS(500)) == pdTRUE) {
+            for (int i = 0; i < (int)(sizeof(cgram) / sizeof(cgram[0])); i++) {
+                lcd_status_t st = lcd_create_char(cgram[i].slot, cgram[i].glyph);
+                if (st != LCD_OK) {
+                    ESP_LOGW(TAG, "lcd_create_char slot %u (%s) failed (%d)",
+                             cgram[i].slot, cgram[i].name, (int)st);
+                }
+            }
+            xSemaphoreGive(MX1);
+        } else {
+            ESP_LOGW(TAG, "MX1 timeout during CGRAM init");
+        }
+    }
+
     /* Boot splash — row 0: product name, row 1: version + "Init." */
     {
         char r1[17];
         snprintf(r1, sizeof(r1), "v%-9.9sInit..", FIRMWARE_VERSION);
         show_msg("Greenhouse Ctrl ", r1, 2000);
     }
+
+    /* Configure IO0 (LOLIN S3 BOOT button) — active-low, external pull-up */
+    pinMode(RESET_PIN_IO0, INPUT_PULLUP);
 
     /* Start in STATUS state */
     s_state        = UI_STATUS;
@@ -1090,6 +1419,50 @@ void task_ui_display(void *pvParameters)
             }
         }
 
+        /* ── 2b. IO0 BOOT button — factory reset sequence ── */
+        {
+            bool io0_low = (digitalRead(RESET_PIN_IO0) == LOW);
+
+            if (io0_low) {
+                s_reset_ticks++;
+                render_reset_bar();
+                if (s_reset_ticks >= RESET_MAX_TICKS) {
+                    /* Held for the full 20 s — auto-execute full reset */
+                    s_reset_ticks = 0u;
+                    execute_reset_action(3u);
+                    s_dirty = true;
+                } else {
+                    /* Button still held — skip key dispatch, rotation and
+                     * dirty render so the bar is the only thing on screen. */
+                    continue;
+                }
+            } else if (s_reset_ticks > 0u) {
+                /* Button released — execute action for the stage reached */
+                uint8_t stage = (uint8_t)(s_reset_ticks / RESET_TICKS_PER_STAGE);
+                if (stage >= 4u) stage = 3u;
+                s_reset_ticks = 0u;
+                execute_reset_action(stage);
+                s_dirty = true;  /* Restore normal display after action */
+            }
+        }
+
+        /* ── 2c. Transient message countdown ── */
+        if (s_msg_ticks_remaining > 0) {
+            if (--s_msg_ticks_remaining == 0) {
+                /* Message just expired — discard events that accumulated in Q2
+                 * while the message was on screen, arm the repeat-suppressor,
+                 * and mark dirty so the FSM state is rendered on this tick. */
+                key_event_t discard;
+                while (xQueueReceive(Q2, &discard, 0) == pdTRUE) {}
+                s_suppress_repeats        = true;
+                s_post_msg_suppress_until = xTaskGetTickCount() +
+                                            pdMS_TO_TICKS(POST_MSG_SUPPRESS_MS);
+                s_dirty                   = true;
+            }
+            /* Discard the event already dequeued in step 1 (if any). */
+            got_key = false;
+        }
+
         /* ── 3. Session timeout ── */
         if (s_session != SESSION_NONE) {
             cfg_shadow_t cfg;
@@ -1110,21 +1483,34 @@ void task_ui_display(void *pvParameters)
 
         /* ── 4. Dispatch key event ── */
         if (got_key) {
-            if (!evt.repeated) {
-                s_idle_ticks = 0;  /* Reset session timeout on non-repeat */
+            /* Post-message all-key suppression window (real-time, not tick-based).
+             * Blocks every key event — including fresh repeated=false presses —
+             * for POST_MSG_SUPPRESS_MS after a transient message clears.
+             * Uses signed subtraction so the comparison is overflow-safe. */
+            if ((int32_t)(s_post_msg_suppress_until - xTaskGetTickCount()) > 0) {
+                got_key = false;
+            } else if (!evt.repeated) {
+                s_idle_ticks       = 0;     /* Reset session timeout on non-repeat */
+                s_suppress_repeats = false; /* Fresh press clears repeat suppression */
+            } else if (s_suppress_repeats) {
+                /* Swallow repeat events that slip through after the real-time
+                 * window but before the user's first deliberate new press. */
+                got_key = false;
             }
 
-            switch (s_state) {
-                case UI_STATUS:        handle_status(evt.key);             break;
-                case UI_MENU_ROOT:     handle_menu_root(evt.key);          break;
-                case UI_MENU_CLIMATE:  handle_param_menu(evt.key, false);  break;
-                case UI_MENU_WIND:     handle_param_menu(evt.key, true);   break;
-                case UI_MENU_ACCESS:   handle_menu_access(evt.key);        break;
-                case UI_MENU_SYSTEM:   handle_menu_system(evt.key);         break;
-                case UI_PIN_ENTRY:     handle_pin(evt.key);                break;
-                case UI_EDIT_VALUE:    handle_edit(evt.key);               break;
-                case UI_SET_DATE:      handle_set_date(evt.key);           break;
-                case UI_SET_TIME:      handle_set_time(evt.key);           break;
+            if (got_key) switch (s_state) {
+                case UI_STATUS:        handle_status(evt.key);                  break;
+                case UI_MENU_ROOT:     handle_menu_root(evt.key);               break;
+                case UI_MENU_CLIMATE:  handle_menu_climate(evt.key);            break;
+                case UI_BROWSE_DAY:    handle_browse_setpoints(evt.key, true);  break;
+                case UI_BROWSE_NIGHT:  handle_browse_setpoints(evt.key, false); break;
+                case UI_MENU_WIND:     handle_param_menu(evt.key, true);        break;
+                case UI_MENU_ACCESS:   handle_menu_access(evt.key);             break;
+                case UI_MENU_SYSTEM:   handle_menu_system(evt.key);             break;
+                case UI_PIN_ENTRY:     handle_pin(evt.key);                     break;
+                case UI_EDIT_VALUE:    handle_edit(evt.key);                    break;
+                case UI_SET_DATE:      handle_set_date(evt.key);                break;
+                case UI_SET_TIME:      handle_set_time(evt.key);                break;
             }
         }
 
@@ -1139,11 +1525,15 @@ void task_ui_display(void *pvParameters)
             s_status_ticks = 0;
         }
 
-        /* ── 6. Render if dirty ── */
-        if (s_dirty) {
+        /* ── 6. Render if dirty (only while no message is active) ── */
+        if (s_dirty && s_msg_ticks_remaining == 0) {
             render();
-            lcd_flush();
-            s_dirty = false;
+            bool flush_ok = lcd_flush();
+            if (flush_ok) {
+                s_dirty = false;
+            }
+            /* If lcd_flush() returned false (MX1 timeout), s_dirty stays true
+             * so the render+flush is retried on the next 100 ms tick. */
         }
     }
 }

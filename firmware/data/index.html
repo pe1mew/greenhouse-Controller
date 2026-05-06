@@ -8,8 +8,8 @@
 </head>
 <body>
 
-<!-- ── Login overlay ────────────────────────────────────────────── -->
-<div id="login-overlay">
+<!-- ── Login modal (hidden until Login button clicked) ──────────── -->
+<div id="login-modal" style="display:none" onclick="modalBackdropClick(event)">
   <div id="login-box">
     <h2>Greenhouse Controller</h2>
     <div class="role-btn-group">
@@ -29,7 +29,8 @@
 <header>
   <h1>Greenhouse Controller <span id="ws-badge" class="badge offline">Offline</span></h1>
   <span id="role-badge" class="badge" style="background:#444;display:none"></span>
-  <button onclick="doLogout()" style="margin-left:auto">Logout</button>
+  <button id="btn-logout" onclick="doLogout()" style="display:none">Logout</button>
+  <button id="btn-login"  onclick="showLoginModal()">Login</button>
 </header>
 
 <!-- ── Status ───────────────────────────────────────────────────── -->
@@ -60,7 +61,7 @@
     </div>
     <div class="card">
       <h3>Mode <span class="tip-icon" data-tip="Current operating state of the controller.">ⓘ</span></h3>
-      <p id="st-mode" data-tip="AUTO = climate control running normally. STANDBY = automatic control paused. WIND = wind safety override active, all windows closed. ALARM = motor emergency, all windows locked off.">—</p>
+      <p id="st-mode" data-tip="Automatic = climate control running normally. Window Cal. = closing all windows to establish known position (on boot or after alarm). Wind override = wind safety active, all windows closed. Motor alarm = emergency stop, all control suspended.">—</p>
       <p id="st-daytime" data-tip="Whether the current time is in the daytime or night-time period, based on calculated sunrise/sunset for the configured location.">—</p>
       <p><span data-tip="Today's calculated sunrise time (local). Determined from latitude, longitude, and the current date.">Sunrise</span>: <strong id="st-sunrise">—</strong></p>
       <p><span data-tip="Today's calculated sunset time (local). The switch from daytime to night-time setpoints occurs at this time.">Sunset</span>: <strong id="st-sunset">—</strong></p>
@@ -88,8 +89,23 @@
   </div>
 </section>
 
-<!-- ── Settings (tabs) ───────────────────────────────────────────── -->
+<!-- ── Sensor history ────────────────────────────────────────────── -->
 <section>
+  <h2>Sensor history
+    <button class="btn-sm" style="float:right;font-size:.8rem;padding:3px 10px" onclick="loadHistory()">Refresh</button>
+  </h2>
+  <div id="log-wrap">
+    <table id="log-tbl">
+      <thead>
+        <tr><th>Time</th><th>T (°C)</th><th>RH (%)</th><th>Wind (m/s)</th><th>Dir (°)</th></tr>
+      </thead>
+      <tbody id="log-body"></tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ── Settings (tabs) — hidden until logged in ──────────────────── -->
+<section id="section-settings" style="display:none">
   <h2>Settings</h2>
   <div class="tab-bar">
     <button class="tab-btn active" onclick="showTab('tab-climate')">Climate</button>
@@ -432,21 +448,6 @@
     </div>
   </div>
 
-</section>
-
-<!-- ── Sensor history ────────────────────────────────────────────── -->
-<section>
-  <h2>Sensor history
-    <button class="btn-sm" style="float:right;font-size:.8rem;padding:3px 10px" onclick="loadHistory()">Refresh</button>
-  </h2>
-  <div id="log-wrap">
-    <table id="log-tbl">
-      <thead>
-        <tr><th>Time</th><th>T (°C)</th><th>RH (%)</th><th>Wind (m/s)</th><th>Dir (°)</th></tr>
-      </thead>
-      <tbody id="log-body"></tbody>
-    </table>
-  </div>
 </section>
 
 <script src="app.js"></script>

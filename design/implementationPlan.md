@@ -723,7 +723,7 @@ Network tasks run on Core 0. They depend on Group 2 (Data Manager) but are indep
 
 After all tasks are individually validated, the following integration tests verify end-to-end behaviour. These tests align with the acceptance criteria in `softwareTestPlan.md`.
 
-**Status:** Integration test suite under development. See `firmware/firmwareImplementationPlan.md` Phase 11 for the test environment, file layout, and bugs uncovered during test infrastructure development.
+**Status:** Integration test suite under development. See `firmware/firmwareImplementationPlan.md` Phase 11 for the test environment, file layout, and bugs uncovered during test infrastructure development. Firmware v1.16.3 (current) adds AiP31068L LCD preamble fix (`lcd_display_on()`), Day/Night browse UI (`UI_BROWSE_DAY`/`UI_BROWSE_NIGHT`), "Window Cal." calibration mode on LCD and web GUI (`EG1_BIT_CALIBRATING`), and public-access web GUI (Status/History/SD card without login). See `firmware/firmwareImplementationResults.md` for full details.
 
 | Test ID | Scenario | Validation |
 |---------|----------|------------|

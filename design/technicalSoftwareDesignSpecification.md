@@ -154,6 +154,7 @@ The following items originate from system-level and functional requirements in t
 **Credential storage**
 - User credentials stored as salted SHA-256 hashes (`SHA-256(salt || pin_ascii)`, mbedTLS); plain-text storage not permitted (FR-AC06).
 - Configurable login lockout after a set number of failed attempts (FR-AC07).
+- Hardware credential recovery via GPIO0 BOOT button resets PINs (and optionally all NVS settings) to factory defaults without authentication; requires physical access to the device (FR-AC08, FR-AC09).
 
 **Event log**
 - Minimum 250 entries retained in persistent storage using a ring buffer (FR-LG06: worst-case 216 events/hour at 30 s poll + headroom); SD card preferred when present, internal flash as fallback (FR-LG07, FR-LG08).
@@ -172,6 +173,7 @@ The following items originate from system-level and functional requirements in t
 
 **Fault recovery**
 - Hardware watchdog timer automatically resets the MCU on a software hang; controlled restart sequence re-synchronises window states on recovery (TR-SW03).
+- Hardware credential recovery via GPIO0 (LOLIN S3 BOOT button): a sustained press triggers a staged PIN and NVS reset without requiring any prior authentication; physical enclosure access is the only prerequisite. Three escalating levels are triggered by hold duration (5–10 s / 10–15 s / 15–20 s). See §4.3 T8 for the full implementation (FR-AC08, FR-AC09, FR-UI24).
 
 **Testability**
 - Control logic modules decoupled from hardware drivers for host-side unit testing via PlatformIO test runner (TR-SW05).
@@ -380,6 +382,17 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 - Manages session state: PIN entry via keyboard, session timeout, PIN validation against T4.
 - Posts validated configuration changes and mode changes to T4.
 - Receives WiFi status updates from T10 via Q5; stores in `s_net` (`net_status_t`); uses `s_net.ntp_synced` for page-4 source label.
+- **IO0 hardware recovery sequence (FR-AC08, FR-AC09, FR-UI24):** GPIO0 (LOLIN S3 BOOT button, active-low, configured as `INPUT_PULLUP`) is polled once per 100 ms main-loop tick. While held, `render_reset_bar()` writes a growing bar to the LCD and the loop immediately issues `continue`, suppressing all normal renders (Q5 dirty-flag updates, status-page rotation, key dispatch) until the button is released.
+  - **Bar rendering:** row 0 = contextual stage label; row 1 = 16-cell bar where filled cells use HD44780 ROM A00 character `\xFF` (full block) and unfilled cells use CGRAM slot 1 (5×8 outline-square glyph `{0x1F,0x11,0x11,0x11,0x11,0x11,0x1F,0x00}`, loaded under MX1 after `lcd_init()` at T8 startup via `lcd_create_char()`). Slot 0 is avoided (C null terminator). `filled = (ticks × 16) / 200`.
+  - **Stage table** (each stage = 50 ticks = 5 s at 100 ms/tick):
+
+    | Ticks | Hold time | Row 0 label | Release action |
+    |-------|-----------|-------------|----------------|
+    | 0–49 | 0–5 s | *(blank)* | No action; normal display resumes. |
+    | 50–99 | 5–10 s | `Reset PIN?` | `nvs_cfg_erase_namespace(NVS_NS_ACCESS)` + `pin_auth_init()` → PINs reset to defaults (`1234` / `12345678`); active session closed; system continues. Confirmation: `PIN Reset!` shown 5 s. |
+    | 100–149 | 10–15 s | `Reset settings?` | All NVS namespaces erased (climate, wind, motor, access, wifi, mqtt, system) + `pin_auth_init()` + session close; system continues with factory defaults. Confirmation: `Settings Reset!` shown 5 s. |
+    | 150–199 | 15–20 s | `Restarting?` | Same full NVS erase + `pin_auth_init()` + `ESP.restart()`. Confirmation: `Restart!` shown 3 s before reboot. Auto-executes at 200 ticks without requiring release. |
+
 - **Synchronization:** acquires MX1 (I2C) to write LCD; acquires MX2 to read current measurements for display refresh; acquires MX3 to read ring buffers for history view; acquires MX4 to read configuration for settings screens; receives Q2 (key events from T7); receives Q5 (network status from T10, including `ntp_synced`); reads EG1 (alarm flags for display and alarm indication); posts to Q4 (config/mode updates to T4); posts to Q3 (log events: mode changes, setpoint changes, session events).
 
 ---

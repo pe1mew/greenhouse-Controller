@@ -134,6 +134,45 @@ lcd_status_t lcd_print_char(uint8_t row, uint8_t col, char c);
 lcd_status_t lcd_write_row(uint8_t row, const char *text);
 
 /**
+ * @brief Define a custom character in CGRAM.
+ *
+ * Writes an 8-byte pixel pattern to CGRAM slot @p slot (0–7), then returns
+ * the display to DDRAM address 0 (home) so subsequent lcd_* calls write to
+ * the visible display area.
+ *
+ * Custom characters are referenced in strings by their slot number (0x00–0x07).
+ * Avoid slot 0 inside C strings — 0x00 is the null terminator and
+ * lcd_write_row() would treat it as end-of-string.  Slots 1–7 are safe to
+ * embed and pass to lcd_write_row().
+ *
+ * Must be called after lcd_init() and while the caller holds MX1.
+ *
+ * @param slot     CGRAM slot 0–7.
+ * @param pattern  8-byte array; each byte encodes one pixel row (5 LSBs used).
+ * @return @ref lcd_status_t.
+ */
+lcd_status_t lcd_create_char(uint8_t slot, const uint8_t pattern[8]);
+
+/**
+ * @brief Re-assert "display on" to wake the AiP31068L after I2C bus inactivity.
+ *
+ * Sends CMD_DISP_ON (0x0C) — display on, cursor off, blink off.  The command
+ * is idempotent (no visible change when the display is already on) and has a
+ * hardware busy time of only ~37 µs, which is safely covered by the I2C
+ * transaction overhead (~70 µs).
+ *
+ * Use this as a preamble write before the first real lcd_write_row() call
+ * that follows a period of I2C bus inactivity.  The AiP31068L silently drops
+ * the first byte addressed to it after ~2.5 s of bus idle; sending this cheap,
+ * safe command first absorbs that loss without corrupting display state.
+ *
+ * Must be called while the caller holds MX1.
+ *
+ * @return @ref lcd_status_t.
+ */
+lcd_status_t lcd_display_on(void);
+
+/**
  * @brief Turn the backlight on.
  *
  * Sets the module-level backlight flag; the backlight bit is applied to all

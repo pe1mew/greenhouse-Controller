@@ -225,7 +225,7 @@ Verification: Inject T > T_max_day via Q6; confirm graduated OPEN commands on Q1
 ### Phase 7 — UI Layer (T7 + T8)  ✅ done
 **Goal:** Local keypad and LCD interface for commissioning and daily operation.
 
-Files: `keypad_scan.h/.cpp` — ✅ **done**; `ui_display.h/.cpp` — ✅ **done**; `auth/pin_auth.h/.cpp` — ✅ **done** (Gap C)
+Files: `keypad_scan.h/.cpp` — ✅ **done**; `ui_display.h/.cpp` — ✅ **done**; `auth/pin_auth.h/.cpp` — ✅ **done** (Gap C); `drivers/LCD1602_I2C/src/lcd1602.h/.cpp` — `lcd_create_char()` added ✅ (v1.16.1); `lcd_display_on()` added ✅ (v1.16.3)
 
 **T7:**
 - `keypad_scan()` every 20ms; if char returned ≠ `KP_NO_KEY`, post `key_event_t` to Q2 (non-blocking)
@@ -248,6 +248,19 @@ Files: `keypad_scan.h/.cpp` — ✅ **done**; `ui_display.h/.cpp` — ✅ **done
 - **LCD I2C address: 0x3E (AiP31068L bridge)** — not 0x27
 
 ~~Stubs acceptable: WiFi AP toggle screen~~ — **implemented in v1.10.1:** `handle_menu_system()` added; root menu updated to show all 4 items; AP toggle requires admin session; posts Q4 to T4.
+
+**v1.16.1 additions:**
+- `lcd_create_char(slot, pattern[8])` added to `lcd1602.h/.cpp`; used to load the outline-square CGRAM glyph into slot 1 at T8 startup (under MX1, after `lcd_init()`).
+- **IO0 factory-reset sequence**: GPIO0 (LOLIN S3 BOOT button, active-low) polled every 100 ms tick. While held, `render_reset_bar()` writes a growing bar (`\xFF` filled / `\x01` CGRAM slot 1 outline) to row 1 and a stage label to row 0; `continue` skips the rest of the main loop so no normal renders interrupt the bar. On release, `execute_reset_action(stage)` runs: stage 0 = no action; stage 1 (5–10 s) = PIN reset; stage 2 (10–15 s) = full NVS reset (no reboot); stage 3 (15–20 s or auto at 20 s) = full NVS reset + `ESP.restart()`.
+
+**v1.16.2 additions:**
+- **`UI_BROWSE_DAY` / `UI_BROWSE_NIGHT` FSM states**: farmer can browse and edit the 4 day setpoints (T max/min, RH max/min) and 4 night setpoints directly from the keypad. Climate menu converted from a flat 11-param paginated list to a Day/Night group selector (`"1=Day  2=Ngt  *"`). `render_browse_setpoints(bool is_day)` renders the current slot. `begin_edit()` signature extended with `ui_state_t return_to` parameter so PIN-gated edits return to the correct browse slot.
+
+**v1.16.3 additions:**
+- **`lcd_display_on()` preamble** (AiP31068L silent-drop fix): `lcd_flush()` preamble changed from `lcd_home()` (CMD_HOME, 1.52 ms busy → cursor shift) to `lcd_display_on()` (CMD_DISP_ON, 37 µs busy → no side effect). See `firmwareImplementationResults.md` v1.16.3 for full root-cause analysis.
+- **`show_group_summary()` removed**: `*` in browse state now navigates directly to `UI_MENU_CLIMATE`; no intermediate 2.5 s summary screen.
+- **Session label polish**: `"ADMN"` / `"FRMR"` replaced by `"Admin"` / `"Farmer"`; space added after `"Sess:"`.
+- **`EG1_BIT_CALIBRATING` (bit 6)**: new system-state flag set/cleared by T2 around `calib_close_all()`. Mode display shows `"Mode:Window Cal."` when bit is set.
 
 Drivers used: LIB-4 (lcd_*), LIB-5 (keypad_scan), LIB-2 (via LCD under MX1)
 
@@ -411,7 +424,7 @@ Verification: Subscribe on broker; verify publish; publish command; verify relay
 | TN1 | TaskNotify | — | T4 → T3 (new wind data) |
 | TN2 | TaskNotify | — | T4 → T6 (new sensor data) |
 | TN4 | TaskNotify | — | T10 → T4 (WiFi connected) |
-| EG1 | EventGroup | 6 bits | WIND_OVERRIDE, *(bit 1 reserved)*, SENSOR_FAULT_T, SENSOR_FAULT_W, OTA_IN_PROGRESS, MOTOR_ALARM |
+| EG1 | EventGroup | 7 bits | WIND_OVERRIDE (bit 0), *(bit 1 reserved)*, SENSOR_FAULT_T (bit 2), SENSOR_FAULT_W (bit 3), OTA_IN_PROGRESS (bit 4), MOTOR_ALARM (bit 5), CALIBRATING (bit 6) |
 | MX1 | Mutex | — | I2C bus (T4 RTC, T8 LCD) |
 | MX2 | Mutex | — | Current measurements |
 | MX3 | Mutex | — | Ring buffers |
@@ -445,8 +458,14 @@ Verification: Subscribe on broker; verify publish; publish command; verify relay
 | `firmware/src/event_logger/event_logger.h` | `log_post()` / `log_take_dropped_count()` API + full T9 Doxygen | ✅ Done (Gap H + Phase 5) |
 | `firmware/src/event_logger/event_logger.cpp` | Full T9 implementation: drain loop, NVS ring buffer, SD CSV append, rotation, drop-counter surfacing | ✅ Done (Phase 5) |
 | `firmware/src/keypad_scan/keypad_scan.h/.cpp` | T7: 20 ms scan, key-repeat, Q2 post | ✅ Done (Phase 7) |
-| `firmware/src/ui_display/ui_display.h/.cpp` | T8: LCD FSM, status pages, menu nav, PIN auth, Q4 config post, session timeout; WiFi page `#`→AP shortcut, T/RH format, boot splash alignment (v1.16.0) | ✅ Done (Phase 7 + v1.16.0) |
+| `drivers/LCD1602_I2C/src/lcd1602.h/.cpp` | HD44780 AiP31068L I2C driver; `lcd_create_char()` added for CGRAM custom glyphs (v1.16.1); `lcd_display_on()` added as AiP31068L silent-drop preamble (v1.16.3) | ✅ Done (LIB-4 + v1.16.1 + v1.16.3) |
+| `firmware/src/types/app_types.h` | Motor travel constants (Gap F) + `NUM_VENT_STEPS 3` (Gap G) + Phase 0 stubs; `EG1_BIT_CALIBRATING` (bit 6) added (v1.16.3) | ✅ Done |
+| `firmware/src/relay_controller/relay_controller.h/.cpp` | T2: window FSM, relay GPIO, GPIO42 ISR, `calib_close_all()` sets/clears `EG1_BIT_CALIBRATING` (v1.16.3) | ✅ Done (Phase 2 + v1.16.3) |
+| `firmware/src/ui_display/ui_display.h/.cpp` | T8: LCD FSM, status pages, menu nav, PIN auth, Q4 config post, session timeout; WiFi page `#`→AP shortcut, T/RH format, boot splash alignment (v1.16.0); IO0 factory-reset bar (v1.16.1); Day/Night browse FSM states `UI_BROWSE_DAY`/`UI_BROWSE_NIGHT`, group selector, `begin_edit()` return_to parameter (v1.16.2); `lcd_display_on()` preamble, group summary removed, session labels "Admin"/"Farmer", `"Mode:Window Cal."` for `EG1_BIT_CALIBRATING` (v1.16.3) | ✅ Done (Phase 7 + v1.16.0–v1.16.3) |
 | `firmware/src/sensor_poll/sensor_poll.cpp` | T5: Modbus poll, sliding averages, fault flags; timestamp via `time(NULL)` — not `dm_get_unix_time()` (v1.16.0) | ✅ Done (Phase 3 + v1.16.0) |
 | `firmware/src/network_manager/network_manager.h/.cpp` | T10: WiFi client FSM, AP management, NTP sync, TN4, Q5; `do_geo_sync()`, `s_tz_table[]`, `iana_to_posix()`, `float_to_deg_frac()`, `post_q4()` (v1.13.0) | ✅ Done (Phase 8 + v1.13.0) |
-| `firmware/src/web_server/web_server.cpp` | T11: time display corrected to use `localtime_r` + no UTC suffix (v1.13.0) | ✅ Done (Phase 9 + v1.13.0) |
+| `firmware/src/web_server/web_server.cpp` | T11: time display corrected to `localtime_r` (v1.13.0); `/api/status`, `/api/history`, `/api/sd/status` auth checks removed (public endpoints); `WINDOW_CAL` mode added for `EG1_BIT_CALIBRATING` (v1.16.3) | ✅ Done (Phase 9 + v1.13.0 + v1.16.3) |
+| `firmware/data/app.js` | Web GUI JS: `setRole()` rewritten for Login/Logout/Settings visibility; `showLoginModal()` / `hideLoginModal()` / `modalBackdropClick()`; history + SD status load on page load without auth; `WINDOW_CAL` mode name (v1.16.3) | ✅ Done (Phase 9 + v1.16.3) |
+| `firmware/data/index.html` | Web GUI HTML: login modal (not overlay), public Status + Sensor history, Settings hidden until login (v1.16.3) | ✅ Done (Phase 9 + v1.16.3) |
+| `firmware/data/style.css` | Web GUI CSS: `#login-overlay` renamed `#login-modal` (v1.16.3) | ✅ Done (Phase 9 + v1.16.3) |
 | `firmware/src/main.cpp` | RTOS primitives, task spawn, pin_auth_init(), extern handle definitions | ✅ Done (Phase 0 + Phase 7) |

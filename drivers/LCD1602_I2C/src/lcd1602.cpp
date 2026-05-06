@@ -178,6 +178,37 @@ lcd_status_t lcd_write_row(uint8_t row, const char *text)
     return LCD_OK;
 }
 
+lcd_status_t lcd_create_char(uint8_t slot, const uint8_t pattern[8])
+{
+    if (slot > 7u) return LCD_ERR_COMM;
+
+    /* Set CGRAM address: 0x40 | (slot << 3) selects the first of the 8 rows
+     * in the chosen slot.  After this command HD44780 auto-increments the
+     * CGRAM address on every data write. */
+    lcd_status_t r = aip_cmd((uint8_t)(0x40u | ((slot & 7u) << 3)));
+    if (r != LCD_OK) return r;
+
+    /* Write the 8 pixel rows (only the 5 LSBs of each byte are used). */
+    for (uint8_t i = 0; i < 8u; i++) {
+        r = aip_data(pattern[i]);
+        if (r != LCD_OK) return r;
+    }
+
+    /* Return to DDRAM address 0 so subsequent writes go to the visible display. */
+    return aip_cmd(CMD_HOME);
+}
+
+lcd_status_t lcd_display_on(void)
+{
+    /* CMD_DISP_ON (0x0Cu): display on, cursor off, blink off.
+     * Busy time: ~37 µs — safely covered by I2C transaction overhead (~70 µs).
+     * Idempotent: no visible side-effect when the display is already on.
+     * Use as a sacrificial preamble write before row data when the I2C bus
+     * has been idle for ~2.5 s — the AiP31068L silently drops the first
+     * transaction after prolonged inactivity; this absorbs that loss. */
+    return aip_cmd(CMD_DISP_ON);
+}
+
 lcd_status_t lcd_backlight_on(void)
 {
     /* Backlight is not software-controlled on this module (AiP31068L). */

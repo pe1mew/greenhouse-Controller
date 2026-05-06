@@ -381,6 +381,7 @@ static void ch_update(uint8_t ch, uint32_t now_ms)
 static void calib_close_all(void)
 {
     ESP_LOGI(TAG, "CLOSE_ALL calibration start");
+    xEventGroupSetBits(EG1, EG1_BIT_CALIBRATING);
 
     uint32_t start_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
 
@@ -424,6 +425,7 @@ static void calib_close_all(void)
         }
     }
 
+    xEventGroupClearBits(EG1, EG1_BIT_CALIBRATING);
     ESP_LOGI(TAG, "CLOSE_ALL calibration complete — all channels CLOSED");
 }
 

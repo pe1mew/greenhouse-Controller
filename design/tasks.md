@@ -240,7 +240,9 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 - Applies the same three-state session model (Normal / Farmer / Admin) and PIN codes as T8
 - Reads configuration and current measurement data from T4; posts validated setting changes to T4
 - Available on both WiFi AP and WiFi client interfaces simultaneously
-- Authentication required before any page is served or any setting is changed
+- **Public endpoints (no session required):** `GET /api/status`, `GET /api/history`, `GET /api/sd/status`, `WS /ws` — status monitoring, sensor history, and SD card state visible without login
+- **Auth-required endpoints:** `GET /api/config`, `POST /api/config`, `POST /api/wifi`, `POST /api/pin`, `POST /api/sd/mount`, `POST /api/sd/unmount`, `GET /api/ota/status`, `POST /api/ota/firmware`, `POST /api/ota/assets`
+- Web GUI: Status and Sensor history sections always visible; Settings section hidden until login. Login modal replaces full-page overlay; Login button in header; session expiry returns to public view without re-showing login modal.
 - **Synchronization:** acquires MX5 (LittleFS) to serve HTML files; reads EG1.OTA_IN_PROGRESS before serving files (defers requests while OTA is active); acquires MX2 to read current measurements; acquires MX4 to read configuration; posts to Q4 (validated config/state updates to T4); posts to Q3 (log events)
 
 ---
@@ -400,6 +402,7 @@ A single FreeRTOS event group (`xEventGroupCreate`) holds all system-wide boolea
 | 3   | SENSOR_FAULT_W     | T5     | T5         | T3, T8, T9                       | Wind sensor fault active; T3 treats wind as worst-case  |
 | 4   | OTA_IN_PROGRESS    | T13    | T13        | T11                              | OTA update active; T11 defers LittleFS file requests    |
 | 5   | MOTOR_ALARM        | T2     | T2         | T3, T6, T8, T11, T12 (display only) | RRK-3 motor emergency stop active; all window control suspended; highest priority override |
+| 6   | CALIBRATING        | T2     | T2         | T8, T11 (display only)               | `calib_close_all()` in progress (boot or post-alarm recovery); LCD shows `Mode:Window Cal.`; web GUI shows `WINDOW_CAL`. Priority below MOTOR_ALARM and WIND_OVERRIDE in mode derivation. |
 
 > **T3 and SENSOR_FAULT_W:** when the wind sensor fault flag is set, T3 shall treat the wind condition as exceeding all thresholds (safe-fail: close all windows) until the fault clears.
 

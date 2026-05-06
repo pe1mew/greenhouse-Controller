@@ -288,3 +288,4 @@ typedef struct {
 #define EG1_BIT_SENSOR_FAULT_W   (1 << 3)  /**< Set/cleared by T5 — wind sensor fault */
 #define EG1_BIT_OTA_IN_PROGRESS  (1 << 4)  /**< Set/cleared by T13 — OTA update in progress */
 #define EG1_BIT_MOTOR_ALARM      (1 << 5)  /**< Set/cleared by T2 — RRK-3 emergency stop active */
+#define EG1_BIT_CALIBRATING      (1 << 6)  /**< Set/cleared by T2 — CLOSE_ALL calibration in progress */

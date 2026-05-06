@@ -2748,3 +2748,147 @@ CRC-32 polynomial stored as decimal `[long]3988292384` (not `0xEDB88320`) to avo
 | 3-fail rollback: unchanged from v1.15.0 | ✅ Inherited |
 | Unused code removal: 0 errors, 0 warnings after deleting 5 dm_ accessors, nvs_cfg_get_blob_or_default, and making 4 vent_step functions static | ✅ Verified 2026-05-06 |
 | Device boots and serves web UI correctly after USB reflash (app0 + lfs0) | ✅ Verified 2026-05-06 |
+
+---
+
+## Post-Phase Releases — v1.16.x Series
+
+The following releases were made after the Phase 10 OTA baseline. They refine the LCD user interface, introduce a Day/Night setpoint browse navigation, harden the I2C LCD bus against the AiP31068L silent-drop bug, add a calibration mode indicator, and restructure the web GUI for unauthenticated status monitoring.
+
+---
+
+### v1.16.0 — 2026-05-06
+
+**Theme:** LCD display improvements, web GUI label fixes, sensor timestamp bug fix, integration test suite started.
+
+#### Files changed
+
+| File | Change |
+|------|--------|
+| `firmware/src/ui_display/ui_display.cpp` | T/RH status page (page 0) reformatted: temperature and humidity on separate rows with aligned `°C` / `%` units; dash style `---` for invalid sensors. Boot splash row 1 expanded to 9-char version field. WiFi page `#` shortcut: admin → `UI_MENU_SYSTEM`; no session → `UI_PIN_ENTRY`; hint `#=AP` shown on row 1 in non-connected states. |
+| `firmware/data/index.html` | Poll-interval label changed from `"Poll interval (s)"` to `"Sensor poll interval (s)"`; tooltip extended noting the value takes effect after reboot. |
+| `firmware/src/sensor_poll/sensor_poll.cpp` | Sensor reading timestamp changed from `dm_get_unix_time()` (T4 60 s cache) to `(uint32_t)time(NULL)` — fixes duplicate rows in the history table when `poll_interval_s` < 60 s. |
+| `firmware/platformio.ini` | `FIRMWARE_VERSION` bumped `1.15.1` → `1.16.0`. |
+
+#### Bug fixed — duplicate sensor log rows (critical)
+
+`dm_get_unix_time()` returns T4's cached unix timestamp, which is refreshed only once per ~60 s RTC read cycle. With `poll_interval_s = 30`, two consecutive T5 polls within the same 60 s window produced readings with identical timestamps, appearing as duplicate rows in the sensor history table. Fixed by replacing with `time(NULL)` which returns the live POSIX system clock.
+
+#### Integration test suite — started
+
+`test/lib/serial_monitor.py`, `test/lib/device_api.py`, `test/lib/emulator_api.py`, `test/conftest.py`, and per-TC test files created. Test plan in `test/firmwareIntegrationTestPlan.md`. Infrastructure bug found and fixed: `wait_for_config` helper incorrectly assumed flat NVS key names for motor travel; corrected to use `travel_s` array indexing on GET.
+
+#### Verification
+
+| Check | Result |
+|-------|--------|
+| T/RH page: temperature and RH on separate rows, `°C` and `%` aligned | ✅ Verified on hardware |
+| Boot splash: version field 9 chars wide, left-justified | ✅ Verified on hardware |
+| Sensor history: no duplicate timestamp rows at 30 s poll interval | ✅ Verified on hardware |
+
+---
+
+### v1.16.1 — 2026-05-06
+
+**Theme:** IO0 BOOT button factory-reset sequence with animated LCD progress bar; `lcd_create_char()` CGRAM API.
+
+#### Files changed
+
+| File | Change |
+|------|--------|
+| `drivers/LCD1602_I2C/src/lcd1602.h/.cpp` | **`lcd_create_char(slot, pattern[8])`** added: programs one HD44780 CGRAM custom-character slot. Sets CGRAM address (`0x40 | slot<<3`), writes 8 pixel rows (5 LSBs used per row), issues CMD_HOME to return to DDRAM. Slot 0 avoided (C null terminator). |
+| `firmware/src/ui_display/ui_display.cpp` | **IO0 factory-reset sequence** (GPIO0, active-low, LOLIN S3 BOOT button): polled every 100 ms tick; while held `render_reset_bar()` writes a growing bar (`\xFF` filled / `\x01` CGRAM outline-square) to row 1 and a stage label to row 0; `continue` skips all normal renders. Four stages of 5 s each: stage 0 = no action; stage 1 (5–10 s) = PIN reset (NVS `access` namespace erased); stage 2 (10–15 s) = full NVS reset, no reboot; stage 3 (15–20 s or auto) = full NVS reset + `ESP.restart()`. CGRAM slot 1 loaded at T8 startup under MX1 after `lcd_init()`. |
+| `firmware/platformio.ini` | `FIRMWARE_VERSION` bumped `1.16.0` → `1.16.1`. |
+
+#### Issue — LCD renders interrupted bar display
+
+**Symptom:** Brief status-page flashes appeared behind the factory-reset bar while the button was held.
+
+**Root cause:** The main loop continued executing Q5 renders, status-page rotation, and key dispatch every 100 ms tick even while `render_reset_bar()` was called.
+
+**Fix:** `continue` statement after `render_reset_bar()` whenever the button is held and the 20 s limit not yet reached — skips steps 3–6 entirely until release.
+
+#### Verification
+
+| Check | Result |
+|-------|--------|
+| Stage 0 (< 5 s hold) — release: no action, display returns to status screen | ✅ Verified on hardware |
+| Stage 1 (5–10 s hold) — release: farmer + admin PINs reset to defaults; system continues | ✅ Verified on hardware |
+| Stage 2 (10–15 s hold) — release: full NVS erase, no reboot; all settings at factory defaults | ✅ Verified on hardware |
+| Stage 3 / auto (≥ 15 s) — release or auto at 20 s: full NVS erase + reboot | ✅ Verified on hardware |
+| Bar fills correctly; stage label changes at each 5 s boundary | ✅ Verified on hardware |
+| No status-page flicker behind the bar during hold | ✅ Verified on hardware |
+
+---
+
+### v1.16.2 — 2026-05-06
+
+**Theme:** Day/Night setpoint browse interface on LCD; farmer can browse and edit the 4 day setpoints and 4 night setpoints directly from the keypad.
+
+#### Files changed
+
+| File | Change |
+|------|--------|
+| `firmware/src/ui_display/ui_display.cpp` | `UI_BROWSE_DAY` / `UI_BROWSE_NIGHT` FSM states. `render_menu_climate()` replaced flat 11-param paginated list with two-line group selector (`1=Day  2=Ngt  *`). `render_browse_setpoints(bool is_day)` renders current browse slot: parameter `edit_lbl` on row 0; value, position counter (1/4…4/4), and key hints on row 1. `DAY_PARAM_IDX[4]` / `NIGHT_PARAM_IDX[4]` map browse position (0–3) to `CLIMATE_PARAMS` indices `{0,2,4,6}` / `{1,3,5,7}`. `handle_menu_climate()` and `handle_browse_setpoints()` key handlers for the two new states. `show_group_summary(bool is_day)` shows T min..max °C and RH min..max % for 2.5 s when `*` is pressed. |
+| `firmware/src/ui_display/ui_display.cpp` | `begin_edit()` signature extended with third parameter `ui_state_t return_to` (replaces hardcoded `is_wind ? UI_MENU_WIND : UI_MENU_CLIMATE`); all callers updated. `handle_pin()` passes `s_return_menu` (set at `begin_edit()` entry) so editing returns to the correct browse state after PIN. |
+| `firmware/platformio.ini` | `FIRMWARE_VERSION` bumped `1.16.1` → `1.16.2`. |
+
+#### Verification
+
+| Check | Result |
+|-------|--------|
+| Climate menu shows group selector `"1=Day  2=Ngt  *"` | ✅ Verified on hardware |
+| Navigating `1` enters day browse at position 1/4 (T max day) | ✅ Verified on hardware |
+| `A`/`B` cycles through all 4 day setpoints, wrapping | ✅ Verified on hardware |
+| `#` enters edit mode for current setpoint; returns to browse slot after save | ✅ Verified on hardware |
+| `*` from browse exits directly to group selector | ✅ Verified on hardware (after group summary removed in v1.16.3) |
+| PIN-gated edit returns to correct browse slot after successful authentication | ✅ Verified on hardware |
+
+---
+
+### v1.16.3 — 2026-05-06
+
+**Theme:** AiP31068L I2C bus reliability fix; LCD display polish (session labels, Window Cal. mode); web GUI public-access redesign.
+
+#### Files changed
+
+| File | Change |
+|------|--------|
+| `drivers/LCD1602_I2C/src/lcd1602.h/.cpp` | **`lcd_display_on()`** added: sends CMD_DISP_ON (0x0C, ~37 µs busy) as a sacrificial preamble before every `lcd_flush()`. Absorbs the AiP31068L silent first-transaction drop after ~2.5 s I2C bus inactivity. No cursor side-effect (unlike CMD_HOME which had 1.52 ms busy and caused a 4-character row-0 shift). |
+| `firmware/src/types/app_types.h` | **`EG1_BIT_CALIBRATING` (bit 6)** added: set/cleared by T2 around `calib_close_all()`. Allows LCD and web GUI to show calibration mode without polling relay state. |
+| `firmware/src/relay_controller/relay_controller.cpp` | `calib_close_all()` sets `EG1_BIT_CALIBRATING` at entry, clears on completion. Called at boot and after 60 s motor-alarm guard. |
+| `firmware/src/ui_display/ui_display.cpp` | `lcd_flush()` preamble: `lcd_home()` replaced with `lcd_display_on()`. `show_group_summary()` removed; `*` in browse state now navigates directly to `UI_MENU_CLIMATE`. Session label: `"SESS:%-4s %s"` / `"ADMN"`/`"FRMR"` replaced by `"Sess: %-6s%s"` / `"Admin"`/`"Farmer"`/`"NONE"`. Mode display: added `EG1_BIT_CALIBRATING` → `"Mode:Window Cal."` between WIND_OVERRIDE and AUTO in the priority chain. |
+| `firmware/src/web_server/web_server.cpp` | `/api/status` auth check removed (public). `/api/history` auth check removed (public). `/api/sd/status` auth check removed (public). Mode derivation extended: `EG1_BIT_CALIBRATING` → `"WINDOW_CAL"`. |
+| `firmware/data/app.js` | `setRole()` rewritten: Login/Logout buttons, `#section-settings` show/hide based on auth state. `showLoginModal()` / `hideLoginModal()` / `modalBackdropClick()` added. `showLogin()` (session expiry) now calls `setRole(null)` only — no overlay. `doLogin()` calls `hideLoginModal()` on success. `loadHistory()` and `loadSdStatus()` 401 guards removed; periodic refresh guards removed. `wsConnect()`, `loadHistory()`, `loadSdStatus()` called on page load regardless of auth. `WINDOW_CAL: 'Window Cal.'` added to `modeNames`. |
+| `firmware/data/style.css` | CSS rule `#login-overlay` renamed `#login-modal`. |
+| `firmware/data/index.html` | Full restructure: full-page blocking overlay replaced by `<div id="login-modal" style="display:none" onclick="modalBackdropClick(event)">`. Header: `#btn-login` visible by default; `#btn-logout` and `#role-badge` hidden. Status and Sensor history sections always visible. Settings section: `<section id="section-settings" style="display:none">` — revealed after login only. |
+| `firmware/platformio.ini` | `FIRMWARE_VERSION` bumped `1.16.2` → `1.16.3`. |
+
+#### Root-cause analysis — AiP31068L silent first-transaction drop
+
+The AiP31068L I2C-to-HD44780 bridge silently drops the first I2C byte it receives after ~2.5 s of bus inactivity. When `lcd_flush()` previously called `lcd_home()` as its preamble, CMD_HOME had a 1.52 ms busy time. The following I2C transaction (sent ~70 µs later) arrived while the HD44780 was still executing CMD_HOME, causing the cursor to end up at position 4 of row 0 — producing a 4-character left shift on the first row after any 2.5 s idle gap (e.g. after a timed message screen).
+
+CMD_DISP_ON (0x0C) has only ~37 µs busy time, which is safely covered by the ~70 µs I2C transaction overhead. No artificial delay is required and no cursor state is modified.
+
+#### Issue — phantom `*` key navigation after timed message
+
+**Symptom:** After the 2.5 s group summary screen expired, a `*` key press registered immediately, navigating away from the group selector before the user could interact.
+
+**Root cause:** `s_suppress_repeats` blocked only `repeated=true` key events; `repeated=false` events (first press) passed through. The key that had been physically held during the summary screen was still down when the FSM transitioned, producing a fresh `repeated=false` event on the next scan.
+
+**Resolution:** The root cause was eliminated by removing `show_group_summary()` entirely. `*` now navigates directly to `UI_MENU_CLIMATE`, so no suppression mechanism is needed. (Previously a `s_post_msg_suppress_until` real-time 600 ms wall-clock suppression was implemented; this was also removed along with the summary function.)
+
+#### Verification
+
+| Check | Result |
+|-------|--------|
+| LCD: no 4-character row-0 shift after 2.5 s of no display updates | ✅ Verified on hardware |
+| LCD: session line shows `"Sess: Admin  "` / `"Sess: Farmer "` / `"Sess: NONE   "` with space after colon | ✅ Verified on hardware |
+| LCD: during boot calibration `"Mode:Window Cal."` shown | ✅ Verified on hardware |
+| Web GUI: Status section visible without login immediately on page load | ✅ Verified on hardware |
+| Web GUI: Sensor history loads on page load without login | ✅ Verified on hardware |
+| Web GUI: SD card status populates on page load without login | ✅ Verified on hardware |
+| Web GUI: Settings section hidden until login; appears after successful PIN entry | ✅ Verified on hardware |
+| Web GUI: Login modal opened by header button; dismissed by backdrop click | ✅ Verified on hardware |
+| Web GUI: session expiry drops to public view without re-showing login modal | ✅ Verified on hardware |
+| Build: flash 55.2% (1157 kB), RAM 19.4% (63 kB) — no regression | ✅ Verified |

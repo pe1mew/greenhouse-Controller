@@ -8,17 +8,22 @@ function setRole(role) {
   document.body.classList.toggle('is-farmer', role === 'farmer' || role === 'admin');
   document.body.classList.toggle('is-admin',  role === 'admin');
 
-  const rb = document.getElementById('role-badge');
+  const rb      = document.getElementById('role-badge');
+  const btnIn   = document.getElementById('btn-login');
+  const btnOut  = document.getElementById('btn-logout');
+  const settings = document.getElementById('section-settings');
+
   if (rb) {
-    rb.textContent = role ? role.toUpperCase() : '';
+    rb.textContent = role ? role.charAt(0).toUpperCase() + role.slice(1) : '';
     rb.style.display = role ? 'inline-block' : 'none';
     rb.style.background = role === 'admin' ? '#0f3460' : '#1a5276';
   }
+  if (btnIn)    btnIn.style.display    = role ? 'none'         : 'inline-block';
+  if (btnOut)   btnOut.style.display   = role ? 'inline-block' : 'none';
+  if (settings) settings.style.display = role ? 'block'        : 'none';
+
   if (role) {
-    const ov = document.getElementById('login-overlay');
-    if (ov) ov.style.display = 'none';
     loadConfig();
-    loadHistory();
     loadSdStatus();
     if (role === 'admin') loadOtaStatus();
   }
@@ -81,7 +86,8 @@ function handleStatus(s) {
   if (s.mode) {
     const modeNames = {
       AUTOMATIC: 'Automatic', STANDBY: 'Standby',
-      WIND_OVERRIDE: 'Wind override', MOTOR_ALARM: 'Motor alarm'
+      WIND_OVERRIDE: 'Wind override', MOTOR_ALARM: 'Motor alarm',
+      WINDOW_CAL: 'Window Cal.'
     };
     setText('st-mode', modeNames[s.mode] || s.mode);
   }
@@ -139,6 +145,7 @@ function doLogin() {
   post('/api/login', { role, pin })
     .then(r => {
       if (r && r.ok) {
+        hideLoginModal();
         setRole(r.role);
         document.getElementById('login-err').textContent = '';
         document.getElementById('login-pin').value = '';
@@ -151,20 +158,40 @@ function doLogin() {
 }
 
 document.addEventListener('keydown', function(e) {
-  if (e.key === 'Enter' && document.getElementById('login-overlay').style.display !== 'none') {
+  const modal = document.getElementById('login-modal');
+  if (e.key === 'Enter' && modal && modal.style.display !== 'none') {
     doLogin();
   }
 });
 
+function showLoginModal() {
+  const modal = document.getElementById('login-modal');
+  if (modal) modal.style.display = 'flex';
+  const pinEl = document.getElementById('login-pin');
+  if (pinEl) pinEl.focus();
+}
+
+function hideLoginModal() {
+  const modal = document.getElementById('login-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+function modalBackdropClick(event) {
+  // Close modal only when the semi-transparent backdrop is clicked,
+  // not when clicking inside the login-box itself.
+  if (event.target === document.getElementById('login-modal')) {
+    hideLoginModal();
+  }
+}
+
 function showLogin() {
-  if (g_role === null) return;   // already on login screen
+  // Session expired or logged out — drop back to unauthenticated state.
   setRole(null);
   wsInitialized = false;
-  document.getElementById('login-overlay').style.display = 'flex';
 }
 
 function doLogout() {
-  post('/api/logout', {}).then(() => showLogin());
+  post('/api/logout', {}).then(() => setRole(null));
 }
 
 // Periodic session check — detects server-side timeout while the user is idle.
@@ -175,9 +202,8 @@ setInterval(function () {
     .catch(function () {});
 }, 60000);
 
-// Periodic history refresh — keeps the sensor history table current.
+// Periodic history refresh — public endpoint, no auth required.
 setInterval(function () {
-  if (g_role === null) return;
   loadHistory();
 }, 120000);
 
@@ -312,7 +338,6 @@ function postPinChange(role) {
 function loadHistory() {
   fetch('/api/history?n=60')
     .then(function (r) {
-      if (r.status === 401) { showLogin(); return null; }
       return r.ok ? r.json() : null;
     })
     .then(data => {
@@ -338,7 +363,6 @@ function loadHistory() {
 function loadSdStatus() {
   fetch('/api/sd/status')
     .then(function (r) {
-      if (r.status === 401) { showLogin(); return null; }
       return r.ok ? r.json() : null;
     })
     .then(function (sd) {
@@ -374,9 +398,8 @@ function postSdUnmount() {
     });
 }
 
-// Periodic SD status refresh (any logged-in role, every 30 s).
+// Periodic SD status refresh — public endpoint, no auth required.
 setInterval(function () {
-  if (g_role === null) return;
   loadSdStatus();
 }, 30000);
 
@@ -584,14 +607,14 @@ function linkSlider(numId) {
   ].forEach(linkSlider);
 })();
 
-// ── Check session on load ────────────────────────────────────────────────────
+// ── Initialise on load ───────────────────────────────────────────────────────
+// Connect WebSocket and load sensor history immediately — both are public.
+// Then check for an existing session so we can restore Settings if the user
+// had already logged in before reloading the page.
+wsConnect();
+loadHistory();
+loadSdStatus();
 fetch('/api/whoami')
   .then(r => r.ok ? r.json() : null)
-  .then(r => {
-    if (r && r.role) {
-      setRole(r.role);
-    }
-    // Connect WS regardless — status is read-only and always visible
-    wsConnect();
-  })
-  .catch(() => wsConnect());
+  .then(r => { if (r && r.role) setRole(r.role); })
+  .catch(function () {});
