@@ -364,6 +364,10 @@ static void ch_update(uint8_t ch, uint32_t now_ms)
  * Boot / re-calibration (synchronous CLOSE_ALL)
  * ============================================================ */
 
+/* Forward declaration — handle_alarm_onset is defined after calib_close_all
+ * but is called from inside it to abort calibration on alarm onset. */
+static void handle_alarm_onset(void);
+
 /**
  * @brief Synchronous CLOSE_ALL calibration — blocks until all channels CLOSED.
  *
@@ -380,6 +384,18 @@ static void ch_update(uint8_t ch, uint32_t now_ms)
  */
 static void calib_close_all(void)
 {
+    /* Entry guard: do not energise relays if the alarm pin is already
+     * asserted.  The boot-time check in task_relay_controller catches the
+     * common case; this guard closes the narrow race between that check
+     * and the first relay_ch_close() call. */
+    if (gpio_read(PIN_OPTO_INPUT) == GPIO_LOW) {
+        s_alarm_edge = false;
+        ESP_LOGW(TAG, "[T2] MOTOR_ALARM at calib_close_all entry — "
+                      "calibration skipped; alarm takes priority");
+        handle_alarm_onset();
+        return;
+    }
+
     ESP_LOGI(TAG, "CLOSE_ALL calibration start");
     xEventGroupSetBits(EG1, EG1_BIT_CALIBRATING);
 
@@ -404,10 +420,25 @@ static void calib_close_all(void)
     }
 
     /* Poll every CALIB_CHUNK_MS; de-energise each channel as its timer
-     * expires, exit when the last channel is done. */
+     * expires, exit when the last channel is done.
+     *
+     * Motor alarm check on every chunk: if the alarm asserts while
+     * CLOSE relays are energised, abort immediately — relay_all_off()
+     * inside handle_alarm_onset() de-energises any still-active channels. */
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(CALIB_CHUNK_MS));
         uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+
+        if (gpio_read(PIN_OPTO_INPUT) == GPIO_LOW) {
+            /* Clear CALIBRATING before onset so status consumers see only
+             * MOTOR_ALARM, not CALIBRATING|MOTOR_ALARM simultaneously. */
+            xEventGroupClearBits(EG1, EG1_BIT_CALIBRATING);
+            s_alarm_edge = false;
+            ESP_LOGW(TAG, "[T2] MOTOR_ALARM during CLOSE_ALL calibration — "
+                          "calibration aborted; de-energising all relays");
+            handle_alarm_onset();
+            return;
+        }
 
         for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
             if (!done[ch] && (int32_t)(now_ms - deadline_ms[ch]) >= 0) {
@@ -469,31 +500,35 @@ static void handle_alarm_clearance(void)
      * T2 is blocked here; Q1 commands accumulate and are processed
      * (from a fully-CLOSED position) once re-calibration completes.
      *
-     * NOTE — alarm jitter: a single pin re-check at guard expiry detects
-     * only a re-assertion that is still present at that moment.  If the
-     * contact bounces (clears → re-asserts → clears again within the 60 s
-     * window) the final re-check sees the pin HIGH and proceeds to
-     * calibrate — which may be unsafe if the motor has not fully stopped.
-     * See open issue in firmwareImplementationPlan.md. */
+     * The pin is re-checked on every ALARM_GUARD_CHUNK_MS (5 s) interval
+     * so that a re-assertion mid-guard is detected within one chunk, not
+     * after the full 60 s.  handle_alarm_onset() is called directly (not
+     * delegated to the main loop via s_alarm_edge) to give the same
+     * latency as a fresh-boot onset. */
     ESP_LOGI(TAG, "MOTOR_ALARM cleared — 60 s guard before re-calibration "
-                  "(motor may still be coasting; see jitter open issue)");
+                  "(motor may still be coasting)");
 
     for (uint32_t elapsed = 0u; elapsed < ALARM_GUARD_MS;
          elapsed += ALARM_GUARD_CHUNK_MS) {
         vTaskDelay(pdMS_TO_TICKS(ALARM_GUARD_CHUNK_MS));
+        const uint32_t elapsed_s = (elapsed + ALARM_GUARD_CHUNK_MS) / 1000u;
         ESP_LOGI(TAG, "  alarm guard: %lu s / %lu s",
-                 (unsigned long)((elapsed + ALARM_GUARD_CHUNK_MS) / 1000u),
+                 (unsigned long)elapsed_s,
                  (unsigned long)(ALARM_GUARD_MS / 1000u));
-    }
 
-    /* Re-check pin at guard expiry.  If alarm has re-asserted, abort
-     * re-calibration and return.  The ISR will have set s_alarm_edge
-     * during the guard; the main loop picks it up on the next iteration
-     * and calls handle_alarm_onset() to restore the alarm state. */
-    if (gpio_read(PIN_OPTO_INPUT) == GPIO_LOW) {
-        ESP_LOGW(TAG, "MOTOR_ALARM re-asserted during guard — "
-                      "re-calibration aborted; main loop will re-enter alarm");
-        return;   /* EG1_BIT_MOTOR_ALARM cleared above; onset restores it */
+        /* Re-check pin on every chunk boundary so a re-assertion during
+         * the guard is acted on within ALARM_GUARD_CHUNK_MS (5 s) rather
+         * than after the full 60 s. */
+        if (gpio_read(PIN_OPTO_INPUT) == GPIO_LOW) {
+            /* Consume the ISR edge flag so the main loop does not issue
+             * a duplicate onset when it resumes after we return. */
+            s_alarm_edge = false;
+            ESP_LOGW(TAG, "MOTOR_ALARM re-asserted at guard +%lu s — "
+                          "guard aborted; asserting alarm immediately",
+                     (unsigned long)elapsed_s);
+            handle_alarm_onset();
+            return;
+        }
     }
 
     ESP_LOGI(TAG, "Guard complete — starting CLOSE_ALL re-calibration (FR-MA07)");
@@ -641,8 +676,23 @@ void task_relay_controller(void *pvParameters)
      *    Establishes a known CLOSED position on all channels before the
      *    main control loop starts.  All relays are de-energised by
      *    setup() before T2 starts, so no gap delay is required here.
+     *
+     *    Boot-time alarm check: attachInterrupt uses CHANGE mode, so a
+     *    pin that is already LOW at boot never fires the ISR.  Read the
+     *    initial state here and skip calibration if the alarm is active —
+     *    it is not safe to energise CLOSE relays while the RRK-3 alarm
+     *    relay is latched.
      * ------------------------------------------------------------------ */
-    calib_close_all();
+    if (gpio_read(PIN_OPTO_INPUT) == GPIO_LOW) {
+        ESP_LOGW(TAG, "GPIO42 alarm pin already asserted at boot — "
+                      "skipping CLOSE_ALL calibration (clear alarm to resume)");
+        handle_alarm_onset();
+        /* Do not call calib_close_all: relays are already de-energised by
+         * setup() and by handle_alarm_onset().  Normal operation resumes
+         * from the main loop once the operator clears the alarm. */
+    } else {
+        calib_close_all();
+    }
 
     /* ------------------------------------------------------------------
      * 4. Main control loop

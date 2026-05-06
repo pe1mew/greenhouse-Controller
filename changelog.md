@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.16.5] — 2026-05-06
+
+*Motor alarm aborts window calibration immediately; web GUI Settings moved above Sensor history; tooltips added to Sensor history heading and Refresh button.*
+
+### Fixed
+- `firmware/src/relay_controller/relay_controller.cpp` — **`calib_close_all()` alarm abort**: motor alarm was silently ignored for the full calibration duration (up to the full travel time of M3 ≈ 176 s). Added two checks: (1) an **entry guard** before any relay is energised — if the alarm pin is already LOW, calibration is skipped and `handle_alarm_onset()` is called immediately; (2) a **per-chunk pin check** inside the poll loop (every `CALIB_CHUNK_MS` = 400 ms) — if the pin goes LOW mid-calibration, `EG1_BIT_CALIBRATING` is cleared, `handle_alarm_onset()` is called (de-energises all relays, sets `EG1_BIT_MOTOR_ALARM`), and calibration returns. Maximum alarm response latency during calibration is now **400 ms**.
+- `firmware/src/relay_controller/relay_controller.cpp` — **forward declaration** of `handle_alarm_onset` added before `calib_close_all` to resolve the out-of-order definition required by the above fix.
+
+### Changed
+- `firmware/data/index.html` — **Settings section reordered**: `<section id="section-settings">` moved to appear before the Sensor history section. Settings are now visible at the top of the page when logged in, without scrolling past the history table.
+- `firmware/data/index.html` — **Sensor history tooltips**: `data-tip` added to the section heading (`"Logged sensor readings — one row per poll cycle…"`) and to the Refresh button (`"Fetch the latest sensor history… also refreshes automatically every 2 minutes"`), consistent with the existing CSS tooltip system used throughout the Status section.
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.16.4` → `1.16.5`.
+
+---
+
+## [1.16.4] — 2026-05-06
+
+*Motor alarm onset detection fix: re-assertion during the 60 s guard period is now detected within 5 s instead of after the full 60 s. Boot-time alarm-at-power-on is now detected and handled.*
+
+### Fixed
+- `firmware/src/relay_controller/relay_controller.cpp` — **`handle_alarm_clearance()` guard loop**: moved the GPIO42 pin re-check from a single test **after** the full 60 s guard to a test **inside every 5 s chunk iteration**. When a re-assertion is detected mid-guard, `s_alarm_edge` is consumed and `handle_alarm_onset()` is called immediately, so the alarm appears on LCD, web GUI, and RED LED within ≤5 s rather than up to 60 s.  Root cause: T2 blocks in `vTaskDelay` inside the guard loop and cannot execute the main-loop debounce code while blocked; the only pin re-check was at guard expiry.
+- `firmware/src/relay_controller/relay_controller.cpp` — **boot-time alarm check**: `attachInterrupt` uses CHANGE mode and does not fire for a pin that is already in the asserted (LOW) state at power-on.  Added an explicit `gpio_read(PIN_OPTO_INPUT)` immediately after `attachInterrupt`; if already LOW, `handle_alarm_onset()` is called and `calib_close_all()` is skipped (energising CLOSE relays onto a latched alarm relay is unsafe).
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.16.3` → `1.16.4` in both `lolin_s3` and `test_t2_relay` environments.
+
+---
+
 ## [1.16.3] — 2026-05-06
 
 *LCD I2C bus reliability fix (AiP31068L silent-drop), LCD display polish, "Window Cal." mode on LCD and web GUI, and web GUI public-access redesign (Status + Sensor history + SD card without login; Login modal replaces full-page overlay).*

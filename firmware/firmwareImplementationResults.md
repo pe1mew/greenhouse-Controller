@@ -2892,3 +2892,73 @@ CMD_DISP_ON (0x0C) has only ~37 µs busy time, which is safely covered by the ~7
 | Web GUI: Login modal opened by header button; dismissed by backdrop click | ✅ Verified on hardware |
 | Web GUI: session expiry drops to public view without re-showing login modal | ✅ Verified on hardware |
 | Build: flash 55.2% (1157 kB), RAM 19.4% (63 kB) — no regression | ✅ Verified |
+
+---
+
+### v1.16.4 — 2026-05-06
+
+**Theme:** Motor alarm onset detection fix — re-assertion during the 60 s guard is now detected within 5 s; alarm-at-boot is now caught.
+
+#### Files changed
+
+| File | Change |
+|------|--------|
+| `firmware/src/relay_controller/relay_controller.cpp` | `handle_alarm_clearance()`: GPIO42 pin re-check moved from a single test **after** the full 60 s guard loop to a test **inside every 5 s chunk iteration**. When re-assertion is detected mid-guard, `s_alarm_edge` is consumed and `handle_alarm_onset()` is called immediately — latency drops from ≤60 s to ≤5 s. |
+| `firmware/src/relay_controller/relay_controller.cpp` | Boot-time alarm check added after `attachInterrupt`: explicit `gpio_read(PIN_OPTO_INPUT)` read detects a pin already LOW at power-on (no edge fires with CHANGE mode). If LOW, `handle_alarm_onset()` is called and `calib_close_all()` is skipped (unsafe to energise CLOSE relays onto a latched alarm). |
+| `firmware/platformio.ini` | `FIRMWARE_VERSION` bumped `1.16.3` → `1.16.4`. |
+
+#### Root-cause analysis — motor alarm onset latency (~60 s)
+
+**Symptom:** Asserting the alarm input (GPIO42 / RRK-3 normally-open dry contact) took approximately 60 s to appear on the LCD, web GUI, and RED LED. Clearing the alarm was always instant.
+
+**Root cause:** `handle_alarm_clearance()` clears `EG1_BIT_MOTOR_ALARM` immediately at entry (explaining instant clearance), then blocks T2 in a 60-second guard loop via `vTaskDelay(ALARM_GUARD_CHUNK_MS=5000)` repeated 12 times. While T2 is blocked, the ISR fires on a re-assertion (`s_alarm_edge = true`) but the main-loop debounce section cannot execute — it runs only at the top of the T2 `for(;;)` loop, which is not reached during the guard. The sole pin re-check was a single `gpio_read()` **after** the full 60 s loop. Any re-assertion that occurred between t=0 and t=60 s was therefore processed at t=60 s exactly, appearing as a ~60-second onset delay.
+
+**Fix:** Added `gpio_read(PIN_OPTO_INPUT)` at the bottom of each 5-second chunk iteration. On a LOW result, `s_alarm_edge` is cleared (prevents main-loop duplicate) and `handle_alarm_onset()` is called inline. Maximum onset latency after alarm clearance is now one guard chunk: 5 s.
+
+**Secondary bug fixed:** `attachInterrupt(…, CHANGE)` fires only on signal edges. An alarm that is already asserted (LOW) when T2 starts generates no interrupt. The initial pin read after `attachInterrupt` closes this gap; if LOW at boot, calibration is also skipped because energising CLOSE relays while the alarm relay is latched is mechanically unsafe.
+
+#### Verification
+
+| Check | Result |
+|-------|--------|
+| Alarm onset detected on LCD/web/LED within ≤5 s after clearance guard starts | ⬜ Pending hardware test |
+| Alarm onset on fresh assertion (no prior guard) still instant (<100 ms) | ⬜ Pending hardware test |
+| Alarm active at power-on: `"GPIO42 alarm pin already asserted at boot"` logged, CLOSE_ALL skipped | ⬜ Pending hardware test |
+| Normal clearance path (guard + CLOSE_ALL re-cal) unchanged when no re-assertion occurs | ⬜ Pending hardware test |
+
+---
+
+### v1.16.5 — 2026-05-06
+
+**Theme:** Motor alarm aborts window calibration immediately; web GUI Settings reordered; Sensor history tooltips.
+
+#### Files changed
+
+| File | Change |
+|------|--------|
+| `firmware/src/relay_controller/relay_controller.cpp` | `calib_close_all()`: forward declaration of `handle_alarm_onset` added. Entry guard: reads `gpio_read(PIN_OPTO_INPUT)` before energising any relay — if LOW, calls `handle_alarm_onset()` and returns without starting calibration. Per-chunk check: inside the poll loop, after each `vTaskDelay(CALIB_CHUNK_MS)`, reads pin — if LOW, clears `EG1_BIT_CALIBRATING`, consumes `s_alarm_edge`, calls `handle_alarm_onset()`, returns. Max latency during cal: 400 ms. |
+| `firmware/data/index.html` | `<section id="section-settings">` moved before the Sensor history `<section>`. `data-tip` attributes added to Sensor history heading text and Refresh button. |
+| `firmware/platformio.ini` | `FIRMWARE_VERSION` bumped `1.16.4` → `1.16.5`. |
+
+#### Root-cause analysis — alarm ignored during calibration
+
+**Symptom:** Asserting the alarm input during a CLOSE_ALL calibration sweep (visible as "Window Cal." on LCD and web) had no effect until calibration completed. All CLOSE relays remained energised for the full travel duration.
+
+**Root cause:** `calib_close_all()` runs a blocking `for(;;)` poll loop with `vTaskDelay(CALIB_CHUNK_MS = 400 ms)` per iteration. The ISR set `s_alarm_edge = true` but the main-loop debounce section (which calls `handle_alarm_onset`) runs only at the top of T2's `for(;;)` loop — unreachable while `calib_close_all` holds the task. The function had no internal alarm check.
+
+**Fix:** Two pin reads added inside `calib_close_all`:
+- Entry guard (before `relay_ch_close()`) to catch a pre-existing assert.
+- Per-chunk guard (after each `vTaskDelay`) to catch an assert mid-calibration.
+
+On detection: `EG1_BIT_CALIBRATING` cleared first (so no double-bit display), then `handle_alarm_onset()` called — which calls `relay_all_off()`, marks all channels `CH_UNKNOWN`, sets `EG1_BIT_MOTOR_ALARM`, logs the event. Maximum response latency: one `CALIB_CHUNK_MS` = **400 ms**.
+
+#### Verification
+
+| Check | Result |
+|-------|--------|
+| Alarm during calibration: relays de-energise within 400 ms, LCD/web show ALARM | ⬜ Pending hardware test |
+| Alarm asserted before calibration starts: calib skipped entirely, no relay energised | ⬜ Pending hardware test |
+| Normal calibration (no alarm) completes and reports CLOSE_ALL calibration complete | ⬜ Pending hardware test |
+| Web GUI: Settings section visible above Sensor history after login | ✅ Verified |
+| Web GUI: tooltip appears on hover over "Sensor history" heading | ✅ Verified |
+| Web GUI: tooltip appears on hover over Refresh button | ✅ Verified |

@@ -89,21 +89,6 @@
   </div>
 </section>
 
-<!-- ── Sensor history ────────────────────────────────────────────── -->
-<section>
-  <h2>Sensor history
-    <button class="btn-sm" style="float:right;font-size:.8rem;padding:3px 10px" onclick="loadHistory()">Refresh</button>
-  </h2>
-  <div id="log-wrap">
-    <table id="log-tbl">
-      <thead>
-        <tr><th>Time</th><th>T (°C)</th><th>RH (%)</th><th>Wind (m/s)</th><th>Dir (°)</th></tr>
-      </thead>
-      <tbody id="log-body"></tbody>
-    </table>
-  </div>
-</section>
-
 <!-- ── Settings (tabs) — hidden until logged in ──────────────────── -->
 <section id="section-settings" style="display:none">
   <h2>Settings</h2>
@@ -448,6 +433,23 @@
     </div>
   </div>
 
+</section>
+
+<!-- ── Sensor history ────────────────────────────────────────────── -->
+<section>
+  <h2><span data-tip="Logged sensor readings — one row per poll cycle. The most recent reading is at the top. Data is stored in RAM (last 250 rows) and optionally written to SD card.">Sensor history</span>
+    <button class="btn-sm" style="float:right;font-size:.8rem;padding:3px 10px"
+            onclick="loadHistory()"
+            data-tip="Fetch the latest sensor history from the controller. History also refreshes automatically every 2 minutes.">Refresh</button>
+  </h2>
+  <div id="log-wrap">
+    <table id="log-tbl">
+      <thead>
+        <tr><th>Time</th><th>T (°C)</th><th>RH (%)</th><th>Wind (m/s)</th><th>Dir (°)</th></tr>
+      </thead>
+      <tbody id="log-body"></tbody>
+    </table>
+  </div>
 </section>
 
 <script src="app.js"></script>
