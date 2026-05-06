@@ -236,7 +236,7 @@ void test_migration_preserves_config_keys(void)
 }
 
 /* =========================================================================
- * _or_default helper tests — UT-NVS-018 … UT-NVS-022
+ * _or_default helper tests — UT-NVS-018 … UT-NVS-021
  * ========================================================================= */
 
 /* UT-NVS-018 — get_i32_or_default: absent key → writes default, returns it */
@@ -296,28 +296,6 @@ void test_get_str_or_default_present(void)
                           nvs_cfg_get_str_or_default(NVS_NS_WIFI, "ssid",
                                                       "Default", buf, sizeof(buf)));
     TEST_ASSERT_EQUAL_STRING("OfficeNet", buf);
-}
-
-/* UT-NVS-022 — get_blob_or_default: absent key → writes default, returns it */
-void test_get_blob_or_default_absent(void)
-{
-    nvs_cfg_init();
-    const uint8_t def[] = {0x01, 0x02, 0x03, 0x04};
-    uint8_t  out[4] = {0};
-    size_t   len    = sizeof(out);
-    TEST_ASSERT_EQUAL_INT(NVS_CFG_OK,
-                          nvs_cfg_get_blob_or_default(NVS_NS_MOTOR, "cal",
-                                                       def, sizeof(def),
-                                                       out, &len));
-    TEST_ASSERT_EQUAL_UINT(sizeof(def), len);
-    TEST_ASSERT_EQUAL_MEMORY(def, out, sizeof(def));
-
-    /* Verify persisted */
-    uint8_t out2[4] = {0};
-    size_t  len2    = sizeof(out2);
-    TEST_ASSERT_EQUAL_INT(NVS_CFG_OK,
-                          nvs_cfg_get_blob(NVS_NS_MOTOR, "cal", out2, &len2));
-    TEST_ASSERT_EQUAL_MEMORY(def, out2, sizeof(def));
 }
 
 /* =========================================================================
@@ -403,7 +381,6 @@ int main(void)
     RUN_TEST(test_get_i32_or_default_present);
     RUN_TEST(test_get_str_or_default_absent);
     RUN_TEST(test_get_str_or_default_present);
-    RUN_TEST(test_get_blob_or_default_absent);
 
     /* fw_version */
     RUN_TEST(test_init_first_boot_writes_fw_version);

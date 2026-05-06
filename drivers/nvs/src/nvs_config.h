@@ -203,21 +203,6 @@ nvs_cfg_status_t nvs_cfg_get_str_or_default(const char *ns, const char *key,
                                               const char *default_val,
                                               char *buf, size_t buf_len);
 
-/**
- * @brief Get a blob, or write @p default_data if absent.
- *
- * @param[in]     ns            Namespace.
- * @param[in]     key           Key name.
- * @param[in]     default_data  Bytes to write and return when absent.
- * @param[in]     default_len   Length of @p default_data.
- * @param[out]    buf           Caller-supplied buffer.
- * @param[in,out] len           In: buffer capacity. Out: bytes written.
- */
-nvs_cfg_status_t nvs_cfg_get_blob_or_default(const char *ns, const char *key,
-                                               const void *default_data,
-                                               size_t default_len,
-                                               void *buf, size_t *len);
-
 /* ---------------------------------------------------------------------------
  * Ring-buffer event log  (NVS_NS_LOG namespace)
  *

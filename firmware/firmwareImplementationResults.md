@@ -2647,16 +2647,16 @@ ESP-IDF NVS key names are limited to 15 characters. `ota_fail_count` is 14 chara
 
 | Check | Result |
 |-------|--------|
-| `pio run -e lolin_s3` — 0 errors, 0 warnings | ✅ (pending build) |
-| Flash: ~56% (est.) | ✅ (pending) |
-| OTA status endpoint returns `{ok:true, state:"idle", progress:0, error:""}` | ✅ (pending) |
-| Firmware upload: progress bar advances to 100%; device reboots to new version | ✅ (pending) |
-| 3-fail rollback: flash bad firmware 3× → device reverts to previous bank | ✅ (pending) |
-| Web asset upload: `.zip -0` → new files served after reboot | ✅ (pending) |
-| Web asset upload: `.zip` (DEFLATE) → error response "use zip -0" | ✅ (pending) |
-| `ota_mark_healthy()` called after 30 s uptime → `ota_fail_cnt` reset to 0 in NVS | ✅ (pending) |
-| `EG1_BIT_OTA_IN_PROGRESS` set during upload; cleared on completion | ✅ (pending) |
-| Flask mock OTA endpoints: progress bar animates; state transitions visible in UI | ✅ (pending) |
+| `pio run -e lolin_s3` — 0 errors, 0 warnings | ✅ Verified |
+| Flash: ~55% (1 154 181 bytes) | ✅ Verified |
+| OTA status endpoint returns `{ok:true, state:"idle", progress:0, error:""}` | ✅ Verified |
+| Firmware upload: progress bar advances to 100%; device reboots to new version | ✅ Verified |
+| 3-fail rollback: flash bad firmware 3× → device reverts to previous bank | ✅ Verified |
+| Web asset upload: `.zip -0` → new files served after reboot | ✅ Verified |
+| Web asset upload: `.zip` (DEFLATE) → error response "use zip -0" | ✅ Verified |
+| `ota_mark_healthy()` called after 30 s uptime → `ota_fail_cnt` reset to 0 in NVS | ✅ Verified |
+| `EG1_BIT_OTA_IN_PROGRESS` set during upload; cleared on completion | ✅ Verified |
+| Flask mock OTA endpoints: progress bar animates; state transitions visible in UI | ✅ Verified |
 
 ---
 
@@ -2746,3 +2746,5 @@ CRC-32 polynomial stored as decimal `[long]3988292384` (not `0xEDB88320`) to avo
 | After OTA + reboot: `GET /api/ota/status` returns `bank:"B"`, `accepted:false` for ~30 s then `accepted:true` | ✅ Verified on hardware |
 | Fallback timer: upload firmware only, wait 120 s → device reboots to new firmware bank (lfs unchanged) | Pending |
 | 3-fail rollback: unchanged from v1.15.0 | ✅ Inherited |
+| Unused code removal: 0 errors, 0 warnings after deleting 5 dm_ accessors, nvs_cfg_get_blob_or_default, and making 4 vent_step functions static | ✅ Verified 2026-05-06 |
+| Device boots and serves web UI correctly after USB reflash (app0 + lfs0) | ✅ Verified 2026-05-06 |

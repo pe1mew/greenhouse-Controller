@@ -227,21 +227,6 @@ nvs_cfg_status_t nvs_cfg_get_str_or_default(const char *ns, const char *key,
     return st;
 }
 
-nvs_cfg_status_t nvs_cfg_get_blob_or_default(const char *ns, const char *key,
-                                               const void *default_data,
-                                               size_t default_len,
-                                               void *buf, size_t *len)
-{
-    nvs_cfg_status_t st = nvs_cfg_get_blob(ns, key, buf, len);
-    if (st == NVS_CFG_ERR_NOT_FOUND) {
-        memcpy(buf, default_data, default_len);
-        *len = default_len;
-        st = nvs_cfg_set_blob(ns, key, default_data, default_len);
-        if (st == NVS_CFG_OK) st = NVS_CFG_OK;
-    }
-    return st;
-}
-
 /* ---------------------------------------------------------------------------
  * Ring-buffer event log
  * --------------------------------------------------------------------------- */

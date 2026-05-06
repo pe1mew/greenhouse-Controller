@@ -134,10 +134,10 @@ static int step_from_deviation(int deviation, int hyst, int current_step)
 }
 
 /* -----------------------------------------------------------------------
- * Public API implementations
+ * Internal helpers (only called within this translation unit)
  * ----------------------------------------------------------------------- */
 
-uint8_t vent_step_channels(int step)
+static uint8_t vent_step_channels(int step)
 {
     if (step < 0 || step > NUM_VENT_STEPS) {
         return 0;
@@ -145,16 +145,16 @@ uint8_t vent_step_channels(int step)
     return VENT_STEP_TABLE[step];
 }
 
-int vent_step_required_t(int16_t t_avg, int16_t t_max, int16_t hyst_t,
-                          int current_step)
+static int vent_step_required_t(int16_t t_avg, int16_t t_max, int16_t hyst_t,
+                                 int current_step)
 {
     int deviation = (int)t_avg - (int)t_max;
     return step_from_deviation(deviation, (int)hyst_t, current_step);
 }
 
-int vent_step_required_rh(int16_t rh_avg, int16_t rh_max, int16_t rh_min,
-                           int16_t hyst_rh, bool rh_ctrl_en,
-                           int current_step)
+static int vent_step_required_rh(int16_t rh_avg, int16_t rh_max, int16_t rh_min,
+                                  int16_t hyst_rh, bool rh_ctrl_en,
+                                  int current_step)
 {
     if (!rh_ctrl_en) {
         return VENT_STEP_NEUTRAL;
@@ -178,7 +178,7 @@ int vent_step_required_rh(int16_t rh_avg, int16_t rh_max, int16_t rh_min,
     return VENT_STEP_NEUTRAL;
 }
 
-int vent_resolve_conflict(int step_t, int step_rh, uint8_t cr_priority)
+static int vent_resolve_conflict(int step_t, int step_rh, uint8_t cr_priority)
 {
     /* Rule 1: RH has no vote — return temperature step unchanged. */
     if (step_rh == VENT_STEP_NEUTRAL) {

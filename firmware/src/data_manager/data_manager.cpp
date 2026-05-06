@@ -654,16 +654,6 @@ void dm_ring_read(uint16_t offset, sensor_reading_t *buf,
     if (read_out != NULL) { *read_out = copied; }
 }
 
-bool dm_get_is_daytime(void)
-{
-    bool v = true;
-    if (xSemaphoreTake(MX4, pdMS_TO_TICKS(100u)) == pdTRUE) {
-        v = s_cfg.is_daytime;
-        xSemaphoreGive(MX4);
-    }
-    return v;
-}
-
 uint32_t dm_get_unix_time(void)
 {
     uint32_t v = 0u;
@@ -682,51 +672,6 @@ int32_t dm_get_poll_interval_s(void)
         xSemaphoreGive(MX4);
     }
     return v;
-}
-
-int16_t dm_get_travel_s(uint8_t channel)
-{
-    if (channel >= 3u) { return (int16_t)MOTOR_M1_TRAVEL_S_DEFAULT; }
-    int16_t v = (int16_t)MOTOR_M1_TRAVEL_S_DEFAULT;
-    if (xSemaphoreTake(MX4, pdMS_TO_TICKS(100u)) == pdTRUE) {
-        v = s_cfg.travel_s[channel];
-        xSemaphoreGive(MX4);
-    }
-    return v;
-}
-
-int16_t dm_get_dwell_open_min(uint8_t channel)
-{
-    if (channel >= 3u) { return 0; }
-    int16_t v = 0;
-    if (xSemaphoreTake(MX4, pdMS_TO_TICKS(100u)) == pdTRUE) {
-        v = s_cfg.dwell_open_min[channel];
-        xSemaphoreGive(MX4);
-    }
-    return v;
-}
-
-int16_t dm_get_dwell_close_min(uint8_t channel)
-{
-    if (channel >= 3u) { return 0; }
-    int16_t v = 0;
-    if (xSemaphoreTake(MX4, pdMS_TO_TICKS(100u)) == pdTRUE) {
-        v = s_cfg.dwell_close_min[channel];
-        xSemaphoreGive(MX4);
-    }
-    return v;
-}
-
-void dm_get_led_config(uint8_t *day_brt_out, uint8_t *nite_brt_out,
-                       uint8_t *nite_from_out, uint8_t *nite_to_out)
-{
-    if (xSemaphoreTake(MX4, pdMS_TO_TICKS(100u)) == pdTRUE) {
-        if (day_brt_out   != NULL) { *day_brt_out   = (uint8_t)s_cfg.led_day_brt;  }
-        if (nite_brt_out  != NULL) { *nite_brt_out  = (uint8_t)s_cfg.led_nite_brt; }
-        if (nite_from_out != NULL) { *nite_from_out = (uint8_t)s_cfg.led_nite_from; }
-        if (nite_to_out   != NULL) { *nite_to_out   = (uint8_t)s_cfg.led_nite_to;  }
-        xSemaphoreGive(MX4);
-    }
 }
 
 void dm_set_manual_time(time_t unix_ts)

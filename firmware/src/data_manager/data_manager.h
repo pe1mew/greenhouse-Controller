@@ -189,10 +189,6 @@ void dm_ring_read(uint16_t offset, sensor_reading_t *buf,
 
 /* ---- Convenience single-field getters ---- */
 
-/** @brief Return true if current time falls between sunrise and sunset.
- *  Thread-safe (MX4, 100 ms timeout; returns true on timeout). */
-bool dm_get_is_daytime(void);
-
 /** @brief Return the last-known Unix UTC timestamp (seconds since 1970-01-01).
  *  Thread-safe (MX4, 100 ms timeout; returns 0 on timeout). */
 uint32_t dm_get_unix_time(void);
@@ -200,41 +196,6 @@ uint32_t dm_get_unix_time(void);
 /** @brief Return the configured sensor poll interval (seconds).
  *  Thread-safe (MX4, 100 ms timeout). */
 int32_t dm_get_poll_interval_s(void);
-
-/**
- * @brief Return motor full-travel time for the given channel (0-based).
- *
- * Returns the factory default for @p channel ≥ 3.
- * Thread-safe (MX4, 100 ms timeout).
- *
- * @param channel  0 = M1, 1 = M2, 2 = M3.
- * @return         Travel time in seconds.
- */
-int16_t dm_get_travel_s(uint8_t channel);
-
-/**
- * @brief Return OPEN dwell time for the given channel (0-based, minutes).
- *  Thread-safe (MX4, 100 ms timeout). */
-int16_t dm_get_dwell_open_min(uint8_t channel);
-
-/**
- * @brief Return CLOSE dwell time for the given channel (0-based, minutes).
- *  Thread-safe (MX4, 100 ms timeout). */
-int16_t dm_get_dwell_close_min(uint8_t channel);
-
-/**
- * @brief Read RGB LED brightness and night-schedule from MX4.
- *
- * All output pointers are optional (may be NULL).
- * Thread-safe (MX4, 100 ms timeout).
- *
- * @param day_brt_out    Day brightness  (0–255).
- * @param nite_brt_out   Night brightness (0–255).
- * @param nite_from_out  Night-start hour (0–23).
- * @param nite_to_out    Night-end hour   (0–23).
- */
-void dm_get_led_config(uint8_t *day_brt_out, uint8_t *nite_brt_out,
-                       uint8_t *nite_from_out, uint8_t *nite_to_out);
 
 /**
  * @brief Set the system clock and DS1307 RTC to the given Unix UTC timestamp.
