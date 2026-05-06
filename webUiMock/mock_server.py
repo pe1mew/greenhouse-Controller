@@ -22,6 +22,9 @@ GET  /api/history       ?n=N  — last N synthetic sensor readings
 GET  /api/sd/status     {mounted, free_mb, size_mb}
 POST /api/sd/mount      mount SD card (admin only)
 POST /api/sd/unmount    unmount SD card (admin only)
+GET  /api/ota/status    {ok, state, progress, error}  (any logged-in role)
+POST /api/ota/firmware  upload firmware .bin  (admin only) → {ok, rebooting}
+POST /api/ota/assets    upload web assets .zip (admin only) → 202 + {ok, message}
 WS   /ws                push status JSON every 2 s
 
 Usage
@@ -95,10 +98,17 @@ cfg: dict = {
     "lon_deg":              4,
     "lon_frac":           300,
     "tz_str":              "CET-1CEST,M3.5.0,M10.5.0/3",
-    "fw_ver":              "1.14.0",
+    "fw_ver":              "1.15.0",
 }
 
 sd: dict = {"mounted": True, "size_mb": 7500, "free_mb": 7100}
+
+# OTA simulation state
+OTA_STATES = ["idle", "fw_writing", "fw_verifying", "fw_done",
+              "assets_buffering", "assets_writing", "rebooting", "error"]
+ota: dict = {"state": "idle", "progress": 0, "error": "",
+             "bank": "A", "accepted": True}
+ota_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # NVS (namespace, key) → (cfg_field, array_index)
@@ -415,6 +425,124 @@ def sd_unmount():
         return {"ok": False, "err": "admin only"}, 403
     sd["mounted"] = False
     return {"ok": True}
+
+# ---------------------------------------------------------------------------
+# OTA routes
+# ---------------------------------------------------------------------------
+def _ota_simulate_firmware(content_length: int) -> None:
+    """Simulate firmware upload: fw_writing -> fw_verifying -> fw_done (no reboot yet)."""
+    steps = 20
+    delay = max(0.05, min(0.3, content_length / (steps * 200_000)))
+    for i in range(1, steps + 1):
+        time.sleep(delay)
+        with ota_lock:
+            if ota["state"] == "error":
+                return
+            ota["state"]    = "fw_writing"
+            ota["progress"] = int(i * 100 / steps)
+    with ota_lock:
+        ota["state"]    = "fw_verifying"
+        ota["progress"] = 100
+    time.sleep(0.3)
+    with ota_lock:
+        ota["state"]    = "fw_done"
+        ota["progress"] = 100
+    # Stay in fw_done; a real device waits up to 120 s for assets.
+    # Mock idles back after 5 s if no assets upload follows.
+    time.sleep(5)
+    with ota_lock:
+        if ota["state"] == "fw_done":
+            ota["state"]    = "idle"
+            ota["progress"] = 0
+
+
+def _ota_simulate_assets(content_length: int) -> None:
+    """Simulate asset upload: assets_buffering -> assets_writing -> rebooting -> idle."""
+    steps = 20
+    delay = max(0.05, min(0.3, content_length / (steps * 200_000)))
+    for i in range(1, steps + 1):
+        time.sleep(delay)
+        with ota_lock:
+            if ota["state"] == "error":
+                return
+            ota["state"]    = "assets_buffering"
+            ota["progress"] = int(i * 100 / steps)
+    with ota_lock:
+        ota["state"]    = "assets_writing"
+        ota["progress"] = 0
+    for i in range(1, 11):
+        time.sleep(0.2)
+        with ota_lock:
+            if ota["state"] == "error":
+                return
+            ota["progress"] = i * 10
+    with ota_lock:
+        ota["state"]    = "rebooting"
+        ota["progress"] = 100
+    time.sleep(1)
+    with ota_lock:
+        # Simulate bank flip and brief "not yet accepted" window
+        ota["bank"]     = "B" if ota["bank"] == "A" else "A"
+        ota["accepted"] = False
+        ota["state"]    = "idle"
+        ota["progress"] = 0
+    time.sleep(5)   # simulate 30 s healthy-boot window (compressed to 5 s for mock)
+    with ota_lock:
+        ota["accepted"] = True
+
+
+@app.route("/api/ota/status", methods=["GET"])
+def ota_status():
+    if not _get_role():
+        return {"ok": False}, 401
+    with ota_lock:
+        return {"ok": True, "state": ota["state"],
+                "progress": ota["progress"], "error": ota["error"],
+                "bank": ota["bank"], "accepted": ota["accepted"]}
+
+
+@app.route("/api/ota/firmware", methods=["POST"])
+def ota_firmware():
+    if _get_role() != "admin":
+        return {"ok": False, "err": "admin only"}, 403
+    content_length = request.content_length or 512 * 1024
+    with ota_lock:
+        if ota["state"] not in ("idle", "error"):
+            return {"ok": False, "err": "OTA already in progress"}, 409
+        ota["state"]    = "fw_begin"
+        ota["progress"] = 0
+        ota["error"]    = ""
+    # Consume request body so Flask doesn't complain
+    _ = request.get_data()
+    threading.Thread(
+        target=_ota_simulate_firmware,
+        args=(content_length,),
+        daemon=True,
+    ).start()
+    return {"ok": True, "rebooting": False, "awaiting_assets": True}
+
+
+@app.route("/api/ota/assets", methods=["POST"])
+def ota_assets():
+    if _get_role() != "admin":
+        return {"ok": False, "err": "admin only"}, 403
+    content_length = request.content_length or 128 * 1024
+    with ota_lock:
+        if ota["state"] not in ("idle", "error", "fw_done"):
+            return {"ok": False, "err": "OTA already in progress"}, 409
+        ota["state"]    = "assets_buffering"
+        ota["progress"] = 0
+        ota["error"]    = ""
+    _ = request.get_data()
+    threading.Thread(
+        target=_ota_simulate_assets,
+        args=(content_length,),
+        daemon=True,
+    ).start()
+    resp = make_response(
+        {"ok": True, "message": "extracting — poll GET /api/ota/status"}, 202
+    )
+    return resp
 
 # ---------------------------------------------------------------------------
 # WebSocket

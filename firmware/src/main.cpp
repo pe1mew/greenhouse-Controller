@@ -132,6 +132,10 @@ static void task_watchdog_heartbeat(void *pvParameters)
     s_rgb.show();
 
     uint32_t tick_count = 0;
+    /* Number of 500 ms T1 ticks before ota_mark_healthy() is called.
+     * OTA_HEALTHY_MS / T1_TICK_MS = 30000 / 500 = 60 ticks. */
+    const uint32_t OTA_HEALTHY_TICKS = OTA_HEALTHY_MS / T1_TICK_MS;
+    bool ota_healthy_marked = false;
 
     for (;;) {
         /* Kick the WDT before anything else — highest priority concern. */
@@ -146,6 +150,14 @@ static void task_watchdog_heartbeat(void *pvParameters)
                      (unsigned long)tick_count,
                      (unsigned long)(millis() / 1000));
         }
+
+        /* After OTA_HEALTHY_MS of stable uptime, reset the OTA fail counter.
+         * Called only once per boot to avoid redundant NVS writes. */
+        if (!ota_healthy_marked && tick_count >= OTA_HEALTHY_TICKS) {
+            ota_mark_healthy();
+            ota_healthy_marked = true;
+        }
+
         tick_count++;
 
         /* ---------------------------------------------------------
@@ -254,6 +266,11 @@ void setup()
     } else {
         ESP_LOGI(TAG, "NVS OK");
     }
+
+    /* ---- OTA rollback check (must follow NVS init) ---- */
+    /* Increments the boot-fail counter; triggers rollback if counter ≥ 3.
+     * T1 calls ota_mark_healthy() after OTA_HEALTHY_MS to reset the counter. */
+    ota_check_rollback();
 
     /* ---- PIN auth (must follow NVS init) ---- */
     pin_auth_result_t pin_stat = pin_auth_init();

@@ -20,6 +20,7 @@ function setRole(role) {
     loadConfig();
     loadHistory();
     loadSdStatus();
+    if (role === 'admin') loadOtaStatus();
   }
 }
 
@@ -378,6 +379,130 @@ setInterval(function () {
   if (g_role === null) return;
   loadSdStatus();
 }, 30000);
+
+// ── OTA update ───────────────────────────────────────────────────────────────
+// State names returned by GET /api/ota/status that indicate active operation.
+var OTA_ACTIVE_STATES = ['fw_writing', 'fw_verifying', 'fw_done',
+                         'assets_buffering', 'assets_writing'];
+var g_ota_poll_timer  = null;
+
+function loadOtaStatus() {
+  fetch('/api/ota/status')
+    .then(function (r) {
+      if (r.status === 401) { showLogin(); return null; }
+      return r.ok ? r.json() : null;
+    })
+    .then(function (data) {
+      if (!data) return;
+      var statusEl  = document.getElementById('ota-status-text');
+      var wrapEl    = document.getElementById('ota-progress-wrap');
+      var fillEl    = document.getElementById('ota-progress-fill');
+      var label = data.state.replace(/_/g, ' ');
+      if (data.state === 'idle') {
+        var bankStr = data.bank ? ('Bank ' + data.bank) : '';
+        var accStr  = (data.accepted === true)  ? 'accepted' :
+                      (data.accepted === false) ? 'not yet accepted' : '';
+        label = 'Idle';
+        if (bankStr || accStr) label += ' — ' + [bankStr, accStr].filter(Boolean).join(', ');
+      }
+      if (data.state === 'error' && data.error) label += ': ' + data.error;
+      if (data.state === 'rebooting') label = 'Rebooting…';
+      if (data.state === 'fw_done')   label = 'Firmware ready — uploading assets…';
+      if (statusEl) statusEl.textContent = label.charAt(0).toUpperCase() + label.slice(1);
+      var active = OTA_ACTIVE_STATES.indexOf(data.state) !== -1;
+      if (wrapEl) wrapEl.style.display = active ? 'block' : 'none';
+      if (fillEl) fillEl.style.width = data.progress + '%';
+      // Continue polling while operation is in progress
+      if (active) {
+        if (!g_ota_poll_timer) {
+          g_ota_poll_timer = setTimeout(function () {
+            g_ota_poll_timer = null;
+            loadOtaStatus();
+          }, 2000);
+        }
+      } else {
+        if (g_ota_poll_timer) { clearTimeout(g_ota_poll_timer); g_ota_poll_timer = null; }
+      }
+    });
+}
+
+/**
+ * Upload a firmware .bin as a raw binary POST body.
+ * The firmware is streamed directly to the inactive OTA partition.
+ */
+function uploadOtaFirmware() {
+  var fileEl = document.getElementById('ota-fw-file');
+  if (!fileEl || !fileEl.files || !fileEl.files[0]) {
+    feedback('fb-ota-fw', false); return;
+  }
+  var file = fileEl.files[0];
+  var statusEl = document.getElementById('ota-status-text');
+  if (statusEl) statusEl.textContent = 'Uploading firmware (' + Math.round(file.size / 1024) + ' kB)…';
+
+  fetch('/api/ota/firmware', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: file,
+  })
+    .then(function (r) {
+      if (!r.ok) return null;
+      return r.json();
+    })
+    .then(function (data) {
+      feedback('fb-ota-fw', data && data.ok);
+      if (data && data.ok) {
+        var assetsEl = document.getElementById('ota-assets-file');
+        if (assetsEl && assetsEl.files && assetsEl.files[0]) {
+          // Assets file is selected — upload it immediately so firmware + assets
+          // switch atomically on the same reboot.
+          if (statusEl) statusEl.textContent = 'Firmware ready — uploading web assets…';
+          uploadOtaAssets();
+        } else {
+          if (statusEl) statusEl.textContent = 'Firmware ready — select web assets ZIP or device reboots in 2 min';
+          loadOtaStatus();
+        }
+      }
+    })
+    .catch(function () { feedback('fb-ota-fw', false); });
+}
+
+/**
+ * Upload a STORE-only web-assets .zip as a raw binary POST body.
+ * The ZIP is buffered in PSRAM on the device then T13 extracts it.
+ * Poll /api/ota/status for extraction progress.
+ */
+function uploadOtaAssets() {
+  var fileEl = document.getElementById('ota-assets-file');
+  if (!fileEl || !fileEl.files || !fileEl.files[0]) {
+    feedback('fb-ota-assets', false); return;
+  }
+  var file = fileEl.files[0];
+  var statusEl = document.getElementById('ota-status-text');
+  if (statusEl) statusEl.textContent = 'Uploading assets ZIP (' + Math.round(file.size / 1024) + ' kB)…';
+
+  fetch('/api/ota/assets', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/zip' },
+    body: file,
+  })
+    .then(function (r) {
+      if (r.status === 202) return r.json();
+      if (!r.ok) return null;
+      return r.json();
+    })
+    .then(function (data) {
+      feedback('fb-ota-assets', data && data.ok);
+      if (data && data.ok) {
+        // Start polling for extraction progress
+        if (g_ota_poll_timer) clearTimeout(g_ota_poll_timer);
+        g_ota_poll_timer = setTimeout(function () {
+          g_ota_poll_timer = null;
+          loadOtaStatus();
+        }, 1000);
+      }
+    })
+    .catch(function () { feedback('fb-ota-assets', false); });
+}
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 function showTab(id) {

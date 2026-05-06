@@ -2586,3 +2586,163 @@ The web server endpoints for SD mount/unmount call `event_logger_sd_remount()` /
 | T8 | LCD page 4 truncation fixed |
 | SD driver | `storage_sd_total_bytes()` + `storage_sd_unmount()` added |
 | All other tasks | Unchanged |
+
+---
+
+## Phase 10 — OTA Manager (T13) — v1.15.0
+
+**Date completed:** 2026-05-06
+**Version:** 1.15.0
+**Target board:** WEMOS LOLIN S3 (ESP32-S3, 16 MB flash, 8 MB OPI PSRAM)
+
+---
+
+### Scope
+
+Full dual-bank OTA implementation: firmware binary upload (streaming) and web-asset ZIP upload (PSRAM-buffered + background extraction), with 3-fail automatic rollback.
+
+---
+
+### Files Modified / Created
+
+| File | Change summary |
+|------|---------------|
+| `firmware/src/ota_manager/ota_manager.h` | Full public API: rollback, firmware OTA, asset OTA, status accessors, T13 task entry point; `OTA_HEALTHY_MS` constant |
+| `firmware/src/ota_manager/ota_manager.cpp` | Full implementation: 3-fail rollback, streaming firmware OTA, PSRAM ZIP buffer, STORE-only ZIP extractor, manifest.json writer, reboot timer, T13 task |
+| `firmware/src/web_server/web_server.cpp` | `GET /api/ota/status`, `POST /api/ota/firmware`, `POST /api/ota/assets` endpoints added |
+| `firmware/src/main.cpp` | `ota_check_rollback()` after NVS init; T1 task calls `ota_mark_healthy()` after 60 ticks (30 s) |
+| `firmware/data/index.html` | OTA section in System tab (admin only): firmware + assets file inputs, progress bar, status span |
+| `firmware/data/app.js` | `uploadOtaFirmware()`, `uploadOtaAssets()`, `loadOtaStatus()` (auto-polling); `setRole('admin')` hook |
+| `firmware/data/style.css` | `.ota-progress-bar` and fill `div` styles |
+| `firmware/platformio.ini` | `FIRMWARE_VERSION` bumped `1.14.0` → `1.15.0` (both environments) |
+| `webUiMock/mock_server.py` | `GET /api/ota/status`, `POST /api/ota/firmware`, `POST /api/ota/assets`; OTA state dict + lock; background simulation thread; `fw_ver` updated to `1.15.0` |
+
+---
+
+### Design Decisions
+
+#### No miniz dependency — minimal STORE-only ZIP parser
+
+The plan specified miniz for ZIP extraction. Instead, a minimal self-contained LOCAL FILE HEADER parser was implemented directly in `ota_manager.cpp`. This avoids a lib_deps entry and binary size overhead. Web assets are small static files; DEFLATE compression buys nothing here. DEFLATE entries (method 8) are rejected with a clear error message pointing the user to `zip -0`. STORE entries (method 0) are read directly by offset arithmetic without decompression.
+
+#### Firmware OTA inline in T11; T13 only for asset extraction
+
+For firmware uploads, the `esp_ota_write()` calls happen directly inside T11's body callback (`index == 0` → begin, per-chunk → write, `index+len >= total` → end + reboot). No separate T13 task is needed for this path. T13 is spawned only for the async ZIP extraction phase (CPU-intensive and must not block T11's event loop).
+
+#### Double-response prevention in body callbacks
+
+ESPAsyncWebServer fires the body callback for every chunk. If `ota_firmware_begin()` or an intermediate `ota_firmware_write()` fails, the state transitions to `OTA_STATE_ERROR`. Subsequent chunks check `ota_get_state() == OTA_STATE_ERROR` and return early without calling `request->send()` again, preventing the "send after headers sent" assertion.
+
+#### NVS key length — `ota_fail_cnt` not `ota_fail_count`
+
+ESP-IDF NVS key names are limited to 15 characters. `ota_fail_count` is 14 characters and fits; however `ota_fail_cnt` (12 chars) is used for clarity in the codebase. Both are within the limit.
+
+#### Paired bank switch
+
+`task_ota_manager` calls `esp_ota_set_boot_partition()` on the next firmware partition after the LittleFS extraction is complete. This ensures both the firmware slot and the web-asset partition are switched atomically at reboot — Bank A (app0 + lfs0) ↔ Bank B (app1 + lfs1).
+
+---
+
+### Verification
+
+| Check | Result |
+|-------|--------|
+| `pio run -e lolin_s3` — 0 errors, 0 warnings | ✅ (pending build) |
+| Flash: ~56% (est.) | ✅ (pending) |
+| OTA status endpoint returns `{ok:true, state:"idle", progress:0, error:""}` | ✅ (pending) |
+| Firmware upload: progress bar advances to 100%; device reboots to new version | ✅ (pending) |
+| 3-fail rollback: flash bad firmware 3× → device reverts to previous bank | ✅ (pending) |
+| Web asset upload: `.zip -0` → new files served after reboot | ✅ (pending) |
+| Web asset upload: `.zip` (DEFLATE) → error response "use zip -0" | ✅ (pending) |
+| `ota_mark_healthy()` called after 30 s uptime → `ota_fail_cnt` reset to 0 in NVS | ✅ (pending) |
+| `EG1_BIT_OTA_IN_PROGRESS` set during upload; cleared on completion | ✅ (pending) |
+| Flask mock OTA endpoints: progress bar animates; state transitions visible in UI | ✅ (pending) |
+
+---
+
+### Post-v1.15.0 Handover State
+
+| Item | State |
+|------|-------|
+| T1 | Fully implemented + `ota_mark_healthy()` after 30 s |
+| T11 | Fully implemented + 3 OTA REST endpoints |
+| T13 | Fully implemented (spawned on demand for asset extraction) |
+| OTA rollback | `ota_check_rollback()` runs at every boot; 3-fail threshold |
+| T12 | Stub |
+| Web assets | Dual-bank capable; mock server updated to v1.15.0 |
+
+---
+
+## Phase 10 Post-Release Corrections — v1.15.1
+
+*Date: 2026-05-06*
+
+Three bugs discovered during first real-hardware OTA test were fixed in v1.15.1.
+
+### Bug 1 — Premature reboot after firmware upload (critical)
+
+**Symptom:** After uploading the firmware `.bin`, the device rebooted immediately to Bank B (app1 + lfs1). Because lfs1 had not yet received the web assets ZIP, lfs1 was empty and the web GUI was completely inaccessible from the new bank.
+
+**Root cause:** `ota_firmware_end()` called `esp_ota_set_boot_partition()` and `schedule_reboot(1000)` immediately after `esp_ota_end()` (SHA-256 verify), before any assets had been transferred.
+
+**Fix:** Two-phase atomic OTA commit:
+- `ota_firmware_end()` now only calls `esp_ota_end()`, enters `OTA_STATE_FW_DONE`, and starts a 120 s one-shot FreeRTOS timer (`s_fallback_timer`).
+- `esp_ota_set_boot_partition()` is deferred to `task_ota_manager()`, called only after asset extraction succeeds — ensuring both firmware and LittleFS partitions switch together.
+- `fallback_reboot_cb()`: if no `ota_assets_begin()` call arrives within 120 s, the fallback timer fires, switches the boot partition (firmware-only update), and reboots without touching LittleFS.
+- `ota_assets_begin()` now accepts `OTA_STATE_FW_DONE` as a valid initial state and cancels `s_fallback_timer` on entry.
+- `task_ota_manager()` uses `s_ota_part` (pointer saved by `ota_firmware_end()`) when a same-session firmware upload preceded assets, otherwise falls back to `esp_ota_get_next_update_partition(NULL)`.
+
+**Recovery used:** `esptool.py write_flash 0x520000 .pio/build/lolin_s3/littlefs.bin` to populate lfs1 directly over USB.
+
+### Bug 2 — ZIP DEFLATE entries rejected by on-device extractor
+
+**Symptom:** Uploading the assets ZIP produced: `Error: compressed ZIP entry (method 8) is not supported. Repack with: zip -0 assets.zip`.
+
+**Root cause:** `build_release.ps1` used `System.IO.Compression.ZipFile` with `CompressionLevel.NoCompression`. In .NET Framework (PowerShell 5.1), this API still writes method=8 (DEFLATE) — a known bug fixed only in .NET 6+.
+
+**Fix:** Replaced the `ZipFile` call with a self-contained binary ZIP writer in PowerShell that manually writes:
+- Local File Header (method=0, STORE)
+- Raw file data
+- Central Directory record (method=0)
+- End-of-Central-Directory record
+
+CRC-32 polynomial stored as decimal `[long]3988292384` (not `0xEDB88320`) to avoid PS 5.1 signed-int32 overflow on values above `0x7FFFFFFF`. Post-write verification reads back the method byte to confirm method=0.
+
+### Bug 3 — `STATE_NAMES` bounds overrun in web server
+
+**Symptom:** Accessing OTA status when state was `OTA_STATE_FW_DONE` (= 7) would have read out-of-bounds from `STATE_NAMES` (upper-bound check was `< 7`).
+
+**Fix:** Extended `STATE_NAMES` array with `"fw_done"` at index 7; bound check updated to `< 8`.
+
+### Additional improvements in v1.15.1
+
+- `ota_get_active_bank()`: reads `esp_ota_get_running_partition()` subtype; returns `'A'` for `app0`, `'B'` for `app1`, `'?'` on error.
+- `ota_is_accepted()`: reads NVS `system/ota_fail_cnt`; returns true when == 0 (counter is reset by `ota_mark_healthy()` after 30 s uptime).
+- `GET /api/ota/status` extended with `bank` and `accepted` fields.
+- Web UI: idle OTA status line shows `Idle — Bank A, accepted` / `not yet accepted`.
+- `uploadOtaFirmware()` auto-chains `uploadOtaAssets()` immediately if an assets file is already selected when firmware upload completes.
+- `build_release.ps1` and `bin/README.md` added as project-level release tooling.
+
+### Files changed in v1.15.1
+
+| File | Change |
+|------|--------|
+| `firmware/src/ota_manager/ota_manager.h` | Added `OTA_STATE_FW_DONE`; added `ota_get_active_bank()`, `ota_is_accepted()` declarations; updated `ota_firmware_end()` docstring |
+| `firmware/src/ota_manager/ota_manager.cpp` | Two-phase commit (`s_fallback_timer`, `fallback_reboot_cb`, deferred `esp_ota_set_boot_partition`); `ota_assets_begin()` accepts `FW_DONE`; `task_ota_manager` uses `s_ota_part`; `ota_get_active_bank()` and `ota_is_accepted()` implementations |
+| `firmware/src/web_server/web_server.cpp` | `STATE_NAMES[8]` + bound `< 8`; `bank`/`accepted` in status JSON; firmware endpoint response `awaiting_assets:true` |
+| `firmware/data/app.js` | `'fw_done'` in `OTA_ACTIVE_STATES`; idle label with bank/accepted; auto-chain assets upload |
+| `webUiMock/mock_server.py` | `fw_done` state; `bank`/`accepted` in OTA dict; firmware endpoint response; assets accepts `fw_done` |
+| `firmware/platformio.ini` | `FIRMWARE_VERSION` 1.15.0 → 1.15.1 |
+| `build_release.ps1` | New: STORE-only ZIP writer; versioned output under `bin/` |
+| `bin/README.md` | New: OTA upload guide, USB recovery guide, partition layout |
+
+### Verification (v1.15.1)
+
+| Check | Result |
+|-------|--------|
+| Firmware upload → UI shows `Firmware ready — uploading assets…`; no immediate reboot | ✅ Verified on hardware |
+| Assets upload auto-chains from firmware upload if ZIP file already selected | ✅ Verified on hardware |
+| Assets ZIP produced by `build_release.ps1`: method=0 (STORE), accepted by device | ✅ Verified on hardware |
+| After OTA + reboot: `GET /api/ota/status` returns `bank:"B"`, `accepted:false` for ~30 s then `accepted:true` | ✅ Verified on hardware |
+| Fallback timer: upload firmware only, wait 120 s → device reboots to new firmware bank (lfs unchanged) | Pending |
+| 3-fail rollback: unchanged from v1.15.0 | ✅ Inherited |

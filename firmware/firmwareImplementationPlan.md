@@ -311,7 +311,8 @@ Verification: Build clean (0 errors); firmware + LittleFS uploaded; device stabl
 
 ---
 
-### Phase 10 — OTA Manager (T13)
+### Phase 10 — OTA Manager (T13) ✅ Complete
+
 **Goal:** Safe firmware and web asset updates with automatic rollback.
 
 Files: `ota_manager.h/.cpp`
@@ -319,15 +320,23 @@ Files: `ota_manager.h/.cpp`
 Implementation:
 - Spawned on-demand by T11 when upload begins; `xTaskCreate` in web_server.cpp
 - Firmware OTA: `esp_ota_begin()` → stream `esp_ota_write()` → `esp_ota_end()` → `esp_ota_set_boot_partition()` → reboot
-- Web asset OTA: receive zip to PSRAM (`ps_malloc`); mount inactive LittleFS; extract via miniz; write `manifest.json` last; unmount; switch partition
-- 3-fail rollback: NVS `system/ota_fail_count`; reset on 30s healthy uptime; increment on boot failure; at 3 → `esp_ota_mark_app_invalid_rollback_and_reboot()`
-- Set/clear `EG1_BIT_OTA_IN_PROGRESS`; post log events to Q3
+- Web asset OTA: receive zip to PSRAM (`heap_caps_malloc(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)`); T13 mounts inactive LittleFS; extracts via minimal STORE-only ZIP parser (no external library); writes `manifest.json` last; unmounts; switches partition; reboots
+- 3-fail rollback: NVS `system/ota_fail_cnt`; reset on 30s healthy uptime (T1 calls `ota_mark_healthy()` after 60 ticks); increment on boot entry; at ≥ 3 → `esp_ota_mark_app_invalid_rollback_and_reboot()`
+- Set/clear `EG1_BIT_OTA_IN_PROGRESS`; T1 calls `ota_mark_healthy()` after `OTA_HEALTHY_MS`
 
-Phase 10.1 stub: firmware OTA only; web asset extraction stubbed to Phase 10.2.
+**Deviations from plan:**
+- `miniz` library not used — minimal STORE-only ZIP parser implemented directly in `ota_manager.cpp`; DEFLATE entries rejected with diagnostic (user must use `zip -0`)
+- NVS key is `ota_fail_cnt` (not `ota_fail_count`) to stay within 15-char NVS key limit
+- Firmware OTA streaming runs inline in T11's body callback (not a separate T13); T13 only handles async ZIP extraction
+
+**Post-v1.15.0 correctness fixes (v1.15.1):**
+- **Two-phase atomic OTA commit**: original design rebooted immediately after `ota_firmware_end()`, before assets could be uploaded, leaving the new LittleFS partition empty. Fixed: `ota_firmware_end()` now only verifies the image (`esp_ota_end()`), enters `OTA_STATE_FW_DONE`, and starts a 120 s one-shot FreeRTOS fallback timer (`s_fallback_timer`). The boot partition switch (`esp_ota_set_boot_partition()`) is deferred to `task_ota_manager()` after successful asset extraction, ensuring atomic Bank A ↔ Bank B switchover. The fallback timer fires `fallback_reboot_cb()` (switches partition + reboots without touching LittleFS) if no assets arrive within 120 s.
+- **ZIP STORE writer**: `build_release.ps1` originally used `System.IO.Compression.ZipFile` (PS 5.1 / .NET Framework) which silently emits method=8 (DEFLATE) even at `CompressionLevel.NoCompression`. Replaced with a self-contained binary ZIP writer producing method=0 (STORE) Local File Headers, Central Directory records, and EOCD. CRC-32 polynomial stored as decimal `[long]3988292384` to avoid PS 5.1 signed-int32 overflow.
+- **New status accessors**: `ota_get_active_bank()` (running partition subtype → `'A'`/`'B'`/`'?'`) and `ota_is_accepted()` (NVS `ota_fail_cnt` == 0) added to `ota_manager.h/.cpp`; web server status endpoint extended with `bank` and `accepted` fields; web UI idle label updated.
 
 Drivers used: LIB-9 (littlefs_mount, littlefs_write, littlefs_unmount, littlefs_active_partition)
 
-Verification: OTA new firmware; confirm reboot to new version; bad firmware → 3-fail rollback; web assets zip → new files after reboot.
+Verification: OTA new firmware; confirm reboot to new version; bad firmware → 3-fail rollback; web assets zip → new files after reboot; firmware-then-assets sequence → atomic bank switch; fallback timer → firmware-only reboot after 120 s if no assets.
 
 ---
 

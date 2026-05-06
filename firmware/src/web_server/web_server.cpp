@@ -61,6 +61,7 @@
 #include "littlefs_storage.h"
 #include "nvs_config.h"
 #include "../../../drivers/sdCard/src/sd_storage.h"
+#include "../ota_manager/ota_manager.h"
 
 static const char *TAG = "T11_WEB";
 
@@ -729,6 +730,134 @@ static void register_routes(AsyncWebServer &srv)
         event_logger_sd_unmount();
         req->send(200, "application/json", "{\"ok\":true}");
     });
+
+    /* ── OTA status ────────────────────────────────────────── */
+    srv.on("/api/ota/status", HTTP_GET, [](AsyncWebServerRequest *req) {
+        if (req_role(req) == SESSION_NONE) {
+            req->send(401, "application/json", "{\"ok\":false}"); return;
+        }
+        static const char * const STATE_NAMES[] = {
+            "idle", "fw_writing", "fw_verifying",
+            "assets_buffering", "assets_writing",
+            "rebooting", "error", "fw_done"
+        };
+        ota_state_t st   = ota_get_state();
+        uint8_t     pct  = ota_get_progress_pct();
+        const char *err  = ota_get_error();
+        char        bank = ota_get_active_bank();
+        bool        acc  = ota_is_accepted();
+        const char *sname = ((unsigned)st < 8) ? STATE_NAMES[st] : "unknown";
+
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+            "{\"ok\":true,\"state\":\"%s\",\"progress\":%u,\"error\":\"%s\","
+            "\"bank\":\"%c\",\"accepted\":%s}",
+            sname, (unsigned)pct, err ? err : "",
+            bank, acc ? "true" : "false");
+        req->send(200, "application/json", buf);
+    });
+
+    /* ── OTA firmware upload ────────────────────────────────── */
+    /*
+     * Accepts a raw .bin firmware image as the POST body.  Chunks arrive via
+     * the body callback; T13 OTA logic is called inline (no separate task for
+     * the write itself — streaming OTA needs no staging buffer).
+     *
+     * On success the device reboots after 1 s (response is sent first).
+     * On error after the first chunk was accepted, subsequent body callbacks
+     * are silently skipped (the response was already sent on the error chunk).
+     */
+    srv.on("/api/ota/firmware", HTTP_POST,
+        [](AsyncWebServerRequest *req) { (void)req; },
+        NULL,
+        [](AsyncWebServerRequest *req, uint8_t *data, size_t len,
+           size_t index, size_t total) {
+            if (req_role(req) != SESSION_ADMIN) {
+                req->send(403, "application/json",
+                          "{\"ok\":false,\"err\":\"admin only\"}");
+                return;
+            }
+            ota_state_t cur = ota_get_state();
+            if (index == 0) {
+                /* First chunk — begin OTA. */
+                if (!ota_firmware_begin(total)) {
+                    req->send(500, "application/json",
+                        "{\"ok\":false,\"err\":\"OTA begin failed\"}");
+                    return;
+                }
+            } else if (cur == OTA_STATE_ERROR || cur == OTA_STATE_IDLE) {
+                /* Error already set on a previous chunk; response already sent. */
+                return;
+            }
+
+            if (!ota_firmware_write(data, len)) {
+                req->send(500, "application/json",
+                    "{\"ok\":false,\"err\":\"OTA write failed\"}");
+                return;
+            }
+
+            if (index + len >= total) {
+                /* Last chunk. */
+                if (!ota_firmware_end()) {
+                    req->send(500, "application/json",
+                        "{\"ok\":false,\"err\":\"OTA verify failed\"}");
+                    return;
+                }
+                req->send(200, "application/json",
+                    "{\"ok\":true,\"rebooting\":false,"
+                    "\"awaiting_assets\":true}");
+            }
+        });
+
+    /* ── OTA web-asset upload ───────────────────────────────── */
+    /*
+     * Accepts a STORE-only .zip archive as the POST body.  The ZIP is
+     * accumulated entirely in PSRAM; on receipt of the last chunk T13 is
+     * spawned to extract it to the inactive LittleFS partition.
+     * The response is 202 Accepted; the caller should poll GET /api/ota/status
+     * for extraction progress.
+     *
+     * Build the archive with:
+     *   zip -0 assets.zip index.html style.css app.js
+     */
+    srv.on("/api/ota/assets", HTTP_POST,
+        [](AsyncWebServerRequest *req) { (void)req; },
+        NULL,
+        [](AsyncWebServerRequest *req, uint8_t *data, size_t len,
+           size_t index, size_t total) {
+            if (req_role(req) != SESSION_ADMIN) {
+                req->send(403, "application/json",
+                          "{\"ok\":false,\"err\":\"admin only\"}");
+                return;
+            }
+            ota_state_t cur = ota_get_state();
+            if (index == 0) {
+                if (!ota_assets_begin(total)) {
+                    req->send(500, "application/json",
+                        "{\"ok\":false,\"err\":\"OTA assets begin failed\"}");
+                    return;
+                }
+            } else if (cur == OTA_STATE_ERROR) {
+                return;  /* Previous chunk already failed and sent a response. */
+            }
+
+            if (!ota_assets_accumulate(data, len, index)) {
+                req->send(500, "application/json",
+                    "{\"ok\":false,\"err\":\"OTA assets accumulate failed\"}");
+                return;
+            }
+
+            if (index + len >= total) {
+                if (!ota_assets_end()) {
+                    req->send(500, "application/json",
+                        "{\"ok\":false,\"err\":\"OTA assets spawn failed\"}");
+                    return;
+                }
+                req->send(202, "application/json",
+                    "{\"ok\":true,"
+                    "\"message\":\"extracting — poll GET /api/ota/status\"}");
+            }
+        });
 
     /* ── 404 fallback ───────────────────────────────────────── */
     srv.onNotFound([](AsyncWebServerRequest *req) {

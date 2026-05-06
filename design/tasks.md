@@ -262,11 +262,11 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 **Priority:** Low (spawned on demand) | **Core:** 0
 
 - Activated via the web interface (T11)
-- Writes incoming firmware image to the inactive flash bank (A or B)
-- Writes incoming LittleFS image to the inactive web-files slot
-- On successful write: marks the inactive bank active and triggers a controlled system restart
+- **Firmware OTA** (inline in T11 body callback, not a separate task): T11 streams each received chunk to `ota_firmware_write()`; `ota_firmware_end()` calls `esp_ota_end()` (SHA-256 verify), enters `OTA_STATE_FW_DONE`, and starts a 120 s one-shot fallback timer. The boot partition is **not** switched yet.
+- **Two-phase atomic commit**: `task_ota_manager` (T13) is spawned by `ota_assets_end()` when asset upload completes. T13 mounts the inactive LittleFS partition, extracts the STORE-only ZIP (DEFLATE entries rejected), writes `manifest.json` last, unmounts, then calls `esp_ota_set_boot_partition()` and reboots — switching both firmware and LittleFS partitions atomically.
+- **Fallback timer** (`s_fallback_timer`, 120 s): if no web-asset upload arrives after firmware verification, the timer fires `fallback_reboot_cb()`, which switches only the boot partition and reboots, leaving LittleFS unchanged (firmware-only update path).
 - Implements 3-consecutive-fail rollback: if the new firmware fails to complete startup 3 times, the previous bank is restored as active and the system boots the known-good version
-- Firmware and web-file updates that belong to the same release must both be applied in the same update session before either is activated
+- **Status accessors**: `ota_get_active_bank()` returns the running partition as `'A'` (app0) or `'B'` (app1); `ota_is_accepted()` returns true when NVS `ota_fail_cnt` == 0 (i.e. `ota_mark_healthy()` has fired).
 - **Synchronization:** acquires MX5 (LittleFS) exclusively during web-file write — T11 is blocked from serving HTML while this is held; sets EG1.OTA_IN_PROGRESS on start, clears on completion or failure; posts to Q3 (log events)
 
 ---
@@ -333,7 +333,7 @@ If stack usage is low and execution time is short, T7 (keypad scan) and T1 (watc
 Drop-oldest enforced by `log_post()` in `event_logger.h` (Gap H). All producers must call `log_post()` — never `xQueueSend(Q3, ...)` directly. T9 surfaces the drop count via a synthetic `LOG_SYSTEM` event after each drain pass.
 
 **OTA sequencing (T13)**
-If an update release contains both firmware and web-file changes, both packages must be transferred and verified before either is activated. T13 shall not switch the active bank until both writes have completed successfully.
+If an update release contains both firmware and web-file changes, both packages must be transferred and verified before either is activated. T13 shall not switch the active bank until both writes have completed successfully. This is enforced by the two-phase commit: `ota_firmware_end()` enters `OTA_STATE_FW_DONE` and defers `esp_ota_set_boot_partition()` to `task_ota_manager()`. A 120 s fallback timer covers firmware-only update releases (no assets ZIP).
 
 ---
 

@@ -389,6 +389,28 @@
       <button id="btn-sd-unmount" onclick="postSdUnmount()" class="danger">Unmount</button>
       <span class="save-ok" id="fb-sd"></span>
     </div>
+
+    <hr>
+    <h3>OTA update <span class="tip-icon" data-tip="Over-The-Air firmware and web asset update. The device reboots automatically after a successful upload. Both OTA banks are maintained; automatic rollback fires after 3 consecutive boot failures.">ⓘ</span></h3>
+    <div class="row">
+      <label data-tip="Upload a compiled firmware binary (.bin) to the inactive OTA bank. The device reboots to the new firmware automatically after a successful write. Build the .bin with PlatformIO: pio run.">Firmware (.bin)</label>
+      <input type="file" id="ota-fw-file" accept=".bin">
+      <button onclick="uploadOtaFirmware()">Upload firmware</button>
+      <span class="save-ok" id="fb-ota-fw"></span>
+    </div>
+    <div class="row">
+      <label data-tip="Upload a STORE-only ZIP of web assets (index.html, style.css, app.js) to the inactive LittleFS partition. Pack with: zip -0 assets.zip index.html style.css app.js. Device reboots and serves new assets after activation.">Web assets (.zip)</label>
+      <input type="file" id="ota-assets-file" accept=".zip">
+      <button onclick="uploadOtaAssets()">Upload assets</button>
+      <span class="save-ok" id="fb-ota-assets"></span>
+    </div>
+    <div class="row">
+      <label data-tip="Current OTA operation state. Poll this during a web-assets upload to track extraction progress.">OTA status</label>
+      <span id="ota-status-text" style="font-weight:600">Idle</span>
+    </div>
+    <div id="ota-progress-wrap" style="display:none">
+      <div class="ota-progress-bar"><div id="ota-progress-fill" style="width:0%"></div></div>
+    </div>
   </div>
 
   <!-- Access tab (admin only) -->

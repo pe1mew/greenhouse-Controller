@@ -6,6 +6,68 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.15.1] — 2026-05-06
+
+*Post-Phase-10 correctness fixes: two-phase atomic OTA commit; STORE-only ZIP writer; OTA idle-status bank/accepted display; release build tooling.*
+
+### Added
+- `firmware/src/ota_manager/ota_manager.h` — `OTA_STATE_FW_DONE` (= 7): new intermediate state entered after `esp_ota_end()` succeeds but before the boot partition is switched; the device waits up to 120 s for asset upload. New status accessors: `ota_get_active_bank()` (returns `'A'`/`'B'`/`'?'` from the running partition subtype) and `ota_is_accepted()` (returns true when NVS `ota_fail_cnt` == 0).
+- `firmware/src/ota_manager/ota_manager.cpp` — `s_fallback_timer`: FreeRTOS one-shot timer (120 000 ms) started by `ota_firmware_end()`; fires `fallback_reboot_cb()` which switches the boot partition and reboots without touching LittleFS if no assets arrive; cancelled by `ota_assets_begin()`. Implementations of `ota_get_active_bank()` and `ota_is_accepted()`.
+- `firmware/src/web_server/web_server.cpp` — `GET /api/ota/status` response extended with `bank` and `accepted` fields; `STATE_NAMES` extended with `"fw_done"` at index 7 (bound check raised to `< 8`); firmware endpoint response changed to `{ok:true, rebooting:false, awaiting_assets:true}`.
+- `firmware/data/app.js` — OTA idle label shows `Idle — Bank A, accepted` / `not yet accepted`; `uploadOtaFirmware()` auto-chains `uploadOtaAssets()` if an assets file is already selected; `OTA_ACTIVE_STATES` includes `'fw_done'` so status polling continues through the intermediate state.
+- `build_release.ps1` — new project-root PowerShell 5.1 script: reads `FIRMWARE_VERSION` from `platformio.ini`; builds firmware binary; validates LittleFS build; produces a STORE-only (method=0) ZIP via a self-contained binary writer (no .NET `ZipFile`); outputs versioned files under `bin/<version>/`. Run: `powershell -ExecutionPolicy Bypass -File .\build_release.ps1`.
+- `bin/README.md` — comprehensive guide: prerequisites, version bump, script invocation, OTA via web GUI (Path A), USB initial flash / recovery (Path B), rollback behaviour, partition layout table.
+
+### Changed
+- `firmware/src/ota_manager/ota_manager.cpp` — `ota_firmware_end()` no longer calls `esp_ota_set_boot_partition()` or schedules an immediate reboot; it verifies the image (`esp_ota_end()`), enters `OTA_STATE_FW_DONE`, and starts the 120 s fallback timer. The boot partition switch is deferred to `task_ota_manager()` after successful asset extraction, making both the firmware and paired LittleFS partition switch atomically. `ota_assets_begin()` accepts `OTA_STATE_FW_DONE` in addition to `OTA_STATE_IDLE` / `OTA_STATE_ERROR`, and cancels the fallback timer on entry. `task_ota_manager()` uses `s_ota_part` (saved by `ota_firmware_end()`) when a same-session firmware upload preceded assets, otherwise falls back to `esp_ota_get_next_update_partition(NULL)`.
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.15.0` → `1.15.1` in both `lolin_s3` and `test_t2_relay` environments.
+- `webUiMock/mock_server.py` — OTA state list extended with `fw_done`; firmware endpoint returns `{ok:true, rebooting:false, awaiting_assets:true}`; assets endpoint accepts `fw_done` initial state; `ota` dict carries `bank` and `accepted` fields (bank flips after asset install; `accepted` is `False` for 5 s then `True`); `cfg["fw_ver"]` updated to `"1.15.1"`.
+
+### Fixed
+- **OTA premature reboot** (critical): the device previously rebooted immediately after firmware upload, before web assets could be transferred, leaving the inactive LittleFS partition empty and the web UI inaccessible. Fixed by the two-phase commit: boot partition switch now happens only after asset extraction succeeds in T13 (or after the 120 s fallback timer if no assets arrive).
+- **ZIP DEFLATE entries rejected by extractor**: `build_release.ps1` originally used `System.IO.Compression.ZipFile` (PS 5.1 / .NET Framework), which silently writes method=8 (DEFLATE) even at `CompressionLevel.NoCompression` — a known .NET Framework defect. Fixed by replacing with a self-contained binary ZIP writer emitting raw Local File Header, Central Directory, and EOCD records with method=0. CRC-32 uses decimal `[long]3988292384` for the polynomial to avoid PS 5.1 signed-int32 overflow on constants above `0x7FFFFFFF`.
+- **`STATE_NAMES` bounds overrun**: the `< 7` upper-bound check in `web_server.cpp` excluded the new index-7 entry; corrected to `< 8`.
+
+### Build metrics
+- No binary size change from v1.15.0.
+
+---
+
+## [1.15.0] — 2026-05-06
+
+*Phase 10: dual-bank OTA (firmware + web assets) with 3-fail rollback; version bump 1.14.0 → 1.15.0.*
+
+### Added
+- `firmware/src/ota_manager/ota_manager.h` — full OTA Manager public API: rollback management (`ota_check_rollback`, `ota_mark_healthy`), streaming firmware OTA (`ota_firmware_begin/write/end`), PSRAM-buffered web-asset OTA (`ota_assets_begin/accumulate/end`), status accessors (`ota_get_state`, `ota_get_progress`, `ota_get_error`), T13 task entry point; `OTA_HEALTHY_MS` constant (30 000 ms)
+- `firmware/src/ota_manager/ota_manager.cpp` — full implementation:
+  - **3-fail rollback**: NVS `system/ota_fail_cnt` incremented on every boot; on count ≥ 3 the counter is cleared and `esp_ota_mark_app_invalid_rollback_and_reboot()` is called, reverting to the previous firmware bank
+  - **Firmware OTA** (T11 inline): `esp_ota_begin/write/end` on the inactive `app` partition; reboots via one-shot FreeRTOS timer after 1 s; `EG1_BIT_OTA_IN_PROGRESS` held throughout
+  - **Web-asset OTA** (T13 spawned on-demand): ZIP uploaded into PSRAM; T13 extracts it onto the inactive LittleFS partition and writes `manifest.json`; then calls `esp_ota_set_boot_partition` (paired bank switch) and reboots; ZIP must use STORE compression (`zip -0`); DEFLATE entries rejected with a clear error message
+  - ZIP LOCAL FILE HEADER parser: reads signature, compression method, sizes, and name; strips directory prefix to extract basename; validates every entry before writing to LittleFS
+- `firmware/src/web_server/web_server.cpp` — three new OTA REST endpoints:
+  - `GET /api/ota/status` — any logged-in role; returns `{ok, state, progress, error}`
+  - `POST /api/ota/firmware` — admin only; streaming body callback (`index == 0` → begin, per-chunk → write, `index+len >= total` → end + 200 `{ok,rebooting:true}`); error state suppresses double-response
+  - `POST /api/ota/assets` — admin only; same streaming pattern; final response 202 `{ok, message:"extracting — poll GET /api/ota/status"}`
+- `firmware/data/index.html` — **OTA section** in System tab (admin only): firmware `.bin` file input + Upload button; web assets `.zip` file input + Upload button; OTA status span; progress bar (hidden when idle)
+- `firmware/data/app.js` — `uploadOtaFirmware()`, `uploadOtaAssets()`, `loadOtaStatus()`: POST binary/zip body to OTA endpoints; `loadOtaStatus()` auto-polls every 2 s while state is not `idle`/`error`; progress bar updated from `progress` field; `setRole('admin')` now calls `loadOtaStatus()` on login
+- `firmware/data/style.css` — `.ota-progress-bar` and inner `div` styles (8 px height, green fill, 0.4 s width transition)
+- `webUiMock/mock_server.py` — **OTA simulation endpoints**: `GET /api/ota/status`, `POST /api/ota/firmware`, `POST /api/ota/assets`; background thread simulates chunked upload progress (0–100%) with per-state transitions (`fw_begin → fw_write → fw_end → idle`, similar for assets); thread-safe via `ota_lock`
+
+### Changed
+- `firmware/src/main.cpp` — `setup()` calls `ota_check_rollback()` immediately after NVS init; T1 task calls `ota_mark_healthy()` once after `OTA_HEALTHY_MS` (30 s, 60 × 500 ms ticks) of stable uptime
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.14.0` → `1.15.0` in both `lolin_s3` and `test_t2_relay` environments
+- `webUiMock/mock_server.py` — `cfg["fw_ver"]` updated to `"1.15.0"`
+
+### Build metrics
+- Flash: ~56% (est.)
+- RAM:   ~19% (est.)
+
+### Notes
+- Web-asset ZIP must be created with `zip -0 assets.zip data/*` (STORE only — no compression). DEFLATE entries are rejected at extraction time with a diagnostic error.
+- On a successful OTA update, the inactive bank becomes the new boot target; both the firmware partition and the paired LittleFS partition are switched atomically.
+
+---
+
 ## [1.14.0] — 2026-05-06
 
 *Web GUI polish: hover tooltips on all fields; session expiry handling; history buffer fix; SD card management (status card + mount/unmount) with full T9 logging integration; LCD truncation fix.*
