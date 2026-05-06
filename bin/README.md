@@ -1,10 +1,11 @@
 # Greenhouse Controller — Release Artefacts
 
-This directory holds versioned release packages produced by `build_release.ps1`.
+This directory holds the release build script and versioned release packages.
 
 ```
 bin/
   README.md               <- this file
+  build_release.ps1       <- release builder script
   1.15.0/
     greenhouse-controller-1.15.0.bin
     web-assets-1.15.0.zip
@@ -28,19 +29,31 @@ bin/
 
 ### Bump the version
 
-Open `firmware/platformio.ini` and change `FIRMWARE_VERSION` in **both** environments:
+> **The build script does not increment the version automatically.**
+> You must edit the version manually before running it.
+
+Open `firmware/platformio.ini` and update `FIRMWARE_VERSION` in **both** build environments (`lolin_s3` and `test_t2_relay`):
 
 ```ini
 build_flags =
     ...
-    -DFIRMWARE_VERSION=\"1.15.1\"
+    -DFIRMWARE_VERSION=\"1.15.2\"
 ```
+
+Make sure both occurrences are updated — the script reads only the first match and will build whichever version it finds.
 
 ### Run the build script
 
 From the **project root** (the directory that contains `firmware/`, `bin/`, etc.):
 
 ```powershell
+powershell -ExecutionPolicy Bypass -File .\bin\build_release.ps1
+```
+
+Or from inside the `bin\` directory:
+
+```powershell
+cd bin
 powershell -ExecutionPolicy Bypass -File .\build_release.ps1
 ```
 

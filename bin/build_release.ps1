@@ -4,10 +4,12 @@
 
 .DESCRIPTION
     1. Reads FIRMWARE_VERSION from firmware/platformio.ini.
+       NOTE: The version is NOT incremented automatically. Bump it manually
+       in firmware/platformio.ini (both environments) before running this script.
     2. Builds the firmware binary   (pio run -e lolin_s3).
     3. Builds the LittleFS image    (pio run -e lolin_s3 -t buildfs).
     4. Creates a STORE-only ZIP of firmware/data/  (method=0, no deflate).
-    5. Copies both artefacts to bin\<version>\ with the version in the filename.
+    5. Writes both artefacts to bin\<version>\ with the version in the filename.
 
 .OUTPUTS
     bin\<version>\greenhouse-controller-<version>.bin
@@ -15,6 +17,9 @@
 
 .NOTES
     Run from the project root:
+        powershell -ExecutionPolicy Bypass -File .\bin\build_release.ps1
+
+    Or from inside the bin\ directory:
         powershell -ExecutionPolicy Bypass -File .\build_release.ps1
 
     The web-assets ZIP uses ZIP STORE (no compression) because the on-device
@@ -26,9 +31,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # ---------------------------------------------------------------------------
-# Paths
+# Paths  (script lives in bin\; project root is one level up)
 # ---------------------------------------------------------------------------
-$ROOT_DIR     = $PSScriptRoot
+$ROOT_DIR     = Split-Path $PSScriptRoot -Parent
 $FIRMWARE_DIR = Join-Path $ROOT_DIR "firmware"
 $PIO          = Join-Path $env:USERPROFILE ".platformio\penv\Scripts\pio.exe"
 
@@ -51,9 +56,9 @@ if ($ini_text -match 'FIRMWARE_VERSION=\\"([0-9]+\.[0-9]+\.[0-9]+)\\"') {
 }
 
 # ---------------------------------------------------------------------------
-# Output directory
+# Output directory  (bin\<version>\  relative to project root)
 # ---------------------------------------------------------------------------
-$OUT_DIR = Join-Path $ROOT_DIR "bin\$VERSION"
+$OUT_DIR = Join-Path $PSScriptRoot $VERSION
 
 Write-Host ""
 Write-Host "=== Greenhouse Controller - Release Builder ===" -ForegroundColor Cyan
