@@ -187,6 +187,12 @@ void dm_meas_snapshot(sensor_reading_t *out, bool *valid_out);
 void dm_ring_read(uint16_t offset, sensor_reading_t *buf,
                   uint16_t count, uint16_t *read_out);
 
+/** @brief Return the number of entries currently stored in the ring buffer.
+ *  Thread-safe (MX3, 500 ms timeout; returns 0 on timeout).
+ *  Use before dm_ring_read() to compute the correct offset for the newest N
+ *  entries: offset = (avail > n) ? avail - n : 0. */
+uint16_t dm_ring_count(void);
+
 /* ---- Convenience single-field getters ---- */
 
 /** @brief Return the last-known Unix UTC timestamp (seconds since 1970-01-01).

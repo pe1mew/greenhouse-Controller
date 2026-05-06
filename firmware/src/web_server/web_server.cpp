@@ -660,8 +660,12 @@ static void register_routes(AsyncWebServer &srv)
             (sensor_reading_t *)ps_malloc((size_t)n * sizeof(sensor_reading_t));
         if (!rows) { req->send(500); return; }
 
-        uint16_t got = 0;
-        dm_ring_read(0, rows, (uint16_t)n, &got);
+        /* Read the NEWEST n entries.  dm_ring_read uses a logical offset from
+         * the oldest entry, so compute offset = max(0, avail - n). */
+        uint16_t avail  = dm_ring_count();
+        uint16_t offset = (avail > (uint16_t)n) ? (uint16_t)(avail - (uint16_t)n) : 0u;
+        uint16_t got    = 0;
+        dm_ring_read(offset, rows, (uint16_t)n, &got);
 
         /* Build JSON array — allocate from PSRAM */
         /* 60 entries × ~85 chars/entry + overhead ≈ 5200 bytes max */

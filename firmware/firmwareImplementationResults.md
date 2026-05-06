@@ -2962,3 +2962,39 @@ On detection: `EG1_BIT_CALIBRATING` cleared first (so no double-bit display), th
 | Web GUI: Settings section visible above Sensor history after login | ✅ Verified |
 | Web GUI: tooltip appears on hover over "Sensor history" heading | ✅ Verified |
 | Web GUI: tooltip appears on hover over Refresh button | ✅ Verified |
+
+---
+
+### v1.16.6 — 2026-05-06
+
+**Theme:** Sensor history stale/frozen bug fix — history table now always shows the newest readings; `dm_ring_count()` added; newest entry at top.
+
+#### Files changed
+
+| File | Change |
+|------|--------|
+| `firmware/src/data_manager/data_manager.h` | `dm_ring_count()` declaration added to public API. |
+| `firmware/src/data_manager/data_manager.cpp` | `dm_ring_count()` implemented: acquires MX3 (500 ms timeout), returns `s_ring.count`, releases. Returns 0 on timeout. |
+| `firmware/src/web_server/web_server.cpp` | `/api/history` handler: replaced fixed `offset=0` with `offset = max(0, dm_ring_count() − n)` so the endpoint always returns the `n` **newest** entries regardless of ring fill level. |
+| `firmware/data/app.js` | `loadHistory()`: `data.rows.forEach(...)` → `data.rows.slice().reverse().forEach(...)` — reverses the server's oldest-first order so the newest reading appears at the top of the history table. |
+| `firmware/data/app.js` | `loadHistory()`: `.catch(function(err){ console.warn('loadHistory failed:', err); })` added to the fetch chain. |
+| `firmware/platformio.ini` | `FIRMWARE_VERSION` bumped `1.16.5` → `1.16.6`. |
+
+#### Root-cause analysis — sensor history frozen/stale
+
+**Symptom:** Sensor history table stopped updating at some point after boot. Hitting Refresh or waiting for the 2-minute auto-refresh produced no change even though the live status display showed new readings arriving.
+
+**Root cause:** `dm_ring_read(offset=0, rows, n, &got)` — logical offset 0 is always the *oldest* entry in the ring. With `DM_RING_DEPTH = 360` entries and `n = 60` requested, once the ring accumulates more than 60 entries (60 minutes at 60 s poll) the oldest 60 entries never change. Every fetch returned the same 60 rows from one hour (or more) ago.
+
+**Fix:** Call `dm_ring_count()` to obtain the current fill count, then compute `offset = (avail > n) ? avail − n : 0` — this points `dm_ring_read` at the last `n` entries (the newest). Added `dm_ring_count()` as a thread-safe MX3 getter because callers previously had no direct way to query the ring fill level.
+
+**Reversal:** The server returns rows oldest-first (ascending timestamp). After fixing the offset the correct 60 rows are returned but still oldest at top. Reversing in `loadHistory()` (`slice().reverse()`) places the most recent poll cycle at row 1 of the table with older rows below it.
+
+#### Verification
+
+| Check | Result |
+|-------|--------|
+| History table updates every poll cycle and shows the most recent reading at the top | ✅ Verified on hardware |
+| Refresh button fetches a new batch with the current latest reading | ✅ Verified on hardware |
+| History table after 1+ hour of operation: newest row is no more than `poll_interval_s` old | ✅ Verified on hardware |
+| `.catch` in `loadHistory()`: network error logs to browser console without unhandled rejection | ✅ Verified in browser DevTools |

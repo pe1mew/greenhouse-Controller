@@ -654,6 +654,16 @@ void dm_ring_read(uint16_t offset, sensor_reading_t *buf,
     if (read_out != NULL) { *read_out = copied; }
 }
 
+uint16_t dm_ring_count(void)
+{
+    uint16_t n = 0u;
+    if (xSemaphoreTake(MX3, pdMS_TO_TICKS(500u)) == pdTRUE) {
+        n = s_ring.count;
+        xSemaphoreGive(MX3);
+    }
+    return n;
+}
+
 uint32_t dm_get_unix_time(void)
 {
     uint32_t v = 0u;

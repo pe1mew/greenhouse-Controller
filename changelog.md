@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.16.6] — 2026-05-06
+
+*Sensor history table now shows newest readings at the top; sensor history stale/frozen bug fixed (always showed the 60 oldest entries); `dm_ring_count()` added.*
+
+### Fixed
+- `firmware/src/data_manager/data_manager.cpp` — **`dm_ring_count()`** added: thread-safe getter (MX3, 500 ms timeout) that returns the current number of valid entries in the ring buffer. Previously callers had no way to query this without taking MX3 themselves.
+- `firmware/src/data_manager/data_manager.h` — **`dm_ring_count()` declaration** added to the public API header.
+- `firmware/src/web_server/web_server.cpp` — **`/api/history` newest-n fix**: handler called `dm_ring_read(0, rows, n, &got)` which always returned the `n` **oldest** entries (logical offset 0 = oldest). After DM_RING_DEPTH (360) entries accumulate, these never change, so the history table appeared frozen. Fixed by calling `dm_ring_count()` and computing `offset = max(0, avail − n)` to fetch the `n` **newest** entries.
+- `firmware/data/app.js` — **`loadHistory()` `.catch` added**: promise chain now has a `.catch(function(err){ console.warn(...) })` handler so network failures surface in the browser console instead of producing an unhandled rejection.
+
+### Changed
+- `firmware/data/app.js` — **Sensor history newest-at-top**: `data.rows.forEach(...)` changed to `data.rows.slice().reverse().forEach(...)`. The server returns rows oldest-first; reversing before rendering places the most recent reading at the top of the table and the oldest at the bottom.
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.16.5` → `1.16.6`.
+
+---
+
 ## [1.16.5] — 2026-05-06
 
 *Motor alarm aborts window calibration immediately; web GUI Settings moved above Sensor history; tooltips added to Sensor history heading and Refresh button.*

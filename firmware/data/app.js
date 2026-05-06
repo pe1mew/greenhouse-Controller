@@ -338,14 +338,14 @@ function postPinChange(role) {
 function loadHistory() {
   fetch('/api/history?n=60')
     .then(function (r) {
-      return r.ok ? r.json() : null;
+      return r.ok ? r.json() : Promise.reject('HTTP ' + r.status);
     })
-    .then(data => {
+    .then(function(data) {
       if (!data || !data.rows) return;
       const tbody = document.getElementById('log-body');
       if (!tbody) return;
       tbody.innerHTML = '';
-      data.rows.forEach(function(row) {
+      data.rows.slice().reverse().forEach(function(row) {
         const tr = document.createElement('tr');
         const t = row.ts ? new Date(row.ts * 1000).toLocaleTimeString() : '—';
         tr.innerHTML =
@@ -356,6 +356,9 @@ function loadHistory() {
           '<td>' + (row.wind_dir !== undefined ? row.wind_dir : '—') + '</td>';
         tbody.appendChild(tr);
       });
+    })
+    .catch(function(err) {
+      console.warn('loadHistory failed:', err);
     });
 }
 
