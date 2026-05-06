@@ -197,6 +197,36 @@ uint64_t storage_sd_free_bytes(void)
 }
 
 /* ---------------------------------------------------------------------------
+ * storage_sd_total_bytes
+ * --------------------------------------------------------------------------- */
+uint64_t storage_sd_total_bytes(void)
+{
+    if (!g_mounted) {
+        return 0;
+    }
+
+#ifndef UNIT_TEST
+    return SD.totalBytes();
+#else
+    return mock_sd_free_bytes(); /* mock has no separate total; return free as proxy */
+#endif
+}
+
+/* ---------------------------------------------------------------------------
+ * storage_sd_unmount
+ * --------------------------------------------------------------------------- */
+void storage_sd_unmount(void)
+{
+    if (!g_mounted) {
+        return;
+    }
+    g_mounted = false;
+#ifndef UNIT_TEST
+    SD.end();
+#endif
+}
+
+/* ---------------------------------------------------------------------------
  * storage_sd_list_csv
  * --------------------------------------------------------------------------- */
 storage_status_t storage_sd_list_csv(const char *ext, char *buf, size_t buf_len)

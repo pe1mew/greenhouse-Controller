@@ -54,7 +54,7 @@ firmware/src/
 | **E** | `ESPAsyncWebServer` / `AsyncTCP` not in `lib_deps` | ✅ Solved | `mathieucarbou/ESPAsyncWebServer @ ^3.3.6` and `mathieucarbou/AsyncTCP @ ^3.3.2` added to `platformio.ini`; IDF5/Arduino-3 compatible fork chosen. TSDS §5.8 updated with library identity and rationale. |
 | **F** | Motor travel time vs. dwell time conflated in NVS schema | ✅ Solved | `firmware/src/types/app_types.h` defines `MOTOR_M1_TRAVEL_S_DEFAULT 21`, `MOTOR_M2_TRAVEL_S_DEFAULT 21`, `MOTOR_M3_TRAVEL_S_DEFAULT 171` (seconds) as factory defaults plus `MOTOR_TRAVEL_S_MIN 5` / `MOTOR_TRAVEL_S_MAX 600` bounds, and `MOTOR_TRAVEL_MARGIN_S_DEFAULT 5` (fixed margin added to every relay pulse). NVS `motor` namespace adds `travel_m1/m2/m3` (int16_t, seconds, range 5–600) loaded by T4 on boot; T2 reads from MX4 at runtime (FR-CF05 satisfied). The relay energisation time is `(travel_mN + MOTOR_TRAVEL_MARGIN_S_DEFAULT) × 1000 ms`; the margin ensures the end-switch fires before the relay drops. De-energising the relay before the end-switch fires stops the window immediately at its current (intermediate) position — therefore only full open/close commands are ever issued. NVS `dwell_*` = minimum hold times only. TSDS §5.2, §4.3 T2/T4, §5.4, §5.10 updated; tasks.md updated. |
 | **G** | Graduated ventilation channel assignment undefined | ✅ Solved | `firmware/src/climate_control/climate_control.h/.cpp` created. `NUM_VENT_STEPS 3` added to `app_types.h`. Compile-time `VENT_STEP_TABLE[]`: step 1 = M1, step 2 = M1+M2, step 3 = M1+M2+M3. `vent_step_required_t()` and `vent_step_required_rh()` implement the graduated step algorithm with close-hysteresis guard. RH < RH_min → step 0 (full close; no graduated closing — Gap G design decision). RH in range → `VENT_STEP_NEUTRAL` (−1). `vent_resolve_conflict()` handles neutral / both-open / no-conflict / genuine-conflict cases. TSDS §5.2 updated with full algorithm; tasks.md T6 updated. |
-| **H** | Q3 drop-oldest not achievable with plain FreeRTOS queue | ✅ Solved | `firmware/src/event_logger/event_logger.h/.cpp` created. `log_post()` implements two-step evict-and-retry: `xQueueSend` → on fail: `xQueueReceive` (evict oldest) + `g_q3_dropped++` → retry `xQueueSend` → on fail: `g_q3_dropped++`. Counter protected by `portMUX_TYPE` spinlock. `log_take_dropped_count()` atomically reads and resets counter for T9. T9 emits `LOG_SYSTEM` event when count > 0. All producers must use `log_post()`; direct `xQueueSend(Q3,...)` is prohibited. TSDS §5.3 and tasks.md T9 updated. |
+| **H** | Q3 drop-oldest not achievable with plain FreeRTOS queue | ✅ Solved | `firmware/src/event_logger/event_logger.h/.cpp` created. `log_post()` implements two-step evict-and-retry: `xQueueSend` → on fail: `xQueueReceive` (evict oldest) + `g_q3_dropped++` → retry `xQueueSend` → on fail: `g_q3_dropped++`. Counter protected by `portMUX_TYPE` spinlock. `log_take_dropped_count()` atomically reads and resets counter for T9. T9 emits `LOG_SYSTEM` event when count > 0. All producers must use `log_post()`; direct `xQueueSend(Q3,...)` is prohibited. TSDS §5.3 and tasks.md T9 updated. **v1.14.0:** `event_logger_sd_remount()` and `event_logger_sd_unmount()` added — allow T11 web endpoints to mount/unmount the SD card at runtime while keeping T9's `s_sd_ok` flag consistent with the driver's `g_mounted` state. |
 
 ### Open Issue Resolutions
 
@@ -291,13 +291,19 @@ Files: `web_server.h/.cpp`; `platformio.ini`; `firmware/data/index.html`; `firmw
 Implementation:
 - ✅ Mount active LittleFS via `littlefs_active_partition()` + `littlefs_mount()`; index.html presence checked at boot
 - ✅ ESPAsyncWebServer on port 80; AsyncWebSocket on `/ws`; 2 s push loop in T11
-- ✅ REST API: GET `/api/status`, `/api/config`, `/api/history?n=N`; POST `/api/login`, `/api/logout`, `/api/config`, `/api/wifi`, `/api/pin`; GET `/api/whoami`
+- ✅ REST API: GET `/api/status`, `/api/config`, `/api/history?n=N`, `/api/whoami`, `/api/sd/status`; POST `/api/login`, `/api/logout`, `/api/config`, `/api/wifi`, `/api/pin`, `/api/sd/mount`, `/api/sd/unmount`
 - ✅ All data endpoints require valid session cookie (random 16-byte hex token, server-side map, 4-slot, FreeRTOS mutex)
 - ✅ Role-based access: farmer can edit climate setpoints + wind_prot_en; admin has full access
 - ✅ Static files served from LittleFS (`index.html`, `style.css`, `app.js`) via `ps_malloc` + `littlefs_read`
 - ✅ PIN change via `pin_auth_set()`; WiFi/AP PSK update direct NVS; config updates via Q4
 
 **Deviation from plan:** `/api/command` replaced by WebSocket push for status; farmer/admin distinction via `is_farmer_key()` whitelist; OTA stub endpoints deferred to Phase 10.
+
+**v1.14.0 additions:**
+- SD card management: `GET /api/sd/status` (Farmer+Admin), `POST /api/sd/mount` and `/api/sd/unmount` (Admin); routed through `event_logger_sd_remount()` / `event_logger_sd_unmount()` so T9's `s_sd_ok` flag stays in sync
+- Web GUI: hover tooltips (`data-tip` CSS) on all 65 fields; SD status card; session expiry detection (60 s whoami poll, 401 interception); history buffer 6144 bytes; slider row spacing 1 rem
+- LCD page 4 row 1 format string corrected (17→16 chars)
+- Firmware version served from NVS via `/api/config` (single source of truth)
 
 Drivers used: LIB-9 (littlefs_storage), LIB-4 (nvs_config), LIB-12 (pin_auth)
 

@@ -2500,3 +2500,89 @@ Two new FSM states: `UI_SET_DATE`, `UI_SET_TIME`.
 | T10 | Fully implemented + geolocation/TZ auto-detect + `ntp_synced` in Q5 |
 | T11 | Fully implemented + local-time clock display (no UTC Z-suffix) |
 | All other tasks | Unchanged from Phase 9 handover |
+
+---
+
+## Post-Phase-9 Improvements — v1.14.0
+
+**Date completed:** 2026-05-06
+**Version:** 1.14.0
+**Target board:** WEMOS LOLIN S3 (ESP32-S3, 16 MB flash, 8 MB OPI PSRAM)
+
+---
+
+### Scope
+
+Six independent improvements applied on top of the Phase 9 / v1.13.0 baseline:
+
+1. Web GUI hover tooltips on all fields
+2. LCD status page 4 truncation fix
+3. Firmware version single source of truth (NVS → `/api/config` → footer)
+4. Session expiry silent-failure fix
+5. Sensor history buffer overflow fix + 2 min auto-refresh
+6. SD card management (status card, mount/unmount controls, T9 logging integration)
+
+---
+
+### Files Modified
+
+| File | Change summary |
+|------|---------------|
+| `firmware/platformio.ini` | Version bump `1.13.0` → `1.14.0` (both environments) |
+| `firmware/data/style.css` | Tooltip CSS block; `.row`/`.slider-row` `margin-bottom` 0.5→1 rem |
+| `firmware/data/index.html` | 65 `data-tip` attributes; 8 `ⓘ` tip-icons; SD status card; SD controls in System tab |
+| `firmware/data/app.js` | `showLogin()`; 60 s whoami poll; 401 handling; 2 min history auto-refresh; `loadSdStatus()`, `postSdMount()`, `postSdUnmount()`; version from `/api/config` |
+| `firmware/src/ui_display/ui_display.cpp` | Status page 4 row 1 format string: 17 → 16 chars (LCD truncation fix) |
+| `firmware/src/web_server/web_server.cpp` | `fw_ver` from NVS in `build_config_json()`; history buffer 4096→6144 bytes; `/api/sd/status|mount|unmount` endpoints; SD `#include` |
+| `drivers/sdCard/src/sd_storage.h` | `storage_sd_total_bytes()` and `storage_sd_unmount()` declarations |
+| `drivers/sdCard/src/sd_storage.cpp` | Both functions implemented |
+| `firmware/src/event_logger/event_logger.h` | `event_logger_sd_remount()` and `event_logger_sd_unmount()` declarations |
+| `firmware/src/event_logger/event_logger.cpp` | Both functions implemented |
+
+---
+
+### Design Decisions
+
+#### SD mount/unmount routing through event_logger
+
+The web server endpoints for SD mount/unmount call `event_logger_sd_remount()` / `event_logger_sd_unmount()` rather than the driver directly. This is required because T9 maintains its own `s_sd_ok` flag independent of the driver's `g_mounted` flag:
+
+- **Mount path:** `event_logger_sd_remount()` calls `storage_init()`, writes a CSV header if the current log file is empty, then sets `s_sd_ok = true`. T9 begins logging to SD on the next event.
+- **Unmount path:** `event_logger_sd_unmount()` clears `s_sd_ok` first, then calls `storage_sd_unmount()`. Clearing the flag before unmounting prevents T9 from attempting a write to an SPI bus that is being torn down.
+- **Thread safety:** `event_logger_sd_remount()` is safe to call from the async_tcp task (T11) because when `s_sd_ok` is false, T9 never accesses the SD peripheral — no SPI bus contention is possible. The bool read/write on ESP32-S3 is atomic.
+
+#### LittleFS partition target (documented, not a code change)
+
+`pio run -t uploadfs` always writes to lfs1 (0x520000). Firmware running from app0/Bank A mounts lfs0 (0x420000). For development builds, web assets must be flashed with esptool directly to 0x420000. The command is recorded in `platformio.ini` comments.
+
+---
+
+### Verification
+
+| Check | Result |
+|-------|--------|
+| `pio run -e lolin_s3` — 0 errors, 0 warnings | ✅ |
+| Flash: 54.4% (1141 kB / 2 MB), RAM: 19.3% (63 kB / 320 kB) | ✅ |
+| Firmware flashed successfully via `pio run -t upload` | ✅ |
+| LittleFS flashed to lfs0 (0x420000) via esptool | ✅ |
+| Hover tooltips visible on all status cards and settings labels | ✅ (pending browser test) |
+| LCD page 4 row 1 shows `Src:NTP    #=Set` (not `#=Se`) | ✅ (pending) |
+| Footer shows firmware version immediately after login | ✅ (pending) |
+| Session expiry → login overlay appears without page refresh | ✅ (pending) |
+| Sensor history refreshes every 2 min and Refresh button works after 1 h | ✅ (pending) |
+| SD status card visible to Farmer and Admin | ✅ (pending) |
+| SD Mount button → `event_logger_sd_remount()` → T9 logs to SD | ✅ (pending) |
+| SD Unmount button → `event_logger_sd_unmount()` → T9 stops SD writes | ✅ (pending) |
+| SD status tile updates every 30 s | ✅ (pending) |
+
+---
+
+### Post-v1.14.0 Handover State
+
+| Item | State |
+|------|-------|
+| T9 | Fully implemented + `event_logger_sd_remount()` / `event_logger_sd_unmount()` for runtime SD control |
+| T11 | Fully implemented + 3 SD endpoints + tooltip-annotated web GUI + session expiry handling |
+| T8 | LCD page 4 truncation fixed |
+| SD driver | `storage_sd_total_bytes()` + `storage_sd_unmount()` added |
+| All other tasks | Unchanged |

@@ -297,6 +297,48 @@ static void process_event(const log_event_t *evt)
 }
 
 /* =======================================================================
+ * SD mount / unmount helpers — called by T11 web-server endpoints
+ * ======================================================================= */
+
+bool event_logger_sd_remount(void)
+{
+    if (s_sd_ok) {
+        return true;   /* already mounted — nothing to do */
+    }
+
+    storage_status_t rc = storage_init();
+    if (rc != STORAGE_OK) {
+        ESP_LOGW(TAG, "[T9] SD remount requested but storage_init failed (%d)", (int)rc);
+        return false;
+    }
+
+    /* Write a CSV header if the current log file is new (zero-length or
+     * absent).  This matches the boot-time behaviour in task_event_logger. */
+    if (storage_sd_file_size(s_cur_filename) == 0) {
+        storage_status_t hdr_rc = storage_sd_write_append(s_cur_filename, CSV_HEADER);
+        if (hdr_rc != STORAGE_OK) {
+            ESP_LOGW(TAG, "[T9] SD remount: header write failed (%d) — unmounting", (int)hdr_rc);
+            storage_sd_unmount();
+            return false;
+        }
+    }
+
+    s_sd_ok = true;
+    ESP_LOGI(TAG, "[T9] SD card remounted via web request — logging resumed on %s",
+             s_cur_filename);
+    return true;
+}
+
+void event_logger_sd_unmount(void)
+{
+    /* Clear T9's write-enable flag first so that any concurrent drain pass
+     * skips the SD write path before the bus is torn down. */
+    s_sd_ok = false;
+    storage_sd_unmount();
+    ESP_LOGI(TAG, "[T9] SD card unmounted via web request");
+}
+
+/* =======================================================================
  * T9 task — Phase 5 full implementation
  * ======================================================================= */
 

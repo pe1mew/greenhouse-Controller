@@ -120,7 +120,7 @@ h3 { font-size: .9rem; color: var(--muted); margin-bottom: .5rem; margin-top: .7
   display: flex;
   align-items: center;
   gap: .5rem;
-  margin-bottom: .5rem;
+  margin-bottom: 1rem;
   flex-wrap: wrap;
 }
 .row > label:first-child {
@@ -165,7 +165,7 @@ button.danger:hover { background: #a02020; }
   display: flex;
   align-items: center;
   gap: .5rem;
-  margin-bottom: .5rem;
+  margin-bottom: 1rem;
   flex-wrap: wrap;
 }
 .slider-row > label:first-child {

@@ -19,6 +19,7 @@ function setRole(role) {
     if (ov) ov.style.display = 'none';
     loadConfig();
     loadHistory();
+    loadSdStatus();
   }
 }
 
@@ -154,18 +155,38 @@ document.addEventListener('keydown', function(e) {
   }
 });
 
-function doLogout() {
-  post('/api/logout', {}).then(() => {
-    setRole(null);
-    wsInitialized = false;
-    document.getElementById('login-overlay').style.display = 'flex';
-  });
+function showLogin() {
+  if (g_role === null) return;   // already on login screen
+  setRole(null);
+  wsInitialized = false;
+  document.getElementById('login-overlay').style.display = 'flex';
 }
+
+function doLogout() {
+  post('/api/logout', {}).then(() => showLogin());
+}
+
+// Periodic session check — detects server-side timeout while the user is idle.
+setInterval(function () {
+  if (g_role === null) return;
+  fetch('/api/whoami')
+    .then(function (r) { if (!r.ok) showLogin(); })
+    .catch(function () {});
+}, 60000);
+
+// Periodic history refresh — keeps the sensor history table current.
+setInterval(function () {
+  if (g_role === null) return;
+  loadHistory();
+}, 120000);
 
 // ── Config load ──────────────────────────────────────────────────────────────
 function loadConfig() {
   fetch('/api/config')
-    .then(r => r.ok ? r.json() : null)
+    .then(function (r) {
+      if (r.status === 401) { showLogin(); return null; }
+      return r.ok ? r.json() : null;
+    })
     .then(cfg => {
       if (!cfg) return;
       setVal('cfg-t-max-day',      cfg.t_max_day);
@@ -200,6 +221,7 @@ function loadConfig() {
       setVal('cfg-wifi-ssid',      cfg.wifi_ssid);
       setText('cfg-ap-ssid',       cfg.ap_ssid);
       setVal('cfg-tz',             cfg.tz_str);
+      if (cfg.fw_ver) setText('fw-ver', 'v' + cfg.fw_ver);
       if (cfg.lat_deg !== undefined && cfg.lat_frac !== undefined) {
         setVal('cfg-lat', (cfg.lat_deg + cfg.lat_frac / 1000.0).toFixed(3));
       }
@@ -288,7 +310,10 @@ function postPinChange(role) {
 // ── Sensor history ───────────────────────────────────────────────────────────
 function loadHistory() {
   fetch('/api/history?n=60')
-    .then(r => r.ok ? r.json() : null)
+    .then(function (r) {
+      if (r.status === 401) { showLogin(); return null; }
+      return r.ok ? r.json() : null;
+    })
     .then(data => {
       if (!data || !data.rows) return;
       const tbody = document.getElementById('log-body');
@@ -308,6 +333,52 @@ function loadHistory() {
     });
 }
 
+// ── SD card ──────────────────────────────────────────────────────────────────
+function loadSdStatus() {
+  fetch('/api/sd/status')
+    .then(function (r) {
+      if (r.status === 401) { showLogin(); return null; }
+      return r.ok ? r.json() : null;
+    })
+    .then(function (sd) {
+      if (!sd) return;
+      const statusEl = document.getElementById('st-sd-status');
+      if (statusEl) {
+        statusEl.textContent = sd.mounted ? 'Mounted' : 'Not mounted';
+        statusEl.style.color = sd.mounted ? 'var(--green)' : 'var(--muted)';
+      }
+      setText('st-sd-size', sd.mounted ? sd.size_mb + ' MB' : '—');
+      setText('st-sd-free', sd.mounted ? sd.free_mb + ' MB' : '—');
+
+      const mountBtn   = document.getElementById('btn-sd-mount');
+      const unmountBtn = document.getElementById('btn-sd-unmount');
+      if (mountBtn)   mountBtn.disabled   = sd.mounted;
+      if (unmountBtn) unmountBtn.disabled = !sd.mounted;
+    });
+}
+
+function postSdMount() {
+  post('/api/sd/mount', {})
+    .then(function (r) {
+      feedback('fb-sd', r && r.ok);
+      if (r && r.ok) loadSdStatus();
+    });
+}
+
+function postSdUnmount() {
+  post('/api/sd/unmount', {})
+    .then(function (r) {
+      feedback('fb-sd', r && r.ok);
+      if (r && r.ok) loadSdStatus();
+    });
+}
+
+// Periodic SD status refresh (any logged-in role, every 30 s).
+setInterval(function () {
+  if (g_role === null) return;
+  loadSdStatus();
+}, 30000);
+
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 function showTab(id) {
   document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
@@ -326,7 +397,10 @@ function post(url, body) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-  }).then(r => r.ok ? r.json() : null).catch(() => null);
+  }).then(function (r) {
+    if (r.status === 401) { showLogin(); return null; }
+    return r.ok ? r.json() : null;
+  }).catch(function () { return null; });
 }
 
 function setText(id, val) {

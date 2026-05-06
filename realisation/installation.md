@@ -26,8 +26,8 @@ This connector may also be used to feed 24 V DC to an external motor controller.
 
 | Pin | Label | Wire |
 |-----|-------|------|
-| 1 | +24 V | Positive (+) of PSU output |
-| 2 | GND | Negative (−) / common of PSU output |
+| 1 | GND | Negative (−) / common of PSU output |
+| 2 | +24 V | Positive (+) of PSU output |
 
 ### J11 — AC mains input (3-pin screw terminal)
 
@@ -35,9 +35,9 @@ Supplies mains voltage to the relay switching circuits for the ventilation motor
 
 | Pin | Label | Wire |
 |-----|-------|------|
-| 1 | L | Phase (Line) |
+| 1 | E | protective Earth (ground) |
 | 2 | N | Neutral |
-| 3 | PE | Protective earth (ground) |
+| 3 | L | Phase (Line) |
 
 > Connect AC mains wiring in accordance with local electrical codes. Use cable rated for the motor load current.
 
@@ -46,7 +46,8 @@ Supplies mains voltage to the relay switching circuits for the ventilation motor
 ## Ventilation motor outputs
 
 Each motor connector carries two relay contact pairs: one for **OPEN** and one for **CLOSE**.  
-The relay contacts switch the AC mains supply from J11 to the motor winding terminals.
+
+With external +24VDC on the COMM connection of the control box, and then the negative on OPEN or CLOSE of the motor, the motor turns in the desired direction. When the signal is lost, the control stops.
 
 Connect the motor's **OPEN winding** between Pin 1 and Pin 2, and the **CLOSE winding** between Pin 3 and Pin 4.
 

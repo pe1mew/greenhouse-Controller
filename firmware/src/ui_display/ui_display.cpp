@@ -452,7 +452,7 @@ static void render_status(void)
                 snprintf(r0, sizeof(r0), "--/--/---- --:--");
             }
             const char *src = s_net.ntp_synced ? "NTP" : "RTC";
-            snprintf(r1, sizeof(r1), "Src:%-3s     #=Set", src);
+            snprintf(r1, sizeof(r1), "Src:%-3s    #=Set", src);
             break;
         }
 

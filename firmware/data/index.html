@@ -79,6 +79,12 @@
       <p><span data-tip="IP address assigned to the controller. Use this address to reach the web GUI from any device on the same network.">IP</span>: <strong id="st-wifi-ip">—</strong></p>
       <p><span data-tip="WiFi signal strength in dBm. Above −70 dBm is good. Below −85 dBm may cause connection drops or slow responses.">RSSI</span>: <strong id="st-wifi-rssi">—</strong> dBm</p>
     </div>
+    <div class="card">
+      <h3>SD Card <span class="tip-icon" data-tip="Status of the microSD card used for event log storage (FAT32 over SPI).">ⓘ</span></h3>
+      <p><span data-tip="Whether the SD card file system is currently mounted and accessible for logging.">Status</span>: <strong id="st-sd-status">—</strong></p>
+      <p><span data-tip="Total capacity of the inserted SD card.">Size</span>: <strong id="st-sd-size">—</strong></p>
+      <p><span data-tip="Available free space remaining on the SD card.">Free</span>: <strong id="st-sd-free">—</strong></p>
+    </div>
   </div>
 </section>
 
@@ -373,6 +379,15 @@
     <div class="row" style="margin-top:.25rem">
       <button onclick="postLocation()">Apply location</button>
       <span class="save-ok" id="fb-location"></span>
+    </div>
+
+    <hr>
+    <h3>SD card</h3>
+    <div class="row">
+      <label data-tip="Mount or unmount the microSD card. Unmounting stops event log writes and allows safe card removal. Mount re-initialises the card after insertion.">SD card control</label>
+      <button id="btn-sd-mount"   onclick="postSdMount()">Mount</button>
+      <button id="btn-sd-unmount" onclick="postSdUnmount()" class="danger">Unmount</button>
+      <span class="save-ok" id="fb-sd"></span>
     </div>
   </div>
 

@@ -111,6 +111,21 @@ uint32_t storage_sd_file_size(const char *filename);
 uint64_t storage_sd_free_bytes(void);
 
 /**
+ * @brief Return the total capacity of the FAT32 volume in bytes.
+ *
+ * @return Total bytes, or 0 on error / no card.
+ */
+uint64_t storage_sd_total_bytes(void);
+
+/**
+ * @brief Gracefully unmount the FAT32 volume and release the SPI bus.
+ *
+ * After this call, storage_sd_available() returns false and T9 falls back to
+ * NVS-only logging.  Call storage_init() to re-mount after card re-insertion.
+ */
+void storage_sd_unmount(void);
+
+/**
  * @brief List files matching an extension into a comma-separated buffer.
  *
  * Scans the root directory and appends each matching filename (just the name,

@@ -20,6 +20,9 @@
  *  POST /api/wifi       → {ssid, psk} or {ap_psk} — writes directly to NVS wifi ns
  *  POST /api/pin        → {role, pin} — admin-only; changes farmer/admin PIN
  *  GET  /api/history    → ?n=N — last N sensor ring buffer entries as JSON
+ *  GET  /api/sd/status  → {mounted, free_mb, size_mb} — SD card state (farmer+admin)
+ *  POST /api/sd/mount   → {} — mount SD card (admin)
+ *  POST /api/sd/unmount → {} — unmount SD card (admin)
  *  WS   /ws             → push status JSON every WS_PUSH_MS
  *
  * ── Access control ────────────────────────────────────────────────────────
@@ -57,6 +60,7 @@
 #include "../auth/pin_auth.h"
 #include "littlefs_storage.h"
 #include "nvs_config.h"
+#include "../../../drivers/sdCard/src/sd_storage.h"
 
 static const char *TAG = "T11_WEB";
 
@@ -303,6 +307,11 @@ static void build_config_json(char *buf, size_t len)
     char wifi_ssid[64] = {};
     nvs_cfg_get_str("wifi", "ssid", wifi_ssid, sizeof(wifi_ssid));
 
+    /* Read fw_version from NVS — written on every boot by nvs_cfg_init().
+     * This is the single source of truth for the running firmware version. */
+    char fw_version[16] = {};
+    nvs_cfg_get_str(NVS_NS_SYSTEM, NVS_KEY_FW_VERSION, fw_version, sizeof(fw_version));
+
     /* Build AP SSID the same way T10 does — last 2 MAC bytes. */
     char ap_ssid[24] = {};
     {
@@ -332,7 +341,8 @@ static void build_config_json(char *buf, size_t len)
         "\"ap_timeout_min\":%ld,"
         "\"lat_deg\":%ld,\"lat_frac\":%ld,"
         "\"lon_deg\":%ld,\"lon_frac\":%ld,"
-        "\"tz_str\":\"%s\""
+        "\"tz_str\":\"%s\","
+        "\"fw_ver\":\"%s\""
         "}",
         wifi_ssid, ap_ssid,
         c.t_max_day, c.t_min_day, c.t_max_ngt, c.t_min_ngt,
@@ -347,7 +357,8 @@ static void build_config_json(char *buf, size_t len)
         (long)c.poll_interval_s, (long)c.session_timeout_min, (long)c.ap_timeout_min,
         (long)c.lat_deg, (long)c.lat_frac,
         (long)c.lon_deg, (long)c.lon_frac,
-        c.tz_str
+        c.tz_str,
+        fw_version
     );
 }
 
@@ -647,13 +658,15 @@ static void register_routes(AsyncWebServer &srv)
         dm_ring_read(0, rows, (uint16_t)n, &got);
 
         /* Build JSON array — allocate from PSRAM */
-        char *buf = (char *)ps_malloc(4096);
+        /* 60 entries × ~85 chars/entry + overhead ≈ 5200 bytes max */
+        const size_t HIST_BUF = 6144;
+        char *buf = (char *)ps_malloc(HIST_BUF);
         if (!buf) { free(rows); req->send(500); return; }
 
         int pos = 0;
-        pos += snprintf(buf + pos, 4096 - pos, "{\"rows\":[");
+        pos += snprintf(buf + pos, HIST_BUF - pos, "{\"rows\":[");
         for (uint16_t i = 0; i < got; i++) {
-            pos += snprintf(buf + pos, 4096 - pos,
+            int written = snprintf(buf + pos, HIST_BUF - (size_t)pos,
                 "%s{\"ts\":%lu,\"temp_c\":%.1f,\"rh_pct\":%u,"
                 "\"wind_ms\":%.1f,\"wind_dir\":%u}",
                 i ? "," : "",
@@ -662,13 +675,59 @@ static void register_routes(AsyncWebServer &srv)
                 rows[i].rh_avg_pct,
                 rows[i].wind_speed_avg_ms10 / 10.0f,
                 rows[i].wind_dir_avg_deg);
-            if (pos >= 3800) break;  /* Guard against overrun */
+            if (written < 0 || pos + written >= (int)HIST_BUF - 4) break;
+            pos += written;
         }
-        snprintf(buf + pos, 4096 - pos, "]}");
+        snprintf(buf + pos, HIST_BUF - (size_t)pos, "]}");
 
         req->send(200, "application/json", buf);
         free(rows);
         free(buf);
+    });
+
+    /* ── SD card status ─────────────────────────────────────── */
+    srv.on("/api/sd/status", HTTP_GET, [](AsyncWebServerRequest *req) {
+        if (req_role(req) == SESSION_NONE) {
+            req->send(401, "application/json", "{\"ok\":false}");
+            return;
+        }
+        bool mounted   = storage_sd_available();
+        uint64_t total = mounted ? storage_sd_total_bytes() : 0;
+        uint64_t free_b = mounted ? storage_sd_free_bytes()  : 0;
+        char buf[128];
+        snprintf(buf, sizeof(buf),
+            "{\"mounted\":%s,\"free_mb\":%lu,\"size_mb\":%lu}",
+            mounted ? "true" : "false",
+            (unsigned long)(free_b  / (1024UL * 1024UL)),
+            (unsigned long)(total   / (1024UL * 1024UL)));
+        req->send(200, "application/json", buf);
+    });
+
+    /* ── SD card mount ──────────────────────────────────────── */
+    srv.on("/api/sd/mount", HTTP_POST, [](AsyncWebServerRequest *req) {}, NULL,
+        [](AsyncWebServerRequest *req, uint8_t *data, size_t len, size_t, size_t) {
+        (void)data; (void)len;
+        if (req_role(req) != SESSION_ADMIN) {
+            req->send(403, "application/json", "{\"ok\":false,\"err\":\"admin only\"}");
+            return;
+        }
+        if (event_logger_sd_remount()) {
+            req->send(200, "application/json", "{\"ok\":true}");
+        } else {
+            req->send(200, "application/json", "{\"ok\":false,\"err\":\"mount failed\"}");
+        }
+    });
+
+    /* ── SD card unmount ────────────────────────────────────── */
+    srv.on("/api/sd/unmount", HTTP_POST, [](AsyncWebServerRequest *req) {}, NULL,
+        [](AsyncWebServerRequest *req, uint8_t *data, size_t len, size_t, size_t) {
+        (void)data; (void)len;
+        if (req_role(req) != SESSION_ADMIN) {
+            req->send(403, "application/json", "{\"ok\":false,\"err\":\"admin only\"}");
+            return;
+        }
+        event_logger_sd_unmount();
+        req->send(200, "application/json", "{\"ok\":true}");
     });
 
     /* ── 404 fallback ───────────────────────────────────────── */

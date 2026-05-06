@@ -6,6 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.14.0] — 2026-05-06
+
+*Web GUI polish: hover tooltips on all fields; session expiry handling; history buffer fix; SD card management (status card + mount/unmount) with full T9 logging integration; LCD truncation fix.*
+
+### Added
+- `firmware/data/index.html` — **65 `data-tip` hover tooltips** on every status card field and every settings label; **8 `ⓘ` tip-icon spans** on card `<h3>` headings (zero JS, CSS `[data-tip]::after` pseudo-element, 260 px dark bubble, 150 ms fade)
+- `firmware/data/index.html` — **SD card status card** in the Status section (visible to both Farmer and Admin): shows Mounted/Not mounted, total size (MB), free space (MB); refreshed on login and every 30 s
+- `firmware/data/index.html` + `firmware/data/app.js` — **SD card controls** in System tab (Admin only): Mount button and Unmount (danger) button; feedback span; button auto-disabled to match current mount state
+- `firmware/data/app.js` — `loadSdStatus()` / `postSdMount()` / `postSdUnmount()`: fetch `/api/sd/status|mount|unmount`, update status card fields and button disabled-state; called on admin/farmer login and on 30 s interval
+- `firmware/data/app.js` — `showLogin()`: restores login overlay, clears role, and resets WS initialisation flag; called on logout, 401 response, and session-check failure
+- `firmware/data/app.js` — **60 s `whoami` polling**: detects server-side session expiry while the UI is idle; calls `showLogin()` on failure
+- `firmware/data/app.js` — **2 min auto-refresh** of sensor history table
+- `firmware/data/app.js` — 401 detection in `post()`, `loadConfig()`, and `loadHistory()`: all three call `showLogin()` on an unexpected 401 response
+- `firmware/data/app.js` — firmware version set from `/api/config` on login (`cfg.fw_ver`) so the footer is populated immediately, before the first WebSocket push
+- `firmware/src/web_server/web_server.cpp` — `GET /api/sd/status` → `{"mounted":…,"free_mb":…,"size_mb":…}` (Farmer + Admin)
+- `firmware/src/web_server/web_server.cpp` — `POST /api/sd/mount` → calls `event_logger_sd_remount()`; Admin only
+- `firmware/src/web_server/web_server.cpp` — `POST /api/sd/unmount` → calls `event_logger_sd_unmount()`; Admin only
+- `drivers/sdCard/src/sd_storage.h/.cpp` — `storage_sd_total_bytes()`: returns FAT32 volume total capacity via `SD.totalBytes()`
+- `drivers/sdCard/src/sd_storage.h/.cpp` — `storage_sd_unmount()`: clears `g_mounted` and calls `SD.end()` to release the SPI bus
+- `firmware/src/event_logger/event_logger.h/.cpp` — `event_logger_sd_remount()`: calls `storage_init()`, writes CSV header if file is new, sets T9's `s_sd_ok` flag — T9 begins logging to SD immediately; safe to call from any task when `s_sd_ok` is false
+- `firmware/src/event_logger/event_logger.h/.cpp` — `event_logger_sd_unmount()`: clears T9's `s_sd_ok` flag first (prevents in-flight SD write), then calls `storage_sd_unmount()`
+
+### Fixed
+- `firmware/src/ui_display/ui_display.cpp` — status page 4 row 1: format string `"Src:%-3s     #=Set"` (17 chars) truncated to `"#=Se"` on the 16-char LCD; corrected to `"Src:%-3s    #=Set"` (16 chars)
+- `firmware/src/web_server/web_server.cpp` — sensor history buffer raised from 4096 → 6144 bytes; pre-write overflow guard replaced `pos >= 3800` heuristic with proper `pos + written >= HIST_BUF - 4` check; history table no longer truncates after the first hour
+- `firmware/src/web_server/web_server.cpp` — firmware version now read from NVS `system/fw_version` in `build_config_json()` and included in `/api/config` response; footer no longer shows "—" until the first WebSocket push
+
+### Changed
+- `firmware/data/style.css` — tooltip CSS block added (`[data-tip]` relative positioning, `::after` pseudo-element, `.tip-icon` helper class)
+- `firmware/data/style.css` — `.row` and `.slider-row` `margin-bottom` increased from `0.5 rem` to `1 rem` for better touch ergonomics on smartphones
+- `firmware/data/app.js` — `doLogout()` simplified to `post('/api/logout', {}).then(() => showLogin())`
+- `firmware/src/web_server/web_server.cpp` — `/api/sd/status` accessible to SESSION_FARMER and SESSION_ADMIN (was SESSION_ADMIN only)
+
+### Added (tooling)
+- `webUiMock/mock_server.py` — **Flask web UI mock server**: serves `firmware/data/` static files and emulates all REST and WebSocket endpoints (`/api/whoami`, `/api/login`, `/api/logout`, `/api/status`, `/api/config` GET/POST, `/api/wifi`, `/api/pin`, `/api/history`, `/api/sd/status|mount|unmount`, `/ws`); sine-wave sensor simulation; in-memory NVS config state with correct `(ns, key)` → field mapping for all motor/climate/wind/system keys; SD card state toggled by mount/unmount; session and access-control rules match firmware exactly (farmer vs. admin restrictions)
+- `webUiMock/requirements.txt` — Python dependencies: `flask>=2.3.0`, `flask-sock>=0.7.0`
+- `webUiMock/README.md` — setup and usage instructions, full endpoint table, access-control notes, differences-from-firmware table
+
+### Build metrics
+- Flash: 54.4% (1141 kB / 2 MB)
+- RAM:   19.3% (63 kB / 320 kB)
+
+### Notes
+- `pio run -t uploadfs` always targets lfs1 (0x520000). When running firmware from app0/Bank A, flash web assets to lfs0 (0x420000) directly with esptool (command in `platformio.ini` comments).
+- Start the mock server with `cd webUiMock && pip install -r requirements.txt && python mock_server.py`; open `http://localhost:5000` (farmer PIN: `1234`, admin PIN: `12345678`).
+
+---
+
 ## [1.13.0] — 2026-05-05
 
 *Geolocation + automatic timezone; local-time clock display fix; LCD time status page; LCD manual date/time set (admin).*

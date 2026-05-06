@@ -137,6 +137,35 @@ void log_post(const log_event_t *evt);
 uint32_t log_take_dropped_count(void);
 
 /* -----------------------------------------------------------------------
+ * SD card mount / unmount helpers (called by T11 web-server endpoints)
+ * ----------------------------------------------------------------------- */
+
+/**
+ * @brief Attempt to mount the SD card and re-enable SD logging in T9.
+ *
+ * Calls `storage_init()` and, on success, writes a CSV header to the current
+ * log file if it is empty, then sets T9's internal `s_sd_ok` flag so that
+ * subsequent events are written to SD.
+ *
+ * Safe to call from any task context: when `s_sd_ok` is false (the only case
+ * where this is useful) T9 never touches the SD bus, so there is no
+ * contention on the SPI peripheral.
+ *
+ * @return true if the card is now mounted and logging is active.
+ * @return false if `storage_init()` failed or the header write failed.
+ */
+bool event_logger_sd_remount(void);
+
+/**
+ * @brief Stop SD logging in T9 and unmount the SD card.
+ *
+ * Clears T9's internal `s_sd_ok` flag first, then calls
+ * `storage_sd_unmount()`.  Clearing the flag before unmounting prevents T9
+ * from attempting a write to a card that is being torn down.
+ */
+void event_logger_sd_unmount(void);
+
+/* -----------------------------------------------------------------------
  * T9 task entry point
  * ----------------------------------------------------------------------- */
 
