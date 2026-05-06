@@ -91,7 +91,8 @@ static const char * const FARMER_WIND_KEYS[] = { "wind_prot_en", NULL };
 typedef struct {
     char      token[TOKEN_LEN + 1];
     session_t role;
-    time_t    expiry;   /**< Unix timestamp; 0 = free slot */
+    time_t    expiry;      /**< Unix timestamp; 0 = free slot */
+    time_t    timeout_s;   /**< Idle timeout in seconds; used to slide expiry on activity */
 } web_session_t;
 
 static web_session_t      s_sessions[MAX_SESSIONS];
@@ -108,7 +109,9 @@ static void gen_token(char out[TOKEN_LEN + 1])
     out[TOKEN_LEN] = '\0';
 }
 
-/** Find session by token; returns role or SESSION_NONE if not found/expired. */
+/** Find session by token; returns role or SESSION_NONE if not found/expired.
+ *  Slides the expiry deadline forward by timeout_s on every successful match
+ *  so that user activity resets the idle timer. */
 static session_t session_find(const char *token)
 {
     if (!token || token[0] == '\0') return SESSION_NONE;
@@ -121,6 +124,7 @@ static session_t session_find(const char *token)
             strcmp(s_sessions[i].token, token) == 0)
         {
             role = s_sessions[i].role;
+            s_sessions[i].expiry = now + s_sessions[i].timeout_s;  /* slide window */
             break;
         }
     }
@@ -147,8 +151,9 @@ static bool session_create(session_t role, int32_t timeout_min, char out_token[T
     }
     if (slot >= 0) {
         gen_token(s_sessions[slot].token);
-        s_sessions[slot].role   = role;
-        s_sessions[slot].expiry = expiry;
+        s_sessions[slot].role      = role;
+        s_sessions[slot].expiry    = expiry;
+        s_sessions[slot].timeout_s = (time_t)(timeout_min > 0 ? timeout_min : 5) * 60;
         memcpy(out_token, s_sessions[slot].token, TOKEN_LEN + 1);
         ok = true;
     }
@@ -159,11 +164,14 @@ static bool session_create(session_t role, int32_t timeout_min, char out_token[T
 /** Invalidate a session by token. */
 static void session_destroy(const char *token)
 {
-    if (!token) return;
+    if (!token || token[0] == '\0') return;   /* ignore empty / null token */
     xSemaphoreTake(s_sess_mux, pdMS_TO_TICKS(200));
     for (int i = 0; i < MAX_SESSIONS; i++) {
-        if (strcmp(s_sessions[i].token, token) == 0) {
-            s_sessions[i].expiry = 0;
+        if (s_sessions[i].expiry > 0 &&
+            strcmp(s_sessions[i].token, token) == 0)
+        {
+            s_sessions[i].expiry    = 0;
+            s_sessions[i].token[0]  = '\0';  /* clear token so it cannot be re-matched */
             break;
         }
     }
@@ -508,9 +516,11 @@ static void register_routes(AsyncWebServer &srv)
     });
 
     /* ── Logout ─────────────────────────────────────────────── */
-    srv.on("/api/logout", HTTP_POST, [](AsyncWebServerRequest *req) {}, NULL,
-        [](AsyncWebServerRequest *req, uint8_t *data, size_t len, size_t, size_t) {
-        (void)data; (void)len;
+    /* Logout reads only the Cookie header — no request body is needed.
+     * The handler MUST live in onRequest, not in the body callback, because
+     * POST /api/logout is sent without a body and ESPAsyncWebServer does not
+     * invoke the body callback for bodyless requests. */
+    srv.on("/api/logout", HTTP_POST, [](AsyncWebServerRequest *req) {
         char token[TOKEN_LEN + 1];
         cookie_get_session(req, token);
         session_destroy(token);

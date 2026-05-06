@@ -321,7 +321,7 @@
       <span class="save-ok" id="fb-ap-timeout"></span>
     </div>
     <div class="slider-row">
-      <label data-tip="How often the sensors are read and logged, in seconds. Shorter intervals give faster control response but produce more log data. Range: 30–3600 s. Default: 60 s.">Poll interval (s)</label>
+      <label data-tip="How often the sensors are read and logged, in seconds. Shorter intervals give faster control response but produce more log data. Range: 30–3600 s. Default: 60 s. Takes effect after reboot.">Sensor poll interval (s)</label>
       <input type="range"  id="cfg-poll-interval-sl" min="30" max="3600" step="10">
       <input type="number" id="cfg-poll-interval"    min="30" max="3600" class="short">
       <button onclick="postCfg('system','poll_interval','cfg-poll-interval','int')">Apply</button>

@@ -53,6 +53,7 @@
 
 #include <math.h>
 #include <string.h>
+#include <time.h>
 
 static const char *TAG = "T5_SEN";
 
@@ -411,7 +412,13 @@ void task_sensor_poll(void *pvParameters)
         sensor_reading_t reading;
         memset(&reading, 0, sizeof(reading));
 
-        reading.timestamp = dm_get_unix_time();
+        /* Use the POSIX system clock so the timestamp always reflects the
+         * actual moment of the reading.  dm_get_unix_time() returns a cached
+         * value that T4 only refreshes every 60 s from the RTC; with a
+         * poll_interval shorter than 60 s two consecutive polls would both
+         * receive the same stale timestamp, producing duplicate rows in the
+         * sensor history table. */
+        reading.timestamp = (uint32_t)time(NULL);
 
         /* Raw T / RH */
         if (t_ok) {

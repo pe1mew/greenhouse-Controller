@@ -158,6 +158,7 @@ static pin_role_t   s_pin_role      = PIN_ROLE_FARMER;
 
 /* Manual date/time set state (UI_SET_DATE / UI_SET_TIME) */
 static bool         s_pending_settime = false; /**< # on time status page pending admin PIN */
+static bool         s_pending_ap      = false; /**< # on WiFi status page pending admin PIN */
 static char         s_dt_buf[9]       = {0};   /**< Digit accumulator for date/time entry */
 static uint8_t      s_dt_len          = 0;     /**< Digits entered so far */
 static int          s_dt_saved_year   = 0;     /**< Year from date entry, passed to time entry */
@@ -383,13 +384,17 @@ static void render_status(void)
 
         case 0: /* Temperature / humidity */
             if (valid) {
-                snprintf(r0, sizeof(r0), "T:%3dC  RH:%3d%%  ",
-                         (int)meas.t_avg_c, (int)meas.rh_avg_pct);
-                snprintf(r1, sizeof(r1), "%s",
-                         (bits & EG1_BIT_SENSOR_FAULT_T) ? "** SENSOR FAULT " : "                ");
+                /* \xDF = HD44780 ROM A00 degree symbol; split literal so 'C'
+                 * is not absorbed into the hex escape sequence (\xDFC). */
+                snprintf(r0, sizeof(r0), "Temp:%3d \xDF" "C     ", (int)meas.t_avg_c);
+                if (bits & EG1_BIT_SENSOR_FAULT_T) {
+                    snprintf(r1, sizeof(r1), "** SENSOR FAULT ");
+                } else {
+                    snprintf(r1, sizeof(r1), "  RH:%3d %%      ", (int)meas.rh_avg_pct);
+                }
             } else {
-                snprintf(r0, sizeof(r0), "T:---C  RH:--%%  ");
-                snprintf(r1, sizeof(r1), "Sensors not ready");
+                snprintf(r0, sizeof(r0), "Temp: --- \xDF" "C    ");
+                snprintf(r1, sizeof(r1), "  RH: ---  %%    ");
             }
             break;
 
@@ -431,10 +436,10 @@ static void render_status(void)
                 char ap_ssid[17] = {};
                 snprintf(ap_ssid, sizeof(ap_ssid), "Greenhouse-%02X%02X", mac[4], mac[5]);
                 snprintf(r0, sizeof(r0), "WiFi: AP active ");
-                snprintf(r1, sizeof(r1), "%-16.16s", ap_ssid);
+                snprintf(r1, sizeof(r1), "%-12.12s #=AP", ap_ssid);
             } else {
                 snprintf(r0, sizeof(r0), "WiFi: --------  ");
-                snprintf(r1, sizeof(r1), "                ");
+                snprintf(r1, sizeof(r1), "            #=AP");
             }
             break;
 
@@ -673,6 +678,23 @@ static void enter_set_date(void)
 
 static void handle_status(char key)
 {
+    /* # on the WiFi/network page (page 3) → go to System menu (admin only) */
+    if (key == '#' && (s_status_page % STATUS_PAGES) == 3u) {
+        if (s_session >= SESSION_ADMIN) {
+            s_state = UI_MENU_SYSTEM;
+            s_dirty = true;
+        } else {
+            s_pin_role      = PIN_ROLE_ADMIN;
+            s_pin_len       = 0;
+            memset(s_pin_buf, 0, sizeof(s_pin_buf));
+            s_pending_param = -1;
+            s_pending_ap    = true;
+            s_return_menu   = UI_STATUS;
+            s_state         = UI_PIN_ENTRY;
+            s_dirty         = true;
+        }
+        return;
+    }
     /* # on the time page (page 4) → set date/time (admin only) */
     if (key == '#' && (s_status_page % STATUS_PAGES) == 4u) {
         if (s_session >= SESSION_ADMIN) {
@@ -822,7 +844,12 @@ static void handle_pin(char key)
             session_open(lvl);
             show_msg("Access granted  ", "Welcome!        ", 1500);
 
-            if (s_pending_settime) {
+            if (s_pending_ap) {
+                /* Resume pending AP enable — go to System menu */
+                s_pending_ap = false;
+                s_state      = UI_MENU_SYSTEM;
+                s_dirty      = true;
+            } else if (s_pending_settime) {
                 /* Resume pending date/time set */
                 s_pending_settime = false;
                 enter_set_date();
@@ -1038,7 +1065,7 @@ void task_ui_display(void *pvParameters)
     /* Boot splash — row 0: product name, row 1: version + "Init." */
     {
         char r1[17];
-        snprintf(r1, sizeof(r1), "v%-5.5s Init...", FIRMWARE_VERSION);
+        snprintf(r1, sizeof(r1), "v%-9.9sInit..", FIRMWARE_VERSION);
         show_msg("Greenhouse Ctrl ", r1, 2000);
     }
 

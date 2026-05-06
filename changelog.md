@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.16.0] — 2026-05-06
+
+*LCD display improvements: T/RH page reformatted, WiFi page `#`-shortcut to AP enable, boot splash version alignment. Web GUI poll-interval label clarified. Sensor timestamp bug fixed (duplicate log rows). Integration test suite development started.*
+
+### Added
+- `firmware/src/ui_display/ui_display.cpp` — **WiFi status page `#` shortcut**: pressing `#` on the network status page (page 3) goes directly to the System menu when an admin session is active; without a session it enters `UI_PIN_ENTRY` (admin PIN); on success lands on `UI_MENU_SYSTEM` where `1` toggles the AP. `s_pending_ap` flag added (mirrors `s_pending_settime` pattern). Row 1 now shows `#=AP` hint in all non-connected states.
+- `test/` — **integration test suite** development started: `test/lib/serial_monitor.py`, `test/lib/device_api.py`, `test/lib/emulator_api.py`, `test/conftest.py`, and per-TC test files. The suite targets the device at `192.168.20.150` and the Modbus sensor emulator at `192.168.20.226`; serial assertions use COM8 at 115 200 baud.
+
+### Changed
+- `firmware/src/ui_display/ui_display.cpp` — **T/RH status page (page 0) reformatted**:
+  - Valid sensors: row 0 `Temp: 43 °C    `, row 1 `  RH: 65 %     ` — temperature and humidity on separate rows with aligned `°C` / `%` units. Hex escape `\xDF` followed by `C` split into `"\xDF" "C"` string literals to prevent the compiler from parsing `\xDFC` as a single (out-of-range) hex escape.
+  - Invalid sensors: row 0 `Temp: --- °C    `, row 1 `  RH: ---  %    ` — consistent dash style; "Sensors not ready" text removed.
+- `firmware/src/ui_display/ui_display.cpp` — **boot splash row 1**: format changed from `"v%-5.5s Init..."` to `"v%-9.9sInit.."` — version field expanded to 9 characters, left-justified; `Init..` sits flush at the right edge of the 16-char display.
+- `firmware/data/index.html` — poll-interval label changed from `"Poll interval (s)"` to `"Sensor poll interval (s)"`; tooltip extended to note that the new value takes effect after reboot.
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.15.1` → `1.16.0` in both `lolin_s3` and `test_t2_relay` environments.
+
+### Fixed
+- **Duplicate sensor log rows** (critical): `sensor_poll.cpp` set `reading.timestamp = dm_get_unix_time()`, which returns a cached value that T4 refreshes only every ~60 s from the RTC. With `poll_interval_s` set to 30 s, two consecutive polls received the same stale timestamp, producing duplicate rows in the sensor history table. Fixed by replacing with `reading.timestamp = (uint32_t)time(NULL)` — the POSIX system clock, always current.
+
+### Integration test — bugs found during development
+The following bugs in the firmware or REST API were discovered while building the integration test infrastructure. Both are fixed in this release:
+- **Duplicate sensor log entries** — root cause documented above under Fixed.
+- **`GET /api/config` vs `POST /api/config` key naming mismatch**: motor travel times are written with keys `travel_m1` / `travel_m2` / `travel_m3` (POST) but read back as a single `travel_s` array (GET). The `wait_for_config` helper in `conftest.py` was updated to exclude travel keys and use array indexing on teardown restore.
+
+### Build metrics
+- Flash: 55.0% (1154 kB / 2 MB)
+- RAM: 19.4% (63 kB / 320 kB)
+
+---
+
 ## [1.15.1] — 2026-05-06
 
 *Post-Phase-10 correctness fixes: two-phase atomic OTA commit; STORE-only ZIP writer; OTA idle-status bank/accepted display; release build tooling.*

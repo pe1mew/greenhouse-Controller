@@ -723,6 +723,8 @@ Network tasks run on Core 0. They depend on Group 2 (Data Manager) but are indep
 
 After all tasks are individually validated, the following integration tests verify end-to-end behaviour. These tests align with the acceptance criteria in `softwareTestPlan.md`.
 
+**Status:** Integration test suite under development. See `firmware/firmwareImplementationPlan.md` Phase 11 for the test environment, file layout, and bugs uncovered during test infrastructure development.
+
 | Test ID | Scenario | Validation |
 |---------|----------|------------|
 | INT-01 | Startup sequence | All 3 windows close within 215 s; heartbeat LED pulses at 4 Hz then drops to 1 Hz |

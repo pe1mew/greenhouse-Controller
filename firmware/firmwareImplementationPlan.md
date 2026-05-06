@@ -340,7 +340,47 @@ Verification: OTA new firmware; confirm reboot to new version; bad firmware → 
 
 ---
 
-### Phase 11 — MQTT Client (T12)
+### Phase 11 — Integration Test Suite (in development)
+**Goal:** Automated end-to-end verification of all firmware behaviour via the REST API, sensor emulator, and serial log output.
+
+**Status:** Under development. No test results yet.
+
+**Test environment:**
+
+| Component | Value |
+|---|---|
+| Device IP | `192.168.20.150` |
+| Sensor emulator IP | `192.168.20.226` |
+| Serial port | `COM8`, 115 200 baud |
+| Test runner | `pytest` with `--timeout=120` |
+
+**File layout:**
+```
+test/
+  conftest.py              — pytest fixtures: serial_mon, device, emulator, fast_config, neutral_sensors
+  lib/
+    serial_monitor.py      — background serial reader; wait_for(pattern, timeout, after)
+    device_api.py          — REST client for device (login, get_status, get_config, set_config_ok)
+    emulator_api.py        — REST client for sensor emulator (set_rest_mode, push)
+  test_01_boot.py          — TC-01: boot banner, all-tasks-spawned, CLOSE_ALL calibration
+  test_02_climate_temp.py  — TC-02/03/04: temperature threshold, close, hysteresis
+  test_03_climate_rh.py    — TC-05/06: RH threshold, over-dry close
+  test_04_wind_override.py — TC-07/08/09/10: wind speed, clearance, direction zone, disabled
+  test_05_sensor_fault.py  — TC-11/12/13: T/RH fault, wind fault, safe-fail wind override
+  test_06_config_api.py    — TC-14/15: config write/read-back, farmer role restrictions
+  test_07_session.py       — TC-16/17: session activity timer, logout
+```
+
+**Bugs found during integration test development:**
+
+| # | Finding | Fix |
+|---|---------|-----|
+| 1 | **Duplicate sensor log rows**: `sensor_poll.cpp` used `dm_get_unix_time()` (T4 cache, refreshed ~every 60 s) as the sensor timestamp. With `poll_interval_s = 30` two consecutive polls received the same stale timestamp, producing duplicate rows in the history table. | Fixed in v1.16.0: `reading.timestamp = (uint32_t)time(NULL)`. |
+| 2 | **`GET /api/config` vs `POST /api/config` key naming mismatch**: motor travel times are posted with keys `travel_m1` / `travel_m2` / `travel_m3` but returned by GET as a `travel_s` array. The `wait_for_config` helper assumed flat key names and always timed out waiting for travel confirmation. | Test-side fix: `wait_for_config` excludes travel keys; teardown uses `travel_s` array indexing. No firmware change required (naming is intentional). |
+
+---
+
+### Phase 12 — MQTT Client (T12)
 **Goal:** Optional telemetry and remote command capability.
 
 Files: `mqtt_client.h/.cpp`
@@ -405,7 +445,8 @@ Verification: Subscribe on broker; verify publish; publish command; verify relay
 | `firmware/src/event_logger/event_logger.h` | `log_post()` / `log_take_dropped_count()` API + full T9 Doxygen | ✅ Done (Gap H + Phase 5) |
 | `firmware/src/event_logger/event_logger.cpp` | Full T9 implementation: drain loop, NVS ring buffer, SD CSV append, rotation, drop-counter surfacing | ✅ Done (Phase 5) |
 | `firmware/src/keypad_scan/keypad_scan.h/.cpp` | T7: 20 ms scan, key-repeat, Q2 post | ✅ Done (Phase 7) |
-| `firmware/src/ui_display/ui_display.h/.cpp` | T8: LCD FSM, status pages, menu nav, PIN auth, Q4 config post, session timeout | ✅ Done (Phase 7) |
+| `firmware/src/ui_display/ui_display.h/.cpp` | T8: LCD FSM, status pages, menu nav, PIN auth, Q4 config post, session timeout; WiFi page `#`→AP shortcut, T/RH format, boot splash alignment (v1.16.0) | ✅ Done (Phase 7 + v1.16.0) |
+| `firmware/src/sensor_poll/sensor_poll.cpp` | T5: Modbus poll, sliding averages, fault flags; timestamp via `time(NULL)` — not `dm_get_unix_time()` (v1.16.0) | ✅ Done (Phase 3 + v1.16.0) |
 | `firmware/src/network_manager/network_manager.h/.cpp` | T10: WiFi client FSM, AP management, NTP sync, TN4, Q5; `do_geo_sync()`, `s_tz_table[]`, `iana_to_posix()`, `float_to_deg_frac()`, `post_q4()` (v1.13.0) | ✅ Done (Phase 8 + v1.13.0) |
 | `firmware/src/web_server/web_server.cpp` | T11: time display corrected to use `localtime_r` + no UTC suffix (v1.13.0) | ✅ Done (Phase 9 + v1.13.0) |
 | `firmware/src/main.cpp` | RTOS primitives, task spawn, pin_auth_init(), extern handle definitions | ✅ Done (Phase 0 + Phase 7) |
