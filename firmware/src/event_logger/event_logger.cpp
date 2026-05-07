@@ -599,6 +599,8 @@ void task_event_logger(void *pvParameters)
     /* ----------------------------------------------------------------
      * Main event loop
      * ---------------------------------------------------------------- */
+    TickType_t s_last_remount_ticks = xTaskGetTickCount();
+
     for (;;) {
         log_event_t evt;
 
@@ -609,6 +611,7 @@ void task_event_logger(void *pvParameters)
         if (xQueueReceive(Q3, &evt, wait) != pdTRUE) {
             /* Timeout — no event arrived; try to (re)mount the SD card. */
             if (!s_sd_ok) {
+                s_last_remount_ticks = xTaskGetTickCount();
                 if (event_logger_sd_remount()) {
                     ESP_LOGI(TAG, "[T9] SD automounted");
                 }
@@ -619,6 +622,19 @@ void task_event_logger(void *pvParameters)
 
         while (xQueueReceive(Q3, &evt, 0) == pdTRUE) {
             process_event(&evt);
+        }
+
+        /* When events are flowing, the 60-s timeout above never fires.
+         * Check elapsed time here so automount is attempted even while
+         * the sensor poll keeps Q3 busy (e.g. poll_interval = 30 s). */
+        if (!s_sd_ok) {
+            TickType_t now = xTaskGetTickCount();
+            if ((now - s_last_remount_ticks) >= pdMS_TO_TICKS(60000)) {
+                s_last_remount_ticks = now;
+                if (event_logger_sd_remount()) {
+                    ESP_LOGI(TAG, "[T9] SD automounted");
+                }
+            }
         }
 
         /* Surface any Q3 drop events. */

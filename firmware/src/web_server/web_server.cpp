@@ -15,8 +15,9 @@
  *  POST /api/login      → {role, pin} → {ok, role} or {ok:false, locked, remaining}
  *  POST /api/logout     → {} → {ok:true}
  *  GET  /api/status     → full status JSON (same as WS push)
- *  GET  /api/config     → all configuration parameters as JSON
- *  POST /api/config     → {ns, key, value} (int) or {ns, key, str_value} (string)
+ *  GET  /api/config        → all configuration parameters as JSON
+ *  GET  /api/config/limits → per-key {min,max} bounds (public; used by web UI)
+ *  POST /api/config        → {ns, key, value} (int) or {ns, key, str_value} (string)
  *  POST /api/wifi       → {ssid, psk} or {ap_psk} — writes directly to NVS wifi ns
  *  POST /api/pin        → {role, pin} — admin-only; changes farmer/admin PIN
  *  GET  /api/history    → ?n=N — last N sensor ring buffer entries as JSON
@@ -64,6 +65,7 @@
 #include "nvs_config.h"
 #include "../../../drivers/sdCard/src/sd_storage.h"
 #include "../ota_manager/ota_manager.h"
+#include "cfg_limits.h"
 
 static const char *TAG = "T11_WEB";
 
@@ -128,6 +130,28 @@ static session_t session_find(const char *token)
             role = s_sessions[i].role;
             s_sessions[i].expiry = now + s_sessions[i].timeout_s;  /* slide window */
             break;
+        }
+    }
+    xSemaphoreGive(s_sess_mux);
+    return role;
+}
+
+/** Find session by token without sliding the expiry deadline.
+ *  Used for probe-only calls (/api/whoami) so the browser's periodic
+ *  validity check does not prevent the idle timeout from firing. */
+static session_t session_find_peek(const char *token)
+{
+    if (!token || token[0] == '\0') return SESSION_NONE;
+    session_t role = SESSION_NONE;
+    time_t now = time(NULL);
+    xSemaphoreTake(s_sess_mux, pdMS_TO_TICKS(200));
+    for (int i = 0; i < MAX_SESSIONS; i++) {
+        if (s_sessions[i].expiry > 0 &&
+            s_sessions[i].expiry > now &&
+            strcmp(s_sessions[i].token, token) == 0)
+        {
+            role = s_sessions[i].role;
+            break;  /* no slide — expiry is not modified */
         }
     }
     xSemaphoreGive(s_sess_mux);
@@ -209,7 +233,9 @@ static session_t req_role(AsyncWebServerRequest *req)
  * ============================================================ */
 static lfs_partition_t s_lfs_part;
 
-/** Serve a file from LittleFS. Falls back to 404 if not found. */
+/** Serve a file from LittleFS. Falls back to 404 if not found.
+ *  Cache-Control: no-store prevents the browser from caching static assets
+ *  across firmware/web-asset OTA updates. */
 static void serve_lfs(AsyncWebServerRequest *req, const char *path, const char *ct)
 {
     char *buf = (char *)ps_malloc(LFS_BUF_SIZE);
@@ -217,7 +243,9 @@ static void serve_lfs(AsyncWebServerRequest *req, const char *path, const char *
 
     lfs_status_t st = littlefs_read(s_lfs_part, path, buf, LFS_BUF_SIZE);
     if (st == LFS_OK) {
-        req->send(200, ct, buf);
+        AsyncWebServerResponse *resp = req->beginResponse(200, ct, buf);
+        resp->addHeader("Cache-Control", "no-store");
+        req->send(resp);
     } else {
         req->send(404, "text/plain", "Not found");
     }
@@ -465,8 +493,13 @@ static void register_routes(AsyncWebServer &srv)
     });
 
     /* ── Whoami ─────────────────────────────────────────────── */
+    /* Uses session_find_peek (no slide) so this probe call does not reset
+     * the idle timeout — the browser polls this every 60 s to detect
+     * server-side expiry without preventing it from happening. */
     srv.on("/api/whoami", HTTP_GET, [](AsyncWebServerRequest *req) {
-        session_t role = req_role(req);
+        char token[TOKEN_LEN + 1] = {0};
+        cookie_get_session(req, token);
+        session_t role = session_find_peek(token);
         if (role == SESSION_NONE) {
             req->send(401, "application/json", "{\"ok\":false}");
         } else {
@@ -543,6 +576,49 @@ static void register_routes(AsyncWebServer &srv)
         free(buf);
     });
 
+    /* ── Config limits (public — no auth required) ──────────── */
+    /* Single source of truth: bounds are defined in config/cfg_limits.h and
+     * baked into this static string at compile time via the _LIMITS_STR() macro.
+     * app.js fetches this once at page load and applies min/max to every
+     * <input> element, so the HTML never needs hardcoded range attributes. */
+    srv.on("/api/config/limits", HTTP_GET, [](AsyncWebServerRequest *req) {
+#define _LIMITS_STR2(x) #x
+#define _LIMITS_STR(x)  _LIMITS_STR2(x)
+        static const char LIMITS_JSON[] =
+            "{"
+            "\"t_max_day\":"      "[" _LIMITS_STR(CFG_MIN_T_MAX_DAY)   "," _LIMITS_STR(CFG_MAX_T_MAX_DAY)   "],"
+            "\"t_min_day\":"      "[" _LIMITS_STR(CFG_MIN_T_MIN_DAY)   "," _LIMITS_STR(CFG_MAX_T_MIN_DAY)   "],"
+            "\"t_max_ngt\":"      "[" _LIMITS_STR(CFG_MIN_T_MAX_NGT)   "," _LIMITS_STR(CFG_MAX_T_MAX_NGT)   "],"
+            "\"t_min_ngt\":"      "[" _LIMITS_STR(CFG_MIN_T_MIN_NGT)   "," _LIMITS_STR(CFG_MAX_T_MIN_NGT)   "],"
+            "\"rh_max_day\":"     "[" _LIMITS_STR(CFG_MIN_RH_MAX)      "," _LIMITS_STR(CFG_MAX_RH_MAX)      "],"
+            "\"rh_min_day\":"     "[" _LIMITS_STR(CFG_MIN_RH_MIN)      "," _LIMITS_STR(CFG_MAX_RH_MIN)      "],"
+            "\"rh_max_ngt\":"     "[" _LIMITS_STR(CFG_MIN_RH_MAX)      "," _LIMITS_STR(CFG_MAX_RH_MAX)      "],"
+            "\"rh_min_ngt\":"     "[" _LIMITS_STR(CFG_MIN_RH_MIN)      "," _LIMITS_STR(CFG_MAX_RH_MIN)      "],"
+            "\"hyst_t\":"         "[" _LIMITS_STR(CFG_MIN_HYST_T)      "," _LIMITS_STR(CFG_MAX_HYST_T)      "],"
+            "\"hyst_rh\":"        "[" _LIMITS_STR(CFG_MIN_HYST_RH)     "," _LIMITS_STR(CFG_MAX_HYST_RH)     "],"
+            "\"avg_win_t\":"      "[" _LIMITS_STR(CFG_MIN_AVG_WIN)     "," _LIMITS_STR(CFG_MAX_AVG_WIN)     "],"
+            "\"avg_win_rh\":"     "[" _LIMITS_STR(CFG_MIN_AVG_WIN)     "," _LIMITS_STR(CFG_MAX_AVG_WIN)     "],"
+            "\"v_max\":"          "[" _LIMITS_STR(CFG_MIN_V_MAX)        "," _LIMITS_STR(CFG_MAX_V_MAX)       "],"
+            "\"dir_excl_low\":"   "[" _LIMITS_STR(CFG_MIN_DIR)          "," _LIMITS_STR(CFG_MAX_DIR)         "],"
+            "\"dir_excl_high\":"  "[" _LIMITS_STR(CFG_MIN_DIR)          "," _LIMITS_STR(CFG_MAX_DIR)         "],"
+            "\"travel_m1\":"      "[" _LIMITS_STR(CFG_MIN_TRAVEL_S)    "," _LIMITS_STR(CFG_MAX_TRAVEL_S)    "],"
+            "\"travel_m2\":"      "[" _LIMITS_STR(CFG_MIN_TRAVEL_S)    "," _LIMITS_STR(CFG_MAX_TRAVEL_S)    "],"
+            "\"travel_m3\":"      "[" _LIMITS_STR(CFG_MIN_TRAVEL_S)    "," _LIMITS_STR(CFG_MAX_TRAVEL_S)    "],"
+            "\"dwell_open_m1\":"  "[" _LIMITS_STR(CFG_MIN_DWELL_OPEN_S) "," _LIMITS_STR(CFG_MAX_DWELL_OPEN_S) "],"
+            "\"dwell_open_m2\":"  "[" _LIMITS_STR(CFG_MIN_DWELL_OPEN_S) "," _LIMITS_STR(CFG_MAX_DWELL_OPEN_S) "],"
+            "\"dwell_open_m3\":"  "[" _LIMITS_STR(CFG_MIN_DWELL_OPEN_S) "," _LIMITS_STR(CFG_MAX_DWELL_OPEN_S) "],"
+            "\"dwell_close_m1\":" "[" _LIMITS_STR(CFG_MIN_DWELL_CLOSE_S) "," _LIMITS_STR(CFG_MAX_DWELL_CLOSE_S) "],"
+            "\"dwell_close_m2\":" "[" _LIMITS_STR(CFG_MIN_DWELL_CLOSE_S) "," _LIMITS_STR(CFG_MAX_DWELL_CLOSE_S) "],"
+            "\"dwell_close_m3\":" "[" _LIMITS_STR(CFG_MIN_DWELL_CLOSE_S) "," _LIMITS_STR(CFG_MAX_DWELL_CLOSE_S) "],"
+            "\"poll_interval\":"  "[" _LIMITS_STR(CFG_MIN_POLL_S)      "," _LIMITS_STR(CFG_MAX_POLL_S)      "],"
+            "\"session_timeout\":" "[" _LIMITS_STR(CFG_MIN_TIMEOUT_MIN) "," _LIMITS_STR(CFG_MAX_TIMEOUT_MIN) "],"
+            "\"ap_timeout\":"     "[" _LIMITS_STR(CFG_MIN_AP_TIMEOUT)  "," _LIMITS_STR(CFG_MAX_TIMEOUT_MIN) "]"
+            "}";
+#undef _LIMITS_STR2
+#undef _LIMITS_STR
+        req->send(200, "application/json", LIMITS_JSON);
+    });
+
     /* ── Config GET ─────────────────────────────────────────── */
     srv.on("/api/config", HTTP_GET, [](AsyncWebServerRequest *req) {
         session_t role = req_role(req);
@@ -588,6 +664,13 @@ static void register_routes(AsyncWebServer &srv)
         if (has_str) {
             /* String value — write directly to NVS (e.g. tz_str) */
             nvs_cfg_set_str(ns, key, str_value);
+            /* Apply timezone immediately so localtime_r uses the new zone
+             * without requiring a reboot.  The same call is made at boot
+             * in data_manager.cpp::nvs_load_system(). */
+            if (strcmp(key, "tz_str") == 0 && str_value[0] != '\0') {
+                setenv("TZ", str_value, 1);
+                tzset();
+            }
             req->send(200, "application/json", "{\"ok\":true}");
         } else {
             /* Integer value — post via Q4 so T4 validates and persists */

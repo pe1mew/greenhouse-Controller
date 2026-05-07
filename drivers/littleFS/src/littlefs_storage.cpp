@@ -206,6 +206,35 @@ uint64_t littlefs_free_bytes(lfs_partition_t partition)
 }
 
 /* ---------------------------------------------------------------------------
+ * littlefs_format
+ * --------------------------------------------------------------------------- */
+lfs_status_t littlefs_format(lfs_partition_t partition)
+{
+    if (partition != LFS_PARTITION_A && partition != LFS_PARTITION_B) {
+        return LFS_ERR_IO;
+    }
+    /* Unmount first if currently mounted. */
+    if (g_mounted[partition]) {
+        littlefs_unmount(partition);
+    }
+
+#ifndef UNIT_TEST
+    const char *lbl = select_label(partition);
+    fs::LittleFSFS &lfs_inst = select_fs(partition);
+    /* begin(formatOnFail=true) mounts or formats the partition; format() then
+     * wipes all files; end() unmounts.  format() internally calls end() before
+     * operating so the double-unmount is safe. */
+    if (!lfs_inst.begin(true, "/lfs", 10, lbl)) return LFS_ERR_IO;
+    bool ok = lfs_inst.format();
+    lfs_inst.end();
+    g_mounted[partition] = false;
+    return ok ? LFS_OK : LFS_ERR_IO;
+#else
+    return LFS_OK;
+#endif
+}
+
+/* ---------------------------------------------------------------------------
  * littlefs_active_partition
  * --------------------------------------------------------------------------- */
 lfs_partition_t littlefs_active_partition(void)

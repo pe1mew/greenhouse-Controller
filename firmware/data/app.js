@@ -3,6 +3,18 @@
 // ── Auth state ───────────────────────────────────────────────────────────────
 let g_role = null;  // 'farmer' | 'admin' | null
 
+// ── Session idle timer ───────────────────────────────────────────────────────
+// g_session_timeout_ms is loaded from cfg.session_timeout_min; default 5 min.
+// g_last_activity is updated on every real user gesture.
+// When the user has been idle for >= g_session_timeout_ms the client calls
+// doLogout() which invalidates the server session and shows the login form.
+let g_session_timeout_ms = 5 * 60 * 1000;
+let g_last_activity      = Date.now();
+['click', 'keydown', 'touchstart'].forEach(function (ev) {
+  document.addEventListener(ev, function () { g_last_activity = Date.now(); },
+                            { passive: true, capture: true });
+});
+
 function setRole(role) {
   g_role = role;
   document.body.classList.toggle('is-farmer', role === 'farmer' || role === 'admin');
@@ -194,9 +206,19 @@ function doLogout() {
   post('/api/logout', {}).then(() => setRole(null));
 }
 
-// Periodic session check — detects server-side timeout while the user is idle.
+// Periodic session check — two responsibilities:
+//   1. Client-side idle logout: if the user has not interacted for
+//      g_session_timeout_ms, call doLogout() to invalidate the session
+//      on the server and return to the login form.
+//   2. Server-side validity probe: fetch /api/whoami (which does NOT slide
+//      the server-side expiry) to detect forced logout or device reboot
+//      while the user is still active.
 setInterval(function () {
   if (g_role === null) return;
+  if (Date.now() - g_last_activity >= g_session_timeout_ms) {
+    doLogout();   // idle timeout reached — log out cleanly
+    return;
+  }
   fetch('/api/whoami')
     .then(function (r) { if (!r.ok) showLogin(); })
     .catch(function () {});
@@ -206,9 +228,11 @@ setInterval(function () {
 // changes made via the REST API (test scripts, other clients) are reflected
 // in the GUI without a full page reload.  Fields the user is currently editing
 // are skipped (see setVal).
+// Only runs while the user is active so that background polls do not silently
+// extend the server-side session when nobody is at the keyboard.
 setInterval(function () {
   if (g_role === null) return;
-  loadConfig();
+  if (Date.now() - g_last_activity < g_session_timeout_ms) loadConfig();
 }, 60000);
 
 // Periodic history refresh — public endpoint, no auth required.
@@ -226,9 +250,11 @@ function loadConfig() {
     .then(cfg => {
       if (!cfg) return;
       setVal('cfg-t-max-day',      cfg.t_max_day);
-      setVal('cfg-t-min-day',      cfg.t_min_day);
+      // HEATING CONTROL NOT IMPLEMENTED — preserved for future use
+      // setVal('cfg-t-min-day',   cfg.t_min_day);
       setVal('cfg-t-max-ngt',      cfg.t_max_ngt);
-      setVal('cfg-t-min-ngt',      cfg.t_min_ngt);
+      // HEATING CONTROL NOT IMPLEMENTED — preserved for future use
+      // setVal('cfg-t-min-ngt',   cfg.t_min_ngt);
       setVal('cfg-rh-max-day',     cfg.rh_max_day);
       setVal('cfg-rh-min-day',     cfg.rh_min_day);
       setVal('cfg-rh-max-ngt',     cfg.rh_max_ngt);
@@ -242,16 +268,17 @@ function loadConfig() {
       setVal('cfg-dir-excl-low',   cfg.dir_excl_low);
       setVal('cfg-dir-excl-high',  cfg.dir_excl_high);
       setVal('cfg-wind-prot-en',   String(cfg.wind_prot_en));
-      setVal('cfg-travel-0',       cfg.travel_s && cfg.travel_s[0]);
-      setVal('cfg-travel-1',       cfg.travel_s && cfg.travel_s[1]);
-      setVal('cfg-travel-2',       cfg.travel_s && cfg.travel_s[2]);
-      setVal('cfg-dwell-open-0',   cfg.dwell_open_min && cfg.dwell_open_min[0]);
-      setVal('cfg-dwell-open-1',   cfg.dwell_open_min && cfg.dwell_open_min[1]);
-      setVal('cfg-dwell-open-2',   cfg.dwell_open_min && cfg.dwell_open_min[2]);
-      setVal('cfg-dwell-close-0',  cfg.dwell_close_min && cfg.dwell_close_min[0]);
-      setVal('cfg-dwell-close-1',  cfg.dwell_close_min && cfg.dwell_close_min[1]);
-      setVal('cfg-dwell-close-2',  cfg.dwell_close_min && cfg.dwell_close_min[2]);
+      setVal('cfg-travel-m1',       cfg.travel_s && cfg.travel_s[0]);
+      setVal('cfg-travel-m2',       cfg.travel_s && cfg.travel_s[1]);
+      setVal('cfg-travel-m3',       cfg.travel_s && cfg.travel_s[2]);
+      setVal('cfg-dwell-open-m1',   cfg.dwell_open_min && cfg.dwell_open_min[0]);
+      setVal('cfg-dwell-open-m2',   cfg.dwell_open_min && cfg.dwell_open_min[1]);
+      setVal('cfg-dwell-open-m3',   cfg.dwell_open_min && cfg.dwell_open_min[2]);
+      setVal('cfg-dwell-close-m1',  cfg.dwell_close_min && cfg.dwell_close_min[0]);
+      setVal('cfg-dwell-close-m2',  cfg.dwell_close_min && cfg.dwell_close_min[1]);
+      setVal('cfg-dwell-close-m3',  cfg.dwell_close_min && cfg.dwell_close_min[2]);
       setVal('cfg-session-timeout', cfg.session_timeout_min);
+      g_session_timeout_ms = (cfg.session_timeout_min > 0 ? cfg.session_timeout_min : 5) * 60 * 1000;
       setVal('cfg-ap-timeout',     cfg.ap_timeout_min);
       setVal('cfg-poll-interval',  cfg.poll_interval_s);
       setVal('cfg-wifi-ssid',      cfg.wifi_ssid);
@@ -418,7 +445,7 @@ setInterval(function () {
 // ── OTA update ───────────────────────────────────────────────────────────────
 // State names returned by GET /api/ota/status that indicate active operation.
 var OTA_ACTIVE_STATES = ['fw_writing', 'fw_verifying', 'fw_done',
-                         'assets_buffering', 'assets_writing'];
+                         'assets_buffering', 'assets_writing', 'rebooting'];
 var g_ota_poll_timer  = null;
 
 function loadOtaStatus() {
@@ -442,22 +469,33 @@ function loadOtaStatus() {
       }
       if (data.state === 'error' && data.error) label += ': ' + data.error;
       if (data.state === 'rebooting') label = 'Rebooting…';
-      if (data.state === 'fw_done')   label = 'Firmware ready — uploading assets…';
+      if (data.state === 'fw_done')   label = 'Firmware ready — please upload the web assets ZIP';
       if (statusEl) statusEl.textContent = label.charAt(0).toUpperCase() + label.slice(1);
-      var active = OTA_ACTIVE_STATES.indexOf(data.state) !== -1;
+      var active  = OTA_ACTIVE_STATES.indexOf(data.state) !== -1;
+      /* Also keep polling after reboot until the firmware is accepted (~35 s). */
+      var pending = (data.state === 'idle' && data.accepted === false);
       if (wrapEl) wrapEl.style.display = active ? 'block' : 'none';
       if (fillEl) fillEl.style.width = data.progress + '%';
-      // Continue polling while operation is in progress
-      if (active) {
+      if (active || pending) {
         if (!g_ota_poll_timer) {
           g_ota_poll_timer = setTimeout(function () {
             g_ota_poll_timer = null;
             loadOtaStatus();
-          }, 2000);
+          }, active ? 2000 : 5000);
         }
       } else {
         if (g_ota_poll_timer) { clearTimeout(g_ota_poll_timer); g_ota_poll_timer = null; }
       }
+    })
+    .catch(function () {
+      /* Connection failed — device has rebooted.  Stop polling and prompt reload. */
+      if (g_ota_poll_timer) { clearTimeout(g_ota_poll_timer); g_ota_poll_timer = null; }
+      var statusEl  = document.getElementById('ota-status-text');
+      var wrapEl    = document.getElementById('ota-progress-wrap');
+      var fillEl    = document.getElementById('ota-progress-fill');
+      if (statusEl) statusEl.textContent = 'Rebooting — reload the page once the device comes back online';
+      if (fillEl)   fillEl.style.width   = '100%';
+      if (wrapEl)   wrapEl.style.display = 'block';
     });
 }
 
@@ -486,16 +524,8 @@ function uploadOtaFirmware() {
     .then(function (data) {
       feedback('fb-ota-fw', data && data.ok);
       if (data && data.ok) {
-        var assetsEl = document.getElementById('ota-assets-file');
-        if (assetsEl && assetsEl.files && assetsEl.files[0]) {
-          // Assets file is selected — upload it immediately so firmware + assets
-          // switch atomically on the same reboot.
-          if (statusEl) statusEl.textContent = 'Firmware ready — uploading web assets…';
-          uploadOtaAssets();
-        } else {
-          if (statusEl) statusEl.textContent = 'Firmware ready — select web assets ZIP or device reboots in 2 min';
-          loadOtaStatus();
-        }
+        if (statusEl) statusEl.textContent = 'Firmware ready — please upload the web assets ZIP';
+        loadOtaStatus();
       }
     })
     .catch(function () { feedback('fb-ota-fw', false); });
@@ -601,6 +631,8 @@ function showTab(id) {
   });
   // Refresh log file list each time the Log tab is opened
   if (id === 'tab-log') loadLogFiles();
+  // Refresh OTA status each time the System tab is opened
+  if (id === 'tab-system' && g_role === 'admin') loadOtaStatus();
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -662,21 +694,48 @@ function linkSlider(numId) {
 
 (function linkAllSliders() {
   [
-    'cfg-t-max-day', 'cfg-t-min-day', 'cfg-rh-max-day', 'cfg-rh-min-day',
-    'cfg-t-max-ngt', 'cfg-t-min-ngt', 'cfg-rh-max-ngt', 'cfg-rh-min-ngt',
+    'cfg-t-max-day', /* 'cfg-t-min-day', HEATING CONTROL NOT IMPLEMENTED — preserved for future use */
+    'cfg-rh-max-day', 'cfg-rh-min-day',
+    'cfg-t-max-ngt', /* 'cfg-t-min-ngt', HEATING CONTROL NOT IMPLEMENTED — preserved for future use */
+    'cfg-rh-max-ngt', 'cfg-rh-min-ngt',
     'cfg-hyst-t', 'cfg-hyst-rh', 'cfg-avg-win-t', 'cfg-avg-win-rh',
     'cfg-v-max', 'cfg-dir-excl-low', 'cfg-dir-excl-high',
-    'cfg-travel-0', 'cfg-travel-1', 'cfg-travel-2',
-    'cfg-dwell-open-0', 'cfg-dwell-open-1', 'cfg-dwell-open-2',
-    'cfg-dwell-close-0', 'cfg-dwell-close-1', 'cfg-dwell-close-2',
+    'cfg-travel-m1', 'cfg-travel-m2', 'cfg-travel-m3',
+    'cfg-dwell-open-m1', 'cfg-dwell-open-m2', 'cfg-dwell-open-m3',
+    'cfg-dwell-close-m1', 'cfg-dwell-close-m2', 'cfg-dwell-close-m3',
     'cfg-session-timeout', 'cfg-ap-timeout', 'cfg-poll-interval',
   ].forEach(linkSlider);
 })();
+
+// ── Config limits ────────────────────────────────────────────────────────────
+// Fetches /api/config/limits once at page load (public endpoint, no auth).
+// The response is a JSON object keyed by NVS parameter name, each value an
+// [min, max] array.  The key name maps to the HTML input ID by replacing '_'
+// with '-' and prepending 'cfg-', which matches every config input exactly
+// (motor inputs were renamed from cfg-*-0/1/2 to cfg-*-m1/m2/m3 to align).
+// The slider counterpart is found by appending '-sl' to the same base ID.
+function loadLimits() {
+  fetch('/api/config/limits')
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (limits) {
+      if (!limits) return;
+      Object.keys(limits).forEach(function (key) {
+        var range = limits[key];           // [min, max]
+        var id  = 'cfg-' + key.replace(/_/g, '-');
+        var num = document.getElementById(id);
+        var sl  = document.getElementById(id + '-sl');
+        if (num) { num.min = range[0]; num.max = range[1]; }
+        if (sl)  { sl.min  = range[0]; sl.max  = range[1]; }
+      });
+    })
+    .catch(function () { /* limits unavailable — inputs work without constraints */ });
+}
 
 // ── Initialise on load ───────────────────────────────────────────────────────
 // Connect WebSocket and load sensor history immediately — both are public.
 // Then check for an existing session so we can restore Settings if the user
 // had already logged in before reloading the page.
+loadLimits();
 wsConnect();
 loadHistory();
 loadSdStatus();

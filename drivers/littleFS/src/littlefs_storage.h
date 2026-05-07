@@ -110,6 +110,19 @@ lfs_status_t littlefs_write(lfs_partition_t partition, const char *path,
 bool littlefs_exists(lfs_partition_t partition, const char *path);
 
 /**
+ * @brief Format (wipe) the specified LittleFS partition.
+ *
+ * Erases all files on the partition and reinitialises the filesystem.
+ * Unmounts the partition first if it is currently mounted.
+ * Intended for use by T13 (OTA) before writing fresh web assets so that
+ * stale files from a previous OTA cycle cannot persist.
+ *
+ * @param partition  Partition to format (must be the INACTIVE partition).
+ * @return LFS_OK on success, LFS_ERR_IO on failure.
+ */
+lfs_status_t littlefs_format(lfs_partition_t partition);
+
+/**
  * @brief Return free bytes remaining on the specified partition.
  *
  * @param partition  Partition to query.

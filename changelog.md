@@ -6,6 +6,176 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.16.25] — 2026-05-07
+
+*Add per-key validation bounds to all integer config parameters received via Q4.*
+
+### Added
+- `firmware/src/data_manager/data_manager.cpp` — new `cfg_clamp()` function and `CFG_MIN_*` / `CFG_MAX_*` constants enforce valid ranges on every integer config value before it is written to NVS or applied to the in-RAM shadow.  Out-of-range values are silently clamped to the nearest bound; a `LOGW` line is emitted so the operator can see the correction.  The clamp runs inside `apply_config_update()`, before the NVS write, so neither storage nor the running config can hold an illegal value.
+
+  Bounds defined for: `t_max/min_day/ngt`, `rh_max/min_day/ngt`, `hyst_t` (min 2), `hyst_rh` (min 2), `avg_win_t/rh` (min 1, max 30), `v_max` (min 1), `dir_excl_low/high` (0–359), `travel_m1/m2/m3` (5–300 s), `dwell_open_m1/m2/m3` (0–600 s), `dwell_close_m1/m2/m3` (0–300 s), `poll_interval_s` (30–300 s), `session_timeout_min` / `ap_timeout_min` (1–1440 min).
+
+  Key oscillation guards: `hyst_t ≥ 2` prevents the step-width from collapsing to zero in the climate control algorithm; `poll_interval_s ≥ 30` prevents excessive relay actuation frequency.
+
+---
+
+## [1.16.24] — 2026-05-07
+
+*Fix RGB LED night dimming: replace setBrightness() loop calls with direct colour-component scaling.*
+
+### Fixed
+- `firmware/src/main.cpp` — `setBrightness()` is documented for one-time initialisation only; calling it every 500 ms T1 tick re-scales the internal NeoPixel pixel buffer on every day↔night brightness change, degrading stored values through lossy integer arithmetic and producing inconsistent output. Fixed by setting `setBrightness(255)` once at startup and scaling the R/G/B components manually before each `setPixelColor()` call (`channel = (raw × dim) >> 8`). With the internal brightness fixed at 255, NeoPixel stores values unmodified and the LED output matches the computed scale exactly. Night schedule and brightness levels are unchanged: 22:00–06:00 local time at brightness 20; daytime at brightness 200.
+
+---
+
+## [1.16.23] — 2026-05-07
+
+*Promote optimised anti-oscillation parameters to firmware defaults.*
+
+### Changed
+- `firmware/src/data_manager/data_manager.cpp` — updated compile-time defaults to match `simulation/settings_optimised.json`:
+  - `DEF_HYST_T` 3 → 5 (wider temperature dead band)
+  - `DEF_AVG_WIN_T` 3 → 6 (longer averaging window to smooth thermal spikes)
+  - `DEF_DWELL_OPEN_S` 120 → 300 (5 min minimum open time; now effective following the v1.16.22 CMD_CLOSE fix)
+
+  These defaults apply on a fresh flash or after an NVS reset.  Existing devices retain their NVS-stored values; update via the web GUI if needed.
+
+---
+
+## [1.16.22] — 2026-05-07
+
+*Fix window oscillation: use CMD_CLOSE (dwell-respecting) instead of CMD_CLOSE_ALL for normal step→0 transitions in climate control.*
+
+### Fixed
+- `firmware/src/climate_control/climate_control.cpp` — `apply_step_delta()` previously issued `CMD_CLOSE_ALL` whenever `new_step == 0`.  `CMD_CLOSE_ALL` zeroes the per-channel dwell deadline in T2 (relay controller), bypassing `dwell_open_s` entirely and causing rapid oscillation when indoor temperature rebounds after ventilation.  Changed to issue per-channel `CMD_CLOSE` for all climate-control step transitions, including full close (step → 0).  `CMD_CLOSE` respects `dwell_open_s`, so windows remain open for at least the configured minimum time before closing.  `CMD_CLOSE_ALL` is now reserved exclusively for safety events (wind override in T3, motor alarm / calibration in T2).
+
+### Recommended settings change (apply via GUI)
+Together with the firmware fix the following NVS parameter changes eliminate oscillation in simulation across all test scenarios:
+
+| Parameter | Old default | New recommended | Reason |
+|---|---|---|---|
+| `hyst_t` | 3 | 5 | Wider dead band; close-guard requires T_avg to drop 5 °C below t_max before closing |
+| `avg_win_t` | 3 min | 6 min | Longer averaging window prevents a single cooled-air reading from instantly clearing the close guard |
+| `dwell_open_m1/2/3` | 120 s | 300 s | Now effective (CMD_CLOSE respects dwell); 5 min minimum open time prevents short re-close cycles |
+
+Simulation results with these three changes + firmware fix (S1 Daytime Solar Gain scenario):
+
+| Metric | v1.16.19 defaults | Optimised | Improvement |
+|---|---|---|---|
+| M1 open/close cycles (24 h) | 24 | 1 | −96 % |
+| Peak indoor temperature | 49.4 °C | 35.7 °C | −13.7 °C |
+| Time T within t_max + 2 °C | 66.5 % | 70.9 % | +4.4 pp |
+| Total actuations | 58 | 6 | −90 % |
+
+---
+
+## [1.16.21] — 2026-05-07
+
+*Fix timezone not applied when changed via web GUI — clock remained in old zone until reboot.*
+
+### Fixed
+- `firmware/src/web_server/web_server.cpp` — `POST /api/config` with `key = "tz_str"` now calls `setenv("TZ", str_value, 1)` + `tzset()` immediately after writing to NVS.  Previously the new POSIX TZ string was persisted to flash but the C-library timezone was only updated on the next reboot (from `data_manager.cpp::nvs_load_system()`), so `localtime_r` kept formatting timestamps in the old zone.
+
+---
+
+## [1.16.20] — 2026-05-07
+
+*Fix session idle timeout: background polls were silently preventing the timeout from ever firing.*
+
+### Fixed
+- `firmware/src/web_server/web_server.cpp` — Added `session_find_peek()`: a non-sliding variant of `session_find()` that checks session validity without resetting the expiry deadline. `/api/whoami` now uses `session_find_peek` so the browser's 60 s probe call no longer keeps the session alive.
+- `firmware/data/app.js` — Added client-side idle timer (`g_last_activity` / `g_session_timeout_ms`). Real user gestures (click, keydown, touchstart) update `g_last_activity`. The periodic session-check interval now calls `doLogout()` when the user has been idle for `session_timeout_min` minutes, and skips the `/api/whoami` probe. `g_session_timeout_ms` is updated from `cfg.session_timeout_min` each time the config is loaded.
+- `firmware/data/app.js` — The background `loadConfig()` poll (every 60 s) is now gated: it only fires while the user is active (`Date.now() − g_last_activity < g_session_timeout_ms`). This stops config polling from silently extending the server-side session when nobody is at the keyboard.
+
+---
+
+## [1.16.19] — 2026-05-07
+
+*Hide T min day / T min night sliders in web GUI — heating control not yet implemented.*
+
+### Changed
+- `firmware/data/index.html` — **T min day** and **T min night** slider rows commented out with `<!-- HEATING CONTROL NOT IMPLEMENTED — preserved for future use -->`. The NVS keys (`t_min_day`, `t_min_ngt`) remain in firmware and continue to be stored; the sliders are only hidden from the UI.
+- `firmware/data/app.js` — Corresponding `setVal()` calls and `linkAllSliders` entries commented out with the same note.
+
+---
+
+## [1.16.18] — 2026-05-07
+
+*Fix dwell_open unit: macro renamed and value corrected from 2 (seconds) to 120 (seconds = 2 min).*
+
+### Fixed
+- `firmware/src/data_manager/data_manager.cpp` — **`DEF_DWELL_OPEN_MIN` unit bug**: T2 stores and reads the dwell NVS value in **seconds** (multiplies by 1 000 ms on load). The macro was named `DEF_DWELL_OPEN_MIN` with value `2`, which T2 interpreted as 2 seconds — not the intended 2 minutes. Renamed to `DEF_DWELL_OPEN_S` and corrected to `120` (120 s = 2 min). `DEF_DWELL_CLOSE_MIN` renamed to `DEF_DWELL_CLOSE_S` (value remains 0) for consistency.
+
+---
+
+## [1.16.17] — 2026-05-07
+
+*Factory defaults updated to general-crop greenhouse values.*
+
+### Changed
+- `firmware/src/data_manager/data_manager.cpp` — **Climate defaults**: `t_max_day` 26→28 °C, `t_max_ngt` 22→20 °C, `t_min_day` 15→16 °C, `t_min_ngt` 12→14 °C; `rh_max_day` 80→75 %, `rh_max_ngt` 85→80 %, `rh_min_day` 40→50 %, `rh_min_ngt` 50→55 %; `hyst_t` 2→3 °C; `avg_win_t` 1→3 min, `avg_win_rh` 1→5 min.
+- `firmware/src/data_manager/data_manager.cpp` — **Wind default**: `v_max` 7→6 m/s (Beaufort 4 onset with margin).
+- `firmware/src/data_manager/data_manager.cpp` — **Motor dwell default**: `dwell_open_m1/m2/m3` 0→2 min; prevents immediate re-close after window opens.
+- `firmware/src/data_manager/data_manager.cpp` — **Poll interval default**: `poll_interval` 30→60 s; reduces relay wear without meaningful loss of responsiveness.
+
+> **Note:** factory defaults only apply on first boot (empty NVS) or after an NVS erase. Existing installations retain their current NVS values and must be updated manually via the web GUI or a full NVS erase.
+
+---
+
+## [1.16.16] — 2026-05-07
+
+*24-hour periodic NTP resync added.*
+
+### Added
+- `firmware/src/network_manager/network_manager.cpp` — **Periodic NTP resync**: while in `NET_RUNNING` state the firmware re-runs `configTime()` / NTP wait once every 24 hours (`NTP_RESYNC_INTERVAL_S = 86400`). On success, T4 is notified (TN4) and writes the updated time to the DS1307 RTC. Geo/TZ lookup is intentionally skipped on periodic resyncs (location is stable); only the initial WiFi-connect sync fetches geo data.
+
+---
+
+## [1.16.15] — 2026-05-07
+
+*OTA flow hardened: manual two-step upload, STORE-only ZIP enforcement, no auto-upload, live status polling fixed.*
+
+### Fixed
+- `firmware/data/app.js` — **OTA status panel not updating**: `loadOtaStatus()` is now called each time the System tab is opened, so the panel always reflects current device state immediately.
+- `firmware/data/app.js` — **"not yet accepted" never clearing**: after an OTA reboot the panel now keeps polling every 5 s until `accepted` flips to `true` (~35 s), then stops. Previously polling stopped as soon as state returned to `idle`.
+- `firmware/data/app.js` — **`fw_done` progress label**: status text while waiting for assets changed from "Firmware ready — uploading assets…" to "Firmware ready — please upload the web assets ZIP" to match the new manual flow.
+
+### Changed
+- `firmware/data/app.js` — **Removed auto-upload of assets**: after firmware upload succeeds, the assets ZIP is no longer uploaded automatically even if it is already selected. Both uploads are now fully manual (firmware first, then assets as a separate step).
+- `bin/build_release.ps1` — confirmed as the canonical release builder; always used for all version packages. Web-assets ZIP uses STORE (method=0) enforced by the script's raw ZIP writer and verified before output.
+
+---
+
+## [1.16.14] — 2026-05-07
+
+*Auto-upload of web assets removed; STORE-only ZIP required by on-device extractor.*
+
+### Changed
+- `firmware/data/app.js` — **Removed auto-upload**: `uploadOtaFirmware()` no longer calls `uploadOtaAssets()` automatically when an assets file is pre-selected. Status message updated to prompt the user to upload assets manually.
+
+### Fixed
+- `bin/build_release.ps1` — **STORE-only ZIP**: `Compress-Archive` (DEFLATE, method=8) replaced by a raw ZIP writer using PowerShell's `MemoryStream`; all entries use method=0 (STORE). The on-device extractor rejects method=8 with "compressed ZIP entry (method 8) is not supported".
+
+---
+
+## [1.16.13] — 2026-05-07
+
+*OTA WDT crash eliminated; fallback reboot timer removed; stale-asset concern resolved.*
+
+### Fixed
+- `firmware/src/ota_manager/ota_manager.cpp` — **Task Watchdog crash**: `esp_partition_erase_range()` on the 1 MB inactive LittleFS partition took ~12 s, triggering the ESP32-S3 TWDT (~5 s default) and rebooting the device before web assets could be written. Removed entirely from T13. The partition is now simply unmounted then remounted; `littlefs_write()` truncates files in-place so no pre-erase is needed.
+- `firmware/src/ota_manager/ota_manager.cpp` — **Premature reboot (fallback timer)**: the 120 s `fallback_reboot_cb` FreeRTOS timer in `ota_firmware_end()` fired if assets were not uploaded within 2 minutes. Removed the timer variable, callback, create/start call, and the cancel call in `ota_assets_begin()`.
+- `firmware/src/ota_manager/ota_manager.cpp` — **False 100 % progress after firmware upload**: `s_progress = 100` in `ota_firmware_end()` changed to `s_progress = 0` so the bar correctly resets before the assets phase.
+- `firmware/src/ota_manager/ota_manager.cpp` — **C++ goto jump-over-initialization**: hoisted `lfs_status_t lfs_st;` declaration above the format guard to satisfy the C++ rule that forbids jumping over a variable initialisation.
+- `firmware/data/app.js` — **`rebooting` state not polled**: `'rebooting'` added to `OTA_ACTIVE_STATES` so the 2 s poll continues through the reboot transition.
+- `firmware/data/app.js` — **Connection-loss during reboot**: `.catch()` handler added to `loadOtaStatus()` to display "Rebooting — reload the page once the device comes back online" when the fetch fails during device restart.
+
+### Added
+- `drivers/littleFS/src/littlefs_storage.cpp` — `littlefs_format()`: lightweight format using `fs.begin(true)` + `fs.format()` + `fs.end()`. Kept in the driver API for future use; not called from T13 in this release.
+- `drivers/littleFS/src/littlefs_storage.h` — `littlefs_format()` declaration and Doxygen documentation added to the public API.
+
+---
+
 ## [1.16.7] — 2026-05-07
 
 *SD card logging overhauled: timestamp-based file names, ISO 8601 CSV timestamps, proactive free-space guard, local-time filenames, and automatic remount on card insertion.*

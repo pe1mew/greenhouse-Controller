@@ -63,10 +63,6 @@ static uint8_t *s_zip_buf   = NULL;
 static size_t   s_zip_total = 0;
 static size_t   s_zip_rcvd  = 0;
 
-/* Fallback reboot timer: fires 120 s after ota_firmware_end() if no asset
- * upload follows.  Cancelled by ota_assets_begin(). */
-static TimerHandle_t s_fallback_timer = NULL;
-
 /* ============================================================
  * Internal helpers
  * ============================================================ */
@@ -115,28 +111,6 @@ static void reboot_timer_cb(TimerHandle_t xTimer)
 {
     (void)xTimer;
     ESP_LOGI(TAG, "[OTA] Rebooting now");
-    esp_restart();
-}
-
-/* Fallback timer callback: asset upload never arrived — commit the firmware
- * update on its own by switching the boot partition and rebooting.
- * The LittleFS partition is NOT switched; the existing active LittleFS
- * continues to be used. */
-static void fallback_reboot_cb(TimerHandle_t xTimer)
-{
-    (void)xTimer;
-    s_fallback_timer = NULL;
-    if (!s_ota_part) {
-        ESP_LOGE(TAG, "[OTA] Fallback: s_ota_part is NULL — cannot switch partition");
-        esp_restart();
-        return;
-    }
-    ESP_LOGI(TAG, "[OTA] Fallback: no assets upload — committing firmware-only update");
-    esp_err_t err = esp_ota_set_boot_partition(s_ota_part);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "[OTA] Fallback: esp_ota_set_boot_partition: %s",
-                 esp_err_to_name(err));
-    }
     esp_restart();
 }
 
@@ -277,34 +251,13 @@ bool ota_firmware_end(void)
 
     /* Boot partition switch is deferred: it happens atomically with the
      * LittleFS switch at the end of task_ota_manager (after asset upload).
-     * Start a 120 s fallback timer so a firmware-only update (no assets)
-     * still commits and reboots. */
-    s_fallback_timer = xTimerCreate("ota_fallback",
-                                    pdMS_TO_TICKS(120000),
-                                    pdFALSE, NULL, fallback_reboot_cb);
-    if (s_fallback_timer) {
-        xTimerStart(s_fallback_timer, 0);
-    } else {
-        /* Timer create failed — fall back to immediate firmware-only commit. */
-        ESP_LOGW(TAG, "[OTA] Fallback timer create failed — committing firmware now");
-        err = esp_ota_set_boot_partition(s_ota_part);
-        if (err == ESP_OK) {
-            schedule_reboot(1000);
-        } else {
-            char msg[64];
-            snprintf(msg, sizeof(msg), "esp_ota_set_boot_partition: %s",
-                     esp_err_to_name(err));
-            set_error_locked(msg);
-            xEventGroupClearBits(EG1, EG1_BIT_OTA_IN_PROGRESS);
-            return false;
-        }
-    }
-
+     * The verified firmware sits uncommitted in the inactive partition until
+     * the web-asset ZIP is also uploaded.  No fallback timer — the device
+     * never reboots autonomously without assets. */
     ESP_LOGI(TAG,
-        "[OTA] Firmware verified OK — awaiting web-asset upload "
-        "(fallback reboot in 120 s if no assets received)");
+        "[OTA] Firmware verified OK — waiting for web-asset upload");
     post_log(1);
-    s_progress = 100;
+    s_progress = 0;   /* Reset: assets phase has not started yet. */
     set_state_locked(OTA_STATE_FW_DONE);
     return true;
 }
@@ -325,15 +278,6 @@ bool ota_assets_begin(size_t total_bytes)
     if (busy) {
         ESP_LOGW(TAG, "[OTA] ota_assets_begin: OTA already in progress");
         return false;
-    }
-
-    /* If a firmware upload just completed, cancel the fallback reboot timer
-     * so the boot partition switch happens atomically after asset extraction. */
-    if (s_fallback_timer) {
-        xTimerStop(s_fallback_timer, 0);
-        xTimerDelete(s_fallback_timer, 0);
-        s_fallback_timer = NULL;
-        ESP_LOGI(TAG, "[OTA] Fallback reboot timer cancelled — assets upload received");
     }
 
     /* Free any stale buffer from a previous failed attempt. */
@@ -597,13 +541,19 @@ void task_ota_manager(void *pvParameters)
              (active_lfs == LFS_PARTITION_A) ? 'A' : 'B',
              (inactive_lfs == LFS_PARTITION_A) ? 'A' : 'B');
 
-    bool ok        = false;
-    bool lfs_open  = false;
+    bool         ok       = false;
+    bool         lfs_open = false;
+    lfs_status_t lfs_st;   /* hoisted: declaration must precede all gotos */
 
-    /* Ensure the inactive partition is not already mounted (e.g. retry). */
+    /* Ensure the inactive partition is not already mounted (e.g. retry path).
+     * We do NOT format/erase before writing: littlefs_write() truncates each
+     * file in-place, so every asset is fully replaced.  The web-asset filenames
+     * are stable (index.html, app.js, style.css, manifest.json) so no orphans
+     * can accumulate.  Erasing a 1 MB partition via esp_partition_erase_range()
+     * takes ~10 s and trips the task watchdog — avoid it here. */
     littlefs_unmount(inactive_lfs);
 
-    lfs_status_t lfs_st = littlefs_mount(inactive_lfs);
+    lfs_st = littlefs_mount(inactive_lfs);
     if (lfs_st != LFS_OK) {
         set_error_locked("inactive LittleFS mount failed");
         goto t13_done;

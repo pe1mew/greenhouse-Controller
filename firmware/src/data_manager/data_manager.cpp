@@ -40,34 +40,35 @@ static const char *TAG = "T4";
  * NVS factory-default values
  * ============================================================ */
 
-/* Climate */
-#define DEF_T_MIN_DAY      15
-#define DEF_T_MAX_DAY      26
-#define DEF_T_MIN_NGT      12
-#define DEF_T_MAX_NGT      22
-#define DEF_RH_MIN_DAY     40
-#define DEF_RH_MAX_DAY     80
-#define DEF_RH_MIN_NGT     50
-#define DEF_RH_MAX_NGT     85
-#define DEF_HYST_T          2
+/* Climate — general-crop defaults (updated from conservative out-of-box values) */
+#define DEF_T_MIN_DAY      16   /**< Day heating setpoint (informational; future heating) */
+#define DEF_T_MAX_DAY      28   /**< Day ventilation threshold: open above 28 °C */
+#define DEF_T_MIN_NGT      14   /**< Night heating setpoint (informational; future heating) */
+#define DEF_T_MAX_NGT      20   /**< Night ventilation threshold: open above 20 °C */
+#define DEF_RH_MIN_DAY     50   /**< Day RH floor: close windows below 50 % (avoid crop desiccation) */
+#define DEF_RH_MAX_DAY     75   /**< Day RH ceiling: open above 75 % (disease pressure threshold) */
+#define DEF_RH_MIN_NGT     55   /**< Night RH floor: close windows below 55 % */
+#define DEF_RH_MAX_NGT     80   /**< Night RH ceiling: open above 80 % (condensation prevention) */
+#define DEF_HYST_T          5   /**< T hysteresis: 5 °C dead band — wider band reduces window oscillation */
 #define DEF_HYST_RH         5
 #define DEF_RH_CTRL_EN      1
 #define DEF_CR_PRIORITY     0
-#define DEF_AVG_WIN_T       1
-#define DEF_AVG_WIN_RH      1
+#define DEF_AVG_WIN_T       6   /**< 6-min T averaging window: ~6 samples @ 60 s poll — smooths short thermal spikes */
+#define DEF_AVG_WIN_RH      5   /**< 5-min RH averaging window: ~5 samples @ 60 s poll */
 
 /* Wind */
-#define DEF_V_MAX           7   /**< Wind speed threshold (m/s) */
+#define DEF_V_MAX           6   /**< Wind speed threshold (m/s) — Beaufort 4 onset + margin */
 #define DEF_DIR_EXCL_LOW    0   /**< No exclusion zone by default */
 #define DEF_DIR_EXCL_HIGH   0
 #define DEF_WIND_PROT_EN    1
 
 /* Motor dwell — travel defaults come from MOTOR_MN_TRAVEL_S_DEFAULT (app_types.h) */
-#define DEF_DWELL_OPEN_MIN  0
-#define DEF_DWELL_CLOSE_MIN 0
+/* Unit: seconds — T2 reads the NVS value and multiplies by 1000 to get milliseconds. */
+#define DEF_DWELL_OPEN_S   300  /**< 300 s (5 min) post-open dwell: hold windows open long enough for climate to stabilise */
+#define DEF_DWELL_CLOSE_S    0
 
 /* System */
-#define DEF_POLL_INTERVAL_S      30
+#define DEF_POLL_INTERVAL_S      60   /**< 60 s poll: adequate for greenhouse dynamics; halves relay wear vs 30 s */
 #define DEF_SESSION_TIMEOUT_MIN   5
 #define DEF_AP_TIMEOUT_MIN       30
 #define DEF_LAT_DEG              52   /**< Netherlands default latitude */
@@ -79,6 +80,9 @@ static const char *TAG = "T4";
 #define DEF_LED_NITE_FROM        22
 #define DEF_LED_NITE_TO           6
 #define DEF_TZ_STR    "CET-1CEST,M3.5.0,M10.5.0/3"
+
+/* Validation bounds — single source of truth in config/cfg_limits.h */
+#include "cfg_limits.h"
 
 /* ============================================================
  * NVS key string literals
@@ -298,9 +302,9 @@ static void nvs_load_motor(void)
     };
 
     for (uint8_t i = 0u; i < 3u; i++) {
-        nvs_cfg_get_i32_or_default(NVS_NS_MOTOR, ktr[i], def_tr[i],           &v); s_cfg.travel_s[i]        = (int16_t)v;
-        nvs_cfg_get_i32_or_default(NVS_NS_MOTOR, kdo[i], DEF_DWELL_OPEN_MIN,  &v); s_cfg.dwell_open_min[i]  = (int16_t)v;
-        nvs_cfg_get_i32_or_default(NVS_NS_MOTOR, kdc[i], DEF_DWELL_CLOSE_MIN, &v); s_cfg.dwell_close_min[i] = (int16_t)v;
+        nvs_cfg_get_i32_or_default(NVS_NS_MOTOR, ktr[i], def_tr[i],         &v); s_cfg.travel_s[i]        = (int16_t)v;
+        nvs_cfg_get_i32_or_default(NVS_NS_MOTOR, kdo[i], DEF_DWELL_OPEN_S,  &v); s_cfg.dwell_open_min[i]  = (int16_t)v;
+        nvs_cfg_get_i32_or_default(NVS_NS_MOTOR, kdc[i], DEF_DWELL_CLOSE_S, &v); s_cfg.dwell_close_min[i] = (int16_t)v;
     }
 }
 
@@ -322,6 +326,63 @@ static void nvs_load_system(void)
 }
 
 /* ============================================================
+ * cfg_clamp — enforce per-key validation bounds on Q4 values.
+ *
+ * Returns the (possibly clamped) value.  Logs a warning whenever
+ * clamping is applied so the operator can see the correction.
+ * Unknown keys are passed through unchanged.
+ * ============================================================ */
+static int32_t cfg_clamp(const char *ns, const char *key, int32_t v)
+{
+#define _CLAMP(lo, hi)                                                       \
+    do {                                                                     \
+        int32_t _lo = (lo), _hi = (hi);                                      \
+        if      (v < _lo) { ESP_LOGW(TAG, "cfg clamp %s/%s: %ld → %ld (min)", \
+                                     ns, key, (long)v, (long)_lo); v = _lo; } \
+        else if (v > _hi) { ESP_LOGW(TAG, "cfg clamp %s/%s: %ld → %ld (max)", \
+                                     ns, key, (long)v, (long)_hi); v = _hi; } \
+    } while (0)
+
+    if (strcmp(ns, NVS_NS_CLIMATE) == 0) {
+        if      (strcmp(key, K_T_MAX_DAY)  == 0) _CLAMP(CFG_MIN_T_MAX_DAY,  CFG_MAX_T_MAX_DAY);
+        else if (strcmp(key, K_T_MIN_DAY)  == 0) _CLAMP(CFG_MIN_T_MIN_DAY,  CFG_MAX_T_MIN_DAY);
+        else if (strcmp(key, K_T_MAX_NGT)  == 0) _CLAMP(CFG_MIN_T_MAX_NGT,  CFG_MAX_T_MAX_NGT);
+        else if (strcmp(key, K_T_MIN_NGT)  == 0) _CLAMP(CFG_MIN_T_MIN_NGT,  CFG_MAX_T_MIN_NGT);
+        else if (strcmp(key, K_RH_MAX_DAY) == 0) _CLAMP(CFG_MIN_RH_MAX,     CFG_MAX_RH_MAX);
+        else if (strcmp(key, K_RH_MIN_DAY) == 0) _CLAMP(CFG_MIN_RH_MIN,     CFG_MAX_RH_MIN);
+        else if (strcmp(key, K_RH_MAX_NGT) == 0) _CLAMP(CFG_MIN_RH_MAX,     CFG_MAX_RH_MAX);
+        else if (strcmp(key, K_RH_MIN_NGT) == 0) _CLAMP(CFG_MIN_RH_MIN,     CFG_MAX_RH_MIN);
+        else if (strcmp(key, K_HYST_T)     == 0) _CLAMP(CFG_MIN_HYST_T,     CFG_MAX_HYST_T);
+        else if (strcmp(key, K_HYST_RH)    == 0) _CLAMP(CFG_MIN_HYST_RH,    CFG_MAX_HYST_RH);
+        else if (strcmp(key, K_AVG_WIN_T)  == 0) _CLAMP(CFG_MIN_AVG_WIN,    CFG_MAX_AVG_WIN);
+        else if (strcmp(key, K_AVG_WIN_RH) == 0) _CLAMP(CFG_MIN_AVG_WIN,    CFG_MAX_AVG_WIN);
+
+    } else if (strcmp(ns, NVS_NS_WIND) == 0) {
+        if      (strcmp(key, K_V_MAX)         == 0) _CLAMP(CFG_MIN_V_MAX, CFG_MAX_V_MAX);
+        else if (strcmp(key, K_DIR_EXCL_LOW)  == 0) _CLAMP(CFG_MIN_DIR,   CFG_MAX_DIR);
+        else if (strcmp(key, K_DIR_EXCL_HIGH) == 0) _CLAMP(CFG_MIN_DIR,   CFG_MAX_DIR);
+
+    } else if (strcmp(ns, NVS_NS_MOTOR) == 0) {
+        static const char * const ktr[] = { K_TRAVEL_M1,      K_TRAVEL_M2,      K_TRAVEL_M3      };
+        static const char * const kdo[] = { K_DWELL_OPEN_M1,  K_DWELL_OPEN_M2,  K_DWELL_OPEN_M3  };
+        static const char * const kdc[] = { K_DWELL_CLOSE_M1, K_DWELL_CLOSE_M2, K_DWELL_CLOSE_M3 };
+        for (uint8_t i = 0u; i < 3u; i++) {
+            if (strcmp(key, ktr[i]) == 0) { _CLAMP(CFG_MIN_TRAVEL_S,      CFG_MAX_TRAVEL_S);      break; }
+            if (strcmp(key, kdo[i]) == 0) { _CLAMP(CFG_MIN_DWELL_OPEN_S,  CFG_MAX_DWELL_OPEN_S);  break; }
+            if (strcmp(key, kdc[i]) == 0) { _CLAMP(CFG_MIN_DWELL_CLOSE_S, CFG_MAX_DWELL_CLOSE_S); break; }
+        }
+
+    } else if (strcmp(ns, NVS_NS_SYSTEM) == 0) {
+        if      (strcmp(key, K_POLL_INTERVAL)  == 0) _CLAMP(CFG_MIN_POLL_S,      CFG_MAX_POLL_S);
+        else if (strcmp(key, K_SESSION_TIMEOUT) == 0) _CLAMP(CFG_MIN_TIMEOUT_MIN, CFG_MAX_TIMEOUT_MIN);
+        else if (strcmp(key, K_AP_TIMEOUT)      == 0) _CLAMP(CFG_MIN_AP_TIMEOUT,  CFG_MAX_TIMEOUT_MIN);
+    }
+
+#undef _CLAMP
+    return v;
+}
+
+/* ============================================================
  * Internal helper — apply a Q4 config_update_t
  *
  * Returns true on success (NVS written + shadow updated).
@@ -332,8 +393,12 @@ static void nvs_load_system(void)
 
 static bool apply_config_update(const config_update_t *upd)
 {
+    /* Clamp to valid range before touching NVS or the shadow struct.
+     * cfg_clamp() logs a warning for every out-of-range value. */
+    const int32_t clamped = cfg_clamp(upd->ns, upd->key, upd->value);
+
     /* Write to NVS first; abort if NVS write fails. */
-    nvs_cfg_status_t ns = nvs_cfg_set_i32(upd->ns, upd->key, upd->value);
+    nvs_cfg_status_t ns = nvs_cfg_set_i32(upd->ns, upd->key, clamped);
     if (ns != NVS_CFG_OK) {
         ESP_LOGW(TAG, "Q4 NVS write failed  ns=%.15s key=%.15s val=%ld  err=%d",
                  upd->ns, upd->key, (long)upd->value, (int)ns);
@@ -347,8 +412,8 @@ static bool apply_config_update(const config_update_t *upd)
     }
 
     bool updated  = true;
-    int16_t v16   = (int16_t)upd->value;
-    int32_t v32   = upd->value;
+    int16_t v16   = (int16_t)clamped;
+    int32_t v32   = clamped;
     const char *ns_str  = upd->ns;
     const char *key_str = upd->key;
 
@@ -407,10 +472,15 @@ static bool apply_config_update(const config_update_t *upd)
     xSemaphoreGive(MX4);
 
     if (updated) {
-        ESP_LOGI(TAG, "Q4 applied: %.15s/%.15s = %ld", ns_str, key_str, (long)upd->value);
+        if (clamped != upd->value) {
+            ESP_LOGI(TAG, "Q4 applied: %.15s/%.15s = %ld (clamped from %ld)",
+                     ns_str, key_str, (long)clamped, (long)upd->value);
+        } else {
+            ESP_LOGI(TAG, "Q4 applied: %.15s/%.15s = %ld", ns_str, key_str, (long)clamped);
+        }
     } else {
         ESP_LOGW(TAG, "Q4 key not in shadow: %.15s/%.15s = %ld  (NVS written; shadow unchanged)",
-                 ns_str, key_str, (long)upd->value);
+                 ns_str, key_str, (long)clamped);
     }
     return true;
 }

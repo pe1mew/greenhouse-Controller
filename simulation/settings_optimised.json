@@ -1,0 +1,55 @@
+{
+  "_comment": "Greenhouse Controller simulation — optimised settings for reduced window oscillation.",
+  "_note": "Changes vs firmware v1.16.22 defaults: hyst_t 3→5, avg_win_t 3→6, dwell_open 120→300 s.",
+
+  "climate": {
+    "t_max_day":   28,
+    "t_max_ngt":   20,
+    "rh_min_day":  50,
+    "rh_max_day":  75,
+    "rh_min_ngt":  55,
+    "rh_max_ngt":  80,
+    "hyst_t":       5,
+    "hyst_rh":      5,
+    "rh_ctrl_en":   1,
+    "cr_priority":  0,
+    "avg_win_t":    6,
+    "avg_win_rh":   5
+  },
+
+  "wind": {
+    "wind_prot_en":  1,
+    "v_max":         6,
+    "dir_excl_low":  0,
+    "dir_excl_high": 0
+  },
+
+  "motor": {
+    "travel_m1":      21,
+    "travel_m2":      21,
+    "travel_m3":     171,
+    "dwell_open_m1": 300,
+    "dwell_open_m2": 300,
+    "dwell_open_m3": 300,
+    "dwell_close_m1":  0,
+    "dwell_close_m2":  0,
+    "dwell_close_m3":  0
+  },
+
+  "system": {
+    "poll_interval": 60,
+    "lat_deg":       52,
+    "lat_frac":       0,
+    "lon_deg":        5,
+    "lon_frac":       0
+  },
+
+  "plant": {
+    "_comment":            "Physical greenhouse model parameters.",
+    "volume_m3":           2400.0,
+    "ach_roof":               8.0,
+    "ach_wall":              40.0,
+    "transpiration_kg_s":   0.010,
+    "solar_peak_w":      20000.0
+  }
+}

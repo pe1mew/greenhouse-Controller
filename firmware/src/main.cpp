@@ -127,7 +127,12 @@ static void task_watchdog_heartbeat(void *pvParameters)
     esp_task_wdt_add(NULL);
 
     s_rgb.begin();
-    s_rgb.setBrightness(LED_DAY_BRT_DEF);
+    /* Fix brightness at 255 so setPixelColor() stores raw values unchanged.
+     * We apply day/night dimming by scaling the colour components directly
+     * rather than calling setBrightness() in the loop — setBrightness() is
+     * designed for one-time use and re-scales the internal pixel buffer on
+     * every change, which degrades values over repeated day↔night transitions. */
+    s_rgb.setBrightness(255);
     s_rgb.setPixelColor(0, s_rgb.Color(255, 128, 0));  /* Amber during init */
     s_rgb.show();
 
@@ -161,48 +166,45 @@ static void task_watchdog_heartbeat(void *pvParameters)
         tick_count++;
 
         /* ---------------------------------------------------------
-         * Day/night brightness.
-         * Phase 0: hardcoded defaults.
-         * Phase 1: read from T4 (MX4): led_day_brt, led_nite_brt,
-         *          led_nite_from, led_nite_to.
+         * Day/night brightness — scale colour components directly.
+         * setBrightness() is NOT called in the loop; it is designed for
+         * one-time initialisation and degrades pixel values on every
+         * day↔night transition.  We scale R/G/B ourselves instead:
+         *   stored_channel = (raw_channel * dim) >> 8
+         * With NeoPixel fixed at brightness=255, setPixelColor() stores
+         * the values unmodified, so what we pass is what the LED outputs.
          * --------------------------------------------------------- */
-        const int nite_from = LED_NITE_FROM_DEF;
-        const int nite_to   = LED_NITE_TO_DEF;
-
         struct tm t_now;
         time_t now = time(NULL);
         localtime_r(&now, &t_now);
         int hour = t_now.tm_hour;
 
-        bool is_night;
-        if (nite_from < nite_to) {
-            is_night = (hour >= nite_from && hour < nite_to);
-        } else {
-            /* Schedule wraps midnight (default: 22–06). */
-            is_night = (hour >= nite_from || hour < nite_to);
-        }
-        uint8_t brightness = is_night
-                             ? (uint8_t)LED_NITE_BRT_DEF
-                             : (uint8_t)LED_DAY_BRT_DEF;
-        s_rgb.setBrightness(brightness);
+        bool is_night = (hour >= LED_NITE_FROM_DEF || hour < LED_NITE_TO_DEF);
+        uint8_t dim   = is_night ? (uint8_t)LED_NITE_BRT_DEF
+                                 : (uint8_t)LED_DAY_BRT_DEF;
 
         /* ---------------------------------------------------------
          * Determine RGB colour from EG1 (lock-free read).
          * Priority (highest first): Red → Amber → Green.  §5.12.
          * --------------------------------------------------------- */
         EventBits_t bits = xEventGroupGetBits(EG1);
-        uint32_t colour;
+        uint8_t r, g, b;
         if (bits & EG1_BIT_MOTOR_ALARM) {
-            colour = s_rgb.Color(255, 0, 0);       /* Red — motor emergency stop */
+            r = 255; g =   0; b = 0;   /* Red   — motor emergency stop */
         } else if (bits & (EG1_BIT_SENSOR_FAULT_T |
                            EG1_BIT_SENSOR_FAULT_W |
                            EG1_BIT_WIND_OVERRIDE)) {
-            colour = s_rgb.Color(255, 128, 0);     /* Amber — non-critical warning */
+            r = 255; g = 128; b = 0;   /* Amber — non-critical warning */
         } else {
-            colour = s_rgb.Color(0, 255, 0);       /* Green — normal operation */
+            r =   0; g = 255; b = 0;   /* Green — normal operation     */
         }
 
-        s_rgb.setPixelColor(0, colour);
+        /* Apply day/night dim factor to each channel. */
+        r = (uint8_t)((r * dim) >> 8);
+        g = (uint8_t)((g * dim) >> 8);
+        b = (uint8_t)((b * dim) >> 8);
+
+        s_rgb.setPixelColor(0, r, g, b);
         s_rgb.show();
 
         vTaskDelay(pdMS_TO_TICKS(T1_TICK_MS));

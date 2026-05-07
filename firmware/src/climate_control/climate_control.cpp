@@ -258,8 +258,14 @@ static void post_log_mode(int resolved_step, int step_t, int step_rh)
  * apply_step_delta() — post incremental Q1 commands for step change
  *
  * new_step and old_step are expressed as resolved steps (0..NUM_VENT_STEPS).
- * Only changed channels are sent.  If new_step == 0 a single CMD_CLOSE_ALL
- * is issued (covers all three channels in one command; T2 handles it).
+ * Only changed channels are sent.  Per-channel CMD_CLOSE / CMD_OPEN commands
+ * are used for all transitions, including step → 0 (full close).
+ *
+ * CMD_CLOSE_ALL is intentionally NOT used here.  CMD_CLOSE_ALL bypasses the
+ * per-channel post-open dwell enforced by T2, causing windows to close
+ * immediately regardless of dwell_open_s, which produces rapid oscillation
+ * when the temperature quickly rebounds after closing.  CMD_CLOSE_ALL is
+ * reserved for safety events (wind override in T3, motor alarm in T2).
  * ----------------------------------------------------------------------- */
 static void apply_step_delta(int old_step, int new_step)
 {
@@ -270,14 +276,8 @@ static void apply_step_delta(int old_step, int new_step)
     uint8_t old_mask = vent_step_channels(old_step);
     uint8_t new_mask = vent_step_channels(new_step);
 
-    if (new_mask == 0) {
-        /* Full close — one CMD_CLOSE_ALL command is sufficient. */
-        post_q1(CMD_CLOSE_ALL, 0);
-        ESP_LOGI(TAG, "[T6] → CMD_CLOSE_ALL (step %d → 0)", old_step);
-        return;
-    }
-
-    /* Per-channel open/close commands for channels that changed. */
+    /* Per-channel open/close commands for channels that changed.
+     * Applies to full-close (new_mask == 0) as well as partial step changes. */
     uint8_t open_bits  = (uint8_t)(new_mask & ~old_mask);
     uint8_t close_bits = (uint8_t)(old_mask & ~new_mask);
 

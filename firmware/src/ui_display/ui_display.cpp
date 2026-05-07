@@ -57,6 +57,7 @@
 #include "../event_logger/event_logger.h"
 #include "../auth/pin_auth.h"
 #include "lcd1602.h"
+#include "cfg_limits.h"
 
 static const char *TAG = "T8_UI";
 
@@ -100,23 +101,23 @@ typedef struct {
 
 /* Climate parameters (11) */
 static const param_def_t CLIMATE_PARAMS[] = {
-    { "T-max-dy", "T-max day (C)   ", "climate", "t_max_day",   0, 50, SESSION_FARMER, LOG_PARAM_T_MAX_DAY  },
-    { "T-max-ng", "T-max ngt (C)   ", "climate", "t_max_ngt",   0, 50, SESSION_FARMER, LOG_PARAM_T_MAX_NGT  },
-    { "T-min-dy", "T-min day (C)   ", "climate", "t_min_day",   0, 50, SESSION_FARMER, LOG_PARAM_T_MIN_DAY  },
-    { "T-min-ng", "T-min ngt (C)   ", "climate", "t_min_ngt",   0, 50, SESSION_FARMER, LOG_PARAM_T_MIN_NGT  },
-    { "RH-max-d", "RH-max day (%)  ", "climate", "rh_max_day",  0,100, SESSION_FARMER, LOG_PARAM_RH_MAX_DAY },
-    { "RH-max-n", "RH-max ngt (%)  ", "climate", "rh_max_ngt",  0,100, SESSION_FARMER, LOG_PARAM_RH_MAX_NGT },
-    { "RH-min-d", "RH-min day (%)  ", "climate", "rh_min_day",  0,100, SESSION_FARMER, LOG_PARAM_RH_MIN_DAY },
-    { "RH-min-n", "RH-min ngt (%)  ", "climate", "rh_min_ngt",  0,100, SESSION_FARMER, LOG_PARAM_RH_MIN_NGT },
-    { "Hyst-T  ", "Hyst temp (C)   ", "climate", "hyst_t",      1, 10, SESSION_FARMER, LOG_PARAM_HYST_T     },
-    { "Hyst-RH ", "Hyst humid (%)  ", "climate", "hyst_rh",     1, 20, SESSION_FARMER, LOG_PARAM_HYST_RH    },
-    { "RH-ctrl ", "RH ctrl (0/1)   ", "climate", "rh_ctrl_en",  0,  1, SESSION_FARMER, LOG_PARAM_RH_CTRL_EN },
+    { "T-max-dy", "T-max day (C)   ", "climate", "t_max_day",  CFG_MIN_T_MAX_DAY,  CFG_MAX_T_MAX_DAY,  SESSION_FARMER, LOG_PARAM_T_MAX_DAY  },
+    { "T-max-ng", "T-max ngt (C)   ", "climate", "t_max_ngt",  CFG_MIN_T_MAX_NGT,  CFG_MAX_T_MAX_NGT,  SESSION_FARMER, LOG_PARAM_T_MAX_NGT  },
+    { "T-min-dy", "T-min day (C)   ", "climate", "t_min_day",  CFG_MIN_T_MIN_DAY,  CFG_MAX_T_MIN_DAY,  SESSION_FARMER, LOG_PARAM_T_MIN_DAY  },
+    { "T-min-ng", "T-min ngt (C)   ", "climate", "t_min_ngt",  CFG_MIN_T_MIN_NGT,  CFG_MAX_T_MIN_NGT,  SESSION_FARMER, LOG_PARAM_T_MIN_NGT  },
+    { "RH-max-d", "RH-max day (%)  ", "climate", "rh_max_day", CFG_MIN_RH_MAX,     CFG_MAX_RH_MAX,     SESSION_FARMER, LOG_PARAM_RH_MAX_DAY },
+    { "RH-max-n", "RH-max ngt (%)  ", "climate", "rh_max_ngt", CFG_MIN_RH_MAX,     CFG_MAX_RH_MAX,     SESSION_FARMER, LOG_PARAM_RH_MAX_NGT },
+    { "RH-min-d", "RH-min day (%)  ", "climate", "rh_min_day", CFG_MIN_RH_MIN,     CFG_MAX_RH_MIN,     SESSION_FARMER, LOG_PARAM_RH_MIN_DAY },
+    { "RH-min-n", "RH-min ngt (%)  ", "climate", "rh_min_ngt", CFG_MIN_RH_MIN,     CFG_MAX_RH_MIN,     SESSION_FARMER, LOG_PARAM_RH_MIN_NGT },
+    { "Hyst-T  ", "Hyst temp (C)   ", "climate", "hyst_t",     CFG_MIN_HYST_T,     CFG_MAX_HYST_T,     SESSION_FARMER, LOG_PARAM_HYST_T     },
+    { "Hyst-RH ", "Hyst humid (%)  ", "climate", "hyst_rh",    CFG_MIN_HYST_RH,    CFG_MAX_HYST_RH,    SESSION_FARMER, LOG_PARAM_HYST_RH    },
+    { "RH-ctrl ", "RH ctrl (0/1)   ", "climate", "rh_ctrl_en", 0,                  1,                  SESSION_FARMER, LOG_PARAM_RH_CTRL_EN },
 };
 #define N_CLIMATE  (int)(sizeof(CLIMATE_PARAMS) / sizeof(CLIMATE_PARAMS[0]))
 
 /* Wind parameters (2) */
 static const param_def_t WIND_PARAMS[] = {
-    { "Wnd-max ", "Wind max (m/s)  ", "wind", "v_max",        0, 30, SESSION_FARMER, LOG_PARAM_V_MAX },
+    { "Wnd-max ", "Wind max (m/s)  ", "wind", "v_max",        CFG_MIN_V_MAX, CFG_MAX_V_MAX, SESSION_FARMER, LOG_PARAM_V_MAX },
     { "Wnd-prot", "Wind prot (0/1) ", "wind", "wind_prot_en", 0,  1, SESSION_FARMER, LOG_PARAM_NONE  },
 };
 #define N_WIND  (int)(sizeof(WIND_PARAMS) / sizeof(WIND_PARAMS[0]))

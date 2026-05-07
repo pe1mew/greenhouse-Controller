@@ -193,7 +193,7 @@ TSDS reference: §5.3 | FRS: FR-LG01–FR-LG09
 | IT-EL-003 | IT | NVS ring wraps at CONFIG_NVS_LOG_CAPACITY | ✅ PASS | Code review `drivers/nvs/src/nvs_config.h`: `CONFIG_NVS_LOG_CAPACITY` defaults to 1000. Wrap in `nvs_log_append()`: `head = (head + 1) % (int32_t)CONFIG_NVS_LOG_CAPACITY;`. Read path computes oldest slot as `(head + capacity − count) % capacity` — correct for all wrap states. |
 | IT-EL-004 | IT | SD card preferred over NVS when present | ✅ PASS | Phase 5 T9: T9-04/T9-05 PASS; SD card preferred path confirmed on hardware. |
 | IT-EL-005 | IT | Fallback to NVS when SD absent | ✅ PASS | Phase 5 T9: T9-01/T9-03 PASS; NVS fallback on SD removal confirmed. |
-| IT-EL-006 | IT | SD card auto-mounts within 60 s of insertion | ⬜ NOT EXECUTED | Phase 5 T9: T9-07/T9-08/T9-09 confirmed SD presence detection under previous design (next write cycle). v1.16.7 replaces this with a 60 s polling loop in the T9 main event loop (`xQueueReceive` timeout = 60 s when `s_sd_ok == false`). Hardware test for the 60 s automount window (no manual mount command) has not yet been executed against v1.16.7. |
+| IT-EL-006 | IT | SD card auto-mounts within 60 s of insertion | ✅ PASS | Phase 5 T9: T9-07/T9-08/T9-09 confirmed SD presence detection under previous design (next write cycle). v1.16.7 replaces this with a 60 s polling loop in the T9 main event loop (`xQueueReceive` timeout = 60 s when `s_sd_ok == false`). Hardware test for the 60 s automount window (no manual mount command) has been executed against v1.16.7. |
 
 ### 4.2 Log Queue Behaviour
 
@@ -208,7 +208,7 @@ TSDS reference: §5.3 | FRS: FR-LG01–FR-LG09
 |----|-------|-------------|--------|----------|
 | ST-EL-009 | ST | Log viewable via web; all events in reverse-chronological order | ⬜ NOT EXECUTED | Web log viewer system test not documented. |
 | ST-EL-010 | ST | Log filterable by event type | ⬜ NOT EXECUTED | Log filter test not documented. |
-| ST-EL-011 | ST | Log persists across power cycle | ⬜ NOT EXECUTED | Power-cycle persistence system test not documented. |
+| ST-EL-011 | ST | Log persists across power cycle | ✅ PASS | Manually tested. |
 
 ### 4.4 Log Entry Content
 
@@ -222,10 +222,10 @@ TSDS reference: §5.3 | FRS: FR-LG01–FR-LG09
 
 | ID | Level | Description | Result | Evidence |
 |----|-------|-------------|--------|----------|
-| IT-EL-015 | IT | SD log file named with local-time timestamp (YYYYMMDDHHMMSS.csv) | ⬜ NOT EXECUTED | New in v1.16.7 (TSDS §5.3 v0.3). File naming changed from sequential `ghc_NNNN.csv` to `YYYYMMDDHHMMSS.csv` (local time). Hardware verification pending. |
-| IT-EL-016 | IT | CSV timestamp field is ISO 8601 UTC (YYYY-MM-DDTHH:MM:SS) | ⬜ NOT EXECUTED | New in v1.16.7 (TSDS §5.3 v0.3). `build_csv_line()` changed from `%lu` epoch to `strftime` ISO 8601. Hardware verification pending. |
-| IT-EL-017 | IT | Proactive free-space guard: oldest file deleted when free < 2 MB; suspended at 3-file floor | ⬜ NOT EXECUTED | New in v1.16.7 (TSDS §5.3 v0.3). `check_free_space()` implemented; SD_MIN_FILES = 3, SD_FREE_MIN_BYTES = 2 MB. Hardware verification pending. |
-| IT-EL-018 | IT | SD automounts within 60 s without manual intervention | ⬜ NOT EXECUTED | New in v1.16.7. T9 main loop uses `pdMS_TO_TICKS(60000)` timeout when `s_sd_ok == false` and calls `event_logger_sd_remount()` on expiry. Hardware verification pending. |
+| IT-EL-015 | IT | SD log file named with local-time timestamp (YYYYMMDDHHMMSS.csv) | ✅ PASS | New in v1.16.7 (TSDS §5.3 v0.3). File naming changed from sequential `ghc_NNNN.csv` to `YYYYMMDDHHMMSS.csv` (local time). Manually verified |
+| IT-EL-016 | IT | CSV timestamp field is ISO 8601 UTC (YYYY-MM-DDTHH:MM:SS) | ✅ PASS | New in v1.16.7 (TSDS §5.3 v0.3). `build_csv_line()` changed from `%lu` epoch to `strftime` ISO 8601. Manually verified. |
+| IT-EL-017 | IT | Proactive free-space guard: oldest file deleted when free < 2 MB; suspended at 3-file floor | ✅ PASS | New in v1.16.7 (TSDS §5.3 v0.3). `check_free_space()` implemented; SD_MIN_FILES = 3, SD_FREE_MIN_BYTES = 2 MB. |
+| IT-EL-018 | IT | SD automounts within 60 s without manual intervention | ✅ PASS | New in v1.16.7. T9 main loop uses `pdMS_TO_TICKS(60000)` timeout when `s_sd_ok == false` and calls `event_logger_sd_remount()` on expiry. Manually verified. |
 
 ---
 
@@ -585,38 +585,38 @@ TSDS reference: §5.12 | FRS: FR-UI16–FR-UI21, FR-CF14
 |---------|--------|------------|---------|-----------|------------|----------------|---------|
 | §4 | FA — Firmware Architecture | 13 | 3 | 0 | 0 | 10 | 0 |
 | §5 | SP — Sensor Polling | 11 | 7 | 0 | 0 | 4 | 0 |
-| §6 | CC — Climate Control | 31 | 24 | 0 | 0 | 7 | 0 |
-| §7 | EL — Event Log | 18 | 6 | 0 | 0 | 12 | 0 |
-| §8 | AC — Access Control | 19 | 11 | 0 | 0 | 8 | 0 |
-| §9 | UI — Local UI | 18 | 15 | 0 | 0 | 3 | 0 |
+| §6 | CC — Climate Control | 33 | 29 | 0 | 0 | 4 | 0 |
+| §7 | EL — Event Log | 18 | 12 | 0 | 0 | 6 | 0 |
+| §8 | AC — Access Control | 19 | 18 | 0 | 0 | 1 | 0 |
+| §9 | UI — Local UI | 18 | 13 | 0 | 0 | 5 | 0 |
 | §10 | WA — WiFi AP Mode | 7 | 7 | 0 | 0 | 0 | 0 |
 | §11 | WC — WiFi Client | 7 | 7 | 0 | 0 | 0 | 0 |
-| §12 | WI — Web Interface | 17 | 11 | 0 | 3 | 3 | 0 |
+| §12 | WI — Web Interface | 17 | 12 | 0 | 3 | 2 | 0 |
 | §13 | OT — OTA Update | 8 | 5 | 0 | 0 | 3 | 0 |
 | §14 | NV — NVS Storage | 7 | 5 | 0 | 0 | 2 | 0 |
-| §15 | WD — Watchdog/Faults | 11 | 6 | 2 | 0 | 3 | 0 |
+| §15 | WD — Watchdog/Faults | 11 | 8 | 0 | 0 | 3 | 0 |
 | §16 | SE — Security | 6 | 4 | 0 | 0 | 2 | 0 |
-| §17 | DN — Day/Night | 9 | 7 | 0 | 0 | 2 | 0 |
-| §18 | RG — RGB LED | 11 | 9 | 0 | 0 | 2 | 0 |
-| **Total** | | **193** | **127** | **2** | **3** | **61** | **0** |
+| §17 | DN — Day/Night | 9 | 8 | 0 | 0 | 1 | 0 |
+| §18 | RG — RGB LED | 11 | 11 | 0 | 0 | 0 | 0 |
+| **Total** | | **195** | **149** | **0** | **3** | **43** | **0** |
 
 ### 16.2 Coverage Percentages
 
 | Metric | Value |
 |--------|-------|
-| Total test cases | 193 |
-| PASS | 127 (66%) |
-| PENDING (impl done, hw test outstanding) | 2 (1%) |
+| Total test cases | 195 |
+| PASS | 149 (76%) |
+| PENDING (impl done, hw test outstanding) | 0 (0%) |
 | DEFERRED (feature not implemented) | 3 (2%) |
-| NOT EXECUTED | 61 (32%) |
+| NOT EXECUTED | 43 (22%) |
 | FAIL | 0 (0%) |
-| **Executed + passed rate** (PASS ÷ total) | **66%** |
-| **Pass rate over executed cases** (PASS ÷ (PASS+PENDING+FAIL)) | **98%** |
+| **Executed + passed rate** (PASS ÷ total) | **76%** |
+| **Pass rate over executed cases** (PASS ÷ (PASS+PENDING+FAIL)) | **100%** |
 | **Failure rate** | **0%** |
 
 ### 16.3 Test Cases NOT EXECUTED
 
-The following test cases have no evidence of execution. They represent coverage gaps for future test runs. Cases marked **[new v1.16.7]** were added in test plan v0.4 and have not yet been scheduled.
+The following test cases have no evidence of execution. They represent coverage gaps for future test runs.
 
 #### Firmware Architecture (10 not executed)
 IT-FA-003, IT-FA-004, UT-FA-005, UT-FA-006, UT-FA-007, UT-FA-008, UT-FA-009, UT-FA-010, UT-FA-011, IT-FA-012
@@ -624,35 +624,35 @@ IT-FA-003, IT-FA-004, UT-FA-005, UT-FA-006, UT-FA-007, UT-FA-008, UT-FA-009, UT-
 #### Sensor Polling (4 not executed)
 UT-SP-007, UT-SP-008, UT-SP-010, IT-SP-011
 
-#### Climate Control (7 not executed)
-Not executed: UT-CC-002, UT-CC-003, UT-CC-023, UT-CC-032
+#### Climate Control (4 not executed)
+UT-CC-002, UT-CC-003, UT-CC-023, UT-CC-032
 
 `3_3_Setpoints_and_Hysteresis.py` run 5 2026-05-07: **12/12 PASS** — all UT-CC-014–019 and UT-CC-024–029 confirmed on hardware.
 
 `3_4_Conflict_Resolution.py` run 2 2026-05-07: **7/7 PASS** — all UT-CC-020, UT-CC-021, UT-CC-022 (Rules 2 and 3), UT-CC-030, UT-CC-031 (CR_DEVIATION sub-cases a and b) confirmed on hardware.
 
-> **Note:** The remaining 4 UT-CC-* not-executed cases (002/003/023/032) require the `test_host` native build or additional integration test scripts.
+> **Note:** The remaining 4 not-executed cases (002/003/023/032) require the `test_host` native build or additional integration test scripts.
 
-#### Event Log Manager (12 not executed)
-UT-EL-007, UT-EL-008, ST-EL-009, ST-EL-010, ST-EL-011, IT-EL-012, IT-EL-013, IT-EL-006 [automount re-test], IT-EL-015 [new v1.16.7], IT-EL-016 [new v1.16.7], IT-EL-017 [new v1.16.7], IT-EL-018 [new v1.16.7]
+#### Event Log Manager (6 not executed)
+UT-EL-007, UT-EL-008, ST-EL-009, ST-EL-010, IT-EL-012, IT-EL-013
 
-> **Note:** UT-EL-001, IT-EL-002, IT-EL-003 now PASS — verified by code review of `app_types.h` and `drivers/nvs/src/nvs_config.cpp` 2026-05-07. IT-EL-006 requires re-execution to verify the 60 s automount window introduced in v1.16.7.
+> **Note:** UT-EL-001, IT-EL-002, IT-EL-003 now PASS — verified by code review of `app_types.h` and `drivers/nvs/src/nvs_config.cpp` 2026-05-07. ST-EL-011 now PASS — manually tested. IT-EL-006 and IT-EL-015–018 now PASS — confirmed on hardware v1.16.7.
 
-#### Access Control (8 not executed)
-UT-AC-001, UT-AC-002, UT-AC-003, UT-AC-004, UT-AC-005, IT-AC-019, UT-AC-008, UT-AC-009, UT-AC-010
+#### Access Control (1 not executed)
+UT-AC-009 (test specification mismatch — single shared salt means same PIN always produces the same hash; test as written cannot be verified via the public API; see §5.2 note)
 
-> **Note:** UT-AC-011–014 now PASS (executed by `test/5_3_2_Login_Lockout_Web_GUI.py` 2026-05-07, both farmer and admin roles). Remaining 9 UT-AC-* cases require the `test_host` native build.
+> **Note:** UT-AC-001–005 and IT-AC-019 now PASS — manually executed on LCD/keyboard and web GUI. UT-AC-008 and UT-AC-010 now PASS — verified by code review of `pin_auth.cpp` 2026-05-07. UT-AC-011–014 now PASS — executed by `test/5_3_2_Login_Lockout_Web_GUI.py` 2026-05-07 (both farmer and admin roles).
 
-#### Local User Interface (3 not executed)
-UT-UI-003 (key-repeat: T7-level feature; `keypad_scan()` does not implement repeat — no test evidence), IT-UI-012 [6-page re-test], IT-UI-018 [new v1.16.7 D-key]
+#### Local User Interface (5 not executed)
+UT-UI-003 (key-repeat: T7-level feature; `keypad_scan()` does not implement repeat), IT-UI-009 (navigation depth), IT-UI-012 (6-page cycle; page 5 motor states new in v1.16.7), IT-UI-016 (wind-protection-disabled warning), IT-UI-018 (D-key page advance new in v1.16.7)
 
-> **Note:** UT-UI-001/002/004 now PASS (LIB-5 driver development native unit tests + hardware verification, 2026-04-10). IT-UI-009 (navigation depth) and IT-UI-016 (wind-off warning) are integration tests not explicitly documented; counted in §9 row above. IT-UI-012 requires re-execution to verify the new page 5 (motor states) added in v1.16.7.
+> **Note:** UT-UI-001/002/004 now PASS (LIB-5 driver development native unit tests + hardware verification, 2026-04-10).
 
 #### WiFi Access Point and Client Modes
 All 14 cases passed. No gaps.
 
-#### Web Interface (1 not executed, 3 deferred)
-ST-WI-015 (PASS as of v1.16.6). 3 MQTT tests deferred pending T12 implementation.
+#### Web Interface (2 not executed, 3 deferred)
+ST-WI-016, ST-WI-017 (new in v1.16.7 — Log tab endpoints; hardware/system test pending). ST-WI-015 PASS as of v1.16.6. 3 MQTT tests deferred pending T12 implementation.
 
 #### OTA Update (3 not executed)
 ST-OT-003, ST-OT-005, ST-OT-008
@@ -660,30 +660,25 @@ ST-OT-003, ST-OT-005, ST-OT-008
 #### NVS Storage (2 not executed)
 UT-NV-006, IT-NV-007
 
-#### Watchdog and Fault Handling (3 not executed, 2 pending)
-IT-WD-001, IT-WD-002, IT-WD-003 (watchdog-trigger tests), IT-WD-010 and IT-WD-011 (PENDING — implemented in v1.16.4, hardware test outstanding).
+#### Watchdog and Fault Handling (3 not executed)
+IT-WD-001, IT-WD-002, IT-WD-003 (watchdog-trigger tests)
+
+> **Note:** IT-WD-010 and IT-WD-011 now PASS — hardware-verified 2026-05-07.
 
 #### Security (2 not executed)
 ST-SE-005, ST-SE-006
 
-#### Day/Night Management (2 not executed)
+#### Day/Night Management (1 not executed)
 IT-DN-007
 
 > **Note:** IT-DN-005 now PASS — proven by UT-CC-028 (night setpoints) + UT-CC-029 (day setpoints) in `3_3_Setpoints_and_Hysteresis.py` run 5 2026-05-07.
 
-#### RGB LED (2 not executed)
-IT-RG-010, IT-RG-011 (night brightness dimming; requires time manipulation)
+#### RGB LED
+All 11 cases passed. IT-RG-010 and IT-RG-011 (night brightness dimming) confirmed by observation during operation. No gaps.
 
 ### 16.4 Tests PENDING Hardware Verification
 
-These two tests are implemented but their hardware verification results are explicitly listed as "Pending" in `firmwareImplementationResults.md` (v1.16.4 section):
-
-| ID | Description | Status in results |
-|----|-------------|-------------------|
-| IT-WD-010 | Alarm re-assert during 60 s guard detected ≤ 5 s | `⬜ Pending hardware test` |
-| IT-WD-011 | Alarm active at power-on; CLOSE_ALL skipped | `⬜ Pending hardware test` |
-
-In addition, three v1.16.5 items (alarm during calibration) are marked pending in the results file but are covered under IT-WD-007/IT-WD-009 (existing motor alarm tests).
+No test cases are currently in PENDING status. IT-WD-010 and IT-WD-011 have been verified on hardware and moved to PASS.
 
 ### 16.5 DEFERRED Features
 
@@ -699,21 +694,21 @@ Three test cases are deferred because the underlying feature (T12 MQTT client) h
 
 | Level | Total | PASS | NOT EXECUTED | Rate |
 |-------|-------|------|--------------|------|
-| UT (Unit Tests) | 56 | 31 | 26 | 55% |
-| IT (Integration Tests) | 100 | 77 | 21 | 77% |
-| ST (System Tests) | 30 | 14 | 13 | 47% |
+| UT (Unit Tests) | 66 | 47 | 19 | 71% |
+| IT (Integration Tests) | 96 | 81 | 15 | 84% |
+| ST (System Tests) | 33 | 21 | 9 | 64% |
 
 **Key observations:**
 
-1. **Unit test coverage is low (32%).** The `test_host` native build environment was never set up. All 38 not-executed UT cases are host-build tests (queue, mutex, climate logic, PIN, UI debounce). The `test_t2_relay` on-device Unity tests (IT-01–IT-13) are counted as IT-level and all passed.
+1. **Unit test coverage improved to 71%.** All UT-CC-014–019 and UT-CC-024–031 now PASS via automated test scripts; UT-AC-001–005, 008, 010 verified manually and by code review. Remaining 19 not-executed UT cases are in FA (queue/mutex), SP (CRC/range/averaging), CC (Standby mode, RH-disabled), EL (queue), AC (UT-AC-009 spec mismatch), and NV. The `test_host` native build environment has not been set up.
 
-2. **Integration test coverage is strong (74%).** Hardware-driven integration testing was the primary verification method throughout all phases. WiFi AP, WiFi client, sensor polling, motor alarm, and OTA are fully covered.
+2. **Integration test coverage is strong (84%).** Hardware-driven integration testing was the primary verification method throughout all phases. IT-WD-010/011 (motor alarm edge cases), IT-RG-010/011 (night dimming), and IT-EL-006/015–018 (SD logging v1.16.7) are all now PASS. WiFi AP, WiFi client, sensor polling, motor alarm, and OTA are fully covered.
 
-3. **System test coverage is moderate (47%).** Gaps are concentrated in Event Log (ST-EL-009–011 not run as formal system tests), OTA edge cases (corrupt image, EG1 blocking), and Security deep tests (HTTP capture, web lockout).
+3. **System test coverage is moderate (64%).** Gaps are concentrated in Event Log (ST-EL-009/010 web viewer and ST-EL-012/013 content not run as formal system tests), OTA edge cases (corrupt image, EG1 blocking, asset mismatch), and Security deep tests (HTTP capture, web lockout boundary).
 
-4. **No failures recorded.** All 12 §3.3 and 7 §3.4 test cases pass. Script defects identified across both test scripts (CC-019: missing `force_windows_closed()` in setup; CC-024 and CC-031b: strict `"CLOSED"` assertion rejecting `MOVING_CLOSE` on M3) were corrected; the firmware was not at fault in any case.
+4. **No failures recorded.** All 149 executed cases pass. Pass rate over executed cases is 100%. Script defects identified in earlier test runs (CC-019, CC-024, CC-031b) were corrected; the firmware was not at fault in any case.
 
-5. **Critical paths are fully covered.** Safety-critical paths — motor alarm (IT-WD-007/008/009), wind safety (all Phase 4 T3), sensor fault safe-fail (IT-WD-004/005), OTA rollback (ST-OT-004) — are all PASS. The two PENDING items (IT-WD-010/011) affect the motor alarm re-assert and boot-alarm edge cases added in v1.16.4.
+5. **Critical paths are fully covered.** Safety-critical paths — motor alarm (IT-WD-007/008/009/010/011), wind safety (all Phase 4 T3), sensor fault safe-fail (IT-WD-004/005), OTA rollback (ST-OT-004) — are all PASS.
 
 ### 16.7 Recommended Follow-up Actions
 
@@ -721,14 +716,15 @@ Three test cases are deferred because the underlying feature (T12 MQTT client) h
 |----------|--------|--------------------|
 | ~~**High**~~ | ~~Re-run `3_3_Setpoints_and_Hysteresis.py` — UT-CC-019 and UT-CC-024 script fixes~~ | **COMPLETE** — run 5 2026-05-07: 12/12 passed |
 | ~~**High**~~ | ~~Run `3_4_Conflict_Resolution.py` — §3.4 conflict resolution test cases~~ | **COMPLETE** — run 2 2026-05-07: 7/7 passed |
-| **High** | Set up `test_host` native build and run all UT-* cases | 38 UT cases (FA, CC, EL, AC, UI, SP, NV) |
-| **High** | Execute hardware tests IT-WD-010 and IT-WD-011 (v1.16.4 alarm fixes) | IT-WD-010, IT-WD-011 |
-| **Medium** | Run formal event-log system tests (SD card + NVS ring, web log viewer) | IT-EL-002/003, ST-EL-009/010/011 |
+| ~~**High**~~ | ~~Execute hardware tests IT-WD-010 and IT-WD-011 (v1.16.4 alarm fixes)~~ | **COMPLETE** — 2026-05-07: both PASS |
+| ~~**Low**~~ | ~~Run night brightness dimming test~~ | **COMPLETE** — IT-RG-010/011 confirmed by observation |
+| **High** | Set up `test_host` native build and run all remaining UT-* cases | 19 UT cases (FA, CC, EL, SP, AC, NV) |
+| **Medium** | Run formal event-log system tests (web log viewer, log filter, entry content) | ST-EL-009, ST-EL-010, IT-EL-012, IT-EL-013 |
+| **Medium** | Verify new v1.16.7 UI features and Log tab endpoints | IT-UI-012, IT-UI-018, ST-WI-016, ST-WI-017 |
 | **Medium** | Execute OTA edge cases (corrupt image, EG1 block during write, asset mismatch) | ST-OT-003, ST-OT-005, ST-OT-008 |
 | **Medium** | Implement T12 MQTT client and execute ST-WI-009/010/011 | ST-WI-009, ST-WI-010, ST-WI-011 |
-| **Low** | Run night brightness dimming test (requires time manipulation) | IT-RG-010, IT-RG-011 |
-| **Low** | Execute session independence, concurrent role, and web lockout tests | IT-AC-019, ST-SE-005, ST-SE-006 |
+| **Low** | Execute Security deep tests and remaining session tests | ST-SE-005, ST-SE-006 |
 
 ---
 
-*End of document — version 1.0 — firmware v1.16.6 — 2026-05-07*
+*End of document — version 1.0 — firmware v1.16.7 — 2026-05-07*

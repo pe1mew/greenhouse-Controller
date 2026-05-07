@@ -36,6 +36,9 @@
  *  (> 1 700 000 000 = 2023-11-14, safely below any real current date).
  *  On success: xTaskNotify(task_t4, DM_NOTIFY_NTP_SYNCED, eSetBits).
  *  T4 then calls rtc_set_time() under MX1 to update the DS1307.
+ *  Periodic resync: while NET_RUNNING, run_ntp_sync() is called again every
+ *  NTP_RESYNC_INTERVAL_S (86400 s = 24 h) to keep the DS1307 accurate.
+ *  Geo/timezone is NOT re-fetched on periodic resyncs (location is stable).
  *
  * ── Q5 status posting ──────────────────────────────────────────────────────
  *  xQueueOverwrite(Q5, &status) on every state change.
@@ -72,6 +75,7 @@ static const char *TAG = "T10_NET";
 #define NTP_MIN_EPOCH  1700000000L   /**< Plausibility threshold (2023-11-14) */
 #define BACKOFF_INIT_MS   2000u      /**< Initial reconnect backoff */
 #define BACKOFF_MAX_MS   60000u      /**< Maximum reconnect backoff */
+#define NTP_RESYNC_INTERVAL_S  86400UL /**< Re-sync NTP once per 24 h while connected */
 
 /** Default WPA2 passphrase for the soft-AP.
  *  Stored as plaintext in NVS (wifi/ap_psk); WPA2 requires the raw key.
@@ -93,13 +97,14 @@ typedef enum {
 /* ============================================================
  * Module state
  * ============================================================ */
-static net_client_state_t s_state        = NET_IDLE;
-static bool               s_ap_active    = false;
-static bool               s_ntp_synced   = false;
-static uint32_t           s_backoff_ms   = BACKOFF_INIT_MS;
-static TickType_t         s_conn_start   = 0;   /**< Tick when NET_CONNECTING entered */
-static TickType_t         s_ap_started   = 0;   /**< Tick when AP was started */
-static int32_t            s_ap_enabled_nvs = 0; /**< Last-known NVS ap_enable value */
+static net_client_state_t s_state          = NET_IDLE;
+static bool               s_ap_active      = false;
+static bool               s_ntp_synced     = false;
+static uint32_t           s_backoff_ms     = BACKOFF_INIT_MS;
+static TickType_t         s_conn_start     = 0;   /**< Tick when NET_CONNECTING entered */
+static TickType_t         s_ap_started     = 0;   /**< Tick when AP was started */
+static TickType_t         s_last_ntp_tick  = 0;   /**< Tick of last successful NTP sync */
+static int32_t            s_ap_enabled_nvs = 0;   /**< Last-known NVS ap_enable value */
 
 /* WiFi credentials (read from NVS at startup) */
 static char s_ssid[64]   = {0};
@@ -476,12 +481,16 @@ static void do_geo_sync(void)
 }
 
 /* ============================================================
- * NTP sync (called once when WL_CONNECTED fires)
+ * NTP sync
+ *
+ * @param do_geo  true  = also fetch geolocation + timezone (initial connect).
+ *                false = skip geo (periodic 24-h resync; location is stable).
  * ============================================================ */
 
-static void run_ntp_sync(void)
+static void run_ntp_sync(bool do_geo = true)
 {
-    ESP_LOGI(TAG, "Starting NTP sync (pool.ntp.org)");
+    ESP_LOGI(TAG, "Starting NTP sync (pool.ntp.org)%s",
+             do_geo ? "" : " [periodic resync — geo skipped]");
     configTime(0, 0, "pool.ntp.org");
 
     for (int i = 0; i < NTP_WAIT_STEPS; i++) {
@@ -492,13 +501,16 @@ static void run_ntp_sync(void)
     }
 
     if (time(NULL) > NTP_MIN_EPOCH) {
-        s_ntp_synced = true;
+        s_ntp_synced    = true;
+        s_last_ntp_tick = xTaskGetTickCount();
         ESP_LOGI(TAG, "NTP sync OK — unix=%lu", (unsigned long)time(NULL));
         /* Notify T4 to write the new time to the DS1307 */
         xTaskNotify(task_t4, DM_NOTIFY_NTP_SYNCED, eSetBits);
         log_sys(2, 1);   /* value_a=2: NTP event; value_b=1: synced */
-        /* Fetch geolocation and apply timezone */
-        do_geo_sync();
+        if (do_geo) {
+            /* Fetch geolocation and apply timezone (initial connect only) */
+            do_geo_sync();
+        }
     } else {
         ESP_LOGW(TAG, "NTP sync timeout after %d s", NTP_WAIT_STEPS);
         log_sys(2, 0);   /* value_a=2: NTP event; value_b=0: timeout */
@@ -582,6 +594,14 @@ static uint32_t step_client(void)
                 s_ntp_synced = false;
                 s_state      = NET_BACKOFF;
                 post_q5(false, s_ap_active, "");
+            } else if (s_ntp_synced) {
+                /* Periodic 24-hour NTP resync to keep the DS1307 accurate.
+                 * Geo/timezone is NOT re-fetched — location is assumed stable. */
+                TickType_t elapsed = xTaskGetTickCount() - s_last_ntp_tick;
+                if (elapsed >= pdMS_TO_TICKS(NTP_RESYNC_INTERVAL_S * 1000UL)) {
+                    ESP_LOGI(TAG, "24 h periodic NTP resync");
+                    run_ntp_sync(false);   /* do_geo = false */
+                }
             }
             return NET_POLL_MS;
 
