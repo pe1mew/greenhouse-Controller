@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [test/3.4] — 2026-05-07
+
+*Automated test suite `3_4_Conflict_Resolution.py` completed and passing: all 7 §3.4 test cases verified on hardware (UT-CC-020, UT-CC-021, UT-CC-022a/b, UT-CC-030, UT-CC-031a/b). All four branches of `vent_resolve_conflict()` exercised — Rule 2 (both open → max), Rule 3 (both close → equal), Rule 4 CR_TEMP_FIRST, CR_RH_FIRST, and CR_DEVIATION. One script defect identified and fixed in run 1; firmware was correct throughout.*
+
+### Added
+- `test/3_4_Conflict_Resolution.py` — new automated test script for §3.4 Conflict Resolution. Covers all five test-plan cases (with UT-CC-022 and UT-CC-031 each split into two sub-cases). All lessons learned from `3_3_Setpoints_and_Hysteresis.py` are applied: `force_windows_closed()` before every opening/closing test, `push_and_verify_sensor()` for all sensor commits, `windows_all_closing()` accepting `MOVING_CLOSE` for M3 tolerance, `WAIT_FOR_MOTOR_S = 45 s` uniformly, 401 re-auth inline in `write_config()`, guarded `finally` blocks in teardown, and 2-poll-cycle confirmation for negative assertions (CC-021, CC-030).
+- `test/3_4_Conflict_Resolution.md` — documentation for the §3.4 test script: purpose, prerequisites, how to run, NVS test parameters, expected duration (~15 min), algorithm description with the four-rule table, mirror-test table (CC-020 ↔ CC-030; CC-021 ↔ CC-031a), and log file format example.
+
+### Fixed
+- `test/3_4_Conflict_Resolution.py` — **CC-031b assertion**: `wins[2] == "CLOSED"` changed to `wins[2] in ("CLOSED", "MOVING_CLOSE")` for M3. Step=2 correctly commands M3 to close; at `TEST_TRAVEL_S=5` the relay is only energised for 10 s while the FSM transition lag can leave M3 in `MOVING_CLOSE` at the polling window. Identical root cause to the CC-024 / CC-025–027 fix in `3_3_Setpoints_and_Hysteresis.py`.
+
+### Changed
+- `test/softwareTestResult.md` — §3.4 results updated (7/7 passed, run 2 2026-05-07 13:05–13:24); coverage table revised (CC: 24 PASS, 7 NOT EXECUTED; total: 129 PASS; UT rate 55%; overall pass rate 69%).
+
+---
+
 ## [test/3.3] — 2026-05-07
 
 *Automated test suite `3_3_Setpoints_and_Hysteresis.py` completed and passing: all 12 §3.3 test cases verified on hardware (UT-CC-014–019, UT-CC-024–029). Six script defects identified and fixed across five test runs; firmware behaviour was correct throughout.*

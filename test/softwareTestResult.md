@@ -161,13 +161,15 @@ Executed by `test/3_3_Setpoints_and_Hysteresis.py`. Test parameters: `t_max_day=
 
 ### 3.4 Conflict Resolution
 
+Executed by `test/3_4_Conflict_Resolution.py`. Test parameters: `t_max_day=25`, `hyst_t=6`, `rh_max_day=70`, `rh_min_day=40`, `hyst_rh=6`; `poll=30 s`, `travel=5 s`, `avg_win=0`. Two runs: run 1 2026-05-07 12:40–12:58 (6/7 — script defect in CC-031b assertion: `wins[2] == "CLOSED"` rejected MOVING_CLOSE on M3; firmware was correct); run 2 2026-05-07 13:05–13:24. Summary: **7/7 passed**.
+
 | ID | Level | Description | Result | Evidence |
 |----|-------|-------------|--------|----------|
-| UT-CC-020 | UT | T demands OPEN, RH demands CLOSE → T wins (CR_TEMP_FIRST) | ⬜ NOT EXECUTED | Conflict resolution unit tests not documented as executed. |
-| UT-CC-021 | UT | T demands CLOSE, RH demands OPEN → T priority gives CLOSE | ⬜ NOT EXECUTED | See UT-CC-020. |
-| UT-CC-022 | UT | No conflict when both demand same action | ⬜ NOT EXECUTED | See UT-CC-020. |
-| UT-CC-030 | UT | Conflict CR_RH_FIRST: humidity demand wins | ⬜ NOT EXECUTED | CR_RH_FIRST path not documented as executed. |
-| UT-CC-031 | UT | Conflict CR_DEVIATION: higher step wins | ⬜ NOT EXECUTED | CR_DEVIATION path not documented as executed. |
+| UT-CC-020 | UT | T demands OPEN, RH demands CLOSE → T wins (CR_TEMP_FIRST) | ✅ PASS | `3_4_Conflict_Resolution.py` run 2 2026-05-07: PASS — T=26°C (step_t=1) vs RH=35% (step_rh=0, over-dry); cr_priority=0 CR_TEMP_FIRST → Rule 4 → T wins → step=1 → M1 opened, M2+M3 closed: `['OPEN', 'CLOSED', 'CLOSED']`. |
+| UT-CC-021 | UT | T demands CLOSE, RH demands OPEN → T priority gives CLOSE | ✅ PASS | `3_4_Conflict_Resolution.py` run 2 2026-05-07: PASS — T=10°C (step_t=0) vs RH=80% (step_rh=3); cr_priority=0 CR_TEMP_FIRST → Rule 4 → T wins → step=0 → windows stayed CLOSED over 2 polls despite RH=80%: `['CLOSED', 'CLOSED', 'CLOSED']`. |
+| UT-CC-022 | UT | No conflict when both demand same action | ✅ PASS | `3_4_Conflict_Resolution.py` run 2 2026-05-07: PASS (two sub-cases). Rule 2 (CC-022a): T=26°C (step_t=1) + RH=80% (step_rh=3), both>0 → max(1,3)=3 → all open: `['OPEN', 'OPEN', 'MOVING_OPEN']`. Rule 3 (CC-022b): T=10°C (step_t=0) + RH=35% (step_rh=0), equal → step=0 → CLOSE_ALL: `['CLOSED', 'CLOSED', 'MOVING_CLOSE']`. |
+| UT-CC-030 | UT | Conflict CR_RH_FIRST: humidity demand wins | ✅ PASS | `3_4_Conflict_Resolution.py` run 2 2026-05-07: PASS — T=26°C (step_t=1) vs RH=35% (step_rh=0, over-dry); cr_priority=1 CR_RH_FIRST → Rule 4 → RH wins → step=0 → windows stayed CLOSED over 2 polls despite T=26°C: `['CLOSED', 'CLOSED', 'CLOSED']`. Mirror of CC-020: same inputs, opposite outcome. |
+| UT-CC-031 | UT | Conflict CR_DEVIATION: higher step wins | ✅ PASS | `3_4_Conflict_Resolution.py` run 2 2026-05-07: PASS (two sub-cases). CC-031a: T=10°C (step_t=0) vs RH=80% (step_rh=3); cr_priority=2 → max(0,3)=3 → all open: `['OPEN', 'OPEN', 'MOVING_OPEN']`. CC-031b: T=28°C (step_t=2) vs RH=35% (step_rh=0); cr_priority=2 → max(2,0)=2 → M1+M2 open, M3 CLOSED/MOVING_CLOSE: `['OPEN', 'OPEN', 'MOVING_CLOSE']`. |
 
 ### 3.5 Humidity and Wind Feature Flags
 
@@ -566,7 +568,7 @@ TSDS reference: §5.12 | FRS: FR-UI16–FR-UI21, FR-CF14
 |---------|--------|------------|---------|-----------|------------|----------------|---------|
 | §4 | FA — Firmware Architecture | 13 | 3 | 0 | 0 | 10 | 0 |
 | §5 | SP — Sensor Polling | 11 | 7 | 0 | 0 | 4 | 0 |
-| §6 | CC — Climate Control | 31 | 19 | 0 | 0 | 12 | 0 |
+| §6 | CC — Climate Control | 31 | 24 | 0 | 0 | 7 | 0 |
 | §7 | EL — Event Log | 14 | 7 | 0 | 0 | 7 | 0 |
 | §8 | AC — Access Control | 19 | 11 | 0 | 0 | 8 | 0 |
 | §9 | UI — Local UI | 17 | 16 | 0 | 0 | 1 | 0 |
@@ -579,19 +581,19 @@ TSDS reference: §5.12 | FRS: FR-UI16–FR-UI21, FR-CF14
 | §16 | SE — Security | 6 | 4 | 0 | 0 | 2 | 0 |
 | §17 | DN — Day/Night | 9 | 7 | 0 | 0 | 2 | 0 |
 | §18 | RG — RGB LED | 11 | 9 | 0 | 0 | 2 | 0 |
-| **Total** | | **186** | **124** | **2** | **3** | **57** | **0** |
+| **Total** | | **186** | **129** | **2** | **3** | **52** | **0** |
 
 ### 16.2 Coverage Percentages
 
 | Metric | Value |
 |--------|-------|
 | Total test cases | 186 |
-| PASS | 124 (67%) |
+| PASS | 129 (69%) |
 | PENDING (impl done, hw test outstanding) | 2 (1%) |
 | DEFERRED (feature not implemented) | 3 (2%) |
-| NOT EXECUTED | 57 (31%) |
+| NOT EXECUTED | 52 (28%) |
 | FAIL | 0 (0%) |
-| **Executed + passed rate** (PASS ÷ total) | **67%** |
+| **Executed + passed rate** (PASS ÷ total) | **69%** |
 | **Pass rate over executed cases** (PASS ÷ (PASS+PENDING+FAIL)) | **98%** |
 | **Failure rate** | **0%** |
 
@@ -605,12 +607,14 @@ IT-FA-003, IT-FA-004, UT-FA-005, UT-FA-006, UT-FA-007, UT-FA-008, UT-FA-009, UT-
 #### Sensor Polling (4 not executed)
 UT-SP-007, UT-SP-008, UT-SP-010, IT-SP-011
 
-#### Climate Control (12 not executed)
-Not executed: UT-CC-002, UT-CC-003, UT-CC-020, UT-CC-021, UT-CC-022, UT-CC-023, UT-CC-030, UT-CC-031, UT-CC-032
+#### Climate Control (7 not executed)
+Not executed: UT-CC-002, UT-CC-003, UT-CC-023, UT-CC-032
 
 `3_3_Setpoints_and_Hysteresis.py` run 5 2026-05-07: **12/12 PASS** — all UT-CC-014–019 and UT-CC-024–029 confirmed on hardware.
 
-> **Note:** The remaining 9 UT-CC-* not-executed cases (002/003/020–023/030–032) require the `test_host` native build or additional integration test scripts.
+`3_4_Conflict_Resolution.py` run 2 2026-05-07: **7/7 PASS** — all UT-CC-020, UT-CC-021, UT-CC-022 (Rules 2 and 3), UT-CC-030, UT-CC-031 (CR_DEVIATION sub-cases a and b) confirmed on hardware.
+
+> **Note:** The remaining 4 UT-CC-* not-executed cases (002/003/023/032) require the `test_host` native build or additional integration test scripts.
 
 #### Event Log Manager (7 not executed)
 UT-EL-007, UT-EL-008, ST-EL-009, ST-EL-010, ST-EL-011, IT-EL-012, IT-EL-013
@@ -678,7 +682,7 @@ Three test cases are deferred because the underlying feature (T12 MQTT client) h
 
 | Level | Total | PASS | NOT EXECUTED | Rate |
 |-------|-------|------|--------------|------|
-| UT (Unit Tests) | 56 | 26 | 31 | 46% |
+| UT (Unit Tests) | 56 | 31 | 26 | 55% |
 | IT (Integration Tests) | 100 | 77 | 21 | 77% |
 | ST (System Tests) | 30 | 14 | 13 | 47% |
 
@@ -690,7 +694,7 @@ Three test cases are deferred because the underlying feature (T12 MQTT client) h
 
 3. **System test coverage is moderate (47%).** Gaps are concentrated in Event Log (ST-EL-009–011 not run as formal system tests), OTA edge cases (corrupt image, EG1 blocking), and Security deep tests (HTTP capture, web lockout).
 
-4. **No failures recorded.** All 12 executed §3.3 test cases pass as of run 5 2026-05-07. Two earlier script defects (CC-019: missing `force_windows_closed()` in setup; CC-024: `windows_all_closed()` rejecting `MOVING_CLOSE` on M3) were identified and corrected; the firmware was not at fault in either case.
+4. **No failures recorded.** All 12 §3.3 and 7 §3.4 test cases pass. Script defects identified across both test scripts (CC-019: missing `force_windows_closed()` in setup; CC-024 and CC-031b: strict `"CLOSED"` assertion rejecting `MOVING_CLOSE` on M3) were corrected; the firmware was not at fault in any case.
 
 5. **Critical paths are fully covered.** Safety-critical paths — motor alarm (IT-WD-007/008/009), wind safety (all Phase 4 T3), sensor fault safe-fail (IT-WD-004/005), OTA rollback (ST-OT-004) — are all PASS. The two PENDING items (IT-WD-010/011) affect the motor alarm re-assert and boot-alarm edge cases added in v1.16.4.
 
@@ -699,6 +703,7 @@ Three test cases are deferred because the underlying feature (T12 MQTT client) h
 | Priority | Action | Test cases covered |
 |----------|--------|--------------------|
 | ~~**High**~~ | ~~Re-run `3_3_Setpoints_and_Hysteresis.py` — UT-CC-019 and UT-CC-024 script fixes~~ | **COMPLETE** — run 5 2026-05-07: 12/12 passed |
+| ~~**High**~~ | ~~Run `3_4_Conflict_Resolution.py` — §3.4 conflict resolution test cases~~ | **COMPLETE** — run 2 2026-05-07: 7/7 passed |
 | **High** | Set up `test_host` native build and run all UT-* cases | 38 UT cases (FA, CC, EL, AC, UI, SP, NV) |
 | **High** | Execute hardware tests IT-WD-010 and IT-WD-011 (v1.16.4 alarm fixes) | IT-WD-010, IT-WD-011 |
 | **Medium** | Run formal event-log system tests (SD card + NVS ring, web log viewer) | IT-EL-002/003, ST-EL-009/010/011 |
