@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [test/3.3] — 2026-05-07
+
+*Automated test suite `3_3_Setpoints_and_Hysteresis.py` completed and passing: all 12 §3.3 test cases verified on hardware (UT-CC-014–019, UT-CC-024–029). Six script defects identified and fixed across five test runs; firmware behaviour was correct throughout.*
+
+### Added
+- `test/3_3_Setpoints_and_Hysteresis.py` — **`windows_all_closing()`** helper: accepts `CLOSED` or `MOVING_CLOSE` per window. Used by `force_windows_closed()` and the UT-CC-024 assertion to handle M3's physical travel time exceeding the 10 s relay pulse (`travel_m3` production default 171 s; test value 5 s → relay energised for only 10 s).
+
+### Fixed
+- `test/3_3_Setpoints_and_Hysteresis.py` — **`TEST_AVG_WIN`** corrected `1` → `0`. Value `1` means 1 minute, producing a 2-sample sliding window (`window_size = clamp(1×60/30, 1, 360) = 2`) instead of the intended single-sample immediate response. `0` → `clamp(0, 1, 360) = 1` sample.
+- `test/3_3_Setpoints_and_Hysteresis.py` — **`write_config()` 401 re-auth**: on `HTTP 401 Unauthorized`, the function now calls `do_login()` to restore the session and retries the write immediately (no sleep). Previously 401 was retried with a 3 s sleep (ineffective). The ~22-minute gap between `setup()` writes and `run_cc028`'s first write caused session expiry, which silently failed UT-CC-028 and skipped UT-CC-029 in earlier runs.
+- `test/3_3_Setpoints_and_Hysteresis.py` — **`run_cc028` finally block**: `set_daytime()` and `write_config()` calls wrapped in `try/except`. Previously an uncaught exception propagated out of `finally`, skipping UT-CC-029 entirely and suppressing the test summary print.
+- `test/3_3_Setpoints_and_Hysteresis.py` — **`setup()`** missing `rh_ctrl_en=1` write added. Without this, RH control was off at runtime and UT-CC-018/024 could not open windows via RH demand.
+- `test/3_3_Setpoints_and_Hysteresis.py` — **`run_cc018` / `run_cc024`** — `write_config(session, "climate", "cr_priority", 1)` (CR_RH_FIRST) added to each test's setup writes. With `t_max_day=40` and `T=10°C`, `vent_step_required_t()` returns step=0 (a genuine close vote); `vent_resolve_conflict()` rule 4 with CR_TEMP_FIRST (default) returned step_t=0, vetoing the RH open demand. Setting CR_RH_FIRST lets RH win the conflict. `teardown()` restores `cr_priority` via the `orig` config loop.
+- `test/3_3_Setpoints_and_Hysteresis.py` — **`run_cc019` setup**: `force_windows_closed()` added before the T=26°C open push; bare `push_sensors()` replaced with `push_and_verify_sensor()`. Previously the prior test (CC-018) left all windows open with stale T=10°C on the emulator; after CC-019 wrote `rh_ctrl_en=0` and `t_max_day=25`, the next firmware poll read T=10°C < close threshold 19°C and issued CLOSE_ALL before T=26°C was recognised.
+- `test/3_3_Setpoints_and_Hysteresis.py` — **`force_windows_closed()`**: success criterion changed from `windows_all_closed()` (requires all `CLOSED`) to `windows_all_closing()` (accepts `CLOSED` or `MOVING_CLOSE`). M3's physical travel outlasts the relay pulse at TEST_TRAVEL_S=5, so the helper no longer logs spurious "not fully closed" warnings or returns False when M3 is legitimately completing its close stroke.
+- `test/3_3_Setpoints_and_Hysteresis.py` — **`teardown()`** and **`write_config()`**: error handling added. `teardown()` uses an inner `_safe_write()` that catches exceptions and logs warnings, so a single 503 response no longer aborts the remaining restore writes. `write_config()` retries up to 3 times on transient HTTP/network errors (5xx, connection errors) with a 3 s wait; application-level rejections (`ok=false`) are never retried.
+- `test/3_3_Setpoints_and_Hysteresis.py` — **Motor wait race**: all bare `time.sleep(TEST_TRAVEL_S + FIRMWARE_TRAVEL_MARGIN_S + MOTOR_MARGIN_S)` calls (15 s) replaced with `time.sleep(WAIT_FOR_MOTOR_S)` (45 s = `TEST_POLL_S + TEST_TRAVEL_S + FIRMWARE_TRAVEL_MARGIN_S + MOTOR_MARGIN_S`). The poll can fire anywhere within the 35 s sensor-confirmation window; the 15 s bare sleep was a race condition.
+
+### Changed
+- `test/3_3_Setpoints_and_Hysteresis.md` — `avg_win_t`/`avg_win_rh` table values updated `1` → `0`; explanation updated to reflect 0-minute → 1-sample immediate response.
+- `test/softwareTestResult.md` — §3.3 results updated through run 5 (12/12 passed); UT-CC-018, UT-CC-019, UT-CC-024, UT-CC-028, UT-CC-029 evidence updated; coverage table revised (CC: 19 PASS, 0 FAIL; total: 124 PASS, 0 FAIL; UT rate 46%; pass rate 98%).
+
+---
+
 ## [1.16.6] — 2026-05-06
 
 *Sensor history table now shows newest readings at the top; sensor history stale/frozen bug fixed (always showed the 60 oldest entries); `dm_ring_count()` added.*

@@ -1,0 +1,39 @@
+2026-05-07 07:36:27  INFO   ============================================================
+2026-05-07 07:36:27  INFO   Greenhouse Controller — Login Lockout Test
+2026-05-07 07:36:27  INFO   Test cases: UT-AC-011, UT-AC-012, UT-AC-013, UT-AC-014
+2026-05-07 07:36:27  INFO   Device     : http://192.168.20.150
+2026-05-07 07:36:27  INFO   Farmer PIN : **** (4 digits)
+2026-05-07 07:36:27  INFO   Admin PIN  : ******** (8 digits)
+2026-05-07 07:36:27  INFO   Test params: lockout_max=3, lockout_secs=20 s
+2026-05-07 07:36:27  INFO   ============================================================
+2026-05-07 07:36:27  INFO   Admin session established
+2026-05-07 07:36:27  INFO   SETUP: clearing any active lockout (lockout_secs=1, wait 3 s)
+2026-05-07 07:36:30  INFO   SETUP: zeroing fail counters and lockout expiry timestamps
+2026-05-07 07:36:30  INFO   SETUP: writing lockout_max=3, lockout_secs=20
+2026-05-07 07:36:32  INFO   --- Role: farmer ---
+2026-05-07 07:36:32  INFO   [UT-AC-011/farmer] PASS — Locked correctly after 3 failures
+2026-05-07 07:36:32  INFO   [UT-AC-012/farmer] PASS — Correct PIN correctly rejected during active lockout
+2026-05-07 07:36:32  INFO   [UT-AC-013/farmer] Waiting 25 s for lockout to expire …
+2026-05-07 07:36:58  INFO   [UT-AC-013/farmer] PASS — Login accepted after lockout expiry
+2026-05-07 07:36:58  INFO   [UT-AC-014/farmer] PASS — Counter reset confirmed: two batches of 2 failures with a successful login between them; no lockout
+2026-05-07 07:36:58  INFO   --- Role: admin ---
+2026-05-07 07:36:58  INFO   [UT-AC-011/admin] PASS — Locked correctly after 3 failures
+2026-05-07 07:36:58  INFO   [UT-AC-012/admin] PASS — Correct PIN correctly rejected during active lockout
+2026-05-07 07:36:58  INFO   [UT-AC-013/admin] Waiting 25 s for lockout to expire …
+2026-05-07 07:37:23  INFO   [UT-AC-013/admin] PASS — Login accepted after lockout expiry
+2026-05-07 07:37:23  INFO   [UT-AC-014/admin] PASS — Counter reset confirmed: two batches of 2 failures with a successful login between them; no lockout
+2026-05-07 07:37:23  INFO   TEARDOWN: restoring lockout_max=5, lockout_secs=300
+2026-05-07 07:37:23  INFO   TEARDOWN: admin session refreshed
+2026-05-07 07:37:25  INFO   TEARDOWN complete
+2026-05-07 07:37:25  INFO   ============================================================
+2026-05-07 07:37:25  INFO   SUMMARY: 8/8 passed, 0 failed
+2026-05-07 07:37:25  INFO     PASS  UT-AC-011/farmer
+2026-05-07 07:37:25  INFO     PASS  UT-AC-012/farmer
+2026-05-07 07:37:25  INFO     PASS  UT-AC-013/farmer
+2026-05-07 07:37:25  INFO     PASS  UT-AC-014/farmer
+2026-05-07 07:37:25  INFO     PASS  UT-AC-011/admin
+2026-05-07 07:37:25  INFO     PASS  UT-AC-012/admin
+2026-05-07 07:37:25  INFO     PASS  UT-AC-013/admin
+2026-05-07 07:37:25  INFO     PASS  UT-AC-014/admin
+2026-05-07 07:37:25  INFO   ============================================================
+2026-05-07 07:37:25  INFO   Log written to: C:\Users\drasv\github\greenhouse-Controller\test\5_3_2_Login_Lockout_Web_GUI.log

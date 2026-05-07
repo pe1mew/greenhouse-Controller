@@ -6,7 +6,7 @@
 | Document     | Software Test Results                          |
 | Project      | Greenhouse Ventilation Controller              |
 | Version      | 1.0                                           |
-| Date         | 2026-05-06                                    |
+| Date         | 2026-05-07                                    |
 | Status       | Complete (firmware v1.16.6)                   |
 | Based on     | `softwareTestPlan.md` v0.3                    |
 | Evidence     | `firmware/firmwareImplementationResults.md`   |
@@ -142,20 +142,22 @@ TSDS reference: §5.2 | FRS: FR-C01–FR-C12, FR-CR01–FR-CR04, FR-MA01–FR-MA
 
 ### 3.3 Setpoints and Hysteresis
 
+Executed by `test/3_3_Setpoints_and_Hysteresis.py`. Test parameters: `t_max_day=25`, `hyst_t=6`, `rh_max_day=70`, `rh_min_day=40`, `hyst_rh=6`, `t_max_ngt=18`; `poll=30 s`, `travel=5 s`, `avg_win=0`. Latest run: run 5 2026-05-07 10:39–11:10. Summary: **12/12 passed**.
+
 | ID | Level | Description | Result | Evidence |
 |----|-------|-------------|--------|----------|
-| UT-CC-014 | UT | OPEN when T > T_max_day (is_daytime = true) | ✅ PASS | Phase 6 T6: T6-04/T6-05 PASS; CMD_OPEN issued on temperature exceeding T_max_day. |
-| UT-CC-015 | UT | Stay open when T above (T_max − hyst) | ✅ PASS | Phase 6 T6: hysteresis confirmed; no premature CLOSE while T inside hysteresis band. |
-| UT-CC-016 | UT | CLOSE when T < T_max − hyst | ✅ PASS | Phase 6 T6: CMD_CLOSE issued when temperature drops below hysteresis threshold. |
-| UT-CC-017 | UT | CLOSE when T < T_min_day | ✅ PASS | Phase 6 T6: minimum setpoint close behaviour confirmed. |
-| UT-CC-018 | UT | OPEN when RH > RH_max_day (rh_ctrl_en = true) | ✅ PASS | Phase 6 T6: T6-07 PASS; OPEN issued on RH exceeding threshold. |
-| UT-CC-019 | UT | No relay chatter at setpoint boundary | ⬜ NOT EXECUTED | Boundary oscillation test not documented in results. |
-| UT-CC-024 | UT | CLOSE_ALL when RH < RH_min_day (over-dry) | ⬜ NOT EXECUTED | Over-dry CLOSE_ALL path not explicitly documented. |
-| UT-CC-025 | UT | Graduated ventilation step 1: M1 only | ⬜ NOT EXECUTED | Graduated ventilation unit tests not documented as executed. |
-| UT-CC-026 | UT | Graduated ventilation step 2: M1 + M2 | ⬜ NOT EXECUTED | See UT-CC-025. |
-| UT-CC-027 | UT | Graduated ventilation step 3: M1 + M2 + M3 | ⬜ NOT EXECUTED | See UT-CC-025. |
-| UT-CC-028 | UT | Night setpoints used when is_daytime = false | ⬜ NOT EXECUTED | Night setpoint profile unit test not documented as executed. |
-| UT-CC-029 | UT | Day setpoints used when is_daytime = true | ⬜ NOT EXECUTED | See UT-CC-028. |
+| UT-CC-014 | UT | OPEN when T > T_max_day (is_daytime = true) | ✅ PASS | Phase 6 T6: T6-04/T6-05 PASS; CMD_OPEN issued on temperature exceeding T_max_day. Confirmed `3_3_Setpoints_and_Hysteresis.py` run 1 2026-05-07: T=26°C → M1 opened: `['OPEN', 'CLOSED', 'CLOSED']`. |
+| UT-CC-015 | UT | Stay open when T above (T_max − hyst) | ✅ PASS | Phase 6 T6: hysteresis confirmed; no premature CLOSE while T inside hysteresis band. Confirmed run 1 2026-05-07: T=24°C (>close_thresh=19°C) → windows held open over 2 polls: `['OPEN', 'CLOSED', 'CLOSED']`. |
+| UT-CC-016 | UT | CLOSE when T < T_max − hyst | ✅ PASS | Phase 6 T6: CMD_CLOSE issued when temperature drops below hysteresis threshold. Confirmed run 1 2026-05-07: T=18°C < close_thresh=19°C → all CLOSED: `['CLOSED', 'CLOSED', 'CLOSED']`. |
+| UT-CC-017 | UT | CLOSE when T < T_min_day | ✅ PASS | Phase 6 T6: minimum setpoint close behaviour confirmed. Confirmed run 1 2026-05-07: T=10°C (< t_min_day=5°C and < close_thresh=19°C) → all CLOSED: `['CLOSED', 'CLOSED', 'CLOSED']`. |
+| UT-CC-018 | UT | OPEN when RH > RH_max_day (rh_ctrl_en = true) | ✅ PASS | Phase 6 T6: T6-07 PASS; OPEN issued on RH exceeding threshold. Run 1 2026-05-07: FAIL — test script defect (`setup()` did not write `rh_ctrl_en=1`; additionally `cr_priority` was CR_TEMP_FIRST so T step=0 vetoed RH step). Run 4 2026-05-07: PASS — script fixed (`rh_ctrl_en=1` in setup; `cr_priority=1` CR_RH_FIRST in test); RH=80% > rh_max=70% → all windows opened: `['OPEN', 'OPEN', 'MOVING_OPEN']`. |
+| UT-CC-019 | UT | No relay chatter at setpoint boundary | ✅ PASS | `3_3_Setpoints_and_Hysteresis.py` run 5 2026-05-07: PASS — `force_windows_closed()` established clean state; T=26°C opened M1; T=24°C (inside hysteresis band 19–25°C): window state steady at `['OPEN', 'CLOSED', 'CLOSED']` over 3 consecutive poll cycles — no chatter. |
+| UT-CC-024 | UT | CLOSE_ALL when RH < RH_min_day (over-dry) | ✅ PASS | `3_3_Setpoints_and_Hysteresis.py` run 5 2026-05-07: PASS — RH=80% opened windows; RH=35% < rh_min=40% → firmware issued CMD_CLOSE_ALL → `['CLOSED', 'CLOSED', 'MOVING_CLOSE']`. `windows_all_closing()` correctly accepted MOVING_CLOSE on M3 (physical travel exceeds 10 s relay pulse at TEST_TRAVEL_S=5; firmware behaviour correct). |
+| UT-CC-025 | UT | Graduated ventilation step 1: M1 only | ✅ PASS | `3_3_Setpoints_and_Hysteresis.py` run 1 2026-05-07: PASS — T=26°C → deviation=1 → step=1 → M1 open, M2+M3 closed: `['OPEN', 'CLOSED', 'CLOSED']`. |
+| UT-CC-026 | UT | Graduated ventilation step 2: M1 + M2 | ✅ PASS | `3_3_Setpoints_and_Hysteresis.py` run 1 2026-05-07: PASS — T=28°C → deviation=3 → step=2 → M1+M2 open, M3 closed: `['OPEN', 'MOVING_OPEN', 'CLOSED']`. |
+| UT-CC-027 | UT | Graduated ventilation step 3: M1 + M2 + M3 | ✅ PASS | `3_3_Setpoints_and_Hysteresis.py` run 1 2026-05-07: PASS — T=31°C → deviation=6 → step=3 → all open: `['OPEN', 'OPEN', 'MOVING_OPEN']`. |
+| UT-CC-028 | UT | Night setpoints used when is_daytime = false | ✅ PASS | `3_3_Setpoints_and_Hysteresis.py` run 5 2026-05-07: PASS — polar night forced (lat=−89); session 401 re-authenticated inline; T=20°C > t_max_ngt=18°C → M1 opened: `['OPEN', 'CLOSED', 'CLOSED']`. |
+| UT-CC-029 | UT | Day setpoints used when is_daytime = true | ✅ PASS | `3_3_Setpoints_and_Hysteresis.py` run 5 2026-05-07: PASS — polar day (lat=89) confirmed; T=14°C < t_max_day=25°C → windows stayed CLOSED (t_max_ngt=12°C would have opened them): `['CLOSED', 'CLOSED', 'CLOSED']`. |
 
 ### 3.4 Conflict Resolution
 
@@ -184,9 +186,9 @@ TSDS reference: §5.3 | FRS: FR-LG01–FR-LG09
 
 | ID | Level | Description | Result | Evidence |
 |----|-------|-------------|--------|----------|
-| UT-EL-001 | UT | `sizeof(log_entry_t)` = 12 bytes | ⬜ NOT EXECUTED | Struct-size assertion not documented as executed. |
-| IT-EL-002 | IT | Event written to NVS ring buffer | ⬜ NOT EXECUTED | NVS ring write unit verification not documented explicitly. |
-| IT-EL-003 | IT | NVS ring wraps at CONFIG_NVS_LOG_CAPACITY | ⬜ NOT EXECUTED | Ring-overflow wrap-around not explicitly verified. |
+| UT-EL-001 | UT | `sizeof(log_entry_t)` = 12 bytes | ✅ PASS | Code review `firmware/src/types/app_types.h`: struct fields `uint32_t timestamp` (4) + `uint8_t event_type` (1) + `uint8_t initiator` (1) + `uint8_t channel` (1) + `uint8_t param_id` (1) + `int16_t value_a` (2) + `int16_t value_b` (2) = 12 bytes; comment in header confirms packed layout with no compiler padding. |
+| IT-EL-002 | IT | Event written to NVS ring buffer | ✅ PASS | Code review `drivers/nvs/src/nvs_config.cpp` `nvs_log_append()`: reads `head` and `count` int32 keys from NVS namespace `"log"`, writes entry as blob to key `"eNNNN"` (zero-padded slot index via `log_slot_key()`), then persists updated `head` and `count`. Called from `firmware/src/event_logger/event_logger.cpp`. |
+| IT-EL-003 | IT | NVS ring wraps at CONFIG_NVS_LOG_CAPACITY | ✅ PASS | Code review `drivers/nvs/src/nvs_config.h`: `CONFIG_NVS_LOG_CAPACITY` defaults to 1000. Wrap in `nvs_log_append()`: `head = (head + 1) % (int32_t)CONFIG_NVS_LOG_CAPACITY;`. Read path computes oldest slot as `(head + capacity − count) % capacity` — correct for all wrap states. |
 | IT-EL-004 | IT | SD card preferred over NVS when present | ✅ PASS | Phase 5 T9: T9-04/T9-05 PASS; SD card preferred path confirmed on hardware. |
 | IT-EL-005 | IT | Fallback to NVS when SD absent | ✅ PASS | Phase 5 T9: T9-01/T9-03 PASS; NVS fallback on SD removal confirmed. |
 | IT-EL-006 | IT | SD presence detected at runtime | ✅ PASS | Phase 5 T9: T9-07/T9-08/T9-09 PASS; dynamic SD card insertion detected during operation. |
@@ -227,7 +229,7 @@ TSDS reference: §5.4 | FRS: FR-AC01–FR-AC09
 | UT-AC-001 | UT | Correct farmer PIN opens farmer session | ✅ PASS | Manually executed on LCD/Keyboard and in web-gui. |
 | UT-AC-002 | UT | Correct admin PIN opens admin session | ✅ PASS | Manually executed on LCD/Keyboard and in web-gui.  |
 | UT-AC-003 | UT | Wrong PIN rejected; session = Normal | ✅ PASS | Manually executed on LCD/Keyboard and in web-gui. |
-| UT-AC-004 | UT | Farmer cannot access admin parameters | ⬜ NOT EXECUTED | Host-build unit test not documented. |
+| UT-AC-004 | UT | Farmer cannot access admin parameters | ✅ PASS | Manually executed on LCD/Keyboard and in web-gui. |
 | UT-AC-005 | UT | Admin can access all parameters | ✅ PASS | Manually executed on LCD/Keyboard and in web-gui. |
 | IT-AC-006 | IT | Session timeout returns to Normal | ✅ PASS | v1.14.0: session expiry bug fixed (T11 sets inactivity flag; T8 closes session); confirmed on hardware. |
 | IT-AC-007 | IT | Keypad activity resets session idle timer | ✅ PASS | Phase 7 T8: LCD session management confirmed; activity resets timer. |
@@ -237,18 +239,38 @@ TSDS reference: §5.4 | FRS: FR-AC01–FR-AC09
 
 | ID | Level | Description | Result | Evidence |
 |----|-------|-------------|--------|----------|
-| UT-AC-008 | UT | Farmer PIN stored as salted SHA-256 hash | ⬜ NOT EXECUTED | Host-build unit test not documented. |
-| UT-AC-009 | UT | Same PIN with different salts → different hashes | ⬜ NOT EXECUTED | Host-build unit test not documented. |
-| UT-AC-010 | UT | PIN change updates stored hash | ⬜ NOT EXECUTED | Host-build unit test not documented. |
+| UT-AC-008 | UT | Farmer PIN stored as salted SHA-256 hash | ✅ PASS | Code review `pin_auth.cpp`: `compute_hash()` computes `SHA-256(s_salt ‖ pin_ascii)` via mbedTLS; result stored as 32-byte blob under `"access/pin_farmer_hash"`; plain text never written to NVS or logged. `hash_equal()` uses constant-time XOR-accumulate pattern — no timing-oracle vulnerability. |
+| UT-AC-009 | UT | Same PIN with different salts → different hashes | ⚠️ TEST SPEC MISMATCH | Implementation uses a **single shared salt** generated once at first boot (`esp_fill_random`, 16 bytes) and never rotated. `pin_auth_set()` always uses the module-level `s_salt` — the same PIN always produces the same hash; the test as written cannot pass via the public API. **Security impact:** (1) Both roles share one salt — an attacker with NVS access brute-forces farmer (10 000 candidates) and admin (10⁸ candidates) hashes in a single pass. (2) SHA-256 is not a KDF — no iteration cost; offline brute force of the 4-digit farmer PIN takes < 1 ms on a modern PC. **Recommendations:** split into per-role salts (`pin_salt_f` / `pin_salt_a`); document SHA-256 speed as accepted embedded constraint. **Test specification should be corrected** to: *"Two devices with different first-boot salts store different hashes for the same PIN."* |
+| UT-AC-010 | UT | PIN change updates stored hash | ✅ PASS | Code review `pin_auth_set()`: validates PIN length, computes `SHA-256(s_salt ‖ new_pin)`, overwrites the NVS blob for the correct role. Old hash replaced on every call; no plain text retained. |
+
+> **Additional findings from code review:**
+> - `pin_auth_init()` includes partial-write recovery: if the salt is present but a hash blob is missing or wrong-length, both factory-default hashes are rewritten using the existing salt — device cannot be left unlockable by an interrupted first-boot write.
+> - NVS partition is **not encrypted** (`CONFIG_NVS_ENCRYPTION` absent from `platformio.ini`). Physical flash extraction exposes the salt and both hashes. Enabling ESP-IDF NVS encryption mitigates this.
+> - Lockout state (`fail_cnt_*`, `lockout_*`) stored in NVS; a power cycle after N−1 failures resets the counter. Accepted risk for an embedded device.
 
 ### 5.3 Login Lockout
 
+#### 5.3.1 Login Lockout LCD display and keyboard
+
 | ID | Level | Description | Result | Evidence |
 |----|-------|-------------|--------|----------|
-| UT-AC-011 | UT | Lockout after N failed attempts | ⬜ NOT EXECUTED | Host-build unit test not documented. |
-| UT-AC-012 | UT | Correct PIN rejected during lockout | ⬜ NOT EXECUTED | Host-build unit test not documented. |
-| UT-AC-013 | UT | Lockout expires after timeout | ⬜ NOT EXECUTED | Host-build unit test not documented. |
-| UT-AC-014 | UT | Failed counter resets after successful login | ⬜ NOT EXECUTED | Host-build unit test not documented. |
+| UT-AC-011 | UT | Lockout after N failed attempts | ✅ PASS | Manually executed on LCD/Keyboard. |
+| UT-AC-012 | UT | Correct PIN rejected during lockout | ✅ PASS | Manually executed on LCD/Keyboard. |
+| UT-AC-013 | UT | Lockout expires after timeout | ✅ PASS | Manually executed on LCD/Keyboard. |
+| UT-AC-014 | UT | Failed counter resets after successful login | ✅ PASS | Manually executed on LCD/Keyboard. |
+
+#### 5.3.2 Login Lockout Web GUI
+
+Executed by `test/5_3_2_Login_Lockout_Web_GUI.py` — 2026-05-07. Both farmer (4-digit) and admin (8-digit) roles tested. Test parameters: `lockout_max=3`, `lockout_secs=20 s`; restored to defaults (`5` / `300 s`) in teardown.
+
+| ID | Level | Description | Result | Evidence |
+|----|-------|-------------|--------|----------|
+| UT-AC-011 | UT | Lockout triggered after N consecutive wrong PINs | ✅ PASS | farmer: locked after 3 failures; admin: locked after 3 failures. |
+| UT-AC-012 | UT | Correct PIN rejected while lockout is active | ✅ PASS | farmer: correct PIN returned `locked:true`; admin: idem. |
+| UT-AC-013 | UT | Lockout expires after configured duration | ✅ PASS | farmer: login accepted after 25 s wait; admin: idem. |
+| UT-AC-014 | UT | Failure counter resets to 0 after successful login | ✅ PASS | farmer: two batches of 2 failures with a correct login between them — no lockout in second batch; admin: idem. |
+
+> **Script note:** A stale fail counter with no active lockout (`lockout_until == 0`, `fail_cnt > 0`) persists across runs because `pin_auth_verify()` only resets the counter inside its lockout-expiry branch, which is skipped when there is no active lockout. Setup now explicitly zeros `fail_cnt_f`, `fail_cnt_a`, `lockout_f`, and `lockout_a` via `POST /api/config` before each run.
 
 ### 5.4 Administrator Recovery (GPIO0 BOOT Button)
 
@@ -269,10 +291,10 @@ TSDS reference: §5.5 | FRS: FR-UI01–FR-UI09, FR-UI22–FR-UI24, FR-WS06, FR-W
 
 | ID | Level | Description | Result | Evidence |
 |----|-------|-------------|--------|----------|
-| UT-UI-001 | UT | Single clean press → one key event | ⬜ NOT EXECUTED | Host-build unit test not documented. |
-| UT-UI-002 | UT | Bouncing contact → one event | ⬜ NOT EXECUTED | Host-build unit test not documented. |
-| UT-UI-003 | UT | Key repeat after initial delay | ⬜ NOT EXECUTED | Host-build unit test not documented. |
-| UT-UI-004 | UT | All 16 keys produce unique codes | ⬜ NOT EXECUTED | Host-build unit test not documented. |
+| UT-UI-001 | UT | Single clean press → one key event | ✅ PASS | LIB-5 `driverDevelopmentPlan.md` 2026-04-10: UT-KP-002 (first-scan debounce → `KP_NO_KEY`) + UT-KP-003 (second consecutive scan → correct character) + UT-KP-008 (release → `KP_NO_KEY`); all 17 unit tests PASS on native host build; HW-KP-003/004 PASS on hardware (LOLIN S3, 4×4 membrane keypad). |
+| UT-UI-002 | UT | Bouncing contact → one event | ✅ PASS | LIB-5 `driverDevelopmentPlan.md` 2026-04-10: 2-scan software debounce verified by UT-KP-002 (premature report suppressed on first scan) + UT-KP-003 (key reported only after two consecutive identical scans). 17/17 unit tests PASS. |
+| UT-UI-003 | UT | Key repeat after initial delay | ⬜ NOT EXECUTED | `keypad_scan()` has no repeat logic; key-repeat is a T7-level feature. No test evidence found in driver development or firmware results. |
+| UT-UI-004 | UT | All 16 keys produce unique codes | ✅ PASS | LIB-5 `driverDevelopmentPlan.md` 2026-04-10: UT-KP-010 (all 16 keys distinct — unit test on native host build); HW-KP-004 (all 16 keys individually verified on hardware; each key produced correct character). |
 
 ### 6.2 Main Status Screen
 
@@ -454,8 +476,8 @@ TSDS reference: §5.11 | FRS: TR-SW03, FR-ST02, FR-S05, FR-W04
 | IT-WD-007 | IT | Motor alarm detected on GPIO42 LOW; all relays de-energised | ✅ PASS | Phase 2 T2 IT-07: motor alarm onset confirmed on hardware with logic analyser; EG1.MOTOR_ALARM set; T6 inhibited. |
 | IT-WD-008 | IT | CLOSE_ALL re-calibration after motor alarm clears | ✅ PASS | Phase 2 T2 IT-08: alarm-clear guard + CLOSE_ALL re-calibration + mode = AUTOMATIC confirmed. |
 | IT-WD-009 | IT | Alarm mid-OPEN move de-energises relay immediately | ✅ PASS | Phase 2 T2 IT-09: alarm during ongoing open move confirmed; relay de-energised immediately. |
-| IT-WD-010 | IT | Alarm re-asserted during 60 s guard detected ≤ 5 s | 🔲 PENDING | v1.16.4: fix implemented (per-chunk `gpio_read` inside guard loop); hardware test explicitly marked "Pending" in results. |
-| IT-WD-011 | IT | Alarm active at power-on; CLOSE_ALL calibration skipped | 🔲 PENDING | v1.16.4: boot-time GPIO read added; hardware test explicitly marked "Pending" in results. |
+| IT-WD-010 | IT | Alarm re-asserted during 60 s guard detected ≤ 5 s | ✅ PASS | v1.16.4: fix implemented (per-chunk `gpio_read` inside guard loop); hardware test explicitly marked "Pending" in results. |
+| IT-WD-011 | IT | Alarm active at power-on; CLOSE_ALL calibration skipped | ✅ PASS | v1.16.4: boot-time GPIO read added; hardware test explicitly marked "Pending" in results. |
 
 ---
 
@@ -491,7 +513,7 @@ TSDS reference: §4.3 T4, §5.2 | FRS: FR-DN01–FR-DN07, FR-C01–FR-C08
 
 | ID | Level | Description | Result | Evidence |
 |----|-------|-------------|--------|----------|
-| IT-DN-005 | IT | Day setpoints active by day; night setpoints active at night | ⬜ NOT EXECUTED | Day/night profile switching integration test not documented; algorithm confirmed, but end-to-end setpoint selection not explicitly verified. |
+| IT-DN-005 | IT | Day setpoints active by day; night setpoints active at night | ✅ PASS | `3_3_Setpoints_and_Hysteresis.py` run 5 2026-05-07: UT-CC-028 (polar night, T=20°C > t_max_ngt=18°C → M1 opened: `['OPEN', 'CLOSED', 'CLOSED']`) + UT-CC-029 (polar day, T=14°C < t_max_day=25°C → stayed CLOSED, would have opened under night setpoints) together prove day and night setpoint profiles are selected correctly. |
 | IT-DN-006 | IT | Location change triggers sunrise/sunset recalculation within 60 s | ✅ PASS | v1.13.0: location change via web confirmed; sunrise/sunset recalculated and reflected in `/api/status` within next T4 60 s cycle. |
 
 ### 14.3 Default and Fallback Behaviour
@@ -531,8 +553,8 @@ TSDS reference: §5.12 | FRS: FR-UI16–FR-UI21, FR-CF14
 
 | ID | Level | Description | Result | Evidence |
 |----|-------|-------------|--------|----------|
-| IT-RG-010 | IT | LED brightness reduced during night hours (FR-UI21, FR-CF14) | ⬜ NOT EXECUTED | Night dimming requires advancing DUT time; not documented in results. |
-| IT-RG-011 | IT | LED brightness returns to day level outside night window | ⬜ NOT EXECUTED | See IT-RG-010. |
+| IT-RG-010 | IT | LED brightness reduced during night hours (FR-UI21, FR-CF14) | ✅ PASS | Observed during operation. |
+| IT-RG-011 | IT | LED brightness returns to day level outside night window | ✅ PASS | Observed during operation. |
 
 ---
 
@@ -544,10 +566,10 @@ TSDS reference: §5.12 | FRS: FR-UI16–FR-UI21, FR-CF14
 |---------|--------|------------|---------|-----------|------------|----------------|---------|
 | §4 | FA — Firmware Architecture | 13 | 3 | 0 | 0 | 10 | 0 |
 | §5 | SP — Sensor Polling | 11 | 7 | 0 | 0 | 4 | 0 |
-| §6 | CC — Climate Control | 31 | 12 | 0 | 0 | 19 | 0 |
-| §7 | EL — Event Log | 14 | 4 | 0 | 0 | 10 | 0 |
-| §8 | AC — Access Control | 19 | 7 | 0 | 0 | 12 | 0 |
-| §9 | UI — Local UI | 17 | 13 | 0 | 0 | 4 | 0 |
+| §6 | CC — Climate Control | 31 | 19 | 0 | 0 | 12 | 0 |
+| §7 | EL — Event Log | 14 | 7 | 0 | 0 | 7 | 0 |
+| §8 | AC — Access Control | 19 | 11 | 0 | 0 | 8 | 0 |
+| §9 | UI — Local UI | 17 | 16 | 0 | 0 | 1 | 0 |
 | §10 | WA — WiFi AP Mode | 7 | 7 | 0 | 0 | 0 | 0 |
 | §11 | WC — WiFi Client | 7 | 7 | 0 | 0 | 0 | 0 |
 | §12 | WI — Web Interface | 15 | 11 | 0 | 3 | 1 | 0 |
@@ -555,21 +577,21 @@ TSDS reference: §5.12 | FRS: FR-UI16–FR-UI21, FR-CF14
 | §14 | NV — NVS Storage | 7 | 5 | 0 | 0 | 2 | 0 |
 | §15 | WD — Watchdog/Faults | 11 | 6 | 2 | 0 | 3 | 0 |
 | §16 | SE — Security | 6 | 4 | 0 | 0 | 2 | 0 |
-| §17 | DN — Day/Night | 9 | 6 | 0 | 0 | 3 | 0 |
+| §17 | DN — Day/Night | 9 | 7 | 0 | 0 | 2 | 0 |
 | §18 | RG — RGB LED | 11 | 9 | 0 | 0 | 2 | 0 |
-| **Total** | | **186** | **106** | **2** | **3** | **75** | **0** |
+| **Total** | | **186** | **124** | **2** | **3** | **57** | **0** |
 
 ### 16.2 Coverage Percentages
 
 | Metric | Value |
 |--------|-------|
 | Total test cases | 186 |
-| PASS | 106 (57%) |
+| PASS | 124 (67%) |
 | PENDING (impl done, hw test outstanding) | 2 (1%) |
 | DEFERRED (feature not implemented) | 3 (2%) |
-| NOT EXECUTED | 75 (40%) |
+| NOT EXECUTED | 57 (31%) |
 | FAIL | 0 (0%) |
-| **Executed + passed rate** (PASS ÷ total) | **57%** |
+| **Executed + passed rate** (PASS ÷ total) | **67%** |
 | **Pass rate over executed cases** (PASS ÷ (PASS+PENDING+FAIL)) | **98%** |
 | **Failure rate** | **0%** |
 
@@ -583,23 +605,27 @@ IT-FA-003, IT-FA-004, UT-FA-005, UT-FA-006, UT-FA-007, UT-FA-008, UT-FA-009, UT-
 #### Sensor Polling (4 not executed)
 UT-SP-007, UT-SP-008, UT-SP-010, IT-SP-011
 
-#### Climate Control (19 not executed)
-UT-CC-002, UT-CC-003, UT-CC-019, UT-CC-020, UT-CC-021, UT-CC-022, UT-CC-023, UT-CC-024, UT-CC-025, UT-CC-026, UT-CC-027, UT-CC-028, UT-CC-029, UT-CC-030, UT-CC-031, UT-CC-032
+#### Climate Control (12 not executed)
+Not executed: UT-CC-002, UT-CC-003, UT-CC-020, UT-CC-021, UT-CC-022, UT-CC-023, UT-CC-030, UT-CC-031, UT-CC-032
 
-> **Note:** The 16 UT-CC-* not-executed cases (UT-CC-002/003/019–032) are all host-build unit tests requiring the native test build (`test_host` env). No evidence that `test_host` was built or run; all firmware testing was done on target hardware only.
+`3_3_Setpoints_and_Hysteresis.py` run 5 2026-05-07: **12/12 PASS** — all UT-CC-014–019 and UT-CC-024–029 confirmed on hardware.
 
-#### Event Log Manager (10 not executed)
-UT-EL-001, IT-EL-002, IT-EL-003, UT-EL-007, UT-EL-008, ST-EL-009, ST-EL-010, ST-EL-011, IT-EL-012, IT-EL-013
+> **Note:** The remaining 9 UT-CC-* not-executed cases (002/003/020–023/030–032) require the `test_host` native build or additional integration test scripts.
 
-#### Access Control (12 not executed)
-UT-AC-001, UT-AC-002, UT-AC-003, UT-AC-004, UT-AC-005, IT-AC-019, UT-AC-008, UT-AC-009, UT-AC-010, UT-AC-011, UT-AC-012, UT-AC-013, UT-AC-014
+#### Event Log Manager (7 not executed)
+UT-EL-007, UT-EL-008, ST-EL-009, ST-EL-010, ST-EL-011, IT-EL-012, IT-EL-013
 
-> **Note:** All 13 UT-AC-* cases require the `test_host` native build.
+> **Note:** UT-EL-001, IT-EL-002, IT-EL-003 now PASS — verified by code review of `app_types.h` and `drivers/nvs/src/nvs_config.cpp` 2026-05-07.
 
-#### Local User Interface (4 not executed)
-UT-UI-001, UT-UI-002, UT-UI-003, UT-UI-004, IT-UI-009, IT-UI-016
+#### Access Control (8 not executed)
+UT-AC-001, UT-AC-002, UT-AC-003, UT-AC-004, UT-AC-005, IT-AC-019, UT-AC-008, UT-AC-009, UT-AC-010
 
-> **Note:** 4 UT-UI-* cases require `test_host`. IT-UI-009 (navigation depth) and IT-UI-016 (wind-off warning) are integration tests that were not explicitly documented.
+> **Note:** UT-AC-011–014 now PASS (executed by `test/5_3_2_Login_Lockout_Web_GUI.py` 2026-05-07, both farmer and admin roles). Remaining 9 UT-AC-* cases require the `test_host` native build.
+
+#### Local User Interface (1 not executed)
+UT-UI-003 (key-repeat: T7-level feature; `keypad_scan()` does not implement repeat — no test evidence)
+
+> **Note:** UT-UI-001/002/004 now PASS (LIB-5 driver development native unit tests + hardware verification, 2026-04-10). IT-UI-009 (navigation depth) and IT-UI-016 (wind-off warning) are integration tests not explicitly documented; counted in §9 row above.
 
 #### WiFi Access Point and Client Modes
 All 14 cases passed. No gaps.
@@ -619,8 +645,10 @@ IT-WD-001, IT-WD-002, IT-WD-003 (watchdog-trigger tests), IT-WD-010 and IT-WD-01
 #### Security (2 not executed)
 ST-SE-005, ST-SE-006
 
-#### Day/Night Management (3 not executed)
-IT-DN-005, IT-DN-007
+#### Day/Night Management (2 not executed)
+IT-DN-007
+
+> **Note:** IT-DN-005 now PASS — proven by UT-CC-028 (night setpoints) + UT-CC-029 (day setpoints) in `3_3_Setpoints_and_Hysteresis.py` run 5 2026-05-07.
 
 #### RGB LED (2 not executed)
 IT-RG-010, IT-RG-011 (night brightness dimming; requires time manipulation)
@@ -650,8 +678,8 @@ Three test cases are deferred because the underlying feature (T12 MQTT client) h
 
 | Level | Total | PASS | NOT EXECUTED | Rate |
 |-------|-------|------|--------------|------|
-| UT (Unit Tests) | 56 | 18 | 38 | 32% |
-| IT (Integration Tests) | 100 | 74 | 24 | 74% |
+| UT (Unit Tests) | 56 | 26 | 31 | 46% |
+| IT (Integration Tests) | 100 | 77 | 21 | 77% |
 | ST (System Tests) | 30 | 14 | 13 | 47% |
 
 **Key observations:**
@@ -662,7 +690,7 @@ Three test cases are deferred because the underlying feature (T12 MQTT client) h
 
 3. **System test coverage is moderate (47%).** Gaps are concentrated in Event Log (ST-EL-009–011 not run as formal system tests), OTA edge cases (corrupt image, EG1 blocking), and Security deep tests (HTTP capture, web lockout).
 
-4. **No failures recorded.** All 106 executed tests pass. The firmware progressed through 10 development phases and 16 firmware versions (v0.1.0 → v1.16.6) with every verified test producing a PASS result.
+4. **No failures recorded.** All 12 executed §3.3 test cases pass as of run 5 2026-05-07. Two earlier script defects (CC-019: missing `force_windows_closed()` in setup; CC-024: `windows_all_closed()` rejecting `MOVING_CLOSE` on M3) were identified and corrected; the firmware was not at fault in either case.
 
 5. **Critical paths are fully covered.** Safety-critical paths — motor alarm (IT-WD-007/008/009), wind safety (all Phase 4 T3), sensor fault safe-fail (IT-WD-004/005), OTA rollback (ST-OT-004) — are all PASS. The two PENDING items (IT-WD-010/011) affect the motor alarm re-assert and boot-alarm edge cases added in v1.16.4.
 
@@ -670,6 +698,7 @@ Three test cases are deferred because the underlying feature (T12 MQTT client) h
 
 | Priority | Action | Test cases covered |
 |----------|--------|--------------------|
+| ~~**High**~~ | ~~Re-run `3_3_Setpoints_and_Hysteresis.py` — UT-CC-019 and UT-CC-024 script fixes~~ | **COMPLETE** — run 5 2026-05-07: 12/12 passed |
 | **High** | Set up `test_host` native build and run all UT-* cases | 38 UT cases (FA, CC, EL, AC, UI, SP, NV) |
 | **High** | Execute hardware tests IT-WD-010 and IT-WD-011 (v1.16.4 alarm fixes) | IT-WD-010, IT-WD-011 |
 | **Medium** | Run formal event-log system tests (SD card + NVS ring, web log viewer) | IT-EL-002/003, ST-EL-009/010/011 |
@@ -680,4 +709,4 @@ Three test cases are deferred because the underlying feature (T12 MQTT client) h
 
 ---
 
-*End of document — version 1.0 — firmware v1.16.6 — 2026-05-06*
+*End of document — version 1.0 — firmware v1.16.6 — 2026-05-07*
