@@ -3030,6 +3030,58 @@
 			(justify left bottom)
 		)
 	)
+	(gr_text "B"
+		(at 180.848 101.6 90)
+		(layer "F.SilkS")
+		(uuid "75a47938-68a8-462e-ba21-38b7eae376e2")
+		(effects
+			(font
+				(size 1.5 1.5)
+				(thickness 0.3)
+				(bold yes)
+			)
+			(justify bottom)
+		)
+	)
+	(gr_text "A"
+		(at 180.848 106.68 90)
+		(layer "F.SilkS")
+		(uuid "90317036-6677-40cf-8832-95cfca06073c")
+		(effects
+			(font
+				(size 1.5 1.5)
+				(thickness 0.3)
+				(bold yes)
+			)
+			(justify bottom)
+		)
+	)
+	(gr_text "24V"
+		(at 180.848 111.76 90)
+		(layer "F.SilkS")
+		(uuid "d6694f29-06e1-4e2b-a3ea-8c9c609a326b")
+		(effects
+			(font
+				(size 1.5 1.5)
+				(thickness 0.3)
+				(bold yes)
+			)
+			(justify bottom)
+		)
+	)
+	(gr_text "GND"
+		(at 180.848 116.84 90)
+		(layer "F.SilkS")
+		(uuid "cd81fc69-b303-45f4-8e3b-da0a3add3d61")
+		(effects
+			(font
+				(size 1.5 1.5)
+				(thickness 0.3)
+				(bold yes)
+			)
+			(justify bottom)
+		)
+	)
 	(gr_text "RS485 Modbus termination connector"
 		(at 151.892 97.536 0)
 		(layer "F.SilkS")
