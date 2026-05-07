@@ -98,6 +98,7 @@
     <button class="tab-btn admin-only" onclick="showTab('tab-motor')">Motors</button>
     <button class="tab-btn admin-only" onclick="showTab('tab-system')">System</button>
     <button class="tab-btn admin-only" onclick="showTab('tab-access')">Access</button>
+    <button class="tab-btn admin-only" onclick="showTab('tab-log')">Log</button>
   </div>
 
   <!-- Climate tab -->
@@ -106,28 +107,28 @@
     <div class="slider-row farmer-hidden">
       <label data-tip="If the greenhouse temperature rises above this value during the day, windows open to cool it down. Windows open in steps: first M1, then M1+M2, then all three.">T max day (°C)</label>
       <input type="range"  id="cfg-t-max-day-sl" min="-20" max="60" step="1">
-      <input type="number" id="cfg-t-max-day"    min="-20" max="60" class="short">
+      <input type="number" id="cfg-t-max-day"    min="-20" max="60" step="1" class="short">
       <button onclick="postCfg('climate','t_max_day','cfg-t-max-day','int')">Apply</button>
       <span class="save-ok" id="fb-t-max-day"></span>
     </div>
     <div class="slider-row farmer-hidden">
       <label data-tip="If the temperature falls below this value during the day, windows close to retain heat. Temperature control is always active and cannot be disabled.">T min day (°C)</label>
       <input type="range"  id="cfg-t-min-day-sl" min="-20" max="60" step="1">
-      <input type="number" id="cfg-t-min-day"    min="-20" max="60" class="short">
+      <input type="number" id="cfg-t-min-day"    min="-20" max="60" step="1" class="short">
       <button onclick="postCfg('climate','t_min_day','cfg-t-min-day','int')">Apply</button>
       <span class="save-ok" id="fb-t-min-day"></span>
     </div>
     <div class="slider-row farmer-hidden rh-dep">
       <label data-tip="If humidity rises above this value during the day, windows open to ventilate. Only active when Humidity control is set to Enabled.">RH max day (%)</label>
       <input type="range"  id="cfg-rh-max-day-sl" min="0" max="100" step="1">
-      <input type="number" id="cfg-rh-max-day"    min="0" max="100" class="short">
+      <input type="number" id="cfg-rh-max-day"    min="0" max="100" step="1" class="short">
       <button onclick="postCfg('climate','rh_max_day','cfg-rh-max-day','int')">Apply</button>
       <span class="save-ok" id="fb-rh-max-day"></span>
     </div>
     <div class="slider-row farmer-hidden rh-dep">
       <label data-tip="If humidity drops below this value during the day, windows close to retain moisture. Only active when Humidity control is set to Enabled.">RH min day (%)</label>
       <input type="range"  id="cfg-rh-min-day-sl" min="0" max="100" step="1">
-      <input type="number" id="cfg-rh-min-day"    min="0" max="100" class="short">
+      <input type="number" id="cfg-rh-min-day"    min="0" max="100" step="1" class="short">
       <button onclick="postCfg('climate','rh_min_day','cfg-rh-min-day','int')">Apply</button>
       <span class="save-ok" id="fb-rh-min-day"></span>
     </div>
@@ -135,28 +136,28 @@
     <div class="slider-row farmer-hidden">
       <label data-tip="Upper temperature limit after sunset. The controller switches to night setpoints automatically based on the calculated sunset time.">T max night (°C)</label>
       <input type="range"  id="cfg-t-max-ngt-sl" min="-20" max="60" step="1">
-      <input type="number" id="cfg-t-max-ngt"    min="-20" max="60" class="short">
+      <input type="number" id="cfg-t-max-ngt"    min="-20" max="60" step="1" class="short">
       <button onclick="postCfg('climate','t_max_ngt','cfg-t-max-ngt','int')">Apply</button>
       <span class="save-ok" id="fb-t-max-ngt"></span>
     </div>
     <div class="slider-row farmer-hidden">
       <label data-tip="Lower temperature limit after sunset. Typically set lower than T min day to allow natural overnight cooling.">T min night (°C)</label>
       <input type="range"  id="cfg-t-min-ngt-sl" min="-20" max="60" step="1">
-      <input type="number" id="cfg-t-min-ngt"    min="-20" max="60" class="short">
+      <input type="number" id="cfg-t-min-ngt"    min="-20" max="60" step="1" class="short">
       <button onclick="postCfg('climate','t_min_ngt','cfg-t-min-ngt','int')">Apply</button>
       <span class="save-ok" id="fb-t-min-ngt"></span>
     </div>
     <div class="slider-row farmer-hidden rh-dep">
       <label data-tip="Upper humidity limit after sunset. Only active when Humidity control is enabled.">RH max night (%)</label>
       <input type="range"  id="cfg-rh-max-ngt-sl" min="0" max="100" step="1">
-      <input type="number" id="cfg-rh-max-ngt"    min="0" max="100" class="short">
+      <input type="number" id="cfg-rh-max-ngt"    min="0" max="100" step="1" class="short">
       <button onclick="postCfg('climate','rh_max_ngt','cfg-rh-max-ngt','int')">Apply</button>
       <span class="save-ok" id="fb-rh-max-ngt"></span>
     </div>
     <div class="slider-row farmer-hidden rh-dep">
       <label data-tip="Lower humidity limit after sunset. Only active when Humidity control is enabled.">RH min night (%)</label>
       <input type="range"  id="cfg-rh-min-ngt-sl" min="0" max="100" step="1">
-      <input type="number" id="cfg-rh-min-ngt"    min="0" max="100" class="short">
+      <input type="number" id="cfg-rh-min-ngt"    min="0" max="100" step="1" class="short">
       <button onclick="postCfg('climate','rh_min_ngt','cfg-rh-min-ngt','int')">Apply</button>
       <span class="save-ok" id="fb-rh-min-ngt"></span>
     </div>
@@ -173,28 +174,28 @@
     <div class="slider-row admin-only">
       <label data-tip="Dead-band around the temperature setpoints to prevent windows rapidly cycling near the threshold. Example: with T max day = 25 °C and hysteresis = 3 °C, the window that opened at 25 °C will not close again until temperature falls to 22 °C.">T hysteresis (°C)</label>
       <input type="range"  id="cfg-hyst-t-sl" min="0" max="10" step="1">
-      <input type="number" id="cfg-hyst-t"    min="0" max="10" class="short">
+      <input type="number" id="cfg-hyst-t"    min="0" max="10" step="1" class="short">
       <button onclick="postCfg('climate','hyst_t','cfg-hyst-t','int')">Apply</button>
       <span class="save-ok" id="fb-hyst-t"></span>
     </div>
     <div class="slider-row admin-only rh-dep">
       <label data-tip="Dead-band around the humidity setpoints. Same principle as T hysteresis. A value of 5% means the window opened at RH max will not close until humidity drops 5% below RH max.">RH hysteresis (%)</label>
       <input type="range"  id="cfg-hyst-rh-sl" min="0" max="20" step="1">
-      <input type="number" id="cfg-hyst-rh"    min="0" max="20" class="short">
+      <input type="number" id="cfg-hyst-rh"    min="0" max="20" step="1" class="short">
       <button onclick="postCfg('climate','hyst_rh','cfg-hyst-rh','int')">Apply</button>
       <span class="save-ok" id="fb-hyst-rh"></span>
     </div>
     <div class="slider-row admin-only">
       <label data-tip="Length of the sliding average used to smooth temperature readings before comparing with setpoints. 1 minute = effectively no averaging (fastest response). Higher values reduce false triggers from brief spikes.">T avg window (min)</label>
       <input type="range"  id="cfg-avg-win-t-sl" min="1" max="60" step="1">
-      <input type="number" id="cfg-avg-win-t"    min="1" max="60" class="short">
+      <input type="number" id="cfg-avg-win-t"    min="1" max="60" step="1" class="short">
       <button onclick="postCfg('climate','avg_win_t','cfg-avg-win-t','int')">Apply</button>
       <span class="save-ok" id="fb-avg-win-t"></span>
     </div>
     <div class="slider-row admin-only rh-dep">
       <label data-tip="Length of the sliding average for humidity readings. Higher values reduce response to brief humidity spikes.">RH avg window (min)</label>
       <input type="range"  id="cfg-avg-win-rh-sl" min="1" max="60" step="1">
-      <input type="number" id="cfg-avg-win-rh"    min="1" max="60" class="short">
+      <input type="number" id="cfg-avg-win-rh"    min="1" max="60" step="1" class="short">
       <button onclick="postCfg('climate','avg_win_rh','cfg-avg-win-rh','int')">Apply</button>
       <span class="save-ok" id="fb-avg-win-rh"></span>
     </div>
@@ -214,21 +215,21 @@
     <div class="slider-row admin-only">
       <label data-tip="Wind speed threshold. When the measured speed exceeds this value, all windows close immediately and remain closed until the wind drops.">v_max (m/s)</label>
       <input type="range"  id="cfg-v-max-sl" min="0" max="60" step="1">
-      <input type="number" id="cfg-v-max"    min="0" max="60" class="short">
+      <input type="number" id="cfg-v-max"    min="0" max="60" step="1" class="short">
       <button onclick="postCfg('wind','v_max','cfg-v-max','int')">Apply</button>
       <span class="save-ok" id="fb-v-max"></span>
     </div>
     <div class="slider-row admin-only">
       <label data-tip="Lower bound of the wind direction exclusion zone in compass degrees (0° = North, clockwise). When wind direction is between Dir excl. low and Dir excl. high, all windows close.">Dir excl. low (°)</label>
       <input type="range"  id="cfg-dir-excl-low-sl" min="0" max="360" step="1">
-      <input type="number" id="cfg-dir-excl-low"    min="0" max="360" class="short">
+      <input type="number" id="cfg-dir-excl-low"    min="0" max="360" step="1" class="short">
       <button onclick="postCfg('wind','dir_excl_low','cfg-dir-excl-low','int')">Apply</button>
       <span class="save-ok" id="fb-dir-excl-low"></span>
     </div>
     <div class="slider-row admin-only">
       <label data-tip="Upper bound of the wind direction exclusion zone. Together with Dir excl. low this defines a compass sector where the wind angle is considered unsafe for ventilation.">Dir excl. high (°)</label>
       <input type="range"  id="cfg-dir-excl-high-sl" min="0" max="360" step="1">
-      <input type="number" id="cfg-dir-excl-high"    min="0" max="360" class="short">
+      <input type="number" id="cfg-dir-excl-high"    min="0" max="360" step="1" class="short">
       <button onclick="postCfg('wind','dir_excl_high','cfg-dir-excl-high','int')">Apply</button>
       <span class="save-ok" id="fb-dir-excl-high"></span>
     </div>
@@ -240,21 +241,21 @@
     <div class="slider-row">
       <label data-tip="Time in seconds the relay stays on to move M1 (south roof) from fully closed to fully open, or vice versa. Measure the physical motor run time and add 2–3 s margin. Default: 21 s.">M1 travel (s)</label>
       <input type="range"  id="cfg-travel-0-sl" min="5" max="600" step="1">
-      <input type="number" id="cfg-travel-0"    min="5" max="600" class="short">
+      <input type="number" id="cfg-travel-0"    min="5" max="600" step="1" class="short">
       <button onclick="postCfg('motor','travel_m1','cfg-travel-0','int')">Apply</button>
       <span class="save-ok" id="fb-travel-0"></span>
     </div>
     <div class="slider-row">
       <label data-tip="Travel time for M2 (north roof). Default: 21 s.">M2 travel (s)</label>
       <input type="range"  id="cfg-travel-1-sl" min="5" max="600" step="1">
-      <input type="number" id="cfg-travel-1"    min="5" max="600" class="short">
+      <input type="number" id="cfg-travel-1"    min="5" max="600" step="1" class="short">
       <button onclick="postCfg('motor','travel_m2','cfg-travel-1','int')">Apply</button>
       <span class="save-ok" id="fb-travel-1"></span>
     </div>
     <div class="slider-row">
       <label data-tip="Travel time for M3 (north wall). This window has a much longer travel path. Default: 171 s. If set too short the window will stop before reaching the fully open or closed position.">M3 travel (s)</label>
       <input type="range"  id="cfg-travel-2-sl" min="5" max="600" step="1">
-      <input type="number" id="cfg-travel-2"    min="5" max="600" class="short">
+      <input type="number" id="cfg-travel-2"    min="5" max="600" step="1" class="short">
       <button onclick="postCfg('motor','travel_m3','cfg-travel-2','int')">Apply</button>
       <span class="save-ok" id="fb-travel-2"></span>
     </div>
@@ -262,21 +263,21 @@
     <div class="slider-row">
       <label data-tip="Minimum time M1 must remain fully open before a close command is accepted. Protects the motor from rapid reversal. 0 = no hold enforced.">M1 dwell open (min)</label>
       <input type="range"  id="cfg-dwell-open-0-sl" min="0" max="60" step="1">
-      <input type="number" id="cfg-dwell-open-0"    min="0" max="60" class="short">
+      <input type="number" id="cfg-dwell-open-0"    min="0" max="60" step="1" class="short">
       <button onclick="postCfg('motor','dwell_open_m1','cfg-dwell-open-0','int')">Apply</button>
       <span class="save-ok" id="fb-dwell-open-0"></span>
     </div>
     <div class="slider-row">
       <label data-tip="Minimum hold at fully open for M2. 0 = no hold enforced.">M2 dwell open (min)</label>
       <input type="range"  id="cfg-dwell-open-1-sl" min="0" max="60" step="1">
-      <input type="number" id="cfg-dwell-open-1"    min="0" max="60" class="short">
+      <input type="number" id="cfg-dwell-open-1"    min="0" max="60" step="1" class="short">
       <button onclick="postCfg('motor','dwell_open_m2','cfg-dwell-open-1','int')">Apply</button>
       <span class="save-ok" id="fb-dwell-open-1"></span>
     </div>
     <div class="slider-row">
       <label data-tip="Minimum hold at fully open for M3. 0 = no hold enforced.">M3 dwell open (min)</label>
       <input type="range"  id="cfg-dwell-open-2-sl" min="0" max="60" step="1">
-      <input type="number" id="cfg-dwell-open-2"    min="0" max="60" class="short">
+      <input type="number" id="cfg-dwell-open-2"    min="0" max="60" step="1" class="short">
       <button onclick="postCfg('motor','dwell_open_m3','cfg-dwell-open-2','int')">Apply</button>
       <span class="save-ok" id="fb-dwell-open-2"></span>
     </div>
@@ -284,21 +285,21 @@
     <div class="slider-row">
       <label data-tip="Minimum time M1 must remain fully closed before an open command is accepted. 0 = no hold enforced.">M1 dwell close (min)</label>
       <input type="range"  id="cfg-dwell-close-0-sl" min="0" max="60" step="1">
-      <input type="number" id="cfg-dwell-close-0"    min="0" max="60" class="short">
+      <input type="number" id="cfg-dwell-close-0"    min="0" max="60" step="1" class="short">
       <button onclick="postCfg('motor','dwell_close_m1','cfg-dwell-close-0','int')">Apply</button>
       <span class="save-ok" id="fb-dwell-close-0"></span>
     </div>
     <div class="slider-row">
       <label data-tip="Minimum hold at fully closed for M2. 0 = no hold enforced.">M2 dwell close (min)</label>
       <input type="range"  id="cfg-dwell-close-1-sl" min="0" max="60" step="1">
-      <input type="number" id="cfg-dwell-close-1"    min="0" max="60" class="short">
+      <input type="number" id="cfg-dwell-close-1"    min="0" max="60" step="1" class="short">
       <button onclick="postCfg('motor','dwell_close_m2','cfg-dwell-close-1','int')">Apply</button>
       <span class="save-ok" id="fb-dwell-close-1"></span>
     </div>
     <div class="slider-row">
       <label data-tip="Minimum hold at fully closed for M3. 0 = no hold enforced.">M3 dwell close (min)</label>
       <input type="range"  id="cfg-dwell-close-2-sl" min="0" max="60" step="1">
-      <input type="number" id="cfg-dwell-close-2"    min="0" max="60" class="short">
+      <input type="number" id="cfg-dwell-close-2"    min="0" max="60" step="1" class="short">
       <button onclick="postCfg('motor','dwell_close_m3','cfg-dwell-close-2','int')">Apply</button>
       <span class="save-ok" id="fb-dwell-close-2"></span>
     </div>
@@ -310,21 +311,21 @@
     <div class="slider-row">
       <label data-tip="Idle time in minutes before an authenticated session closes automatically and the GUI returns to the login screen. Applies to both Farmer and Admin sessions.">Session timeout (min)</label>
       <input type="range"  id="cfg-session-timeout-sl" min="1" max="120" step="1">
-      <input type="number" id="cfg-session-timeout"    min="1" max="120" class="short">
+      <input type="number" id="cfg-session-timeout"    min="1" max="120" step="1" class="short">
       <button onclick="postCfg('system','session_timeout','cfg-session-timeout','int')">Apply</button>
       <span class="save-ok" id="fb-session-timeout"></span>
     </div>
     <div class="slider-row">
       <label data-tip="The controller's own WiFi access point shuts down automatically after this many minutes if no client is connected. Set to 0 to keep the AP running until manually disabled.">AP timeout (min, 0=never)</label>
       <input type="range"  id="cfg-ap-timeout-sl" min="0" max="1440" step="1">
-      <input type="number" id="cfg-ap-timeout"    min="0" max="1440" class="short">
+      <input type="number" id="cfg-ap-timeout"    min="0" max="1440" step="1" class="short">
       <button onclick="postCfg('system','ap_timeout','cfg-ap-timeout','int')">Apply</button>
       <span class="save-ok" id="fb-ap-timeout"></span>
     </div>
     <div class="slider-row">
-      <label data-tip="How often the sensors are read and logged, in seconds. Shorter intervals give faster control response but produce more log data. Range: 30–3600 s. Default: 60 s. Takes effect after reboot.">Sensor poll interval (s)</label>
-      <input type="range"  id="cfg-poll-interval-sl" min="30" max="3600" step="10">
-      <input type="number" id="cfg-poll-interval"    min="30" max="3600" class="short">
+      <label data-tip="How often the sensors are read and logged, in seconds. Shorter intervals give faster control response but produce more log data. Range: 15–120 s. Default: 30 s. Takes effect after reboot.">Sensor poll interval (s)</label>
+      <input type="range"  id="cfg-poll-interval-sl" min="15" max="120" step="1">
+      <input type="number" id="cfg-poll-interval"    min="15" max="120" step="1" class="short">
       <button onclick="postCfg('system','poll_interval','cfg-poll-interval','int')">Apply</button>
       <span class="save-ok" id="fb-poll-interval"></span>
     </div>
@@ -383,15 +384,6 @@
     </div>
 
     <hr>
-    <h3>SD card</h3>
-    <div class="row">
-      <label data-tip="Mount or unmount the microSD card. Unmounting stops event log writes and allows safe card removal. Mount re-initialises the card after insertion.">SD card control</label>
-      <button id="btn-sd-mount"   onclick="postSdMount()">Mount</button>
-      <button id="btn-sd-unmount" onclick="postSdUnmount()" class="danger">Unmount</button>
-      <span class="save-ok" id="fb-sd"></span>
-    </div>
-
-    <hr>
     <h3>OTA update <span class="tip-icon" data-tip="Over-The-Air firmware and web asset update. The device reboots automatically after a successful upload. Both OTA banks are maintained; automatic rollback fires after 3 consecutive boot failures.">ⓘ</span></h3>
     <div class="row">
       <label data-tip="Upload a compiled firmware binary (.bin) to the inactive OTA bank. The device reboots to the new firmware automatically after a successful write. Build the .bin with PlatformIO: pio run.">Firmware (.bin)</label>
@@ -411,6 +403,31 @@
     </div>
     <div id="ota-progress-wrap" style="display:none">
       <div class="ota-progress-bar"><div id="ota-progress-fill" style="width:0%"></div></div>
+    </div>
+  </div>
+
+  <!-- Log tab (admin only) -->
+  <div id="tab-log" class="tab-pane">
+    <h3>SD Card</h3>
+    <div class="row">
+      <label data-tip="Mount or unmount the microSD card. Unmounting stops event log writes and allows safe card removal. Mount re-initialises the card after insertion.">SD card control</label>
+      <button id="btn-sd-mount"   onclick="postSdMount()">Mount</button>
+      <button id="btn-sd-unmount" onclick="postSdUnmount()" class="danger">Unmount</button>
+      <span class="save-ok" id="fb-sd"></span>
+    </div>
+
+    <hr>
+    <h3>Download log</h3>
+    <div class="row">
+      <label data-tip="Select a log source to download. 'NVS buffer' exports the on-device ring buffer as CSV. SD card files are listed when a card is mounted.">Log source</label>
+      <select id="log-src-select" style="flex:1;min-width:0">
+        <option value="">— loading… —</option>
+      </select>
+      <button onclick="loadLogFiles()" data-tip="Refresh the list of available log files from the device.">↻</button>
+    </div>
+    <div class="row">
+      <button onclick="downloadLog()">Download CSV</button>
+      <span class="save-ok" id="fb-log-dl"></span>
     </div>
   </div>
 

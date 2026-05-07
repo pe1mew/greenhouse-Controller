@@ -6,8 +6,8 @@
 |---------------|-------------------------------|
 | Document      | Functional Requirements Specification |
 | Project       | Greenhouse Ventilation Controller |
-| Version       | 0.3 (draft)                   |
-| Date          | 2026-05-05                    |
+| Version       | 0.4 (draft)                   |
+| Date          | 2026-05-07                    |
 | Status        | Draft                         |
 
 ---
@@ -148,7 +148,7 @@ The RRK-3 provides a single alarm output (potential-free contact) that closes wh
 |----|-------------|--------|
 | FR-S01 | The system **shall** measure the internal greenhouse temperature. | Must |
 | FR-S02 | The system **shall** measure the internal greenhouse relative humidity. | Must |
-| FR-S03 | The system **shall** poll all sensors (temperature, humidity, and wind) at a single configurable interval. The default interval is 60 s. The technician **shall** be able to set the interval in the range 30 to 3600 s via the web GUI. | Must |
+| FR-S03 | The system **shall** poll all sensors (temperature, humidity, and wind) at a single configurable interval. The default interval is 30 s. The technician **shall** be able to set the interval in the range 15 to 120 s via the web GUI. | Must |
 | FR-S04 | The system **shall** detect and report a sensor fault (e.g. disconnected or out-of-range sensor). | Must |
 | FR-S05 | On a sensor fault, the system **shall** maintain the last known window states and alert the user. | Must |
 | FR-S06 | The system **should** compute a sliding (moving) average of temperature and humidity readings to reduce the effect of measurement noise before comparing with setpoints. | Should |
@@ -364,7 +364,7 @@ The RGB LED uses the following colour semantics, which differ from the discrete 
 | FR-CF04 | The technician **shall** be able to set the wind direction exclusion zone (centre bearing and half-width angle). | Must |
 | FR-CF05 | The technician **shall** be able to set the motor travel time (run-time) per window (M1, M2, M3) individually via the **web GUI only** (administrator session). Each value represents the duration the controller energises the relay to move the window from one end-stop to the other. Range: 5–600 s per window. Factory defaults: M1 = 21 s, M2 = 21 s, M3 = 171 s. | Must |
 | FR-CF06 | All settings **shall** be retained after a power cycle or controller restart. | Must |
-| FR-CF07 | The technician **shall** be able to set the sensor poll interval in the range 30 to 3600 s, via the web GUI only. The factory default is 60 s. | Must |
+| FR-CF07 | The technician **shall** be able to set the sensor poll interval in the range 15 to 120 s, via the web GUI only. The factory default is 30 s. | Must |
 | FR-CF08 | The technician **should** be able to set hysteresis values for temperature and humidity control. | Should |
 | FR-CF09 | The technician **should** be able to set the wind safety hysteresis timer (FR-WS08). | Should |
 | FR-CF10 | The technician **shall** be able to set the open-dwell time for each window (M1, M2, M3) via the web GUI only — the minimum time a window must remain open before it may be closed. | Must |
@@ -422,7 +422,7 @@ The RGB LED uses the following colour semantics, which differ from the discrete 
 | FR-LG03 | For events triggered by an operator action (mode change, setpoint change), the log entry **shall** record which user role (Farmer / Administrator) and, where applicable, which user account performed the action. | Must |
 | FR-LG04 | For events triggered automatically by the control logic, the log entry **shall** record "SYSTEM" as the initiator and include the sensor values that triggered the event. | Must |
 | FR-LG05 | The log **shall** be retrievable via the web interface (when WiFi is available) and via the serial/USB diagnostic port. | Should |
-| FR-LG06 | The system **should** retain event log entries persistently across power cycles using a circular strategy, so that the log is maintained automatically without manual management; oldest entries are overwritten when capacity is reached. The ring buffer **shall** be sized to retain at least 1 hour of all event types combined under worst-case activity at the minimum poll interval (30 s). Worst-case hourly budget: 120 `LOG_SENSOR` events (1 per 30 s poll) + 72 `LOG_RELAY` events (wind-storm cycling, 3 channels × 2 directions every 5 min) + 24 `LOG_MODE_CHANGE` events = 216 events/hour. Minimum capacity: **250 entries** (216 + ~16 % headroom). | Should |
+| FR-LG06 | The system **should** retain event log entries persistently across power cycles using a circular strategy, so that the log is maintained automatically without manual management; oldest entries are overwritten when capacity is reached. The ring buffer **shall** be sized to retain at least 1 hour of all event types combined under worst-case activity at the minimum poll interval (15 s). Worst-case hourly budget: 240 `LOG_SENSOR` events (1 per 15 s poll) + 72 `LOG_RELAY` events (wind-storm cycling, 3 channels × 2 directions every 5 min) + 24 `LOG_MODE_CHANGE` events = 336 events/hour. Minimum capacity: **400 entries** (336 + ~19 % headroom). | Should |
 | FR-LG07 | The system **could** write the event log to an SD card for extended retention and offline retrieval. | Could |
 | FR-LG08 | If an SD card is present and functional, the system **should** prefer the SD card as the primary log storage; internal non-volatile memory acts as fallback. | Could |
 | FR-LG09 | The log **shall** include a sensor-value snapshot (temperature, humidity, wind speed, wind direction) on every sensor poll cycle. The snapshot interval therefore equals the poll interval (FR-S03); no separate snapshot interval is configurable. | Must |
@@ -522,4 +522,4 @@ MoSCoW is a prioritisation technique widely used in requirements engineering and
 
 ---
 
-*End of document — version 0.2 draft*
+*End of document — version 0.4 draft*

@@ -3,7 +3,7 @@
  * @brief T5 — Sensor Poll task implementation (Phase 3).
  *
  * Modbus RTU master for the FG6485A (T/RH) and S200 (wind) sensors.
- * Polls at the configured interval (30–3600 s, default 60 s), maintains
+ * Polls at the configured interval (15–120 s, default 30 s), maintains
  * per-sensor sliding averages, builds a sensor_reading_t, and overwrites Q6.
  * LOG_SENSOR is posted by T4 (data_manager) on receipt of the Q6 update —
  * not by T5 — to avoid duplicate log entries (FR-LG09: one snapshot per
@@ -65,10 +65,10 @@ static const char *TAG = "T5_SEN";
 #define SP_AVG_DEPTH  360u
 
 /** Minimum poll interval enforced by T5 regardless of NVS value (seconds). */
-#define SP_POLL_MIN_S  30
+#define SP_POLL_MIN_S  15
 
 /** Maximum poll interval enforced by T5 (seconds). */
-#define SP_POLL_MAX_S  3600
+#define SP_POLL_MAX_S  120
 
 /** Delay between the first and second Modbus read attempt (ms). */
 #define SP_RETRY_DELAY_MS  100u

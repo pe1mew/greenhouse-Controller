@@ -5,8 +5,8 @@
 |--------------|------------------------------------------------|
 | Document     | Technical Software Design Specification        |
 | Project      | Greenhouse Ventilation Controller              |
-| Version      | 0.2 (draft)                                   |
-| Date         | 2026-05-05                                    |
+| Version      | 0.3 (draft)                                   |
+| Date         | 2026-05-07                                    |
 | Status       | Draft                                         |
 | Related docs | `functionalRequirementsSpecification.md`       |
 |              | `technicalHardwareDesignSpecification.md`      |
@@ -329,7 +329,7 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 **Priority:** Medium-high | **Core:** 1
 
 - Modbus RTU master on UART1 with SIT65HVD08P transceiver; manages DE/RE direction control pin.
-- Polls SenseCAP S200 (wind speed + direction) and FG6485A (T + RH) on a configurable interval (factory default 60 s; technician-configurable 30–3600 s via web GUI).
+- Polls SenseCAP S200 (wind speed + direction) and FG6485A (T + RH) on a configurable interval (factory default 30 s; technician-configurable 15–120 s via web GUI).
 - On successful read: computes updated sliding-average values for T and RH (ring buffer of size = `avg_window_min × 60 / poll_interval` samples; default window 1 minute = effectively no averaging); writes raw and averaged values to T4; T4 then notifies T3 and T6.
 - On fault (timeout, CRC error, out-of-range value): posts a sensor fault event to T9 (logger) and triggers alarm display via T8.
 - **Synchronization:** posts to Q6 (sensor readings and updated sliding averages to T4); sets/clears EG1.SENSOR_FAULT_T and EG1.SENSOR_FAULT_W; posts to Q3 (log events); no mutexes held — T4 owns all measurement storage.
@@ -368,12 +368,14 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 
 - Manages the LCD1602 display via I2C (shared bus with RTC). Any `delay()` calls in the LCD1602 driver must be replaced with `vTaskDelay(pdMS_TO_TICKS(ms))` so T8 yields to the scheduler rather than spinning.
 - Renders the main status screen: T, RH, wind speed and direction, window states, operating mode, active session, active alarms.
-- **Cyclic status pages (`STATUS_PAGES = 5`):** auto-rotates every 5 s through pages 0–4:
+- **Cyclic status pages (`STATUS_PAGES = 6`):** auto-rotates every 5 s through pages 0–5:
   - 0: temperature and humidity
   - 1: wind speed and direction
-  - 2: window states (OPEN / MOVING / CLOSED per channel)
+  - 2: climate window-demand status (OPEN / MOVING / CLOSED per channel)
   - 3: network status (AP / client / IP)
   - 4: current date/time (local, via `localtime_r`) and time source label ("NTP" when `s_net.ntp_synced` true; "RTC" otherwise); pressing `#` on this page initiates the manual time-set flow (FR-UI22, FR-UI23)
+  - 5: motor (window) states — row 0: `M1    M2    M3  `; row 1: per-channel state abbreviation (`OPEN` / `CLOS` / `MOV>` / `MOV<` / `UNK `); reads `window_state_t[3]` from T2 via `t2_get_window_states()` (FR-UI04)
+- **D-key page advance:** pressing `D` while in the auto-rotation loop (`UI_STATUS`) immediately advances to the next page (`s_status_page = (s_status_page + 1) % STATUS_PAGES`) and resets the 5-second display timer (`s_status_ticks = 0`); the new page then holds for a full 5 s before the next automatic advance.
 - Runs the menu FSM; navigation depth ≤ 4 key presses from the main screen to any first-level setting.
   - **FSM states:** `UI_STATUS`, `UI_MENU_ROOT`, `UI_MENU_CLIMATE`, `UI_MENU_WIND`, `UI_MENU_SYSTEM`, `UI_MENU_ACCESS`, `UI_EDIT_VALUE`, `UI_PIN_ENTRY`, **`UI_SET_DATE`**, **`UI_SET_TIME`**
   - `UI_SET_DATE`: 6-digit DDMMYY entry with inline `_` cursor placeholder; validates DD 01–31, MM 01–12; saves to `s_dt_saved_{year,mon,mday}` on `#`; advances to `UI_SET_TIME`. `*` returns to `UI_STATUS`.
@@ -603,7 +605,7 @@ A single FreeRTOS event group (`xEventGroupCreate`) holds all system-wide boolea
 **Poll schedule:**
 - SenseCAP S200 (Modbus address 1): reads wind speed register and wind direction register each cycle. **No dedicated S200 driver library exists.** T5 calls LIB-6 (`modbus_read_holding_registers()`) directly with the S200 register map from the sensor user guide (`documentation/Sensors/W-Sensecap-S200/`).
 - FG6485A (Modbus address 2): reads temperature register and humidity register each cycle. **LIB-10** (`drivers/FG6485A/`) provides the driver. LIB-10 also exposes `fg6485a_task()` — a standalone FreeRTOS periodic polling task. T5 may integrate this directly or call the driver read API within its own loop; the integration approach is to be decided during implementation.
-- Poll interval configurable via NVS (default 60 s; range 30–3600 s). T4 posts one `LOG_SENSOR` event to Q3 on every Q6 reception — snapshot interval equals poll interval (FR-LG09); no separate snapshot timer.
+- Poll interval configurable via NVS (default 30 s; range 15–120 s). T4 posts one `LOG_SENSOR` event to Q3 on every Q6 reception — snapshot interval equals poll interval (FR-LG09); no separate snapshot timer.
 
 **Fault detection and response:**
 
@@ -757,12 +759,12 @@ Total: 12 bytes. No padding needed — four uint8 fields (offset 4–7) fill the
 - T9 checks SD card presence on startup and on each write cycle; falls back to NVS if card is absent or returns an error (FR-LG07, FR-LG08).
 
 **SD card log file format:**
-- CSV text file; first line is a fixed header row: `timestamp,event_type,initiator,channel,param_id,value_a,value_b`
-- Each subsequent line is one log entry. Example: `2024-06-15T10:30:00,SENSOR,SYSTEM,0,0,235,650`
-- Average line length: ~60 bytes. Estimated daily volume: ~90 KB (1 440 sensor snapshots at 1-minute default interval + ~100 discrete events).
+- CSV text file; first line is a fixed header row: `timestamp,type,initiator,ch,param,value_a,value_b`
+- Each subsequent line is one log entry. Example: `2025-06-07T14:30:22,SENSOR,SYS,0,0,235,650`
+- The `timestamp` field is an ISO 8601 UTC string (`YYYY-MM-DDTHH:MM:SS`), formatted via `strftime("%Y-%m-%dT%H:%M:%S")`. Average line length: ~55 bytes. Estimated daily volume: ~90 KB (1 440 sensor snapshots at 30 s default interval + ~100 discrete events).
 
 **SD card log file naming:**
-Files are named `YYYYMMDDHHSS.csv`, where:
+Files are named `YYYYMMDDHHMMSS.csv`, where:
 
 | Token | Meaning |
 |-------|---------|
@@ -770,9 +772,10 @@ Files are named `YYYYMMDDHHSS.csv`, where:
 | MM | 2-digit month (01–12) |
 | DD | 2-digit day (01–31) |
 | HH | 2-digit hour, 24-hour clock (00–23) |
+| MM | 2-digit minute (00–59) |
 | SS | 2-digit second (00–59) |
 
-The timestamp encodes the moment the file was created. Files are stored in the root directory of the SD card. Lexicographic sort of filenames yields chronological order, which is used by the startup scan and the web log retrieval interface.
+The timestamp encodes the moment the file was created (local time). Files are stored in the root directory of the SD card. Lexicographic sort of filenames yields chronological order, which is used by the startup scan and the web log retrieval interface. T9 applies an `is_ts_filename()` filter (exactly 14 decimal digits + `.csv`) so that old sequential-index files (`ghc_NNNN.csv`) from a previous firmware version are silently ignored and do not interfere with rotation or the file count.
 
 **SD card log rotation policy:**
 
@@ -780,17 +783,19 @@ The timestamp encodes the moment the file was created. Files are stored in the r
 |-----------|-------|-----------|
 | Maximum file size | 512 KB | At ~90 KB/day typical rate, each file spans ~5–6 days. A power-loss event can corrupt only the currently open file; all closed files are intact. |
 | Files retained | 10 most recent | 10 × 512 KB = 5 MB maximum log footprint. Minimum guaranteed history: 9 closed files + 1 partial current file ≈ 45–60 days. |
-| Minimum retention floor | 3 files | Files are never deleted below this count, regardless of free space. |
-| Low free-space threshold | 2 MB | If SD free space drops below 2 MB and the file count is already at the minimum retention floor, SD logging is suspended; NVS fallback is activated. SD logging resumes on the next successful mount when space has been reclaimed. |
+| Minimum retention floor | 3 files | The free-space guard never deletes below this count. |
+| Low free-space threshold | 2 MB | If SD free space drops below 2 MB and the file count is above the floor, the oldest file is deleted to reclaim space. If already at the floor (3 files) and space is still below 2 MB, SD logging is suspended and NVS fallback is activated. SD logging resumes on the next successful mount command. |
 
 **Rotation procedure (triggered when current file reaches 512 KB):**
-1. Flush and close the current log file.
-2. Create a new file named with the current timestamp (`YYYYMMDDHHSS.csv`).
-3. Write the CSV header row to the new file.
-4. If the total file count now exceeds 10, delete the oldest file (lowest lexicographic filename).
+1. Create a new file named with the current UTC timestamp (`YYYYMMDDHHMMSS.csv`).
+2. Write the CSV header row to the new file.
+3. If the total timestamp-file count now exceeds 10, delete the lexicographically oldest file.
+4. Check free space (`storage_sd_free_bytes()`): if < 2 MB, invoke the free-space guard (delete oldest or suspend).
+
+**Write-failure reclaim:** if `storage_sd_write_append()` returns `STORAGE_ERR_FULL` or `STORAGE_ERR_IO`, T9 attempts a single oldest-file deletion and retries the write before falling back to NVS-only mode.
 
 **Startup / resume behaviour:**
-On SD card mount, T9 scans the log directory for `*.csv` files and sorts them by filename (lexicographic = chronological). If the most recent file is below 512 KB, T9 resumes appending to it. Otherwise a new file is created immediately. If no log files exist, a new file is created.
+On SD card mount, T9 calls `storage_sd_list_csv(".csv", ...)` and filters results through `is_ts_filename()` (14 decimal digits + `.csv`). The lexicographically largest matching filename is the most recent file. If its size is below 512 KB, T9 resumes appending to it; otherwise a new timestamp file is created. If no matching files exist, a new file is created immediately.
 
 **Corruption resilience:**
 - Power loss during a write may leave the last partial CSV line incomplete; all preceding complete lines remain parseable.
@@ -868,7 +873,7 @@ T9 calls `log_take_dropped_count()` (which atomically reads and resets `g_q3_dro
 | *Farmer* parameters | Hidden | Read-write | Read-write |
 | *Administrator* parameters | Hidden | Hidden | Read-write |
 
-Farmer-level parameters include: day and night temperature setpoints (T_min_day, T_max_day, T_min_night, T_max_night), day and night humidity setpoints (RH_min_day, RH_max_day, RH_min_night, RH_max_night), humidity control enable/disable (`rh_ctrl_en`), wind protection enable/disable (`wind_prot_en`), conflict resolution priority (`cr_priority`), and geographic location for sunrise/sunset calculation (`lat_*`, `lon_*`) — web GUI only (FR-CF16). Administrator/technician-level parameters include: wind safety thresholds (v_max, direction exclusion zone), hysteresis values, dwell times (web GUI only, FR-CF10/CF11), motor travel times (`travel_m1`, `travel_m2`, `travel_m3`, web GUI only, 5–600 s, FR-CF05; defaults `MOTOR_MN_TRAVEL_S_DEFAULT` in `app_types.h`), sensor poll interval (web GUI only, 150–3600 s, FR-CF07), sliding average windows (web GUI only, 1–60 min, FR-CF17), network configuration, and access control settings.
+Farmer-level parameters include: day and night temperature setpoints (T_min_day, T_max_day, T_min_night, T_max_night), day and night humidity setpoints (RH_min_day, RH_max_day, RH_min_night, RH_max_night), humidity control enable/disable (`rh_ctrl_en`), wind protection enable/disable (`wind_prot_en`), conflict resolution priority (`cr_priority`), and geographic location for sunrise/sunset calculation (`lat_*`, `lon_*`) — web GUI only (FR-CF16). Administrator/technician-level parameters include: wind safety thresholds (v_max, direction exclusion zone), hysteresis values, dwell times (web GUI only, FR-CF10/CF11), motor travel times (`travel_m1`, `travel_m2`, `travel_m3`, web GUI only, 5–600 s, FR-CF05; defaults `MOTOR_MN_TRAVEL_S_DEFAULT` in `app_types.h`), sensor poll interval (web GUI only, 15–120 s, FR-CF07), sliding average windows (web GUI only, 1–60 min, FR-CF17), network configuration, and access control settings.
 
 The web interface applies the same three-state model and the same PIN codes as the local keyboard interface.
 
@@ -900,12 +905,15 @@ Where `Mxx` encodes active window states (e.g. `M1O` = M1 open, `M2C` = M2 close
 - `#` key: confirm / enter. `*` key: cancel / back. Numeric keys: input values. `A`/`B`: scroll up/down in lists.
 - On session timeout: menu FSM resets to main screen and session closes.
 
-**Status page cycling (`STATUS_PAGES = 5`):**
+**Status page cycling (`STATUS_PAGES = 6`):**
 - Page 0: temperature and humidity readings
 - Page 1: wind speed and direction
-- Page 2: estimated window states (OPEN / MOVING / CLOSED per channel)
+- Page 2: climate window-demand states (OPEN / MOVING / CLOSED per channel)
 - Page 3: network status (AP active / client IP)
 - Page 4: current local date/time (via `localtime_r`); source label "NTP" or "RTC" (from `s_net.ntp_synced`); pressing `#` enters the manual time-set flow (FR-UI22, FR-UI23)
+- Page 5: motor (window) states — row 0: `M1    M2    M3  `; row 1: four-character state per channel (`OPEN` / `CLOS` / `MOV>` / `MOV<` / `UNK `); state read via `t2_get_window_states()` (FR-UI04)
+
+**D-key page advance:** pressing `D` on any status page immediately increments `s_status_page` (modulo `STATUS_PAGES`) and resets `s_status_ticks` to 0, giving the new page a full 5 s dwell before the next auto-advance.
 
 **Manual time-set flow (FR-UI23, admin session required):**
 1. `#` pressed on status page 4 → if no admin session active: enter PIN flow first (`s_pending_settime = true`); else: enter `UI_SET_DATE` directly.
@@ -977,13 +985,18 @@ Where `Mxx` encodes active window states (e.g. `M1O` = M1 open, `M2C` = M2 close
   | **Climate** | Farmer / Admin | T_min_day, T_max_day, T_min_night, T_max_night (°C); RH_min_day, RH_max_day, RH_min_night, RH_max_night (%); humidity control enable (`rh_ctrl_en`); conflict resolution priority (`cr_priority`); geographic location lat/lon for sunrise/sunset (FR-CF16) |
   | **Wind** | Farmer (enable/disable only) / Admin (all) | Wind protection enable (`wind_prot_en`); v_max (Beaufort); direction exclusion zone centre and half-width (°); wind hysteresis timer (FR-CF09) |
   | **Motors** | Admin only | Motor travel times: M1, M2, M3 individually (seconds, range 5–600 s, factory defaults 21/21/171 s, FR-CF05); open-dwell time per window M1–M3 (minutes, FR-CF10); close-dwell time per window M1–M3 (minutes, FR-CF11) |
-  | **Sensors** | Admin only | Sensor poll interval (30–3600 s, factory default 60 s, FR-CF07); sliding average window for T and RH (1–60 min, FR-CF17) |
+  | **Sensors** | Admin only | Sensor poll interval (15–120 s, factory default 30 s, FR-CF07); sliding average window for T and RH (1–60 min, FR-CF17) |
   | **System** | Admin only | Session timeout (minutes); RGB LED day/night brightness and schedule (`led_day_brt`, `led_nite_brt`, `led_nite_from`, `led_nite_to`, FR-CF14); NTP timezone string |
   | **Access** | Admin only | Change farmer PIN; change admin PIN; lockout threshold and duration |
 
   Each editable field shows its current value, the valid range, and the factory default. A **Restore defaults** button is available per sub-section (admin only); factory reset of all settings requires physical confirmation (admin only).
 
-- **Log viewer** *(farmer / admin)*: paginated event log, filterable by event type and time range (FR-LG05).
+- **Log** *(admin only)*: dedicated tab that consolidates SD card management and event log download:
+  - **SD card controls:** mount and unmount the SD card (identical to the controls previously located in the System tab).
+  - **Log download:** a dropdown populated by `GET /api/log/files` (returns `{nvs_count, sd_files:[...]}`) lists two source types:
+    - *NVS buffer* — the in-flash ring buffer; label shows current entry count.
+    - *SD file* — each `.csv` file found on the SD card, listed by filename.
+  - A **Download CSV** button triggers a browser file download via `GET /api/log/download?src=nvs` (filename `nvs_log.csv`) or `GET /api/log/download?src=sd&file=NAME` (filename preserved). Path-traversal guard on the server rejects any filename containing `/` or `..`. Returns HTTP 503 if SD is unmounted, 404 if file not found (FR-LG05).
 
 - **OTA update** *(admin only)*: firmware binary upload and web-asset `.zip` upload (T13).
 
@@ -1084,7 +1097,7 @@ Motor full-travel time defaults (`MOTOR_M1_TRAVEL_S_DEFAULT 21`, `MOTOR_M2_TRAVE
 | `access` | `pin_salt` (blob[16]), `pin_farmer_hash` (blob[32]), `pin_admin_hash` (blob[32]), `fail_cnt_f`, `fail_cnt_a`, `lockout_f`, `lockout_a`, `lockout_max`, `lockout_secs` | blob / int32 | `pin_salt`: 16-byte random salt, generated once at first boot. `pin_farmer_hash` / `pin_admin_hash`: SHA-256(salt \|\| pin_ascii) digest. `fail_cnt_f` / `fail_cnt_a`: per-role consecutive failure count. `lockout_f` / `lockout_a`: per-role lockout expiry as Unix timestamp (0 = not locked). `lockout_max`: threshold before lockout (default 5). `lockout_secs`: lockout duration (default 300 s). |
 | `wifi` | `ssid`, `psk_hash`, `ap_psk`, `ip_mode`, `ip_addr`, `ip_mask`, `ip_gw`, `ip_dns` | string | WiFi client and AP credentials and network settings; AP SSID is auto-generated from MAC address and not stored. `ap_psk` stored as **plaintext** (WPA2 requires raw key); default `"0123456789"`; configurable by admin via web interface. `psk_hash` (client password) stored as salted SHA-256 hash. |
 | `mqtt` | `broker_url`, `port`, `username`, `password`, `topic_prefix`, `interval` | string / uint16 | MQTT broker connection and publish settings. `password` stored as plaintext in NVS (MQTT protocol requires the actual password to authenticate to the broker; hashing is not possible). Accepted risk — same basis as no-HTTPS decision (Issue #5 closed). |
-| `system` | `poll_interval`, `session_timeout`, `ap_timeout`, `lang`, `log_pointer`, `schema_ver`, `fw_version`, `led_day_brt`, `led_nite_brt`, `led_nite_from`, `led_nite_to`, `lat_deg`, `lat_frac`, `lon_deg`, `lon_frac`, `tz_str` | uint16 / string / uint8 / int16 | System-wide configuration; `poll_interval` (uint16, seconds, default 60, technician-settable 30–3600 via web GUI); `lat_deg` + `lat_frac` / `lon_deg` + `lon_frac`: geographic location stored as integer degree and fractional milli-degree parts (e.g. 52.0907°N stored as lat_deg=52, lat_frac=907) for sunrise/sunset calculation; populated manually via web GUI (FR-CF16) or automatically by `do_geo_sync()` (FR-DN06); `tz_str` (string[64]): POSIX TZ string e.g. `"CET-1CEST,M3.5.0,M10.5.0/3"`, factory default `"CET-1CEST,M3.5.0,M10.5.0/3"`, applied at boot via `setenv/tzset` and on each geolocation update (FR-DN07, FR-CF18); `schema_ver` (int32) tracks NVS layout version; `fw_version` (string `"MAJOR.MINOR.PATCH"`) overwritten on every boot; `led_day_brt` / `led_nite_brt` (uint8, 0–255, defaults 200/20); `led_nite_from` / `led_nite_to` (uint8, hour 0–23, defaults 22/6) |
+| `system` | `poll_interval`, `session_timeout`, `ap_timeout`, `lang`, `log_pointer`, `schema_ver`, `fw_version`, `led_day_brt`, `led_nite_brt`, `led_nite_from`, `led_nite_to`, `lat_deg`, `lat_frac`, `lon_deg`, `lon_frac`, `tz_str` | uint16 / string / uint8 / int16 | System-wide configuration; `poll_interval` (uint16, seconds, default 30, technician-settable 15–120 via web GUI); `lat_deg` + `lat_frac` / `lon_deg` + `lon_frac`: geographic location stored as integer degree and fractional milli-degree parts (e.g. 52.0907°N stored as lat_deg=52, lat_frac=907) for sunrise/sunset calculation; populated manually via web GUI (FR-CF16) or automatically by `do_geo_sync()` (FR-DN06); `tz_str` (string[64]): POSIX TZ string e.g. `"CET-1CEST,M3.5.0,M10.5.0/3"`, factory default `"CET-1CEST,M3.5.0,M10.5.0/3"`, applied at boot via `setenv/tzset` and on each geolocation update (FR-DN07, FR-CF18); `schema_ver` (int32) tracks NVS layout version; `fw_version` (string `"MAJOR.MINOR.PATCH"`) overwritten on every boot; `led_day_brt` / `led_nite_brt` (uint8, 0–255, defaults 200/20); `led_nite_from` / `led_nite_to` (uint8, hour 0–23, defaults 22/6) |
 | `log` | Ring buffer entries (binary blob, fixed record size) | blob | Event log fallback when SD card absent |
 
 **Default values:**
@@ -1212,11 +1225,11 @@ These four keys are part of the "Should" feature set (FR-UI21, FR-CF14); they de
 | # | Issue | Owner | Status |
 |---|-------|-------|--------|
 | 1 | **Motor alarm signal — software response** — Hardware signal characterised (THDS Issue #1 closed): RRK-3 alarm relay (dry contact, closes on motor emergency stop) → J10 opto input → GPIO 42 (active-low: GPIO LOW = alarm active, INPUT_PULLUP). Normal manual window operation does NOT trigger this signal. **Resolution:** T2 uses a deferred-ISR pattern: `attachInterrupt(PIN_OPTO_INPUT, isr_handler, CHANGE)`; `IRAM_ATTR` ISR records first edge (volatile flag + FreeRTOS tick timestamp); T2 task loop confirms after 75 ms by reading live pin state; NOT suppressed during MOVING. On alarm assert: de-energise all 6 relays, set EG1.MOTOR_ALARM, post log to Q3. On alarm release: clear EG1.MOTOR_ALARM, post CLOSE_ALL re-calibration to Q1, post log to Q3, resume AUTOMATIC. Manual override detection (formerly FR-M08–FR-M11) removed — hardware does not support it. | Software engineer | **Closed** |
-| 2 | **Ring buffer depth** — **Resolution:** 360 entries per channel (T, RH, wind speed, wind direction) = 11.5 KB total internal RAM. At the default 60 s poll interval: 6 hours of in-memory history; at the minimum 30 s poll interval: 3 hours. Fits comfortably in ESP32-S3 internal SRAM with substantial headroom. Sufficient for web trend view and MQTT history. | Software engineer | **Closed** |
+| 2 | **Ring buffer depth** — **Resolution:** 360 entries per channel (T, RH, wind speed, wind direction) = 11.5 KB total internal RAM. At the default 30 s poll interval: 3 hours of in-memory history; at the minimum 15 s poll interval: 1.5 hours. Fits comfortably in ESP32-S3 internal SRAM with substantial headroom. Sufficient for web trend view and MQTT history. | Software engineer | **Closed** |
 | 3 | **NTP timezone handling** — Hardware time source resolved (THDS Issue #7 closed): DS1307 RTC is the authoritative offline clock; NTP synchronises on WiFi connect. **Resolution:** DST handling via POSIX TZ string — `setenv("TZ", tz_str, 1); tzset()` applied at boot and on every geolocation update. TZ string stored in NVS `system/tz_str`; factory default `"CET-1CEST,M3.5.0,M10.5.0/3"` (Europe/Amsterdam). **Auto-TZ from geolocation (FR-DN07):** after successful NTP sync, `do_geo_sync()` queries ip-api.com and resolves the IANA timezone name to a POSIX string via a ~100-entry lookup table (`s_tz_table[]` in `network_manager.cpp`); the resolved POSIX string is applied immediately and persisted to NVS. If geolocation or lookup fails, the NVS value from the previous run is used. Technician-configurable via web GUI (FR-CF18). | Software engineer | **Closed** |
 | 4 | **Web interface HTTPS — not implemented (TR-NW04 accepted)** — TLS termination on the ESP32-S3 is not feasible: the RAM and CPU overhead of a TLS stack would leave insufficient headroom for concurrent real-time tasks. **Decision:** HTTPS will not be implemented. **Accepted threat model:** the web interface is served over plain HTTP. The risk is mitigated by the following constraints: (a) the WiFi AP is disabled by default and enabled only on explicit admin command; (b) the AP has a configurable automatic timeout; (c) the controller is intended for use on a private, physically controlled greenhouse network and is not exposed to the public internet; (d) all credentials are stored as salted hashes and are never transmitted in plaintext; (e) session cookies are short-lived and invalidated on logout or timeout. This residual risk is accepted by the project owner. | Software engineer | **Closed — accepted** |
 | 5 | **MQTT authentication method** — **Resolution:** plain username + password over TCP. Client certificate authentication is not implemented. The MQTT `password` field is stored as plaintext in NVS `mqtt/password` (MQTT protocol requires the actual password; hashing is not applicable). Accepted risk: same threat model as Issue #4 (no-HTTPS decision) — controller is on a private greenhouse network. Risk documented and accepted by the project owner. | Software engineer | **Closed — accepted** |
 
 ---
 
-*End of document — version 0.1 draft*
+*End of document — version 0.3 draft*

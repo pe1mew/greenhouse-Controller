@@ -7,8 +7,8 @@
 | Project      | Greenhouse Ventilation Controller              |
 | Version      | 1.0                                           |
 | Date         | 2026-05-07                                    |
-| Status       | Complete (firmware v1.16.6)                   |
-| Based on     | `softwareTestPlan.md` v0.3                    |
+| Status       | Updated (firmware v1.16.7)                    |
+| Based on     | `softwareTestPlan.md` v0.4                    |
 | Evidence     | `firmware/firmwareImplementationResults.md`   |
 
 ---
@@ -90,7 +90,7 @@ TSDS reference: §5.1 | FRS: FR-S03, FR-S04, FR-S06, FR-S07, FR-W03
 |----|-------|-------------|--------|----------|
 | IT-SP-001 | IT | S200 polled; wind speed and direction stored correctly | ✅ PASS | Phase 3 T5: Modbus poll with SenseCAP S200 emulator confirmed; values stored in T4. |
 | IT-SP-002 | IT | FG6485A polled; T and RH stored correctly | ✅ PASS | Phase 3 T5: FG6485A emulator returns T = 22.5 °C, RH = 65%; T4 current measurement confirmed. |
-| IT-SP-003 | IT | Poll interval respected (within ±5%) | ✅ PASS | v1.16.0: duplicate timestamp bug fixed (replaced `dm_get_unix_time()` with `time(NULL)`); no duplicate rows at 30 s poll confirmed on hardware. |
+| IT-SP-003 | IT | Poll interval respected (factory default 30 s; range 15–120 s) | ✅ PASS | v1.16.0: duplicate timestamp bug fixed (replaced `dm_get_unix_time()` with `time(NULL)`); no duplicate rows at 30 s poll confirmed on hardware. Factory default updated from 60 s to 30 s in FRS v0.4 / TSDS v0.3; hardware evidence unaffected (was already tested at 30 s). |
 | IT-SP-004 | IT | TN1 and TN2 notifications sent to T3 and T6 after poll | ✅ PASS | Phase 3/4: T3 and T6 both respond correctly to new sensor data; T6 opens windows on high-T readings; T3 triggers CLOSE_ALL on high-wind — confirms notifications delivered. |
 
 ### 2.2 Fault Detection
@@ -193,7 +193,7 @@ TSDS reference: §5.3 | FRS: FR-LG01–FR-LG09
 | IT-EL-003 | IT | NVS ring wraps at CONFIG_NVS_LOG_CAPACITY | ✅ PASS | Code review `drivers/nvs/src/nvs_config.h`: `CONFIG_NVS_LOG_CAPACITY` defaults to 1000. Wrap in `nvs_log_append()`: `head = (head + 1) % (int32_t)CONFIG_NVS_LOG_CAPACITY;`. Read path computes oldest slot as `(head + capacity − count) % capacity` — correct for all wrap states. |
 | IT-EL-004 | IT | SD card preferred over NVS when present | ✅ PASS | Phase 5 T9: T9-04/T9-05 PASS; SD card preferred path confirmed on hardware. |
 | IT-EL-005 | IT | Fallback to NVS when SD absent | ✅ PASS | Phase 5 T9: T9-01/T9-03 PASS; NVS fallback on SD removal confirmed. |
-| IT-EL-006 | IT | SD presence detected at runtime | ✅ PASS | Phase 5 T9: T9-07/T9-08/T9-09 PASS; dynamic SD card insertion detected during operation. |
+| IT-EL-006 | IT | SD card auto-mounts within 60 s of insertion | ⬜ NOT EXECUTED | Phase 5 T9: T9-07/T9-08/T9-09 confirmed SD presence detection under previous design (next write cycle). v1.16.7 replaces this with a 60 s polling loop in the T9 main event loop (`xQueueReceive` timeout = 60 s when `s_sd_ok == false`). Hardware test for the 60 s automount window (no manual mount command) has not yet been executed against v1.16.7. |
 
 ### 4.2 Log Queue Behaviour
 
@@ -217,6 +217,15 @@ TSDS reference: §5.3 | FRS: FR-LG01–FR-LG09
 | IT-EL-012 | IT | SETPOINT log entry contains operator identity and old/new values | ⬜ NOT EXECUTED | Structured log content verification not documented. |
 | IT-EL-013 | IT | LOG_SENSOR event emitted each poll cycle with T, RH, wind values | ⬜ NOT EXECUTED | LOG_SENSOR content verification not documented explicitly. |
 | IT-EL-014 | IT | Wind-override onset event logged with SYSTEM initiator | ✅ PASS | Phase 4 T3: wind-override onset and clearance logged; confirmed via serial log patterns. |
+
+### 4.5 SD Log File Format and Lifecycle
+
+| ID | Level | Description | Result | Evidence |
+|----|-------|-------------|--------|----------|
+| IT-EL-015 | IT | SD log file named with local-time timestamp (YYYYMMDDHHMMSS.csv) | ⬜ NOT EXECUTED | New in v1.16.7 (TSDS §5.3 v0.3). File naming changed from sequential `ghc_NNNN.csv` to `YYYYMMDDHHMMSS.csv` (local time). Hardware verification pending. |
+| IT-EL-016 | IT | CSV timestamp field is ISO 8601 UTC (YYYY-MM-DDTHH:MM:SS) | ⬜ NOT EXECUTED | New in v1.16.7 (TSDS §5.3 v0.3). `build_csv_line()` changed from `%lu` epoch to `strftime` ISO 8601. Hardware verification pending. |
+| IT-EL-017 | IT | Proactive free-space guard: oldest file deleted when free < 2 MB; suspended at 3-file floor | ⬜ NOT EXECUTED | New in v1.16.7 (TSDS §5.3 v0.3). `check_free_space()` implemented; SD_MIN_FILES = 3, SD_FREE_MIN_BYTES = 2 MB. Hardware verification pending. |
+| IT-EL-018 | IT | SD automounts within 60 s without manual intervention | ⬜ NOT EXECUTED | New in v1.16.7. T9 main loop uses `pdMS_TO_TICKS(60000)` timeout when `s_sd_ok == false` and calls `event_logger_sd_remount()` on expiry. Hardware verification pending. |
 
 ---
 
@@ -319,7 +328,7 @@ TSDS reference: §5.5 | FRS: FR-UI01–FR-UI09, FR-UI22–FR-UI24, FR-WS06, FR-W
 
 | ID | Level | Description | Result | Evidence |
 |----|-------|-------------|--------|----------|
-| IT-UI-012 | IT | Status pages 0–4 auto-cycle every 5 s (FR-UI22) | ✅ PASS | Phase 7/v1.16.0: 5-page LCD rotation including page 4 (time/date) confirmed; v1.16.2 day/night browse integrated. |
+| IT-UI-012 | IT | Status pages 0–5 auto-cycle every 5 s (FR-UI22; STATUS_PAGES = 6) | ⬜ NOT EXECUTED | Pages 0–4 (5-page rotation) were confirmed in v1.16.0 / v1.16.2. Page 5 (motor states via `t2_get_window_states()`) is new in v1.16.7 (TSDS §5.5 v0.3). Full 6-page cycle has not been verified on hardware. |
 | IT-UI-013 | IT | Page 4 shows time and NTP/RTC source label | ✅ PASS | v1.13.0: time display page implemented and confirmed; RTC label switches to NTP on WiFi sync. |
 
 ### 6.5 Manual Date/Time Set
@@ -340,6 +349,7 @@ TSDS reference: §5.5 | FRS: FR-UI01–FR-UI09, FR-UI22–FR-UI24, FR-WS06, FR-W
 | ID | Level | Description | Result | Evidence |
 |----|-------|-------------|--------|----------|
 | IT-UI-017 | IT | BOOT hold suppresses normal display; animated bar; stage labels (FR-UI24) | ✅ PASS | v1.16.1: bar fills correctly; stage labels change at each 5 s boundary; no status flicker confirmed on hardware. |
+| IT-UI-018 | IT | D-key immediately advances to next status page and resets 5 s dwell | ⬜ NOT EXECUTED | New in v1.16.7 (TSDS §5.5 v0.3). D-key increments `s_status_page` modulo STATUS_PAGES and resets `s_status_ticks`. Hardware verification pending. |
 
 ---
 
@@ -405,9 +415,16 @@ TSDS reference: §5.8 | FRS: FR-NW06, FR-DN04, FR-MQ01–FR-MQ05
 
 | ID | Level | Description | Result | Evidence |
 |----|-------|-------------|--------|----------|
-| ST-WI-009 | ST | MQTT publishes sensor data at configured interval | ⚠️ DEFERRED | T12 MQTT client remains a stub as of v1.16.6; MQTT not yet implemented. |
+| ST-WI-009 | ST | MQTT publishes sensor data at configured interval | ⚠️ DEFERRED | T12 MQTT client remains a stub as of v1.16.7; MQTT not yet implemented. |
 | ST-WI-010 | ST | MQTT publishes window states and mode on change | ⚠️ DEFERRED | See ST-WI-009. |
 | ST-WI-011 | ST | MQTT CLOSE_ALL command received and executed | ⚠️ DEFERRED | See ST-WI-009. |
+
+### 9.4 Log Tab
+
+| ID | Level | Description | Result | Evidence |
+|----|-------|-------------|--------|----------|
+| ST-WI-016 | ST | `GET /api/log/files` admin-only; returns NVS count and sorted SD file list | ⬜ NOT EXECUTED | New in v1.16.7 (TSDS §5.8 v0.3 Log tab). Endpoint implemented in `web_server.cpp`; SD filenames sorted with bubble sort before JSON build. Hardware/system test pending. |
+| ST-WI-017 | ST | `GET /api/log/download` returns CSV with ISO 8601 timestamps; path-traversal guard | ⬜ NOT EXECUTED | New in v1.16.7 (TSDS §5.8 v0.3 Log tab). Both NVS and SD download paths implemented; `gmtime_r` + `strftime` timestamps confirmed in code review. Hardware/system test pending. |
 
 ---
 
@@ -569,37 +586,37 @@ TSDS reference: §5.12 | FRS: FR-UI16–FR-UI21, FR-CF14
 | §4 | FA — Firmware Architecture | 13 | 3 | 0 | 0 | 10 | 0 |
 | §5 | SP — Sensor Polling | 11 | 7 | 0 | 0 | 4 | 0 |
 | §6 | CC — Climate Control | 31 | 24 | 0 | 0 | 7 | 0 |
-| §7 | EL — Event Log | 14 | 7 | 0 | 0 | 7 | 0 |
+| §7 | EL — Event Log | 18 | 6 | 0 | 0 | 12 | 0 |
 | §8 | AC — Access Control | 19 | 11 | 0 | 0 | 8 | 0 |
-| §9 | UI — Local UI | 17 | 16 | 0 | 0 | 1 | 0 |
+| §9 | UI — Local UI | 18 | 15 | 0 | 0 | 3 | 0 |
 | §10 | WA — WiFi AP Mode | 7 | 7 | 0 | 0 | 0 | 0 |
 | §11 | WC — WiFi Client | 7 | 7 | 0 | 0 | 0 | 0 |
-| §12 | WI — Web Interface | 15 | 11 | 0 | 3 | 1 | 0 |
+| §12 | WI — Web Interface | 17 | 11 | 0 | 3 | 3 | 0 |
 | §13 | OT — OTA Update | 8 | 5 | 0 | 0 | 3 | 0 |
 | §14 | NV — NVS Storage | 7 | 5 | 0 | 0 | 2 | 0 |
 | §15 | WD — Watchdog/Faults | 11 | 6 | 2 | 0 | 3 | 0 |
 | §16 | SE — Security | 6 | 4 | 0 | 0 | 2 | 0 |
 | §17 | DN — Day/Night | 9 | 7 | 0 | 0 | 2 | 0 |
 | §18 | RG — RGB LED | 11 | 9 | 0 | 0 | 2 | 0 |
-| **Total** | | **186** | **129** | **2** | **3** | **52** | **0** |
+| **Total** | | **193** | **127** | **2** | **3** | **61** | **0** |
 
 ### 16.2 Coverage Percentages
 
 | Metric | Value |
 |--------|-------|
-| Total test cases | 186 |
-| PASS | 129 (69%) |
+| Total test cases | 193 |
+| PASS | 127 (66%) |
 | PENDING (impl done, hw test outstanding) | 2 (1%) |
 | DEFERRED (feature not implemented) | 3 (2%) |
-| NOT EXECUTED | 52 (28%) |
+| NOT EXECUTED | 61 (32%) |
 | FAIL | 0 (0%) |
-| **Executed + passed rate** (PASS ÷ total) | **69%** |
+| **Executed + passed rate** (PASS ÷ total) | **66%** |
 | **Pass rate over executed cases** (PASS ÷ (PASS+PENDING+FAIL)) | **98%** |
 | **Failure rate** | **0%** |
 
 ### 16.3 Test Cases NOT EXECUTED
 
-The following 75 test cases have no evidence of execution in `firmwareImplementationResults.md`. They represent coverage gaps for future test runs.
+The following test cases have no evidence of execution. They represent coverage gaps for future test runs. Cases marked **[new v1.16.7]** were added in test plan v0.4 and have not yet been scheduled.
 
 #### Firmware Architecture (10 not executed)
 IT-FA-003, IT-FA-004, UT-FA-005, UT-FA-006, UT-FA-007, UT-FA-008, UT-FA-009, UT-FA-010, UT-FA-011, IT-FA-012
@@ -616,20 +633,20 @@ Not executed: UT-CC-002, UT-CC-003, UT-CC-023, UT-CC-032
 
 > **Note:** The remaining 4 UT-CC-* not-executed cases (002/003/023/032) require the `test_host` native build or additional integration test scripts.
 
-#### Event Log Manager (7 not executed)
-UT-EL-007, UT-EL-008, ST-EL-009, ST-EL-010, ST-EL-011, IT-EL-012, IT-EL-013
+#### Event Log Manager (12 not executed)
+UT-EL-007, UT-EL-008, ST-EL-009, ST-EL-010, ST-EL-011, IT-EL-012, IT-EL-013, IT-EL-006 [automount re-test], IT-EL-015 [new v1.16.7], IT-EL-016 [new v1.16.7], IT-EL-017 [new v1.16.7], IT-EL-018 [new v1.16.7]
 
-> **Note:** UT-EL-001, IT-EL-002, IT-EL-003 now PASS — verified by code review of `app_types.h` and `drivers/nvs/src/nvs_config.cpp` 2026-05-07.
+> **Note:** UT-EL-001, IT-EL-002, IT-EL-003 now PASS — verified by code review of `app_types.h` and `drivers/nvs/src/nvs_config.cpp` 2026-05-07. IT-EL-006 requires re-execution to verify the 60 s automount window introduced in v1.16.7.
 
 #### Access Control (8 not executed)
 UT-AC-001, UT-AC-002, UT-AC-003, UT-AC-004, UT-AC-005, IT-AC-019, UT-AC-008, UT-AC-009, UT-AC-010
 
 > **Note:** UT-AC-011–014 now PASS (executed by `test/5_3_2_Login_Lockout_Web_GUI.py` 2026-05-07, both farmer and admin roles). Remaining 9 UT-AC-* cases require the `test_host` native build.
 
-#### Local User Interface (1 not executed)
-UT-UI-003 (key-repeat: T7-level feature; `keypad_scan()` does not implement repeat — no test evidence)
+#### Local User Interface (3 not executed)
+UT-UI-003 (key-repeat: T7-level feature; `keypad_scan()` does not implement repeat — no test evidence), IT-UI-012 [6-page re-test], IT-UI-018 [new v1.16.7 D-key]
 
-> **Note:** UT-UI-001/002/004 now PASS (LIB-5 driver development native unit tests + hardware verification, 2026-04-10). IT-UI-009 (navigation depth) and IT-UI-016 (wind-off warning) are integration tests not explicitly documented; counted in §9 row above.
+> **Note:** UT-UI-001/002/004 now PASS (LIB-5 driver development native unit tests + hardware verification, 2026-04-10). IT-UI-009 (navigation depth) and IT-UI-016 (wind-off warning) are integration tests not explicitly documented; counted in §9 row above. IT-UI-012 requires re-execution to verify the new page 5 (motor states) added in v1.16.7.
 
 #### WiFi Access Point and Client Modes
 All 14 cases passed. No gaps.

@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.16.7] — 2026-05-07
+
+*SD card logging overhauled: timestamp-based file names, ISO 8601 CSV timestamps, proactive free-space guard, local-time filenames, and automatic remount on card insertion.*
+
+### Added
+- `firmware/src/event_logger/event_logger.cpp` — **SD automount**: T9 main loop now wakes every 60 s when SD is absent and calls `event_logger_sd_remount()`, so a card inserted after boot is picked up automatically within one minute. When SD is active the task blocks indefinitely as before (no polling overhead).
+- `firmware/src/event_logger/event_logger.cpp` — **Proactive free-space guard** (`check_free_space()`): called after every rotation. If free space drops below 2 MB and the file count is above the 3-file retention floor, the oldest file is deleted to reclaim space. If already at the floor, SD logging is suspended and a `LOG_SYSTEM` event with `value_a = −2` is emitted.
+- `firmware/src/event_logger/event_logger.cpp` — **Write-failure reclaim**: on `STORAGE_ERR_FULL` / `STORAGE_ERR_IO`, a single oldest-file deletion is attempted and the write retried before falling back to NVS-only mode.
+
+### Changed
+- `firmware/src/event_logger/event_logger.cpp` — **Timestamp-based SD file naming**: files are now named `YYYYMMDDHHMMSS.csv` (local time of creation) instead of the previous sequential-index scheme (`ghc_NNNN.csv`). Lexicographic sort equals chronological order. Old `ghc_*` files are silently ignored via `is_ts_filename()` filter.
+- `firmware/src/event_logger/event_logger.cpp` — **SD filename uses local time**: `make_ts_filename()` calls `localtime_r()` so filenames are human-readable without timezone conversion when browsing the card directly.
+- `firmware/src/event_logger/event_logger.cpp` — **ISO 8601 CSV timestamps**: `build_csv_line()` now formats the timestamp as `YYYY-MM-DDTHH:MM:SS` (UTC) via `gmtime_r()` + `strftime()` instead of a raw Unix epoch integer.
+- `firmware/src/web_server/web_server.cpp` — **ISO 8601 NVS export**: `/api/log/download?src=nvs` CSV timestamps updated to ISO 8601 format, matching SD output.
+- `firmware/src/web_server/web_server.cpp` — **Sorted SD file list**: `/api/log/files` now returns SD filenames sorted lexicographically (oldest → newest) via an in-place bubble sort before building the JSON response.
+- `firmware/src/event_logger/event_logger.h` — file naming and CSV format documentation updated.
+- `design/technicalSoftwareDesignSpecification.md` — §5.3 updated: timestamp file naming (local time), ISO 8601 CSV format, rotation procedure, free-space guard, startup scan behaviour. Version 0.2 → 0.3.
+- `design/functionalRequirementsSpecification.md` — FR-S03, FR-CF07 poll interval range updated to 15–120 s (default 30 s); FR-LG06 worst-case budget recalculated for 15 s minimum poll (400 entries). Version 0.3 → 0.4.
+
+---
+
 ## [test/3.4] — 2026-05-07
 
 *Automated test suite `3_4_Conflict_Resolution.py` completed and passing: all 7 §3.4 test cases verified on hardware (UT-CC-020, UT-CC-021, UT-CC-022a/b, UT-CC-030, UT-CC-031a/b). All four branches of `vent_resolve_conflict()` exercised — Rule 2 (both open → max), Rule 3 (both close → equal), Rule 4 CR_TEMP_FIRST, CR_RH_FIRST, and CR_DEVIATION. One script defect identified and fixed in run 1; firmware was correct throughout.*

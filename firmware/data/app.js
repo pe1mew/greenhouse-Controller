@@ -25,7 +25,7 @@ function setRole(role) {
   if (role) {
     loadConfig();
     loadSdStatus();
-    if (role === 'admin') loadOtaStatus();
+    if (role === 'admin') { loadOtaStatus(); loadLogFiles(); }
   }
 }
 
@@ -200,6 +200,15 @@ setInterval(function () {
   fetch('/api/whoami')
     .then(function (r) { if (!r.ok) showLogin(); })
     .catch(function () {});
+}, 60000);
+
+// Periodic config refresh — keeps Settings inputs in sync with NVS so that
+// changes made via the REST API (test scripts, other clients) are reflected
+// in the GUI without a full page reload.  Fields the user is currently editing
+// are skipped (see setVal).
+setInterval(function () {
+  if (g_role === null) return;
+  loadConfig();
 }, 60000);
 
 // Periodic history refresh — public endpoint, no auth required.
@@ -530,6 +539,56 @@ function uploadOtaAssets() {
     .catch(function () { feedback('fb-ota-assets', false); });
 }
 
+// ── Log tab ──────────────────────────────────────────────────────────────────
+function loadLogFiles() {
+  var sel = document.getElementById('log-src-select');
+  if (!sel) return;
+  fetch('/api/log/files')
+    .then(function (r) {
+      if (r.status === 401) { showLogin(); return null; }
+      return r.ok ? r.json() : null;
+    })
+    .then(function (data) {
+      if (!data) return;
+      sel.innerHTML = '';
+      // NVS buffer option (always present)
+      var opt = document.createElement('option');
+      opt.value = 'nvs';
+      opt.textContent = 'NVS buffer (' + data.nvs_count + ' entries)';
+      sel.appendChild(opt);
+      // SD file options
+      if (data.sd_files && data.sd_files.length > 0) {
+        data.sd_files.forEach(function (fname) {
+          var o = document.createElement('option');
+          o.value = 'sd:' + fname;
+          o.textContent = fname;
+          sel.appendChild(o);
+        });
+      }
+    });
+}
+
+function downloadLog() {
+  var sel = document.getElementById('log-src-select');
+  if (!sel || !sel.value) { feedback('fb-log-dl', false); return; }
+  var val = sel.value;
+  var url;
+  if (val === 'nvs') {
+    url = '/api/log/download?src=nvs';
+  } else if (val.indexOf('sd:') === 0) {
+    url = '/api/log/download?src=sd&file=' + encodeURIComponent(val.slice(3));
+  } else {
+    feedback('fb-log-dl', false); return;
+  }
+  // Trigger browser file download without navigating away
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 function showTab(id) {
   document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
@@ -540,6 +599,8 @@ function showTab(id) {
   document.querySelectorAll('.tab-btn').forEach(b => {
     if (b.getAttribute('onclick') === "showTab('" + id + "')") b.classList.add('active');
   });
+  // Refresh log file list each time the Log tab is opened
+  if (id === 'tab-log') loadLogFiles();
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -562,10 +623,12 @@ function setText(id, val) {
 function setVal(id, val) {
   const el = document.getElementById(id);
   if (!el || val === undefined || val === null) return;
+  // Do not overwrite a field (or its paired slider) that the user is currently editing.
+  if (el === document.activeElement) return;
   el.value = val;
   // Keep paired slider in sync
   const sl = document.getElementById(id + '-sl');
-  if (sl) sl.value = val;
+  if (sl && sl !== document.activeElement) sl.value = val;
 }
 
 function setBadge(id, text, cls) {

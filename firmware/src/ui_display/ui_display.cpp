@@ -14,7 +14,7 @@
  *  6. If display_dirty: render → lcd_flush
  *
  * ── FSM states ─────────────────────────────────────────────────────────────
- *  UI_STATUS         auto-rotate 5 pages × 5 s; any key → UI_MENU_ROOT
+ *  UI_STATUS         auto-rotate 6 pages × 5 s; any key → UI_MENU_ROOT
  *  UI_MENU_ROOT      1=Climate  2=Wind  3=Access  4=System  *=back
  *  UI_MENU_CLIMATE   Day/Night group selector: 1=Day  2=Night  *=back
  *  UI_BROWSE_DAY     Browse 4 day setpoints one at a time; A/B=prev/next
@@ -53,6 +53,7 @@
 #include "ui_display.h"
 #include "../types/app_types.h"
 #include "../data_manager/data_manager.h"
+#include "../relay_controller/relay_controller.h"
 #include "../event_logger/event_logger.h"
 #include "../auth/pin_auth.h"
 #include "lcd1602.h"
@@ -64,7 +65,7 @@ static const char *TAG = "T8_UI";
  * ============================================================ */
 #define UI_LOOP_MS          100u   /**< Main-loop tick (ms) */
 #define STATUS_PAGE_TICKS    50u   /**< 5 s auto-rotate = 50 × 100 ms */
-#define STATUS_PAGES          5u   /**< Number of status pages (0-3 sensors/net, 4=time) */
+#define STATUS_PAGES          6u   /**< Number of status pages (0-3 sensors/net, 4=time, 5=windows) */
 #define MX1_TIMEOUT_MS      200u   /**< MX1 acquire timeout */
 #define DEF_SESSION_MIN       5    /**< Session timeout default (minutes) */
 
@@ -660,6 +661,25 @@ static void render_status(void)
             break;
         }
 
+        case 5: { /* Window (motor) states */
+            window_state_t ws[3];
+            t2_get_window_states(ws);
+            /* Map each state to a ≤4-char abbreviation */
+            auto win_abbr = [](window_state_t s) -> const char * {
+                switch (s) {
+                    case WIN_OPEN:         return "OPEN";
+                    case WIN_CLOSED:       return "CLOS";
+                    case WIN_MOVING_OPEN:  return "MOV>";
+                    case WIN_MOVING_CLOSE: return "MOV<";
+                    default:               return "UNK ";
+                }
+            };
+            snprintf(r0, sizeof(r0), "M1    M2    M3  ");
+            snprintf(r1, sizeof(r1), "%-4s  %-4s  %-4s",
+                     win_abbr(ws[0]), win_abbr(ws[1]), win_abbr(ws[2]));
+            break;
+        }
+
         default:
             snprintf(r0, sizeof(r0), "Greenhouse Ctrl ");
             snprintf(r1, sizeof(r1), "                ");
@@ -924,6 +944,14 @@ static void enter_set_date(void)
 
 static void handle_status(char key)
 {
+    /* D key → advance to the next status page and reset the rotation timer */
+    if (key == 'D') {
+        s_status_page  = (uint8_t)((s_status_page + 1u) % STATUS_PAGES);
+        s_status_ticks = 0;
+        s_dirty        = true;
+        return;
+    }
+
     /* # on the WiFi/network page (page 3) → go to System menu (admin only) */
     if (key == '#' && (s_status_page % STATUS_PAGES) == 3u) {
         if (s_session >= SESSION_ADMIN) {

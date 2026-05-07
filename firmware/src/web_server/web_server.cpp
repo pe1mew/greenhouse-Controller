@@ -20,10 +20,12 @@
  *  POST /api/wifi       → {ssid, psk} or {ap_psk} — writes directly to NVS wifi ns
  *  POST /api/pin        → {role, pin} — admin-only; changes farmer/admin PIN
  *  GET  /api/history    → ?n=N — last N sensor ring buffer entries as JSON
- *  GET  /api/sd/status  → {mounted, free_mb, size_mb} — SD card state (farmer+admin)
- *  POST /api/sd/mount   → {} — mount SD card (admin)
- *  POST /api/sd/unmount → {} — unmount SD card (admin)
- *  WS   /ws             → push status JSON every WS_PUSH_MS
+ *  GET  /api/sd/status    → {mounted, free_mb, size_mb} — SD card state (farmer+admin)
+ *  POST /api/sd/mount    → {} — mount SD card (admin)
+ *  POST /api/sd/unmount  → {} — unmount SD card (admin)
+ *  GET  /api/log/files   → {nvs_count, sd_files:[...]} — log source list (admin)
+ *  GET  /api/log/download → ?src=nvs | ?src=sd&file=NAME — download log CSV (admin)
+ *  WS   /ws              → push status JSON every WS_PUSH_MS
  *
  * ── Access control ────────────────────────────────────────────────────────
  *  Unauthenticated GET on / returns 200 (login overlay rendered by JS).
@@ -735,6 +737,175 @@ static void register_routes(AsyncWebServer &srv)
         }
         event_logger_sd_unmount();
         req->send(200, "application/json", "{\"ok\":true}");
+    });
+
+    /* ── Log: list available sources ───────────────────────── */
+    srv.on("/api/log/files", HTTP_GET, [](AsyncWebServerRequest *req) {
+        if (req_role(req) != SESSION_ADMIN) {
+            req->send(403, "application/json", "{\"ok\":false}"); return;
+        }
+        uint32_t nvs_cnt = nvs_log_count();
+
+        /* Collect SD CSV filenames (comma-separated) */
+        const size_t LIST_LEN = 512u;
+        char *list_buf = (char *)ps_malloc(LIST_LEN);
+        if (!list_buf) { req->send(500); return; }
+        list_buf[0] = '\0';
+        if (storage_sd_available()) {
+            storage_sd_list_csv(".csv", list_buf, LIST_LEN);
+        }
+
+        /* Collect filenames into a small array and sort lexicographically
+         * (lexicographic order = chronological for YYYYMMDDHHMMSS names). */
+        static const int LOG_FILES_MAX = 12;   /* SD_MAX_FILES + headroom */
+        static const int LOG_FNAME_MAX = 20;   /* "YYYYMMDDHHMMSS.csv\0" */
+        char  names[LOG_FILES_MAX][LOG_FNAME_MAX];
+        int   n_names = 0;
+        char *tok = strtok(list_buf, ",");
+        while (tok && n_names < LOG_FILES_MAX) {
+            while (*tok == ' ') tok++;
+            if (*tok) {
+                strncpy(names[n_names], tok, LOG_FNAME_MAX - 1);
+                names[n_names][LOG_FNAME_MAX - 1] = '\0';
+                n_names++;
+            }
+            tok = strtok(nullptr, ",");
+        }
+        /* Bubble sort — at most 10 entries, negligible cost. */
+        for (int i = 0; i < n_names - 1; i++) {
+            for (int j = 0; j < n_names - 1 - i; j++) {
+                if (strcmp(names[j], names[j + 1]) > 0) {
+                    char tmp[LOG_FNAME_MAX];
+                    memcpy(tmp,         names[j],     LOG_FNAME_MAX);
+                    memcpy(names[j],    names[j + 1], LOG_FNAME_MAX);
+                    memcpy(names[j + 1], tmp,         LOG_FNAME_MAX);
+                }
+            }
+        }
+
+        /* Build JSON */
+        const size_t OUT_LEN = 1024u;
+        char *out = (char *)ps_malloc(OUT_LEN);
+        if (!out) { free(list_buf); req->send(500); return; }
+
+        int pos = snprintf(out, OUT_LEN, "{\"nvs_count\":%lu,\"sd_files\":[",
+                           (unsigned long)nvs_cnt);
+        for (int i = 0; i < n_names && (size_t)pos < OUT_LEN - 32u; i++) {
+            pos += snprintf(out + pos, OUT_LEN - (size_t)pos,
+                            "%s\"%s\"", i ? "," : "", names[i]);
+        }
+        snprintf(out + pos, OUT_LEN - (size_t)pos, "]}");
+
+        req->send(200, "application/json", out);
+        free(list_buf);
+        free(out);
+    });
+
+    /* ── Log: download as CSV ───────────────────────────────── */
+    srv.on("/api/log/download", HTTP_GET, [](AsyncWebServerRequest *req) {
+        if (req_role(req) != SESSION_ADMIN) {
+            req->send(403); return;
+        }
+
+        static const char * const TYPE_NAMES[] = {
+            "SENSOR","RELAY","MODE","SETPT","SESSION","ALARM","SYSTEM"
+        };
+        static const char * const INIT_NAMES[] = {
+            "SYS","FARMER","ADMIN","MQTT","WEB"
+        };
+
+        const char *src = req->hasParam("src")
+                          ? req->getParam("src")->value().c_str() : "nvs";
+
+        if (strcmp(src, "nvs") == 0) {
+            /* Export NVS ring buffer as CSV */
+            uint32_t cnt = nvs_log_count();
+            /* Each line: "YYYY-MM-DDTHH:MM:SS,SENSOR,FARMER,255,255,-32768,-32768\n"
+             * is ≤ 56 chars; 80 bytes per entry gives comfortable headroom. */
+            size_t csv_len = (size_t)(cnt + 2u) * 80u + 64u;
+            char *csv = (char *)ps_malloc(csv_len);
+            if (!csv) { req->send(500); return; }
+
+            int pos = snprintf(csv, csv_len,
+                "timestamp,type,initiator,ch,param,value_a,value_b\n");
+
+            if (cnt > 0u) {
+                log_entry_t *entries =
+                    (log_entry_t *)ps_malloc(cnt * sizeof(log_entry_t));
+                if (entries) {
+                    uint32_t got = 0;
+                    nvs_log_read(0, entries, cnt, &got);
+                    for (uint32_t i = 0; i < got; i++) {
+                        if ((size_t)pos >= csv_len - 80u) break;
+                        const log_entry_t &e = entries[i];
+                        const char *tname = (e.event_type < 7u)
+                                            ? TYPE_NAMES[e.event_type] : "?";
+                        const char *iname = (e.initiator  < 5u)
+                                            ? INIT_NAMES[e.initiator]  : "?";
+                        /* ISO 8601 UTC timestamp */
+                        time_t ts = (time_t)e.timestamp;
+                        struct tm tm_utc;
+                        gmtime_r(&ts, &tm_utc);
+                        char ts_str[20];
+                        strftime(ts_str, sizeof(ts_str),
+                                 "%Y-%m-%dT%H:%M:%S", &tm_utc);
+                        pos += snprintf(csv + pos, csv_len - (size_t)pos,
+                            "%s,%s,%s,%u,%u,%d,%d\n",
+                            ts_str, tname, iname,
+                            (unsigned)e.channel, (unsigned)e.param_id,
+                            (int)e.value_a, (int)e.value_b);
+                    }
+                    free(entries);
+                }
+            }
+
+            AsyncWebServerResponse *resp =
+                req->beginResponse(200, "text/csv", csv);
+            resp->addHeader("Content-Disposition",
+                            "attachment; filename=\"nvs_log.csv\"");
+            req->send(resp);
+            free(csv);
+
+        } else if (strcmp(src, "sd") == 0) {
+            if (!req->hasParam("file")) { req->send(400); return; }
+            const String &fname_param = req->getParam("file")->value();
+
+            /* Reject path traversal */
+            if (strchr(fname_param.c_str(), '/') ||
+                strstr(fname_param.c_str(), "..")) {
+                req->send(400); return;
+            }
+            if (!storage_sd_available()) {
+                req->send(503, "application/json",
+                          "{\"ok\":false,\"err\":\"SD not mounted\"}");
+                return;
+            }
+            char abs_path[48];
+            snprintf(abs_path, sizeof(abs_path), "/%s", fname_param.c_str());
+
+            uint32_t fsize = storage_sd_file_size(abs_path);
+            if (fsize == 0u) { req->send(404); return; }
+
+            char *buf = (char *)ps_malloc((size_t)fsize + 1u);
+            if (!buf) { req->send(500); return; }
+
+            size_t got = 0;
+            storage_sd_read(abs_path, 0, buf, (size_t)fsize + 1u, &got);
+            buf[got] = '\0';
+
+            char disp[80];
+            snprintf(disp, sizeof(disp), "attachment; filename=\"%s\"",
+                     fname_param.c_str());
+
+            AsyncWebServerResponse *resp =
+                req->beginResponse(200, "text/csv", buf);
+            resp->addHeader("Content-Disposition", disp);
+            req->send(resp);
+            free(buf);
+
+        } else {
+            req->send(400);
+        }
     });
 
     /* ── OTA status ────────────────────────────────────────── */

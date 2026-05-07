@@ -67,7 +67,7 @@ static const char *TAG = "T4";
 #define DEF_DWELL_CLOSE_MIN 0
 
 /* System */
-#define DEF_POLL_INTERVAL_S      60
+#define DEF_POLL_INTERVAL_S      30
 #define DEF_SESSION_TIMEOUT_MIN   5
 #define DEF_AP_TIMEOUT_MIN       30
 #define DEF_LAT_DEG              52   /**< Netherlands default latitude */

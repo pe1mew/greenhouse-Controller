@@ -72,22 +72,28 @@
  *
  * ## T9 SD log rotation
  *
- * Log files are named `/ghc_NNNN.csv` (4-digit zero-padded sequential index
- * stored in NVS `log/file_idx`).  A new file is started when the current
- * file reaches 512 KB.  At most 10 files are retained; the oldest is deleted
- * on each rotation that would exceed this limit.
+ * Log files are named `YYYYMMDDHHMMSS.csv` (local-time timestamp of creation,
+ * e.g. `20250607163022.csv`).  Lexicographic sort = chronological order.
+ * A new file is started when the current file reaches 512 KB.  At most 10
+ * files are retained; the lexicographically oldest is deleted on each
+ * rotation that would exceed this limit.  If free space drops below 2 MB,
+ * the oldest file is proactively deleted; if already at the 3-file retention
+ * floor, SD logging is suspended and NVS is used as fallback.
+ *
+ * Old sequential-index files (`ghc_NNNN.csv`) are ignored by the scan
+ * filter and will not interfere with the new naming scheme.
  *
  * ## CSV line format
  *
  * ```
  * timestamp,type,initiator,ch,param,value_a,value_b
- * 1776014381,SENSOR,SYS,0,0,11,81
- * 1776014390,ALARM,SYS,0,0,80,70
+ * 2025-06-07T14:30:22,SENSOR,SYS,0,0,235,650
+ * 2025-06-07T14:30:30,ALARM,SYS,0,0,80,70
  * ```
  *
  * Field      | Type    | Description
  * -----------|---------|---------------------------------------------------
- * timestamp  | uint32  | Unix epoch seconds
+ * timestamp  | string  | ISO 8601 UTC: YYYY-MM-DDTHH:MM:SS
  * type       | string  | SENSOR / RELAY / MODE / SETPT / SESSION / ALARM / SYSTEM
  * initiator  | string  | SYS / FARMER / ADMIN / MQTT / WEB
  * ch         | uint8   | Motor channel (1/2/3) or 0 for non-motor events

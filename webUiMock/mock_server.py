@@ -25,6 +25,8 @@ POST /api/sd/unmount    unmount SD card (admin only)
 GET  /api/ota/status    {ok, state, progress, error}  (any logged-in role)
 POST /api/ota/firmware  upload firmware .bin  (admin only) → {ok, rebooting}
 POST /api/ota/assets    upload web assets .zip (admin only) → 202 + {ok, message}
+GET  /api/log/files     {nvs_count, sd_files:[...]}  (admin only)
+GET  /api/log/download  ?src=nvs  or  ?src=sd&file=NAME  (admin only) → CSV
 WS   /ws                push status JSON every 2 s
 
 Usage
@@ -98,10 +100,71 @@ cfg: dict = {
     "lon_deg":              4,
     "lon_frac":           300,
     "tz_str":              "CET-1CEST,M3.5.0,M10.5.0/3",
-    "fw_ver":              "1.15.0",
+    "fw_ver":              "1.16.7",
 }
 
 sd: dict = {"mounted": True, "size_mb": 7500, "free_mb": 7100}
+
+# ---------------------------------------------------------------------------
+# Synthetic log data (mirrors log_entry_t / log_event_t from firmware)
+# Fields: timestamp, event_type, initiator, channel, param_id, value_a, value_b
+# event_type → string: 0=SENSOR 1=RELAY 2=MODE 3=SETPT 4=SESSION 5=ALARM 6=SYSTEM
+# initiator  → string: 0=SYS 1=FARMER 2=ADMIN 3=MQTT 4=WEB
+# ---------------------------------------------------------------------------
+_EVT_TYPE  = ["SENSOR", "RELAY",   "MODE",  "SETPT", "SESSION", "ALARM", "SYSTEM"]
+_EVT_INIT  = ["SYS",    "FARMER",  "ADMIN", "MQTT",  "WEB"]
+
+def _nvs_log_entries() -> list[dict]:
+    """Generate 64 synthetic NVS log entries spanning the last ~32 minutes."""
+    now = int(time.time())
+    entries = []
+    for i in range(64):
+        ts         = now - (64 - i) * 30
+        etype      = [0, 0, 1, 0, 2, 0, 3, 0, 1, 0, 4, 0, 0, 6, 0, 1][i % 16]
+        initiator  = [0, 0, 0, 0, 0, 4, 2, 0, 0, 0, 4, 0, 0, 0, 1, 0][i % 16]
+        channel    = i % 3
+        param_id   = i % 8
+        value_a    = int(20.0 * 10 + 40 * math.sin(ts / 7200) * 10)   # °C × 10
+        value_b    = int(60 * 10 + 100 * math.sin(ts / 10800 + 1.0))  # RH × 10
+        entries.append({
+            "ts":        ts,
+            "type":      _EVT_TYPE[etype],
+            "initiator": _EVT_INIT[initiator],
+            "ch":        channel,
+            "param":     param_id,
+            "value_a":   value_a,
+            "value_b":   value_b,
+        })
+    return entries
+
+def _sd_log_files() -> list[str]:
+    """Return 3 synthetic SD log filenames using local-time timestamp format."""
+    now = time.time()
+    files = []
+    for hours_ago in (3, 2, 1):
+        t = time.localtime(now - hours_ago * 3600)
+        files.append(time.strftime("%Y%m%d%H%M%S", t) + ".csv")
+    return files
+
+def _sd_csv_content(filename: str) -> str:
+    """Return synthetic CSV content for the given SD filename (ISO 8601 timestamps)."""
+    # Derive time base from the filename timestamp (YYYYMMDDHHMMSS)
+    try:
+        base = time.mktime(time.strptime(filename[:14], "%Y%m%d%H%M%S"))
+    except (ValueError, IndexError):
+        base = time.time() - 3600
+    lines = ["timestamp,type,initiator,ch,param,value_a,value_b"]
+    for i in range(120):
+        ts        = base + i * 30
+        etype     = _EVT_TYPE[i % len(_EVT_TYPE)]
+        initiator = _EVT_INIT[i % len(_EVT_INIT)]
+        ch        = i % 3
+        param     = i % 8
+        va        = int(20.0 * 10 + 40 * math.sin(ts / 7200) * 10)
+        vb        = int(60  * 10 + 100 * math.sin(ts / 10800 + 1.0))
+        ts_str    = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(ts))
+        lines.append(f"{ts_str},{etype},{initiator},{ch},{param},{va},{vb}")
+    return "\n".join(lines) + "\n"
 
 # OTA simulation state
 OTA_STATES = ["idle", "fw_writing", "fw_verifying", "fw_done",
@@ -425,6 +488,57 @@ def sd_unmount():
         return {"ok": False, "err": "admin only"}, 403
     sd["mounted"] = False
     return {"ok": True}
+
+# ---------------------------------------------------------------------------
+# Log routes
+# ---------------------------------------------------------------------------
+@app.route("/api/log/files", methods=["GET"])
+def log_files():
+    if _get_role() != "admin":
+        return {"ok": False, "err": "admin only"}, 403
+    entries   = _nvs_log_entries()
+    sd_files  = _sd_log_files() if sd["mounted"] else []
+    return {"nvs_count": len(entries), "sd_files": sd_files}
+
+
+@app.route("/api/log/download", methods=["GET"])
+def log_download():
+    if _get_role() != "admin":
+        return {"ok": False, "err": "admin only"}, 403
+
+    src = request.args.get("src", "")
+
+    if src == "nvs":
+        entries = _nvs_log_entries()
+        lines   = ["timestamp,type,initiator,ch,param,value_a,value_b"]
+        for e in entries:
+            ts_str = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(e["ts"]))
+            lines.append(
+                f"{ts_str},{e['type']},{e['initiator']},"
+                f"{e['ch']},{e['param']},{e['value_a']},{e['value_b']}"
+            )
+        csv_text = "\n".join(lines) + "\n"
+        resp = make_response(csv_text)
+        resp.headers["Content-Type"]        = "text/csv; charset=utf-8"
+        resp.headers["Content-Disposition"] = 'attachment; filename="nvs_log.csv"'
+        return resp
+
+    if src == "sd":
+        filename = request.args.get("file", "")
+        # Path-traversal guard (mirrors firmware)
+        if not filename or "/" in filename or ".." in filename:
+            return {"ok": False, "err": "invalid filename"}, 400
+        if not sd["mounted"]:
+            return {"ok": False, "err": "SD not mounted"}, 503
+        if filename not in _sd_log_files():
+            return {"ok": False, "err": "file not found"}, 404
+        csv_text = _sd_csv_content(filename)
+        resp = make_response(csv_text)
+        resp.headers["Content-Type"]        = "text/csv; charset=utf-8"
+        resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return resp
+
+    return {"ok": False, "err": "invalid src"}, 400
 
 # ---------------------------------------------------------------------------
 # OTA routes

@@ -5,13 +5,21 @@
 |--------------|------------------------------------------------|
 | Document     | Software Test Plan                             |
 | Project      | Greenhouse Ventilation Controller              |
-| Version      | 0.3                                           |
-| Date         | 2026-05-06                                    |
+| Version      | 0.4                                           |
+| Date         | 2026-05-07                                    |
 | Status       | Updated                                       |
 | Related docs | `technicalSoftwareDesignSpecification.md`      |
 |              | `functionalRequirementsSpecification.md`       |
 |              | `tasks.md`                                    |
 
+> **v0.3 → v0.4 change summary:**
+> - §5 (IT-SP-003): poll interval default corrected to 30 s (TSDS §5.1 / FRS FR-S03, FR-CF07 — range 15–120 s, factory default 30 s).
+> - §7 (IT-EL-006): expected result updated to reflect 60 s SD automount loop (T9 wakes every 60 s when SD absent). New §7.5 added with IT-EL-015 to IT-EL-018 covering timestamp-based file naming, ISO 8601 CSV timestamps, proactive free-space guard, and 60 s automount window.
+> - §9.4 (IT-UI-012): updated to cover 6 status pages (STATUS_PAGES = 6); page 5 (motor states via `t2_get_window_states()`) added. New §9.8 (IT-UI-018): D-key manual page advance.
+> - §12.4 (new): ST-WI-016 and ST-WI-017 for Log tab endpoints (`GET /api/log/files`, `GET /api/log/download`).
+> - §19 Traceability Matrix: new test IDs added.
+> - §20.7 timing table: `poll_interval_s` default corrected to 30 s.
+>
 > **v0.2 → v0.3 change summary:**
 > - §20 (new): Automated Integration Test Infrastructure — harness architecture, fixture protocol, NVS write confirmation, serial patterns reference, eg1 bitmask, timing constants, and run instructions.
 > - §3.2: Python dependency list updated (`pytest-timeout` added; env-var overrides documented).
@@ -228,7 +236,7 @@ TSDS reference: §5.1 | FRS: FR-S03, FR-S04, FR-S06, FR-S07, FR-W03
 |----|-------|-------------|-------|-----------------|
 | IT-SP-001 | IT | SenseCAP S200 polled and values stored | Connect Modbus simulator returning valid wind speed (5.0 m/s) and direction (270°); wait 1 poll cycle | T4 current measurement: wind speed = 5.0 m/s, direction = 270°; no fault flag set |
 | IT-SP-002 | IT | FG6485A polled and values stored | Connect Modbus simulator returning T = 22.5 °C, RH = 65%; wait 1 poll cycle | T4 current measurement: T = 22.5 °C, RH = 65%; no fault flag set |
-| IT-SP-003 | IT | Poll interval respected | Log timestamps of consecutive poll cycles | Interval between polls within ±5% of configured value (default 60 s) `[→ TC-14]` |
+| IT-SP-003 | IT | Poll interval respected | Log timestamps of consecutive poll cycles | Interval between polls within ±5% of configured value (factory default 30 s; range 15–120 s) `[→ TC-14]` |
 | IT-SP-004 | IT | T4 notified after successful poll | Instrument TN1 and TN2 in test build | TN1 (wind) and TN2 (sensor) task notifications sent to T3 and T6 within 100 ms of poll completion |
 
 ### 5.2 Fault Detection
@@ -327,7 +335,7 @@ TSDS reference: §5.3 | FRS: FR-LG01–FR-LG09
 | IT-EL-003 | IT | NVS ring buffer wraps at CONFIG_NVS_LOG_CAPACITY | Write capacity+1 events; read ring buffer | capacity entries retained; entry #1 overwritten by entry #(capacity+1); entry #2 intact |
 | IT-EL-004 | IT | SD card preferred over NVS when present | Insert formatted SD card; write 10 events | Events written to SD card file; NVS log not updated |
 | IT-EL-005 | IT | Fallback to NVS when SD card absent | Remove SD card; write 10 events | Events written to NVS ring buffer; no crash or error halt |
-| IT-EL-006 | IT | SD card presence detected at runtime | Boot without SD; insert card mid-operation; observe log destination | T9 detects card on next write cycle; subsequent events go to SD card |
+| IT-EL-006 | IT | SD card auto-mounts within 60 s of insertion | Boot without SD; insert card; observe serial and log destination without issuing a manual mount command | Serial shows `[T9] SD automounted` within 60 s; subsequent events written to SD card file; `GET /api/sd/status` returns `mounted: true` |
 
 ### 7.2 Log Queue Behaviour
 
@@ -346,11 +354,22 @@ TSDS reference: §5.3 | FRS: FR-LG01–FR-LG09
 
 ### 7.4 Log Entry Content
 
+
+
 | ID | Level | Description | Steps | Expected result |
 |----|-------|-------------|-------|-----------------|
 | IT-EL-012 | IT | SETPOINT change log entry contains operator identity and old/new values (FR-LG02–FR-LG04) | Login as farmer; change T_max_day from 25 to 28 via web; read log | Log entry: event_type = SETPOINT, initiator = USER_FARMER, value_a = 25 (old), value_b = 28 (new), param_id matches T_max_day |
 | IT-EL-013 | IT | LOG_SENSOR event emitted on each poll cycle with T, RH, wind values (FR-LG09) | Set poll_interval = 30 s; inject T=22, RH=65, Speed=3, Dir=90; wait 1 cycle | LOG_SENSOR entry in Q3/log with correct T (22), RH (65), and wind values; timestamp within 2 s of poll |
 | IT-EL-014 | IT | Wind-override onset event logged with SYSTEM initiator (FR-MA08 analog, FR-WS11) | Trigger wind override by exceeding v_max; read log | LOG_ALARM entry: event_type = ALARM, initiator = SYSTEM; onset and clearance both logged |
+
+### 7.5 SD Log File Format and Lifecycle
+
+| ID | Level | Description | Steps | Expected result |
+|----|-------|-------------|-------|-----------------|
+| IT-EL-015 | IT | SD log file named with local-time timestamp (YYYYMMDDHHMMSS.csv) | Mount SD card; generate log events; inspect SD root directory | File created with name exactly 14 decimal digits + `.csv` (e.g. `20260507163022.csv`); name encodes local creation time; no `ghc_*` files created |
+| IT-EL-016 | IT | CSV timestamp field is ISO 8601 UTC (YYYY-MM-DDTHH:MM:SS) | Download SD log file via `GET /api/log/download?src=sd&file=NAME`; inspect `timestamp` column | Every row's timestamp matches format `YYYY-MM-DDTHH:MM:SS`; value is UTC; differs from filename (local time) by timezone offset |
+| IT-EL-017 | IT | Proactive free-space guard: oldest file deleted when SD free < 2 MB (above floor); logging suspended at 3-file floor | Fill SD card to < 2 MB free with > 3 log files present; observe T9 serial | Serial: `SD low space: deleted oldest (N files remaining)` when count > 3; if already at 3 files: `SD low space at retention floor — suspending`; `GET /api/sd/status` shows `mounted: false` at floor |
+| IT-EL-018 | IT | SD automounts within 60 s without manual intervention | Boot without SD card; after boot completes insert FAT32 SD card; wait without calling `POST /api/sd/mount` | Serial: `[T9] SD automounted` within 60 s of insertion; subsequent events appear in SD log file; `GET /api/sd/status` returns `mounted: true` |
 
 ---
 
@@ -435,7 +454,7 @@ TSDS reference: §5.5 | FRS: FR-UI01–FR-UI09, FR-UI22–FR-UI24, FR-WS06, FR-W
 
 | ID | Level | Description | Steps | Expected result |
 |----|-------|-------------|-------|-----------------|
-| IT-UI-012 | IT | Status pages 0–4 auto-cycle every 5 s in normal operation (FR-UI22) | Boot DUT; observe LCD for 30 s without pressing any key | All 5 pages visible in sequence: page 0 (T/RH) → page 1 (wind) → page 2 (windows) → page 3 (network) → page 4 (time/date); each displayed for ~5 s |
+| IT-UI-012 | IT | Status pages 0–5 auto-cycle every 5 s in normal operation (FR-UI22) | Boot DUT; observe LCD for 35 s without pressing any key | All 6 pages visible in sequence: page 0 (T/RH) → page 1 (wind) → page 2 (windows) → page 3 (network) → page 4 (time/date) → page 5 (motor states M1/M2/M3); each displayed for ~5 s |
 | IT-UI-013 | IT | Page 4 shows current time and source label NTP/RTC (FR-UI22) | Ensure WiFi is disconnected (no NTP sync); observe LCD page 4 | Row 0: current local date/time (YYYY-MM-DD HH:MM format); row 1: source label = "RTC"; after NTP sync label changes to "NTP" |
 
 ### 9.5 Manual Date/Time Set
@@ -456,6 +475,12 @@ TSDS reference: §5.5 | FRS: FR-UI01–FR-UI09, FR-UI22–FR-UI24, FR-WS06, FR-W
 | ID | Level | Description | Steps | Expected result |
 |----|-------|-------------|-------|-----------------|
 | IT-UI-017 | IT | BOOT button hold suppresses normal display and shows animated progress bar (FR-UI24) | Hold BOOT button; observe LCD during 0–20 s hold period | Row 1: growing filled-character bar advancing left to right; row 0: blank (0–5 s), `Reset PIN?` (5–10 s), `Reset settings?` (10–15 s), `Restarting?` (15–20 s); normal status pages frozen during hold |
+
+### 9.8 D-Key Page Advance
+
+| ID | Level | Description | Steps | Expected result |
+|----|-------|-------------|-------|-----------------|
+| IT-UI-018 | IT | D-key immediately advances to next status page and resets 5 s dwell timer | Boot DUT; let auto-cycle settle on page 0; press `D` key | LCD immediately shows page 1; auto-cycle clock resets (page 1 remains for ~5 s before advancing to page 2); repeated `D` presses cycle through all 6 pages and wrap from page 5 back to page 0 |
 
 ---
 
@@ -526,6 +551,13 @@ TSDS reference: §5.8 | FRS: FR-NW06, FR-DN04, FR-MQ01–FR-MQ05
 | ST-WI-009 | ST | MQTT publishes sensor data at configured interval | Configure broker; subscribe to topic; wait | Messages received at configured interval; payload contains T, RH, wind speed, direction |
 | ST-WI-010 | ST | MQTT publishes window states and mode | Observe MQTT messages during mode change | Status topic updated within 5 s of mode change |
 | ST-WI-011 | ST | MQTT CLOSE_ALL command received and executed | Publish CLOSE_ALL to command topic | All relays receive CLOSE command; T2 state machines transition |
+
+### 12.4 Log Tab
+
+| ID | Level | Description | Steps | Expected result |
+|----|-------|-------------|-------|-----------------|
+| ST-WI-016 | ST | `GET /api/log/files` admin-only; returns NVS count and sorted SD file list | Login as admin with SD mounted; `GET /api/log/files` | HTTP 200; response contains `nvs_count` (integer ≥ 0) and `sd_files` array; SD filenames match `YYYYMMDDHHMMSS.csv` pattern; list sorted lexicographically oldest→newest; unauthenticated or farmer session returns 403 |
+| ST-WI-017 | ST | `GET /api/log/download` returns valid CSV with ISO 8601 timestamps | Login as admin; `GET /api/log/download?src=nvs` and `GET /api/log/download?src=sd&file=NAME` | Both return `text/csv` with header `timestamp,type,initiator,ch,param,value_a,value_b`; every `timestamp` field matches `YYYY-MM-DDTHH:MM:SS`; NVS filename is `nvs_log.csv`; SD filename preserved; path-traversal attempts (`../` or `/`) return 400 |
 
 ---
 
@@ -693,12 +725,12 @@ TSDS reference: §5.12 | FRS: FR-UI16–FR-UI21, FR-CF14
 | §5.2 Climate Control Logic — mode FSM | FR-C09, FR-C10, FR-C11, FR-C12, FR-M01–FR-M07, FR-MA01–FR-MA08 | UT-CC-001 to UT-CC-013, UT-CC-023, UT-CC-028, UT-CC-029, IT-CC-033 |
 | §5.2 Climate Control Logic — setpoints | FR-C01–FR-C12, FR-S06 | UT-CC-014 to UT-CC-022, UT-CC-024 to UT-CC-027, UT-CC-030, UT-CC-031 |
 | §5.2 Conflict Resolution | FR-CR01–FR-CR04 | UT-CC-020, UT-CC-021, UT-CC-022, UT-CC-030, UT-CC-031 |
-| §5.3 Event Log Manager | FR-LG01–FR-LG09 | UT-EL-001, IT-EL-002 to IT-EL-006, IT-EL-012 to IT-EL-014, UT-EL-007, UT-EL-008, ST-EL-009 to ST-EL-011 |
+| §5.3 Event Log Manager | FR-LG01–FR-LG09 | UT-EL-001, IT-EL-002 to IT-EL-006, IT-EL-012 to IT-EL-018, UT-EL-007, UT-EL-008, ST-EL-009 to ST-EL-011 |
 | §5.4 Access Control | FR-AC01–FR-AC09 | UT-AC-001 to UT-AC-014, IT-AC-006, IT-AC-007, IT-AC-015 to IT-AC-019 |
-| §5.5 Local User Interface | FR-UI01–FR-UI09, FR-UI22–FR-UI24, FR-WS06, FR-WS10 | UT-UI-001 to UT-UI-004, IT-UI-005 to IT-UI-017 |
+| §5.5 Local User Interface | FR-UI01–FR-UI09, FR-UI22–FR-UI24, FR-WS06, FR-WS10 | UT-UI-001 to UT-UI-004, IT-UI-005 to IT-UI-018 |
 | §5.6 WiFi AP Mode | TR-NW01, FR-NW02 | IT-WA-001 to IT-WA-007 |
 | §5.7 WiFi Client Mode | FR-NW01–FR-NW07, FR-DN06, FR-DN07 | IT-WC-001 to IT-WC-007 |
-| §5.8 Web Interface | FR-NW06, FR-DN04, FR-MQ01–FR-MQ05 | ST-WI-001 to ST-WI-015 |
+| §5.8 Web Interface | FR-NW06, FR-DN04, FR-MQ01–FR-MQ05 | ST-WI-001 to ST-WI-017 |
 | §5.9 OTA Firmware Update | TR-SW02 | ST-OT-001 to ST-OT-006, ST-OT-008, IT-OT-007 |
 | §5.10 NVS Configuration Storage | FR-CF06, TR-SW01 | IT-NV-001 to IT-NV-005, IT-NV-007, UT-NV-006 |
 | §5.11 Watchdog and Fault Handling | TR-SW03, FR-ST02, FR-S05, FR-W04 | IT-WD-001 to IT-WD-011 |
@@ -858,7 +890,7 @@ Test bodies that assert bit-level fault state use `(status['eg1'] & mask) != 0`.
 
 | Parameter | Default (NVS) | `fast_config` value | Rationale |
 |-----------|---------------|---------------------|-----------|
-| `poll_interval_s` | 60 s | 30 s | Halves sensor reaction time |
+| `poll_interval_s` | 30 s | 30 s | Matches factory default; explicitly written to ensure fixture state is known |
 | `travel_m1` | 21 s | 5 s | Window traverses in 5 s |
 | `travel_m2` | 21 s | 5 s | Window traverses in 5 s |
 | `travel_m3` | 171 s | 5 s | Window traverses in 5 s |
@@ -919,4 +951,4 @@ Confirm `travel_m1/m2/m3` and `avg_win_t/rh` are back to their pre-test values. 
 
 ---
 
-*End of document — version 0.3*
+*End of document — version 0.4*

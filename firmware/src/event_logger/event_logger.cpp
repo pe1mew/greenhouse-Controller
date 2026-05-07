@@ -19,22 +19,45 @@
  *     posts a synthetic LOG_SYSTEM event directly to Q3 (not via
  *     log_post() — avoids re-entrant eviction).
  *
- * ### SD log rotation
- * Files are named `/ghc_NNNN.csv` (4-digit zero-padded sequential index).
- * The current index is persisted in NVS (`log/file_idx`) so it survives
- * a reboot.  Rotation triggers when the current file reaches 512 KB.  The
- * oldest file is deleted when the total count exceeds 10.
+ * ### SD log file naming
+ * Files are named `YYYYMMDDHHMMSS.csv` where the timestamp encodes the
+ * moment the file was created (UTC).  Lexicographic sort = chronological
+ * order.  At most SD_MAX_FILES (10) files are retained; the lexicographically
+ * oldest is deleted when a rotation would exceed this limit.
  *
- * ### NVS fallback
+ * ### CSV line format
+ * Header:  timestamp,type,initiator,ch,param,value_a,value_b
+ * Example: 2025-06-07T14:30:22,SENSOR,SYS,0,0,235,650
+ * The timestamp field uses ISO 8601 (UTC).
+ *
+ * ### Startup / resume
+ * On mount, T9 scans the SD root for files matching the 14-digit timestamp
+ * pattern.  The lexicographically largest (most recent) file is resumed if
+ * its size is below SD_ROTATE_BYTES; otherwise a new file is created.
+ * Old sequential-index files (`ghc_NNNN.csv`) are ignored by the scan
+ * filter and will not interfere with the new naming scheme.
+ *
+ * ### Free-space guard
+ * After each rotation T9 checks available SD space.  If free < SD_FREE_MIN_BYTES
+ * and the file count is above SD_MIN_FILES, the oldest file is deleted to
+ * reclaim space.  If the count is already at SD_MIN_FILES and space is still
+ * low, SD logging is suspended and NVS fallback is activated.  Additionally,
+ * if a write returns STORAGE_ERR_FULL, a single oldest-file deletion is
+ * attempted before falling back to NVS-only mode.
+ *
+ * ### NVS fallback and SD automount
  * If `storage_init()` fails at startup, T9 operates in NVS-only mode.
- * A LOG_SYSTEM event is emitted on SD failure (FR-LG07, FR-LG08).  T9
- * does not retry the SD mount after a failure — a reboot is required to
- * re-attempt mounting.
+ * A LOG_SYSTEM event is emitted on SD failure (FR-LG07, FR-LG08).  While
+ * `s_sd_ok` is false, the main event loop uses a 60-second receive timeout
+ * and calls `event_logger_sd_remount()` on each expiry, so a card inserted
+ * after boot is picked up automatically within one minute.  The admin web-GUI
+ * mount button is still available for an immediate manual remount.
  *
  * @author  Greenhouse Controller project
  */
 
 #include <Arduino.h>
+#include <time.h>
 
 #include "event_logger.h"
 #include "../types/app_types.h"
@@ -49,6 +72,7 @@
 #include <freertos/portmacro.h>
 #include <string.h>
 #include <stdio.h>
+#include <ctype.h>
 
 static const char *TAG = "T9_LOG";
 
@@ -59,13 +83,25 @@ static const char *TAG = "T9_LOG";
 #define SD_ROTATE_BYTES    (512UL * 1024UL)
 
 /** Maximum number of log files retained on the SD card. */
-#define SD_MAX_FILES       10
+#define SD_MAX_FILES       10u
 
-/** Length of a FAT32 filename string including leading '/' and NUL. */
-#define SD_FILENAME_LEN    16    /* "/ghc_9999.csv\0" = 15 chars + NUL */
+/** Minimum number of files to retain; never delete below this floor. */
+#define SD_MIN_FILES       3u
 
-/** NVS key (in NVS_NS_LOG namespace) for the current SD file index. */
-#define NVS_KEY_FILE_IDX   "file_idx"
+/** Suspend (or reclaim) when free space drops below this many bytes. */
+#define SD_FREE_MIN_BYTES  (2UL * 1024UL * 1024UL)
+
+/**
+ * Length of an SD filename string including leading '/' and NUL.
+ * "/YYYYMMDDHHMMSS.csv" = 19 printable chars + '\0' = 20.  24 gives margin.
+ */
+#define SD_FILENAME_LEN    24
+
+/**
+ * Length of the name-only part (no leading '/') including NUL.
+ * "YYYYMMDDHHMMSS.csv" = 18 chars + '\0' = 19.  20 gives margin.
+ */
+#define SD_NAME_ONLY_LEN   20
 
 /** CSV header line written at the start of every new log file. */
 #define CSV_HEADER  "timestamp,type,initiator,ch,param,value_a,value_b\n"
@@ -73,52 +109,33 @@ static const char *TAG = "T9_LOG";
 /* -----------------------------------------------------------------------
  * Module state
  * ----------------------------------------------------------------------- */
-static bool     s_sd_ok        = false;   /**< true iff SD card is mounted */
-static uint32_t s_file_idx     = 1;       /**< current SD file sequential index */
-static char     s_cur_filename[SD_FILENAME_LEN]; /**< e.g. "/ghc_0001.csv" */
+static bool s_sd_ok = false;                    /**< true iff SD logging is active */
+static char s_cur_filename[SD_FILENAME_LEN];    /**< active file, with leading '/' */
 
 /* -----------------------------------------------------------------------
  * Drop counter — tracks events lost due to Q3 overflow
- *
- * Protected by a FreeRTOS spinlock so that concurrent callers from
- * different tasks increment it safely without blocking.  On ESP32-S3 the
- * spinlock is a 32-bit CAS instruction; the critical section is sub-
- * microsecond.
  * ----------------------------------------------------------------------- */
-static portMUX_TYPE      g_drop_mux     = portMUX_INITIALIZER_UNLOCKED;
-static volatile uint32_t g_q3_dropped   = 0;
+static portMUX_TYPE      g_drop_mux   = portMUX_INITIALIZER_UNLOCKED;
+static volatile uint32_t g_q3_dropped = 0;
 
 /* -----------------------------------------------------------------------
- * log_post() — the single entry point for all Q3 producers
+ * log_post() — single entry point for all Q3 producers
  * ----------------------------------------------------------------------- */
 
 void log_post(const log_event_t *evt)
 {
-    /* --- Common path: queue has space --- */
     if (xQueueSend(Q3, evt, 0) == pdPASS) {
         return;
     }
 
-    /* --- Queue is full: evict the oldest entry to make room --- */
     log_event_t discard;
-    xQueueReceive(Q3, &discard, 0);   /* removes oldest; result ignored */
+    xQueueReceive(Q3, &discard, 0);
 
-    /* Count the evicted entry as a dropped event. */
     portENTER_CRITICAL(&g_drop_mux);
     g_q3_dropped++;
     portEXIT_CRITICAL(&g_drop_mux);
 
-    /* --- Retry send: may fail if a concurrent sender took the freed slot ---
-     *
-     * The gap between xQueueReceive and the retry xQueueSend is not atomic.
-     * A concurrent caller can win the freed slot, leaving this retry without
-     * space.  This is an acknowledged race: extremely rare given Q3's depth
-     * (32) and T9's drain rate.  A mutex around the whole sequence would
-     * eliminate it but adds latency in T3 and T6; deferred until profiling
-     * demonstrates it is needed.
-     */
     if (xQueueSend(Q3, evt, 0) != pdPASS) {
-        /* New event also lost — count it. */
         portENTER_CRITICAL(&g_drop_mux);
         g_q3_dropped++;
         portEXIT_CRITICAL(&g_drop_mux);
@@ -126,11 +143,7 @@ void log_post(const log_event_t *evt)
 }
 
 /* -----------------------------------------------------------------------
- * log_take_dropped_count() — read and reset the drop counter
- *
- * Called by T9 only.  The portENTER_CRITICAL ensures that no in-flight
- * log_post() increment races with the reset: on exit the counter is 0
- * and `count` holds the pre-reset value.
+ * log_take_dropped_count()
  * ----------------------------------------------------------------------- */
 
 uint32_t log_take_dropped_count(void)
@@ -147,11 +160,184 @@ uint32_t log_take_dropped_count(void)
  * ======================================================================= */
 
 /**
- * @brief Build the SD file path for a given sequential index.
+ * @brief Return true if @p name matches the timestamp filename pattern.
+ *
+ * A valid log filename is exactly 14 decimal digits followed by ".csv"
+ * (total 18 characters, e.g. "20250607143022.csv").  Files with any other
+ * naming pattern — including old sequential-index files (`ghc_NNNN.csv`) —
+ * are silently skipped by all scan operations.
  */
-static void make_filename(uint32_t idx, char *buf, size_t len)
+static bool is_ts_filename(const char *name)
 {
-    snprintf(buf, len, "/ghc_%04u.csv", (unsigned)idx);
+    if (!name || strlen(name) != 18) return false;
+    for (int i = 0; i < 14; i++) {
+        if (!isdigit((unsigned char)name[i])) return false;
+    }
+    return strncmp(name + 14, ".csv", 4) == 0;
+}
+
+/**
+ * @brief Create an SD filename from the current local time.
+ *
+ * Produces a path of the form "/YYYYMMDDHHMMSS.csv" in @p buf.
+ * Local time is used so that filenames are human-readable without
+ * timezone conversion when browsing the card directly.
+ */
+static void make_ts_filename(char *buf, size_t len)
+{
+    time_t now = (time_t)dm_get_unix_time();
+    struct tm tm_local;
+    localtime_r(&now, &tm_local);
+    snprintf(buf, len, "/%04d%02d%02d%02d%02d%02d.csv",
+             tm_local.tm_year + 1900,
+             tm_local.tm_mon  + 1,
+             tm_local.tm_mday,
+             tm_local.tm_hour,
+             tm_local.tm_min,
+             tm_local.tm_sec);
+}
+
+/**
+ * @brief Scan the SD root and return a comma-separated list of matching
+ *        timestamp-pattern CSV filenames (name only, no leading '/').
+ *
+ * @param list_buf  Destination buffer.
+ * @param list_len  Size of @p list_buf.
+ * @return true if the scan succeeded (even if no files were found).
+ */
+static bool sd_scan(char *list_buf, size_t list_len)
+{
+    list_buf[0] = '\0';
+    if (!s_sd_ok && !storage_sd_available()) return false;
+
+    char raw[512];
+    if (storage_sd_list_csv(".csv", raw, sizeof(raw)) != STORAGE_OK) return false;
+
+    /* Re-filter: keep only files matching the 14-digit timestamp pattern. */
+    size_t pos = 0;
+    const char *tok = raw;
+    while (*tok) {
+        const char *end = strchr(tok, ',');
+        size_t flen = end ? (size_t)(end - tok) : strlen(tok);
+        if (flen > 0 && flen < SD_NAME_ONLY_LEN) {
+            char name[SD_NAME_ONLY_LEN];
+            memcpy(name, tok, flen);
+            name[flen] = '\0';
+            if (is_ts_filename(name) && pos + flen + 2 < list_len) {
+                memcpy(list_buf + pos, name, flen);
+                pos += flen;
+                list_buf[pos++] = ',';
+                list_buf[pos]   = '\0';
+            }
+        }
+        if (!end) break;
+        tok = end + 1;
+    }
+    return true;
+}
+
+/**
+ * @brief Count the comma-separated entries in a scan list.
+ */
+static uint32_t scan_count(const char *list)
+{
+    uint32_t n = 0;
+    const char *tok = list;
+    while (*tok) {
+        const char *end = strchr(tok, ',');
+        size_t flen = end ? (size_t)(end - tok) : strlen(tok);
+        if (flen > 0) n++;
+        if (!end) break;
+        tok = end + 1;
+    }
+    return n;
+}
+
+/**
+ * @brief Find the lexicographically smallest or largest name in a scan list.
+ *
+ * @param list       Comma-separated list from sd_scan().
+ * @param find_max   true = find newest (lex max); false = find oldest (lex min).
+ * @param out        Destination for the found name (no leading '/').
+ * @param out_len    Size of @p out.
+ * @return true if a name was found; false if the list was empty.
+ */
+static bool scan_find(const char *list, bool find_max,
+                      char *out, size_t out_len)
+{
+    out[0] = '\0';
+    const char *tok = list;
+    while (*tok) {
+        const char *end  = strchr(tok, ',');
+        size_t      flen = end ? (size_t)(end - tok) : strlen(tok);
+        if (flen > 0 && flen < out_len) {
+            char candidate[SD_NAME_ONLY_LEN];
+            memcpy(candidate, tok, flen);
+            candidate[flen] = '\0';
+            if (out[0] == '\0' ||
+                (find_max ? strcmp(candidate, out) > 0
+                          : strcmp(candidate, out) < 0)) {
+                memcpy(out, candidate, flen + 1);
+            }
+        }
+        if (!end) break;
+        tok = end + 1;
+    }
+    return out[0] != '\0';
+}
+
+/**
+ * @brief Delete the lexicographically oldest timestamp CSV file on the SD card.
+ * @return true on success.
+ */
+static bool delete_oldest(void)
+{
+    char list[512];
+    if (!sd_scan(list, sizeof(list))) return false;
+
+    char oldest[SD_NAME_ONLY_LEN];
+    if (!scan_find(list, false, oldest, sizeof(oldest))) return false;
+
+    char path[SD_FILENAME_LEN];
+    snprintf(path, sizeof(path), "/%s", oldest);
+    bool ok = (storage_sd_delete(path) == STORAGE_OK);
+    if (ok) ESP_LOGI(TAG, "[T9] Deleted oldest log file %s", path);
+    return ok;
+}
+
+/**
+ * @brief Check free space; if below SD_FREE_MIN_BYTES, delete the oldest
+ *        file to reclaim space.  If already at SD_MIN_FILES floor and still
+ *        low, suspend SD logging (s_sd_ok = false) and emit a LOG_SYSTEM event.
+ */
+static void check_free_space(void)
+{
+    if (storage_sd_free_bytes() >= SD_FREE_MIN_BYTES) return;
+
+    char list[512];
+    sd_scan(list, sizeof(list));
+    uint32_t count = scan_count(list);
+
+    if (count > SD_MIN_FILES) {
+        if (delete_oldest()) {
+            ESP_LOGW(TAG, "[T9] SD low space: deleted oldest (%u files remaining)",
+                     (unsigned)(count - 1u));
+            return;   /* freed one file; enough room to continue */
+        }
+    }
+
+    /* At retention floor or deletion failed — suspend. */
+    ESP_LOGW(TAG, "[T9] SD low space at retention floor (%u files) — suspending",
+             (unsigned)count);
+    s_sd_ok = false;
+
+    log_event_t sys_evt;
+    memset(&sys_evt, 0, sizeof(sys_evt));
+    sys_evt.timestamp  = dm_get_unix_time();
+    sys_evt.event_type = (uint8_t)LOG_SYSTEM;
+    sys_evt.initiator  = (uint8_t)LOG_BY_SYSTEM;
+    sys_evt.value_a    = (int16_t)(-2);   /* −2 = SD low-space suspension */
+    log_post(&sys_evt);
 }
 
 /**
@@ -189,18 +375,24 @@ static const char *initiator_str(uint8_t i)
 /**
  * @brief Format one log_event_t as a NUL-terminated CSV line.
  *
- * Line format (always ends with '\n'):
- *   timestamp,type,initiator,ch,param,value_a,value_b\n
+ * Line format: ISO-8601-timestamp,type,initiator,ch,param,value_a,value_b\n
+ * Example:     2025-06-07T14:30:22,SENSOR,SYS,0,0,235,650
  *
  * @param evt  Event to format.
- * @param buf  Destination buffer (must be ≥ 64 bytes; 80 is safe).
+ * @param buf  Destination buffer (≥ 80 bytes recommended).
  * @param len  Size of @p buf.
  */
 static void build_csv_line(const log_event_t *evt, char *buf, size_t len)
 {
+    time_t ts = (time_t)evt->timestamp;
+    struct tm tm_utc;
+    gmtime_r(&ts, &tm_utc);
+    char ts_str[20];   /* "YYYY-MM-DDTHH:MM:SS\0" */
+    strftime(ts_str, sizeof(ts_str), "%Y-%m-%dT%H:%M:%S", &tm_utc);
+
     snprintf(buf, len,
-             "%lu,%s,%s,%u,%u,%d,%d\n",
-             (unsigned long)evt->timestamp,
+             "%s,%s,%s,%u,%u,%d,%d\n",
+             ts_str,
              evt_type_str(evt->event_type),
              initiator_str(evt->initiator),
              (unsigned)evt->channel,
@@ -210,49 +402,52 @@ static void build_csv_line(const log_event_t *evt, char *buf, size_t len)
 }
 
 /**
- * @brief Advance to the next SD log file and delete the oldest if needed.
+ * @brief Advance to the next SD log file.
  *
- * Increments the sequential file index, persists it in NVS, creates the
- * new file with a CSV header, and deletes the file that is now more than
- * SD_MAX_FILES positions behind the current index.
+ * Creates a new file named with the current UTC timestamp, writes the CSV
+ * header, and deletes the lexicographically oldest timestamp file if the
+ * total count now exceeds SD_MAX_FILES.  Calls check_free_space() after
+ * the rotation.
  */
 static void rotate_sd_file(void)
 {
-    s_file_idx++;
-    nvs_cfg_set_i32(NVS_NS_LOG, NVS_KEY_FILE_IDX, (int32_t)s_file_idx);
-    make_filename(s_file_idx, s_cur_filename, sizeof(s_cur_filename));
+    make_ts_filename(s_cur_filename, sizeof(s_cur_filename));
 
-    /* Write CSV header to the new (initially empty) file. */
     storage_status_t rc = storage_sd_write_append(s_cur_filename, CSV_HEADER);
     if (rc != STORAGE_OK) {
-        ESP_LOGW(TAG, "Rotate: header write to %s failed (%d)", s_cur_filename, rc);
+        ESP_LOGW(TAG, "[T9] Rotate: header write to %s failed (%d)",
+                 s_cur_filename, (int)rc);
         s_sd_ok = false;
         return;
     }
 
-    /* Delete the oldest file when we now hold more than SD_MAX_FILES. */
-    if (s_file_idx > SD_MAX_FILES) {
-        char oldest[SD_FILENAME_LEN];
-        make_filename(s_file_idx - SD_MAX_FILES, oldest, sizeof(oldest));
-        storage_status_t del_rc = storage_sd_delete(oldest);
-        if (del_rc == STORAGE_OK) {
-            ESP_LOGI(TAG, "Rotated: %s created, deleted %s", s_cur_filename, oldest);
+    /* Enforce SD_MAX_FILES ceiling. */
+    char list[512];
+    if (sd_scan(list, sizeof(list))) {
+        uint32_t count = scan_count(list);
+        if (count > SD_MAX_FILES) {
+            char oldest[SD_NAME_ONLY_LEN];
+            if (scan_find(list, false, oldest, sizeof(oldest))) {
+                char path[SD_FILENAME_LEN];
+                snprintf(path, sizeof(path), "/%s", oldest);
+                storage_sd_delete(path);
+                ESP_LOGI(TAG, "[T9] Rotated to %s, deleted %s", s_cur_filename, path);
+            }
         } else {
-            /* NOT_FOUND is expected once the file index wraps past 10. */
-            ESP_LOGI(TAG, "Rotated: %s created (oldest %s absent, code %d)",
-                     s_cur_filename, oldest, del_rc);
+            ESP_LOGI(TAG, "[T9] Rotated to %s (%u files)", s_cur_filename, (unsigned)count);
         }
-    } else {
-        ESP_LOGI(TAG, "Rotated to %s", s_cur_filename);
     }
+
+    /* Proactive free-space check. */
+    check_free_space();
 }
 
 /**
  * @brief Write one event as a CSV line to the current SD file.
  *
- * Checks the file size after writing and rotates if the 512 KB limit is
- * reached.  On any write error, clears `s_sd_ok` and emits a warning so
- * that subsequent events fall back to NVS-only.
+ * On STORAGE_ERR_FULL, attempts to delete the oldest log file and retry
+ * the write before falling back to NVS-only mode.  Rotates to a new file
+ * when the 512 KB threshold is reached.
  */
 static void write_to_sd(const log_event_t *evt)
 {
@@ -260,22 +455,33 @@ static void write_to_sd(const log_event_t *evt)
     build_csv_line(evt, csv_line, sizeof(csv_line));
 
     storage_status_t rc = storage_sd_write_append(s_cur_filename, csv_line);
+
+    /* On full/IO error, attempt to reclaim space by deleting the oldest file. */
+    if (rc == STORAGE_ERR_FULL || rc == STORAGE_ERR_IO) {
+        char list[512];
+        if (sd_scan(list, sizeof(list)) && scan_count(list) > SD_MIN_FILES) {
+            if (delete_oldest()) {
+                ESP_LOGW(TAG, "[T9] SD full: reclaimed space, retrying write");
+                rc = storage_sd_write_append(s_cur_filename, csv_line);
+            }
+        }
+    }
+
     if (rc != STORAGE_OK) {
-        ESP_LOGW(TAG, "SD write failed (%d) — falling back to NVS-only", rc);
+        ESP_LOGW(TAG, "[T9] SD write failed (%d) — NVS-only", (int)rc);
         s_sd_ok = false;
 
-        /* Emit a LOG_SYSTEM event so the SD failure is visible in NVS log. */
         log_event_t sys_evt;
         memset(&sys_evt, 0, sizeof(sys_evt));
         sys_evt.timestamp  = dm_get_unix_time();
         sys_evt.event_type = (uint8_t)LOG_SYSTEM;
         sys_evt.initiator  = (uint8_t)LOG_BY_SYSTEM;
-        sys_evt.value_a    = (int16_t)(-1);  /* −1 = SD write failure */
+        sys_evt.value_a    = (int16_t)(-1);   /* −1 = SD write failure */
         log_post(&sys_evt);
         return;
     }
 
-    /* Rotate on size threshold. */
+    /* Rotate when the size threshold is reached. */
     uint32_t sz = storage_sd_file_size(s_cur_filename);
     if (sz >= SD_ROTATE_BYTES) {
         rotate_sd_file();
@@ -283,17 +489,56 @@ static void write_to_sd(const log_event_t *evt)
 }
 
 /**
- * @brief Persist one event to NVS and (if available) SD card.
+ * @brief Persist one event to NVS and (if available) the SD card.
  */
 static void process_event(const log_event_t *evt)
 {
-    /* Always write to NVS ring buffer (circular, overwrites oldest). */
     nvs_log_append(evt, sizeof(log_event_t));
-
-    /* Write to SD if the card is currently available. */
     if (s_sd_ok) {
         write_to_sd(evt);
     }
+}
+
+/* =======================================================================
+ * Shared startup / remount helper
+ * ======================================================================= */
+
+/**
+ * @brief Scan the SD card for timestamp log files and set s_cur_filename.
+ *
+ * Resumes the most recent (lexicographically largest) file if its size is
+ * below SD_ROTATE_BYTES.  Creates a new timestamp file otherwise.
+ *
+ * @return true if s_cur_filename now points to a usable file.
+ */
+static bool sd_open_active_file(void)
+{
+    char list[512];
+    bool have_list = sd_scan(list, sizeof(list));
+
+    char newest[SD_NAME_ONLY_LEN] = { '\0' };
+    bool found = have_list && scan_find(list, true, newest, sizeof(newest));
+
+    if (found) {
+        char path[SD_FILENAME_LEN];
+        snprintf(path, sizeof(path), "/%s", newest);
+        if (storage_sd_file_size(path) < SD_ROTATE_BYTES) {
+            strncpy(s_cur_filename, path, sizeof(s_cur_filename) - 1);
+            s_cur_filename[sizeof(s_cur_filename) - 1] = '\0';
+            ESP_LOGI(TAG, "[T9] Resuming log file %s", s_cur_filename);
+            return true;
+        }
+    }
+
+    /* No suitable existing file — create a fresh one. */
+    make_ts_filename(s_cur_filename, sizeof(s_cur_filename));
+    storage_status_t rc = storage_sd_write_append(s_cur_filename, CSV_HEADER);
+    if (rc != STORAGE_OK) {
+        ESP_LOGW(TAG, "[T9] Failed to create %s (%d)", s_cur_filename, (int)rc);
+        return false;
+    }
+    ESP_LOGI(TAG, "[T9] Created new log file %s", s_cur_filename);
+    return true;
 }
 
 /* =======================================================================
@@ -302,44 +547,33 @@ static void process_event(const log_event_t *evt)
 
 bool event_logger_sd_remount(void)
 {
-    if (s_sd_ok) {
-        return true;   /* already mounted — nothing to do */
-    }
+    if (s_sd_ok) return true;
 
     storage_status_t rc = storage_init();
     if (rc != STORAGE_OK) {
-        ESP_LOGW(TAG, "[T9] SD remount requested but storage_init failed (%d)", (int)rc);
+        ESP_LOGW(TAG, "[T9] SD remount failed (%d)", (int)rc);
         return false;
     }
 
-    /* Write a CSV header if the current log file is new (zero-length or
-     * absent).  This matches the boot-time behaviour in task_event_logger. */
-    if (storage_sd_file_size(s_cur_filename) == 0) {
-        storage_status_t hdr_rc = storage_sd_write_append(s_cur_filename, CSV_HEADER);
-        if (hdr_rc != STORAGE_OK) {
-            ESP_LOGW(TAG, "[T9] SD remount: header write failed (%d) — unmounting", (int)hdr_rc);
-            storage_sd_unmount();
-            return false;
-        }
+    if (!sd_open_active_file()) {
+        storage_sd_unmount();
+        return false;
     }
 
     s_sd_ok = true;
-    ESP_LOGI(TAG, "[T9] SD card remounted via web request — logging resumed on %s",
-             s_cur_filename);
+    ESP_LOGI(TAG, "[T9] SD remounted — logging on %s", s_cur_filename);
     return true;
 }
 
 void event_logger_sd_unmount(void)
 {
-    /* Clear T9's write-enable flag first so that any concurrent drain pass
-     * skips the SD write path before the bus is torn down. */
     s_sd_ok = false;
     storage_sd_unmount();
-    ESP_LOGI(TAG, "[T9] SD card unmounted via web request");
+    ESP_LOGI(TAG, "[T9] SD unmounted via web request");
 }
 
 /* =======================================================================
- * T9 task — Phase 5 full implementation
+ * T9 task
  * ======================================================================= */
 
 void task_event_logger(void *pvParameters)
@@ -352,69 +586,42 @@ void task_event_logger(void *pvParameters)
      * ---------------------------------------------------------------- */
     storage_status_t sd_rc = storage_init();
     if (sd_rc == STORAGE_OK) {
-        s_sd_ok = true;
-        ESP_LOGI(TAG, "[T9] SD card mounted");
-    } else {
-        s_sd_ok = false;
-        ESP_LOGW(TAG, "[T9] SD not available (code %d) — NVS-only mode", sd_rc);
-    }
-
-    /* ----------------------------------------------------------------
-     * Recover or initialise the SD file index from NVS.
-     *
-     * NVS_NS_LOG / NVS_KEY_FILE_IDX stores the sequential index of the
-     * last-used log file.  On first boot the key is absent; default to 1.
-     * ---------------------------------------------------------------- */
-    int32_t idx_stored = 0;
-    if (nvs_cfg_get_i32(NVS_NS_LOG, NVS_KEY_FILE_IDX, &idx_stored) == NVS_CFG_OK
-            && idx_stored >= 1) {
-        s_file_idx = (uint32_t)idx_stored;
-    } else {
-        s_file_idx = 1;
-        nvs_cfg_set_i32(NVS_NS_LOG, NVS_KEY_FILE_IDX, 1);
-    }
-    make_filename(s_file_idx, s_cur_filename, sizeof(s_cur_filename));
-    ESP_LOGI(TAG, "[T9] current log file: %s", s_cur_filename);
-
-    /* Write CSV header if the current file is new (zero-length or absent). */
-    if (s_sd_ok && storage_sd_file_size(s_cur_filename) == 0) {
-        storage_status_t hdr_rc = storage_sd_write_append(s_cur_filename, CSV_HEADER);
-        if (hdr_rc != STORAGE_OK) {
-            ESP_LOGW(TAG, "[T9] CSV header write failed (%d) — NVS-only", hdr_rc);
-            s_sd_ok = false;
+        if (sd_open_active_file()) {
+            s_sd_ok = true;
+            ESP_LOGI(TAG, "[T9] SD ready");
+        } else {
+            ESP_LOGW(TAG, "[T9] SD mounted but file init failed — NVS-only");
         }
+    } else {
+        ESP_LOGW(TAG, "[T9] SD not available (code %d) — NVS-only", (int)sd_rc);
     }
 
     /* ----------------------------------------------------------------
      * Main event loop
-     *
-     * Structure:
-     *   1. Block until at least one event arrives (portMAX_DELAY).
-     *   2. Drain all immediately-available events (non-blocking).
-     *   3. After each drain pass, check and surface the drop counter.
      * ---------------------------------------------------------------- */
     for (;;) {
         log_event_t evt;
 
-        /* Block until the first event of this drain pass is available. */
-        if (xQueueReceive(Q3, &evt, portMAX_DELAY) != pdTRUE) {
-            /* Should never happen with portMAX_DELAY; guard against it. */
+        /* When SD is absent, wake up every 60 s to attempt automount.
+         * When SD is active, block indefinitely — no polling overhead. */
+        TickType_t wait = s_sd_ok ? portMAX_DELAY : pdMS_TO_TICKS(60000);
+
+        if (xQueueReceive(Q3, &evt, wait) != pdTRUE) {
+            /* Timeout — no event arrived; try to (re)mount the SD card. */
+            if (!s_sd_ok) {
+                if (event_logger_sd_remount()) {
+                    ESP_LOGI(TAG, "[T9] SD automounted");
+                }
+            }
             continue;
         }
         process_event(&evt);
 
-        /* Drain any further events that arrived without blocking. */
         while (xQueueReceive(Q3, &evt, 0) == pdTRUE) {
             process_event(&evt);
         }
 
-        /* --- Drop-counter surfacing (FR-LG05 equivalent) ---
-         *
-         * Use xQueueSend directly (NOT log_post) to avoid a re-entrant
-         * call to the evict-and-retry logic inside log_post().  A second
-         * overflow while we are posting the drop event would be counted
-         * the next drain pass.
-         */
+        /* Surface any Q3 drop events. */
         uint32_t dropped = log_take_dropped_count();
         if (dropped > 0) {
             ESP_LOGW(TAG, "[T9] Q3 overflow: %u event(s) dropped", (unsigned)dropped);
@@ -424,13 +631,9 @@ void task_event_logger(void *pvParameters)
             sys_evt.timestamp  = dm_get_unix_time();
             sys_evt.event_type = (uint8_t)LOG_SYSTEM;
             sys_evt.initiator  = (uint8_t)LOG_BY_SYSTEM;
-            /* value_a = drop count (clamped to int16_t range). */
             sys_evt.value_a    = (int16_t)(dropped > 32767u ? 32767 : (int16_t)dropped);
 
-            /* Direct send — no eviction; if Q3 is still full the synthetic
-             * event is lost silently (acceptable: the overflow is already
-             * known and the next drain pass will catch any further drops). */
-            xQueueSend(Q3, &sys_evt, 0);
+            xQueueSend(Q3, &sys_evt, 0);   /* direct — not via log_post() */
         }
     }
 }
