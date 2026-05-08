@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.16.34] — 2026-05-08
+
+*LCD1602RGB hardware support + status-display readability fixes.  The existing `LCD1602_I2C` driver now also drives the PCA9633DP2 RGB controller present on the LCD1602RGB module; T8 (`ui_display`) tints the backlight from the EG1 status flags (red = critical safety event, blue = OK).  The on-board WS2812B LED palette is brought into alignment so the two indicators never disagree about severity.  Status display (LCD + web GUI) switched from sliding-window averaged readings to raw most-recent values so step changes in T/RH/wind become visible within one poll cycle instead of `avg_win_*` minutes.  Versions 1.16.32 and 1.16.33 were skipped — they were internal-only flashes revised three times during hardware bring-up before this release.*
+
+### Added (LCD1602RGB driver)
+- `drivers/LCD1602_I2C/src/lcd1602.h` and `lcd1602.cpp` — PCA9633DP2 driver bolted onto the existing AiP31068L driver.  The PCA9633 sits at I²C address 0x60 (8-bit 0xC0) on the same bus; `lcd_init()` now also probes 0x60 and runs the PCA9633 init sequence (clear MODE1.SLEEP, MODE2 = group dimming + totem-pole, GRPPWM = 0xFF, LEDOUT = 0xFF, then auto-increment burst PWM0=255 / PWM1=0 / PWM2=0 / PWM3=0 for boot-default BLUE at full brightness).  When the PCA9633 NACKs the probe (legacy LCD1602 module without RGB), a static `s_rgb_present` flag stays false and the rest of the driver continues unchanged — no error, no bus traffic on the colour-control path.  Two new public functions:
+  - `lcd_backlight_color(uint8_t r, uint8_t g, uint8_t b)` — auto-increment write to PWM0/PWM1/PWM2.  This Waveshare LCD1602RGB PCB has LED0=BLUE, LED1=GREEN, LED2=RED (verified empirically; does NOT follow the Grove LED0=R/LED2=B convention even though the datasheet block diagram is silent on which LED is which colour).  The function remaps `(r, g, b)` arguments to the actual (B, G, R) channel order internally so callers don't need to care.
+  - `lcd_backlight_lumination(uint8_t level)` — group brightness via GRPPWM (0..255 master multiplier on all channels).
+  Both follow the existing `lcd_*()` mutex convention: callers hold MX1; the driver does not lock internally.  Header and file comments updated; driver version bumped 0.1.0 → 0.2.0.
+- `firmware/src/ui_display/ui_display.cpp` — new static `update_backlight_status()` runs every T8 tick after the character flush.  Reads EG1 flags, looks up the target colour (highest-severity-wins: any of motor-alarm / wind-override / sensor-fault-T → red; otherwise blue), and writes the PCA9633 only when the resolved colour changed since the last write.  Cheap on the bus: in steady state the I²C write happens zero times per tick.  Tracks last-written colour in a static `s_bl_colour_last`; an MX1 timeout leaves it unchanged so the next tick retries.  Two-colour palette (blue calm vs red alarm) instead of richer red/orange/white because the green channel on the procured Waveshare LCD1602RGB units does not light — see boot-default note in `lcd1602.cpp::pca9633_init()`.
+
+### Changed
+- `drivers/LCD1602_I2C/src/lcd1602.h` — file header doxygen rewritten to describe both module variants (mono LCD1602 and LCD1602RGB) and the auto-detection.  Added 9 PCA9633 register / control-byte `#define`s (`LCD_RGB_REG_*`, `LCD_RGB_AI_BIT`, `LCD_RGB_I2C_ADDR`).
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.16.31` → `1.16.34` in both `lolin_s3` and `test_t2_relay` environments.
+
+### Removed
+- `lcd_backlight_on()` / `lcd_backlight_off()` — both were no-ops in the previous driver (the AiP31068L has no SW-controllable backlight) and no firmware source called them.  Replaced by the new `lcd_backlight_color()` / `lcd_backlight_lumination()` API which actually does something on RGB hardware.
+
+### Fixed
+- `firmware/src/main.cpp` — the on-board WS2812B (GPIO38) status LED palette now agrees with the LCD1602RGB backlight palette: `EG1_BIT_WIND_OVERRIDE` is treated as a critical safety event and lights **red** alongside `EG1_BIT_MOTOR_ALARM`.  Previously wind was bucketed with sensor faults as an amber "non-critical warning", which made the on-board LED and the LCD disagree about severity (LCD red, LED yellow) on the same event.  Sensor faults remain amber on the on-board LED so degraded-but-operating states are still distinguishable.
+- `firmware/src/web_server/web_server.cpp` — the `/api/status` JSON payload had four "raw" fields (`temp_c`, `rh_pct`, `wind_ms`, `wind_dir`) wired to the same `meas.*_avg_*` values as their `*_avg` counterparts.  The web GUI was therefore reporting averaged values for both pairs and the supposedly-instant readings tracked the controller's sliding-window output instead of the latest sensor sample.  All four raw fields now read from the corresponding raw struct members (`temperature_c`, `humidity_pct`, `wind_speed_ms10`, `wind_dir_deg`).  Operator-visible effect: a step change in measured T/RH/wind shows up on the status page within one poll cycle (~30 s) instead of taking up to `avg_win_t` / `avg_win_rh` minutes to fully settle.
+- `firmware/src/ui_display/ui_display.cpp` — LCD status page (case 0) was reading `meas.t_avg_c` and `meas.rh_avg_pct` for the displayed Temp/RH numbers, so the same lag bothered the operator at the device.  Now reads `meas.temperature_c` / `meas.humidity_pct`.  T6's control branch is untouched and continues to use the averaged values for the step ladder, so anti-chatter behaviour is unaffected.
+
+### Out of scope
+- `lcd_backlight_lumination()` is exported but not yet driven from the firmware — the boot default of 255 (full) is set by `pca9633_init()` and is left untouched.  Day/night dimming (e.g. honouring the existing `DEF_LED_NITE_FROM/TO` window already used by the NeoPixel) would layer on top of the new API without further driver changes.
+- The colour palette in `update_backlight_status()` is intentionally two-state because the green LED channel on the procured units doesn't light.  When/if the green LED is fixed (or a different module variant is sourced), a richer palette (e.g. green-OK / orange-warning / red-alarm) is a one-function edit in `status_colour_for_bits()`.
+
+---
+
 ## [1.16.31] — 2026-05-08
 
 *Apply the kas-2-calibrated anti-oscillation tuning from `simulation/new_settings_calibrated.json` to the firmware factory defaults. Per-motor dwell defaults replace the previous single-value `DEF_DWELL_OPEN_S` / `DEF_DWELL_CLOSE_S` so M3 (171 s ridge vent) can carry a substantially longer hold than M1/M2.*

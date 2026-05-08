@@ -313,14 +313,20 @@ static void build_status_json(char *buf, size_t len)
         "\"wifi_ip\":\"%s\","
         "\"wifi_rssi\":%d,"
         "\"fw_ver\":\"" FIRMWARE_VERSION "\"}",
-        meas_valid ? (float)meas.t_avg_c   : 0.0f,
-        meas_valid ? (float)meas.t_avg_c   : 0.0f,
-        meas_valid ? meas.rh_avg_pct        : 0u,
-        meas_valid ? meas.rh_avg_pct        : 0u,
+        /* "temp_c"  — raw / most-recent T sample (poll_interval_s old at most) */
+        meas_valid ? (float)meas.temperature_c : 0.0f,
+        /* "temp_avg" — sliding-window average used by T6 (avg_win_t minutes deep) */
+        meas_valid ? (float)meas.t_avg_c       : 0.0f,
+        /* "rh_pct"  — raw / most-recent RH sample */
+        meas_valid ? meas.humidity_pct        : 0u,
+        /* "rh_avg"  — sliding-window average */
+        meas_valid ? meas.rh_avg_pct           : 0u,
+        /* "wind_ms" / "wind_dir" — raw most-recent wind reading */
+        meas_valid ? meas.wind_speed_ms10 / 10.0f : 0.0f,
+        meas_valid ? meas.wind_dir_deg            : 0u,
+        /* "wind_avg" / "wind_avg_dir" — sliding-window averages */
         meas_valid ? meas.wind_speed_avg_ms10 / 10.0f : 0.0f,
-        meas_valid ? meas.wind_dir_avg_deg  : 0u,
-        meas_valid ? meas.wind_speed_avg_ms10 / 10.0f : 0.0f,
-        meas_valid ? meas.wind_dir_avg_deg  : 0u,
+        meas_valid ? meas.wind_dir_avg_deg            : 0u,
         w0, w1, w2,
         mode_str,
         cfg.is_daytime ? "true" : "false",

@@ -260,6 +260,74 @@ static const uint8_t BROWSE_BACK_GLYPH[8] = {
  * LCD helpers
  * ============================================================ */
 
+/* ============================================================
+ * RGB backlight status colour
+ *
+ * On the LCD1602RGB module, we tint the backlight to mirror the system
+ * status carried in EG1.  Priority is highest-severity-wins so a single
+ * glance at the device tells the operator what's happening.  The backlight
+ * is intentionally a one-bit "DANGER vs OK" indicator with a calm "OK"
+ * tone; the character row distinguishes which event is active.
+ *
+ *   MOTOR_ALARM     → red    (255,   0,   0)
+ *   WIND_OVERRIDE   → red    (255,   0,   0)
+ *   SENSOR_FAULT_T  → red    (255,   0,   0)
+ *   (none)          → blue   (  0,   0, 255)
+ *
+ * Two-colour palette (red/blue) instead of the original red/orange/white
+ * because the green channel on the procured Waveshare LCD1602RGB units
+ * does not light, so a "white" idle rendered as red-tinged magenta and
+ * looked alarming.  See pca9633_init() in lcd1602.cpp for the PCB's
+ * channel wiring (PWM0=B, PWM1=G, PWM2=R).
+ *
+ * On legacy LCD1602 (no PCA9633) lcd_backlight_color() is a no-op so this
+ * code path is harmless on monochrome hardware.
+ * ============================================================ */
+
+/* Packed RGB colour codes used by the status mapping below. */
+#define LCD_BL_BLUE    0x0000FFu
+#define LCD_BL_RED     0xFF0000u
+
+static uint32_t s_bl_colour_last = LCD_BL_BLUE;  /* matches lcd_init() boot default */
+
+static uint32_t status_colour_for_bits(EventBits_t bits)
+{
+    if (bits & (EG1_BIT_MOTOR_ALARM |
+                EG1_BIT_WIND_OVERRIDE |
+                EG1_BIT_SENSOR_FAULT_T)) {
+        return LCD_BL_RED;
+    }
+    return LCD_BL_BLUE;
+}
+
+/**
+ * @brief Update the LCD1602RGB backlight colour to mirror current EG1 state.
+ *
+ * Idempotent and cheap: reads EG1, looks up the target colour, and writes
+ * the PCA9633 only when the colour has changed since the last call.  Takes
+ * MX1 briefly when a write is needed.
+ */
+static void update_backlight_status(void)
+{
+    EventBits_t bits = xEventGroupGetBits(EG1);
+    uint32_t target = status_colour_for_bits(bits);
+    if (target == s_bl_colour_last) return;
+
+    if (xSemaphoreTake(MX1, pdMS_TO_TICKS(MX1_TIMEOUT_MS)) == pdTRUE) {
+        uint8_t r = (uint8_t)((target >> 16) & 0xFFu);
+        uint8_t g = (uint8_t)((target >>  8) & 0xFFu);
+        uint8_t b = (uint8_t)( target        & 0xFFu);
+        lcd_status_t st = lcd_backlight_color(r, g, b);
+        xSemaphoreGive(MX1);
+        if (st == LCD_OK) {
+            s_bl_colour_last = target;
+        } else {
+            ESP_LOGW(TAG, "lcd_backlight_color failed: %d — will retry", (int)st);
+        }
+    }
+    /* MX1 timeout: leave s_bl_colour_last unchanged so we retry next tick. */
+}
+
 /**
  * @brief Write s_row0 and s_row1 to the LCD under MX1.
  *
@@ -604,12 +672,20 @@ static void render_status(void)
         case 0: /* Temperature / humidity */
             if (valid) {
                 /* \xDF = HD44780 ROM A00 degree symbol; split literal so 'C'
-                 * is not absorbed into the hex escape sequence (\xDFC). */
-                snprintf(r0, sizeof(r0), "Temp:%3d \xDF" "C     ", (int)meas.t_avg_c);
+                 * is not absorbed into the hex escape sequence (\xDFC).
+                 *
+                 * Display uses raw (most-recent) sensor values so a step
+                 * change in real T/RH is visible within one poll cycle
+                 * (~30 s) instead of the avg_win_t / avg_win_rh window
+                 * (default 6 / 10 min).  T6 still uses meas.t_avg_c /
+                 * meas.rh_avg_pct for control decisions — anti-chatter
+                 * smoothing where it matters, live readings where the
+                 * operator wants them. */
+                snprintf(r0, sizeof(r0), "Temp:%3d \xDF" "C     ", (int)meas.temperature_c);
                 if (bits & EG1_BIT_SENSOR_FAULT_T) {
                     snprintf(r1, sizeof(r1), "** SENSOR FAULT ");
                 } else {
-                    snprintf(r1, sizeof(r1), "  RH:%3d %%      ", (int)meas.rh_avg_pct);
+                    snprintf(r1, sizeof(r1), "  RH:%3d %%      ", (int)meas.humidity_pct);
                 }
             } else {
                 snprintf(r0, sizeof(r0), "Temp: --- \xDF" "C    ");
@@ -1584,5 +1660,12 @@ void task_ui_display(void *pvParameters)
             /* If lcd_flush() returned false (MX1 timeout), s_dirty stays true
              * so the render+flush is retried on the next 100 ms tick. */
         }
+
+        /* ── 7. Update RGB backlight colour from EG1 status ──
+         * Cheap: only writes the PCA9633 when the resolved status colour
+         * actually changed since the last write.  No-op on legacy mono
+         * LCD1602 (lcd_backlight_color() returns LCD_OK without bus traffic
+         * when the PCA9633 was not detected at lcd_init()). */
+        update_backlight_status();
     }
 }

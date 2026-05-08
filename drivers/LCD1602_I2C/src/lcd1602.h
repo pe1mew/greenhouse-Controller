@@ -1,11 +1,16 @@
 /**
  * @file lcd1602.h
- * @brief HD44780 LCD1602 I2C driver — types and API for LIB-4.
+ * @brief HD44780 LCD1602 / LCD1602RGB I2C driver — types and API for LIB-4.
  *
- * Drives a Waveshare LCD1602 module: HD44780 controller connected via an
- * AiP31068L I2C-to-parallel bridge at I2C address 0x3E.  All bus access goes
- * through the LIB-2 i2c_bus driver; callers must call i2c_init() before
- * lcd_init().
+ * Drives both the original Waveshare LCD1602 (AiP31068L only) and the
+ * LCD1602RGB module (AiP31068L + PCA9633DP2 RGB backlight).  Detection is
+ * automatic in lcd_init(): the PCA9633 is probed at 0x60 and, if present, the
+ * RGB backlight is initialised to BLUE at full brightness; if absent (legacy
+ * monochrome module), the RGB-control functions become no-ops and the
+ * character display continues to work unchanged.
+ *
+ * All bus access goes through the LIB-2 i2c_bus driver; callers must call
+ * i2c_init() before lcd_init().
  *
  * AiP31068L write protocol (two bytes per transaction):
  * @code
@@ -13,10 +18,15 @@
  *   byte 1: HD44780 command or character byte
  * @endcode
  * The chip handles the parallel HD44780 interface internally (8-bit bus).
- * Backlight is not software-controlled on this module.
+ *
+ * PCA9633DP2 write protocol (auto-increment supported via the AI bit):
+ * @code
+ *   byte 0: control byte — register address; bit7 (AI) set = auto-increment
+ *   byte 1+: register data
+ * @endcode
  *
  * @author Greenhouse Controller project
- * @version 0.1.0
+ * @version 0.2.0
  */
 
 #pragma once
@@ -27,7 +37,7 @@
  * Display geometry and I2C address
  * --------------------------------------------------------------------------- */
 
-/** @brief 7-bit I2C address of the PCF8574A backpack on the Waveshare module. */
+/** @brief 7-bit I2C address of the AiP31068L character controller. */
 #define LCD_I2C_ADDR  0x3E
 
 /** @brief Number of character columns (characters per row). */
@@ -35,6 +45,35 @@
 
 /** @brief Number of rows. */
 #define LCD_ROWS   2
+
+/* ---------------------------------------------------------------------------
+ * PCA9633DP2 RGB backlight (LCD1602RGB module only)
+ *
+ * 8-bit slave address 0xC0 = 7-bit 0x60. Wired channels on this Waveshare
+ * LCD1602RGB PCB (verified empirically — does NOT match the Grove convention
+ * where LED0=R/LED1=G/LED2=B):
+ *   LED0 → BLUE
+ *   LED1 → GREEN
+ *   LED2 → RED
+ *   LED3 → unused
+ * lcd_backlight_color() handles the (r,g,b)-to-channel remap internally so
+ * callers can keep using the natural (r, g, b) argument order.
+ * --------------------------------------------------------------------------- */
+
+/** @brief 7-bit I2C address of the PCA9633DP2 RGB backlight controller. */
+#define LCD_RGB_I2C_ADDR    0x60
+
+#define LCD_RGB_REG_MODE1   0x00  /**< MODE1: write 0x00 to clear SLEEP and wake oscillator. */
+#define LCD_RGB_REG_MODE2   0x01  /**< MODE2: 0x05 = outputs change on STOP, group dimming, totem-pole. */
+#define LCD_RGB_REG_PWM0    0x02  /**< channel 0 PWM duty — wired to BLUE on this PCB.  */
+#define LCD_RGB_REG_PWM1    0x03  /**< channel 1 PWM duty — wired to GREEN. */
+#define LCD_RGB_REG_PWM2    0x04  /**< channel 2 PWM duty — wired to RED on this PCB.   */
+#define LCD_RGB_REG_PWM3    0x05  /**< channel 3 PWM duty — unused on this module. */
+#define LCD_RGB_REG_GRPPWM  0x06  /**< Group brightness (0..255) applied to all channels. */
+#define LCD_RGB_REG_LEDOUT  0x08  /**< Per-channel output mode: 0xFF = PWM × group dim, all 4. */
+
+/** @brief Control-byte bit that enables auto-increment of the register pointer. */
+#define LCD_RGB_AI_BIT      0x80
 
 /* ---------------------------------------------------------------------------
  * @defgroup lcd_types LCD types
@@ -173,22 +212,40 @@ lcd_status_t lcd_create_char(uint8_t slot, const uint8_t pattern[8]);
 lcd_status_t lcd_display_on(void);
 
 /**
- * @brief Turn the backlight on.
+ * @brief Set the RGB backlight colour.
  *
- * Sets the module-level backlight flag; the backlight bit is applied to all
- * subsequent byte writes to the PCF8574A.
+ * Writes the three individual PCA9633 PWM channels (R/G/B intensities) using
+ * an auto-increment burst from PWM0..PWM2.  The result is mixed with the
+ * group-PWM master brightness (see lcd_backlight_lumination()) to produce the
+ * final per-channel duty cycle.
  *
- * @return @ref LCD_OK.
+ * Silently returns @ref LCD_OK without bus traffic when the PCA9633 was not
+ * detected at lcd_init() (i.e. on legacy LCD1602 hardware without RGB).
+ *
+ * Must be called while the caller holds MX1.
+ *
+ * @param r  Red   intensity 0..255.
+ * @param g  Green intensity 0..255.
+ * @param b  Blue  intensity 0..255.
+ * @return @ref lcd_status_t.
  */
-lcd_status_t lcd_backlight_on(void);
+lcd_status_t lcd_backlight_color(uint8_t r, uint8_t g, uint8_t b);
 
 /**
- * @brief Turn the backlight off.
+ * @brief Set the RGB backlight master brightness.
  *
- * Clears the module-level backlight flag.
+ * Writes the PCA9633 GRPPWM register (0..255).  Acts as a master multiplier
+ * on the per-channel PWM values, so it dims the entire backlight without
+ * changing the colour.
  *
- * @return @ref LCD_OK.
+ * Silently returns @ref LCD_OK without bus traffic when the PCA9633 was not
+ * detected at lcd_init().
+ *
+ * Must be called while the caller holds MX1.
+ *
+ * @param level  Master brightness 0 (off) .. 255 (full).
+ * @return @ref lcd_status_t.
  */
-lcd_status_t lcd_backlight_off(void);
+lcd_status_t lcd_backlight_lumination(uint8_t level);
 
 /** @} */ /* end lcd_api */

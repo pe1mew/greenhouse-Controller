@@ -185,18 +185,22 @@ static void task_watchdog_heartbeat(void *pvParameters)
 
         /* ---------------------------------------------------------
          * Determine RGB colour from EG1 (lock-free read).
-         * Priority (highest first): Red → Amber → Green.  §5.12.
+         * Priority (highest first): Red → Amber → Green.
+         * Wind override is grouped with motor alarm (red) because both are
+         * critical safety events — windows force-closed against equipment
+         * damage. Aligned with the LCD1602RGB backlight palette in
+         * ui_display.cpp::status_colour_for_bits() so the on-board LED and
+         * the LCD never disagree about severity.
          * --------------------------------------------------------- */
         EventBits_t bits = xEventGroupGetBits(EG1);
         uint8_t r, g, b;
-        if (bits & EG1_BIT_MOTOR_ALARM) {
-            r = 255; g =   0; b = 0;   /* Red   — motor emergency stop */
+        if (bits & (EG1_BIT_MOTOR_ALARM | EG1_BIT_WIND_OVERRIDE)) {
+            r = 255; g =   0; b = 0;   /* Red   — critical safety event (motor or wind) */
         } else if (bits & (EG1_BIT_SENSOR_FAULT_T |
-                           EG1_BIT_SENSOR_FAULT_W |
-                           EG1_BIT_WIND_OVERRIDE)) {
-            r = 255; g = 128; b = 0;   /* Amber — non-critical warning */
+                           EG1_BIT_SENSOR_FAULT_W)) {
+            r = 255; g = 128; b = 0;   /* Amber — sensor fault (degraded but operating)  */
         } else {
-            r =   0; g = 255; b = 0;   /* Green — normal operation     */
+            r =   0; g = 255; b = 0;   /* Green — normal operation                       */
         }
 
         /* Apply day/night dim factor to each channel. */

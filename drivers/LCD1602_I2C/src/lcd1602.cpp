@@ -77,6 +77,82 @@ static lcd_status_t aip_data(uint8_t data)
 }
 
 /* ---------------------------------------------------------------------------
+ * PCA9633DP2 RGB backlight — present on LCD1602RGB, absent on legacy LCD1602.
+ *
+ * `s_rgb_present` is set by lcd_init() after probing 0x60.  All public
+ * lcd_backlight_*() functions early-return LCD_OK when this flag is false so
+ * legacy hardware keeps working without producing bus errors.
+ * --------------------------------------------------------------------------- */
+static bool s_rgb_present = false;
+
+/**
+ * @brief Initialise the PCA9633: wake from sleep, configure dimming, set boot
+ *        default to BLUE at full brightness.
+ *
+ * Returns LCD_OK in two cases:
+ *   - PCA9633 not present (legacy LCD1602 module) — `s_rgb_present` stays false
+ *   - PCA9633 present and successfully initialised — `s_rgb_present` set true
+ *
+ * Returns LCD_ERR_COMM if the device acks the probe but a subsequent register
+ * write fails (genuine bus error mid-init).
+ */
+static lcd_status_t pca9633_init(void)
+{
+    /* Probe: zero-length write is acked by the chip if its address bytes
+     * are recognised. NACK = device absent (legacy module). */
+    i2c_status_t probe = i2c_write(LCD_RGB_I2C_ADDR, NULL, 0);
+    if (probe == I2C_ERR_NACK) {
+        s_rgb_present = false;
+        return LCD_OK;
+    }
+    if (probe != I2C_OK) return LCD_ERR_COMM;
+
+    /* Wake from sleep — chip powers up with MODE1.SLEEP set; clearing it
+     * starts the internal oscillator. */
+    {
+        uint8_t buf[2] = { LCD_RGB_REG_MODE1, 0x00u };
+        if (map_i2c(i2c_write(LCD_RGB_I2C_ADDR, buf, 2)) != LCD_OK) return LCD_ERR_COMM;
+    }
+    /* MODE2: outputs change on STOP, group control = dimming (not blink),
+     * totem-pole drivers, no inversion. */
+    {
+        uint8_t buf[2] = { LCD_RGB_REG_MODE2, 0x05u };
+        if (map_i2c(i2c_write(LCD_RGB_I2C_ADDR, buf, 2)) != LCD_OK) return LCD_ERR_COMM;
+    }
+    /* GRPPWM = 0xFF — full master brightness; per-channel PWM applied directly. */
+    {
+        uint8_t buf[2] = { LCD_RGB_REG_GRPPWM, 0xFFu };
+        if (map_i2c(i2c_write(LCD_RGB_I2C_ADDR, buf, 2)) != LCD_OK) return LCD_ERR_COMM;
+    }
+    /* LEDOUT = 0xFF — all four channels in mode 0b11 (individual PWM × group
+     * dimming) so per-channel intensity and master brightness both take effect. */
+    {
+        uint8_t buf[2] = { LCD_RGB_REG_LEDOUT, 0xFFu };
+        if (map_i2c(i2c_write(LCD_RGB_I2C_ADDR, buf, 2)) != LCD_OK) return LCD_ERR_COMM;
+    }
+    /* Boot default: BLUE at full intensity (calm "OK" colour).
+     * On this Waveshare LCD1602RGB PCB the channels are wired
+     *   PWM0 = BLUE, PWM1 = GREEN, PWM2 = RED.
+     * Boot blue = (PWM0=255, PWM1=0, PWM2=0, PWM3=0). The application layer
+     * (T8) re-asserts the colour from EG1 status on the first tick anyway;
+     * this just gives a sensible default for the gap between lcd_init() and
+     * the first ui_display update. */
+    {
+        uint8_t buf[5] = {
+            (uint8_t)(LCD_RGB_AI_BIT | LCD_RGB_REG_PWM0),
+            0xFFu,  /* PWM0 = BLUE  → 255 */
+            0x00u,  /* PWM1 = GREEN → 0   */
+            0x00u,  /* PWM2 = RED   → 0   */
+            0x00u   /* PWM3 unused        */
+        };
+        if (map_i2c(i2c_write(LCD_RGB_I2C_ADDR, buf, sizeof buf)) != LCD_OK) return LCD_ERR_COMM;
+    }
+
+    s_rgb_present = true;
+    return LCD_OK;
+}
+
+/* ---------------------------------------------------------------------------
  * API implementation
  * --------------------------------------------------------------------------- */
 
@@ -116,6 +192,12 @@ lcd_status_t lcd_init(void)
     r = aip_cmd(CMD_CLEAR);        if (r != LCD_OK) return r;  /* clear display */
     lcd_delay_ms(2);                                            /* clear busy time ≥1.52 ms */
     r = aip_cmd(CMD_ENTRY_MODE);   if (r != LCD_OK) return r;  /* cursor increment, no shift */
+
+    /* Probe and initialise the PCA9633DP2 RGB backlight if this is an
+     * LCD1602RGB module. On the legacy mono LCD1602 (no PCA9633) this returns
+     * LCD_OK with s_rgb_present=false and the rest of the driver is unaffected. */
+    lcd_status_t rgb = pca9633_init();
+    if (rgb != LCD_OK) return rgb;
 
     return LCD_OK;
 }
@@ -209,14 +291,26 @@ lcd_status_t lcd_display_on(void)
     return aip_cmd(CMD_DISP_ON);
 }
 
-lcd_status_t lcd_backlight_on(void)
+lcd_status_t lcd_backlight_color(uint8_t r, uint8_t g, uint8_t b)
 {
-    /* Backlight is not software-controlled on this module (AiP31068L). */
-    return LCD_OK;
+    if (!s_rgb_present) return LCD_OK;
+    /* Auto-increment burst from PWM0..PWM2 in one I2C transaction.
+     * On this Waveshare LCD1602RGB PCB the channels are wired LED0=BLUE,
+     * LED1=GREEN, LED2=RED (R/B swapped vs Grove), so we remap here to keep
+     * the public (r, g, b) API natural for callers. Channel 3 is unused and
+     * was seeded to 0 by pca9633_init(); we don't touch it on every write. */
+    uint8_t buf[4] = {
+        (uint8_t)(LCD_RGB_AI_BIT | LCD_RGB_REG_PWM0),
+        b,   /* PWM0 → BLUE  */
+        g,   /* PWM1 → GREEN */
+        r    /* PWM2 → RED   */
+    };
+    return map_i2c(i2c_write(LCD_RGB_I2C_ADDR, buf, sizeof buf));
 }
 
-lcd_status_t lcd_backlight_off(void)
+lcd_status_t lcd_backlight_lumination(uint8_t level)
 {
-    /* Backlight is not software-controlled on this module (AiP31068L). */
-    return LCD_OK;
+    if (!s_rgb_present) return LCD_OK;
+    uint8_t buf[2] = { LCD_RGB_REG_GRPPWM, level };
+    return map_i2c(i2c_write(LCD_RGB_I2C_ADDR, buf, 2));
 }
