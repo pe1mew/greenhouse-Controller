@@ -29,8 +29,14 @@ ADMIN_PIN     = os.getenv("GH_ADMIN_PIN",      "12345678")
 # Restored unconditionally in teardown.
 TEST_POLL_S     = 30   # system/poll_interval  (s)
 TEST_TRAVEL_S   = 5    # motor/travel_m1/m2/m3 (s) — minimum allowed
-TEST_AVG_WIN    = 0    # climate/avg_win_t and avg_win_rh
-                       # 0 min → window_size = clamp(0×60/30, 1, 360) = 1 sample = immediate
+TEST_AVG_WIN    = 1    # climate/avg_win_t and avg_win_rh — minimum allowed.
+                       # cfg_clamp() (v1.16.25) enforces avg_win min=1, so 0 is silently
+                       # clamped.  At avg_win=1 min and poll_interval=30 s the rolling
+                       # window holds 2 samples, so the FIRST poll after a sensor push
+                       # reads (prev+new)/2 and will not match the pushed value within
+                       # tolerance.  push_and_verify_sensor() retries: the second push
+                       # fills both slots with the new value, avg matches, verification
+                       # succeeds.  Cost: ~one extra poll cycle per test case.
 
 # Timing margins
 POLL_MARGIN_S            = 5   # extra seconds beyond poll interval for sensor read
@@ -80,7 +86,7 @@ RH_MAX_DAY   = 70   # %
 HYST_RH      = 6    # %
 RH_MIN_DAY   = 40   # %
 RH_OPEN      = 80   # % — above rh_max; deviation = 10 → step 5, clamped to 3 (all)
-RH_DRY       = 35   # % — below rh_min → demands CLOSE_ALL (step 0)
+RH_DRY       = 35   # % — below rh_min → demands step 0 → per-channel CMD_CLOSE
 RH_NEUTRAL   = 55   # % — between rh_min and rh_max; no RH demand
 
 # ---------------------------------------------------------------------------
@@ -320,10 +326,12 @@ def windows_all_closed(status: dict) -> bool:
 def windows_all_closing(status: dict) -> bool:
     """True when every window is CLOSED or MOVING_CLOSE.
 
-    Used where the firmware has correctly issued CLOSE_ALL but M3's physical
-    travel time can exceed the relay pulse duration (travel_m3 production
-    default is 171 s; at TEST_TRAVEL_S=5 the relay is only energised for 10 s,
-    so the motor may still be moving when the status is polled).
+    Used where the firmware has correctly issued the close commands (per-channel
+    CMD_CLOSE for climate-control step→0 transitions, or CMD_CLOSE_ALL only on
+    safety events) but M3's physical travel time can exceed the relay pulse
+    duration (travel_m3 production default is 171 s; at TEST_TRAVEL_S=5 the
+    relay is only energised for 10 s, so the motor may still be moving when the
+    status is polled).
     """
     return all(w in ("CLOSED", "MOVING_CLOSE") for w in status.get("windows", []))
 
@@ -414,7 +422,7 @@ def setup(session: requests.Session) -> None:
     set_rest_mode()
 
     log.info("SETUP: writing fast-test config parameters")
-    # Averaging: 1 sample → immediate response to pushed values
+    # Averaging: 1 min × 60s ÷ 30s poll = 2 samples (cfg_clamp min); see TEST_AVG_WIN
     write_config(session, "climate", "avg_win_t",      TEST_AVG_WIN)
     write_config(session, "climate", "avg_win_rh",     TEST_AVG_WIN)
     # Motor travel: minimum; dwell disabled (factory default = 0, explicit anyway)
@@ -643,7 +651,9 @@ def run_cc016(results: Results, session: requests.Session) -> None:
 
     Precondition: at least one window open.
     Push T=18°C: below close threshold (25−6=19°C).
-    The close-hysteresis guard allows step-down to 0 → CMD_CLOSE_ALL.
+    The close-hysteresis guard allows step-down to 0 → per-channel CMD_CLOSE
+    (v1.16.22: apply_step_delta() no longer emits CMD_CLOSE_ALL for normal
+    climate transitions; CMD_CLOSE_ALL is reserved for safety events only).
     Assert: all windows reach CLOSED.
     """
     test_id = "UT-CC-016"
@@ -804,9 +814,10 @@ def run_cc019(results: Results, session: requests.Session) -> None:
 
         # Close any windows left open by the previous test before starting the
         # chatter check.  Without this, the prior test's stale T=T_NEUTRAL on
-        # the emulator can trigger a CLOSE_ALL on the very next firmware poll
-        # (before the T=T_STEP1 push is recognised), causing all windows to
-        # start MOVING_CLOSE instead of opening.
+        # the emulator can trigger an all-close (step 0 → per-channel CMD_CLOSE)
+        # on the very next firmware poll (before the T=T_STEP1 push is
+        # recognised), causing all windows to start MOVING_CLOSE instead of
+        # opening.
         force_windows_closed(session)
 
         log.info(f"  Opening M1: pushing T={T_STEP1}°C …")
@@ -867,16 +878,22 @@ def run_cc019(results: Results, session: requests.Session) -> None:
 
 def run_cc024(results: Results, session: requests.Session) -> None:
     """
-    UT-CC-024 — CLOSE_ALL when RH < RH_min_day (over-dry)
+    UT-CC-024 — Close all windows when RH < RH_min_day (over-dry)
 
     Config: rh_ctrl_en=1, rh_min_day=40, rh_max_day=70, t_max_day=40.
     Step 1. Open windows via high RH=80%.
     Step 2. Push RH=35% (below rh_min=40%) → vent_step_required_rh returns 0
-            → vent_resolve_conflict selects step 0 → CMD_CLOSE_ALL.
-    Assert: all windows CLOSED.
+            → vent_resolve_conflict selects step 0 → apply_step_delta() issues
+            per-channel CMD_CLOSE for every open channel.  (v1.16.22 reserved
+            CMD_CLOSE_ALL for safety events: wind override, motor alarm,
+            calibration.  Climate-control step→0 transitions go through
+            per-channel CMD_CLOSE so dwell_open_s is honoured.  With
+            dwell_open=0 in this test setup, the observable end-state is the
+            same: all windows CLOSED.)
+    Assert: all windows CLOSED (or MOVING_CLOSE if M3 is still travelling).
     """
     test_id = "UT-CC-024"
-    log.info(f"--- {test_id}: CLOSE_ALL when RH < RH_min_day ---")
+    log.info(f"--- {test_id}: Close all when RH < RH_min_day ---")
     try:
         write_config(session, "climate", "rh_ctrl_en",  1)
         write_config(session, "climate", "rh_max_day",  RH_MAX_DAY)
@@ -904,9 +921,9 @@ def run_cc024(results: Results, session: requests.Session) -> None:
             return
         log.info(f"  Windows open: {wins_str(status)}")
 
-        # Push RH below rh_min → CLOSE_ALL
+        # Push RH below rh_min → step 0 → per-channel CMD_CLOSE
         log.info(
-            f"  Pushing RH={RH_DRY}% (below rh_min={RH_MIN_DAY}%) → CLOSE_ALL …"
+            f"  Pushing RH={RH_DRY}% (below rh_min={RH_MIN_DAY}%) → step 0 → CMD_CLOSE …"
         )
         if not push_and_verify_sensor(session, T=T_NEUTRAL, RH=RH_DRY):
             results.record(test_id, False, "sensor not confirmed — test aborted")
@@ -917,18 +934,19 @@ def run_cc024(results: Results, session: requests.Session) -> None:
         log.info(f"  Windows: {wins_str(status)}")
 
         # Accept MOVING_CLOSE as a valid outcome: the firmware correctly issued
-        # CMD_CLOSE_ALL; M3's physical travel can exceed the relay pulse at
-        # TEST_TRAVEL_S=5 so it may still be moving when polled.
+        # per-channel CMD_CLOSE for the open channels; M3's physical travel can
+        # exceed the relay pulse at TEST_TRAVEL_S=5 so it may still be moving
+        # when polled.
         if windows_all_closing(status):
             results.record(
                 test_id, True,
-                f"RH={RH_DRY}% < rh_min={RH_MIN_DAY}% → CMD_CLOSE_ALL → "
+                f"RH={RH_DRY}% < rh_min={RH_MIN_DAY}% → step 0 → per-channel CMD_CLOSE → "
                 f"all CLOSED/MOVING_CLOSE: {wins_str(status)}",
             )
         else:
             results.record(
                 test_id, False,
-                f"Expected CMD_CLOSE_ALL at RH={RH_DRY}% "
+                f"Expected all CLOSED/MOVING_CLOSE at RH={RH_DRY}% "
                 f"(rh_min={RH_MIN_DAY}%), got: {wins_str(status)}",
             )
     except Exception as exc:

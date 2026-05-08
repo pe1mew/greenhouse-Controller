@@ -14,7 +14,7 @@ controlled readings.
 | UT-CC-017 | CLOSE when T < T_min_day |
 | UT-CC-018 | OPEN when RH > RH_max_day (rh_ctrl_en = true) |
 | UT-CC-019 | No relay chatter at setpoint boundary |
-| UT-CC-024 | CLOSE_ALL when RH < RH_min_day (over-dry) |
+| UT-CC-024 | Close all windows when RH < RH_min_day (over-dry) |
 | UT-CC-025 | Graduated ventilation step 1: M1 only |
 | UT-CC-026 | Graduated ventilation step 2: M1 + M2 |
 | UT-CC-027 | Graduated ventilation step 3: M1 + M2 + M3 |
@@ -65,8 +65,8 @@ manageable. All values are **restored unconditionally in a `finally` block**.
 |---------|-----------|-------------------|------------|---------|
 | `poll_interval` | `system` | 60 s | 30 s | Minimum wait between sensor reads |
 | `travel_m1/m2/m3` | `motor` | 21/21/171 s | 5 s | Minimum motor travel time |
-| `avg_win_t` | `climate` | varies | 0 | 0 min → window = 1 sample = immediate T response |
-| `avg_win_rh` | `climate` | varies | 0 | 0 min → window = 1 sample = immediate RH response |
+| `avg_win_t` | `climate` | varies | 1 | Minimum allowed (v1.16.25 `cfg_clamp` enforces ≥1). 1 min × 60/30 = 2 samples; first poll after a push reads (prev+new)/2; second poll reads the new value (handled by `push_and_verify_sensor` retry). |
+| `avg_win_rh` | `climate` | varies | 1 | Same as `avg_win_t`. |
 | `dwell_open_m1/2/3` | `motor` | 0 min | 0 min | No hold at OPEN before CLOSE accepted |
 | `dwell_close_m1/2/3` | `motor` | 0 min | 0 min | No hold at CLOSED before OPEN accepted |
 | `wind_prot_en` | `wind` | varies | 0 | Wind override must not interfere |
@@ -96,7 +96,7 @@ manageable. All values are **restored unconditionally in a `finally` block**.
 | UT-CC-017 (open then close on T_min) | ~100 s |
 | UT-CC-018 (open on RH) | ~100 s |
 | UT-CC-019 (chatter — 3 poll cycles) | ~155 s |
-| UT-CC-024 (over-dry CLOSE_ALL) | ~145 s |
+| UT-CC-024 (over-dry close-all) | ~145 s |
 | UT-CC-025/026/027 (graduated steps) | ~200 s |
 | UT-CC-028 (night setpoints) | ~100 s |
 | UT-CC-029 (day setpoints) | ~90 s |

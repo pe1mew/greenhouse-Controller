@@ -58,6 +58,7 @@
 #include "../auth/pin_auth.h"
 #include "lcd1602.h"
 #include "cfg_limits.h"
+#include "cfg_defaults.h"
 
 static const char *TAG = "T8_UI";
 
@@ -68,7 +69,7 @@ static const char *TAG = "T8_UI";
 #define STATUS_PAGE_TICKS    50u   /**< 5 s auto-rotate = 50 × 100 ms */
 #define STATUS_PAGES          6u   /**< Number of status pages (0-3 sensors/net, 4=time, 5=windows) */
 #define MX1_TIMEOUT_MS      200u   /**< MX1 acquire timeout */
-#define DEF_SESSION_MIN       5    /**< Session timeout default (minutes) */
+/* Session-timeout default lives in cfg_defaults.h as DEF_SESSION_TIMEOUT_MIN. */
 
 /* IO0 factory-reset sequence */
 #define RESET_PIN_IO0         0u    /**< GPIO0 = LOLIN S3 BOOT button (active-low) */
@@ -1498,7 +1499,7 @@ void task_ui_display(void *pvParameters)
             dm_cfg_snapshot(&cfg);
             uint32_t timeout_min = (cfg.session_timeout_min > 0)
                                    ? (uint32_t)cfg.session_timeout_min
-                                   : (uint32_t)DEF_SESSION_MIN;
+                                   : (uint32_t)DEF_SESSION_TIMEOUT_MIN;
             uint32_t timeout_ticks = timeout_min * 60u * (1000u / UI_LOOP_MS);
 
             s_idle_ticks++;

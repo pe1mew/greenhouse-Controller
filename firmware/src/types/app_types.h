@@ -24,34 +24,20 @@
 
 /* ============================================================
  * Section 1 — Factory-default hardware constants
+ *
+ * NVS factory defaults (incl. MOTOR_M*_TRAVEL_S_DEFAULT and
+ * MOTOR_TRAVEL_MARGIN_S_DEFAULT) live in config/cfg_defaults.h.
+ * Min/max validation bounds live in config/cfg_limits.h.
+ * Files that need either set should include those headers directly.
  * ============================================================ */
 
-/**
- * @defgroup motor_travel Motor full-travel time — factory defaults
- *
- * Factory-default motor full-travel times in seconds.  Written to NVS on
- * first boot; adjustable via web GUI (FR-CF05, admin).  T2 reads runtime
- * values from T4 (MX4), not these macros.
- *
- * Relay energisation time = (travel_mN + MOTOR_TRAVEL_MARGIN_S_DEFAULT) × 1000 ms.
- * De-energising before expiry stops the motor immediately — only full
- * open/close commands are ever issued.
- *
- * ### NVS keys (namespace `motor`)
- * | Key         | Type    | Default                   | Range (s) |
- * |-------------|---------|---------------------------|-----------|
- * | `travel_m1` | int16_t | MOTOR_M1_TRAVEL_S_DEFAULT | 5 – 600   |
- * | `travel_m2` | int16_t | MOTOR_M2_TRAVEL_S_DEFAULT | 5 – 600   |
- * | `travel_m3` | int16_t | MOTOR_M3_TRAVEL_S_DEFAULT | 5 – 600   |
- * @{
- */
-#define MOTOR_M1_TRAVEL_S_DEFAULT    21   /**< M1 factory default full-travel: 21 s */
-#define MOTOR_M2_TRAVEL_S_DEFAULT    21   /**< M2 factory default full-travel: 21 s */
-#define MOTOR_M3_TRAVEL_S_DEFAULT   171   /**< M3 (ridge vent) factory default: 171 s */
-#define MOTOR_TRAVEL_S_MIN            5   /**< Minimum allowed travel time (s) */
-#define MOTOR_TRAVEL_S_MAX          600   /**< Maximum allowed travel time (s) */
-#define MOTOR_TRAVEL_MARGIN_S_DEFAULT 5   /**< Fixed safety margin added to every relay pulse (s) */
-/** @} */
+/* Local clamp used by relay_controller's NVS-load fallback path.
+ * NB: cfg_limits.h::CFG_MIN_TRAVEL_S/CFG_MAX_TRAVEL_S are the user-facing
+ * web-GUI / cfg_clamp() bounds (5–300); these wider runtime bounds (5–600)
+ * tolerate field-installed motors with longer strokes that may have been
+ * written to NVS by an earlier firmware revision. */
+#define MOTOR_TRAVEL_S_MIN            5   /**< Minimum runtime travel time (s) */
+#define MOTOR_TRAVEL_S_MAX          600   /**< Maximum runtime travel time (s) */
 
 /** Graduated ventilation steps (Step 1=M1, Step 2=M1+M2, Step 3=M1+M2+M3). */
 #define NUM_VENT_STEPS  3

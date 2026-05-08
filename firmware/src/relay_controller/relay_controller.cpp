@@ -28,6 +28,8 @@
 #include "../event_logger/event_logger.h"
 #include "gpio_util.h"
 #include "nvs_config.h"
+#include "cfg_defaults.h"   /* MOTOR_M*_TRAVEL_S_DEFAULT, MOTOR_TRAVEL_MARGIN_S_DEFAULT,
+                             * DEF_DWELL_OPEN_S, DEF_DWELL_CLOSE_S */
 
 #include <Arduino.h>
 #include <esp_log.h>
@@ -64,8 +66,9 @@ static const int32_t TRAVEL_S_DEFAULT[NUM_CHANNELS] = {
     MOTOR_M3_TRAVEL_S_DEFAULT,
 };
 
-#define DWELL_OPEN_S_DEFAULT   0   /**< Default dwell after OPEN (s); configurable via NVS */
-#define DWELL_CLOSE_S_DEFAULT  0   /**< Default dwell after CLOSED (s); configurable via NVS */
+/* Dwell defaults are pulled from cfg_defaults.h directly: DEF_DWELL_OPEN_S,
+ * DEF_DWELL_CLOSE_S.  Used below as the NVS-load fallback in case T2 boots
+ * before T4 has seeded the keys. */
 
 /** Relay pin pairs: [channel][0=OPEN relay, 1=CLOSE relay]. */
 static const uint8_t RELAY_OPEN_PIN[NUM_CHANNELS]  = {
@@ -636,9 +639,9 @@ void task_relay_controller(void *pvParameters)
         nvs_cfg_get_i32_or_default(NVS_NS_MOTOR, NVS_KEY_TRAVEL[ch],
                                     TRAVEL_S_DEFAULT[ch], &travel_s);
         nvs_cfg_get_i32_or_default(NVS_NS_MOTOR, NVS_KEY_DWELL_OPEN[ch],
-                                    DWELL_OPEN_S_DEFAULT,  &dwell_open);
+                                    DEF_DWELL_OPEN_S,  &dwell_open);
         nvs_cfg_get_i32_or_default(NVS_NS_MOTOR, NVS_KEY_DWELL_CLOSE[ch],
-                                    DWELL_CLOSE_S_DEFAULT, &dwell_close);
+                                    DEF_DWELL_CLOSE_S, &dwell_close);
 
         /* Clamp travel to valid hardware range. */
         if (travel_s < MOTOR_TRAVEL_S_MIN) travel_s = MOTOR_TRAVEL_S_MIN;

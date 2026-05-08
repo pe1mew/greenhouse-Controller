@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.16.27] — 2026-05-08
+
+*Single source of truth for NVS factory defaults — new `firmware/config/cfg_defaults.h` mirrors the `cfg_limits.h` pattern.*
+
+### Added
+- `firmware/config/cfg_defaults.h` — new header collecting every `DEF_*` macro and the `MOTOR_M{1,2,3}_TRAVEL_S_DEFAULT` / `MOTOR_TRAVEL_MARGIN_S_DEFAULT` constants in one place.  Companion to `cfg_limits.h` (validation bounds): every layer that needs to know "what value should be written to NVS the first time we boot, or read back if a key is missing" now includes this header.  Sections mirror `cfg_limits.h`: temperature, humidity, hysteresis/control flags, wind, motor (travel + dwell + margin), system (poll/session/AP), site location, LED, timezone.
+
+### Changed
+- `firmware/src/data_manager/data_manager.cpp` — 47 lines of `DEF_*` `#define`s replaced with `#include "cfg_defaults.h"`.  No behaviour change for this file (it was already the de facto canonical home for these values); the move enables the same defaults to be consumed by other layers without duplication.
+- `firmware/src/types/app_types.h` — `MOTOR_M{1,2,3}_TRAVEL_S_DEFAULT` and `MOTOR_TRAVEL_MARGIN_S_DEFAULT` removed; consumers now `#include "cfg_defaults.h"` directly.  `MOTOR_TRAVEL_S_MIN/MAX` kept here with a clarifying comment (these are runtime hardware-tolerance bounds for the NVS-load fallback path; the user-facing GUI / `cfg_clamp()` bounds at 5–300 s live in `cfg_limits.h::CFG_*_TRAVEL_S`).
+- `firmware/src/ui_display/ui_display.cpp` — local `#define DEF_SESSION_MIN 5` removed; the session-timeout fallback at the idle-counter check now uses the shared `DEF_SESSION_TIMEOUT_MIN`.  The two macros agreed at 5/5 by coincidence, not by construction; the duplication is now gone.
+
+### Fixed
+- `firmware/src/relay_controller/relay_controller.cpp` — latent first-boot race condition resolved.  Local `DWELL_OPEN_S_DEFAULT = 0` and `DWELL_CLOSE_S_DEFAULT = 0` macros drifted from `data_manager.cpp`'s `DEF_DWELL_OPEN_S = 300` (changed in v1.16.23) and `DEF_DWELL_CLOSE_S = 0`.  Both modules call `nvs_cfg_get_i32_or_default()` for the dwell keys at startup; whichever ran first wrote its default value to NVS.  If T2 won the race on a fresh-flash device, dwell_open silently became 0 — defeating the 5-min anti-oscillation hold introduced in v1.16.23.  T2 now reads `DEF_DWELL_OPEN_S` / `DEF_DWELL_CLOSE_S` from `cfg_defaults.h` directly, so both tasks always agree.  Existing devices (with NVS-stored values) are unaffected.
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.16.26` → `1.16.27` in both `lolin_s3` and `test_t2_relay` environments.
+
+---
+
+## [1.16.26] — 2026-05-08
+
+*Fix timezone reverts to UTC after periodic NTP resync (or when geolocation lookup fails on initial connect).*
+
+### Fixed
+- `firmware/src/network_manager/network_manager.cpp` — `run_ntp_sync()` now re-reads `tz_str` from NVS and calls `setenv("TZ", ...)` + `tzset()` immediately after `configTime(0, 0, "pool.ntp.org")`. The Arduino-ESP32 `configTime()` call resets the C-library `TZ` environment variable to UTC on every NTP sync. Previously the only restoration path was the `setenv` inside `do_geo_sync()`, which is skipped on the 24-hour periodic resync (`run_ntp_sync(false)` at line 603) and silently bypassed on the initial sync whenever the `ip-api.com` HTTP GET failed, JSON parsing failed, or the returned IANA zone was not in the lookup table. Symptom: LCD, event log viewer, web `/api/events`, and LED day/night dimming all flipped to UTC roughly 24 h after boot — or immediately after the first NTP sync on networks where outbound HTTP to `ip-api.com` was blocked. NVS is read directly (instead of the MX4 shadow `s_cfg.tz_str`) because both `do_geo_sync()` and the `/api/config` web handler write `tz_str` to NVS without posting Q4, so the shadow can lag the persisted value until the next reboot.
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.16.25` → `1.16.26` in both `lolin_s3` and `test_t2_relay` environments.
+
+---
+
 ## [1.16.25] — 2026-05-07
 
 *Add per-key validation bounds to all integer config parameters received via Q4.*

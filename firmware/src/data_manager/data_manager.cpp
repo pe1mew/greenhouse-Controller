@@ -37,51 +37,10 @@
 static const char *TAG = "T4";
 
 /* ============================================================
- * NVS factory-default values
+ * NVS factory-default values  → config/cfg_defaults.h (single source of truth)
+ * Validation bounds (min/max)  → config/cfg_limits.h
  * ============================================================ */
-
-/* Climate — general-crop defaults (updated from conservative out-of-box values) */
-#define DEF_T_MIN_DAY      16   /**< Day heating setpoint (informational; future heating) */
-#define DEF_T_MAX_DAY      28   /**< Day ventilation threshold: open above 28 °C */
-#define DEF_T_MIN_NGT      14   /**< Night heating setpoint (informational; future heating) */
-#define DEF_T_MAX_NGT      20   /**< Night ventilation threshold: open above 20 °C */
-#define DEF_RH_MIN_DAY     50   /**< Day RH floor: close windows below 50 % (avoid crop desiccation) */
-#define DEF_RH_MAX_DAY     75   /**< Day RH ceiling: open above 75 % (disease pressure threshold) */
-#define DEF_RH_MIN_NGT     55   /**< Night RH floor: close windows below 55 % */
-#define DEF_RH_MAX_NGT     80   /**< Night RH ceiling: open above 80 % (condensation prevention) */
-#define DEF_HYST_T          5   /**< T hysteresis: 5 °C dead band — wider band reduces window oscillation */
-#define DEF_HYST_RH         5
-#define DEF_RH_CTRL_EN      1
-#define DEF_CR_PRIORITY     0
-#define DEF_AVG_WIN_T       6   /**< 6-min T averaging window: ~6 samples @ 60 s poll — smooths short thermal spikes */
-#define DEF_AVG_WIN_RH      5   /**< 5-min RH averaging window: ~5 samples @ 60 s poll */
-
-/* Wind */
-#define DEF_V_MAX           6   /**< Wind speed threshold (m/s) — Beaufort 4 onset + margin */
-#define DEF_DIR_EXCL_LOW    0   /**< No exclusion zone by default */
-#define DEF_DIR_EXCL_HIGH   0
-#define DEF_WIND_PROT_EN    1
-
-/* Motor dwell — travel defaults come from MOTOR_MN_TRAVEL_S_DEFAULT (app_types.h) */
-/* Unit: seconds — T2 reads the NVS value and multiplies by 1000 to get milliseconds. */
-#define DEF_DWELL_OPEN_S   300  /**< 300 s (5 min) post-open dwell: hold windows open long enough for climate to stabilise */
-#define DEF_DWELL_CLOSE_S    0
-
-/* System */
-#define DEF_POLL_INTERVAL_S      60   /**< 60 s poll: adequate for greenhouse dynamics; halves relay wear vs 30 s */
-#define DEF_SESSION_TIMEOUT_MIN   5
-#define DEF_AP_TIMEOUT_MIN       30
-#define DEF_LAT_DEG              52   /**< Netherlands default latitude */
-#define DEF_LAT_FRAC              0
-#define DEF_LON_DEG               5   /**< Netherlands default longitude */
-#define DEF_LON_FRAC              0
-#define DEF_LED_DAY_BRT         200
-#define DEF_LED_NITE_BRT         20
-#define DEF_LED_NITE_FROM        22
-#define DEF_LED_NITE_TO           6
-#define DEF_TZ_STR    "CET-1CEST,M3.5.0,M10.5.0/3"
-
-/* Validation bounds — single source of truth in config/cfg_limits.h */
+#include "cfg_defaults.h"
 #include "cfg_limits.h"
 
 /* ============================================================

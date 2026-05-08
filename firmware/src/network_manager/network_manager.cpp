@@ -493,6 +493,17 @@ static void run_ntp_sync(bool do_geo = true)
              do_geo ? "" : " [periodic resync — geo skipped]");
     configTime(0, 0, "pool.ntp.org");
 
+    /* configTime() resets the TZ env to UTC. Re-apply the persisted POSIX TZ
+     * so localtime_r() keeps working after every sync (initial and 24h resync).
+     * NVS is the source of truth — the in-memory shadow may lag a geo-sync
+     * update because do_geo_sync() / web_server write NVS without posting Q4. */
+    char tz_buf[64] = {};
+    nvs_cfg_get_str(NVS_NS_SYSTEM, "tz_str", tz_buf, sizeof(tz_buf));
+    if (tz_buf[0] != '\0') {
+        setenv("TZ", tz_buf, 1);
+        tzset();
+    }
+
     for (int i = 0; i < NTP_WAIT_STEPS; i++) {
         vTaskDelay(pdMS_TO_TICKS(1000));
         if (time(NULL) > NTP_MIN_EPOCH) {
