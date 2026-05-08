@@ -29,7 +29,7 @@
 #include "gpio_util.h"
 #include "nvs_config.h"
 #include "cfg_defaults.h"   /* MOTOR_M*_TRAVEL_S_DEFAULT, MOTOR_TRAVEL_MARGIN_S_DEFAULT,
-                             * DEF_DWELL_OPEN_S, DEF_DWELL_CLOSE_S */
+                             * DEF_DWELL_OPEN_M{1,2,3}_S, DEF_DWELL_CLOSE_M{1,2,3}_S */
 #include "cfg_limits.h"     /* CFG_MIN_TRAVEL_S, CFG_MAX_TRAVEL_S */
 
 #include <Arduino.h>
@@ -67,9 +67,20 @@ static const int32_t TRAVEL_S_DEFAULT[NUM_CHANNELS] = {
     MOTOR_M3_TRAVEL_S_DEFAULT,
 };
 
-/* Dwell defaults are pulled from cfg_defaults.h directly: DEF_DWELL_OPEN_S,
- * DEF_DWELL_CLOSE_S.  Used below as the NVS-load fallback in case T2 boots
- * before T4 has seeded the keys. */
+/* Per-motor dwell defaults — M3 has substantially longer hold times than
+ * M1/M2 to suppress the slow RH-driven oscillation observed in the kas-2
+ * calibration. Used below as the NVS-load fallback in case T2 boots before
+ * T4 has seeded the keys. */
+static const int32_t DWELL_OPEN_S_DEFAULT[NUM_CHANNELS] = {
+    DEF_DWELL_OPEN_M1_S,
+    DEF_DWELL_OPEN_M2_S,
+    DEF_DWELL_OPEN_M3_S,
+};
+static const int32_t DWELL_CLOSE_S_DEFAULT[NUM_CHANNELS] = {
+    DEF_DWELL_CLOSE_M1_S,
+    DEF_DWELL_CLOSE_M2_S,
+    DEF_DWELL_CLOSE_M3_S,
+};
 
 /** Relay pin pairs: [channel][0=OPEN relay, 1=CLOSE relay]. */
 static const uint8_t RELAY_OPEN_PIN[NUM_CHANNELS]  = {
@@ -640,9 +651,9 @@ void task_relay_controller(void *pvParameters)
         nvs_cfg_get_i32_or_default(NVS_NS_MOTOR, NVS_KEY_TRAVEL[ch],
                                     TRAVEL_S_DEFAULT[ch], &travel_s);
         nvs_cfg_get_i32_or_default(NVS_NS_MOTOR, NVS_KEY_DWELL_OPEN[ch],
-                                    DEF_DWELL_OPEN_S,  &dwell_open);
+                                    DWELL_OPEN_S_DEFAULT[ch],  &dwell_open);
         nvs_cfg_get_i32_or_default(NVS_NS_MOTOR, NVS_KEY_DWELL_CLOSE[ch],
-                                    DEF_DWELL_CLOSE_S, &dwell_close);
+                                    DWELL_CLOSE_S_DEFAULT[ch], &dwell_close);
 
         /* Clamp travel to valid range — same bounds as cfg_clamp() and the
          * web GUI (single source of truth: cfg_limits.h). */

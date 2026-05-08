@@ -56,10 +56,10 @@
 /* ── Motor (seconds) ─────────────────────────────────────────────────────── */
 #define CFG_MIN_TRAVEL_S      5   /* below 5 s motor cannot complete full stroke */
 #define CFG_MAX_TRAVEL_S    300
-#define CFG_MIN_DWELL_OPEN_S  0   /* 0 = no hold; higher values reduce oscillation */
-#define CFG_MAX_DWELL_OPEN_S 600
-#define CFG_MIN_DWELL_CLOSE_S 0
-#define CFG_MAX_DWELL_CLOSE_S 300
+#define CFG_MIN_DWELL_OPEN_S    0   /* 0 = no hold; higher values reduce oscillation */
+#define CFG_MAX_DWELL_OPEN_S 1500   /* M3 may need up to 25 min hold to suppress slow RH oscillation (kas-2 calibration) */
+#define CFG_MIN_DWELL_CLOSE_S   0
+#define CFG_MAX_DWELL_CLOSE_S 1500  /* matched to dwell_open ceiling so M3 can run a symmetric closed-state hold */
 
 /* ── System ───────────────────────────────────────────────────────────────── */
 #define CFG_MIN_POLL_S       30   /* below 30 s provides no benefit for greenhouse dynamics */

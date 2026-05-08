@@ -15,10 +15,18 @@
  *   3. ui_display.cpp / session-timeout calc  — fallback when the cfg shadow
  *                                                snapshot is unavailable.
  *
- * Anti-oscillation rationale (see simulation/simulationOptimisation.md):
- *   DEF_HYST_T       = 5    wider band reduces window oscillation
- *   DEF_AVG_WIN_T    = 6    smooths short thermal spikes
- *   DEF_DWELL_OPEN_S = 300  5 min minimum open time prevents short cycles
+ * Anti-oscillation rationale (see simulation/simulationOptimisation.md and
+ * the kas-2 calibration in simulation/new_settings_calibrated.json):
+ *   DEF_HYST_T              = 5     wider band reduces window oscillation
+ *   DEF_HYST_RH             = 12    wider RH dead band suppresses small-signal toggles
+ *   DEF_AVG_WIN_T           = 6     smooths short thermal spikes
+ *   DEF_AVG_WIN_RH          = 10    matched to the doubled-buffer 30 s poll
+ *   DEF_POLL_INTERVAL_S     = 30    finer sampling, twice the smoothing depth in same time window
+ *   DEF_DWELL_OPEN_M1/M2_S  = 300   5 min hold for the short-travel roof vents
+ *   DEF_DWELL_OPEN_M3_S     = 1500  25 min hold for M3 specifically (171 s travel makes it the
+ *                                   dominant slow-oscillation driver; long hold breaks the cycle)
+ *   DEF_DWELL_CLOSE_M3_S    = 600   10 min closed-state hold on M3 — symmetric counterpart;
+ *                                   prevents reopen-after-close micro-cycles
  *
  * NB: existing devices keep their NVS-stored values across firmware upgrades;
  * default changes only apply on a fresh flash or after factory-reset.
@@ -40,11 +48,11 @@
 
 /* ── Climate — control flags and tuning ─────────────────────────────────── */
 #define DEF_HYST_T          5   /**< T hysteresis: 5 °C dead band — wider band reduces window oscillation */
-#define DEF_HYST_RH         5
+#define DEF_HYST_RH        12   /**< RH hysteresis: 12 % dead band — suppresses small-signal step toggles on humid days */
 #define DEF_RH_CTRL_EN      1   /**< RH control enabled by default */
-#define DEF_CR_PRIORITY     0   /**< Conflict resolution: 0 = CR_TEMP_FIRST */
-#define DEF_AVG_WIN_T       6   /**< 6-min T averaging window: ~6 samples @ 60 s poll — smooths short thermal spikes */
-#define DEF_AVG_WIN_RH      5   /**< 5-min RH averaging window: ~5 samples @ 60 s poll */
+#define DEF_CR_PRIORITY     0   /**< Conflict resolution: 0 = CR_TEMP_FIRST (preserves T-floor protection on cool humid nights) */
+#define DEF_AVG_WIN_T       6   /**< 6-min T averaging window: ~12 samples @ 30 s poll — smooths short thermal spikes */
+#define DEF_AVG_WIN_RH     10   /**< 10-min RH averaging window: ~20 samples @ 30 s poll — extra smoothing for the M3 RH-driven scenarios */
 
 /* ── Wind ───────────────────────────────────────────────────────────────── */
 #define DEF_V_MAX           6   /**< Wind speed threshold (m/s) — Beaufort 4 onset + margin */
@@ -62,12 +70,20 @@
 #define MOTOR_TRAVEL_MARGIN_S_DEFAULT    5   /**< Fixed safety margin added to every relay pulse (s) */
 
 /* ── Motor — dwell (seconds) ────────────────────────────────────────────── */
-/* Unit: seconds — T2 reads the NVS value and multiplies by 1000 for ms. */
-#define DEF_DWELL_OPEN_S   300  /**< 300 s (5 min) post-open dwell: hold windows open long enough for climate to stabilise */
-#define DEF_DWELL_CLOSE_S    0  /**< No mandatory closed-state hold by default */
+/* Per-motor: M3 (171 s travel ridge vent) needs a much longer post-open hold
+ * to break the slow oscillation observed on humid days; M1 and M2 (21 s
+ * travel roof vents) can use the standard 5 min hold. dwell_close on M3
+ * adds a symmetric closed-state hold for the same anti-oscillation reason.
+ * Unit: seconds — T2 reads the NVS value and multiplies by 1000 for ms. */
+#define DEF_DWELL_OPEN_M1_S    300   /**< M1: 5 min post-open hold */
+#define DEF_DWELL_OPEN_M2_S    300   /**< M2: 5 min post-open hold */
+#define DEF_DWELL_OPEN_M3_S   1500   /**< M3: 25 min post-open hold (kas-2 calibrated, breaks slow RH oscillation) */
+#define DEF_DWELL_CLOSE_M1_S     0   /**< M1: no mandatory closed-state hold */
+#define DEF_DWELL_CLOSE_M2_S     0   /**< M2: no mandatory closed-state hold */
+#define DEF_DWELL_CLOSE_M3_S   600   /**< M3: 10 min closed-state hold — symmetric anti-oscillation counterpart to the open hold */
 
 /* ── System ─────────────────────────────────────────────────────────────── */
-#define DEF_POLL_INTERVAL_S      60   /**< 60 s poll: adequate for greenhouse dynamics; halves relay wear vs 30 s */
+#define DEF_POLL_INTERVAL_S      30   /**< 30 s poll: doubles smoothing-buffer depth at same time-window without the firmware-revisit overhead of finer rates */
 #define DEF_SESSION_TIMEOUT_MIN   5   /**< Idle session expiry (minutes) */
 #define DEF_AP_TIMEOUT_MIN       30   /**< Soft-AP auto-stop (minutes); 0 = stay up */
 

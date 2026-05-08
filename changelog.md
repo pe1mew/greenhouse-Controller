@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.16.31] — 2026-05-08
+
+*Apply the kas-2-calibrated anti-oscillation tuning from `simulation/new_settings_calibrated.json` to the firmware factory defaults. Per-motor dwell defaults replace the previous single-value `DEF_DWELL_OPEN_S` / `DEF_DWELL_CLOSE_S` so M3 (171 s ridge vent) can carry a substantially longer hold than M1/M2.*
+
+### Changed
+- `firmware/config/cfg_defaults.h`:
+  - `DEF_HYST_RH` 5 → 12 — wider RH dead band suppresses small-signal step toggles on humid days.
+  - `DEF_AVG_WIN_RH` 5 → 10 — 10-min RH averaging window gives ~20 samples at the new 30 s poll rate (was 5 samples at 60 s); much smoother input to the step ladder without changing the response horizon.
+  - `DEF_POLL_INTERVAL_S` 60 → 30 — finer sampling.  Doubles the buffer depth feeding `DEF_AVG_WIN_T` / `DEF_AVG_WIN_RH` for the same time-window average, so the controller sees a smoother signal while still firing every 30 s rather than every 60 s.
+  - `DEF_DWELL_OPEN_S` (single value) replaced by `DEF_DWELL_OPEN_M1_S` = 300, `DEF_DWELL_OPEN_M2_S` = 300, `DEF_DWELL_OPEN_M3_S` = 1500.  M3's 171 s travel time makes it the dominant slow-oscillation driver in the kas-2 simulation; a 25 min open hold breaks the open-then-close-then-open cycle observed at midday on humid days.  M1/M2 keep the 5 min hold from v1.16.23.
+  - `DEF_DWELL_CLOSE_S` (single value) replaced by `DEF_DWELL_CLOSE_M1_S` = 0, `DEF_DWELL_CLOSE_M2_S` = 0, `DEF_DWELL_CLOSE_M3_S` = 600.  The 10 min closed-state hold on M3 is the symmetric counterpart to the open hold; together they ensure M3 can complete a full open-or-closed run before the controller is allowed to reverse it.
+  - File header anti-oscillation comment updated to reflect all five tuning knobs and reference `simulation/new_settings_calibrated.json` as the source.
+- `firmware/config/cfg_limits.h`:
+  - `CFG_MAX_DWELL_OPEN_S` 600 → 1500 — required so `cfg_clamp()` and the web GUI accept the new M3 default.  M1/M2 are unaffected because their default stays at 300 s.
+  - `CFG_MAX_DWELL_CLOSE_S` 300 → 1500 — needed for the same reason on the close-side: without raising this, `cfg_clamp()` would silently truncate the new `dwell_close_m3 = 600` default.  Both ceilings now match for symmetry.
+- `firmware/src/data_manager/data_manager.cpp` — `nvs_load_motor()` now reads dwell defaults from per-motor arrays (`def_do[3]`, `def_dc[3]`) rather than a single shared scalar.  The travel-default array (`def_tr[]`) was already per-motor; this brings dwell into the same shape.
+- `firmware/src/relay_controller/relay_controller.cpp` — adds `DWELL_OPEN_S_DEFAULT[NUM_CHANNELS]` and `DWELL_CLOSE_S_DEFAULT[NUM_CHANNELS]` arrays mirroring the existing `TRAVEL_S_DEFAULT[]`; the T2-init loop now indexes into them per channel.  The `cfg_defaults.h` include comment updated to reference the new symbol names.
+
+### Out of scope
+- Existing devices keep their NVS-stored dwell values across the firmware upgrade; only fresh flashes (or a factory-reset) inherit the new per-motor defaults.  Operators who want the new tuning on an in-service device need to set `dwell_open_m3 = 1500` and `dwell_close_m3 = 600` manually via the web GUI or LCD keypad.
+- The simulation's `ACH_INF` background-infiltration constant (`simulation/simulation.py`) is still 0.5 /h.  The kas-2 fit suggests ~1.35 /h would be more accurate; making `ACH_INF` configurable from the plant-model JSON is still a future change (flagged in v1.16.30 already).
+
+### Fixed
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.16.30` → `1.16.31` in both `lolin_s3` and `test_t2_relay` environments.
+
+---
+
 ## [1.16.30] — 2026-05-08
 
 *T6 climate-control becomes level-triggered so dwell-deferred close/open commands are retried until they take effect; simulation tooling is upgraded to mirror the firmware FSM and to accept live sensor data for calibration.*

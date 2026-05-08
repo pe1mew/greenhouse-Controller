@@ -1,6 +1,6 @@
 {
   "_comment": "Greenhouse Controller simulation — optimised settings for general crops (moderate biomass + active soil + glazing).",
-  "_note": "Changes vs firmware v1.16.22 defaults: hyst_t 3→5, avg_win_t 3→6, dwell_open 120→300 s, c_eff_mj_per_c 10→30 (general-crops thermal mass).",
+  "_note": "Changes vs firmware factory defaults: hyst_t 3→5, hyst_rh 5→8, avg_win_t 3→6, dwell_open M1/M2 120→300 s and M3 120→900 s (M3's 171 s travel makes it the dominant oscillation driver, so it gets a longer minimum-open hold), c_eff_mj_per_c 10→30 (general-crops thermal mass; lives in plant_general_crops.json).",
 
   "climate": {
     "t_max_day":   28,
@@ -10,7 +10,7 @@
     "rh_min_ngt":  55,
     "rh_max_ngt":  80,
     "hyst_t":       5,
-    "hyst_rh":      5,
+    "hyst_rh":      8,
     "rh_ctrl_en":   1,
     "cr_priority":  0,
     "avg_win_t":    6,
@@ -30,7 +30,7 @@
     "travel_m3":     171,
     "dwell_open_m1": 300,
     "dwell_open_m2": 300,
-    "dwell_open_m3": 300,
+    "dwell_open_m3": 900,
     "dwell_close_m1":  0,
     "dwell_close_m2":  0,
     "dwell_close_m3":  0

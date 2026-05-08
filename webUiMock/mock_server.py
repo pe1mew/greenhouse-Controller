@@ -15,6 +15,7 @@ POST /api/login         {role, pin} → {ok, role}
 POST /api/logout        → {ok:true} + clears cookie
 GET  /api/status        full status JSON (same payload as WebSocket push)
 GET  /api/config        all configuration parameters
+GET  /api/config/limits min/max ranges per parameter (public, no auth)
 POST /api/config        {ns, key, value} or {ns, key, str_value}
 POST /api/wifi          {ssid, psk} or {ap_psk}
 POST /api/pin           {role, pin}  (admin only)
@@ -67,40 +68,43 @@ pins = {"farmer": "1234", "admin": "12345678"}
 sessions: dict[str, dict] = {}
 sessions_lock = threading.Lock()
 
-# NVS config state — mirrors build_config_json() in web_server.cpp
+# NVS config state — mirrors build_config_json() in web_server.cpp.
+# Default values track firmware/config/cfg_defaults.h so the GUI sees the
+# same fresh-flash factory defaults whether it talks to the mock or to a
+# real device.
 cfg: dict = {
     "wifi_ssid":           "MyNetwork",
     "ap_ssid":             "Greenhouse-AABB",
-    "t_max_day":           28,
-    "t_min_day":           18,
-    "t_max_ngt":           22,
-    "t_min_ngt":           14,
-    "rh_max_day":          80,
-    "rh_min_day":          40,
-    "rh_max_ngt":          85,
-    "rh_min_ngt":          45,
-    "hyst_t":               2,
-    "hyst_rh":              5,
+    "t_max_day":           28,    # DEF_T_MAX_DAY
+    "t_min_day":           16,    # DEF_T_MIN_DAY
+    "t_max_ngt":           20,    # DEF_T_MAX_NGT
+    "t_min_ngt":           14,    # DEF_T_MIN_NGT
+    "rh_max_day":          75,    # DEF_RH_MAX_DAY
+    "rh_min_day":          50,    # DEF_RH_MIN_DAY
+    "rh_max_ngt":          80,    # DEF_RH_MAX_NGT
+    "rh_min_ngt":          55,    # DEF_RH_MIN_NGT
+    "hyst_t":               5,    # DEF_HYST_T
+    "hyst_rh":             12,    # DEF_HYST_RH (1.16.31: anti-oscillation widening)
     "rh_ctrl_en":           1,
     "cr_priority":          0,
-    "avg_win_t":            5,
-    "avg_win_rh":           5,
-    "v_max":                8,
+    "avg_win_t":            6,    # DEF_AVG_WIN_T
+    "avg_win_rh":          10,    # DEF_AVG_WIN_RH (1.16.31)
+    "v_max":                6,    # DEF_V_MAX
     "wind_prot_en":         1,
     "dir_excl_low":         0,
     "dir_excl_high":        0,
-    "travel_s":            [45, 45, 45],
-    "dwell_open_min":      [ 5,  5,  5],
-    "dwell_close_min":     [ 5,  5,  5],
-    "poll_interval_s":     30,
-    "session_timeout_min": 30,
-    "ap_timeout_min":      10,
-    "lat_deg":             52,
-    "lat_frac":           100,
-    "lon_deg":              4,
-    "lon_frac":           300,
+    "travel_s":            [21, 21, 171],     # MOTOR_M{1,2,3}_TRAVEL_S_DEFAULT
+    "dwell_open_min":      [300, 300, 1500],  # DEF_DWELL_OPEN_M{1,2,3}_S (1.16.31: per-motor split, M3=1500)
+    "dwell_close_min":     [  0,   0,  600],  # DEF_DWELL_CLOSE_M{1,2,3}_S (1.16.31: per-motor split, M3=600)
+    "poll_interval_s":     30,    # DEF_POLL_INTERVAL_S
+    "session_timeout_min":  5,    # DEF_SESSION_TIMEOUT_MIN
+    "ap_timeout_min":      30,    # DEF_AP_TIMEOUT_MIN
+    "lat_deg":             52,    # DEF_LAT_DEG
+    "lat_frac":             0,    # DEF_LAT_FRAC
+    "lon_deg":              5,    # DEF_LON_DEG
+    "lon_frac":             0,    # DEF_LON_FRAC
     "tz_str":              "CET-1CEST,M3.5.0,M10.5.0/3",
-    "fw_ver":              "1.16.7",
+    "fw_ver":              "1.16.31",
 }
 
 sd: dict = {"mounted": True, "size_mb": 7500, "free_mb": 7100}
@@ -388,6 +392,46 @@ def status():
     if not _get_role():
         return {"ok": False}, 401
     return _build_status()
+
+
+# Mirrors the static LIMITS_JSON string in firmware/src/web_server/web_server.cpp
+# (see firmware/config/cfg_limits.h — single source of truth).  app.js fetches
+# this once at page load and applies min/max to every <input> element.
+CONFIG_LIMITS: dict[str, list[int]] = {
+    "t_max_day":      [15, 45],
+    "t_min_day":      [ 5, 40],
+    "t_max_ngt":      [10, 35],
+    "t_min_ngt":      [ 0, 30],
+    "rh_max_day":     [40, 98],
+    "rh_min_day":     [20, 90],
+    "rh_max_ngt":     [40, 98],
+    "rh_min_ngt":     [20, 90],
+    "hyst_t":         [ 2, 15],
+    "hyst_rh":        [ 2, 20],
+    "avg_win_t":      [ 1, 30],
+    "avg_win_rh":     [ 1, 30],
+    "v_max":          [ 1, 30],
+    "dir_excl_low":   [ 0, 359],
+    "dir_excl_high":  [ 0, 359],
+    "travel_m1":      [ 5, 300],
+    "travel_m2":      [ 5, 300],
+    "travel_m3":      [ 5, 300],
+    "dwell_open_m1":  [ 0, 1500],   # 1.16.31: ceiling raised so M3 default 1500 round-trips
+    "dwell_open_m2":  [ 0, 1500],
+    "dwell_open_m3":  [ 0, 1500],
+    "dwell_close_m1": [ 0, 1500],   # 1.16.31: matched to dwell_open ceiling
+    "dwell_close_m2": [ 0, 1500],
+    "dwell_close_m3": [ 0, 1500],
+    "poll_interval":  [30, 300],
+    "session_timeout":[ 1, 1440],
+    "ap_timeout":     [ 0, 1440],
+}
+
+
+@app.route("/api/config/limits", methods=["GET"])
+def config_limits_get():
+    """Public endpoint (no auth) — same as the firmware web_server."""
+    return CONFIG_LIMITS
 
 
 @app.route("/api/config", methods=["GET"])

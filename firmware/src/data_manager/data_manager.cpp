@@ -259,11 +259,21 @@ static void nvs_load_motor(void)
         MOTOR_M2_TRAVEL_S_DEFAULT,
         MOTOR_M3_TRAVEL_S_DEFAULT
     };
+    static const int32_t def_do[3] = {
+        DEF_DWELL_OPEN_M1_S,
+        DEF_DWELL_OPEN_M2_S,
+        DEF_DWELL_OPEN_M3_S
+    };
+    static const int32_t def_dc[3] = {
+        DEF_DWELL_CLOSE_M1_S,
+        DEF_DWELL_CLOSE_M2_S,
+        DEF_DWELL_CLOSE_M3_S
+    };
 
     for (uint8_t i = 0u; i < 3u; i++) {
-        nvs_cfg_get_i32_or_default(NVS_NS_MOTOR, ktr[i], def_tr[i],         &v); s_cfg.travel_s[i]        = (int16_t)v;
-        nvs_cfg_get_i32_or_default(NVS_NS_MOTOR, kdo[i], DEF_DWELL_OPEN_S,  &v); s_cfg.dwell_open_min[i]  = (int16_t)v;
-        nvs_cfg_get_i32_or_default(NVS_NS_MOTOR, kdc[i], DEF_DWELL_CLOSE_S, &v); s_cfg.dwell_close_min[i] = (int16_t)v;
+        nvs_cfg_get_i32_or_default(NVS_NS_MOTOR, ktr[i], def_tr[i], &v); s_cfg.travel_s[i]        = (int16_t)v;
+        nvs_cfg_get_i32_or_default(NVS_NS_MOTOR, kdo[i], def_do[i], &v); s_cfg.dwell_open_min[i]  = (int16_t)v;
+        nvs_cfg_get_i32_or_default(NVS_NS_MOTOR, kdc[i], def_dc[i], &v); s_cfg.dwell_close_min[i] = (int16_t)v;
     }
 }
 
