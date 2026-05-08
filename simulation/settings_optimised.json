@@ -1,6 +1,6 @@
 {
-  "_comment": "Greenhouse Controller simulation — optimised settings for reduced window oscillation.",
-  "_note": "Changes vs firmware v1.16.22 defaults: hyst_t 3→5, avg_win_t 3→6, dwell_open 120→300 s.",
+  "_comment": "Greenhouse Controller simulation — optimised settings for general crops (moderate biomass + active soil + glazing).",
+  "_note": "Changes vs firmware v1.16.22 defaults: hyst_t 3→5, avg_win_t 3→6, dwell_open 120→300 s, c_eff_mj_per_c 10→30 (general-crops thermal mass).",
 
   "climate": {
     "t_max_day":   28,
@@ -44,12 +44,5 @@
     "lon_frac":       0
   },
 
-  "plant": {
-    "_comment":            "Physical greenhouse model parameters.",
-    "volume_m3":           2400.0,
-    "ach_roof":               8.0,
-    "ach_wall":              40.0,
-    "transpiration_kg_s":   0.010,
-    "solar_peak_w":      20000.0
-  }
+  "plant_file": "plant_general_crops.json"
 }

@@ -100,12 +100,19 @@ typedef struct {
     log_param_id_t   log_id;     /**< LOG_PARAM_* (LOG_PARAM_NONE = no log) */
 } param_def_t;
 
-/* Climate parameters (11) */
+/* Climate parameters (11)
+ *
+ * Indices 2 (t_min_day) and 3 (t_min_ngt) are HEATING CONTROL parameters that
+ * are NOT IMPLEMENTED — preserved for future use.  They remain in this table
+ * (so param_get() / log_id mapping stays index-stable) but are excluded from
+ * DAY_PARAM_IDX / NIGHT_PARAM_IDX below, so the browse menus skip them.
+ * Same pattern as the web GUI (see firmware/data/app.js linkAllSliders /
+ * loadConfig setVal calls). */
 static const param_def_t CLIMATE_PARAMS[] = {
     { "T-max-dy", "T-max day (C)   ", "climate", "t_max_day",  CFG_MIN_T_MAX_DAY,  CFG_MAX_T_MAX_DAY,  SESSION_FARMER, LOG_PARAM_T_MAX_DAY  },
     { "T-max-ng", "T-max ngt (C)   ", "climate", "t_max_ngt",  CFG_MIN_T_MAX_NGT,  CFG_MAX_T_MAX_NGT,  SESSION_FARMER, LOG_PARAM_T_MAX_NGT  },
-    { "T-min-dy", "T-min day (C)   ", "climate", "t_min_day",  CFG_MIN_T_MIN_DAY,  CFG_MAX_T_MIN_DAY,  SESSION_FARMER, LOG_PARAM_T_MIN_DAY  },
-    { "T-min-ng", "T-min ngt (C)   ", "climate", "t_min_ngt",  CFG_MIN_T_MIN_NGT,  CFG_MAX_T_MIN_NGT,  SESSION_FARMER, LOG_PARAM_T_MIN_NGT  },
+    { "T-min-dy", "T-min day (C)   ", "climate", "t_min_day",  CFG_MIN_T_MIN_DAY,  CFG_MAX_T_MIN_DAY,  SESSION_FARMER, LOG_PARAM_T_MIN_DAY  }, /* HEATING CONTROL NOT IMPLEMENTED — preserved for future use */
+    { "T-min-ng", "T-min ngt (C)   ", "climate", "t_min_ngt",  CFG_MIN_T_MIN_NGT,  CFG_MAX_T_MIN_NGT,  SESSION_FARMER, LOG_PARAM_T_MIN_NGT  }, /* HEATING CONTROL NOT IMPLEMENTED — preserved for future use */
     { "RH-max-d", "RH-max day (%)  ", "climate", "rh_max_day", CFG_MIN_RH_MAX,     CFG_MAX_RH_MAX,     SESSION_FARMER, LOG_PARAM_RH_MAX_DAY },
     { "RH-max-n", "RH-max ngt (%)  ", "climate", "rh_max_ngt", CFG_MIN_RH_MAX,     CFG_MAX_RH_MAX,     SESSION_FARMER, LOG_PARAM_RH_MAX_NGT },
     { "RH-min-d", "RH-min day (%)  ", "climate", "rh_min_day", CFG_MIN_RH_MIN,     CFG_MAX_RH_MIN,     SESSION_FARMER, LOG_PARAM_RH_MIN_DAY },
@@ -124,13 +131,21 @@ static const param_def_t WIND_PARAMS[] = {
 #define N_WIND  (int)(sizeof(WIND_PARAMS) / sizeof(WIND_PARAMS[0]))
 
 /**
- * @brief CLIMATE_PARAMS indices for the day and night browse menus (4 each).
+ * @brief CLIMATE_PARAMS indices for the day and night browse menus.
  *
- * Day:   T_max_day(0) T_min_day(2) RH_max_day(4) RH_min_day(6)
- * Night: T_max_ngt(1) T_min_ngt(3) RH_max_ngt(5) RH_min_ngt(7)
+ * Day:   T_max_day(0), RH_max_day(4), RH_min_day(6).
+ *        T_min_day(2) is skipped — heating control not implemented.
+ * Night: T_max_ngt(1), RH_max_ngt(5), RH_min_ngt(7).
+ *        T_min_ngt(3) is skipped — heating control not implemented.
+ *
+ * BROWSE_COUNT is the size of each array (auto-derived); the browse FSM
+ * uses it for wrap-around and the "n/N" position counter on the LCD.
  */
-static const uint8_t DAY_PARAM_IDX[4]   = {0, 2, 4, 6};
-static const uint8_t NIGHT_PARAM_IDX[4] = {1, 3, 5, 7};
+static const uint8_t DAY_PARAM_IDX[]   = {0, /* 2 — t_min_day, HEATING CONTROL NOT IMPLEMENTED */ 4, 6};
+static const uint8_t NIGHT_PARAM_IDX[] = {1, /* 3 — t_min_ngt, HEATING CONTROL NOT IMPLEMENTED */ 5, 7};
+#define BROWSE_COUNT  (uint8_t)(sizeof(DAY_PARAM_IDX) / sizeof(DAY_PARAM_IDX[0]))
+_Static_assert(sizeof(DAY_PARAM_IDX) == sizeof(NIGHT_PARAM_IDX),
+               "DAY_PARAM_IDX and NIGHT_PARAM_IDX must have the same length");
 
 /* ============================================================
  * FSM state enum
@@ -705,19 +720,20 @@ static void render_menu_climate(void)
  * @brief Render one browse-setpoint screen.
  *
  * Row 0: parameter label (16 chars, from edit_lbl).
- * Row 1: "<value> <n>/4 A B #* " — current value, position counter, key hints.
+ * Row 1: "<value> <n>/N A B #* " — current value, position counter (N = BROWSE_COUNT), key hints.
  *
  * @param is_day  True for day setpoints, false for night.
  */
 static void render_browse_setpoints(bool is_day)
 {
     const uint8_t *idx_map = is_day ? DAY_PARAM_IDX : NIGHT_PARAM_IDX;
-    uint8_t cidx = idx_map[s_sub_page % 4u];
+    uint8_t cidx = idx_map[s_sub_page % BROWSE_COUNT];
     const param_def_t *p = &CLIMATE_PARAMS[cidx];
     int32_t val = param_get(false, cidx);
 
     char r1[17];
-    /* Row 1: 4-char value, position N/4, then four symbol+key pairs.
+    /* Row 1: 4-char value, position n/N (N = BROWSE_COUNT), then four
+     * symbol+key pairs.
      *
      * IMPORTANT — hex-escape termination: in a C string literal \xNN consumes
      * ALL following hex digits (0-9, a-f, A-F).  'A' and 'B' are hex digits,
@@ -735,8 +751,10 @@ static void render_browse_setpoints(bool is_day)
      * \x03 is safe — '#' is not a hex digit.
      *
      * Total rendered: 4+3+1+2+2+2+2 = 16 chars; fills the display exactly. */
-    snprintf(r1, sizeof(r1), "%-4ld%d/4 \x7F" "A\x7E" "B\x03#^*",
-             (long)val, (int)(s_sub_page % 4u) + 1);
+    snprintf(r1, sizeof(r1), "%-4ld%u/%u \x7F" "A\x7E" "B\x03#^*",
+             (long)val,
+             (unsigned)((s_sub_page % BROWSE_COUNT) + 1u),
+             (unsigned)BROWSE_COUNT);
     lcd_set(p->edit_lbl, r1);
 }
 
@@ -1042,15 +1060,16 @@ static void handle_browse_setpoints(char key, bool is_day)
 
     switch (key) {
         case 'A':  /* Previous setpoint */
-            s_sub_page = (s_sub_page == 0u) ? 3u : (uint8_t)(s_sub_page - 1u);
+            s_sub_page = (s_sub_page == 0u) ? (uint8_t)(BROWSE_COUNT - 1u)
+                                            : (uint8_t)(s_sub_page - 1u);
             s_dirty    = true;
             break;
         case 'B':  /* Next setpoint */
-            s_sub_page = (uint8_t)((s_sub_page + 1u) % 4u);
+            s_sub_page = (uint8_t)((s_sub_page + 1u) % BROWSE_COUNT);
             s_dirty    = true;
             break;
         case '#':  /* Edit current setpoint */
-            begin_edit(false, idx_map[s_sub_page % 4u], this_state);
+            begin_edit(false, idx_map[s_sub_page % BROWSE_COUNT], this_state);
             break;
         case '*':  /* Back to group selector */
             s_state    = UI_MENU_CLIMATE;

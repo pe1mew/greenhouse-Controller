@@ -44,12 +44,5 @@
     "lon_frac":       0
   },
 
-  "plant": {
-    "_comment":            "Physical greenhouse model parameters.",
-    "volume_m3":           2400.0,
-    "ach_roof":               8.0,
-    "ach_wall":              40.0,
-    "transpiration_kg_s":   0.010,
-    "solar_peak_w":      20000.0
-  }
+  "plant_file": "plant_empty_greenhouse.json"
 }

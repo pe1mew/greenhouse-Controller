@@ -88,9 +88,12 @@
  *  3. **Setpoint selection** — selects t_max, rh_max, rh_min from is_daytime.
  *  4. **Step evaluation** — vent_step_required_t() and vent_step_required_rh().
  *  5. **Conflict resolution** — vent_resolve_conflict() → resolved step.
- *  6. **Delta application** — apply_step_delta(): CMD_CLOSE first, then CMD_OPEN,
- *     or a single CMD_CLOSE_ALL when resolved step == 0.
- *  7. **Logging** — LOG_MODE_CHANGE posted to Q3 on every step change.
+ *  6. **Reconcile to step** — reconcile_to_step(): every T6 cycle, query
+ *     T2 actual window states and post CMD_CLOSE / CMD_OPEN for any channel
+ *     whose actual state does not yet match the desired bit in the step's
+ *     channel mask.  Level-triggered, so commands lost to T2 dwell are
+ *     retried until they take effect.  CLOSE first, then OPEN.
+ *  7. **Logging** — LOG_MODE_CHANGE posted to Q3 only on step changes.
  *  8. **State update** — current_step_t and current_step_rh updated.
  *
  * ### Inhibit behaviour

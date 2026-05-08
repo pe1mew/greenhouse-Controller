@@ -30,6 +30,7 @@
 #include "nvs_config.h"
 #include "cfg_defaults.h"   /* MOTOR_M*_TRAVEL_S_DEFAULT, MOTOR_TRAVEL_MARGIN_S_DEFAULT,
                              * DEF_DWELL_OPEN_S, DEF_DWELL_CLOSE_S */
+#include "cfg_limits.h"     /* CFG_MIN_TRAVEL_S, CFG_MAX_TRAVEL_S */
 
 #include <Arduino.h>
 #include <esp_log.h>
@@ -643,9 +644,10 @@ void task_relay_controller(void *pvParameters)
         nvs_cfg_get_i32_or_default(NVS_NS_MOTOR, NVS_KEY_DWELL_CLOSE[ch],
                                     DEF_DWELL_CLOSE_S, &dwell_close);
 
-        /* Clamp travel to valid hardware range. */
-        if (travel_s < MOTOR_TRAVEL_S_MIN) travel_s = MOTOR_TRAVEL_S_MIN;
-        if (travel_s > MOTOR_TRAVEL_S_MAX) travel_s = MOTOR_TRAVEL_S_MAX;
+        /* Clamp travel to valid range — same bounds as cfg_clamp() and the
+         * web GUI (single source of truth: cfg_limits.h). */
+        if (travel_s < CFG_MIN_TRAVEL_S) travel_s = CFG_MIN_TRAVEL_S;
+        if (travel_s > CFG_MAX_TRAVEL_S) travel_s = CFG_MAX_TRAVEL_S;
         if (dwell_open  < 0) dwell_open  = 0;
         if (dwell_close < 0) dwell_close = 0;
 

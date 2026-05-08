@@ -362,7 +362,7 @@ The RGB LED uses the following colour semantics, which differ from the discrete 
 | FR-CF02 | The farmer **shall** be able to set RH_min_day, RH_max_day, RH_min_night, and RH_max_night via the local keyboard and via the web GUI. | Must |
 | FR-CF03 | The technician **shall** be able to set the wind speed closure threshold (v_max, in Beaufort). | Must |
 | FR-CF04 | The technician **shall** be able to set the wind direction exclusion zone (centre bearing and half-width angle). | Must |
-| FR-CF05 | The technician **shall** be able to set the motor travel time (run-time) per window (M1, M2, M3) individually via the **web GUI only** (administrator session). Each value represents the duration the controller energises the relay to move the window from one end-stop to the other. Range: 5–600 s per window. Factory defaults: M1 = 21 s, M2 = 21 s, M3 = 171 s. | Must |
+| FR-CF05 | The technician **shall** be able to set the motor travel time (run-time) per window (M1, M2, M3) individually via the **web GUI only** (administrator session). Each value represents the duration the controller energises the relay to move the window from one end-stop to the other. Range: 5–300 s per window. Factory defaults: M1 = 21 s, M2 = 21 s, M3 = 171 s. | Must |
 | FR-CF06 | All settings **shall** be retained after a power cycle or controller restart. | Must |
 | FR-CF07 | The technician **shall** be able to set the sensor poll interval in the range 15 to 120 s, via the web GUI only. The factory default is 30 s. | Must |
 | FR-CF08 | The technician **should** be able to set hysteresis values for temperature and humidity control. | Should |

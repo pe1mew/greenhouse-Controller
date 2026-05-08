@@ -245,21 +245,21 @@
     <div class="slider-row">
       <label data-tip="Time in seconds the relay stays on to move M1 (south roof) from fully closed to fully open, or vice versa. Measure the physical motor run time and add 2–3 s margin. Default: 21 s.">M1 travel (s)</label>
       <input type="range"  id="cfg-travel-m1-sl" step="1">
-      <input type="number" id="cfg-travel-m1"    min="5" max="600" step="1" class="short">
+      <input type="number" id="cfg-travel-m1"    min="5" max="300" step="1" class="short">
       <button onclick="postCfg('motor','travel_m1','cfg-travel-m1','int')">Apply</button>
       <span class="save-ok" id="fb-travel-0"></span>
     </div>
     <div class="slider-row">
       <label data-tip="Travel time for M2 (north roof). Default: 21 s.">M2 travel (s)</label>
       <input type="range"  id="cfg-travel-m2-sl" step="1">
-      <input type="number" id="cfg-travel-m2"    min="5" max="600" step="1" class="short">
+      <input type="number" id="cfg-travel-m2"    min="5" max="300" step="1" class="short">
       <button onclick="postCfg('motor','travel_m2','cfg-travel-m2','int')">Apply</button>
       <span class="save-ok" id="fb-travel-1"></span>
     </div>
     <div class="slider-row">
       <label data-tip="Travel time for M3 (north wall). This window has a much longer travel path. Default: 171 s. If set too short the window will stop before reaching the fully open or closed position.">M3 travel (s)</label>
       <input type="range"  id="cfg-travel-m3-sl" step="1">
-      <input type="number" id="cfg-travel-m3"    min="5" max="600" step="1" class="short">
+      <input type="number" id="cfg-travel-m3"    min="5" max="300" step="1" class="short">
       <button onclick="postCfg('motor','travel_m3','cfg-travel-m3','int')">Apply</button>
       <span class="save-ok" id="fb-travel-2"></span>
     </div>

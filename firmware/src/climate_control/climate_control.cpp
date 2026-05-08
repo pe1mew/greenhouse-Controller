@@ -13,8 +13,10 @@
  *   3. Selects the active T and RH setpoints from is_daytime.
  *   4. Evaluates vent_step_required_t() and vent_step_required_rh().
  *   5. Resolves the two steps with vent_resolve_conflict().
- *   6. Converts old and new steps to channel bitmasks; posts only the
- *      incremental delta to Q1 via window_cmd_t.
+ *   6. Reconciles T2 actual window states to the resolved step's channel
+ *      mask: per-channel CMD_CLOSE / CMD_OPEN posted to Q1 for any channel
+ *      whose actual state does not already match. Level-triggered, run on
+ *      every cycle so dwell-deferred commands are retried automatically.
  *   7. Logs a MODE_CHANGE event on every step change.
  *
  * ## State variables
@@ -34,7 +36,11 @@
  *   .action  = CMD_OPEN  / CMD_CLOSE / CMD_CLOSE_ALL
  *   .channel = 1/2/3 for per-channel commands; 0 for CMD_CLOSE_ALL
  *
- * Only channels that changed are sent; no-op transitions post nothing.
+ * Each cycle, T6 reconciles actual T2 state against the desired channel
+ * mask: any channel whose actual state does not already match gets a
+ * single CMD_OPEN or CMD_CLOSE; channels already in (or moving toward) the
+ * desired state get nothing. Level-triggered design means dwell-deferred
+ * commands are retried automatically until T2 accepts them.
  *
  * @author  Greenhouse Controller project
  */
@@ -47,6 +53,7 @@
 #include "../types/app_types.h"
 #include "../data_manager/data_manager.h"
 #include "../event_logger/event_logger.h"
+#include "../relay_controller/relay_controller.h"   /* t2_get_window_states */
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -255,45 +262,52 @@ static void post_log_mode(int resolved_step, int step_t, int step_rh)
 }
 
 /* -----------------------------------------------------------------------
- * apply_step_delta() — post incremental Q1 commands for step change
+ * reconcile_to_step() — drive T2 channel states toward the desired step
  *
- * new_step and old_step are expressed as resolved steps (0..NUM_VENT_STEPS).
- * Only changed channels are sent.  Per-channel CMD_CLOSE / CMD_OPEN commands
- * are used for all transitions, including step → 0 (full close).
+ * Replaces the previous edge-triggered apply_step_delta(). Called every T6
+ * cycle (level-triggered) so that commands lost to T2's post-open/close
+ * dwell are re-issued automatically once dwell expires.  The previous
+ * delta-only design dropped any CMD_CLOSE that arrived while a window was
+ * still in its post-open dwell, leaving windows stuck OPEN until the next
+ * step transition; reconciling every cycle removes that failure mode.
+ *
+ * Idempotency is provided by T2's ch_start_open() / ch_start_close()
+ * (relay_controller.cpp): a CMD_OPEN posted while the channel is already
+ * OPEN/MOVING_OPEN/GAP_TO_OPEN is a no-op; likewise CMD_CLOSE on a channel
+ * already CLOSED/MOVING_CLOSE/GAP_TO_CLOSE.  Posting a command for the
+ * opposite direction during travel triggers the standard 2 s reversal gap.
  *
  * CMD_CLOSE_ALL is intentionally NOT used here.  CMD_CLOSE_ALL bypasses the
- * per-channel post-open dwell enforced by T2, causing windows to close
- * immediately regardless of dwell_open_s, which produces rapid oscillation
- * when the temperature quickly rebounds after closing.  CMD_CLOSE_ALL is
- * reserved for safety events (wind override in T3, motor alarm in T2).
+ * per-channel post-open dwell, causing rapid close after a brief opening —
+ * undesirable when temperature rebounds quickly.  CMD_CLOSE_ALL is reserved
+ * for safety events (wind override in T3, motor alarm in T2).
  * ----------------------------------------------------------------------- */
-static void apply_step_delta(int old_step, int new_step)
+static void reconcile_to_step(int step)
 {
-    if (old_step == new_step) {
-        return;  /* Nothing to do */
-    }
+    window_state_t actual[3];
+    t2_get_window_states(actual);
 
-    uint8_t old_mask = vent_step_channels(old_step);
-    uint8_t new_mask = vent_step_channels(new_step);
+    uint8_t desired = vent_step_channels(step);
 
-    /* Per-channel open/close commands for channels that changed.
-     * Applies to full-close (new_mask == 0) as well as partial step changes. */
-    uint8_t open_bits  = (uint8_t)(new_mask & ~old_mask);
-    uint8_t close_bits = (uint8_t)(old_mask & ~new_mask);
-
-    /* Post CLOSE commands first (narrowing before widening is safer). */
-    for (uint8_t ch = 1; ch <= 3; ch++) {
-        if (close_bits & (1u << (ch - 1u))) {
-            post_q1(CMD_CLOSE, ch);
-            ESP_LOGI(TAG, "[T6] → CMD_CLOSE ch=%u (step %d → %d)",
-                     (unsigned)ch, old_step, new_step);
+    /* Post CLOSE first (narrowing before widening is safer). */
+    for (uint8_t ch = 0; ch < 3; ch++) {
+        bool want_open = ((desired >> ch) & 1u) != 0;
+        window_state_t a = actual[ch];
+        bool currently_open_or_opening = (a == WIN_OPEN || a == WIN_MOVING_OPEN);
+        if (!want_open && currently_open_or_opening) {
+            post_q1(CMD_CLOSE, (uint8_t)(ch + 1));
+            ESP_LOGI(TAG, "[T6] → CMD_CLOSE ch=%u (target step %d, actual=%d)",
+                     (unsigned)(ch + 1), step, (int)a);
         }
     }
-    for (uint8_t ch = 1; ch <= 3; ch++) {
-        if (open_bits & (1u << (ch - 1u))) {
-            post_q1(CMD_OPEN, ch);
-            ESP_LOGI(TAG, "[T6] → CMD_OPEN  ch=%u (step %d → %d)",
-                     (unsigned)ch, old_step, new_step);
+    for (uint8_t ch = 0; ch < 3; ch++) {
+        bool want_open = ((desired >> ch) & 1u) != 0;
+        window_state_t a = actual[ch];
+        bool currently_closed_or_closing = (a == WIN_CLOSED || a == WIN_MOVING_CLOSE);
+        if (want_open && currently_closed_or_closing) {
+            post_q1(CMD_OPEN, (uint8_t)(ch + 1));
+            ESP_LOGI(TAG, "[T6] → CMD_OPEN  ch=%u (target step %d, actual=%d)",
+                     (unsigned)(ch + 1), step, (int)a);
         }
     }
 }
@@ -417,8 +431,11 @@ void task_climate_control(void *pvParameters)
                                                        : current_step_rh,
                                                    (uint8_t)cfg.cr_priority);
 
+        /* Level-triggered: reconcile every cycle so dwell-deferred commands
+         * are retried until they land. Mode-change logging stays edge-
+         * triggered to preserve event-log semantics. */
+        reconcile_to_step(resolved);
         if (resolved != prev_resolved) {
-            apply_step_delta(prev_resolved, resolved);
             post_log_mode(resolved, step_t, step_rh);
         }
 

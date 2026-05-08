@@ -20,7 +20,7 @@ The following firmware tasks are modelled:
 | **T2** `relay_controller` | Motor travel timing and post-open / post-close dwell enforcement |
 | **T4** `data_manager` | Day/night setpoint selection using the NOAA sunrise/sunset algorithm (same as firmware `sunrise.cpp`) |
 
-A steady-state algebraic **plant model** computes indoor temperature and humidity at each time step from outdoor conditions, window configuration, solar heat gain, and crop transpiration.
+A first-order **plant model** computes indoor temperature and humidity at each time step from outdoor conditions, window configuration, solar heat gain, crop transpiration, and the greenhouse's effective heat capacity (`c_eff_mj_per_c`). Indoor T relaxes toward the ventilation equilibrium with time constant `tau_T = c_eff / (ACH × V × ρ × cp)`; AH relaxes with `tau_AH = 1 / ACH`. Setting `c_eff_mj_per_c = 0` recovers the previous instant-equilibrium model.
 
 ---
 
@@ -137,17 +137,35 @@ The settings file is a JSON document with five top-level sections.  Any key that
     "lon_deg":        5,  // Location longitude integer part (°E)
     "lon_frac":       0   // Location longitude fractional part (×0.001 °)
   },
-  "plant": {
-    "volume_m3":           2400.0, // Greenhouse air volume (m³)
-    "ach_roof":               8.0, // ACH of each roof vent when fully open (h⁻¹)
-    "ach_wall":              40.0, // ACH of wall vent when fully open (h⁻¹)
-    "transpiration_kg_s":   0.010, // Crop transpiration moisture load (kg/s)
-    "solar_peak_w":      20000.0  // Peak solar heat gain at noon, clear sky (W)
-  }
+  "plant_file": "plant_general_crops.json"  // Path to the plant-model JSON (relative to the settings file)
 }
 ```
 
-> **Note:** JSON does not support comments.  Remove `//` lines before use, or use `settings.json` as the template (it has no comments).
+The `plant_file` field references a separate JSON describing the physical greenhouse — air volume, vent ACHs, solar peak, transpiration, and effective heat capacity. This keeps the controller config (climate / wind / motor / system) cleanly decoupled from the building/crop description so each can be versioned and reused independently.
+
+```json
+// plant_general_crops.json
+{
+  "volume_m3":           2400.0, // Greenhouse air volume (m³)
+  "ach_roof":               8.0, // ACH of each roof vent when fully open (h⁻¹)
+  "ach_wall":              40.0, // ACH of wall vent when fully open (h⁻¹)
+  "transpiration_kg_s":   0.010, // Crop transpiration moisture load (kg/s)
+  "solar_peak_w":      20000.0, // Peak solar heat gain at noon, clear sky (W)
+  "c_eff_mj_per_c":        30.0  // Air-coupled effective heat capacity (MJ/°C) — sets thermal-lag time constant. ~10 for empty greenhouse, ~30 for general crops, ~60 for dense canopy
+}
+```
+
+Three plant files ship with the simulation:
+
+| File | Use case |
+|---|---|
+| `plant_empty_greenhouse.json` | Empty greenhouse, bare floor, no crops (`c_eff = 10`) |
+| `plant_general_crops.json` | General crops — moderate canopy + active soil (`c_eff = 30`) |
+| `plant_calibrated.json` | Fit to live indoor sensor(s) by `calibrate_plant.py`; the file's `_comment` records which sensors were used |
+
+Inline `"plant": { ... }` sections in a settings JSON are still honoured for backward compatibility; if both `plant` and `plant_file` are present, `plant` wins.
+
+> **Note:** JSON does not support comments.  Remove `//` lines before use, or use `settings.json` / one of the plant files as the template (they have no comments).
 
 ---
 
@@ -169,9 +187,9 @@ Time-series CSV with one row per ~60 s of simulation time.
 | `RH_out_pct` | % | Outdoor relative humidity |
 | `t_avg_C` | °C | T5 sliding-average temperature (integer, used by T6) |
 | `rh_avg_pct` | % | T5 sliding-average RH (integer, used by T6) |
-| `M1_open` | 0/1 | M1 physically open |
-| `M2_open` | 0/1 | M2 physically open |
-| `M3_open` | 0/1 | M3 physically open |
+| `M1_state` | enum | M1 window state (`CLOSED`, `MOVING_OPEN`, `OPEN`, `MOVING_CLOSE`) |
+| `M2_state` | enum | M2 window state (same enum as `M1_state`) |
+| `M3_state` | enum | M3 window state (same enum as `M1_state`) |
 | `step_t` | 0–3 | T6 temperature step |
 | `step_rh` | −1–3 | T6 RH step (−1 = NEUTRAL = no RH demand) |
 | `step_resolved` | 0–3 | T6 resolved ventilation step (drives window commands) |
@@ -184,7 +202,7 @@ Four-panel plot (requires `matplotlib`):
 
 1. **Temperature** — indoor T, outdoor T, `t_max_day` / `t_max_ngt` setpoints.  Night periods shaded.
 2. **Humidity** — indoor RH, outdoor RH, `rh_max_day`, `rh_min_day`, `rh_max_ngt` setpoints.
-3. **Window states** — M1, M2, M3 open/closed over time (step plot).
+3. **Window states** — M1, M2, M3 four-state trace (`CLOSED` / `MOVING_OPEN` / `OPEN` / `MOVING_CLOSE`) mirroring firmware `t2_get_window_states()`. Each motor's track has y-ticks `C ↑ ↓ O` at `CLOSED`, `MOVING_OPEN`, `MOVING_CLOSE`, `OPEN` respectively.
 4. **Ventilation steps** — `step_t`, `step_resolved`; wind override period shaded in orange.
 
 ---

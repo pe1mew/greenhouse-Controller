@@ -31,14 +31,6 @@
  * Files that need either set should include those headers directly.
  * ============================================================ */
 
-/* Local clamp used by relay_controller's NVS-load fallback path.
- * NB: cfg_limits.h::CFG_MIN_TRAVEL_S/CFG_MAX_TRAVEL_S are the user-facing
- * web-GUI / cfg_clamp() bounds (5–300); these wider runtime bounds (5–600)
- * tolerate field-installed motors with longer strokes that may have been
- * written to NVS by an earlier firmware revision. */
-#define MOTOR_TRAVEL_S_MIN            5   /**< Minimum runtime travel time (s) */
-#define MOTOR_TRAVEL_S_MAX          600   /**< Maximum runtime travel time (s) */
-
 /** Graduated ventilation steps (Step 1=M1, Step 2=M1+M2, Step 3=M1+M2+M3). */
 #define NUM_VENT_STEPS  3
 

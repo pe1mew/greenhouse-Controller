@@ -430,9 +430,9 @@ CH_UNKNOWN → CH_CLOSED ↔ CH_GAP_TO_OPEN → CH_MOVING_OPEN → CH_OPEN
 
 | Parameter | NVS key | Factory default | Range | Notes |
 |-----------|---------|-----------------|-------|-------|
-| M1 travel | `motor/travel_m1` | 21 s | 5–600 s | Relay pulse = travel + 5 s margin |
-| M2 travel | `motor/travel_m2` | 21 s | 5–600 s | Relay pulse = travel + 5 s margin |
-| M3 travel | `motor/travel_m3` | 171 s | 5–600 s | Relay pulse = travel + 5 s margin |
+| M1 travel | `motor/travel_m1` | 21 s | 5–300 s | Relay pulse = travel + 5 s margin |
+| M2 travel | `motor/travel_m2` | 21 s | 5–300 s | Relay pulse = travel + 5 s margin |
+| M3 travel | `motor/travel_m3` | 171 s | 5–300 s | Relay pulse = travel + 5 s margin |
 | M1–M3 dwell open | `motor/dwell_open_mN` | 0 s | ≥0 s | Minimum rest after reaching OPEN |
 | M1–M3 dwell close | `motor/dwell_close_mN` | 0 s | ≥0 s | Minimum rest after reaching CLOSED |
 

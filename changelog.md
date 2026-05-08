@@ -6,6 +6,68 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.16.30] — 2026-05-08
+
+*T6 climate-control becomes level-triggered so dwell-deferred close/open commands are retried until they take effect; simulation tooling is upgraded to mirror the firmware FSM and to accept live sensor data for calibration.*
+
+### Fixed
+- `firmware/src/climate_control/climate_control.cpp` — replaced edge-triggered `apply_step_delta()` with level-triggered `reconcile_to_step()`. The previous design fired window commands only when `resolved_step` changed; if T2 dwell-deferred a CMD_CLOSE (e.g. T plummeted right after the post-open dwell of v1.16.23 started), T6 never re-issued it because `resolved` had stopped moving. Result: windows could remain physically OPEN indefinitely while `step_resolved == 0`, until the next non-zero-to-zero step transition came along. T6 now queries `t2_get_window_states()` every cycle, computes the desired channel mask from the resolved step, and posts a CMD_CLOSE / CMD_OPEN for any channel whose actual state does not already match. Posts targeting the current direction are no-ops in T2 (`ch_start_open()` / `ch_start_close()`); opposite-direction posts during travel cleanly trigger the existing 2 s reversal gap; close-vs-open ordering preserved (CLOSE first, narrowing-before-widening). Mode-change logging stays edge-triggered so `LOG_MODE_CHANGE` semantics are unchanged. New `#include "../relay_controller/relay_controller.h"` to call `t2_get_window_states()`. The greenhouse climate model (`simulation/simulation.py`) was firmware-faithful and exhibited the same pathology — finding it there is what surfaced the firmware bug.
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.16.29` → `1.16.30` in both `lolin_s3` and `test_t2_relay` environments.
+
+### Changed
+- `firmware/src/climate_control/climate_control.h` and the `climate_control.cpp` file/function header doxygen — step-6 description rewritten from "Delta application — apply_step_delta(): CMD_CLOSE first, then CMD_OPEN" to "Reconcile to step — reconcile_to_step(): every T6 cycle, query T2 actual window states and post per-channel commands for any channel that does not already match the desired bit". Mode-change logging note clarified to say "only on step changes" so the difference between "command issued" and "mode logged" is explicit.
+
+### Added (simulation tooling)
+- `simulation/simulation.py` — port of the firmware `reconcile_to_step()` change so the simulation stays firmware-faithful. The motor FSM gained the firmware's `GAP_TO_OPEN` / `GAP_TO_CLOSE` transient states with a 2 s safety gap (`MotorState.RELAY_GAP_MS = 2000`); `cmd_open()` / `cmd_close()` now reverse mid-travel via the gap rather than silently ignoring opposite-direction commands, matching `relay_controller.cpp::ch_start_close()`/`ch_start_open()`. The plant model gained a first-order thermal/moisture lag (replacing the steady-state algebraic model) — `T_in` relaxes toward the ventilation equilibrium with `tau_T = c_eff / (ACH·V·ρ·cp)`; `AH_in` with `tau_AH = 1/ACH`. Setting `c_eff_mj_per_c = 0` recovers the previous instant-equilibrium behaviour. CSV output replaces the binary `M{1,2,3}_open` columns with 4-state `M{1,2,3}_state` columns (`CLOSED` / `MOVING_OPEN` / `OPEN` / `MOVING_CLOSE`) mirroring the firmware's `t2_get_window_states()`; the windows panel in the saved PNG now shows a `C ↑ ↓ O` per-motor track instead of a 0/1 step plot.
+- `simulation/calibrate_plant.py` — new regression tool. Fits `k_solar` (W per outdoor lux), `c_eff_mj_per_c`, `transpiration_kg_s`, `ach_closed_per_hr`, and `ach_open_per_hr` against live indoor sensors in `srcData/` using `scipy.optimize.differential_evolution` (global) + bounded Nelder-Mead (local). Models the user's actual ventilation schedule (windows opened 10:00, closed 18:00 local) so the open / closed ACH split is identifiable, drives solar from the measured outdoor lumosity instead of the synthetic NOAA model, and masks out grid points more than an hour from any real sample so long sensor gaps don't pollute the fit. `--plot` produces a fit-vs-measured PNG per indoor sensor.
+- `simulation/generate_inputs_from_live.py` — new script that picks five 24-hour slices from `srcData/greenhouseClimate-lht65-20_*.csv` to populate the `input_S{1..5}_*.csv` scenarios with real outdoor weather (April–May 2026), replacing the synthetic Format-B data the scenarios used to ship with. Day picks were chosen by character (sunny/humid/cold/etc.) using outdoor lumosity and indoor LHT65-02/-03 readings as ground truth.
+- `simulation/srcData/` — three live-sensor CSVs (LHT65-02 indoor "kas 2", LHT65-03 indoor "kas 1", lht65-20 outdoor with lumosity) over 2026-03-17 .. 2026-05-07, plus an `sql.md` describing the MySQL extraction.
+
+### Changed (simulation tooling)
+- The plant section was split out of the settings JSONs into separate plant-model files. Each settings JSON now carries a `"plant_file": "<filename>"` reference (relative to the settings file's directory, falling back to the simulation script's directory) instead of an inline `"plant"` block. `simulation.py::load_settings()` resolves the reference and injects the loaded plant dict into `settings["plant"]`. Inline `"plant"` sections are still honoured for backward compatibility and take precedence when both are present. Three plant files now ship: `plant_empty_greenhouse.json` (empty greenhouse, `c_eff = 10` MJ/°C), `plant_general_crops.json` (general crops, `c_eff = 30`), and `plant_calibrated.json` (regenerated by `calibrate_plant.py` from live sensor data; current fit is to LHT65-02 only after LHT65-03 was excluded — its `ach_closed > ach_open` suggested the 10:00–18:00 schedule does not apply to that compartment).
+- `simulation/settings.json` and `simulation/settings_optimised.json` — `_note` rewritten to mention the new `plant_file` field and the controller-vs-plant separation; inline plant section removed.
+- `simulation/simulation_manual.md` — settings layout documentation updated to reflect the `plant_file` split, the new plant-file table, and the inline-plant fallback rule. Plant-model description rewritten from "steady-state algebraic" to "first-order lag" with the relevant time-constant formulas.
+
+### Out of scope
+- The simulation's `ACH_INF` (background infiltration when all windows are closed) is still hard-coded to `0.5 /h` in `simulation.py`. The kas 2 calibration suggests the real greenhouse has an `ach_closed` of ~1.35 /h (ventilated regularly enough that the "closed" state is not really tight), so a future change should make `ACH_INF` configurable from the plant-model JSON.
+- The 1st-order plant model's residual T RMSE against the live data is 3.93 °C (kas 2). The remaining gap appears to be solar storage in soil/structure that re-radiates at night, which a 2nd-order plant model (separate floor / biomass thermal-mass node coupled to the air via a slow heat-exchange coefficient) would capture. Not in this version.
+- The `model/` (academic/exploration) tree was edited earlier in this session to fix a separate priority-order divergence with the firmware (`climate_model.py` opened M2 first, while firmware `VENT_STEP_TABLE` opens M1 first). Those edits aligned `model_design.md §7` with the firmware but were not part of the user's original ask; flagging here for visibility — they can be reverted independently if needed.
+
+---
+
+## [1.16.29] — 2026-05-08
+
+*Hide unused `t_min_day` / `t_min_ngt` heating setpoints from the LCD browse menus — same pattern already used by the web GUI.*
+
+### Changed
+- `firmware/src/ui_display/ui_display.cpp` — `DAY_PARAM_IDX` and `NIGHT_PARAM_IDX` no longer reference `CLIMATE_PARAMS[2]` (`t_min_day`) or `CLIMATE_PARAMS[3]` (`t_min_ngt`).  These two parameters are documented as "informational; future heating" in `cfg_defaults.h` but `climate_control.cpp::vent_step_required_t()` does not evaluate them — they had no effect on window operation.  The browse FSM now cycles through three setpoints per group (T-max, RH-max, RH-min) instead of four.
+  - The corresponding `CLIMATE_PARAMS` rows are kept in place — array indices remain stable so `param_get()`'s switch statement and `LOG_PARAM_T_MIN_DAY/NGT` mappings need no renumbering.  Comments mark them as "HEATING CONTROL NOT IMPLEMENTED — preserved for future use", matching the pattern already in `firmware/data/app.js` (`linkAllSliders` slider list and `loadConfig` `setVal` calls), where the same fields are commented out from the live web UI.
+  - New `BROWSE_COUNT` macro derived from `sizeof(DAY_PARAM_IDX)` replaces the previously hardcoded `4` / `4u` / `3u` constants in `render_browse_setpoints()` and `handle_browse_setpoints()`.  A `_Static_assert` checks that `DAY_PARAM_IDX` and `NIGHT_PARAM_IDX` keep the same length.  Restoring the heating setpoints to the menus in the future is a one-line edit in each `IDX` array.
+  - LCD position counter on the browse screen now reads `n/3` (was `n/4`).
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.16.28` → `1.16.29` in both `lolin_s3` and `test_t2_relay` environments.
+
+### Out of scope
+- The web GUI HTML still renders `cfg-t-min-day` and `cfg-t-min-ngt` `<input>` elements (with all wiring already commented out in `app.js`), so the inputs appear but do nothing.  Removing them from `index.html` is a separate cleanup — flagging here for visibility.
+
+---
+
+## [1.16.28] — 2026-05-08
+
+*Reconcile motor-travel range to a single value (5–300 s) across firmware, web GUI, and specification — eliminate the 300 vs 600 drift.*
+
+### Changed
+- **FR-CF05** (`design/functionalRequirementsSpecification.md`) — motor travel range narrowed from "5–600 s" to "5–300 s" to match the runtime enforcement introduced by `cfg_clamp()` in v1.16.25.  The wider 600 s upper bound predated `cfg_limits.h` and was never re-derived from a hardware requirement; 300 s is comfortably above the longest-stroke window in the system (M3 ridge vent factory default 171 s) plus the 5 s safety margin.  No installed device has been written with a value above 300 s since v1.16.25 (cfg_clamp would have silently truncated it), so this is a documentation alignment for the current first-installation target — not a behavioural change for existing devices.
+- `design/technicalSoftwareDesignSpecification.md` — three "5–600 s" → "5–300 s" references updated (§ farmer/admin parameter visibility, § parameter editor scope, § NVS namespace `motor`).  Default-value cross-references updated to point at `firmware/config/cfg_defaults.h` (the v1.16.27 location) instead of the historical `app_types.h`.
+- `firmware/firmwareImplementationResults.md` — three "5–600 s" → "5–300 s" rows in the motor-config table.
+- `firmware/data/index.html` — `<input type="number">` `max` attribute for `cfg-travel-m1/m2/m3` lowered from 600 → 300.  These static values are runtime-overridden by `app.js::loadLimits()` from `GET /api/config/limits` (which returns `cfg_limits.h::CFG_*_TRAVEL_S`); updating them keeps the static fallback consistent with the API.
+- `firmware/src/types/app_types.h` — `MOTOR_TRAVEL_S_MIN` (5) and `MOTOR_TRAVEL_S_MAX` (600) deleted along with the v1.16.27 "deliberate split" comment.  These macros are now redundant with `cfg_limits.h::CFG_MIN_TRAVEL_S` / `CFG_MAX_TRAVEL_S`.
+- `firmware/src/relay_controller/relay_controller.cpp` — NVS-load fallback clamp at `t2_init()` switched from `MOTOR_TRAVEL_S_{MIN,MAX}` to `CFG_{MIN,MAX}_TRAVEL_S`.  The relay controller now reads its bounds from the same single source of truth as `cfg_clamp()`, the LCD keypad, and the web GUI.
+
+### Fixed
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.16.27` → `1.16.28` in both `lolin_s3` and `test_t2_relay` environments.
+
+---
+
 ## [1.16.27] — 2026-05-08
 
 *Single source of truth for NVS factory defaults — new `firmware/config/cfg_defaults.h` mirrors the `cfg_limits.h` pattern.*
@@ -31,6 +93,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Fixed
 - `firmware/src/network_manager/network_manager.cpp` — `run_ntp_sync()` now re-reads `tz_str` from NVS and calls `setenv("TZ", ...)` + `tzset()` immediately after `configTime(0, 0, "pool.ntp.org")`. The Arduino-ESP32 `configTime()` call resets the C-library `TZ` environment variable to UTC on every NTP sync. Previously the only restoration path was the `setenv` inside `do_geo_sync()`, which is skipped on the 24-hour periodic resync (`run_ntp_sync(false)` at line 603) and silently bypassed on the initial sync whenever the `ip-api.com` HTTP GET failed, JSON parsing failed, or the returned IANA zone was not in the lookup table. Symptom: LCD, event log viewer, web `/api/events`, and LED day/night dimming all flipped to UTC roughly 24 h after boot — or immediately after the first NTP sync on networks where outbound HTTP to `ip-api.com` was blocked. NVS is read directly (instead of the MX4 shadow `s_cfg.tz_str`) because both `do_geo_sync()` and the `/api/config` web handler write `tz_str` to NVS without posting Q4, so the shadow can lag the persisted value until the next reboot.
 - `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.16.25` → `1.16.26` in both `lolin_s3` and `test_t2_relay` environments.
+
+### Documentation
+- `test/3_3_Setpoints_and_Hysteresis.py` and `test/3_3_Setpoints_and_Hysteresis.md` — integration-test docstrings refreshed to match firmware behaviour after v1.16.22 (per-channel `CMD_CLOSE` instead of `CMD_CLOSE_ALL` for climate-control step→0 transitions) and v1.16.25 (`cfg_clamp` floor of 1 on `avg_win_t/rh`). UT-CC-024 success messages no longer claim `CMD_CLOSE_ALL`; UT-CC-016 docstring notes the v1.16.22 reservation of `CMD_CLOSE_ALL` for safety events. `TEST_AVG_WIN` raised from 0 to 1 (the new minimum); the comment now explains that the rolling window holds 2 samples at `avg_win=1 min` / `poll_interval=30 s`, so the first poll after a sensor push reads `(prev+new)/2` and is handled by `push_and_verify_sensor()`'s retry loop. No assertion logic changed; tests still validate the same intended behaviour.
 
 ---
 

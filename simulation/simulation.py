@@ -91,10 +91,11 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "lat_deg": 52, "lat_frac": 0,
         "lon_deg":  5, "lon_frac": 0,
     },
-    "plant": {
-        "volume_m3": 2400.0, "ach_roof": 8.0, "ach_wall": 40.0,
-        "transpiration_kg_s": 0.010, "solar_peak_w": 20000.0,
-    },
+    # The plant model lives in a separate JSON referenced via "plant_file"
+    # (defaulting to plant_empty_greenhouse.json next to this script). This
+    # keeps the controller config (climate / wind / motor / system) cleanly
+    # separated from the physical greenhouse description.
+    "plant_file": "plant_empty_greenhouse.json",
 }
 
 
@@ -113,16 +114,57 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+def _load_plant(plant_path: Path) -> Dict[str, Any]:
+    """Load a plant-model JSON file."""
+    with open(plant_path) as f:
+        plant = json.load(f)
+    plant.pop("_comment", None)
+    print(f"[settings] loaded plant model: {plant_path.name}")
+    return plant
+
+
 def load_settings(json_path: Optional[Path]) -> Dict[str, Any]:
-    """Load JSON settings and deep-merge with firmware factory defaults."""
+    """
+    Load JSON settings and deep-merge with firmware factory defaults.
+
+    The plant section is stored in a separate file referenced by the
+    `plant_file` field (path is relative to the settings JSON's directory,
+    or falls back to the simulation.py directory). Inline `plant` sections
+    in the settings JSON are still honoured for backward compatibility and
+    take precedence over `plant_file` when both are present.
+    """
+    base_dir = (json_path.parent if (json_path is not None and json_path.exists())
+                else Path(__file__).parent)
     if json_path is None or not json_path.exists():
         if json_path is not None:
             print(f"[settings] {json_path.name} not found - using firmware defaults")
-        return _deep_merge(DEFAULT_SETTINGS, {})
-    with open(json_path) as f:
-        user = json.load(f)
-    merged = _deep_merge(DEFAULT_SETTINGS, user)
-    print(f"[settings] loaded {json_path.name}")
+        merged = _deep_merge(DEFAULT_SETTINGS, {})
+    else:
+        with open(json_path) as f:
+            user = json.load(f)
+        merged = _deep_merge(DEFAULT_SETTINGS, user)
+        print(f"[settings] loaded {json_path.name}")
+
+    # Resolve plant_file unless an inline plant section is already present.
+    if "plant" not in merged:
+        plant_file = merged.get("plant_file")
+        if plant_file:
+            plant_path = (base_dir / plant_file).resolve()
+            if not plant_path.exists():
+                # Fall back to the simulation.py directory if the settings
+                # file lives elsewhere and the plant_file isn't co-located.
+                fallback = (Path(__file__).parent / plant_file).resolve()
+                if fallback.exists():
+                    plant_path = fallback
+            if not plant_path.exists():
+                print(f"[settings] plant_file {plant_file!r} not found "
+                      f"(looked in {base_dir} and {Path(__file__).parent}) "
+                      f"- aborting")
+                sys.exit(1)
+            merged["plant"] = _load_plant(plant_path)
+        else:
+            print("[settings] no plant or plant_file specified - aborting")
+            sys.exit(1)
     return merged
 
 
@@ -353,24 +395,55 @@ def ach_total(window_open: List[bool], ach_roof: float, ach_wall: float) -> floa
 
 
 def plant_step(window_open: List[bool], t_out: float, rh_out: float,
-               unix_ts: float, settings: Dict) -> Tuple[float, float]:
+               unix_ts: float, settings: Dict,
+               T_in_prev: Optional[float] = None,
+               AH_in_prev: Optional[float] = None,
+               dt_s: Optional[float] = None) -> Tuple[float, float]:
     """
-    Compute indoor equilibrium T [°C] and AH [kg/m³] (steady-state model).
+    Advance indoor T [°C] and AH [kg/m³] by dt_s using a first-order thermal
+    and moisture lag toward the current ventilation equilibrium.
 
-    Setting dT/dt=0 and d(AH)/dt=0:
-      T_in  = T_out + Q_solar / (ACH * V * rho * cp)
-      AH_in = AH_out + m_transp / (ACH * V)
+    Steady-state targets (dT/dt = 0, d(AH)/dt = 0):
+      T_eq  = T_out + Q_solar / (ACH_per_s * V * rho * cp)
+      AH_eq = AH_out + m_transp / (ACH_per_s * V)
+
+    Time constants:
+      tau_T  = c_eff_J_per_C / (ACH_per_s * V * rho * cp)
+      tau_AH = 1 / ACH_per_s
+
+    c_eff_mj_per_c is the air-coupled effective heat capacity of the
+    greenhouse (air + soil surface + crop biomass + glazing), set in the
+    plant section of the settings file. It controls how slowly indoor T
+    follows ventilation changes — small for an empty greenhouse, larger
+    when crops and active soil are present.
+
+    When c_eff_mj_per_c <= 0 or no previous state is supplied (initial
+    seed call), the function returns the instantaneous equilibrium —
+    matching the original steady-state model.
     """
     p  = settings["plant"]
     s  = settings["system"]
     V  = p["volume_m3"]
-    ACH = ach_total(window_open, p["ach_roof"], p["ach_wall"])
+    ACH = ach_total(window_open, p["ach_roof"], p["ach_wall"])  # s⁻¹
     Qs  = q_solar(unix_ts, p["solar_peak_w"], s["lat_deg"], s["lon_deg"])
 
-    T_in  = t_out  + Qs / (ACH * V * RHO_AIR * CP_AIR)
-    AH_out = ah_from_rh(rh_out, t_out)
-    AH_in  = max(0.0, AH_out + p["transpiration_kg_s"] / (ACH * V))
-    return T_in, AH_in
+    air_throughput = ACH * V * RHO_AIR * CP_AIR  # W/°C
+    T_eq           = t_out + Qs / air_throughput
+    AH_out         = ah_from_rh(rh_out, t_out)
+    AH_eq          = max(0.0, AH_out + p["transpiration_kg_s"] / (ACH * V))
+
+    c_eff_mj = p.get("c_eff_mj_per_c", 0.0)
+    if (c_eff_mj <= 0.0 or T_in_prev is None or AH_in_prev is None
+            or dt_s is None or dt_s <= 0.0):
+        return T_eq, AH_eq
+
+    # First-order Euler integration toward the equilibrium.
+    c_eff_J = c_eff_mj * 1e6
+    tau_T   = c_eff_J / air_throughput
+    tau_AH  = 1.0 / ACH
+    T_in    = T_in_prev  + (T_eq  - T_in_prev)  * (dt_s / tau_T)
+    AH_in   = AH_in_prev + (AH_eq - AH_in_prev) * (dt_s / tau_AH)
+    return T_in, max(0.0, AH_in)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -540,6 +613,15 @@ class MotorState:
     MOVING_OPEN  = "MOVING_OPEN"
     OPEN         = "OPEN"
     MOVING_CLOSE = "MOVING_CLOSE"
+    # Internal-only transient states matching firmware ch_state_t. These model
+    # the 2-second safety gap inserted between energising opposing relays
+    # (relay_controller.cpp RELAY_GAP_MS). They are mapped to MOVING_OPEN /
+    # MOVING_CLOSE in the externally-reported window_state, just as the
+    # firmware's t2_get_window_states() does.
+    GAP_TO_OPEN  = "GAP_TO_OPEN"
+    GAP_TO_CLOSE = "GAP_TO_CLOSE"
+
+    RELAY_GAP_MS = 2000   # firmware relay_controller.cpp RELAY_GAP_MS
 
     def __init__(self, name: str, travel_s: int, dwell_open_s: int,
                  dwell_close_s: int) -> None:
@@ -550,49 +632,91 @@ class MotorState:
         self.state         = self.CLOSED
         self.relay_deadline_ms: int = 0   # time when MOVING → OPEN/CLOSED
         self.dwell_deadline_ms: int = 0   # time before next opposite command
+        self.gap_deadline_ms:   int = 0   # time when GAP_TO_* → MOVING_*
 
     @property
     def is_open(self) -> bool:
+        # Physical end-switch semantic, matching firmware T2: only a window
+        # whose travel timer has expired is "open" for ACH purposes. Travelling
+        # and gap states contribute no ACH (binary approximation; the 4-state
+        # window_state below preserves the full state machine for reporting).
         return self.state == self.OPEN
 
     @property
     def is_moving(self) -> bool:
-        return self.state in (self.MOVING_OPEN, self.MOVING_CLOSE)
+        # Includes the safety-gap states so external callers don't need to
+        # know about them (the gap is internal to the relay-controller FSM).
+        return self.state in (self.MOVING_OPEN, self.MOVING_CLOSE,
+                              self.GAP_TO_OPEN, self.GAP_TO_CLOSE)
+
+    @property
+    def window_state(self) -> str:
+        # Mirrors firmware t2_get_window_states(): GAP_TO_* collapse onto
+        # MOVING_* so the reported set is exactly {CLOSED, MOVING_OPEN, OPEN,
+        # MOVING_CLOSE}.
+        if self.state in (self.GAP_TO_OPEN,):
+            return self.MOVING_OPEN
+        if self.state in (self.GAP_TO_CLOSE,):
+            return self.MOVING_CLOSE
+        return self.state
 
     def tick(self, now_ms: int) -> None:
-        """Advance state machine — called every dt loop."""
+        """Advance the channel FSM — port of relay_controller.cpp ch_update()."""
         if self.state == self.MOVING_OPEN and now_ms >= self.relay_deadline_ms:
             self.state = self.OPEN
             self.dwell_deadline_ms = now_ms + self.dwell_open_ms
         elif self.state == self.MOVING_CLOSE and now_ms >= self.relay_deadline_ms:
             self.state = self.CLOSED
             self.dwell_deadline_ms = now_ms + self.dwell_close_ms
+        elif self.state == self.GAP_TO_OPEN and now_ms >= self.gap_deadline_ms:
+            self.state = self.MOVING_OPEN
+            self.relay_deadline_ms = now_ms + self.travel_ms
+        elif self.state == self.GAP_TO_CLOSE and now_ms >= self.gap_deadline_ms:
+            self.state = self.MOVING_CLOSE
+            self.relay_deadline_ms = now_ms + self.travel_ms
 
-    def cmd_open(self, now_ms: int) -> None:
-        """Issue OPEN command — ignored if already open, moving, or dwell active."""
-        if self.state == self.OPEN or self.is_moving:
+    def cmd_open(self, now_ms: int, bypass_dwell: bool = False) -> None:
+        """Issue OPEN command — port of relay_controller.cpp ch_start_open().
+
+        bypass_dwell mirrors firmware SRC_T3 (safety) commands: they skip the
+        post-close dwell timer but still observe the relay safety gap.
+        """
+        s = self.state
+        if s in (self.OPEN, self.MOVING_OPEN, self.GAP_TO_OPEN):
+            return  # at target or moving there
+        if s == self.MOVING_CLOSE:
+            self.state = self.GAP_TO_OPEN
+            self.gap_deadline_ms = now_ms + self.RELAY_GAP_MS
             return
-        if now_ms < self.dwell_deadline_ms:
-            return   # post-close dwell not yet expired
-        self.state            = self.MOVING_OPEN
+        if s == self.GAP_TO_CLOSE:
+            self.state = self.GAP_TO_OPEN  # pivot during gap; reuse deadline
+            return
+        if s == self.CLOSED and not bypass_dwell and now_ms < self.dwell_deadline_ms:
+            return  # post-close dwell not yet expired
+        self.state             = self.MOVING_OPEN
         self.relay_deadline_ms = now_ms + self.travel_ms
 
-    def cmd_close(self, now_ms: int) -> None:
-        """Issue CLOSE command — ignored if already closed, moving, or dwell active."""
-        if self.state == self.CLOSED or self.is_moving:
+    def cmd_close(self, now_ms: int, bypass_dwell: bool = False) -> None:
+        """Issue CLOSE command — port of relay_controller.cpp ch_start_close()."""
+        s = self.state
+        if s in (self.CLOSED, self.MOVING_CLOSE, self.GAP_TO_CLOSE):
             return
-        if now_ms < self.dwell_deadline_ms:
-            return   # post-open dwell not yet expired
-        self.state            = self.MOVING_CLOSE
+        if s == self.MOVING_OPEN:
+            self.state = self.GAP_TO_CLOSE
+            self.gap_deadline_ms = now_ms + self.RELAY_GAP_MS
+            return
+        if s == self.GAP_TO_OPEN:
+            self.state = self.GAP_TO_CLOSE  # pivot during gap; reuse deadline
+            return
+        if s == self.OPEN and not bypass_dwell and now_ms < self.dwell_deadline_ms:
+            return  # post-open dwell not yet expired
+        self.state             = self.MOVING_CLOSE
         self.relay_deadline_ms = now_ms + self.travel_ms
 
     def cmd_close_all(self, now_ms: int) -> None:
-        """Emergency/wind close — bypasses dwell enforcement."""
-        if self.state in (self.CLOSED, self.MOVING_CLOSE):
-            return
-        self.dwell_deadline_ms = 0   # clear dwell
-        self.state             = self.MOVING_CLOSE
-        self.relay_deadline_ms = now_ms + self.travel_ms
+        """Emergency/wind close — firmware SRC_T3: bypasses dwell, keeps the
+        2 s relay safety gap on reversal (handled by cmd_close)."""
+        self.cmd_close(now_ms, bypass_dwell=True)
 
 
 def make_motors(settings: Dict) -> List[MotorState]:
@@ -605,37 +729,37 @@ def make_motors(settings: Dict) -> List[MotorState]:
     ]
 
 
-def apply_step_to_motors(old_step: int, new_step: int,
-                         motors: List[MotorState], now_ms: int,
-                         force_close_all: bool = False) -> None:
+def reconcile_to_step(step: int, motors: List[MotorState], now_ms: int) -> None:
     """
-    Issue Q1 commands for a step change — port of apply_step_delta().
-    Sends only incremental channel changes; CMD_CLOSE_ALL if new_step == 0.
-    force_close_all bypasses dwell (used for wind override).
+    Drive each motor toward the channel mask for `step` — port of T6's
+    reconcile_to_step() in climate_control.cpp. Level-triggered: called every
+    poll cycle so commands deferred by T2's post-open/close dwell are retried
+    until they take effect.
+
+    Idempotency is provided by MotorState.cmd_open() / cmd_close(): commands
+    targeting the current direction are no-ops, opposite-direction commands
+    during travel trigger the 2 s reversal gap.
     """
-    if not force_close_all and old_step == new_step:
-        return
-
-    new_mask = VENT_STEP_TABLE[new_step]
-    old_mask = VENT_STEP_TABLE[old_step] if not force_close_all else 0b111
-
-    if force_close_all:
-        # Safety path (wind override, motor alarm) — bypass dwell
-        for m in motors:
-            m.cmd_close_all(now_ms)
-        return
-
-    # Per-channel CMD_CLOSE / CMD_OPEN for all climate-control step changes,
-    # including full close (new_mask == 0).  cmd_close() respects dwell_open_s
-    # so that windows are not closed before their minimum open time has elapsed.
-    # CMD_CLOSE_ALL is reserved for safety events only (force_close_all path above).
+    desired_mask = VENT_STEP_TABLE[step]
     # CLOSE first (narrowing before widening is safer)
     for i, m in enumerate(motors):
-        if (old_mask >> i) & 1 and not (new_mask >> i) & 1:
+        want_open = bool((desired_mask >> i) & 1)
+        s = m.window_state
+        currently_open_or_opening = s in (MotorState.OPEN, MotorState.MOVING_OPEN)
+        if not want_open and currently_open_or_opening:
             m.cmd_close(now_ms)
     for i, m in enumerate(motors):
-        if not (old_mask >> i) & 1 and (new_mask >> i) & 1:
+        want_open = bool((desired_mask >> i) & 1)
+        s = m.window_state
+        currently_closed_or_closing = s in (MotorState.CLOSED, MotorState.MOVING_CLOSE)
+        if want_open and currently_closed_or_closing:
             m.cmd_open(now_ms)
+
+
+def force_close_all_motors(motors: List[MotorState], now_ms: int) -> None:
+    """Safety path (wind override / motor alarm) — bypass dwell on all motors."""
+    for m in motors:
+        m.cmd_close_all(now_ms)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -648,7 +772,7 @@ class SimRecord:
         "unix_ts", "elapsed_s",
         "T_in", "RH_in", "T_out", "RH_out",
         "t_avg", "rh_avg",
-        "m1_open", "m2_open", "m3_open",
+        "m1_state", "m2_state", "m3_state",
         "step_t", "step_rh", "step_resolved",
         "is_day", "wind_override",
     )
@@ -723,10 +847,12 @@ def run_simulation(weather: List[WeatherRow], settings: Dict,
         # ── Current window physical open state ─────────────────────────────
         window_open = [m.is_open for m in motors]
 
-        # ── Plant model (steady-state indoor T and RH) ─────────────────────
+        # ── Plant model (first-order thermal/moisture lag) ──────────────────
         wx       = interpolate_weather(weather, now_ts)
         T_in, AH_in = plant_step(window_open, wx.t_out, wx.rh_out,
-                                  now_ts, settings)
+                                  now_ts, settings,
+                                  T_in_prev=T_in, AH_in_prev=AH_in,
+                                  dt_s=dt)
         RH_in   = rh_from_ah(AH_in, T_in)
 
         # ── T5 poll cycle ───────────────────────────────────────────────────
@@ -747,8 +873,7 @@ def run_simulation(weather: List[WeatherRow], settings: Dict,
             if reason:
                 print(f"  [T3] t={step*dt/3600:.2f}h  {reason}")
                 if wind_override:
-                    apply_step_to_motors(0, 0, motors, now_ms,
-                                         force_close_all=True)
+                    force_close_all_motors(motors, now_ms)
                     current_step_t  = 0
                     current_step_rh = 0
                     last_step_rh    = VENT_STEP_NEUTRAL
@@ -770,16 +895,10 @@ def run_simulation(weather: List[WeatherRow], settings: Dict,
 
                 resolved = vent_resolve_conflict(step_t, step_rh, c["cr_priority"])
 
-                # Compute previous resolved step for delta application
-                prev_rh_for_resolve = (VENT_STEP_NEUTRAL
-                                       if (last_step_rh == VENT_STEP_NEUTRAL
-                                           and not c["rh_ctrl_en"])
-                                       else last_step_rh)
-                prev_resolved = vent_resolve_conflict(
-                    current_step_t, prev_rh_for_resolve, c["cr_priority"])
-
-                if resolved != prev_resolved:
-                    apply_step_to_motors(prev_resolved, resolved, motors, now_ms)
+                # Level-triggered: reconcile every poll cycle so dwell-deferred
+                # commands are retried until they land. Mirrors the firmware
+                # T6 behaviour after the same fix.
+                reconcile_to_step(resolved, motors, now_ms)
 
                 current_step_t  = step_t
                 last_step_rh    = step_rh
@@ -810,9 +929,9 @@ def run_simulation(weather: List[WeatherRow], settings: Dict,
                 RH_out        = wx.rh_out,
                 t_avg         = t_avg_int,
                 rh_avg        = rh_avg_int,
-                m1_open       = int(window_open[0]),
-                m2_open       = int(window_open[1]),
-                m3_open       = int(window_open[2]),
+                m1_state      = motors[0].window_state,
+                m2_state      = motors[1].window_state,
+                m3_state      = motors[2].window_state,
                 step_t        = step_t,
                 step_rh       = step_rh,
                 step_resolved = resolved,
@@ -841,11 +960,11 @@ def _print_metrics(records: List[SimRecord], settings: Dict) -> None:
     T_in_band = sum(1 for T, sp in zip(T_vals, T_sp_vals)
                     if T < sp + 2.0) / n * 100
 
-    # Actuations (transitions in window state)
+    # Actuations (transitions in window state — count any state change)
     acts = 0
-    prev = (records[0].m1_open, records[0].m2_open, records[0].m3_open)
+    prev = (records[0].m1_state, records[0].m2_state, records[0].m3_state)
     for r in records[1:]:
-        cur = (r.m1_open, r.m2_open, r.m3_open)
+        cur = (r.m1_state, r.m2_state, r.m3_state)
         acts += sum(1 for a, b in zip(cur, prev) if a != b)
         prev = cur
 
@@ -870,7 +989,7 @@ def save_csv(records: List[SimRecord], path: Path) -> None:
             "datetime", "elapsed_s",
             "T_in_C", "RH_in_pct", "T_out_C", "RH_out_pct",
             "t_avg_C", "rh_avg_pct",
-            "M1_open", "M2_open", "M3_open",
+            "M1_state", "M2_state", "M3_state",
             "step_t", "step_rh", "step_resolved",
             "is_daytime", "wind_override",
         ])
@@ -881,7 +1000,7 @@ def save_csv(records: List[SimRecord], path: Path) -> None:
                 f"{r.T_in:.2f}", f"{r.RH_in:.1f}",
                 f"{r.T_out:.2f}", f"{r.RH_out:.1f}",
                 r.t_avg, r.rh_avg,
-                r.m1_open, r.m2_open, r.m3_open,
+                r.m1_state, r.m2_state, r.m3_state,
                 r.step_t, r.step_rh, r.step_resolved,
                 r.is_day, r.wind_override,
             ])
@@ -962,20 +1081,35 @@ def save_plot(records: List[SimRecord], settings: Dict, path: Path) -> None:
     ax2.legend(fontsize=7, loc="upper right", ncol=3)
     ax2.grid(True, alpha=0.25)
 
-    # ── Panel 3: Window states ──────────────────────────────────────────────
+    # ── Panel 3: Window states (4-state, mirrors firmware window_state_t) ───
+    # Per-window y-band: CLOSED=0, MOVING_OPEN=0.33, OPEN=1, MOVING_CLOSE=0.67.
+    # Reads as a "physical openness" trace: closed→opening→open→closing→closed.
     ax3 = fig.add_subplot(gs[2], sharex=ax1)
     _shade_night(ax3)
     names  = ["M1 (roof vent)",  "M2 (roof vent)",  "M3 (wall vent)"]
     colors = ["#e67e22", "#27ae60", "#2980b9"]
-    cols   = [(r.m1_open, r.m2_open, r.m3_open) for r in records]
+    state_y = {
+        "CLOSED":       0.00,
+        "MOVING_OPEN":  0.33,
+        "MOVING_CLOSE": 0.67,
+        "OPEN":         1.00,
+    }
+    track_h  = 1.3   # vertical span per motor track (1.0 for states + 0.3 gap)
+    state_cols = [(r.m1_state, r.m2_state, r.m3_state) for r in records]
     for i, (name, color) in enumerate(zip(names, colors)):
-        vals = [c[i] + i * 1.4 for c in cols]
+        vals = [state_y.get(c[i], 0.0) + i * track_h for c in state_cols]
         ax3.step(dts, vals, color=color, lw=1.8, where="post", label=name)
-    ax3.set_ylabel("Window state\n(0=closed 1=open)")
-    ax3.set_yticks([0, 1, 1.4, 2.4, 2.8, 3.8])
-    ax3.set_yticklabels(["C", "O", "C", "O", "C", "O"], fontsize=7)
+    ax3.set_ylabel("Window state\nC ↑ ↓ O")
+    yticks, ylabels = [], []
+    for i in range(3):
+        for s, y in (("C", 0.00), ("↑", 0.33), ("↓", 0.67), ("O", 1.00)):
+            yticks.append(y + i * track_h)
+            ylabels.append(s)
+    ax3.set_yticks(yticks)
+    ax3.set_yticklabels(ylabels, fontsize=7)
+    ax3.set_ylim(-0.1, 2 * track_h + 1.1)
     ax3.legend(fontsize=7, loc="upper right")
-    ax3.grid(True, alpha=0.25)
+    ax3.grid(True, alpha=0.25, axis="x")
 
     # ── Panel 4: Steps ──────────────────────────────────────────────────────
     ax4 = fig.add_subplot(gs[3], sharex=ax1)
