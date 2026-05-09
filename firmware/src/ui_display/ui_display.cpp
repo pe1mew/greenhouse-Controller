@@ -682,30 +682,40 @@ static void render_status(void)
                  * (default 6 / 10 min).  T6 still uses meas.t_avg_c /
                  * meas.rh_avg_pct for control decisions — anti-chatter
                  * smoothing where it matters, live readings where the
-                 * operator wants them. */
+                 * operator wants them.
+                 *
+                 * "#=Set" hint on row 1 mirrors the WiFi (#=AP) and Time
+                 * (#=Set) shortcuts: pressing # on this status page jumps
+                 * straight to the Climate sub-menu (asks Farmer PIN if not
+                 * yet authenticated). The hint is right-aligned to columns
+                 * 12-16 so the data on the left and the hint on the right
+                 * are visually distinct. */
                 snprintf(r0, sizeof(r0), "Temp:%3d \xDF" "C     ", (int)meas.temperature_c);
                 if (bits & EG1_BIT_SENSOR_FAULT_T) {
                     snprintf(r1, sizeof(r1), "** SENSOR FAULT ");
                 } else {
-                    snprintf(r1, sizeof(r1), "  RH:%3d %%      ", (int)meas.humidity_pct);
+                    snprintf(r1, sizeof(r1), "  RH:%3d%%  #=Set", (int)meas.humidity_pct);
                 }
             } else {
                 snprintf(r0, sizeof(r0), "Temp: --- \xDF" "C    ");
-                snprintf(r1, sizeof(r1), "  RH: ---  %%    ");
+                snprintf(r1, sizeof(r1), "  RH: ---  #=Set");
             }
             break;
 
         case 1: /* Wind */
+            /* Right-aligned "#=Set" hint on row 1 (columns 12-16) jumps to
+             * the Wind sub-menu (Farmer PIN if not yet authenticated) —
+             * same pattern as case 0. */
             if (valid) {
                 snprintf(r0, sizeof(r0), "Wind:%2d.%1d m/s   ",
                          (int)(meas.wind_speed_avg_ms10 / 10),
                          (int)(meas.wind_speed_avg_ms10 % 10));
-                snprintf(r1, sizeof(r1), " Dir:%3d \xDF (%-2s) ",
+                snprintf(r1, sizeof(r1), "Dir:%3d\xDF %-2s#=Set",
                          (int)meas.wind_dir_avg_deg,
                          deg_to_cardinal((uint16_t)meas.wind_dir_avg_deg));
             } else {
                 snprintf(r0, sizeof(r0), "Wind: -- m/s    ");
-                snprintf(r1, sizeof(r1), " Dir: --- \xDF     ");
+                snprintf(r1, sizeof(r1), "Dir: ---   #=Set");
             }
             break;
 
@@ -1050,6 +1060,47 @@ static void handle_status(char key)
         return;
     }
 
+    /* # on the T/RH page (page 0) → jump to Climate sub-menu (Farmer).
+     * Mirrors the WiFi (#=AP) and Time (#=Set) shortcuts: if not yet
+     * authenticated, request Farmer PIN and resume in UI_MENU_CLIMATE
+     * via the s_return_menu fallback in handle_pin(). */
+    if (key == '#' && (s_status_page % STATUS_PAGES) == 0u) {
+        if (s_session >= SESSION_FARMER) {
+            s_state    = UI_MENU_CLIMATE;
+            s_sub_page = 0;
+            s_dirty    = true;
+        } else {
+            s_pin_role        = PIN_ROLE_FARMER;
+            s_pin_len         = 0;
+            memset(s_pin_buf, 0, sizeof(s_pin_buf));
+            s_pending_param   = -1;
+            s_pending_ap      = false;
+            s_pending_settime = false;
+            s_return_menu     = UI_MENU_CLIMATE;
+            s_state           = UI_PIN_ENTRY;
+            s_dirty           = true;
+        }
+        return;
+    }
+    /* # on the wind page (page 1) → jump to Wind sub-menu (Farmer). */
+    if (key == '#' && (s_status_page % STATUS_PAGES) == 1u) {
+        if (s_session >= SESSION_FARMER) {
+            s_state    = UI_MENU_WIND;
+            s_sub_page = 0;
+            s_dirty    = true;
+        } else {
+            s_pin_role        = PIN_ROLE_FARMER;
+            s_pin_len         = 0;
+            memset(s_pin_buf, 0, sizeof(s_pin_buf));
+            s_pending_param   = -1;
+            s_pending_ap      = false;
+            s_pending_settime = false;
+            s_return_menu     = UI_MENU_WIND;
+            s_state           = UI_PIN_ENTRY;
+            s_dirty           = true;
+        }
+        return;
+    }
     /* # on the WiFi/network page (page 3) → go to System menu (admin only) */
     if (key == '#' && (s_status_page % STATUS_PAGES) == 3u) {
         if (s_session >= SESSION_ADMIN) {

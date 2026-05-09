@@ -6,6 +6,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.16.38] — 2026-05-09
+
+*Cosmetic follow-up to 1.16.37: replace the `#=Edit` hint on the new T/RH and Wind status-page shortcuts with `#=Set`, right-aligned to columns 12-16, so the four `#`-shortcut hints on the LCD now share the same visual convention (`#=AP`, `#=Set`, `#=Set`, `#=Set`).*
+
+### Changed
+- `firmware/src/ui_display/ui_display.cpp::render_status()` — case 0 row 1 now `"  RH:%3d%%  #=Set"` (valid) / `"  RH: ---  #=Set"` (invalid); case 1 row 1 now `"Dir:%3d°%-2s#=Set"` (valid) / `"Dir: ---   #=Set"` (invalid). The `#=Set` token sits at the same right-edge columns 12-16 on every status page that supports the `#`-shortcut, matching the existing WiFi-status (`#=AP`) and Time-status (`#=Set`) rendering. Comments updated to flag the right-alignment.
+- `manual/beheerderHandleiding.md` §"Snelweg via #-toets" — both T/RH and Wind shortcut entries now show hint `#=Set` (was `#=Edit`).
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.16.37` → `1.16.38` in both `lolin_s3` and `test_t2_relay` environments.
+
+### Out of scope
+- The keypad behaviour is unchanged — only the on-screen hint label and its column position are different. `handle_status()` still routes `#` on pages 0/1 to `UI_MENU_CLIMATE` / `UI_MENU_WIND` exactly as in 1.16.37.
+- `web-assets-1.16.38.zip` is byte-identical to 1.16.37 — no static asset content changed.
+
+---
+
+## [1.16.37] — 2026-05-09
+
+*Extend the existing `#`-shortcut pattern (already used on the WiFi-status and Time-status pages) to the T/RH-status and Wind-status pages. Pressing `#` on T/RH now jumps straight into the Climate sub-menu; pressing `#` on Wind jumps into the Wind sub-menu. Both shortcuts request the Farmer PIN if no session is active and resume in the target menu after a successful PIN entry — same flow as `#=AP` (System menu) and `#=Set` (date/time entry), just routed through `s_return_menu` instead of dedicated pending flags. Row 2 of each affected status page now shows a `#=Edit` hint so the shortcut is discoverable.*
+
+### Added
+- `firmware/src/ui_display/ui_display.cpp::handle_status()` — two new branches at the top of the function: `#` on status page 0 (T/RH) routes to `UI_MENU_CLIMATE`; `#` on status page 1 (Wind) routes to `UI_MENU_WIND`. When `s_session >= SESSION_FARMER` the jump is direct; otherwise `s_pin_role = PIN_ROLE_FARMER` and `s_return_menu` is set to the target sub-menu, then the existing PIN-success default branch in `handle_pin()` restores the menu after authentication. `s_pending_param` / `s_pending_ap` / `s_pending_settime` are explicitly cleared so the new path can never collide with a half-finished pending action from a prior interaction.
+- `manual/beheerderHandleiding.md` §"Snelweg via #-toets" — list extended from 2 to 4 shortcuts (T/RH and Wind added), each annotated with the on-screen hint (`#=Edit`, `#=AP`, `#=Set`) and the required role.
+
+### Changed
+- `firmware/src/ui_display/ui_display.cpp::render_status()` — row 1 of pages 0 and 1 now ends with `#=Edit` instead of trailing whitespace, so the LCD shows the new shortcut. T/RH valid: `"  RH:%3d%% #=Edit"`; T/RH invalid: `"  RH: --- #=Edit"`. Wind valid: `"Dir:%3d°%-2s#=Edit"` (the leading space and the parens around the cardinal direction were removed to free the 6 columns the hint needs); wind invalid: `"Dir: ---  #=Edit"`. Both formats fit exactly in the 16-column LCD line. Sensor-fault row 1 is unchanged — the hint would be misleading while the sensor isn't responding.
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.16.36` → `1.16.37` in both `lolin_s3` and `test_t2_relay` environments.
+
+### Out of scope
+- The boer-handleiding (`manual/handleiding.md` §5.1) describes the same status pages and reference-table for `#=AP` / `#=Set`, but the new `#=Edit` hint is not yet listed there. Update on next pass through the boer manual.
+- `web-assets-1.16.37.zip` will be byte-identical to `web-assets-1.16.36.zip` — no static asset content changed; only the LCD render strings and the keypad handler. Re-flashing the LFS partition is not necessary.
+
+---
+
+## [1.16.36] — 2026-05-09
+
+*Fix a regression introduced in 1.16.35 where the static-file response handler silently truncated files larger than 32767 bytes. `index.html` grew from ~32.2 KiB to ~32.9 KiB after the conflict-priority dropdown was added, pushing it past the buffer ceiling and dropping the closing `</span>`, the GitHub footer link, `</footer>`, `</body>` and `</html>` from every page load. The browser was forgiving enough to render the page anyway, so the only visible symptom was the missing footer link.*
+
+### Fixed
+- `firmware/src/web_server/web_server.cpp` — `LFS_BUF_SIZE` raised `32768` → `65536`. `serve_lfs()` allocates the whole buffer per request from PSRAM (8 MiB, ample headroom) and passes it to `AsyncWebServerResponse::beginResponse(int, const char*, const char*)`, which treats the third argument as a null-terminated C string — so the served length is capped at `LFS_BUF_SIZE - 1` regardless of the actual file size. 64 KiB now leaves ~30 KiB headroom above today's largest static asset; the next time a static file approaches the new ceiling the same regression will recur and the right answer will be to switch to a chunked / streaming response. Comment on the `#define` updated to flag the trap.
+
+### Changed
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.16.35` → `1.16.36` in both `lolin_s3` and `test_t2_relay` environments.
+
+### Out of scope
+- Long-term, `serve_lfs()` should query the file size from LittleFS and `ps_malloc(file_size + 1)`, or stream the file in chunks via `beginChunkedResponse()`. That removes the silent-truncation footgun entirely. Not done in this release because the immediate goal was to restore the missing footer link without further surgery on the static-file path.
+- `web-assets-1.16.36.zip` is byte-identical to `web-assets-1.16.35.zip` — no asset content changed; only the firmware buffer ceiling. Re-flashing the assets is not strictly necessary for the fix, but `bin/build_release.ps1` writes both artefacts as a matter of course.
+
+---
+
 ## [1.16.35] — 2026-05-09
 
 *Expose the existing T-vs-RH conflict-resolution priority (`cr_priority`) to both the LCD keypad UI and the web GUI, for both Farmer and Technician roles. The setting was already present in firmware (`cfg.cr_priority`, NVS key `climate/cr_priority`, defaults to `0` = `CR_TEMP_FIRST`) and was already returned by `GET /api/config`, but no UI surface offered to change it — operators had to POST it directly. Also corrects the LCD design document's stale "6-digit PIN" references to the actual firmware values (Farmer = 4, Technician = 8).*

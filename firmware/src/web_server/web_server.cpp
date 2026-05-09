@@ -75,7 +75,7 @@ static const char *TAG = "T11_WEB";
 #define WS_PUSH_MS       2000u  /**< WebSocket status push interval */
 #define MAX_SESSIONS        4   /**< Max concurrent web sessions */
 #define TOKEN_LEN          16   /**< Session token length (hex chars) */
-#define LFS_BUF_SIZE    32768u  /**< Max LittleFS file read buffer (PSRAM) */
+#define LFS_BUF_SIZE    65536u  /**< Max LittleFS file read buffer (PSRAM). Sized at 64 KiB to leave ~30 KiB headroom above the current largest static asset (index.html, ~33 KiB at 1.16.36). serve_lfs() allocates this whole buffer per request and beginResponse() treats it as a null-terminated C string, so files larger than LFS_BUF_SIZE-1 are silently truncated — that bit 1.16.35 when index.html crossed 32767 bytes and the footer's GitHub link disappeared. */
 #define HIST_MAX_ROWS      60   /**< Max history rows returned by /api/history */
 
 /* Farmer-visible NVS keys: POST /api/config accepts these without admin */

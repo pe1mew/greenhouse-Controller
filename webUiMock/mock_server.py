@@ -104,7 +104,7 @@ cfg: dict = {
     "lon_deg":              5,    # DEF_LON_DEG
     "lon_frac":             0,    # DEF_LON_FRAC
     "tz_str":              "CET-1CEST,M3.5.0,M10.5.0/3",
-    "fw_ver":              "1.16.35",
+    "fw_ver":              "1.16.38",
 }
 
 sd: dict = {"mounted": True, "size_mb": 7500, "free_mb": 7100}
