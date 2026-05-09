@@ -264,6 +264,7 @@ function loadConfig() {
       setVal('cfg-avg-win-t',      cfg.avg_win_t);
       setVal('cfg-avg-win-rh',     cfg.avg_win_rh);
       setVal('cfg-rh-ctrl-en',     String(cfg.rh_ctrl_en));
+      setVal('cfg-cr-priority',    String(cfg.cr_priority));
       setVal('cfg-v-max',          cfg.v_max);
       setVal('cfg-dir-excl-low',   cfg.dir_excl_low);
       setVal('cfg-dir-excl-high',  cfg.dir_excl_high);

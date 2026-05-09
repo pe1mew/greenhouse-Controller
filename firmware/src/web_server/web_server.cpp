@@ -83,7 +83,7 @@ static const char *TAG = "T11_WEB";
 static const char * const FARMER_KEYS[] = {
     "t_max_day","t_min_day","t_max_ngt","t_min_ngt",
     "rh_max_day","rh_min_day","rh_max_ngt","rh_min_ngt",
-    "rh_ctrl_en",
+    "rh_ctrl_en","cr_priority",
     NULL
 };
 /* Wind-protection enable is farmer-writable */

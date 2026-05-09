@@ -104,7 +104,7 @@ cfg: dict = {
     "lon_deg":              5,    # DEF_LON_DEG
     "lon_frac":             0,    # DEF_LON_FRAC
     "tz_str":              "CET-1CEST,M3.5.0,M10.5.0/3",
-    "fw_ver":              "1.16.31",
+    "fw_ver":              "1.16.35",
 }
 
 sd: dict = {"mounted": True, "size_mb": 7500, "free_mb": 7100}
@@ -195,6 +195,7 @@ NVS_MAP: dict[tuple, tuple] = {
     ("climate", "avg_win_t"):       ("avg_win_t",           None),
     ("climate", "avg_win_rh"):      ("avg_win_rh",          None),
     ("climate", "rh_ctrl_en"):      ("rh_ctrl_en",          None),
+    ("climate", "cr_priority"):     ("cr_priority",         None),
     ("wind",    "v_max"):           ("v_max",               None),
     ("wind",    "dir_excl_low"):    ("dir_excl_low",        None),
     ("wind",    "dir_excl_high"):   ("dir_excl_high",       None),
@@ -231,6 +232,7 @@ FARMER_WRITABLE: set[tuple] = {
     ("climate", "rh_max_ngt"),
     ("climate", "rh_min_ngt"),
     ("climate", "rh_ctrl_en"),
+    ("climate", "cr_priority"),
     ("wind",    "wind_prot_en"),
 }
 

@@ -16,7 +16,7 @@
  * ── FSM states ─────────────────────────────────────────────────────────────
  *  UI_STATUS         auto-rotate 6 pages × 5 s; any key → UI_MENU_ROOT
  *  UI_MENU_ROOT      1=Climate  2=Wind  3=Access  4=System  *=back
- *  UI_MENU_CLIMATE   Day/Night group selector: 1=Day  2=Night  *=back
+ *  UI_MENU_CLIMATE   Climate menu: 1=Day  2=Night  3=CR-priority  *=back
  *  UI_BROWSE_DAY     Browse 4 day setpoints one at a time; A/B=prev/next
  *                    #=edit (farmer PIN if not logged in); *=group summary→back
  *  UI_BROWSE_NIGHT   Same as UI_BROWSE_DAY for the night setpoints
@@ -100,7 +100,7 @@ typedef struct {
     log_param_id_t   log_id;     /**< LOG_PARAM_* (LOG_PARAM_NONE = no log) */
 } param_def_t;
 
-/* Climate parameters (11)
+/* Climate parameters (12)
  *
  * Indices 2 (t_min_day) and 3 (t_min_ngt) are HEATING CONTROL parameters that
  * are NOT IMPLEMENTED — preserved for future use.  They remain in this table
@@ -109,17 +109,18 @@ typedef struct {
  * Same pattern as the web GUI (see firmware/data/app.js linkAllSliders /
  * loadConfig setVal calls). */
 static const param_def_t CLIMATE_PARAMS[] = {
-    { "T-max-dy", "T-max day (C)   ", "climate", "t_max_day",  CFG_MIN_T_MAX_DAY,  CFG_MAX_T_MAX_DAY,  SESSION_FARMER, LOG_PARAM_T_MAX_DAY  },
-    { "T-max-ng", "T-max ngt (C)   ", "climate", "t_max_ngt",  CFG_MIN_T_MAX_NGT,  CFG_MAX_T_MAX_NGT,  SESSION_FARMER, LOG_PARAM_T_MAX_NGT  },
-    { "T-min-dy", "T-min day (C)   ", "climate", "t_min_day",  CFG_MIN_T_MIN_DAY,  CFG_MAX_T_MIN_DAY,  SESSION_FARMER, LOG_PARAM_T_MIN_DAY  }, /* HEATING CONTROL NOT IMPLEMENTED — preserved for future use */
-    { "T-min-ng", "T-min ngt (C)   ", "climate", "t_min_ngt",  CFG_MIN_T_MIN_NGT,  CFG_MAX_T_MIN_NGT,  SESSION_FARMER, LOG_PARAM_T_MIN_NGT  }, /* HEATING CONTROL NOT IMPLEMENTED — preserved for future use */
-    { "RH-max-d", "RH-max day (%)  ", "climate", "rh_max_day", CFG_MIN_RH_MAX,     CFG_MAX_RH_MAX,     SESSION_FARMER, LOG_PARAM_RH_MAX_DAY },
-    { "RH-max-n", "RH-max ngt (%)  ", "climate", "rh_max_ngt", CFG_MIN_RH_MAX,     CFG_MAX_RH_MAX,     SESSION_FARMER, LOG_PARAM_RH_MAX_NGT },
-    { "RH-min-d", "RH-min day (%)  ", "climate", "rh_min_day", CFG_MIN_RH_MIN,     CFG_MAX_RH_MIN,     SESSION_FARMER, LOG_PARAM_RH_MIN_DAY },
-    { "RH-min-n", "RH-min ngt (%)  ", "climate", "rh_min_ngt", CFG_MIN_RH_MIN,     CFG_MAX_RH_MIN,     SESSION_FARMER, LOG_PARAM_RH_MIN_NGT },
-    { "Hyst-T  ", "Hyst temp (C)   ", "climate", "hyst_t",     CFG_MIN_HYST_T,     CFG_MAX_HYST_T,     SESSION_FARMER, LOG_PARAM_HYST_T     },
-    { "Hyst-RH ", "Hyst humid (%)  ", "climate", "hyst_rh",    CFG_MIN_HYST_RH,    CFG_MAX_HYST_RH,    SESSION_FARMER, LOG_PARAM_HYST_RH    },
-    { "RH-ctrl ", "RH ctrl (0/1)   ", "climate", "rh_ctrl_en", 0,                  1,                  SESSION_FARMER, LOG_PARAM_RH_CTRL_EN },
+    { "T-max-dy", "T-max day (C)   ", "climate", "t_max_day",   CFG_MIN_T_MAX_DAY,  CFG_MAX_T_MAX_DAY,  SESSION_FARMER, LOG_PARAM_T_MAX_DAY  },
+    { "T-max-ng", "T-max ngt (C)   ", "climate", "t_max_ngt",   CFG_MIN_T_MAX_NGT,  CFG_MAX_T_MAX_NGT,  SESSION_FARMER, LOG_PARAM_T_MAX_NGT  },
+    { "T-min-dy", "T-min day (C)   ", "climate", "t_min_day",   CFG_MIN_T_MIN_DAY,  CFG_MAX_T_MIN_DAY,  SESSION_FARMER, LOG_PARAM_T_MIN_DAY  }, /* HEATING CONTROL NOT IMPLEMENTED — preserved for future use */
+    { "T-min-ng", "T-min ngt (C)   ", "climate", "t_min_ngt",   CFG_MIN_T_MIN_NGT,  CFG_MAX_T_MIN_NGT,  SESSION_FARMER, LOG_PARAM_T_MIN_NGT  }, /* HEATING CONTROL NOT IMPLEMENTED — preserved for future use */
+    { "RH-max-d", "RH-max day (%)  ", "climate", "rh_max_day",  CFG_MIN_RH_MAX,     CFG_MAX_RH_MAX,     SESSION_FARMER, LOG_PARAM_RH_MAX_DAY },
+    { "RH-max-n", "RH-max ngt (%)  ", "climate", "rh_max_ngt",  CFG_MIN_RH_MAX,     CFG_MAX_RH_MAX,     SESSION_FARMER, LOG_PARAM_RH_MAX_NGT },
+    { "RH-min-d", "RH-min day (%)  ", "climate", "rh_min_day",  CFG_MIN_RH_MIN,     CFG_MAX_RH_MIN,     SESSION_FARMER, LOG_PARAM_RH_MIN_DAY },
+    { "RH-min-n", "RH-min ngt (%)  ", "climate", "rh_min_ngt",  CFG_MIN_RH_MIN,     CFG_MAX_RH_MIN,     SESSION_FARMER, LOG_PARAM_RH_MIN_NGT },
+    { "Hyst-T  ", "Hyst temp (C)   ", "climate", "hyst_t",      CFG_MIN_HYST_T,     CFG_MAX_HYST_T,     SESSION_FARMER, LOG_PARAM_HYST_T     },
+    { "Hyst-RH ", "Hyst humid (%)  ", "climate", "hyst_rh",     CFG_MIN_HYST_RH,    CFG_MAX_HYST_RH,    SESSION_FARMER, LOG_PARAM_HYST_RH    },
+    { "RH-ctrl ", "RH ctrl (0/1)   ", "climate", "rh_ctrl_en",  0,                  1,                  SESSION_FARMER, LOG_PARAM_RH_CTRL_EN },
+    { "CR-prio ", "T/RH prio (0-2) ", "climate", "cr_priority", 0,                  2,                  SESSION_FARMER, LOG_PARAM_CR_PRIORITY },
 };
 #define N_CLIMATE  (int)(sizeof(CLIMATE_PARAMS) / sizeof(CLIMATE_PARAMS[0]))
 
@@ -420,6 +421,7 @@ static int32_t param_get(bool is_wind, int idx)
             case  8: return cfg.hyst_t;
             case  9: return cfg.hyst_rh;
             case 10: return cfg.rh_ctrl_en;
+            case 11: return cfg.cr_priority;
             default: return 0;
         }
     } else {
@@ -786,10 +788,10 @@ static void render_menu_root(void)
     lcd_set("1:Clim  2:Wind  ", "3:Access 4:Sys *");
 }
 
-/** @brief Render the Day/Night climate group selector. */
+/** @brief Render the climate sub-menu (Day/Night setpoints + CR priority). */
 static void render_menu_climate(void)
 {
-    lcd_set("Day/Night setpts", "1=Day  2=Ngt  * ");
+    lcd_set("Climate menu    ", "1Day 2Ngt 3CR  *");
 }
 
 /**
@@ -1099,7 +1101,7 @@ static void handle_menu_root(char key)
     }
 }
 
-/** @brief Handle keypresses in UI_MENU_CLIMATE (Day/Night group selector). */
+/** @brief Handle keypresses in UI_MENU_CLIMATE (Day/Night + CR priority). */
 static void handle_menu_climate(char key)
 {
     switch (key) {
@@ -1112,6 +1114,10 @@ static void handle_menu_climate(char key)
             s_state    = UI_BROWSE_NIGHT;
             s_sub_page = 0;
             s_dirty    = true;
+            break;
+        case '3':
+            /* Edit cr_priority directly (CLIMATE_PARAMS index 11). */
+            begin_edit(false, 11, UI_MENU_CLIMATE);
             break;
         case '*':
             s_state = UI_MENU_ROOT;

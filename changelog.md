@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.16.35] — 2026-05-09
+
+*Expose the existing T-vs-RH conflict-resolution priority (`cr_priority`) to both the LCD keypad UI and the web GUI, for both Farmer and Technician roles. The setting was already present in firmware (`cfg.cr_priority`, NVS key `climate/cr_priority`, defaults to `0` = `CR_TEMP_FIRST`) and was already returned by `GET /api/config`, but no UI surface offered to change it — operators had to POST it directly. Also corrects the LCD design document's stale "6-digit PIN" references to the actual firmware values (Farmer = 4, Technician = 8).*
+
+### Added
+- `firmware/src/ui_display/ui_display.cpp` — new entry in `CLIMATE_PARAMS` (index 11) for `cr_priority` (range 0–2, `SESSION_FARMER`, logged as `LOG_PARAM_CR_PRIORITY`). The climate sub-menu now offers `1=Day  2=Ngt  3=CR  *`; pressing `3` opens the edit screen for the new parameter (with PIN gate if not yet authenticated). Both Farmer and Admin sessions can edit it.
+- `firmware/data/index.html` — new `<select>` control "T vs RH conflict priority" in the Climate tab (3 options: Temperature first / Humidity first / Largest deviation). Placed in a `farmer-hidden` row so it is visible to both Farmer and Admin sessions, hidden for guests.
+- `firmware/data/app.js` — `setVal('cfg-cr-priority', String(cfg.cr_priority))` populates the dropdown from `GET /api/config`.
+- `webUiMock/mock_server.py` — `("climate", "cr_priority")` added to both `NVS_MAP` (so a POST actually persists in the in-memory `cfg`) and `FARMER_WRITABLE` (so a farmer-session POST is accepted, mirroring the firmware).
+
+### Changed
+- `firmware/src/web_server/web_server.cpp` — `cr_priority` added to `FARMER_KEYS[]` so a farmer-session `POST /api/config` is accepted (previously admin-only).
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.16.34` → `1.16.35` in both `lolin_s3` and `test_t2_relay` environments.
+- `design/LCD_GUI_Design.md` — added §5.1.5 "Conflict Resolution Priority" (mockup, value list, edit flow); renumbered Change Farmer PIN → §5.1.6 and Logout → §5.1.7. Technician section 2.3 now lists conflict-resolution priority alongside the wind-protection toggle. Same document's stale "6-digit PIN" text and ASCII mockups corrected to match the firmware (Farmer = 4 digits, Technician = 8 digits).
+- `design/lcd_gui_state_diagram.puml` — added `FM_CRPrio` and `TM_CRPrio` states to the Farmer and Technician menu rings (with A/▲ and B/▼ wrap-around). The "(6 digits)" labels on the PIN-entry / change-PIN transitions corrected to "(4 or 8 digits)" / "(4 digits)" / "(8 digits)" respectively.
+- `design/logAnalysis.md` — Farmer-login row corrected from "6-digit" to "4-digit" farmer PIN.
+
+### Out of scope
+- The PNG render of `design/lcd_gui_state_diagram.puml` is not regenerated automatically; rerun `plantuml -tpng design/lcd_gui_state_diagram.puml` to refresh `design/lcd_gui_state_diagram.png` after this release.
+- `design/LCD_GUI_Design.docx` (binary) is not updated by this change; the `.md` is the working source. Re-export with Pandoc or Word if the `.docx` needs to stay in sync.
+- Existing devices keep their NVS-stored `cr_priority` value across the firmware upgrade; the new menu/dropdown lets operators change it without an API call but does not migrate the stored value.
+
+---
+
 ## [1.16.34] — 2026-05-08
 
 *LCD1602RGB hardware support + status-display readability fixes.  The existing `LCD1602_I2C` driver now also drives the PCA9633DP2 RGB controller present on the LCD1602RGB module; T8 (`ui_display`) tints the backlight from the EG1 status flags (red = critical safety event, blue = OK).  The on-board WS2812B LED palette is brought into alignment so the two indicators never disagree about severity.  Status display (LCD + web GUI) switched from sliding-window averaged readings to raw most-recent values so step changes in T/RH/wind become visible within one poll cycle instead of `avg_win_*` minutes.  Versions 1.16.32 and 1.16.33 were skipped — they were internal-only flashes revised three times during hardware bring-up before this release.*

@@ -175,6 +175,16 @@
       <button onclick="postCfgSelect('climate','rh_ctrl_en','cfg-rh-ctrl-en')">Apply</button>
       <span class="save-ok" id="fb-rh-ctrl-en"></span>
     </div>
+    <div class="row farmer-hidden">
+      <label data-tip="When temperature wants windows OPEN and humidity wants them CLOSED (or vice versa), this rule decides which signal wins. Temperature first preserves the T-floor on cool humid nights; Humidity first prioritises drying; Largest deviation picks whichever signal is furthest from its setpoint.">T vs RH conflict priority</label>
+      <select id="cfg-cr-priority">
+        <option value="0">Temperature first</option>
+        <option value="1">Humidity first</option>
+        <option value="2">Largest deviation</option>
+      </select>
+      <button onclick="postCfgSelect('climate','cr_priority','cfg-cr-priority')">Apply</button>
+      <span class="save-ok" id="fb-cr-priority"></span>
+    </div>
     <div class="slider-row admin-only">
       <label data-tip="Dead-band around the temperature setpoints to prevent windows rapidly cycling near the threshold. Example: with T max day = 25 °C and hysteresis = 3 °C, the window that opened at 25 °C will not close again until temperature falls to 22 °C.">T hysteresis (°C)</label>
       <input type="range"  id="cfg-hyst-t-sl" step="1">
