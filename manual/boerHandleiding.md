@@ -59,6 +59,8 @@ Voor al die onderwerpen: neem contact op met de **beheerder** (zie [Bijlage A](#
 
 **Bij twijfel of een storing**: probeer niet zelf de hardware te openen of aan te passen. Bel eerst de beheerder.
 
+**Voor snel raadplegen naast de kast** is er een aparte quick-reference card: `boerQuickRef.pdf` (1 vel A4, dubbelzijdig — bedoeld om te lamineren of in een plastic hoes naast de controller te hangen). Het kaartje vat LED-kleuren, modi, toetsen en de eerste actie bij storingen samen; deze handleiding blijft de volledige uitleg.
+
 ---
 
 ## 2. Wat doet de kascontroller?
