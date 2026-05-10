@@ -104,3 +104,17 @@
 /* ── Timezone (POSIX TZ string) ─────────────────────────────────────────── */
 /* Overwritten at runtime by geolocation sync or web/Q4 update. */
 #define DEF_TZ_STR    "CET-1CEST,M3.5.0,M10.5.0/3"
+
+/* ── Status website reporting (T14) ─────────────────────────────────────── */
+/* All keys live in NVS_NS_SYSTEM. Empty URL or status_enable=0 disables the
+ * feature. Defaults: feature off, expose mask = ALL six tiles, daily log
+ * upload at 03:15 local, also upload on rotation. */
+#define DEF_STATUS_URL          ""              /**< Endpoint URL (http:// or https://) */
+#define DEF_STATUS_SECRET       ""              /**< Shared secret sent in sourceidentifier header */
+#define DEF_STATUS_INTERVAL_S   120             /**< POST cycle (s); spec range 60–300 */
+#define DEF_STATUS_ENABLE       0               /**< 0 = disabled by default */
+#define DEF_STATUS_EXPOSE       0x3F            /**< Bits 0..5 = climate/wind/windows/mode/sun/system */
+#define DEF_LOG_UPLOAD_H        3               /**< Daily upload local hour (0–23) */
+#define DEF_LOG_UPLOAD_M        15              /**< Daily upload local minute (0–59) */
+#define DEF_LOG_UPLOAD_ROT      1               /**< Also upload on T9 rotation */
+#define DEF_LOG_LAST_UP         ""              /**< Last uploaded filename (T14 owns) */

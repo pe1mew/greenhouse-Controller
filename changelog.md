@@ -6,6 +6,93 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.17.2] — 2026-05-10
+
+*Cosmetic only: make the time on the Status-tab Clock tile **bold** so it matches the value-rendering convention used by every other Status tile (where the dynamic value is wrapped in `<strong>` and the surrounding label / unit is regular weight).*
+
+### Changed
+- `firmware/data/index.html` — Clock tile time element changed from `<p id="st-time">…</p>` to `<p><strong id="st-time">…</strong></p>`. The `data-tip` tooltip stays on the `<p>` so the hover-help is unchanged; `setText('st-time', …)` in `app.js` keeps working unchanged because the target ID just moved one level inwards.
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.1` → `1.17.2`.
+
+### Out of scope
+- Other tiles already use `<strong>` for the value; no firmware logic changes; LittleFS-only patch but rebuilt firmware too because `FIRMWARE_VERSION` is baked at compile time and is displayed by the System / Clock surfaces.
+
+---
+
+## [1.17.1] — 2026-05-10
+
+*Field-readiness polish for the 1.17.0 status-website feature. Aligns the canonical payload with the actual public dashboard contract at `pe1mew.nl/hbwv` (different field names than the spec implied), routes sunrise/sunset and `time_iso` through a TZ-correct path so the dashboard shows local time, widens the T11 status JSON buffers, and surfaces uptime on the System tile so unexpected resets are visible at a glance.*
+
+### Added
+- `firmware/data/index.html` System → Clock card — new `<strong id="st-uptime">` row, tooltipped "Time since the controller last booted … useful for spotting unexpected resets."
+- `firmware/data/app.js::fmtUptime()` — formats `system.uptime_s` as `1d 4h 23m` / `4h 23m` / `2m 13s` / `5s` and binds it in `handleStatus()`.
+
+### Changed
+- `firmware/src/status_post/status_json.cpp::build_canonical_status_json()` — field names rewritten to match the public dashboard's `app.js` consumer:
+  - climate: `temp_c` / `temp_avg_c` (was `t_c` / `t_avg_c`)
+  - wind: `speed_ms` / `speed_avg_ms` / `direction_deg` / `direction_avg_deg` (was `ms` / `avg_ms` / `dir_deg` / `avg_dir_deg`)
+  - mode: now an object `{current, flags[]}` (was a bare string). `current` is the highest-priority mode label (`MOTOR_ALARM`/`WIND_OVERRIDE`/`WINDOW_CAL`/`AUTOMATIC`); `flags` is an EG1-derived array (`wind_override`, `sensor_fault_temp`, `sensor_fault_wind`, `ota_in_progress`, `motor_alarm`, `calibrating`).
+  - sun: `sunrise_min` / `sunset_min` in **local** minutes-from-midnight (was `sunrise_mins_utc` / `sunset_mins_utc` in UTC).
+  - system: `wifi_ip` / `wifi_rssi_dbm` / `ntp_synced` / `fw_ver` (was `ip` / `rssi` / `ntp` / `fw`).
+- `firmware/src/data_manager/data_manager.cpp::dm_status_snapshot()` — converts `cfg.sunrise_mins_utc` / `cfg.sunset_mins_utc` to **local** minutes by deriving the offset from `localtime_r` vs. `gmtime_r` (Newlib has no `tm_gmtoff`), so DST is handled automatically. Belt-and-braces `setenv("TZ", …)` + `tzset()` reapply on every snapshot closes the brief window after `configTime()` where TZ is `UTC0`; gated by `strcmp` against `getenv("TZ")` to avoid the env-allocate-free churn (this snapshot runs every 2 s from the WS push).
+- `firmware/src/types/app_types.h::status_snapshot_t` — `sunrise_mins_utc` / `sunset_mins_utc` renamed to `sunrise_mins_local` / `sunset_mins_local` to make the post-conversion semantics explicit.
+- `firmware/data/app.js::handleStatus()` — reads the new nested field names from the canonical builder; mode rendering now handles the `{current, flags[]}` object and builds badge HTML from the `flags` array instead of from raw EG1 bits.
+- `firmware/data/app.js` — Web-tab auto-refresh now calls a new `refreshWebStatus()` (status indicators only) instead of `loadWebCfg()` (full reload), so the user's in-progress edits to URL / secret / interval / expose checkboxes are not clobbered every 5 s. `postWebCfg()` success path calls `loadWebCfg()` once after Apply so the form reflects exactly what was persisted.
+- `firmware/data/app.js::validateStatusUrl()` — client-side syntax check: empty allowed (disables feature), otherwise must start `http(s)://`, must not contain `?` or `#`, and must end with `api.php`. Matching server-side check in `/api/web` POST handler.
+- `firmware/src/web_server/web_server.cpp` — `/api/status` GET buffer and the WS-push buffer both bumped 1024 → **2048** bytes (and matching `ps_malloc` / `build_status_json` size argument). Canonical worst-case payload is ~720 B; the new size keeps a 2.8× margin against future schema additions. The intermediate inconsistent state (alloc 1024 / build 2048) is no longer possible — the size literal is defined per call site with a pinning comment.
+- `firmware/src/data_manager/data_manager.cpp::dm_reload_web_cfg()` — now reloads the cfg shadow **synchronously** under MX4. The previous TN5/task-notification path left a window where a `GET /api/web` (e.g. the 5 s tab refresh) immediately after Apply could still read the previous shadow values and snap the form back to the old URL. The `DM_NOTIFY_RELOAD_WEB` bit and its T4 handler are removed.
+- `firmware/src/main.cpp` — T14 stack bumped **6 KB → 12 KB**. `WiFiClientSecure` / mbedTLS handshake needs substantially more stack than plain HTTP; 6 KB was enough for plain `http://` POSTs but blew the stack on first `https://` handshake, causing a reboot.
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.0` → `1.17.1`.
+- `design/impact-analysis-statusReporting.md` — status updated to *Shipped (1.17.1)* with a divergences-from-design note (canonical-shape field names; `mode` as object; sun as local minutes).
+- `design/implementationStatusPages.md` — status updated to *Shipped (1.17.1)* with the same divergences note and a verification result.
+
+### Fixed
+- Dashboard at `pe1mew.nl/hbwv/` now renders every tile after refresh (was showing "Connection lost" and "—" placeholders because the dashboard's `app.js` could not find any of the fields it expected in the previous payload shape).
+- Public dashboard sunrise/sunset now displays local time (was UTC).
+- Web tab "Last post" / "Last log upload" / "Last uploaded file" auto-refresh every 5 s without disturbing the editable inputs.
+- Repeated short cycles of `setenv("TZ", …)` from the WS push are skipped when TZ is already correct — eliminates a slow env-string allocate/free churn.
+
+### Out of scope
+- The pe1mew.nl dashboard project itself is not in this repository — the firmware now matches its consumer contract; nothing on that side was changed.
+- LittleFS partition gotcha: `pio run -t uploadfs` always writes to `lfs1` (0x520000) regardless of the active OTA bank. For development (firmware in bank A) the web assets must be written to `lfs0` (0x420000) with esptool — same caveat already documented in `platformio.ini`.
+
+---
+
+## [1.17.0] — 2026-05-10
+
+*Initial implementation of the status-website reporting feature: a new FreeRTOS task (T14) that POSTs the controller's runtime status to a configurable REST endpoint on a 60–300 s cycle, uploads the most recently closed SD log file on T9 rotation (with a daily fallback at a configurable local time), and is configured via a new admin-only "Web" tab in the local web GUI. Refactors the status JSON path so both the local UI (`/api/status`, WebSocket) and the remote dashboard read from a single canonical builder, gated by a per-tile exposure mask.*
+
+### Added
+- `firmware/src/status_post/` — new module:
+  - `status_json.h` / `status_json.cpp` — `build_canonical_status_json(buf, cap, snap, expose_mask)` produces the spec-shaped nested payload. `window_state_str()` and `op_mode_str()` strip the `WIN_` / `MODE_` prefixes.
+  - `status_post.h` / `status_post.cpp` — T14 task body: 1 Hz wake-up, ready-to-post gate (status enabled + URL set + WiFi up + NTP-synced + not OTA), cycle-due check via `xTaskGetTickCount` delta, HTTPS branch via `WiFiClientSecure::setInsecure()` (no cert validation; documented MITM trade-off). Log-upload path (`do_log_upload()` / `try_log_upload()` / `maybe_upload_log()`) streams up to 5 MB from SD via `heap_caps_malloc(MALLOC_CAP_SPIRAM)` and POSTs as `text/plain` to `<url>?action=log`; deduplicated by filename via `cfg.log_last_up`.
+- `firmware/src/types/app_types.h::status_snapshot_t` — aggregated controller state (climate, wind, windows, mode + EG1 bits, sun, system, `update_interval_s`). Six `STATUS_EXPOSE_*` bits + `STATUS_EXPOSE_ALL` for the per-tile exposure mask.
+- `firmware/src/data_manager/data_manager.{h,cpp}::dm_status_snapshot()` — fills the snapshot from MX2/MX4/relay-spinlock; called by both the local UI's `build_status_json()` and T14.
+- `firmware/src/data_manager/data_manager.{h,cpp}` — new NVS keys in the `system` namespace: `status_url`, `status_secret`, `status_intv_s`, `status_enable`, `status_expose`, `log_upload_h`, `log_upload_m`, `log_upload_rot`, `log_last_up`. Matching fields in `cfg_shadow_t`. `dm_reload_web_cfg()` and `dm_set_log_last_up()` helpers for the `/api/web` POST handler and T14.
+- `firmware/src/event_logger/event_logger.{h,cpp}` — `event_logger_last_rotated()` (cheap, in-memory; set by `rotate_sd_file()` before the active filename is overwritten) and `event_logger_newest_closed()` (SD scan fallback for the daily-upload path). `s_last_closed` published under a short spinlock.
+- `firmware/src/web_server/web_server.cpp` — `GET /api/web` returns the current settings + last-post/last-log-up indicators (secret never echoed); `POST /api/web` validates bounds (`http(s)://`, no `? #`, ends with `api.php`, secret ≥ 16 chars, interval 60–300, hour 0–23, minute 0–59, exposure bitmask 0–0x3F), writes via `nvs_cfg_set_*`, and calls `dm_reload_web_cfg()`.
+- `firmware/data/index.html` — new admin-only "Web" tab pane (URL, shared secret, interval, master enable, six exposure checkboxes for climate/wind/windows/mode/sun/system, daily log-upload hour:minute, "Upload on rotation" toggle, live last-post / last-log-up / last-uploaded-filename indicators, Apply button).
+- `firmware/data/app.js` — `loadWebCfg()` / `postWebCfg()` for the Web tab. Single bundled POST per Apply. 5 s auto-refresh of the Status block (initially full reload — narrowed to indicators-only in 1.17.1). Tab handler hook in `showTab()`.
+- `firmware/config/cfg_defaults.h` — `DEF_STATUS_*` and `DEF_LOG_UPLOAD_*` defaults (feature off, expose=ALL, daily upload 03:15 local, also upload on rotation).
+- `firmware/config/cfg_limits.h` — `CFG_MIN/MAX_STATUS_INTERVAL_S` (60–300), `CFG_MIN/MAX_HOUR` (0–23), `CFG_MIN/MAX_MINUTE` (0–59), `CFG_MIN_SECRET_LEN` (16), `CFG_MAX_URL_LEN` (128), `CFG_MAX_SECRET_LEN` (64).
+- `firmware/src/main.cpp` — spawn `task_status_post` as **T14_WEB** on Core 0, priority LOW, 6 KB stack (bumped to 12 KB in 1.17.1).
+- `design/impact-analysis-statusReporting.md` — firmware-side impact analysis companion to `design/technical-spec-statusWebsite.md`.
+- `design/implementationStatusPages.md` — six-phase implementation plan with the eight design decisions resolved up-front.
+
+### Changed
+- `firmware/src/web_server/web_server.cpp::build_status_json()` — body replaced with a delegation to `dm_status_snapshot()` + `build_canonical_status_json(buf, len, STATUS_EXPOSE_ALL)`. Output is now the nested canonical shape consumed by both the local UI and the remote dashboard.
+- `firmware/data/app.js::handleStatus()` — rewritten for the new nested shape (was reading flat `temp_c`, `windows: [...]`, etc.).
+- `firmware/src/data_manager/data_manager.{h,cpp}` — `cfg_shadow_t` extended with the nine new web-tab fields; `cfg_clamp()` and `apply_config_update()` switch branches handle the int subset; `nvs_load_web()` populates from NVS on boot.
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.16.39` → `1.17.0`.
+
+### Out of scope
+- Public dashboard rendering / shape mismatch — discovered after this version's first POST; fixed in 1.17.1.
+- Stack overflow under HTTPS — discovered on first `https://` POST; fixed in 1.17.1 (6 KB → 12 KB).
+- LCD GUI changes — none. The feature is configured exclusively via the web GUI.
+- `design/technical-spec-statusWebsite.md` is the website-side spec and is not in this repository's authority; it is referenced as the consumer contract.
+
+---
+
 ## [1.16.39] — 2026-05-10
 
 *Drop the `#=Set` and `#=AP` discoverability hints from every rotating LCD status page (T/RH, Wind, WiFi, Time). The four `#`-shortcuts still work — `#` on a status page that has a related sub-menu jumps straight to it (Climate, Wind, System/AP, Date-time), asking for Farmer or Admin PIN as appropriate. The user manual now documents `#` as the implicit "open settings" key on status pages, so the on-screen hint is redundant. The wind-status second row also returns to its pre-1.16.37 layout with the cardinal letter in parentheses (` Dir:180 ° (S ) `) — the parens were collateral damage in 1.16.37 when the `#=Edit` hint was first squeezed in.*

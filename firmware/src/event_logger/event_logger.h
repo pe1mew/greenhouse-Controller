@@ -143,6 +143,38 @@ void log_post(const log_event_t *evt);
 uint32_t log_take_dropped_count(void);
 
 /* -----------------------------------------------------------------------
+ * Rotation-tracking helpers (T14 upload-on-rotation + daily fallback)
+ * ----------------------------------------------------------------------- */
+
+/**
+ * @brief Return the filename of the most recently *rotated-away* CSV file.
+ *
+ * Set by T9 immediately before each rotation overwrites s_cur_filename.
+ * Cheap: simply reads an in-memory string under a short critical section.
+ * Returns the bare filename (no leading '/'), e.g. "20260507143022.csv".
+ *
+ * @param out  Destination buffer; always NUL-terminated on return.
+ * @param cap  Capacity of @p out. 24 bytes is sufficient.
+ * @return true if at least one rotation has occurred this boot, false otherwise.
+ */
+bool event_logger_last_rotated(char *out, size_t cap);
+
+/**
+ * @brief Return the lexicographically newest closed CSV file on SD.
+ *
+ * Scans the SD card for *.csv files and returns the newest name that is not
+ * the currently active (open) file. Suitable for T14's daily-fallback path
+ * when no rotation has happened since boot. Falls back to the most-recently
+ * rotated file in memory when the SD scan finds no candidate.
+ *
+ * @param out  Destination buffer; always NUL-terminated on return.
+ * @param cap  Capacity of @p out. 24 bytes is sufficient.
+ * @return true if a closed file was found, false if none exists or SD is
+ *         unavailable.
+ */
+bool event_logger_newest_closed(char *out, size_t cap);
+
+/* -----------------------------------------------------------------------
  * SD card mount / unmount helpers (called by T11 web-server endpoints)
  * ----------------------------------------------------------------------- */
 

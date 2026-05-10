@@ -25,12 +25,15 @@
 #include "data_manager.h"
 #include "sunrise.h"
 #include "../event_logger/event_logger.h"
+#include "../relay_controller/relay_controller.h"
 
 #include "nvs_config.h"
 #include "ds1307_rtc.h"
 
 #include <Arduino.h>
+#include <WiFi.h>
 #include <esp_log.h>
+#include <esp_timer.h>
 #include <time.h>
 #include <string.h>
 
@@ -93,6 +96,17 @@ static const char K_LED_NITE_BRT[]     = "led_nite_brt";
 static const char K_LED_NITE_FROM[]    = "led_nite_from";
 static const char K_LED_NITE_TO[]      = "led_nite_to";
 static const char K_TZ_STR[]           = "tz_str";
+
+/* Web-tab / status-website (system namespace; NVS key max 15 chars + NUL) */
+static const char K_STATUS_URL[]       = "status_url";
+static const char K_STATUS_SECRET[]    = "status_secret";
+static const char K_STATUS_INTERVAL[]  = "status_intv_s";   /* 13 chars */
+static const char K_STATUS_ENABLE[]    = "status_enable";
+static const char K_STATUS_EXPOSE[]    = "status_expose";
+static const char K_LOG_UPLOAD_H[]     = "log_upload_h";
+static const char K_LOG_UPLOAD_M[]     = "log_upload_m";
+static const char K_LOG_UPLOAD_ROT[]   = "log_upload_rot";
+static const char K_LOG_LAST_UP[]      = "log_last_up";
 
 /* ============================================================
  * Module-private state
@@ -294,6 +308,22 @@ static void nvs_load_system(void)
                                 s_cfg.tz_str, sizeof(s_cfg.tz_str));
 }
 
+static void nvs_load_web(void)
+{
+    nvs_cfg_get_str_or_default(NVS_NS_SYSTEM, K_STATUS_URL,    DEF_STATUS_URL,
+                                s_cfg.status_url,    sizeof(s_cfg.status_url));
+    nvs_cfg_get_str_or_default(NVS_NS_SYSTEM, K_STATUS_SECRET, DEF_STATUS_SECRET,
+                                s_cfg.status_secret, sizeof(s_cfg.status_secret));
+    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_STATUS_INTERVAL, DEF_STATUS_INTERVAL_S, &s_cfg.status_interval_s);
+    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_STATUS_ENABLE,   DEF_STATUS_ENABLE,     &s_cfg.status_enable);
+    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_STATUS_EXPOSE,   DEF_STATUS_EXPOSE,     &s_cfg.status_expose);
+    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_LOG_UPLOAD_H,    DEF_LOG_UPLOAD_H,      &s_cfg.log_upload_h);
+    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_LOG_UPLOAD_M,    DEF_LOG_UPLOAD_M,      &s_cfg.log_upload_m);
+    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_LOG_UPLOAD_ROT,  DEF_LOG_UPLOAD_ROT,    &s_cfg.log_upload_rot);
+    nvs_cfg_get_str_or_default(NVS_NS_SYSTEM, K_LOG_LAST_UP,    DEF_LOG_LAST_UP,
+                                s_cfg.log_last_up, sizeof(s_cfg.log_last_up));
+}
+
 /* ============================================================
  * cfg_clamp — enforce per-key validation bounds on Q4 values.
  *
@@ -342,9 +372,15 @@ static int32_t cfg_clamp(const char *ns, const char *key, int32_t v)
         }
 
     } else if (strcmp(ns, NVS_NS_SYSTEM) == 0) {
-        if      (strcmp(key, K_POLL_INTERVAL)  == 0) _CLAMP(CFG_MIN_POLL_S,      CFG_MAX_POLL_S);
-        else if (strcmp(key, K_SESSION_TIMEOUT) == 0) _CLAMP(CFG_MIN_TIMEOUT_MIN, CFG_MAX_TIMEOUT_MIN);
-        else if (strcmp(key, K_AP_TIMEOUT)      == 0) _CLAMP(CFG_MIN_AP_TIMEOUT,  CFG_MAX_TIMEOUT_MIN);
+        if      (strcmp(key, K_POLL_INTERVAL)   == 0) _CLAMP(CFG_MIN_POLL_S,            CFG_MAX_POLL_S);
+        else if (strcmp(key, K_SESSION_TIMEOUT) == 0) _CLAMP(CFG_MIN_TIMEOUT_MIN,       CFG_MAX_TIMEOUT_MIN);
+        else if (strcmp(key, K_AP_TIMEOUT)      == 0) _CLAMP(CFG_MIN_AP_TIMEOUT,        CFG_MAX_TIMEOUT_MIN);
+        else if (strcmp(key, K_STATUS_INTERVAL) == 0) _CLAMP(CFG_MIN_STATUS_INTERVAL_S, CFG_MAX_STATUS_INTERVAL_S);
+        else if (strcmp(key, K_STATUS_ENABLE)   == 0) _CLAMP(0, 1);
+        else if (strcmp(key, K_STATUS_EXPOSE)   == 0) _CLAMP(0, 0x3F);
+        else if (strcmp(key, K_LOG_UPLOAD_H)    == 0) _CLAMP(CFG_MIN_HOUR,              CFG_MAX_HOUR);
+        else if (strcmp(key, K_LOG_UPLOAD_M)    == 0) _CLAMP(CFG_MIN_MINUTE,            CFG_MAX_MINUTE);
+        else if (strcmp(key, K_LOG_UPLOAD_ROT)  == 0) _CLAMP(0, 1);
     }
 
 #undef _CLAMP
@@ -433,6 +469,12 @@ static bool apply_config_update(const config_update_t *upd)
         else if (strcmp(key_str, K_LED_NITE_BRT)     == 0) s_cfg.led_nite_brt        = v32;
         else if (strcmp(key_str, K_LED_NITE_FROM)    == 0) s_cfg.led_nite_from       = v32;
         else if (strcmp(key_str, K_LED_NITE_TO)      == 0) s_cfg.led_nite_to         = v32;
+        else if (strcmp(key_str, K_STATUS_INTERVAL)  == 0) s_cfg.status_interval_s   = v32;
+        else if (strcmp(key_str, K_STATUS_ENABLE)    == 0) s_cfg.status_enable       = v32;
+        else if (strcmp(key_str, K_STATUS_EXPOSE)    == 0) s_cfg.status_expose       = v32;
+        else if (strcmp(key_str, K_LOG_UPLOAD_H)     == 0) s_cfg.log_upload_h        = v32;
+        else if (strcmp(key_str, K_LOG_UPLOAD_M)     == 0) s_cfg.log_upload_m        = v32;
+        else if (strcmp(key_str, K_LOG_UPLOAD_ROT)   == 0) s_cfg.log_upload_rot      = v32;
         else { updated = false; }
     } else {
         updated = false;
@@ -576,6 +618,7 @@ void task_data_manager(void *pvParameters)
     nvs_load_wind();
     nvs_load_motor();
     nvs_load_system();
+    nvs_load_web();
 
     /* Apply the stored TZ string so local-time functions are correct. */
     setenv("TZ", s_cfg.tz_str, 1);
@@ -664,6 +707,102 @@ void dm_meas_snapshot(sensor_reading_t *out, bool *valid_out)
     }
 }
 
+void dm_status_snapshot(status_snapshot_t *out)
+{
+    if (out == NULL) { return; }
+    memset(out, 0, sizeof(*out));
+
+    /* Latest measurement (MX2-protected; fast path). */
+    sensor_reading_t meas;
+    bool meas_valid = false;
+    dm_meas_snapshot(&meas, &meas_valid);
+    if (meas_valid) {
+        /* Sensor reports integer °C; canonical shape uses ×10 to keep the
+         * builder integer-only. The actual °C resolution is unchanged. */
+        out->t_c10         = (int16_t)((int32_t)meas.temperature_c * 10);
+        out->t_avg_c10     = (int16_t)((int32_t)meas.t_avg_c       * 10);
+        out->rh_pct        = meas.humidity_pct;
+        out->rh_avg_pct    = meas.rh_avg_pct;
+        out->w_ms10        = meas.wind_speed_ms10;
+        out->w_avg_ms10    = meas.wind_speed_avg_ms10;
+        out->w_dir_deg     = meas.wind_dir_deg;
+        out->w_avg_dir_deg = meas.wind_dir_avg_deg;
+    }
+
+    /* Config / derived state (MX4-protected). */
+    cfg_shadow_t cfg;
+    dm_cfg_snapshot(&cfg);
+    out->is_daytime         = cfg.is_daytime;
+    out->ts_unix            = cfg.current_unix_ts;
+    out->ntp_synced         = (cfg.current_unix_ts > 1700000000UL);
+    out->update_interval_s  = (uint16_t)(cfg.status_interval_s > 0 ? cfg.status_interval_s
+                                                                    : DEF_STATUS_INTERVAL_S);
+
+    /* Belt-and-braces TZ reapply. configTime() inside T10's NTP sync resets
+     * TZ to "UTC0" and there is a brief window where localtime_r() returns
+     * UTC. We reapply the configured TZ here so both time_iso (local ISO)
+     * and the sunrise/sunset conversion below are deterministic regardless
+     * of what the NTP sync path is doing. The strcmp gate avoids the
+     * setenv-allocate-free churn when TZ already matches — this snapshot
+     * runs every 2 s from the WS push. */
+    if (cfg.tz_str[0] != '\0') {
+        const char *cur = getenv("TZ");
+        if (cur == NULL || strcmp(cur, cfg.tz_str) != 0) {
+            setenv("TZ", cfg.tz_str, 1);
+            tzset();
+        }
+    }
+
+    /* Local-time ISO-8601 + UTC→local minutes-from-midnight for sun tile.
+     * The dashboard renders sunrise_min/sunset_min verbatim as HH:MM, so the
+     * payload must carry LOCAL minutes — not UTC. Newlib's `struct tm` does
+     * not expose tm_gmtoff, so derive the offset from localtime vs. gmtime
+     * of the same instant; this naturally tracks DST. */
+    long off_min = 0;
+    if (out->ts_unix > 1000000UL) {
+        time_t ts = (time_t)out->ts_unix;
+        struct tm lt, gm;
+        localtime_r(&ts, &lt);
+        gmtime_r(&ts, &gm);
+        strftime(out->time_iso, sizeof(out->time_iso), "%Y-%m-%dT%H:%M:%S", &lt);
+
+        /* Compute LT − GM in minutes. Use yday delta for the day-boundary
+         * case; collapse to ±1 across a year boundary (rare but possible). */
+        int day_diff = lt.tm_yday - gm.tm_yday;
+        if      (lt.tm_year > gm.tm_year) day_diff =  1;
+        else if (lt.tm_year < gm.tm_year) day_diff = -1;
+        off_min = (long)day_diff * 1440L
+                + (long)(lt.tm_hour - gm.tm_hour) * 60L
+                + (long)(lt.tm_min  - gm.tm_min);
+    } else {
+        strncpy(out->time_iso, "—", sizeof(out->time_iso) - 1u);
+    }
+    /* +14400 (10 days of minutes) keeps modulo positive for any plausible
+     * offset including negative (west-of-UTC) timezones. */
+    out->sunrise_mins_local = (int32_t)((cfg.sunrise_mins_utc + off_min + 14400L) % 1440);
+    out->sunset_mins_local  = (int32_t)((cfg.sunset_mins_utc  + off_min + 14400L) % 1440);
+
+    /* Window states via the relay-controller spinlock-protected getter. */
+    t2_get_window_states(out->win);
+
+    /* Mode is derived from EG1 in the same priority order T11 used. */
+    EventBits_t eg1 = xEventGroupGetBits(EG1);
+    out->eg1_bits = (uint32_t)eg1;
+    if      (eg1 & EG1_BIT_MOTOR_ALARM)   { out->mode = MODE_MOTOR_ALARM;   }
+    else if (eg1 & EG1_BIT_WIND_OVERRIDE) { out->mode = MODE_WIND_OVERRIDE; }
+    else                                  { out->mode = MODE_AUTOMATIC;    }
+
+    /* Network. */
+    if (WiFi.isConnected()) {
+        strncpy(out->ip, WiFi.localIP().toString().c_str(), sizeof(out->ip) - 1u);
+        out->rssi = (int16_t)WiFi.RSSI();
+    }
+
+    /* Firmware version + uptime. */
+    strncpy(out->fw, FIRMWARE_VERSION, sizeof(out->fw) - 1u);
+    out->uptime_s = (uint32_t)(esp_timer_get_time() / 1000000LL);
+}
+
 void dm_ring_read(uint16_t offset, sensor_reading_t *buf,
                   uint16_t count, uint16_t *read_out)
 {
@@ -721,6 +860,40 @@ int32_t dm_get_poll_interval_s(void)
         xSemaphoreGive(MX4);
     }
     return v;
+}
+
+void dm_reload_web_cfg(void)
+{
+    /* Synchronous: caller (typically the /api/web POST handler) blocks until
+     * the shadow has been refreshed from NVS. Going via TN5/task-notification
+     * leaves a window where the next /api/web GET (e.g. the 5 s tab refresh)
+     * still reads the *previous* shadow values and the UI snaps back to the
+     * old URL. NVS reads under MX4 are fast (<10 ms) so blocking the async
+     * web context briefly is acceptable. */
+    if (xSemaphoreTake(MX4, pdMS_TO_TICKS(500u)) == pdTRUE) {
+        nvs_load_web();
+        xSemaphoreGive(MX4);
+    } else {
+        ESP_LOGW(TAG, "dm_reload_web_cfg: MX4 timeout — shadow may be stale");
+    }
+}
+
+void dm_set_log_last_up(const char *filename)
+{
+    if (filename == NULL) { return; }
+
+    /* Persist to NVS first; on success, update the in-RAM shadow. */
+    nvs_cfg_status_t st = nvs_cfg_set_str(NVS_NS_SYSTEM, K_LOG_LAST_UP, filename);
+    if (st != NVS_CFG_OK) {
+        ESP_LOGW(TAG, "dm_set_log_last_up: NVS write failed (st=%d)", (int)st);
+        return;
+    }
+
+    if (xSemaphoreTake(MX4, pdMS_TO_TICKS(200u)) == pdTRUE) {
+        strncpy(s_cfg.log_last_up, filename, sizeof(s_cfg.log_last_up) - 1u);
+        s_cfg.log_last_up[sizeof(s_cfg.log_last_up) - 1u] = '\0';
+        xSemaphoreGive(MX4);
+    }
 }
 
 void dm_set_manual_time(time_t unix_ts)

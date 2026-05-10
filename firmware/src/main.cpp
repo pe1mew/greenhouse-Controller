@@ -40,6 +40,7 @@ static const char *TAG = "GHC";
 #include "web_server/web_server.h"
 #include "mqtt_client/mqtt_client.h"
 #include "ota_manager/ota_manager.h"
+#include "status_post/status_post.h"
 
 /* ============================================================
  * RTOS primitive definitions (declared extern in app_types.h)
@@ -65,6 +66,7 @@ TaskHandle_t task_t10;
 TaskHandle_t task_t11;
 TaskHandle_t task_t12;
 /* task_t13 created on demand by T11 */
+TaskHandle_t task_t14;
 
 EventGroupHandle_t EG1;
 
@@ -330,6 +332,12 @@ void setup()
     xTaskCreatePinnedToCore(task_web_server,        "T11_WEB", 8192, NULL, TASK_PRIO_LOW,      &task_t11, 0);
     xTaskCreatePinnedToCore(task_mqtt_client,       "T12_MQT", 8192, NULL, TASK_PRIO_LOW,      &task_t12, 0);
     /* T13 (OTA) is spawned on demand by T11 — no permanent handle. */
+    /* T14 stack 12 KB: TLS handshake (WiFiClientSecure / mbedTLS) needs
+     * substantially more stack than plain HTTPClient. 6 KB causes a
+     * stack-overflow panic the first time the task POSTs to an https://
+     * endpoint; 12 KB matches what other Arduino-ESP32 projects use for
+     * outbound HTTPS clients. */
+    xTaskCreatePinnedToCore(task_status_post,       "T14_WEB", 12288, NULL, TASK_PRIO_LOW,      &task_t14, 0);
 
     ESP_LOGI(TAG, "All tasks spawned - scheduler running");
 }

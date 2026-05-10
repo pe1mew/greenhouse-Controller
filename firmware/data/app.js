@@ -73,65 +73,100 @@ const WIN_CLASS  = { OPEN: 'win-open', CLOSED: 'win-closed',
                      MOVING_OPEN: 'win-moving', MOVING_CLOSE: 'win-moving', UNKNOWN: 'win-unknown' };
 
 function handleStatus(s) {
-  if (s.temp_c    !== undefined) setText('st-temp',      s.temp_c.toFixed(1));
-  if (s.temp_avg  !== undefined) setText('st-temp-avg',  s.temp_avg.toFixed(1));
-  if (s.rh_pct    !== undefined) setText('st-rh',        s.rh_pct.toFixed(0));
-  if (s.rh_avg    !== undefined) setText('st-rh-avg',    s.rh_avg.toFixed(0));
-  if (s.wind_ms   !== undefined) setText('st-wind',      s.wind_ms.toFixed(1));
-  if (s.wind_dir  !== undefined) setText('st-wind-dir',  s.wind_dir.toFixed(0));
-  if (s.wind_avg  !== undefined) setText('st-wind-avg',  s.wind_avg.toFixed(1));
-  if (s.wifi_rssi !== undefined) setText('st-wifi-rssi', s.wifi_rssi);
-  if (s.wifi_ip)                 setText('st-wifi-ip',   s.wifi_ip);
+  // Canonical nested shape — single contract for local UI + public dashboard.
+  // Field names match the dashboard's app.js (see design/technical-spec-statusWebsite.md
+  // and the pe1mew.nl/hbwv reference frontend).
+  const c = s.climate;
+  if (c) {
+    if (c.temp_c     !== undefined) setText('st-temp',     c.temp_c.toFixed(1));
+    if (c.temp_avg_c !== undefined) setText('st-temp-avg', c.temp_avg_c.toFixed(1));
+    if (c.rh_pct     !== undefined) setText('st-rh',       c.rh_pct.toFixed(0));
+    if (c.rh_avg_pct !== undefined) setText('st-rh-avg',   c.rh_avg_pct.toFixed(0));
+  }
 
-  // Windows
+  const w = s.wind;
+  if (w) {
+    if (w.speed_ms      !== undefined) setText('st-wind',     w.speed_ms.toFixed(1));
+    if (w.direction_deg !== undefined) setText('st-wind-dir', w.direction_deg.toFixed(0));
+    if (w.speed_avg_ms  !== undefined) setText('st-wind-avg', w.speed_avg_ms.toFixed(1));
+  }
+
+  // Windows — object keyed M1/M2/M3
   if (s.windows) {
+    const ids = ['M1', 'M2', 'M3'];
     for (let i = 0; i < 3; i++) {
       const el = document.getElementById('st-win' + i);
       if (!el) continue;
-      const st = s.windows[i] || 'UNKNOWN';
+      const st = s.windows[ids[i]] || 'UNKNOWN';
       el.textContent = WIN_LABELS[st] || st;
       el.className = WIN_CLASS[st] || '';
     }
   }
 
-  // Mode
-  if (s.mode) {
+  // Mode is now an object {current, flags[]} — render the headline mode and
+  // build alarm badges from the flags array (no longer derived from eg1 bits
+  // directly, though sys.eg1 is still emitted for diagnostic use).
+  if (s.mode && typeof s.mode === 'object') {
     const modeNames = {
       AUTOMATIC: 'Automatic', STANDBY: 'Standby',
       WIND_OVERRIDE: 'Wind override', MOTOR_ALARM: 'Motor alarm',
       WINDOW_CAL: 'Window Cal.'
     };
-    setText('st-mode', modeNames[s.mode] || s.mode);
-  }
+    if (s.mode.current) setText('st-mode', modeNames[s.mode.current] || s.mode.current);
 
-  // Day/night + sunrise/sunset
-  if (s.is_daytime !== undefined) setText('st-daytime', s.is_daytime ? 'Daytime' : 'Night');
-  if (s.sunrise_utc !== undefined) setText('st-sunrise', utcMinsToStr(s.sunrise_utc));
-  if (s.sunset_utc  !== undefined) setText('st-sunset',  utcMinsToStr(s.sunset_utc));
-
-  // Alarms
-  if (s.eg1 !== undefined) {
-    const flags = [];
-    if (s.eg1 & 1)  flags.push('<span class="badge alarm">WIND</span>');
-    if (s.eg1 & 4)  flags.push('<span class="badge warn">T/RH fault</span>');
-    if (s.eg1 & 8)  flags.push('<span class="badge warn">Wind fault</span>');
-    if (s.eg1 & 16) flags.push('<span class="badge warn">OTA active</span>');
-    if (s.eg1 & 32) flags.push('<span class="badge alarm">MOTOR ALARM</span>');
+    const flagBadges = {
+      wind_override:     '<span class="badge alarm">WIND</span>',
+      motor_alarm:       '<span class="badge alarm">MOTOR ALARM</span>',
+      sensor_fault_temp: '<span class="badge warn">T/RH fault</span>',
+      sensor_fault_wind: '<span class="badge warn">Wind fault</span>',
+      ota_in_progress:   '<span class="badge warn">OTA active</span>',
+      calibrating:       '<span class="badge warn">Calibrating</span>'
+    };
+    const flags = (Array.isArray(s.mode.flags) ? s.mode.flags : [])
+      .map(f => flagBadges[f]).filter(x => x);
     const el = document.getElementById('st-alarms');
     if (el) el.innerHTML = flags.length ? flags.join(' ') : '<span class="badge ok">OK</span>';
   }
 
-  // Time / NTP
-  if (s.time) setText('st-time', s.time.replace('T', ' '));
-  const ntpEl = document.getElementById('st-ntp');
-  if (ntpEl) {
-    ntpEl.textContent = s.ntp_synced ? 'NTP synced' : 'NTP pending';
-    ntpEl.className   = 'badge ' + (s.ntp_synced ? 'ntp-on' : 'ntp-off');
+  // Sun
+  const sun = s.sun;
+  if (sun) {
+    if (sun.is_daytime  !== undefined) setText('st-daytime', sun.is_daytime ? 'Daytime' : 'Night');
+    if (sun.sunrise_min !== undefined) setText('st-sunrise', utcMinsToStr(sun.sunrise_min));
+    if (sun.sunset_min  !== undefined) setText('st-sunset',  utcMinsToStr(sun.sunset_min));
   }
 
-  // Firmware version (first message only)
-  if (!wsInitialized && s.fw_ver) setText('fw-ver', 'v' + s.fw_ver);
+  // System: time, NTP, IP/RSSI, fw
+  const sys = s.system;
+  if (sys) {
+    if (sys.time_iso) setText('st-time', sys.time_iso.replace('T', ' '));
+    const ntpEl = document.getElementById('st-ntp');
+    if (ntpEl) {
+      ntpEl.textContent = sys.ntp_synced ? 'NTP synced' : 'NTP pending';
+      ntpEl.className   = 'badge ' + (sys.ntp_synced ? 'ntp-on' : 'ntp-off');
+    }
+    if (sys.wifi_rssi_dbm !== undefined) setText('st-wifi-rssi', sys.wifi_rssi_dbm);
+    if (sys.wifi_ip)                     setText('st-wifi-ip',   sys.wifi_ip);
+    if (sys.uptime_s !== undefined)      setText('st-uptime',    fmtUptime(sys.uptime_s));
+    // Firmware version (first message only)
+    if (!wsInitialized && sys.fw_ver) setText('fw-ver', 'v' + sys.fw_ver);
+  }
+
   wsInitialized = true;
+}
+
+// Format seconds as "1d 4h 23m" / "4h 23m" / "23m 5s" / "5s". Drops leading
+// units that are 0 so short uptimes stay readable. Used in the System tile.
+function fmtUptime(sec) {
+  if (typeof sec !== 'number' || sec < 0) return '—';
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  if (d > 0) return d + 'd ' + h + 'h ' + m + 'm';
+  if (h > 0) return h + 'h ' + m + 'm';
+  if (m > 0) return m + 'm ' + s + 's';
+  return s + 's';
 }
 
 function utcMinsToStr(mins) {
@@ -634,6 +669,108 @@ function showTab(id) {
   if (id === 'tab-log') loadLogFiles();
   // Refresh OTA status each time the System tab is opened
   if (id === 'tab-system' && g_role === 'admin') loadOtaStatus();
+  // Refresh status-website settings + last-attempt indicators on the Web tab
+  if (id === 'tab-web'    && g_role === 'admin') loadWebCfg();
+}
+
+// ── Web tab — status website reporting ────────────────────────────────────────
+const WEB_TILES = ['climate','wind','windows','mode','sun','system'];
+
+// Full reload: pulls every field including form inputs. Called on Apply
+// success and when the Web tab is first opened. The 5 s auto-refresh uses
+// refreshWebStatus() instead to avoid clobbering the user's edits.
+function loadWebCfg() { fetchWebCfg(true); }
+function refreshWebStatus() { fetchWebCfg(false); }
+
+function fetchWebCfg(includeInputs) {
+  fetch('/api/web', { credentials: 'same-origin' })
+    .then(r => r.ok ? r.json() : null)
+    .then(c => {
+      if (!c) return;
+      const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+      const chk = (id, v) => { const el = document.getElementById(id); if (el) el.checked = !!v; };
+      const txt = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v || '—'; };
+
+      if (includeInputs) {
+        set('cfg-web-url',      c.url || '');
+        set('cfg-web-secret',   '');                          // never echoed
+        set('cfg-web-interval', c.interval_s != null ? c.interval_s : 120);
+        chk('cfg-web-enable',   c.enable);
+        WEB_TILES.forEach((k, i) => chk('cfg-web-exp-' + k, (c.expose & (1 << i)) !== 0));
+        set('cfg-web-log-h',    c.log_h != null ? c.log_h : 3);
+        set('cfg-web-log-m',    c.log_m != null ? c.log_m : 15);
+        chk('cfg-web-log-rot',  c.log_rot);
+      }
+      // Read-only status indicators are always refreshed.
+      txt('cfg-web-last-post', c.last_post);
+      txt('cfg-web-last-log',  c.last_log_up);
+      txt('cfg-web-last-name', c.log_last_up);
+    });
+}
+
+// Auto-refresh the Web tab's read-only status indicators every 5 s while
+// it is the active tab and the user is admin. Calls refreshWebStatus()
+// (NOT loadWebCfg) so the user's in-progress edits to URL / secret /
+// interval / checkboxes are not clobbered mid-typing. The check is cheap
+// when off-tab — one classList read per tick, no fetch.
+setInterval(() => {
+  if (g_role !== 'admin') return;
+  const pane = document.getElementById('tab-web');
+  if (pane && pane.classList.contains('active')) refreshWebStatus();
+}, 5000);
+
+// Client-side syntax check for the status-site URL. Empty is allowed (it
+// disables the feature server-side). Otherwise the URL must use http(s)://,
+// must not carry a query string or fragment (T14 appends ?action=log), and
+// must end with "api.php" — Apache routing varies and the firmware does not
+// follow redirects, so requiring the exact endpoint avoids silent FAILs.
+function validateStatusUrl(url) {
+  if (url === '')                                return '';
+  if (!/^https?:\/\//.test(url))                 return 'URL must start with http:// or https://';
+  if (url.indexOf('?') !== -1 || url.indexOf('#') !== -1)
+                                                  return 'URL must not contain ? or #';
+  if (!url.endsWith('api.php'))                  return 'URL must end with "api.php"';
+  return '';
+}
+
+function postWebCfg() {
+  const get = id => document.getElementById(id);
+  let mask = 0;
+  WEB_TILES.forEach((k, i) => { if (get('cfg-web-exp-' + k).checked) mask |= (1 << i); });
+
+  const url = get('cfg-web-url').value.trim();
+  const fb  = document.getElementById('fb-web');
+  const urlErr = validateStatusUrl(url);
+  if (urlErr) {
+    if (fb) { fb.textContent = urlErr; fb.className = 'save-ok err'; }
+    return;
+  }
+
+  const body = {
+    url:        url,
+    secret:     get('cfg-web-secret').value,                // empty = unchanged
+    interval_s: parseInt(get('cfg-web-interval').value, 10),
+    enable:     get('cfg-web-enable').checked ? 1 : 0,
+    expose:     mask,
+    log_h:      parseInt(get('cfg-web-log-h').value, 10),
+    log_m:      parseInt(get('cfg-web-log-m').value, 10),
+    log_rot:    get('cfg-web-log-rot').checked ? 1 : 0
+  };
+
+  if (fb) fb.textContent = '…';
+  post('/api/web', body)
+    .then(r => {
+      if (!fb) return;
+      if (r && r.ok)        { fb.textContent = 'Saved'; fb.className = 'save-ok ok'; }
+      else if (r && r.err)  { fb.textContent = r.err;   fb.className = 'save-ok err'; }
+      else                  { fb.textContent = 'Failed'; fb.className = 'save-ok err'; }
+      setTimeout(() => { fb.textContent = ''; fb.className = 'save-ok'; }, 3000);
+      // Clear the secret field so the next Apply doesn't re-send it.
+      get('cfg-web-secret').value = '';
+      // Pull the canonical values back from the device so the form reflects
+      // exactly what was persisted (not just what the user typed).
+      if (r && r.ok) loadWebCfg();
+    });
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

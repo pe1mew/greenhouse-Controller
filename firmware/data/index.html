@@ -72,8 +72,9 @@
     </div>
     <div class="card">
       <h3>Clock <span class="tip-icon" data-tip="System clock used for event logging, sunrise/sunset calculation, and night-time LED dimming.">ⓘ</span></h3>
-      <p id="st-time" data-tip="Current local date and time. Timezone is set automatically after NTP sync via geolocation, or manually in System → NTP timezone.">—</p>
+      <p data-tip="Current local date and time. Timezone is set automatically after NTP sync via geolocation, or manually in System → NTP timezone."><strong id="st-time">—</strong></p>
       <p><span id="st-ntp" class="badge ntp-off" data-tip="NTP = clock was synchronised from the internet this session. RTC = clock is running from the on-board battery-backed DS1307 only (no internet sync yet).">NTP pending</span></p>
+      <p><span data-tip="Time since the controller last booted. Resets to 0 on reboot or power loss; useful for spotting unexpected resets.">Uptime</span>: <strong id="st-uptime">—</strong></p>
     </div>
     <div class="card">
       <h3>WiFi <span class="tip-icon" data-tip="WiFi client connection to your local network.">ⓘ</span></h3>
@@ -99,6 +100,7 @@
     <button class="tab-btn admin-only" onclick="showTab('tab-system')">System</button>
     <button class="tab-btn admin-only" onclick="showTab('tab-access')">Access</button>
     <button class="tab-btn admin-only" onclick="showTab('tab-log')">Log</button>
+    <button class="tab-btn admin-only" onclick="showTab('tab-web')">Web</button>
   </div>
 
   <!-- Climate tab -->
@@ -442,6 +444,66 @@
     <div class="row">
       <button onclick="downloadLog()">Download CSV</button>
       <span class="save-ok" id="fb-log-dl"></span>
+    </div>
+  </div>
+
+  <!-- Web tab (admin only) — status website reporting + log upload -->
+  <div id="tab-web" class="tab-pane">
+    <h3>Status website</h3>
+    <div class="row">
+      <label data-tip="Endpoint URL the controller POSTs status to. Use http:// or https://. Empty = feature disabled.">URL</label>
+      <input type="url" id="cfg-web-url" maxlength="128" placeholder="https://example.org/api.php" style="flex:1;min-width:0">
+    </div>
+    <div class="row">
+      <label data-tip="Shared secret sent in the sourceidentifier header. Must match the server's GH_SECRET_TOKEN. Leave blank to keep the existing secret unchanged.">Shared secret</label>
+      <input type="password" id="cfg-web-secret" maxlength="64" placeholder="(leave blank to keep)" style="flex:1;min-width:0">
+    </div>
+    <div class="row">
+      <label data-tip="POST cycle in seconds (60–300). Faster = fresher dashboard but more network traffic.">Interval (s)</label>
+      <input type="number" id="cfg-web-interval" class="short" min="60" max="300" value="120">
+    </div>
+    <div class="row">
+      <label data-tip="Master enable. When off, the controller never POSTs regardless of URL.">Enabled</label>
+      <input type="checkbox" id="cfg-web-enable">
+    </div>
+
+    <h3>Expose to public dashboard</h3>
+    <div class="row"><label data-tip="Send the climate object (temperature, humidity).">Climate</label><input type="checkbox" id="cfg-web-exp-climate"></div>
+    <div class="row"><label data-tip="Send the wind object (speed and direction, current and average).">Wind</label><input type="checkbox" id="cfg-web-exp-wind"></div>
+    <div class="row"><label data-tip="Send the windows object (M1 / M2 / M3 state strings).">Windows</label><input type="checkbox" id="cfg-web-exp-windows"></div>
+    <div class="row"><label data-tip="Send the operating mode (AUTOMATIC / WIND_OVERRIDE / MOTOR_ALARM).">Mode</label><input type="checkbox" id="cfg-web-exp-mode"></div>
+    <div class="row"><label data-tip="Send the sun object (is_daytime, sunrise/sunset times).">Sun</label><input type="checkbox" id="cfg-web-exp-sun"></div>
+    <div class="row"><label data-tip="Send the system object (firmware version, uptime, IP, NTP, RSSI, eg1 bits).">System</label><input type="checkbox" id="cfg-web-exp-system"></div>
+
+    <h3>Log file upload</h3>
+    <div class="row">
+      <label data-tip="Local time-of-day to attempt the daily log upload. The most recently closed log file is uploaded; if it has already been uploaded the daily check skips silently.">Daily upload time</label>
+      <input type="number" id="cfg-web-log-h" class="short" min="0" max="23" value="3" style="width:3.5em">
+      <span>:</span>
+      <input type="number" id="cfg-web-log-m" class="short" min="0" max="59" value="15" style="width:3.5em">
+    </div>
+    <div class="row">
+      <label data-tip="Also upload as soon as T9 closes a log file (rotation). Combined with the daily check, this gives at most one upload per closed file.">Upload on rotation</label>
+      <input type="checkbox" id="cfg-web-log-rot">
+    </div>
+
+    <h3>Status</h3>
+    <div class="row">
+      <label data-tip="Outcome and timestamp of the most recent POST attempt this boot.">Last post</label>
+      <span id="cfg-web-last-post">—</span>
+    </div>
+    <div class="row">
+      <label data-tip="Outcome of the most recent log file upload this boot.">Last log upload</label>
+      <span id="cfg-web-last-log">—</span>
+    </div>
+    <div class="row">
+      <label data-tip="Filename of the log file that was last successfully uploaded. Used for deduplication.">Last uploaded file</label>
+      <span id="cfg-web-last-name">—</span>
+    </div>
+
+    <div class="row">
+      <button onclick="postWebCfg()">Apply</button>
+      <span class="save-ok" id="fb-web"></span>
     </div>
   </div>
 

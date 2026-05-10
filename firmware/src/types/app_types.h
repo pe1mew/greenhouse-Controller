@@ -69,6 +69,7 @@ extern TaskHandle_t task_t10;  /**< Network Manager */
 extern TaskHandle_t task_t11;  /**< Web Server */
 extern TaskHandle_t task_t12;  /**< MQTT Client */
 /* task_t13 (OTA) is created on demand by T11; no permanent handle */
+extern TaskHandle_t task_t14;  /**< Status website POST */
 
 /* Event group (defined in main.cpp) */
 extern EventGroupHandle_t EG1; /**< System state flags — see Section 5 */
@@ -255,6 +256,67 @@ typedef struct {
     uint16_t wind_dir_avg_deg;      /**< Sliding-average wind direction, 0–359 ° */
     uint32_t timestamp;             /**< Unix epoch seconds of this reading */
 } sensor_reading_t;
+
+/**
+ * @brief Aggregated controller status snapshot (read-mostly).
+ *
+ * Filled by dm_status_snapshot(). Consumed by build_canonical_status_json()
+ * for both the local web UI (/api/status, WebSocket) and the remote status
+ * website POST. Single source of truth for "what is the controller doing
+ * right now".
+ *
+ * Empty / pre-NTP / pre-sensor states are rendered as zeros so the JSON
+ * builder never has to special-case missing data; consumers gate display on
+ * presence of the tile object.
+ */
+typedef struct {
+    /* Climate */
+    int16_t  t_c10;          /**< Latest temperature × 10 (e.g. 234 = 23.4 °C) */
+    int16_t  t_avg_c10;      /**< Sliding-average temperature × 10 */
+    uint8_t  rh_pct;         /**< Latest RH (0–100 %) */
+    uint8_t  rh_avg_pct;     /**< Sliding-average RH */
+
+    /* Wind */
+    uint16_t w_ms10;         /**< Latest wind speed × 10 */
+    uint16_t w_avg_ms10;     /**< Sliding-average wind speed × 10 */
+    uint16_t w_dir_deg;      /**< Latest wind direction (0–359 °) */
+    uint16_t w_avg_dir_deg;  /**< Sliding-average wind direction */
+
+    /* Windows */
+    window_state_t win[3];   /**< M1 = win[0], M2 = win[1], M3 = win[2] */
+
+    /* Mode + raw EG1 bits (for local-UI badges; harmless on the public dashboard) */
+    op_mode_t mode;
+    uint32_t  eg1_bits;
+
+    /* Sun — minutes from local midnight (already DST-adjusted). The cfg
+     * shadow stores UTC minutes; dm_status_snapshot adds the current TZ
+     * offset so consumers can render verbatim as HH:MM. */
+    bool     is_daytime;
+    int32_t  sunrise_mins_local;
+    int32_t  sunset_mins_local;
+
+    /* System */
+    uint32_t ts_unix;        /**< Last known Unix UTC timestamp */
+    char     time_iso[20];   /**< Local-time ISO-8601 ("YYYY-MM-DDTHH:MM:SS") */
+    bool     ntp_synced;
+    char     ip[16];         /**< Dotted-decimal STA IPv4 ("" if not connected) */
+    int16_t  rssi;           /**< STA RSSI in dBm (0 if not connected) */
+    char     fw[16];         /**< Firmware version string */
+    uint32_t uptime_s;       /**< Seconds since boot */
+
+    /* Top-level — always emitted regardless of expose mask */
+    uint16_t update_interval_s;  /**< Cycle the controller advertises to the dashboard */
+} status_snapshot_t;
+
+/** Bit positions in cfg_shadow_t::status_expose. */
+#define STATUS_EXPOSE_CLIMATE   (1u << 0)
+#define STATUS_EXPOSE_WIND      (1u << 1)
+#define STATUS_EXPOSE_WINDOWS   (1u << 2)
+#define STATUS_EXPOSE_MODE      (1u << 3)
+#define STATUS_EXPOSE_SUN       (1u << 4)
+#define STATUS_EXPOSE_SYSTEM    (1u << 5)
+#define STATUS_EXPOSE_ALL       0x3Fu
 
 /* ============================================================
  * Section 5 — Event group bit definitions (EG1)

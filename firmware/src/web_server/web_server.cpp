@@ -61,6 +61,8 @@
 #include "../relay_controller/relay_controller.h"
 #include "../event_logger/event_logger.h"
 #include "../auth/pin_auth.h"
+#include "../status_post/status_json.h"
+#include "../status_post/status_post.h"
 #include "littlefs_storage.h"
 #include "nvs_config.h"
 #include "../../../drivers/sdCard/src/sd_storage.h"
@@ -258,85 +260,14 @@ static void serve_lfs(AsyncWebServerRequest *req, const char *path, const char *
 
 static void build_status_json(char *buf, size_t len)
 {
-    sensor_reading_t meas;
-    bool meas_valid;
-    dm_meas_snapshot(&meas, &meas_valid);
-
-    cfg_shadow_t cfg;
-    dm_cfg_snapshot(&cfg);
-
-    window_state_t wins[3];
-    t2_get_window_states(wins);
-
-    EventBits_t eg1 = xEventGroupGetBits(EG1);
-
-    /* Derive operating mode from EG1 */
-    const char *mode_str;
-    if      (eg1 & EG1_BIT_MOTOR_ALARM)   mode_str = "MOTOR_ALARM";
-    else if (eg1 & EG1_BIT_WIND_OVERRIDE)  mode_str = "WIND_OVERRIDE";
-    else if (eg1 & EG1_BIT_CALIBRATING)    mode_str = "WINDOW_CAL";
-    else                                    mode_str = "AUTOMATIC";
-
-    static const char * const WIN_STR[] = {
-        "UNKNOWN","CLOSED","MOVING_OPEN","OPEN","MOVING_CLOSE"
-    };
-    const char *w0 = (wins[0] < 5) ? WIN_STR[wins[0]] : "UNKNOWN";
-    const char *w1 = (wins[1] < 5) ? WIN_STR[wins[1]] : "UNKNOWN";
-    const char *w2 = (wins[2] < 5) ? WIN_STR[wins[2]] : "UNKNOWN";
-
-    /* ISO-8601 time string */
-    char tstr[25] = "—";
-    if (cfg.current_unix_ts > 1000000) {
-        struct tm tm_info;
-        time_t ts = (time_t)cfg.current_unix_ts;
-        localtime_r(&ts, &tm_info);
-        strftime(tstr, sizeof(tstr), "%Y-%m-%dT%H:%M:%S", &tm_info);
-    }
-
-    /* Wifi */
-    bool ntp_synced = (cfg.current_unix_ts > 1700000000UL);
-    int  rssi       = WiFi.isConnected() ? (int)WiFi.RSSI() : 0;
-
-    snprintf(buf, len,
-        "{\"type\":\"status\","
-        "\"temp_c\":%.1f,\"temp_avg\":%.1f,"
-        "\"rh_pct\":%u,\"rh_avg\":%u,"
-        "\"wind_ms\":%.1f,\"wind_dir\":%u,"
-        "\"wind_avg\":%.1f,\"wind_avg_dir\":%u,"
-        "\"windows\":[\"%s\",\"%s\",\"%s\"],"
-        "\"mode\":\"%s\","
-        "\"is_daytime\":%s,"
-        "\"sunrise_utc\":%ld,\"sunset_utc\":%ld,"
-        "\"eg1\":%lu,"
-        "\"time\":\"%s\","
-        "\"ntp_synced\":%s,"
-        "\"wifi_ip\":\"%s\","
-        "\"wifi_rssi\":%d,"
-        "\"fw_ver\":\"" FIRMWARE_VERSION "\"}",
-        /* "temp_c"  — raw / most-recent T sample (poll_interval_s old at most) */
-        meas_valid ? (float)meas.temperature_c : 0.0f,
-        /* "temp_avg" — sliding-window average used by T6 (avg_win_t minutes deep) */
-        meas_valid ? (float)meas.t_avg_c       : 0.0f,
-        /* "rh_pct"  — raw / most-recent RH sample */
-        meas_valid ? meas.humidity_pct        : 0u,
-        /* "rh_avg"  — sliding-window average */
-        meas_valid ? meas.rh_avg_pct           : 0u,
-        /* "wind_ms" / "wind_dir" — raw most-recent wind reading */
-        meas_valid ? meas.wind_speed_ms10 / 10.0f : 0.0f,
-        meas_valid ? meas.wind_dir_deg            : 0u,
-        /* "wind_avg" / "wind_avg_dir" — sliding-window averages */
-        meas_valid ? meas.wind_speed_avg_ms10 / 10.0f : 0.0f,
-        meas_valid ? meas.wind_dir_avg_deg            : 0u,
-        w0, w1, w2,
-        mode_str,
-        cfg.is_daytime ? "true" : "false",
-        (long)cfg.sunrise_mins_utc, (long)cfg.sunset_mins_utc,
-        (unsigned long)eg1,
-        tstr,
-        ntp_synced ? "true" : "false",
-        WiFi.isConnected() ? WiFi.localIP().toString().c_str() : "",
-        rssi
-    );
+    /* Single source of truth: dm_status_snapshot() acquires MX2/MX4/relay
+     * spinlock under the hood; build_canonical_status_json() formats the
+     * spec-shaped payload (design/technical-spec-statusWebsite.md §9.2).
+     * The local UI receives every tile (STATUS_EXPOSE_ALL); T14 passes the
+     * user-configured expose mask. */
+    status_snapshot_t snap;
+    dm_status_snapshot(&snap);
+    build_canonical_status_json(buf, len, &snap, STATUS_EXPOSE_ALL);
 }
 
 /* ============================================================
@@ -574,10 +505,14 @@ static void register_routes(AsyncWebServer &srv)
     });
 
     /* ── Status ─────────────────────────────────────────────── */
+    /* 2 KB buffer for the canonical status JSON. Worst-case payload (every
+     * tile present + every flag set) is ~720 bytes; 2 KB leaves headroom
+     * for future schema additions. Must match the size passed to
+     * build_status_json() below. */
     srv.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *req) {
-        char *buf = (char *)ps_malloc(1024);
+        char *buf = (char *)ps_malloc(2048);
         if (!buf) { req->send(500); return; }
-        build_status_json(buf, 1024);
+        build_status_json(buf, 2048);
         req->send(200, "application/json", buf);
         free(buf);
     });
@@ -714,6 +649,135 @@ static void register_routes(AsyncWebServer &srv)
 
         ESP_LOGI(TAG, "WiFi creds updated via web: ssid=%s", has_ssid ? ssid : "(unchanged)");
         req->send(200, "application/json", "{\"ok\":true}");
+    });
+
+    /* ── Status website / Web tab (admin) ───────────────────── */
+    /* GET — returns the current web-tab settings plus the live last-attempt
+     * indicators. The shared secret is intentionally never echoed; the UI
+     * uses an empty input + "send empty to keep" semantics on POST.        */
+    srv.on("/api/web", HTTP_GET, [](AsyncWebServerRequest *req) {
+        if (req_role(req) != SESSION_ADMIN) {
+            req->send(403, "application/json", "{\"ok\":false,\"err\":\"admin only\"}");
+            return;
+        }
+        cfg_shadow_t c;
+        dm_cfg_snapshot(&c);
+
+        char last_post[48] = {};
+        char last_log[48]  = {};
+        status_post_last_str(last_post, sizeof(last_post));
+        status_post_last_log_str(last_log, sizeof(last_log));
+
+        char buf[640];
+        snprintf(buf, sizeof(buf),
+            "{\"url\":\"%s\","
+             "\"interval_s\":%ld,"
+             "\"enable\":%ld,"
+             "\"expose\":%ld,"
+             "\"log_h\":%ld,"
+             "\"log_m\":%ld,"
+             "\"log_rot\":%ld,"
+             "\"last_post\":\"%s\","
+             "\"last_log_up\":\"%s\","
+             "\"log_last_up\":\"%s\"}",
+            c.status_url,
+            (long)c.status_interval_s,
+            (long)c.status_enable,
+            (long)c.status_expose,
+            (long)c.log_upload_h,
+            (long)c.log_upload_m,
+            (long)c.log_upload_rot,
+            last_post, last_log, c.log_last_up);
+        req->send(200, "application/json", buf);
+    });
+
+    /* POST — single-transaction Apply. Validates bounds before any NVS
+     * write; on success notifies T4 to reload the cfg shadow.             */
+    srv.on("/api/web", HTTP_POST, [](AsyncWebServerRequest *req) {}, NULL,
+        [](AsyncWebServerRequest *req, uint8_t *data, size_t len, size_t, size_t) {
+        if (req_role(req) != SESSION_ADMIN) {
+            req->send(403, "application/json", "{\"ok\":false,\"err\":\"admin only\"}");
+            return;
+        }
+        char body[640] = {};
+        memcpy(body, data, len < sizeof(body) - 1 ? len : sizeof(body) - 1);
+
+        char    url[CFG_MAX_URL_LEN + 1]    = {};
+        char    secret[CFG_MAX_SECRET_LEN + 1] = {};
+        int32_t interval = 0, enable = 0, expose = 0;
+        int32_t log_h = 0, log_m = 0, log_rot = 0;
+        bool h_url    = json_get_str(body, "url",    url,    sizeof(url));
+        bool h_sec    = json_get_str(body, "secret", secret, sizeof(secret));
+        bool h_iv     = json_get_int(body, "interval_s", &interval);
+        bool h_en     = json_get_int(body, "enable",     &enable);
+        bool h_ex     = json_get_int(body, "expose",     &expose);
+        bool h_lh     = json_get_int(body, "log_h",      &log_h);
+        bool h_lm     = json_get_int(body, "log_m",      &log_m);
+        bool h_lr     = json_get_int(body, "log_rot",    &log_rot);
+
+        /* URL: empty disables the feature; non-empty must use a known scheme,
+         * carry no query/fragment (T14 appends ?action=log itself), and end
+         * in "api.php" — Apache routing varies and HTTPClient does not follow
+         * redirects, so requiring the exact endpoint avoids silent FAILs. */
+        if (h_url && url[0] != '\0') {
+            if (strncmp(url, "http://",  7) != 0 &&
+                strncmp(url, "https://", 8) != 0) {
+                req->send(400, "application/json",
+                          "{\"ok\":false,\"err\":\"URL must start with http:// or https://\"}");
+                return;
+            }
+            if (strchr(url, '?') != NULL || strchr(url, '#') != NULL) {
+                req->send(400, "application/json",
+                          "{\"ok\":false,\"err\":\"URL must not contain ? or #\"}");
+                return;
+            }
+            const size_t ulen = strlen(url);
+            const char  *suffix = "api.php";
+            const size_t slen = 7u;
+            if (ulen < slen || strcmp(url + ulen - slen, suffix) != 0) {
+                req->send(400, "application/json",
+                          "{\"ok\":false,\"err\":\"URL must end with \\\"api.php\\\"\"}");
+                return;
+            }
+        }
+        /* Secret: empty = keep existing; non-empty must meet minimum length. */
+        if (h_sec && secret[0] != '\0' &&
+            strlen(secret) < (size_t)CFG_MIN_SECRET_LEN) {
+            req->send(400, "application/json",
+                      "{\"ok\":false,\"err\":\"secret too short\"}");
+            return;
+        }
+        if (h_iv && (interval < CFG_MIN_STATUS_INTERVAL_S || interval > CFG_MAX_STATUS_INTERVAL_S)) {
+            req->send(400, "application/json",
+                      "{\"ok\":false,\"err\":\"interval out of range\"}");
+            return;
+        }
+        if (h_lh && (log_h < CFG_MIN_HOUR   || log_h > CFG_MAX_HOUR))   { goto bad; }
+        if (h_lm && (log_m < CFG_MIN_MINUTE || log_m > CFG_MAX_MINUTE)) { goto bad; }
+        if (h_en && (enable  < 0 || enable  > 1))  { goto bad; }
+        if (h_lr && (log_rot < 0 || log_rot > 1))  { goto bad; }
+        if (h_ex && (expose  < 0 || expose  > 0x3F)) { goto bad; }
+
+        if (h_url)                  nvs_cfg_set_str(NVS_NS_SYSTEM, "status_url",     url);
+        if (h_sec && secret[0])     nvs_cfg_set_str(NVS_NS_SYSTEM, "status_secret",  secret);
+        if (h_iv)                   nvs_cfg_set_i32(NVS_NS_SYSTEM, "status_intv_s",  interval);
+        if (h_en)                   nvs_cfg_set_i32(NVS_NS_SYSTEM, "status_enable",  enable);
+        if (h_ex)                   nvs_cfg_set_i32(NVS_NS_SYSTEM, "status_expose",  expose);
+        if (h_lh)                   nvs_cfg_set_i32(NVS_NS_SYSTEM, "log_upload_h",   log_h);
+        if (h_lm)                   nvs_cfg_set_i32(NVS_NS_SYSTEM, "log_upload_m",   log_m);
+        if (h_lr)                   nvs_cfg_set_i32(NVS_NS_SYSTEM, "log_upload_rot", log_rot);
+
+        dm_reload_web_cfg();   /* TN5 → T4 republishes under MX4 */
+
+        ESP_LOGI(TAG, "Web cfg updated: url=%s interval=%ld enable=%ld expose=0x%02lX",
+                 h_url ? url : "(unchanged)",
+                 (long)interval, (long)enable, (long)expose);
+        req->send(200, "application/json", "{\"ok\":true}");
+        return;
+
+bad:
+        req->send(400, "application/json",
+                  "{\"ok\":false,\"err\":\"bounds\"}");
     });
 
     /* ── PIN change ─────────────────────────────────────────── */
@@ -1167,8 +1231,11 @@ void task_web_server(void *pvParameters)
     ESP_LOGI(TAG, "HTTP server started on port 80");
 
     /* ── Main loop: periodic WebSocket status push ── */
+    /* 2 KB push buffer matches the /api/status allocation. Canonical JSON
+     * worst case is ~720 bytes; the larger size leaves headroom and keeps
+     * the two surfaces' buffer sizing in lockstep. */
     TickType_t last_push = xTaskGetTickCount();
-    char *push_buf = (char *)ps_malloc(1024);
+    char *push_buf = (char *)ps_malloc(2048);
     if (!push_buf) {
         ESP_LOGE(TAG, "ps_malloc failed for WS push buffer");
         push_buf = nullptr;
@@ -1181,7 +1248,7 @@ void task_web_server(void *pvParameters)
         s_ws.cleanupClients();
 
         if (push_buf && s_ws.count() > 0) {
-            build_status_json(push_buf, 1024);
+            build_status_json(push_buf, 2048);
             s_ws.textAll(push_buf);
         }
     }

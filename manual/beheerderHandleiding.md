@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de beheerder
 
-**Versie:** 1.0 — concept
-**Datum:** \[invullen]
-**Firmware:** 1.16.38
+**Versie:** 1.3 — concept
+**Datum:** 2026-05-10
+**Firmware:** 1.17.1
 
 ---
 
@@ -324,6 +324,20 @@ Dezelfde route als voor de boer: lees IP-adres af van het LCD, het WiFi-scherm, 
 
 `[SCHERMAFBEELDING: webinterface met alle 7 tabs zichtbaar voor Beheerder]`
 
+### Status-tab — Klok-tegel
+
+Op de Status-tab staat in de linker tegelrij de **Klok-tegel**. Deze toont drie regels:
+
+- **Tijd** — actuele lokale datum en tijd op de controller (format `YYYY-MM-DD HH:MM:SS`). De tijdzone wordt automatisch ingesteld na NTP-sync via geolocation, of handmatig via System-tab → NTP timezone.
+- **NTP-badge** — `NTP synced` (groen) wanneer de klok deze sessie via NTP gesynchroniseerd is, `NTP pending` (rood) zolang dat nog niet gelukt is en de controller op de interne klok RTC met batterij-backup draait.
+- **Uptime** — bedrijfsduur sinds de laatste start, ververst om de ~2 seconden. Het formaat past zich aan aan de beschikbare ruimte wat verschillende presentatie oplevert:
+  - `5s` … `59s`
+  - `1m 23s`
+  - `2h 15m`
+  - `1d 4h 23m`
+
+  Bij een herstart van de controller springt deze waarde `0s` en begint opnieuw — handig om te zien of de controller stabiel draait.
+
 ---
 
 ## 7. De twee gebruikersrollen
@@ -641,6 +655,101 @@ Deze wordt gebruikt voor het bepalen van zonsopkomst/zonsondergang en automatisc
 | `Session timeout (min)` | Idle-timeout in minuten | 5 | 1–1440 |
 
 Geldt voor zowel LCD als webinterface. Een te lange waarde (bv. 60 min) is een veiligheidsrisico — een vergeten ingelogde sessie kan worden misbruikt.
+
+---
+
+### 11.10 Status-rapportage naar extern webdashboard (tab **Web**) — nieuw in 1.17
+
+De kascontroller kan zijn actuele toestand periodiek naar een **externe web-server** sturen. Op die web-server draait een dashboard dat dezelfde gegevens toont als de eigen webinterface — zo kan iemand op afstand toch de werking van de kas volgen. Daarnaast wordt het laatst-gesloten logbestand van de SD-kaart één keer per dag (en/of bij elke logrotatie) naar dezelfde server geüpload.
+
+De feature staat **standaard uit**. Inschakelen gebeurt volledig in de webinterface, tab **Web** (alleen zichtbaar voor de Beheerder).
+
+#### Werkingsoverzicht
+
+```
+┌──────────────────┐                  ┌────────────────────┐
+│  Kascontroller   │  POST status     │ uw-server.nl/.../  │
+│   (firmware)     │ ───────────────► │     api.php        │
+│                  │  (om de 60–300 s)│                    │
+│                  │                  │   slaat laatste    │
+│                  │  POST logbestand │   status op disk   │
+│                  │ ───────────────► │   serveert via     │
+│                  │  (1×/dag of rota-│   view.php aan     │
+│                  │   tie SD-log)    │   het dashboard    │
+└──────────────────┘                  └────────────────────┘
+```
+
+Iedere POST draagt een **shared secret** in de HTTP-header `sourceidentifier`. De web-server vergelijkt die met zijn eigen **shared secret**; bij verschil wordt de informatie zonder terugmelding verworpen. Het **shared secret** staat dus letterlijk op twéé plaatsen — kascontroller en web-server — en moet bij een aanpassing aan beide kanten worden aangepast.
+
+#### Velden op tab Web
+
+| Veld | Beschrijving | Default | Bereik / regels |
+|---|---|---|---|
+| `URL` | Eindpunt van het PHP-script | leeg | Moet beginnen met `http://` of `https://`, mag géén `?` of `#` bevatten, móét eindigen op `api.php`. Maximaal 128 tekens. Leeg laten = functie uit. |
+| `Shared secret` | Token in `sourceidentifier`-header | leeg | Minimaal 16 tekens. Leeg laten bij `Apply` = bestaande token blijft staan. Wordt nooit teruggetoond bij heropenen van het tabblad. |
+| `Interval (s)` | Tijd tussen POST's | 120 | 60–300 |
+| `Enabled` | Hoofdschakelaar | uit | aan / uit. Bij `uit` worden geen POST's verstuurd, ook niet als URL en token correct zijn ingevuld. |
+| `Climate / Wind / Windows / Mode / Sun / System` (6 vinkjes) | Welke tegels worden meegestuurd | alle 6 aan | Een uitgevinkt vinkje laat het bijhorende JSON-object weg uit de POST → de tegel verschijnt automatisch niet op het publieke dashboard. |
+| `Daily upload time` | Lokale tijd waarop log-upload geprobeerd wordt | 03:15 | uu : mm, 24-uur klok |
+| `Upload on rotation` | Ook uploaden zodra T9 een logbestand sluit | aan | aan / uit |
+
+#### Actuele informatie over de werking van deze functie
+
+Onderaan tab *Web* staan drie regels die elke 5 seconden ververst worden (zolang u op dit tabblad staat). Ze tonen wat T14 zelf intern weet, ze zijn niet handmatig in te vullen:
+
+| Regel | Inhoud | Voorbeeld |
+|---|---|---|
+| `Last post` | Datum/tijd en uitkomst van laatste status-POST | `OK 2026-05-10 14:30:22` of `FAIL 2026-05-10 14:30:22` |
+| `Last log upload` | Idem voor laatste log-upload | `OK 2026-05-10 03:15:08` of leeg als nooit geprobeerd |
+| `Last uploaded file` | Bestandsnaam van het laatst succesvol geüploade logbestand | `20260507143022.csv` |
+
+De auto-refresh raakt alleen deze drie regels aan — uw invoer in `URL`, `Shared secret`, intervalkeuze of vinkjes wordt nooit overschreven terwijl u typt. Pas op het moment dat u op **Apply** klikt worden de waarden eerst gevalideerd, daarna naar NVS geschreven en daarna teruggelezen, zodat de formuliervelden exact tonen wat er in NVS staat.
+
+#### Eerste keer instellen — stap voor stap
+
+1. Log in als Beheerder en open tab **Web**.
+2. Vul de URL van het PHP-eindpunt in (bv. `https://uw-server.nl/hbwv/api.php`).
+3. Vraag aan de beheerder van de web-server de waarde van het shared secret. Plak die in `Shared secret`. Laat het secret-veld leeg als u het later eens wilt wijzigen zonder het opnieuw te hoeven invullen.
+4. Stel het update `Interval (s)` in op een geschikte waarde — `120` is een goede default (niet te druk op het netwerk, dashboard blijft binnen 5 minuten "vers").
+5. Vink desgewenst tegels uit die u **niet** publiek wilt tonen. Standaard staan alle zes aan.
+6. Eventueel `Daily upload time` aanpassen naar een rustig moment in uw netwerk (bv. nacht).
+7. Vink `Enabled` aan.
+8. Klik **Apply**.
+
+Binnen één intervalperiode hoort de regel `Last post` op `OK …` te springen. Blijft hij op `FAIL …` of leeg staan? Zie [§11.10 troubleshooting](#1110-troubleshooting-status-rapportage) hieronder.
+
+#### Functie tijdelijk uitschakelen
+
+Twee opties:
+- Vink `Enabled` uit en klik **Apply**. URL en token blijven bewaard.
+- Maak het URL-veld leeg en klik **Apply**. De feature is dan ook uit, ongeacht de stand van `Enabled`.
+
+Bij OTA-firmware-update worden status-POST's automatisch overgeslagen totdat de update klaar is — u hoeft niks handmatig uit te zetten.
+
+#### HTTPS
+
+Endpoints met `https://` worden ondersteund. **De controller controleert het certificaat NIET** (De verbinding is versleuteld maar niet geauthenticeerd). Dat is een bewuste keuze: anders moest de firmware een actuele CA-bundel meedragen en periodiek updaten. De gedeelde token in de header is de eigenlijke authenticatie. Wijzig de token meteen als u vermoedt dat hij is gelekt.
+
+#### Veelgemaakte fouten
+
+| Symptoom | Oorzaak | Oplossing |
+|---|---|---|
+| Bij **Apply** verschijnt rood `URL must end with "api.php"` | URL eindigt op een directorypad zoals `/api/` | Voeg `api.php` toe; De HTTP-Client volgt geen 301-redirects, dus de server-side `DirectoryIndex` kan niet vertrouwd worden |
+| Rood `URL must not contain ? or #` | Query-parameters in de URL | Verwijder ze — de firmware voegt zelf `?action=log` toe voor de log-upload |
+| Rood `secret too short` | Minder dan 16 tekens | Vraag de beheerder van de website om een langer token |
+| `Last post` blijft `FAIL` | Server bereikbaar maar weigert ('wrong secret') | Controleer dat `Shared secret` byte-exact gelijk is aan shared secret op de web-server. Spaties/tabs aan einde tellen mee! |
+| `Last post` blijft leeg | WiFi-client verbinding niet actief, of klok niet via NTP gesynchroniseerd | Zie [§11.1](#111-eerste-keer-WiFi-configureren-na-fabrieksreset-of-nieuwe-installatie) (WiFi) of [§11.7](#117-ntp-en-tijdzone) (NTP). T14 wacht op beide vóórdat hij verstuurt. |
+| Publiek dashboard toont een tegel met verkeerde inhoud | Mismatch in veldnamen tussen kascontroller-firmware en het PHP-dashboard | Beide moeten van dezelfde release-generatie zijn. Firmware 1.17.1 hoort bij `pe1mew.nl/hbwv` van mei 2026 of nieuwer. |
+
+#### Logbestand-upload — wat gaat er precies heen?
+
+De controller upload het **meest recent gesloten** CSV-logbestand op de SD-kaart (dus niet het bestand waar T9 op het moment van uploaden nog in schrijft). De bestandsnaam is van de vorm `YYYYMMDDHHMMSS.csv` (lokale tijd van aanmaak) en is maximaal 512 KB groot — daarboven heeft T9 het al gerouteerd naar een nieuwer bestand.
+
+Twee triggers, beide aan te zetten of uit te zetten:
+- **On rotation:** zodra T9 een logbestand sluit (omdat het 512 KB heeft bereikt), wordt het vrijwel direct geüpload.
+- **Daily:** elke dag rond `Daily upload time` lokaal wordt het laatst-gesloten bestand opnieuw beoordeeld; staat het al onder `Last uploaded file`, dan wordt het geslagen — anders wordt het geüpload.
+
+Door deze dubbele aanpak met dedup-op-bestandsnaam wordt hetzelfde bestand nooit twee keer geüpload, ook als de rotatie en de dagelijkse check op verschillende dagen vallen.
 
 ---
 
@@ -1327,6 +1436,7 @@ De **complete uitleg** — met daarin alle velden, alle event-types, alle parame
 | 1.0 | \[invullen] | Eerste uitgave — gebaseerd op firmware 1.16.34 |
 | 1.1 | 2026-05-09 | Bijgewerkt voor firmware 1.16.35–1.16.38: conflict-prioriteit (`cr_priority`) toegankelijk via Climate-menu (LCD optie 3) en als keuzelijst in webinterface tab Climate (Boer-bewerkbaar); nieuwe `#=Set` snelweg op de T/RH- en Wind-statusschermen die het Climate- of Wind-menu opent met een Boer-PIN-prompt; LCD-render bug `LFS_BUF_SIZE` opgehoogd naar 64 KiB om afgeknotte HTML te voorkomen; Wind-statusscherm rij 2 zonder haakjes om kompasletter (`Dir:180° S #=Set`) |
 | 1.2 | 2026-05-10 | Bijgewerkt voor firmware 1.16.39: zichtbare `#=Set`/`#=AP`-hints verwijderd van alle vier de statusschermen (T/RH, Wind, WiFi, Datum/tijd) — `#`-snelweg blijft werken naar het bijhorende menu, alleen de hint op rij 2 is weg; Wind-statusscherm rij 2 toont kompasletter weer tussen haakjes (`Dir:180 ° (S )`) zoals vóór 1.16.37 |
+| 1.3 | 2026-05-10 | Bijgewerkt voor firmware 1.17.0–1.17.1: nieuwe Beheerder-tab **Web** voor status-rapportage naar een extern PHP-eindpunt (URL, gedeelde token, interval 60–300 s, zes tegel-zichtbaarheidsvinkjes, dagelijkse log-upload tijd en upload-op-rotatie); status-rapportage standaard uit en volledig instelbaar zonder de LCD aan te raken; HTTPS-eindpunten ondersteund (geen certificaatcontrole); `Uptime`-regel toegevoegd aan de Klok-tegel van de Status-tab zodat onverwachte reboots zichtbaar zijn (§6 Status-tab — Klok-tegel, §11.10). |
 
 ---
 

@@ -67,3 +67,14 @@
 #define CFG_MIN_TIMEOUT_MIN   1
 #define CFG_MAX_TIMEOUT_MIN 1440  /* 24 h */
 #define CFG_MIN_AP_TIMEOUT    0   /* 0 = AP stays up indefinitely */
+
+/* ── Status website reporting (T14) ──────────────────────────────────────── */
+#define CFG_MIN_STATUS_INTERVAL_S   60   /* spec floor; faster wastes bandwidth */
+#define CFG_MAX_STATUS_INTERVAL_S  300   /* spec ceiling; slower drops dashboard freshness */
+#define CFG_MIN_HOUR                 0
+#define CFG_MAX_HOUR                23
+#define CFG_MIN_MINUTE               0
+#define CFG_MAX_MINUTE              59
+#define CFG_MIN_SECRET_LEN          16   /* below this gives weak shared-secret protection */
+#define CFG_MAX_URL_LEN            128
+#define CFG_MAX_SECRET_LEN          64

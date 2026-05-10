@@ -112,6 +112,16 @@ static const char *TAG = "T9_LOG";
 static bool s_sd_ok = false;                    /**< true iff SD logging is active */
 static char s_cur_filename[SD_FILENAME_LEN];    /**< active file, with leading '/' */
 
+/**
+ * Most recently *rotated-away* CSV filename (no leading '/'). Empty until
+ * the first rotation of the boot. Read by T14's upload-on-rotation path
+ * via event_logger_last_rotated(); written by rotate_sd_file() under
+ * s_closed_mux. Thread-safety: short critical section copying a small
+ * fixed-size string.
+ */
+static portMUX_TYPE s_closed_mux = portMUX_INITIALIZER_UNLOCKED;
+static char s_last_closed[SD_NAME_ONLY_LEN] = {};
+
 /* -----------------------------------------------------------------------
  * Drop counter — tracks events lost due to Q3 overflow
  * ----------------------------------------------------------------------- */
@@ -411,6 +421,18 @@ static void build_csv_line(const log_event_t *evt, char *buf, size_t len)
  */
 static void rotate_sd_file(void)
 {
+    /* Capture the soon-to-be-closed filename for T14 upload-on-rotation
+     * before make_ts_filename overwrites s_cur_filename. We strip the
+     * leading '/' so callers receive the bare name (matches the spec's
+     * URL-friendly path scheme used by storage_sd_list_csv). */
+    if (s_cur_filename[0] != '\0') {
+        const char *bare = (s_cur_filename[0] == '/') ? s_cur_filename + 1 : s_cur_filename;
+        portENTER_CRITICAL(&s_closed_mux);
+        strncpy(s_last_closed, bare, sizeof(s_last_closed) - 1u);
+        s_last_closed[sizeof(s_last_closed) - 1u] = '\0';
+        portEXIT_CRITICAL(&s_closed_mux);
+    }
+
     make_ts_filename(s_cur_filename, sizeof(s_cur_filename));
 
     storage_status_t rc = storage_sd_write_append(s_cur_filename, CSV_HEADER);
@@ -570,6 +592,69 @@ void event_logger_sd_unmount(void)
     s_sd_ok = false;
     storage_sd_unmount();
     ESP_LOGI(TAG, "[T9] SD unmounted via web request");
+}
+
+/* =======================================================================
+ * Public — rotation-tracking helpers (T14)
+ * ======================================================================= */
+
+bool event_logger_last_rotated(char *out, size_t cap)
+{
+    if (out == NULL || cap == 0u) { return false; }
+
+    portENTER_CRITICAL(&s_closed_mux);
+    strncpy(out, s_last_closed, cap - 1u);
+    out[cap - 1u] = '\0';
+    portEXIT_CRITICAL(&s_closed_mux);
+
+    return out[0] != '\0';
+}
+
+bool event_logger_newest_closed(char *out, size_t cap)
+{
+    if (out == NULL || cap == 0u) { return false; }
+    out[0] = '\0';
+
+    /* Determine the active file's bare name (no leading '/') so we can skip
+     * it in the scan. If SD logging is inactive, no file is "active". */
+    char active_bare[SD_NAME_ONLY_LEN] = {};
+    if (s_sd_ok && s_cur_filename[0] != '\0') {
+        const char *bare = (s_cur_filename[0] == '/') ? s_cur_filename + 1 : s_cur_filename;
+        strncpy(active_bare, bare, sizeof(active_bare) - 1u);
+        active_bare[sizeof(active_bare) - 1u] = '\0';
+    }
+
+    char list[512];
+    if (!sd_scan(list, sizeof(list))) {
+        /* SD unavailable — fall back to in-memory rotation record. */
+        return event_logger_last_rotated(out, cap);
+    }
+
+    /* Walk the scan list, lex-max excluding the active filename. */
+    const char *tok = list;
+    while (*tok) {
+        const char *end  = strchr(tok, ',');
+        size_t      flen = end ? (size_t)(end - tok) : strlen(tok);
+        if (flen > 0 && flen < cap) {
+            char candidate[SD_NAME_ONLY_LEN];
+            memcpy(candidate, tok, flen);
+            candidate[flen] = '\0';
+            if (active_bare[0] && strcmp(candidate, active_bare) == 0) {
+                /* skip the active file */
+            } else if (out[0] == '\0' || strcmp(candidate, out) > 0) {
+                strncpy(out, candidate, cap - 1u);
+                out[cap - 1u] = '\0';
+            }
+        }
+        if (!end) break;
+        tok = end + 1;
+    }
+
+    if (out[0] == '\0') {
+        /* SD scan found nothing — try the in-memory record. */
+        return event_logger_last_rotated(out, cap);
+    }
+    return true;
 }
 
 /* =======================================================================

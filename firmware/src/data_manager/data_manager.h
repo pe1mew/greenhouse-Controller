@@ -55,6 +55,10 @@
  */
 #define DM_NOTIFY_NTP_SYNCED  (1u << 3)
 
+/* TN5 (DM_NOTIFY_RELOAD_WEB) used to live here. The /api/web POST handler
+ * now reloads the cfg shadow synchronously via dm_reload_web_cfg() — async
+ * notification left a window where the next GET could read stale values. */
+
 /* ============================================================
  * Configuration shadow struct  (MX4-protected)
  *
@@ -110,6 +114,17 @@ typedef struct {
     int32_t  led_nite_from;       /**< Night brightness start hour (0–23)    */
     int32_t  led_nite_to;         /**< Night brightness end hour  (0–23)     */
     char     tz_str[64];          /**< POSIX TZ string (e.g. "CET-1CEST,...")*/
+
+    /* ---- Status website / web-tab settings (NVS_NS_SYSTEM, T14) ---- */
+    char     status_url[129];     /**< Endpoint URL ("" = disabled) */
+    char     status_secret[65];   /**< Shared secret for sourceidentifier header */
+    int32_t  status_interval_s;   /**< POST cycle (s); 60–300 */
+    int32_t  status_enable;       /**< Master enable (0 = off) */
+    int32_t  status_expose;       /**< Bitmask: bits 0..5 = climate/wind/windows/mode/sun/system */
+    int32_t  log_upload_h;        /**< Daily log-upload local hour (0–23) */
+    int32_t  log_upload_m;        /**< Daily log-upload local minute (0–59) */
+    int32_t  log_upload_rot;      /**< Also upload on T9 CSV rotation (0/1) */
+    char     log_last_up[33];     /**< Last uploaded log filename (T14 owns) */
 
     /* ---- Derived (computed by T4; not stored in NVS) ---- */
     bool     is_daytime;          /**< true = between sunrise and sunset      */
@@ -202,6 +217,39 @@ uint32_t dm_get_unix_time(void);
 /** @brief Return the configured sensor poll interval (seconds).
  *  Thread-safe (MX4, 100 ms timeout). */
 int32_t dm_get_poll_interval_s(void);
+
+/**
+ * @brief Fill an aggregated controller status snapshot.
+ *
+ * Reads MX2 (latest measurement), MX4 (config + derived state) and the
+ * relay-controller spinlock once each, releasing all locks before returning.
+ * Safe to call from any task. Used by both the local web UI and T14.
+ *
+ * @param out  Caller-allocated status_snapshot_t to fill. Zero-initialised
+ *             on entry; missing data appears as 0 / false / "".
+ */
+void dm_status_snapshot(status_snapshot_t *out);
+
+/**
+ * @brief Reload the status-website / web-tab NVS keys into the cfg shadow.
+ *
+ * Called by the /api/web POST handler after it has written the new keys
+ * directly via nvs_cfg_set_str / nvs_cfg_set_i32. Synchronous — takes MX4
+ * itself, calls the internal nvs_load_web(), releases MX4, and returns. The
+ * next dm_cfg_snapshot() reflects the fresh values immediately.
+ */
+void dm_reload_web_cfg(void);
+
+/**
+ * @brief Persist the most recently uploaded log filename.
+ *
+ * Called by T14 after a successful log upload. Writes log_last_up to NVS and
+ * updates the cfg shadow under MX4 in one step.
+ *
+ * @param filename  Bare filename (no path), e.g. "20260507143022.csv".
+ *                  Truncated to fit cfg_shadow_t::log_last_up.
+ */
+void dm_set_log_last_up(const char *filename);
 
 /**
  * @brief Set the system clock and DS1307 RTC to the given Unix UTC timestamp.
