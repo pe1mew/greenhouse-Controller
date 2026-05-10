@@ -1,6 +1,6 @@
 # Quick-reference — Kascontroller voor de boer
 
-**Versie 1.16.38** · 2026-05-09 · Volledige uitleg in `boerHandleiding.pdf` · Lamineren en naast de kast hangen.
+**Versie 1.16.39** · 2026-05-10 · Volledige uitleg in `boerHandleiding.pdf` · Lamineren en naast de kast hangen.
 
 ### RGB-LED · in één oogopslag
 
@@ -31,7 +31,7 @@
 1 Temp/RH  →  2 Wind  →  3 Mode/Sess  →  4 WiFi  →  5 Tijd  →  6 Raamposities  →  (1)
 ```
 
-Toets **`D`** = direct naar volgend scherm. Hint **`#=Set`** rechts op rij 2 → druk `#` voor het bijhorende menu. Sensor-uitval: `** SENSOR FAULT` op rij 2 + rode achtergrond → bel beheerder.
+Toets **`D`** = direct naar volgend scherm. Toets **`#`** = direct naar het bijhorende menu (werkt op de schermen met instellingen: T/RH, Wind, WiFi, Datum/tijd). Sensor-uitval: `** SENSOR FAULT` op rij 2 + rode achtergrond → bel beheerder.
 
 <div style="page-break-before: always;"></div>
 
@@ -40,7 +40,7 @@ Toets **`D`** = direct naar volgend scherm. Hint **`#=Set`** rechts op rij 2 →
 | Toets | Functie |
 |:---:|:---|
 | **D** | Volgende statusscherm |
-| **#** | Snelweg waar `#=Set` staat · in menu/PIN: bevestig |
+| **#** | Snelweg → bijhorend instellingen-menu · in menu/PIN: bevestig |
 | **\*** | Eén niveau terug · bij invoer: wis cijfer |
 | **0–9** | Cijfer invoeren · op statusscherm: opent hoofdmenu |
 | **A / B** | Vorige / volgende setpoint · `B` = teken ± bij invoer |

@@ -684,38 +684,37 @@ static void render_status(void)
                  * smoothing where it matters, live readings where the
                  * operator wants them.
                  *
-                 * "#=Set" hint on row 1 mirrors the WiFi (#=AP) and Time
-                 * (#=Set) shortcuts: pressing # on this status page jumps
-                 * straight to the Climate sub-menu (asks Farmer PIN if not
-                 * yet authenticated). The hint is right-aligned to columns
-                 * 12-16 so the data on the left and the hint on the right
-                 * are visually distinct. */
+                 * No on-screen "#=Set" hint: pressing # on any status
+                 * page that has a related menu jumps to that sub-menu
+                 * (asks Farmer PIN if not yet authenticated). The
+                 * shortcut is documented in the user manual; the LCD
+                 * row stays clean. */
                 snprintf(r0, sizeof(r0), "Temp:%3d \xDF" "C     ", (int)meas.temperature_c);
                 if (bits & EG1_BIT_SENSOR_FAULT_T) {
                     snprintf(r1, sizeof(r1), "** SENSOR FAULT ");
                 } else {
-                    snprintf(r1, sizeof(r1), "  RH:%3d%%  #=Set", (int)meas.humidity_pct);
+                    snprintf(r1, sizeof(r1), "  RH:%3d %%      ", (int)meas.humidity_pct);
                 }
             } else {
                 snprintf(r0, sizeof(r0), "Temp: --- \xDF" "C    ");
-                snprintf(r1, sizeof(r1), "  RH: ---  #=Set");
+                snprintf(r1, sizeof(r1), "  RH: ---  %%    ");
             }
             break;
 
         case 1: /* Wind */
-            /* Right-aligned "#=Set" hint on row 1 (columns 12-16) jumps to
-             * the Wind sub-menu (Farmer PIN if not yet authenticated) —
-             * same pattern as case 0. */
+            /* Row 1: degrees + 8-point cardinal in parens.
+             * Pressing # on the wind page jumps to the Wind sub-menu
+             * (Farmer PIN if not yet authenticated); no on-screen hint. */
             if (valid) {
                 snprintf(r0, sizeof(r0), "Wind:%2d.%1d m/s   ",
                          (int)(meas.wind_speed_avg_ms10 / 10),
                          (int)(meas.wind_speed_avg_ms10 % 10));
-                snprintf(r1, sizeof(r1), "Dir:%3d\xDF %-2s#=Set",
+                snprintf(r1, sizeof(r1), " Dir:%3d \xDF (%-2s) ",
                          (int)meas.wind_dir_avg_deg,
                          deg_to_cardinal((uint16_t)meas.wind_dir_avg_deg));
             } else {
                 snprintf(r0, sizeof(r0), "Wind: -- m/s    ");
-                snprintf(r1, sizeof(r1), "Dir: ---   #=Set");
+                snprintf(r1, sizeof(r1), " Dir: --- \xDF     ");
             }
             break;
 
@@ -741,10 +740,10 @@ static void render_status(void)
                 char ap_ssid[17] = {};
                 snprintf(ap_ssid, sizeof(ap_ssid), "Greenhouse-%02X%02X", mac[4], mac[5]);
                 snprintf(r0, sizeof(r0), "WiFi: AP active ");
-                snprintf(r1, sizeof(r1), "%-12.12s #=AP", ap_ssid);
+                snprintf(r1, sizeof(r1), "%-16.16s", ap_ssid);
             } else {
                 snprintf(r0, sizeof(r0), "WiFi: --------  ");
-                snprintf(r1, sizeof(r1), "            #=AP");
+                snprintf(r1, sizeof(r1), "                ");
             }
             break;
 
@@ -762,7 +761,7 @@ static void render_status(void)
                 snprintf(r0, sizeof(r0), "--/--/---- --:--");
             }
             const char *src = s_net.ntp_synced ? "NTP" : "RTC";
-            snprintf(r1, sizeof(r1), "Src:%-3s    #=Set", src);
+            snprintf(r1, sizeof(r1), "Src:%-3s         ", src);
             break;
         }
 
@@ -1061,9 +1060,11 @@ static void handle_status(char key)
     }
 
     /* # on the T/RH page (page 0) → jump to Climate sub-menu (Farmer).
-     * Mirrors the WiFi (#=AP) and Time (#=Set) shortcuts: if not yet
-     * authenticated, request Farmer PIN and resume in UI_MENU_CLIMATE
-     * via the s_return_menu fallback in handle_pin(). */
+     * Same pattern as the WiFi (#→AP toggle) and Time (#→date/time set)
+     * shortcuts: if not yet authenticated, request Farmer PIN and resume
+     * in UI_MENU_CLIMATE via the s_return_menu fallback in handle_pin().
+     * No on-screen hint — # is documented in the user manual as the
+     * universal "open settings" key on status pages. */
     if (key == '#' && (s_status_page % STATUS_PAGES) == 0u) {
         if (s_session >= SESSION_FARMER) {
             s_state    = UI_MENU_CLIMATE;

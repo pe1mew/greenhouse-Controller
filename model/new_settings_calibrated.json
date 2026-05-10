@@ -1,0 +1,43 @@
+{
+  "_comment": "Greenhouse Controller simulation \u00e2\u20ac\u201d calibrated greenhouse (kas 2) with M3-targeted dampening from settings_optimised.json applied on top.",
+  "_note": "Differences vs settings_calibrated.json: hyst_rh 5\u00e2\u2020\u20198 (wider RH deadband to suppress small-signal step toggles), dwell_open_m3 300\u00e2\u2020\u2019900 s (M3 specifically held open \u00e2\u2030\u00a5 15 min once committed; M3's 171 s travel is the dominant oscillation driver, M1/M2 are unchanged because their 21 s travel doesn't drive the same pattern). Controller config otherwise identical to settings_calibrated.json; plant model points at plant_calibrated.json (kas 2 fit).",
+  "climate": {
+    "t_max_day": 28,
+    "t_max_ngt": 20,
+    "rh_min_day": 50,
+    "rh_max_day": 75,
+    "rh_min_ngt": 55,
+    "rh_max_ngt": 80,
+    "hyst_t": 5,
+    "hyst_rh": 12,
+    "rh_ctrl_en": 1,
+    "cr_priority": 0,
+    "avg_win_t": 6,
+    "avg_win_rh": 10
+  },
+  "wind": {
+    "wind_prot_en": 1,
+    "v_max": 6,
+    "dir_excl_low": 0,
+    "dir_excl_high": 0
+  },
+  "motor": {
+    "travel_m1": 21,
+    "travel_m2": 21,
+    "travel_m3": 171,
+    "dwell_open_m1": 300,
+    "dwell_open_m2": 300,
+    "dwell_open_m3": 1500,
+    "dwell_close_m1": 0,
+    "dwell_close_m2": 0,
+    "dwell_close_m3": 600
+  },
+  "system": {
+    "poll_interval": 30,
+    "lat_deg": 52,
+    "lat_frac": 0,
+    "lon_deg": 5,
+    "lon_frac": 0
+  },
+  "plant_file": "plant_calibrated.json"
+}

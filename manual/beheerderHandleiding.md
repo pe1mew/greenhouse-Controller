@@ -400,12 +400,12 @@ Inloggen via het hoofdmenu — **dezelfde route als boer maar met Beheerder-PIN*
 
 ### Snelweg via #-toets
 
-Op vier statusschermen kan je direct vanuit de auto-rotatie naar een instellingen-menu springen, waarbij PIN-invoer eerst wordt gevraagd als je nog niet ingelogd bent. De hint op rij 2 van het scherm geeft aan dat de sneltoets actief is.
+Op vier statusschermen kan je direct vanuit de auto-rotatie naar een instellingen-menu springen, waarbij PIN-invoer eerst wordt gevraagd als je nog niet ingelogd bent. Vanaf firmware 1.16.39 staat er **geen zichtbare hint** meer op rij 2 — `#` werkt op elk statusscherm dat een instellingen-menu heeft, en wordt genegeerd op de overige schermen (Mode/Sess en Raamposities).
 
-- **T/RH-status (scherm 1)** — hint `#=Set`: druk `#` → vraagt **Boer-PIN** (4 cijfers) → daarna direct in Climate-menu (Day/Night setpoints + Conflict-prioriteit)
-- **Wind-status (scherm 2)** — hint `#=Set`: druk `#` → vraagt **Boer-PIN** → daarna direct in Wind-menu (`Wnd-max`, `Wnd-prot`)
-- **WiFi-status (scherm 4)** — hint `#=AP`: druk `#` → vraagt **Beheerder-PIN** (8 cijfers) → daarna direct in System-menu (waar je AP kunt aan/uit zetten)
-- **Time-status (scherm 5)** — hint `#=Set`: druk `#` → vraagt **Beheerder-PIN** → daarna direct in datum/tijd-invoer
+- **T/RH-status (scherm 1)** — `#` → vraagt **Boer-PIN** (4 cijfers) → daarna direct in Climate-menu (Day/Night setpoints + Conflict-prioriteit)
+- **Wind-status (scherm 2)** — `#` → vraagt **Boer-PIN** → daarna direct in Wind-menu (`Wnd-max`, `Wnd-prot`)
+- **WiFi-status (scherm 4)** — `#` → vraagt **Beheerder-PIN** (8 cijfers) → daarna direct in System-menu (waar je AP kunt aan/uit zetten)
+- **Time-status (scherm 5)** — `#` → vraagt **Beheerder-PIN** → daarna direct in datum/tijd-invoer
 
 > **Let op**: ben je al ingelogd als boer, dan zal `#` op de WiFi- of Time-status alsnog om de Beheerder-PIN vragen (deze schermen zijn admin-only). Andersom werkt voor een Beheerder elk van de vier sneltoetsen direct zonder extra PIN-invoer.
 
@@ -1326,6 +1326,7 @@ De **complete uitleg** — met daarin alle velden, alle event-types, alle parame
 |---|---|---|
 | 1.0 | \[invullen] | Eerste uitgave — gebaseerd op firmware 1.16.34 |
 | 1.1 | 2026-05-09 | Bijgewerkt voor firmware 1.16.35–1.16.38: conflict-prioriteit (`cr_priority`) toegankelijk via Climate-menu (LCD optie 3) en als keuzelijst in webinterface tab Climate (Boer-bewerkbaar); nieuwe `#=Set` snelweg op de T/RH- en Wind-statusschermen die het Climate- of Wind-menu opent met een Boer-PIN-prompt; LCD-render bug `LFS_BUF_SIZE` opgehoogd naar 64 KiB om afgeknotte HTML te voorkomen; Wind-statusscherm rij 2 zonder haakjes om kompasletter (`Dir:180° S #=Set`) |
+| 1.2 | 2026-05-10 | Bijgewerkt voor firmware 1.16.39: zichtbare `#=Set`/`#=AP`-hints verwijderd van alle vier de statusschermen (T/RH, Wind, WiFi, Datum/tijd) — `#`-snelweg blijft werken naar het bijhorende menu, alleen de hint op rij 2 is weg; Wind-statusscherm rij 2 toont kompasletter weer tussen haakjes (`Dir:180 ° (S )`) zoals vóór 1.16.37 |
 
 ---
 

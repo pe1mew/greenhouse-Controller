@@ -1,0 +1,9 @@
+{
+  "_comment": "Calibrated by calibrate_plant.py against srcData/ (scheduled-window model, lux-driven solar; sensors: LHT65-02_kas2). Per-sensor k_solar=[0.5299] W/lux, c_eff=[2.89] MJ/degC, ach_open=[2.7] /h, ach_closed=[1.35] /h. simulation.py uses ACH_INF=0.5 as a constant; consider raising to 1.35 (the fit ach_closed) for full fidelity.",
+  "volume_m3": 2400.0,
+  "ach_roof": 0.19,
+  "ach_wall": 0.96,
+  "transpiration_kg_s": 0.00477,
+  "solar_peak_w": 21932.0,
+  "c_eff_mj_per_c": 2.89
+}

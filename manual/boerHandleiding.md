@@ -222,24 +222,24 @@ De controller doorloopt zes schermen in vaste volgorde, elk 5 seconden zichtbaar
 ```
    +----------------+
    |Temp: 23 °C     |
-   |  RH: 65 % #=Set|
+   |  RH: 65 %      |
    +----------------+
 ```
 
-Aan het einde van rij 2 staat de hint `#=Set`: druk `#` om direct naar het Climate-menu te gaan voor het instellen van setpoints (vraagt om de Farmer-PIN als je nog niet bent ingelogd).
+Druk `#` op dit scherm om direct naar het Climate-menu te gaan voor het instellen van setpoints (vraagt om de Farmer-PIN als je nog niet bent ingelogd).
 
-Bij sensoruitval: rij 2 toont `** SENSOR FAULT` (geen `#=Set` zolang de sensor uitvalt). Bij ongeldige meting: `Temp: --- °C` en `  RH: ---  #=Set`.
+Bij sensoruitval: rij 2 toont `** SENSOR FAULT`. Bij ongeldige meting: `Temp: --- °C` en `  RH: ---  %    `.
 
 **Scherm 2 — Wind:**
 
 ```
    +----------------+
    |Wind: 2.3 m/s   |
-   |Dir:180° S #=Set|
+   | Dir:180 ° (S ) |
    +----------------+
 ```
 
-Toont gemiddelde windsnelheid in m/s, en op rij 2 de richting in graden met een kompasletter (N, NE, E, SE, S, SW, W, NW). Aan het einde van rij 2 staat de hint `#=Set`: druk `#` om direct naar het Wind-menu te gaan (vraagt om de Farmer-PIN als je nog niet bent ingelogd). Bij ongeldige meting: `Wind: -- m/s` en `Dir: ---   #=Set`.
+Toont gemiddelde windsnelheid in m/s, en op rij 2 de richting in graden met de kompasletter tussen haakjes (N, NE, E, SE, S, SW, W, NW). Druk `#` op dit scherm om direct naar het Wind-menu te gaan (vraagt om de Farmer-PIN als je nog niet bent ingelogd). Bij ongeldige meting: `Wind: -- m/s` en ` Dir: --- °     `.
 
 **Scherm 3 — Bedrijfsmodus en sessie:**
 
@@ -263,24 +263,24 @@ Drie mogelijke weergaven:
 ```
    +----------------+      +----------------+      +----------------+
    |WiFi: connected |      |WiFi: AP active |      |WiFi: --------  |
-   |192.168.1.100   |      |Greenhouse-XXXX |      |            #=AP|
+   |192.168.1.100   |      |Greenhouse-XXXX |      |                |
    +----------------+      +----------------+      +----------------+
 ```
 
 - **Connected**: kascontroller is verbonden met een wifi-netwerk; rij 2 toont het IP-adres
 - **AP active**: de tijdelijke Access Point staat aan; rij 2 toont de SSID `Greenhouse-XXXX` (waar XXXX de laatste hex-cijfers van het MAC-adres zijn)
-- **Disconnected**: geen verbinding; `#=AP` betekent dat de Admin via deze toets de AP kan inschakelen
+- **Disconnected**: geen verbinding; druk `#` om de AP in te schakelen (vraagt Admin-PIN)
 
 **Scherm 5 — Datum en tijd:**
 
 ```
    +----------------+
    |06-05-2026 14:30|
-   |Src:NTP    #=Set|
+   |Src:NTP         |
    +----------------+
 ```
 
-Rij 1 toont datum en tijd. Rij 2 toont de tijdsbron: `NTP` (gesynchroniseerd via internet) of `RTC` (alleen interne klok). De `#=Set`-hint geeft aan dat de Admin via deze toets datum en tijd handmatig kan instellen.
+Rij 1 toont datum en tijd. Rij 2 toont de tijdsbron: `NTP` (gesynchroniseerd via internet) of `RTC` (alleen interne klok). Druk `#` op dit scherm om datum en tijd handmatig in te stellen (vraagt Admin-PIN).
 
 **Scherm 6 — Raamposities:**
 
@@ -325,14 +325,14 @@ De functie van een toets hangt af van het **scherm** waar je je bevindt. Hierond
 | **#** | Snelweg naar een functie — afhankelijk van het zichtbare scherm (zie tabel hieronder) |
 | **alle andere toetsen** | Open het hoofdmenu |
 
-De `#`-snelweg werkt op vier statusschermen, elk herkenbaar aan een hint rechts op rij 2 (`#=Set` of `#=AP`):
+De `#`-snelweg werkt op vier statusschermen. Op het LCD zelf staat geen zichtbare hint; onthoud gewoon dat `#` op een statusscherm met instellingen direct het bijhorende menu opent:
 
-| Scherm | Hint op LCD | `#` opent | Vraagt PIN? |
-|---|---|---|---|
-| 1 — Temperatuur/RH | `#=Set` | Climate-menu (setpoints) | Farmer-PIN |
-| 2 — Wind | `#=Set` | Wind-menu (Wnd-max, Wnd-prot) | Farmer-PIN |
-| 4 — WiFi | `#=AP` | System-menu (AP aan/uit) | Admin-PIN |
-| 5 — Datum/tijd | `#=Set` | Datum/tijd-invoer | Admin-PIN |
+| Scherm | `#` opent | Vraagt PIN? |
+|---|---|---|
+| 1 — Temperatuur/RH | Climate-menu (setpoints) | Farmer-PIN |
+| 2 — Wind | Wind-menu (Wnd-max, Wnd-prot) | Farmer-PIN |
+| 4 — WiFi | System-menu (AP aan/uit) | Admin-PIN |
+| 5 — Datum/tijd | Datum/tijd-invoer | Admin-PIN |
 
 Op de overige schermen (3 — Mode/Sess en 6 — Raamposities) heeft `#` geen functie en opent — net als andere toetsen — gewoon het hoofdmenu.
 
@@ -1165,7 +1165,6 @@ Onderstaande termen verschijnen op het LCD-scherm. Ze zijn gegroepeerd per funct
 | `WiFi: AP active` | Eigen AP actief |
 | `WiFi: --------` | Geen verbinding |
 | `Greenhouse-XXXX` | SSID van de eigen AP |
-| `#=AP` | Druk `#` om AP te activeren (Admin) |
 
 **Tijd:**
 
@@ -1173,7 +1172,6 @@ Onderstaande termen verschijnen op het LCD-scherm. Ze zijn gegroepeerd per funct
 |---|---|
 | `Src:NTP` | Tijd via internet (NTP) |
 | `Src:RTC` | Tijd uit interne klok |
-| `#=Set` | Druk `#` om tijd in te stellen (Admin) |
 
 **Menu's:**
 
@@ -1288,6 +1286,7 @@ Voor alle vragen of problemen waar deze handleiding geen antwoord op geeft:
 |---|---|---|
 | 1.0 | \[invullen] | Eerste uitgave — gebaseerd op firmware 1.16.34 |
 | 1.1 | 2026-05-09 | Bijgewerkt voor firmware 1.16.38: nieuwe `#=Set` snelweg vanaf de T/RH- en Wind-statusschermen (vraagt Farmer-PIN), conflict-prioriteit toegevoegd aan Climate-menu (LCD optie 3) en aan webinterface tab Climate als keuzelijst, gewijzigd Wind-statusscherm-formaat (zonder haakjes om de kompasletter) |
+| 1.2 | 2026-05-10 | Bijgewerkt voor firmware 1.16.39: zichtbare `#=Set`/`#=AP`-hints verwijderd van alle statusschermen (T/RH, Wind, WiFi, Datum/tijd) — `#` werkt nog steeds als snelweg naar het bijhorende menu, maar het LCD blijft schoon; Wind-statusscherm rij 2 toont kompasletter weer tussen haakjes (`Dir:180 ° (S )`) zoals vóór 1.16.37 |
 
 ---
 

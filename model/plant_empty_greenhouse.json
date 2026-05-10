@@ -1,0 +1,9 @@
+{
+  "_comment": "Empty greenhouse plant model — bare floor + glazing only, no crops. c_eff_mj_per_c is the air-coupled effective heat capacity (air + soil surface + structure) in MJ/degC; it sets the thermal-lag time constant via tau_T = c_eff / (ACH * V * rho * cp). 10 MJ/degC ≈ ~3.5× air mass: typical for an empty greenhouse without active soil or crop biomass.",
+  "volume_m3":          2400.0,
+  "ach_roof":              8.0,
+  "ach_wall":             40.0,
+  "transpiration_kg_s":   0.010,
+  "solar_peak_w":      20000.0,
+  "c_eff_mj_per_c":       10.0
+}

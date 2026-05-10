@@ -1,0 +1,9 @@
+{
+  "_comment": "General-crops plant model — moderate biomass + active soil + glazing. c_eff_mj_per_c is the air-coupled effective heat capacity (air + soil surface + crop biomass + glazing) in MJ/degC; it sets the thermal-lag time constant via tau_T = c_eff / (ACH * V * rho * cp). 30 MJ/degC ≈ ~10× air mass: typical for a mature general-crop canopy (lettuce/tomato class) with active soil surface.",
+  "volume_m3":          2400.0,
+  "ach_roof":              8.0,
+  "ach_wall":             40.0,
+  "transpiration_kg_s":   0.010,
+  "solar_peak_w":      20000.0,
+  "c_eff_mj_per_c":       30.0
+}

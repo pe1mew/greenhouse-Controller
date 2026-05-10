@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.16.39] — 2026-05-10
+
+*Drop the `#=Set` and `#=AP` discoverability hints from every rotating LCD status page (T/RH, Wind, WiFi, Time). The four `#`-shortcuts still work — `#` on a status page that has a related sub-menu jumps straight to it (Climate, Wind, System/AP, Date-time), asking for Farmer or Admin PIN as appropriate. The user manual now documents `#` as the implicit "open settings" key on status pages, so the on-screen hint is redundant. The wind-status second row also returns to its pre-1.16.37 layout with the cardinal letter in parentheses (` Dir:180 ° (S ) `) — the parens were collateral damage in 1.16.37 when the `#=Edit` hint was first squeezed in.*
+
+### Changed
+- `firmware/src/ui_display/ui_display.cpp::render_status()` — case 0 (T/RH) row 1 now `"  RH:%3d %%      "` (valid) / `"  RH: ---  %%    "` (invalid); case 1 (Wind) row 1 now `" Dir:%3d \xDF (%-2s) "` (valid) / `" Dir: --- \xDF     "` (invalid); case 3 (Network) AP-active row 1 now `"%-16.16s"` (full-width SSID, no hint); case 3 disconnected row 1 now 16 spaces; case 4 (Time) row 1 now `"Src:%-3s         "`. All formats fit the 16-column LCD line exactly. Comments above each case rewritten to flag that the `#`-shortcut survives but no longer paints a hint.
+- `firmware/src/ui_display/ui_display.cpp::handle_status()` — comment block at the top of the T/RH `#` branch updated for the same reason; functional logic unchanged.
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.16.38` → `1.16.39` in both `lolin_s3` and `test_t2_relay` environments.
+- `manual/boerHandleiding.md` — §5.1 (status-screen mock-ups for T/RH, Wind, WiFi, Time) and §5.2 (`#`-shortcut table) rewritten to drop the on-screen hint references; wind mock-up restored to parenthesised cardinal layout. Glossary entries for `#=AP` and `#=Set` removed. Version-history row added (1.2 / 2026-05-10).
+- `manual/beheerderHandleiding.md` — §"Snelweg via #-toets" rewritten: list keeps the four shortcuts but no longer references the (now-absent) hint text. Version-history row added (1.2 / 2026-05-10).
+- `manual/boerQuickRef.md` — version chip updated to 1.16.39 / 2026-05-10; LCD-status paragraph and toetsenbord table cleaned of `#=Set` references.
+
+### Out of scope
+- Keypad behaviour is unchanged — `#` on a status page still routes through `handle_status()` to the same target sub-menus and PIN flow as in 1.16.38.
+- `web-assets-1.16.39.zip` is byte-identical to 1.16.38 — no static asset content changed; only LCD render strings and Dutch documentation. LFS partition does not need re-uploading.
+- `design/LCD_GUI_Design.md` is an older design spec that doesn't track the rotating-status implementation; not updated.
+
+---
+
 ## [1.16.38] — 2026-05-09
 
 *Cosmetic follow-up to 1.16.37: replace the `#=Edit` hint on the new T/RH and Wind status-page shortcuts with `#=Set`, right-aligned to columns 12-16, so the four `#`-shortcut hints on the LCD now share the same visual convention (`#=AP`, `#=Set`, `#=Set`, `#=Set`).*
