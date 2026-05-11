@@ -3,22 +3,32 @@
 Greenhouse Controller — Web UI Mock Server
 ==========================================
 Serves the static files from firmware/data/ and emulates all REST and
-WebSocket endpoints that the real ESP32 firmware (web_server.cpp) exposes.
+WebSocket endpoints that the real ESP32 firmware (web_server.cpp +
+status_post/status_json.cpp) exposes.
+
+Targets firmware 1.17.20 — canonical nested status-JSON shape, status-
+website POST configuration (Web tab), and the OTA-version mismatch
+diagnostic surfaces (manifest.json, asset_version, HTML version stamp).
 
 Endpoints emulated
 ------------------
-GET  /                  index.html from firmware/data/
+GET  /                  index.html from firmware/data/ (with ?v=<ver>
+                        cache-busters injected on app.js / style.css)
 GET  /style.css         stylesheet
 GET  /app.js            JavaScript
+GET  /manifest.json     {"asset_version": "<ver>", "checksum": ""}
 GET  /api/whoami        check cookie validity → {ok, role}
 POST /api/login         {role, pin} → {ok, role}
 POST /api/logout        → {ok:true} + clears cookie
-GET  /api/status        full status JSON (same payload as WebSocket push)
+GET  /api/status        full status JSON (canonical nested shape;
+                        same payload as WebSocket push)
 GET  /api/config        all configuration parameters
 GET  /api/config/limits min/max ranges per parameter (public, no auth)
 POST /api/config        {ns, key, value} or {ns, key, str_value}
 POST /api/wifi          {ssid, psk} or {ap_psk}
 POST /api/pin           {role, pin}  (admin only)
+GET  /api/web           current status-website settings (admin only)
+POST /api/web           update status-website settings (admin only)
 GET  /api/history       ?n=N  — last N synthetic sensor readings
 GET  /api/sd/status     {mounted, free_mb, size_mb}
 POST /api/sd/mount      mount SD card (admin only)
@@ -104,8 +114,22 @@ cfg: dict = {
     "lon_deg":              5,    # DEF_LON_DEG
     "lon_frac":             0,    # DEF_LON_FRAC
     "tz_str":              "CET-1CEST,M3.5.0,M10.5.0/3",
-    "fw_ver":              "1.16.38",
+    "fw_ver":              "1.17.20",
+    # Status-website / Web tab settings (added in firmware 1.17.0).  Defaults
+    # mirror DEF_STATUS_* / DEF_LOG_UPLOAD_* in firmware/config/cfg_defaults.h.
+    "status_url":          "",
+    "status_secret":       "",
+    "status_interval_s":   120,
+    "status_enable":         0,
+    "status_expose":      0x3F,
+    "log_upload_h":          3,
+    "log_upload_m":         15,
+    "log_upload_rot":        1,
+    "log_last_up":          "",
 }
+
+# Process start time — drives system.uptime_s in the canonical status JSON.
+BOOT_TIME: float = time.monotonic()
 
 sd: dict = {"mounted": True, "size_mb": 7500, "free_mb": 7100}
 
@@ -272,43 +296,70 @@ def _get_role() -> str | None:
 # ---------------------------------------------------------------------------
 # Sensor / status data generators
 # ---------------------------------------------------------------------------
-def _sensor_now() -> dict:
+def _build_status() -> dict:
+    """Canonical nested status JSON — matches build_canonical_status_json() in
+    firmware/src/status_post/status_json.cpp as of firmware 1.17.20.  Every
+    key the local app.js and the public dashboard consume must appear here
+    in the exact same shape, otherwise the mock and the real device diverge
+    silently and the GUI breaks against one of them."""
     t = time.time()
     temp     = 20.0 + 4.0  * math.sin(t / 7200)
     rh       = 60   + 10   * math.sin(t / 10800 + 1.0)
     wind     = max(0.0, 2.5 + 2.0 * math.sin(t / 900 + 2.0))
     wind_dir = int((180 + 90 * math.sin(t / 3600 + 3.0)) % 360)
-    return {
-        "temp_c":       round(temp, 1),
-        "temp_avg":     round(temp, 1),
-        "rh_pct":       int(round(rh)),
-        "rh_avg":       int(round(rh)),
-        "wind_ms":      round(wind, 1),
-        "wind_dir":     wind_dir,
-        "wind_avg":     round(wind, 1),
-        "wind_avg_dir": wind_dir,
-    }
 
+    now      = datetime.now()
+    cur_mins = now.hour * 60 + now.minute
+    # Sun times in LOCAL minutes-from-midnight (firmware 1.17.1+ converts
+    # UTC→local in dm_status_snapshot using gmtoff so the public dashboard
+    # renders the value verbatim as HH:MM).
+    sunrise  = 6 * 60 + 30     # 06:30 local
+    sunset   = 20 * 60 + 30    # 20:30 local
 
-def _build_status() -> dict:
-    now       = datetime.now()
-    cur_mins  = now.hour * 60 + now.minute
-    sunrise   = 6 * 60 + 30    # 06:30 UTC
-    sunset    = 20 * 60 + 30   # 20:30 UTC
     return {
         "type": "status",
-        **_sensor_now(),
-        "windows":     ["CLOSED", "CLOSED", "CLOSED"],
-        "mode":        "AUTOMATIC",
-        "is_daytime":  sunrise <= cur_mins <= sunset,
-        "sunrise_utc": sunrise,
-        "sunset_utc":  sunset,
-        "eg1":         0,
-        "time":        now.strftime("%Y-%m-%dT%H:%M:%S"),
-        "ntp_synced":  True,
-        "wifi_ip":     "192.168.1.100",
-        "wifi_rssi":   -65,
-        "fw_ver":      cfg["fw_ver"],
+        "climate": {
+            "temp_c":     round(temp, 1),
+            "temp_avg_c": round(temp, 1),
+            "rh_pct":     int(round(rh)),
+            "rh_avg_pct": int(round(rh)),
+        },
+        "wind": {
+            "speed_ms":          round(wind, 1),
+            "speed_avg_ms":      round(wind, 1),
+            "direction_deg":     wind_dir,
+            "direction_avg_deg": wind_dir,
+        },
+        "windows": {
+            "M1": "CLOSED",
+            "M2": "CLOSED",
+            "M3": "CLOSED",
+        },
+        "mode": {
+            "current": "AUTOMATIC",
+            "flags":   [],
+        },
+        "sun": {
+            "is_daytime":   sunrise <= cur_mins <= sunset,
+            "sunrise_min":  sunrise,
+            "sunset_min":   sunset,
+        },
+        "system": {
+            "wifi_ip":       "192.168.1.100",
+            "wifi_rssi_dbm": -65,
+            "ntp_synced":    True,
+            "fw_ver":        cfg["fw_ver"],
+            # asset_version is what /manifest.json reports — in the mock
+            # they're paired since we don't simulate the real-device case
+            # where they can drift via a half-completed OTA.  A MISMATCH
+            # badge therefore never fires here; that's by design.
+            "asset_version": cfg["fw_ver"],
+            "uptime_s":      int(time.monotonic() - BOOT_TIME),
+            "ts_unix":       int(t),
+            "time_iso":      now.strftime("%Y-%m-%dT%H:%M:%S"),
+            "eg1":           0,
+        },
+        "update_interval_s": cfg.get("status_interval_s", 120),
     }
 
 
@@ -337,7 +388,18 @@ def _build_history(n: int) -> list[dict]:
 # ---------------------------------------------------------------------------
 @app.route("/")
 def index():
-    return send_from_directory(str(DATA_DIR), "index.html")
+    """Serve index.html with `?v=<fw_ver>` injected on app.js / style.css
+    references — mirrors firmware/src/web_server/web_server.cpp::serve_lfs()
+    behaviour added in 1.17.4 so browsers reliably revalidate static assets
+    when the firmware version changes."""
+    html = (DATA_DIR / "index.html").read_text(encoding="utf-8")
+    ver  = cfg["fw_ver"]
+    html = html.replace('app.js"',    f'app.js?v={ver}"')
+    html = html.replace('style.css"', f'style.css?v={ver}"')
+    resp = make_response(html)
+    resp.headers["Content-Type"]  = "text/html; charset=utf-8"
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 @app.route("/style.css")
@@ -348,6 +410,19 @@ def stylesheet():
 @app.route("/app.js")
 def appjs():
     return send_from_directory(str(DATA_DIR), "app.js")
+
+
+@app.route("/manifest.json")
+def manifest():
+    """Mirrors GET /manifest.json on the real device (added 1.17.8).  In the
+    mock asset_version is always equal to the firmware version — there is
+    no separate LittleFS partition to drift out of sync.  The endpoint is
+    here so the same diagnostic tooling (curl, View Source `<!-- web-assets
+    X.Y.Z -->`) works against the mock and the real controller."""
+    return {
+        "asset_version": cfg["fw_ver"],
+        "checksum":      "",
+    }
 
 # ---------------------------------------------------------------------------
 # Auth routes
@@ -494,6 +569,102 @@ def pin_change():
     if role_req not in pins or not new_pin:
         return {"ok": False, "err": "invalid"}
     pins[role_req] = new_pin
+    return {"ok": True}
+
+# ---------------------------------------------------------------------------
+# Status-website (Web tab) routes — added in firmware 1.17.0.
+#
+# Validation rules mirror firmware/src/web_server/web_server.cpp::/api/web
+# POST handler EXACTLY so the GUI gets identical 400 errors against the
+# mock and the real device.
+# ---------------------------------------------------------------------------
+@app.route("/api/web", methods=["GET"])
+def web_get():
+    if _get_role() != "admin":
+        return {"ok": False, "err": "admin only"}, 403
+    # Secret is intentionally never echoed (matches firmware).  The UI uses
+    # an empty input + "send empty to keep" idiom.
+    return {
+        "url":         cfg["status_url"],
+        "interval_s":  cfg["status_interval_s"],
+        "enable":      cfg["status_enable"],
+        "expose":      cfg["status_expose"],
+        "log_h":       cfg["log_upload_h"],
+        "log_m":       cfg["log_upload_m"],
+        "log_rot":     cfg["log_upload_rot"],
+        "last_post":   "",  # T14 last-attempt indicator; no T14 in mock
+        "last_log_up": "",
+        "log_last_up": cfg["log_last_up"],
+    }
+
+
+@app.route("/api/web", methods=["POST"])
+def web_post():
+    if _get_role() != "admin":
+        return {"ok": False, "err": "admin only"}, 403
+    body = request.get_json(force=True, silent=True) or {}
+
+    # URL: empty disables the feature; non-empty must be http(s)://, must not
+    # contain ? or #, and must end with "api.php".  Mirrors firmware checks.
+    if "url" in body:
+        url = (body.get("url") or "").strip()
+        if url:
+            if not (url.startswith("http://") or url.startswith("https://")):
+                return {"ok": False, "err": "URL must start with http:// or https://"}, 400
+            if "?" in url or "#" in url:
+                return {"ok": False, "err": "URL must not contain ? or #"}, 400
+            if not url.endswith("api.php"):
+                return {"ok": False, "err": 'URL must end with "api.php"'}, 400
+        cfg["status_url"] = url
+
+    # Secret: empty = unchanged.  Non-empty must be ≥ 16 chars
+    # (CFG_MIN_SECRET_LEN in firmware/config/cfg_limits.h).
+    if "secret" in body:
+        secret = body.get("secret") or ""
+        if secret:
+            if len(secret) < 16:
+                return {"ok": False, "err": "secret too short"}, 400
+            cfg["status_secret"] = secret
+
+    if "interval_s" in body:
+        try:
+            iv = int(body["interval_s"])
+        except (TypeError, ValueError):
+            return {"ok": False, "err": "interval out of range"}, 400
+        if iv < 60 or iv > 300:
+            return {"ok": False, "err": "interval out of range"}, 400
+        cfg["status_interval_s"] = iv
+
+    if "enable" in body:
+        v = int(body["enable"])
+        if v not in (0, 1):
+            return {"ok": False, "err": "bounds"}, 400
+        cfg["status_enable"] = v
+
+    if "expose" in body:
+        v = int(body["expose"])
+        if v < 0 or v > 0x3F:
+            return {"ok": False, "err": "bounds"}, 400
+        cfg["status_expose"] = v
+
+    if "log_h" in body:
+        v = int(body["log_h"])
+        if v < 0 or v > 23:
+            return {"ok": False, "err": "bounds"}, 400
+        cfg["log_upload_h"] = v
+
+    if "log_m" in body:
+        v = int(body["log_m"])
+        if v < 0 or v > 59:
+            return {"ok": False, "err": "bounds"}, 400
+        cfg["log_upload_m"] = v
+
+    if "log_rot" in body:
+        v = int(body["log_rot"])
+        if v not in (0, 1):
+            return {"ok": False, "err": "bounds"}, 400
+        cfg["log_upload_rot"] = v
+
     return {"ok": True}
 
 # ---------------------------------------------------------------------------

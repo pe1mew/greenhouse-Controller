@@ -55,19 +55,24 @@ Stop the server with **Ctrl+C**.
 
 ## What is emulated
 
+Targets firmware **1.17.20** — canonical nested status-JSON shape, status-website POST configuration (Web tab), and the OTA-version-mismatch diagnostic surfaces.
+
 | Endpoint             | Method | Auth    | Description |
 |----------------------|--------|---------|-------------|
-| `/`                  | GET    | none    | Serves `firmware/data/index.html` |
+| `/`                  | GET    | none    | Serves `firmware/data/index.html` with `?v=<fw_ver>` cache-busters injected on `app.js` / `style.css` references |
 | `/style.css`         | GET    | none    | Serves `firmware/data/style.css` |
 | `/app.js`            | GET    | none    | Serves `firmware/data/app.js` |
+| `/manifest.json`     | GET    | none    | `{"asset_version":"<fw_ver>","checksum":""}` |
 | `/api/whoami`        | GET    | cookie  | Returns `{ok, role}` or 401 |
 | `/api/login`         | POST   | —       | `{role, pin}` → `{ok, role}` + sets cookie |
 | `/api/logout`        | POST   | cookie  | Clears session cookie |
-| `/api/status`        | GET    | farmer+ | Full status JSON (mirrors WebSocket payload) |
+| `/api/status`        | GET    | farmer+ | Full status JSON in canonical nested shape (`climate`, `wind`, `windows:{M1,M2,M3}`, `mode:{current,flags[]}`, `sun`, `system{asset_version,uptime_s,…}`, `update_interval_s`) — same payload as WebSocket push |
 | `/api/config`        | GET    | farmer+ | All configuration parameters |
 | `/api/config`        | POST   | farmer+ | Write one NVS key; farmer restricted to climate/wind keys |
 | `/api/wifi`          | POST   | admin   | Update WiFi SSID (PSK accepted but not stored) |
 | `/api/pin`           | POST   | admin   | Change farmer or admin PIN for this session |
+| `/api/web`           | GET    | admin   | Current status-website (Web tab) settings; secret never echoed |
+| `/api/web`           | POST   | admin   | Update status-website settings; same validation as firmware (URL must end `api.php`, secret ≥ 16 chars, interval 60–300, etc.) |
 | `/api/history`       | GET    | farmer+ | `?n=N` — last N synthetic sensor readings |
 | `/api/sd/status`     | GET    | farmer+ | `{mounted, free_mb, size_mb}` |
 | `/api/sd/mount`      | POST   | admin   | Set SD mounted state to `true` |
@@ -78,7 +83,8 @@ Stop the server with **Ctrl+C**.
 
 * **Sensor readings** — temperature, relative humidity, and wind speed are
   generated with slow sine-wave variation so dashboard tiles update visibly.
-* **Window states** — always `CLOSED`; system mode always `AUTOMATIC`.
+* **Window states** — always `CLOSED`; system mode always `AUTOMATIC` with empty `flags[]`.
+* **`asset_version` always equals `fw_ver`** — the mock has no LittleFS partitions to drift apart, so the `MISMATCH` badge never fires. That's deliberate; the badge is only meaningful on real hardware where an OTA bank flip can leave the new firmware paired with old assets.
 * **SD card** — starts mounted (7.5 GB / 7.1 GB free); toggled by mount/unmount.
 * **History** — synthetic ring-buffer rows matching the real firmware's format.
 
@@ -115,4 +121,6 @@ the web UI are held in memory for the lifetime of the server process.
 | Sensor data | Sine-wave generator | DHT22 + anemometer |
 | Window states | Always CLOSED | T2 relay state machines |
 | NTP / time | Host system clock | SNTP |
-| OTA / firmware version | Hardcoded `"1.14.0"` | NVS `system/fw_version` |
+| OTA / firmware version | Single `cfg["fw_ver"]` string in `mock_server.py` (currently `"1.17.20"`) | NVS `system/fw_version`, set on every boot from `FIRMWARE_VERSION` |
+| `manifest.json` / `asset_version` | Always equal to `cfg["fw_ver"]` (no real LFS to drift) | Written by `bin/build_release.ps1` into the ZIP; T13 preserves it on the inactive LFS partition during OTA |
+| OTA cross-bank routing | Not simulated (single-instance Python process) | Dual OTA banks + dual LittleFS partitions; T13 writes assets to the LFS paired with the inactive bank |

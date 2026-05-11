@@ -1,0 +1,7 @@
+.pio/
+*.exe
+*.dll
+
+/hardware/pcb/gerbers
+.claude/
+/design/plantuml.jar

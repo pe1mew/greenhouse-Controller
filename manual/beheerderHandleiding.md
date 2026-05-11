@@ -340,23 +340,11 @@ Op de Status-tab staat in de linker tegelrij de **Klok-tegel**. Deze toont drie 
 
 ### Status-tab — versie-controle van firmware en web-assets
 
-Vanaf firmware 1.17.20 wordt een verschil tussen de **firmware-versie** (in de ESP32-image gecompileerd) en de **web-assets-versie** (uit `/manifest.json` op de actieve LittleFS-partitie) automatisch herkend en gemeld als alarm. Tijdens normaal bedrijf zijn beide versies gelijk; een afwijking wijst op een onvolledig uitgevoerde OTA-update.
+Vanaf firmware 1.17.20 wordt een verschil tussen de **firmware-versie** en de **web-assets-versie** automatisch herkend en gemeld als alarm. Tijdens normaal bedrijf zijn beide versies gelijk; een afwijking wijst op een onvolledig uitgevoerde OTA-update.
 
 **Hoe te zien op het dashboard**
 
 Een mismatch verschijnt als een rode **MISMATCH**-badge in de **Alarms**-tegel op de Status-tab, naast eventuele andere alarmen (WIND, MOTOR ALARM, sensor-faults). Bij gelijke versies (of wanneer de assets-versie onbekend is — `?` op een schone serieel-geflasht systeem zonder OTA-pakket) blijft de badge weg en toont Alarms zoals gebruikelijk **OK** of de actieve mode-vlaggen.
-
-**Onafhankelijke controle (handig bij twijfel of bij verdacht gedrag van de browser-cache)**
-
-| Bron | Wat toont het | Hoe op te roepen |
-|---|---|---|
-| `http://<controller-ip>/manifest.json` | JSON met `asset_version` — leest het bestand direct van de actieve LittleFS-partitie | Browser of `curl`. Direct ground-truth. |
-| Pagina-bron op de hoofdpagina | Regel 2: `<!-- web-assets X.Y.Z -->`, gestempeld door `bin/build_release.ps1` in de ZIP | Browser → *Pagina-bron weergeven* (Ctrl+U) |
-| Webgui footer | Firmware-versie als `vX.Y.Z` | Onderaan de pagina, altijd zichtbaar |
-
-Bij een **MISMATCH** voer als eerste een harde refresh uit van de webpagina (`Ctrl+Shift+R`); blijft de melding staan, dan is de OTA op de controller zelf incompleet. Voer de OTA-update opnieuw uit met **beide** pakketten — eerst `greenhouse-controller-X.Y.Z.bin`, daarna `web-assets-X.Y.Z.zip` — en wacht op de automatische herstart. Het mismatch-mechanisme werkt op basis van het `manifest.json`-bestand dat door `build_release.ps1` mee in de assets-ZIP wordt verpakt, dus de versie-vergelijking is betrouwbaar zonder dat de firmware moet weten welke ZIP er is geüpload.
-
-> **Historische opmerking** — In firmware 1.17.4–1.17.9a stond op deze plek een tijdelijke **OTA diagnostic (temp)**-tegel met aparte Firmware/Assets-regels en een eigen MISMATCH-badge. Die tegel is sinds 1.17.20 verwijderd nadat de onderliggende oorzaak (een collisie tussen beide LittleFS-partities op dezelfde VFS-mountpoint) is opgelost; de versie-controle zelf is behouden en geïntegreerd in de Alarms-tegel. Zie de changelog onder `1.17.9` en `1.17.20` voor de technische details.
 
 ---
 
@@ -759,7 +747,7 @@ Endpoints met `https://` worden ondersteund. **De controller controleert het cer
 | Rood `secret too short` | Minder dan 16 tekens | Vraag de beheerder van de website om een langer token |
 | `Last post` blijft `FAIL` | Server bereikbaar maar weigert ('wrong secret') | Controleer dat `Shared secret` byte-exact gelijk is aan shared secret op de web-server. Spaties/tabs aan einde tellen mee! |
 | `Last post` blijft leeg | WiFi-client verbinding niet actief, of klok niet via NTP gesynchroniseerd | Zie [§11.1](#111-eerste-keer-WiFi-configureren-na-fabrieksreset-of-nieuwe-installatie) (WiFi) of [§11.7](#117-ntp-en-tijdzone) (NTP). T14 wacht op beide vóórdat hij verstuurt. |
-| Publiek dashboard toont een tegel met verkeerde inhoud | Mismatch in veldnamen tussen kascontroller-firmware en het PHP-dashboard | Beide moeten van dezelfde release-generatie zijn. Firmware 1.17.1 hoort bij `pe1mew.nl/hbwv` van mei 2026 of nieuwer. |
+| Publiek dashboard toont een tegel met verkeerde inhoud | Mismatch in veldnamen tussen kascontroller-firmware en het web-dashboard | Beide moeten van dezelfde release-generatie zijn. Firmware 1.17.1 hoort bij `pe1mew.nl/hbwv` van mei 2026 of nieuwer. |
 
 #### Logbestand-upload — wat gaat er precies heen?
 
