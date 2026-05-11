@@ -235,9 +235,56 @@ static session_t req_role(AsyncWebServerRequest *req)
  * ============================================================ */
 static lfs_partition_t s_lfs_part;
 
+/** Inject `?v=<FIRMWARE_VERSION>` after the named asset reference in the
+ *  HTML buffer. Used on index.html to bust browser caches of `app.js` and
+ *  `style.css` across OTA updates. The replacement happens in-place: we
+ *  shift the bytes after the match right by the length of the version
+ *  query string, then write the query string into the gap.
+ *
+ *  Why this matters: every browser obeys `Cache-Control: no-store` for the
+ *  HTML document itself, but if the user holds the page open across an OTA
+ *  reboot some browsers reuse the in-memory `app.js` / `style.css` they
+ *  already parsed. Changing the URL on every release forces a fresh fetch
+ *  even when the browser would otherwise believe its copy is current.
+ *
+ *  Returns the new content length (≤ original_len + room_added). The
+ *  buffer must have at least @p slack bytes free past the original NUL.
+ */
+static size_t inject_cache_buster(char *buf, size_t buf_cap,
+                                  size_t cur_len,
+                                  const char *target,
+                                  const char *qparam)
+{
+    /* Find `target` followed by `"` (e.g. `app.js"` ). Restricting the
+     * match to the closing quote avoids hitting `app.js` mentions in
+     * tooltip text or comments elsewhere in the document. */
+    char needle[24];
+    snprintf(needle, sizeof(needle), "%s\"", target);
+
+    char *p = strstr(buf, needle);
+    if (!p) return cur_len;
+
+    size_t qparam_len = strlen(qparam);
+    size_t target_len = strlen(target);
+
+    /* Position of the closing quote. */
+    char *quote = p + target_len;
+
+    if (cur_len + qparam_len + 1 >= buf_cap) return cur_len;   /* no room */
+
+    /* Shift the tail (including the NUL) right by qparam_len. */
+    size_t tail = cur_len - (quote - buf) + 1u;
+    memmove(quote + qparam_len, quote, tail);
+    memcpy(quote, qparam, qparam_len);
+
+    return cur_len + qparam_len;
+}
+
 /** Serve a file from LittleFS. Falls back to 404 if not found.
  *  Cache-Control: no-store prevents the browser from caching static assets
- *  across firmware/web-asset OTA updates. */
+ *  across firmware/web-asset OTA updates. For index.html we additionally
+ *  rewrite the `app.js` / `style.css` references with a `?v=<version>`
+ *  query string so browsers that ignore no-store still pull fresh assets. */
 static void serve_lfs(AsyncWebServerRequest *req, const char *path, const char *ct)
 {
     char *buf = (char *)ps_malloc(LFS_BUF_SIZE);
@@ -245,6 +292,19 @@ static void serve_lfs(AsyncWebServerRequest *req, const char *path, const char *
 
     lfs_status_t st = littlefs_read(s_lfs_part, path, buf, LFS_BUF_SIZE);
     if (st == LFS_OK) {
+        /* Cache-bust asset references when serving the HTML shell.
+         * The version comes from FIRMWARE_VERSION (compile-time): assets
+         * shipped together with this firmware will share the same string,
+         * and an asset/firmware mismatch surfaces as a stale URL on the
+         * page (the browser is forced to revalidate). */
+        if (strcmp(path, "/index.html") == 0) {
+            size_t cur_len = strnlen(buf, LFS_BUF_SIZE);
+            cur_len = inject_cache_buster(buf, LFS_BUF_SIZE, cur_len,
+                                          "app.js",    "?v=" FIRMWARE_VERSION);
+            cur_len = inject_cache_buster(buf, LFS_BUF_SIZE, cur_len,
+                                          "style.css", "?v=" FIRMWARE_VERSION);
+            (void)cur_len;
+        }
         AsyncWebServerResponse *resp = req->beginResponse(200, ct, buf);
         resp->addHeader("Cache-Control", "no-store");
         req->send(resp);
@@ -427,6 +487,14 @@ static void register_routes(AsyncWebServer &srv)
     });
     srv.on("/app.js", HTTP_GET, [](AsyncWebServerRequest *req) {
         serve_lfs(req, "/app.js", "application/javascript");
+    });
+    /* /manifest.json — exposed as an HTTP endpoint so the asset version is
+     * directly inspectable from a browser or curl. The firmware also reads
+     * the same file internally in dm_status_snapshot() to populate
+     * system.asset_version; the HTTP route is purely diagnostic and proves
+     * which physical file is on the active LittleFS partition. */
+    srv.on("/manifest.json", HTTP_GET, [](AsyncWebServerRequest *req) {
+        serve_lfs(req, "/manifest.json", "application/json");
     });
 
     /* ── Whoami ─────────────────────────────────────────────── */

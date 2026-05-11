@@ -87,6 +87,13 @@ h3 { font-size: .9rem; color: var(--muted); margin-bottom: .5rem; margin-top: .7
   font-weight: 700;
   vertical-align: middle;
 }
+
+/* Force the HTML `hidden` attribute to win over class-based display rules.
+ * Without this, `.badge { display: inline-block }` above overrides the
+ * user-agent default `[hidden] { display: none }`, and badge elements with
+ * the `hidden` attribute (e.g. #st-mismatch) stay visible regardless of
+ * what app.js does. */
+[hidden] { display: none !important; }
 .badge.online  { background: var(--green);  color: #fff; }
 .badge.offline { background: var(--red);    color: #fff; }
 .badge.ntp-on  { background: var(--green);  color: #fff; }
@@ -133,6 +140,7 @@ h3 { font-size: .9rem; color: var(--muted); margin-bottom: .5rem; margin-top: .7
 input[type="number"],
 input[type="text"],
 input[type="password"],
+input[type="url"],
 input[type="datetime-local"] {
   background: #0d1b2a;
   color: var(--fg);

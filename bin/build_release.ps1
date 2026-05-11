@@ -48,7 +48,7 @@ if (-not (Test-Path $PIO)) {
 $INI_PATH = Join-Path $FIRMWARE_DIR "platformio.ini"
 $ini_text = Get-Content $INI_PATH -Raw
 
-if ($ini_text -match 'FIRMWARE_VERSION=\\"([0-9]+\.[0-9]+\.[0-9]+)\\"') {
+if ($ini_text -match 'FIRMWARE_VERSION=\\"([0-9]+\.[0-9]+\.[0-9]+[a-z]?)\\"') {
     $VERSION = $Matches[1]
 } else {
     Write-Error "Could not find FIRMWARE_VERSION in $INI_PATH"
@@ -70,6 +70,49 @@ if (Test-Path $OUT_DIR) {
 } else {
     New-Item -ItemType Directory -Force -Path $OUT_DIR | Out-Null
     Write-Host "    Output   : $OUT_DIR  (created)"
+}
+Write-Host ""
+
+# ---------------------------------------------------------------------------
+# Stamp the version into firmware/data/ before building.
+#
+# Two artefacts are written so the assets carry their OWN version, independent
+# of whatever firmware happens to be running on the device:
+#
+#   1. firmware/data/manifest.json — JSON with {"asset_version":"<VERSION>", ...}.
+#      Read by T11 at boot (dm_status_snapshot) and surfaced as
+#      system.asset_version. Compared with the running firmware's
+#      FIRMWARE_VERSION to detect an OTA bank/asset mismatch.
+#
+#   2. firmware/data/index.html — the literal placeholder `{{ASSET_VERSION}}`
+#      in the second-line HTML comment is replaced with the version string.
+#      Visible via View Source on the live page; useful to verify which
+#      web-assets version is actually being served.
+#
+# Both files are overwritten on every build; the originals (with the
+# placeholder intact) are restored from git on `git checkout`.
+# ---------------------------------------------------------------------------
+$DATA_DIR_PRE = Join-Path $FIRMWARE_DIR "data"
+$MANIFEST     = Join-Path $DATA_DIR_PRE "manifest.json"
+$INDEX_HTML   = Join-Path $DATA_DIR_PRE "index.html"
+
+Write-Host "--- Step 0: Stamp version into firmware/data/ ---" -ForegroundColor Yellow
+
+# manifest.json
+$manifest_obj = "{`"asset_version`":`"$VERSION`",`"checksum`":`"`"}"
+[System.IO.File]::WriteAllText($MANIFEST, $manifest_obj)
+Write-Host "    + manifest.json  -> $manifest_obj"
+
+# index.html version stamp (replace literal {{ASSET_VERSION}} placeholder)
+if (Test-Path $INDEX_HTML) {
+    $html_text = [System.IO.File]::ReadAllText($INDEX_HTML)
+    if ($html_text.Contains("{{ASSET_VERSION}}")) {
+        $html_text = $html_text.Replace("{{ASSET_VERSION}}", $VERSION)
+        [System.IO.File]::WriteAllText($INDEX_HTML, $html_text)
+        Write-Host "    + index.html     -> stamped {{ASSET_VERSION}} = $VERSION"
+    } else {
+        Write-Host "    ! index.html     -> {{ASSET_VERSION}} placeholder not found, skipped"
+    }
 }
 Write-Host ""
 

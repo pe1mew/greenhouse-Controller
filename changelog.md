@@ -6,6 +6,182 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.17.20] — 2026-05-11
+
+*Retire the temporary OTA-diagnostic infrastructure now that the LittleFS basePath bug (fixed in 1.17.9) has been field-confirmed via a successful 1.17.9 → 1.17.9a round-trip on a live controller. The version-mismatch detection is kept — it is a low-cost canary against any future regression — but moves from its own diagnostic card into the existing **Alarms** card, where it semantically belongs alongside motor-alarm and wind-override badges. Durable inspection surfaces (`/manifest.json` HTTP route, `<!-- web-assets X.Y.Z -->` HTML comment, `?v=<VERSION>` cache-busters, in-ZIP manifest.json from `build_release.ps1`) all remain — they are general-purpose post-OTA verification, not specific to the resolved bug.*
+
+### Removed
+- `firmware/data/index.html` — the temporary "OTA diagnostic (temp)" card (the comment-fenced `<div class="card">` block lines 80-98 of 1.17.6–1.17.9a) is deleted entirely. The `#st-fw`, `#st-assets`, and `#st-mismatch` DOM IDs go with it.
+
+### Changed
+- `firmware/data/app.js::handleStatus()` — version-mismatch detection now appends a `MISMATCH` badge to the existing alarms list (alongside `WIND`, `MOTOR ALARM`, sensor faults etc.) rendered in `#st-alarms`. Single dashboard surface for all active issues. The standalone `#st-mismatch` toggle, `setText('st-fw', …)` and `setText('st-assets', …)` calls are removed (the elements no longer exist; setText was null-safe but the calls are dead code now).
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.9a` → `1.17.20`. The jump in patch number signals the diagnostic-infrastructure cleanup is the headline change in this release.
+
+### Preserved
+- `system.asset_version` field in the canonical status JSON — still emitted by the builder, still read by the local UI for the MISMATCH check, still surfaceable via `/api/status` for tooling.
+- `GET /manifest.json` HTTP route — useful for `curl`-based verification of which `asset_version` is on the active LittleFS partition.
+- `<!-- web-assets X.Y.Z -->` HTML comment stamp on line 2 of `index.html` — definitive View Source readout.
+- `?v=<FIRMWARE_VERSION>` cache-buster injection in `serve_lfs()` for `app.js` / `style.css` — forces fresh fetches when the firmware version changes.
+- `bin/build_release.ps1` stamping logic (manifest.json generation + `{{ASSET_VERSION}}` substitution).
+- `[hidden] { display: none !important }` rule in `style.css` (general latent-bug fix; not specific to OTA diagnostic).
+
+### Out of scope
+- The Dutch admin manual's §6 "Status-tab — OTA diagnostic (temp)" subsection still describes the (now-removed) card. Update on next manual pass; the §6 "Status-tab — Klok-tegel" content is still accurate. The MISMATCH-in-Alarms behaviour is documented inline as alarm badges already are.
+
+---
+
+## [1.17.9a] — 2026-05-11
+
+*Functionally identical to 1.17.9 — version-tag-only re-release for OTA round-trip verification of the LittleFS basePath fix. The device runs 1.17.9 from serial flash. Uploading `greenhouse-controller-1.17.9a.bin` and `web-assets-1.17.9a.zip` via the OTA tab forces firmware to write to the inactive bank, assets to the inactive LFS, and bank-flip. With the basePath fix in place, all four diagnostics (LCD/footer firmware version, View Source comment, `/manifest.json`, OTA diagnostic card) MUST flip to `1.17.9a`. Any surface still reporting `1.17.9` after the reboot is a residual bug at that surface — but in 1.17.8a the same test would have flipped only the firmware version while assets stayed at whatever was last in the destination LittleFS partition.*
+
+### Changed
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.9` → `1.17.9a`.
+
+### Out of scope
+- No code changes from 1.17.9. The LittleFS basePath fix (`/lfsa` / `/lfsb`) is inherited as-is.
+
+---
+
+## [1.17.9] — 2026-05-11
+
+*Root-cause fix for the asset-OTA cross-bank bug that 1.17.4 through 1.17.8a failed to resolve. The bug was not in T13 or the OTA flow — it was in `drivers/littleFS/src/littlefs_storage.cpp`, which mounted **both** LittleFS partitions at the same VFS path `/lfs`. ESP-IDF's VFS layer cannot have two filesystems at the same path; the Arduino `LittleFSFS::begin()` call either silently failed or rebound `/lfs` to the second partition. Practical effect: T11 mounted lfs0 at `/lfs` at boot, then during paired OTA T13 called `littlefs_mount(LFS_PARTITION_B)` which appeared to succeed — but T13's subsequent writes never reliably reached lfs1. After reboot to bank B the device mounted lfs1 and found the OLD content from a prior cycle (in the field-reported case, 1.17.3 era assets). All the manifest/version-stamp diagnostics added between 1.17.4 and 1.17.8 were correct; they finally exposed the underlying storage bug.*
+
+### Fixed
+- `drivers/littleFS/src/littlefs_storage.cpp` — each partition now uses a UNIQUE VFS mount point: `LFS_PARTITION_A` → `/lfsa`, `LFS_PARTITION_B` → `/lfsb`. Affects `littlefs_mount()` and `littlefs_format()`. Both can now be mounted simultaneously without conflict, so T13's writes to the inactive partition during paired OTA reach the correct flash region.
+
+### Changed
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.8a` → `1.17.9`. (1.17.8a was a verification-only re-release of 1.17.8 — same buggy storage driver — used to prove the crossing was real before this fix.)
+
+### How to verify the fix
+1. Flash 1.17.9 via serial (clears both banks/LFSes implicitly: PIO upload to bank A, esptool write_flash to lfs0).
+2. Hard-reload the page; confirm all four diagnostics report `1.17.9` (firmware, View Source comment, `/manifest.json`, OTA diagnostic card).
+3. OTA-upload `greenhouse-controller-1.17.9a.bin` + `web-assets-1.17.9a.zip` (separate release-tag re-build of the same code).
+4. After the controller reboots, ALL four diagnostics must now flip to `1.17.9a`. Any surface still reporting `1.17.9` is a residual bug — but pre-fix, the assets surfaces would have stayed at whatever was last in the destination LittleFS (in the user's case, 1.17.3).
+
+### Out of scope
+- Existing devices that already have stale content on lfs1 from prior failed OTAs will get it overwritten on the next paired OTA running 1.17.9 (because T13's writes now actually reach lfs1). No migration step required.
+
+---
+
+## [1.17.8a] — 2026-05-11
+
+*Functionally identical to 1.17.8 — version-tag-only re-release so the user can OTA-upload both `greenhouse-controller-1.17.8a.bin` and `web-assets-1.17.8a.zip` to a device currently running 1.17.8 and observe a clean version flip on every diagnostic (HTML comment, `/manifest.json`, the OTA-diagnostic card). If the OTA path is honest the controller will report `Firmware: 1.17.8a / Assets: 1.17.8a` after the reboot. If anything reports `1.17.8` (the previous version) somewhere, the crossing is at exactly that surface.*
+
+### Changed
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.8` → `1.17.8a`. The trailing-letter format is now permitted: `bin/build_release.ps1`'s parsing regex was widened from `[0-9]+\.[0-9]+\.[0-9]+` to `[0-9]+\.[0-9]+\.[0-9]+[a-z]?`.
+- `bin/build_release.ps1` — regex updated as above; no other change.
+- `manual/beheerderHandleiding.md` — version-history row `1.4` summarises every change from 1.17.2 through 1.17.8a; new §6 "Status-tab — OTA diagnostic (temp)" subsection documents the diagnostic card and how to read it.
+
+### Out of scope
+- No firmware-logic changes from 1.17.8. Use this release purely for OTA round-trip verification.
+
+---
+
+## [1.17.8] — 2026-05-11
+
+*1.17.7 made `manifest.json` part of the LittleFS asset bundle but forgot to expose it over HTTP. Field testing confirmed View Source proves the served HTML version, but `curl http://<controller>/manifest.json` returned 404 because T11 only registers explicit routes — there is no static-file fall-through. Adding the route.*
+
+### Added
+- `firmware/src/web_server/web_server.cpp` — new `GET /manifest.json` handler that calls `serve_lfs(req, "/manifest.json", "application/json")`. Provides a definitive browser-inspectable readout of which `asset_version` is physically present on the active LittleFS partition, independent of any DOM/JS path.
+
+### Changed
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.7` → `1.17.8`.
+
+### Out of scope
+- The HTTP route is unauthenticated. `manifest.json` only contains the version string; no secrets ever travel through it.
+
+---
+
+## [1.17.7] — 2026-05-11
+
+*Fix the asset-version reporting that 1.17.4 introduced. T13 used to overwrite `/manifest.json` after extracting the ZIP, stamping it with the **firmware's** version regardless of what the uploaded ZIP actually contained. As a result `system.asset_version` always equalled `fw_ver` and the MISMATCH badge could never trigger — even though the on-device assets really could be mismatched. The fix moves manifest generation into `build_release.ps1` so the version travels INSIDE the ZIP and reflects exactly what was packaged; T13 now preserves the ZIP's manifest verbatim. A version-stamp HTML comment is also injected into `index.html` so View Source on the live page confirms which assets are being served, independent of any JS / DOM behaviour.*
+
+### Fixed
+- `firmware/src/ota_manager/ota_manager.cpp::task_t13_assets()` — removed the post-extraction overwrite of `/manifest.json`. The asset's actual version now survives the OTA. A log line records whether the ZIP carried a manifest at all (`'?'` is reported in `system.asset_version` when it didn't).
+- `bin/build_release.ps1` — new Step 0 stamps the version into two places in `firmware/data/` before any build runs:
+  - `manifest.json` is generated freshly with `{"asset_version":"<VERSION>",...}`.
+  - `index.html` has the literal placeholder `{{ASSET_VERSION}}` (added in this release) replaced with `<VERSION>`. Both `pio buildfs` and the STORE-ZIP packager then pick up the stamped versions.
+- `firmware/data/index.html` — new HTML comment on line 2: `<!-- web-assets {{ASSET_VERSION}} -->`. Visible via View Source on the live device — a definitive readout of which assets version is currently being served, regardless of any styling/CSS/JS quirks.
+
+### Changed
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.6` → `1.17.7`.
+
+### Out of scope
+- `firmware/data/manifest.json` and the stamped `index.html` are now build-generated. They are overwritten by `build_release.ps1` on every run; the originals (with `{{ASSET_VERSION}}` placeholder intact in `index.html`) are restored from git when checking out a clean tree. No `.gitignore` change in this release — the file may show as modified after a build, which is harmless and serves as a visible reminder that the data folder has been stamped.
+
+---
+
+## [1.17.6] — 2026-05-10
+
+*Move the OTA version-mismatch diagnostics from the Clock card into a dedicated, clearly-marked temporary card so the bug-investigation UI can be removed in one block when no longer needed.*
+
+### Changed
+- `firmware/data/index.html` — Clock card reverted to its pre-1.17.4 three-line layout (Time, NTP, Uptime). The `Firmware:` and `Assets:` lines plus the `MISMATCH` badge now live in a new "OTA diagnostic (temp)" card directly after the Clock card. The card is wrapped in clearly-labelled HTML comment fences (`<!-- TEMPORARY: … -->` … `<!-- END TEMPORARY CARD -->`) so it can be deleted as one block when the OTA flow is confirmed solid.
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.5` → `1.17.6`.
+
+### Out of scope
+- `app.js::handleStatus()` is unchanged — the `setText()` helper guards each write with `if (el)`, so when the temporary card is removed the `#st-fw` / `#st-assets` / `#st-mismatch` writes become silent no-ops. No firmware change required to retire the card.
+- The `#fw-ver` element in the page footer continues to render the version independently of the temporary card.
+
+---
+
+## [1.17.5] — 2026-05-10
+
+*Two hot fixes for the 1.17.4 mismatch indicator. The MISMATCH badge was permanently visible because `.badge { display: inline-block }` overrode the user-agent's `[hidden] { display: none }`, so toggling the HTML `hidden` attribute did nothing. The firmware version was also only displayed in the page footer; on the new Clock-card layout the user could read `Assets: ?` next to a red MISMATCH badge with no firmware-version line nearby to compare against.*
+
+### Fixed
+- `firmware/data/style.css` — added `[hidden] { display: none !important; }` so the HTML `hidden` attribute wins over the class-based display rules. Without this, every `.badge` element with `hidden` (e.g. `#st-mismatch`) stayed visible regardless of `app.js` state.
+
+### Added
+- `firmware/data/index.html` — new `Firmware:` line in the Clock card next to `Assets:` so both versions are visible side-by-side; tooltip explains where each value comes from.
+- `firmware/data/app.js::handleStatus()` — `sys.fw_ver` now updates both the Clock-card line (`#st-fw`) and the footer (`#fw-ver`) on every WebSocket push. Previously it was a one-shot set gated by `wsInitialized`; if the first push lacked `fw_ver` for any reason, the field stayed at `—` forever.
+
+### Changed
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.4` → `1.17.5`.
+
+### Out of scope
+- The `[hidden]` rule retroactively fixes any other `<X class="badge" hidden>` element that may have been silently visible. Audit not done in this release; `#st-mismatch` was the user-visible regression.
+
+---
+
+## [1.17.4] — 2026-05-10
+
+*Diagnostics for OTA mismatches. After a paired firmware+assets OTA, a silent firmware/asset mismatch (firmware bank flipped but the matching LFS partition wasn't actually overwritten) used to be invisible: the GUI reported the firmware version correctly while the rendered assets were from a different release. This release surfaces the asset version on the local web GUI and forces the browser to revalidate `app.js` / `style.css` whenever the firmware version changes — no protocol changes, only diagnostics.*
+
+### Added
+- `firmware/src/data_manager/data_manager.cpp::dm_status_snapshot()` — reads `/manifest.json` from the active LittleFS partition once at first call (cached), parses `asset_version`, and fills it into a new `status_snapshot_t::assets[16]` field.
+- `firmware/src/types/app_types.h::status_snapshot_t::assets` — string slot for the asset version. Emitted as `system.asset_version` in the canonical JSON, alongside `fw_ver`.
+- `firmware/data/index.html` — Status → Clock card now shows an `Assets:` line plus an `MISMATCH` red badge that auto-toggles when the firmware version and the asset version disagree. Tooltip explains what to do (refresh, then re-run asset OTA).
+- `firmware/data/app.js::handleStatus()` — renders `system.asset_version` and toggles the mismatch badge.
+- `firmware/src/web_server/web_server.cpp::serve_lfs()` — when serving `/index.html`, rewrites `app.js` and `style.css` references in-place to `app.js?v=<FIRMWARE_VERSION>` and `style.css?v=<FIRMWARE_VERSION>`. The query string travels with the URL only; routing still hits the same handlers (ESPAsyncWebServer strips the query string before matching). Browsers that ignore `Cache-Control: no-store` are still forced to revalidate because the URL itself changed.
+
+### Changed
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.3` → `1.17.4`.
+
+### Out of scope
+- This release does not change the OTA wire protocol; the asset OTA still writes new assets to the inactive LFS and pairs them with the inactive firmware bank. The dual-bank rollback property is preserved (firmware and assets stay paired per bank).
+- The cache-buster string is the firmware's compile-time `FIRMWARE_VERSION`. If a user uploads a `web-assets-X.zip` that doesn't match the firmware they uploaded alongside, the page link will say `?v=<firmware-version>` while `manifest.json` reports the asset's actual version — exactly the cue that drives the new MISMATCH badge.
+
+---
+
+## [1.17.3] — 2026-05-10
+
+*Fix asset-only OTA reverting to the previous web assets after reboot. T13's success path used to switch the boot partition to the inactive firmware bank for **every** OTA, including asset-only uploads — but the inactive bank may hold stale or unbootable firmware (typical after a clean `pio run -t upload` that only touches one bank), in which case the boot fails and the bootloader rolls back to the original bank. The user then sees the OLD assets because the new ones were written to the now-inactive LittleFS partition that T11 doesn't mount.*
+
+### Fixed
+- `firmware/src/ota_manager/ota_manager.cpp::task_t13_assets()` — asset-only OTA path (`s_ota_part == NULL`, i.e. no firmware was uploaded in the same session) now **mirrors** the new ZIP contents to the active LittleFS partition AND skips the boot-partition switch. T11 stays on the same bank and immediately serves the new assets after the reboot.
+- Firmware+assets OTA path (`s_ota_part != NULL`) is unchanged: boot still switches to the verified inactive bank, where both new firmware and new assets sit together. The fallback to `esp_ota_get_next_update_partition()` is removed — that fallback was the source of the bug.
+
+### Changed
+- `firmware/data/style.css` — `input[type="url"]` added to the dark-input selector group so the Web tab's URL field uses the same theme as the other inputs (was rendering with the browser-default white background on dark page).
+- `firmware/data/index.html` — Web tab "Daily upload time" H/M number inputs no longer have an inline `width: 3.5em` (which was too narrow to fit a 2-digit value plus the native spinner buttons). They use the existing `.short` (90 px) class, matching every other short numeric field in the GUI.
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.2` → `1.17.3`.
+
+### Out of scope
+- Recovering an already-stranded asset upload (assets sitting on lfs1 after a failed bank switch) — those assets are simply overwritten by any subsequent asset OTA. No migration needed; the next clean upload restores correct state.
+
+---
+
 ## [1.17.2] — 2026-05-10
 
 *Cosmetic only: make the time on the Status-tab Clock tile **bold** so it matches the value-rendering convention used by every other Status tile (where the dynamic value is wrapped in `<strong>` and the surrounding label / unit is regular weight).*

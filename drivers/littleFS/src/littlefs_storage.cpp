@@ -34,6 +34,17 @@
 
   static const char * const LABEL_A = "lfs0";
   static const char * const LABEL_B = "lfs1";
+
+  /* Each partition gets a UNIQUE VFS mount point. Using the same path
+   * (e.g. "/lfs" for both) silently caused the OTA cross-bank bug observed
+   * in 1.17.4–1.17.8a: T11 mounted lfs0 at /lfs, then during a paired OTA
+   * T13 tried to mount lfs1 also at /lfs. ESP-IDF VFS rejects (or silently
+   * rebinds) a second mount at the same path; the result was that T13's
+   * writes appeared to "succeed" but never reached the inactive LittleFS
+   * partition. After reboot, T11 mounted what it thought was the new
+   * partition's filesystem but read the OLD content. */
+  static const char * const MOUNT_A = "/lfsa";
+  static const char * const MOUNT_B = "/lfsb";
 #else
   #include "mock_lfs.h"
 #endif
@@ -53,6 +64,10 @@ static const char *select_label(lfs_partition_t p)
 {
     return (p == LFS_PARTITION_A) ? LABEL_A : LABEL_B;
 }
+static const char *select_mountpoint(lfs_partition_t p)
+{
+    return (p == LFS_PARTITION_A) ? MOUNT_A : MOUNT_B;
+}
 #endif
 
 /* ---------------------------------------------------------------------------
@@ -69,8 +84,9 @@ lfs_status_t littlefs_mount(lfs_partition_t partition)
 
 #ifndef UNIT_TEST
     fs::LittleFSFS &fs = select_fs(partition);
-    /* begin(formatOnFail=false, basePath, maxFiles, partitionLabel) */
-    if (!fs.begin(false, "/lfs", 10, select_label(partition))) {
+    /* begin(formatOnFail=false, basePath, maxFiles, partitionLabel)
+     * basePath MUST differ per partition — see MOUNT_A/MOUNT_B above for why. */
+    if (!fs.begin(false, select_mountpoint(partition), 10, select_label(partition))) {
         return LFS_ERR_MOUNT;
     }
 #else
@@ -220,11 +236,13 @@ lfs_status_t littlefs_format(lfs_partition_t partition)
 
 #ifndef UNIT_TEST
     const char *lbl = select_label(partition);
+    const char *mp  = select_mountpoint(partition);
     fs::LittleFSFS &lfs_inst = select_fs(partition);
     /* begin(formatOnFail=true) mounts or formats the partition; format() then
      * wipes all files; end() unmounts.  format() internally calls end() before
-     * operating so the double-unmount is safe. */
-    if (!lfs_inst.begin(true, "/lfs", 10, lbl)) return LFS_ERR_IO;
+     * operating so the double-unmount is safe. Use per-partition mount path
+     * (MOUNT_A / MOUNT_B). */
+    if (!lfs_inst.begin(true, mp, 10, lbl)) return LFS_ERR_IO;
     bool ok = lfs_inst.format();
     lfs_inst.end();
     g_mounted[partition] = false;

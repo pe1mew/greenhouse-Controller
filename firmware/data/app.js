@@ -103,9 +103,13 @@ function handleStatus(s) {
     }
   }
 
-  // Mode is now an object {current, flags[]} — render the headline mode and
-  // build alarm badges from the flags array (no longer derived from eg1 bits
-  // directly, though sys.eg1 is still emitted for diagnostic use).
+  // Mode + Alarms — the Alarms card aggregates every active concern. Mode
+  // flags from the EG1 bitset come first; a version-mismatch (firmware
+  // running against stale web-assets after an incomplete OTA) appends a
+  // MISMATCH badge to the same list. Both surfaces share the same DOM
+  // element so the Alarms card is the single place to look for trouble.
+  const sys = s.system;
+  let alarmBadges = [];
   if (s.mode && typeof s.mode === 'object') {
     const modeNames = {
       AUTOMATIC: 'Automatic', STANDBY: 'Standby',
@@ -122,10 +126,21 @@ function handleStatus(s) {
       ota_in_progress:   '<span class="badge warn">OTA active</span>',
       calibrating:       '<span class="badge warn">Calibrating</span>'
     };
-    const flags = (Array.isArray(s.mode.flags) ? s.mode.flags : [])
+    alarmBadges = (Array.isArray(s.mode.flags) ? s.mode.flags : [])
       .map(f => flagBadges[f]).filter(x => x);
+  }
+  // Append MISMATCH when firmware and asset versions disagree. '?' (no
+  // manifest on the active LFS — happens right after a clean serial flash)
+  // is treated as "unknown" and never triggers the badge.
+  if (sys && sys.fw_ver && sys.asset_version &&
+      sys.asset_version !== '?' && sys.fw_ver !== sys.asset_version) {
+    alarmBadges.push('<span class="badge alarm">MISMATCH</span>');
+  }
+  {
     const el = document.getElementById('st-alarms');
-    if (el) el.innerHTML = flags.length ? flags.join(' ') : '<span class="badge ok">OK</span>';
+    if (el) el.innerHTML = alarmBadges.length
+        ? alarmBadges.join(' ')
+        : '<span class="badge ok">OK</span>';
   }
 
   // Sun
@@ -136,8 +151,7 @@ function handleStatus(s) {
     if (sun.sunset_min  !== undefined) setText('st-sunset',  utcMinsToStr(sun.sunset_min));
   }
 
-  // System: time, NTP, IP/RSSI, fw
-  const sys = s.system;
+  // System: time, NTP, IP/RSSI, uptime, firmware version
   if (sys) {
     if (sys.time_iso) setText('st-time', sys.time_iso.replace('T', ' '));
     const ntpEl = document.getElementById('st-ntp');
@@ -148,8 +162,13 @@ function handleStatus(s) {
     if (sys.wifi_rssi_dbm !== undefined) setText('st-wifi-rssi', sys.wifi_rssi_dbm);
     if (sys.wifi_ip)                     setText('st-wifi-ip',   sys.wifi_ip);
     if (sys.uptime_s !== undefined)      setText('st-uptime',    fmtUptime(sys.uptime_s));
-    // Firmware version (first message only)
-    if (!wsInitialized && sys.fw_ver) setText('fw-ver', 'v' + sys.fw_ver);
+    // Firmware version goes into the page footer. Set on every push
+    // (idempotent setText) so it remains correct after a re-render and
+    // there is no first-message gating window where the field stays at "—".
+    if (sys.fw_ver) setText('fw-ver', 'v' + sys.fw_ver);
+    // sys.asset_version is consumed by the Alarms-card mismatch check
+    // above; no separate visible field — a mismatch shows up as the
+    // MISMATCH badge alongside the mode-derived alarms.
   }
 
   wsInitialized = true;

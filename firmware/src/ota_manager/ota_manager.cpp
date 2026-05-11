@@ -577,29 +577,71 @@ void task_ota_manager(void *pvParameters)
         update_progress(75, 100);
     }
 
-    /* --- Write manifest.json last (integrity sentinel) --------------- */
-    {
-        /* Firmware version: prefer live NVS over compile-time macro so the
-         * manifest reflects what is actually booted. */
-        char fw_ver[16] = FIRMWARE_VERSION;
-        nvs_cfg_get_str(NVS_NS_SYSTEM, NVS_KEY_FW_VERSION, fw_ver, sizeof(fw_ver));
-
-        char manifest[128];
-        snprintf(manifest, sizeof(manifest),
-                 "{\"asset_version\":\"%s\",\"checksum\":\"\"}", fw_ver);
-
-        lfs_status_t wst = littlefs_write(inactive_lfs, "/manifest.json",
-                                          (const uint8_t *)manifest,
-                                          strlen(manifest));
-        if (wst != LFS_OK) {
-            set_error_locked("manifest.json write failed");
-            goto t13_done;
-        }
-        ESP_LOGI(TAG, "[T13] Wrote /manifest.json: %s", manifest);
-        update_progress(90, 100);
+    /* /manifest.json travels INSIDE the uploaded ZIP — it is built into the
+     * archive by tools/build_release.ps1 from $VERSION at ZIP-build time, so
+     * the version that ends up on the active LittleFS partition reflects
+     * the ZIP that was actually extracted (not the firmware that happens to
+     * be running). T13 used to overwrite manifest.json with the running
+     * firmware's NVS version here — that defeated the mismatch detector
+     * because asset_version would always equal fw_ver regardless of what
+     * ZIP was uploaded. */
+    if (littlefs_exists(inactive_lfs, "/manifest.json")) {
+        ESP_LOGI(TAG, "[T13] /manifest.json present in ZIP — preserved as-is");
+    } else {
+        ESP_LOGW(TAG, "[T13] /manifest.json NOT in ZIP — asset_version will report '?'");
     }
+    update_progress(90, 100);
 
     ok = true;
+
+    /* Asset-only OTA fix-up (1.17.3).
+     *
+     * When this OTA session uploaded ONLY new web assets (no firmware), the
+     * historical behaviour was: write assets to the inactive LFS, then ask
+     * the bootloader to switch to the inactive firmware bank. That assumed
+     * BOTH firmware banks already held valid firmware. After a clean
+     * `pio run -t upload` (which only writes to a single bank), the OTHER
+     * bank may hold a stale or unbootable image, so the switch triggered
+     * a rollback; the user then ended up back on the original bank — and
+     * therefore on the OLD active LFS — with the just-uploaded assets
+     * stranded on the inactive partition.
+     *
+     * Fix: when no firmware was uploaded in this session, ALSO mirror the
+     * new assets to the active LFS, and skip the boot-partition switch.
+     * The reboot below then comes back on the same bank with fresh assets
+     * on the partition T11 actually mounts.
+     *
+     * For PAIRED firmware+asset OTA the dual-bank rollback property must be
+     * preserved: the assets and firmware on each bank must stay paired so a
+     * rollback to the previous bank yields a self-consistent firmware+assets
+     * pair. Therefore the mirror runs ONLY on the asset-only path. */
+    if (ok && s_ota_part == NULL) {
+        ESP_LOGI(TAG, "[T13] Asset-only OTA — mirroring to active LFS %c",
+                 (active_lfs == LFS_PARTITION_A) ? 'A' : 'B');
+        lfs_status_t mst = littlefs_mount(active_lfs);
+        if (mst != LFS_OK) {
+            ESP_LOGW(TAG, "[T13] Active LFS mount failed for mirror — "
+                          "new assets only on inactive partition");
+        } else {
+            char zip_err2[80] = {};
+            int nfiles2 = extract_zip_store(zip_buf, zip_size,
+                                            active_lfs, zip_err2, sizeof(zip_err2));
+            if (nfiles2 > 0) {
+                char fw_ver[16] = FIRMWARE_VERSION;
+                nvs_cfg_get_str(NVS_NS_SYSTEM, NVS_KEY_FW_VERSION, fw_ver, sizeof(fw_ver));
+                char manifest[128];
+                snprintf(manifest, sizeof(manifest),
+                         "{\"asset_version\":\"%s\",\"checksum\":\"\"}", fw_ver);
+                littlefs_write(active_lfs, "/manifest.json",
+                               (const uint8_t *)manifest, strlen(manifest));
+                ESP_LOGI(TAG, "[T13] Active LFS mirrored OK (%d file(s))", nfiles2);
+            } else {
+                ESP_LOGW(TAG, "[T13] Active LFS mirror skipped: %s", zip_err2);
+            }
+            /* Do NOT unmount — T11 still has this partition mounted for
+             * serving requests. littlefs_mount() above was a safe no-op. */
+        }
+    }
 
 t13_done:
     if (lfs_open) {
@@ -610,32 +652,21 @@ t13_done:
     heap_caps_free(s_zip_buf);
     s_zip_buf = NULL;
 
-    if (ok) {
-        /* Switch the active OTA boot partition to the bank paired with the
-         * inactive LittleFS we just wrote.  Both firmware and web assets
-         * switch together on the next reboot.
-         *
-         * Prefer s_ota_part (set by ota_firmware_end in the same session) so
-         * the exact verified partition is used.  Fall back to
-         * esp_ota_get_next_update_partition() when only assets are being
-         * updated (firmware upload did not occur in this session). */
-        const esp_partition_t *next_fw = s_ota_part
-                                       ? s_ota_part
-                                       : esp_ota_get_next_update_partition(NULL);
-        if (!next_fw) {
-            set_error_locked("no inactive firmware partition for bank switch");
+    if (ok && s_ota_part) {
+        /* Firmware-plus-assets OTA: switch the boot partition to the bank we
+         * verified during the firmware-upload step. Both firmware and web
+         * assets activate together on the reboot below. */
+        esp_err_t err = esp_ota_set_boot_partition(s_ota_part);
+        if (err != ESP_OK) {
+            char msg[64];
+            snprintf(msg, sizeof(msg),
+                     "esp_ota_set_boot_partition: %s", esp_err_to_name(err));
+            set_error_locked(msg);
             ok = false;
-        } else {
-            esp_err_t err = esp_ota_set_boot_partition(next_fw);
-            if (err != ESP_OK) {
-                char msg[64];
-                snprintf(msg, sizeof(msg),
-                         "esp_ota_set_boot_partition: %s", esp_err_to_name(err));
-                set_error_locked(msg);
-                ok = false;
-            }
         }
     }
+    /* else: asset-only path — boot partition is intentionally left alone.
+     * The mirror above guarantees the active LFS now holds the new assets. */
 
     if (ok) {
         ESP_LOGI(TAG, "[T13] Asset OTA complete — reboot in 1 s");

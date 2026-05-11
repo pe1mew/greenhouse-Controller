@@ -302,7 +302,12 @@ typedef struct {
     bool     ntp_synced;
     char     ip[16];         /**< Dotted-decimal STA IPv4 ("" if not connected) */
     int16_t  rssi;           /**< STA RSSI in dBm (0 if not connected) */
-    char     fw[16];         /**< Firmware version string */
+    char     fw[16];         /**< Firmware version string (compiled into firmware) */
+    char     assets[16];     /**< Asset version string from manifest.json on the
+                              *   active LittleFS partition. Differs from `fw`
+                              *   when an OTA bank flip didn't bring the matching
+                              *   web assets along — surfaces silent firmware/
+                              *   assets mismatches. */
     uint32_t uptime_s;       /**< Seconds since boot */
 
     /* Top-level — always emitted regardless of expose mask */

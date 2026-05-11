@@ -29,6 +29,7 @@
 
 #include "nvs_config.h"
 #include "ds1307_rtc.h"
+#include "littlefs_storage.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -801,6 +802,41 @@ void dm_status_snapshot(status_snapshot_t *out)
     /* Firmware version + uptime. */
     strncpy(out->fw, FIRMWARE_VERSION, sizeof(out->fw) - 1u);
     out->uptime_s = (uint32_t)(esp_timer_get_time() / 1000000LL);
+
+    /* Asset version from /manifest.json on the active LittleFS partition.
+     * Cached after the first successful read — manifest doesn't change at
+     * runtime, only across an OTA reboot. The manifest format written by
+     * task_t13_assets is a flat JSON object: {"asset_version":"X.Y.Z",...}
+     *
+     * If the manifest cannot be read or parsed, "?" is reported. The web UI
+     * compares fw against assets and shows an explicit "MISMATCH" badge so
+     * a stale-LFS situation after a partial OTA is visible at a glance. */
+    static char s_asset_ver[16] = {};
+    static bool s_asset_ver_loaded = false;
+    if (!s_asset_ver_loaded) {
+        s_asset_ver_loaded = true;
+        char manifest[128] = {};
+        if (littlefs_read(littlefs_active_partition(), "/manifest.json",
+                          manifest, sizeof(manifest)) == LFS_OK) {
+            const char *needle = "\"asset_version\":\"";
+            const char *p = strstr(manifest, needle);
+            if (p) {
+                p += strlen(needle);
+                const char *end = strchr(p, '"');
+                if (end && end > p) {
+                    size_t n = (size_t)(end - p);
+                    if (n >= sizeof(s_asset_ver)) n = sizeof(s_asset_ver) - 1u;
+                    memcpy(s_asset_ver, p, n);
+                    s_asset_ver[n] = '\0';
+                }
+            }
+        }
+        if (s_asset_ver[0] == '\0') {
+            strncpy(s_asset_ver, "?", sizeof(s_asset_ver) - 1u);
+        }
+        ESP_LOGI(TAG, "Asset version (from manifest.json): %s", s_asset_ver);
+    }
+    strncpy(out->assets, s_asset_ver, sizeof(out->assets) - 1u);
 }
 
 void dm_ring_read(uint16_t offset, sensor_reading_t *buf,

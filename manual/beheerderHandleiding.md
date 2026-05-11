@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de beheerder
 
-**Versie:** 1.3 — concept
-**Datum:** 2026-05-10
-**Firmware:** 1.17.1
+**Versie:** 1.4 — concept
+**Datum:** 2026-05-11
+**Firmware:** 1.17.8a
 
 ---
 
@@ -337,6 +337,18 @@ Op de Status-tab staat in de linker tegelrij de **Klok-tegel**. Deze toont drie 
   - `1d 4h 23m`
 
   Bij een herstart van de controller springt deze waarde `0s` en begint opnieuw — handig om te zien of de controller stabiel draait.
+
+### Status-tab — OTA diagnostic (temp)
+
+Direct naast de Klok-tegel staat sinds firmware 1.17.4 een tijdelijke tegel met de naam **OTA diagnostic (temp)**. Deze toont:
+
+- **Firmware** — versie van de draaiende firmware (komt uit `FIRMWARE_VERSION`, gecompileerd in de ESP32-image).
+- **Assets** — versie van de momenteel actieve web-assets (gelezen uit `/manifest.json` op de actieve LittleFS-partitie). `?` betekent dat er geen `manifest.json` staat op de actieve partitie (gebeurt na een schone serieel-flash zonder OTA-pakket).
+- **MISMATCH** — rode badge, alleen zichtbaar wanneer Firmware en Assets verschillen. Een `?` als Assets-waarde onderdrukt de badge.
+
+Een MISMATCH wijst op een onvolledige OTA-update: de firmware-bank is wel omgezet, maar de bijhorende web-assets zijn niet meegekomen (of andersom). Eerste actie: harde refresh van de webpagina (`Ctrl+Shift+R`); blijft de mismatch staan, voer dan de asset-OTA opnieuw uit met de juiste ZIP. Een directere controle is mogelijk via `http://<controller-ip>/manifest.json` (toont de JSON met `asset_version`) en *Pagina-bron weergeven* op de hoofdpagina (regel 2 bevat de comment `<!-- web-assets X.Y.Z -->`).
+
+Deze tegel is bedoeld als tijdelijke diagnostische hulp. Wanneer het OTA-pad in het veld bewezen stabiel is kan de tegel uit `firmware/data/index.html` verwijderd worden (het blok staat tussen `<!-- TEMPORARY: … -->` en `<!-- END TEMPORARY CARD -->`-merktekens); de JavaScript blijft werken zonder code-aanpassing.
 
 ---
 
@@ -1437,6 +1449,7 @@ De **complete uitleg** — met daarin alle velden, alle event-types, alle parame
 | 1.1 | 2026-05-09 | Bijgewerkt voor firmware 1.16.35–1.16.38: conflict-prioriteit (`cr_priority`) toegankelijk via Climate-menu (LCD optie 3) en als keuzelijst in webinterface tab Climate (Boer-bewerkbaar); nieuwe `#=Set` snelweg op de T/RH- en Wind-statusschermen die het Climate- of Wind-menu opent met een Boer-PIN-prompt; LCD-render bug `LFS_BUF_SIZE` opgehoogd naar 64 KiB om afgeknotte HTML te voorkomen; Wind-statusscherm rij 2 zonder haakjes om kompasletter (`Dir:180° S #=Set`) |
 | 1.2 | 2026-05-10 | Bijgewerkt voor firmware 1.16.39: zichtbare `#=Set`/`#=AP`-hints verwijderd van alle vier de statusschermen (T/RH, Wind, WiFi, Datum/tijd) — `#`-snelweg blijft werken naar het bijhorende menu, alleen de hint op rij 2 is weg; Wind-statusscherm rij 2 toont kompasletter weer tussen haakjes (`Dir:180 ° (S )`) zoals vóór 1.16.37 |
 | 1.3 | 2026-05-10 | Bijgewerkt voor firmware 1.17.0–1.17.1: nieuwe Beheerder-tab **Web** voor status-rapportage naar een extern PHP-eindpunt (URL, gedeelde token, interval 60–300 s, zes tegel-zichtbaarheidsvinkjes, dagelijkse log-upload tijd en upload-op-rotatie); status-rapportage standaard uit en volledig instelbaar zonder de LCD aan te raken; HTTPS-eindpunten ondersteund (geen certificaatcontrole); `Uptime`-regel toegevoegd aan de Klok-tegel van de Status-tab zodat onverwachte reboots zichtbaar zijn (§6 Status-tab — Klok-tegel, §11.10). |
+| 1.4 | 2026-05-11 | Bijgewerkt voor firmware 1.17.2–1.17.8a: extern dashboard toont nu **lokale tijd** voor zonsopkomst/zonsondergang en `time_iso` (UTC→lokaal-conversie in `dm_status_snapshot`, DST automatisch); status-JSON-veldnamen aangelijnd op het bestaande publieke dashboard (`temp_c`/`speed_ms`/`direction_deg`/`mode={current,flags[]}` etc.); HTTPS-uitgaande verbindingen krijgen ruimere stack (12 KB) en mbedTLS-handshake werkt nu betrouwbaar; T11 status-JSON-buffer vergroot 1024 → 2048 bytes; `/api/web` POST nu synchroon (geen race meer bij Apply); URL-validatie eist `api.php`-suffix; webgui-Apply velden worden niet meer overschreven door auto-refresh; cosmetische verbeteringen (klok-waarde bold, URL-veld donker thema, datum-spinner-knoppen passen); nieuwe diagnostische **OTA diagnostic (temp)**-tegel op Status-tab toont Firmware-vs-Assets-versie + MISMATCH-badge (§6 Status-tab — OTA diagnostic (temp)); web-assets dragen nu een eigen `asset_version` via `manifest.json` (in de ZIP gebakken door `bin/build_release.ps1`); `GET /manifest.json` en `<!-- web-assets X.Y.Z -->` HTML-comment voor onafhankelijke verificatie. |
 
 ---
 

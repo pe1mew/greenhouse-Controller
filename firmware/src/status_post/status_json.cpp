@@ -162,16 +162,20 @@ size_t build_canonical_status_json(char *buf, size_t cap,
     }
 
     /* system — dashboard reads wifi_ip, wifi_rssi_dbm, ntp_synced, fw_ver.
-     * ts_unix / time_iso / eg1 / uptime_s are local-UI extras. */
+     * ts_unix / time_iso / eg1 / uptime_s / asset_version are local-UI
+     * extras. asset_version comes from /manifest.json on the active LFS;
+     * compared with fw_ver in the local UI to detect a stale-LFS-after-OTA
+     * mismatch. */
     if (ok && (expose_mask & STATUS_EXPOSE_SYSTEM)) {
         ok = ok && append(buf, cap, &pos,
             ",\"system\":{\"wifi_ip\":\"%s\",\"wifi_rssi_dbm\":%d,"
             "\"ntp_synced\":%s,\"fw_ver\":\"%s\","
+            "\"asset_version\":\"%s\","
             "\"uptime_s\":%lu,\"ts_unix\":%lu,"
             "\"time_iso\":\"%s\",\"eg1\":%lu}",
             s->ip, (int)s->rssi,
             s->ntp_synced ? "true" : "false",
-            s->fw,
+            s->fw, s->assets,
             (unsigned long)s->uptime_s,
             (unsigned long)s->ts_unix, s->time_iso,
             (unsigned long)s->eg1_bits);
