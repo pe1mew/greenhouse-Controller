@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de beheerder
 
-**Versie:** 1.4 — concept
+**Versie:** 1.5 — concept
 **Datum:** 2026-05-11
-**Firmware:** 1.17.8a
+**Firmware:** 1.17.20
 
 ---
 
@@ -338,17 +338,25 @@ Op de Status-tab staat in de linker tegelrij de **Klok-tegel**. Deze toont drie 
 
   Bij een herstart van de controller springt deze waarde `0s` en begint opnieuw — handig om te zien of de controller stabiel draait.
 
-### Status-tab — OTA diagnostic (temp)
+### Status-tab — versie-controle van firmware en web-assets
 
-Direct naast de Klok-tegel staat sinds firmware 1.17.4 een tijdelijke tegel met de naam **OTA diagnostic (temp)**. Deze toont:
+Vanaf firmware 1.17.20 wordt een verschil tussen de **firmware-versie** (in de ESP32-image gecompileerd) en de **web-assets-versie** (uit `/manifest.json` op de actieve LittleFS-partitie) automatisch herkend en gemeld als alarm. Tijdens normaal bedrijf zijn beide versies gelijk; een afwijking wijst op een onvolledig uitgevoerde OTA-update.
 
-- **Firmware** — versie van de draaiende firmware (komt uit `FIRMWARE_VERSION`, gecompileerd in de ESP32-image).
-- **Assets** — versie van de momenteel actieve web-assets (gelezen uit `/manifest.json` op de actieve LittleFS-partitie). `?` betekent dat er geen `manifest.json` staat op de actieve partitie (gebeurt na een schone serieel-flash zonder OTA-pakket).
-- **MISMATCH** — rode badge, alleen zichtbaar wanneer Firmware en Assets verschillen. Een `?` als Assets-waarde onderdrukt de badge.
+**Hoe te zien op het dashboard**
 
-Een MISMATCH wijst op een onvolledige OTA-update: de firmware-bank is wel omgezet, maar de bijhorende web-assets zijn niet meegekomen (of andersom). Eerste actie: harde refresh van de webpagina (`Ctrl+Shift+R`); blijft de mismatch staan, voer dan de asset-OTA opnieuw uit met de juiste ZIP. Een directere controle is mogelijk via `http://<controller-ip>/manifest.json` (toont de JSON met `asset_version`) en *Pagina-bron weergeven* op de hoofdpagina (regel 2 bevat de comment `<!-- web-assets X.Y.Z -->`).
+Een mismatch verschijnt als een rode **MISMATCH**-badge in de **Alarms**-tegel op de Status-tab, naast eventuele andere alarmen (WIND, MOTOR ALARM, sensor-faults). Bij gelijke versies (of wanneer de assets-versie onbekend is — `?` op een schone serieel-geflasht systeem zonder OTA-pakket) blijft de badge weg en toont Alarms zoals gebruikelijk **OK** of de actieve mode-vlaggen.
 
-Deze tegel is bedoeld als tijdelijke diagnostische hulp. Wanneer het OTA-pad in het veld bewezen stabiel is kan de tegel uit `firmware/data/index.html` verwijderd worden (het blok staat tussen `<!-- TEMPORARY: … -->` en `<!-- END TEMPORARY CARD -->`-merktekens); de JavaScript blijft werken zonder code-aanpassing.
+**Onafhankelijke controle (handig bij twijfel of bij verdacht gedrag van de browser-cache)**
+
+| Bron | Wat toont het | Hoe op te roepen |
+|---|---|---|
+| `http://<controller-ip>/manifest.json` | JSON met `asset_version` — leest het bestand direct van de actieve LittleFS-partitie | Browser of `curl`. Direct ground-truth. |
+| Pagina-bron op de hoofdpagina | Regel 2: `<!-- web-assets X.Y.Z -->`, gestempeld door `bin/build_release.ps1` in de ZIP | Browser → *Pagina-bron weergeven* (Ctrl+U) |
+| Webgui footer | Firmware-versie als `vX.Y.Z` | Onderaan de pagina, altijd zichtbaar |
+
+Bij een **MISMATCH** voer als eerste een harde refresh uit van de webpagina (`Ctrl+Shift+R`); blijft de melding staan, dan is de OTA op de controller zelf incompleet. Voer de OTA-update opnieuw uit met **beide** pakketten — eerst `greenhouse-controller-X.Y.Z.bin`, daarna `web-assets-X.Y.Z.zip` — en wacht op de automatische herstart. Het mismatch-mechanisme werkt op basis van het `manifest.json`-bestand dat door `build_release.ps1` mee in de assets-ZIP wordt verpakt, dus de versie-vergelijking is betrouwbaar zonder dat de firmware moet weten welke ZIP er is geüpload.
+
+> **Historische opmerking** — In firmware 1.17.4–1.17.9a stond op deze plek een tijdelijke **OTA diagnostic (temp)**-tegel met aparte Firmware/Assets-regels en een eigen MISMATCH-badge. Die tegel is sinds 1.17.20 verwijderd nadat de onderliggende oorzaak (een collisie tussen beide LittleFS-partities op dezelfde VFS-mountpoint) is opgelost; de versie-controle zelf is behouden en geïntegreerd in de Alarms-tegel. Zie de changelog onder `1.17.9` en `1.17.20` voor de technische details.
 
 ---
 
@@ -943,9 +951,21 @@ Symptomen:
 8. Bij succes: controller reboot automatisch in de nieuwe firmware-versie
 9. Controleer firmware-versie na reboot (Status-tab toont versie: ` Idle — Bank A, accepting` en nadat de firmware is geaccepteerd: ` Idle — Bank A, accepted`)
 
+#### Verificatie na de update
+
+Beide pakketten — firmware **én** web-assets — horen in één OTA-cyclus mee te gaan. Vanaf firmware 1.17.20 controleert de controller dit automatisch en meldt een afwijking. Drie onafhankelijke verificatie-bronnen:
+
+| # | Wat | Verwachte waarde na update |
+|---|---|---|
+| 1 | Webgui footer (firmware-versie) | `vX.Y.Z` van het geüploade `.bin` |
+| 2 | `http://<controller-ip>/manifest.json` | `{"asset_version":"X.Y.Z",...}` met dezelfde versie als de footer |
+| 3 | Alarms-tegel op Status-tab | Geen rode **MISMATCH**-badge (of weergave **OK** als er ook geen andere alarmen actief zijn) |
+
+Een **MISMATCH**-badge in de Alarms-tegel wijst op een onvolledige OTA-update: de firmware-bank is wel omgezet maar de web-assets niet (of andersom). Eerste actie: harde refresh van de webpagina (`Ctrl+Shift+R`); blijft de melding staan, voer de OTA-procedure dan opnieuw uit met **beide** pakketten in dezelfde sessie. Zie [§6 Status-tab — versie-controle van firmware en web-assets](#status-tab--versie-controle-van-firmware-en-web-assets) voor de achtergrond van dit mechanisme.
+
 #### Dual-bank rollback
 - Bij **3 opeenvolgende boot-mislukkingen** gaat de controller automatisch terug naar de vorige firmware-versie
-- Symptomen van rollback: onverwachte oude versie na update
+- Symptomen van rollback: onverwachte oude versie na update — controleer ook de Alarms-tegel (na rollback met oude web-assets verschijnt **MISMATCH** zolang nog niet beide pakketten opnieuw geladen zijn)
 
 #### Firmware-update faalt
 - Controleer laptop-WiFi stabiel
@@ -1450,6 +1470,7 @@ De **complete uitleg** — met daarin alle velden, alle event-types, alle parame
 | 1.2 | 2026-05-10 | Bijgewerkt voor firmware 1.16.39: zichtbare `#=Set`/`#=AP`-hints verwijderd van alle vier de statusschermen (T/RH, Wind, WiFi, Datum/tijd) — `#`-snelweg blijft werken naar het bijhorende menu, alleen de hint op rij 2 is weg; Wind-statusscherm rij 2 toont kompasletter weer tussen haakjes (`Dir:180 ° (S )`) zoals vóór 1.16.37 |
 | 1.3 | 2026-05-10 | Bijgewerkt voor firmware 1.17.0–1.17.1: nieuwe Beheerder-tab **Web** voor status-rapportage naar een extern PHP-eindpunt (URL, gedeelde token, interval 60–300 s, zes tegel-zichtbaarheidsvinkjes, dagelijkse log-upload tijd en upload-op-rotatie); status-rapportage standaard uit en volledig instelbaar zonder de LCD aan te raken; HTTPS-eindpunten ondersteund (geen certificaatcontrole); `Uptime`-regel toegevoegd aan de Klok-tegel van de Status-tab zodat onverwachte reboots zichtbaar zijn (§6 Status-tab — Klok-tegel, §11.10). |
 | 1.4 | 2026-05-11 | Bijgewerkt voor firmware 1.17.2–1.17.8a: extern dashboard toont nu **lokale tijd** voor zonsopkomst/zonsondergang en `time_iso` (UTC→lokaal-conversie in `dm_status_snapshot`, DST automatisch); status-JSON-veldnamen aangelijnd op het bestaande publieke dashboard (`temp_c`/`speed_ms`/`direction_deg`/`mode={current,flags[]}` etc.); HTTPS-uitgaande verbindingen krijgen ruimere stack (12 KB) en mbedTLS-handshake werkt nu betrouwbaar; T11 status-JSON-buffer vergroot 1024 → 2048 bytes; `/api/web` POST nu synchroon (geen race meer bij Apply); URL-validatie eist `api.php`-suffix; webgui-Apply velden worden niet meer overschreven door auto-refresh; cosmetische verbeteringen (klok-waarde bold, URL-veld donker thema, datum-spinner-knoppen passen); nieuwe diagnostische **OTA diagnostic (temp)**-tegel op Status-tab toont Firmware-vs-Assets-versie + MISMATCH-badge (§6 Status-tab — OTA diagnostic (temp)); web-assets dragen nu een eigen `asset_version` via `manifest.json` (in de ZIP gebakken door `bin/build_release.ps1`); `GET /manifest.json` en `<!-- web-assets X.Y.Z -->` HTML-comment voor onafhankelijke verificatie. |
+| 1.5 | 2026-05-11 | Bijgewerkt voor firmware 1.17.9–1.17.20: hoofd-bugfix in `drivers/littleFS/src/littlefs_storage.cpp` — beide LittleFS-partities deelden VFS-mountpoint `/lfs`, waardoor T13 tijdens een gekoppelde OTA wel firmware naar de inactieve bank schreef maar de assets nooit op de bijhorende LFS-partitie terechtkwamen; iedere partitie heeft nu een eigen mountpoint (`/lfsa` en `/lfsb`), waarmee de OTA-cross-bank fout (zichtbaar als oude assets na een succesvolle firmware-update) verholpen is. De tijdelijke **OTA diagnostic (temp)**-tegel uit 1.17.4–1.17.9a is verwijderd; de versie-controle blijft behouden en is geïntegreerd in de **Alarms**-tegel als **MISMATCH**-badge (§6 Status-tab — versie-controle van firmware en web-assets). De diagnostische verificatie-bronnen blijven beschikbaar voor onafhankelijke controle: `GET /manifest.json`, View Source-stempel `<!-- web-assets X.Y.Z -->`, en `?v=<versie>` cache-busters op `app.js` / `style.css`. OTA-procedure in §14 uitgebreid met expliciete **Verificatie na de update**-stap. |
 
 ---
 
