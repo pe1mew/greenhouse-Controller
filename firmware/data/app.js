@@ -78,17 +78,33 @@ function handleStatus(s) {
   // and the pe1mew.nl/hbwv reference frontend).
   const c = s.climate;
   if (c) {
-    if (c.temp_c     !== undefined) setText('st-temp',     c.temp_c.toFixed(1));
-    if (c.temp_avg_c !== undefined) setText('st-temp-avg', c.temp_avg_c.toFixed(1));
-    if (c.rh_pct     !== undefined) setText('st-rh',       c.rh_pct.toFixed(0));
-    if (c.rh_avg_pct !== undefined) setText('st-rh-avg',   c.rh_avg_pct.toFixed(0));
+    if (c.temp_c          !== undefined) setText('st-temp',     c.temp_c.toFixed(1));
+    if (c.temp_avg_c      !== undefined) setText('st-temp-avg', c.temp_avg_c.toFixed(1));
+    if (c.rh_pct          !== undefined) setText('st-rh',       c.rh_pct.toFixed(0));
+    if (c.rh_avg_pct      !== undefined) setText('st-rh-avg',   c.rh_avg_pct.toFixed(0));
+    if (c.temp_max_active !== undefined) setText('st-t-max',    c.temp_max_active);
+    if (c.rh_max_active   !== undefined) setText('st-rh-max',   c.rh_max_active);
+    if (c.rh_min_active   !== undefined) setText('st-rh-min',   c.rh_min_active);
+    // Dim the Humidity setpoint rows when RH control is disabled. The
+    // values stay visible so the operator can still see what is configured
+    // for the moment they re-enable the control. Public dashboard never
+    // sees these fields when disabled (T14 omits them — see build_canonical_status_json
+    // include_disabled_setpoints=false).
+    if (c.rh_ctrl_enabled !== undefined) {
+      const dim = !c.rh_ctrl_enabled;
+      ['st-rh-max', 'st-rh-min'].forEach(function (id) {
+        const el = document.getElementById(id);
+        if (el && el.parentElement) el.parentElement.classList.toggle('dimmed', dim);
+      });
+    }
   }
 
   const w = s.wind;
   if (w) {
-    if (w.speed_ms      !== undefined) setText('st-wind',     w.speed_ms.toFixed(1));
-    if (w.direction_deg !== undefined) setText('st-wind-dir', w.direction_deg.toFixed(0));
-    if (w.speed_avg_ms  !== undefined) setText('st-wind-avg', w.speed_avg_ms.toFixed(1));
+    if (w.speed_ms                !== undefined) setText('st-wind',     w.speed_ms.toFixed(1));
+    if (w.speed_avg_ms            !== undefined) setText('st-wind-avg', w.speed_avg_ms.toFixed(1));
+    if (w.direction_deg           !== undefined) setText('st-wind-dir', w.direction_deg.toFixed(0));
+    if (w.direction_variation_deg !== undefined) setText('st-wind-var', w.direction_variation_deg.toFixed(0));
   }
 
   // Windows — object keyed M1/M2/M3
@@ -439,12 +455,20 @@ function loadHistory() {
       data.rows.slice().reverse().forEach(function(row) {
         const tr = document.createElement('tr');
         const t = row.ts ? new Date(row.ts * 1000).toLocaleTimeString() : '—';
+        // Helpers for compact "value or dash" cells, with .toFixed(1) on
+        // float-style fields and integer rendering on RH / direction.
+        const f1 = v => (v !== undefined ? v.toFixed(1) : '—');
+        const i0 = v => (v !== undefined ? v             : '—');
         tr.innerHTML =
           '<td>' + esc(t) + '</td>' +
-          '<td>' + (row.temp_c !== undefined ? row.temp_c.toFixed(1) : '—') + '</td>' +
-          '<td>' + (row.rh_pct !== undefined ? row.rh_pct : '—') + '</td>' +
-          '<td>' + (row.wind_ms !== undefined ? row.wind_ms.toFixed(1) : '—') + '</td>' +
-          '<td>' + (row.wind_dir !== undefined ? row.wind_dir : '—') + '</td>';
+          '<td>' + f1(row.temp_c)                  + '</td>' +
+          '<td>' + f1(row.temp_avg_c)              + '</td>' +
+          '<td>' + i0(row.rh_pct)                  + '</td>' +
+          '<td>' + i0(row.rh_avg_pct)              + '</td>' +
+          '<td>' + f1(row.speed_ms)                + '</td>' +
+          '<td>' + f1(row.speed_avg_ms)            + '</td>' +
+          '<td>' + i0(row.direction_deg)           + '</td>' +
+          '<td>' + i0(row.direction_variation_deg) + '</td>';
         tbody.appendChild(tr);
       });
     })

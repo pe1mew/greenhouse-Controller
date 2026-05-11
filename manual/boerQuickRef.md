@@ -1,6 +1,6 @@
 # Quick-reference — Kascontroller voor de boer
 
-**Versie 1.16.39** · 2026-05-10 · Volledige uitleg in `boerHandleiding.pdf` · Lamineren en naast de kast hangen.
+**Versie 1.17.25** · 2026-05-11 · Volledige uitleg in `boerHandleiding.pdf` · Lamineren en naast de kast hangen.
 
 ### RGB-LED · in één oogopslag
 
@@ -10,7 +10,7 @@
 | **Oranje** | Waarschuwing — wind, sensor of windbeveiliging-uit | Lees Mode-regel; bij `** SENSOR FAULT` → bel beheerder |
 | **Rood** | `ALARM` — motor-noodstop, ramen niet meer aangestuurd | **Bel de beheerder** — niet zelf ingrijpen |
 
-**Heartbeat-LED** (kleine amber): knippert 1×/sec = OK. Knippert niet → power-cycle (zie achterkant).
+**Heartbeat-LED** (rechter groen led): knippert 1×/sec = OK. Knippert niet → power-cycle (zie achterkant).
 
 `[FOTO: vooraanzicht kascontroller met pijl naar RGB-LED, heartbeat-LED en LCD]`
 
@@ -28,10 +28,12 @@
 ### LCD-statusschermen (auto-rotatie, elk 5 sec)
 
 ```
-1 Temp/RH  →  2 Wind  →  3 Mode/Sess  →  4 WiFi  →  5 Tijd  →  6 Raamposities  →  (1)
+1 Temperatuur/Luchtvochtigheid  →  2 Wind  →  3 Mode/Sessie  →  4 WiFi  →  5 Tijd+Dag/Nacht  →  6 Raamposities  →  7 Firmware-versie/Uptime  →  (1)
 ```
 
-Toets **`D`** = direct naar volgend scherm. Toets **`#`** = direct naar het bijhorende menu (werkt op de schermen met instellingen: T/RH, Wind, WiFi, Datum/tijd). Sensor-uitval: `** SENSOR FAULT` op rij 2 + rode achtergrond → bel beheerder.
+Toets **`D`** = vanaf een statusscherm: direct naar volgend scherm; **vanuit elk menu / PIN / bewerk-scherm: direct terug naar de auto-rotatie**. Toets **`#`** = direct naar het bijhorende menu (werkt op T/RH, Wind, WiFi, Datum/tijd). Sensor-uitval toont: `** SENSOR FAULT` op rij 2 + LCD kleut rood → bel beheerder.
+
+**Auto-terug naar rotatie**: na 5 minuten zonder gebruik van de bedieing keert het LCD-display vanzelf terug naar de roterende statusschermen.
 
 <div style="page-break-before: always;"></div>
 
@@ -39,8 +41,8 @@ Toets **`D`** = direct naar volgend scherm. Toets **`#`** = direct naar het bijh
 
 | Toets | Functie |
 |:---:|:---|
-| **D** | Volgende statusscherm |
-| **#** | Snelweg → bijhorend instellingen-menu · in menu/PIN: bevestig |
+| **D** | Op statusscherm: volgend scherm · In elk ander menu: **direct terug naar auto-rotatie** |
+| **#** | Aanpassen → Ga naar bijhorend instellingen-menu · in het menu/PIN: bevestigen |
 | **\*** | Eén niveau terug · bij invoer: wis cijfer |
 | **0–9** | Cijfer invoeren · op statusscherm: opent hoofdmenu |
 | **A / B** | Vorige / volgende setpoint · `B` = teken ± bij invoer |
@@ -48,7 +50,7 @@ Toets **`D`** = direct naar volgend scherm. Toets **`#`** = direct naar het bijh
 
 Vanaf elk statusscherm opent **elke toets behalve `D`** het hoofdmenu.
 
-**Inloggen** — *LCD*: druk willekeurige toets (niet `D`) → menu → 4-cijferige Farmer-PIN → `#`. **Default `1234` — direct wijzigen.** *Web*: lees IP van LCD-scherm 4 → open in browser op zelfde wifi → tab **Access** → Farmer-PIN. Sessie verloopt na ~5 min inactief.
+**Inloggen** — *Op de controller*: druk willekeurige toets (niet `D`) → menu → 4-cijferige Farmer-PIN → `#`. *In de webinterface*: lees IP van LCD-scherm 4 → open in browser op zelfde wifi → tab **Access** → Farmer-PIN. Sessie verloopt na ~5 min inactief.
 
 ### FAQ — eerste actie
 

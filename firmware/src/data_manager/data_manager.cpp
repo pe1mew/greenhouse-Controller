@@ -720,20 +720,35 @@ void dm_status_snapshot(status_snapshot_t *out)
     if (meas_valid) {
         /* Sensor reports integer °C; canonical shape uses ×10 to keep the
          * builder integer-only. The actual °C resolution is unchanged. */
-        out->t_c10         = (int16_t)((int32_t)meas.temperature_c * 10);
-        out->t_avg_c10     = (int16_t)((int32_t)meas.t_avg_c       * 10);
-        out->rh_pct        = meas.humidity_pct;
-        out->rh_avg_pct    = meas.rh_avg_pct;
-        out->w_ms10        = meas.wind_speed_ms10;
-        out->w_avg_ms10    = meas.wind_speed_avg_ms10;
-        out->w_dir_deg     = meas.wind_dir_deg;
-        out->w_avg_dir_deg = meas.wind_dir_avg_deg;
+        out->t_c10              = (int16_t)((int32_t)meas.temperature_c * 10);
+        out->t_avg_c10          = (int16_t)((int32_t)meas.t_avg_c       * 10);
+        out->rh_pct             = meas.humidity_pct;
+        out->rh_avg_pct         = meas.rh_avg_pct;
+        out->w_ms10             = meas.wind_speed_ms10;
+        out->w_avg_ms10         = meas.wind_speed_avg_ms10;
+        out->w_dir_deg          = meas.wind_dir_deg;
+        out->w_avg_dir_deg      = meas.wind_dir_avg_deg;
+        out->w_dir_variation_deg = meas.wind_dir_variation_deg;
     }
 
     /* Config / derived state (MX4-protected). */
     cfg_shadow_t cfg;
     dm_cfg_snapshot(&cfg);
     out->is_daytime         = cfg.is_daytime;
+    /* Active climate setpoints — currently-in-force day-or-night values.
+     * The local web GUI and the canonical status JSON surface these so the
+     * operator can see, at a glance, which threshold is gating ventilation
+     * right now without mentally consulting the time of day. */
+    if (cfg.is_daytime) {
+        out->t_max_active  = cfg.t_max_day;
+        out->rh_max_active = (uint8_t)cfg.rh_max_day;
+        out->rh_min_active = (uint8_t)cfg.rh_min_day;
+    } else {
+        out->t_max_active  = cfg.t_max_ngt;
+        out->rh_max_active = (uint8_t)cfg.rh_max_ngt;
+        out->rh_min_active = (uint8_t)cfg.rh_min_ngt;
+    }
+    out->rh_ctrl_enabled = (cfg.rh_ctrl_en != 0);
     out->ts_unix            = cfg.current_unix_ts;
     out->ntp_synced         = (cfg.current_unix_ts > 1700000000UL);
     out->update_interval_s  = (uint16_t)(cfg.status_interval_s > 0 ? cfg.status_interval_s

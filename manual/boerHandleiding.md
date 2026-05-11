@@ -1,16 +1,16 @@
 # Handleiding Kascontroller — voor de boer
 
-**Versie:** 1.0 — concept
-**Datum:** \[invullen]
-**Firmware:** 1.16.38
+**Versie:** 1.3 — concept
+**Datum:** 2026-05-11
+**Firmware:** 1.17.25
 
 ---
 
 > **Voor wie is deze handleiding?**
-> Dit document is geschreven voor de boer / kasgebruiker die de kascontroller dagelijks bedient. Het legt uit wat je op het apparaat ziet, hoe je inlogt, hoe je het klimaat instelt, en wat alarmen betekenen. Technische installatie- en configuratiezaken staan hier niet in — die zijn voor de beheerder.
+> Dit document is geschreven voor de boer / kasgebruiker die de kascontroller dagelijks bedient. Het legt uit wat je op het apparaat ziet, hoe je inlogt, hoe je het klimaat instelt, en wat alarmen betekenen. Technische installatie- en configuratiezaken staan hier niet in, die zijn voor de beheerder.
 
 > **Veiligheid**
-> Werk **nooit handmatig** aan een raam terwijl een motor actief is. Wacht tot de motor stilstaat. Bij twijfel: schakel eerst de voeding uit (stekker eruit) of bel de beheerder.
+> Werk **nooit handmatig** aan een raam terwijl een motor actief is. Wacht tot de motor stilstaat. Bij twijfel: schakel eerst de voeding uit (stekker eruit) van de **Motorbox (Hotraco RRK-3)** of bel de beheerder.
 
 ---
 
@@ -52,7 +52,7 @@ Deze handleiding is bedoeld voor de **boer / kasgebruiker** die de kascontroller
 **Wat staat er niet in deze handleiding?**
 - Hardware-installatie en bedrading
 - Netwerkconfiguratie en wifi-instellingen door de beheerder
-- Motor-tijden, sensor-poll-intervallen en andere technische parameters
+- Motor-tijden, sensor-poll-intervallen en andere technische parameters van de kascontroller
 - Reparaties en vervanging van onderdelen
 
 Voor al die onderwerpen: neem contact op met de **beheerder** (zie [Bijlage A](#19-bijlage-a--contactgegevens-beheerder)).
@@ -104,7 +104,7 @@ De kascontroller is een geautomatiseerd systeem dat het **klimaat in één kas**
 
 **Sensoren:**
 - **T/RH-sensor** (temperatuur en luchtvochtigheid) — type FG6485A — gemonteerd binnen in de kas, op een representatieve plek (geen direct zonlicht, geen druipwater)
-- **Wind-sensor** (snelheid en richting) — type SenseCAP S200 — buiten gemonteerd, op een open plek zonder afscherming
+- **Wind-sensor** (snelheid en richting) — type SenseCAP S200 — buiten gemonteerd, op een open plek zonder afscherming door objecten
 
 **Motor-relaisbox Hotraco RRK-3:**
 De motorbox bedient de drie raammotoren. Hij is **in de kas gemonteerd**, **rechts bij de ingang**, op dezelfde plek als de kascontroller. De relaisbox heeft eindschakelaars voor elk raam — zodra een raam volledig open of dicht is, stopt de bijbehorende motor automatisch. De relaisbox heeft ook een eigen **alarmuitgang**: bij motorstoring (bijvoorbeeld een vastgelopen raam of overbelasting) wordt de kascontroller hiervan op de hoogte gesteld.
@@ -136,13 +136,12 @@ De controller probeert continu de temperatuur en luchtvochtigheid binnen de door
 
 **Setpoints (gewenste waarden):**
 Je stelt vier soorten grenswaarden in, apart voor **dag** en **nacht**:
-- Maximum temperatuur (boven deze waarde: ramen openen om af te koelen)
+- Maximum temperatuur (boven deze waarde: ramen openen om af te koelen, onder deze waarde: ramen dicht houden om warmte vast te houden)
 - Maximum vochtigheid (boven deze waarde: ramen openen om vocht af te voeren)
-- Minimum temperatuur (onder deze waarde: ramen dicht houden om warmte vast te houden)
 - Minimum vochtigheid (onder deze waarde: ramen dicht houden om vocht vast te houden)
 
 **Dag/nacht-omschakeling:**
-Automatisch op basis van zonsopkomst en zonsondergang. De geografische locatie wordt door de beheerder ingesteld; de controller berekent zelf wanneer de zon op- en ondergaat.
+Automatisch op basis van zonsopkomst en zonsondergang. De geografische locatie wordt automatisch bepaald of door de beheerder ingesteld; de controller berekent zelf wanneer de zon op- en ondergaat.
 
 **Hysterese:**
 Een kleine bandbreedte rondom elke setpoint, zodat de ramen niet om de seconde openen en sluiten als de meetwaarde precies op het setpoint zit. Hysterese-instellingen staan in de webinterface (en zijn alleen door de beheerder aan te passen).
@@ -156,7 +155,7 @@ De controller opent de ramen in stappen, afhankelijk van de gewenste afkoeling o
 2. Dan **M1 + M2** (beide dakramen)
 3. Dan **M1 + M2 + M3** (alles, inclusief de grote zijwand)
 
-Dit voorkomt dat het klimaat binnen plotseling sterk verandert.
+Dit voorkomt dat het klimaat binnen plotseling sterk verandert. ook draagt dit bij aan een "rustig" gedrag van de ramen. 
 
 **Conflict-prioriteit:**
 Soms vraagt de temperatuur om ramen open (te warm) en de vochtigheid om ramen dicht (te droog), of andersom. In dat geval volgt de controller je gekozen prioriteit:
@@ -174,14 +173,15 @@ Bij te harde wind sluit de controller **alle ramen automatisch**, ongeacht wat h
 `[FOTO: vooraanzicht van de kascontroller-kast met LCD, toetsenbord en zichtbare LEDs]`
 
 De kascontroller bevindt zich in een afgesloten kast bij de ingang van de kas, naast de Hotraco RRK-3. Op de voorkant zie je:
-- Een **LCD-scherm** (16 tekens × 2 regels) met statusinformatie
-- Een **4 × 4 toetsenbord** voor bediening
+- Een **LCD-scherm** met statusinformatie, die kleurt bij wind alarm
+- Een **toetsenbord** voor bediening
 - Een **RGB-LED** (zichtbaar door de doorzichtige kap) die de globale status aangeeft
-- Een **heartbeat-LED** (kleine amber LED) die aangeeft dat de firmware loopt
+- Een **heartbeat-LED** (kleine groene LED rechts) die aangeeft dat de firmware loopt
+- Een **voeding-LED** (kleine groene LED links) die aangeeft dat de controller spanning heeft
 
-### 5.1 LCD-display (16 × 2 tekens)
+### 5.1 LCD-display
 
-Het LCD toont alle statusinformatie in compacte tekstschermen. Wanneer er geen gebruiker is ingelogd en er geen toetsen worden ingedrukt, **wisselen de schermen automatisch elke 5 seconden** door zes informatieschermen. Dit heet *auto-rotatie*.
+Het LCD-display toont alle statusinformatie in compacte tekstschermen. Wanneer er geen gebruiker is ingelogd en er geen toetsen worden ingedrukt, **wisselen de schermen automatisch elke 5 seconden** door zes informatieschermen. Dit heet *auto-rotatie*.
 
 Met de toets `D` (STEP) kun je **versneld naar het volgende scherm stappen** — handig om snel een specifiek scherm te bereiken zonder te wachten tot de auto-rotatie er aan toe is.
 
@@ -189,13 +189,13 @@ Met de toets `D` (STEP) kun je **versneld naar het volgende scherm stappen** —
 
 #### Het mode-veld
 
-Op het derde statusscherm staat een **Mode-regel**. Deze geeft aan in welke bedrijfsmodus de controller zich bevindt. Mogelijke waarden:
+Op het derde statusscherm staat een **Mode-regel**. Deze geeft aan in welke bedrijfsmodus de controller zich bevindt. Mogelijke waarden zijn:
 
 | LCD-tekst | Betekenis |
 |---|---|
-| `Mode: AUTO` | Normale automatische werking |
-| `Mode: WIND` | Wind-override actief — alle ramen dicht door te harde wind |
-| `Mode: ALARM` | Motor-alarm — de Hotraco RRK-3 heeft een fout gemeld |
+| `Mode: AUTO` | Normale automatische werking van de kascontroller |
+| `Mode: WIND` | Wind-override actief — alle ramen dicht door te harde wind. de Kascontroller is gestopt met besturen |
+| `Mode: ALARM` | Motor-alarm — de Hotraco RRK-3 heeft een fout gemeld. de Kascontroller is gestopt met besturen |
 | `Mode:Window Cal.` | Kalibratie van de ramen (alle ramen worden gesloten om de uitgangspositie te bepalen) |
 
 Zie [hoofdstuk 12](#12-alarmen-en-bedrijfsmodi--wat-betekenen-ze-wat-te-doen) voor uitgebreide uitleg.
@@ -213,11 +213,11 @@ Wanneer de T/RH-sensor niet (meer) reageert, verschijnt op het temperatuur-scher
 
 Daarnaast kleurt de LCD-achtergrond rood. Bel in dat geval de beheerder.
 
-#### De zes statusschermen (auto-rotatie)
+#### De zeven statusschermen (auto-rotatie)
 
-De controller doorloopt zes schermen in vaste volgorde, elk 5 seconden zichtbaar.
+De controller doorloopt zeven schermen in vaste volgorde, elk 5 seconden zichtbaar.
 
-**Scherm 1 — Temperatuur en luchtvochtigheid:**
+**Scherm 1 — Temperatuur en luchtvochtigheid:** De actuele temperatuur en relative-luchtvochtigheid
 
 ```
    +----------------+
@@ -226,11 +226,11 @@ De controller doorloopt zes schermen in vaste volgorde, elk 5 seconden zichtbaar
    +----------------+
 ```
 
-Druk `#` op dit scherm om direct naar het Climate-menu te gaan voor het instellen van setpoints (vraagt om de Farmer-PIN als je nog niet bent ingelogd).
+ - Druk `#` op dit scherm om direct naar het Climate-menu te gaan voor het instellen van setpoints (vraagt om de Farmer-PIN als je nog niet bent ingelogd).
+ - Bij sensoruitval toont regel 2 `** SENSOR FAULT`. 
+ - Bij ongeldige meting: `Temp: --- °C` en `  RH: ---  %    `.
 
-Bij sensoruitval: rij 2 toont `** SENSOR FAULT`. Bij ongeldige meting: `Temp: --- °C` en `  RH: ---  %    `.
-
-**Scherm 2 — Wind:**
+**Scherm 2 — Wind:** Toont de gemiddelde windsnelheid in m/s, en op rij 2 de richting in graden met de kompasrichting tussen haakjes (N, NE, E, SE, S, SW, W, NW).
 
 ```
    +----------------+
@@ -239,9 +239,10 @@ Bij sensoruitval: rij 2 toont `** SENSOR FAULT`. Bij ongeldige meting: `Temp: --
    +----------------+
 ```
 
-Toont gemiddelde windsnelheid in m/s, en op rij 2 de richting in graden met de kompasletter tussen haakjes (N, NE, E, SE, S, SW, W, NW). Druk `#` op dit scherm om direct naar het Wind-menu te gaan (vraagt om de Farmer-PIN als je nog niet bent ingelogd). Bij ongeldige meting: `Wind: -- m/s` en ` Dir: --- °     `.
+ - Druk `#` op dit scherm om direct naar het Wind-menu te gaan (vraagt om de Farmer-PIN als je nog niet bent ingelogd). 
+ - Bij ongeldige meting: `Wind: -- m/s` en ` Dir: --- °     `.
 
-**Scherm 3 — Bedrijfsmodus en sessie:**
+**Scherm 3 — Bedrijfsmodus en sessie:** mode en sessie status
 
 ```
    +----------------+
@@ -250,11 +251,12 @@ Toont gemiddelde windsnelheid in m/s, en op rij 2 de richting in graden met de k
    +----------------+
 ```
 
-Rij 1 toont de bedrijfsmodus (AUTO / WIND / ALARM / Window Cal.). Rij 2 toont de actieve sessie:
-- `Sess: NONE` — niemand ingelogd
-- `Sess: Farmer` — Farmer ingelogd
-- `Sess: Admin` — Admin ingelogd
-- Als er een over-the-air firmware-update bezig is, verschijnt `OTA` aan het eind van rij 2
+ - Regel 1 toont de bedrijfsmodus (AUTO / WIND / ALARM / Window Cal.). 
+ - Regel 2 toont de actieve sessie, is er ingelogd op de controller en door wie:
+	- `Sess: NONE` — niemand ingelogd
+	- `Sess: Farmer` — Boer ingelogd
+	- `Sess: Admin` — Beheerder ingelogd
+	- Als er een over-the-air firmware-update (OTA) bezig is, verschijnt `OTA` aan het eind van regel 2
 
 **Scherm 4 — Wifi-status:**
 
@@ -267,20 +269,23 @@ Drie mogelijke weergaven:
    +----------------+      +----------------+      +----------------+
 ```
 
-- **Connected**: kascontroller is verbonden met een wifi-netwerk; rij 2 toont het IP-adres
-- **AP active**: de tijdelijke Access Point staat aan; rij 2 toont de SSID `Greenhouse-XXXX` (waar XXXX de laatste hex-cijfers van het MAC-adres zijn)
-- **Disconnected**: geen verbinding; druk `#` om de AP in te schakelen (vraagt Admin-PIN)
+ - **Connected**: de kascontroller is verbonden met een wifi-netwerk; regel 2 toont het IP-adres
+ - **AP active**: de tijdelijke Access Point staat aan; regel 2 toont de SSID `Greenhouse-XXXX` (waar XXXX de unieke ID is van de kascontroller)
+ - **Disconnected**: geen verbinding; druk `#` om de AP in te schakelen (vraagt Beheerder-PIN)
 
 **Scherm 5 — Datum en tijd:**
 
 ```
    +----------------+
    |06-05-2026 14:30|
-   |Src:NTP         |
+   |Src:NTP      Day|
    +----------------+
 ```
 
-Rij 1 toont datum en tijd. Rij 2 toont de tijdsbron: `NTP` (gesynchroniseerd via internet) of `RTC` (alleen interne klok). Druk `#` op dit scherm om datum en tijd handmatig in te stellen (vraagt Admin-PIN).
+ - Regel 1 toont datum en tijd. 
+ - Regel 2 toont links de tijdsbron (`NTP` = gesynchroniseerd via internet, of `RTC` = alleen interne klok) en rechts of de controller op dit moment in de **dag**- of **nacht**-zone zit (`Day` / `Night`). 
+	- De omschakeling dag/nacht gebeurt automatisch op basis van zonsopkomst en zonsondergang voor de ingestelde locatie en is dezelfde grens die ook bepaalt welke dag- of nacht-setpoints actief zijn. 
+ - Druk `#` op dit scherm om datum en tijd handmatig in te stellen (vraagt om Beheerder-PIN).
 
 **Scherm 6 — Raamposities:**
 
@@ -291,15 +296,29 @@ Rij 1 toont datum en tijd. Rij 2 toont de tijdsbron: `NTP` (gesynchroniseerd via
    +----------------+
 ```
 
-Rij 1 is een vaste kop. Rij 2 toont per raam de toestand:
+ - Rij 1 is een vaste kop. Rij 2 toont per raam de toestand:
 
-| Code | Betekenis |
-|---|---|
-| `OPEN` | Volledig open |
-| `CLOS` | Volledig dicht |
-| `MOV>` | Aan het openen |
-| `MOV<` | Aan het sluiten |
-| `UNK ` | Onbekend (treedt op kort na opstart vóór de kalibratie) |
+	| Code | Betekenis |
+	|---|---|
+	| `OPEN` | Raam is volledig open |
+	| `CLOS` | raam is volledig dicht |
+	| `MOV>` | Raam wordt geopend |
+	| `MOV<` | Raam wordt gesloten |
+	| `UNK ` | Raamopening onbekend (treedt op kort na opstart vóór de kalibratie) |
+
+**Scherm 7 — Firmware versie en bedrijfsduur:**
+
+```
+   +----------------+
+   |FW: 1.17.25     |
+   |Up: 1d 4h 23m   |
+   +----------------+
+```
+
+ - Regel 1 toont het firmware-versienummer (`FW: 1.17.25`). 
+ - Regel 2 toont de bedrijfsduur sinds de laatste start. Het formaat past zich aan:
+
+Een onverwachte herstart valt op doordat Uptime bedrijfsduur naar `0 minuten` en daarna weer oploopt. Handig om te zien of de controller stabiel draait. Vraag de beheerder het firmware-nummer als je een storing meldt — dat helpt bij diagnose.
 
 ### 5.2 Toetsenbord (4 × 4)
 
@@ -315,26 +334,34 @@ Rij 1 is een vaste kop. Rij 2 toont per raam de toestand:
    +-----+-----+-----+-----+
 ```
 
-De functie van een toets hangt af van het **scherm** waar je je bevindt. Hieronder een overzicht per situatie:
+De functie van een toets hangt af van het **scherm** waar je je bevindt. Hieronder een overzicht van de toesfunctie per situatie:
 
 #### Op een statusscherm (auto-rotatie)
 
 | Toets | Functie |
 |:---:|:---|
-| **D** | Volgende statusscherm (versneld door auto-rotatie stappen) |
-| **#** | Snelweg naar een functie — afhankelijk van het zichtbare scherm (zie tabel hieronder) |
+| **D** | Volgende statusscherm (versneld door auto-rotatie schermen stappen) |
+| **#** | Quick-jump naar een functie — afhankelijk van welk scherm wordt getoond (zie tabel hieronder) |
 | **alle andere toetsen** | Open het hoofdmenu |
 
-De `#`-snelweg werkt op vier statusschermen. Op het LCD zelf staat geen zichtbare hint; onthoud gewoon dat `#` op een statusscherm met instellingen direct het bijhorende menu opent:
+#### In een menu of bewerk-scherm
+
+| Toets | Functie |
+|:---:|:---|
+| **D** | **Direct terug naar de auto-rotatie statusschermen** — werkt vanuit elk menu, bladermenu, PIN-invoer en bewerk-scherm. Eén druk en je staat weer op het roterende statusscherm. Handig om snel weg te komen als je per ongeluk in een menu bent beland. |
+
+> **Automatisch terug naar de auto-rotatie**: blijft het LCD 5 minuten op een menu of invoerscherm staan zonder dat er een toets wordt ingedrukt, dan keert de controller automatisch terug naar de roterende statusschermen. Je hoeft dus niet bang te zijn dat de display vast blijft staan op een halve invoer.
+
+De `#`-quick-jump werkt op vier statusschermen. Op het LCD zelf staat geen zichtbare hint; onthoud gewoon dat `#` op een statusscherm met instellingen direct het bijhorende menu opent:
 
 | Scherm | `#` opent | Vraagt PIN? |
 |---|---|---|
-| 1 — Temperatuur/RH | Climate-menu (setpoints) | Farmer-PIN |
-| 2 — Wind | Wind-menu (Wnd-max, Wnd-prot) | Farmer-PIN |
-| 4 — WiFi | System-menu (AP aan/uit) | Admin-PIN |
-| 5 — Datum/tijd | Datum/tijd-invoer | Admin-PIN |
+| 1 — Temperatuur/luchtvochtigheid | Klimaat-menu (setpoints) | Boer-PIN |
+| 2 — Wind | Wind-menu (Wnd-max, Wnd-prot) | Boer-PIN |
+| 4 — WiFi | System-menu (AP aan/uit) | Beheerder-PIN |
+| 5 — Datum/tijd | Datum/tijd-invoer | Beheerder-PIN |
 
-Op de overige schermen (3 — Mode/Sess en 6 — Raamposities) heeft `#` geen functie en opent — net als andere toetsen — gewoon het hoofdmenu.
+Op de overige schermen (3 — Mode/Sess en 6 — Raamposities) heeft `#` geen functie omdat er niets is in te stellen en opent, net als andere toetsen, het hoofdmenu.
 
 #### In een menu (root, climate, wind, access, system)
 
@@ -343,12 +370,12 @@ Op de overige schermen (3 — Mode/Sess en 6 — Raamposities) heeft `#` geen fu
 | **1, 2, 3, 4** | Selecteer de menu-optie met dat nummer |
 | **\*** | Eén niveau terug |
 
-#### In het bladermenu voor klimaat-setpoints (Day / Night)
+#### In het bladermenu voor klimaat-setpoints (Day / Night / CR-priority)
 
 | Toets | Functie |
 |:---:|:---|
-| **A** | Vorige setpoint (← op het scherm) |
-| **B** | Volgende setpoint (→ op het scherm) |
+| **A** | Vorige setpoint (← op het scherm) — alleen Day/Night |
+| **B** | Volgende setpoint (→ op het scherm) — alleen Day/Night |
 | **#** | Bewerk de huidige setpoint (vraagt Farmer-PIN als nog niet ingelogd) |
 | **\*** | Terug naar Climate-menu |
 
@@ -358,7 +385,7 @@ Op de overige schermen (3 — Mode/Sess en 6 — Raamposities) heeft `#` geen fu
 |:---:|:---|
 | **0–9** | Voer cijfer in |
 | **#** | Bevestig PIN |
-| **\*** | Wis laatst ingevoerd cijfer; bij lege invoer: annuleer en ga terug |
+| **\*** | Wis het laatst ingevoerd cijfer; bij lege invoer: annuleer je de invoer en ga terug naar het vorige scherm |
 
 #### Bij het invoeren / bewerken van een waarde
 
@@ -367,15 +394,13 @@ Op de overige schermen (3 — Mode/Sess en 6 — Raamposities) heeft `#` geen fu
 | **0–9** | Voer cijfer in |
 | **B** | Plus/min-teken omdraaien (alleen bij waarden die negatief mogen zijn) |
 | **#** | Bevestig en sla op |
-| **\*** | Wis laatst ingevoerd cijfer; bij lege invoer: annuleer en ga terug |
-
-> **Let op**: de toetsen `C` heeft op dit moment geen specifieke functie in de UI. De toetsen `▲` en `▼` zoals in oudere documentatie zijn niet aanwezig — gebruik in plaats daarvan `A` en `B`.
+| **\*** | Wis het laatst ingevoerd cijfer; bij lege invoer: annuleer je de invoer en ga terug naar het vorige scherm  |
 
 ### 5.3 LED-indicatoren
 
 #### RGB-LED
 
-Een meerkleurige LED zichtbaar door de kapje van de kast. De kleur geeft de globale toestand aan:
+Een meerkleurige LED is zichtbaar door de deksel van de kast. De kleur geeft de globale toestand van de kascontroller aan:
 
 | Kleur | Betekenis |
 |---|---|
@@ -383,28 +408,29 @@ Een meerkleurige LED zichtbaar door de kapje van de kast. De kleur geeft de glob
 | **Oranje (amber)** | Waarschuwing — wind-override actief, sensor-fout, windbeveiliging staat uit, of vochtregeling staat uit |
 | **Rood** | Kritiek alarm — motor-noodstop (`Mode: ALARM`); de motoren worden niet meer aangestuurd |
 
-De LED dimt 's nachts automatisch (instelling staat in de hand van de beheerder).
+De LED dimt 's nachts automatisch.
 
 #### Heartbeat-LED
 
-Een kleine amber LED die **1× per seconde** aan/uit knippert. Zolang deze knippert, draait de firmware normaal. **Knippert hij niet?** Dan is de controller bevroren of uitgeschakeld — voer een power-cycle uit (zie [§14](#14-onderhoud--wat-de-boer-zelf-doet)) of bel de beheerder.
+Een kleine groene LED die **1× per seconde** aan/uit knippert. Zolang deze knippert, draait de software normaal. **Knippert hij niet?** Dan is de controller bevroren of uitgeschakeld — voer een power-cycle uit (zie [§14](#14-onderhoud--wat-de-boer-zelf-doet)) of bel de beheerder.
 
 ---
 
 ## 6. De webinterface (via wifi)
 
-Naast het LCD-scherm op de kast is de kascontroller ook bereikbaar via een **webinterface**: een webpagina die je kunt openen op een laptop, tablet of smartphone die op hetzelfde wifi-netwerk zit. De webinterface biedt **meer overzicht en mogelijkheden** dan het LCD: live grafieken, sensorhistorie en alle setpoints op één scherm.
+Naast het LCD-scherm op de kast is de kascontroller ook bereikbaar via een **webinterface**: een webpagina die je kunt openen in de browser op een laptop, tablet of smartphone en die op hetzelfde wifi-netwerk zit als de controller. De webinterface biedt **meer overzicht en mogelijkheden** dan de bediening controller: live informatie, sensorhistorie en alle setpoints op één scherm.
 
-`[SCHERMAFBEELDING: hoofdpagina van de webinterface]`
+![SCHERMAFBEELDING: hoofdpagina van de webinterface](images\kasControllerWebGUIHoofdpagina.png)
+*Figuur #: hoofdpagina van de webinterface*
 
 ### Voorwaarde
 
-De beheerder moet de kascontroller eerst hebben verbonden met een wifi-netwerk. Zonder die configuratie heeft je laptop of telefoon geen verbinding met de controller. De aparte AP-modus (Access Point) van de controller is een hulpmiddel voor de beheerder bij installatie of onderhoud, en hoef je als boer niet zelf te gebruiken.
+De beheerder moet de kascontroller eerst hebben verbonden met een wifi-netwerk. Zonder die instelling heeft je laptop of telefoon geen verbinding met de controller. De aparte AP-modus (Access Point) van de controller is een hulpmiddel voor de beheerder bij installatie of onderhoud, en hoef je als boer niet zelf te gebruiken.
 
 ### Bereiken van de webinterface
 
 1. Meld je aan op hetzelfde WiFi netwerk als waar de kascontroller op is aangemeld.
-2. Lees het IP-adres af van het LCD-scherm (auto-rotatie, of door klikken met de D-toets,  laat het WiFi-scherm vanzelf zien — daar staat SSID + IP-adres)
+2. Lees het IP-adres af van het LCD-scherm (auto-rotatie, of door klikken met de D-toets, laat het WiFi-scherm vanzelf zien — daar staat **SSID + IP-adres**)
 3. Open een browser (Chrome, Firefox, Edge, Safari) op een apparaat dat op hetzelfde wifi-netwerk zit
 4. Typ het IP-adres in de adresbalk, bijvoorbeeld `http://192.168.1.100`
 5. De **Status**-pagina opent direct, zonder dat je hoeft in te loggen
@@ -413,14 +439,14 @@ De beheerder moet de kascontroller eerst hebben verbonden met een wifi-netwerk. 
 
 | Tab | Wie ziet het? | Wat staat er? |
 |---|---|---|
-| **Status** | Iedereen (zonder login) | T, RH, wind, raamposities, mode, alarmen, klok, wifi, SD-kaart |
-| **Climate** | Farmer + Admin | Setpoints voor dag en nacht, vochtregeling aan/uit, conflict-prioriteit |
-| **Wind** | Farmer + Admin | Windbeveiliging aan/uit; windgrenzen alleen voor Admin |
+| **Status** | Iedereen (zonder inloggen) | temperatuur, luchtvochtigheid, wind, raamposities, mode, alarmen, klok, wifi, SD-kaart |
+| **Climate** | Boer + Beheerder | Setpoints voor dag en nacht, vochtregeling aan/uit, conflict-prioriteit |
+| **Wind** | Boer + Beheerder | Windbeveiliging aan/uit; windgrenzen instellen is alleen voor de Beheerder |
 
 
 ### Sensorhistorie
 
-Een lijst van de meetwaarden over de afgelopen periode met de laatst gemeten waarde bovenaan de lijst. Toegankelijk **zonder login**. De grafiek ververst zichzelf elke ~2 minuten.
+Een lijst van de meetwaarden over de afgelopen periode met de laatst gemeten waarde bovenaan de lijst. Toegankelijk **zonder login**. De tabel ververst zichzelf elke ~2 minuten.
 
 ### Sessie
 
@@ -436,14 +462,15 @@ De kascontroller kent twee gebruikersrollen, elk met een eigen PIN-code:
 
 - **PIN**: 4 cijfers
   - Bij eerste levering staat deze op fabrieksstandaard `1234`
-  - **Wijzig deze direct na ingebruikname** — laat hem niet op de fabrieksstandaard staan. PIN-wijziging gaat via de **webinterface** (Access-tab); het LCD-menu heeft hiervoor geen optie.
+  - **Wijzig deze direct na ingebruikname** — laat hem niet op de fabrieksstandaard staan. PIN-wijziging gaan alleen via de **webinterface** (Access-tab)en kan iet op de controller zelf.
 - **Mag op de kas controller (LCD-menu)**:
   - Klimaat-setpoints instellen — T-max en RH-min/max voor dag en nacht
-  - Conflict-prioriteit kiezen (T eerst / RH eerst / Auto)
+  - Conflict-prioriteit kiezen (Temperauur eerst / Luchtvochtigeid eerst / Automatisch)
   - Windbeveiliging (wind protection) aan- of uitzetten en windgrens (Wnd-max) aanpassen — **deze actie wordt gelogd**
 - **Mag aanvullend in de webinterface**:
   - Vochtregeling (humidity control) aan- of uitzetten
-  - Eigen PIN wijzigen
+
+> **Opmerking:** De PIN-code van de boer kan alleen door de beheerder worden ingesteld. 
 
 ### Admin / Technisch beheerder
 
@@ -453,18 +480,18 @@ De kascontroller kent twee gebruikersrollen, elk met een eigen PIN-code:
   - Wifi configureren (AP en client mode)
   - Motor-tijden en sensor-poll-intervallen aanpassen
   - Geografische locatie instellen
-  - Beide PIN-codes wijzigen
+  - PIN-codes van de boer en zichzelf wijzigen
 
 Voor jou als boer relevant: bel de beheerder als motor-instellingen, wifi of sensoren niet kloppen. Probeer niet zelf in admin-instellingen te duiken.
 
 ### Lockout
 
-Als je 5 keer achter elkaar een verkeerde PIN invoert, wordt de invoer voor die rol **5 minuten geblokkeerd**. Dit geldt zowel op de LCD als in de webinterface, en beide rollen hebben hun eigen lockout-teller.
+Als je 5 keer achter elkaar een verkeerde PIN invoert, wordt de invoer voor die rol **5 minuten geblokkeerd**. Dit geldt zowel op de bediening op de controller als in de webinterface, en beide rollen hebben hun eigen lockout-teller.
 
 ### PIN-opslag
 
 PIN's worden versleuteld opgeslagen (gehasht). Ze kunnen niet worden teruggelezen — alleen vervangen. Als je je PIN bent vergeten:
-- **Farmer-PIN vergeten**: de beheerder kan deze resetten via het Admin-menu
+- **Farmer-PIN vergeten**: de beheerder kan deze openieu instellen via het Beheerder-menu
 - **Admin-PIN vergeten**: gebruik de fysieke reset-procedure (zie [§18](#18-reset-procedure-boot-knop-op-microprocessorboard))
 
 ---
@@ -475,28 +502,28 @@ Zonder in te loggen kun je alle **statusinformatie** van het systeem aflezen. Je
 
 ### Op de controller
 
-Wanneer er geen gebruiker is ingelogd, rouleren de schermen automatisch elke 5 seconden in deze volgorde (zes schermen, daarna weer scherm 1):
+Wanneer er geen gebruiker is ingelogd, rouleren de schermen automatisch elke 5 seconden in deze volgorde (zeven schermen, daarna weer scherm 1):
 
-1. **Temperatuur en luchtvochtigheid** — `Temp:` en `RH:`
-2. **Wind** — windsnelheid (`Wind:`) en richting (`Dir:` met kompasletter)
+1. **Temperatuur en luchtvochtigheid** — Temperatuur `Temp:` en luchtvochtigheid `RH:`
+2. **Wind** — windsnelheid (`Wind:`) en windrichting (`Dir:` met kompasletter)
 3. **Bedrijfsmodus en sessie** — `Mode:` en `Sess:`
 4. **Wifi-status** — `WiFi:` en SSID of IP-adres
-5. **Datum en tijd** — datum en tijd, met tijdsbron (`NTP` of `RTC`)
-6. **Raamposities** — `M1`, `M2`, `M3` met `OPEN` / `CLOS` / `MOV>` / `MOV<`
+5. **Datum en tijd** — datum en tijd, met tijdsbron (`NTP` of `RTC`); of het dag `Day` of nacht `Night` is
+6. **Raamposities** — Staus van de ramen `M1`, `M2`, `M3` met `OPEN` / `CLOS` / `MOV>` / `MOV<`
 
 Volledige beschrijving van elk scherm staat in [§5.1](#51-lcd-display-16--2-tekens).
 
 **Handmatig navigeren** (zonder inloggen):
 - `D` — direct naar het volgende statusscherm
-- Op het temperatuur-/luchtvochtigheid-scherm (1): `#` opent het Climate-menu (vraagt Farmer-PIN)
-- Op het wind-scherm (2): `#` opent het Wind-menu (vraagt Farmer-PIN)
-- Op het wifi-scherm (4): `#` opent de wifi-AP-functie (vraagt Admin-PIN)
-- Op het tijdscherm (5): `#` opent de datum-/tijd-instelling (vraagt Admin-PIN)
+- Op het temperatuur-/luchtvochtigheid-scherm (1): `#` opent het Climate-menu (vraagt Boer-PIN)
+- Op het wind-scherm (2): `#` opent het Wind-menu (vraagt Boer-PIN)
+- Op het wifi-scherm (4): `#` opent de wifi-AP-functie (vraagt Beheerder-PIN)
+- Op het tijdscherm (5): `#` opent de datum-/tijd-instelling (vraagt Beheerder-PIN)
 - Elke andere toets opent het hoofdmenu
 
 ### In de webinterface
 
-De **Status**-tab is direct zichtbaar in de browser, zonder inloggen. Hier zie je dezelfde informatie als op de LCD, maar dan overzichtelijk gepresenteerd, plus grafieken van de afgelopen uren.
+De **Status**-tab is direct zichtbaar in de browser, zonder inloggen. Hier zie je dezelfde informatie als op de LCD, maar dan overzichtelijk gepresenteerd, plus een tabel met de metingen van de afgelopen tijd.
 
 ### Wat is niet zichtbaar zonder login?
 
@@ -507,13 +534,13 @@ De **Status**-tab is direct zichtbaar in de browser, zonder inloggen. Hier zie j
 - Wifi-instellingen
 - Motor-tijden
 
-Voor al deze handelingen moet je inloggen als Farmer of Admin.
+Voor al deze handelingen moet je inloggen als Boer of Beheerder.
 
 ---
 
 ## 9. Inloggen als boer
 
-### Op de kas controller
+### Op de controller
 
 Inloggen gaat via het hoofdmenu. Je kunt direct vanuit elk statusscherm naar het hoofdmenu door bijvoorbeeld op een cijfertoets te drukken (de toets `D` werkt niet — die stapt door de statusschermen).
 
@@ -535,7 +562,7 @@ Inloggen gaat via het hoofdmenu. Je kunt direct vanuit elk statusscherm naar het
    +----------------+
 ```
 
-3. Druk `1` om als Farmer in te loggen. Het PIN-invoerscherm verschijnt:
+3. Druk `1` om als boer `Farmer` in te loggen. Het PIN-invoerscherm verschijnt:
 
 ```
    +----------------+
@@ -555,12 +582,12 @@ Inloggen gaat via het hoofdmenu. Je kunt direct vanuit elk statusscherm naar het
 - `*` — wist het laatst ingevoerde cijfer
 - `*` met lege invoer — annuleer en ga terug naar het Access-menu
 
-> **Tip — snelweg naar setpoint bewerken**: je kunt ook direct in het Climate-menu beginnen (zie [§10](#10-klimaat-instellen)). Wanneer je een setpoint probeert te bewerken zonder ingelogd te zijn, vraagt het systeem dan vanzelf om je PIN en zet je daarna meteen in de bewerk-modus.
+> **Tip — quick-jump naar setpoint**: je kunt ook direct in het Climate-menu beginnen (zie [§10](#10-klimaat-instellen)). Wanneer je een setpoint probeert te bewerken zonder ingelogd te zijn, vraagt het systeem dan vanzelf om je PIN en zet je daarna meteen in de bewerk-modus.
 
 ### In de webinterface
 
 1. Open de webinterface (zie [§6](#6-de-webinterface-via-wifi))
-2. Klik op de tab **Access** (of de Login-knop)
+2. Klik op de Login-knop
 3. Klik op **Farmer**
 4. Voer je 4-cijferige PIN in
 5. Klik **Login**
@@ -568,14 +595,14 @@ Inloggen gaat via het hoofdmenu. Je kunt direct vanuit elk statusscherm naar het
 ### Uitloggen
 
 - **LCD**: hoofdmenu → `3:Access` → `3:Logout`. Het bericht `Logged out` verschijnt en de controller keert terug naar de statusschermen
-- **Web**: klik op **Logout** in de Access-tab
+- **Webinterface**: klik op **Logout** knop rechts boven
 - **Automatisch**: na de ingestelde sessie-time-out (standaard ~5 min) zonder activiteit word je uitgelogd
 
 ---
 
 ## 10. Klimaat instellen
 
-Allereerst: log in als Farmer (zie [§9](#9-inloggen-als-boer)).
+Allereerst: log in als Boer (zie [§9](#9-inloggen-als-boer)).
 
 ### 10.1 Op de kas controller
 
@@ -624,7 +651,7 @@ Rij 1 toont de naam van de huidige setpoint. Rij 2 toont:
 - de positie in de groep (`1/3`)
 - toetshints: `←A` (vorige), `→B` (volgende), `↩#` (bewerk), `^*` (terug)
 
-**Setpoints in de Day-groep:**
+**Setpoints in de dag-groep (Day):**
 
 | Volgorde | Naam op LCD | Wat regelt het? | Bereik |
 |:---:|---|---|---|
@@ -632,19 +659,17 @@ Rij 1 toont de naam van de huidige setpoint. Rij 2 toont:
 | 2/3 | `RH-max day (%)` | Maximum dagvochtigheid — boven deze waarde gaan ramen open | 40–98 % |
 | 3/3 | `RH-min day (%)` | Minimum dagvochtigheid — onder deze waarde blijven ramen dicht | 20–90 % |
 
-**Setpoints in de Night-groep:**
+**Setpoints in de Nacht-groep (Night):**
 
 | Volgorde | Naam op LCD | Wat regelt het? | Bereik |
 |:---:|---|---|---|
-| 1/3 | `T-max ngt (C)` | Maximum nachttemperatuur | 10–35 °C |
-| 2/3 | `RH-max ngt (%)` | Maximum nachtvochtigheid | 40–98 % |
-| 3/3 | `RH-min ngt (%)` | Minimum nachtvochtigheid | 20–90 % |
-
-> **Let op**: T-min (een minimum-temperatuur) komt niet voor in het menu. De huidige firmware regelt geen verwarming, alleen ventilatie — dus is alleen een T-max nodig om aan te geven wanneer er geventileerd moet worden.
+| 1/3 | `T-max ngt (C)` | Maximum nachttemperatuur — boven deze waarde gaan ramen open | 10–35 °C |
+| 2/3 | `RH-max ngt (%)` | Maximum nachtvochtigheid — boven deze waarde gaan ramen open | 40–98 % |
+| 3/3 | `RH-min ngt (%)` | Minimum nachtvochtigheid — onder deze waarde blijven ramen dicht | 20–90 % |
 
 #### Stap 4 — Bewerk een setpoint
 
-Druk `#` op het bladerscherm om de huidige setpoint te bewerken. Als je nog niet ingelogd was als Farmer, vraagt de controller eerst je PIN; daarna ga je automatisch naar het bewerk-scherm.
+Druk `#` op het bladerscherm om de huidige setpoint te bewerken. Als je nog niet ingelogd was als Boer, vraagt de controller eerst je PIN; daarna ga je automatisch naar het bewerk-scherm.
 
 ```
    +----------------+
@@ -659,9 +684,9 @@ Druk `#` op het bladerscherm om de huidige setpoint te bewerken. Als je nog niet
 - `#` — bevestig en sla op
 
 **Bij opslaan**:
-- Verandering: melding `Saved: <nieuwe waarde>`
-- Geen verandering: melding `No change`
-- Buiten bereik: de waarde wordt automatisch geknepen tot het toegestane minimum of maximum
+- Aanpassing is succesvol: melding `Saved: <nieuwe waarde>`
+- Waarde is deelfde: melding `No change`
+- Waarde ligt buiten bereik: de waarde wordt automatisch geknepen tot het toegestane minimum of maximum
 
 #### Conflict-prioriteit (Climate-menu, optie 3)
 
@@ -677,7 +702,7 @@ Druk in het Climate-menu op `3` om de prioriteit aan te passen. Het bewerkscherm
 | Waarde | Betekenis |
 |:---:|---|
 | `0` | Temperatuur eerst — temperatuur krijgt voorrang |
-| `1` | luchtvochtigheid eerst — vochtigheid krijgt voorrang |
+| `1` | luchtvochtigheid eerst — luchtvochtigheid krijgt voorrang |
 | `2` | Auto — de regeling kijkt naar welke afwijking het grootst is en kiest die |
 
 Voer 0, 1 of 2 in en bevestig met `#`.
@@ -701,7 +726,7 @@ Vanuit het hoofdmenu druk je `2` om in het Wind-menu te komen:
 
 #### PIN wijzigen op de kas controller — niet beschikbaar
 
-In de huidige firmware is er geen LCD-menu om je PIN te wijzigen. Wijzigen kan alleen via de **webinterface** (Access-tab). Bij verlies van een PIN-code: zie de fysieke reset-procedure in [§18](#18-reset-procedure-boot-knop-op-microprocessorboard).
+Er is op de kascontroller geen menu om je PIN te wijzigen. Je PIN wijzigen kan alleen via de **webinterface** (Access-tab) door de Beheerder. Bij verlies van een PIN-code: zie de fysieke reset-procedure in [§18](#18-reset-procedure-boot-knop-op-microprocessorboard).
 
 #### Time-out
 
@@ -709,7 +734,8 @@ Wanneer je in een menu of bewerk-scherm de ingestelde sessie-time-out (standaard
 
 ### 10.2 In de webinterface (tab Climate)
 
-`[SCHERMAFBEELDING: tab Climate met sliders, velden en de keuzelijst voor T vs RH conflict-prioriteit]`
+![SCHERMAFBEELDING: tab Climate met sliders, velden en de keuzelijst voor T vs RH conflict-prioriteit](.\images\kasControllerWebGUIClimateTab.png)
+*Figuur #: Climate tab met sliders, velden en de keuzelijst voor T vs RH conflict-prioriteit*
 
 Per setpoint heb je een schuifregelaar + nummerveld + **Apply**-knop.
 
@@ -779,7 +805,7 @@ Dit hoofdstuk legt uit wat de mode-regel op het LCD betekent en wat je in elke s
 
 | LCD-tekst | Betekenis | Wat doet de controller? | Wat moet je doen? |
 |---|---|---|---|
-| `Mode: AUTO` | Normale automatische werking | Regelt T en RH binnen de setpoints | Niets — alles werkt zoals het hoort |
+| `Mode: AUTO` | Normale automatische werking | Regelt Temperatuur en Luchtvochtigeid binnen de setpoints | Niets — alles werkt zoals het hoort |
 | `Mode: WIND` | Wind-override actief — wind te hard | **Alle ramen dicht; klimaatregeling onderdrukt** | Wachten tot de wind afneemt; zie [§12.5](#125-windbeveiliging-in-detail) |
 | `Mode: ALARM` | Motor-alarm (Hotraco RRK-3) | **Alle relais uit; motoren staan stil** | **Bel de beheerder onmiddellijk**; zie [§12.6](#126-motor-alarm-in-detail) |
 | `Mode:Window Cal.` | Kalibratie van de ramen — alle ramen sluiten om de uitgangspositie te bepalen | Sluit M1, M2, M3 gelijktijdig; duurt tot ~3 minuten | Wachten; niet ingrijpen, niet handmatig aan de ramen werken |
@@ -801,7 +827,7 @@ Dit hoofdstuk legt uit wat de mode-regel op het LCD betekent en wat je in elke s
 
 ### 12.4 Tijdens kalibratie
 
-Bij iedere opstart (of na een power-cycle) voert de controller automatisch een **CLOSE_ALL kalibratie** uit: alle drie de ramen worden gelijktijdig gesloten zodat de controller weet wat de uitgangspositie is.
+Bij iedere opstart, na een power-cycle, of nadat het alarm van de motorcontroller is afgevallen, voert de controller automatisch een **CLOSE_ALL kalibratie** uit: alle drie de ramen worden gelijktijdig gesloten zodat de kascontroller weet wat de uitgangspositie is.
 
 | Raam | Tijd om dicht te zijn |
 |---|---|
@@ -815,14 +841,14 @@ Tijdens deze ~3 minuten staat de mode op `Mode:Window Cal.`. Daarna gaat de cont
 
 ### 12.5 Windbeveiliging in detail
 
-De windbeveiliging beschermt de raamconstructie en motoren tegen schade door wind. Dit gedeelte beschrijft hoe deze precies werkt.
+De windbeveiliging beschermt de kas tegen schade door wind. Dit gedeelte beschrijft hoe deze precies werkt.
 
 #### Wat triggert het wind-alarm?
 
 Bij elke sensor-cyclus controleert de kascontroller drie zaken:
 
 1. **Gemiddelde windsnelheid** — ligt deze op of boven de ingestelde grens **`Wnd-max`** (in m/s)?
-2. **Windrichting** — valt de gemiddelde windrichting binnen een eventueel door de Admin ingestelde **uitsluitings-zone** (een richting-arc waarin de wind extra gevaarlijk is, bijvoorbeeld omdat ramen er direct op staan)?
+2. **Windrichting** — valt de gemiddelde windrichting binnen een eventueel door de Beheerder ingestelde **uitsluitings-zone** (een openingshoek waarin de wind extra gevaarlijk is, bijvoorbeeld omdat ramen er direct op staan.
 3. **Wind-sensor storing** — levert de wind-sensor geen geldige meting meer? In dat geval gaat de controller "veilig falen" en gedraagt zich alsof het hard waait.
 
 Als één of meer van deze drie waar zijn, gaat de controller in **wind-override** modus.
@@ -831,16 +857,14 @@ Als één of meer van deze drie waar zijn, gaat de controller in **wind-override
 
 | Instelling | Op LCD | In webinterface | Wie? |
 |---|---|---|---|
-| Windbeveiliging aan/uit | Wind-menu, item 2 (`Wnd-prot`) | Wind-tab | Farmer |
-| Windgrens in m/s | Wind-menu, item 1 (`Wnd-max`) | Wind-tab | Farmer |
-| Uitsluitings-zone (richting) | — | Wind-tab | Admin |
-| Gemiddeld windvenster (in min.) | — | Wind-tab | Admin |
+| Windbeveiliging aan/uit | Wind-menu, item 2 (`Wnd-prot`) | Wind-tab | Boer |
+| Windgrens in m/s | Wind-menu, item 1 (`Wnd-max`) | Wind-tab | Boer |
 
 Het **gemiddeld windvenster** bepaalt over hoeveel minuten de windmetingen worden gemiddeld voordat ze met de grens worden vergeleken. Een langer venster reageert minder snel op een rukwind maar wel betrouwbaarder op aanhoudend stevige wind.
 
 #### Wat gebeurt er als wind-alarm actief wordt?
 
-1. **Mode-regel** op de LCD verandert naar `Mode: WIND`
+1. **Mode-regel** op de LCD verandert naar `Mode: WIND`l het LCD kleurt *Rood* 
 2. **RGB-LED** wordt oranje; LCD-achtergrond wordt rood
 3. **Alle drie de ramen worden onmiddellijk gesloten** — gelijktijdig, zonder vertraging
 4. **Klimaatregeling wordt onderdrukt** — de controller stopt met afwegen of de ramen open zouden moeten op basis van temperatuur of vochtigheid, zolang het alarm actief is
@@ -855,9 +879,9 @@ Het alarm valt **direct** af zodra **alle** onderstaande voorwaarden tegelijk wa
 - De gemiddelde windrichting valt **buiten** de uitsluitings-zone (indien ingesteld)
 - De wind-sensor levert weer geldige metingen
 
-Er is **geen extra wachttijd of hysterese** — zodra de wind weer binnen de grenzen is, wordt het alarm onmiddellijk gewist en gaat de mode terug naar `Mode: AUTO`. De ramen blijven dicht; de klimaatregeling beslist daarna zelf op basis van T en RH of er weer geopend moet worden.
+Er is **geen extra wachttijd of hysteresis** — zodra de wind weer binnen de grenzen is, wordt het alarm onmiddellijk gewist en gaat de mode terug naar `Mode: AUTO`. De ramen blijven dicht; de klimaatregeling beslist daarna zelf op basis van temperatuur en Luchtvochtigeid of er weer geopend moet worden.
 
-> **Praktische tip**: doordat er geen hysterese is, kan bij onstabiel weer (windvlagen rond de grens) het alarm meermaals snel achter elkaar in en uit gaan. Een **langer gemiddeld windvenster** (door de Admin in te stellen) dempt dit, omdat korte rukwinden dan minder snel de gemiddelde meetwaarde over de grens duwen.
+> **Praktische tip**: doordat er geen hysteresis is, kan bij onstabiel weer (windvlagen rond de grens) het alarm meermaals snel achter elkaar in en uit gaan. Een **langer gemiddeld windvenster** (door de Beheerder in te stellen) dempt dit, omdat korte rukwinden dan minder snel de gemiddelde meetwaarde over de grens duwen.
 
 #### Bij een wind-sensor storing
 
@@ -881,11 +905,11 @@ De **Hotraco RRK-3 motorbox** heeft een eigen alarm-uitgang die de kascontroller
 
 #### Wat triggert het motor-alarm?
 
-De alarm-uitgang van de RRK-3 is met de kascontroller verbonden via een opto-koppelaar (voor elektrische scheiding). Zodra de RRK-3 zijn alarm-contact sluit:
+De alarm-uitgang van de RRK-3 is met de kascontroller verbonden. Zodra de RRK-3 zijn alarm-contact sluit:
 
-- De kascontroller detecteert dit binnen ~75 milliseconden (met een korte ontstoringsfilter om valse alarmen door storing te negeren)
+- De kascontroller detecteert dit binnen ~75 milliseconden
 - `Mode: ALARM` verschijnt op het LCD
-- De RGB-LED gaat **rood**, LCD-achtergrond wordt rood
+- De RGB-LED gaat **rood**, het LCD-scherm kleurt rood
 
 Mogelijke oorzaken — bepaald door de RRK-3 zelf:
 - Een motor blijft te lang draaien zonder dat de eindschakelaar wordt bereikt (vastloper of eindschakelaar-fout)
@@ -896,10 +920,10 @@ Mogelijke oorzaken — bepaald door de RRK-3 zelf:
 #### Wat gebeurt er als motor-alarm actief wordt?
 
 1. **Mode-regel** verandert naar `Mode: ALARM`
-2. **RGB-LED** wordt rood
+2. **RGB-LED** en **LCD-scherm** wordt rood
 3. **Alle relais naar de motoren worden onmiddellijk uitgeschakeld** — alle drie de motoren stoppen direct met bewegen
 4. **De raamposities worden als "onbekend" gemarkeerd** (`UNK` op het raamposities-scherm) — na een noodstop weet de controller niet meer in welke positie de ramen staan
-5. **Klimaatregeling wordt onderdrukt** — geen evaluatie van T en RH zolang het alarm actief is
+5. **Klimaatregeling wordt onderdrukt** — geen evaluatie van temperatuur en Luchtvochtigeid zolang het alarm actief is
 6. **Alle nieuwe commando's worden genegeerd** — zelfs als je in de webinterface op iets klikt of een setpoint wijzigt, wordt er niets met de ramen gedaan zolang het alarm actief is
 7. De gebeurtenis wordt gelogd
 
@@ -908,12 +932,12 @@ Mogelijke oorzaken — bepaald door de RRK-3 zelf:
 Stap voor stap:
 
 1. De **beheerder lost de oorzaak op** en reset de RRK-3 (handmatig, op de motorbox zelf — een externe reset-procedure die buiten de kascontroller om gaat)
-2. De alarm-uitgang van de RRK-3 valt af; de kascontroller detecteert dit binnen ~75 ms
-3. **Het alarm-bit in de kascontroller wordt gewist** — `Mode: ALARM` zou direct kunnen verdwijnen, maar:
-4. **60 seconden veiligheids-wachttijd** ("guard period"): de controller wacht **één volle minuut** zonder iets met de ramen te doen. Reden: een motor die net gestopt is na een noodstop kan nog enige tijd uitlopen of nog onder spanning staan. Direct opnieuw aansturen zou schade veroorzaken
+2. De alarm-uitgang van de RRK-3 valt af; de kascontroller detecteert dit
+3. **Het alarm in de kascontroller wordt gewist** — `Mode: ALARM` zou direct kunnen verdwijnen, maar:
+4. er volgt een **60 seconden veiligheids-wachttijd** ("guard period"): de controller wacht **één volle minuut** zonder iets met de ramen te doen. Reden: een motor die net gestopt is na een noodstop kan nog enige tijd uitlopen of nog onder spanning staan. Direct opnieuw aansturen zou schade veroorzaken. Ook geeft het de een Beheerder de tijd om rekening te houden met de aanstaande calibratie van de ramen
 5. Tijdens deze 60 seconden controleert de controller elke 5 seconden of het alarm misschien terugkomt. Zo ja → onmiddellijk terug naar `Mode: ALARM`, en de hele procedure begint van voren af aan
 6. Na 60 seconden stabiele veiligheid start de controller automatisch een **CLOSE_ALL re-kalibratie** (~3 minuten — `Mode:Window Cal.`) om alle ramen weer in een bekende uitgangspositie (volledig dicht) te brengen
-7. Na de re-kalibratie keert de controller automatisch terug naar `Mode: AUTO` en hervat de klimaatregeling
+7. Na de her-kalibratie keert de controller automatisch terug naar `Mode: AUTO` en hervat de klimaatregeling
 
 **Totale duur vanaf alarm-clear tot weer normaal werkend**: ongeveer **3 tot 4 minuten**.
 
@@ -1136,8 +1160,8 @@ Onderstaande termen verschijnen op het LCD-scherm. Ze zijn gegroepeerd per funct
 | Op LCD | Nederlands |
 |---|---|
 | `Sess: NONE` | Niemand ingelogd |
-| `Sess: Farmer` | Farmer ingelogd |
-| `Sess: Admin` | Admin ingelogd |
+| `Sess: Farmer` | Boer ingelogd |
+| `Sess: Admin` | Beheerder ingelogd |
 | `OTA` (achteraan) | Firmware-update bezig |
 
 **Sensor- en metingweergaven:**
@@ -1151,11 +1175,11 @@ Onderstaande termen verschijnen op het LCD-scherm. Ze zijn gegroepeerd per funct
 
 | Op LCD | Nederlands |
 |---|---|
-| `OPEN` | Volledig open |
-| `CLOS` | Volledig dicht |
-| `MOV>` | Aan het openen |
-| `MOV<` | Aan het sluiten |
-| `UNK` | Onbekende positie (kort na opstart) |
+| `OPEN` | Raam is volledig open |
+| `CLOS` | Raam is volledig dicht |
+| `MOV>` | Raam is aan het openen |
+| `MOV<` | Raam is aan het sluiten |
+| `UNK` | Raam is in onbekende positie (kort na opstart) |
 
 **Wifi:**
 
@@ -1164,7 +1188,7 @@ Onderstaande termen verschijnen op het LCD-scherm. Ze zijn gegroepeerd per funct
 | `WiFi: connected` | Verbonden met netwerk |
 | `WiFi: AP active` | Eigen AP actief |
 | `WiFi: --------` | Geen verbinding |
-| `Greenhouse-XXXX` | SSID van de eigen AP |
+| `Greenhouse-XXXX` | SSID van de eigen AP met unieke code op `XXXX` |
 
 **Tijd:**
 
@@ -1202,7 +1226,7 @@ Onderstaande termen verschijnen op het LCD-scherm. Ze zijn gegroepeerd per funct
 | `No change` | Geen wijziging doorgevoerd |
 | `Already logged in` | Je bent al ingelogd op dit niveau |
 
-**Reset (BOOT-knop):**
+**Reset (IO0-knop):**
 
 | Op LCD | Nederlands |
 |---|---|
@@ -1215,18 +1239,20 @@ Onderstaande termen verschijnen op het LCD-scherm. Ze zijn gegroepeerd per funct
 
 ---
 
-## 18. Reset-procedure (BOOT-knop op microprocessorboard)
+## 18. Reset-procedure (IO0-knop op microprocessorboard)
 
-Voor het geval een PIN vergeten is, of de controller moet volledig terug naar fabrieksinstellingen, kan de boer (of bij voorkeur de beheerder) een fysieke reset uitvoeren via de **BOOT-knop** op het microprocessorboard in de kast.
+Voor het geval de Beheerder-PIN vergeten is, of de controller moet volledig terug naar fabrieksinstellingen, kan de een fysieke reset uitgevoert worden via de **IO0-knop** op het microprocessorboard in de kast.
 
-`[FOTO: microprocessorboard met BOOT-knop en RESET-knop duidelijk aangewezen]`
+![FOTO: microprocessorboard met IO0-knop en RESET-knop duidelijk aangewezen](.\images\kasControllerLOLINRebootButton.png)
+
+*Figuur #: microprocessorboard met RESET-knop*
 
 > **LET OP**: gebruik deze procedure alleen bewust. Op niveau 2 en 3 verlies je álle door de beheerder ingestelde wifi-, motor- en locatie-parameters.
 
 ### Procedure
 
-1. Open de kast en lokaliseer de **BOOT-knop** op het microprocessorboard (LOLIN S3). Dit is een andere knop dan de RESET-knop — let goed op welke knop je indrukt
-2. Druk de BOOT-knop in en houd deze ingedrukt
+1. Open de kast en lokaliseer de **IO0-knop** op het microprocessorboard (LOLIN S3). Dit is een andere knop dan de RST-knop — let goed op welke knop je indrukt
+2. Druk de **IO0-knop** in en houd deze ingedrukt
 3. Op de LCD verschijnt na enkele seconden een melding die aangeeft welk reset-niveau actief wordt
 4. Laat de knop los op het gewenste niveau:
 
@@ -1237,16 +1263,16 @@ Voor het geval een PIN vergeten is, of de controller moet volledig terug naar fa
 | **10–15 sec.** | `Reset settings?` | **Niveau 2 — alle instellingen resetten**: klimaat, wind, motor, wifi, MQTT en systeem-instellingen worden allemaal teruggezet. PIN's ook gereset. Geen reboot. |
 | **15–20 sec.** | `Restart!` / `Restarting...` | **Niveau 3 — volledige reset + herstart**: alles wordt gereset en de controller start opnieuw op |
 
-5. Bij **20 seconden continu vasthouden** voert de controller automatisch niveau 3 uit (volledige reset + herstart). Het is dus niet nodig om langer dan 20 seconden vast te houden
+5. Bij **20 seconden continu vasthouden** voert de controller automatisch een niveau 3 reset uit (volledige reset + herstart). Het is dus niet nodig om langer dan 20 seconden vast te houden
 6. **Na een reset op niveau 2 of 3**: alle instellingen die de beheerder had geconfigureerd zijn weg. Bel de beheerder om wifi-, motor- en locatie-instellingen opnieuw te configureren
-7. **Na een reset op niveau 1**: PIN's staan weer op fabrieksstandaard. Login met de fabrieks-Farmer-PIN, en wijzig deze direct
+7. **Na een reset op niveau 1**: PIN's staan weer op fabrieksstandaard. Login met de fabrieks-Boer-PIN op de webinterface, en wijzig deze direct
 
 ### Welke reset wanneer?
 
 | Situatie | Welk niveau? |
 |---|---|
-| Farmer-PIN vergeten | Niveau 1 (Reset PIN) — daarna weer met `1234` inloggen en direct wijzigen |
-| Admin-PIN vergeten | Niveau 1 — daarna kan de beheerder met de fabrieks-Admin-PIN inloggen |
+| Boer-PIN vergeten | Niveau 1 (Reset PIN) — daarna weer met `1234` inloggen en direct wijzigen |
+| Beheerde-PIN vergeten | Niveau 1 — daarna kan de beheerder met de fabrieks-Admin-PIN inloggen |
 | Controller helemaal vastgelopen, eenvoudige reboot helpt niet | Eerst proberen met power-cycle of RESET-knop ([§14](#14-onderhoud--wat-de-boer-zelf-doet)). Pas als dat niet werkt: niveau 3 |
 | Controller compleet terug naar fabriek (bijv. bij verhuizing of overname) | Niveau 2 of 3 — daarna alles opnieuw laten configureren door beheerder |
 
@@ -1278,6 +1304,8 @@ Voor alle vragen of problemen waar deze handleiding geen antwoord op geeft:
 - Wanneer is het probleem begonnen?
 - Was er net daarvoor een stroomuitval, onweer, of een handmatige actie?
 
+> Maak eventueel fotos met een smartfone en stuur die naar de beheerder
+
 ---
 
 ## 20. Versie en wijzigingshistorie
@@ -1287,6 +1315,7 @@ Voor alle vragen of problemen waar deze handleiding geen antwoord op geeft:
 | 1.0 | \[invullen] | Eerste uitgave — gebaseerd op firmware 1.16.34 |
 | 1.1 | 2026-05-09 | Bijgewerkt voor firmware 1.16.38: nieuwe `#=Set` snelweg vanaf de T/RH- en Wind-statusschermen (vraagt Farmer-PIN), conflict-prioriteit toegevoegd aan Climate-menu (LCD optie 3) en aan webinterface tab Climate als keuzelijst, gewijzigd Wind-statusscherm-formaat (zonder haakjes om de kompasletter) |
 | 1.2 | 2026-05-10 | Bijgewerkt voor firmware 1.16.39: zichtbare `#=Set`/`#=AP`-hints verwijderd van alle statusschermen (T/RH, Wind, WiFi, Datum/tijd) — `#` werkt nog steeds als snelweg naar het bijhorende menu, maar het LCD blijft schoon; Wind-statusscherm rij 2 toont kompasletter weer tussen haakjes (`Dir:180 ° (S )`) zoals vóór 1.16.37 |
+| 1.3 | 2026-05-11 | Bijgewerkt voor firmware 1.17.0–1.17.25: zevende statusscherm toegevoegd met firmware-versie + Uptime; Datum/tijd-statusscherm (5) toont op rij 2 nu rechts een **Day**/**Night**-badge die automatisch omschakelt op zonsopkomst en zonsondergang; **D**-toets werkt vanuit elk menu, bladerscherm, PIN- of bewerk-scherm als directe terugkeer naar de roterende statusschermen; na 5 minuten zonder toetsendruk in een menu keert de controller automatisch terug naar de auto-rotatie; **Climate → 3 CR** volgt nu hetzelfde "eerst tonen, dan PIN, dan bewerken"-patroon als Day/Night (voorheen sprong dit menu direct naar PIN-invoer). Volledige handmatige taalcontrole.|
 
 ---
 

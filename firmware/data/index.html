@@ -42,17 +42,21 @@
       <h3>Temperature <span class="tip-icon" data-tip="Internal greenhouse air temperature measured by the FG6485A sensor.">ⓘ</span></h3>
       <p><span data-tip="Raw reading from the most recent sensor poll.">Current</span>: <strong id="st-temp">—</strong> °C</p>
       <p><span data-tip="Sliding average over the window configured in Climate → T avg window. Used by the control logic.">Average</span>: <strong id="st-temp-avg">—</strong> °C</p>
+      <p><span data-tip="Active maximum temperature setpoint — the day or night value (T max day / T max ngt from Climate) currently in force based on sunrise/sunset. Windows open in steps when the sliding-average temperature exceeds this value.">Setpoint</span>: <strong id="st-t-max">—</strong> °C</p>
     </div>
     <div class="card">
       <h3>Humidity <span class="tip-icon" data-tip="Internal greenhouse relative humidity measured by the FG6485A sensor.">ⓘ</span></h3>
       <p><span data-tip="Raw reading from the most recent sensor poll.">Current</span>: <strong id="st-rh">—</strong> %RH</p>
       <p><span data-tip="Sliding average over the window configured in Climate → RH avg window. Used by the control logic when humidity control is enabled.">Average</span>: <strong id="st-rh-avg">—</strong> %RH</p>
+      <p><span data-tip="Active maximum humidity setpoint — day or night value currently in force. Windows open when the sliding-average RH exceeds this value (only when humidity control is enabled).">Setpoint max</span>: <strong id="st-rh-max">—</strong> %RH</p>
+      <p><span data-tip="Active minimum humidity setpoint — day or night value currently in force. Used by the conflict-resolution logic to keep windows closed when RH is below this value.">Setpoint min</span>: <strong id="st-rh-min">—</strong> %RH</p>
     </div>
     <div class="card">
       <h3>Wind <span class="tip-icon" data-tip="External wind data from the SenseCAP S200 anemometer.">ⓘ</span></h3>
       <p><span data-tip="Instantaneous wind speed from the last sensor poll (m/s).">Speed</span>: <strong id="st-wind">—</strong> m/s</p>
+      <p><span data-tip="Sliding-average wind speed used by the wind-protection evaluation.">Avg</span>: <strong id="st-wind-avg">—</strong> m/s</p>
       <p><span data-tip="Wind direction in degrees. 0° and 360° = North; 90° = East; 180° = South; 270° = West.">Direction</span>: <strong id="st-wind-dir">—</strong> °</p>
-      <p><span data-tip="Average wind speed used by the wind safety evaluation.">Avg</span>: <strong id="st-wind-avg">—</strong> m/s</p>
+      <p><span data-tip="Angular sector spanned by every direction sample in the current sliding window. A small value (e.g. 30°) means steady wind from one direction; a large value (e.g. 180°) means the wind is shifting widely.">Variation</span>: <strong id="st-wind-var">—</strong> °</p>
     </div>
     <div class="card">
       <h3>Windows <span class="tip-icon" data-tip="Estimated window positions. These are software-tracked states — the controller has no physical position feedback.">ⓘ</span></h3>
@@ -539,7 +543,17 @@
   <div id="log-wrap">
     <table id="log-tbl">
       <thead>
-        <tr><th>Time</th><th>T (°C)</th><th>RH (%)</th><th>Wind (m/s)</th><th>Dir (°)</th></tr>
+        <tr>
+          <th>Time</th>
+          <th>T (°C)</th>
+          <th>T-avg (°C)</th>
+          <th>RH (%)</th>
+          <th>RH-avg (%)</th>
+          <th>Wind (m/s)</th>
+          <th>Wind Avg (m/s)</th>
+          <th>Direction (°)</th>
+          <th>Variation (°)</th>
+        </tr>
       </thead>
       <tbody id="log-body"></tbody>
     </table>

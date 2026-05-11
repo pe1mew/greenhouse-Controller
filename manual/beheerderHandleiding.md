@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de beheerder
 
-**Versie:** 1.5 — concept
+**Versie:** 1.6 — concept
 **Datum:** 2026-05-11
-**Firmware:** 1.17.20
+**Firmware:** 1.17.25
 
 ---
 
@@ -345,6 +345,49 @@ Vanaf firmware 1.17.20 wordt een verschil tussen de **firmware-versie** en de **
 **Hoe te zien op het dashboard**
 
 Een mismatch verschijnt als een rode **MISMATCH**-badge in de **Alarms**-tegel op de Status-tab, naast eventuele andere alarmen (WIND, MOTOR ALARM, sensor-faults). Bij gelijke versies (of wanneer de assets-versie onbekend is — `?` op een schone serieel-geflasht systeem zonder OTA-pakket) blijft de badge weg en toont Alarms zoals gebruikelijk **OK** of de actieve mode-vlaggen.
+
+### Status-tab — actieve setpoints op de tegels
+
+Sinds firmware 1.17.21 tonen de Temperature-, Humidity- en Wind-tegels naast de actuele meting ook de **op dit moment actieve setpoint(s)**. "Actief" wil zeggen: de dag- of nacht-waarde die op dit moment in werking is, geselecteerd op basis van zonsopkomst/zonsondergang.
+
+| Tegel | Extra regel(s) |
+|---|---|
+| Temperature | **Setpoint** — actieve `T-max` (boven deze waarde gaan ramen open) |
+| Humidity | **Setpoint max** + **Setpoint min** — actieve `RH-max` / `RH-min` |
+| Wind | **Variation** — de hoekbreedte (in graden) waarbinnen alle recente windrichting-metingen liggen; klein getal = stabiele wind, groot getal = sterk wisselende richting |
+
+De volgorde van de regels in de Wind-tegel is aangepast naar **Speed → Avg → Direction → Variation** zodat de twee snelheidsregels bij elkaar staan en de richting-gerelateerde regels onderaan.
+
+**Humidity-tegel bij uitgeschakelde RH-regeling**: wanneer de beheerder onder Climate → Humidity-control op *Off* heeft gezet, worden de twee **Setpoint max / Setpoint min**-regels op de Humidity-tegel *gedimd* (50 % opacity) — de waarden blijven leesbaar zodat de operator nog kan zien wat geconfigureerd is, maar zijn duidelijk inactief. Het externe dashboard krijgt deze velden in dat geval niet binnen (de controller laat ze weg uit de POST), zodat de publieke weergave geen inactieve waarden toont.
+
+### Sensorhistorie-tabel onderaan de pagina
+
+Sinds firmware 1.17.22 toont de sensorhistorie-tabel onder de Status-tegels acht kolommen in plaats van vier: **Time · T · T-avg · RH · RH-avg · Wind · Wind Avg · Direction · Variation**. Elke rauwe meting staat naast zijn glijdend-gemiddelde, en de nieuwe wind-direction-variation is ook hier zichtbaar. De `/api/history` JSON gebruikt dezelfde veldnamen als de Status-JSON (`temp_c` / `temp_avg_c` / `speed_ms` / `speed_avg_ms` / `direction_deg` / `direction_variation_deg`) — handig voor scripts die beide endpoints uitlezen.
+
+### LCD-statusschermen — overzicht
+
+Sinds firmware 1.17.24 roteert het LCD **zeven** statusschermen (was zes). Elk scherm staat 5 seconden, daarna volgt het volgende; na scherm 7 begint de cyclus opnieuw bij 1.
+
+| # | Scherm | Inhoud rij 1 / rij 2 |
+|---|---|---|
+| 1 | Temp/RH | `Temp: 23 °C` / `  RH: 65 %` |
+| 2 | Wind | `Wind: 2.3 m/s` / ` Dir:180 ° (S )` |
+| 3 | Mode/Sess | `Mode: AUTO` / `Sess: NONE` |
+| 4 | WiFi | `WiFi: connected` / `192.168.20.150` |
+| 5 | Tijd | `06-05-2026 14:30` / `Src:NTP      Day` |
+| 6 | Raamposities | `M1    M2    M3 ` / `OPEN  CLOS  MOV>` |
+| 7 | Firmware + Uptime *(nieuw 1.17.24)* | `FW: 1.17.25` / `Up: 1d 4h 23m` |
+
+Op scherm 5 is sinds firmware 1.17.25 rechts op rij 2 een **`Day`**/**`Night`**-badge zichtbaar; deze schakelt op de exacte zonsopkomst en zonsondergang die ook de dag/nacht-setpoint-selectie aansturen.
+
+### LCD — D-toets als directe terugkeer + 5-minuten time-out
+
+Twee gebruikers-vriendelijke gedragingen sinds firmware 1.17.24:
+
+- **D-toets als snelle escape**: vanaf elk menu, bladermenu, PIN-invoer of bewerk-scherm springt **één druk op `D`** terug naar de roterende statusschermen. Op de statusschermen zelf behoudt `D` zijn oude functie (volgende scherm in de rotatie).
+- **5-minuten auto-terugkeer**: blijft het LCD 5 minuten lang op een menu of invoer staan zonder dat een toets wordt ingedrukt, dan keert de FSM automatisch terug naar de auto-rotatie. Onafhankelijk van de sessie-time-out — werkt ook zonder ingelogde gebruiker, zodat de display niet permanent blijft hangen op een halve invoer als iemand wegloopt.
+
+Daarnaast volgt **Climate → 3 CR** (conflict-prioriteit) nu hetzelfde "blader-dan-PIN-dan-bewerken"-patroon als Climate → 1 Day en 2 Night: eerst zie je de actieve waarde, `#` start dan pas het bewerken (vraagt Farmer-PIN als je nog niet ingelogd bent), `*` terug naar het Climate-menu.
 
 ---
 
@@ -1459,6 +1502,7 @@ De **complete uitleg** — met daarin alle velden, alle event-types, alle parame
 | 1.3 | 2026-05-10 | Bijgewerkt voor firmware 1.17.0–1.17.1: nieuwe Beheerder-tab **Web** voor status-rapportage naar een extern PHP-eindpunt (URL, gedeelde token, interval 60–300 s, zes tegel-zichtbaarheidsvinkjes, dagelijkse log-upload tijd en upload-op-rotatie); status-rapportage standaard uit en volledig instelbaar zonder de LCD aan te raken; HTTPS-eindpunten ondersteund (geen certificaatcontrole); `Uptime`-regel toegevoegd aan de Klok-tegel van de Status-tab zodat onverwachte reboots zichtbaar zijn (§6 Status-tab — Klok-tegel, §11.10). |
 | 1.4 | 2026-05-11 | Bijgewerkt voor firmware 1.17.2–1.17.8a: extern dashboard toont nu **lokale tijd** voor zonsopkomst/zonsondergang en `time_iso` (UTC→lokaal-conversie in `dm_status_snapshot`, DST automatisch); status-JSON-veldnamen aangelijnd op het bestaande publieke dashboard (`temp_c`/`speed_ms`/`direction_deg`/`mode={current,flags[]}` etc.); HTTPS-uitgaande verbindingen krijgen ruimere stack (12 KB) en mbedTLS-handshake werkt nu betrouwbaar; T11 status-JSON-buffer vergroot 1024 → 2048 bytes; `/api/web` POST nu synchroon (geen race meer bij Apply); URL-validatie eist `api.php`-suffix; webgui-Apply velden worden niet meer overschreven door auto-refresh; cosmetische verbeteringen (klok-waarde bold, URL-veld donker thema, datum-spinner-knoppen passen); nieuwe diagnostische **OTA diagnostic (temp)**-tegel op Status-tab toont Firmware-vs-Assets-versie + MISMATCH-badge (§6 Status-tab — OTA diagnostic (temp)); web-assets dragen nu een eigen `asset_version` via `manifest.json` (in de ZIP gebakken door `bin/build_release.ps1`); `GET /manifest.json` en `<!-- web-assets X.Y.Z -->` HTML-comment voor onafhankelijke verificatie. |
 | 1.5 | 2026-05-11 | Bijgewerkt voor firmware 1.17.9–1.17.20: hoofd-bugfix in `drivers/littleFS/src/littlefs_storage.cpp` — beide LittleFS-partities deelden VFS-mountpoint `/lfs`, waardoor T13 tijdens een gekoppelde OTA wel firmware naar de inactieve bank schreef maar de assets nooit op de bijhorende LFS-partitie terechtkwamen; iedere partitie heeft nu een eigen mountpoint (`/lfsa` en `/lfsb`), waarmee de OTA-cross-bank fout (zichtbaar als oude assets na een succesvolle firmware-update) verholpen is. De tijdelijke **OTA diagnostic (temp)**-tegel uit 1.17.4–1.17.9a is verwijderd; de versie-controle blijft behouden en is geïntegreerd in de **Alarms**-tegel als **MISMATCH**-badge (§6 Status-tab — versie-controle van firmware en web-assets). De diagnostische verificatie-bronnen blijven beschikbaar voor onafhankelijke controle: `GET /manifest.json`, View Source-stempel `<!-- web-assets X.Y.Z -->`, en `?v=<versie>` cache-busters op `app.js` / `style.css`. OTA-procedure in §14 uitgebreid met expliciete **Verificatie na de update**-stap. |
+| 1.6 | 2026-05-11 | Bijgewerkt voor firmware 1.17.21–1.17.25. **Web GUI** — actieve setpoints toegevoegd op de Temperature-, Humidity- en Wind-tegels (de dag- of nacht-waarde die momenteel in werking is); Wind-tegel rij-volgorde gewijzigd naar Speed → Avg → Direction → Variation, met **Variation** = de hoekbreedte (°) waarbinnen alle recente windrichting-metingen liggen; sensorhistorie-tabel uitgebreid van 4 naar 8 kolommen (Time + T/T-avg + RH/RH-avg + Wind/Wind Avg + Direction + Variation); wanneer **Humidity-control = Off** worden de RH-setpoint-regels op de Humidity-tegel gedimd (50 % opacity) en worden de bijhorende velden weggelaten uit de POST naar het externe dashboard. **LCD** — zevende statusscherm toegevoegd (`FW: 1.17.25` / `Up: 1d 4h 23m`); Tijd-scherm rij 2 krijgt rechts een **Day**/**Night**-badge; **D**-toets werkt vanuit elk menu/PIN/bewerk-scherm als directe terugkeer naar de auto-rotatie; na 5 minuten zonder toets in een menu keert de display automatisch terug naar de roterende statusschermen; **Climate → 3 CR** volgt nu het "blader-eerst, daarna PIN, daarna bewerken"-patroon van Day/Night. Zie §6 *Status-tab — actieve setpoints op de tegels*, *Sensorhistorie-tabel*, *LCD-statusschermen* en *LCD — D-toets en 5-minuten time-out*. |
 
 ---
 

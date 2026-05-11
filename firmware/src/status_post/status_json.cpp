@@ -92,7 +92,8 @@ static const char *current_mode_label(const status_snapshot_t *s)
 
 size_t build_canonical_status_json(char *buf, size_t cap,
                                    const status_snapshot_t *s,
-                                   uint32_t expose_mask)
+                                   uint32_t expose_mask,
+                                   bool include_disabled_setpoints)
 {
     if (buf == NULL || cap == 0u || s == NULL) { return 0u; }
 
@@ -103,25 +104,53 @@ size_t build_canonical_status_json(char *buf, size_t cap,
     ok = ok && append(buf, cap, &pos, "{\"type\":\"status\"");
 
     /* climate — dashboard reads temp_c, rh_pct (see hbwv assets/app.js). The
-     * temp_avg_c / rh_avg_pct fields are local-UI extras the dashboard ignores. */
+     * temp_avg_c / rh_avg_pct and the *_active setpoint fields are extras
+     * that the public dashboard ignores; the local web GUI surfaces them
+     * on the Temperature and Humidity status tiles so the operator sees
+     * the live measurement together with the threshold currently in force.
+     *
+     * RH-setpoint gating: the two `rh_*_active` fields are conditional —
+     * emitted when RH control is active OR when the caller explicitly
+     * asks for them (local UI passes include_disabled_setpoints=true so it
+     * can render the values in a dimmed style; T14 passes false so the
+     * public dashboard receives no inert setpoints when the operator has
+     * disabled RH control). `rh_ctrl_enabled` is always emitted so the
+     * recipient knows which mode is active. */
     if (ok && (expose_mask & STATUS_EXPOSE_CLIMATE)) {
         ok = ok && append(buf, cap, &pos,
             ",\"climate\":{\"temp_c\":%d.%d,\"temp_avg_c\":%d.%d,"
-            "\"rh_pct\":%u,\"rh_avg_pct\":%u}",
+            "\"rh_pct\":%u,\"rh_avg_pct\":%u,"
+            "\"temp_max_active\":%d",
             s->t_c10 / 10, (s->t_c10 < 0 ? -s->t_c10 : s->t_c10) % 10,
             s->t_avg_c10 / 10, (s->t_avg_c10 < 0 ? -s->t_avg_c10 : s->t_avg_c10) % 10,
-            (unsigned)s->rh_pct, (unsigned)s->rh_avg_pct);
+            (unsigned)s->rh_pct, (unsigned)s->rh_avg_pct,
+            (int)s->t_max_active);
+
+        if (ok && (s->rh_ctrl_enabled || include_disabled_setpoints)) {
+            ok = ok && append(buf, cap, &pos,
+                ",\"rh_max_active\":%u,\"rh_min_active\":%u",
+                (unsigned)s->rh_max_active, (unsigned)s->rh_min_active);
+        }
+        ok = ok && append(buf, cap, &pos,
+            ",\"rh_ctrl_enabled\":%s}",
+            s->rh_ctrl_enabled ? "true" : "false");
     }
 
-    /* wind — dashboard reads speed_ms, direction_deg. avg_* are local extras. */
+    /* wind — dashboard reads speed_ms, direction_deg. avg_* and
+     * direction_variation_deg are local extras; the variation captures the
+     * angular sector that the wind direction is currently oscillating
+     * within (a tight sector means steady wind, a wide sector means
+     * shifting wind). */
     if (ok && (expose_mask & STATUS_EXPOSE_WIND)) {
         ok = ok && append(buf, cap, &pos,
             ",\"wind\":{\"speed_ms\":%u.%u,\"speed_avg_ms\":%u.%u,"
-            "\"direction_deg\":%u,\"direction_avg_deg\":%u}",
+            "\"direction_deg\":%u,\"direction_avg_deg\":%u,"
+            "\"direction_variation_deg\":%u}",
             (unsigned)(s->w_ms10 / 10u),     (unsigned)(s->w_ms10 % 10u),
             (unsigned)(s->w_avg_ms10 / 10u), (unsigned)(s->w_avg_ms10 % 10u),
             (unsigned)s->w_dir_deg,
-            (unsigned)s->w_avg_dir_deg);
+            (unsigned)s->w_avg_dir_deg,
+            (unsigned)s->w_dir_variation_deg);
     }
 
     /* windows — object keyed M1/M2/M3. */

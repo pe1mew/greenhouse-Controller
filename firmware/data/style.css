@@ -94,6 +94,12 @@ h3 { font-size: .9rem; color: var(--muted); margin-bottom: .5rem; margin-top: .7
  * the `hidden` attribute (e.g. #st-mismatch) stay visible regardless of
  * what app.js does. */
 [hidden] { display: none !important; }
+
+/* Visually de-emphasise a row whose data is configured but currently inert
+ * (e.g. RH setpoint lines on the Humidity card while RH control is disabled).
+ * Stable card height — the row stays in place — but the operator immediately
+ * sees that the value is not driving the controller right now. */
+.dimmed { opacity: 0.5; }
 .badge.online  { background: var(--green);  color: #fff; }
 .badge.offline { background: var(--red);    color: #fff; }
 .badge.ntp-on  { background: var(--green);  color: #fff; }

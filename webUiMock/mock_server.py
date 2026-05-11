@@ -315,20 +315,46 @@ def _build_status() -> dict:
     # renders the value verbatim as HH:MM).
     sunrise  = 6 * 60 + 30     # 06:30 local
     sunset   = 20 * 60 + 30    # 20:30 local
+    is_day   = sunrise <= cur_mins <= sunset
+
+    # Active climate setpoints — pick the day or night value from the cfg
+    # dict to mirror dm_status_snapshot()'s is_daytime branch.
+    t_max_active  = cfg["t_max_day"]  if is_day else cfg["t_max_ngt"]
+    rh_max_active = cfg["rh_max_day"] if is_day else cfg["rh_max_ngt"]
+    rh_min_active = cfg["rh_min_day"] if is_day else cfg["rh_min_ngt"]
+    rh_ctrl_on    = (cfg["rh_ctrl_en"] != 0)
+
+    # Wind-direction variation — synthetic ±20° wobble around the average
+    # plus a slow swelling component so the value moves visibly between
+    # ~30° (steady) and ~110° (shifting). The real firmware computes this
+    # as the smallest arc containing every direction sample in the sliding
+    # window (see dir_avg_variation() in firmware/src/sensor_poll/).
+    wind_var = int(40 + 35 * (1 + math.sin(t / 1800 + 0.7)))
 
     return {
         "type": "status",
+        # Mock serves the local-UI consumer path, so it ALWAYS includes the
+        # RH-setpoint values (the GUI dims the rows itself when rh_ctrl is
+        # off via the rh_ctrl_enabled flag).  rh_ctrl_enabled is always
+        # emitted so consumers know which mode is active.  The real-device
+        # T14 → public-dashboard path differs — see firmware
+        # status_post/status_json.cpp `include_disabled_setpoints=false`.
         "climate": {
-            "temp_c":     round(temp, 1),
-            "temp_avg_c": round(temp, 1),
-            "rh_pct":     int(round(rh)),
-            "rh_avg_pct": int(round(rh)),
+            "temp_c":           round(temp, 1),
+            "temp_avg_c":       round(temp, 1),
+            "rh_pct":           int(round(rh)),
+            "rh_avg_pct":       int(round(rh)),
+            "temp_max_active":  t_max_active,
+            "rh_max_active":    rh_max_active,
+            "rh_min_active":    rh_min_active,
+            "rh_ctrl_enabled":  rh_ctrl_on,
         },
         "wind": {
-            "speed_ms":          round(wind, 1),
-            "speed_avg_ms":      round(wind, 1),
-            "direction_deg":     wind_dir,
-            "direction_avg_deg": wind_dir,
+            "speed_ms":                round(wind, 1),
+            "speed_avg_ms":            round(wind, 1),
+            "direction_deg":           wind_dir,
+            "direction_avg_deg":       wind_dir,
+            "direction_variation_deg": wind_var,
         },
         "windows": {
             "M1": "CLOSED",
@@ -340,7 +366,7 @@ def _build_status() -> dict:
             "flags":   [],
         },
         "sun": {
-            "is_daytime":   sunrise <= cur_mins <= sunset,
+            "is_daytime":   is_day,
             "sunrise_min":  sunrise,
             "sunset_min":   sunset,
         },
@@ -364,22 +390,36 @@ def _build_status() -> dict:
 
 
 def _build_history(n: int) -> list[dict]:
-    """Return n synthetic readings from oldest → newest."""
+    """Return n synthetic readings from oldest → newest.
+
+    Per-row schema mirrors firmware /api/history (1.17.22+): both raw and
+    average for T, RH, wind speed, plus the current direction and the
+    sliding-window direction variation.  Field names match the keys inside
+    the canonical status JSON's `climate` and `wind` blocks so the same
+    name carries the same number on /api/status and /api/history."""
     now      = time.time()
     interval = cfg.get("poll_interval_s", 30)
     rows     = []
     for i in range(n - 1, -1, -1):
         ts       = now - i * interval
         temp     = 20.0 + 4.0  * math.sin(ts / 7200)
+        temp_avg = 20.0 + 4.0  * math.sin((ts - 60) / 7200)         # slight lag
         rh       = 60   + 10   * math.sin(ts / 10800 + 1.0)
+        rh_avg   = 60   + 10   * math.sin((ts - 60) / 10800 + 1.0)
         wind     = max(0.0, 2.5 + 2.0 * math.sin(ts / 900 + 2.0))
+        wind_avg = max(0.0, 2.5 + 2.0 * math.sin((ts - 60) / 900 + 2.0))
         wind_dir = int((180 + 90 * math.sin(ts / 3600 + 3.0)) % 360)
+        wind_var = int(40 + 35 * (1 + math.sin(ts / 1800 + 0.7)))
         rows.append({
-            "ts":       int(ts),
-            "temp_c":   round(temp, 1),
-            "rh_pct":   int(round(rh)),
-            "wind_ms":  round(wind, 1),
-            "wind_dir": wind_dir,
+            "ts":                       int(ts),
+            "temp_c":                   round(temp,     1),
+            "temp_avg_c":               round(temp_avg, 1),
+            "rh_pct":                   int(round(rh)),
+            "rh_avg_pct":               int(round(rh_avg)),
+            "speed_ms":                 round(wind,     1),
+            "speed_avg_ms":             round(wind_avg, 1),
+            "direction_deg":            wind_dir,
+            "direction_variation_deg":  wind_var,
         })
     return rows
 

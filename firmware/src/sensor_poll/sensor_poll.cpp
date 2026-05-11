@@ -207,6 +207,65 @@ static float dir_avg_get(const dir_avg_ctx_t *ctx)
 }
 
 /**
+ * @brief Width of the smallest arc containing every direction sample.
+ *
+ * Reconstructs each per-sample angle from the sin/cos buffers, sorts them,
+ * then finds the largest gap between consecutive sorted angles (including
+ * the wrap-around gap from the last back to the first). The variation is
+ * the complement of that gap: `360 - max_gap`.
+ *
+ * Examples:
+ *   samples 100°/130°/160°       → variation = 60° (one continuous sector)
+ *   samples 5°/355°/10°           → variation = 15° (wraps across north)
+ *   samples 100°/280°             → variation = 180° (opposing winds)
+ *   all samples identical         → variation = 0°
+ *
+ * @return Variation in degrees [0, 360), or 0 when count < 2.
+ */
+static float dir_avg_variation(const dir_avg_ctx_t *ctx)
+{
+    if (ctx->count < 2u) return 0.0f;
+
+    /* Reconstruct each in-window angle from its stored sin/cos pair.
+     * The valid samples are the most recent `count` entries written into
+     * the circular buffer — walk from the oldest forward. */
+    float angles[SP_AVG_DEPTH];
+    const uint16_t n = ctx->count;
+    for (uint16_t i = 0; i < n; i++) {
+        uint16_t idx = (uint16_t)((ctx->head + SP_AVG_DEPTH - n + i) % SP_AVG_DEPTH);
+        float deg = atan2f(ctx->sin_buf[idx], ctx->cos_buf[idx]) * (180.0f / (float)M_PI);
+        if (deg < 0.0f) deg += 360.0f;
+        angles[i] = deg;
+    }
+
+    /* Insertion sort — N is small (≤ SP_AVG_DEPTH, typically 12–30) so the
+     * O(N²) cost is negligible and we avoid pulling in qsort. */
+    for (uint16_t i = 1u; i < n; i++) {
+        float key = angles[i];
+        int32_t j = (int32_t)i - 1;
+        while (j >= 0 && angles[j] > key) {
+            angles[j + 1] = angles[j];
+            j--;
+        }
+        angles[j + 1] = key;
+    }
+
+    /* Largest gap between consecutive sorted angles, including the wrap. */
+    float max_gap = 0.0f;
+    for (uint16_t i = 0u; i + 1u < n; i++) {
+        float gap = angles[i + 1u] - angles[i];
+        if (gap > max_gap) max_gap = gap;
+    }
+    float wrap = 360.0f - angles[n - 1u] + angles[0];
+    if (wrap > max_gap) max_gap = wrap;
+
+    float variation = 360.0f - max_gap;
+    if (variation < 0.0f)   variation = 0.0f;
+    if (variation >= 360.0f) variation = 359.0f;
+    return variation;
+}
+
+/**
  * @brief Compute window size in samples, clamped to [1, SP_AVG_DEPTH].
  *
  * @param win_min  Window duration in minutes (from cfg_shadow_t).
@@ -444,6 +503,7 @@ void task_sensor_poll(void *pvParameters)
         reading.rh_avg_pct           = clamp_u8(avg_get(&s_avg_rh));
         reading.wind_speed_avg_ms10  = (uint16_t)lroundf(avg_get(&s_avg_ws) * 10.0f);
         reading.wind_dir_avg_deg     = (uint16_t)lroundf(dir_avg_get(&s_avg_wd));
+        reading.wind_dir_variation_deg = (uint16_t)lroundf(dir_avg_variation(&s_avg_wd));
 
         /* ================================================================
          * Step 6 — Overwrite Q6 (depth-1; T4 reads via xQueueReceive)

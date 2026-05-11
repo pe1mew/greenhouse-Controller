@@ -384,8 +384,13 @@ void task_status_post(void *pvParameters)
             status_snapshot_t snap;
             dm_status_snapshot(&snap);
 
+            /* include_disabled_setpoints=false: the public dashboard
+             * receives no rh_max_active/rh_min_active fields when RH ctrl
+             * is off — inert configuration is not worth shipping over the
+             * wire. */
             size_t n = build_canonical_status_json(json_buf, sizeof(json_buf),
-                                                    &snap, (uint32_t)cfg.status_expose);
+                                                    &snap, (uint32_t)cfg.status_expose,
+                                                    false);
             bool ok = false;
             if (n > 0u) {
                 ok = do_status_post(&cfg, json_buf, n);

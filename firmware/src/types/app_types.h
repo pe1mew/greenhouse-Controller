@@ -254,6 +254,10 @@ typedef struct {
     uint8_t  _reserved2;            /**< Alignment padding */
     uint16_t wind_speed_avg_ms10;   /**< Sliding-average wind speed × 10 */
     uint16_t wind_dir_avg_deg;      /**< Sliding-average wind direction, 0–359 ° */
+    uint16_t wind_dir_variation_deg;/**< Width of the smallest arc containing
+                                      *  every direction sample in the current
+                                      *  sliding window (0–359). E.g. wind
+                                      *  oscillating 100° ↔ 160° gives 60. */
     uint32_t timestamp;             /**< Unix epoch seconds of this reading */
 } sensor_reading_t;
 
@@ -281,6 +285,21 @@ typedef struct {
     uint16_t w_avg_ms10;     /**< Sliding-average wind speed × 10 */
     uint16_t w_dir_deg;      /**< Latest wind direction (0–359 °) */
     uint16_t w_avg_dir_deg;  /**< Sliding-average wind direction */
+    uint16_t w_dir_variation_deg; /**< Arc width spanning every direction sample
+                                    * in the current sliding window (0–359). */
+
+    /* Active climate setpoints — the day-or-night value currently in force
+     * (selected from cfg by is_daytime). Surfaced on the local web GUI Status
+     * tiles and the canonical status JSON so operators see at a glance which
+     * threshold the controller is regulating against right now. */
+    int16_t t_max_active;    /**< Active max temperature setpoint (°C) */
+    uint8_t rh_max_active;   /**< Active max humidity setpoint (%) */
+    uint8_t rh_min_active;   /**< Active min humidity setpoint (%) */
+    bool    rh_ctrl_enabled; /**< Live state of the Humidity-control switch;
+                              *   when false the RH setpoints are configured
+                              *   but inert. Drives a dim-style on the local
+                              *   web GUI and field-omission in the T14
+                              *   status-website POST. */
 
     /* Windows */
     window_state_t win[3];   /**< M1 = win[0], M2 = win[1], M3 = win[2] */

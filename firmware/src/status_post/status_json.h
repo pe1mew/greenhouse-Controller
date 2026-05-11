@@ -43,19 +43,31 @@ const char *op_mode_str(op_mode_t m);
 /**
  * @brief Format a status snapshot into the canonical JSON payload.
  *
- * @param buf          Output buffer.
- * @param cap          Capacity of @p buf in bytes (must include room for the
- *                     terminating NUL).
- * @param s            Snapshot, typically filled by dm_status_snapshot().
- * @param expose_mask  Bitmask of STATUS_EXPOSE_* flags. Cleared bits cause
- *                     the matching top-level object to be omitted entirely.
+ * @param buf                       Output buffer.
+ * @param cap                       Capacity of @p buf in bytes (must include
+ *                                  room for the terminating NUL).
+ * @param s                         Snapshot, typically filled by
+ *                                  dm_status_snapshot().
+ * @param expose_mask               Bitmask of STATUS_EXPOSE_* flags. Cleared
+ *                                  bits cause the matching top-level object
+ *                                  to be omitted entirely.
+ * @param include_disabled_setpoints  When true, `rh_max_active` and
+ *                                  `rh_min_active` are emitted regardless of
+ *                                  `rh_ctrl_enabled` (local-UI behaviour: the
+ *                                  GUI dims the rows but still wants the
+ *                                  values). When false, the two RH-setpoint
+ *                                  fields are omitted when RH control is
+ *                                  disabled (T14 → public dashboard).
+ *                                  `rh_ctrl_enabled` itself is always emitted
+ *                                  so consumers know which mode is active.
  *
  * @return Number of bytes written excluding the terminating NUL, or 0 on
  *         failure (typically buf too small).
  */
 size_t build_canonical_status_json(char *buf, size_t cap,
                                    const status_snapshot_t *s,
-                                   uint32_t expose_mask);
+                                   uint32_t expose_mask,
+                                   bool include_disabled_setpoints);
 
 #ifdef __cplusplus
 }

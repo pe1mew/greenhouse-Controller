@@ -6,6 +6,107 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.17.25] — 2026-05-11
+
+*Two LCD rotating-status polish items: add a right-aligned `Day` / `Night` badge to the Time page (page 4, row 1) so the operator can read the controller's active day/night state without crawling into a menu, and clean up the Uptime line on the Firmware page (page 6, row 1) to be left-aligned with a single space after the colon.*
+
+### Changed
+- `firmware/src/ui_display/ui_display.cpp::render_status()` case 4 — row 1 now reads `Src:NTP      Day` or `Src:RTC    Night` (right-aligned in the trailing 9 columns via `%9s`). Source comes from `cfg.is_daytime` so the badge flips at the exact same sunrise/sunset moments the climate controller switches setpoints.
+- `firmware/src/ui_display/ui_display.cpp::render_status()` case 6 — uptime line is left-aligned with a single space after the colon. The compact `1d 4h 23m` / `4h 23m` / `23m` body is built into a scratch buffer first and then space-padded to the 16-column LCD width. Examples: `"Up: 23m         "`, `"Up: 4h 23m      "`, `"Up: 1d 4h 23m   "`. Previous format used colon-no-space and right-padding zeros (`Up:23d  4h 23m  `).
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.24` → `1.17.25`.
+
+### Out of scope
+- No web GUI / canonical JSON change; this is LCD-only polish.
+
+---
+
+## [1.17.24] — 2026-05-11
+
+*Four LCD-UI improvements: align Climate → CR-priority with the Day/Night view-then-edit flow, add a global D-key escape that jumps back to the rotating status screens from any menu, auto-return to the status rotation after 5 minutes of menu inactivity, and add a firmware-version + uptime page to the status rotation.*
+
+### Added
+- `firmware/src/ui_display/ui_display.cpp` — new `UI_BROWSE_CR` state. Mirrors `UI_BROWSE_DAY`/`UI_BROWSE_NIGHT`: shows the current `cr_priority` value with `↩#` edit and `^*` back hints; pressing `#` triggers the existing `begin_edit()` path, which prompts for the Farmer PIN if not yet authenticated and returns to the Climate menu after the edit.
+- `render_browse_cr()` / `handle_browse_cr()` helpers wired into the FSM render and key-dispatch switches.
+- `STATUS_PAGES` bumped 6 → 7. New status page 6 shows `FW: <FIRMWARE_VERSION>` on row 0 and uptime on row 1 (`Up: 23m`, `Up: 4h 23m`, `Up: 1d 4h 23m`). Same compact format as the local web GUI Clock-card uptime.
+- `AUTOROTATE_RETURN_TICKS` = 3000 (5 min × 60 s × 10 ticks/s at `UI_LOOP_MS = 100`). New `s_menu_idle_ticks` counter is incremented every tick while `s_state != UI_STATUS`, reset on every non-repeat keypress; on threshold the FSM is forced back to `UI_STATUS`. Independent of the session-timeout path so it runs regardless of login state.
+- Global `D`-key handler — before the per-state dispatch, if `s_state != UI_STATUS` the `D` press calls `go_status()` and consumes the event. One-press escape from any menu / browse / edit / PIN-entry / set-time depth. Inside `UI_STATUS` the legacy "advance to next status page" behaviour on `D` is preserved.
+
+### Changed
+- `handle_menu_climate()` case `'3'` — was `begin_edit(false, 11, UI_MENU_CLIMATE)` (jumped straight to PIN + edit). Now transitions to `UI_BROWSE_CR` first; the user sees the active value before being asked to edit. Same pattern the `'1'` / `'2'` keys already follow.
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.23` → `1.17.24`.
+
+### Out of scope
+- The Dutch admin manual's §6 LCD-page list still numbers 0–5; bump on next manual pass to add page 6 (Firmware) and document the `D`-back-to-status shortcut + 5-min auto-return.
+- `handle_status()` (the UI_STATUS dispatch) still consumes `D` as "next status page" — by design; this is the original page-advance shortcut and remains useful for cycling without waiting 5 s.
+
+---
+
+## [1.17.23] — 2026-05-11
+
+*Differentiate the two canonical-JSON consumers: the local web GUI keeps the RH-setpoint values visible (dimmed) when RH control is disabled, while the T14 → public-dashboard payload omits those two fields entirely so the dashboard doesn't render inert configuration. A new `rh_ctrl_enabled` boolean is always emitted inside the climate object so consumers know which mode is active.*
+
+### Added
+- `firmware/src/types/app_types.h::status_snapshot_t::rh_ctrl_enabled` — boolean filled from `cfg.rh_ctrl_en` in `dm_status_snapshot()`.
+- `firmware/data/style.css` — `.dimmed { opacity: 0.5 }` rule. Stable layout (row stays in place) but immediately signals the value is inert.
+- Canonical JSON now always carries `climate.rh_ctrl_enabled` (true/false).
+
+### Changed
+- `firmware/src/status_post/status_json.{h,cpp}::build_canonical_status_json()` — new fourth parameter `bool include_disabled_setpoints`. When false (T14 path), `climate.rh_max_active` / `climate.rh_min_active` are omitted from the emitted JSON when `rh_ctrl_enabled` is false. When true (local UI path), both fields are always emitted so the GUI can render dimmed values rather than gaps.
+- `firmware/src/web_server/web_server.cpp::build_status_json()` — passes `true` for the new parameter.
+- `firmware/src/status_post/status_post.cpp::task_status_post()` — passes `false` for the new parameter.
+- `firmware/data/app.js::handleStatus()` — when `c.rh_ctrl_enabled === false`, applies the `.dimmed` CSS class to the `<p>` parents of `#st-rh-max` and `#st-rh-min`. Toggles back when re-enabled.
+- `webUiMock/mock_server.py::_build_status()` — always emits `climate.rh_ctrl_enabled` from `cfg["rh_ctrl_en"]`. Setpoint values are always emitted (mock serves the local-UI consumer path).
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.22` → `1.17.23`.
+
+### Out of scope
+- The wind side has a parallel `wind_prot_en` toggle that could apply the same treatment to the wind v_max / Variation rows. Not done in this release — flag for future symmetric improvement.
+
+---
+
+## [1.17.22] — 2026-05-11
+
+*Expand the sensor-history table at the bottom of the web GUI from 4 columns (Time, T, RH, Wind, Dir) to 8 columns (Time, T, T-avg, RH, RH-avg, Wind, Wind Avg, Direction, Variation). Pairs every raw measurement with its sliding-window average and adds the new direction-variation metric from 1.17.21. `/api/history` field names align with the canonical status-JSON `climate`/`wind` keys so the same value carries the same name on every endpoint.*
+
+### Changed
+- `firmware/src/web_server/web_server.cpp::/api/history` — per-row JSON expanded from `{ts, temp_c, rh_pct, wind_ms, wind_dir}` to `{ts, temp_c, temp_avg_c, rh_pct, rh_avg_pct, speed_ms, speed_avg_ms, direction_deg, direction_variation_deg}`. Field naming aligned with the canonical status JSON (1.17.x): `wind_ms` → `speed_ms`, `wind_dir` → `direction_deg`. The previous endpoint stored `t_avg_c` under the key `temp_c` (misleading); raw `temperature_c` is now under `temp_c` and the average under `temp_avg_c`.
+- `firmware/src/web_server/web_server.cpp` — `HIST_BUF` bumped 6 144 → 12 288 bytes (PSRAM). Per-row payload roughly doubled to ~160 chars; 60 rows × 160 ≈ 10 KB with 20 % headroom. PSRAM allocation cost is trivial.
+- `firmware/data/index.html` — sensor history `<thead>` rewritten with 9 columns matching the new schema.
+- `firmware/data/app.js::loadHistory()` — row builder writes 8 data cells (matching the new headers) using small `f1` / `i0` helpers for compact "value or em-dash" rendering.
+- `webUiMock/mock_server.py::_build_history()` — emits the same 9-key per-row shape; introduces a slight phase lag on the avg sinusoids so the raw vs. avg columns are visibly distinct during dev.
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.21` → `1.17.22`.
+
+### Out of scope
+- Existing callers of `/api/history` outside `app.js` (none in this repo) would need to switch from `wind_ms`/`wind_dir` to `speed_ms`/`direction_deg` and consume the new fields. Breaking-change but additive in JSON terms — old keys are gone.
+- T11 endpoints `/api/status` and the WS push were already on the canonical names; no change there.
+
+---
+
+## [1.17.21] — 2026-05-11
+
+*Surface the currently-active climate setpoints and a new wind-direction-variation metric on the local web GUI Status tiles, and ship the same values in the canonical status JSON so the public dashboard can consume them (it currently ignores extras — pure additive change, no breakage). The Wind card row order is reshuffled to keep the two speed lines together: Speed → Avg → Direction → Variation.*
+
+### Added
+- `firmware/src/types/app_types.h::sensor_reading_t` — new `wind_dir_variation_deg` field. Width of the smallest arc containing every direction sample in the current sliding window; 0 when count < 2 samples.
+- `firmware/src/types/app_types.h::status_snapshot_t` — new fields `t_max_active` (°C), `rh_max_active` (%), `rh_min_active` (%), `w_dir_variation_deg`. Active setpoints are the day-or-night value currently in force based on `cfg.is_daytime`.
+- `firmware/src/sensor_poll/sensor_poll.cpp::dir_avg_variation()` — circular-aware arc-width computation: reconstructs per-sample angles from the existing sin/cos ring buffer, sorts them with insertion sort (N ≤ SP_AVG_DEPTH, typically 12–30, so O(N²) is fine), finds the largest gap including the wraparound from last back to first, and reports `360 − max_gap`. Handles north-crossing wraparound correctly (e.g. 5°/355°/10° → 15°, not 350°).
+- `firmware/src/data_manager/data_manager.cpp::dm_status_snapshot()` — copies `wind_dir_variation_deg` from the sensor reading; selects active climate setpoints from the cfg shadow based on `is_daytime`.
+- `firmware/src/status_post/status_json.cpp::build_canonical_status_json()` — emits the new keys inside the existing `climate` and `wind` objects:
+  - `climate.temp_max_active`, `climate.rh_max_active`, `climate.rh_min_active`
+  - `wind.direction_variation_deg`
+- `firmware/data/index.html` — Temperature card gains a `Setpoint:` line; Humidity card gains `Setpoint max:` and `Setpoint min:` lines; Wind card gains a `Variation:` line. Each new row has a contextual `data-tip` tooltip.
+- `firmware/data/app.js::handleStatus()` — wires the new DOM IDs (`st-t-max`, `st-rh-max`, `st-rh-min`, `st-wind-var`) to the matching JSON fields.
+- `webUiMock/mock_server.py::_build_status()` — mirrors the new fields so dev iteration without the device sees the same shape; wind variation is a slow ~30°→110° sine for visible movement on the dashboard.
+
+### Changed
+- `firmware/data/index.html` — Wind card row order reshuffled from Speed/Direction/Avg to **Speed → Avg → Direction → Variation** so the two speed metrics sit together and direction-related rows follow.
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.20` → `1.17.21`.
+
+### Out of scope
+- Public dashboard at `pe1mew.nl/hbwv` does not consume the new fields yet; its `app.js::renderClimate()`/`renderWind()` silently drop unknown keys. Add markup + JS there to display the new values when the website project is next touched.
+- Canonical JSON worst-case payload grows by ~50 bytes (well within the 2 KB buffer).
+
+---
+
 ## [1.17.20] — 2026-05-11
 
 *Retire the temporary OTA-diagnostic infrastructure now that the LittleFS basePath bug (fixed in 1.17.9) has been field-confirmed via a successful 1.17.9 → 1.17.9a round-trip on a live controller. The version-mismatch detection is kept — it is a low-cost canary against any future regression — but moves from its own diagnostic card into the existing **Alarms** card, where it semantically belongs alongside motor-alarm and wind-override badges. Durable inspection surfaces (`/manifest.json` HTTP route, `<!-- web-assets X.Y.Z -->` HTML comment, `?v=<VERSION>` cache-busters, in-ZIP manifest.json from `build_release.ps1`) all remain — they are general-purpose post-OTA verification, not specific to the resolved bug.*

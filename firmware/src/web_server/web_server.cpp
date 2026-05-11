@@ -327,7 +327,9 @@ static void build_status_json(char *buf, size_t len)
      * user-configured expose mask. */
     status_snapshot_t snap;
     dm_status_snapshot(&snap);
-    build_canonical_status_json(buf, len, &snap, STATUS_EXPOSE_ALL);
+    /* include_disabled_setpoints=true: local UI gets the values even when
+     * RH ctrl is off, so it can render them dimmed instead of hiding. */
+    build_canonical_status_json(buf, len, &snap, STATUS_EXPOSE_ALL, true);
 }
 
 /* ============================================================
@@ -890,9 +892,13 @@ bad:
         uint16_t got    = 0;
         dm_ring_read(offset, rows, (uint16_t)n, &got);
 
-        /* Build JSON array — allocate from PSRAM */
-        /* 60 entries × ~85 chars/entry + overhead ≈ 5200 bytes max */
-        const size_t HIST_BUF = 6144;
+        /* Build JSON array — allocate from PSRAM.  Per-row payload grew from
+         * ~85 chars (legacy 4 columns) to ~160 chars (1.17.21+: raw + avg
+         * for T/RH/wind speed, plus direction and direction_variation). At
+         * 60 rows that's ~10 KB; 12 KB gives 20 % headroom. Field names
+         * mirror the canonical status JSON so the same numbers carry the
+         * same key on /api/status, /ws and /api/history. */
+        const size_t HIST_BUF = 12288;
         char *buf = (char *)ps_malloc(HIST_BUF);
         if (!buf) { free(rows); req->send(500); return; }
 
@@ -900,14 +906,21 @@ bad:
         pos += snprintf(buf + pos, HIST_BUF - pos, "{\"rows\":[");
         for (uint16_t i = 0; i < got; i++) {
             int written = snprintf(buf + pos, HIST_BUF - (size_t)pos,
-                "%s{\"ts\":%lu,\"temp_c\":%.1f,\"rh_pct\":%u,"
-                "\"wind_ms\":%.1f,\"wind_dir\":%u}",
+                "%s{\"ts\":%lu,"
+                "\"temp_c\":%.1f,\"temp_avg_c\":%.1f,"
+                "\"rh_pct\":%u,\"rh_avg_pct\":%u,"
+                "\"speed_ms\":%.1f,\"speed_avg_ms\":%.1f,"
+                "\"direction_deg\":%u,\"direction_variation_deg\":%u}",
                 i ? "," : "",
                 (unsigned long)rows[i].timestamp,
+                (float)rows[i].temperature_c,
                 (float)rows[i].t_avg_c,
+                rows[i].humidity_pct,
                 rows[i].rh_avg_pct,
+                rows[i].wind_speed_ms10     / 10.0f,
                 rows[i].wind_speed_avg_ms10 / 10.0f,
-                rows[i].wind_dir_avg_deg);
+                rows[i].wind_dir_deg,
+                rows[i].wind_dir_variation_deg);
             if (written < 0 || pos + written >= (int)HIST_BUF - 4) break;
             pos += written;
         }

@@ -44,6 +44,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_log.h>
+#include <esp_timer.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -67,7 +68,8 @@ static const char *TAG = "T8_UI";
  * ============================================================ */
 #define UI_LOOP_MS          100u   /**< Main-loop tick (ms) */
 #define STATUS_PAGE_TICKS    50u   /**< 5 s auto-rotate = 50 × 100 ms */
-#define STATUS_PAGES          6u   /**< Number of status pages (0-3 sensors/net, 4=time, 5=windows) */
+#define STATUS_PAGES          7u   /**< Number of status pages (0=T/RH, 1=wind, 2=mode, 3=net, 4=time, 5=windows, 6=firmware) */
+#define AUTOROTATE_RETURN_TICKS  3000u  /**< 5 minutes of menu-idle = 5×60×(1000/UI_LOOP_MS) → return to UI_STATUS */
 #define MX1_TIMEOUT_MS      200u   /**< MX1 acquire timeout */
 /* Session-timeout default lives in cfg_defaults.h as DEF_SESSION_TIMEOUT_MIN. */
 
@@ -157,6 +159,10 @@ typedef enum {
     UI_MENU_CLIMATE,   /**< Day/Night group selector */
     UI_BROWSE_DAY,     /**< Browse 4 day setpoints; A/B navigate, #=edit, *=summary+back */
     UI_BROWSE_NIGHT,   /**< Browse 4 night setpoints; A/B navigate, #=edit, *=summary+back */
+    UI_BROWSE_CR,      /**< Browse single CR-priority value (same view-then-edit
+                        *   flow as Day/Night browse: shows the active value
+                        *   first, # opens edit (with PIN prompt if needed),
+                        *   * returns to Climate menu). */
     UI_MENU_WIND,
     UI_MENU_ACCESS,
     UI_MENU_SYSTEM,
@@ -179,6 +185,13 @@ static uint8_t      s_status_page   = 0;
 /* Session */
 static session_t    s_session       = SESSION_NONE;
 static uint32_t     s_idle_ticks    = 0;
+/* Separate counter for the menu-auto-return-to-status timeout. Reset on
+ * every keypress in the main loop; incremented every tick while state is
+ * not UI_STATUS. When it reaches AUTOROTATE_RETURN_TICKS, the FSM is
+ * forced back to UI_STATUS so the rotating status screens resume. Unlike
+ * s_idle_ticks (session-scoped) this counter runs regardless of whether
+ * the operator is logged in. */
+static uint32_t     s_menu_idle_ticks = 0;
 
 /* Latest network status (from Q5) */
 static net_status_t s_net           = { false, false, "---" };
@@ -747,7 +760,7 @@ static void render_status(void)
             }
             break;
 
-        case 4: { /* Time + NTP/RTC source */
+        case 4: { /* Time + NTP/RTC source + Day/Night badge */
             cfg_shadow_t cfg_t;
             dm_cfg_snapshot(&cfg_t);
             if (cfg_t.current_unix_ts > 100000u) {
@@ -760,8 +773,13 @@ static void render_status(void)
             } else {
                 snprintf(r0, sizeof(r0), "--/--/---- --:--");
             }
-            const char *src = s_net.ntp_synced ? "NTP" : "RTC";
-            snprintf(r1, sizeof(r1), "Src:%-3s         ", src);
+            const char *src      = s_net.ntp_synced ? "NTP" : "RTC";
+            const char *daynight = cfg_t.is_daytime ? "Day" : "Night";
+            /* Row 1: "Src:NTP" (left, 7 chars) + Day/Night right-aligned in
+             * the remaining 9 columns. Computed from cfg.is_daytime, so the
+             * value flips at the same sunrise/sunset moments the climate
+             * controller uses for day/night setpoint selection. */
+            snprintf(r1, sizeof(r1), "Src:%-3s%9s", src, daynight);
             break;
         }
 
@@ -781,6 +799,35 @@ static void render_status(void)
             snprintf(r0, sizeof(r0), "M1    M2    M3  ");
             snprintf(r1, sizeof(r1), "%-4s  %-4s  %-4s",
                      win_abbr(ws[0]), win_abbr(ws[1]), win_abbr(ws[2]));
+            break;
+        }
+
+        case 6: { /* Firmware version + uptime */
+            uint64_t up_s = (uint64_t)(esp_timer_get_time() / 1000000LL);
+            uint32_t days = (uint32_t)(up_s / 86400u);
+            uint32_t hrs  = (uint32_t)((up_s % 86400u) / 3600u);
+            uint32_t mins = (uint32_t)((up_s % 3600u)  / 60u);
+            snprintf(r0, sizeof(r0), "FW: %-12.12s", FIRMWARE_VERSION);
+            /* Compact uptime, LEFT-aligned with a single space after the
+             * colon (operator-readable like the web GUI's Clock-card line).
+             * Build the variable-length body into a scratch buffer first,
+             * then space-pad to exactly 16 chars on the LCD line:
+             *  < 1 h  : "Up: 23m         "
+             *  < 1 d  : "Up: 4h 23m      "
+             *  ≥ 1 d  : "Up: 1d 4h 23m   "
+             * Mirrors the fmtUptime() helper in the web GUI. */
+            char body[13];
+            if (days > 0u) {
+                snprintf(body, sizeof(body), "%lud %luh %lum",
+                         (unsigned long)days, (unsigned long)hrs, (unsigned long)mins);
+            } else if (hrs > 0u) {
+                snprintf(body, sizeof(body), "%luh %lum",
+                         (unsigned long)hrs, (unsigned long)mins);
+            } else {
+                snprintf(body, sizeof(body), "%lum",
+                         (unsigned long)mins);
+            }
+            snprintf(r1, sizeof(r1), "Up: %-12s", body);
             break;
         }
 
@@ -1019,6 +1066,12 @@ static void render_edit_value(void)
 /* ============================================================
  * Render dispatch
  * ============================================================ */
+/* Forward declarations — these helpers live further down in the file
+ * (next to handle_browse_cr) but are referenced from render() and the
+ * key-dispatch switch above the declaration point. */
+static void render_browse_cr(void);
+static void handle_browse_cr(char key);
+
 static void render(void)
 {
     switch (s_state) {
@@ -1027,6 +1080,7 @@ static void render(void)
         case UI_MENU_CLIMATE:  render_menu_climate();           break;
         case UI_BROWSE_DAY:    render_browse_setpoints(true);   break;
         case UI_BROWSE_NIGHT:  render_browse_setpoints(false);  break;
+        case UI_BROWSE_CR:     render_browse_cr();              break;
         case UI_MENU_WIND:     render_param_menu(true);         break;
         case UI_MENU_ACCESS:   render_menu_access();            break;
         case UI_MENU_SYSTEM:   render_menu_system();            break;
@@ -1168,8 +1222,13 @@ static void handle_menu_climate(char key)
             s_dirty    = true;
             break;
         case '3':
-            /* Edit cr_priority directly (CLIMATE_PARAMS index 11). */
-            begin_edit(false, 11, UI_MENU_CLIMATE);
+            /* Browse cr_priority (CLIMATE_PARAMS index 11) — show the
+             * current value first, then accept # to edit (which prompts
+             * for the Farmer PIN if not yet authenticated). Mirrors the
+             * Day/Night flow (UI_BROWSE_DAY/NIGHT) so all three Climate
+             * sub-menus behave the same way. */
+            s_state = UI_BROWSE_CR;
+            s_dirty = true;
             break;
         case '*':
             s_state = UI_MENU_ROOT;
@@ -1206,6 +1265,49 @@ static void handle_browse_setpoints(char key, bool is_day)
             begin_edit(false, idx_map[s_sub_page % BROWSE_COUNT], this_state);
             break;
         case '*':  /* Back to group selector */
+            s_state    = UI_MENU_CLIMATE;
+            s_sub_page = 0;
+            s_dirty    = true;
+            break;
+        default:
+            break;
+    }
+}
+
+/**
+ * @brief Render the CR-priority browse screen (UI_BROWSE_CR).
+ *
+ * Single-value variant of render_browse_setpoints(): no A/B navigation
+ * (there is only one parameter to view), just the active value and the
+ * edit / back hints on row 1.
+ *
+ * Row 0: parameter label ("T/RH prio (0-2) " from the param table).
+ * Row 1: "<value>        ↩#^*"  — 4-char value, padding, edit & back hints.
+ */
+static void render_browse_cr(void)
+{
+    const param_def_t *p = &CLIMATE_PARAMS[11];   /* cr_priority */
+    int32_t val = param_get(false, 11);
+    char r1[17];
+    /* 4 chars value + 8 padding + 2 chars ↩# + 2 chars ^* = 16. The hex
+     * escapes mirror render_browse_setpoints — \x03 = CGRAM ↩ (edit
+     * confirm), '^' = ASCII caret (back/up). No \xNN A/B prefixes needed
+     * here because no navigation. */
+    snprintf(r1, sizeof(r1), "%-4ld        \x03#^*", (long)val);
+    lcd_set(p->edit_lbl, r1);
+}
+
+/** @brief Handle keypresses in UI_BROWSE_CR. */
+static void handle_browse_cr(char key)
+{
+    switch (key) {
+        case '#':
+            /* Open the edit flow on cr_priority. begin_edit() handles the
+             * PIN prompt when not yet authenticated; s_return_menu makes
+             * the post-edit landing place the Climate menu (one level up). */
+            begin_edit(false, 11, UI_MENU_CLIMATE);
+            break;
+        case '*':
             s_state    = UI_MENU_CLIMATE;
             s_sub_page = 0;
             s_dirty    = true;
@@ -1674,10 +1776,21 @@ void task_ui_display(void *pvParameters)
                 got_key = false;
             } else if (!evt.repeated) {
                 s_idle_ticks       = 0;     /* Reset session timeout on non-repeat */
+                s_menu_idle_ticks  = 0;     /* Reset menu-auto-return timer */
                 s_suppress_repeats = false; /* Fresh press clears repeat suppression */
             } else if (s_suppress_repeats) {
                 /* Swallow repeat events that slip through after the real-time
                  * window but before the user's first deliberate new press. */
+                got_key = false;
+            }
+
+            /* Global 'D'-key handler: when the FSM is anywhere other than
+             * UI_STATUS, 'D' jumps back to the rotating status pages —
+             * one-press escape from any menu / edit / browse depth. Inside
+             * UI_STATUS the per-state handler keeps the legacy "advance to
+             * next status page" behaviour. */
+            if (got_key && evt.key == 'D' && s_state != UI_STATUS) {
+                go_status();
                 got_key = false;
             }
 
@@ -1687,6 +1800,7 @@ void task_ui_display(void *pvParameters)
                 case UI_MENU_CLIMATE:  handle_menu_climate(evt.key);            break;
                 case UI_BROWSE_DAY:    handle_browse_setpoints(evt.key, true);  break;
                 case UI_BROWSE_NIGHT:  handle_browse_setpoints(evt.key, false); break;
+                case UI_BROWSE_CR:     handle_browse_cr(evt.key);               break;
                 case UI_MENU_WIND:     handle_param_menu(evt.key, true);        break;
                 case UI_MENU_ACCESS:   handle_menu_access(evt.key);             break;
                 case UI_MENU_SYSTEM:   handle_menu_system(evt.key);             break;
@@ -1704,8 +1818,19 @@ void task_ui_display(void *pvParameters)
                 s_status_page  = (uint8_t)((s_status_page + 1) % STATUS_PAGES);
                 s_dirty        = true;
             }
+            /* Counter is meaningless on the rotating status screens. */
+            s_menu_idle_ticks = 0;
         } else {
             s_status_ticks = 0;
+            /* Menu-auto-return: after 5 minutes of no keypress while the
+             * display is showing anything other than the rotating status
+             * screens, jump back to UI_STATUS. Independent of the session-
+             * timeout above — runs even when no user is logged in (e.g.
+             * casual visitor left the system on the menu). */
+            if (++s_menu_idle_ticks >= AUTOROTATE_RETURN_TICKS) {
+                go_status();
+                s_menu_idle_ticks = 0;
+            }
         }
 
         /* ── 6. Render if dirty (only while no message is active) ── */
