@@ -1,0 +1,24 @@
+s@startuml
+title Kascontroller systeem
+
+component "Temperatuur/Luchtvochtigheid-sensor\nFG6485A\n(Modbus)" as TempSensor
+component "Wind-sensor\nSenseCAP S200\n(Modbus)" as WindSensor
+
+component "KASCONTROLLER\n(ESP32-S3 + LCD + WiFi)" as Controller
+
+component "RRK-3\n(relais-box)" as RelayBox
+
+component "Motor M1" as M1
+component "Motor M2" as M2
+component "Motor M3" as M3
+
+TempSensor -right-> Controller : RS485 / Modbus
+WindSensor -left-> Controller : RS485 / Modbus
+
+Controller -right-> RelayBox : Command
+Controller <-- RelayBox : Alarm-uitgang
+
+RelayBox --> M1
+RelayBox --> M2
+RelayBox --> M3
+@enduml

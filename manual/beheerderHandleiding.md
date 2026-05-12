@@ -1,19 +1,19 @@
 # Handleiding Kascontroller — voor de beheerder
 
-**Versie:** 1.6 — concept
-**Datum:** 2026-05-11
+**Versie:** 1.7 — concept
+**Datum:** 2026-05-12
 **Firmware:** 1.17.25
 
 ---
 
 > **Voor wie is deze handleiding?**
-> Dit document is geschreven voor de **technisch beheerder / installateur** die verantwoordelijk is voor de installatie, configuratie, onderhoud en het oplossen van storingen aan de kascontroller. De boer/kasgebruiker bedient het systeem dagelijks; daarvoor is een aparte boer-handleiding (`manual/handleiding.md`).
+> Dit document is geschreven voor de **technisch beheerder / installateur** die verantwoordelijk is voor de installatie, configuratie, onderhoud en het oplossen van storingen aan de kascontroller. De boer \/ kasgebruiker bedient het systeem dagelijks; daarvoor is een aparte [boer-handleiding](boerHandleiding.md).
 
 > **Veiligheid**
 > Binnen in de kast van de kascontroller bevinden zich onderdelen onder **netspanning (230 V)**. Werk uitsluitend aan de bedrading of aan motoren met de **voeding afgekoppeld**. Een aansluiting op het lichtnet vereist kennis van elektrische installaties. Let bovendien op draaiende motoren: handmatige werkzaamheden aan ramen mogen alleen wanneer de motoren stilstaan en bij voorkeur met de motorbox-schakelaars in handbediening (zie [§15](#15-handmatige-overname-via-de-motorbox)).
 
 > **Verwijzing naar boer-handleiding**
-> Voor algemene uitleg over dagelijks gebruik, schermen op de LCD en alarm-meldingen verwijst dit document regelmatig naar de [boer-handleiding](handleiding.md). Onderwerpen die specifiek voor de beheerder zijn worden hier volledig behandeld.
+> Voor algemene uitleg over dagelijks gebruik, schermen op de LCD en alarm-meldingen verwijst dit document regelmatig naar de [boer-handleiding](boerHandleiding.md). Onderwerpen die specifiek voor de beheerder zijn worden hier volledig behandeld.
 
 ---
 
@@ -29,7 +29,7 @@
 8. [Gebruik zonder inloggen — informatiemenu](#8-gebruik-zonder-inloggen--informatiemenu)
 9. [Inloggen als beheerder](#9-inloggen-als-beheerder)
 10. [Klimaat instellen](#10-klimaat-instellen)
-11. [WiFi en webinterface — installatie en beheer](#11-WiFi-en-webinterface--installatie-en-beheer)
+11. [Eerste-installatie WiFi-verbinding](#11-eerste-installatie-wifi-verbinding)
 12. [Alarmen en bedrijfsmodi — diagnose en herstel](#12-alarmen-en-bedrijfsmodi--diagnose-en-herstel)
 13. [Inschakelen na stroomuitval](#13-inschakelen-na-stroomuitval)
 14. [Onderhoud — wat de beheerder doet](#14-onderhoud--wat-de-beheerder-doet)
@@ -52,17 +52,17 @@ Technisch beheerder / installateur van de kascontroller. Een persoon met:
 - Bereidheid om incidenteel een microprocessor-board fysiek te bedienen (jumpers, BOOT-knop, USB-flash)
 
 ### Wat staat er in deze handleiding?
-- Eerste-installatie en commissioning
+- Eerste-installatie en in bedrijf stelling 
 - Alle beheersfuncties op het LCD/toetsenbord én in de webinterface
 - Configuratie van WiFi, locatie, NTP, motor-tijden, sensor-instellingen, hysteresis, glijdend gemiddelde
-- PIN-management voor zowel Farmer als Beheerder
+- PIN-management voor zowel Boer als Beheerder
 - Diagnose en oplossing van alarmen, sensor-fouten en motor-storingen
 - Firmware-updates (OTA), SD-kaart beheer, downloaden van logs
 - Reset-procedures en herstel naar fabrieksinstellingen
 
 ### Wat staat er niet in?
 - **Firmware-broncode-niveau** detail → zie `design/technicalSoftwareDesignSpecification.md`
-- **Hardware-ontwerp / schema's / printontwerp** → zie `hardware/` map
+- **Hardware-ontwerp / schema's / printontwerp** → zie de `hardware/` map in de repository
 - **Teelt-advies** (klimaatzones per gewas) → vraag de teler / leverancier van de planten
 
 ### Bij escalatie
@@ -90,15 +90,15 @@ De controller leest **elke poll-cyclus** (default 30 sec.) de sensoren uit via M
 - hysteresis en glijdend gemiddelde tegen oscillaties
 - Drie-traps ventilatie-strategie (M1 → M1+M2 → M1+M2+M3)
 - Veiligheidsmechanismen: wind-override (sterke wind), motor-alarm, sensor-fault detectie (problemen met het uitlezen van de sensors)
-- Automatische CLOSE_ALL kalibratie bij opstart
-- Permanente opslag in het geheugen (NVS) van alle setpoints en configuratie instellingen
+- Automatische CLOSE_ALL kalibratie bij opstart en na motor-alarm
+- Permanente opslag in het geheugen (Non Volatile Memory - NVS) van alle setpoints en configuratie instellingen
 - Logging van de activiteiten op de kascontroller in het geheugen en op SD-kaart
 
 ### Wat doet de controller niet
 - Geen verwarming of koeling aansturen
 - Geen klimaatschermen aansturen
 - Geen besproeiing of CO₂-dosering aansturen
-- Ramen die gedeeltelijk penof dicht gestuurd worden. Er is een positie-feedback van motoren. De controller werkt op tijd-gestuurde commando's via de RRK-3
+- Ramen die gedeeltelijk dicht gestuurd worden. Er is geen positie-feedback van motoren. De controller werkt op tijd-gestuurde commando's via de RRK-3
 
 ---
 
@@ -156,30 +156,21 @@ De sensoren zijn **digitaal** en communiceren met de kascontroller via het **Mod
 - **Voeding**: Meanwell 24 V gelijkspanning
 - **IP-rating kast**: IP67
 
-`[FOTO: open kast met bedrading en bordjes met etiketten, GPIO-pinout zichtbaar]`
+![Kast met bedrading en bordjes met etiketten, GPIO-pinout zichtbaar](images\kasControllerFrontInternalView.png)
+
+*Figuur #: Kas controller interieur.*
 
 ### Schematisch overzicht
 
-```
-                           Load
-   +---------------+        |      +-----------------+        +-----------+
-   | Temperatuur/Luchtvochtigheid-sensor   |--------|      | KASCONTROLLER   |--------| RRK-3     |--motor M1
-   | FG6485A       |   RS485|      | (ESP32-S3       |        | (relais-  |--motor M2
-   | (Modbus)      |        |      |  + LCD + WiFi)  |        |  box)     |--motor M3
-   +---------------+        |------|                 |        +-----------+
-                            |      |                 |              | alarm-uitgang
-   +---------------+        |      |                 |<-------------+
-   | Wind-sensor   |--------|      |                 |        
-   | SenseCAP S200 |   RS485|      |                 |         
-   | (Modbus)      |        |      +-----------------+
-   +---------------+      Load
-```
+![Schematisch overzicht](images\SchematischOverzicht.png)
+
+*Figuur #: Schematisch overzicht kas controller.*
 
 ---
 
 ## 4. Hoe regelt de controller het klimaat?
 
-### Setpoints (boer-bewerkbaar via Climate-tab of LCD-menu)
+### Setpoints ( door de boer bewerkbaar via Climate-tab of LCD-menu)
 
 | Beschrijving | Default | Bereik | Eenheid |
 |---|---|---|---|
@@ -204,8 +195,8 @@ De sensoren zijn **digitaal** en communiceren met de kascontroller via het **Mod
 **Effect van elke parameter**:
 
 - **Hysteresis**: Dit is de bandbreedte rondom een setpoint waarbinnen niet wordt geschakeld. Voorbeeld bij `hyst_t = 5`: bij `t_max_dag = 28 °C` opent een raam wanneer T ≥ 28 °C en sluit het pas weer wanneer T ≤ 23 °C. Voorkomt continu in/uit-schakelen rond een setpoint.
-- **Glijdend gemiddelde**: meetwaarden worden over de venstertijd in minutengemiddeld voordat ze met een setpoint worden vergeleken. Een groter venster maakt de regeling rustiger en minder gevoelig voor pieken (een korte zonnestraal op de sensor); een kleiner venster reageert sneller. De live waarden op het LCD display toont de **ruwe** (laatste) meetwaarde zodat de gebruiker altijd het actuele resultaat ziet.
-- **Vochtregeling aan/uit**: vochtregeling uit; alleen temperatuur wordt geregeld. Zinvol bij teelten waarbij luchtvochtigheid niet relevant is of wanneer de luchtvochtiheid sensor defect is.
+- **Glijdend gemiddelde**: meetwaarden worden over de venstertijd in minuten gemiddeld voordat ze met een setpoint worden vergeleken. Een groter venster maakt de regeling rustiger en minder gevoelig voor pieken (een korte zonnestraal op de sensor); een kleiner venster reageert sneller. De live waarden op het LCD display toont de **ruwe** (laatste) meetwaarde zodat de gebruiker altijd het actuele resultaat ziet.
+- **Vochtregeling aan/uit**: vochtregeling uit; alleen de temperatuur wordt geregeld. Dit kan zinvol zijn bij teelten waarbij luchtvochtigheid niet relevant is of wanneer de luchtvochtiheid sensor defect is.
 - **Conflict-prioriteit**:
   - `0` — Temperature first (Temperatuur regeling krijgt voorrang)
   - `1` — Humidity first (luchtvochtigheid krijgt voorrang)
@@ -213,7 +204,7 @@ De sensoren zijn **digitaal** en communiceren met de kascontroller via het **Mod
 
 ### Dwelltime (wachttijd) per motor (Beheerder-only, Motors-tab)
 
-Minimum tijd dat een raam in een stand moet blijven voordat de controller hem opnieuw mag schakelen. Deze instelling dempt langzame oscillatie, met name bij het raam in de zijwand (M3) met een groot oppervlak en lang klimaat-respons.
+Minimum tijd dat een raam in een stand moet blijven voordat de controller hem opnieuw mag schakelen. Deze instelling dempt oscillaties, met name bij het raam in de zijwand (M3) met een groot oppervlak en lange klimaat-respons.
 
 | Motor | Dwell-open default | Dwell-close default | Bereik |
 |---|---|---|---|
@@ -225,7 +216,7 @@ Minimum tijd dat een raam in een stand moet blijven voordat de controller hem op
 
 ### Stapsgewijs ventileren
 
-De controller telt een interne ventilatie-stap-teller (0–3) per regelas (Temperatuur en Luchtvochtigheid):
+De controller telt een interne ventilatie-stap-teller (0–3) per regel-as (Temperatuur en Luchtvochtigheid):
 
 | Stap | Open ramen |
 |---|---|
@@ -238,14 +229,16 @@ Bij overschrijding van een setpoint stijgt de stap; binnen de hysteresis daalt h
 
 ### Dag/nacht-omschakeling
 
-- **Berekening** vindt automatisch op basis van **datum + geografische locatie**: zonsopkomst en zonsondergang
+- **Berekening** van dag/nacht vindt automatisch op basis van de **datum en geografische locatie**: zonsopkomst en zonsondergang
 - **Geografische locatie** (`latitude`, `longitude`) wordt **automatisch bepaald op basis van de internet-aansluiting** (geo-lookup via [ip-api.com](ip-api.com) eerste verbinding) en wordt daarna in het permanente geheugen bewaard. De beheerder kan deze handmatig overschrijven via System-tab → Location
 - **Tijdzone** (`tz_str`) — POSIX-formaat, default voor Nederland: `CET-1CEST,M3.5.0,M10.5.0/3`*Wordt automatisch bepaald bij locatiebepaling.* De beheerder kan deze handmatig overschrijven via System-tab → NTP timezone → POSIX TZ string
 - **Tijd** synchroniseert via NTP zodra WiFi-client is verbonden; bij geen verbinding gebruikt controller de interne klok
 
+> *Opgelet:* Wanneer er wordt gebruik gemaakt van een mobiele internet verbinding kan de locatie flink afwijken. 
+
 ### Reboot-vereiste parameters
 
-Niet alle parameters zijn live actief; sommige vereisen een power-cycle (Schakel het apparaat uit en weer in):
+Niet alle parameters zijn direct na het aanpassen actief; sommige vereisen een power-cycle (Schakel het apparaat uit en weer in):
 
 | Parameter | Reboot vereist? |
 |---|---|
@@ -265,7 +258,9 @@ Niet alle parameters zijn live actief; sommige vereisen een power-cycle (Schakel
 
 ## 5. De controller (fysiek)
 
-`[FOTO: vooraanzicht kast met LCD, toetsenbord, LEDs]`
+![Kast vooraangezicht](images\kasControllerFrontView.png)
+
+*Figuur #: Kas controller vooraanzicht.*
 
 ### De kast
 - Schroefverbinding aan de wand met M5/M6 schroeven (placeholder)
@@ -304,9 +299,9 @@ groene LED Knippert 1× per seconde. **Knippert niet:**
 
 De webinterface is de primaire beheerdersinterface. Veel beheers-functies zijn alleen hier beschikbaar (niet via de bediening op de kast).
 
-### Bereiken
+### Bereiken webinterface
 
-Dezelfde route als voor de boer: lees IP-adres af van het LCD, het WiFi-scherm, open browser op laptop op hetzelfde WiFi-netwerk, typ het IP-adres in dat wordt getoond p het LCD-display.
+Dezelfde route als voor de boer: lees IP-adres af van het LCD, het WiFi-scherm, open browser op laptop op hetzelfde WiFi-netwerk, typ het IP-adres in dat wordt getoond op het LCD-display.
 
 > Voor eerste-installatie zonder bestaand WiFi-netwerk: gebruik de AP-modus — zie [§11 WiFi installatie](#11-WiFi-en-webinterface--installatie-en-beheer).
 
@@ -319,14 +314,18 @@ Dezelfde route als voor de boer: lees IP-adres af van het LCD, het WiFi-scherm, 
 | **Wind** | Boer + Beheerder | wind_prot_en; Beheerder ziet ook v_max, dir_excl_low/high |
 | **Motors** | **Alleen Beheerder** | M1/M2/M3 travel + dwell open/close |
 | **System** | **Alleen Beheerder** | Sessie-timeout, AP-config, WiFi-client, NTP/timezone, locatie coordinaten, Over the Air Update (OTA) |
-| **Log** | **Alleen Beheerder** | SD-kaart mount/unmount, log-bestanden downloaden |
 | **Access** | **Alleen Beheerder** | PIN-management voor Farmer + Beheerder |
+| **Log** | **Alleen Beheerder** | SD-kaart mount/unmount, log-bestanden downloaden |
+| **Web** | **Alleen Beheerder** | Instellingen voor on-line status pagina |
+| **Sensor history** | Iedereen, *geen login* | laatste sensormetingen en gemiddelde waarden |
 
-`[SCHERMAFBEELDING: webinterface met alle 7 tabs zichtbaar voor Beheerder]`
+![SCHERMAFBEELDING: webinterface met alle 7 tabs zichtbaar voor Beheerder](images\kasControllerWebGUIAllTabsBeheerder.png)
+
+*Figuur #: webinterface met alle tabs zichtbaar voor Beheerder*
 
 ### Status-tab — Klok-tegel
 
-Op de Status-tab staat in de linker tegelrij de **Klok-tegel**. Deze toont drie regels:
+Op de Status-tab staat in de linker tegelrij de **Klok-tegel (Clock)**. Deze toont drie regels:
 
 - **Tijd** — actuele lokale datum en tijd op de controller (format `YYYY-MM-DD HH:MM:SS`). De tijdzone wordt automatisch ingesteld na NTP-sync via geolocation, of handmatig via System-tab → NTP timezone.
 - **NTP-badge** — `NTP synced` (groen) wanneer de klok deze sessie via NTP gesynchroniseerd is, `NTP pending` (rood) zolang dat nog niet gelukt is en de controller op de interne klok RTC met batterij-backup draait.
@@ -336,11 +335,11 @@ Op de Status-tab staat in de linker tegelrij de **Klok-tegel**. Deze toont drie 
   - `2h 15m`
   - `1d 4h 23m`
 
-  Bij een herstart van de controller springt deze waarde `0s` en begint opnieuw — handig om te zien of de controller stabiel draait.
+> Bij een herstart van de controller springt deze waarde naar `0s` en begint opnieuw — handig om te zien of de controller stabiel draait.
 
-### Status-tab — versie-controle van firmware en web-assets
+### Status-tab — Alarm-tegel: versie-controle van firmware en web-assets
 
-Vanaf firmware 1.17.20 wordt een verschil tussen de **firmware-versie** en de **web-assets-versie** automatisch herkend en gemeld als alarm. Tijdens normaal bedrijf zijn beide versies gelijk; een afwijking wijst op een onvolledig uitgevoerde OTA-update.
+Wanneer er een verschil is tussen de **firmware-versie** en de **web-assets-versie** (de Web-gui) automatisch herkend en gemeld als alarm. Tijdens normaal bedrijf zijn beide versies gelijk; een afwijking wijst op een onvolledig uitgevoerde OTA-update.
 
 **Hoe te zien op het dashboard**
 
@@ -348,7 +347,7 @@ Een mismatch verschijnt als een rode **MISMATCH**-badge in de **Alarms**-tegel o
 
 ### Status-tab — actieve setpoints op de tegels
 
-Sinds firmware 1.17.21 tonen de Temperature-, Humidity- en Wind-tegels naast de actuele meting ook de **op dit moment actieve setpoint(s)**. "Actief" wil zeggen: de dag- of nacht-waarde die op dit moment in werking is, geselecteerd op basis van zonsopkomst/zonsondergang.
+Naast de Temperature-, Humidity- en Wind-tegels tonen naast de actuele meting ook de **op dit moment actieve setpoint(s)**. "Actief" wil zeggen: de dag- of nacht-waarde die op dit moment in werking is, geselecteerd op basis van zonsopkomst/zonsondergang.
 
 | Tegel | Extra regel(s) |
 |---|---|
@@ -356,17 +355,15 @@ Sinds firmware 1.17.21 tonen de Temperature-, Humidity- en Wind-tegels naast de 
 | Humidity | **Setpoint max** + **Setpoint min** — actieve `RH-max` / `RH-min` |
 | Wind | **Variation** — de hoekbreedte (in graden) waarbinnen alle recente windrichting-metingen liggen; klein getal = stabiele wind, groot getal = sterk wisselende richting |
 
-De volgorde van de regels in de Wind-tegel is aangepast naar **Speed → Avg → Direction → Variation** zodat de twee snelheidsregels bij elkaar staan en de richting-gerelateerde regels onderaan.
-
-**Humidity-tegel bij uitgeschakelde RH-regeling**: wanneer de beheerder onder Climate → Humidity-control op *Off* heeft gezet, worden de twee **Setpoint max / Setpoint min**-regels op de Humidity-tegel *gedimd* (50 % opacity) — de waarden blijven leesbaar zodat de operator nog kan zien wat geconfigureerd is, maar zijn duidelijk inactief. Het externe dashboard krijgt deze velden in dat geval niet binnen (de controller laat ze weg uit de POST), zodat de publieke weergave geen inactieve waarden toont.
+**Humidity-tegel bij uitgeschakelde RH-regeling**: wanneer de onder Climate → Humidity-control op *Off* is gezet, worden de twee **Setpoint max / Setpoint min**-regels op de Humidity-tegel *grayed* — de waarden blijven leesbaar zodat de gebruiker nog kan zien wat geconfigureerd is, maar zijn duidelijk inactief. Het externe dashboard toont deze velden in dat geval niet. 
 
 ### Sensorhistorie-tabel onderaan de pagina
 
-Sinds firmware 1.17.22 toont de sensorhistorie-tabel onder de Status-tegels acht kolommen in plaats van vier: **Time · T · T-avg · RH · RH-avg · Wind · Wind Avg · Direction · Variation**. Elke rauwe meting staat naast zijn glijdend-gemiddelde, en de nieuwe wind-direction-variation is ook hier zichtbaar. De `/api/history` JSON gebruikt dezelfde veldnamen als de Status-JSON (`temp_c` / `temp_avg_c` / `speed_ms` / `speed_avg_ms` / `direction_deg` / `direction_variation_deg`) — handig voor scripts die beide endpoints uitlezen.
+De sensorhistorie-tabel onder de Status-tegels toont acht kolommen: **Time · T · T-avg · RH · RH-avg · Wind · Wind Avg · Direction · Variation**. Elke rauwe meting staat naast zijn glijdend-gemiddelde.
 
 ### LCD-statusschermen — overzicht
 
-Sinds firmware 1.17.24 roteert het LCD **zeven** statusschermen (was zes). Elk scherm staat 5 seconden, daarna volgt het volgende; na scherm 7 begint de cyclus opnieuw bij 1.
+Op het LCD-scherm roteren **zeven** statusschermen. Elk scherm staat 5 seconden, daarna volgt het volgende; na scherm 7 begint de cyclus opnieuw bij 1.
 
 | # | Scherm | Inhoud rij 1 / rij 2 |
 |---|---|---|
@@ -376,18 +373,12 @@ Sinds firmware 1.17.24 roteert het LCD **zeven** statusschermen (was zes). Elk s
 | 4 | WiFi | `WiFi: connected` / `192.168.20.150` |
 | 5 | Tijd | `06-05-2026 14:30` / `Src:NTP      Day` |
 | 6 | Raamposities | `M1    M2    M3 ` / `OPEN  CLOS  MOV>` |
-| 7 | Firmware + Uptime *(nieuw 1.17.24)* | `FW: 1.17.25` / `Up: 1d 4h 23m` |
-
-Op scherm 5 is sinds firmware 1.17.25 rechts op rij 2 een **`Day`**/**`Night`**-badge zichtbaar; deze schakelt op de exacte zonsopkomst en zonsondergang die ook de dag/nacht-setpoint-selectie aansturen.
+| 7 | Firmware + Uptime | `FW: 1.17.25` / `Up: 1d 4h 23m` |
 
 ### LCD — D-toets als directe terugkeer + 5-minuten time-out
 
-Twee gebruikers-vriendelijke gedragingen sinds firmware 1.17.24:
-
-- **D-toets als snelle escape**: vanaf elk menu, bladermenu, PIN-invoer of bewerk-scherm springt **één druk op `D`** terug naar de roterende statusschermen. Op de statusschermen zelf behoudt `D` zijn oude functie (volgende scherm in de rotatie).
-- **5-minuten auto-terugkeer**: blijft het LCD 5 minuten lang op een menu of invoer staan zonder dat een toets wordt ingedrukt, dan keert de FSM automatisch terug naar de auto-rotatie. Onafhankelijk van de sessie-time-out — werkt ook zonder ingelogde gebruiker, zodat de display niet permanent blijft hangen op een halve invoer als iemand wegloopt.
-
-Daarnaast volgt **Climate → 3 CR** (conflict-prioriteit) nu hetzelfde "blader-dan-PIN-dan-bewerken"-patroon als Climate → 1 Day en 2 Night: eerst zie je de actieve waarde, `#` start dan pas het bewerken (vraagt Farmer-PIN als je nog niet ingelogd bent), `*` terug naar het Climate-menu.
+- **D-toets als Quick-jump**: vanaf elk menu, bladermenu, PIN-invoer of bewerk-scherm springt **één druk op `D`** terug naar de roterende statusschermen. 
+- **5-minuten auto-terugkeer**: blijft het LCD 5 minuten lang op een menu of invoer staan zonder dat een toets wordt ingedrukt, dan keert het display automatisch terug naar de auto-rotatie schermen. Dit is onafhankelijk van de sessie-time-out en werkt ook zonder een ingelogde gebruiker, zodat de display niet permanent blijft hangen op een halve invoer als iemand wegloopt.
 
 ---
 
@@ -409,13 +400,15 @@ Daarnaast volgt **Climate → 3 CR** (conflict-prioriteit) nu hetzelfde "blader-
 - Lockout-teller en -duur per rol apart
 
 ### PIN-opslag
-- PIN's worden opgeslagen als **salted SHA-256 hash** in permanent gehuegen
+- PIN's worden opgeslagen als **salted SHA-256 hash** in permanent geheugen
 - De salt is 16 bytes random getal, en wordt gegenereerd bij eerste boot
 - Plaintext-PIN wordt nooit opgeslagen of gelogd
 
 ### PIN-management voor de Beheerder (webinterface, Access-tab)
 
-`[SCHERMAFBEELDING: Access-tab met PIN-change formulieren voor Farmer en Beheerder]`
+![Access-tab met PIN-change formulieren voor Farmer en Beheerder](imagesBeheerder\kasControllerWebGUIAccessTab.png)
+
+*Figuur #: Access-tab met PIN-change formulieren voor Farmer en Beheerder* 
 
 #### Eigen Beheerder-PIN wijzigen
 1. Inloggen als Beheerder (8 cijfers)
@@ -463,9 +456,9 @@ Inloggen via het hoofdmenu — **dezelfde route als boer maar met Beheerder-PIN*
 5. Druk `#` om te bevestigen
 6. Bij succes: `Access granted` / `Welcome!`; `Sess: Beheerder` op het modus-scherm
 
-### Snelweg via #-toets
+### Quick-jump via #-toets
 
-Op vier statusschermen kan je direct vanuit de auto-rotatie naar een instellingen-menu springen, waarbij PIN-invoer eerst wordt gevraagd als je nog niet ingelogd bent. Vanaf firmware 1.16.39 staat er **geen zichtbare hint** meer op rij 2 — `#` werkt op elk statusscherm dat een instellingen-menu heeft, en wordt genegeerd op de overige schermen (Mode/Sess en Raamposities).
+Op vier statusschermen kan je direct vanuit de auto-rotatie naar een instellingen-menu springen, waarbij PIN-invoer eerst wordt gevraagd als je nog niet ingelogd bent. `#` werkt op elk statusscherm dat een instellingen-menu heeft, en wordt genegeerd op de overige schermen (Mode/Sess en Raamposities).
 
 - **T/RH-status (scherm 1)** — `#` → vraagt **Boer-PIN** (4 cijfers) → daarna direct in Climate-menu (Day/Night setpoints + Conflict-prioriteit)
 - **Wind-status (scherm 2)** — `#` → vraagt **Boer-PIN** → daarna direct in Wind-menu (`Wnd-max`, `Wnd-prot`)
@@ -514,9 +507,11 @@ De LCD-route voor de door de **boer-bewerkbare** instellingen (T-max dag/ngt, RH
 
 ### 10.2 In de webinterface (tab Climate)
 
-`[SCHERMAFBEELDING: tab Climate, ingelogd als Beheerder, met Beheerder-only sectie zichtbaar]`
+![SCHERMAFBEELDING: tab Climate, ingelogd als Beheerder, met Beheerder-only sectie zichtbaar](imagesBeheerder\kasControllerWebGUIClimateTab.png)
 
-#### Boer-bewerkbare velden (Farmer + Beheerder)
+*Figuur #: Climate-tab, ingelogd als Beheerder, met Beheerder-only sectie zichtbaar*
+
+#### Boer-bewerkbare velden (Boer + Beheerder)
 
 Per setpoint: schuifregelaar + nummerveld + **Apply**-knop.
 
@@ -544,7 +539,9 @@ Per setpoint: schuifregelaar + nummerveld + **Apply**-knop.
 
 ### 10.3 Wind-tab
 
-`[SCHERMAFBEELDING: tab Wind, ingelogd als Beheerder]`
+![SCHERMAFBEELDING: tab Wind, ingelogd als Beheerder](imagesBeheerder\kasControllerWebGUIWindTabBeheerder.png)
+
+*Figuur #: Wind-tab, ingelogd als Beheerder
 
 #### Boer + Beheerder
 |  Label |  Default | Bereik |
@@ -553,13 +550,11 @@ Per setpoint: schuifregelaar + nummerveld + **Apply**-knop.
 
 #### Beheerder-only
 
-**### uitleg over de wind instellingen toevoegen**
-
 | Label |  Default | Bereik | Eenheid |
 |---|---|---|---|
 | Wind speed max | 6 | 1–30 | m/s |
-| Excl. zone low | — | 0–359 | ° |
-|  Excl. zone high | — | 0–359 | ° |
+| Dir excl. zone low | — | 0–359 | ° |
+| Dir axcl. zone high | — | 0–359 | ° |
 
 > **Wind-uitsluitings-zone**: windrichting waarbij de wind extra gevaarlijk is (bijvoorbeeld omdat ramen rechtstreeks in deze richting staan). Wind binnen deze hoek triggert wind-override ongeacht windsnelheid.
 
@@ -588,7 +583,9 @@ Hieronder staat een conversietabel van **Beaufort naar m/s**:
 
 ### 10.4 Motors-tab (alleen Beheerder)
 
-`[SCHERMAFBEELDING: tab Motors met M1, M2, M3 instellingen]`
+![SCHERMAFBEELDING: tab Motors met M1, M2, M3 instellingen](imagesBeheerder\kasControllerWebGUIMotorTabBeheerder.png)
+
+*Figuur #: Motors-tab met M1, M2, M3 instellingen*
 
 | Veld | Default M1 | Default M2 | Default M3 | Bereik |
 |---|---|---|---|---|
@@ -600,120 +597,150 @@ Hieronder staat een conversietabel van **Beaufort naar m/s**:
 >
 > **Dwell-tijden aanpassen**: bij oscillatie (raam gaat steeds open/dicht in een korte cyclus) → dwell-tijd verhogen. Bij trage reactie op klimaat-veranderingen → dwell verlagen. Begin met de standaar instellingen; pas deze waarden alleen aan na minimaal 1 dag observeren.
 
-### 10.5 Adviezen voor instelling per teelttype
+### 10.5 System-tab (alleen Beheerder)
 
-`[TABEL: richtwaarden per teelt — door teler / leverancier planten in te vullen]`
+![SCHERMAFBEELDING: tab System, ingelogd als Beheerder](imagesBeheerder\kasControllerWebGUISystemTabBeheerder.png)
 
-Algemene vuistregels:
-- **Nacht-Temperatuur** iets lager dan dag-Temperatuur (planten besparen energie)
-- **Luchtvochtigheid boven 85%** voor langere tijd; verhoogd schimmelrisico
-- **Luchtvochtigheid onder 50%** kan groei remmen
-- Begin met **default-waarden** en stel pas bij na een week observeren
+*Figuur #: System-tab, ingelogd als Beheerder — alle systeem-instellingen op één plek*
 
----
+De System-tab bundelt alle systeem-instellingen die niet direct aan de klimaatregeling raken: netwerk, klok, locatie, sessies en firmware-updates. Eerste-installatie van WiFi loopt via een combinatie van de LCD en deze tab (zie [§11 Eerste-installatie WiFi-verbinding](#11-eerste-installatie-wifi-verbinding) voor de stap-voor-stap procedure).
 
-## 11. WiFi en webinterface — installatie en beheer
+#### WiFi AP (Access Point op de controller)
 
-### 11.1 Eerste keer WiFi configureren (na fabrieksreset of nieuwe installatie)
+De controller kan een eigen tijdelijk WiFi-netwerk uitzenden zodat de beheerder ook zonder bestaand WiFi-netwerk de webinterface kan bereiken. Aanbevolen alleen voor installatie en onderhoud — niet voor dagelijks gebruik.
 
-Wanneer de kascontroller voor het eerst wordt aangesloten of na een reset niveau 2/3, is er nog geen WiFi-verbinding. Volg de volgende procedure:
+| Veld | Beschrijving | Default | Bereik / regels |
+|---|---|---|---|
+| `AP password` | WPA2-wachtwoord voor het AP | `0123456789` | 8–63 tekens |
+| `AP timeout (min, 0=never)` | Min. tot AP automatisch uitschakelt | 30 | 0 = nooit · 1–1440 min. |
 
-1. **Schakel het AP in op de controller**:
-   - Druk vanaf elk statusscherm `D` totdat je op het **WiFi-status scherm** (scherm 4) bent
-   - Druk `#`
-   - Voer Beheerder-PIN in (8 cijfers), druk `#`
-   - Het System-menu opent met `1=WiFi AP`
-   - Druk `1` om AP te activeren — bevestiging `WiFi AP / enabling...`
-   - LCD toont nu `WiFi: AP active` met SSID `Greenhouse-XXXX`
+> **Sterk aangeraden bij installatie**: wijzig het AP-wachtwoord direct van de fabriekswaarde `0123456789` naar iets unieks per kas. Zonder wijziging is iedereen die de fysieke kas nadert in staat verbinding te maken.
 
-2. **Verbind je laptop/telefoon met het AP**:
-   - Zoek WiFi-netwerk `Greenhouse-XXXX` (waar XXXX de laatste twee bytes van het MAC-adres zijn)
-   - AP-wachtwoord: standaard `0123456789` — **wijzig dit zo snel mogelijk** (zie §11.4)
-   - Verbind met het WiFi netwerk.
+> `AP timeout` voorkomt dat een vergeten AP-modus permanent open blijft staan — bij `0` blijft het AP open totdat u het handmatig uitschakelt.
 
-3. **Open in je browser de webinterface op het AP**:
-   - Browse naar → `http://192.168.4.1`
-   - Login als Beheerder
+#### WiFi client (verbinding met uw eigen netwerk)
 
-4. **Configureer client-mode WiFi**:
-   - Tab **System** → sectie **WiFi client**
-   - Stel in het veld **SSID** de naam van het WiFi netwerk in
-   - Stel in het veld ** Password** het WiFi-wachtwoord in
-   - Klik **Connect**
-   - De controller probeert binnen ~30 sec. verbinding te maken; Het LCD toont `WiFi: connecting...` daarna `WiFi: connected` en het IP-adres van de controller
+| Veld | Beschrijving | Bereik / regels |
+|---|---|---|
+| `SSID` | Naam van het WiFi-netwerk dat de controller moet gebruiken | max 32 tekens |
+| `Password` | Wachtwoord (WPA2-PSK) van dat WiFi-netwerk | 8–63 tekens · leeg laten bij Apply = bestaande PSK blijft staan |
 
-5. **Verbind je apparaat opnieuw met het kas-/thuisnetwerk** en open de webinterface op het nieuwe IP-adres. Het AP kan nu uitgezet worden:
-   - Op de controller: System-menu → `1` om AP weer uit te schakelen, of wacht tot dat het AP automatisch wordt uitgeschakeld na 30 min.
+Klik **Connect** om de verbinding tot stand te brengen. De controller probeert ~30 sec.; bij succes verschijnt het verkregen IP-adres op LCD-status-scherm 4 en is de webinterface op dat adres bereikbaar.
 
-### 11.2 AP-timeout
+> **Statisch IP**: de firmware ondersteunt **geen** statisch IP-adres. Gebruik een **DHCP-reservering** op uw router (op MAC-adres) als u een vast adres wilt.
+
+> **mDNS / hostname**: de controller registreert zichzelf niet op de lokale DNS. Gebruik altijd het IP-adres of maak zelf een DNS-record in uw router.
+
+#### NTP en tijdzone
+
+| Veld | Beschrijving | Default | Voorbeeld |
+|---|---|---|---|
+| `POSIX TZ string` | POSIX-tijdzone-notatie | (Nederlandse tijdzone) | `CET-1CEST,M3.5.0,M10.5.0/3` |
+
+- **NTP-synchronisatie**: automatisch zodra de WiFi-client verbonden is. Default server: [pool.ntp.org](pool.ntp.org); niet configureerbaar.
+- **Tijdzone-wijziging**: een aanpassing in dit veld is direct actief, een reboot is niet nodig.
+- **Zomertijd**: wordt automatisch bepaald uit de POSIX-TZ-string (zie default Nederland).
+- **Tijd handmatig instellen** (wanneer u geen internet-toegang heeft): op de controller via LCD-tijdscherm (scherm 5) → `#` → Beheerder-PIN → datum DDMMYY → `#` → tijd HHMM → `#`.
+
+#### Geografische locatie (Location)
+
+Wordt gebruikt voor het berekenen van zonsopkomst en zonsondergang, en daarmee de automatische dag/nacht-omschakeling van de klimaat-setpoints.
+
+| Veld | Default | Eenheid |
+|---|---|---|
+| `Latitude` | 52.0 | ° (Nederland; positief = N, negatief = S) |
+| `Longitude` | 5.0 | ° (Nederland; positief = E, negatief = W) |
+
+**Automatische detectie**: bij eerste WiFi-verbinding doet de controller een geo-lookup via [ip-api.com](ip-api.com) en vult `latitude` / `longitude` zelfstandig in. De waarden worden in permanent geheugen bewaard.
+
+> Wanneer de WiFi-verbinding via een mobiele hotspot loopt, kan de geo-lookup onverwachte resultaten opleveren (de provider-locatie wordt teruggegeven, niet uw kas-locatie). Pas in dat geval handmatig de locatie aan.
+
+**Handmatig aanpassen**: velden `latitude` / `longitude` rechtstreeks editen. Decimale graden met teken — bijv. `52.218` voor 52°13′05″ N, `5.939` voor 5°56′21″ E.
+
+#### Sessie-timeout
 
 | Veld | Beschrijving | Default | Bereik |
 |---|---|---|---|
-| AP timeout (min, 0=never) | Min. tot AP automatisch uitschakelt | 30 | 0 = nooit, 1–∞ min. |
-
-Voorkomt dat een vergeten AP-modus permanent open blijft staan.
-
-### 11.3 AP-wachtwoord wijzigen
-
-> **Sterk aangeraden bij installatie**: wijzig het AP-wachtwoord van fabriekswaarde `0123456789` naar iets unieks per kas.
-
-1. Inloggen als Beheerder
-2. Tab **System** → sectie **WiFi AP**
-3. Veld `AP password` (max 63 tekens, min 8 tekens voor WPA2)
-4. Klik **Apply**
-
-### 11.4 WiFi client SSID/PSK wijzigen
-
-Volg dezelfde procedure als bij eerste configuratie (§11.1 stap 4). Tijdens uitvoer is de controller kort niet bereikbaar tot de WiFi verbinding is hersteld (~30 sec.).
-
-### 11.5 Statisch IP
-
-De firmware ondersteunt **geen** statische IP adressen en werkt alleen met een **DHCP-reservering** op de internet-router (op MAC-adres) als je een vast IP wilt.
-
-### 11.6 mDNS / hostname
-
-De controller registreert zichzelf niet op de lokale DNS server; gebruik altijd het IP-adres. Maak indien gewenst een eigen DNS-record in je router.
-
-### 11.7 NTP en tijdzone
-
-| Instelling | Beschrijving | Default | Voorbeeld |
-|---|---|---|---|
-| `POSIX TZ string` | POSIX TZ-string | (Nederlandse tijdzone) | `CET-1CEST,M3.5.0,M10.5.0/3` |
-
-- **NTP-synchronisatie**: is automatisch zodra WiFi-client verbonden is. Default server is: [pool.ntp.org](pool.ntp.org) en is niet configureerbaar
-- **Tijdzone-wijziging**: webinterface System-tab → veld `POSIX TZ string`. Een aanpassing is direct actief, geen reboot nodig
-- **daglight Saving**: Wordt automatisch bepaald; meegenomen in POSIX TZ-string (zie default Nederland)
-- **Tijd handmatig instellen** Wanneer je geen internet toegang hebt: Op de contrller: LCD time-status (scherm 5) → `#` → Beheerder-PIN → datum invoer DDMMYY → `#` → tijd invoer HHMM → `#`
-
-### 11.8 Geografische locatie
-
-Deze wordt gebruikt voor het bepalen van zonsopkomst/zonsondergang en automatische dag/nacht-omschakeling.
-
-| Beschrijving | Default | Eenheid |
-|---|---|---|
-| Latitude (graden + fractie) | 52.0 | ° (Nederland) |
-| Longitude (graden + fractie) | 5.0 | ° (Nederland) |
-
-**Automatische detectie**: bij eerste WiFi-verbinding doet de controller een geo-lookup via [ip-api.com](ip-api.com) en vult latitiude/longitude automatischwaarna dit in het permanente geheugen wordt bewaard.
-> Wanneer de Wifi verbinding via een mobiele internet verbinding loopt kan de geo-lookup onverwachte resultaten opleveren
-
-**Handmatig aanpassen locatie**: in de webinterface: System-tab → sectie **Location** → velden `latitude`, `longitude`. Notatie is Decimal-graden met teken (positief = N/E, negatief = S/W). *Bijvoorbeeld: 52.218, 5.939* 
-
-### 11.9 Sessie-timeout
-
-| Invul veld | Beschrijving | Default | Bereik |
-|---|---|---|---|
-| `Session timeout (min)` | Idle-timeout in minuten | 5 | 1–1440 |
+| `Session timeout (min)` | Idle-timeout voor de webinterface en de LCD-menu | 5 min. | 1–1440 min. |
 
 Geldt voor zowel LCD als webinterface. Een te lange waarde (bv. 60 min) is een veiligheidsrisico — een vergeten ingelogde sessie kan worden misbruikt.
 
+#### OTA — firmware-update
+
+In de System-tab staat ook de sectie **OTA update** met twee upload-knoppen: één voor het firmware-binair (`.bin`) en één voor de web-assets-ZIP. De volledige update-procedure inclusief verificatie-stappen staat in [§14 Firmware-update / OTA](#firmware-update--ota).
+
 ---
 
-### 11.10 Status-rapportage naar extern webdashboard (tab **Web**) — nieuw in 1.17
+### 10.6 Access-tab (alleen Beheerder)
+
+![SCHERMAFBEELDING: tab Access, ingelogd als Beheerder](imagesBeheerder\kasControllerWebGUIAccessTab.png)
+
+*Figuur #: Access-tab — PIN-beheer voor beide gebruikersrollen*
+
+In de Access-tab wijzigt u de PIN-code van de Boer en die van de Beheerder. Zie [§9 PIN-management voor de Beheerder (webinterface, Access-tab)](#pin-management-voor-de-beheerder-webinterface-access-tab) voor de volledige procedure en de regels rondom lockout.
+
+| Veld | Beschrijving | Bereik |
+|---|---|---|
+| `New PIN (4 digits)` — Farmer | Nieuwe Boer-PIN | exact 4 cijfers |
+| `New PIN (8 digits)` — Admin | Nieuwe Beheerder-PIN | exact 8 cijfers |
+
+> **Eigen Beheerder-PIN wijzigen kan alleen vanaf de webinterface** — niet vanaf de LCD. De LCD-menu's bieden geen PIN-wijzigings-functie. Voor het wijzigen van een Boer-PIN is een Beheerder-sessie vereist.
+
+> **Beheerer-PIN vergeten** is niet zonder fysiek toegang oplosbaar. Zie [§18 Reset-procedure (BOOT-knop)](#18-reset-procedure-boot-knop-op-microprocessorboard) voor de fabrieksreset die ook de PIN's resetten.
+
+De **Logout**-knop verschijnt op de Access-tab wanneer u ingelogd bent (Boer of Beheerder); klik hierop om de sessie direct te beëindigen, anders verloopt deze na de in System ingestelde sessie-timeout.
+
+---
+
+### 10.7 Log-tab (alleen Beheerder)
+
+![SCHERMAFBEELDING: tab Log, ingelogd als Beheerder](imagesBeheerder\kasControllerWebGUILogTabBeheerder.png)
+
+*Figuur #: Log-tab — SD-kaart status en logbestand-download*
+
+De Log-tab biedt toegang tot het event-logbestand-systeem. De kascontroller schrijft alle relevante gebeurtenissen (sensor-readings, raam-bewegingen, mode-wisselingen, alarmen, configuratie-wijzigingen) naar twee bronnen:
+
+- **SD-kaart**: dag-bestanden in CSV-formaat — primaire opslag voor historische analyse. De firmware roteert automatisch naar een nieuw bestand bij 512 KB en bewaart maximaal 10 bestanden.
+- **NVS-ringbuffer**: laatste ~100 events in het flash-geheugen — fallback wanneer geen SD-kaart aanwezig of niet leesbaar is. Logging gaat dus altijd door, ook zonder SD-kaart.
+
+#### Velden en knoppen
+
+| Element | Beschrijving |
+|---|---|
+| `SD card control` — **Mount** / **Unmount** | Handmatig mounten/unmounten van de SD-kaart |
+| `Log source` (keuzelijst) | Bron om te downloaden: NVS-ringbuffer, of een specifiek SD-bestand uit de lijst |
+| **Download CSV** | Download de gekozen logbron als CSV-bestand |
+| Refresh-knop (↻) | Vernieuwt de lijst beschikbare SD-bestanden |
+
+#### SD-kaart eisen
+
+- **Bestandssysteem**: FAT32 (verplicht). exFAT en NTFS worden niet ondersteund
+- **Capaciteit**: in de praktijk **max 32 GB** (SDXC-kaarten worden standaard als exFAT geformatteerd en moeten handmatig naar FAT32 worden gezet)
+- **Klasse / snelheid**: geen minimum vereist — Class 4 of hoger volstaat voor de geringe schrijfbelasting van logging
+
+#### Automatisch mounten
+
+De firmware probeert de SD-kaart **automatisch te mounten**:
+- bij het opstarten (direct na boot, tijdens de event-logger-initialisatie)
+- daarna elke 60 seconden zolang er geen kaart gemount is
+
+Plaats een SD-kaart tijdens bedrijf en binnen één minuut wordt er automatisch een mount-poging gedaan — een power-cycle is niet nodig.
+
+> **Verplicht voordat u een SD-kaart fysiek verwijdert**: klik **Unmount** in de Log-tab. Anders kunnen de laatste log-events verloren gaan of kan het bestandssysteem corrupt raken.
+
+> **Logbestand-formaat**: het CSV-formaat (kolomnamen, event-types en parameter-ID's) en het meegeleverde Python-script `log/logparser.py` om ruwe logs naar leesbare tekst om te zetten, staan beschreven in [Bijlage F — Logbestand-formaat en `logparser` script](#bijlage-f--logbestand-formaat-en-logparser-script).
+
+---
+
+### 10.8 Web-tab (alleen Beheerder) — status-rapportage naar extern dashboard
+
+![SCHERMAFBEELDING: tab Web, ingelogd als Beheerder](imagesBeheerder\kasControllerWebGUIWebTabBeheerder.png)
+
+*Figuur #: Web-tab — configuratie van status-rapportage naar een externe web-server*
 
 De kascontroller kan zijn actuele toestand periodiek naar een **externe web-server** sturen. Op die web-server draait een dashboard dat dezelfde gegevens toont als de eigen webinterface — zo kan iemand op afstand toch de werking van de kas volgen. Daarnaast wordt het laatst-gesloten logbestand van de SD-kaart één keer per dag (en/of bij elke logrotatie) naar dezelfde server geüpload.
 
-De feature staat **standaard uit**. Inschakelen gebeurt volledig in de webinterface, tab **Web** (alleen zichtbaar voor de Beheerder).
+De feature staat **standaard uit**. Inschakelen gebeurt volledig in deze tab.
 
 #### Werkingsoverzicht
 
@@ -730,7 +757,7 @@ De feature staat **standaard uit**. Inschakelen gebeurt volledig in de webinterf
 └──────────────────┘                  └────────────────────┘
 ```
 
-Iedere POST draagt een **shared secret** in de HTTP-header `sourceidentifier`. De web-server vergelijkt die met zijn eigen **shared secret**; bij verschil wordt de informatie zonder terugmelding verworpen. Het **shared secret** staat dus letterlijk op twéé plaatsen — kascontroller en web-server — en moet bij een aanpassing aan beide kanten worden aangepast.
+Iedere POST draagt een **shared secret** in de HTTP-header `sourceidentifier`. De web-server vergelijkt die met zijn eigen shared secret; bij verschil wordt de informatie zonder terugmelding verworpen. Het shared secret staat dus letterlijk op twéé plaatsen — kascontroller en web-server — en moet bij een aanpassing aan beide kanten worden aangepast.
 
 #### Velden op tab Web
 
@@ -746,7 +773,7 @@ Iedere POST draagt een **shared secret** in de HTTP-header `sourceidentifier`. D
 
 #### Actuele informatie over de werking van deze functie
 
-Onderaan tab *Web* staan drie regels die elke 5 seconden ververst worden (zolang u op dit tabblad staat). Ze tonen wat T14 zelf intern weet, ze zijn niet handmatig in te vullen:
+Onderaan tab Web staan drie regels die elke 5 seconden ververst worden (zolang u op dit tabblad staat). Ze tonen wat T14 zelf intern weet, ze zijn niet handmatig in te vullen:
 
 | Regel | Inhoud | Voorbeeld |
 |---|---|---|
@@ -767,7 +794,7 @@ De auto-refresh raakt alleen deze drie regels aan — uw invoer in `URL`, `Share
 7. Vink `Enabled` aan.
 8. Klik **Apply**.
 
-Binnen één intervalperiode hoort de regel `Last post` op `OK …` te springen. Blijft hij op `FAIL …` of leeg staan? Zie [§11.10 troubleshooting](#1110-troubleshooting-status-rapportage) hieronder.
+Binnen één intervalperiode hoort de regel `Last post` op `OK …` te springen. Blijft hij op `FAIL …` of leeg staan? Zie de tabel *Veelgemaakte fouten* hieronder.
 
 #### Functie tijdelijk uitschakelen
 
@@ -779,17 +806,17 @@ Bij OTA-firmware-update worden status-POST's automatisch overgeslagen totdat de 
 
 #### HTTPS
 
-Endpoints met `https://` worden ondersteund. **De controller controleert het certificaat NIET** (De verbinding is versleuteld maar niet geauthenticeerd). Dat is een bewuste keuze: anders moest de firmware een actuele CA-bundel meedragen en periodiek updaten. De gedeelde token in de header is de eigenlijke authenticatie. Wijzig de token meteen als u vermoedt dat hij is gelekt.
+Endpoints met `https://` worden ondersteund. **De controller controleert het certificaat NIET** (de verbinding is versleuteld maar niet geauthenticeerd). Dat is een bewuste keuze: anders moest de firmware een actuele CA-bundel meedragen en periodiek updaten. De gedeelde token in de header is de eigenlijke authenticatie. Wijzig de token meteen als u vermoedt dat hij is gelekt.
 
 #### Veelgemaakte fouten
 
 | Symptoom | Oorzaak | Oplossing |
 |---|---|---|
-| Bij **Apply** verschijnt rood `URL must end with "api.php"` | URL eindigt op een directorypad zoals `/api/` | Voeg `api.php` toe; De HTTP-Client volgt geen 301-redirects, dus de server-side `DirectoryIndex` kan niet vertrouwd worden |
+| Bij **Apply** verschijnt rood `URL must end with "api.php"` | URL eindigt op een directorypad zoals `/api/` | Voeg `api.php` toe; de HTTP-client volgt geen 301-redirects, dus de server-side `DirectoryIndex` kan niet vertrouwd worden |
 | Rood `URL must not contain ? or #` | Query-parameters in de URL | Verwijder ze — de firmware voegt zelf `?action=log` toe voor de log-upload |
 | Rood `secret too short` | Minder dan 16 tekens | Vraag de beheerder van de website om een langer token |
-| `Last post` blijft `FAIL` | Server bereikbaar maar weigert ('wrong secret') | Controleer dat `Shared secret` byte-exact gelijk is aan shared secret op de web-server. Spaties/tabs aan einde tellen mee! |
-| `Last post` blijft leeg | WiFi-client verbinding niet actief, of klok niet via NTP gesynchroniseerd | Zie [§11.1](#111-eerste-keer-WiFi-configureren-na-fabrieksreset-of-nieuwe-installatie) (WiFi) of [§11.7](#117-ntp-en-tijdzone) (NTP). T14 wacht op beide vóórdat hij verstuurt. |
+| `Last post` blijft `FAIL` | Server bereikbaar maar weigert ('wrong secret') | Controleer dat `Shared secret` byte-exact gelijk is aan het shared secret op de web-server. Spaties/tabs aan het einde tellen mee! |
+| `Last post` blijft leeg | WiFi-client verbinding niet actief, of klok niet via NTP gesynchroniseerd | Zie [§11 Eerste-installatie WiFi-verbinding](#11-eerste-installatie-wifi-verbinding) of [§10.5 NTP en tijdzone](#ntp-en-tijdzone). T14 wacht op beide vóórdat hij verstuurt. |
 | Publiek dashboard toont een tegel met verkeerde inhoud | Mismatch in veldnamen tussen kascontroller-firmware en het web-dashboard | Beide moeten van dezelfde release-generatie zijn. Firmware 1.17.1 hoort bij `pe1mew.nl/hbwv` van mei 2026 of nieuwer. |
 
 #### Logbestand-upload — wat gaat er precies heen?
@@ -797,10 +824,61 @@ Endpoints met `https://` worden ondersteund. **De controller controleert het cer
 De controller upload het **meest recent gesloten** CSV-logbestand op de SD-kaart (dus niet het bestand waar T9 op het moment van uploaden nog in schrijft). De bestandsnaam is van de vorm `YYYYMMDDHHMMSS.csv` (lokale tijd van aanmaak) en is maximaal 512 KB groot — daarboven heeft T9 het al gerouteerd naar een nieuwer bestand.
 
 Twee triggers, beide aan te zetten of uit te zetten:
-- **On rotation:** zodra T9 een logbestand sluit (omdat het 512 KB heeft bereikt), wordt het vrijwel direct geüpload.
-- **Daily:** elke dag rond `Daily upload time` lokaal wordt het laatst-gesloten bestand opnieuw beoordeeld; staat het al onder `Last uploaded file`, dan wordt het geslagen — anders wordt het geüpload.
+- **On rotation**: zodra T9 een logbestand sluit (omdat het 512 KB heeft bereikt), wordt het vrijwel direct geüpload.
+- **Daily**: elke dag rond `Daily upload time` lokaal wordt het laatst-gesloten bestand opnieuw beoordeeld; staat het al onder `Last uploaded file`, dan wordt het overgeslagen — anders wordt het geüpload.
 
 Door deze dubbele aanpak met dedup-op-bestandsnaam wordt hetzelfde bestand nooit twee keer geüpload, ook als de rotatie en de dagelijkse check op verschillende dagen vallen.
+
+---
+
+### 10.9 Adviezen voor instelling per teelttype
+
+`[TABEL: richtwaarden per teelt — door teler / leverancier planten in te vullen]`
+
+Algemene vuistregels:
+- **Nacht-Temperatuur** iets lager dan dag-Temperatuur (planten besparen energie)
+- **Luchtvochtigheid boven 85%** voor langere tijd; verhoogd schimmelrisico
+- **Luchtvochtigheid onder 50%** kan groei remmen
+- Begin met **default-waarden** en stel pas bij na een week observeren
+
+---
+
+## 11. Eerste-installatie WiFi-verbinding
+
+Dit hoofdstuk beschrijft uitsluitend de **eenmalige procedure** om de kascontroller voor het eerst op een WiFi-netwerk te krijgen — bijvoorbeeld na de fabriekslevering of na een reset op niveau 2/3 (zie [§18 Reset-procedure](#18-reset-procedure-boot-knop-op-microprocessorboard)). Voor reguliere WiFi-aanpassingen ná de eerste installatie (AP-wachtwoord, client-SSID, NTP, locatie, sessie-timeout) gebruikt u de **System-tab** in de webinterface — zie [§10.5 System-tab](#105-system-tab-alleen-beheerder).
+
+### 11.1 Eerste keer WiFi configureren (na fabrieksreset of nieuwe installatie)
+
+Wanneer de kascontroller voor het eerst wordt aangesloten of na een reset niveau 2/3, is er nog geen WiFi-verbinding. Volg de volgende procedure:
+
+1. **Schakel het AP in op de controller**:
+   - Druk vanaf elk statusscherm `D` totdat u op het **WiFi-status scherm** (scherm 4) bent
+   - Druk `#`
+   - Voer de Beheerder-PIN in (8 cijfers), druk `#`
+   - Het System-menu opent met `1=WiFi AP`
+   - Druk `1` om het AP te activeren — bevestiging `WiFi AP / enabling...`
+   - Het LCD toont nu `WiFi: AP active` met SSID `Greenhouse-XXXX`
+
+2. **Verbind uw laptop/telefoon met het AP**:
+   - Zoek het WiFi-netwerk `Greenhouse-XXXX` (waar `XXXX` de laatste twee bytes van het MAC-adres zijn)
+   - AP-wachtwoord: standaard `0123456789` — **wijzig dit zo snel mogelijk** (zie [§10.5 System-tab → WiFi AP](#wifi-ap-access-point-op-de-controller))
+   - Verbind met het WiFi-netwerk.
+
+3. **Open in uw browser de webinterface op het AP**:
+   - Browse naar → `http://192.168.4.1`
+   - Log in als Beheerder
+
+4. **Configureer client-mode WiFi**:
+   - Tab **System** → sectie **WiFi client**
+   - Vul bij **SSID** de naam van uw WiFi-netwerk in
+   - Vul bij **Password** het WiFi-wachtwoord in
+   - Klik **Connect**
+   - De controller probeert binnen ~30 sec. verbinding te maken; het LCD toont `WiFi: connecting...`, daarna `WiFi: connected` en het IP-adres van de controller
+
+5. **Verbind uw apparaat opnieuw met het kas-/thuisnetwerk** en open de webinterface op het nieuwe IP-adres. Het AP kan nu uitgezet worden:
+   - Op de controller: System-menu → `1` om het AP weer uit te schakelen, of wacht totdat het AP automatisch uitgeschakeld wordt na 30 min.
+
+> **Vervolgstappen na deze eerste installatie** — pas direct het AP-wachtwoord aan ([§10.5 → WiFi AP](#wifi-ap-access-point-op-de-controller)) en, indien nodig, de tijdzone, locatie en sessie-timeout via [§10.5 System-tab](#105-system-tab-alleen-beheerder). Status-rapportage naar een extern dashboard configureert u via [§10.8 Web-tab](#108-web-tab-alleen-beheerder--status-rapportage-naar-extern-dashboard).
 
 ---
 
@@ -1503,6 +1581,7 @@ De **complete uitleg** — met daarin alle velden, alle event-types, alle parame
 | 1.4 | 2026-05-11 | Bijgewerkt voor firmware 1.17.2–1.17.8a: extern dashboard toont nu **lokale tijd** voor zonsopkomst/zonsondergang en `time_iso` (UTC→lokaal-conversie in `dm_status_snapshot`, DST automatisch); status-JSON-veldnamen aangelijnd op het bestaande publieke dashboard (`temp_c`/`speed_ms`/`direction_deg`/`mode={current,flags[]}` etc.); HTTPS-uitgaande verbindingen krijgen ruimere stack (12 KB) en mbedTLS-handshake werkt nu betrouwbaar; T11 status-JSON-buffer vergroot 1024 → 2048 bytes; `/api/web` POST nu synchroon (geen race meer bij Apply); URL-validatie eist `api.php`-suffix; webgui-Apply velden worden niet meer overschreven door auto-refresh; cosmetische verbeteringen (klok-waarde bold, URL-veld donker thema, datum-spinner-knoppen passen); nieuwe diagnostische **OTA diagnostic (temp)**-tegel op Status-tab toont Firmware-vs-Assets-versie + MISMATCH-badge (§6 Status-tab — OTA diagnostic (temp)); web-assets dragen nu een eigen `asset_version` via `manifest.json` (in de ZIP gebakken door `bin/build_release.ps1`); `GET /manifest.json` en `<!-- web-assets X.Y.Z -->` HTML-comment voor onafhankelijke verificatie. |
 | 1.5 | 2026-05-11 | Bijgewerkt voor firmware 1.17.9–1.17.20: hoofd-bugfix in `drivers/littleFS/src/littlefs_storage.cpp` — beide LittleFS-partities deelden VFS-mountpoint `/lfs`, waardoor T13 tijdens een gekoppelde OTA wel firmware naar de inactieve bank schreef maar de assets nooit op de bijhorende LFS-partitie terechtkwamen; iedere partitie heeft nu een eigen mountpoint (`/lfsa` en `/lfsb`), waarmee de OTA-cross-bank fout (zichtbaar als oude assets na een succesvolle firmware-update) verholpen is. De tijdelijke **OTA diagnostic (temp)**-tegel uit 1.17.4–1.17.9a is verwijderd; de versie-controle blijft behouden en is geïntegreerd in de **Alarms**-tegel als **MISMATCH**-badge (§6 Status-tab — versie-controle van firmware en web-assets). De diagnostische verificatie-bronnen blijven beschikbaar voor onafhankelijke controle: `GET /manifest.json`, View Source-stempel `<!-- web-assets X.Y.Z -->`, en `?v=<versie>` cache-busters op `app.js` / `style.css`. OTA-procedure in §14 uitgebreid met expliciete **Verificatie na de update**-stap. |
 | 1.6 | 2026-05-11 | Bijgewerkt voor firmware 1.17.21–1.17.25. **Web GUI** — actieve setpoints toegevoegd op de Temperature-, Humidity- en Wind-tegels (de dag- of nacht-waarde die momenteel in werking is); Wind-tegel rij-volgorde gewijzigd naar Speed → Avg → Direction → Variation, met **Variation** = de hoekbreedte (°) waarbinnen alle recente windrichting-metingen liggen; sensorhistorie-tabel uitgebreid van 4 naar 8 kolommen (Time + T/T-avg + RH/RH-avg + Wind/Wind Avg + Direction + Variation); wanneer **Humidity-control = Off** worden de RH-setpoint-regels op de Humidity-tegel gedimd (50 % opacity) en worden de bijhorende velden weggelaten uit de POST naar het externe dashboard. **LCD** — zevende statusscherm toegevoegd (`FW: 1.17.25` / `Up: 1d 4h 23m`); Tijd-scherm rij 2 krijgt rechts een **Day**/**Night**-badge; **D**-toets werkt vanuit elk menu/PIN/bewerk-scherm als directe terugkeer naar de auto-rotatie; na 5 minuten zonder toets in een menu keert de display automatisch terug naar de roterende statusschermen; **Climate → 3 CR** volgt nu het "blader-eerst, daarna PIN, daarna bewerken"-patroon van Day/Night. Zie §6 *Status-tab — actieve setpoints op de tegels*, *Sensorhistorie-tabel*, *LCD-statusschermen* en *LCD — D-toets en 5-minuten time-out*. |
+| 1.7 | 2026-05-12 | Structurele herordening van §10 en §11 (geen firmware-wijziging — nog steeds 1.17.25). Vier nieuwe sub-hoofdstukken toegevoegd aan §10 "Klimaat instellen" die de overige webinterface-tabs één-op-één beschrijven: **§10.5 System-tab** (WiFi AP, WiFi client, NTP en tijdzone, geografische locatie, sessie-timeout, OTA-verwijzing) waarin alle voormalige sub-paragrafen van §11.2–§11.9 zijn samengebracht; **§10.6 Access-tab** (PIN-beheer voor Boer en Beheerder, met kruisverwijzing naar §9); **§10.7 Log-tab** (SD-kaart mount/unmount, eisen, automatisch mounten, kruisverwijzing naar Bijlage F voor het CSV-formaat); **§10.8 Web-tab** (status-rapportage naar extern dashboard, voorheen §11.10). §11 is dientengevolge afgeslankt tot uitsluitend de **eenmalige eerste-installatie-procedure** van een WiFi-verbinding (na fabrieksreset of nieuwe installatie); hoofdstuktitel hernoemd naar "Eerste-installatie WiFi-verbinding". De inhoudsopgave en interne kruisverwijzingen zijn dienovereenkomstig bijgewerkt. |
 
 ---
 
