@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de boer
 
-**Versie:** 1.4 — concept
+**Versie:** 1.5 — concept
 **Datum:** 2026-05-12
-**Firmware:** 1.17.25
+**Firmware:** 1.17.26
 
 ---
 
@@ -226,7 +226,7 @@ De controller doorloopt zeven schermen in vaste volgorde, elk 5 seconden zichtba
 ```
    +----------------+
    |Wind: 2.3 m/s   |
-   | Dir:180 ° (S ) |
+   | Dir: 180 ° (S )|
    +----------------+
 ```
 
@@ -1013,13 +1013,13 @@ Soms helpt het om de controller volledig opnieuw op te starten — bijvoorbeeld 
 
 **Optie B — RESET-knop op het microprocessorboard**:
 1. Open de kast (alleen als je daar door de beheerder toegang voor hebt)
-2. Vind de **RESET-knop** op het microprocessorboard (LOLIN S3) — dit is een andere knop dan de BOOT-knop
+2. Vind de **RESET-knop** op het microprocessorboard (LOLIN S3) — dit is een andere knop dan de IO0-knop is met **1** gemarkeerd op onderstaande figuur. 
 3. Druk de RESET-knop kort in en laat los
 4. De controller herstart hetzelfde als bij een power-cycle
 
-`[FOTO: microprocessorboard in kast met RESET-knop en BOOT-knop duidelijk gemarkeerd]`
+![FOTO: microprocessorboard in kast met RESET-knop en BOOT-knop duidelijk gemarkeerd](images\LolinS3Reset.png)
 
-> **Waarschuwing**: druk niet op de **BOOT-knop** in plaats van de RESET-knop, tenzij je bewust de fysieke reset-procedure uitvoert (zie [§18](#18-reset-procedure-boot-knop-op-microprocessorboard)). De BOOT-knop start een fabrieksreset wanneer je hem te lang ingedrukt houdt.
+> **Waarschuwing**: druk niet op de **IO0-knop** in plaats van de RESET-knop, tenzij je bewust de fysieke reset-procedure uitvoert (zie [§18](#18-reset-procedure-boot-knop-op-microprocessorboard)). De IO0-knop start een fabrieksreset wanneer je hem te lang ingedrukt houdt.
 
 ---
 
@@ -1034,9 +1034,9 @@ In sommige situaties wil je de **automatische besturing door de kascontroller vo
 
 Op de **Hotraco RRK-3 motorbox** zit voor elk van de drie ramen een eigen schakelaar. Door alle drie de schakelaars **uit de automatische stand** te zetten, **negeert de motorbox alle commando's vanaf de kascontroller** — de kascontroller is dan effectief losgekoppeld van de raamaansturing.
 
-`[FOTO: vooraanzicht van de Hotraco RRK-3 motorbox met de drie schakelaars per kanaal duidelijk in beeld; markeer welke positie hoort bij "automatisch (kascontroller actief)" en welke positie bij "handbediening / kascontroller uit"]`
+![vooraanzicht van de Hotraco RRK-3 motorbox met de drie schakelaars per kanaal duidelijk in beeld](images\RBMotorControllerKnoppenstand.png)
 
-> **Belangrijk — foto vereist**: bovenstaande foto moet de **exacte instelling** tonen van alle drie de schakelaars in beide standen (automatisch én handbediening). Vraag bij installatie of eerste gebruik aan de beheerder welke positie precies hoort bij "kascontroller actief" en welke bij "handbediening".
+*Figuur #: vooraanzicht van de Hotraco RRK-3 motorbox met de drie schakelaars*
 
 ### Effect op de kascontroller
 
@@ -1310,6 +1310,7 @@ Voor alle vragen of problemen waar deze handleiding geen antwoord op geeft:
 | 1.2 | 2026-05-10 | Bijgewerkt voor firmware 1.16.39: zichtbare `#=Set`/`#=AP`-hints verwijderd van alle statusschermen (T/RH, Wind, WiFi, Datum/tijd) — `#` werkt nog steeds als snelweg naar het bijhorende menu, maar het LCD blijft schoon; Wind-statusscherm rij 2 toont kompasletter weer tussen haakjes (`Dir:180 ° (S )`) zoals vóór 1.16.37 |
 | 1.3 | 2026-05-11 | Bijgewerkt voor firmware 1.17.0–1.17.25: zevende statusscherm toegevoegd met firmware-versie + Uptime; Datum/tijd-statusscherm (5) toont op rij 2 nu rechts een **Day**/**Night**-badge die automatisch omschakelt op zonsopkomst en zonsondergang; **D**-toets werkt vanuit elk menu, bladerscherm, PIN- of bewerk-scherm als directe terugkeer naar de roterende statusschermen; na 5 minuten zonder toetsendruk in een menu keert de controller automatisch terug naar de auto-rotatie; **Climate → 3 CR** volgt nu hetzelfde "eerst tonen, dan PIN, dan bewerken"-patroon als Day/Night (voorheen sprong dit menu direct naar PIN-invoer). Volledige handmatige taalcontrole.|
 | 1.4 | 2026-05-12 | Kleine revisies (geen firmware-wijziging — nog steeds 1.17.25). Elke PDF-pagina krijgt nu een **kop- en voettekst**: koptekst toont links *Kas Controller - Herenboeren Wenumseveld* en rechts het versienummer; voettekst toont links *Een RFSee product - http://www.rfsee.nl* en rechts *pagina N*. Alle figuren in de handleiding zijn voorzien van een **doorlopend volgnummer** ("Figuur 1: …", "Figuur 2: …" enz.). |
+| 1.5 | 2026-05-12 | Bijgewerkt voor firmware 1.17.26. Cosmetische correctie op **LCD Scherm 2 (Wind)**: rij 2 toont nu `Dir: 180 ° (S )` in plaats van `Dir:180 ° (S )` — er zit nu één spatie tussen de dubbele punt en het cijfer, in lijn met alle andere LCD-rijen (`Wind:`, `Mode:`, `Sess:`) en met de ongeldige-meting-rij (`Dir: ---`). GitHub-issue [#6](https://github.com/pe1mew/greenhouse-Controller/issues/6). |
 
 ---
 

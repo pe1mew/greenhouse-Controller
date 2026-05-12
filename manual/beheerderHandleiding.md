@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de beheerder
 
-**Versie:** 1.8 — concept
+**Versie:** 1.9 — concept
 **Datum:** 2026-05-12
-**Firmware:** 1.17.25
+**Firmware:** 1.17.26
 
 ---
 
@@ -124,7 +124,7 @@ De controller leest **elke poll-cyclus** (default 30 sec.) de sensoren uit via M
 ### Sensoren
 
 | Type | Model | Lokatie |
-|---|---|---|---|---|
+|---|---|---|
 | Temperatuur + Relatieve luchtvochtigheid (RH) | **FG6485A** | Binnen, een op representatieve plek | 
 | Wind snelheid + richting | **SenseCAP S200** | Buiten, vrij van afscherming  door grote objecten in de omgeving | 
 
@@ -368,12 +368,12 @@ Op het LCD-scherm roteren **zeven** statusschermen. Elk scherm staat 5 seconden,
 | # | Scherm | Inhoud rij 1 / rij 2 |
 |---|---|---|
 | 1 | Temp/RH | `Temp: 23 °C` / `  RH: 65 %` |
-| 2 | Wind | `Wind: 2.3 m/s` / ` Dir:180 ° (S )` |
+| 2 | Wind | `Wind: 2.3 m/s` / ` Dir: 180 ° (S )` |
 | 3 | Mode/Sess | `Mode: AUTO` / `Sess: NONE` |
 | 4 | WiFi | `WiFi: connected` / `192.168.20.150` |
 | 5 | Tijd | `06-05-2026 14:30` / `Src:NTP      Day` |
 | 6 | Raamposities | `M1    M2    M3 ` / `OPEN  CLOS  MOV>` |
-| 7 | Firmware + Uptime | `FW: 1.17.25` / `Up: 1d 4h 23m` |
+| 7 | Firmware + Uptime | `FW: 1.17.26` / `Up: 1d 4h 23m` |
 
 ### LCD — D-toets als directe terugkeer + 5-minuten time-out
 
@@ -1014,7 +1014,7 @@ Symptomen:
 
 ### CR2032 RTC-batterij vervangen
 
-`[FOTO: CR2032 batterijhouder op het microprocessorboard, met de juiste oriëntatie + plus zichtbaar]`
+`[FOTO: CR2032 batterijhouder op het microprocessorboard, met de juiste oriëntatie + plus zichtbaar]` ###
 
 1. Voeding van kascontroller wegnemen (stekker of zekering uit)
 2. Open de kast van de controller; houdt rekening met de flat-cable van het toetenbord
@@ -1179,8 +1179,9 @@ Voor algemene uitleg en consequenties: zie [boer-handleiding §15](handleiding.m
 
 > Zie [boer-handleiding §15 — De kascontroller weet niet dat hij is uitgeschakeld](handleiding.md#de-kascontroller-weet-niet-dat-hij-is-uitgeschakeld) voor de gevolgen van handmatige stand zonder power-cycle achteraf.
 
-### Foto-vereisten
-`[FOTO: Hotraco RRK-3 motorbox met de drie schakelaars per kanaal duidelijk in beeld; markeer welke positie hoort bij "automatisch" en welke bij "handbediening"]`
+![Hotraco RRK-3 motorbox met de drie schakelaars per kanaal duidelijk in beeld; markeer welke positie hoort bij "automatisch" en welke bij "handbediening"](images\RBMotorControllerKnoppenstand.png)
+
+*Figuur #: Hotraco RRK-3 motorbox met de drie schakelaars per kanaal*
 
 ---
 
@@ -1564,6 +1565,7 @@ De **complete uitleg** — met daarin alle velden, alle event-types, alle parame
 | 1.6 | 2026-05-11 | Bijgewerkt voor firmware 1.17.21–1.17.25. **Web GUI** — actieve setpoints toegevoegd op de Temperature-, Humidity- en Wind-tegels (de dag- of nacht-waarde die momenteel in werking is); Wind-tegel rij-volgorde gewijzigd naar Speed → Avg → Direction → Variation, met **Variation** = de hoekbreedte (°) waarbinnen alle recente windrichting-metingen liggen; sensorhistorie-tabel uitgebreid van 4 naar 8 kolommen (Time + T/T-avg + RH/RH-avg + Wind/Wind Avg + Direction + Variation); wanneer **Humidity-control = Off** worden de RH-setpoint-regels op de Humidity-tegel gedimd (50 % opacity) en worden de bijhorende velden weggelaten uit de POST naar het externe dashboard. **LCD** — zevende statusscherm toegevoegd (`FW: 1.17.25` / `Up: 1d 4h 23m`); Tijd-scherm rij 2 krijgt rechts een **Day**/**Night**-badge; **D**-toets werkt vanuit elk menu/PIN/bewerk-scherm als directe terugkeer naar de auto-rotatie; na 5 minuten zonder toets in een menu keert de display automatisch terug naar de roterende statusschermen; **Climate → 3 CR** volgt nu het "blader-eerst, daarna PIN, daarna bewerken"-patroon van Day/Night. Zie §6 *Status-tab — actieve setpoints op de tegels*, *Sensorhistorie-tabel*, *LCD-statusschermen* en *LCD — D-toets en 5-minuten time-out*. |
 | 1.7 | 2026-05-12 | Structurele herordening van §10 en §11 (geen firmware-wijziging — nog steeds 1.17.25). Vier nieuwe sub-hoofdstukken toegevoegd aan §10 "Klimaat instellen" die de overige webinterface-tabs één-op-één beschrijven: **§10.5 System-tab** (WiFi AP, WiFi client, NTP en tijdzone, geografische locatie, sessie-timeout, OTA-verwijzing) waarin alle voormalige sub-paragrafen van §11.2–§11.9 zijn samengebracht; **§10.6 Access-tab** (PIN-beheer voor Boer en Beheerder, met kruisverwijzing naar §9); **§10.7 Log-tab** (SD-kaart mount/unmount, eisen, automatisch mounten, kruisverwijzing naar Bijlage F voor het CSV-formaat); **§10.8 Web-tab** (status-rapportage naar extern dashboard, voorheen §11.10). §11 is dientengevolge afgeslankt tot uitsluitend de **eenmalige eerste-installatie-procedure** van een WiFi-verbinding (na fabrieksreset of nieuwe installatie); hoofdstuktitel hernoemd naar "Eerste-installatie WiFi-verbinding". De inhoudsopgave en interne kruisverwijzingen zijn dienovereenkomstig bijgewerkt. |
 | 1.8 | 2026-05-12 | Kleine revisies (geen firmware-wijziging — nog steeds 1.17.25). Elke PDF-pagina krijgt nu een **kop- en voettekst**: koptekst toont links *Kas Controller - Herenboeren Wenumseveld* en rechts het versienummer; voettekst toont links *Een RFSee product - http://www.rfsee.nl* en rechts *pagina N*. Alle figuren in de handleiding zijn voorzien van een **doorlopend volgnummer** ("Figuur 1: …", "Figuur 2: …" enz.). |
+| 1.9 | 2026-05-12 | Bijgewerkt voor firmware 1.17.26. Cosmetische correctie op **LCD Scherm 2 (Wind)**: tabel-rij in §6 *LCD-statusschermen* toont nu `Dir: 180 ° (S )` met één spatie tussen de dubbele punt en het cijfer, in lijn met `Wind:`, `Mode:` en `Sess:` en met de ongeldige-meting-rij (`Dir: ---`). GitHub-issue [#6](https://github.com/pe1mew/greenhouse-Controller/issues/6). Tevens firmware-referentie op LCD-pagina 7 (`FW: 1.17.26`) in dezelfde tabel bijgewerkt. |
 
 ---
 

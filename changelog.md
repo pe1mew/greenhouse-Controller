@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.17.26] — 2026-05-12
+
+*One-character LCD cosmetic fix for GitHub issue [#6](https://github.com/pe1mew/greenhouse-Controller/issues/6) on the Wind status page (page 2): insert a space between `Dir:` and the heading digits so the colon aligns with the same spacing used everywhere else on the LCD (`Wind:` row, `Mode:`, `Sess:`, the `Dir: ---` invalid-reading row directly below it).*
+
+### Fixed
+- `firmware/src/ui_display/ui_display.cpp::render_status()` case 1 (Wind) — valid-reading format string changed `" Dir:%3d \xDF (%-2s) "` → `" Dir: %3d \xDF (%-2s)"`. Width stays at exactly 16 columns: one extra space is inserted between the colon and the `%3d` field, and one trailing space at the end of the row is dropped to compensate. Resulting display for 180° south wind: `" Dir: 180 ° (S )"`. The invalid-reading row on the next branch already uses `" Dir: --- "` and is unchanged; valid and invalid rows are now consistent. Reported by @pe1mew.
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.25` → `1.17.26`.
+
+### Changed (docs)
+- `manual/boerHandleiding.md` — chapter §6 (LCD Screen 2) and the v1.2 version-history row updated to show the new layout `Dir: 180 ° (S )`. The history row itself is rewritten as a note rather than touched in-place so older readers can still see what changed.
+- `manual/beheerderHandleiding.md` — references to the Wind status row updated.
+- Both PDFs regenerated.
+
+### Out of scope
+- Pure cosmetic; no behavioural or wire-format change. No effect on web GUI, canonical JSON, or external dashboard.
+
+---
+
 ## [1.17.25] — 2026-05-11
 
 *Two LCD rotating-status polish items: add a right-aligned `Day` / `Night` badge to the Time page (page 4, row 1) so the operator can read the controller's active day/night state without crawling into a menu, and clean up the Uptime line on the Firmware page (page 6, row 1) to be left-aligned with a single space after the colon. **Documentation-only follow-up on 2026-05-12 (no firmware change):** structural reorganisation of the Dutch admin manual, sequential figure numbering, branded PDF page header/footer, and Dutch footer wording.*

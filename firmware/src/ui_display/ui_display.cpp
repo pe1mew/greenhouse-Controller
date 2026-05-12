@@ -722,7 +722,11 @@ static void render_status(void)
                 snprintf(r0, sizeof(r0), "Wind:%2d.%1d m/s   ",
                          (int)(meas.wind_speed_avg_ms10 / 10),
                          (int)(meas.wind_speed_avg_ms10 % 10));
-                snprintf(r1, sizeof(r1), " Dir:%3d \xDF (%-2s) ",
+                /* GitHub issue #6: keep one space after "Dir:" so the heading
+                 * is aligned with the colon (matches the invalid-reading row
+                 * on the next branch and the documented spec).  Width stays
+                 * exactly 16 chars: ' Dir: 180 ° (S )'. */
+                snprintf(r1, sizeof(r1), " Dir: %3d \xDF (%-2s)",
                          (int)meas.wind_dir_avg_deg,
                          deg_to_cardinal((uint16_t)meas.wind_dir_avg_deg));
             } else {
