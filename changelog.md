@@ -8,15 +8,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [1.17.25] — 2026-05-11
 
-*Two LCD rotating-status polish items: add a right-aligned `Day` / `Night` badge to the Time page (page 4, row 1) so the operator can read the controller's active day/night state without crawling into a menu, and clean up the Uptime line on the Firmware page (page 6, row 1) to be left-aligned with a single space after the colon.*
+*Two LCD rotating-status polish items: add a right-aligned `Day` / `Night` badge to the Time page (page 4, row 1) so the operator can read the controller's active day/night state without crawling into a menu, and clean up the Uptime line on the Firmware page (page 6, row 1) to be left-aligned with a single space after the colon. **Documentation-only follow-up on 2026-05-12 (no firmware change):** structural reorganisation of the Dutch admin manual, sequential figure numbering, branded PDF page header/footer, and Dutch footer wording.*
 
 ### Changed
 - `firmware/src/ui_display/ui_display.cpp::render_status()` case 4 — row 1 now reads `Src:NTP      Day` or `Src:RTC    Night` (right-aligned in the trailing 9 columns via `%9s`). Source comes from `cfg.is_daytime` so the badge flips at the exact same sunrise/sunset moments the climate controller switches setpoints.
 - `firmware/src/ui_display/ui_display.cpp::render_status()` case 6 — uptime line is left-aligned with a single space after the colon. The compact `1d 4h 23m` / `4h 23m` / `23m` body is built into a scratch buffer first and then space-padded to the 16-column LCD width. Examples: `"Up: 23m         "`, `"Up: 4h 23m      "`, `"Up: 1d 4h 23m   "`. Previous format used colon-no-space and right-padding zeros (`Up:23d  4h 23m  `).
 - `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.24` → `1.17.25`.
 
+### Documentation (2026-05-12)
+- `manual/beheerderHandleiding.md` — bumped header to **v1.8** (was v1.6). v1.7 introduced four new sub-chapters under §10 "Klimaat instellen" that describe the remaining webinterface tabs one-on-one: **§10.5 System-tab** (WiFi AP, WiFi client, NTP en tijdzone, geografische locatie, sessie-timeout, OTA cross-reference) absorbs the contents of the former §11.2–§11.9; **§10.6 Access-tab** (PIN management for both roles) cross-references §9; **§10.7 Log-tab** (SD-card mount/unmount, requirements, automatic mounting) cross-references appendix F for the CSV format; **§10.8 Web-tab** (remote status reporting, ASCII operation diagram, fields table, HTTPS section, common errors, log-upload section) is the former §11.10 moved over. §11 was slimmed down to just the **one-off first-time WiFi installation procedure** (after factory reset or new install); chapter heading renamed to "Eerste-installatie WiFi-verbinding". TOC and internal cross-references updated. v1.8 adds the cosmetic PDF revision row (see below).
+- `manual/boerHandleiding.md` — bumped header to **v1.4** (was v1.3). Cosmetic PDF revision row added; no manual content changes other than the version-history table.
+- `manual/md2pdf.py` — rewritten render path. Edge headless is now driven via the **DevTools Protocol** over a WebSocket (`simple_websocket.Client`) so we can call `Page.printToPDF` with custom `headerTemplate` and `footerTemplate` fields. Edge's CLI `--print-to-pdf` cannot inject custom templates; the previous pipeline rendered without any branding. Added: pre-processing of the markdown that replaces every `Figuur #:` placeholder with sequential `Figuur 1:`, `Figuur 2:`, … in document order (source `.md` is not mutated; substitution happens in the in-memory text fed to the HTML converter); auto-extraction of `**Versie:** X.Y` from the source so the right-hand header is always in sync with the document. CSS `@page` top/bottom margins widened to 22 mm to leave room for the templates.
+- Branded PDF header/footer on **every page**: top-left `Kas Controller - Herenboeren Wenumseveld`, top-right `v<version>`; bottom-left `Een RFSee product - http://www.rfsee.nl`, bottom-right `pagina <n>` (Chromium's `.pageNumber` span substitution).
+- `manual/beheerderHandleiding.pdf` — regenerated (4.4 MB, 13 figures sequentially numbered, every page carries the branded header/footer with `v1.8`).
+- `manual/boerHandleiding.pdf` — regenerated (2.3 MB, 5 figures sequentially numbered, every page carries the branded header/footer with `v1.4`).
+
 ### Out of scope
-- No web GUI / canonical JSON change; this is LCD-only polish.
+- No web GUI / canonical JSON change; the firmware-side change in this release is LCD-only polish.
+- The 2026-05-12 documentation work is a manual-only follow-up and does not bump the firmware version — both manuals still target firmware **1.17.25**.
 
 ---
 

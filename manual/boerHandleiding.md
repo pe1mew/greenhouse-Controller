@@ -1,7 +1,7 @@
 # Handleiding Kascontroller — voor de boer
 
-**Versie:** 1.3 — concept
-**Datum:** 2026-05-11
+**Versie:** 1.4 — concept
+**Datum:** 2026-05-12
 **Firmware:** 1.17.25
 
 ---
@@ -85,7 +85,9 @@ De kascontroller is een geautomatiseerd systeem dat het **klimaat in één kas**
 
 ## 3. De kas en het systeem
 
-`[FOTO: bovenaanzicht / plattegrond van de kas met M1, M2 en M3 aangegeven]`
+![FOTO: bovenaanzicht / plattegrond van de kas met M1, M2 en M3 aangegeven](images\bovenAanzicht.png)
+
+*Figuur #: bovenaanzicht / plattegrond van de kas met M1, M2 en M3 aangegeven*
 
 **Kas:**
 - Lengte (oost-west): ongeveer 40 m
@@ -100,8 +102,6 @@ De kascontroller is een geautomatiseerd systeem dat het **klimaat in één kas**
 | **M2** | Dakbeluchting Noord | Noordelijke dakhelft | ca. 8 m² | ca. 21 sec. |
 | **M3** | Zijwandbeluchting Noord | Noordelijke zijwand | ca. 80 m² | ca. 171 sec. (≈ 3 min.) |
 
-`[FOTO: vooraanzicht van de kas met de drie ramen herkenbaar]`
-
 **Sensoren:**
 - **T/RH-sensor** (temperatuur en luchtvochtigheid) — type FG6485A — gemonteerd binnen in de kas, op een representatieve plek (geen direct zonlicht, geen druipwater)
 - **Wind-sensor** (snelheid en richting) — type SenseCAP S200 — buiten gemonteerd, op een open plek zonder afscherming door objecten
@@ -112,21 +112,9 @@ De motorbox bedient de drie raammotoren. Hij is **in de kas gemonteerd**, **rech
 **Kascontroller:**
 De kascontroller is de elektronische besturing van het hele systeem: een microprocessor met een LCD-scherm, een toetsenbord, sensor-interfaces en een wifi-module. De kascontroller leest de sensoren uit, vergelijkt de meetwaarden met de door jou ingestelde setpoints, en stuurt op basis daarvan de Hotraco RRK-3 aan om ramen te openen of te sluiten.
 
-`[FOTO: de kascontroller en de Hotraco RRK-3 naast elkaar bij de ingang van de kas]`
-
 **Schematisch overzicht:**
 
-```
-   +---------------+        +-----------------+        +-----------+
-   | T/RH-sensor   |--------| KASCONTROLLER   |--------| RRK-3     |--motor M1
-   | (Modbus)      |        | (microprocessor |        | (relais-  |--motor M2
-   +---------------+        |  + LCD + wifi)  |        |  box)     |--motor M3
-                            |                 |        +-----------+
-   +---------------+        |                 |              |
-   | Wind-sensor   |--------|                 |<-------------+
-   | (Modbus)      |        |                 |   alarm-uitgang
-   +---------------+        +-----------------+
-```
+![Shematisch overzicht](images\SchematischOverzicht.png)
 
 ---
 
@@ -170,7 +158,10 @@ Bij te harde wind sluit de controller **alle ramen automatisch**, ongeacht wat h
 
 ## 5. De controller (fysiek)
 
-`[FOTO: vooraanzicht van de kascontroller-kast met LCD, toetsenbord en zichtbare LEDs]`
+![FOTO: vooraanzicht van de kascontroller-kast met LCD, toetsenbord en zichtbare LEDs](images\kasControllerFrontView.png)
+
+*Figuur #: vooraanzicht van de kascontroller-kast met LCD, toetsenbord en zichtbare LEDs
+
 
 De kascontroller bevindt zich in een afgesloten kast bij de ingang van de kas, naast de Hotraco RRK-3. Op de voorkant zie je:
 - Een **LCD-scherm** met statusinformatie, die kleurt bij wind alarm
@@ -421,6 +412,7 @@ Een kleine groene LED die **1× per seconde** aan/uit knippert. Zolang deze knip
 Naast het LCD-scherm op de kast is de kascontroller ook bereikbaar via een **webinterface**: een webpagina die je kunt openen in de browser op een laptop, tablet of smartphone en die op hetzelfde wifi-netwerk zit als de controller. De webinterface biedt **meer overzicht en mogelijkheden** dan de bediening controller: live informatie, sensorhistorie en alle setpoints op één scherm.
 
 ![SCHERMAFBEELDING: hoofdpagina van de webinterface](images\kasControllerWebGUIHoofdpagina.png)
+
 *Figuur #: hoofdpagina van de webinterface*
 
 ### Voorwaarde
@@ -735,6 +727,7 @@ Wanneer je in een menu of bewerk-scherm de ingestelde sessie-time-out (standaard
 ### 10.2 In de webinterface (tab Climate)
 
 ![SCHERMAFBEELDING: tab Climate met sliders, velden en de keuzelijst voor T vs RH conflict-prioriteit](.\images\kasControllerWebGUIClimateTab.png)
+
 *Figuur #: Climate tab met sliders, velden en de keuzelijst voor T vs RH conflict-prioriteit*
 
 Per setpoint heb je een schuifregelaar + nummerveld + **Apply**-knop.
@@ -755,7 +748,7 @@ Bij elk veld vind je een tooltip (mouse-over) met uitleg over wat het veld doet.
 
 ### 10.3 Wat zijn goede setpoints?
 
-`[TABEL: richtwaarden per teelt — door de teler aan te vullen]`
+Setpoints zijn afhankelijk van de teelt in de kas. Deze etpoints moeten door de boer wordt opgegeven.
 
 Algemene vuistregels:
 - **Nacht-T** mag iets lager zijn dan dag-T (planten besparen energie 's nachts)
@@ -1316,6 +1309,7 @@ Voor alle vragen of problemen waar deze handleiding geen antwoord op geeft:
 | 1.1 | 2026-05-09 | Bijgewerkt voor firmware 1.16.38: nieuwe `#=Set` snelweg vanaf de T/RH- en Wind-statusschermen (vraagt Farmer-PIN), conflict-prioriteit toegevoegd aan Climate-menu (LCD optie 3) en aan webinterface tab Climate als keuzelijst, gewijzigd Wind-statusscherm-formaat (zonder haakjes om de kompasletter) |
 | 1.2 | 2026-05-10 | Bijgewerkt voor firmware 1.16.39: zichtbare `#=Set`/`#=AP`-hints verwijderd van alle statusschermen (T/RH, Wind, WiFi, Datum/tijd) — `#` werkt nog steeds als snelweg naar het bijhorende menu, maar het LCD blijft schoon; Wind-statusscherm rij 2 toont kompasletter weer tussen haakjes (`Dir:180 ° (S )`) zoals vóór 1.16.37 |
 | 1.3 | 2026-05-11 | Bijgewerkt voor firmware 1.17.0–1.17.25: zevende statusscherm toegevoegd met firmware-versie + Uptime; Datum/tijd-statusscherm (5) toont op rij 2 nu rechts een **Day**/**Night**-badge die automatisch omschakelt op zonsopkomst en zonsondergang; **D**-toets werkt vanuit elk menu, bladerscherm, PIN- of bewerk-scherm als directe terugkeer naar de roterende statusschermen; na 5 minuten zonder toetsendruk in een menu keert de controller automatisch terug naar de auto-rotatie; **Climate → 3 CR** volgt nu hetzelfde "eerst tonen, dan PIN, dan bewerken"-patroon als Day/Night (voorheen sprong dit menu direct naar PIN-invoer). Volledige handmatige taalcontrole.|
+| 1.4 | 2026-05-12 | Kleine revisies (geen firmware-wijziging — nog steeds 1.17.25). Elke PDF-pagina krijgt nu een **kop- en voettekst**: koptekst toont links *Kas Controller - Herenboeren Wenumseveld* en rechts het versienummer; voettekst toont links *Een RFSee product - http://www.rfsee.nl* en rechts *pagina N*. Alle figuren in de handleiding zijn voorzien van een **doorlopend volgnummer** ("Figuur 1: …", "Figuur 2: …" enz.). |
 
 ---
 

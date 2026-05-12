@@ -1,6 +1,6 @@
 # Handleiding Kascontroller — voor de beheerder
 
-**Versie:** 1.7 — concept
+**Versie:** 1.8 — concept
 **Datum:** 2026-05-12
 **Firmware:** 1.17.25
 
@@ -543,12 +543,12 @@ Per setpoint: schuifregelaar + nummerveld + **Apply**-knop.
 
 *Figuur #: Wind-tab, ingelogd als Beheerder
 
-#### Boer + Beheerder
+#### Boer en Beheerder
 |  Label |  Default | Bereik |
-|---|---|---|---|---|
+|---|---|---|
 | Wind protection | Aan | Uit/Aan |
 
-#### Beheerder-only
+#### Alleen Beheerder
 
 | Label |  Default | Bereik | Eenheid |
 |---|---|---|---|
@@ -1563,6 +1563,7 @@ De **complete uitleg** — met daarin alle velden, alle event-types, alle parame
 | 1.5 | 2026-05-11 | Bijgewerkt voor firmware 1.17.9–1.17.20: hoofd-bugfix in `drivers/littleFS/src/littlefs_storage.cpp` — beide LittleFS-partities deelden VFS-mountpoint `/lfs`, waardoor T13 tijdens een gekoppelde OTA wel firmware naar de inactieve bank schreef maar de assets nooit op de bijhorende LFS-partitie terechtkwamen; iedere partitie heeft nu een eigen mountpoint (`/lfsa` en `/lfsb`), waarmee de OTA-cross-bank fout (zichtbaar als oude assets na een succesvolle firmware-update) verholpen is. De tijdelijke **OTA diagnostic (temp)**-tegel uit 1.17.4–1.17.9a is verwijderd; de versie-controle blijft behouden en is geïntegreerd in de **Alarms**-tegel als **MISMATCH**-badge (§6 Status-tab — versie-controle van firmware en web-assets). De diagnostische verificatie-bronnen blijven beschikbaar voor onafhankelijke controle: `GET /manifest.json`, View Source-stempel `<!-- web-assets X.Y.Z -->`, en `?v=<versie>` cache-busters op `app.js` / `style.css`. OTA-procedure in §14 uitgebreid met expliciete **Verificatie na de update**-stap. |
 | 1.6 | 2026-05-11 | Bijgewerkt voor firmware 1.17.21–1.17.25. **Web GUI** — actieve setpoints toegevoegd op de Temperature-, Humidity- en Wind-tegels (de dag- of nacht-waarde die momenteel in werking is); Wind-tegel rij-volgorde gewijzigd naar Speed → Avg → Direction → Variation, met **Variation** = de hoekbreedte (°) waarbinnen alle recente windrichting-metingen liggen; sensorhistorie-tabel uitgebreid van 4 naar 8 kolommen (Time + T/T-avg + RH/RH-avg + Wind/Wind Avg + Direction + Variation); wanneer **Humidity-control = Off** worden de RH-setpoint-regels op de Humidity-tegel gedimd (50 % opacity) en worden de bijhorende velden weggelaten uit de POST naar het externe dashboard. **LCD** — zevende statusscherm toegevoegd (`FW: 1.17.25` / `Up: 1d 4h 23m`); Tijd-scherm rij 2 krijgt rechts een **Day**/**Night**-badge; **D**-toets werkt vanuit elk menu/PIN/bewerk-scherm als directe terugkeer naar de auto-rotatie; na 5 minuten zonder toets in een menu keert de display automatisch terug naar de roterende statusschermen; **Climate → 3 CR** volgt nu het "blader-eerst, daarna PIN, daarna bewerken"-patroon van Day/Night. Zie §6 *Status-tab — actieve setpoints op de tegels*, *Sensorhistorie-tabel*, *LCD-statusschermen* en *LCD — D-toets en 5-minuten time-out*. |
 | 1.7 | 2026-05-12 | Structurele herordening van §10 en §11 (geen firmware-wijziging — nog steeds 1.17.25). Vier nieuwe sub-hoofdstukken toegevoegd aan §10 "Klimaat instellen" die de overige webinterface-tabs één-op-één beschrijven: **§10.5 System-tab** (WiFi AP, WiFi client, NTP en tijdzone, geografische locatie, sessie-timeout, OTA-verwijzing) waarin alle voormalige sub-paragrafen van §11.2–§11.9 zijn samengebracht; **§10.6 Access-tab** (PIN-beheer voor Boer en Beheerder, met kruisverwijzing naar §9); **§10.7 Log-tab** (SD-kaart mount/unmount, eisen, automatisch mounten, kruisverwijzing naar Bijlage F voor het CSV-formaat); **§10.8 Web-tab** (status-rapportage naar extern dashboard, voorheen §11.10). §11 is dientengevolge afgeslankt tot uitsluitend de **eenmalige eerste-installatie-procedure** van een WiFi-verbinding (na fabrieksreset of nieuwe installatie); hoofdstuktitel hernoemd naar "Eerste-installatie WiFi-verbinding". De inhoudsopgave en interne kruisverwijzingen zijn dienovereenkomstig bijgewerkt. |
+| 1.8 | 2026-05-12 | Kleine revisies (geen firmware-wijziging — nog steeds 1.17.25). Elke PDF-pagina krijgt nu een **kop- en voettekst**: koptekst toont links *Kas Controller - Herenboeren Wenumseveld* en rechts het versienummer; voettekst toont links *Een RFSee product - http://www.rfsee.nl* en rechts *pagina N*. Alle figuren in de handleiding zijn voorzien van een **doorlopend volgnummer** ("Figuur 1: …", "Figuur 2: …" enz.). |
 
 ---
 
