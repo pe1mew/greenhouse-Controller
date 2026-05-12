@@ -742,22 +742,9 @@ De kascontroller kan zijn actuele toestand periodiek naar een **externe web-serv
 
 De feature staat **standaard uit**. Inschakelen gebeurt volledig in deze tab.
 
-#### Werkingsoverzicht
+![ComponentDiagramStatusWebsite](imagesBeheerder\StatusWebsiteComponentDiagram.png)
 
-```
-┌──────────────────┐                  ┌────────────────────┐
-│  Kascontroller   │  POST status     │ uw-server.nl/.../  │
-│   (firmware)     │ ───────────────► │     api.php        │
-│                  │  (om de 60–300 s)│                    │
-│                  │                  │   slaat laatste    │
-│                  │  POST logbestand │   status op disk   │
-│                  │ ───────────────► │   serveert via     │
-│                  │  (1×/dag of rota-│   view.php aan     │
-│                  │   tie SD-log)    │   het dashboard    │
-└──────────────────┘                  └────────────────────┘
-```
-
-Iedere POST draagt een **shared secret** in de HTTP-header `sourceidentifier`. De web-server vergelijkt die met zijn eigen shared secret; bij verschil wordt de informatie zonder terugmelding verworpen. Het shared secret staat dus letterlijk op twéé plaatsen — kascontroller en web-server — en moet bij een aanpassing aan beide kanten worden aangepast.
+*Figuur #: Overzicht Status-website*
 
 #### Velden op tab Web
 
@@ -781,7 +768,7 @@ Onderaan tab Web staan drie regels die elke 5 seconden ververst worden (zolang u
 | `Last log upload` | Idem voor laatste log-upload | `OK 2026-05-10 03:15:08` of leeg als nooit geprobeerd |
 | `Last uploaded file` | Bestandsnaam van het laatst succesvol geüploade logbestand | `20260507143022.csv` |
 
-De auto-refresh raakt alleen deze drie regels aan — uw invoer in `URL`, `Shared secret`, intervalkeuze of vinkjes wordt nooit overschreven terwijl u typt. Pas op het moment dat u op **Apply** klikt worden de waarden eerst gevalideerd, daarna naar NVS geschreven en daarna teruggelezen, zodat de formuliervelden exact tonen wat er in NVS staat.
+De auto-refresh werkt alleen deze drie regels — uw invoer in `URL`, `Shared secret`, intervalkeuze of vinkjes wordt nooit overschreven terwijl u typt. Pas op het moment dat u op **Apply** klikt worden de waarden eerst gevalideerd, daarna naar permanent geheuge  geschreven en daarna teruggelezen, zodat de formuliervelden exact tonen wat er in permanente geheugen staat.
 
 #### Eerste keer instellen — stap voor stap
 
@@ -817,7 +804,7 @@ Endpoints met `https://` worden ondersteund. **De controller controleert het cer
 | Rood `secret too short` | Minder dan 16 tekens | Vraag de beheerder van de website om een langer token |
 | `Last post` blijft `FAIL` | Server bereikbaar maar weigert ('wrong secret') | Controleer dat `Shared secret` byte-exact gelijk is aan het shared secret op de web-server. Spaties/tabs aan het einde tellen mee! |
 | `Last post` blijft leeg | WiFi-client verbinding niet actief, of klok niet via NTP gesynchroniseerd | Zie [§11 Eerste-installatie WiFi-verbinding](#11-eerste-installatie-wifi-verbinding) of [§10.5 NTP en tijdzone](#ntp-en-tijdzone). T14 wacht op beide vóórdat hij verstuurt. |
-| Publiek dashboard toont een tegel met verkeerde inhoud | Mismatch in veldnamen tussen kascontroller-firmware en het web-dashboard | Beide moeten van dezelfde release-generatie zijn. Firmware 1.17.1 hoort bij `pe1mew.nl/hbwv` van mei 2026 of nieuwer. |
+| Publiek dashboard toont een tegel met verkeerde inhoud | Mismatch in veldnamen tussen kascontroller-firmware en het web-dashboard | Beide moeten van dezelfde release-generatie zijn. |
 
 #### Logbestand-upload — wat gaat er precies heen?
 
@@ -827,7 +814,7 @@ Twee triggers, beide aan te zetten of uit te zetten:
 - **On rotation**: zodra T9 een logbestand sluit (omdat het 512 KB heeft bereikt), wordt het vrijwel direct geüpload.
 - **Daily**: elke dag rond `Daily upload time` lokaal wordt het laatst-gesloten bestand opnieuw beoordeeld; staat het al onder `Last uploaded file`, dan wordt het overgeslagen — anders wordt het geüpload.
 
-Door deze dubbele aanpak met dedup-op-bestandsnaam wordt hetzelfde bestand nooit twee keer geüpload, ook als de rotatie en de dagelijkse check op verschillende dagen vallen.
+Door deze dubbele aanpak met deduplicatie-op-bestandsnaam wordt hetzelfde bestand nooit twee keer geüpload, ook als de rotatie en de dagelijkse check op verschillende dagen vallen.
 
 ---
 
@@ -913,8 +900,6 @@ Zone uitschakelen: `Dir excl. low = Dir excl. high` of negatief.
 
 #### Geen hysteresis — hoe omgaan met flapperen
 
-**### Dit moet uitgezocht worden hoe het is geimplementeerd en instelbaar is**
-
 Bij wind rond `v_max` kan de override snel in/uit-flikkeren. **Verhoog `avg_win_w`** (Beheerder-only, namespace `system`, default 1 min., Bereik 1–30 min.). Een venster van 5–10 min. dempt flikkering goed.
 
 ### 12.2 Motor-alarm — diagnose
@@ -998,7 +983,6 @@ Voor algemene procedure: zie [boer-handleiding §13](handleiding.md#13-inschakel
 
 ### Kalibratie-problemen
 
-- **Raam blijft in `MOV>` of `MOV<` hangen**: eindschakelaar in RRK-3 niet bereikt → mechanische obstructie of eindschakelaar-defect
 - **`Mode: ALARM` direct na opstart**: motor-alarm was al actief tijdens stroomuitval → reset RRK-3, dan power-cycle kascontroller om kalibratie af te dwingen
 
 ### RTC-batterij verlies
@@ -1032,8 +1016,8 @@ Symptomen:
 
 `[FOTO: CR2032 batterijhouder op het microprocessorboard, met de juiste oriëntatie + plus zichtbaar]`
 
-1. Voeding van kascontroller eruit (stekker of zekering uit)
-2. Open de kast
+1. Voeding van kascontroller wegnemen (stekker of zekering uit)
+2. Open de kast van de controller; houdt rekening met de flat-cable van het toetenbord
 3. Lokaliseer de batterijhouder op het microprocessorboard
 4. Klik de oude CR2032 voorzichtig uit de houder
 5. Plaats nieuwe CR2032 met `+` zijde naar boven (zoals aangegeven in de houder)
@@ -1094,7 +1078,7 @@ De kascontroller schrijft logbestanden naar een SD-kaart. Wanneer er geen kaart 
 
 #### Wat zijn "mounten" en "unmounten"?
 
-- **Mounten** is het beschikbaar maken van de SD-kaart voor de firmware. Voor het mounten kan er nog geen file (gemaakt of gelezen worden van de SD-kaart. De firmware leest het FAT32 bestandssysteem in, controleert dat de kaart leesbaar is, en opent een logbestand om naar te schrijven. Pas na succesvol mounten kan logging naar SD plaatsvinden.
+- **Mounten** is het beschikbaar maken van de SD-kaart voor de firmware. Voor het mounten kan er nog geen file gemaakt of gelezen worden van de SD-kaart. De firmware leest het FAT32 bestandssysteem in, controleert dat de kaart lees- en schrijfbaar is, en opent een logbestand om naar te schrijven. Pas na succesvol mounten kan logging naar SD plaatsvinden.
 - **Unmounten** is het netjes afsluiten van de SD-kaart: openstaande bestanden worden gesloten en eventuele buffers naar de kaart geschreven. Pas na unmounten mag je de kaart fysiek verwijderen — anders kunnen log-events verloren gaan of kan het bestandssysteem corrupt raken.
 
 #### Automatisch mounten
@@ -1132,9 +1116,7 @@ Voor het omzetten van CSV-logbestanden naar leesbare tekst: zie [Bijlage F](#bij
 #### SD-kaart vervangen / formatteren
 
 1. Unmount via webinterface (zie hierboven)
-2. Veiligheidshalve: voeding van de kascontroller eruit
-3. Vervang SD-kaart, of formatteer hem opnieuw op FAT32 (Windows/macOS bij grotere SDXC-kaarten: gebruik een dedicated FAT32-formattertool)
-4. Voeding aan; binnen ~60 sec. wordt de kaart automatisch gemount, of trigger handmatig via Mount SD
+2. Vervang SD-kaart, of formatteer hem opnieuw op FAT32 (Windows/macOS bij grotere SDXC-kaarten: gebruik een dedicated FAT32-formattertool)
 
 #### Vrije ruimte en bestandsrotatie
 
@@ -1152,7 +1134,6 @@ Om te voorkomen dat de SD-kaart vol raakt:
 
 Zie [boer-handleiding §14](handleiding.md#14-onderhoud--wat-de-boer-zelf-doet). Identieke procedure.
 
-`[FOTO: voedingstekker en stopcontact bij de kascontroller-kast]`
 `[FOTO: microprocessorboard met RESET-knop en BOOT-knop duidelijk gemarkeerd]`
 
 #### Power-cycle leidt altijd tot een nieuwe Window Cal.

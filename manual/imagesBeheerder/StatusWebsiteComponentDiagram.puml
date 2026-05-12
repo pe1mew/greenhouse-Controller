@@ -1,0 +1,9 @@
+@startuml
+title Kascontroller Status-page systeem
+
+component "Kascontroller" as Controller
+component "Status-server" as Api
+
+Controller -right-> Api : POST status\n(om de 60–300 s)
+Controller -right-> Api : POST logbestand\n(1×/dag of rotatie SD-log)
+@enduml
