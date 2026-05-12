@@ -104,7 +104,9 @@ De controller leest **elke poll-cyclus** (default 30 sec.) de sensoren uit via M
 
 ## 3. De kas en het systeem
 
-`[FOTO: bovenaanzicht / plattegrond van de kas met M1, M2 en M3 aangegeven]`
+![FOTO: bovenaanzicht / plattegrond van de kas met M1, M2 en M3 aangegeven](images\KasRaamlocaties.png)
+
+*Figuur #: bovenaanzicht / plattegrond van de kas met M1, M2 en M3 aangegeven* 
 
 ### Kas-afmetingen
 - Lengte (oost-west): ongeveer 40 m
