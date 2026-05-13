@@ -6,25 +6,62 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.17.28] — 2026-05-13
+
+*Daily log-upload now actually delivers "daily" — force a rotation at the upload slot so the dashboard receives the day's data even when the active CSV hasn't yet hit the 512 KB rotation threshold. Resolves [gh#8](https://github.com/pe1mew/greenhouse-Controller/issues/8) (decision (b) of three options). Behaviour change for T14's daily-fallback path; the rotation-on-512 KB path is unchanged.*
+
+### Added
+- `firmware/src/event_logger/event_logger.h` — new public API `event_logger_force_rotate(uint32_t timeout_ms)`. Sets a request flag that T9 polls after each drain pass; T9 calls the existing `rotate_sd_file()` helper and clears the flag. The function posts a synthetic `LOG_SYSTEM` marker (`value_a=6`, new code, documented in the value_a table) to Q3 to (a) wake T9 from a blocked receive and (b) leave a visible last-entry on the file about to be closed. Caller blocks up to `timeout_ms` polling for completion at 100 ms resolution. Returns `false` on timeout or when SD is unmounted (rotation has no meaning without an active file).
+- `firmware/src/event_logger/event_logger.cpp` — module state `s_force_rotate_req` (bool, guarded by `s_rotate_mux`); T9 loop checks the flag after the drop-counter handling and rotates if set. `rotate_sd_file()` itself is unchanged — same code path the size-threshold trip already uses.
+- `firmware/src/event_logger/event_logger.h` doc table — `value_a=6` added to the LOG_SYSTEM encoding table (force-rotate marker; `value_b=0`).
+
+### Changed
+- `firmware/src/status_post/status_post.cpp::maybe_upload_log()` daily-fallback branch — now calls `event_logger_force_rotate(5000)` before `event_logger_newest_closed()`. The 5 s timeout matches the existing per-cycle budget; if rotation doesn't complete in time (e.g. SD card unmounted, T9 stuck on a heavy NVS flush) the code falls through to the pre-1.17.28 behaviour — try whatever newest-closed exists, or emit the `log_upload_skip(2)` diagnostic event.
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.27` → `1.17.28`.
+
+### Side effects to be aware of
+- **File-count growth.** Previous behaviour: a slow-emitting controller produced ~1 rotation every 14 days, so the 10-file retention window covered ~140 days. New behaviour: 1 rotation per day from the daily slot + occasional 512 KB-threshold rotations, so 10-file retention covers ~10 days. Older files are deleted by the existing `SD_MAX_FILES=10` rule. If you need a longer SD-side history, raise `SD_MAX_FILES` in `firmware/src/event_logger/event_logger.cpp`.
+- **An extra `SYSTEM,WEB,0,0,6,0` event lands at the daily slot** in the file that's about to be closed. Cosmetic but worth knowing when reading logs.
+
+### Out of scope
+- Manuals (boer / beheerder) still document the pre-1.17.28 behaviour. They'll be updated in the next manual pass.
+- The local web GUI Log-tab still has no "Force rotate now" button. Could be added as a Beheerder-only action; not part of this release.
+
+### Resolves
+- [gh#8](https://github.com/pe1mew/greenhouse-Controller/issues/8) — Daily log upload: force-rotate at slot (option b).
+
+### Related
+- [gh#12](https://github.com/pe1mew/greenhouse-Controller/issues/12) — Unexpected reboot investigation. With this release the daily-upload feedback loop is functional, so the dashboard sees today's data within 24 h instead of waiting for the next 512 KB rotation. Significantly improves the diagnostic turn-around for any future reboot.
+
+---
+
 ## [1.17.27] — 2026-05-13
 
-*Two diagnostic fixes triggered by a 03:44 reboot today: (1) the "24-hour" periodic NTP resync in T10 was actually firing every ~8 minutes due to a `pdMS_TO_TICKS` `uint32_t` overflow — confirmed from the user's SD log (`SYSTEM 2,1` events repeating at 8 m 25 s intervals); (2) the firmware never recorded `esp_reset_reason()` at boot, so previous reboots left no diagnostic trail. Adding the boot-reason log entry means every future unexpected reboot identifies its own cause (POWERON / PANIC / TASK_WDT / BROWNOUT / …).*
+*Three diagnostic fixes triggered by today's 03:44 reboot and the related "Last log upload is always empty" investigation: (1) the "24-hour" periodic NTP resync in T10 was actually firing every ~8 minutes due to a `pdMS_TO_TICKS` `uint32_t` overflow — confirmed from the user's SD log (`SYSTEM 2,1` events repeating at 8 m 25 s intervals); (2) the firmware never recorded `esp_reset_reason()` at boot, so previous reboots left no diagnostic trail; (3) T14's daily-fallback log-upload path silently no-op'd when no closed file existed on SD, leaving the web GUI's "Last log upload" indicator empty indefinitely with no way to tell whether the slot ran. All three are diagnostic-only — no behavioural change to climate control, wind protection, or status reporting.*
 
 ### Fixed
 - `firmware/src/network_manager/network_manager.cpp::step_client()` NET_RUNNING branch — periodic NTP resync condition rewritten from `pdMS_TO_TICKS(NTP_RESYNC_INTERVAL_S * 1000UL)` to `(TickType_t)NTP_RESYNC_INTERVAL_S * configTICK_RATE_HZ`. Root cause: the `pdMS_TO_TICKS` macro expansion multiplies `(uint32_t)ms × configTICK_RATE_HZ` inside `TickType_t`; for `86_400_000 ms × 1000 Hz` the intermediate `86_400_000_000` overflows `uint32_t` and wraps to `500_654_080`, which `/1000` becomes `500_654` ticks (≈ 8 min 21 s). The macro on FreeRTOS/Arduino-ESP32 has no overflow guard. Computing the tick count directly (`seconds × Hz`) gives `86_400_000` ticks, well inside `uint32_t`. Direct effects: `configTime("pool.ntp.org")` is now called once per 24 hours instead of ~172× per day; `tzset()` reapplied once per 24 h; T10 no longer enters `vTaskDelay`-spin in `run_ntp_sync()` every 8 minutes; DS1307 `DM_NOTIFY_NTP_SYNCED` count drops from ~172 to 1 per day.
 
 ### Added
 - `firmware/src/main.cpp::setup()` — boot-reason capture and logging. `esp_reset_reason()` is read at the very top of `setup()` (before any other side effect), logged via `ESP_LOGI` to the serial monitor, and posted to Q3 as the first event the new boot writes to the SD log. Convention: `LOG_SYSTEM`, `value_a = 5` (BOOT marker, new code), `value_b = esp_reset_reason_t` (1=POWERON, 3=SW, 4=PANIC, 5=INT_WDT, 6=TASK_WDT, 7=WDT, 8=DEEPSLEEP, 9=BROWNOUT, …). Posted to Q3 after queue creation, before any task is spawned, so T9 picks it up as its first dequeue. Every fresh SD-log file now starts with a verdict on the previous boot — no more silent unexplained reboots.
-- `firmware/src/event_logger/event_logger.h` — documentation block extended with a complete LOG_SYSTEM `value_a` encoding table (subtypes 0–5 and the synthetic −1 drop-overflow marker), so the next time someone reads a CSV log they can decode every SYSTEM row without grepping multiple `.cpp` files.
+- `firmware/src/status_post/status_post.cpp::maybe_upload_log()` — daily-slot diagnostic. The slot now emits a `LOG_SYSTEM` event whenever it fires, regardless of whether an actual upload was attempted: `value_a=0, value_b=2` when the slot fired but no closed CSV exists on SD (the long-running-controller case — the active file hasn't hit the 512 KB rotation threshold yet so `event_logger_newest_closed()` returns nothing); `value_a=0, value_b=3` when a precondition blocked the slot (status disabled / URL empty / WiFi down / pre-NTP / OTA in progress). Without this, the web GUI's "Last log upload" indicator stayed empty for weeks of normal operation with no diagnostic trail. New static helper `log_upload_skip()` encapsulates the event.
+- `firmware/src/event_logger/event_logger.h` — documentation block extended with a complete LOG_SYSTEM `value_a` encoding table (subtypes 0–5 and the synthetic −1 drop-overflow marker) plus the new sub-table for `value_a=0` value_b codes (0=status POST, 1=log upload, 2=daily-slot/no-closed-file, 3=daily-slot/precondition-blocked), so the next time someone reads a CSV log they can decode every SYSTEM row without grepping multiple `.cpp` files.
+- `bin/gh_issue.py` — minimal stdlib-only GitHub Issues client for `pe1mew/greenhouse-Controller`. Reads token from `GITHUB_TOKEN`/`GH_TOKEN` env or `.github/token.local` file. Supports `list`, `show`, `create`, `comment`, `close`, `reopen`. Lets Claude-driven sessions manage issues without installing `gh` system-wide.
+- `.github/README.md` — one-time-setup walkthrough for the local PAT used by `gh_issue.py`. Fine-grained token, repo-scoped Issues read/write only.
+- `firmware/issues.md` — restructured from a 2-line stub into a real in-repo TODO with status flags (`open`/`in-progress`/`blocked`/`decision-needed`/`RESOLVED`), seeded with five concrete items including the serial-port-freeze bug, the daily-upload design decision, the index.html placeholder fragility, the Archive/images blob bloat decision, and a forward-port of the boot-reason field to the web GUI.
 
 ### Changed
 - `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.26` → `1.17.27`.
+- `.gitignore` — added rules for `.github/token.local`, `*.local` (PAT files), `__pycache__/`, `.vscode/`, `.idea/`, `/Archive/images/IMG_*.{jpg,JPG,png}`, `/finance/RECEIPT_*.pdf`, `/model/simulation.zip`, and `/manual/*.html`. Blocks accidental re-commits of the bloat that landed in `b89fac0`.
 
 ### Diagnostic context
 - The pre-crash SD log `20260410120000.csv` ran from 2026-04-10 to 2026-05-13 (33 days of continuous uptime — a single 524 KB file that rotated exactly at the crash) and ended abruptly at `01:44:41 UTC` with a routine SENSOR event. No panic line, no alarm, no graceful shutdown event. The new boot started immediately and is unaffected by whatever triggered the reset. Without an `esp_reset_reason()` log we cannot tell whether the reset was a panic, a task-WDT, or a brownout. This release closes that diagnostic gap; if/when another reboot occurs, the first line of the new SD log will identify the class of fault.
 
 ### Out of scope
 - No web GUI, canonical JSON, manuals or PDFs touched. Manuals will be updated when the boot-reason field becomes user-visible (e.g. a "Last boot reason" line on the Status tab's Clock card).
+
+### Related
+- [gh#12](https://github.com/pe1mew/greenhouse-Controller/issues/12) — Unexpected reboot investigation. This release's `esp_reset_reason()` boot logging is the primary diagnostic instrument for that investigation. From here on, every fresh SD log's first event is a verdict on the previous boot, and the matching `Phase 0 boot — esp_reset_reason=<n>` serial line gives the same answer to whoever's watching the host-side capture.
 
 ---
 

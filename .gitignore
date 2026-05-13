@@ -5,3 +5,26 @@
 /hardware/pcb/gerbers
 .claude/
 /design/plantuml.jar
+
+# Local secrets — never commit
+.github/token.local
+*.local
+
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Editor / IDE state
+.vscode/
+.idea/
+
+# Untracked working dumps (currently in Archive/) — phone-camera shots
+# accidentally committed in b89fac0 totalled ~25 MB.  Block further drift:
+/Archive/images/IMG_*.jpg
+/Archive/images/IMG_*.JPG
+/Archive/images/IMG_*.png
+/finance/RECEIPT_*.pdf
+/model/simulation.zip
+
+# Generated PDF/HTML siblings of manual sources — produced by md2pdf.py
+/manual/*.html

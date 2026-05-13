@@ -129,6 +129,17 @@ static portMUX_TYPE      g_drop_mux   = portMUX_INITIALIZER_UNLOCKED;
 static volatile uint32_t g_q3_dropped = 0;
 
 /* -----------------------------------------------------------------------
+ * Force-rotate request (T14 → T9 hand-off, since 1.17.28)
+ *
+ * Set by event_logger_force_rotate(); polled by T9's main loop after each
+ * drain pass. T9 calls rotate_sd_file() and clears the flag. T14 polls
+ * back via event_logger_force_rotate() until the flag clears or its
+ * timeout expires.
+ * ----------------------------------------------------------------------- */
+static portMUX_TYPE      s_rotate_mux = portMUX_INITIALIZER_UNLOCKED;
+static volatile bool     s_force_rotate_req = false;
+
+/* -----------------------------------------------------------------------
  * log_post() — single entry point for all Q3 producers
  * ----------------------------------------------------------------------- */
 
@@ -610,6 +621,50 @@ bool event_logger_last_rotated(char *out, size_t cap)
     return out[0] != '\0';
 }
 
+bool event_logger_force_rotate(uint32_t timeout_ms)
+{
+    /* Refuse early if SD logging is currently inactive: rotation has no
+     * meaning without an active file, and we'd otherwise spin to timeout. */
+    if (!s_sd_ok) { return false; }
+
+    /* Raise the request flag. T9's drain loop checks this after each pass. */
+    portENTER_CRITICAL(&s_rotate_mux);
+    s_force_rotate_req = true;
+    portEXIT_CRITICAL(&s_rotate_mux);
+
+    /* Post a synthetic marker to Q3 to (a) wake T9 if it is blocked on
+     * receive, and (b) leave a visible "why was this file closed?" trail
+     * in the file that is about to be rotated away. The marker uses
+     * value_a=6 per the LOG_SYSTEM encoding table in event_logger.h. */
+    log_event_t marker = {};
+    marker.timestamp  = (uint32_t)time(NULL);
+    marker.event_type = (uint8_t)LOG_SYSTEM;
+    marker.initiator  = (uint8_t)LOG_BY_WEB;
+    marker.value_a    = 6;
+    marker.value_b    = 0;
+    log_post(&marker);
+
+    /* Poll for completion. Resolution = 100 ms; well under the typical
+     * 5 s timeout T14 passes for this call. */
+    const TickType_t start         = xTaskGetTickCount();
+    const TickType_t timeout_ticks = pdMS_TO_TICKS(timeout_ms);
+    for (;;) {
+        portENTER_CRITICAL(&s_rotate_mux);
+        bool still_pending = s_force_rotate_req;
+        portEXIT_CRITICAL(&s_rotate_mux);
+        if (!still_pending) { return true; }
+        if ((xTaskGetTickCount() - start) >= timeout_ticks) {
+            ESP_LOGW(TAG, "[T9] force-rotate timeout after %lu ms",
+                     (unsigned long)timeout_ms);
+            /* Leave the flag set — T9 will process when it gets a chance.
+             * The caller (T14) treats timeout as "no rotation observed in
+             * time" and falls back to whatever newest_closed currently is. */
+            return false;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
 bool event_logger_newest_closed(char *out, size_t cap)
 {
     if (out == NULL || cap == 0u) { return false; }
@@ -735,6 +790,22 @@ void task_event_logger(void *pvParameters)
             sys_evt.value_a    = (int16_t)(dropped > 32767u ? 32767 : (int16_t)dropped);
 
             xQueueSend(Q3, &sys_evt, 0);   /* direct — not via log_post() */
+        }
+
+        /* Honour an external force-rotate request (T14 daily-upload slot).
+         * The marker event posted by event_logger_force_rotate() is already
+         * in the file at this point — it was processed by the drain loop
+         * above — so rotating now produces a closed file whose last entry
+         * documents why it was closed. */
+        portENTER_CRITICAL(&s_rotate_mux);
+        bool need_rotate = s_force_rotate_req;
+        portEXIT_CRITICAL(&s_rotate_mux);
+        if (need_rotate && s_sd_ok) {
+            ESP_LOGI(TAG, "[T9] force-rotate requested");
+            rotate_sd_file();
+            portENTER_CRITICAL(&s_rotate_mux);
+            s_force_rotate_req = false;
+            portEXIT_CRITICAL(&s_rotate_mux);
         }
     }
 }

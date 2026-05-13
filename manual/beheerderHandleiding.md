@@ -1016,7 +1016,9 @@ Symptomen:
 
 ### CR2032 RTC-batterij vervangen
 
-`[FOTO: CR2032 batterijhouder op het microprocessorboard, met de juiste oriëntatie + plus zichtbaar]` ###
+![FOTO: CR2032 batterijhouder op het microprocessorboard, met de juiste oriëntatie + plus zichtbaar](imagesBeheerder\kasControllerRTCBackupBattery.png)
+
+*Figuur #: R2032 batterijhouder op het microprocessorboard, met de juiste oriëntatie + plus zichtbaar*
 
 1. Voeding van kascontroller wegnemen (stekker of zekering uit)
 2. Open de kast van de controller; houdt rekening met de flat-cable van het toetenbord
@@ -1136,7 +1138,9 @@ Om te voorkomen dat de SD-kaart vol raakt:
 
 Zie [boer-handleiding §14](handleiding.md#14-onderhoud--wat-de-boer-zelf-doet). Identieke procedure.
 
-`[FOTO: microprocessorboard met RESET-knop en BOOT-knop duidelijk gemarkeerd]`
+![FOTO: microprocessorboard met RESET-knop en BOOT-knop duidelijk gemarkeerd](images\LolinS3Reset.png)
+
+*Figuur #: microprocessorboard met RESET-knop*
 
 #### Power-cycle leidt altijd tot een nieuwe Window Cal.
 

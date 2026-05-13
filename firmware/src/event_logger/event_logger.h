@@ -108,13 +108,31 @@
  *
  * value_a | meaning           | value_b                              | producer
  * --------|-------------------|--------------------------------------|--------------------------
- *   0     | status-post outcome (T14)  | 0 (status POST), 1 (log upload) | T14 status_post.cpp
+ *   0     | T14 outcome / skip  | see "value_a=0 sub-codes" below      | T14 status_post.cpp
  *   1     | STA (WiFi client)   | 0 = disconnected, 1 = connected      | T10 network_manager.cpp
  *   2     | NTP                 | 0 = timeout,      1 = synced         | T10 network_manager.cpp
  *   3     | AP                  | 0 = stopped,      1 = started        | T10 network_manager.cpp
  *   4     | geolocation         | 1 = success                          | T10 network_manager.cpp
  *   5     | BOOT (since 1.17.27)| esp_reset_reason_t value (1–10)      | main.cpp setup()
+ *   6     | force-rotate marker (since 1.17.28) | 0 = unused              | T14 → event_logger
  *  -1     | Q3 drop-overflow    | dropped count                        | T9 (synthetic)
+ *
+ * ### value_a=0 sub-codes (T14 outcome / diagnostic skip)
+ *
+ * The initiator is always LOG_BY_WEB. value_b distinguishes the outcome:
+ *
+ * value_b | meaning
+ * --------|---------------------------------------------------------------
+ *    0    | status POST attempt — failed (only on streak transitions)
+ *    1    | log upload attempt — failed
+ *    2    | daily-slot fired but no closed file on SD (since 1.17.27)
+ *    3    | daily-slot fired but precondition blocked it (since 1.17.27).
+ *           Blocking cause: status disabled / URL empty / WiFi down /
+ *           pre-NTP / OTA in progress. Read the next/previous SYSTEM
+ *           events to identify which one.
+ *
+ * For value_a=1 (success) the same value_b codes apply: 0 = status POST,
+ * 1 = log upload. Codes 2 and 3 are skip-diagnostics only (value_a=0).
  *
  * The BOOT entry (value_a = 5) is posted once per boot, before any task is
  * scheduled, so every fresh SD log file starts with a verdict on why the
@@ -179,6 +197,36 @@ uint32_t log_take_dropped_count(void);
  * @return true if at least one rotation has occurred this boot, false otherwise.
  */
 bool event_logger_last_rotated(char *out, size_t cap);
+
+/**
+ * @brief Force T9 to rotate the active SD log file.
+ *
+ * Sets an internal request flag that T9 polls after each drain pass.
+ * T9 closes the current file (which becomes "closed" and detectable via
+ * event_logger_newest_closed() and event_logger_last_rotated()) and
+ * opens a new file with the current timestamp.
+ *
+ * Used by T14's daily-upload path to force a fresh nightly snapshot when
+ * the active file has not yet reached the 512 KB rotation threshold.
+ * Without this, controllers that emit events slowly (one SENSOR every
+ * 30 s = ~1.5 KB/h ≈ 36 KB/day) would never accumulate enough to trigger
+ * a natural rotation, and the daily upload slot would have nothing to send.
+ *
+ * Posts a synthetic LOG_SYSTEM event (value_a=6, "force-rotate marker")
+ * to Q3 to wake T9 from its receive-block. The marker is written to the
+ * outgoing CSV file as its last entry, documenting why the file was
+ * closed.
+ *
+ * Blocks the caller for up to @p timeout_ms waiting for the rotation to
+ * complete. Returns false on timeout or when SD logging is currently
+ * inactive (no card mounted).
+ *
+ * Safe to call from any task context.
+ *
+ * @param timeout_ms Maximum wait, milliseconds (5000 is reasonable).
+ * @return true if rotation completed; false on timeout / SD inactive.
+ */
+bool event_logger_force_rotate(uint32_t timeout_ms);
 
 /**
  * @brief Return the lexicographically newest closed CSV file on SD.

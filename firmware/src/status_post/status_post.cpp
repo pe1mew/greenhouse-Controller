@@ -311,6 +311,31 @@ static void log_upload_outcome(bool ok, const char *filename)
     (void)filename;
 }
 
+/* Emit a diagnostic LOG_SYSTEM event for the daily-fallback slot when the
+ * slot fires but no actual upload was attempted. Without this, the web
+ * GUI's "Last log upload" indicator stays empty indefinitely with no way
+ * to tell whether the slot ever ran. Encoding (extends the existing
+ * value_b convention in log_upload_outcome):
+ *   value_a = 0    (slot-skip marker — distinguishes from value_a=1 success)
+ *   value_b = 2    daily slot hit but no closed file existed on SD
+ *   value_b = 3    daily slot hit but a precondition blocked it
+ *                  (status disabled / URL empty / WiFi down / pre-NTP / OTA)
+ * Documented in event_logger.h alongside the LOG_SYSTEM value_a table.
+ * Only called from the daily-fallback path, never from the rotation path.
+ */
+static void log_upload_skip(uint8_t reason_b)
+{
+    log_event_t ev = {};
+    ev.timestamp  = (uint32_t)time(NULL);
+    ev.event_type = (uint8_t)LOG_SYSTEM;
+    ev.initiator  = (uint8_t)LOG_BY_WEB;
+    ev.channel    = 0u;
+    ev.param_id   = (uint8_t)LOG_PARAM_NONE;
+    ev.value_a    = 0;            /* 0 = slot fired without upload */
+    ev.value_b    = (int16_t)reason_b;
+    log_post(&ev);
+}
+
 /* Attempt to upload @p candidate if it differs from the last-uploaded record. */
 static void try_log_upload(const cfg_shadow_t *cfg, const char *candidate)
 {
@@ -332,16 +357,53 @@ static void try_log_upload(const cfg_shadow_t *cfg, const char *candidate)
  *      file; cheap polling, fires within one T14 tick.
  *  (2) Daily fallback — once per minute we evaluate the local clock; on
  *      the configured H:M edge we scan SD for the newest closed file.
+ *
+ * Diagnostic visibility (1.17.27): when the daily-slot fires but no upload
+ * is attempted, log_upload_skip() emits a LOG_SYSTEM event so the SD log
+ * records that the slot ran. Without this, the web GUI's "Last log upload"
+ * indicator would stay empty for weeks of normal long-running operation
+ * (an active file under the 512 KB rotation threshold has no "closed" peer
+ * for newest_closed() to return), giving no clue whether the feature is
+ * working. The on-rotation path remains silent on skip — rotations are
+ * frequent and intentional.
  * ============================================================ */
 static void maybe_upload_log(const cfg_shadow_t *cfg)
 {
-    if (cfg->status_enable == 0)                                   { return; }
-    if (cfg->status_url[0] == '\0')                                { return; }
-    if (!WiFi.isConnected())                                       { return; }
-    if (cfg->current_unix_ts < 1700000000UL)                       { return; }
-    if (xEventGroupGetBits(EG1) & EG1_BIT_OTA_IN_PROGRESS)         { return; }
+    /* Daily-slot edge detection — runs first so we can record a diagnostic
+     * event even when preconditions block the actual upload below.
+     * Requires a plausible Unix timestamp (post-NTP, or RTC-seeded). */
+    bool daily_slot_hit = false;
+    if (cfg->current_unix_ts >= 1700000000UL) {
+        time_t now = (time_t)cfg->current_unix_ts;
+        struct tm lt;
+        localtime_r(&now, &lt);
+        if (lt.tm_min != s_last_min_checked) {
+            s_last_min_checked = lt.tm_min;
+            if (lt.tm_hour == cfg->log_upload_h &&
+                lt.tm_min  == cfg->log_upload_m) {
+                daily_slot_hit = true;
+            }
+        }
+    }
 
-    /* (1) Rotation path */
+    /* Master preconditions for any upload attempt. If the daily slot just
+     * fired and a precondition blocks us, emit log_upload_skip(3) so the
+     * blocking reason is visible in the log instead of silently dropped. */
+    bool preconditions_ok = true;
+    if      (cfg->status_enable == 0)                              preconditions_ok = false;
+    else if (cfg->status_url[0] == '\0')                           preconditions_ok = false;
+    else if (!WiFi.isConnected())                                  preconditions_ok = false;
+    else if (cfg->current_unix_ts < 1700000000UL)                  preconditions_ok = false;
+    else if (xEventGroupGetBits(EG1) & EG1_BIT_OTA_IN_PROGRESS)    preconditions_ok = false;
+
+    if (!preconditions_ok) {
+        if (daily_slot_hit) {
+            log_upload_skip(3);            /* slot fired but blocked */
+        }
+        return;
+    }
+
+    /* (1) Rotation path — silent on miss (rotations are routine). */
     if (cfg->log_upload_rot) {
         char rotated[24] = {};
         if (event_logger_last_rotated(rotated, sizeof(rotated))) {
@@ -349,17 +411,23 @@ static void maybe_upload_log(const cfg_shadow_t *cfg)
         }
     }
 
-    /* (2) Daily fallback — only check on minute boundaries. */
-    time_t now = (time_t)cfg->current_unix_ts;
-    struct tm lt;
-    localtime_r(&now, &lt);
-    if (lt.tm_min == s_last_min_checked) { return; }
-    s_last_min_checked = lt.tm_min;
+    /* (2) Daily fallback — force a rotation first so today's accumulated
+     * data becomes a closed file, then upload that file. Without this, a
+     * controller emitting events slowly (one SENSOR every 30 s ≈ 36 KB/day,
+     * 512 KB rotation threshold ≈ 14 days) would have nothing new to send
+     * at the daily slot — the gh#8 issue this code path was designed to
+     * fix. force_rotate has a 5 s timeout; on failure (SD unmounted, or
+     * T9 too busy to honour the request in time) we fall through to the
+     * pre-1.17.28 behaviour: try whatever newest_closed currently is, or
+     * log a slot-with-no-file skip. */
+    if (daily_slot_hit) {
+        (void)event_logger_force_rotate(5000u);
 
-    if (lt.tm_hour == cfg->log_upload_h && lt.tm_min == cfg->log_upload_m) {
         char newest[24] = {};
         if (event_logger_newest_closed(newest, sizeof(newest))) {
             try_log_upload(cfg, newest);
+        } else {
+            log_upload_skip(2);            /* slot fired, no closed file */
         }
     }
 }
