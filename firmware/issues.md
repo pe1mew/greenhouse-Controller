@@ -93,6 +93,17 @@ The `changelog.md` file is for what's *done*; this file is for what's *open*.
    (serial-port-use freeze) — the current serial capture is itself an
    indirect test of that hypothesis.
 
+7. `(open)` → [gh#15](https://github.com/pe1mew/greenhouse-Controller/issues/15)
+   **User-configurable LCD contrast + backlight brightness.** Driver-side
+   API `lcd_set_contrast(uint8_t)` shipped in 1.17.33 — pure addition, no
+   call sites yet. This issue tracks the full plumbing to NVS-backed
+   `cfg_shadow_t::lcd_contrast / lcd_day_brt / lcd_nite_brt`, T1 + T8
+   consumption, System-tab sliders in the web GUI, mock-server update,
+   manual changes. Estimated ~half-day; decomposes into four natural
+   commits (NVS, task consumption, GUI, manuals). Out of scope:
+   user-tunable alarm/fault/normal colour palette (safety — would let an
+   operator hide the red), ambient-light auto-adjust (needs LDR hardware).
+
 ## Closed (most recent first)
 
 - ~~Tier-1/2 hardening + 5 MB streaming refactor~~ — resolved in 1.17.29

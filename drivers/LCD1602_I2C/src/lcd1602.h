@@ -248,4 +248,26 @@ lcd_status_t lcd_backlight_color(uint8_t r, uint8_t g, uint8_t b);
  */
 lcd_status_t lcd_backlight_lumination(uint8_t level);
 
+/**
+ * @brief Set the LCD character contrast (since 1.17.33 / gh#15-prep).
+ *
+ * Writes the AiP31068L's 6-bit contrast register via its extension
+ * instruction set (IS=1). The contrast register is split: the low 4 bits
+ * (C3..C0) go into the dedicated Contrast Set opcode, and the high 2 bits
+ * (C5..C4) go into the Power/Icon/Contrast Set opcode alongside the
+ * booster-on bit (Bon=1, matches the boot-init choice). After both writes
+ * the controller returns to IS=0.
+ *
+ * lcd_init() configures contrast = 32 (binary 100000, ≈ 50 % of the 0–63
+ * range) at boot. This call lets a higher-level task override that at
+ * runtime. Useful band based on the LCD glass: ~16 (faded) to ~48 (bold);
+ * < 16 makes characters fade out, > 55 makes dark blocks bleed.
+ *
+ * Must be called while the caller holds MX1.
+ *
+ * @param value  Contrast 0..63. Values > 63 are clamped to 63.
+ * @return @ref lcd_status_t.
+ */
+lcd_status_t lcd_set_contrast(uint8_t value);
+
 /** @} */ /* end lcd_api */

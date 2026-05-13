@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.17.33] — 2026-05-13
+
+*Adds a runtime LCD-contrast API to the driver. The AiP31068L character controller has supported software contrast via its extended-instruction set since the chip's first revision; `lcd_init()` has always used it once at boot to set a fixed value of 32 (≈ 50 % of the 0–63 range), but the driver did not expose a runtime override. This release adds `lcd_set_contrast(uint8_t value)` so a higher-level task (T1 / T8 / a future Web-tab field) can re-tune contrast at runtime. No behaviour change in this release — the boot-time default and call sites are unchanged. The plumbing-to-NVS-and-GUI work is tracked separately on [gh#15](https://github.com/pe1mew/greenhouse-Controller/issues/15).*
+
+### Added
+- `drivers/LCD1602_I2C/src/lcd1602.h` — new public API `lcd_status_t lcd_set_contrast(uint8_t value)`. 6-bit raw range 0–63 to match the AiP31068L's native register width; values > 63 are clamped. Comment block documents the useful band (~16 faded, ~48 bold; default 32 is sensible for most ambient light).
+- `drivers/LCD1602_I2C/src/lcd1602.cpp` — implementation: enters extension instruction set (`CMD_FUNC_SET_EX`, IS=1), writes the contrast low nibble (`0x70 | C3..C0`), writes the power/icon/contrast high opcode with booster-on (`0x54 | Bon<<2 | C5..C4`), returns to IS=0. Mirrors exactly what `lcd_init()` does at boot but parameterised. Caller must hold MX1 (same convention as the rest of the LCD API).
+
+### Changed
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.32` → `1.17.33`.
+
+### Notes
+- **No new call sites** in this release. Boot still uses the fixed 32. To experiment with a different value, a developer can call `lcd_set_contrast(N)` once from anywhere that holds MX1 (e.g. drop it into T8's init block, or expose it via a Serial-console handler).
+- **gh#15** tracks the full user-facing wiring: NVS-backed `cfg_shadow_t::lcd_contrast` + `lcd_brightness`, web GUI System-tab fields, T8 reads the values per tick, manual updates. Half-day of work.
+- The existing `lcd_backlight_lumination(uint8_t level)` API for backlight master brightness has been in the driver for a long time but is also not yet user-tunable (also covered by gh#15).
+
+### Related
+- [gh#15](https://github.com/pe1mew/greenhouse-Controller/issues/15) — User-configurable LCD contrast and brightness via the System tab (umbrella).
+
+---
+
 ## [1.17.32] — 2026-05-13
 
 *Two-line driver fix for [gh#14](https://github.com/pe1mew/greenhouse-Controller/issues/14): after a clean web-GUI Unmount + physical removal of the SD card, T9's 60-second automount poll would call `SD.begin()` again, and the Arduino-ESP32 SD library's SPI-level state cache would let both `SD.begin()` and `SD.cardType()` lie (cached "card present" result survives `SD.end()`). `g_mounted` flipped back to true; the GUI showed `Mounted: Mounted, Size: 0 MB, Free: 0 MB` — the "mounted" flag lying, the byte counts honestly reporting no card.*

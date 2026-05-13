@@ -314,3 +314,34 @@ lcd_status_t lcd_backlight_lumination(uint8_t level)
     uint8_t buf[2] = { LCD_RGB_REG_GRPPWM, level };
     return map_i2c(i2c_write(LCD_RGB_I2C_ADDR, buf, 2));
 }
+
+/* ---------------------------------------------------------------------------
+ * lcd_set_contrast — runtime LCD contrast control (since 1.17.33).
+ *
+ * AiP31068L extended-instruction-set sequence; mirrors what lcd_init() does
+ * once at boot, but parameterised. Bit layout:
+ *
+ *   Contrast register : C5 C4 C3 C2 C1 C0  (6 bits, range 0..63)
+ *
+ *   Low-nibble opcode  : 0111 C3 C2 C1 C0   →   0x70 | (value & 0x0F)
+ *   High-bits opcode   : 0101 Ion Bon C5 C4 →   0x50 | (Ion<<3) | (Bon<<2)
+ *                                              | ((value >> 4) & 0x03)
+ *
+ * Ion=0 (icon display off — this is a character LCD, no icon row),
+ * Bon=1 (booster on — required by the AiP31068L for the contrast register
+ * to take effect at all; matches the 0x56 sent in lcd_init()).
+ * --------------------------------------------------------------------------- */
+lcd_status_t lcd_set_contrast(uint8_t value)
+{
+    if (value > 63u) value = 63u;
+
+    lcd_status_t r;
+    r = aip_cmd(CMD_FUNC_SET_EX);                                       /* IS=1 */
+    if (r != LCD_OK) return r;
+    r = aip_cmd((uint8_t)(0x70u | (value & 0x0Fu)));                    /* C3..C0 */
+    if (r != LCD_OK) return r;
+    r = aip_cmd((uint8_t)(0x54u | ((value >> 4) & 0x03u)));             /* Bon=1, C5..C4 */
+    if (r != LCD_OK) return r;
+    r = aip_cmd(CMD_FUNC_SET);                                          /* back to IS=0 */
+    return r;
+}
