@@ -34,6 +34,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_log.h>
+#include <esp_task_wdt.h>   /* WDT subscription (1.17.29 / gh#13) */
 #include <esp_timer.h>
 #include <time.h>
 #include <string.h>
@@ -605,6 +606,10 @@ void task_data_manager(void *pvParameters)
 {
     (void)pvParameters;
 
+    /* Subscribe to WDT (1.17.29 / gh#13). T4's main loop blocks on Q6 with
+     * a 1 s timeout, well under the 5 s WDT window. */
+    esp_task_wdt_add(NULL);
+
     /* ----------------------------------------------------------------
      * Boot phase: initialise all module state.
      * No mutex needed here — other tasks do not yet contest MX2/MX3/MX4.
@@ -650,6 +655,7 @@ void task_data_manager(void *pvParameters)
     uint32_t last_rtc_tick = 0u;
 
     for (;;) {
+        esp_task_wdt_reset();   /* WDT kick (1.17.29 / gh#13) */
         /* ---- 1. Block up to 1 s on Q6 for a new sensor reading. ---- */
         sensor_reading_t reading;
         if (xQueueReceive(Q6, &reading, pdMS_TO_TICKS(1000u)) == pdTRUE) {

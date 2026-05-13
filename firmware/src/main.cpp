@@ -16,6 +16,7 @@
 #include <esp_task_wdt.h>
 #include <esp_log.h>
 #include <esp_system.h>      /* esp_reset_reason() — boot diagnostic */
+#include <esp_heap_caps.h>   /* heap_caps_get_free_size, integrity check (1.17.29) */
 #include <time.h>
 #include <string.h>
 #include <Adafruit_NeoPixel.h>
@@ -158,6 +159,80 @@ static void task_watchdog_heartbeat(void *pvParameters)
                      (unsigned long)tick_count,
                      (unsigned long)(millis() / 1000));
         }
+
+        /* ---------------------------------------------------------
+         * Hardening instrumentation (1.17.29 / gh#13).
+         * Three rhythms, all gated on tick_count modulo:
+         *   - every 120 ticks (60 s)         heap-free SD-log rows
+         *   - 60 ticks after each heap log   heap-integrity check
+         *   - every 1200 ticks (10 min)      stack-HWM serial log
+         * --------------------------------------------------------- */
+        if (tick_count % 120 == 0) {
+            /* INTERNAL heap free → LOG_SYSTEM value_a=7, value_b=KB */
+            log_event_t ev = {};
+            ev.timestamp  = (uint32_t)time(NULL);
+            ev.event_type = (uint8_t)LOG_SYSTEM;
+            ev.initiator  = (uint8_t)LOG_BY_SYSTEM;
+            ev.value_a    = (int16_t)7;
+            size_t free_int = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+            ev.value_b    = (int16_t)((free_int >> 10) > 32767u ? 32767
+                                                                 : (free_int >> 10));
+            log_post(&ev);
+
+            /* PSRAM heap free → LOG_SYSTEM value_a=8, value_b=KB */
+            ev.value_a    = (int16_t)8;
+            size_t free_ps = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+            ev.value_b    = (int16_t)((free_ps >> 10) > 32767u ? 32767
+                                                                : (free_ps >> 10));
+            log_post(&ev);
+        }
+
+        if (tick_count % 120 == 60) {
+            /* Heap integrity check — offset 30 s from the heap-row tick
+             * to spread the cost. heap_caps_check_integrity_all walks every
+             * heap block; takes ~10 ms on this part. The (true) arg means
+             * abort-on-corruption is OFF — we want to keep running and log. */
+            if (!heap_caps_check_integrity_all(true)) {
+                ESP_LOGE(TAG, "HEAP CORRUPTION DETECTED at tick %lu",
+                         (unsigned long)tick_count);
+                log_event_t ev = {};
+                ev.timestamp  = (uint32_t)time(NULL);
+                ev.event_type = (uint8_t)LOG_SYSTEM;
+                ev.initiator  = (uint8_t)LOG_BY_SYSTEM;
+                ev.value_a    = (int16_t)9;
+                ev.value_b    = 0;
+                log_post(&ev);
+            }
+        }
+
+        if (tick_count % 1200 == 0 && tick_count > 0) {
+            /* Stack high-water-mark sweep over all known task handles.
+             * Serial only — too noisy for SD. Below-1-KB-free is promoted
+             * to LOGW for visibility in the warning stream. */
+            struct {
+                const char    *name;
+                TaskHandle_t   handle;
+            } tasks[] = {
+                { "T1",  task_t1  }, { "T2",  task_t2  }, { "T3",  task_t3  },
+                { "T4",  task_t4  }, { "T5",  task_t5  }, { "T6",  task_t6  },
+                { "T7",  task_t7  }, { "T8",  task_t8  }, { "T9",  task_t9  },
+                { "T10", task_t10 }, { "T11", task_t11 }, { "T12", task_t12 },
+                { "T14", task_t14 },
+            };
+            for (auto &t : tasks) {
+                if (t.handle == NULL) continue;
+                UBaseType_t hwm_words = uxTaskGetStackHighWaterMark(t.handle);
+                size_t      hwm_bytes = (size_t)hwm_words * sizeof(StackType_t);
+                if (hwm_bytes < 1024) {
+                    ESP_LOGW(TAG, "stack low: %s hwm=%u B", t.name,
+                             (unsigned)hwm_bytes);
+                } else {
+                    ESP_LOGI(TAG, "stack %-3s hwm=%u B", t.name,
+                             (unsigned)hwm_bytes);
+                }
+            }
+        }
+        /* End hardening instrumentation. */
 
         /* After OTA_HEALTHY_MS of stable uptime, reset the OTA fail counter.
          * Called only once per boot to avoid redundant NVS writes. */

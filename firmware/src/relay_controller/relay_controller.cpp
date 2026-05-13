@@ -34,6 +34,7 @@
 
 #include <Arduino.h>
 #include <esp_log.h>
+#include <esp_task_wdt.h>   /* WDT subscription (1.17.29 / gh#13) */
 #include <time.h>
 
 static const char *TAG = "T2";
@@ -441,6 +442,9 @@ static void calib_close_all(void)
      * CLOSE relays are energised, abort immediately — relay_all_off()
      * inside handle_alarm_onset() de-energises any still-active channels. */
     for (;;) {
+        /* Calibration can take 171 s for M3 — kick the WDT each chunk
+         * (1.17.29 / gh#13) so the task subscription doesn't fire mid-cal. */
+        esp_task_wdt_reset();
         vTaskDelay(pdMS_TO_TICKS(CALIB_CHUNK_MS));
         uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
 
@@ -634,6 +638,11 @@ void task_relay_controller(void *pvParameters)
 {
     (void)pvParameters;
 
+    /* Subscribe to the task watchdog (1.17.29 / gh#13). T2's main loop ticks
+     * every LOOP_TICK_MS (20 ms) → far faster than the WDT timeout, so a
+     * simple reset at the top of each iteration is sufficient. */
+    esp_task_wdt_add(NULL);
+
     ESP_LOGI(TAG, "T2 starting");
 
     /* ------------------------------------------------------------------
@@ -714,6 +723,7 @@ void task_relay_controller(void *pvParameters)
      * 4. Main control loop
      * ------------------------------------------------------------------ */
     for (;;) {
+        esp_task_wdt_reset();   /* WDT kick (1.17.29 / gh#13) */
         uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
 
         /* ---- 4a. Motor alarm ISR debounce ---- */

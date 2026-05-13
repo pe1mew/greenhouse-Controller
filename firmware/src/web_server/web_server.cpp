@@ -47,6 +47,7 @@
 #define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
 #include <Arduino.h>
 #include <esp_log.h>
+#include <esp_task_wdt.h>   /* WDT subscription (1.17.29 / gh#13) */
 #include <time.h>
 #include <string.h>
 #include <stdio.h>
@@ -684,7 +685,17 @@ static void register_routes(AsyncWebServer &srv)
             }
             req->send(200, "application/json", "{\"ok\":true}");
         } else {
-            /* Integer value — post via Q4 so T4 validates and persists */
+            /* Integer value — post via Q4 so T4 validates and persists.
+             * Reject keys/namespaces that would silently truncate into
+             * config_update_t (16 bytes each, NUL-terminated). All real
+             * NVS keys in this codebase are ≤ 12 chars; a longer one is
+             * either a typo, a stale field name, or a malicious POST. */
+            if (strlen(ns) >= sizeof(((config_update_t *)0)->ns) ||
+                strlen(key) >= sizeof(((config_update_t *)0)->key)) {
+                req->send(400, "application/json",
+                          "{\"ok\":false,\"err\":\"ns/key too long\"}");
+                return;
+            }
             config_update_t upd = {};
             snprintf(upd.ns,  sizeof(upd.ns),  "%s", ns);
             snprintf(upd.key, sizeof(upd.key), "%s", key);
@@ -1283,6 +1294,12 @@ bad:
 void task_web_server(void *pvParameters)
 {
     (void)pvParameters;
+
+    /* Subscribe to WDT (1.17.29 / gh#13). Main loop is a vTaskDelayUntil
+     * driven by WS_PUSH_MS (2 s) — well under 5 s. The async event loop
+     * runs on a separate ESPAsyncWebServer thread, not gated by WDT. */
+    esp_task_wdt_add(NULL);
+
     ESP_LOGI(TAG, "T11 task alive");
 
     /* ── Session mutex ── */
@@ -1323,6 +1340,7 @@ void task_web_server(void *pvParameters)
     }
 
     for (;;) {
+        esp_task_wdt_reset();   /* WDT kick (1.17.29 / gh#13) */
         vTaskDelayUntil(&last_push, pdMS_TO_TICKS(WS_PUSH_MS));
 
         /* Clean up stale WebSocket clients */

@@ -6,6 +6,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.17.29] — 2026-05-13
+
+*Firmware-hardening pass — four phases delivered in one release to minimise flash cycles. (A) Tier-1 compile flags catch a wider warning surface at build time. (B) `pio check` (cppcheck) static analysis is now wired up. (C) Runtime instrumentation gives memory leaks and watchdog hangs a visible signal in the SD log and on serial. (D) The 5 MB log-upload buffer is replaced with a 4 KB streaming adapter so the daily upload no longer takes 5 MB of PSRAM at peak. All four resolve [gh#13](https://github.com/pe1mew/greenhouse-Controller/issues/13).*
+
+### Added — Phase A (Tier-1 compile flags)
+- `firmware/platformio.ini` — added `-Wall -Wextra -Wformat=2 -Wshadow -Wstack-usage=2200 -Wlogical-op -Wstrict-overflow=2 -Wnull-dereference -D_FORTIFY_SOURCE=2` to `build_flags` for both `lolin_s3` and `test_t2_relay` environments. Warnings are emitted; build is not failed on warning (no `-Werror`). Framework-header warnings from Arduino-ESP32 / ESPAsyncWebServer / Adafruit_NeoPixel are accepted as noise; our own code (`firmware/src/` + `drivers/`) is clean against these flags.
+
+### Added — Phase B (static analyser)
+- `firmware/platformio.ini` — `check_tool = cppcheck` with `--enable=all`, `--inline-suppr`, severity ≥ medium, scoped to `src/` and `../drivers/`. Run with `pio check -e lolin_s3`. First run is slow (cppcheck downloads + initial scan) but subsequent runs are fast.
+
+### Added — Phase C (runtime instrumentation)
+- `firmware/src/main.cpp::task_watchdog_heartbeat()` — three new rhythms inside T1's loop:
+  - **Every 60 s**: emit two `LOG_SYSTEM` events recording free heap in KB. `value_a=7` = INTERNAL heap, `value_a=8` = PSRAM heap. Plot these columns over time to spot slow leaks.
+  - **Every 60 s (30 s offset from heap row)**: call `heap_caps_check_integrity_all(true)`. On corruption emit `LOG_SYSTEM,value_a=9,value_b=0` so heap-overrun bugs surface immediately rather than via a downstream panic.
+  - **Every 10 min**: walk all 13 task handles and print stack high-water-mark to serial. Below 1 KB free is promoted from `ESP_LOGI` to `ESP_LOGW` for visibility.
+- `firmware/src/event_logger/event_logger.h` — LOG_SYSTEM `value_a` table extended with codes 7, 8, 9 (HEAP internal free / PSRAM free / corruption).
+- **WDT subscription** for tasks T2, T3, T4, T6, T7, T8, T11, T12. Each task's main loop calls `esp_task_wdt_reset()` per iteration. T2's calibration helper loop also kicks the WDT each `CALIB_CHUNK_MS` cycle to survive the 171 s M3 close.
+- **Excluded from WDT**: T5 (sleeps up to 120 s between sensor polls by design), T9 (blocks indefinitely on Q3 when no events), T10 (network), T14 (network). T13 (OTA, on-demand) remains self-managed. T1 was already on WDT.
+- **T3 (safety monitor) and T6 (climate control)** previously used `ulTaskNotifyTake(pdTRUE, portMAX_DELAY)`; both notifications fire on T4's sensor-poll cadence (30–3600 s) — too sparse for a 5 s WDT. Both reworked to use a 2 s notify timeout; on timeout the task just kicks the WDT and re-blocks.
+- **T12 (MQTT stub)** previously used `vTaskDelay(portMAX_DELAY)`; reworked to a 2 s tick so the WDT subscription is exercised. Will be replaced by the real MQTT loop in Phase 9.
+
+### Changed — Phase D (5 MB log-upload streaming)
+- `firmware/src/status_post/status_post.cpp` — new `SDFileChunkedStream : public Stream` adapter class. Implements `read`, `peek`, `readBytes`, `available` (write methods stubbed). Internally backed by a single 4 KB **static** chunk buffer (BSS, no heap). `refill()` pulls the next chunk via `storage_sd_read()`. **Definition is static class member**, deliberately — T14 only does one upload at a time so the slot is reused, not consumed from the heap.
+- `do_log_upload()` rewritten: was `heap_caps_malloc(fsize+1)` + slurp + `http.POST(body, total)`, now `SDFileChunkedStream stream(path, fsize)` + `http.sendRequest("POST", &stream, fsize)`. The Stream-driven POST still sends a proper Content-Length and works identically over `http://` and `https://`. Peak heap during a log upload drops from up to 5 MB (PSRAM) to ~0 (the stream object lives on T14's stack).
+
+### Changed — code-quality fixes from Phase A triage
+- `firmware/src/ui_display/ui_display.cpp::s_net` — initialised with explicit field names to silence `-Wmissing-field-initializers`. No behavioural change.
+- `firmware/src/web_server/web_server.cpp` (`/api/config` POST handler) — added defensive `strlen(ns)`/`strlen(key)` length-check before `snprintf` into `config_update_t` fields. Previously gcc's `-Wformat-truncation` flagged the snprintf as potentially truncating; defensive check returns 400 on over-long keys before they hit the queue. No real-world impact (all current keys are ≤ 12 chars).
+
+### Changed — versioning
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.28` → `1.17.29`.
+
+### Build deltas
+- Flash: `1 184 241 B` → `1 187 365 B` (+3 124 B, +0.15 pp). Mostly Phase C instrumentation; Phase D actually shrank by removing the malloc loop.
+- RAM (BSS): `67 412 B` → `71 516 B` (+4 104 B). The 4 KB static SDFileChunkedStream chunk buffer. **Net memory win:** loses 4 KB always-allocated BSS, gains back up to 5 MB of PSRAM-availability during the once-per-day log upload.
+
+### Resolves
+- [gh#13](https://github.com/pe1mew/greenhouse-Controller/issues/13) — Tier-1/2 hardening + 5 MB streaming refactor.
+
+### Related
+- [gh#12](https://github.com/pe1mew/greenhouse-Controller/issues/12) — Unexpected reboot investigation. Phase C heap-free SD-log row is the single highest-value addition for that investigation. If the next reboot is OOM-driven, the heap-free column of the pre-crash log will show a clear downward trend in the minutes leading up; if it's a task hang, the new WDT subscription on 8 more tasks means the reboot will identify itself as `TASK_WDT` rather than vanishing into a generic panic.
+
+---
+
 ## [1.17.28] — 2026-05-13
 
 *Daily log-upload now actually delivers "daily" — force a rotation at the upload slot so the dashboard receives the day's data even when the active CSV hasn't yet hit the 512 KB rotation threshold. Resolves [gh#8](https://github.com/pe1mew/greenhouse-Controller/issues/8) (decision (b) of three options). Behaviour change for T14's daily-fallback path; the rotation-on-512 KB path is unchanged.*

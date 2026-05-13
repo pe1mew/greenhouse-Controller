@@ -115,6 +115,9 @@
  *   4     | geolocation         | 1 = success                          | T10 network_manager.cpp
  *   5     | BOOT (since 1.17.27)| esp_reset_reason_t value (1–10)      | main.cpp setup()
  *   6     | force-rotate marker (since 1.17.28) | 0 = unused              | T14 → event_logger
+ *   7     | HEAP internal free (since 1.17.29) | KB free in MALLOC_CAP_INTERNAL | T1 every 60 s
+ *   8     | HEAP PSRAM free    (since 1.17.29) | KB free in MALLOC_CAP_SPIRAM   | T1 every 60 s
+ *   9     | HEAP corruption    (since 1.17.29) | 0 = unused                       | T1 (heap_caps_check_integrity_all failure)
  *  -1     | Q3 drop-overflow    | dropped count                        | T9 (synthetic)
  *
  * ### value_a=0 sub-codes (T14 outcome / diagnostic skip)

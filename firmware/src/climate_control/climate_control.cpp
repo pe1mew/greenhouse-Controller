@@ -48,6 +48,7 @@
 #define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
 #include <Arduino.h>
 #include <esp_log.h>
+#include <esp_task_wdt.h>   /* WDT subscription (1.17.29 / gh#13) */
 
 #include "climate_control.h"
 #include "../types/app_types.h"
@@ -320,6 +321,12 @@ void task_climate_control(void *pvParameters)
 {
     (void)pvParameters;
 
+    /* Subscribe to WDT (1.17.29 / gh#13). T4 notifies T6 on each sensor
+     * reading (interval 30–3600 s) — too sparse for portMAX_DELAY under a
+     * 5 s WDT. Use a 2 s receive timeout; on timeout reset WDT and continue
+     * (no notification, no work). */
+    esp_task_wdt_add(NULL);
+
     ESP_LOGI(TAG, "[T6] task alive");
 
     /* Task-local state — tracks last commanded step from each source.
@@ -332,11 +339,15 @@ void task_climate_control(void *pvParameters)
     bool prev_inhibited = false;
 
     for (;;) {
+        esp_task_wdt_reset();
         /* ----------------------------------------------------------------
          * 1. Block on TN2 — T4 notifies after every new Q6 reading.
-         *    portMAX_DELAY: T6 has nothing to do between sensor updates.
+         *    2 s timeout: T6 has nothing to do between sensor updates, but
+         *    must wake periodically to kick the WDT (1.17.29).
          * ---------------------------------------------------------------- */
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2000)) == 0) {
+            continue;
+        }
 
         /* ----------------------------------------------------------------
          * 2. Check EG1 inhibit flags.

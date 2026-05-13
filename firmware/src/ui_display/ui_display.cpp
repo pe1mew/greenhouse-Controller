@@ -44,6 +44,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_log.h>
+#include <esp_task_wdt.h>   /* WDT subscription (1.17.29 / gh#13) */
 #include <esp_timer.h>
 #include <stdio.h>
 #include <string.h>
@@ -193,8 +194,12 @@ static uint32_t     s_idle_ticks    = 0;
  * the operator is logged in. */
 static uint32_t     s_menu_idle_ticks = 0;
 
-/* Latest network status (from Q5) */
-static net_status_t s_net           = { false, false, "---" };
+/* Latest network status (from Q5). All fields named to silence
+ * -Wmissing-field-initializers; ntp_synced defaults to false. */
+static net_status_t s_net           = { /*client_connected*/ false,
+                                        /*ap_active*/       false,
+                                        /*ntp_synced*/      false,
+                                        /*ip_str*/          "---" };
 
 /* Sub-menu navigation */
 static uint8_t      s_sub_page      = 0;  /**< Page within sub-menu (2 params/page) */
@@ -1639,6 +1644,9 @@ void task_ui_display(void *pvParameters)
 {
     (void)pvParameters;
 
+    /* Subscribe to WDT (1.17.29 / gh#13). 100 ms tick — well under 5 s. */
+    esp_task_wdt_add(NULL);
+
     ESP_LOGI(TAG, "T8 task alive");
 
     /* ---- Initialise LCD under MX1 ---- */
@@ -1694,6 +1702,7 @@ void task_ui_display(void *pvParameters)
     s_dirty        = true;
 
     for (;;) {
+        esp_task_wdt_reset();   /* WDT kick (1.17.29 / gh#13) */
 
         /* ── 1. Receive key event from T7 ── */
         key_event_t evt = { '\0', false };  /* '\0' = no key (matches KP_NO_KEY) */

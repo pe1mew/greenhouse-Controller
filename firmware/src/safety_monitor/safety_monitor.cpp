@@ -29,6 +29,7 @@
 
 #include <Arduino.h>
 #include <esp_log.h>
+#include <esp_task_wdt.h>   /* WDT subscription (1.17.29 / gh#13) */
 
 #include "safety_monitor.h"
 #include "../types/app_types.h"
@@ -91,11 +92,24 @@ void task_safety_monitor(void *pvParameters)
 
     bool alarm_active = false;   /* mirrors EG1.WIND_OVERRIDE */
 
+    /* Subscribe to the task WDT (1.17.29 / gh#13). T3 is safety-critical:
+     * if it hangs, wind protection stops working — we want a WDT-reset to
+     * notice. T4 only notifies on each sensor poll (interval 30–3600 s), so
+     * the receive uses a 2 s timeout instead of portMAX_DELAY; on timeout
+     * we just kick the WDT and continue (no work to do without new data).
+     * This means T3 wakes every 2 s in the idle case — cheap. */
+    esp_task_wdt_add(NULL);
+
     ESP_LOGI(TAG, "[T3] task alive");
 
     for (;;) {
-        /* ---- Block until T4 signals new wind data (TN1) ---- */
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        esp_task_wdt_reset();
+        /* Take the TN1 notification with a 2 s timeout. If no notification
+         * arrived during the window the loop iterates again to kick the WDT.
+         * When a notification DOES arrive, we fall through and evaluate. */
+        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2000)) == 0) {
+            continue;
+        }
 
         /* ---- Snapshot latest state from T4 ---- */
         sensor_reading_t meas;

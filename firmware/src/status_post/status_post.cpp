@@ -201,20 +201,104 @@ void status_post_last_log_str(char *buf, size_t cap)
 }
 
 /* ============================================================
- * HTTP POST helper for log uploads (?action=log).
+ * SDFileChunkedStream — Arduino Stream adapter over an SD-card CSV file.
  *
- * Reads the entire SD file into a PSRAM buffer (max 5 MB per spec; T9
- * rotates at 512 KB so the realistic cap is a few hundred KB) and POSTs
- * it as raw bytes with Content-Type: text/plain. The shared-secret header
- * mirrors the status-POST path. On success the body is freed.
+ * Replaces the pre-1.17.29 "malloc(fsize) + slurp + POST(buf, fsize)"
+ * pattern. HTTPClient::sendRequest("POST", Stream*, size_t) pulls bytes
+ * from the stream as needed, sending Content-Length: size up front so
+ * the server still sees a properly framed request.
+ *
+ * Peak heap during the upload drops from up to 5 MB (the old PSRAM body)
+ * to ~4 KB (the static chunk buffer below). The buffer is static —
+ * deliberate: T14 only does one upload at a time, so the slot is reused
+ * across uploads and not consumed from the heap.
+ * ============================================================ */
+class SDFileChunkedStream : public Stream {
+public:
+    SDFileChunkedStream(const char *path, uint32_t size)
+        : m_size(size), m_pos(0), m_buf_pos(0), m_buf_len(0)
+    {
+        snprintf(m_path, sizeof(m_path), "%s", path);
+    }
+
+    /* Print (parent) — write not used; satisfy pure virtual. */
+    size_t write(uint8_t) override               { return 0; }
+    size_t write(const uint8_t *, size_t) override { return 0; }
+
+    /* Stream interface — used by HTTPClient::sendRequest. */
+    int available() override {
+        return (int)((m_size - m_pos) + (m_buf_len - m_buf_pos));
+    }
+
+    int read() override {
+        if (m_buf_pos >= m_buf_len && !refill()) { return -1; }
+        return (unsigned char)s_chunk[m_buf_pos++];
+    }
+
+    int peek() override {
+        if (m_buf_pos >= m_buf_len && !refill()) { return -1; }
+        return (unsigned char)s_chunk[m_buf_pos];
+    }
+
+    /* Bulk-read path. HTTPClient::sendRequest prefers this over read()
+     * one byte at a time — substantially faster for large transfers. */
+    size_t readBytes(char *out, size_t len) override {
+        size_t written = 0;
+        while (written < len) {
+            if (m_buf_pos >= m_buf_len && !refill()) { break; }
+            size_t avail = m_buf_len - m_buf_pos;
+            size_t take  = (avail < (len - written)) ? avail : (len - written);
+            memcpy(out + written, s_chunk + m_buf_pos, take);
+            m_buf_pos += take;
+            written   += take;
+        }
+        return written;
+    }
+
+private:
+    static char     s_chunk[T14_LOG_READ_CHUNK];   /* static: BSS, no heap */
+    char            m_path[64];
+    uint32_t        m_size;       /* total file size in bytes               */
+    uint32_t        m_pos;        /* next SD-read offset                    */
+    size_t          m_buf_pos;    /* read offset within s_chunk             */
+    size_t          m_buf_len;    /* valid bytes in s_chunk                 */
+
+    bool refill() {
+        if (m_pos >= m_size) { return false; }
+        uint32_t remaining = m_size - m_pos;
+        size_t   want      = (remaining > (uint32_t)(sizeof(s_chunk) - 1u))
+                              ? (sizeof(s_chunk) - 1u) : (size_t)remaining;
+        size_t got = 0;
+        storage_status_t rc = storage_sd_read(m_path, m_pos, s_chunk,
+                                              want + 1u, &got);
+        if (rc != STORAGE_OK || got == 0u) {
+            ESP_LOGW(TAG, "log upload: stream refill failed at offset %lu (rc=%d)",
+                     (unsigned long)m_pos, (int)rc);
+            return false;
+        }
+        m_pos    += got;
+        m_buf_pos = 0;
+        m_buf_len = got;
+        return true;
+    }
+};
+
+/* Definition of the static chunk buffer. */
+char SDFileChunkedStream::s_chunk[T14_LOG_READ_CHUNK];
+
+/* ============================================================
+ * HTTP POST helper for log uploads (?action=log) — since 1.17.29.
+ *
+ * Streams the SD file via SDFileChunkedStream so peak heap use is the
+ * 4 KB chunk buffer instead of the entire file. Content-Length is set
+ * from the file size up front; HTTPClient::sendRequest pulls bytes from
+ * the stream as it sends. Works identically for http:// and https://.
  * ============================================================ */
 static bool do_log_upload(const cfg_shadow_t *cfg, const char *filename)
 {
     if (filename == NULL || filename[0] == '\0') { return false; }
 
-    /* Build absolute path; storage_sd_* expects a leading slash. T9's
-     * filename scheme is "YYYYMMDDHHMMSS.csv" (18 chars) so a 32-byte path
-     * buffer is comfortably oversized. */
+    /* Build absolute path; storage_sd_* expects a leading slash. */
     char path[32];
     snprintf(path, sizeof(path), "/%s", filename);
 
@@ -223,33 +307,6 @@ static bool do_log_upload(const cfg_shadow_t *cfg, const char *filename)
         ESP_LOGW(TAG, "log upload: size %lu out of bounds for %s",
                  (unsigned long)fsize, filename);
         return false;
-    }
-
-    /* Allocate the body in PSRAM. +1 lets storage_sd_read keep its NUL
-     * terminator semantics without overflowing. */
-    uint8_t *body = (uint8_t *)heap_caps_malloc(fsize + 1u, MALLOC_CAP_SPIRAM);
-    if (body == nullptr) {
-        body = (uint8_t *)malloc(fsize + 1u);
-    }
-    if (body == nullptr) {
-        ESP_LOGW(TAG, "log upload: alloc %lu bytes failed", (unsigned long)fsize);
-        return false;
-    }
-
-    size_t total = 0;
-    while (total < fsize) {
-        size_t want   = (fsize - total > T14_LOG_READ_CHUNK) ? T14_LOG_READ_CHUNK
-                                                              : (fsize - total);
-        size_t got    = 0;
-        storage_status_t rc = storage_sd_read(path, total,
-                                              (char *)(body + total), want + 1u, &got);
-        if (rc != STORAGE_OK || got == 0u) {
-            ESP_LOGW(TAG, "log upload: read failed at offset %u (rc=%d got=%u)",
-                     (unsigned)total, (int)rc, (unsigned)got);
-            free(body);
-            return false;
-        }
-        total += got;
     }
 
     /* Build target URL with the ?action=log query param. */
@@ -262,7 +319,7 @@ static bool do_log_upload(const cfg_shadow_t *cfg, const char *filename)
 
     if (strncmp(cfg->status_url, "https://", 8) == 0) {
         secure = new WiFiClientSecure();
-        if (secure == nullptr) { free(body); return false; }
+        if (secure == nullptr) { return false; }
         secure->setInsecure();
         opened = http.begin(*secure, url);
     } else {
@@ -270,7 +327,6 @@ static bool do_log_upload(const cfg_shadow_t *cfg, const char *filename)
     }
     if (!opened) {
         ESP_LOGW(TAG, "log upload: http.begin failed");
-        free(body);
         if (secure) { delete secure; }
         return false;
     }
@@ -279,14 +335,17 @@ static bool do_log_upload(const cfg_shadow_t *cfg, const char *filename)
     http.addHeader("Content-Type",     "text/plain");
     http.addHeader("sourceidentifier", cfg->status_secret);
 
-    int code = http.POST(body, total);
+    /* Stream-driven POST. The Stream lives on T14's stack; the chunk
+     * buffer it reads through is static BSS. Peak heap added: ~0. */
+    SDFileChunkedStream stream(path, fsize);
+    int code = http.sendRequest("POST", &stream, (size_t)fsize);
     http.end();
-    free(body);
     if (secure) { delete secure; }
 
     bool ok = (code == 204 || (code >= 200 && code < 300));
     if (ok) {
-        ESP_LOGI(TAG, "log upload OK: %s (%u bytes)", filename, (unsigned)total);
+        ESP_LOGI(TAG, "log upload OK: %s (%lu bytes)", filename,
+                 (unsigned long)fsize);
     } else {
         ESP_LOGW(TAG, "log upload FAILED: %s code=%d", filename, code);
     }

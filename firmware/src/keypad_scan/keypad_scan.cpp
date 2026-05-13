@@ -28,6 +28,7 @@
 #define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
 #include <Arduino.h>
 #include <esp_log.h>
+#include <esp_task_wdt.h>   /* WDT subscription (1.17.29 / gh#13) */
 
 #include "keypad_scan.h"
 #include "../types/app_types.h"
@@ -54,6 +55,10 @@ void task_keypad_scan(void *pvParameters)
 {
     (void)pvParameters;
 
+    /* Subscribe to WDT (1.17.29 / gh#13). 20 ms scan period — well under
+     * the 5 s WDT window. */
+    esp_task_wdt_add(NULL);
+
     ESP_LOGI(TAG, "T7 task alive");
     keypad_init();
 
@@ -62,6 +67,7 @@ void task_keypad_scan(void *pvParameters)
     int32_t repeat_accum = 0;         /**< Ticks accumulated toward next repeat  */
 
     for (;;) {
+        esp_task_wdt_reset();
         char key = keypad_scan();
 
         if (key == KP_NO_KEY) {
