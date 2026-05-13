@@ -6,6 +6,66 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.17.32] — 2026-05-13
+
+*Two-line driver fix for [gh#14](https://github.com/pe1mew/greenhouse-Controller/issues/14): after a clean web-GUI Unmount + physical removal of the SD card, T9's 60-second automount poll would call `SD.begin()` again, and the Arduino-ESP32 SD library's SPI-level state cache would let both `SD.begin()` and `SD.cardType()` lie (cached "card present" result survives `SD.end()`). `g_mounted` flipped back to true; the GUI showed `Mounted: Mounted, Size: 0 MB, Free: 0 MB` — the "mounted" flag lying, the byte counts honestly reporting no card.*
+
+### Fixed
+- `drivers/sdCard/src/sd_storage.cpp::storage_init()` — after `SD.cardType() != CARD_NONE` passes, sanity-check `SD.totalBytes() != 0` before setting `g_mounted = true`. `SD.totalBytes()` is the honest function in the SD library's chain: it round-trips to the card hardware on every call instead of returning a cached value, so it returns 0 when no card is physically present regardless of what `SD.begin()` / `SD.cardType()` say. On a zero result the driver releases the SPI claim (`SD.end()`) and returns `STORAGE_ERR_NO_CARD`. Happy-path cost: one extra accessor call (≈ 5 ms) during init only.
+- `firmware/src/event_logger/event_logger.cpp::event_logger_sd_remount()` — belt-and-braces. After `storage_init()` returns `STORAGE_OK`, double-check `storage_sd_total_bytes() != 0` before flipping `s_sd_ok = true`. The driver's primary fix should handle every case but the cost of this second check is one accessor call and the benefit is that no future regression in the driver can leak an unmounted-but-flagged-mounted state into T9.
+
+### Changed
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.31` → `1.17.32`.
+
+### Notes
+- The 60 s automount polling cadence is unchanged — the bug was in *how* the poll concluded "card present", not in *when* it polled. Card-insertion detection is unaffected: a real card inserted at any point still triggers the next poll to succeed within 60 s.
+- The `Phase 0 boot` LCD/serial output is unchanged. The web GUI's Status-tab SD card display is unchanged. Only the underlying `g_mounted` / `s_sd_ok` state-tracking is tightened.
+- Manuals (boer/beheerder) do not need updating; the user-visible behaviour is exactly what was always documented (after Unmount → "Not mounted"; after card removal → stays "Not mounted").
+
+### Resolves
+- [gh#14](https://github.com/pe1mew/greenhouse-Controller/issues/14) — Web GUI shows "Mounted, 0 MB" after unmount + physical card removal.
+
+---
+
+## [1.17.31] — 2026-05-13
+
+*Cosmetic fix triggered by the 2026-05-13 SD-card capture: the boot-reason `LOG_SYSTEM` event (`value_a=5`) was being posted from `main.cpp::setup()` before T4 had read the DS1307, so its CSV-row timestamp came out as `1970-01-01T00:00:00`. Four POWERON boots in the capture all showed epoch-zero timestamps. Move the emit into T4 right after `read_rtc_and_seed_clock()` so the row is sortable by timestamp. No behavioural change; no firmware version dependency.*
+
+### Changed
+- `firmware/src/main.cpp::setup()` — removed the `log_post(boot_ev)` block. The `esp_reset_reason()` capture and the `Phase 0 boot — esp_reset_reason=N` `ESP_LOGI` line on serial both stay; only the SD-log emit has moved. Comment block now explains where the event went and why.
+- `firmware/src/data_manager/data_manager.cpp::task_data_manager()` — boot-init path now emits the boot-reason event itself via `esp_reset_reason()`. Replaces the old generic `SYSTEM,SYS,0,0,0,0` boot marker (`value_a=0,value_b=0`) that used to live here. `esp_reset_reason()` is ESP-IDF-cached so calling it from T4 returns the same value `main.cpp::setup()` would have observed.
+- `firmware/src/event_logger/event_logger.h` — LOG_SYSTEM `value_a` table updated: `value_a=5` producer column now reads "task_data_manager() post-RTC-seed" instead of "main.cpp setup()". The first-emission-version (1.17.27) is preserved alongside the new T4-emission-version (1.17.31).
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.30` → `1.17.31`.
+
+### Notes
+- `esp_reset_reason()` is cached by the ESP-IDF boot stub; T4 reads the same value `main.cpp::setup()` would have read. No race, no missed-reason concern.
+- The serial-monitor capture still gets the boot-reason line at setup-entry (via `ESP_LOGI`), independent of RTC state. So host-side serial captures continue to identify the reset class within the first ~50 ms of boot regardless of whether the SD log row arrives at epoch-zero or wall-clock-accurate.
+- Side effect: the legacy `SYSTEM,SYS,0,0,0,0` boot marker from T4's old code path is **retired**. Tools that filtered on `value_a==0 && value_b==0 && initiator==SYS` to find boots should now filter on `value_a==5 && initiator==SYS`.
+
+### Related
+- [gh#12](https://github.com/pe1mew/greenhouse-Controller/issues/12) — Unexpected reboot investigation. The SD log is the primary forensic surface for that thread; sortable-by-timestamp boot rows make the data substantially more usable.
+
+---
+
+## [1.17.30] — 2026-05-13
+
+*Single-line fix triggered by the first capture of the 1.17.29 stack-HWM probe: T5 (sensor poll) was using 3932 B of its 4096 B stack — 96 % used, only 164 B headroom. Doubling the allocation to 8192 B gives ~52 % headroom and removes the one `stack low` warning observed in the [2026-05-13 06:44 capture](https://github.com/pe1mew/greenhouse-Controller/issues/12). The 1.17.29 hardening pass paid for itself within hours of being deployed.*
+
+### Fixed
+- `firmware/src/main.cpp::setup()` — T5 (`task_sensor_poll`) stack allocation bumped from 4096 → 8192 bytes. The 1.17.29 stack-HWM probe (every 10 min via T1) reported nine consecutive samples of `stack low: T5 hwm=164 B`. Stable at 164 B free across the 91-minute observation window — not a creeping bug, just a one-time sizing miss when the original 4096 B was chosen without accounting for the Modbus + sliding-average + Q6 post + `log_post` + `snprintf` deep-stack peak. Doubling to 8192 B brings T5 in line with T2, T8, T10, T11 which all use 8192 B. Cost: +4 KB RAM (BSS).
+
+### Changed
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.29` → `1.17.30`.
+
+### Diagnostic context
+- The 1.17.29 hardening release added a stack-HWM probe that walks all task handles every 10 minutes. The very first capture (2026-05-13 06:44 → 11:27) recorded the T5 warning on every sample. Without the probe, T5 would have continued running at 96 % stack-use until some future change (a new sensor type, deeper Modbus parsing, a `trace_printf`) pushed it past 4096 B, causing a panic-class reset that would be very difficult to attribute back to T5. This 1.17.30 fix removes that latent failure mode entirely.
+
+### Related
+- [gh#12](https://github.com/pe1mew/greenhouse-Controller/issues/12) — Unexpected reboot investigation. The capture that surfaced this finding is part of that thread.
+- [gh#13](https://github.com/pe1mew/greenhouse-Controller/issues/13) — Tier-1/2 hardening + 5 MB streaming refactor. The probe added by gh#13 is what caught this.
+
+---
+
 ## [1.17.29] — 2026-05-13
 
 *Firmware-hardening pass — four phases delivered in one release to minimise flash cycles. (A) Tier-1 compile flags catch a wider warning surface at build time. (B) `pio check` (cppcheck) static analysis is now wired up. (C) Runtime instrumentation gives memory leaks and watchdog hangs a visible signal in the SD log and on serial. (D) The 5 MB log-upload buffer is replaced with a 4 KB streaming adapter so the daily upload no longer takes 5 MB of PSRAM at peak. All four resolve [gh#13](https://github.com/pe1mew/greenhouse-Controller/issues/13).*

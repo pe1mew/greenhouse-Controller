@@ -34,6 +34,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_log.h>
+#include <esp_system.h>     /* esp_reset_reason() — boot-reason event (1.17.31) */
 #include <esp_task_wdt.h>   /* WDT subscription (1.17.29 / gh#13) */
 #include <esp_timer.h>
 #include <time.h>
@@ -639,12 +640,29 @@ void task_data_manager(void *pvParameters)
     /* Read DS1307; seed system clock so time(NULL) returns valid UTC. */
     read_rtc_and_seed_clock();
 
-    /* Log boot system event. */
+    /* Log the boot-reason event. Previously emitted from main.cpp::setup()
+     * before any RTC read, which left the SD-log row stamped 1970-01-01
+     * (confirmed in the 2026-05-13 capture: four POWERON boots all came
+     * out at epoch zero).  Moved here in 1.17.31 so the timestamp reflects
+     * the boot's actual wall-clock (per the DS1307; NTP correction follows
+     * a few seconds later if WiFi is up).
+     *
+     * Encoding (see event_logger.h LOG_SYSTEM value_a table):
+     *   value_a = 5    BOOT marker
+     *   value_b       = esp_reset_reason_t (1=POWERON, 3=SW, 4=PANIC,
+     *                   5=INT_WDT, 6=TASK_WDT, 7=WDT, 8=DEEPSLEEP,
+     *                   9=BROWNOUT, ...)
+     * esp_reset_reason() is cached by ESP-IDF — returns the same value
+     * regardless of when in the boot it is called. */
     {
         log_event_t boot_evt = {};
         boot_evt.timestamp  = s_cfg.current_unix_ts;
         boot_evt.event_type = (uint8_t)LOG_SYSTEM;
         boot_evt.initiator  = (uint8_t)LOG_BY_SYSTEM;
+        boot_evt.channel    = 0u;
+        boot_evt.param_id   = (uint8_t)LOG_PARAM_NONE;
+        boot_evt.value_a    = (int16_t)5;
+        boot_evt.value_b    = (int16_t)esp_reset_reason();
         log_post(&boot_evt);
     }
 

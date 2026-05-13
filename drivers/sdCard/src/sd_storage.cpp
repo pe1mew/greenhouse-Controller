@@ -52,6 +52,18 @@ storage_status_t storage_init(void)
     if (card_type == CARD_NONE) {
         return STORAGE_ERR_NO_CARD;
     }
+    /* gh#14 (since 1.17.32): the Arduino-ESP32 SD library's SPI-level state
+     * survives SD.end()/SD.begin() cycles. After a clean unmount + physical
+     * removal, the next storage_init() can see SD.begin() return true and
+     * SD.cardType() return the previously-cached type — both fail-safes
+     * pass even though no card is present.  SD.totalBytes() is the honest
+     * function in this chain: it round-trips to the card hardware and
+     * returns 0 when none is there.  A zero total before we flip g_mounted
+     * means "lying state — treat as absent". */
+    if (SD.totalBytes() == 0) {
+        SD.end();   /* release SPI claim so a future re-mount starts clean */
+        return STORAGE_ERR_NO_CARD;
+    }
 #else
     if (!mock_sd_card_present()) {
         return STORAGE_ERR_NO_CARD;

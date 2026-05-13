@@ -588,6 +588,18 @@ bool event_logger_sd_remount(void)
         return false;
     }
 
+    /* gh#14 (since 1.17.32): belt-and-braces after storage_init().
+     * The driver's storage_init() guards against this case directly via
+     * SD.totalBytes()==0, but the cost of double-checking here is one
+     * extra accessor call and the benefit is that if the SD library's
+     * cached state slips through both layers — extremely unlikely but
+     * possible — s_sd_ok still doesn't flip to true. */
+    if (storage_sd_total_bytes() == 0u) {
+        ESP_LOGW(TAG, "[T9] SD remount reported OK but total=0 — treating as absent");
+        storage_sd_unmount();
+        return false;
+    }
+
     if (!sd_open_active_file()) {
         storage_sd_unmount();
         return false;

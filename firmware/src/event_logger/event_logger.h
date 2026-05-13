@@ -113,7 +113,7 @@
  *   2     | NTP                 | 0 = timeout,      1 = synced         | T10 network_manager.cpp
  *   3     | AP                  | 0 = stopped,      1 = started        | T10 network_manager.cpp
  *   4     | geolocation         | 1 = success                          | T10 network_manager.cpp
- *   5     | BOOT (since 1.17.27)| esp_reset_reason_t value (1–10)      | main.cpp setup()
+ *   5     | BOOT (since 1.17.27, T4-emitted since 1.17.31) | esp_reset_reason_t value (1–10) | task_data_manager() post-RTC-seed
  *   6     | force-rotate marker (since 1.17.28) | 0 = unused              | T14 → event_logger
  *   7     | HEAP internal free (since 1.17.29) | KB free in MALLOC_CAP_INTERNAL | T1 every 60 s
  *   8     | HEAP PSRAM free    (since 1.17.29) | KB free in MALLOC_CAP_SPIRAM   | T1 every 60 s

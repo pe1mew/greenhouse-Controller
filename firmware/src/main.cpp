@@ -410,25 +410,17 @@ void setup()
 
     ESP_LOGI(TAG, "RTOS primitives created");
 
-    /* ---- Post the boot-reason event captured at setup() entry ----
-     * Q3 is alive; T9 isn't running yet, so this just sits in the queue and
-     * T9 will drain it as its very first event. Convention:
-     *   event_type = LOG_SYSTEM
-     *   value_a    = 5  (BOOT marker — new code; documented in event_logger.h)
-     *   value_b    = esp_reset_reason_t value (see comment at top of setup())
-     * Timestamp at this point is pre-NTP, so it reflects the RTC reading at
-     * boot — close enough for filtering "which boot" in post-hoc analysis. */
-    {
-        log_event_t boot_ev = {};
-        boot_ev.timestamp  = (uint32_t)time(NULL);
-        boot_ev.event_type = (uint8_t)LOG_SYSTEM;
-        boot_ev.initiator  = (uint8_t)LOG_BY_SYSTEM;
-        boot_ev.channel    = 0u;
-        boot_ev.param_id   = (uint8_t)LOG_PARAM_NONE;
-        boot_ev.value_a    = (int16_t)5;                       /* 5 = BOOT */
-        boot_ev.value_b    = (int16_t)s_boot_reason;           /* esp_reset_reason_t */
-        log_post(&boot_ev);
-    }
+    /* The boot-reason event (LOG_SYSTEM, value_a=5, value_b=esp_reset_reason)
+     * used to be posted here in 1.17.27–1.17.30. Problem: at this point in
+     * setup() the RTC has not yet been read, so time(NULL) returns 0 and
+     * the SD-log row gets a `1970-01-01T00:00:00` timestamp. Confirmed in
+     * the 2026-05-13 SD capture — four POWERON boots all showed epoch-zero.
+     *
+     * 1.17.31 moves the emit into task_data_manager() right after
+     * read_rtc_and_seed_clock(), where current_unix_ts is valid. The
+     * `Phase 0 boot — esp_reset_reason=` ESP_LOGI line above continues to
+     * fire here at setup-entry for serial-monitor visibility regardless of
+     * RTC state. */
 
     /* ---- Spawn all tasks ---- */
     /*                                          name      stack   param  prio               handle    core */
@@ -436,7 +428,11 @@ void setup()
     xTaskCreatePinnedToCore(task_relay_controller,  "T2_RLY",  8192, NULL, TASK_PRIO_HIGH,     &task_t2,  1);
     xTaskCreatePinnedToCore(task_safety_monitor,    "T3_SAF",  4096, NULL, TASK_PRIO_HIGH,     &task_t3,  1);
     xTaskCreatePinnedToCore(task_data_manager,      "T4_DAT",  6144, NULL, TASK_PRIO_MED_HIGH, &task_t4,  1);
-    xTaskCreatePinnedToCore(task_sensor_poll,       "T5_SEN",  4096, NULL, TASK_PRIO_MED_HIGH, &task_t5,  1);
+    /* T5 stack: 1.17.29's stack-HWM probe found peak-used = 3932 B of the
+     * original 4096 (only 164 B / 4 % free). 1.17.30 doubles to 8192 → ~52 %
+     * headroom. Cost: +4 KB RAM (we have plenty). Removes the only "stack
+     * low" warning observed in the 2026-05-13 capture. */
+    xTaskCreatePinnedToCore(task_sensor_poll,       "T5_SEN",  8192, NULL, TASK_PRIO_MED_HIGH, &task_t5,  1);
     xTaskCreatePinnedToCore(task_climate_control,   "T6_CLI",  4096, NULL, TASK_PRIO_MEDIUM,   &task_t6,  1);
     xTaskCreatePinnedToCore(task_keypad_scan,       "T7_KPD",  4096, NULL, TASK_PRIO_MED_HIGH, &task_t7,  1);
     xTaskCreatePinnedToCore(task_ui_display,        "T8_UI",   8192, NULL, TASK_PRIO_MEDIUM,   &task_t8,  1);
