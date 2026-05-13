@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.17.27] — 2026-05-13
+
+*Two diagnostic fixes triggered by a 03:44 reboot today: (1) the "24-hour" periodic NTP resync in T10 was actually firing every ~8 minutes due to a `pdMS_TO_TICKS` `uint32_t` overflow — confirmed from the user's SD log (`SYSTEM 2,1` events repeating at 8 m 25 s intervals); (2) the firmware never recorded `esp_reset_reason()` at boot, so previous reboots left no diagnostic trail. Adding the boot-reason log entry means every future unexpected reboot identifies its own cause (POWERON / PANIC / TASK_WDT / BROWNOUT / …).*
+
+### Fixed
+- `firmware/src/network_manager/network_manager.cpp::step_client()` NET_RUNNING branch — periodic NTP resync condition rewritten from `pdMS_TO_TICKS(NTP_RESYNC_INTERVAL_S * 1000UL)` to `(TickType_t)NTP_RESYNC_INTERVAL_S * configTICK_RATE_HZ`. Root cause: the `pdMS_TO_TICKS` macro expansion multiplies `(uint32_t)ms × configTICK_RATE_HZ` inside `TickType_t`; for `86_400_000 ms × 1000 Hz` the intermediate `86_400_000_000` overflows `uint32_t` and wraps to `500_654_080`, which `/1000` becomes `500_654` ticks (≈ 8 min 21 s). The macro on FreeRTOS/Arduino-ESP32 has no overflow guard. Computing the tick count directly (`seconds × Hz`) gives `86_400_000` ticks, well inside `uint32_t`. Direct effects: `configTime("pool.ntp.org")` is now called once per 24 hours instead of ~172× per day; `tzset()` reapplied once per 24 h; T10 no longer enters `vTaskDelay`-spin in `run_ntp_sync()` every 8 minutes; DS1307 `DM_NOTIFY_NTP_SYNCED` count drops from ~172 to 1 per day.
+
+### Added
+- `firmware/src/main.cpp::setup()` — boot-reason capture and logging. `esp_reset_reason()` is read at the very top of `setup()` (before any other side effect), logged via `ESP_LOGI` to the serial monitor, and posted to Q3 as the first event the new boot writes to the SD log. Convention: `LOG_SYSTEM`, `value_a = 5` (BOOT marker, new code), `value_b = esp_reset_reason_t` (1=POWERON, 3=SW, 4=PANIC, 5=INT_WDT, 6=TASK_WDT, 7=WDT, 8=DEEPSLEEP, 9=BROWNOUT, …). Posted to Q3 after queue creation, before any task is spawned, so T9 picks it up as its first dequeue. Every fresh SD-log file now starts with a verdict on the previous boot — no more silent unexplained reboots.
+- `firmware/src/event_logger/event_logger.h` — documentation block extended with a complete LOG_SYSTEM `value_a` encoding table (subtypes 0–5 and the synthetic −1 drop-overflow marker), so the next time someone reads a CSV log they can decode every SYSTEM row without grepping multiple `.cpp` files.
+
+### Changed
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.26` → `1.17.27`.
+
+### Diagnostic context
+- The pre-crash SD log `20260410120000.csv` ran from 2026-04-10 to 2026-05-13 (33 days of continuous uptime — a single 524 KB file that rotated exactly at the crash) and ended abruptly at `01:44:41 UTC` with a routine SENSOR event. No panic line, no alarm, no graceful shutdown event. The new boot started immediately and is unaffected by whatever triggered the reset. Without an `esp_reset_reason()` log we cannot tell whether the reset was a panic, a task-WDT, or a brownout. This release closes that diagnostic gap; if/when another reboot occurs, the first line of the new SD log will identify the class of fault.
+
+### Out of scope
+- No web GUI, canonical JSON, manuals or PDFs touched. Manuals will be updated when the boot-reason field becomes user-visible (e.g. a "Last boot reason" line on the Status tab's Clock card).
+
+---
+
 ## [1.17.26] — 2026-05-12
 
 *One-character LCD cosmetic fix for GitHub issue [#6](https://github.com/pe1mew/greenhouse-Controller/issues/6) on the Wind status page (page 2): insert a space between `Dir:` and the heading digits so the colon aligns with the same spacing used everywhere else on the LCD (`Wind:` row, `Mode:`, `Sess:`, the `Dir: ---` invalid-reading row directly below it).*

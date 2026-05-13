@@ -101,6 +101,27 @@
  * value_a    | int16   | First payload (sensor value, reason code, etc.)
  * value_b    | int16   | Second payload (threshold, new setting, etc.)
  *
+ * ## LOG_SYSTEM value_a encoding
+ *
+ * value_a categorises the SYSTEM-event subtype. The producers and their
+ * conventions:
+ *
+ * value_a | meaning           | value_b                              | producer
+ * --------|-------------------|--------------------------------------|--------------------------
+ *   0     | status-post outcome (T14)  | 0 (status POST), 1 (log upload) | T14 status_post.cpp
+ *   1     | STA (WiFi client)   | 0 = disconnected, 1 = connected      | T10 network_manager.cpp
+ *   2     | NTP                 | 0 = timeout,      1 = synced         | T10 network_manager.cpp
+ *   3     | AP                  | 0 = stopped,      1 = started        | T10 network_manager.cpp
+ *   4     | geolocation         | 1 = success                          | T10 network_manager.cpp
+ *   5     | BOOT (since 1.17.27)| esp_reset_reason_t value (1–10)      | main.cpp setup()
+ *  -1     | Q3 drop-overflow    | dropped count                        | T9 (synthetic)
+ *
+ * The BOOT entry (value_a = 5) is posted once per boot, before any task is
+ * scheduled, so every fresh SD log file starts with a verdict on why the
+ * previous boot ended (POWERON / PANIC / TASK_WDT / BROWNOUT / …). The
+ * esp_reset_reason_t codes are listed in the comment at the top of
+ * main.cpp::setup().
+ *
  * @author  Greenhouse Controller project
  */
 

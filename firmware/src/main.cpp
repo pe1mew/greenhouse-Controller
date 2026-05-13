@@ -15,6 +15,7 @@
 #include <Arduino.h>
 #include <esp_task_wdt.h>
 #include <esp_log.h>
+#include <esp_system.h>      /* esp_reset_reason() — boot diagnostic */
 #include <time.h>
 #include <string.h>
 #include <Adafruit_NeoPixel.h>
@@ -223,13 +224,30 @@ static void task_watchdog_heartbeat(void *pvParameters)
 
 void setup()
 {
+    /* Capture the reason for *this* boot before anything else can perturb it.
+     * On the ESP32 the value persists across the early-boot stub; reading it
+     * here gives us the cleanest answer. Values per esp_reset_reason_t:
+     *   1 ESP_RST_POWERON      cold boot or power loss
+     *   2 ESP_RST_EXT          external reset pin
+     *   3 ESP_RST_SW           software esp_restart() (e.g. OTA finalise)
+     *   4 ESP_RST_PANIC        unhandled exception / assertion / stack overflow
+     *   5 ESP_RST_INT_WDT      interrupt watchdog (CPU starved > 300 ms)
+     *   6 ESP_RST_TASK_WDT     task watchdog (T1 missed its 500 ms kick)
+     *   7 ESP_RST_WDT          other RTC WDT
+     *   8 ESP_RST_DEEPSLEEP    wake from deep sleep
+     *   9 ESP_RST_BROWNOUT     supply voltage dropped below threshold
+     *  10 ESP_RST_SDIO         reset over SDIO
+     * Posted to T9 below (value_a = 5 BOOT, value_b = reason code) so every
+     * fresh log file carries a verdict on the previous boot. */
+    esp_reset_reason_t s_boot_reason = esp_reset_reason();
+
     /* USB-CDC for interactive debug sessions (monitor_dtr=1 in platformio.ini).
      * Diagnostic output uses ESP_LOGI — no wait loop needed. */
     Serial.begin(115200);
     Serial.setTxTimeoutMs(0);   /* Non-blocking; never hang if no host connected */
 
     ESP_LOGI(TAG, "=== Greenhouse Controller v" FIRMWARE_VERSION " ===");
-    ESP_LOGI(TAG, "Phase 0 boot");
+    ESP_LOGI(TAG, "Phase 0 boot — esp_reset_reason=%d", (int)s_boot_reason);
 
     /* ---- LIB-1: GPIO ---- */
     gpio_set_pin_mode(PIN_HB_LED, GPIO_OUTPUT);
@@ -316,6 +334,26 @@ void setup()
     configASSERT(MX1 && MX2 && MX3 && MX4 && MX5);
 
     ESP_LOGI(TAG, "RTOS primitives created");
+
+    /* ---- Post the boot-reason event captured at setup() entry ----
+     * Q3 is alive; T9 isn't running yet, so this just sits in the queue and
+     * T9 will drain it as its very first event. Convention:
+     *   event_type = LOG_SYSTEM
+     *   value_a    = 5  (BOOT marker — new code; documented in event_logger.h)
+     *   value_b    = esp_reset_reason_t value (see comment at top of setup())
+     * Timestamp at this point is pre-NTP, so it reflects the RTC reading at
+     * boot — close enough for filtering "which boot" in post-hoc analysis. */
+    {
+        log_event_t boot_ev = {};
+        boot_ev.timestamp  = (uint32_t)time(NULL);
+        boot_ev.event_type = (uint8_t)LOG_SYSTEM;
+        boot_ev.initiator  = (uint8_t)LOG_BY_SYSTEM;
+        boot_ev.channel    = 0u;
+        boot_ev.param_id   = (uint8_t)LOG_PARAM_NONE;
+        boot_ev.value_a    = (int16_t)5;                       /* 5 = BOOT */
+        boot_ev.value_b    = (int16_t)s_boot_reason;           /* esp_reset_reason_t */
+        log_post(&boot_ev);
+    }
 
     /* ---- Spawn all tasks ---- */
     /*                                          name      stack   param  prio               handle    core */

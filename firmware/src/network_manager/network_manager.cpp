@@ -607,9 +607,19 @@ static uint32_t step_client(void)
                 post_q5(false, s_ap_active, "");
             } else if (s_ntp_synced) {
                 /* Periodic 24-hour NTP resync to keep the DS1307 accurate.
-                 * Geo/timezone is NOT re-fetched — location is assumed stable. */
+                 * Geo/timezone is NOT re-fetched — location is assumed stable.
+                 *
+                 * IMPORTANT: do not write this as
+                 *   pdMS_TO_TICKS(NTP_RESYNC_INTERVAL_S * 1000UL)
+                 * The pdMS_TO_TICKS expansion multiplies the ms value by
+                 * configTICK_RATE_HZ inside TickType_t (uint32_t on Arduino-
+                 * ESP32). For 86_400_000 ms × 1000 Hz that intermediate is
+                 * 86_400_000_000, which overflows uint32_t and wraps to
+                 * ~500_654 ticks (≈ 8 min 21 s). Result before the fix:
+                 * NTP resynced ~172× per day instead of once. Computing
+                 * the tick count directly avoids the overflow. */
                 TickType_t elapsed = xTaskGetTickCount() - s_last_ntp_tick;
-                if (elapsed >= pdMS_TO_TICKS(NTP_RESYNC_INTERVAL_S * 1000UL)) {
+                if (elapsed >= (TickType_t)NTP_RESYNC_INTERVAL_S * configTICK_RATE_HZ) {
                     ESP_LOGI(TAG, "24 h periodic NTP resync");
                     run_ntp_sync(false);   /* do_geo = false */
                 }
