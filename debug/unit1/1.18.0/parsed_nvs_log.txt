@@ -1,0 +1,259 @@
+================================================================================
+  Source file : nvs_log.csv
+  Parsed      : 2026-05-14 08:44:00 UTC
+================================================================================
+Timestamp (UTC)       Type        Initiator       Description
+--------------------------------------------------------------------------------
+2026-05-14 07:11:22  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:11:52  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:11:59  [SYSTEM ]  System          Heap internal free: 127 KB
+2026-05-14 07:11:59  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:12:23  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:12:53  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:12:59  [SYSTEM ]  System          Heap internal free: 130 KB
+2026-05-14 07:12:59  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:13:24  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:13:55  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:14:00  [SYSTEM ]  System          Heap internal free: 130 KB
+2026-05-14 07:14:00  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:14:26  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:14:56  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:15:00  [SYSTEM ]  System          Heap internal free: 130 KB
+2026-05-14 07:15:00  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:15:27  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:15:57  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:16:00  [SYSTEM ]  System          Heap internal free: 129 KB
+2026-05-14 07:16:00  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:16:28  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:16:58  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:17:00  [SYSTEM ]  System          Heap internal free: 130 KB
+2026-05-14 07:17:00  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:17:29  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:18:00  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:18:01  [SYSTEM ]  System          Heap internal free: 129 KB
+2026-05-14 07:18:01  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:18:31  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:19:01  [SYSTEM ]  System          Heap internal free: 130 KB
+2026-05-14 07:19:01  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:19:01  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:19:32  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:20:01  [SYSTEM ]  System          Heap internal free: 127 KB
+2026-05-14 07:20:01  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:20:02  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:20:33  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:21:01  [SYSTEM ]  System          Heap internal free: 129 KB
+2026-05-14 07:21:01  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:21:03  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:21:34  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:22:01  [SYSTEM ]  System          Heap internal free: 129 KB
+2026-05-14 07:22:01  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:22:04  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:22:35  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:23:02  [SYSTEM ]  System          Heap internal free: 129 KB
+2026-05-14 07:23:02  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:23:06  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:23:37  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:24:02  [SYSTEM ]  System          Heap internal free: 129 KB
+2026-05-14 07:24:02  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:24:07  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:24:38  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:25:02  [SYSTEM ]  System          Heap internal free: 129 KB
+2026-05-14 07:25:02  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:25:08  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:25:39  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:26:02  [SYSTEM ]  System          Heap internal free: 129 KB
+2026-05-14 07:26:02  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:26:09  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:26:40  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:27:02  [SYSTEM ]  System          Heap internal free: 129 KB
+2026-05-14 07:27:02  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:27:11  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:27:41  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:28:02  [SYSTEM ]  System          Heap internal free: 129 KB
+2026-05-14 07:28:02  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:28:12  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:28:42  [SENSOR ]  System          T=11 degC   RH=89 %
+2026-05-14 07:29:02  [SYSTEM ]  System          Heap internal free: 127 KB
+2026-05-14 07:29:02  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:29:13  [SENSOR ]  System          T=12 degC   RH=88 %
+2026-05-14 07:29:44  [SENSOR ]  System          T=12 degC   RH=88 %
+2026-05-14 07:30:03  [SYSTEM ]  System          Heap internal free: 129 KB
+2026-05-14 07:30:03  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:30:15  [SENSOR ]  System          T=12 degC   RH=88 %
+2026-05-14 07:30:45  [SENSOR ]  System          T=12 degC   RH=87 %
+2026-05-14 07:31:03  [SYSTEM ]  System          Heap internal free: 129 KB
+2026-05-14 07:31:03  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:31:16  [SENSOR ]  System          T=12 degC   RH=87 %
+2026-05-14 07:31:46  [SENSOR ]  System          T=13 degC   RH=87 %
+2026-05-14 07:32:03  [SYSTEM ]  System          Heap internal free: 129 KB
+2026-05-14 07:32:03  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:32:17  [SENSOR ]  System          T=13 degC   RH=86 %
+2026-05-14 07:32:47  [SENSOR ]  System          T=13 degC   RH=86 %
+2026-05-14 07:33:03  [SYSTEM ]  System          Heap internal free: 129 KB
+2026-05-14 07:33:03  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:33:18  [SENSOR ]  System          T=13 degC   RH=86 %
+2026-05-14 07:33:48  [SENSOR ]  System          T=13 degC   RH=85 %
+2026-05-14 07:34:03  [SYSTEM ]  System          Heap internal free: 129 KB
+2026-05-14 07:34:03  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:34:19  [SENSOR ]  System          T=14 degC   RH=85 %
+2026-05-14 07:34:50  [SENSOR ]  System          T=14 degC   RH=84 %
+2026-05-14 07:35:04  [SYSTEM ]  System          Heap internal free: 129 KB
+2026-05-14 07:35:04  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:35:21  [SENSOR ]  System          T=14 degC   RH=84 %
+2026-05-14 07:35:51  [SENSOR ]  System          T=14 degC   RH=84 %
+2026-05-14 07:36:04  [SYSTEM ]  System          Heap internal free: 129 KB
+2026-05-14 07:36:04  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:36:22  [SENSOR ]  System          T=14 degC   RH=83 %
+2026-05-14 07:36:52  [SENSOR ]  System          T=14 degC   RH=83 %
+2026-05-14 07:37:04  [SYSTEM ]  System          Heap internal free: 129 KB
+2026-05-14 07:37:04  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:37:23  [SENSOR ]  System          T=14 degC   RH=83 %
+2026-05-14 07:37:53  [SENSOR ]  System          T=14 degC   RH=82 %
+2026-05-14 07:38:04  [SYSTEM ]  System          Heap internal free: 129 KB
+2026-05-14 07:38:04  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:38:24  [SENSOR ]  System          T=14 degC   RH=82 %
+2026-05-14 07:38:55  [SENSOR ]  System          T=14 degC   RH=82 %
+2026-05-14 07:39:05  [SYSTEM ]  System          Heap internal free: 129 KB
+2026-05-14 07:39:05  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:39:26  [SENSOR ]  System          T=14 degC   RH=82 %
+2026-05-14 07:39:56  [SENSOR ]  System          T=14 degC   RH=82 %
+2026-05-14 07:40:05  [SYSTEM ]  System          Heap internal free: 129 KB
+2026-05-14 07:40:05  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:40:27  [SENSOR ]  System          T=14 degC   RH=82 %
+2026-05-14 07:40:57  [SENSOR ]  System          T=14 degC   RH=82 %
+2026-05-14 07:41:05  [SYSTEM ]  System          Heap internal free: 129 KB
+2026-05-14 07:41:05  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:41:28  [SENSOR ]  System          T=14 degC   RH=82 %
+2026-05-14 07:41:58  [SENSOR ]  System          T=13 degC   RH=82 %
+2026-05-14 07:42:05  [SYSTEM ]  System          Heap internal free: 129 KB
+2026-05-14 07:42:05  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:42:29  [SENSOR ]  System          T=13 degC   RH=82 %
+2026-05-14 07:43:00  [SENSOR ]  System          T=13 degC   RH=83 %
+2026-05-14 07:43:06  [SYSTEM ]  System          Heap internal free: 130 KB
+2026-05-14 07:43:06  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:43:30  [SENSOR ]  System          T=13 degC   RH=83 %
+2026-05-14 07:44:01  [SENSOR ]  System          T=13 degC   RH=83 %
+2026-05-14 07:44:06  [SYSTEM ]  System          Heap internal free: 130 KB
+2026-05-14 07:44:06  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:44:31  [SENSOR ]  System          T=13 degC   RH=83 %
+2026-05-14 07:45:02  [SENSOR ]  System          T=13 degC   RH=83 %
+2026-05-14 07:45:06  [SYSTEM ]  System          Heap internal free: 130 KB
+2026-05-14 07:45:06  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:45:33  [SENSOR ]  System          T=12 degC   RH=84 %
+2026-05-14 07:46:04  [SENSOR ]  System          T=12 degC   RH=84 %
+2026-05-14 07:46:07  [SYSTEM ]  System          Heap internal free: 130 KB
+2026-05-14 07:46:07  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:46:34  [SENSOR ]  System          T=12 degC   RH=84 %
+2026-05-14 07:47:05  [SENSOR ]  System          T=12 degC   RH=84 %
+2026-05-14 07:47:07  [SYSTEM ]  System          Heap internal free: 130 KB
+2026-05-14 07:47:07  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:47:35  [SENSOR ]  System          T=12 degC   RH=84 %
+2026-05-14 07:48:06  [SENSOR ]  System          T=12 degC   RH=84 %
+2026-05-14 07:48:07  [SYSTEM ]  System          Heap internal free: 130 KB
+2026-05-14 07:48:07  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:48:36  [SENSOR ]  System          T=12 degC   RH=85 %
+2026-05-14 07:49:07  [SENSOR ]  System          T=12 degC   RH=84 %
+2026-05-14 07:49:07  [SYSTEM ]  System          Heap internal free: 129 KB
+2026-05-14 07:49:07  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:49:37  [SENSOR ]  System          T=12 degC   RH=84 %
+2026-05-14 07:50:07  [SYSTEM ]  System          Heap internal free: 129 KB
+2026-05-14 07:50:07  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:50:08  [SENSOR ]  System          T=13 degC   RH=84 %
+2026-05-14 07:50:39  [SENSOR ]  System          T=13 degC   RH=84 %
+2026-05-14 07:51:08  [SYSTEM ]  System          Heap internal free: 129 KB
+2026-05-14 07:51:08  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:51:10  [SENSOR ]  System          T=13 degC   RH=84 %
+2026-05-14 07:51:40  [SENSOR ]  System          T=13 degC   RH=83 %
+2026-05-14 07:52:08  [SYSTEM ]  System          Heap internal free: 130 KB
+2026-05-14 07:52:08  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:52:11  [SENSOR ]  System          T=13 degC   RH=83 %
+2026-05-14 07:52:41  [SENSOR ]  System          T=13 degC   RH=82 %
+2026-05-14 07:53:08  [SYSTEM ]  System          Heap internal free: 130 KB
+2026-05-14 07:53:08  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:53:12  [SENSOR ]  System          T=13 degC   RH=82 %
+2026-05-14 07:53:42  [SENSOR ]  System          T=14 degC   RH=82 %
+2026-05-14 07:54:08  [SYSTEM ]  System          Heap internal free: 130 KB
+2026-05-14 07:54:08  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:54:13  [SENSOR ]  System          T=14 degC   RH=81 %
+2026-05-14 07:54:44  [SENSOR ]  System          T=14 degC   RH=81 %
+2026-05-14 07:55:09  [SYSTEM ]  System          Heap internal free: 130 KB
+2026-05-14 07:55:09  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:55:15  [SENSOR ]  System          T=14 degC   RH=81 %
+2026-05-14 07:55:45  [SENSOR ]  System          T=14 degC   RH=80 %
+2026-05-14 07:56:09  [SYSTEM ]  System          Heap internal free: 130 KB
+2026-05-14 07:56:09  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:56:16  [SENSOR ]  System          T=14 degC   RH=80 %
+2026-05-14 07:56:46  [SENSOR ]  System          T=14 degC   RH=79 %
+2026-05-14 07:57:09  [SYSTEM ]  System          Heap internal free: 129 KB
+2026-05-14 07:57:09  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:57:17  [SENSOR ]  System          T=14 degC   RH=79 %
+2026-05-14 07:57:48  [SENSOR ]  System          T=14 degC   RH=79 %
+2026-05-14 07:58:10  [SYSTEM ]  System          Heap internal free: 129 KB
+2026-05-14 07:58:10  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:58:18  [SENSOR ]  System          T=14 degC   RH=78 %
+2026-05-14 07:58:49  [SENSOR ]  System          T=14 degC   RH=78 %
+2026-05-14 07:59:10  [SYSTEM ]  System          Heap internal free: 130 KB
+2026-05-14 07:59:10  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 07:59:19  [SENSOR ]  System          T=14 degC   RH=78 %
+2026-05-14 07:59:50  [SENSOR ]  System          T=14 degC   RH=78 %
+2026-05-14 08:00:10  [SYSTEM ]  System          Heap internal free: 130 KB
+2026-05-14 08:00:10  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 08:00:20  [SENSOR ]  System          T=14 degC   RH=78 %
+2026-05-14 08:00:51  [SENSOR ]  System          T=14 degC   RH=78 %
+2026-05-14 08:01:10  [SYSTEM ]  System          Heap internal free: 130 KB
+2026-05-14 08:01:10  [SYSTEM ]  System          Heap PSRAM free: 8144 KB
+2026-05-14 08:01:22  [SENSOR ]  System          T=14 degC   RH=79 %
+2026-05-14 08:01:53  [SENSOR ]  System          T=14 degC   RH=79 %
+2026-05-14 08:02:04  [SYSTEM ]  System          Legacy boot marker (pre-1.17.31)
+2026-05-14 08:02:11  [SYSTEM ]  System          Heap internal free: 127 KB
+2026-05-14 08:02:11  [SYSTEM ]  System          Heap PSRAM free: 8137 KB
+2026-05-14 08:02:13  [SYSTEM ]  System          STA WiFi client: disconnected
+2026-05-14 08:02:16  [SYSTEM ]  System          NTP: timeout
+2026-05-14 08:02:18  [SYSTEM ]  System          Heap internal free: 269 KB
+2026-05-14 08:02:18  [SYSTEM ]  System          Heap PSRAM free: 8189 KB
+2026-05-14 08:02:18  [RELAY  ]  System          M1: -> MOVING_CLOSE
+2026-05-14 08:02:18  [RELAY  ]  System          M2: -> MOVING_CLOSE
+2026-05-14 08:02:18  [RELAY  ]  System          M3: -> MOVING_CLOSE
+2026-05-14 08:02:19  [SYSTEM ]  System          Boot: esp_reset_reason = 3 (SW (esp_restart))
+2026-05-14 08:02:21  [SYSTEM ]  Web UI          T14 status POST: success
+2026-05-14 08:02:24  [SYSTEM ]  System          STA WiFi client: connected
+2026-05-14 08:02:25  [SYSTEM ]  System          NTP: synced
+2026-05-14 08:02:26  [SYSTEM ]  System          Heap internal free: 269 KB
+2026-05-14 08:02:26  [SYSTEM ]  System          Heap PSRAM free: 8189 KB
+2026-05-14 08:02:26  [RELAY  ]  System          M1: -> MOVING_CLOSE
+2026-05-14 08:02:26  [RELAY  ]  System          M2: -> MOVING_CLOSE
+2026-05-14 08:02:26  [RELAY  ]  System          M3: -> MOVING_CLOSE
+2026-05-14 08:02:26  [SYSTEM ]  System          Boot: esp_reset_reason = 6 (TASK_WDT)
+2026-05-14 08:02:28  [SYSTEM ]  Web UI          T14 status POST: success
+2026-05-14 08:02:31  [SYSTEM ]  System          STA WiFi client: connected
+2026-05-14 08:02:32  [SYSTEM ]  System          NTP: synced
+2026-05-14 08:02:33  [SYSTEM ]  System          Heap internal free: 269 KB
+2026-05-14 08:02:33  [SYSTEM ]  System          Heap PSRAM free: 8189 KB
+2026-05-14 08:02:33  [RELAY  ]  System          M1: -> MOVING_CLOSE
+2026-05-14 08:02:33  [RELAY  ]  System          M2: -> MOVING_CLOSE
+2026-05-14 08:02:33  [RELAY  ]  System          M3: -> MOVING_CLOSE
+2026-05-14 08:02:33  [SYSTEM ]  System          Boot: esp_reset_reason = 6 (TASK_WDT)
+2026-05-14 08:02:35  [SYSTEM ]  Web UI          T14 status POST: success
+2026-05-14 08:02:38  [SYSTEM ]  System          STA WiFi client: connected
+2026-05-14 08:02:39  [SYSTEM ]  System          NTP: synced
+2026-05-14 08:02:41  [SYSTEM ]  System          Heap internal free: 271 KB
+2026-05-14 08:02:41  [SYSTEM ]  System          Heap PSRAM free: 8189 KB
+2026-05-14 08:02:41  [RELAY  ]  System          M1: -> MOVING_CLOSE
+2026-05-14 08:02:41  [RELAY  ]  System          M2: -> MOVING_CLOSE
+2026-05-14 08:02:41  [RELAY  ]  System          M3: -> MOVING_CLOSE
+2026-05-14 08:02:41  [SYSTEM ]  System          Boot: esp_reset_reason = 3 (SW (esp_restart))
+2026-05-14 08:02:43  [SYSTEM ]  Web UI          T14 status POST: success
+2026-05-14 08:02:46  [SYSTEM ]  System          STA WiFi client: connected
+2026-05-14 08:02:47  [SYSTEM ]  System          NTP: synced
+2026-05-14 08:02:47  [SYSTEM ]  System          Geolocation: success
+2026-05-14 08:03:11  [RELAY  ]  System          M1: -> CLOSED
+2026-05-14 08:03:11  [RELAY  ]  System          M2: -> CLOSED
+2026-05-14 08:02:48  [ALARM  ]  System          WIND OVERRIDE: CLEARED - speed now 0.2 m/s
+2026-05-14 08:03:24  [SENSOR ]  System          T=13 degC   RH=84 %
+2026-05-14 08:03:45  [SYSTEM ]  System          Heap internal free: 133 KB
+2026-05-14 08:03:45  [SYSTEM ]  System          Heap PSRAM free: 8170 KB
+2026-05-14 08:03:49  [SENSOR ]  System          T=13 degC   RH=84 %
+2026-05-14 08:04:20  [SENSOR ]  System          T=13 degC   RH=84 %
+--------------------------------------------------------------------------------
+  250 event(s) in nvs_log.csv
+
