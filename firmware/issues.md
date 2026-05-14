@@ -104,41 +104,47 @@ The `changelog.md` file is for what's *done*; this file is for what's *open*.
    user-tunable alarm/fault/normal colour palette (safety — would let an
    operator hide the red), ambient-light auto-adjust (needs LDR hardware).
 
-8. `(in-progress — waiting for reproduction)` → [gh#16](https://github.com/pe1mew/greenhouse-Controller/issues/16)
-   **Unit-2 reboots: PANIC + INT_WDT within 3 minutes on 1.17.32.**
-   Field unit without an S200 wind sensor connected has rebooted twice
-   in quick succession with *different* boot reasons (4 = PANIC, 5 =
-   INT_WDT). **Wind protection is disabled on Unit 2** (`wind_prot_en
-   = 0`), which rules out the T2-calib × T3 close-all race hypothesis
-   — T3 doesn't fire WIND_OVERRIDE when wind protection is off. Top
-   remaining suspect: the Modbus-RTU timeout-and-drain path
-   (`drivers/modBus/src/modbus_rtu.cpp` lines 151-167), which runs
-   four times per poll (2 reads × 2 retries × 200 ms timeout each =
-   ~800 ms busy-poll per cycle, every 30 s, indefinitely). Unit 1
-   (with serial logging) was reconfigured on 2026-05-13 ≈ 21:30 to
-   match Unit 2's NVS and have its S200 made effectively absent via
-   an emulator-address change; **manual reboot at 21:30 starts the
-   reproduction-watch window — no unprovoked crash on Unit 1 yet**.
-   Next action: watch Unit 1's serial capture; the first panic dump /
-   INT_WDT trigger that arrives unprompted is the deliverable. Heap
-   stable, no corruption, no Q3 overflow on Unit 2 throughout. Related
-   to [gh#12](https://github.com/pe1mew/greenhouse-Controller/issues/12).
+8. ~~`(RESOLVED — gh#16 closed 2026-05-14; no proven root-cause, but
+   structurally bounded by gh#18)` → [gh#16](https://github.com/pe1mew/greenhouse-Controller/issues/16)
+   **Unit-2 reboots: PANIC + INT_WDT within 3 minutes on 1.17.32.**~~
+   The original Modbus-RTU busy-poll hypothesis never accumulated
+   evidence; multiple observations counted against it (heap stable, no
+   corruption, Q3 fine, wind protection already disabled). The crash
+   interval (~2 min) instead correlated strongly with the
+   `status_interval_s` default of 120 s — the secondary HTTPS /
+   mbedTLS / WiFiClientSecure / lwIP chain triggered by every status
+   POST. That failure surface is exactly what gh#18 (bulkhead policy,
+   closed) addresses: TLS reuse + 3 s connect timeout (1.17.34),
+   persistent circuit breaker with 60 s → 1 h escalation (1.17.35),
+   ~2 s recovery from planned reboot via NVS-persisted window state
+   (1.17.36), T15 supervisor (1.18.0). Heap-fragmentation diagnostic
+   blind spot closed by `LOG_SYSTEM value_a=12` row in 1.18.2 (gh#20).
+   Forensic question (which exact code path triggered the original
+   reboots) unresolved and probably unresolvable from the evidence
+   we have; operational question (what should the firmware do when
+   this class of fault occurs) answered structurally. Remaining
+   verification tracked on gh#20: deploy 1.18.2 to Unit 1 (24 h
+   soak) then Unit 2. Related to
+   [gh#12](https://github.com/pe1mew/greenhouse-Controller/issues/12).
 
-9. `(open)` → [gh#17](https://github.com/pe1mew/greenhouse-Controller/issues/17)
-   **Unique unit identifier derived from MAC.** Today the codebase has
-   no concept of unit identity — two physically-different controllers
-   running the same firmware produce SD logs that are byte-identical in
-   provenance. The current gh#16 multi-unit debugging made the gap
-   obvious (we had to fold "Unit 1" / "Unit 2" identity into the
-   conversation manually). Proposed: derive a `GH-AABBCC` short ID and
-   `aa:bb:cc:dd:ee:ff` full ID from `esp_read_mac()` and surface in:
-   SD log preamble line, canonical JSON (`system.unit_id`), `Phase 0
-   boot` serial line, LCD page 7, web GUI System tab, T14 status-POST
-   body. Immutable (factory-burned MAC, no NVS, survives factory reset).
-   Out of scope: user-typed friendly name, OTA signature pinning, fleet
-   management. ~half-day effort.
+9. ~~`(RESOLVED — gh#17 closed 2026-05-14, shipped 1.18.3)` →
+   [gh#17](https://github.com/pe1mew/greenhouse-Controller/issues/17)
+   **Unique unit identifier derived from MAC.**~~ Shipped in 1.18.3 with
+   the **2-byte short form** (last 2 MAC bytes, 4 hex chars) matching the
+   existing `Greenhouse-XXXX` AP-SSID convention. Surfaced on four
+   channels per the gh#17 evaluation: (a) Phase 0 boot serial line
+   `id=AABB`, (b) `LOG_SYSTEM value_a=11` emitted once at boot by T4 +
+   once at every SD-rotation by T9, (c) `system.unit_id` in canonical
+   status JSON, (d) AP SSID (pre-existing). 16-bit collision rate <1%
+   for ≤30-unit fleet; deterministic 0% within a single procurement
+   batch (sequential MAC allocation). Upgrade path to 24-bit ID
+   documented inline in `firmware/src/system_id/system_id.h` if fleet
+   ever exceeds ~50 units. **Out of scope** (per the original gh#17
+   "out of scope" list, kept out of scope here): LCD page 7 surfacing,
+   web GUI System tab tile, full MAC string, user-typed friendly name,
+   OTA signature pinning, fleet management.
 
-10. ~~`(decision: shipped 1.18.0)` → [gh#18](https://github.com/pe1mew/greenhouse-Controller/issues/18)
+10. ~~`(RESOLVED: gh#18 closed 2026-05-14)` → [gh#18](https://github.com/pe1mew/greenhouse-Controller/issues/18)
     **Bulkhead policy: secondary network activity must not affect
     primary climate control.**~~ — All four phases shipped 2026-05-14.
     Phase 1 (1.17.34): HTTPS hardening + visibility scaffold (static
@@ -162,7 +168,7 @@ The `changelog.md` file is for what's *done*; this file is for what's *open*.
     preserved as a future option. Related to
     [gh#16](https://github.com/pe1mew/greenhouse-Controller/issues/16).
 
-11. `(open)`
+11. `(open)` → [gh#19](https://github.com/pe1mew/greenhouse-Controller/issues/19)
     **Document the WDT-subscriber design rule.** 1.18.0 shipped T15 with
     a `vTaskDelay(30 000)` between `esp_task_wdt_reset()` kicks. The
     default task-WDT timeout is 5 s, so T15 starved the WDT on every
@@ -176,6 +182,22 @@ The `changelog.md` file is for what's *done*; this file is for what's *open*.
     `design/tasks.md` (or a new `design/task_design_rules.md`) and
     cross-link from the 1.17.29 hardening section in `changelog.md`.
     Small-scope follow-up: ~30 minutes.
+
+12. `(open — shipped 1.18.2, awaiting Unit-1 24 h soak)` → [gh#20](https://github.com/pe1mew/greenhouse-Controller/issues/20)
+    **1.18.2 defensive pass: platform pin + heap-fragmentation probe +
+    TLS audit.** Three small additions triggered by the mbedTLS research
+    thread on gh#18: PlatformIO `platform = espressif32@6.12.0` (was
+    unpinned — drift risk eliminated); new `LOG_SYSTEM value_a=12, value_b=KB`
+    row every 60 s recording `heap_caps_get_largest_free_block` (closes
+    Phase 4's fragmentation blind spot — see arduino-esp32 #7884 / #4523);
+    `design/tls_leak_audit.md` static-source audit of `WiFiClientSecure::
+    stop()` against #3808 and of TLS 1.3 status against esp-idf #8515
+    (verdict: Phase 1's static-client pattern correctly dodges both).
+    Supervisor integration of the largest-block trigger is a deliberate
+    follow-up — needs one field-capture session to set the threshold
+    empirically. Close when Unit 1 has run 1.18.2 for 24 h and the first
+    fragmentation baseline is observable in the log. See gh#16 verification
+    plan for the deployment sequence.
 
 ## Closed (most recent first)
 

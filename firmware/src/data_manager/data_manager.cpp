@@ -30,6 +30,7 @@
 #include "nvs_config.h"
 #include "ds1307_rtc.h"
 #include "littlefs_storage.h"
+#include "../system_id/system_id.h"   /* unit_id at boot (gh#17, since 1.18.3) */
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -664,6 +665,23 @@ void task_data_manager(void *pvParameters)
         boot_evt.value_a    = (int16_t)5;
         boot_evt.value_b    = (int16_t)esp_reset_reason();
         log_post(&boot_evt);
+    }
+
+    /* Unit-id event (gh#17, since 1.18.3) — emitted once per boot, immediately
+     * after the boot-reason row so the operator sees both rows in the same
+     * second-resolution timestamp on the SD log. value_b carries the 16-bit ID
+     * cast through int16_t: top bit of mac[4] aliases as a negative number,
+     * which the parser reinterprets via (uint16_t) before rendering %04X. */
+    {
+        log_event_t id_evt = {};
+        id_evt.timestamp  = s_cfg.current_unix_ts;
+        id_evt.event_type = (uint8_t)LOG_SYSTEM;
+        id_evt.initiator  = (uint8_t)LOG_BY_SYSTEM;
+        id_evt.channel    = 0u;
+        id_evt.param_id   = (uint8_t)LOG_PARAM_NONE;
+        id_evt.value_a    = (int16_t)11;
+        id_evt.value_b    = (int16_t)system_unit_id_u16();
+        log_post(&id_evt);
     }
 
     /* ----------------------------------------------------------------

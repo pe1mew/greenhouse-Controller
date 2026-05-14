@@ -14,6 +14,7 @@
 
 #include "status_json.h"
 #include "status_post.h"   /* status_post_backoff_active() — gh#18 Phase 1 */
+#include "../system_id/system_id.h"  /* unit_id (gh#17, since 1.18.3) */
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -204,14 +205,23 @@ size_t build_canonical_status_json(char *buf, size_t cap,
      * ts_unix / time_iso / eg1 / uptime_s / asset_version are local-UI
      * extras. asset_version comes from /manifest.json on the active LFS;
      * compared with fw_ver in the local UI to detect a stale-LFS-after-OTA
-     * mismatch. */
+     * mismatch.
+     *
+     * `unit_id` (since 1.18.3, gh#17) is the 4-hex-char short ID derived
+     * from the last 2 MAC bytes — matches the AP-SSID `Greenhouse-XXXX`
+     * convention so operators identify units consistently across the SSID,
+     * the LCD/log boot row, and the dashboard. */
     if (ok && (expose_mask & STATUS_EXPOSE_SYSTEM)) {
+        char unit_id_str[8] = {0};
+        system_unit_id_str(unit_id_str, sizeof(unit_id_str));
         ok = ok && append(buf, cap, &pos,
-            ",\"system\":{\"wifi_ip\":\"%s\",\"wifi_rssi_dbm\":%d,"
+            ",\"system\":{\"unit_id\":\"%s\","
+            "\"wifi_ip\":\"%s\",\"wifi_rssi_dbm\":%d,"
             "\"ntp_synced\":%s,\"fw_ver\":\"%s\","
             "\"asset_version\":\"%s\","
             "\"uptime_s\":%lu,\"ts_unix\":%lu,"
             "\"time_iso\":\"%s\",\"eg1\":%lu}",
+            unit_id_str,
             s->ip, (int)s->rssi,
             s->ntp_synced ? "true" : "false",
             s->fw, s->assets,

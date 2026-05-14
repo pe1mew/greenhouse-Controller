@@ -62,6 +62,7 @@
 #include "event_logger.h"
 #include "../types/app_types.h"
 #include "../data_manager/data_manager.h"
+#include "../system_id/system_id.h"   /* unit_id in SD preamble (gh#17) */
 
 #include "nvs_config.h"
 #include "sd_storage.h"
@@ -453,6 +454,32 @@ static void rotate_sd_file(void)
         s_sd_ok = false;
         return;
     }
+
+    /* Unit-id preamble row (gh#17, since 1.18.3). Every new SD log file
+     * starts with a self-identifying LOG_SYSTEM value_a=11 row so a
+     * downloaded CSV is always traceable to the unit that produced it,
+     * regardless of how many files later get downloaded out-of-order.
+     * Cost: ~50 bytes per rotation. The format matches build_csv_line()
+     * exactly so the row is indistinguishable from one that came through
+     * Q3 — operators / parsers see no difference.
+     *
+     * Written directly (not via Q3 + log_post) because we want it to land
+     * synchronously after the header, before any "real" rotation event
+     * (e.g. the force-rotate marker T14 emits) reaches T9's drain. */
+    log_event_t id_evt = {};
+    id_evt.timestamp  = (uint32_t)time(NULL);
+    id_evt.event_type = (uint8_t)LOG_SYSTEM;
+    id_evt.initiator  = (uint8_t)LOG_BY_SYSTEM;
+    id_evt.channel    = 0u;
+    id_evt.param_id   = (uint8_t)LOG_PARAM_NONE;
+    id_evt.value_a    = (int16_t)11;
+    id_evt.value_b    = (int16_t)system_unit_id_u16();
+    char id_line[80];
+    build_csv_line(&id_evt, id_line, sizeof(id_line));
+    (void)storage_sd_write_append(s_cur_filename, id_line);
+    /* If the unit-id append fails, swallow it — the file is still usable
+     * for normal CSV writes. The boot-time LOG_SYSTEM value_a=11 in T4
+     * provides a fallback identification path. */
 
     /* Enforce SD_MAX_FILES ceiling. */
     char list[512];

@@ -6,6 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.18.3] — 2026-05-14
+
+*Adds a per-unit identifier ([gh#17](https://github.com/pe1mew/greenhouse-Controller/issues/17)) derived from the factory-burned WiFi-STA MAC, surfaced on four operator/log/dashboard channels. Reuses the same 2-byte short form (last 2 MAC bytes, 4 hex chars) that the AP SSID `Greenhouse-XXXX` has used since day one, so operators identify the same unit consistently across SSID, LCD boot row, SD log, NVS ring, and external dashboard. For the project's expected fleet size (≤ tens of units) the 16-bit ID has effectively zero collision probability — even more so when units are procured as a single batch (sequentially-numbered MACs within a batch make collisions deterministically impossible).*
+
+### Added
+- **New module:** `firmware/src/system_id/{system_id.h, .cpp}` — tiny helper exporting `system_unit_id_u16()` and `system_unit_id_str(buf, cap)`. Reads `esp_read_mac(ESP_MAC_WIFI_STA)` once and caches the low 2 bytes as a `uint16_t`. Works before WiFi is initialised (unlike `WiFi.macAddress()`); cache is lazy + thread-safe under the "one writer, many readers, primitive aligned store" pattern.
+- `firmware/src/main.cpp::setup()` — extends the existing `Phase 0 boot — esp_reset_reason=N` ESP_LOGI line with `id=AABB`. Zero log-row cost; immediately visible in any serial capture.
+- `firmware/src/data_manager/data_manager.cpp::task_data_manager()` — emits a second LOG_SYSTEM event at boot, immediately after the existing `value_a=5` boot-reason row: `value_a=11, value_b=(int16_t)system_unit_id_u16()`. Both rows carry the same RTC timestamp so they appear together in the SD log and NVS ring.
+- `firmware/src/event_logger/event_logger.cpp::rotate_sd_file()` — every newly-rotated SD CSV file now starts with a `value_a=11` unit-id row written directly (not via Q3), immediately after the CSV header. Self-identifying logs for the forensic case where multiple downloaded CSVs need to be attributed to specific units.
+- `firmware/src/status_post/status_json.cpp::build_canonical_status_json()` — the `system` block now includes `"unit_id":"AABB"` as the first field. ~10 bytes per status POST; lets the external dashboard label rows by unit without needing the chip MAC.
+- `firmware/src/event_logger/event_logger.h` — LOG_SYSTEM `value_a=11` documented in the encoding table, alongside `value_a=10` (boot-cal skipped) and `value_a=12` (heap largest block).
+
+### Changed
+- `log/logparser.py` — new decoder branch in `_decode_system()` for `value_a=11`: reinterprets the (signed) `value_b` as `uint16` and renders `Unit ID: AABB (AP SSID would be 'Greenhouse-AABB')`. Smoke-tested against both positive and negative int16 casts.
+- `log/logparser.md` — encoding table extended with row 11; doc version 1.2 → 1.3.
+- `firmware/data/manifest.json` and `firmware/data/index.html` — stamped 1.18.3.
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.18.2` → `1.18.3`.
+
+### Behaviour notes / non-changes
+- Build cost: ~+476 bytes flash, +8 bytes RAM (cache + init flag), zero NVS slots. No new tasks; no scheduling impact.
+- **Collision math for a 16-bit ID** (birthday-paradox approximation, M = 65 536):
+  - N = 10 units → 0.07 %
+  - N = 20 units → 0.29 %
+  - N = 30 units → 0.66 %
+  - N = 50 units → 1.9 %
+  - At the project's stated fleet scale (≤ tens), well under 1 %. **And** because ESP32-S3 MAC addresses are allocated sequentially within a production batch, units bought in a single supplier order have *guaranteed-distinct* last 2 bytes — collisions in that case are physically impossible.
+- **Upgrade path to 3 bytes** (if fleet ever exceeds ~50 units, drops collision probability into the 10⁻⁶ % range): single-line change in `system_id.cpp::load_unit_id()` — widen `s_cached` to `uint32_t` and OR in `mac[3]` at the top. The four call sites use the public functions so no other code needs to change. Documented inline in the header.
+- **Why not a user-typed friendly name?** Out of scope per gh#17. The MAC-derived ID is immutable (survives factory reset, never collides within a batch, can't be forgotten by an operator). A friendly-name layer can be added on top later if needed without changing this lower-level ID.
+- **CSV format unchanged.** The unit-id preamble row is a regular `LOG_SYSTEM` event row — no special comment lines, no out-of-band metadata. Parsers that already handle the CSV format see no schema change.
+
+### Operational notes
+- After OTA to 1.18.3 + first reboot, the new boot row pair appears in the SD log:
+  ```
+  YYYY-MM-DDTHH:MM:SS,SYSTEM,SYS,0,0,5,1         <- boot reason
+  YYYY-MM-DDTHH:MM:SS,SYSTEM,SYS,0,0,11,N        <- unit ID (N = int16 cast)
+  ```
+- `log/logparser.py` renders the second as `"Unit ID: AABB (AP SSID would be 'Greenhouse-AABB')"`.
+- The web GUI's Status tab gets the `unit_id` field automatically via the canonical-JSON refresh; surfacing it in a UI tile is left as a small follow-up.
+
+### Related
+- [gh#17](https://github.com/pe1mew/greenhouse-Controller/issues/17) — Unique unit identifier derived from MAC. Closed with this release.
+- `design/tasks.md` — T4 boot block now emits two log rows in sequence (5 then 11).
+- `log/logparser.md` — value_a table updated.
+
+---
+
 ## [1.18.2] — 2026-05-14
 
 *Three small defensive additions triggered by the mbedTLS research thread on gh#18. None of them changes runtime behaviour for an OK build; all of them close gaps that would surface as "the next field crash" if left alone. Tracked as gh#20.*

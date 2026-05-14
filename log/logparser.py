@@ -365,6 +365,7 @@ def _decode_system(row: dict) -> str:
       a=8,  b=KB                      HEAP PSRAM free (since 1.17.29)
       a=9,  b=0                       HEAP corruption (since 1.17.29)
       a=10, b=0                       T2 boot-calibration skipped (since 1.17.36)
+      a=11, b=uid16 (int16-cast)      Unit ID (since 1.18.3) — low 16 bits of WiFi-STA MAC
       a=12, b=KB                      HEAP internal largest contiguous (since 1.18.2)
 
     The legacy "a=0 b=0 initiator=SYS = boot marker" form was retired in
@@ -455,6 +456,16 @@ def _decode_system(row: dict) -> str:
         if va == 10:
             return ("T2 boot calibration skipped — NVS-recovered window state "
                     "(all three channels CLOSED)")
+
+        # ---------------------------------------------------------------
+        # value_a=11 — Unit ID, low 16 bits of WiFi-STA MAC (since 1.18.3, gh#17).
+        # value_b is int16 in the CSV; reinterpret as uint16 and render as
+        # 4-char uppercase hex — matches the AP-SSID convention
+        # "Greenhouse-XXXX" so the same 4 chars identify a unit everywhere.
+        # ---------------------------------------------------------------
+        if va == 11:
+            uid = vb & 0xFFFF
+            return f"Unit ID: {uid:04X} (AP SSID would be 'Greenhouse-{uid:04X}')"
 
         # ---------------------------------------------------------------
         # value_a=12 — largest contiguous internal-heap block (since 1.18.2)

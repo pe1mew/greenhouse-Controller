@@ -90,7 +90,7 @@ De controller leest **elke poll-cyclus** (default 30 sec.) de sensoren uit via M
 - hysteresis en glijdend gemiddelde tegen oscillaties
 - Drie-traps ventilatie-strategie (M1 → M1+M2 → M1+M2+M3)
 - Veiligheidsmechanismen: wind-override (sterke wind), motor-alarm, sensor-fault detectie (problemen met het uitlezen van de sensors)
-- Automatische CLOSE_ALL kalibratie bij opstart en na motor-alarm
+- Automatische CLOSE_ALL kalibratie bij opstart wanneer ten minste één raam niet als CLOSED in NVS staat (sinds 1.17.36 wordt de kalibratie overgeslagen als alle drie ramen al dicht waren), en na motor-alarm-clearance
 - Permanente opslag in het geheugen (Non Volatile Memory - NVS) van alle setpoints en configuratie instellingen
 - Logging van de activiteiten op de kascontroller in het geheugen en op SD-kaart
 
@@ -1197,29 +1197,43 @@ Zie [boer-handleiding §14](handleiding.md#14-onderhoud--wat-de-boer-zelf-doet).
 
 *Figuur #: microprocessorboard met RESET-knop*
 
-#### Power-cycle leidt altijd tot een nieuwe Window Cal.
+#### Window Cal bij opstart — wanneer wel, wanneer niet
 
-Bij **élke** power-cycle (of een druk op de RESET-knop) doorloopt de controller automatisch een **CLOSE_ALL kalibratie**: hij stuurt alle drie de motoren tegelijkertijd naar volledig dicht en wacht tot de travel-times verstreken zijn. Pas na afloop van die kalibratie weet de controller met zekerheid in welke positie de ramen zich bevinden. Tijdens de procedure staat `Mode:Window Cal.` op het LCD.
+Bij élke opstart van de controller (power-cycle, druk op RESET-knop, geplande herstart door T15-supervisor, OTA-update, fabrieksreset, watchdog-reset, panic-reset) loopt de controller een vaste boot-procedure door die kan resulteren in **één van drie uitkomsten**:
 
-**Waarom is dit belangrijk om te onthouden?**
+| Voorwaarde bij opstart | Resultaat | LCD-modus | Hersteltijd |
+|---|---|---|---|
+| Motor-alarm signaal asserted op GPIO42 (RRK-3 LOW) | Geen kalibratie; controller gaat direct naar alarm-staat | `Mode: ALARM` | direct |
+| **Geen alarm én alle drie NVS-persistente raamposities zijn `CLOSED`** | **Kalibratie overgeslagen** (sinds firmware 1.17.36) | `Mode: AUTO` | **~2 sec** |
+| Geen alarm én ten minste één NVS-positie is `OPEN` of `UNKNOWN` | Volledige CLOSE_ALL kalibratie | `Mode:Window Cal.` | **~3 min** (~176 sec M3) |
 
-- De controller heeft **geen positie-feedback** van de motoren — hij volgt de raamposities intern bij op basis van de open/sluit-commando's die hij zelf heeft verstuurd. Tijdens een stroomuitval, een handmatige beweging op de RRK-3, of een motor-alarm gaat die interne aanname verloren of klopt niet meer met de werkelijkheid
-- De CLOSE_ALL kalibratie is de **enige manier** om die interne aanname weer in lijn te brengen met de fysieke werkelijkheid
-- **Duur van de kalibratie**: ~26 sec. voor M1 en M2 (gelijktijdig), ~176 sec. voor M3 — totaal dus ongeveer **3 minuten** voordat `Mode: AUTO` weer verschijnt
-- **Kalibratie wordt alleen overgeslagen** als bij opstart al een motor-alarm actief is op GPIO42 (RRK-3 alarm-uitgang LOW). Mode toont dan direct `Mode: ALARM`. Eerst de RRK-3 resetten, daarna nogmaals power-cyclen om de kalibratie alsnog uit te voeren
+**De skip-conditie hangt uitsluitend af van de raamposities op het moment dat de vorige firmware-sessie eindigde** — niet van het type opstart. Concrete consequenties:
 
-**Wanneer is een geforceerde power-cycle nodig?**
+- **Power-cycle 's nachts met alle ramen dicht** → skip (~2 sec). Identiek aan een geplande reboot of een OTA-update die op datzelfde moment plaatsvindt.
+- **Power-cycle midden op een warme dag** met M3 of M2 open → volledige kalibratie (~3 min). Identiek aan een geplande reboot of OTA op datzelfde moment.
+- **Fabrieksreset (BOOT-knop)** → NVS leeg → alle drie posities default `UNKNOWN` → altijd volledige kalibratie.
 
-| Situatie | Waarom power-cycle? |
+**Hoe weet de controller dit?** Sinds firmware 1.17.36 schrijft T2 bij elke transitie naar een eind-positie (CLOSED of OPEN) de raampositie weg naar NVS (`t2_st_ch0`, `t2_st_ch1`, `t2_st_ch2` in namespace `motor`). Vóór het energiseren van een relais wordt eerst `UNKNOWN` weggeschreven, zodat een stroomuitval midden in een beweging correct als "onbekend → kalibreren" wordt hersteld. Bij het overslaan van de boot-kalibratie wordt een diagnostische regel `LOG_SYSTEM, value_a=10` in het logbestand geschreven. Zie [§12.7 Bulkhead-beleid](#127-bulkhead-beleid--netwerk-isolatie-van-klimaatregeling-sinds-1180) voor het volledige design.
+
+**Waarom matters this?**
+
+- De controller heeft **geen positie-feedback** van de motoren — hij volgt de raamposities intern bij op basis van de open/sluit-commando's die hij zelf heeft verstuurd. Tijdens een stroomuitval, een handmatige beweging op de RRK-3, of een motor-alarm gaat die interne aanname verloren of klopt niet meer met de werkelijkheid.
+- De CLOSE_ALL kalibratie is de **enige manier** om die interne aanname weer in lijn te brengen met de fysieke werkelijkheid wanneer dat verloren is gegaan.
+- **Duur van de kalibratie**: ~26 sec. voor M1 en M2 (gelijktijdig), ~176 sec. voor M3 — totaal dus ongeveer **3 minuten** voordat `Mode: AUTO` weer verschijnt.
+- **Een handmatige beweging op de RRK-3 wordt door de kascontroller niet gedetecteerd** (alleen het motor-alarm wordt gemeld via GPIO42). De controller blijft de raamposities bijhouden zoals hij die zelf gestuurd had en zal die nog naar NVS persisteren. Een power-cycle na handmatige overname kan dus de "skip"-conditie raken terwijl de fysieke ramen niet werkelijk dicht zijn. Volg daarom altijd de procedure in [§15 *Handmatige overname via de motorbox*](#15-handmatige-overname-via-de-motorbox).
+
+**Wanneer is een geforceerde power-cycle plus kalibratie nodig?**
+
+| Situatie | Actie |
 |---|---|
-| Na handmatige overname op de motorbox | Controller-aanname klopt niet meer met de werkelijke raamposities |
-| Na onderhoud aan een raam-motor of bedrading | Idem |
-| Na herstel van een stroomuitval | Bij twijfel of de kalibratie correct doorliep |
-| Bij wijziging van motor-travel-times in de webinterface | Niet strikt vereist (waardes worden direct toegepast op de volgende beweging), maar een kalibratie verifieert de nieuwe waardes meteen |
-| Na firmware-update (OTA) | De controller herstart automatisch en doorloopt CLOSE_ALL — geen extra power-cycle nodig |
-| Bij motor-alarm-clearance | Niet vereist — de controller doet automatisch een 60-seconden guard + CLOSE_ALL re-kalibratie zodra het alarm wegvalt (zie [boer-handleiding §12.6](handleiding.md#126-motor-alarm-in-detail)) |
+| Na handmatige overname op de motorbox | Voer power-cycle uit **terwijl ten minste één raam fysiek open staat** (bv. M3) — de NVS-positie klopt dan niet met `all closed` en de kalibratie loopt. Of: gebruik een fabrieksreset om NVS leeg te maken (overweging: alle setpoints gaan dan ook verloren). |
+| Na onderhoud aan een raam-motor of bedrading | Zelfde benadering — open één raam handmatig vóór het opstarten zodat de skip-conditie niet trip. |
+| Na herstel van een stroomuitval | Geen actie nodig; de controller doet automatisch het juiste op basis van de NVS-staat. |
+| Bij wijziging van motor-travel-times in de webinterface | Niet strikt vereist (nieuwe waardes worden direct toegepast op de volgende beweging). Voor verificatie: forceer een kalibratie door één raam handmatig te openen vóór een power-cycle. |
+| Na firmware-update (OTA) | Geen actie nodig. De controller herstart automatisch en evalueert de skip-conditie. |
+| Bij motor-alarm-clearance | Niet vereist — de controller doet automatisch een 60-seconden guard + CLOSE_ALL re-kalibratie zodra het alarm wegvalt (zie [boer-handleiding §12.6](handleiding.md#126-motor-alarm-in-detail)). |
 
-> **Praktische tip**: plan een power-cycle altijd op een rustig moment (bv. avond, niet midden in een hete dag). Tijdens de ~3 minuten kalibratie staan alle ramen dicht en is de klimaatregeling tijdelijk inactief.
+> **Praktische tip**: plan een power-cycle die een kalibratie *moet* uitvoeren op een rustig moment (bv. avond). Tijdens de ~3 minuten kalibratie staan alle ramen dicht en is de klimaatregeling tijdelijk inactief. Een power-cycle waarbij de skip-conditie zal opgaan (alle ramen al dicht) is daarentegen elke moment veilig — hersteltijd ~2 sec.
 
 ---
 
@@ -1236,7 +1250,7 @@ Voor algemene uitleg en consequenties: zie [boer-handleiding §15](handleiding.m
 3. **Indien werkzaamheden aan motor zelf** (bedrading, vervangen): zet bovendien de motor-zekering in de RRK-3 uit, of haal de stekker eruit
 4. Voer onderhoud uit
 5. Na onderhoud: **eerst zekering / stekker terug**, dan **schakelaars terug op automatisch**
-6. **Power-cycle de kascontroller** (zie [§14](#14-onderhoud--wat-de-beheerder-doet)) om CLOSE_ALL kalibratie af te dwingen — alleen zo weet de controller weer met zekerheid waar de ramen staan
+6. **Power-cycle de kascontroller** (zie [§14](#14-onderhoud--wat-de-beheerder-doet)) **met ten minste één raam fysiek open** om de CLOSE_ALL kalibratie af te dwingen — alleen zo weet de controller weer met zekerheid waar de ramen staan. Power-cyclen terwijl alle drie de ramen dicht staan trip mogelijk de NVS-skip (sinds 1.17.36, zie [§17](#17-reset-procedure-boot-knop-op-microprocessorboard)) waardoor de kalibratie wordt overgeslagen en de controller-aanname ongetest blijft
 
 > Zie [boer-handleiding §15 — De kascontroller weet niet dat hij is uitgeschakeld](handleiding.md#de-kascontroller-weet-niet-dat-hij-is-uitgeschakeld) voor de gevolgen van handmatige stand zonder power-cycle achteraf.
 
@@ -1627,7 +1641,7 @@ De **complete uitleg** — met daarin alle velden, alle event-types, alle parame
 | 1.7 | 2026-05-12 | Structurele herordening van §10 en §11 (geen firmware-wijziging — nog steeds 1.17.25). Vier nieuwe sub-hoofdstukken toegevoegd aan §10 "Klimaat instellen" die de overige webinterface-tabs één-op-één beschrijven: **§10.5 System-tab** (WiFi AP, WiFi client, NTP en tijdzone, geografische locatie, sessie-timeout, OTA-verwijzing) waarin alle voormalige sub-paragrafen van §11.2–§11.9 zijn samengebracht; **§10.6 Access-tab** (PIN-beheer voor Boer en Beheerder, met kruisverwijzing naar §9); **§10.7 Log-tab** (SD-kaart mount/unmount, eisen, automatisch mounten, kruisverwijzing naar Bijlage F voor het CSV-formaat); **§10.8 Web-tab** (status-rapportage naar extern dashboard, voorheen §11.10). §11 is dientengevolge afgeslankt tot uitsluitend de **eenmalige eerste-installatie-procedure** van een WiFi-verbinding (na fabrieksreset of nieuwe installatie); hoofdstuktitel hernoemd naar "Eerste-installatie WiFi-verbinding". De inhoudsopgave en interne kruisverwijzingen zijn dienovereenkomstig bijgewerkt. |
 | 1.8 | 2026-05-12 | Kleine revisies (geen firmware-wijziging — nog steeds 1.17.25). Elke PDF-pagina krijgt nu een **kop- en voettekst**: koptekst toont links *Kas Controller - Herenboeren Wenumseveld* en rechts het versienummer; voettekst toont links *Een RFSee product - http://www.rfsee.nl* en rechts *pagina N*. Alle figuren in de handleiding zijn voorzien van een **doorlopend volgnummer** ("Figuur 1: …", "Figuur 2: …" enz.). |
 | 1.9 | 2026-05-12 | Bijgewerkt voor firmware 1.17.26. Cosmetische correctie op **LCD Scherm 2 (Wind)**: tabel-rij in §6 *LCD-statusschermen* toont nu `Dir: 180 ° (S )` met één spatie tussen de dubbele punt en het cijfer, in lijn met `Wind:`, `Mode:` en `Sess:` en met de ongeldige-meting-rij (`Dir: ---`). GitHub-issue [#6](https://github.com/pe1mew/greenhouse-Controller/issues/6). Tevens firmware-referentie op LCD-pagina 7 (`FW: 1.17.26`) in dezelfde tabel bijgewerkt. |
-| 1.10 | 2026-05-14 | Bijgewerkt voor firmware 1.17.27–1.18.2. **Nieuwe §12.7 *Bulkhead-beleid*** toegevoegd: complete documentatie van de vier-fasen architectuurmaatregel ([gh#18](https://github.com/pe1mew/greenhouse-Controller/issues/18)) die garandeert dat secundaire-netwerk-activiteit (status-POST + log-upload) nooit kan leiden tot uitval van de primaire klimaatregeling. Behandelt de `BK`-indicator op LCD-scherm 4 (rij 1 rechts), het `net_backoff_active`-veld in de status-JSON (rendert als gele "Net backoff"-badge op de Status-tab → Alarms-tegel), de persistent circuit breaker met escalatie 60s→5min→30min→1h, de T15-supervisortaak met geplande reboot, NVS-persistente raamposities (boot-kalibratie wordt overgeslagen als alle drie ramen al CLOSED waren — bespaart ~171 sec hersteltijd), en de bijhorende NVS-sleutels en LOG_SYSTEM-event-codes. Tevens **nieuwe `value_a`-codes** (5–10, 12) gedocumenteerd in §12.7 en in Bijlage F (logparser-script bijgewerkt). LCD-statusschermen tabel uitgebreid met de `BK`-variant van Wifi-scherm 4. Achtergrond: één geconstateerde regressie in 1.18.0 (T15 starveerde de task-watchdog door 30 sec sleep tussen WDT-kicks; OTA-rollback redde de unit; 1.18.1 corrigeert die bug; 1.18.2 voegt platform-versiepinning, heap-fragmentatie-instrumentatie en een TLS-audit-document toe). Zie ook `design/tls_leak_audit.md` voor de TLS-stack-audit. Geen wijzigingen aan de boer-interface (LCD-menu's, webinterface-tabs voor de boer) buiten de `BK`-indicator. |
+| 1.10 | 2026-05-14 | Bijgewerkt voor firmware 1.17.27–1.18.2. **Nieuwe §12.7 *Bulkhead-beleid*** toegevoegd: complete documentatie van de vier-fasen architectuurmaatregel ([gh#18](https://github.com/pe1mew/greenhouse-Controller/issues/18)) die garandeert dat secundaire-netwerk-activiteit (status-POST + log-upload) nooit kan leiden tot uitval van de primaire klimaatregeling. Behandelt de `BK`-indicator op LCD-scherm 4 (rij 1 rechts), het `net_backoff_active`-veld in de status-JSON (rendert als gele "Net backoff"-badge op de Status-tab → Alarms-tegel), de persistent circuit breaker met escalatie 60s→5min→30min→1h, de T15-supervisortaak met geplande reboot, NVS-persistente raamposities (boot-kalibratie wordt overgeslagen als alle drie ramen al CLOSED waren — bespaart ~171 sec hersteltijd), en de bijhorende NVS-sleutels en LOG_SYSTEM-event-codes. Tevens **nieuwe `value_a`-codes** (5–10, 12) gedocumenteerd in §12.7 en in Bijlage F (logparser-script bijgewerkt). LCD-statusschermen tabel uitgebreid met de `BK`-variant van Wifi-scherm 4. **§17 *Power-cycle / RESET* volledig herschreven** om de nieuwe boot-kalibratie-skip-logica eenduidig te beschrijven en de pre-1.17.36 claim "élke power-cycle doorloopt CLOSE_ALL" te corrigeren. Drie boot-uitkomsten (alarm / NVS-skip / volledige kalibratie) in tabel-vorm. Expliciete vermelding dat het type opstart (power-cycle, RESET-knop, OTA-update, geplande T15-reboot, fabrieksreset) **niet** de skip-conditie bepaalt — uitsluitend de NVS-staat van de raamposities op het moment van uitschakeling. Handmatige-overname-advies aangepast: na terugkeer naar AUTO bewust een raam fysiek open zetten vóór de power-cycle om de skip te vermijden. Achtergrond: één geconstateerde regressie in 1.18.0 (T15 starveerde de task-watchdog door 30 sec sleep tussen WDT-kicks; OTA-rollback redde de unit; 1.18.1 corrigeert die bug; 1.18.2 voegt platform-versiepinning, heap-fragmentatie-instrumentatie en een TLS-audit-document toe). Zie ook `design/tls_leak_audit.md` voor de TLS-stack-audit. Geen wijzigingen aan de boer-interface (LCD-menu's, webinterface-tabs voor de boer) buiten de `BK`-indicator. |
 
 ---
 

@@ -119,6 +119,7 @@
  *   8     | HEAP PSRAM free    (since 1.17.29) | KB free in MALLOC_CAP_SPIRAM   | T1 every 60 s
  *   9     | HEAP corruption    (since 1.17.29) | 0 = unused                       | T1 (heap_caps_check_integrity_all failure)
  *  10     | T2 boot-cal skipped (since 1.17.36) | 0 = unused                       | T2 (NVS recovered all 3 channels CLOSED → gh#18 Phase 3)
+ *  11     | Unit ID           (since 1.18.3) | low 16 bits of MAC (top byte = mac[4]) cast to int16  | T4 once at boot + T9 on every SD rotation (gh#17)
  *  12     | HEAP largest block  (since 1.18.2) | KB in MALLOC_CAP_INTERNAL largest contiguous | T1 every 60 s (gh#20)
  *  -1     | Q3 drop-overflow    | dropped count                        | T9 (synthetic)
  *

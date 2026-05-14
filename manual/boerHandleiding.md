@@ -831,7 +831,7 @@ Dit hoofdstuk legt uit wat de mode-regel op het LCD betekent en wat je in elke s
 
 ### 12.4 Tijdens kalibratie
 
-Bij iedere opstart, na een power-cycle, of nadat het alarm van de motorcontroller is afgevallen, voert de controller automatisch een **CLOSE_ALL kalibratie** uit: alle drie de ramen worden gelijktijdig gesloten zodat de kascontroller weet wat de uitgangspositie is.
+Na een opstart kan de controller een **CLOSE_ALL kalibratie** uitvoeren: alle drie de ramen worden gelijktijdig gesloten zodat de kascontroller weet wat de uitgangspositie is. Tijdens deze procedure staat de mode op `Mode:Window Cal.` Daarna gaat de controller automatisch naar `Mode: AUTO`.
 
 | Raam | Tijd om dicht te zijn |
 |---|---|
@@ -839,9 +839,20 @@ Bij iedere opstart, na een power-cycle, of nadat het alarm van de motorcontrolle
 | M2 (dak noord) | ~26 sec. |
 | M3 (zijwand noord) | ~176 sec. (≈ 3 min.) |
 
-Tijdens deze ~3 minuten staat de mode op `Mode:Window Cal.`. Daarna gaat de controller automatisch naar `Mode: AUTO`.
+**Wanneer wordt de kalibratie wél uitgevoerd?**
 
-> **Als bij het opstarten al een motor-alarm actief was**, slaat de controller de kalibratie over en gaat hij direct naar `Mode: ALARM`. In dat geval: bel de beheerder.
+- Bij élke opstart waarin de ramen vóór de uitschakeling **niet allemaal dicht** waren (bv. M3 stond open op het moment van stroomuitval, OTA-update of een geplande herstart van de controller).
+- Na een **motor-alarm-clearance** (60 sec. wachttijd + ~3 min kalibratie — zie §12.6).
+- Na een **fabrieksreset** (BOOT-knop): omdat het permanente geheugen leeg is, geldt de raampositie als "onbekend" en wordt altijd gekalibreerd.
+
+**Wanneer wordt de kalibratie overgeslagen?** (sinds firmware 1.17.36)
+
+- Als bij de uitschakeling **alle drie de ramen volledig dicht stonden** én de motor-controller geen alarm meldt, slaat de controller de kalibratie over. Hersteltijd dan: ~2 sec. in plaats van ~3 min. Op het LCD verschijnt niet `Mode:Window Cal.` maar direct `Mode: AUTO`. In het logbestand staat dan een regel "T2 boot calibration skipped".
+- Als bij de opstart al een motor-alarm actief is op de motorbox, slaat de controller de kalibratie eveneens over en gaat hij direct naar `Mode: ALARM`. In dat geval: bel de beheerder.
+
+**Wat betekent dit in de praktijk?**
+
+Of een opstart wel of geen kalibratie krijgt hangt **niet** af van wat de oorzaak van de opstart was (power-cycle, OTA-update, fabrieksreset, etc.), maar uitsluitend van **de raamposities op het moment van uitschakeling**. Een power-cycle 's avonds met alle ramen dicht slaat de kalibratie over; een power-cycle midden op de dag terwijl M3 open staat voert de volledige kalibratie uit.
 
 ### 12.5 Windbeveiliging in detail
 
@@ -969,16 +980,14 @@ Vuistregel:
 
 Na elke power-cycle (stroomuitval, beheerder heeft de stekker eruit getrokken, of een power-cycle door jezelf uitgevoerd) doorloopt de controller automatisch dezelfde startsequentie:
 
-1. **Voeding terug** — de LCD licht op binnen enkele seconden; de heartbeat-LED begint 1× per seconde te knipperen
-2. **Mode-regel toont** `Mode:Window Cal.` — kalibratie van de ramen begint automatisch
-3. **Alle ramen sluiten gelijktijdig**:
-   - M1 en M2 (dak): na ~26 sec. dicht
-   - M3 (zijwand): na ~176 sec. dicht
-   - Totaal: ongeveer 3 minuten
-4. **Niet ingrijpen tijdens deze fase**: niet handmatig aan ramen werken, niet inloggen, niet rebooten
-5. **Na kalibratie** schakelt de controller naar `Mode: AUTO` — RGB-LED wordt groen — de klimaatregeling is weer actief
-6. **Controleer**: zijn de eerder ingestelde setpoints nog correct? (Setpoints worden in het permanente geheugen bewaard en zouden dus nog moeten staan.)
-7. **Bij opstart met motor-alarm actief**: de kalibratie wordt overgeslagen, mode toont `Mode: ALARM`, RGB-LED gaat rood. Bel in dat geval de beheerder.
+1. **Voeding terug** — de LCD licht op binnen enkele seconden; de heartbeat-LED begint 1× per seconde te knipperen.
+2. **Controleer-de-raamposities**: de controller leest uit zijn permanente geheugen wat de laatst bekende posities waren (zie [§12.4](#124-tijdens-kalibratie)).
+   - **Stonden alle drie ramen volledig dicht?** → kalibratie wordt **overgeslagen**, mode springt binnen ~2 sec. op `Mode: AUTO`.
+   - **Stond ten minste één raam open of onbekend?** → mode toont `Mode:Window Cal.` en kalibratie loopt (~3 minuten).
+3. **Tijdens kalibratie**: alle drie de ramen sluiten gelijktijdig (M1/M2 ~26 sec., M3 ~176 sec.). Niet ingrijpen, niet handmatig aan ramen werken, niet inloggen, niet rebooten.
+4. **Na kalibratie (of direct als die werd overgeslagen)** schakelt de controller naar `Mode: AUTO` — RGB-LED wordt groen — de klimaatregeling is weer actief.
+5. **Controleer**: zijn de eerder ingestelde setpoints nog correct? (Setpoints worden in het permanente geheugen bewaard en zouden dus nog moeten staan.)
+6. **Bij opstart met motor-alarm actief**: zowel kalibratie als skip worden overgeslagen, mode toont direct `Mode: ALARM`, RGB-LED gaat rood. Bel in dat geval de beheerder.
 
 > **Tip**: noteer de tijd waarop de stroom uitviel en hoe lang de uitval duurde. Dit kan voor de beheerder waardevol zijn bij het opsporen van een onderliggend probleem.
 
@@ -1081,7 +1090,7 @@ De kascontroller heeft **geen enkele terugmelding** uit de RRK-3 over de stand v
 - **Vertrouw niet blind op het LCD of de webinterface** zolang de schakelaars handmatig staan. Wat je ziet kan afwijken van de werkelijke raamposities
 - **Een motorbox-schakelaar die "tijdelijk" handmatig staat is gevaarlijk** — de controller waarschuwt je niet als je dat vergeet. Maak er een vaste gewoonte van om bij elke schakelaarwissel beide standen te noteren of een collega te attenderen
 - **Bij terugschakelen naar automatisch** denkt de controller dat de ramen al staan zoals hij dat had bedacht. Klopt dat niet met de werkelijkheid (bijvoorbeeld: M3 staat fysiek open, maar de controller "weet" van een eerder zelf gestuurd CLOSE_ALL dat M3 dicht is), dan kan de eerstvolgende klimaat- of wind-actie tot een **onverwachte raambeweging** leiden
-- **Doe daarom altijd een power-cycle** bij het terugschakelen (zie [§14](#14-onderhoud--wat-de-boer-zelf-doet)). Pas dan voert de controller een verse CLOSE_ALL kalibratie uit en weet hij weer met zekerheid waar de ramen staan
+- **Doe daarom altijd een power-cycle** bij het terugschakelen (zie [§14](#14-onderhoud--wat-de-boer-zelf-doet)) **én zorg ervoor dat ten minste één raam fysiek open staat op het moment van de power-cycle**. Sinds firmware 1.17.36 slaat de controller de kalibratie over als hij denkt dat alle drie de ramen al dicht zijn — wat bij handmatige overname zonder waarschuwing kan kloppen met zijn interne aanname maar niet met de fysiek zichtbare werkelijkheid. Door één raam handmatig open te zetten vóór de power-cycle dwing je de controller tot een volledige CLOSE_ALL kalibratie, waarna hij weer met zekerheid weet waar alle ramen staan
 
 > **Belangrijke gevolgtrekking**: zolang ook maar één schakelaar op de motorbox handmatig staat, is **alles wat je op het LCD en in de webinterface ziet over raamposities en bedrijfsmodus mogelijk niet representatief** voor de fysieke werkelijkheid. Vertrouw in die situatie op wat je met eigen ogen aan de ramen ziet, niet op het scherm.
 
@@ -1101,7 +1110,7 @@ Zet de schakelaars **pas terug op automatisch** als:
 Direct na het terugschakelen naar automatisch:
 
 - De kascontroller kan op elk moment commando's gaan sturen — bij verschil tussen actuele klimaat en setpoints kunnen ramen direct gaan bewegen
-- Bij twijfel over de raamposities: voer een **power-cycle** uit (zie [§14](#14-onderhoud--wat-de-boer-zelf-doet)). De controller doet dan automatisch een CLOSE_ALL kalibratie en weet daarna weer zeker waar de ramen staan
+- Bij twijfel over de raamposities: voer een **power-cycle** uit (zie [§14](#14-onderhoud--wat-de-boer-zelf-doet)) **terwijl ten minste één raam fysiek open staat**. De controller voert dan een volledige CLOSE_ALL kalibratie uit en weet daarna weer zeker waar de ramen staan. Power-cyclen terwijl alle drie de ramen dicht staan slaat de kalibratie over (~2 sec. herstart) — handig in normale situaties maar geen oplossing voor "ik weet niet of de controller-aanname klopt"
 
 > **Veiligheid**: vergeet **nooit** om na onderhoud de schakelaars terug op automatisch te zetten — anders staat de windbeveiliging effectief uit en kan een onverwachte windvlaag schade veroorzaken aan open ramen.
 
@@ -1323,7 +1332,7 @@ Voor alle vragen of problemen waar deze handleiding geen antwoord op geeft:
 | 1.3 | 2026-05-11 | Bijgewerkt voor firmware 1.17.0–1.17.25: zevende statusscherm toegevoegd met firmware-versie + Uptime; Datum/tijd-statusscherm (5) toont op rij 2 nu rechts een **Day**/**Night**-badge die automatisch omschakelt op zonsopkomst en zonsondergang; **D**-toets werkt vanuit elk menu, bladerscherm, PIN- of bewerk-scherm als directe terugkeer naar de roterende statusschermen; na 5 minuten zonder toetsendruk in een menu keert de controller automatisch terug naar de auto-rotatie; **Climate → 3 CR** volgt nu hetzelfde "eerst tonen, dan PIN, dan bewerken"-patroon als Day/Night (voorheen sprong dit menu direct naar PIN-invoer). Volledige handmatige taalcontrole.|
 | 1.4 | 2026-05-12 | Kleine revisies (geen firmware-wijziging — nog steeds 1.17.25). Elke PDF-pagina krijgt nu een **kop- en voettekst**: koptekst toont links *Kas Controller - Herenboeren Wenumseveld* en rechts het versienummer; voettekst toont links *Een RFSee product - http://www.rfsee.nl* en rechts *pagina N*. Alle figuren in de handleiding zijn voorzien van een **doorlopend volgnummer** ("Figuur 1: …", "Figuur 2: …" enz.). |
 | 1.5 | 2026-05-12 | Bijgewerkt voor firmware 1.17.26. Cosmetische correctie op **LCD Scherm 2 (Wind)**: rij 2 toont nu `Dir: 180 ° (S )` in plaats van `Dir:180 ° (S )` — er zit nu één spatie tussen de dubbele punt en het cijfer, in lijn met alle andere LCD-rijen (`Wind:`, `Mode:`, `Sess:`) en met de ongeldige-meting-rij (`Dir: ---`). GitHub-issue [#6](https://github.com/pe1mew/greenhouse-Controller/issues/6). |
-| 1.6 | 2026-05-14 | Bijgewerkt voor firmware 1.18.0–1.18.2. **Nieuwe `BK`-indicator op LCD Scherm 4 (Wifi)**: regel 1 toont rechts `BK` (afkorting van *backoff*) wanneer de online status-rapportage naar het externe webdashboard tijdelijk gepauzeerd is na herhaaldelijke verbindingsfouten. Het klimaatregelsysteem (RGB-LED, ramen, sensoren) blijft normaal werken; de boer hoeft niets te doen. De controller probeert de online verbinding daarna automatisch opnieuw met oplopende tussenpozen (60 sec → 5 min → 30 min → 1 uur). Zie §6 *Scherm 4 — Wifi-status* en §18 *Vertaaltabel — Wifi*. Achtergrond: deze indicator hoort bij een grotere intern-architectuurwijziging ("bulkhead policy", [gh#18](https://github.com/pe1mew/greenhouse-Controller/issues/18)) die garandeert dat problemen met de internet-verbinding **nooit** invloed hebben op de klimaat-aansturing — uitgebreid behandeld in de beheerder-handleiding. Geen LCD- of webinterface-wijzigingen die de dagelijkse bediening van de boer raken. |
+| 1.6 | 2026-05-14 | Bijgewerkt voor firmware 1.18.0–1.18.2. **Nieuwe `BK`-indicator op LCD Scherm 4 (Wifi)**: regel 1 toont rechts `BK` (afkorting van *backoff*) wanneer de online status-rapportage naar het externe webdashboard tijdelijk gepauzeerd is na herhaaldelijke verbindingsfouten. Het klimaatregelsysteem (RGB-LED, ramen, sensoren) blijft normaal werken; de boer hoeft niets te doen. De controller probeert de online verbinding daarna automatisch opnieuw met oplopende tussenpozen (60 sec → 5 min → 30 min → 1 uur). Zie §6 *Scherm 4 — Wifi-status* en §18 *Vertaaltabel — Wifi*. Achtergrond: deze indicator hoort bij een grotere intern-architectuurwijziging ("bulkhead policy", [gh#18](https://github.com/pe1mew/greenhouse-Controller/issues/18)) die garandeert dat problemen met de internet-verbinding **nooit** invloed hebben op de klimaat-aansturing — uitgebreid behandeld in de beheerder-handleiding. Tevens **§12.4 (Tijdens kalibratie) en §13 (Inschakelen na stroomuitval) herschreven** om de nieuwe boot-kalibratie-skip-logica te beschrijven die met firmware 1.17.36 werd geïntroduceerd: de CLOSE_ALL kalibratie wordt overgeslagen als alle drie de ramen bij de vorige uitschakeling al dicht waren én er geen motor-alarm actief is. Een power-cycle 's nachts (alle ramen dicht) herstart nu in ~2 sec. zonder kalibratie; een power-cycle midden op een warme dag met M3 open voert de volledige 3-minuten kalibratie uit zoals voorheen. Advies in §15 over handmatige overname op de motorbox aangepast: na terugkeer naar AUTO altijd een power-cycle uitvoeren **met ten minste één raam fysiek open**, anders kan de skip-conditie de kalibratie ongewenst overslaan. |
 
 ---
 

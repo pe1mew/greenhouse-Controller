@@ -1,7 +1,7 @@
 # logparser — Greenhouse Controller Log Parser
 
 **File:** `log/logparser.py`
-**Document version:** 1.2 (matches firmware 1.18.2)
+**Document version:** 1.3 (matches firmware 1.18.3)
 **Requires:** Python 3.10+, standard library only (no pip dependencies)
 
 ---
@@ -303,6 +303,7 @@ matches the LOG_SYSTEM table in `firmware/src/event_logger/event_logger.h`:
 | **8** | KB | SYS | T1 watchdog | Heap PSRAM free (KB; every 60 s, 1.17.29+) |
 | **9** | 0 | SYS | T1 watchdog | Heap CORRUPTION detected by `heap_caps_check_integrity_all` (1.17.29+) |
 | **10** | 0 | SYS | T2 relay_ctrl | T2 boot calibration skipped — NVS-recovered window state (1.17.36+, gh#18 Phase 3) |
+| **11** | uid16 (int16-cast) | SYS | T4 boot + T9 SD-rotation | Unit ID — low 16 bits of WiFi-STA MAC, same format as AP SSID `Greenhouse-XXXX` (1.18.3+, gh#17) |
 | **12** | KB | SYS | T1 watchdog | Heap internal largest contiguous block (KB; every 60 s, 1.18.2+, gh#20) |
 
 **esp_reset_reason codes (value_a=5):**

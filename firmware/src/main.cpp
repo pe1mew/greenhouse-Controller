@@ -44,6 +44,7 @@ static const char *TAG = "GHC";
 #include "ota_manager/ota_manager.h"
 #include "status_post/status_post.h"
 #include "status_post_supervisor/status_post_supervisor.h"
+#include "system_id/system_id.h"
 
 /* ============================================================
  * RTOS primitive definitions (declared extern in app_types.h)
@@ -337,7 +338,14 @@ void setup()
     Serial.setTxTimeoutMs(0);   /* Non-blocking; never hang if no host connected */
 
     ESP_LOGI(TAG, "=== Greenhouse Controller v" FIRMWARE_VERSION " ===");
-    ESP_LOGI(TAG, "Phase 0 boot — esp_reset_reason=%d", (int)s_boot_reason);
+    /* Unit ID — last 2 bytes of WiFi-STA MAC, same format as the AP SSID
+     * (Greenhouse-XXXX). Surfaces in serial here, in the LOG_SYSTEM
+     * value_a=11 row T4 emits a few seconds later, in the SD-log preamble
+     * at every rotation, and in the canonical status JSON. See gh#17. */
+    char unit_id_str[8] = {0};
+    system_unit_id_str(unit_id_str, sizeof(unit_id_str));
+    ESP_LOGI(TAG, "Phase 0 boot — id=%s  esp_reset_reason=%d",
+             unit_id_str, (int)s_boot_reason);
 
     /* ---- LIB-1: GPIO ---- */
     gpio_set_pin_mode(PIN_HB_LED, GPIO_OUTPUT);
