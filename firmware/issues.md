@@ -200,21 +200,58 @@ The `changelog.md` file is for what's *done*; this file is for what's *open*.
     new design note as "tracked on gh#19" — but closing gh#19 anyway
     since the must-have deliverable is the rule itself, not the lint).
 
-12. `(open — shipped 1.18.2, awaiting Unit-1 24 h soak)` → [gh#20](https://github.com/pe1mew/greenhouse-Controller/issues/20)
+12. ~~`(RESOLVED — gh#20 closed 2026-05-14 after production observation
+    on Unit 2)` → [gh#20](https://github.com/pe1mew/greenhouse-Controller/issues/20)
     **1.18.2 defensive pass: platform pin + heap-fragmentation probe +
-    TLS audit.** Three small additions triggered by the mbedTLS research
-    thread on gh#18: PlatformIO `platform = espressif32@6.12.0` (was
-    unpinned — drift risk eliminated); new `LOG_SYSTEM value_a=12, value_b=KB`
-    row every 60 s recording `heap_caps_get_largest_free_block` (closes
-    Phase 4's fragmentation blind spot — see arduino-esp32 #7884 / #4523);
-    `design/tls_leak_audit.md` static-source audit of `WiFiClientSecure::
-    stop()` against #3808 and of TLS 1.3 status against esp-idf #8515
-    (verdict: Phase 1's static-client pattern correctly dodges both).
-    Supervisor integration of the largest-block trigger is a deliberate
-    follow-up — needs one field-capture session to set the threshold
-    empirically. Close when Unit 1 has run 1.18.2 for 24 h and the first
-    fragmentation baseline is observable in the log. See gh#16 verification
-    plan for the deployment sequence.
+    TLS audit.**~~ Three small additions triggered by the mbedTLS research
+    thread on gh#18. All three behaved as designed in the first production
+    exercise (Unit 2, 2026-05-14 18:14:23 UTC): platform pin held byte-
+    faithful across the 1.18.3 OTA (rebuild of 1.18.3 from current source
+    produced `firmware.bin` with sha256 matching the shipped artefact in
+    `bin/1.18.3/`); largest-block probe recorded 77 KB against 126 KB total
+    free at the moment of the supervisor's planned-reboot — **heap is not
+    fragmented**, the leak that triggered the planned reboot is in raw
+    allocation cycles not in contiguous-block availability; TLS audit's
+    conclusion (Phase 1 static-client pattern dodges arduino-esp32 #3808)
+    remains valid since every recent T14 outcome event was a success — the
+    leak is in the HTTPS success path, not the destructor path the audit
+    cleared. Forensic capture: `debug/unit2/20260514_141849.log` +
+    `debug/unit2/20260514031520.csv`.
+
+13. `(open)` → [gh#21](https://github.com/pe1mew/greenhouse-Controller/issues/21)
+    **lwIP-init race on T11 fast-boot path — `Invalid mbox` assert after
+    planned reboot.** Discovered 2026-05-14 18:14:24 UTC on Unit 2 (running
+    1.18.3). When T15's planned reboot (gh#18 Phase 4) lands with all three
+    windows NVS-recovered as CLOSED, T2's boot calibration is skipped
+    (gh#18 Phase 3) — total T2 init drops from 171 s to ~2 s. T11's
+    `task_web_server()` reaches `server.begin()` (`web_server.cpp:1328`)
+    before T10's `esp_netif_init()` has finished initialising lwIP's
+    tcpip-thread mailbox. `AsyncServer::begin` → `tcpip_api_call` →
+    `LWIP_ASSERT("Invalid mbox", …)` at `tcpip.c:497` fires → PANIC
+    (`esp_reset_reason=4`). Recovery: the next boot completes cleanly;
+    operator-visible climate-control outage was ~1 s on top of the planned
+    reboot's own ~1 s. Race exists pre-bulkhead but was masked by the
+    171 s calibration delay; gh#18 Phase 3 fast-boot exposed it. **Fix
+    proposal (Option 1, recommended)**: new `EG1_BIT_NETIF_READY` event
+    bit. T10 sets it after `esp_netif_init()` returns; T11 waits with
+    5 s timeout before `server.begin()`. ~30 min effort. Full decoded
+    backtrace + commit-message draft in the gh#21 comment thread.
+    Forensic source: `debug/unit2/20260514_141849.log` line 5749.
+
+14. `(open — heap-leak root cause)` → see [gh#12](https://github.com/pe1mew/greenhouse-Controller/issues/12)
+    **T14 HTTPS-chain heap leak — slow, success-path, source unidentified.**
+    Observation 2026-05-14: Unit 2 (1.18.3) ran ~14 h on a stable steady-
+    state heap (~125 KB free internal), then crossed T15's 64 KB
+    cumulative-drop threshold and was bounded by a planned reboot. All
+    recent T14 outcome events show `value_a=1` (success), so the leak is
+    inside the success path of `do_status_post()` / `do_log_upload()` —
+    not the destructor-leak path cleared by `design/tls_leak_audit.md`
+    (item 12 above). Candidate hypotheses: an mbedTLS allocation that the
+    static-client pattern doesn't catch on `stop()`; lwIP DHCP-lease
+    re-handshake; TCP-timewait cleanup. **Status**: not blocking
+    operationally — the supervisor's bounded-recovery contains the
+    consequences. Root-cause hunt is forensic; can wait for additional
+    captures to look for a reproducible pattern.
 
 ## Closed (most recent first)
 
