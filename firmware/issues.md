@@ -93,7 +93,9 @@ The `changelog.md` file is for what's *done*; this file is for what's *open*.
    (serial-port-use freeze) — the current serial capture is itself an
    indirect test of that hypothesis.
 
-7. `(open)` → [gh#15](https://github.com/pe1mew/greenhouse-Controller/issues/15)
+7. `(open — investigation 2026-05-14: I2C contrast register confirmed
+   updating but not driving visible V0 on this hardware; UI feature
+   reverted)` → [gh#15](https://github.com/pe1mew/greenhouse-Controller/issues/15)
    **User-configurable LCD contrast + backlight brightness.** Driver-side
    API `lcd_set_contrast(uint8_t)` shipped in 1.17.33 — pure addition, no
    call sites yet. This issue tracks the full plumbing to NVS-backed
@@ -103,6 +105,21 @@ The `changelog.md` file is for what's *done*; this file is for what's *open*.
    commits (NVS, task consumption, GUI, manuals). Out of scope:
    user-tunable alarm/fault/normal colour palette (safety — would let an
    operator hide the red), ambient-light auto-adjust (needs LDR hardware).
+
+   **Investigation 2026-05-14 (not committed):** an LCD-only
+   implementation (1.18.4 + 1.18.5 driver hotfix) was built, deployed,
+   and tested on Unit 1 (`debug/unit1/1.18.5/20260514_055501.log`). The
+   firmware path is provably correct — `[T8_UI] contrast → N` log lines
+   appear for every A/B press across the full range 12–52, every
+   `lcd_set_contrast()` returns LCD_OK, no MX1 timeouts — but the
+   visible LCD contrast does not change. Hardware-side bottleneck: the
+   chip on the unit's LCD module either (a) has V0 overridden by an
+   external trimmer pot, or (b) is a different controller that ACKs but
+   doesn't implement the AiP31068L IS=1 extended-instruction-set
+   contrast register. Physical inspection of the LCD module's back side
+   is the next step. Per the operator's decision, the 1.18.4 / 1.18.5
+   work has been reverted; gh#15 returns to its original open state
+   pending hardware identification.
 
 8. ~~`(RESOLVED — gh#16 closed 2026-05-14; no proven root-cause, but
    structurally bounded by gh#18)` → [gh#16](https://github.com/pe1mew/greenhouse-Controller/issues/16)
@@ -168,20 +185,20 @@ The `changelog.md` file is for what's *done*; this file is for what's *open*.
     preserved as a future option. Related to
     [gh#16](https://github.com/pe1mew/greenhouse-Controller/issues/16).
 
-11. `(open)` → [gh#19](https://github.com/pe1mew/greenhouse-Controller/issues/19)
-    **Document the WDT-subscriber design rule.** 1.18.0 shipped T15 with
-    a `vTaskDelay(30 000)` between `esp_task_wdt_reset()` kicks. The
-    default task-WDT timeout is 5 s, so T15 starved the WDT on every
-    iteration and the chip TASK_WDT-reset every ~5–8 s of uptime until
-    OTA rolled back to the previous bank. 1.18.1 fixed the bug with the
-    chunked-wait pattern already used in `calib_close_all()` (since
-    1.17.29). The lesson should be captured as a written invariant:
-    *any task that subscribes to the task WDT and has a blocking call
-    longer than the WDT timeout MUST break the wait into chunks of
-    ≤ `WDT_timeout / 2` and kick the WDT each chunk.* Add to
-    `design/tasks.md` (or a new `design/task_design_rules.md`) and
-    cross-link from the 1.17.29 hardening section in `changelog.md`.
-    Small-scope follow-up: ~30 minutes.
+11. ~~`(RESOLVED — gh#19 closed 2026-05-14)` →
+    [gh#19](https://github.com/pe1mew/greenhouse-Controller/issues/19)
+    **Document the WDT-subscriber design rule.**~~ Rule written into
+    `design/tasks.md` §6 *Watchdog-subscriber discipline* (new design
+    note alongside "T4 as single source of truth", "T2 as sole relay
+    owner", etc.). Contains the invariant, a table of reference
+    implementations (T2 `calib_close_all`, T2 `handle_alarm_clearance`,
+    T15 supervisor poll), the 1.18.0 cautionary example with the
+    forensic boot-row trace, and the rationale for why a written rule
+    beats code review for this class of bug. `changelog.md` [1.17.29]
+    "WDT subscription" bullet cross-linked to the new rule + to gh#19.
+    Optional `pio check` lint deferred to future work (documented in the
+    new design note as "tracked on gh#19" — but closing gh#19 anyway
+    since the must-have deliverable is the rule itself, not the lint).
 
 12. `(open — shipped 1.18.2, awaiting Unit-1 24 h soak)` → [gh#20](https://github.com/pe1mew/greenhouse-Controller/issues/20)
     **1.18.2 defensive pass: platform pin + heap-fragmentation probe +

@@ -6,8 +6,8 @@
 |--------------|------------------------------------------|
 | Document     | Task Structure                           |
 | Project      | Greenhouse Ventilation Controller        |
-| Version      | 0.2 (draft)                              |
-| Date         | 2026-05-05                               |
+| Version      | 0.3 (draft)                              |
+| Date         | 2026-05-14                               |
 | Status       | Draft                                    |
 | Related docs | `technicalDesignSpecification.md`        |
 
@@ -336,6 +336,26 @@ Drop-oldest enforced by `log_post()` in `event_logger.h` (Gap H). All producers 
 
 **OTA sequencing (T13)**
 If an update release contains both firmware and web-file changes, both packages must be transferred and verified before either is activated. T13 shall not switch the active bank until both writes have completed successfully. This is enforced by the two-phase commit: `ota_firmware_end()` enters `OTA_STATE_FW_DONE` and defers `esp_ota_set_boot_partition()` to `task_ota_manager()`. A 120 s fallback timer covers firmware-only update releases (no assets ZIP).
+
+**Watchdog-subscriber discipline (since 1.18.1 — gh#19)**
+
+> **Invariant.** Any FreeRTOS task that subscribes to the ESP-IDF task watchdog via `esp_task_wdt_add(NULL)` and has a blocking call (sleep, mutex acquire, blocking I/O) longer than `CONFIG_ESP_TASK_WDT_TIMEOUT_S / 2` MUST break that blocking call into chunks of ≤ `CONFIG_ESP_TASK_WDT_TIMEOUT_S / 2` and kick the watchdog (`esp_task_wdt_reset()`) before each chunk.
+
+The default `CONFIG_ESP_TASK_WDT_TIMEOUT_S` in Arduino-ESP32 is **5 seconds**. The current safe-chunk ceiling is therefore **2 s**. A task that subscribes to the WDT and then blocks for longer between kicks will trigger a `TASK_WDT` reset and reboot the chip. On three consecutive bad boots within 30 s (the `ota_mark_healthy()` window) the OTA bootloader will treat the new firmware bank as unhealthy and roll back to the previous one — turning a small bug into a firmware-deployment failure.
+
+**Reference implementations in the codebase** (use these as templates):
+
+| Task | Long block | Chunk size | Pattern |
+|---|---|---|---|
+| T2 (`task_relay_controller`) | CLOSE_ALL calibration up to 171 s (M3 travel) | `CALIB_CHUNK_MS = 400` (0.4 s) | `for (;;) { esp_task_wdt_reset(); vTaskDelay(pdMS_TO_TICKS(CALIB_CHUNK_MS)); ... if done break; }` |
+| T2 (`handle_alarm_clearance`) | 60-second guard wait after motor alarm clears | `ALARM_GUARD_CHUNK_MS = 5000` (5 s — *at the WDT limit; tighten to 2 s on next pass*) | Same pattern. |
+| T15 (`task_status_post_supervisor`) | 30-second polling interval | `T15_WDT_KICK_CHUNK_MS = 1000` (1 s) | `while (slept < tick) { esp_task_wdt_reset(); vTaskDelay(min(chunk, tick - slept)); slept += chunk; }` |
+
+**Cautionary example.** Firmware **1.18.0** shipped the new T15 supervisor with `vTaskDelay(30 000)` between WDT kicks — a direct violation of this rule. After OTA to Unit 1 the chip recorded three consecutive TASK_WDT resets within 22 seconds (`debug/unit1/1.18.0/nvs_log.csv` boot rows at 08:02:18 SW / 26 TASK_WDT / 33 TASK_WDT / 41 SW), and the OTA gate rolled back to 1.17.x. **1.18.1** restored the chunked-wait pattern as shown above. The OTA safety net worked exactly as designed, but the underlying bug should have been impossible to write — hence this rule.
+
+**Why a written rule and not just code review?** The pattern is invisible at the call-site: an `esp_task_wdt_add(NULL)` and a `vTaskDelay(N)` are both unremarkable on their own. The bug emerges only from their *combination* across two unrelated parts of the same function. A reviewer who hasn't internalised the invariant can read both lines and see nothing wrong. Writing the rule down is the only durable safeguard.
+
+**Future work** (deferred indefinitely, low priority): an optional `pio check` lint or pre-commit grep that flags any source file containing both `esp_task_wdt_add(NULL)` and `vTaskDelay(pdMS_TO_TICKS(N))` with N > 2000 outside an immediately-preceding `esp_task_wdt_reset()`. The signal-to-noise is unclear, hence the deferral; the documentation rule above is the must-have. Open a fresh GitHub issue if the lint becomes worthwhile in light of new field evidence.
 
 ---
 
