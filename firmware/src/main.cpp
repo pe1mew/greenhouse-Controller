@@ -43,6 +43,7 @@ static const char *TAG = "GHC";
 #include "mqtt_client/mqtt_client.h"
 #include "ota_manager/ota_manager.h"
 #include "status_post/status_post.h"
+#include "status_post_supervisor/status_post_supervisor.h"
 
 /* ============================================================
  * RTOS primitive definitions (declared extern in app_types.h)
@@ -185,6 +186,20 @@ static void task_watchdog_heartbeat(void *pvParameters)
             ev.value_b    = (int16_t)((free_ps >> 10) > 32767u ? 32767
                                                                 : (free_ps >> 10));
             log_post(&ev);
+
+            /* INTERNAL largest-contiguous block → LOG_SYSTEM value_a=12, value_b=KB
+             * (gh#20, since 1.18.2). Phase 4's supervisor measures cumulative
+             * free-heap drop, but mbedTLS handshake churn can fragment the
+             * heap while free-total stays flat. The classic signature is
+             * "free=130 KB but largest-block=8 KB", which makes the next
+             * 16 KB mbedTLS allocation fail and corrupt-or-panic the chip
+             * inside the library before any breaker can react.
+             * Cross-reference: arduino-esp32 #7884 / #4523. */
+            ev.value_a    = (int16_t)12;
+            size_t lb_int = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+            ev.value_b    = (int16_t)((lb_int >> 10) > 32767u ? 32767
+                                                              : (lb_int >> 10));
+            log_post(&ev);
         }
 
         if (tick_count % 120 == 60) {
@@ -217,7 +232,7 @@ static void task_watchdog_heartbeat(void *pvParameters)
                 { "T4",  task_t4  }, { "T5",  task_t5  }, { "T6",  task_t6  },
                 { "T7",  task_t7  }, { "T8",  task_t8  }, { "T9",  task_t9  },
                 { "T10", task_t10 }, { "T11", task_t11 }, { "T12", task_t12 },
-                { "T14", task_t14 },
+                { "T14", task_t14 }, { "T15", task_t15 },
             };
             for (auto &t : tasks) {
                 if (t.handle == NULL) continue;
@@ -441,6 +456,15 @@ void setup()
     xTaskCreatePinnedToCore(task_web_server,        "T11_WEB", 8192, NULL, TASK_PRIO_LOW,      &task_t11, 0);
     xTaskCreatePinnedToCore(task_mqtt_client,       "T12_MQT", 8192, NULL, TASK_PRIO_LOW,      &task_t12, 0);
     /* T13 (OTA) is spawned on demand by T11 — no permanent handle. */
+    /* T15 — Status-POST supervisor (gh#18 Phase 4, since 1.18.0).
+     * Priority 4 sits between TASK_PRIO_LOW (3) and TASK_PRIO_MEDIUM (5):
+     * higher than T14 so a wedged-T14 cannot starve the supervisor that's
+     * trying to recover it, lower than the climate-critical tasks so it
+     * never preempts T2/T3/T6. Stack 4 KB: the supervisor's only work is
+     * accessor reads + occasional NVS writes; no TLS, no Modbus. Spawned
+     * BEFORE T14 so task_t15 (defined in status_post_supervisor.cpp) is
+     * valid by the time T14 enters its main loop. */
+    xTaskCreatePinnedToCore(task_status_post_supervisor, "T15_SUP", 4096, NULL, 4,                &task_t15, 0);
     /* T14 stack 12 KB: TLS handshake (WiFiClientSecure / mbedTLS) needs
      * substantially more stack than plain HTTPClient. 6 KB causes a
      * stack-overflow panic the first time the task POSTs to an https://

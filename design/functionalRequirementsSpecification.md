@@ -6,8 +6,8 @@
 |---------------|-------------------------------|
 | Document      | Functional Requirements Specification |
 | Project       | Greenhouse Ventilation Controller |
-| Version       | 0.4 (draft)                   |
-| Date          | 2026-05-07                    |
+| Version       | 0.5 (draft)                   |
+| Date          | 2026-05-14                    |
 | Status        | Draft                         |
 
 ---
@@ -34,6 +34,7 @@
    - 5.12 MQTT Integration
    - 5.13 Access Control and Security
    - 5.14 Logging
+   - 5.15 Fault Isolation Between Subsystems (Bulkhead Policy)
 6. [System-Level Requirements](#6-system-level-requirements)
 7. [Constraints and Assumptions](#7-constraints-and-assumptions)
 8. [MoSCoW Priority Reference](#8-moscow-priority-reference)
@@ -427,6 +428,23 @@ The RGB LED uses the following colour semantics, which differ from the discrete 
 | FR-LG08 | If an SD card is present and functional, the system **should** prefer the SD card as the primary log storage; internal non-volatile memory acts as fallback. | Could |
 | FR-LG09 | The log **shall** include a sensor-value snapshot (temperature, humidity, wind speed, wind direction) on every sensor poll cycle. The snapshot interval therefore equals the poll interval (FR-S03); no separate snapshot interval is configurable. | Must |
 
+### 5.15 Fault Isolation Between Subsystems (Bulkhead Policy)
+
+> **Rationale.** The controller has a primary mission-critical subsystem (sensor poll, climate control, relay actuation, motor alarm handling) and a set of secondary best-effort subsystems (WiFi client, web GUI, MQTT, status-website reporting, log upload). A fault inside a secondary subsystem — for example a hang inside the TLS handshake of an HTTPS POST, or a slow memory leak inside a third-party library — must not be allowed to disrupt or delay the primary subsystem. This section codifies the contract between the two layers. See GitHub issue [gh#18](https://github.com/pe1mew/greenhouse-Controller/issues/18) for the original policy text and design rationale.
+
+| ID | Requirement | MoSCoW |
+|----|-------------|--------|
+| FR-BK01 | Climate-critical tasks (sensor poll, relay control, safety monitor, climate control, motor alarm handler) **shall** be executable at scheduling priorities strictly higher than secondary network-related tasks (HTTP/HTTPS POST, log upload, MQTT publish). Priority inversion via shared mutexes **shall** be avoided by keeping mutex hold-times in secondary tasks bounded. | Must |
+| FR-BK02 | All outbound TLS and HTTP operations performed by secondary subsystems **shall** be bounded in time: a separate **TCP-connect timeout** and **response timeout** **shall** apply, both finite and configurable at compile-time. A hung server or unreachable host **shall not** block the calling task for longer than the sum of these two timeouts. | Must |
+| FR-BK03 | Repeated failures of any secondary outbound operation (status POST, log upload, MQTT publish) **shall** be throttled by a persistent circuit breaker: after N consecutive failures, further attempts **shall** be suppressed for an escalating duration (60 s → 5 min → 30 min → 1 h cap) until a successful attempt regresses the escalation phase. The breaker state **shall** survive a reboot via non-volatile storage so that a power-loss during a failure burst does not reset the throttling. | Must |
+| FR-BK04 | The controller **shall** maintain a supervisor task that monitors the primary network-reporting task for liveness (heartbeat counter) and for resource consumption (cumulative heap drop). If the monitored task is judged stuck or leaking, the supervisor **shall** either respawn it (cleanly closing any persistent network sockets first) or, if respawning is itself failing, issue a *planned reboot* via `esp_restart()`. The reset reason of a planned reboot **shall** be distinguishable in the boot log from a panic or watchdog reset. | Should |
+| FR-BK05 | Terminal window-position state (per channel, fully OPEN or fully CLOSED) **shall** be persisted to non-volatile storage on every transition. At boot, if all three channels were persisted as CLOSED and no motor-alarm signal is asserted, the boot-time CLOSE_ALL calibration **may** be skipped, reducing recovery time after a planned reboot from ~171 s (full M3 travel) to ~2 s. The pre-energise persist of `UNKNOWN` to NVS **shall** precede every energise of a relay so a power-loss mid-travel is recoverable. | Should |
+| FR-BK06 | Whenever the persistent circuit breaker (FR-BK03) is in an open state, the controller **shall** surface this fact to the operator: as an on-LCD indicator (compact badge on the network status screen), as a flag in the canonical status JSON payload of the local web GUI, and as a written record in the event log when the breaker phase transitions. The breaker state **shall not** affect the primary climate control. | Should |
+| FR-BK07 | The controller **shall** instrument heap usage and emit periodic snapshots to the event log: total free heap (internal and PSRAM separately), heap-corruption checks, and largest contiguous free internal block. The largest-contiguous-block metric **shall** be sampled at the same cadence as total-free so that *heap fragmentation* (largest block falling while total free remains stable) is observable from the log alone. | Should |
+| FR-BK08 | All long-running blocking operations (longer than half of the configured task-watchdog timeout) **shall** internally yield to the scheduler in chunks short enough to honour the watchdog. A task that subscribes to the task-watchdog and then blocks beyond the timeout **shall** be considered a defect, regardless of intended duration. (Lesson from the 1.18.0 regression — see `changelog.md` 1.18.1.) | Must |
+
+**Implementation references (informative, not part of the requirement statement):** the policy described above is realised across firmware releases 1.17.34, 1.17.35, 1.17.36, 1.18.0, 1.18.1 and 1.18.2. Detailed design is in the Technical Software Design Specification (TSDS) §5.15 and in `design/tls_leak_audit.md`.
+
 ---
 
 ## 6. System-Level Requirements
@@ -522,4 +540,4 @@ MoSCoW is a prioritisation technique widely used in requirements engineering and
 
 ---
 
-*End of document — version 0.4 draft*
+*End of document — version 0.5 draft*

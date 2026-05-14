@@ -70,6 +70,7 @@ extern TaskHandle_t task_t11;  /**< Web Server */
 extern TaskHandle_t task_t12;  /**< MQTT Client */
 /* task_t13 (OTA) is created on demand by T11; no permanent handle */
 extern TaskHandle_t task_t14;  /**< Status website POST */
+extern TaskHandle_t task_t15;  /**< Status-POST supervisor (gh#18 Phase 4) */
 
 /* Event group (defined in main.cpp) */
 extern EventGroupHandle_t EG1; /**< System state flags — see Section 5 */

@@ -57,6 +57,7 @@
 #include "../data_manager/data_manager.h"
 #include "../relay_controller/relay_controller.h"
 #include "../event_logger/event_logger.h"
+#include "../status_post/status_post.h"      /* status_post_backoff_active (gh#18 Phase 4) */
 #include "../auth/pin_auth.h"
 #include "lcd1602.h"
 #include "cfg_limits.h"
@@ -754,7 +755,16 @@ static void render_status(void)
 
         case 3: /* Network */
             if (s_net.client_connected) {
-                snprintf(r0, sizeof(r0), "WiFi: connected ");
+                /* gh#18 Phase 4 — append "BK" badge when the T14 circuit
+                 * breaker is open. Operator can see at a glance that
+                 * secondary network activity is currently suspended; the
+                 * green-status LED stays green because primary climate
+                 * control is unaffected. */
+                if (status_post_backoff_active()) {
+                    snprintf(r0, sizeof(r0), "WiFi: conn    BK");
+                } else {
+                    snprintf(r0, sizeof(r0), "WiFi: connected ");
+                }
                 snprintf(r1, sizeof(r1), "%-16.16s", s_net.ip_str);
             } else if (s_net.ap_active) {
                 uint8_t mac[6] = {};

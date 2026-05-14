@@ -59,6 +59,63 @@ void status_post_last_str(char *buf, size_t cap);
  */
 void status_post_last_log_str(char *buf, size_t cap);
 
+/**
+ * @brief Return true if T14's circuit breaker is currently open (in backoff).
+ *
+ * Surfaced as the `net_backoff_active` flag in the canonical status JSON
+ * (rendered as a "Net backoff" badge on the Alarms card) and on the LCD.
+ * Always returns false in Phase 1 (v1.17.34); wired to real breaker state
+ * in Phase 2 (v1.17.35). Lock-free read of a primitive type — caller need
+ * not hold any mutex.
+ *
+ * @return true iff the status-post or log-upload breaker is open.
+ */
+bool status_post_backoff_active(void);
+
+/* ============================================================
+ * Supervisor integration (gh#18 Phase 4, since 1.18.0)
+ *
+ * These three entry points let the T15 supervisor monitor T14 health and
+ * recover from a wedged or leaking T14 incarnation without interrupting
+ * primary climate control. They are private to the bulkhead-policy build
+ * — no other consumer should call them.
+ * ============================================================ */
+
+/**
+ * @brief Heartbeat counter incremented by T14 at the top of every loop tick.
+ *
+ * The supervisor (T15) snapshots this value and watches for staleness over
+ * a 60-second window — if it does not advance for that long, T14 is
+ * considered stuck and is force-respawned. Reader is racy with writer but
+ * the value is a single 32-bit aligned store / load → coherent.
+ *
+ * Exposed via a getter rather than a raw `extern volatile uint32_t` so the
+ * variable can stay file-local in status_post.cpp.
+ */
+uint32_t status_post_heartbeat(void);
+
+/**
+ * @brief Cumulative heap drop attributed to T14 since the last counter reset.
+ *
+ * T14 samples free internal heap immediately before and after each
+ * HTTPS call (status POST + log upload). The signed delta is accumulated
+ * here; negative deltas (heap freed back) are clamped to zero so transient
+ * recovery doesn't mask a real leak. Supervisor compares against the
+ * 64 KB planned-reboot threshold.
+ */
+uint32_t status_post_heap_drop_bytes(void);
+
+/**
+ * @brief Force a clean teardown of the persistent TLS session.
+ *
+ * Called by the supervisor immediately before `vTaskDelete(task_t14)`. The
+ * static `WiFiClientSecure` (`s_secure`) survives task deletion — without
+ * this call, the next T14 incarnation would inherit a half-closed socket
+ * pointing at lwIP state that the killed task never had a chance to release.
+ * Idempotent: safe to call multiple times.
+ */
+void status_post_force_teardown(void);
+
 #ifdef __cplusplus
 }
 #endif

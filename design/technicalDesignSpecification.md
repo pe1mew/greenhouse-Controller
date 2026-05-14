@@ -5,9 +5,9 @@
 |--------------|------------------------------------------|
 | Document     | Technical Design Specification           |
 | Project      | Greenhouse Ventilation Controller        |
-| Version      | 0.2 (draft)                             |
-| Date         | 2026-03-26                              |
-| Status       | **SUPERSEDED** — replaced by `technicalHardwareDesignSpecification.md` (v0.3) and `technicalSoftwareDesignSpecification.md` (v0.1). Do not use for reference. |
+| Version      | 0.2 (draft, SUPERSEDED)                  |
+| Date         | 2026-03-26 — supersedure confirmed 2026-05-14 |
+| Status       | **SUPERSEDED** — replaced by `technicalHardwareDesignSpecification.md` and `technicalSoftwareDesignSpecification.md` (TSDS at v0.4 as of 2026-05-14, covering firmware up to 1.18.2 incl. the bulkhead-policy work in §5.15). This file is preserved for git-history archaeology only. Do not edit, do not cite. |
 | Related docs | `technicalHardwareDesignSpecification.md` |
 |              | `technicalSoftwareDesignSpecification.md` |
 |              | `functionalRequirementsSpecification.md` |

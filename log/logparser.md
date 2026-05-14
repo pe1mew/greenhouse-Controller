@@ -1,6 +1,7 @@
 # logparser — Greenhouse Controller Log Parser
 
-**File:** `log/logparser.py`  
+**File:** `log/logparser.py`
+**Document version:** 1.2 (matches firmware 1.18.2)
 **Requires:** Python 3.10+, standard library only (no pip dependencies)
 
 ---
@@ -275,22 +276,72 @@ Wind override and motor alarm events.
 ---
 
 ### SYSTEM
-Internal system events from various firmware tasks.
 
-| `value_a` | `value_b` | Initiator | Meaning |
-|---|---|---|---|
-| 0 | 0 | SYS | System boot |
-| −1 | 0 | SYS | SD write failure — NVS-only mode |
-| −2 | 0 | SYS | SD low space at floor — SD logging suspended |
-| N > 0 | 0 | SYS | Q3 queue overflow: N events dropped |
-| 0 or 1 | 0 | ADMIN | WiFi AP disabled / enabled |
+Internal system events from various firmware tasks. `value_a` categorises the
+subtype; `value_b` is the payload. The current encoding (firmware 1.18.2)
+matches the LOG_SYSTEM table in `firmware/src/event_logger/event_logger.h`:
 
-**Example output:**
+| `value_a` | `value_b` | Initiator | Producer | Meaning |
+|---|---|---|---|---|
+| **−1** | drop count | SYS | T9 (synthetic) | Q3 queue overflow — N events dropped |
+| **0** | 0 | WEB | T14 status_post | Status POST failed (streak transition) |
+| **0** | 1 | WEB | T14 status_post | Log upload failed |
+| **0** | 2 | WEB | T14 status_post | Daily slot fired, no closed file on SD (1.17.27+) |
+| **0** | 3 | WEB | T14 status_post | Daily slot fired, precondition blocked it (1.17.27+) |
+| **1** | 0 | SYS | T10 net_manager | STA WiFi client disconnected |
+| **1** | 1 | SYS | T10 net_manager | STA WiFi client connected |
+| **1** | 0 | WEB | T14 status_post | Status POST success |
+| **1** | 1 | WEB | T14 status_post | Log upload success |
+| **2** | 0 | SYS | T10 net_manager | NTP timeout |
+| **2** | 1 | SYS | T10 net_manager | NTP synced |
+| **3** | 0 | SYS | T10 net_manager | WiFi AP stopped |
+| **3** | 1 | SYS | T10 net_manager | WiFi AP started |
+| **4** | 1 | SYS | T10 net_manager | Geolocation lookup success |
+| **5** | 1–10 | SYS | T4 data_manager | Boot reason from `esp_reset_reason()` (1.17.27+, T4 since 1.17.31) |
+| **6** | 0 | WEB | T14 → T9 | Force-rotate marker, last entry in rotated file (1.17.28+) |
+| **7** | KB | SYS | T1 watchdog | Heap internal free (KB; every 60 s, 1.17.29+) |
+| **8** | KB | SYS | T1 watchdog | Heap PSRAM free (KB; every 60 s, 1.17.29+) |
+| **9** | 0 | SYS | T1 watchdog | Heap CORRUPTION detected by `heap_caps_check_integrity_all` (1.17.29+) |
+| **10** | 0 | SYS | T2 relay_ctrl | T2 boot calibration skipped — NVS-recovered window state (1.17.36+, gh#18 Phase 3) |
+| **12** | KB | SYS | T1 watchdog | Heap internal largest contiguous block (KB; every 60 s, 1.18.2+, gh#20) |
+
+**esp_reset_reason codes (value_a=5):**
+
+| Code | Name |
+|---|---|
+| 1 | POWERON |
+| 2 | EXT |
+| 3 | SW — `esp_restart()` from software (planned reboot, OTA finalize, etc.) |
+| 4 | PANIC — exception, watchdog re-triggered, etc. |
+| 5 | INT_WDT — interrupt watchdog |
+| 6 | TASK_WDT — task watchdog |
+| 7 | WDT — other watchdog |
+| 8 | DEEPSLEEP |
+| 9 | BROWNOUT |
+| 10 | SDIO |
+
+**Example output (real 1.18.0 crash-loop excerpt):**
 ```
-2025-06-07 12:00:00  [SYSTEM ]   System          System boot
-2025-06-07 13:10:00  [SYSTEM ]   System          Q3 queue overflow: 3 event(s) dropped
-2025-06-07 14:00:00  [SYSTEM ]   System          SD card write failure — falling back to NVS-only logging
+2026-05-14 08:02:33  [SYSTEM ]  System          Boot: esp_reset_reason = 6 (TASK_WDT)
+2026-05-14 08:02:35  [SYSTEM ]  Web UI          T14 status POST: success
+2026-05-14 08:02:38  [SYSTEM ]  System          STA WiFi client: connected
+2026-05-14 08:02:39  [SYSTEM ]  System          NTP: synced
+2026-05-14 08:02:41  [SYSTEM ]  System          Heap internal free: 271 KB
+2026-05-14 08:02:41  [SYSTEM ]  System          Heap PSRAM free: 8189 KB
+2026-05-14 08:02:41  [SYSTEM ]  System          Boot: esp_reset_reason = 3 (SW (esp_restart))
 ```
+
+**Diagnosing reboot-loop signatures:** consecutive `value_a=5` rows within
+seconds of each other indicate a crash loop; the `value_b` payload identifies
+the killer. `value_b=6` (TASK_WDT) repeated three times followed by `value_b=3`
+(SW) is the OTA-rollback signature — the bootloader marked the new bank
+unhealthy and reverted. See `bin/build_release.ps1` notes and the 1.18.1
+changelog entry for the field-observed case.
+
+**Legacy/retired:** pre-1.17.31 firmware emitted a `value_a=0, value_b=0,
+initiator=SYS` row as the boot marker. That code path was retired in 1.17.31
+(boot reason now uses `value_a=5`). The parser still recognises old rows and
+reports them as "Legacy boot marker (pre-1.17.31)".
 
 ---
 
@@ -333,3 +384,10 @@ when the controller is in a non-UTC timezone.
 
 4. **Wildcard mode** only picks up files named `YYYYMMDDHHMMSS.csv`.
    Files named `nvs_log.csv` or with other patterns must be passed explicitly.
+
+5. **Heap-fragmentation interpretation:** since 1.18.2 the parser decodes
+   `value_a=12` as "Heap internal largest contiguous block (KB)". A healthy
+   build should show this value within ~10 % of `value_a=7` (free total).
+   A widening gap — free-total stable, largest-block falling — is the
+   fragmentation signature flagged in gh#20. There is currently no
+   automated alert; visual inspection of the parsed output suffices.

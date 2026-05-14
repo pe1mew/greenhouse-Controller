@@ -6,6 +6,185 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.18.2] — 2026-05-14
+
+*Three small defensive additions triggered by the mbedTLS research thread on gh#18. None of them changes runtime behaviour for an OK build; all of them close gaps that would surface as "the next field crash" if left alone. Tracked as gh#20.*
+
+### Added
+- `firmware/src/main.cpp::task_watchdog_heartbeat()` — new `LOG_SYSTEM value_a=12, value_b=KB` row every 60 s, recording `heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) >> 10`. This is the heap *fragmentation* signal that Phase 4's free-heap-delta monitor cannot see by construction: free total can stay flat while the largest contiguous block shrinks under repeated TLS handshake churn (arduino-esp32 issues #7884, #4523). With this row, a future "T14 panicked inside mbedTLS for no obvious reason" investigation has the diagnostic it needs to recognise the fragmentation pattern. Supervisor integration (trip planned-reboot when largest-block drops below a threshold) is a follow-up; one log capture in the field is needed first to set the threshold empirically.
+- `firmware/src/event_logger/event_logger.h` — `value_a=12` documented in the LOG_SYSTEM table alongside `value_a=7/8/9/10`.
+- `design/tls_leak_audit.md` — written record of the static-source audit of `WiFiClientSecure::stop()` and `stop_ssl_socket()` in Arduino-ESP32 3.20017. Verdict: Phase 1's static-`WiFiClientSecure` pattern correctly dodges arduino-esp32 #3808 for our `setInsecure()` usage profile. TLS 1.3 panic surface (esp-idf #8515) is not in our compile-time path (TLS 1.3 disabled in the resolved sdkconfig). Audit includes a per-resource ledger and explicit re-qualification triggers (CA-cert addition, mTLS, platform-version bump).
+
+### Changed
+- `firmware/platformio.ini` — `platform = espressif32` → `platform = espressif32@6.12.0`. Unpinned was letting `pio platform update` silently advance the Arduino-ESP32 / ESP-IDF / mbedTLS combination, which can introduce or expose latent issues (TLS 1.3 default flip → #8515 panic surface; PSA crypto migration → esp-idf #18186 panic). 6.12.0 is the version that compiles 1.18.0–1.18.1 and was audited in `design/tls_leak_audit.md`. Future bumps must re-run the audit.
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.18.1` → `1.18.2`.
+
+### Behaviour notes / non-changes
+- Build cost: ~+150 bytes flash (the extra log call), zero new RAM, zero new NVS slots.
+- The platform pin is a no-op for *this* build (we were already on 6.12.0). Its purpose is forward-looking — the next contributor who runs `pio platform update` no longer breaks reproducibility silently.
+- The largest-block row appends to T9's existing every-60-s heap-snapshot triplet (value_a = 7, 8, then 12) so a single SD-log scan plots all three on the same time axis. No new task, no new mutex, no new scheduling pressure.
+- The TLS audit document is read-only forensics. It does not change any firmware. It exists so the next investigator (or future-us in 6 months) does not re-research the same questions under time pressure.
+
+### Related
+- [gh#20](https://github.com/pe1mew/greenhouse-Controller/issues/20) — Three-item defensive pass triggered by the mbedTLS research summary on gh#18.
+- [gh#18](https://github.com/pe1mew/greenhouse-Controller/issues/18) — Bulkhead policy. The audit closes one of the two open assumptions Phase 1 made (the other being "supervisor T15 is reliable" — proven by the 1.18.1 fix landing without regression).
+- arduino-esp32 #7884, #4523 — heap fragmentation cited as the motivation for the new largest-block row.
+- arduino-esp32 #3808 — destructor leak; cleared for our usage profile by the audit.
+- esp-idf #8515 — TLS 1.3 POST panic; out of compile-time surface (TLS 1.3 disabled in sdkconfig).
+- esp-idf #18186 — PSA crypto crash on ESP-IDF 6.0-beta; protected by the platform pin.
+
+---
+
+## [1.18.1] — 2026-05-14
+
+*Critical hotfix for 1.18.0. T15 (the bulkhead-policy supervisor introduced in 1.18.0) starved its task watchdog every iteration: it subscribed to the task WDT (default 5-s timeout) but then `vTaskDelay(30 000)` between WDT kicks. On Unit 1 this caused a crash loop of three TASK_WDT resets in ~22 seconds after OTA, after which the OTA app-validation gate flipped to "unhealthy" and rolled the unit back to the previous bank. The forensic evidence in `debug/unit1/1.18.0/nvs_log.csv` is unambiguous: boot-reason events at 08:02:18 (SW=3, OTA finalize), 08:02:26 (TASK_WDT=6), 08:02:33 (TASK_WDT=6), 08:02:41 (SW=3, rollback).*
+
+### Fixed
+- `firmware/src/status_post_supervisor/status_post_supervisor.cpp::task_status_post_supervisor()` — main loop now breaks the 30-s polling delay into ≤ 1-s chunks (`T15_WDT_KICK_CHUNK_MS = 1000u`), kicking `esp_task_wdt_reset()` before each chunk. Mirrors the chunked-wait pattern `calib_close_all()` has used since 1.17.29 for the 171-s M3 calibration. Default task-WDT timeout is 5 s; 1 s gives 5× safety margin.
+
+### Changed
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.18.0` → `1.18.1`.
+
+### Behaviour notes
+- **OTA recovery saved us this time.** The 30-s `ota_mark_healthy()` window in `main.cpp::task_watchdog_heartbeat()` requires the firmware to survive at least 30 s of uptime before the new bank is committed. The 1.18.0 crash loop killed the chip at ~7-8 s on every boot, so the gate never tripped, and after three failed boots the bootloader rolled back to the 1.17.x bank that was previously committed. This is the OTA safety system working exactly as designed — it converted a fatal regression into a recovery scenario at the cost of one operator-visible reboot cycle.
+- **All other 1.18.0 changes (T15 design, supervisor entry points, LCD badge, NVS-persisted state from Phase 3, breaker from Phase 2, HTTPS hardening from Phase 1) are unaffected.** This release re-ships them with the WDT bug fixed.
+- Lesson for future task additions: any task that subscribes to the task WDT and has a polling interval longer than the WDT timeout must break the wait into chunks. The 1.17.29 hardening release should have surfaced this rule as a written invariant; adding that to the task-design checklist is a follow-up.
+- The same WDT-kicking pattern was already correctly used in `relay_controller.cpp::calib_close_all()` (`CALIB_CHUNK_MS = 400` ms) and `handle_alarm_clearance()` (`ALARM_GUARD_CHUNK_MS = 5000` ms). T15 was the first new subscriber since 1.17.29, and the rule was implicit rather than documented.
+
+### Related
+- [gh#18](https://github.com/pe1mew/greenhouse-Controller/issues/18) — Bulkhead policy. Phase 4 (T15) is unchanged in design; only the wait loop was broken.
+- New issue to file: capture this lesson as a written task-design rule ("any WDT-subscribed task with > 4 s blocking calls must chunk").
+
+---
+
+## [1.18.0] — 2026-05-14
+
+*Final phase of the bulkhead policy ([gh#18](https://github.com/pe1mew/greenhouse-Controller/issues/18)): adds the **T15 supervisor task** plus the **planned-reboot fallback**, closing the policy out. With this release a wedged or leaking T14 (status-POST + log-upload) can no longer take primary climate control offline — the supervisor either respawns T14 cleanly within ~60 s, or escalates to a planned reboot that recovers in ~2 s (thanks to Phase 3's NVS-persisted window state) instead of ~171 s. Minor-version bump because (a) a new task ID (T15) is introduced and (b) restart semantics now include planned reboots that operators may observe.*
+
+### Added
+- **New module:** `firmware/src/status_post_supervisor/{status_post_supervisor.h, .cpp}` — T15 task implementation. 30-second polling cadence, watchdog-subscribed (same pattern as T1, T2 since 1.17.29). Tracks three failure modes:
+  - **Wedge:** T14's heartbeat counter has not advanced for ≥ 60 s → force-respawn T14.
+  - **Heap leak:** T14's cumulative heap drop has crossed 64 KB → planned reboot.
+  - **Respawn storm:** more than 1 respawn within 5 minutes, or more than 10 within one hour → planned reboot.
+- `firmware/src/status_post/status_post.h` — three new public APIs for supervisor integration: `status_post_heartbeat()`, `status_post_heap_drop_bytes()`, `status_post_force_teardown()`. The first two are racy lock-free reads of `volatile uint32_t` accumulators; the third is an idempotent close of the static `WiFiClientSecure` (closes the persistent TLS session before `vTaskDelete(task_t14)` so the next incarnation starts clean).
+- `firmware/src/status_post/status_post.cpp` — two new module-private accumulators: `s_heartbeat` (advanced at the top of every T14 main-loop iteration) and `s_heap_drop_bytes` (saturating-add accumulator fed by `record_heap_drop()` after each HTTPS call). Each accumulator survives `vTaskDelete` because it lives in BSS, not on the task stack — a respawned T14 sees the same counter values its predecessor wrote.
+- `firmware/src/status_post/status_post.cpp` — heap sampling around `do_status_post()` and `maybe_upload_log()`. Real leaks accumulate; transient handshake allocations release before the call returns and are not counted (negative deltas clamp to zero).
+- `firmware/src/status_post_supervisor/status_post_supervisor.h` — public API `supervisor_was_planned_reboot()` so downstream code can distinguish a planned reboot from an `ESP_RST_SW` of unknown provenance. Cleared once T14 makes one successful POST after recovery.
+- `firmware/src/main.cpp` — T15 spawned **before** T14 with priority 4 (between `TASK_PRIO_LOW` = 3 and `TASK_PRIO_MEDIUM` = 5). Higher than T14 so a wedged T14 cannot starve the supervisor that's trying to recover it; lower than the climate-critical tasks so it never preempts T2/T3/T6. Stack 4 KB. Pinned to Core 0 (same core as T10/T11/T14).
+- `firmware/src/types/app_types.h` — new `extern TaskHandle_t task_t15` declaration. Symbol defined in `status_post_supervisor.cpp` so a future build that omits T15 doesn't drag an unused handle along.
+- `firmware/src/main.cpp` — T15 added to the stack-HWM probe loop (1.17.29 instrumentation).
+- `firmware/src/ui_display/ui_display.cpp` — page 3 (Network) row 0 now reads `WiFi: conn    BK` when `status_post_backoff_active()` is true. Operator can see at a glance that secondary network activity is currently suspended; the green-status LED stays green because primary climate control is unaffected.
+
+### Changed
+- `firmware/src/status_post/status_post.cpp::task_status_post()` — main loop top now advances `s_heartbeat++` unconditionally. A wedged HTTPS call (the failure mode we're detecting) is the only thing that can freeze it.
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.36` → `1.18.0`.
+
+### Behaviour notes / non-changes
+- Build cost: ~+2.3 KB flash, ~+32 bytes RAM (the new supervisor handle in main.cpp). Total bulkhead-policy delta over the 1.17.33 baseline: ~12 KB flash, +96 bytes RAM, 11 new NVS slots.
+- **Force-respawn cost budget:** each respawn keeps the static `WiFiClientSecure` (Phase 1) and the breaker structs (Phase 2) intact — only the task stack + TCB is reclaimed. Empirically ~96 KB peak overhead during the `vTaskDelete → vTaskDelay(100ms) → xTaskCreatePinnedToCore` window. Supervisor's hourly cap (10 respawns / hour) bounds the budget to ~960 KB of churn per hour, well within heap headroom.
+- **Why planned reboot at 64 KB?** That's ~50 % of the typical free-internal-heap floor on this build (observed ~131 KB free under load via the 1.17.29 heap-row probe). Crossing 64 KB cumulative drop means a sustained leak that respawning has not arrested — escalate before OOM forces an uncontrolled `ESP_RST_PANIC`.
+- **Planned-reboot recovery time:** Phase 3 wrote each window channel's last terminal state to NVS, so the next boot's T2 calibration is skipped if all three were CLOSED at restart. Worst-case 2 seconds vs. the pre-Phase-3 171 seconds of climate-control outage during M3 boot calibration.
+- **Boot-reason distinguishability:** a planned reboot calls `esp_restart()`, which the ESP-IDF records as `ESP_RST_SW` (= 3). Distinguishable from `ESP_RST_PANIC` (= 4) or `ESP_RST_INT_WDT` (= 5) in the existing 1.17.31 boot-reason log row.
+- **Bulkhead policy known limitation (per gh#18):** hard faults *inside* ESP-IDF / mbedTLS / lwIP on a single-chip architecture cannot be intercepted. The policy's job is to make such faults *bounded* (Phase 2 throttles the trigger rate; Phase 3 + Phase 4 ensure the resulting reboot is a 2-second blip, not a 171-second outage). Eliminating the faults themselves requires hardware separation or a separate co-processor — explicitly out of scope.
+- **Log-upload retention:** preserved per gh#18 explicit out-of-scope. If the log-upload path proves to be the dominant supervisor-respawn trigger after deployment, dropping or re-scoping it remains a future option (would land as a v1.18.x patch).
+
+### Related
+- [gh#18](https://github.com/pe1mew/greenhouse-Controller/issues/18) — Bulkhead policy umbrella. **All four phases now shipped.**
+- [gh#16](https://github.com/pe1mew/greenhouse-Controller/issues/16) — Unit-2 S200-absent reboots. The structural mitigation is now complete; remaining work on gh#16 is root-cause investigation, orthogonal to the policy.
+
+---
+
+## [1.17.36] — 2026-05-14
+
+*Third of four phases delivering the bulkhead policy ([gh#18](https://github.com/pe1mew/greenhouse-Controller/issues/18)): persists each relay channel's terminal window state (`CH_CLOSED` / `CH_OPEN`) to NVS on arrival, and writes `CH_UNKNOWN` to NVS **before** energising any relay. On boot, if every channel's persisted state is `CH_CLOSED` and the GPIO42 alarm pin is not asserted, the M3 boot calibration (up to 171 s of climate-control outage) is skipped. This pre-positions the supervisor's planned-reboot path (Phase 4): a planned reboot can now recover in ~2 seconds instead of ~171 seconds, making the bulkhead policy's "planned-reboot safety valve" operationally cheap.*
+
+### Added
+- `firmware/src/relay_controller/relay_controller.cpp` — three new NVS keys `t2_st_ch0`, `t2_st_ch1`, `t2_st_ch2` (i32, namespace `NVS_NS_MOTOR`). Encoded values: 0 = UNKNOWN (default), 1 = CLOSED, 2 = OPEN. Three new symbolic constants `NVS_STATE_UNKNOWN`, `NVS_STATE_CLOSED`, `NVS_STATE_OPEN`.
+- `firmware/src/relay_controller/relay_controller.cpp` — new helper `persist_ch_state(uint8_t ch, ch_state_t state)`. Maps `CH_CLOSED`/`CH_OPEN` to the two terminal encodings; everything else (UNKNOWN, MOVING, GAP) maps to UNKNOWN. Called at every state transition.
+- `firmware/src/event_logger/event_logger.h` — LOG_SYSTEM `value_a=10` documented as "T2 boot-cal skipped" (producer: T2; value_b unused). Since 1.17.36. Lets a downstream log analyser distinguish a fast NVS-recovered boot from a full M3 calibration.
+
+### Changed
+- `firmware/src/relay_controller/relay_controller.cpp::ch_start_close()` and `ch_start_open()` — persist `CH_UNKNOWN` to NVS **immediately before** `relay_ch_close()` / `relay_ch_open()`. Invariant: the relay can only be energised while NVS records UNKNOWN, so a power loss between persist-call and reboot recovers as "calibrate" not "stale terminal".
+- `firmware/src/relay_controller/relay_controller.cpp::ch_update()` — on travel-complete (`CH_MOVING_OPEN → CH_OPEN`, `CH_MOVING_CLOSE → CH_CLOSED`), persist the new terminal state to NVS. This is the only write of a non-UNKNOWN value.
+- `firmware/src/relay_controller/relay_controller.cpp::calib_close_all()` — persists `CH_UNKNOWN` before each channel's CLOSE relay is energised, and persists `CH_CLOSED` on the completion of each channel's travel. Boot-calibration completion now leaves a clean NVS-side state ready for next boot's skip-check.
+- `firmware/src/relay_controller/relay_controller.cpp::handle_alarm_onset()` — additionally persists `CH_UNKNOWN` for all three channels (in addition to the existing in-memory state update). A power loss after an alarm onset but before the operator clears the alarm now recovers correctly (calibrate on next boot, never trust pre-alarm terminal state).
+- `firmware/src/relay_controller/relay_controller.cpp::task_relay_controller()` — boot path: when the GPIO42 alarm is not asserted, read the three persisted state keys via `nvs_cfg_get_i32_or_default()` (default UNKNOWN). If **all three** are `NVS_STATE_CLOSED`, set the in-memory channels to `CH_CLOSED` directly and skip `calib_close_all()`. Emit `LOG_SYSTEM,SYS,0,0,10,0` and an `ESP_LOGI` line documenting the skip. Otherwise log the recovered tuple and run calibration as before.
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.35` → `1.17.36`.
+
+### Behaviour notes / non-changes
+- Build cost: ~+0.7 KB flash, 3 new NVS slots, zero new RAM.
+- NVS wear: two writes per window movement (one UNKNOWN before, one terminal after). Climate-control issues at most ~10 moves per hour in a worst-case operational pattern, so ~480 writes/day per channel ≈ 175 k/year — well within the 100 k-cycle-per-page NVS lifetime once wear-levelling is accounted for (NVS internally distributes writes across many pages).
+- **Why "all three CLOSED" only?** Boot calibration's stated purpose is to establish a known-CLOSED reference. An all-`CH_OPEN` recovery would still need to drive to CLOSED before climate logic acts, so the calibration runs anyway. Restricting skip-eligibility to "all closed" keeps the semantics of CLOSE_ALL calibration intact while capturing the operationally common case (planned reboot after a sustained period of stable climate at night, with all windows closed).
+- **Power-loss race during MOVING:** the invariant "NVS records UNKNOWN before relay energises" makes the failure mode safe by construction. Worst-case outcome of any power-loss timing is "calibrate on boot" — the same behaviour the firmware has always had.
+- **Stale NVS from older firmware:** the explicit `default=NVS_STATE_UNKNOWN` in `nvs_cfg_get_i32_or_default()` means first-boot post-upgrade (key absent in NVS) always calibrates. No migration code needed.
+- Phase 4 (v1.18.0) adds the supervisor task (T15), the planned-reboot fallback that consumes this fast-recovery path, and the LCD "Net backoff" badge.
+
+### Related
+- [gh#18](https://github.com/pe1mew/greenhouse-Controller/issues/18) — Bulkhead policy umbrella. This is Phase 3 of four.
+
+---
+
+## [1.17.35] — 2026-05-14
+
+*Second of four phases delivering the bulkhead policy ([gh#18](https://github.com/pe1mew/greenhouse-Controller/issues/18)): adds a persistent circuit breaker around the T14 status-POST and log-upload paths. After a threshold of consecutive failures, the breaker opens a backoff window (60 s → 5 min → 30 min → 1 h, capped) and skips POST/upload attempts entirely until the window expires. The state survives reboot via NVS, so a chip that crashes-and-resets in the middle of a failure burst comes back already in backoff instead of immediately re-triggering the same fault. Phase 1's `status_post_backoff_active()` stub now returns the real state, so the `net_backoff_active` JSON flag and "Net backoff" web-GUI badge already wired in 1.17.34 light up correctly. No impact on climate control, sensors, or any primary-task surface.*
+
+### Added
+- `firmware/src/status_post/status_post.cpp` — `t14_breaker_t` extended with four Phase-2 fields: `open_until_unix` (NVS-persisted; backoff window expiry in Unix UTC, 0 = closed), `hold_phase` (NVS-persisted; index 0–4 into the schedule table), `consec_fail` and `consec_ok` (RAM-only counters). Same struct used for both `s_post_breaker` and `s_log_breaker` — two independent breakers because the two paths fail at very different cadences (every status interval vs. once per day).
+- `firmware/src/status_post/status_post.cpp` — exponential backoff schedule `BREAKER_PHASE_S[] = {0, 60, 300, 1800, 3600}` seconds. Thresholds: 3 consecutive failures advance one phase; 5 consecutive successes regress one phase (hysteresis prevents 30 min → 60 s → 30 min yo-yo under intermittent connectivity).
+- `firmware/src/status_post/status_post.cpp` — three new module-private helpers `breaker_load()`, `breaker_open()`, `breaker_record()`. `breaker_load()` is called once at T14 task entry to recover NVS-persisted state. `breaker_open()` is a non-mutating predicate consulted by `ready_to_post()` and `maybe_upload_log()` preconditions, plus by `status_post_backoff_active()`. `breaker_record()` mutates state on each outcome and writes NVS only on phase transitions (and on first success after open) — steady-state success or sub-threshold fail touches NVS zero times.
+- `firmware/src/status_post/status_post.cpp` — NVS-key constants `t14_post_until`, `t14_post_phase`, `t14_log_until`, `t14_log_phase` (all `int32_t` in `NVS_NS_SYSTEM`).
+- `firmware/src/status_post/status_post.cpp` — `task_status_post()` entry now calls `breaker_load()` for both breakers and logs an `ESP_LOGI` line summarising recovered state if either breaker came back non-closed.
+
+### Changed
+- `firmware/src/status_post/status_post.cpp` — `ready_to_post()` now returns false when `breaker_open(&s_post_breaker, cfg->current_unix_ts)` is true. Pre-NTP (`current_unix_ts < 1700000000`) is treated as not-in-backoff by `breaker_open()`; the pre-NTP guard in `ready_to_post()` already blocks the attempt for an orthogonal reason.
+- `firmware/src/status_post/status_post.cpp` — `maybe_upload_log()` preconditions extended with `breaker_open(&s_log_breaker, …)` check. When the daily slot fires while the log breaker is open, the existing `log_upload_skip(3)` diagnostic event records that the slot was blocked.
+- `firmware/src/status_post/status_post.cpp` — `log_post_outcome()` and `log_upload_outcome()` now feed `breaker_record()` for their respective breakers immediately after recording the cosmetic last-attempt fields.
+- `firmware/src/status_post/status_post.cpp` — `status_post_backoff_active()` now returns the real state (`breaker_open(post) || breaker_open(log)`). The Phase-1 stub returned `false` unconditionally; the consumer side in `status_json.cpp` and `app.js` was already wired so the JSON flag and the "Net backoff" badge light up automatically the first time either breaker opens.
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.34` → `1.17.35`.
+
+### Behaviour notes / non-changes
+- No new tasks. No new public APIs beyond what 1.17.34 already exposed.
+- Build cost: ~+1 KB flash; ~+64 B BSS (two breaker structs); 4 new NVS slots (well within the NVS partition's 64 KB).
+- NVS wear: steady-state operation writes zero NVS slots per cycle. NVS writes occur only when the breaker crosses a phase boundary — at most ~10 writes per day even during a hard outage, vs. NVS's 100 k-cycle endurance ceiling. Effectively unlimited.
+- Recovery semantics: a single successful POST after the breaker opens clears `open_until_unix` immediately (so the next cycle attempts normally) but `hold_phase` only regresses after 5 consecutive successes. Worst case during intermittent connectivity: the breaker stays at its highest reached phase for several minutes after recovery before stepping down. This is deliberate — preferable to a flapping breaker that ping-pongs between fully-open and fully-closed every successful retry.
+- Independent breakers: the status-POST path and the log-upload path each have their own `t14_*_until` / `t14_*_phase` keys. A flaky daily-upload window does not throttle the every-2-minute status post, and vice versa.
+- Phase 3 (v1.17.36) will persist window state (`CH_CLOSED` / `CH_OPEN`) for the three relay channels so the supervisor's planned-reboot recovery (added in Phase 4) is a 2-second blip rather than a 171-second M3-calibration outage.
+
+### Related
+- [gh#18](https://github.com/pe1mew/greenhouse-Controller/issues/18) — Bulkhead policy umbrella. This is Phase 2 of four.
+- [gh#16](https://github.com/pe1mew/greenhouse-Controller/issues/16) — Unit-2 S200-absent reboots. The breaker prevents repeated immediate-retry storms after a crash-induced reboot, regardless of the root cause.
+
+---
+
+## [1.17.34] — 2026-05-14
+
+*First of four phases delivering the bulkhead policy ([gh#18](https://github.com/pe1mew/greenhouse-Controller/issues/18)): secondary network activity (T14 status reporting + log upload) must not affect primary climate control. This release ships the HTTPS-side hardening that reduces both the per-kill leak magnitude (when the future supervisor in Phase 4 kills T14 mid-call) and the per-cycle time-in-mbedTLS (which empirically tracks the trigger probability of the gh#16 crash class). Behaviour change for status POSTs and log uploads only — no impact on climate control, sensors, or any primary-task surface.*
+
+### Added
+- `firmware/src/status_post/status_post.h` — new public API `bool status_post_backoff_active(void)`. Phase 1 stub returns `false`; Phase 2 will wire it to real breaker state. Existing now so `status_json.cpp` and `app.js` can integrate the consumer side this release.
+- `firmware/src/status_post/status_post.cpp` — new module-private `t14_breaker_t` struct (Phase 1 refactor of the four loose `s_last_post_*` / `s_streak_*` statics from 1.17.30). Two independent instances (`s_post_breaker`, `s_log_breaker`) — Phase 2 will extend the struct with `open_until_unix` / `hold_phase` / `consec_fail` fields without changing the callsites refactored here.
+- `firmware/src/status_post/status_post.cpp` — new static `WiFiClientSecure s_secure` + `s_secure_inited` flag, replacing the per-POST heap allocation pattern. With `http.setReuse(true)` + explicit `Connection: keep-alive` header, the underlying TCP socket (and therefore the TLS session) persists across calls. `setInsecure()` applied once at first https:// use. Reset to fresh state on (a) WiFi-disconnect edge (detected at top of T14 main loop), (b) HTTPClient error return ≤ 0 (transport-level failure).
+- `firmware/src/status_post/status_post.cpp` — new static helpers `http_open_for()` and `http_handle_error()` centralising the per-call setup that was duplicated between `do_status_post()` and `do_log_upload()`. Both call sites now go through the helper, halving the surface area Phase 2's breaker integration has to touch.
+- `firmware/src/status_post/status_post.cpp` — new compile-time tunable `T14_HTTP_CONNECT_TIMEOUT_MS = 3000u`. Applied via `http.setConnectTimeout()` in `http_open_for()`. Bounds the TCP-connect phase independently of the response phase (which stays at 5 s for status POST, 30 s for log upload). A misbehaving DNS or unreachable host now aborts within ~4 s of cycle start instead of 5 s.
+- `firmware/src/status_post/status_json.cpp` — `mode.flags[]` array now appends `"net_backoff_active"` when `status_post_backoff_active()` returns true. No new EG1 bit allocated — the breaker state is T14-private and has no other consumer.
+- `firmware/data/app.js` — `flagBadges` map extended with `net_backoff_active: '<span class="badge warn">Net backoff</span>'`. Existing Alarms-card render pipeline picks it up automatically.
+
+### Changed
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.17.33` → `1.17.34`.
+- WiFiClientSecure no longer heap-allocated per POST/upload (saves ~6-8 KB per kill if the future supervisor in Phase 4 terminates T14 mid-call; saves the full handshake roundtrip on every status POST after the first one).
+
+### Behaviour notes / non-changes
+- No new files. No new NVS keys (Phase 2 adds them). No new tasks (Phase 4 adds the supervisor).
+- Build cost: ~+0.5 KB flash; BSS grows by the `WiFiClientSecure` instance size (~8 KB) but the equivalent heap allocation per POST is eliminated, so net runtime memory pressure is lower at steady-state.
+- TLS session is *connection-reuse* over keep-alive, not *session-ticket resumption*. The same `WiFiClientSecure` instance retains the live TCP+TLS connection across `http.end()` calls (as long as `setReuse(true)` and `Connection: keep-alive` are both honoured). A fresh handshake still happens on first call after every WiFi-disconnect, error return, or server-side connection close.
+- Phase 2 (v1.17.35) will populate the breaker struct's missing fields, implement the persistent backoff schedule, persist state to NVS, and wire `status_post_backoff_active()` to return real values.
+
+### Related
+- [gh#18](https://github.com/pe1mew/greenhouse-Controller/issues/18) — Bulkhead policy umbrella. This is Phase 1 of four.
+- [gh#16](https://github.com/pe1mew/greenhouse-Controller/issues/16) — Unit-2 S200-absent reboots. The HTTPS hardening here is the structural mitigation, orthogonal to root-cause identification.
+
+---
+
 ## [1.17.33] — 2026-05-13
 
 *Adds a runtime LCD-contrast API to the driver. The AiP31068L character controller has supported software contrast via its extended-instruction set since the chip's first revision; `lcd_init()` has always used it once at boot to set a fixed value of 32 (≈ 50 % of the 0–63 range), but the driver did not expose a runtime override. This release adds `lcd_set_contrast(uint8_t value)` so a higher-level task (T1 / T8 / a future Web-tab field) can re-tune contrast at runtime. No behaviour change in this release — the boot-time default and call sites are unchanged. The plumbing-to-NVS-and-GUI work is tracked separately on [gh#15](https://github.com/pe1mew/greenhouse-Controller/issues/15).*

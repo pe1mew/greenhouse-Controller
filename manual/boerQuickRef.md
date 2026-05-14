@@ -1,6 +1,6 @@
 # Quick-reference — Kascontroller voor de boer
 
-**Versie 1.17.25** · 2026-05-11 · Volledige uitleg in `boerHandleiding.pdf` · Lamineren en naast de kast hangen.
+**Versie 1.18.2** · 2026-05-14 · Volledige uitleg in `boerHandleiding.pdf` · Lamineren en naast de kast hangen.
 
 ### RGB-LED · in één oogopslag
 
@@ -60,6 +60,7 @@ Vanaf elk statusscherm opent **elke toets behalve `D`** het hoofdmenu.
 | Heartbeat-LED knippert niet | Power-cycle |
 | RGB-LED rood (`Mode: ALARM`) | **Bel beheerder** — zelf niets doen |
 | RGB-LED oranje | Lees Mode-regel; `** SENSOR FAULT` → bel beheerder |
+| `WiFi: conn    BK` op LCD-scherm 4 | Online status-rapportage in **backoff** — geen actie; klimaat ongewijzigd. Blijft het uren bestaan? Meld beheerder. |
 | PIN vergeten (Farmer) | Bel beheerder |
 | Wind-alarm telkens terug | Beheerder kan windgemiddelde-venster langer zetten |
 

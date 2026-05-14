@@ -323,39 +323,158 @@ def _decode_alarm(row: dict) -> str:
         return f"raw: a={row.get('value_a')} b={row.get('value_b')}"
 
 
+_ESP_RESET_REASON = {
+    0:  "UNKNOWN",
+    1:  "POWERON",
+    2:  "EXT",
+    3:  "SW (esp_restart)",
+    4:  "PANIC",
+    5:  "INT_WDT",
+    6:  "TASK_WDT",
+    7:  "WDT",
+    8:  "DEEPSLEEP",
+    9:  "BROWNOUT",
+    10: "SDIO",
+}
+
+
 def _decode_system(row: dict) -> str:
     """
-    SYSTEM events (various sources):
-      Boot:              all zeros (event_type=SYSTEM, value_a=0, value_b=0)
-      SD write failure:  value_a=-1
-      SD low space:      value_a=-2
-      Q3 overflow:       value_a>0 (count of dropped events)
-      WiFi AP toggle:    initiated by ADMIN, value_a=0/1
+    SYSTEM events. value_a categorises the SYSTEM-event subtype; value_b is
+    the payload. Match the LOG_SYSTEM value_a table in
+    ``firmware/src/event_logger/event_logger.h`` exactly.
+
+    Producer key:
+      WEB   = T14 status_post.cpp
+      NET   = T10 network_manager.cpp
+      T4    = task_data_manager() (post-RTC-seed)
+      T9    = event_logger.cpp (force-rotate marker, Q3 drop synthetic)
+      T1    = task_watchdog_heartbeat() (heap rows + corruption + largest-block)
+      T2    = relay_controller.cpp (boot-cal skipped)
+
+    Subtypes:
+      a=-1, b=count                   Q3 drop-overflow (T9 synthetic)
+      a=0,  b=0/1/2/3 (initiator=WEB) T14 outcome / diagnostic skip
+      a=1,  b=0/1                     STA (WiFi client) connected/disconnected
+      a=2,  b=0/1                     NTP timeout / synced
+      a=3,  b=0/1                     AP stopped / started
+      a=4,  b=1                       Geolocation success
+      a=5,  b=esp_reset_reason 1..10  BOOT (since 1.17.27, T4-emitted since 1.17.31)
+      a=6,  b=0                       Force-rotate marker (since 1.17.28)
+      a=7,  b=KB                      HEAP internal free (since 1.17.29)
+      a=8,  b=KB                      HEAP PSRAM free (since 1.17.29)
+      a=9,  b=0                       HEAP corruption (since 1.17.29)
+      a=10, b=0                       T2 boot-calibration skipped (since 1.17.36)
+      a=12, b=KB                      HEAP internal largest contiguous (since 1.18.2)
+
+    The legacy "a=0 b=0 initiator=SYS = boot marker" form was retired in
+    1.17.31; older logs that contain it are reported as such.
     """
     try:
         va        = int(row["value_a"])
         vb        = int(row["value_b"])
         initiator = row.get("initiator", "SYS").strip()
 
-        if va == 0 and vb == 0:
-            if initiator in ("SYS", ""):
-                return "System boot"
-            return f"System event (a=0 b=0)  [{_INITIATOR.get(initiator, initiator)}]"
+        # ---------------------------------------------------------------
+        # Q3 drop overflow (T9 synthetic)
+        # ---------------------------------------------------------------
+        if va == -1:
+            return f"Q3 queue overflow: {vb} event(s) dropped"
 
-        if va == -1 and vb == 0:
-            return "SD card write failure - falling back to NVS-only logging"
+        # ---------------------------------------------------------------
+        # T14 outcome / skip (initiator=WEB) — value_a=0 sub-codes
+        # ---------------------------------------------------------------
+        if va == 0 and initiator == "WEB":
+            if vb == 0:
+                return "T14 status POST: failed (streak transition)"
+            if vb == 1:
+                return "T14 log upload: failed"
+            if vb == 2:
+                return "T14 daily slot fired but no closed file on SD"
+            if vb == 3:
+                return ("T14 daily slot fired but precondition blocked it "
+                        "(status disabled / URL empty / WiFi down / pre-NTP / OTA)")
+            return f"T14 SYSTEM event: a=0 b={vb} (Web)"
 
-        if va == -2 and vb == 0:
-            return "SD card low space at retention floor - SD logging suspended"
+        # T14 success outcomes share the value_b code (0=status POST, 1=log upload)
+        if va == 1 and initiator == "WEB":
+            if vb == 0:
+                return "T14 status POST: success"
+            if vb == 1:
+                return "T14 log upload: success"
+            return f"T14 SYSTEM event: a=1 b={vb} (Web)"
 
-        if va > 0 and vb == 0 and initiator == "SYS":
-            return f"Q3 queue overflow: {va} event(s) dropped"
+        # ---------------------------------------------------------------
+        # value_a=1..4 — network events (initiator=SYS, posted by T10)
+        # ---------------------------------------------------------------
+        if va == 1 and initiator in ("SYS", ""):
+            return ("STA WiFi client: " + ("connected" if vb else "disconnected"))
 
+        if va == 2 and initiator in ("SYS", ""):
+            return "NTP: " + ("synced" if vb else "timeout")
+
+        if va == 3 and initiator in ("SYS", ""):
+            return "WiFi AP: " + ("started" if vb else "stopped")
+
+        if va == 4 and initiator in ("SYS", ""):
+            if vb == 1:
+                return "Geolocation: success"
+            return f"Geolocation event: b={vb}"
+
+        # ---------------------------------------------------------------
+        # value_a=5 — boot reason (posted by T4 since 1.17.31)
+        # ---------------------------------------------------------------
+        if va == 5:
+            reason = _ESP_RESET_REASON.get(vb, f"reason#{vb}")
+            return f"Boot: esp_reset_reason = {vb} ({reason})"
+
+        # ---------------------------------------------------------------
+        # value_a=6 — T9 force-rotate marker (last entry in a rotated-out file)
+        # ---------------------------------------------------------------
+        if va == 6:
+            return "T9 force-rotate marker (last entry before rotation)"
+
+        # ---------------------------------------------------------------
+        # value_a=7/8 — periodic free-heap snapshot (T1)
+        # ---------------------------------------------------------------
+        if va == 7:
+            return f"Heap internal free: {vb} KB"
+
+        if va == 8:
+            return f"Heap PSRAM free: {vb} KB"
+
+        # ---------------------------------------------------------------
+        # value_a=9 — heap integrity check failure (T1)
+        # ---------------------------------------------------------------
+        if va == 9:
+            return "Heap CORRUPTION detected (heap_caps_check_integrity_all)"
+
+        # ---------------------------------------------------------------
+        # value_a=10 — T2 boot-calibration skipped (gh#18 Phase 3)
+        # ---------------------------------------------------------------
+        if va == 10:
+            return ("T2 boot calibration skipped — NVS-recovered window state "
+                    "(all three channels CLOSED)")
+
+        # ---------------------------------------------------------------
+        # value_a=12 — largest contiguous internal-heap block (since 1.18.2)
+        # ---------------------------------------------------------------
+        if va == 12:
+            return f"Heap internal largest block: {vb} KB"
+
+        # ---------------------------------------------------------------
+        # Legacy / ambiguous: pre-1.17.31 boot marker
+        # ---------------------------------------------------------------
+        if va == 0 and vb == 0 and initiator in ("SYS", ""):
+            return "Legacy boot marker (pre-1.17.31)"
+
+        # Admin-initiated WiFi AP toggle (older firmware path)
         if initiator == "ADMIN" and vb == 0:
             state = "enabled" if va else "disabled"
             return f"WiFi AP {state}  [Admin]"
 
-        return f"System event: a={va} b={vb}  [{_INITIATOR.get(initiator, initiator)}]"
+        return (f"System event: a={va} b={vb}  "
+                f"[{_INITIATOR.get(initiator, initiator)}]")
     except (ValueError, KeyError):
         return f"raw: a={row.get('value_a')} b={row.get('value_b')}"
 

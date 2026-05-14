@@ -13,6 +13,7 @@
  */
 
 #include "status_json.h"
+#include "status_post.h"   /* status_post_backoff_active() — gh#18 Phase 1 */
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -175,6 +176,15 @@ size_t build_canonical_status_json(char *buf, size_t cap,
                     "%s\"%s\"", first ? "" : ",", EG1_FLAGS[i].name);
                 first = false;
             }
+        }
+        /* T14 circuit-breaker state (gh#18 Phase 1). Not an EG1 bit: the
+         * breaker is private to T14 and would not benefit from cross-task
+         * event-group machinery. Polled here directly. Phase 1 returns
+         * false unconditionally; Phase 2 wires it to real breaker state. */
+        if (ok && status_post_backoff_active()) {
+            ok = ok && append(buf, cap, &pos,
+                "%s\"net_backoff_active\"", first ? "" : ",");
+            first = false;
         }
         ok = ok && append(buf, cap, &pos, "]}");
     }

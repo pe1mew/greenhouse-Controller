@@ -5,9 +5,9 @@
 |--------------|------------------------------------------------|
 | Document     | Technical Software Design Specification        |
 | Project      | Greenhouse Ventilation Controller              |
-| Version      | 0.3 (draft)                                   |
-| Date         | 2026-05-07                                    |
-| Status       | Draft                                         |
+| Version      | 0.4 (draft)                                   |
+| Date         | 2026-05-14                                    |
+| Status       | Draft — covers firmware up to 1.18.2          |
 | Related docs | `functionalRequirementsSpecification.md`       |
 |              | `technicalHardwareDesignSpecification.md`      |
 |              | `tasks.md`                                    |
@@ -45,6 +45,9 @@
    - 5.10 NVS Configuration Storage Layout
    - 5.11 Watchdog and Fault Handling
    - 5.12 System Status RGB LED
+   - 5.13 Status Website POST (T14)
+   - 5.14 Persistent Circuit Breaker (T14 internal)
+   - 5.15 Bulkhead Policy and Status-POST Supervisor (T15)
 6. [Open Issues](#6-open-issues)
 
 ---
@@ -225,6 +228,8 @@ The firmware is structured as a set of FreeRTOS tasks. Each logical function is 
 | T11 | Web Server           | Low               | 0    | Serves configuration pages from LittleFS; applies session model; posts config changes to T4 |
 | T12 | MQTT Client          | Low               | 0    | Publishes sensor data and status; subscribes to command topics |
 | T13 | OTA                  | Low (on demand)   | 0    | Firmware and LittleFS update; manages dual-bank rollback |
+| T14 | Status website POST  | Low               | 0    | Periodic HTTP/HTTPS status POST to external dashboard; daily log upload; persistent circuit breaker (gh#18). Added 1.17.0; bulkhead-hardened 1.17.34+. |
+| T15 | Status-POST supervisor | 4 (between LOW and MED) | 0 | Bulkhead-policy supervisor (gh#18 Phase 4, since 1.18.0). Monitors T14 heartbeat + cumulative heap-drop; force-respawns T14 on wedge; issues a planned reboot via `esp_restart()` when respawn budget is exhausted. |
 
 ### 4.3 Task Descriptions
 
@@ -1220,6 +1225,113 @@ These four keys are part of the "Should" feature set (FR-UI21, FR-CF14); they de
 
 ---
 
+### 5.13 Status Website POST (T14)
+
+> **Status:** added in firmware 1.17.0; hardened against external-network faults in 1.17.34 (Phase 1 of the gh#18 bulkhead policy, see §5.15).
+
+**Responsibility.** T14 is the sole producer of outbound HTTP/HTTPS POSTs to the configured external dashboard URL. Two endpoints:
+
+- `POST <status_url>` — periodic status snapshot in canonical JSON (interval 60–300 s).
+- `POST <status_url>?action=log` — daily log-file upload (force-rotate then stream the most recent closed CSV).
+
+**Persistent TLS client.** `WiFiClientSecure` is held as a module-level `static` instance (`s_secure` in `firmware/src/status_post/status_post.cpp`). Combined with `HTTPClient::setReuse(true)` and the explicit `Connection: keep-alive` header, the TLS session and underlying TCP socket survive across status-POST cycles. The static instance is taken down (`s_secure.stop()` + `s_secure_inited = false`) on (a) the WiFi-disconnect edge, detected at the top of the T14 main loop; (b) any transport-level error return (HTTPClient return code ≤ 0). Audit of the underlying `stop_ssl_socket()` against arduino-esp32 #3808 in `design/tls_leak_audit.md` confirms this pattern releases all mbedtls contexts for our `setInsecure()` usage profile.
+
+**Timeouts** are split: `T14_HTTP_CONNECT_TIMEOUT_MS = 3000` for TCP connect (and TLS handshake), `T14_HTTP_TIMEOUT_MS = 5000` for the status-POST response, and `T14_LOG_HTTP_TIMEOUT_MS = 30000` for the log-upload response (large body). A fully unreachable host therefore aborts within ~4 s of cycle start instead of waiting the full 5 s of the response timeout.
+
+**Streaming log upload.** The daily upload uses `SDFileChunkedStream` (Arduino `Stream` adapter over `storage_sd_read`) with a single static 4 KB chunk buffer in BSS. `HTTPClient::sendRequest("POST", &stream, fsize)` pulls bytes as needed. Peak heap during a 5 MB upload is ~4 KB, vs. up to 5 MB of PSRAM in the pre-1.17.29 slurp-and-POST pattern.
+
+**Public state-getters** (lock-free reads of primitive types; no mutex required):
+
+| Function | Returns | Used by |
+|---|---|---|
+| `status_post_last_str(buf, cap)` | "OK 2026-05-10 14:30:22" or "" | `/api/web` GET handler |
+| `status_post_last_log_str(buf, cap)` | same shape, for the log upload | `/api/web` GET handler |
+| `status_post_backoff_active()` | `true` if either breaker is open | `status_json.cpp` (`net_backoff_active` flag) and `ui_display.cpp` (LCD page 3 `BK` badge) |
+| `status_post_heartbeat()` | monotonic uint32 incremented at top of every loop iteration | T15 supervisor |
+| `status_post_heap_drop_bytes()` | saturating uint32 of cumulative free-heap drop measured around every HTTPS call | T15 supervisor |
+| `status_post_force_teardown()` | idempotent close of `s_secure` | T15 supervisor (before `vTaskDelete(task_t14)`) |
+
+### 5.14 Persistent Circuit Breaker (T14 internal)
+
+> **Status:** added in firmware 1.17.35 (Phase 2 of the gh#18 bulkhead policy).
+
+**Purpose.** Throttle repeated outbound-POST failures so that an unreachable server cannot keep the controller continuously busy with hopeless retry attempts.
+
+**State (`t14_breaker_t` in `status_post.cpp`):** two independent breakers — `s_post_breaker` for the periodic status POST, `s_log_breaker` for the daily log upload.
+
+| Field | RAM/NVS | Purpose |
+|---|---|---|
+| `last_unix` / `last_ok` / `known` | RAM | Last-attempt record for `format_last()` |
+| `streak_logged_fail` | RAM | Suppresses duplicate fail-event SD writes during a failure streak |
+| `open_until_unix` | NVS | Unix UTC when the breaker reopens; 0 = closed |
+| `hold_phase` | NVS | 0..4 index into the escalation schedule |
+| `consec_fail` / `consec_ok` | RAM | Counters for advancing/regressing `hold_phase` |
+
+**Schedule (`BREAKER_PHASE_S[]`):** `{0, 60, 300, 1800, 3600}` seconds. Three consecutive failures advance one phase (`BREAKER_FAIL_THRESHOLD = 3`); five consecutive successes regress one phase (`BREAKER_OK_TO_REGRESS = 5`). Hysteresis prevents the breaker yo-yoing under intermittent connectivity. Max phase capped at 4 (1 h).
+
+**NVS keys (namespace `system`):** `t14_post_until`, `t14_post_phase`, `t14_log_until`, `t14_log_phase`. Written via `nvs_cfg_set_i32()` **only** on phase transitions (and on clearing of the open window). Steady-state success or fail-before-threshold writes zero NVS slots. Worst-case NVS wear during a hard outage: ~10 writes/day per breaker — well under the 100 k-cycle NVS endurance budget.
+
+**Pre-NTP safety.** Both `breaker_open()` (predicate) and `breaker_record()` (mutator) treat `current_unix_ts < 1700000000` as "do not act" — the breaker cannot advance or trip before the clock is sync'd, because the `open_until_unix` comparison would be meaningless. The pre-NTP guard in `ready_to_post()` already blocks the attempt for an orthogonal reason; the breaker simply does not interfere.
+
+### 5.15 Bulkhead Policy and Status-POST Supervisor (T15)
+
+> **Status:** added in firmware 1.18.0 (Phase 4 of the gh#18 bulkhead policy). Implements FR-BK01 through FR-BK08.
+
+**Module:** `firmware/src/status_post_supervisor/status_post_supervisor.cpp` (header `.h`).
+
+**Design intent.** Provide a structural guarantee that secondary-network failures (T14 hang, TLS-stack memory leak, lwIP socket-leak) cannot disrupt the climate-critical primary loop. The supervisor is small, lock-free, and isolated from T14's address-space contents: it observes via three public getters and acts via three public setters.
+
+**Detection signals:**
+
+| Signal | Threshold | Outcome |
+|---|---|---|
+| `status_post_heartbeat()` not advancing for 60 s | `T15_WEDGE_TIMEOUT_MS` | Respawn T14 |
+| `status_post_heap_drop_bytes()` ≥ 64 KB | `T15_HEAP_DROP_LIMIT` | Planned reboot via `esp_restart()` |
+| > 1 respawn in 5 minutes | `T15_MIN_RESPAWN_GAP_MS` | Planned reboot |
+| > 10 respawns in current hour | `T15_HOURLY_RESPAWN_LIMIT` | Planned reboot |
+
+**Respawn sequence:**
+
+1. Confirm the respawn budgets above are not exhausted (else: planned reboot).
+2. Call `status_post_force_teardown()` — idempotent close of the persistent TLS session. The static `WiFiClientSecure` instance survives `vTaskDelete` (it lives in BSS, not on T14's task stack); without this explicit close the next incarnation would inherit a half-closed socket pointing at lwIP state the killed task never released.
+3. `vTaskDelete(task_t14)`.
+4. `vTaskDelay(100 ms)` — empirical minimum for FreeRTOS's idle task to reclaim the deleted task's stack + TCB.
+5. `xTaskCreatePinnedToCore(task_status_post, "T14_WEB", 12288, NULL, TASK_PRIO_LOW, &task_t14, 0)` — recreate. The recreated task picks up the same module-scope state (breakers, heartbeat, heap-drop accumulator); only the stack/TCB is fresh.
+
+**Planned reboot:**
+
+1. Set NVS `system/t15_planreboot = 1`.
+2. `vTaskDelay(250 ms)` for NVS commit and UART log to flush.
+3. `esp_restart()`. The boot-reason event posted by T4 in the next boot reports `esp_reset_reason = 3 (ESP_RST_SW)`, distinguishable from `ESP_RST_PANIC (4)` and `ESP_RST_INT_WDT (5)`.
+4. T15 clears `t15_planreboot` automatically after T14 completes one successful POST in the new boot — gives the web GUI a way to surface "this boot was a planned recovery" until normal operation resumes.
+
+**Watchdog discipline.** T15 itself subscribes to the task watchdog (`esp_task_wdt_add(NULL)` at entry, same pattern as T1/T2 since 1.17.29). Its 30-second polling interval is broken into 1-second chunks each preceded by `esp_task_wdt_reset()`. This is the `T15_WDT_KICK_CHUNK_MS` invariant (see FR-BK08). The 1.18.0→1.18.1 regression — T15 starving the WDT — is documented in `changelog.md` [1.18.1] as a cautionary example.
+
+**NVS keys (namespace `system`):**
+
+| Key | Type | Purpose |
+|---|---|---|
+| `t15_respawn_h` | i32 | Respawn count in current hour (rolls at HH:00 boundary) |
+| `t15_resp_hr`  | i32 | Hour marker (0–23) for the above counter |
+| `t15_planreboot` | i32 | 1 = next boot is recovery from a planned reboot; cleared after first successful POST |
+
+**Cross-references for the related primary-side state:**
+
+- Per-channel persisted window state (`t2_st_ch0/1/2` in `motor`) — written by T2 on every transition to a terminal state (`CH_CLOSED`/`CH_OPEN`); written to `NVS_STATE_UNKNOWN` before every relay-energise. At boot, if all three channels are `CH_CLOSED` and the GPIO42 motor-alarm pin is not asserted, `calib_close_all()` is skipped (saves up to 171 s on the planned-reboot recovery path). Logged as `LOG_SYSTEM, value_a=10`. Implements FR-BK05.
+- T1's heap probe extends `LOG_SYSTEM, value_a=7` (free internal KB) and `value_a=8` (free PSRAM KB) with `value_a=12` (largest contiguous internal block, KB) since 1.18.2. Implements FR-BK07. A widening gap between `value_a=7` and `value_a=12` is the diagnostic signature of heap fragmentation under repeated TLS handshakes — see `design/tls_leak_audit.md` for the rationale.
+
+**Operator-visible surfaces:**
+
+- LCD page 3 (Network) row 1: when `status_post_backoff_active()` returns true, the row reads `WiFi: conn    BK` instead of `WiFi: connected `. The 4-char slack of the original layout absorbs the badge without truncating the IP address on row 2.
+- Status JSON: `mode.flags[]` array includes the string literal `"net_backoff_active"` while either breaker is open. The local web GUI (`app.js::flagBadges`) renders it as a yellow `<span class="badge warn">Net backoff</span>` on the Status tab's Alarms card.
+- Event log: every breaker phase transition writes a `LOG_SYSTEM, value_a=0..1, value_b=0..3` row (initiator `LOG_BY_WEB`) — see `event_logger.h` for the value_b sub-code table.
+
+**Platform-version pinning.** `firmware/platformio.ini` pins `platform = espressif32@6.12.0` (since 1.18.2) so that the mbedtls/lwIP/ESP-IDF combination compiled into a given firmware is reproducible across developer environments. Re-running `design/tls_leak_audit.md`'s static audit is required before bumping the pin.
+
+**Known limitation (per gh#18).** Hard faults *inside* ESP-IDF / mbedTLS / lwIP cannot be intercepted from the application layer on this single-chip architecture. The bulkhead policy makes such faults *bounded* (Phase 2 throttles the trigger rate; Phase 3 + Phase 4 ensure the recovery is a 2-second blip, not a 171-second outage). Eliminating the faults themselves would require hardware separation or a co-processor — explicitly out of scope.
+
+---
+
 ## 6. Open Issues
 
 | # | Issue | Owner | Status |
@@ -1232,4 +1344,4 @@ These four keys are part of the "Should" feature set (FR-UI21, FR-CF14); they de
 
 ---
 
-*End of document — version 0.3 draft*
+*End of document — version 0.4 draft (covers firmware up to 1.18.2)*

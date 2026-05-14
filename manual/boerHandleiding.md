@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de boer
 
-**Versie:** 1.5 — concept
-**Datum:** 2026-05-12
-**Firmware:** 1.17.26
+**Versie:** 1.6 — concept
+**Datum:** 2026-05-14
+**Firmware:** 1.18.2
 
 ---
 
@@ -263,6 +263,17 @@ Drie mogelijke weergaven:
  - **Connected**: de kascontroller is verbonden met een wifi-netwerk; regel 2 toont het IP-adres
  - **AP active**: de tijdelijke Access Point staat aan; regel 2 toont de SSID `Greenhouse-XXXX` (waar XXXX de unieke ID is van de kascontroller)
  - **Disconnected**: geen verbinding; druk `#` om de AP in te schakelen (vraagt Beheerder-PIN)
+
+> **Sinds firmware 1.18.0** kan op regel 1 rechts de tekst `BK` verschijnen:
+>
+> ```
+>    +----------------+
+>    |WiFi: conn    BK|
+>    |192.168.1.100   |
+>    +----------------+
+> ```
+>
+> `BK` (afkorting van *backoff*) betekent dat de kascontroller tijdelijk **gestopt** is met rapporteren naar het externe webdashboard, omdat de verbinding daarmee meerdere keren mislukte. **Dit is geen storing** — het klimaatregelsysteem blijft normaal werken (RGB-LED blijft groen), alleen de online status-rapportage staat pauze. De controller probeert het later automatisch opnieuw (vanzelf, na 60 sec → 5 min → 30 min → 1 uur, afhankelijk van hoe lang de uitval al duurt). Geen actie nodig van de boer; als `BK` permanent blijft staan, meld het bij de beheerder.
 
 **Scherm 5 — Datum en tijd:**
 
@@ -1179,6 +1190,7 @@ Onderstaande termen verschijnen op het LCD-scherm. Ze zijn gegroepeerd per funct
 | Op LCD | Nederlands |
 |---|---|
 | `WiFi: connected` | Verbonden met netwerk |
+| `WiFi: conn    BK` | Verbonden, online status-rapportage in **backoff** (tijdelijk uit; klimaat ongewijzigd) — sinds 1.18.0 |
 | `WiFi: AP active` | Eigen AP actief |
 | `WiFi: --------` | Geen verbinding |
 | `Greenhouse-XXXX` | SSID van de eigen AP met unieke code op `XXXX` |
@@ -1311,6 +1323,7 @@ Voor alle vragen of problemen waar deze handleiding geen antwoord op geeft:
 | 1.3 | 2026-05-11 | Bijgewerkt voor firmware 1.17.0–1.17.25: zevende statusscherm toegevoegd met firmware-versie + Uptime; Datum/tijd-statusscherm (5) toont op rij 2 nu rechts een **Day**/**Night**-badge die automatisch omschakelt op zonsopkomst en zonsondergang; **D**-toets werkt vanuit elk menu, bladerscherm, PIN- of bewerk-scherm als directe terugkeer naar de roterende statusschermen; na 5 minuten zonder toetsendruk in een menu keert de controller automatisch terug naar de auto-rotatie; **Climate → 3 CR** volgt nu hetzelfde "eerst tonen, dan PIN, dan bewerken"-patroon als Day/Night (voorheen sprong dit menu direct naar PIN-invoer). Volledige handmatige taalcontrole.|
 | 1.4 | 2026-05-12 | Kleine revisies (geen firmware-wijziging — nog steeds 1.17.25). Elke PDF-pagina krijgt nu een **kop- en voettekst**: koptekst toont links *Kas Controller - Herenboeren Wenumseveld* en rechts het versienummer; voettekst toont links *Een RFSee product - http://www.rfsee.nl* en rechts *pagina N*. Alle figuren in de handleiding zijn voorzien van een **doorlopend volgnummer** ("Figuur 1: …", "Figuur 2: …" enz.). |
 | 1.5 | 2026-05-12 | Bijgewerkt voor firmware 1.17.26. Cosmetische correctie op **LCD Scherm 2 (Wind)**: rij 2 toont nu `Dir: 180 ° (S )` in plaats van `Dir:180 ° (S )` — er zit nu één spatie tussen de dubbele punt en het cijfer, in lijn met alle andere LCD-rijen (`Wind:`, `Mode:`, `Sess:`) en met de ongeldige-meting-rij (`Dir: ---`). GitHub-issue [#6](https://github.com/pe1mew/greenhouse-Controller/issues/6). |
+| 1.6 | 2026-05-14 | Bijgewerkt voor firmware 1.18.0–1.18.2. **Nieuwe `BK`-indicator op LCD Scherm 4 (Wifi)**: regel 1 toont rechts `BK` (afkorting van *backoff*) wanneer de online status-rapportage naar het externe webdashboard tijdelijk gepauzeerd is na herhaaldelijke verbindingsfouten. Het klimaatregelsysteem (RGB-LED, ramen, sensoren) blijft normaal werken; de boer hoeft niets te doen. De controller probeert de online verbinding daarna automatisch opnieuw met oplopende tussenpozen (60 sec → 5 min → 30 min → 1 uur). Zie §6 *Scherm 4 — Wifi-status* en §18 *Vertaaltabel — Wifi*. Achtergrond: deze indicator hoort bij een grotere intern-architectuurwijziging ("bulkhead policy", [gh#18](https://github.com/pe1mew/greenhouse-Controller/issues/18)) die garandeert dat problemen met de internet-verbinding **nooit** invloed hebben op de klimaat-aansturing — uitgebreid behandeld in de beheerder-handleiding. Geen LCD- of webinterface-wijzigingen die de dagelijkse bediening van de boer raken. |
 
 ---
 

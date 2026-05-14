@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de beheerder
 
-**Versie:** 1.9 — concept
-**Datum:** 2026-05-12
-**Firmware:** 1.17.26
+**Versie:** 1.10 — concept
+**Datum:** 2026-05-14
+**Firmware:** 1.18.2
 
 ---
 
@@ -970,6 +970,61 @@ Zie [boer-handleiding §12.3](handleiding.md#123-rgb-led-kleuren-samengevat). LC
 
 Voor de complete uitleg van het logbestand-formaat (alle velden, event-types, parameter-ID's, channel-states, alarm-codes) en het gebruik van het meegeleverde `logparser`-script: zie [Bijlage F](#bijlage-f--logbestand-formaat-en-logparser-script).
 
+### 12.7 Bulkhead-beleid — netwerk-isolatie van klimaatregeling (sinds 1.18.0)
+
+Het *bulkhead-beleid* is een architectuurmaatregel ingevoerd in firmware 1.18.0–1.18.2 (GitHub-issue [gh#18](https://github.com/pe1mew/greenhouse-Controller/issues/18)) die garandeert dat een secundair subsysteem — concreet: de online status-rapportage en log-upload naar het externe webdashboard via HTTPS — **nooit** kan leiden tot uitval van de primaire klimaatregeling. Een vastlopende internet-verbinding, een onbereikbare server, of een fout binnen de TLS-/mbedTLS-bibliotheek leidt hooguit tot tijdelijk gepauzeerde online rapportage (zichtbaar als `BK`-badge op LCD-scherm 4 en als `net_backoff_active`-vlag in de status-JSON); de motoren, sensoren, en alle LCD-/RGB-indicatoren blijven normaal werken.
+
+**Operator-zichtbare indicatoren:**
+
+| Indicator | Locatie | Betekenis |
+|---|---|---|
+| `BK` (rechts op rij 1) | LCD-scherm 4 (Wifi) | Tijdelijke pauze van status-POST en/of log-upload na herhaaldelijke verbindingsfouten. Klimaatregeling ongewijzigd. Verdwijnt automatisch zodra de verbinding zich herstelt. |
+| `net_backoff_active` (in JSON-payload) | Status-tab → Alarms-tegel webinterface | Zelfde betekenis als `BK`; wordt als gele "Net backoff"-badge gerenderd. |
+| `Boot: esp_reset_reason = 3 (SW)` in log | SD-logbestand en NVS-ring | Geplande herstart door T15-supervisor (zie hieronder). Onderscheidbaar van paniek-resets (`= 4 PANIC`) en watchdog-resets (`= 5 INT_WDT` of `= 6 TASK_WDT`). |
+
+**Wat zit erachter:**
+
+Vier opvolgende firmware-releases hebben elk een component toegevoegd:
+
+1. **1.17.34** — TLS-verbinding hergebruikt (één handshake meerdere POSTs), TCP-/HTTPS-timeouts gescheiden (3 sec verbinden, 5 sec antwoord status / 30 sec antwoord log), aparte `WiFiClientSecure`-instantie als statisch BSS-object om allocatie-druk weg te halen.
+2. **1.17.35** — *Persistent circuit breaker*: na 3 mislukkingen op rij wordt status-POST of log-upload gepauzeerd voor 60 sec → 5 min → 30 min → 1 uur (oplopend, maximaal 1 uur). Toestand overleeft een reboot via NVS-sleutels `t14_post_until` / `t14_post_phase` / `t14_log_until` / `t14_log_phase` (namespace `system`).
+3. **1.17.36** — Raamposities (`CH_CLOSED`/`CH_OPEN`) worden bij elke transitie weggeschreven naar NVS (`t2_st_ch0/1/2` in namespace `motor`); bij een opstart waarin alle drie kanalen al `CLOSED` waren wordt de M3-kalibratie van 171 sec **overgeslagen**, wat de hersteltijd van een geplande reboot terugbrengt van ~171 sec naar ~2 sec.
+4. **1.18.0** — Nieuwe achtergrondtaak **T15** (`status_post_supervisor`) bewaakt T14. Bij een vastgelopen T14 (heartbeat-teller niet meer opgehoogd binnen 60 sec) wordt T14 schoon gerespawned (cleanup van TLS-socket → `vTaskDelete` → opnieuw aanmaken). Bij verdacht heap-verbruik (> 64 KB cumulatieve daling) of een respawn-storm (> 10 respawns/uur of < 5 min tussen twee respawns) wordt een *geplande reboot* uitgevoerd via `esp_restart()`. De OTA-rollback-watchdog (`ota_mark_healthy()` na 30 sec stabiele uptime) beschermt tegen een defecte nieuwe firmware: drie crashes binnen 30 sec → automatische terugval naar de vorige bank. Dit gebeurde in productie op 2026-05-14 bij build 1.18.0 met een geconstateerde WDT-bug; 1.18.1 corrigeert die bug.
+
+**NVS-sleutels overzicht (gebruikt door bulkhead-componenten):**
+
+| Sleutel | Namespace | Type | Betekenis |
+|---|---|---|---|
+| `t14_post_until` | system | i32 | Unix-tijd waarop status-POST breaker dichtgaat (0 = niet open) |
+| `t14_post_phase` | system | i32 | Backoff-fase 0–4 (0=dicht, 1=60s, 2=5min, 3=30min, 4=1h) |
+| `t14_log_until`  | system | i32 | idem voor log-upload |
+| `t14_log_phase`  | system | i32 | idem voor log-upload |
+| `t15_respawn_h`  | system | i32 | T15-respawn-teller binnen huidig uur (rolt over op HH:00) |
+| `t15_resp_hr`    | system | i32 | Uur-marker (0–23) van laatste tellerwissel |
+| `t15_planreboot` | system | i32 | 1 = volgende boot was geplande reboot (wordt door T15 gewist na eerste succesvolle POST) |
+| `t2_st_ch0`/`t2_st_ch1`/`t2_st_ch2` | motor | i32 | Persistente raampositie (0=UNKNOWN, 1=CLOSED, 2=OPEN) |
+
+**Nieuwe LOG_SYSTEM-codes voor analyse:**
+
+| value_a | Betekenis | Sinds |
+|---|---|---|
+| 5 | Boot reden (value_b = `esp_reset_reason` 1–10; zie `logparser.md`) | 1.17.27 |
+| 6 | T9 force-rotate marker — laatste regel in een geroteerd-uit logbestand | 1.17.28 |
+| 7 | Vrije interne heap (value_b in KB), elke 60 sec | 1.17.29 |
+| 8 | Vrije PSRAM heap (value_b in KB), elke 60 sec | 1.17.29 |
+| 9 | Heap-corruptie gedetecteerd door `heap_caps_check_integrity_all` | 1.17.29 |
+| 10 | T2 boot-kalibratie overgeslagen (NVS-recovered) | 1.17.36 |
+| 12 | Grootste contiguous interne-heap-block (value_b in KB), elke 60 sec | 1.18.2 |
+
+De combinatie van `value_a=7` (totaal vrij) en `value_a=12` (grootste blok) geeft inzicht in *heap-fragmentatie*: een toenemend verschil tussen die twee waarden zonder dat het totaal vrij daalt, duidt op fragmentatie. Dit is in 1.18.2 toegevoegd nadat onderzoek vaststelde dat de bulkhead-supervisor met alleen de "totaal-vrije-heap"-meting een belangrijke faalmodus zou missen (zie `design/tls_leak_audit.md` voor details).
+
+**Wat de beheerder moet weten — operationele consequenties:**
+
+- **`BK`-badge of `Net backoff`-badge gedurende uren:** een onbereikbare dashboard-server. Controleer of de URL in de Web-tab klopt, of de externe server bereikbaar is. Het *klimaat* is hier niet door beïnvloed; alleen de online rapportage staat pauze.
+- **Onverklaarbare boot met `esp_reset_reason = 3 (SW)`:** kan een geplande reboot zijn door de T15-supervisor. Inspecteer de minuten vóór de reboot in het SD-log; bij een geplande reboot vind je daar ofwel (a) heap-rij `value_a=7` dalend naar < 70 KB, of (b) een respawn-burst herkenbaar aan meerdere T14-uitval-events kort op elkaar. Indien geen van beide zichtbaar: dit was géén geplande reboot, mogelijk OTA-rollback of handmatig commando.
+- **Onverklaarbare boot met `esp_reset_reason = 5 (INT_WDT)` of `= 6 (TASK_WDT)`:** harde firmware-fout. Bekijk seriële capture (indien aangesloten) voor stack-trace. Indien repeated: melden bij ontwikkelaar met SD-log van laatste 24 uur.
+- **`Boot calibration skipped`-event in log:** dit is correct gedrag wanneer alle drie ramen bij de vorige uitschakeling CLOSED waren. Bespaart ~3 min hersteltijd. Indien een raam stil-bij-power-cycle in OPEN-positie staat, kan de operator hem fysiek dichtdoen (RRK-3 in HAND-stand) voordat de stroom eraf gaat — bij volgende boot zal de controller dan correct skippen.
+
 ---
 
 ## 13. Inschakelen na stroomuitval
@@ -1572,6 +1627,7 @@ De **complete uitleg** — met daarin alle velden, alle event-types, alle parame
 | 1.7 | 2026-05-12 | Structurele herordening van §10 en §11 (geen firmware-wijziging — nog steeds 1.17.25). Vier nieuwe sub-hoofdstukken toegevoegd aan §10 "Klimaat instellen" die de overige webinterface-tabs één-op-één beschrijven: **§10.5 System-tab** (WiFi AP, WiFi client, NTP en tijdzone, geografische locatie, sessie-timeout, OTA-verwijzing) waarin alle voormalige sub-paragrafen van §11.2–§11.9 zijn samengebracht; **§10.6 Access-tab** (PIN-beheer voor Boer en Beheerder, met kruisverwijzing naar §9); **§10.7 Log-tab** (SD-kaart mount/unmount, eisen, automatisch mounten, kruisverwijzing naar Bijlage F voor het CSV-formaat); **§10.8 Web-tab** (status-rapportage naar extern dashboard, voorheen §11.10). §11 is dientengevolge afgeslankt tot uitsluitend de **eenmalige eerste-installatie-procedure** van een WiFi-verbinding (na fabrieksreset of nieuwe installatie); hoofdstuktitel hernoemd naar "Eerste-installatie WiFi-verbinding". De inhoudsopgave en interne kruisverwijzingen zijn dienovereenkomstig bijgewerkt. |
 | 1.8 | 2026-05-12 | Kleine revisies (geen firmware-wijziging — nog steeds 1.17.25). Elke PDF-pagina krijgt nu een **kop- en voettekst**: koptekst toont links *Kas Controller - Herenboeren Wenumseveld* en rechts het versienummer; voettekst toont links *Een RFSee product - http://www.rfsee.nl* en rechts *pagina N*. Alle figuren in de handleiding zijn voorzien van een **doorlopend volgnummer** ("Figuur 1: …", "Figuur 2: …" enz.). |
 | 1.9 | 2026-05-12 | Bijgewerkt voor firmware 1.17.26. Cosmetische correctie op **LCD Scherm 2 (Wind)**: tabel-rij in §6 *LCD-statusschermen* toont nu `Dir: 180 ° (S )` met één spatie tussen de dubbele punt en het cijfer, in lijn met `Wind:`, `Mode:` en `Sess:` en met de ongeldige-meting-rij (`Dir: ---`). GitHub-issue [#6](https://github.com/pe1mew/greenhouse-Controller/issues/6). Tevens firmware-referentie op LCD-pagina 7 (`FW: 1.17.26`) in dezelfde tabel bijgewerkt. |
+| 1.10 | 2026-05-14 | Bijgewerkt voor firmware 1.17.27–1.18.2. **Nieuwe §12.7 *Bulkhead-beleid*** toegevoegd: complete documentatie van de vier-fasen architectuurmaatregel ([gh#18](https://github.com/pe1mew/greenhouse-Controller/issues/18)) die garandeert dat secundaire-netwerk-activiteit (status-POST + log-upload) nooit kan leiden tot uitval van de primaire klimaatregeling. Behandelt de `BK`-indicator op LCD-scherm 4 (rij 1 rechts), het `net_backoff_active`-veld in de status-JSON (rendert als gele "Net backoff"-badge op de Status-tab → Alarms-tegel), de persistent circuit breaker met escalatie 60s→5min→30min→1h, de T15-supervisortaak met geplande reboot, NVS-persistente raamposities (boot-kalibratie wordt overgeslagen als alle drie ramen al CLOSED waren — bespaart ~171 sec hersteltijd), en de bijhorende NVS-sleutels en LOG_SYSTEM-event-codes. Tevens **nieuwe `value_a`-codes** (5–10, 12) gedocumenteerd in §12.7 en in Bijlage F (logparser-script bijgewerkt). LCD-statusschermen tabel uitgebreid met de `BK`-variant van Wifi-scherm 4. Achtergrond: één geconstateerde regressie in 1.18.0 (T15 starveerde de task-watchdog door 30 sec sleep tussen WDT-kicks; OTA-rollback redde de unit; 1.18.1 corrigeert die bug; 1.18.2 voegt platform-versiepinning, heap-fragmentatie-instrumentatie en een TLS-audit-document toe). Zie ook `design/tls_leak_audit.md` voor de TLS-stack-audit. Geen wijzigingen aan de boer-interface (LCD-menu's, webinterface-tabs voor de boer) buiten de `BK`-indicator. |
 
 ---
 

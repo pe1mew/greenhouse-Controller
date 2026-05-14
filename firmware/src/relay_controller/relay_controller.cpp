@@ -61,6 +61,19 @@ static const char * const NVS_KEY_DWELL_OPEN[NUM_CHANNELS] = {
 static const char * const NVS_KEY_DWELL_CLOSE[NUM_CHANNELS] = {
     "dwell_close_m1", "dwell_close_m2", "dwell_close_m3"
 };
+/** NVS keys for persisted terminal window state (gh#18 Phase 3, since 1.17.36). */
+static const char * const NVS_KEY_STATE[NUM_CHANNELS] = {
+    "t2_st_ch0", "t2_st_ch1", "t2_st_ch2"
+};
+
+/* Encoded values for NVS_KEY_STATE[]. Only the two terminal states are
+ * "trusted" by the boot-recovery path; any other in-flight state (MOVING,
+ * GAP) is persisted as NVS_STATE_UNKNOWN before energising the relay so a
+ * power-loss mid-move recovers as "unknown → calibrate", not "stale
+ * terminal → skip incorrectly". */
+#define NVS_STATE_UNKNOWN  0
+#define NVS_STATE_CLOSED   1
+#define NVS_STATE_OPEN     2
 
 static const int32_t TRAVEL_S_DEFAULT[NUM_CHANNELS] = {
     MOTOR_M1_TRAVEL_S_DEFAULT,
@@ -206,6 +219,32 @@ static void log_alarm_event(int16_t onset)   /* 1 = onset, 0 = clearance */
 }
 
 /* ============================================================
+ * NVS state persistence (gh#18 Phase 3, since 1.17.36)
+ *
+ * Persists the channel's terminal state (CH_CLOSED / CH_OPEN) to NVS on
+ * arrival, and writes NVS_STATE_UNKNOWN before energising any relay so that
+ * a power loss during travel recovers as "unknown → calibrate" rather than
+ * "stale terminal → skip calibration". Internal (non-terminal) states all
+ * map to NVS_STATE_UNKNOWN.
+ *
+ * Write rate: at most two writes per window movement (one UNKNOWN before
+ * relay-on, one terminal on travel-complete). Climate control issues at
+ * most a handful of moves per hour, so this is well under the NVS wear
+ * budget (100 k cycles per page).
+ *
+ * Used by the boot recovery path in task_relay_controller() to decide
+ * whether the CLOSE_ALL calibration can be skipped (saving up to 171 s
+ * of climate-control outage on every clean reboot).
+ * ============================================================ */
+static void persist_ch_state(uint8_t ch, ch_state_t state)
+{
+    int32_t nvs_val = NVS_STATE_UNKNOWN;
+    if      (state == CH_CLOSED) nvs_val = NVS_STATE_CLOSED;
+    else if (state == CH_OPEN)   nvs_val = NVS_STATE_OPEN;
+    (void)nvs_cfg_set_i32(NVS_NS_MOTOR, NVS_KEY_STATE[ch], nvs_val);
+}
+
+/* ============================================================
  * Channel FSM — start-close / start-open
  * ============================================================ */
 
@@ -229,7 +268,8 @@ static void ch_start_close(uint8_t ch, uint32_t now_ms, cmd_source_t source)
         return;  /* already at target or already moving there */
 
     case CH_MOVING_OPEN:
-        /* Reversal: de-energise OPEN relay, insert gap, then close. */
+        /* Reversal: de-energise OPEN relay, insert gap, then close.
+         * NVS already records UNKNOWN from the original MOVING_OPEN entry. */
         relay_ch_off(ch);
         c->gap_deadline_ms = now_ms + RELAY_GAP_MS;
         c->state = CH_GAP_TO_CLOSE;
@@ -237,7 +277,8 @@ static void ch_start_close(uint8_t ch, uint32_t now_ms, cmd_source_t source)
         return;
 
     case CH_GAP_TO_OPEN:
-        /* Change of mind while still in gap — pivot to close. */
+        /* Change of mind while still in gap — pivot to close.
+         * NVS already records UNKNOWN from the original GAP_TO_OPEN entry. */
         c->state = CH_GAP_TO_CLOSE;
         ESP_LOGD(TAG, "CH%u: GAP_TO_OPEN pivoted → GAP_TO_CLOSE", ch + 1u);
         return;
@@ -256,6 +297,11 @@ static void ch_start_close(uint8_t ch, uint32_t now_ms, cmd_source_t source)
         /* Close from unknown position (e.g. after motor alarm). */
         break;
     }
+
+    /* Persist UNKNOWN BEFORE energising the relay — gh#18 Phase 3 invariant
+     * (a power loss between this write and the next NVS event recovers as
+     * "unknown → calibrate" rather than "stale terminal → skip"). */
+    persist_ch_state(ch, CH_UNKNOWN);
 
     /* Energise the CLOSE relay and start travel timer. */
     relay_ch_close(ch);
@@ -307,6 +353,9 @@ static void ch_start_open(uint8_t ch, uint32_t now_ms, cmd_source_t source)
         break;
     }
 
+    /* Persist UNKNOWN BEFORE energising the relay (gh#18 Phase 3 invariant). */
+    persist_ch_state(ch, CH_UNKNOWN);
+
     relay_ch_open(ch);
     c->relay_deadline_ms = now_ms + c->travel_ms;
     c->state = CH_MOVING_OPEN;
@@ -336,6 +385,7 @@ static void ch_update(uint8_t ch, uint32_t now_ms)
             relay_ch_off(ch);
             c->state = CH_OPEN;
             c->dwell_deadline_ms = now_ms + c->dwell_open_ms;
+            persist_ch_state(ch, CH_OPEN);   /* gh#18 Phase 3 */
             log_relay_event((uint8_t)(ch + 1u), CH_OPEN);
             ESP_LOGI(TAG, "CH%u: OPEN (travel complete)", ch + 1u);
         }
@@ -346,6 +396,7 @@ static void ch_update(uint8_t ch, uint32_t now_ms)
             relay_ch_off(ch);
             c->state = CH_CLOSED;
             c->dwell_deadline_ms = now_ms + c->dwell_close_ms;
+            persist_ch_state(ch, CH_CLOSED); /* gh#18 Phase 3 */
             log_relay_event((uint8_t)(ch + 1u), CH_CLOSED);
             ESP_LOGI(TAG, "CH%u: CLOSED (travel complete)", ch + 1u);
         }
@@ -423,6 +474,8 @@ static void calib_close_all(void)
     uint32_t max_deadline_ms = 0;
 
     for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
+        /* gh#18 Phase 3: persist UNKNOWN BEFORE energising. */
+        persist_ch_state(ch, CH_UNKNOWN);
         relay_ch_close(ch);
         s_ch[ch].state  = CH_MOVING_CLOSE;
         deadline_ms[ch] = start_ms + s_ch[ch].travel_ms;
@@ -465,6 +518,7 @@ static void calib_close_all(void)
                 s_ch[ch].state             = CH_CLOSED;
                 s_ch[ch].dwell_deadline_ms = now_ms + s_ch[ch].dwell_close_ms;
                 done[ch]                   = true;
+                persist_ch_state(ch, CH_CLOSED);   /* gh#18 Phase 3 */
                 log_relay_event((uint8_t)(ch + 1u), CH_CLOSED);
                 ESP_LOGI(TAG, "CH%u: CLOSED (calibration complete)", ch + 1u);
             }
@@ -488,9 +542,10 @@ static void handle_alarm_onset(void)
     /* Immediately de-energise all 6 relays — highest priority action. */
     relay_all_off();
 
-    /* Mark all channels as position-unknown. */
+    /* Mark all channels as position-unknown (RAM and NVS — gh#18 Phase 3). */
     for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
         s_ch[ch].state = CH_UNKNOWN;
+        persist_ch_state(ch, CH_UNKNOWN);
     }
 
     xEventGroupSetBits(EG1, EG1_BIT_MOTOR_ALARM);
@@ -696,7 +751,7 @@ void task_relay_controller(void *pvParameters)
     ESP_LOGI(TAG, "GPIO42 ISR attached (MOTOR_ALARM, CHANGE, not suppressed during MOVING)");
 
     /* ------------------------------------------------------------------
-     * 3. Boot CLOSE_ALL calibration.
+     * 3. Boot CLOSE_ALL calibration (with gh#18 Phase 3 NVS-skip).
      *
      *    Establishes a known CLOSED position on all channels before the
      *    main control loop starts.  All relays are de-energised by
@@ -707,6 +762,17 @@ void task_relay_controller(void *pvParameters)
      *    initial state here and skip calibration if the alarm is active —
      *    it is not safe to energise CLOSE relays while the RRK-3 alarm
      *    relay is latched.
+     *
+     *    NVS-recovered skip (since 1.17.36): if every channel's persisted
+     *    state is CH_CLOSED and the alarm pin is not asserted, the M3
+     *    boot calibration (up to 171 s of climate-control outage) is
+     *    skipped. The persist_ch_state() invariant ("write UNKNOWN before
+     *    energising the relay") guarantees this is safe — any power-loss
+     *    mid-move was recorded as UNKNOWN before the relay was touched,
+     *    so the saved state can be trusted. CH_OPEN does NOT qualify:
+     *    boot calibration's purpose is closing to a known reference, and
+     *    an all-open recovery would still need to drive to closed before
+     *    climate control acts, so the calibration would run anyway.
      * ------------------------------------------------------------------ */
     if (gpio_read(PIN_OPTO_INPUT) == GPIO_LOW) {
         ESP_LOGW(TAG, "GPIO42 alarm pin already asserted at boot — "
@@ -716,7 +782,47 @@ void task_relay_controller(void *pvParameters)
          * setup() and by handle_alarm_onset().  Normal operation resumes
          * from the main loop once the operator clears the alarm. */
     } else {
-        calib_close_all();
+        /* gh#18 Phase 3 — query NVS-persisted window state. */
+        int32_t saved_state[NUM_CHANNELS] = { NVS_STATE_UNKNOWN,
+                                              NVS_STATE_UNKNOWN,
+                                              NVS_STATE_UNKNOWN };
+        bool all_closed = true;
+        for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
+            nvs_cfg_get_i32_or_default(NVS_NS_MOTOR, NVS_KEY_STATE[ch],
+                                       NVS_STATE_UNKNOWN, &saved_state[ch]);
+            if (saved_state[ch] != NVS_STATE_CLOSED) {
+                all_closed = false;
+            }
+        }
+
+        if (all_closed) {
+            for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
+                s_ch[ch].state = CH_CLOSED;
+                /* Dwell deadline left at 0: the previous boot's dwell timer
+                 * is long-since expired by the time we boot. Climate
+                 * control can act immediately. */
+            }
+            /* LOG_SYSTEM,SYS,0,0,10,0 — "boot calibration skipped, NVS
+             * recovered all channels CLOSED". value_a=10 is documented in
+             * event_logger.h alongside the other LOG_SYSTEM subtypes. */
+            log_event_t ev = {};
+            ev.timestamp  = (uint32_t)time(NULL);
+            ev.event_type = (uint8_t)LOG_SYSTEM;
+            ev.initiator  = (uint8_t)LOG_BY_SYSTEM;
+            ev.channel    = 0u;
+            ev.param_id   = (uint8_t)LOG_PARAM_NONE;
+            ev.value_a    = 10;
+            ev.value_b    = 0;
+            log_post(&ev);
+            ESP_LOGI(TAG, "T2 boot calibration skipped — NVS-recovered "
+                          "window state (all three channels CLOSED)");
+        } else {
+            ESP_LOGI(TAG, "T2 boot calibration starting — NVS state "
+                          "(ch0=%ld ch1=%ld ch2=%ld; need all=%d)",
+                     (long)saved_state[0], (long)saved_state[1],
+                     (long)saved_state[2], (int)NVS_STATE_CLOSED);
+            calib_close_all();
+        }
     }
 
     /* ------------------------------------------------------------------

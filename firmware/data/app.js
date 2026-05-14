@@ -135,12 +135,15 @@ function handleStatus(s) {
     if (s.mode.current) setText('st-mode', modeNames[s.mode.current] || s.mode.current);
 
     const flagBadges = {
-      wind_override:     '<span class="badge alarm">WIND</span>',
-      motor_alarm:       '<span class="badge alarm">MOTOR ALARM</span>',
-      sensor_fault_temp: '<span class="badge warn">T/RH fault</span>',
-      sensor_fault_wind: '<span class="badge warn">Wind fault</span>',
-      ota_in_progress:   '<span class="badge warn">OTA active</span>',
-      calibrating:       '<span class="badge warn">Calibrating</span>'
+      wind_override:      '<span class="badge alarm">WIND</span>',
+      motor_alarm:        '<span class="badge alarm">MOTOR ALARM</span>',
+      sensor_fault_temp:  '<span class="badge warn">T/RH fault</span>',
+      sensor_fault_wind:  '<span class="badge warn">Wind fault</span>',
+      ota_in_progress:    '<span class="badge warn">OTA active</span>',
+      calibrating:        '<span class="badge warn">Calibrating</span>',
+      // gh#18 Phase 1 — T14 circuit breaker open. Phase 1 never emits this
+      // flag (stub returns false); Phase 2 wires it to real breaker state.
+      net_backoff_active: '<span class="badge warn">Net backoff</span>'
     };
     alarmBadges = (Array.isArray(s.mode.flags) ? s.mode.flags : [])
       .map(f => flagBadges[f]).filter(x => x);
