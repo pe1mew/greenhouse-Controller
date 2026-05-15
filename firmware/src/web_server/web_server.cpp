@@ -48,6 +48,7 @@
 #include <Arduino.h>
 #include <esp_log.h>
 #include <esp_task_wdt.h>   /* WDT subscription (1.17.29 / gh#13) */
+#include <esp_system.h>     /* esp_restart() — /api/wifi apply-on-restart (1.19.1) */
 #include <time.h>
 #include <string.h>
 #include <stdio.h>
@@ -729,7 +730,29 @@ static void register_routes(AsyncWebServer &srv)
         if (has_ap_psk && ap_psk[0]) nvs_cfg_set_str("wifi", "ap_psk", ap_psk);
 
         ESP_LOGI(TAG, "WiFi creds updated via web: ssid=%s", has_ssid ? ssid : "(unchanged)");
-        req->send(200, "application/json", "{\"ok\":true}");
+
+        /* 1.19.1 — apply via reboot. T10 (network_manager.cpp:671-672) and
+         * the AP startup path both read NVS-namespace `wifi` only once at
+         * boot. Without this restart, new SSID/PSK/AP_PSK sit in NVS but the
+         * live association keeps using the boot-time values, leading to the
+         * confusing "I saved my creds, why won't it connect?" experience
+         * observed on Unit 12F0 / 2026-05-15. Spawn a one-shot task that
+         * delays 1 s so the HTTP response flushes before esp_restart(). */
+        const bool need_restart = has_ssid
+                               || (has_psk && psk[0])
+                               || (has_ap_psk && ap_psk[0]);
+        if (need_restart) {
+            ESP_LOGW(TAG, "WiFi creds changed — restarting in 1 s to apply");
+            req->send(200, "application/json", "{\"ok\":true,\"restarting\":true}");
+            xTaskCreate(
+                [](void *){
+                    vTaskDelay(pdMS_TO_TICKS(1000));
+                    esp_restart();
+                },
+                "wifi_restart", 2048, nullptr, 1, nullptr);
+        } else {
+            req->send(200, "application/json", "{\"ok\":true}");
+        }
     });
 
     /* ── Status website / Web tab (admin) ───────────────────── */

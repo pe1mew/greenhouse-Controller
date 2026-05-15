@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de boer
 
-**Versie:** 1.6 — concept
-**Datum:** 2026-05-14
-**Firmware:** 1.18.2
+**Versie:** 1.8 — concept
+**Datum:** 2026-05-15
+**Firmware:** 1.20.0
 
 ---
 
@@ -115,6 +115,24 @@ De kascontroller is de elektronische besturing van het hele systeem: een micropr
 **Schematisch overzicht:**
 
 ![Shematisch overzicht](images\SchematischOverzicht.png)
+
+### 3.1 Unieke ID van de kascontroller
+
+Sinds firmware 1.18.3 heeft elke kascontroller een **unieke identificatie van vier hex-tekens** (bijvoorbeeld `5C88` of `12F0`). Deze ID wordt afgeleid van het ingebakken MAC-adres van de microprocessor en is dus voor elke fysieke unit anders. De ID is **onveranderbaar** — een fabrieksreset (BOOT-knop) verandert hem niet, een firmware-update verandert hem niet.
+
+Je ziet de ID op vijf plaatsen:
+
+| Waar | Hoe het eruit ziet |
+|---|---|
+| **AP-SSID** (LCD-scherm 4 wanneer de AP actief is) | `Greenhouse-5C88` |
+| **LCD-scherm 7** (Firmware/Uptime — sinds 1.20.0) | rechts op regel 1, naast het versienummer: `FW: 1.20.0  5C88` |
+| **Webinterface, voettekst** (sinds 1.20.0) | onderaan de pagina: `Greenhouse Controller – v1.20.0 · 5C88` |
+| **Webinterface, tab Status** | als veld in de status-uitleg (verschijnt automatisch) |
+| **Logbestand** (download via Log-tab) | als regel `SYSTEM,SYS,0,0,11,...` bij het begin van elk logbestand |
+
+Op de seriële verbinding (zichtbaar voor de beheerder maar niet voor de boer) verschijnt de ID ook één keer in het boot-bericht: `Phase 0 boot — id=5C88 esp_reset_reason=...`
+
+**Waarom is dit handig?** Als je twee of meer kascontrollers hebt — bijvoorbeeld bij meerdere kassen — kun je hun logs en status-rapportage uit elkaar houden. Voor één enkele kascontroller is de ID minder van direct nut, maar handig om aan een beheerder te kunnen doorgeven bij vragen ("mijn unit is `5C88`, sinds gisteren..."). De beheerder gebruikt de ID intern voor het identificeren van logs en debug-meldingen.
 
 ---
 
@@ -261,7 +279,7 @@ Drie mogelijke weergaven:
 ```
 
  - **Connected**: de kascontroller is verbonden met een wifi-netwerk; regel 2 toont het IP-adres
- - **AP active**: de tijdelijke Access Point staat aan; regel 2 toont de SSID `Greenhouse-XXXX` (waar XXXX de unieke ID is van de kascontroller)
+ - **AP active**: de tijdelijke Access Point staat aan; regel 2 toont de SSID `Greenhouse-XXXX` (waar `XXXX` de unieke ID van de kascontroller is — vier hex-tekens afgeleid van het ingebakken MAC-adres van de chip; zie [§3.1](#31-unieke-id-van-de-kascontroller))
  - **Disconnected**: geen verbinding; druk `#` om de AP in te schakelen (vraagt Beheerder-PIN)
 
 > **Sinds firmware 1.18.0** kan op regel 1 rechts de tekst `BK` verschijnen:
@@ -308,19 +326,19 @@ Drie mogelijke weergaven:
 	| `MOV<` | Raam wordt gesloten |
 	| `UNK ` | Raamopening onbekend (treedt op kort na opstart vóór de kalibratie) |
 
-**Scherm 7 — Firmware versie en bedrijfsduur:**
+**Scherm 7 — Firmware versie, unit-ID en bedrijfsduur:**
 
 ```
    +----------------+
-   |FW: 1.17.25     |
+   |FW: 1.20.0  5C88|
    |Up: 1d 4h 23m   |
    +----------------+
 ```
 
- - Regel 1 toont het firmware-versienummer (`FW: 1.17.25`). 
+ - Regel 1 toont links het firmware-versienummer (`FW: 1.20.0`) en rechts de **unieke ID van deze kascontroller** (in dit voorbeeld `5C88` — zie [§3.1](#31-unieke-id-van-de-kascontroller) voor de uitleg). Sinds firmware 1.20.0 staat de ID hier; bij oudere firmware was alleen het versienummer zichtbaar.
  - Regel 2 toont de bedrijfsduur sinds de laatste start. Het formaat past zich aan:
 
-Een onverwachte herstart valt op doordat Uptime bedrijfsduur naar `0 minuten` en daarna weer oploopt. Handig om te zien of de controller stabiel draait. Vraag de beheerder het firmware-nummer als je een storing meldt — dat helpt bij diagnose.
+Een onverwachte herstart valt op doordat Uptime bedrijfsduur naar `0 minuten` en daarna weer oploopt. Handig om te zien of de controller stabiel draait. Vraag de beheerder het firmware-nummer als je een storing meldt — dat helpt bij diagnose. Geef ook de unit-ID erbij door wanneer je een storingsmelding doet, zeker bij installaties met meerdere kascontrollers.
 
 ### 5.2 Toetsenbord (4 × 4)
 
@@ -798,6 +816,15 @@ De LCD geeft op het WiFi-scherm aan of er verbinding is. Als de melding `DISCONN
 ### IP-adres veranderd
 
 Het IP-adres kan veranderen als de wifi-router opnieuw is opgestart of als de controller een nieuw IP toegewezen krijgt. Kijk in dat geval opnieuw op de LCD WiFi-pagina voor het actuele adres.
+
+### Korte automatische herstart na wifi-wijziging door de beheerder
+
+Sinds firmware 1.19.1 herstart de kascontroller **automatisch** wanneer de beheerder via de webinterface de wifi-instellingen wijzigt (nieuwe SSID, nieuwe WiFi-wachtwoord, of nieuw AP-wachtwoord). Je ziet:
+
+- Het LCD springt kortstondig naar de boot-rotatie en daarna weer naar `Mode: AUTO` (totale onderbreking ~2 sec voor de klimaatregeling, dankzij de kalibratie-overslaan-logica — zie [§13](#13-inschakelen-na-stroomuitval)).
+- De webinterface zou een herlaad-melding kunnen tonen.
+
+**Dit is normaal en bedoeld zo**: de oude wifi-configuratie blijft anders actief tot de volgende fysieke power-cycle. Geen actie nodig.
 
 ---
 
@@ -1333,6 +1360,8 @@ Voor alle vragen of problemen waar deze handleiding geen antwoord op geeft:
 | 1.4 | 2026-05-12 | Kleine revisies (geen firmware-wijziging — nog steeds 1.17.25). Elke PDF-pagina krijgt nu een **kop- en voettekst**: koptekst toont links *Kas Controller - Herenboeren Wenumseveld* en rechts het versienummer; voettekst toont links *Een RFSee product - http://www.rfsee.nl* en rechts *pagina N*. Alle figuren in de handleiding zijn voorzien van een **doorlopend volgnummer** ("Figuur 1: …", "Figuur 2: …" enz.). |
 | 1.5 | 2026-05-12 | Bijgewerkt voor firmware 1.17.26. Cosmetische correctie op **LCD Scherm 2 (Wind)**: rij 2 toont nu `Dir: 180 ° (S )` in plaats van `Dir:180 ° (S )` — er zit nu één spatie tussen de dubbele punt en het cijfer, in lijn met alle andere LCD-rijen (`Wind:`, `Mode:`, `Sess:`) en met de ongeldige-meting-rij (`Dir: ---`). GitHub-issue [#6](https://github.com/pe1mew/greenhouse-Controller/issues/6). |
 | 1.6 | 2026-05-14 | Bijgewerkt voor firmware 1.18.0–1.18.2. **Nieuwe `BK`-indicator op LCD Scherm 4 (Wifi)**: regel 1 toont rechts `BK` (afkorting van *backoff*) wanneer de online status-rapportage naar het externe webdashboard tijdelijk gepauzeerd is na herhaaldelijke verbindingsfouten. Het klimaatregelsysteem (RGB-LED, ramen, sensoren) blijft normaal werken; de boer hoeft niets te doen. De controller probeert de online verbinding daarna automatisch opnieuw met oplopende tussenpozen (60 sec → 5 min → 30 min → 1 uur). Zie §6 *Scherm 4 — Wifi-status* en §18 *Vertaaltabel — Wifi*. Achtergrond: deze indicator hoort bij een grotere intern-architectuurwijziging ("bulkhead policy", [gh#18](https://github.com/pe1mew/greenhouse-Controller/issues/18)) die garandeert dat problemen met de internet-verbinding **nooit** invloed hebben op de klimaat-aansturing — uitgebreid behandeld in de beheerder-handleiding. Tevens **§12.4 (Tijdens kalibratie) en §13 (Inschakelen na stroomuitval) herschreven** om de nieuwe boot-kalibratie-skip-logica te beschrijven die met firmware 1.17.36 werd geïntroduceerd: de CLOSE_ALL kalibratie wordt overgeslagen als alle drie de ramen bij de vorige uitschakeling al dicht waren én er geen motor-alarm actief is. Een power-cycle 's nachts (alle ramen dicht) herstart nu in ~2 sec. zonder kalibratie; een power-cycle midden op een warme dag met M3 open voert de volledige 3-minuten kalibratie uit zoals voorheen. Advies in §15 over handmatige overname op de motorbox aangepast: na terugkeer naar AUTO altijd een power-cycle uitvoeren **met ten minste één raam fysiek open**, anders kan de skip-conditie de kalibratie ongewenst overslaan. |
+| 1.7 | 2026-05-14 | Bijgewerkt voor firmware 1.18.3. **Nieuwe §3.1 *Unieke ID van de kascontroller*** ([gh#17](https://github.com/pe1mew/greenhouse-Controller/issues/17)). Elke kascontroller heeft sinds 1.18.3 een uniek vier-tekens hex-ID (bijv. `5C88`), afgeleid van het ingebakken MAC-adres van de chip. De ID is **onveranderbaar** (overleeft fabrieksreset en firmware-update) en verschijnt op vier plekken: de AP-SSID die op LCD-scherm 4 wordt getoond wanneer de AP actief is (`Greenhouse-XXXX` — voorheen alleen genoemd zonder uitleg, nu expliciet als de unieke unit-ID), de webinterface Status-tab, het SD-logbestand (als regel `SYSTEM,SYS,0,0,11,...` bij het begin van elk bestand), en de seriële boot-output (alleen voor de beheerder zichtbaar). Praktisch nut voor de boer: één installatie kan met meerdere kascontrollers werken zonder verwarring; per unit kan de boer een ID-sticker plakken voor visuele herkenning. De LCD-rij `Greenhouse-XXXX` in §6 Scherm 4 verwijst nu door naar §3.1 voor de uitleg. Geen wijzigingen aan de bediening, menustructuur of het webinterface-uiterlijk. |
+| 1.8 | 2026-05-15 | Bijgewerkt voor firmware 1.19.0–1.20.0 (vier firmware-releases). **§3.1 *Unieke ID* uitgebreid van 4 naar 5 boer-zichtbare oppervlakken**: vanaf firmware 1.20.0 verschijnt de unit-ID ook (a) op **LCD-scherm 7** rechts op regel 1 naast het firmware-versienummer (`FW: 1.20.0  5C88`), en (b) in de **voettekst van de webinterface** (`Greenhouse Controller – v1.20.0 · 5C88`). Tabel in §3.1 bijgewerkt. Voor §6 *Scherm 7* dezelfde update: regel 1 toont nu links versie en rechts unit-ID; vraag bij storingsmelding nu het versienummer **én** de unit-ID door aan de beheerder. **Nieuwe sub-sectie in §11 *Korte automatische herstart na wifi-wijziging door de beheerder*** (sinds firmware 1.19.1): wanneer de beheerder via de webinterface de wifi-instellingen wijzigt, herstart de controller automatisch ~1 sec later om de nieuwe configuratie te activeren. Klimaatregeling-onderbreking ~2 sec (kalibratie wordt overgeslagen). Voorheen bleef de oude wifi-configuratie actief tot de volgende fysieke power-cycle. Achtergrond (niet zichtbaar voor de boer): 1.19.0 loste een opstart-paniek op die voorheen optrad direct na een geplande herstart van de controller; 1.19.2 voorkomt dat geplande herstarts ten onrechte tellen als "mislukte boot" voor de OTA-rollbackbeveiliging. Geen wijzigingen aan de menustructuur, het toetsenbord, of de bediening voor de boer. |
 
 ---
 

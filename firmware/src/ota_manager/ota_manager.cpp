@@ -24,6 +24,7 @@
 #include <esp_log.h>
 #include <esp_ota_ops.h>
 #include <esp_heap_caps.h>
+#include <esp_system.h>     /* esp_reset_reason() — 1.19.2 planned-reboot exemption */
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/timers.h>
@@ -140,6 +141,35 @@ void ota_check_rollback(void)
     int32_t fail_cnt = 0;
     nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, OTA_FAIL_KEY, 0, &fail_cnt);
     ESP_LOGI(TAG, "[OTA] Boot fail counter = %d", (int)fail_cnt);
+
+    /* 1.19.2 — Don't count T15 PLANNED REBOOTs as boot failures.
+     * The supervisor (status_post_supervisor.cpp:101) sets the NVS key
+     * `t15_planreboot=1` immediately before calling esp_restart() to escalate
+     * a heap-drop or respawn-storm condition. When we see that flag here with
+     * reset_reason == ESP_RST_SW, this boot is the intentional resume from
+     * that planned reboot — NOT a crash. The flag gets cleared by T15 a few
+     * seconds later (line 262) once T14 is healthy, so this is a one-shot
+     * exemption per planned reboot.
+     *
+     * Without this guard a unit hitting gh#20 (TLS-handshake heap fragmentation)
+     * at the wrong cadence could accumulate counter=3 within hours and trip
+     * the rollback, reverting from 1.19.x to 1.18.3 — exactly the firmware
+     * the 1.19.0 release was issued to fix.
+     *
+     * The ESP_RST_SW gate matters: if the unit *panicked* while the flag was
+     * still set (e.g. the original 2026-05-14 gh#21 cascade — flag set,
+     * esp_restart called, next boot asserted on tcpip_api_call before the
+     * flag could be cleared), reset_reason will be ESP_RST_PANIC and we still
+     * want to count that as a real failure. */
+    if (esp_reset_reason() == ESP_RST_SW) {
+        int32_t plan_flag = 0;
+        nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, "t15_planreboot", 0, &plan_flag);
+        if (plan_flag != 0) {
+            ESP_LOGI(TAG, "[OTA] T15 PLANNED REBOOT detected — fail counter NOT incremented (stays at %d)",
+                     (int)fail_cnt);
+            return;
+        }
+    }
 
     if (fail_cnt >= 3) {
         ESP_LOGE(TAG,

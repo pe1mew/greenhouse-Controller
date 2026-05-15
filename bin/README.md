@@ -27,6 +27,29 @@ bin/
 | Python 3.x | https://python.org (must be on PATH for esptool) |
 | PowerShell 5.1+ | Pre-installed on Windows 10/11 |
 
+### One-time per clone — enable the repo's git hooks
+
+The repo ships a `.githooks/pre-commit` hook (tracked, version-controlled, no Python framework dependency) that prevents the gh#9 stamped-manifest regression: every release build overwrites `firmware/data/manifest.json` with a literal version, and without the hook that overwritten form has a habit of getting accidentally committed alongside other work. Enable it once after cloning:
+
+```powershell
+git config core.hooksPath .githooks
+```
+
+To check it's active:
+
+```powershell
+git config --get core.hooksPath        # should print  .githooks
+```
+
+If the hook fires on commit, the fix is almost always:
+
+```powershell
+git restore --staged firmware/data/manifest.json   # un-stage the stamped form
+git checkout firmware/data/manifest.json           # restore the placeholder from HEAD
+```
+
+then re-add whatever else you intended to commit. See gh#9 for the full context.
+
 ### Bump the version
 
 > **The build script does not increment the version automatically.**

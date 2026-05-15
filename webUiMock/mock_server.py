@@ -6,9 +6,11 @@ Serves the static files from firmware/data/ and emulates all REST and
 WebSocket endpoints that the real ESP32 firmware (web_server.cpp +
 status_post/status_json.cpp) exposes.
 
-Targets firmware 1.17.20 — canonical nested status-JSON shape, status-
-website POST configuration (Web tab), and the OTA-version mismatch
-diagnostic surfaces (manifest.json, asset_version, HTML version stamp).
+Targets firmware 1.20.0 — canonical nested status-JSON shape (now including
+the gh#17 `unit_id` field), status-website POST configuration (Web tab),
+the OTA-version-mismatch diagnostic surfaces (manifest.json, asset_version,
+HTML version stamp), and the 1.19.1 `/api/wifi` apply-on-restart semantics
+(response carries `{"restarting":true}` when SSID/PSK/AP_PSK change).
 
 Endpoints emulated
 ------------------
@@ -114,7 +116,12 @@ cfg: dict = {
     "lon_deg":              5,    # DEF_LON_DEG
     "lon_frac":             0,    # DEF_LON_FRAC
     "tz_str":              "CET-1CEST,M3.5.0,M10.5.0/3",
-    "fw_ver":              "1.17.20",
+    "fw_ver":              "1.20.0",
+    # gh#17 — 4-char hex from last 2 bytes of WiFi-STA MAC. On real hardware
+    # this surfaces in the boot banner, SD log preamble, AP SSID, status JSON,
+    # LCD info screen (1.20.0), and web GUI footer (1.20.0). Mock keeps it
+    # constant so the GUI's mock-vs-real visual is otherwise identical.
+    "unit_id":             "AABB",
     # Status-website / Web tab settings (added in firmware 1.17.0).  Defaults
     # mirror DEF_STATUS_* / DEF_LOG_UPLOAD_* in firmware/config/cfg_defaults.h.
     "status_url":          "",
@@ -374,6 +381,7 @@ def _build_status() -> dict:
             "wifi_ip":       "192.168.1.100",
             "wifi_rssi_dbm": -65,
             "ntp_synced":    True,
+            "unit_id":       cfg["unit_id"],   # gh#17 — consumed by 1.20.0 footer
             "fw_ver":        cfg["fw_ver"],
             # asset_version is what /manifest.json reports — in the mock
             # they're paired since we don't simulate the real-device case
@@ -596,6 +604,21 @@ def wifi():
     if "ssid" in body:
         cfg["wifi_ssid"] = body["ssid"]
     # psk / ap_psk accepted but not persisted in mock (write-only by design)
+
+    # 1.19.1 — real firmware schedules an esp_restart() ~1 s after the response
+    # so the new SSID/PSK/AP_PSK actually take effect (T10 only reads NVS at
+    # boot). The response carries {"restarting":true} so the GUI can show a
+    # "rebooting…" toast. Mock mirrors the shape but obviously doesn't reboot
+    # itself — the in-memory cfg is already live. Match the firmware's gate:
+    # restart if `ssid` key is present (even empty — same as has_ssid in JSON),
+    # OR if a non-empty `psk` / `ap_psk` was supplied.
+    need_restart = (
+        "ssid" in body
+        or bool(body.get("psk"))
+        or bool(body.get("ap_psk"))
+    )
+    if need_restart:
+        return {"ok": True, "restarting": True}
     return {"ok": True}
 
 

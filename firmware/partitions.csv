@@ -15,7 +15,15 @@
 #   0x220000–0x41FFFF app1 / Bank B — firmware image slot B (2 MB)
 #   0x420000–0x51FFFF lfs0 / LittleFS A — web assets paired with Bank A (1 MB)
 #   0x520000–0x61FFFF lfs1 / LittleFS B — web assets paired with Bank B (1 MB)
-#   0x620000–0xFFFFFF (unused — ~9.9 MB, reserved for future expansion)
+#   0x620000–0x62FFFF coredump — ESP-IDF core-dump capture (64 KB, gh#21 / 1.19.0)
+#                   First flash on each unit MUST be followed by
+#                     esptool.py --chip esp32s3 --port COMx erase_region 0x620000 0x10000
+#                   otherwise the IDF reads garbage at this offset on boot
+#                   and logs `esp_core_dump_flash: Core dump flash config is
+#                   corrupted! CRC=…` (exactly the message Unit 12F0 produced
+#                   in the 2026-05-14 forensic capture, on a partition table
+#                   that didn't include a coredump entry at all).
+#   0x630000–0xFFFFFF (unused — ~9.8 MB, reserved for future expansion)
 #
 # Partition coupling rule:
 #   Active firmware bank A → mount lfs0;  active firmware bank B → mount lfs1.
@@ -34,3 +42,4 @@ app0,       app,   ota_0,    0x20000,    0x200000,
 app1,       app,   ota_1,    0x220000,   0x200000,
 lfs0,       data,  spiffs,   0x420000,   0x100000,
 lfs1,       data,  spiffs,   0x520000,   0x100000,
+coredump,   data,  coredump, 0x620000,   0x10000,

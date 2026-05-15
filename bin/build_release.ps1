@@ -74,46 +74,37 @@ if (Test-Path $OUT_DIR) {
 Write-Host ""
 
 # ---------------------------------------------------------------------------
-# Stamp the version into firmware/data/ before building.
+# Stamp the version into firmware/data/manifest.json before building.
 #
-# Two artefacts are written so the assets carry their OWN version, independent
-# of whatever firmware happens to be running on the device:
+# manifest.json carries the asset version that T11 reads at boot
+# (dm_status_snapshot) and surfaces as system.asset_version. The status JSON
+# pushes it to the GUI, which compares against the running firmware's
+# FIRMWARE_VERSION to flag an OTA bank/asset mismatch. So this file MUST be
+# rewritten on every build.
 #
-#   1. firmware/data/manifest.json — JSON with {"asset_version":"<VERSION>", ...}.
-#      Read by T11 at boot (dm_status_snapshot) and surfaced as
-#      system.asset_version. Compared with the running firmware's
-#      FIRMWARE_VERSION to detect an OTA bank/asset mismatch.
+# The source form in git is the placeholder
+#   {"asset_version":"{{ASSET_VERSION}}","checksum":""}
+# The build script overwrites the placeholder with the literal version.
+# A pre-commit hook (.githooks/pre-commit) refuses to commit the stamped form
+# so the placeholder discipline survives release builds.
 #
-#   2. firmware/data/index.html — the literal placeholder `{{ASSET_VERSION}}`
-#      in the second-line HTML comment is replaced with the version string.
-#      Visible via View Source on the live page; useful to verify which
-#      web-assets version is actually being served.
-#
-# Both files are overwritten on every build; the originals (with the
-# placeholder intact) are restored from git on `git checkout`.
+# The HTML index used to carry a `<!-- web-assets {{ASSET_VERSION}} -->`
+# comment that was stamped the same way; it was removed (#9 / 1.20.0 follow-on)
+# because the version is already surfaced via the footer (sys.fw_ver over WS),
+# the manifest.json file itself, the boot serial banner, the status JSON, and
+# the LCD info screen. Five existing surfaces; the HTML comment was the only
+# one requiring a placeholder/stamp dance and the only one that ever silently
+# regressed.
 # ---------------------------------------------------------------------------
 $DATA_DIR_PRE = Join-Path $FIRMWARE_DIR "data"
 $MANIFEST     = Join-Path $DATA_DIR_PRE "manifest.json"
-$INDEX_HTML   = Join-Path $DATA_DIR_PRE "index.html"
 
-Write-Host "--- Step 0: Stamp version into firmware/data/ ---" -ForegroundColor Yellow
+Write-Host "--- Step 0: Stamp version into firmware/data/manifest.json ---" -ForegroundColor Yellow
 
-# manifest.json
+# manifest.json — overwrite whole file with the literal version
 $manifest_obj = "{`"asset_version`":`"$VERSION`",`"checksum`":`"`"}"
 [System.IO.File]::WriteAllText($MANIFEST, $manifest_obj)
 Write-Host "    + manifest.json  -> $manifest_obj"
-
-# index.html version stamp (replace literal {{ASSET_VERSION}} placeholder)
-if (Test-Path $INDEX_HTML) {
-    $html_text = [System.IO.File]::ReadAllText($INDEX_HTML)
-    if ($html_text.Contains("{{ASSET_VERSION}}")) {
-        $html_text = $html_text.Replace("{{ASSET_VERSION}}", $VERSION)
-        [System.IO.File]::WriteAllText($INDEX_HTML, $html_text)
-        Write-Host "    + index.html     -> stamped {{ASSET_VERSION}} = $VERSION"
-    } else {
-        Write-Host "    ! index.html     -> {{ASSET_VERSION}} placeholder not found, skipped"
-    }
-}
 Write-Host ""
 
 # ---------------------------------------------------------------------------

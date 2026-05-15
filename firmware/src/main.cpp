@@ -17,6 +17,7 @@
 #include <esp_log.h>
 #include <esp_system.h>      /* esp_reset_reason() — boot diagnostic */
 #include <esp_heap_caps.h>   /* heap_caps_get_free_size, integrity check (1.17.29) */
+#include <esp_core_dump.h>   /* esp_core_dump_image_get() — boot-time dump presence log (gh#21, 1.19.0) */
 #include <time.h>
 #include <string.h>
 #include <Adafruit_NeoPixel.h>
@@ -346,6 +347,38 @@ void setup()
     system_unit_id_str(unit_id_str, sizeof(unit_id_str));
     ESP_LOGI(TAG, "Phase 0 boot — id=%s  esp_reset_reason=%d",
              unit_id_str, (int)s_boot_reason);
+
+    /* gh#21 / 1.19.0 — core-dump presence. The previous boot may have left an
+     * ELF image in the new `coredump` partition (partitions.csv @ 0x620000).
+     * Log presence once at startup so operators reading serial — or the
+     * eventual SYSTEM-event mirror — see immediately whether the previous
+     * boot is worth pulling via `esptool.py read_flash 0x620000 0x10000`.
+     *
+     * `esp_core_dump_image_get()` returns ESP_OK with a non-zero size only
+     * when a valid dump (matching CRC32 of the configured checksum format)
+     * is present. The Arduino-ESP32 framework's coredump driver returns:
+     *   - ESP_ERR_NOT_FOUND      on a partition with size header = 0
+     *   - ESP_ERR_INVALID_SIZE   on a partition with size header = 0xFFFFFFFF
+     *                            (freshly-erased flash — bytes are all 0xFF)
+     *   - ESP_ERR_INVALID_CRC    when header parses but checksum doesn't match
+     * The first two both mean "no dump here", which is the post-erase state on
+     * Unit 1 today and the steady-state on every healthy unit. Map them both
+     * to the same "none" log line; anything else is genuinely surprising and
+     * worth a warning. */
+    {
+        size_t cd_addr = 0;
+        size_t cd_size = 0;
+        esp_err_t cd_err = esp_core_dump_image_get(&cd_addr, &cd_size);
+        if (cd_err == ESP_OK && cd_size > 0) {
+            ESP_LOGW(TAG, "coredump present: %u bytes @ 0x%x — pull via esptool read_flash",
+                     (unsigned)cd_size, (unsigned)cd_addr);
+        } else if (cd_err == ESP_ERR_NOT_FOUND || cd_err == ESP_ERR_INVALID_SIZE) {
+            ESP_LOGI(TAG, "coredump: none");
+        } else {
+            ESP_LOGW(TAG, "coredump: partition unreadable (err=0x%x) — erase_region 0x620000 0x10000",
+                     (unsigned)cd_err);
+        }
+    }
 
     /* ---- LIB-1: GPIO ---- */
     gpio_set_pin_mode(PIN_HB_LED, GPIO_OUTPUT);

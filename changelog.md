@@ -6,6 +6,144 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.20.0] — 2026-05-15
+
+*Surfaces the per-unit identifier (gh#17) on two more channels: the LCD's Firmware/Uptime info screen and the web GUI footer. Until this release, the unit_id was visible on the serial boot banner, in the SD log preamble, in the canonical status JSON, and in the AP SSID — but operators with their hands on a physical unit (LCD) or eyes on the live GUI (footer) couldn't read it at a glance. Both surfaces now show it next to the version string so "which one am I touching?" is a zero-click question. Bundles the 1.19.2 OTA-counter fix.*
+
+### Added
+- **LCD Firmware/Uptime screen** (info-rotation case 6) now shows the unit_id right-aligned on the same row as the firmware version:
+  ```
+  FW: 1.20.0  12F0
+  Up: 1h 23m
+  ```
+  Row 0 layout is `"FW: "` (4 chars) + version (left-padded/truncated to 8 chars) + unit_id (4 chars) = 16 chars exactly. Current longest version `"1.19.2"` is 6 chars; the 8-char field accommodates anything up to `"1.999.99"` before truncation kicks in. (`firmware/src/ui_display/ui_display.cpp:824`)
+- **Web GUI footer** now shows the unit_id after the version with a middot separator:
+  ```
+  Greenhouse Controller – v1.20.0 · 12F0          GitHub ↗
+  ```
+  Reads `sys.unit_id` from the canonical status push that `app.js` already consumes, so no new endpoint and no new request. (`firmware/data/app.js`)
+
+### Fixed (carried forward from 1.19.2)
+- **OTA fail counter exempts T15 PLANNED REBOOTs.** `ota_check_rollback()` now reads the `t15_planreboot` NVS key and skips the counter increment when the current boot is the intentional resume from a planned reboot, guarded by `esp_reset_reason() == ESP_RST_SW` so genuine panics still count. Prevents a unit hitting gh#20 (TLS-handshake heap fragmentation) at an unlucky cadence from accumulating counter=3 within hours and triggering an OTA rollback back to 1.18.3 — the exact build 1.19.0 was issued to replace. See the 1.19.2 entry below for the full reasoning.
+
+### Changed
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.19.2` → `1.20.0` in both env blocks.
+- `firmware/data/manifest.json` and `firmware/data/index.html` — stamped 1.20.0 by `bin/build_release.ps1`.
+
+### Behaviour notes / non-changes
+- **Minor bump (1.19.x → 1.20.0), not patch.** Per the project convention, feature additions cross to a new minor version even when small. The OTA-counter fix on its own would have been 1.19.2 (and remains in the changelog history under that heading); landing the LCD + footer feature on top makes this a minor release.
+- **No new API field exposed.** `sys.unit_id` has been in the canonical status JSON since 1.18.3 (gh#17); this release just consumes it in the GUI. So an older GUI talking to a 1.20.0 firmware is unaffected, and a 1.20.0 GUI talking to ≥1.18.3 firmware works.
+- **LCD truncation behaviour is identical.** The version field width changed from 12 to 8 chars, but no shipped version has ever been longer than 7 chars, so no operator-visible truncation occurs.
+- **Boot splash (`v%-9.9sInit..`) unchanged.** The unit_id was *not* added to the boot splash because that row already carries the "Init.." progress hint. Anyone needing the unit_id at boot time can read the serial banner or wait ~2 seconds for the post-boot info-rotation to reach screen 6.
+
+### Operational notes
+- **No partition table or sdkconfig changes.** OTA from 1.19.1 / 1.19.2 / 1.18.3 all work without extras.
+- **Verification recipe.**
+  - LCD: cycle through info screens (or wait for auto-rotation) to reach the FW/Up screen — bottom-right corner of row 0 shows the 4-char unit_id.
+  - Web: load the GUI in a browser and check the footer at the bottom of the page — version is now followed by `· 12F0` (or whatever the unit's MAC last 2 bytes resolve to).
+
+### Tooling
+- **`webUiMock/mock_server.py` synced to 1.20.0.** Target-firmware stamp bumped from 1.17.20 (three minor versions stale), `cfg["fw_ver"]` updated, new `cfg["unit_id"]` constant added (`"AABB"`), `/api/status` `system` block now emits `unit_id` so the new footer renders in the mock GUI, and the `/api/wifi` POST response now carries `{"restarting":true}` when `ssid`/`psk`/`ap_psk` change (matching the 1.19.1 firmware semantics). Run `python webUiMock/mock_server.py` and open `http://localhost:5000` to preview the 1.20.0 GUI without flashing hardware. Docstring + README target-firmware stamps updated to match.
+
+### Related
+- [gh#17](https://github.com/pe1mew/greenhouse-Controller/issues/17) — Unique unit identifier derived from MAC. **First closed** in 1.18.3; this release **finishes the rollout** to the two remaining operator-facing surfaces (LCD info screen, web GUI footer).
+
+---
+
+## [1.19.2] — 2026-05-15
+
+*One-line defensive patch in the OTA boot-fail accounting. Closes the "tonight could undo today" risk flagged after the 1.19.1 deployment: a unit hitting the still-unfixed gh#20 (TLS-handshake heap fragmentation) at an unlucky cadence could accumulate three PLANNED REBOOTs in counter-incrementing succession and trigger an OTA rollback back to 1.18.3 — the exact build 1.19.0 was issued to replace. This release tells the OTA manager that T15-initiated reboots are intentional and must not count against the rollback budget. Pairs cleanly with the still-open work to actually fix gh#20.*
+
+### Fixed
+- **OTA fail counter exempts T15 PLANNED REBOOTs.** `ota_check_rollback()` now reads the `t15_planreboot` NVS key (set by `status_post_supervisor.cpp:101` immediately before `esp_restart()`) and skips the counter increment when the current boot is the intentional resume from that reboot. Guarded by `esp_reset_reason() == ESP_RST_SW` so a genuine panic that happens to occur while the flag is still set (e.g. the original 2026-05-14 gh#21 cascade) is still counted as a real failure. The flag is single-shot per planned reboot — T15 clears it (line 262) a few seconds later once T14 is healthy, so subsequent boots are accounted for normally. (`firmware/src/ota_manager/ota_manager.cpp`)
+
+### Changed
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.19.1` → `1.19.2` in both env blocks.
+- `firmware/data/manifest.json` and `firmware/data/index.html` — stamped 1.19.2 by `bin/build_release.ps1`.
+
+### Behaviour notes / non-changes
+- **The rollback threshold is unchanged.** If a unit ever does accumulate three genuine boot failures (i.e. resets with reason != `ESP_RST_SW`, OR `ESP_RST_SW` without the planned-reboot flag), the 3-fail rollback still fires. This release narrows what counts as a "fail", not what counts as "rollback-worthy".
+- **No partition table, sdkconfig, or LittleFS-format changes.** Straight OTA from 1.19.1; the per-unit `erase_region 0x620000 0x10000` step is not needed for this upgrade.
+- **Does not address gh#20.** Heap fragmentation in T14's status-POST loop still triggers PLANNED REBOOTs; this release just stops those PLANNED REBOOTs from being miscounted. The actual heap-fragmentation work remains the next priority (separate issue forthcoming).
+- **NVS reset history reconsideration tracked separately.** A feature-request issue has been opened to evaluate whether the in-firmware NVS event-log ring buffer earns its keep given the SD-side log files already capture the same information with vastly longer retention. No code change in this release.
+
+### Operational notes
+- **No per-unit flash step.** OTA path A (web GUI) or USB flash both work without extras.
+- **Verification recipe.** Force a T15 PLANNED REBOOT — easiest way is to temporarily set the heap-drop threshold low in `status_post_supervisor.cpp` or to set the NVS key `t15_planreboot=1` directly and call `esp_restart()`. On 1.19.1 the next boot logged `Fail counter incremented to N+1`. On 1.19.2 it logs `T15 PLANNED REBOOT detected — fail counter NOT incremented (stays at N)`.
+
+### Related
+- [gh#21](https://github.com/pe1mew/greenhouse-Controller/issues/21) — original lwIP race. Unaffected.
+- gh#20 — heap fragmentation. **Still open.** This release reduces (not eliminates) the operational impact of gh#20 by preventing it from triggering OTA rollback.
+
+---
+
+## [1.19.1] — 2026-05-15
+
+*Three small follow-on fixes that surfaced while verifying 1.19.0 on Unit 12F0 (the same unit that produced the original gh#21 forensic capture). None changes the gh#21 fix itself; they patch issues 1.19.0 introduced or exposed.*
+
+### Fixed
+- **Supervisor wedge in the gh#21 gate.** 1.19.0's gate sat *before* `s_heartbeat++`, so a unit waiting for STA WiFi never advanced its T14 heartbeat. T15 (`status_post_supervisor.cpp:244`) declares T14 wedged after `T15_WEDGE_TIMEOUT_MS` (60 s) without a heartbeat change → respawn → gate again → wedge again → after one respawn-storm window (< 5 min between respawns) T15 escalates to PLANNED REBOOT. Result: an AP-only unit (or any unit that has not yet associated) loops forever on planned reboots. Observed 2026-05-15 on Unit 12F0 with no SSID configured. **Fix:** the gate now bumps `s_heartbeat` on every wait iteration, which is the truthful status ("T14 is alive, waiting on a precondition"). T15's heap-drop and respawn-storm detectors are unaffected. (`firmware/src/status_post/status_post.cpp`)
+- **`/api/wifi` now applies on the spot.** The POST handler at `web_server.cpp:713-733` wrote new STA/AP creds to NVS but never restarted the unit, while T10 and the AP startup path read those creds only at boot — so saved creds sat in NVS unused until the next manual power-cycle. Confused operators (and confused me, during the 1.19.0 verification on Unit 12F0). **Fix:** when the request changes `ssid`, `psk`, or `ap_psk`, the handler now spawns a 1-second-delayed `esp_restart()` task so the HTTP response flushes before the reboot. The JSON response now includes `"restarting":true` so the UI can show a "rebooting…" toast. Unchanged paths (e.g. unrelated fields, or a POST with no changes) still send the bare `{"ok":true}`.
+- **Empty coredump partition now logs cleanly.** 1.19.0's boot-time presence check treated `ESP_ERR_INVALID_SIZE` (what the Arduino-ESP32 framework's coredump driver returns when the partition is freshly erased — size header reads 0xFFFFFFFF) as "partition unreadable", which produced a scary warning on every healthy boot after the one-time `erase_region`. **Fix:** treat both `ESP_ERR_NOT_FOUND` and `ESP_ERR_INVALID_SIZE` as `coredump: none`. The inline comment in `main.cpp` now documents both return codes. (`firmware/src/main.cpp`)
+
+### Changed
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.19.0` → `1.19.1` in both env blocks (`lolin_s3`, `test_t2_relay`).
+- `firmware/data/manifest.json` and `firmware/data/index.html` — stamped 1.19.1.
+
+### Behaviour notes / non-changes
+- **gh#21 fix is unchanged.** This release patches issues introduced *around* the gh#21 fix, not the fix itself. The lwIP-startup gate still gates on `WiFi.localIP() != 0.0.0.0` and still releases on the same condition; 1.19.0 deployments do not need to be rolled back, only upgraded.
+- **No partition table or sdkconfig changes.** Same partition layout as 1.19.0; same coredump-related defaults; no per-unit `erase_region` step needed for the 1.19.0 → 1.19.1 upgrade.
+- **`/api/wifi` restart only fires on a real credential change.** A POST that explicitly carries unchanged fields (or omits all wifi-namespace fields) takes the no-restart path. Idempotent reconfigure scripts that send the same creds repeatedly will still cause repeated restarts; that's intentional — guarantees the value-on-the-wire is the value the operator entered.
+
+### Operational notes
+- **No per-unit flash step.** Unlike 1.19.0 (which required `erase_region 0x620000 0x10000` per unit to seed the new core-dump partition), 1.19.1 is a straight OTA-or-flash with no extra step.
+- **Verification recipe for `/api/wifi` fix:** from the AP-mode web UI, change the SSID/PSK and watch serial — expect `[T11_WEB] WiFi creds changed — restarting in 1 s to apply`, then a fresh boot, then `[T10_NET] Connecting to SSID '<new>'`. On 1.19.0 the same sequence stayed on the old (or empty) creds until manual power-cycle.
+- **Verification recipe for the supervisor-wedge fix:** boot a unit with no SSID in NVS (or a wrong SSID that never associates). Leave it for > 5 minutes. On 1.19.0 the unit produced a `PLANNED REBOOT — T14 respawn rate exceeded (< 5 min since last)` cycle within ~3 min. On 1.19.1 the unit sits cleanly in `gh#21 gate: waiting for STA IP …` and T1 watchdog ticks advance steadily with no respawn or planned-reboot log lines.
+
+### Related
+- [gh#21](https://github.com/pe1mew/greenhouse-Controller/issues/21) — original lwIP startup race. Stays closed; this release does not change its fix.
+- Forensic capture: `debug/unit1/coredump_12F0_test.bin` (1.19.0 verification image, 12 KB ELF dump produced by the deliberate `abort()` test) remains the proof-of-life that coredump capture works end-to-end on this PlatformIO/Arduino-ESP32 build.
+
+---
+
+## [1.19.0] — 2026-05-15
+
+*Fixes a production panic surfaced overnight on Units 12F0 and 5C88 ([gh#21](https://github.com/pe1mew/greenhouse-Controller/issues/21)) and adds infrastructure for capturing the next one. Both units hit `assert failed: tcpip_api_call IDF/components/lwip/lwip/src/api/tcpip.c:497 (Invalid mbox)` on resume from a T15 PLANNED REBOOT — a real lwIP startup race in T14, not a heap or supervisor issue. Same release also lays the partition + sdkconfig groundwork for ESP-IDF core-dump capture so the next panic produces an analysable image rather than a bare backtrace.*
+
+### Fixed
+- **gh#21 lwIP startup race in T14.** `task_status_post` now waits for `WiFi.localIP() != 0.0.0.0` before entering its main loop. T14 spawns on core 0 alongside T10 (`network_manager`), and the Arduino-ESP32 core lazily calls `tcpip_init()` only when `WiFi.mode()` runs inside T10. On resume from a T15 PLANNED REBOOT the RTC_SW_CPU_RST path returns to the scheduler fast enough that T14's `WiFi.isConnected()` edge detector (line 802) can dispatch into `tcpip_api_call` before the mbox is populated, asserting in `tcpip.c:497`. Waiting for an IP is a strict superset of "tcpip initialised" and is the precondition every real POST already needs, so the gate is defensive on every boot, not just resume-from-planned-reboot. No timeout/bail — if WiFi never comes up, T14 idles in the gate instead of in its main loop. Same outcome, no new failure modes. (`firmware/src/status_post/status_post.cpp`)
+
+### Added
+- **Core-dump partition.** `firmware/partitions.csv` declares a new `coredump` partition (64 KB at 0x620000, in the previously-unused tail of flash). Existing partition offsets are unchanged so OTA across the upgrade is safe. On every freshly-flashed unit the new region must be erased once with `esptool.py --port COMx erase_region 0x620000 0x10000`; without that step the IDF reads whatever happens to sit at 0x620000 and complains about a corrupt CRC on the first boot (this is exactly the `CRC=0x7bd5c66f` message Unit 12F0 logged before the panic — its NVS partition didn't include a coredump entry at all).
+- **Core-dump build flags (documentation-of-intent).** New `firmware/sdkconfig.defaults` records the expected coredump configuration. Verified 2026-05-15 against the prebuilt Arduino-ESP32 framework's baked-in sdkconfig (`framework-arduinoespressif32` 3.20017, shipped with `espressif32@6.12.0`): **the framework already enables `CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y`, `_DATA_FORMAT_ELF=y`, `_CHECKSUM_CRC32=y`, and `_CHECK_BOOT=y`** and links in the `espcoredump` library, so `esp_core_dump_image_get()` works on this build. The file has no runtime effect on the prebuilt framework but documents the assumption and protects against an upstream maintainer ever flipping coredump off — or against this project switching to a source-built framework or the `pioarduino` fork that does honour `sdkconfig.defaults`.
+- **Boot-time core-dump presence log.** `firmware/src/main.cpp::setup()` now calls `esp_core_dump_image_get()` immediately after the Phase 0 boot banner and logs either `coredump: none` or `coredump present: N bytes @ 0xADDR` (warning level). Operators reading serial — or `parsed_nvs_log.txt` once we add the SYSTEM-event mirror — immediately see whether the previous boot left an analysable image worth pulling.
+
+### Changed
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.18.3` → `1.19.0`. Per the project's release cadence rule, a fix that prevents a production panic and adds a new diagnostic partition is a minor version, not a patch.
+- `firmware/data/manifest.json` and `firmware/data/index.html` — stamped 1.19.0.
+
+### Behaviour notes / non-changes
+- **Partition table change is OTA-safe for existing units.** All previously-defined offsets (otadata, nvs, app0, app1, lfs0, lfs1) are byte-identical to 1.18.3. The new `coredump` row only claims previously-unallocated flash above 0x620000. On a unit that does *not* run the `erase_region` step, the IDF will log a CRC complaint once at boot and operate normally; the next core-dump capture won't work until the region is erased, but nothing else is affected.
+- **No bail-out timeout in the gh#21 gate.** Earlier discussion considered a 30-second timeout that would let T14 enter its loop without an IP. Rejected: a POST without an IP can't succeed, so a timeout would only let T14 spin uselessly in the main loop instead of usefully in the gate. The gate is the same wait, in the right place.
+- **Heap-fragmentation root cause (gh#20) untouched.** This release fixes the *cascade* (the lwIP panic that happens *after* T15 issues a planned reboot), not the upstream heap drop that triggers the planned reboot. T15's heap monitor is still the right detector for gh#20; that work continues separately.
+- **OTA fail counter behaviour unchanged.** A planned reboot still increments the OTA boot-fail counter; the 30-second healthy-uptime reset clears it as before. Changing the counter to skip planned reboots is a separate follow-up.
+
+### Operational notes
+- **One-time per-unit flash step before the new core-dump partition becomes usable:**
+  ```
+  esptool.py --chip esp32s3 --port COMx erase_region 0x620000 0x10000
+  ```
+  Run this once after the first 1.19.0 flash on each unit. Subsequent OTAs do not need to repeat it.
+- **Verifying core-dump capture actually works in this PlatformIO build:** the prebuilt Arduino-ESP32 framework's baked-in sdkconfig was verified during this release to already have all the required flags enabled, so capture *should* work end-to-end. To confirm on a development unit: trigger a deliberate panic (temporary `abort()` behind a test-only admin endpoint), reboot, and confirm the new boot log shows `coredump present: N bytes`. Then pull and decode with `esptool.py read_flash 0x620000 0x10000 coredump.bin` + `espcoredump.py info_corefile -t elf -c coredump.bin firmware.elf`.
+- **Reproducing gh#21 to confirm the fix:** add a one-shot trigger that sets the T15 planned-reboot NVS flag and calls `esp_restart()`. On an unpatched unit this reproduces the `Invalid mbox` assertion in ≤ 2 boots; on a patched unit serial shows `gh#21 gate: waiting for STA IP` → `gh#21 gate: IP=…, proceeding` → normal T14 cycle.
+
+### Related
+- [gh#21](https://github.com/pe1mew/greenhouse-Controller/issues/21) — lwIP startup race in T14 on resume from PLANNED REBOOT. Closed with this release.
+- [gh#20](https://github.com/pe1mew/greenhouse-Controller/issues/20) — Heap fragmentation in T14 status-POST loop. **Not** closed by this release; this release only addresses the downstream cascade.
+- Forensic capture under `debug/unit1/1.18.3/20260514_191506.log` and `debug/unit2/1.18.3/20260514_141849.log` — primary evidence for both findings.
+
+---
+
 ## [1.18.3] — 2026-05-14
 
 *Adds a per-unit identifier ([gh#17](https://github.com/pe1mew/greenhouse-Controller/issues/17)) derived from the factory-burned WiFi-STA MAC, surfaced on four operator/log/dashboard channels. Reuses the same 2-byte short form (last 2 MAC bytes, 4 hex chars) that the AP SSID `Greenhouse-XXXX` has used since day one, so operators identify the same unit consistently across SSID, LCD boot row, SD log, NVS ring, and external dashboard. For the project's expected fleet size (≤ tens of units) the 16-bit ID has effectively zero collision probability — even more so when units are procured as a single batch (sequentially-numbered MACs within a batch make collisions deterministically impossible).*

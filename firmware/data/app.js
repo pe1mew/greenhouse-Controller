@@ -181,10 +181,17 @@ function handleStatus(s) {
     if (sys.wifi_rssi_dbm !== undefined) setText('st-wifi-rssi', sys.wifi_rssi_dbm);
     if (sys.wifi_ip)                     setText('st-wifi-ip',   sys.wifi_ip);
     if (sys.uptime_s !== undefined)      setText('st-uptime',    fmtUptime(sys.uptime_s));
-    // Firmware version goes into the page footer. Set on every push
-    // (idempotent setText) so it remains correct after a re-render and
+    // Firmware version + unit_id (gh#17) go into the page footer.
+    // Format: "v1.20.0 · 12F0". The unit_id (last 2 bytes of WiFi-STA MAC, 4
+    // hex chars) is appended after a middot so an operator looking at the
+    // GUI can identify which physical unit they're talking to without going
+    // to System → Network. Mirrors the LCD case-6 row-0 layout. Set on every
+    // push (idempotent setText) so it remains correct after a re-render and
     // there is no first-message gating window where the field stays at "—".
-    if (sys.fw_ver) setText('fw-ver', 'v' + sys.fw_ver);
+    if (sys.fw_ver) {
+      const id = sys.unit_id ? ' · ' + sys.unit_id : '';
+      setText('fw-ver', 'v' + sys.fw_ver + id);
+    }
     // sys.asset_version is consumed by the Alarms-card mismatch check
     // above; no separate visible field — a mismatch shows up as the
     // MISMATCH badge alongside the mode-derived alarms.

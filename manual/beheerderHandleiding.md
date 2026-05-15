@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de beheerder
 
-**Versie:** 1.10 — concept
-**Datum:** 2026-05-14
-**Firmware:** 1.18.2
+**Versie:** 1.12 — concept
+**Datum:** 2026-05-15
+**Firmware:** 1.20.0
 
 ---
 
@@ -869,6 +869,42 @@ Wanneer de kascontroller voor het eerst wordt aangesloten of na een reset niveau
 
 > **Vervolgstappen na deze eerste installatie** — pas direct het AP-wachtwoord aan ([§10.5 → WiFi AP](#wifi-ap-access-point-op-de-controller)) en, indien nodig, de tijdzone, locatie en sessie-timeout via [§10.5 System-tab](#105-system-tab-alleen-beheerder). Status-rapportage naar een extern dashboard configureert u via [§10.8 Web-tab](#108-web-tab-alleen-beheerder--status-rapportage-naar-extern-dashboard).
 
+### 11.2 Automatische herstart na WiFi-wijziging — sinds firmware 1.19.1
+
+Sinds firmware 1.19.1 voert de controller **automatisch een herstart uit** wanneer een POST naar `/api/wifi` (afkomstig van het Connect/Save-knopje op de System-tab) één of meer van de volgende velden wijzigt:
+
+- `ssid` — naam van het WiFi-client-netwerk
+- `psk` — wachtwoord van het WiFi-client-netwerk
+- `ap_psk` — wachtwoord van het AP-modus-netwerk
+
+De herstart wordt ~1 sec na het opslaan in NVS uitgevoerd, zodat de HTTP-respons eerst gevuld kan worden. De JSON-respons bevat dan `"restarting": true` (in tegenstelling tot het reguliere `{"ok": true}`) zodat de webinterface een herstart-melding kan tonen.
+
+**Waarom is dit nodig?** T10 (`network_manager`) en de AP-init-paden lezen WiFi-credentials uit NVS **alleen bij boot**. Vóór 1.19.1 bleven nieuwe credentials in NVS ongebruikt tot de eerstvolgende handmatige power-cycle, wat tot operationele verwarring leidde ("ik heb de SSID al opgeslagen, waarom werkt het nog niet?"). De automatische herstart sluit dit gat.
+
+**Voor de beheerder zichtbaar als:**
+- Op seriële verbinding: `[T11_WEB] WiFi creds changed — restarting in 1 s to apply`, gevolgd door een normale boot-sequentie.
+- Op de LCD: korte boot-rotatie, daarna `Mode: AUTO`.
+- Op de webinterface: een herstart-toast (afhankelijk van browser-cache).
+- Voor de boer: ~2 sec klimaatregeling-onderbreking (dankzij de kalibratie-overslaan-logica) — zie boer-handleiding §11.
+
+**Wijzigingen die géén herstart triggeren:** alle andere velden van de System-tab (NTP-server, tijdzone, locatie-coördinaten, sessie-timeout) blijven via de bestaande "schrijf-en-doorgaan"-paden lopen.
+
+### 11.3 Core-dump partitie — sinds firmware 1.19.0
+
+Firmware 1.19.0 voegt een **core-dump partitie** toe aan de flash-layout (64 KB op offset `0x620000`, in het voorheen-ongebruikte staartdeel van de flash). Bestaande partitie-offsets (otadata, NVS, app0, app1, lfs0, lfs1) zijn **byte-identiek** aan 1.18.3 — een OTA-update vanaf 1.18.3 is veilig zonder partitietabel-conversies.
+
+**Eénmalige stap per fysieke unit bij eerste installatie van 1.19.0+:**
+
+```
+python -m esptool --port COMx --baud 460800 erase_region 0x620000 0x10000
+```
+
+Zonder deze stap leest de IDF whatever-bits-er-staan op `0x620000` en logt een CRC-fout (`Core dump flash config is corrupted! CRC=0x...`) bij elke boot. Dat is geen kritieke fout — de rest van het systeem werkt normaal — maar de core-dump-capture werkt niet tot de partitie eenmalig gewist is. Pas dán kan een toekomstige paniek een analyseerbaar core-dump-image schrijven naar deze regio.
+
+**Boot-zichtbaarheid sinds 1.19.0:** direct na de Phase 0-banner logt `main.cpp::setup()` ofwel `coredump: none` (geen image aanwezig) of `coredump present: N bytes @ 0xADDR` (warning level, signaleert dat de vorige boot een paniek-image heeft achtergelaten die de moeite waard is om te downloaden).
+
+**Operationeel:** de partitie is een diagnostiek-asset voor de ontwikkelaar, geen actief gebruikt component. Voor een normale werking van de controller is de eenmalige erase-stap niet strikt nodig — alleen indien u een toekomstige paniek wilt kunnen analyseren met `xtensa-esp32s3-elf-addr2line` of het ESP-IDF core-dump-tooling.
+
 ---
 
 ## 12. Alarmen en bedrijfsmodi — diagnose en herstel
@@ -1014,6 +1050,7 @@ Vier opvolgende firmware-releases hebben elk een component toegevoegd:
 | 8 | Vrije PSRAM heap (value_b in KB), elke 60 sec | 1.17.29 |
 | 9 | Heap-corruptie gedetecteerd door `heap_caps_check_integrity_all` | 1.17.29 |
 | 10 | T2 boot-kalibratie overgeslagen (NVS-recovered) | 1.17.36 |
+| 11 | Unit-ID (value_b = lage 16 bits van WiFi-STA MAC, in int16 cast) — één per boot + één per SD-rotatie | 1.18.3 |
 | 12 | Grootste contiguous interne-heap-block (value_b in KB), elke 60 sec | 1.18.2 |
 
 De combinatie van `value_a=7` (totaal vrij) en `value_a=12` (grootste blok) geeft inzicht in *heap-fragmentatie*: een toenemend verschil tussen die twee waarden zonder dat het totaal vrij daalt, duidt op fragmentatie. Dit is in 1.18.2 toegevoegd nadat onderzoek vaststelde dat de bulkhead-supervisor met alleen de "totaal-vrije-heap"-meting een belangrijke faalmodus zou missen (zie `design/tls_leak_audit.md` voor details).
@@ -1024,6 +1061,77 @@ De combinatie van `value_a=7` (totaal vrij) en `value_a=12` (grootste blok) geef
 - **Onverklaarbare boot met `esp_reset_reason = 3 (SW)`:** kan een geplande reboot zijn door de T15-supervisor. Inspecteer de minuten vóór de reboot in het SD-log; bij een geplande reboot vind je daar ofwel (a) heap-rij `value_a=7` dalend naar < 70 KB, of (b) een respawn-burst herkenbaar aan meerdere T14-uitval-events kort op elkaar. Indien geen van beide zichtbaar: dit was géén geplande reboot, mogelijk OTA-rollback of handmatig commando.
 - **Onverklaarbare boot met `esp_reset_reason = 5 (INT_WDT)` of `= 6 (TASK_WDT)`:** harde firmware-fout. Bekijk seriële capture (indien aangesloten) voor stack-trace. Indien repeated: melden bij ontwikkelaar met SD-log van laatste 24 uur.
 - **`Boot calibration skipped`-event in log:** dit is correct gedrag wanneer alle drie ramen bij de vorige uitschakeling CLOSED waren. Bespaart ~3 min hersteltijd. Indien een raam stil-bij-power-cycle in OPEN-positie staat, kan de operator hem fysiek dichtdoen (RRK-3 in HAND-stand) voordat de stroom eraf gaat — bij volgende boot zal de controller dan correct skippen.
+
+#### Eerste productie-observatie van het bulkhead-beleid — 2026-05-14
+
+Op Unit 2 (ID `5C88`) werd op 2026-05-14 om 18:14:23 UTC voor het eerst in productie een **geplande reboot** door T15 waargenomen, na ~14 uur normale werking. De forensische capture staat in `debug/unit2/20260514_141849.log` (seriële trace) en `debug/unit2/20260514031520.csv` (SD-log).
+
+**Wat we hebben gezien:**
+
+| Tijd (UTC) | Gebeurtenis |
+|---|---|
+| **18:14:23.305** | T15: `PLANNED REBOOT — T14 cumulative heap drop crossed 64 KB` — de drempelwaarde van de bulkhead-supervisor is precies voor deze situatie ingesteld. |
+| 18:14:23.665 | Chip reset, reden `SW (3)`. |
+| **18:14:24.283** | `T2 boot calibration skipped — NVS-recovered window state (all three channels CLOSED)` — gh#18 Phase 3 deed exact wat hij beloofde: ~2 sec hersteltijd in plaats van ~171 sec. |
+| 18:14:24.544 | Tweede paniek (lwIP-init race — zie hieronder, gh#21). |
+| 18:14:25.062 | Chip reset, reden `PANIC (4)`. |
+| 18:14:25.217 | Tweede `boot calibration skipped` — Phase 3 nogmaals actief; ~1 sec extra hersteltijd. |
+| 18:14:55.414 | T15: `planned-reboot flag cleared (T14 healthy)` — herstel bevestigd. |
+
+**Klimaatregeling-onderbreking voor de operator:** ≈ 2 seconden totaal (één per boot-window). Geen RGB-LED-verandering, geen alarm, geen kalibratie-procedure zichtbaar. Het bulkhead-beleid heeft zijn ontwerp-doel gehaald.
+
+**De heap-lekkage zelf is nog niet gevonden** — gevolgd op gh#12. Alle T14 status-POST events vlak voor de geplande reboot waren successen (`value_a=1` in het log), dus de lekkage zit in de *success path* van de HTTPS-keten (`mbedTLS` / `WiFiClientSecure` / `lwIP`), niet in de destructor-keten die `design/tls_leak_audit.md` heeft afgekeurd. De supervisor begrenst de gevolgen — operationeel geen blocker.
+
+#### lwIP-init race tijdens fast-boot — gh#21 RESOLVED in 1.19.0
+
+**Achtergrond.** Wanneer T15 een geplande reboot uitvoert en T2's boot-kalibratie wordt overgeslagen (omdat alle drie ramen al CLOSED waren), is de hele opstartroutine ~2 sec in plaats van ~171 sec. Op die snelle opstartroutine bestond een race-conditie tussen T14 (status-POST) en T10 (netwerkmanager, `esp_netif_init`): T14's WiFi-detectie kon `tcpip_api_call` dispatchen vóór lwIP's `tcpip_init()` had gedraaid → panic met assert `Invalid mbox` op regel 497 van `tcpip.c`. Resultaat: één extra reboot direct na elke geplande reboot.
+
+Voor de beheerder zichtbaar als (vóór 1.19.0):
+- Een boot-reden-event `SYSTEM,SYS,0,0,5,3` (SW) gevolgd binnen ~1 sec door `SYSTEM,SYS,0,0,5,4` (PANIC) in het SD-log.
+- Op de seriële verbinding (indien aangesloten): `assert failed: tcpip_api_call ... (Invalid mbox)` + een backtrace via `task_status_post() → tcpip_api_call`.
+
+**Fix in firmware 1.19.0** (`firmware/src/status_post/status_post.cpp`): T14's hoofdlus begint nu met een wacht-conditie op `WiFi.localIP() != 0.0.0.0`. Dit is een strikte super-set van "tcpip geïnitialiseerd" en ook precies de pre-conditie die elke echte POST sowieso nodig heeft. Geen timeout — als WiFi nooit opkomt, idlet T14 in deze wacht in plaats van paniek te veroorzaken in de main-loop. Tegelijkertijd is in 1.19.1 een follow-up-fix toegevoegd zodat de heartbeat-teller ook tijdens deze wacht doorloopt — anders zou T15 T14 ten onrechte als "vastgelopen" bestempelen.
+
+**Verwacht gedrag sinds 1.19.0+:** een geplande reboot levert nog steeds één SD-reboot-rij op (`SYSTEM,SYS,0,0,5,3` SW) maar **géén** opvolgende paniek-rij meer. Klimaatregeling-onderbreking blijft binnen het 2-sec budget — en de extra ~1 sec die er voorheen bovenop kwam, is weg.
+
+#### OTA-fail-counter exempt geplande reboots — sinds 1.19.2
+
+**Probleem (vóór 1.19.2):** elke reboot — inclusief T15-geïnitieerde geplande reboots — telde mee voor de `ota_check_rollback()` 3-fail-budget. Als een unit gh#20 (heap-fragmentatie) op een ongelukkige cadens raakte (drie geplande reboots binnen het OTA-healthy-uptime-venster), schakelde de bootloader terug naar de vorige firmware-bank — terwijl die juist degene was die werd vervangen om gh#20 te mitigeren.
+
+**Fix in firmware 1.19.2** (`firmware/src/ota_manager/ota_manager.cpp`): `ota_check_rollback()` leest nu de `t15_planreboot` NVS-sleutel (gezet door `status_post_supervisor.cpp` vlak vóór `esp_restart()`) en slaat de teller-verhoging over wanneer de huidige boot een opzettelijke voortzetting is van een geplande reboot. Beperkt tot `esp_reset_reason() == ESP_RST_SW`, zodat een echte paniek die toevallig optreedt terwijl de vlag nog gezet is (zoals het oorspronkelijke gh#21-cascade-scenario van 2026-05-14) wel meetelt.
+
+**Wat dit betekent voor de beheerder:** geplande reboots door T15 verlagen niet meer de OTA-stabiliteits-marge. Het 3-fail-budget bevat nu alleen echte fouten (paniek, watchdog-reset, brownout, et cetera). De drempel zelf — drie mislukte boots binnen 30 sec — is onveranderd. Heap-fragmentatie zelf (gh#20) is hiermee niet opgelost — alleen de operationele bijwerking is verkleind.
+
+### 12.8 Unit-identificatie — sinds firmware 1.18.3
+
+Sinds firmware 1.18.3 ([gh#17](https://github.com/pe1mew/greenhouse-Controller/issues/17)) heeft elke kascontroller een **vier-tekens hex-ID** afgeleid van de lage 2 bytes van het ingebakken WiFi-STA MAC-adres van de microprocessor. De ID is **onveranderbaar**:
+
+- Survives factory reset (de BOOT-knop wist NVS maar raakt het MAC-adres niet).
+- Survives firmware-update (chip-MAC ligt vast in eFuse).
+- Identiek aan de SSID-naam van de AP (`Greenhouse-XXXX`), die deze conventie sinds dag één gebruikte — de `gh#17`-work in 1.18.3 + 1.20.0 maakt deze conventie consistent over alle zes oppervlakken.
+
+**Zes surfaces waar de ID zichtbaar is** (vier toegevoegd in 1.18.3, twee in 1.20.0):
+
+| Surface | Sinds | Waar | Voorbeeld |
+|---|---|---|---|
+| **AP-SSID** | bestaand | LCD-scherm 4 wanneer AP actief is, en in WiFi-instellingen van een laptop/telefoon | `Greenhouse-5C88` |
+| **Seriële boot-output** | 1.18.3 | Eerste seconde na power-on, één regel | `Phase 0 boot — id=5C88  esp_reset_reason=3` |
+| **SD-logbestand** | 1.18.3 | Eenmaal per boot (T4 post-RTC-seed) + één keer bovenaan elk geroteerd CSV-bestand (T9) | `2026-05-14T12:00:00,SYSTEM,SYS,0,0,11,23688` (decode via `logparser.py`: `Unit ID: 5C88`) |
+| **Status-JSON** | 1.18.3 | Veld `system.unit_id` in de canonieke status, zichtbaar via `GET /api/status` van de web-interface en in de POSTs naar het externe dashboard | `"system":{"unit_id":"5C88", "wifi_ip":"192.168.20.150", ...}` |
+| **LCD-scherm 7** *(FW/Up)* | **1.20.0** | Rechts uitgelijnd op regel 1, naast het firmware-versienummer | `FW: 1.20.0  5C88` |
+| **Webinterface-voettekst** | **1.20.0** | Onderaan elke pagina, na het versienummer | `Greenhouse Controller – v1.20.0 · 5C88` |
+
+**Implementatie-detail:** de `value_b` in het LOG_SYSTEM-event (waarde 11) is een `int16_t` cast van de 16-bits ID. Bij waarden boven 0x7FFF (32767) ziet het er negatief uit in de CSV — de logparser herinterpreteert via `(uint16_t)value_b` en rendert als 4-tekens uppercase hex.
+
+**Botsingskans bij vlootgrootte ≤ tientallen units:** verwaarloosbaar (< 1% bij 30 units volgens birthday-paradox; **deterministisch 0%** binnen één productiebatch omdat MAC-adressen sequentieel worden toegekend). Upgrade-pad naar 24-bits ID (`AA:BB:CC`) bestaat — één regel in `firmware/src/system_id/system_id.cpp` — indien de vloot ooit > 50 units overschrijdt. Documenteerd in dat bestand inline.
+
+**Module:** `firmware/src/system_id/system_id.h` + `.cpp`. Twee publieke functies: `system_unit_id_u16()` (uint16) en `system_unit_id_str(buf, cap)` (4-tekens hex string + NUL).
+
+**Praktisch nut voor de beheerder:**
+
+- **Identificeer een unit zonder serial-aansluiting**: vraag de boer om naar de SSID van de AP-modus te kijken (LCD-scherm 4 met AP actief). De vier tekens na `Greenhouse-` zijn de unit-ID.
+- **Identificeer logs**: elk gedownload SD-CSV-bestand begint met een `value_a=11` regel die de unit-ID bevat. Bij meerdere downloads van meerdere units kan je per CSV de herkomst vaststellen zonder bestandsnamen te onthouden.
+- **Dashboard-aggregatie**: het externe webdashboard ontvangt `system.unit_id` in elke status-POST. Logs op de server kunnen daarmee per unit gefilterd / gegroepeerd worden.
 
 ---
 
@@ -1642,6 +1750,8 @@ De **complete uitleg** — met daarin alle velden, alle event-types, alle parame
 | 1.8 | 2026-05-12 | Kleine revisies (geen firmware-wijziging — nog steeds 1.17.25). Elke PDF-pagina krijgt nu een **kop- en voettekst**: koptekst toont links *Kas Controller - Herenboeren Wenumseveld* en rechts het versienummer; voettekst toont links *Een RFSee product - http://www.rfsee.nl* en rechts *pagina N*. Alle figuren in de handleiding zijn voorzien van een **doorlopend volgnummer** ("Figuur 1: …", "Figuur 2: …" enz.). |
 | 1.9 | 2026-05-12 | Bijgewerkt voor firmware 1.17.26. Cosmetische correctie op **LCD Scherm 2 (Wind)**: tabel-rij in §6 *LCD-statusschermen* toont nu `Dir: 180 ° (S )` met één spatie tussen de dubbele punt en het cijfer, in lijn met `Wind:`, `Mode:` en `Sess:` en met de ongeldige-meting-rij (`Dir: ---`). GitHub-issue [#6](https://github.com/pe1mew/greenhouse-Controller/issues/6). Tevens firmware-referentie op LCD-pagina 7 (`FW: 1.17.26`) in dezelfde tabel bijgewerkt. |
 | 1.10 | 2026-05-14 | Bijgewerkt voor firmware 1.17.27–1.18.2. **Nieuwe §12.7 *Bulkhead-beleid*** toegevoegd: complete documentatie van de vier-fasen architectuurmaatregel ([gh#18](https://github.com/pe1mew/greenhouse-Controller/issues/18)) die garandeert dat secundaire-netwerk-activiteit (status-POST + log-upload) nooit kan leiden tot uitval van de primaire klimaatregeling. Behandelt de `BK`-indicator op LCD-scherm 4 (rij 1 rechts), het `net_backoff_active`-veld in de status-JSON (rendert als gele "Net backoff"-badge op de Status-tab → Alarms-tegel), de persistent circuit breaker met escalatie 60s→5min→30min→1h, de T15-supervisortaak met geplande reboot, NVS-persistente raamposities (boot-kalibratie wordt overgeslagen als alle drie ramen al CLOSED waren — bespaart ~171 sec hersteltijd), en de bijhorende NVS-sleutels en LOG_SYSTEM-event-codes. Tevens **nieuwe `value_a`-codes** (5–10, 12) gedocumenteerd in §12.7 en in Bijlage F (logparser-script bijgewerkt). LCD-statusschermen tabel uitgebreid met de `BK`-variant van Wifi-scherm 4. **§17 *Power-cycle / RESET* volledig herschreven** om de nieuwe boot-kalibratie-skip-logica eenduidig te beschrijven en de pre-1.17.36 claim "élke power-cycle doorloopt CLOSE_ALL" te corrigeren. Drie boot-uitkomsten (alarm / NVS-skip / volledige kalibratie) in tabel-vorm. Expliciete vermelding dat het type opstart (power-cycle, RESET-knop, OTA-update, geplande T15-reboot, fabrieksreset) **niet** de skip-conditie bepaalt — uitsluitend de NVS-staat van de raamposities op het moment van uitschakeling. Handmatige-overname-advies aangepast: na terugkeer naar AUTO bewust een raam fysiek open zetten vóór de power-cycle om de skip te vermijden. Achtergrond: één geconstateerde regressie in 1.18.0 (T15 starveerde de task-watchdog door 30 sec sleep tussen WDT-kicks; OTA-rollback redde de unit; 1.18.1 corrigeert die bug; 1.18.2 voegt platform-versiepinning, heap-fragmentatie-instrumentatie en een TLS-audit-document toe). Zie ook `design/tls_leak_audit.md` voor de TLS-stack-audit. Geen wijzigingen aan de boer-interface (LCD-menu's, webinterface-tabs voor de boer) buiten de `BK`-indicator. |
+| 1.12 | 2026-05-15 | Bijgewerkt voor firmware 1.19.0–1.20.0 (vier firmware-releases). **§12.7 *Bulkhead-beleid* bijgewerkt**: de sub-sectie *Bekende secundaire bug — lwIP-init race* is geherformuleerd naar *lwIP-init race tijdens fast-boot — gh#21 RESOLVED in 1.19.0*. De daadwerkelijk geïmplementeerde fix bleek niet de eerder voorgestelde `EG1_BIT_NETIF_READY` event-bit, maar een wacht-conditie op `WiFi.localIP() != 0.0.0.0` in T14's hoofdlus (zie `firmware/src/status_post/status_post.cpp` sinds 1.19.0); 1.19.1 voegde een follow-up toe zodat de heartbeat-teller ook tijdens deze wacht doorloopt (anders zou T15 T14 onterecht als wedged bestempelen). Tevens **nieuwe sub-sectie *OTA-fail-counter exempt geplande reboots*** ([gh#20-mitigatie](https://github.com/pe1mew/greenhouse-Controller/issues/20), sinds 1.19.2): T15-geïnitieerde geplande reboots tellen niet meer mee voor het `ota_check_rollback()` 3-fail-budget — voorkomt dat een unit met heap-fragmentatie ten onrechte terugvalt naar een eerdere firmware-bank. **§12.8 *Unit-identificatie* uitgebreid van 4 naar 6 surfaces** met de nieuwe oppervlakken die in 1.20.0 zijn toegevoegd: **LCD-scherm 7** rechts op regel 1 (`FW: 1.20.0  5C88`), en **webinterface-voettekst** (`Greenhouse Controller – v1.20.0 · 5C88`). **Twee nieuwe sub-secties in §11 *Eerste-installatie WiFi-verbinding*** toegevoegd: §11.2 *Automatische herstart na WiFi-wijziging* (sinds 1.19.1 — POST naar `/api/wifi` die `ssid`/`psk`/`ap_psk` wijzigt triggert ~1 sec later een `esp_restart()`, JSON-respons bevat `"restarting": true`) en §11.3 *Core-dump partitie* (sinds 1.19.0 — 64 KB partitie op offset `0x620000`, eenmalige `esptool.py erase_region` per fysieke unit nodig om de core-dump-capture werkend te krijgen; OTA vanuit 1.18.3 blijft veilig omdat alle bestaande partitie-offsets byte-identiek zijn). Geen wijzigingen aan menustructuur, alarmgedrag, of webinterface-tabs voor boer of beheerder buiten de toegevoegde voettekst. |
+| 1.11 | 2026-05-14 | Bijgewerkt voor firmware 1.18.3. **Nieuwe §12.8 *Unit-identificatie*** ([gh#17](https://github.com/pe1mew/greenhouse-Controller/issues/17)). Sinds 1.18.3 heeft elke kascontroller een vier-tekens hex-ID afgeleid van de lage 2 bytes van het ingebakken WiFi-STA MAC-adres. De ID is onveranderbaar (survives factory-reset én firmware-update) en verschijnt op **vier surfaces**: AP-SSID (`Greenhouse-XXXX` — pre-existent), seriële boot-output (`Phase 0 boot — id=5C88` — nieuw), SD-logbestand (`LOG_SYSTEM, value_a=11` één keer per boot via T4 + één keer per SD-rotatie via T9 — nieuw), en de canonieke status-JSON (`system.unit_id` — nieuw). LOG_SYSTEM-tabel in §12.7 uitgebreid met `value_a=11`. Logparser (`log/logparser.py` + `log/logparser.md`) bijgewerkt om de int16-cast unit-ID terug te interpreteren als uint16-hex. Botsingskans bij vlootgrootte ≤ tientallen units < 1%, **deterministisch 0%** binnen één productiebatch. **Nieuwe §12.7 sub-sectie *Eerste productie-observatie van het bulkhead-beleid* (2026-05-14)** toegevoegd met een tijdlijn-tabel van het eerste productie-event waarin T15 een geplande reboot uitvoerde wegens `T14 cumulative heap drop > 64 KB` — alle componenten functioneerden zoals ontworpen, klimaatregeling-onderbreking voor de operator was ≈ 2 seconden. **Nieuwe sub-sectie *Bekende secundaire bug — lwIP-init race tijdens fast-boot*** ([gh#21](https://github.com/pe1mew/greenhouse-Controller/issues/21)): de gh#18 Phase 3 fast-boot heeft een latente race tussen T11 (web-server, AsyncTCP) en T10 (network-manager, `esp_netif_init`) blootgelegd. Resultaat: één extra paniek-reboot direct na elke geplande reboot. Operationeel impact: ~1 sec extra hersteltijd; klimaatregeling nog steeds binnen het 2-sec design-budget. Fix gepland via `EG1_BIT_NETIF_READY` event-group-bit; niet-blokkerend. Geen wijzigingen aan de boer-interface, LCD-menu's of webinterface-tabs voor de boer of beheerder. |
 
 ---
 

@@ -28,6 +28,7 @@
 #include <HTTPClient.h>
 #include <esp_log.h>
 #include <esp_heap_caps.h>
+#include <esp_task_wdt.h>   /* gh#21 — gate uses esp_task_wdt_reset() defensively */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -764,6 +765,52 @@ void task_status_post(void *pvParameters)
     (void)pvParameters;
 
     ESP_LOGI(TAG, "T14 started — status reporting (idle until configured)");
+
+    /* gh#21 — lwIP startup gate. The Arduino-ESP32 core lazily calls
+     * tcpip_init() on the first WiFi.mode() call (T10, network_manager.cpp:680).
+     * T14 spawns on the same core (0) and its loop calls WiFi.isConnected()
+     * unconditionally — racing past lwIP init triggers `assert(Invalid mbox)`
+     * in tcpip_api_call. Confirmed 2026-05-15 on units 12F0 and 5C88, both on
+     * resume from a T15 PLANNED REBOOT (RTC_SW_CPU_RST resumes the scheduler
+     * fast enough that T14 wins the race against T10's NVS reads).
+     *
+     * Wait until the STA netif has an IP — that's a strict superset of
+     * "tcpip is initialised" AND it is the precondition every real POST needs
+     * anyway, so the gate doubles as a defensive check on every boot, not
+     * just resume-from-planned-reboot. No timeout/bail: if WiFi never comes
+     * up, T14 idles here instead of in its main loop. Same outcome.
+     *
+     * WiFi.localIP() is safe before lwIP exists — the Arduino wrapper checks
+     * `_esp_netif != NULL` before touching lwIP. T14 isn't WDT-subscribed
+     * today, but esp_task_wdt_reset() returns ESP_ERR_NOT_FOUND silently when
+     * the caller isn't subscribed; keeping the call documents the gh#19
+     * pattern and is harmless if T14 ever becomes subscribed.
+     *
+     * IMPORTANT — the gate MUST advance s_heartbeat on every iteration.
+     * T15 (status_post_supervisor.cpp:244) declares T14 wedged after
+     * T15_WEDGE_TIMEOUT_MS (60 s) without a heartbeat change. If the gate
+     * leaves the heartbeat frozen the supervisor respawns T14, which lands
+     * straight back in the gate, wedges again 60 s later, and after one
+     * respawn-storm window (< 5 min between respawns) T15 escalates to a
+     * PLANNED REBOOT — observed 2026-05-15 on unit 12F0 with no SSID
+     * configured. Bumping s_heartbeat here tells T15 "T14 is alive, just
+     * waiting on a precondition", which is the truthful status. */
+    {
+        bool logged_waiting = false;
+        while (WiFi.localIP() == IPAddress(0, 0, 0, 0)) {
+            s_heartbeat++;
+            if (!logged_waiting) {
+                ESP_LOGI(TAG, "gh#21 gate: waiting for STA IP before first lwIP call");
+                logged_waiting = true;
+            }
+            esp_task_wdt_reset();
+            vTaskDelay(pdMS_TO_TICKS(250));
+        }
+        if (logged_waiting) {
+            ESP_LOGI(TAG, "gh#21 gate: IP=%s, proceeding",
+                     WiFi.localIP().toString().c_str());
+        }
+    }
 
     /* gh#18 Phase 2 — recover breaker state from NVS. If a previous boot left
      * the breaker open (open_until_unix in the future) we honour that window;

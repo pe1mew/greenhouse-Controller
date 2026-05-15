@@ -57,6 +57,7 @@
 #include "../data_manager/data_manager.h"
 #include "../relay_controller/relay_controller.h"
 #include "../event_logger/event_logger.h"
+#include "../system_id/system_id.h"      /* unit_id for FW screen (1.20.0) */
 #include "../status_post/status_post.h"      /* status_post_backoff_active (gh#18 Phase 4) */
 #include "../auth/pin_auth.h"
 #include "lcd1602.h"
@@ -826,7 +827,16 @@ static void render_status(void)
             uint32_t days = (uint32_t)(up_s / 86400u);
             uint32_t hrs  = (uint32_t)((up_s % 86400u) / 3600u);
             uint32_t mins = (uint32_t)((up_s % 3600u)  / 60u);
-            snprintf(r0, sizeof(r0), "FW: %-12.12s", FIRMWARE_VERSION);
+            /* Row 0 layout (16 cols, gh#17 / 1.20.0):
+             *   "FW: " (4) + version padded/truncated to 8 chars + unit_id (4)
+             * Right-edge unit_id mirrors the web GUI footer and the boot serial
+             * banner. Lets an operator identify which physical unit they're
+             * standing in front of without going to Sys → Network. Current
+             * longest version "1.19.2" is 6 chars; the 8-char field gives room
+             * for "1.999.99" before truncation kicks in. */
+            char unit_id_buf[8] = {0};
+            system_unit_id_str(unit_id_buf, sizeof(unit_id_buf));
+            snprintf(r0, sizeof(r0), "FW: %-8.8s%s", FIRMWARE_VERSION, unit_id_buf);
             /* Compact uptime, LEFT-aligned with a single space after the
              * colon (operator-readable like the web GUI's Clock-card line).
              * Build the variable-length body into a scratch buffer first,

@@ -55,7 +55,7 @@ Stop the server with **Ctrl+C**.
 
 ## What is emulated
 
-Targets firmware **1.17.20** — canonical nested status-JSON shape, status-website POST configuration (Web tab), and the OTA-version-mismatch diagnostic surfaces.
+Targets firmware **1.20.0** — canonical nested status-JSON shape (now including the gh#17 `unit_id` field consumed by the LCD info screen and the web-GUI footer), status-website POST configuration (Web tab), the OTA-version-mismatch diagnostic surfaces, and the 1.19.1 `/api/wifi` apply-on-restart semantics.
 
 | Endpoint             | Method | Auth    | Description |
 |----------------------|--------|---------|-------------|
