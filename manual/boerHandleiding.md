@@ -85,9 +85,9 @@ De kascontroller is een geautomatiseerd systeem dat het **klimaat in één kas**
 
 ## 3. De kas en het systeem
 
-![FOTO: bovenaanzicht / plattegrond van de kas met M1, M2 en M3 aangegeven](images\bovenAanzicht.png)
+![FOTO: bovenaanzicht / plattegrond van de kas met M1, M2 en M3 aangegeven](images\KasRaamlocaties.png)
 
-*Figuur #: bovenaanzicht / plattegrond van de kas met M1, M2 en M3 aangegeven*
+*Figuur 1: bovenaanzicht / plattegrond van de kas met M1, M2 en M3 aangegeven*
 
 **Kas:**
 - Lengte (oost-west): ongeveer 40 m
@@ -118,21 +118,15 @@ De kascontroller is de elektronische besturing van het hele systeem: een micropr
 
 ### 3.1 Unieke ID van de kascontroller
 
-Sinds firmware 1.18.3 heeft elke kascontroller een **unieke identificatie van vier hex-tekens** (bijvoorbeeld `5C88` of `12F0`). Deze ID wordt afgeleid van het ingebakken MAC-adres van de microprocessor en is dus voor elke fysieke unit anders. De ID is **onveranderbaar** — een fabrieksreset (BOOT-knop) verandert hem niet, een firmware-update verandert hem niet.
+Elke kascontroller een **unieke identificatie van vier letters** (bijvoorbeeld `5C88` of `12F0`).
 
-Je ziet de ID op vijf plaatsen:
+De ID ID wordt op vijf plaatsen gebruikt:
 
 | Waar | Hoe het eruit ziet |
 |---|---|
 | **AP-SSID** (LCD-scherm 4 wanneer de AP actief is) | `Greenhouse-5C88` |
-| **LCD-scherm 7** (Firmware/Uptime — sinds 1.20.0) | rechts op regel 1, naast het versienummer: `FW: 1.20.0  5C88` |
-| **Webinterface, voettekst** (sinds 1.20.0) | onderaan de pagina: `Greenhouse Controller – v1.20.0 · 5C88` |
-| **Webinterface, tab Status** | als veld in de status-uitleg (verschijnt automatisch) |
-| **Logbestand** (download via Log-tab) | als regel `SYSTEM,SYS,0,0,11,...` bij het begin van elk logbestand |
-
-Op de seriële verbinding (zichtbaar voor de beheerder maar niet voor de boer) verschijnt de ID ook één keer in het boot-bericht: `Phase 0 boot — id=5C88 esp_reset_reason=...`
-
-**Waarom is dit handig?** Als je twee of meer kascontrollers hebt — bijvoorbeeld bij meerdere kassen — kun je hun logs en status-rapportage uit elkaar houden. Voor één enkele kascontroller is de ID minder van direct nut, maar handig om aan een beheerder te kunnen doorgeven bij vragen ("mijn unit is `5C88`, sinds gisteren..."). De beheerder gebruikt de ID intern voor het identificeren van logs en debug-meldingen.
+| **LCD-scherm 7** (Firmware/Uptime) | rechts op regel 1, naast het versienummer: `FW: 1.20.0  5C88` |
+| **Webinterface, voettekst** | onderaan de pagina: `Greenhouse Controller – v1.20.0 · 5C88` |
 
 ---
 
@@ -147,7 +141,7 @@ Je stelt vier soorten grenswaarden in, apart voor **dag** en **nacht**:
 - Minimum vochtigheid (onder deze waarde: ramen dicht houden om vocht vast te houden)
 
 **Dag/nacht-omschakeling:**
-Automatisch op basis van zonsopkomst en zonsondergang. De geografische locatie wordt automatisch bepaald of door de beheerder ingesteld; de controller berekent zelf wanneer de zon op- en ondergaat.
+Dit is automatisch op basis van zonsopkomst en zonsondergang. De geografische locatie wordt automatisch bepaald of door de beheerder ingesteld; de controller berekent zelf wanneer de zon op- en ondergaat.
 
 **Hysterese:**
 Een kleine bandbreedte rondom elke setpoint, zodat de ramen niet om de seconde openen en sluiten als de meetwaarde precies op het setpoint zit. Hysterese-instellingen staan in de webinterface (en zijn alleen door de beheerder aan te passen).
@@ -178,7 +172,7 @@ Bij te harde wind sluit de controller **alle ramen automatisch**, ongeacht wat h
 
 ![FOTO: vooraanzicht van de kascontroller-kast met LCD, toetsenbord en zichtbare LEDs](images\kasControllerFrontView.png)
 
-*Figuur #: vooraanzicht van de kascontroller-kast met LCD, toetsenbord en zichtbare LEDs
+*Figuur 2: vooraanzicht van de kascontroller-kast met LCD, toetsenbord en zichtbare LEDs*
 
 
 De kascontroller bevindt zich in een afgesloten kast bij de ingang van de kas, naast de Hotraco RRK-3. Op de voorkant zie je:
@@ -220,7 +214,7 @@ Wanneer de T/RH-sensor niet (meer) reageert, verschijnt op het temperatuur-scher
    +----------------+
 ```
 
-Daarnaast kleurt de LCD-achtergrond rood. Bel in dat geval de beheerder.
+Daarnaast kleurt de LCD-achtergrond rood. De klimaatregeling is verstoord. Bel in dat geval de beheerder.
 
 #### De zeven statusschermen (auto-rotatie)
 
@@ -279,7 +273,7 @@ Drie mogelijke weergaven:
 ```
 
  - **Connected**: de kascontroller is verbonden met een wifi-netwerk; regel 2 toont het IP-adres
- - **AP active**: de tijdelijke Access Point staat aan; regel 2 toont de SSID `Greenhouse-XXXX` (waar `XXXX` de unieke ID van de kascontroller is — vier hex-tekens afgeleid van het ingebakken MAC-adres van de chip; zie [§3.1](#31-unieke-id-van-de-kascontroller))
+ - **AP active**: de tijdelijke Access Point staat aan; regel 2 toont de SSID `Greenhouse-XXXX` (waar `XXXX` de unieke ID van de kascontroller is — vier letters afgeleid van de chip; zie [§3.1](#31-unieke-id-van-de-kascontroller))
  - **Disconnected**: geen verbinding; druk `#` om de AP in te schakelen (vraagt Beheerder-PIN)
 
 > **Sinds firmware 1.18.0** kan op regel 1 rechts de tekst `BK` verschijnen:
@@ -335,10 +329,10 @@ Drie mogelijke weergaven:
    +----------------+
 ```
 
- - Regel 1 toont links het firmware-versienummer (`FW: 1.20.0`) en rechts de **unieke ID van deze kascontroller** (in dit voorbeeld `5C88` — zie [§3.1](#31-unieke-id-van-de-kascontroller) voor de uitleg). Sinds firmware 1.20.0 staat de ID hier; bij oudere firmware was alleen het versienummer zichtbaar.
- - Regel 2 toont de bedrijfsduur sinds de laatste start. Het formaat past zich aan:
+ - Regel 1 toont links het firmware-versienummer (`FW: 1.20.0`) en rechts de **unieke ID van deze kascontroller** (in dit voorbeeld `5C88` — zie [§3.1](#31-unieke-id-van-de-kascontroller) voor de uitleg). Sinds firmware 1.20.0 staat de ID hier.
+ - Regel 2 toont de bedrijfsduur sinds de laatste start.
 
-Een onverwachte herstart valt op doordat Uptime bedrijfsduur naar `0 minuten` en daarna weer oploopt. Handig om te zien of de controller stabiel draait. Vraag de beheerder het firmware-nummer als je een storing meldt — dat helpt bij diagnose. Geef ook de unit-ID erbij door wanneer je een storingsmelding doet, zeker bij installaties met meerdere kascontrollers.
+Een onverwachte herstart valt op doordat Uptime bedrijfsduur naar `0 minuten` en daarna weer oploopt. Handig om te zien of de controller stabiel draait. Geef de beheerder het firmware-nummer als je een storing meldt — dat helpt bij diagnose.
 
 ### 5.2 Toetsenbord (4 × 4)
 
@@ -442,7 +436,7 @@ Naast het LCD-scherm op de kast is de kascontroller ook bereikbaar via een **web
 
 ![SCHERMAFBEELDING: hoofdpagina van de webinterface](images\kasControllerWebGUIHoofdpagina.png)
 
-*Figuur #: hoofdpagina van de webinterface*
+*Figuur 3: hoofdpagina van de webinterface*
 
 ### Voorwaarde
 
@@ -523,7 +517,7 @@ Zonder in te loggen kun je alle **statusinformatie** van het systeem aflezen. Je
 
 ### Op de controller
 
-Wanneer er geen gebruiker is ingelogd, rouleren de schermen automatisch elke 5 seconden in deze volgorde (zeven schermen, daarna weer scherm 1):
+Wanneer er geen gebruiker is ingelogd, rouleren de schermen op het LCD-display automatisch elke 5 seconden in deze volgorde (zeven schermen, daarna weer scherm 1):
 
 1. **Temperatuur en luchtvochtigheid** — Temperatuur `Temp:` en luchtvochtigheid `RH:`
 2. **Wind** — windsnelheid (`Wind:`) en windrichting (`Dir:` met kompasletter)
@@ -531,6 +525,7 @@ Wanneer er geen gebruiker is ingelogd, rouleren de schermen automatisch elke 5 s
 4. **Wifi-status** — `WiFi:` en SSID of IP-adres
 5. **Datum en tijd** — datum en tijd, met tijdsbron (`NTP` of `RTC`); of het dag `Day` of nacht `Night` is
 6. **Raamposities** — Staus van de ramen `M1`, `M2`, `M3` met `OPEN` / `CLOS` / `MOV>` / `MOV<`
+7. **Systeem status** - Firmware `FW` unit-ID, en uptime `Up`.
 
 Volledige beschrijving van elk scherm staat in [§5.1](#51-lcd-display-16--2-tekens).
 
@@ -546,7 +541,7 @@ Volledige beschrijving van elk scherm staat in [§5.1](#51-lcd-display-16--2-tek
 
 De **Status**-tab is direct zichtbaar in de browser, zonder inloggen. Hier zie je dezelfde informatie als op de LCD, maar dan overzichtelijk gepresenteerd, plus een tabel met de metingen van de afgelopen tijd.
 
-### Wat is niet zichtbaar zonder login?
+### Wat zichtbaar na login?
 
 - Setpoints wijzigen
 - Windbeveiliging aan/uit zetten
@@ -757,7 +752,7 @@ Wanneer je in een menu of bewerk-scherm de ingestelde sessie-time-out (standaard
 
 ![SCHERMAFBEELDING: tab Climate met sliders, velden en de keuzelijst voor T vs RH conflict-prioriteit](.\images\kasControllerWebGUIClimateTab.png)
 
-*Figuur #: Climate tab met sliders, velden en de keuzelijst voor T vs RH conflict-prioriteit*
+*Figuur 4: Climate tab met sliders, velden en de keuzelijst voor T vs RH conflict-prioriteit*
 
 Per setpoint heb je een schuifregelaar + nummerveld + **Apply**-knop.
 
@@ -777,7 +772,7 @@ Bij elk veld vind je een tooltip (mouse-over) met uitleg over wat het veld doet.
 
 ### 10.3 Wat zijn goede setpoints?
 
-Setpoints zijn afhankelijk van de teelt in de kas. Deze etpoints moeten door de boer wordt opgegeven.
+Setpoints zijn afhankelijk van de teelt in de kas. Deze setpoints moeten door de boer wordt opgegeven.
 
 Algemene vuistregels:
 - **Nacht-T** mag iets lager zijn dan dag-T (planten besparen energie 's nachts)
@@ -819,12 +814,12 @@ Het IP-adres kan veranderen als de wifi-router opnieuw is opgestart of als de co
 
 ### Korte automatische herstart na wifi-wijziging door de beheerder
 
-Sinds firmware 1.19.1 herstart de kascontroller **automatisch** wanneer de beheerder via de webinterface de wifi-instellingen wijzigt (nieuwe SSID, nieuwe WiFi-wachtwoord, of nieuw AP-wachtwoord). Je ziet:
+De kascontroller herstart **automatisch** wanneer de beheerder via de webinterface de wifi-instellingen wijzigt (nieuwe SSID, nieuwe WiFi-wachtwoord, of nieuw AP-wachtwoord). Je ziet:
 
 - Het LCD springt kortstondig naar de boot-rotatie en daarna weer naar `Mode: AUTO` (totale onderbreking ~2 sec voor de klimaatregeling, dankzij de kalibratie-overslaan-logica — zie [§13](#13-inschakelen-na-stroomuitval)).
 - De webinterface zou een herlaad-melding kunnen tonen.
 
-**Dit is normaal en bedoeld zo**: de oude wifi-configuratie blijft anders actief tot de volgende fysieke power-cycle. Geen actie nodig.
+**Dit is normaal en zo bedoeld**: de oude wifi-configuratie blijft anders actief tot de volgende fysieke power-cycle. Geen actie nodig.
 
 ---
 
@@ -872,9 +867,9 @@ Na een opstart kan de controller een **CLOSE_ALL kalibratie** uitvoeren: alle dr
 - Na een **motor-alarm-clearance** (60 sec. wachttijd + ~3 min kalibratie — zie §12.6).
 - Na een **fabrieksreset** (BOOT-knop): omdat het permanente geheugen leeg is, geldt de raampositie als "onbekend" en wordt altijd gekalibreerd.
 
-**Wanneer wordt de kalibratie overgeslagen?** (sinds firmware 1.17.36)
+**Wanneer wordt de kalibratie overgeslagen?**
 
-- Als bij de uitschakeling **alle drie de ramen volledig dicht stonden** én de motor-controller geen alarm meldt, slaat de controller de kalibratie over. Hersteltijd dan: ~2 sec. in plaats van ~3 min. Op het LCD verschijnt niet `Mode:Window Cal.` maar direct `Mode: AUTO`. In het logbestand staat dan een regel "T2 boot calibration skipped".
+- Als bij de uitschakeling **alle drie de ramen volledig dicht stonden** én de motor-controller geen alarm meldt, slaat de controller de kalibratie over. Hersteltijd dan: ~2 sec. in plaats van ~3 min. Op het LCD verschijnt niet `Mode:Window Cal.` maar direct `Mode: AUTO`.
 - Als bij de opstart al een motor-alarm actief is op de motorbox, slaat de controller de kalibratie eveneens over en gaat hij direct naar `Mode: ALARM`. In dat geval: bel de beheerder.
 
 **Wat betekent dit in de praktijk?**
@@ -1038,9 +1033,9 @@ Dit zijn de onderhoudsacties die je als boer zelf kunt en mag doen. Voor alles d
 - **De kast of het microprocessorboard openen** — alleen voor de beheerder, en alleen na power-cycle (voeding eruit)
 - **Bedrading aanpassen** — alleen voor de beheerder
 
-### RTC-batterij
+### klok-batterij (RTC)
 
-In de controller zit een kleine knoopcel-batterij (CR2032) die de real-time klok ook tijdens stroomuitval laat doorlopen. Vervanging is een taak van de **beheerder**. Symptomen van een lege RTC-batterij:
+In de controller zit een kleine knoopcel-batterij (CR2032) die de interne klok ook tijdens stroomuitval laat doorlopen. Vervanging is een taak van de **beheerder**. Symptomen van een lege RTC-batterij:
 - De tijd is na een stroomuitval niet meer correct
 - Dag/nacht-omschakeling klopt niet meer met zonsopkomst en zonsondergang
 
@@ -1083,7 +1078,7 @@ Op de **Hotraco RRK-3 motorbox** zit voor elk van de drie ramen een eigen schake
 
 ![vooraanzicht van de Hotraco RRK-3 motorbox met de drie schakelaars per kanaal duidelijk in beeld](images\RBMotorControllerKnoppenstand.png)
 
-*Figuur #: vooraanzicht van de Hotraco RRK-3 motorbox met de drie schakelaars*
+*Figuur 5: vooraanzicht van de Hotraco RRK-3 motorbox met de drie schakelaars*
 
 ### Effect op de kascontroller
 
@@ -1286,7 +1281,7 @@ Voor het geval de Beheerder-PIN vergeten is, of de controller moet volledig teru
 
 ![FOTO: microprocessorboard met IO0-knop en RESET-knop duidelijk aangewezen](.\images\kasControllerLOLINRebootButton.png)
 
-*Figuur #: microprocessorboard met RESET-knop*
+*Figuur 6: microprocessorboard met RESET-knop*
 
 > **LET OP**: gebruik deze procedure alleen bewust. Op niveau 2 en 3 verlies je álle door de beheerder ingestelde wifi-, motor- en locatie-parameters.
 

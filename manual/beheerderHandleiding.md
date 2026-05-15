@@ -90,7 +90,7 @@ De controller leest **elke poll-cyclus** (default 30 sec.) de sensoren uit via M
 - hysteresis en glijdend gemiddelde tegen oscillaties
 - Drie-traps ventilatie-strategie (M1 → M1+M2 → M1+M2+M3)
 - Veiligheidsmechanismen: wind-override (sterke wind), motor-alarm, sensor-fault detectie (problemen met het uitlezen van de sensors)
-- Automatische CLOSE_ALL kalibratie bij opstart wanneer ten minste één raam niet als CLOSED in NVS staat (sinds 1.17.36 wordt de kalibratie overgeslagen als alle drie ramen al dicht waren), en na motor-alarm-clearance
+- Automatische CLOSE_ALL kalibratie bij opstart wanneer ten minste één raam niet als CLOSED in het geheugen staat opgeslagen, en na motor-alarm-clearance
 - Permanente opslag in het geheugen (Non Volatile Memory - NVS) van alle setpoints en configuratie instellingen
 - Logging van de activiteiten op de kascontroller in het geheugen en op SD-kaart
 
@@ -106,7 +106,7 @@ De controller leest **elke poll-cyclus** (default 30 sec.) de sensoren uit via M
 
 ![FOTO: bovenaanzicht / plattegrond van de kas met M1, M2 en M3 aangegeven](images\KasRaamlocaties.png)
 
-*Figuur #: bovenaanzicht / plattegrond van de kas met M1, M2 en M3 aangegeven* 
+*Figuur 1: bovenaanzicht / plattegrond van de kas met M1, M2 en M3 aangegeven* 
 
 ### Kas-afmetingen
 - Lengte (oost-west): ongeveer 40 m
@@ -160,19 +160,19 @@ De sensoren zijn **digitaal** en communiceren met de kascontroller via het **Mod
 
 ![Kast met bedrading en bordjes met etiketten, GPIO-pinout zichtbaar](images\kasControllerFrontInternalView.png)
 
-*Figuur #: Kas controller interieur.*
+*Figuur 2: Kas controller interieur.*
 
 ### Schematisch overzicht
 
 ![Schematisch overzicht](images\SchematischOverzicht.png)
 
-*Figuur #: Schematisch overzicht kas controller.*
+*Figuur 3: Schematisch overzicht kas controller.*
 
 ---
 
 ## 4. Hoe regelt de controller het klimaat?
 
-### Setpoints ( door de boer bewerkbaar via Climate-tab of LCD-menu)
+### Setpoints (door de boer bewerkbaar via Climate-tab of LCD-menu)
 
 | Beschrijving | Default | Bereik | Eenheid |
 |---|---|---|---|
@@ -262,7 +262,7 @@ Niet alle parameters zijn direct na het aanpassen actief; sommige vereisen een p
 
 ![Kast vooraangezicht](images\kasControllerFrontView.png)
 
-*Figuur #: Kas controller vooraanzicht.*
+*Figuur 4: Kas controller vooraanzicht.*
 
 ### De kast
 - Schroefverbinding aan de wand met M5/M6 schroeven (placeholder)
@@ -311,19 +311,19 @@ Dezelfde route als voor de boer: lees IP-adres af van het LCD, het WiFi-scherm, 
 
 | Tab | Rol | Functies |
 |---|---|---|
-| **Status** | Iedereen, *geen login* | Live Temparatuur, Luchtvochtigheid, wind snelheid en richting, raamposities, mode, alarmen, klok, WiFi, SD-kaart informatie |
-| **Climate** | Boer + Beheerder | Setpoints; Beheerder ziet ook hyst, avg_win, rh_ctrl_en |
-| **Wind** | Boer + Beheerder | wind_prot_en; Beheerder ziet ook v_max, dir_excl_low/high |
-| **Motors** | **Alleen Beheerder** | M1/M2/M3 travel + dwell open/close |
-| **System** | **Alleen Beheerder** | Sessie-timeout, AP-config, WiFi-client, NTP/timezone, locatie coordinaten, Over the Air Update (OTA) |
-| **Access** | **Alleen Beheerder** | PIN-management voor Farmer + Beheerder |
-| **Log** | **Alleen Beheerder** | SD-kaart mount/unmount, log-bestanden downloaden |
-| **Web** | **Alleen Beheerder** | Instellingen voor on-line status pagina |
-| **Sensor history** | Iedereen, *geen login* | laatste sensormetingen en gemiddelde waarden |
+| **Status** | Iedereen | Live Temparatuur, Luchtvochtigheid, wind snelheid en richting, raamposities, mode, alarmen, klok, WiFi, SD-kaart informatie |
+| **Climate** | Boer + Beheerder | Setpoints; *Beheerder ziet ook hyst, avg_win, rh_ctrl_en* |
+| **Wind** | Boer + Beheerder | wind_prot_en; *Beheerder ziet ook v_max, dir_excl_low/high* |
+| **Motors** | **Beheerder** | M1/M2/M3 travel + dwell open/close |
+| **System** | **Beheerder** | Sessie-timeout, AP-config, WiFi-client, NTP/timezone, locatie coordinaten, Over the Air Update (OTA) |
+| **Access** | **Beheerder** | PIN-management voor Farmer + Beheerder |
+| **Log** | **Beheerder** | SD-kaart mount/unmount, log-bestanden downloaden |
+| **Web** | **Beheerder** | Instellingen voor on-line status pagina |
+| **Sensor history** | Iedereen | laatste sensormetingen en gemiddelde waarden |
 
 ![SCHERMAFBEELDING: webinterface met alle 7 tabs zichtbaar voor Beheerder](images\kasControllerWebGUIAllTabsBeheerder.png)
 
-*Figuur #: webinterface met alle tabs zichtbaar voor Beheerder*
+*Figuur 5: webinterface met alle tabs zichtbaar voor Beheerder*
 
 ### Status-tab — Klok-tegel
 
@@ -331,11 +331,7 @@ Op de Status-tab staat in de linker tegelrij de **Klok-tegel (Clock)**. Deze too
 
 - **Tijd** — actuele lokale datum en tijd op de controller (format `YYYY-MM-DD HH:MM:SS`). De tijdzone wordt automatisch ingesteld na NTP-sync via geolocation, of handmatig via System-tab → NTP timezone.
 - **NTP-badge** — `NTP synced` (groen) wanneer de klok deze sessie via NTP gesynchroniseerd is, `NTP pending` (rood) zolang dat nog niet gelukt is en de controller op de interne klok RTC met batterij-backup draait.
-- **Uptime** — bedrijfsduur sinds de laatste start, ververst om de ~2 seconden. Het formaat past zich aan aan de beschikbare ruimte wat verschillende presentatie oplevert:
-  - `5s` … `59s`
-  - `1m 23s`
-  - `2h 15m`
-  - `1d 4h 23m`
+- **Uptime** — bedrijfsduur sinds de laatste start, ververst om de ~2 seconden. 
 
 > Bij een herstart van de controller springt deze waarde naar `0s` en begint opnieuw — handig om te zien of de controller stabiel draait.
 
@@ -388,13 +384,13 @@ Op het LCD-scherm roteren **zeven** statusschermen. Elk scherm staat 5 seconden,
 
 ### Boer (kasgebruiker)
 - 4-cijferige PIN
-- Fabrieksstandaard: `1234` — moet bij eerste gebruik worden gewijzigd door de boer of door de beheerder namens de boer
+- Fabrieksstandaard: `1234` — moet bij eerste gebruik worden gewijzigd door de boer of door de beheerder namens de boer in de webinterface. 
 - **Mag** klimaat-setpoints en windbeveiliging instellen, eigen PIN wijzigen (web)
 - Kan niet bij motor-, WiFi-, systeem-, toegang- of log-instellingen
 
 ### Beheerer (Technisch beheerder van installatie)
 - 8-cijferige PIN
-- **Geen default in deze handleiding genoemd** — wordt door installateur ingesteld bij oplevering, of via fysieke reset op fabrieksstandaard teruggezet (zie [§18](#18-reset-procedure-boot-knop-op-microprocessorboard))
+- **Geen default in deze handleiding genoemd** — wordt door installateur ingesteld bij oplevering, de webinterface door de beheerder of via fysieke reset op fabrieksstandaard teruggezet (zie [§18](#18-reset-procedure-boot-knop-op-microprocessorboard))
 - Volledige toegang tot alle beheers-functies
 
 ### Lockout
@@ -410,7 +406,7 @@ Op het LCD-scherm roteren **zeven** statusschermen. Elk scherm staat 5 seconden,
 
 ![Access-tab met PIN-change formulieren voor Farmer en Beheerder](imagesBeheerder\kasControllerWebGUIAccessTab.png)
 
-*Figuur #: Access-tab met PIN-change formulieren voor Farmer en Beheerder* 
+*Figuur 6: Access-tab met PIN-change formulieren voor Farmer en Beheerder* 
 
 #### Eigen Beheerder-PIN wijzigen
 1. Inloggen als Beheerder (8 cijfers)
@@ -511,7 +507,7 @@ De LCD-route voor de door de **boer-bewerkbare** instellingen (T-max dag/ngt, RH
 
 ![SCHERMAFBEELDING: tab Climate, ingelogd als Beheerder, met Beheerder-only sectie zichtbaar](imagesBeheerder\kasControllerWebGUIClimateTab.png)
 
-*Figuur #: Climate-tab, ingelogd als Beheerder, met Beheerder-only sectie zichtbaar*
+*Figuur 7: Climate-tab, ingelogd als Beheerder, met Beheerder-only sectie zichtbaar*
 
 #### Boer-bewerkbare velden (Boer + Beheerder)
 
@@ -543,7 +539,7 @@ Per setpoint: schuifregelaar + nummerveld + **Apply**-knop.
 
 ![SCHERMAFBEELDING: tab Wind, ingelogd als Beheerder](imagesBeheerder\kasControllerWebGUIWindTabBeheerder.png)
 
-*Figuur #: Wind-tab, ingelogd als Beheerder
+*Figuur 8: Wind-tab, ingelogd als Beheerder*
 
 #### Boer en Beheerder
 |  Label |  Default | Bereik |
@@ -587,7 +583,7 @@ Hieronder staat een conversietabel van **Beaufort naar m/s**:
 
 ![SCHERMAFBEELDING: tab Motors met M1, M2, M3 instellingen](imagesBeheerder\kasControllerWebGUIMotorTabBeheerder.png)
 
-*Figuur #: Motors-tab met M1, M2, M3 instellingen*
+*Figuur 9: Motors-tab met M1, M2, M3 instellingen*
 
 | Veld | Default M1 | Default M2 | Default M3 | Bereik |
 |---|---|---|---|---|
@@ -595,7 +591,7 @@ Hieronder staat een conversietabel van **Beaufort naar m/s**:
 | Dwell open | 300 s | 300 s | 1500 s | 0–1500 s |
 | Dwell close | 300 s | 300 s | 600 s | 0–1500 s |
 
-> **Travel-time afstemming**: meet de werkelijke open- of sluit-tijd van een raam met een stopwatch. Stel die waarde in als *travel-time.* Dde firmware voegt zelf een veiligheidsmarge toe van 5 sec. De controller gebruikt deze waarde als time-out voor het OPEN/CLOSE-relais.
+> **Travel-time afstemming**: meet de werkelijke open- of sluit-tijd van een raam met een stopwatch. Stel die waarde in als *travel-time.* De firmware voegt zelf een veiligheidsmarge toe van 5 sec. De controller gebruikt deze waarde als time-out voor het OPEN/CLOSE-relais.
 >
 > **Dwell-tijden aanpassen**: bij oscillatie (raam gaat steeds open/dicht in een korte cyclus) → dwell-tijd verhogen. Bij trage reactie op klimaat-veranderingen → dwell verlagen. Begin met de standaar instellingen; pas deze waarden alleen aan na minimaal 1 dag observeren.
 
@@ -603,7 +599,7 @@ Hieronder staat een conversietabel van **Beaufort naar m/s**:
 
 ![SCHERMAFBEELDING: tab System, ingelogd als Beheerder](imagesBeheerder\kasControllerWebGUISystemTabBeheerder.png)
 
-*Figuur #: System-tab, ingelogd als Beheerder — alle systeem-instellingen op één plek*
+*Figuur 10: System-tab, ingelogd als Beheerder — alle systeem-instellingen op één plek*
 
 De System-tab bundelt alle systeem-instellingen die niet direct aan de klimaatregeling raken: netwerk, klok, locatie, sessies en firmware-updates. Eerste-installatie van WiFi loopt via een combinatie van de LCD en deze tab (zie [§11 Eerste-installatie WiFi-verbinding](#11-eerste-installatie-wifi-verbinding) voor de stap-voor-stap procedure).
 
@@ -677,7 +673,7 @@ In de System-tab staat ook de sectie **OTA update** met twee upload-knoppen: é�
 
 ![SCHERMAFBEELDING: tab Access, ingelogd als Beheerder](imagesBeheerder\kasControllerWebGUIAccessTab.png)
 
-*Figuur #: Access-tab — PIN-beheer voor beide gebruikersrollen*
+*Figuur 11: Access-tab — PIN-beheer voor beide gebruikersrollen*
 
 In de Access-tab wijzigt u de PIN-code van de Boer en die van de Beheerder. Zie [§9 PIN-management voor de Beheerder (webinterface, Access-tab)](#pin-management-voor-de-beheerder-webinterface-access-tab) voor de volledige procedure en de regels rondom lockout.
 
@@ -698,7 +694,7 @@ De **Logout**-knop verschijnt op de Access-tab wanneer u ingelogd bent (Boer of 
 
 ![SCHERMAFBEELDING: tab Log, ingelogd als Beheerder](imagesBeheerder\kasControllerWebGUILogTabBeheerder.png)
 
-*Figuur #: Log-tab — SD-kaart status en logbestand-download*
+*Figuur 12: Log-tab — SD-kaart status en logbestand-download*
 
 De Log-tab biedt toegang tot het event-logbestand-systeem. De kascontroller schrijft alle relevante gebeurtenissen (sensor-readings, raam-bewegingen, mode-wisselingen, alarmen, configuratie-wijzigingen) naar twee bronnen:
 
@@ -738,7 +734,7 @@ Plaats een SD-kaart tijdens bedrijf en binnen één minuut wordt er automatisch 
 
 ![SCHERMAFBEELDING: tab Web, ingelogd als Beheerder](imagesBeheerder\kasControllerWebGUIWebTabBeheerder.png)
 
-*Figuur #: Web-tab — configuratie van status-rapportage naar een externe web-server*
+*Figuur 13: Web-tab — configuratie van status-rapportage naar een externe web-server*
 
 De kascontroller kan zijn actuele toestand periodiek naar een **externe web-server** sturen. Op die web-server draait een dashboard dat dezelfde gegevens toont als de eigen webinterface — zo kan iemand op afstand toch de werking van de kas volgen. Daarnaast wordt het laatst-gesloten logbestand van de SD-kaart één keer per dag (en/of bij elke logrotatie) naar dezelfde server geüpload.
 
@@ -746,7 +742,7 @@ De feature staat **standaard uit**. Inschakelen gebeurt volledig in deze tab.
 
 ![ComponentDiagramStatusWebsite](imagesBeheerder\StatusWebsiteComponentDiagram.png)
 
-*Figuur #: Overzicht Status-website*
+*Figuur 14: Overzicht Status-website*
 
 #### Velden op tab Web
 
@@ -756,7 +752,7 @@ De feature staat **standaard uit**. Inschakelen gebeurt volledig in deze tab.
 | `Shared secret` | Token in `sourceidentifier`-header | leeg | Minimaal 16 tekens. Leeg laten bij `Apply` = bestaande token blijft staan. Wordt nooit teruggetoond bij heropenen van het tabblad. |
 | `Interval (s)` | Tijd tussen POST's | 120 | 60–300 |
 | `Enabled` | Hoofdschakelaar | uit | aan / uit. Bij `uit` worden geen POST's verstuurd, ook niet als URL en token correct zijn ingevuld. |
-| `Climate / Wind / Windows / Mode / Sun / System` (6 vinkjes) | Welke tegels worden meegestuurd | alle 6 aan | Een uitgevinkt vinkje laat het bijhorende JSON-object weg uit de POST → de tegel verschijnt automatisch niet op het publieke dashboard. |
+| `Climate` / `Wind` / `Windows` / `Mode` / `Sun` / `System` (6 vinkjes) | Welke tegels worden meegestuurd | alle 6 aan | Een uitgevinkt vinkje laat het bijhorende JSON-object weg uit de POST → de tegel verschijnt automatisch niet op het publieke dashboard. |
 | `Daily upload time` | Lokale tijd waarop log-upload geprobeerd wordt | 03:15 | uu : mm, 24-uur klok |
 | `Upload on rotation` | Ook uploaden zodra T9 een logbestand sluit | aan | aan / uit |
 
@@ -795,7 +791,7 @@ Bij OTA-firmware-update worden status-POST's automatisch overgeslagen totdat de 
 
 #### HTTPS
 
-Endpoints met `https://` worden ondersteund. **De controller controleert het certificaat NIET** (de verbinding is versleuteld maar niet geauthenticeerd). Dat is een bewuste keuze: anders moest de firmware een actuele CA-bundel meedragen en periodiek updaten. De gedeelde token in de header is de eigenlijke authenticatie. Wijzig de token meteen als u vermoedt dat hij is gelekt.
+Endpoints met `https://` worden ondersteund maar **de controller controleert het certificaat NIET** (de verbinding is versleuteld maar niet geauthenticeerd). Dat is een bewuste keuze: anders moest de firmware een actuele CA-bundel meedragen en periodiek updaten. De gedeelde token (shared secret) in de header is de eigenlijke authenticatie. Wijzig de token meteen als u vermoedt dat hij is gelekt.
 
 #### Veelgemaakte fouten
 
@@ -822,7 +818,8 @@ Door deze dubbele aanpak met deduplicatie-op-bestandsnaam wordt hetzelfde bestan
 
 ### 10.9 Adviezen voor instelling per teelttype
 
-`[TABEL: richtwaarden per teelt — door teler / leverancier planten in te vullen]`
+Een tabel met richtwaarden per teelt is te vinden in [Bijlage G](#bijlage-g--aanbevolen-startinstellingen-per-gewas).
+
 
 Algemene vuistregels:
 - **Nacht-Temperatuur** iets lager dan dag-Temperatuur (planten besparen energie)
@@ -871,39 +868,9 @@ Wanneer de kascontroller voor het eerst wordt aangesloten of na een reset niveau
 
 ### 11.2 Automatische herstart na WiFi-wijziging — sinds firmware 1.19.1
 
-Sinds firmware 1.19.1 voert de controller **automatisch een herstart uit** wanneer een POST naar `/api/wifi` (afkomstig van het Connect/Save-knopje op de System-tab) één of meer van de volgende velden wijzigt:
-
-- `ssid` — naam van het WiFi-client-netwerk
-- `psk` — wachtwoord van het WiFi-client-netwerk
-- `ap_psk` — wachtwoord van het AP-modus-netwerk
-
-De herstart wordt ~1 sec na het opslaan in NVS uitgevoerd, zodat de HTTP-respons eerst gevuld kan worden. De JSON-respons bevat dan `"restarting": true` (in tegenstelling tot het reguliere `{"ok": true}`) zodat de webinterface een herstart-melding kan tonen.
-
-**Waarom is dit nodig?** T10 (`network_manager`) en de AP-init-paden lezen WiFi-credentials uit NVS **alleen bij boot**. Vóór 1.19.1 bleven nieuwe credentials in NVS ongebruikt tot de eerstvolgende handmatige power-cycle, wat tot operationele verwarring leidde ("ik heb de SSID al opgeslagen, waarom werkt het nog niet?"). De automatische herstart sluit dit gat.
-
-**Voor de beheerder zichtbaar als:**
-- Op seriële verbinding: `[T11_WEB] WiFi creds changed — restarting in 1 s to apply`, gevolgd door een normale boot-sequentie.
-- Op de LCD: korte boot-rotatie, daarna `Mode: AUTO`.
-- Op de webinterface: een herstart-toast (afhankelijk van browser-cache).
-- Voor de boer: ~2 sec klimaatregeling-onderbreking (dankzij de kalibratie-overslaan-logica) — zie boer-handleiding §11.
+De controller voert **automatisch een herstart uit** wanneer een WiFi instelling wodt gewijzigd. De herstart wordt ~1 sec na het opslaan in permanent geheugen  uitgevoerd.
 
 **Wijzigingen die géén herstart triggeren:** alle andere velden van de System-tab (NTP-server, tijdzone, locatie-coördinaten, sessie-timeout) blijven via de bestaande "schrijf-en-doorgaan"-paden lopen.
-
-### 11.3 Core-dump partitie — sinds firmware 1.19.0
-
-Firmware 1.19.0 voegt een **core-dump partitie** toe aan de flash-layout (64 KB op offset `0x620000`, in het voorheen-ongebruikte staartdeel van de flash). Bestaande partitie-offsets (otadata, NVS, app0, app1, lfs0, lfs1) zijn **byte-identiek** aan 1.18.3 — een OTA-update vanaf 1.18.3 is veilig zonder partitietabel-conversies.
-
-**Eénmalige stap per fysieke unit bij eerste installatie van 1.19.0+:**
-
-```
-python -m esptool --port COMx --baud 460800 erase_region 0x620000 0x10000
-```
-
-Zonder deze stap leest de IDF whatever-bits-er-staan op `0x620000` en logt een CRC-fout (`Core dump flash config is corrupted! CRC=0x...`) bij elke boot. Dat is geen kritieke fout — de rest van het systeem werkt normaal — maar de core-dump-capture werkt niet tot de partitie eenmalig gewist is. Pas dán kan een toekomstige paniek een analyseerbaar core-dump-image schrijven naar deze regio.
-
-**Boot-zichtbaarheid sinds 1.19.0:** direct na de Phase 0-banner logt `main.cpp::setup()` ofwel `coredump: none` (geen image aanwezig) of `coredump present: N bytes @ 0xADDR` (warning level, signaleert dat de vorige boot een paniek-image heeft achtergelaten die de moeite waard is om te downloaden).
-
-**Operationeel:** de partitie is een diagnostiek-asset voor de ontwikkelaar, geen actief gebruikt component. Voor een normale werking van de controller is de eenmalige erase-stap niet strikt nodig — alleen indien u een toekomstige paniek wilt kunnen analyseren met `xtensa-esp32s3-elf-addr2line` of het ESP-IDF core-dump-tooling.
 
 ---
 
@@ -1006,132 +973,17 @@ Zie [boer-handleiding §12.3](handleiding.md#123-rgb-led-kleuren-samengevat). LC
 
 Voor de complete uitleg van het logbestand-formaat (alle velden, event-types, parameter-ID's, channel-states, alarm-codes) en het gebruik van het meegeleverde `logparser`-script: zie [Bijlage F](#bijlage-f--logbestand-formaat-en-logparser-script).
 
-### 12.7 Bulkhead-beleid — netwerk-isolatie van klimaatregeling (sinds 1.18.0)
+### 12.7 Unit-identificatie
 
-Het *bulkhead-beleid* is een architectuurmaatregel ingevoerd in firmware 1.18.0–1.18.2 (GitHub-issue [gh#18](https://github.com/pe1mew/greenhouse-Controller/issues/18)) die garandeert dat een secundair subsysteem — concreet: de online status-rapportage en log-upload naar het externe webdashboard via HTTPS — **nooit** kan leiden tot uitval van de primaire klimaatregeling. Een vastlopende internet-verbinding, een onbereikbare server, of een fout binnen de TLS-/mbedTLS-bibliotheek leidt hooguit tot tijdelijk gepauzeerde online rapportage (zichtbaar als `BK`-badge op LCD-scherm 4 en als `net_backoff_active`-vlag in de status-JSON); de motoren, sensoren, en alle LCD-/RGB-indicatoren blijven normaal werken.
+Elke kascontroller een **vier-tekens hex-ID** afgeleid van de lage 2 bytes van het WiFi MAC-adres.
 
-**Operator-zichtbare indicatoren:**
+**Waar de ID zichtbaar is:**
 
-| Indicator | Locatie | Betekenis |
+| Surface | Waar | Voorbeeld |
 |---|---|---|
-| `BK` (rechts op rij 1) | LCD-scherm 4 (Wifi) | Tijdelijke pauze van status-POST en/of log-upload na herhaaldelijke verbindingsfouten. Klimaatregeling ongewijzigd. Verdwijnt automatisch zodra de verbinding zich herstelt. |
-| `net_backoff_active` (in JSON-payload) | Status-tab → Alarms-tegel webinterface | Zelfde betekenis als `BK`; wordt als gele "Net backoff"-badge gerenderd. |
-| `Boot: esp_reset_reason = 3 (SW)` in log | SD-logbestand en NVS-ring | Geplande herstart door T15-supervisor (zie hieronder). Onderscheidbaar van paniek-resets (`= 4 PANIC`) en watchdog-resets (`= 5 INT_WDT` of `= 6 TASK_WDT`). |
-
-**Wat zit erachter:**
-
-Vier opvolgende firmware-releases hebben elk een component toegevoegd:
-
-1. **1.17.34** — TLS-verbinding hergebruikt (één handshake meerdere POSTs), TCP-/HTTPS-timeouts gescheiden (3 sec verbinden, 5 sec antwoord status / 30 sec antwoord log), aparte `WiFiClientSecure`-instantie als statisch BSS-object om allocatie-druk weg te halen.
-2. **1.17.35** — *Persistent circuit breaker*: na 3 mislukkingen op rij wordt status-POST of log-upload gepauzeerd voor 60 sec → 5 min → 30 min → 1 uur (oplopend, maximaal 1 uur). Toestand overleeft een reboot via NVS-sleutels `t14_post_until` / `t14_post_phase` / `t14_log_until` / `t14_log_phase` (namespace `system`).
-3. **1.17.36** — Raamposities (`CH_CLOSED`/`CH_OPEN`) worden bij elke transitie weggeschreven naar NVS (`t2_st_ch0/1/2` in namespace `motor`); bij een opstart waarin alle drie kanalen al `CLOSED` waren wordt de M3-kalibratie van 171 sec **overgeslagen**, wat de hersteltijd van een geplande reboot terugbrengt van ~171 sec naar ~2 sec.
-4. **1.18.0** — Nieuwe achtergrondtaak **T15** (`status_post_supervisor`) bewaakt T14. Bij een vastgelopen T14 (heartbeat-teller niet meer opgehoogd binnen 60 sec) wordt T14 schoon gerespawned (cleanup van TLS-socket → `vTaskDelete` → opnieuw aanmaken). Bij verdacht heap-verbruik (> 64 KB cumulatieve daling) of een respawn-storm (> 10 respawns/uur of < 5 min tussen twee respawns) wordt een *geplande reboot* uitgevoerd via `esp_restart()`. De OTA-rollback-watchdog (`ota_mark_healthy()` na 30 sec stabiele uptime) beschermt tegen een defecte nieuwe firmware: drie crashes binnen 30 sec → automatische terugval naar de vorige bank. Dit gebeurde in productie op 2026-05-14 bij build 1.18.0 met een geconstateerde WDT-bug; 1.18.1 corrigeert die bug.
-
-**NVS-sleutels overzicht (gebruikt door bulkhead-componenten):**
-
-| Sleutel | Namespace | Type | Betekenis |
-|---|---|---|---|
-| `t14_post_until` | system | i32 | Unix-tijd waarop status-POST breaker dichtgaat (0 = niet open) |
-| `t14_post_phase` | system | i32 | Backoff-fase 0–4 (0=dicht, 1=60s, 2=5min, 3=30min, 4=1h) |
-| `t14_log_until`  | system | i32 | idem voor log-upload |
-| `t14_log_phase`  | system | i32 | idem voor log-upload |
-| `t15_respawn_h`  | system | i32 | T15-respawn-teller binnen huidig uur (rolt over op HH:00) |
-| `t15_resp_hr`    | system | i32 | Uur-marker (0–23) van laatste tellerwissel |
-| `t15_planreboot` | system | i32 | 1 = volgende boot was geplande reboot (wordt door T15 gewist na eerste succesvolle POST) |
-| `t2_st_ch0`/`t2_st_ch1`/`t2_st_ch2` | motor | i32 | Persistente raampositie (0=UNKNOWN, 1=CLOSED, 2=OPEN) |
-
-**Nieuwe LOG_SYSTEM-codes voor analyse:**
-
-| value_a | Betekenis | Sinds |
-|---|---|---|
-| 5 | Boot reden (value_b = `esp_reset_reason` 1–10; zie `logparser.md`) | 1.17.27 |
-| 6 | T9 force-rotate marker — laatste regel in een geroteerd-uit logbestand | 1.17.28 |
-| 7 | Vrije interne heap (value_b in KB), elke 60 sec | 1.17.29 |
-| 8 | Vrije PSRAM heap (value_b in KB), elke 60 sec | 1.17.29 |
-| 9 | Heap-corruptie gedetecteerd door `heap_caps_check_integrity_all` | 1.17.29 |
-| 10 | T2 boot-kalibratie overgeslagen (NVS-recovered) | 1.17.36 |
-| 11 | Unit-ID (value_b = lage 16 bits van WiFi-STA MAC, in int16 cast) — één per boot + één per SD-rotatie | 1.18.3 |
-| 12 | Grootste contiguous interne-heap-block (value_b in KB), elke 60 sec | 1.18.2 |
-
-De combinatie van `value_a=7` (totaal vrij) en `value_a=12` (grootste blok) geeft inzicht in *heap-fragmentatie*: een toenemend verschil tussen die twee waarden zonder dat het totaal vrij daalt, duidt op fragmentatie. Dit is in 1.18.2 toegevoegd nadat onderzoek vaststelde dat de bulkhead-supervisor met alleen de "totaal-vrije-heap"-meting een belangrijke faalmodus zou missen (zie `design/tls_leak_audit.md` voor details).
-
-**Wat de beheerder moet weten — operationele consequenties:**
-
-- **`BK`-badge of `Net backoff`-badge gedurende uren:** een onbereikbare dashboard-server. Controleer of de URL in de Web-tab klopt, of de externe server bereikbaar is. Het *klimaat* is hier niet door beïnvloed; alleen de online rapportage staat pauze.
-- **Onverklaarbare boot met `esp_reset_reason = 3 (SW)`:** kan een geplande reboot zijn door de T15-supervisor. Inspecteer de minuten vóór de reboot in het SD-log; bij een geplande reboot vind je daar ofwel (a) heap-rij `value_a=7` dalend naar < 70 KB, of (b) een respawn-burst herkenbaar aan meerdere T14-uitval-events kort op elkaar. Indien geen van beide zichtbaar: dit was géén geplande reboot, mogelijk OTA-rollback of handmatig commando.
-- **Onverklaarbare boot met `esp_reset_reason = 5 (INT_WDT)` of `= 6 (TASK_WDT)`:** harde firmware-fout. Bekijk seriële capture (indien aangesloten) voor stack-trace. Indien repeated: melden bij ontwikkelaar met SD-log van laatste 24 uur.
-- **`Boot calibration skipped`-event in log:** dit is correct gedrag wanneer alle drie ramen bij de vorige uitschakeling CLOSED waren. Bespaart ~3 min hersteltijd. Indien een raam stil-bij-power-cycle in OPEN-positie staat, kan de operator hem fysiek dichtdoen (RRK-3 in HAND-stand) voordat de stroom eraf gaat — bij volgende boot zal de controller dan correct skippen.
-
-#### Eerste productie-observatie van het bulkhead-beleid — 2026-05-14
-
-Op Unit 2 (ID `5C88`) werd op 2026-05-14 om 18:14:23 UTC voor het eerst in productie een **geplande reboot** door T15 waargenomen, na ~14 uur normale werking. De forensische capture staat in `debug/unit2/20260514_141849.log` (seriële trace) en `debug/unit2/20260514031520.csv` (SD-log).
-
-**Wat we hebben gezien:**
-
-| Tijd (UTC) | Gebeurtenis |
-|---|---|
-| **18:14:23.305** | T15: `PLANNED REBOOT — T14 cumulative heap drop crossed 64 KB` — de drempelwaarde van de bulkhead-supervisor is precies voor deze situatie ingesteld. |
-| 18:14:23.665 | Chip reset, reden `SW (3)`. |
-| **18:14:24.283** | `T2 boot calibration skipped — NVS-recovered window state (all three channels CLOSED)` — gh#18 Phase 3 deed exact wat hij beloofde: ~2 sec hersteltijd in plaats van ~171 sec. |
-| 18:14:24.544 | Tweede paniek (lwIP-init race — zie hieronder, gh#21). |
-| 18:14:25.062 | Chip reset, reden `PANIC (4)`. |
-| 18:14:25.217 | Tweede `boot calibration skipped` — Phase 3 nogmaals actief; ~1 sec extra hersteltijd. |
-| 18:14:55.414 | T15: `planned-reboot flag cleared (T14 healthy)` — herstel bevestigd. |
-
-**Klimaatregeling-onderbreking voor de operator:** ≈ 2 seconden totaal (één per boot-window). Geen RGB-LED-verandering, geen alarm, geen kalibratie-procedure zichtbaar. Het bulkhead-beleid heeft zijn ontwerp-doel gehaald.
-
-**De heap-lekkage zelf is nog niet gevonden** — gevolgd op gh#12. Alle T14 status-POST events vlak voor de geplande reboot waren successen (`value_a=1` in het log), dus de lekkage zit in de *success path* van de HTTPS-keten (`mbedTLS` / `WiFiClientSecure` / `lwIP`), niet in de destructor-keten die `design/tls_leak_audit.md` heeft afgekeurd. De supervisor begrenst de gevolgen — operationeel geen blocker.
-
-#### lwIP-init race tijdens fast-boot — gh#21 RESOLVED in 1.19.0
-
-**Achtergrond.** Wanneer T15 een geplande reboot uitvoert en T2's boot-kalibratie wordt overgeslagen (omdat alle drie ramen al CLOSED waren), is de hele opstartroutine ~2 sec in plaats van ~171 sec. Op die snelle opstartroutine bestond een race-conditie tussen T14 (status-POST) en T10 (netwerkmanager, `esp_netif_init`): T14's WiFi-detectie kon `tcpip_api_call` dispatchen vóór lwIP's `tcpip_init()` had gedraaid → panic met assert `Invalid mbox` op regel 497 van `tcpip.c`. Resultaat: één extra reboot direct na elke geplande reboot.
-
-Voor de beheerder zichtbaar als (vóór 1.19.0):
-- Een boot-reden-event `SYSTEM,SYS,0,0,5,3` (SW) gevolgd binnen ~1 sec door `SYSTEM,SYS,0,0,5,4` (PANIC) in het SD-log.
-- Op de seriële verbinding (indien aangesloten): `assert failed: tcpip_api_call ... (Invalid mbox)` + een backtrace via `task_status_post() → tcpip_api_call`.
-
-**Fix in firmware 1.19.0** (`firmware/src/status_post/status_post.cpp`): T14's hoofdlus begint nu met een wacht-conditie op `WiFi.localIP() != 0.0.0.0`. Dit is een strikte super-set van "tcpip geïnitialiseerd" en ook precies de pre-conditie die elke echte POST sowieso nodig heeft. Geen timeout — als WiFi nooit opkomt, idlet T14 in deze wacht in plaats van paniek te veroorzaken in de main-loop. Tegelijkertijd is in 1.19.1 een follow-up-fix toegevoegd zodat de heartbeat-teller ook tijdens deze wacht doorloopt — anders zou T15 T14 ten onrechte als "vastgelopen" bestempelen.
-
-**Verwacht gedrag sinds 1.19.0+:** een geplande reboot levert nog steeds één SD-reboot-rij op (`SYSTEM,SYS,0,0,5,3` SW) maar **géén** opvolgende paniek-rij meer. Klimaatregeling-onderbreking blijft binnen het 2-sec budget — en de extra ~1 sec die er voorheen bovenop kwam, is weg.
-
-#### OTA-fail-counter exempt geplande reboots — sinds 1.19.2
-
-**Probleem (vóór 1.19.2):** elke reboot — inclusief T15-geïnitieerde geplande reboots — telde mee voor de `ota_check_rollback()` 3-fail-budget. Als een unit gh#20 (heap-fragmentatie) op een ongelukkige cadens raakte (drie geplande reboots binnen het OTA-healthy-uptime-venster), schakelde de bootloader terug naar de vorige firmware-bank — terwijl die juist degene was die werd vervangen om gh#20 te mitigeren.
-
-**Fix in firmware 1.19.2** (`firmware/src/ota_manager/ota_manager.cpp`): `ota_check_rollback()` leest nu de `t15_planreboot` NVS-sleutel (gezet door `status_post_supervisor.cpp` vlak vóór `esp_restart()`) en slaat de teller-verhoging over wanneer de huidige boot een opzettelijke voortzetting is van een geplande reboot. Beperkt tot `esp_reset_reason() == ESP_RST_SW`, zodat een echte paniek die toevallig optreedt terwijl de vlag nog gezet is (zoals het oorspronkelijke gh#21-cascade-scenario van 2026-05-14) wel meetelt.
-
-**Wat dit betekent voor de beheerder:** geplande reboots door T15 verlagen niet meer de OTA-stabiliteits-marge. Het 3-fail-budget bevat nu alleen echte fouten (paniek, watchdog-reset, brownout, et cetera). De drempel zelf — drie mislukte boots binnen 30 sec — is onveranderd. Heap-fragmentatie zelf (gh#20) is hiermee niet opgelost — alleen de operationele bijwerking is verkleind.
-
-### 12.8 Unit-identificatie — sinds firmware 1.18.3
-
-Sinds firmware 1.18.3 ([gh#17](https://github.com/pe1mew/greenhouse-Controller/issues/17)) heeft elke kascontroller een **vier-tekens hex-ID** afgeleid van de lage 2 bytes van het ingebakken WiFi-STA MAC-adres van de microprocessor. De ID is **onveranderbaar**:
-
-- Survives factory reset (de BOOT-knop wist NVS maar raakt het MAC-adres niet).
-- Survives firmware-update (chip-MAC ligt vast in eFuse).
-- Identiek aan de SSID-naam van de AP (`Greenhouse-XXXX`), die deze conventie sinds dag één gebruikte — de `gh#17`-work in 1.18.3 + 1.20.0 maakt deze conventie consistent over alle zes oppervlakken.
-
-**Zes surfaces waar de ID zichtbaar is** (vier toegevoegd in 1.18.3, twee in 1.20.0):
-
-| Surface | Sinds | Waar | Voorbeeld |
-|---|---|---|---|
-| **AP-SSID** | bestaand | LCD-scherm 4 wanneer AP actief is, en in WiFi-instellingen van een laptop/telefoon | `Greenhouse-5C88` |
-| **Seriële boot-output** | 1.18.3 | Eerste seconde na power-on, één regel | `Phase 0 boot — id=5C88  esp_reset_reason=3` |
-| **SD-logbestand** | 1.18.3 | Eenmaal per boot (T4 post-RTC-seed) + één keer bovenaan elk geroteerd CSV-bestand (T9) | `2026-05-14T12:00:00,SYSTEM,SYS,0,0,11,23688` (decode via `logparser.py`: `Unit ID: 5C88`) |
-| **Status-JSON** | 1.18.3 | Veld `system.unit_id` in de canonieke status, zichtbaar via `GET /api/status` van de web-interface en in de POSTs naar het externe dashboard | `"system":{"unit_id":"5C88", "wifi_ip":"192.168.20.150", ...}` |
-| **LCD-scherm 7** *(FW/Up)* | **1.20.0** | Rechts uitgelijnd op regel 1, naast het firmware-versienummer | `FW: 1.20.0  5C88` |
-| **Webinterface-voettekst** | **1.20.0** | Onderaan elke pagina, na het versienummer | `Greenhouse Controller – v1.20.0 · 5C88` |
-
-**Implementatie-detail:** de `value_b` in het LOG_SYSTEM-event (waarde 11) is een `int16_t` cast van de 16-bits ID. Bij waarden boven 0x7FFF (32767) ziet het er negatief uit in de CSV — de logparser herinterpreteert via `(uint16_t)value_b` en rendert als 4-tekens uppercase hex.
-
-**Botsingskans bij vlootgrootte ≤ tientallen units:** verwaarloosbaar (< 1% bij 30 units volgens birthday-paradox; **deterministisch 0%** binnen één productiebatch omdat MAC-adressen sequentieel worden toegekend). Upgrade-pad naar 24-bits ID (`AA:BB:CC`) bestaat — één regel in `firmware/src/system_id/system_id.cpp` — indien de vloot ooit > 50 units overschrijdt. Documenteerd in dat bestand inline.
-
-**Module:** `firmware/src/system_id/system_id.h` + `.cpp`. Twee publieke functies: `system_unit_id_u16()` (uint16) en `system_unit_id_str(buf, cap)` (4-tekens hex string + NUL).
-
-**Praktisch nut voor de beheerder:**
-
-- **Identificeer een unit zonder serial-aansluiting**: vraag de boer om naar de SSID van de AP-modus te kijken (LCD-scherm 4 met AP actief). De vier tekens na `Greenhouse-` zijn de unit-ID.
-- **Identificeer logs**: elk gedownload SD-CSV-bestand begint met een `value_a=11` regel die de unit-ID bevat. Bij meerdere downloads van meerdere units kan je per CSV de herkomst vaststellen zonder bestandsnamen te onthouden.
-- **Dashboard-aggregatie**: het externe webdashboard ontvangt `system.unit_id` in elke status-POST. Logs op de server kunnen daarmee per unit gefilterd / gegroepeerd worden.
+| **AP-SSID** | LCD-scherm 4 wanneer AP actief is, en in WiFi-instellingen van een laptop/telefoon | `Greenhouse-5C88` |
+| **LCD-scherm 7** *(FW/Up)* | Rechts uitgelijnd op regel 1, naast het firmware-versienummer | `FW: 1.20.0  5C88` |
+| **Webinterface-voettekst** | Onderaan elke pagina, na het versienummer | `Greenhouse Controller – v1.20.0 · 5C88` |
 
 ---
 
@@ -1181,7 +1033,7 @@ Symptomen:
 
 ![FOTO: CR2032 batterijhouder op het microprocessorboard, met de juiste oriëntatie + plus zichtbaar](imagesBeheerder\kasControllerRTCBackupBattery.png)
 
-*Figuur #: R2032 batterijhouder op het microprocessorboard, met de juiste oriëntatie + plus zichtbaar*
+*Figuur 15: R2032 batterijhouder op het microprocessorboard, met de juiste oriëntatie + plus zichtbaar*
 
 1. Voeding van kascontroller wegnemen (stekker of zekering uit)
 2. Open de kast van de controller; houdt rekening met de flat-cable van het toetenbord
@@ -1213,28 +1065,22 @@ Symptomen:
 
 #### Verificatie na de update
 
-Beide pakketten — firmware **én** web-assets — horen in één OTA-cyclus mee te gaan. Vanaf firmware 1.17.20 controleert de controller dit automatisch en meldt een afwijking. Drie onafhankelijke verificatie-bronnen:
-
-| # | Wat | Verwachte waarde na update |
-|---|---|---|
-| 1 | Webgui footer (firmware-versie) | `vX.Y.Z` van het geüploade `.bin` |
-| 2 | `http://<controller-ip>/manifest.json` | `{"asset_version":"X.Y.Z",...}` met dezelfde versie als de footer |
-| 3 | Alarms-tegel op Status-tab | Geen rode **MISMATCH**-badge (of weergave **OK** als er ook geen andere alarmen actief zijn) |
+Beide bestanden — firmware **én** web-assets — horen in één OTA-cyclus mee te gaan. de controller controleert dit automatisch en meldt een afwijking. 
 
 Een **MISMATCH**-badge in de Alarms-tegel wijst op een onvolledige OTA-update: de firmware-bank is wel omgezet maar de web-assets niet (of andersom). Eerste actie: harde refresh van de webpagina (`Ctrl+Shift+R`); blijft de melding staan, voer de OTA-procedure dan opnieuw uit met **beide** pakketten in dezelfde sessie. Zie [§6 Status-tab — versie-controle van firmware en web-assets](#status-tab--versie-controle-van-firmware-en-web-assets) voor de achtergrond van dit mechanisme.
 
 #### Dual-bank rollback
-- Bij **3 opeenvolgende boot-mislukkingen** gaat de controller automatisch terug naar de vorige firmware-versie
+- Bij **3 opeenvolgende mislukte pogingen om op te starten** gaat de controller automatisch terug naar de vorige firmware-versie
 - Symptomen van rollback: onverwachte oude versie na update — controleer ook de Alarms-tegel (na rollback met oude web-assets verschijnt **MISMATCH** zolang nog niet beide pakketten opnieuw geladen zijn)
 
-#### Firmware-update faalt
+#### Firmware-update mislukt
 - Controleer laptop-WiFi stabiel
 - Probeer kleinere chunks (browser-instelling)
 - Bij blijvende fout: USB-flash via het LOLIN S3-board (procedure: zie `firmware/README.md` of leverancier)
 
 ### SD-kaart beheer
 
-De kascontroller schrijft logbestanden naar een SD-kaart. Wanneer er geen kaart aanwezig of niet leesbaar is, wordt logging automatisch teruggevallen op de **NVS-ringbuffer** (~100 events in flash-geheugen). De controller blijft dus altijd loggen — er gaat alleen geen historie naar de SD-kaart als die niet beschikbaar is.
+De kascontroller schrijft logbestanden naar een SD-kaart. Wanneer er geen kaart aanwezig of niet leesbaar is, wordt logging automatisch teruggevallen op de **NVS-ringbuffer** (~100 events in flash-geheugen). De controller blijft dus altijd loggen — er gaat alleen historie naar de SD-kaart als die is geplaatst.
 
 #### Eisen aan de SD-kaart
 
@@ -1303,7 +1149,7 @@ Zie [boer-handleiding §14](handleiding.md#14-onderhoud--wat-de-boer-zelf-doet).
 
 ![FOTO: microprocessorboard met RESET-knop en BOOT-knop duidelijk gemarkeerd](images\LolinS3Reset.png)
 
-*Figuur #: microprocessorboard met RESET-knop*
+*Figuur 16: microprocessorboard met RESET-knop*
 
 #### Window Cal bij opstart — wanneer wel, wanneer niet
 
@@ -1311,19 +1157,19 @@ Bij élke opstart van de controller (power-cycle, druk op RESET-knop, geplande h
 
 | Voorwaarde bij opstart | Resultaat | LCD-modus | Hersteltijd |
 |---|---|---|---|
-| Motor-alarm signaal asserted op GPIO42 (RRK-3 LOW) | Geen kalibratie; controller gaat direct naar alarm-staat | `Mode: ALARM` | direct |
-| **Geen alarm én alle drie NVS-persistente raamposities zijn `CLOSED`** | **Kalibratie overgeslagen** (sinds firmware 1.17.36) | `Mode: AUTO` | **~2 sec** |
-| Geen alarm én ten minste één NVS-positie is `OPEN` of `UNKNOWN` | Volledige CLOSE_ALL kalibratie | `Mode:Window Cal.` | **~3 min** (~176 sec M3) |
+| Motor-alarm actief | Geen kalibratie; controller gaat direct naar alarm-staat | `Mode: ALARM` | direct |
+| **Geen alarm én alle 3 de ramen staan dich in permanent geheugen** | **Kalibratie overgeslagen** | `Mode: AUTO` | **~2 sec** |
+| Geen alarm én ten minste één raam is `OPEN` of `UNKNOWN` in permanent geheugen | Volledige CLOSE_ALL kalibratie | `Mode:Window Cal.` | **~3 min** (~176 sec M3) |
 
 **De skip-conditie hangt uitsluitend af van de raamposities op het moment dat de vorige firmware-sessie eindigde** — niet van het type opstart. Concrete consequenties:
 
 - **Power-cycle 's nachts met alle ramen dicht** → skip (~2 sec). Identiek aan een geplande reboot of een OTA-update die op datzelfde moment plaatsvindt.
 - **Power-cycle midden op een warme dag** met M3 of M2 open → volledige kalibratie (~3 min). Identiek aan een geplande reboot of OTA op datzelfde moment.
-- **Fabrieksreset (BOOT-knop)** → NVS leeg → alle drie posities default `UNKNOWN` → altijd volledige kalibratie.
+- **Fabrieksreset (BOOT-knop)** → permanente geheugen wordt gewist → alle drie posities default `UNKNOWN` → altijd volledige kalibratie.
 
-**Hoe weet de controller dit?** Sinds firmware 1.17.36 schrijft T2 bij elke transitie naar een eind-positie (CLOSED of OPEN) de raampositie weg naar NVS (`t2_st_ch0`, `t2_st_ch1`, `t2_st_ch2` in namespace `motor`). Vóór het energiseren van een relais wordt eerst `UNKNOWN` weggeschreven, zodat een stroomuitval midden in een beweging correct als "onbekend → kalibreren" wordt hersteld. Bij het overslaan van de boot-kalibratie wordt een diagnostische regel `LOG_SYSTEM, value_a=10` in het logbestand geschreven. Zie [§12.7 Bulkhead-beleid](#127-bulkhead-beleid--netwerk-isolatie-van-klimaatregeling-sinds-1180) voor het volledige design.
+**Hoe weet de controller dit?** Bij elke transitie naar een eind-positie (CLOSED of OPEN) wodt de raampositie opgeslagen in het permanente geheugen. Vóór het aansturen van een van de relais wordt eerst `UNKNOWN` weggeschreven, zodat een stroomuitval midden in een beweging correct als "onbekend → kalibreren" wordt hersteld. 
 
-**Waarom matters this?**
+**Waarom is dit belangrijk?**
 
 - De controller heeft **geen positie-feedback** van de motoren — hij volgt de raamposities intern bij op basis van de open/sluit-commando's die hij zelf heeft verstuurd. Tijdens een stroomuitval, een handmatige beweging op de RRK-3, of een motor-alarm gaat die interne aanname verloren of klopt niet meer met de werkelijkheid.
 - De CLOSE_ALL kalibratie is de **enige manier** om die interne aanname weer in lijn te brengen met de fysieke werkelijkheid wanneer dat verloren is gegaan.
@@ -1364,7 +1210,7 @@ Voor algemene uitleg en consequenties: zie [boer-handleiding §15](handleiding.m
 
 ![Hotraco RRK-3 motorbox met de drie schakelaars per kanaal duidelijk in beeld; markeer welke positie hoort bij "automatisch" en welke bij "handbediening"](images\RBMotorControllerKnoppenstand.png)
 
-*Figuur #: Hotraco RRK-3 motorbox met de drie schakelaars per kanaal*
+*Figuur 17: Hotraco RRK-3 motorbox met de drie schakelaars per kanaal*
 
 ---
 
@@ -1734,24 +1580,108 @@ Timestamp (UTC)      Type        Initiator       Description
 De **complete uitleg** — met daarin alle velden, alle event-types, alle parameter-ID's voor `SETPT`-events, alle channel-states voor `RELAY`-events, de codering van `ALARM`-events en bekende beperkingen — staat in **`log/logparser.md`** in de git-repository. Houd dit document naast deze handleiding bij het analyseren van logbestanden.
 
 ---
+### Bijlage G — Aanbevolen startinstellingen per gewas
+
+## Aanbevolen startinstellingen per gewas
+
+> **Belangrijk** — deze waarden zijn **startpunten**, geen absolute regels. De ideale instelling voor jouw kas hangt af van locatie, seizoen, gewas-variëteit, groeistadium en persoonlijke ervaring. Stel de waarden in zoals hieronder, observeer een paar dagen, en bij sla, leuter een paar °C in de juiste richting tot het klopt met wat je in de kas ziet. De getallen zijn afgerond op hele graden / procenten — de kascontroller werkt sowieso met gehele getallen (zie [§4 Hoe regelt de controller het klimaat?](#4-hoe-regelt-de-controller-het-klimaat)).
+
+### Klimaat-startinstellingen per gewas
+
+| Gewas | T dag<br/>min–max | T nacht<br/>min–max | RH dag<br/>min–max | RH nacht<br/>min–max | RH-regeling | CR-prio | Opmerkingen |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|---|
+| **Tomaat** | 18–26 °C | 16–18 °C | 60–75 % | 65–80 % | aan | RH | Vruchtfase: houd RH onder 80 % 's nachts om botrytis te voorkomen. Hoge RH bij bloei → slechte vruchtzetting. |
+| **Komkommer** | 22–28 °C | 18–21 °C | 70–85 % | 75–85 % | aan | T | Houdt van vocht. Bij T > 30 °C wordt de plant gestrest; bij T < 12 °C 's nachts groei-onderbreking. |
+| **Paprika / peper** | 21–27 °C | 18–20 °C | 60–75 % | 65–75 % | aan | T | Bloemval bij T > 32 °C of T < 15 °C 's nachts. Stabiele temperatuur belangrijker dan exacte waarde. |
+| **Aubergine** | 22–28 °C | 18–22 °C | 55–70 % | 60–75 % | aan | T | Warmtegevoelig — bij T > 30 °C ramen open houden. |
+| **Aardbei** | 18–24 °C | 12–16 °C | 60–70 % | 60–75 % | aan | RH | Hoge RH = botrytis-risico op de vruchten. Liever wat koeler en droger dan warm en vochtig. |
+| **Sla / kropsla** | 15–22 °C | 10–15 °C | 50–70 % | 55–75 % | uit | T | Schiet door bij T > 24 °C. Vochtregeling meestal niet nodig — temperatuur is de hoofdsturing. |
+| **Spinazie** | 14–20 °C | 8–14 °C | 50–70 % | 55–75 % | uit | T | Koel-seizoen-gewas. Bij T > 22 °C schiet snel door (in bloei). |
+| **Andijvie / radicchio** | 15–22 °C | 10–16 °C | 55–70 % | 60–75 % | uit | T | Vergelijkbaar met sla; iets warmer ondergrens dan spinazie. |
+| **Courgette / pompoen** | 20–28 °C | 16–20 °C | 60–75 % | 65–80 % | aan | T | Bij hoge RH bloeit de plant goed maar krijgt meeldauw. Ventilatie belangrijk. |
+| **Bonen (stam / stok)** | 18–24 °C | 15–18 °C | 60–75 % | 65–80 % | uit | T | Vrij tolerant. Bij T > 30 °C wordt bloei en zetting onbetrouwbaar. |
+| **Kruiden (basilicum)** | 20–26 °C | 16–20 °C | 50–65 % | 55–70 % | uit | T | Houdt **niet** van koude voeten — nachttemperatuur niet onder 15 °C. |
+| **Kruiden (peterselie, dille)** | 16–22 °C | 12–16 °C | 50–65 % | 55–70 % | uit | T | Koeltolerant. Hoge T → bittere smaak / vroege bloei. |
+| **Bladgroenten (boerenkool, andijvie-mix)** | 12–22 °C | 6–14 °C | 50–70 % | 55–75 % | uit | T | Winter-/voorjaars-teelt; verdraagt nachtvorst tot ~ −2 °C zonder schade. |
+
+### Wat de kolommen betekenen
+
+- **T dag min–max** / **T nacht min–max**: temperatuurband. **Min**imum is de waarde waaronder de controller de ramen sluit (`T_min`); **max** is de waarde waarboven de controller de ramen opent (`T_max`). Tussen min en max gebeurt er niets (regelhysteresis — zie §10.1).
+- **RH dag min–max** / **RH nacht min–max**: vochtigheidsband, alleen actief wanneer **RH-regeling** aan staat.
+- **RH-regeling**: of de controller mag reageren op vochtigheid. **Aan** = vochtigheid stuurt mee in de raam-beslissing; **uit** = alleen temperatuur stuurt (handig voor gewassen waar vocht niet de beperkende factor is).
+- **CR-prio** (Conflict Resolution-prioriteit): wat doet de controller als T en RH tegelijk om tegengestelde acties vragen? **T** = temperatuur wint (gebruikelijk bij koel-seizoen-gewassen en warme zomers); **RH** = vochtigheid wint (gebruikelijk wanneer een gewas vochtigheids-gevoelig is — schimmelziektes, botrytis, meeldauw).
+- **Opmerkingen**: gewas-specifieke aandachtspunten waar de getallen alleen niet voldoende zijn.
+
+### Windbeveiliging — geldt voor alle gewassen
+
+De **windsnelheid-drempel** (`Wnd-max`) staat standaard op **6 m/s** en is **niet gewas-afhankelijk** maar **kas-constructie-afhankelijk**. Pas hem alleen aan wanneer:
+
+- Je merkt dat de ramen frequent dichtgaan bij wind die je intuïtief nog "rustig" zou noemen → verhoog naar 7–8 m/s.
+- Je merkt dat de wind ramen schade aanricht voordat de override inslaat → verlaag naar 4–5 m/s.
+
+De **windbeveiliging zelf** (aan/uit-schakelaar) moet **altijd AAN** staan tijdens de teelt. Alleen tijdelijk uitschakelen wanneer een beheerder lokaal aanwezig is en bewust met de ramen werkt.
+
+### Hoe te gebruiken
+
+1. Zoek je gewas op in de tabel (of het meest vergelijkbare).
+2. Log in als boer op de webinterface of LCD (zie §9).
+3. Stel achtereenvolgens in: **Climate-tab → T min/max dag en nacht → RH min/max dag en nacht → RH-regeling aan/uit → CR-prio**.
+4. **Observeer 2–3 dagen** voordat je nog iets aanpast. De sliding-average uitmiddeling (5 min standaard) zorgt voor stabiel gedrag, maar de cumulatieve invloed van een instelling op de plant zie je pas na een paar dagen.
+5. Stel **één parameter tegelijk** bij als iets niet klopt. Twee tegelijk verandert maakt het onmogelijk te zien welke aanpassing welk effect had.
+
+### Wat de tabel niet vervangt
+
+- **Bodemvochtigheid** — de controller stuurt ramen, geen irrigatie. Vochtig blad bij droge wortels lost de controller niet op.
+- **CO₂-bemesting** — niet gemeten, niet gestuurd. Bij gesloten ramen op een zonnige ochtend kan CO₂ snel dalen tot een groei-beperking; bewust ventileren is dan nodig ongeacht wat T en RH zeggen.
+- **Lichtniveau** — alleen indirect (dag/nacht-schakeling via zonsopkomst/zonsondergang). Schermdoeken, schaduwverf, en aanvullend assimilatielicht zijn buiten het bereik van deze controller.
+- **Gewas-specifieke groeistadia** — bovenstaande waarden zijn voor de **vegetatieve / vruchtdragende hoofdfase**. Bij zaailingen, oogstpiek, of einde-seizoen kunnen optimale waarden afwijken (bv. iets koeler in de uitloopfase om houdbaarheid te verbeteren).
+
+### Wanneer twijfel?
+
+- Lees de tabel als **eerste schatting** en pas aan op wat je in de kas ziet.
+- Bij ziekte/schade: noteer de instellingen die actief waren (Climate-tab) plus T-gemiddelde en RH-gemiddelde van de laatste 24 uur (Status-tab → Sensorhistorie). Stuur die naar de teeltvoorlichter of de Herenboeren-kennisgroep voor advies.
+- De **fabrieksinstellingen** van de kascontroller (Dag T = 18 / 28 °C, Nacht T = 16 / 25 °C, RH = 50 / 75 %) zijn een redelijke "tomaat-achtig" middelweg. Voor andere gewassen begin je beter direct vanaf de tabel-waarden.
+
+---
+
+## Inbouwadvies voor de handleiding
+
+Twee plaatsingsopties:
+
+**Optie A — Nieuwe sub-sectie §10.5** *Aanbevolen startinstellingen per gewas*. Komt logisch direct na §10.4 (CR-prio) omdat de CR-prio-kolom van de tabel daar pas zin krijgt. Voordeel: leesvolgorde blijft natuurlijk (eerst leren hoe de regeling werkt, dan welke waarden invoeren). Nadeel: lange tabel onderbreekt het verhalend hoofdstuk.
+
+**Optie B — Nieuwe Bijlage G** *Aanbevolen startinstellingen per gewas*. Komt achter Bijlage F (CSV-formaat) maar nog vóór §20 (versiehistorie). Voordeel: blijft samen met de andere referentietabellen; gebruikers zoeken hem op wanneer nodig in plaats van hem in een leesvolgorde tegen te komen. Nadeel: minder ontdekbaar vanaf §10.
+
+Mijn voorkeur is **Optie B (Bijlage G)** — past beter bij het karakter van de tabel (referentie-materiaal, niet leerstof) en houdt §10 leesbaar. Een korte zin in §10.4 (*"Voor concrete aanbevelingen per gewas zie [Bijlage G](#bijlage-g--aanbevolen-startinstellingen-per-gewas)"*) maakt hem alsnog ontdekbaar.
+
+## Toetsen / vragen voor jou voordat het gepubliceerd wordt
+
+1. **Welke gewassen wil je werkelijk in de tabel?** De huidige selectie van 13 is mijn beste gok voor Nederlandse Herenboeren-kassen. Schrap wat niet relevant is, voeg toe wat ontbreekt (typisch missende kandidaten: snijbloemen, frambozen, jonge boomopkweek).
+2. **Klopt de teelttechnische inhoud?** Mijn waarden zijn gebaseerd op algemene horticultuur-vuistregels, geen specifieke ervaring met deze kas. Een teeltvoorlichter of een ervaren Herenboeren-collega kan de getallen reviewen en corrigeren waar nodig.
+3. **Is "min–max" als bereik in één cel duidelijk genoeg?** Alternatief is twee aparte kolommen per band (T dag min / T dag max), maar dan wordt de tabel breder. PDF-render kan dat moeilijk weergeven op A4 staand.
+4. **CR-prio met letters T/RH duidelijk?** Of beter een zin als "temperatuur eerst" / "vocht eerst"?
+
+---
 
 ## 20. Versie en wijzigingshistorie
 
-| Versie | Datum | Wijziging |
+Inhoudelijke wijzigingen aan de firmware staan beschreven in het bestand `changelog.md` in de git-repository. Deze tabel houdt alleen bij welke firmware-versie door welke handleiding-versie wordt afgedekt.
+
+| Versie | Datum | Firmware |
 |---|---|---|
-| 1.0 | \[invullen] | Eerste uitgave — gebaseerd op firmware 1.16.34 |
-| 1.1 | 2026-05-09 | Bijgewerkt voor firmware 1.16.35–1.16.38: conflict-prioriteit (`cr_priority`) toegankelijk via Climate-menu (LCD optie 3) en als keuzelijst in webinterface tab Climate (Boer-bewerkbaar); nieuwe `#=Set` snelweg op de T/RH- en Wind-statusschermen die het Climate- of Wind-menu opent met een Boer-PIN-prompt; LCD-render bug `LFS_BUF_SIZE` opgehoogd naar 64 KiB om afgeknotte HTML te voorkomen; Wind-statusscherm rij 2 zonder haakjes om kompasletter (`Dir:180° S #=Set`) |
-| 1.2 | 2026-05-10 | Bijgewerkt voor firmware 1.16.39: zichtbare `#=Set`/`#=AP`-hints verwijderd van alle vier de statusschermen (T/RH, Wind, WiFi, Datum/tijd) — `#`-snelweg blijft werken naar het bijhorende menu, alleen de hint op rij 2 is weg; Wind-statusscherm rij 2 toont kompasletter weer tussen haakjes (`Dir:180 ° (S )`) zoals vóór 1.16.37 |
-| 1.3 | 2026-05-10 | Bijgewerkt voor firmware 1.17.0–1.17.1: nieuwe Beheerder-tab **Web** voor status-rapportage naar een extern PHP-eindpunt (URL, gedeelde token, interval 60–300 s, zes tegel-zichtbaarheidsvinkjes, dagelijkse log-upload tijd en upload-op-rotatie); status-rapportage standaard uit en volledig instelbaar zonder de LCD aan te raken; HTTPS-eindpunten ondersteund (geen certificaatcontrole); `Uptime`-regel toegevoegd aan de Klok-tegel van de Status-tab zodat onverwachte reboots zichtbaar zijn (§6 Status-tab — Klok-tegel, §11.10). |
-| 1.4 | 2026-05-11 | Bijgewerkt voor firmware 1.17.2–1.17.8a: extern dashboard toont nu **lokale tijd** voor zonsopkomst/zonsondergang en `time_iso` (UTC→lokaal-conversie in `dm_status_snapshot`, DST automatisch); status-JSON-veldnamen aangelijnd op het bestaande publieke dashboard (`temp_c`/`speed_ms`/`direction_deg`/`mode={current,flags[]}` etc.); HTTPS-uitgaande verbindingen krijgen ruimere stack (12 KB) en mbedTLS-handshake werkt nu betrouwbaar; T11 status-JSON-buffer vergroot 1024 → 2048 bytes; `/api/web` POST nu synchroon (geen race meer bij Apply); URL-validatie eist `api.php`-suffix; webgui-Apply velden worden niet meer overschreven door auto-refresh; cosmetische verbeteringen (klok-waarde bold, URL-veld donker thema, datum-spinner-knoppen passen); nieuwe diagnostische **OTA diagnostic (temp)**-tegel op Status-tab toont Firmware-vs-Assets-versie + MISMATCH-badge (§6 Status-tab — OTA diagnostic (temp)); web-assets dragen nu een eigen `asset_version` via `manifest.json` (in de ZIP gebakken door `bin/build_release.ps1`); `GET /manifest.json` en `<!-- web-assets X.Y.Z -->` HTML-comment voor onafhankelijke verificatie. |
-| 1.5 | 2026-05-11 | Bijgewerkt voor firmware 1.17.9–1.17.20: hoofd-bugfix in `drivers/littleFS/src/littlefs_storage.cpp` — beide LittleFS-partities deelden VFS-mountpoint `/lfs`, waardoor T13 tijdens een gekoppelde OTA wel firmware naar de inactieve bank schreef maar de assets nooit op de bijhorende LFS-partitie terechtkwamen; iedere partitie heeft nu een eigen mountpoint (`/lfsa` en `/lfsb`), waarmee de OTA-cross-bank fout (zichtbaar als oude assets na een succesvolle firmware-update) verholpen is. De tijdelijke **OTA diagnostic (temp)**-tegel uit 1.17.4–1.17.9a is verwijderd; de versie-controle blijft behouden en is geïntegreerd in de **Alarms**-tegel als **MISMATCH**-badge (§6 Status-tab — versie-controle van firmware en web-assets). De diagnostische verificatie-bronnen blijven beschikbaar voor onafhankelijke controle: `GET /manifest.json`, View Source-stempel `<!-- web-assets X.Y.Z -->`, en `?v=<versie>` cache-busters op `app.js` / `style.css`. OTA-procedure in §14 uitgebreid met expliciete **Verificatie na de update**-stap. |
-| 1.6 | 2026-05-11 | Bijgewerkt voor firmware 1.17.21–1.17.25. **Web GUI** — actieve setpoints toegevoegd op de Temperature-, Humidity- en Wind-tegels (de dag- of nacht-waarde die momenteel in werking is); Wind-tegel rij-volgorde gewijzigd naar Speed → Avg → Direction → Variation, met **Variation** = de hoekbreedte (°) waarbinnen alle recente windrichting-metingen liggen; sensorhistorie-tabel uitgebreid van 4 naar 8 kolommen (Time + T/T-avg + RH/RH-avg + Wind/Wind Avg + Direction + Variation); wanneer **Humidity-control = Off** worden de RH-setpoint-regels op de Humidity-tegel gedimd (50 % opacity) en worden de bijhorende velden weggelaten uit de POST naar het externe dashboard. **LCD** — zevende statusscherm toegevoegd (`FW: 1.17.25` / `Up: 1d 4h 23m`); Tijd-scherm rij 2 krijgt rechts een **Day**/**Night**-badge; **D**-toets werkt vanuit elk menu/PIN/bewerk-scherm als directe terugkeer naar de auto-rotatie; na 5 minuten zonder toets in een menu keert de display automatisch terug naar de roterende statusschermen; **Climate → 3 CR** volgt nu het "blader-eerst, daarna PIN, daarna bewerken"-patroon van Day/Night. Zie §6 *Status-tab — actieve setpoints op de tegels*, *Sensorhistorie-tabel*, *LCD-statusschermen* en *LCD — D-toets en 5-minuten time-out*. |
-| 1.7 | 2026-05-12 | Structurele herordening van §10 en §11 (geen firmware-wijziging — nog steeds 1.17.25). Vier nieuwe sub-hoofdstukken toegevoegd aan §10 "Klimaat instellen" die de overige webinterface-tabs één-op-één beschrijven: **§10.5 System-tab** (WiFi AP, WiFi client, NTP en tijdzone, geografische locatie, sessie-timeout, OTA-verwijzing) waarin alle voormalige sub-paragrafen van §11.2–§11.9 zijn samengebracht; **§10.6 Access-tab** (PIN-beheer voor Boer en Beheerder, met kruisverwijzing naar §9); **§10.7 Log-tab** (SD-kaart mount/unmount, eisen, automatisch mounten, kruisverwijzing naar Bijlage F voor het CSV-formaat); **§10.8 Web-tab** (status-rapportage naar extern dashboard, voorheen §11.10). §11 is dientengevolge afgeslankt tot uitsluitend de **eenmalige eerste-installatie-procedure** van een WiFi-verbinding (na fabrieksreset of nieuwe installatie); hoofdstuktitel hernoemd naar "Eerste-installatie WiFi-verbinding". De inhoudsopgave en interne kruisverwijzingen zijn dienovereenkomstig bijgewerkt. |
-| 1.8 | 2026-05-12 | Kleine revisies (geen firmware-wijziging — nog steeds 1.17.25). Elke PDF-pagina krijgt nu een **kop- en voettekst**: koptekst toont links *Kas Controller - Herenboeren Wenumseveld* en rechts het versienummer; voettekst toont links *Een RFSee product - http://www.rfsee.nl* en rechts *pagina N*. Alle figuren in de handleiding zijn voorzien van een **doorlopend volgnummer** ("Figuur 1: …", "Figuur 2: …" enz.). |
-| 1.9 | 2026-05-12 | Bijgewerkt voor firmware 1.17.26. Cosmetische correctie op **LCD Scherm 2 (Wind)**: tabel-rij in §6 *LCD-statusschermen* toont nu `Dir: 180 ° (S )` met één spatie tussen de dubbele punt en het cijfer, in lijn met `Wind:`, `Mode:` en `Sess:` en met de ongeldige-meting-rij (`Dir: ---`). GitHub-issue [#6](https://github.com/pe1mew/greenhouse-Controller/issues/6). Tevens firmware-referentie op LCD-pagina 7 (`FW: 1.17.26`) in dezelfde tabel bijgewerkt. |
-| 1.10 | 2026-05-14 | Bijgewerkt voor firmware 1.17.27–1.18.2. **Nieuwe §12.7 *Bulkhead-beleid*** toegevoegd: complete documentatie van de vier-fasen architectuurmaatregel ([gh#18](https://github.com/pe1mew/greenhouse-Controller/issues/18)) die garandeert dat secundaire-netwerk-activiteit (status-POST + log-upload) nooit kan leiden tot uitval van de primaire klimaatregeling. Behandelt de `BK`-indicator op LCD-scherm 4 (rij 1 rechts), het `net_backoff_active`-veld in de status-JSON (rendert als gele "Net backoff"-badge op de Status-tab → Alarms-tegel), de persistent circuit breaker met escalatie 60s→5min→30min→1h, de T15-supervisortaak met geplande reboot, NVS-persistente raamposities (boot-kalibratie wordt overgeslagen als alle drie ramen al CLOSED waren — bespaart ~171 sec hersteltijd), en de bijhorende NVS-sleutels en LOG_SYSTEM-event-codes. Tevens **nieuwe `value_a`-codes** (5–10, 12) gedocumenteerd in §12.7 en in Bijlage F (logparser-script bijgewerkt). LCD-statusschermen tabel uitgebreid met de `BK`-variant van Wifi-scherm 4. **§17 *Power-cycle / RESET* volledig herschreven** om de nieuwe boot-kalibratie-skip-logica eenduidig te beschrijven en de pre-1.17.36 claim "élke power-cycle doorloopt CLOSE_ALL" te corrigeren. Drie boot-uitkomsten (alarm / NVS-skip / volledige kalibratie) in tabel-vorm. Expliciete vermelding dat het type opstart (power-cycle, RESET-knop, OTA-update, geplande T15-reboot, fabrieksreset) **niet** de skip-conditie bepaalt — uitsluitend de NVS-staat van de raamposities op het moment van uitschakeling. Handmatige-overname-advies aangepast: na terugkeer naar AUTO bewust een raam fysiek open zetten vóór de power-cycle om de skip te vermijden. Achtergrond: één geconstateerde regressie in 1.18.0 (T15 starveerde de task-watchdog door 30 sec sleep tussen WDT-kicks; OTA-rollback redde de unit; 1.18.1 corrigeert die bug; 1.18.2 voegt platform-versiepinning, heap-fragmentatie-instrumentatie en een TLS-audit-document toe). Zie ook `design/tls_leak_audit.md` voor de TLS-stack-audit. Geen wijzigingen aan de boer-interface (LCD-menu's, webinterface-tabs voor de boer) buiten de `BK`-indicator. |
-| 1.12 | 2026-05-15 | Bijgewerkt voor firmware 1.19.0–1.20.0 (vier firmware-releases). **§12.7 *Bulkhead-beleid* bijgewerkt**: de sub-sectie *Bekende secundaire bug — lwIP-init race* is geherformuleerd naar *lwIP-init race tijdens fast-boot — gh#21 RESOLVED in 1.19.0*. De daadwerkelijk geïmplementeerde fix bleek niet de eerder voorgestelde `EG1_BIT_NETIF_READY` event-bit, maar een wacht-conditie op `WiFi.localIP() != 0.0.0.0` in T14's hoofdlus (zie `firmware/src/status_post/status_post.cpp` sinds 1.19.0); 1.19.1 voegde een follow-up toe zodat de heartbeat-teller ook tijdens deze wacht doorloopt (anders zou T15 T14 onterecht als wedged bestempelen). Tevens **nieuwe sub-sectie *OTA-fail-counter exempt geplande reboots*** ([gh#20-mitigatie](https://github.com/pe1mew/greenhouse-Controller/issues/20), sinds 1.19.2): T15-geïnitieerde geplande reboots tellen niet meer mee voor het `ota_check_rollback()` 3-fail-budget — voorkomt dat een unit met heap-fragmentatie ten onrechte terugvalt naar een eerdere firmware-bank. **§12.8 *Unit-identificatie* uitgebreid van 4 naar 6 surfaces** met de nieuwe oppervlakken die in 1.20.0 zijn toegevoegd: **LCD-scherm 7** rechts op regel 1 (`FW: 1.20.0  5C88`), en **webinterface-voettekst** (`Greenhouse Controller – v1.20.0 · 5C88`). **Twee nieuwe sub-secties in §11 *Eerste-installatie WiFi-verbinding*** toegevoegd: §11.2 *Automatische herstart na WiFi-wijziging* (sinds 1.19.1 — POST naar `/api/wifi` die `ssid`/`psk`/`ap_psk` wijzigt triggert ~1 sec later een `esp_restart()`, JSON-respons bevat `"restarting": true`) en §11.3 *Core-dump partitie* (sinds 1.19.0 — 64 KB partitie op offset `0x620000`, eenmalige `esptool.py erase_region` per fysieke unit nodig om de core-dump-capture werkend te krijgen; OTA vanuit 1.18.3 blijft veilig omdat alle bestaande partitie-offsets byte-identiek zijn). Geen wijzigingen aan menustructuur, alarmgedrag, of webinterface-tabs voor boer of beheerder buiten de toegevoegde voettekst. |
-| 1.11 | 2026-05-14 | Bijgewerkt voor firmware 1.18.3. **Nieuwe §12.8 *Unit-identificatie*** ([gh#17](https://github.com/pe1mew/greenhouse-Controller/issues/17)). Sinds 1.18.3 heeft elke kascontroller een vier-tekens hex-ID afgeleid van de lage 2 bytes van het ingebakken WiFi-STA MAC-adres. De ID is onveranderbaar (survives factory-reset én firmware-update) en verschijnt op **vier surfaces**: AP-SSID (`Greenhouse-XXXX` — pre-existent), seriële boot-output (`Phase 0 boot — id=5C88` — nieuw), SD-logbestand (`LOG_SYSTEM, value_a=11` één keer per boot via T4 + één keer per SD-rotatie via T9 — nieuw), en de canonieke status-JSON (`system.unit_id` — nieuw). LOG_SYSTEM-tabel in §12.7 uitgebreid met `value_a=11`. Logparser (`log/logparser.py` + `log/logparser.md`) bijgewerkt om de int16-cast unit-ID terug te interpreteren als uint16-hex. Botsingskans bij vlootgrootte ≤ tientallen units < 1%, **deterministisch 0%** binnen één productiebatch. **Nieuwe §12.7 sub-sectie *Eerste productie-observatie van het bulkhead-beleid* (2026-05-14)** toegevoegd met een tijdlijn-tabel van het eerste productie-event waarin T15 een geplande reboot uitvoerde wegens `T14 cumulative heap drop > 64 KB` — alle componenten functioneerden zoals ontworpen, klimaatregeling-onderbreking voor de operator was ≈ 2 seconden. **Nieuwe sub-sectie *Bekende secundaire bug — lwIP-init race tijdens fast-boot*** ([gh#21](https://github.com/pe1mew/greenhouse-Controller/issues/21)): de gh#18 Phase 3 fast-boot heeft een latente race tussen T11 (web-server, AsyncTCP) en T10 (network-manager, `esp_netif_init`) blootgelegd. Resultaat: één extra paniek-reboot direct na elke geplande reboot. Operationeel impact: ~1 sec extra hersteltijd; klimaatregeling nog steeds binnen het 2-sec design-budget. Fix gepland via `EG1_BIT_NETIF_READY` event-group-bit; niet-blokkerend. Geen wijzigingen aan de boer-interface, LCD-menu's of webinterface-tabs voor de boer of beheerder. |
+| 1.0 | Er was eens... | 1.16.34 |
+| 1.1 | 2026-05-09 | 1.16.35–1.16.38 |
+| 1.2 | 2026-05-10 | 1.16.39 |
+| 1.3 | 2026-05-10 | 1.17.0–1.17.1 |
+| 1.4 | 2026-05-11 | 1.17.2–1.17.8a |
+| 1.5 | 2026-05-11 | 1.17.9–1.17.20 |
+| 1.6 | 2026-05-11 | 1.17.21–1.17.25 |
+| 1.7 | 2026-05-12 | 1.17.25 (alleen herordening §10/§11) |
+| 1.8 | 2026-05-12 | 1.17.25 (alleen kop-/voettekst en figuur-nummering) |
+| 1.9 | 2026-05-12 | 1.17.26 |
+| 1.10 | 2026-05-14 | 1.17.27–1.18.2 |
+| 1.11 | 2026-05-14 | 1.18.3 |
+| 1.12 | 2026-05-15 | 1.19.0–1.20.0 |
 
 ---
 
