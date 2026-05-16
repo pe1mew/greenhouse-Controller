@@ -6,6 +6,64 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.20.2] — 2026-05-16
+
+*One bug fix for an SD-card data-loss pattern surfaced by the same Unit 1 forensics that drove 1.20.1. The supervisor's planned-reboot path was calling `esp_restart()` without unmounting the SD card, which let the Arduino-ESP32 SD library's directory cache and FatFs write-back queue discard whatever was pending. On Unit 1 this manifested as three log files the controller logged creating (`/20260516025038.csv`, `/20260516031506.csv`, `/20260516041646.csv`) that were never on the physical card when inspected. Two-line fix; no behaviour change for any other code path.*
+
+### Fixed
+- **gh#26 — `planned_reboot()` now unmounts the SD card before `esp_restart()`.** `firmware/src/status_post_supervisor/status_post_supervisor.cpp` adds `event_logger_sd_unmount()` between the NVS-flag write and the 250 ms drain. `event_logger_sd_unmount()` clears T9's `s_sd_ok` so no in-flight write races the teardown, calls `storage_sd_unmount()` → `SD.end()`, which forces FatFs to flush its directory cache and FAT updates to physical media before releasing the SPI bus. The function is idempotent at both layers (T9 and the SD driver) so it's safe regardless of current mount state. Combined with 1.20.1's gh#24 detector fix (which eliminates the *spurious* planned reboots in the first place), this closes the SD-corruption window down to "an in-flight write at the exact moment of an unplanned reset" — i.e. only a panic or interrupt-WDT can still leave the FAT inconsistent, and those are rare and bounded.
+
+### Changed
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.20.1` → `1.20.2` in both env blocks.
+- `firmware/data/manifest.json` and `firmware/data/index.html` — stamped 1.20.2 by `bin/build_release.ps1`.
+- `firmware/src/status_post_supervisor/status_post_supervisor.cpp` — `#include "../event_logger/event_logger.h"` added for the unmount call.
+
+### Behaviour notes / non-changes
+- **No bulkhead-architecture changes.** The supervisor's heap-leak detector (1.20.1 / gh#24), wedge detector, respawn-storm guard, OTA fail-counter exemption (1.19.2), and NVS-window-state recovery (gh#18 Phase 3) are all unchanged. Only the planned-reboot teardown sequence gains one additional step.
+- **The fix doesn't help against panic resets.** A genuine `ESP_RST_PANIC` or `ESP_RST_INT_WDT` still bypasses the unmount because the supervisor never runs. T15 doesn't fire planned reboots on those paths — they're already "things outside the bulkhead's reach". The acceptance criterion is specifically that supervisor-driven planned reboots are now SD-clean, which they weren't before.
+- **Acceptance criterion.** Configure status reporting against an unreachable server until T15 fires a planned reboot. Just before the reboot, inject SD-log events to ensure the write-back queue is dirty. Post-reboot, pull the SD card and confirm all files written before the reboot are present and the correct size. Pre-fix, files queued via `f.close()` in the seconds before reset could land as phantom directory entries. Post-fix, they land as committed file data.
+- **Asymmetry note from the field data.** Unit 2 (id=5C88) had *6* planned reboots in the same 17 h 1.20.0 window and its CSVs were intact — the bug is marginal, depending on the card's write-back behaviour and the timing of the last write versus the reset. The fix tightens the corruption window across all cards uniformly; Unit 2 was simply on the safe side of the margin.
+- **Drop-in upgrade.** No NVS layout change, no partition-table change, no config-key change. OTA from 1.20.1, 1.20.0, 1.19.x, or 1.18.3 all work without extras.
+
+### Cross-references
+- gh#26 — T15 planned_reboot() calls esp_restart() without unmounting the SD card — observed silent file loss on Unit 1
+- gh#24 — heap-drop accumulator fix (1.20.1) — reduces *opportunity* for this bug by eliminating spurious planned reboots
+- gh#25 — log-upload dedup latch fix (1.20.1) — works whether the offending file is "empty" or "phantom", so it's correct against the symptom this issue causes too
+- gh#18 — bulkhead policy (the supervisor unchanged in 1.20.2)
+
+---
+
+## [1.20.1] — 2026-05-16
+
+*Two bulkhead-policy bug fixes uncovered by 1.20.0 forensics on units 12F0 and 5C88: the T15 heap-leak detector was integrating per-POST allocator jitter into a planned reboot every 3-7 h despite steady free heap, and the T14 log-upload path could livelock on a structurally-bad CSV because the dedup latch only advanced on success. Both are detector/state-machine bugs, not bulkhead-architecture changes — the supervisor task, breaker, NVS-window-state recovery, and respawn-storm guard all remain exactly as shipped in 1.18.x.*
+
+### Fixed
+- **gh#24 — T15 heap-leak detector now uses a signed running balance.** `record_heap_drop()` in `firmware/src/status_post/status_post.cpp` was a monotonic positive-only integrator that summed every transient free-heap dip across an HTTPS call without subtracting the matching recovery. Over thousands of POSTs the integral hit the 64 KB threshold every 3-7 hours even when actual free heap was steady. Field evidence: 9 planned reboots across units 12F0 + 5C88 over a 17 h window 2026-05-15→16, all firing *"T14 cumulative heap drop crossed 64 KB"* while the SD-log `value_a=7` (free) and `value_a=12` (largest-block) rows showed steady 120–126 KB free / 71–83 KB largest-block. Now `s_heap_drop_bytes` is a signed running balance: positive deltas add, negative deltas subtract, floored at 0 (no banking recovery credit), saturated at `INT32_MAX`. True leaks accumulate monotonically; per-call jitter cancels. The public `status_post_heap_drop_bytes()` API and the supervisor's 64 KB threshold check are unchanged.
+- **gh#25 — T14 log-upload dedup latch now advances on structural rejects.** `try_log_upload()` previously only called `dm_set_log_last_up()` on a successful upload, so a candidate that failed `do_log_upload()`'s `fsize == 0 || fsize > T14_LOG_MAX_BYTES` precondition would be re-targeted by every subsequent T14 cycle. The breaker throttled the cadence (60 s → 5 min → 30 min → 1 h escalation) but couldn't break the loop — only a reboot or a new rotation producing a different `newest_closed` candidate could clear it. Field evidence: unit 12F0 looped on a 0-byte `/20260516025038.csv` from 01:15:10 through 01:53:18 on 2026-05-16, broken only by the gh#24 planned reboot at 02:16. Fix: hoist the size precondition out of `do_log_upload()` into `try_log_upload()` so a structural reject advances the latch with one `ESP_LOGW` and one LOG_SYSTEM fail event, then never retries. Network/transport failures inside `do_log_upload()` still leave the latch unchanged so a transient outage retries the same file when connectivity returns. The defensive `fsize == 0 || fsize > max` guard inside `do_log_upload()` is preserved as belt-and-braces.
+
+### Changed
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` bumped `1.20.0` → `1.20.1` in both env blocks.
+- `firmware/data/manifest.json` and `firmware/data/index.html` — stamped 1.20.1 by `bin/build_release.ps1`.
+- `do_log_upload()` signature: `bool do_log_upload(const cfg_shadow_t *cfg, const char *filename)` → `bool do_log_upload(const cfg_shadow_t *cfg, const char *filename, uint32_t fsize)`. Single caller (`try_log_upload`) updated in lockstep; no external API change (function is `static`).
+
+### Behaviour notes / non-changes
+- **No bulkhead-architecture changes.** The supervisor task (T15), breaker (gh#18 Phase 2), NVS-window-state recovery (Phase 3), wedge/respawn-storm guards, and OTA fail-counter exemption (1.19.2) are unchanged. The bug was in the detector's accumulator math, not in any of the policy mechanisms it feeds.
+- **Acceptance criterion for gh#24.** A 1.20.1 controller running 24 h against a working HTTPS server should produce *zero* "T14 cumulative heap drop crossed 64 KB" planned reboots. A 1.20.0 controller produced 3 (unit 12F0) to 6 (unit 5C88) per 17 h window. The fix doesn't weaken leak detection: injecting a deliberate `malloc(256)` per POST cycle into T14 will still trip the threshold in ~250 cycles.
+- **Acceptance criterion for gh#25.** A pre-staged 0-byte CSV with a valid timestamp filename should produce one warning + one LOG_SYSTEM fail event at the first daily slot, then silence. Pre-fix would have produced 3 attempts every breaker-window for hours.
+- **Coredump partition + platform pin unchanged.** Same factory + OTA partitions, same `espressif32@6.12.0` pin as 1.20.0. OTA from 1.20.0, 1.19.2, 1.19.1, or 1.18.3 all work without extras.
+- **Stuck 0-byte CSV on field units carries over.** The fix prevents *new* livelocks but doesn't proactively delete an existing 0-byte file. Unit 12F0's `/20260516025038.csv` remains on the SD card until manual cleanup or the SD_MAX_FILES rotation eventually evicts it. A separate "sweep zero-byte timestamp CSVs older than 24 h" enhancement is left as a future option — not blocking for 1.20.1.
+
+### Operational notes
+- **Drop-in upgrade.** No NVS layout change, no partition-table change, no config-key change.
+- **Forensic value preserved.** Existing `value_a=7` (free heap) and `value_a=12` (largest-block) LOG_SYSTEM rows continue to work as before. To confirm gh#24 is fixed after deployment, look for the absence of the `[T15] PLANNED REBOOT — T14 cumulative heap drop crossed 64 KB` line in serial logs over a 24 h window.
+
+### Cross-references
+- gh#24 — T15 heap-drop accumulator integrates jitter; trips planned reboot every few hours without a real leak
+- gh#25 — T14 log-upload dedup latch doesn't advance on bad-file failures, infinite re-upload of 0-byte CSV
+- gh#18 — bulkhead policy (the framework these fixes live within; unchanged in 1.20.1)
+
+---
+
 ## [1.20.0] — 2026-05-15
 
 *Surfaces the per-unit identifier (gh#17) on two more channels: the LCD's Firmware/Uptime info screen and the web GUI footer. Until this release, the unit_id was visible on the serial boot banner, in the SD log preamble, in the canonical status JSON, and in the AP SSID — but operators with their hands on a physical unit (LCD) or eyes on the live GUI (footer) couldn't read it at a glance. Both surfaces now show it next to the version string so "which one am I touching?" is a zero-click question. Bundles the 1.19.2 OTA-counter fix.*

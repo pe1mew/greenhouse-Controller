@@ -34,6 +34,7 @@
 
 #include "../types/app_types.h"
 #include "../status_post/status_post.h"
+#include "../event_logger/event_logger.h"     /* gh#26: SD unmount before reset */
 #include "../../../drivers/nvs/src/nvs_config.h"
 
 #include <Arduino.h>
@@ -99,8 +100,23 @@ static void planned_reboot(const char *reason)
 {
     ESP_LOGE(TAG, "PLANNED REBOOT — %s", reason);
     (void)nvs_cfg_set_i32(NVS_NS_SYSTEM, K_PLAN_REBOOT, 1);
-    /* Brief delay so the NVS commit lands and the ESP_LOGE makes it to the
-     * UART output buffer before reset. */
+
+    /* gh#26 (1.20.2): unmount the SD card cleanly before esp_restart() so
+     * the Arduino-ESP32 SD library / FatFs flushes its directory cache and
+     * write-back queue to physical media. Pre-fix, a planned reboot
+     * discarded whatever was pending in the cache: phantom directory
+     * entries, partially-rotated files, zero-byte ghost files. Observed on
+     * Unit 1 (id=12F0) in the 1.20.0 forensic window — three planned
+     * reboots and three CSVs (20260516025038, 20260516031506, 20260516041646)
+     * that the controller logged creating but never landed on the card.
+     * Pulls in the unmount call before the UART drain so the resulting
+     * "[T9] SD unmounted via web request" log line also makes it out.
+     * Tolerates already-unmounted state — event_logger_sd_unmount() is
+     * idempotent. */
+    event_logger_sd_unmount();
+
+    /* Brief delay so the NVS commit lands and the ESP_LOGE / SD-unmount log
+     * lines make it to the UART output buffer before reset. */
     vTaskDelay(pdMS_TO_TICKS(250));
     esp_restart();
 }

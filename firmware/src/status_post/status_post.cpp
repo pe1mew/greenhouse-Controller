@@ -135,10 +135,18 @@ static bool             s_wifi_was_connected = false;   /**< edge tracker */
  * The supervisor (T15) treats no-advance-for-60s as "T14 stuck" and force-
  * respawns. Single primitive, no mutex needed.
  *
- * `s_heap_drop_bytes` accumulates the per-call free-heap delta whenever
- * the value drops across an HTTPS call. Negative deltas are clamped to
- * zero so a transient free doesn't reset the counter (real leaks are
- * monotonic). Supervisor compares against a 64 KB ceiling.
+ * `s_heap_drop_bytes` exposes the supervisor a *net* free-heap balance:
+ * the per-cycle delta is summed with sign so recoveries cancel transient
+ * drops. Pre-1.20.1 this was a monotonic positive-only integrator, which
+ * accumulated per-POST allocator jitter (HTTPClient/lwIP buffers that
+ * grow and immediately free within one cycle) up to the 64 KB threshold
+ * every few hours even when heap-free was steady — gh#24. The signed
+ * balance turns the detector into a real leak signal: true leaks
+ * accumulate, jitter cancels. Floor at 0 (a positive recovery run
+ * shouldn't bank credit against a future genuine leak); ceiling at
+ * INT32_MAX (saturating, protects supervisor from rollover).
+ * Supervisor compares against a 64 KB ceiling via the unchanged
+ * status_post_heap_drop_bytes() public API.
  * ============================================================ */
 static volatile uint32_t s_heartbeat        = 0u;
 static volatile uint32_t s_heap_drop_bytes  = 0u;
@@ -458,18 +466,28 @@ void status_post_force_teardown(void)
 }
 
 /* Helper used by the main task loop to sample heap deltas around HTTPS
- * calls. Keeps the supervisor wiring private to this translation unit. */
+ * calls. Keeps the supervisor wiring private to this translation unit.
+ *
+ * gh#24 (1.20.1): signed running balance, floored at 0 and saturated at
+ * INT32_MAX. Pre-fix this was a positive-only integrator that summed
+ * every transient dip without subtracting the matching recovery; per-POST
+ * allocator jitter accumulated to the 64 KB trigger every few hours even
+ * when actual free-heap was steady. Now positive deltas (free drops)
+ * add to the balance, negative deltas (free rises) subtract — true leaks
+ * accumulate monotonically, noise cancels. Floor at 0 prevents banking
+ * "recovery credit" against a future leak. */
 static void record_heap_drop(size_t before, size_t after)
 {
-    if (after < before) {
-        uint32_t delta = (uint32_t)(before - after);
-        /* Saturating add: protect the supervisor from rollover. */
-        if (s_heap_drop_bytes + delta < s_heap_drop_bytes) {
-            s_heap_drop_bytes = 0xFFFFFFFFu;
-        } else {
-            s_heap_drop_bytes += delta;
-        }
-    }
+    /* Compute signed delta: positive means free heap dropped (T14 used memory),
+     * negative means free heap rose (T14 returned memory). Both before/after
+     * are size_t — cast through int64_t to dodge underflow on the subtract
+     * before clamping. */
+    int64_t delta = (int64_t)before - (int64_t)after;
+    int64_t next  = (int64_t)s_heap_drop_bytes + delta;
+
+    if      (next <= 0)             s_heap_drop_bytes = 0u;
+    else if (next > 0x7FFFFFFFLL)   s_heap_drop_bytes = 0x7FFFFFFFu;
+    else                            s_heap_drop_bytes = (uint32_t)next;
 }
 
 /* ============================================================
@@ -566,20 +584,20 @@ char SDFileChunkedStream::s_chunk[T14_LOG_READ_CHUNK];
  * from the file size up front; HTTPClient::sendRequest pulls bytes from
  * the stream as it sends. Works identically for http:// and https://.
  * ============================================================ */
-static bool do_log_upload(const cfg_shadow_t *cfg, const char *filename)
+static bool do_log_upload(const cfg_shadow_t *cfg, const char *filename, uint32_t fsize)
 {
-    if (filename == NULL || filename[0] == '\0') { return false; }
+    /* gh#25 (1.20.1): file-size precondition is now screened by the caller
+     * (try_log_upload) so a structural reject can advance the dedup latch.
+     * Keep a defensive guard here — if someone ever calls this directly with
+     * a bad file, fail fast rather than crash the SD stream. */
+    if (filename == NULL || filename[0] == '\0' ||
+        fsize == 0u || fsize > T14_LOG_MAX_BYTES) {
+        return false;
+    }
 
     /* Build absolute path; storage_sd_* expects a leading slash. */
     char path[32];
     snprintf(path, sizeof(path), "/%s", filename);
-
-    uint32_t fsize = storage_sd_file_size(path);
-    if (fsize == 0u || fsize > T14_LOG_MAX_BYTES) {
-        ESP_LOGW(TAG, "log upload: size %lu out of bounds for %s",
-                 (unsigned long)fsize, filename);
-        return false;
-    }
 
     /* Build target URL with the ?action=log query param. */
     char url[CFG_MAX_URL_LEN + 16] = {};
@@ -659,13 +677,40 @@ static void log_upload_skip(uint8_t reason_b)
     log_post(&ev);
 }
 
-/* Attempt to upload @p candidate if it differs from the last-uploaded record. */
+/* Attempt to upload @p candidate if it differs from the last-uploaded record.
+ *
+ * gh#25 (1.20.1): pre-flight the file-size precondition here so a 0-byte or
+ * over-cap file advances the dedup latch even though the upload didn't
+ * happen. Pre-fix the latch only advanced on success, so any candidate that
+ * tripped the precondition would livelock the upload path through the
+ * breaker's escalating back-off (60s → 5min → 30min → 1h) until either a
+ * new rotation produced a different candidate or a reboot cleared
+ * s_last_closed. Observed 2026-05-16 on unit 12F0 with a stuck 0-byte CSV.
+ *
+ * The size precondition is a *structural* reject (the file is fundamentally
+ * unusable). It is correct to advance the latch and never retry: the file
+ * isn't going to grow data retroactively. Network/transport failures inside
+ * do_log_upload() still leave the latch unchanged so a transient outage
+ * retries the same file when connectivity returns. */
 static void try_log_upload(const cfg_shadow_t *cfg, const char *candidate)
 {
     if (candidate == NULL || candidate[0] == '\0')              { return; }
     if (strcmp(candidate, cfg->log_last_up) == 0)               { return; }   /* dedup */
 
-    bool ok = do_log_upload(cfg, candidate);
+    /* Structural precondition (file size). Done here, not inside
+     * do_log_upload, so the dedup latch can advance on reject. */
+    char path[32];
+    snprintf(path, sizeof(path), "/%s", candidate);
+    uint32_t fsize = storage_sd_file_size(path);
+    if (fsize == 0u || fsize > T14_LOG_MAX_BYTES) {
+        ESP_LOGW(TAG, "log upload skipped: %s size %lu out of bounds — advancing dedup",
+                 candidate, (unsigned long)fsize);
+        log_upload_outcome(false, candidate);
+        dm_set_log_last_up(candidate);    /* never retry this dead file */
+        return;
+    }
+
+    bool ok = do_log_upload(cfg, candidate, fsize);
     log_upload_outcome(ok, candidate);
     if (ok) {
         dm_set_log_last_up(candidate);
@@ -869,7 +914,9 @@ void task_status_post(void *pvParameters)
                 /* gh#18 Phase 4 — sample heap free immediately around the
                  * HTTPS call. Real leaks accumulate; transient handshake
                  * allocations release back to free by the time the call
-                 * returns. record_heap_drop() clamps negatives to zero. */
+                 * returns. record_heap_drop() keeps a signed running
+                 * balance (gh#24, 1.20.1) so recoveries cancel transient
+                 * dips and only true leaks reach the 64 KB threshold. */
                 size_t heap_before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
                 ok = do_status_post(&cfg, json_buf, n);
                 size_t heap_after  = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
