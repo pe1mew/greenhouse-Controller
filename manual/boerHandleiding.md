@@ -1,6 +1,6 @@
 # Handleiding Kascontroller — voor de boer
 
-**Versie:** 1.10 — concept
+**Versie:** 1.12 — concept
 **Datum:** 2026-05-15
 **Firmware:** 1.20.2
 
@@ -35,7 +35,8 @@
 17. [Verklarende woordenlijst](#17-verklarende-woordenlijst)
 18. [Reset-procedure (BOOT-knop)](#18-reset-procedure-boot-knop-op-microprocessorboard)
 19. [Bijlage A — contactgegevens beheerder](#19-bijlage-a--contactgegevens-beheerder)
-20. [Versie en wijzigingshistorie](#20-versie-en-wijzigingshistorie)
+20. [Bijlage B — Aanbevolen startinstellingen per gewas](#20-bijlage-b--aanbevolen-startinstellingen-per-gewas)
+21. [Versie en wijzigingshistorie](#21-versie-en-wijzigingshistorie)
 
 ---
 
@@ -778,7 +779,7 @@ Algemene vuistregels:
 - **Nacht-T** mag iets lager zijn dan dag-T (planten besparen energie 's nachts)
 - **RH boven 85%** voor langere tijd vergroot het risico op schimmelziekten — houd RH-max liever onder 85%
 - **RH onder 50%** kan groei remmen en mijten in de hand werken
-- **Bij twijfel**: vraag je teler / leverancier van de planten om aanbevolen klimaatzones
+- **Bij twijfel**: zie [Bijlage B — Aanbevolen startinstellingen per gewas](#20-bijlage-b--aanbevolen-startinstellingen-per-gewas) voor een tabel met richtwaarden voor de meest voorkomende gewassen, of vraag je teler / leverancier van de planten om aanbevolen klimaatzones
 
 ---
 
@@ -1344,7 +1345,86 @@ Voor alle vragen of problemen waar deze handleiding geen antwoord op geeft:
 
 ---
 
-## 20. Versie en wijzigingshistorie
+## 20. Bijlage B — Aanbevolen startinstellingen per gewas
+
+> **Belangrijk** — deze waarden zijn **startpunten**, geen absolute regels. De ideale instelling voor jouw kas hangt af van locatie, seizoen, gewas-variëteit, groeistadium en persoonlijke ervaring. Stel de waarden in zoals hieronder, observeer een paar dagen, en bij twijfel leuter een paar °C in de juiste richting tot het klopt met wat je in de kas ziet. De getallen zijn afgerond op hele graden / procenten — de kascontroller werkt sowieso met gehele getallen (zie [§4 Hoe regelt de controller het klimaat?](#4-hoe-regelt-de-controller-het-klimaat)).
+
+### Klimaat-startinstellingen per gewas
+
+De tabel is geordend per gewas-familie zodat verwante gewassen bij elkaar staan: vruchtgewassen, peulvruchten, bladgroenten, koolgewassen, wortelgewassen, kruiden en bloemen.
+
+| Gewas | T dag<br/>min–max | T nacht<br/>min–max | RH dag<br/>min–max | RH nacht<br/>min–max | RH-regeling | CR-prio | Opmerkingen |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|---|
+| **Tomaat** | 18–26 °C | 16–18 °C | 60–75 % | 65–80 % | aan | RH | Vruchtfase: houd RH onder 80 % 's nachts om botrytis te voorkomen. Hoge RH bij bloei → slechte vruchtzetting. |
+| **Komkommer** | 22–28 °C | 18–21 °C | 70–85 % | 75–85 % | aan | T | Houdt van vocht. Bij T > 30 °C wordt de plant gestrest; bij T < 12 °C 's nachts groei-onderbreking. |
+| **Paprika / peper** | 21–27 °C | 18–20 °C | 60–75 % | 65–75 % | aan | T | Bloemval bij T > 32 °C of T < 15 °C 's nachts. Stabiele temperatuur belangrijker dan exacte waarde. |
+| **Aubergine** | 22–28 °C | 18–22 °C | 55–70 % | 60–75 % | aan | T | Warmtegevoelig — bij T > 30 °C ramen open houden. |
+| **Meloen** | 22–30 °C | 18–22 °C | 60–75 % | 65–75 % | aan | T | Warmtegevoelig; nachten boven 16 °C, anders vruchtval. Tolereert T tot ~32 °C bij goede ventilatie. |
+| **Ananaskers (Physalis)** | 18–26 °C | 15–20 °C | 55–70 % | 60–75 % | aan | T | Familie van tomaat; vergelijkbare aanpak maar iets droger en koeler verdraagbaar. Lange teelt, oogst pas na augustus. |
+| **Aardbei** | 18–24 °C | 12–16 °C | 60–70 % | 60–75 % | aan | RH | Hoge RH = botrytis-risico op de vruchten. Liever wat koeler en droger dan warm en vochtig. |
+| **Courgette / pompoen** | 20–28 °C | 16–20 °C | 60–75 % | 65–80 % | aan | T | Bij hoge RH bloeit de plant goed maar krijgt meeldauw. Ventilatie belangrijk. |
+| **Bonen (stam / stok)** | 18–24 °C | 15–18 °C | 60–75 % | 65–80 % | uit | T | Vrij tolerant. Bij T > 30 °C wordt bloei en zetting onbetrouwbaar. |
+| **Spaghettiboon (asperge-boon)** | 20–28 °C | 18–22 °C | 60–75 % | 65–80 % | uit | T | Warmer-minnend dan gewone bonen. Zetting matig onder 18 °C 's nachts. Lange peulen, lange oogstperiode. |
+| **Peulen / erwten** | 15–22 °C | 10–16 °C | 60–75 % | 65–75 % | uit | T | Koel-seizoen-peulvrucht. Bloemval bij T > 25 °C. Vroege voorjaars- of late herfst-teelt. |
+| **Sla / kropsla** | 15–22 °C | 10–15 °C | 50–70 % | 55–75 % | uit | T | Schiet door bij T > 24 °C. Vochtregeling meestal niet nodig — temperatuur is de hoofdsturing. |
+| **Andijvie / radicchio** | 15–22 °C | 10–16 °C | 55–70 % | 60–75 % | uit | T | Vergelijkbaar met sla; iets warmer ondergrens dan spinazie. |
+| **Spinazie** | 14–20 °C | 8–14 °C | 50–70 % | 55–75 % | uit | T | Koel-seizoen-gewas. Bij T > 22 °C schiet snel door (in bloei). |
+| **Rucola** | 12–22 °C | 8–16 °C | 50–70 % | 55–75 % | uit | T | Koel-seizoen-bladgroente. Pikanter bij koel groeien; bitter of doorschieten bij T > 22 °C. |
+| **Paksoi** | 14–22 °C | 10–16 °C | 55–75 % | 60–80 % | uit | T | Aziatische bladkool. Schiet snel door bij T > 24 °C 's middags. Vooral voor- en najaars-teelt. |
+| **Snijbiet** | 14–24 °C | 10–16 °C | 55–75 % | 60–75 % | uit | T | Tolerant voor zowel koele als warmere periodes; minder schietgevoelig dan sla. |
+| **Raapsteel** | 12–22 °C | 6–14 °C | 50–70 % | 55–75 % | uit | T | Koel-seizoen-blad; vorsttolerant tot ~ −2 °C. Snelle teelt (~4 weken). |
+| **Palmkool (cavolo nero)** | 12–22 °C | 6–14 °C | 50–70 % | 55–75 % | uit | T | Winter-/voorjaars-teelt. Vorsttolerant; smaak verbetert zelfs na lichte vorst. |
+| **Bladgroenten (boerenkool, andijvie-mix)** | 12–22 °C | 6–14 °C | 50–70 % | 55–75 % | uit | T | Winter-/voorjaars-teelt; verdraagt nachtvorst tot ~ −2 °C zonder schade. |
+| **Koolrabi** | 15–22 °C | 10–16 °C | 55–75 % | 60–75 % | uit | T | Koel-seizoen-kool. Hoge T → houterige knol; vermijd T > 25 °C. |
+| **Bospeen (peen)** | 12–22 °C | 8–15 °C | 50–70 % | 55–75 % | uit | T | Wortelgewas. Stabiele bodemvocht belangrijker dan luchtvocht; de controller stuurt ramen, niet irrigatie. |
+| **Bosbiet (rode biet)** | 12–22 °C | 8–15 °C | 50–70 % | 55–75 % | uit | T | Wortelgewas vergelijkbaar met bospeen. Goed bij koele tot middentemperaturen. |
+| **Radijs (radys)** | 12–22 °C | 6–14 °C | 50–70 % | 55–75 % | uit | T | Snelste gewas in de tabel (~3–4 weken). Bij T > 25 °C wordt de knol scherp en houterig. |
+| **Groene selderij** | 15–22 °C | 10–15 °C | 70–85 % | 75–85 % | aan | T | Houdt van vocht zowel in lucht als bodem. Bij droge lucht bittere stengels. Lange teelt (~4–5 maanden). |
+| **Kruiden (basilicum)** | 20–26 °C | 16–20 °C | 50–65 % | 55–70 % | uit | T | Houdt **niet** van koude voeten — nachttemperatuur niet onder 15 °C. |
+| **Kruiden (peterselie, dille)** | 16–22 °C | 12–16 °C | 50–65 % | 55–70 % | uit | T | Koeltolerant. Hoge T → bittere smaak / vroege bloei. |
+| **Bloemen (snijbloemen)** | 15–24 °C | 12–18 °C | 60–75 % | 65–80 % | aan | T | Sterk variëteit-afhankelijk; deze waarden zijn een algemeen midden-bereik. Raadpleeg de leverancier per variëteit (zonnebloem, zinnia, statice, cosmea hebben ieder eigen optima). |
+
+### Wat de kolommen betekenen
+
+- **T dag min–max** / **T nacht min–max**: temperatuurband. **Min**imum is de waarde waaronder de controller de ramen sluit (`T_min`); **max** is de waarde waarboven de controller de ramen opent (`T_max`). Tussen min en max gebeurt er niets (regelhysteresis — zie [§4](#4-hoe-regelt-de-controller-het-klimaat)).
+- **RH dag min–max** / **RH nacht min–max**: vochtigheidsband, alleen actief wanneer **RH-regeling** aan staat.
+- **RH-regeling**: of de controller mag reageren op vochtigheid. **Aan** = vochtigheid stuurt mee in de raam-beslissing; **uit** = alleen temperatuur stuurt (handig voor gewassen waar vocht niet de beperkende factor is).
+- **CR-prio** (Conflict Resolution-prioriteit): wat doet de controller als T en RH tegelijk om tegengestelde acties vragen? **T** = temperatuur wint (gebruikelijk bij koel-seizoen-gewassen en warme zomers); **RH** = vochtigheid wint (gebruikelijk wanneer een gewas vochtigheids-gevoelig is — schimmelziektes, botrytis, meeldauw).
+- **Opmerkingen**: gewas-specifieke aandachtspunten waar de getallen alleen niet voldoende zijn.
+
+### Windbeveiliging — geldt voor alle gewassen
+
+De **windsnelheid-drempel** (`Wnd-max`) staat standaard op **6 m/s** en is **niet gewas-afhankelijk** maar **kas-constructie-afhankelijk**. Pas hem alleen aan wanneer:
+
+- Je merkt dat de ramen frequent dichtgaan bij wind die je intuïtief nog "rustig" zou noemen → verhoog naar 7–8 m/s.
+- Je merkt dat de wind ramen schade aanricht voordat de override inslaat → verlaag naar 4–5 m/s.
+
+De **windbeveiliging zelf** (aan/uit-schakelaar) moet **altijd AAN** staan tijdens de teelt. Alleen tijdelijk uitschakelen wanneer een beheerder lokaal aanwezig is en bewust met de ramen werkt. Zie ook [§12.5 Windbeveiliging in detail](#125-windbeveiliging-in-detail).
+
+### Hoe te gebruiken
+
+1. Zoek je gewas op in de tabel (of het meest vergelijkbare).
+2. Log in als boer op de webinterface of LCD (zie [§9](#9-inloggen-als-boer)).
+3. Stel achtereenvolgens in: **Climate-tab → T min/max dag en nacht → RH min/max dag en nacht → RH-regeling aan/uit → CR-prio**.
+4. **Observeer 2–3 dagen** voordat je nog iets aanpast. De sliding-average uitmiddeling (5 min standaard) zorgt voor stabiel gedrag, maar de cumulatieve invloed van een instelling op de plant zie je pas na een paar dagen.
+5. Stel **één parameter tegelijk** bij als iets niet klopt. Twee tegelijk verandert maakt het onmogelijk te zien welke aanpassing welk effect had.
+
+### Wat de tabel niet vervangt
+
+- **Bodemvochtigheid** — de controller stuurt ramen, geen irrigatie. Vochtig blad bij droge wortels lost de controller niet op.
+- **CO₂-bemesting** — niet gemeten, niet gestuurd. Bij gesloten ramen op een zonnige ochtend kan CO₂ snel dalen tot een groei-beperking; bewust ventileren is dan nodig ongeacht wat T en RH zeggen.
+- **Lichtniveau** — alleen indirect (dag/nacht-schakeling via zonsopkomst/zonsondergang). Schermdoeken, schaduwverf, en aanvullend assimilatielicht zijn buiten het bereik van deze controller.
+- **Gewas-specifieke groeistadia** — bovenstaande waarden zijn voor de **vegetatieve / vruchtdragende hoofdfase**. Bij zaailingen, oogstpiek, of einde-seizoen kunnen optimale waarden afwijken (bv. iets koeler in de uitloopfase om houdbaarheid te verbeteren).
+
+### Wanneer twijfel?
+
+- Lees de tabel als **eerste schatting** en pas aan op wat je in de kas ziet.
+- Bij ziekte/schade: noteer de instellingen die actief waren (Climate-tab) plus T-gemiddelde en RH-gemiddelde van de laatste 24 uur (Status-tab → Sensorhistorie). Stuur die naar de teeltvoorlichter of de Herenboeren-kennisgroep voor advies.
+- De **fabrieksinstellingen** van de kascontroller (Dag T = 18 / 28 °C, Nacht T = 16 / 25 °C, RH = 50 / 75 %) zijn een redelijke "tomaat-achtig" middelweg. Voor andere gewassen begin je beter direct vanaf de tabel-waarden.
+
+---
+
+## 21. Versie en wijzigingshistorie
 
 Inhoudelijke wijzigingen aan de firmware staan beschreven in het bestand `changelog.md` in de git-repository. Deze tabel houdt alleen bij welke firmware-versie door welke handleiding-versie wordt afgedekt.
 
@@ -1361,6 +1441,8 @@ Inhoudelijke wijzigingen aan de firmware staan beschreven in het bestand `change
 | 1.8 | 2026-05-15 | 1.19.0–1.20.0 |
 | 1.9 | 2026-05-16 | 1.20.1 |
 | 1.10 | 2026-05-16 | 1.20.2 |
+| 1.11 | 2026-05-16 | 1.20.2 (alleen documentatie — Bijlage B *Aanbevolen startinstellingen per gewas* toegevoegd) |
+| 1.12 | 2026-05-16 | 1.20.2 (alleen documentatie — Bijlage B uitgebreid van 13 naar 28 gewassen passend bij de teelt in Wenumseveld: Meloen, Ananaskers, Spaghettiboon, Peulen, Rucola, Paksoi, Snijbiet, Raapsteel, Palmkool, Koolrabi, Bospeen, Bosbiet, Radijs, Groene selderij, Bloemen — geordend per gewas-familie) |
 
 ---
 

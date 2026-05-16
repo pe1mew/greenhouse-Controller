@@ -1588,21 +1588,38 @@ De **complete uitleg** — met daarin alle velden, alle event-types, alle parame
 
 ### Klimaat-startinstellingen per gewas
 
+De tabel is geordend per gewas-familie zodat verwante gewassen bij elkaar staan: vruchtgewassen, peulvruchten, bladgroenten, koolgewassen, wortelgewassen, kruiden en bloemen.
+
 | Gewas | T dag<br/>min–max | T nacht<br/>min–max | RH dag<br/>min–max | RH nacht<br/>min–max | RH-regeling | CR-prio | Opmerkingen |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|---|
 | **Tomaat** | 18–26 °C | 16–18 °C | 60–75 % | 65–80 % | aan | RH | Vruchtfase: houd RH onder 80 % 's nachts om botrytis te voorkomen. Hoge RH bij bloei → slechte vruchtzetting. |
 | **Komkommer** | 22–28 °C | 18–21 °C | 70–85 % | 75–85 % | aan | T | Houdt van vocht. Bij T > 30 °C wordt de plant gestrest; bij T < 12 °C 's nachts groei-onderbreking. |
 | **Paprika / peper** | 21–27 °C | 18–20 °C | 60–75 % | 65–75 % | aan | T | Bloemval bij T > 32 °C of T < 15 °C 's nachts. Stabiele temperatuur belangrijker dan exacte waarde. |
 | **Aubergine** | 22–28 °C | 18–22 °C | 55–70 % | 60–75 % | aan | T | Warmtegevoelig — bij T > 30 °C ramen open houden. |
+| **Meloen** | 22–30 °C | 18–22 °C | 60–75 % | 65–75 % | aan | T | Warmtegevoelig; nachten boven 16 °C, anders vruchtval. Tolereert T tot ~32 °C bij goede ventilatie. |
+| **Ananaskers (Physalis)** | 18–26 °C | 15–20 °C | 55–70 % | 60–75 % | aan | T | Familie van tomaat; vergelijkbare aanpak maar iets droger en koeler verdraagbaar. Lange teelt, oogst pas na augustus. |
 | **Aardbei** | 18–24 °C | 12–16 °C | 60–70 % | 60–75 % | aan | RH | Hoge RH = botrytis-risico op de vruchten. Liever wat koeler en droger dan warm en vochtig. |
-| **Sla / kropsla** | 15–22 °C | 10–15 °C | 50–70 % | 55–75 % | uit | T | Schiet door bij T > 24 °C. Vochtregeling meestal niet nodig — temperatuur is de hoofdsturing. |
-| **Spinazie** | 14–20 °C | 8–14 °C | 50–70 % | 55–75 % | uit | T | Koel-seizoen-gewas. Bij T > 22 °C schiet snel door (in bloei). |
-| **Andijvie / radicchio** | 15–22 °C | 10–16 °C | 55–70 % | 60–75 % | uit | T | Vergelijkbaar met sla; iets warmer ondergrens dan spinazie. |
 | **Courgette / pompoen** | 20–28 °C | 16–20 °C | 60–75 % | 65–80 % | aan | T | Bij hoge RH bloeit de plant goed maar krijgt meeldauw. Ventilatie belangrijk. |
 | **Bonen (stam / stok)** | 18–24 °C | 15–18 °C | 60–75 % | 65–80 % | uit | T | Vrij tolerant. Bij T > 30 °C wordt bloei en zetting onbetrouwbaar. |
+| **Spaghettiboon (asperge-boon)** | 20–28 °C | 18–22 °C | 60–75 % | 65–80 % | uit | T | Warmer-minnend dan gewone bonen. Zetting matig onder 18 °C 's nachts. Lange peulen, lange oogstperiode. |
+| **Peulen / erwten** | 15–22 °C | 10–16 °C | 60–75 % | 65–75 % | uit | T | Koel-seizoen-peulvrucht. Bloemval bij T > 25 °C. Vroege voorjaars- of late herfst-teelt. |
+| **Sla / kropsla** | 15–22 °C | 10–15 °C | 50–70 % | 55–75 % | uit | T | Schiet door bij T > 24 °C. Vochtregeling meestal niet nodig — temperatuur is de hoofdsturing. |
+| **Andijvie / radicchio** | 15–22 °C | 10–16 °C | 55–70 % | 60–75 % | uit | T | Vergelijkbaar met sla; iets warmer ondergrens dan spinazie. |
+| **Spinazie** | 14–20 °C | 8–14 °C | 50–70 % | 55–75 % | uit | T | Koel-seizoen-gewas. Bij T > 22 °C schiet snel door (in bloei). |
+| **Rucola** | 12–22 °C | 8–16 °C | 50–70 % | 55–75 % | uit | T | Koel-seizoen-bladgroente. Pikanter bij koel groeien; bitter of doorschieten bij T > 22 °C. |
+| **Paksoi** | 14–22 °C | 10–16 °C | 55–75 % | 60–80 % | uit | T | Aziatische bladkool. Schiet snel door bij T > 24 °C 's middags. Vooral voor- en najaars-teelt. |
+| **Snijbiet** | 14–24 °C | 10–16 °C | 55–75 % | 60–75 % | uit | T | Tolerant voor zowel koele als warmere periodes; minder schietgevoelig dan sla. |
+| **Raapsteel** | 12–22 °C | 6–14 °C | 50–70 % | 55–75 % | uit | T | Koel-seizoen-blad; vorsttolerant tot ~ −2 °C. Snelle teelt (~4 weken). |
+| **Palmkool (cavolo nero)** | 12–22 °C | 6–14 °C | 50–70 % | 55–75 % | uit | T | Winter-/voorjaars-teelt. Vorsttolerant; smaak verbetert zelfs na lichte vorst. |
+| **Bladgroenten (boerenkool, andijvie-mix)** | 12–22 °C | 6–14 °C | 50–70 % | 55–75 % | uit | T | Winter-/voorjaars-teelt; verdraagt nachtvorst tot ~ −2 °C zonder schade. |
+| **Koolrabi** | 15–22 °C | 10–16 °C | 55–75 % | 60–75 % | uit | T | Koel-seizoen-kool. Hoge T → houterige knol; vermijd T > 25 °C. |
+| **Bospeen (peen)** | 12–22 °C | 8–15 °C | 50–70 % | 55–75 % | uit | T | Wortelgewas. Stabiele bodemvocht belangrijker dan luchtvocht; de controller stuurt ramen, niet irrigatie. |
+| **Bosbiet (rode biet)** | 12–22 °C | 8–15 °C | 50–70 % | 55–75 % | uit | T | Wortelgewas vergelijkbaar met bospeen. Goed bij koele tot middentemperaturen. |
+| **Radijs (radys)** | 12–22 °C | 6–14 °C | 50–70 % | 55–75 % | uit | T | Snelste gewas in de tabel (~3–4 weken). Bij T > 25 °C wordt de knol scherp en houterig. |
+| **Groene selderij** | 15–22 °C | 10–15 °C | 70–85 % | 75–85 % | aan | T | Houdt van vocht zowel in lucht als bodem. Bij droge lucht bittere stengels. Lange teelt (~4–5 maanden). |
 | **Kruiden (basilicum)** | 20–26 °C | 16–20 °C | 50–65 % | 55–70 % | uit | T | Houdt **niet** van koude voeten — nachttemperatuur niet onder 15 °C. |
 | **Kruiden (peterselie, dille)** | 16–22 °C | 12–16 °C | 50–65 % | 55–70 % | uit | T | Koeltolerant. Hoge T → bittere smaak / vroege bloei. |
-| **Bladgroenten (boerenkool, andijvie-mix)** | 12–22 °C | 6–14 °C | 50–70 % | 55–75 % | uit | T | Winter-/voorjaars-teelt; verdraagt nachtvorst tot ~ −2 °C zonder schade. |
+| **Bloemen (snijbloemen)** | 15–24 °C | 12–18 °C | 60–75 % | 65–80 % | aan | T | Sterk variëteit-afhankelijk; deze waarden zijn een algemeen midden-bereik. Raadpleeg de leverancier per variëteit (zonnebloem, zinnia, statice, cosmea hebben ieder eigen optima). |
 
 ### Wat de kolommen betekenen
 
@@ -1683,6 +1700,7 @@ Inhoudelijke wijzigingen aan de firmware staan beschreven in het bestand `change
 | 1.11 | 2026-05-14 | 1.18.3 |
 | 1.12 | 2026-05-15 | 1.19.0–1.20.0 |
 | 1.13 | 2026-05-16 | 1.20.1-1.20.2 |
+| 1.14 | 2026-05-16 | 1.20.2 (alleen documentatie — Bijlage G uitgebreid van 13 naar 28 gewassen passend bij de teelt in Wenumseveld: Meloen, Ananaskers, Spaghettiboon, Peulen, Rucola, Paksoi, Snijbiet, Raapsteel, Palmkool, Koolrabi, Bospeen, Bosbiet, Radijs, Groene selderij, Bloemen — geordend per gewas-familie. Inhoud blijft synchroon met boer-handleiding Bijlage B v1.12) |
 
 ---
 
