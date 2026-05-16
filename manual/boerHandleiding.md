@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de boer
 
-**Versie:** 1.8 — concept
+**Versie:** 1.10 — concept
 **Datum:** 2026-05-15
-**Firmware:** 1.20.0
+**Firmware:** 1.20.2
 
 ---
 
@@ -1346,17 +1346,21 @@ Voor alle vragen of problemen waar deze handleiding geen antwoord op geeft:
 
 ## 20. Versie en wijzigingshistorie
 
-| Versie | Datum | Wijziging |
+Inhoudelijke wijzigingen aan de firmware staan beschreven in het bestand `changelog.md` in de git-repository. Deze tabel houdt alleen bij welke firmware-versie door welke handleiding-versie wordt afgedekt.
+
+| Versie | Datum | Firmware |
 |---|---|---|
-| 1.0 | \[invullen] | Eerste uitgave — gebaseerd op firmware 1.16.34 |
-| 1.1 | 2026-05-09 | Bijgewerkt voor firmware 1.16.38: nieuwe `#=Set` snelweg vanaf de T/RH- en Wind-statusschermen (vraagt Farmer-PIN), conflict-prioriteit toegevoegd aan Climate-menu (LCD optie 3) en aan webinterface tab Climate als keuzelijst, gewijzigd Wind-statusscherm-formaat (zonder haakjes om de kompasletter) |
-| 1.2 | 2026-05-10 | Bijgewerkt voor firmware 1.16.39: zichtbare `#=Set`/`#=AP`-hints verwijderd van alle statusschermen (T/RH, Wind, WiFi, Datum/tijd) — `#` werkt nog steeds als snelweg naar het bijhorende menu, maar het LCD blijft schoon; Wind-statusscherm rij 2 toont kompasletter weer tussen haakjes (`Dir:180 ° (S )`) zoals vóór 1.16.37 |
-| 1.3 | 2026-05-11 | Bijgewerkt voor firmware 1.17.0–1.17.25: zevende statusscherm toegevoegd met firmware-versie + Uptime; Datum/tijd-statusscherm (5) toont op rij 2 nu rechts een **Day**/**Night**-badge die automatisch omschakelt op zonsopkomst en zonsondergang; **D**-toets werkt vanuit elk menu, bladerscherm, PIN- of bewerk-scherm als directe terugkeer naar de roterende statusschermen; na 5 minuten zonder toetsendruk in een menu keert de controller automatisch terug naar de auto-rotatie; **Climate → 3 CR** volgt nu hetzelfde "eerst tonen, dan PIN, dan bewerken"-patroon als Day/Night (voorheen sprong dit menu direct naar PIN-invoer). Volledige handmatige taalcontrole.|
-| 1.4 | 2026-05-12 | Kleine revisies (geen firmware-wijziging — nog steeds 1.17.25). Elke PDF-pagina krijgt nu een **kop- en voettekst**: koptekst toont links *Kas Controller - Herenboeren Wenumseveld* en rechts het versienummer; voettekst toont links *Een RFSee product - http://www.rfsee.nl* en rechts *pagina N*. Alle figuren in de handleiding zijn voorzien van een **doorlopend volgnummer** ("Figuur 1: …", "Figuur 2: …" enz.). |
-| 1.5 | 2026-05-12 | Bijgewerkt voor firmware 1.17.26. Cosmetische correctie op **LCD Scherm 2 (Wind)**: rij 2 toont nu `Dir: 180 ° (S )` in plaats van `Dir:180 ° (S )` — er zit nu één spatie tussen de dubbele punt en het cijfer, in lijn met alle andere LCD-rijen (`Wind:`, `Mode:`, `Sess:`) en met de ongeldige-meting-rij (`Dir: ---`). GitHub-issue [#6](https://github.com/pe1mew/greenhouse-Controller/issues/6). |
-| 1.6 | 2026-05-14 | Bijgewerkt voor firmware 1.18.0–1.18.2. **Nieuwe `BK`-indicator op LCD Scherm 4 (Wifi)**: regel 1 toont rechts `BK` (afkorting van *backoff*) wanneer de online status-rapportage naar het externe webdashboard tijdelijk gepauzeerd is na herhaaldelijke verbindingsfouten. Het klimaatregelsysteem (RGB-LED, ramen, sensoren) blijft normaal werken; de boer hoeft niets te doen. De controller probeert de online verbinding daarna automatisch opnieuw met oplopende tussenpozen (60 sec → 5 min → 30 min → 1 uur). Zie §6 *Scherm 4 — Wifi-status* en §18 *Vertaaltabel — Wifi*. Achtergrond: deze indicator hoort bij een grotere intern-architectuurwijziging ("bulkhead policy", [gh#18](https://github.com/pe1mew/greenhouse-Controller/issues/18)) die garandeert dat problemen met de internet-verbinding **nooit** invloed hebben op de klimaat-aansturing — uitgebreid behandeld in de beheerder-handleiding. Tevens **§12.4 (Tijdens kalibratie) en §13 (Inschakelen na stroomuitval) herschreven** om de nieuwe boot-kalibratie-skip-logica te beschrijven die met firmware 1.17.36 werd geïntroduceerd: de CLOSE_ALL kalibratie wordt overgeslagen als alle drie de ramen bij de vorige uitschakeling al dicht waren én er geen motor-alarm actief is. Een power-cycle 's nachts (alle ramen dicht) herstart nu in ~2 sec. zonder kalibratie; een power-cycle midden op een warme dag met M3 open voert de volledige 3-minuten kalibratie uit zoals voorheen. Advies in §15 over handmatige overname op de motorbox aangepast: na terugkeer naar AUTO altijd een power-cycle uitvoeren **met ten minste één raam fysiek open**, anders kan de skip-conditie de kalibratie ongewenst overslaan. |
-| 1.7 | 2026-05-14 | Bijgewerkt voor firmware 1.18.3. **Nieuwe §3.1 *Unieke ID van de kascontroller*** ([gh#17](https://github.com/pe1mew/greenhouse-Controller/issues/17)). Elke kascontroller heeft sinds 1.18.3 een uniek vier-tekens hex-ID (bijv. `5C88`), afgeleid van het ingebakken MAC-adres van de chip. De ID is **onveranderbaar** (overleeft fabrieksreset en firmware-update) en verschijnt op vier plekken: de AP-SSID die op LCD-scherm 4 wordt getoond wanneer de AP actief is (`Greenhouse-XXXX` — voorheen alleen genoemd zonder uitleg, nu expliciet als de unieke unit-ID), de webinterface Status-tab, het SD-logbestand (als regel `SYSTEM,SYS,0,0,11,...` bij het begin van elk bestand), en de seriële boot-output (alleen voor de beheerder zichtbaar). Praktisch nut voor de boer: één installatie kan met meerdere kascontrollers werken zonder verwarring; per unit kan de boer een ID-sticker plakken voor visuele herkenning. De LCD-rij `Greenhouse-XXXX` in §6 Scherm 4 verwijst nu door naar §3.1 voor de uitleg. Geen wijzigingen aan de bediening, menustructuur of het webinterface-uiterlijk. |
-| 1.8 | 2026-05-15 | Bijgewerkt voor firmware 1.19.0–1.20.0 (vier firmware-releases). **§3.1 *Unieke ID* uitgebreid van 4 naar 5 boer-zichtbare oppervlakken**: vanaf firmware 1.20.0 verschijnt de unit-ID ook (a) op **LCD-scherm 7** rechts op regel 1 naast het firmware-versienummer (`FW: 1.20.0  5C88`), en (b) in de **voettekst van de webinterface** (`Greenhouse Controller – v1.20.0 · 5C88`). Tabel in §3.1 bijgewerkt. Voor §6 *Scherm 7* dezelfde update: regel 1 toont nu links versie en rechts unit-ID; vraag bij storingsmelding nu het versienummer **én** de unit-ID door aan de beheerder. **Nieuwe sub-sectie in §11 *Korte automatische herstart na wifi-wijziging door de beheerder*** (sinds firmware 1.19.1): wanneer de beheerder via de webinterface de wifi-instellingen wijzigt, herstart de controller automatisch ~1 sec later om de nieuwe configuratie te activeren. Klimaatregeling-onderbreking ~2 sec (kalibratie wordt overgeslagen). Voorheen bleef de oude wifi-configuratie actief tot de volgende fysieke power-cycle. Achtergrond (niet zichtbaar voor de boer): 1.19.0 loste een opstart-paniek op die voorheen optrad direct na een geplande herstart van de controller; 1.19.2 voorkomt dat geplande herstarts ten onrechte tellen als "mislukte boot" voor de OTA-rollbackbeveiliging. Geen wijzigingen aan de menustructuur, het toetsenbord, of de bediening voor de boer. |
+| 1.0 | Er was eens... | 1.16.34 |
+| 1.1 | 2026-05-09 | 1.16.35–1.16.38 |
+| 1.2 | 2026-05-10 | 1.16.39 |
+| 1.3 | 2026-05-11 | 1.17.0–1.17.25 |
+| 1.4 | 2026-05-12 | 1.17.25 (alleen kop-/voettekst en figuur-nummering) |
+| 1.5 | 2026-05-12 | 1.17.26 |
+| 1.6 | 2026-05-14 | 1.18.0–1.18.2 |
+| 1.7 | 2026-05-14 | 1.18.3 |
+| 1.8 | 2026-05-15 | 1.19.0–1.20.0 |
+| 1.9 | 2026-05-16 | 1.20.1 |
+| 1.10 | 2026-05-16 | 1.20.2 |
 
 ---
 

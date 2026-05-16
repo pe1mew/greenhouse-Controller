@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de beheerder
 
-**Versie:** 1.12 — concept
+**Versie:** 1.14 — concept
 **Datum:** 2026-05-15
-**Firmware:** 1.20.0
+**Firmware:** 1.20.2
 
 ---
 
@@ -1682,6 +1682,7 @@ Inhoudelijke wijzigingen aan de firmware staan beschreven in het bestand `change
 | 1.10 | 2026-05-14 | 1.17.27–1.18.2 |
 | 1.11 | 2026-05-14 | 1.18.3 |
 | 1.12 | 2026-05-15 | 1.19.0–1.20.0 |
+| 1.13 | 2026-05-16 | 1.20.1-1.20.2 |
 
 ---
 
