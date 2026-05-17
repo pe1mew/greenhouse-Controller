@@ -42,6 +42,8 @@
 #include "esp_flash.h"
 #include "esp_heap_caps.h"
 #include "esp_mac.h"
+#include "esp_err.h"
+#include "nvs_flash.h"
 
 /* Phase 2 driver-layer migration — proves component-linkage works for each
  * migrated driver. Each driver gets one line of "tickle" code in the
@@ -52,9 +54,18 @@
  * 2.0.0-alpha.2.2: keypad_matrix (LIB-5) — log count_pressed on each tick.
  *                                          On Unit-2 hardware (membrane
  *                                          keypad wired) reports key
- *                                          presses in real time. */
+ *                                          presses in real time.
+ * 2.0.0-alpha.2.3: nvs_config (LIB-7) — initialise NVS, read the previously-
+ *                                       stored fw_version string at boot.
+ *                                       On Unit 2 (last ran 1.20.3 prod) the
+ *                                       first read will report "1.20.3";
+ *                                       nvs_cfg_init then overwrites it
+ *                                       with the current FIRMWARE_VERSION
+ *                                       per schema policy. One-shot in
+ *                                       app_main — no heartbeat noise. */
 #include "gpio_util.h"
 #include "keypad_matrix.h"
+#include "nvs_config.h"
 
 static const char *TAG = "GHC-STUB";
 
@@ -178,6 +189,47 @@ extern "C" void app_main(void)
     gpio_set_pin_mode(PIN_HB_LED, GPIO_OUTPUT);
     gpio_write(PIN_HB_LED, GPIO_LOW);
     keypad_init();
+
+    /* alpha.2.3 — NVS driver tickle. Read system/fw_version BEFORE
+     * nvs_cfg_init() so we capture the value left by the previous
+     * firmware (1.20.3 on Unit 2 → "1.20.3"). Then init normally;
+     * the init writes the current FIRMWARE_VERSION over the top per
+     * the schema-versioning policy documented in nvs_config.h. */
+    {
+        char prev_fw[32] = {0};
+        /* Direct nvs_flash_init for this pre-init read — nvs_open requires
+         * the flash subsystem to be up. nvs_cfg_init() will be called
+         * immediately after; it tolerates already-initialised state. */
+        esp_err_t pre = nvs_flash_init();
+        if (pre == ESP_ERR_NVS_NO_FREE_PAGES || pre == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+            nvs_flash_erase();
+            pre = nvs_flash_init();
+        }
+        if (pre == ESP_OK) {
+            nvs_cfg_status_t st = nvs_cfg_get_str(NVS_NS_SYSTEM, NVS_KEY_FW_VERSION,
+                                                   prev_fw, sizeof(prev_fw));
+            ESP_LOGI(TAG, "NVS pre-init: previous fw_version = \"%s\" (status=%d)",
+                     prev_fw, (int)st);
+        } else {
+            ESP_LOGW(TAG, "NVS flash init failed: %s", esp_err_to_name(pre));
+        }
+    }
+
+    nvs_cfg_status_t init_st = nvs_cfg_init();
+    ESP_LOGI(TAG, "nvs_cfg_init() returned %d (%s)", (int)init_st,
+             (init_st == NVS_CFG_OK)             ? "OK" :
+             (init_st == NVS_CFG_ERR_MIGRATION)  ? "MIGRATION" :
+             (init_st == NVS_CFG_ERR_INIT)       ? "INIT" :
+                                                    "OTHER");
+
+    /* Confirm the post-init write took effect — should match FIRMWARE_VERSION now. */
+    {
+        char now_fw[32] = {0};
+        nvs_cfg_status_t st = nvs_cfg_get_str(NVS_NS_SYSTEM, NVS_KEY_FW_VERSION,
+                                               now_fw, sizeof(now_fw));
+        ESP_LOGI(TAG, "NVS post-init: fw_version is now \"%s\" (status=%d)",
+                 now_fw, (int)st);
+    }
 
     BaseType_t rc = xTaskCreatePinnedToCore(
         heartbeat_task,

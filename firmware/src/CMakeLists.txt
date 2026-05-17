@@ -34,12 +34,14 @@ idf_component_register(
         esp_system
         esp_hw_support
         heap
+        nvs_flash     # used directly by app_main_stub for the pre-init NVS readback (alpha.2.3)
         # Phase 2 driver components (extends per migration sub-step).
         # Each REQUIRES entry corresponds to a proxy CMakeLists.txt
         # under firmware/components/<name>/ which forwards to the
         # actual driver source at ../../drivers/<name>/src/.
         gpio          # LIB-1 — migrated 2.0.0-alpha.2.1
         keyPad        # LIB-5 — migrated 2.0.0-alpha.2.2 (depends on gpio)
+        nvs           # LIB-7 — migrated 2.0.0-alpha.2.3 (trivial — already raw nvs_*)
 )
 
 # -----------------------------------------------------------------------------
