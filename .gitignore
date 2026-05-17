@@ -34,9 +34,17 @@ debug/
 # ESP-IDF build-system artefacts (appearing from 2.0.0-alpha.1 onwards when
 # framework = espidf replaces framework = arduino). PlatformIO+espidf still
 # writes most of its build output under .pio/ (already ignored above), but
-# native idf.py paths and managed-component caches land outside it.
+# native idf.py paths, managed-component caches, and per-env auto-generated
+# sdkconfig files land outside it.
+#
+# Tracked: firmware/sdkconfig.defaults  (load-bearing project config, source-of-truth)
+# Ignored: firmware/sdkconfig            (auto-generated, copy of defaults + diffs)
+# Ignored: firmware/sdkconfig.old        (auto-generated backup)
+# Ignored: firmware/sdkconfig.<env>      (auto-generated per-PlatformIO-environment)
 /firmware/build/
 /firmware/sdkconfig
 /firmware/sdkconfig.old
+/firmware/sdkconfig.lolin_s3
+/firmware/sdkconfig.test_t2_relay
 /firmware/managed_components/
 /firmware/dependencies.lock

@@ -28,7 +28,68 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
-### `[2.0.0-alpha.0]` — 2026-05-17 (this commit)
+### `[2.0.0-alpha.1]` — 2026-05-17
+
+**Phase 1 — build-system flip + smoke-boot stub.** The single highest-risk step in the migration: `framework = arduino` becomes `framework = espidf` in `platformio.ini`. From this commit onward the binary is built by ESP-IDF, not arduino-esp32.
+
+#### What changed
+
+- **`firmware/platformio.ini`** — `framework = arduino` → `framework = espidf` (in `[env:lolin_s3]`). Removed arduino-only options that no longer apply (`board_build.arduino.memory_type`, `board_build.filesystem`, `-DCORE_DEBUG_LEVEL`, `lib_deps` for Adafruit_NeoPixel/ESPAsyncWebServer/AsyncTCP, `lib_extra_dirs` for `../drivers`, `lib_ignore = WebServer`). Kept the platform pin `espressif32@6.12.0`, partition table, flash mode `qio`, USB upload protocol, tier-1 hardening flags, and `cppcheck` static-analyser config. **`FIRMWARE_VERSION`** stamped `2.0.0-alpha.1`. The `[env:test_t2_relay]` block is **commented out** for Phases 1-2 because it depends on PlatformIO's arduino-Unity test infrastructure; checkout `v1.20.3-arduino-final` to use it temporarily.
+- **`firmware/sdkconfig.defaults`** — promoted from documentation-of-intent to load-bearing config. Under arduino-esp32 the prebuilt framework baked in its own sdkconfig and this file had no effect; under espidf it now gets honoured. Added sections for: bootloader/log level (INFO), flash + PSRAM (qio flash, OPI 8 MB PSRAM, 80 MHz), FreeRTOS (1 ms tick, dual-core), partition table (custom + `partitions.csv` at 0x8000), CPU target (esp32s3 explicit). Kept the eight existing coredump lines verbatim with refreshed context.
+- **`firmware/CMakeLists.txt`** — *new file*. Top-level IDF project entry. Pulls in `$ENV{IDF_PATH}/tools/cmake/project.cmake` and declares `project(greenhouse_controller)`.
+- **`firmware/src/CMakeLists.txt`** — *new file*. The "main" component registration. Lists ONLY `app_main_stub.cpp` — every other source file in `firmware/src/<subdir>/*.cpp` exists on disk but is excluded from the build. Comments document the phase-by-phase plan for reintroducing each subsystem.
+- **`firmware/src/app_main_stub.cpp`** — *new file*. Minimal heartbeat: boot banner + `xTaskCreatePinnedToCore(heartbeat_task)` + `app_main` return. Heartbeat task emits one `ESP_LOGI` line every 5 s with free heap, largest contiguous block, free PSRAM, and uptime. No peripherals, no networking, no NVS reads, no watchdog subscription. ~140 lines including extensive header comments.
+
+#### What did NOT change
+
+- `firmware/src/main.cpp` and every other `firmware/src/<subdir>/*.cpp` from the 1.20.3 codebase remains on disk, untouched, **excluded from the build** by virtue of not being listed in `firmware/src/CMakeLists.txt`. Phase 6 absorbs `main.cpp` into a clean IDF entry point; Phases 2-5 reintroduce subsystem files one at a time.
+- `partitions.csv` — same layout (dual OTA bank + dual LittleFS + coredump). Verified compatible with both arduino-esp32 and espidf frameworks.
+- `drivers/*` — untouched. Phase 2 starts migrating drivers; for Phase 1 they're simply not in the build.
+
+#### Acceptance bar (verify before declaring alpha.1 success)
+
+1. `pio run -e lolin_s3` returns SUCCESS. Binary builds.
+2. Flash to bench hardware via USB-CDC.
+3. Open `pio device monitor`. First log lines should show the boot banner with chip info, MAC, free heap, `esp_reset_reason=1` (POWERON).
+4. Heartbeat task emits one `heartbeat <N> | free=… largest=… psram_free=… uptime=…s` line every 5 s thereafter.
+5. **Run for ≥ 1 hour**. Acceptance: zero resets, free heap stays above 100 KB the whole time.
+
+If acceptance fails: rollback by `git reset --hard <pre-alpha.1-commit>` (the alpha.0 scaffolding stays). The framework=espidf flip is the only reversible-by-revert change in this commit set.
+
+#### Known limitations until later phases
+
+- **No web interface.** Cannot configure anything via WiFi.
+- **No serial console interactivity.** USB-CDC is read-only logging.
+- **No persistent NVS use.** Each boot is "from scratch" config-wise.
+- **No motor / sensor / SD activity.** The relay outputs and motor alarm pin are not driven; the SD card is not mounted.
+- **No watchdog supervision.** A bug that hangs the heartbeat task will not auto-reset.
+
+These are all addressed by Phases 2-6.
+
+#### Build delta vs 1.20.3 / alpha.0
+
+| Metric | 1.20.3 (arduino-esp32) | 2.0.0-alpha.1 (espidf stub) | Delta |
+|---|---:|---:|---:|
+| Firmware bin size | 1,194,128 B | 239,424 B | **−80 %** (954,704 B smaller) |
+| Flash usage | 56.9 % of 2 MB | 11.4 % of 2 MB | −45.5 percentage points |
+| RAM usage (static) | 21.9 % of 320 KB | 5.7 % of 320 KB | −16.2 percentage points |
+| Components compiled | full stack | freertos + log + esp_system + esp_hw_support + heap (+ transitive ESP-IDF) | ~80 % of subsystems excluded |
+
+bin sha256: `453135aa53ae6949f525c0e1859ce42503e70d126f7532fafce7952d940b4492`
+
+This is the expected shape: the stub binary excludes almost all application code, drivers, network stack, and web server. The 239 KB that remains is the ESP-IDF core (FreeRTOS scheduler, logging, heap, basic system) plus our ~140-line heartbeat. As phases 2-6 bring subsystems back, flash usage will climb back toward the 1.20.3 baseline.
+
+#### Build-system tuning required during Phase 1
+
+Two issues surfaced when first running `pio run -e lolin_s3` after the framework flip; both fixed in this commit:
+
+1. **`-D_FORTIFY_SOURCE=2` collides with `esp_async_memcpy`.** The fortify macro redefines `memcpy` as a stack-checked stub, but ESP-IDF's `esp_async_memcpy.c:22` uses `memcpy` as a struct-field name (function pointer). Macro expansion broke the compile. The flag was acceptable under arduino-esp32 because that codebase doesn't have the struct-field name collision. **Removed for 2.0.0-alpha.1.** Revisit later with per-file opt-out if needed.
+
+2. **`-Wshadow` (and similar strict warnings) treat IDF internal code as broken.** Under arduino-esp32 the framework was a precompiled library and our build_flags only applied to our own source files. Under framework=espidf the IDF sources compile in-tree and these flags trip on internal shadow-variable usage in `esp_wps.c`, `esp_async_memcpy.c`, lwIP, and mbedTLS. **Tier-1 hardening flags moved out of global `build_flags` and into the `firmware/src/CMakeLists.txt` `target_compile_options`** so they apply only to our component, not the framework. ESP-IDF code is left at its own warning level.
+
+Drivers will get the same component-scoped flag treatment when they migrate in Phase 2.
+
+### `[2.0.0-alpha.0]` — 2026-05-17
 
 - **Branch `dev/2.0.0-esp-idf`** created from `main` at commit `d8436ad` (the 1.20.3 release commit). Production state preserved by annotated tag `v1.20.3-arduino-final`.
 - **`BRANCH_NOTES.md`** added at repo root describing the branch purpose, working policy, backport discipline, and phase progression. New contributors should read this before pushing.
