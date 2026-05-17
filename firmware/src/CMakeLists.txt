@@ -39,6 +39,7 @@ idf_component_register(
         # under firmware/components/<name>/ which forwards to the
         # actual driver source at ../../drivers/<name>/src/.
         gpio          # LIB-1 — migrated 2.0.0-alpha.2.1
+        keyPad        # LIB-5 — migrated 2.0.0-alpha.2.2 (depends on gpio)
 )
 
 # -----------------------------------------------------------------------------

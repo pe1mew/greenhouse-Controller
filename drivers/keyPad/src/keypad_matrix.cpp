@@ -1,15 +1,38 @@
 /**
  * @file keypad_matrix.cpp
  * @brief Keypad matrix driver implementation — LIB-5.
+ *
+ * Migrated from arduino-esp32 to ESP-IDF in 2.0.0-alpha.2.2 (Phase 2.2).
+ *
+ * Implementation policy: this driver does not call ESP-IDF GPIO primitives
+ * directly. Instead it goes through gpio_util (LIB-1), which already
+ * encapsulates the arduino→ESP-IDF abstraction. The benefits:
+ *   - One place to handle the `GPIO_MODE_INPUT_OUTPUT` vs `GPIO_MODE_OUTPUT`
+ *     trap (documented in gpio_util.cpp) — keypad inherits the fix.
+ *   - The keypad driver remains framework-independent. The public API in
+ *     keypad_matrix.h doesn't change; callers are unaffected by the
+ *     migration.
+ *   - Future improvements in gpio_util (e.g. ISR support) become
+ *     automatically available to this driver.
+ *
+ * Behavioural notes:
+ *   - Rows are driven LOW one at a time during a scan. Active LOW on the
+ *     selected row + INPUT_PULLUP on the columns means a pressed key
+ *     pulls the corresponding column input LOW. After each row's scan,
+ *     the row is restored to HIGH idle.
+ *   - 2-scan debounce: a key is reported only when the same single key
+ *     was detected on the previous call.
+ *   - Multi-press detection (>1 column LOW on one row, or any keys on
+ *     more than one row in the same scan) discards the input and resets
+ *     debounce.
  */
 
-#ifndef UNIT_TEST
-  #include <Arduino.h>
-#else
+#ifdef UNIT_TEST
   #include "../test/mock_keypad.h"
 #endif
 
 #include "keypad_matrix.h"
+#include "gpio_util.h"
 
 /* ---------------------------------------------------------------------------
  * Key character map  [row 0-3][col 0-3]
@@ -34,11 +57,11 @@ static char prev_key = KP_NO_KEY;
 void keypad_init(void)
 {
     for (int r = 0; r < 4; r++) {
-        pinMode(row_pins[r], OUTPUT);
-        digitalWrite(row_pins[r], HIGH);   /* idle: all rows HIGH */
+        gpio_set_pin_mode(row_pins[r], GPIO_OUTPUT);
+        gpio_write(row_pins[r], GPIO_HIGH);   /* idle: all rows HIGH */
     }
     for (int c = 0; c < 4; c++) {
-        pinMode(col_pins[c], INPUT_PULLUP);
+        gpio_set_pin_mode(col_pins[c], GPIO_INPUT_PULLUP);
     }
 }
 
@@ -50,19 +73,19 @@ char keypad_scan(void)
 
     for (int r = 0; r < 4 && !multipress; r++) {
         /* Drive exactly this row LOW — all other rows remain HIGH */
-        digitalWrite(row_pins[r], LOW);
+        gpio_write(row_pins[r], GPIO_LOW);
 
         int col_low_count = 0;
         int col_hit       = -1;
         for (int c = 0; c < 4; c++) {
-            if (digitalRead(col_pins[c]) == LOW) {
+            if (gpio_read(col_pins[c]) == GPIO_LOW) {
                 col_low_count++;
                 col_hit = c;
             }
         }
 
         /* Restore row to idle HIGH before moving on */
-        digitalWrite(row_pins[r], HIGH);
+        gpio_write(row_pins[r], GPIO_HIGH);
 
         if (col_low_count > 1) {
             /* Two or more columns LOW in one row → multi-press */
@@ -97,13 +120,13 @@ int keypad_count_pressed(void)
 {
     int total = 0;
     for (int r = 0; r < 4; r++) {
-        digitalWrite(row_pins[r], LOW);
+        gpio_write(row_pins[r], GPIO_LOW);
         for (int c = 0; c < 4; c++) {
-            if (digitalRead(col_pins[c]) == LOW) {
+            if (gpio_read(col_pins[c]) == GPIO_LOW) {
                 total++;
             }
         }
-        digitalWrite(row_pins[r], HIGH);
+        gpio_write(row_pins[r], GPIO_HIGH);
     }
     return total;
 }

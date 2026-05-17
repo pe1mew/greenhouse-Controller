@@ -48,8 +48,13 @@
  * heartbeat path so a build/link failure surfaces immediately rather than
  * waiting until the full firmware is reassembled in Phases 4-6.
  *
- * 2.0.0-alpha.2.1: gpio_util (LIB-1) — toggle the heartbeat LED on each tick. */
+ * 2.0.0-alpha.2.1: gpio_util (LIB-1) — toggle the heartbeat LED on each tick.
+ * 2.0.0-alpha.2.2: keypad_matrix (LIB-5) — log count_pressed on each tick.
+ *                                          On Unit-2 hardware (membrane
+ *                                          keypad wired) reports key
+ *                                          presses in real time. */
 #include "gpio_util.h"
+#include "keypad_matrix.h"
 
 static const char *TAG = "GHC-STUB";
 
@@ -117,21 +122,26 @@ static void heartbeat_task(void *arg)
 
         /* Toggle PIN_HB_LED and read it back — software-level proof the
          * gpio driver works regardless of whether the dev unit actually
-         * has an LED wired on GPIO41. The pin-state value in the log
-         * line should alternate between 0 and 1 on every heartbeat.
-         * Production hardware with an amber HB LED on GPIO41 will also
-         * see visible blink in sync. Uses the migrated LIB-1 API; no
-         * Arduino code involved. */
+         * has an LED wired on GPIO41. Production hardware with the amber
+         * HB LED on GPIO41 will also see visible blink in sync. */
         gpio_toggle(PIN_HB_LED);
         int hb_state = (gpio_read(PIN_HB_LED) == GPIO_HIGH) ? 1 : 0;
 
-        ESP_LOGI(TAG, "heartbeat %lu | free=%u largest=%u psram_free=%u uptime=%lus | hb_led=%d",
+        /* Poll the keypad — exercises gpio_util on 8 pins (4 row outputs
+         * + 4 col inputs with pullup). Returns 0 when nothing is pressed,
+         * 1 for a single key, >1 during multi-press. The log line tracks
+         * this so a user pressing keys during the test sees the count
+         * change in real time on serial. */
+        int keys_pressed = keypad_count_pressed();
+
+        ESP_LOGI(TAG, "heartbeat %lu | free=%u largest=%u psram_free=%u uptime=%lus | hb_led=%d keys=%d",
                  (unsigned long)counter,
                  (unsigned)free_internal,
                  (unsigned)largest_block,
                  (unsigned)free_spiram,
                  (unsigned long)((xTaskGetTickCount() * portTICK_PERIOD_MS) / 1000UL),
-                 hb_state);
+                 hb_state,
+                 keys_pressed);
         counter++;
 
         vTaskDelayUntil(&last_wake, period);
@@ -152,14 +162,22 @@ extern "C" void app_main(void)
 {
     log_boot_banner();
 
-    /* Phase-2 driver linkage tickle: configure the heartbeat LED pin as
-     * output and drive it LOW. The heartbeat task toggles it on each tick
-     * so the user can verify the gpio driver works (visible blink on the
-     * LOLIN S3's amber HB LED at PIN_HB_LED = GPIO41). If gpio_util
-     * weren't linked, this call site would be a link-time undefined
-     * reference and the build would fail. */
+    /* Phase-2 driver linkage tickles. Each migrated driver gets one call
+     * here to prove the component-linkage works against real hardware.
+     *
+     * alpha.2.1 — gpio_util (LIB-1): configure PIN_HB_LED as output, drive
+     * LOW. Heartbeat task toggles it later; visible blink on Unit 2's
+     * amber HB LED (GPIO41).
+     *
+     * alpha.2.2 — keypad_matrix (LIB-5): initialise row/col pins. Heartbeat
+     * task calls keypad_count_pressed() each tick and logs the count.
+     * Unit 2's membrane keypad reports 0 idle, >0 while keys held.
+     * This also indirectly exercises gpio_util on 8 different pins
+     * (KP_ROW1..4 outputs + KP_COL1..4 inputs with pullup) which is
+     * meaningfully more coverage than the single-pin gpio test. */
     gpio_set_pin_mode(PIN_HB_LED, GPIO_OUTPUT);
     gpio_write(PIN_HB_LED, GPIO_LOW);
+    keypad_init();
 
     BaseType_t rc = xTaskCreatePinnedToCore(
         heartbeat_task,

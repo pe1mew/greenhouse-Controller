@@ -28,6 +28,59 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-alpha.2.2]` — 2026-05-17
+
+**Phase 2.2 — second driver migration: `drivers/keyPad` (LIB-5, keypad_matrix).**
+
+#### What changed
+
+- **`drivers/keyPad/src/keypad_matrix.cpp`** — migrated. All `pinMode`/`digitalWrite`/`digitalRead`/`HIGH`/`LOW` calls replaced with the `gpio_util` wrappers (`gpio_set_pin_mode`, `gpio_write`, `gpio_read`, `GPIO_HIGH`, `GPIO_LOW`). The `#include <Arduino.h>` is dropped; `#include "gpio_util.h"` takes its place. Public API in `keypad_matrix.h` is **unchanged** — `keypad_init()`, `keypad_scan()`, `keypad_count_pressed()` all keep their signatures. The 2-scan debounce logic, multi-press detection, and key character map are byte-for-byte identical to 1.20.3.
+- **`firmware/components/keyPad/CMakeLists.txt`** (new) — proxy component. SRCS points at `../../../drivers/keyPad/src/keypad_matrix.cpp`; INCLUDE_DIRS adds the driver's `src` and the firmware's `config` (for `pin_config.h`'s `KP_ROW*` / `KP_COL*` macros). `REQUIRES gpio` — **does NOT** require the ESP-IDF `driver` component directly. All GPIO access is funnelled through the `gpio_util` wrapper, so any future improvement to LIB-1 propagates transitively to LIB-5.
+- **`firmware/src/CMakeLists.txt`** — added `keyPad` to the main component's `REQUIRES` list.
+- **`firmware/src/app_main_stub.cpp`** — adds the Phase-2.2 tickle:
+  - `#include "keypad_matrix.h"` at the top
+  - `keypad_init()` in `app_main()` after `gpio_write(PIN_HB_LED, GPIO_LOW)`
+  - `int keys_pressed = keypad_count_pressed()` on each heartbeat tick
+  - Extended log format: `heartbeat N | … | hb_led=X keys=Y`
+- **`firmware/platformio.ini`** — `FIRMWARE_VERSION` stamped `2.0.0-alpha.2.2`.
+
+#### Design choice: keypad goes through gpio_util, not direct ESP-IDF
+
+The keypad uses the project's own `gpio_util` wrapper instead of calling `gpio_set_level` / `gpio_get_level` directly. Three reasons:
+
+1. **Trap inheritance.** The Phase-2.1 `GPIO_MODE_OUTPUT` vs `GPIO_MODE_INPUT_OUTPUT` trap is already paid for in `gpio_util`. If the keypad called ESP-IDF directly, we'd re-litigate it here (4 row pins, all `OUTPUT` mode, never read back — so possibly NOT broken in this specific case, but still cleaner to not have to reason about it).
+2. **Framework portability of the driver.** The keypad header doesn't include any ESP-IDF specifics — the cpp file's only platform dependency is `gpio_util.h`. That makes it trivially portable to any other framework that ports `gpio_util` (theoretically).
+3. **Single point of GPIO-driver maintenance.** Any future improvement (e.g. ISR support in `gpio_util`) is automatically available to every higher-level driver. No per-driver fixups.
+
+This pattern will apply to every driver in Phase 2 that uses GPIO: the keypad, relay control (Phase 6), and any switch / discrete-IO sensor reads will all funnel through `gpio_util`.
+
+#### Acceptance bar for alpha.2.2
+
+1. ✅ Build succeeds — no warnings against migrated source.
+2. Flash to bench unit. Boot reason `ESP_RST_POWERON`.
+3. Heartbeat log line includes `keys=N` field. Should read `keys=0` when no key is pressed.
+4. **Press a key on Unit 2's keypad** during the heartbeat: the next log line should show `keys=1` (or `keys=2`+ for multi-press). Releasing returns to `keys=0`.
+5. The amber HB LED (Phase-2.1 acceptance) keeps blinking — no regression.
+6. Run ≥ 15 min; no resets.
+
+#### Build delta vs alpha.2.1
+
+| Metric | alpha.2.1 | alpha.2.2 | Delta |
+|---|---:|---:|---:|
+| Firmware bin | 243,728 B | 243,904 B | +176 B |
+| Flash usage | 11.6 % | 11.6 % | (rounded same) |
+| RAM static | 18,772 B | 18,772 B | 0 (keypad has only a 1-byte static debounce field, absorbed into existing padding) |
+
+bin sha256: `AF171CC3BD0258D012A5800487D0B44E6EA8BF5A59FF8F185C231CC355736591`
+
+The +176 B is the keypad scan + count_pressed code paths. The driver is tiny.
+
+#### Acceptance: PASSED — 2026-05-17
+
+Flashed to Unit 2 hardware. Verified by hand-pressing keys on the membrane keypad and observing `keys=N` changing in serial output in real time. Single-press → `keys=1`. Multi-press → `keys≥2`. Release → `keys=0` next heartbeat. The Phase-2.1 amber HB LED kept blinking (no regression).
+
+Eight pins exercised on real hardware: 4 row outputs (`KP_ROW1..4`) + 4 col inputs with internal pull-up (`KP_COL1..4`). The GPIO_MODE_INPUT_OUTPUT fix from alpha.2.1 propagated transitively (rows are output pins driven HIGH/LOW; the proxy depends on `gpio`, not on direct IDF GPIO). Confirms the architectural choice — drivers funnel through `gpio_util`, single point of GPIO maintenance.
+
 ### `[2.0.0-alpha.2.1]` — 2026-05-17
 
 **Phase 2.1 — first driver migration: `drivers/gpio` (LIB-1).** Plus the build-system pattern that the rest of Phase 2 will follow.
