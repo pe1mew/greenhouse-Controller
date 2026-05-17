@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [1.20.3] — 2026-05-17
 
+**Note: active development has moved to dev/2.0.0-esp-idf. The 1.20.x line continues to receive critical bug fixes via cherry-pick from that branch.**
+
 *Operational mitigation for gh#23: bumps the default status-POST interval from 120 s to 240 s. With the gh#24 detector fix shipped in 1.20.1, the supervisor's planned-reboot cadence on Unit 2 stabilised at ~5.5 h driven by the per-handshake mbedTLS pattern documented in gh#23. Cutting the handshake rate by 2× extends the cadence to ~11 h with zero code-path changes beyond the default value. Operators who already configured a custom interval are unaffected; only fresh installations or factory-reset units pick up the new default.*
 
 ### Changed
