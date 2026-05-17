@@ -62,10 +62,18 @@
  *                                       nvs_cfg_init then overwrites it
  *                                       with the current FIRMWARE_VERSION
  *                                       per schema policy. One-shot in
- *                                       app_main — no heartbeat noise. */
+ *                                       app_main — no heartbeat noise.
+ * 2.0.0-alpha.2.4: i2c_bus (LIB-2)    — initialise the I2C bus, then scan
+ *                                       the whole address space and log
+ *                                       which devices respond. On Unit 2
+ *                                       expect to see 0x27 (LCD1602
+ *                                       backpack) and 0x68 (DS1307 RTC).
+ *                                       One-shot in app_main — no heartbeat
+ *                                       noise. */
 #include "gpio_util.h"
 #include "keypad_matrix.h"
 #include "nvs_config.h"
+#include "i2c_bus.h"
 
 static const char *TAG = "GHC-STUB";
 
@@ -229,6 +237,37 @@ extern "C" void app_main(void)
                                                now_fw, sizeof(now_fw));
         ESP_LOGI(TAG, "NVS post-init: fw_version is now \"%s\" (status=%d)",
                  now_fw, (int)st);
+    }
+
+    /* alpha.2.4 — I2C bus driver tickle. Initialise the bus, scan the
+     * full 7-bit address space, log responding devices.
+     *
+     * Expected on Unit 2 hardware (production wiring):
+     *   0x27  LCD1602 backpack (PCF8574 I2C-to-parallel)
+     *   0x68  DS1307 RTC
+     *
+     * If the scan finds these two addresses, the new ESP-IDF v5 i2c_master
+     * API works end-to-end against real hardware AND the pull-up + clock
+     * configuration matches what the LCD/RTC need.
+     *
+     * If the scan finds zero devices, either i2c_init failed (pin config
+     * wrong) or no device acknowledges (wiring fault / wrong pull-up
+     * config). The next driver migration (alpha.2.5, LCD1602) needs this
+     * to work, so failure here gates further phase 2 progress. */
+    {
+        i2c_status_t i2c_st = i2c_init();
+        ESP_LOGI(TAG, "i2c_init returned %d (%s)", (int)i2c_st,
+                 (i2c_st == I2C_OK)         ? "OK" :
+                 (i2c_st == I2C_ERR_TIMEOUT)? "TIMEOUT" :
+                 (i2c_st == I2C_ERR_NACK)   ? "NACK" :
+                 (i2c_st == I2C_ERR_BUS_BUSY)? "BUS_BUSY" : "?");
+
+        uint8_t found[16] = {0};
+        uint8_t n = i2c_scan(found, sizeof(found));
+        ESP_LOGI(TAG, "i2c_scan: %u device(s) found", (unsigned)n);
+        for (uint8_t i = 0; i < n; i++) {
+            ESP_LOGI(TAG, "  device[%u] @ 0x%02X", (unsigned)i, (unsigned)found[i]);
+        }
     }
 
     BaseType_t rc = xTaskCreatePinnedToCore(
