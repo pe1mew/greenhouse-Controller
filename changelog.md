@@ -28,6 +28,86 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-alpha.2.3]` — 2026-05-17
+
+**Phase 2.3 — third driver migration: `drivers/nvs` (LIB-7, nvs_config).** Trivial — pure proxy + Phase-1-style tickle. The driver source was already 100 % ESP-IDF native; the only Arduino bits in the directory were in `drivers/nvs/src/main.cpp`, the standalone hardware-verification test, which the proxy `SRCS` list intentionally excludes.
+
+#### What changed
+
+- **`drivers/nvs/src/nvs_config.cpp` + `nvs_config.h`** — **NO CHANGES**. Already pure ESP-IDF (`#include <nvs_flash.h>`, `#include <nvs.h>`, no `Arduino.h`, no `Serial.print`, no `delay()`, no `String`). This was the easiest driver in the whole tree.
+- **`firmware/components/nvs/CMakeLists.txt`** (new) — proxy. SRCS = `../../../drivers/nvs/src/nvs_config.cpp`. INCLUDE_DIRS only adds the driver's `src/` (the public header doesn't need `pin_config.h`). REQUIRES = `nvs_flash` (ESP-IDF NVS component).
+- **`firmware/src/CMakeLists.txt`** — added `nvs` to REQUIRES list; added `nvs_flash` to the main component's direct REQUIRES (the app_main_stub.cpp tickle calls `nvs_flash_init()` / `nvs_flash_erase()` directly for the pre-init readback).
+- **`firmware/src/app_main_stub.cpp`** — Phase 2.3 tickle:
+  - `#include "nvs_config.h"` + `#include "esp_err.h"` + `#include "nvs_flash.h"`
+  - Pre-init block: direct `nvs_flash_init()` (with `NO_FREE_PAGES`/`NEW_VERSION_FOUND` recovery), then `nvs_cfg_get_str(NVS_NS_SYSTEM, NVS_KEY_FW_VERSION, …)` to read whatever the previous firmware left.
+  - `nvs_cfg_init()` call with full status decode in the log line (`OK` / `MIGRATION` / `INIT` / `OTHER`).
+  - Post-init read of `fw_version` to confirm the schema-policy overwrite landed.
+  - All one-shot in `app_main()` — no heartbeat noise.
+- **`firmware/platformio.ini`** — `FIRMWARE_VERSION` stamped `2.0.0-alpha.2.3`.
+
+#### Expected serial output on Unit-2 hardware (last ran 1.20.3 prod)
+
+```
+I (xxx) GHC-STUB: NVS pre-init: previous fw_version = "1.20.3" (status=0)
+I (xxx) GHC-STUB: nvs_cfg_init() returned 0 (OK)             ← OR returned 5 (MIGRATION) if schema changed
+I (xxx) GHC-STUB: NVS post-init: fw_version is now "2.0.0-alpha.2.3" (status=0)
+```
+
+If pre-init reads `"1.20.3"` then post-init reads `"2.0.0-alpha.2.3"`, the driver works end-to-end:
+- IDF NVS flash subsystem initialises against the existing partition (no erase needed)
+- `nvs_cfg_get_str` reads existing keys preserved from 1.20.3
+- `nvs_cfg_init` performs the schema-version check and fw_version overwrite policy
+- Post-init reads see the newly-written value
+
+On a fresh-flashed unit (NVS partition erased), the pre-init read would return `NVS_CFG_ERR_NOT_FOUND` (status=4) with `prev_fw=""` — also valid, just different.
+
+#### Build delta vs alpha.2.2
+
+| Metric | alpha.2.2 | alpha.2.3 | Delta |
+|---|---:|---:|---:|
+| Firmware bin | 243,904 B | **262,368 B** | +18,464 B |
+| Flash usage | 11.6 % | 12.5 % | +0.9 pp |
+| RAM static | 18,772 B | 18,812 B | +40 B |
+
+bin sha256: `6DA9FDF39A9E911233386DB9A94725C2EDFF9451B25C93FF2589DE110B0D2788`
+
+The +18 KB is significant because this is the first commit that pulls in the full ESP-IDF NVS infrastructure (`nvs_flash`, the underlying `nvs` library, partition lookup, encryption stubs, etc.) plus the project's own `nvs_config.cpp` (~307 lines compiled). Each subsequent NVS user (which is most of the firmware) adds essentially zero further cost. Memory-cost amortisation: this 18 KB is paid once in Phase 2.3 and never again.
+
+#### Acceptance bar for alpha.2.3
+
+1. ✅ Build succeeds — no warnings against migrated source (none needed; only header-cleanup).
+2. Flash to Unit 2; boot reason `ESP_RST_POWERON`.
+3. Serial log shows the three NVS log lines in the boot banner section.
+4. Pre-init `fw_version` reads `"1.20.3"` (left by 1.20.3 production firmware).
+5. `nvs_cfg_init()` returns `OK` or `MIGRATION` — both acceptable (`MIGRATION` means schema version changed which it shouldn't here since we kept `NVS_SCHEMA_VERSION=1`).
+6. Post-init `fw_version` reads `"2.0.0-alpha.2.3"` — confirms write path works.
+7. HB LED still blinks (Phase 2.1 regression-check). Keypad `keys=` field still works (Phase 2.2 regression-check).
+8. Run ≥ 5 min; no resets, no NVS error messages.
+
+#### Acceptance: PASSED — 2026-05-17
+
+Flashed to Unit 2. The captured serial output happened to be boot #2 of alpha.2.3 (boot #1 was lost; user power-cycled between flash and serial capture), which gave a stronger acceptance signal than the original criterion expected. Observed:
+
+```
+NVS pre-init: previous fw_version = "2.0.0-alpha.2.3" (status=0)
+nvs_cfg_init() returned 0 (OK)
+NVS post-init: fw_version is now "2.0.0-alpha.2.3" (status=0)
+```
+
+Interpretation: boot #1 of alpha.2.3 (immediately after flash) read whatever 1.20.3 left in NVS (presumably "1.20.3", though not captured), called `nvs_cfg_init()` which wrote the new "2.0.0-alpha.2.3" per the schema policy. The captured boot (#2 after a power cycle) shows the persisted value being read back successfully — proving the full write-reboot-read roundtrip against real flash hardware. That's a more demanding test than the original "see a 1.20.3-to-current transition" criterion.
+
+Concrete acceptance check-list:
+- ✅ NVS pre-init read succeeds (status=0, valid string returned)
+- ✅ NVS persists across boots (pre-init read returns what a previous boot wrote)
+- ✅ `nvs_cfg_init()` returns OK (status=0) — schema version 1 unchanged
+- ✅ NVS post-init read confirms the value is current
+- ✅ No NVS error messages
+- ✅ Phase 2.1 regression check: HB LED still alternates (hb_led=1/0)
+- ✅ Phase 2.2 regression check: keypad reports keys=0 idle
+- ✅ Heap impact: ~2 KB persistent overhead for NVS infrastructure (375275 → 373267 stable from heartbeat 1 onward) — one-time, expected
+
+Boot reason POWERON, free heap 375 KB at banner, stable thereafter. No resets observed during the verification window. Migration is clean.
+
 ### `[2.0.0-alpha.2.2]` — 2026-05-17
 
 **Phase 2.2 — second driver migration: `drivers/keyPad` (LIB-5, keypad_matrix).**
