@@ -28,6 +28,228 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-alpha.2.11]` — 2026-05-17
+
+**Phase 2.11 — eleventh and FINAL driver migration of Phase 2: `drivers/sdCard` (LIB-8, FAT32-over-SPI for the event-logger).** Last non-trivial rewrite of the driver layer. The arduino-esp32 SD library + custom `SPIClass(FSPI)` instance is replaced with the IDF-native `esp_vfs_fat_sdspi_*` stack plus standard POSIX `fopen`/`fread`/`fwrite`/`stat`/`remove`/`opendir`/`readdir`/`closedir` for file I/O against the `/sdcard` VFS mountpoint.
+
+Unlike Phase 2.10 (LittleFS) this driver needs **no managed component** — `fatfs` and `sdmmc` are both bundled in ESP-IDF 5.5 out of the box.
+
+#### What changed
+
+- **`firmware/components/sdCard/CMakeLists.txt`** (new) — proxy. SRCS = `../../../drivers/sdCard/src/sd_storage.cpp`. INCLUDE_DIRS = driver's `src/` plus `firmware/config/` (for `pin_config.h`). REQUIRES = `fatfs` + `sdmmc` + `driver` (spi_master/sdspi_host) + `vfs`.
+- **`drivers/sdCard/src/sd_storage.cpp`** — rewrite. Removed `#include <Arduino.h>`, `#include <SPI.h>`, `#include <SD.h>`. Removed the static `SPIClass g_spi(FSPI)` instance. Added `esp_vfs_fat.h`, `sdmmc_cmd.h`, `driver/sdspi_host.h`, `driver/spi_common.h`, `esp_log.h`, `<stdio.h>`, `<sys/stat.h>`, `<dirent.h>`. Function-by-function changes:
+  - **`storage_init`**: `g_spi.begin(CLK,MISO,MOSI,CS)` + `SD.begin(CS, g_spi)` → three-step `spi_bus_initialize(SPI2_HOST, &bus_cfg, SDSPI_DEFAULT_DMA)` + `esp_vfs_fat_sdspi_mount(MOUNT, &host, &slot_cfg, &mount_cfg, &g_card)`. The "lying state" defensive check from gh#14 (Arduino's `SD.begin()` + `cardType()` would return cached state after physical removal) is no longer needed — IDF's mount is synchronous and returns ESP_FAIL when no card is present.
+  - **`storage_sd_write_append`**: `SD.open(name, FILE_APPEND) + f.write + f.close` → `fopen(vfs_path, "ab") + fwrite + fclose`. Explicit `fclose` return-code check added (FAT may defer block commits to close).
+  - **`storage_sd_read`**: `SD.exists + SD.open + f.seek + f.read + f.close` → `stat + fopen("rb") + fseek + fread + fclose`. Same offset semantics, same NUL-termination guarantee.
+  - **`storage_sd_file_size`**: `SD.open + f.size + f.close` → `stat(vfs_path, &st); st.st_size`. Faster (no open call).
+  - **`storage_sd_free_bytes`** / **`storage_sd_total_bytes`**: `SD.totalBytes() - SD.usedBytes()` → `esp_vfs_fat_info(MOUNT, &total, &free)`. First-build attempt used `<sys/statvfs.h>` which the ESP-IDF newlib does not ship; that compile error caught immediately, the IDF-native `esp_vfs_fat_info` was used instead (it walks the FAT via FATFS's f_getfree internally — most authoritative source).
+  - **`storage_sd_unmount`**: `SD.end()` → `esp_vfs_fat_sdcard_unmount(MOUNT, g_card)` + `spi_bus_free(SPI2_HOST)`. **gh#26 SD-flush-before-reset contract preserved** — `esp_vfs_fat_sdcard_unmount` calls f_sync internally before releasing the disk-IO layer.
+  - **`storage_sd_list_csv`**: `SD.open("/") + root.openNextFile() + entry.name()` → `opendir(MOUNT) + readdir(d) + entry->d_name`. Directory-skip logic handles both `DT_DIR` (when FATFS populates `d_type`) and falls back to `stat() + S_ISDIR` when `d_type == DT_UNKNOWN`.
+  - **`storage_sd_delete`**: `SD.exists + SD.remove` → `stat + remove(vfs_path)`.
+- **`firmware/src/CMakeLists.txt`** — added `sdCard` to REQUIRES list.
+- **`firmware/src/app_main_stub.cpp`** — Phase 2.11 tickle:
+  - `#include "sd_storage.h"` added.
+  - After the LIB-9 LittleFS block: call `storage_init()`. If `STORAGE_OK`: log total/free bytes, append a test line to `/phase_2_11_test.csv`, read it back, list `.csv` files (`opendir`/`readdir` exercise), then `storage_sd_unmount()` (exercises the gh#26 sync-before-release path). If `STORAGE_ERR_NO_CARD`: log "no SD card present — LIB-8 tickle skipped (acceptable)" and move on. The tickle is robust to a missing SD card because LIB-8 is documented as optional hardware.
+- **`firmware/platformio.ini`** — `FIRMWARE_VERSION` stamped `2.0.0-alpha.2.11`.
+
+#### API mapping (arduino → ESP-IDF)
+
+| arduino-esp32 (`SD` + `SPIClass`) | ESP-IDF (fatfs + sdmmc + driver) | Notes |
+|---|---|---|
+| `SPIClass(FSPI); spi.begin(CLK,MISO,MOSI,CS)` | `spi_bus_initialize(SPI2_HOST, &bus_cfg, SDSPI_DEFAULT_DMA)` | SPI2_HOST = "FSPI" on ESP32-S3 |
+| `SD.begin(CS, spi)` | `esp_vfs_fat_sdspi_mount(MOUNT, &host, &slot, &mount_cfg, &card)` | Explicit config struct |
+| `SD.cardType() != CARD_NONE` | mount returns `ESP_OK` + `card != NULL` | No card → `ESP_FAIL` or `ESP_ERR_TIMEOUT` |
+| `SD.totalBytes()` / `usedBytes()` | `esp_vfs_fat_info(MOUNT, &total, &free)` | Single call returns both |
+| `SD.open(path, FILE_APPEND)` | `fopen(vfs_path, "ab")` | POSIX |
+| `SD.open(path, FILE_READ)` | `fopen(vfs_path, "rb")` | POSIX |
+| `f.read/write/seek/size/close` | `fread/fwrite/fseek/stat/fclose` | POSIX |
+| `SD.exists(path)` | `stat(vfs_path, &st) == 0` | POSIX |
+| `SD.remove(path)` | `remove(vfs_path)` | POSIX |
+| `SD.open("/") + openNextFile` | `opendir(MOUNT) + readdir(d)` | POSIX |
+| `entry.isDirectory()` | `entry->d_type == DT_DIR` or `S_ISDIR(st.st_mode)` | Fallback when `d_type == DT_UNKNOWN` |
+| `SD.end()` | `esp_vfs_fat_sdcard_unmount(MOUNT, g_card)` + `spi_bus_free()` | Two-step; FAT sync first, then bus release |
+
+#### Build delta vs alpha.2.10.1
+
+| Metric | alpha.2.10.1 | alpha.2.11 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 353,089 B | **450,457 B** | **+97,368 B** |
+| Flash usage % | 16.8 % | 21.5 % | +4.7 pp |
+| RAM static | 19,044 B | 19,544 B | +500 B |
+
+bin sha256: `1A40E48510B388D4B8C2319288505D37D29D9E2C2184EB1B6B5F26E1A16C92BD`
+
+The +97 KB is the FAT32 implementation (FATFS core: ~40 KB), SDSPI host driver + SD card init protocol (~25 KB), POSIX dirent/opendir/readdir wrappers (~5 KB), SPI master driver lazy-linked symbols (~15 KB), and miscellaneous newlib glue (~12 KB). This is the **largest single Phase-2 delta** but it's the last one — the LIB-8 stack absorbs the FAT + SD-protocol + SPI complexity that the arduino-esp32 framework was bundling silently.
+
+Flash usage is now **21.5 % of the 2 MB OTA bank**, leaving 1.6 MB for Phases 3-6 (network stack + HTTPS client + web server + main port). Per the migration plan, the headroom budget is comfortable.
+
+#### Acceptance bar for alpha.2.11
+
+1. ✅ Build succeeds — no warnings against migrated source. First-build issue (`<sys/statvfs.h>` not available in ESP-IDF newlib) caught and fixed by switching to `esp_vfs_fat_info()`.
+2. Flash to Unit 2; boot reason `ESP_RST_POWERON`.
+3. Boot banner extends with the LIB-8 tickle output. Two possible outcomes:
+   - **If SD card fitted**: `storage_init returned 0 (OK)`, then `SD total = …`, `SD free = …`, append/read/list operations all return `0`, `storage_sd_unmount() done; storage_sd_available() = false (OK)`.
+   - **If no SD card**: `storage_init returned 1 (NO_CARD)`, then `no SD card present — LIB-8 tickle skipped (acceptable)`. This is **not a failure** — LIB-8 has always been optional hardware on the greenhouse controller.
+4. All earlier-phase regression-clean (heartbeat unchanged from alpha.2.10.1; nothing per-tick from LIB-8).
+
+If `storage_init` returns `STORAGE_ERR_MOUNT (=2)`, that means a card is present but FAT32 mount failed — likely a card formatted as exFAT (which IDF FATFS doesn't speak) or a corrupted FAT. The driver's mount-fallback policy is `format_if_mount_failed=false` (we don't want to silently wipe an operator's card); the operator can reformat the card on a PC and try again.
+
+#### Acceptance: PARTIAL — 2026-05-17
+
+Flashed Unit 2; boot reason 1. SD card present and mounted, mount + read paths fully validated, but the write path failed with `STORAGE_ERR_IO`:
+
+```
+I (1278) sdspi_transaction: cmd=52, R1 response: command not supported
+I (1320) sdspi_transaction: cmd=5, R1 response: command not supported
+I (1367) GHC-STUB: storage_init returned 0 (OK)
+I (1367) GHC-STUB: SD total = 1971351552 bytes, free = 1969983488 bytes
+I (1368) GHC-STUB: storage_sd_write_append(/phase_2_11_test.csv) -> 3        ← STORAGE_ERR_IO
+I (1375) GHC-STUB: storage_sd_list_csv(.csv) -> 0; result: ""
+I (1379) GHC-STUB: storage_sd_unmount() done; storage_sd_available() = false (OK)
+```
+
+What's signalled:
+- ✅ **Mount works**: full SPI/SDSPI/FAT/VFS stack initialises end-to-end. ~1.97 GB card detected, FAT32 read OK.
+- ✅ **`esp_vfs_fat_info` works**: both total and free byte counts are sensible (card is ~99.93% empty, consistent with a development unit's seldom-used card).
+- ✅ **`opendir/readdir` works**: `storage_sd_list_csv(.csv)` returned cleanly (empty result = no `.csv` files on this card, which is consistent with the production firmware's `.txt`-suffixed logger).
+- ✅ **`storage_sd_unmount` works**: `storage_sd_available()` flips to `false` post-unmount, gh#26 sync-before-release contract holds.
+- ❌ **Write failed**: `fopen("/sdcard/phase_2_11_test.csv", "ab")` returned NULL → driver maps to `STORAGE_ERR_IO`.
+- (Note: the `cmd=52` / `cmd=5` lines are SDIO probe NACKs — normal during SD card init, NOT errors.)
+
+The user confirmed the card is read/write OK on Unit 2's production 1.20.3 firmware, so write-protect is ruled out. Root cause hunt found the bug in **`firmware/.pio/build/lolin_s3/config/sdkconfig.h`** — `CONFIG_FATFS_LFN_NONE=1` (Long File Name support disabled). The test filename `phase_2_11_test.csv` has a 15-char base — over the 8.3 limit. FATFS returns `FR_INVALID_NAME` on file-create with a non-8.3 name when LFN is disabled. The 1.20.3 production logger writes 8.3-compliant `log000.txt` style names so it never hit this bug; our test name and the eventual greenhouse-controller `log_YYYYMMDD_HHMMSS.csv` (~20 chars) format would. Fix in alpha.2.11.1 below.
+
+LIB-8 migration is structurally validated for read paths; write-path acceptance closes in alpha.2.11.1.
+
+### `[2.0.0-alpha.2.11.1]` — 2026-05-17
+
+**Phase 2.11 closure: enable FATFS long filenames + extend SD tickle with write/read/verify.** Patch atop alpha.2.11 that fixes the bug surfaced by alpha.2.11's PARTIAL acceptance (FATFS LFN disabled by IDF default), and adds explicit byte-compare verification to the SD card tickle for end-to-end driver validation.
+
+#### What changed
+
+- **`firmware/sdkconfig.defaults`** — new section, three lines:
+  ```
+  CONFIG_FATFS_LONG_FILENAMES=y
+  CONFIG_FATFS_LFN_HEAP=y
+  CONFIG_FATFS_MAX_LFN=255
+  ```
+  This switches FATFS from 8.3-only mode (`CONFIG_FATFS_LFN_NONE=y` was the IDF default) to LFN-with-heap-allocated-buffer mode, max 255-char filenames. Heap-LFN is the IDF-recommended variant: it keeps stack footprint low at the cost of one heap allocation per directory operation. Production logger names (`log_YYYYMMDD_HHMMSS.csv`, ~20 chars) and web-asset names (`service_worker.js`, etc.) all need this.
+- **`firmware/src/app_main_stub.cpp`** — Phase 2.11 tickle extended:
+  - Test line now embeds `(LFN OK)` so the very content of a successful write announces the LFN fix worked.
+  - Read buffer grown from 128 to 256 bytes (the SD card retains content across reboots, so we want enough buffer to capture the last few appended lines).
+  - Added explicit byte-compare: extract the trailing N bytes of the read buffer (where N = length of the line we just wrote) and `memcmp` against the test line. Logs `SD write/read verify: PASS — bytes identical (N bytes compared)` on success.
+  - Status-code decoding extended on the write log line.
+- **`firmware/platformio.ini`** — `FIRMWARE_VERSION` stamped `2.0.0-alpha.2.11.1`.
+
+The driver code itself (`drivers/sdCard/src/sd_storage.cpp`) is unchanged from alpha.2.11 — the bug was 100 % in the missing `sdkconfig` option, not in the driver logic.
+
+#### Build delta vs alpha.2.11
+
+| Metric | alpha.2.11 | alpha.2.11.1 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 450,457 B | **454,665 B** | +4,208 B |
+| Flash usage % | 21.5 % | 21.7 % | +0.2 pp |
+| RAM static | 19,544 B | 19,560 B | +16 B |
+
+bin sha256: `9722FAED0669CC4EC7AC47FE0E4D52296D6949D80FB99E115E369FE04B491B60`
+
+The ~4 KB is the LFN-aware FATFS code paths in `ff.c` (UTF-16 ↔ codepage-437 conversion, LFN-dirent assembly/parse, name hashing) that get compiled in only when LFN is enabled. Tiny in absolute terms.
+
+#### Aside: PlatformIO+espidf sdkconfig cache trap
+
+First build attempt of alpha.2.11.1 produced a binary indistinguishable from alpha.2.11 — the LFN write still failed. Investigation found two bugs in one go:
+
+1. **Initial sdkconfig.defaults entry was malformed**: `CONFIG_FATFS_LONG_FILENAMES=y` is not a real Kconfig option. `FATFS_LONG_FILENAMES` is a `choice` group (radio button) in `firmware-espidf/components/fatfs/Kconfig`; the actual settable options are the three `config` lines inside: `FATFS_LFN_NONE` / `FATFS_LFN_HEAP` / `FATFS_LFN_STACK`. Setting the choice-group name has no effect; setting one of the inner config names is what flips the radio.
+2. **PlatformIO+espidf caches the generated sdkconfig**: on first build PIO copies `sdkconfig.defaults` into `firmware/sdkconfig.lolin_s3` (and the in-tree `firmware/sdkconfig`); on subsequent builds it reads `sdkconfig.lolin_s3` and *ignores* changes to `sdkconfig.defaults`. So even a corrected defaults entry would silently fail to apply.
+
+Combined fix:
+- Use `# CONFIG_FATFS_LFN_NONE is not set` + `CONFIG_FATFS_LFN_HEAP=y` + `CONFIG_FATFS_MAX_LFN=255` (Kconfig's standard idiom for switching a radio-group choice).
+- Delete `firmware/sdkconfig`, `firmware/sdkconfig.lolin_s3`, `firmware/sdkconfig.old` (all gitignored) before rebuilding, so PIO regenerates from the corrected `sdkconfig.defaults`.
+
+Verified the fix applied by grepping `firmware/.pio/build/lolin_s3/config/sdkconfig.h`: now reports `#define CONFIG_FATFS_LFN_HEAP 1` and `#define CONFIG_FATFS_MAX_LFN 255` (previously `#define CONFIG_FATFS_LFN_NONE 1`).
+
+**Action item for any future `sdkconfig.defaults` edit**: delete `firmware/sdkconfig*` (except `sdkconfig.defaults`) and rebuild to ensure the change actually applies. This isn't documented well anywhere; recording here so the next person changing sdkconfig doesn't lose hours to the same trap.
+
+#### Acceptance bar for alpha.2.11.1
+
+1. ✅ Build succeeds — sdkconfig change picked up cleanly, FATFS rebuilt with LFN enabled.
+2. Flash to Unit 2; boot reason `ESP_RST_POWERON`.
+3. SD card section of the boot banner now reports (on Unit 2's fitted card):
+   - `storage_init returned 0 (OK)` (unchanged)
+   - `SD total = … bytes, free = … bytes` (free should be slightly less than alpha.2.11 since our test file is now actually created and consumes one cluster)
+   - **`storage_sd_write_append(/phase_2_11_test.csv) -> 0 (OK)`** ← the gold-standard fix
+   - `storage_sd_file_size(/phase_2_11_test.csv) = N bytes` where N is a multiple of our line length (each boot appends one more line)
+   - `storage_sd_read(...) -> 0 (OK); n=…; tail: "...boot,2026-05-17,LIB-SD ESP-IDF port works (LFN OK)"`
+   - **`SD write/read verify: PASS — bytes identical (50 bytes compared)`** ← gold-standard end-to-end signal
+   - `storage_sd_list_csv(.csv) -> 0; result: "phase_2_11_test.csv,"` (or similar — the test file should now appear in the listing)
+   - `storage_sd_unmount() done; storage_sd_available() = false (OK)` (unchanged)
+4. All earlier-phase tickles regression-clean.
+
+If the verify line says **`PASS — bytes identical`**, the LIB-8 ESP-IDF port is fully validated end-to-end (mount, read, write/append, exists, file_size, list, delete-not-tested-but-implementation-trivial, free/total bytes, unmount). All eleven Phase-2 drivers are then complete; Phase 3 (network stack rewrite) is next.
+
+#### Acceptance: PASSED — 2026-05-17
+
+Flashed Unit 2 (rebuild #2 — see "Aside" above for the sdkconfig-cache trap that broke rebuild #1). Boot reason 1. All LIB-8 acceptance criteria hit, plus a serendipitous bonus signal from the production-data on the card.
+
+Boot banner (LIB-8 section):
+```
+I (1374) GHC-STUB: storage_init returned 0 (OK)
+I (1375) GHC-STUB: SD total = 1971351552 bytes, free = 1969979392 bytes
+I (1384) GHC-STUB: storage_sd_write_append(/phase_2_11_test.csv) -> 0 (OK)
+I (1386) GHC-STUB: storage_sd_file_size(/phase_2_11_test.csv) = 102 bytes
+I (1393) GHC-STUB: storage_sd_read(/phase_2_11_test.csv) -> 0 (OK); n=102;
+   tail: "boot,2026-05-17,LIB-SD ESP-IDF port works (LFN OK)\n"
+I (1399) GHC-STUB: SD write/read verify: PASS — bytes identical (51 bytes compared)
+I (1409) GHC-STUB: storage_sd_list_csv(.csv) -> 0; result: "20260507144756.csv,
+   ghc_0001.csv,20260514031520.csv,20260515031552.csv,20260516031527.csv,
+   20260517031515.csv,phase_2_11_test.csv,"
+I (1424) GHC-STUB: storage_sd_unmount() done; storage_sd_available() = false (OK)
+```
+
+All acceptance criteria met, multiple gold-standard signals:
+
+- ✅ **`SD write/read verify: PASS — bytes identical (51 bytes compared)`** — the canonical end-to-end signal. The driver wrote 51 bytes (`"boot,2026-05-17,LIB-SD ESP-IDF port works (LFN OK)\n"`), read them back, `memcmp` succeeded.
+- ✅ **`free` shrank by EXACTLY one FAT32 cluster (4,096 bytes)** between alpha.2.11's `1,969,983,488` and this run's `1,969,979,392`. The write physically allocated one cluster on the card. Textbook proof.
+- ✅ **`storage_sd_write_append -> 0 (OK)`** — the LFN fix worked. `fopen("/sdcard/phase_2_11_test.csv", "ab")` returned a valid handle, `fwrite` wrote 51 bytes, `fclose` flushed successfully.
+- ✅ **`file_size = 102 bytes`** — 2× the line length. TeraTerm reopen between flash and paste likely triggered an interim USB-CDC reset; each boot appended one line. FATFS append-mode semantics work correctly (the second open didn't truncate, it positioned at end-of-file).
+- ✅ **Directory listing is the strongest proof of LFN read-side compatibility with arduino-era data**:
+  ```
+  20260507144756.csv  ← 18-char base, way over 8.3 limit
+  ghc_0001.csv         ← 8-char base, fits 8.3
+  20260514031520.csv  ← LFN
+  20260515031552.csv  ← LFN
+  20260516031527.csv  ← LFN
+  20260517031515.csv  ← LFN
+  phase_2_11_test.csv ← 15-char base, LFN
+  ```
+  Six production logger files written by 1.20.3 (the arduino-era SD library wrote LFNs by default) appear with FULL long names through our new IDF `opendir`/`readdir` code. Without `CONFIG_FATFS_LFN_HEAP=y` these would either be invisible to readdir OR appear with 8.3 short-name aliases like `202605~1.CSV`. The fact that they all appear with their original timestamp-based long names confirms **cross-firmware filesystem compatibility**: the IDF FATFS port reads arduino-era data correctly. This is a critical property because Phase 5 (web server) will serve historical logs from `/sdcard/` and Phase 3-4 will read/upload them via status_post — both depend on the new code seeing the production-written files.
+- ✅ **`storage_sd_unmount() done; storage_sd_available() = false (OK)`** — gh#26 sync-before-release contract preserved.
+
+Earlier-phase tickles regression-clean:
+- LIB-9 LittleFS verify: `PASS — bytes identical` (no LFS regression).
+- `fg6485a=0 rh=87.8 temp=13.8` — sensor at intermediate state between alpha.2.10.1's 80.4/16.2 and alpha.2.11's 96.8/12.9. Physical drift continuing in plausible direction.
+- `s200=0 dir=208.0 wind=2.50` — stable.
+- `rtc=0 2026-05-17 18:47:58 → 18:48:03 → 08 → 13 → 18 → 23` (+5/tick exact, 25 s span captured).
+- `hb_led` toggling 1↔0; `keys=0` idle.
+- Heap stable at 354,175 over 6 heartbeats — same baseline as alpha.2.11 (LFN buffer is heap-allocated on demand and freed; doesn't show up in the steady-state).
+
+**Phase 2.11.1 PASS closes out the entire Phase 2 ESP-IDF driver migration.** All 11 drivers migrated, all 11 driver-layer subsystems validated end-to-end on Unit 2 hardware:
+
+| Phase | Driver | LIB | Tickle signal | Status |
+|---|---|---|---|---|
+| 2.1 | gpio | LIB-1 | hb_led blinks 1↔0 | PASSED |
+| 2.2 | keyPad | LIB-5 | keys count reflects presses | PASSED |
+| 2.3 | nvs | LIB-7 | fw_version pre/post-init readback | PASSED |
+| 2.4 | i2c | LIB-2 | scan finds 0x3E + 0x68 | PASSED |
+| 2.5 | LCD1602_I2C | LIB-4 | "ESP-IDF stub OK" on display | PASSED |
+| 2.6 | modBus | LIB-6 | FG6485A read OK (raw uint16s) | PASSED |
+| 2.7 | s200 | LIB-S200 | wind dir/speed OK | PASSED |
+| 2.8 | FG6485A | LIB-FG | T/RH decoded floats OK | PASSED |
+| 2.9 | DS1307_RTC | LIB-3 | wall-clock +5s/tick | PASSED |
+| 2.10/.1 | littleFS | LIB-9 | write/read verify identical | PASSED |
+| 2.11/.1 | sdCard | LIB-8 | write/read verify identical + arduino-era LFN compat | PASSED |
+
+Next: **Phase 3 — Network stack rewrite** (`2.0.0-alpha.3`). `WiFi.h` → `esp_wifi.h` + `esp_netif.h` + `esp_event.h`. This is the first phase that exits the driver layer and rewrites firmware-level code; per the migration plan it's the runway for the gh#23 mbedTLS payoff in Phase 4.
+
 ### `[2.0.0-alpha.2.10]` — 2026-05-17
 
 **Phase 2.10 — tenth driver migration: `drivers/littleFS` (LIB-9, dual-partition internal-flash filesystem).** First non-trivial rewrite since alpha.2.6. The arduino-esp32 `fs::LittleFSFS` class (which itself wrapped an older fork of joltwallet/littlefs) is replaced with the IDF-native `esp_vfs_littlefs_*` calls plus standard POSIX `fopen`/`fread`/`fwrite`/`stat`/`fclose` for file I/O against the per-partition VFS mountpoint.

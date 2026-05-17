@@ -131,7 +131,19 @@
  *                                       can use it. Exercises the new
  *                                       esp_vfs_littlefs_register path and
  *                                       the POSIX fopen/stat layer that
- *                                       replaces the Arduino fs::File class. */
+ *                                       replaces the Arduino fs::File class.
+ * 2.0.0-alpha.2.11: sd_storage (LIB-8) — initialise SPI host (FSPI/SPI2 on
+ *                                       LOLIN S3, pins CLK=39 MISO=48 MOSI=47
+ *                                       CS=40), mount FAT32 over SPI at
+ *                                       /sdcard. If card present: log
+ *                                       capacity, free bytes, append a test
+ *                                       log line, list .csv files. If no
+ *                                       card: log "no SD card present" and
+ *                                       move on (acceptable — Phase 2.11
+ *                                       does not require SD hardware to be
+ *                                       fitted; some operators don't fit one).
+ *                                       This is the LAST driver migrated
+ *                                       in Phase 2. */
 #include "gpio_util.h"
 #include "keypad_matrix.h"
 #include "nvs_config.h"
@@ -142,6 +154,7 @@
 #include "fg6485a.h"
 #include "ds1307_rtc.h"
 #include "littlefs_storage.h"
+#include "sd_storage.h"
 
 static const char *TAG = "GHC-STUB";
 
@@ -555,6 +568,107 @@ extern "C" void app_main(void)
             ESP_LOGI(TAG, "LFS file probe: /index.html %s",
                      have_index ? "exists (likely arduino-era survivor)"
                                 : "not found (clean post-format state)");
+        }
+    }
+
+    /* alpha.2.11 — SD card storage driver tickle.
+     *
+     * The dev unit may or may not have an SD card fitted; LIB-8 has always
+     * been optional. The tickle handles all three states:
+     *   STORAGE_OK            — card present + mounted. Log capacity, free
+     *                           bytes, write one test log line, read it back,
+     *                           list .csv files, unmount cleanly.
+     *   STORAGE_ERR_NO_CARD   — no card detected. Log "no SD card present"
+     *                           and move on. This is NOT a failure; many
+     *                           operator units skip the SD-card slot.
+     *   STORAGE_ERR_MOUNT     — card present but FAT32 mount failed (card
+     *                           formatted as something else, or hardware
+     *                           fault). Log warning; move on.
+     *
+     * The tickle exercises the same code path that T9 (Event Logger) will
+     * eventually use in Phase 6: mount → append → read → list → unmount.
+     * gh#26 SD-flush-before-reset behaviour is preserved by the new
+     * esp_vfs_fat_sdcard_unmount call which f_syncs internally before
+     * releasing the disk-IO layer (same synchronous-flush contract as the
+     * arduino-era SD.end() call). */
+    {
+        storage_status_t sd_st = storage_init();
+        ESP_LOGI(TAG, "storage_init returned %d (%s)", (int)sd_st,
+                 (sd_st == STORAGE_OK)            ? "OK" :
+                 (sd_st == STORAGE_ERR_NO_CARD)   ? "NO_CARD" :
+                 (sd_st == STORAGE_ERR_MOUNT)     ? "MOUNT" :
+                 (sd_st == STORAGE_ERR_IO)        ? "IO" :
+                 (sd_st == STORAGE_ERR_NOT_FOUND) ? "NOT_FOUND" :
+                 (sd_st == STORAGE_ERR_FULL)      ? "FULL" :
+                 (sd_st == STORAGE_ERR_PARAM)     ? "PARAM" : "?");
+
+        if (sd_st == STORAGE_OK) {
+            uint64_t total = storage_sd_total_bytes();
+            uint64_t free_b = storage_sd_free_bytes();
+            ESP_LOGI(TAG, "SD total = %llu bytes, free = %llu bytes",
+                     (unsigned long long)total,
+                     (unsigned long long)free_b);
+
+            /* alpha.2.11.1 — Append a test line to a file with a long name.
+             * The filename intentionally exceeds the 8.3 limit ("phase_2_11_test"
+             * is 15 chars) so we exercise the LFN path enabled in
+             * sdkconfig.defaults (CONFIG_FATFS_LONG_FILENAMES=y). The
+             * 1.20.3 production logger writes similarly-long names
+             * (log_YYYYMMDD_HHMMSS.csv) so this is the realistic shape. */
+            static const char *test_file = "/phase_2_11_test.csv";
+            static const char *test_line =
+                "boot,2026-05-17,LIB-SD ESP-IDF port works (LFN OK)\n";
+            const size_t test_line_len = strlen(test_line);
+            storage_status_t w_st = storage_sd_write_append(test_file, test_line);
+            ESP_LOGI(TAG, "storage_sd_write_append(%s) -> %d (%s)",
+                     test_file, (int)w_st,
+                     (w_st == STORAGE_OK)        ? "OK" :
+                     (w_st == STORAGE_ERR_IO)    ? "IO" :
+                     (w_st == STORAGE_ERR_FULL)  ? "FULL" : "?");
+
+            if (w_st == STORAGE_OK) {
+                /* Read it back. Use storage_sd_file_size first to confirm
+                 * the write reached the FAT; then read enough bytes to
+                 * cover the line we just wrote. */
+                uint32_t sz = storage_sd_file_size(test_file);
+                ESP_LOGI(TAG, "storage_sd_file_size(%s) = %u bytes",
+                         test_file, (unsigned)sz);
+
+                char readbuf[256] = {0};
+                size_t n = 0;
+                storage_status_t r_st = storage_sd_read(test_file, 0,
+                                                        readbuf, sizeof(readbuf), &n);
+                /* Show only the trailing line (the file may carry older boot
+                 * lines from prior runs; on the FIRST boot it's just our line). */
+                const char *tail = (n > test_line_len) ? (readbuf + n - test_line_len)
+                                                       : readbuf;
+                ESP_LOGI(TAG, "storage_sd_read(%s) -> %d (%s); n=%u; tail: \"%.80s\"",
+                         test_file, (int)r_st,
+                         (r_st == STORAGE_OK) ? "OK" : "FAIL",
+                         (unsigned)n, tail);
+
+                /* Verify the tail bytes match what we wrote. */
+                bool match = (r_st == STORAGE_OK)
+                          && (n >= test_line_len)
+                          && (memcmp(tail, test_line, test_line_len) == 0);
+                ESP_LOGI(TAG, "SD write/read verify: %s (%u bytes compared)",
+                         match ? "PASS — bytes identical"
+                               : "FAIL — content mismatch",
+                         (unsigned)test_line_len);
+            }
+
+            /* List .csv files to exercise opendir/readdir. */
+            char csv_list[256] = {0};
+            storage_status_t l_st = storage_sd_list_csv(".csv", csv_list, sizeof(csv_list));
+            ESP_LOGI(TAG, "storage_sd_list_csv(.csv) -> %d; result: \"%s\"",
+                     (int)l_st, csv_list);
+
+            /* Unmount cleanly — exercises the gh#26 sync-before-release path. */
+            storage_sd_unmount();
+            ESP_LOGI(TAG, "storage_sd_unmount() done; storage_sd_available() = %s",
+                     storage_sd_available() ? "true (BUG)" : "false (OK)");
+        } else if (sd_st == STORAGE_ERR_NO_CARD) {
+            ESP_LOGI(TAG, "no SD card present — LIB-8 tickle skipped (acceptable)");
         }
     }
 
