@@ -10,6 +10,16 @@
 .github/token.local
 *.local
 
+# 2.0.0-alpha.3.1 was a throwaway dev build that baked WiFi credentials
+# (ssid + psk literals) into the source temporarily for one-shot NVS
+# seeding on the bench LOLIN S3. The literals were stripped from source
+# in alpha.3.2 but the .bin / .elf / .map produced by alpha.3.1 still
+# contain the plaintext PSK and will leak it if uploaded anywhere. Keep
+# the directory off GitHub. The changelog entry for alpha.3.1 carries
+# the historical context; binaries belong nowhere but the original
+# developer's disk.
+/bin/2.0.0-alpha.3.1/
+
 # Python caches
 __pycache__/
 *.py[cod]
