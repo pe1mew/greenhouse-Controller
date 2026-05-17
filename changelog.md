@@ -28,6 +28,93 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-alpha.2.9]` — 2026-05-17
+
+**Phase 2.9 — ninth driver migration: `drivers/DS1307_RTC` (LIB-3, DS1307 battery-backed RTC).** Trivial header cleanup, same shape as alpha.2.7/2.8: vestigial `#include <Arduino.h>` dropped. The driver body uses only LIB-2 (i2c_bus) wrappers + stdint primitives; no Arduino types anywhere. Public API in `ds1307_rtc.h` unchanged.
+
+#### What changed
+
+- **`drivers/DS1307_RTC/src/ds1307_rtc.cpp`** — dropped `#include <Arduino.h>` (was inside `#ifndef UNIT_TEST` guard alongside the production `i2c_bus.h`). Body uses only `i2c_write`, `i2c_write_read` (LIB-2, migrated alpha.2.4) and BCD helper functions.
+- **`firmware/components/DS1307_RTC/CMakeLists.txt`** (new) — proxy. SRCS = `../../../drivers/DS1307_RTC/src/ds1307_rtc.cpp`. INCLUDE_DIRS = the driver's `src/` only. REQUIRES = `i2c` (LIB-2). No firmware/config dep — the address `DS1307_I2C_ADDR=0x68` is hard-coded by the chip.
+- **`firmware/src/CMakeLists.txt`** — added `DS1307_RTC` to REQUIRES list.
+- **`firmware/src/app_main_stub.cpp`** — Phase 2.9 tickle:
+  - `#include "ds1307_rtc.h"` added.
+  - **`app_main()` tickle**: `rtc_init()` after `modbus_init()`; if it returns `RTC_OK`, also log `rtc_oscillator_stopped()`. On Unit 2 the battery-backed RTC has been running since the 1.20.3 deployment so CH must be 0.
+  - **Per-heartbeat poll**: `rtc_get_time(&now)` returns a `rtc_datetime_t` (year, month, day, hour, minute, second; all decimal after the driver's BCD decode + range validation). Heartbeat log extended with `rtc=<status> YYYY-MM-DD HH:MM:SS`.
+- **`firmware/platformio.ini`** — `FIRMWARE_VERSION` stamped `2.0.0-alpha.2.9`.
+
+#### Why this phase matters even though it's trivial
+
+The RTC at 0x68 has been visible in every i2c_scan since alpha.2.4, but until this phase the IDF build never *read* from it. The tickle exercises three things at once:
+
+1. **LIB-3's BCD-decode arithmetic** — registers 0x00–0x06 carry packed BCD digits (`0x53` = decimal 53). The driver's `bcd_to_dec()` and `bcd_to_dec()` helpers convert in both directions, plus mask out the mode/century bits. A bug there shows up as a date like "2026-13-32" or "2026-05-17 24:99:99" rather than a clean error.
+2. **LIB-3's range-validation gate** — if any decoded field is out of bounds, the driver returns `RTC_ERR_INVALID (=3)` rather than the bad value. So `rtc=3` followed by zeros means the decode read corrupted registers, not that the bus failed.
+3. **A second i2c device on the LIB-2 bus** — alpha.2.5 only exercised 0x3E (LCD) for writes. alpha.2.9 adds 0x68 reads, which exercises `i2c_write_read` (register pointer write followed by repeated-START read of 7 bytes). This is the canonical multi-device + read-after-write pattern most other LIB-2 consumers use; a bug in that wrapper would show up here.
+
+If `rtc=0` and the timestamp matches a sensible wall-clock value on every heartbeat (with the seconds field incrementing by 5 each tick), the LIB-3 migration is fully validated.
+
+#### Build delta vs alpha.2.8
+
+| Metric | alpha.2.8 | alpha.2.9 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 301,333 B | **302,705 B** | +1,372 B |
+| Firmware bin (image file) | 301,744 B | **303,104 B** | +1,360 B |
+| Flash usage % | 14.4 % | 14.4 % | (rounded same) |
+| RAM static | 18,892 B | 18,900 B | +8 B |
+
+bin sha256: `919EC135867EA45DB21F875259FB23E41CD0F0920ACD6FC0B3A8EBA0FEFBE236`
+
+The +1,372 B is bigger than 2.7/2.8 because LIB-3 has actual code: BCD encode/decode helpers, range-validation guard, the 7-byte read/decode loop, the CH-bit probe, and the heartbeat's extended `printf`-format string. Still tiny vs the 2 MB OTA bank budget.
+
+#### Acceptance bar for alpha.2.9
+
+1. ✅ Build succeeds — no warnings against migrated source.
+2. Flash to Unit 2; boot reason `ESP_RST_POWERON`.
+3. Boot banner extends with `rtc_init returned 0 (OK)` and `RTC clock-halt bit (CH): 0 (running — time is valid)`.
+4. Heartbeat lines extend with `rtc=<status> YYYY-MM-DD HH:MM:SS`.
+5. **`rtc=0` (RTC_OK)** on every heartbeat.
+6. **Date plausibility**: year ≈ 2026, month/day/hour all in normal ranges. The DS1307 doesn't track timezone; whatever time the operator last set persists. On Unit 2 the live readout matches the current time (it ran continuously through 1.20.3).
+7. **Seconds field increments by 5** between consecutive heartbeats (modulo 60). This is the strongest end-to-end check: not just "the chip ACKs", but "the chip's oscillator is actually ticking AND we're reading the latest seconds register, not a cached stale value".
+8. `fg6485a=0 rh=… temp=…` + `s200=0 dir=… wind=…` regression-clean from alpha.2.8.
+9. All earlier-phase regressions clean (hb_led toggling, keys=0, heap stable).
+10. Run ≥ 10 min; no resets; all sensors keep reporting on every heartbeat.
+
+If `rtc=3 (INVALID)` appears, the BCD decode read bad data — could be a battery-low RTC (CH=1 should already have caught that) or a bus contention with another LIB-2 user. If `rtc=2 (COMM)` appears repeatedly, the `i2c_write_read` path is broken (LIB-2 regression).
+
+#### Acceptance: PASSED — 2026-05-17
+
+Flashed Unit 2 (LOLIN S3 dev board on Unit-2 production hardware). Boot reason 1 (`ESP_RST_POWERON`). All earlier-phase tickles regression-clean.
+
+New boot-banner lines from this phase:
+```
+I (1148) GHC-STUB: rtc_init returned 0 (OK)
+I (1151) GHC-STUB: RTC clock-halt bit (CH): 0 (running — time is valid)
+```
+
+Heartbeat output (first 5 ticks, 0–20 s uptime, *seconds field stepping +5 every tick with zero drift*):
+```
+heartbeat 0 | … | rtc=0 2026-05-17 17:43:26
+heartbeat 1 | … | rtc=0 2026-05-17 17:43:31
+heartbeat 2 | … | rtc=0 2026-05-17 17:43:36
+heartbeat 3 | … | rtc=0 2026-05-17 17:43:41
+heartbeat 4 | … | rtc=0 2026-05-17 17:43:46
+```
+
+All acceptance criteria met:
+- **`rtc=0` (RTC_OK)** from the first heartbeat onward.
+- **CH bit = 0** in the banner — DS1307 oscillator has been running continuously since the 1.20.3 deployment; battery still good.
+- **Date `2026-05-17`** matches today's date.
+- **Seconds field stepping +5 every heartbeat** — 26 → 31 → 36 → 41 → 46. This is the strongest end-to-end signal:
+  1. The DS1307 oscillator is actually ticking real time (not just ACKing).
+  2. Each `rtc_get_time` call reads the *current* seconds register (no cache).
+  3. BCD decode is correct (`0x26 → 26` etc.).
+  4. The `i2c_write_read` pattern (write-pointer 0x00, repeated-START, read-7-bytes) works end-to-end.
+- **Heap curve mirrors alpha.2.8** offset by 8 B (RAM static went up by 8 B for the new `rtc_datetime_t` stack variable in the heartbeat) — `363,087 → 367,315 → steady`. No leak.
+- **`fg6485a=0 rh=80.4 temp=16.2`** and **`s200=0 dir=208.0 wind=2.50`** unchanged from alpha.2.8 — adding the RTC poll to the same heartbeat cadence doesn't disturb the other peripherals (separate buses).
+- **Multi-device LIB-2 regression-clean**: every heartbeat now exercises 0x68 reads + 0x3E writes (LCD update is one-shot in `app_main`, but the LCD's last write is still latched on the bus). No NACK collisions, no bus-busy errors.
+
+Phase 2.9 PASS closes out the I2C-bound driver migrations. From here forward Phase 2 has two non-trivial pieces left: LittleFS (alpha.2.10) and SD card (alpha.2.11). Both are filesystem-layer migrations against the IDF VFS API, structurally different from the per-device driver work done so far.
+
 ### `[2.0.0-alpha.2.8]` — 2026-05-17
 
 **Phase 2.8 — eighth driver migration: `drivers/FG6485A` (LIB-FG, ASAIR FG6485A T/RH transmitter).** Trivial header cleanup, same shape as alpha.2.7: the driver was already pure FreeRTOS + LIB-6 (modbus_rtu) consumer. Vestigial `#include <Arduino.h>` removed. The heartbeat tickle is upgraded from a raw `modbus_read_holding_registers(1, 0, 2, ...)` call (kept in place since alpha.2.6) to `fg6485a_read_measurements(1, &meas)` — same wire traffic, but the driver now decodes the registers into engineering units (`humidity_pct`, `temperature_c`) instead of the stub printing raw `uint16` values.

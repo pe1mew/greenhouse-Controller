@@ -104,7 +104,20 @@
  *                                       this validates LIB-FG's status-mapping
  *                                       (MODBUS_OK → FG6485A_OK, other → ERR_COMM)
  *                                       and its reg-decode arithmetic on the
- *                                       same live bus as 2.7. */
+ *                                       same live bus as 2.7.
+ * 2.0.0-alpha.2.9: ds1307_rtc (LIB-3) — initialise the DS1307 RTC at I2C
+ *                                       address 0x68 (already detected by
+ *                                       i2c_scan since alpha.2.4) and read
+ *                                       the wall-clock time on each heartbeat.
+ *                                       Exercises i2c_write_read for the
+ *                                       BCD-encoded time registers (0x00–0x06)
+ *                                       and the LIB-3 BCD-decode + range-
+ *                                       validation path. On Unit 2 the battery-
+ *                                       backed RTC has been running continuously
+ *                                       since the 1.20.3 deployment so the
+ *                                       expected reading is real wall-clock
+ *                                       time. Also reports the CH-bit (clock-
+ *                                       halt) via rtc_oscillator_stopped(). */
 #include "gpio_util.h"
 #include "keypad_matrix.h"
 #include "nvs_config.h"
@@ -113,6 +126,7 @@
 #include "modbus_rtu.h"
 #include "s200.h"
 #include "fg6485a.h"
+#include "ds1307_rtc.h"
 
 static const char *TAG = "GHC-STUB";
 
@@ -210,8 +224,18 @@ static void heartbeat_task(void *arg)
         s200_measurement_t wind = {};
         s200_status_t s200_st = s200_read_measurements(44, &wind);
 
+        /* alpha.2.9 — Poll the DS1307 RTC via LIB-3. Reads 7 BCD registers
+         * (seconds..year), decodes to decimal, validates ranges. Status:
+         *   RTC_OK (=0)         = clean read
+         *   RTC_ERR_COMM (=2)   = I2C error (bus contention / wiring)
+         *   RTC_ERR_INVALID (=3)= range check failed (BCD nonsense in a
+         *                        register — points at battery-low or
+         *                        a corrupted RTC). */
+        rtc_datetime_t now = {};
+        rtc_status_t rtc_st = rtc_get_time(&now);
+
         ESP_LOGI(TAG,
-                 "heartbeat %lu | free=%u largest=%u psram_free=%u uptime=%lus | hb_led=%d keys=%d | fg6485a=%d rh=%.1f temp=%.1f | s200=%d dir=%.1f wind=%.2f",
+                 "heartbeat %lu | free=%u largest=%u psram_free=%u uptime=%lus | hb_led=%d keys=%d | fg6485a=%d rh=%.1f temp=%.1f | s200=%d dir=%.1f wind=%.2f | rtc=%d %04u-%02u-%02u %02u:%02u:%02u",
                  (unsigned long)counter,
                  (unsigned)free_internal,
                  (unsigned)largest_block,
@@ -224,7 +248,14 @@ static void heartbeat_task(void *arg)
                  fg.temperature_c,
                  (int)s200_st,
                  wind.wind_dir_avg_deg,
-                 wind.wind_speed_avg_ms);
+                 wind.wind_speed_avg_ms,
+                 (int)rtc_st,
+                 (unsigned)now.year,
+                 (unsigned)now.month,
+                 (unsigned)now.day,
+                 (unsigned)now.hour,
+                 (unsigned)now.minute,
+                 (unsigned)now.second);
         counter++;
 
         vTaskDelayUntil(&last_wake, period);
@@ -370,6 +401,31 @@ extern "C" void app_main(void)
      * Init only here; the actual polls move into heartbeat_task below. */
     modbus_init();
     ESP_LOGI(TAG, "modbus_init() done — heartbeat will poll FG6485A@1 + S200@44");
+
+    /* alpha.2.9 — DS1307 RTC tickle. Probe the chip at 0x68 (already
+     * confirmed present by the alpha.2.4 i2c_scan), report the CH bit
+     * (clock-halt — if set, the oscillator stopped and the time is
+     * invalid; on Unit 2 the battery-backed RTC has been running since
+     * 1.20.3 deployment so CH must be 0).
+     *
+     * If rtc_init returns RTC_ERR_NO_DEVICE here, that contradicts the
+     * i2c_scan above and means the LIB-3 init path is broken — the bus
+     * is the same. RTC_ERR_COMM would mean i2c_write succeeded the scan
+     * but the LIB-3 0-byte probe doesn't (which is *exactly* the contract
+     * caught by the alpha.2.5 LIB-2 fix — zero-length writes route through
+     * i2c_master_probe). This is a regression check for that fix. */
+    {
+        rtc_status_t rtc_st = rtc_init();
+        ESP_LOGI(TAG, "rtc_init returned %d (%s)", (int)rtc_st,
+                 (rtc_st == RTC_OK)             ? "OK" :
+                 (rtc_st == RTC_ERR_NO_DEVICE)  ? "NO_DEVICE" :
+                 (rtc_st == RTC_ERR_COMM)       ? "COMM" :
+                 (rtc_st == RTC_ERR_INVALID)    ? "INVALID" : "?");
+        bool ch_halted = rtc_oscillator_stopped();
+        ESP_LOGI(TAG, "RTC clock-halt bit (CH): %d (%s)", (int)ch_halted,
+                 ch_halted ? "OSCILLATOR HALTED — time is invalid"
+                           : "running — time is valid");
+    }
 
     BaseType_t rc = xTaskCreatePinnedToCore(
         heartbeat_task,
