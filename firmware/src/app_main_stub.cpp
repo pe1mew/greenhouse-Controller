@@ -81,13 +81,38 @@
  *                                       log the result. First time alpha.2.x
  *                                       exercises the full UART + RS-485
  *                                       direction-control + Modbus protocol
- *                                       stack against a real sensor. */
+ *                                       stack against a real sensor.
+ * 2.0.0-alpha.2.7: s200 (LIB-S200)    — call s200_read_measurements()
+ *                                       against the SenseCAP S200 wind
+ *                                       sensor at slave addr 44 alongside
+ *                                       the FG6485A poll. Exercises the
+ *                                       multi-slave Modbus pattern (IFG
+ *                                       enforcement across consecutive
+ *                                       transactions to different slaves),
+ *                                       and decodes engineering units
+ *                                       (m/s and degrees) via the s200
+ *                                       driver's int32×1000 helpers.
+ * 2.0.0-alpha.2.8: fg6485a (LIB-FG)   — replace the raw FC03 readout used
+ *                                       since 2.6 with the FG6485A driver's
+ *                                       fg6485a_read_measurements(). Same
+ *                                       wire traffic, but the result is now
+ *                                       decoded into engineering units
+ *                                       (humidity_pct, temperature_c) by
+ *                                       the driver's int16/10 helpers. The
+ *                                       heartbeat log changes from raw uint16
+ *                                       (rh_raw/t_raw) to floats (rh/temp) —
+ *                                       this validates LIB-FG's status-mapping
+ *                                       (MODBUS_OK → FG6485A_OK, other → ERR_COMM)
+ *                                       and its reg-decode arithmetic on the
+ *                                       same live bus as 2.7. */
 #include "gpio_util.h"
 #include "keypad_matrix.h"
 #include "nvs_config.h"
 #include "i2c_bus.h"
 #include "lcd1602.h"
 #include "modbus_rtu.h"
+#include "s200.h"
+#include "fg6485a.h"
 
 static const char *TAG = "GHC-STUB";
 
@@ -167,16 +192,26 @@ static void heartbeat_task(void *arg)
          * change in real time on serial. */
         int keys_pressed = keypad_count_pressed();
 
-        /* Poll the FG6485A T/RH sensor via Modbus RTU. Reads 2 holding
-         * registers (FC03): reg 0x0000=humidity raw, reg 0x0001=temp raw.
-         * Logs raw uint16 values + status code; the FG6485A driver (LIB-FG
-         * Phase 2.8) is what scales these into engineering units. */
-        uint16_t fg_regs[2] = { 0, 0 };
-        modbus_status_t fg_st = modbus_read_holding_registers(
-            1, 0x0000, 2, fg_regs);
+        /* alpha.2.8 — Poll the FG6485A T/RH sensor via the FG6485A driver
+         * (LIB-FG). Internally fg6485a_read_measurements() does one FC03
+         * to slave 1 reading 2 holding regs (same wire traffic as the
+         * raw call this replaced) but returns decoded floats:
+         *   meas.humidity_pct    = int16(reg[0]) / 10.0f
+         *   meas.temperature_c   = int16(reg[1]) / 10.0f
+         * Status is collapsed: MODBUS_OK → FG6485A_OK (=0), MODBUS_ERR_PARAM
+         * → FG6485A_ERR_PARAM (=1), other → FG6485A_ERR_COMM (=2). */
+        fg6485a_measurement_t fg = {};
+        fg6485a_status_t fg_st = fg6485a_read_measurements(1, &fg);
+
+        /* Poll the SenseCAP S200 wind sensor via the s200 driver. Issues
+         * two FC04 reads internally (wind dir+speed at 0x0008/12 regs,
+         * heating temp at 0x001C/2 regs) and returns engineering units
+         * (m/s and degrees) decoded from int32×1000 register pairs. */
+        s200_measurement_t wind = {};
+        s200_status_t s200_st = s200_read_measurements(44, &wind);
 
         ESP_LOGI(TAG,
-                 "heartbeat %lu | free=%u largest=%u psram_free=%u uptime=%lus | hb_led=%d keys=%d | fg6485a=%d rh_raw=%u t_raw=%u",
+                 "heartbeat %lu | free=%u largest=%u psram_free=%u uptime=%lus | hb_led=%d keys=%d | fg6485a=%d rh=%.1f temp=%.1f | s200=%d dir=%.1f wind=%.2f",
                  (unsigned long)counter,
                  (unsigned)free_internal,
                  (unsigned)largest_block,
@@ -185,8 +220,11 @@ static void heartbeat_task(void *arg)
                  hb_state,
                  keys_pressed,
                  (int)fg_st,
-                 (unsigned)fg_regs[0],
-                 (unsigned)fg_regs[1]);
+                 fg.humidity_pct,
+                 fg.temperature_c,
+                 (int)s200_st,
+                 wind.wind_dir_avg_deg,
+                 wind.wind_speed_avg_ms);
         counter++;
 
         vTaskDelayUntil(&last_wake, period);
@@ -325,21 +363,13 @@ extern "C" void app_main(void)
     }
 
     /* alpha.2.6 — Modbus RTU master tickle. Initialise UART1 + RS-485
-     * direction control. Heartbeat task polls the FG6485A T/RH sensor
-     * on each tick.
+     * direction control. The heartbeat task uses the bus to poll the
+     * FG6485A (slave 1, via LIB-FG since alpha.2.8) AND the S200 wind
+     * sensor (slave 44, via LIB-S200 since alpha.2.7).
      *
-     * Expected on Unit 2 (FG6485A at slave addr 1, hardware-validated):
-     *   - First poll on each boot may TIMEOUT once while bus settles.
-     *   - Subsequent polls return MODBUS_OK with two register values.
-     *   - reg[0] = humidity   (raw uint16, typically 0..1000 = 0..100.0 %RH)
-     *   - reg[1] = temperature (raw int16, typically -400..1200 = -40.0..120.0 °C)
-     * The full register decode lives in fg6485a.cpp (LIB-FG, Phase 2.8);
-     * this stub just shows the raw values to prove the bus, framing, and
-     * CRC all work end-to-end.
-     *
-     * Init only here; the actual poll moves into heartbeat_task below. */
+     * Init only here; the actual polls move into heartbeat_task below. */
     modbus_init();
-    ESP_LOGI(TAG, "modbus_init() done — will poll FG6485A (addr 1) on each heartbeat");
+    ESP_LOGI(TAG, "modbus_init() done — heartbeat will poll FG6485A@1 + S200@44");
 
     BaseType_t rc = xTaskCreatePinnedToCore(
         heartbeat_task,

@@ -14,7 +14,10 @@
  */
 
 #ifndef NATIVE_TEST
-  #include <Arduino.h>
+  /* ESP-IDF migration 2.0.0-alpha.2.8 — dropped vestigial `#include <Arduino.h>`.
+   * The driver body uses no Arduino types (no String, no Serial, no millis()).
+   * The only platform dependencies are FreeRTOS (semphr, task) for the
+   * optional polling task helper. Public API in `fg6485a.h` is unchanged. */
   #include "freertos/FreeRTOS.h"
   #include "freertos/semphr.h"
   #include "freertos/task.h"

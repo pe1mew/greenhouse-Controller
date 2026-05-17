@@ -18,7 +18,11 @@
  */
 
 #ifndef NATIVE_TEST
-  #include <Arduino.h>
+  /* ESP-IDF migration (2.0.0-alpha.2.7): dropped #include <Arduino.h>.
+   * The body of this file makes no Arduino calls (no delay, no millis,
+   * no Serial, no Wire) — the include was historical noise from the
+   * arduino-esp32 era. FreeRTOS headers below cover all platform
+   * primitives the s200_task helper needs. */
   #include "freertos/FreeRTOS.h"
   #include "freertos/semphr.h"
   #include "freertos/task.h"
