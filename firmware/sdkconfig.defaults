@@ -74,3 +74,29 @@ CONFIG_PARTITION_TABLE_OFFSET=0x8000
 # ESP32-S3 is the target; lock that in explicitly.
 CONFIG_IDF_TARGET="esp32s3"
 CONFIG_IDF_TARGET_ESP32S3=y
+
+# ----------------------------------------------------------------------------
+# FATFS — Long File Name support
+# ----------------------------------------------------------------------------
+# Phase 2.11.1 (2.0.0-alpha.2.11.1) — ESP-IDF defaults CONFIG_FATFS_LFN_NONE=y,
+# which restricts the SD-card FATFS to 8.3 filenames (8-char base + 3-char ext).
+# That broke our test file "phase_2_11_test.csv" (15-char base) and would also
+# break production filenames the original arduino-esp32 build wrote freely:
+#   - Logger filenames patterned "log_YYYYMMDD_HHMMSS.csv" (~20 chars)
+#   - Web assets "manifest.json", "service_worker.js", asset hashes
+# Enable LFN with the heap-allocated buffer (max_lfn=255 chars). The HEAP
+# variant is the IDF default when LFN is enabled; it keeps the per-open stack
+# footprint low at the cost of one heap alloc per directory operation.
+# Without this fix, all of LIB-8's create-file paths return STORAGE_ERR_IO
+# because FATFS internally returns FR_INVALID_NAME on long names.
+#
+# IMPORTANT: FATFS_LONG_FILENAMES is a Kconfig `choice` group (radio button)
+# in IDF 5.5, NOT a settable bool. The first try at this fix (alpha.2.11.1
+# build #1) used `CONFIG_FATFS_LONG_FILENAMES=y` which Kconfig silently
+# ignored — the underlying choice option (NONE/HEAP/STACK) remained on its
+# default of NONE. Correct form: explicitly mark NONE as unset and HEAP as
+# selected. Belt-and-braces for max_lfn so the buffer is large enough for
+# the project's longest production filenames.
+# CONFIG_FATFS_LFN_NONE is not set
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=255
