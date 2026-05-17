@@ -237,6 +237,36 @@ The −412 B is just the removed writer block + literal string constants. The SN
 
 After alpha.3.2 acceptance, Phase 3 is fully closed; Phase 4 (HTTPS client rewrite — `HTTPClient` → `esp_http_client`/`esp_tls`, the gh#23 payoff) is next.
 
+#### Acceptance: PASSED (WiFi primary signal) + SOFT-FAIL (SNTP) — 2026-05-17
+
+Flashed Unit 2 dev board (alpha.3.1's NVS-persisted credentials are still in place — `T-WIFI: NVS credentials: ssid='casaminerva_nomap' psk=***(set)` confirms the seed survived the reflash).
+
+**WiFi path (PRIMARY Phase-3 acceptance signal): PASSED**
+- `WIFI_EVENT_STA_START → IP_EVENT_STA_GOT_IP` in **1.7 seconds** (1668 ms → 3393 ms). Plan's bar was < 5 s; ample margin.
+- `wifi:connected with casaminerva_nomap, aid = 19, channel 6, BW20, bssid = d8:b3:70:d8:05:09 / security: WPA2-PSK, phy: bgn, rssi: -62`
+- `sta ip: 192.168.20.160, mask: 255.255.255.0, gw: 192.168.20.1` — IP/mask/gw all populated, gh#21 race condition structurally impossible.
+- One transient `WIFI_EVENT_STA_DISCONNECTED reason=2` on first auth attempt (reason 2 = AUTH_LEAVE, normal during very-early association); the event handler's retry loop succeeded on the next try. Behaviour identical to alpha.3.1.
+- The `tx null, bss is null` warning at 2000 ms is also normal — it's the WiFi stack briefly trying to send a null frame between the auth-leave and the re-association; cosmetic.
+- **Build verified credentials-free**: byte-pattern scan of the alpha.3.2 .bin showed neither `casaminerva` nor `0652528773` present.
+
+**SNTP path: SOFT-FAIL (network-level, not code regression)**
+- `Starting SNTP (pool.ntp.org)` at 3403 ms → timeout at 13407 ms = full 10-second budget with no progress. `time(NULL)` never advanced past boot-time, meaning no SNTP response arrived to call `settimeofday()`.
+- Most likely cause: bench router (`casaminerva_nomap`) blocks or doesn't NAT outbound UDP/123 (a common consumer-router default to suppress NTP-amplification reflection traffic). Less likely: DNS failure for `pool.ntp.org`, or a missing IDF lwIP/SNTP Kconfig knob.
+- **Not a regression** — the Phase-3 plan does not require SNTP to function over arbitrary networks. The plan calls SNTP a "consequence of `WiFi.h → esp_wifi.h`" but doesn't bar SNTP failure as a phase-completion blocker.
+
+**Workaround (lives in this codebase already)**
+- The RTC tickle from alpha.2.9 (`rtc_get_time(...)` in the heartbeat) keeps reporting **correct wall-clock time** from the battery-backed DS1307: `2026-05-17 21:33:07 → 21:33:12 → 21:33:17 → … (+5s/tick)`. This is independent of the SNTP-fed libc time.
+- The full task_network_manager port in Phase 6 will use the production-proven 30-second SNTP budget + geo/timezone HTTP fetch from `ip-api.com` (which is TCP/80 via `esp_http_client` introduced in Phase 4, not UDP/123). The arduino-era code has been working through this same router pattern in production for many months on 1.20.3, so the Phase-6 path will succeed there too.
+- Phase 4 itself will provide a separate signal on whether the bench network has any outbound internet egress (TCP/443 to the status server). If TLS POSTs work in Phase 4, the network is fine; only NTP/UDP is blocked.
+
+**Earlier-phase tickles regression-clean**:
+- `LFS write/read verify: PASS` (LIB-9 still good)
+- `SD write/read verify: PASS (51 bytes compared)` — file_size now 306 B = 6 boots × 51 B (the appender keeps appending across boots, exactly the gh#26-style append-once-per-boot pattern)
+- `fg6485a=0 rh=92.6 temp=10.5`, `s200=0 dir=208.0 wind=2.50`, `rtc=0 2026-05-17 21:33:07 → +5s/tick`, hb_led toggling, keys=0.
+- Heap: 246,763 free / 163,840 largest at steady-state — matches alpha.3.1's WiFi-runtime baseline within ±300 B. No leak.
+
+**Phase 3 is CLOSED.** Per user decision, SNTP debugging deferred to Phase 6 alongside the full task_network_manager port (which uses `esp_http_client` for geo-sync — that path provides time independent of NTP/UDP/123 if needed). Phase 4 (HTTPS client rewrite — the gh#23 payoff) is next.
+
 ### `[2.0.0-alpha.2.11]` — 2026-05-17
 
 **Phase 2.11 — eleventh and FINAL driver migration of Phase 2: `drivers/sdCard` (LIB-8, FAT32-over-SPI for the event-logger).** Last non-trivial rewrite of the driver layer. The arduino-esp32 SD library + custom `SPIClass(FSPI)` instance is replaced with the IDF-native `esp_vfs_fat_sdspi_*` stack plus standard POSIX `fopen`/`fread`/`fwrite`/`stat`/`remove`/`opendir`/`readdir`/`closedir` for file I/O against the `/sdcard` VFS mountpoint.
