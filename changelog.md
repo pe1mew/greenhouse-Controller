@@ -28,6 +28,138 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-alpha.2.8]` — 2026-05-17
+
+**Phase 2.8 — eighth driver migration: `drivers/FG6485A` (LIB-FG, ASAIR FG6485A T/RH transmitter).** Trivial header cleanup, same shape as alpha.2.7: the driver was already pure FreeRTOS + LIB-6 (modbus_rtu) consumer. Vestigial `#include <Arduino.h>` removed. The heartbeat tickle is upgraded from a raw `modbus_read_holding_registers(1, 0, 2, ...)` call (kept in place since alpha.2.6) to `fg6485a_read_measurements(1, &meas)` — same wire traffic, but the driver now decodes the registers into engineering units (`humidity_pct`, `temperature_c`) instead of the stub printing raw `uint16` values.
+
+#### What changed
+
+- **`drivers/FG6485A/src/fg6485a.cpp`** — dropped vestigial `#include <Arduino.h>` (line 17). The body of this file uses no Arduino types — no `String`, no `Serial`, no `millis()`. Only the FreeRTOS includes (`semphr.h`, `task.h`) stay inside the `#ifndef NATIVE_TEST` guard for the optional `fg6485a_task` polling helper. Public API in `fg6485a.h` is unchanged.
+- **`firmware/components/FG6485A/CMakeLists.txt`** (new) — proxy. SRCS = `../../../drivers/FG6485A/src/fg6485a.cpp`. INCLUDE_DIRS = the driver's `src/` only (the public header doesn't need `pin_config.h` — slave address is a caller parameter). REQUIRES = `modBus` (LIB-6, alpha.2.6) and `freertos` (for the optional `fg6485a_task` polling helper).
+- **`firmware/src/CMakeLists.txt`** — added `FG6485A` to REQUIRES list.
+- **`firmware/src/app_main_stub.cpp`** — Phase 2.8 tickle:
+  - `#include "fg6485a.h"` added.
+  - The raw `modbus_read_holding_registers(1, 0x0000, 2, fg_regs)` call (in place since alpha.2.6) is replaced with `fg6485a_read_measurements(1, &fg)`. The driver internally issues the same FC03 to slave 1 reading 2 holding regs, then decodes:
+    - `fg.humidity_pct   = int16(reg[0]) / 10.0f`
+    - `fg.temperature_c  = int16(reg[1]) / 10.0f`
+  - Status codes collapse: `MODBUS_OK → FG6485A_OK (=0)`, `MODBUS_ERR_PARAM → FG6485A_ERR_PARAM (=1)`, everything else → `FG6485A_ERR_COMM (=2)`.
+  - Heartbeat log format change: `fg6485a=<status> rh_raw=<u16> t_raw=<u16>` → `fg6485a=<status> rh=<%RH> temp=<°C>`. Same status field semantics, but values arrive pre-decoded.
+- **`firmware/platformio.ini`** — `FIRMWARE_VERSION` stamped `2.0.0-alpha.2.8`.
+
+#### Why this phase matters even though it's trivial
+
+The FG6485A migration itself is one `#include` line; the value lies in **what the tickle now exercises**. Before alpha.2.8 the heartbeat printed raw register values, which proved the bus and CRC worked but said nothing about how the FG6485A driver interprets those values. After alpha.2.8 the tickle exercises:
+
+1. **`map_status()`** — the modbus_status_t → fg6485a_status_t collapse (3-way mapping). On a clean bus we should see `fg6485a=0` (FG6485A_OK) steadily.
+2. **`fg6485a_read_measurements()` end-to-end** — the same 5-line wrapper that the future `main.cpp` (Phase 6) will call from `sensor_task`. If the wrapper has a packing/decode bug, it surfaces here against a known-good sensor.
+3. **Signed/unsigned register decode** — temperature is signed × 10 (regs[1] cast to int16 before dividing), humidity is also signed × 10 (the header comment says "unsigned" but the implementation casts to int16 anyway, which only matters at >32767 raw = >3276.7 %RH which is physically impossible). The driver's interpretation now drives the heartbeat output and any decode bug becomes immediately visible.
+
+In short: from alpha.2.8 onward the stub's heartbeat output for FG6485A is **as real as production** — engineering units, status mapping, same code path the climate loop will use. This is the last driver-level migration that touches Modbus; the bus is now fully migrated and exercised through proper driver wrappers for both sensors on it.
+
+#### Build delta vs alpha.2.7
+
+| Metric | alpha.2.7 | alpha.2.8 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 301,217 B | **301,333 B** | +116 B |
+| Firmware bin (image file) | 301,616 B | **301,744 B** | +128 B |
+| Flash usage % | 14.4 % | 14.4 % | (rounded same) |
+| RAM static | 18,892 B | 18,892 B | 0 |
+
+bin sha256: `8E72FB404B9866E29D85C2CF544C8D0E17FB8FF5B45D091595886BDD563128CD`
+
+The +116 B is the FG6485A driver's measurement-read function (~30 lines of compiled code) plus the small status-mapping helper. The raw-register-print path is removed from the stub (-50 B or so), so the *net* delta is small. The driver's write-side functions (`fg6485a_write_alarm_config`, `fg6485a_write_temp_correction`, `fg6485a_write_humidity_correction`) are linked-in but tree-shaken — the stub doesn't call them so they may or may not be in the final image (the linker discards unreferenced static functions, which these are).
+
+#### Acceptance bar for alpha.2.8
+
+1. ✅ Build succeeds — no warnings against migrated source.
+2. Flash to Unit 2; boot reason `ESP_RST_POWERON`.
+3. Heartbeat lines change format: `fg6485a=<status> rh=<%> temp=<°C>` (was `fg6485a=<status> rh_raw=<u16> t_raw=<u16>`).
+4. **`fg6485a=0` (FG6485A_OK)** on the steady-state heartbeats. First poll may briefly TIMEOUT under multi-slave bus settling — accept up to 1 retry.
+5. **`rh=<plausible>` and `temp=<plausible>`** — the decoded values must equal `rh_raw / 10.0` and `t_raw / 10.0` from the alpha.2.7 baseline. Phase 2.7 showed `rh_raw=775 t_raw=185` → expected: `rh=77.5 temp=18.5`. Indoor ambient on Unit 2 location is consistent with that range (small day-over-day variation acceptable).
+6. **`s200=0 dir=<plausible> wind=<plausible>`** unchanged from alpha.2.7 — multi-slave Modbus regression-clean.
+7. All earlier-phase regressions clean (hb_led toggling, keys=0 idle, heap stable).
+8. Run ≥ 10 min; no resets; both sensors keep reporting on every heartbeat.
+
+If `fg6485a=2 (ERR_COMM)` appears repeatedly under alpha.2.8 but the alpha.2.7 raw poll worked (same wire, same bus), the bug is in `map_status()` or the FC03 reply parsing within the driver — *not* in modBus or in the bus itself. Likewise if `rh` or `temp` values are wildly out of plausible range, the decode arithmetic is suspect (signed/unsigned cast).
+
+### `[2.0.0-alpha.2.7]` — 2026-05-17
+
+**Phase 2.7 — seventh driver migration: `drivers/s200` (LIB-S200, SenseCAP wind sensor).** Trivial header cleanup — the driver was already pure FreeRTOS + LIB-6 modBus consumer. Migration cost: one `#include` line.
+
+#### What changed
+
+- **`drivers/s200/src/s200.cpp`** — dropped vestigial `#include <Arduino.h>` (line 21). The body of this file makes no Arduino calls (no `delay`, no `millis`, no `Serial`, no `Wire`) — the include was historical noise from the arduino-esp32 era. Public API in `s200.h` is unchanged.
+- **`firmware/components/s200/CMakeLists.txt`** (new) — proxy. SRCS = `../../../drivers/s200/src/s200.cpp`. INCLUDE_DIRS = the driver's `src/` only (the public header doesn't need `pin_config.h`). REQUIRES = `modBus` (LIB-6, alpha.2.6) and `freertos` (for the optional `s200_task` polling helper).
+- **`firmware/src/CMakeLists.txt`** — added `s200` to REQUIRES list.
+- **`firmware/src/app_main_stub.cpp`** — Phase 2.7 tickle:
+  - `#include "s200.h"` at the top
+  - per-heartbeat call: `s200_read_measurements(44, &wind)` returns a `s200_measurement_t` with `.wind_dir_avg_deg` + `.wind_speed_avg_ms` (and 4 other fields not logged).
+  - Extended heartbeat log: `… | s200=<status> dir=<deg> wind=<m/s>`
+- **`firmware/platformio.ini`** — `FIRMWARE_VERSION` stamped `2.0.0-alpha.2.7`.
+
+#### Why this phase matters even though it's trivial
+
+The s200 tickle is the **first multi-slave Modbus test** in the migration. Up to now alpha.2.6 only polled the FG6485A at slave address 1. The s200 lives at slave address 44, and the tickle now runs both polls on the SAME bus on every heartbeat:
+
+1. FC03 to slave 1 (FG6485A) — 2 holding regs
+2. FC04 to slave 44 (S200) — 12 input regs
+3. FC04 to slave 44 (S200) — 2 input regs (heating temp)
+
+That's three Modbus transactions per heartbeat to two different slaves, and the IFG (inter-frame-gap) enforcement in the LIB-6 driver has to correctly observe 4 ms of bus silence between EVERY transaction — including when bouncing from slave 1 to slave 44. If the IFG bookkeeping is buggy, the second slave starts replying while the first slave's response is still echoing on the bus → CRC errors or framing errors.
+
+Stable `fg6485a=0` AND `s200=0` across heartbeats = the IFG state machine works correctly across slave changes. That's a real regression check on LIB-6, not just driver-loading proof.
+
+#### Build delta vs alpha.2.6
+
+| Metric | alpha.2.6 | alpha.2.7 | Delta |
+|---|---:|---:|---:|
+| Firmware bin | 301,200 B | **301,616 B** | +416 B |
+| Flash usage | 14.3 % | 14.4 % | (rounded same) |
+| RAM static | 18,892 B | 18,892 B | 0 |
+
+bin sha256: `A98217B05DAAAE90B030C42B9FDD2605B5F65CF7989A8E0F31010F9FB65A13B1`
+
+The +416 B is the s200.cpp object code itself (~127 lines of reg-decode and the small `s200_task` polling helper) plus the tickle additions. No new ESP-IDF infrastructure pulled in — s200 is a pure consumer of already-imported modBus + freertos.
+
+#### Acceptance bar for alpha.2.7
+
+1. ✅ Build succeeds — no warnings against migrated source.
+2. Flash to Unit 2; boot reason `ESP_RST_POWERON`.
+3. Heartbeat lines extend with `s200=0 dir=<n> wind=<n>` fields.
+4. **`s200=0`** (S200_OK) on the steady-state heartbeats. First poll may TIMEOUT or COMM (S200's response is longer; multi-slave bus settling).
+5. **`dir=<plausible>`** — 0..360 degrees. Calm day on Unit 2 location: typically west or southwest = 200-270.
+6. **`wind=<plausible>`** — 0..15 m/s for typical conditions. Indoor / sheltered = 0.0-2.0 m/s.
+7. `fg6485a=0` still appears (Phase 2.6 regression — must not break under multi-slave load).
+8. All earlier-phase regressions clean.
+9. Run ≥ 10 min; no resets; both sensors keep reporting on every heartbeat.
+
+If `s200=2 (COMM)` appears repeatedly but `fg6485a=0` stays clean, the multi-slave IFG handling is suspect — the S200's 24-byte responses are larger than FG6485A's 9-byte responses, leaving more bytes in the RX ring that need to be drained correctly between slave switches.
+
+#### Acceptance: PASSED — 2026-05-17
+
+Flashed Unit 2 (LOLIN S3 dev board on Unit-2 production hardware). Boot reason 1 (`ESP_RST_POWERON`). Boot banner clean. NVS pre/post-init: previous fw_version `"2.0.0-alpha.2.7"` (auto-overwritten by the schema's write-on-init policy — alpha.2.6 was the previous flash). i2c_init OK; scan found 0x3E (AiP31068L LCD) and 0x68 (DS1307 RTC). lcd_print wrote `ESP-IDF stub OK` / `v2.0.0-alpha.2.7` to the LCD. modbus_init OK.
+
+Heartbeat output (first 5 ticks, 0–20 s uptime, ALL FIELDS HOLD):
+```
+heartbeat 0 | free=363095 largest=270336 psram_free=8383560 uptime=0s | hb_led=1 keys=0 | fg6485a=0 rh_raw=775 t_raw=185 | s200=0 dir=208.0 wind=2.50
+heartbeat 1 | free=367323 largest=270336 psram_free=8383560 uptime=5s | hb_led=0 keys=0 | fg6485a=0 rh_raw=775 t_raw=185 | s200=0 dir=208.0 wind=2.50
+heartbeat 2 | free=367323 largest=270336 psram_free=8383560 uptime=10s | hb_led=1 keys=0 | fg6485a=0 rh_raw=775 t_raw=185 | s200=0 dir=208.0 wind=2.50
+heartbeat 3 | free=367323 largest=270336 psram_free=8383560 uptime=15s | hb_led=0 keys=0 | fg6485a=0 rh_raw=775 t_raw=185 | s200=0 dir=208.0 wind=2.50
+heartbeat 4 | free=367323 largest=270336 psram_free=8383560 uptime=20s | hb_led=1 keys=0 | fg6485a=0 rh_raw=775 t_raw=185 | s200=0 dir=208.0 wind=2.50
+```
+
+All acceptance criteria met:
+- **`s200=0` (S200_OK)** from the FIRST heartbeat — no warm-up TIMEOUT needed. Multi-slave bus settling happened during alpha.2.6 boot ; the FG6485A poll at slave 1 already heats the bus before the S200 poll at slave 44 fires.
+- **`dir=208.0` (S/SSW)**, **`wind=2.50` m/s** — both within plausible indoor/sheltered range. Values steady across heartbeats — the S200 averaging window holds the reading stable in low-flow conditions (expected).
+- **`fg6485a=0 rh_raw=775 t_raw=185` steady** — slave 1 still works alongside slave 44 on the SAME RS-485 bus. Decoded: 77.5 %RH / 18.5 °C — consistent with alpha.2.6's reading and matches indoor conditions. Phase 2.6's IFG state machine handles slave-1→slave-44→slave-44 transitions on every 5-second heartbeat without CRC/framing errors.
+- **Heap stability**: 363,095 → 367,323 free (small post-init free as alpha.2.7's transient buffers release), then **rock-steady at 367,323** with no drift over 5 heartbeats. Largest block 270,336 unchanged.
+- **`hb_led` toggling 1↔0** every tick — LIB-1 alpha.2.1 regression-clean.
+- **`keys=0`** idle — LIB-5 alpha.2.2 regression-clean.
+
+Phase 2.7 PASS confirms LIB-S200 driver-side migration is structurally trivial (as predicted) AND validates LIB-6's multi-slave behaviour under real bus load — the first test in the migration where two physically distinct slaves on one bus must coordinate.
+
+The `fg6485a=0 rh_raw=… t_raw=…` line in the heartbeat is still going through *raw* modbus_read_holding_registers — the FG6485A driver itself still has `#include <Arduino.h>` and is excluded from the build. Phase 2.8 fixes that.
+
 ### `[2.0.0-alpha.2.6]` — 2026-05-17
 
 **Phase 2.6 — sixth driver migration: `drivers/modBus` (LIB-6, modbus_rtu).** Second non-trivial migration after i2c. Arduino `Serial1.*` calls replaced with ESP-IDF `uart_driver_*` (~120 lines touched). Modbus framing, CRC, and RS-485 direction sequencing all unchanged (framework-agnostic).
