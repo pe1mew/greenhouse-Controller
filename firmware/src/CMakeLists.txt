@@ -44,6 +44,7 @@ idf_component_register(
         nvs           # LIB-7 — migrated 2.0.0-alpha.2.3 (trivial — already raw nvs_*)
         i2c           # LIB-2 — migrated 2.0.0-alpha.2.4 (Wire.h → ESP-IDF v5 i2c_master_*)
         LCD1602_I2C   # LIB-4 — migrated 2.0.0-alpha.2.5 (delay()→vTaskDelay, depends on i2c)
+        modBus        # LIB-6 — migrated 2.0.0-alpha.2.6 (Serial1 → uart_driver_*, depends on gpio)
 )
 
 # -----------------------------------------------------------------------------

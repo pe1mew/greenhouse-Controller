@@ -72,12 +72,22 @@
  *                                       write a visible greeting on both
  *                                       rows. First time alpha.2.x produces
  *                                       output on the LCD itself rather
- *                                       than serial only. */
+ *                                       than serial only.
+ * 2.0.0-alpha.2.6: modbus_rtu (LIB-6) — initialise Modbus RTU master on
+ *                                       UART1/RS-485. On each heartbeat,
+ *                                       read 2 holding registers from the
+ *                                       FG6485A T/RH sensor (slave addr 1,
+ *                                       regs 0x0000=RH 0x0001=Temp) and
+ *                                       log the result. First time alpha.2.x
+ *                                       exercises the full UART + RS-485
+ *                                       direction-control + Modbus protocol
+ *                                       stack against a real sensor. */
 #include "gpio_util.h"
 #include "keypad_matrix.h"
 #include "nvs_config.h"
 #include "i2c_bus.h"
 #include "lcd1602.h"
+#include "modbus_rtu.h"
 
 static const char *TAG = "GHC-STUB";
 
@@ -157,14 +167,26 @@ static void heartbeat_task(void *arg)
          * change in real time on serial. */
         int keys_pressed = keypad_count_pressed();
 
-        ESP_LOGI(TAG, "heartbeat %lu | free=%u largest=%u psram_free=%u uptime=%lus | hb_led=%d keys=%d",
+        /* Poll the FG6485A T/RH sensor via Modbus RTU. Reads 2 holding
+         * registers (FC03): reg 0x0000=humidity raw, reg 0x0001=temp raw.
+         * Logs raw uint16 values + status code; the FG6485A driver (LIB-FG
+         * Phase 2.8) is what scales these into engineering units. */
+        uint16_t fg_regs[2] = { 0, 0 };
+        modbus_status_t fg_st = modbus_read_holding_registers(
+            1, 0x0000, 2, fg_regs);
+
+        ESP_LOGI(TAG,
+                 "heartbeat %lu | free=%u largest=%u psram_free=%u uptime=%lus | hb_led=%d keys=%d | fg6485a=%d rh_raw=%u t_raw=%u",
                  (unsigned long)counter,
                  (unsigned)free_internal,
                  (unsigned)largest_block,
                  (unsigned)free_spiram,
                  (unsigned long)((xTaskGetTickCount() * portTICK_PERIOD_MS) / 1000UL),
                  hb_state,
-                 keys_pressed);
+                 keys_pressed,
+                 (int)fg_st,
+                 (unsigned)fg_regs[0],
+                 (unsigned)fg_regs[1]);
         counter++;
 
         vTaskDelayUntil(&last_wake, period);
@@ -301,6 +323,23 @@ extern "C" void app_main(void)
             ESP_LOGI(TAG, "lcd_print: \"ESP-IDF stub OK\" / \"v%s\" written", FIRMWARE_VERSION);
         }
     }
+
+    /* alpha.2.6 — Modbus RTU master tickle. Initialise UART1 + RS-485
+     * direction control. Heartbeat task polls the FG6485A T/RH sensor
+     * on each tick.
+     *
+     * Expected on Unit 2 (FG6485A at slave addr 1, hardware-validated):
+     *   - First poll on each boot may TIMEOUT once while bus settles.
+     *   - Subsequent polls return MODBUS_OK with two register values.
+     *   - reg[0] = humidity   (raw uint16, typically 0..1000 = 0..100.0 %RH)
+     *   - reg[1] = temperature (raw int16, typically -400..1200 = -40.0..120.0 °C)
+     * The full register decode lives in fg6485a.cpp (LIB-FG, Phase 2.8);
+     * this stub just shows the raw values to prove the bus, framing, and
+     * CRC all work end-to-end.
+     *
+     * Init only here; the actual poll moves into heartbeat_task below. */
+    modbus_init();
+    ESP_LOGI(TAG, "modbus_init() done — will poll FG6485A (addr 1) on each heartbeat");
 
     BaseType_t rc = xTaskCreatePinnedToCore(
         heartbeat_task,

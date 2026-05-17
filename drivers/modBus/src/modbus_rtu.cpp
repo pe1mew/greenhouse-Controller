@@ -2,10 +2,14 @@
  * @file modbus_rtu.cpp
  * @brief Modbus RTU master driver implementation (LIB-6).
  *
+ * Migrated from arduino-esp32's `Serial1` to ESP-IDF's `uart_driver_*`
+ * API in 2.0.0-alpha.2.6 (Phase 2.6). All RS-485 direction control goes
+ * through gpio_util (LIB-1, migrated in alpha.2.1).
+ *
  * Transaction sequence per request:
  *  1. Assert DE/RE HIGH via gpio_set_rs485_direction(true).
- *  2. Write 8-byte request frame to Serial1.
- *  3. Call Serial1.flush() to wait for TX to complete.
+ *  2. Write 8-byte request frame to UART1.
+ *  3. Wait for TX FIFO to drain via uart_wait_tx_done().
  *  4. Assert DE/RE LOW via gpio_set_rs485_direction(false).
  *  5. Read bytes with per-frame timeout until (count*2 + 5) bytes received.
  *     After byte 1: if fc|0x80, adjust expected length to 5 (exception frame).
@@ -17,19 +21,117 @@
  *   Response           : [addr][fc][byte_cnt][data...][crc_lo][crc_hi]
  *   Exception (5 bytes): [addr][fc|0x80][exc_code][crc_lo][crc_hi]
  *
+ * API mapping (arduino → ESP-IDF):
+ *   Serial1.begin(...)          → uart_driver_install + uart_param_config + uart_set_pin
+ *   Serial1.write(buf, n)       → uart_write_bytes(UART_NUM_1, buf, n)
+ *   Serial1.flush()             → uart_wait_tx_done(UART_NUM_1, timeout)
+ *   Serial1.available()         → uart_get_buffered_data_len(UART_NUM_1, &n); n > 0
+ *   Serial1.read()              → uart_read_bytes(UART_NUM_1, &byte, 1, 0)
+ *   micros()                    → esp_timer_get_time() (cast to uint32_t for wrap-compat)
+ *   millis()                    → esp_timer_get_time() / 1000 (likewise)
+ *   delayMicroseconds(us)       → esp_rom_delay_us(us)
+ *
+ * The migration preserves the original code's exact pacing (IFG enforcement,
+ * RS-485 direction flip timing, 8-byte echo drain, counted RX with timeout).
+ * Modbus timing is critical — any deviation can break frame detection on
+ * slow buses or with slaves that produce bursty replies.
+ *
  * @author Greenhouse Controller project
- * @version 0.1.0
  */
 
-#ifndef NATIVE_TEST
-  #include <Arduino.h>
-  #include "gpio_util.h"
-#else
+#ifdef NATIVE_TEST
   #include "mock_uart.h"
   #include "mock_gpio.h"
 #endif
 
 #include "modbus_rtu.h"
+
+#ifndef NATIVE_TEST
+  #include "gpio_util.h"
+  #include "driver/uart.h"
+  #include "esp_timer.h"
+  #include "esp_rom_sys.h"           /* esp_rom_delay_us */
+  #include "freertos/FreeRTOS.h"
+  #include "freertos/task.h"          /* pdMS_TO_TICKS, vTaskDelay (not used; ticks only) */
+#endif
+
+/* ---------------------------------------------------------------------------
+ * UART configuration constants — local to this module.
+ *
+ * RX_BUF_SIZE: ESP-IDF requires >= 128. Set to 256 — comfortably larger than
+ * the longest possible Modbus response (256 bytes data + header/CRC = 261).
+ * For our use (max 2-register reads = 9 bytes response) 256 is generous.
+ *
+ * TX_BUF_SIZE: 0 disables TX buffering — uart_write_bytes blocks until each
+ * byte is in the hardware FIFO. Matches Arduino Serial1.write semantics for
+ * short frames (FIFO is 128 bytes on ESP32-S3 UART1).
+ *
+ * EVENT_QUEUE: 0/NULL — we poll buffered-bytes count rather than using
+ * event-driven RX. Preserves the existing single-threaded transaction model.
+ * --------------------------------------------------------------------------- */
+#ifndef NATIVE_TEST
+#define MODBUS_UART_PORT  UART_NUM_1
+#define MODBUS_RX_BUF     256
+#define MODBUS_TX_BUF     0          /* blocking writes; no SW TX buffer */
+#endif
+
+/* ---------------------------------------------------------------------------
+ * micros() / millis() / delayMicroseconds() shims
+ *
+ * Wrap ESP-IDF primitives so the rest of the file reads identical to the
+ * arduino-era code. micros() and millis() return uint32_t for wrap-equivalence
+ * with the original arduino-style subtraction (modulo arithmetic survives
+ * across the 32-bit wrap at ~71 minutes for micros, 49.7 days for millis).
+ * --------------------------------------------------------------------------- */
+#ifndef NATIVE_TEST
+static inline uint32_t micros(void) {
+    return (uint32_t)esp_timer_get_time();
+}
+static inline uint32_t millis(void) {
+    return (uint32_t)(esp_timer_get_time() / 1000);
+}
+static inline void delayMicroseconds(uint32_t us) {
+    esp_rom_delay_us(us);
+}
+#endif
+
+/* ---------------------------------------------------------------------------
+ * UART helpers — preserve Arduino-style API at the cpp call sites
+ * --------------------------------------------------------------------------- */
+#ifndef NATIVE_TEST
+/* Returns the number of bytes in the RX ring buffer ready to read. */
+static inline int uart1_available(void) {
+    size_t n = 0;
+    uart_get_buffered_data_len(MODBUS_UART_PORT, &n);
+    return (int)n;
+}
+
+/* Non-blocking single-byte read. Returns the byte (0..255) or -1 if none. */
+static inline int uart1_read(void) {
+    uint8_t b = 0;
+    int rc = uart_read_bytes(MODBUS_UART_PORT, &b, 1, 0);
+    return (rc == 1) ? (int)b : -1;
+}
+
+/* Blocking write of n bytes. */
+static inline void uart1_write(const uint8_t *buf, size_t n) {
+    (void)uart_write_bytes(MODBUS_UART_PORT, (const char *)buf, n);
+}
+
+/* Block until the hardware FIFO has drained (matches Serial1.flush). */
+static inline void uart1_flush_tx(void) {
+    /* 50 ms is ample for the longest frame we send (~261 bytes @ 9600 baud
+     * = ~272 ms in theory but write() above blocks until in FIFO; this just
+     * waits for the FIFO to actually clock out). For a Modbus 8-byte request
+     * the FIFO drain is < 10 ms — 50 ms is a safety ceiling. */
+    (void)uart_wait_tx_done(MODBUS_UART_PORT, pdMS_TO_TICKS(50));
+}
+#else
+/* In NATIVE_TEST builds the mock_uart.h header provides Arduino-shaped
+ * Serial1.* functions; the rest of the file uses them directly via the
+ * existing arduino call shapes (Serial1.available() etc.). The shims
+ * above are not needed. */
+#endif
 
 /* ---------------------------------------------------------------------------
  * CRC16 — Modbus (polynomial 0xA001, init 0xFFFF)
@@ -79,7 +181,32 @@ static uint32_t s_frame_end_us = 0u;
 void modbus_init(void)
 {
     gpio_rs485_init();                 /* configure DE/RE pin as output, LOW */
+
+#ifndef NATIVE_TEST
+    /* Install UART driver if not already installed (idempotent guard). */
+    if (uart_is_driver_installed(MODBUS_UART_PORT)) {
+        uart_driver_delete(MODBUS_UART_PORT);
+    }
+
+    uart_config_t cfg = {};
+    cfg.baud_rate  = MODBUS_BAUD;
+    cfg.data_bits  = UART_DATA_8_BITS;
+    cfg.parity     = UART_PARITY_DISABLE;
+    cfg.stop_bits  = UART_STOP_BITS_1;
+    cfg.flow_ctrl  = UART_HW_FLOWCTRL_DISABLE;
+    cfg.source_clk = UART_SCLK_DEFAULT;
+
+    (void)uart_driver_install(MODBUS_UART_PORT,
+                              MODBUS_RX_BUF, MODBUS_TX_BUF,
+                              0, NULL, 0);
+    (void)uart_param_config(MODBUS_UART_PORT, &cfg);
+    (void)uart_set_pin(MODBUS_UART_PORT,
+                       MODBUS_UART_TX, MODBUS_UART_RX,
+                       UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+#else
     Serial1.begin(MODBUS_BAUD, SERIAL_8N1, MODBUS_UART_RX, MODBUS_UART_TX);
+#endif
+
     gpio_set_rs485_direction(false);   /* start in receive mode */
     s_frame_end_us = micros();         /* start IFG timer from driver init */
 }
@@ -123,8 +250,13 @@ static modbus_status_t modbus_transaction(uint8_t  device_addr,
         }
     }
     gpio_set_rs485_direction(true);   /* DE/RE HIGH — driver enable */
+#ifndef NATIVE_TEST
+    uart1_write(req, 8);
+    uart1_flush_tx();
+#else
     Serial1.write(req, 8);
-    Serial1.flush();                  /* wait for TX FIFO to drain */
+    Serial1.flush();
+#endif
     s_frame_end_us = micros();        /* last TX bit left the wire */
     /* Guard: one extra character time so the shift register finishes
      * clocking out the stop bit before DE/RE is deasserted.
@@ -139,7 +271,11 @@ static modbus_status_t modbus_transaction(uint8_t  device_addr,
      * response byte that may have arrived before DE/RE settled. */
     delayMicroseconds(1500);
     for (uint8_t i = 0; i < 8u; i++) {
+#ifndef NATIVE_TEST
+        if (uart1_available()) (void)uart1_read();
+#else
         if (Serial1.available()) (void)Serial1.read();
+#endif
     }
 
     /* Receive response */
@@ -153,12 +289,21 @@ static modbus_status_t modbus_transaction(uint8_t  device_addr,
             /* Drain any late-arriving bytes before returning so the next
              * transaction starts with a clean buffer. */
             delayMicroseconds(2000);
+#ifndef NATIVE_TEST
+            while (uart1_available()) (void)uart1_read();
+#else
             while (Serial1.available()) (void)Serial1.read();
+#endif
             s_frame_end_us = micros();   /* IFG measured from here */
             return MODBUS_ERR_TIMEOUT;
         }
+#ifndef NATIVE_TEST
+        if (uart1_available()) {
+            resp[received++] = (uint8_t)uart1_read();
+#else
         if (Serial1.available()) {
             resp[received++] = (uint8_t)Serial1.read();
+#endif
             /* After the function-code byte: check for exception response */
             if (received == 2 && (resp[1] & 0x80)) {
                 expected_len = 5;   /* exception frame: addr+fc+exc_code+crc_lo+crc_hi */
@@ -200,7 +345,11 @@ static modbus_status_t modbus_transaction(uint8_t  device_addr,
     /* Drain any surplus bytes (e.g. interleaved echoes) so the next
      * transaction starts with a clean buffer. */
     delayMicroseconds(2000);
+#ifndef NATIVE_TEST
+    while (uart1_available()) (void)uart1_read();
+#else
     while (Serial1.available()) (void)Serial1.read();
+#endif
 
     return MODBUS_OK;
 }
@@ -248,8 +397,13 @@ modbus_status_t modbus_write_multiple_registers(uint8_t         device_addr,
         }
     }
     gpio_set_rs485_direction(true);
+#ifndef NATIVE_TEST
+    uart1_write(req, (size_t)(payload_len + 2));
+    uart1_flush_tx();
+#else
     Serial1.write(req, (size_t)(payload_len + 2));
     Serial1.flush();
+#endif
     s_frame_end_us = micros();        /* last TX bit left the wire */
     delayMicroseconds(2000);
     gpio_set_rs485_direction(false);
@@ -258,7 +412,11 @@ modbus_status_t modbus_write_multiple_registers(uint8_t         device_addr,
      * For FC16 the frame is (payload_len + 2) bytes long. */
     delayMicroseconds(1500);
     for (uint8_t i = 0; i < (uint8_t)(payload_len + 2u); i++) {
+#ifndef NATIVE_TEST
+        if (uart1_available()) (void)uart1_read();
+#else
         if (Serial1.available()) (void)Serial1.read();
+#endif
     }
 
     /* Receive 8-byte normal response (or 5-byte exception) */
@@ -270,12 +428,21 @@ modbus_status_t modbus_write_multiple_registers(uint8_t         device_addr,
     while (received < expected_len) {
         if (millis() - start > MODBUS_TIMEOUT_MS) {
             delayMicroseconds(2000);
+#ifndef NATIVE_TEST
+            while (uart1_available()) (void)uart1_read();
+#else
             while (Serial1.available()) (void)Serial1.read();
+#endif
             s_frame_end_us = micros();
             return MODBUS_ERR_TIMEOUT;
         }
+#ifndef NATIVE_TEST
+        if (uart1_available()) {
+            resp[received++] = (uint8_t)uart1_read();
+#else
         if (Serial1.available()) {
             resp[received++] = (uint8_t)Serial1.read();
+#endif
             if (received == 2 && (resp[1] & 0x80)) {
                 expected_len = 5;   /* exception frame */
             }
@@ -301,7 +468,11 @@ modbus_status_t modbus_write_multiple_registers(uint8_t         device_addr,
 
     /* Drain surplus bytes */
     delayMicroseconds(2000);
+#ifndef NATIVE_TEST
+    while (uart1_available()) (void)uart1_read();
+#else
     while (Serial1.available()) (void)Serial1.read();
+#endif
 
     return MODBUS_OK;
 }
