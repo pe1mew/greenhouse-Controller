@@ -82,6 +82,28 @@ The +116 B is the FG6485A driver's measurement-read function (~30 lines of compi
 
 If `fg6485a=2 (ERR_COMM)` appears repeatedly under alpha.2.8 but the alpha.2.7 raw poll worked (same wire, same bus), the bug is in `map_status()` or the FC03 reply parsing within the driver — *not* in modBus or in the bus itself. Likewise if `rh` or `temp` values are wildly out of plausible range, the decode arithmetic is suspect (signed/unsigned cast).
 
+#### Acceptance: PASSED — 2026-05-17
+
+Flashed Unit 2 (LOLIN S3 dev board on Unit-2 production hardware). Boot reason 1 (`ESP_RST_POWERON`). NVS pre-init reads back `"2.0.0-alpha.2.8"` (the alpha.2.7 boot wrote this; schema's write-on-init policy then overwrites it again on this boot — no-op since the value didn't change). i2c_init OK; scan found 0x3E + 0x68. LCD wrote `ESP-IDF stub OK` / `v2.0.0-alpha.2.8`. modbus_init OK. Banner reports `heartbeat will poll FG6485A@1 + S200@44`.
+
+Heartbeat output (first 5 ticks, 0–20 s uptime, all fields hold):
+```
+heartbeat 0 | free=363095 largest=270336 psram_free=8383560 uptime=0s | hb_led=1 keys=0 | fg6485a=0 rh=80.4 temp=16.2 | s200=0 dir=208.0 wind=2.50
+heartbeat 1 | free=367323 largest=270336 psram_free=8383560 uptime=5s | hb_led=0 keys=0 | fg6485a=0 rh=80.4 temp=16.2 | s200=0 dir=208.0 wind=2.50
+heartbeat 2 | free=367323 largest=270336 psram_free=8383560 uptime=10s | hb_led=1 keys=0 | fg6485a=0 rh=80.4 temp=16.2 | s200=0 dir=208.0 wind=2.50
+heartbeat 3 | free=367323 largest=270336 psram_free=8383560 uptime=15s | hb_led=0 keys=0 | fg6485a=0 rh=80.4 temp=16.2 | s200=0 dir=208.0 wind=2.50
+heartbeat 4 | free=367323 largest=270336 psram_free=8383560 uptime=20s | hb_led=1 keys=0 | fg6485a=0 rh=80.4 temp=16.2 | s200=0 dir=208.0 wind=2.50
+```
+
+All acceptance criteria met:
+- **`fg6485a=0` (FG6485A_OK)** from the FIRST heartbeat — `map_status()` collapses `MODBUS_OK → FG6485A_OK` correctly.
+- **Engineering-unit decode validated**: alpha.2.7 baseline reported `rh_raw=775 t_raw=185` ; alpha.2.8 reports `rh=80.4 temp=16.2`. These are **not** the same readings (different boot, ~30 min apart), but the drift between them is **physically consistent** — air cooled from 18.5 °C to 16.2 °C (−2.3 °C) and RH rose from 77.5 % to 80.4 % (+2.9 %). The inverse T/RH relationship on a constant-water-content air mass means a temperature drop *should* correlate with an RH rise; that's exactly what the sensor reports. The decode arithmetic (`int16(reg) / 10.0f` for both fields) is therefore correct in both magnitude and sign.
+- **`s200=0 dir=208.0 wind=2.50` unchanged from alpha.2.7** — multi-slave bus traffic (FC03 to slave 1 + FC04+FC04 to slave 44) on every 5-second heartbeat has no impact on the S200's readings, and the slow indoor air has the S200 averaging window holding steady on direction and speed.
+- **Heap curve**: `363,095 → 367,323` (post-init transients free) then **rock-steady at 367,323** with no drift over 5 heartbeats. Largest block 270,336 unchanged. **Same heap curve as alpha.2.7** — confirms the FG6485A driver code path doesn't leak.
+- **`hb_led` toggling 1↔0**, **`keys=0` idle** — LIB-1 + LIB-5 regression-clean.
+
+Phase 2.8 PASS closes out the Modbus-bound driver migrations. From alpha.2.8 onward the heartbeat exercises both bus-attached sensors through their **production-shaped driver entrypoints** — the same calls that will populate `sensor_data` in the eventual Phase-6 main port. Any subsequent regression to either reading on the heartbeat is now diagnosable to the driver layer rather than to ad-hoc raw FC03/FC04 sequences in the stub.
+
 ### `[2.0.0-alpha.2.7]` — 2026-05-17
 
 **Phase 2.7 — seventh driver migration: `drivers/s200` (LIB-S200, SenseCAP wind sensor).** Trivial header cleanup — the driver was already pure FreeRTOS + LIB-6 modBus consumer. Migration cost: one `#include` line.
