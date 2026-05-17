@@ -117,7 +117,21 @@
  *                                       since the 1.20.3 deployment so the
  *                                       expected reading is real wall-clock
  *                                       time. Also reports the CH-bit (clock-
- *                                       halt) via rtc_oscillator_stopped(). */
+ *                                       halt) via rtc_oscillator_stopped().
+ * 2.0.0-alpha.2.10: littlefs (LIB-9) — query the active LittleFS partition
+ *                                       (via OTA bank readback), mount it,
+ *                                       log total/free bytes, probe for
+ *                                       `index.html` (the canonical bundled
+ *                                       web-asset that EVERY 1.x build has
+ *                                       written to whichever partition is
+ *                                       active for that OTA cycle). One-shot
+ *                                       tickle in app_main; the mount stays
+ *                                       up for the rest of the boot so any
+ *                                       future filesystem regression test
+ *                                       can use it. Exercises the new
+ *                                       esp_vfs_littlefs_register path and
+ *                                       the POSIX fopen/stat layer that
+ *                                       replaces the Arduino fs::File class. */
 #include "gpio_util.h"
 #include "keypad_matrix.h"
 #include "nvs_config.h"
@@ -127,6 +141,7 @@
 #include "s200.h"
 #include "fg6485a.h"
 #include "ds1307_rtc.h"
+#include "littlefs_storage.h"
 
 static const char *TAG = "GHC-STUB";
 
@@ -425,6 +440,122 @@ extern "C" void app_main(void)
         ESP_LOGI(TAG, "RTC clock-halt bit (CH): %d (%s)", (int)ch_halted,
                  ch_halted ? "OSCILLATOR HALTED — time is invalid"
                            : "running — time is valid");
+    }
+
+    /* alpha.2.10 / alpha.2.10.1 — LittleFS dual-partition driver tickle.
+     *
+     * Workflow:
+     *   1) Read which OTA app bank is currently running via
+     *      littlefs_active_partition() (esp_ota_get_running_partition under
+     *      the hood). On Unit 2 we expect LFS_PARTITION_A because Unit 2 is
+     *      running the freshly-flashed binary at app0; OTA bank N ↔ LittleFS
+     *      partition N by design.
+     *   2) Try to mount the active partition.
+     *   3) FALLBACK: if mount fails (typical fresh-flash scenario — the
+     *      lfs0 partition has uninitialised or arduino-era content that the
+     *      IDF joltwallet/littlefs implementation rejects with LFS_ERR_CORRUPT
+     *      = -84), format the partition and re-mount. This exercises the
+     *      littlefs_format() code path that we'd otherwise never hit before
+     *      Phase 5; it's also a realistic production-recovery scenario
+     *      (factory-erase, paired-OTA pre-write).
+     *   4) Write a small known-content file, read it back, byte-compare to
+     *      prove fopen("wb")+fwrite()+fclose() and fopen("rb")+fread()+fclose()
+     *      via the VFS mountpoint all work end-to-end.
+     *   5) Report total + used + free bytes via esp_littlefs_info.
+     *
+     * Acceptance signal:
+     *   - One of:
+     *       littlefs_mount returns 0 (OK) — partition was already initialised
+     *       littlefs_mount returns 1 (MOUNT), then format+remount → 0 (OK)
+     *   - test-file write/read/verify all succeed
+     *   - free_bytes is positive and plausible (~960 KB on a 1 MB partition
+     *     with one tiny test file)
+     *
+     * The mount stays up for the rest of the boot so any future filesystem
+     * regression test can use it. */
+    {
+        lfs_partition_t active = littlefs_active_partition();
+        const char *active_str = (active == LFS_PARTITION_A) ? "A (lfs0)" :
+                                 (active == LFS_PARTITION_B) ? "B (lfs1)" : "?";
+        ESP_LOGI(TAG, "littlefs_active_partition = %s", active_str);
+
+        lfs_status_t lfs_st = littlefs_mount(active);
+        ESP_LOGI(TAG, "littlefs_mount(%s) returned %d (%s)",
+                 active_str, (int)lfs_st,
+                 (lfs_st == LFS_OK)            ? "OK" :
+                 (lfs_st == LFS_ERR_MOUNT)     ? "MOUNT" :
+                 (lfs_st == LFS_ERR_NOT_FOUND) ? "NOT_FOUND" :
+                 (lfs_st == LFS_ERR_IO)        ? "IO" :
+                 (lfs_st == LFS_ERR_FULL)      ? "FULL" : "?");
+
+        /* alpha.2.10.1 fallback: if the partition didn't mount, format it
+         * and try again. The partition table reserves 1 MB at offset
+         * 0x420000; a fresh format gives us a clean LittleFS filesystem. */
+        if (lfs_st == LFS_ERR_MOUNT) {
+            ESP_LOGW(TAG, "LFS mount failed — partition is uninitialised or "
+                          "carries arduino-era content; formatting now...");
+            lfs_status_t fmt_st = littlefs_format(active);
+            ESP_LOGI(TAG, "littlefs_format(%s) returned %d (%s)",
+                     active_str, (int)fmt_st,
+                     (fmt_st == LFS_OK) ? "OK" : "ERR");
+
+            if (fmt_st == LFS_OK) {
+                lfs_st = littlefs_mount(active);
+                ESP_LOGI(TAG, "littlefs_mount(%s) after format returned %d (%s)",
+                         active_str, (int)lfs_st,
+                         (lfs_st == LFS_OK) ? "OK" : "FAIL");
+            }
+        }
+
+        if (lfs_st == LFS_OK) {
+            /* Write/read/verify cycle. The file path is intentionally distinct
+             * from any production asset name so an operator looking at the
+             * partition later can tell which build the file was written by. */
+            static const char *test_path = "/phase_2_10_test.txt";
+            static const char  test_data[] =
+                "Greenhouse Controller v2.0.0-alpha.2.10.1 — LIB-9 ESP-IDF port works.\n";
+            const size_t test_data_len = sizeof(test_data) - 1u;
+
+            lfs_status_t w_st = littlefs_write(active, test_path,
+                                               test_data, test_data_len);
+            ESP_LOGI(TAG, "littlefs_write(%s) %u bytes -> %d (%s)",
+                     test_path, (unsigned)test_data_len, (int)w_st,
+                     (w_st == LFS_OK)        ? "OK" :
+                     (w_st == LFS_ERR_FULL)  ? "FULL" :
+                     (w_st == LFS_ERR_IO)    ? "IO"   :
+                     (w_st == LFS_ERR_MOUNT) ? "MOUNT": "?");
+
+            if (w_st == LFS_OK) {
+                bool exists = littlefs_exists(active, test_path);
+                ESP_LOGI(TAG, "littlefs_exists(%s) = %s",
+                         test_path, exists ? "true" : "false");
+
+                char readbuf[128] = {0};
+                lfs_status_t r_st = littlefs_read(active, test_path,
+                                                   readbuf, sizeof(readbuf));
+                ESP_LOGI(TAG, "littlefs_read(%s) -> %d (%s); %u bytes; first 40 chars: \"%.40s\"",
+                         test_path, (int)r_st,
+                         (r_st == LFS_OK) ? "OK" : "FAIL",
+                         (unsigned)strlen(readbuf), readbuf);
+
+                /* Byte-compare what we wrote vs what we read back. */
+                bool match = (r_st == LFS_OK)
+                          && (strlen(readbuf) == test_data_len)
+                          && (memcmp(readbuf, test_data, test_data_len) == 0);
+                ESP_LOGI(TAG, "LFS write/read verify: %s",
+                         match ? "PASS — bytes identical"
+                               : "FAIL — content mismatch (driver bug)");
+            }
+
+            uint64_t free_b = littlefs_free_bytes(active);
+            ESP_LOGI(TAG, "LFS free bytes on partition %s: %llu",
+                     active_str, (unsigned long long)free_b);
+
+            bool have_index = littlefs_exists(active, "/index.html");
+            ESP_LOGI(TAG, "LFS file probe: /index.html %s",
+                     have_index ? "exists (likely arduino-era survivor)"
+                                : "not found (clean post-format state)");
+        }
     }
 
     BaseType_t rc = xTaskCreatePinnedToCore(

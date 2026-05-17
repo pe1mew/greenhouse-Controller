@@ -48,6 +48,7 @@ idf_component_register(
         s200          # LIB-S200 — migrated 2.0.0-alpha.2.7 (trivial cleanup, depends on modBus)
         FG6485A       # LIB-FG — migrated 2.0.0-alpha.2.8 (trivial cleanup, depends on modBus)
         DS1307_RTC    # LIB-3 — migrated 2.0.0-alpha.2.9 (trivial cleanup, depends on i2c)
+        littleFS      # LIB-9 — migrated 2.0.0-alpha.2.10 (LittleFS.h → esp_vfs_littlefs_*; managed component)
 )
 
 # -----------------------------------------------------------------------------
