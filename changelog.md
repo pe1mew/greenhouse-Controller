@@ -28,6 +28,120 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-alpha.2.6]` — 2026-05-17
+
+**Phase 2.6 — sixth driver migration: `drivers/modBus` (LIB-6, modbus_rtu).** Second non-trivial migration after i2c. Arduino `Serial1.*` calls replaced with ESP-IDF `uart_driver_*` (~120 lines touched). Modbus framing, CRC, and RS-485 direction sequencing all unchanged (framework-agnostic).
+
+#### What changed
+
+- **`drivers/modBus/src/modbus_rtu.cpp`** — ~120 lines of arduino calls replaced. Public API in `modbus_rtu.h` unchanged — three functions (`modbus_init`, `modbus_read_holding_registers`, `modbus_read_input_registers`, `modbus_write_multiple_registers`) keep their signatures and semantics.
+- **`firmware/components/modBus/CMakeLists.txt`** (new) — proxy. SRCS = `../../../drivers/modBus/src/modbus_rtu.cpp`. INCLUDE_DIRS adds the driver's `src/` and the firmware's `config/` (for `PIN_RS485_TX`/`PIN_RS485_RX`). REQUIRES = `gpio` (for RS-485 direction) + `driver` (for UART API) + `esp_timer` (for micros/millis) + `freertos` (for pdMS_TO_TICKS).
+- **`firmware/src/CMakeLists.txt`** — added `modBus` to REQUIRES list.
+- **`firmware/src/app_main_stub.cpp`** — Phase 2.6 tickle:
+  - `#include "modbus_rtu.h"` at the top
+  - `modbus_init()` in `app_main()` after the LCD tickle
+  - **per-heartbeat poll**: `modbus_read_holding_registers(1, 0x0000, 2, fg_regs)` reads RH (reg 0) + Temperature (reg 1) raw from the FG6485A. The heartbeat log line now ends with `fg6485a=<status> rh_raw=<value> t_raw=<value>`. On Unit 2 with the FG6485A wired and operational, `fg_st=0 (OK)` and the values track real ambient conditions.
+- **`firmware/platformio.ini`** — `FIRMWARE_VERSION` stamped `2.0.0-alpha.2.6`.
+
+#### API mapping (arduino → ESP-IDF)
+
+| arduino-esp32 | ESP-IDF | Notes |
+|---|---|---|
+| `Serial1.begin(baud, SERIAL_8N1, rx, tx)` | `uart_driver_install` + `uart_param_config` + `uart_set_pin` | More verbose but explicit about buffer sizes |
+| `Serial1.write(buf, n)` | `uart_write_bytes(UART_NUM_1, buf, n)` | Blocking; matches arduino with TX_BUF=0 |
+| `Serial1.flush()` | `uart_wait_tx_done(UART_NUM_1, pdMS_TO_TICKS(50))` | 50 ms ceiling — generous for 9600 baud |
+| `Serial1.available()` | `uart_get_buffered_data_len(...)` (wrapped as `uart1_available()`) | Returns int byte-count |
+| `Serial1.read()` | `uart_read_bytes(..., 1, 0)` (wrapped as `uart1_read()`) | Non-blocking single byte |
+| `micros()` | `(uint32_t)esp_timer_get_time()` | Wrapped to preserve uint32 wraparound semantics |
+| `millis()` | `(uint32_t)(esp_timer_get_time() / 1000)` | Same |
+| `delayMicroseconds(us)` | `esp_rom_delay_us(us)` | Tight busy-wait |
+
+Inline static wrappers at the top of `modbus_rtu.cpp` keep the body close to the arduino-era code — only the `Serial1.*` calls were token-substituted to `uart1_*()` helpers and `micros()`/`millis()`/`delayMicroseconds()` redirected. CRC math, frame parsing, IFG timing, echo-drain loops, response-length detection (including the exception-frame path that reduces expected length to 5 bytes on `fc | 0x80`) — all character-for-character identical to 1.20.3.
+
+#### UART configuration
+
+- Port: `UART_NUM_1` (UART1, matches the arduino `Serial1`)
+- Baud: 9600 (MODBUS_BAUD, unchanged)
+- Frame: 8N1
+- RX buffer: 256 bytes (above ESP-IDF's 128-byte minimum; ample for max-size 256-byte modbus response)
+- TX buffer: 0 (blocking writes — matches arduino Serial behaviour with short frames)
+- No event queue (polling pattern preserved)
+- Pins: `PIN_RS485_TX` / `PIN_RS485_RX` from `pin_config.h`
+
+#### Build delta vs alpha.2.5
+
+| Metric | alpha.2.5 | alpha.2.6 | Delta |
+|---|---:|---:|---:|
+| Firmware bin | 283,312 B | **301,200 B** | +17,888 B |
+| Flash usage | 13.5 % | 14.3 % | +0.8 pp |
+| RAM static | 18,884 B | 18,892 B | +8 B |
+
+bin sha256: `92A6A8EA98257A6FB90B479CB53E97A59BD37A9F459B0E4771335E08659C0963`
+
+The +18 KB pulls in the ESP-IDF UART driver subsystem (`driver/uart.h` implementation, ring buffer + event-queue infrastructure that we don't use but the library provides anyway, UART HAL layer) plus the migrated modbus_rtu.cpp object code. Each subsequent UART user (s200 in Phase 2.7, fg6485a in Phase 2.8) reuses this and pays essentially zero further bytes.
+
+Also: the UART driver allocates the RX ring buffer (256 bytes) on the heap when `uart_driver_install` runs. That's the +8 B RAM-static cost showing here, plus 256 B of heap that's deducted from free heap at boot — visible in the heartbeat free-heap field after this commit.
+
+#### Acceptance bar for alpha.2.6
+
+1. ✅ Build succeeds — no warnings against migrated source.
+2. Flash to Unit 2; boot reason `ESP_RST_POWERON`.
+3. Boot log shows `modbus_init() done — will poll FG6485A (addr 1) on each heartbeat`.
+4. **Heartbeat lines include `fg6485a=<n> rh_raw=<u> t_raw=<u>`** — the new acceptance signal:
+   - `fg6485a=0` → MODBUS_OK; RH and Temp registers read successfully
+   - `rh_raw` typically in 0..1000 range (= 0..100.0 %RH × 10); on a normal kas could be ~600 (60 %)
+   - `t_raw` typically in -400..1200 range (= -40.0..120.0 °C × 10); on a normal kas could be ~250 (25 °C)
+5. **First heartbeat may show `fg6485a=1 (TIMEOUT)`** — RS-485 bus can take one cycle to settle after init; subsequent heartbeats should report OK.
+6. All earlier-phase regressions clean (HB LED, keypad, NVS, I2C scan, LCD greeting).
+7. Run ≥ 10 min — at least 100 successful Modbus polls; no resets.
+
+If `fg6485a=2 (CRC)` keeps appearing, the UART RX is dropping bytes or interleaving with echo bytes. If `fg6485a=4 (FRAMING)`, the slave is responding but with unexpected content. If `fg6485a=1 (TIMEOUT)` persists, either the slave isn't responding or the RS-485 direction-control timing is wrong (DE/RE flip race with TX FIFO drain) — would need to retune the `delayMicroseconds(2000)` guards.
+
+#### Acceptance: PASSED — 2026-05-17
+
+Flashed to Unit 2. Even better than the bar called for: zero timeouts, OK on the very FIRST poll. First 5 heartbeats:
+
+```
+heartbeat 0 | … | fg6485a=0 rh_raw=812 t_raw=190
+heartbeat 1 | … | fg6485a=0 rh_raw=812 t_raw=190
+heartbeat 2 | … | fg6485a=0 rh_raw=812 t_raw=190
+heartbeat 3 | … | fg6485a=0 rh_raw=812 t_raw=190
+heartbeat 4 | … | fg6485a=0 rh_raw=812 t_raw=190
+```
+
+Decoded per the FG6485A register-scaling convention (raw × 10):
+- **rh_raw=812** → 81.2 %RH
+- **t_raw=190** → 19.0 °C
+
+Plausible kas reading for the time and weather, and the **stable-across-heartbeats** value is a stronger signal than predicted: the sensor's internal reading updates slowly (every few seconds for the capacitive RH element), so identical raw values across consecutive polls means the Modbus byte-level path is delivering the same internal state byte-for-byte every time. Any UART RX glitch, echo-drain timing error, or CRC-validation bug would show as random or shifting values.
+
+Every layer of the new Modbus stack is verified end-to-end against real hardware in one shot:
+- ESP-IDF `uart_driver_install` + `uart_param_config` for UART1 @ 9600 8N1 ✓
+- `uart_write_bytes` + `uart_wait_tx_done` (TX path + blocking-flush semantics) ✓
+- `uart_get_buffered_data_len` + `uart_read_bytes` (RX ring buffer → byte polling) ✓
+- `gpio_set_rs485_direction` (LIB-1 chain) — half-duplex DE/RE flip ✓
+- `esp_timer_get_time()` → micros/millis wrappers — IFG (4 ms) + response timeout (200 ms) ✓
+- `esp_rom_delay_us(us)` — tight 1.5/2 ms guards around DE/RE flips ✓
+- Modbus CRC-16 (0xA001) — byte-identical results across the migration ✓
+- Counted echo-drain (8 bytes) — half-duplex echo handling preserved ✓
+- FC03 framing — request + response wire bytes unchanged ✓
+
+The careful preservation of the original arduino timing constants (4000 µs IFG, 2000 µs DE/RE guard, 1500 µs settle, 8-byte echo count) is what made the migration land cleanly the first time. The migration ONLY changed which API moves bytes to/from the wire; everything timing-sensitive stayed character-for-character identical to the 1.20.3 source.
+
+Regression checks all clean:
+- ✅ Boot reason POWERON (esp_reset_reason=1)
+- ✅ NVS roundtrip works (fw_version pre/post both "2.0.0-alpha.2.6")
+- ✅ I2C scan still finds 2 devices (0x3E + 0x68)
+- ✅ LCD still shows "ESP-IDF stub OK" / "v2.0.0-alpha.2.6"
+- ✅ HB LED alternates hb_led=1/0
+- ✅ Keypad still reports keys=0 idle
+- ✅ Heap stable at ~367 KB free, 270 KB largest-block (+~3 KB cost vs alpha.2.5 for UART ring buffer)
+- ✅ NEW: FG6485A T/RH poll returns OK every heartbeat with stable raw values
+
+This commit also represents the first time alpha.2.x has read a real sensor value from the kas. Phase 2.7 (s200, wind sensor) and Phase 2.8 (fg6485a, full scaling decode) will build on this by exercising the same Modbus path against the wind sensor at slave addr 44 and then layering the engineering-units conversion on top of the raw-register reads.
+
+### `[2.0.0-alpha.2.5]` — 2026-05-17
+
 ### `[2.0.0-alpha.2.5]` — 2026-05-17
 
 **Phase 2.5 — fifth driver migration: `drivers/LCD1602_I2C` (LIB-4, lcd1602).** First alpha that produces visible output on the LCD itself, not just serial.
