@@ -30,3 +30,13 @@ __pycache__/
 /manual/*.html
 debug/
 /.tmp
+
+# ESP-IDF build-system artefacts (appearing from 2.0.0-alpha.1 onwards when
+# framework = espidf replaces framework = arduino). PlatformIO+espidf still
+# writes most of its build output under .pio/ (already ignored above), but
+# native idf.py paths and managed-component caches land outside it.
+/firmware/build/
+/firmware/sdkconfig
+/firmware/sdkconfig.old
+/firmware/managed_components/
+/firmware/dependencies.lock

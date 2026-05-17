@@ -6,6 +6,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.0.0] — *in progress on `dev/2.0.0-esp-idf` branch*
+
+> **This is a major-version release in active development.** The work is not yet on `main`. The 1.20.x line continues as the production line; this section will be consolidated and re-dated when 2.0.0 ships. Pre-releases (`2.0.0-alpha.N`, `2.0.0-rc.N`) accumulate below in chronological order, oldest first.
+
+### Why 2.0.0 — context
+
+Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (PlatformIO `framework = espidf`). The codebase is already ~80 % ESP-IDF native (FreeRTOS tasks, raw `nvs_*`, `esp_ota_*`, custom dual-LittleFS, `esp_log` / `esp_task_wdt` / `heap_caps_*`); the residual Arduino layer has become the structural cause of every remaining hard problem (gh#23 mbedTLS heap pattern, gh#21 lwIP-init race, gh#26 SD-flush absence, ESPAsyncWebServer constraints). Direct mbedTLS / esp_tls config — required to close gh#23 — is unreachable through arduino-esp32's `WiFiClientSecure` (confirmed by the 1.20.3 attempt to apply mitigation C1). The migration eliminates that constraint and unlocks the gh#23 mitigation menu in full.
+
+### Phased build, alpha-tagged
+
+| Tag | Phase | Scope |
+|---|---|---|
+| `2.0.0-alpha.0` | 0 | Branch setup + scaffolding (this entry) |
+| `2.0.0-alpha.1` | 1 | `framework = espidf` flip + smoke boot |
+| `2.0.0-alpha.2` | 2 | Driver layer (gpio → keypad → nvs → i2c_bus → lcd1602 → modbus_rtu → s200 → fg6485a → DS1307_RTC → littleFS → sdCard) |
+| `2.0.0-alpha.3` | 3 | Network stack (`WiFi.h` → `esp_wifi.h` / `esp_netif.h` / `esp_event.h`) |
+| `2.0.0-alpha.4` | 4 | HTTPS client (`HTTPClient` / `WiFiClientSecure` → `esp_http_client` / `esp_tls` + mbedtls knobs) — gh#23 payoff |
+| `2.0.0-alpha.5` | 5 | Web server (`ESPAsyncWebServer` → `esp_http_server`) — 25 endpoints + WS rewrite |
+| `2.0.0-alpha.6` | 6 | Misc cleanup (Adafruit_NeoPixel → RMT, pinMode → gpio_*, millis() → esp_timer, Arduino.h removal) |
+| `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
+| `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
+
+### `[2.0.0-alpha.0]` — 2026-05-17 (this commit)
+
+- **Branch `dev/2.0.0-esp-idf`** created from `main` at commit `d8436ad` (the 1.20.3 release commit). Production state preserved by annotated tag `v1.20.3-arduino-final`.
+- **`BRANCH_NOTES.md`** added at repo root describing the branch purpose, working policy, backport discipline, and phase progression. New contributors should read this before pushing.
+- **`firmware/platformio.ini`** — `FIRMWARE_VERSION` bumped `1.20.3` → `2.0.0-alpha.0`. `framework = arduino` is **unchanged in this commit** — the framework flip happens in `2.0.0-alpha.1` (Phase 1). The version string change is purely declarative: any binary built from this commit is recognisable as a pre-migration scaffold.
+- **`.gitignore`** extended to cover IDF-build-system artefacts that will appear from Phase 1 onwards (`firmware/build/`, `firmware/sdkconfig` auto-generated, `firmware/managed_components/`, `firmware/dependencies.lock`).
+- **`changelog.md`** — this section opened.
+
+No firmware behaviour changes in this commit. Builds against the same arduino-esp32 framework as 1.20.3 and would behave identically on hardware. Don't deploy to production units; this version is a scaffolding marker only.
+
+### Backport policy reminder
+
+Bug fixes found on the 1.20.x production line during this migration go to `main` first, then are cherry-picked onto this branch with `git cherry-pick -x <sha>`. This keeps the 2.0.0 branch from diverging into an unmergable state. See `BRANCH_NOTES.md` for the full policy.
+
+### Out of scope for 2.0.0 (deferred to 2.1.x)
+
+- Native `idf.py` build (we stay on PlatformIO+espidf for 2.0.0)
+- Plain HTTP via reverse proxy (gh#23 mitigation C2 — the in-firmware mbedtls config knobs that Phase 4 unlocks are expected to be sufficient)
+- `esp_http_server` async tuning (synchronous is enough for current request rate)
+- gh#22 (NVS log ring reconsideration)
+
+---
+
 ## [1.20.3] — 2026-05-17
 
 *Operational mitigation for gh#23: bumps the default status-POST interval from 120 s to 240 s. With the gh#24 detector fix shipped in 1.20.1, the supervisor's planned-reboot cadence on Unit 2 stabilised at ~5.5 h driven by the per-handshake mbedTLS pattern documented in gh#23. Cutting the handshake rate by 2× extends the cadence to ~11 h with zero code-path changes beyond the default value. Operators who already configured a custom interval are unaffected; only fresh installations or factory-reset units pick up the new default.*
