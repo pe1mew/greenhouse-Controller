@@ -1,5 +1,6 @@
 #ifndef UNIT_TEST
-  #include <Arduino.h>
+  #include "freertos/FreeRTOS.h"
+  #include "freertos/task.h"
   #include "i2c_bus.h"
 #else
   #include "../test/mock_i2c_bus.h"
@@ -35,12 +36,15 @@
 #define ROW1_OFFSET  0x40u
 
 /* ---------------------------------------------------------------------------
- * Portable millisecond delay (compiled away in the native/test build)
+ * Portable millisecond delay (compiled away in the native/test build).
+ * ESP-IDF migration (2.0.0-alpha.2.5): Arduino's delay() → vTaskDelay()
+ * with pdMS_TO_TICKS conversion. Functionally identical for the LCD's use
+ * — millisecond-scale waits between HD44780 power-on init steps.
  * --------------------------------------------------------------------------- */
 static inline void lcd_delay_ms(uint8_t ms)
 {
 #ifndef UNIT_TEST
-    delay(ms);
+    vTaskDelay(pdMS_TO_TICKS(ms));
 #else
     (void)ms;
 #endif

@@ -69,7 +69,18 @@ static i2c_master_bus_handle_t s_bus = NULL;
  * --------------------------------------------------------------------------- */
 
 #ifndef UNIT_TEST
-/* Map an esp_err_t from an i2c_master_* call to our i2c_status_t. */
+/* Map an esp_err_t from an i2c_master_* call to our i2c_status_t.
+ *
+ * NACK distinction (refined 2026-05-17 during alpha.2.5 LCD acceptance):
+ * IDF v5 reports a slave NACK via TWO different esp_err_t codes depending
+ * on which API call produced it:
+ *   - i2c_master_probe()    → ESP_ERR_NOT_FOUND   (the dedicated probe code)
+ *   - i2c_master_transmit() → ESP_FAIL            (per the data-write path)
+ * Both must map to our I2C_ERR_NACK so callers that distinguish "device
+ * absent" from "bus error" (e.g. lcd1602's optional PCA9633 RGB detection
+ * at 0x60) behave correctly. Missing the ESP_ERR_NOT_FOUND mapping caused
+ * pca9633_init() to return LCD_ERR_COMM on Unit 2 (where the RGB backlight
+ * is absent), aborting the entire lcd_init() chain. */
 static i2c_status_t to_status(esp_err_t e)
 {
     switch (e) {
@@ -77,10 +88,9 @@ static i2c_status_t to_status(esp_err_t e)
             return I2C_OK;
         case ESP_ERR_TIMEOUT:
             return I2C_ERR_TIMEOUT;
-        case ESP_FAIL:
-            /* The IDF docs note: ESP_FAIL is the device-NACK signal for
-             * i2c_master_probe + i2c_master_transmit when the address is
-             * not acknowledged.  Map it to our NACK code. */
+        case ESP_FAIL:                 /* i2c_master_transmit NACK */
+        case ESP_ERR_NOT_FOUND:        /* i2c_master_probe    NACK */
+        case ESP_ERR_INVALID_RESPONSE: /* malformed slave reply — treat as NACK */
             return I2C_ERR_NACK;
         case ESP_ERR_INVALID_STATE:
             return I2C_ERR_BUS_BUSY;
@@ -174,6 +184,34 @@ static i2c_status_t do_write_read(i2c_master_dev_handle_t dev)
 i2c_status_t i2c_write(uint8_t addr, const uint8_t *data, size_t len)
 {
 #ifndef UNIT_TEST
+    /* Zero-length write = address-only probe per the LIB-2 contract
+     * (i2c_bus.h documents this explicitly: "Zero-length writes are
+     * accepted and serve as an address-only probe — the device will
+     * ACK or NACK its address"). Under arduino-esp32's Wire library
+     * this just worked: Wire.beginTransmission(addr) + endTransmission(true)
+     * sent only the address byte and reported NACK/ACK.
+     *
+     * The ESP-IDF v5 i2c_master_transmit API does NOT accept zero-length
+     * transmissions (returns ESP_ERR_INVALID_ARG with "buffer or size
+     * invalid"). For probes, IDF v5 instead provides i2c_master_probe()
+     * which works directly on the bus handle (no device handle needed)
+     * and sends exactly a START + addr + W + STOP, reporting ACK/NACK
+     * as ESP_OK / ESP_FAIL.
+     *
+     * Redirecting here preserves the LIB-2 public contract — callers
+     * doing zero-length probes (e.g. the LCD driver's optional RGB-
+     * backlight detection at LCD_RGB_I2C_ADDR, or its own presence
+     * probe at LCD_I2C_ADDR before sending any commands) keep working
+     * unchanged. Surfaced 2026-05-17 during alpha.2.5 LCD acceptance —
+     * the LCD's i2c_write(addr, NULL, 0) returned COMM error and
+     * lcd_init() refused to initialise; redirecting through probe
+     * fixed it. */
+    if (len == 0) {
+        if (s_bus == NULL) return I2C_ERR_BUS_BUSY;   /* i2c_init not called */
+        esp_err_t e = i2c_master_probe(s_bus, addr, I2C_OP_TIMEOUT_MS);
+        return to_status(e);
+    }
+
     s_tx_buf = data;
     s_tx_len = len;
     return with_device(addr, do_write);

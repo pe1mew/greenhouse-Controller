@@ -66,14 +66,18 @@
  * 2.0.0-alpha.2.4: i2c_bus (LIB-2)    — initialise the I2C bus, then scan
  *                                       the whole address space and log
  *                                       which devices respond. On Unit 2
- *                                       expect to see 0x27 (LCD1602
- *                                       backpack) and 0x68 (DS1307 RTC).
- *                                       One-shot in app_main — no heartbeat
- *                                       noise. */
+ *                                       expect 0x3E (AiP31068L LCD) and
+ *                                       0x68 (DS1307 RTC).
+ * 2.0.0-alpha.2.5: lcd1602 (LIB-4)    — initialise the AiP31068L LCD,
+ *                                       write a visible greeting on both
+ *                                       rows. First time alpha.2.x produces
+ *                                       output on the LCD itself rather
+ *                                       than serial only. */
 #include "gpio_util.h"
 #include "keypad_matrix.h"
 #include "nvs_config.h"
 #include "i2c_bus.h"
+#include "lcd1602.h"
 
 static const char *TAG = "GHC-STUB";
 
@@ -267,6 +271,34 @@ extern "C" void app_main(void)
         ESP_LOGI(TAG, "i2c_scan: %u device(s) found", (unsigned)n);
         for (uint8_t i = 0; i < n; i++) {
             ESP_LOGI(TAG, "  device[%u] @ 0x%02X", (unsigned)i, (unsigned)found[i]);
+        }
+    }
+
+    /* alpha.2.5 — LCD driver tickle. After i2c_init succeeds and we've
+     * confirmed the AiP31068L responded to the bus scan at 0x3E, init
+     * the LCD and write a recognisable greeting that proves end-to-end
+     * I2C → LCD command sequencing works.
+     *
+     * Row 0: firmware identity (so an operator glancing at the screen
+     *        immediately sees this is the ESP-IDF migration build, not
+     *        production 1.20.3).
+     * Row 1: a benign "boot OK" message + the dev unit's last MAC byte
+     *        so multiple bench units can be told apart by sight.
+     *
+     * The greeting stays on the LCD for the rest of the alpha.2.5 boot —
+     * no heartbeat updates yet (those land in later phases when more of
+     * the system is online). */
+    {
+        lcd_status_t lcd_st = lcd_init();
+        ESP_LOGI(TAG, "lcd_init returned %d (%s)", (int)lcd_st,
+                 (lcd_st == LCD_OK)            ? "OK" :
+                 (lcd_st == LCD_ERR_NO_DEVICE) ? "NO_DEVICE" :
+                 (lcd_st == LCD_ERR_COMM)      ? "COMM" : "?");
+        if (lcd_st == LCD_OK) {
+            (void)lcd_clear();
+            (void)lcd_print(0, 0, "ESP-IDF stub OK");
+            (void)lcd_print(1, 0, "v" FIRMWARE_VERSION);
+            ESP_LOGI(TAG, "lcd_print: \"ESP-IDF stub OK\" / \"v%s\" written", FIRMWARE_VERSION);
         }
     }
 

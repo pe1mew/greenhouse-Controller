@@ -28,6 +28,124 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-alpha.2.5]` — 2026-05-17
+
+**Phase 2.5 — fifth driver migration: `drivers/LCD1602_I2C` (LIB-4, lcd1602).** First alpha that produces visible output on the LCD itself, not just serial.
+
+#### What changed
+
+- **`drivers/LCD1602_I2C/src/lcd1602.cpp`** — minimal migration. The driver was already 100 % bus-bound through LIB-2's `i2c_*` calls (no direct hardware register access, no Wire calls). The only Arduino dependency was a single `delay(ms)` inside `lcd_delay_ms()`, replaced with `vTaskDelay(pdMS_TO_TICKS(ms))`. The `#include <Arduino.h>` swapped for `#include "freertos/FreeRTOS.h"` + `#include "freertos/task.h"`. Public API in `lcd1602.h` is **unchanged** — same 12 functions (`lcd_init`, `lcd_clear`, `lcd_home`, `lcd_set_cursor`, `lcd_print`, `lcd_print_char`, `lcd_write_row`, `lcd_create_char`, `lcd_display_on`, `lcd_backlight_color`, `lcd_backlight_lumination`, `lcd_set_contrast`).
+- **`firmware/components/LCD1602_I2C/CMakeLists.txt`** (new) — proxy. SRCS = `../../../drivers/LCD1602_I2C/src/lcd1602.cpp`. INCLUDE_DIRS = the driver's `src/` only (the header has no firmware/config dependency). REQUIRES = `i2c` (LIB-2 wrapper from alpha.2.4) and `freertos` (for `vTaskDelay`).
+- **`firmware/src/CMakeLists.txt`** — added `LCD1602_I2C` to REQUIRES list.
+- **`firmware/src/app_main_stub.cpp`** — Phase 2.5 tickle: after `i2c_init` + `i2c_scan`, calls `lcd_init()` and writes a recognisable two-row greeting:
+  ```
+  ESP-IDF stub OK
+  v2.0.0-alpha.2.5
+  ```
+  Operator glancing at Unit 2 sees immediately that this is the migration build, not production 1.20.3.
+- **`firmware/platformio.ini`** — `FIRMWARE_VERSION` stamped `2.0.0-alpha.2.5`.
+
+#### Implementation note
+
+The lcd1602 driver was designed from the start with hardware abstraction through LIB-2's `i2c_bus`. That choice — made years before the ESP-IDF migration was contemplated — pays off here: the LCD driver doesn't know whether `i2c_write` ultimately calls Arduino `Wire.write` (LIB-2 pre-alpha.2.4) or ESP-IDF's `i2c_master_transmit` (LIB-2 post-alpha.2.4). The migration cost is two header lines and one function-body swap. Everything else — HD44780 init sequence, AiP31068L control-byte protocol, PCA9633 RGB backlight handling, contrast register split — is portable C and didn't change.
+
+This is the same pattern the gpio_util / keypad_matrix pair demonstrated in alpha.2.1 + alpha.2.2: drivers funnel through their dependency's wrapper, and the migration cost is concentrated at the lowest layer.
+
+#### Build delta vs alpha.2.4
+
+| Metric | alpha.2.4 | alpha.2.5 | Delta |
+|---|---:|---:|---:|
+| Firmware bin | 278,688 B | **283,248 B** | +4,560 B |
+| Flash usage | 13.3 % | 13.5 % | +0.2 pp |
+| RAM static | 18,868 B | 18,884 B | +16 B |
+
+bin sha256: `0E3A008789A8D5AFD4CD1841F9E90BB8EFAED5AA7815D6EA3C0D5DBC5636BDC6`
+
+The +4.5 KB is the lcd1602.cpp object code itself (~347 lines of AiP31068L command sequencing, RGB backlight init, CGRAM custom-char support, contrast register split). Pure additive — no new ESP-IDF infrastructure pulled in (everything LCD-side is already covered by the i2c component).
+
+#### Acceptance bar for alpha.2.5
+
+1. ✅ Build succeeds — no warnings against migrated source.
+2. Flash to Unit 2; boot reason `ESP_RST_POWERON`.
+3. Boot log shows `lcd_init returned 0 (OK)` and the `lcd_print: "ESP-IDF stub OK" / "v2.0.0-alpha.2.5" written` confirmation line.
+4. **Visible on Unit 2's LCD** (this is the new acceptance signal):
+   - Row 0: `ESP-IDF stub OK`
+   - Row 1: `v2.0.0-alpha.2.5`
+5. All earlier-phase regressions still pass:
+   - HB LED blinks (Phase 2.1)
+   - Keypad `keys=` reports (Phase 2.2)
+   - NVS roundtrip works (Phase 2.3)
+   - I2C scan finds 2 devices at 0x3E + 0x68 (Phase 2.4)
+6. Run ≥ 5 min; no resets, no LCD garbling.
+
+If `lcd_init` returns `LCD_ERR_NO_DEVICE`, the AiP31068L didn't ACK at 0x3E — would contradict alpha.2.4's scan result, so very unlikely. If it returns `LCD_OK` but the display shows garbage / random pixels, the HD44780 init sequence timings are off — would be the first place to look.
+
+#### Acceptance: PASSED — 2026-05-17
+
+Flashed to Unit 2. After two iterations to resolve i2c-contract bugs surfaced by the LCD's specific call patterns (both bugs in the LIB-2 layer from alpha.2.4, fixes folded into this commit — see below), final observed:
+
+Serial output:
+```
+i2c_init returned 0 (OK)
+i2c_scan: 2 device(s) found
+  device[0] @ 0x3E
+  device[1] @ 0x68
+lcd_init returned 0 (OK)
+lcd_print: "ESP-IDF stub OK" / "v2.0.0-alpha.2.5" written
+```
+
+LCD display (Unit 2 hardware, AiP31068L):
+```
+┌────────────────┐
+│ESP-IDF stub OK │
+│v2.0.0-alpha.2.5│
+└────────────────┘
+```
+
+This is the first time alpha.2.x has produced visible output on the LCD itself, not just serial. Full validation of:
+- The LIB-2 i2c_master_* migration from alpha.2.4 working against a real I2C peripheral that issues actual command sequences (not just bus probes)
+- The LIB-4 lcd1602 migration from alpha.2.5 (delay → vTaskDelay, Arduino.h removed)
+- The HD44780 init sequence + AiP31068L control-byte protocol surviving the framework change byte-for-byte
+- Pull-up + 400 kHz clock + the IDF v5 transient-device-handle pattern from alpha.2.4 all working together
+
+#### Two i2c-contract bugs found in this phase + fixed in LIB-2
+
+The LCD migration surfaced two latent bugs in the alpha.2.4 LIB-2 i2c_bus migration — both about contract mismatches between the Arduino-era LIB-2 semantics and the ESP-IDF v5 i2c_master implementation. Both fixes are folded into THIS commit (alpha.2.5) because they live in `drivers/i2c/src/i2c_bus.cpp`, not in any LCD code.
+
+**Bug 1: zero-length write rejected.**
+The LIB-2 public contract in `i2c_bus.h` says: *"Zero-length writes are accepted and serve as an address-only probe."* Under Arduino's Wire, `beginTransmission(addr) + endTransmission(true)` with no `Wire.write()` between them sent the address byte alone and reported ACK/NACK. The ESP-IDF v5 `i2c_master_transmit()` does NOT accept zero-length transmissions — it returns `ESP_ERR_INVALID_ARG` with `"i2c transmit buffer or size invalid"`. The alpha.2.4 implementation passed length straight through to `i2c_master_transmit`, breaking the probe contract. The LCD driver's `pca9633_init()` (line 107) and `lcd_init()` (line 166) both rely on zero-length probes; both broke. Symptom: error line `E (xxx) i2c.master: i2c_master_transmit(1224): i2c transmit buffer or size invalid` followed by `lcd_init returned 2 (COMM)`. Fix: in `i2c_write`, if `len == 0`, redirect to `i2c_master_probe(s_bus, addr, …)` which is the IDF v5 idiom for address-only ACK detection.
+
+**Bug 2: `i2c_master_probe` NACK code different from `i2c_master_transmit` NACK code.**
+After fixing Bug 1, the LCD's PCA9633 probe at 0x60 (an OPTIONAL RGB backlight chip that's absent on Unit 2 hardware) needed to return `I2C_ERR_NACK` so the driver could correctly mark RGB as absent and continue. Under the IDF v5 API, `i2c_master_probe` reports NACK as `ESP_ERR_NOT_FOUND`, but `i2c_master_transmit` reports NACK as `ESP_FAIL`. Two different esp_err_t codes for the same logical condition. The alpha.2.4 `to_status()` mapping only handled `ESP_FAIL` → `I2C_ERR_NACK`; `ESP_ERR_NOT_FOUND` fell into `default` → `I2C_ERR_BUS_BUSY` → `LCD_ERR_COMM`. `pca9633_init` bailed and the entire LCD init returned `COMM` (no IDF error line this time — silent failure). Symptom: `lcd_init returned 2 (COMM)` with no `i2c.master:` error. Fix: add `case ESP_ERR_NOT_FOUND: return I2C_ERR_NACK;` to `to_status()` (also added `ESP_ERR_INVALID_RESPONSE` defensively). Documented inline.
+
+#### Lesson learned (extends the alpha.2.1 GPIO trap pattern)
+
+The per-driver-tickle migration strategy keeps paying its rent. The earlier i2c_scan tickle in alpha.2.4 exercised only the **ACK case** (devices present, scan adds them). The LCD's `pca9633_init` is the first piece of higher-level code that exercises the **NACK case** through LIB-2 (probing for an OPTIONAL device that may not be present). Bug 2 was latent until the LCD tickled it. If we'd discovered it in Phase 4/5 (when the data_manager + relay_controller pull in DS1307_RTC and more I2C usage), debug cost would be hours instead of 10 minutes.
+
+Both fixes are commented inline at the relevant code in `drivers/i2c/src/i2c_bus.cpp` so the next driver migration doesn't trip on them.
+
+#### Updated build delta vs alpha.2.4 (post-fix)
+
+| Metric | alpha.2.4 | alpha.2.5 (final) | Delta |
+|---|---:|---:|---:|
+| Firmware bin | 278,688 B | **283,312 B** | +4,624 B |
+| Flash usage | 13.3 % | 13.5 % | +0.2 pp |
+| RAM static | 18,868 B | 18,884 B | +16 B |
+
+bin sha256: `B07076684790ED817F0F93D9428FD785299DEE1322B8C09CE4D8FFEA1130C223`
+
+The +4.6 KB covers the lcd1602.cpp object code (~347 lines AiP31068L command sequencing + PCA9633 RGB backlight handling) plus the two LIB-2 contract-fix branches.
+
+#### Regression checks (all clean)
+
+- ✅ HB LED still blinks (Phase 2.1) — `hb_led=1 → 0 → 1` visible in heartbeats
+- ✅ Keypad still reports (Phase 2.2) — `keys=0` idle  
+- ✅ NVS round-trip still works (Phase 2.3) — `fw_version` pre/post both `"2.0.0-alpha.2.5"`
+- ✅ I2C scan still finds 2 devices (Phase 2.4) — `0x3E` + `0x68`
+- ✅ LCD now displays text (Phase 2.5) — the new acceptance signal
+
+### `[2.0.0-alpha.2.4]` — 2026-05-17
+
 ### `[2.0.0-alpha.2.4]` — 2026-05-17
 
 **Phase 2.4 — first non-trivial driver migration: `drivers/i2c` (LIB-2, i2c_bus).** Wire.h → ESP-IDF v5 `driver/i2c_master.h` (the new bus/device-handle API, not the legacy `i2c_master_cmd_begin` pattern).
