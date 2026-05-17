@@ -28,6 +28,115 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-alpha.2.4]` — 2026-05-17
+
+**Phase 2.4 — first non-trivial driver migration: `drivers/i2c` (LIB-2, i2c_bus).** Wire.h → ESP-IDF v5 `driver/i2c_master.h` (the new bus/device-handle API, not the legacy `i2c_master_cmd_begin` pattern).
+
+#### What changed
+
+- **`drivers/i2c/src/i2c_bus.cpp`** — full rewrite (~140 lines). Replaces all `Wire.beginTransmission` / `Wire.write` / `Wire.read` / `Wire.requestFrom` / `Wire.endTransmission` calls with the IDF v5 `i2c_master_*` API. Public API in `i2c_bus.h` is **unchanged** — same five functions (`i2c_init`, `i2c_write`, `i2c_read`, `i2c_write_read`, `i2c_scan`, plus `i2c_lock`/`i2c_unlock` no-ops). Callers (LCD1602 in Phase 2.5, DS1307_RTC in Phase 2.9, anything new) don't see the migration.
+- **`firmware/components/i2c/CMakeLists.txt`** (new) — proxy. SRCS = `../../../drivers/i2c/src/i2c_bus.cpp`. INCLUDE_DIRS adds the driver's `src/` and the firmware's `config/` (for `PIN_I2C_SDA` / `PIN_I2C_SCL`). REQUIRES = `driver` (ESP-IDF's combined peripheral-driver component, exposes `driver/i2c_master.h`).
+- **`firmware/src/CMakeLists.txt`** — added `i2c` to REQUIRES list.
+- **`firmware/src/app_main_stub.cpp`** — Phase 2.4 tickle: `i2c_init()` + full address-space `i2c_scan()` with results logged. Expected on Unit 2: 0x27 (LCD1602 backpack PCF8574) + 0x68 (DS1307 RTC).
+- **`firmware/platformio.ini`** — `FIRMWARE_VERSION` stamped `2.0.0-alpha.2.4`.
+
+#### Implementation strategy: transient device handles
+
+The IDF v5 i2c_master_* API requires a `i2c_master_dev_handle_t` per device on the bus, created via `i2c_master_bus_add_device()`. The legacy public API in `i2c_bus.h` takes a 7-bit address per call. Three options were considered:
+
+1. **Force callers to pre-register devices** (cleanest API). Would break all downstream code. Rejected — would cascade rewrites into LCD1602, DS1307_RTC, anything new.
+2. **Cache device handles by address in a static lookup table.** Saves the per-call create/destroy cost. Adds complexity (mutex around the table, capacity limit). Deferred — not measurably needed.
+3. **Create transient handles per call.** Each `i2c_write` / `i2c_read` / `i2c_write_read` does `i2c_master_bus_add_device` → I/O → `i2c_master_bus_rm_device`. Cost is one small bookkeeping struct alloc/free per call. Negligible at our transaction rates (sub-Hz). **Adopted.**
+
+For `i2c_scan` the v5 API exposes `i2c_master_probe()` directly on the bus handle — no device handle needed. Cleaner than the Wire-era `beginTransmission`/`endTransmission` probe loop.
+
+#### Bus configuration (IDF v5 style)
+
+```c
+i2c_master_bus_config_t bus_cfg = {
+    .i2c_port          = I2C_NUM_0,
+    .sda_io_num        = PIN_I2C_SDA,
+    .scl_io_num        = PIN_I2C_SCL,
+    .clk_source        = I2C_CLK_SRC_DEFAULT,
+    .glitch_ignore_cnt = 7,                  // IDF default
+    .flags.enable_internal_pullup = true,    // matches Wire default; no external Rp on the board
+};
+```
+
+Per-device clock speed is set on each transient handle via `dev_cfg.scl_speed_hz = I2C_FREQ_HZ` (400 kHz Fast-mode). The v5 API "negotiates" clock per device, but since LCD + RTC both run at 400 kHz, no actual switching occurs.
+
+#### Error mapping (esp_err_t → i2c_status_t)
+
+| esp_err_t | i2c_status_t | Notes |
+|---|---|---|
+| `ESP_OK` | `I2C_OK` | |
+| `ESP_ERR_TIMEOUT` | `I2C_ERR_TIMEOUT` | bus held, slave stretching SCL too long |
+| `ESP_FAIL` | `I2C_ERR_NACK` | per IDF docs: address-NACK on probe + transmit |
+| `ESP_ERR_INVALID_STATE` | `I2C_ERR_BUS_BUSY` | bus controller in unrecoverable state |
+| anything else | `I2C_ERR_BUS_BUSY` | bucket-everything-else |
+
+Matches the legacy Arduino-Wire status enum to keep callers unchanged.
+
+#### Build delta vs alpha.2.3
+
+| Metric | alpha.2.3 | alpha.2.4 | Delta |
+|---|---:|---:|---:|
+| Firmware bin | 262,368 B | **278,688 B** | +16,320 B |
+| Flash usage | 12.5 % | 13.3 % | +0.8 pp |
+| RAM static | 18,812 B | 18,868 B | +56 B |
+
+bin sha256: `935B0ADABB201B0E5AC63EE698A9BA49726D5D040817AB6038439A3DC7F0CB3D`
+
+The +16 KB is the ESP-IDF `driver/i2c_master` library (full v5 implementation including bus controller setup, glitch filter, GDMA hooks, etc.) plus the project's migrated `i2c_bus.cpp`. Each subsequent I2C user pays essentially zero further bytes.
+
+#### Acceptance bar for alpha.2.4
+
+1. ✅ Build succeeds — no warnings against migrated source.
+2. Flash to Unit 2; boot reason `ESP_RST_POWERON`.
+3. Boot log shows `i2c_init returned 0 (OK)`.
+4. Boot log shows `i2c_scan: 2 device(s) found`.
+5. `device[0] @ 0x27` (LCD1602 backpack PCF8574).
+6. `device[1] @ 0x68` (DS1307 RTC).
+7. No `I2C: ` error lines from IDF.
+8. HB LED still blinks (Phase 2.1). Keypad reports `keys=` (Phase 2.2). NVS log lines present (Phase 2.3). All regressions clean.
+9. Run ≥ 5 min; no resets.
+
+If scan reports 0 devices, troubleshooting hierarchy:
+- **Bus init failed** (`i2c_init` returns non-OK) → pin config wrong or I2C peripheral conflict
+- **0 devices but init OK** → wiring fault, address mismatch, or pull-up issue
+- **Wrong addresses found** → schematic vs config mismatch — would be a real surprise
+
+If scan reports the expected 2 addresses, the v5 i2c_master_* API works end-to-end against real hardware, validating the bus config, transient device-handle pattern, and pull-up settings. Phase 2.5 (LCD1602) and Phase 2.9 (DS1307_RTC) can proceed with confidence in the foundation.
+
+#### Acceptance: PASSED — 2026-05-17
+
+Flashed to Unit 2. Boot captured:
+
+```
+i2c_init returned 0 (OK)
+i2c_scan: 2 device(s) found
+  device[0] @ 0x3E       ← AiP31068L LCD controller (matches LCD_I2C_ADDR in lcd1602.h)
+  device[1] @ 0x68       ← DS1307 RTC (matches pin_config.h comment)
+```
+
+Both expected devices responded at the documented addresses. The original "expected 0x27" guess in the acceptance bar above was based on the more-common PCF8574 backpack pattern — this project uses an AiP31068L which has its own I2C interface at 0x3E. `pin_config.h` line 69 and `lcd1602.h` line 41 both document this. The scan found exactly what the project's own code says it should find — full end-to-end validation of:
+- Bus initialisation (`i2c_new_master_bus` with the correct pin/clock/pullup config)
+- The transient device-handle pattern (created per call, destroyed after)
+- `i2c_master_probe` against the LCD and RTC chips
+- Pull-up + 400 kHz clock settings matching what both devices need
+
+Regression checks all clean:
+- ✅ Boot reason POWERON
+- ✅ Free heap baseline 373 611 (−1.6 KB vs alpha.2.3, persistent i2c_master infra cost)
+- ✅ Free heap stable at 371 527 from heartbeat 1 onward
+- ✅ NVS round-trip works (`pre = "2.0.0-alpha.2.4"`, `post = "2.0.0-alpha.2.4"`)
+- ✅ HB LED `hb_led=1 → 0` toggle visible
+- ✅ Keypad `keys=0` idle reporting
+- ✅ No I2C errors during scan
+- ✅ Heartbeat task running cleanly
+
+The +1.7 KB persistent heap is the one-time infrastructure cost of the ESP-IDF v5 i2c_master subsystem (bus controller state, GDMA descriptors, internal lock). LCD (Phase 2.5) and RTC (Phase 2.9) will pay essentially zero further bytes — they just create transient device handles per call.
+
 ### `[2.0.0-alpha.2.3]` — 2026-05-17
 
 **Phase 2.3 — third driver migration: `drivers/nvs` (LIB-7, nvs_config).** Trivial — pure proxy + Phase-1-style tickle. The driver source was already 100 % ESP-IDF native; the only Arduino bits in the directory were in `drivers/nvs/src/main.cpp`, the standalone hardware-verification test, which the proxy `SRCS` list intentionally excludes.

@@ -42,6 +42,7 @@ idf_component_register(
         gpio          # LIB-1 — migrated 2.0.0-alpha.2.1
         keyPad        # LIB-5 — migrated 2.0.0-alpha.2.2 (depends on gpio)
         nvs           # LIB-7 — migrated 2.0.0-alpha.2.3 (trivial — already raw nvs_*)
+        i2c           # LIB-2 — migrated 2.0.0-alpha.2.4 (Wire.h → ESP-IDF v5 i2c_master_*)
 )
 
 # -----------------------------------------------------------------------------
