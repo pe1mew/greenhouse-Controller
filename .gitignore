@@ -29,3 +29,4 @@ __pycache__/
 # Generated PDF/HTML siblings of manual sources — produced by md2pdf.py
 /manual/*.html
 debug/
+/.tmp

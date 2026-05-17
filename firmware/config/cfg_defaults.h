@@ -111,7 +111,7 @@
  * upload at 03:15 local, also upload on rotation. */
 #define DEF_STATUS_URL          ""              /**< Endpoint URL (http:// or https://) */
 #define DEF_STATUS_SECRET       ""              /**< Shared secret sent in sourceidentifier header */
-#define DEF_STATUS_INTERVAL_S   120             /**< POST cycle (s); spec range 60–300 */
+#define DEF_STATUS_INTERVAL_S   240             /**< POST cycle (s); spec range 60–300. Default raised 120→240 in 1.20.3 (gh#23) to slow the mbedTLS-handshake heap-drop accumulation rate; with 240 s the supervisor's planned-reboot cadence extends from ~5.5 h to ~11 h. Operator can override via Web tab → Interval (s). */
 #define DEF_STATUS_ENABLE       0               /**< 0 = disabled by default */
 #define DEF_STATUS_EXPOSE       0x3F            /**< Bits 0..5 = climate/wind/windows/mode/sun/system */
 #define DEF_LOG_UPLOAD_H        3               /**< Daily upload local hour (0–23) */

@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de beheerder
 
-**Versie:** 1.14 — concept
+**Versie:** 1.15 — concept
 **Datum:** 2026-05-15
-**Firmware:** 1.20.2
+**Firmware:** 1.20.3
 
 ---
 
@@ -750,7 +750,7 @@ De feature staat **standaard uit**. Inschakelen gebeurt volledig in deze tab.
 |---|---|---|---|
 | `URL` | Eindpunt van het PHP-script | leeg | Moet beginnen met `http://` of `https://`, mag géén `?` of `#` bevatten, móét eindigen op `api.php`. Maximaal 128 tekens. Leeg laten = functie uit. |
 | `Shared secret` | Token in `sourceidentifier`-header | leeg | Minimaal 16 tekens. Leeg laten bij `Apply` = bestaande token blijft staan. Wordt nooit teruggetoond bij heropenen van het tabblad. |
-| `Interval (s)` | Tijd tussen POST's | 120 | 60–300 |
+| `Interval (s)` | Tijd tussen POST's | 240 | 60–300 |
 | `Enabled` | Hoofdschakelaar | uit | aan / uit. Bij `uit` worden geen POST's verstuurd, ook niet als URL en token correct zijn ingevuld. |
 | `Climate` / `Wind` / `Windows` / `Mode` / `Sun` / `System` (6 vinkjes) | Welke tegels worden meegestuurd | alle 6 aan | Een uitgevinkt vinkje laat het bijhorende JSON-object weg uit de POST → de tegel verschijnt automatisch niet op het publieke dashboard. |
 | `Daily upload time` | Lokale tijd waarop log-upload geprobeerd wordt | 03:15 | uu : mm, 24-uur klok |
@@ -773,7 +773,7 @@ De auto-refresh werkt alleen deze drie regels — uw invoer in `URL`, `Shared se
 1. Log in als Beheerder en open tab **Web**.
 2. Vul de URL van het PHP-eindpunt in (bv. `https://uw-server.nl/hbwv/api.php`).
 3. Vraag aan de beheerder van de web-server de waarde van het shared secret. Plak die in `Shared secret`. Laat het secret-veld leeg als u het later eens wilt wijzigen zonder het opnieuw te hoeven invullen.
-4. Stel het update `Interval (s)` in op een geschikte waarde — `120` is een goede default (niet te druk op het netwerk, dashboard blijft binnen 5 minuten "vers").
+4. Stel het update `Interval (s)` in op een geschikte waarde — Lager dan 120 s of hoger dan 300 s wordt door de validatie geweigerd.
 5. Vink desgewenst tegels uit die u **niet** publiek wilt tonen. Standaard staan alle zes aan.
 6. Eventueel `Daily upload time` aanpassen naar een rustig moment in uw netwerk (bv. nacht).
 7. Vink `Enabled` aan.
@@ -1701,6 +1701,7 @@ Inhoudelijke wijzigingen aan de firmware staan beschreven in het bestand `change
 | 1.12 | 2026-05-15 | 1.19.0–1.20.0 |
 | 1.13 | 2026-05-16 | 1.20.1-1.20.2 |
 | 1.14 | 2026-05-16 | 1.20.2 (alleen documentatie — Bijlage G uitgebreid van 13 naar 28 gewassen passend bij de teelt in Wenumseveld: Meloen, Ananaskers, Spaghettiboon, Peulen, Rucola, Paksoi, Snijbiet, Raapsteel, Palmkool, Koolrabi, Bospeen, Bosbiet, Radijs, Groene selderij, Bloemen — geordend per gewas-familie. Inhoud blijft synchroon met boer-handleiding Bijlage B v1.12) |
+| 1.15 | 2026-05-17 | 1.20.3 |
 
 ---
 

@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de boer
 
-**Versie:** 1.12 — concept
+**Versie:** 1.13 — concept
 **Datum:** 2026-05-15
-**Firmware:** 1.20.2
+**Firmware:** 1.20.3
 
 ---
 
@@ -1443,6 +1443,7 @@ Inhoudelijke wijzigingen aan de firmware staan beschreven in het bestand `change
 | 1.10 | 2026-05-16 | 1.20.2 |
 | 1.11 | 2026-05-16 | 1.20.2 (alleen documentatie — Bijlage B *Aanbevolen startinstellingen per gewas* toegevoegd) |
 | 1.12 | 2026-05-16 | 1.20.2 (alleen documentatie — Bijlage B uitgebreid van 13 naar 28 gewassen passend bij de teelt in Wenumseveld: Meloen, Ananaskers, Spaghettiboon, Peulen, Rucola, Paksoi, Snijbiet, Raapsteel, Palmkool, Koolrabi, Bospeen, Bosbiet, Radijs, Groene selderij, Bloemen — geordend per gewas-familie) |
+| 1.13 | 2026-05-17 | 1.20.3 |
 
 ---
 

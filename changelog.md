@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.20.3] — 2026-05-17
+
+*Operational mitigation for gh#23: bumps the default status-POST interval from 120 s to 240 s. With the gh#24 detector fix shipped in 1.20.1, the supervisor's planned-reboot cadence on Unit 2 stabilised at ~5.5 h driven by the per-handshake mbedTLS pattern documented in gh#23. Cutting the handshake rate by 2× extends the cadence to ~11 h with zero code-path changes beyond the default value. Operators who already configured a custom interval are unaffected; only fresh installations or factory-reset units pick up the new default.*
+
+### Changed
+- **`DEF_STATUS_INTERVAL_S` raised 120 → 240** in `firmware/config/cfg_defaults.h`. Spec range (60–300 s) unchanged; the new default sits comfortably mid-range. Dashboard refresh experience: 4 min between updates instead of 2 min — well within the operational tolerance documented in beheerder-handleiding §10.2.
+- **`firmware/data/index.html`** initial value for the `Interval (s)` input updated to 240 (cosmetic pre-API-load fallback; the actual value displayed is loaded from `/api/web`).
+- **`firmware/platformio.ini`** — `FIRMWARE_VERSION` bumped 1.20.2 → 1.20.3 in both env blocks.
+- **`firmware/data/manifest.json`** — stamped 1.20.3 by `bin/build_release.ps1`.
+
+### Behaviour notes / non-changes
+- **No detector, supervisor, or breaker changes.** gh#24 signed-balance accumulator, gh#25 dedup latch, gh#26 SD-unmount-before-restart — all unchanged. This release is exclusively a defaults bump.
+- **Operators with existing custom values are unaffected.** The NVS-persisted `status_interval_s` survives the OTA update; only units that never had the key set (fresh installs, factory-reset units) pick up the new default. To force the new default on an existing unit, operator visits Web tab and writes `240` explicitly, or performs a factory reset of the `system` NVS namespace.
+- **Why not 300 s (max of spec range)?** 240 s is the conservative choice. 300 s would extend cadence to ~14 h but pushes the dashboard refresh experience past the 4 min threshold many operators implicitly tolerate. If 240 s proves insufficient, operators can bump further via Web tab on a per-unit basis.
+- **C1 mitigation (`setBufferSizes(4096, 4096)`) is NOT viable on this stack.** The original gh#23 mitigation menu identified `WiFiClientSecure::setBufferSizes()` as a half-line code change. Reading arduino-esp32 6.x `WiFiClientSecure.h` confirms this method is from the BearSSL fork (ESP8266) and is **not exposed** by the mbedtls-backed arduino-esp32 implementation. The internal `mbedtls_ssl_config` is `protected` and there's no hook between handshake setup and execution to inject `mbedtls_ssl_conf_max_frag_len()` without copy-pasting the parent's `connect()` logic. gh#23 updated with this finding; C4 (switch to `esp_http_client` directly) remains the next mitigation tier.
+- **Drop-in upgrade.** No NVS schema change, no partition-table change, no API change. OTA from 1.20.2, 1.20.1, 1.20.0, 1.19.x, or 1.18.3 all work without extras.
+
+### Acceptance test
+- Unit running 1.20.3 with `status_interval_s = 240` (either default or explicitly set): planned-reboot cadence on a unit that previously averaged 5.5 h should extend to ~11 h. Confirm via `[T15] PLANNED REBOOT — T14 cumulative heap drop crossed 64 KB` line absence over a 10 h window.
+- Existing custom-interval units: behaviour unchanged across the upgrade. Confirm via `cfg.status_interval_s` value at boot matches pre-upgrade NVS contents.
+
+### Cross-references
+- gh#23 — heap-fragmentation root cause; this release is one mitigation tier in that issue's menu. Cadence reduction is operational; underlying cause persists.
+- gh#27 — heap-drop sampling-timing question; orthogonal to this release.
+- gh#24 — closed in 1.20.1; the detector fix is what made this release's cadence-tracking meaningful in the first place.
+
+---
+
 ## [1.20.2] — 2026-05-16
 
 *One bug fix for an SD-card data-loss pattern surfaced by the same Unit 1 forensics that drove 1.20.1. The supervisor's planned-reboot path was calling `esp_restart()` without unmounting the SD card, which let the Arduino-ESP32 SD library's directory cache and FatFs write-back queue discard whatever was pending. On Unit 1 this manifested as three log files the controller logged creating (`/20260516025038.csv`, `/20260516031506.csv`, `/20260516041646.csv`) that were never on the physical card when inspected. Two-line fix; no behaviour change for any other code path.*
