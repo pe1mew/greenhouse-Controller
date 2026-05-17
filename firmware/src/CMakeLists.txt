@@ -47,6 +47,7 @@ idf_component_register(
         modBus        # LIB-6 — migrated 2.0.0-alpha.2.6 (Serial1 → uart_driver_*, depends on gpio)
         s200          # LIB-S200 — migrated 2.0.0-alpha.2.7 (trivial cleanup, depends on modBus)
         FG6485A       # LIB-FG — migrated 2.0.0-alpha.2.8 (trivial cleanup, depends on modBus)
+        DS1307_RTC    # LIB-3 — migrated 2.0.0-alpha.2.9 (trivial cleanup, depends on i2c)
 )
 
 # -----------------------------------------------------------------------------

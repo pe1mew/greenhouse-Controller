@@ -1,5 +1,8 @@
 #ifndef UNIT_TEST
-  #include <Arduino.h>
+  /* ESP-IDF migration 2.0.0-alpha.2.9 — dropped vestigial `#include <Arduino.h>`.
+   * The driver body uses no Arduino types — only the LIB-2 i2c_bus wrappers
+   * (i2c_write, i2c_write_read) and stdint.h primitives. Public API in
+   * `ds1307_rtc.h` is unchanged. */
   #include "i2c_bus.h"
 #else
   #include "../test/mock_i2c_bus.h"
