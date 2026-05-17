@@ -43,6 +43,14 @@
 #include "esp_heap_caps.h"
 #include "esp_mac.h"
 
+/* Phase 2 driver-layer migration — proves component-linkage works for each
+ * migrated driver. Each driver gets one line of "tickle" code in the
+ * heartbeat path so a build/link failure surfaces immediately rather than
+ * waiting until the full firmware is reassembled in Phases 4-6.
+ *
+ * 2.0.0-alpha.2.1: gpio_util (LIB-1) — toggle the heartbeat LED on each tick. */
+#include "gpio_util.h"
+
 static const char *TAG = "GHC-STUB";
 
 /* The CMake `idf_component_register` doesn't propagate -DFIRMWARE_VERSION
@@ -107,12 +115,23 @@ static void heartbeat_task(void *arg)
         size_t largest_block  = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
         size_t free_spiram    = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
 
-        ESP_LOGI(TAG, "heartbeat %lu | free=%u largest=%u psram_free=%u uptime=%lus",
+        /* Toggle PIN_HB_LED and read it back — software-level proof the
+         * gpio driver works regardless of whether the dev unit actually
+         * has an LED wired on GPIO41. The pin-state value in the log
+         * line should alternate between 0 and 1 on every heartbeat.
+         * Production hardware with an amber HB LED on GPIO41 will also
+         * see visible blink in sync. Uses the migrated LIB-1 API; no
+         * Arduino code involved. */
+        gpio_toggle(PIN_HB_LED);
+        int hb_state = (gpio_read(PIN_HB_LED) == GPIO_HIGH) ? 1 : 0;
+
+        ESP_LOGI(TAG, "heartbeat %lu | free=%u largest=%u psram_free=%u uptime=%lus | hb_led=%d",
                  (unsigned long)counter,
                  (unsigned)free_internal,
                  (unsigned)largest_block,
                  (unsigned)free_spiram,
-                 (unsigned long)((xTaskGetTickCount() * portTICK_PERIOD_MS) / 1000UL));
+                 (unsigned long)((xTaskGetTickCount() * portTICK_PERIOD_MS) / 1000UL),
+                 hb_state);
         counter++;
 
         vTaskDelayUntil(&last_wake, period);
@@ -132,6 +151,15 @@ static void heartbeat_task(void *arg)
 extern "C" void app_main(void)
 {
     log_boot_banner();
+
+    /* Phase-2 driver linkage tickle: configure the heartbeat LED pin as
+     * output and drive it LOW. The heartbeat task toggles it on each tick
+     * so the user can verify the gpio driver works (visible blink on the
+     * LOLIN S3's amber HB LED at PIN_HB_LED = GPIO41). If gpio_util
+     * weren't linked, this call site would be a link-time undefined
+     * reference and the build would fail. */
+    gpio_set_pin_mode(PIN_HB_LED, GPIO_OUTPUT);
+    gpio_write(PIN_HB_LED, GPIO_LOW);
 
     BaseType_t rc = xTaskCreatePinnedToCore(
         heartbeat_task,

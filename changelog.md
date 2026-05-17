@@ -28,6 +28,70 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-alpha.2.1]` — 2026-05-17
+
+**Phase 2.1 — first driver migration: `drivers/gpio` (LIB-1).** Plus the build-system pattern that the rest of Phase 2 will follow.
+
+#### Architectural decision: proxy components, not EXTRA_COMPONENT_DIRS
+
+The migration plan called for "Option A — drivers stay under `../drivers/` where they've always lived; they get IDF component scaffolding in-place" via `EXTRA_COMPONENT_DIRS = ../drivers` in `firmware/CMakeLists.txt`. Empirically this triggers a regression in PlatformIO's post-CMake-configure introspection: any non-empty `EXTRA_COMPONENT_DIRS` causes `pio run` to bail out with `Error: Couldn't find the main target of the project!`, despite the CMake configure itself reporting `Configuring done` / `Generating done` and the gpio component being correctly enumerated. Reproduced 2026-05-17 on platform pin `espressif32@6.12.0` (PlatformIO 6.1.x). The bug is in PlatformIO+espidf's CMake target-finding step.
+
+Workaround adopted: each migrated driver gets a **thin proxy component** at `firmware/components/<name>/CMakeLists.txt` that uses IDF's automatic-discovery mechanism (no `EXTRA_COMPONENT_DIRS` involved). The proxy `idf_component_register`s a component named after the driver, but its `SRCS` and `INCLUDE_DIRS` point at the actual driver location under `../../../drivers/<name>/src/`. Driver source files don't move — the migration-plan Option A intent is preserved.
+
+Trade-off: one extra layer of indirection per driver (an ~30-line CMakeLists), in exchange for working around the PlatformIO bug without giving up the in-place driver layout. The standalone-test setups under each `drivers/<name>/` (their own `platformio.ini`, `library.json`, `.vscode/`, etc.) remain functional for native test builds.
+
+Future v2.1.x could revisit by either (a) physically moving drivers into `firmware/components/<name>/src/`, or (b) switching to native `idf.py` (which is reported not to have the `EXTRA_COMPONENT_DIRS` bug) and reverting to the in-place EXTRA_COMPONENT_DIRS layout.
+
+#### What changed
+
+- **`firmware/CMakeLists.txt`** — added explanatory comment block documenting the proxy-component pattern + the EXTRA_COMPONENT_DIRS bisect finding. No `set(EXTRA_COMPONENT_DIRS …)` call — left out of the build.
+- **`firmware/components/gpio/CMakeLists.txt`** (new) — proxy `idf_component_register` for the `gpio` component. SRCS path resolves to `../../../drivers/gpio/src/gpio_util.cpp`; INCLUDE_DIRS adds `../../../drivers/gpio/src` (for `gpio_util.h`) and `../../config` (for `pin_config.h`). Requires the ESP-IDF `driver` component (legacy peripheral driver layer providing `gpio_config_t`, `gpio_set_level`, etc.). Tier-1 hardening flags scoped via `target_compile_options(${COMPONENT_LIB} PRIVATE …)` as established in alpha.1.
+- **`drivers/gpio/src/gpio_util.cpp`** (modified) — full migration from Arduino API to ESP-IDF. `pinMode` → `gpio_config_t` + `gpio_config()`. `digitalWrite` → `gpio_set_level`. `digitalRead` → `gpio_get_level`. `INPUT_PULLUP` mode now explicitly sets `pull_up_en = GPIO_PULLUP_ENABLE` on top of `mode = GPIO_MODE_INPUT`. Behavioural equivalence: each `gpio_set_pin_mode()` reconfigures the pin completely (matches arduino's "pinMode replaces prior config" semantic). Interrupt type set to `GPIO_INTR_DISABLE` on every reconfig — this driver doesn't handle ISRs. Public API in `gpio_util.h` is **unchanged**; callers don't know which underlying API does the work.
+- **`firmware/src/CMakeLists.txt`** — added `gpio` to the main component's `REQUIRES` list. The IDF dependency-graph machinery resolves the `gpio` component via the auto-discovery of `firmware/components/gpio/`.
+- **`firmware/src/app_main_stub.cpp`** — exercises the new gpio driver: `#include "gpio_util.h"`, configures `PIN_HB_LED` (GPIO41) as output in `app_main()`, calls `gpio_toggle(PIN_HB_LED)` on every heartbeat tick. The amber HB LED on the LOLIN S3 will visibly blink every 5 s as a direct proof the gpio driver linked and works. If the proxy weren't wired up correctly, the build would fail at the link step with `undefined reference to gpio_set_pin_mode`.
+- **`firmware/platformio.ini`** — `FIRMWARE_VERSION` stamped `2.0.0-alpha.2.1` (the `.1` sub-version denotes "first sub-step of Phase 2").
+
+#### Build delta vs alpha.1
+
+| Metric | alpha.1 (stub only) | alpha.2.1 (stub + gpio) | Delta |
+|---|---:|---:|---:|
+| Firmware bin | 239,424 B | 243,696 B | +4,272 B |
+| Flash usage | 11.4 % | 11.6 % | +0.2 pp |
+| RAM static | 18,732 B (5.7 %) | 18,772 B (5.7 %) | +40 B |
+
+bin sha256: `B70AF8B35108380FD57C1BEDC9C65E0331A2F2C4CD3C20D4A06DB04005E4F2FF`
+
+The +4.2 KB is the gpio driver code + its IDF `driver`-component pulls (which were already partially present in alpha.1 via other transitive dependencies). The +40 B RAM is largely the link-time references; the driver itself has no static state.
+
+#### Acceptance criterion for alpha.2.1
+
+1. Build succeeds with no warnings from `target_compile_options` (the tier-1 hardening flags should pass cleanly against the migrated `gpio_util.cpp`).
+2. Flash to bench unit; boot reason `ESP_RST_POWERON` (= 1).
+3. Heartbeat task emits one log line every 5 s as in alpha.1, with an additional `hb_led=` field that alternates 1/0 on every heartbeat (software-level proof of the toggle).
+4. **`PIN_HB_LED` (GPIO41, amber on LOLIN S3) visibly blinks** in sync with the log lines — proves the gpio driver works against real hardware.
+5. Run for ≥ 30 minutes; no resets, no panic. (Lighter acceptance than alpha.1 because the only new code is one driver toggle call.)
+
+#### Acceptance: PASSED — 2026-05-17
+
+Flashed to Unit 2 hardware (LOLIN S3 dev unit on the production Unit 2 hardware bench, which has a known-good amber HB LED wiring on GPIO41). After one interim bisect (see "lesson learned" below), final acceptance signal:
+
+- ✅ Build succeeded, no tier-1 hardening warnings against the migrated source
+- ✅ `hb_led=` value alternates between 0 and 1 on every heartbeat
+- ✅ Amber HB LED on GPIO41 visibly blinks at the heartbeat cadence
+- ✅ Boot reason `esp_reset_reason=1` (POWERON); chip stable on the new binary
+
+#### Lesson learned: `GPIO_MODE_OUTPUT` is not what arduino-esp32's `pinMode(p, OUTPUT)` does
+
+First attempt mapped `pinMode(p, OUTPUT)` directly onto ESP-IDF's `gpio_config_t.mode = GPIO_MODE_OUTPUT`. Boot succeeded, link succeeded, heartbeat logs appeared on serial — but the LED stayed dark and `gpio_read()` on the pin always returned 0. Two-toggle bisect revealed the cause:
+
+ESP-IDF's `gpio_get_level()` on a pin configured `GPIO_MODE_OUTPUT` (output-only) returns **always 0** regardless of the latched output value. Our `gpio_toggle()` does a read-modify-write: read current state, write the inverse. With `gpio_read()` stuck at 0, every `gpio_toggle()` wrote HIGH unconditionally. The pin transitioned LOW→HIGH on the first heartbeat, then stayed HIGH forever — no blink, no readback.
+
+The arduino-esp32 wrapper hides this by mapping `pinMode(p, OUTPUT)` to ESP-IDF's `GPIO_MODE_INPUT_OUTPUT` internally (input+output mode where the input register reflects the latched output). `digitalRead()` on an output pin under arduino returns the latched value — and we relied on that semantic without noticing it was framework sugar.
+
+Fix landed in this same commit: `GPIO_OUTPUT` in the driver maps to `GPIO_MODE_INPUT_OUTPUT` instead of `GPIO_MODE_OUTPUT`. Documented in `drivers/gpio/src/gpio_util.cpp`'s header comment so the next driver migration doesn't trip on the same trap (the `relay_controller` does output-pin readback for self-checks — would have hit this in Phase 6).
+
+This is **exactly the class of silent semantic regression the per-driver acceptance gates were designed to catch.** Five seconds of LED observation made it obvious; a Phase 5 full-firmware build would have buried it in the noise of dozens of other simultaneously-changing files.
+
 ### `[2.0.0-alpha.1]` — 2026-05-17
 
 **Phase 1 — build-system flip + smoke-boot stub.** The single highest-risk step in the migration: `framework = arduino` becomes `framework = espidf` in `platformio.ini`. From this commit onward the binary is built by ESP-IDF, not arduino-esp32.

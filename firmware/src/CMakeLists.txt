@@ -34,6 +34,11 @@ idf_component_register(
         esp_system
         esp_hw_support
         heap
+        # Phase 2 driver components (extends per migration sub-step).
+        # Each REQUIRES entry corresponds to a proxy CMakeLists.txt
+        # under firmware/components/<name>/ which forwards to the
+        # actual driver source at ../../drivers/<name>/src/.
+        gpio          # LIB-1 — migrated 2.0.0-alpha.2.1
 )
 
 # -----------------------------------------------------------------------------
