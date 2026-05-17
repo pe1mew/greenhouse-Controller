@@ -89,6 +89,31 @@ Two issues surfaced when first running `pio run -e lolin_s3` after the framework
 
 Drivers will get the same component-scoped flag treatment when they migrate in Phase 2.
 
+#### Acceptance: PASSED — 2026-05-17
+
+Flashed to dev unit (MAC `64:E8:33:7C:23:44`, unit_id `2344` — distinct from production Unit 1 `12F0` and Unit 2 `5C88`, per migration plan).
+
+| Acceptance criterion | Target | Observed |
+|---|---|---|
+| Boot reason | `ESP_RST_POWERON` (1) | `rst:0x1 POWERON`, `esp_reset_reason=1` |
+| Duration | ≥ 60 min | **76 min 40 s** (uptime=4600s) |
+| Heartbeats | monotonic | 0 → 920, zero gaps |
+| Free heap (INTERNAL) | > 100 KB | 375 275 B constant for 919 heartbeats |
+| Largest contiguous block | sanity bound | 278 528 B (272 KB) constant |
+| PSRAM detected | 8 MB OPI | 8 386 156 B added to heap allocator |
+| Panic / WDT / abort | none | none |
+| Heap drift over window | < 1 KB | **0 bytes** |
+
+Key boot-log evidence:
+- IDF version `5.5.0` (matches espressif32@6.12.0 pin)
+- `App version: v1.20.3-arduino-final-1-gfe5a5a` — git-describe auto-derivation working, tag chain intact
+- 8 MB OPI PSRAM correctly initialised with `octal_psram` driver (validates `CONFIG_SPIRAM_MODE_OCT=y` + friends in sdkconfig.defaults)
+- `esp_core_dump_flash: Found partition 'coredump' @ 620000 65536 bytes` — clean init, no CRC error like the 1.19.0 problem
+- Coredump partition NOT requiring the historical `erase_region` step on this unit (clean partition table written during flash)
+- DRAM available for dynamic allocation: 322 + 21 + 32 KiB = 375 KiB total — matches the heartbeat reading
+
+The heap signature in particular is the clean baseline for the rest of the migration: with no networking and no application logic in the build, there is nothing to allocate or hold and heap is perfectly stable for over an hour. Phases 4-5 will reintroduce networking and the gh#23 mbedTLS pattern will either re-emerge (proving the per-handshake hold is intrinsic to the stack) or be eliminated by the new `esp_http_client` + `esp_tls` config (the Phase 4 payoff).
+
 ### `[2.0.0-alpha.0]` — 2026-05-17
 
 - **Branch `dev/2.0.0-esp-idf`** created from `main` at commit `d8436ad` (the 1.20.3 release commit). Production state preserved by annotated tag `v1.20.3-arduino-final`.
