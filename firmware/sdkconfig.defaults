@@ -1,0 +1,76 @@
+# Greenhouse Controller — sdkconfig defaults (ESP-IDF migration, v2.0.0-alpha.1+)
+#
+# History
+# --------
+# Added 1.19.0 (gh#21) as documentation-of-intent for core-dump capture under
+# framework=arduino, where these settings had NO EFFECT because PlatformIO's
+# prebuilt Arduino-ESP32 framework was built from a baked-in sdkconfig.
+#
+# Promoted to load-bearing in 2.0.0-alpha.1 (Phase 1 ESP-IDF migration):
+# framework=espidf consumes this file directly. Every config value below is
+# now meaningful and acted upon by the build.
+#
+# Editing rules
+# --------------
+# - Keep this file alphabetised within each section.
+# - Do not commit auto-generated `sdkconfig` (gitignored). All non-default
+#   settings belong here.
+# - One-off interactive tweaks: `pio run -t menuconfig` (which writes to the
+#   auto-generated sdkconfig; copy any keepers back here before re-build).
+
+# ----------------------------------------------------------------------------
+# Bootloader / log level
+# ----------------------------------------------------------------------------
+CONFIG_BOOTLOADER_LOG_LEVEL_INFO=y
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# ----------------------------------------------------------------------------
+# Coredump (gh#21 / 1.19.0)
+# ----------------------------------------------------------------------------
+# Partition for these is defined in partitions.csv at 0x620000 (64 KB).
+# First flash on a fresh unit MUST be followed by:
+#   esptool.py --chip esp32s3 --port COMx erase_region 0x620000 0x10000
+# otherwise the IDF reads garbage at this offset on boot.
+CONFIG_ESP_COREDUMP_ENABLE=y
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
+CONFIG_ESP_COREDUMP_CHECK_BOOT=y
+CONFIG_ESP_COREDUMP_LOGS=y
+CONFIG_ESP_COREDUMP_MAX_TASKS_NUM=64
+CONFIG_ESP_COREDUMP_STACK_SIZE=1024
+
+# ----------------------------------------------------------------------------
+# Flash + PSRAM
+# ----------------------------------------------------------------------------
+# Matches the verified 1.20.3 runtime config (qio flash, OPI 8 MB PSRAM).
+# The board_build.flash_mode = qio in platformio.ini sets the same value for
+# the binary header byte that esptool writes during upload.
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_TYPE_ESPPSRAM64=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# ----------------------------------------------------------------------------
+# FreeRTOS — 1 ms tick (assumed throughout the firmware)
+# ----------------------------------------------------------------------------
+CONFIG_FREERTOS_HZ=1000
+# Dual-core (default for ESP32-S3, listed here for explicitness against any
+# future single-core variant of the framework).
+CONFIG_FREERTOS_UNICORE=n
+
+# ----------------------------------------------------------------------------
+# Partition table (custom layout for dual-bank OTA + dual LittleFS + coredump)
+# ----------------------------------------------------------------------------
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0x8000
+
+# ----------------------------------------------------------------------------
+# CPU + compiler
+# ----------------------------------------------------------------------------
+# ESP32-S3 is the target; lock that in explicitly.
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_IDF_TARGET_ESP32S3=y
