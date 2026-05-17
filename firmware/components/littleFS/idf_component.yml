@@ -1,0 +1,19 @@
+# firmware/components/littleFS/idf_component.yml
+#
+# IDF Component Manager dependency for the LIB-9 littleFS migration.
+#
+# ESP-IDF 5.5 does not bundle a LittleFS implementation. The community-maintained
+# `joltwallet/littlefs` package adds `esp_vfs_littlefs_register` / `_unregister`
+# and the procedural `esp_littlefs_format` / `_info` calls used by our driver.
+# The original arduino-esp32 build got the same code via the Arduino LittleFS
+# wrapper class (fs::LittleFSFS) which itself was a thin shim over an older
+# fork of this same library.
+#
+# Version pinning: choose the latest stable in the 1.16.x series — known
+# compatible with IDF 5.5.x in our package combo (espressif32@6.12.0 +
+# framework-espidf @ 3.50500.0). Caret-range allows minor bumps but no
+# major-version jumps without an explicit edit. The managed component
+# arrives in firmware/managed_components/joltwallet__littlefs/ on first
+# build (PlatformIO+espidf calls the IDF component manager automatically).
+dependencies:
+  joltwallet/littlefs: "^1.16.0"
