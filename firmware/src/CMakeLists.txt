@@ -24,6 +24,7 @@
 idf_component_register(
     SRCS
         "app_main_stub.cpp"
+        "wifi_tickle.cpp"        # Phase 3 (2.0.0-alpha.3) — IDF-native STA + SNTP
     INCLUDE_DIRS
         "."
     REQUIRES
@@ -50,6 +51,12 @@ idf_component_register(
         DS1307_RTC    # LIB-3 — migrated 2.0.0-alpha.2.9 (trivial cleanup, depends on i2c)
         littleFS      # LIB-9 — migrated 2.0.0-alpha.2.10 (LittleFS.h → esp_vfs_littlefs_*; managed component)
         sdCard        # LIB-8 — migrated 2.0.0-alpha.2.11 (SD.h → esp_vfs_fat_sdspi_*; FAT32 over SPI; LAST Phase-2 driver)
+        # Phase 3 (2.0.0-alpha.3) — IDF-native WiFi tickle requirements.
+        # Pulls in the WiFi + lwip stack (~200 KB).
+        esp_wifi       # esp_wifi_init/_set_config/_start/_connect
+        esp_event      # default event loop + WIFI_EVENT / IP_EVENT
+        esp_netif      # esp_netif_create_default_wifi_sta, IPSTR/IP2STR
+        lwip           # esp_netif_sntp_*, lwip/ip4_addr.h for IPSTR macros
 )
 
 # -----------------------------------------------------------------------------

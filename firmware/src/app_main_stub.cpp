@@ -143,7 +143,22 @@
  *                                       does not require SD hardware to be
  *                                       fitted; some operators don't fit one).
  *                                       This is the LAST driver migrated
- *                                       in Phase 2. */
+ *                                       in Phase 2.
+ *
+ * Phase 3 — Network stack (2.0.0-alpha.3):
+ *   wifi_tickle (firmware/src/wifi_tickle.cpp) — IDF-native esp_wifi +
+ *                                       esp_netif + esp_event STA bring-up,
+ *                                       reads SSID/PSK from NVS (LIB-7),
+ *                                       waits for IP_EVENT_STA_GOT_IP via
+ *                                       event group, runs esp_netif_sntp_*
+ *                                       for time sync. Replaces the
+ *                                       arduino-era WiFi.begin/status loop
+ *                                       in network_manager.cpp (full task
+ *                                       port deferred to Phase 6 alongside
+ *                                       main.cpp; this tickle proves the
+ *                                       IDF WiFi stack works end-to-end
+ *                                       on Unit 2 hardware and structurally
+ *                                       precludes gh#21 lwIP-init race). */
 #include "gpio_util.h"
 #include "keypad_matrix.h"
 #include "nvs_config.h"
@@ -155,6 +170,7 @@
 #include "ds1307_rtc.h"
 #include "littlefs_storage.h"
 #include "sd_storage.h"
+#include "wifi_tickle.h"
 
 static const char *TAG = "GHC-STUB";
 
@@ -670,6 +686,59 @@ extern "C" void app_main(void)
         } else if (sd_st == STORAGE_ERR_NO_CARD) {
             ESP_LOGI(TAG, "no SD card present — LIB-8 tickle skipped (acceptable)");
         }
+    }
+
+    /* alpha.3 — Phase 3 WiFi network stack tickle.
+     *
+     * Note (historical): alpha.3.1 carried a one-shot bench-credentials
+     * writer here to seed NVS keys `wifi/ssid` and `wifi/psk`. That block
+     * was removed in alpha.3.2 once the NVS partition was confirmed
+     * populated on the dev board; the credentials persist there now
+     * across reflashes (NVS lives on its own partition). For any future
+     * bench unit, set credentials either via 1.20.3's web UI before
+     * reflashing, via `nvs_partition_gen.py`, or by temporarily restoring
+     * a similar one-shot writer block (the alpha.3.1 commit shows the
+     * pattern).
+     *
+     * IDF-native STA bring-up: esp_netif_init → esp_event_loop_create_default
+     * → esp_netif_create_default_wifi_sta → esp_wifi_init → register handlers
+     * for WIFI_EVENT + IP_EVENT → set STA config from NVS creds → esp_wifi_start.
+     * The WIFI_EVENT_STA_START handler calls esp_wifi_connect; the
+     * IP_EVENT_STA_GOT_IP handler sets a bit on a FreeRTOS event group; the
+     * tickle blocks on xEventGroupWaitBits with a 10 s budget.
+     *
+     * Three possible outcomes:
+     *   WIFI_TICKLE_OK              — connected, got IP, SNTP synced.
+     *   WIFI_TICKLE_OK_NO_NTP       — connected, got IP, SNTP timed out
+     *                                 (this can happen if the bench AP has
+     *                                 no internet route to pool.ntp.org).
+     *   WIFI_TICKLE_NO_SSID         — NVS wifi/ssid empty (factory state
+     *                                 or operator-cleared) — graceful skip.
+     *   WIFI_TICKLE_CONNECT_TIMEOUT — STA_GOT_IP not received in budget;
+     *                                 most likely cause is the WiFi
+     *                                 network not being in range of Unit 2.
+     *   WIFI_TICKLE_DISCONNECTED    — auth failure or AP not found after
+     *                                 retries.
+     *
+     * The Unit 2 NVS holds whatever ssid/psk the 1.20.3 firmware persisted
+     * there (lossless across reflashes). If the bench unit is physically
+     * located within reach of that network, we should connect cleanly. If
+     * not — the tickle reports CONNECT_TIMEOUT and we move on. That's
+     * EXPECTED behaviour and not a regression in the WiFi migration.
+     *
+     * Per the migration plan: STA_GOT_IP should arrive in < 5 s. The 10 s
+     * budget here gives 2× headroom for slow APs / weak signal. */
+    {
+        wifi_tickle_status_t wifi_st = wifi_tickle_run(/*connect_timeout_ms=*/10000u);
+        const char *wifi_msg =
+            (wifi_st == WIFI_TICKLE_OK)              ? "OK (connected + SNTP synced)" :
+            (wifi_st == WIFI_TICKLE_OK_NO_NTP)       ? "OK (connected, NTP timed out)" :
+            (wifi_st == WIFI_TICKLE_NO_SSID)         ? "NO_SSID (NVS wifi/ssid empty)" :
+            (wifi_st == WIFI_TICKLE_INIT_FAILED)     ? "INIT_FAILED" :
+            (wifi_st == WIFI_TICKLE_CONNECT_TIMEOUT) ? "CONNECT_TIMEOUT (AP out of range?)" :
+            (wifi_st == WIFI_TICKLE_DISCONNECTED)    ? "DISCONNECTED (auth fail / AP missing)" :
+                                                       "?";
+        ESP_LOGI(TAG, "wifi_tickle_run() returned %d (%s)", (int)wifi_st, wifi_msg);
     }
 
     BaseType_t rc = xTaskCreatePinnedToCore(
