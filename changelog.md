@@ -28,6 +28,108 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-alpha.6.7.1]` — 2026-05-18
+
+**Phase 2.11 SD test-file probe retirement.** Operator SD-card inspection of the dev unit revealed `/phase_2_11_test.csv` had been growing by one identical line (`boot,2026-05-17,LIB-SD ESP-IDF port works (LFN OK)`) per boot since alpha.2.11.1 — leftover scaffolding from the LIB-8 write-path acceptance test. T9 (alpha.6.6) now exercises the same FATFS write path with real RTC-stamped data into the daily CSV, making the probe fully redundant. Patch removes the probe; the existing dev-card file must be deleted by hand.
+
+#### What changed
+
+- **`firmware/src/app_main_stub.cpp`** — removed the `static const char *test_file = "/phase_2_11_test.csv"` block (write_append → file_size → read → byte-compare verify; ~46 lines). The `storage_init()`, total/free log, `storage_sd_list_csv()`, and `storage_sd_unmount()` calls are preserved as passive sanity probes — they exercise the mount/list/unmount paths without writing to the card. Replaced the deleted block with a one-paragraph comment pointing at this changelog entry.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-alpha.6.7.1`.
+
+The historical references to `phase_2_11_test.csv` in `sdkconfig.defaults` (the LFN-config rationale comment block) and in earlier `changelog.md` entries (alpha.2.11 + alpha.2.11.1 release notes) are deliberately untouched — they're historical commentary, not active code.
+
+#### Operator action required
+
+Pop the SD card out of any dev unit that ran alpha.2.11.1 through alpha.6.7 and delete `/phase_2_11_test.csv` manually on a PC. The file contains no useful data — it's just `boot,2026-05-17,LIB-SD ESP-IDF port works (LFN OK)` repeated N times. No firmware unlink is provided; alpha.6.7.1 simply stops writing the file.
+
+#### Build delta vs alpha.6.7
+
+| Metric | alpha.6.7 | alpha.6.7.1 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1,225,657 B | **1,224,797 B** | −860 B |
+| Flash usage % | 58.4 % | 58.4 % | unchanged at 2 dp |
+| RAM static | 51,992 B | **51,992 B** | **0 B** |
+
+bin sha256: `1AD5C6A01816A08AFF2AF72800DDD1DC5F6A3F37B0950D9430B8F3CD0B2AA12D`
+
+Tiny patch: −860 bytes flash from the removed write/read/verify code + 2 fewer string-table entries; RAM static unchanged as predicted (the `test_file` / `test_line` literals were `static const char *` references into RODATA, no `.bss`/`.data` involvement).
+
+#### Acceptance bar for alpha.6.7.1
+
+1. Build succeeds.
+2. Flash, boot, observe serial: the SD tickle block should log:
+   ```
+   storage_init returned 0 (OK)
+   SD total = ... bytes, free = ... bytes
+   storage_sd_list_csv(.csv) -> 0; result: "<csv-list>"
+   storage_sd_unmount() done; storage_sd_available() = false (OK)
+   ```
+   Note the **absence** of any `storage_sd_write_append(/phase_2_11_test.csv) -> ...` and `SD write/read verify: PASS — bytes identical` lines. That's the gold-standard signal — the probe is gone.
+3. T4 (data_manager) and T9 (event_logger) unchanged from alpha.6.7 baseline. Heartbeat `alpha.6.7 dm: ...` cfg snapshot still emits each tick (the heartbeat literal still references "alpha.6.7" — left in place to avoid touching unrelated code in a cleanup patch; will rename in the next functional alpha).
+4. All earlier-phase tickles regression-clean.
+
+### `[2.0.0-alpha.6.7]` — 2026-05-18
+
+**Phase 6.7 — data_manager (T4) activation.** The central data hub goes live: cfg_shadow_t backbone, MX1..MX4 mutexes, sensor ring buffer (DM_RING_DEPTH=360 entries), Q4/Q6 consumers, RTC↔system-clock sync, NTP→DS1307 writeback via TN4, sunrise/sunset integration (sunrise.cpp from alpha.6.2). 1031 lines; the heaviest single firmware/src/ activation in Phase 6.
+
+#### What changed
+
+- **`firmware/src/data_manager/data_manager.cpp`**:
+  - Dropped `#include <Arduino.h>` and `#include <WiFi.h>`.
+  - Added `#include <esp_wifi.h>` + `#include <esp_netif.h>` for the WiFi-state replacement.
+  - Added `#include <sys/time.h>` for `settimeofday()` (was previously via Arduino.h transitively).
+  - Replaced the 3 WiFi.* calls in `dm_status_snapshot()` with `esp_wifi_sta_get_ap_info()` + `esp_netif_get_handle_from_ifkey("WIFI_STA_DEF")` + `esp_netif_get_ip_info()`. IDF-native idiom; same semantics as the Arduino `WiFi.isConnected()` + `WiFi.localIP().toString()` + `WiFi.RSSI()` chain. ~17 lines new code for ~3 lines removed.
+- **`firmware/src/data_manager/data_manager.h`**: added `#include <time.h>` for `time_t` (used by `dm_set_manual_time()`'s parameter).
+- **`firmware/src/relay_controller/relay_controller_stub.cpp`** (new): provides `t2_get_window_states(window_state_t out[3])` returning `{WIN_UNKNOWN, WIN_UNKNOWN, WIN_UNKNOWN}` until the real T2 ports in Phase 6.8+. Same forcing-removal pattern as the now-deleted `data_manager_stub.cpp`.
+- **`firmware/src/data_manager/data_manager_stub.cpp`** — **DELETED**. T4's real `dm_get_unix_time()` definition replaces it. The linker would refuse coexistence anyway.
+- **`firmware/src/CMakeLists.txt`**: added `data_manager/data_manager.cpp` + `relay_controller/relay_controller_stub.cpp` to SRCS; removed `data_manager/data_manager_stub.cpp`.
+- **`firmware/src/app_main_stub.cpp`**:
+  - `#include "data_manager/data_manager.h"` added.
+  - Spawn T4 just before T9 with `xTaskCreatePinnedToCore(task_data_manager, "T4-data", 8192, NULL, 5, &task_t4, tskNO_AFFINITY)`. T4 runs at priority 5 (one higher than T9's 4) so cfg/measurement updates land before any synthetic logging derived from them.
+  - Heartbeat now calls `dm_cfg_snapshot(&cfg)` each tick and logs `t_min_day / t_max_day / hyst_t / v_max / unix_ts / is_daytime / sunrise / sunset` from the snapshot. Validates that T4 loaded the cfg from NVS (values should be 1.20.3-written production setpoints, NOT cfg_defaults.h's compile defaults).
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-alpha.6.7`.
+
+#### Build traps encountered + fixes
+
+Two Arduino-transitive-include traps surfaced:
+1. `'time_t' was not declared` in data_manager.h:266. Fix: explicit `#include <time.h>` in the header.
+2. `'settimeofday' was not declared` in data_manager.cpp:219, 1017. Fix: explicit `#include <sys/time.h>` in the source.
+
+Same `arduino-transitively-included-IDF-headers-we-now-need-explicitly` pattern as alpha.6.6 (where esp_log.h had to be added explicit). I expect ~1-2 of these per future activation; each instance is a 1-line fix.
+
+#### Build delta vs alpha.6.6
+
+| Metric | alpha.6.6 | alpha.6.7 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1,214,497 B | **1,225,657 B** | +11,160 B |
+| Flash usage % | 57.9 % | 58.4 % | +0.5 pp |
+| RAM static | 42,880 B | **51,992 B** | **+9,112 B** |
+
+bin sha256: `179298D12B3BA12892B44BA451C130B35E4ADF08743FEF8C2477A486FBBCC419`
+
+The **+9 KB RAM static** is mostly data_manager's `s_ring` history buffer (DM_RING_DEPTH × sizeof(sensor_reading_t) ≈ 360 × 20 B ≈ 7.2 KB) plus the cfg_shadow_t static (~1 KB) plus the 5 NVS key-name string-table arrays. T4's runtime task stack (8 KB) comes from heap — the +9 KB above is static BSS only.
+
+Runtime heap impact at heartbeat baseline expected: ~−9 KB free (T4 task stack 8 KB + a small Q4/Q6/MX_-related working set). Compared to alpha.6.6's `free=222,331`, alpha.6.7 should land around `free=213,000`.
+
+#### Acceptance bar for alpha.6.7
+
+1. ✅ Build succeeds (after two include fixes).
+2. Flash to Unit 2; boot reason `ESP_RST_POWERON`.
+3. Boot banner: `alpha.6.7: T4 data_manager task spawned (handle=0x...)`. T4 emits its own boot-banner equivalents (NVS load progress, RTC read, sunrise compute) — watch for those.
+4. **Heartbeat shows live cfg snapshot every 5 s**:
+   ```
+   alpha.6.7 dm: t_min_day=<n> t_max_day=<n> hyst_t=<n> v_max=<n>
+                 unix_ts=<NNNNNNNNNN> is_day=<0|1> sunrise=<n> set=<n>
+   ```
+   - `t_min_day`/`t_max_day`/etc. should be **production 1.20.3 values**, not cfg_defaults.h's compile defaults. The dev board's NVS persisted those values from prior production firmware runs.
+   - `unix_ts` should be the current Unix epoch (post-SNTP).
+   - `is_day=1` mid-day Dutch time.
+   - `sunrise`/`set` should match alpha.6.2's tickle output (220 / 1174 minutes UTC ≈ 03:40 / 19:34).
+5. T9 (alpha.6.6) keeps running — SD CSV continues to grow with one event per 5 s.
+6. All earlier-phase tickles regression-clean.
+7. Run ≥ 10 min; no resets; no stack-overflow on T4.
+
 ### `[2.0.0-alpha.6.6]` — 2026-05-18
 
 **Phase 6.6 — event_logger (T9) activation.** Brings T9 online: sole consumer of Q3, drains the queue, persists each event as a CSV line on SD via LIB-8. After this lands, every other task in the system can call `log_post(&evt)` and get durable storage. Made considerably simpler by Phase 6.5's NVS-fallback removal (T9 is now SD-only).

@@ -41,6 +41,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <time.h>    /* time_t — used by dm_set_manual_time (alpha.6.7) */
 #include "../types/app_types.h"
 
 /* ============================================================

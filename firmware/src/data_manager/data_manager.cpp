@@ -32,13 +32,18 @@
 #include "littlefs_storage.h"
 #include "../system_id/system_id.h"   /* unit_id at boot (gh#17, since 1.18.3) */
 
-#include <Arduino.h>
-#include <WiFi.h>
+/* alpha.6.7 — dropped vestigial #include <Arduino.h> and <WiFi.h>.
+ * The 3 WiFi.* call sites in dm_status_snapshot() are rewritten below
+ * to use esp_wifi_sta_get_ap_info + esp_netif_get_ip_info directly.
+ * Pulls in esp_wifi.h + esp_netif.h replacing the Arduino WiFi shim. */
+#include <esp_wifi.h>
+#include <esp_netif.h>
 #include <esp_log.h>
 #include <esp_system.h>     /* esp_reset_reason() — boot-reason event (1.17.31) */
 #include <esp_task_wdt.h>   /* WDT subscription (1.17.29 / gh#13) */
 #include <esp_timer.h>
 #include <time.h>
+#include <sys/time.h>    /* settimeofday() — alpha.6.7, was via Arduino.h */
 #include <string.h>
 
 static const char *TAG = "T4";
@@ -850,10 +855,25 @@ void dm_status_snapshot(status_snapshot_t *out)
     else if (eg1 & EG1_BIT_WIND_OVERRIDE) { out->mode = MODE_WIND_OVERRIDE; }
     else                                  { out->mode = MODE_AUTOMATIC;    }
 
-    /* Network. */
-    if (WiFi.isConnected()) {
-        strncpy(out->ip, WiFi.localIP().toString().c_str(), sizeof(out->ip) - 1u);
-        out->rssi = (int16_t)WiFi.RSSI();
+    /* Network (alpha.6.7 — IDF replacement for Arduino WiFi.* calls).
+     *
+     * esp_wifi_sta_get_ap_info() returns ESP_OK only when the STA is
+     * associated to an AP — same semantics as Arduino's WiFi.isConnected().
+     * On success we read the IP from the default WiFi-STA netif and the
+     * RSSI from the AP-info record (no separate WiFi.RSSI() call needed). */
+    {
+        wifi_ap_record_t ap_info = {};
+        if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+            esp_netif_t *netif =
+                esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+            esp_netif_ip_info_t ip = {};
+            if (netif != NULL &&
+                esp_netif_get_ip_info(netif, &ip) == ESP_OK) {
+                snprintf(out->ip, sizeof(out->ip),
+                         IPSTR, IP2STR(&ip.ip));
+            }
+            out->rssi = (int16_t)ap_info.rssi;
+        }
     }
 
     /* Firmware version + uptime. */
