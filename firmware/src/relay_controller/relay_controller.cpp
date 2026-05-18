@@ -32,9 +32,15 @@
                              * DEF_DWELL_OPEN_M{1,2,3}_S, DEF_DWELL_CLOSE_M{1,2,3}_S */
 #include "cfg_limits.h"     /* CFG_MIN_TRAVEL_S, CFG_MAX_TRAVEL_S */
 
-#include <Arduino.h>
+/* alpha.6.9 — dropped <Arduino.h>. The single Arduino-specific call
+ * was attachInterrupt(PIN_OPTO_INPUT, isr_motor_alarm, CHANGE) at the
+ * boot path; that's been replaced with the IDF gpio ISR service below
+ * (gpio_install_isr_service + gpio_set_intr_type GPIO_INTR_ANYEDGE +
+ * gpio_isr_handler_add). The ISR signature also gains a void* arg to
+ * match the IDF gpio_isr_t typedef. */
 #include <esp_log.h>
 #include <esp_task_wdt.h>   /* WDT subscription (1.17.29 / gh#13) */
+#include <driver/gpio.h>    /* alpha.6.9 — gpio_install_isr_service / handler_add */
 #include <time.h>
 
 static const char *TAG = "T2";
@@ -148,8 +154,10 @@ static portMUX_TYPE s_state_mux = portMUX_INITIALIZER_UNLOCKED;
 static volatile bool       s_alarm_edge      = false;
 static volatile TickType_t s_alarm_edge_tick = 0;
 
-static void IRAM_ATTR isr_motor_alarm(void)
+static void IRAM_ATTR isr_motor_alarm(void *arg)
 {
+    /* arg unused — kept for the ESP-IDF gpio_isr_t signature (alpha.6.9). */
+    (void)arg;
     s_alarm_edge_tick = xTaskGetTickCountFromISR();
     s_alarm_edge      = true;
 }
@@ -740,15 +748,33 @@ void task_relay_controller(void *pvParameters)
     }
 
     /* ------------------------------------------------------------------
-     * 2. Attach GPIO42 interrupt.
+     * 2. Attach GPIO42 interrupt (alpha.6.9 ESP-IDF GPIO ISR service).
      *
-     *    CHANGE mode fires on both assert (alarm onset) and deassert
-     *    (alarm clearance).  The ISR is NOT suppressed during MOVING
-     *    states — a motor reaching the emergency switch during a
+     *    CHANGE mode (GPIO_INTR_ANYEDGE) fires on both assert (alarm onset)
+     *    and deassert (alarm clearance).  The ISR is NOT suppressed during
+     *    MOVING states — a motor reaching the emergency switch during a
      *    T2-commanded move is the primary failure scenario (FR-MA01).
+     *
+     *    gpio_install_isr_service is called with ESP_INTR_FLAG_IRAM so the
+     *    ISR runs from IRAM (matching the IRAM_ATTR on isr_motor_alarm).
+     *    The "already installed" error is benign — another component may
+     *    have installed the service first (none today, but defensive).
+     *
+     *    Note: PIN_OPTO_INPUT itself is configured as input + pull-up by
+     *    app_main_stub's relay pin-config block before T2 spawns, so we
+     *    only need to set the interrupt type + register the handler here.
      * ------------------------------------------------------------------ */
-    attachInterrupt(PIN_OPTO_INPUT, isr_motor_alarm, CHANGE);
-    ESP_LOGI(TAG, "GPIO42 ISR attached (MOTOR_ALARM, CHANGE, not suppressed during MOVING)");
+    {
+        esp_err_t isr_svc_rc = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
+        if (isr_svc_rc != ESP_OK && isr_svc_rc != ESP_ERR_INVALID_STATE) {
+            ESP_LOGE(TAG, "gpio_install_isr_service failed: %s", esp_err_to_name(isr_svc_rc));
+        }
+        ESP_ERROR_CHECK(gpio_set_intr_type((gpio_num_t)PIN_OPTO_INPUT, GPIO_INTR_ANYEDGE));
+        ESP_ERROR_CHECK(gpio_isr_handler_add((gpio_num_t)PIN_OPTO_INPUT,
+                                              isr_motor_alarm, NULL));
+        ESP_ERROR_CHECK(gpio_intr_enable((gpio_num_t)PIN_OPTO_INPUT));
+    }
+    ESP_LOGI(TAG, "GPIO42 ISR attached (MOTOR_ALARM, ANYEDGE, IRAM, not suppressed during MOVING)");
 
     /* ------------------------------------------------------------------
      * 3. Boot CLOSE_ALL calibration (with gh#18 Phase 3 NVS-skip).

@@ -181,6 +181,7 @@
 #include "event_logger/event_logger.h"
 #include "data_manager/data_manager.h"
 #include "sensor_poll/sensor_poll.h"
+#include "relay_controller/relay_controller.h"
 #include "types/app_types.h"  /* Q1..Q6, MX1..MX5, EG1, task_t1..15, key_event_t etc. */
 
 static const char *TAG = "GHC-STUB";
@@ -916,6 +917,80 @@ extern "C" void app_main(void)
             ESP_LOGI(TAG, "alpha.6.8: T5 sensor_poll task spawned (handle=%p); "
                           "first poll in ~38 s (8 s boot grace + poll_interval_s)",
                      (void *)task_t5);
+        }
+    }
+
+    /* alpha.6.9 — relay GPIO pin configuration + spawn T2 relay_controller.
+     *
+     * Pin map (firmware/config/pin_config.h):
+     *   PIN_RELAY_M1_OPEN=12   PIN_RELAY_M1_CLOSE=13
+     *   PIN_RELAY_M2_OPEN=14   PIN_RELAY_M2_CLOSE=15
+     *   PIN_RELAY_M3_OPEN=16   PIN_RELAY_M3_CLOSE=21
+     *   PIN_OPTO_INPUT=42 (RRK-3 motor alarm, active LOW through opto-coupler)
+     *
+     * Configure all 6 relay outputs as push-pull OUTPUTs and drive them LOW
+     * BEFORE T2 spawns. Two reasons:
+     *  1. The relays must be in a known de-energised state before T2 reads
+     *     the alarm pin and decides whether to run CLOSE_ALL calibration.
+     *  2. T2's calib_close_all() assumes all relays start LOW (it energises
+     *     CLOSE relays; reversal logic depends on a known starting state).
+     *
+     * GPIO42 (PIN_OPTO_INPUT) is configured as INPUT_PULLUP. T2's first
+     * task action is to read this pin — if it's LOW the alarm is already
+     * asserted at boot and calibration is skipped (handle_alarm_onset).
+     * The pull-up is essential: the RRK-3 contact is normally OPEN (alarm
+     * cleared), and without the pull-up the pin would float.
+     *
+     * T2 then attaches an ISR on PIN_OPTO_INPUT via gpio_install_isr_service
+     * + gpio_isr_handler_add (ESP-IDF native, alpha.6.9). Pin configuration
+     * has to happen BEFORE the ISR install (otherwise the ISR sees a
+     * default pin mode and may not behave consistently).
+     *
+     * **Physical safety note (alpha.6.9 acceptance)**: if NVS has saved any
+     * channel state OTHER than CLOSED, T2 will energise the 3 CLOSE relays
+     * simultaneously for up to ~3 minutes (M3 travel = 171 s). If the dev
+     * unit has motors physically attached, they will close. The gh#18
+     * Phase 3 NVS-skip optimization avoids this entirely when all three
+     * channels were saved CLOSED on the previous clean reboot — which is
+     * usually true if the unit was running production firmware.
+     */
+    {
+        static const uint8_t RELAY_PINS_OUT[6] = {
+            PIN_RELAY_M1_OPEN, PIN_RELAY_M1_CLOSE,
+            PIN_RELAY_M2_OPEN, PIN_RELAY_M2_CLOSE,
+            PIN_RELAY_M3_OPEN, PIN_RELAY_M3_CLOSE,
+        };
+        for (size_t i = 0; i < sizeof(RELAY_PINS_OUT) / sizeof(RELAY_PINS_OUT[0]); i++) {
+            gpio_set_pin_mode(RELAY_PINS_OUT[i], GPIO_OUTPUT);
+            gpio_write(RELAY_PINS_OUT[i], GPIO_LOW);
+        }
+        gpio_set_pin_mode(PIN_OPTO_INPUT, GPIO_INPUT_PULLUP);
+        ESP_LOGI(TAG, "alpha.6.9: 6 relay output pins configured + driven LOW; "
+                      "PIN_OPTO_INPUT=42 configured INPUT_PULLUP");
+
+        /* T2 stack: 8 KB — calib_close_all polls every 400 ms for up to
+         * 171 s with on-stack arrays + log lines; 8 KB matches 1.20.3 prod.
+         * Priority 6 — one higher than T4/T5 (5) so T2 preempts data and
+         * sensor tasks when commanded. In 1.20.3 prod this was
+         * TASK_PRIO_HIGH; using 6 here matches that intent without
+         * pulling in the priority-enum header.
+         * Core pinning: tskNO_AFFINITY (1.20.3 prod pinned to core 1;
+         * defer pinning until Phase 7 soak says we need it). */
+        BaseType_t rc = xTaskCreatePinnedToCore(
+            task_relay_controller,
+            "T2-relay",
+            8192,                  /* stack words */
+            NULL,
+            6,                     /* priority — above T4/T5 (5) */
+            &task_t2,
+            tskNO_AFFINITY);
+        if (rc != pdPASS) {
+            ESP_LOGE(TAG, "alpha.6.9: xTaskCreate T2 failed (rc=%d)", (int)rc);
+        } else {
+            ESP_LOGI(TAG, "alpha.6.9: T2 relay_controller task spawned (handle=%p); "
+                          "boot calibration may run (up to 171 s) unless NVS "
+                          "recovered all 3 channels CLOSED",
+                     (void *)task_t2);
         }
     }
 

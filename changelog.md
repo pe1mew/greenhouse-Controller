@@ -28,6 +28,66 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-alpha.6.9]` — 2026-05-18
+
+**Phase 6.9 — relay_controller (T2) activation.** The window-control task goes live: sole owner of the 6 relay GPIO outputs (M1/M2/M3 × OPEN/CLOSE), per-channel FSM (UNKNOWN → CLOSED ↔ MOVING_OPEN/MOVING_CLOSE ↔ OPEN), 2 s reversal-gap enforcement, NVS-persisted terminal state (gh#18 Phase 3 calibration-skip), GPIO42 motor-alarm ISR with 75 ms debounce, 60 s post-alarm guard before re-calibration. Q1 consumer (Q1 is fed by T3 safety + T6 climate — both still dormant in this phase). Force-removes `relay_controller_stub.cpp` via the linker conflict pattern (same as `data_manager_stub.cpp` in alpha.6.7).
+
+#### What changed
+
+- **`firmware/src/relay_controller/relay_controller.cpp`**:
+  - Dropped `#include <Arduino.h>` (the only Arduino-specific call was `attachInterrupt(...)` at the GPIO42 ISR install).
+  - Added `#include <driver/gpio.h>` for the ESP-IDF GPIO ISR service.
+  - ISR signature `void IRAM_ATTR isr_motor_alarm(void)` → `void IRAM_ATTR isr_motor_alarm(void *arg)` to match the IDF `gpio_isr_t` typedef. The added `arg` parameter is unused (`(void)arg;` cast inside).
+  - Replaced `attachInterrupt(PIN_OPTO_INPUT, isr_motor_alarm, CHANGE)` with `gpio_install_isr_service(ESP_INTR_FLAG_IRAM) + gpio_set_intr_type(..., GPIO_INTR_ANYEDGE) + gpio_isr_handler_add(...) + gpio_intr_enable(...)`. ESP_ERROR_CHECK on each step except install (which is allowed to return `ESP_ERR_INVALID_STATE` when the service is already installed — benign).
+- **`firmware/src/relay_controller/relay_controller_stub.cpp`** — **DELETED** via `git rm`. The real `relay_controller.cpp:t2_get_window_states()` replaces the stub's no-op. The linker would refuse two definitions of the symbol — forcing-removal pattern, same as `data_manager_stub.cpp` in alpha.6.7.
+- **`firmware/src/CMakeLists.txt`** — added `relay_controller/relay_controller.cpp` to SRCS; removed `relay_controller/relay_controller_stub.cpp`.
+- **`firmware/src/app_main_stub.cpp`**:
+  - `#include "relay_controller/relay_controller.h"` added.
+  - New init block before T2 spawn: configures the 6 relay output pins (`PIN_RELAY_M{1,2,3}_{OPEN,CLOSE}` = GPIO12/13/14/15/16/21) as `GPIO_OUTPUT` and drives them `GPIO_LOW`; configures `PIN_OPTO_INPUT` (GPIO42) as `GPIO_INPUT_PULLUP`. Must happen before T2's task body so the alarm pin reads correctly and the relays start from a known de-energised state.
+  - Spawn T2 with `xTaskCreatePinnedToCore(task_relay_controller, "T2-relay", 8192, NULL, 6, &task_t2, tskNO_AFFINITY)`. Priority 6 — one above T4/T5 (5) — so T2 preempts data and sensor tasks when a Q1 command arrives. Matches 1.20.3 production's `TASK_PRIO_HIGH` intent.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-alpha.6.9`.
+
+#### Build delta vs alpha.6.8
+
+| Metric | alpha.6.8 | alpha.6.9 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1,229,421 B | **1,237,005 B** | +7,584 B |
+| Flash usage % | 58.6 % | 59.0 % | +0.4 pp |
+| RAM static | 59,240 B | **59,336 B** | +96 B |
+
+bin sha256: `DFE428AC260CE06BE5A7E21A4D610D84DE0018E6A3F87D0D348CC3C2B9BC74A7`
+
+The **+7,584 B flash** is T2's task body (~830 lines: FSM, calibration, alarm handler, NVS state persistence, ISR install). RAM static delta is +96 B — that's the `s_ch[3]` channel-state array (3 × `ch_t` = 84 B) plus a small portMUX spinlock byte. T2's runtime task stack (8 KB) comes from heap.
+
+Runtime heap impact at heartbeat baseline expected: ~−8 KB free vs alpha.6.8 (T2 task stack 8 KB). Heartbeat baseline ~180,000 free (was 188,235 at alpha.6.8).
+
+#### ⚠ Physical-safety acceptance considerations
+
+**T2 will drive 6 relay outputs on real GPIO pins.** Two possible boot behaviours depending on NVS state:
+
+1. **NVS-recovered (gh#18 Phase 3 skip)**: if the previous clean reboot saved all three channels as `CH_CLOSED`, T2 logs `boot calibration skipped — NVS-recovered window state (all three channels CLOSED)` and proceeds directly to the main loop. **No relays fire.** This is the common case after running 1.20.3 production firmware (which uses the same gh#18 Phase 3 persistence).
+2. **Calibration required**: if any channel is `UNKNOWN` or `OPEN` in NVS, T2 runs `calib_close_all()` — energises all 3 CLOSE relays simultaneously for each channel's `travel_s + MOTOR_TRAVEL_MARGIN_S_DEFAULT` (up to 171 s for M3). Relays click + motors (if attached) drive to CLOSED.
+
+**Boot-time alarm guard**: if `PIN_OPTO_INPUT` reads LOW at boot (RRK-3 alarm relay already latched), T2 logs `GPIO42 alarm pin already asserted at boot — skipping CLOSE_ALL calibration` and calls `handle_alarm_onset()` (relays stay de-energised; `EG1_BIT_MOTOR_ALARM` set; further Q1 commands discarded). Operator must clear the alarm hardware-side to resume.
+
+If the dev unit has motors physically connected, **either** ensure it's safe for them to close, **or** confirm the unit's NVS records all three channels CLOSED (in which case the calibration is skipped entirely).
+
+#### Acceptance bar for alpha.6.9
+
+1. ✅ Build succeeds (no Arduino-transitive trap; the only Arduino-specific call was `attachInterrupt`, replaced with the IDF GPIO ISR service).
+2. Flash to Unit 2; boot reason `ESP_RST_POWERON`.
+3. Spawn banner: `alpha.6.9: T2 relay_controller task spawned (handle=0x...)`.
+4. T2 banner sequence (in order):
+   - `T2 starting`
+   - `CH1: travel=N s  dwell_open=N s  dwell_close=N s` × 3
+   - `GPIO42 ISR attached (MOTOR_ALARM, ANYEDGE, IRAM, not suppressed during MOVING)`
+   - **Either** `T2 boot calibration skipped — NVS-recovered window state (all three channels CLOSED)` **or** `T2 boot calibration starting — NVS state (ch0=N ch1=N ch2=N; need all=1)` followed by 3× `CHN: CLOSE relay energised (deadline N ms from boot)` and finally `CLOSE_ALL calibration complete — all channels CLOSED`.
+5. Heartbeat continues — no regressions on T4/T5/T7/T9/HTTPS/WiFi/SD/LFS.
+6. `t2_get_window_states()` now returns real state (not WIN_UNKNOWN). T4's `dm_status_snapshot()` populates `win[0..2]` with `WIN_CLOSED` (or whatever T2 recovered) instead of all `WIN_UNKNOWN`.
+7. T2 idles waiting for Q1 — no Q1 producer is active in this phase (T3/T6 dormant), so the queue stays empty. Expect zero CMD_OPEN / CMD_CLOSE log lines.
+8. Optional manual test: hand-trip the RRK-3 alarm relay (or short GPIO42 to GND through a 1 kΩ resistor). Within ~95 ms (75 ms debounce + 20 ms loop tick) T2 should log `MOTOR_ALARM asserted — all relays de-energised, all window control suspended`. Release the alarm; T2 logs clearance + starts the 60 s guard + then runs CLOSE_ALL re-calibration. **Skip this test if motors are connected.**
+9. Run ≥ 10 min; no resets; no stack-overflow on T2.
+
 ### `[2.0.0-alpha.6.8]` — 2026-05-18
 
 **Phase 6.8 — sensor_poll (T5) activation.** Modbus RTU master goes live: polls FG6485A (T/RH) at slave 1 and S200 (wind speed/direction) at slave 44, maintains sliding-window arithmetic averages (T/RH/wind speed) plus a unit-vector atan2-based circular mean for wind direction, pushes a `sensor_reading_t` onto Q6 (depth-1, xQueueOverwrite — latest wins). Edge-triggered fault detection on EG1: `EG1_BIT_SENSOR_FAULT_T` for the T/RH bus, `EG1_BIT_SENSOR_FAULT_W` for the wind bus, both with `LOG_ALARM` events posted only at fault onset and clearance.
