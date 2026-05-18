@@ -6,16 +6,28 @@ Serves the static files from firmware/data/ and emulates all REST and
 WebSocket endpoints that the real ESP32 firmware (web_server.cpp +
 status_post/status_json.cpp) exposes.
 
-Targets firmware 1.20.0 — canonical nested status-JSON shape (now including
-the gh#17 `unit_id` field), status-website POST configuration (Web tab),
-the OTA-version-mismatch diagnostic surfaces (manifest.json, asset_version,
-HTML version stamp), and the 1.19.1 `/api/wifi` apply-on-restart semantics
-(response carries `{"restarting":true}` when SSID/PSK/AP_PSK change).
+Targets firmware 2.0.0-alpha.6.X — same canonical nested status-JSON shape
+as 1.20.0 (incl. gh#17 `unit_id`), web-tab status-website settings, OTA-
+mismatch diagnostics (`manifest.json` / `asset_version`), and the 1.19.1
+`/api/wifi` apply-on-restart semantics. Compared to the 1.20.0 baseline
+the 2.0.0 firmware is structurally different (ESP-IDF native vs Arduino-
+esp32, esp_http_server vs ESPAsyncWebServer) but the operator-facing API
+shape is preserved exactly with two retirements:
+
+  - NVS-ringbuffer event log retired (Phase 6.5 / alpha.6.5). Mock
+    matches: `/api/log/files` no longer returns `nvs_count`; the
+    `_nvs_log_entries()` generator is gone; `/api/log/download` no
+    longer accepts `?src=nvs` and the SD-only path takes `?file=NAME`
+    directly (the legacy `?src=sd&file=NAME` form is rejected).
+
+  - `app_main_stub.cpp` → `main.cpp` rename (Phase 6.N.2 / alpha.6.23).
+    Not user-visible from the API; documented here for reference.
 
 Endpoints emulated
 ------------------
 GET  /                  index.html from firmware/data/ (with ?v=<ver>
                         cache-busters injected on app.js / style.css)
+GET  /index.html        same content as / (alpha.6.24)
 GET  /style.css         stylesheet
 GET  /app.js            JavaScript
 GET  /manifest.json     {"asset_version": "<ver>", "checksum": ""}
@@ -35,11 +47,11 @@ GET  /api/history       ?n=N  — last N synthetic sensor readings
 GET  /api/sd/status     {mounted, free_mb, size_mb}
 POST /api/sd/mount      mount SD card (admin only)
 POST /api/sd/unmount    unmount SD card (admin only)
-GET  /api/ota/status    {ok, state, progress, error}  (any logged-in role)
+GET  /api/ota/status    {ok, state, progress, error, bank, accepted}
 POST /api/ota/firmware  upload firmware .bin  (admin only) → {ok, rebooting}
 POST /api/ota/assets    upload web assets .zip (admin only) → 202 + {ok, message}
-GET  /api/log/files     {nvs_count, sd_files:[...]}  (admin only)
-GET  /api/log/download  ?src=nvs  or  ?src=sd&file=NAME  (admin only) → CSV
+GET  /api/log/files     {sd_files:[...]}  (admin only) — NVS source retired
+GET  /api/log/download  ?file=NAME  (admin only) → CSV
 WS   /ws                push status JSON every 2 s
 
 Usage
@@ -116,7 +128,7 @@ cfg: dict = {
     "lon_deg":              5,    # DEF_LON_DEG
     "lon_frac":             0,    # DEF_LON_FRAC
     "tz_str":              "CET-1CEST,M3.5.0,M10.5.0/3",
-    "fw_ver":              "1.20.0",
+    "fw_ver":              "2.0.0-alpha.6.25",
     # gh#17 — 4-char hex from last 2 bytes of WiFi-STA MAC. On real hardware
     # this surfaces in the boot banner, SD log preamble, AP SSID, status JSON,
     # LCD info screen (1.20.0), and web GUI footer (1.20.0). Mock keeps it
@@ -149,28 +161,11 @@ sd: dict = {"mounted": True, "size_mb": 7500, "free_mb": 7100}
 _EVT_TYPE  = ["SENSOR", "RELAY",   "MODE",  "SETPT", "SESSION", "ALARM", "SYSTEM"]
 _EVT_INIT  = ["SYS",    "FARMER",  "ADMIN", "MQTT",  "WEB"]
 
-def _nvs_log_entries() -> list[dict]:
-    """Generate 64 synthetic NVS log entries spanning the last ~32 minutes."""
-    now = int(time.time())
-    entries = []
-    for i in range(64):
-        ts         = now - (64 - i) * 30
-        etype      = [0, 0, 1, 0, 2, 0, 3, 0, 1, 0, 4, 0, 0, 6, 0, 1][i % 16]
-        initiator  = [0, 0, 0, 0, 0, 4, 2, 0, 0, 0, 4, 0, 0, 0, 1, 0][i % 16]
-        channel    = i % 3
-        param_id   = i % 8
-        value_a    = int(20.0 * 10 + 40 * math.sin(ts / 7200) * 10)   # °C × 10
-        value_b    = int(60 * 10 + 100 * math.sin(ts / 10800 + 1.0))  # RH × 10
-        entries.append({
-            "ts":        ts,
-            "type":      _EVT_TYPE[etype],
-            "initiator": _EVT_INIT[initiator],
-            "ch":        channel,
-            "param":     param_id,
-            "value_a":   value_a,
-            "value_b":   value_b,
-        })
-    return entries
+# _nvs_log_entries() retired in mock sync to firmware alpha.6.5 — the
+# NVS-ringbuffer log source was removed from the firmware in Phase 6.5.
+# `/api/log/files` now returns sd_files only; `/api/log/download` no longer
+# accepts `?src=nvs`. The _EVT_TYPE / _EVT_INIT tables above are kept for
+# documentation; they previously labelled NVS entry rows.
 
 def _sd_log_files() -> list[str]:
     """Return 3 synthetic SD log filenames using local-time timestamp format."""
@@ -435,11 +430,18 @@ def _build_history(n: int) -> list[dict]:
 # Static file routes
 # ---------------------------------------------------------------------------
 @app.route("/")
+@app.route("/index.html")
 def index():
     """Serve index.html with `?v=<fw_ver>` injected on app.js / style.css
     references — mirrors firmware/src/web_server/web_server.cpp::serve_lfs()
     behaviour added in 1.17.4 so browsers reliably revalidate static assets
-    when the firmware version changes."""
+    when the firmware version changes.
+
+    2.0.0-alpha.6.24: the firmware also registers `/index.html` directly
+    (the 1.20.x ESPAsyncWebServer had a wildcard fallback that fell through
+    to LFS; esp_http_server needs explicit URIs). Mock follows the same
+    semantics — `/` and `/index.html` return byte-identical content.
+    """
     html = (DATA_DIR / "index.html").read_text(encoding="utf-8")
     ver  = cfg["fw_ver"]
     html = html.replace('app.js"',    f'app.js?v={ver}"')
@@ -735,8 +737,11 @@ def web_post():
 # ---------------------------------------------------------------------------
 @app.route("/api/history", methods=["GET"])
 def history():
-    if not _get_role():
-        return {"ok": False}, 401
+    """Public, no auth. Same policy as /api/status and /ws — operator-facing
+    sensor data is open by design (firmware/data/app.js:935 comment:
+    "Connect WebSocket and load sensor history immediately — both are
+    public."). Mock previously gated this 401 which was wrong; firmware
+    history_handler is also public after the alpha.6.27 fix."""
     n = min(int(request.args.get("n", 60)), 60)
     return {"rows": _build_history(n)}
 
@@ -774,51 +779,38 @@ def sd_unmount():
 # ---------------------------------------------------------------------------
 @app.route("/api/log/files", methods=["GET"])
 def log_files():
+    """Firmware alpha.6.19 returns {sd_files:[...]} only. The 1.20.x nvs_count
+    field was retired in alpha.6.5 along with the NVS-ringbuffer log source.
+    """
     if _get_role() != "admin":
         return {"ok": False, "err": "admin only"}, 403
-    entries   = _nvs_log_entries()
-    sd_files  = _sd_log_files() if sd["mounted"] else []
-    return {"nvs_count": len(entries), "sd_files": sd_files}
+    sd_files = _sd_log_files() if sd["mounted"] else []
+    return {"sd_files": sd_files}
 
 
 @app.route("/api/log/download", methods=["GET"])
 def log_download():
+    """Firmware alpha.6.19 endpoint takes only `?file=NAME`. The 1.20.x
+    `?src=nvs` and `?src=sd&file=NAME` selectors were retired with the NVS
+    source; SD is the only remaining source and the file query parameter is
+    the bare filename (no namespace prefix).
+    """
     if _get_role() != "admin":
         return {"ok": False, "err": "admin only"}, 403
 
-    src = request.args.get("src", "")
-
-    if src == "nvs":
-        entries = _nvs_log_entries()
-        lines   = ["timestamp,type,initiator,ch,param,value_a,value_b"]
-        for e in entries:
-            ts_str = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(e["ts"]))
-            lines.append(
-                f"{ts_str},{e['type']},{e['initiator']},"
-                f"{e['ch']},{e['param']},{e['value_a']},{e['value_b']}"
-            )
-        csv_text = "\n".join(lines) + "\n"
-        resp = make_response(csv_text)
-        resp.headers["Content-Type"]        = "text/csv; charset=utf-8"
-        resp.headers["Content-Disposition"] = 'attachment; filename="nvs_log.csv"'
-        return resp
-
-    if src == "sd":
-        filename = request.args.get("file", "")
-        # Path-traversal guard (mirrors firmware)
-        if not filename or "/" in filename or ".." in filename:
-            return {"ok": False, "err": "invalid filename"}, 400
-        if not sd["mounted"]:
-            return {"ok": False, "err": "SD not mounted"}, 503
-        if filename not in _sd_log_files():
-            return {"ok": False, "err": "file not found"}, 404
-        csv_text = _sd_csv_content(filename)
-        resp = make_response(csv_text)
-        resp.headers["Content-Type"]        = "text/csv; charset=utf-8"
-        resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
-        return resp
-
-    return {"ok": False, "err": "invalid src"}, 400
+    filename = request.args.get("file", "")
+    # Path-traversal guard (mirrors firmware web_server.cpp:log_download_handler)
+    if not filename or "/" in filename or ".." in filename:
+        return {"ok": False, "err": "invalid filename"}, 400
+    if not sd["mounted"]:
+        return {"ok": False, "err": "SD not mounted"}, 503
+    if filename not in _sd_log_files():
+        return {"ok": False, "err": "file not found"}, 404
+    csv_text = _sd_csv_content(filename)
+    resp = make_response(csv_text)
+    resp.headers["Content-Type"]        = "text/csv; charset=utf-8"
+    resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return resp
 
 # ---------------------------------------------------------------------------
 # OTA routes

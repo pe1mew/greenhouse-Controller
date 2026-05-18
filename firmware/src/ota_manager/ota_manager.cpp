@@ -592,8 +592,38 @@ void task_ota_manager(void *pvParameters)
 
     lfs_st = littlefs_mount(inactive_lfs);
     if (lfs_st != LFS_OK) {
-        set_error_locked("inactive LittleFS mount failed");
-        goto t13_done;
+        /* alpha.6.24 — first-time format fallback. On a fresh chip (or after
+         * the lfs0/lfs1 partitions were wiped by `esptool erase_region`) the
+         * inactive partition contains random flash content; littlefs_mount
+         * rightly refuses with LFS_ERR_CORRUPT. Format and re-mount.
+         *
+         * This path is benign on production hardware: the active partition
+         * always contains a valid LittleFS image (we just booted from the
+         * paired OTA bank), and the inactive partition is the one being
+         * overwritten — formatting it loses nothing operationally.
+         *
+         * Note: littlefs_format() calls esp_littlefs_format(), which under the
+         * hood does the same erase pass we shy away from above. The difference
+         * is that this is the genuine first-write path — we have no choice but
+         * to pay the ~10 s erase cost. T13 is a transient task (not WDT-
+         * subscribed via esp_task_wdt_add), so the long erase is safe here in
+         * a way it wouldn't be inside the steady-state asset-write loop. */
+        ESP_LOGW(TAG, "[T13] inactive LFS mount failed (%d) — formatting first-time",
+                 (int)lfs_st);
+        lfs_status_t fmt_st = littlefs_format(inactive_lfs);
+        if (fmt_st != LFS_OK) {
+            ESP_LOGE(TAG, "[T13] littlefs_format(%c) failed: %d",
+                     (inactive_lfs == LFS_PARTITION_A) ? 'A' : 'B', (int)fmt_st);
+            set_error_locked("inactive LittleFS format failed");
+            goto t13_done;
+        }
+        lfs_st = littlefs_mount(inactive_lfs);
+        if (lfs_st != LFS_OK) {
+            ESP_LOGE(TAG, "[T13] post-format remount failed: %d", (int)lfs_st);
+            set_error_locked("inactive LittleFS remount after format failed");
+            goto t13_done;
+        }
+        ESP_LOGI(TAG, "[T13] inactive LFS formatted + mounted");
     }
     lfs_open = true;
 

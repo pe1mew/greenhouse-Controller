@@ -79,6 +79,14 @@ static const char *select_mountpoint(lfs_partition_t p)
     return (p == LFS_PARTITION_A) ? MOUNT_A : MOUNT_B;
 }
 
+/* Public accessor — alpha.6.24. Forwards to the static helper. The static
+ * helper stays because the in-file callers (build_vfs_path, conf.base_path)
+ * are tighter than the public API and inlinable. */
+const char *littlefs_mountpoint(lfs_partition_t partition)
+{
+    return select_mountpoint(partition);
+}
+
 /**
  * Concatenate the partition's VFS mountpoint with a caller-supplied path that
  * is relative to the LittleFS root (e.g. "/index.html"). The output is

@@ -142,3 +142,25 @@ uint64_t littlefs_free_bytes(lfs_partition_t partition);
  * @return LFS_PARTITION_A or LFS_PARTITION_B.
  */
 lfs_partition_t littlefs_active_partition(void);
+
+/**
+ * @brief Return the VFS mountpoint prefix for the partition (no trailing slash).
+ *
+ * Use with stdio (fopen, fread, fstat) when streaming large files: the LFS_OK
+ * `littlefs_read` API caps at one fixed-size buffer + NUL-terminates the
+ * result, which truncates files > buffer size and corrupts binary content past
+ * the first 0x00 byte. For HTTP file serving of 10-40 KB assets the stdio path
+ * via this mountpoint is the correct primitive.
+ *
+ * Example:
+ *   char path[64];
+ *   snprintf(path, sizeof(path), "%s/index.html",
+ *            littlefs_mountpoint(littlefs_active_partition()));
+ *   FILE *f = fopen(path, "rb");
+ *   // … fread loop …
+ *   fclose(f);
+ *
+ * @param partition  Partition to query.
+ * @return "/lfsa" for LFS_PARTITION_A, "/lfsb" for LFS_PARTITION_B. Never NULL.
+ */
+const char *littlefs_mountpoint(lfs_partition_t partition);

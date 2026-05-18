@@ -379,8 +379,9 @@ static esp_err_t serve_lfs_file(httpd_req_t *req, const char *fs_path,
             "<!DOCTYPE html><html><body style='font-family:sans-serif;padding:2em'>"
             "<h2>Greenhouse Controller %s</h2>"
             "<p>Web assets not yet uploaded.</p>"
-            "<p>Use OTA endpoint <code>POST /api/web</code> to upload "
-            "the asset bundle ZIP.</p>"
+            "<p>Upload the GUI asset bundle (STORE-only ZIP) with: "
+            "<code>POST /api/ota/assets</code> (admin auth required). "
+            "Use 1.20.x's <code>web-assets-X.Y.Z.zip</code> as a starting point.</p>"
             "<p>Requested path: <code>%s</code></p>"
             "</body></html>",
             FIRMWARE_VERSION, fs_path);
@@ -390,31 +391,72 @@ static esp_err_t serve_lfs_file(httpd_req_t *req, const char *fs_path,
         return ESP_OK;
     }
 
-    /* Allocate a heap buffer. littlefs_read NUL-terminates the buffer, so
-     * we read up to LFS_READ_BUF-1 bytes of file content + 1 NUL. For
-     * binary files this would corrupt content past the first NUL byte,
-     * but our 4 static routes (HTML, CSS, JS, JSON) are all text. */
+    /* alpha.6.24 — chunked stdio streaming. The old single-read path was:
+     *   1. heap_caps_malloc(LFS_READ_BUF=4096) once
+     *   2. littlefs_read(buf, 4096) which NUL-terminates inside the buffer
+     *   3. httpd_resp_send(buf, strlen(buf))
+     * That truncated any file > 4 KB (index.html and app.js are both ~40 KB)
+     * AND treated binary 0x00 bytes as EOF (style.css survives but a future
+     * binary asset would corrupt past the first NUL).
+     *
+     * The fix uses stdio against the active partition's VFS mountpoint,
+     * fstat for the true file size, and httpd_resp_send_chunk to stream
+     * arbitrarily large files in LFS_READ_BUF chunks. */
+    char vfs_path[64];
+    int n = snprintf(vfs_path, sizeof(vfs_path), "%s%s",
+                     littlefs_mountpoint(active), fs_path);
+    if (n <= 0 || (size_t)n >= sizeof(vfs_path)) {
+        ESP_LOGW(TAG, "[T11] serve_lfs path too long: %s", fs_path);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    FILE *fp = fopen(vfs_path, "rb");
+    if (fp == NULL) {
+        ESP_LOGW(TAG, "[T11] fopen(%s) failed", vfs_path);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
     char *buf = (char *)heap_caps_malloc(LFS_READ_BUF, MALLOC_CAP_INTERNAL);
     if (buf == NULL) {
         ESP_LOGE(TAG, "[T11] serve_lfs %s: malloc(%u) failed",
                  fs_path, (unsigned)LFS_READ_BUF);
+        fclose(fp);
         httpd_resp_send_500(req);
         return ESP_FAIL;
     }
-
-    lfs_status_t st = littlefs_read(active, fs_path, buf, LFS_READ_BUF);
-    if (st != LFS_OK) {
-        ESP_LOGW(TAG, "[T11] littlefs_read(%s) failed: %d", fs_path, (int)st);
-        heap_caps_free(buf);
-        httpd_resp_send_500(req);
-        return ESP_FAIL;
-    }
-    const size_t n_read = strlen(buf);
 
     httpd_resp_set_type(req, mime);
-    esp_err_t err = httpd_resp_send(req, buf, n_read);
+
+    /* Stream in chunks until fread returns 0. esp_http_server's chunked-
+     * encoding path is engaged automatically when httpd_resp_send_chunk is
+     * called without a prior httpd_resp_send. Terminate with a zero-length
+     * chunk per HTTP/1.1 chunked spec. */
+    size_t total = 0;
+    esp_err_t err = ESP_OK;
+    for (;;) {
+        size_t got = fread(buf, 1, LFS_READ_BUF, fp);
+        if (got == 0) break;
+        err = httpd_resp_send_chunk(req, buf, got);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "[T11] serve_lfs %s: send_chunk failed at %u B: %s",
+                     fs_path, (unsigned)total, esp_err_to_name(err));
+            break;
+        }
+        total += got;
+    }
+    /* Terminator chunk — required even on error to avoid leaking a partial
+     * connection state into the next request on the same keepalive socket. */
+    if (err == ESP_OK) {
+        err = httpd_resp_send_chunk(req, NULL, 0);
+    } else {
+        (void)httpd_resp_send_chunk(req, NULL, 0);
+    }
+
     heap_caps_free(buf);
-    ESP_LOGD(TAG, "[T11] served %s (%u B)", fs_path, (unsigned)n_read);
+    fclose(fp);
+    ESP_LOGD(TAG, "[T11] served %s (%u B)", fs_path, (unsigned)total);
     return err;
 }
 
@@ -723,8 +765,30 @@ static esp_err_t history_handler(httpd_req_t *req)
         n = actually_read;
     }
 
-    /* JSON array. Each entry ~80 chars; 60 entries → ~5 KB. Allocate 8 KB. */
-    const size_t cap = 8192;
+    /* alpha.6.27 — corrected JSON output shape.
+     *
+     * Previous alpha.6.17 output had two defects observable in the GUI:
+     *
+     *   1. Bare array envelope `[…]` instead of `{"rows":[…]}`. The
+     *      dashboard's loadHistory() in firmware/data/app.js short-circuits
+     *      on `if (!data || !data.rows) return;` — silent no-op on a bare
+     *      array. Symptom: history table never populates.
+     *
+     *   2. Raw field names `t/rh/ws/wd` instead of the dashboard's
+     *      `temp_c/temp_avg_c/rh_pct/rh_avg_pct/speed_ms/speed_avg_ms/
+     *      direction_deg/direction_variation_deg`. Even if (1) were fixed,
+     *      every row cell would render as "—" because the readers all use
+     *      the long names.
+     *
+     * The mock at webUiMock/mock_server.py::_build_history is the design
+     * reference for both the envelope and the field-naming convention. The
+     * comment on `_build_history` says: "Field names match the keys inside
+     * the canonical status JSON's `climate` and `wind` blocks so the same
+     * name carries the same number on /api/status and /api/history."
+     *
+     * Per-row size grew from ~80 B → ~160 B (more fields, decimals); bumped
+     * the body cap from 8 KB to 12 KB for the n=60 worst case. */
+    const size_t cap = 12288;
     char *body = (char *)heap_caps_malloc(cap, MALLOC_CAP_INTERNAL);
     if (body == NULL) {
         if (rows) heap_caps_free(rows);
@@ -734,19 +798,34 @@ static esp_err_t history_handler(httpd_req_t *req)
 
     size_t pos = 0;
     int w;
-    w = snprintf(body + pos, cap - pos, "[");
+    w = snprintf(body + pos, cap - pos, "{\"rows\":[");
     if (w > 0) pos += (size_t)w;
 
     for (uint16_t i = 0; i < n && pos < cap - 1; i++) {
         const sensor_reading_t *e = &rows[i];
+        /* `sensor_reading_t` stores temperature as whole-°C integers — the
+         * sensor delivers integer °C and we don't upsample. Emit `%d.0` so
+         * the dashboard's .toFixed(1) renders "21.0" rather than "21". Wind
+         * is ×10 fixed-point in storage; emit `%u.%u` to get "1.0" etc.
+         * Mirrors the status_json.cpp tenths trick. */
         w = snprintf(body + pos, cap - pos,
-            "%s{\"ts\":%lu,\"t\":%d,\"rh\":%u,\"ws\":%u,\"wd\":%u}",
+            "%s{\"ts\":%lu,"
+              "\"temp_c\":%d.0,\"temp_avg_c\":%d.0,"
+              "\"rh_pct\":%u,\"rh_avg_pct\":%u,"
+              "\"speed_ms\":%u.%u,\"speed_avg_ms\":%u.%u,"
+              "\"direction_deg\":%u,\"direction_variation_deg\":%u}",
             (i > 0) ? "," : "",
             (unsigned long)e->timestamp,
+            (int)e->temperature_c,
             (int)e->t_avg_c,
+            (unsigned)e->humidity_pct,
             (unsigned)e->rh_avg_pct,
-            (unsigned)e->wind_speed_avg_ms10,
-            (unsigned)e->wind_dir_avg_deg);
+            (unsigned)(e->wind_speed_ms10     / 10u),
+            (unsigned)(e->wind_speed_ms10     % 10u),
+            (unsigned)(e->wind_speed_avg_ms10 / 10u),
+            (unsigned)(e->wind_speed_avg_ms10 % 10u),
+            (unsigned)e->wind_dir_deg,
+            (unsigned)e->wind_dir_variation_deg);
         if (w < 0 || (size_t)w >= cap - pos) {
             ESP_LOGW(TAG, "[T11] /api/history: row %u truncated", (unsigned)i);
             break;
@@ -754,8 +833,9 @@ static esp_err_t history_handler(httpd_req_t *req)
         pos += (size_t)w;
     }
 
-    if (pos < cap - 1) {
+    if (pos < cap - 2) {
         body[pos++] = ']';
+        body[pos++] = '}';
         body[pos]   = '\0';
     }
 
@@ -1738,24 +1818,23 @@ static esp_err_t web_post_handler(httpd_req_t *req)
  * subsequent inbound frame. The handshake is auto-completed by the
  * httpd when this handler returns ESP_OK from the first call.
  *
- * Auth: GATED to farmer-or-higher. Without this gate any browser on
- * the LAN could subscribe to the live status stream — same gate as
- * the local LCD displays, where the operator must authenticate at
- * the keypad before reading detailed sensor values. Login is
- * checked once at upgrade-time; once subscribed the client stays
- * connected until it disconnects or the session times out (the
- * push task does not re-verify per push — symmetric with 1.20.3).
+ * Auth: PUBLIC (no gate). The pushed payload is byte-identical to the
+ * already-public `GET /api/status` response — climate / wind / windows /
+ * mode / sun / system (incl. fw_ver + unit_id). Operator-visible data is
+ * open by design (matches 1.20.3 and webUiMock/mock_server.py's
+ * unauthenticated `@sock.route("/ws")`). The gate added in alpha.6.21
+ * was a mistake — symptom on the GUI was that after logout the WS
+ * upgrade returned 401 and `ws.onclose` set the dashboard's badge to
+ * "Offline", freezing all the live tiles, even though `/api/status`
+ * itself would have answered fine.
+ *
+ * Sensitive surfaces stay gated separately (POST /api/config, POST
+ * /api/wifi, POST /api/pin, the OTA + log endpoints).
  */
 static esp_err_t ws_handler(httpd_req_t *req)
 {
-    /* GET = upgrade handshake. Gate it here. */
+    /* GET = upgrade handshake. No auth gate. */
     if (req->method == HTTP_GET) {
-        if (require_auth(req, WEB_ROLE_FARMER) == WEB_ROLE_NONE) {
-            /* require_auth already sent a 401 with JSON body. The
-             * httpd will not perform the WS upgrade because we
-             * return ESP_OK *after* a body was sent. */
-            return ESP_OK;
-        }
         ESP_LOGI(TAG, "[T11] /ws upgrade fd=%d", httpd_req_to_sockfd(req));
         return ESP_OK;
     }
@@ -1900,6 +1979,12 @@ static void task_ws_push(void *pvParameters)
  * ============================================================ */
 static const httpd_uri_t s_uri_root = {
     .uri = "/", .method = HTTP_GET, .handler = root_handler, .user_ctx = NULL };
+/* alpha.6.24 — also serve /index.html directly. The 1.20.3 ESPAsyncWebServer
+ * had a wildcard onNotFound that fell through to LFS; with esp_http_server we
+ * register the path explicitly. Reusing root_handler keeps "/" and
+ * "/index.html" byte-identical. */
+static const httpd_uri_t s_uri_index = {
+    .uri = "/index.html", .method = HTTP_GET, .handler = root_handler, .user_ctx = NULL };
 static const httpd_uri_t s_uri_style = {
     .uri = "/style.css", .method = HTTP_GET, .handler = style_handler, .user_ctx = NULL };
 static const httpd_uri_t s_uri_appjs = {
@@ -2003,7 +2088,7 @@ void task_web_server(void *pvParameters)
 
     /* Register URIs. */
     const httpd_uri_t *uris[] = {
-        &s_uri_root, &s_uri_style, &s_uri_appjs, &s_uri_manifest,
+        &s_uri_root, &s_uri_index, &s_uri_style, &s_uri_appjs, &s_uri_manifest,
         &s_uri_whoami, &s_uri_login, &s_uri_logout,
         &s_uri_status, &s_uri_history,
         &s_uri_config_get, &s_uri_config_limits, &s_uri_config_post,

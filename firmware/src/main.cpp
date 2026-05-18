@@ -269,11 +269,10 @@ static void heartbeat_task(void *arg)
         size_t largest_block  = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
         size_t free_spiram    = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
 
-        /* Toggle PIN_HB_LED and read it back — software-level proof the
-         * gpio driver works regardless of whether the dev unit actually
-         * has an LED wired on GPIO41. Production hardware with the amber
-         * HB LED on GPIO41 will also see visible blink in sync. */
-        gpio_toggle(PIN_HB_LED);
+        /* alpha.6.24 — PIN_HB_LED toggle moved to T1 (watchdog/watchdog.cpp)
+         * so the LED blinks at 1 Hz like 1.20.3 (was 0.1 Hz here). Read-back
+         * kept for the log line below — proves the GPIO driver works and the
+         * LED state matches what T1 last wrote on its tick. */
         int hb_state = (gpio_read(PIN_HB_LED) == GPIO_HIGH) ? 1 : 0;
 
         /* Poll the keypad — exercises gpio_util on 8 pins (4 row outputs
@@ -1323,7 +1322,17 @@ extern "C" void app_main(void)
             (wifi_st == WIFI_TICKLE_DISCONNECTED)    ? "DISCONNECTED (auth fail / AP missing)" :
                                                        "?";
         ESP_LOGI(TAG, "wifi_tickle_run() returned %d (%s)", (int)wifi_st, wifi_msg);
-        wifi_up = (wifi_st == WIFI_TICKLE_OK || wifi_st == WIFI_TICKLE_OK_NO_NTP);
+        /* alpha.6.31 — `wifi_up` now means "WiFi STACK initialized", not
+         * "STA connected". Previously T11 was gated on STA being up at
+         * boot, which broke the AP-mode recovery path: a unit with no
+         * `wifi/ssid` couldn't reach the GUI via AP because T11 was
+         * never spawned. Now T11 spawns as long as wifi_tickle_run got
+         * the stack to esp_wifi_start() — even NO_SSID counts, because
+         * the admin can later enable the AP from the LCD menu and T11
+         * binds httpd to all interfaces (incl. the AP netif at
+         * 192.168.4.1). The only state that still gates T11 is
+         * INIT_FAILED (genuine WiFi-driver failure). */
+        wifi_up = (wifi_st != WIFI_TICKLE_INIT_FAILED);
     }
 
     /* alpha.6.14 — spawn T10 minimal network_manager task.
