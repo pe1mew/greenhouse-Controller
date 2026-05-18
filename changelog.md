@@ -28,7 +28,112 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
-### `[2.0.0-alpha.6.3]` — 2026-05-18
+### `[2.0.0-alpha.6.4]` — 2026-05-18
+
+**Phase 6.4 — First real FreeRTOS task activation: `keypad_scan` (T7).** Previous activations (sunrise, system_id) were pure helper functions called from `app_main`. T7 is a long-running task created via `xTaskCreatePinnedToCore`, scanning the 4×4 membrane keypad every 20 ms and producing key events onto Q2 — the first real producer/consumer pattern in the IDF build.
+
+Originally the activation plan put data_manager and event_logger first, but those two have a **circular dependency** (data_manager calls log_post() from event_logger; event_logger calls dm_get_unix_time() from data_manager) that needs a stub layer to break. keypad_scan is dependency-free (LIB-5 ✓, Q2 ✓) and gives tactile acceptance (operator presses a key, event appears in serial log within 5 s). Re-ordered the activation plan to do keypad_scan first; the event_logger/data_manager bundle will follow the NVS-ringbuffer-removal design change (Phase 6.5).
+
+#### What changed
+
+- **`firmware/src/keypad_scan/keypad_scan.cpp`** — dropped vestigial `#include <Arduino.h>`. Body uses only ESP-IDF (`esp_log`, `esp_task_wdt`, FreeRTOS) and LIB-5 (`keypad_matrix`). Inline comment recording the removal.
+- **`firmware/src/CMakeLists.txt`** — added `keypad_scan/keypad_scan.cpp` to SRCS.
+- **`firmware/src/app_main_stub.cpp`**:
+  - `#include "keypad_scan/keypad_scan.h"` + `#include "types/app_types.h"` (for `key_event_t`, `task_t7`, `Q2`).
+  - After the existing `keypad_init()` call (alpha.2.2 tickle), spawn T7 via `xTaskCreatePinnedToCore(task_keypad_scan, "T7-keypad", 3072, NULL, 4, &task_t7, tskNO_AFFINITY)`. Handle stored into the global `task_t7` (declared extern in app_types.h, defined NULL in system_globals.cpp since alpha.6.1, now populated).
+  - In the heartbeat task: drain Q2 each tick. Pop all available `key_event_t`s non-blocking and log each one. Up to 8 events queued between 5 s ticks (Q2 depth); user keypresses within that window are captured cleanly.
+- **`firmware/platformio.ini`** — `FIRMWARE_VERSION` stamped `2.0.0-alpha.6.4`.
+
+Two key design notes folded into the diff:
+1. **`keypad_init()` is now called twice** — once by app_main's alpha.2.2 tickle (line 369), again by `task_keypad_scan()` at its first iteration. LIB-5's init is idempotent (GPIO pin config); the double-init is harmless and is documented inline.
+2. **Heartbeat continues to call `keypad_count_pressed()`** — that's the alpha.2.2 polled read path. It's independent of T7's edge-detection event path. Both paths read LIB-5 directly. They can coexist.
+
+#### Build trap encountered + fix
+
+First build failed: `'key_ev' was not declared in this scope` and `'task_t7' was not declared in this scope`. `app_main_stub.cpp` didn't include `types/app_types.h` (the tickles previously stayed inside their own self-contained scopes). Added the include alongside the other Phase 6 headers.
+
+#### Build delta vs alpha.6.3
+
+| Metric | alpha.6.3 | alpha.6.4 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1,203,669 B | **1,205,309 B** | +1,640 B |
+| Flash usage % | 57.4 % | 57.5 % | +0.1 pp |
+| RAM static | 42,784 B | 42,784 B | 0 |
+
+bin sha256: `02E1DBD7543ED0C58794EBC8368177A3AC756189ED0D0268FCD35FE997011100`
+
+The +1,640 B is the keypad_scan task code (~600 B) + the heartbeat's Q2-drain loop (~400 B) + miscellaneous link-time text expansion. Runtime cost: one new FreeRTOS task with 3 KB stack (~3.5 KB heap when active).
+
+#### Acceptance bar for alpha.6.4
+
+1. ✅ Build succeeds (after the `types/app_types.h` include fix).
+2. Flash to Unit 2; boot reason `ESP_RST_POWERON`.
+3. After the existing `keypad_init` log line, new log:
+   ```
+   alpha.6.4: T7 keypad_scan task spawned (handle=0x...); press a key to see Q2 events drained in the heartbeat
+   ```
+4. **Physical-input acceptance**: with the membrane keypad wired (Unit 2 production hardware has it), pressing any key produces a log line within the next heartbeat:
+   ```
+   Q2 key event #0: 'N' repeated=0
+   Q2 drained 1 event(s) this tick
+   ```
+   where `N` is the ASCII key value per the 4×4 layout (`1234`/`5678`/`9*0#` mapped to corners + `ABCD` on column 4).
+5. **Key-repeat acceptance**: holding a key for >500 ms produces additional events with `repeated=1` at ~100 ms intervals. Inside a 5 s heartbeat window with a held key, expect ~45 events (one first-press + ~44 repeats at 100 ms each = 4.4 s of repeats).
+6. **Q2 overflow** if user presses >8 keys in 5 s: each event after the 8th is dropped, `T7_KPD: Q2 full — first-press 'X' dropped` warning logged. Tolerable for the tickle.
+7. Earlier-phase tickles all regression-clean (heartbeat heap stable, HTTPS gh#23 fix intact, web server still responding).
+8. Run ≥ 10 min; no resets; no stack overflow on the T7 task.
+
+If T7 fails to spawn (`xTaskCreate T7 failed (rc=X)`), most likely cause is heap exhaustion at boot. Pre-spawn heap is ~300 KB on Unit 2; T7 needs 3 KB stack — trivial. Failure here would point at something else (rc=-1 = errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY only).
+
+#### Acceptance: PASSED — 2026-05-18
+
+Flashed Unit 2. T7 spawned immediately after the system_globals_init line:
+```
+I (990) T-GLOBALS: system_globals_init OK: ...
+I (1000) T7_KPD: T7 task alive
+I (1003) GHC-STUB: alpha.6.4: T7 keypad_scan task spawned (handle=0x3fceaee4)
+```
+
+**Interactive verification — operator exercised the full input domain:**
+
+| Time | Action | Captured |
+|---|---|---|
+| 22 s | quick tap `5`, `4` | 2× first-press events |
+| 27 s | rapid tap `6`, `2`, `1` | 3× first-press events |
+| 32 s | tap `8` | 1× first-press event |
+| 37 s | hold `8` ~4 s | 1× first-press + 7× repeat = 8 events (fills Q2) |
+| 40 s | release 8 + press 5 | **`Q2 full — first-press '5' dropped`** warning |
+| 42 s | continue holding | 8 events (mix `8`/`5` repeats) |
+| 47 s | hold `5` | 8× `5 repeated=1` |
+| 52 s | release | quiet |
+
+All design behaviours observed cleanly:
+
+- ✅ First-press detection on key-down (`repeated=0`)
+- ✅ Edge detection on key-change (pressing 4 while 5 is still active → new first-press for 4)
+- ✅ Repeat after 500 ms hold (`repeated=1` at ~100 ms cadence)
+- ✅ Q2 overflow warning fires correctly on the 9th event
+- ✅ ASCII codes match the 4×4 layout (`5/4/6/2/1/8` all valid keypad positions)
+- ✅ The polled `keys=N` (alpha.2.2 path) and event-`Q2-drained` (alpha.6.4 path) coexist correctly — both read LIB-5 independently. `keys=1` heartbeats line up with periods when a key is held.
+
+**Earlier-phase tickles all regression-clean:**
+- system_globals (Phase 6.1) regression-clean.
+- WiFi (Phase 3): 1.2 s STA_GOT_IP, SNTP synced in 4.5 s.
+- sunrise (Phase 6.2): `rise=03:40 UTC set=19:34 UTC is_daytime=true` — same as alpha.6.2 acceptance, consistent.
+- system_id (Phase 6.3): `Unit ID: 2344 (AP-SSID would be Greenhouse-2344)`.
+- HTTPS (Phase 4): 5/5 OK status=204, gh#23 fix still holding — call 1 free −492 B / largest −36,864 B; calls 2-5 free ~−220 B / largest 0 (transient-not-sticky).
+- Web server (Phase 5): running, externally reachable.
+
+**Heap delta** confirms predicted T7 cost:
+- alpha.6.3 heartbeat baseline: `free=234,495 / largest=131,072`
+- alpha.6.4 heartbeat baseline: `free=231,179 / largest=126,976`
+- Delta: **−3,316 B free** (T7 stack 3 KB + FreeRTOS TCB ~300 B), **−4,096 B largest** (one heap block consumed by the task-stack allocation). Exactly the predicted cost. Heap rock-steady at 231,179 across 8+ heartbeats — no leak.
+
+**Side observation worth recording**: keypad_scan.cpp's source comment says "Q2 capacity is 16 items" but system_globals.cpp creates Q2 with depth 8 (matching the production tasks/queues spec the data hub has been writing against). The `Q2 full` warning at 41 s confirms depth=8 in the binary. Real-world UI usage (operator presses slow vs T8 consumer drain) means 8 is fine — the saturation only happened here because the tickle's heartbeat-drain runs every 5 s instead of T8's eventual sub-100 ms drain. Worth noting for any future Q2-depth audit; not a regression.
+
+**Phase 6.4 is CLOSED. First real FreeRTOS task activation pattern proven**: `xTaskCreatePinnedToCore`, handle into a global from `system_globals.cpp`, producer (T7) + consumer (heartbeat stub) both running, Q2 round-trips work, no leaks. The pattern scales for the remaining 10 task subsystem activations.
+
+
 
 **Phase 6.3 — Second firmware/src/ subsystem activation: `system_id`** (gh#17, since 1.18.3 on the arduino-era line). Tiny utility (~48 lines) that derives a 16-bit per-unit ID from MAC bytes 4-5 via `esp_read_mac()`, with a lazy-cache for O(1) subsequent reads. No FreeRTOS deps, no driver deps, no Arduino — just `<esp_mac.h>` and `<stdio.h>`. Surfaces the per-unit ID in the boot banner alongside the MAC; the future network_manager (Phase 6.12) will use it for the `Greenhouse-XXXX` AP-SSID.
 
