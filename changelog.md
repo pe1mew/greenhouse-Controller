@@ -28,6 +28,56 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-alpha.6.23]` — 2026-05-18
+
+**Phase 6.N.2 — housekeeping: `main.cpp` rename + archive deletion.** Pure file moves + three string edits; binary behaviour identical to alpha.6.22.
+
+- `git mv firmware/src/app_main_stub.cpp firmware/src/main.cpp` — the file has not been a "stub" since the early alphas; the name now matches the role.
+- `git rm firmware/src/main.cpp` (pre-rename — the original 1.20.3 Arduino-era entry point with `Adafruit_NeoPixel`, `Wire`, `WiFi.h` etc. that would not compile under `framework = espidf`). Preserved in git history if archaeology is ever needed.
+- `git rm firmware/src/web_server/web_server_1.20.3_original.cpp.archived`
+- `git rm firmware/src/status_post/status_post_1.20.3_original.cpp.archived`
+- `git rm firmware/src/network_manager/network_manager_1.20.3_original.cpp.archived`
+
+The three archive files were preserved on disk through Phases 6.14 / 6.15 / 6.16 as porting references; their content is now superseded by the working IDF-native code and they're no longer reachable from git working-tree.
+
+#### Inside the renamed main.cpp
+
+- `TAG` literal: `"GHC-STUB"` → `"GHC"` (renames the log prefix on the ~30 boot log lines from `app_main`)
+- alpha.2.5 LCD greeting: `"ESP-IDF stub OK"` → `"ESP-IDF boot OK"`
+- File header docblock: rewritten from the original "Phase 1 stub mandate" to a 8-step boot-sequence description (banner → globals → driver tickles → NVS → ota_check_rollback → pin_auth → task spawns → heartbeat).
+- Comment references to `app_main_stub.cpp` in two other live source files (`network_manager.cpp`, `relay_controller.cpp`) and one in `platformio.ini` updated to point at the new name. Changelog and prior release-notes retain the original name verbatim as historical record.
+
+#### Build delta vs alpha.6.22
+
+| Metric | alpha.6.22 | alpha.6.23 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1 305 213 B | 1 305 213 B | **0 B** |
+| RAM static | 60 256 B | 60 256 B | 0 B |
+
+Byte-identical — confirms the rename was textual only. The three string changes (`"GHC-STUB"` 9 B → `"GHC"` 3 B, `"ESP-IDF stub OK"` 16 B → `"ESP-IDF boot OK"` 16 B, docblock comment-only) happen to land in the same `.rodata` size class.
+
+bin sha256: `2589802B9D506887…`
+
+#### Acceptance — hardware verified on 192.168.20.160
+
+After 184 s uptime:
+
+```
+GET /api/ota/status   → {state:"idle", progress:0, error:"", bank:"A", accepted:true}
+GET /api/status       → fw_ver=2.0.0-alpha.6.23, uptime_s=184
+```
+
+`accepted=true` confirms the T1 + `ota_check_rollback` flow from alpha.6.22 still works after the file move — the spawn block and boot call weren't relocated, only the file containing them was renamed. Zero functional regression.
+
+#### Phase 6.N retrospective
+
+| Sub-phase | Tag | Scope |
+|---|---|---|
+| 6.N.1 | alpha.6.22 | T1 minimal watchdog + `ota_check_rollback` boot wiring + stack-overflow fix |
+| 6.N.2 | **alpha.6.23** | main.cpp rename + 4 archive deletions |
+
+Phase 6 (the ESP-IDF migration's Phase 6 = "misc cleanup + finalisation") is structurally complete. The deferred Phase 6.N.1.X (T1 full instrumentation — NeoPixel + LOG_SYSTEM heap rows + heap-integrity check + stack-HWM sweep) carries forward; it's high-value diagnostic data but not gating for 2.0.0-rc.1.
+
 ### `[2.0.0-alpha.6.22]` — 2026-05-18
 
 **Phase 6.N.1 — T1 minimal watchdog task + boot-time `ota_check_rollback()`.** Closes the previously-dormant 3-fail OTA rollback flow: every cold boot now increments `system/ota_fail_cnt` in NVS, and T1 calls `ota_mark_healthy()` after 30 s of stable uptime to reset it. Three boots that don't reach 30 s = `esp_ota_mark_app_invalid_rollback_and_reboot()`.

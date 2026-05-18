@@ -23,7 +23,7 @@
 
 idf_component_register(
     SRCS
-        "app_main_stub.cpp"
+        "main.cpp"               # Phase 6.N.2 (2.0.0-alpha.6.23) — renamed from app_main_stub.cpp; the 1.20.3 Arduino-era main.cpp deleted in the same commit
         "wifi_tickle.cpp"        # Phase 3 (2.0.0-alpha.3) — IDF-native STA + SNTP
         "https_tickle.cpp"       # Phase 4 (2.0.0-alpha.4) — IDF-native HTTPS client + esp_tls
         # web_server_tickle.cpp REMOVED in 2.0.0-alpha.6.16 — replaced by minimal T11 below

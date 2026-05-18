@@ -36,13 +36,13 @@
  *    soak shows drift.
  *
  * **Dependencies in place**:
- *  - `wifi_tickle_run()` (alpha.3.2) called from app_main_stub.cpp BEFORE
+ *  - `wifi_tickle_run()` (alpha.3.2) called from main.cpp BEFORE
  *    T10 spawns, so esp_wifi is already initialised + connected + SNTP
  *    synced by the time T10 starts its main loop.
  *  - `Q5` queue (depth 1, xQueueOverwrite) created by `system_globals_init`.
  *  - `task_t4` handle populated by alpha.6.7 spawn.
  *  - `task_t10` handle declared in `system_globals.cpp`, populated by
- *    app_main_stub.cpp's spawn block.
+ *    main.cpp's spawn block (named app_main_stub.cpp through alpha.6.22).
  *
  * @author  Greenhouse Controller project
  */

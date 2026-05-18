@@ -761,7 +761,7 @@ void task_relay_controller(void *pvParameters)
      *    have installed the service first (none today, but defensive).
      *
      *    Note: PIN_OPTO_INPUT itself is configured as input + pull-up by
-     *    app_main_stub's relay pin-config block before T2 spawns, so we
+     *    main.cpp's relay pin-config block before T2 spawns, so we
      *    only need to set the interrupt type + register the handler here.
      * ------------------------------------------------------------------ */
     {
