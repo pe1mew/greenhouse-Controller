@@ -46,7 +46,10 @@
  */
 
 #define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
-#include <Arduino.h>
+/* alpha.6.10 — dropped <Arduino.h>. T6 has no Arduino-specific calls;
+ * FreeRTOS primitives (ulTaskNotifyTake, xQueueSend, xEventGroupGetBits)
+ * arrive transitively via app_types.h, and ESP-IDF logging + WDT are
+ * already explicit below. */
 #include <esp_log.h>
 #include <esp_task_wdt.h>   /* WDT subscription (1.17.29 / gh#13) */
 
