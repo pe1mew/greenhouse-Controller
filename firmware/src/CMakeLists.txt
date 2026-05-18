@@ -39,6 +39,10 @@ idf_component_register(
         "sensor_poll/sensor_poll.cpp"           # Phase 6.8 (2.0.0-alpha.6.8) — T5 sensor poll task (Modbus FG6485A+S200 → Q6)
         "climate_control/climate_control.cpp"   # Phase 6.10 (2.0.0-alpha.6.10) — T6 climate control (TN2 reader, Q1 producer, graduated ventilation)
         "safety_monitor/safety_monitor.cpp"     # Phase 6.11 (2.0.0-alpha.6.11) — T3 safety monitor (TN1 reader, wind override, Q1 producer)
+        "ui_display/ui_display.cpp"             # Phase 6.12 (2.0.0-alpha.6.12) — T8 UI/LCD (Q2 consumer, Q4/Q5 producer, menu FSM)
+        "auth/pin_auth.cpp"                     # Phase 6.12 — PIN session + lockout (called from T8 + future T11 web routes)
+        "status_post/status_post_stub.cpp"      # Phase 6.12 stub — status_post_backoff_active; force-removed when real status_post.cpp activates in Phase 6.N
+        "ota_manager/ota_manager.cpp"           # Phase 6.13 (2.0.0-alpha.6.13) — T13 OTA manager (firmware + assets); spawned on-demand by T11
     INCLUDE_DIRS
         "."
     REQUIRES

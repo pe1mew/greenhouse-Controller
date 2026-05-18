@@ -184,6 +184,8 @@
 #include "relay_controller/relay_controller.h"
 #include "climate_control/climate_control.h"
 #include "safety_monitor/safety_monitor.h"
+#include "ui_display/ui_display.h"
+#include "auth/pin_auth.h"
 #include "types/app_types.h"  /* Q1..Q6, MX1..MX5, EG1, task_t1..15, key_event_t etc. */
 
 static const char *TAG = "GHC-STUB";
@@ -497,6 +499,29 @@ extern "C" void app_main(void)
                                                now_fw, sizeof(now_fw));
         ESP_LOGI(TAG, "NVS post-init: fw_version is now \"%s\" (status=%d)",
                  now_fw, (int)st);
+    }
+
+    /* alpha.6.12.1 — pin_auth one-time init. Production 1.20.3's setup()
+     * calls pin_auth_init() during boot; alpha.6.12 missed this call, so
+     * pin_auth_verify() rejected the default farmer PIN "1234" on a fresh
+     * unit with PIN_AUTH_ERR_INIT (s_initialized==false). Stage-1 IO0
+     * factory reset masked the bug by calling pin_auth_init() as part of
+     * the reset action.
+     *
+     * On first boot (no salt in NVS_NS_ACCESS): generates a random salt
+     * via esp_fill_random(), writes default farmer ("1234") + admin
+     * ("12345678") SHA-256 hashes. On subsequent boots: just reads the
+     * existing salt, validates the farmer hash is present, sets
+     * s_initialized=true. Idempotent — safe to call every boot. */
+    {
+        pin_auth_result_t pa_rc = pin_auth_init();
+        ESP_LOGI(TAG, "pin_auth_init() returned %d (%s)", (int)pa_rc,
+                 (pa_rc == PIN_AUTH_OK)         ? "OK — default PINs ready" :
+                 (pa_rc == PIN_AUTH_ERR_NVS)    ? "NVS error" :
+                 (pa_rc == PIN_AUTH_ERR_INIT)   ? "init error" :
+                 (pa_rc == PIN_AUTH_ERR_PARAM)  ? "param error" :
+                 (pa_rc == PIN_AUTH_LOCKED_OUT) ? "locked out (unexpected)" :
+                                                  "unknown");
     }
 
     /* alpha.2.4 — I2C bus driver tickle. Initialise the bus, scan the
@@ -1129,6 +1154,56 @@ extern "C" void app_main(void)
             ESP_LOGI(TAG, "alpha.6.11: T3 safety_monitor task spawned (handle=%p); "
                           "wakes on TN1 from T4 — wind-safety override owner",
                      (void *)task_t3);
+        }
+    }
+
+    /* alpha.6.12 — spawn T8 ui_display task.
+     *
+     * T8 owns the 16×2 LCD (AiP31068L at 0x3E, mutexed via MX1) + keypad
+     * input + menu FSM + PIN session management + factory-reset (IO0 BOOT
+     * button held 20 s). It consumes Q2 (key events from T7) and Q5 (net
+     * status from T10 — dormant in this phase, so Q5 stays empty and the
+     * LCD shows "WiFi: ---" until Phase 6.N). It posts to Q4 (config
+     * changes via menu) and Q3 (LOG_CFG_CHANGE / LOG_PIN_AUTH events).
+     *
+     * Major migration changes (all single-line):
+     *   - <Arduino.h> + <WiFi.h> dropped.
+     *   - <esp_mac.h> added for esp_read_mac (replaces WiFi.macAddress).
+     *   - "gpio_util.h" added for gpio_set_pin_mode/gpio_read.
+     *   - pinMode(IO0, INPUT_PULLUP) → gpio_set_pin_mode(IO0, GPIO_INPUT_PULLUP).
+     *   - digitalRead(IO0) == LOW → gpio_read(IO0) == GPIO_LOW.
+     *
+     * Dependencies satisfied:
+     *   - T7 alpha.6.4 — produces Q2 key events.
+     *   - T4 alpha.6.7 — consumes Q4 config updates (drains the queue in main loop).
+     *   - T9 alpha.6.6 — log_post() for LOG_CFG_CHANGE / LOG_PIN_AUTH.
+     *   - MX1 — shared with LCD/RTC paths; T8 takes it for LCD writes.
+     *   - pin_auth.cpp — added to SRCS this phase (framework-agnostic, no Arduino deps).
+     *   - status_post.cpp — NOT activated yet (Phase 6.N); status_post_stub.cpp
+     *     provides status_post_backoff_active() returning false (LCD just doesn't
+     *     show "BK" suffix on the WiFi page until the real status_post lands).
+     *
+     * Stack: 8 KB — T8 has more locals than T6/T3 (LCD char buffers, menu
+     * state arrays, PIN input scratch). 1.20.3 prod used 8192 — match it.
+     * Priority 4 — below T2/T3 (6) and T4/T5/T6 (5), above T7 (3). UI is
+     * latency-tolerant; user perception threshold is ~100 ms, well within
+     * the UI_LOOP_MS scheduling.
+     */
+    {
+        BaseType_t rc = xTaskCreatePinnedToCore(
+            task_ui_display,
+            "T8-ui",
+            8192,                  /* stack words */
+            NULL,
+            4,                     /* priority — latency-tolerant UI */
+            &task_t8,
+            tskNO_AFFINITY);
+        if (rc != pdPASS) {
+            ESP_LOGE(TAG, "alpha.6.12: xTaskCreate T8 failed (rc=%d)", (int)rc);
+        } else {
+            ESP_LOGI(TAG, "alpha.6.12: T8 ui_display task spawned (handle=%p); "
+                          "LCD live, Q2 keypad consumer, Q4/Q3 producer",
+                     (void *)task_t8);
         }
     }
 
