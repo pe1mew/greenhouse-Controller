@@ -81,7 +81,11 @@
 #include "../data_manager/data_manager.h"
 #include "../auth/pin_auth.h"
 #include "../status_post/status_json.h"   /* alpha.6.17 — build_canonical_status_json */
+#include "../event_logger/event_logger.h" /* alpha.6.19 — event_logger_sd_remount / _unmount */
+#include "../ota_manager/ota_manager.h"   /* alpha.6.20 — ota_firmware_/assets_/get_* */
+#include "../status_post/status_post.h"   /* alpha.6.20 — status_post_last_str (web tab) */
 #include "littlefs_storage.h"
+#include "sd_storage.h"        /* alpha.6.19 — storage_sd_* for SD status + log list/download */
 #include "nvs_config.h"        /* alpha.6.18 — nvs_cfg_get_str / nvs_cfg_set_str for /api/wifi + /api/config GET */
 #include "cfg_limits.h"        /* alpha.6.18 — CFG_MIN_/MAX_ macros stringified into /api/config/limits */
 
@@ -1167,6 +1171,536 @@ static esp_err_t pin_post_handler(httpd_req_t *req)
 }
 
 /* ============================================================
+ * SD-card + log routes (alpha.6.19 / Phase 6.16-ε)
+ *
+ * GET  /api/sd/status      — {mounted, free_mb, size_mb} (PUBLIC)
+ * POST /api/sd/mount       — re-mount via event_logger_sd_remount (admin)
+ * POST /api/sd/unmount     — flush + unmount via event_logger_sd_unmount (admin)
+ * GET  /api/log/files      — {sd_files:[...]} listing of .csv files (admin)
+ * GET  /api/log/download   — ?file=NAME stream a CSV from SD (admin)
+ *
+ * SD lifecycle note: T9 (event_logger) owns the SD mount under normal
+ * operation — it keeps the card mounted continuously and rotates the
+ * daily CSV file. /api/sd/{mount,unmount} go through event_logger_sd_*
+ * so T9's internal state stays consistent with the operator's actions.
+ * ============================================================ */
+
+static esp_err_t sd_status_handler(httpd_req_t *req)
+{
+    const bool mounted = storage_sd_available();
+    const uint64_t total = mounted ? storage_sd_total_bytes() : 0;
+    const uint64_t freeb = mounted ? storage_sd_free_bytes()  : 0;
+    char body[128];
+    int n = snprintf(body, sizeof(body),
+        "{\"mounted\":%s,\"free_mb\":%lu,\"size_mb\":%lu}",
+        mounted ? "true" : "false",
+        (unsigned long)(freeb / (1024UL * 1024UL)),
+        (unsigned long)(total / (1024UL * 1024UL)));
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, body, (n > 0) ? (size_t)n : 0);
+}
+
+static esp_err_t sd_mount_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+    bool ok = event_logger_sd_remount();
+    httpd_resp_set_type(req, "application/json");
+    if (ok) {
+        ESP_LOGI(TAG, "[T11] /api/sd/mount: remount OK");
+        return httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
+    }
+    ESP_LOGW(TAG, "[T11] /api/sd/mount: remount FAILED");
+    return httpd_resp_send(req,
+        "{\"ok\":false,\"err\":\"mount failed\"}", HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t sd_unmount_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+    event_logger_sd_unmount();
+    ESP_LOGI(TAG, "[T11] /api/sd/unmount: unmounted");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
+}
+
+/**
+ * GET /api/log/files — list .csv files on SD, sorted chronologically.
+ *
+ * `nvs_count` is intentionally absent — the NVS-ringbuffer log source
+ * was retired in alpha.6.5. SD is the only source.
+ *
+ * Filename names follow YYYYMMDDHHMMSS.csv from T9, so lexicographic
+ * sort = chronological order. Includes any imported names too
+ * (e.g. 1.20.3-era log_YYYYMMDD_HHMMSS.csv) — the sort order is
+ * approximately right for those.
+ */
+static esp_err_t log_files_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+
+    /* List buffer for storage_sd_list_csv (comma-separated string). */
+    const size_t LIST_LEN = 512u;
+    char *list_buf = (char *)heap_caps_malloc(LIST_LEN, MALLOC_CAP_INTERNAL);
+    if (list_buf == NULL) { httpd_resp_send_500(req); return ESP_FAIL; }
+    list_buf[0] = '\0';
+    if (storage_sd_available()) {
+        (void)storage_sd_list_csv(".csv", list_buf, LIST_LEN);
+    }
+
+    /* Tokenize → fixed-size name array. */
+    enum { LOG_FILES_MAX = 12, LOG_FNAME_MAX = 24 };
+    char names[LOG_FILES_MAX][LOG_FNAME_MAX] = {};
+    int n_names = 0;
+    char *save = NULL;
+    char *tok = strtok_r(list_buf, ",", &save);
+    while (tok && n_names < LOG_FILES_MAX) {
+        while (*tok == ' ') tok++;
+        if (*tok) {
+            strncpy(names[n_names], tok, LOG_FNAME_MAX - 1);
+            names[n_names][LOG_FNAME_MAX - 1] = '\0';
+            n_names++;
+        }
+        tok = strtok_r(NULL, ",", &save);
+    }
+    /* Bubble sort — n ≤ 12, negligible. */
+    for (int i = 0; i < n_names - 1; i++) {
+        for (int j = 0; j < n_names - 1 - i; j++) {
+            if (strcmp(names[j], names[j + 1]) > 0) {
+                char tmp[LOG_FNAME_MAX];
+                memcpy(tmp,           names[j],     LOG_FNAME_MAX);
+                memcpy(names[j],      names[j + 1], LOG_FNAME_MAX);
+                memcpy(names[j + 1],  tmp,          LOG_FNAME_MAX);
+            }
+        }
+    }
+
+    /* Build the JSON response. */
+    const size_t OUT_LEN = 1024u;
+    char *out = (char *)heap_caps_malloc(OUT_LEN, MALLOC_CAP_INTERNAL);
+    if (out == NULL) { heap_caps_free(list_buf); httpd_resp_send_500(req); return ESP_FAIL; }
+
+    int pos = snprintf(out, OUT_LEN, "{\"sd_files\":[");
+    for (int i = 0; i < n_names && (size_t)pos < OUT_LEN - 32u; i++) {
+        int w = snprintf(out + pos, OUT_LEN - (size_t)pos,
+                         "%s\"%s\"", (i > 0) ? "," : "", names[i]);
+        if (w < 0) break;
+        pos += w;
+    }
+    int wTail = snprintf(out + pos, OUT_LEN - (size_t)pos, "]}");
+    if (wTail > 0) pos += wTail;
+
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t err = httpd_resp_send(req, out, (size_t)pos);
+    heap_caps_free(list_buf);
+    heap_caps_free(out);
+    return err;
+}
+
+/**
+ * GET /api/log/download?file=NAME — stream a CSV file as
+ *   Content-Disposition: attachment; filename="NAME".
+ *
+ * Rejects path-traversal attempts (any '/' or "..") and requires
+ * `file` query param. PSRAM-allocates the whole file (CSV files are
+ * typically < 100 KB; with 8 MB PSRAM that's comfortable).
+ */
+static esp_err_t log_download_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+
+    /* ?file= query string */
+    char query[64] = {0};
+    char fname[32] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+        httpd_query_key_value(query, "file", fname, sizeof(fname)) != ESP_OK ||
+        fname[0] == '\0') {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_send(req,
+            "{\"ok\":false,\"err\":\"missing file param\"}", HTTPD_RESP_USE_STRLEN);
+    }
+
+    /* Reject path traversal */
+    if (strchr(fname, '/') || strstr(fname, "..")) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_send(req,
+            "{\"ok\":false,\"err\":\"bad filename\"}", HTTPD_RESP_USE_STRLEN);
+    }
+    if (!storage_sd_available()) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_send(req,
+            "{\"ok\":false,\"err\":\"SD not mounted\"}", HTTPD_RESP_USE_STRLEN);
+    }
+
+    char abs_path[48];
+    snprintf(abs_path, sizeof(abs_path), "/%s", fname);
+    uint32_t fsize = storage_sd_file_size(abs_path);
+    if (fsize == 0u) {
+        httpd_resp_set_status(req, "404 Not Found");
+        return httpd_resp_send(req,
+            "{\"ok\":false,\"err\":\"not found or empty\"}", HTTPD_RESP_USE_STRLEN);
+    }
+
+    /* Allocate from PSRAM — files can be 10s-100s of KB. */
+    char *buf = (char *)heap_caps_malloc((size_t)fsize + 1u, MALLOC_CAP_SPIRAM);
+    if (buf == NULL) {
+        ESP_LOGE(TAG, "[T11] /api/log/download: PSRAM alloc(%lu) failed",
+                 (unsigned long)fsize + 1u);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    size_t got = 0;
+    storage_status_t st = storage_sd_read(abs_path, 0, buf,
+                                          (size_t)fsize + 1u, &got);
+    if (st != STORAGE_OK) {
+        ESP_LOGW(TAG, "[T11] /api/log/download: storage_sd_read failed st=%d", (int)st);
+        heap_caps_free(buf);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    buf[got] = '\0';
+
+    /* Caller-owned hdr buffer survives until httpd_resp_send returns. */
+    char disp[80];
+    snprintf(disp, sizeof(disp), "attachment; filename=\"%s\"", fname);
+    httpd_resp_set_hdr(req, "Content-Disposition", disp);
+    httpd_resp_set_type(req, "text/csv");
+
+    esp_err_t err = httpd_resp_send(req, buf, got);
+    heap_caps_free(buf);
+    ESP_LOGI(TAG, "[T11] /api/log/download(%s) sent %u bytes", fname, (unsigned)got);
+    return err;
+}
+
+/* ============================================================
+ * OTA + web-tab routes (alpha.6.20 / Phase 6.16-ζ)
+ *
+ * GET  /api/ota/status     — OTA state machine (auth required)
+ * POST /api/ota/firmware   — admin; raw .bin upload, streams to T13 OTA
+ * POST /api/ota/assets     — admin; STORE-only ZIP, PSRAM accum, T13 extract
+ * GET  /api/web            — admin; web-tab settings (status URL, interval, ...)
+ * POST /api/web            — admin; validates + writes web-tab settings; T4 reload
+ *
+ * esp_http_server runs each handler once per request — the chunked-upload
+ * pattern is `httpd_req_recv` in a loop until `content_len` bytes read.
+ * ============================================================ */
+
+static esp_err_t ota_status_handler(httpd_req_t *req)
+{
+    if (require_auth(req, WEB_ROLE_FARMER) == WEB_ROLE_NONE) return ESP_OK;
+
+    static const char * const STATE_NAMES[] = {
+        "idle", "fw_writing", "fw_verifying",
+        "assets_buffering", "assets_writing",
+        "rebooting", "error", "fw_done"
+    };
+    ota_state_t st   = ota_get_state();
+    uint8_t     pct  = ota_get_progress_pct();
+    const char *err  = ota_get_error();
+    char        bank = ota_get_active_bank();
+    bool        acc  = ota_is_accepted();
+    const char *sname = ((unsigned)st < 8) ? STATE_NAMES[st] : "unknown";
+
+    char body[256];
+    int n = snprintf(body, sizeof(body),
+        "{\"ok\":true,\"state\":\"%s\",\"progress\":%u,\"error\":\"%s\","
+        "\"bank\":\"%c\",\"accepted\":%s}",
+        sname, (unsigned)pct, err ? err : "",
+        bank, acc ? "true" : "false");
+
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, body, (n > 0) ? (size_t)n : 0);
+}
+
+/**
+ * POST /api/ota/firmware — admin only.
+ *
+ * Receives the .bin body in chunks via httpd_req_recv; each chunk is fed
+ * straight into ota_firmware_write. content_len is required (Content-Length
+ * header) so T13 can pre-validate the image size against the inactive bank.
+ */
+static esp_err_t ota_firmware_post_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+
+    const size_t total = (size_t)req->content_len;
+    if (total == 0) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_send(req,
+            "{\"ok\":false,\"err\":\"Content-Length required\"}",
+            HTTPD_RESP_USE_STRLEN);
+    }
+
+    if (!ota_firmware_begin(total)) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    /* 4 KB chunk buffer — large enough that we don't thrash httpd_req_recv,
+     * small enough that it lives on the stack without bloating the httpd
+     * task. Read in a loop until total bytes consumed. */
+    uint8_t buf[4096];
+    size_t received = 0;
+    while (received < total) {
+        int want = (int)((total - received) > sizeof(buf)
+                         ? sizeof(buf) : (total - received));
+        int n = httpd_req_recv(req, (char *)buf, (size_t)want);
+        if (n <= 0) {
+            if (n == HTTPD_SOCK_ERR_TIMEOUT) continue;
+            ESP_LOGE(TAG, "[T11] /api/ota/firmware: recv failed at %u/%u",
+                     (unsigned)received, (unsigned)total);
+            httpd_resp_send_500(req);
+            return ESP_FAIL;
+        }
+        if (!ota_firmware_write(buf, (size_t)n)) {
+            ESP_LOGE(TAG, "[T11] /api/ota/firmware: write failed at %u/%u",
+                     (unsigned)received, (unsigned)total);
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_send(req,
+                "{\"ok\":false,\"err\":\"OTA write failed\"}",
+                HTTPD_RESP_USE_STRLEN);
+            return ESP_FAIL;
+        }
+        received += (size_t)n;
+    }
+
+    if (!ota_firmware_end()) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req,
+            "{\"ok\":false,\"err\":\"OTA verify failed\"}",
+            HTTPD_RESP_USE_STRLEN);
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "[T11] /api/ota/firmware: OK %u bytes; awaiting assets ZIP",
+             (unsigned)total);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req,
+        "{\"ok\":true,\"rebooting\":false,\"awaiting_assets\":true}",
+        HTTPD_RESP_USE_STRLEN);
+}
+
+/**
+ * POST /api/ota/assets — admin only.
+ *
+ * Accumulates a STORE-only .zip body into the T13 PSRAM buffer via
+ * ota_assets_accumulate(data, len, offset). On the last chunk calls
+ * ota_assets_end() which spawns T13 to extract to inactive LittleFS.
+ */
+static esp_err_t ota_assets_post_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+
+    const size_t total = (size_t)req->content_len;
+    if (total == 0) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_send(req,
+            "{\"ok\":false,\"err\":\"Content-Length required\"}",
+            HTTPD_RESP_USE_STRLEN);
+    }
+
+    if (!ota_assets_begin(total)) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    uint8_t buf[4096];
+    size_t received = 0;
+    while (received < total) {
+        int want = (int)((total - received) > sizeof(buf)
+                         ? sizeof(buf) : (total - received));
+        int n = httpd_req_recv(req, (char *)buf, (size_t)want);
+        if (n <= 0) {
+            if (n == HTTPD_SOCK_ERR_TIMEOUT) continue;
+            ESP_LOGE(TAG, "[T11] /api/ota/assets: recv failed at %u/%u",
+                     (unsigned)received, (unsigned)total);
+            httpd_resp_send_500(req);
+            return ESP_FAIL;
+        }
+        if (!ota_assets_accumulate(buf, (size_t)n, received)) {
+            ESP_LOGE(TAG, "[T11] /api/ota/assets: accumulate failed at %u",
+                     (unsigned)received);
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_send(req,
+                "{\"ok\":false,\"err\":\"accumulate failed\"}",
+                HTTPD_RESP_USE_STRLEN);
+            return ESP_FAIL;
+        }
+        received += (size_t)n;
+    }
+
+    if (!ota_assets_end()) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req,
+            "{\"ok\":false,\"err\":\"assets spawn failed\"}",
+            HTTPD_RESP_USE_STRLEN);
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "[T11] /api/ota/assets: %u bytes accumulated; T13 extracting",
+             (unsigned)total);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_status(req, "202 Accepted");
+    return httpd_resp_send(req,
+        "{\"ok\":true,\"message\":\"extracting — poll GET /api/ota/status\"}",
+        HTTPD_RESP_USE_STRLEN);
+}
+
+/**
+ * GET /api/web — admin only. Returns web-tab settings + last-attempt strings.
+ *
+ * Secret is intentionally NOT echoed (write-only from the UI; the input
+ * stays blank and "empty=keep" on POST).
+ */
+static esp_err_t web_get_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+
+    cfg_shadow_t cfg = {};
+    dm_cfg_snapshot(&cfg);
+
+    char last_post[48] = {};
+    char last_log[48]  = {};
+    status_post_last_str(last_post, sizeof(last_post));
+    status_post_last_log_str(last_log, sizeof(last_log));
+
+    char body[640];
+    int n = snprintf(body, sizeof(body),
+        "{\"url\":\"%s\","
+         "\"interval_s\":%ld,"
+         "\"enable\":%ld,"
+         "\"expose\":%ld,"
+         "\"log_h\":%ld,"
+         "\"log_m\":%ld,"
+         "\"log_rot\":%ld,"
+         "\"last_post\":\"%s\","
+         "\"last_log_up\":\"%s\","
+         "\"log_last_up\":\"%s\"}",
+        cfg.status_url,
+        (long)cfg.status_interval_s,
+        (long)cfg.status_enable,
+        (long)cfg.status_expose,
+        (long)cfg.log_upload_h,
+        (long)cfg.log_upload_m,
+        (long)cfg.log_upload_rot,
+        last_post, last_log, cfg.log_last_up);
+
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, body, (n > 0) ? (size_t)n : 0);
+}
+
+/**
+ * POST /api/web — admin only. Single-transaction Apply with bounds-check
+ * before any NVS write, then `dm_reload_web_cfg()` so the cfg shadow
+ * refreshes synchronously (T4 publishes under MX4 before this returns).
+ *
+ * URL validation matches 1.20.3: must start with http:// or https://, must
+ * NOT contain ? or #, must end with "api.php" (T14 appends ?action=log
+ * itself; HTTPClient followed redirects silently which masked routing bugs).
+ */
+static esp_err_t web_post_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+
+    char body[640] = {0};
+    if (!read_request_body(req, body, sizeof(body))) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_send(req,
+            "{\"ok\":false,\"err\":\"bad body\"}", HTTPD_RESP_USE_STRLEN);
+    }
+
+    char url[CFG_MAX_URL_LEN + 1]      = {};
+    char secret[CFG_MAX_SECRET_LEN + 1] = {};
+    char vbuf[16] = {};
+    const bool h_url = json_get_field(body, "url",    url,    sizeof(url));
+    const bool h_sec = json_get_field(body, "secret", secret, sizeof(secret));
+    int32_t interval = 0, enable = 0, expose = 0;
+    int32_t log_h = 0, log_m = 0, log_rot = 0;
+    const bool h_iv = json_get_field(body, "interval_s", vbuf, sizeof(vbuf));
+    if (h_iv) interval = (int32_t)atoi(vbuf);
+    const bool h_en = json_get_field(body, "enable", vbuf, sizeof(vbuf));
+    if (h_en) enable  = (int32_t)atoi(vbuf);
+    const bool h_ex = json_get_field(body, "expose", vbuf, sizeof(vbuf));
+    if (h_ex) expose  = (int32_t)atoi(vbuf);
+    const bool h_lh = json_get_field(body, "log_h",  vbuf, sizeof(vbuf));
+    if (h_lh) log_h   = (int32_t)atoi(vbuf);
+    const bool h_lm = json_get_field(body, "log_m",  vbuf, sizeof(vbuf));
+    if (h_lm) log_m   = (int32_t)atoi(vbuf);
+    const bool h_lr = json_get_field(body, "log_rot", vbuf, sizeof(vbuf));
+    if (h_lr) log_rot = (int32_t)atoi(vbuf);
+
+    httpd_resp_set_type(req, "application/json");
+
+    /* URL validation. */
+    if (h_url && url[0] != '\0') {
+        if (strncmp(url, "http://", 7) != 0 &&
+            strncmp(url, "https://", 8) != 0) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            return httpd_resp_send(req,
+                "{\"ok\":false,\"err\":\"URL must start with http:// or https://\"}",
+                HTTPD_RESP_USE_STRLEN);
+        }
+        if (strchr(url, '?') != NULL || strchr(url, '#') != NULL) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            return httpd_resp_send(req,
+                "{\"ok\":false,\"err\":\"URL must not contain ? or #\"}",
+                HTTPD_RESP_USE_STRLEN);
+        }
+        const size_t ulen = strlen(url);
+        const char *suffix = "api.php";
+        const size_t slen = 7u;
+        if (ulen < slen || strcmp(url + ulen - slen, suffix) != 0) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            return httpd_resp_send(req,
+                "{\"ok\":false,\"err\":\"URL must end with \\\"api.php\\\"\"}",
+                HTTPD_RESP_USE_STRLEN);
+        }
+    }
+    if (h_sec && secret[0] != '\0' &&
+        strlen(secret) < (size_t)CFG_MIN_SECRET_LEN) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_send(req,
+            "{\"ok\":false,\"err\":\"secret too short\"}",
+            HTTPD_RESP_USE_STRLEN);
+    }
+    if (h_iv && (interval < CFG_MIN_STATUS_INTERVAL_S ||
+                 interval > CFG_MAX_STATUS_INTERVAL_S)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_send(req,
+            "{\"ok\":false,\"err\":\"interval out of range\"}",
+            HTTPD_RESP_USE_STRLEN);
+    }
+    if ((h_lh && (log_h < CFG_MIN_HOUR   || log_h > CFG_MAX_HOUR))   ||
+        (h_lm && (log_m < CFG_MIN_MINUTE || log_m > CFG_MAX_MINUTE)) ||
+        (h_en && (enable  < 0 || enable  > 1))                       ||
+        (h_lr && (log_rot < 0 || log_rot > 1))                       ||
+        (h_ex && (expose  < 0 || expose  > 0x3F))) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_send(req,
+            "{\"ok\":false,\"err\":\"bounds\"}", HTTPD_RESP_USE_STRLEN);
+    }
+
+    if (h_url)               (void)nvs_cfg_set_str(NVS_NS_SYSTEM, "status_url",     url);
+    if (h_sec && secret[0])  (void)nvs_cfg_set_str(NVS_NS_SYSTEM, "status_secret",  secret);
+    if (h_iv)                (void)nvs_cfg_set_i32(NVS_NS_SYSTEM, "status_intv_s",  interval);
+    if (h_en)                (void)nvs_cfg_set_i32(NVS_NS_SYSTEM, "status_enable",  enable);
+    if (h_ex)                (void)nvs_cfg_set_i32(NVS_NS_SYSTEM, "status_expose",  expose);
+    if (h_lh)                (void)nvs_cfg_set_i32(NVS_NS_SYSTEM, "log_upload_h",   log_h);
+    if (h_lm)                (void)nvs_cfg_set_i32(NVS_NS_SYSTEM, "log_upload_m",   log_m);
+    if (h_lr)                (void)nvs_cfg_set_i32(NVS_NS_SYSTEM, "log_upload_rot", log_rot);
+
+    dm_reload_web_cfg();
+    ESP_LOGI(TAG, "[T11] /api/web cfg updated: url=%s interval=%ld enable=%ld expose=0x%02lX",
+             h_url ? url : "(unchanged)",
+             (long)interval, (long)enable, (long)expose);
+    return httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
+}
+
+/* ============================================================
  * URI registration table
  * ============================================================ */
 static const httpd_uri_t s_uri_root = {
@@ -1203,6 +1737,30 @@ static const httpd_uri_t s_uri_wifi_post = {
 static const httpd_uri_t s_uri_pin_post = {
     .uri = "/api/pin", .method = HTTP_POST, .handler = pin_post_handler, .user_ctx = NULL };
 
+/* alpha.6.19 — SD + log routes (Phase 6.16-ε). */
+static const httpd_uri_t s_uri_sd_status = {
+    .uri = "/api/sd/status", .method = HTTP_GET, .handler = sd_status_handler, .user_ctx = NULL };
+static const httpd_uri_t s_uri_sd_mount = {
+    .uri = "/api/sd/mount", .method = HTTP_POST, .handler = sd_mount_handler, .user_ctx = NULL };
+static const httpd_uri_t s_uri_sd_unmount = {
+    .uri = "/api/sd/unmount", .method = HTTP_POST, .handler = sd_unmount_handler, .user_ctx = NULL };
+static const httpd_uri_t s_uri_log_files = {
+    .uri = "/api/log/files", .method = HTTP_GET, .handler = log_files_handler, .user_ctx = NULL };
+static const httpd_uri_t s_uri_log_download = {
+    .uri = "/api/log/download", .method = HTTP_GET, .handler = log_download_handler, .user_ctx = NULL };
+
+/* alpha.6.20 — OTA + web-tab routes (Phase 6.16-ζ). */
+static const httpd_uri_t s_uri_ota_status = {
+    .uri = "/api/ota/status", .method = HTTP_GET, .handler = ota_status_handler, .user_ctx = NULL };
+static const httpd_uri_t s_uri_ota_firmware = {
+    .uri = "/api/ota/firmware", .method = HTTP_POST, .handler = ota_firmware_post_handler, .user_ctx = NULL };
+static const httpd_uri_t s_uri_ota_assets = {
+    .uri = "/api/ota/assets", .method = HTTP_POST, .handler = ota_assets_post_handler, .user_ctx = NULL };
+static const httpd_uri_t s_uri_web_get = {
+    .uri = "/api/web", .method = HTTP_GET, .handler = web_get_handler, .user_ctx = NULL };
+static const httpd_uri_t s_uri_web_post = {
+    .uri = "/api/web", .method = HTTP_POST, .handler = web_post_handler, .user_ctx = NULL };
+
 /* ============================================================
  * Task entry point
  * ============================================================ */
@@ -1226,7 +1784,7 @@ void task_web_server(void *pvParameters)
     cfg.server_port      = 80;
     cfg.stack_size       = 8192;     /* +4 KB vs default for LFS_READ_BUF + JSON stack work */
     cfg.task_priority    = 5;
-    cfg.max_uri_handlers = 16;       /* room for the 7 routes + the deferred 18+ */
+    cfg.max_uri_handlers = 28;       /* room for the 19 routes now + room for OTA (5) + WS (1) in 6.16-ζ/η */
     cfg.max_open_sockets = 7;
     cfg.lru_purge_enable = true;
     cfg.recv_wait_timeout = 10;
@@ -1246,6 +1804,10 @@ void task_web_server(void *pvParameters)
         &s_uri_status, &s_uri_history,
         &s_uri_config_get, &s_uri_config_limits, &s_uri_config_post,
         &s_uri_wifi_post, &s_uri_pin_post,
+        &s_uri_sd_status, &s_uri_sd_mount, &s_uri_sd_unmount,
+        &s_uri_log_files, &s_uri_log_download,
+        &s_uri_ota_status, &s_uri_ota_firmware, &s_uri_ota_assets,
+        &s_uri_web_get, &s_uri_web_post,
     };
     for (size_t i = 0; i < sizeof(uris)/sizeof(uris[0]); i++) {
         err = httpd_register_uri_handler(s_server, uris[i]);
@@ -1255,12 +1817,16 @@ void task_web_server(void *pvParameters)
         }
     }
 
-    ESP_LOGI(TAG, "[T11] HTTP server running on port 80 — 14 routes registered");
+    ESP_LOGI(TAG, "[T11] HTTP server running on port 80 — 24 routes registered");
     ESP_LOGI(TAG, "[T11]   static: /  /style.css  /app.js  /manifest.json");
     ESP_LOGI(TAG, "[T11]   auth:   GET /api/whoami  POST /api/login  POST /api/logout");
     ESP_LOGI(TAG, "[T11]   status: GET /api/status  GET /api/history?n=N");
     ESP_LOGI(TAG, "[T11]   config: GET /api/config  GET /api/config/limits  POST /api/config");
     ESP_LOGI(TAG, "[T11]   admin:  POST /api/wifi  POST /api/pin");
+    ESP_LOGI(TAG, "[T11]   sd:     GET /api/sd/status  POST /api/sd/mount  POST /api/sd/unmount");
+    ESP_LOGI(TAG, "[T11]   log:    GET /api/log/files  GET /api/log/download?file=NAME");
+    ESP_LOGI(TAG, "[T11]   ota:    GET /api/ota/status  POST /api/ota/firmware  POST /api/ota/assets");
+    ESP_LOGI(TAG, "[T11]   web:    GET /api/web  POST /api/web");
 
     /* Task body: just idle. httpd runs in its own task (spawned by httpd_start).
      * T11 task could be deleted here, but we keep it around as a host for

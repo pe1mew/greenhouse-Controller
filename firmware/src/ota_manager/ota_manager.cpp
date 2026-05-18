@@ -391,9 +391,14 @@ bool ota_assets_end(void)
 
 ota_state_t ota_get_state(void)
 {
-    xSemaphoreTake(s_mx, portMAX_DELAY);
+    /* NULL-safe symmetric with set_state_locked. s_mx is lazily created on
+     * first ota_*_begin(); callers that only ever read (e.g. T11
+     * /api/ota/status before any OTA upload) would otherwise panic via
+     * xSemaphoreTake(NULL). The read of s_state is a single byte and
+     * happens often enough that skipping the lock is acceptable. */
+    if (s_mx) xSemaphoreTake(s_mx, portMAX_DELAY);
     ota_state_t st = s_state;
-    xSemaphoreGive(s_mx);
+    if (s_mx) xSemaphoreGive(s_mx);
     return st;
 }
 
