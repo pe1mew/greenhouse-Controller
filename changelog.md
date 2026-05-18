@@ -28,6 +28,56 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-alpha.6.11]` — 2026-05-18
+
+**Phase 6.11 — safety_monitor (T3) activation.** Wind-safety override task goes live. T3 wakes on TN1 (xTaskNotify from T4, same notify event that drives T6), snapshots latest measurement + cfg, evaluates wind speed against `v_max` and direction against `[dir_excl_low, dir_excl_high]` exclusion zone (with 0°/360° wrap support). On unsafe onset: sets `EG1_BIT_WIND_OVERRIDE`, posts `CMD_CLOSE_ALL` (SRC_T3) to Q1, logs `LOG_ALARM`. On safe clearance: clears the EG1 bit, posts `CMD_RESUME`, logs clearance. `EG1_BIT_SENSOR_FAULT_W` is treated as worst-case (safe-fail per FR-W04 / TSDS §5.12).
+
+This is the first task that competes with T6 to drive Q1, so priority matters: **T3 at priority 6, T6 at priority 5**. T3 preempts T6 within the same TN cycle so it sets `EG1_BIT_WIND_OVERRIDE` BEFORE T6 evaluates — T6's inhibit-gate (climate_control.cpp:360-362) then suppresses its own evaluation, preventing the race where T6's `CMD_OPEN` could land on Q1 between T3's set-bit and T3's `CMD_CLOSE_ALL`.
+
+#### What changed
+
+- **`firmware/src/safety_monitor/safety_monitor.cpp`** — dropped `#include <Arduino.h>`. Zero Arduino-specific calls; FreeRTOS primitives (`ulTaskNotifyTake`, `xQueueSend`, `xEventGroup*`) arrive via app_types.h. Single-line patch, same shape as alpha.6.10's T6 port.
+- **`firmware/src/CMakeLists.txt`** — added `safety_monitor/safety_monitor.cpp` to SRCS.
+- **`firmware/src/app_main_stub.cpp`**:
+  - `#include "safety_monitor/safety_monitor.h"` added.
+  - Spawn T3 after T6 with `xTaskCreatePinnedToCore(task_safety_monitor, "T3-safety", 6144, NULL, 6, &task_t3, tskNO_AFFINITY)`. Stack 6144 (1.20.3 prod 4096; +2 KB IDF headroom). Priority 6 — matches T2 (both safety-relevant Q1 producers/consumers); one above T6.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-alpha.6.11`.
+
+#### TN1 plumbing (already in place from alpha.6.7)
+
+`firmware/src/data_manager/data_manager.cpp:548` already calls `xTaskNotify(task_t3, 1u, eSetBits)` after every Q6 store. Like T6's TN2 in alpha.6.10, `task_t3` was previously NULL → notify was a no-op. As of alpha.6.11 the handle is populated.
+
+#### Build delta vs alpha.6.10
+
+| Metric | alpha.6.10 | alpha.6.11 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1,239,241 B | **1,240,941 B** | +1,700 B |
+| Flash usage % | 59.1 % | 59.2 % | +0.1 pp |
+| RAM static | 59,336 B | **59,336 B** | 0 B |
+
+bin sha256: `276C38C63270B117372ABAC1EDC56395F76E291A729F82E5EBC801BA5B7129E3`
+
+The **+1,700 B flash** is T3's 256-line task body. RAM static unchanged — T3's only state is one task-local `bool alarm_active` (lives on the task stack, not BSS).
+
+Runtime heap impact at heartbeat baseline expected: ~−6 KB free vs alpha.6.10 (T3 task stack 6 KB). Heartbeat baseline ~166,000 free (was 172,343 at alpha.6.10).
+
+#### Acceptance bar for alpha.6.11
+
+1. ✅ Build succeeds (no Arduino-transitive trap — single-line patch).
+2. Flash to dev unit; boot reason `ESP_RST_POWERON`.
+3. Banner: `Greenhouse Controller v2.0.0-alpha.6.11`.
+4. T3 spawn banner: `alpha.6.11: T3 safety_monitor task spawned (handle=0x...); wakes on TN1 from T4 — wind-safety override owner`.
+5. T3 task-alive: `[T3_WIND] [T3] task alive` within ~1 s of spawn.
+6. **No `WIND_OVERRIDE set` log line at boot** — current dev-unit wind reading is ws=2.4 m/s, well below v_max=6 m/s; direction 199° is outside any normal exclusion zone (production NVS likely has zero-width zones disabled). T3 evaluates each TN1 and stays in the "no state change (steady safe)" branch — logged at DEBUG, usually invisible at INFO.
+7. **T6 / T2 chain continues** from alpha.6.10's last state — if M1 was OPEN from the last alpha.6.10 boot, T2's NVS-persisted state may now record CH1=OPEN; T2 won't NVS-skip on this boot (only all-CLOSED qualifies). Calibration **may run** as a result — this is expected (alpha.6.10 didn't include a CMD_CLOSE_ALL on shutdown to re-close M1). If calibration runs: ~26 s on M1, 26 s on M2 (already CLOSED?), 171 s on M3. After calibration completes, T6 will re-evaluate and may re-open M1 if temperature still > 28°C.
+8. All earlier-phase tickles regression-clean.
+9. Run ≥ 10 min; no resets; no stack-overflow on T3.
+
+#### Watch items
+
+- **First-boot calibration may run again**: alpha.6.10 left M1 in `WIN_OPEN` state without a clean close before reset. T2's NVS state for ch1 = `NVS_STATE_OPEN`, not `NVS_STATE_CLOSED` → calibration runs (gh#18 Phase 3 only skips on all-CLOSED). Subsequent reboots (after T6 has closed everything overnight) should re-hit the NVS-skip.
+- **Optional manual wind-override test**: write `v_max=2` via web GUI before any unsafe wind happens. Next TN1 cycle should immediately set `WIND_OVERRIDE` (ws=2.4 ≥ 2), post `CMD_CLOSE_ALL`, post LOG_ALARM. Reset `v_max=6` to clear the override and verify CMD_RESUME path.
+
 ### `[2.0.0-alpha.6.10]` — 2026-05-18
 
 **Phase 6.10 — climate_control (T6) activation.** The climate control loop closes for the first time on 2.0.0. T6 wakes on TN2 (xTaskNotify from T4 after every Q6 store), snapshots cfg + measurement, runs the graduated-ventilation step algorithm (T-step from `t_avg - t_max` divided by `hyst_t / NUM_VENT_STEPS`; RH-step from `rh_avg - rh_max` if too humid, full close if too dry, neutral otherwise), resolves T vs RH conflict via `cr_priority`, and reconciles T2's actual window states to the resolved step's channel mask by posting per-channel `CMD_OPEN`/`CMD_CLOSE` to Q1. **Level-triggered every cycle** so commands lost to T2's post-open/close dwell are retried automatically. `CMD_CLOSE_ALL` is deliberately not used (reserved for safety events: T3 wind override, T2 motor alarm).

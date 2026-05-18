@@ -183,6 +183,7 @@
 #include "sensor_poll/sensor_poll.h"
 #include "relay_controller/relay_controller.h"
 #include "climate_control/climate_control.h"
+#include "safety_monitor/safety_monitor.h"
 #include "types/app_types.h"  /* Q1..Q6, MX1..MX5, EG1, task_t1..15, key_event_t etc. */
 
 static const char *TAG = "GHC-STUB";
@@ -1065,6 +1066,69 @@ extern "C" void app_main(void)
             ESP_LOGI(TAG, "alpha.6.10: T6 climate_control task spawned (handle=%p); "
                           "wakes on TN2 from T4 — first decision after T5 iter 1 + T4 store",
                      (void *)task_t6);
+        }
+    }
+
+    /* alpha.6.11 — spawn T3 safety_monitor task.
+     *
+     * T3 owns the wind-safety override. It wakes on TN1 (xTaskNotify from T4
+     * after every Q6 store — same notify event that drives T6). On each
+     * wake-up:
+     *
+     *   1. Snapshots latest measurement + cfg.
+     *   2. If cfg.wind_prot_en==0: clears EG1_BIT_WIND_OVERRIDE if set and
+     *      posts CMD_RESUME. Otherwise:
+     *   3. Evaluates speed (wind_speed_avg_ms10 >= v_max * 10) and direction
+     *      (in_exclusion_zone(wind_dir_avg_deg, dir_excl_low, dir_excl_high)).
+     *   4. If EG1_BIT_SENSOR_FAULT_W is set: safe-fail — treats wind as
+     *      threshold exceeded (FR-W04 safety semantics).
+     *   5. On unsafe onset: sets EG1_BIT_WIND_OVERRIDE, posts CMD_CLOSE_ALL
+     *      (SRC_T3) to Q1, posts LOG_ALARM.
+     *   6. On safe clearance: clears EG1_BIT_WIND_OVERRIDE, posts CMD_RESUME,
+     *      posts LOG_ALARM.
+     *
+     * **Priority 6 — one above T6 (5)** so T3 runs first when T4 notifies
+     * both tasks in the same scheduling round. T3 sets EG1_BIT_WIND_OVERRIDE
+     * BEFORE T6 evaluates; T6's inhibit-gate (climate_control.cpp:360-362)
+     * then skips its own evaluation, preventing the race where T6's CMD_OPEN
+     * could land on Q1 between T3's set-bit and T3's CMD_CLOSE_ALL.
+     *
+     * Priority matches T2 (also 6) — T2's existing dispatch loop handles
+     * concurrent Q1 posts from T3 and T6 correctly. T3 doesn't need to
+     * preempt T2 (T2 is the consumer; T3 is just another producer).
+     *
+     * Stack: 6 KB — like T6, mostly small locals + the bool/struct state.
+     * 1.20.3 prod used 4096; +2 KB headroom for IDF stack frames.
+     *
+     * Dependencies satisfied:
+     *   - T4 alpha.6.7 — provides TN1 (xTaskNotify after each Q6 store),
+     *     dm_meas_snapshot, dm_cfg_snapshot, dm_get_unix_time.
+     *   - T5 alpha.6.8 — produces sensor readings that drive T4's TN1.
+     *   - T2 alpha.6.9 — consumes CMD_CLOSE_ALL / CMD_RESUME from Q1.
+     *   - T6 alpha.6.10 — checks EG1_BIT_WIND_OVERRIDE inhibit; T3 sets/clears.
+     *   - T9 alpha.6.6 — log_post for LOG_ALARM wind events.
+     *   - EG1_BIT_WIND_OVERRIDE / EG1_BIT_SENSOR_FAULT_W — defined in app_types.h.
+     *
+     * Acceptance note: current dev unit wind reading is ws=2.4 m/s,
+     * v_max=6 m/s (from NVS). Wind is safe; T3 should evaluate every TN1,
+     * stay in "no state change (steady safe)" branch (logged at DEBUG so
+     * usually invisible at LOG_LEVEL_INFO).
+     */
+    {
+        BaseType_t rc = xTaskCreatePinnedToCore(
+            task_safety_monitor,
+            "T3-safety",
+            6144,                  /* stack words */
+            NULL,
+            6,                     /* priority — above T6 (5), matches T2 */
+            &task_t3,
+            tskNO_AFFINITY);
+        if (rc != pdPASS) {
+            ESP_LOGE(TAG, "alpha.6.11: xTaskCreate T3 failed (rc=%d)", (int)rc);
+        } else {
+            ESP_LOGI(TAG, "alpha.6.11: T3 safety_monitor task spawned (handle=%p); "
+                          "wakes on TN1 from T4 — wind-safety override owner",
+                     (void *)task_t3);
         }
     }
 

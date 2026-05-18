@@ -27,7 +27,9 @@
  * @author  Greenhouse Controller project
  */
 
-#include <Arduino.h>
+/* alpha.6.11 — dropped <Arduino.h>. T3 has no Arduino-specific calls;
+ * FreeRTOS primitives (ulTaskNotifyTake, xQueueSend, xEventGroup*)
+ * arrive via app_types.h's transitive FreeRTOS includes. */
 #include <esp_log.h>
 #include <esp_task_wdt.h>   /* WDT subscription (1.17.29 / gh#13) */
 
