@@ -44,6 +44,7 @@
 /* LIB-7 wrapper from drivers/nvs (migrated alpha.2.3) — used to read
  * the WiFi credentials persisted by the arduino-era 1.20.3 firmware. */
 #include "nvs_config.h"
+#include "freertos/timers.h"   /* alpha.6.31 — STA reconnect back-off timer */
 
 static const char *TAG = "T-WIFI";
 
@@ -53,9 +54,55 @@ static const char *TAG = "T-WIFI";
 
 static EventGroupHandle_t  s_evt_group = NULL;
 static esp_netif_t        *s_sta_netif = NULL;
-static int                 s_retry_count = 0;
+static int                 s_retry_count = 0;   /* still used for the boot-time tickle's 3-shot fast path */
 static const int           kMaxRetries  = 3;
 static char                s_last_ip[16] = {0};   /* "xxx.xxx.xxx.xxx" + NUL */
+
+/* alpha.6.31 — STA reconnect with infinite retry + exponential back-off.
+ * The wifi_tickle event handler kicks a one-shot timer on each disconnect;
+ * the timer expires and calls esp_wifi_connect(), retry budget never runs
+ * out. Back-off ladder mirrors the 1.20.3 design (2 → 4 → 8 → 16 → 32 → 60 s
+ * cap) so a permanently-down AP doesn't hammer the radio at full rate.
+ *
+ * Reset to BACKOFF_INIT_MS on every successful STA_GOT_IP. */
+#define BACKOFF_INIT_MS    2000u
+#define BACKOFF_MAX_MS    60000u
+
+static TimerHandle_t s_reconnect_timer    = NULL;
+static uint32_t      s_reconnect_delay_ms = BACKOFF_INIT_MS;
+
+static void reconnect_timer_cb(TimerHandle_t xTimer)
+{
+    (void)xTimer;
+    ESP_LOGI(TAG, "Reconnect attempt (back-off was %lu ms)",
+             (unsigned long)s_reconnect_delay_ms);
+    esp_wifi_connect();
+    /* Bump the back-off for the *next* drop. Reset on STA_GOT_IP. */
+    s_reconnect_delay_ms <<= 1;
+    if (s_reconnect_delay_ms > BACKOFF_MAX_MS) {
+        s_reconnect_delay_ms = BACKOFF_MAX_MS;
+    }
+}
+
+static void schedule_reconnect(void)
+{
+    if (s_reconnect_timer == NULL) {
+        s_reconnect_timer = xTimerCreate("wifi_reconnect",
+                                         pdMS_TO_TICKS(s_reconnect_delay_ms),
+                                         pdFALSE, NULL, reconnect_timer_cb);
+        if (s_reconnect_timer == NULL) {
+            ESP_LOGE(TAG, "xTimerCreate(wifi_reconnect) failed — "
+                          "falling back to immediate retry");
+            esp_wifi_connect();
+            return;
+        }
+    }
+    /* xTimerChangePeriod auto-starts the timer. Period of 1 tick triggers
+     * almost immediately for the first retry; subsequent retries use
+     * s_reconnect_delay_ms. */
+    xTimerChangePeriod(s_reconnect_timer,
+                       pdMS_TO_TICKS(s_reconnect_delay_ms), 0);
+}
 
 /**
  * Unified handler for WIFI_EVENT and IP_EVENT. Registered against the
@@ -81,10 +128,14 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                 break;
 
             case WIFI_EVENT_STA_DISCONNECTED: {
-                /* Could be initial-connect failure (wrong PSK, AP out of
-                 * range) or mid-session drop. For the tickle we retry up
-                 * to kMaxRetries times with no delay between attempts;
-                 * the full Phase-6 task adds exponential backoff. */
+                /* Boot-time tickle: kMaxRetries fast attempts so the boot
+                 * gate doesn't block forever on a missing AP. After that
+                 * we hand off to the back-off timer for indefinite retry.
+                 *
+                 * alpha.6.31 — no terminal "give up" any more. The 1.20.3
+                 * behaviour was infinite-retry with exponential back-off;
+                 * the 3-strike kill from earlier alphas would leave the
+                 * unit permanently offline after a transient AP drop. */
                 wifi_event_sta_disconnected_t *disc =
                     (wifi_event_sta_disconnected_t *)event_data;
                 ESP_LOGW(TAG, "WIFI_EVENT_STA_DISCONNECTED reason=%d retry=%d/%d",
@@ -93,8 +144,14 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                 if (s_retry_count < kMaxRetries) {
                     s_retry_count++;
                     esp_wifi_connect();
+                    /* Don't signal BIT_DISCONNECTED yet — let the fast
+                     * retries play out within the tickle's boot budget. */
                 } else {
+                    /* Hand off to the back-off timer. xEventGroupSetBits
+                     * still fires so the initial wifi_tickle_run() returns
+                     * — but the back-off keeps retrying in the background. */
                     xEventGroupSetBits(s_evt_group, BIT_DISCONNECTED);
+                    schedule_reconnect();
                 }
                 break;
             }
@@ -114,7 +171,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                          s_last_ip,
                          IP2STR(&ev->ip_info.gw),
                          IP2STR(&ev->ip_info.netmask));
-                s_retry_count = 0;   /* clear retry budget for any future drop */
+                s_retry_count        = 0;   /* clear fast-retry budget for next drop */
+                s_reconnect_delay_ms = BACKOFF_INIT_MS;   /* alpha.6.31 — reset back-off */
                 xEventGroupSetBits(s_evt_group, BIT_GOT_IP);
                 break;
             }
@@ -189,12 +247,24 @@ wifi_tickle_status_t wifi_tickle_run(uint32_t connect_timeout_ms)
     nvs_cfg_get_str(NVS_NS_WIFI, "ssid", ssid, sizeof(ssid));
     nvs_cfg_get_str(NVS_NS_WIFI, "psk",  psk,  sizeof(psk));
 
-    if (ssid[0] == '\0') {
-        ESP_LOGI(TAG, "no SSID in NVS (wifi/ssid) — WiFi tickle skipped");
-        return WIFI_TICKLE_NO_SSID;
+    const bool have_sta_creds = (ssid[0] != '\0');
+    if (have_sta_creds) {
+        ESP_LOGI(TAG, "NVS credentials: ssid='%s' psk=%s",
+                 ssid, psk[0] ? "***(set)" : "(empty)");
+    } else {
+        /* alpha.6.30 — no SSID in NVS does NOT short-circuit the stack init
+         * any more. T10's AP mode (Greenhouse-XXYY recovery AP) needs
+         * esp_wifi_init/_start to have happened, even when no STA credentials
+         * are configured yet (that's exactly the recovery-flow case: fresh
+         * unit, operator joins the AP, sets the real SSID via the GUI).
+         *
+         * The old code short-circuited here with WIFI_TICKLE_NO_SSID, which
+         * meant esp_netif_create_default_wifi_ap() later aborted with
+         * ESP_ERR_INVALID_STATE because the underlying esp_wifi peripheral
+         * had never been initialised. Now we init the stack regardless,
+         * skip only the STA-connect step. */
+        ESP_LOGI(TAG, "no SSID in NVS — WiFi stack will init but skip STA-connect");
     }
-    ESP_LOGI(TAG, "NVS credentials: ssid='%s' psk=%s",
-             ssid, psk[0] ? "***(set)" : "(empty)");
 
     /* Step 2: event-group for waiting on STA_GOT_IP vs STA_DISCONNECTED. */
     s_evt_group   = xEventGroupCreate();
@@ -256,35 +326,46 @@ wifi_tickle_status_t wifi_tickle_run(uint32_t connect_timeout_ms)
         return WIFI_TICKLE_INIT_FAILED;
     }
 
-    /* Step 6: configure STA mode with the NVS credentials. */
-    wifi_config_t cfg = {};
-    /* sta.ssid and sta.password are uint8_t[]; copy with bounds. */
-    strncpy((char *)cfg.sta.ssid,     ssid, sizeof(cfg.sta.ssid)     - 1);
-    strncpy((char *)cfg.sta.password, psk,  sizeof(cfg.sta.password) - 1);
-    /* Be tolerant of older WPA-PSK APs as well as WPA2/WPA3 — same
-     * default as the arduino-era driver. */
-    cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
-    cfg.sta.pmf_cfg.capable    = true;
-    cfg.sta.pmf_cfg.required   = false;
-
+    /* Step 6: configure STA mode. Without credentials we still set STA mode
+     * + esp_wifi_start so esp_netif_create_default_wifi_ap() can succeed in
+     * T10's start_ap (the AP-handler-registration step inside that call
+     * asserts the wifi peripheral is up). T10 promotes STA → APSTA when
+     * the operator enables AP via NVS wifi/ap_enable. */
     err = esp_wifi_set_mode(WIFI_MODE_STA);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_wifi_set_mode(STA): %s", esp_err_to_name(err));
         return WIFI_TICKLE_INIT_FAILED;
     }
-    err = esp_wifi_set_config(WIFI_IF_STA, &cfg);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_wifi_set_config: %s", esp_err_to_name(err));
-        return WIFI_TICKLE_INIT_FAILED;
+
+    if (have_sta_creds) {
+        wifi_config_t cfg = {};
+        strncpy((char *)cfg.sta.ssid,     ssid, sizeof(cfg.sta.ssid)     - 1);
+        strncpy((char *)cfg.sta.password, psk,  sizeof(cfg.sta.password) - 1);
+        cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
+        cfg.sta.pmf_cfg.capable    = true;
+        cfg.sta.pmf_cfg.required   = false;
+        err = esp_wifi_set_config(WIFI_IF_STA, &cfg);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "esp_wifi_set_config: %s", esp_err_to_name(err));
+            return WIFI_TICKLE_INIT_FAILED;
+        }
     }
 
     /* Step 7: kick off WIFI_EVENT_STA_START — handler will call
-     * esp_wifi_connect from there. */
+     * esp_wifi_connect from there IF we have credentials (it reads the
+     * config we just set via esp_wifi_set_config). Without credentials,
+     * esp_wifi_start still brings the radio up; STA just won't connect. */
     err = esp_wifi_start();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_wifi_start: %s", esp_err_to_name(err));
         return WIFI_TICKLE_INIT_FAILED;
     }
+
+    if (!have_sta_creds) {
+        ESP_LOGI(TAG, "WiFi stack up; STA-connect skipped (no SSID) — ready for AP mode");
+        return WIFI_TICKLE_NO_SSID;
+    }
+
     ESP_LOGI(TAG, "esp_wifi_start OK — waiting up to %lu ms for STA_GOT_IP",
              (unsigned long)connect_timeout_ms);
 

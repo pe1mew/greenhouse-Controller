@@ -700,8 +700,11 @@ function downloadLog() {
   var url;
   // 2.0.0-alpha.6.5: the `val === 'nvs'` branch was removed alongside the
   // NVS-ringbuffer retirement. Only SD-file downloads remain.
+  // 2.0.0-alpha.6.X: dropped the `src=sd` query param. The firmware endpoint
+  // (alpha.6.19, web_server.cpp:log_download_handler) takes only `?file=NAME`
+  // — the legacy `src=` selector was retired together with the NVS source.
   if (val.indexOf('sd:') === 0) {
-    url = '/api/log/download?src=sd&file=' + encodeURIComponent(val.slice(3));
+    url = '/api/log/download?file=' + encodeURIComponent(val.slice(3));
   } else {
     feedback('fb-log-dl', false); return;
   }

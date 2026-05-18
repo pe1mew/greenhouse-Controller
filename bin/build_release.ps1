@@ -48,7 +48,13 @@ if (-not (Test-Path $PIO)) {
 $INI_PATH = Join-Path $FIRMWARE_DIR "platformio.ini"
 $ini_text = Get-Content $INI_PATH -Raw
 
-if ($ini_text -match 'FIRMWARE_VERSION=\\"([0-9]+\.[0-9]+\.[0-9]+[a-z]?)\\"') {
+# 2.0.0-alpha.6.X: regex extended to accept SemVer pre-release / build-metadata
+# suffixes (the original matched only `X.Y.Z[a-z]?`). Examples that must parse:
+#   1.20.3
+#   2.0.0-alpha.6.25
+#   2.0.0-rc.1
+#   2.0.0
+if ($ini_text -match 'FIRMWARE_VERSION=\\"([0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.\-]+)?)\\"') {
     $VERSION = $Matches[1]
 } else {
     Write-Error "Could not find FIRMWARE_VERSION in $INI_PATH"

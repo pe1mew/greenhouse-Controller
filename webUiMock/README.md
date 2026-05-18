@@ -55,11 +55,12 @@ Stop the server with **Ctrl+C**.
 
 ## What is emulated
 
-Targets firmware **1.20.0** — canonical nested status-JSON shape (now including the gh#17 `unit_id` field consumed by the LCD info screen and the web-GUI footer), status-website POST configuration (Web tab), the OTA-version-mismatch diagnostic surfaces, and the 1.19.1 `/api/wifi` apply-on-restart semantics.
+Targets firmware **2.0.0-alpha.6.X** — canonical nested status-JSON shape carried unchanged from 1.20.0 (incl. gh#17 `unit_id` for LCD info screen + web-GUI footer), status-website POST configuration (Web tab), the OTA-version-mismatch diagnostic surfaces, the 1.19.1 `/api/wifi` apply-on-restart semantics, and the alpha.6.16-η T11 WebSocket. Compared to 1.20.0 the underlying firmware is structurally different (ESP-IDF native vs Arduino-esp32) but the operator-facing API shape is preserved with two retirements: the NVS-ringbuffer log source (alpha.6.5) and the legacy `?src=` selector on `/api/log/download` (alpha.6.19).
 
 | Endpoint             | Method | Auth    | Description |
 |----------------------|--------|---------|-------------|
 | `/`                  | GET    | none    | Serves `firmware/data/index.html` with `?v=<fw_ver>` cache-busters injected on `app.js` / `style.css` references |
+| `/index.html`        | GET    | none    | Same content as `/` — explicit URI registered in alpha.6.24 (was wildcard fallback under 1.20.x) |
 | `/style.css`         | GET    | none    | Serves `firmware/data/style.css` |
 | `/app.js`            | GET    | none    | Serves `firmware/data/app.js` |
 | `/manifest.json`     | GET    | none    | `{"asset_version":"<fw_ver>","checksum":""}` |
@@ -68,15 +69,21 @@ Targets firmware **1.20.0** — canonical nested status-JSON shape (now includin
 | `/api/logout`        | POST   | cookie  | Clears session cookie |
 | `/api/status`        | GET    | farmer+ | Full status JSON in canonical nested shape (`climate`, `wind`, `windows:{M1,M2,M3}`, `mode:{current,flags[]}`, `sun`, `system{asset_version,uptime_s,…}`, `update_interval_s`) — same payload as WebSocket push |
 | `/api/config`        | GET    | farmer+ | All configuration parameters |
+| `/api/config/limits` | GET    | none    | Per-key {min, max} bounds for client-side validation |
 | `/api/config`        | POST   | farmer+ | Write one NVS key; farmer restricted to climate/wind keys |
 | `/api/wifi`          | POST   | admin   | Update WiFi SSID (PSK accepted but not stored) |
 | `/api/pin`           | POST   | admin   | Change farmer or admin PIN for this session |
 | `/api/web`           | GET    | admin   | Current status-website (Web tab) settings; secret never echoed |
 | `/api/web`           | POST   | admin   | Update status-website settings; same validation as firmware (URL must end `api.php`, secret ≥ 16 chars, interval 60–300, etc.) |
-| `/api/history`       | GET    | farmer+ | `?n=N` — last N synthetic sensor readings |
+| `/api/history`       | GET    | none    | `?n=N` — last N sensor readings. Public per the design contract: same policy as `/api/status` and `/ws`. Response shape `{rows:[{ts, temp_c, temp_avg_c, rh_pct, rh_avg_pct, speed_ms, speed_avg_ms, direction_deg, direction_variation_deg}]}`. |
 | `/api/sd/status`     | GET    | farmer+ | `{mounted, free_mb, size_mb}` |
 | `/api/sd/mount`      | POST   | admin   | Set SD mounted state to `true` |
 | `/api/sd/unmount`    | POST   | admin   | Set SD mounted state to `false` |
+| `/api/log/files`     | GET    | admin   | `{sd_files:[...]}` — `nvs_count` removed in alpha.6.5 |
+| `/api/log/download`  | GET    | admin   | `?file=NAME` (SD only). The legacy `?src=` selector was retired in alpha.6.19. |
+| `/api/ota/status`    | GET    | farmer+ | `{state, progress, error, bank, accepted}` |
+| `/api/ota/firmware`  | POST   | admin   | Streaming firmware `.bin` upload |
+| `/api/ota/assets`    | POST   | admin   | Streaming STORE-only ZIP upload of web assets |
 | `/ws`                | WS     | none    | Push status JSON every 2 s |
 
 ### Simulated data
@@ -121,6 +128,6 @@ the web UI are held in memory for the lifetime of the server process.
 | Sensor data | Sine-wave generator | DHT22 + anemometer |
 | Window states | Always CLOSED | T2 relay state machines |
 | NTP / time | Host system clock | SNTP |
-| OTA / firmware version | Single `cfg["fw_ver"]` string in `mock_server.py` (currently `"1.17.20"`) | NVS `system/fw_version`, set on every boot from `FIRMWARE_VERSION` |
+| OTA / firmware version | Single `cfg["fw_ver"]` string in `mock_server.py` (currently `"2.0.0-alpha.6.25"`) | NVS `system/fw_version`, set on every boot from `FIRMWARE_VERSION` |
 | `manifest.json` / `asset_version` | Always equal to `cfg["fw_ver"]` (no real LFS to drift) | Written by `bin/build_release.ps1` into the ZIP; T13 preserves it on the inactive LFS partition during OTA |
 | OTA cross-bank routing | Not simulated (single-instance Python process) | Dual OTA banks + dual LittleFS partitions; T13 writes assets to the LFS paired with the inactive bank |

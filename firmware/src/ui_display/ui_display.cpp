@@ -1760,12 +1760,62 @@ void task_ui_display(void *pvParameters)
             }
         }
 
-        /* ── 2b. IO0 BOOT button — factory reset sequence ── */
+        /* ── 2b. IO0 BOOT button — factory reset sequence ──
+         *
+         * alpha.6.25 — require IO0 to have been seen HIGH at least once before
+         * counting any LOW tick. Background: on the LOLIN S3, the USB-CDC line
+         * signals (DTR/RTS) are routed through the dev board's auto-reset
+         * transistor circuit to IO0/EN. A host that opens the serial port with
+         * DTR asserted statically (some non-miniterm tools — e.g. raw .NET
+         * SerialPort — do this) will hold IO0 LOW for the entire duration the
+         * port is open. After 5 s the old code interpreted that as a
+         * deliberate BOOT-button hold and erased NVS_NS_ACCESS, factory-
+         * resetting the admin PIN. Operator-confirmed observable: the LCD
+         * reset-progress bar was seen growing during a 25 s serial capture.
+         *
+         * The fix: a HIGH reading is an *enabling edge*. Until we've seen IO0
+         * HIGH once (= the button is released, the auto-reset circuit isn't
+         * holding it low) we ignore any LOW reading entirely. This preserves
+         * the intended user gesture (press the BOOT button → hold N seconds →
+         * release) and rejects the passive electrical artifact. */
         {
             /* alpha.6.12: digitalRead→gpio_read (LIB-1 / drivers/gpio). */
             bool io0_low = (gpio_read(RESET_PIN_IO0) == GPIO_LOW);
 
-            if (io0_low) {
+            /* alpha.6.25 / .6.31 — enabling-edge gate with debounce.
+             *
+             * Original alpha.6.25 fix: require IO0 HIGH at least once
+             * before counting LOW. That prevented passive DTR-low from
+             * triggering the counter at boot — but Windows .NET
+             * SerialPort can produce brief HIGH transients during
+             * `Open()` even when the eventual signal is LOW. A single
+             * HIGH tick was enough to arm the gate, after which any
+             * LOW caused by USB-CDC reconfiguration would start
+             * counting toward PIN reset.
+             *
+             * alpha.6.31 — require N consecutive HIGH ticks. Spurious
+             * transient HIGHs lasting < N×UI_LOOP_MS are filtered. The
+             * operator actually pressing the BOOT button always
+             * satisfies this (they hold for hundreds of milliseconds
+             * before pressing), but a 50-100 ms DTR-transient HIGH
+             * during SerialPort.Open() doesn't. */
+            #define IO0_ARM_HIGH_TICKS  20u   /* 20 × 100 ms = 2 s of HIGH */
+            static uint16_t s_io0_high_streak  = 0;
+            static bool     s_io0_seen_high    = false;
+            if (!io0_low) {
+                if (s_io0_high_streak < IO0_ARM_HIGH_TICKS) {
+                    s_io0_high_streak++;
+                    if (s_io0_high_streak >= IO0_ARM_HIGH_TICKS) {
+                        s_io0_seen_high = true;
+                    }
+                }
+            } else {
+                /* Any LOW tick resets the streak — only a sustained
+                 * HIGH counts toward arming. */
+                s_io0_high_streak = 0;
+            }
+
+            if (io0_low && s_io0_seen_high) {
                 s_reset_ticks++;
                 render_reset_bar();
                 if (s_reset_ticks >= RESET_MAX_TICKS) {
@@ -1778,7 +1828,7 @@ void task_ui_display(void *pvParameters)
                      * dirty render so the bar is the only thing on screen. */
                     continue;
                 }
-            } else if (s_reset_ticks > 0u) {
+            } else if (!io0_low && s_reset_ticks > 0u) {
                 /* Button released — execute action for the stage reached */
                 uint8_t stage = (uint8_t)(s_reset_ticks / RESET_TICKS_PER_STAGE);
                 if (stage >= 4u) stage = 3u;
@@ -1786,6 +1836,7 @@ void task_ui_display(void *pvParameters)
                 execute_reset_action(stage);
                 s_dirty = true;  /* Restore normal display after action */
             }
+            /* else: io0_low but !s_io0_seen_high → ignore (DTR artifact). */
         }
 
         /* ── 2c. Transient message countdown ── */

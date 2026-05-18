@@ -888,7 +888,9 @@ void dm_status_snapshot(status_snapshot_t *out)
      * If the manifest cannot be read or parsed, "?" is reported. The web UI
      * compares fw against assets and shows an explicit "MISMATCH" badge so
      * a stale-LFS situation after a partial OTA is visible at a glance. */
-    static char s_asset_ver[16] = {};
+    /* alpha.6.24 — bumped 16 → 24 to match status_snapshot_t::assets[24].
+     * Same "2.0.0-alpha.6.X" truncation trap that hit fw[16] in alpha.6.17.1. */
+    static char s_asset_ver[24] = {};
     static bool s_asset_ver_loaded = false;
     if (!s_asset_ver_loaded) {
         s_asset_ver_loaded = true;

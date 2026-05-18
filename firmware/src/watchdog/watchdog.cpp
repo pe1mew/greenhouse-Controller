@@ -16,6 +16,7 @@
 #include <esp_timer.h>
 
 #include "../ota_manager/ota_manager.h"   /* OTA_HEALTHY_MS, ota_mark_healthy */
+#include "gpio_util.h"                    /* alpha.6.24 — PIN_HB_LED toggle (1 Hz blink) */
 
 static const char *TAG = "T1";
 
@@ -43,6 +44,13 @@ void task_watchdog(void *pvParameters)
     for (;;) {
         /* Kick the WDT first — highest priority concern. */
         esp_task_wdt_reset();
+
+        /* Toggle the heartbeat LED (PIN_HB_LED = GPIO41, amber on Unit 2).
+         * 1 Hz blink rate matches 1.20.3 exactly — the operator-recognisable
+         * "T1 is alive" indicator. The integration heartbeat_task in main.cpp
+         * runs at 5 s cadence (10× slower) and is NOT what should drive this
+         * signal; alpha.6.24 moved the toggle here. */
+        gpio_toggle(PIN_HB_LED);
 
         /* Heartbeat log every 10 ticks (= 5 s). Quiet enough not to flood
          * the serial buffer; frequent enough that an operator watching the

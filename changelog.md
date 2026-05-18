@@ -28,6 +28,368 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-alpha.6.31]` — 2026-05-18
+
+**Phase 6.14.X step 2 — admin-toggled AP-mode + infinite-retry STA back-off + IO0 reset-gate hardening + T11-spawn-without-STA.** Closes four operator-experience gaps in one alpha; built and partially tested through the failed alpha.6.29 and alpha.6.30 iterations before landing here.
+
+#### 1. AP mode — admin-only, per design spec
+
+Soft-AP in `WIFI_MODE_APSTA` mode runs alongside the STA whenever the admin writes `wifi/ap_enable=1` to NVS (via web GUI `POST /api/config` or LCD `Settings → System → 1=WiFi AP`, admin session required). **No auto-enabling** on credential loss (security policy: an unconfigured broadcast would expose the greenhouse to anyone in radio range). SSID source: NVS `wifi/ap_ssid` → MAC-derived `Greenhouse-XXYY` default. PSK source: NVS `wifi/ap_psk` → factory default `0123456789`; never an open AP. Auto-shutdown after `cfg.ap_timeout_min` minutes (default 30) clears the NVS flag so it doesn't restart. T8 reads `net_status_t.ap_active` from Q5 and renders "AP active" on the LCD WiFi page. `start_ap()` reloads SSID/PSK from NVS each call so admin changes apply on next enable without a reboot.
+
+Two iteration alphas (6.29, 6.30) were burned getting here:
+- alpha.6.29 panicked at `esp_netif_create_default_wifi_ap()` because `esp_wifi_init()` was never called when wifi_tickle skipped on missing SSID. Boot-loop on the bench unit; rolled back to alpha.6.28.
+- alpha.6.30 added auto-enable-on-no-SSID — violates the security policy (operator pushback). Reverted. The wifi-stack-init-without-SSID fix from .6.30 is kept since it's correct and needed for the proper admin-controlled flow.
+
+#### 2. WiFi STA reconnect — infinite retry + exponential back-off
+
+`wifi_tickle` event handler previously gave up after 3 disconnects (`s_retry_count == kMaxRetries`), leaving the unit permanently offline until the next boot. New FreeRTOS one-shot timer (`reconnect_timer_cb` + `schedule_reconnect`) takes over after the 3 fast retries and runs the 2 → 4 → 8 → 16 → 32 → 60 s ladder indefinitely. Resets to 2 s on successful `STA_GOT_IP`. Matches the 1.20.3 design's documented "NET_BACKOFF" sequence verbatim.
+
+#### 3. WiFi stack init even without SSID
+
+`wifi_tickle_run` used to short-circuit on `wifi/ssid == ""`. Now it always runs steps 2–7 (netif init, event loop, STA netif, `esp_wifi_init`, `esp_wifi_set_mode(STA)`, `esp_wifi_start`) and only gates the `esp_wifi_set_config(STA)` + connect-wait on having credentials. The WiFi stack is therefore ready for the admin to enable AP from the LCD on a fresh unit. Return value `WIFI_TICKLE_NO_SSID` is preserved so callers can still distinguish "STA connected" from "stack initialized, no creds".
+
+#### 4. T11 web server spawns whenever the WiFi stack is initialized
+
+`main.cpp` previously gated T11 on `wifi_st == OK || OK_NO_NTP`. That meant a unit without `wifi/ssid` had no web GUI even after admin enabled AP — fatal for the operator-recovery flow. `wifi_up` is now `(wifi_st != INIT_FAILED)` — T11 spawns and binds httpd to all interfaces. Reachable on the STA IP if connected and on `192.168.4.1` whenever AP is enabled.
+
+#### 5. IO0 reset gate — 2-second debounce on HIGH-edge (the "IO1 key" bug)
+
+Operator report: "you keep resetting pin settings over serial using IO1 key." Root cause: my alpha.6.25 HIGH-edge gate accepted a single HIGH tick as "armed". Windows .NET `SerialPort.Open()` generates a brief (50–100 ms) DTR transient during the line-state handshake — IO0 went HIGH for 1–2 ticks, gate armed, then DTR settled at LOW and the 5-s counter ran to completion. The PIN reset I attributed to "operator manually pressing BOOT" was actually self-inflicted from every serial capture I did.
+
+Hardened gate (alpha.6.31): requires **20 consecutive HIGH ticks (= 2 seconds of sustained HIGH)** before arming. Any LOW tick resets the streak. The 50–100 ms transient from `SerialPort.Open()` is filtered out; an operator actually pressing the BOOT button always satisfies the streak.
+
+#### What changed
+
+- **`firmware/src/wifi_tickle.cpp`** — stack init unconditional; new back-off timer (`schedule_reconnect`, `reconnect_timer_cb`); STA_DISCONNECTED hands off to timer after the 3-strike fast path; STA_GOT_IP resets back-off; includes `freertos/timers.h`.
+- **`firmware/src/network_manager/network_manager.cpp`** — reverted auto-enable-on-no-SSID; new `load_ap_credentials()` reads NVS `wifi/ap_ssid` + `wifi/ap_psk` with fallbacks; called from both `ap_init` and `start_ap` so admin changes apply on next enable.
+- **`firmware/src/ui_display/ui_display.cpp`** — 20-tick HIGH-streak debounce (`s_io0_high_streak`) before the alpha.6.25 gate arms.
+- **`firmware/src/main.cpp`** — `wifi_up` redefined to "stack initialized" (`wifi_st != INIT_FAILED`); T11 spawns accordingly.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-alpha.6.31`.
+
+#### Acceptance — hardware verified on 192.168.20.160
+
+```
+fw_ver        : 2.0.0-alpha.6.31
+asset_version : 2.0.0-alpha.6.31    ← paired bundle uploaded, mismatch cleared
+uptime_s      : 10                   ← post-asset-OTA reboot
+coordinates   : 52.218 N, 5.939 E   ← geo persisted across all the iteration reboots
+tz_str        : CET-1CEST,M3.5.0,M10.5.0/3
+ap_ssid       : Greenhouse-2344     ← MAC-derived default
+ap_timeout_min: 30 min
+```
+
+Eight surface checks PASS: `/api/whoami` 401, `/api/login` 200, `/api/status` canonical JSON, `/api/history` correct envelope + 9 fields, `/api/ota/status` accepted=true, `/ws` unauthenticated upgrade + 2 s push frames, `/api/sd/status` mounted, `GET /` 38918 B full GUI.
+
+#### Build delta vs alpha.6.28 (last shipped)
+
+| Metric | alpha.6.28 | alpha.6.31 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1 318 976 B | 1 321 312 B | +2 336 B |
+| RAM static | ~60 256 B | ~60 256 B | unchanged |
+
+bin sha256: `A6AD887A300C9AA0…`
+
++2.3 KB net for back-off timer + AP-creds reload + IO0 debounce + main.cpp wifi_up gating.
+
+#### Operator-facing recovery flow (now actually functional)
+
+1. Admin enables AP via LCD `Settings → System → 1=WiFi AP` (admin session required) — OR via web GUI when STA is reachable
+2. AP `Greenhouse-XXYY` broadcasts with PSK `0123456789` (or NVS override)
+3. Operator joins, opens `http://192.168.4.1`, sets WiFi STA SSID + PSK via web GUI
+4. AP auto-shuts down after `cfg.ap_timeout_min` (default 30) — admin can disable earlier
+5. STA reconnect uses back-off ladder; recovers from any transient AP drop automatically — never gives up
+
+### `[2.0.0-alpha.6.28]` — 2026-05-18
+
+**Feature — IP geolocation + timezone sync restored (Phase 6.14.X step 1).** The minimal T10 in alpha.6.14 deferred the 1.20.3 `http://ip-api.com/json` lookup. Without it, NVS-default coordinates `(52, 0)` / `(5, 0)` were the only thing the sunrise/sunset calc ever saw — a central-Netherlands grid intersection that's not a real geocoded location. User report:
+
+> "coordinate as presented in web gui system tam shall be updated with the location lookup on IP that does not seem the case. coordinate is 52.0, 5.0 (default)"
+
+Restored behaviour:
+
+- T10 calls `do_geo_sync()` once per boot after `client_connected && ntp_synced`, latched via `s_geo_done`. Retries on every main-loop tick until success (covers DNS hiccups + ip-api.com rate-limit transients).
+- esp_http_client GET against `http://ip-api.com/json?fields=status,lat,lon,timezone`. Plain HTTP — ip-api.com free tier doesn't offer TLS; same choice as 1.20.3. Data is non-sensitive (worst-case MITM = sunrise drifts a few minutes).
+- Body parser is the same strstr-based extractor as 1.20.3 (no JSON-library dependency).
+- lat/lon converted to integer-deg + millidegree-fraction and pushed to Q4 (4 entries: `lat_deg`, `lat_frac`, `lon_deg`, `lon_frac`). T4 writes NVS + refreshes the cfg shadow + recalculates today's sunrise/sunset.
+- IANA timezone → POSIX TZ string via new `firmware/src/network_manager/tz_table.h` (~90 entries: Europe full + Americas + Asia + Australia + Pacific + Africa major). On success: `nvs_cfg_set_str(NVS_NS_SYSTEM, "tz_str", …)` + immediate `setenv("TZ", …)` + `tzset()` so `localtime_r` returns local wall-clock time without waiting for the next boot. On miss: TZ unchanged, warning logged.
+
+#### What changed
+
+- **`firmware/src/network_manager/network_manager.cpp`** — added `geo_resp_t`, `geo_http_event_cb`, `float_to_deg_frac`, `parse_geo_response`, `post_q4`, `do_geo_sync`, `s_geo_done` latch, and two call sites in `task_network_manager` (initial post-boot + retry on every tick). New includes: `esp_http_client.h`, `nvs_config.h`, `tz_table.h`, `<stdlib.h>`. ~140 lines net.
+- **`firmware/src/network_manager/tz_table.h`** — new file. Static-const IANA → POSIX TZ table + `iana_to_posix()` inline lookup. Verbatim port from the 1.20.3 archive.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-alpha.6.28`.
+
+#### Acceptance — hardware verified on 192.168.20.160
+
+Pre-fix (defaults):
+```
+lat_deg=52  lat_frac=0    lon_deg=5  lon_frac=0     → 52.000 N, 5.000 E
+```
+
+After alpha.6.28 boot + geo sync:
+```
+lat_deg=52  lat_frac=218  lon_deg=5  lon_frac=939   → 52.218 N, 5.939 E
+tz_str = "CET-1CEST,M3.5.0,M10.5.0/3"
+```
+
+Central-east Netherlands as expected from the public IP. Coordinates persist across reboot (NVS); a network outage between syncs doesn't lose the geocoded location.
+
+#### Paired asset bundle uploaded
+
+`bin/build_release.ps1` rebuild → `web-assets-2.0.0-alpha.6.28.zip` (STORE-only, 91 414 B) → `POST /api/ota/assets`. Post-reboot `fw_ver == asset_version == 2.0.0-alpha.6.28`; mismatch badge cleared.
+
+#### Build delta vs alpha.6.27
+
+| Metric | alpha.6.27 | alpha.6.28 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1 307 408 B | **1 318 976 B** | +11 568 B |
+| RAM static | ~60 256 B | (~same) | unchanged |
+
++11.6 KB flash. Roughly: TZ table ~6 KB, do_geo_sync + helpers ~1 KB, plus lwIP/HTTP-over-TCP linkage pulled in for the first time (status_post.cpp had only used HTTP_TRANSPORT_OVER_SSL until this alpha).
+
+bin sha256: `C03F761512223009…`
+
+#### Phase 6.14.X — three items still deferred
+
+| Item | Operational impact | Decision |
+|---|---|---|
+| AP fallback (captive portal when STA can't connect) | Currently relying on esp_wifi's auto-reconnect; works for transient network drops, fails for fresh-install operator config | Land in 2.0.1 if Phase 7 surfaces a need; current behaviour matches 1.20.x soak success |
+| Exponential backoff state machine (2 → 4 → 8 → 16 → 32 → 60 s) | esp_wifi internal retries at a fixed cadence; sufficient for current network conditions | Same — 2.0.1 candidate |
+| Periodic 24 h NTP resync | DS1307 RTC drift has been bounded enough for multi-day operation | Same — 2.0.1 if soak shows drift > a few seconds/day |
+
+### `[2.0.0-alpha.6.27]` — 2026-05-18
+
+**Bug fix — `/api/history` JSON shape.** Dashboard's "Sensor history" table never populated. Two-layer mismatch between firmware output and GUI / mock expectation: bare-array envelope vs `{rows:[…]}`, and raw field names `t/rh/ws/wd` (avg-only) vs canonical `temp_c/temp_avg_c/rh_pct/rh_avg_pct/speed_ms/speed_avg_ms/direction_deg/direction_variation_deg` (both raw + avg).
+
+**How the GUI failed silently:** `firmware/data/app.js::loadHistory()` does `if (!data || !data.rows) return;` — short-circuits on a bare array, no row ever rendered. Even with the envelope fixed, the `(v !== undefined ? v.toFixed(1) : '—')` cell helpers would have rendered every column as `—` because every reader uses the long field names.
+
+**Source of truth for the shape:** `webUiMock/mock_server.py::_build_history` comment: *"Field names match the keys inside the canonical status JSON's `climate` and `wind` blocks so the same name carries the same number on /api/status and /api/history."* The firmware now follows this contract.
+
+#### What changed
+
+- **`firmware/src/web_server/web_server.cpp::history_handler`** — JSON rewritten:
+  - Envelope `[…]` → `{"rows":[…]}`
+  - Per-row keys switched to canonical `temp_c/temp_avg_c/rh_pct/rh_avg_pct/speed_ms/speed_avg_ms/direction_deg/direction_variation_deg`
+  - Both raw (`temperature_c/humidity_pct/wind_speed_ms10/wind_dir_deg`) and sliding-average values emitted
+  - Temperature `%d.0` (sensor delivers whole °C; matches GUI's `.toFixed(1)`); wind `%u.%u` (×10 fixed-point decoded — same tenths trick as `status_json.cpp`)
+  - Body buffer 8 KB → 12 KB (per-row size grew ~80 B → ~160 B; n=60 worst case ~9.6 KB)
+- **`webUiMock/mock_server.py::history`** — dropped the `_get_role()` auth check. The mock had been gating `/api/history` 401, contradicting both its own docstring and `firmware/data/app.js:935` ("`loadHistory` is public, no auth required"). Mock now matches the firmware: public, no auth.
+- **`webUiMock/README.md`** — endpoint table for `/api/history` updated: auth `farmer+` → `none`; response shape documented.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-alpha.6.27`.
+
+#### Acceptance — hardware verified on 192.168.20.160
+
+```
+GET /api/history?n=3 (no cookie, no auth)
+→ {"rows":[
+    {"ts":1779126289,"temp_c":21.0,"temp_avg_c":21.0,"rh_pct":86,
+     "rh_avg_pct":86,"speed_ms":1.0,"speed_avg_ms":1.0,
+     "direction_deg":305,"direction_variation_deg":0},
+    {"ts":1779126319,…},
+    {"ts":1779126259,…}]}
+```
+
+Every dashboard reader (the eight `f1(row.temp_c)` / `i0(row.rh_pct)` / … expressions in `loadHistory`) now resolves to a real number; cells render real values instead of `—`. Mock smoke-tested independently: `/api/history?n=3` without cookie returns 200 with all nine expected keys per row.
+
+#### Build delta vs alpha.6.26
+
+| Metric | alpha.6.26 | alpha.6.27 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1 307 152 B | 1 307 408 B | +256 B |
+| RAM static | ~60 256 B | ~60 256 B | unchanged |
+
+bin sha256: `5C79875DB459E715…`
+
+#### Paired asset bundle uploaded — manifest mismatch cleared
+
+`bin/build_release.ps1` rerun (Step 0 stamps `manifest.json` with the active `FIRMWARE_VERSION`); produced `bin/2.0.0-alpha.6.27/web-assets-2.0.0-alpha.6.27.zip` (STORE-only, 91 414 B). Uploaded to 192.168.20.160 via `POST /api/ota/assets`; T13 mirrored the new manifest to the active LFS partition; after reboot `/api/status` reports `fw_ver == asset_version == 2.0.0-alpha.6.27`, dashboard MISMATCH badge cleared.
+
+### `[2.0.0-alpha.6.26]` — 2026-05-18
+
+**Bug fix — `/ws` is PUBLIC, not farmer-gated.** Operator-visible status data (temperature, humidity, wind, window states, mode, alarms, clock, WiFi state, sensor history, firmware version, unit ID) is **open data by design**. The 1.20.3 firmware never gated `/ws`; `webUiMock/mock_server.py` does not gate `@sock.route("/ws")`; `firmware/data/app.js:935` literally has the comment "Connect WebSocket and load sensor history immediately — both are public." My alpha.6.21 implementation wrongly added a `require_auth(req, WEB_ROLE_FARMER)` to the upgrade branch.
+
+**Operator-visible symptom** from alpha.6.25 acceptance:
+> "when logged out in webgui, only SD-card seems updated. the webgui states offline. Temp, Hum, Wind, Windows, Mode Alarms, Clock, WiFi, sensor history, version number and id are not restricted and open data. sensor logdat is not populated either."
+
+Root cause: after logout the browser cleared its session cookie. The WS reconnect attempt hit the alpha.6.21 gate, returned 401 at upgrade, and `ws.onclose` set the dashboard's badge to "Offline" — freezing every live tile because rendering hangs off the WS message stream. The underlying REST endpoints (`/api/status`, `/api/history`) were still public the whole time but the GUI didn't consult them while the WS was marked dead. `/api/sd/status` happens to be polled on a separate timer that doesn't depend on the WS health flag — that's why SD alone kept refreshing.
+
+#### Fix
+
+Dropped the `require_auth` call from the `HTTP_GET` upgrade branch of `ws_handler`. The frame-receive branch (called per inbound frame after upgrade) was already auth-free. Docstring rewritten to spell out the public-data design contract and capture the failure-mode story so the next migrator doesn't reintroduce the gate.
+
+Sensitive surfaces stay gated as before: `POST /api/config` (setpoint writes), `POST /api/wifi`, `POST /api/pin`, all OTA endpoints, and the log-download endpoints.
+
+#### What changed
+
+- **`firmware/src/web_server/web_server.cpp`** — dropped the `require_auth` call from the WS upgrade branch (~8 lines net); docstring rewritten.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-alpha.6.26`.
+
+#### Acceptance — hardware verified on 192.168.20.160
+
+Curl with no cookie, no Authorization header, no session of any kind:
+
+```
+GET /ws (Upgrade: websocket, Sec-WebSocket-Version: 13, valid Key)
+  → HTTP/1.1 101 Switching Protocols
+    Sec-WebSocket-Accept: OBSRQ41Cm6rKLUwPGIPxa3yEszc=
+
+  10-second window → 5 push frames received, exactly 2.000 s apart
+  (uptime_s = 166, 168, 170, 172, 174)
+```
+
+Every field in the user's "open data" list is in the push payload: `climate.temp_c`/`rh_pct`, `wind.speed_ms`/`direction_deg`, `windows.M1/M2/M3`, `mode.current`/`flags[]`, `system.eg1`, `system.time_iso`/`ts_unix`, `system.wifi_ip`/`wifi_rssi_dbm`, `system.fw_ver`, `system.unit_id`, plus `/api/history` (already public) for sensor history.
+
+#### Build delta vs alpha.6.25
+
+| Metric | alpha.6.25 | alpha.6.26 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1 307 168 B | **1 307 152 B** | **−16 B** |
+| RAM static | ~60 256 B | ~60 256 B | unchanged |
+
+bin sha256: `E2B265B18289D5F4…`
+
+First negative-delta alpha of Phase 6.N: we removed code rather than added it.
+
+#### Carried forward — manifest mismatch badge after this flash
+
+Because we only flashed firmware (no asset OTA), the device now reports `fw_ver=2.0.0-alpha.6.26` but `asset_version=2.0.0-alpha.6.25` (the active LFS manifest, written by the alpha.6.25 asset upload). The dashboard's MISMATCH badge fires — that's the **intended behaviour** of the mismatch detector (firmware OTA without paired asset OTA = stale assets). Either upload a fresh alpha.6.26 ZIP (`bin/build_release.ps1` → `POST /api/ota/assets`) to clear the badge, or accept it as cosmetic until the next alpha that actually needs asset changes. The alpha.6.25 ZIP is forward-compatible with the alpha.6.26 firmware (no API breakage).
+
+### `[2.0.0-alpha.6.25]` — 2026-05-18
+
+**Safety fix — T8 IO0 factory-reset requires a HIGH-edge gate.** Discovered during alpha.6.24 acceptance: a host that opens the USB-CDC serial port with DTR held statically high holds GPIO0 electrically LOW for the duration of the connection. T8 polled GPIO0 every 100 ms and counted consecutive LOW ticks toward the 5-second factory-reset stages — so a 5+ s static-DTR connection fired Stage 1 = `nvs_cfg_erase_namespace(NVS_NS_ACCESS)` + `pin_auth_init()`, indistinguishable from an operator pressing and holding the BOOT button.
+
+**Operator-confirmed observable:** the LCD reset-progress bar was seen growing during a PowerShell SerialPort-based 25 s serial-log capture. After ≥5 s the admin PIN was factory-reset to `12345678` (and the farmer PIN to `1234`).
+
+**Why miniterm doesn't hit it:** `pio device monitor` (miniterm) pulses DTR briefly at open and then maintains it through the dev board's RC filter, which smooths out the level change. Raw .NET `SerialPort` (used by my PowerShell serial-capture script) doesn't pulse — it just sets the signal level on `Open()`, holding IO0 LOW the entire connection.
+
+#### Fix — HIGH-edge enabling gate
+
+Added a `static bool s_io0_seen_high = false` in T8's main loop. The detector now requires GPIO0 to be observed HIGH at least once since boot before any LOW tick counts toward a reset stage. A static-LOW reading (USB-DTR artifact, wiring fault, stuck button at boot) is rejected as a passive electrical state rather than a deliberate operator gesture.
+
+```c
+static bool s_io0_seen_high = false;
+if (!io0_low) s_io0_seen_high = true;
+if (io0_low && s_io0_seen_high) { /* count toward reset */ }
+```
+
+This preserves the intended user-action semantics: the operator must release the button to "arm" the detector, then press to count. Also catches a few latent failure modes — e.g. an operator who restarts the board mid-press now gets a clean state instead of an immediate reset.
+
+#### What changed
+
+- **`firmware/src/ui_display/ui_display.cpp`** — added `s_io0_seen_high` gate in T8's IO0 polling block (~10 lines + comment block explaining the failure mode).
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-alpha.6.25`.
+
+#### Acceptance — hardware verified on 192.168.20.160
+
+Flashed via esptool — *no serial monitor opened post-flash*, deliberately, to avoid re-triggering the bug we just fixed. After 51 s uptime:
+
+```
+GET /api/status     → fw_ver=2.0.0-alpha.6.25, uptime_s=51
+GET /api/ota/status → {state:"idle", accepted:true, bank:"A"}
+```
+
+T1's 1 Hz LED blink, T11's full GUI serving, and the OTA rollback flow all preserved from alpha.6.24.
+
+#### Operator note — PINs reset to factory defaults on 192.168.20.160
+
+Because the bug triggered during the alpha.6.24 capture, the unit's admin PIN is now `12345678` (factory default; what the curl tests use) and the farmer PIN is `1234`. Any custom PIN set in NVS before that session was erased by `nvs_cfg_erase_namespace(NVS_NS_ACCESS)`. Re-set via Settings → Change PINs in the GUI, or `POST /api/pin`.
+
+#### 2.0-flavoured asset bundle landed during this cycle
+
+User reported "NVS buffer is still an option in webgui" + "I now have a mismatch warning" during alpha.6.24 acceptance. Both root-caused to the 1.20.x asset bundle being the one we'd uploaded — `firmware/data/` already had the NVS UI stripped since alpha.6.5, but no STORE-only ZIP had ever been built from those sources.
+
+Fixed inside the alpha.6.25 cycle:
+
+1. **`bin/build_release.ps1` version regex extended** to accept SemVer pre-release suffixes. The original `[0-9]+\.[0-9]+\.[0-9]+[a-z]?` only matched plain `X.Y.Z`; the new pattern also accepts `-alpha.6.25`, `-rc.1`, build-metadata suffixes, etc.
+2. **`bin/2.0.0-alpha.6.25/web-assets-2.0.0-alpha.6.25.zip` built** by the patched release script. STORE-only (verified — method=0 on the first Local File Header), 91 414 B. Contains: `index.html` 38 918 B, `app.js` 41 193 B, `style.css` 10 623 B, `manifest.json` 51 B stamped with `"asset_version":"2.0.0-alpha.6.25"`.
+3. **`firmware/data/app.js`** — dropped the stale `?src=sd&file=...` query param (firmware endpoint takes only `?file=NAME` since alpha.6.19; legacy `src=` selector retired with NVS).
+4. **Live OTA performed** — uploaded to `192.168.20.160` via `POST /api/ota/assets`. T13 mirror-step wrote `fw_ver`-stamped manifest to the active partition; `/api/status` now reports `fw_ver=asset_version=2.0.0-alpha.6.25` → mismatch warning cleared. NVS option no longer appears in the Logs-tab dropdown (it was 1.20.x bundle-specific).
+
+#### `webUiMock` synced to 2.0 firmware surface
+
+`webUiMock/mock_server.py` and `webUiMock/README.md`:
+
+- Header docstring + README endpoint table re-targeted at firmware **2.0.0-alpha.6.X** (was 1.20.0). Documents the two operator-visible retirements (NVS-ringbuffer log source + `?src=` selector) and the alpha.6.24 `/index.html` explicit-URI addition.
+- `cfg["fw_ver"]` bumped `"1.20.0"` → `"2.0.0-alpha.6.25"`.
+- `_nvs_log_entries()` synthetic-row generator deleted.
+- `/api/log/files` returns `{sd_files:[...]}` only (no `nvs_count`).
+- `/api/log/download` accepts only `?file=NAME` — the `?src=nvs` and `?src=sd` branches removed.
+- `/index.html` direct route added (Flask `@app.route("/")` + `@app.route("/index.html")` on the same handler) to match the alpha.6.24 firmware addition.
+- README endpoint table extended to cover the routes that landed across alpha.6.16-δ/ε/ζ/η: `/api/config/limits`, `/api/log/files`, `/api/log/download`, `/api/ota/status`, `/api/ota/firmware`, `/api/ota/assets`. (The mock handlers for those already existed since the 1.17.x era — README was just behind on documentation.)
+
+Mock smoke-tested: syntax clean, boots in <1.5 s, `/api/ota/status` returns 401 (no session), `/api/log/files` returns 403 (admin only), `/manifest.json` returns `"2.0.0-alpha.6.25"`, `/index.html` returns 200.
+
+#### Build delta vs alpha.6.24
+
+| Metric | alpha.6.24 | alpha.6.25 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1 307 136 B | 1 307 168 B | +32 B |
+| RAM static | ~60 256 B | ~60 256 B | unchanged |
+
+bin sha256: `DB9741BFEEEECE81…`
+
+### `[2.0.0-alpha.6.24]` — 2026-05-18
+
+**Bug-fix bundle.** Two operator-visible issues reported during alpha.6.23 acceptance — "watchdog LED isn't blinking at 1.20.3's speed" and "I do not see the website of the controller. only test data" — both root-caused and fixed in a single tag. Five adjacent latent bugs were uncovered during the second investigation and fixed in the same pass.
+
+#### 1. Heartbeat LED — back to 1 Hz
+
+`gpio_toggle(PIN_HB_LED)` had ended up inside `heartbeat_task` at the 5 s tick (= 0.1 Hz blink, 10× too slow). T1 never touched the LED at all. The 1.20.3 design puts the LED toggle in T1 at a 500 ms cadence (= 1 Hz visible blink); moved the toggle there, removed the slow duplicate. Serial confirms `T1 tick=100 at uptime=50s` → 500 ms per tick exactly.
+
+#### 2. "Only test data" — full investigation
+
+The user saw a placeholder 404 page when loading the device URL. Four chained defects, then a fifth and sixth surfaced during the fix.
+
+- **2a — `serve_lfs_file` truncation.** Single 4 KB heap buffer + `strlen()`-based response sizing. `index.html` (38 900 B) capped at 4 095 B; `app.js` likewise. Rewrote as stdio (`fopen` + `fread` + `httpd_resp_send_chunk`) against the VFS mountpoint. Streams arbitrarily large files; no NUL hazard.
+- **2b — LIB-9 mountpoint not exposed.** `select_mountpoint` was `static`, so callers couldn't compose VFS paths. Added public `littlefs_mountpoint(partition)` accessor returning `"/lfsa"` / `"/lfsb"`.
+- **2c — `s_asset_ver[16]` truncation.** Same off-by-one trap as the `fw[16]→[24]` fix in alpha.6.17.1. `"2.0.0-alpha.6.24"` (16 chars) NUL-truncated to `"2.0.0-alpha.6.2"`. Bumped to `[24]`.
+- **2d — T13 OTA-assets aborted on fresh chip.** `littlefs_mount` of the **inactive** partition failed because lfs1 was never formatted (only lfs0 was, by the alpha.2.10 tickle). T13 aborted with `"inactive LittleFS mount failed"`. Added a `littlefs_format(inactive)` fallback inside T13; the format costs ~10 s of erase but only runs on a genuine first-use of the inactive bank.
+- **2e — Placeholder text pointed at wrong endpoint.** Said "upload via `POST /api/web`" — but that endpoint is for status-website *settings*, not asset upload. Corrected to `POST /api/ota/assets` with a hint about the 1.20.x web-assets ZIP.
+- **2f — `/index.html` direct URL returned 404.** Only `/` was registered. 1.20.3's ESPAsyncWebServer had a wildcard fallback that fell through to LFS. Added `s_uri_index` pointing the same `root_handler`; now `/` and `/index.html` are byte-identical.
+
+#### What changed
+
+- **`firmware/src/watchdog/watchdog.cpp`** — `gpio_toggle(PIN_HB_LED)` added at the top of T1's tick loop + `#include "gpio_util.h"`.
+- **`firmware/src/main.cpp`** — removed `gpio_toggle(PIN_HB_LED)` from `heartbeat_task` (kept the read-back for the log line).
+- **`firmware/src/web_server/web_server.cpp`** — `serve_lfs_file` rewritten (~50 lines net); `s_uri_index` added + registered; placeholder text corrected.
+- **`firmware/src/ota_manager/ota_manager.cpp`** — T13 format-on-mount-failure for inactive partition (~25 lines).
+- **`firmware/src/data_manager/data_manager.cpp`** — `s_asset_ver[16] → [24]`.
+- **`drivers/littleFS/src/littlefs_storage.h`** + **`.cpp`** — public `littlefs_mountpoint()` accessor.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-alpha.6.24`.
+
+#### Live OTA performed during this tag
+
+Uploaded `bin/1.20.3/web-assets-1.20.3.zip` (90 775 B, STORE-only) to the running device via `POST /api/ota/assets`. T13's new format-fallback fired on the inactive partition, extracted the 4 STORE entries, mirrored to the active partition, and rebooted. The device now serves the real 1.20.x GUI:
+
+```
+GET /              → HTTP 200, 38 900 B
+GET /index.html    → HTTP 200, 38 900 B
+GET /style.css     → HTTP 200, 10 623 B
+GET /app.js        → HTTP 200, 40 810 B
+GET /manifest.json → HTTP 200,     50 B
+```
+
+#### Build delta vs alpha.6.23
+
+| Metric | alpha.6.23 | alpha.6.24 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1 305 213 B | **1 307 136 B** | +1 923 B |
+| RAM static | 60 256 B | (~same) | unchanged |
+
+bin sha256: `8620AC00EB9234FE…`
+
+#### Operator note
+
+This is the first 2.0.0-alpha where the **actual GUI is live**. Every prior alpha since 6.16 served the 404 placeholder because nothing had populated LittleFS with the real assets. The workflow going forward, until a 2.0.0-paired asset ZIP is built, is:
+
+```
+# After first flash of any 2.0.0-alpha.6.X firmware:
+curl -c jar -X POST http://device/api/login -d '{"role":"admin","pin":"12345678"}'
+curl -b jar -X POST --data-binary @bin/1.20.3/web-assets-1.20.3.zip \
+     http://device/api/ota/assets
+# Device reboots in ~1 s; GUI live ~12 s after that.
+```
+
 ### `[2.0.0-alpha.6.23]` — 2026-05-18
 
 **Phase 6.N.2 — housekeeping: `main.cpp` rename + archive deletion.** Pure file moves + three string edits; binary behaviour identical to alpha.6.22.
