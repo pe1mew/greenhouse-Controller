@@ -47,6 +47,7 @@ idf_component_register(
         "ota_manager/ota_manager.cpp"           # Phase 6.13 (2.0.0-alpha.6.13) — T13 OTA manager (firmware + assets); spawned on-demand by T11
         "network_manager/network_manager.cpp"   # Phase 6.14 (2.0.0-alpha.6.14) — T10 minimal network manager (Q5 producer, TN4 to T4); see file header for deferred features
         "status_post/status_post.cpp"           # Phase 6.15 (2.0.0-alpha.6.15) — T14 minimal status_post (periodic HTTPS POST); see file header for deferred features (T15 supervisor + gh#23 mitigations)
+        "watchdog/watchdog.cpp"                 # Phase 6.N.1 (2.0.0-alpha.6.22) — T1 minimal watchdog (TWDT subscriber + ota_mark_healthy at 30s); see file header for deferred features (NeoPixel + heap-integrity + stack-HWM)
     INCLUDE_DIRS
         "."
     REQUIRES

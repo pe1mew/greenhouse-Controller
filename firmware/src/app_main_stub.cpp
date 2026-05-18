@@ -189,6 +189,8 @@
 #include "auth/pin_auth.h"
 #include "network_manager/network_manager.h"
 #include "status_post/status_post.h"
+#include "ota_manager/ota_manager.h"  /* alpha.6.22 — ota_check_rollback at boot */
+#include "watchdog/watchdog.h"        /* alpha.6.22 — T1 task_watchdog (TWDT + ota_mark_healthy) */
 #include "types/app_types.h"  /* Q1..Q6, MX1..MX5, EG1, task_t1..15, key_event_t etc. */
 
 static const char *TAG = "GHC-STUB";
@@ -430,6 +432,41 @@ extern "C" void app_main(void)
     gpio_write(PIN_HB_LED, GPIO_LOW);
     keypad_init();
 
+    /* alpha.6.22 (Phase 6.N.1) — spawn T1 watchdog task.
+     *
+     * Spawned BEFORE the other long-running tasks so the IDF TWDT has at
+     * least one subscriber present from the very first kick window. The
+     * other tasks (T4, T6, T7, T9, …) each call esp_task_wdt_add(NULL)
+     * themselves on their first iteration; T1's job is also to call
+     * ota_mark_healthy() after OTA_HEALTHY_MS — that's the second half of
+     * the 3-fail rollback flow whose first half is ota_check_rollback()
+     * above. See watchdog.h for the deferred-features list. */
+    {
+        /* alpha.6.22 stack-overflow fix: xTaskCreatePinnedToCore's stack size
+         * is in BYTES under ESP-IDF (not words as in vanilla FreeRTOS).
+         * First attempt used 2048 → boot-loop panic with "stack overflow in
+         * task T1-WDT" — ESP_LOGI's per-call buffer + nvs_cfg_set_i32's
+         * working stack didn't fit. 4096 B mirrors T11 and gives generous
+         * headroom for the deferred features (heap-integrity sweep,
+         * stack-HWM walk). */
+        BaseType_t rc = xTaskCreatePinnedToCore(
+            task_watchdog,
+            "T1-WDT",
+            4096,                  /* stack BYTES — see comment above */
+            NULL,                  /* arg */
+            1,                     /* priority — low; work is light */
+            &task_t1,              /* handle written into global */
+            1);                    /* core 1 (APP_CPU), matches the other lights */
+        if (rc != pdPASS) {
+            ESP_LOGE(TAG, "alpha.6.22: xTaskCreate T1 failed (rc=%d)", (int)rc);
+        } else {
+            ESP_LOGI(TAG, "alpha.6.22: T1 watchdog task spawned (handle=%p); "
+                          "WDT kicks every %ums, ota_mark_healthy at %ums",
+                     (void *)task_t1, (unsigned)T1_TICK_MS,
+                     (unsigned)OTA_HEALTHY_MS);
+        }
+    }
+
     /* alpha.6.4 — spawn T7 keypad-scan task. The task scans the 4×4 membrane
      * matrix every 20 ms via LIB-5, debounces, generates key-repeat events
      * on 500 ms hold, and posts key_event_t to Q2. The heartbeat task
@@ -503,6 +540,25 @@ extern "C" void app_main(void)
         ESP_LOGI(TAG, "NVS post-init: fw_version is now \"%s\" (status=%d)",
                  now_fw, (int)st);
     }
+
+    /* alpha.6.22 (Phase 6.N.1) — OTA rollback gate.
+     *
+     * Increments the NVS `system/ota_fail_cnt` counter. If it reaches 3,
+     * calls esp_ota_mark_app_invalid_rollback_and_reboot() which switches
+     * the boot partition back to the previous bank and resets the chip.
+     *
+     * The counter is reset to 0 by T1 (task_watchdog) calling
+     * ota_mark_healthy() after OTA_HEALTHY_MS (30 s) of stable operation —
+     * so a freshly OTA'd image that boots OK three times in a row without
+     * surviving long enough to call ota_mark_healthy is treated as a bad
+     * image and rolled back.
+     *
+     * Must happen AFTER nvs_cfg_init (it uses the NVS_NS_SYSTEM namespace)
+     * and BEFORE any task that depends on the running partition / OTA
+     * bank — i.e. anything that mounts LittleFS. We're inside that
+     * window now. */
+    ota_check_rollback();
+    ESP_LOGI(TAG, "alpha.6.22: ota_check_rollback() completed — boot accepted");
 
     /* alpha.6.12.1 — pin_auth one-time init. Production 1.20.3's setup()
      * calls pin_auth_init() during boot; alpha.6.12 missed this call, so
