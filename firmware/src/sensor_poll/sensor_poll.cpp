@@ -39,7 +39,11 @@
  * @author  Greenhouse Controller project
  */
 
-#include <Arduino.h>
+/* alpha.6.8 — dropped <Arduino.h>. FreeRTOS handles (Q6, EG1, task primitives)
+ * arrive via "../types/app_types.h" which includes freertos/{FreeRTOS,queue,
+ * task,event_groups,semphr}.h. <math.h>, <string.h>, <time.h>, and <esp_log.h>
+ * are explicit below — they were transitively available via Arduino.h pre-port
+ * but the port now spells them out so we don't depend on the wrapper. */
 #include <esp_log.h>
 
 #include "sensor_poll.h"

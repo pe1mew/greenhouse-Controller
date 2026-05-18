@@ -28,6 +28,57 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-alpha.6.8]` — 2026-05-18
+
+**Phase 6.8 — sensor_poll (T5) activation.** Modbus RTU master goes live: polls FG6485A (T/RH) at slave 1 and S200 (wind speed/direction) at slave 44, maintains sliding-window arithmetic averages (T/RH/wind speed) plus a unit-vector atan2-based circular mean for wind direction, pushes a `sensor_reading_t` onto Q6 (depth-1, xQueueOverwrite — latest wins). Edge-triggered fault detection on EG1: `EG1_BIT_SENSOR_FAULT_T` for the T/RH bus, `EG1_BIT_SENSOR_FAULT_W` for the wind bus, both with `LOG_ALARM` events posted only at fault onset and clearance.
+
+#### What changed
+
+- **`firmware/src/sensor_poll/sensor_poll.cpp`** — dropped `#include <Arduino.h>`. The FreeRTOS handles (Q6, EG1, vTaskDelay, xQueueOverwrite, xEventGroup*) all arrive via `"../types/app_types.h"` which transitively includes `freertos/{FreeRTOS,queue,task,event_groups,semphr}.h`. `<esp_log.h>`, `<math.h>`, `<string.h>`, `<time.h>` were already explicit at the top of the file — no further explicit-include additions were needed. **Zero functional changes** in T5 itself; the file was already IDF-shaped beyond the one Arduino.h line.
+- **`firmware/src/app_main_stub.cpp`** — three coordinated edits:
+  - `#include "sensor_poll/sensor_poll.h"` added.
+  - Spawn T5 after T9 with `xTaskCreatePinnedToCore(task_sensor_poll, "T5-sensor", 8192, NULL, 5, &task_t5, tskNO_AFFINITY)`. Priority 5 matches T4 (T4 is T5's consumer; they alternate naturally on Q6).
+  - **Removed** the heartbeat task's `fg6485a_read_measurements(1, ...)` and `s200_read_measurements(44, ...)` calls plus their references in the heartbeat log format string. T5 is now the sole owner of the Modbus RTU bus — dual pollers on a half-duplex RS-485 line would scramble responses. The canonical readings now surface in T5's own log lines (`[T5_SEN] T=N°C RH=N% ws=N.N m/s wd=N° | avg T=N RH=N ws=N.N wd=N° [win T=W RH=W W=W]`) instead. The heartbeat log shrinks to `heartbeat N | free=X largest=Y psram_free=Z uptime=Ws | hb_led=A keys=B | rtc=R YYYY-MM-DD HH:MM:SS`.
+- **`firmware/src/CMakeLists.txt`** — added `sensor_poll/sensor_poll.cpp` to SRCS.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-alpha.6.8`.
+
+The `modbus_init()` call site is **kept in BOTH** places. The driver's `modbus_init()` does an `uart_is_driver_installed → uart_driver_delete` guard before installing fresh (drivers/modBus/src/modbus_rtu.cpp:187-189), so double-call is safe by design. The app_main_stub call site (Phase 2.6 tickle) keeps the bus ready immediately at boot; T5's own `modbus_init()` on task entry reconfirms the driver state after the 8 s boot-grace delay. No race because T5 doesn't issue Modbus traffic until at least `8 s + poll_interval_s` (default 38 s) after spawn.
+
+#### Build delta vs alpha.6.7.1
+
+| Metric | alpha.6.7.1 | alpha.6.8 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1,224,797 B | **1,229,421 B** | +4,624 B |
+| Flash usage % | 58.4 % | 58.6 % | +0.2 pp |
+| RAM static | 51,992 B | **59,240 B** | **+7,248 B** |
+
+bin sha256: `028A7E5EE6901C8F1559DF8CAB5E090DA6CBAE5B51C9CE794A28F618AE43F89C`
+
+The **+7,248 B RAM static** is sensor_poll.cpp's BSS: 3 × `avg_ctx_t` (T, RH, wind speed — each holds `float buf[360]` + 8 B of head/count/sum = ~1,448 B; 3 of these = ~4.3 KB) + 1 × `dir_avg_ctx_t` (sin + cos buffers + state = ~2.9 KB). Padding/alignment shrinks the theoretical 7.2 KB to a slightly tighter actual. T5's runtime task stack (8 KB) lives on the heap; the +7 KB above is BSS only.
+
+Runtime heap impact at heartbeat baseline expected: ~−8 KB free vs alpha.6.7.1 (T5 task stack 8 KB + Modbus driver overhead). Heartbeat baseline ~196,000 free (was ~204,000 at alpha.6.7.1).
+
+#### Acceptance bar for alpha.6.8
+
+1. ✅ Build succeeds (no Arduino-transitive trap surfaced — the explicit includes already in sensor_poll.cpp covered everything Arduino.h was providing).
+2. Flash to Unit 2; boot reason `ESP_RST_POWERON`.
+3. Spawn banner: `alpha.6.8: T5 sensor_poll task spawned (handle=0x...)`.
+4. T5 boot-grace banner ~8 s after spawn: `[T5_SEN] [T5] task alive — boot grace expired` followed by `[T5_SEN] [T5] Modbus RTU initialised (9600 baud) — init complete`.
+5. **First poll log ~38 s after spawn**: `[T5] iter 1 — woke from 30 s delay` followed by `polling FG6485A`, `polling S200`, then a `T=N°C RH=N% ws=N.N m/s wd=N° | avg T=N RH=N ws=N.N wd=N° [win T=W RH=W W=W]` line.
+   - Initial poll window is **1 sample wide** (`win T=1 RH=1 W=1`) — sliding average hasn't warmed yet. Window widens as `cfg.avg_win_t × 60 / poll_interval_s` over subsequent polls until it hits `SP_AVG_DEPTH=360`.
+   - T/RH should match the 1.20.3 production values from the same sensors: ~22-25 °C ambient, ~50-90 % RH depending on ventilation state.
+   - Wind speed should match S200 readings — ~1-3 m/s indoor air movement is normal; outdoor mounting will show higher and noisier.
+6. **Heartbeat no longer shows fg6485a/s200 fields** — confirms the heartbeat-side Modbus polls are gone.
+7. **Q6 producer→consumer**: T4 was already activated alpha.6.7 with the Q6 receive logic in its main loop. T4's log lines should show that it's now receiving readings (`T4: received sensor reading` or equivalent — check existing T4 code for the actual log format). The data_manager ring buffer (DM_RING_DEPTH=360) starts filling.
+8. **Edge-case faults** (deferrable to a soak test): if a sensor disconnects mid-run, expect `[T5] T/RH sensor FAULT — two consecutive read failures` (or `Wind sensor FAULT`), `EG1_BIT_SENSOR_FAULT_T/W` set, one `LOG_ALARM` posted. On reconnect, exactly one `fault cleared` log line + one clearance `LOG_ALARM`.
+9. T9 keeps draining Q3 — SD CSV continues to grow with one synthetic event per heartbeat plus any LOG_ALARM fault events.
+10. All earlier-phase tickles regression-clean.
+11. Run ≥ 10 min; no resets; no stack-overflow on T5.
+
+#### Watch items carried forward
+
+- **dm-snapshot `unix_ts` staleness** (carried from alpha.6.7 acceptance review): the snapshot field is captured at T4 boot and not refreshed per call. T5 deliberately uses `(uint32_t)time(NULL)` (POSIX system clock) for its `reading.timestamp` instead of `dm_get_unix_time()` to avoid this — sensor_poll.cpp:476-480 documents the reasoning inline. So T5 sidesteps the issue; T2/T6/T13 activations will need to make the same choice or T4's snapshot semantics will need a fix.
+
 ### `[2.0.0-alpha.6.7.1]` — 2026-05-18
 
 **Phase 2.11 SD test-file probe retirement.** Operator SD-card inspection of the dev unit revealed `/phase_2_11_test.csv` had been growing by one identical line (`boot,2026-05-17,LIB-SD ESP-IDF port works (LFN OK)`) per boot since alpha.2.11.1 — leftover scaffolding from the LIB-8 write-path acceptance test. T9 (alpha.6.6) now exercises the same FATFS write path with real RTC-stamped data into the daily CSV, making the probe fully redundant. Patch removes the probe; the existing dev-card file must be deleted by hand.
