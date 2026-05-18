@@ -32,6 +32,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>   /* time_t, time() — Phase 6.2 sunrise tickle */
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -174,6 +175,7 @@
 #include "https_tickle.h"
 #include "web_server_tickle.h"
 #include "system_globals.h"
+#include "data_manager/sunrise.h"
 
 static const char *TAG = "GHC-STUB";
 
@@ -761,6 +763,53 @@ extern "C" void app_main(void)
                                                        "?";
         ESP_LOGI(TAG, "wifi_tickle_run() returned %d (%s)", (int)wifi_st, wifi_msg);
         wifi_up = (wifi_st == WIFI_TICKLE_OK || wifi_st == WIFI_TICKLE_OK_NO_NTP);
+    }
+
+    /* alpha.6.2 — Phase 6.2 first firmware/src/ subsystem activation: sunrise.cpp.
+     *
+     * sunrise.cpp implements the NOAA General Solar Position Equations
+     * (±2 min accuracy for latitudes between 60°S and 60°N). Pure math —
+     * no FreeRTOS, no drivers, no Arduino dependencies. The lowest-risk
+     * first activation of a firmware/src/ file: this validates that
+     * adding a file to the build pipeline works end-to-end before we
+     * tackle the heavier task .cpp activations in Phase 6.3+.
+     *
+     * Tickle inputs:
+     *   - lat/lon: Amsterdam-area Dutch coordinates (52.37°N, 4.90°E),
+     *     close enough to Unit 2's actual location for a representative
+     *     sunrise/sunset computation. Phase-6.3 (data_manager) will read
+     *     the real lat/lon from NVS.
+     *   - unix_ts: time(NULL) after SNTP. If SNTP failed, the date will
+     *     be wrong but the math still works — the tickle just reports
+     *     sunrise for whatever date the libc time-keeper believes.
+     *
+     * Result interpretation:
+     *   - rise_min / set_min are UTC minutes from midnight (0..1439).
+     *   - To convert to UTC HH:MM: hour = m / 60; minute = m % 60.
+     *   - In CEST (UTC+2 in May), sunrise in Amsterdam is ~03:55 UTC
+     *     = 05:55 local; sunset is ~19:30 UTC = 21:30 local. */
+    if (wifi_up) {
+        time_t now = time(NULL);
+        int32_t rise_m = 0;
+        int32_t set_m  = 0;
+        sunrise_result_t s_st = sunrise_calc((int32_t)now, 52.37f, 4.90f,
+                                              &rise_m, &set_m);
+        bool is_day = sunrise_is_daytime((int32_t)now, 52.37f, 4.90f);
+
+        const char *s_msg =
+            (s_st == SUNRISE_OK)          ? "OK" :
+            (s_st == SUNRISE_POLAR_DAY)   ? "POLAR_DAY (sun never sets)" :
+            (s_st == SUNRISE_POLAR_NIGHT) ? "POLAR_NIGHT (sun never rises)" :
+            (s_st == SUNRISE_ERR_PARAM)   ? "ERR_PARAM" : "?";
+        ESP_LOGI(TAG,
+                 "alpha.6.2 sunrise tickle: lat=52.37 lon=4.90 unix=%ld -> %s; "
+                 "rise=%02d:%02d UTC set=%02d:%02d UTC is_daytime=%s",
+                 (long)now, s_msg,
+                 (int)(rise_m / 60), (int)(rise_m % 60),
+                 (int)(set_m  / 60), (int)(set_m  % 60),
+                 is_day ? "true" : "false");
+    } else {
+        ESP_LOGW(TAG, "alpha.6.2 sunrise tickle: skipped — no SNTP-synced time");
     }
 
     /* alpha.4 — Phase 4 HTTPS client tickle (gh#23 payoff).
