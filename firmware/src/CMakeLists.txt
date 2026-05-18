@@ -38,6 +38,7 @@ idf_component_register(
         "relay_controller/relay_controller.cpp" # Phase 6.9 (2.0.0-alpha.6.9) — T2 relay controller (3 channels × OPEN/CLOSE + GPIO42 alarm ISR)
         "sensor_poll/sensor_poll.cpp"           # Phase 6.8 (2.0.0-alpha.6.8) — T5 sensor poll task (Modbus FG6485A+S200 → Q6)
         "climate_control/climate_control.cpp"   # Phase 6.10 (2.0.0-alpha.6.10) — T6 climate control (TN2 reader, Q1 producer, graduated ventilation)
+        "safety_monitor/safety_monitor.cpp"     # Phase 6.11 (2.0.0-alpha.6.11) — T3 safety monitor (TN1 reader, wind override, Q1 producer)
     INCLUDE_DIRS
         "."
     REQUIRES
