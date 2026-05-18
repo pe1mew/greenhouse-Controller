@@ -10,7 +10,13 @@
 #                   0xE000 regardless of the partition table.  This partition
 #                   MUST stay at 0xE000 or every "pio upload" will corrupt the
 #                   NVS partition (see previous layout bug).
-#   0x10000–0x1FFFF NVS   — config namespaces + event-log ring buffer (64 KB)
+#   0x10000–0x1FFFF NVS   — config namespaces (64 KB)
+#                   (was: "config namespaces + event-log ring buffer". The
+#                   NVS-backed event-log ring (gh#22) was retired in
+#                   2.0.0-alpha.6.5 as redundant with T9's SD CSV logging.
+#                   The partition stays the same size — config namespaces
+#                   alone use a tiny fraction; the freed pages are just
+#                   unused.)
 #   0x20000–0x21FFFF  app0 / Bank A — firmware image slot A (2 MB)
 #   0x220000–0x41FFFF app1 / Bank B — firmware image slot B (2 MB)
 #   0x420000–0x51FFFF lfs0 / LittleFS A — web assets paired with Bank A (1 MB)

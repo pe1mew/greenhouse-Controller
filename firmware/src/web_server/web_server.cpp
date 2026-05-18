@@ -1012,7 +1012,10 @@ bad:
         if (req_role(req) != SESSION_ADMIN) {
             req->send(403, "application/json", "{\"ok\":false}"); return;
         }
-        uint32_t nvs_cnt = nvs_log_count();
+        /* 2.0.0-alpha.6.5: `nvs_count` field removed from the response.
+         * The NVS-ringbuffer log source was retired; SD is now the only
+         * source. The web GUI's log tab was updated in alpha.6.5 (web
+         * assets sweep) to drop the NVS-count display. */
 
         /* Collect SD CSV filenames (comma-separated) */
         const size_t LIST_LEN = 512u;
@@ -1056,8 +1059,7 @@ bad:
         char *out = (char *)ps_malloc(OUT_LEN);
         if (!out) { free(list_buf); req->send(500); return; }
 
-        int pos = snprintf(out, OUT_LEN, "{\"nvs_count\":%lu,\"sd_files\":[",
-                           (unsigned long)nvs_cnt);
+        int pos = snprintf(out, OUT_LEN, "{\"sd_files\":[");
         for (int i = 0; i < n_names && (size_t)pos < OUT_LEN - 32u; i++) {
             pos += snprintf(out + pos, OUT_LEN - (size_t)pos,
                             "%s\"%s\"", i ? "," : "", names[i]);
@@ -1075,66 +1077,17 @@ bad:
             req->send(403); return;
         }
 
-        static const char * const TYPE_NAMES[] = {
-            "SENSOR","RELAY","MODE","SETPT","SESSION","ALARM","SYSTEM"
-        };
-        static const char * const INIT_NAMES[] = {
-            "SYS","FARMER","ADMIN","MQTT","WEB"
-        };
+        /* 2.0.0-alpha.6.5: the `src=nvs` branch was removed alongside the
+         * NVS-ringbuffer retirement. Only `src=sd&file=<name>` remains. The
+         * TYPE_NAMES/INIT_NAMES/ISO-8601 formatter blocks that lived here
+         * (used only for the NVS-CSV export) went with it. Default src is
+         * now `sd` — callers without an explicit `src=sd` still need to
+         * pass the `file` param. */
 
         const char *src = req->hasParam("src")
-                          ? req->getParam("src")->value().c_str() : "nvs";
+                          ? req->getParam("src")->value().c_str() : "sd";
 
-        if (strcmp(src, "nvs") == 0) {
-            /* Export NVS ring buffer as CSV */
-            uint32_t cnt = nvs_log_count();
-            /* Each line: "YYYY-MM-DDTHH:MM:SS,SENSOR,FARMER,255,255,-32768,-32768\n"
-             * is ≤ 56 chars; 80 bytes per entry gives comfortable headroom. */
-            size_t csv_len = (size_t)(cnt + 2u) * 80u + 64u;
-            char *csv = (char *)ps_malloc(csv_len);
-            if (!csv) { req->send(500); return; }
-
-            int pos = snprintf(csv, csv_len,
-                "timestamp,type,initiator,ch,param,value_a,value_b\n");
-
-            if (cnt > 0u) {
-                log_entry_t *entries =
-                    (log_entry_t *)ps_malloc(cnt * sizeof(log_entry_t));
-                if (entries) {
-                    uint32_t got = 0;
-                    nvs_log_read(0, entries, cnt, &got);
-                    for (uint32_t i = 0; i < got; i++) {
-                        if ((size_t)pos >= csv_len - 80u) break;
-                        const log_entry_t &e = entries[i];
-                        const char *tname = (e.event_type < 7u)
-                                            ? TYPE_NAMES[e.event_type] : "?";
-                        const char *iname = (e.initiator  < 5u)
-                                            ? INIT_NAMES[e.initiator]  : "?";
-                        /* ISO 8601 UTC timestamp */
-                        time_t ts = (time_t)e.timestamp;
-                        struct tm tm_utc;
-                        gmtime_r(&ts, &tm_utc);
-                        char ts_str[20];
-                        strftime(ts_str, sizeof(ts_str),
-                                 "%Y-%m-%dT%H:%M:%S", &tm_utc);
-                        pos += snprintf(csv + pos, csv_len - (size_t)pos,
-                            "%s,%s,%s,%u,%u,%d,%d\n",
-                            ts_str, tname, iname,
-                            (unsigned)e.channel, (unsigned)e.param_id,
-                            (int)e.value_a, (int)e.value_b);
-                    }
-                    free(entries);
-                }
-            }
-
-            AsyncWebServerResponse *resp =
-                req->beginResponse(200, "text/csv", csv);
-            resp->addHeader("Content-Disposition",
-                            "attachment; filename=\"nvs_log.csv\"");
-            req->send(resp);
-            free(csv);
-
-        } else if (strcmp(src, "sd") == 0) {
+        if (strcmp(src, "sd") == 0) {
             if (!req->hasParam("file")) { req->send(400); return; }
             const String &fname_param = req->getParam("file")->value();
 

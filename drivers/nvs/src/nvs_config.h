@@ -40,7 +40,9 @@
 #define NVS_NS_WIFI     "wifi"
 #define NVS_NS_MQTT     "mqtt"
 #define NVS_NS_SYSTEM   "system"
-#define NVS_NS_LOG      "log"
+/* NVS_NS_LOG removed in 2.0.0-alpha.6.5 — the NVS event-log ringbuffer
+ * (gh#22) was retired as redundant with the SD/CSV logging in T9.
+ * See changelog [2.0.0-alpha.6.5] and design/tasks.md T9. */
 
 /* ---------------------------------------------------------------------------
  * Schema versioning
@@ -69,12 +71,9 @@
 /** @brief NVS key used to store the running firmware version (in NVS_NS_SYSTEM). */
 #define NVS_KEY_FW_VERSION  "fw_version"
 
-/* ---------------------------------------------------------------------------
- * Log ring-buffer capacity
- * --------------------------------------------------------------------------- */
-#ifndef CONFIG_NVS_LOG_CAPACITY
-  #define CONFIG_NVS_LOG_CAPACITY  1000
-#endif
+/* CONFIG_NVS_LOG_CAPACITY default removed in 2.0.0-alpha.6.5 along with
+ * the NVS event-log ringbuffer (gh#22). The build flag is also removed
+ * from firmware/platformio.ini. */
 
 /* ---------------------------------------------------------------------------
  * Status codes
@@ -204,25 +203,17 @@ nvs_cfg_status_t nvs_cfg_get_str_or_default(const char *ns, const char *key,
                                               char *buf, size_t buf_len);
 
 /* ---------------------------------------------------------------------------
- * Ring-buffer event log  (NVS_NS_LOG namespace)
+ * Ring-buffer event log — REMOVED in 2.0.0-alpha.6.5
  *
- * Fixed-capacity FIFO.  Oldest entries are overwritten when the ring is full.
- * Keys used internally:
- *   "head"  (i32) — next write slot, 0-based, wraps at CONFIG_NVS_LOG_CAPACITY
- *   "count" (i32) — number of valid entries (≤ capacity)
- *   "eNNNN" (blob)— entry at slot NNNN (zero-padded 4-digit index)
+ * The NVS-backed event-log ringbuffer (gh#22, originally added for
+ * boot-survival event recording when SD might fail) was retired during
+ * the v2.0.0 migration. SD-based logging in T9 (event_logger) is the
+ * single source of truth; the additional NVS ring served no purpose
+ * that wasn't already covered by SD persistence + the production-
+ * proven NVS-fallback policy that has been removed from T9 as part
+ * of the same design change.
+ *
+ * Build-flag CONFIG_NVS_LOG_CAPACITY (platformio.ini) and the doc
+ * mentions in design/tasks.md / TSDS were removed in the same alpha
+ * (and in alpha.6.5.1 documentation follow-up).
  * --------------------------------------------------------------------------- */
-
-/** @brief Append one entry of @p entry_size bytes. Overwrites oldest on wrap. */
-nvs_cfg_status_t nvs_log_append(const void *entry, size_t entry_size);
-
-/**
- * @brief Read up to @p count entries starting at logical @p offset.
- *        offset=0 is the oldest surviving entry.
- * @param[out] count_out  Actual number of entries read (≤ count).
- */
-nvs_cfg_status_t nvs_log_read(uint32_t offset, void *buf,
-                                uint32_t count, uint32_t *count_out);
-
-/** @brief Return the number of valid log entries currently stored. */
-uint32_t nvs_log_count(void);

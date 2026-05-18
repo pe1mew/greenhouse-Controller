@@ -99,73 +99,10 @@ void test_erase_namespace(void)
                           nvs_cfg_get_i32(NVS_NS_CLIMATE, "t_min", &val));
 }
 
-/* UT-NVS-008 — nvs_log_append increases nvs_log_count */
-void test_log_append_increments_count(void)
-{
-    nvs_cfg_init();
-    const uint8_t entry[] = {1, 2, 3};
-    nvs_log_append(entry, sizeof(entry));
-    TEST_ASSERT_EQUAL_UINT32(1, nvs_log_count());
-    nvs_log_append(entry, sizeof(entry));
-    TEST_ASSERT_EQUAL_UINT32(2, nvs_log_count());
-}
-
-/* UT-NVS-009 — nvs_log_read retrieves the appended entry */
-void test_log_read_retrieves_entry(void)
-{
-    nvs_cfg_init();
-    const uint8_t entry[] = {0xAA, 0xBB, 0xCC};
-    nvs_log_append(entry, sizeof(entry));
-    uint8_t  buf[3]     = {0};
-    uint32_t count_out  = 0;
-    nvs_log_read(0, buf, 1, &count_out);
-    TEST_ASSERT_EQUAL_UINT32(1, count_out);
-    TEST_ASSERT_EQUAL_MEMORY(entry, buf, sizeof(entry));
-}
-
-/* UT-NVS-010 — ring wraps at capacity: oldest entry overwritten */
-void test_log_ring_wrap(void)
-{
-    nvs_cfg_init();
-    /* Use a tiny capacity override by re-defining the constant isn't possible
-     * at runtime — use CONFIG_NVS_LOG_CAPACITY directly.
-     * Strategy: append capacity+1 entries; verify count == capacity. */
-    const uint8_t entry[] = {0x01};
-    for (int i = 0; i <= (int)CONFIG_NVS_LOG_CAPACITY; i++) {
-        nvs_log_append(entry, sizeof(entry));
-    }
-    TEST_ASSERT_EQUAL_UINT32((uint32_t)CONFIG_NVS_LOG_CAPACITY, nvs_log_count());
-}
-
-/* UT-NVS-011 — after wrap, offset=0 reads oldest surviving entry */
-void test_log_read_oldest_after_wrap(void)
-{
-    nvs_cfg_init();
-    /* Write capacity+5 entries with distinguishable payloads */
-    for (int i = 0; i < (int)CONFIG_NVS_LOG_CAPACITY + 5; i++) {
-        uint8_t e = (uint8_t)(i & 0xFF);
-        nvs_log_append(&e, 1);
-    }
-    /* Oldest surviving entry payload = 5 (entries 0..4 were overwritten) */
-    uint8_t  out       = 0;
-    uint32_t count_out = 0;
-    nvs_log_read(0, &out, 1, &count_out);
-    TEST_ASSERT_EQUAL_UINT32(1, count_out);
-    TEST_ASSERT_EQUAL_UINT8(5, out);
-}
-
-/* UT-NVS-012 — read count > available clamps to available */
-void test_log_read_clamps_to_available(void)
-{
-    nvs_cfg_init();
-    const uint8_t e = 0x55;
-    nvs_log_append(&e, 1);
-    nvs_log_append(&e, 1);   /* 2 entries */
-    uint8_t  buf[10]   = {0};
-    uint32_t count_out = 0;
-    nvs_log_read(0, buf, 10, &count_out);  /* request more than available */
-    TEST_ASSERT_LESS_OR_EQUAL(2, (int)count_out);
-}
+/* UT-NVS-008..012 (NVS event-log ringbuffer tests) — REMOVED in 2.0.0-alpha.6.5
+ * along with the underlying nvs_log_append / nvs_log_read / nvs_log_count
+ * functions. See nvs_config.{h,cpp} for the design-change rationale.
+ * The test runner below also drops the matching RUN_TEST() lines. */
 
 /* UT-NVS-013 — key longer than 15 chars: consistent behaviour (reject) */
 void test_long_key_consistent(void)
@@ -363,11 +300,8 @@ int main(void)
     RUN_TEST(test_get_str_truncates);
     RUN_TEST(test_set_get_blob);
     RUN_TEST(test_erase_namespace);
-    RUN_TEST(test_log_append_increments_count);
-    RUN_TEST(test_log_read_retrieves_entry);
-    RUN_TEST(test_log_ring_wrap);
-    RUN_TEST(test_log_read_oldest_after_wrap);
-    RUN_TEST(test_log_read_clamps_to_available);
+    /* RUN_TEST(test_log_*) — 5 ringbuffer tests removed in alpha.6.5
+     * along with the underlying nvs_log_* API. */
     RUN_TEST(test_long_key_consistent);
 
     /* Schema versioning */

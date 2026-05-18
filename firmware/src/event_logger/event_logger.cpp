@@ -549,11 +549,16 @@ static void write_to_sd(const log_event_t *evt)
 }
 
 /**
- * @brief Persist one event to NVS and (if available) the SD card.
+ * @brief Persist one event to the SD card (if available).
+ *
+ * 2.0.0-alpha.6.5: the NVS-backed event-log ringbuffer (gh#22) was retired
+ * as redundant with the SD CSV. The `nvs_log_append(evt, sizeof(log_event_t))`
+ * call that lived here is gone. Events are now SD-only; if SD is absent or
+ * the mount has failed, the event is dropped (and counted via the existing
+ * `s_dropped` accumulator surfaced as a LOG_SYSTEM post on the next drain).
  */
 static void process_event(const log_event_t *evt)
 {
-    nvs_log_append(evt, sizeof(log_event_t));
     if (s_sd_ok) {
         write_to_sd(evt);
     }

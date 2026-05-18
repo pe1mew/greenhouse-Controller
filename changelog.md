@@ -28,7 +28,67 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
-### `[2.0.0-alpha.6.4]` — 2026-05-18
+### `[2.0.0-alpha.6.5]` — 2026-05-18 (design change — code-only sweep)
+
+**Phase 6.5 — DESIGN CHANGE: retire the NVS event-log ringbuffer (gh#22).** The NVS-backed event-log ring was introduced in 1.x for boot-survival event recording when SD might fail. In practice SD has been reliable enough on production units that the NVS ring served no purpose that wasn't already covered by SD persistence — and its presence complicated T9's logic with two parallel persistence paths, a "fallback" mode, drop-counter bookkeeping, and a separate `/api/log/download?src=nvs` web endpoint with its own CSV-export code. Retiring it simplifies T9 to a single SD-CSV persistence path, simplifies the web UI to "one log-source dropdown, SD files only", and reclaims ~600 B of code + a now-unused chunk of NVS namespace.
+
+Code-only sweep in this alpha. The matching documentation updates (FDS, TSDS, tasks.md, design narratives, manuals, test plans) lift into **alpha.6.5.1+** as a separate paper sweep — the binary is identical to alpha.6.4 (the NVS-ring code was already link-time-dead because nobody in the active build called it), so this alpha doesn't need a flash; doc updates are pure git-history hygiene.
+
+#### What changed (code)
+
+**Core API — drivers/nvs (LIB-7):**
+- **`drivers/nvs/src/nvs_config.h`**:
+  - Removed `#define NVS_NS_LOG "log"` (replaced with a removal-pointer comment).
+  - Removed the `Ring-buffer event log` docblock + the 3 function declarations (`nvs_log_append`, `nvs_log_read`, `nvs_log_count`). Comment marker left in place pointing at this changelog entry.
+  - Removed the `#ifndef CONFIG_NVS_LOG_CAPACITY / #define ... 1000 / #endif` default-capacity block (now unused).
+- **`drivers/nvs/src/nvs_config.cpp`**:
+  - Removed `log_slot_key()` helper + the 3 function bodies.
+  - Removed `#include <inttypes.h>` (was only used by `PRIu32` in the removed helper).
+- **`drivers/nvs/test/test_nvs_config.cpp`**:
+  - Removed 5 unit tests (UT-NVS-008..012 — append/read/wrap/oldest-after-wrap/clamp).
+  - Removed matching `RUN_TEST()` lines in the test runner.
+- **`drivers/nvs/src/main.cpp`**: removed HW-NVS-006..008 hardware-test code (ring-append + read + capacity-cap).
+
+**Callers — firmware/src/:**
+- **`firmware/src/event_logger/event_logger.cpp`**: removed the `nvs_log_append(evt, sizeof(log_event_t))` call from `process_event()`. Events are now SD-only; if SD is absent, the existing `s_dropped` counter accumulates and is surfaced as a `LOG_SYSTEM value_a=2` event on the next drain (existing path, unchanged). The NVS-only-fallback mode is gone.
+- **`firmware/src/event_logger/event_logger.h`**: updated the T9 task docblock to drop the NVS-mirror description.
+
+**Web GUI:**
+- **`firmware/src/web_server/web_server.cpp`**:
+  - `/api/log/files` no longer returns `nvs_count` in its JSON response. Body is now just `{"sd_files":[...]}`.
+  - `/api/log/download` lost the entire `?src=nvs` branch + the TYPE_NAMES/INIT_NAMES tables + the ISO-8601 formatter used only for NVS-CSV export. Default `src` is now `sd` (was `nvs`). Calls without an explicit `?file=` parameter return 400.
+- **`firmware/data/app.js`**:
+  - `loadLogFiles()` no longer adds an "NVS buffer (N entries)" option to the log-source dropdown. If `sd_files` is empty (no card / no CSVs), the dropdown shows a single disabled `— no SD log files —` placeholder.
+  - `downloadLog()` removed the `val === 'nvs'` branch.
+- **`firmware/data/index.html`**: updated the `Log source` field's tooltip to describe SD-only behaviour.
+
+**Build / partitions:**
+- **`firmware/platformio.ini`**: removed the `-DCONFIG_NVS_LOG_CAPACITY=250` build flag. Replaced with a removal-pointer comment.
+- **`firmware/partitions.csv`**: updated the comment for the nvs partition to drop "event-log ring buffer" from its description (the partition stays the same size — config namespaces use a tiny fraction; the freed pages are just unused).
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` stamped `2.0.0-alpha.6.5`.
+
+#### Build delta vs alpha.6.4
+
+| Metric | alpha.6.4 | alpha.6.5 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1,205,309 B | **1,205,309 B** | **0 B** |
+| Flash usage % | 57.5 % | 57.5 % | 0 |
+| RAM static | 42,784 B | 42,784 B | 0 |
+
+bin sha256: `D615FBA9C6D23BBA5169184A098D4E98F97F405E548C051FB25E62B58D909FF8`
+
+**Binary is identical to alpha.6.4 by size — but a different SHA256** because the removed nvs_log_* functions had been getting link-time dead-stripped (nobody in the active firmware/src/ files calls them; event_logger/web_server are still dormant). Removing them from source shrinks the .o files but the .bin section sizes wrap to the same boundaries. The bin diff is purely in the .text section ordering. No behavioural change.
+
+NVS data on units upgraded from 1.20.x: the existing `log/head`, `log/count`, `log/eNNNN` blob entries in the `log` namespace persist as orphan data. They are harmless (no code reads them). On a long timescale they'll be naturally evicted as other namespaces consume NVS pages.
+
+#### Acceptance bar for alpha.6.5
+
+1. ✅ Build succeeds (after both passes — initial removal + the secondary CONFIG_NVS_LOG_CAPACITY cleanup).
+2. **No flash needed** — alpha.6.5 binary's runtime behaviour is identical to alpha.6.4. The user-visible signal is "Phase 6.6 event_logger activation no longer has to wrestle with the NVS-fallback path."
+3. **No grep matches remain in active .cpp/.h files** for `nvs_log_append|nvs_log_read|nvs_log_count|NVS_NS_LOG|CONFIG_NVS_LOG_CAPACITY` (post-cleanup verification).
+4. **Documentation sweep deferred to alpha.6.5.1+** covers: design/tasks.md (T9 description), design/technicalSoftwareDesignSpecification.md, design/technicalDesignSpecification.md, design/logAnalysis.md, design/riskAssessment.md, design/implementationStatusPages.md, firmware/firmwareImplementationPlan.md, firmware/firmwareImplementationResults.md, firmware/src/README.md, manual/beheerderHandleiding.md (operator-facing), log/README.md + log/logparser.md (CSV format remains; just remove the "NVS-CSV alongside SD-CSV" passages), test/testPlan.md + test/softwareTestPlan.md + test/softwareTestResult.md (UT-NVS-008..012 + HW-NVS-006..008 cases gone).
+
+
 
 **Phase 6.4 — First real FreeRTOS task activation: `keypad_scan` (T7).** Previous activations (sunrise, system_id) were pure helper functions called from `app_main`. T7 is a long-running task created via `xTaskCreatePinnedToCore`, scanning the 4×4 membrane keypad every 20 ms and producing key events onto Q2 — the first real producer/consumer pattern in the IDF build.
 

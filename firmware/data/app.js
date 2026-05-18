@@ -659,6 +659,11 @@ function uploadOtaAssets() {
 }
 
 // ── Log tab ──────────────────────────────────────────────────────────────────
+// 2.0.0-alpha.6.5: the NVS-ringbuffer log source was retired. The dropdown
+// now lists SD CSV files only. If the SD card isn't mounted (or contains no
+// CSVs), the dropdown shows a single disabled "— no SD log files —" option
+// so the operator gets a clear "what's expected" hint instead of an empty
+// select.
 function loadLogFiles() {
   var sel = document.getElementById('log-src-select');
   if (!sel) return;
@@ -670,12 +675,6 @@ function loadLogFiles() {
     .then(function (data) {
       if (!data) return;
       sel.innerHTML = '';
-      // NVS buffer option (always present)
-      var opt = document.createElement('option');
-      opt.value = 'nvs';
-      opt.textContent = 'NVS buffer (' + data.nvs_count + ' entries)';
-      sel.appendChild(opt);
-      // SD file options
       if (data.sd_files && data.sd_files.length > 0) {
         data.sd_files.forEach(function (fname) {
           var o = document.createElement('option');
@@ -683,6 +682,13 @@ function loadLogFiles() {
           o.textContent = fname;
           sel.appendChild(o);
         });
+      } else {
+        var none = document.createElement('option');
+        none.value = '';
+        none.disabled = true;
+        none.selected = true;
+        none.textContent = '— no SD log files —';
+        sel.appendChild(none);
       }
     });
 }
@@ -692,9 +698,9 @@ function downloadLog() {
   if (!sel || !sel.value) { feedback('fb-log-dl', false); return; }
   var val = sel.value;
   var url;
-  if (val === 'nvs') {
-    url = '/api/log/download?src=nvs';
-  } else if (val.indexOf('sd:') === 0) {
+  // 2.0.0-alpha.6.5: the `val === 'nvs'` branch was removed alongside the
+  // NVS-ringbuffer retirement. Only SD-file downloads remain.
+  if (val.indexOf('sd:') === 0) {
     url = '/api/log/download?src=sd&file=' + encodeURIComponent(val.slice(3));
   } else {
     feedback('fb-log-dl', false); return;
