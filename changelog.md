@@ -28,6 +28,66 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-alpha.6.14]` — 2026-05-18
+
+**Phase 6.N.1 — network_manager (T10) minimal activation.** The Phase 6 final-assembly subphases begin. T10 is the first of the four "tickle replacements" — the existing alpha.5 tickles (wifi_tickle, https_tickle, web_server_tickle) get replaced by their real long-running task counterparts. This alpha activates the minimal viable T10; T14 (status_post + supervisor), T11 (web_server full), and T1+main consolidation follow in 6.15/6.16/6.17.
+
+#### The decision: minimal rewrite, not full port
+
+The 1.20.3 `network_manager.cpp` (720 lines) was written against Arduino-ESP32's `WiFi.h` + `HTTPClient.h`. The class APIs (`WiFi.begin/WL_CONNECTED/configTime/WiFi.softAP`) do not map 1:1 to esp_wifi/esp_netif/esp_event, so this was always going to be a rewrite — see the migration plan §"Phase 3 — Network stack" entry. The 1.20.3 file is preserved in-tree as `network_manager_1.20.3_original.cpp.archived` for future reference; the new `network_manager.cpp` is a focused ~170-line IDF-native task.
+
+#### Minimal-T10 scope (alpha.6.14)
+
+**Implemented:**
+1. **Q5 producer**: snapshots `client_connected` (via `esp_wifi_sta_get_ap_info`), `ntp_synced` (`time(NULL) > 2023-11-14`), `ip_str` (via `esp_netif_get_ip_info("WIFI_STA_DEF")`), and posts to Q5 via `xQueueOverwrite`. T8's LCD WiFi page now reflects real state.
+2. **TN4 to T4**: on the initial snapshot (after `wifi_tickle_run` did the boot connect + SNTP), sends `xTaskNotify(task_t4, DM_NOTIFY_NTP_SYNCED, eSetBits)` so T4 writes the post-SNTP system time back to the DS1307 RTC.
+3. **Periodic monitor**: every NET_POLL_MS (5 s) re-snapshots state; reposts Q5 only on material change (avoids T8 LCD jitter); re-notifies TN4 on a CLEAR→SYNCED transition.
+
+**Deferred** — listed in the source-file header for traceability and follow-up:
+- **AP fallback** (soft-AP mode if STA can't connect). esp_wifi's auto-reconnect handles persistent STA retry; AP captive-portal lands in a follow-up.
+- **Exponential backoff state machine** (2→4→8→16→32→60 s). esp_wifi's internal cadence is sufficient for soak.
+- **HTTPClient geo/timezone lookup**. Timezone hard-coded in NVS already (`tz=CET-1CEST,M3.5.0,M10.5.0/3`), no per-boot HTTP probe needed.
+- **Periodic 24 h NTP resync**. DS1307 holds time precisely; add later if Phase 7 soak shows drift.
+
+#### What changed
+
+- **`firmware/src/network_manager/network_manager.cpp`** — full rewrite. Old 720-line Arduino-WiFi file moved to `network_manager_1.20.3_original.cpp.archived` (via `git mv`, preserves history). New ~170-line IDF-native file with the minimal-T10 task body.
+- **`firmware/src/CMakeLists.txt`** — added `network_manager/network_manager.cpp` to SRCS.
+- **`firmware/src/app_main_stub.cpp`**:
+  - `#include "network_manager/network_manager.h"` added.
+  - Spawn T10 after the wifi_tickle returns (so esp_wifi + SNTP are already in steady state when T10 takes its first snapshot). Stack 6 KB (1.20.3 prod used 8 KB but had AP setup, HTTPClient buffer, geo JSON parser — none present here). Priority 3 (low; network polling is latency-tolerant; T2-T6 at 4-6 all preempt cleanly).
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-alpha.6.14`.
+
+`wifi_tickle.cpp` stays in the build — it still does the initial boot connect. T10 picks up monitoring duty after `wifi_tickle_run()` returns. A future alpha could fold the initial connect into T10's task body and delete wifi_tickle.cpp entirely; deferred to keep this patch minimal.
+
+#### Build delta vs alpha.6.13
+
+| Metric | alpha.6.13 | alpha.6.14 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1,258,833 B | **1,260,041 B** | +1,208 B |
+| Flash usage % | 60.0 % | 60.1 % | +0.1 pp |
+| RAM static | 59,872 B | **59,880 B** | +8 B |
+
+bin sha256: `C120357D8F7D9D897B423BD4BA57A888119120E9DED86F31A1C95396118178CC`
+
+The **+1,208 B flash** is T10's task body (~170 lines including the file header docstring). RAM delta +8 B — the prev/cur net_status_t snapshots are task-local on the stack, not BSS; the only static is the TAG pointer.
+
+Runtime heap impact at heartbeat baseline expected: ~−6 KB free vs alpha.6.13 (T10 task stack 6 KB). Heartbeat baseline ~146,000 free (was 152,975 at alpha.6.13).
+
+#### Acceptance bar for alpha.6.14
+
+1. ✅ Build succeeds.
+2. Flash & boot: existing T2/T3/T4/T5/T6/T7/T8/T9 chain regression-clean.
+3. T10 spawn banner: `alpha.6.14: T10 network_manager task spawned (handle=0x...); Q5 producer + TN4 to T4 (NTP sync ack)`.
+4. T10 task-alive: `[T10_NET] [T10] task alive (minimal T10 — see file header for deferred features)`.
+5. **Initial Q5 post** at uptime ~10 s (500 ms after T10 spawn): `[T10_NET] [T10] initial Q5 post: client=1 ap=0 ntp=1 ip="192.168.20.160"`.
+6. **TN4 sent**: `[T10_NET] [T10] TN4 sent to T4 (DM_NOTIFY_NTP_SYNCED)`.
+7. **T4 reacts to TN4**: T4 calls `rtc_set_time()` under MX1 to write post-SNTP system time to DS1307. T4's `dm_get_unix_time()` should now return the up-to-date Unix timestamp (no longer reverting to boot-time RTC value).
+8. **T8 LCD WiFi page now shows real state**: the WiFi status page should display `WiFi: connected` and `192.168.20.160` (not `WiFi: ---` as before). This is the user-visible signal that T10 is live.
+9. T10 main loop continues polling every 5 s. **No further Q5 posts** while state is stable (idempotency).
+10. All earlier-phase tickles regression-clean.
+11. Run ≥ 10 min; no resets; no stack-overflow on T10.
+
 ### `[2.0.0-alpha.6.13]` — 2026-05-18
 
 **Phase 6.13 — ota_manager (T13) compiled in.** The OTA Manager source migrates with a single Arduino.h drop. T13 is **spawned on demand** by T11 (web server) when an asset-ZIP upload arrives — T11 is still the alpha.5 tickle stub, so T13 doesn't actually run yet, but all its symbols (ota_check_rollback, ota_firmware_*, ota_assets_*, ota_get_*, task_ota_manager) are now linked in and ready for Phase 6.N to wire up.

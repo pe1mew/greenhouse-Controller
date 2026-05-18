@@ -186,6 +186,7 @@
 #include "safety_monitor/safety_monitor.h"
 #include "ui_display/ui_display.h"
 #include "auth/pin_auth.h"
+#include "network_manager/network_manager.h"
 #include "types/app_types.h"  /* Q1..Q6, MX1..MX5, EG1, task_t1..15, key_event_t etc. */
 
 static const char *TAG = "GHC-STUB";
@@ -1260,6 +1261,48 @@ extern "C" void app_main(void)
                                                        "?";
         ESP_LOGI(TAG, "wifi_tickle_run() returned %d (%s)", (int)wifi_st, wifi_msg);
         wifi_up = (wifi_st == WIFI_TICKLE_OK || wifi_st == WIFI_TICKLE_OK_NO_NTP);
+    }
+
+    /* alpha.6.14 — spawn T10 minimal network_manager task.
+     *
+     * The wifi_tickle above already did the heavy lifting: esp_wifi init +
+     * STA connect + SNTP sync. T10 picks up from there as a long-running
+     * monitor that posts net_status_t to Q5 (T8 LCD WiFi page consumer)
+     * and sends TN4 (DM_NOTIFY_NTP_SYNCED) to T4 so T4 writes the post-SNTP
+     * system time to the DS1307 RTC.
+     *
+     * Minimal scope (see firmware/src/network_manager/network_manager.cpp
+     * file header for the full deferred-features list):
+     *  - AP fallback NOT implemented (defers to follow-up patch).
+     *  - Exponential backoff NOT implemented (esp_wifi auto-reconnect handles it).
+     *  - HTTPClient geo/timezone NOT ported (timezone is in NVS already).
+     *  - Periodic 24 h NTP resync NOT scheduled (DS1307 holds time precisely
+     *    enough for the soak; add later if drift becomes visible).
+     *
+     * Stack: 6 KB — modest locals (net_status_t snapshots + IP buffer).
+     * 1.20.3 prod used 8 KB but had AP setup, HTTPClient buffer, geo JSON
+     * parser — none present here. +2 KB IDF margin → 6 KB total.
+     * Priority 3 — low. Network state polling is latency-tolerant; T2/T3/T4/
+     * T5/T6 (4-6) all preempt cleanly.
+     * Core pinning: tskNO_AFFINITY (1.20.3 prod pinned to core 0 for
+     * locality with the WiFi driver task; defer pinning until Phase 7 soak).
+     */
+    {
+        BaseType_t rc = xTaskCreatePinnedToCore(
+            task_network_manager,
+            "T10-net",
+            6144,                  /* stack words */
+            NULL,
+            3,                     /* priority — low, latency-tolerant */
+            &task_t10,
+            tskNO_AFFINITY);
+        if (rc != pdPASS) {
+            ESP_LOGE(TAG, "alpha.6.14: xTaskCreate T10 failed (rc=%d)", (int)rc);
+        } else {
+            ESP_LOGI(TAG, "alpha.6.14: T10 network_manager task spawned (handle=%p); "
+                          "Q5 producer + TN4 to T4 (NTP sync ack)",
+                     (void *)task_t10);
+        }
     }
 
     /* alpha.6.2 — Phase 6.2 first firmware/src/ subsystem activation: sunrise.cpp.

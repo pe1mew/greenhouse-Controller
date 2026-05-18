@@ -43,6 +43,7 @@ idf_component_register(
         "auth/pin_auth.cpp"                     # Phase 6.12 — PIN session + lockout (called from T8 + future T11 web routes)
         "status_post/status_post_stub.cpp"      # Phase 6.12 stub — status_post_backoff_active; force-removed when real status_post.cpp activates in Phase 6.N
         "ota_manager/ota_manager.cpp"           # Phase 6.13 (2.0.0-alpha.6.13) — T13 OTA manager (firmware + assets); spawned on-demand by T11
+        "network_manager/network_manager.cpp"   # Phase 6.14 (2.0.0-alpha.6.14) — T10 minimal network manager (Q5 producer, TN4 to T4); see file header for deferred features
     INCLUDE_DIRS
         "."
     REQUIRES
