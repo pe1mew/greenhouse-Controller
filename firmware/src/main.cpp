@@ -453,10 +453,15 @@ extern "C" void app_main(void)
          * working stack didn't fit. 4096 B mirrors T11 and gives generous
          * headroom for the deferred features (heap-integrity sweep,
          * stack-HWM walk). */
+        /* a.6.32 stack bump: 4096 → 6144 bytes. The full instrumentation
+         * added in this alpha (heap_caps_check_integrity_all + dm_cfg_snapshot
+         * + neopixel led_strip_refresh + stack-HWM sweep) wants more
+         * headroom than the minimal T1 body. heap_caps_check_integrity_all
+         * walks the entire heap and is the largest stack consumer here. */
         BaseType_t rc = xTaskCreatePinnedToCore(
             task_watchdog,
             "T1-WDT",
-            4096,                  /* stack BYTES — see comment above */
+            6144,                  /* stack BYTES (a.6.32 bump from 4096) */
             NULL,                  /* arg */
             1,                     /* priority — low; work is light */
             &task_t1,              /* handle written into global */

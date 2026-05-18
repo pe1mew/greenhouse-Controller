@@ -28,6 +28,72 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-a.6.32]` — 2026-05-18
+
+**First alpha of the maturation plan (`design/maturationPlan_alpha6.32-6.35.md`). Also marks the version-naming convention switch: `alpha` → `a`.** From this tag onwards every pre-release uses the shorter prefix (`2.0.0-a.6.32`, …, `2.0.0-rc.1`). Historical alphas keep their original full form for traceability.
+
+#### What landed — T1 full instrumentation
+
+Restores the four T1 features deferred when a.6.22 first shipped T1 minimal. Implementation pattern matches the 1.20.3 `main.cpp::task_watchdog_heartbeat` reference.
+
+- **NeoPixel via `espressif/led_strip@^2.5.3`** managed component. New `firmware/src/idf_component.yml` declares the dependency. T1 calls `led_strip_set_pixel` + `led_strip_refresh` every 500 ms tick.
+- **EG1 priority colour** aligned with `ui_display.cpp::status_colour_for_bits` so LED and LCD backlight never disagree. `MOTOR_ALARM|WIND_OVERRIDE` → RED, `SENSOR_FAULT_T|_W` → AMBER, `CALIBRATING` → BLUE, else GREEN.
+- **Day/night dimming** from `cfg.led_day_brt` / `led_nite_brt` / `led_nite_from` / `led_nite_to`. Brightness scaled at R/G/B level (`scaled = (raw * dim) >> 8`) — NOT via `led_strip_set_brightness` (which re-scales the internal pixel buffer per call and degrades values over many day↔night cycles).
+- **60 s heap rows**: `LOG_SYSTEM value_a=7` (free internal kB), `=8` (free PSRAM kB), `=12` (largest internal contiguous kB) at `tick % 120 == 0`. Posted to Q3 → T9 → SD CSV.
+- **30 s-offset heap-integrity check**: `heap_caps_check_integrity_all(panic=false)` at `tick % 120 == 60`. Failure logs `value_a=9`. Non-panicking.
+- **10-min stack-HWM sweep**: `uxTaskGetStackHighWaterMark()` over T1..T15 handles at `tick % 1200 == 0`. Serial-only (too noisy for SD); LOGW if hwm < 1024 B.
+
+#### Bug fix shipped under this tag — led_strip 2.5.x vs 3.x API drift
+
+First build attempt failed: `'led_strip_config_t' has no non-static data member named 'color_component_format'`. The 2.5.x line uses `led_pixel_format` (enum `LED_PIXEL_FORMAT_GRB`); 3.x renamed to `color_component_format`. We pin to 2.5.x via `^2.5.3` in `idf_component.yml`. Documented in the release notes so future migrators can spot it.
+
+#### What changed
+
+- **`firmware/src/watchdog/watchdog.cpp`** — ~210-line rewrite of the body. led_strip handle + tick-modulo dispatch (heap rows, integrity, stack-HWM, NeoPixel). New includes pull in `data_manager.h`, `event_logger.h`, `types/app_types.h`, `pin_config.h`.
+- **`firmware/src/main.cpp`** — T1 stack bump `4096 → 6144` bytes for the heap-walk headroom.
+- **`firmware/src/CMakeLists.txt`** — added `espressif__led_strip` to REQUIRES.
+- **`firmware/src/idf_component.yml`** — new file declaring `espressif/led_strip: "^2.5.3"`.
+- **`firmware/platformio.ini`** — `FIRMWARE_VERSION` → `2.0.0-a.6.32` (naming convention switch).
+
+#### Acceptance — hardware verified on 192.168.20.160
+
+```
+fw_ver        : 2.0.0-a.6.32
+asset_version : 2.0.0-a.6.32     (paired bundle uploaded; mismatch cleared)
+uptime_s      : 11               (post-OTA reboot)
+ota_status    : state="idle", accepted=true   (T1 ota_mark_healthy still works)
+```
+
+Heap rows captured before the asset OTA forced a reboot, at uptime 120 s:
+
+```
+20:51:10 SYSTEM SYS 0 0 7,103    ← free internal = 103 KB
+20:51:10 SYSTEM SYS 0 0 8,8153   ← free PSRAM    = 8153 KB (~8 MB)
+20:51:10 SYSTEM SYS 0 0 12,31    ← largest block = 31 KB
+```
+
+No `value_a=9` (heap corruption) events.
+
+**Pre-existing observation (not caused by this alpha):** largest-block sits at 31 KB. Below the 50 KB threshold proposed as the gh#23 acceptance criterion for a.6.35. Will be watched closely once a.6.35 lands the canonical-JSON + log-upload work that stresses the mbedTLS heap.
+
+#### Build delta vs a.6.31
+
+| Metric | a.6.31 | a.6.32 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1 321 312 B | **1 343 120 B** | +21 808 B |
+| RAM static | ~60 256 B | 60 488 B | +232 B |
+
+**+21 KB flash — bigger than my plan estimate (+6 KB).** Breakdown:
+
+- `led_strip` managed component: ~12 KB (vs plan's 3 KB — too optimistic; it pulls in the RMT TX driver bytecode tree)
+- New T1 body with heap walks + log_post: ~4 KB
+- Misc linkage (esp_heap_caps + includes): ~5 KB
+- Task stack bump 4096 → 6144: 2 KB RAM only, not flash
+
+Final flash usage: **64.0 %** of the 2 MB OTA bank. Comfortable but the 1.30 MB target line in the migration plan needs re-baselining — a.6.35 will land at ~1.36 MB.
+
+bin sha256: `C4268BE05B51CF0D…`
+
 ### `[2.0.0-alpha.6.31]` — 2026-05-18
 
 **Phase 6.14.X step 2 — admin-toggled AP-mode + infinite-retry STA back-off + IO0 reset-gate hardening + T11-spawn-without-STA.** Closes four operator-experience gaps in one alpha; built and partially tested through the failed alpha.6.29 and alpha.6.30 iterations before landing here.

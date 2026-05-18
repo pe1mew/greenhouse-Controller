@@ -1,0 +1,17 @@
+# firmware/src/idf_component.yml
+#
+# IDF Component Manager dependencies for the "main" component (firmware/src/).
+#
+# 2.0.0-a.6.32 — adds espressif/led_strip for T1's NeoPixel driver. The single
+# WS2812B on PIN_RGB_LED reflects EG1 priority (red/amber/blue/green) with
+# day/night brightness scaling. led_strip wraps the RMT TX driver and handles
+# the IDF 5.x API surface so we don't have to.
+#
+# Other managed components used by this project are declared in their own
+# proxy directories (e.g. firmware/components/littleFS/idf_component.yml).
+# led_strip lives here in the main component because no driver code wraps it
+# — T1 calls `led_strip_set_pixel` + `led_strip_refresh` directly from the
+# watchdog task.
+
+dependencies:
+  espressif/led_strip: "^2.5.3"

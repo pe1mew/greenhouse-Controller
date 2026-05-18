@@ -87,6 +87,10 @@ idf_component_register(
         esp_timer          # esp_timer_get_time for elapsed-ms measurement
         # Phase 5 (2.0.0-alpha.5) — IDF-native web server.
         esp_http_server    # httpd_start/_stop/_register_uri_handler
+        # alpha.6.32 (Phase T1.X) — NeoPixel RGB LED via managed component.
+        # Declared in firmware/src/idf_component.yml. Used by T1 watchdog.cpp
+        # for EG1-priority colour + day/night brightness scaling.
+        espressif__led_strip
 )
 
 # -----------------------------------------------------------------------------
