@@ -34,7 +34,8 @@ idf_component_register(
         "event_logger/event_logger.cpp"         # Phase 6.6 (2.0.0-alpha.6.6) — T9 event logger task (Q3 → SD CSV)
         # data_manager_stub.cpp REMOVED in 2.0.0-alpha.6.7 — the real data_manager.cpp below provides dm_get_unix_time
         "data_manager/data_manager.cpp"         # Phase 6.7 (2.0.0-alpha.6.7) — T4 data manager (cfg_shadow + RTC + sunrise + Q4/Q6)
-        "relay_controller/relay_controller_stub.cpp"  # Phase 6.7 stub — t2_get_window_states; remove when T2 ports in 6.8+
+        "relay_controller/relay_controller_stub.cpp"  # Phase 6.7 stub — t2_get_window_states; remove when T2 ports in 6.9+
+        "sensor_poll/sensor_poll.cpp"           # Phase 6.8 (2.0.0-alpha.6.8) — T5 sensor poll task (Modbus FG6485A+S200 → Q6)
     INCLUDE_DIRS
         "."
     REQUIRES

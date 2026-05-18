@@ -180,6 +180,7 @@
 #include "keypad_scan/keypad_scan.h"
 #include "event_logger/event_logger.h"
 #include "data_manager/data_manager.h"
+#include "sensor_poll/sensor_poll.h"
 #include "types/app_types.h"  /* Q1..Q6, MX1..MX5, EG1, task_t1..15, key_event_t etc. */
 
 static const char *TAG = "GHC-STUB";
@@ -332,23 +333,14 @@ static void heartbeat_task(void *arg)
             }
         }
 
-        /* alpha.2.8 — Poll the FG6485A T/RH sensor via the FG6485A driver
-         * (LIB-FG). Internally fg6485a_read_measurements() does one FC03
-         * to slave 1 reading 2 holding regs (same wire traffic as the
-         * raw call this replaced) but returns decoded floats:
-         *   meas.humidity_pct    = int16(reg[0]) / 10.0f
-         *   meas.temperature_c   = int16(reg[1]) / 10.0f
-         * Status is collapsed: MODBUS_OK → FG6485A_OK (=0), MODBUS_ERR_PARAM
-         * → FG6485A_ERR_PARAM (=1), other → FG6485A_ERR_COMM (=2). */
-        fg6485a_measurement_t fg = {};
-        fg6485a_status_t fg_st = fg6485a_read_measurements(1, &fg);
-
-        /* Poll the SenseCAP S200 wind sensor via the s200 driver. Issues
-         * two FC04 reads internally (wind dir+speed at 0x0008/12 regs,
-         * heating temp at 0x001C/2 regs) and returns engineering units
-         * (m/s and degrees) decoded from int32×1000 register pairs. */
-        s200_measurement_t wind = {};
-        s200_status_t s200_st = s200_read_measurements(44, &wind);
+        /* alpha.6.8 — Removed the heartbeat's fg6485a_read_measurements()
+         * and s200_read_measurements() polls. T5 (sensor_poll, activated
+         * this phase) is now the sole owner of the Modbus RTU bus —
+         * dual polling would cause half-duplex contention and corrupt
+         * sensor responses. The canonical readings now appear in T5's
+         * own log lines ("[T5_SEN] T=N°C RH=N% ws=N.N m/s wd=N° | avg ...").
+         * The fg6485a/s200 fields previously embedded in the heartbeat
+         * format string are dropped to match. */
 
         /* alpha.2.9 — Poll the DS1307 RTC via LIB-3. Reads 7 BCD registers
          * (seconds..year), decodes to decimal, validates ranges. Status:
@@ -361,7 +353,7 @@ static void heartbeat_task(void *arg)
         rtc_status_t rtc_st = rtc_get_time(&now);
 
         ESP_LOGI(TAG,
-                 "heartbeat %lu | free=%u largest=%u psram_free=%u uptime=%lus | hb_led=%d keys=%d | fg6485a=%d rh=%.1f temp=%.1f | s200=%d dir=%.1f wind=%.2f | rtc=%d %04u-%02u-%02u %02u:%02u:%02u",
+                 "heartbeat %lu | free=%u largest=%u psram_free=%u uptime=%lus | hb_led=%d keys=%d | rtc=%d %04u-%02u-%02u %02u:%02u:%02u",
                  (unsigned long)counter,
                  (unsigned)free_internal,
                  (unsigned)largest_block,
@@ -369,12 +361,6 @@ static void heartbeat_task(void *arg)
                  (unsigned long)((xTaskGetTickCount() * portTICK_PERIOD_MS) / 1000UL),
                  hb_state,
                  keys_pressed,
-                 (int)fg_st,
-                 fg.humidity_pct,
-                 fg.temperature_c,
-                 (int)s200_st,
-                 wind.wind_dir_avg_deg,
-                 wind.wind_speed_avg_ms,
                  (int)rtc_st,
                  (unsigned)now.year,
                  (unsigned)now.month,
@@ -863,6 +849,73 @@ extern "C" void app_main(void)
             ESP_LOGI(TAG, "alpha.6.6: T9 event_logger task spawned (handle=%p); "
                           "heartbeat will log_post() synthetic events to Q3",
                      (void *)task_t9);
+        }
+    }
+
+    /* alpha.6.8 — spawn T5 sensor_poll task.
+     *
+     * T5 is the sole owner of the Modbus RTU bus. It polls FG6485A (T/RH)
+     * at slave 1 and S200 (wind speed/direction) at slave 44 every
+     * cfg.poll_interval_s (clamped [15..120] s, NVS default 30 s), maintains
+     * sliding-window averages (arithmetic for T/RH/ws, unit-vector atan2
+     * for wind dir to handle the 0°/360° wrap), builds a sensor_reading_t,
+     * and pushes it onto Q6 via xQueueOverwrite (depth 1, latest-wins).
+     *
+     * The heartbeat used to do its own naive fg6485a_read_measurements +
+     * s200_read_measurements polls every 5 s. Those have been removed in
+     * this alpha — running two pollers on a half-duplex RS-485 bus would
+     * scramble responses. T5 owns the bus now; the canonical readings
+     * surface in T5's own log lines ("[T5_SEN] T=N°C RH=N% ws=N.N m/s …").
+     *
+     * Boot grace: T5's task body waits 8 s before its first modbus_init
+     * call, then sleeps poll_interval_s (30 s default) before its first
+     * poll. Total ~38 s of bus quiet after spawn — plenty of headroom for
+     * everything else to settle.
+     *
+     * Modbus driver init: modbus_init() was already called earlier in
+     * app_main (Phase 2.6 tickle). T5 calls it again on entry — the
+     * driver is idempotent (uart_driver_delete-if-installed then reinstall),
+     * so double-init is safe. We keep both call sites: app_main_stub gets
+     * the bus ready immediately (the heartbeat's RTC reads still run), and
+     * T5's own modbus_init reconfirms the driver state at task entry.
+     *
+     * Stack: 8 KB — Modbus retry path, two driver call chains, and the
+     * 360-deep sliding-average buffers (BSS already, but local working
+     * vars during dir_avg_variation's insertion sort fit comfortably).
+     * Priority 5 — same as T4 (the consumer). Q6 is depth 1 xQueueOverwrite
+     * so producer/consumer relative priority doesn't matter for liveness;
+     * matching T4 keeps the wake-up locality simple. Core pinning:
+     * tskNO_AFFINITY (1.20.3 pinned to core 1; for now we let the scheduler
+     * pick — Phase 7 soak will reveal if we need to pin it).
+     *
+     * Q6 consumer: T4 (data_manager). T4 must be running before T5
+     * starts producing, otherwise the first xQueueOverwrite has no
+     * receiver. T4 was activated alpha.6.7 and is spawned earlier in
+     * this app_main, so the ordering holds.
+     *
+     * Dependencies satisfied:
+     *   - Modbus RTU (LIB-MB / drivers/modBus) — Phase 2.6
+     *   - FG6485A driver (LIB-FG / drivers/FG6485A) — Phase 2.8
+     *   - S200 driver (LIB-S200 / drivers/s200) — Phase 2.7
+     *   - EG1 (sensor fault bits 2-3) — declared in app_types.h
+     *   - Q6 (sensor_reading_t carrier) — created system_globals_init alpha.6.1
+     *   - dm_get_unix_time, dm_get_poll_interval_s, dm_cfg_snapshot — T4 alpha.6.7
+     *   - log_post (LOG_ALARM fault events) — T9 alpha.6.6 */
+    {
+        BaseType_t rc = xTaskCreatePinnedToCore(
+            task_sensor_poll,
+            "T5-sensor",
+            8192,                  /* stack words */
+            NULL,
+            5,                     /* priority — matches T4 (producer/consumer pair) */
+            &task_t5,
+            tskNO_AFFINITY);
+        if (rc != pdPASS) {
+            ESP_LOGE(TAG, "alpha.6.8: xTaskCreate T5 failed (rc=%d)", (int)rc);
+        } else {
+            ESP_LOGI(TAG, "alpha.6.8: T5 sensor_poll task spawned (handle=%p); "
+                          "first poll in ~38 s (8 s boot grace + poll_interval_s)",
+                     (void *)task_t5);
         }
     }
 
