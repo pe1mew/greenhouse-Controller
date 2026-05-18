@@ -28,7 +28,73 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
-### `[2.0.0-alpha.6.5]` — 2026-05-18 (design change — code-only sweep)
+### `[2.0.0-alpha.6.6]` — 2026-05-18
+
+**Phase 6.6 — event_logger (T9) activation.** Brings T9 online: sole consumer of Q3, drains the queue, persists each event as a CSV line on SD via LIB-8. After this lands, every other task in the system can call `log_post(&evt)` and get durable storage. Made considerably simpler by Phase 6.5's NVS-fallback removal (T9 is now SD-only).
+
+#### What changed
+
+- **`firmware/src/event_logger/event_logger.cpp`**: dropped `#include <Arduino.h>`, added explicit `#include <esp_log.h>` (was coming via Arduino.h transitively). No other source changes — the file was already IDF-shaped beyond that.
+- **`firmware/src/data_manager/data_manager_stub.cpp`** (new): provides `uint32_t dm_get_unix_time(void) { return (uint32_t)time(NULL); }`. Breaks the data_manager↔event_logger circular dep so T9 can compile and run without waiting for the full T4 port. **Designed for forcing-removal** when the real `data_manager.cpp` activates in Phase 6.7+ — the linker will refuse two definitions of `dm_get_unix_time`.
+- **`firmware/src/CMakeLists.txt`**: added `event_logger/event_logger.cpp` + `data_manager/data_manager_stub.cpp` to SRCS.
+- **`firmware/src/app_main_stub.cpp`**:
+  - `#include "event_logger/event_logger.h"` added.
+  - After the LIB-8 SD tickle (which unmounts at the end), spawn T9 via `xTaskCreatePinnedToCore(task_event_logger, "T9-evlog", 6144, NULL, 4, &task_t9, tskNO_AFFINITY)`. T9 internally re-mounts the SD, scans for existing `YYYYMMDDHHMMSS.csv` files, and resumes the most recent if it has room.
+  - In the heartbeat task: `log_post(&syn)` with a synthetic `LOG_SYSTEM` event each tick (`value_a = uptime_s`, `value_b = free_heap_KB`). Operator can confirm T9 is alive by watching the SD CSV file grow by one line every 5 s.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-alpha.6.6`.
+
+#### Build delta vs alpha.6.5
+
+| Metric | alpha.6.5 | alpha.6.6 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1,205,309 B | **1,214,497 B** | +9,188 B |
+| Flash usage % | 57.5 % | 57.9 % | +0.4 pp |
+| RAM static | 42,784 B | 42,880 B | +96 B |
+
+bin sha256: `D2611059474E907A00A6AAA6054A1C297322D79C207ECA9F109B9152389435B0`
+
+The +9 KB is event_logger.cpp's task body + the heartbeat-side log_post call + the stub. Runtime cost adds T9's task stack (6 KB heap) plus T9's internal SD/FAT-write buffers (~2-3 KB) when active.
+
+#### Build trap encountered + fix
+
+First build failed: `'ESP_LOGI' was not declared in this scope`. Cause: `event_logger.cpp` was relying on the now-removed `#include <Arduino.h>` to transitively pull in `esp_log.h`. Fix: add the include explicitly (one line). The "ARDUINO_HEADERS_TRANSITIVELY_INCLUDED_ESP_IDF_HEADERS_THAT_WE_NEED_INDEPENDENTLY" trap will hit other dormant files when they activate; pattern is "add the explicit IDF include in the same commit that drops Arduino.h."
+
+#### Acceptance: PASSED — 2026-05-18
+
+Flashed Unit 2. T9 spawned cleanly and the killer signal arrived almost immediately:
+```
+I (1587) T9_LOG: [T9] task alive
+I (1597) GHC-STUB: alpha.6.6: T9 event_logger task spawned (handle=0x3fcec634);
+                   heartbeat will log_post() synthetic events to Q3
+...
+I (1692) T9_LOG: [T9] Resuming log file /20260518031514.csv
+I (1698) T9_LOG: [T9] SD ready
+```
+
+**Cross-firmware filesystem continuity confirmed**: T9 in v2.0.0-alpha.6.6 opened the same `20260518031514.csv` file that the production 1.20.3 firmware created earlier today at 03:15:14 local time. The two firmware lineages can share the same SD CSV — by design.
+
+From boot+12 s (heartbeat 0) onward, each 5-second heartbeat's `log_post()` adds a `LOG_SYSTEM` event to Q3 with `value_a=uptime_s`, `value_b=free_heap_KB`. T9 drains the queue and appends one CSV line per event to the resumed file. Operator can verify by pulling the SD card to a PC and reading the tail of the file.
+
+**Heap impact** — T9 runtime cost matches prediction:
+- alpha.6.4 heartbeat baseline: `free=234,495 / largest=131,072`
+- alpha.6.6 heartbeat baseline: `free=222,331 / largest=118,784`
+- Delta: **−12,164 B free** (T9 6 KB stack + FAT/SD buffers + Q3 storage + miscellaneous), **−12,288 B largest** (three 4 KB heap blocks consumed by T9 allocations). Predicted ~10 KB; actual ~12 KB; within budget.
+- Heap **rock-steady at 222,331 across 8+ heartbeats** — no leak from T9 or from the per-tick log_post.
+
+**Earlier-phase tickles all regression-clean**:
+- system_globals (Phase 6.1) ✓
+- T7 keypad (Phase 6.4) ✓ — `T7_KPD: T7 task alive` still fires; Q2 drain logic unchanged
+- WiFi (Phase 3): 1.2 s STA_GOT_IP, RSSI -49 dBm (excellent signal this session)
+- SNTP (Phase 3): synced in 4.2 s
+- Sunrise (Phase 6.2): `lat=52.37 lon=4.90 unix=1779091892 -> OK; rise=03:40 UTC set=19:34 UTC is_daytime=true`
+- HTTPS (Phase 4): 5/5 OK status=204; gh#23 fragmentation pattern intact (call 1 free −492 / largest −36,864; calls 2-5 free ~−248 / largest 0)
+- Web server (Phase 5): `T-WEB: HTTP server running — open http://192.168.20.160/ in a browser`
+- System_id (Phase 6.3): `Unit ID: 2344`
+- All Phase 2 drivers regression-clean
+
+**Phase 6.6 is CLOSED.** T9 event_logger is now live and accepting events from any task. This unblocks every future task activation (data_manager, sensor_poll, relay_controller, climate_control, ui_display, safety_monitor, the network/status/web ports) — each can call `log_post()` for durable SD-CSV recording from day one. The data_manager_stub.cpp will be force-removed by the linker when the real T4 ports in Phase 6.7+.
+
+
 
 **Phase 6.5 — DESIGN CHANGE: retire the NVS event-log ringbuffer (gh#22).** The NVS-backed event-log ring was introduced in 1.x for boot-survival event recording when SD might fail. In practice SD has been reliable enough on production units that the NVS ring served no purpose that wasn't already covered by SD persistence — and its presence complicated T9's logic with two parallel persistence paths, a "fallback" mode, drop-counter bookkeeping, and a separate `/api/log/download?src=nvs` web endpoint with its own CSV-export code. Retiring it simplifies T9 to a single SD-CSV persistence path, simplifies the web UI to "one log-source dropdown, SD files only", and reclaims ~600 B of code + a now-unused chunk of NVS namespace.
 

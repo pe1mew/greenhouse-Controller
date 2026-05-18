@@ -178,6 +178,7 @@
 #include "data_manager/sunrise.h"
 #include "system_id/system_id.h"
 #include "keypad_scan/keypad_scan.h"
+#include "event_logger/event_logger.h"
 #include "types/app_types.h"  /* Q1..Q6, MX1..MX5, EG1, task_t1..15, key_event_t etc. */
 
 static const char *TAG = "GHC-STUB";
@@ -264,6 +265,33 @@ static void heartbeat_task(void *arg)
          * this so a user pressing keys during the test sees the count
          * change in real time on serial. */
         int keys_pressed = keypad_count_pressed();
+
+        /* alpha.6.6 — feed Q3 with a synthetic LOG_SYSTEM event each
+         * heartbeat. T9 (event_logger) drains Q3 and persists each event
+         * as one CSV line on SD. Producing one heartbeat-cadence event
+         * gives the operator a steady "T9 is alive" signal on the SD
+         * card: open the latest YYYYMMDDHHMMSS.csv and see it grow by
+         * one line every 5 seconds.
+         *
+         * Event encoding:
+         *   timestamp  = libc time(NULL)
+         *   event_type = LOG_SYSTEM (6)
+         *   initiator  = LOG_BY_SYSTEM (0)
+         *   value_a    = uptime in seconds (i16; wraps at ~9 hours)
+         *   value_b    = free heap in KB (i16; fits comfortably) */
+        {
+            uint32_t uptime_s = (uint32_t)(
+                (xTaskGetTickCount() * portTICK_PERIOD_MS) / 1000UL);
+            log_event_t syn = {};
+            syn.timestamp  = (uint32_t)time(NULL);
+            syn.event_type = (uint8_t)LOG_SYSTEM;
+            syn.initiator  = (uint8_t)LOG_BY_SYSTEM;
+            syn.channel    = 0;
+            syn.param_id   = 0;
+            syn.value_a    = (int16_t)((uptime_s > 32767u) ? 32767 : uptime_s);
+            syn.value_b    = (int16_t)(free_internal / 1024u);
+            log_post(&syn);
+        }
 
         /* alpha.6.4 — drain Q2 of any key events produced by the T7
          * keypad-scan task since the last heartbeat. The task posts
@@ -771,6 +799,41 @@ extern "C" void app_main(void)
                      storage_sd_available() ? "true (BUG)" : "false (OK)");
         } else if (sd_st == STORAGE_ERR_NO_CARD) {
             ESP_LOGI(TAG, "no SD card present — LIB-8 tickle skipped (acceptable)");
+        }
+    }
+
+    /* alpha.6.6 — spawn T9 event_logger task.
+     *
+     * T9 is the sole consumer of Q3. log_post() from any task adds an
+     * event; T9 drains the queue and persists each event as a CSV line
+     * on SD. The task internally re-mounts the SD card (the tickle above
+     * unmounted), scans for existing CSV files, resumes the most recent
+     * if it has room, otherwise creates a new YYYYMMDDHHMMSS.csv file.
+     *
+     * Stack: 6 KB — FAT writes need more stack than the lighter T7.
+     * Priority 4 — same as T7, neither realtime nor idle.
+     *
+     * Heartbeat below also calls log_post() with a synthetic LOG_SYSTEM
+     * event each tick to feed T9 with traffic — operator can observe
+     * the SD file growing as proof T9 is alive.
+     *
+     * data_manager dep (dm_get_unix_time) satisfied via the alpha.6.6
+     * stub at firmware/src/data_manager/data_manager_stub.cpp. */
+    {
+        BaseType_t rc = xTaskCreatePinnedToCore(
+            task_event_logger,
+            "T9-evlog",
+            6144,                  /* stack words */
+            NULL,
+            4,                     /* priority */
+            &task_t9,
+            tskNO_AFFINITY);
+        if (rc != pdPASS) {
+            ESP_LOGE(TAG, "alpha.6.6: xTaskCreate T9 failed (rc=%d)", (int)rc);
+        } else {
+            ESP_LOGI(TAG, "alpha.6.6: T9 event_logger task spawned (handle=%p); "
+                          "heartbeat will log_post() synthetic events to Q3",
+                     (void *)task_t9);
         }
     }
 
