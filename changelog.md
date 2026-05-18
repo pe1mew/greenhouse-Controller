@@ -28,6 +28,55 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-alpha.6.22]` — 2026-05-18
+
+**Phase 6.N.1 — T1 minimal watchdog task + boot-time `ota_check_rollback()`.** Closes the previously-dormant 3-fail OTA rollback flow: every cold boot now increments `system/ota_fail_cnt` in NVS, and T1 calls `ota_mark_healthy()` after 30 s of stable uptime to reset it. Three boots that don't reach 30 s = `esp_ota_mark_app_invalid_rollback_and_reboot()`.
+
+T1 ships minimal — see the file header for the deferred features (NeoPixel day/night brightness, 60-s heap-free LOG_SYSTEM rows, 30-s-offset heap-integrity check, 10-min stack-HWM sweep). They follow the same minimal-then-extend pattern used for T10 / T14 / T11; landing them in their own alpha.6.22.X keeps the bisect window narrow.
+
+#### Bug found and fixed under this tag — T1 stack overflow
+
+First build of alpha.6.22 used `xTaskCreatePinnedToCore(..., 2048, ...)` thinking it was words (vanilla FreeRTOS convention). Under ESP-IDF it's **bytes**. 2 KB was nowhere near enough for ESP_LOGI's per-call buffer + nvs_cfg_set_i32's working stack — boot loop within seconds.
+
+Symptom: device unresponsive after flash; HTTP probes timed out for 60+ s; ping returned "Destination host unreachable". Recovery: direct-flashed `bin/2.0.0-alpha.6.21/firmware-2.0.0-alpha.6.21.bin` via esptool.
+
+Diagnosis was unusually painful for a static-analysis pass — nothing in the C looked wrong. Switched to capturing serial output via a PowerShell SerialPort reader (so the next migrator doesn't need a separate `pio device monitor` terminal):
+
+```
+***ERROR*** A stack overflow in task T1-WDT has been detected.
+Backtrace: 0x40378301:0x3fcea250 ... 0x40381966:0xa5a5a5a5 |<-CORRUPTED
+Rebooting...
+```
+
+12 times in 25 s = unambiguous. Fix: bumped to 4096 bytes (matches T11). Both the spawn call and the `watchdog.h` "Suggested parameters" docstring now say "BYTES — ESP-IDF convention, NOT FreeRTOS words" with a forensic note about the failed first attempt.
+
+#### What changed
+
+- **`firmware/src/watchdog/watchdog.{h,cpp}`** — new files, ~110 lines total. T1 entry point + minimal task body (TWDT subscribe → 500 ms tick → ota_mark_healthy at tick 60).
+- **`firmware/src/CMakeLists.txt`** — added `watchdog/watchdog.cpp` to SRCS.
+- **`firmware/src/app_main_stub.cpp`** — added `#include "ota_manager/ota_manager.h"` and `#include "watchdog/watchdog.h"`, an `ota_check_rollback()` call right after `nvs_cfg_init()`, and a T1 spawn block before T7. ~50 lines net.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-alpha.6.22`.
+
+#### Acceptance — hardware verified on 192.168.20.160
+
+After 37 s uptime:
+
+```
+GET /api/ota/status   → {state:"idle", progress:0, error:"", bank:"A", accepted:true}
+GET /api/status       → uptime_s=103, fw_ver=2.0.0-alpha.6.22
+```
+
+`accepted:true` is the critical signal — it means `ota_is_accepted()` read `ota_fail_cnt == 0` from NVS, which means T1's tick-60 callback fired and reset the counter that `ota_check_rollback()` had incremented at boot. End-to-end flow exercised on every boot from now on.
+
+#### Build delta vs alpha.6.21
+
+| Metric | alpha.6.21 | alpha.6.22 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1 303 385 B | **1 305 213 B** | +1 828 B |
+| RAM static | 60 232 B | 60 256 B | +24 B |
+
+bin sha256: `9B3859BB5AA658BB…`
+
 ### `[2.0.0-alpha.6.21]` — 2026-05-18
 
 **Phase 6.16-η — T11 `/ws` WebSocket (FINAL T11 route).** Adds the one remaining route to bring T11 to **25 / 25 = 100 %** of the v1.20.3 route set. ESPAsyncWebSocket → `esp_http_server` WebSocket migration complete.
