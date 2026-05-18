@@ -56,7 +56,17 @@
  * @author  Greenhouse Controller project
  */
 
-#include <Arduino.h>
+/* alpha.6.6 — dropped vestigial #include <Arduino.h>. The file uses no
+ * Arduino types — only ESP-IDF (esp_log, esp_task_wdt via FreeRTOS),
+ * stdlib (time.h, string.h, stdio.h, ctype.h), and project headers
+ * (LIB-7 nvs, LIB-8 sd_storage, system_id, app_types). The
+ * `dm_get_unix_time()` dependency on T4 is satisfied via a stub
+ * (firmware/src/data_manager/data_manager_stub.cpp) until T4 itself
+ * activates in Phase 6.7+.
+ *
+ * `esp_log.h` was previously pulled in transitively through Arduino.h;
+ * with Arduino removed it has to be included explicitly. */
+#include <esp_log.h>
 #include <time.h>
 
 #include "event_logger.h"
