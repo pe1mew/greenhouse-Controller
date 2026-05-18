@@ -26,6 +26,7 @@ idf_component_register(
         "app_main_stub.cpp"
         "wifi_tickle.cpp"        # Phase 3 (2.0.0-alpha.3) — IDF-native STA + SNTP
         "https_tickle.cpp"       # Phase 4 (2.0.0-alpha.4) — IDF-native HTTPS client + esp_tls
+        "web_server_tickle.cpp"  # Phase 5 (2.0.0-alpha.5) — IDF-native esp_http_server
     INCLUDE_DIRS
         "."
     REQUIRES
@@ -63,6 +64,8 @@ idf_component_register(
         esp_http_client    # esp_http_client_init/_perform/_cleanup + event API
         esp-tls            # transitive: TLS context for HTTP_TRANSPORT_OVER_SSL
         esp_timer          # esp_timer_get_time for elapsed-ms measurement
+        # Phase 5 (2.0.0-alpha.5) — IDF-native web server.
+        esp_http_server    # httpd_start/_stop/_register_uri_handler
 )
 
 # -----------------------------------------------------------------------------
