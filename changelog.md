@@ -28,6 +28,96 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-alpha.6.10]` — 2026-05-18
+
+**Phase 6.10 — climate_control (T6) activation.** The climate control loop closes for the first time on 2.0.0. T6 wakes on TN2 (xTaskNotify from T4 after every Q6 store), snapshots cfg + measurement, runs the graduated-ventilation step algorithm (T-step from `t_avg - t_max` divided by `hyst_t / NUM_VENT_STEPS`; RH-step from `rh_avg - rh_max` if too humid, full close if too dry, neutral otherwise), resolves T vs RH conflict via `cr_priority`, and reconciles T2's actual window states to the resolved step's channel mask by posting per-channel `CMD_OPEN`/`CMD_CLOSE` to Q1. **Level-triggered every cycle** so commands lost to T2's post-open/close dwell are retried automatically. `CMD_CLOSE_ALL` is deliberately not used (reserved for safety events: T3 wind override, T2 motor alarm).
+
+End-to-end loop now live: T5 produces sensor readings on Q6 → T4 stores them and notifies T6 via TN2 → T6 evaluates and posts Q1 commands → T2 drives the relays. This is the first 2.0.0 phase where firmware autonomously controls the physical world in response to sensor data.
+
+#### What changed
+
+- **`firmware/src/climate_control/climate_control.cpp`** — dropped `#include <Arduino.h>`. The file has zero Arduino-specific calls; FreeRTOS primitives (`ulTaskNotifyTake`, `xQueueSend`, `xEventGroupGetBits`) arrive via `app_types.h`'s transitive FreeRTOS includes. ESP-IDF `esp_log.h` and `esp_task_wdt.h` were already explicit. Single-line patch.
+- **`firmware/src/CMakeLists.txt`** — added `climate_control/climate_control.cpp` to SRCS.
+- **`firmware/src/app_main_stub.cpp`**:
+  - `#include "climate_control/climate_control.h"` added.
+  - Spawn T6 after T2 with `xTaskCreatePinnedToCore(task_climate_control, "T6-climate", 6144, NULL, 5, &task_t6, tskNO_AFFINITY)`. Stack 6144 (1.20.3 prod used 4096; +2 KB headroom for IDF stack frames). Priority 5 — matches T4 (T6's notifier); same-priority round-robin means T6 picks up the TN2 notification immediately when T4 releases the CPU.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-alpha.6.10`.
+
+#### TN2 plumbing (already in place from alpha.6.7)
+
+`firmware/src/data_manager/data_manager.cpp:551` already calls `xTaskNotify(task_t6, 1u, eSetBits)` after every Q6 store. The `task_t6` handle was previously NULL (T6 dormant) — `xTaskNotify(NULL, ...)` would have done nothing. As of alpha.6.10 the handle is populated by the T6 spawn, so T4's notify now lands. No T4 code changes were required.
+
+#### Build delta vs alpha.6.9
+
+| Metric | alpha.6.9 | alpha.6.10 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1,237,005 B | **1,239,241 B** | +2,236 B |
+| Flash usage % | 59.0 % | 59.1 % | +0.1 pp |
+| RAM static | 59,336 B | **59,336 B** | 0 B |
+
+bin sha256: `1346A829125859FC8D58737D1551AB69CDF90D4BBB006FED464F074456D9FD45`
+
+The **+2,236 B flash** is T6's 462-line task body (step algorithm + conflict resolution + reconcile loop + logging). RAM static is unchanged — T6's only persistent state lives in task-local static ints (`current_step_t`, `current_step_rh`, `prev_inhibited`), all within the task stack rather than BSS.
+
+Runtime heap impact at heartbeat baseline expected: ~−6 KB free vs alpha.6.9 (T6 task stack 6 KB). Heartbeat baseline ~173,000 free (was 179,007 at alpha.6.9).
+
+#### ⚠ Physical-safety acceptance considerations
+
+T6 will issue **real CMD_OPEN/CMD_CLOSE commands** to T2 as soon as it has a measurement that exceeds the current setpoint. **On the dev unit's current state** (from alpha.6.9's last T5 reading: T=30°C, t_max_day=28°C, hyst_t=5):
+
+```
+deviation = 30 - 28 = 2°C
+step_width = max(5 / NUM_VENT_STEPS, 1) = max(5/3, 1) = 1
+raw_step = ceil(2 / 1) = 2
+→ resolved step = 2 → CMD_OPEN ch=1 + CMD_OPEN ch=2
+```
+
+So **immediately after T6's first wake-up** (which happens after T5's first Q6 reading + T4 store, ~38-40 s after boot), T2 will:
+1. Receive `CMD_OPEN ch=1` and `CMD_OPEN ch=2` from Q1.
+2. Energise `PIN_RELAY_M1_OPEN` (GPIO12) for ~21 s (M1 travel).
+3. Energise `PIN_RELAY_M2_OPEN` (GPIO14) for ~21 s (M2 travel).
+4. (M3 stays closed unless the gap to setpoint widens further.)
+
+If T_avg drifts further above setpoint, step could climb to 3 (M1 + M2 + M3), engaging the M3 relay for 171 s travel. Conversely, once T_avg drops below `t_max - hyst` (28 - 5 = 23°C), T6 will step down to 0 and post `CMD_CLOSE` for each open channel.
+
+**If the dev unit has motors physically connected, they will move.** This is the first activation where T6 autonomously decides relay state from live sensor data — the climate loop is fully live.
+
+#### Acceptance bar for alpha.6.10
+
+1. ✅ Build succeeds (no Arduino-transitive trap — single-line patch).
+2. Flash to dev unit; boot reason `ESP_RST_POWERON`.
+3. T6 spawn banner: `alpha.6.10: T6 climate_control task spawned (handle=0x...); wakes on TN2 from T4 — first decision after T5 iter 1 + T4 store`.
+4. ~1 s later: `[T6_CLI] [T6] task alive`.
+5. T5 first poll at ~38 s post-spawn produces a sensor_reading_t; T4 stores it in its ring + calls `xTaskNotify(task_t6, 1u, eSetBits)`.
+6. T6 wakes immediately and logs the evaluation line:
+   ```
+   [T6_CLI] [T6] T_avg=N t_max=N hyst=N → step_t=N | RH_avg=N rh_max=N rh_min=N hyst=N rh_en=N → step_rh=N | resolved=N (was cur_t=0 cur_rh=0)
+   ```
+   For current dev state expect: `T_avg=30 t_max=28 hyst=5 → step_t=2`.
+7. If `step_t > 0`, T6 calls `reconcile_to_step()` which queries `t2_get_window_states()` and logs:
+   ```
+   [T6_CLI] [T6] → CMD_OPEN  ch=1 (target step 2, actual=1)
+   [T6_CLI] [T6] → CMD_OPEN  ch=2 (target step 2, actual=1)
+   ```
+   (`actual=1` is `WIN_CLOSED` from T2's NVS-recovered state.)
+8. T2 receives Q1 commands and fires the M1/M2 OPEN relays:
+   ```
+   T2: CMD_OPEN ch1 from T6
+   T2: CH1: → MOVING_OPEN  (travel 26000 ms)
+   T2: CMD_OPEN ch2 from T6
+   T2: CH2: → MOVING_OPEN  (travel 26000 ms)
+   ```
+   (Travel includes the `MOTOR_TRAVEL_MARGIN_S_DEFAULT` padding on top of the 21 s NVS-saved travel.)
+9. ~26 s later T2 logs `CH1: OPEN (travel complete)` and `CH2: OPEN (travel complete)`. After 300 s dwell_open expires, T6 could begin closing if temperature drops below 23°C.
+10. T9 logs `LOG_MODE_CHANGE value_a=2` (the new step) to today's daily CSV.
+11. All earlier-phase tickles regression-clean.
+12. Run ≥ 10 min; no resets; no stack-overflow on T6.
+
+#### Watch items
+
+- **Inhibit-onset on EG1_BIT_SENSOR_FAULT_T**: T5's edge-triggered fault bits are wired, but no actual fault has been observed yet. If a Modbus comm error happens during the soak, T6 should log `[T6] inhibited (EG1=0x04) — evaluation suspended` and reset both `current_step_*` counters.
+- **`prev_resolved` calculation** (climate_control.cpp:439-443) recomputes the previous resolved step using the *current* `cr_priority` — which could theoretically yield a "phantom step change" log if `cr_priority` was updated mid-cycle via web GUI. T11 (web server route handler) isn't yet active on 2.0.0 so this is dormant. Worth a look during Phase 7 soak if a phantom MODE_CHANGE log appears.
+
 ### `[2.0.0-alpha.6.9]` — 2026-05-18
 
 **Phase 6.9 — relay_controller (T2) activation.** The window-control task goes live: sole owner of the 6 relay GPIO outputs (M1/M2/M3 × OPEN/CLOSE), per-channel FSM (UNKNOWN → CLOSED ↔ MOVING_OPEN/MOVING_CLOSE ↔ OPEN), 2 s reversal-gap enforcement, NVS-persisted terminal state (gh#18 Phase 3 calibration-skip), GPIO42 motor-alarm ISR with 75 ms debounce, 60 s post-alarm guard before re-calibration. Q1 consumer (Q1 is fed by T3 safety + T6 climate — both still dormant in this phase). Force-removes `relay_controller_stub.cpp` via the linker conflict pattern (same as `data_manager_stub.cpp` in alpha.6.7).

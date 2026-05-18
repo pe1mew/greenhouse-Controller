@@ -37,6 +37,7 @@ idf_component_register(
         # relay_controller_stub.cpp REMOVED in 2.0.0-alpha.6.9 — the real relay_controller.cpp below provides t2_get_window_states
         "relay_controller/relay_controller.cpp" # Phase 6.9 (2.0.0-alpha.6.9) — T2 relay controller (3 channels × OPEN/CLOSE + GPIO42 alarm ISR)
         "sensor_poll/sensor_poll.cpp"           # Phase 6.8 (2.0.0-alpha.6.8) — T5 sensor poll task (Modbus FG6485A+S200 → Q6)
+        "climate_control/climate_control.cpp"   # Phase 6.10 (2.0.0-alpha.6.10) — T6 climate control (TN2 reader, Q1 producer, graduated ventilation)
     INCLUDE_DIRS
         "."
     REQUIRES

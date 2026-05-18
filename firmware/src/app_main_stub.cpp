@@ -182,6 +182,7 @@
 #include "data_manager/data_manager.h"
 #include "sensor_poll/sensor_poll.h"
 #include "relay_controller/relay_controller.h"
+#include "climate_control/climate_control.h"
 #include "types/app_types.h"  /* Q1..Q6, MX1..MX5, EG1, task_t1..15, key_event_t etc. */
 
 static const char *TAG = "GHC-STUB";
@@ -991,6 +992,79 @@ extern "C" void app_main(void)
                           "boot calibration may run (up to 171 s) unless NVS "
                           "recovered all 3 channels CLOSED",
                      (void *)task_t2);
+        }
+    }
+
+    /* alpha.6.10 — spawn T6 climate_control task.
+     *
+     * T6 closes the climate control loop for the first time on 2.0.0. It
+     * blocks on ulTaskNotifyTake (TN2) — T4 calls
+     * xTaskNotify(task_t6, 1u, eSetBits) every time T4 stores a new
+     * sensor_reading_t from Q6 (T5 producer). On each wake-up T6:
+     *
+     *   1. Reads EG1 inhibit bits (WIND_OVERRIDE | MOTOR_ALARM |
+     *      SENSOR_FAULT_T) — skips if any set.
+     *   2. Snapshots cfg_shadow_t (dm_cfg_snapshot, MX4) and current
+     *      measurement (dm_meas_snapshot, MX2).
+     *   3. Selects active setpoints from cfg.is_daytime.
+     *   4. Runs the graduated-ventilation step algorithm: step_t from
+     *      T_avg/t_max/hyst_t; step_rh from RH_avg/rh_max/rh_min/hyst_rh
+     *      (or VENT_STEP_NEUTRAL if rh_ctrl_en==0).
+     *   5. Resolves T vs RH conflict via vent_resolve_conflict()
+     *      (cr_priority from cfg).
+     *   6. Reconciles to step: queries t2_get_window_states(), posts
+     *      CMD_OPEN/CMD_CLOSE for any channel whose actual state doesn't
+     *      match the resolved step's channel mask. Level-triggered —
+     *      retries dwell-deferred commands every cycle. CMD_CLOSE_ALL is
+     *      NOT used here (reserved for safety events: T3 wind override,
+     *      T2 motor alarm).
+     *   7. Logs LOG_MODE_CHANGE on step transitions.
+     *
+     * Stack: 6 KB — modest local state, no large stack buffers. T6's
+     * static state (current_step_t, current_step_rh, prev_inhibited)
+     * is task-local int/bool, ~12 bytes total. Compared to 1.20.3 prod's
+     * 4 KB stack we add 2 KB headroom for IDF's slightly heavier
+     * frames.
+     *
+     * Priority 5 — same as T4 and T5. T6 wakes on T4's notification,
+     * so matching priority avoids the WoT (wake-on-task) priority
+     * inversion (T4's notify happens at T4's priority; T6 picks up
+     * immediately since round-robin within priority class).
+     *
+     * Core pinning: tskNO_AFFINITY (1.20.3 prod pinned to core 1;
+     * defer pinning until Phase 7 soak).
+     *
+     * Dependencies satisfied:
+     *   - T4 alpha.6.7 — provides TN2 (xTaskNotify on Q6 update),
+     *     dm_cfg_snapshot, dm_meas_snapshot.
+     *   - T2 alpha.6.9 — provides t2_get_window_states (real, not stub).
+     *   - T5 alpha.6.8 — produces Q6 readings that drive T4's notify.
+     *   - T9 alpha.6.6 — log_post for LOG_MODE_CHANGE.
+     *   - EG1 bits — declared in app_types.h.
+     *   - Q1 — T2's consumer queue (depth 8, created alpha.6.1).
+     *
+     * **Physical-safety acceptance note (alpha.6.10)**: T6 will issue
+     * CMD_OPEN commands to T2 whenever T_avg > t_max. Current dev-unit
+     * conditions (T=30°C, t_max_day=28°C, hyst_t=5) yield resolved
+     * step = 2 → M1 + M2 OPEN. T2 will fire those relays, motors (if
+     * connected) drive to OPEN. Step 3 (M3 added) engages if T_avg
+     * drifts further above setpoint. Climate loop is now LIVE.
+     */
+    {
+        BaseType_t rc = xTaskCreatePinnedToCore(
+            task_climate_control,
+            "T6-climate",
+            6144,                  /* stack words */
+            NULL,
+            5,                     /* priority — matches T4 producer */
+            &task_t6,
+            tskNO_AFFINITY);
+        if (rc != pdPASS) {
+            ESP_LOGE(TAG, "alpha.6.10: xTaskCreate T6 failed (rc=%d)", (int)rc);
+        } else {
+            ESP_LOGI(TAG, "alpha.6.10: T6 climate_control task spawned (handle=%p); "
+                          "wakes on TN2 from T4 — first decision after T5 iter 1 + T4 store",
+                     (void *)task_t6);
         }
     }
 
