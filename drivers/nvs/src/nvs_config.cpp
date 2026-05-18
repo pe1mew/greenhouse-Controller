@@ -11,7 +11,9 @@
 #endif
 
 #include "nvs_config.h"
-#include <inttypes.h>
+/* <inttypes.h> removed in 2.0.0-alpha.6.5 — was only used by the
+ * log_slot_key() helper (PRIu32) inside the NVS-ring code that the
+ * same alpha retired. */
 #include <string.h>
 #include <stdio.h>
 
@@ -228,80 +230,17 @@ nvs_cfg_status_t nvs_cfg_get_str_or_default(const char *ns, const char *key,
 }
 
 /* ---------------------------------------------------------------------------
- * Ring-buffer event log
+ * Ring-buffer event log — REMOVED in 2.0.0-alpha.6.5.
+ *
+ * The NVS-backed event-log ring (gh#22) was retired as redundant with the
+ * SD-card CSV logging in T9 (event_logger). All three functions
+ * (nvs_log_append / nvs_log_read / nvs_log_count) plus the NVS_NS_LOG
+ * namespace, the log_slot_key helper, and the CONFIG_NVS_LOG_CAPACITY
+ * build flag were removed in the same alpha. Documentation followed in
+ * alpha.6.5.1+ (FDS / TSDS / tasks.md / manual updates).
+ *
+ * The previously-stored ring entries persist as stale data in the NVS
+ * `log` namespace on units upgraded from 1.20.x. They are harmless
+ * (no code reads them) and will be naturally evicted as other NVS
+ * namespaces consume the freed pages over time.
  * --------------------------------------------------------------------------- */
-
-static void log_slot_key(char *out, size_t out_len, uint32_t slot)
-{
-    snprintf(out, out_len, "e%04" PRIu32, slot);
-}
-
-nvs_cfg_status_t nvs_log_append(const void *entry, size_t entry_size)
-{
-    /* Read head and count */
-    int32_t head  = 0;
-    int32_t count = 0;
-    nvs_cfg_get_i32_or_default(NVS_NS_LOG, "head",  0, &head);
-    nvs_cfg_get_i32_or_default(NVS_NS_LOG, "count", 0, &count);
-
-    /* Write entry at current head slot */
-    char slot_key[8];
-    log_slot_key(slot_key, sizeof(slot_key), (uint32_t)head);
-    nvs_cfg_status_t st = nvs_cfg_set_blob(NVS_NS_LOG, slot_key,
-                                            entry, entry_size);
-    if (st != NVS_CFG_OK) return st;
-
-    /* Advance head (wrap) */
-    head = (head + 1) % (int32_t)CONFIG_NVS_LOG_CAPACITY;
-
-    /* Grow count until capacity reached */
-    if (count < (int32_t)CONFIG_NVS_LOG_CAPACITY) count++;
-
-    nvs_cfg_set_i32(NVS_NS_LOG, "head",  head);
-    nvs_cfg_set_i32(NVS_NS_LOG, "count", count);
-    return NVS_CFG_OK;
-}
-
-nvs_cfg_status_t nvs_log_read(uint32_t offset, void *buf,
-                                uint32_t count, uint32_t *count_out)
-{
-    int32_t head  = 0;
-    int32_t total = 0;
-    nvs_cfg_get_i32_or_default(NVS_NS_LOG, "head",  0, &head);
-    nvs_cfg_get_i32_or_default(NVS_NS_LOG, "count", 0, &total);
-
-    if (offset >= (uint32_t)total) { *count_out = 0; return NVS_CFG_OK; }
-
-    uint32_t available = (uint32_t)total - offset;
-    if (count > available) count = available;
-
-    /*
-     * Oldest entry slot = (head - total + CONFIG_NVS_LOG_CAPACITY) % capacity
-     * Logical offset 0 maps to that slot; each successive offset adds 1 (mod cap).
-     */
-    uint32_t capacity = (uint32_t)CONFIG_NVS_LOG_CAPACITY;
-    uint32_t oldest   = ((uint32_t)head + capacity - (uint32_t)total) % capacity;
-
-    uint8_t *dst = (uint8_t *)buf;
-    uint32_t read = 0;
-    for (uint32_t i = 0; i < count; i++) {
-        uint32_t slot = (oldest + offset + i) % capacity;
-        char slot_key[8];
-        log_slot_key(slot_key, sizeof(slot_key), slot);
-        size_t sz = 256;   /* caller provides sufficient buffer per entry */
-        nvs_cfg_status_t st = nvs_cfg_get_blob(NVS_NS_LOG, slot_key,
-                                                dst, &sz);
-        if (st != NVS_CFG_OK) break;
-        dst += sz;
-        read++;
-    }
-    *count_out = read;
-    return NVS_CFG_OK;
-}
-
-uint32_t nvs_log_count(void)
-{
-    int32_t count = 0;
-    nvs_cfg_get_i32(NVS_NS_LOG, "count", &count);
-    return (count > 0) ? (uint32_t)count : 0u;
-}

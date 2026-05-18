@@ -292,8 +292,9 @@ void event_logger_sd_unmount(void);
  *  2. Calls `xQueueReceive(Q3, &evt, 0)` in a loop to drain all remaining
  *     immediately-available events without blocking.
  *  3. For each event:
- *     - Appends a 12-byte binary record to the NVS ring buffer via
- *       `nvs_log_append()` (always; fallback store when SD is absent).
+ *     - **2.0.0-alpha.6.5**: the NVS-backed event-log ringbuffer (gh#22)
+ *       was retired here. Events are no longer mirrored to NVS — SD is
+ *       the sole persistent store.
  *     - If an SD card is mounted, appends a CSV line to the current file
  *       via `storage_sd_write_append()`; rotates to a new file when the
  *       current file reaches 512 KB; deletes the oldest file when more

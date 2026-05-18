@@ -130,52 +130,12 @@ void setup()
           t_max2 == 350);
 
     /* -----------------------------------------------------------------
-     * HW-NVS-006 — log ring buffer appends
-     * Reset the log namespace first so this test is repeatable across
-     * multiple power cycles without needing a full flash erase.
+     * HW-NVS-006..008 (NVS log ringbuffer hardware tests) — REMOVED in
+     * 2.0.0-alpha.6.5 along with the underlying nvs_log_* API. The
+     * NVS-backed event-log ring (gh#22) was retired as redundant with
+     * T9's SD CSV logging. See drivers/nvs/src/nvs_config.{h,cpp} for
+     * the design-change rationale.
      * ----------------------------------------------------------------- */
-    nvs_cfg_erase_namespace(NVS_NS_LOG);
-    for (int i = 0; i < 10; i++) {
-        uint8_t entry[4] = {(uint8_t)i, 0xAB, 0xCD, 0xEF};
-        nvs_log_append(entry, sizeof(entry));
-    }
-    uint32_t log_cnt = nvs_log_count();
-    Serial0.print("[INFO] log_count after 10 appends = ");
-    Serial0.println(log_cnt);
-    check("HW-NVS-006", "log ring buffer count = 10", log_cnt == 10);
-
-    /* -----------------------------------------------------------------
-     * HW-NVS-007 — log read returns correct entry bytes
-     * ----------------------------------------------------------------- */
-    uint8_t  read_buf[4 * 5] = {0};
-    uint32_t n_read           = 0;
-    nvs_log_read(0, read_buf, 5, &n_read);
-    Serial0.print("[INFO] log entries read = ");
-    Serial0.print(n_read);
-    Serial0.print("; entry[0][0] = 0x");
-    Serial0.println(read_buf[0], HEX);
-    check("HW-NVS-007", "log read returns 5 entries; entry[0][0]=0x00",
-          n_read == 5 && read_buf[0] == 0x00);
-
-    /* -----------------------------------------------------------------
-     * HW-NVS-008 — ring buffer caps at capacity
-     * (Appending 105 entries total: 10 already written above, 95 more here)
-     * CONFIG_NVS_LOG_CAPACITY is set to 100 via build flag for the hardware
-     * test so that all entries fit within the default 20 KB NVS partition.
-     * The production default is 1000; behaviour is identical at any capacity.
-     * ----------------------------------------------------------------- */
-    Serial0.print("[INFO] CONFIG_NVS_LOG_CAPACITY = ");
-    Serial0.println((int)CONFIG_NVS_LOG_CAPACITY);
-    Serial0.println("[INFO] Appending 95 more log entries (total 105) ...");
-    for (int i = 10; i < 105; i++) {
-        uint8_t e = (uint8_t)(i & 0xFF);
-        nvs_log_append(&e, 1);
-    }
-    uint32_t log_cnt2 = nvs_log_count();
-    Serial0.print("[INFO] log_count after 105 appends = ");
-    Serial0.println(log_cnt2);
-    check("HW-NVS-008", "log count capped at CONFIG_NVS_LOG_CAPACITY",
-          log_cnt2 == (uint32_t)CONFIG_NVS_LOG_CAPACITY);
 
     /* -----------------------------------------------------------------
      * HW-NVS-009 — pre-power-cycle state
