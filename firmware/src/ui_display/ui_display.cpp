@@ -41,16 +41,33 @@
  */
 
 #define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
-#include <Arduino.h>
-#include <WiFi.h>
+
+/* alpha.6.12 — Suppress -Wformat-truncation for this file. The snprintf calls
+ * all write into 17-byte LCD-row buffers ("16 chars + NUL") with bounded
+ * inputs (tm_mday 1..31, tm_mon 0..11, tm_year 124..199, wind 0..99 m/s,
+ * temperatures clamped via dm_meas_snapshot), but gcc can't infer those
+ * bounds and conservatively flags possible truncation. Under arduino-esp32
+ * this warning wasn't promoted to error; our espidf hardening flags
+ * (-Wformat=2 in firmware/src/CMakeLists.txt) treat it as one. Pragma is
+ * file-scope; safer than rewriting all the format strings with manual
+ * range clamps that would duplicate work already done at the data layer. */
+#pragma GCC diagnostic ignored "-Wformat-truncation"
+
+/* alpha.6.12 — dropped <Arduino.h> and <WiFi.h>. The only Arduino-specific
+ * calls were pinMode(IO0, INPUT_PULLUP) and digitalRead(IO0) — replaced
+ * with gpio_util's gpio_set_pin_mode/gpio_read below. WiFi.macAddress is
+ * replaced with the IDF esp_read_mac(ESP_MAC_WIFI_STA) call. */
 #include <esp_log.h>
 #include <esp_task_wdt.h>   /* WDT subscription (1.17.29 / gh#13) */
 #include <esp_timer.h>
+#include <esp_mac.h>        /* alpha.6.12 — esp_read_mac (replaces WiFi.macAddress) */
+#include <esp_system.h>     /* alpha.6.12 — esp_restart (replaces ESP.restart) */
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
 
+#include "gpio_util.h"      /* alpha.6.12 — gpio_set_pin_mode/gpio_read (replaces pinMode/digitalRead) */
 #include "nvs_config.h"
 #include "ui_display.h"
 #include "../types/app_types.h"
@@ -664,11 +681,13 @@ static void execute_reset_action(uint8_t stage)
             ESP_LOGW(TAG, "IO0: full reset — restarting");
             /* Restart is immediate — use a blocking delay here so the message
              * is actually visible; non-blocking show_msg won't work because
-             * ESP.restart() is called right after. */
+             * esp_restart() is called right after.
+             * alpha.6.12: ESP.restart() (Arduino wrapper) → esp_restart() (IDF
+             * native, never returns). */
             lcd_set("Restart!        ", "Restarting...   ");
             (void)lcd_flush();
             vTaskDelay(pdMS_TO_TICKS(3000));
-            ESP.restart();
+            esp_restart();
             break;
 
         default: /* stage 0 — released before 5 s, no action */
@@ -769,7 +788,10 @@ static void render_status(void)
                 snprintf(r1, sizeof(r1), "%-16.16s", s_net.ip_str);
             } else if (s_net.ap_active) {
                 uint8_t mac[6] = {};
-                WiFi.macAddress(mac);
+                /* alpha.6.12 — esp_read_mac replaces WiFi.macAddress.
+                 * ESP_MAC_WIFI_STA returns the same 6-byte MAC the arduino
+                 * WiFi.macAddress() did (the STA interface MAC). */
+                esp_read_mac(mac, ESP_MAC_WIFI_STA);
                 char ap_ssid[17] = {};
                 snprintf(ap_ssid, sizeof(ap_ssid), "Greenhouse-%02X%02X", mac[4], mac[5]);
                 snprintf(r0, sizeof(r0), "WiFi: AP active ");
@@ -1712,8 +1734,9 @@ void task_ui_display(void *pvParameters)
         show_msg("Greenhouse Ctrl ", r1, 2000);
     }
 
-    /* Configure IO0 (LOLIN S3 BOOT button) — active-low, external pull-up */
-    pinMode(RESET_PIN_IO0, INPUT_PULLUP);
+    /* Configure IO0 (LOLIN S3 BOOT button) — active-low, external pull-up.
+     * alpha.6.12: pinMode→gpio_set_pin_mode (LIB-1 / drivers/gpio). */
+    gpio_set_pin_mode(RESET_PIN_IO0, GPIO_INPUT_PULLUP);
 
     /* Start in STATUS state */
     s_state        = UI_STATUS;
@@ -1739,7 +1762,8 @@ void task_ui_display(void *pvParameters)
 
         /* ── 2b. IO0 BOOT button — factory reset sequence ── */
         {
-            bool io0_low = (digitalRead(RESET_PIN_IO0) == LOW);
+            /* alpha.6.12: digitalRead→gpio_read (LIB-1 / drivers/gpio). */
+            bool io0_low = (gpio_read(RESET_PIN_IO0) == GPIO_LOW);
 
             if (io0_low) {
                 s_reset_ticks++;

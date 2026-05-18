@@ -20,7 +20,9 @@
  */
 
 #define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
-#include <Arduino.h>
+/* alpha.6.13 — dropped <Arduino.h>. T13 has zero Arduino-specific calls;
+ * everything (esp_ota_*, esp_partition_*, FreeRTOS timers, mbedtls) was
+ * already IDF-native in the 1.20.3 source. Single-line patch. */
 #include <esp_log.h>
 #include <esp_ota_ops.h>
 #include <esp_heap_caps.h>
@@ -657,7 +659,12 @@ void task_ota_manager(void *pvParameters)
             int nfiles2 = extract_zip_store(zip_buf, zip_size,
                                             active_lfs, zip_err2, sizeof(zip_err2));
             if (nfiles2 > 0) {
-                char fw_ver[16] = FIRMWARE_VERSION;
+                /* alpha.6.13: buffer grown from 16 to 32 — modern alpha tag
+                 * strings like "2.0.0-alpha.6.13" are 17 chars including NUL
+                 * and overflow the original 16-byte buffer with -fpermissive
+                 * promoted to error under espidf hardening flags. 32 gives
+                 * headroom for future tag patterns up to "2.0.0-alpha.10.99". */
+                char fw_ver[32] = FIRMWARE_VERSION;
                 nvs_cfg_get_str(NVS_NS_SYSTEM, NVS_KEY_FW_VERSION, fw_ver, sizeof(fw_ver));
                 char manifest[128];
                 snprintf(manifest, sizeof(manifest),

@@ -28,6 +28,159 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-alpha.6.13]` — 2026-05-18
+
+**Phase 6.13 — ota_manager (T13) compiled in.** The OTA Manager source migrates with a single Arduino.h drop. T13 is **spawned on demand** by T11 (web server) when an asset-ZIP upload arrives — T11 is still the alpha.5 tickle stub, so T13 doesn't actually run yet, but all its symbols (ota_check_rollback, ota_firmware_*, ota_assets_*, ota_get_*, task_ota_manager) are now linked in and ready for Phase 6.N to wire up.
+
+The ota_manager subsystem was deliberately already IDF-native in 1.20.3 (per migration plan §"Existing functions and patterns to reuse — `esp_ota_*` OTA path"). No spawn block in app_main_stub.cpp — T13 isn't a long-lived task; it's transient, started on each asset-ZIP write and exits when done.
+
+#### What changed
+
+- **`firmware/src/ota_manager/ota_manager.cpp`** — two single-line patches:
+  - Dropped `#include <Arduino.h>`. T13 has zero Arduino-specific calls (esp_ota_*, esp_partition_*, FreeRTOS timers, mbedtls all native).
+  - `char fw_ver[16] = FIRMWARE_VERSION;` (line 662) → `char fw_ver[32] = FIRMWARE_VERSION;`. The 1.20.3 version string was "1.20.3" (6 chars), well under 16. The migration's alpha tags grew to "2.0.0-alpha.6.13" (16 chars + NUL = 17 bytes) which overflows the 16-byte buffer under `-fpermissive` promoted to error. Buffer grown to 32 for headroom through 2.0.0-alpha.X.Y / 2.0.0-rc.N / 2.x.x patterns.
+- **`firmware/src/CMakeLists.txt`** — added `ota_manager/ota_manager.cpp` to SRCS.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-alpha.6.13`.
+
+#### What does NOT change (deferred to Phase 6.N)
+
+- **`ota_check_rollback()` not called at boot** — would increment NVS `system/ota_fail_cnt` every reboot. Without `ota_mark_healthy()` (called by T1 watchdog after 30 s healthy uptime — T1 is dormant in this phase), the counter would hit 3 within 3 reboots and trigger rollback to the previous OTA bank. Wiring `ota_check_rollback()` waits until T1 lands in Phase 6.N.
+- **T13 task body never executes** — only T11 spawns T13, and T11 is still the alpha.5 tickle. The functions are linked in but dead-code-eliminated at runtime until T11 is fully ported.
+
+#### Build delta vs alpha.6.12.1
+
+| Metric | alpha.6.12.1 | alpha.6.13 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1,256,653 B | **1,258,833 B** | +2,180 B |
+| Flash usage % | 59.9 % | 60.0 % | +0.1 pp |
+| RAM static | 59,552 B | **59,872 B** | +320 B |
+
+bin sha256: `C8DD03D764E3011BDBD24BB8AE9CD2D06D5E1DB59504051B6CFEC895F7180A33`
+
+The **+2,180 B flash** is T13's 713-line body (FW + assets state machines, ZIP STORE extractor, rollback logic). RAM static delta +320 B — the s_error[80] + module-level state (s_state, s_progress, s_mx pointer, partition pointers, fail-timer handle).
+
+#### Acceptance bar for alpha.6.13
+
+1. ✅ Build succeeds (after `fw_ver` buffer fix).
+2. ✅ All T13 symbols resolve at link time (no undefined-reference errors).
+3. Flash & boot: existing T2/T3/T4/T5/T6/T7/T8/T9 chain regression-clean. Heartbeat shows ~157,000 free internal heap (was ~157,000 at 6.12.1 — T13's modules add a few hundred bytes to BSS but no live tasks).
+4. **No `[T13_OTA]` log lines** during normal operation (T13 doesn't spawn until T11 calls it).
+5. T13 is **callable but dormant** until Phase 6.N wires up T11 + T1.
+
+#### Phase 6 status — last single-task activation
+
+After alpha.6.13, **every task source file is in the build**. The remaining work is Phase 6.N (final assembly):
+- Replace `app_main_stub.cpp` with the real `main.cpp` task graph.
+- Replace `wifi_tickle.cpp` stub with real `network_manager` task (T10, spawning + event handler permanently).
+- Replace `https_tickle.cpp` stub with real `status_post.cpp` task graph (T14 + T15 supervisor + force-removes status_post_stub.cpp).
+- Replace `web_server_tickle.cpp` stub with full `web_server.cpp` + 25 route handlers.
+- Wire `ota_check_rollback()` at boot + `ota_mark_healthy()` from T1 watchdog after 30 s healthy uptime.
+
+The Phase 6 stage table now reads: 1, 2, 3, 4, 5, 6.0–6.13 done; 6.N pending.
+
+### `[2.0.0-alpha.6.12.1]` — 2026-05-18
+
+**Bug fix — missing `pin_auth_init()` call on normal boot.** Production 1.20.3's `setup()` calls `pin_auth_init()` during boot to initialise the PIN auth subsystem (salt + default hashes on first boot; sets `s_initialized=true`). The alpha.6.12 port to `app_main_stub.cpp` missed this call — `pin_auth_init()` was only present in `execute_reset_action()` (T8's factory-reset handler at ui_display.cpp:651/665/679). On a **factory-fresh** unit's first boot under alpha.6.12, the default farmer PIN "1234" was therefore rejected by `pin_auth_verify()` because `s_initialized==false` → `PIN_AUTH_ERR_INIT`. The stage-1 IO0-button factory reset masked the bug by calling `pin_auth_init()` as part of the reset action, after which the default PIN worked.
+
+**Correction to the alpha.6.12 acceptance note**: my earlier explanation attributed the PIN failure to "the dev unit's NVS already holds the operator's custom PIN from 1.20.3 — proves cross-firmware NVS continuity." That diagnosis was **wrong**: the user clarified the dev unit was never used before (no prior 1.20.3 NVS data). The PIN failure was an actual regression in the alpha.6.12 port, not a cross-firmware-NVS demonstration. (The cross-firmware claim still holds for cfg setpoints alpha.6.7 and channel state alpha.6.9, where the dev unit's behaviour confirmed it — but pin_auth was a different bug on a clean unit.)
+
+#### What changed
+
+- **`firmware/src/app_main_stub.cpp`**:
+  - `#include "auth/pin_auth.h"` added (next to the other include block).
+  - Single `pin_auth_init()` call inserted immediately after `nvs_cfg_init()` (so it runs ~1.05 s after boot, well before T8 spawns at ~1.78 s). Return value logged: `pin_auth_init() returned 0 (OK — default PINs ready)`.
+  - `pin_auth_init()` is idempotent: first boot generates salt + writes default hashes; subsequent boots just validate the salt + farmer-hash exist and set `s_initialized=true`.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-alpha.6.12.1`.
+
+The historical `pin_auth_init()` calls in `execute_reset_action()` are deliberately left in place — they're correct behaviour for the factory-reset path (re-seed defaults after the namespace erase). The bug was only the missing **boot-time** call.
+
+#### Build trap encountered
+
+`-Werror=trigraphs` flagged the string literal `"locked out (??)"` because `??)` is a C trigraph for `]`. Fixed by changing the string to `"locked out (unexpected)"`. Same `-Wformat=2`-family hardening that bit ui_display.cpp with `-Werror=format-truncation` in alpha.6.12.
+
+#### Build delta vs alpha.6.12
+
+| Metric | alpha.6.12 | alpha.6.12.1 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1,257,021 B | **1,256,653 B** | −368 B |
+| Flash usage % | 59.9 % | 59.9 % | unchanged at 1 dp |
+| RAM static | 59,552 B | **59,552 B** | 0 B |
+
+bin sha256: `CA54F93FCB5773894681687220B7D9679A64404F88245E31FFE1A8BDD17A701C`
+
+Slightly smaller binary (string-pool dedup or compiler folding around the new function call). RAM unchanged.
+
+#### Acceptance bar for alpha.6.12.1
+
+1. ✅ Build succeeds (after trigraph fix).
+2. Flash to dev unit. Boot log should show, immediately after the `nvs_cfg_init() returned 0 (OK)` line:
+   ```
+   pin_auth_init() returned 0 (OK — default PINs ready)
+   ```
+3. On a **factory-fresh** unit (no prior pin_auth NVS data), the default farmer PIN "1234" should now work **on first attempt**, with no IO0 factory reset needed.
+4. On a unit that already has pin_auth NVS data (salt + hashes from a previous boot), pin_auth_init takes the "salt present" branch — existing hashes preserved; previously-configured custom PIN still works. **Idempotent across reboots.**
+5. T8 / T6 / T2 / T5 / T9 / T3 chain regression-clean.
+
+### `[2.0.0-alpha.6.12]` — 2026-05-18
+
+**Phase 6.12 — ui_display (T8) activation.** The LCD + keypad UI task goes live. T8 owns the 16×2 AiP31068L LCD (under MX1), consumes Q2 (key events from T7), drives the menu FSM (status pages + setpoint editing + PIN session + factory-reset via IO0 BOOT button held 20 s), posts Q4 config updates (consumed by T4) and Q3 LOG_CFG_CHANGE / LOG_PIN_AUTH events (consumed by T9). The 1887-line task migrates with just **5 single-line changes** (Arduino call swaps + esp_restart) plus a file-scope -Wformat-truncation pragma.
+
+#### What changed
+
+- **`firmware/src/ui_display/ui_display.cpp`** — five surgical patches:
+  - Dropped `#include <Arduino.h>` + `#include <WiFi.h>`.
+  - Added `#include <esp_mac.h>` (for `esp_read_mac`), `#include <esp_system.h>` (for `esp_restart`), `#include "gpio_util.h"` (for `gpio_set_pin_mode` / `gpio_read`).
+  - `WiFi.macAddress(mac)` (line 772) → `esp_read_mac(mac, ESP_MAC_WIFI_STA)`. Same 6-byte STA MAC; same downstream behaviour (LCD shows AP SSID `Greenhouse-XXXX` from mac[4..5]).
+  - `pinMode(RESET_PIN_IO0, INPUT_PULLUP)` (line 1716) → `gpio_set_pin_mode(RESET_PIN_IO0, GPIO_INPUT_PULLUP)`.
+  - `digitalRead(RESET_PIN_IO0) == LOW` (line 1742) → `gpio_read(RESET_PIN_IO0) == GPIO_LOW`.
+  - `ESP.restart()` (line 675; the factory-reset finalizer) → `esp_restart()`.
+  - File-scope `#pragma GCC diagnostic ignored "-Wformat-truncation"` added: the per-component `-Wformat=2` hardening flag (in `firmware/src/CMakeLists.txt`) treats `snprintf` truncation warnings as errors, and gcc can't infer the bounded ranges of `time_t` / cfg / sensor struct fields, so it conservatively flags 8 snprintf call-sites as potentially-truncating. Under arduino-esp32 the warning wasn't promoted to error. The pragma is the surgical fix that leaves the well-tested production code unchanged; the alternative would be 8 manual range-clamps before each snprintf.
+- **`firmware/src/auth/pin_auth.cpp`** — added to SRCS. The file is framework-agnostic (no Arduino dependencies). Provides PIN session table, lockout counter, SHA-256 hash verify via mbedtls.
+- **`firmware/src/status_post/status_post_stub.cpp`** (new) — provides `bool status_post_backoff_active(void) { return false; }`. T8 calls this from the WiFi status page (LCD shows "BK" suffix when backoff is active). Designed for forcing-removal when the full status_post.cpp activates in Phase 6.N — same stub-and-linker-conflict pattern as `data_manager_stub.cpp` (alpha.6.6→6.7) and `relay_controller_stub.cpp` (alpha.6.7→6.9).
+- **`firmware/src/CMakeLists.txt`** — added `ui_display/ui_display.cpp`, `auth/pin_auth.cpp`, `status_post/status_post_stub.cpp` to SRCS.
+- **`firmware/src/app_main_stub.cpp`**:
+  - `#include "ui_display/ui_display.h"` added.
+  - Spawn T8 after T3 with `xTaskCreatePinnedToCore(task_ui_display, "T8-ui", 8192, NULL, 4, &task_t8, tskNO_AFFINITY)`. Stack 8192 matches 1.20.3 prod (T8 has more locals than T6/T3 — LCD char buffers, menu state arrays, PIN scratch). Priority 4 — below safety-critical T2/T3 (6) and producer/consumer pair T4/T5/T6 (5), above T7 (3). UI is latency-tolerant; ~UI_LOOP_MS scheduling is far inside user perception threshold.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-alpha.6.12`.
+
+#### Build traps encountered
+
+Two build errors were caught and fixed before the successful build:
+1. `'ESP' was not declared in this scope` at line 675 — `ESP.restart()` is Arduino-only. Fixed by replacing with `esp_restart()` + adding `#include <esp_system.h>`.
+2. **8 × `-Werror=format-truncation`** at various LCD render functions — fixed with the file-scope pragma documented above.
+
+Same "Arduino-transitive-include trap" pattern as previous activations (alpha.6.6 added `esp_log.h` explicit; alpha.6.7 added `time.h` + `sys/time.h`). T8's larger surface area meant more traps surfaced; expect similar density in future activations of large legacy files.
+
+#### Build delta vs alpha.6.11
+
+| Metric | alpha.6.11 | alpha.6.12 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1,240,941 B | **1,257,021 B** | +16,080 B |
+| Flash usage % | 59.2 % | 59.9 % | +0.7 pp |
+| RAM static | 59,336 B | **59,552 B** | +216 B |
+
+bin sha256: `54D62F377CE08CA515FE119EBFD00B0CD099022B70C4A8D7B3DD2A14420AB52D`
+
+The **+16,080 B flash** is T8 (1887 lines: LCD menu FSM, status pages, PIN flow, factory-reset, mode-change handling) + pin_auth.cpp (~200 lines, SHA-256 verification) + status_post_stub.cpp (1 line). RAM static delta is +216 B — mostly T8's static menu state and a small portion of pin_auth's session table.
+
+Runtime heap impact at heartbeat baseline expected: ~−8 KB free vs alpha.6.11 (T8 task stack 8 KB). Heartbeat baseline ~158,000 free (was 165,927 at alpha.6.11).
+
+#### Acceptance bar for alpha.6.12
+
+1. ✅ Build succeeds (after `esp_restart` + `-Wformat-truncation` pragma fixes).
+2. Flash to dev unit; boot reason `ESP_RST_POWERON`.
+3. Banner: `Greenhouse Controller v2.0.0-alpha.6.12`.
+4. **LCD boot sequence**:
+   - First the app_main_stub's LCD probe writes `ESP-IDF stub OK` / `v2.0.0-alpha.6.12` (~uptime 1.3 s).
+   - Then T8's task body writes splash `Greenhouse Ctrl ` / `v2.0.0-alph Init..` for 2 s.
+   - After splash, T8 enters STATUS state and starts rotating through status pages every UI_STATUS_ROTATE_MS.
+5. **T8 spawn banner**: `alpha.6.12: T8 ui_display task spawned (handle=0x...); LCD live, Q2 keypad consumer, Q4/Q3 producer`.
+6. **Keypad input now drives menu**: pressing keys advances through the menu hierarchy (max 4 presses to any first-level setting per design). Editing a setpoint via the menu causes T8 to post Q4 → T4 absorbs the update → next cfg_shadow_t snapshot reflects the new value → next T6 cycle uses the new setpoint.
+7. **Factory-reset test (optional)**: hold IO0 BOOT button for 20 s. LCD shows progress bar; if held to completion, full reset executes. Skip if you don't want to clear NVS.
+8. T3/T6/T2/T5/T9 chain continues unchanged from alpha.6.11.
+9. All earlier-phase tickles regression-clean.
+10. Run ≥ 10 min; no resets; no stack-overflow on T8.
+
 ### `[2.0.0-alpha.6.11]` — 2026-05-18
 
 **Phase 6.11 — safety_monitor (T3) activation.** Wind-safety override task goes live. T3 wakes on TN1 (xTaskNotify from T4, same notify event that drives T6), snapshots latest measurement + cfg, evaluates wind speed against `v_max` and direction against `[dir_excl_low, dir_excl_high]` exclusion zone (with 0°/360° wrap support). On unsafe onset: sets `EG1_BIT_WIND_OVERRIDE`, posts `CMD_CLOSE_ALL` (SRC_T3) to Q1, logs `LOG_ALARM`. On safe clearance: clears the EG1 bit, posts `CMD_RESUME`, logs clearance. `EG1_BIT_SENSOR_FAULT_W` is treated as worst-case (safe-fail per FR-W04 / TSDS §5.12).
