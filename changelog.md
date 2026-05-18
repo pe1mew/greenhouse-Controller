@@ -28,6 +28,96 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-alpha.6.18]` — 2026-05-18
+
+**Phase 6.16-δ — T11 config routes (5 of 18 remaining routes).** Adds the 5 routes that let the web GUI read + write configuration:
+
+- `GET /api/config` — full `cfg_shadow_t` dump as JSON (auth required, any role)
+- `GET /api/config/limits` — per-key {min,max} bounds (PUBLIC, used for client-side input validation)
+- `POST /api/config` — `{ns, key, value | str_value}` with farmer/admin policy
+- `POST /api/wifi` — `{ssid, psk, ap_psk}` (admin only); writes NVS + schedules 1-s deferred restart so T10 picks up the new credentials
+- `POST /api/pin` — `{role, pin}` (admin only); calls `pin_auth_set` to update the salted SHA-256 hash
+
+**T11 surface grows from 9 → 14 routes** (4 static + 3 auth + 2 status + 5 config). Roughly 60 % through the original 25-route plan.
+
+#### Farmer-vs-admin policy (mirrors 1.20.3 exactly)
+
+The new `is_farmer_key(ns, key)` helper consults two compile-time tables:
+```
+FARMER_NS = "climate"
+FARMER_KEYS = { t_max_day, t_min_day, t_max_ngt, t_min_ngt,
+                rh_max_day, rh_min_day, rh_max_ngt, rh_min_ngt,
+                rh_ctrl_en, cr_priority }
+FARMER_WIND_KEYS in ns="wind" = { wind_prot_en }
+```
+Anything else (motor, system, wifi, mqtt) requires admin. Farmer-level requests for admin-only keys return **403 forbidden** (vs 401 for missing/invalid session).
+
+`POST /api/wifi` and `POST /api/pin` use a new inline helper `admin_only_or_send_error(req)` that distinguishes "no session" (401) from "wrong role" (403). The general `require_auth(req, min_role)` helper used by the auth-required GET routes still returns 401 for both cases (matching 1.20.3 behaviour for unauthenticated API hits).
+
+#### What changed
+
+- **`firmware/src/web_server/web_server.cpp`** — added 5 handlers + `FARMER_KEYS`/`FARMER_WIND_KEYS` tables + `is_farmer_key` helper + `read_request_body` helper + `wifi_apply_restart_task` one-shot + `admin_only_or_send_error` helper. ~270 lines net. Includes `esp_mac.h` for `esp_read_mac` (AP-SSID generation), `esp_system.h` for `esp_restart()`, `nvs_config.h` for the wifi-cred + fw_ver reads, `cfg_limits.h` for the bounds-stringification.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-alpha.6.18`.
+
+#### Build traps encountered
+
+Two caught during iteration:
+1. **`/*` inside a `/* */` comment block** — my route-summary header had `farmer can write climate/* and wind/wind_prot_en` which gcc parsed as a nested-comment start. `-Werror=comment` promoted to error. Fixed by rephrasing as `climate.* keys`.
+2. **`-Werror=format-truncation` on `snprintf(upd.key, sizeof(upd.key), "%s", key)`** — `upd.key` is 16 bytes but `key` source buffer is 32. Even though we explicitly check `strlen(key) >= sizeof(upd.key)` before the snprintf, gcc's static analyser can't see that. Fixed by switching to `strncpy(upd.key, key, sizeof(upd.key) - 1) + explicit NUL`. Same pattern as the alpha.6.16 fw_buf rewrite.
+
+#### Build delta vs alpha.6.17.1
+
+| Metric | alpha.6.17.1 | alpha.6.18 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1,268,597 B | **1,273,885 B** | +5,288 B |
+| RAM static | 60,072 B | **60,072 B** | unchanged |
+
+bin sha256: `776A62F49F61E993A625636114C59973649C8F28E9ED9C18814A7FE47323BFB7`
+
+**+5,288 B flash** for ~270 lines of handler code + the (large) `LIMITS_JSON` static-string table.
+
+#### Acceptance — full policy matrix curl-validated
+
+```
+1. GET /api/config/limits                       → 200 + bounds JSON (public)        ✅
+2. GET /api/config (no cookie)                  → 401 no_session                    ✅
+3. Farmer login + GET /api/config               → 200 + full 37-field cfg dump      ✅
+4. Farmer POST climate/t_max_day=30             → 200 + reflected on next GET       ✅
+5. Farmer POST motor/travel_m1                  → 403 forbidden (farmer-only policy) ✅
+6. Farmer POST /api/wifi                        → 403 admin only                    ✅
+7. Restore t_max_day=28, logout farmer          → 200                               ✅
+8. Admin login (PIN 12345678)                   → 200 + role:admin                  ✅
+9. Admin POST motor/dwell_open_m1               → 200 (admin can write any ns)      ✅
+```
+
+Test 4 is the operationally critical signal: a farmer-level POST through the web GUI flows **Q4 → T4 → NVS → next dm_cfg_snapshot**. The full setpoint-change loop is now live on the new T11 — the GUI is no longer view-only.
+
+Skipped live `/api/pin` change to avoid disrupting the test state (would have rotated the farmer hash and required a fresh stage-1 IO0 reset to recover). The handler compiled + the route registered + the admin auth gate verified.
+
+### `[2.0.0-alpha.6.17.1]` — 2026-05-18
+
+**Watch-item fix — `status_snapshot_t.fw[16]` truncation.** Caught at alpha.6.17 acceptance: `/api/status` returned `"fw_ver":"2.0.0-alpha.6.1"` instead of the full `"2.0.0-alpha.6.17"`. Root cause: `status_snapshot_t.fw` was sized at 16 chars (matching 1.20.3's 6-char version strings) but the 2.0.0 alpha tags grew to 16 chars + NUL = 17 bytes, overflowing by one. The `strncpy(out->fw, FIRMWARE_VERSION, sizeof(out->fw) - 1u)` in `dm_status_snapshot` silently clipped the trailing character.
+
+Same family as alpha.6.13's `ota_manager.cpp` `char fw_ver[16] → [32]` fix. One-line bump per field — and the existing `sizeof(out->fw) - 1u` strncpy pattern picks up the new size automatically.
+
+#### What changed
+
+- **`firmware/src/types/app_types.h`** — `status_snapshot_t.fw[16]→[24]` and `status_snapshot_t.assets[16]→[24]` (assets bumped in lockstep for consistency; both fields hold the same string family). 24 bytes gives headroom through `2.0.0-rc.N` and any `2.x.x.x` patterns.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-alpha.6.17.1`.
+
+No other code changes — all callers use `sizeof()` or compare against the struct field, so the size bump is transparent.
+
+#### Acceptance
+
+```
+$ curl -s http://192.168.20.160/api/status | grep -oP 'fw_ver":"[^"]+"'
+fw_ver":"2.0.0-alpha.6.17.1"
+```
+
+Full version string now visible in the JSON payload. The web GUI dashboard will display the correct firmware version.
+
+bin sha256: `1D24B66F6A0AF343BED82275C1787F4447D86174E7CE4A18901A07FCB13EC09E`
+
 ### `[2.0.0-alpha.6.17]` — 2026-05-18
 
 **Phase 6.16-γ — T11 status routes (2 of 18 deferred routes).** Adds `/api/status` (canonical status JSON snapshot for dashboard tiles) and `/api/history?n=N` (last N sensor ring entries). Both public (no auth gate) — matches 1.20.3 production behaviour and lets the web GUI render the dashboard tiles to unauthenticated visitors before they log in to edit setpoints.

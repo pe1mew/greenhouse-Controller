@@ -73,12 +73,17 @@
 #include "esp_random.h"
 #include "esp_heap_caps.h"
 
+#include "esp_mac.h"           /* alpha.6.18 — esp_read_mac for AP SSID */
+#include "esp_system.h"        /* alpha.6.18 — esp_restart() for /api/wifi apply */
+
 #include "web_server.h"
 #include "../types/app_types.h"
 #include "../data_manager/data_manager.h"
 #include "../auth/pin_auth.h"
 #include "../status_post/status_json.h"   /* alpha.6.17 — build_canonical_status_json */
 #include "littlefs_storage.h"
+#include "nvs_config.h"        /* alpha.6.18 — nvs_cfg_get_str / nvs_cfg_set_str for /api/wifi + /api/config GET */
+#include "cfg_limits.h"        /* alpha.6.18 — CFG_MIN_/MAX_ macros stringified into /api/config/limits */
 
 static const char *TAG = "T11_WEB";
 
@@ -759,6 +764,409 @@ static esp_err_t history_handler(httpd_req_t *req)
 }
 
 /* ============================================================
+ * Config routes (alpha.6.18 / 6.16-δ)
+ *
+ * GET  /api/config         — full cfg_shadow_t dump (auth required)
+ * GET  /api/config/limits  — per-key bounds (PUBLIC, used for input validation)
+ * POST /api/config         — {ns, key, value} or {ns, key, str_value}
+ *                            farmer can write the climate.* keys and
+ *                            wind/wind_prot_en;
+ *                            admin can write anything
+ * POST /api/wifi           — {ssid, psk} / {ap_psk} (admin only); restarts unit
+ * POST /api/pin            — {role, pin} (admin only); changes farmer/admin PIN
+ *
+ * The "farmer-allowed keys" table mirrors 1.20.3 production exactly. Setpoint
+ * changes via T8 LCD use the same keys, so farmer NVS write rights are
+ * already in scope for the operator.
+ * ============================================================ */
+
+/** Farmer-writable NVS namespace + key list. Anything not here requires admin. */
+#define FARMER_NS  "climate"
+static const char * const FARMER_KEYS[] = {
+    "t_max_day","t_min_day","t_max_ngt","t_min_ngt",
+    "rh_max_day","rh_min_day","rh_max_ngt","rh_min_ngt",
+    "rh_ctrl_en","cr_priority",
+    NULL
+};
+static const char * const FARMER_WIND_KEYS[] = { "wind_prot_en", NULL };
+
+static bool is_farmer_key(const char *ns, const char *key)
+{
+    if (strcmp(ns, FARMER_NS) == 0) {
+        for (int i = 0; FARMER_KEYS[i]; i++) {
+            if (strcmp(key, FARMER_KEYS[i]) == 0) return true;
+        }
+    } else if (strcmp(ns, "wind") == 0) {
+        for (int i = 0; FARMER_WIND_KEYS[i]; i++) {
+            if (strcmp(key, FARMER_WIND_KEYS[i]) == 0) return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * GET /api/config — full configuration as a JSON object.
+ *
+ * Auth-required (any logged-in session). Mirrors 1.20.3's build_config_json
+ * exactly — same key names, same ordering, so the web UI's `app.js` reads
+ * fields by the same identifiers it always has. Includes the running
+ * fw_version from NVS (which nvs_cfg_init writes at every boot), the AP
+ * SSID computed from the WiFi STA MAC, and the WiFi STA SSID (psk is
+ * deliberately write-only).
+ */
+static esp_err_t config_get_handler(httpd_req_t *req)
+{
+    if (require_auth(req, WEB_ROLE_FARMER) == WEB_ROLE_NONE) return ESP_OK;
+
+    cfg_shadow_t cfg = {};
+    dm_cfg_snapshot(&cfg);
+
+    char wifi_ssid[64] = {};
+    nvs_cfg_get_str("wifi", "ssid", wifi_ssid, sizeof(wifi_ssid));
+
+    char fw_version[32] = {};
+    nvs_cfg_get_str(NVS_NS_SYSTEM, NVS_KEY_FW_VERSION,
+                    fw_version, sizeof(fw_version));
+
+    char ap_ssid[24] = {};
+    {
+        uint8_t mac[6] = {0};
+        esp_read_mac(mac, ESP_MAC_WIFI_STA);
+        snprintf(ap_ssid, sizeof(ap_ssid), "Greenhouse-%02X%02X", mac[4], mac[5]);
+    }
+
+    const size_t cap = 1536;
+    char *body = (char *)heap_caps_malloc(cap, MALLOC_CAP_INTERNAL);
+    if (body == NULL) { httpd_resp_send_500(req); return ESP_FAIL; }
+
+    int n = snprintf(body, cap,
+        "{"
+        "\"wifi_ssid\":\"%s\","
+        "\"ap_ssid\":\"%s\","
+        "\"t_max_day\":%d,\"t_min_day\":%d,"
+        "\"t_max_ngt\":%d,\"t_min_ngt\":%d,"
+        "\"rh_max_day\":%d,\"rh_min_day\":%d,"
+        "\"rh_max_ngt\":%d,\"rh_min_ngt\":%d,"
+        "\"hyst_t\":%d,\"hyst_rh\":%d,"
+        "\"rh_ctrl_en\":%d,\"cr_priority\":%d,"
+        "\"avg_win_t\":%d,\"avg_win_rh\":%d,"
+        "\"v_max\":%d,\"wind_prot_en\":%d,"
+        "\"dir_excl_low\":%d,\"dir_excl_high\":%d,"
+        "\"travel_s\":[%d,%d,%d],"
+        "\"dwell_open_min\":[%d,%d,%d],"
+        "\"dwell_close_min\":[%d,%d,%d],"
+        "\"poll_interval_s\":%ld,"
+        "\"session_timeout_min\":%ld,"
+        "\"ap_timeout_min\":%ld,"
+        "\"lat_deg\":%ld,\"lat_frac\":%ld,"
+        "\"lon_deg\":%ld,\"lon_frac\":%ld,"
+        "\"tz_str\":\"%s\","
+        "\"fw_ver\":\"%s\""
+        "}",
+        wifi_ssid, ap_ssid,
+        (int)cfg.t_max_day, (int)cfg.t_min_day,
+        (int)cfg.t_max_ngt, (int)cfg.t_min_ngt,
+        (int)cfg.rh_max_day, (int)cfg.rh_min_day,
+        (int)cfg.rh_max_ngt, (int)cfg.rh_min_ngt,
+        (int)cfg.hyst_t, (int)cfg.hyst_rh,
+        (int)cfg.rh_ctrl_en, (int)cfg.cr_priority,
+        (int)cfg.avg_win_t, (int)cfg.avg_win_rh,
+        (int)cfg.v_max, (int)cfg.wind_prot_en,
+        (int)cfg.dir_excl_low, (int)cfg.dir_excl_high,
+        (int)cfg.travel_s[0], (int)cfg.travel_s[1], (int)cfg.travel_s[2],
+        (int)cfg.dwell_open_min[0], (int)cfg.dwell_open_min[1], (int)cfg.dwell_open_min[2],
+        (int)cfg.dwell_close_min[0], (int)cfg.dwell_close_min[1], (int)cfg.dwell_close_min[2],
+        (long)cfg.poll_interval_s, (long)cfg.session_timeout_min,
+        (long)cfg.ap_timeout_min,
+        (long)cfg.lat_deg, (long)cfg.lat_frac,
+        (long)cfg.lon_deg, (long)cfg.lon_frac,
+        cfg.tz_str, fw_version);
+
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t err = httpd_resp_send(req, body, (n > 0) ? (size_t)n : 0);
+    heap_caps_free(body);
+    return err;
+}
+
+/**
+ * GET /api/config/limits — per-key min/max bounds (PUBLIC).
+ *
+ * Single source of truth: cfg_limits.h. Stringified at compile time via
+ * _LIMITS_STR — no runtime overhead, no allocation. app.js fetches this
+ * once at page load and applies min/max to every <input> in the GUI.
+ */
+static esp_err_t config_limits_handler(httpd_req_t *req)
+{
+#define _LIMITS_STR2(x) #x
+#define _LIMITS_STR(x)  _LIMITS_STR2(x)
+    static const char LIMITS_JSON[] =
+        "{"
+        "\"t_max_day\":"      "[" _LIMITS_STR(CFG_MIN_T_MAX_DAY)    "," _LIMITS_STR(CFG_MAX_T_MAX_DAY)    "],"
+        "\"t_min_day\":"      "[" _LIMITS_STR(CFG_MIN_T_MIN_DAY)    "," _LIMITS_STR(CFG_MAX_T_MIN_DAY)    "],"
+        "\"t_max_ngt\":"      "[" _LIMITS_STR(CFG_MIN_T_MAX_NGT)    "," _LIMITS_STR(CFG_MAX_T_MAX_NGT)    "],"
+        "\"t_min_ngt\":"      "[" _LIMITS_STR(CFG_MIN_T_MIN_NGT)    "," _LIMITS_STR(CFG_MAX_T_MIN_NGT)    "],"
+        "\"rh_max_day\":"     "[" _LIMITS_STR(CFG_MIN_RH_MAX)       "," _LIMITS_STR(CFG_MAX_RH_MAX)       "],"
+        "\"rh_min_day\":"     "[" _LIMITS_STR(CFG_MIN_RH_MIN)       "," _LIMITS_STR(CFG_MAX_RH_MIN)       "],"
+        "\"rh_max_ngt\":"     "[" _LIMITS_STR(CFG_MIN_RH_MAX)       "," _LIMITS_STR(CFG_MAX_RH_MAX)       "],"
+        "\"rh_min_ngt\":"     "[" _LIMITS_STR(CFG_MIN_RH_MIN)       "," _LIMITS_STR(CFG_MAX_RH_MIN)       "],"
+        "\"hyst_t\":"         "[" _LIMITS_STR(CFG_MIN_HYST_T)       "," _LIMITS_STR(CFG_MAX_HYST_T)       "],"
+        "\"hyst_rh\":"        "[" _LIMITS_STR(CFG_MIN_HYST_RH)      "," _LIMITS_STR(CFG_MAX_HYST_RH)      "],"
+        "\"avg_win_t\":"      "[" _LIMITS_STR(CFG_MIN_AVG_WIN)      "," _LIMITS_STR(CFG_MAX_AVG_WIN)      "],"
+        "\"avg_win_rh\":"     "[" _LIMITS_STR(CFG_MIN_AVG_WIN)      "," _LIMITS_STR(CFG_MAX_AVG_WIN)      "],"
+        "\"v_max\":"          "[" _LIMITS_STR(CFG_MIN_V_MAX)        "," _LIMITS_STR(CFG_MAX_V_MAX)        "],"
+        "\"dir_excl_low\":"   "[" _LIMITS_STR(CFG_MIN_DIR)          "," _LIMITS_STR(CFG_MAX_DIR)          "],"
+        "\"dir_excl_high\":"  "[" _LIMITS_STR(CFG_MIN_DIR)          "," _LIMITS_STR(CFG_MAX_DIR)          "],"
+        "\"travel_m1\":"      "[" _LIMITS_STR(CFG_MIN_TRAVEL_S)     "," _LIMITS_STR(CFG_MAX_TRAVEL_S)     "],"
+        "\"travel_m2\":"      "[" _LIMITS_STR(CFG_MIN_TRAVEL_S)     "," _LIMITS_STR(CFG_MAX_TRAVEL_S)     "],"
+        "\"travel_m3\":"      "[" _LIMITS_STR(CFG_MIN_TRAVEL_S)     "," _LIMITS_STR(CFG_MAX_TRAVEL_S)     "],"
+        "\"dwell_open_m1\":"  "[" _LIMITS_STR(CFG_MIN_DWELL_OPEN_S)  "," _LIMITS_STR(CFG_MAX_DWELL_OPEN_S)  "],"
+        "\"dwell_open_m2\":"  "[" _LIMITS_STR(CFG_MIN_DWELL_OPEN_S)  "," _LIMITS_STR(CFG_MAX_DWELL_OPEN_S)  "],"
+        "\"dwell_open_m3\":"  "[" _LIMITS_STR(CFG_MIN_DWELL_OPEN_S)  "," _LIMITS_STR(CFG_MAX_DWELL_OPEN_S)  "],"
+        "\"dwell_close_m1\":" "[" _LIMITS_STR(CFG_MIN_DWELL_CLOSE_S) "," _LIMITS_STR(CFG_MAX_DWELL_CLOSE_S) "],"
+        "\"dwell_close_m2\":" "[" _LIMITS_STR(CFG_MIN_DWELL_CLOSE_S) "," _LIMITS_STR(CFG_MAX_DWELL_CLOSE_S) "],"
+        "\"dwell_close_m3\":" "[" _LIMITS_STR(CFG_MIN_DWELL_CLOSE_S) "," _LIMITS_STR(CFG_MAX_DWELL_CLOSE_S) "],"
+        "\"poll_interval\":"  "[" _LIMITS_STR(CFG_MIN_POLL_S)       "," _LIMITS_STR(CFG_MAX_POLL_S)       "],"
+        "\"session_timeout\":" "[" _LIMITS_STR(CFG_MIN_TIMEOUT_MIN)  "," _LIMITS_STR(CFG_MAX_TIMEOUT_MIN)  "],"
+        "\"ap_timeout\":"     "[" _LIMITS_STR(CFG_MIN_AP_TIMEOUT)   "," _LIMITS_STR(CFG_MAX_TIMEOUT_MIN)  "]"
+        "}";
+#undef _LIMITS_STR2
+#undef _LIMITS_STR
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, LIMITS_JSON, HTTPD_RESP_USE_STRLEN);
+}
+
+/**
+ * @brief Helper: read up to `cap-1` bytes from the request body, NUL-terminate.
+ * Returns true on success.
+ */
+static bool read_request_body(httpd_req_t *req, char *buf, size_t cap)
+{
+    if (buf == NULL || cap == 0) return false;
+    buf[0] = '\0';
+    int total = (int)req->content_len;
+    if (total <= 0 || total >= (int)cap) return false;
+
+    int read_total = 0;
+    while (read_total < total) {
+        int r = httpd_req_recv(req, buf + read_total, total - read_total);
+        if (r <= 0) return false;
+        read_total += r;
+    }
+    buf[read_total] = '\0';
+    return true;
+}
+
+/**
+ * POST /api/config — body {"ns","key","value" | "str_value"}.
+ *
+ * Auth: farmer if (ns,key) is in FARMER_KEYS / FARMER_WIND_KEYS, else admin.
+ * Integer writes go via Q4 → T4 → NVS (T4 validates against cfg_limits.h).
+ * String writes (tz_str) go straight to NVS via nvs_cfg_set_str. On tz_str
+ * the helper also applies the timezone live so localtime_r picks it up.
+ */
+static esp_err_t config_post_handler(httpd_req_t *req)
+{
+    web_session_role_t role = require_auth(req, WEB_ROLE_FARMER);
+    if (role == WEB_ROLE_NONE) return ESP_OK;
+
+    char body[256] = {0};
+    if (!read_request_body(req, body, sizeof(body))) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_send(req,
+            "{\"ok\":false,\"err\":\"bad body\"}", HTTPD_RESP_USE_STRLEN);
+    }
+
+    char ns[16] = {}, key[32] = {}, str_value[80] = {}, val_buf[16] = {};
+    if (!json_get_field(body, "ns",  ns,  sizeof(ns)) ||
+        !json_get_field(body, "key", key, sizeof(key))) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_send(req,
+            "{\"ok\":false,\"err\":\"bad request\"}", HTTPD_RESP_USE_STRLEN);
+    }
+    const bool has_int = json_get_field(body, "value",     val_buf,   sizeof(val_buf));
+    const bool has_str = json_get_field(body, "str_value", str_value, sizeof(str_value));
+
+    if (!has_int && !has_str) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_send(req,
+            "{\"ok\":false,\"err\":\"no value\"}", HTTPD_RESP_USE_STRLEN);
+    }
+
+    /* Farmer-vs-admin policy: farmer can only write farmer-level keys. */
+    if (role == WEB_ROLE_FARMER && !is_farmer_key(ns, key)) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_status(req, "403 Forbidden");
+        return httpd_resp_send(req,
+            "{\"ok\":false,\"err\":\"forbidden\"}", HTTPD_RESP_USE_STRLEN);
+    }
+
+    httpd_resp_set_type(req, "application/json");
+
+    if (has_str) {
+        (void)nvs_cfg_set_str(ns, key, str_value);
+        if (strcmp(key, "tz_str") == 0 && str_value[0] != '\0') {
+            setenv("TZ", str_value, 1);
+            tzset();
+        }
+        ESP_LOGI(TAG, "[T11] /api/config %s/%s set str=\"%s\"", ns, key, str_value);
+        return httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
+    }
+
+    /* Integer path: post via Q4. Enforce ns/key length so we don't silently
+     * truncate into config_update_t.ns/key (16 bytes each, NUL-terminated). */
+    if (strlen(ns) >= sizeof(((config_update_t *)0)->ns) ||
+        strlen(key) >= sizeof(((config_update_t *)0)->key)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_send(req,
+            "{\"ok\":false,\"err\":\"ns/key too long\"}", HTTPD_RESP_USE_STRLEN);
+    }
+
+    /* upd.ns/upd.key are 16-byte buffers; src ns/key may be up to 16/32
+     * (the strlen check above already rejects oversize). strncpy + explicit
+     * NUL terminator avoids the gcc -Wformat-truncation pessimism. */
+    config_update_t upd = {};
+    strncpy(upd.ns,  ns,  sizeof(upd.ns)  - 1);
+    upd.ns[sizeof(upd.ns)  - 1] = '\0';
+    strncpy(upd.key, key, sizeof(upd.key) - 1);
+    upd.key[sizeof(upd.key) - 1] = '\0';
+    upd.value = (int32_t)atoi(val_buf);
+
+    if (xQueueSend(Q4, &upd, pdMS_TO_TICKS(500)) != pdTRUE) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_send(req,
+            "{\"ok\":false,\"err\":\"Q4 full\"}", HTTPD_RESP_USE_STRLEN);
+    }
+
+    ESP_LOGI(TAG, "[T11] /api/config %s/%s set int=%ld → Q4", ns, key, (long)upd.value);
+    return httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
+}
+
+/**
+ * @brief Worker task that delays 1 s then calls esp_restart().
+ *
+ * Spawned by /api/wifi so the HTTP response can flush before the reset.
+ */
+static void wifi_apply_restart_task(void *arg)
+{
+    (void)arg;
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    ESP_LOGW(TAG, "[T11] /api/wifi apply: restarting now");
+    esp_restart();
+}
+
+/**
+ * POST /api/wifi — admin-only. Body may include any of {"ssid","psk","ap_psk"}.
+ *
+ * Each field provided is written to NVS namespace "wifi". On any STA-cred
+ * or AP-cred change, schedules a 1-second-deferred esp_restart so T10's
+ * NVS-load picks up the new values. The HTTP response flushes before the
+ * reset.
+ */
+/**
+ * @brief Inline auth check that returns 401 (no session) or 403 (wrong role)
+ *        with the right error body. Returns true on success.
+ */
+static bool admin_only_or_send_error(httpd_req_t *req)
+{
+    char token[TOKEN_LEN + 1] = {0};
+    if (!cookie_get_session(req, token)) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_status(req, "401 Unauthorized");
+        httpd_resp_send(req, "{\"ok\":false,\"error\":\"no_session\"}",
+                        HTTPD_RESP_USE_STRLEN);
+        return false;
+    }
+    web_session_role_t role = session_find_and_renew(token);
+    if (role != WEB_ROLE_ADMIN) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_status(req, "403 Forbidden");
+        httpd_resp_send(req, "{\"ok\":false,\"err\":\"admin only\"}",
+                        HTTPD_RESP_USE_STRLEN);
+        return false;
+    }
+    return true;
+}
+
+static esp_err_t wifi_post_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+
+    char body[256] = {0};
+    if (!read_request_body(req, body, sizeof(body))) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_send(req,
+            "{\"ok\":false,\"err\":\"bad body\"}", HTTPD_RESP_USE_STRLEN);
+    }
+
+    char ssid[64] = {}, psk[64] = {}, ap_psk[64] = {};
+    const bool has_ssid   = json_get_field(body, "ssid",   ssid,   sizeof(ssid));
+    const bool has_psk    = json_get_field(body, "psk",    psk,    sizeof(psk));
+    const bool has_ap_psk = json_get_field(body, "ap_psk", ap_psk, sizeof(ap_psk));
+
+    if (has_ssid)             (void)nvs_cfg_set_str("wifi", "ssid",   ssid);
+    if (has_psk && psk[0])    (void)nvs_cfg_set_str("wifi", "psk",    psk);    /* never blank PSK */
+    if (has_ap_psk && ap_psk[0]) (void)nvs_cfg_set_str("wifi", "ap_psk", ap_psk);
+
+    ESP_LOGI(TAG, "[T11] /api/wifi updated: ssid=%s%s%s",
+             has_ssid ? ssid : "(unchanged)",
+             (has_psk && psk[0]) ? " psk=***" : "",
+             (has_ap_psk && ap_psk[0]) ? " ap_psk=***" : "");
+
+    const bool need_restart = has_ssid || (has_psk && psk[0]) || (has_ap_psk && ap_psk[0]);
+    httpd_resp_set_type(req, "application/json");
+
+    if (need_restart) {
+        ESP_LOGW(TAG, "[T11] /api/wifi: scheduling restart in 1 s");
+        esp_err_t err = httpd_resp_send(req,
+            "{\"ok\":true,\"restarting\":true}", HTTPD_RESP_USE_STRLEN);
+        xTaskCreate(wifi_apply_restart_task, "wifi-restart",
+                    2048, NULL, 1, NULL);
+        return err;
+    }
+    return httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
+}
+
+/**
+ * POST /api/pin — admin-only. Body {"role":"farmer"|"admin","pin":"NNNN"}.
+ *
+ * Calls pin_auth_set which writes the salted SHA-256 hash to NVS. Returns
+ * {"ok":true} on success; otherwise {"ok":false,"err":"..."}.
+ */
+static esp_err_t pin_post_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+
+    char body[128] = {0};
+    if (!read_request_body(req, body, sizeof(body))) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_send(req,
+            "{\"ok\":false,\"err\":\"bad body\"}", HTTPD_RESP_USE_STRLEN);
+    }
+
+    char role_str[12] = {}, pin_str[16] = {};
+    json_get_field(body, "role", role_str, sizeof(role_str));
+    json_get_field(body, "pin",  pin_str,  sizeof(pin_str));
+
+    pin_role_t pr = (strcmp(role_str, "admin") == 0) ? PIN_ROLE_ADMIN
+                                                     : PIN_ROLE_FARMER;
+    pin_auth_result_t res = pin_auth_set(pr, pin_str);
+
+    httpd_resp_set_type(req, "application/json");
+    if (res == PIN_AUTH_OK) {
+        ESP_LOGI(TAG, "[T11] /api/pin: role=%s changed", role_str);
+        return httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
+    }
+    ESP_LOGW(TAG, "[T11] /api/pin: pin_auth_set failed rc=%d", (int)res);
+    return httpd_resp_send(req,
+        "{\"ok\":false,\"err\":\"pin_auth_set failed\"}", HTTPD_RESP_USE_STRLEN);
+}
+
+/* ============================================================
  * URI registration table
  * ============================================================ */
 static const httpd_uri_t s_uri_root = {
@@ -782,6 +1190,18 @@ static const httpd_uri_t s_uri_status = {
     .uri = "/api/status", .method = HTTP_GET, .handler = status_handler, .user_ctx = NULL };
 static const httpd_uri_t s_uri_history = {
     .uri = "/api/history", .method = HTTP_GET, .handler = history_handler, .user_ctx = NULL };
+
+/* alpha.6.18 — config routes (Phase 6.16-δ). */
+static const httpd_uri_t s_uri_config_get = {
+    .uri = "/api/config", .method = HTTP_GET, .handler = config_get_handler, .user_ctx = NULL };
+static const httpd_uri_t s_uri_config_limits = {
+    .uri = "/api/config/limits", .method = HTTP_GET, .handler = config_limits_handler, .user_ctx = NULL };
+static const httpd_uri_t s_uri_config_post = {
+    .uri = "/api/config", .method = HTTP_POST, .handler = config_post_handler, .user_ctx = NULL };
+static const httpd_uri_t s_uri_wifi_post = {
+    .uri = "/api/wifi", .method = HTTP_POST, .handler = wifi_post_handler, .user_ctx = NULL };
+static const httpd_uri_t s_uri_pin_post = {
+    .uri = "/api/pin", .method = HTTP_POST, .handler = pin_post_handler, .user_ctx = NULL };
 
 /* ============================================================
  * Task entry point
@@ -824,6 +1244,8 @@ void task_web_server(void *pvParameters)
         &s_uri_root, &s_uri_style, &s_uri_appjs, &s_uri_manifest,
         &s_uri_whoami, &s_uri_login, &s_uri_logout,
         &s_uri_status, &s_uri_history,
+        &s_uri_config_get, &s_uri_config_limits, &s_uri_config_post,
+        &s_uri_wifi_post, &s_uri_pin_post,
     };
     for (size_t i = 0; i < sizeof(uris)/sizeof(uris[0]); i++) {
         err = httpd_register_uri_handler(s_server, uris[i]);
@@ -833,10 +1255,12 @@ void task_web_server(void *pvParameters)
         }
     }
 
-    ESP_LOGI(TAG, "[T11] HTTP server running on port 80 — 9 routes registered");
+    ESP_LOGI(TAG, "[T11] HTTP server running on port 80 — 14 routes registered");
     ESP_LOGI(TAG, "[T11]   static: /  /style.css  /app.js  /manifest.json");
     ESP_LOGI(TAG, "[T11]   auth:   GET /api/whoami  POST /api/login  POST /api/logout");
     ESP_LOGI(TAG, "[T11]   status: GET /api/status  GET /api/history?n=N");
+    ESP_LOGI(TAG, "[T11]   config: GET /api/config  GET /api/config/limits  POST /api/config");
+    ESP_LOGI(TAG, "[T11]   admin:  POST /api/wifi  POST /api/pin");
 
     /* Task body: just idle. httpd runs in its own task (spawned by httpd_start).
      * T11 task could be deleted here, but we keep it around as a host for
