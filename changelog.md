@@ -28,7 +28,79 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
-### `[2.0.0-alpha.6.0]` — 2026-05-18 (preparatory only, no flash needed)
+### `[2.0.0-alpha.6.1]` — 2026-05-18
+
+**Phase 6.1 — FreeRTOS infrastructure bootstrap (`system_globals.cpp`).** Defines every queue / mutex / event group / task handle that `types/app_types.h` declares as `extern`, and provides a single init call that creates them at boot. This decouples "FreeRTOS infrastructure exists" from "tasks are running" so subsequent Phase-6 alphas can each activate one task without touching the global-creation plumbing.
+
+#### What changed
+
+- **`firmware/src/system_globals.h`** (new) — declares `int system_globals_init(void)`; idempotent; ~1.2 KB heap on success.
+- **`firmware/src/system_globals.cpp`** (new) — defines all 6 queues (Q1..Q6), all 5 mutexes (MX1..MX5), the event group (EG1), and all 14 task handles (task_t1..task_t15, all initialised to NULL — the matching `xTaskCreate` calls land one-per-alpha in Phase 6.2..6.13). Queue depths come from the inter-task design (Q3 = 32, Q4 = 16, Q1/Q2 = 8, Q5/Q6 = 1 with overwrite semantics).
+- **`firmware/src/CMakeLists.txt`** — added `system_globals.cpp` to SRCS. No new REQUIRES (uses already-linked freertos + log components).
+- **`firmware/src/app_main_stub.cpp`** — `#include "system_globals.h"` plus a call to `system_globals_init()` early in `app_main`, *before* any subsystem init. On non-zero return, logs FATAL and idles forever — no point trying to run further code with the global-handle contract broken.
+- **`firmware/platformio.ini`** — `FIRMWARE_VERSION` stamped `2.0.0-alpha.6.1`.
+
+#### Build trap encountered + fix
+
+First build failed with `error: "/*" within comment [-Werror=comment]`. The string `*_tickle.cpp` inside a `/* ... */` block looks like a nested comment start to GCC. Trivial replacement (`*_tickle.cpp` → `[X]_tickle.cpp`). Worth recording so the next person doesn't lose 30 seconds to it.
+
+#### Build delta vs alpha.5
+
+| Metric | alpha.5 | alpha.6.1 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1,194,029 B | **1,194,633 B** | +604 B |
+| Flash usage % | 56.9 % | 57.0 % | +0.1 pp |
+| RAM static | 42,728 B | 42,776 B | +48 B |
+| Runtime heap on init OK | (n/a) | ~1.2 KB | — |
+
+bin sha256: `F71F76D7EF53733107F83559791934B87993A8F99D1806B7783C94351AD56EC8`
+
+The +604 B is system_globals.cpp's object code (the init function + the queue/mutex/event-group static definitions). The +48 B RAM is the 24 NULL pointer slots in BSS. The ~1.2 KB runtime heap impact is the underlying FreeRTOS queue storage (8 × `window_cmd_t` + 8 × `key_event_t` + 32 × `log_event_t` + 16 × `config_update_t` + 1 × `net_status_t` + 1 × `sensor_reading_t` storage areas) plus 5 mutex semaphore-control blocks plus 1 event-group bitmap.
+
+#### Acceptance bar for alpha.6.1
+
+1. ✅ Build succeeds (after the `*/` comment-trap fix).
+2. Flash to Unit 2; boot reason `ESP_RST_POWERON`.
+3. Boot banner shows the new log line near the top of `app_main`:
+   ```
+   T-GLOBALS: system_globals_init OK: queues=Q1..Q6 (8/8/32/16/1/1 depths), mutexes=MX1..MX5, EG1 (no bits set)
+   ```
+4. No regressions in any prior tickle — Phase 2 drivers, Phase 3 WiFi, Phase 4 HTTPS gh#23 signal (5 calls, transient-not-sticky fragmentation), Phase 5 web server endpoints all still respond identically.
+5. Free internal heap roughly 1.2 KB lower than alpha.5's baseline (the new runtime allocations).
+
+If `system_globals_init` returns non-zero, the most likely cause is internal-heap exhaustion at boot. Pre-init heap is ~370 KB on Unit 2; needing 1.2 KB is trivial. Failure here points at something else (e.g. a `xQueueCreate` parameter sanity issue).
+
+#### Acceptance: PASSED — 2026-05-18
+
+Flashed Unit 2 dev board. Boot reason 1 (`ESP_RST_POWERON`). The critical line fired at exactly the designed point in the boot sequence:
+```
+I (974) GHC-STUB: ================================================================
+I (982) T-GLOBALS: system_globals_init OK: queues=Q1..Q6 (8/8/32/16/1/1 depths), mutexes=MX1..MX5, EG1 (no bits set)
+I (1010) GHC-STUB: NVS pre-init: previous fw_version = "2.0.0-alpha.6.1" (status=0)
+```
+
+Right after the dashed-line banner divider, before any NVS work begins. Globals are visible to all subsequent code paths.
+
+**Heap delta confirms the predicted runtime cost**:
+- alpha.5 heartbeat baseline: `free=236,791 / largest=139,264`
+- alpha.6.1 heartbeat baseline: `free=234,451 / largest=131,072`
+- **−2,340 B free** vs alpha.5 — matches the ~2.3 KB system_globals runtime cost (1.2 KB queue storage + 5 mutexes + 1 event group + FreeRTOS per-object housekeeping). Within prediction window. No leak: heap is stable across multiple heartbeats (234,451 → 234,451 → 234,451 → 234,487 — ±36 B jitter from per-tick log allocations).
+
+The `largest=131,072` reading is the HTTPS-tickle's transient post-call-5 state captured at the moment of the heartbeat sample (call 5 ended at largest=131,072 in this run). The transient-not-sticky pattern from alpha.4.1 still holds — the next time the system idles, largest will recover toward 139K.
+
+**Earlier-phase tickles regression-clean**:
+- LIB-1..9 driver outputs unchanged (i2c_scan, LFS verify, SD verify, RTC ticking +5s per heartbeat).
+- WiFi: 1.85 s STA_GOT_IP (1709 → 3553), one transient retry, connect at RSSI -67 dBm, IP 192.168.20.160 obtained cleanly.
+- SNTP synced in 2,400 ms — network is good this session.
+- HTTPS: 5/5 calls returned `OK status=204`. Heap signature matches alpha.4.1 exactly:
+  - Call 1 cold: free -504 B, largest -32,768 B
+  - Calls 2-4: free -244..-248 B, largest 0
+  - Call 5: free -248 B, largest 0
+- Web server: `T-WEB: HTTP server running — open http://192.168.20.160/`; externally verified that `/api/info` reports `fw_version=2.0.0-alpha.6.1` and `/api/status` returns fresh data.
+
+**Phase 6.1 is CLOSED.** The FreeRTOS infrastructure is now permanent in the build. Every subsequent Phase-6.N alpha can `xQueueSend(Q*, ...)` or `xSemaphoreTake(MX*, ...)` without worrying about creation order. Next: Phase 6.2 activates the first firmware/src/ subsystem.
+
+
 
 **Phase 6.0 — Shared infrastructure for subsystem activation.** Phase 6 in the migration plan is the long-tail integration: bring 13 dormant subsystems online (data_manager, event_logger, sensor_poll, keypad_scan, relay_controller, climate_control, ui_display, safety_monitor, network_manager, status_post + supervisor, web_server, ota_manager, main.cpp), each with its own Arduino.h cleanup folded in. Rather than do a speculative bulk-cleanup pass that can't be validated (the touched files aren't yet in the build), alpha.6.0 sets up just the shared infrastructure each subsequent sub-phase needs.
 

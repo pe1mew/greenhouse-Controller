@@ -27,6 +27,7 @@ idf_component_register(
         "wifi_tickle.cpp"        # Phase 3 (2.0.0-alpha.3) — IDF-native STA + SNTP
         "https_tickle.cpp"       # Phase 4 (2.0.0-alpha.4) — IDF-native HTTPS client + esp_tls
         "web_server_tickle.cpp"  # Phase 5 (2.0.0-alpha.5) — IDF-native esp_http_server
+        "system_globals.cpp"     # Phase 6.1 (2.0.0-alpha.6.1) — FreeRTOS infrastructure (Q*, MX*, EG1, task_t*)
     INCLUDE_DIRS
         "."
     REQUIRES

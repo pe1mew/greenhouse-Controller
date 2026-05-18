@@ -173,6 +173,7 @@
 #include "wifi_tickle.h"
 #include "https_tickle.h"
 #include "web_server_tickle.h"
+#include "system_globals.h"
 
 static const char *TAG = "GHC-STUB";
 
@@ -321,6 +322,23 @@ static void heartbeat_task(void *arg)
 extern "C" void app_main(void)
 {
     log_boot_banner();
+
+    /* alpha.6.1 — Phase 6.1 FreeRTOS infrastructure bootstrap.
+     *
+     * Creates every queue, mutex, and event group declared as extern in
+     * types/app_types.h. Task handles are initialised to NULL — the
+     * Phase 6.2..6.13 alphas each spawn one task and assign its handle.
+     *
+     * Done FIRST in app_main (before any driver init) so that any
+     * subsequent code path can xQueueSend / xSemaphoreTake without
+     * worrying about creation order. Phase-2/3/4/5 tickles currently
+     * don't touch these globals (they all live in firmware/src/[X]_tickle.cpp
+     * which is self-contained), but Phase 6 task activations will. */
+    int globals_rc = system_globals_init();
+    if (globals_rc != 0) {
+        ESP_LOGE(TAG, "FATAL: system_globals_init failed (rc=%d) — halting", globals_rc);
+        for (;;) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+    }
 
     /* Phase-2 driver linkage tickles. Each migrated driver gets one call
      * here to prove the component-linkage works against real hardware.
