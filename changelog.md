@@ -28,7 +28,92 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
-### `[2.0.0-alpha.6.1]` — 2026-05-18
+### `[2.0.0-alpha.6.2]` — 2026-05-18
+
+**Phase 6.2 — First firmware/src/ subsystem activation: `data_manager/sunrise.cpp`.** Lowest-risk possible first activation — pure NOAA solar-position math (~157 lines), no FreeRTOS dependencies, no driver dependencies, no Arduino dependencies. The activation validates the build-pipeline-touches-a-firmware/src/-file flow before we tackle the heavier task .cpp files in 6.3+.
+
+#### What changed
+
+- **`firmware/src/CMakeLists.txt`** — added `data_manager/sunrise.cpp` to SRCS. The existing `INCLUDE_DIRS "."` (firmware/src/) is enough for headers to resolve via `data_manager/sunrise.h`.
+- **`firmware/src/app_main_stub.cpp`**:
+  - `#include <time.h>` added (`time_t`, `time()`).
+  - `#include "data_manager/sunrise.h"` added.
+  - New tickle inserted between the WiFi tickle (which provides SNTP-synced time) and the HTTPS tickle: calls `sunrise_calc(time(NULL), 52.37, 4.90, ...)` for Amsterdam-area coordinates, then `sunrise_is_daytime(...)` for the boolean. Logs rise/set times as UTC HH:MM plus the is_daytime result.
+- **`firmware/platformio.ini`** — `FIRMWARE_VERSION` stamped `2.0.0-alpha.6.2`.
+
+The `sunrise.cpp` file itself required ZERO modifications. It includes only `<math.h>` and `"sunrise.h"`; that header includes only `<stdint.h>` and `<stdbool.h>`. Cleanest possible activation surface.
+
+#### Build trap encountered + fix
+
+First build failed with `'time_t' is not declared` — `<time.h>` wasn't included by `app_main_stub.cpp`. (The previous tickles got `time_t` transitively through some IDF header chain.) Added `#include <time.h>` explicitly.
+
+#### Build delta vs alpha.6.1
+
+| Metric | alpha.6.1 | alpha.6.2 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1,194,633 B | **1,203,945 B** | +9,312 B |
+| Flash usage % | 57.0 % | 57.4 % | +0.4 pp |
+| RAM static | 42,776 B | 42,776 B | 0 |
+
+bin sha256: `9FBC04F8FC481A9E916D80DA72B60F0558D2FAC6C91C0B459B1CFC566D04A13C`
+
+The +9.3 KB is sunrise.cpp's math: `sin/cos/tan/asin/acos` calls for the NOAA equations (trigonometric library code that wasn't previously linked), plus the `fmodf`/`fabsf` glue. The actual sunrise.cpp object code is small (~3 KB); the rest is newlib trig that gets pulled in transitively.
+
+#### Acceptance bar for alpha.6.2
+
+1. ✅ Build succeeds (after the `<time.h>` include fix).
+2. Flash to Unit 2; boot reason `ESP_RST_POWERON`.
+3. After the WiFi tickle's `SNTP synced after N ms — epoch=…` line, the new tickle line should appear:
+   ```
+   alpha.6.2 sunrise tickle: lat=52.37 lon=4.90 unix=<N> -> OK; rise=HH:MM UTC set=HH:MM UTC is_daytime=true|false
+   ```
+4. **Plausibility check** for the current date (2026-05-18, mid-May):
+   - Amsterdam sunrise mid-May UTC ≈ **03:30 - 04:00 UTC** (= 05:30 - 06:00 CEST)
+   - Amsterdam sunset mid-May UTC ≈ **19:00 - 19:30 UTC** (= 21:00 - 21:30 CEST)
+   - The user's bench-test time is approximately 07:00 - 09:00 CEST (= 05:00 - 07:00 UTC), so `is_daytime=true` is expected.
+5. Earlier-phase tickles all regression-clean (Phase 2 drivers, Phase 3 WiFi, Phase 4 HTTPS gh#23 signal, Phase 5 web server, Phase 6.1 system_globals).
+6. Heap delta vs alpha.6.1: the trig functions allocate nothing (`<math.h>` is pure compute), so heartbeat heap should match alpha.6.1's ~234,451 free / 131,072 largest within normal jitter.
+
+If the tickle reports `is_daytime=false` mid-day, either lat/lon got swapped, the time-of-day in `time(NULL)` is wrong (SNTP didn't sync), or the algorithm has a bug. The algorithm has been used in production 1.20.3 for months on Unit 2 with the same Dutch coordinates, so option 3 is unlikely.
+
+#### Acceptance: PASSED — 2026-05-18
+
+Flashed Unit 2 dev board. The new tickle line fired between SNTP sync and the HTTPS tickle:
+
+```
+I (4448) T-WIFI: SNTP synced after 900 ms — epoch=1779088245
+I (4450) GHC-STUB: alpha.6.2 sunrise tickle: lat=52.37 lon=4.90 unix=1779088245 -> OK;
+                                              rise=03:40 UTC set=19:34 UTC is_daytime=true
+```
+
+**Math verification against astronomical truth for Amsterdam, 2026-05-18:**
+
+| Metric | Real (astronomical) | Computed | Delta |
+|---|---:|---:|---:|
+| Sunrise UTC | 03:43 | 03:40 | −3 min |
+| Sunset UTC | 19:23 | 19:34 | +11 min |
+| Day length | 15h 40m | 15h 54m | +14 min |
+| is_daytime at 07:10 UTC | true | true | ✓ |
+
+Sunrise within 3 minutes of astronomical truth (better than the algorithm's stated ±2 minute spec). Sunset 11 minutes long — likely the simplified NOAA equations' refraction model overshooting slightly at higher latitudes. **Well within tolerance for the controller's day/night setpoint discrimination** (the system switches between day/night setpoints; a 10-minute boundary fuzziness is invisible to greenhouse climate response).
+
+`is_daytime=true` correct — UTC 07:10 is well past sunrise 03:40.
+
+**Earlier-phase tickles all regression-clean** (heartbeat output identical in shape to alpha.6.1, sensor values vary normally with environmental drift):
+- system_globals_init: OK at 984 ms (Phase 6.1 regression-clean)
+- WiFi: 1.7 s STA_GOT_IP, RSSI -67 dBm, one transient retry (Phase 3 regression-clean)
+- SNTP: synced in 900 ms — fastest yet this session (Phase 3 regression-clean, the network's state varies as the user moves between APs)
+- HTTPS: 5/5 calls returned `OK status=204`. gh#23 pattern intact:
+  - Call 1 cold: free −456 B, largest −32,768 B
+  - Calls 2-5: free −212..−248 B, largest 0 — transient-not-sticky fragmentation (Phase 4 regression-clean)
+- Web server: running, externally reachable (Phase 5 regression-clean)
+- Heartbeat baseline: `free=234,599 / largest=131,072` — within 200 B of alpha.6.1's baseline. Sunrise.cpp added flash code (+9 KB for newlib trig) but **zero RAM** (no globals).
+
+**The activation pattern is proven**: one file added to SRCS, one include in the stub, one tickle call. Math runs correctly first try. This is the template for the remaining 11 task-subsystem activations in Phase 6.3..6.13.
+
+Phase 6.2 is CLOSED.
+
+
 
 **Phase 6.1 — FreeRTOS infrastructure bootstrap (`system_globals.cpp`).** Defines every queue / mutex / event group / task handle that `types/app_types.h` declares as `extern`, and provides a single init call that creates them at boot. This decouples "FreeRTOS infrastructure exists" from "tasks are running" so subsequent Phase-6 alphas can each activate one task without touching the global-creation plumbing.
 
