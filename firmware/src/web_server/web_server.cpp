@@ -77,6 +77,7 @@
 #include "../types/app_types.h"
 #include "../data_manager/data_manager.h"
 #include "../auth/pin_auth.h"
+#include "../status_post/status_json.h"   /* alpha.6.17 — build_canonical_status_json */
 #include "littlefs_storage.h"
 
 static const char *TAG = "T11_WEB";
@@ -619,6 +620,145 @@ static esp_err_t logout_handler(httpd_req_t *req)
 }
 
 /* ============================================================
+ * Status routes (alpha.6.17 / 6.16-γ)
+ *
+ * GET /api/status   — canonical status JSON snapshot for dashboard tiles.
+ * GET /api/history  — last N sensor ring entries (?n=N, default 60).
+ *
+ * Both are intentionally PUBLIC (no auth gate). Rationale: the web GUI
+ * dashboard polls these on every page load to render the status tiles
+ * before the operator decides to log in. The 1.20.3 web_server.cpp had
+ * the same policy. Setpoint changes are still admin-only via /api/config.
+ * ============================================================ */
+
+#define HIST_MAX_ROWS  60  /**< Cap on /api/history?n=N */
+
+static esp_err_t status_handler(httpd_req_t *req)
+{
+    /* status_snapshot_t is large (~600 B); use a heap allocation rather
+     * than the task stack. Done inside the handler so concurrent requests
+     * each get their own buffer (httpd may dispatch handlers in parallel). */
+    status_snapshot_t *snap =
+        (status_snapshot_t *)heap_caps_malloc(sizeof(status_snapshot_t),
+                                              MALLOC_CAP_INTERNAL);
+    if (snap == NULL) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    memset(snap, 0, sizeof(*snap));
+    dm_status_snapshot(snap);
+
+    /* 4 KB body buffer — canonical JSON is typically 1.5–2.5 KB with all
+     * tiles + windows + alarms. The build helper returns 0 on overflow. */
+    const size_t cap = 4096;
+    char *body = (char *)heap_caps_malloc(cap, MALLOC_CAP_INTERNAL);
+    if (body == NULL) {
+        heap_caps_free(snap);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    size_t n = build_canonical_status_json(body, cap, snap,
+                                           STATUS_EXPOSE_ALL,
+                                           /*include_disabled_setpoints=*/true);
+    heap_caps_free(snap);
+
+    if (n == 0) {
+        ESP_LOGW(TAG, "[T11] /api/status: build_canonical_status_json returned 0 "
+                      "(buffer overflow?)");
+        heap_caps_free(body);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t err = httpd_resp_send(req, body, n);
+    heap_caps_free(body);
+    return err;
+}
+
+static esp_err_t history_handler(httpd_req_t *req)
+{
+    /* Parse ?n=N from the query string. Bounds: 1 ≤ n ≤ HIST_MAX_ROWS. */
+    int n_req = 60;
+    {
+        char query[32] = {0};
+        if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+            char val[8] = {0};
+            if (httpd_query_key_value(query, "n", val, sizeof(val)) == ESP_OK) {
+                int parsed = atoi(val);
+                if (parsed > 0) n_req = parsed;
+            }
+        }
+    }
+    if (n_req < 1)              n_req = 1;
+    if (n_req > HIST_MAX_ROWS)  n_req = HIST_MAX_ROWS;
+
+    const uint16_t total = dm_ring_count();
+    uint16_t n = (uint16_t)n_req;
+    if (n > total) n = total;
+
+    /* Pull the last n entries from T4's ring buffer. dm_ring_read takes
+     * an offset measured from the oldest entry, so we read starting at
+     * (total - n) to get the most-recent n. */
+    sensor_reading_t *rows = NULL;
+    if (n > 0) {
+        rows = (sensor_reading_t *)heap_caps_malloc(
+            (size_t)n * sizeof(sensor_reading_t), MALLOC_CAP_INTERNAL);
+        if (rows == NULL) {
+            httpd_resp_send_500(req);
+            return ESP_FAIL;
+        }
+        uint16_t actually_read = 0;
+        dm_ring_read((uint16_t)(total - n), rows, n, &actually_read);
+        n = actually_read;
+    }
+
+    /* JSON array. Each entry ~80 chars; 60 entries → ~5 KB. Allocate 8 KB. */
+    const size_t cap = 8192;
+    char *body = (char *)heap_caps_malloc(cap, MALLOC_CAP_INTERNAL);
+    if (body == NULL) {
+        if (rows) heap_caps_free(rows);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    size_t pos = 0;
+    int w;
+    w = snprintf(body + pos, cap - pos, "[");
+    if (w > 0) pos += (size_t)w;
+
+    for (uint16_t i = 0; i < n && pos < cap - 1; i++) {
+        const sensor_reading_t *e = &rows[i];
+        w = snprintf(body + pos, cap - pos,
+            "%s{\"ts\":%lu,\"t\":%d,\"rh\":%u,\"ws\":%u,\"wd\":%u}",
+            (i > 0) ? "," : "",
+            (unsigned long)e->timestamp,
+            (int)e->t_avg_c,
+            (unsigned)e->rh_avg_pct,
+            (unsigned)e->wind_speed_avg_ms10,
+            (unsigned)e->wind_dir_avg_deg);
+        if (w < 0 || (size_t)w >= cap - pos) {
+            ESP_LOGW(TAG, "[T11] /api/history: row %u truncated", (unsigned)i);
+            break;
+        }
+        pos += (size_t)w;
+    }
+
+    if (pos < cap - 1) {
+        body[pos++] = ']';
+        body[pos]   = '\0';
+    }
+
+    if (rows) heap_caps_free(rows);
+
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t err = httpd_resp_send(req, body, pos);
+    heap_caps_free(body);
+    return err;
+}
+
+/* ============================================================
  * URI registration table
  * ============================================================ */
 static const httpd_uri_t s_uri_root = {
@@ -636,6 +776,12 @@ static const httpd_uri_t s_uri_login = {
     .uri = "/api/login", .method = HTTP_POST, .handler = login_handler, .user_ctx = NULL };
 static const httpd_uri_t s_uri_logout = {
     .uri = "/api/logout", .method = HTTP_POST, .handler = logout_handler, .user_ctx = NULL };
+
+/* alpha.6.17 — status routes (Phase 6.16-γ). Public (no auth gate). */
+static const httpd_uri_t s_uri_status = {
+    .uri = "/api/status", .method = HTTP_GET, .handler = status_handler, .user_ctx = NULL };
+static const httpd_uri_t s_uri_history = {
+    .uri = "/api/history", .method = HTTP_GET, .handler = history_handler, .user_ctx = NULL };
 
 /* ============================================================
  * Task entry point
@@ -676,7 +822,8 @@ void task_web_server(void *pvParameters)
     /* Register URIs. */
     const httpd_uri_t *uris[] = {
         &s_uri_root, &s_uri_style, &s_uri_appjs, &s_uri_manifest,
-        &s_uri_whoami, &s_uri_login, &s_uri_logout
+        &s_uri_whoami, &s_uri_login, &s_uri_logout,
+        &s_uri_status, &s_uri_history,
     };
     for (size_t i = 0; i < sizeof(uris)/sizeof(uris[0]); i++) {
         err = httpd_register_uri_handler(s_server, uris[i]);
@@ -686,9 +833,10 @@ void task_web_server(void *pvParameters)
         }
     }
 
-    ESP_LOGI(TAG, "[T11] HTTP server running on port 80 — 7 routes registered");
+    ESP_LOGI(TAG, "[T11] HTTP server running on port 80 — 9 routes registered");
     ESP_LOGI(TAG, "[T11]   static: /  /style.css  /app.js  /manifest.json");
     ESP_LOGI(TAG, "[T11]   auth:   GET /api/whoami  POST /api/login  POST /api/logout");
+    ESP_LOGI(TAG, "[T11]   status: GET /api/status  GET /api/history?n=N");
 
     /* Task body: just idle. httpd runs in its own task (spawned by httpd_start).
      * T11 task could be deleted here, but we keep it around as a host for
