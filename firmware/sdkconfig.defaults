@@ -112,3 +112,12 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 # CONFIG_FATFS_LFN_NONE is not set
 CONFIG_FATFS_LFN_HEAP=y
 CONFIG_FATFS_MAX_LFN=255
+
+# ----------------------------------------------------------------------------
+# HTTPD — WebSocket support (Phase 6.16-η / 2.0.0-alpha.6.21)
+# ----------------------------------------------------------------------------
+# Required for the T11 /ws route. Disabled by default in IDF 5.5; enabling
+# pulls in the WS framing + handshake code (~6 KB flash) and unlocks the
+# httpd_uri_t.is_websocket field, httpd_ws_send_frame_async(),
+# httpd_ws_recv_frame(), and httpd_ws_get_fd_info().
+CONFIG_HTTPD_WS_SUPPORT=y
