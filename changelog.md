@@ -28,6 +28,114 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-alpha.6.16.1]` — 2026-05-18
+
+**Bug fix — `Set-Cookie` header value falls out of scope before `httpd_resp_send` reads it.** alpha.6.16's acceptance curl test caught it on the first POST /api/login: the body returned `{"ok":true,"role":"farmer"}` cleanly but the `Set-Cookie:` header value was garbled bytes (`???`) instead of the generated hex token. The login + cookie-aware whoami round-trip therefore failed (server rejected the corrupted token).
+
+**Root cause**: `cookie_set_session()` built the Set-Cookie value into a stack-local `char hdr[96]` buffer and passed it to `httpd_resp_set_hdr()`. The IDF httpd contract is explicit on this: `httpd_resp_set_hdr` does NOT copy the value; it stores a pointer that must remain valid until any send API is invoked. The `hdr` buffer fell out of scope as soon as `cookie_set_session` returned. By the time esp_http_server wrote the response headers, the stack memory had been reused by other function calls — the cookie value read whatever happened to be on the stack at that address.
+
+#### What changed
+
+- **`firmware/src/web_server/web_server.cpp`**:
+  - `cookie_set_session()` signature now takes a caller-owned `char *hdr, size_t hdr_cap` pair. The caller (login_handler) allocates `char hdr_buf[96]` in its own stack frame, which outlives the `httpd_resp_set_hdr → httpd_resp_send` sequence.
+  - Inline comment added documenting the IDF contract and the alpha.6.16 acceptance-test catch.
+  - `cookie_clear_session()` left unchanged — its value is a string literal with static storage duration, so the pointer is always valid.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-alpha.6.16.1`.
+
+#### Acceptance — full curl auth flow
+
+```
+1. GET /                       → 404 + "Web assets not yet uploaded" placeholder ✅
+2. GET /api/whoami             → 401 + {"ok":false,"error":"no_session"}         ✅
+3. POST /api/login (farmer/1234) → 200 + Set-Cookie: session=21ee0da378ce70b3;
+                                       Path=/; HttpOnly; Max-Age=300              ✅
+4. GET /api/whoami (cookie)    → 200 + {"role":"farmer"}                          ✅
+5. POST /api/logout (cookie)   → 200 + Set-Cookie: session=; Max-Age=0;
+                                       {"ok":true}                                 ✅
+6. GET /api/whoami (stale cookie) → 401 + {"ok":false,"error":"no_session"}       ✅
+```
+
+Test 6 is the critical signal: the curl cookie jar still contained the token, but the server-side `session_close()` had cleared the in-memory slot, so `session_find_and_renew()` correctly returned WEB_ROLE_NONE. Captured-cookie replay is therefore not possible after logout. Production-grade behaviour.
+
+Also note from test 3: `Max-Age=300` — the cookie expiry is being driven by `cfg.session_timeout_min × 60 = 5 × 60 = 300 s`. The dm_cfg_snapshot integration is wired through correctly from T4 to T11.
+
+bin sha256: `70A7C3C563AD3E8A46968D851E97A52184562AB167F50C706D2314E9DB00A000`
+
+### `[2.0.0-alpha.6.16]` — 2026-05-18
+
+**Phase 6.N.3-α/β — web_server (T11) minimal activation: static + auth.** Third of the four tickle-replacement subphases. Replaces alpha.5's `web_server_tickle.cpp` (3-route hardcoded HTML) with the real T11 backed by `esp_http_server` + LittleFS. **7 of the 25 routes** are wired in this alpha: 4 static (served from LittleFS) + 3 auth (cookie session + pin_auth integration). The remaining 18 routes (status/config/sd/log/ota/ws) land in follow-up alphas.
+
+#### What's in this alpha (7 routes)
+
+**Static (4) — served from active LittleFS partition via LIB-9 wrapper:**
+- `GET /` → `/index.html`
+- `GET /style.css` → `/style.css`
+- `GET /app.js` → `/app.js`
+- `GET /manifest.json` → `/manifest.json`
+
+On factory-fresh units with empty LittleFS, all 4 return a friendly 404 placeholder ("Web assets not yet uploaded — use OTA /api/web") instead of an opaque error. Cleanly indicates T11 is alive even before the web-asset bundle is uploaded.
+
+**Auth (3) — cookie session + pin_auth.cpp integration:**
+- `GET /api/whoami` → returns `{"role":"farmer"|"admin"}` (200) or `{"ok":false,"error":"no_session"}` (401). Slides the session expiry forward on a hit (renewal pattern).
+- `POST /api/login` → body `{"role":"farmer"|"admin","pin":"NNNN"}`. Verifies via `pin_auth_verify`. On match: generates a 16-hex-char token, opens a session slot (4-slot in-memory table, LRU eviction), sets `Set-Cookie: session=TOKEN; Path=/; HttpOnly; Max-Age=N`, returns `{"ok":true,"role":"R"}`. On wrong PIN: `{"ok":false,"locked":false}`. On lockout: `{"ok":false,"locked":true,"remaining":N}` (reads `pin_auth_lockout_remaining_secs`).
+- `POST /api/logout` → invalidates the session and clears the cookie. Always returns 200.
+
+#### Deferred to follow-up alphas (18+ routes)
+
+`/api/status`, `/api/config`, `/api/config/limits`, `/api/wifi`, `/api/pin`, `/api/history`, `/api/sd/status`, `/api/sd/mount`, `/api/sd/unmount`, `/api/log/files`, `/api/log/download`, `/api/ota/firmware`, `/api/ota/assets`, `/api/web`, `/api/ota/status`, `/ws`, and any I'm missing. Each needs either status_json.cpp (rich payload), multipart upload (OTA), streaming download (log), or WebSocket framing (real-time push) — all are non-trivial. They land in 6.16.X alphas as focused, bisectable patches.
+
+#### What changed
+
+- **`firmware/src/web_server/web_server.cpp`** — full rewrite. Original 1330-line ESPAsyncWebServer-based file archived as `web_server_1.20.3_original.cpp.archived` (via `git mv`, preserves history). New ~600-line IDF-native `esp_http_server` task with the 7 routes + session table + cookie helpers + LittleFS-streaming pattern.
+- **`firmware/src/web_server_tickle.cpp`** — kept in the source tree but **REMOVED from CMakeLists SRCS**. T11 now provides the `/`, `/api/status`-like (later), and `/api/info`-like (later) routes; the tickle's hardcoded HTML page is no longer the entry point. The file stays around for reference; could be deleted after T11 is fully ported.
+- **`firmware/src/CMakeLists.txt`** — added `web_server/web_server.cpp`; removed `web_server_tickle.cpp`.
+- **`firmware/src/app_main_stub.cpp`**:
+  - `#include "web_server_tickle.h"` → `#include "web_server/web_server.h"`.
+  - Replaced the `web_server_tickle_start()` one-shot call with a `xTaskCreatePinnedToCore(task_web_server, "T11-web", 6144, NULL, 4, &task_t11, tskNO_AFFINITY)` spawn. Stack 6 KB (T11's own body just idles; the real HTTP work happens in esp_http_server's internal task with stack 8 KB set inside task_web_server). Priority 4 — below T10/T14 (3) since web traffic is non-critical compared to the network state machine.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-alpha.6.16`.
+
+#### Session model
+
+In-memory table, MAX_SESSIONS=4 slots. Each slot: 16-hex-char token, `web_session_role_t` (NONE/-1, FARMER/0, ADMIN/1 — local enum because pin_auth.h's pin_role_t has only 0 and 1, no sentinel), Unix expiry, configured timeout. Sessions are lost on reboot (acceptable: operator re-authenticates after a power-cycle). LRU eviction on overflow.
+
+Mutex `s_sess_mux` protects table modifications. All API handlers can run concurrently in httpd's task pool; the mutex ensures atomic find-and-renew + insert + close.
+
+#### Build traps encountered
+
+Four caught and fixed during iteration:
+1. `PIN_ROLE_NONE` doesn't exist in pin_auth.h (enum has only FARMER=0, ADMIN=1). Fixed by introducing a local `web_session_role_t` with `WEB_ROLE_NONE = -1`. Cast to `pin_role_t` at the call boundary to `pin_auth_verify` / `pin_auth_lockout_remaining_secs`.
+2. `littlefs_read` signature mismatch — takes `char *` (not `uint8_t *`) and only 4 args (no out-length param; the buffer is NUL-terminated and `strlen` gives the byte count). Reworked `serve_lfs_file` to match.
+3. `-Werror=format-truncation` on the 256-byte placeholder body. Bumped to 512.
+4. `-Wunused-function` on `require_auth` (defined for the 18 deferred routes, not used by the 7 minimal ones). Suppressed with `__attribute__((unused))` plus a comment explaining the intent.
+
+#### Build delta vs alpha.6.15
+
+| Metric | alpha.6.15 | alpha.6.16 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1,262,497 B | **1,263,941 B** | +1,444 B |
+| Flash usage % | 60.2 % | 60.3 % | +0.1 pp |
+| RAM static | 59,920 B | **60,056 B** | +136 B |
+
+bin sha256: `4079718D80E768113AFA07B2BA8A43FC63DDF9083DF731C88E39AE909B3EE65D`
+
+The **+1,444 B flash** is the net of T11's ~600-line body minus web_server_tickle's ~330 lines (which is no longer compiled into SRCS but still on disk). RAM delta +136 B from `s_sessions[4]` table (4 × ~32 B) and `s_sess_mux` pointer.
+
+Runtime heap impact at heartbeat baseline: T11 task stack 6 KB + httpd internal task stack 8 KB = ~14 KB. Heartbeat baseline expected ~124,000 free internal (was 137,623 at 6.15).
+
+#### Acceptance bar for alpha.6.16
+
+1. ✅ Build succeeds (after four iteration fixes).
+2. Flash & boot: existing T2/T3/T4/T5/T6/T7/T8/T9/T10/T14 chain regression-clean.
+3. T11 spawn banner: `alpha.6.16: T11 web_server task spawned (handle=0x...); 4 static + 3 auth routes on port 80`.
+4. T11 task-alive: `[T11_WEB] [T11] task alive (minimal T11 — static + auth only)`.
+5. T11 server-started: `[T11_WEB] [T11] HTTP server running on port 80 — 7 routes registered` + 2 follow-up lines listing the route paths.
+6. **Browser test 1** — visit `http://192.168.20.160/`. Should show the **"Web assets not yet uploaded"** placeholder (404 status, but readable). Same for `/style.css`, `/app.js`, `/manifest.json` (placeholder text varies by path).
+7. **Browser test 2** — visit `http://192.168.20.160/api/whoami`. Should return 401 with `{"ok":false,"error":"no_session"}`.
+8. **curl test** — `curl -i -X POST -H "Content-Type: application/json" -d '{"role":"farmer","pin":"1234"}' http://192.168.20.160/api/login`. Should return 200 + `Set-Cookie: session=...` + body `{"ok":true,"role":"farmer"}`. If you previously did the IO0 stage-1 reset, default "1234" works; otherwise it'll be 401 (no session yet seeded).
+9. **Cookie-aware curl** — same login, save the cookie via `-c`, then `curl -b cookies.txt http://192.168.20.160/api/whoami` → 200 `{"role":"farmer"}`. Then `curl -b cookies.txt -X POST http://192.168.20.160/api/logout` → 200 `{"ok":true}`. Then whoami again → 401.
+10. Heap stable around 124,000 free internal.
+11. Run ≥ 5 min; no resets; no stack-overflow on T11 or the httpd internal task.
+
 ### `[2.0.0-alpha.6.15]` — 2026-05-18
 
 **Phase 6.N.2 — status_post (T14) minimal activation.** Second of the four tickle-replacement subphases. Replaces the alpha.5 `https_tickle.cpp` one-shot with a long-running T14 task that POSTs a status JSON every `cfg.status_interval_s`. T15 supervisor + gh#23 mbedtls mitigations + streaming SD-log upload are explicitly deferred to a follow-up patch — see source-file header for the full deferred-features list.

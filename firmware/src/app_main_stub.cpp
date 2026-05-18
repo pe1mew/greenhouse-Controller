@@ -173,7 +173,8 @@
 #include "sd_storage.h"
 #include "wifi_tickle.h"
 #include "https_tickle.h"
-#include "web_server_tickle.h"
+/* web_server_tickle.h removed in alpha.6.16 — replaced by web_server/web_server.h (real T11). */
+#include "web_server/web_server.h"
 #include "system_globals.h"
 #include "data_manager/sunrise.h"
 #include "system_id/system_id.h"
@@ -1474,15 +1475,41 @@ extern "C" void app_main(void)
      *
      * Skipped if WiFi is not up (esp_http_server still starts, but nobody
      * could reach it; log noise rather than functional failure). */
+    /* alpha.6.16 — Spawn T11 minimal web_server task (replaces alpha.5
+     * web_server_tickle). Currently hosts 4 static (/, /style.css, /app.js,
+     * /manifest.json — all served from active LittleFS) and 3 auth
+     * (GET /api/whoami, POST /api/login, POST /api/logout) routes.
+     * The 18+ remaining routes (status, config, SD, log, OTA, WS) land in
+     * follow-up alphas — see firmware/src/web_server/web_server.cpp file
+     * header for the full list.
+     *
+     * Task body just idles after registering the httpd handlers; the real
+     * HTTP work happens in esp_http_server's own internal task spawned by
+     * httpd_start. Stack 6 KB for task_web_server itself; the httpd task
+     * uses cfg.stack_size = 8 KB (set inside task_web_server).
+     * Priority 4 — slightly below T10/T14 (3) since web reqs are
+     * non-critical compared to the network state machine.
+     *
+     * Skipped if WiFi is not up — the server would still start but nobody
+     * could reach it. Logged as a warning in that case. */
     if (wifi_up) {
-        web_server_tickle_status_t web_st = web_server_tickle_start();
-        const char *web_msg =
-            (web_st == WEB_SERVER_TICKLE_OK)              ? "OK (running on port 80)" :
-            (web_st == WEB_SERVER_TICKLE_INIT_FAILED)     ? "INIT_FAILED" :
-            (web_st == WEB_SERVER_TICKLE_REGISTER_FAILED) ? "REGISTER_FAILED" : "?";
-        ESP_LOGI(TAG, "web_server_tickle_start() returned %d (%s)", (int)web_st, web_msg);
+        BaseType_t web_rc = xTaskCreatePinnedToCore(
+            task_web_server,
+            "T11-web",
+            6144,                  /* stack words */
+            NULL,
+            4,                     /* priority — non-critical web */
+            &task_t11,
+            tskNO_AFFINITY);
+        if (web_rc != pdPASS) {
+            ESP_LOGE(TAG, "alpha.6.16: xTaskCreate T11 failed (rc=%d)", (int)web_rc);
+        } else {
+            ESP_LOGI(TAG, "alpha.6.16: T11 web_server task spawned (handle=%p); "
+                          "4 static + 3 auth routes on port 80",
+                     (void *)task_t11);
+        }
     } else {
-        ESP_LOGW(TAG, "alpha.5 web server tickle: skipped — WiFi not up");
+        ESP_LOGW(TAG, "alpha.6.16 T11 web_server: skipped — WiFi not up");
     }
 
     BaseType_t rc = xTaskCreatePinnedToCore(
