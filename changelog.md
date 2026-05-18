@@ -28,6 +28,81 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-alpha.6.15]` — 2026-05-18
+
+**Phase 6.N.2 — status_post (T14) minimal activation.** Second of the four tickle-replacement subphases. Replaces the alpha.5 `https_tickle.cpp` one-shot with a long-running T14 task that POSTs a status JSON every `cfg.status_interval_s`. T15 supervisor + gh#23 mbedtls mitigations + streaming SD-log upload are explicitly deferred to a follow-up patch — see source-file header for the full deferred-features list.
+
+#### The decision: minimal rewrite, full port deferred
+
+The 1.20.3 `status_post.cpp` (942 lines, Arduino-HTTPClient based, with persistent WiFiClientSecure + heap-drop accumulator + circuit breaker + planned-reboot supervisor integration) is archived as `status_post_1.20.3_original.cpp.archived`. The migration plan §"Phase 4 — HTTPS client" describes the full rewrite (gh#23 fix payoff: max_frag_len=1024, single cipher suite, mbedtls session-ticket reuse via `HTTP_EVENT_ON_FINISH`/`HTTP_EVENT_ON_CONNECTED`); that work lives in a future patch.
+
+Tonight's minimal-T14 lands the structural pieces:
+1. **Replace https_tickle one-shot** with a periodic long-running task.
+2. **Force-remove status_post_stub.cpp** — the real status_post.cpp now provides `status_post_backoff_active()` (same stub-and-linker-conflict pattern as data_manager_stub.cpp alpha.6.7 and relay_controller_stub.cpp alpha.6.9).
+3. **Provide all 6 symbols from status_post.h** so ui_display + future T11 web_server callers link cleanly: `task_status_post`, `status_post_backoff_active`, `status_post_last_str`, `status_post_last_log_str`, `status_post_heartbeat`, `status_post_heap_drop_bytes`, `status_post_force_teardown`.
+
+#### Minimal-T14 scope (alpha.6.15)
+
+**Implemented:**
+- `task_status_post` long-running task. Reads `cfg.status_url` + `cfg.status_interval_s` via `dm_cfg_snapshot`. If URL is empty or interval is zero: sleeps 60 s and re-checks (lets the operator enable/disable status posts via the web/LCD menu at runtime).
+- One esp_http_client POST per cycle. Uses the same shape as https_tickle (`crt_bundle_attach` + `keep_alive_enable=true` + 1 KB buffers).
+- Minimal JSON payload: `{"unit_id":"NNNN","fw_version":"X","uptime_s":N,"free_heap":N}` (~80 bytes). Adequate for server connectivity testing; full sensor + relay + alarms snapshot lands when status_json.cpp activates in a follow-up.
+- `s_heartbeat` increments per loop tick (T15 supervisor hook, exposed via `status_post_heartbeat()`).
+- `s_last_str` formatted as `"OK YYYY-MM-DD HH:MM:SS"` / `"FAIL YYYY-MM-DD HH:MM:SS"` (rendered on T8 LCD Web tab + future web GUI).
+
+**Deferred to a follow-up patch** (preserves the gh#23 fix work for focused attention):
+- mbedtls session-ticket reuse (`HTTP_EVENT_ON_FINISH` save + `HTTP_EVENT_ON_CONNECTED` restore).
+- mbedtls knobs (max_frag_len=1024, single cipher suite TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256).
+- Streaming SD-log upload (`SDFileChunkedStream` → `esp_http_client_open + write + fetch_headers`).
+- gh#24 heap-drop accumulator (signed-balance math around each POST).
+- gh#25 log-upload dedup latch.
+- Circuit breaker (10 consecutive failures → 60 s lockout).
+- T15 supervisor task (wedge detection, leak detection, planned-reboot path).
+- Full status_json.cpp payload (sensor snapshot, relay states, EG1 flag bits, alarms array).
+
+#### What changed
+
+- **`firmware/src/status_post/status_post.cpp`** — full rewrite. Old 942-line Arduino-HTTPClient file moved to `status_post_1.20.3_original.cpp.archived` (via `git mv`, preserves history). New ~330-line IDF-native file with the minimal T14 task.
+- **`firmware/src/status_post/status_post_stub.cpp`** — **DELETED** via `git rm`. Real status_post.cpp now provides `status_post_backoff_active()`. Force-removal pattern.
+- **`firmware/src/CMakeLists.txt`** — added `status_post/status_post.cpp`; removed `status_post/status_post_stub.cpp`.
+- **`firmware/src/app_main_stub.cpp`**:
+  - `#include "status_post/status_post.h"` added.
+  - Spawn T14 after T10 with `xTaskCreatePinnedToCore(task_status_post, "T14-status", 8192, NULL, 3, &task_t14, tskNO_AFFINITY)`. Stack 8 KB (mbedtls handshake peaks at ~5 KB; +3 KB margin matches 1.20.3 prod + https_tickle observed usage). Priority 3 — same as T10; network tasks latency-tolerant vs T2/T6 climate priorities.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-alpha.6.15`.
+
+`https_tickle.cpp` stays in the build — still runs the 5×HTTPS-POST boot connectivity test (originally the gh#23 baseline demonstration). T14 takes over from there as the long-running periodic poster. A future alpha could fold the boot connectivity test into T14's first cycle and delete https_tickle.cpp entirely; deferred to keep this patch focused.
+
+#### Build trap encountered
+
+- `system_id_unit_id` → `system_unit_id_u16`. My initial draft used a function name that didn't exist; the real export from `system_id.h` is `system_unit_id_u16(void)` returning `uint16_t`. Same Phase 6.3 module, just a different name. One-line fix.
+
+#### Build delta vs alpha.6.14
+
+| Metric | alpha.6.14 | alpha.6.15 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1,260,041 B | **1,262,497 B** | +2,456 B |
+| Flash usage % | 60.1 % | 60.2 % | +0.1 pp |
+| RAM static | 59,880 B | **59,920 B** | +40 B |
+
+bin sha256: `1B09793DD312AEECE8285B11048B6EA2946405BCE9ADAAF12E997BC1B7F1FB12`
+
+The **+2,456 B flash** is T14's ~330-line minimal task body. RAM delta +40 B for the s_last_str + s_last_log_str + s_heartbeat + s_heap_drop_bytes module-level state.
+
+Runtime heap impact at heartbeat baseline expected: ~−8 KB free vs alpha.6.14 (T14 task stack 8 KB). Plus, per-cycle TLS handshake adds transient ~30-40 KB but releases back. Heartbeat baseline ~138,000 free (was 146,143 at alpha.6.14).
+
+#### Acceptance bar for alpha.6.15
+
+1. ✅ Build succeeds (after `system_unit_id_u16` rename).
+2. Flash & boot: existing T2/T3/T4/T5/T6/T7/T8/T9/T10 chain regression-clean.
+3. T14 spawn banner: `alpha.6.15: T14 status_post task spawned (handle=0x...); periodic HTTPS POST every cfg.status_interval_s`.
+4. T14 task-alive: `[T14_STA] [T14] task alive (minimal T14 — see file header for deferred features)`.
+5. **First T14 POST** at uptime ~12 s (T14 spawns at ~3 s + 2 s settling + ~5 s first-cycle wait): `[T14_STA] [T14] POST OK: status=N len=N elapsed=N ms (body=N B)` OR `[T14_STA] [T14] POST FAIL: ...` if the status server is unreachable.
+6. **Subsequent POSTs** every `cfg.status_interval_s` (default 240 s on production NVS).
+7. The boot https_tickle still does 5×POSTs as before (still in app_main_stub); T14 picks up after.
+8. T8 LCD Web tab (if you navigate to it) should display the last status_post outcome.
+9. Heap stable around 138,000 free internal (was 146,143; T14 stack 8 KB).
+10. Run ≥ 10 min; no resets; observe at least 2 successful periodic POSTs.
+
 ### `[2.0.0-alpha.6.14]` — 2026-05-18
 
 **Phase 6.N.1 — network_manager (T10) minimal activation.** The Phase 6 final-assembly subphases begin. T10 is the first of the four "tickle replacements" — the existing alpha.5 tickles (wifi_tickle, https_tickle, web_server_tickle) get replaced by their real long-running task counterparts. This alpha activates the minimal viable T10; T14 (status_post + supervisor), T11 (web_server full), and T1+main consolidation follow in 6.15/6.16/6.17.

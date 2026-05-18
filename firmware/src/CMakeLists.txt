@@ -41,9 +41,10 @@ idf_component_register(
         "safety_monitor/safety_monitor.cpp"     # Phase 6.11 (2.0.0-alpha.6.11) — T3 safety monitor (TN1 reader, wind override, Q1 producer)
         "ui_display/ui_display.cpp"             # Phase 6.12 (2.0.0-alpha.6.12) — T8 UI/LCD (Q2 consumer, Q4/Q5 producer, menu FSM)
         "auth/pin_auth.cpp"                     # Phase 6.12 — PIN session + lockout (called from T8 + future T11 web routes)
-        "status_post/status_post_stub.cpp"      # Phase 6.12 stub — status_post_backoff_active; force-removed when real status_post.cpp activates in Phase 6.N
+        # status_post_stub.cpp REMOVED in 2.0.0-alpha.6.15 — minimal status_post.cpp below provides status_post_backoff_active() and friends
         "ota_manager/ota_manager.cpp"           # Phase 6.13 (2.0.0-alpha.6.13) — T13 OTA manager (firmware + assets); spawned on-demand by T11
         "network_manager/network_manager.cpp"   # Phase 6.14 (2.0.0-alpha.6.14) — T10 minimal network manager (Q5 producer, TN4 to T4); see file header for deferred features
+        "status_post/status_post.cpp"           # Phase 6.15 (2.0.0-alpha.6.15) — T14 minimal status_post (periodic HTTPS POST); see file header for deferred features (T15 supervisor + gh#23 mitigations)
     INCLUDE_DIRS
         "."
     REQUIRES

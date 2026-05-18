@@ -187,6 +187,7 @@
 #include "ui_display/ui_display.h"
 #include "auth/pin_auth.h"
 #include "network_manager/network_manager.h"
+#include "status_post/status_post.h"
 #include "types/app_types.h"  /* Q1..Q6, MX1..MX5, EG1, task_t1..15, key_event_t etc. */
 
 static const char *TAG = "GHC-STUB";
@@ -1302,6 +1303,59 @@ extern "C" void app_main(void)
             ESP_LOGI(TAG, "alpha.6.14: T10 network_manager task spawned (handle=%p); "
                           "Q5 producer + TN4 to T4 (NTP sync ack)",
                      (void *)task_t10);
+        }
+    }
+
+    /* alpha.6.15 — spawn T14 minimal status_post task.
+     *
+     * Replaces the alpha.5 https_tickle one-shot with a long-running task
+     * that POSTs a status JSON every cfg.status_interval_s (60-300 s).
+     * See firmware/src/status_post/status_post.cpp file header for the
+     * full minimal-T14 scope + deferred features (gh#23 mitigations +
+     * streaming SD-log upload + supervisor + breaker).
+     *
+     * Force-removes status_post_stub.cpp via the linker conflict pattern —
+     * status_post.cpp now provides the real status_post_backoff_active()
+     * (just like data_manager_stub.cpp removal in alpha.6.7 and
+     * relay_controller_stub.cpp removal in alpha.6.9).
+     *
+     * The https_tickle is still called above for the boot-time 5×POST
+     * connectivity test (it served as the gh#23 demonstration). T14 takes
+     * over from there as the long-running periodic poster.
+     *
+     * Stack: 8 KB — esp_http_client opens TLS sockets, mbedtls handshake
+     * needs ~5 KB of stack at peak. +3 KB IDF margin → 8 KB. Matches
+     * 1.20.3 prod and https_tickle's effective consumption.
+     * Priority 3 — same as T10 (network polling and HTTPS POST are both
+     * latency-tolerant relative to climate control). Core pinning:
+     * tskNO_AFFINITY (1.20.3 prod pinned to core 0 for WiFi locality;
+     * defer pinning until Phase 7 soak).
+     *
+     * Dependencies satisfied:
+     *   - T4 alpha.6.7 — provides cfg.status_url + cfg.status_interval_s
+     *     via dm_cfg_snapshot.
+     *   - T9 alpha.6.6 — log_post() for LOG_NET events (deferred in
+     *     minimal T14 — added when status_json.cpp activates).
+     *   - WiFi STA + SNTP — wifi_tickle + T10 alpha.6.14 ensure the
+     *     network is up before T14's first POST attempt.
+     *   - system_id alpha.6.3 — provides system_id_unit_id() for the
+     *     JSON payload's "unit_id" field.
+     */
+    {
+        BaseType_t rc = xTaskCreatePinnedToCore(
+            task_status_post,
+            "T14-status",
+            8192,                  /* stack words */
+            NULL,
+            3,                     /* priority — latency-tolerant network task */
+            &task_t14,
+            tskNO_AFFINITY);
+        if (rc != pdPASS) {
+            ESP_LOGE(TAG, "alpha.6.15: xTaskCreate T14 failed (rc=%d)", (int)rc);
+        } else {
+            ESP_LOGI(TAG, "alpha.6.15: T14 status_post task spawned (handle=%p); "
+                          "periodic HTTPS POST every cfg.status_interval_s",
+                     (void *)task_t14);
         }
     }
 
