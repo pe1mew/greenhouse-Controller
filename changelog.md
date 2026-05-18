@@ -28,6 +28,128 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-alpha.6.20]` — 2026-05-18
+
+**Phase 6.16-ζ — T11 OTA + web-tab routes (5 of 6 remaining).** Adds the 5 routes that let the web GUI inspect OTA state, push firmware + asset uploads, and configure the status-website integration:
+
+- `GET /api/ota/status` — `{state, progress, error, bank, accepted}` (auth required, any role)
+- `POST /api/ota/firmware` — admin only; streams `.bin` body chunks into `ota_firmware_begin/write/end`
+- `POST /api/ota/assets` — admin only; accumulates STORE-only `.zip` body into the PSRAM buffer via `ota_assets_begin/accumulate/end` (spawns T13 on success)
+- `GET /api/web` — admin only; returns the web-tab settings (status URL, interval, expose mask, log-upload schedule, last-attempt strings)
+- `POST /api/web` — admin only; URL/secret/interval bounds-check → NVS write → synchronous `dm_reload_web_cfg()` so the cfg shadow refreshes before the response is sent
+
+**T11 surface grows from 19 → 24 routes** (96 % of the original 25-route plan). Only `/ws` (WebSocket dashboard push) remains for Phase 6.16-η.
+
+#### Bug fix shipped under this tag — `ota_get_state()` NULL-mutex panic
+
+`ota_get_state()` was calling `xSemaphoreTake(s_mx, portMAX_DELAY)` unconditionally. `s_mx` is created lazily inside `ota_mx_init()`, which only runs from `ota_firmware_begin()` / `ota_assets_begin()`. Pre-2.0 nothing read OTA state before a write began, so the bug had been dormant. The new `/api/ota/status` handler is the first read-before-write caller — and it panicked the httpd worker with `assert failed: xSemaphoreTake(NULL, …)` followed by a TCP RST from the kernel. The companion writers (`set_state_locked` / `set_error_locked`) had always been NULL-safe; the fix lifts the same pattern into the read accessor (skip the lock when `s_mx == NULL` — the read is a single byte, benign without lock when no writer is racing).
+
+Detected on-hardware during alpha.6.20 acceptance: first curl-test of `GET /api/ota/status` returned `curl: (56) Recv failure: Connection was reset`. Device remained alive (other routes still responded), so it was a per-worker fault rather than a system panic. NULL-safe edit applied to `firmware/src/ota_manager/ota_manager.cpp`, rebuild + reflash, route now answers `{state:"idle",progress:0,bank:"A",accepted:true}` immediately on cold boot.
+
+#### What changed
+
+- **`firmware/src/web_server/web_server.cpp`** — added 5 handlers (`ota_status_handler`, `ota_firmware_post_handler`, `ota_assets_post_handler`, `web_get_handler`, `web_post_handler`), 5 URI structs, 5 registration-array entries, and two new include lines (`ota_manager/ota_manager.h`, `status_post/status_post.h`). The two log lines describing the registered routes were extended to 9 (added `ota:` and `web:` rows). Total ~310 lines net.
+- **`firmware/src/ota_manager/ota_manager.cpp`** — `ota_get_state()` made NULL-safe (4-line edit; see above).
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-alpha.6.20`.
+
+#### URL validation — matches 1.20.3 byte-for-byte
+
+`POST /api/web` keeps the three URL rules from the Arduino implementation: must start with `http://` or `https://`, must NOT contain `?` or `#`, must end in `api.php`. T14 itself appends `?action=…` query strings so the operator never types them; bare-URL discipline meant we never accidentally tunnelled a misconfigured query parameter through the redirect chain that HTTPClient used to follow silently. Same `CFG_MIN_SECRET_LEN = 16` check on the shared secret (which is hashed, not echoed, on subsequent GETs).
+
+#### Acceptance — hardware verified on 192.168.20.160
+
+Admin login (PIN `12345678`) then full validation sweep:
+
+```
+POST /api/web  url=example.com/api.php         → 400 "URL must start with http:// or https://"
+POST /api/web  url=https://x.com/api.php?x=1   → 400 "URL must not contain ? or #"
+POST /api/web  url=https://x.com/foo.bar       → 400 "URL must end with \"api.php\""
+POST /api/web  secret=short                    → 400 "secret too short"
+POST /api/web  interval_s=30                   → 400 "interval out of range"
+POST /api/web  log_h=30                        → 400 "bounds"
+POST /api/web  full valid payload              → 200 {"ok":true}
+GET  /api/web  (same admin cookie)             → all fields persisted; secret not echoed
+```
+
+Role enforcement on a farmer cookie:
+
+```
+GET  /api/ota/status   → 200 (farmer ≥ farmer)
+GET  /api/web          → 403 "admin only"
+POST /api/web          → 403 "admin only"
+POST /api/ota/firmware → 403 "admin only"
+```
+
+The valid-payload write also exercised the write-then-read round-trip: `dm_reload_web_cfg()` returned synchronously and the next GET reflected the new values. Test settings were rolled back to `url="" enable=0` afterwards so the unit doesn't loop on DNS failures to the fake server.
+
+OTA POST upload paths (`/api/ota/firmware` and `/api/ota/assets`) NOT exercised on the live unit because they would overwrite the running firmware. Code paths inspected against the 1.20.3 archived original (lines 1133-1258); the chunk-receive loop is identical, only the wire-layer reader (`httpd_req_recv` vs `AsyncWebServerRequest::onBody`) differs.
+
+#### Build delta vs alpha.6.19
+
+| Metric | alpha.6.19 | alpha.6.20 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1,277,072 B | **1,296,481 B** | +19,409 B |
+| RAM static | ~60,072 B | 60,248 B | +176 B |
+
+bin sha256: `888C8A8C48E74C6A…` (full hash in `bin/2.0.0-alpha.6.20/`)
+
+**+19 KB flash** — the OTA endpoints carry the largest single jump because their bodies handle multi-megabyte uploads; the buffered-recv loop dominates. The web-tab routes are comparatively cheap.
+
+### `[2.0.0-alpha.6.19]` — 2026-05-18
+
+**Phase 6.16-ε — T11 SD + log routes (5 of 11 remaining).** Adds the 5 routes that let the web GUI inspect the SD card state, manage its lifecycle, and download CSV log files:
+
+- `GET /api/sd/status` — `{mounted, free_mb, size_mb}` (PUBLIC)
+- `POST /api/sd/mount` — admin only; calls `event_logger_sd_remount()` so T9 stays consistent
+- `POST /api/sd/unmount` — admin only; calls `event_logger_sd_unmount()` (gh#26 sync-before-release path)
+- `GET /api/log/files` — admin only; lists `.csv` files on SD, lexicographically sorted (= chronological for YYYYMMDD-named files)
+- `GET /api/log/download?file=NAME` — admin only; streams the CSV as `text/csv` with `Content-Disposition: attachment`
+
+**T11 surface grows from 14 → 19 routes** (76 % of the original 25-route plan). Remaining: 4 OTA routes + 1 WebSocket.
+
+#### What changed
+
+- **`firmware/src/web_server/web_server.cpp`** — added 5 handlers + URI registrations. Includes `event_logger.h` for the SD lifecycle helpers and `sd_storage.h` for the file/byte accessors. `cfg.max_uri_handlers` bumped 16 → 28 to make room for the remaining 6 routes.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-alpha.6.19`.
+
+The `nvs_count` field from 1.20.3's `/api/log/files` is intentionally absent — the NVS-ringbuffer log source was retired in alpha.6.5. SD is the only source. Same call out as the deferred web-asset bundle update.
+
+The `src=nvs` branch from 1.20.3's `/api/log/download` is also retired. Default + only mode is now SD-based — query is `?file=NAME`, no `?src=`.
+
+#### Acceptance — full route matrix curl-validated
+
+```
+1. GET /api/sd/status              → 200 + {mounted:true, free_mb:1878, size_mb:1880}
+2. GET /api/log/files (no cookie)  → 401 no_session
+3. Admin login + GET /api/log/files → 200 + 8 entries including cross-firmware
+                                       leftovers (ghc_0001.csv from 1.20.3 + the
+                                       T9 daily YYYYMMDD-named files +
+                                       phase_2_11_test.csv from alpha.2.11.1)
+4. GET /api/log/download?file=phase_2_11_test.csv → 200 + text/csv +
+                                       Content-Disposition: attachment +
+                                       1275-byte body
+5. ?file=../etc/passwd             → 400 bad filename (path-traversal rejected)
+6. (no file param)                 → 400 missing param
+7. ?file=nope.csv                  → 404 not found or empty
+```
+
+Operationally meaningful: **`ghc_0001.csv` in the listing demonstrates cross-firmware SD continuity** through the web GUI. The 1.20.3-era logger filename is preserved by T9's "resume existing" path (alpha.6.6) and now appears in T11's listing. Operators can download their pre-migration logs through the new GUI without any data migration.
+
+#### Watch item carried forward
+
+Error bodies in the 400/404 paths of `/api/log/download` return `Content-Type: text/html` instead of `application/json` because the `set_status` path doesn't reset the type. JSON body content is correct; only the header is wrong. Trivial fix (add `httpd_resp_set_type` before each `set_status`/`send`), saved for a future cleanup alpha.
+
+#### Build delta vs alpha.6.18
+
+| Metric | alpha.6.18 | alpha.6.19 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1,273,885 B | **1,277,072 B** | +3,187 B |
+| RAM static | 60,072 B | (similar) | unchanged |
+
+bin sha256: `49E9A852CBD4A9699C107D16C63BAF94ED953BF711AEDA15C9DDD5221FC2CF2E`
+
+**+3,187 B flash** — five focused handlers, no new task allocations.
+
 ### `[2.0.0-alpha.6.18]` — 2026-05-18
 
 **Phase 6.16-δ — T11 config routes (5 of 18 remaining routes).** Adds the 5 routes that let the web GUI read + write configuration:
