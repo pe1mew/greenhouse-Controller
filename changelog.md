@@ -28,7 +28,79 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
-### `[2.0.0-alpha.6.2]` — 2026-05-18
+### `[2.0.0-alpha.6.3]` — 2026-05-18
+
+**Phase 6.3 — Second firmware/src/ subsystem activation: `system_id`** (gh#17, since 1.18.3 on the arduino-era line). Tiny utility (~48 lines) that derives a 16-bit per-unit ID from MAC bytes 4-5 via `esp_read_mac()`, with a lazy-cache for O(1) subsequent reads. No FreeRTOS deps, no driver deps, no Arduino — just `<esp_mac.h>` and `<stdio.h>`. Surfaces the per-unit ID in the boot banner alongside the MAC; the future network_manager (Phase 6.12) will use it for the `Greenhouse-XXXX` AP-SSID.
+
+#### What changed
+
+- **`firmware/src/CMakeLists.txt`** — added `system_id/system_id.cpp` to SRCS.
+- **`firmware/src/app_main_stub.cpp`** — `#include "system_id/system_id.h"` plus two new lines in `log_boot_banner()` immediately after the MAC printout:
+  ```c
+  char unit_id_str[5] = {0};
+  system_unit_id_str(unit_id_str, sizeof(unit_id_str));
+  ESP_LOGI(TAG, "Unit ID: %s (AP-SSID would be Greenhouse-%s)", unit_id_str, unit_id_str);
+  ```
+- **`firmware/platformio.ini`** — `FIRMWARE_VERSION` stamped `2.0.0-alpha.6.3`.
+
+The `system_id.cpp` file required ZERO modifications. It was already IDF-native — no Arduino, no FreeRTOS, no drivers.
+
+#### Build delta vs alpha.6.2
+
+| Metric | alpha.6.2 | alpha.6.3 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1,203,945 B | **1,203,669 B** | **−276 B** |
+| Flash usage % | 57.4 % | 57.4 % | 0 |
+| RAM static | 42,776 B | 42,784 B | +8 B |
+
+bin sha256: `EC2C51B3ED0B8873067013CD346DEC3F56E2C918840A4F5485E7F17AA648384F`
+
+**Flash size actually DROPPED** by 276 bytes despite adding a new .cpp. Likely cause: the format-string change in `log_boot_banner` removed one of the two `(int)` casts of the chip revision (small constant fold), and the link-time optimiser re-arranged some literal pools. The `system_id.cpp` object code itself is tiny (~80 bytes — one cached uint16, one snprintf call, one esp_read_mac call). The +8 B RAM is the `s_cached` and `s_inited` statics in system_id.cpp's BSS.
+
+#### Acceptance bar for alpha.6.3
+
+1. ✅ Build succeeds.
+2. Flash to Unit 2; boot reason `ESP_RST_POWERON`.
+3. Boot banner now includes a new line right after the STA MAC:
+   ```
+   I (xxx) GHC-STUB: STA MAC: 64:E8:33:7C:23:44
+   I (xxx) GHC-STUB: Unit ID: 2344 (AP-SSID would be Greenhouse-2344)
+   ```
+   The value `2344` derives from MAC bytes 4-5 (`23:44`).
+4. All earlier-phase tickles regression-clean.
+
+If the unit ID shows as `0000` or differs from the MAC last-two-bytes, `esp_read_mac(ESP_MAC_WIFI_STA, ...)` returned zero / wrong values — but this same call has been working in `log_boot_banner` (existing MAC print) since Phase 1, so a regression there would be visible in the MAC line too.
+
+#### Acceptance: PASSED — 2026-05-18
+
+Flashed Unit 2 dev board. The new line fired exactly as designed:
+```
+I (958) GHC-STUB: STA MAC: 64:E8:33:7C:23:44
+I (962) GHC-STUB: Unit ID: 2344 (AP-SSID would be Greenhouse-2344)
+```
+
+`2344` correctly derives from MAC bytes `23:44` packed as uint16. The AP-SSID string `Greenhouse-2344` is the same one the future Phase-6.12 network_manager port will use for soft-AP mode.
+
+**SNTP soft-failed this boot** (network UDP/123 instability — same intermittent pattern documented in alpha.3.2). Not a regression in alpha.6.3 (which doesn't touch SNTP).
+
+**Side-channel observation worth recording**: the sunrise tickle output (Phase 6.2) now serves as a SNTP-success indicator for free. When SNTP works (alpha.6.2 boot): `unix=1779088245 -> rise=03:40 set=19:34 is_daytime=true`. When SNTP fails (this boot): `unix=12 -> rise=07:51 set=15:37 is_daytime=false`. The algorithm correctly computes January-1 polar-winter values for "1970-01-01 + 12 seconds since boot" — graceful failure mode, no crash, no NaN. The tickle was designed to validate the sunrise math; it serendipitously also gives an at-a-glance SNTP health check.
+
+**HTTPS still worked despite time being stuck near 1970**: all 5 calls returned `OK status=204`. Either IDF's esp-tls doesn't strictly enforce cert validity-window when `skip_cert_common_name_check=true`, or SNTP arrived in the ~280 ms window between the sunrise tickle's `time(NULL)` snapshot and the first HTTPS handshake. gh#23 heap pattern intact (call 1 free −504 B / largest −32,768 B; calls 2-5 free ~−240 B / largest 0, with one transient −4,096 B on call 4 that recovered on call 5).
+
+**Earlier-phase tickles all regression-clean**:
+- system_globals_init: OK at 990 ms (Phase 6.1 regression-clean)
+- WiFi: 1.7 s STA_GOT_IP, RSSI -66 dBm (Phase 3 regression-clean)
+- HTTPS: 5/5 OK status=204 (Phase 4 regression-clean, gh#23 fix holds)
+- Web server: running on port 80 (Phase 5 regression-clean)
+- Sensors + RTC + LFS + SD: heartbeat shows fg6485a=0 rh=95.0 temp=13.9, s200=0 dir=208.0, rtc=07:23 advancing (all Phase 2 regression-clean)
+- LFS verify PASS, SD verify PASS, file_size now 1020 B = 20 boots × 51 B
+- Heartbeat heap: `free=234,495 / largest=131,072` — within jitter of alpha.6.2's baseline (`free=234,599`). system_id added zero heap impact (its statics live in BSS, not heap).
+
+Phase 6.3 PASSED. The `Unit ID: 2344` line confirms `esp_read_mac()` + the lazy-cache pattern work correctly; the AP-SSID string is now derivable from any future task.
+
+Phase 6.3 is CLOSED.
+
+
 
 **Phase 6.2 — First firmware/src/ subsystem activation: `data_manager/sunrise.cpp`.** Lowest-risk possible first activation — pure NOAA solar-position math (~157 lines), no FreeRTOS dependencies, no driver dependencies, no Arduino dependencies. The activation validates the build-pipeline-touches-a-firmware/src/-file flow before we tackle the heavier task .cpp files in 6.3+.
 
