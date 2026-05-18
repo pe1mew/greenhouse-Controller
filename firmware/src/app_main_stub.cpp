@@ -177,6 +177,8 @@
 #include "system_globals.h"
 #include "data_manager/sunrise.h"
 #include "system_id/system_id.h"
+#include "keypad_scan/keypad_scan.h"
+#include "types/app_types.h"  /* Q1..Q6, MX1..MX5, EG1, task_t1..15, key_event_t etc. */
 
 static const char *TAG = "GHC-STUB";
 
@@ -262,6 +264,27 @@ static void heartbeat_task(void *arg)
          * this so a user pressing keys during the test sees the count
          * change in real time on serial. */
         int keys_pressed = keypad_count_pressed();
+
+        /* alpha.6.4 — drain Q2 of any key events produced by the T7
+         * keypad-scan task since the last heartbeat. The task posts
+         * `key_event_t { key, repeated }` on each edge-detected press
+         * (and on repeat after 500 ms hold). Q2 has capacity 8, so up
+         * to 8 events between 5 s ticks are captured. We pop them all
+         * non-blocking and log each one. If nothing's been pressed,
+         * this is a zero-cost no-op (xQueueReceive returns pdFALSE
+         * immediately on empty). */
+        {
+            key_event_t key_ev;
+            int q2_drained = 0;
+            while (xQueueReceive(Q2, &key_ev, 0) == pdTRUE) {
+                ESP_LOGI(TAG, "Q2 key event #%d: '%c' repeated=%d",
+                         q2_drained, key_ev.key, key_ev.repeated ? 1 : 0);
+                q2_drained++;
+            }
+            if (q2_drained > 0) {
+                ESP_LOGI(TAG, "Q2 drained %d event(s) this tick", q2_drained);
+            }
+        }
 
         /* alpha.2.8 — Poll the FG6485A T/RH sensor via the FG6485A driver
          * (LIB-FG). Internally fg6485a_read_measurements() does one FC03
@@ -366,6 +389,39 @@ extern "C" void app_main(void)
     gpio_set_pin_mode(PIN_HB_LED, GPIO_OUTPUT);
     gpio_write(PIN_HB_LED, GPIO_LOW);
     keypad_init();
+
+    /* alpha.6.4 — spawn T7 keypad-scan task. The task scans the 4×4 membrane
+     * matrix every 20 ms via LIB-5, debounces, generates key-repeat events
+     * on 500 ms hold, and posts key_event_t to Q2. The heartbeat task
+     * (below) drains Q2 each tick and surfaces presses to the serial log,
+     * giving tactile acceptance: physically press a key → see the event
+     * within 5 s.
+     *
+     * The task subscribes to the IDF TWDT internally (esp_task_wdt_add).
+     * 20 ms scan period is well within the 5 s TWDT window.
+     *
+     * NB: keypad_init() is called above (alpha.2.2 tickle) AND again inside
+     * the task at startup. LIB-5's init is idempotent (GPIO config) so the
+     * double-init is harmless. The stub's earlier call keeps LIB-5 alive
+     * for the heartbeat's keypad_count_pressed() polling (a separate
+     * read path from the task's event-edge detection). */
+    {
+        BaseType_t rc = xTaskCreatePinnedToCore(
+            task_keypad_scan,
+            "T7-keypad",
+            3072,                  /* stack words */
+            NULL,                  /* arg */
+            4,                     /* priority */
+            &task_t7,              /* handle written into global */
+            tskNO_AFFINITY);
+        if (rc != pdPASS) {
+            ESP_LOGE(TAG, "alpha.6.4: xTaskCreate T7 failed (rc=%d)", (int)rc);
+        } else {
+            ESP_LOGI(TAG, "alpha.6.4: T7 keypad_scan task spawned (handle=%p); "
+                          "press a key to see Q2 events drained in the heartbeat",
+                     (void *)task_t7);
+        }
+    }
 
     /* alpha.2.3 — NVS driver tickle. Read system/fw_version BEFORE
      * nvs_cfg_init() so we capture the value left by the previous

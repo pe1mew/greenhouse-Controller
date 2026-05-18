@@ -30,6 +30,7 @@ idf_component_register(
         "system_globals.cpp"     # Phase 6.1 (2.0.0-alpha.6.1) — FreeRTOS infrastructure (Q*, MX*, EG1, task_t*)
         "data_manager/sunrise.cpp"  # Phase 6.2 (2.0.0-alpha.6.2) — NOAA solar position math (pure math, no deps)
         "system_id/system_id.cpp"   # Phase 6.3 (2.0.0-alpha.6.3) — per-unit ID from factory MAC (gh#17)
+        "keypad_scan/keypad_scan.cpp" # Phase 6.4 (2.0.0-alpha.6.4) — T7 keypad scan task (LIB-5 + Q2)
     INCLUDE_DIRS
         "."
     REQUIRES

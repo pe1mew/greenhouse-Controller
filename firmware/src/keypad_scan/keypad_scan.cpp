@@ -26,7 +26,9 @@
  */
 
 #define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
-#include <Arduino.h>
+/* alpha.6.4 — dropped vestigial #include <Arduino.h>. The file uses no
+ * Arduino types (no String, no Serial, no millis()) — only ESP-IDF
+ * (esp_log, esp_task_wdt, FreeRTOS) and LIB-5's keypad_matrix.h. */
 #include <esp_log.h>
 #include <esp_task_wdt.h>   /* WDT subscription (1.17.29 / gh#13) */
 
