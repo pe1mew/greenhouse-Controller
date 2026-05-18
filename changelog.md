@@ -28,6 +28,54 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-alpha.6.17]` — 2026-05-18
+
+**Phase 6.16-γ — T11 status routes (2 of 18 deferred routes).** Adds `/api/status` (canonical status JSON snapshot for dashboard tiles) and `/api/history?n=N` (last N sensor ring entries). Both public (no auth gate) — matches 1.20.3 production behaviour and lets the web GUI render the dashboard tiles to unauthenticated visitors before they log in to edit setpoints.
+
+#### What changed
+
+- **`firmware/src/web_server/web_server.cpp`** — added 2 handler functions + 2 httpd_uri_t entries + 2 entries in the registration array. New handlers heap-allocate their working buffers (status: 4 KB, history: 8 KB) since both can be too large for the httpd task's default stack. Heap pressure is brief and per-request.
+  - `status_handler` calls `dm_status_snapshot(&snap)` (T4 alpha.6.7 export) into a heap-allocated `status_snapshot_t` (~600 B), then `build_canonical_status_json(body, 4096, &snap, STATUS_EXPOSE_ALL, /*include_disabled_setpoints=*/true)`.
+  - `history_handler` parses `?n=N` via `httpd_query_key_value` (capped at HIST_MAX_ROWS=60, defaults to 60), pulls the last N entries from T4's ring buffer via `dm_ring_count` + `dm_ring_read(offset, buf, count, &actually_read)`, then hand-builds a compact JSON array `[{"ts":N,"t":N,"rh":N,"ws":N,"wd":N}, ...]` with `snprintf`.
+- **`firmware/src/CMakeLists.txt`** — added `status_post/status_json.cpp` to SRCS. The file is framework-agnostic (`stdarg.h`, `stdio.h`, `string.h`, no Arduino dependencies) so no patching was needed. Now linked in to provide `build_canonical_status_json` to T11 (and eventually full T14 in 6.15.X).
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-alpha.6.17`.
+
+The 7-route T11 from alpha.6.16 grows to 9 routes here. T11 log line updated: `HTTP server running on port 80 — 9 routes registered`.
+
+#### Build trap
+
+`dm_ring_read` signature has 4 params, not 3 — I missed the `uint16_t *read_out` out-param on first draft. Fixed: caller now supplies `&actually_read` and rescopes `n` to the returned count (handles the edge case where requested > available).
+
+#### Build delta vs alpha.6.16.1
+
+| Metric | alpha.6.16.1 | alpha.6.17 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | (similar) 1,263,904 B | **1,268,541 B** | +4,637 B |
+| RAM static | (similar) 60,056 B | **60,056 B** | unchanged |
+
+bin sha256: `6F72ED5049D6D43DFD39D5C6A4B64ABCAFDDFA967ABBAB20EFEF73285E86E51B`
+
+The **+4.6 KB flash** is status_json.cpp (243 lines) + the 2 new handler bodies. RAM static unchanged — all status/history working buffers are heap-allocated per-request.
+
+#### Acceptance bar — curl-tested at uptime 30s
+
+```
+GET /api/status        → 200 + 697 B canonical JSON (climate/wind/windows/
+                             mode/sun/system tiles all populated)
+GET /api/history?n=3   → 200 + [] (empty array — T5 hadn't deposited any
+                             readings yet during early-boot calibration)
+```
+
+The status payload at uptime 30 s captured the unit mid-calibration:
+- `windows.M3 = "MOVING_CLOSE"` (T2 calibrating M3, ~140 s remaining)
+- `mode.current = "WINDOW_CAL"`, `flags=["calibrating"]` (EG1_BIT_CALIBRATING set)
+- `climate.temp_c = 0.0`, `rh_pct = 0` (T5 first poll is at uptime ~38 s, hadn't fired yet)
+- `system.ntp_synced = true`, `wifi_ip = "192.168.20.160"`, `wifi_rssi_dbm = -66`
+- `time_iso = "2026-05-18T13:57:55"` — DS1307 time, post-SNTP, correct
+- `eg1 = 64` (bit 6 = EG1_BIT_CALIBRATING)
+
+Watch item caught: **`fw_ver` field truncated to "2.0.0-alpha.6.1"** instead of "2.0.0-alpha.6.17". Root cause: `status_snapshot_t.fw` is `char fw[16]` (15 chars + NUL) but our alpha-tag string is 16 chars + NUL. Same family of bug as alpha.6.13's `ota_manager.cpp` `fw_ver[16]→[32]` bump. Functional behaviour is fine; only the displayed JSON field is clipped. Fix is a 1-line bump in `types/app_types.h`; saved for the next micro-alpha to land cleanly without disturbing 6.17's bin sha256.
+
 ### `[2.0.0-alpha.6.16.1]` — 2026-05-18
 
 **Bug fix — `Set-Cookie` header value falls out of scope before `httpd_resp_send` reads it.** alpha.6.16's acceptance curl test caught it on the first POST /api/login: the body returned `{"ok":true,"role":"farmer"}` cleanly but the `Set-Cookie:` header value was garbled bytes (`???`) instead of the generated hex token. The login + cookie-aware whoami round-trip therefore failed (server rejected the corrupted token).
