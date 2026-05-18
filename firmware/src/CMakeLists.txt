@@ -29,6 +29,7 @@ idf_component_register(
         "web_server_tickle.cpp"  # Phase 5 (2.0.0-alpha.5) — IDF-native esp_http_server
         "system_globals.cpp"     # Phase 6.1 (2.0.0-alpha.6.1) — FreeRTOS infrastructure (Q*, MX*, EG1, task_t*)
         "data_manager/sunrise.cpp"  # Phase 6.2 (2.0.0-alpha.6.2) — NOAA solar position math (pure math, no deps)
+        "system_id/system_id.cpp"   # Phase 6.3 (2.0.0-alpha.6.3) — per-unit ID from factory MAC (gh#17)
     INCLUDE_DIRS
         "."
     REQUIRES

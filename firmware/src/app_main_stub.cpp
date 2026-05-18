@@ -176,6 +176,7 @@
 #include "web_server_tickle.h"
 #include "system_globals.h"
 #include "data_manager/sunrise.h"
+#include "system_id/system_id.h"
 
 static const char *TAG = "GHC-STUB";
 
@@ -214,6 +215,13 @@ static void log_boot_banner(void)
     ESP_LOGI(TAG, "Flash: %lu MB", (unsigned long)(flash_size / (1024UL * 1024UL)));
     ESP_LOGI(TAG, "STA MAC: %02X:%02X:%02X:%02X:%02X:%02X",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    /* alpha.6.3 — surface the per-unit ID derived from MAC bytes 4-5 via
+     * system_id (gh#17). Matches the AP-SSID convention `Greenhouse-XXXX`
+     * the future network_manager (Phase 6.12) will use. */
+    char unit_id_str[5] = {0};
+    system_unit_id_str(unit_id_str, sizeof(unit_id_str));
+    ESP_LOGI(TAG, "Unit ID: %s (AP-SSID would be Greenhouse-%s)",
+             unit_id_str, unit_id_str);
     ESP_LOGI(TAG, "Boot reason: esp_reset_reason=%d", (int)esp_reset_reason());
     ESP_LOGI(TAG, "Free heap (INTERNAL): %u bytes",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
