@@ -171,6 +171,7 @@
 #include "littlefs_storage.h"
 #include "sd_storage.h"
 #include "wifi_tickle.h"
+#include "https_tickle.h"
 
 static const char *TAG = "GHC-STUB";
 
@@ -728,6 +729,7 @@ extern "C" void app_main(void)
      *
      * Per the migration plan: STA_GOT_IP should arrive in < 5 s. The 10 s
      * budget here gives 2× headroom for slow APs / weak signal. */
+    bool wifi_up = false;
     {
         wifi_tickle_status_t wifi_st = wifi_tickle_run(/*connect_timeout_ms=*/10000u);
         const char *wifi_msg =
@@ -739,6 +741,61 @@ extern "C" void app_main(void)
             (wifi_st == WIFI_TICKLE_DISCONNECTED)    ? "DISCONNECTED (auth fail / AP missing)" :
                                                        "?";
         ESP_LOGI(TAG, "wifi_tickle_run() returned %d (%s)", (int)wifi_st, wifi_msg);
+        wifi_up = (wifi_st == WIFI_TICKLE_OK || wifi_st == WIFI_TICKLE_OK_NO_NTP);
+    }
+
+    /* alpha.4 — Phase 4 HTTPS client tickle (gh#23 payoff).
+     *
+     * Runs 5 back-to-back HTTPS GETs against Google's captive-portal
+     * detection endpoint (returns HTTP 204, fast, TLS-friendly, universally
+     * available). Each call logs:
+     *   - HTTP status code (expected: 204)
+     *   - elapsed ms (full TLS handshake on call 1; resume on calls 2-5
+     *                 IF the IDF stack keeps the session warm)
+     *   - free heap + largest block before/after the call
+     *
+     * The gh#23 signal source is the DELTA from call to call. Under
+     * arduino-esp32 HTTPClient + WiFiClientSecure, each call:
+     *   - dropped free heap ~20 KB (mbedtls handshake state held until end)
+     *   - dropped largest-block to 77-83 KB (fragmentation pinned)
+     *   - did NOT recover before the next call
+     *
+     * Cumulative drop over many calls drove the planned-reboot cadence
+     * (every 5.5 to 11 hours on Unit 2 under status_interval_s=240 s).
+     *
+     * With esp_http_client + keep_alive_enable + buffer_size=1024 the
+     * expectation is:
+     *   - Call 1: full handshake, ~20 KB transient drop (recoverable)
+     *   - Calls 2-5: near-zero drop (session reused)
+     *
+     * If WiFi tickle failed (no IP), skip — esp_http_client_perform would
+     * block until lwIP timeout (long; bad for boot UX). */
+    if (wifi_up) {
+        ESP_LOGI(TAG, "alpha.4 HTTPS tickle: 5 back-to-back HTTPS GETs");
+        for (int i = 0; i < 5; i++) {
+            https_tickle_result_t r = {};
+            https_tickle_status_t st = https_tickle_run(
+                "https://www.google.com/generate_204", &r);
+            const char *msg =
+                (st == HTTPS_TICKLE_OK)              ? "OK" :
+                (st == HTTPS_TICKLE_NO_URL)          ? "NO_URL" :
+                (st == HTTPS_TICKLE_INIT_FAILED)     ? "INIT_FAILED" :
+                (st == HTTPS_TICKLE_PERFORM_FAILED)  ? "PERFORM_FAILED" :
+                (st == HTTPS_TICKLE_HTTP_ERROR)      ? "HTTP_ERROR" : "?";
+            ESP_LOGI(TAG, "HTTPS #%d: %s status=%d elapsed=%lld ms; "
+                          "heap free %u -> %u (delta %+d), largest %u -> %u (delta %+d)",
+                     i + 1, msg, r.http_status_code, (long long)r.elapsed_ms,
+                     (unsigned)r.free_heap_before, (unsigned)r.free_heap_after,
+                     (int)((int32_t)r.free_heap_after - (int32_t)r.free_heap_before),
+                     (unsigned)r.largest_block_before, (unsigned)r.largest_block_after,
+                     (int)((int32_t)r.largest_block_after - (int32_t)r.largest_block_before));
+            /* Short pause between calls so any deferred lwIP teardown
+             * settles before the next sample. */
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
+        ESP_LOGI(TAG, "alpha.4 HTTPS tickle: done — see deltas above for gh#23 signal");
+    } else {
+        ESP_LOGW(TAG, "alpha.4 HTTPS tickle: skipped — WiFi not up");
     }
 
     BaseType_t rc = xTaskCreatePinnedToCore(

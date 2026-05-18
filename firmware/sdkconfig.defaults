@@ -76,6 +76,18 @@ CONFIG_IDF_TARGET="esp32s3"
 CONFIG_IDF_TARGET_ESP32S3=y
 
 # ----------------------------------------------------------------------------
+# mbedTLS — Certificate bundle
+# ----------------------------------------------------------------------------
+# Phase 4.1 (2.0.0-alpha.4.1) — IDF 5.5's esp-tls REQUIRES an explicit
+# server-verification option. The most pragmatic for public HTTPS endpoints
+# (Phase-4 tickle hits Google) is the bundled CA store. ~17 KB flash impact.
+#
+# Default in IDF 5.5 is already y but we set it explicitly so a future
+# Kconfig migration can't silently disable it.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+
+# ----------------------------------------------------------------------------
 # FATFS — Long File Name support
 # ----------------------------------------------------------------------------
 # Phase 2.11.1 (2.0.0-alpha.2.11.1) — ESP-IDF defaults CONFIG_FATFS_LFN_NONE=y,

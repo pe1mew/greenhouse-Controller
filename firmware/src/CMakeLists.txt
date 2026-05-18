@@ -25,6 +25,7 @@ idf_component_register(
     SRCS
         "app_main_stub.cpp"
         "wifi_tickle.cpp"        # Phase 3 (2.0.0-alpha.3) — IDF-native STA + SNTP
+        "https_tickle.cpp"       # Phase 4 (2.0.0-alpha.4) — IDF-native HTTPS client + esp_tls
     INCLUDE_DIRS
         "."
     REQUIRES
@@ -57,6 +58,11 @@ idf_component_register(
         esp_event      # default event loop + WIFI_EVENT / IP_EVENT
         esp_netif      # esp_netif_create_default_wifi_sta, IPSTR/IP2STR
         lwip           # esp_netif_sntp_*, lwip/ip4_addr.h for IPSTR macros
+        # Phase 4 (2.0.0-alpha.4) — IDF-native HTTPS client.
+        # Pulls in esp_http_client + esp-tls (uses bundled mbedtls).
+        esp_http_client    # esp_http_client_init/_perform/_cleanup + event API
+        esp-tls            # transitive: TLS context for HTTP_TRANSPORT_OVER_SSL
+        esp_timer          # esp_timer_get_time for elapsed-ms measurement
 )
 
 # -----------------------------------------------------------------------------
