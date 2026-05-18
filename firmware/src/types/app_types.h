@@ -322,12 +322,20 @@ typedef struct {
     bool     ntp_synced;
     char     ip[16];         /**< Dotted-decimal STA IPv4 ("" if not connected) */
     int16_t  rssi;           /**< STA RSSI in dBm (0 if not connected) */
-    char     fw[16];         /**< Firmware version string (compiled into firmware) */
-    char     assets[16];     /**< Asset version string from manifest.json on the
+    char     fw[24];         /**< Firmware version string (compiled into firmware).
+                              *   alpha.6.17.1: bumped 16→24. The 1.20.3-era 6-char
+                              *   "1.20.3" string fit in 16 bytes but the 2.0.0
+                              *   alpha tags ("2.0.0-alpha.6.17" = 16 chars + NUL
+                              *   = 17 bytes) overflowed by one — alpha.6.17 was
+                              *   caught with fw="2.0.0-alpha.6.1" (truncated). 24
+                              *   bytes gives comfortable headroom through 2.0.0-rc.N
+                              *   and 2.x.x.x patterns. */
+    char     assets[24];     /**< Asset version string from manifest.json on the
                               *   active LittleFS partition. Differs from `fw`
                               *   when an OTA bank flip didn't bring the matching
                               *   web assets along — surfaces silent firmware/
-                              *   assets mismatches. */
+                              *   assets mismatches. Bumped 16→24 in lockstep with
+                              *   `fw` above (same alpha-tag-length concern). */
     uint32_t uptime_s;       /**< Seconds since boot */
 
     /* Top-level — always emitted regardless of expose mask */
