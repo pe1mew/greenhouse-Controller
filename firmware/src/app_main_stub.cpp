@@ -179,6 +179,7 @@
 #include "system_id/system_id.h"
 #include "keypad_scan/keypad_scan.h"
 #include "event_logger/event_logger.h"
+#include "data_manager/data_manager.h"
 #include "types/app_types.h"  /* Q1..Q6, MX1..MX5, EG1, task_t1..15, key_event_t etc. */
 
 static const char *TAG = "GHC-STUB";
@@ -265,6 +266,23 @@ static void heartbeat_task(void *arg)
          * this so a user pressing keys during the test sees the count
          * change in real time on serial. */
         int keys_pressed = keypad_count_pressed();
+
+        /* alpha.6.7 — sample T4's cfg_shadow_t once per heartbeat and log
+         * a few representative fields. Validates that T4 successfully
+         * loaded the cfg from NVS (values should be the production
+         * 1.20.3-written setpoints, NOT cfg_defaults.h's compile-time
+         * defaults) and that current_unix_ts is being kept current. */
+        {
+            cfg_shadow_t cfg = {};
+            dm_cfg_snapshot(&cfg);
+            ESP_LOGI(TAG,
+                     "alpha.6.7 dm: t_min_day=%d t_max_day=%d hyst_t=%d "
+                     "v_max=%d unix_ts=%lu is_day=%d sunrise=%ld set=%ld",
+                     (int)cfg.t_min_day, (int)cfg.t_max_day, (int)cfg.hyst_t,
+                     (int)cfg.v_max, (unsigned long)cfg.current_unix_ts,
+                     cfg.is_daytime ? 1 : 0,
+                     (long)cfg.sunrise_mins_utc, (long)cfg.sunset_mins_utc);
+        }
 
         /* alpha.6.6 — feed Q3 with a synthetic LOG_SYSTEM event each
          * heartbeat. T9 (event_logger) drains Q3 and persists each event
@@ -739,53 +757,16 @@ extern "C" void app_main(void)
                      (unsigned long long)total,
                      (unsigned long long)free_b);
 
-            /* alpha.2.11.1 — Append a test line to a file with a long name.
-             * The filename intentionally exceeds the 8.3 limit ("phase_2_11_test"
-             * is 15 chars) so we exercise the LFN path enabled in
-             * sdkconfig.defaults (CONFIG_FATFS_LONG_FILENAMES=y). The
-             * 1.20.3 production logger writes similarly-long names
-             * (log_YYYYMMDD_HHMMSS.csv) so this is the realistic shape. */
-            static const char *test_file = "/phase_2_11_test.csv";
-            static const char *test_line =
-                "boot,2026-05-17,LIB-SD ESP-IDF port works (LFN OK)\n";
-            const size_t test_line_len = strlen(test_line);
-            storage_status_t w_st = storage_sd_write_append(test_file, test_line);
-            ESP_LOGI(TAG, "storage_sd_write_append(%s) -> %d (%s)",
-                     test_file, (int)w_st,
-                     (w_st == STORAGE_OK)        ? "OK" :
-                     (w_st == STORAGE_ERR_IO)    ? "IO" :
-                     (w_st == STORAGE_ERR_FULL)  ? "FULL" : "?");
-
-            if (w_st == STORAGE_OK) {
-                /* Read it back. Use storage_sd_file_size first to confirm
-                 * the write reached the FAT; then read enough bytes to
-                 * cover the line we just wrote. */
-                uint32_t sz = storage_sd_file_size(test_file);
-                ESP_LOGI(TAG, "storage_sd_file_size(%s) = %u bytes",
-                         test_file, (unsigned)sz);
-
-                char readbuf[256] = {0};
-                size_t n = 0;
-                storage_status_t r_st = storage_sd_read(test_file, 0,
-                                                        readbuf, sizeof(readbuf), &n);
-                /* Show only the trailing line (the file may carry older boot
-                 * lines from prior runs; on the FIRST boot it's just our line). */
-                const char *tail = (n > test_line_len) ? (readbuf + n - test_line_len)
-                                                       : readbuf;
-                ESP_LOGI(TAG, "storage_sd_read(%s) -> %d (%s); n=%u; tail: \"%.80s\"",
-                         test_file, (int)r_st,
-                         (r_st == STORAGE_OK) ? "OK" : "FAIL",
-                         (unsigned)n, tail);
-
-                /* Verify the tail bytes match what we wrote. */
-                bool match = (r_st == STORAGE_OK)
-                          && (n >= test_line_len)
-                          && (memcmp(tail, test_line, test_line_len) == 0);
-                ESP_LOGI(TAG, "SD write/read verify: %s (%u bytes compared)",
-                         match ? "PASS — bytes identical"
-                               : "FAIL — content mismatch",
-                         (unsigned)test_line_len);
-            }
+            /* alpha.6.7.1 — Phase 2.11.1 test-file write/read/verify probe
+             * removed. It used to append one line per boot to
+             * "/phase_2_11_test.csv" ("boot,2026-05-17,LIB-SD ESP-IDF port
+             * works (LFN OK)") to prove the LFN-enabled FATFS write path
+             * worked. T9 (event_logger, activated alpha.6.6) now exercises
+             * the same write path with real RTC-stamped lines into the
+             * daily CSV — the probe is fully redundant and was just
+             * growing developer cruft on the SD card. The leftover file
+             * "/phase_2_11_test.csv" on the dev card must be deleted by
+             * hand from a PC (the firmware does not unlink it). */
 
             /* List .csv files to exercise opendir/readdir. */
             char csv_list[256] = {0};
@@ -799,6 +780,54 @@ extern "C" void app_main(void)
                      storage_sd_available() ? "true (BUG)" : "false (OK)");
         } else if (sd_st == STORAGE_ERR_NO_CARD) {
             ESP_LOGI(TAG, "no SD card present — LIB-8 tickle skipped (acceptable)");
+        }
+    }
+
+    /* alpha.6.7 — spawn T4 data_manager task.
+     *
+     * T4 is the central data hub: loads cfg_shadow_t from NVS at boot,
+     * reads the DS1307 RTC under MX1 → sets the system clock via
+     * settimeofday(), computes today's sunrise/sunset from cfg lat/lon
+     * (via sunrise.cpp activated alpha.6.2), then enters a main loop
+     * draining Q4 (config updates from web/UI) and Q6 (sensor readings
+     * from T5). On a TN4 notification from T10 it writes the post-NTP
+     * time back to the RTC.
+     *
+     * Stack: 8 KB — needs more than T9 because NVS reads can transiently
+     * allocate ~2 KB on the stack for blob decode, and the cfg_shadow_t
+     * struct itself is ~1 KB on snapshot copies.
+     * Priority 5 — one higher than T9 (logging) so cfg/measurement updates
+     * land before any synthetic logging derived from them.
+     *
+     * Dependencies satisfied:
+     *   - NVS (LIB-7) — initialised earlier in app_main (alpha.2.3)
+     *   - RTC (LIB-3, via MX1) — initialised in the LCD/RTC tickle (alpha.2.9)
+     *   - sunrise math — sunrise.cpp linked alpha.6.2
+     *   - Q4/Q6 — created in system_globals_init() alpha.6.1; producers
+     *             (T11 web, T5 sensor) are still dormant so the queues
+     *             stay empty until Phase 6.8+ task activations.
+     *   - t2_get_window_states() — stubbed via relay_controller_stub.cpp
+     *
+     * This activation also FORCE-REMOVES data_manager_stub.cpp via the
+     * linker (the real dm_get_unix_time in data_manager.cpp conflicts
+     * with the stub). Same pattern documented in data_manager_stub.cpp's
+     * removal comment. */
+    {
+        BaseType_t rc = xTaskCreatePinnedToCore(
+            task_data_manager,
+            "T4-data",
+            8192,                  /* stack words */
+            NULL,
+            5,                     /* priority — above T9 (4) */
+            &task_t4,
+            tskNO_AFFINITY);
+        if (rc != pdPASS) {
+            ESP_LOGE(TAG, "alpha.6.7: xTaskCreate T4 failed (rc=%d)", (int)rc);
+        } else {
+            ESP_LOGI(TAG, "alpha.6.7: T4 data_manager task spawned (handle=%p); "
+                          "cfg_shadow loads from NVS, RTC reads → settimeofday, "
+                          "heartbeat will dm_cfg_snapshot to validate",
+                     (void *)task_t4);
         }
     }
 

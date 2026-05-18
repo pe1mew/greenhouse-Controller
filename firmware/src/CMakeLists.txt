@@ -32,7 +32,9 @@ idf_component_register(
         "system_id/system_id.cpp"   # Phase 6.3 (2.0.0-alpha.6.3) — per-unit ID from factory MAC (gh#17)
         "keypad_scan/keypad_scan.cpp" # Phase 6.4 (2.0.0-alpha.6.4) — T7 keypad scan task (LIB-5 + Q2)
         "event_logger/event_logger.cpp"         # Phase 6.6 (2.0.0-alpha.6.6) — T9 event logger task (Q3 → SD CSV)
-        "data_manager/data_manager_stub.cpp"    # Phase 6.6 stub — dm_get_unix_time only; remove when T4 ports in 6.7+
+        # data_manager_stub.cpp REMOVED in 2.0.0-alpha.6.7 — the real data_manager.cpp below provides dm_get_unix_time
+        "data_manager/data_manager.cpp"         # Phase 6.7 (2.0.0-alpha.6.7) — T4 data manager (cfg_shadow + RTC + sunrise + Q4/Q6)
+        "relay_controller/relay_controller_stub.cpp"  # Phase 6.7 stub — t2_get_window_states; remove when T2 ports in 6.8+
     INCLUDE_DIRS
         "."
     REQUIRES
