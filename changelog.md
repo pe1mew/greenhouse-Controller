@@ -28,6 +28,61 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-alpha.6.0]` — 2026-05-18 (preparatory only, no flash needed)
+
+**Phase 6.0 — Shared infrastructure for subsystem activation.** Phase 6 in the migration plan is the long-tail integration: bring 13 dormant subsystems online (data_manager, event_logger, sensor_poll, keypad_scan, relay_controller, climate_control, ui_display, safety_monitor, network_manager, status_post + supervisor, web_server, ota_manager, main.cpp), each with its own Arduino.h cleanup folded in. Rather than do a speculative bulk-cleanup pass that can't be validated (the touched files aren't yet in the build), alpha.6.0 sets up just the shared infrastructure each subsequent sub-phase needs.
+
+#### What changed
+
+- **`firmware/src/util/time_compat.h`** (new) — `millis_idf()` and `micros_idf()` `static inline` shims wrapping `esp_timer_get_time()`. Drop-in replacement for arduino-era `millis()` / `micros()` with the same uint32 return type and wraparound semantics. Zero runtime cost. Inline docs explain why a shim + a single point of truth for the µs→ms conversion.
+
+#### Why no file edits in 6.0
+
+The 15 files still carrying `Arduino.h` references are all dormant — none are in the current `firmware/src/CMakeLists.txt` SRCS list. The alpha.5 binary doesn't see any of their code. Two strategies were considered:
+
+- **Bulk speculative cleanup**: edit all 15 now, validate nothing (build doesn't compile them). Saves diff churn but no acceptance signal.
+- **Cleanup-as-you-activate**: each sub-phase activates ONE subsystem with the Arduino-keyword cleanup bundled into that subsystem's activation diff. Smaller, validated, bisectable. Phase 2's per-driver pattern.
+
+The second strategy wins. Each alpha.6.N below activates one subsystem.
+
+#### Phase-6 activation order (dependency-first)
+
+| Sub-phase | Subsystem | Owning file(s) | Direct deps |
+|---|---|---|---|
+| 6.1 | data_manager (T4) | `data_manager.cpp` | LIB-7 (NVS), `app_types.h` |
+| 6.2 | event_logger (T9) | `event_logger.cpp` | LIB-8 (SD), LIB-9 (LFS), data_manager |
+| 6.3 | sensor_poll (T2) | `sensor_poll.cpp` | LIB-FG, LIB-S200, LIB-3, data_manager |
+| 6.4 | keypad_scan (T7) | `keypad_scan.cpp` | LIB-5, event_logger |
+| 6.5 | relay_controller (T3) | `relay_controller.cpp` | LIB-1, sensor_poll output |
+| 6.6 | climate_control (T1) | `climate_control.cpp` | sensor_poll, relay_controller |
+| 6.7 | ui_display (T8) | `ui_display.cpp` | LIB-4, sensor data |
+| 6.8 | safety_monitor (T16) | `safety_monitor.cpp` | data_manager, event_logger |
+| 6.9 | network_manager (T10) | `network_manager.cpp` | replaces wifi_tickle; geo via esp_http_client |
+| 6.10 | status_post (T14) | `status_post.cpp` + supervisor | replaces https_tickle |
+| 6.11 | web_server (T11) | `web_server.cpp` + 7× `web_routes_*.cpp` | replaces web_server_tickle (this is Phase 5.1-5.5 from the plan) |
+| 6.12 | ota_manager (T13) | `ota_manager.cpp` | esp_ota_* |
+| 6.13 | main.cpp | `main.cpp` replaces `app_main_stub.cpp` | orchestrates all of the above |
+
+Some sub-phases will bundle (e.g. 6.4 might fold into 6.3 if keypad_scan's contract is tiny enough). The list captures intent; alpha-tag granularity will adjust as actual diffs land.
+
+#### Survey of remaining Arduino-keyword surface area
+
+A `grep` of `firmware/src/` after Phase 5 found:
+
+| Pattern | Files | Total occurrences |
+|---|---|---|
+| `Arduino.h` reference | 15 | 15 |
+| `millis()` call | 2 (`main.cpp`, `relay_controller.cpp`) | 4 |
+| `Serial.print*()` | 1 (`main.cpp`) | 1 |
+| `pinMode`/`digitalRead`/etc | 1 (`ui_display.cpp`) | 2 |
+| `NeoPixel` / `String` | 2 (`main.cpp`, `network_manager.cpp`) | 4 |
+
+Roughly **~25 mechanical token replacements** spread across the 13 subsystem activations. The NeoPixel → `rmt_transmit` rewrite in `main.cpp` is the only non-trivial item (alpha.6.13).
+
+#### No binary changes in alpha.6.0
+
+`time_compat.h` is header-only and currently unused (no .cpp `#include`s it yet — that lands in alpha.6.1 onwards). The alpha.5 binary is unchanged. No flash needed.
+
 ### `[2.0.0-alpha.5]` — 2026-05-18
 
 **Phase 5 — Web server rewrite (`ESPAsyncWebServer` → `esp_http_server`).** The plan calls this the biggest single chunk of work in the migration (25 endpoints + WebSocket + multipart OTA + session-cookie handling, ~800 → ~1000 lines + split into 7 route files). Same tickle pattern as Phases 3-4: `web_server_tickle.cpp` proves the IDF httpd works end-to-end with minimal handlers; the full route migration lifts into Phase 5.1+ / Phase 6.
