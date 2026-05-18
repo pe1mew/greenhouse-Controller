@@ -28,6 +28,96 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-alpha.6.21]` — 2026-05-18
+
+**Phase 6.16-η — T11 `/ws` WebSocket (FINAL T11 route).** Adds the one remaining route to bring T11 to **25 / 25 = 100 %** of the v1.20.3 route set. ESPAsyncWebSocket → `esp_http_server` WebSocket migration complete.
+
+- `/ws` — `GET` with `Upgrade: websocket`; subscribes the client to a 2-second status push stream. Same canonical JSON shape as `GET /api/status` (`STATUS_EXPOSE_ALL`, `include_disabled_setpoints=true`). Auth gate at upgrade time only (farmer min role) — symmetric with 1.20.3.
+
+#### Architecture
+
+A dedicated `task_ws_push` task (4 KB stack, core 1) runs the push loop independently of the httpd worker pool — a slow `dm_status_snapshot()` / `build_canonical_status_json()` can never block concurrent HTTP requests. Client tracking uses `esp_http_server`'s own list (`httpd_get_client_list` + `httpd_ws_get_fd_info`) instead of a parallel fd table — stale fds prune themselves: `httpd_ws_send_frame_async` returns an error for a closed socket and the loop just skips it. When no client is subscribed the push task short-circuits before the snapshot/build cost, which matters for the typical deployed-greenhouse case where the dashboard tab is closed.
+
+`WS_PUSH_MS = 2000` matches 1.20.3 exactly.
+
+#### sdkconfig change required
+
+`CONFIG_HTTPD_WS_SUPPORT=y` is **disabled by default** in ESP-IDF 5.5. Added explicitly to `firmware/sdkconfig.defaults`; the auto-generated `sdkconfig.lolin_s3` is gitignored and regenerates from `defaults` on each clean build. The flag pulls in ~6.9 KB of WS framing + handshake code and unlocks the `httpd_uri_t.is_websocket` field plus the `httpd_ws_*` API surface (`httpd_ws_recv_frame`, `httpd_ws_send_frame_async`, `httpd_ws_get_fd_info`).
+
+**Trap encountered (documented for future PlatformIO+IDF migrators):** the first build after the WS handler edit failed with `'httpd_ws_frame_t' was not declared in this scope` because PlatformIO had cached the prior `sdkconfig.lolin_s3` from before the defaults change. Deleting that file and rebuilding regenerates it correctly. PlatformIO does **not** detect a stale sdkconfig vs an updated `sdkconfig.defaults` automatically — there is no implicit `defaults`-newer-than-`lolin_s3` check.
+
+#### What changed
+
+- **`firmware/src/web_server/web_server.cpp`** — added `ws_handler`, `ws_broadcast`, `task_ws_push`, `s_uri_ws` (with `is_websocket = true`), one URI-registration entry, two ESP_LOG lines (the route description + the push-task-start log). Spawns `task_ws_push` after `httpd_start` via `xTaskCreatePinnedToCore(..., core 1)`. ~140 lines.
+- **`firmware/sdkconfig.defaults`** — `CONFIG_HTTPD_WS_SUPPORT=y` added with a note explaining why.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-alpha.6.21`.
+
+#### Acceptance — hardware verified on 192.168.20.160
+
+Upgrade handshake (admin cookie):
+
+```
+GET /ws HTTP/1.1
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Version: 13
+Sec-WebSocket-Key: dGVzdC13ZWJzb2NrZXQta2V5MTI=
+
+→ HTTP/1.1 101 Switching Protocols
+  Sec-WebSocket-Accept: kTjCX124s2JzwSqlutGQ3yTMyaE=
+```
+
+Push cadence verified — two frames captured during a 5 s window:
+
+```
+uptime_s = 60   ← first push received
+uptime_s = 62   ← +2 s exactly (WS_PUSH_MS honoured)
+```
+
+Payload identical to `GET /api/status` — climate / wind / windows / mode / sun / system + `update_interval_s = 240`.
+
+Farmer-role upgrade:
+
+```
+GET /ws (farmer cookie)  → 101 Switching Protocols ✓
+                           Sec-WebSocket-Accept: ZxbsKQFyR24BdBi40U2UYDmcR98=
+                           push received within 2 s
+```
+
+Liveness after disconnect:
+
+```
+GET /api/whoami → 401 in 241 ms     (httpd worker still healthy)
+GET /api/status → uptime_s=183       (system stable, fw_ver=2.0.0-alpha.6.21)
+```
+
+No stale-fd accumulation, no heap-leak symptom. The push task gracefully tolerated curl's `--max-time` expiry on its socket and continued serving other clients.
+
+#### Build delta vs alpha.6.20
+
+| Metric | alpha.6.20 | alpha.6.21 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1 296 481 B | **1 303 385 B** | +6 904 B |
+| RAM static | 60 248 B | 60 232 B | -16 B |
+
+bin sha256: `83CE2D0213AAEF47…` (full hash in `bin/2.0.0-alpha.6.21/`)
+
+**+6.9 KB flash** = the WS framing + handshake code itself (the handler + push task are negligible). RAM essentially unchanged.
+
+#### Phase 6.16 retrospective — T11 web server migration complete
+
+| Sub-phase | Tag | Routes added | Cumulative |
+|---|---|---|---|
+| α (+.1 Set-Cookie fix) | alpha.6.16 | 4 static + 3 auth | 7 |
+| β | (folded into α) | — | 7 |
+| γ (+.1 fw[24] fix) | alpha.6.17 | 2 status | 9 |
+| δ | alpha.6.18 | 5 config + admin | 14 |
+| ε | alpha.6.19 | 5 SD + log | 19 |
+| ζ (+ ota_get_state NULL-mutex fix) | alpha.6.20 | 5 OTA + web-tab | 24 |
+| η | **alpha.6.21** | 1 WebSocket | **25 / 25** |
+
+ESPAsyncWebServer + AsyncWebSocket entirely retired. `firmware/src/web_server/web_server_1.20.3_original.cpp.archived` remains in tree as a porting reference; scheduled for deletion in Phase 6.N consolidation.
+
 ### `[2.0.0-alpha.6.20]` — 2026-05-18
 
 **Phase 6.16-ζ — T11 OTA + web-tab routes (5 of 6 remaining).** Adds the 5 routes that let the web GUI inspect OTA state, push firmware + asset uploads, and configure the status-website integration:

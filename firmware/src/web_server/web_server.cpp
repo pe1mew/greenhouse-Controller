@@ -1701,6 +1701,201 @@ static esp_err_t web_post_handler(httpd_req_t *req)
 }
 
 /* ============================================================
+ * WebSocket — /ws  (Phase 6.16-η, alpha.6.21)
+ *
+ * Pushes the canonical status JSON every WS_PUSH_MS (2 s) to every
+ * connected client. Behaviour matches 1.20.3:
+ *   • Same JSON shape as GET /api/status (STATUS_EXPOSE_ALL,
+ *     include_disabled_setpoints=true — local-UI mode).
+ *   • 2 s push interval.
+ *   • Bidirectional — incoming frames are read and discarded
+ *     (the dashboard does not send any client→server WS messages,
+ *     but the IDF httpd contract requires the URI handler to drain
+ *     received frames or the socket stalls on the next ping).
+ *
+ * Client tracking uses esp_http_server's own client list instead of
+ * a parallel table: httpd_get_client_list() returns every connected
+ * fd, then httpd_ws_get_fd_info() filters down to fds that are still
+ * in the WebSocket state. Stale fds are pruned implicitly on the
+ * next push attempt — httpd_ws_send_frame_async returns ESP_ERR_*
+ * for a closed socket and we simply skip it.
+ *
+ * The push runs in its own task (task_ws_push) spawned from
+ * task_web_server. Keeping it off the httpd worker threads means a
+ * slow push (LittleFS read, sensor snapshot copy) can't block
+ * concurrent HTTP requests.
+ * ============================================================ */
+
+#define WS_PUSH_MS  2000u   /**< matches 1.20.3 — 2 s status push cadence */
+#define WS_PUSH_BUF 4096u   /**< matches /api/status — 1.5–2.5 KB JSON + headroom */
+#define WS_MAX_CLIENTS 5    /**< must be ≥ httpd cfg.max_open_sockets - 2 */
+
+/**
+ * @brief WebSocket URI handler for /ws.
+ *
+ * Called by esp_http_server twice per client lifetime: once at the
+ * upgrade handshake (method = HTTP_GET, no frame), and on every
+ * subsequent inbound frame. The handshake is auto-completed by the
+ * httpd when this handler returns ESP_OK from the first call.
+ *
+ * Auth: GATED to farmer-or-higher. Without this gate any browser on
+ * the LAN could subscribe to the live status stream — same gate as
+ * the local LCD displays, where the operator must authenticate at
+ * the keypad before reading detailed sensor values. Login is
+ * checked once at upgrade-time; once subscribed the client stays
+ * connected until it disconnects or the session times out (the
+ * push task does not re-verify per push — symmetric with 1.20.3).
+ */
+static esp_err_t ws_handler(httpd_req_t *req)
+{
+    /* GET = upgrade handshake. Gate it here. */
+    if (req->method == HTTP_GET) {
+        if (require_auth(req, WEB_ROLE_FARMER) == WEB_ROLE_NONE) {
+            /* require_auth already sent a 401 with JSON body. The
+             * httpd will not perform the WS upgrade because we
+             * return ESP_OK *after* a body was sent. */
+            return ESP_OK;
+        }
+        ESP_LOGI(TAG, "[T11] /ws upgrade fd=%d", httpd_req_to_sockfd(req));
+        return ESP_OK;
+    }
+
+    /* Inbound frame from a subscribed client. Read it and discard.
+     * The dashboard never sends WS payloads in 1.20.3 — but per the
+     * protocol we still must drain to keep the socket alive. */
+    httpd_ws_frame_t frame = {};
+    /* First call with max_len=0 discovers the frame length. */
+    esp_err_t err = httpd_ws_recv_frame(req, &frame, 0);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "[T11] /ws recv_frame(len) failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    if (frame.len == 0) return ESP_OK;
+
+    /* Cap the payload — we don't expect anything legitimate from
+     * the dashboard, but mute any large garbage. 256 B is enough
+     * for a CLOSE control frame's reason string and any future
+     * ping payload. */
+    if (frame.len > 256) frame.len = 256;
+    uint8_t buf[256];
+    frame.payload = buf;
+    err = httpd_ws_recv_frame(req, &frame, sizeof(buf));
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "[T11] /ws recv_frame(payload) failed: %s", esp_err_to_name(err));
+    }
+    /* Discard. No reply. */
+    return ESP_OK;
+}
+
+/**
+ * @brief Send `payload` of length `len` to every connected WS client.
+ *
+ * Uses httpd_get_client_list to enumerate active fds, then filters
+ * by httpd_ws_get_fd_info to keep only WS-upgraded ones, then
+ * httpd_ws_send_frame_async per matched fd. Stale fds (closed since
+ * last enumeration) return an error from send_frame_async and are
+ * skipped — esp_http_server prunes them from its internal list on
+ * its own schedule.
+ */
+static void ws_broadcast(const char *payload, size_t len)
+{
+    if (s_server == NULL || payload == NULL || len == 0) return;
+
+    int fds[WS_MAX_CLIENTS];
+    size_t n_fds = WS_MAX_CLIENTS;
+    esp_err_t err = httpd_get_client_list(s_server, &n_fds, fds);
+    if (err != ESP_OK || n_fds == 0) return;
+
+    httpd_ws_frame_t frame = {};
+    frame.type    = HTTPD_WS_TYPE_TEXT;
+    frame.payload = (uint8_t *)payload;
+    frame.len     = len;
+    frame.final   = true;
+
+    for (size_t i = 0; i < n_fds; i++) {
+        int fd = fds[i];
+        httpd_ws_client_info_t info = httpd_ws_get_fd_info(s_server, fd);
+        if (info != HTTPD_WS_CLIENT_WEBSOCKET) continue;   /* not a WS client */
+        err = httpd_ws_send_frame_async(s_server, fd, &frame);
+        if (err != ESP_OK) {
+            ESP_LOGD(TAG, "[T11] /ws send fd=%d failed: %s (client gone)",
+                     fd, esp_err_to_name(err));
+            /* fd pruned by httpd on its own; nothing for us to do */
+        }
+    }
+}
+
+/**
+ * @brief WS push task — wakes every WS_PUSH_MS, builds canonical
+ *        status JSON, broadcasts to all subscribed clients.
+ *
+ * Runs independent of the httpd worker pool so a slow
+ * dm_status_snapshot() / build_canonical_status_json() can't block
+ * concurrent HTTP requests. Buffers are heap-allocated once and
+ * reused; the task is the sole owner.
+ */
+static void task_ws_push(void *pvParameters)
+{
+    (void)pvParameters;
+
+    ESP_LOGI(TAG, "[T11] WS push task alive — %ums interval", (unsigned)WS_PUSH_MS);
+
+    /* Snapshot + JSON buffers, allocated once. snap goes in internal
+     * RAM (~600 B); body in PSRAM-preferred (~4 KB). */
+    status_snapshot_t *snap = (status_snapshot_t *)
+        heap_caps_malloc(sizeof(status_snapshot_t), MALLOC_CAP_INTERNAL);
+    char *body = (char *)heap_caps_malloc(WS_PUSH_BUF, MALLOC_CAP_DEFAULT);
+    if (!snap || !body) {
+        ESP_LOGE(TAG, "[T11] WS push: heap alloc failed (snap=%p body=%p) — task exit",
+                 snap, body);
+        if (snap) heap_caps_free(snap);
+        if (body) heap_caps_free(body);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    TickType_t last_wake = xTaskGetTickCount();
+    for (;;) {
+        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(WS_PUSH_MS));
+
+        /* Skip the snapshot+build cost entirely when nobody is
+         * subscribed — a connected client is the typical case during
+         * an open dashboard tab, but in a deployed greenhouse the
+         * UI is often idle. */
+        int probe_fds[WS_MAX_CLIENTS];
+        size_t probe_n = WS_MAX_CLIENTS;
+        if (s_server == NULL) continue;
+        if (httpd_get_client_list(s_server, &probe_n, probe_fds) != ESP_OK) continue;
+        bool any_ws = false;
+        for (size_t i = 0; i < probe_n; i++) {
+            if (httpd_ws_get_fd_info(s_server, probe_fds[i]) ==
+                HTTPD_WS_CLIENT_WEBSOCKET) {
+                any_ws = true;
+                break;
+            }
+        }
+        if (!any_ws) continue;
+
+        memset(snap, 0, sizeof(*snap));
+        dm_status_snapshot(snap);
+        size_t n = build_canonical_status_json(body, WS_PUSH_BUF, snap,
+                                               STATUS_EXPOSE_ALL,
+                                               /*include_disabled_setpoints=*/true);
+        if (n == 0) {
+            ESP_LOGW(TAG, "[T11] WS push: build_canonical_status_json returned 0 "
+                          "(buffer overflow?) — skipping cycle");
+            continue;
+        }
+        ws_broadcast(body, n);
+    }
+
+    /* Unreachable but keep for static analysers. */
+    heap_caps_free(snap);
+    heap_caps_free(body);
+    vTaskDelete(NULL);
+}
+
+/* ============================================================
  * URI registration table
  * ============================================================ */
 static const httpd_uri_t s_uri_root = {
@@ -1761,6 +1956,15 @@ static const httpd_uri_t s_uri_web_get = {
 static const httpd_uri_t s_uri_web_post = {
     .uri = "/api/web", .method = HTTP_POST, .handler = web_post_handler, .user_ctx = NULL };
 
+/* alpha.6.21 — WebSocket route (Phase 6.16-η, final T11 route). */
+static const httpd_uri_t s_uri_ws = {
+    .uri          = "/ws",
+    .method       = HTTP_GET,
+    .handler      = ws_handler,
+    .user_ctx     = NULL,
+    .is_websocket = true,
+};
+
 /* ============================================================
  * Task entry point
  * ============================================================ */
@@ -1808,6 +2012,7 @@ void task_web_server(void *pvParameters)
         &s_uri_log_files, &s_uri_log_download,
         &s_uri_ota_status, &s_uri_ota_firmware, &s_uri_ota_assets,
         &s_uri_web_get, &s_uri_web_post,
+        &s_uri_ws,
     };
     for (size_t i = 0; i < sizeof(uris)/sizeof(uris[0]); i++) {
         err = httpd_register_uri_handler(s_server, uris[i]);
@@ -1817,7 +2022,7 @@ void task_web_server(void *pvParameters)
         }
     }
 
-    ESP_LOGI(TAG, "[T11] HTTP server running on port 80 — 24 routes registered");
+    ESP_LOGI(TAG, "[T11] HTTP server running on port 80 — 25 routes registered");
     ESP_LOGI(TAG, "[T11]   static: /  /style.css  /app.js  /manifest.json");
     ESP_LOGI(TAG, "[T11]   auth:   GET /api/whoami  POST /api/login  POST /api/logout");
     ESP_LOGI(TAG, "[T11]   status: GET /api/status  GET /api/history?n=N");
@@ -1827,10 +2032,22 @@ void task_web_server(void *pvParameters)
     ESP_LOGI(TAG, "[T11]   log:    GET /api/log/files  GET /api/log/download?file=NAME");
     ESP_LOGI(TAG, "[T11]   ota:    GET /api/ota/status  POST /api/ota/firmware  POST /api/ota/assets");
     ESP_LOGI(TAG, "[T11]   web:    GET /api/web  POST /api/web");
+    ESP_LOGI(TAG, "[T11]   ws:     /ws (push every %ums)", (unsigned)WS_PUSH_MS);
 
-    /* Task body: just idle. httpd runs in its own task (spawned by httpd_start).
-     * T11 task could be deleted here, but we keep it around as a host for
-     * future maintenance work (session expiry sweep, WS push, etc.). */
+    /* Spawn the WS push task. Pinned to APP_CPU (core 1) to keep httpd's
+     * accept/dispatch on core 0; matches the 1.20.3 pin layout. */
+    BaseType_t tres = xTaskCreatePinnedToCore(task_ws_push, "ws_push",
+                                              4096, NULL, 4, NULL, 1);
+    if (tres != pdPASS) {
+        ESP_LOGE(TAG, "[T11] xTaskCreatePinnedToCore(ws_push) failed: %d",
+                 (int)tres);
+        /* Non-fatal: HTTP server still serves the other 24 routes. */
+    }
+
+    /* Task body: just idle. httpd runs in its own task (spawned by httpd_start),
+     * WS push runs in its own task (above). T11 task could be deleted here, but
+     * we keep it around as a host for future maintenance work (session expiry
+     * sweep, OTA timeout sweep, etc.). */
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(60000));   /* 60 s idle tick */
     }
