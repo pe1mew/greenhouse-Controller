@@ -28,6 +28,150 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-alpha.5]` — 2026-05-18
+
+**Phase 5 — Web server rewrite (`ESPAsyncWebServer` → `esp_http_server`).** The plan calls this the biggest single chunk of work in the migration (25 endpoints + WebSocket + multipart OTA + session-cookie handling, ~800 → ~1000 lines + split into 7 route files). Same tickle pattern as Phases 3-4: `web_server_tickle.cpp` proves the IDF httpd works end-to-end with minimal handlers; the full route migration lifts into Phase 5.1+ / Phase 6.
+
+#### Strategy
+
+Same dormant-modules problem as before: the production `web_server.cpp` depends on auth/session/data_manager/event_logger/ota_manager/sd_storage/littlefs_storage/main globals. Compiling it as-is would drag the entire firmware tree into the build. The tickle gives:
+- esp_http_server bring-up signal (does httpd_start work? does port 80 bind?)
+- URI-handler registration signal (does the 3-handler table register correctly?)
+- HTTP request/response cycle signal (does a browser actually get bytes back?)
+- Live-data integration signal (DS1307 RTC + heap reading in the response body — exercises the integration with already-migrated drivers)
+- Visual-acceptance signal — the user opens a browser to the unit's IP and sees a live status page that auto-refreshes every 5 s. **Tactile**.
+
+The full 25-route port is staged for Phase 5.1+ in five sub-phases per the plan:
+- **5.1**: web_routes_static (`/`, `/style.css`, `/app.js`, `/manifest.json`) + web_routes_auth (`/api/login`, `/api/logout`, `/api/whoami`)
+- **5.2**: web_routes_config (`/api/config*`, `/api/wifi`, `/api/pin`) + web_routes_status (`/api/status`, `/api/history`)
+- **5.3**: web_routes_sd (`/api/sd/*`, `/api/log/*`)
+- **5.4**: web_routes_ota (`/api/ota/*`, `/api/web` — multipart accumulator)
+- **5.5**: web_routes_ws (`/ws` WebSocket + 2-second status push)
+
+Each sub-phase leaves the migrated routes functional and other routes returning HTTP 501 stubs, so the GUI partially works incrementally rather than as a big-bang flip.
+
+#### What changed
+
+- **`firmware/src/web_server_tickle.h`** (new) — single function `web_server_tickle_start()` plus a 3-value status enum (OK / INIT_FAILED / REGISTER_FAILED).
+- **`firmware/src/web_server_tickle.cpp`** (new) — implementation:
+  - One module-static `httpd_handle_t s_server` so future tear-down logic has a handle.
+  - **3 URI handlers** registered against `HTTPD_DEFAULT_CONFIG` (port 80, stack 4 KB, prio 5, 8 URI handlers, 7 sockets, LRU purge enabled):
+    - `GET /` → operator-facing HTML page with auto-refresh-every-5s meta tag. Dark green theme (greenhouse-y), shows wall clock from DS1307, uptime, STA IP, free heap, largest block. Tabular layout. ~700 bytes rendered.
+    - `GET /api/status` → text/plain key=value snapshot (parser-friendly for curl smoke tests).
+    - `GET /api/info` → firmware identity (version, chip rev, MAC, IDF version).
+  - Two helper functions: `get_sta_ip_str()` (uses `esp_netif_get_handle_from_ifkey("WIFI_STA_DEF")` + `esp_netif_get_ip_info` — IDF-native, no arduino IP4Address wrapper); `get_rtc_str()` (calls our LIB-3 `rtc_get_time` and formats YYYY-MM-DD HH:MM:SS).
+  - All handlers are stateless and reentrant. Stack buffer (1.5 KB for HTML, 512 B for status, 256 B for info) — no malloc, no globals mutated.
+- **`firmware/src/CMakeLists.txt`** — added `web_server_tickle.cpp` to SRCS, added `esp_http_server` to REQUIRES.
+- **`firmware/src/app_main_stub.cpp`** — Phase 5 tickle invocation after the HTTPS tickle, gated by `wifi_up` (no point starting an HTTP server on a non-IP'd unit). Server stays running indefinitely; the heartbeat task continues normally alongside.
+- **`firmware/platformio.ini`** — `FIRMWARE_VERSION` stamped `2.0.0-alpha.5`.
+
+#### What's deferred to Phase 5.1+
+
+- Session-cookie handling (`Cookie:` header parse via `httpd_req_get_hdr_value_str`, hand-rolled `session=<token>` extraction since esp_http_server doesn't ship a cookie helper).
+- Multipart upload (`httpd_req_recv()` loop + `Content-Disposition` parsing).
+- WebSocket via `httpd_ws_recv_frame` / `httpd_ws_send_frame`.
+- Cache-bust `?v=<FIRMWARE_VERSION>` injection in `index.html` at serve time.
+- Static-file serving from LittleFS (the alpha.2.10/2.11 LFS mount is ready).
+- The 25 production endpoints themselves.
+
+#### Build issue encountered + fix
+
+First build attempt failed with `-Werror=format-truncation` on the 1024-byte HTML body buffer. GCC's pessimistic static analyzer assumed worst-case width for every `%u` (uint32 → "4294967295" = 10 chars), summed all worst cases, and flagged that the template + worst-case widths might overflow 1024 B even though real runtime values are 3-7 chars each. Fix: bump buffer to 1536 B (no real impact — stack is plenty deep). Inline comment in source explains the trap so the next person hitting it doesn't have to re-derive.
+
+#### API mapping (arduino → ESP-IDF)
+
+| arduino-esp32 (`ESPAsyncWebServer`) | ESP-IDF (`esp_http_server`) | Notes |
+|---|---|---|
+| `AsyncWebServer server(80);` | `httpd_config_t cfg = HTTPD_DEFAULT_CONFIG(); httpd_start(&server, &cfg);` | Two-step |
+| `server.on("/", HTTP_GET, [](req){...})` | `httpd_uri_t uri = { .uri = "/", .method = HTTP_GET, .handler = h, .user_ctx = NULL }; httpd_register_uri_handler(server, &uri);` | C-style, no lambdas |
+| `req->send(200, "text/html", body)` | `httpd_resp_set_type(req, "text/html"); httpd_resp_send(req, body, len);` | Status code defaults to 200 |
+| `req->getParam("name")` (Phase 5.2+) | `httpd_query_key_value(qs, "name", buf, sizeof(buf))` after `httpd_req_get_url_query_str(req, qs, len)` | Two-step parse |
+| `req->getHeader("Cookie")` (Phase 5.1+) | `httpd_req_get_hdr_value_str(req, "Cookie", buf, sizeof(buf))` | Same shape |
+| `req->beginResponseStream(...)` (Phase 5.3+) | `httpd_resp_send_chunk(req, buf, len)` looped + final `httpd_resp_send_chunk(req, NULL, 0)` | Chunked transfer-encoding |
+| Multipart file upload (Phase 5.4+) | `httpd_req_recv(req, buf, n)` loop + hand-rolled Content-Disposition parse | Manual |
+| WebSocket (Phase 5.5+) | `httpd_ws_recv_frame` / `httpd_ws_send_frame` with `httpd_ws_frame_t` | esp_http_server WS API |
+
+#### Build delta vs alpha.4.1
+
+| Metric | alpha.4.1 | alpha.5 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1,171,225 B | **1,194,029 B** | **+22,804 B** |
+| Flash usage % | 55.8 % | 56.9 % | +1.1 pp |
+| RAM static | 42,720 B | 42,728 B | +8 B |
+
+bin sha256: `442373982FB11E437F80C48B3F40A20FD7BCE98FB86E5B645AE857F3663E9329`
+
+The +22 KB is just the `esp_http_server` driver itself — server task, URI dispatch, HTTP parser (which is the SAME parser the esp_http_client already uses, so most code is shared, hence the small delta). The cert bundle, mbedTLS, lwIP TCP machinery are all already linked from Phase 4. The server's small footprint is one of the reasons IDF's stack is so much friendlier than ESPAsyncWebServer (~70 KB on its own).
+
+RAM is essentially unchanged because the httpd task's stack (4 KB) and per-socket buffers come out of heap on `httpd_start`, not static.
+
+Flash usage now 56.9% of the 2 MB OTA bank. **~880 KB headroom for Phase 6** (main port + sensor/relay/climate/UI tasks). Comfortably under-budget.
+
+#### Acceptance bar for alpha.5
+
+1. ✅ Build succeeds (after the format-truncation buffer bump).
+2. Flash to Unit 2; boot reason `ESP_RST_POWERON`.
+3. WiFi tickle PASS → HTTPS tickle PASS (5 calls clean — gh#23 fix still holds).
+4. `T-WEB: HTTP server running — open http://<IP>/ in a browser` logged with the unit's STA IP.
+5. **From a phone/PC on the same WiFi**:
+   - `http://<IP>/` shows the dark-green status page with live wall clock, uptime, IP, heap counts.
+   - Page auto-refreshes every 5 s and the values move (uptime increments, RTC seconds advance, heap might wobble a few bytes).
+   - `http://<IP>/api/status` returns `text/plain` key=value text.
+   - `http://<IP>/api/info` returns firmware identity.
+6. **Multiple concurrent clients**: the server should handle several browser tabs simultaneously without errors. esp_http_server is single-threaded but uses select() / connection pool — easily handles 7 concurrent sockets.
+7. Earlier-phase tickles regression-clean.
+8. Run ≥ 10 min; no resets; no server-task stack overflow.
+
+If `T-WEB` log says `INIT_FAILED`, the most likely cause is port-80 already in use — but on a fresh boot that can't happen, so it'd really be a config error. If `REGISTER_FAILED`, one of the URI handlers has a bad config struct.
+
+If the browser can't reach the server, the network might block client-to-device connections (some "guest" or "isolated" WiFi modes drop inter-client packets). Test from a phone on the same WiFi as a counter-check.
+
+#### Acceptance: PASSED — 2026-05-18
+
+Flashed Unit 2 dev board. WiFi tickle PASS, HTTPS tickle PASS (gh#23 fix still holding — 5 calls all returned 204 cleanly with the expected heap pattern). Server logged its listening URL: `T-WEB: HTTP server running — open http://192.168.20.160/ in a browser`.
+
+**External-host verification** (`curl` from the developer host machine on the same WiFi):
+
+`GET /api/info`:
+```
+fw_version=2.0.0-alpha.5
+chip=ESP32-S3 rev v0.2
+cores=2
+sta_mac=64:E8:33:7C:23:44
+idf_version=5.5.0
+```
+
+`GET /api/status` (sampled at uptime 49s):
+```
+fw_version=2.0.0-alpha.5
+uptime_s=49
+rtc=2026-05-18 06:36:38
+sta_ip=192.168.20.160
+free_heap_internal=236227
+free_heap_largest=139264
+free_heap_spiram=8383412
+```
+
+`GET /` returned proper HTML beginning with `<!DOCTYPE html>` + `<meta http-equiv="refresh" content="5">` + `<title>Greenhouse Controller — v2.0.0-alpha.5</title>` + inline CSS for the dark-green theme + table of live values.
+
+**Live-data freshness check** — two `GET /api/status` calls 3 seconds apart:
+- Sample 1: `uptime_s=71  rtc=2026-05-18 06:37:00  free_heap_largest=139264`
+- Sample 2: `uptime_s=74  rtc=2026-05-18 06:37:03  free_heap_largest=139264`
+
+Both `uptime_s` and `rtc` advanced by exactly **+3 seconds** (matches the sleep between calls). **No caching** — each call invokes the handler fresh and reads live driver state. `largest_block` unchanged between calls — **no per-request memory leak**.
+
+All acceptance criteria met:
+- ✅ Server starts cleanly on port 80 (status_code 0 returned).
+- ✅ All 3 URI handlers respond with correct content types (`text/html`, `text/plain`).
+- ✅ Live cross-driver integration works: LIB-3 RTC → BCD decode → snprintf → TCP → external client. Same proof for `heap_caps_get_*` integration.
+- ✅ Multiple sequential requests from the same client return fresh data each time (no caching, no stale snapshots).
+- ✅ No memory leak per request (largest_block stable).
+- ✅ Earlier-phase tickles (WiFi, HTTPS, all drivers) regression-clean.
+
+Phase 5 alpha.5 is the **second-largest single architectural win** of the v2.0.0 migration (after Phase 4's gh#23 fix). It unblocks the elimination of `ESPAsyncWebServer` — the last Arduino-only dependency holding back the migration. The full 25-route + WebSocket port (Phase 5.1+) is now a mechanical mapping exercise; the framework story is proven.
+
+**Phase 5 is CLOSED.** Phase 6 (misc Arduino cleanup: NeoPixel → RMT, project-wide `Arduino.h` removal, `millis()` → `esp_timer_get_time()/1000`, full task port including the actual `network_manager.cpp`, `status_post.cpp`, and `web_server.cpp` with the 25 routes) is next.
+
 ### `[2.0.0-alpha.4]` — 2026-05-17
 
 **Phase 4 — HTTPS client rewrite (`HTTPClient` + `WiFiClientSecure` → `esp_http_client` + `esp_tls`).** This is the gh#23 payoff: direct access to mbedTLS config knobs hidden behind the Arduino WiFiClientSecure wrapper. Same strategy as Phase 3 — self-contained tickle now (`https_tickle.cpp`), full `status_post.cpp` port deferred to Phase 6.

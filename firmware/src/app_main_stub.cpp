@@ -172,6 +172,7 @@
 #include "sd_storage.h"
 #include "wifi_tickle.h"
 #include "https_tickle.h"
+#include "web_server_tickle.h"
 
 static const char *TAG = "GHC-STUB";
 
@@ -796,6 +797,31 @@ extern "C" void app_main(void)
         ESP_LOGI(TAG, "alpha.4 HTTPS tickle: done — see deltas above for gh#23 signal");
     } else {
         ESP_LOGW(TAG, "alpha.4 HTTPS tickle: skipped — WiFi not up");
+    }
+
+    /* alpha.5 — Phase 5 web server tickle.
+     *
+     * Spins up esp_http_server on port 80 with 3 lightweight handlers:
+     *   GET /           — operator-facing HTML status page (auto-refresh 5s)
+     *   GET /api/status — machine-readable key=value snapshot
+     *   GET /api/info   — firmware identity (version, MAC, chip rev)
+     *
+     * Once started the server runs in its own task indefinitely — the user
+     * can open a browser at any point during the boot session to confirm
+     * the IDF httpd is serving correctly. The listening URL is logged
+     * prominently so it's easy to copy/paste from serial.
+     *
+     * Skipped if WiFi is not up (esp_http_server still starts, but nobody
+     * could reach it; log noise rather than functional failure). */
+    if (wifi_up) {
+        web_server_tickle_status_t web_st = web_server_tickle_start();
+        const char *web_msg =
+            (web_st == WEB_SERVER_TICKLE_OK)              ? "OK (running on port 80)" :
+            (web_st == WEB_SERVER_TICKLE_INIT_FAILED)     ? "INIT_FAILED" :
+            (web_st == WEB_SERVER_TICKLE_REGISTER_FAILED) ? "REGISTER_FAILED" : "?";
+        ESP_LOGI(TAG, "web_server_tickle_start() returned %d (%s)", (int)web_st, web_msg);
+    } else {
+        ESP_LOGW(TAG, "alpha.5 web server tickle: skipped — WiFi not up");
     }
 
     BaseType_t rc = xTaskCreatePinnedToCore(
