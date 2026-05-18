@@ -26,7 +26,8 @@ idf_component_register(
         "app_main_stub.cpp"
         "wifi_tickle.cpp"        # Phase 3 (2.0.0-alpha.3) — IDF-native STA + SNTP
         "https_tickle.cpp"       # Phase 4 (2.0.0-alpha.4) — IDF-native HTTPS client + esp_tls
-        "web_server_tickle.cpp"  # Phase 5 (2.0.0-alpha.5) — IDF-native esp_http_server
+        # web_server_tickle.cpp REMOVED in 2.0.0-alpha.6.16 — replaced by minimal T11 below
+        "web_server/web_server.cpp"             # Phase 6.16-α/β (2.0.0-alpha.6.16) — T11 minimal web server (4 static + 3 auth routes); see file header for the 18+ deferred routes
         "system_globals.cpp"     # Phase 6.1 (2.0.0-alpha.6.1) — FreeRTOS infrastructure (Q*, MX*, EG1, task_t*)
         "data_manager/sunrise.cpp"  # Phase 6.2 (2.0.0-alpha.6.2) — NOAA solar position math (pure math, no deps)
         "system_id/system_id.cpp"   # Phase 6.3 (2.0.0-alpha.6.3) — per-unit ID from factory MAC (gh#17)
