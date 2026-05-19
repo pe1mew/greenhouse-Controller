@@ -782,13 +782,15 @@ setInterval(() => {
 }, 5000);
 
 // Client-side syntax check for the status-site URL. Empty is allowed (it
-// disables the feature server-side). Otherwise the URL must use http(s)://,
-// must not carry a query string or fragment (T14 appends ?action=log), and
-// must end with "api.php" — Apache routing varies and the firmware does not
-// follow redirects, so requiring the exact endpoint avoids silent FAILs.
+// disables the feature server-side). Otherwise the URL must use https:// only
+// (a.6.35: plain HTTP would expose the sourceidentifier shared secret on the
+// wire), must not carry a query string or fragment (T14 appends ?action=log),
+// and must end with "api.php" — Apache routing varies and the firmware does
+// not follow redirects, so requiring the exact endpoint avoids silent FAILs.
 function validateStatusUrl(url) {
   if (url === '')                                return '';
-  if (!/^https?:\/\//.test(url))                 return 'URL must start with http:// or https://';
+  if (!/^https:\/\//.test(url))
+    return 'URL must use https:// — plain HTTP exposes the shared secret on the wire';
   if (url.indexOf('?') !== -1 || url.indexOf('#') !== -1)
                                                   return 'URL must not contain ? or #';
   if (!url.endsWith('api.php'))                  return 'URL must end with "api.php"';

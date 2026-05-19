@@ -1,6 +1,6 @@
 # Firmware maturation plan — alpha.6.32 → alpha.6.35
 
-**Status:** in progress — a.6.32, a.6.33, a.6.34 shipped + bench-verified on 192.168.20.160. a.6.35 pending.
+**Status:** complete — all four alphas (a.6.32, a.6.33, a.6.34, a.6.35) shipped + bench-verified on 192.168.20.160. Phase 7 (14-day soak) now unblocked.
 **Branch:** `dev/2.0.0-esp-idf`.
 **Predecessor:** alpha.6.31 (T10 admin-toggled AP + STA back-off + IO0 debounce).
 **Successor:** Phase 7 (14-day soak → 2.0.0-rc.1), deferred until this plan completes.

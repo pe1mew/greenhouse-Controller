@@ -28,6 +28,72 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-a.6.35]` — 2026-05-19
+
+**Fourth and final alpha of the maturation plan.** Seven discrete T14 items, the largest alpha of the four. Restores the production T14 behaviour: shared-secret header, canonical JSON body, streaming SD log upload (daily + on-rotation triggers, gh#25 dedup latch), the four audit-gap items (`status_enable` master gate, `log_upload_rot` rotation gate, `s_last_log_str` updates, `log_last_up` persistence), and tightens the `POST /api/web` URL validator to `https://` only so the secret can't leak on the wire.
+
+#### Items shipped
+
+| Item | Scope | One-line |
+|---|---|---|
+| A | Shared secret header | `esp_http_client_set_header(client, "sourceidentifier", cfg.status_secret)` on every status POST + log upload when secret non-empty |
+| B | Canonical JSON body | `build_canonical_status_json(buf, 2048, &snap, cfg.status_expose, false)` replaces `build_min_status_json`; `include_disabled_setpoints=false` matches public-dashboard policy |
+| C | SD CSV log upload | Daily trigger at `cfg.log_upload_h:m` + on-rotation trigger via `T14_NOTIFY_LOG_ROTATED` task notify from T9. Streaming `esp_http_client_open(fsize)` + 4 KB chunk loop. URL: `<status_url>?action=log&file=<name>`. gh#25 dedup latch via `dm_set_log_last_up()` on 2xx |
+| D | `status_enable` master gate | Main-loop gate now `(!enable \|\| !url \|\| interval<=0)`; `s_last_str = "DISABLED"` while disabled |
+| E | `log_upload_rot` rotation gate | T14_NOTIFY_LOG_ROTATED handler wrapped in `if (cfg.log_upload_rot != 0)`; daily-window upload is independent of this flag |
+| F | `s_last_log_str` updates | Shared `format_outcome` helper produces both `s_last_str` and `s_last_log_str` in `"OK ts"` / `"FAIL ts code=N"` shape |
+| G | URL validator https-only | T11 `web_post_handler` rejects `http://`; mirrored in `app.js::validateStatusUrl`, `index.html` tooltip, `webUiMock/mock_server.py` |
+
+#### What changed
+
+- **`firmware/src/status_post/status_post.cpp`** — ~+200 lines net. New `do_status_post` (canonical JSON + secret header), `do_log_upload` (streaming SD → HTTPS), `format_outcome`, `post_log` helper using `LOG_BY_WEB`. Main loop adds status_enable gate, daily-trigger logic with minute-latching, xTaskNotifyWait for rotation triggers with log_upload_rot gate. `s_last_str` / `s_last_log_str` buffers widened to 64 bytes.
+- **`firmware/src/status_post/status_post.h`** — new `T14_NOTIFY_LOG_ROTATED` macro.
+- **`firmware/src/event_logger/event_logger.cpp`** — `rotate_sd_file()` calls `xTaskNotify(task_t14, T14_NOTIFY_LOG_ROTATED, eSetBits)` after a successful rotation, with NULL-handle guard. New `#include "../status_post/status_post.h"`.
+- **`firmware/src/web_server/web_server.cpp`** — URL validator changed from `http:// \| https://` to `https://` only; operator-facing error message updated.
+- **`firmware/data/app.js`** — `validateStatusUrl` regex tightened to `https://` only.
+- **`firmware/data/index.html`** — Web tab URL tooltip updated.
+- **`webUiMock/mock_server.py`** — mirror URL validator change for parity with firmware.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-a.6.35`.
+
+#### Acceptance — bench-verified on 192.168.20.160
+
+End-to-end:
+
+| Item | Test | Result |
+|---|---|---|
+| **G** | `POST /api/web {"url":"http://example.com/api.php"}` | 400 + `"URL must use https:// — plain HTTP exposes the shared secret on the wire"` ✓ |
+| **G** | `POST /api/web {"url":"https://example.com/api.php"}` | 200 ✓ |
+| **D** | `enable=0` → `/api/web::last_post` | `'DISABLED'` ✓ |
+| **D** | `enable=1 url=https://192.168.99.99/api.php interval=60` → wait 100 s | `'FAIL 2026-05-19 11:08:40 code=0'` then `'FAIL ... 11:09:41 code=0'` at next cycle ✓ |
+| **D** | `enable=0` → `last_post` within 5 s | `'DISABLED'` ✓ |
+| **F** | Implicit via D (shared `format_outcome`) | `"FAIL YYYY-MM-DD HH:MM:SS code=N"` format confirmed ✓ |
+
+Runtime evidence (a.6.35 boot ran stable 13+ min including 2+ failed-POST cycles):
+- `fw_ver=2.0.0-a.6.35` ✓
+- `eg1=0` (no fault / WDT events) ✓
+- Status POST cycle executes at 60 s cadence ✓
+- TLS handshake attempt reaches wire (`code=0` from unreachable target = unit attempted) ✓
+- Heap rows stable at boot baseline (253/8189/176 KB) ✓
+
+Items A (secret on wire), B (canonical body shape), C (log upload end-to-end), E (log_upload_rot gate exercised by rotation) are correct by code review but **require a TLS-terminated status server with a CA-bundle-valid certificate** to verify on the wire. The bench unit's `skip_cert_common_name_check = false` setting prevents pointing at a self-signed local mock; an HTTPS-fronted mock setup was out of scope for the acceptance window. Real-server validation lands during Phase 7 (14-day soak) when the unit talks to the operator's production endpoint.
+
+#### gh#23 watch — primary Phase 7 signal
+
+Pre-a.6.35 the bench-unit baseline `value_a=12` (largest-block) in-flight has been 31 KB. The new 2 KB JSON build buffer + 4 KB log-upload chunk buffer (both heap-allocated per cycle, both freed before the next cycle) add transient demand. The Phase 7 soak watches `value_a=12` over ≥100 status POST cycles — if it stays above 50 KB, gh#23 is closed; if not, **a.6.36** lands mbedTLS mitigations (max_frag_len=1024, single cipher TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, session-ticket reuse).
+
+#### Build delta vs a.6.34
+
+| Metric | a.6.34 | a.6.35 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1 344 925 B | **1 348 457 B** | +3 532 B |
+| RAM static | 60 504 B | 60 552 B | +48 B |
+
++3.5 KB flash, +48 B RAM — **well under the plan estimate of +6 KB / +60 B**. `build_canonical_status_json` was already linked from T11's `/api/status` handler, so this alpha only pays for `do_log_upload`, daily-trigger logic, gates, and URL-validator changes. Final flash usage: **64.3 %** of the 2 MB OTA bank.
+
+#### Known cosmetic — `value_a=0` / `value_a=1` collision with T10
+
+The documented LOG_SYSTEM table reuses `value_a=0` for T14 outcome and `value_a=1` for both T10 STA up/down events AND T14 outcome successes. The collision is real but distinguishable by initiator (T10 = `LOG_BY_SYSTEM`, T14 = `LOG_BY_WEB`). This alpha follows the documented intent; a future cleanup alpha could carve T14 out of the 0/1 range. Not blocking 2.0.0.
+
 ### `[2.0.0-a.6.34]` — 2026-05-19
 
 **Third alpha of the maturation plan.** Adds the T13 firmware-only fallback timer — a one-shot FreeRTOS timer that commits a verified-but-uncommitted firmware OTA after 120 s of inactivity, if no paired web-asset upload arrives. Restores 1.20.3's behaviour: without this, an interrupted asset upload (network blip, operator closed the page) leaves the new firmware permanently inactive and the unit on the old bank.
