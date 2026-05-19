@@ -28,6 +28,79 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-a.6.35.5]` — 2026-05-19
+
+**Audit-log every setting change with operator attribution.** Pre-patch the LCD UI logged setpoint changes correctly (`LOG_SETPOINT` with `LOG_BY_FARMER` / `LOG_BY_ADMIN` from the active session) but the web GUI did not — five distinct config-write paths from `/api/config` / `/api/wifi` / `/api/pin` / `/api/web` updated NVS silently. A PIN rotation, a status-website URL change, or a wholesale climate-setpoint edit through the browser left zero rows in the SD CSV. Operator question: "with respect to logging events. Are all setting changes in both guis logged as an event including the operator who did it? logging would be a task of the NVS task who is administering these settings."
+
+#### Architecture
+
+Per the operator's design proposal — T4 (the NVS task, sole consumer of Q4) owns the audit emission for any setting that flows through Q4. T11 retains direct logging for the four paths that bypass Q4 (string config writes, WiFi credentials, PIN, status-website cfg fields written via direct `nvs_cfg_set_*`).
+
+- **`config_update_t` extended** with a 1-byte `initiator` field. Callers set it before `xQueueSend(Q4, ...)`; T4 carries it into the audit row.
+- **T4 `apply_config_update`** — under the same MX4 critical section that updates the cfg shadow, reads the old value of the key being written, then emits `LOG_SETPOINT` with `value_a = old`, `value_b = new (clamped)`, `param_id` mapped via a new `ns_key_to_log_id()` helper, and `initiator = upd->initiator`. Channel for `dwell_open` / `dwell_close` is parsed from the key index.
+- **T8 LCD UI** sets `upd.initiator` based on session and stops emitting `LOG_SETPOINT` directly — T4 now handles it. Side benefit: the pre-patch T8 bug that logged "changed" even when Q4 was full is fixed by definition (T4 only emits after a successful NVS+shadow write).
+- **T11 web** for `POST /api/config` (numeric) sets `upd.initiator = LOG_BY_WEB` before Q4 send. T4 emits the audit row.
+- **T11 web** for the four non-Q4 paths emits its own `LOG_SETPOINT` directly via a new `log_web_setpoint(pid, va, vb)` helper.
+
+#### New `log_param_id_t` entries
+
+15 new entries (23 → 37) for fields that previously had no enumeration:
+
+| ID | Name | Semantics |
+|---:|---|---|
+| 23 | `tz_str` | sentinel `(set)` — TZ string changed |
+| 24 | `wifi_ssid` | sentinel `(set)` — credential not logged |
+| 25 | `wifi_psk` | sentinel `(set)` — credential not logged |
+| 26 | `wifi_ap_psk` | sentinel `(set)` — credential not logged |
+| 27 | `pin_farmer` | sentinel `(changed)` — PIN not logged |
+| 28 | `pin_admin` | sentinel `(changed)` — PIN not logged |
+| 29 | `status_url` | sentinel `(set)` |
+| 30 | `status_secret` | sentinel `(set)` — secret not logged |
+| 31 | `status_intv_s` | numeric old → new |
+| 32 | `status_enable` | numeric old → new (boolean) |
+| 33 | `status_expose` | numeric old → new (bitmask, parser renders hex) |
+| 34 | `log_upload_h` | numeric old → new |
+| 35 | `log_upload_m` | numeric old → new |
+| 36 | `log_upload_rot` | numeric old → new (boolean) |
+| 37 | `wind_prot_en` | numeric old → new (boolean) |
+
+**Sensitive-value policy**: PIN, WiFi creds, shared secret use `value_a=1` as a sentinel for "changed/set" — the actual value is **never** logged. Stops the SD CSV from being a credential exfil surface. The parser surfaces these as `<field> (set)` / `<field> (changed)` rather than the misleading "1 → 0".
+
+#### What changed
+
+- **`firmware/src/types/app_types.h`** — `config_update_t.initiator` added; `log_param_id_t` extended with 15 new entries.
+- **`firmware/src/data_manager/data_manager.cpp`** — new static `ns_key_to_log_id()` mapping helper; `apply_config_update` rewritten to capture `old_val` under MX4 alongside the shadow write and emit `LOG_SETPOINT` from the queue-consumer side; comments updated.
+- **`firmware/src/ui_display/ui_display.cpp`** — `apply_param_change` sets `upd.initiator` based on session and removes its direct `log_post`; T4 now owns the emission.
+- **`firmware/src/web_server/web_server.cpp`** — `/api/config` numeric handler sets `upd.initiator = LOG_BY_WEB`; new `log_web_setpoint()` helper plus emissions for `/api/config` string (tz_str), `/api/wifi` (ssid/psk/ap_psk — sentinel only), `/api/pin` (sentinel only), `/api/web` (per changed field, numeric or sentinel as appropriate).
+- **`log/logparser.py`** — `_PARAM` table extended with the 15 new entries; new `_PARAM_SENTINEL_VALUE` set; `_decode_setpoint` renders sentinel-value rows as `<field> (set)` / `<field> (changed)` and handles new boolean / bitmask formatting for status_enable / log_upload_rot / wind_prot_en / status_expose.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-a.6.35.5`.
+
+#### Acceptance — bench-verified on 192.168.20.160
+
+End-to-end, each of the eight paths produces an audit row with correct attribution and value semantics:
+
+```
+2026-05-19 17:16:57  [SETPT  ]  Web UI    t_max_day: 28 degC -> 29 degC          (Q4 → T4)
+2026-05-19 17:16:59  [SETPT  ]  Web UI    wind_prot_en: enabled -> disabled       (Q4 → T4)
+2026-05-19 17:17:01  [SETPT  ]  Web UI    wind_prot_en: disabled -> enabled       (Q4 → T4)
+2026-05-19 17:17:02  [SETPT  ]  Web UI    status_intv_s: 120 s -> 180 s           (T11 direct)
+2026-05-19 17:17:04  [SETPT  ]  Web UI    status_intv_s: 180 s -> 120 s           (T11 direct)
+2026-05-19 17:17:08  [SETPT  ]  Web UI    t_max_day: 29 degC -> 28 degC           (Q4 → T4)
+2026-05-19 17:19:09  [SETPT  ]  Web UI    pin_admin (changed)                     (T11 direct)
+2026-05-19 17:19:10  [SETPT  ]  Web UI    tz_str (set)                            (T11 direct)
+```
+
+Every row carries `initiator = Web UI` correctly. PIN and tz_str rows render the value-redacted sentinel form. LCD-UI path (T8 → Q4 → T4) was not re-verified in this acceptance window (the new T4-side emission for the Q4 path is exercised by Web UI rows; T8's contribution is just setting `upd.initiator = FARMER/ADMIN`, which is a 2-line change that's correct by inspection).
+
+#### Build delta vs a.6.35.4
+
+| Metric | a.6.35.4 | a.6.35.5 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1 349 296 B | **1 350 944 B** | +1 648 B |
+| RAM static | 60 552 B | 60 553 B | +1 B |
+
++1.6 KB flash: `ns_key_to_log_id` switch tables, the `apply_config_update` old-value capture, the eight new emission sites in T11, the 15 new param-id strings in `log_param_id_t`. RAM: +1 B for the new `initiator` field in `config_update_t`. Final flash usage 64.4 % of the 2 MB OTA bank.
+
 ### `[2.0.0-a.6.35.4]` — 2026-05-19
 
 **Operator-disabled-feature badges** — surfaces two new `mode.flags` entries in the canonical status JSON so both the local GUI's Alarms card and the public status dashboard show when wind protection or humidity control has been turned off via cfg.

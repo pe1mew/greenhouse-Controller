@@ -1,10 +1,26 @@
 # logparser — Greenhouse Controller Log Parser
 
 **File:** `log/logparser.py`
-**Document version:** 1.4 (matches firmware 2.0.0-a.6.35.3)
+**Document version:** 1.5 (matches firmware 2.0.0-a.6.35.5)
 **Requires:** Python 3.10+, standard library only (no pip dependencies)
 
-**What's new in 1.4** (matches firmware a.6.35.3):
+**What's new in 1.5** (matches firmware a.6.35.5):
+- **Every setting change in either GUI is now audit-logged.** Pre-a.6.35.5 the
+  web GUI was silent on `/api/config` numeric writes, `/api/config` string
+  writes (tz_str), `/api/wifi`, `/api/pin`, and `/api/web` — eight distinct
+  silent paths. All eight now produce `SETPT` rows attributed to `Web UI`.
+- **15 new SETPT parameter IDs** (23-37) covering tz_str, WiFi credentials, PIN
+  changes, the status-website cfg fields, and `wind_prot_en`. See the SETPT
+  table below for the full list and value semantics.
+- **Sensitive-value sentinel**: param IDs 23-30 (tz_str, WiFi creds, PINs,
+  status URL/secret) use `value_a=1` as a "set/changed" marker. The actual
+  value is **never** in the CSV — operators see *who* changed *what kind of
+  field* and *when* without the SD card becoming a credential exfil surface.
+  Parser renders these rows as `<field> (set)` / `<field> (changed)`.
+- New SETPT `value_a=14/15/16/17` OTA-stage events recognised (see SYSTEM
+  table below — actually under SYSTEM, included here for completeness).
+
+**What was new in 1.4** (matches firmware a.6.35.3):
 - CSV row timestamps are **local time** (used to be UTC). Output column heading
   changed from "Timestamp (UTC)" to "Timestamp (local)". Older logs with UTC
   timestamps render identically — the parser doesn't interpret the timezone,
@@ -190,48 +206,101 @@ recalculates the desired ventilation step.
 ---
 
 ### SETPT
-Configuration parameter changed.  Posted by the UI task (T8) when an operator
-edits a setpoint, or by the Web Server (T11) via REST API.
+Configuration parameter changed.  Posted by:
+
+- T8 (LCD UI) when a farmer/admin edits a setpoint via the LCD menu —
+  `initiator` = `FARMER` or `ADMIN` from the active LCD session.
+- T4 (Data Manager) after applying a Q4 message — picks up the `initiator`
+  field the caller (T8 or T11) set on the Q4 message. T4 emits the audit row
+  with the caller's attribution; this is the canonical "NVS task logs the
+  change" path (since 2.0.0-a.6.35.5).
+- T11 (Web Server) directly for the four paths that bypass Q4: `/api/config`
+  with `str_value` (tz_str), `/api/wifi`, `/api/pin`, `/api/web`. All emit
+  `initiator` = `WEB`.
 
 | Field | Meaning |
 |---|---|
 | `param` | Parameter ID (see table below) |
-| `value_a` | Old value |
-| `value_b` | New value |
+| `value_a` | Old value (or sentinel `1` for "set/changed" on sensitive fields) |
+| `value_b` | New value (or `0` for sensitive fields) |
 | `ch` | Motor channel (only relevant for `dwell_open` / `dwell_close`) |
 
 **Parameter IDs:**
 
-| ID | Key | Unit |
-|---|---|---|
-| 1 | t_min_day | °C |
-| 2 | t_max_day | °C |
-| 3 | t_min_ngt | °C |
-| 4 | t_max_ngt | °C |
-| 5 | rh_min_day | % |
-| 6 | rh_max_day | % |
-| 7 | rh_min_ngt | % |
-| 8 | rh_max_ngt | % |
-| 9 | hyst_t | °C |
-| 10 | hyst_rh | % |
-| 11 | rh_ctrl_en | (enabled/disabled) |
-| 12 | cr_priority | |
-| 13 | avg_win_t | samples |
-| 14 | avg_win_rh | samples |
-| 15 | v_max | m/s |
-| 16 | dir_excl_low | ° |
-| 17 | dir_excl_high | ° |
-| 18 | dwell_open | s (per channel) |
-| 19 | dwell_close | s (per channel) |
-| 20 | poll_interval | s |
-| 21 | lat/lon | |
-| 22 | cr_applied | |
+| ID | Key | Unit | Type |
+|---|---|---|---|
+| 1 | t_min_day | °C | numeric, old → new |
+| 2 | t_max_day | °C | numeric, old → new |
+| 3 | t_min_ngt | °C | numeric, old → new |
+| 4 | t_max_ngt | °C | numeric, old → new |
+| 5 | rh_min_day | % | numeric, old → new |
+| 6 | rh_max_day | % | numeric, old → new |
+| 7 | rh_min_ngt | % | numeric, old → new |
+| 8 | rh_max_ngt | % | numeric, old → new |
+| 9 | hyst_t | °C | numeric, old → new |
+| 10 | hyst_rh | % | numeric, old → new |
+| 11 | rh_ctrl_en | (enabled/disabled) | boolean, old → new |
+| 12 | cr_priority | | numeric, old → new |
+| 13 | avg_win_t | samples | numeric, old → new |
+| 14 | avg_win_rh | samples | numeric, old → new |
+| 15 | v_max | m/s | numeric, old → new |
+| 16 | dir_excl_low | ° | numeric, old → new |
+| 17 | dir_excl_high | ° | numeric, old → new |
+| 18 | dwell_open | s (per channel) | numeric, old → new |
+| 19 | dwell_close | s (per channel) | numeric, old → new |
+| 20 | poll_interval | s | numeric, old → new |
+| 21 | lat/lon | | numeric, old → new (one row per lat_deg / lat_frac / lon_deg / lon_frac sub-field) |
+| 22 | cr_applied | | numeric, old → new |
+| 23 | tz_str | *(set)* | **sentinel** — TZ string was changed (string value not logged) |
+| 24 | wifi_ssid | *(set)* | **sentinel** — WiFi SSID was changed (credential not logged) |
+| 25 | wifi_psk | *(set)* | **sentinel** — WiFi STA passphrase was changed (credential not logged) |
+| 26 | wifi_ap_psk | *(set)* | **sentinel** — WiFi AP passphrase was changed (credential not logged) |
+| 27 | pin_farmer | *(changed)* | **sentinel** — Farmer PIN was changed (PIN not logged) |
+| 28 | pin_admin | *(changed)* | **sentinel** — Admin PIN was changed (PIN not logged) |
+| 29 | status_url | *(set)* | **sentinel** — Status-website URL was changed (URL not logged) |
+| 30 | status_secret | *(set)* | **sentinel** — Status-website shared secret was changed (secret not logged) |
+| 31 | status_intv_s | s | numeric, old → new |
+| 32 | status_enable | (enabled/disabled) | boolean, old → new |
+| 33 | status_expose | bitmask (hex) | numeric, old → new (parser renders as `0xNN`) |
+| 34 | log_upload_h | h | numeric, old → new |
+| 35 | log_upload_m | min | numeric, old → new |
+| 36 | log_upload_rot | (enabled/disabled) | boolean, old → new |
+| 37 | wind_prot_en | (enabled/disabled) | boolean, old → new |
+
+**Sensitive-value policy (since 2.0.0-a.6.35.5).** Param IDs 23-30 cover
+admin-sensitive settings — PIN rotations, WiFi credentials, the
+status-website shared secret, the timezone string, and the status-website
+URL. For these the firmware uses `value_a = 1` as a sentinel for "set" or
+"changed" and `value_b = 0`. The actual value is **never** written to the
+CSV. The audit row stamps *who* changed *what kind of field* and *when*
+without making the SD card a credential exfil surface. The parser renders
+these rows as `<field> (set)` or `<field> (changed)` rather than the
+misleading `1 -> 0`.
 
 **Example output:**
 ```
-2025-06-07 14:35:00  [SETPT  ]   Admin (LCD)     t_max_day: 25 °C → 27 °C
-2025-06-07 14:36:00  [SETPT  ]   Web UI          poll_interval: 60 s → 30 s
+2025-06-07 14:35:00  [SETPT  ]   Admin (LCD)     t_max_day: 25 °C -> 27 °C
+2025-06-07 14:36:00  [SETPT  ]   Web UI          poll_interval: 60 s -> 30 s
+2025-06-07 14:37:12  [SETPT  ]   Web UI          wind_prot_en: enabled -> disabled
+2025-06-07 14:38:01  [SETPT  ]   Web UI          status_intv_s: 120 s -> 180 s
+2025-06-07 14:39:33  [SETPT  ]   Web UI          status_expose: 0x3F -> 0x0F
+2025-06-07 14:42:18  [SETPT  ]   Web UI          pin_admin (changed)
+2025-06-07 14:43:05  [SETPT  ]   Web UI          wifi_ssid (set)
+2025-06-07 14:43:05  [SETPT  ]   Web UI          wifi_psk (set)
+2025-06-07 14:43:10  [SETPT  ]   Web UI          tz_str (set)
 ```
+
+**Audit attribution (since 2.0.0-a.6.35.5).** Before this release the LCD UI
+emitted `SETPT` rows with correct `FARMER` / `ADMIN` attribution, but the
+web GUI was silent on every config change — `POST /api/config`,
+`POST /api/wifi`, `POST /api/pin`, `POST /api/web` all updated NVS without
+an audit row. A PIN rotation or a wholesale climate-setpoint walk through
+the browser left zero rows in the SD log. The 2.0.0-a.6.35.5 architecture
+puts the audit emission at the NVS-task layer (T4) for all Q4-routed
+changes, with T11 emitting directly for the four direct-write paths. Every
+setting change in either GUI now produces a `SETPT` row identifying the
+operator role (LCD farmer/admin or Web UI) and a `before -> after` (or
+sentinel) value pair.
 
 ---
 

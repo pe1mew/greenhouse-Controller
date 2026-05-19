@@ -56,31 +56,62 @@ _VENT_STEP = {
 }
 
 # log_param_id_t (from app_types.h) — param → (name, unit)
+#
+# Sensitive fields (PIN, WiFi credentials, secrets) log a "changed" marker
+# without exposing the value. Numeric fields log old → new the way the
+# climate/wind setpoints do. The parser renders sensitive fields with
+# value_a=1 as "<field> changed" (no value); numeric fields render as
+# "<field>: <old> -> <new>" via the normal _decode_setpoint path.
 _PARAM = {
-    0:  ("none",           ""),
-    1:  ("t_min_day",      "degC"),
-    2:  ("t_max_day",      "degC"),
-    3:  ("t_min_ngt",      "degC"),
-    4:  ("t_max_ngt",      "degC"),
-    5:  ("rh_min_day",     "%"),
-    6:  ("rh_max_day",     "%"),
-    7:  ("rh_min_ngt",     "%"),
-    8:  ("rh_max_ngt",     "%"),
-    9:  ("hyst_t",         "degC"),
-    10: ("hyst_rh",        "%"),
-    11: ("rh_ctrl_en",     ""),
-    12: ("cr_priority",    ""),
-    13: ("avg_win_t",      "samples"),
-    14: ("avg_win_rh",     "samples"),
-    15: ("v_max",          "m/s"),
-    16: ("dir_excl_low",   "deg"),
-    17: ("dir_excl_high",  "deg"),
-    18: ("dwell_open",     "s"),
-    19: ("dwell_close",    "s"),
-    20: ("poll_interval",  "s"),
-    21: ("lat/lon",        ""),
-    22: ("cr_applied",     ""),
+    0:  ("none",            ""),
+    # C1..C22 — original setpoint table from logAnalysis.md.
+    1:  ("t_min_day",       "degC"),
+    2:  ("t_max_day",       "degC"),
+    3:  ("t_min_ngt",       "degC"),
+    4:  ("t_max_ngt",       "degC"),
+    5:  ("rh_min_day",      "%"),
+    6:  ("rh_max_day",      "%"),
+    7:  ("rh_min_ngt",      "%"),
+    8:  ("rh_max_ngt",      "%"),
+    9:  ("hyst_t",          "degC"),
+    10: ("hyst_rh",         "%"),
+    11: ("rh_ctrl_en",      ""),
+    12: ("cr_priority",     ""),
+    13: ("avg_win_t",       "samples"),
+    14: ("avg_win_rh",      "samples"),
+    15: ("v_max",           "m/s"),
+    16: ("dir_excl_low",    "deg"),
+    17: ("dir_excl_high",   "deg"),
+    18: ("dwell_open",      "s"),
+    19: ("dwell_close",     "s"),
+    20: ("poll_interval",   "s"),
+    21: ("lat/lon",         ""),
+    22: ("cr_applied",      ""),
+
+    # 2.0.0-a.6.35.5 — audit-trail entries for setting changes that
+    # previously had no LOG_SETPOINT emission. Sensitive (no value):
+    23: ("tz_str",          "(set)"),
+    24: ("wifi_ssid",       "(set)"),
+    25: ("wifi_psk",        "(set)"),
+    26: ("wifi_ap_psk",     "(set)"),
+    27: ("pin_farmer",      "(changed)"),
+    28: ("pin_admin",       "(changed)"),
+    29: ("status_url",      "(set)"),
+    30: ("status_secret",   "(set)"),
+    # Numeric (old → new):
+    31: ("status_intv_s",   "s"),
+    32: ("status_enable",   ""),
+    33: ("status_expose",   "bitmask"),
+    34: ("log_upload_h",    "h"),
+    35: ("log_upload_m",    "min"),
+    36: ("log_upload_rot",  ""),
+    37: ("wind_prot_en",    ""),
 }
+
+# Param IDs whose value semantics are "field was set/changed" (value_a=1
+# is a sentinel, not a real old/new pair). The decoder renders these with
+# just the field name + "(set)" / "(changed)" rather than "1 -> 0".
+_PARAM_SENTINEL_VALUE = frozenset({23, 24, 25, 26, 27, 28, 29, 30})
 
 # Initiator strings shown in CSV → friendly label
 _INITIATOR = {
@@ -197,6 +228,13 @@ def _decode_setpoint(row: dict) -> str:
       param = log_param_id_t identifying the config key
       value_a = old value   value_b = new value
       ch = motor channel for dwell_open/dwell_close, 0 otherwise
+
+    Since 2.0.0-a.6.35.5 the parameter space includes audit-only entries
+    for sensitive admin operations (PIN changes, WiFi credentials, the
+    TZ string, the status-website URL/secret). These use value_a=1 as a
+    sentinel for "changed/set" — the actual value isn't loggable for
+    security reasons. The parser surfaces these as "<field> (set)" or
+    "<field> (changed)" rather than the numeric old/new pair.
     """
     try:
         param_id = int(row["param"])
@@ -206,12 +244,30 @@ def _decode_setpoint(row: dict) -> str:
 
         param_name, unit = _PARAM.get(param_id, (f"param#{param_id}", ""))
 
+        # Sensitive / sentinel-value rows: value_a=1 = "set"/"changed".
+        # Don't render as "1 -> 0" — that's misleading. unit string carries
+        # the human-readable verb (e.g. "(set)", "(changed)").
+        if param_id in _PARAM_SENTINEL_VALUE:
+            if old_val == 1:
+                return f"{param_name} {unit}".rstrip()
+            # Defensive fallback for unexpected value_a — shouldn't happen
+            # but won't be invisible if it does.
+            return f"{param_name} {unit}  [raw a={old_val} b={new_val}]"
+
         # Motor-specific params include the channel
         ch_suffix = f" (M{ch})" if ch in (1, 2, 3) and param_id in (18, 19) else ""
 
         def _fmt(v: int) -> str:
             if param_id == 11:   # rh_ctrl_en — boolean
                 return "enabled" if v else "disabled"
+            if param_id == 32:   # status_enable — boolean
+                return "enabled" if v else "disabled"
+            if param_id == 36:   # log_upload_rot — boolean
+                return "enabled" if v else "disabled"
+            if param_id == 37:   # wind_prot_en — boolean
+                return "enabled" if v else "disabled"
+            if param_id == 33:   # status_expose — hex bitmask
+                return f"0x{v:02X}"
             return f"{v} {unit}".strip()
 
         return f"{param_name}{ch_suffix}: {_fmt(old_val)} -> {_fmt(new_val)}"
