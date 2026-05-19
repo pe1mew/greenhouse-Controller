@@ -409,7 +409,14 @@ static const char *initiator_str(uint8_t i)
  * @brief Format one log_event_t as a NUL-terminated CSV line.
  *
  * Line format: ISO-8601-timestamp,type,initiator,ch,param,value_a,value_b\n
- * Example:     2025-06-07T14:30:22,SENSOR,SYS,0,0,235,650
+ * Example:     2026-05-19T13:30:22,SENSOR,SYS,0,0,235,650
+ *
+ * Since a.6.35.3 the timestamp is **local time** (per the POSIX TZ env
+ * variable that T10 maintains via setenv("TZ", cfg.tz_str) + tzset()).
+ * This matches the SD card filename convention (make_ts_filename, which has
+ * always used localtime_r) so the filename's wall-clock and the inside-the-
+ * file row timestamps are now consistent. Operator-side a CSV downloaded at
+ * 13:30 local time will show rows stamped 13:30 local time, not 11:30 UTC.
  *
  * @param evt  Event to format.
  * @param buf  Destination buffer (≥ 80 bytes recommended).
@@ -418,10 +425,10 @@ static const char *initiator_str(uint8_t i)
 static void build_csv_line(const log_event_t *evt, char *buf, size_t len)
 {
     time_t ts = (time_t)evt->timestamp;
-    struct tm tm_utc;
-    gmtime_r(&ts, &tm_utc);
+    struct tm tm_local;
+    localtime_r(&ts, &tm_local);
     char ts_str[20];   /* "YYYY-MM-DDTHH:MM:SS\0" */
-    strftime(ts_str, sizeof(ts_str), "%Y-%m-%dT%H:%M:%S", &tm_utc);
+    strftime(ts_str, sizeof(ts_str), "%Y-%m-%dT%H:%M:%S", &tm_local);
 
     snprintf(buf, len,
              "%s,%s,%s,%u,%u,%d,%d\n",
@@ -800,6 +807,64 @@ bool event_logger_newest_closed(char *out, size_t cap)
         return event_logger_last_rotated(out, cap);
     }
     return true;
+}
+
+/* -----------------------------------------------------------------------
+ * event_logger_next_pending — a.6.35.2 multi-file upload helper
+ *
+ * Scans the SD card and returns the lex-smallest closed CSV whose name is
+ * strictly greater than @p after. T14's upload_pending walks this in a loop,
+ * advancing `after` to each successful upload, so a backlog of missed files
+ * (e.g. WiFi outage that spanned a rotation) gets drained in chronological
+ * order on the next trigger. Closed-file enumeration is identical to
+ * event_logger_newest_closed (same sd_scan() + active-file exclusion);
+ * only the selection predicate differs: smallest > after, vs lex-max.
+ * ----------------------------------------------------------------------- */
+bool event_logger_next_pending(const char *after, char *out, size_t cap)
+{
+    if (out == NULL || cap == 0u) { return false; }
+    out[0] = '\0';
+    if (after == NULL) { after = ""; }
+
+    /* Active file's bare name — exclude from results. If SD logging is
+     * inactive, no file is active. */
+    char active_bare[SD_NAME_ONLY_LEN] = {};
+    if (s_sd_ok && s_cur_filename[0] != '\0') {
+        const char *bare = (s_cur_filename[0] == '/') ? s_cur_filename + 1 : s_cur_filename;
+        strncpy(active_bare, bare, sizeof(active_bare) - 1u);
+        active_bare[sizeof(active_bare) - 1u] = '\0';
+    }
+
+    char list[512];
+    if (!sd_scan(list, sizeof(list))) {
+        /* SD unavailable / scan failed — no enumeration possible. Unlike
+         * newest_closed we do NOT fall back to event_logger_last_rotated
+         * here, because the caller's intent is "walk all pending in order"
+         * and an in-memory fallback can't provide that. */
+        return false;
+    }
+
+    /* Walk the comma-separated scan list, find smallest candidate > after. */
+    const char *tok = list;
+    while (*tok) {
+        const char *end  = strchr(tok, ',');
+        size_t      flen = end ? (size_t)(end - tok) : strlen(tok);
+        if (flen > 0 && flen < cap) {
+            char candidate[SD_NAME_ONLY_LEN];
+            memcpy(candidate, tok, flen);
+            candidate[flen] = '\0';
+            bool is_active   = (active_bare[0] && strcmp(candidate, active_bare) == 0);
+            bool is_eligible = !is_active && (strcmp(candidate, after) > 0);
+            if (is_eligible && (out[0] == '\0' || strcmp(candidate, out) < 0)) {
+                strncpy(out, candidate, cap - 1u);
+                out[cap - 1u] = '\0';
+            }
+        }
+        if (!end) break;
+        tok = end + 1;
+    }
+
+    return out[0] != '\0';
 }
 
 /* =======================================================================

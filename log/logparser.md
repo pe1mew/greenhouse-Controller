@@ -1,8 +1,19 @@
 # logparser — Greenhouse Controller Log Parser
 
 **File:** `log/logparser.py`
-**Document version:** 1.3 (matches firmware 1.18.3)
+**Document version:** 1.4 (matches firmware 2.0.0-a.6.35.3)
 **Requires:** Python 3.10+, standard library only (no pip dependencies)
+
+**What's new in 1.4** (matches firmware a.6.35.3):
+- CSV row timestamps are **local time** (used to be UTC). Output column heading
+  changed from "Timestamp (UTC)" to "Timestamp (local)". Older logs with UTC
+  timestamps render identically — the parser doesn't interpret the timezone,
+  just the column heading caveat changes.
+- New `value_a=13` SYSTEM event recognised: T13 firmware-only fallback commit
+  (added by firmware a.6.34). Rendered as "T13 firmware-only fallback commit".
+- New documented producers of `value_a=1, value_b=0/1` (STA WiFi up/down) and
+  `value_a=2, value_b=0/1` (NTP timeout/synced) — firmware a.6.35.3 now emits
+  these edge-triggered. Older firmware did not emit them despite the spec.
 
 ---
 
@@ -87,7 +98,7 @@ Output:
 Each event is rendered as a single line:
 
 ```
-Timestamp (UTC)      Type        Initiator       Description
+Timestamp (local)    Type        Initiator       Description
 --------------------------------------------------------------------
 2025-06-07 14:30:22  [SENSOR ]   System          T=23 °C   RH=65 %
 2025-06-07 14:30:52  [RELAY  ]   System          M1: → MOVING_OPEN
@@ -265,6 +276,25 @@ Wind override and motor alarm events.
 > possibilities.  Context from surrounding RELAY/MODE events will clarify which
 > occurred.
 
+#### Sensor read fault (T5 Sensor Poll, since 2.0.0-a.6.35.3)
+
+T5 emits ALARM rows when an I²C / Modbus sensor stops responding (two
+consecutive read failures) or recovers. The `channel` field carries the
+sensor type so motor alarms and sensor-read alarms are distinguishable:
+
+| `channel` | `value_a` | `value_b` | Meaning |
+|---|---|---|---|
+| 4 | 1 | 0 | T/RH sensor read fault TRIGGERED |
+| 4 | 0 | 0 | T/RH sensor read fault CLEARED |
+| 5 | 1 | 0 | Wind sensor read fault TRIGGERED |
+| 5 | 0 | 0 | Wind sensor read fault CLEARED |
+
+Channels 1/2/3 remain motor channels (RELAY events) and are not used by
+sensor faults. Pre-a.6.35.3 firmware emitted T5 sensor faults with
+`channel=0` and `value_a = ±1` / `±2`, which the parser misread as motor
+alarms and wind-override events — operators looking at logs from that era
+should treat ALARM rows around boot or OTA windows with skepticism.
+
 **Example output:**
 ```
 2025-06-07 14:45:00  [ALARM  ]   System          WIND OVERRIDE: SET — speed 8.5 m/s ≥ v_max 5.0 m/s
@@ -305,6 +335,11 @@ matches the LOG_SYSTEM table in `firmware/src/event_logger/event_logger.h`:
 | **10** | 0 | SYS | T2 relay_ctrl | T2 boot calibration skipped — NVS-recovered window state (1.17.36+, gh#18 Phase 3) |
 | **11** | uid16 (int16-cast) | SYS | T4 boot + T9 SD-rotation | Unit ID — low 16 bits of WiFi-STA MAC, same format as AP SSID `Greenhouse-XXXX` (1.18.3+, gh#17) |
 | **12** | KB | SYS | T1 watchdog | Heap internal largest contiguous block (KB; every 60 s, 1.18.2+, gh#20) |
+| **13** | 0 | SYS | T13 ota_manager | Firmware-only fallback commit — verified firmware was committed because no paired web-asset upload arrived within the 120 s window (2.0.0-a.6.34+) |
+| **14** | 0 | SYS | T13 ota_manager | OTA firmware POST started — bytes streaming to inactive bank (2.0.0-a.6.35.3+, was `post_log(0)` pre-renumbering) |
+| **15** | 0 | SYS | T13 ota_manager | OTA firmware verified OK — awaiting web-asset upload (2.0.0-a.6.35.3+, was `post_log(1)`) |
+| **16** | 0 | SYS | T13 ota_manager | OTA asset ZIP extracted OK — reboot scheduled (2.0.0-a.6.35.3+, was `post_log(2)`) |
+| **17** | 0 | SYS | T13 ota_manager | OTA asset extraction FAILED — boot partition unchanged (2.0.0-a.6.35.3+, was `post_log(-1)`) |
 
 **esp_reset_reason codes (value_a=5):**
 
@@ -360,12 +395,18 @@ reports them as "Legacy boot marker (pre-1.17.31)".
 
 ## Timestamps
 
-All timestamps in the CSV are **ISO 8601 UTC** (`YYYY-MM-DDTHH:MM:SS`).
-The parser displays them as `YYYY-MM-DD HH:MM:SS` in the output.
+Since firmware 2.0.0-a.6.35.3, timestamps in the CSV are **ISO 8601 local time**
+(`YYYY-MM-DDTHH:MM:SS`), matching the SD card filename convention (which has
+always been local time, e.g. `20260519163022.csv`). The local-time POSIX TZ is
+taken from `cfg.tz_str` in NVS, set by the geolocation lookup or by the operator
+via the LCD config menu. The parser displays them as `YYYY-MM-DD HH:MM:SS`.
 
-SD card **filenames** use **local time** (e.g. `20250607163022.csv`),
-which is why the filename date may differ from the UTC timestamps inside the file
-when the controller is in a non-UTC timezone.
+Pre-a.6.35.3 logs have **UTC** row timestamps inside but **local-time** filenames,
+which is why the filename date can differ from the row timestamps when the
+controller is in a non-UTC timezone. The parser passes the string through
+unchanged in both cases — only the column heading caveat differs. Operators
+diffing old vs new logs across an upgrade should account for the local-vs-UTC
+shift around the upgrade reboot.
 
 ---
 

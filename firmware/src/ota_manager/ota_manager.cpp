@@ -357,7 +357,12 @@ bool ota_firmware_begin(size_t total_bytes)
 
     ESP_LOGI(TAG, "[OTA] Firmware OTA begin — target partition: %s, size: %u B",
              s_ota_part->label, (unsigned)total_bytes);
-    post_log(0);
+    /* a.6.35.3 — OTA stage codes moved to value_a=14..17 to avoid colliding
+     * with T14 status outcomes (0/1), T10 STA (1), T10 NTP (2), and T9 Q3
+     * drop overflow (-1). Old codes (post_log(0/1/2/-1)) made the parser
+     * misrender ota_firmware_begin as "Legacy boot marker", ota_firmware_end
+     * as "STA WiFi disconnected", and ota_assets_end as "NTP timeout". */
+    post_log(14);   /* 14 = OTA firmware-begin */
     return true;
 }
 
@@ -404,7 +409,7 @@ bool ota_firmware_end(void)
         "[OTA] Firmware verified OK — waiting for web-asset upload "
         "(fallback commit in %u ms if none arrives)",
         (unsigned)FW_DONE_FALLBACK_MS);
-    post_log(1);
+    post_log(15);   /* 15 = OTA firmware-end / verified (a.6.35.3 re-numbering) */
     s_progress = 0;   /* Reset: assets phase has not started yet. */
     set_state_locked(OTA_STATE_FW_DONE);
 
@@ -891,12 +896,12 @@ t13_done:
 
     if (ok) {
         ESP_LOGI(TAG, "[T13] Asset OTA complete — reboot in 1 s");
-        post_log(2);
+        post_log(16);   /* 16 = OTA asset-complete (a.6.35.3 re-numbering) */
         s_progress = 100;
         schedule_reboot(1000);
     } else {
         ESP_LOGE(TAG, "[T13] Asset OTA failed: %s", s_error);
-        post_log(-1);
+        post_log(17);   /* 17 = OTA asset-fail (a.6.35.3 re-numbering) */
         xEventGroupClearBits(EG1, EG1_BIT_OTA_IN_PROGRESS);
     }
 
