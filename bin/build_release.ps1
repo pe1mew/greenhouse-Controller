@@ -297,6 +297,32 @@ Write-Host "    -> $ZIP_DST  ($zip_kb KB, method=STORE verified)" -ForegroundCol
 Write-Host ""
 
 # ---------------------------------------------------------------------------
+# Step 3.5 - Restore the manifest.json placeholder (gh#9).
+#
+# Step 0 stamped firmware/data/manifest.json with the literal version so the
+# LittleFS image baked by Step 2 AND the ZIP packed by Step 3 carry the
+# correct asset_version. By this point the version is captured in:
+#   - .pio/build/lolin_s3/spiffs.bin           (the LFS image)
+#   - bin/<version>/web-assets-<version>.zip   (the OTA bundle)
+# so the in-tree manifest.json has done its job and should snap back to the
+# placeholder. Without this restoration, every `bin/build_release.ps1` run
+# leaves the source tree dirty with a stamped manifest, which the pre-commit
+# hook then rejects on the next `git commit` (correctly — the in-tree file
+# should always live as the placeholder; the literal version belongs only in
+# the LFS image / OTA bundle / release ZIP).
+#
+# Idempotent: writing the placeholder over an already-placeholder file is a
+# no-op as far as git is concerned. Runs even on the build's success path
+# only — if any of Step 1/2/3 throws, the manifest is left in stamped form
+# so the operator can inspect what was baked into a partial build. That's
+# rare enough not to need a try/finally wrapper.
+# ---------------------------------------------------------------------------
+$manifest_placeholder = "{`"asset_version`":`"{{ASSET_VERSION}}`",`"checksum`":`"`"}"
+[System.IO.File]::WriteAllText($MANIFEST, $manifest_placeholder)
+Write-Host "    + firmware/data/manifest.json restored to placeholder (pre-commit hook compliance, gh#9)" -ForegroundColor Green
+Write-Host ""
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 Write-Host "=== Done - release v$VERSION ===" -ForegroundColor Cyan
