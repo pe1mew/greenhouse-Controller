@@ -28,6 +28,50 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-a.6.35.1]` — 2026-05-19
+
+**UX follow-up to a.6.35** — fixes a confusing window in the Web tab where the operator clicked Apply with `enable=1` but the `last_post` indicator kept showing `DISABLED` until the page was manually refreshed (and even then only after up to a full status interval).
+
+#### Root cause
+
+T14's disabled branch slept for `STATUS_IDLE_RECHECK_MS = 60 000` ms (60 s) via `xTaskNotifyWait`. When the operator toggled `enable=1`, T11's `/api/web` POST handler updated the cfg shadow synchronously, but T14 was already mid-sleep and didn't re-snapshot until the timeout. Even after waking, the next thing the operator saw at the GUI's 5 s auto-refresh was still `last_post = "DISABLED"` because the disabled branch unconditionally re-stamped that string every iteration.
+
+#### Fix
+
+Two changes:
+
+1. **Wake T14 immediately on cfg change.** New `T14_NOTIFY_CFG_CHANGED` task-notify bit. `dm_reload_web_cfg()` (called by every `/api/web` POST) now fires `xTaskNotify(task_t14, T14_NOTIFY_CFG_CHANGED, eSetBits)`. T14's disabled-branch `xTaskNotifyWait` wakes on any bit, so it re-reads cfg within ~1 s.
+2. **Clear `s_last_str` on disabled→enabled transition.** Track via local `s_was_disabled` flag. When the flag flips from true to false, `s_last_str[0] = '\0'` and `last_post_ms = 0`. The GUI renders the empty string as `—` (pending) until the first status POST completes, and the cadence reset means the POST fires on the very next loop iteration without waiting up to a full `status_interval_s`. The disabled branch only re-stamps `"DISABLED"` once per enabled→disabled transition rather than every idle wake-up.
+
+#### What changed
+
+- **`firmware/src/status_post/status_post.h`** — new `T14_NOTIFY_CFG_CHANGED (1u << 1)` macro.
+- **`firmware/src/status_post/status_post.cpp`** — new `s_was_disabled` local tracker in `task_status_post()`; transition handling at the top and bottom of the disabled branch.
+- **`firmware/src/data_manager/data_manager.cpp`** — new `#include "../status_post/status_post.h"`; `dm_reload_web_cfg()` calls `xTaskNotify(task_t14, T14_NOTIFY_CFG_CHANGED, eSetBits)` after the NVS reload, NULL-guarded.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-a.6.35.1`.
+
+#### Acceptance — bench-verified on 192.168.20.160
+
+Reproduced the original bug scenario, observed the fixed timeline:
+
+| Time | `enable` | `last_post` | Operator-visible state |
+|---|---:|---|---|
+| Pre-Apply (enable=0) | 0 | `'DISABLED'` | (initial) |
+| t+0.5 s (right after Apply, enable=1) | 1 | `''` | GUI renders `—` (pending) |
+| t+2 s | 1 | `''` | Still pending — POST cycle in flight |
+| t+10 s | 1 | `'FAIL 2026-05-19 11:31:22 code=0'` | First cycle result |
+
+No more "enable=1 but last_post=DISABLED" window.
+
+#### Build delta vs a.6.35
+
+| Metric | a.6.35 | a.6.35.1 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1 348 457 B | **1 348 669 B** | +212 B |
+| RAM static | 60 552 B | 60 552 B | 0 |
+
+Trivial cost — one xTaskNotify call site + one bool + the transition logic.
+
 ### `[2.0.0-a.6.35]` — 2026-05-19
 
 **Fourth and final alpha of the maturation plan.** Seven discrete T14 items, the largest alpha of the four. Restores the production T14 behaviour: shared-secret header, canonical JSON body, streaming SD log upload (daily + on-rotation triggers, gh#25 dedup latch), the four audit-gap items (`status_enable` master gate, `log_upload_rot` rotation gate, `s_last_log_str` updates, `log_last_up` persistence), and tightens the `POST /api/web` URL validator to `https://` only so the secret can't leak on the wire.

@@ -41,12 +41,25 @@ extern "C" {
  * T14 then reads the just-closed filename via `event_logger_last_rotated()`
  * and (subject to `cfg.log_upload_rot`) uploads it.
  *
- * Single-bit budget: this is the only T14 notify bit so far. Future expansion
- * could carve out bits 1..31; bit 0 is reserved for log-rotation.
- *
  * Since 2.0.0-a.6.35.
  */
 #define T14_NOTIFY_LOG_ROTATED  (1u << 0)
+
+/**
+ * @brief Task-notify bit fired by `dm_reload_web_cfg()` after any /api/web POST.
+ *
+ * Wakes T14 immediately from its idle wait so an operator-driven enable / URL /
+ * interval change takes effect within ~1 s of clicking Apply rather than after
+ * the full 60 s disabled-branch idle. The disabled and active branches both
+ * accept this bit; on receipt T14 simply re-reads `cfg_shadow_t` and proceeds
+ * with whatever state the new cfg dictates. The disabled→enabled transition
+ * additionally clears `s_last_str` so the GUI shows `—` (pending) until the
+ * next status POST completes — avoids the confusing window where the operator
+ * sees `enable=1` in the form but `last_post=DISABLED` in the indicator.
+ *
+ * Since 2.0.0-a.6.35.1 (UX follow-up to a.6.35).
+ */
+#define T14_NOTIFY_CFG_CHANGED  (1u << 1)
 
 /**
  * @brief T14 task entry. Spawned by main.cpp on Core 0 at TASK_PRIO_LOW.
