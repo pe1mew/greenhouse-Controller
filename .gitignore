@@ -10,6 +10,22 @@
 .github/token.local
 *.local
 
+# Release artefacts — binaries + web-asset bundles must not enter git.
+# Each tagged release directory (bin/<version>/) keeps its release-notes.md
+# (the source-of-truth evidence trail), but the .bin / .elf / .zip outputs
+# are local-only — they are reproducible from the matching firmware/ +
+# firmware/data/ checkout at the tagged commit via `bin/build_release.ps1`.
+# Committing them bloats the repo without adding traceable value, and the
+# .elf files in particular can leak debug strings + symbol names.
+bin/**/*.bin
+bin/**/*.elf
+bin/**/*.zip
+
+# Scratch dotfiles produced by curl-based acceptance scripts running out of
+# the repo root (cookie jars, JSON request bodies, serial-capture logs).
+# They live under bin/ for convenience; they're not source.
+bin/.*
+
 # 2.0.0-alpha.3.1 was a throwaway dev build that baked WiFi credentials
 # (ssid + psk literals) into the source temporarily for one-shot NVS
 # seeding on the bench LOLIN S3. The literals were stripped from source
