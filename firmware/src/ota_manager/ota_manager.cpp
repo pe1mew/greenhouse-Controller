@@ -61,6 +61,26 @@ static const esp_partition_t *s_ota_part   = NULL;
 static size_t                 s_fw_total   = 0;
 static size_t                 s_fw_written = 0;
 
+/* a.6.34 — firmware-only fallback timer.
+ *
+ * After ota_firmware_end() verifies the image, the device sits in
+ * OTA_STATE_FW_DONE waiting for a paired ota_assets_begin() to follow.
+ * If no asset upload arrives within FW_DONE_FALLBACK_MS, this one-shot
+ * timer fires and commits the firmware-only update — esp_ota_set_boot_partition
+ * on the inactive bank, then schedule_reboot(1000). Cancelled in
+ * ota_assets_begin() if the asset upload starts before the timer fires.
+ *
+ * 120 s matches the 1.20.3 design header. Long enough for an operator who
+ * is uploading both .bin and .zip via the GUI to push the second file
+ * after the first commit; short enough that a "firmware-only on purpose"
+ * upload commits within a couple of minutes without needing a manual
+ * trigger.
+ *
+ * NULL when no firmware-only fallback is pending. Created on first use
+ * via xTimerCreate, then reused (xTimerStart re-arms it). */
+#define FW_DONE_FALLBACK_MS  120000u
+static TimerHandle_t s_fw_done_timer = NULL;
+
 /* Asset ZIP buffer (owned by ota_manager until passed to T13) */
 static uint8_t *s_zip_buf   = NULL;
 static size_t   s_zip_total = 0;
@@ -129,6 +149,99 @@ static void schedule_reboot(uint32_t delay_ms)
     } else {
         ESP_LOGE(TAG, "[OTA] Reboot timer create failed — rebooting immediately");
         esp_restart();
+    }
+}
+
+/* a.6.34 — firmware-only fallback commit worker.
+ *
+ * Spawned as a one-shot task from fw_done_fallback_cb() (the xTimerService
+ * callback). The actual commit work — state check, audit log, partition
+ * swap, deferred reboot — runs here with a proper 4 KB task stack instead
+ * of xTimerService's much smaller configTIMER_TASK_STACK_DEPTH. Empirically
+ * required: doing the commit directly in the timer callback produced clean
+ * reboots at the correct time but the value_a=13 audit row never reached
+ * SD, indicating an SD-write failure in the constrained timer-callback
+ * stack/context. */
+static void fw_done_commit_task(void *pv)
+{
+    (void)pv;
+
+    /* State check under s_mx. If anything else (asset upload, error, retry)
+     * has moved the state away from FW_DONE, this fallback is no longer the
+     * right action — silently bail. */
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    bool should_commit = (s_state == OTA_STATE_FW_DONE);
+    xSemaphoreGive(s_mx);
+    if (!should_commit) {
+        ESP_LOGI(TAG, "[OTA] firmware-only fallback worker started but state moved "
+                      "off FW_DONE — bailing (likely an asset upload started)");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    if (s_ota_part == NULL) {
+        /* Shouldn't happen — s_ota_part is set in ota_firmware_begin() and not
+         * cleared until the next OTA. Belt-and-braces. */
+        ESP_LOGE(TAG, "[OTA] firmware-only fallback: s_ota_part is NULL — refusing to commit");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    ESP_LOGW(TAG, "[OTA] No asset upload arrived in %u ms — committing firmware-only update",
+             (unsigned)FW_DONE_FALLBACK_MS);
+
+    /* Audit-log the commit — value_a=13 (documented in event_logger.h).
+     * Posting from this task context (4 KB stack, normal task priority) means
+     * T9 reliably picks up the entry and flushes to SD before the 3 s reboot
+     * timer fires. The cancel-path's post_log(2) follows the same pattern from
+     * T13's task context and is empirically reliable. */
+    post_log(13);
+
+    esp_err_t err = esp_ota_set_boot_partition(s_ota_part);
+    if (err != ESP_OK) {
+        char msg[80];
+        snprintf(msg, sizeof(msg),
+                 "fw-only fallback: esp_ota_set_boot_partition: %s",
+                 esp_err_to_name(err));
+        set_error_locked(msg);
+        vTaskDelete(NULL);
+        return;   /* leave state = ERROR; device stays on current bank */
+    }
+
+    /* 3 s deferred-reboot — T9 has plenty of runway to flush the value_a=13
+     * audit row to SD before esp_restart(). schedule_reboot itself creates
+     * another one-shot timer that runs esp_restart() in xTimerService context. */
+    schedule_reboot(3000);
+
+    vTaskDelete(NULL);
+}
+
+/* a.6.34 — firmware-only fallback timer callback (lightweight dispatcher).
+ *
+ * Fires FW_DONE_FALLBACK_MS after ota_firmware_end() set state to FW_DONE
+ * if no asset upload arrived in the window. Spawns fw_done_commit_task to
+ * do the actual commit work — the timer-service task has a small stack
+ * (configTIMER_TASK_STACK_DEPTH) that is not enough for SD writes + the
+ * esp_ota_set_boot_partition flash write.
+ *
+ * Cancellation: ota_assets_begin() stops the timer; if a cancel races with
+ * the fire, the spawned task's first action is a state re-check under s_mx
+ * and it bails silently if state moved off FW_DONE. */
+static void fw_done_fallback_cb(TimerHandle_t xTimer)
+{
+    (void)xTimer;
+
+    BaseType_t rc = xTaskCreate(fw_done_commit_task,
+                                "ota_fb_commit",
+                                4096,
+                                NULL,
+                                5,        /* priority — above T9's 4 */
+                                NULL);
+    if (rc != pdPASS) {
+        ESP_LOGE(TAG, "[OTA] fw_done_commit_task spawn failed (%d) — firmware-only "
+                      "commit will not happen this cycle", (int)rc);
+        /* Non-fatal: device stays on current bank. Operator can re-trigger
+         * by uploading firmware again. */
     }
 }
 
@@ -284,13 +397,40 @@ bool ota_firmware_end(void)
     /* Boot partition switch is deferred: it happens atomically with the
      * LittleFS switch at the end of task_ota_manager (after asset upload).
      * The verified firmware sits uncommitted in the inactive partition until
-     * the web-asset ZIP is also uploaded.  No fallback timer — the device
-     * never reboots autonomously without assets. */
+     * the web-asset ZIP is also uploaded — OR the a.6.34 firmware-only
+     * fallback timer commits it after FW_DONE_FALLBACK_MS of inactivity
+     * (matches the 1.20.3 design). */
     ESP_LOGI(TAG,
-        "[OTA] Firmware verified OK — waiting for web-asset upload");
+        "[OTA] Firmware verified OK — waiting for web-asset upload "
+        "(fallback commit in %u ms if none arrives)",
+        (unsigned)FW_DONE_FALLBACK_MS);
     post_log(1);
     s_progress = 0;   /* Reset: assets phase has not started yet. */
     set_state_locked(OTA_STATE_FW_DONE);
+
+    /* a.6.34 — arm the firmware-only fallback. Create the timer lazily on
+     * first use; subsequent ota_firmware_end() calls reuse it via xTimerStart
+     * (which is documented as safe on a stopped one-shot timer). */
+    if (s_fw_done_timer == NULL) {
+        s_fw_done_timer = xTimerCreate("ota_fw_fallback",
+                                       pdMS_TO_TICKS(FW_DONE_FALLBACK_MS),
+                                       pdFALSE,   /* one-shot */
+                                       NULL,
+                                       fw_done_fallback_cb);
+        if (s_fw_done_timer == NULL) {
+            ESP_LOGW(TAG, "[OTA] xTimerCreate(fw_fallback) failed — fallback disabled");
+            /* Non-fatal: the operator can still upload assets to commit. */
+            return true;
+        }
+    } else {
+        /* Reuse: change period (also re-arms) so a previous expired/stopped
+         * timer gets a fresh FW_DONE_FALLBACK_MS countdown. */
+        xTimerChangePeriod(s_fw_done_timer,
+                           pdMS_TO_TICKS(FW_DONE_FALLBACK_MS), 0);
+    }
+    if (xTimerStart(s_fw_done_timer, 0) != pdPASS) {
+        ESP_LOGW(TAG, "[OTA] xTimerStart(fw_fallback) failed — fallback disabled");
+    }
     return true;
 }
 
@@ -310,6 +450,15 @@ bool ota_assets_begin(size_t total_bytes)
     if (busy) {
         ESP_LOGW(TAG, "[OTA] ota_assets_begin: OTA already in progress");
         return false;
+    }
+
+    /* a.6.34 — cancel the firmware-only fallback timer if it was armed by a
+     * preceding ota_firmware_end(). The asset upload supersedes the
+     * fallback path; commit happens via the normal task_ota_manager flow
+     * at the end of asset extraction. xTimerStop on a not-running timer is
+     * a no-op — safe to call unconditionally. */
+    if (s_fw_done_timer != NULL) {
+        xTimerStop(s_fw_done_timer, 0);
     }
 
     /* Free any stale buffer from a previous failed attempt. */
