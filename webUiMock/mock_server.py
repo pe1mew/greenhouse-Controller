@@ -67,6 +67,7 @@ import json
 import math
 import os
 import secrets
+import sys
 import threading
 import time
 from datetime import datetime
@@ -128,7 +129,7 @@ cfg: dict = {
     "lon_deg":              5,    # DEF_LON_DEG
     "lon_frac":             0,    # DEF_LON_FRAC
     "tz_str":              "CET-1CEST,M3.5.0,M10.5.0/3",
-    "fw_ver":              "2.0.0-alpha.6.25",
+    "fw_ver":              "2.0.0-a.6.35.7",
     # gh#17 — 4-char hex from last 2 bytes of WiFi-STA MAC. On real hardware
     # this surfaces in the boot banner, SD log preamble, AP SSID, status JSON,
     # LCD info screen (1.20.0), and web GUI footer (1.20.0). Mock keeps it
@@ -146,6 +147,29 @@ cfg: dict = {
     "log_upload_rot":        1,
     "log_last_up":          "",
 }
+
+# ────────────────────────────────────────────────────────────────────────────
+# Coredump simulation (a.6.35.6).
+#
+# The real device captures a coredump to a 64 KB flash partition whenever the
+# IDF panic handler fires, and exposes three /api/coredump endpoints (status,
+# download, erase) so an admin can retrieve the dump from anywhere on the LAN.
+# The mock can't crash a Python process to produce a real ELF coredump, so it
+# fakes the state machine: starts with "no dump", admin can flip `present` to
+# True via the URL trick described below to exercise the GUI badge + the
+# Diagnostics panel, and the download endpoint streams a placeholder payload
+# of `size_bytes` bytes (recognisable ASCII so it's obvious in operator hexdumps
+# that this is a mock and not a real dump).
+#
+# To toggle a coredump "present" in the mock while developing the GUI, hit:
+#   curl -X POST http://localhost:5000/api/__mock/coredump?present=true&size=12345
+# (a mock-only debug route; the real firmware has no such backdoor).
+COREDUMP_STATE = {
+    "present":    False,
+    "size_bytes":  0,
+    "captured_fw": "",   # firmware version recorded at panic time
+}
+# ────────────────────────────────────────────────────────────────────────────
 
 # Process start time — drives system.uptime_s in the canonical status JSON.
 BOOT_TIME: float = time.monotonic()
@@ -298,6 +322,31 @@ def _get_role() -> str | None:
 # ---------------------------------------------------------------------------
 # Sensor / status data generators
 # ---------------------------------------------------------------------------
+def _mode_flags() -> list[str]:
+    """Compute the mode.flags[] entries that the firmware's status_json.cpp
+    would emit. The local GUI's app.js flagBadges table maps each string to
+    a coloured <span> badge; the public dashboard mirrors that mapping.
+
+    The mock only emits the operator-aware flags it can derive from cfg
+    state (a.6.35.4: wind_protect_off, humidity_ctrl_off — a.6.35.6:
+    coredump_available). EG1-bit-driven flags (wind_override, motor_alarm,
+    sensor_fault_*, ota_in_progress, calibrating) aren't simulated because
+    the mock has no relay state machine to drive them.
+
+    Mirrors the emission order in status_json.cpp so the GUI's badge order
+    matches between mock and real device."""
+    out: list[str] = []
+    # a.6.35.4 — operator-disabled-feature flags
+    if cfg.get("wind_prot_en", 1) == 0:
+        out.append("wind_protect_off")
+    if cfg.get("rh_ctrl_en", 1) == 0:
+        out.append("humidity_ctrl_off")
+    # a.6.35.6 — coredump waiting for retrieval
+    if COREDUMP_STATE["present"]:
+        out.append("coredump_available")
+    return out
+
+
 def _build_status() -> dict:
     """Canonical nested status JSON — matches build_canonical_status_json() in
     firmware/src/status_post/status_json.cpp as of firmware 1.17.20.  Every
@@ -363,9 +412,13 @@ def _build_status() -> dict:
             "M2": "CLOSED",
             "M3": "CLOSED",
         },
+        # mode.flags now also carries the three operator-aware flags added in
+        # a.6.35.4 (wind_protect_off, humidity_ctrl_off) and a.6.35.6
+        # (coredump_available). Computed from cfg state + the mock coredump
+        # simulation, mirroring firmware/src/status_post/status_json.cpp.
         "mode": {
             "current": "AUTOMATIC",
-            "flags":   [],
+            "flags":   _mode_flags(),
         },
         "sun": {
             "is_daytime":   is_day,
@@ -931,6 +984,138 @@ def ota_assets():
         {"ok": True, "message": "extracting — poll GET /api/ota/status"}, 202
     )
     return resp
+
+# ---------------------------------------------------------------------------
+# Coredump retrieval (a.6.35.6) — admin only, rate-limited, audit-logged.
+#
+# Same shape as firmware/src/web_server/web_server.cpp:
+#   GET  /api/coredump/status    → {ok, present, size_bytes, size_kb, fw_ver}
+#   GET  /api/coredump/download  → application/octet-stream + Content-Disposition
+#   POST /api/coredump/erase     → {ok}
+#
+# Rate-limit (1 op / 10 s on download + erase; status is exempt) and audit
+# emission to console mirror the firmware's behaviour. The mock streams a
+# recognisable placeholder payload — "MOCK COREDUMP " repeated to size_bytes
+# — so it's obvious in an operator hexdump that this is not a real ELF.
+# ---------------------------------------------------------------------------
+_COREDUMP_RATE_LIMIT_S = 10.0
+_coredump_last_access  = [0.0]              # mutable single-item for closure
+_coredump_lock         = threading.Lock()   # uses module-level `threading` import
+
+
+def _coredump_rate_limit_ok() -> bool:
+    """Return True if enough time has elapsed since the last download/erase.
+    Mirrors COREDUMP_RATE_LIMIT_MS in web_server.cpp (10 s)."""
+    with _coredump_lock:
+        now = time.monotonic()
+        if (now - _coredump_last_access[0]) < _COREDUMP_RATE_LIMIT_S:
+            return False
+        _coredump_last_access[0] = now
+        return True
+
+
+@app.route("/api/coredump/status", methods=["GET"])
+def coredump_status():
+    role = _get_role()
+    if not role:
+        return {"ok": False, "error": "no_session"}, 401
+    if role != "admin":
+        return {"ok": False, "err": "admin only"}, 403
+    sz = COREDUMP_STATE["size_bytes"]
+    return {
+        "ok":          True,
+        "present":     bool(COREDUMP_STATE["present"]),
+        "size_bytes":  int(sz),
+        "size_kb":     (int(sz) + 1023) // 1024,
+        "fw_ver":      COREDUMP_STATE.get("captured_fw") or cfg["fw_ver"],
+    }
+
+
+@app.route("/api/coredump/download", methods=["GET"])
+def coredump_download():
+    role = _get_role()
+    if not role:
+        return {"ok": False, "error": "no_session"}, 401
+    if role != "admin":
+        return {"ok": False, "err": "admin only"}, 403
+    if not _coredump_rate_limit_ok():
+        resp = make_response(
+            {"ok": False, "err": "rate limited — one /api/coredump op per 10 s"},
+            429,
+        )
+        resp.headers["Retry-After"] = "10"
+        return resp
+    if not COREDUMP_STATE["present"]:
+        return {"ok": False, "err": "no coredump stored"}, 404
+
+    sz   = int(COREDUMP_STATE["size_bytes"])
+    fwv  = COREDUMP_STATE.get("captured_fw") or cfg["fw_ver"]
+    ts   = int(time.time())
+    name = f"coredump-{fwv}-{ts}.bin"
+
+    # Placeholder content. Recognisable ASCII so an operator hex-dumping the
+    # file immediately sees it's a mock and not a real ELF coredump.
+    template = b"MOCK COREDUMP - webUiMock placeholder - not a real ELF\n"
+    body = (template * ((sz // len(template)) + 1))[:sz]
+
+    print(f"[mock] /api/coredump/download → {name} ({sz} bytes) [AUDIT value_a=19]",
+          file=sys.stderr)
+
+    resp = make_response(body)
+    resp.headers["Content-Type"]        = "application/octet-stream"
+    resp.headers["Content-Disposition"] = f'attachment; filename="{name}"'
+    resp.headers["Content-Length"]      = str(sz)
+    return resp
+
+
+@app.route("/api/coredump/erase", methods=["POST"])
+def coredump_erase():
+    role = _get_role()
+    if not role:
+        return {"ok": False, "error": "no_session"}, 401
+    if role != "admin":
+        return {"ok": False, "err": "admin only"}, 403
+    if not _coredump_rate_limit_ok():
+        resp = make_response(
+            {"ok": False, "err": "rate limited — one /api/coredump op per 10 s"},
+            429,
+        )
+        resp.headers["Retry-After"] = "10"
+        return resp
+    # Idempotent: no dump → 200 OK with note
+    if not COREDUMP_STATE["present"]:
+        return {"ok": True, "note": "no coredump to erase"}
+    COREDUMP_STATE["present"]     = False
+    COREDUMP_STATE["size_bytes"]  = 0
+    COREDUMP_STATE["captured_fw"] = ""
+    print(f"[mock] /api/coredump/erase  → partition cleared [AUDIT value_a=20]",
+          file=sys.stderr)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Mock-only debug route — toggle the coredump-present state from the dev
+# workstation so the GUI's blue badge + Diagnostics panel can be exercised
+# without crashing the Python process to produce a real ELF dump.
+#
+#   curl -X POST 'http://localhost:5000/api/__mock/coredump?present=true&size=45000'
+#   curl -X POST 'http://localhost:5000/api/__mock/coredump?present=false'
+#
+# The real firmware has no such backdoor — coredumps are written by the IDF
+# panic handler only.
+# ---------------------------------------------------------------------------
+@app.route("/api/__mock/coredump", methods=["POST"])
+def coredump_mock_toggle():
+    present = request.args.get("present", "false").lower() in ("1", "true", "yes")
+    size    = int(request.args.get("size", "45000"))
+    fwv     = request.args.get("fw") or cfg["fw_ver"]
+    COREDUMP_STATE["present"]     = present
+    COREDUMP_STATE["size_bytes"]  = size if present else 0
+    COREDUMP_STATE["captured_fw"] = fwv  if present else ""
+    print(f"[mock] /api/__mock/coredump → present={present}, size={size}, fw={fwv}",
+          file=sys.stderr)
+    return {"ok": True, "coredump": COREDUMP_STATE}
+
 
 # ---------------------------------------------------------------------------
 # WebSocket

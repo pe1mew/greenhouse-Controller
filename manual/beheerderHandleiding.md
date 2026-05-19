@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de beheerder
 
-**Versie:** 1.15 — concept
-**Datum:** 2026-05-15
-**Firmware:** 1.20.3
+**Versie:** 1.16 — concept
+**Datum:** 2026-05-19
+**Firmware:** 2.0.0-a.6.35.7 (rijping-alpha's vanaf 2.0.0-a.6.32; productie-doel 2.0.0)
 
 ---
 
@@ -335,13 +335,28 @@ Op de Status-tab staat in de linker tegelrij de **Klok-tegel (Clock)**. Deze too
 
 > Bij een herstart van de controller springt deze waarde naar `0s` en begint opnieuw — handig om te zien of de controller stabiel draait.
 
-### Status-tab — Alarm-tegel: versie-controle van firmware en web-assets
+### Alarms-tegel — overzicht van alle badges
 
-Wanneer er een verschil is tussen de **firmware-versie** en de **web-assets-versie** (de Web-gui) automatisch herkend en gemeld als alarm. Tijdens normaal bedrijf zijn beide versies gelijk; een afwijking wijst op een onvolledig uitgevoerde OTA-update.
+De Alarms-tegel verzamelt elke actieve waarschuwing of bedrijfsstaat als een gekleurde badge. De kleur geeft de ernst aan; de tekst zegt waarop het slaat. Geen actieve waarschuwingen → groene **OK**-badge.
 
-**Hoe te zien op het dashboard**
+De kleuren van de badg geven de urgentie weer van de melding: 
+ - 🔴 Rood (alarm)
+ - 🟡 Geel (waarschuwing)
+ - 🔵 Blauw (informatie, herinnering)
 
-Een mismatch verschijnt als een rode **MISMATCH**-badge in de **Alarms**-tegel op de Status-tab, naast eventuele andere alarmen (WIND, MOTOR ALARM, sensor-faults). Bij gelijke versies (of wanneer de assets-versie onbekend is — `?` op een schone serieel-geflasht systeem zonder OTA-pakket) blijft de badge weg en toont Alarms zoals gebruikelijk **OK** of de actieve mode-vlaggen.
+| Kleur | Badge | Betekent | Operator-actie |
+|---|---|---|---|
+| 🔴 | **MOTOR ALARM** | Noodstop door RRK-3 — de besturing van de ramen is gestaakt | Diagnose: zie [§12.2](#122-motor-alarm--diagnose) |
+| 🔴 | **WIND** | Wind-override actief — alle ramen dicht door harde wind | Wachten tot windsnelheid zakt; controleer `v_max` als de override te snel/vaak triggert |
+| 🔴 | **MISMATCH** | Firmware-versie ≠ web-assets-versie (onvolledige OTA) | Harde browser-refresh; bij blijven: OTA opnieuw met beide pakketten |
+| 🟡 | **T/RH fault** | Twee opeenvolgende mislukte uitlezingen van de Temperatuur/Luchtvochtigheid-sensor | Zie [§12.3](#123-sensor-fault--diagnose) |
+| 🟡 | **Wind fault** | Twee opeenvolgende mislukte uitlezingen van de windsensor | Zie [§12.3](#123-sensor-fault--diagnose) |
+| 🟡 | **OTA active** | OTA-update loopt nu | Wacht tot voltooid; geen handeling vereist |
+| 🟡 | **Calibrating** | Window-Cal: ramen worden gesloten om positie vast te leggen | Wacht ~3 min; geen handeling vereist |
+| 🟡 | **Net backoff** | Status-website onbereikbaar — Updates zij tijdelijk gestopt na herhaalde fouten | Controleer netwerk + URL; herstelt automatisch |
+| 🟡 | **Wind protect off** | Boer/Beheerder heeft windbeveiliging uitgezet | Bewust — controleer of dit zo bedoeld is; ramen worden niet meer dichtgestuurd bij wind |
+| 🔵 | **Humidity ctrl off** | Boer/Beheerder heeft de luchtvochtigheid-regeling uitgezet | Bewust — alleen temperatuur stuurt nu de ramen |
+| 🔵 | **Coredump available** | De firmware is gecrashed *panic*; er staat een coredump flash die gedownload kan worden voor analyse | Tab Log → Diagnostics — zie [§14 Coredump ophalen na een panic](#coredump-ophalen-na-een-panic-vanaf-200) |
 
 ### Status-tab — actieve setpoints op de tegels
 
@@ -1126,6 +1141,97 @@ Soms wil je het mounten niet afwachten (bijvoorbeeld na vervanging van de kaart)
 
 Voor het omzetten van CSV-logbestanden naar leesbare tekst: zie [Bijlage F](#bijlage-f--logbestand-formaat-en-logparser-script).
 
+### Coredump ophalen na een panic
+
+Wanneer de kascontroller onverwacht herstart door een **panic** (software-storing, bijvoorbeeld een ongeldige geheugen-toegang of een task-watchdog-timeout) schrijft de ESP-IDF panic-handler automatisch een **coredump** — een geheugen-snapshot op het moment van de crash — naar een speciale partitie in flash geheugen. Dit bestand bevat de stack-traceback, register-staat en de taak-naam die crashte. Op een werkstation met de ESP-IDF tools kun je deze coredump offline ontleden tot een leesbare backtrace.
+
+#### Hoe weet je dat er een coredump klaar staat?
+
+Twee onafhankelijke signalen:
+
+1. **Status-tab → Alarms-tegel**: blauwe **Coredump available**-badge zodra de controller bij het opstarten een coredump in flash heeft gedetecteerd. Deze badge blijft staan tot de coredump gewist wordt.
+2. **SD-logbestand**: één regel met `SYSTEM`-event `value_a = 18` direct na de boot-rij. Het `logparser.py`-script (zie [Bijlage F](#bijlage-f--logbestand-formaat-en-logparser-script)) toont deze als:
+   ```
+   2026-05-19 03:42:19  [SYSTEM ]  System    Coredump from previous panic detected in flash: ~45 KB
+   ```
+
+#### Coredump downloaden
+
+1. Inloggen als **Beheerder** in de webinterface
+2. Tab **Log** → onder aan de pagina: sectie **Diagnostics**
+3. Lees de regel "Coredump: Available — N bytes (N KB) • captured on fw ..."
+4. Klik **Download**
+5. De browser slaat het bestand op met de naam `coredump-<firmware-versie>-<unix-tijdstempel>.bin`
+
+Onmiddellijk na downloaden wordt de **Erase**-knop actief. Daarvóór is hij gegrijst — je moet eerst de download bevestigen voor je iets kunt wissen.
+
+#### Coredump offline ontleden
+
+Op je werkstation, met **ESP-IDF** geïnstalleerd, en met het `.elf`-bestand bij de hand dat hoort bij de firmware-versie waarop de panic plaatsvond (te vinden in `bin/<versie>/firmware-<versie>.elf` in de repository of in het release-pakket van de leverancier):
+
+```
+idf.py coredump-info \
+    -t raw \
+    -c ~/Downloads/coredump-2.0.0-a.6.35.7-1779999999.bin \
+    bin/2.0.0-a.6.35.7/firmware-2.0.0-a.6.35.7.elf
+```
+
+De uitvoer geeft:
+
+- Naam van de taak die crashte
+- Register-staat op het crash-moment (`PC`, `EXCCAUSE`, `EXCVADDR`)
+- Volledige backtrace met `file.cpp:regelnummer`-verwijzingen
+- Stand van alle andere taken op het moment van de crash + stack-watermerken
+
+Dit is de informatie waarmee de leverancier of softwareontwikkelaar de oorzaak van de panic kan achterhalen zonder de fout te hoeven reproduceren.
+
+#### Coredump wissen na succesvolle analyse
+
+Pas wanneer je het bestand veilig hebt en de offline analyse is gelukt:
+
+1. Tab **Log** → sectie **Diagnostics** → klik **Erase**
+2. Bevestig de waarschuwingsdialoog ("After erase, the dump is unrecoverable.")
+3. De badge **Coredump available** verdwijnt; de partitie is klaar voor het opvangen van de volgende panic
+
+> **Niet wissen voordat je het bestand hebt!** De coredump wordt overschreven bij de volgende panic, maar tot dat moment is het de enige forensische bron — er bestaat geen tweede kopie. Wissen is onomkeerbaar.
+
+#### Beveiliging van de coredump-endpoints
+
+- Alle drie de endpoints (`status`, `download`, `erase`) zijn **alleen voor de Beheerder-rol** toegankelijk; een Boer-sessie krijgt HTTP 403. Zonder sessie HTTP 401.
+- **Snelheidsbegrenzing**: maximaal 1 download- of erase-actie per 10 seconden. Een herhaalde snelle klik krijgt HTTP 429 met "rate limited".
+- **Audit-spoor in SD-CSV**: elke download (`value_a = 19`) en elke wissing (`value_a = 20`) wordt geregistreerd met `initiator = WEB`. Bij ongeplande toegang kan dit later worden teruggevonden in het logbestand.
+- **Coredump-inhoud kan gevoelige data bevatten** (bijv. WiFi-PSK, status-website-secret of een PIN die op het moment van de panic in het werkgeheugen stond). Behandel het gedownloade `.bin`-bestand daarom als gevoelige informatie en wis het van je werkstation zodra de analyse klaar is.
+
+### Loggen instellingsveranderingen
+
+De legt de kascontroller **elke instellingswijziging** vast in het logbestand op de SD-kaart, met:
+
+- **Welke parameter** is gewijzigd (bijv. `t_max_day`, `wind_prot_en`, `status_intv_s`)
+- **Wie** de wijziging deed en waar vandaan: `Boer (LCD)`, `Beheerder (LCD)`, of `Web UI`
+- **Oude en de nieuwe waarde** voor numerieke parameters
+
+Voor gevoelige velden (PIN-wijziging, WiFi-wachtwoord, status-website-secret, time-zone-string) wordt alleen de boodschap **"changed"** of **"set"** vastgelegd — de daadwerkelijke waarde komt **niet** in het logbestand. Dit voorkomt dat het SD-bestand een lek-bron wordt voor credentials.
+
+#### Voorbeelden in parsed log
+
+```
+2026-05-19 14:35:00  [SETPT  ]  Admin (LCD)     t_max_day: 25 degC -> 27 degC
+2026-05-19 14:36:00  [SETPT  ]  Web UI          poll_interval: 60 s -> 30 s
+2026-05-19 14:37:12  [SETPT  ]  Web UI          wind_prot_en: enabled -> disabled
+2026-05-19 14:42:18  [SETPT  ]  Web UI          pin_admin (changed)
+2026-05-19 14:43:05  [SETPT  ]  Web UI          wifi_ssid (set)
+2026-05-19 14:43:10  [SETPT  ]  Web UI          tz_str (set)
+```
+
+#### Wat dit voor de beheerder oplevert
+
+- **Onverklaarde klimaatdrift**: wanneer ramen anders openen dan verwacht, geeft het audit-spoor onmiddellijk antwoord op de vraag "wie heeft welke setpoint wanneer veranderd?". Filter het CSV-bestand op `SETPT` om een tijdlijn op te bouwen.
+- **PIN-veiligheid**: een onverwachte regel `pin_admin (changed)` of `pin_farmer (changed)` op een tijdstip dat je niet zelf bezig was → verandering door iemand anders. Tijd om de PIN opnieuw te wijzigen en de toegang te onderzoeken.
+- **WiFi-credentials**: wijzigingen aan `wifi_ssid` / `wifi_psk` / `wifi_ap_psk` worden eveneens vastgelegd. Een onverwachte regel hier kan wijzen op ongewenste configuratie-toegang.
+- **Status-website-instellingen**: alle 8 velden in tab **Web** (URL, secret, interval, expose-mask, log-upload-tijd, log-upload-rotatie) worden per gewijzigd veld vastgelegd, zodat een operator achteraf precies kan reconstrueren welke veld(en) bij een Apply zijn aangepast.
+
+Voor de volledige tabel van parameter-ID's en de gebruikte sentinel-codering: zie de bijgewerkte [`log/logparser.md`](https://github.com/pe1mew/greenhouse-Controller/blob/main/log/logparser.md) in de git-repository.
+
 #### SD-kaart vervangen / formatteren
 
 1. Unmount via webinterface (zie hierboven)
@@ -1223,6 +1329,7 @@ Voor algemene uitleg en consequenties: zie [boer-handleiding §15](handleiding.m
 | LCD blank, heartbeat-LED uit | Voeding weg | Voeding controleren; zekering nameten |
 | LCD blank, heartbeat-LED knippert | LCD-bus probleem | Power-cycle; bij blijvende fout LCD-module vervangen |
 | Heartbeat-LED steady aan (niet knipperend) | Firmware vastgelopen | Power-cycle of reset; bij herhaling firmware re-flash |
+| Controller herstart onverwacht | **Software-panic** wordt vrijwel altijd opgevangen in een coredump | Inloggen als Beheerder → tab **Log** → sectie **Diagnostics** → check op `Coredump available`-badge in de Alarms-tegel. Download het `.bin`-bestand voor offline analyse — zie [§14 Coredump ophalen na een panic](#coredump-ophalen-na-een-panic-vanaf-200). Tegelijkertijd: SD-logbestand downloaden — de regel direct vóór de boot-marker (`SYSTEM value_a=5`) toont wat de controller deed kort vóór de crash |
 
 ### 16.2 Sensor-problemen
 
@@ -1506,12 +1613,9 @@ Modbus RTU wordt verstuurd over **RS485**, een differentieel seriële bus:
 
 ### Bijlage F — Logbestand-formaat en `logparser` script
 
-De kascontroller schrijft gebeurtenissen naar twee bronnen:
+De kascontroller schrijft gebeurtenissen naar de **SD-kaart** als CSV-bestanden, één per opstart-sessie met bestandsnaam `YYYYMMDDHHMMSS.csv` (lokale tijd).
 
-- **NVS-ringbuffer** — laatste ~100 events, altijd in het flash-geheugen aanwezig
-- **SD-kaart** — CSV-bestanden per opstart-sessie, bestandsnaam `YYYYMMDDHHMMSS.csv` (lokale tijd)
-
-Beide bronnen leveren CSV-bestanden in hetzelfde formaat. Download via webinterface tab **Log** (Beheerder-rol vereist).
+Download via webinterface tab **Log** (Beheerder-rol vereist).
 
 #### CSV-formaat
 
@@ -1519,10 +1623,10 @@ Elke regel is één event met de volgende kolommen:
 
 | Kolom | Beschrijving |
 |---|---|
-| `timestamp` | ISO 8601 UTC (`YYYY-MM-DDTHH:MM:SS`) |
+| `timestamp` | ISO 8601 **lokale tijd** (`YYYY-MM-DDTHH:MM:SS`). |
 | `event_type` | Een van: `SENSOR`, `RELAY`, `MODE`, `SETPT`, `SESSION`, `ALARM`, `SYSTEM` |
 | `initiator` | Wie veroorzaakte het event: `SYS`, `FARMER`, `ADMIN`, `MQTT`, `WEB` |
-| `ch` | Motor-kanaal (1=M1, 2=M2, 3=M3) of 0 |
+| `ch` | Motor-kanaal (1=M1, 2=M2, 3=M3) of 0 — voor `ALARM`-events of 4 (T/RH-sensor-fout) of 5 (wind-sensor-fout) |
 | `param` | Parameter-ID (alleen bij `SETPT`-events) of 0 |
 | `value_a` | Eerste waarde, betekenis afhankelijk van event-type |
 | `value_b` | Tweede waarde, betekenis afhankelijk van event-type |
@@ -1534,10 +1638,10 @@ Elke regel is één event met de volgende kolommen:
 | `SENSOR` | Iedere sensor-poll-cyclus | `value_a` = T (°C), `value_b` = RH (%) |
 | `RELAY` | Bij motor-toestandsovergang | `ch` = motor, `value_a` = nieuwe state (0–6) |
 | `MODE` | Bij wijziging van ventilatie-stap | `value_a` = stap (0–3) |
-| `SETPT` | Bij wijziging van een setpoint | `param` = parameter-ID, `value_a` = oud, `value_b` = nieuw |
+| `SETPT` | Bij elke wijziging van een setpoint of admin-instelling | `param` = parameter-ID, `value_a` = oud, `value_b` = nieuw. Bij gevoelige velden (PIN, WiFi-credentials, status-website-secret) wordt alleen `value_a = 1` als sentinel geschreven — de daadwerkelijke waarde komt **niet** in het log |
 | `SESSION` | Bij login/logout | `value_a` = niveau (0/1/2) |
-| `ALARM` | Wind-override + motor-alarm | Specifieke codering per alarm-type |
-| `SYSTEM` | Systeem-events (boot, queue overflow, SD-fout) | Verschilt per sub-event |
+| `ALARM` | Wind-override, motor-alarm, sensor-fault | Specifieke codering per alarm-type; sensor_poll `ch = 4/5` om T/RH- en wind-fout-rijen te onderscheiden van motor-alarmen |
+| `SYSTEM` | Systeem-events (boot, queue overflow, SD-fout, OTA-stadia, coredump-status, audit-rijen) | Verschilt per sub-event — zie `log/logparser.md` voor de volledige tabel |
 
 #### `logparser.py` — Python-script in de repository
 
@@ -1565,14 +1669,26 @@ python logparser.py *
 **Voorbeeld-output**:
 
 ```
-Timestamp (UTC)      Type        Initiator       Description
+Timestamp (local)    Type        Initiator       Description
 --------------------------------------------------------------------
-2025-06-07 14:30:22  [SENSOR ]   System          T=23 °C   RH=65 %
-2025-06-07 14:30:52  [RELAY  ]   System          M1: → MOVING_OPEN
-2025-06-07 14:31:10  [MODE   ]   System          Vent step → 1 (M1 open)
-2025-06-07 14:35:00  [SETPT  ]   Admin (LCD)     t_max_day: 25 °C → 27 °C
-2025-06-07 14:45:00  [ALARM  ]   System          WIND OVERRIDE: SET — speed 8.5 m/s ≥ v_max 5.0 m/s
-2025-06-07 14:50:00  [ALARM  ]   System          WIND OVERRIDE: CLEARED — speed 3.2 m/s, direction 180°
+2026-05-19 14:30:22  [SENSOR ]   System          T=23 °C   RH=65 %
+2026-05-19 14:30:52  [RELAY  ]   System          M1: → MOVING_OPEN
+2026-05-19 14:31:10  [MODE   ]   System          Vent step → 1 (M1 open)
+2026-05-19 14:35:00  [SETPT  ]   Admin (LCD)     t_max_day: 25 degC -> 27 degC
+2026-05-19 14:36:00  [SETPT  ]   Web UI          poll_interval: 60 s -> 30 s
+2026-05-19 14:37:12  [SETPT  ]   Web UI          wind_prot_en: enabled -> disabled
+2026-05-19 14:42:18  [SETPT  ]   Web UI          pin_admin (changed)
+2026-05-19 14:45:00  [ALARM  ]   System          WIND OVERRIDE: SET — speed 8.5 m/s ≥ v_max 5.0 m/s
+2026-05-19 14:50:00  [ALARM  ]   System          WIND OVERRIDE: CLEARED — speed 3.2 m/s, direction 180°
+2026-05-19 15:00:00  [SYSTEM ]   System          OTA: firmware POST started (bytes streaming to inactive bank)
+2026-05-19 15:00:05  [SYSTEM ]   System          OTA: firmware verified OK — awaiting web-asset upload
+2026-05-19 15:00:10  [SYSTEM ]   System          OTA: asset ZIP extracted OK — reboot scheduled (1 s)
+2026-05-19 15:00:14  [SYSTEM ]   System          Boot: esp_reset_reason = 4 (PANIC)
+2026-05-19 15:00:14  [SYSTEM ]   System          STA WiFi client: connected
+2026-05-19 15:00:14  [SYSTEM ]   System          NTP: synced
+2026-05-19 03:42:19  [SYSTEM ]   System          Coredump from previous panic detected in flash: ~45 KB
+2026-05-19 08:15:02  [SYSTEM ]   Web UI          Coredump downloaded by admin (~45 KB transferred)
+2026-05-19 08:18:33  [SYSTEM ]   Web UI          Coredump erased by admin (partition wiped)
 ```
 
 #### Volledige documentatie
@@ -1702,6 +1818,7 @@ Inhoudelijke wijzigingen aan de firmware staan beschreven in het bestand `change
 | 1.13 | 2026-05-16 | 1.20.1-1.20.2 |
 | 1.14 | 2026-05-16 | 1.20.2 (alleen documentatie — Bijlage G uitgebreid van 13 naar 28 gewassen passend bij de teelt in Wenumseveld: Meloen, Ananaskers, Spaghettiboon, Peulen, Rucola, Paksoi, Snijbiet, Raapsteel, Palmkool, Koolrabi, Bospeen, Bosbiet, Radijs, Groene selderij, Bloemen — geordend per gewas-familie. Inhoud blijft synchroon met boer-handleiding Bijlage B v1.12) |
 | 1.15 | 2026-05-17 | 1.20.3 |
+| 1.16 | 2026-05-19 | 2.0.0-a.6.32 → 2.0.0-a.6.35.7 |
 
 ---
 

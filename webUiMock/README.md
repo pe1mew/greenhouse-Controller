@@ -55,45 +55,55 @@ Stop the server with **Ctrl+C**.
 
 ## What is emulated
 
-Targets firmware **2.0.0-alpha.6.X** — canonical nested status-JSON shape carried unchanged from 1.20.0 (incl. gh#17 `unit_id` for LCD info screen + web-GUI footer), status-website POST configuration (Web tab), the OTA-version-mismatch diagnostic surfaces, the 1.19.1 `/api/wifi` apply-on-restart semantics, and the alpha.6.16-η T11 WebSocket. Compared to 1.20.0 the underlying firmware is structurally different (ESP-IDF native vs Arduino-esp32) but the operator-facing API shape is preserved with two retirements: the NVS-ringbuffer log source (alpha.6.5) and the legacy `?src=` selector on `/api/log/download` (alpha.6.19).
+Targets firmware **2.0.0-a.6.35.x** — canonical nested status-JSON shape carried unchanged from 1.20.0 (incl. gh#17 `unit_id` for LCD info screen + web-GUI footer), status-website POST configuration (Web tab) with the a.6.35 HTTPS-only URL validator, the OTA-version-mismatch diagnostic surfaces, the 1.19.1 `/api/wifi` apply-on-restart semantics, the alpha.6.16-η T11 WebSocket, the a.6.35.4 operator-aware mode flags (`wind_protect_off`, `humidity_ctrl_off`), and the a.6.35.6 `/api/coredump` retrieval surface plus the matching `coredump_available` mode flag. Compared to 1.20.0 the underlying firmware is structurally different (ESP-IDF native vs Arduino-esp32) but the operator-facing API shape is preserved with two retirements: the NVS-ringbuffer log source (alpha.6.5) and the legacy `?src=` selector on `/api/log/download` (alpha.6.19).
 
-| Endpoint             | Method | Auth    | Description |
-|----------------------|--------|---------|-------------|
-| `/`                  | GET    | none    | Serves `firmware/data/index.html` with `?v=<fw_ver>` cache-busters injected on `app.js` / `style.css` references |
-| `/index.html`        | GET    | none    | Same content as `/` — explicit URI registered in alpha.6.24 (was wildcard fallback under 1.20.x) |
-| `/style.css`         | GET    | none    | Serves `firmware/data/style.css` |
-| `/app.js`            | GET    | none    | Serves `firmware/data/app.js` |
-| `/manifest.json`     | GET    | none    | `{"asset_version":"<fw_ver>","checksum":""}` |
-| `/api/whoami`        | GET    | cookie  | Returns `{ok, role}` or 401 |
-| `/api/login`         | POST   | —       | `{role, pin}` → `{ok, role}` + sets cookie |
-| `/api/logout`        | POST   | cookie  | Clears session cookie |
-| `/api/status`        | GET    | farmer+ | Full status JSON in canonical nested shape (`climate`, `wind`, `windows:{M1,M2,M3}`, `mode:{current,flags[]}`, `sun`, `system{asset_version,uptime_s,…}`, `update_interval_s`) — same payload as WebSocket push |
-| `/api/config`        | GET    | farmer+ | All configuration parameters |
-| `/api/config/limits` | GET    | none    | Per-key {min, max} bounds for client-side validation |
-| `/api/config`        | POST   | farmer+ | Write one NVS key; farmer restricted to climate/wind keys |
-| `/api/wifi`          | POST   | admin   | Update WiFi SSID (PSK accepted but not stored) |
-| `/api/pin`           | POST   | admin   | Change farmer or admin PIN for this session |
-| `/api/web`           | GET    | admin   | Current status-website (Web tab) settings; secret never echoed |
-| `/api/web`           | POST   | admin   | Update status-website settings; same validation as firmware (URL must end `api.php`, secret ≥ 16 chars, interval 60–300, etc.) |
-| `/api/history`       | GET    | none    | `?n=N` — last N sensor readings. Public per the design contract: same policy as `/api/status` and `/ws`. Response shape `{rows:[{ts, temp_c, temp_avg_c, rh_pct, rh_avg_pct, speed_ms, speed_avg_ms, direction_deg, direction_variation_deg}]}`. |
-| `/api/sd/status`     | GET    | farmer+ | `{mounted, free_mb, size_mb}` |
-| `/api/sd/mount`      | POST   | admin   | Set SD mounted state to `true` |
-| `/api/sd/unmount`    | POST   | admin   | Set SD mounted state to `false` |
-| `/api/log/files`     | GET    | admin   | `{sd_files:[...]}` — `nvs_count` removed in alpha.6.5 |
-| `/api/log/download`  | GET    | admin   | `?file=NAME` (SD only). The legacy `?src=` selector was retired in alpha.6.19. |
-| `/api/ota/status`    | GET    | farmer+ | `{state, progress, error, bank, accepted}` |
-| `/api/ota/firmware`  | POST   | admin   | Streaming firmware `.bin` upload |
-| `/api/ota/assets`    | POST   | admin   | Streaming STORE-only ZIP upload of web assets |
-| `/ws`                | WS     | none    | Push status JSON every 2 s |
+| Endpoint                     | Method | Auth    | Description |
+|------------------------------|--------|---------|-------------|
+| `/`                          | GET    | none    | Serves `firmware/data/index.html` with `?v=<fw_ver>` cache-busters injected on `app.js` / `style.css` references |
+| `/index.html`                | GET    | none    | Same content as `/` — explicit URI registered in alpha.6.24 (was wildcard fallback under 1.20.x) |
+| `/style.css`                 | GET    | none    | Serves `firmware/data/style.css` |
+| `/app.js`                    | GET    | none    | Serves `firmware/data/app.js` |
+| `/manifest.json`             | GET    | none    | `{"asset_version":"<fw_ver>","checksum":""}` |
+| `/api/whoami`                | GET    | cookie  | Returns `{ok, role}` or 401 |
+| `/api/login`                 | POST   | —       | `{role, pin}` → `{ok, role}` + sets cookie |
+| `/api/logout`                | POST   | cookie  | Clears session cookie |
+| `/api/status`                | GET    | farmer+ | Full status JSON in canonical nested shape (`climate`, `wind`, `windows:{M1,M2,M3}`, `mode:{current,flags[]}`, `sun`, `system{asset_version,uptime_s,…}`, `update_interval_s`) — same payload as WebSocket push. `mode.flags[]` includes the operator-aware flags (since a.6.35.4/6) derived from the cfg dict state + the coredump simulation: `wind_protect_off` when `cfg["wind_prot_en"] == 0`, `humidity_ctrl_off` when `cfg["rh_ctrl_en"] == 0`, `coredump_available` when the mock coredump state is set to `present` |
+| `/api/config`                | GET    | farmer+ | All configuration parameters |
+| `/api/config/limits`         | GET    | none    | Per-key {min, max} bounds for client-side validation |
+| `/api/config`                | POST   | farmer+ | Write one NVS key; farmer restricted to climate/wind keys |
+| `/api/wifi`                  | POST   | admin   | Update WiFi SSID (PSK accepted but not stored) |
+| `/api/pin`                   | POST   | admin   | Change farmer or admin PIN for this session |
+| `/api/web`                   | GET    | admin   | Current status-website (Web tab) settings; secret never echoed |
+| `/api/web`                   | POST   | admin   | Update status-website settings; same validation as firmware (URL must use `https://` only since a.6.35, must end `api.php`, secret ≥ 16 chars, interval 60–300, etc.) |
+| `/api/history`               | GET    | none    | `?n=N` — last N sensor readings. Public per the design contract: same policy as `/api/status` and `/ws`. Response shape `{rows:[{ts, temp_c, temp_avg_c, rh_pct, rh_avg_pct, speed_ms, speed_avg_ms, direction_deg, direction_variation_deg}]}`. |
+| `/api/sd/status`             | GET    | farmer+ | `{mounted, free_mb, size_mb}` |
+| `/api/sd/mount`              | POST   | admin   | Set SD mounted state to `true` |
+| `/api/sd/unmount`            | POST   | admin   | Set SD mounted state to `false` |
+| `/api/log/files`             | GET    | admin   | `{sd_files:[...]}` — `nvs_count` removed in alpha.6.5 |
+| `/api/log/download`          | GET    | admin   | `?file=NAME` (SD only). The legacy `?src=` selector was retired in alpha.6.19. |
+| `/api/coredump/status`       | GET    | admin   | `{ok, present, size_bytes, size_kb, fw_ver}` (a.6.35.6+). Reflects the mock COREDUMP_STATE; not rate-limited |
+| `/api/coredump/download`     | GET    | admin   | Streams a placeholder dump of `size_bytes` bytes (recognisable ASCII so a hexdump immediately shows it's not a real ELF). `Content-Disposition: attachment; filename="coredump-<fw_ver>-<unix_ts>.bin"`. Rate-limited: 1 op / 10 s. Audit-log line printed to stderr |
+| `/api/coredump/erase`        | POST   | admin   | Wipes the mock COREDUMP_STATE. Idempotent (no dump → 200 OK with note). Rate-limited: 1 op / 10 s. Audit-log line to stderr |
+| `/api/__mock/coredump`       | POST   | **none** (dev-only) | Mock-only debug route: `?present=true&size=N&fw=VER` injects a fake coredump so the GUI badge + Diagnostics panel can be exercised without crashing the Python process. The real firmware has NO such backdoor — coredumps come only from the IDF panic handler |
+| `/api/ota/status`            | GET    | farmer+ | `{state, progress, error, bank, accepted}` |
+| `/api/ota/firmware`          | POST   | admin   | Streaming firmware `.bin` upload |
+| `/api/ota/assets`            | POST   | admin   | Streaming STORE-only ZIP upload of web assets |
+| `/ws`                        | WS     | none    | Push status JSON every 2 s (same shape as `/api/status`) |
 
 ### Simulated data
 
 * **Sensor readings** — temperature, relative humidity, and wind speed are
   generated with slow sine-wave variation so dashboard tiles update visibly.
-* **Window states** — always `CLOSED`; system mode always `AUTOMATIC` with empty `flags[]`.
+* **Window states** — always `CLOSED`; system mode always `AUTOMATIC`.
+* **Operator-aware mode flags** (a.6.35.4 / a.6.35.6) — `mode.flags[]` is computed at request time from cfg state and the mock coredump simulation, mirroring `status_json.cpp::build_canonical_status_json`:
+  * `wind_protect_off` whenever `cfg["wind_prot_en"] == 0` (toggle via Wind tab in the GUI or `POST /api/config {"ns":"wind","key":"wind_prot_en","value":0}`)
+  * `humidity_ctrl_off` whenever `cfg["rh_ctrl_en"] == 0`
+  * `coredump_available` whenever `COREDUMP_STATE["present"]` is `True` — set via the mock-only `/api/__mock/coredump?present=true&size=N` route, cleared via `/api/coredump/erase` or `/api/__mock/coredump?present=false`
+  * EG1-driven flags (`wind_override`, `motor_alarm`, `sensor_fault_*`, `ota_in_progress`, `calibrating`) are **not** simulated — the mock has no relay state machine to drive them. To see those badges in the GUI you need the real firmware.
 * **`asset_version` always equals `fw_ver`** — the mock has no LittleFS partitions to drift apart, so the `MISMATCH` badge never fires. That's deliberate; the badge is only meaningful on real hardware where an OTA bank flip can leave the new firmware paired with old assets.
 * **SD card** — starts mounted (7.5 GB / 7.1 GB free); toggled by mount/unmount.
 * **History** — synthetic ring-buffer rows matching the real firmware's format.
+* **Coredump** — starts absent. The `/api/__mock/coredump` debug route flips the in-memory `COREDUMP_STATE` so the GUI's blue "Coredump available" badge + Log → Diagnostics panel can be tested without crashing the Python process. The download endpoint streams a recognisable ASCII placeholder ("MOCK COREDUMP - webUiMock placeholder - not a real ELF") rather than a real ESP-IDF ELF dump.
 
 ### Access control
 
@@ -117,6 +127,51 @@ the web UI are held in memory for the lifetime of the server process.
 
 ---
 
+## Triggering the operator-aware badges + coredump panel
+
+The three a.6.35.4 / a.6.35.6 badges are visible on the dashboard's Alarms
+card whenever `mode.flags[]` contains the matching string. Trigger each one
+from the dev workstation while the mock is running:
+
+```bash
+# Wind-protect-off badge (yellow):
+curl -b cookies.txt -X POST -H "Content-Type: application/json" \
+  -d '{"ns":"wind","key":"wind_prot_en","value":0}' \
+  http://localhost:5000/api/config
+
+# Humidity-ctrl-off badge (blue):
+curl -b cookies.txt -X POST -H "Content-Type: application/json" \
+  -d '{"ns":"climate","key":"rh_ctrl_en","value":0}' \
+  http://localhost:5000/api/config
+
+# Coredump-available badge (blue) + populate the Log → Diagnostics panel:
+curl -X POST 'http://localhost:5000/api/__mock/coredump?present=true&size=45000'
+
+# Restore everything:
+curl -b cookies.txt -X POST -H "Content-Type: application/json" \
+  -d '{"ns":"wind","key":"wind_prot_en","value":1}' \
+  http://localhost:5000/api/config
+curl -b cookies.txt -X POST -H "Content-Type: application/json" \
+  -d '{"ns":"climate","key":"rh_ctrl_en","value":1}' \
+  http://localhost:5000/api/config
+curl -X POST 'http://localhost:5000/api/__mock/coredump?present=false'
+```
+
+The `cookies.txt` file comes from a prior admin login:
+
+```bash
+curl -c cookies.txt -X POST -H "Content-Type: application/json" \
+  -d '{"role":"admin","pin":"12345678"}' \
+  http://localhost:5000/api/login
+```
+
+After triggering, refresh the dashboard and switch to the Log tab — the
+Diagnostics section at the bottom now shows the (fake) coredump's size
+and enables the Download button. The Download button streams the ASCII
+placeholder; the Erase button clears `COREDUMP_STATE`.
+
+---
+
 ## Differences from the real firmware
 
 | Aspect | Mock | Real firmware |
@@ -128,6 +183,8 @@ the web UI are held in memory for the lifetime of the server process.
 | Sensor data | Sine-wave generator | DHT22 + anemometer |
 | Window states | Always CLOSED | T2 relay state machines |
 | NTP / time | Host system clock | SNTP |
-| OTA / firmware version | Single `cfg["fw_ver"]` string in `mock_server.py` (currently `"2.0.0-alpha.6.25"`) | NVS `system/fw_version`, set on every boot from `FIRMWARE_VERSION` |
+| OTA / firmware version | Single `cfg["fw_ver"]` string in `mock_server.py` (currently `"2.0.0-a.6.35.7"`) | NVS `system/fw_version`, set on every boot from `FIRMWARE_VERSION` |
 | `manifest.json` / `asset_version` | Always equal to `cfg["fw_ver"]` (no real LFS to drift) | Written by `bin/build_release.ps1` into the ZIP; T13 preserves it on the inactive LFS partition during OTA |
 | OTA cross-bank routing | Not simulated (single-instance Python process) | Dual OTA banks + dual LittleFS partitions; T13 writes assets to the LFS paired with the inactive bank |
+| Coredump capture | Faked via `POST /api/__mock/coredump` debug route; download streams ASCII placeholder | IDF panic handler writes a real ELF dump to the 64 KB coredump partition on every panic; download streams the actual bytes for `idf.py coredump-info` decoding |
+| Audit logging | Coredump download / erase events go to **stderr** (so visible in the terminal where the mock runs); cfg-change audit rows are not generated | All audit rows go to the SD CSV (LOG_SETPOINT for cfg changes, LOG_SYSTEM value_a=19/20 for coredump access) and can be filtered offline with `log/logparser.py` |
