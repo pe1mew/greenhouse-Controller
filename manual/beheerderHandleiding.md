@@ -2,7 +2,7 @@
 
 **Versie:** 1.17 — concept
 **Datum:** 2026-05-19
-**Firmware:** 2.0.0-rc.1 (release candidate 1 — voor de 14-daagse Phase 7 soak die de doorgang naar 2.0.0 bepaalt)
+**Firmware:** 2.0.0-rc.1.1 (release candidate 1, patch 1 — UX-fix voor windrichting-weergave in de webGUI; vervangt rc.1 als kandidaat voor de 14-daagse Phase 7 soak)
 
 ---
 

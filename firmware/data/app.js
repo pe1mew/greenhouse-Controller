@@ -103,8 +103,14 @@ function handleStatus(s) {
   if (w) {
     if (w.speed_ms                !== undefined) setText('st-wind',     w.speed_ms.toFixed(1));
     if (w.speed_avg_ms            !== undefined) setText('st-wind-avg', w.speed_avg_ms.toFixed(1));
-    if (w.direction_deg           !== undefined) setText('st-wind-dir', w.direction_deg.toFixed(0));
-    if (w.direction_variation_deg !== undefined) setText('st-wind-var', w.direction_variation_deg.toFixed(0));
+    // rc.1.1 — Direction surfaces the sliding-window vector average (matches LCD).
+    // Was reading the instant `direction_deg` field; operator saw LCD-vs-GUI mismatch
+    // (e.g. LCD 31° vs GUI 33° on the same sample).
+    if (w.direction_avg_deg       !== undefined) setText('st-wind-dir', w.direction_avg_deg.toFixed(0));
+    // rc.1.1 — Variation is the half-arc around the average ("±N°"). The canonical JSON
+    // emits the FULL arc width spanned by the window's samples, so we halve it here and
+    // prefix a literal ± to match the natural "±15° around the average" operator reading.
+    if (w.direction_variation_deg !== undefined) setText('st-wind-var', '±' + (w.direction_variation_deg / 2).toFixed(0));
   }
 
   // Windows — object keyed M1/M2/M3

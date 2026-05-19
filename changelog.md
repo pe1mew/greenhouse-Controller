@@ -28,6 +28,87 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-rc.1.1]` — 2026-05-19  (web-GUI wind-direction surface fix; supersedes rc.1 as Phase 7 candidate)
+
+**Operator-reported UX mismatch resolved.** While bench-validating rc.1 with the real S200 wind sensor wired up (replacing the modbus emulator that the alpha-series had used), the operator observed:
+
+> "in the LCD I see 16 degrees wind direction and in the webgui I see +/- 31 degrees. why?"
+
+Investigation against the live `/api/status` payload found **no firmware bug** — the canonical JSON correctly emits three distinct wind-direction fields:
+
+| JSON field | Physical meaning | Bench live value at time of report |
+|---|---|---:|
+| `direction_deg` | Last instantaneous sample from the sensor | 33° |
+| `direction_avg_deg` | Sliding-window vector average | 31° |
+| `direction_variation_deg` | **Full** arc width spanning every sample in the window | 17° |
+
+…but the **two surfaces disagreed about which field to render**:
+
+- LCD row 1 displayed `wind_dir_avg_deg` (the averaged value — 31° at the time of the report).
+- Web GUI **Direction** field rendered `direction_deg` (the instant value — 33° on the same sample, ≈ 16° earlier in the operator's observation window as the sensor moved).
+- Web GUI **Variation** field rendered the raw `direction_variation_deg` (the full arc width — 17°), which an operator naturally reads as "±17°", but the underlying figure was the *width* of the arc, not the half-arc around the average. With the digit-pattern from the report ("+/- 31") the operator was almost certainly reading the *Direction* number as if it were the *Variation* number — a layout-induced misreading caused by the surface inconsistency.
+
+#### Chosen fix — values + presentation
+
+Per operator direction: **make the LCD and GUI agree on Direction (both averaged); keep the "Variation" label but divide the displayed value by 2 and prefix a literal ± sign so the GUI matches the natural "±N° around the average" reading.**
+
+| Surface | Field read from JSON | Display format | Example (with bench live values 33 / 31 / 17) |
+|---|---|---|---|
+| LCD row 1 (unchanged) | `wind_dir_avg_deg` | `" Dir: %3d \xDF (%-2s)"` | ` Dir:  31 ° (NE)` |
+| GUI "Direction" *(was instant)* | `direction_avg_deg` | `toFixed(0) + " °"` | `31 °` |
+| GUI "Variation" *(was full arc width)* | `direction_variation_deg / 2` | `'±' + toFixed(0) + " °"` | `±9 °` |
+
+Both surfaces now reference the same physical quantity for Direction. "Variation: ±9°" reads naturally as "the wind has been swinging roughly ±9° around 31° during the sliding window", which is the operator's mental model.
+
+#### What changed
+
+- `firmware/data/app.js`:
+  - Line 106 — `setText('st-wind-dir', w.direction_deg.toFixed(0))` → `setText('st-wind-dir', w.direction_avg_deg.toFixed(0))`. Same field as the LCD now.
+  - Line 107 — `setText('st-wind-var', w.direction_variation_deg.toFixed(0))` → `setText('st-wind-var', '±' + (w.direction_variation_deg / 2).toFixed(0))`. Half-arc with literal ± prefix.
+  - Comments inline-explain the field choice + halving so the next maintainer doesn't unwind the change without seeing the rationale.
+- `firmware/data/index.html`:
+  - "Direction" tooltip rewritten: "Sliding-window vector average of the wind direction (the same value the LCD shows)…".
+  - "Variation" tooltip rewritten: "Half the angular sector spanned by the direction samples in the current sliding window, displayed as ±N° around the average…".
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` `2.0.0-rc.1` → `2.0.0-rc.1.1`.
+- `webUiMock/mock_server.py` — `cfg["fw_ver"]` bumped in lockstep so the offline GUI mock and the real device report the same version string.
+- `manual/beheerderHandleiding.md` — header refreshed: still v1.17, but firmware row now `2.0.0-rc.1.1` with a one-line explanation of why a sub-iteration was cut.
+- `bin/2.0.0-rc.1.1/` — new paired-asset directory with `greenhouse-controller-2.0.0-rc.1.1.bin`, `web-assets-2.0.0-rc.1.1.zip`, matching `release-notes.md`, and the matching `.elf` for any future addr2line work.
+
+#### No firmware C/C++ code changes
+
+The fix is entirely in the web bundle (`app.js` + `index.html` tooltip strings) plus the version-string bump. The canonical JSON shape is unchanged; the LCD code is unchanged; the wind-direction averaging math is unchanged. Risk surface is limited to "did the right two JS lines flip" — easy to bench-verify by reading the live `/api/status` and comparing the rendered numbers.
+
+#### Post-deploy pre-soak housekeeping
+
+After the paired OTA completed cleanly (BOOT row `value_a=5, value_b=4` = ESP_RST_SW), the bench dashboard surfaced a `coredump_available` mode-flag from a 45 732 B dump in the partition. The dump's embedded app-SHA (`438a2fdfa`) matches the rc.1 build (not rc.1.1), so the panic happened *during* the rc.1 30-minute uptime window. Probable cause: this session's first attempted OTA upload sent `POST /api/ota/firmware` with a PowerShell multipart wrapper (`--boundary\r\nContent-Disposition: …`) instead of the raw .bin body the handler expects; the connection was reset rather than returning a 4xx, which is consistent with a panic inside the `httpd_req_recv → ota_firmware_write` loop when fed multipart bytes that don't look like an ESP32 image header. A retry with the correct raw-body format succeeded. Follow-up session spawned to rebuild the rc.1 ELF and decode the backtrace — not blocking rc.1.1, the browser OTA path posts the raw bin so the panic isn't reachable from the GUI.
+
+The dump was archived to `bin/2.0.0-rc.1.1/pre-soak-artifacts/coredump-rc.1.1-pre-soak-residual.bin` (gitignored, sha256 `B1071BE4DA…`) and the partition then erased via `POST /api/coredump/erase`. Post-erase: `/api/coredump/status` returns `present:false`; `/api/status` `mode.flags` is `[]`; rc.1.1 day-0 coredump slot is clean.
+
+#### Live wind-direction fix verification
+
+Captured `/api/status` against the real S200 sensor after the deploy:
+
+| Sample | `direction_deg` | `direction_avg_deg` | `direction_variation_deg` | LCD shows | GUI Direction (rc.1.1) | GUI Variation (rc.1.1) |
+|---|---:|---:|---:|---:|---:|---:|
+| Settled | 34° | 32° | 4° | 32° | **32°** | **±2°** |
+| Shifting | 155° | 137° | 131° | 137° | **137°** | **±66°** |
+
+LCD and GUI Direction now reference the same physical quantity; Variation reads as the natural "±N° around the average" the operator was looking for.
+
+#### Phase 7 soak — clock reset
+
+rc.1's 14-day clock had been running for < 1 day when this fix was applied; per the rc.1 acceptance criterion *"Bin stays ≤ 1.40 MB (no growth unless a patch alpha lands)"* and *"Fail on any criterion = halt + a.6.36 (or rc.2) patch + restart the 14-day clock"*, **the soak day-counter restarts at day 0 against the rc.1.1 build**. All other acceptance criteria from rc.1 carry over unchanged (zero unplanned reboots, zero coredumps, gh#23 watch, heap baseline drift < 5 KB, status POST > 95 %, daily log upload, climate-control responsiveness, GUI smoke test).
+
+#### Build delta vs rc.1
+
+| Metric | rc.1 | rc.1.1 | Delta |
+|---|---:|---:|---:|
+| Firmware bin | 1 354 160 B | 1 354 144 B | −16 B (`rc.1` → `rc.1.1` version-string length unchanged in chars but the ELF metadata + paired stamp differ) |
+| Web assets ZIP | (rc.1 baseline) | +~30 B | +30 B (tooltip strings + the `±` literal + the halving expression in app.js) |
+| RAM static | 60 568 B | 60 568 B | 0 |
+
+Full flash usage still 64.6 % of the 2 MB OTA bank — same headroom as rc.1.
+
 ### `[2.0.0-rc.1]` — 2026-05-19  (Phase 7 soak candidate)
 
 **Maturation complete. Soak candidate cut.** All four maturation alphas + seven a.6.35.x sub-iterations shipped + bench-verified; tag bumped from `2.0.0-a.6.35.7` to `2.0.0-rc.1` ahead of the 14-day Phase 7 soak that gates the doorgang to `v2.0.0`. **No firmware code changes** vs a.6.35.7 — only the version string, paired-asset manifest, and the documentation/companion-doc references that name the firmware-under-test.
