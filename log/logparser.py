@@ -602,6 +602,39 @@ def _decode_system(row: dict) -> str:
             return "OTA: asset extraction FAILED — boot partition unchanged"
 
         # ---------------------------------------------------------------
+        # value_a=18..20 — coredump-retrieval audit (since 2.0.0-a.6.35.6).
+        # Initiator-gated to avoid mis-rendering pre-a.6.35.3 heartbeat
+        # noise (the retired main.cpp heartbeat emitted value_a=uptime_s
+        # with initiator=SYS, so historic CSVs from older firmware contain
+        # value_a=18/19/20 rows with bogus value_b=heap_kb payloads).
+        #
+        #   18 (SYS, value_b = KB)   T4 detected a coredump from a previous
+        #                             panic at boot. The dump is sitting in
+        #                             the coredump partition; download via
+        #                             GET /api/coredump/download.
+        #   19 (WEB, value_b ≈ KB/4) Admin downloaded the coredump from the
+        #                             GUI Log → Diagnostics panel.
+        #   20 (WEB, value_b = 0)    Admin erased the coredump partition
+        #                             after a confirmed offline decode.
+        #
+        # A normal post-panic cycle looks like:
+        #   <PANIC reboot>
+        #   BOOT (value_a=5, value_b=4=PANIC)
+        #   value_a=18, value_b=N  ← T4 detected the dump
+        #   ... operator opens the GUI ...
+        #   value_a=19            ← Admin downloaded
+        #   value_a=20            ← Admin erased (after offline decode)
+        # ---------------------------------------------------------------
+        if va == 18 and initiator == "SYS":
+            return f"Coredump from previous panic detected in flash: ~{vb} KB"
+        if va == 19 and initiator == "WEB":
+            # value_b is bytes / 256; render the approximate KB.
+            approx_kb = (vb * 256) // 1024 if vb >= 0 else "?"
+            return f"Coredump downloaded by admin (~{approx_kb} KB transferred)"
+        if va == 20 and initiator == "WEB":
+            return "Coredump erased by admin (partition wiped)"
+
+        # ---------------------------------------------------------------
         # Legacy / ambiguous: pre-1.17.31 boot marker
         # ---------------------------------------------------------------
         if va == 0 and vb == 0 and initiator in ("SYS", ""):

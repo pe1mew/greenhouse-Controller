@@ -75,6 +75,9 @@
 
 #include "esp_mac.h"           /* alpha.6.18 — esp_read_mac for AP SSID */
 #include "esp_system.h"        /* alpha.6.18 — esp_restart() for /api/wifi apply */
+#include "esp_core_dump.h"     /* a.6.35.6  — /api/coredump endpoints */
+#include "esp_partition.h"     /* a.6.35.6  — coredump partition read */
+#include "esp_timer.h"         /* a.6.35.6  — rate-limit timestamp */
 
 #include "web_server.h"
 #include "../types/app_types.h"
@@ -1500,6 +1503,247 @@ static esp_err_t log_download_handler(httpd_req_t *req)
 }
 
 /* ============================================================
+ * /api/coredump — Pre-soak post-mortem retrieval (a.6.35.6)
+ *
+ * Three admin-only endpoints expose the IDF coredump partition through the
+ * GUI so an operator can grab and decode a panic dump from anywhere on the
+ * LAN without physically connecting to the unit.
+ *
+ *   GET  /api/coredump/status    {"present": bool, "size_bytes": N,
+ *                                  "size_kb": N, "version": "..."}
+ *   GET  /api/coredump/download  application/octet-stream, raw partition bytes
+ *                                Content-Disposition: attachment with a
+ *                                versioned filename so the operator's
+ *                                Downloads folder ends up with a clearly-
+ *                                named .bin per panic.
+ *   POST /api/coredump/erase     {"ok": true} after esp_core_dump_image_erase
+ *                                Operator confirms a successful decode first.
+ *
+ * Security envelope:
+ *   - admin_only_or_send_error() — same session/role gate as /api/wifi etc.
+ *   - LOG_SYSTEM audit row on every download (value_a=19) and erase
+ *     (value_a=20). The operator can grep the SD CSV for unexpected access
+ *     after the fact.
+ *   - Rate limit: at most one coredump operation per
+ *     COREDUMP_RATE_LIMIT_MS (10 s). A captured admin cookie can't be used
+ *     to scrape the partition repeatedly without triggering 429 responses.
+ *   - Confirm-then-erase: download does NOT auto-erase. Operator decides
+ *     to erase only after confirming the decode succeeded offline.
+ *   - Not surfaced via T14 status POST — the canonical JSON only emits
+ *     the `coredump_available` mode flag, never the partition contents.
+ *
+ * Coredump may contain RAM snapshots that include WiFi creds / PINs / the
+ * status-website shared secret if those were in-flight at panic time. The
+ * admin-only gate + per-LAN deployment is the operational boundary.
+ * ============================================================ */
+
+#define COREDUMP_RATE_LIMIT_MS  10000u  /* one access per 10 s */
+#define COREDUMP_CHUNK_BYTES    4096u   /* streaming chunk for the download */
+
+/** Rate-limit timestamp. Single int64 = atomic 64-bit load/store on ESP32. */
+static int64_t s_coredump_last_access_us = 0;
+
+static bool coredump_rate_limit_ok(httpd_req_t *req)
+{
+    const int64_t now_us = esp_timer_get_time();
+    if (s_coredump_last_access_us != 0 &&
+        (now_us - s_coredump_last_access_us) < (int64_t)(COREDUMP_RATE_LIMIT_MS * 1000)) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_status(req, "429 Too Many Requests");
+        httpd_resp_set_hdr(req, "Retry-After", "10");
+        (void)httpd_resp_send(req,
+            "{\"ok\":false,\"err\":\"rate limited — one /api/coredump op per 10 s\"}",
+            HTTPD_RESP_USE_STRLEN);
+        return false;
+    }
+    s_coredump_last_access_us = now_us;
+    return true;
+}
+
+/** Emit a LOG_SYSTEM audit row for a coredump operation. */
+static void coredump_audit(int16_t value_a, int16_t value_b)
+{
+    log_event_t ev = {};
+    ev.timestamp  = (uint32_t)time(NULL);
+    ev.event_type = (uint8_t)LOG_SYSTEM;
+    ev.initiator  = (uint8_t)LOG_BY_WEB;
+    ev.value_a    = value_a;   /* 19 = downloaded, 20 = erased */
+    ev.value_b    = value_b;
+    log_post(&ev);
+}
+
+/**
+ * GET /api/coredump/status — JSON status of the stored coredump.
+ *
+ * Even without `present=true` the endpoint is useful — the GUI can poll
+ * it on the Log tab to display "no coredump stored" vs "coredump available
+ * (N bytes)". No flash read other than the cheap cached state from T4.
+ */
+static esp_err_t coredump_status_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+
+    const bool   present = dm_coredump_present();
+    const size_t bytes   = dm_coredump_size_bytes();
+
+    char body[160];
+    int n = snprintf(body, sizeof(body),
+        "{\"ok\":true,\"present\":%s,\"size_bytes\":%u,\"size_kb\":%u,"
+         "\"fw_ver\":\"" FIRMWARE_VERSION "\"}",
+        present ? "true" : "false",
+        (unsigned)bytes,
+        (unsigned)((bytes + 1023u) / 1024u));
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, body, (n > 0) ? (size_t)n : 0);
+}
+
+/**
+ * GET /api/coredump/download — stream the partition contents.
+ *
+ * Returns 404 when no coredump is present. Otherwise reads the coredump
+ * partition in 4 KB chunks and writes them out as application/octet-stream
+ * with a Content-Disposition that names the file:
+ *   coredump-<FIRMWARE_VERSION>-<unix_ts>.bin
+ * Operator decodes offline with
+ *   idf.py coredump-info -t raw -c <file> bin/<ver>/firmware-<ver>.elf
+ *
+ * Does NOT auto-erase — call POST /api/coredump/erase after confirming
+ * the decode succeeded.
+ */
+static esp_err_t coredump_download_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+    if (!coredump_rate_limit_ok(req))   return ESP_OK;
+
+    if (!dm_coredump_present()) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_status(req, "404 Not Found");
+        return httpd_resp_send(req,
+            "{\"ok\":false,\"err\":\"no coredump stored\"}",
+            HTTPD_RESP_USE_STRLEN);
+    }
+
+    /* Look up the coredump partition. esp_core_dump_image_get gives an
+     * absolute flash address; convert to a partition-relative offset so
+     * we can use esp_partition_read (which bounds-checks against the
+     * partition size). */
+    const esp_partition_t *p = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_COREDUMP, NULL);
+    if (p == NULL) {
+        ESP_LOGE(TAG, "[T11] /api/coredump/download: no coredump partition");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    size_t cd_addr = 0u, cd_size = 0u;
+    esp_err_t e = esp_core_dump_image_get(&cd_addr, &cd_size);
+    if (e != ESP_OK || cd_size == 0u) {
+        ESP_LOGE(TAG, "[T11] /api/coredump/download: image_get failed (%d)", (int)e);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    if (cd_addr < p->address || (cd_addr + cd_size) > (p->address + p->size)) {
+        ESP_LOGE(TAG, "[T11] /api/coredump/download: image spans outside partition");
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    const size_t part_off = cd_addr - p->address;
+
+    /* Versioned + timestamped filename so the operator's Downloads folder
+     * disambiguates dumps from multiple panic cycles. */
+    char fname[64];
+    snprintf(fname, sizeof(fname),
+             "coredump-" FIRMWARE_VERSION "-%lu.bin",
+             (unsigned long)time(NULL));
+    char disp[96];
+    snprintf(disp, sizeof(disp), "attachment; filename=\"%s\"", fname);
+    httpd_resp_set_hdr(req, "Content-Disposition", disp);
+    httpd_resp_set_type(req, "application/octet-stream");
+
+    /* Stream in 4 KB chunks. Allocated from INTERNAL heap so we don't
+     * exercise PSRAM for a one-shot ~tens-of-KB transfer. */
+    uint8_t *chunk = (uint8_t *)heap_caps_malloc(COREDUMP_CHUNK_BYTES, MALLOC_CAP_INTERNAL);
+    if (chunk == NULL) {
+        ESP_LOGE(TAG, "[T11] /api/coredump/download: chunk alloc failed");
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    size_t sent = 0u;
+    while (sent < cd_size) {
+        const size_t want = (cd_size - sent > COREDUMP_CHUNK_BYTES)
+                              ? COREDUMP_CHUNK_BYTES : (cd_size - sent);
+        if (esp_partition_read(p, part_off + sent, chunk, want) != ESP_OK) {
+            ESP_LOGE(TAG, "[T11] /api/coredump/download: partition_read failed at %u",
+                     (unsigned)(part_off + sent));
+            heap_caps_free(chunk);
+            return ESP_FAIL;   /* socket already partially written; just bail */
+        }
+        if (httpd_resp_send_chunk(req, (const char *)chunk, want) != ESP_OK) {
+            ESP_LOGW(TAG, "[T11] /api/coredump/download: send_chunk failed at %u",
+                     (unsigned)sent);
+            heap_caps_free(chunk);
+            return ESP_FAIL;
+        }
+        sent += want;
+    }
+    /* End chunked response. */
+    (void)httpd_resp_send_chunk(req, NULL, 0);
+    heap_caps_free(chunk);
+
+    /* Audit row: value_a=19, value_b = bytes/256 clamped to int16 so the
+     * parser can render an approximate size without losing precision on
+     * typical 5-30 KB dumps (5 KB → 20, 30 KB → 120). */
+    int16_t vb = (int16_t)((cd_size + 255u) / 256u);
+    if (vb < 0) vb = 32767;
+    coredump_audit(19, vb);
+
+    ESP_LOGI(TAG, "[T11] /api/coredump/download: %u bytes streamed", (unsigned)sent);
+    return ESP_OK;
+}
+
+/**
+ * POST /api/coredump/erase — wipe the partition.
+ *
+ * Operator confirms a successful decode offline first, then clicks Erase
+ * in the GUI. esp_core_dump_image_erase() clears the partition; T4's
+ * cached state is dropped via dm_coredump_clear() so the next status
+ * snapshot omits the `coredump_available` mode flag and the GUI badge
+ * disappears.
+ */
+static esp_err_t coredump_erase_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+    if (!coredump_rate_limit_ok(req))   return ESP_OK;
+
+    httpd_resp_set_type(req, "application/json");
+
+    /* Idempotent: no coredump → 200 OK, nothing to do. Operator clicking
+     * the button on a clean unit is benign. */
+    if (!dm_coredump_present()) {
+        return httpd_resp_send(req,
+            "{\"ok\":true,\"note\":\"no coredump to erase\"}",
+            HTTPD_RESP_USE_STRLEN);
+    }
+
+    esp_err_t e = esp_core_dump_image_erase();
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "[T11] /api/coredump/erase: image_erase failed (%d)", (int)e);
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_send(req,
+            "{\"ok\":false,\"err\":\"image_erase failed\"}",
+            HTTPD_RESP_USE_STRLEN);
+    }
+
+    dm_coredump_clear();
+    coredump_audit(20, 0);   /* value_a=20 = coredump erased by admin */
+    ESP_LOGI(TAG, "[T11] /api/coredump/erase: partition cleared");
+    return httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
+}
+
+/* ============================================================
  * OTA + web-tab routes (alpha.6.20 / Phase 6.16-ζ)
  *
  * GET  /api/ota/status     — OTA state machine (auth required)
@@ -2129,6 +2373,14 @@ static const httpd_uri_t s_uri_log_files = {
 static const httpd_uri_t s_uri_log_download = {
     .uri = "/api/log/download", .method = HTTP_GET, .handler = log_download_handler, .user_ctx = NULL };
 
+/* a.6.35.6 — coredump retrieval routes. */
+static const httpd_uri_t s_uri_coredump_status = {
+    .uri = "/api/coredump/status",   .method = HTTP_GET,  .handler = coredump_status_handler,   .user_ctx = NULL };
+static const httpd_uri_t s_uri_coredump_download = {
+    .uri = "/api/coredump/download", .method = HTTP_GET,  .handler = coredump_download_handler, .user_ctx = NULL };
+static const httpd_uri_t s_uri_coredump_erase = {
+    .uri = "/api/coredump/erase",    .method = HTTP_POST, .handler = coredump_erase_handler,    .user_ctx = NULL };
+
 /* alpha.6.20 — OTA + web-tab routes (Phase 6.16-ζ). */
 static const httpd_uri_t s_uri_ota_status = {
     .uri = "/api/ota/status", .method = HTTP_GET, .handler = ota_status_handler, .user_ctx = NULL };
@@ -2173,7 +2425,7 @@ void task_web_server(void *pvParameters)
     cfg.server_port      = 80;
     cfg.stack_size       = 8192;     /* +4 KB vs default for LFS_READ_BUF + JSON stack work */
     cfg.task_priority    = 5;
-    cfg.max_uri_handlers = 28;       /* room for the 19 routes now + room for OTA (5) + WS (1) in 6.16-ζ/η */
+    cfg.max_uri_handlers = 32;       /* +4 for /api/coredump trio (a.6.35.6) on top of the 28 prior routes */
     cfg.max_open_sockets = 7;
     cfg.lru_purge_enable = true;
     cfg.recv_wait_timeout = 10;
@@ -2195,6 +2447,7 @@ void task_web_server(void *pvParameters)
         &s_uri_wifi_post, &s_uri_pin_post,
         &s_uri_sd_status, &s_uri_sd_mount, &s_uri_sd_unmount,
         &s_uri_log_files, &s_uri_log_download,
+        &s_uri_coredump_status, &s_uri_coredump_download, &s_uri_coredump_erase,
         &s_uri_ota_status, &s_uri_ota_firmware, &s_uri_ota_assets,
         &s_uri_web_get, &s_uri_web_post,
         &s_uri_ws,

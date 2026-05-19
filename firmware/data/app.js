@@ -153,7 +153,12 @@ function handleStatus(s) {
       //     temperature-driven ventilation). Distinct visual class from
       //     warn/alarm so the operator can tell at a glance it's not a fault.
       wind_protect_off:   '<span class="badge warn">Wind protect off</span>',
-      humidity_ctrl_off:  '<span class="badge info">Humidity ctrl off</span>'
+      humidity_ctrl_off:  '<span class="badge info">Humidity ctrl off</span>',
+      // a.6.35.6 — coredump available from a previous panic. Blue info badge
+      // (same class as humidity_ctrl_off) — surfaced on the dashboard so the
+      // operator sees the dump exists without going to the Log tab. The
+      // dump itself is downloaded from Log → Diagnostics → Download.
+      coredump_available: '<span class="badge info">Coredump available</span>'
     };
     alarmBadges = (Array.isArray(s.mode.flags) ? s.mode.flags : [])
       .map(f => flagBadges[f]).filter(x => x);
@@ -727,6 +732,101 @@ function downloadLog() {
   document.body.removeChild(a);
 }
 
+// ── Diagnostics — coredump retrieval (a.6.35.6) ───────────────────────────────
+//
+// Three /api/coredump endpoints: status (poll), download (stream the binary),
+// erase (wipe the partition). All admin-only via session cookie. The UI flow:
+//
+//   1. On Log-tab open, refreshCoredumpStatus() polls /api/coredump/status
+//      and updates the #cd-status text. If a dump is present, both buttons
+//      become enabled (Download is what you do first; Erase is for after a
+//      confirmed offline decode).
+//   2. Download triggers a browser file save via a temporary <a> element.
+//      The firmware sets a Content-Disposition with a versioned filename so
+//      the operator's Downloads folder ends up with
+//      coredump-<ver>-<unix_ts>.bin without manual naming.
+//   3. Erase POSTs to /api/coredump/erase, then refreshes the status. The
+//      operator should only click this after running `idf.py coredump-info`
+//      on the downloaded file and confirming the backtrace decoded.
+//
+// Once-saved-and-erased flag is intentionally NOT persisted across page
+// reloads — the Erase button is re-disabled after a refresh until another
+// Download has happened, to make a "double-click Erase by accident" harder.
+
+let g_cd_downloaded_this_session = false;
+
+function refreshCoredumpStatus() {
+  if (g_role !== 'admin') return;
+  fetch('/api/coredump/status', { credentials: 'same-origin' })
+    .then(r => r.ok ? r.json() : null)
+    .then(d => {
+      const el  = document.getElementById('cd-status');
+      const bd  = document.getElementById('btn-cd-download');
+      const be  = document.getElementById('btn-cd-erase');
+      if (!el || !bd || !be) return;
+      if (!d || !d.ok) {
+        el.textContent = '— check failed —';
+        bd.disabled = true;
+        be.disabled = true;
+        return;
+      }
+      if (d.present) {
+        el.textContent = 'Available — ' + d.size_bytes + ' bytes (' + d.size_kb + ' KB)' +
+                         (d.fw_ver ? ' • captured on fw ' + d.fw_ver : '');
+        bd.disabled = false;
+        be.disabled = !g_cd_downloaded_this_session;
+      } else {
+        el.textContent = 'No coredump stored. Next panic will be captured automatically.';
+        bd.disabled = true;
+        be.disabled = true;
+        g_cd_downloaded_this_session = false;
+      }
+    })
+    .catch(() => {
+      const el = document.getElementById('cd-status');
+      if (el) el.textContent = '— check failed —';
+    });
+}
+
+function downloadCoredump() {
+  // Trigger browser download via <a> — same pattern as downloadLog().
+  // On success the server sets Content-Disposition with a versioned filename.
+  const a = document.createElement('a');
+  a.href = '/api/coredump/download';
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  // Unlock the Erase button until the next refresh wipes the latch. The
+  // server side ALSO rate-limits (1 op per 10s) so a fast double-click
+  // can't accidentally trigger a download + erase together.
+  g_cd_downloaded_this_session = true;
+  const be = document.getElementById('btn-cd-erase');
+  if (be) be.disabled = false;
+  feedback('fb-cd', true, 'Download started');
+}
+
+function eraseCoredump() {
+  if (!confirm('Erase the stored coredump?\n\nDo this only after you have downloaded and successfully decoded the file with `idf.py coredump-info`. After erase, the dump is unrecoverable.')) {
+    return;
+  }
+  fetch('/api/coredump/erase', {
+    method: 'POST',
+    credentials: 'same-origin'
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d && d.ok) {
+        feedback('fb-cd', true, 'Erased');
+        g_cd_downloaded_this_session = false;
+        refreshCoredumpStatus();
+      } else {
+        feedback('fb-cd', false, (d && d.err) || 'Erase failed');
+      }
+    })
+    .catch(() => feedback('fb-cd', false, 'Network error'));
+}
+
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 function showTab(id) {
   document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
@@ -738,7 +838,7 @@ function showTab(id) {
     if (b.getAttribute('onclick') === "showTab('" + id + "')") b.classList.add('active');
   });
   // Refresh log file list each time the Log tab is opened
-  if (id === 'tab-log') loadLogFiles();
+  if (id === 'tab-log') { loadLogFiles(); refreshCoredumpStatus(); }
   // Refresh OTA status each time the System tab is opened
   if (id === 'tab-system' && g_role === 'admin') loadOtaStatus();
   // Refresh status-website settings + last-attempt indicators on the Web tab
@@ -882,10 +982,18 @@ function setBadge(id, text, cls) {
   el.className   = 'badge ' + cls;
 }
 
-function feedback(fbId, ok) {
+function feedback(fbId, ok, customText) {
   const el = document.getElementById(fbId);
   if (!el) return;
-  el.textContent = ok ? '✓ Saved' : '✗ Error';
+  // a.6.35.6 — optional third arg lets callers override the default text
+  // (used by the Diagnostics → Coredump panel for "Download started" /
+  // "Erased" / specific error messages from the server). 2-arg calls keep
+  // the original "✓ Saved" / "✗ Error" behaviour.
+  if (customText && typeof customText === 'string') {
+    el.textContent = (ok ? '✓ ' : '✗ ') + customText;
+  } else {
+    el.textContent = ok ? '✓ Saved' : '✗ Error';
+  }
   el.className   = ok ? 'save-ok' : 'save-err';
   setTimeout(() => { el.textContent = ''; el.className = 'save-ok'; }, 3000);
 }

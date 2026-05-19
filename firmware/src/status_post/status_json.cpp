@@ -208,6 +208,19 @@ size_t build_canonical_status_json(char *buf, size_t cap,
                 "%s\"humidity_ctrl_off\"", first ? "" : ",");
             first = false;
         }
+
+        /* a.6.35.6 — coredump-available indicator. Set when T4's boot-time
+         * esp_core_dump_image_check() found a valid dump in flash from a
+         * previous panic. Surfaced to both the local GUI (blue "Coredump
+         * available" badge in the Alarms card + Diagnostics panel in the
+         * Log tab with Download/Erase buttons) AND the public status
+         * dashboard via this flag string. Cleared after the operator
+         * downloads and erases the partition via /api/coredump. */
+        if (ok && s->coredump_available) {
+            ok = ok && append(buf, cap, &pos,
+                "%s\"coredump_available\"", first ? "" : ",");
+            first = false;
+        }
         ok = ok && append(buf, cap, &pos, "]}");
     }
 

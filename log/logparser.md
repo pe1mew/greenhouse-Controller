@@ -1,10 +1,18 @@
 # logparser — Greenhouse Controller Log Parser
 
 **File:** `log/logparser.py`
-**Document version:** 1.5 (matches firmware 2.0.0-a.6.35.5)
+**Document version:** 1.6 (matches firmware 2.0.0-a.6.35.6)
 **Requires:** Python 3.10+, standard library only (no pip dependencies)
 
-**What's new in 1.5** (matches firmware a.6.35.5):
+**What's new in 1.6** (matches firmware a.6.35.6):
+- **Coredump retrieval audit events.** Three new SYSTEM subtypes (`value_a=18`
+  detected-at-boot, `value_a=19` downloaded, `value_a=20` erased). The
+  controller now writes the coredump to a dedicated 64 KB partition on every
+  panic and exposes it via the GUI Log → Diagnostics panel (admin-only,
+  rate-limited 1 op/10 s, audit-logged on every access). The parser renders
+  each event with the approximate size where applicable.
+
+**What was new in 1.5** (matches firmware a.6.35.5):
 - **Every setting change in either GUI is now audit-logged.** Pre-a.6.35.5 the
   web GUI was silent on `/api/config` numeric writes, `/api/config` string
   writes (tz_str), `/api/wifi`, `/api/pin`, and `/api/web` — eight distinct
@@ -409,6 +417,9 @@ matches the LOG_SYSTEM table in `firmware/src/event_logger/event_logger.h`:
 | **15** | 0 | SYS | T13 ota_manager | OTA firmware verified OK — awaiting web-asset upload (2.0.0-a.6.35.3+, was `post_log(1)`) |
 | **16** | 0 | SYS | T13 ota_manager | OTA asset ZIP extracted OK — reboot scheduled (2.0.0-a.6.35.3+, was `post_log(2)`) |
 | **17** | 0 | SYS | T13 ota_manager | OTA asset extraction FAILED — boot partition unchanged (2.0.0-a.6.35.3+, was `post_log(-1)`) |
+| **18** | KB | SYS | T4 data_manager | Coredump from previous panic detected in flash at boot (2.0.0-a.6.35.6+) — download via GUI Log → Diagnostics |
+| **19** | ≈ bytes/256 | WEB | T11 web_server | Admin downloaded the coredump via `GET /api/coredump/download` (2.0.0-a.6.35.6+) |
+| **20** | 0 | WEB | T11 web_server | Admin erased the coredump partition via `POST /api/coredump/erase` (2.0.0-a.6.35.6+) |
 
 **esp_reset_reason codes (value_a=5):**
 

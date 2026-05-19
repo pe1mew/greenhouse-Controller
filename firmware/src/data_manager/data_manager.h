@@ -265,3 +265,38 @@ void dm_set_log_last_up(const char *filename);
  *                 mktime() (with TZ already set by geolocation or NVS).
  */
 void dm_set_manual_time(time_t unix_ts);
+
+/* ============================================================
+ * Coredump accessors (a.6.35.6)
+ *
+ * T4 calls esp_core_dump_image_check() once during boot. If a coredump
+ * from the previous panic is present in flash, T4 caches the fact + size
+ * and emits a LOG_SYSTEM row (value_a=18). The cached state drives both
+ * the canonical JSON's `coredump_available` mode flag and the GUI's blue
+ * Alarms-card badge. T11's /api/coredump endpoints query and clear the
+ * cached state via the accessors below.
+ * ============================================================ */
+
+/**
+ * @brief Returns true iff a valid coredump was detected in flash at boot.
+ *
+ * Read-only, lock-free (single-byte volatile load). Cleared by
+ * dm_coredump_clear() after T11 successfully erases the coredump partition.
+ */
+bool dm_coredump_present(void);
+
+/**
+ * @brief Size in bytes of the stored coredump as reported by
+ *        esp_core_dump_image_get(). Zero when none is present.
+ */
+size_t dm_coredump_size_bytes(void);
+
+/**
+ * @brief Clear the cached "coredump present" flag.
+ *
+ * Called by T11 immediately after a successful esp_core_dump_image_erase()
+ * from the /api/coredump/erase handler. Drops the GUI badge and the
+ * canonical JSON flag on the next status snapshot. Does NOT touch flash —
+ * the caller is responsible for the actual partition erase.
+ */
+void dm_coredump_clear(void);

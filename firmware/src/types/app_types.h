@@ -347,6 +347,17 @@ typedef struct {
                               *   card so the operator and public dashboard
                               *   can see at a glance that the wind safety
                               *   net is currently inactive. (a.6.35.4+) */
+    bool    coredump_available; /**< True iff a valid coredump from a previous
+                              *   panic is stored in the coredump partition.
+                              *   Cached at boot by T4 from
+                              *   esp_core_dump_image_check(). Drives the
+                              *   `coredump_available` mode-flag in the
+                              *   canonical JSON; the local GUI Alarms card
+                              *   shows a blue "Coredump available" badge and
+                              *   the Log tab adds a download/erase panel.
+                              *   Cleared by dm_coredump_clear() after the
+                              *   operator wipes the partition via
+                              *   POST /api/coredump/erase. (a.6.35.6+) */
 
     /* Windows */
     window_state_t win[3];   /**< M1 = win[0], M2 = win[1], M3 = win[2] */
