@@ -1,7 +1,7 @@
 # logparser — Greenhouse Controller Log Parser
 
 **File:** `log/logparser.py`
-**Document version:** 1.6 (matches firmware 2.0.0-a.6.35.6)
+**Document version:** 1.6 (matches firmware 2.0.0-a.6.35.7 — parser unchanged since a.6.35.6; a.6.35.7 was a DOM-only GUI reorder)
 **Requires:** Python 3.10+, standard library only (no pip dependencies)
 
 **What's new in 1.6** (matches firmware a.6.35.6):
