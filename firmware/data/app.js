@@ -143,7 +143,17 @@ function handleStatus(s) {
       calibrating:        '<span class="badge warn">Calibrating</span>',
       // gh#18 Phase 1 — T14 circuit breaker open. Phase 1 never emits this
       // flag (stub returns false); Phase 2 wires it to real breaker state.
-      net_backoff_active: '<span class="badge warn">Net backoff</span>'
+      net_backoff_active: '<span class="badge warn">Net backoff</span>',
+      // a.6.35.4 — operator-disabled-feature indicators.
+      //   wind_protect_off  → yellow warn. Wind-driven auto-close is a safety
+      //     net; turning it off (cfg.v_max ≤ 0) is a real concern the
+      //     operator should be reminded of, especially on the public dashboard.
+      //   humidity_ctrl_off → blue info. Disabling RH control (cfg.rh_ctrl_en=0)
+      //     is a routine configuration choice (e.g. operator only wants
+      //     temperature-driven ventilation). Distinct visual class from
+      //     warn/alarm so the operator can tell at a glance it's not a fault.
+      wind_protect_off:   '<span class="badge warn">Wind protect off</span>',
+      humidity_ctrl_off:  '<span class="badge info">Humidity ctrl off</span>'
     };
     alarmBadges = (Array.isArray(s.mode.flags) ? s.mode.flags : [])
       .map(f => flagBadges[f]).filter(x => x);

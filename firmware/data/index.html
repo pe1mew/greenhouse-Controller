@@ -72,7 +72,7 @@
     </div>
     <div class="card">
       <h3>Alarms <span class="tip-icon" data-tip="Active alarm and fault flags. Green = all clear.">ⓘ</span></h3>
-      <p id="st-alarms" data-tip="Possible flags: MOTOR ALARM (emergency stop triggered — all control suspended), WIND OVERRIDE (wind safety active), SENSOR FAULT T (temperature/humidity sensor error), SENSOR FAULT W (wind sensor error).">—</p>
+      <p id="st-alarms" data-tip="Possible flags. RED (alarm/fault): MOTOR ALARM (emergency stop — all control suspended), WIND OVERRIDE (wind safety active, all windows closed), MISMATCH (firmware/web-asset version mismatch). YELLOW (warn/transient): T/RH fault (temperature/humidity sensor error), Wind fault (wind sensor error), OTA active (firmware upgrade in progress), Calibrating (window-position calibration after boot), Net backoff (status-website breaker open), Wind protect off (operator set v_max ≤ 0, wind-driven auto-close disabled). BLUE (info): Humidity ctrl off (operator disabled RH-driven window control; temperature setpoints still active).">—</p>
     </div>
     <div class="card">
       <h3>Clock <span class="tip-icon" data-tip="System clock used for event logging, sunrise/sunset calculation, and night-time LED dimming.">ⓘ</span></h3>

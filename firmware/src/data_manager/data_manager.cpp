@@ -797,6 +797,13 @@ void dm_status_snapshot(status_snapshot_t *out)
         out->rh_min_active = (uint8_t)cfg.rh_min_ngt;
     }
     out->rh_ctrl_enabled = (cfg.rh_ctrl_en != 0);
+    /* Wind protection has a dedicated cfg boolean (`wind_prot_en`) that gates
+     * the whole T3 safety_monitor subsystem — both the speed and direction
+     * branches. Setting v_max ≤ 0 only disables the speed branch; setting
+     * wind_prot_en=0 disables everything (and T3 clears EG1.WIND_OVERRIDE
+     * if it was set). The badge maps to the operator-visible "off the whole
+     * subsystem" decision, which is wind_prot_en. */
+    out->wind_protect_enabled = (cfg.wind_prot_en != 0);
     out->ts_unix            = cfg.current_unix_ts;
     out->ntp_synced         = (cfg.current_unix_ts > 1700000000UL);
     out->update_interval_s  = (uint16_t)(cfg.status_interval_s > 0 ? cfg.status_interval_s
