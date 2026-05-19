@@ -1715,13 +1715,18 @@ static esp_err_t web_post_handler(httpd_req_t *req)
 
     httpd_resp_set_type(req, "application/json");
 
-    /* URL validation. */
+    /* URL validation.
+     *
+     * a.6.35 (item G): https-only. Plain HTTP exposes the `sourceidentifier`
+     * shared secret on the wire — once T14 starts attaching it as a header
+     * (item A in this same alpha), an HTTP endpoint becomes a credential
+     * leak. Reject http:// at the validator so an operator can't accidentally
+     * configure one via the GUI. */
     if (h_url && url[0] != '\0') {
-        if (strncmp(url, "http://", 7) != 0 &&
-            strncmp(url, "https://", 8) != 0) {
+        if (strncmp(url, "https://", 8) != 0) {
             httpd_resp_set_status(req, "400 Bad Request");
             return httpd_resp_send(req,
-                "{\"ok\":false,\"err\":\"URL must start with http:// or https://\"}",
+                "{\"ok\":false,\"err\":\"URL must use https:// — plain HTTP exposes the shared secret on the wire\"}",
                 HTTPD_RESP_USE_STRLEN);
         }
         if (strchr(url, '?') != NULL || strchr(url, '#') != NULL) {

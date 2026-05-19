@@ -669,13 +669,15 @@ def web_post():
         return {"ok": False, "err": "admin only"}, 403
     body = request.get_json(force=True, silent=True) or {}
 
-    # URL: empty disables the feature; non-empty must be http(s)://, must not
-    # contain ? or #, and must end with "api.php".  Mirrors firmware checks.
+    # URL: empty disables the feature; non-empty must be https:// (a.6.35:
+    # plain HTTP exposes the sourceidentifier shared secret on the wire),
+    # must not contain ? or #, and must end with "api.php". Mirrors firmware
+    # checks in firmware/src/web_server/web_server.cpp::web_post_handler.
     if "url" in body:
         url = (body.get("url") or "").strip()
         if url:
-            if not (url.startswith("http://") or url.startswith("https://")):
-                return {"ok": False, "err": "URL must start with http:// or https://"}, 400
+            if not url.startswith("https://"):
+                return {"ok": False, "err": "URL must use https:// — plain HTTP exposes the shared secret on the wire"}, 400
             if "?" in url or "#" in url:
                 return {"ok": False, "err": "URL must not contain ? or #"}, 400
             if not url.endswith("api.php"):

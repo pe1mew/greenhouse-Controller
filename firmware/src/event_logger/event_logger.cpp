@@ -70,8 +70,9 @@
 #include <time.h>
 
 #include "event_logger.h"
-#include "../types/app_types.h"
+#include "../types/app_types.h"          /* task_t14 handle */
 #include "../data_manager/data_manager.h"
+#include "../status_post/status_post.h"  /* T14_NOTIFY_LOG_ROTATED (a.6.35) */
 #include "../system_id/system_id.h"   /* unit_id in SD preamble (gh#17) */
 
 #include "nvs_config.h"
@@ -510,6 +511,15 @@ static void rotate_sd_file(void)
 
     /* Proactive free-space check. */
     check_free_space();
+
+    /* a.6.35 — wake T14 to consider uploading the just-closed file. T14's
+     * handler reads cfg.log_upload_rot and silently consumes the notification
+     * if rotation-uploads are disabled. NULL-safe: at very early boot T9
+     * may rotate before T14 is spawned; xTaskNotify with a NULL handle would
+     * crash, so we skip when task_t14 isn't populated yet. */
+    if (task_t14 != NULL) {
+        xTaskNotify(task_t14, T14_NOTIFY_LOG_ROTATED, eSetBits);
+    }
 }
 
 /**
