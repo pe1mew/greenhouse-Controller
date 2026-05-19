@@ -684,6 +684,30 @@ static esp_err_t logout_handler(httpd_req_t *req)
 
 #define HIST_MAX_ROWS  60  /**< Cap on /api/history?n=N */
 
+/* ============================================================
+ * Audit-log helpers (a.6.35.5) — emit LOG_SETPOINT rows for the four
+ * config paths that bypass Q4 → T4 (and therefore T4's automatic audit
+ * emission).
+ *
+ * Sensitive-value semantics: for PIN / WiFi credentials / shared secrets,
+ * value_a=1 means "field was changed" — the actual value is intentionally
+ * NOT logged so the SD CSV doesn't become a credential exfil surface.
+ *
+ * Numeric /api/web fields (status_interval_s, status_enable, etc.) still
+ * encode old → new the way the climate/wind setpoints do.
+ * ============================================================ */
+static void log_web_setpoint(log_param_id_t pid, int16_t value_a, int16_t value_b)
+{
+    log_event_t ev = {};
+    ev.timestamp  = (uint32_t)time(NULL);
+    ev.event_type = (uint8_t)LOG_SETPOINT;
+    ev.initiator  = (uint8_t)LOG_BY_WEB;
+    ev.param_id   = (uint8_t)pid;
+    ev.value_a    = value_a;
+    ev.value_b    = value_b;
+    log_post(&ev);
+}
+
 static esp_err_t status_handler(httpd_req_t *req)
 {
     /* status_snapshot_t is large (~600 B); use a heap allocation rather
@@ -1094,6 +1118,10 @@ static esp_err_t config_post_handler(httpd_req_t *req)
         if (strcmp(key, "tz_str") == 0 && str_value[0] != '\0') {
             setenv("TZ", str_value, 1);
             tzset();
+            /* a.6.35.5 — audit row for the TZ change. The actual TZ string
+             * isn't logged (value_a=1 = "set"); the param_id identifies
+             * the field, the initiator (WEB) identifies the operator path. */
+            log_web_setpoint(LOG_PARAM_TZ_STR, 1, 0);
         }
         ESP_LOGI(TAG, "[T11] /api/config %s/%s set str=\"%s\"", ns, key, str_value);
         return httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
@@ -1110,13 +1138,17 @@ static esp_err_t config_post_handler(httpd_req_t *req)
 
     /* upd.ns/upd.key are 16-byte buffers; src ns/key may be up to 16/32
      * (the strlen check above already rejects oversize). strncpy + explicit
-     * NUL terminator avoids the gcc -Wformat-truncation pessimism. */
+     * NUL terminator avoids the gcc -Wformat-truncation pessimism.
+     *
+     * a.6.35.5 — set upd.initiator = LOG_BY_WEB so T4's audit row
+     * correctly attributes this change to the web GUI. */
     config_update_t upd = {};
     strncpy(upd.ns,  ns,  sizeof(upd.ns)  - 1);
     upd.ns[sizeof(upd.ns)  - 1] = '\0';
     strncpy(upd.key, key, sizeof(upd.key) - 1);
     upd.key[sizeof(upd.key) - 1] = '\0';
-    upd.value = (int32_t)atoi(val_buf);
+    upd.value     = (int32_t)atoi(val_buf);
+    upd.initiator = (uint8_t)LOG_BY_WEB;
 
     if (xQueueSend(Q4, &upd, pdMS_TO_TICKS(500)) != pdTRUE) {
         httpd_resp_set_status(req, "503 Service Unavailable");
@@ -1195,6 +1227,15 @@ static esp_err_t wifi_post_handler(httpd_req_t *req)
     if (has_psk && psk[0])    (void)nvs_cfg_set_str("wifi", "psk",    psk);    /* never blank PSK */
     if (has_ap_psk && ap_psk[0]) (void)nvs_cfg_set_str("wifi", "ap_psk", ap_psk);
 
+    /* a.6.35.5 — audit rows for credential changes. value_a=1 indicates
+     * "set/changed"; the actual SSID / passphrase is NEVER logged (would
+     * make the SD CSV a credential exfil surface). The CSV row stamps
+     * who-changed-what-when; the actual new value can be confirmed via
+     * the next /api/wifi GET if needed. */
+    if (has_ssid)                log_web_setpoint(LOG_PARAM_WIFI_SSID,    1, 0);
+    if (has_psk    && psk[0])    log_web_setpoint(LOG_PARAM_WIFI_PSK,     1, 0);
+    if (has_ap_psk && ap_psk[0]) log_web_setpoint(LOG_PARAM_WIFI_AP_PSK,  1, 0);
+
     ESP_LOGI(TAG, "[T11] /api/wifi updated: ssid=%s%s%s",
              has_ssid ? ssid : "(unchanged)",
              (has_psk && psk[0]) ? " psk=***" : "",
@@ -1243,6 +1284,13 @@ static esp_err_t pin_post_handler(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     if (res == PIN_AUTH_OK) {
         ESP_LOGI(TAG, "[T11] /api/pin: role=%s changed", role_str);
+        /* a.6.35.5 — audit row for the PIN change. Critical security event:
+         * value_a=1 = "changed"; the new PIN itself is NEVER logged. The
+         * separate LOG_PARAM_PIN_FARMER / LOG_PARAM_PIN_ADMIN param ids
+         * let the operator filter by role in the parsed CSV. */
+        log_web_setpoint(
+            (pr == PIN_ROLE_ADMIN) ? LOG_PARAM_PIN_ADMIN : LOG_PARAM_PIN_FARMER,
+            1, 0);
         return httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
     }
     ESP_LOGW(TAG, "[T11] /api/pin: pin_auth_set failed rc=%d", (int)res);
@@ -1769,6 +1817,11 @@ static esp_err_t web_post_handler(httpd_req_t *req)
             "{\"ok\":false,\"err\":\"bounds\"}", HTTPD_RESP_USE_STRLEN);
     }
 
+    /* a.6.35.5 — capture old values BEFORE writing so the audit rows
+     * can show old → new. Snapshot under MX4 happens once for all fields. */
+    cfg_shadow_t prev = {};
+    dm_cfg_snapshot(&prev);
+
     if (h_url)               (void)nvs_cfg_set_str(NVS_NS_SYSTEM, "status_url",     url);
     if (h_sec && secret[0])  (void)nvs_cfg_set_str(NVS_NS_SYSTEM, "status_secret",  secret);
     if (h_iv)                (void)nvs_cfg_set_i32(NVS_NS_SYSTEM, "status_intv_s",  interval);
@@ -1779,6 +1832,48 @@ static esp_err_t web_post_handler(httpd_req_t *req)
     if (h_lr)                (void)nvs_cfg_set_i32(NVS_NS_SYSTEM, "log_upload_rot", log_rot);
 
     dm_reload_web_cfg();
+
+    /* a.6.35.5 — emit audit rows for every changed field. String fields
+     * (URL, secret) log "set" without exposing the value; integer fields
+     * log old → new the same way climate/wind setpoints do. The "changed"
+     * test guards against logging a no-op Apply where the operator clicked
+     * without actually editing the field. */
+    if (h_url && strcmp(url, prev.status_url) != 0) {
+        log_web_setpoint(LOG_PARAM_STATUS_URL, 1, 0);
+    }
+    if (h_sec && secret[0]) {
+        /* The secret comparison would require the existing value, which is
+         * never echoed via /api/web GET. Conservative: log any non-empty
+         * write as a "set". Operator side: redundant Applies of the same
+         * secret will log redundant rows, which is acceptable for a
+         * security-sensitive field. */
+        log_web_setpoint(LOG_PARAM_STATUS_SECRET, 1, 0);
+    }
+    if (h_iv && interval != prev.status_interval_s) {
+        log_web_setpoint(LOG_PARAM_STATUS_INTV,
+                         (int16_t)prev.status_interval_s, (int16_t)interval);
+    }
+    if (h_en && enable != prev.status_enable) {
+        log_web_setpoint(LOG_PARAM_STATUS_ENABLE,
+                         (int16_t)prev.status_enable, (int16_t)enable);
+    }
+    if (h_ex && expose != prev.status_expose) {
+        log_web_setpoint(LOG_PARAM_STATUS_EXPOSE,
+                         (int16_t)prev.status_expose, (int16_t)expose);
+    }
+    if (h_lh && log_h != prev.log_upload_h) {
+        log_web_setpoint(LOG_PARAM_LOG_UPLOAD_H,
+                         (int16_t)prev.log_upload_h, (int16_t)log_h);
+    }
+    if (h_lm && log_m != prev.log_upload_m) {
+        log_web_setpoint(LOG_PARAM_LOG_UPLOAD_M,
+                         (int16_t)prev.log_upload_m, (int16_t)log_m);
+    }
+    if (h_lr && log_rot != prev.log_upload_rot) {
+        log_web_setpoint(LOG_PARAM_LOG_UPLOAD_ROT,
+                         (int16_t)prev.log_upload_rot, (int16_t)log_rot);
+    }
+
     ESP_LOGI(TAG, "[T11] /api/web cfg updated: url=%s interval=%ld enable=%ld expose=0x%02lX",
              h_url ? url : "(unchanged)",
              (long)interval, (long)enable, (long)expose);

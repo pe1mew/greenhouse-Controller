@@ -504,25 +504,26 @@ static void session_close(bool timeout)
  * ============================================================ */
 static void apply_param_change(const param_def_t *p, int32_t new_val, int32_t old_val)
 {
+    /* a.6.35.5 — set initiator on the Q4 message so T4 can emit the audit
+     * row with correct attribution. Previously T8 emitted its own
+     * LOG_SETPOINT directly here, BUT did so even when xQueueSend failed —
+     * the log claimed the change was made while the actual change was lost.
+     * T4 now emits the audit row only after a successful NVS+shadow write,
+     * so a Q4 overflow correctly produces zero rows for the dropped change. */
     config_update_t upd = {};
     snprintf(upd.ns,  sizeof(upd.ns),  "%s", p->nvs_ns);
     snprintf(upd.key, sizeof(upd.key), "%s", p->nvs_key);
-    upd.value = new_val;
+    upd.value     = new_val;
+    upd.initiator = (s_session == SESSION_FARMER) ? (uint8_t)LOG_BY_FARMER
+                                                  : (uint8_t)LOG_BY_ADMIN;
 
     if (xQueueSend(Q4, &upd, pdMS_TO_TICKS(200)) != pdTRUE) {
         ESP_LOGW(TAG, "Q4 full — config '%s/%s' lost", p->nvs_ns, p->nvs_key);
     }
-
-    if (p->log_id != LOG_PARAM_NONE) {
-        log_event_t ev = {};
-        ev.timestamp  = (uint32_t)time(NULL);
-        ev.event_type = LOG_SETPOINT;
-        ev.initiator  = (s_session == SESSION_FARMER) ? LOG_BY_FARMER : LOG_BY_ADMIN;
-        ev.param_id   = (uint8_t)p->log_id;
-        ev.value_a    = (int16_t)old_val;
-        ev.value_b    = (int16_t)new_val;
-        log_post(&ev);
-    }
+    /* T8 no longer emits LOG_SETPOINT directly — T4 does, from Q4. The
+     * (void)old_val cast keeps the parameter signature stable for the
+     * existing callers; the value is still useful in the ESP_LOGI below. */
+    (void)old_val;
     ESP_LOGI(TAG, "Config '%s/%s' changed: %ld -> %ld",
              p->nvs_ns, p->nvs_key, (long)old_val, (long)new_val);
 }

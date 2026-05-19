@@ -163,6 +163,32 @@ typedef enum {
     LOG_PARAM_POLL_INTV    = 20,  /**< C20 poll_interval */
     LOG_PARAM_LAT_LON      = 21,  /**< C21 lat / lon */
     LOG_PARAM_CR_APPLIED   = 22,  /**< C22 automatic T vs RH conflict resolution */
+
+    /* a.6.35.5 — admin / web-only setting changes that previously had no
+     * audit trail. Sensitive fields (PIN, WiFi credentials, secrets) log
+     * a "changed" marker without exposing the value:
+     *   value_a = 1, value_b = 0 → field was set/changed
+     * Non-sensitive integer fields log old → new exactly the way the C1..C22
+     * setpoints do. Strings without sensitive content (tz_str) get the same
+     * "set" marker — the parser includes the field-name; the value isn't
+     * loggable as int16 anyway. */
+    LOG_PARAM_TZ_STR         = 23,  /**< system/tz_str   — value_a=1=set */
+    LOG_PARAM_WIFI_SSID      = 24,  /**< wifi/ssid       — value_a=1=set */
+    LOG_PARAM_WIFI_PSK       = 25,  /**< wifi/psk        — value_a=1=set */
+    LOG_PARAM_WIFI_AP_PSK    = 26,  /**< wifi/ap_psk     — value_a=1=set */
+    LOG_PARAM_PIN_FARMER     = 27,  /**< pin role=farmer — value_a=1=changed */
+    LOG_PARAM_PIN_ADMIN      = 28,  /**< pin role=admin  — value_a=1=changed */
+    LOG_PARAM_STATUS_URL     = 29,  /**< system/status_url    — value_a=1=set */
+    LOG_PARAM_STATUS_SECRET  = 30,  /**< system/status_secret — value_a=1=set */
+    LOG_PARAM_STATUS_INTV    = 31,  /**< system/status_intv_s — old → new */
+    LOG_PARAM_STATUS_ENABLE  = 32,  /**< system/status_enable — old → new */
+    LOG_PARAM_STATUS_EXPOSE  = 33,  /**< system/status_expose — old → new (bitmask) */
+    LOG_PARAM_LOG_UPLOAD_H   = 34,  /**< system/log_upload_h   — old → new */
+    LOG_PARAM_LOG_UPLOAD_M   = 35,  /**< system/log_upload_m   — old → new */
+    LOG_PARAM_LOG_UPLOAD_ROT = 36,  /**< system/log_upload_rot — old → new */
+
+    /* Wind subsystem boolean (since 1.20.x; not previously enumerated). */
+    LOG_PARAM_WIND_PROT_EN   = 37,  /**< wind/wind_prot_en — old → new */
 } log_param_id_t;
 
 /**
@@ -233,6 +259,13 @@ typedef struct {
     char    ns[16];   /**< NVS namespace (e.g. "climate") */
     char    key[16];  /**< NVS key (e.g. "t_max_day") */
     int32_t value;    /**< New value (cast to appropriate NVS type by T4) */
+    uint8_t initiator;/**< log_initiator_t — carried through to the audit row
+                       *   T4 emits after applying the change. LCD-UI senders
+                       *   set LOG_BY_FARMER or LOG_BY_ADMIN from the active
+                       *   session; the web server sets LOG_BY_WEB. Since
+                       *   2.0.0-a.6.35.5; older callers that left it zero
+                       *   produce LOG_BY_SYSTEM rows which surface as a
+                       *   missing-attribution audit signal. */
 } config_update_t;
 
 /** Q5 — network status (T10 → T8; depth 1, xQueueOverwrite). */

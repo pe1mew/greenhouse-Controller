@@ -398,12 +398,93 @@ static int32_t cfg_clamp(const char *ns, const char *key, int32_t v)
 }
 
 /* ============================================================
+ * ns/key → log_param_id_t mapping (a.6.35.5 audit logging).
+ *
+ * Returns the LOG_PARAM_* id and, for motor-channel keys, the 1-based
+ * channel index. Returns LOG_PARAM_NONE for keys that aren't enumerated
+ * in log_param_id_t — those changes still apply but emit no audit row.
+ * ============================================================ */
+static log_param_id_t ns_key_to_log_id(const char *ns, const char *key,
+                                       uint8_t *out_channel)
+{
+    if (out_channel) { *out_channel = 0u; }
+
+    if (strcmp(ns, NVS_NS_CLIMATE) == 0) {
+        if (strcmp(key, K_T_MIN_DAY)   == 0) return LOG_PARAM_T_MIN_DAY;
+        if (strcmp(key, K_T_MAX_DAY)   == 0) return LOG_PARAM_T_MAX_DAY;
+        if (strcmp(key, K_T_MIN_NGT)   == 0) return LOG_PARAM_T_MIN_NGT;
+        if (strcmp(key, K_T_MAX_NGT)   == 0) return LOG_PARAM_T_MAX_NGT;
+        if (strcmp(key, K_RH_MIN_DAY)  == 0) return LOG_PARAM_RH_MIN_DAY;
+        if (strcmp(key, K_RH_MAX_DAY)  == 0) return LOG_PARAM_RH_MAX_DAY;
+        if (strcmp(key, K_RH_MIN_NGT)  == 0) return LOG_PARAM_RH_MIN_NGT;
+        if (strcmp(key, K_RH_MAX_NGT)  == 0) return LOG_PARAM_RH_MAX_NGT;
+        if (strcmp(key, K_HYST_T)      == 0) return LOG_PARAM_HYST_T;
+        if (strcmp(key, K_HYST_RH)     == 0) return LOG_PARAM_HYST_RH;
+        if (strcmp(key, K_RH_CTRL_EN)  == 0) return LOG_PARAM_RH_CTRL_EN;
+        if (strcmp(key, K_CR_PRIORITY) == 0) return LOG_PARAM_CR_PRIORITY;
+        if (strcmp(key, K_AVG_WIN_T)   == 0) return LOG_PARAM_AVG_WIN_T;
+        if (strcmp(key, K_AVG_WIN_RH)  == 0) return LOG_PARAM_AVG_WIN_RH;
+        return LOG_PARAM_NONE;
+    }
+    if (strcmp(ns, NVS_NS_WIND) == 0) {
+        if (strcmp(key, K_V_MAX)         == 0) return LOG_PARAM_V_MAX;
+        if (strcmp(key, K_DIR_EXCL_LOW)  == 0) return LOG_PARAM_DIR_EXCL_LOW;
+        if (strcmp(key, K_DIR_EXCL_HIGH) == 0) return LOG_PARAM_DIR_EXCL_HI;
+        if (strcmp(key, K_WIND_PROT_EN)  == 0) return LOG_PARAM_WIND_PROT_EN;
+        return LOG_PARAM_NONE;
+    }
+    if (strcmp(ns, NVS_NS_MOTOR) == 0) {
+        static const char * const kdo[] = { K_DWELL_OPEN_M1,  K_DWELL_OPEN_M2,  K_DWELL_OPEN_M3  };
+        static const char * const kdc[] = { K_DWELL_CLOSE_M1, K_DWELL_CLOSE_M2, K_DWELL_CLOSE_M3 };
+        for (uint8_t i = 0u; i < 3u; i++) {
+            if (strcmp(key, kdo[i]) == 0) {
+                if (out_channel) { *out_channel = (uint8_t)(i + 1u); }
+                return LOG_PARAM_DWELL_OPEN;
+            }
+            if (strcmp(key, kdc[i]) == 0) {
+                if (out_channel) { *out_channel = (uint8_t)(i + 1u); }
+                return LOG_PARAM_DWELL_CLOSE;
+            }
+        }
+        /* travel_m{1,2,3} not enumerated in log_param_id_t — falls to NONE.
+         * Motor travel time is set during commissioning and rarely changes;
+         * not surfacing it via SETPT is a deliberate choice from the C1..C22
+         * table in logAnalysis.md. */
+        return LOG_PARAM_NONE;
+    }
+    if (strcmp(ns, NVS_NS_SYSTEM) == 0) {
+        if (strcmp(key, K_POLL_INTERVAL)  == 0) return LOG_PARAM_POLL_INTV;
+        if (strcmp(key, K_LAT_DEG)        == 0 ||
+            strcmp(key, K_LAT_FRAC)       == 0 ||
+            strcmp(key, K_LON_DEG)        == 0 ||
+            strcmp(key, K_LON_FRAC)       == 0) return LOG_PARAM_LAT_LON;
+        if (strcmp(key, K_STATUS_INTERVAL) == 0) return LOG_PARAM_STATUS_INTV;
+        if (strcmp(key, K_STATUS_ENABLE)   == 0) return LOG_PARAM_STATUS_ENABLE;
+        if (strcmp(key, K_STATUS_EXPOSE)   == 0) return LOG_PARAM_STATUS_EXPOSE;
+        if (strcmp(key, K_LOG_UPLOAD_H)    == 0) return LOG_PARAM_LOG_UPLOAD_H;
+        if (strcmp(key, K_LOG_UPLOAD_M)    == 0) return LOG_PARAM_LOG_UPLOAD_M;
+        if (strcmp(key, K_LOG_UPLOAD_ROT)  == 0) return LOG_PARAM_LOG_UPLOAD_ROT;
+        /* session_timeout_min / ap_timeout_min / led_* not enumerated. */
+        return LOG_PARAM_NONE;
+    }
+    return LOG_PARAM_NONE;
+}
+
+/* ============================================================
  * Internal helper — apply a Q4 config_update_t
+ *
+ * a.6.35.5: now also emits a LOG_SETPOINT audit row to Q3 after a
+ * successful shadow update. The Q4 message carries the initiator
+ * (LOG_BY_FARMER / LOG_BY_ADMIN from the LCD-UI session, LOG_BY_WEB
+ * from the web server, or 0 / LOG_BY_SYSTEM from legacy callers that
+ * didn't set it). Old → new (clamped) values are captured under the
+ * same MX4 critical section that writes the shadow.
  *
  * Returns true on success (NVS written + shadow updated).
  * config_update_t carries only int32_t values; string-type keys
  * (tz_str) are not handled through Q4 — the web server writes them
- * to NVS directly (Phase 9) and T4 re-reads on next boot.
+ * to NVS directly and emits its own audit row (T11-side, with
+ * initiator=LOG_BY_WEB).
  * ============================================================ */
 
 static bool apply_config_update(const config_update_t *upd)
@@ -420,40 +501,43 @@ static bool apply_config_update(const config_update_t *upd)
         return false;
     }
 
-    /* Update the in-RAM shadow under MX4. */
+    /* Update the in-RAM shadow under MX4. Also reads the *old* value of the
+     * same key in the same critical section so the audit row below carries
+     * an accurate old→new pair regardless of any racing reader. */
     if (xSemaphoreTake(MX4, pdMS_TO_TICKS(200u)) != pdTRUE) {
         ESP_LOGW(TAG, "MX4 timeout in apply_config_update — NVS written but shadow stale");
         return false;
     }
 
-    bool updated  = true;
-    int16_t v16   = (int16_t)clamped;
-    int32_t v32   = clamped;
+    bool    updated = true;
+    int32_t old_val = 0;            /* captured before the shadow write */
+    int16_t v16     = (int16_t)clamped;
+    int32_t v32     = clamped;
     const char *ns_str  = upd->ns;
     const char *key_str = upd->key;
 
     if (strcmp(ns_str, NVS_NS_CLIMATE) == 0) {
-        if      (strcmp(key_str, K_T_MIN_DAY)   == 0) s_cfg.t_min_day   = v16;
-        else if (strcmp(key_str, K_T_MAX_DAY)   == 0) s_cfg.t_max_day   = v16;
-        else if (strcmp(key_str, K_T_MIN_NGT)   == 0) s_cfg.t_min_ngt   = v16;
-        else if (strcmp(key_str, K_T_MAX_NGT)   == 0) s_cfg.t_max_ngt   = v16;
-        else if (strcmp(key_str, K_RH_MIN_DAY)  == 0) s_cfg.rh_min_day  = v16;
-        else if (strcmp(key_str, K_RH_MAX_DAY)  == 0) s_cfg.rh_max_day  = v16;
-        else if (strcmp(key_str, K_RH_MIN_NGT)  == 0) s_cfg.rh_min_ngt  = v16;
-        else if (strcmp(key_str, K_RH_MAX_NGT)  == 0) s_cfg.rh_max_ngt  = v16;
-        else if (strcmp(key_str, K_HYST_T)      == 0) s_cfg.hyst_t      = v16;
-        else if (strcmp(key_str, K_HYST_RH)     == 0) s_cfg.hyst_rh     = v16;
-        else if (strcmp(key_str, K_RH_CTRL_EN)  == 0) s_cfg.rh_ctrl_en  = v16;
-        else if (strcmp(key_str, K_CR_PRIORITY) == 0) s_cfg.cr_priority = v16;
-        else if (strcmp(key_str, K_AVG_WIN_T)   == 0) s_cfg.avg_win_t   = v16;
-        else if (strcmp(key_str, K_AVG_WIN_RH)  == 0) s_cfg.avg_win_rh  = v16;
+        if      (strcmp(key_str, K_T_MIN_DAY)   == 0) { old_val = s_cfg.t_min_day;   s_cfg.t_min_day   = v16; }
+        else if (strcmp(key_str, K_T_MAX_DAY)   == 0) { old_val = s_cfg.t_max_day;   s_cfg.t_max_day   = v16; }
+        else if (strcmp(key_str, K_T_MIN_NGT)   == 0) { old_val = s_cfg.t_min_ngt;   s_cfg.t_min_ngt   = v16; }
+        else if (strcmp(key_str, K_T_MAX_NGT)   == 0) { old_val = s_cfg.t_max_ngt;   s_cfg.t_max_ngt   = v16; }
+        else if (strcmp(key_str, K_RH_MIN_DAY)  == 0) { old_val = s_cfg.rh_min_day;  s_cfg.rh_min_day  = v16; }
+        else if (strcmp(key_str, K_RH_MAX_DAY)  == 0) { old_val = s_cfg.rh_max_day;  s_cfg.rh_max_day  = v16; }
+        else if (strcmp(key_str, K_RH_MIN_NGT)  == 0) { old_val = s_cfg.rh_min_ngt;  s_cfg.rh_min_ngt  = v16; }
+        else if (strcmp(key_str, K_RH_MAX_NGT)  == 0) { old_val = s_cfg.rh_max_ngt;  s_cfg.rh_max_ngt  = v16; }
+        else if (strcmp(key_str, K_HYST_T)      == 0) { old_val = s_cfg.hyst_t;      s_cfg.hyst_t      = v16; }
+        else if (strcmp(key_str, K_HYST_RH)     == 0) { old_val = s_cfg.hyst_rh;     s_cfg.hyst_rh     = v16; }
+        else if (strcmp(key_str, K_RH_CTRL_EN)  == 0) { old_val = s_cfg.rh_ctrl_en;  s_cfg.rh_ctrl_en  = v16; }
+        else if (strcmp(key_str, K_CR_PRIORITY) == 0) { old_val = s_cfg.cr_priority; s_cfg.cr_priority = v16; }
+        else if (strcmp(key_str, K_AVG_WIN_T)   == 0) { old_val = s_cfg.avg_win_t;   s_cfg.avg_win_t   = v16; }
+        else if (strcmp(key_str, K_AVG_WIN_RH)  == 0) { old_val = s_cfg.avg_win_rh;  s_cfg.avg_win_rh  = v16; }
         else { updated = false; }
 
     } else if (strcmp(ns_str, NVS_NS_WIND) == 0) {
-        if      (strcmp(key_str, K_V_MAX)         == 0) s_cfg.v_max         = v16;
-        else if (strcmp(key_str, K_DIR_EXCL_LOW)  == 0) s_cfg.dir_excl_low  = v16;
-        else if (strcmp(key_str, K_DIR_EXCL_HIGH) == 0) s_cfg.dir_excl_high = v16;
-        else if (strcmp(key_str, K_WIND_PROT_EN)  == 0) s_cfg.wind_prot_en  = v16;
+        if      (strcmp(key_str, K_V_MAX)         == 0) { old_val = s_cfg.v_max;         s_cfg.v_max         = v16; }
+        else if (strcmp(key_str, K_DIR_EXCL_LOW)  == 0) { old_val = s_cfg.dir_excl_low;  s_cfg.dir_excl_low  = v16; }
+        else if (strcmp(key_str, K_DIR_EXCL_HIGH) == 0) { old_val = s_cfg.dir_excl_high; s_cfg.dir_excl_high = v16; }
+        else if (strcmp(key_str, K_WIND_PROT_EN)  == 0) { old_val = s_cfg.wind_prot_en;  s_cfg.wind_prot_en  = v16; }
         else { updated = false; }
 
     } else if (strcmp(ns_str, NVS_NS_MOTOR) == 0) {
@@ -462,29 +546,29 @@ static bool apply_config_update(const config_update_t *upd)
         static const char * const kdc[] = { K_DWELL_CLOSE_M1, K_DWELL_CLOSE_M2, K_DWELL_CLOSE_M3 };
         updated = false;
         for (uint8_t i = 0u; i < 3u; i++) {
-            if (strcmp(key_str, ktr[i]) == 0) { s_cfg.travel_s[i]        = v16; updated = true; break; }
-            if (strcmp(key_str, kdo[i]) == 0) { s_cfg.dwell_open_min[i]  = v16; updated = true; break; }
-            if (strcmp(key_str, kdc[i]) == 0) { s_cfg.dwell_close_min[i] = v16; updated = true; break; }
+            if (strcmp(key_str, ktr[i]) == 0) { old_val = s_cfg.travel_s[i];        s_cfg.travel_s[i]        = v16; updated = true; break; }
+            if (strcmp(key_str, kdo[i]) == 0) { old_val = s_cfg.dwell_open_min[i];  s_cfg.dwell_open_min[i]  = v16; updated = true; break; }
+            if (strcmp(key_str, kdc[i]) == 0) { old_val = s_cfg.dwell_close_min[i]; s_cfg.dwell_close_min[i] = v16; updated = true; break; }
         }
 
     } else if (strcmp(ns_str, NVS_NS_SYSTEM) == 0) {
-        if      (strcmp(key_str, K_POLL_INTERVAL)   == 0) s_cfg.poll_interval_s     = v32;
-        else if (strcmp(key_str, K_SESSION_TIMEOUT)  == 0) s_cfg.session_timeout_min = v32;
-        else if (strcmp(key_str, K_AP_TIMEOUT)       == 0) s_cfg.ap_timeout_min      = v32;
-        else if (strcmp(key_str, K_LAT_DEG)          == 0) { s_cfg.lat_deg  = v32; update_sun_times(); }
-        else if (strcmp(key_str, K_LAT_FRAC)         == 0) { s_cfg.lat_frac = v32; update_sun_times(); }
-        else if (strcmp(key_str, K_LON_DEG)          == 0) { s_cfg.lon_deg  = v32; update_sun_times(); }
-        else if (strcmp(key_str, K_LON_FRAC)         == 0) { s_cfg.lon_frac = v32; update_sun_times(); }
-        else if (strcmp(key_str, K_LED_DAY_BRT)      == 0) s_cfg.led_day_brt         = v32;
-        else if (strcmp(key_str, K_LED_NITE_BRT)     == 0) s_cfg.led_nite_brt        = v32;
-        else if (strcmp(key_str, K_LED_NITE_FROM)    == 0) s_cfg.led_nite_from       = v32;
-        else if (strcmp(key_str, K_LED_NITE_TO)      == 0) s_cfg.led_nite_to         = v32;
-        else if (strcmp(key_str, K_STATUS_INTERVAL)  == 0) s_cfg.status_interval_s   = v32;
-        else if (strcmp(key_str, K_STATUS_ENABLE)    == 0) s_cfg.status_enable       = v32;
-        else if (strcmp(key_str, K_STATUS_EXPOSE)    == 0) s_cfg.status_expose       = v32;
-        else if (strcmp(key_str, K_LOG_UPLOAD_H)     == 0) s_cfg.log_upload_h        = v32;
-        else if (strcmp(key_str, K_LOG_UPLOAD_M)     == 0) s_cfg.log_upload_m        = v32;
-        else if (strcmp(key_str, K_LOG_UPLOAD_ROT)   == 0) s_cfg.log_upload_rot      = v32;
+        if      (strcmp(key_str, K_POLL_INTERVAL)   == 0) { old_val = s_cfg.poll_interval_s;     s_cfg.poll_interval_s     = v32; }
+        else if (strcmp(key_str, K_SESSION_TIMEOUT) == 0) { old_val = s_cfg.session_timeout_min; s_cfg.session_timeout_min = v32; }
+        else if (strcmp(key_str, K_AP_TIMEOUT)      == 0) { old_val = s_cfg.ap_timeout_min;      s_cfg.ap_timeout_min      = v32; }
+        else if (strcmp(key_str, K_LAT_DEG)         == 0) { old_val = s_cfg.lat_deg;  s_cfg.lat_deg  = v32; update_sun_times(); }
+        else if (strcmp(key_str, K_LAT_FRAC)        == 0) { old_val = s_cfg.lat_frac; s_cfg.lat_frac = v32; update_sun_times(); }
+        else if (strcmp(key_str, K_LON_DEG)         == 0) { old_val = s_cfg.lon_deg;  s_cfg.lon_deg  = v32; update_sun_times(); }
+        else if (strcmp(key_str, K_LON_FRAC)        == 0) { old_val = s_cfg.lon_frac; s_cfg.lon_frac = v32; update_sun_times(); }
+        else if (strcmp(key_str, K_LED_DAY_BRT)     == 0) { old_val = s_cfg.led_day_brt;   s_cfg.led_day_brt   = v32; }
+        else if (strcmp(key_str, K_LED_NITE_BRT)    == 0) { old_val = s_cfg.led_nite_brt;  s_cfg.led_nite_brt  = v32; }
+        else if (strcmp(key_str, K_LED_NITE_FROM)   == 0) { old_val = s_cfg.led_nite_from; s_cfg.led_nite_from = v32; }
+        else if (strcmp(key_str, K_LED_NITE_TO)     == 0) { old_val = s_cfg.led_nite_to;   s_cfg.led_nite_to   = v32; }
+        else if (strcmp(key_str, K_STATUS_INTERVAL) == 0) { old_val = s_cfg.status_interval_s; s_cfg.status_interval_s = v32; }
+        else if (strcmp(key_str, K_STATUS_ENABLE)   == 0) { old_val = s_cfg.status_enable;     s_cfg.status_enable     = v32; }
+        else if (strcmp(key_str, K_STATUS_EXPOSE)   == 0) { old_val = s_cfg.status_expose;     s_cfg.status_expose     = v32; }
+        else if (strcmp(key_str, K_LOG_UPLOAD_H)    == 0) { old_val = s_cfg.log_upload_h;      s_cfg.log_upload_h      = v32; }
+        else if (strcmp(key_str, K_LOG_UPLOAD_M)    == 0) { old_val = s_cfg.log_upload_m;      s_cfg.log_upload_m      = v32; }
+        else if (strcmp(key_str, K_LOG_UPLOAD_ROT)  == 0) { old_val = s_cfg.log_upload_rot;    s_cfg.log_upload_rot    = v32; }
         else { updated = false; }
     } else {
         updated = false;
@@ -498,6 +582,31 @@ static bool apply_config_update(const config_update_t *upd)
                      ns_str, key_str, (long)clamped, (long)upd->value);
         } else {
             ESP_LOGI(TAG, "Q4 applied: %.15s/%.15s = %ld", ns_str, key_str, (long)clamped);
+        }
+
+        /* a.6.35.5 — emit the audit row. Only when ns/key maps to a
+         * documented log_param_id_t; admin-internal keys (session_timeout,
+         * ap_timeout, led_*) update silently. */
+        uint8_t channel = 0u;
+        log_param_id_t pid = ns_key_to_log_id(ns_str, key_str, &channel);
+        if (pid != LOG_PARAM_NONE) {
+            log_event_t ev = {};
+            ev.timestamp  = (uint32_t)time(NULL);
+            ev.event_type = (uint8_t)LOG_SETPOINT;
+            /* Default to LOG_BY_SYSTEM when an older caller forgot to set
+             * the initiator — surfaces missing attribution rather than
+             * silently mis-attributing to LOG_BY_FARMER (which is the zero
+             * value in some older log_initiator_t orderings). */
+            ev.initiator  = (upd->initiator != 0u) ? upd->initiator
+                                                   : (uint8_t)LOG_BY_SYSTEM;
+            ev.channel    = channel;
+            ev.param_id   = (uint8_t)pid;
+            /* Clamp old_val and clamped to int16 range for the log payload.
+             * Values that don't fit (e.g. led_day_brt up to 255) still log
+             * within int16 — the parser knows the unit per param_id. */
+            ev.value_a    = (int16_t)old_val;
+            ev.value_b    = (int16_t)clamped;
+            log_post(&ev);
         }
     } else {
         ESP_LOGW(TAG, "Q4 key not in shadow: %.15s/%.15s = %ld  (NVS written; shadow unchanged)",
