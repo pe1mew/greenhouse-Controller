@@ -187,6 +187,27 @@ size_t build_canonical_status_json(char *buf, size_t cap,
                 "%s\"net_backoff_active\"", first ? "" : ",");
             first = false;
         }
+
+        /* a.6.35.4 — operator-disabled-feature flags. Surfaced as mode.flags
+         * entries so both the local GUI's Alarms card and the public status
+         * dashboard pick them up via the same flag-name → badge mapping.
+         *
+         * Not EG1 bits: these are cfg-shadow boolean states, not transient
+         * runtime events. cfg.v_max ≤ 0 disables wind-protection (operator
+         * decision); cfg.rh_ctrl_en == 0 disables humidity-driven window
+         * control. Both states are persistent across reboots — they reflect
+         * configuration, not alarm conditions, so a separate flag namespace
+         * is appropriate. */
+        if (ok && !s->wind_protect_enabled) {
+            ok = ok && append(buf, cap, &pos,
+                "%s\"wind_protect_off\"", first ? "" : ",");
+            first = false;
+        }
+        if (ok && !s->rh_ctrl_enabled) {
+            ok = ok && append(buf, cap, &pos,
+                "%s\"humidity_ctrl_off\"", first ? "" : ",");
+            first = false;
+        }
         ok = ok && append(buf, cap, &pos, "]}");
     }
 

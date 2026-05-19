@@ -107,6 +107,11 @@ h3 { font-size: .9rem; color: var(--muted); margin-bottom: .5rem; margin-top: .7
 .badge.alarm   { background: var(--red);    color: #fff; }
 .badge.warn    { background: var(--yellow); color: #000; }
 .badge.ok      { background: var(--green);  color: #fff; }
+/* a.6.35.4 — informational badge (operator-disabled feature, not a fault).
+ * Used by the "Hum off" indicator when rh_ctrl_en=0. Blue distinguishes
+ * "operator configured this off on purpose" from "something went wrong"
+ * (red alarm) and "something needs attention" (yellow warn). */
+.badge.info    { background: var(--blue);   color: #fff; }
 .win-open    { color: var(--green); font-weight: 700; }
 .win-closed  { color: var(--muted); }
 .win-moving  { color: var(--yellow); }

@@ -300,7 +300,20 @@ typedef struct {
                               *   when false the RH setpoints are configured
                               *   but inert. Drives a dim-style on the local
                               *   web GUI and field-omission in the T14
-                              *   status-website POST. */
+                              *   status-website POST. Also emitted as the
+                              *   `humidity_ctrl_off` mode-flag in the
+                              *   canonical JSON when false (a.6.35.4+) so
+                              *   both surfaces show a "Hum off" badge. */
+    bool    wind_protect_enabled; /**< Live state of the wind-protection
+                              *   subsystem. True when `cfg.v_max > 0`; false
+                              *   when the operator set v_max ≤ 0 to disable
+                              *   wind-driven window closing entirely. When
+                              *   false, the canonical JSON emits the
+                              *   `wind_protect_off` mode-flag and the GUI
+                              *   surfaces a "Wind off" badge in the Alarms
+                              *   card so the operator and public dashboard
+                              *   can see at a glance that the wind safety
+                              *   net is currently inactive. (a.6.35.4+) */
 
     /* Windows */
     window_state_t win[3];   /**< M1 = win[0], M2 = win[1], M3 = win[2] */

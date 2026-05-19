@@ -702,7 +702,23 @@ The plan's §4.2 example used the field names from `design/technical-spec-status
 | sun | `sunrise_mins_utc`, `sunset_mins_utc` | `sunrise_min`, `sunset_min` (LOCAL minutes) |
 | system | `ip`, `rssi`, `ntp`, `fw` | `wifi_ip`, `wifi_rssi_dbm`, `ntp_synced`, `fw_ver` |
 
-`mode.flags` is an EG1-bitset fan-out into named strings (`wind_override`, `sensor_fault_temp`, `sensor_fault_wind`, `ota_in_progress`, `motor_alarm`, `calibrating`). `mode.current` is computed with priority (`MOTOR_ALARM` > `WIND_OVERRIDE` > `WINDOW_CAL` > op_mode_t).
+`mode.flags` is an EG1-bitset fan-out into named strings (`wind_override`, `sensor_fault_temp`, `sensor_fault_wind`, `ota_in_progress`, `motor_alarm`, `calibrating`), plus two task-state extras: `net_backoff_active` (T14 status-website circuit breaker open) and — since 2.0.0-a.6.35.4 — two operator-disabled-feature flags surfaced from the cfg shadow:
+
+| Flag string | Source | Condition | Local-GUI badge class |
+|---|---|---|---|
+| `wind_override` | EG1 bit set by T3 safety_monitor | wind safety active, all windows closed | `alarm` (red) |
+| `motor_alarm` | EG1 bit set by T2 relay_controller | emergency stop triggered | `alarm` (red) |
+| `sensor_fault_temp` | EG1 bit set by T5 sensor_poll | two consecutive FG6485A read failures | `warn` (yellow) |
+| `sensor_fault_wind` | EG1 bit set by T5 sensor_poll | two consecutive S200 read failures | `warn` (yellow) |
+| `ota_in_progress` | EG1 bit set during firmware/asset OTA | OTA cycle running | `warn` (yellow) |
+| `calibrating` | EG1 bit set during boot-time window calibration | T2 closing all windows to establish position | `warn` (yellow) |
+| `net_backoff_active` | `status_post_backoff_active()` (task-private) | T14 circuit breaker open | `warn` (yellow) |
+| `wind_protect_off` | `cfg.v_max <= 0` (a.6.35.4+) | operator disabled wind-speed-driven auto-close | `warn` (yellow) |
+| `humidity_ctrl_off` | `cfg.rh_ctrl_en == 0` (a.6.35.4+) | operator disabled RH-driven window control | `info` (blue) |
+
+The first six are EG1 bits emitted by the producer indicated. The last three are not EG1 bits — they're queried directly from `status_post_backoff_active()` and the cfg shadow respectively, and emitted by `status_json.cpp` as additional `mode.flags` entries. Same flag-name → CSS-class mapping in the local GUI's `app.js::flagBadges` table; dashboard implementers can mirror the table to render the same badges on the public status page.
+
+`mode.current` is computed with priority (`MOTOR_ALARM` > `WIND_OVERRIDE` > `WINDOW_CAL` > op_mode_t). Operator-disabled-feature flags do NOT influence `mode.current` — they're purely informational badges; the controller is still in `AUTOMATIC` when wind protect / humidity ctrl are off, just with the corresponding sub-feature disabled.
 
 ### TZ handling
 The plan put UTC minutes in the sun fields. The dashboard renders the value verbatim, so the firmware now converts UTC → local in `dm_status_snapshot()` using `localtime_r` − `gmtime_r` (Newlib has no `tm_gmtoff`). The snapshot also re-applies `TZ` defensively against `configTime()`'s `UTC0` reset, gated by a `strcmp` against `getenv("TZ")` so the 2 s WS push doesn't churn `setenv` allocations.

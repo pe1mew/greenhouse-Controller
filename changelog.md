@@ -28,6 +28,64 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-a.6.35.4]` — 2026-05-19
+
+**Operator-disabled-feature badges** — surfaces two new `mode.flags` entries in the canonical status JSON so both the local GUI's Alarms card and the public status dashboard show when wind protection or humidity control has been turned off via cfg.
+
+#### The gap
+
+Pre-patch: turning wind protection off (`wind/wind_prot_en = 0` via LCD or `/api/config`) cleared `EG1_BIT_WIND_OVERRIDE` so the controller stopped reacting to wind, but **no badge appeared anywhere**. The Alarms card showed "OK" even though the wind safety net was completely disabled. Same for the humidity control switch (`climate/rh_ctrl_en = 0`) — the GUI's Humidity card dimmed the setpoint rows, but the Alarms card and the public status dashboard had no indication.
+
+Operator visibility ask: "When wind protection is disabled, no 'wind disable' badge appears in Alarm shield on webgui. Also it is not signalled to the web status page. Add to the status shields on the webgui a blue badge to indicate that humidity control is off. Also add this information for the status page."
+
+#### Fix
+
+Two new flag strings emitted by `build_canonical_status_json` into `mode.flags[]`:
+
+| Flag | Condition | Local GUI badge | Class |
+|---|---|---|---|
+| `wind_protect_off` | `cfg.wind_prot_en == 0` | "Wind protect off" | `warn` (yellow) |
+| `humidity_ctrl_off` | `cfg.rh_ctrl_en == 0` | "Humidity ctrl off" | `info` (blue, new) |
+
+Both surfaces — local GUI and public dashboard — pick them up through the existing flag-name → badge-class mapping. No new endpoints, no new JSON keys; the existing `mode.flags[]` array already exists for exactly this kind of extension.
+
+The yellow vs blue split matches the semantic difference: disabling wind protection removes a safety net (operator should be reminded — yellow), whereas disabling humidity control is a routine config choice (only temperature-driven ventilation — informational blue).
+
+`mode.current` is intentionally NOT affected: the controller is still in `AUTOMATIC` when either of these subsystems is operator-disabled, just with the corresponding sub-feature inactive. The badges convey state without overwriting the primary mode label.
+
+#### What changed
+
+- **`firmware/src/types/app_types.h`** — added `wind_protect_enabled` field to `status_snapshot_t` (mirror of `rh_ctrl_enabled` placement).
+- **`firmware/src/data_manager/data_manager.cpp`** — `dm_status_snapshot()` now sets `out->wind_protect_enabled = (cfg.wind_prot_en != 0)`. Note: uses the dedicated `wind_prot_en` cfg boolean rather than `v_max > 0`, because `wind_prot_en` gates the *whole* T3 safety_monitor subsystem (both speed and direction branches), while `v_max ≤ 0` only disables the speed branch.
+- **`firmware/src/status_post/status_json.cpp`** — flag emission loop now appends `wind_protect_off` when `!s->wind_protect_enabled` and `humidity_ctrl_off` when `!s->rh_ctrl_enabled`. Placement is after `net_backoff_active` so the existing alarm/warn flags come first in the array (no semantic ordering requirement; just consistent).
+- **`firmware/data/style.css`** — new `.badge.info` class (blue background `var(--blue) = #2196f3`).
+- **`firmware/data/app.js`** — `flagBadges` table extended with `wind_protect_off` and `humidity_ctrl_off`.
+- **`firmware/data/index.html`** — `#st-alarms` tooltip rewritten to enumerate all possible badges with their colour classes.
+- **`design/implementationStatusPages.md`** — flag-name → badge-class table extended with the two new entries plus the existing `net_backoff_active`. Dashboard implementers can mirror the table to render the same badges.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-a.6.35.4`.
+
+#### Acceptance — verified on 192.168.20.160
+
+Toggled both cfg booleans via `POST /api/config` and observed `/api/status::mode.flags`:
+
+| Cfg state | `mode.flags[]` |
+|---|---|
+| `rh_ctrl_en=1, wind_prot_en=1` (default) | `[]` |
+| `rh_ctrl_en=0, wind_prot_en=1` | `['humidity_ctrl_off']` |
+| `rh_ctrl_en=0, wind_prot_en=0` | `['wind_protect_off', 'humidity_ctrl_off']` |
+| `rh_ctrl_en=1, wind_prot_en=1` | `[]` |
+
+Per-cycle transition latency: ≤ 3 s from `POST /api/config` 200-OK to the next `/api/status` showing the updated flags. (The cfg shadow updates synchronously under `dm_reload_cfg_for_key`, and the WebSocket / `/api/status` reads it on every call.)
+
+#### Build delta vs a.6.35.3
+
+| Metric | a.6.35.3 | a.6.35.4 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1 349 136 B | (see release-notes.md) | ~ +250 B (two flag strings + cfg.wind_prot_en read) |
+| RAM static | 60 552 B | 60 553 B | +1 (new bool field in status_snapshot_t) |
+
+Trivial. Final flash usage 64.3 % of the 2 MB OTA bank.
+
 ### `[2.0.0-a.6.35.3]` — 2026-05-19
 
 **Log-format follow-up to a.6.35.x** — audit and align all `log_post` call sites with what `log/logparser.py` actually expects. Triggered by the question "is the log populated with all information that the log processor script expects, in the correct format?" Answer pre-patch: largely yes, but with five real bugs that made the parser misrender events. All five close here.
