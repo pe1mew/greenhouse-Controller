@@ -28,6 +28,61 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-a.6.33]` — 2026-05-19
+
+**Second alpha of the maturation plan.** Restores two T10 features from the deferred-to-2.0.1 list: periodic 24 h NTP resync, and LOG_SYSTEM audit events (`value_a=3` AP start/stop, `value_a=4` geo sync).
+
+#### Periodic 24 h NTP resync
+
+`s_last_ntp_sync_us` seeded at boot when `wifi_tickle` reports NTP up, and re-seeded on every `STA_GOT_IP` reconnect edge. T10 main-loop check: `(elapsed_us >= 86 400 × 1 000 000) && client_connected` → `run_ntp_resync()`. The resync calls `esp_sntp_setoperatingmode(POLL)` + `esp_sntp_setservername("pool.ntp.org")` + `esp_sntp_init()` (repeatable), waits up to 10 s for `SNTP_SYNC_STATUS_COMPLETED`, re-applies `cfg.tz_str` via `setenv`/`tzset` if it differs from the current TZ, notifies T4 (DM_NOTIFY_NTP_SYNCED). Geo is NOT re-fetched (location is stable; matches 1.20.3). Compile-time override via `-DNTP_RESYNC_INTERVAL_S=N` for verification builds.
+
+#### LOG_SYSTEM audit events
+
+| Event | Producer | Code |
+|---|---|---|
+| AP start | `start_ap()` after `s_ap_active = true` | `value_a=3, value_b=1` |
+| AP stop | `stop_ap()` before return | `value_a=3, value_b=0` |
+| Geo sync success | `do_geo_sync()` after the four `post_q4` writes | `value_a=4, value_b=1` |
+
+Matches the LOG_SYSTEM `value_a` encoding documented in `event_logger.h` lines 109–124.
+
+#### What changed
+
+- **`firmware/src/network_manager/network_manager.cpp`** — new includes (`esp_sntp.h`, `esp_timer.h`, `event_logger.h`); `s_last_ntp_sync_us` static; `log_sys(value_a, value_b)` helper wrapping `log_post`; `run_ntp_resync()` function (~55 lines); three `log_sys` call sites; main-loop cadence check; `s_last_ntp_sync_us` seeded at boot-time NTP-up and on reconnect edges.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-a.6.33`.
+
+#### Build trap (documented, fixed inline)
+
+First a.6.33 build errored: `'esp_timer_get_time' was not declared in this scope; did you mean 'timer_gettime'?`. Resolved by adding `#include "esp_timer.h"` — the symbol had been transitively reachable from other files' include chains but not this one. Documented so the next migrator reaching for `esp_timer_get_time` from a new TU knows to include it explicitly.
+
+#### Acceptance — hardware verified on 192.168.20.160
+
+Clean a.6.33 boot (uptime=52 s at probe), AP enable→disable toggled via `POST /api/config`:
+
+```
+06:34:50 UTC SYSTEM SYS 0 0 4,1    ← geo sync this boot (T+30 s)
+06:35:45 UTC SYSTEM SYS 0 0 3,1    ← AP started (operator POST)
+06:35:50 UTC SYSTEM SYS 0 0 3,0    ← AP stopped (operator POST)
+06:35:48 UTC SYSTEM SYS 0 0 7,98   ← T1 heap row (a.6.32 unchanged)
+06:35:48 UTC SYSTEM SYS 0 0 8,8153
+06:35:48 UTC SYSTEM SYS 0 0 12,31
+```
+
+All three new event types fire correctly. Heap rows + heartbeat counters continue producing — no regression in the existing audit stream. Paired asset bundle uploaded; `fw_ver == asset_version == 2.0.0-a.6.33`.
+
+24 h NTP resync code path verified to compile + link; the 24 h cadence can't be exercised in a single test cycle and lands implicitly during the Phase 7 soak.
+
+#### Build delta vs a.6.32
+
+| Metric | a.6.32 | a.6.33 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1 343 120 B | **1 343 632 B** | +512 B |
+| RAM static | 60 488 B | (~same) | unchanged |
+
+**+512 B flash — under the plan's +1.2 KB estimate.** `esp_sntp_*` symbols were already linked from boot-time `wifi_tickle_run`; this alpha only added a function body + helper + 3 call sites. No new component pulled in.
+
+Final flash usage: **64.0 %** of the 2 MB OTA bank.
+
 ### `[2.0.0-a.6.32]` — 2026-05-18
 
 **First alpha of the maturation plan (`design/maturationPlan_alpha6.32-6.35.md`). Also marks the version-naming convention switch: `alpha` → `a`.** From this tag onwards every pre-release uses the shorter prefix (`2.0.0-a.6.32`, …, `2.0.0-rc.1`). Historical alphas keep their original full form for traceability.

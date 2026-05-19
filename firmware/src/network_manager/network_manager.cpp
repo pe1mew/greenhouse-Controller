@@ -68,11 +68,14 @@
 #include "esp_netif.h"
 #include "esp_mac.h"                      /* alpha.6.29 — esp_read_mac for AP SSID */
 #include "esp_http_client.h"   /* alpha.6.28 — ip-api.com lookup */
+#include "esp_sntp.h"                     /* a.6.33 — periodic 24 h NTP resync */
+#include "esp_timer.h"                    /* a.6.33 — esp_timer_get_time for resync cadence */
 #include "lwip/ip4_addr.h"
 
 #include "network_manager.h"
 #include "../types/app_types.h"           /* Q4, Q5, net_status_t, task_t4 */
 #include "../data_manager/data_manager.h" /* DM_NOTIFY_NTP_SYNCED, dm_cfg_snapshot */
+#include "../event_logger/event_logger.h" /* a.6.33 — log_post + log_event_t */
 #include "nvs_config.h"                   /* alpha.6.28 — NVS_NS_SYSTEM, NVS_NS_WIFI, nvs_cfg_set_str */
 #include "tz_table.h"                     /* alpha.6.28 — iana_to_posix() */
 
@@ -88,6 +91,41 @@ static bool s_ap_active = false;
 
 /** Plausibility threshold for "NTP-synced wall clock" (2023-11-14). */
 #define NTP_MIN_EPOCH  ((time_t)1700000000)
+
+/* a.6.33 — periodic 24 h NTP resync.
+ *
+ * Tracks the timestamp (in esp_timer_get_time microseconds) of the last
+ * successful NTP sync — whether boot-time via wifi_tickle, or periodic via
+ * run_ntp_resync() below. The check fires inside the main loop: when STA
+ * is connected and the elapsed since last sync exceeds NTP_RESYNC_INTERVAL,
+ * a single SNTP cycle is kicked off. Geo is NOT re-fetched (location is
+ * stable; matches 1.20.3).
+ *
+ * NTP_RESYNC_INTERVAL_S = 86400 (24 h) for production. For verification
+ * builds the symbol may be redefined at compile time via -D.
+ */
+#ifndef NTP_RESYNC_INTERVAL_S
+#define NTP_RESYNC_INTERVAL_S  86400u
+#endif
+#define NTP_RESYNC_INTERVAL_US ((uint64_t)NTP_RESYNC_INTERVAL_S * 1000000ULL)
+
+static int64_t s_last_ntp_sync_us = 0;   /* 0 = never synced this boot */
+
+/** Post a single LOG_SYSTEM event to Q3 (T9 drains to SD CSV).
+ *  a.6.33 — used by start_ap / stop_ap / do_geo_sync to log audit events
+ *  with value_a=3 (AP, value_b=1 start / 0 stop) and value_a=4 (geo,
+ *  value_b=1 success). Matches the 1.20.3 LOG_SYSTEM value_a encoding
+ *  documented in event_logger.h. */
+static void log_sys(int16_t value_a, int16_t value_b)
+{
+    log_event_t ev = {};
+    ev.timestamp  = (uint32_t)time(NULL);
+    ev.event_type = (uint8_t)LOG_SYSTEM;
+    ev.initiator  = (uint8_t)LOG_BY_SYSTEM;
+    ev.value_a    = value_a;
+    ev.value_b    = value_b;
+    log_post(&ev);
+}
 
 /**
  * @brief Build a `net_status_t` snapshot from the current esp_wifi/esp_netif state.
@@ -291,6 +329,9 @@ static void do_geo_sync(void)
     post_q4(NVS_NS_SYSTEM, "lon_deg",  lon_deg);
     post_q4(NVS_NS_SYSTEM, "lon_frac", lon_frac);
 
+    /* a.6.33 — audit event: value_a=4 (geo), value_b=1 (success). */
+    log_sys(4, 1);
+
     /* IANA → POSIX TZ. Falls back to "TZ unchanged" if the zone is not in
      * the table — better than overwriting NVS with garbage. */
     const char *posix_tz = iana_to_posix(iana_tz);
@@ -448,6 +489,8 @@ static void start_ap(void)
     s_ap_started = xTaskGetTickCount();
     ESP_LOGI(TAG, "[T10] AP started: SSID=\"%s\" (channel %u, max %u clients)",
              s_ap_ssid, (unsigned)AP_CHANNEL, (unsigned)AP_MAX_CONN);
+    /* a.6.33 — audit event: value_a=3 (AP), value_b=1 (started). */
+    log_sys(3, 1);
 }
 
 /** Stop the soft-AP. Returns mode to STA-only. Idempotent. */
@@ -465,6 +508,8 @@ static void stop_ap(void)
 
     s_ap_active = false;
     ESP_LOGI(TAG, "[T10] AP stopped");
+    /* a.6.33 — audit event: value_a=3 (AP), value_b=0 (stopped). */
+    log_sys(3, 0);
 }
 
 /** Read NVS `wifi/ap_enable` and start/stop on edge; enforce auto-shutdown.
@@ -509,6 +554,89 @@ static void poll_ap(void)
     }
 }
 
+/* ============================================================
+ * Periodic 24 h NTP resync (a.6.33 — Phase T10 maturation)
+ *
+ * The DS1307 RTC is precise enough for multi-day operation, but slow drift
+ * accumulates. The 1.20.3 design called for a once-per-24 h SNTP refresh
+ * to keep the wall clock aligned. Called only when STA is connected and
+ * the elapsed since last sync exceeds NTP_RESYNC_INTERVAL_S.
+ *
+ * Implementation notes:
+ *   - esp_sntp_* directly, NOT wifi_tickle_run (which is a boot-time helper
+ *     that re-initializes the event loop + netif).
+ *   - esp_sntp_setoperatingmode / setservername are idempotent — they only
+ *     change state if the new value differs. Safe to call on every resync.
+ *   - esp_sntp_init() may be called repeatedly; second-and-later calls
+ *     reinitialize the SNTP module.
+ *   - Wait up to 10 s for a plausible epoch; on timeout, leave
+ *     s_last_ntp_sync_us unchanged so the next iteration retries.
+ *   - After success, re-apply cfg.tz_str (esp_sntp resets TZ to UTC) and
+ *     notify T4 to re-write the DS1307.
+ *   - Geo is NOT re-fetched (location is stable).
+ * ============================================================ */
+
+static void run_ntp_resync(void)
+{
+    ESP_LOGI(TAG, "[T10] Starting periodic NTP resync (24 h cadence)");
+
+    /* esp_sntp_get_sync_status returns IN_PROGRESS while a previous sync is
+     * still running. Avoid double-kicking. */
+    sntp_sync_status_t st = esp_sntp_get_sync_status();
+    if (st == SNTP_SYNC_STATUS_IN_PROGRESS) {
+        ESP_LOGI(TAG, "[T10] NTP resync: another sync already in progress — skipping");
+        return;
+    }
+
+    /* Setup. esp_sntp_init() is repeatable; calling it again kicks a new
+     * query against the configured server. */
+    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_init();
+
+    /* Wait up to 10 s for a plausible epoch. Note: we don't check for an
+     * absolute time delta, just for the system clock to be > NTP_MIN_EPOCH
+     * (which it already is from the boot sync — that's why we got here).
+     * A fresh sync simply updates the clock with sub-second accuracy. */
+    const int wait_steps = 20;   /* 20 × 500 ms = 10 s */
+    bool ok = false;
+    for (int i = 0; i < wait_steps; i++) {
+        if (esp_sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) {
+            ok = true;
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+
+    if (!ok) {
+        ESP_LOGW(TAG, "[T10] NTP resync: timed out after 10 s — will retry next cycle");
+        return;
+    }
+
+    /* Re-apply persisted POSIX TZ. esp_sntp resets TZ to UTC implicitly;
+     * if cfg.tz_str is unset, leave whatever the prior setenv set. */
+    cfg_shadow_t cfg = {};
+    dm_cfg_snapshot(&cfg);
+    if (cfg.tz_str[0] != '\0') {
+        const char *cur_tz = getenv("TZ");
+        if (cur_tz == NULL || strcmp(cur_tz, cfg.tz_str) != 0) {
+            setenv("TZ", cfg.tz_str, 1);
+            tzset();
+            ESP_LOGI(TAG, "[T10] NTP resync: TZ re-applied (\"%s\")", cfg.tz_str);
+        }
+    }
+
+    s_last_ntp_sync_us = esp_timer_get_time();
+    ESP_LOGI(TAG, "[T10] NTP resync complete");
+
+    /* Notify T4 so it re-writes the DS1307 RTC with the freshly-synced time.
+     * Idempotent — DS1307 just gets refreshed with the same-to-the-second
+     * value. T4 takes MX1 briefly. */
+    if (task_t4 != NULL) {
+        xTaskNotify(task_t4, DM_NOTIFY_NTP_SYNCED, eSetBits);
+    }
+}
+
 void task_network_manager(void *pvParameters)
 {
     (void)pvParameters;
@@ -544,6 +672,9 @@ void task_network_manager(void *pvParameters)
     if (prev.ntp_synced && task_t4 != NULL) {
         xTaskNotify(task_t4, DM_NOTIFY_NTP_SYNCED, eSetBits);
         ESP_LOGI(TAG, "[T10] TN4 sent to T4 (DM_NOTIFY_NTP_SYNCED)");
+        /* a.6.33 — seed the resync timer at boot so the 24 h cadence is
+         * measured from the boot-time sync, not from T10 task start. */
+        s_last_ntp_sync_us = esp_timer_get_time();
     }
 
     /* alpha.6.28 — one-shot IP geolocation + timezone sync. Gated on NTP
@@ -562,6 +693,19 @@ void task_network_manager(void *pvParameters)
          * cfg.ap_timeout_min auto-shutdown. */
         poll_ap();
 
+        /* a.6.33 — periodic 24 h NTP resync. Gated on STA connected AND
+         * a prior successful sync (so we have a non-zero last-sync timestamp
+         * to compare against). The check is cheap; the actual resync work
+         * only runs when the interval has elapsed. */
+        if (s_last_ntp_sync_us != 0 && prev.client_connected) {
+            int64_t elapsed_us = esp_timer_get_time() - s_last_ntp_sync_us;
+            if ((uint64_t)elapsed_us >= NTP_RESYNC_INTERVAL_US) {
+                run_ntp_resync();
+                /* run_ntp_resync updates s_last_ntp_sync_us on success;
+                 * on failure leaves it unchanged so we retry next cycle. */
+            }
+        }
+
         net_status_t cur = {};
         snapshot_state(&cur);
 
@@ -578,6 +722,10 @@ void task_network_manager(void *pvParameters)
             if (cur.ntp_synced && !prev.ntp_synced && task_t4 != NULL) {
                 xTaskNotify(task_t4, DM_NOTIFY_NTP_SYNCED, eSetBits);
                 ESP_LOGI(TAG, "[T10] TN4 re-sent on NTP-synced transition");
+                /* a.6.33 — also (re)seed the resync timer on an NTP-up edge,
+                 * so the 24 h cadence is measured from when the wall clock
+                 * actually became plausible. */
+                s_last_ntp_sync_us = esp_timer_get_time();
             }
 
             prev = cur;
