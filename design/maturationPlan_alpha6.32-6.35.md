@@ -1,6 +1,6 @@
 # Firmware maturation plan — alpha.6.32 → alpha.6.35
 
-**Status:** complete — all four alphas (a.6.32, a.6.33, a.6.34, a.6.35) shipped + bench-verified on 192.168.20.160. Phase 7 (14-day soak) now unblocked.
+**Status:** complete — all four alphas + the seven a.6.35.x sub-iterations (a.6.35.1 UX, a.6.35.2 multi-file drain, a.6.35.3 log-format audit, a.6.35.4 wind/humidity badges, a.6.35.5 setting audit-log, a.6.35.6 coredump retrieval, a.6.35.7 Diagnostics placement) shipped + bench-verified on 192.168.20.160. Tag **2.0.0-rc.1** cut for Phase 7 14-day soak.
 **Branch:** `dev/2.0.0-esp-idf`.
 **Predecessor:** alpha.6.31 (T10 admin-toggled AP + STA back-off + IO0 debounce).
 **Successor:** Phase 7 (14-day soak → 2.0.0-rc.1), deferred until this plan completes.
