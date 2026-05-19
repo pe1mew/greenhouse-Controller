@@ -26,6 +26,7 @@
 #include "sunrise.h"
 #include "../event_logger/event_logger.h"
 #include "../relay_controller/relay_controller.h"
+#include "../status_post/status_post.h"  /* T14_NOTIFY_CFG_CHANGED (a.6.35.1) */
 
 #include "nvs_config.h"
 #include "ds1307_rtc.h"
@@ -990,6 +991,16 @@ void dm_reload_web_cfg(void)
         xSemaphoreGive(MX4);
     } else {
         ESP_LOGW(TAG, "dm_reload_web_cfg: MX4 timeout — shadow may be stale");
+    }
+
+    /* a.6.35.1 — wake T14 so an enable / URL / interval change takes effect
+     * within ~1 s of the /api/web POST rather than after the 60 s disabled-
+     * branch idle. The notify bit also drives T14's "I just woke from
+     * disabled — clear s_last_str so the GUI shows `—` until the first POST
+     * completes" transition, which is what removes the confusing
+     * `enable=1 last_post=DISABLED` window the operator was seeing. */
+    if (task_t14 != NULL) {
+        xTaskNotify(task_t14, T14_NOTIFY_CFG_CHANGED, eSetBits);
     }
 }
 

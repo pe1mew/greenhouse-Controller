@@ -490,6 +490,14 @@ void task_status_post(void *pvParameters)
 
     uint32_t last_post_ms = 0;
 
+    /* a.6.35.1 — disabled-state tracker. True until proven otherwise so the
+     * very first iteration writes `s_last_str = "DISABLED"` if the unit
+     * boots with status disabled. Toggles back to true only on disabled→
+     * enabled transition so the disabled-branch idle wake-ups don't re-stamp
+     * the string every cycle (which would clobber an in-flight `s_last_str`
+     * set during a brief active window). */
+    bool s_was_disabled = true;
+
     for (;;) {
         s_heartbeat++;
 
@@ -505,13 +513,41 @@ void task_status_post(void *pvParameters)
             (cfg.status_interval_s <= 0);
 
         if (disabled) {
-            snprintf(s_last_str, sizeof(s_last_str), "DISABLED");
+            /* Only stamp "DISABLED" once per enabled→disabled transition.
+             * Otherwise the 60 s idle wake-up would overwrite an in-flight
+             * `OK ts`/`FAIL ts ...` string the active branch might be
+             * computing in a parallel iteration (no real concurrency since
+             * single task — but the future-proofing is cheap). */
+            if (!s_was_disabled) {
+                snprintf(s_last_str, sizeof(s_last_str), "DISABLED");
+                s_was_disabled = true;
+            }
             ESP_LOGD(TAG, "[T14] disabled (enable=%ld url=\"%s\" interval=%ld)",
                      (long)cfg.status_enable, cfg.status_url, (long)cfg.status_interval_s);
-            /* Consume any pending notify (drain) — silently — and idle. */
+            /* Idle: wait up to STATUS_IDLE_RECHECK_MS, but wake immediately
+             * on any notify bit (T14_NOTIFY_CFG_CHANGED fires from
+             * dm_reload_web_cfg() on every /api/web POST, so an operator
+             * re-enabling status sees the change reflected within ~1 s
+             * instead of waiting out the full idle window). */
             uint32_t drain = 0;
             (void)xTaskNotifyWait(0, ULONG_MAX, &drain, pdMS_TO_TICKS(STATUS_IDLE_RECHECK_MS));
             continue;
+        }
+
+        /* a.6.35.1 — disabled→enabled transition. Clear `s_last_str` so the
+         * GUI shows `—` (pending) for the brief window between the operator
+         * clicking Apply and the first status POST completing. Without this,
+         * the form shows `enable=1` while the indicator still reads
+         * `DISABLED` — confusing. Also reset `last_post_ms = 0` so the first
+         * POST fires on the very next cycle without waiting up to a full
+         * `status_interval_s` for the cadence check. */
+        if (s_was_disabled) {
+            s_last_str[0] = '\0';
+            last_post_ms = 0;
+            s_was_disabled = false;
+            ESP_LOGI(TAG, "[T14] re-enabled (url=%s interval=%lds expose=0x%02lX) — POST imminent",
+                     cfg.status_url, (long)cfg.status_interval_s,
+                     (unsigned long)cfg.status_expose);
         }
 
         /* ----------------------------------------------------------------
