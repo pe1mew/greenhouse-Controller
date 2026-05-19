@@ -28,6 +28,70 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-rc.1]` — 2026-05-19  (Phase 7 soak candidate)
+
+**Maturation complete. Soak candidate cut.** All four maturation alphas + seven a.6.35.x sub-iterations shipped + bench-verified; tag bumped from `2.0.0-a.6.35.7` to `2.0.0-rc.1` ahead of the 14-day Phase 7 soak that gates the doorgang to `v2.0.0`. **No firmware code changes** vs a.6.35.7 — only the version string, paired-asset manifest, and the documentation/companion-doc references that name the firmware-under-test.
+
+#### What's in rc.1
+
+The full feature set documented across `[2.0.0-alpha.6.32]` through `[2.0.0-a.6.35.7]`. Highlights for an operator picking up the soak unit:
+
+- **T1 instrumentation** (a.6.32) — NeoPixel + heap rows + integrity sweep + stack-HWM in the SD log
+- **T10 NTP resync + audit events** (a.6.33) — 24 h NTP cadence, AP/geo audit rows
+- **T13 firmware-only fallback** (a.6.34) — verified-but-uncommitted firmware commits after 120 s if no asset upload follows
+- **T14 status hardening** (a.6.35) — `sourceidentifier` secret, canonical JSON, SD log upload (daily + on-rotation), `status_enable` master gate, `log_upload_rot` gate, https-only URL validator
+- **a.6.35.1** — `last_post=DISABLED` UX fix
+- **a.6.35.2** — multi-file log upload drain (no stranded CSVs after WiFi outage)
+- **a.6.35.3** — log-format audit + CSV row timestamps in local time + new OTA value_a range 14-17 + sensor-fault encoding via `ch=4/5`
+- **a.6.35.4** — operator-aware mode flags: `wind_protect_off`, `humidity_ctrl_off`
+- **a.6.35.5** — every setting change audit-logged with operator attribution (sensitive fields use `(set)`/`(changed)` sentinel, no value leak)
+- **a.6.35.6** — `/api/coredump` retrieval through GUI Log → Diagnostics, admin-only, rate-limited, audit-logged
+- **a.6.35.7** — Diagnostics-panel placement UX fix
+
+Companion docs aligned with rc.1:
+- `manual/beheerderHandleiding.md` v1.17 — covers all 2.0.0 operator-facing additions
+- `design/technical-spec-statusWebsite.md` v1.0 — full canonical JSON shape + FLAG_CLASS for the public dashboard
+- `log/logparser.{py,md}` v1.6 — decoders for every documented event type 0..20
+- `webUiMock/mock_server.py` — matching `/api/coredump` + mode-flag derivation for offline GUI work
+
+#### Pre-soak housekeeping (this commit's work)
+
+- Bumped `FIRMWARE_VERSION` `2.0.0-a.6.35.7` → `2.0.0-rc.1` in `firmware/platformio.ini`.
+- Bumped `cfg["fw_ver"]` `2.0.0-a.6.35.7` → `2.0.0-rc.1` in `webUiMock/mock_server.py`.
+- Bumped the beheerder-handleiding header from v1.16 / firmware a.6.35.7 to v1.17 / firmware rc.1 with the soak-purpose note.
+- Marked the maturation plan as "complete; rc.1 cut for Phase 7".
+- Built + paired-deployed rc.1 to the bench unit (192.168.20.160). Clean boot: `fw_ver=2.0.0-rc.1, asset_version=2.0.0-rc.1, uptime climbing, eg1=0, mode=AUTOMATIC, flags=[]`.
+- **Archived the pre-existing 45 KB coredump** from earlier panic-test work to the local workstation at `bin/2.0.0-rc.1/pre-soak-artifacts/coredump-pre-soak-cleanup.bin` (gitignored alongside firmware binaries — local-only artifact) and then erased the partition so day-1 of soak starts with a clean coredump slot. Any operator-flagged regression during the soak can be cross-referenced against the local archive via `idf.py coredump-info`.
+
+#### Phase 7 acceptance criteria (binding)
+
+The soak runs for **14 days minimum**. The unit is configured to talk to the operator's production status server (`https://pe1mew.nl/hbwv/api.php`) at `status_interval_s = 120`. Daily review by the operator covers the criteria below; failure on any of them halts the soak and triggers an a.6.36 patch alpha:
+
+| Criterion | Target | Where to verify |
+|---|---|---|
+| **Zero** unplanned reboots | No `value_a=5, value_b ∈ {6 TASK_WDT, 5 INT_WDT, 7 WDT, 9 BROWNOUT}` rows in the SD CSV | `grep ",SYSTEM,SYS,0,0,5," /tmp/log.csv` — only `value_b=1` (POWERON) and `value_b=4` (esp_restart, expected at OTA-trigger time) acceptable |
+| **Zero** coredumps captured | `/api/coredump/status` reports `present:false` every day | Dashboard Alarms-card stays clear of the blue "Coredump available" badge |
+| **Heap drift watch — gh#23 primary signal** | `value_a=12` (largest contiguous block) stays > 30 KB through ≥ 100 status POST cycles, ideally trending stable | `awk -F',' '$2=="SYSTEM" && $6==12 {print $1, $7}' /tmp/log.csv` — falling trend over 100+ cycles triggers a.6.36 (mbedTLS mitigations) |
+| **Heap baseline** | `value_a=7` (free internal) and `value_a=8` (PSRAM free) steady, no drift > 5 KB over 14 days | Same `awk` filter on params 7 / 8 |
+| **Status POST success rate** | `value_a=1, value_b=0` rate > 95 % of cycles, no extended `Net backoff` badge | `awk -F',' '$2=="SYSTEM" && $3=="WEB" && $6==1 && $7==0' /tmp/log.csv` |
+| **Log upload at least one daily cycle** | One `value_a=1, value_b=1, initiator=WEB` per day at the configured `log_upload_h:log_upload_m` | Confirms the gh#25 dedup latch + multi-file drain are operational |
+| **Climate-control responsiveness** | Window opens/closes match what 1.20.3 would have done under identical conditions; no spurious wind-override; mode rarely leaves AUTOMATIC | Operator visual inspection + RELAY-row review in the CSV |
+| **Flash usage** | Bin remains ≤ 1.40 MB (current rc.1 = 1.354 MB); no growth | Bin size unchanged unless we ship a patch alpha |
+| **GUI fully functional** | Operator can log in, view status, change setpoints, download logs, see audit rows, retrieve a coredump if one happens | Daily smoke test |
+
+**If all criteria pass at day 14**: tag `v2.0.0`, fast-forward merge `dev/2.0.0-esp-idf` into `main`, run `bin/build_release.ps1` from the merged main → publishes `bin/2.0.0/`. Operator deploys to Unit 2 (lower-stakes), observes 7 days, then Unit 1.
+
+**If any criterion fails**: halt soak, diagnose with the captured coredump + SD CSV, ship an a.6.36 (or rc.2 if architectural) patch, restart the 14-day clock.
+
+#### Build delta vs a.6.35.7
+
+| Metric | a.6.35.7 | rc.1 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1 354 176 B | **1 354 160 B** | −16 B (FIRMWARE_VERSION string is one character shorter — `a.6.35.7` → `rc.1`) |
+| RAM static | 60 568 B | 60 568 B | 0 |
+
+No code changes; only the version string. Final flash usage **64.6 %** of the 2 MB OTA bank.
+
 ### `[2.0.0-a.6.35.7]` — 2026-05-19
 
 **UX follow-up to a.6.35.6** — moved the new Diagnostics section to the bottom of the Log tab (was first; now last, after "SD Card" and "Download log"). Operator preference: routine SD operations are touched more often than the post-mortem coredump panel, so the routine controls stay at eye-level and Diagnostics sits below where it's visible but doesn't compete for attention.

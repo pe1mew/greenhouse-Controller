@@ -129,7 +129,7 @@ cfg: dict = {
     "lon_deg":              5,    # DEF_LON_DEG
     "lon_frac":             0,    # DEF_LON_FRAC
     "tz_str":              "CET-1CEST,M3.5.0,M10.5.0/3",
-    "fw_ver":              "2.0.0-a.6.35.7",
+    "fw_ver":              "2.0.0-rc.1",
     # gh#17 — 4-char hex from last 2 bytes of WiFi-STA MAC. On real hardware
     # this surfaces in the boot banner, SD log preamble, AP SSID, status JSON,
     # LCD info screen (1.20.0), and web GUI footer (1.20.0). Mock keeps it

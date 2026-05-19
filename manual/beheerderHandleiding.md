@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de beheerder
 
-**Versie:** 1.16 — concept
+**Versie:** 1.17 — concept
 **Datum:** 2026-05-19
-**Firmware:** 2.0.0-a.6.35.7 (rijping-alpha's vanaf 2.0.0-a.6.32; productie-doel 2.0.0)
+**Firmware:** 2.0.0-rc.1 (release candidate 1 — voor de 14-daagse Phase 7 soak die de doorgang naar 2.0.0 bepaalt)
 
 ---
 
