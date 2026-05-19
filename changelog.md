@@ -28,6 +28,134 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-a.6.35.7]` — 2026-05-19
+
+**UX follow-up to a.6.35.6** — moved the new Diagnostics section to the bottom of the Log tab (was first; now last, after "SD Card" and "Download log"). Operator preference: routine SD operations are touched more often than the post-mortem coredump panel, so the routine controls stay at eye-level and Diagnostics sits below where it's visible but doesn't compete for attention.
+
+#### What changed
+
+- **`firmware/data/index.html`** — moved the `<h3>Diagnostics</h3>` block + its row from before the SD Card section to after the Download log section. No content changes; only DOM order.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-a.6.35.7`. (Asset bundle pairs with firmware version via manifest checksum; a paired re-flash is needed for the change to deploy.)
+
+#### Build delta vs a.6.35.6
+
+| Metric | a.6.35.6 | a.6.35.7 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1 354 176 B | ~ same | ~0 (FIRMWARE_VERSION string change only) |
+| RAM static | 60 568 B | 60 568 B | 0 |
+
+GUI-only edit. Paired flash bumps the asset ZIP so the manifest stays in sync.
+
+### `[2.0.0-a.6.35.6]` — 2026-05-19
+
+**Coredump retrieval via the web GUI — last Phase-7-readiness gap closed.** Pre-patch the IDF panic handler wrote a coredump to flash on every panic (64 KB partition at 0x620000, configured since gh#21 / 1.19.0), but the firmware had no way to:
+  1. Notice on boot that a dump from the previous panic was sitting in flash
+  2. Surface the fact to the operator
+  3. Expose the dump for retrieval other than physically connecting esptool.py
+
+For a 14-day soak this would have made any remote panic effectively un-diagnosable. The user asked: *"can the coredump be downloaded over webgui? can it be protected with admin login and session?"* Both answered yes; here's the implementation.
+
+#### Architecture
+
+**Boot-time detection** (T4 / `data_manager.cpp`):
+- After the boot-reason and unit-id audit rows, `esp_core_dump_image_check()` runs once.
+- On OK, `esp_core_dump_image_get()` returns the dump size.
+- Module-static `s_coredump_present` + `s_coredump_size_b` cache the result for cheap read by `dm_status_snapshot` (no repeated flash CRC checks during the soak).
+- A `LOG_SYSTEM value_a=18, value_b=size_KB` audit row hits the SD CSV so the operator's daily-review pass surfaces the dump even without opening the GUI.
+
+**Status snapshot** (`dm_status_snapshot`):
+- New `status_snapshot_t.coredump_available` bool populated from the cached state.
+
+**Canonical JSON** (`status_json.cpp`):
+- New `coredump_available` entry in `mode.flags[]` — both the local GUI Alarms card and the public status dashboard pick it up through the existing flag-name → badge-class mapping.
+
+**Three new T11 web routes** — all admin-only via the existing `admin_only_or_send_error()` helper:
+
+| Endpoint | Method | Behaviour |
+|---|---|---|
+| `/api/coredump/status` | GET | `{ok, present, size_bytes, size_kb, fw_ver}` |
+| `/api/coredump/download` | GET | Streams partition contents in 4 KB chunks as `application/octet-stream` with `Content-Disposition: attachment; filename="coredump-<ver>-<unix_ts>.bin"`. Audit row `value_a=19`. |
+| `/api/coredump/erase` | POST | Calls `esp_core_dump_image_erase()` + `dm_coredump_clear()`. Idempotent. Audit row `value_a=20`. |
+
+**Security envelope** (per the prior design discussion):
+- **Admin-only**: `admin_only_or_send_error()` first line of each handler — 401 with no session, 403 for non-admin.
+- **Rate limit**: 1 op / 10 s on download + erase (status is exempt — needed for GUI polling). Returns 429 + `Retry-After: 10` header.
+- **Audit logging**: every download + erase produces a `LOG_SYSTEM` row with `initiator=LOG_BY_WEB`. Operators can grep the CSV for unexpected access after the fact.
+- **Confirm-then-erase**: download streams the bytes but does NOT touch the partition. Operator runs `idf.py coredump-info` offline, confirms the decode, then explicitly POSTs `/erase`. The GUI's Erase button is disabled until the operator has downloaded in the current session.
+- **Not surfaced via T14 status POST**: the canonical JSON emits only the `coredump_available` flag string; the partition contents are never POSTed anywhere outbound.
+- **Operator-visible warning**: GUI confirm dialog before erase makes the irreversibility explicit ("After erase, the dump is unrecoverable").
+
+**GUI integration**:
+- Alarms card: blue "Coredump available" badge whenever the canonical JSON includes the flag — no need to dig into a tab to discover the dump exists.
+- Log tab: new "Diagnostics" section above the SD-card panel showing dump status (size, fw version it was captured on) + Download / Erase buttons.
+- Refresh hook: `refreshCoredumpStatus()` runs on every Log-tab open so the panel always reflects current state.
+
+#### What changed
+
+- **`firmware/src/data_manager/data_manager.cpp`** — `#include <esp_core_dump.h>`; new module-static `s_coredump_present` + `s_coredump_size_b`; boot-time check + audit row after the unit-id event; populates `out->coredump_available` in `dm_status_snapshot`; new `dm_coredump_present` / `_size_bytes` / `_clear` accessors.
+- **`firmware/src/data_manager/data_manager.h`** — declares the three new accessors.
+- **`firmware/src/types/app_types.h`** — new `status_snapshot_t.coredump_available` field.
+- **`firmware/src/status_post/status_json.cpp`** — emits `coredump_available` in `mode.flags[]` when set.
+- **`firmware/src/event_logger/event_logger.h`** — three new LOG_SYSTEM value_a codes documented (18 detected-at-boot, 19 downloaded, 20 erased).
+- **`firmware/src/web_server/web_server.cpp`** — new includes (`esp_core_dump.h`, `esp_partition.h`, `esp_timer.h`); rate-limit state + helper; audit helper; three new handlers; three new `httpd_uri_t` registrations; `max_uri_handlers` bumped 28→32.
+- **`firmware/data/index.html`** — new Diagnostics section in the Log tab with status display + Download / Erase buttons.
+- **`firmware/data/app.js`** — `coredump_available` rendered as blue `info` badge in `flagBadges`; new `refreshCoredumpStatus` / `downloadCoredump` / `eraseCoredump` functions; `feedback()` extended with optional 3rd arg for custom messages; Log-tab `showTab` hook calls `refreshCoredumpStatus`.
+- **`log/logparser.py`** — three new decoders for value_a=18/19/20, initiator-gated to avoid mis-rendering pre-a.6.35.3 heartbeat rows that happen to land on value_a=20.
+- **`log/logparser.md`** — version 1.6; SYSTEM table extended with rows 18/19/20; "What's new in 1.6" section.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-a.6.35.6`.
+
+#### Acceptance — bench-verified on 192.168.20.160
+
+Discovered a real coredump from a previous panic during the deploy itself (the unit had a `~45 KB` dump captured before this firmware was installed):
+
+```
+=== Admin-only auth ===
+No session       → 401 {"ok":false,"error":"no_session"}
+Farmer session   → 403 {"ok":false,"err":"admin only"}
+Admin session    → 200 {"ok":true,"present":true,"size_bytes":45828,...}
+
+=== Download ===
+GET /api/coredump/download → streams ELF data (45 KB, Content-Disposition=attachment)
+
+=== Rate limit ===
+1st POST /erase  → 200 {"ok":true}
+2nd POST /erase  → 429 {"ok":false,"err":"rate limited — one /api/coredump op per 10 s"}
+                   Retry-After: 10
+
+=== After erase ===
+GET /api/coredump/status → 200 {"present":false,"size_bytes":0,...}
+mode.flags               → []  (was ['coredump_available'])
+
+=== Audit trail rendered by logparser ===
+2026-05-19 18:40:25  [SYSTEM ]  System    Coredump from previous panic detected in flash: ~45 KB
+2026-05-19 18:43:01  [SYSTEM ]  Web UI    Coredump downloaded by admin (~45 KB transferred)
+2026-05-19 18:43:28  [SYSTEM ]  Web UI    Coredump erased by admin (partition wiped)
+```
+
+GUI: Diagnostics panel renders the size + fw_ver, buttons enable/disable correctly based on coredump presence and per-session download state, confirm-then-erase dialog shows. Visual verification post-deploy.
+
+#### Build delta vs a.6.35.5
+
+| Metric | a.6.35.5 | a.6.35.6 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1 350 944 B | **1 354 176 B** | +3 232 B |
+| RAM static | 60 553 B | 60 568 B | +15 B |
+
++3.2 KB flash absorbs the three new handlers (~1.5 KB), the partition-read streaming loop, the boot-time coredump check + audit row + accessors in T4, and the new app.js Diagnostics-panel functions. +15 B RAM for the snapshot field + the rate-limit timestamp + the cached coredump state. Final flash usage **64.6 %** of the 2 MB OTA bank — still plenty of headroom.
+
+#### Soak readiness — green
+
+With this patch, the soak unit can be left alone for 14 days. Any panic during the soak:
+1. Captures a coredump to the dedicated partition (IDF panic handler, was already working).
+2. Reboots, esp_reset_reason=PANIC, CSV gets the BOOT row.
+3. T4 detects the dump at boot, logs `value_a=18`, sets the canonical-JSON flag.
+4. Operator notices the blue badge on the Alarms card during the daily review, opens Log tab → Diagnostics, clicks Download.
+5. Operator runs `idf.py coredump-info -t raw -c <file> bin/2.0.0-a.6.35.6/firmware-2.0.0-a.6.35.6.elf` on their workstation.
+6. Operator gets the panic backtrace + register state + task name + stack contents — enough to root-cause without reproducing on the bench.
+7. Operator clicks Erase to make room for the next dump.
+
+Phase 7 14-day soak: **ready to start**.
+
 ### `[2.0.0-a.6.35.5]` — 2026-05-19
 
 **Audit-log every setting change with operator attribution.** Pre-patch the LCD UI logged setpoint changes correctly (`LOG_SETPOINT` with `LOG_BY_FARMER` / `LOG_BY_ADMIN` from the active session) but the web GUI did not — five distinct config-write paths from `/api/config` / `/api/wifi` / `/api/pin` / `/api/web` updated NVS silently. A PIN rotation, a status-website URL change, or a wholesale climate-setpoint edit through the browser left zero rows in the SD CSV. Operator question: "with respect to logging events. Are all setting changes in both guis logged as an event including the operator who did it? logging would be a task of the NVS task who is administering these settings."

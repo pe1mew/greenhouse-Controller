@@ -126,6 +126,9 @@
  *  15     | OTA firmware-verified (since 2.0.0-a.6.35.3) | 0 = unused                     | T13 ota_manager (was post_log(1) → collided with T10 STA + T14 success)
  *  16     | OTA asset-complete  (since 2.0.0-a.6.35.3) | 0 = unused                       | T13 ota_manager (was post_log(2) → collided with T10 NTP)
  *  17     | OTA asset-fail      (since 2.0.0-a.6.35.3) | 0 = unused                       | T13 ota_manager (was post_log(-1) → collided with T9 Q3 drop overflow)
+ *  18     | Coredump available at boot (since 2.0.0-a.6.35.6) | size in KB (rounded up) | T4 data_manager (esp_core_dump_image_check OK during boot)
+ *  19     | Coredump downloaded by admin (since 2.0.0-a.6.35.6) | bytes_streamed / 256 (clamped int16) | T11 web_server (initiator=WEB)
+ *  20     | Coredump erased by admin   (since 2.0.0-a.6.35.6) | 0 = unused             | T11 web_server (initiator=WEB)
  *  -1     | Q3 drop-overflow    | dropped count                        | T9 (synthetic)
  *
  * ### value_a=0 sub-codes (T14 outcome / diagnostic skip)

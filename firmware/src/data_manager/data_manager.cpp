@@ -43,6 +43,7 @@
 #include <esp_system.h>     /* esp_reset_reason() — boot-reason event (1.17.31) */
 #include <esp_task_wdt.h>   /* WDT subscription (1.17.29 / gh#13) */
 #include <esp_timer.h>
+#include <esp_core_dump.h>  /* a.6.35.6 — boot-time check + erase from web GUI */
 #include <time.h>
 #include <sys/time.h>    /* settimeofday() — alpha.6.7, was via Arduino.h */
 #include <string.h>
@@ -133,6 +134,26 @@ static bool s_meas_valid;
 
 /** @brief Sensor history ring buffer (7.2 KB BSS).  Protected by MX3. */
 static dm_ring_buf_t s_ring;
+
+/** @brief Cached "is a coredump sitting in flash from a previous panic?"
+ *
+ * Set once at boot from `esp_core_dump_image_check()` (cheap flash CRC check,
+ * not worth repeating). Cleared by `dm_coredump_clear()` after T11 erases
+ * the partition via `/api/coredump/erase`. Read by:
+ *
+ *  - `dm_status_snapshot()`  → fills `status_snapshot_t::coredump_available`
+ *    so the canonical JSON emits the `coredump_available` mode flag and the
+ *    GUI Alarms card renders the badge.
+ *  - `dm_coredump_size_bytes()` → exposed for the GUI to display the dump
+ *    size before the operator decides to download.
+ *
+ * No mutex: single 1-byte atomic load/store. Reads from any task; writes
+ * from the boot-sequence + the erase handler (both serialised by being
+ * one-shot from T11's worker thread).
+ *
+ * Since 2.0.0-a.6.35.6. */
+static volatile bool   s_coredump_present  = false;
+static volatile size_t s_coredump_size_b   = 0u;
 
 /** @brief Re-read RTC every this many main-loop ticks (≈ RTC_POLL_TICKS s). */
 #define RTC_POLL_TICKS  60u
@@ -799,6 +820,42 @@ void task_data_manager(void *pvParameters)
         log_post(&id_evt);
     }
 
+    /* a.6.35.6 — boot-time coredump check. esp_core_dump_image_check() reads
+     * the coredump partition header + checksum and returns ESP_OK if a valid
+     * dump from a previous panic is stored. If yes, cache the fact + size,
+     * and emit a LOG_SYSTEM row so the operator sees "by the way, a coredump
+     * is sitting in flash from last boot" in the SD log without having to
+     * notice the badge in the GUI. value_b carries the size in KB (rounded
+     * up). The dump stays in flash until the operator downloads + erases
+     * via /api/coredump in T11. */
+    {
+        esp_err_t cd_check = esp_core_dump_image_check();
+        if (cd_check == ESP_OK) {
+            size_t cd_addr = 0u;
+            size_t cd_size = 0u;
+            if (esp_core_dump_image_get(&cd_addr, &cd_size) == ESP_OK && cd_size > 0u) {
+                s_coredump_present = true;
+                s_coredump_size_b  = cd_size;
+                ESP_LOGW(TAG, "Coredump from previous boot detected: %u bytes at flash 0x%06x",
+                         (unsigned)cd_size, (unsigned)cd_addr);
+
+                log_event_t cd_evt = {};
+                cd_evt.timestamp  = s_cfg.current_unix_ts;
+                cd_evt.event_type = (uint8_t)LOG_SYSTEM;
+                cd_evt.initiator  = (uint8_t)LOG_BY_SYSTEM;
+                cd_evt.channel    = 0u;
+                cd_evt.param_id   = (uint8_t)LOG_PARAM_NONE;
+                cd_evt.value_a    = (int16_t)18;   /* coredump available at boot */
+                cd_evt.value_b    = (int16_t)((cd_size + 1023u) / 1024u); /* KB rounded up */
+                log_post(&cd_evt);
+            } else {
+                ESP_LOGW(TAG, "esp_core_dump_image_check OK but image_get failed — treating as absent");
+            }
+        } else {
+            ESP_LOGI(TAG, "No coredump present (esp_core_dump_image_check=%d)", (int)cd_check);
+        }
+    }
+
     /* ----------------------------------------------------------------
      * Main loop
      * ---------------------------------------------------------------- */
@@ -913,6 +970,10 @@ void dm_status_snapshot(status_snapshot_t *out)
      * if it was set). The badge maps to the operator-visible "off the whole
      * subsystem" decision, which is wind_prot_en. */
     out->wind_protect_enabled = (cfg.wind_prot_en != 0);
+    /* a.6.35.6 — coredump-available indicator, derived from the boot-time
+     * esp_core_dump_image_check() result. Drives the canonical JSON's
+     * `coredump_available` mode flag and the GUI's blue Alarms-card badge. */
+    out->coredump_available = s_coredump_present;
     out->ts_unix            = cfg.current_unix_ts;
     out->ntp_synced         = (cfg.current_unix_ts > 1700000000UL);
     out->update_interval_s  = (uint16_t)(cfg.status_interval_s > 0 ? cfg.status_interval_s
@@ -1136,6 +1197,32 @@ void dm_set_log_last_up(const char *filename)
         s_cfg.log_last_up[sizeof(s_cfg.log_last_up) - 1u] = '\0';
         xSemaphoreGive(MX4);
     }
+}
+
+/* ============================================================
+ * Coredump accessors (a.6.35.6)
+ * ============================================================ */
+
+bool dm_coredump_present(void)
+{
+    return s_coredump_present;
+}
+
+size_t dm_coredump_size_bytes(void)
+{
+    return s_coredump_size_b;
+}
+
+void dm_coredump_clear(void)
+{
+    /* Called by T11 after a successful /api/coredump/erase. The actual
+     * partition erase happens in T11 via esp_core_dump_image_erase();
+     * this just clears the cached "present" flag so the next status
+     * snapshot omits the coredump_available mode flag and the GUI
+     * Alarms-card badge disappears. */
+    s_coredump_present = false;
+    s_coredump_size_b  = 0u;
+    ESP_LOGI(TAG, "dm_coredump_clear: cached state reset (post-erase)");
 }
 
 void dm_set_manual_time(time_t unix_ts)
