@@ -54,8 +54,8 @@
       <h3>Wind <span class="tip-icon" data-tip="External wind data from the SenseCAP S200 anemometer.">ⓘ</span></h3>
       <p><span data-tip="Instantaneous wind speed from the last sensor poll (m/s).">Speed</span>: <strong id="st-wind">—</strong> m/s</p>
       <p><span data-tip="Sliding-average wind speed used by the wind-protection evaluation.">Avg</span>: <strong id="st-wind-avg">—</strong> m/s</p>
-      <p><span data-tip="Wind direction in degrees. 0° and 360° = North; 90° = East; 180° = South; 270° = West.">Direction</span>: <strong id="st-wind-dir">—</strong> °</p>
-      <p><span data-tip="Angular sector spanned by every direction sample in the current sliding window. A small value (e.g. 30°) means steady wind from one direction; a large value (e.g. 180°) means the wind is shifting widely.">Variation</span>: <strong id="st-wind-var">—</strong> °</p>
+      <p><span data-tip="Sliding-window vector average of the wind direction (the same value the LCD shows). 0° and 360° = North; 90° = East; 180° = South; 270° = West.">Direction</span>: <strong id="st-wind-dir">—</strong> °</p>
+      <p><span data-tip="Half the angular sector spanned by the direction samples in the current sliding window, displayed as ±N° around the average. A small ± value (e.g. ±15°) means steady wind from one direction; a large ± value (e.g. ±90°) means the wind is shifting widely.">Variation</span>: <strong id="st-wind-var">—</strong> °</p>
     </div>
     <div class="card">
       <h3>Windows <span class="tip-icon" data-tip="Estimated window positions. These are software-tracked states — the controller has no physical position feedback.">ⓘ</span></h3>
