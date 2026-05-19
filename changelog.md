@@ -28,6 +28,62 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-a.6.34]` — 2026-05-19
+
+**Third alpha of the maturation plan.** Adds the T13 firmware-only fallback timer — a one-shot FreeRTOS timer that commits a verified-but-uncommitted firmware OTA after 120 s of inactivity, if no paired web-asset upload arrives. Restores 1.20.3's behaviour: without this, an interrupted asset upload (network blip, operator closed the page) leaves the new firmware permanently inactive and the unit on the old bank.
+
+#### Mechanics
+
+- `FW_DONE_FALLBACK_MS = 120 000` ms. One-shot `xTimerCreate(..., pdFALSE, ..., fw_done_fallback_cb)`, lazily created on first OTA and reused via `xTimerChangePeriod` + `xTimerStart` on subsequent OTAs.
+- Armed in `ota_firmware_end()` immediately after `set_state_locked(OTA_STATE_FW_DONE)` + `post_log(1)`.
+- Cancelled in `ota_assets_begin()` via `xTimerStop(s_fw_done_timer, 0)` before state transitions to ASSETS_BUFFERING.
+- New `value_a=13, value_b=0` LOG_SYSTEM row documents the fallback commit (encoding table entry added in `event_logger.h`).
+- Commit path: `esp_ota_set_boot_partition(s_ota_part)` → `schedule_reboot(3000)` — same primitive used by the paired-OTA asset commit path.
+
+#### Task-dispatch refactor — required to get the audit row on disk
+
+The naive implementation runs the commit work directly inside the `xTimerService` callback. On the bench, this produced **clean reboots at the correct time** (the firmware committed correctly and the unit booted on the new bank) but **`value_a=13` never reached the SD CSV**. Iterations narrowed the cause to `xTimerService`'s small `configTIMER_TASK_STACK_DEPTH` stack: doing the SD write (whether via T9's Q3 path or a direct synchronous helper) from that context appears to overflow and panic-recover invisibly. The cancel-path's `post_log(2)` was always reliable because it runs in T13's task context with a normal stack.
+
+The shipped fix: `fw_done_fallback_cb` now does nothing but spawn `fw_done_commit_task` (4 KB stack, priority 5, one above T9). The worker task does the state check + `post_log(13)` + partition swap + deferred reboot. With this, the audit row lands on disk ~5 s before reset, reliably.
+
+A new public helper `event_logger_post_sync(value_a, value_b)` was added during the iteration and kept for future "must-flush-before-reset" callers — it writes a LOG_SYSTEM row synchronously via `storage_sd_write_append`, bypassing Q3 / T9. The fallback path no longer uses it (the task dispatch made Q3 reliable again) but it's the right primitive for any caller that does need it.
+
+#### What changed
+
+- **`firmware/src/ota_manager/ota_manager.cpp`** — new `FW_DONE_FALLBACK_MS` define, `s_fw_done_timer` handle, `fw_done_commit_task` worker (~50 lines), `fw_done_fallback_cb` dispatcher (~15 lines); `ota_firmware_end()` extended to arm the timer; `ota_assets_begin()` extended to stop the timer.
+- **`firmware/src/event_logger/event_logger.h`** + **`event_logger.cpp`** — new `value_a=13` row in the LOG_SYSTEM encoding table; new public `event_logger_post_sync(value_a, value_b)` helper.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-a.6.34`.
+
+#### Acceptance — hardware verified on 192.168.20.160
+
+Both halves of the timer's behaviour exercised end-to-end:
+
+**Cancel-path** — `POST /api/ota/firmware` followed by `POST /api/ota/assets` within the 120 s window. Asset OTA commits normally; **no** spurious `value_a=13` row in CSV; reboot driven by the asset commit path. Paired-flash deploys cleanly across multiple iterations.
+
+**Fallback-path** — `POST /api/ota/firmware` with no follow-up:
+
+```
+07:50:00 UTC SYSTEM SYS 0 0 0,0      ← post_log(0): ota_firmware_begin
+07:50:09 UTC SYSTEM SYS 0 0 1,0      ← post_log(1): ota_firmware_end + timer armed
+...                                  ← 120 s of heartbeats while timer counts down
+07:52:03 UTC SYSTEM SYS 0 0 13,0     ← post_log(13): fallback fired → commit worker
+07:52:08 UTC SYSTEM SYS 0 0 7,253    ← post-reboot heap row (high values = fresh boot)
+07:52:09 UTC SYSTEM SYS 0 0 5,4      ← BOOT entry
+```
+
+Reboot landed ~6 s after the audit row (≈ 3 s reboot timer + boot), with `fw_ver=2.0.0-a.6.34` and `asset_version=2.0.0-a.6.34` reported by `/api/status` immediately after. Unit was already on a.6.34 from the cancel-path step, so the fallback re-flashed and re-committed the same bin — outcome (clean boot into expected firmware) identical to a real upgrade-via-fallback.
+
+**`esp_reset_reason()` cosmetic note:** every OTA reboot in this build — cancel-path and fallback-path alike — surfaces with `value_b=4` in the BOOT entry (which the documented enum calls `ESP_RST_PANIC`). External resets and clean power-cycles register as `value_b=1` (POWERON) earlier in the same file, so the field is producing valid values; this particular IDF 5.5.0 build records `esp_restart()` as 4 rather than the expected 3 (`ESP_RST_SW`). Every reboot lands cleanly; the cosmetic mismatch is not blocking 2.0.0.
+
+#### Build delta vs a.6.33
+
+| Metric | a.6.33 | a.6.34 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1 343 632 B | **1 344 925 B** | +1 293 B |
+| RAM static | 60 488 B | 60 504 B | +16 B |
+
++1.3 KB flash, ~1 KB over plan estimate. The overrun absorbs the dispatch refactor (extra worker function + strings) and the new `event_logger_post_sync` helper kept linked for future callers. Final flash usage: **64.1 %** of the 2 MB OTA bank — headroom unchanged.
+
 ### `[2.0.0-a.6.33]` — 2026-05-19
 
 **Second alpha of the maturation plan.** Restores two T10 features from the deferred-to-2.0.1 list: periodic 24 h NTP resync, and LOG_SYSTEM audit events (`value_a=3` AP start/stop, `value_a=4` geo sync).

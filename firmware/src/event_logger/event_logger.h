@@ -121,6 +121,7 @@
  *  10     | T2 boot-cal skipped (since 1.17.36) | 0 = unused                       | T2 (NVS recovered all 3 channels CLOSED → gh#18 Phase 3)
  *  11     | Unit ID           (since 1.18.3) | low 16 bits of MAC (top byte = mac[4]) cast to int16  | T4 once at boot + T9 on every SD rotation (gh#17)
  *  12     | HEAP largest block  (since 1.18.2) | KB in MALLOC_CAP_INTERNAL largest contiguous | T1 every 60 s (gh#20)
+ *  13     | T13 firmware-only fallback commit (since 2.0.0-a.6.34) | 0 = unused | T13 (no asset upload arrived within FW_DONE_FALLBACK_MS of a verified firmware OTA → boot partition committed via esp_ota_set_boot_partition + scheduled reboot)
  *  -1     | Q3 drop-overflow    | dropped count                        | T9 (synthetic)
  *
  * ### value_a=0 sub-codes (T14 outcome / diagnostic skip)
@@ -277,6 +278,33 @@ bool event_logger_sd_remount(void);
  * from attempting a write to a card that is being torn down.
  */
 void event_logger_sd_unmount(void);
+
+/**
+ * @brief Synchronously write a LOG_SYSTEM event row to the current SD file.
+ *
+ * Bypasses Q3 entirely: builds the CSV line in-place and calls
+ * storage_sd_write_append() directly. Use only when a normal log_post() →
+ * T9 → SD round-trip is unsafe — most importantly inside a pre-reboot
+ * audit window where T9 may not be scheduled to drain Q3 before esp_restart
+ * cuts it off.
+ *
+ * Since 2.0.0-a.6.34. Added because the T13 firmware-only fallback timer's
+ * post_log(13) audit row was empirically not reaching SD before esp_restart
+ * fired, even with a 3-second deferred-reboot window: the xTimerService task
+ * context that holds the callback never yielded long enough for T9 to drain
+ * the entry and complete fopen/fwrite/fclose. Synchronous bypass avoids the
+ * scheduling assumption.
+ *
+ * Concurrency: storage_sd_write_append uses fopen("ab") + fwrite + fclose;
+ * each call is independent. Concurrent calls from T9 and from this helper
+ * are serialised at the SDMMC/FAT VFS layer — both end up as separate file
+ * appends. No data loss expected but interleave order is non-deterministic.
+ *
+ * @return true if the row was successfully appended.
+ * @return false if SD is unmounted, the current filename is empty, or the
+ *               write failed.
+ */
+bool event_logger_post_sync(int16_t value_a, int16_t value_b);
 
 /* -----------------------------------------------------------------------
  * T9 task entry point

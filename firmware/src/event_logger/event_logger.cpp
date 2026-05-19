@@ -660,6 +660,32 @@ void event_logger_sd_unmount(void)
 }
 
 /* =======================================================================
+ * Public — synchronous LOG_SYSTEM helper (since 2.0.0-a.6.34)
+ *
+ * Bypasses Q3 to guarantee the row reaches the SD file before the caller
+ * returns. See event_logger.h for the rationale (T13 fallback audit row).
+ * ======================================================================= */
+
+bool event_logger_post_sync(int16_t value_a, int16_t value_b)
+{
+    if (!s_sd_ok || s_cur_filename[0] == '\0') {
+        return false;
+    }
+
+    log_event_t evt;
+    memset(&evt, 0, sizeof(evt));
+    evt.timestamp  = (uint32_t)time(NULL);
+    evt.event_type = (uint8_t)LOG_SYSTEM;
+    evt.initiator  = (uint8_t)LOG_BY_SYSTEM;
+    evt.value_a    = value_a;
+    evt.value_b    = value_b;
+
+    char csv_line[80];
+    build_csv_line(&evt, csv_line, sizeof(csv_line));
+    return storage_sd_write_append(s_cur_filename, csv_line) == STORAGE_OK;
+}
+
+/* =======================================================================
  * Public — rotation-tracking helpers (T14)
  * ======================================================================= */
 
