@@ -129,12 +129,36 @@ static void post_log(int16_t val_a)
     log_post(&evt);
 }
 
-/* FreeRTOS timer callback: performs the deferred system restart. */
+/* Worker spawned by reboot_timer_cb. esp_restart() performs WiFi teardown
+ * (esp_wifi_stop → 802.11 ioctls → queue_send_wrapper) that consumes several
+ * KB of stack — more than the FreeRTOS timer service task's ~2 KB allotment
+ * (configTIMER_TASK_STACK_DEPTH). Same carve-off pattern as
+ * fw_done_commit_task. */
+static void reboot_worker_task(void *pv)
+{
+    (void)pv;
+    ESP_LOGI(TAG, "[OTA] Rebooting now");
+    esp_restart();
+    /* unreachable */
+}
+
+/* FreeRTOS timer callback: spawns reboot_worker_task with a 4 KB stack so
+ * esp_restart()'s WiFi teardown doesn't blow the timer-service stack. */
 static void reboot_timer_cb(TimerHandle_t xTimer)
 {
     (void)xTimer;
-    ESP_LOGI(TAG, "[OTA] Rebooting now");
-    esp_restart();
+    BaseType_t rc = xTaskCreate(reboot_worker_task,
+                                "ota_reboot",
+                                4096,
+                                NULL,
+                                5,        /* priority — matches fw_done_commit_task */
+                                NULL);
+    if (rc != pdPASS) {
+        ESP_LOGE(TAG, "[OTA] reboot_worker_task spawn failed (%d) — "
+                      "falling back to in-timer esp_restart() (may overflow)",
+                 (int)rc);
+        esp_restart();
+    }
 }
 
 /* Schedule a system restart after delay_ms milliseconds. */
