@@ -292,20 +292,41 @@ static uint16_t calc_win(int32_t win_min, int32_t poll_s)
 /**
  * @brief Post a LOG_ALARM event to Q3 for a sensor fault change.
  *
- * @param value_a  Fault code:
- *                  1 = T/RH sensor fault onset
- *                 -1 = T/RH sensor fault cleared
- *                  2 = wind sensor fault onset
- *                 -2 = wind sensor fault cleared
+ * Since 2.0.0-a.6.35.3: encoding re-cut to avoid logparser collisions.
+ *
+ * Pre-fix: `value_a` carried both the sensor type and the onset/clear sign
+ * (±1 = T/RH, ±2 = wind). With `channel=0` this aliased to motor-alarm
+ * (`va=1, vb=0` per relay_controller.cpp) and wind-override sensor-fault
+ * (`va=-1`) — the logparser had no way to disambiguate, so every T/RH
+ * onset surfaced as "MOTOR ALARM: triggered" in the parsed output. Real
+ * field captures during OTAs showed all three sensor_poll alarm shapes
+ * being misclassified.
+ *
+ * Post-fix: `channel` carries the sensor type, `value_a` carries the
+ * onset/clear edge:
+ *   - channel = 4, value_a = 1 → T/RH sensor fault TRIGGERED
+ *   - channel = 4, value_a = 0 → T/RH sensor fault CLEARED
+ *   - channel = 5, value_a = 1 → wind  sensor fault TRIGGERED
+ *   - channel = 5, value_a = 0 → wind  sensor fault CLEARED
+ *
+ * Channels 1/2/3 are motor channels (RELAY events); 4 and 5 are reserved
+ * here for sensor faults. The logparser checks `ch` first when decoding
+ * ALARM rows and only falls back to the motor/wind-override decoder when
+ * `ch ∈ {0,1,2,3}`.
+ *
+ * @param sensor_kind  4 = T/RH, 5 = wind.
+ * @param onset        true = fault triggered, false = fault cleared.
  */
-static void post_sensor_alarm(int16_t value_a)
+static void post_sensor_alarm(uint8_t sensor_kind, bool onset)
 {
     log_event_t evt;
     memset(&evt, 0, sizeof(evt));
     evt.timestamp  = dm_get_unix_time();
     evt.event_type = (uint8_t)LOG_ALARM;
     evt.initiator  = (uint8_t)LOG_BY_SYSTEM;
-    evt.value_a    = value_a;
+    evt.channel    = sensor_kind;             /* 4 = T/RH, 5 = wind */
+    evt.value_a    = onset ? 1 : 0;
+    /* value_b stays 0 — sensor faults are binary on/off. */
     log_post(&evt);
 }
 
@@ -414,7 +435,7 @@ void task_sensor_poll(void *pvParameters)
                 /* Fault cleared — update EG1, log once */
                 xEventGroupClearBits(EG1, EG1_BIT_SENSOR_FAULT_T);
                 t_fault_active = false;
-                post_sensor_alarm(-1);
+                post_sensor_alarm(/*sensor_kind=*/4u, /*onset=*/false);
                 ESP_LOGI(TAG, "[T5] T/RH sensor fault cleared (T=%.1f°C RH=%.1f%%)",
                          (double)tm.temperature_c, (double)tm.humidity_pct);
             }
@@ -425,7 +446,7 @@ void task_sensor_poll(void *pvParameters)
                 /* Fault onset — update EG1, log once */
                 xEventGroupSetBits(EG1, EG1_BIT_SENSOR_FAULT_T);
                 t_fault_active = true;
-                post_sensor_alarm(1);
+                post_sensor_alarm(/*sensor_kind=*/4u, /*onset=*/true);
                 ESP_LOGW(TAG, "[T5] T/RH sensor FAULT — two consecutive read failures");
             }
         }
@@ -450,7 +471,7 @@ void task_sensor_poll(void *pvParameters)
             if (w_fault_active) {
                 xEventGroupClearBits(EG1, EG1_BIT_SENSOR_FAULT_W);
                 w_fault_active = false;
-                post_sensor_alarm(-2);
+                post_sensor_alarm(/*sensor_kind=*/5u, /*onset=*/false);
                 ESP_LOGI(TAG, "[T5] Wind sensor fault cleared (ws=%.1f m/s wd=%.0f°)",
                          (double)wm.wind_speed_avg_ms, (double)wm.wind_dir_avg_deg);
             }
@@ -460,7 +481,7 @@ void task_sensor_poll(void *pvParameters)
             if (!w_fault_active) {
                 xEventGroupSetBits(EG1, EG1_BIT_SENSOR_FAULT_W);
                 w_fault_active = true;
-                post_sensor_alarm(2);
+                post_sensor_alarm(/*sensor_kind=*/5u, /*onset=*/true);
                 ESP_LOGW(TAG, "[T5] Wind sensor FAULT — two consecutive read failures");
             }
         }

@@ -610,6 +610,8 @@ static void run_ntp_resync(void)
 
     if (!ok) {
         ESP_LOGW(TAG, "[T10] NTP resync: timed out after 10 s — will retry next cycle");
+        /* a.6.35.3 — emit the parser-documented NTP timeout audit row. */
+        log_sys(2, 0);
         return;
     }
 
@@ -677,6 +679,19 @@ void task_network_manager(void *pvParameters)
         s_last_ntp_sync_us = esp_timer_get_time();
     }
 
+    /* a.6.35.3 — emit boot-time STA / NTP snapshot rows.
+     *
+     * The main-loop transition handler (below) only fires log_sys on
+     * snapshots_equal-detected edges. Because `prev` is seeded from the
+     * post-boot state above, the very first iteration sees no edge and
+     * never emits the "STA up" / "NTP synced" rows the logparser expects
+     * (value_a=1, value_a=2). Emit them once here so every boot's CSV
+     * has a definitive record of the network state the firmware came up
+     * with — matches the way BOOT (a=5), Unit ID (a=11) and T2 boot-cal
+     * (a=10) rows are all stamped once per boot. */
+    log_sys(1, prev.client_connected ? 1 : 0);
+    log_sys(2, prev.ntp_synced       ? 1 : 0);
+
     /* alpha.6.28 — one-shot IP geolocation + timezone sync. Gated on NTP
      * being synced (so DNS resolution + HTTP have a working network) and
      * latched after the first successful response. */
@@ -714,6 +729,21 @@ void task_network_manager(void *pvParameters)
                      (int)cur.client_connected, (int)cur.ap_active,
                      (int)cur.ntp_synced, cur.ip_str);
             (void)xQueueOverwrite(Q5, &cur);
+
+            /* a.6.35.3 — emit LOG_SYSTEM audit events for STA and NTP state
+             * transitions. These were documented in event_logger.h and
+             * logparser.md (value_a=1 STA, value_a=2 NTP) but never actually
+             * produced by the firmware — the parser would never see them.
+             * Edge-triggered (only on transitions) to keep the CSV signal-
+             * to-noise high; AP transitions already get the same treatment
+             * via start_ap()/stop_ap() so this just fills the remaining
+             * two documented slots. */
+            if (cur.client_connected != prev.client_connected) {
+                log_sys(1, cur.client_connected ? 1 : 0);
+            }
+            if (cur.ntp_synced != prev.ntp_synced) {
+                log_sys(2, cur.ntp_synced ? 1 : 0);
+            }
 
             /* If NTP just transitioned to synced (e.g. after a reconnect
              * that included a fresh SNTP run), notify T4 again. The TN4

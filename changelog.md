@@ -28,6 +28,150 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-a.6.35.3]` — 2026-05-19
+
+**Log-format follow-up to a.6.35.x** — audit and align all `log_post` call sites with what `log/logparser.py` actually expects. Triggered by the question "is the log populated with all information that the log processor script expects, in the correct format?" Answer pre-patch: largely yes, but with five real bugs that made the parser misrender events. All five close here.
+
+#### Five bugs found and fixed
+
+1. **`main.cpp` heartbeat polluted `value_a`.** Every 5 s `main.cpp`'s status-print loop posted a synthetic LOG_SYSTEM with `value_a = uptime_seconds`. `value_a` is the SYSTEM-event subtype field. Uptime values 5, 7, 8, 9, 10, 11, 12, … *each* collide with a documented subtype (5=BOOT, 7/8/12=heap rows, 9=heap-corruption, 10=T2-skip, 11=unit-id). The parser misread thousands of heartbeats as fake boot / unit-id / corruption / heap rows. Pre-fix CSV value_a histograms had hundreds of "values" 15, 17, 20, 22, 25, …, 1935 — none of those are documented subtypes. **Removed entirely.** T9's own steady output (heap rows every 60 s, sensor rows every poll cycle, T14 status POSTs) is sufficient proof of life.
+
+2. **CSV row timestamps were UTC, filenames are local.** `build_csv_line` used `gmtime_r`; `make_ts_filename` used `localtime_r`. An operator browsing the SD card saw a filename like `20260519143022.csv` but rows inside stamped `12:30:22` (UTC). Switched `build_csv_line` to `localtime_r` so filename and row timestamps are consistent. Per-user request.
+
+3. **T10 STA/NTP edge events were documented but never emitted.** The parser's value_a=1 (STA up/down) and value_a=2 (NTP timeout/synced) had producer "T10 net_manager" in the spec, but `network_manager.cpp` never actually posted them. Added: snapshot-equal detector now fires `log_sys(1, ...)` and `log_sys(2, ...)` on transitions; `run_ntp_resync()` posts `log_sys(2, 0)` on timeout; boot-time T10 init posts a one-shot `log_sys(1, x)` + `log_sys(2, x)` snapshot so every boot's CSV records the network state the firmware came up with (matches how BOOT, Unit ID, T2 boot-cal each fire once per boot).
+
+4. **`ota_manager`'s OTA-stage codes collided with documented subtypes.** Pre-fix: `post_log(0)` for OTA firmware-begin collided with T14 status outcome (also va=0); `post_log(1)` for OTA firmware-end collided with both T10 STA up/down (va=1) and T14 success (va=1); `post_log(2)` for OTA asset-complete collided with T10 NTP (va=2); `post_log(-1)` for OTA asset-fail collided with T9 Q3 drop overflow (va=-1). The parser misrendered every OTA stage as a wrong network/legacy event. Re-numbered to a dedicated OTA range: 14 (fw-begin), 15 (fw-verified), 16 (asset-complete), 17 (asset-fail). `value_a=13` (firmware-only fallback commit, from a.6.34) unchanged. Parser updated to decode 14-17.
+
+5. **`sensor_poll` sensor-fault codes collided with motor alarm + wind override.** Pre-fix `post_sensor_alarm` emitted LOG_ALARM with `channel=0` and `value_a = ±1, ±2`. The `±1` shapes collided directly with motor alarm onset/cleared (T2) and wind-override sensor-fault (T3); the `±2` shapes fell into the wind-override-direction decoder branch. A real bench capture during the a.6.35.3 deploy showed three T5 sensor-fault rows misrendering as "MOTOR ALARM: triggered" + "WIND OVERRIDE: SET direction X" + "WIND OVERRIDE: sensor fault safe-fail". Re-encoded: T5 now uses `channel=4` (T/RH) or `channel=5` (wind) with `value_a=1` (onset) / `value_a=0` (cleared); the parser checks `ch` first and routes ch=4/5 to a dedicated T5 decoder branch.
+
+#### What changed
+
+**Firmware:**
+- `firmware/src/main.cpp` — removed the 5 s heartbeat `log_post`.
+- `firmware/src/event_logger/event_logger.cpp` — `build_csv_line` now uses `localtime_r` instead of `gmtime_r`.
+- `firmware/src/event_logger/event_logger.h` — LOG_SYSTEM table extended with rows for value_a=14/15/16/17.
+- `firmware/src/network_manager/network_manager.cpp` — STA/NTP edge-trigger log_sys calls; NTP-timeout log_sys in `run_ntp_resync`; boot-time STA + NTP snapshot rows.
+- `firmware/src/ota_manager/ota_manager.cpp` — `post_log(0/1/2/-1)` → `post_log(14/15/16/17)`.
+- `firmware/src/sensor_poll/sensor_poll.cpp` — `post_sensor_alarm` signature changed to `(sensor_kind, onset)`; emits `channel=4/5` + `value_a=1/0` instead of bare value_a=±1/±2.
+- `firmware/platformio.ini` `FIRMWARE_VERSION` → `2.0.0-a.6.35.3`.
+
+**Parser:**
+- `log/logparser.py` — column heading "Timestamp (UTC)" → "Timestamp (local)"; decoders for value_a=13/14/15/16/17 added; `_decode_alarm` checks `channel` field first for T5 sensor-fault routing.
+- `log/logparser.md` — version bump to 1.4; "What's new" section; updated SYSTEM table + ALARM table; updated Timestamps section.
+
+#### Acceptance — full bench cycle on 192.168.20.160
+
+Two consecutive OTA cycles deployed a.6.35.3 → re-flashed a.6.35.3. The second cycle (which used the new firmware as the OTA-emitter) produced this clean parsed output:
+
+```
+15:27:26  [SYSTEM ]  System    OTA: firmware POST started (bytes streaming to inactive bank)
+15:27:31  [SYSTEM ]  System    OTA: firmware verified OK — awaiting web-asset upload
+15:27:36  [SYSTEM ]  System    OTA: asset ZIP extracted OK — reboot scheduled (1 s)
+15:27:39  [SYSTEM ]  System    Heap internal largest block: 176 KB
+15:27:40  [SYSTEM ]  System    Boot: esp_reset_reason = 4 (PANIC)
+15:27:40  [SYSTEM ]  System    STA WiFi client: connected     ← boot snapshot
+15:27:40  [SYSTEM ]  System    NTP: synced                    ← boot snapshot
+15:27:41  [SYSTEM ]  System    Geolocation: success
+15:27:43  [SYSTEM ]  Web UI    T14 status POST: success
+```
+
+Compare to the pre-patch parsing of the same OTA pattern, which produced "Legacy boot marker" + "STA WiFi disconnected" + "NTP timeout" for the three OTA-stage rows. Every event in the new output renders meaningfully; no row falls through to the generic `System event: a=N b=M` formatter. Timestamps are local time (`15:27`, not `13:27` UTC). Heartbeat pollution is gone — `value_a` histogram on the new CSV section shows only documented subtypes (1, 2, 4, 5, 7, 8, 10, 11, 12, 14, 15, 16) with no stray uptime-second values.
+
+The pre-patch field captures show what was happening in the older logs and gave the operator a misleading view of "STA disconnect" and "NTP timeout" during OTAs that were actually just OTA progress. Operators reading pre-a.6.35.3 logs should treat any SYSTEM row with `value_a ∈ {0, 1, 2}` and `initiator=SYS` around an OTA window with skepticism — those are likely ota_manager stage events, not network events.
+
+#### Build delta vs a.6.35.2
+
+| Metric | a.6.35.2 | a.6.35.3 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1 348 685 B | **1 349 136 B** | +451 B |
+| RAM static | 60 552 B | 60 552 B | 0 |
+
++451 bytes for the new T10 boot-snapshot rows, OTA value_a re-numbering (+strings), sensor_poll signature change, and the small build_csv_line / heartbeat-removal delta (heartbeat removal saved ~30 B; the rest paid for diagnostic strings). Flash usage still 64.3 % of the 2 MB OTA bank.
+
+### `[2.0.0-a.6.35.2]` — 2026-05-19
+
+**Data-loss follow-up to a.6.35** — fixes a real failure mode where files could be permanently stranded on SD without ever reaching the status server. Operator-driven question: "is it possible we miss a file because log rotation was executed before the upload was executed?" Answer: yes, in two scenarios. Both close here.
+
+#### The bug
+
+T14's two upload triggers (daily + on-rotation) each looked at exactly one filename:
+
+| Trigger | Filename source | Dedup logic |
+|---|---|---|
+| Daily | `event_logger_newest_closed()` — lex-max non-active CSV | `strcmp(fn, cfg.log_last_up) != 0` |
+| On-rotation | `event_logger_last_rotated()` — in-memory `s_last_closed` set by `rotate_sd_file()` | same |
+
+"Strictly different from the latch" is not the same as "newer than the latch". The middle of a range was never examined. Two scenarios produced silent data loss:
+
+1. **Multiple rotations during one upload.** While T14 is mid-streaming file A to the server, T9 rotates B (s_last_closed=B, notify bit set), then rotates C (s_last_closed=C, notify already set). T14 finishes uploading A, latch advances to A. Next iteration: notify bit triggers, T14 reads s_last_closed=C, uploads C, latch advances to C. **B was never sent.** Daily trigger can't recover B either — `newest_closed` returns C, dedup-equals latch, skipped. B sits on SD until `SD_MAX_FILES = 10` enforces deletion.
+
+2. **T14 offline / failing across a rotation.** The more realistic case: WiFi drops at 14:00 on Day 2. The 03:15 daily trigger on Day 2 attempts to upload file B → FAILS, latch stays at A (the previous day's success). Day 3 at 03:15, WiFi is back, T9 has rotated C since then. T14 reads newest_closed=C, uploads C, latch advances to C. **B is stranded** — `newest_closed` always returns the lex-max which now equals the latch.
+
+#### Fix — iterate every closed file newer than the latch, oldest first
+
+New helper in event_logger:
+
+```c
+bool event_logger_next_pending(const char *after, char *out, size_t cap);
+```
+
+Scans the SD card and returns the lex-smallest closed CSV strictly greater than `after`. T14's new `upload_pending(&cfg)` walks this in a loop:
+
+```c
+static int upload_pending(const cfg_shadow_t *cfg) {
+    char after[33] = {0};
+    strncpy(after, cfg->log_last_up, sizeof(after) - 1u);
+    int n_uploaded = 0;
+    char next[24];
+    for (int i = 0; i < 12; i++) {
+        if (!event_logger_next_pending(after, next, sizeof(next))) break;
+        if (!do_log_upload(next, cfg)) break;   // failure → next trigger resumes
+        strncpy(after, next, sizeof(after) - 1u);
+        n_uploaded++;
+    }
+    return n_uploaded;
+}
+```
+
+`do_log_upload`'s success path already calls `dm_set_log_last_up(next)`, persisting the latch to NVS after each 2xx. If a later upload in the batch fails, the latch is correct: next trigger picks up where we left off. If the unit reboots mid-batch, the latch is still correct: `nvs_load_web()` at boot reads the advanced value.
+
+Both daily and on-rotation triggers now call `upload_pending(&cfg)` instead of single-file logic.
+
+#### What changed
+
+- **`firmware/src/event_logger/event_logger.h`** — new `event_logger_next_pending(after, out, cap)` declaration with rationale block.
+- **`firmware/src/event_logger/event_logger.cpp`** — implementation (~30 lines). Same `sd_scan()` + active-file exclusion as `event_logger_newest_closed`; selection predicate is "smallest > after" instead of "max".
+- **`firmware/src/status_post/status_post.cpp`** — new static `upload_pending(cfg)` (~25 lines). Daily-trigger block replaced with single call + 0-count diagnostic. On-rotation block replaced with single call. Both old single-file paths removed.
+- **`firmware/platformio.ini`** `FIRMWARE_VERSION` → `2.0.0-a.6.35.2`.
+
+#### Edge cases handled by the loop
+
+| Scenario | Behaviour |
+|---|---|
+| No pending files (steady state) | Returns 0 immediately. Daily trigger logs `value_a=0, value_b=2`. |
+| 1 pending file (normal rotation cadence) | Single upload, latch advances. Identical to pre-patch behaviour. |
+| 5 pending files (post-outage backlog) | All 5 uploaded oldest-first. Each success advances the latch in NVS. |
+| Failure mid-batch | Loop bails, latch reflects only the successes. Next trigger resumes from the failed file. |
+| Reboot mid-batch | Latch in NVS reflects successes; next boot's first trigger resumes. |
+| Pathological: server consistently rejects a specific file | Loop blocks forever on that file. Mitigation: the 12-iteration safety cap in `upload_pending` prevents an infinite loop within a single call; operator-side, the per-cycle `s_last_log_str = "FAIL ..."` indicator surfaces the stall. Not auto-skipped — deferred to a future "skip-after-N-failures" mechanism if it ever bites in production. |
+
+#### Acceptance
+
+Build delta + clean boot validated on 192.168.20.160:
+
+| Metric | a.6.35.1 | a.6.35.2 | Delta |
+|---|---:|---:|---:|
+| Firmware bin (flash usage) | 1 348 669 B | **1 348 685 B** | +16 B |
+| RAM static | 60 552 B | 60 552 B | 0 |
+
++16 bytes total: the new `event_logger_next_pending` shares its body with `event_logger_newest_closed` (same `sd_scan` + walk), and `upload_pending` is mostly a small loop wrapping the existing `do_log_upload`. No new heap allocations beyond what `do_log_upload` already does.
+
+**Single-file behaviour preserved**: with 0 or 1 pending files, `upload_pending` is byte-identical in observable behaviour to the pre-patch single-file logic. All a.6.35 acceptance tests (D `status_enable` gate, G URL validator, F format) and the a.6.35.1 transition fix continue to apply unchanged.
+
+**Multi-file behaviour** (the new path): code-review verified. Not exercised on the bench during this acceptance window — the user's production status server is configured (`pe1mew.nl/hbwv/api.php`) and triggering a 9-file drain to a real endpoint would have been unexpected. **First real test happens during Phase 7 (14-day soak)** when natural WiFi blips / rotations will create the conditions. The fallback is benign: with no backlog, the multi-file path collapses to the single-file path it replaced.
+
+**Side observation during deploy**: `last_post = 'OK 2026-05-19 11:54:33'` on a.6.35.2 first boot — the production status server returns HTTP 200 for the canonical JSON body with the sourceidentifier header. **Items A (secret header) and B (canonical JSON body) from a.6.35, previously documented as "deferred to Phase 7 real-server validation", are verified end-to-end now.** That moves a.6.35 from "5/7 items end-to-end verified" to "6/7 items end-to-end verified" (item C log upload still needs the daily slot or a rotation to fire).
+
 ### `[2.0.0-a.6.35.1]` — 2026-05-19
 
 **UX follow-up to a.6.35** — fixes a confusing window in the Web tab where the operator clicked Apply with `enable=1` but the `last_post` indicator kept showing `DISABLED` until the page was manually refreshed (and even then only after up to a full status interval).

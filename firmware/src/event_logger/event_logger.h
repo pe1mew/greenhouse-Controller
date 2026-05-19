@@ -122,6 +122,10 @@
  *  11     | Unit ID           (since 1.18.3) | low 16 bits of MAC (top byte = mac[4]) cast to int16  | T4 once at boot + T9 on every SD rotation (gh#17)
  *  12     | HEAP largest block  (since 1.18.2) | KB in MALLOC_CAP_INTERNAL largest contiguous | T1 every 60 s (gh#20)
  *  13     | T13 firmware-only fallback commit (since 2.0.0-a.6.34) | 0 = unused | T13 (no asset upload arrived within FW_DONE_FALLBACK_MS of a verified firmware OTA → boot partition committed via esp_ota_set_boot_partition + scheduled reboot)
+ *  14     | OTA firmware-begin  (since 2.0.0-a.6.35.3) | 0 = unused                       | T13 ota_manager (was post_log(0) → collided with T14 status outcome)
+ *  15     | OTA firmware-verified (since 2.0.0-a.6.35.3) | 0 = unused                     | T13 ota_manager (was post_log(1) → collided with T10 STA + T14 success)
+ *  16     | OTA asset-complete  (since 2.0.0-a.6.35.3) | 0 = unused                       | T13 ota_manager (was post_log(2) → collided with T10 NTP)
+ *  17     | OTA asset-fail      (since 2.0.0-a.6.35.3) | 0 = unused                       | T13 ota_manager (was post_log(-1) → collided with T9 Q3 drop overflow)
  *  -1     | Q3 drop-overflow    | dropped count                        | T9 (synthetic)
  *
  * ### value_a=0 sub-codes (T14 outcome / diagnostic skip)
@@ -249,6 +253,31 @@ bool event_logger_force_rotate(uint32_t timeout_ms);
  *         unavailable.
  */
 bool event_logger_newest_closed(char *out, size_t cap);
+
+/**
+ * @brief Return the lexicographically *smallest* closed CSV file whose name
+ *        is strictly greater than @p after.
+ *
+ * "Strictly greater than" in lexicographic order, which matches chronological
+ * order because filenames embed `YYYYMMDDHHMMSS`. Excludes the currently
+ * active file. Used by T14's `upload_pending` to walk all unsent closed
+ * files in order, oldest first, after each successful upload advances the
+ * `cfg.log_last_up` dedup latch.
+ *
+ * Pass `after = ""` (or `NULL`) to get the lex-smallest closed file
+ * regardless of any prior latch. Pass `after = cfg.log_last_up` to resume
+ * from the last successfully uploaded file.
+ *
+ * @param after  Filename to resume after (exclusive). NULL or empty string
+ *               returns the smallest closed file. No leading '/'.
+ * @param out    Destination buffer; always NUL-terminated on return.
+ * @param cap    Capacity of @p out. 24 bytes is sufficient.
+ * @return true if a closed file > @p after exists, false if there are no
+ *         pending files, SD is unavailable, or the scan failed.
+ *
+ * Since 2.0.0-a.6.35.2 (multi-file upload follow-up to a.6.35).
+ */
+bool event_logger_next_pending(const char *after, char *out, size_t cap);
 
 /* -----------------------------------------------------------------------
  * SD card mount / unmount helpers (called by T11 web-server endpoints)

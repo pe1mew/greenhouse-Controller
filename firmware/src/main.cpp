@@ -299,32 +299,23 @@ static void heartbeat_task(void *arg)
                      (long)cfg.sunrise_mins_utc, (long)cfg.sunset_mins_utc);
         }
 
-        /* alpha.6.6 — feed Q3 with a synthetic LOG_SYSTEM event each
-         * heartbeat. T9 (event_logger) drains Q3 and persists each event
-         * as one CSV line on SD. Producing one heartbeat-cadence event
-         * gives the operator a steady "T9 is alive" signal on the SD
-         * card: open the latest YYYYMMDDHHMMSS.csv and see it grow by
-         * one line every 5 seconds.
+        /* a.6.35.3 — heartbeat log_post REMOVED.
          *
-         * Event encoding:
-         *   timestamp  = libc time(NULL)
-         *   event_type = LOG_SYSTEM (6)
-         *   initiator  = LOG_BY_SYSTEM (0)
-         *   value_a    = uptime in seconds (i16; wraps at ~9 hours)
-         *   value_b    = free heap in KB (i16; fits comfortably) */
-        {
-            uint32_t uptime_s = (uint32_t)(
-                (xTaskGetTickCount() * portTICK_PERIOD_MS) / 1000UL);
-            log_event_t syn = {};
-            syn.timestamp  = (uint32_t)time(NULL);
-            syn.event_type = (uint8_t)LOG_SYSTEM;
-            syn.initiator  = (uint8_t)LOG_BY_SYSTEM;
-            syn.channel    = 0;
-            syn.param_id   = 0;
-            syn.value_a    = (int16_t)((uptime_s > 32767u) ? 32767 : uptime_s);
-            syn.value_b    = (int16_t)(free_internal / 1024u);
-            log_post(&syn);
-        }
+         * The original alpha.6.6 scaffold posted a synthetic LOG_SYSTEM row
+         * every 5 s with `value_a = uptime_seconds` to prove T9 was alive on
+         * the SD card. That made sense when only main.cpp was producing log
+         * events. With T1/T2/T4/T6/T8/T10/T13/T14 now all posting real
+         * events, the heartbeat was actively harmful: `value_a` is the
+         * SYSTEM-event subtype field, and every uptime-second value
+         * (5, 7, 8, 9, 10, 11, 12, …) collides with a documented subtype in
+         * event_logger.h's LOG_SYSTEM table (5=BOOT, 7/8/12=heap rows,
+         * 9=heap-corruption, 10=T2-skip, 11=unit-id). logparser.py would
+         * misread every heartbeat as a fake boot / corruption / unit-id row.
+         *
+         * "T9 is alive" is now demonstrated by T1's heap rows (every 60 s),
+         * T4's sensor rows (every poll cycle), and the SD file growing
+         * during steady-state operation. The 5 s ESP_LOGI status print above
+         * still fires for serial-side visibility. */
 
         /* alpha.6.4 — drain Q2 of any key events produced by the T7
          * keypad-scan task since the last heartbeat. The task posts

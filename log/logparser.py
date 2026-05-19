@@ -104,13 +104,25 @@ _SD_FILENAME_RE = re.compile(r"^\d{14}\.csv$", re.IGNORECASE)
 # Timestamp helpers
 # ---------------------------------------------------------------------------
 
-def _fmt_utc(iso_str: str) -> str:
+def _fmt_local(iso_str: str) -> str:
     """
-    Return a fixed-width UTC timestamp string from an ISO 8601 UTC string.
-    Input:  "2025-06-07T14:30:22"
-    Output: "2025-06-07 14:30:22"
+    Return a fixed-width local-time timestamp string from an ISO 8601 string.
+
+    Input:  "2026-05-19T13:30:22"
+    Output: "2026-05-19 13:30:22"
+
+    Since firmware 2.0.0-a.6.35.3 the CSV row timestamps are in **local
+    time** (matches the SD filename convention which has always been local).
+    Older log files emitted before that release have UTC timestamps inside
+    but local-time filenames — the parser passes the string through
+    unchanged in both cases since the visual format is identical. The
+    column heading and the docs make the timezone explicit.
     """
     return iso_str.replace("T", " ")
+
+
+# Backwards-compat alias for any external caller of the old name.
+_fmt_utc = _fmt_local
 
 
 def _date_from_sd_filename(name: str) -> str:
@@ -231,28 +243,49 @@ def _decode_session(row: dict) -> str:
 
 def _decode_alarm(row: dict) -> str:
     """
-    ALARM — two sources in the firmware:
+    ALARM — three producers in the firmware:
 
-    T2 relay_controller.cpp — motor alarm:
+    T2 relay_controller.cpp — motor alarm (channel = 0):
       onset:    value_a=1, value_b=0
       cleared:  value_a=0, value_b=0
 
-    T3 safety_monitor.cpp — wind override:
+    T3 safety_monitor.cpp — wind override (channel = 0):
       set (sensor fault):   value_a=-1,  value_b=0
       set (speed):          value_a=speed×10, value_b=v_max×10
       set (direction):      value_a=direction°, value_b=excl_low°
       cleared (disabled):   value_a=0,   value_b=0
       cleared (safe):       value_a=speed×10,  value_b=direction°
 
-    Disambiguation rules (best-effort; value_a=0,value_b=0 is ambiguous):
+    T5 sensor_poll.cpp — sensor read fault (since 2.0.0-a.6.35.3):
+      channel = 4 → T/RH sensor; channel = 5 → wind sensor
+      value_a = 1 → fault triggered, value_a = 0 → fault cleared
+      value_b = 0
+      (Pre-a.6.35.3 these used `value_a = ±1, ±2` with `channel = 0`, which
+      aliased to motor alarm and wind-override sensor-fault — the parser
+      had no way to disambiguate. The new ch-based encoding lets T2/T3
+      keep ch=0 and T5 own ch>=4.)
+
+    Channel-based dispatch handles T5 first; everything else falls through
+    to the legacy va-based disambiguation:
       value_a ==  1  → motor alarm onset
       value_a == -1  → wind override: sensor fault safe-fail
       value_a ==  0  → motor alarm cleared  OR  wind override cleared (disabled)
       value_a >   1  → wind override event (speed or direction)
     """
     try:
+        ch = int(row["ch"])
         va = int(row["value_a"])
         vb = int(row["value_b"])
+
+        # T5 sensor faults — channel carries the sensor kind (4 = T/RH, 5 = wind).
+        if ch == 4:
+            return ("T/RH sensor fault: "
+                    + ("triggered (two consecutive read failures)"
+                       if va else "cleared"))
+        if ch == 5:
+            return ("Wind sensor fault: "
+                    + ("triggered (two consecutive read failures)"
+                       if va else "cleared"))
 
         if va == 1 and vb == 0:
             return "MOTOR ALARM: triggered - all relays de-energised"
@@ -367,6 +400,7 @@ def _decode_system(row: dict) -> str:
       a=10, b=0                       T2 boot-calibration skipped (since 1.17.36)
       a=11, b=uid16 (int16-cast)      Unit ID (since 1.18.3) — low 16 bits of WiFi-STA MAC
       a=12, b=KB                      HEAP internal largest contiguous (since 1.18.2)
+      a=13, b=0                       T13 firmware-only fallback commit (since 2.0.0-a.6.34)
 
     The legacy "a=0 b=0 initiator=SYS = boot marker" form was retired in
     1.17.31; older logs that contain it are reported as such.
@@ -474,6 +508,44 @@ def _decode_system(row: dict) -> str:
             return f"Heap internal largest block: {vb} KB"
 
         # ---------------------------------------------------------------
+        # value_a=13 — T13 firmware-only fallback commit (since 2.0.0-a.6.34).
+        # Fires when a firmware OTA was verified but no paired web-asset
+        # upload arrived inside the 120 s window; T13 commits the firmware
+        # alone via esp_ota_set_boot_partition + schedule_reboot. The row
+        # is written ~3 s before the reboot, so the NEXT row in the file
+        # (after the heap-row triple) is the BOOT entry with the new
+        # esp_reset_reason. value_b is reserved; always 0 in this release.
+        # ---------------------------------------------------------------
+        if va == 13:
+            return ("T13 firmware-only fallback commit "
+                    "(no asset upload received within 120 s)")
+
+        # ---------------------------------------------------------------
+        # value_a=14..17 — OTA stage progress (since 2.0.0-a.6.35.3).
+        # Previously emitted as post_log(0/1/2/-1), which collided with
+        # T14 status outcome / T10 STA / T10 NTP / T9 Q3 drop-overflow
+        # codes. Re-numbered into a dedicated OTA range that doesn't
+        # overlap any other producer. Operator-visible meaning:
+        #
+        #   14  /api/ota/firmware started — bytes streaming to inactive bank
+        #   15  /api/ota/firmware ended OK — bank verified, waiting for assets
+        #   16  /api/ota/assets ended OK  — ZIP extracted to inactive LittleFS,
+        #                                    reboot scheduled in 1 s
+        #   17  Asset OTA failed         — ZIP extraction error, OTA aborted
+        #
+        # A normal OTA cycle produces rows 14 → 15 → 16 → BOOT.
+        # An interrupted cycle (a.6.34 fallback) is 14 → 15 → 13 → BOOT.
+        # ---------------------------------------------------------------
+        if va == 14:
+            return "OTA: firmware POST started (bytes streaming to inactive bank)"
+        if va == 15:
+            return "OTA: firmware verified OK — awaiting web-asset upload"
+        if va == 16:
+            return "OTA: asset ZIP extracted OK — reboot scheduled (1 s)"
+        if va == 17:
+            return "OTA: asset extraction FAILED — boot partition unchanged"
+
+        # ---------------------------------------------------------------
         # Legacy / ambiguous: pre-1.17.31 boot marker
         # ---------------------------------------------------------------
         if va == 0 and vb == 0 and initiator in ("SYS", ""):
@@ -511,9 +583,9 @@ def _format_row(row: dict, line_no: int) -> str:
     Format one CSV row as a human-readable line.
 
     Output format:
-        2025-06-07 14:30:22  [SENSOR ]  System          T=23 °C   RH=65 %
+        2026-05-19 13:30:22  [SENSOR ]  System          T=23 °C   RH=65 %
     """
-    ts        = _fmt_utc(row.get("timestamp", "?").strip())
+    ts        = _fmt_local(row.get("timestamp", "?").strip())
     etype     = row.get("type", "?").strip().upper()
     initiator = row.get("initiator", "?").strip()
 
@@ -547,7 +619,7 @@ def parse_csv(path: str) -> list[str]:
     lines.append(f"  Parsed      : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
     lines.append("=" * 80)
     lines.append(
-        f"{'Timestamp (UTC)':<{_COL_TS}}  "
+        f"{'Timestamp (local)':<{_COL_TS}}  "
         f"{'Type':<{_COL_TYPE+2}}  "
         f"{'Initiator':<{_COL_INIT}}  "
         f"Description"

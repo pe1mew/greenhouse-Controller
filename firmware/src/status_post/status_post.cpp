@@ -476,6 +476,72 @@ static bool do_log_upload(const char *filename, const cfg_shadow_t *cfg)
 }
 
 /* ============================================================
+ * upload_pending — a.6.35.2 multi-file backlog drainer
+ *
+ * Walks every closed CSV on the SD card whose name is lex-greater than
+ * @p cfg->log_last_up (which corresponds to chronologically newer, given
+ * the YYYYMMDDHHMMSS filename scheme), oldest first, calling do_log_upload
+ * on each. do_log_upload's success path persists `cfg.log_last_up` via
+ * dm_set_log_last_up, so each successful upload advances the dedup latch
+ * one step.
+ *
+ * On the first upload failure the loop bails. The next trigger (daily,
+ * on-rotation, or a fresh xTaskNotify after re-enable) re-runs this and
+ * resumes from the last successfully delivered file because the latch
+ * only advanced for files that returned 2xx.
+ *
+ * Caller's cfg snapshot is intentionally NOT re-read mid-loop — we track
+ * an iteration-local `after` instead. dm_set_log_last_up updates the MX4
+ * shadow synchronously so the *next* dm_cfg_snapshot will reflect the
+ * advanced latch on the following T14 main-loop iteration.
+ *
+ * Why this exists (was a real gap in a.6.35): the previous implementation
+ * looked at exactly one file per trigger — `event_logger_last_rotated()`
+ * for on-rotation and `event_logger_newest_closed()` for daily. If WiFi
+ * was down (or the status server returned 5xx) across a rotation, the
+ * stranded middle file was unreachable: the rotation trigger's
+ * s_last_closed got overwritten by the next rotation, and the daily
+ * trigger's newest_closed always returned the lex-max which equalled the
+ * latch on the next successful round. The middle file just sat on SD
+ * until SD_MAX_FILES eventually deleted it — quietly, without ever
+ * reaching the server.
+ *
+ * @return Count of files successfully uploaded this call (≥0). Zero is
+ *         the steady-state when no closed file is newer than the latch.
+ * ============================================================ */
+static int upload_pending(const cfg_shadow_t *cfg)
+{
+    /* Local cursor — advances per successful upload. Sized 32 to match
+     * cfg.log_last_up (33 bytes with NUL). */
+    char after[33] = {0};
+    strncpy(after, cfg->log_last_up, sizeof(after) - 1u);
+
+    int n_uploaded = 0;
+    char next[24];
+    /* Safety cap: at most SD_MAX_FILES (=10) closed files exist, so 12
+     * iterations is well over any realistic backlog. Prevents an
+     * accidental infinite loop if dm_set_log_last_up silently failed. */
+    for (int i = 0; i < 12; i++) {
+        if (!event_logger_next_pending(after, next, sizeof(next))) {
+            break;   /* no more pending files */
+        }
+        ESP_LOGI(TAG, "[T14] upload_pending: %s (after=\"%s\")", next, after);
+        if (!do_log_upload(next, cfg)) {
+            ESP_LOGW(TAG, "[T14] upload_pending: stopped at %s — next trigger resumes",
+                     next);
+            break;   /* failure: leave for the next trigger */
+        }
+        /* do_log_upload's 2xx path already called dm_set_log_last_up(next).
+         * Advance our local cursor too so the next iteration's
+         * event_logger_next_pending picks the file after this one. */
+        strncpy(after, next, sizeof(after) - 1u);
+        after[sizeof(after) - 1u] = '\0';
+        n_uploaded++;
+    }
+    return n_uploaded;
+}
+
+/* ============================================================
  * Task entry point
  * ============================================================ */
 
@@ -551,14 +617,18 @@ void task_status_post(void *pvParameters)
         }
 
         /* ----------------------------------------------------------------
-         * Daily log-upload trigger (a.6.35 item C, daily half).
+         * Daily log-upload trigger (a.6.35 item C, daily half;
+         * a.6.35.2 multi-file drain).
          *
          * Fires at cfg.log_upload_h:cfg.log_upload_m local time. Uses
          * s_last_daily_min to ensure we only fire once per minute (the
          * outer loop runs at ~1 Hz so without this guard we'd fire
-         * 60+ times across the matching minute). The gh#25 dedup latch
-         * (cfg.log_last_up) then skips repeats across reboots / multiple
-         * triggers within a day.
+         * 60+ times across the matching minute).
+         *
+         * upload_pending walks every closed file newer than cfg.log_last_up,
+         * draining a backlog if one accumulated (WiFi outage spanning a
+         * rotation, etc.). Returns 0 when nothing pending → log the
+         * value_a=0, value_b=2 "fired but no fresh file" diagnostic.
          * ---------------------------------------------------------------- */
         time_t now = time(NULL);
         struct tm tm_local;
@@ -567,18 +637,12 @@ void task_status_post(void *pvParameters)
             tm_local.tm_min  == cfg.log_upload_m &&
             tm_local.tm_min  != s_last_daily_min) {
             s_last_daily_min = tm_local.tm_min;
-            char fn[32] = {0};
-            if (event_logger_newest_closed(fn, sizeof(fn))) {
-                if (strcmp(fn, cfg.log_last_up) != 0) {
-                    ESP_LOGI(TAG, "[T14] daily upload trigger: %s", fn);
-                    (void)do_log_upload(fn, &cfg);
-                } else {
-                    ESP_LOGD(TAG, "[T14] daily: %s already uploaded, skip", fn);
-                    post_log(0, 2);   /* daily-slot fired but no fresh file */
-                }
-            } else {
-                ESP_LOGD(TAG, "[T14] daily: no closed file on SD, skip");
-                post_log(0, 2);
+            ESP_LOGI(TAG, "[T14] daily upload trigger @ %02d:%02d (latch=%s)",
+                     tm_local.tm_hour, tm_local.tm_min, cfg.log_last_up);
+            const int n = upload_pending(&cfg);
+            if (n == 0) {
+                ESP_LOGD(TAG, "[T14] daily: no pending files, skip");
+                post_log(0, 2);   /* daily-slot fired but nothing fresh */
             }
         }
         /* When we cross into a different minute, clear the latch so the
@@ -610,19 +674,14 @@ void task_status_post(void *pvParameters)
 
         if (got == pdPASS && (notify & T14_NOTIFY_LOG_ROTATED) != 0u) {
             /* a.6.35 item E — rotation upload gated by cfg.log_upload_rot.
-             * When 0, silently consume the notification. */
+             * a.6.35.2 — drains the full backlog of pending files via
+             * upload_pending rather than just the most-recently rotated one.
+             * Handles the case where multiple rotations happened during a
+             * long single upload, or while T14 was unable to reach the
+             * server. When log_upload_rot=0, silently consume the notify. */
             if (cfg.log_upload_rot != 0) {
-                char rotated[32] = {0};
-                if (event_logger_last_rotated(rotated, sizeof(rotated))) {
-                    if (strcmp(rotated, cfg.log_last_up) != 0) {
-                        ESP_LOGI(TAG, "[T14] rotation upload trigger: %s", rotated);
-                        (void)do_log_upload(rotated, &cfg);
-                    } else {
-                        ESP_LOGD(TAG, "[T14] rotation: %s already uploaded, skip", rotated);
-                    }
-                } else {
-                    ESP_LOGW(TAG, "[T14] rotation notify but event_logger_last_rotated empty");
-                }
+                ESP_LOGI(TAG, "[T14] rotation upload trigger (latch=%s)", cfg.log_last_up);
+                (void)upload_pending(&cfg);
             } else {
                 ESP_LOGD(TAG, "[T14] rotation notify ignored (log_upload_rot=0)");
             }
