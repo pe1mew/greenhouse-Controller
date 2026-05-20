@@ -86,24 +86,38 @@ static const uint8_t VENT_STEP_TABLE[NUM_VENT_STEPS + 1] = {
 
 /* -----------------------------------------------------------------------
  * Internal helper: core graduation algorithm
+ * ----------------------------------------------------------------------- */
+
+/**
+ * @brief Compute the required ventilation step from a value's deviation
+ *        above its setpoint.
  *
- * Computes the required step given:
- *   deviation   = value − setpoint_max  (may be negative)
- *   hyst        = hysteresis band (> 0)
- *   current_step = step currently commanded
+ * Shared by both the temperature and the humidity branches — both demand
+ * graduated OPEN with the same integer-ceiling algorithm and the same
+ * close-hysteresis guard. The function is purely arithmetic (no I/O, no
+ * mutexes) and is safe to call from any context.
  *
  * Step selection:
  *   step_width = max(hyst / NUM_VENT_STEPS, 1)
- *   raw_step   = ceil(deviation / step_width)
+ *   raw_step   = (deviation > 0) ? ceil(deviation / step_width) : 0
  *   clamped    = clamp(raw_step, 0, NUM_VENT_STEPS)
  *
  * Close-hysteresis guard:
  *   Once any step > 0 is active, do NOT step down to 0 until
- *   deviation <= −hyst  (i.e. value < setpoint_max − hyst).
- *   Step reductions within 1..NUM_VENT_STEPS are applied immediately.
+ *   deviation <= −hyst  (i.e. value < setpoint_max − hyst). Step reductions
+ *   within 1..NUM_VENT_STEPS are applied immediately.
  *
- * Returns: 0..NUM_VENT_STEPS
- * ----------------------------------------------------------------------- */
+ * @param deviation    value − setpoint_max (may be negative).
+ * @param hyst         Hysteresis band; floor-clamped to 1 internally to
+ *                     avoid division by zero.
+ * @param current_step Step currently commanded; used only for the
+ *                     close-hysteresis guard.
+ * @return Required step in 0..NUM_VENT_STEPS. 0 means "close"; values >0
+ *         denote progressively wider opening per VENT_STEP_TABLE.
+ * @note  Returns 1 (not 0) when current_step>0 and the close threshold has
+ *        not yet been crossed — a deliberate "stay slightly open" rather
+ *        than oscillate around the setpoint.
+ */
 static int step_from_deviation(int deviation, int hyst, int current_step)
 {
     /* Compute step width; floor to 1 to avoid division by zero. */
@@ -148,6 +162,16 @@ static int step_from_deviation(int deviation, int hyst, int current_step)
  * Internal helpers (only called within this translation unit)
  * ----------------------------------------------------------------------- */
 
+/**
+ * @brief Map a step number (0..NUM_VENT_STEPS) to its channel bitmask.
+ *
+ * Bounds-checks step against the table; returns 0 (all closed) for
+ * out-of-range inputs so a corrupt step value cannot drive arbitrary
+ * channels.
+ *
+ * @param step  Step number; 0 = all closed, 1..NUM_VENT_STEPS = lookup.
+ * @return      Bitmask combining VENT_CH_M1/M2/M3 bits, or 0.
+ */
 static uint8_t vent_step_channels(int step)
 {
     if (step < 0 || step > NUM_VENT_STEPS) {
@@ -156,6 +180,18 @@ static uint8_t vent_step_channels(int step)
     return VENT_STEP_TABLE[step];
 }
 
+/**
+ * @brief Compute the temperature branch's required ventilation step.
+ *
+ * Thin wrapper over step_from_deviation(): deviation = t_avg − t_max,
+ * hysteresis = hyst_t.
+ *
+ * @param t_avg        Sliding-average temperature (°C).
+ * @param t_max        Active max-temperature setpoint (°C, day or night).
+ * @param hyst_t       Temperature hysteresis band (°C, must be >0).
+ * @param current_step Step currently commanded for temperature.
+ * @return Required step 0..NUM_VENT_STEPS.
+ */
 static int vent_step_required_t(int16_t t_avg, int16_t t_max, int16_t hyst_t,
                                  int current_step)
 {
@@ -163,6 +199,24 @@ static int vent_step_required_t(int16_t t_avg, int16_t t_max, int16_t hyst_t,
     return step_from_deviation(deviation, (int)hyst_t, current_step);
 }
 
+/**
+ * @brief Compute the humidity branch's required ventilation step.
+ *
+ * Three branches:
+ *   - rh_ctrl_en == false → VENT_STEP_NEUTRAL (RH abstains from voting).
+ *   - rh_avg > rh_max     → graduated OPEN, same algorithm as temperature.
+ *   - rh_avg < rh_min     → step 0 (full CLOSE; graduated closing not
+ *                            implemented — Gap G design decision).
+ *   - within band         → VENT_STEP_NEUTRAL.
+ *
+ * @param rh_avg        Sliding-average humidity (%RH).
+ * @param rh_max        Active max-humidity setpoint (%RH).
+ * @param rh_min        Active min-humidity setpoint (%RH).
+ * @param hyst_rh       Humidity hysteresis band (%RH, must be >0).
+ * @param rh_ctrl_en    Master enable for humidity control (cfg.rh_ctrl_en).
+ * @param current_step  Step currently commanded for humidity.
+ * @return VENT_STEP_NEUTRAL (no vote), 0 (close), or 1..NUM_VENT_STEPS.
+ */
 static int vent_step_required_rh(int16_t rh_avg, int16_t rh_max, int16_t rh_min,
                                   int16_t hyst_rh, bool rh_ctrl_en,
                                   int current_step)
@@ -189,6 +243,23 @@ static int vent_step_required_rh(int16_t rh_avg, int16_t rh_max, int16_t rh_min,
     return VENT_STEP_NEUTRAL;
 }
 
+/**
+ * @brief Resolve temperature and humidity step demands to a single step.
+ *
+ * Four-rule decision tree:
+ *   1. RH abstains (VENT_STEP_NEUTRAL) → return step_t.
+ *   2. Both demand OPEN (step_t>0 AND step_rh>0) → take the higher step
+ *      regardless of cr_priority (more ventilation satisfies both).
+ *   3. No conflict (step_t == step_rh) → return either.
+ *   4. Genuine conflict (one wants OPEN, the other CLOSE) → apply
+ *      cr_priority: 0=T-first, 1=RH-first, 2=deviation-based (higher wins).
+ *
+ * @param step_t        Temperature branch step (0..NUM_VENT_STEPS).
+ * @param step_rh       Humidity branch step (VENT_STEP_NEUTRAL,
+ *                      0, or 1..NUM_VENT_STEPS).
+ * @param cr_priority   cfg.cr_priority (0/1/2; see cfg_shadow_t).
+ * @return Resolved step 0..NUM_VENT_STEPS.
+ */
 static int vent_resolve_conflict(int step_t, int step_rh, uint8_t cr_priority)
 {
     /* Rule 1: RH has no vote — return temperature step unchanged. */
@@ -227,6 +298,21 @@ static int vent_resolve_conflict(int step_t, int step_rh, uint8_t cr_priority)
 /* -----------------------------------------------------------------------
  * post_q1() — send one window_cmd_t to Q1 (non-blocking, warn on full)
  * ----------------------------------------------------------------------- */
+
+/**
+ * @brief Build a window_cmd_t with source=SRC_T6 and post it to Q1.
+ *
+ * Non-blocking send (0-tick timeout). If Q1 is full the command is dropped
+ * and a warning is logged — the level-triggered reconciliation loop in T6
+ * will retry on the next cycle, so a single drop is recoverable.
+ *
+ * @param action   CMD_OPEN, CMD_CLOSE, or CMD_CLOSE_ALL (CLOSE_ALL is
+ *                 reserved for safety events; T6 itself avoids it — see
+ *                 reconcile_to_step()).
+ * @param channel  1, 2, 3 for per-channel commands; 0 for CMD_CLOSE_ALL.
+ * @warning Caller must keep channel in range [0..3]; T2 logs an error and
+ *          drops out-of-range channels.
+ */
 static void post_q1(cmd_action_t action, uint8_t channel)
 {
     window_cmd_t cmd;
@@ -243,10 +329,25 @@ static void post_q1(cmd_action_t action, uint8_t channel)
 
 /* -----------------------------------------------------------------------
  * post_log_mode() — emit a LOG_MODE_CHANGE record to Q3
- *
- * value_a = resolved step (0..NUM_VENT_STEPS)
- * value_b = packed: high byte = step_t, low byte = step_rh (cast to int16)
  * ----------------------------------------------------------------------- */
+
+/**
+ * @brief Emit a LOG_MODE_CHANGE event to Q3 via log_post().
+ *
+ * Encodes both per-branch demands plus the resolved step into a single
+ * log row so the SD-log parser can reconstruct the full decision context.
+ *
+ *   value_a = resolved step (0..NUM_VENT_STEPS)
+ *   value_b = packed: high byte = step_t, low byte = step_rh
+ *
+ * Each per-branch step is clamped to int8 range before packing so an
+ * out-of-range source value cannot corrupt the int16 encoding.
+ *
+ * @param resolved_step  Final step posted to T2 (0..NUM_VENT_STEPS).
+ * @param step_t         Temperature branch raw demand.
+ * @param step_rh        Humidity branch raw demand (may be VENT_STEP_NEUTRAL).
+ * @see   log_post()
+ */
 static void post_log_mode(int resolved_step, int step_t, int step_rh)
 {
     log_event_t evt;
@@ -267,25 +368,36 @@ static void post_log_mode(int resolved_step, int step_t, int step_rh)
 
 /* -----------------------------------------------------------------------
  * reconcile_to_step() — drive T2 channel states toward the desired step
+ * ----------------------------------------------------------------------- */
+
+/**
+ * @brief Drive T2's per-channel state toward the channel mask for `step`.
  *
  * Replaces the previous edge-triggered apply_step_delta(). Called every T6
  * cycle (level-triggered) so that commands lost to T2's post-open/close
- * dwell are re-issued automatically once dwell expires.  The previous
+ * dwell are re-issued automatically once dwell expires. The previous
  * delta-only design dropped any CMD_CLOSE that arrived while a window was
  * still in its post-open dwell, leaving windows stuck OPEN until the next
  * step transition; reconciling every cycle removes that failure mode.
  *
+ * Sequence: CLOSE-first then OPEN. Narrowing before widening keeps the
+ * total open area monotone-decreasing in transient states — safer when a
+ * step transition is interrupted (e.g. wind override fires mid-cycle).
+ *
  * Idempotency is provided by T2's ch_start_open() / ch_start_close()
  * (relay_controller.cpp): a CMD_OPEN posted while the channel is already
  * OPEN/MOVING_OPEN/GAP_TO_OPEN is a no-op; likewise CMD_CLOSE on a channel
- * already CLOSED/MOVING_CLOSE/GAP_TO_CLOSE.  Posting a command for the
+ * already CLOSED/MOVING_CLOSE/GAP_TO_CLOSE. Posting a command for the
  * opposite direction during travel triggers the standard 2 s reversal gap.
  *
- * CMD_CLOSE_ALL is intentionally NOT used here.  CMD_CLOSE_ALL bypasses the
+ * CMD_CLOSE_ALL is intentionally NOT used here. CMD_CLOSE_ALL bypasses the
  * per-channel post-open dwell, causing rapid close after a brief opening —
- * undesirable when temperature rebounds quickly.  CMD_CLOSE_ALL is reserved
+ * undesirable when temperature rebounds quickly. CMD_CLOSE_ALL is reserved
  * for safety events (wind override in T3, motor alarm in T2).
- * ----------------------------------------------------------------------- */
+ *
+ * @param step  Target step 0..NUM_VENT_STEPS; out-of-range maps to mask 0.
+ * @see   t2_get_window_states(), vent_step_channels(), post_q1()
+ */
 static void reconcile_to_step(int step)
 {
     window_state_t actual[3];
@@ -320,6 +432,21 @@ static void reconcile_to_step(int step)
  * T6 task — Climate Control (Phase 6)
  * ----------------------------------------------------------------------- */
 
+/**
+ * @brief T6 task entry point — see climate_control.h for the full
+ *        per-wake sequence and EG1 inhibit semantics.
+ *
+ * Implementation notes (not duplicated in the header):
+ *  - Subscribes to esp_task_wdt with a 2 s TN2-wait timeout so the WDT is
+ *    kicked even when the sensor poll interval is long (up to 3600 s).
+ *  - Reconciliation is level-triggered every wake (dwell-deferred T2
+ *    commands are retried automatically). Mode-change logging stays
+ *    edge-triggered so the SD log keeps one row per actual transition.
+ *  - prev_inhibited tracks the EG1 inhibit edges so the inhibit-onset
+ *    reset of current_step_t/rh happens exactly once.
+ *
+ * @param pvParameters Unused; pass NULL.
+ */
 void task_climate_control(void *pvParameters)
 {
     (void)pvParameters;

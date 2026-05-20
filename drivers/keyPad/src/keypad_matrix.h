@@ -3,10 +3,25 @@
  * @brief Keypad matrix driver — types and API for LIB-5.
  *
  * Scans a 4×4 membrane keypad and returns a single debounced key character
- * per press. Pin assignments are centralised in firmware/config/pin_config.h
- * and exposed here by inclusion so callers need only include this header.
+ * per press.  Pin assignments are centralised in
+ * @c firmware/config/pin_config.h and exposed here by inclusion so callers
+ * need only include this header.
  *
- * Key layout:
+ * ## Hardware
+ *   - Keypad     : Generic 4×4 membrane, no internal electronics.
+ *   - Topology   : Four row outputs driven HIGH at idle, four column inputs
+ *                  with internal pull-ups (no external resistors required).
+ *                  Scan algorithm drives one row LOW at a time and inspects
+ *                  the column inputs.
+ *   - Pins       : @c KP_ROW1..@c KP_ROW4 (outputs),
+ *                  @c KP_COL1..@c KP_COL4 (inputs) — see @c pin_config.h.
+ *
+ * ## API summary
+ *   - @ref keypad_init             Configure all eight pins.
+ *   - @ref keypad_scan             Polled debounced-key read (~20 ms cadence).
+ *   - @ref keypad_count_pressed    Diagnostic: how many keys are down right now.
+ *
+ * ## Key layout
  * @verbatim
  *   Col:     1    2    3    4
  *   Row 1:  '1'  '2'  '3'  'A'
@@ -14,6 +29,11 @@
  *   Row 3:  '7'  '8'  '9'  'C'
  *   Row 4:  '*'  '0'  '#'  'D'
  * @endverbatim
+ *
+ * ## Thread safety
+ *   No internal mutex.  The internal debounce state is module-static, so
+ *   @ref keypad_scan MUST be called from a single task only.  The shared
+ *   GPIO peripheral is otherwise unprotected — see LIB-1 caveats.
  *
  * @author Greenhouse Controller project
  * @version 0.1.0
@@ -42,9 +62,12 @@
 /**
  * @brief Initialise all keypad GPIO pins.
  *
- * Row pins (KP_ROW1–KP_ROW4) are configured as OUTPUT and driven HIGH (idle).
- * Column pins (KP_COL1–KP_COL4) are configured as INPUT_PULLUP.
- * Call once at startup before the first keypad_scan().
+ * Row pins (@c KP_ROW1..@c KP_ROW4) are configured as OUTPUT and driven
+ * HIGH (idle).  Column pins (@c KP_COL1..@c KP_COL4) are configured as
+ * INPUT_PULLUP.
+ *
+ * @warning Must be called once at startup before the first
+ *          @ref keypad_scan().  Internal debounce state is also reset here.
  */
 void keypad_init(void);
 

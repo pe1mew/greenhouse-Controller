@@ -2,6 +2,12 @@
  * @file sunrise.h
  * @brief Sunrise/sunset calculation — NOAA General Solar Position Equations.
  *
+ * Used by T4 (Data Manager) to maintain `cfg_shadow_t::is_daytime`,
+ * `sunrise_mins_utc`, and `sunset_mins_utc` — these in turn select the
+ * day/night setpoint pairs in T6 (Climate Control) and drive the GUI's
+ * sun-position tile (FR-DN04). The module has no external dependencies
+ * beyond `<math.h>` and is fully reentrant — safe to call from any task.
+ *
  * Implements the NOAA simplified solar position algorithm (NOAA Solar
  * Calculator, General Solar Position Calculations, ESRL Global Monitoring
  * Laboratory). Accuracy: ±2 minutes for latitudes between 60°S and 60°N;
@@ -49,6 +55,7 @@
  * Result codes
  * --------------------------------------------------------------------------- */
 
+/** @brief Return codes for sunrise_calc(). */
 typedef enum {
     SUNRISE_OK          =  0,  /**< Calculation succeeded; outputs are valid. */
     SUNRISE_POLAR_DAY   =  1,  /**< Sun never sets at this location/date (Arctic summer).
@@ -80,6 +87,9 @@ typedef enum {
  *                            set to 0 on SUNRISE_POLAR_NIGHT.
  * @return SUNRISE_OK, SUNRISE_POLAR_DAY, SUNRISE_POLAR_NIGHT, or
  *         SUNRISE_ERR_PARAM if either output pointer is NULL.
+ * @note   Pure function: no globals read or written, no I/O. Reentrant
+ *         and safe to call concurrently from multiple tasks.
+ * @see    sunrise_is_daytime() — convenience wrapper used by T4
  */
 sunrise_result_t sunrise_calc(int32_t unix_ts, float lat_deg, float lon_deg,
                                int32_t *rise_mins_utc, int32_t *set_mins_utc);
@@ -99,5 +109,8 @@ sunrise_result_t sunrise_calc(int32_t unix_ts, float lat_deg, float lon_deg,
  * @param lat_deg   Latitude in decimal degrees, positive = North.
  * @param lon_deg   Longitude in decimal degrees, positive = East.
  * @return true if daytime, false if night-time.
+ * @note   Used by T4 to maintain cfg_shadow_t::is_daytime, which T6 reads
+ *         each cycle to pick day vs. night setpoints.
+ * @see    sunrise_calc()
  */
 bool sunrise_is_daytime(int32_t unix_ts, float lat_deg, float lon_deg);

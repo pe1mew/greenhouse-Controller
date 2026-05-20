@@ -255,11 +255,33 @@ static void log_boot_banner(void)
 }
 
 /**
- * @brief Heartbeat task — emits one log line every 5 s with current heap.
+ * @brief Heartbeat task — emits one ESP_LOGI line every 5 s with current heap.
  *
- * Stack: 4 KB is generous for printf + ESP_LOGI; default IDF task stacks
- * are 3 KB which we'd want to grow when stack-canary checks are tight.
- * Priority 5 is the IDF default for application tasks.
+ * Survives from the alpha.6.6 scaffold era. Originally drove the
+ * synthetic LOG_SYSTEM heartbeat row that was retired in a.6.35.3 (see
+ * the comment block inside the loop body for the rationale); now serves
+ * as a low-priority serial-only liveness indicator while the real tasks
+ * (T1..T15) carry the operational workload.
+ *
+ * Per-iteration responsibilities (every 5 s):
+ *  - Sample current internal heap + largest contiguous block + PSRAM free.
+ *  - Read a representative `cfg_shadow_t` snapshot (T4 dm_cfg_snapshot)
+ *    to confirm NVS-recovered values are sane.
+ *  - Drain Q2 of any pending key events posted by T7 (keypad_scan), log each.
+ *  - Read the DS1307 RTC (LIB-3) and log the wall-clock time.
+ *  - Emit a single combined ESP_LOGI line with all of the above.
+ *
+ * @param arg  Unused; pass `NULL` at xTaskCreate time.
+ * @note   Stack: 4 KB — printf + ESP_LOGI + the embedded snprintf format are
+ *         well under that. Default IDF task stacks are 3 KB; the 1 KB
+ *         margin protects against stack-canary checks tripping on tight
+ *         compiler-optimised builds.
+ * @note   Priority 5 — the IDF default for application tasks. Yields to
+ *         T2/T3/T4/T5/T6 (priorities 4-6) and to the WiFi/network event
+ *         tasks (priority 20+).
+ * @warning This task does NOT subscribe to the IDF TWDT. It's not safety-
+ *          critical (serial-log-only); T1 is the watchdog-relevant heartbeat.
+ * @see    task_watchdog() — the real T1 heartbeat that posts to the SD log.
  */
 static void heartbeat_task(void *arg)
 {
@@ -384,14 +406,50 @@ static void heartbeat_task(void *arg)
 }
 
 /**
- * @brief ESP-IDF application entry point.
+ * @brief ESP-IDF application entry point — bootstraps every subsystem.
  *
- * Called by the IDF startup code on Core 0 after FreeRTOS is up. Returns
- * are not allowed — must keep running or spawn workers and stay alive.
+ * Called by the IDF startup code on Core 0 after FreeRTOS is up. The function
+ * runs to completion (it does NOT loop forever) — the long-running work all
+ * lives in the spawned tasks. IDF tolerates app_main returning; the
+ * task-graph stays alive as long as at least one task does.
  *
- * Spawns the heartbeat task and then deletes itself: the spawned task
- * takes over from here. Matches the spawn-and-exit pattern the eventual
- * full main.cpp will use.
+ * ## Boot sequence (high-level)
+ *  -# Log the boot banner (chip rev, flash size, free heap, FIRMWARE_VERSION).
+ *  -# `system_globals_init()` — create Q1..Q6, MX1..MX5, EG1.
+ *  -# Driver "tickles" (alpha.2.X) — `nvs_cfg_init`, `i2c_bus_init`,
+ *     `lcd_init`, `modbus_init`, `rtc_init`, LittleFS mount, SD mount.
+ *  -# `nm_wifi_init_blocking()` — bring up STA, register the long-lived
+ *     event handler, run SNTP. Blocks until IP or 10 s timeout.
+ *  -# Spawn task graph: T7 (keypad), T9 (event_logger), T4 (data_manager),
+ *     T2 (relay_controller), T5 (sensor_poll), T6 (climate_control),
+ *     T3 (safety_monitor), T8 (ui_display), T10 (network_manager),
+ *     T14 (status_post), T11 (web_server, gated on `wifi_up`),
+ *     T1 (watchdog).
+ *  -# Boot-time sunrise + RTC + sensor "tickles" (informational ESP_LOGI lines).
+ *  -# Spawn the legacy `heartbeat_task()` (low-priority serial liveness).
+ *  -# Return — IDF idle task takes over Core 0.
+ *
+ * ## Failure modes
+ *  - WiFi init fails (`NM_WIFI_INIT_FAILED`) → T11 (web) is NOT spawned,
+ *    but the rest of the task graph runs. Operator must access the LCD
+ *    or factory-reset to reconfigure.
+ *  - Any single driver tickle failure (e.g. LCD missing) is logged at
+ *    WARN/ERROR and boot continues — the controller is best-effort, not
+ *    fail-stop.
+ *
+ * @note   IDF will panic if `app_main` blocks the FreeRTOS scheduler
+ *         (e.g. an infinite loop without a `vTaskDelay`). The current
+ *         flow uses blocking `xEventGroupWaitBits` inside
+ *         `nm_wifi_init_blocking()` which is allowed because the
+ *         FreeRTOS scheduler is already running by the time IDF calls
+ *         `app_main`.
+ * @warning Stack: IDF allocates ~3 KB for app_main by default. The boot
+ *          sequence uses sub-1 KB of stack at peak; if you add more
+ *          on-stack buffers, bump `CONFIG_ESP_MAIN_TASK_STACK_SIZE` in
+ *          sdkconfig.
+ * @see    system_globals.cpp — global resource creation.
+ * @see    network_manager.h — `nm_wifi_init_blocking()` signature + status enum.
+ * @see    types/app_types.h — task handle declarations the spawn block populates.
  */
 extern "C" void app_main(void)
 {

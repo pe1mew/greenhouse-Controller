@@ -4,15 +4,40 @@
  *        FreeRTOS handle declarations used across all firmware tasks.
  *
  * This is the single header every firmware module includes for inter-task
- * communication types and system-wide constants.
+ * communication types and system-wide constants. It is the project's
+ * reference card — if you need to know which task produces a queue, what
+ * the payload layout looks like, or which EG1 bit signals which condition,
+ * it's documented here.
  *
  * ## Sections
  *  1. Factory-default hardware constants — NVS-backed at runtime; these
  *     macros are the factory defaults written on first boot.
- *  2. FreeRTOS includes + RTOS handle externs — declared here, defined in main.cpp.
+ *  2. FreeRTOS includes + RTOS handle externs — declared here, defined in
+ *     `system_globals.cpp` (the Phase-6.1 bootstrap unit).
  *  3. Enumeration types — FSM states, modes, roles, log types.
  *  4. Queue / message struct types — one struct per queue.
  *  5. Event group bit definitions — EG1 system-state flags.
+ *
+ * ## Producer / consumer summary
+ *  - Q1 carries `window_cmd_t` from T3 (Safety Monitor) and T6 (Climate
+ *    Control) to T2 (Relay Controller). Demand reconciliation between T6's
+ *    graduated ventilation and T3's wind-safety overrides happens via Q1
+ *    windows — both tasks post; T2 arbitrates by source.
+ *  - Q2 carries `key_event_t` from T7 (Keypad Scan) to T8 (UI / Display)
+ *    only.
+ *  - Q3 carries `log_event_t` (== `log_entry_t`) from every producer to
+ *    T9 (Event Logger). Producers MUST call `log_post()`, never
+ *    `xQueueSend` directly — log_post handles drop-counting on overflow
+ *    so the volume of dropped events is itself recoverable as a
+ *    LOG_SYSTEM row.
+ *  - Q4 carries `config_update_t` from T8 (LCD), T10 (Network Manager
+ *    for SNTP/geo updates) and T11 (web server) to T4 (Data Manager).
+ *  - Q5 carries `net_status_t` from T10 to T8 (depth 1, overwrite).
+ *  - Q6 carries `sensor_reading_t` from T5 (Sensor Poll) to T4 (depth 1,
+ *    overwrite).
+ *
+ * @see  system_globals.cpp for queue depths and mutex semantics.
+ * @see  design/tasks.md for the full task / queue / mutex matrix.
  *
  * @author  Greenhouse Controller project
  */
@@ -31,7 +56,14 @@
  * Files that need either set should include those headers directly.
  * ============================================================ */
 
-/** Graduated ventilation steps (Step 1=M1, Step 2=M1+M2, Step 3=M1+M2+M3). */
+/**
+ * @brief Number of graduated ventilation steps T6 selects between.
+ *
+ * Step 1 opens M1 only; Step 2 opens M1+M2; Step 3 opens M1+M2+M3. Mapping
+ * lives in `climate_control.cpp`. Value drives loop bounds in the climate
+ * FSM and the wind-direction-exclusion check that gates the high-step
+ * windows. Changing this requires rewiring the step→channel map.
+ */
 #define NUM_VENT_STEPS  3
 
 /* ============================================================
@@ -47,40 +79,40 @@
 #include <freertos/event_groups.h>
 #include <freertos/semphr.h>
 
-/* Queues (defined in main.cpp) */
-extern QueueHandle_t Q1;   /**< window_cmd_t   — T3/T6 → T2 only (C9: manual window commands out of scope) */
-extern QueueHandle_t Q2;   /**< key_event_t    — T7 → T8 */
-extern QueueHandle_t Q3;   /**< log_event_t    — all tasks → T9 (use log_post(), never xQueueSend directly) */
-extern QueueHandle_t Q4;   /**< config_update_t — T8/T10/T11 → T4 */
-extern QueueHandle_t Q5;   /**< net_status_t   — T10 → T8 (depth 1, xQueueOverwrite) */
-extern QueueHandle_t Q6;   /**< sensor_reading_t — T5 → T4 (depth 1, xQueueOverwrite) */
+/* Queues (defined in system_globals.cpp) */
+extern QueueHandle_t Q1;   /**< window_cmd_t     — T3/T6 → T2 only, depth 8 (C9: manual window commands out of scope) */
+extern QueueHandle_t Q2;   /**< key_event_t      — T7 → T8, depth 8 */
+extern QueueHandle_t Q3;   /**< log_event_t      — all tasks → T9, depth 32 (use log_post(), never xQueueSend directly) */
+extern QueueHandle_t Q4;   /**< config_update_t  — T8/T10/T11 → T4, depth 16 */
+extern QueueHandle_t Q5;   /**< net_status_t     — T10 → T8, depth 1 (xQueueOverwrite — latest wins) */
+extern QueueHandle_t Q6;   /**< sensor_reading_t — T5 → T4,  depth 1 (xQueueOverwrite — latest wins) */
 
-/* Task handles (defined in main.cpp) */
-extern TaskHandle_t task_t1;   /**< Watchdog / Heartbeat */
-extern TaskHandle_t task_t2;   /**< Relay Controller */
-extern TaskHandle_t task_t3;   /**< Safety Monitor */
-extern TaskHandle_t task_t4;   /**< Data Manager */
-extern TaskHandle_t task_t5;   /**< Sensor Poll */
-extern TaskHandle_t task_t6;   /**< Climate Control */
-extern TaskHandle_t task_t7;   /**< Keypad Scan */
-extern TaskHandle_t task_t8;   /**< UI / Display */
-extern TaskHandle_t task_t9;   /**< Event Logger */
-extern TaskHandle_t task_t10;  /**< Network Manager */
-extern TaskHandle_t task_t11;  /**< Web Server */
-extern TaskHandle_t task_t12;  /**< MQTT Client */
-/* task_t13 (OTA) is created on demand by T11; no permanent handle */
-extern TaskHandle_t task_t14;  /**< Status website POST */
-extern TaskHandle_t task_t15;  /**< Status-POST supervisor (gh#18 Phase 4) */
+/* Task handles (defined in system_globals.cpp, set by xTaskCreatePinnedToCore call in main.cpp). */
+extern TaskHandle_t task_t1;   /**< T1  — Watchdog / Heartbeat: TWDT kick, NeoPixel, heap rows, OTA mark-healthy. */
+extern TaskHandle_t task_t2;   /**< T2  — Relay Controller: per-channel window FSM, motor-alarm RRK-3 monitor. */
+extern TaskHandle_t task_t3;   /**< T3  — Safety Monitor: wind override, CLOSE_ALL on safety conditions. */
+extern TaskHandle_t task_t4;   /**< T4  — Data Manager: NVS shadow, sensor ring buffer, applies Q4 config updates. */
+extern TaskHandle_t task_t5;   /**< T5  — Sensor Poll: SHT31 T/RH + WS-3000 wind, publishes Q6. */
+extern TaskHandle_t task_t6;   /**< T6  — Climate Control: graduated ventilation FSM, posts Q1 window commands. */
+extern TaskHandle_t task_t7;   /**< T7  — Keypad Scan: 4×4 matrix debounce + autorepeat, publishes Q2. */
+extern TaskHandle_t task_t8;   /**< T8  — UI / Display: LCD render + keypad menu FSM + session manager. */
+extern TaskHandle_t task_t9;   /**< T9  — Event Logger: drains Q3 to SD CSV with ring-buffer overflow handling. */
+extern TaskHandle_t task_t10;  /**< T10 — Network Manager: WiFi STA/AP, SNTP, geo lookup, publishes Q5. */
+extern TaskHandle_t task_t11;  /**< T11 — Web Server: esp_http_server with 25+ routes + /ws WebSocket. */
+extern TaskHandle_t task_t12;  /**< T12 — MQTT Client (optional; may be NULL if disabled). */
+/* task_t13 (OTA) is created on demand by T11 — no permanent handle. */
+extern TaskHandle_t task_t14;  /**< T14 — Status website POST: periodic JSON upload to remote dashboard. */
+extern TaskHandle_t task_t15;  /**< T15 — Status-POST supervisor (gh#18 Phase 4): circuit-breaker for T14 backoff. */
 
-/* Event group (defined in main.cpp) */
-extern EventGroupHandle_t EG1; /**< System state flags — see Section 5 */
+/* Event group (defined in system_globals.cpp). */
+extern EventGroupHandle_t EG1; /**< System state flags — see Section 5 for bit definitions. */
 
-/* Mutexes (defined in main.cpp) */
-extern SemaphoreHandle_t MX1;  /**< I2C bus (T4 RTC + T8 LCD) */
-extern SemaphoreHandle_t MX2;  /**< Current measurement data */
-extern SemaphoreHandle_t MX3;  /**< Measurement ring buffers */
-extern SemaphoreHandle_t MX4;  /**< Configuration settings (NVS shadow) */
-extern SemaphoreHandle_t MX5;  /**< LittleFS active partition */
+/* Mutexes (defined in system_globals.cpp). */
+extern SemaphoreHandle_t MX1;  /**< I2C bus (T4 RTC + T8 LCD on shared LIB-2). */
+extern SemaphoreHandle_t MX2;  /**< Current measurement data (sensor_reading_t snapshot). */
+extern SemaphoreHandle_t MX3;  /**< Measurement ring buffers (sensor history, served by /api/history). */
+extern SemaphoreHandle_t MX4;  /**< Configuration settings (NVS-backed cfg_shadow_t). */
+extern SemaphoreHandle_t MX5;  /**< LittleFS active partition (T11 read vs T13 OTA cross-bank write). */
 
 /* ============================================================
  * Section 3 — Enumeration types
@@ -399,23 +431,49 @@ typedef struct {
     uint16_t update_interval_s;  /**< Cycle the controller advertises to the dashboard */
 } status_snapshot_t;
 
-/** Bit positions in cfg_shadow_t::status_expose. */
+/* ============================================================
+ * Status-expose bitmask
+ *
+ * Bit positions in `cfg_shadow_t::status_expose`. The admin selects which
+ * tile groups are pushed to the public dashboard via the /api/web "expose"
+ * field. The local web GUI always renders everything (STATUS_EXPOSE_ALL +
+ * include_disabled_setpoints=true via build_canonical_status_json).
+ * ============================================================ */
+
+/** @brief Expose climate tile (T, RH, setpoints) to the public dashboard. */
 #define STATUS_EXPOSE_CLIMATE   (1u << 0)
+/** @brief Expose wind tile (speed, direction, variation) to the public dashboard. */
 #define STATUS_EXPOSE_WIND      (1u << 1)
+/** @brief Expose windows tile (M1/M2/M3 states) to the public dashboard. */
 #define STATUS_EXPOSE_WINDOWS   (1u << 2)
+/** @brief Expose operating mode + alarm badges to the public dashboard. */
 #define STATUS_EXPOSE_MODE      (1u << 3)
+/** @brief Expose sunrise/sunset minutes and is_daytime flag to the public dashboard. */
 #define STATUS_EXPOSE_SUN       (1u << 4)
+/** @brief Expose system tile (uptime, IP, RSSI, fw_ver, assets_ver) to the public dashboard. */
 #define STATUS_EXPOSE_SYSTEM    (1u << 5)
+/** @brief Convenience: all six expose bits set (mask `0x3F`). Used by the local UI / WebSocket push. */
 #define STATUS_EXPOSE_ALL       0x3Fu
 
 /* ============================================================
  * Section 5 — Event group bit definitions (EG1)
+ *
+ * EG1 is a single shared event group; bits are write-side owned by the
+ * task noted in each definition's comment and read by any task that
+ * needs to react. Readers should use xEventGroupGetBits() (non-blocking)
+ * unless a true block-until-condition wait is required.
  * ============================================================ */
 
-#define EG1_BIT_WIND_OVERRIDE    (1 << 0)  /**< Set/cleared by T3 — wind safety active */
+/** @brief Wind safety active — T3 forced all windows closed; T6 should not open. Write: T3. */
+#define EG1_BIT_WIND_OVERRIDE    (1 << 0)
 /* bit 1 reserved — was MANUAL_OVERRIDE; removed (hardware does not support manual op detection) */
-#define EG1_BIT_SENSOR_FAULT_T   (1 << 2)  /**< Set/cleared by T5 — T/RH sensor fault */
-#define EG1_BIT_SENSOR_FAULT_W   (1 << 3)  /**< Set/cleared by T5 — wind sensor fault */
-#define EG1_BIT_OTA_IN_PROGRESS  (1 << 4)  /**< Set/cleared by T13 — OTA update in progress */
-#define EG1_BIT_MOTOR_ALARM      (1 << 5)  /**< Set/cleared by T2 — RRK-3 emergency stop active */
-#define EG1_BIT_CALIBRATING      (1 << 6)  /**< Set/cleared by T2 — CLOSE_ALL calibration in progress */
+/** @brief T/RH sensor fault detected by T5 — temperature/humidity readings invalid. Write: T5. */
+#define EG1_BIT_SENSOR_FAULT_T   (1 << 2)
+/** @brief Wind sensor fault detected by T5 — wind speed/direction readings invalid. Write: T5. */
+#define EG1_BIT_SENSOR_FAULT_W   (1 << 3)
+/** @brief OTA update in progress — T13 is writing the inactive bank. Write: T13. */
+#define EG1_BIT_OTA_IN_PROGRESS  (1 << 4)
+/** @brief RRK-3 motor alarm — emergency stop active; T2 has suspended all relay outputs. Write: T2. */
+#define EG1_BIT_MOTOR_ALARM      (1 << 5)
+/** @brief CLOSE_ALL calibration in progress — T2 is performing the boot-time calibration sweep. Write: T2. */
+#define EG1_BIT_CALIBRATING      (1 << 6)

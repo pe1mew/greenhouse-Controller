@@ -22,6 +22,20 @@
  * timeout window — at the cost of `ESP_RST_TASK_WDT` boot reason in the
  * next session.
  *
+ * ## Build state (2.0.0-rc.1.2.1)
+ *  Source is on disk but **not in `firmware/src/CMakeLists.txt`** — T15 is
+ *  intentionally dormant pending the gh#23 mbedTLS keep-alive + 1 KB-buffer
+ *  mitigations baked into the IDF migration, which removed the bulk of the
+ *  T14 wedge / leak signal it was built to detect. The header + cpp are
+ *  retained verbatim so the supervisor can be re-enabled with a single
+ *  CMakeLists addition if leak telemetry resurfaces. Document as the
+ *  intended-future-state interface.
+ *
+ * @see status_post.h (T14 — supervised task; exposes heartbeat / heap-drop /
+ *      force_teardown for this supervisor)
+ * @see status_post.cpp (`status_post_force_teardown`, `status_post_heartbeat`,
+ *      `status_post_heap_drop_bytes`)
+ *
  * @author Greenhouse Controller project
  */
 
@@ -37,10 +51,16 @@ extern "C" {
 
 /**
  * @brief T15 task entry. Spawned by main.cpp on Core 0 at priority 4.
- *        Spawned BEFORE T14 so the supervisor handle is valid by the
- *        time T14 first runs.
+ *
+ * Spawned BEFORE T14 so the supervisor handle is valid by the time T14
+ * first runs. Watchdog-subscribed (`esp_task_wdt_add(NULL)`); polls every
+ * 30 s, kicking the WDT once per second to stay well inside the default
+ * 5 s task-WDT timeout (gh#19 fix).
  *
  * @param pvParameters Unused; pass NULL.
+ * @warning Dormant in current builds — see file-header build-state note.
+ *          Re-enable by adding `status_post_supervisor.cpp` back to
+ *          `firmware/src/CMakeLists.txt` SRCS.
  */
 void task_status_post_supervisor(void *pvParameters);
 
@@ -51,6 +71,9 @@ void task_status_post_supervisor(void *pvParameters);
  * Surfaced via the status JSON so a planned-reboot recovery is visible
  * to the operator in the web GUI (distinguishes it from a panic-class
  * reset that happened to reboot with `ESP_RST_SW`).
+ *
+ * @return true if `NVS_NS_SYSTEM/t15_planreboot` was non-zero at task
+ *         entry; false otherwise (including all builds without T15 linked).
  */
 bool supervisor_was_planned_reboot(void);
 

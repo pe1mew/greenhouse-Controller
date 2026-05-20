@@ -1,6 +1,25 @@
 /**
  * @file pin_auth.cpp
  * @brief PIN authentication implementation — see pin_auth.h for full description.
+ *
+ * Implements the salted SHA-256 / NVS-backed PIN scheme described in
+ * TSDS §5.4. All persistent state lives in NVS namespace `access` (see
+ * NVS_NS_ACCESS in nvs_config.h); module RAM holds only the 16-byte salt
+ * and an init flag.
+ *
+ * ## Sources of randomness
+ *   `esp_fill_random()` (Espressif hardware TRNG) generates the per-device
+ *   salt the first time pin_auth_init() runs. The salt is written once and
+ *   never regenerated, so PIN hashes remain comparable across reboots.
+ *
+ * ## Constant-time comparison
+ *   hash_equal() XORs corresponding bytes and OR-folds into a single byte
+ *   to prevent input-dependent early exit. The intent is to avoid leaking
+ *   PIN-prefix correctness via timing — overkill for a four-digit local
+ *   keypad, but the same code is reused for the eight-digit admin PIN and
+ *   the web /api/login path.
+ *
+ * @author Greenhouse Controller project
  */
 
 #include "pin_auth.h"
@@ -14,14 +33,24 @@
 /* ---------------------------------------------------------------------------
  * NVS key names (namespace NVS_NS_ACCESS = "access", defined in nvs_config.h)
  * --------------------------------------------------------------------------- */
+
+/** @brief NVS key for the per-device random salt (blob[16]). */
 #define KEY_SALT           "pin_salt"
+/** @brief NVS key for the farmer PIN's SHA-256 hash (blob[32]). */
 #define KEY_HASH_FARMER    "pin_farmer_hash"
+/** @brief NVS key for the administrator PIN's SHA-256 hash (blob[32]). */
 #define KEY_HASH_ADMIN     "pin_admin_hash"
+/** @brief NVS key for consecutive farmer-PIN failure counter (int32). */
 #define KEY_FAIL_FARMER    "fail_cnt_f"
+/** @brief NVS key for consecutive admin-PIN failure counter (int32). */
 #define KEY_FAIL_ADMIN     "fail_cnt_a"
+/** @brief NVS key for farmer-role lockout expiry (Unix timestamp; 0 = none). */
 #define KEY_LOCKOUT_FARMER "lockout_f"
+/** @brief NVS key for admin-role lockout expiry (Unix timestamp; 0 = none). */
 #define KEY_LOCKOUT_ADMIN  "lockout_a"
+/** @brief NVS key for configurable max consecutive failures before lockout. */
 #define KEY_LOCKOUT_MAX    "lockout_max"
+/** @brief NVS key for configurable lockout duration in seconds. */
 #define KEY_LOCKOUT_SECS   "lockout_secs"
 
 /* ---------------------------------------------------------------------------
@@ -34,7 +63,17 @@ static bool    s_initialized = false;
  * Internal helpers
  * --------------------------------------------------------------------------- */
 
-/** Compute SHA-256(salt || pin) into hash_out[PIN_HASH_LEN]. */
+/**
+ * @brief Compute SHA-256(salt || pin) into hash_out[PIN_HASH_LEN].
+ *
+ * Uses ESP-IDF's bundled mbedTLS. The PIN is hashed as raw ASCII digit
+ * bytes (no NUL terminator), matching what pin_auth_verify() does with
+ * caller-supplied PIN strings.
+ *
+ * @param salt      16-byte salt buffer (PIN_SALT_LEN bytes).
+ * @param pin       Null-terminated ASCII PIN string; strlen() is used.
+ * @param hash_out  Caller-allocated PIN_HASH_LEN-byte output buffer.
+ */
 static void compute_hash(const uint8_t *salt, const char *pin, uint8_t *hash_out)
 {
     mbedtls_sha256_context ctx;
@@ -46,7 +85,18 @@ static void compute_hash(const uint8_t *salt, const char *pin, uint8_t *hash_out
     mbedtls_sha256_free(&ctx);
 }
 
-/** Constant-time comparison of two fixed-length byte arrays. */
+/**
+ * @brief Constant-time comparison of two fixed-length byte arrays.
+ *
+ * Avoids early-exit timing leaks by XOR-folding the difference into a
+ * single accumulator. Always touches every byte regardless of mismatch
+ * position.
+ *
+ * @param a    First byte array.
+ * @param b    Second byte array.
+ * @param len  Length in bytes; both arrays must be at least this long.
+ * @return     true if the arrays match byte-for-byte, false otherwise.
+ */
 static bool hash_equal(const uint8_t *a, const uint8_t *b, size_t len)
 {
     uint8_t diff = 0;
@@ -54,31 +104,43 @@ static bool hash_equal(const uint8_t *a, const uint8_t *b, size_t len)
     return diff == 0;
 }
 
-/** Return the NVS hash key name for a role. */
+/** @brief Return the NVS hash key name for a role. */
 static const char *hash_key(pin_role_t role)
 {
     return (role == PIN_ROLE_FARMER) ? KEY_HASH_FARMER : KEY_HASH_ADMIN;
 }
 
-/** Return the NVS failure-counter key name for a role. */
+/** @brief Return the NVS failure-counter key name for a role. */
 static const char *fail_key(pin_role_t role)
 {
     return (role == PIN_ROLE_FARMER) ? KEY_FAIL_FARMER : KEY_FAIL_ADMIN;
 }
 
-/** Return the NVS lockout-expiry key name for a role. */
+/** @brief Return the NVS lockout-expiry key name for a role. */
 static const char *lockout_key(pin_role_t role)
 {
     return (role == PIN_ROLE_FARMER) ? KEY_LOCKOUT_FARMER : KEY_LOCKOUT_ADMIN;
 }
 
-/** Return the required digit count for a role. */
+/** @brief Return the required digit count for a role (4 farmer / 8 admin). */
 static size_t required_digits(pin_role_t role)
 {
     return (role == PIN_ROLE_FARMER) ? PIN_FARMER_DIGITS : PIN_ADMIN_DIGITS;
 }
 
-/** Write default hashes for both roles using the current s_salt. */
+/**
+ * @brief Write default hashes for both roles using the current s_salt.
+ *
+ * Used at first boot (after salt generation) and for partial-write recovery
+ * when one of the two hashes is missing from NVS. The salt is read from
+ * s_salt; the caller must have populated it first.
+ *
+ * @return PIN_AUTH_OK on success, PIN_AUTH_ERR_NVS if either NVS blob write
+ *         fails. On failure the NVS state may be partially written.
+ * @note   Caller pays for two NVS blob writes (~32 KB flash wear budget).
+ * @warning Logs of plain-text PINs are never produced; only the hash blobs
+ *          are stored (FR-AC06).
+ */
 static pin_auth_result_t write_default_hashes(void)
 {
     uint8_t hash[PIN_HASH_LEN];
@@ -98,6 +160,19 @@ static pin_auth_result_t write_default_hashes(void)
  * Public API
  * --------------------------------------------------------------------------- */
 
+/**
+ * @brief Initialise the PIN authentication module. See pin_auth.h.
+ *
+ * Three boot paths:
+ *   - First boot (salt absent): generate random salt + write both default
+ *     hashes. Two blob writes to NVS.
+ *   - Partial-write recovery (salt present, hash missing): rewrite both
+ *     default hashes with existing salt.
+ *   - Normal boot: load salt; no writes.
+ *
+ * @return PIN_AUTH_OK on success, PIN_AUTH_ERR_NVS on NVS failure.
+ * @see    write_default_hashes()
+ */
 pin_auth_result_t pin_auth_init(void)
 {
     size_t salt_len = PIN_SALT_LEN;
@@ -130,6 +205,25 @@ pin_auth_result_t pin_auth_init(void)
     return PIN_AUTH_OK;
 }
 
+/**
+ * @brief Verify an entered PIN against the stored hash. See pin_auth.h.
+ *
+ * Sequence:
+ *   1. Validate args (init, non-null pin, correct digit length).
+ *   2. Lockout check: read lockout expiry; if still active, return
+ *      PIN_AUTH_LOCKED_OUT. If expired, clear lockout + counter and proceed.
+ *   3. Hash the entered PIN with s_salt; constant-time compare against the
+ *      stored hash blob from NVS.
+ *   4. On match: zero the failure counter and return PIN_AUTH_OK.
+ *   5. On miss: increment failure counter; arm lockout if the threshold is
+ *      reached. Return PIN_AUTH_WRONG (or PIN_AUTH_LOCKED_OUT on threshold).
+ *
+ * @param role  PIN_ROLE_FARMER or PIN_ROLE_ADMIN.
+ * @param pin   ASCII digit string; length must match `role`.
+ * @return      PIN_AUTH_OK, PIN_AUTH_WRONG, PIN_AUTH_LOCKED_OUT, or error.
+ * @note   Every call writes at least one int32 to NVS (counter reset or
+ *         increment); callers that probe speculatively will wear flash.
+ */
 pin_auth_result_t pin_auth_verify(pin_role_t role, const char *pin)
 {
     if (!s_initialized)         return PIN_AUTH_ERR_INIT;
@@ -184,6 +278,18 @@ pin_auth_result_t pin_auth_verify(pin_role_t role, const char *pin)
     return PIN_AUTH_WRONG;
 }
 
+/**
+ * @brief Replace the stored PIN hash for the given role. See pin_auth.h.
+ *
+ * Computes SHA-256(s_salt || new_pin) and overwrites the role's hash blob
+ * in NVS. Does not touch lockout state or the failure counter.
+ *
+ * @param role     PIN_ROLE_FARMER or PIN_ROLE_ADMIN.
+ * @param new_pin  ASCII digit string of the correct length for `role`.
+ * @return         PIN_AUTH_OK or PIN_AUTH_ERR_PARAM / PIN_AUTH_ERR_NVS / PIN_AUTH_ERR_INIT.
+ * @warning Caller MUST enforce role permissions before invoking — farmer
+ *          must not be allowed to call this with PIN_ROLE_ADMIN.
+ */
 pin_auth_result_t pin_auth_set(pin_role_t role, const char *new_pin)
 {
     if (!s_initialized)                      return PIN_AUTH_ERR_INIT;
@@ -199,6 +305,19 @@ pin_auth_result_t pin_auth_set(pin_role_t role, const char *new_pin)
     return PIN_AUTH_OK;
 }
 
+/**
+ * @brief Reset the administrator PIN to the factory default. See pin_auth.h.
+ *
+ * Recovery path used after the hardware jumper procedure (TSDS §5.4).
+ * Rewrites the admin hash with PIN_DEFAULT_ADMIN under the existing salt,
+ * then clears both the admin failure counter and the admin lockout expiry.
+ * Does not touch the farmer PIN, the salt, or the farmer counters.
+ *
+ * @return PIN_AUTH_OK on success, PIN_AUTH_ERR_NVS on NVS failure,
+ *         PIN_AUTH_ERR_INIT if pin_auth_init() has not been called.
+ * @warning Should only be reachable through the hardware recovery procedure;
+ *          a software-only path would compromise the access model.
+ */
 pin_auth_result_t pin_auth_reset_admin(void)
 {
     if (!s_initialized) return PIN_AUTH_ERR_INIT;
@@ -216,6 +335,19 @@ pin_auth_result_t pin_auth_reset_admin(void)
     return PIN_AUTH_OK;
 }
 
+/**
+ * @brief Return seconds remaining in the lockout period for a role.
+ *        See pin_auth.h.
+ *
+ * Reads the per-role lockout expiry from NVS and subtracts the current
+ * Unix timestamp. Returns 0 if no lockout is active (either never set or
+ * already expired in wall-clock time).
+ *
+ * @param role  PIN_ROLE_FARMER or PIN_ROLE_ADMIN.
+ * @return      Seconds until lockout expires, or 0 if not currently locked.
+ * @note   This is purely informational; the next pin_auth_verify() call
+ *         will detect the expiry and clear the lockout itself.
+ */
 uint32_t pin_auth_lockout_remaining_secs(pin_role_t role)
 {
     if (!s_initialized) return 0;

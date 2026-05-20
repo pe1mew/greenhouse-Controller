@@ -15,6 +15,16 @@
  * Window-state strings drop the WIN_ prefix to match the spec
  * ("OPEN", "CLOSED", "MOVING_OPEN", "MOVING_CLOSE", "UNKNOWN"). Mode strings
  * follow op_mode_t names without the MODE_ prefix.
+ *
+ * ## Thread safety
+ *  Pure function — no module-private state, no I/O, no locks. Safe to call
+ *  from any task at any priority. Callers must own the buffer and the
+ *  snapshot for the duration of the call.
+ *
+ * @see   web_server.cpp (T11 /api/status caller)
+ * @see   status_post.cpp (T14 caller via build_status_body)
+ *
+ * @author Greenhouse Controller project
  */
 
 #pragma once
@@ -30,13 +40,20 @@ extern "C" {
 
 /**
  * @brief Convert a window_state_t to its spec string (no WIN_ prefix).
- * Falls back to "UNKNOWN" for out-of-range values.
+ *
+ * @param s  Window state value.
+ * @return Static string literal: "OPEN", "CLOSED", "MOVING_OPEN",
+ *         "MOVING_CLOSE", or "UNKNOWN" (also returned for out-of-range
+ *         enum values — never NULL).
  */
 const char *window_state_str(window_state_t s);
 
 /**
  * @brief Convert an op_mode_t to its public string (no MODE_ prefix).
- * Falls back to "AUTOMATIC".
+ *
+ * @param m  Operating mode value.
+ * @return Static string literal: "STANDBY", "WIND_OVERRIDE",
+ *         "MOTOR_ALARM", or "AUTOMATIC" (also the fallback — never NULL).
  */
 const char *op_mode_str(op_mode_t m);
 

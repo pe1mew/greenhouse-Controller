@@ -1,24 +1,39 @@
 /**
  * @file s200.h
- * @brief SenseCAP ONE V2 S200 wind sensor driver — types and API.
+ * @brief SenseCAP ONE V2 S200 wind sensor driver — LIB-S200.
  *
  * Thin driver over LIB-6 (modbus_rtu) for the Seeed SenseCAP ONE V2 S200
- * compact wind station.  Provides:
- *   - Measurement reads (FC04, wind direction 0x0008–0x000D, wind speed 0x000E–0x0013,
- *     heating temperature 0x001C–0x001D)
+ * compact wind station mounted on the greenhouse roof.  Provides:
+ *   - Measurement reads (FC04, wind direction 0x0008–0x000D, wind speed
+ *     0x000E–0x0013, heating temperature 0x001C–0x001D)
  *   - A FreeRTOS periodic polling task
  *
- * Prerequisites:
- *   Call modbus_init() (from modbus_rtu.h) once before using any function
- *   in this driver.
+ * ## Hardware
+ *   - Sensor      : Seeed SenseCAP ONE V2 S200 (ultrasonic, no moving parts).
+ *   - Bus         : Modbus RTU over RS-485 (UART1 + SIT65HVD08P, see LIB-6).
+ *   - Wiring      : A/B differential pair; see @c PIN_RS485_* in
+ *                   @c pin_config.h.  Internal heater prevents icing.
+ *   - Speed       : 0–60 m/s, resolution 0.001 m/s.
+ *   - Direction   : 0–360°, resolution 0.001°.
+ *   - Heater temp : −40 to 85 °C (internal anti-icing heater).
+ *   - Comm spec   : 9600 baud, 8N1 (matches @ref MODBUS_BAUD).
+ *   - Encoding    : raw register pair is int32 × 1000 of the engineering
+ *                   value, big-endian word order (high register first).
+ *   - Slave addr  : 44 (factory default, see @ref S200_DEFAULT_ADDR).
  *
- * Sensor specifications (from SenseCAP ONE V2 User Guide):
- *   - Wind speed range    : 0–60 m/s, resolution 0.001 m/s
- *   - Wind direction range: 0–360°,   resolution 0.001°
- *   - Heating temperature : −40 to 85 °C (internal heater, prevents icing)
- *   - Communication       : Modbus RTU, 9600 baud, 8N1, RS-485
- *   - Raw register values : int32 × 1000 of the engineering value, big-endian word order
- *   - Slave address       : 44 (factory default)
+ * ## API summary
+ *   - @ref s200_read_measurements  Read all wind channels + heater temp.
+ *   - @ref s200_task               FreeRTOS periodic-poll task.
+ *
+ * ## Thread safety
+ *   No internal mutex — LIB-6 (modBus) serialises wire traffic, so two
+ *   threads each calling this driver will not collide on the wire.
+ *   Per-call output structs (@p out) are written by the calling thread
+ *   only; if a shared buffer is updated by @ref s200_task, callers must
+ *   hold the @c task_param.mutex when reading it.
+ *
+ * Prerequisites:
+ *   Call @c modbus_init() (LIB-6) once before any function in this driver.
  *
  * @author Greenhouse Controller project
  * @version 0.1.0
@@ -178,8 +193,16 @@ typedef struct {
  * storing in @p out.  Returns the first error encountered.
  *
  * @param slave_addr  Modbus slave address of the sensor (1–247).
- * @param out         Caller-supplied @ref s200_measurement_t to fill.
- * @return @ref S200_OK, @ref S200_ERR_COMM, or @ref S200_ERR_PARAM.
+ * @param out         Caller-supplied @ref s200_measurement_t to fill (must
+ *                    not be NULL).
+ * @return @ref S200_OK on success, @ref S200_ERR_COMM on bus error,
+ *         @ref S200_ERR_PARAM if @p out is NULL or @p slave_addr is 0.
+ * @note   The two FC04 transactions are issued back-to-back; the average
+ *         wind values therefore reflect the sensor-side averaging window,
+ *         not a host-side average across the two reads.
+ * @warning A persistent @ref S200_ERR_COMM after install often indicates a
+ *          missing 120 Ω bus terminator at the sensor end.
+ * @see    s200_measurement_t.
  */
 s200_status_t s200_read_measurements(uint8_t slave_addr, s200_measurement_t *out);
 
@@ -197,6 +220,9 @@ s200_status_t s200_read_measurements(uint8_t slave_addr, s200_measurement_t *out
  *   - Core  : APP_CPU_NUM (core 1)
  *
  * @param pvParameters  Pointer to @ref s200_task_param_t (must not be NULL).
+ * @warning Lifetime of @p pvParameters must outlive the task (use static
+ *          storage or a long-lived heap allocation).
+ * @see    s200_read_measurements(), s200_task_param_t.
  */
 void s200_task(void *pvParameters);
 #endif /* NATIVE_TEST */

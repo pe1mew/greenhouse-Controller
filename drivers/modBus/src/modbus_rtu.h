@@ -2,12 +2,43 @@
  * @file modbus_rtu.h
  * @brief Modbus RTU master driver — types and API for LIB-6.
  *
- * Modbus RTU master over UART1 and the SIT65HVD08P RS485 transceiver.
- * Reads sensor data from the SenseCAP S200 (wind) and FG6485A
- * (temperature/humidity). Used by T5 (Sensor Poll).
+ * Modbus RTU master over UART1 and the SIT65HVD08P RS-485 transceiver.
+ * Reads sensor data from the SenseCAP S200 (LIB-S200, wind) and FG6485A
+ * (LIB-FG, temperature/humidity).  Consumed by T5 (Sensor Poll).
  *
- * Depends on LIB-1 (gpio/) for RS485 direction control via
- * gpio_set_rs485_direction().
+ * ## Hardware
+ *   - Transceiver : Sipex SIT65HVD08P (3.3 V, half-duplex RS-485).
+ *   - UART        : ESP32-S3 UART1 — TX on @c PIN_RS485_TX, RX on
+ *                   @c PIN_RS485_RX, line direction on @c PIN_RS485_DE_RE.
+ *   - Wiring      : Differential A/B pair, 120 Ω bus terminator at the
+ *                   far end of the daisy chain (sensor end).  Bias network
+ *                   is on the controller PCB.
+ *   - Frame       : 9600 baud, 8N1 (see @ref MODBUS_BAUD).
+ *
+ * ## Half-duplex DE/RE timing
+ *   Each transaction:
+ *     1. Assert DE HIGH (TX) via LIB-1 @ref gpio_set_rs485_direction.
+ *     2. Write the request bytes; wait for TX FIFO + shift register drain
+ *        before dropping DE — premature drop truncates the final byte.
+ *     3. Drop DE LOW (RX) and wait for the response within
+ *        @ref MODBUS_TIMEOUT_MS (200 ms is comfortable for FG6485A and
+ *        SenseCAP S200 at 9600 baud).
+ *     4. Validate length, function code, and CRC.
+ *
+ * ## API summary
+ *   - @ref modbus_init                       UART + DE/RE setup.
+ *   - @ref modbus_read_holding_registers     FC03 read.
+ *   - @ref modbus_read_input_registers       FC04 read.
+ *   - @ref modbus_write_multiple_registers   FC16 write.
+ *
+ * ## Thread safety
+ *   The driver serialises wire access internally with a UART mutex — two
+ *   tasks may safely call any combination of these functions concurrently
+ *   and the per-request DE/RE timing remains correct.  Per-call output
+ *   buffers are owned by the calling task only.
+ *
+ * Depends on LIB-1 (gpio/) for RS-485 direction control via
+ * @ref gpio_set_rs485_direction.
  *
  * @author Greenhouse Controller project
  * @version 0.1.0
@@ -66,8 +97,13 @@ typedef enum {
  * @brief Initialise the Modbus RTU driver.
  *
  * Configures UART1 at @ref MODBUS_BAUD (8N1) on GPIO @ref MODBUS_UART_TX /
- * @ref MODBUS_UART_RX and sets the RS485 transceiver to receive mode.
- * Must be called once before any transaction function.
+ * @ref MODBUS_UART_RX, creates the UART mutex, and sets the RS-485
+ * transceiver to receive mode via @ref gpio_set_rs485_direction(@c false).
+ *
+ * @warning Must be called once before any transaction function.  The
+ *          internal DE/RE init also runs here; do NOT call
+ *          @ref gpio_rs485_init separately.
+ * @see    modbus_read_holding_registers(), modbus_write_multiple_registers().
  */
 void modbus_init(void);
 

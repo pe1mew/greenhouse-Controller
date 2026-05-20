@@ -2,6 +2,24 @@
  * @file climate_control.h
  * @brief Graduated ventilation step table, evaluation functions, and T6 task.
  *
+ * ## Subsystem role
+ * T6 is the project's *climate-control* task. It owns no hardware directly;
+ * it consumes the latest sensor reading (via the MX2-protected snapshot
+ * published by T4 on Q6 reception) and the configuration shadow (MX4-protected,
+ * also owned by T4), then posts open/close commands to the relay-controller
+ * task T2 via Q1. T6 wakes only when T4 notifies it (TN2) after each new
+ * sensor reading — its cadence is therefore the sensor poll interval
+ * (`poll_interval_s`, typically 30–3600 s).
+ *
+ * ## Position in the task graph
+ * T4 (Data Manager) → TN2 → T6 (Climate Control) → Q1 → T2 (Relay Controller)
+ *                                          ↓
+ *                                          Q3 → T9 (Event Logger)
+ *
+ * EG1 also gates T6 evaluation: when WIND_OVERRIDE (T3-owned), MOTOR_ALARM
+ * (T2-owned), or SENSOR_FAULT_T (T5-owned) is set, T6 produces no commands
+ * — the active flag-owner is already in control of window position.
+ *
  * ## Graduated ventilation (FR-C09, FR-C10, Gap G)
  *
  * Windows are opened in up to NUM_VENT_STEPS cumulative steps proportional
@@ -57,18 +75,26 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* -----------------------------------------------------------------------
- * Sentinel value returned by vent_step_required_rh() when RH is within
- * the acceptable range and neither open nor close is demanded.
- * vent_resolve_conflict() treats this as "RH has no vote".
- * ----------------------------------------------------------------------- */
+/**
+ * @brief Sentinel returned by vent_step_required_rh() when RH is within
+ *        the acceptable range and neither open nor close is demanded.
+ *
+ * vent_resolve_conflict() treats this as "RH has no vote" — the temperature
+ * step wins unconditionally. Distinguishing NEUTRAL from a genuine `step=0`
+ * close demand is essential: a NEUTRAL RH should NOT veto temperature-driven
+ * opening, but a genuine close demand should.
+ */
 #define VENT_STEP_NEUTRAL  (-1)
 
 /* -----------------------------------------------------------------------
  * Channel bitmask helpers (bit 0 = M1, bit 1 = M2, bit 2 = M3)
  * ----------------------------------------------------------------------- */
+
+/** @brief Bitmask bit for motor channel M1 (window 1). */
 #define VENT_CH_M1  (1u << 0)
+/** @brief Bitmask bit for motor channel M2 (window 2). */
 #define VENT_CH_M2  (1u << 1)
+/** @brief Bitmask bit for motor channel M3 (window 3). */
 #define VENT_CH_M3  (1u << 2)
 
 /* -----------------------------------------------------------------------
@@ -102,5 +128,13 @@
  * reset to 0 so that on clearance it re-opens gradually from scratch.
  *
  * @param pvParameters  Unused; pass NULL.
+ * @note   T6 subscribes to the task watchdog (esp_task_wdt_add). The TN2
+ *         wait uses a 2 s timeout so the WDT is kicked even when sensor
+ *         readings are sparse (poll interval can be up to 3600 s).
+ * @warning T6 must run AFTER T2 and T4 are created (it queries
+ *          t2_get_window_states() and calls dm_*_snapshot()).
+ * @see    task_data_manager()  — produces the TN2 notification
+ * @see    task_relay_controller() — owner of Q1 and the window state machine
+ * @see    t2_get_window_states() — used for level-triggered reconciliation
  */
 void task_climate_control(void *pvParameters);

@@ -28,6 +28,16 @@
  *    then `vTaskDelete(task_t14)`, a 100 ms delay so FreeRTOS reclaims the
  *    stack, then `xTaskCreatePinnedToCore()` with the same arguments
  *    main.cpp used at first boot. Stores the new handle into `task_t14`.
+ *
+ * @warning This translation unit is currently **excluded from the build**
+ *          (not listed in `firmware/src/CMakeLists.txt` SRCS). The source
+ *          and documentation reflect the intended-future-state interface;
+ *          re-enable by adding the file back to SRCS when T14 leak/wedge
+ *          telemetry warrants resuming supervision.
+ *
+ * @see status_post_supervisor.h
+ *
+ * @author Greenhouse Controller project
  */
 
 #include "status_post_supervisor.h"
@@ -50,42 +60,83 @@ static const char *TAG = "T15";
  * (Avoiding a definition in main.cpp also means a future build that omits
  * T15 from the link doesn't drag an unused TaskHandle_t along.)
  * ============================================================ */
+
+/** @brief Public handle for the supervisor task (extern in app_types.h). */
 TaskHandle_t task_t15 = NULL;
 
 /* ============================================================
  * Compile-time tunables
  * ============================================================ */
-#define T15_TICK_MS              30000u  /**< 30-s polling cadence */
-#define T15_WDT_KICK_CHUNK_MS     1000u  /**< Sleep chunk between WDT kicks
-                                          *  (must be < task-WDT timeout — the
-                                          *  ESP-IDF default is 5 s; 1 s gives
-                                          *  5× safety margin). gh#19 fix. */
-#define T15_WEDGE_TIMEOUT_MS     60000u  /**< Heartbeat must advance every 60 s */
+
+/** @brief Polling cadence in ms — supervisor evaluates T14 health every 30 s. */
+#define T15_TICK_MS              30000u
+
+/** @brief Sleep chunk between WDT kicks (ms).
+ *
+ * Must be strictly less than the task-WDT timeout — ESP-IDF default is
+ * 5 s; 1 s gives 5× safety margin. gh#19 fix; pre-fix the 30 s vTaskDelay
+ * between kicks caused TASK_WDT resets every ~5 s of uptime and triple-
+ * boot OTA rollback on Unit 1 (1.18.0).
+ */
+#define T15_WDT_KICK_CHUNK_MS     1000u
+
+/** @brief Heartbeat must advance within this window or T14 is considered wedged (ms). */
+#define T15_WEDGE_TIMEOUT_MS     60000u
+
+/** @brief Cumulative heap-drop limit (bytes) before T15 escalates to a planned reboot. */
 #define T15_HEAP_DROP_LIMIT      (64u * 1024u)
+
+/** @brief Minimum elapsed time between respawns (ms). Less → respawn storm → planned reboot. */
 #define T15_MIN_RESPAWN_GAP_MS  (5u * 60u * 1000u)
+
+/** @brief Maximum respawns per local-time hour. Exhaustion → planned reboot. */
 #define T15_HOURLY_RESPAWN_LIMIT 10u
 
 /* Match main.cpp's spawn arguments for T14. Re-declared here rather than
  * shared in a header so a typo in main.cpp doesn't silently desync the
  * respawn parameters. If the canonical values change, both call sites need
  * to be updated. */
+
+/** @brief T14 task stack in bytes — must match main.cpp's xTaskCreate value. */
 #define T14_STACK_BYTES          12288u
-#define T14_PRIORITY             3u      /* TASK_PRIO_LOW in main.cpp */
+
+/** @brief T14 task priority — TASK_PRIO_LOW in main.cpp. */
+#define T14_PRIORITY             3u
+
+/** @brief T14 task core affinity (0 = Core 0). */
 #define T14_CORE                 0u
 
 /* NVS keys (namespace NVS_NS_SYSTEM). */
-static const char K_RESPAWN_H[]   = "t15_respawn_h"; /**< respawns this hour */
-static const char K_RESPAWN_HR[]  = "t15_resp_hr";   /**< hour boundary marker */
+
+/** @brief NVS key: respawn count within the current local-time hour. */
+static const char K_RESPAWN_H[]   = "t15_respawn_h";
+
+/** @brief NVS key: local-time hour-of-day (0..23) at which the count was reset. */
+static const char K_RESPAWN_HR[]  = "t15_resp_hr";
+
+/** @brief NVS key: planned-reboot indicator (1 = next boot resumes from planned reboot). */
 static const char K_PLAN_REBOOT[] = "t15_planreboot";
 
 /* ============================================================
  * Module-private state
  * ============================================================ */
+
+/** @brief Last observed T14 heartbeat value (set when it advances). */
 static uint32_t s_last_heartbeat       = 0u;
+
+/** @brief Tick (ms) at which `s_last_heartbeat` was set — wedge timer reference. */
 static uint32_t s_last_heartbeat_tick  = 0u;
+
+/** @brief Tick (ms) of the last respawn — minimum-gap budget reference. */
 static uint32_t s_last_respawn_tick    = 0u;
+
+/** @brief Respawn count within the current local-time hour. */
 static uint32_t s_respawn_this_hour    = 0u;
-static int      s_respawn_hour_marker  = -1;   /**< local-time hour 0..23 */
+
+/** @brief Local-time hour 0..23 the hourly counter belongs to (-1 = pre-NTP). */
+static int      s_respawn_hour_marker  = -1;
+
+/** @brief True if this boot resumed from a planned reboot — cleared after T14 recovers. */
 static bool     s_was_planned_reboot   = false;
 
 /* Forward declaration of the T14 entry — we re-spawn it here. */
@@ -96,6 +147,19 @@ bool supervisor_was_planned_reboot(void)
     return s_was_planned_reboot;
 }
 
+/**
+ * @brief Persist the planned-reboot flag, unmount SD, and `esp_restart()`.
+ *
+ * Sets `NVS_NS_SYSTEM/t15_planreboot=1` so the next boot can surface the
+ * "planned reboot recovery" indicator in the status JSON. Unmounts the SD
+ * card (gh#26) so FatFs flushes its write-back cache before reset —
+ * pre-fix, planned reboots left phantom directory entries and zero-byte
+ * ghost CSVs (Unit 1 1.20.0 forensic window). A 250 ms delay lets the
+ * NVS commit and UART log lines flush.
+ *
+ * @param reason  Free-form human-readable cause; emitted at ERROR level.
+ * @note  Does not return — calls `esp_restart()`.
+ */
 static void planned_reboot(const char *reason)
 {
     ESP_LOGE(TAG, "PLANNED REBOOT — %s", reason);
@@ -121,7 +185,14 @@ static void planned_reboot(const char *reason)
     esp_restart();
 }
 
-/* Roll the hourly respawn counter on the HH:00 boundary. */
+/**
+ * @brief Roll the hourly respawn counter on the HH:00 boundary.
+ *
+ * Compares the current local-time hour against `s_respawn_hour_marker`;
+ * if different, resets the hourly counter to zero and persists both values
+ * to NVS. No-op before NTP sync (epoch < 2023-11-15) — we never want to
+ * roll based on a stale boot-time clock.
+ */
 static void maybe_roll_hour_counter(void)
 {
     time_t now = time(NULL);
@@ -136,6 +207,21 @@ static void maybe_roll_hour_counter(void)
     }
 }
 
+/**
+ * @brief Force-respawn T14 after enforcing minimum-gap and hourly budgets.
+ *
+ * Order: budget checks (escalate to `planned_reboot()` if exceeded);
+ * `status_post_force_teardown()` (idempotent TLS close);
+ * `vTaskDelete(task_t14)`; 100 ms delay so FreeRTOS reaps the TCB and
+ * stack; `xTaskCreatePinnedToCore()` with the same args main.cpp used;
+ * persist the new hourly count; force-reset heartbeat tracking so the
+ * wedge timer doesn't immediately re-fire before the new incarnation
+ * gets a tick in.
+ *
+ * @param reason  Free-form human-readable cause; emitted at WARN level.
+ * @note  May not return — escalation paths call `planned_reboot()` which
+ *        in turn calls `esp_restart()`.
+ */
 static void respawn_t14(const char *reason)
 {
     uint32_t now_tick = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
@@ -193,6 +279,14 @@ static void respawn_t14(const char *reason)
     s_last_heartbeat_tick = now_tick;
 }
 
+/**
+ * @brief Restore NVS-persisted supervisor state at task entry.
+ *
+ * Loads the hourly respawn counter (clamped to [0, T15_HOURLY_RESPAWN_LIMIT]),
+ * the hour-of-day marker, and the planned-reboot flag. The planned-reboot
+ * flag is held in RAM until cleared after T14 demonstrates one successful
+ * POST (heartbeat advance + breaker closed).
+ */
 static void load_persisted_state(void)
 {
     int32_t v = 0;
@@ -215,6 +309,22 @@ static void load_persisted_state(void)
 /* ============================================================
  * Task entry
  * ============================================================ */
+
+/**
+ * @brief T15 supervisor task body (see header for overview).
+ *
+ * Subscribes to the task WDT, restores NVS state, then loops forever with
+ * a 30 s tick (broken into 1 s WDT-kick chunks per gh#19). Per tick:
+ *  - (a) Wedge detector — compare `status_post_heartbeat()`; if unchanged
+ *        for `T15_WEDGE_TIMEOUT_MS`, call `respawn_t14()`.
+ *  - (b) Leak detector — if `status_post_heap_drop_bytes()` ≥ 64 KB,
+ *        escalate to `planned_reboot()` (does not return).
+ *  - (c) Planned-reboot housekeeping — clear the flag once T14 has
+ *        demonstrated recovery (heartbeat advanced past 5 + breaker closed).
+ *  - Roll the hourly respawn counter on local-time HH:00 boundary.
+ *
+ * @param pvParameters  Unused.
+ */
 void task_status_post_supervisor(void *pvParameters)
 {
     (void)pvParameters;
