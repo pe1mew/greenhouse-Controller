@@ -645,6 +645,45 @@ def _decode_system(row: dict) -> str:
             state = "enabled" if va else "disabled"
             return f"WiFi AP {state}  [Admin]"
 
+        # ---------------------------------------------------------------
+        # Legacy main.cpp heartbeat (pre-2.0.0-a.6.35.3).
+        #
+        # The original alpha.6.6 main.cpp scaffold posted a synthetic
+        # LOG_SYSTEM row every 5 s with:
+        #     value_a = uptime_seconds  (5, 10, 15, 20, …)
+        #     value_b = heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024
+        #     initiator = LOG_BY_SYSTEM, ch = 0, param = 0
+        # to prove T9 was alive on the SD card.
+        #
+        # The emit was REMOVED in 2.0.0-a.6.35.3 — see the rationale
+        # comment at `firmware/src/main.cpp` (the `heartbeat_task()`
+        # function around lines 302-318). Reason: every uptime-second
+        # value (5, 7, 8, 9, 10, 11, 12, …) collides with a documented
+        # subtype in event_logger.h's LOG_SYSTEM table (5=BOOT,
+        # 7/8/12=heap rows, 9=corruption, 10=T2-skip, 11=unit-id,
+        # 13=T13-fallback, 14-17=OTA, 18=coredump-detected). The
+        # heartbeat is INDISTINGUISHABLE from a real subtype event
+        # for uptime values that overlap with documented codes; this
+        # decoder will (correctly) prefer the documented interpretation
+        # for those rows.
+        #
+        # value_a == 19 and value_a == 20 are documented as WEB-only
+        # (coredump downloaded / erased — admin-initiated, fired by
+        # T11). A row with value_a=19 or value_a=20 and initiator=SYS
+        # has no documented producer, so it is unambiguously a legacy
+        # heartbeat (uptime=19 s or 20 s). From uptime=21 s onward
+        # there is no overlap at all.
+        #
+        # SD log files that span the a.6.35.3 transition (which on any
+        # field unit is a one-time event) contain a finite block of
+        # these rows from the pre-upgrade sessions. The decoder makes
+        # those rows readable instead of falling through to the opaque
+        # "System event: a=N b=M" generic.
+        # ---------------------------------------------------------------
+        if va >= 19 and initiator in ("SYS", ""):
+            return (f"Legacy heartbeat (pre-a.6.35.3): "
+                    f"uptime={va} s, free internal heap={vb} KB")
+
         return (f"System event: a={va} b={vb}  "
                 f"[{_INITIATOR.get(initiator, initiator)}]")
     except (ValueError, KeyError):

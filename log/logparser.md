@@ -1,10 +1,25 @@
 # logparser — Greenhouse Controller Log Parser
 
 **File:** `log/logparser.py`
-**Document version:** 1.6 (matches firmware 2.0.0-a.6.35.7 — parser unchanged since a.6.35.6; a.6.35.7 was a DOM-only GUI reorder)
+**Document version:** 1.7 (matches firmware 2.0.0-rc.1.2.1 — legacy-heartbeat decoder added)
 **Requires:** Python 3.10+, standard library only (no pip dependencies)
 
-**What's new in 1.6** (matches firmware a.6.35.6):
+**What's new in 1.7** (matches firmware 2.0.0-rc.1.2.1):
+- **Legacy main.cpp heartbeat decoder added.** Pre-a.6.35.3 firmware emitted a
+  synthetic `LOG_SYSTEM` row every 5 s with `value_a = uptime_seconds` and
+  `value_b = free_internal_heap_kb` (retired in a.6.35.3 per the rationale
+  comment in `firmware/src/main.cpp:heartbeat_task()`). The parser previously
+  fell through to the opaque `System event: a=N b=M` generic for these rows.
+  Now any SD log spanning the a.6.35.3 transition decodes them as
+  `Legacy heartbeat (pre-a.6.35.3): uptime=N s, free internal heap=N KB`.
+  The collision domain (uptime 5..18 s overlaps documented SYSTEM subtypes
+  for SYS-initiator rows) is unavoidable — the parser correctly prefers the
+  documented interpretation for those values; for uptime ≥ 19 s (where no
+  documented SYS-initiator code exists) the legacy-heartbeat label is used.
+  On a typical post-upgrade log this turns the largest source of "unknown
+  System event" noise into a readable single-line per row.
+
+**What was new in 1.6** (matches firmware a.6.35.6):
 - **Coredump retrieval audit events.** Three new SYSTEM subtypes (`value_a=18`
   detected-at-boot, `value_a=19` downloaded, `value_a=20` erased). The
   controller now writes the coredump to a dedicated 64 KB partition on every
