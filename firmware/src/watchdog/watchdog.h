@@ -47,7 +47,14 @@
 extern "C" {
 #endif
 
-/** @brief Task period in ms — drives the WDT kick + tick counter. */
+/**
+ * @brief Task period in ms — drives the WDT kick + every other periodic check.
+ *
+ * 500 ms gives a 60 s heap-row cadence at tick % 120 == 0, a 30 s-offset
+ * heap-integrity check at tick % 120 == 60, and a 10 min stack-HWM sweep
+ * at tick % 1200 == 0. Changing this constant requires rederiving those
+ * modulos and the OTA-healthy threshold (currently OTA_HEALTHY_MS / T1_TICK_MS).
+ */
 #define T1_TICK_MS  500u
 
 /**
@@ -55,11 +62,15 @@ extern "C" {
  *        marks the boot healthy at OTA_HEALTHY_MS.
  *
  * Suggested xTaskCreatePinnedToCore parameters:
- *   stack:    4096   (BYTES — ESP-IDF convention, NOT FreeRTOS words)
- *   priority: 1      (low — the work is light)
- *   core:     1      (APP_CPU — same as the other low-prio tasks)
+ *   - stack:    4096   (BYTES — ESP-IDF convention, NOT FreeRTOS words)
+ *   - priority: 1      (low — the work is light)
+ *   - core:     1      (APP_CPU — same as the other low-prio tasks)
  *
  * @param pvParameters  Unused; pass NULL.
+ * @note This task subscribes to the IDF TWDT on entry — if it ever stops
+ *       kicking, the panic handler dumps a coredump. Do not delete the
+ *       task without first calling `esp_task_wdt_delete(NULL)`.
+ * @warning A 2 KB stack causes an immediate boot-loop; do not reduce.
  */
 void task_watchdog(void *pvParameters);
 

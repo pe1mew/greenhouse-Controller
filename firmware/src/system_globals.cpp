@@ -1,26 +1,35 @@
 /**
  * @file system_globals.cpp
- * @brief Phase-6.1 FreeRTOS-infrastructure bootstrap implementation.
+ * @brief Phase-6.1 FreeRTOS-infrastructure bootstrap — definitions + init.
  *
- * Defines every extern symbol that `types/app_types.h` declares, and
- * provides `system_globals_init()` to create the underlying queues,
- * mutexes, and event group at boot.
+ * Owns the storage for every extern symbol declared in `types/app_types.h`
+ * (queues Q1..Q6, mutexes MX1..MX5, event group EG1 and task handles
+ * task_t1..task_t15) and provides `system_globals_init()` to create the
+ * underlying RTOS objects at boot.
  *
- * Queue depths come from the inter-task design (firmwareImplementationPlan.md
+ * ## Queue sizing rationale
+ * Depths come from the inter-task design (firmwareImplementationPlan.md
  * §Phase 1 + design/tasks.md):
- *   Q1 (window_cmd_t,     T3/T6→T2):     8   — peak load is several cmds back-to-back during CLOSE_ALL
- *   Q2 (key_event_t,      T7→T8):        8   — debouncing in T7 keeps this thin
- *   Q3 (log_event_t,      *→T9):        32   — gh#22 ring-handover sizing; logs burst on mode change
- *   Q4 (config_update_t,  T8/T10/T11→T4): 16  — peak during web-save of many fields
- *   Q5 (net_status_t,     T10→T8):       1   — overwrite semantics (latest-wins)
- *   Q6 (sensor_reading_t, T5→T4):        1   — overwrite semantics (latest-wins)
+ *   - Q1 (window_cmd_t,    T3/T6 → T2):       8 — peak load is several cmds
+ *                                                 back-to-back during CLOSE_ALL
+ *   - Q2 (key_event_t,     T7    → T8):       8 — debouncing in T7 keeps this thin
+ *   - Q3 (log_event_t,     *     → T9):      32 — gh#22 ring-handover sizing;
+ *                                                 logs burst on mode change
+ *   - Q4 (config_update_t, T8/T10/T11 → T4): 16 — peak during web-save of many fields
+ *   - Q5 (net_status_t,    T10   → T8):       1 — overwrite semantics (latest-wins)
+ *   - Q6 (sensor_reading_t,T5    → T4):       1 — overwrite semantics (latest-wins)
  *
- * Mutex semantics:
- *   MX1 — I2C bus serialisation (RTC + LCD on shared LIB-2)
- *   MX2 — current sensor_reading_t
- *   MX3 — sensor history ring buffer
- *   MX4 — cfg_shadow_t (NVS-backed config)
- *   MX5 — LittleFS active partition guard (T11 vs T13 cross-bank-write)
+ * ## Mutex semantics
+ *   - MX1 — I2C bus serialisation (RTC + LCD on shared LIB-2)
+ *   - MX2 — current sensor_reading_t (publisher T5, readers T6/T8/T11/T14)
+ *   - MX3 — sensor history ring buffer (writer T4, reader T11 /api/history)
+ *   - MX4 — cfg_shadow_t (NVS-backed config; writer T4, readers everywhere)
+ *   - MX5 — LittleFS active partition guard (T11 vs T13 cross-bank-write)
+ *
+ * @note All mutexes are non-recursive; deadlock prevention is design-level
+ *       (consistent lock ordering across tasks, kept short).
+ * @see  types/app_types.h for the matching extern declarations + per-handle
+ *       producer/consumer mapping.
  *
  * @author Greenhouse Controller project
  */

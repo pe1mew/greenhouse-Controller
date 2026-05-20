@@ -1,7 +1,11 @@
 /**
  * @file sunrise.cpp
  * @brief NOAA General Solar Position sunrise/sunset calculation.
- *        See sunrise.h for algorithm description and usage.
+ *
+ * See sunrise.h for the algorithm description, accuracy bounds, and the
+ * coordinate convention. This translation unit only uses `<math.h>`; no
+ * RTOS / ESP-IDF dependency, so the same code can be unit-tested on the
+ * host without a stub layer.
  */
 
 #include "sunrise.h"
@@ -11,10 +15,13 @@
  * Internal helpers
  * --------------------------------------------------------------------------- */
 
+/** @brief Convert degrees to radians. */
 static inline float deg2rad(float d) { return d * (float)M_PI / 180.0f; }
+
+/** @brief Convert radians to degrees. */
 static inline float rad2deg(float r) { return r * 180.0f / (float)M_PI; }
 
-/** Reduce angle to [0, 360). */
+/** @brief Reduce an angle in degrees to the half-open range [0, 360). */
 static inline float wrap360(float x)
 {
     x = fmodf(x, 360.0f);
@@ -22,10 +29,14 @@ static inline float wrap360(float x)
 }
 
 /**
- * Julian Day Number for the UTC date encoded in @p unix_ts.
+ * @brief Compute the Julian Day Number for the UTC date in @p unix_ts.
+ *
  * The time-of-day is stripped so the JD corresponds to noon on that date,
  * which is the convention used by the NOAA algorithm (JD is referenced to
  * the start of the Julian period, noon UT on 1 Jan 4713 BC).
+ *
+ * @param unix_ts  Unix timestamp (seconds since 1970-01-01 UTC).
+ * @return         Julian Day Number at noon on that UTC date.
  */
 static float julian_day(int32_t unix_ts)
 {
@@ -39,6 +50,24 @@ static float julian_day(int32_t unix_ts)
  * Public API
  * --------------------------------------------------------------------------- */
 
+/**
+ * @brief Compute sunrise and sunset for a date+location. See sunrise.h.
+ *
+ * Ten-step NOAA solar position pipeline:
+ *  1. Julian Day (JD) and Julian Century (T) from the Unix timestamp.
+ *  2. Geometric mean longitude L0.
+ *  3. Geometric mean anomaly M.
+ *  4. Equation of center C.
+ *  5. True longitude θ and apparent longitude λ.
+ *  6. Obliquity of the ecliptic ε.
+ *  7. Solar declination δ.
+ *  8. Equation of Time E.
+ *  9. Hour angle ω₀ at sunrise (uses the 90.833° zenith — atmospheric
+ *     refraction + solar disc radius).
+ * 10. UTC minutes from midnight: rise = noon − 4·ω₀, set = noon + 4·ω₀.
+ *
+ * Detects polar day / polar night when cos(ω₀) falls outside [-1, 1].
+ */
 sunrise_result_t sunrise_calc(int32_t unix_ts, float lat_deg, float lon_deg,
                                int32_t *rise_mins_utc, int32_t *set_mins_utc)
 {
@@ -137,6 +166,14 @@ sunrise_result_t sunrise_calc(int32_t unix_ts, float lat_deg, float lon_deg,
     return SUNRISE_OK;
 }
 
+/**
+ * @brief Convenience wrapper: is the moment in @p unix_ts daytime? See sunrise.h.
+ *
+ * Calls sunrise_calc() then compares the UTC time-of-day extracted from
+ * @p unix_ts against the [rise, set) window. Includes the FR-DN05
+ * "no location configured" fallback (both lat and lon zero → return true,
+ * i.e. apply daytime setpoints).
+ */
 bool sunrise_is_daytime(int32_t unix_ts, float lat_deg, float lon_deg)
 {
     /* FR-DN05: no location configured (both zero) — default to daytime setpoints. */

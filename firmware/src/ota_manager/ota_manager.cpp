@@ -5,8 +5,27 @@
  * Implements dual-bank firmware OTA, web-asset ZIP OTA, and 3-consecutive-fail
  * rollback.  See ota_manager.h for the full design description.
  *
- * ZIP extraction notes
- * --------------------
+ * ## Reboot path (rc.1.2)
+ *
+ * esp_restart() performs a WiFi teardown (esp_wifi_stop → 802.11 ioctls →
+ * queue_send_wrapper) that consumes several KB of stack.  That is more than
+ * the FreeRTOS timer service task's configTIMER_TASK_STACK_DEPTH allotment,
+ * so all reboot paths (asset-success, firmware-only fallback, generic
+ * schedule_reboot) follow a two-stage pattern:
+ *
+ *  1. A software timer is started with reboot_timer_cb / fw_done_fallback_cb
+ *     as the callback (runs in the timer-service task context).
+ *  2. That callback does **not** call esp_restart() directly.  It spawns a
+ *     dedicated worker task (reboot_worker_task / fw_done_commit_task) with
+ *     a 4 KB stack, and the worker performs the final esp_restart() (or
+ *     the boot-partition switch + post_log() audit + schedule_reboot()).
+ *
+ * The same pattern carries the SD audit-write off the timer-service task —
+ * the constrained stack used to produce clean reboots but missing audit
+ * rows (value_a=13 never reached SD).
+ *
+ * ## ZIP extraction notes
+ *
  * Only STORE (method 0, uncompressed) ZIP entries are supported.  The parser
  * walks Local File Headers (PK\x03\x04) sequentially until a Central Directory
  * header (PK\x01\x02) or End-of-Central-Directory record (PK\x05\x06) is
@@ -90,6 +109,7 @@ static size_t   s_zip_rcvd  = 0;
  * Internal helpers
  * ============================================================ */
 
+/** @brief Lazily create the module mutex on first OTA call. */
 static void ota_mx_init(void)
 {
     if (!s_mx) {
@@ -97,6 +117,7 @@ static void ota_mx_init(void)
     }
 }
 
+/** @brief Set s_state under s_mx; safe before s_mx is created. */
 static void set_state_locked(ota_state_t st)
 {
     if (s_mx) xSemaphoreTake(s_mx, portMAX_DELAY);
@@ -104,6 +125,7 @@ static void set_state_locked(ota_state_t st)
     if (s_mx) xSemaphoreGive(s_mx);
 }
 
+/** @brief Set state to ERROR with a message; logs at ESP_LOGE. */
 static void set_error_locked(const char *msg)
 {
     if (s_mx) xSemaphoreTake(s_mx, portMAX_DELAY);
@@ -113,12 +135,27 @@ static void set_error_locked(const char *msg)
     ESP_LOGE(TAG, "[OTA] error: %s", msg);
 }
 
+/** @brief Update s_progress to (done × 100 / total); 0 if total == 0. */
 static void update_progress(size_t done, size_t total)
 {
     s_progress = (total > 0) ? (uint8_t)(done * 100U / total) : 0;
 }
 
-/* Post a minimal LOG_SYSTEM entry to Q3. */
+/**
+ * @brief Post a minimal LOG_SYSTEM entry to Q3 with value_a as the OTA stage.
+ *
+ * Value codes (documented in event_logger.h):
+ *   10  boot calibration skipped (NVS recovery, set by T2)
+ *   13  firmware-only fallback commit
+ *   14  OTA firmware-begin
+ *   15  OTA firmware-end / verified
+ *   16  OTA asset-complete
+ *   17  OTA asset-fail
+ *
+ * a.6.35.3 — OTA stage codes were moved from 0..2 to 14..17 to avoid
+ * colliding with T14 status outcomes, T10 STA/NTP markers, and T9 Q3
+ * drop-overflow counts that share the LOG_SYSTEM event_type.
+ */
 static void post_log(int16_t val_a)
 {
     log_entry_t evt = {};
@@ -129,11 +166,15 @@ static void post_log(int16_t val_a)
     log_post(&evt);
 }
 
-/* Worker spawned by reboot_timer_cb. esp_restart() performs WiFi teardown
- * (esp_wifi_stop → 802.11 ioctls → queue_send_wrapper) that consumes several
- * KB of stack — more than the FreeRTOS timer service task's ~2 KB allotment
- * (configTIMER_TASK_STACK_DEPTH). Same carve-off pattern as
- * fw_done_commit_task. */
+/**
+ * @brief Reboot worker task — runs esp_restart() with a proper task stack.
+ *
+ * Spawned by reboot_timer_cb to carry the WiFi teardown out of the
+ * timer-service task context (see file-level "Reboot path" notes).
+ *
+ * @param pv  Unused.
+ * @warning Does not return — esp_restart() reboots the SoC.
+ */
 static void reboot_worker_task(void *pv)
 {
     (void)pv;
@@ -142,8 +183,15 @@ static void reboot_worker_task(void *pv)
     /* unreachable */
 }
 
-/* FreeRTOS timer callback: spawns reboot_worker_task with a 4 KB stack so
- * esp_restart()'s WiFi teardown doesn't blow the timer-service stack. */
+/**
+ * @brief FreeRTOS timer callback — spawns reboot_worker_task with a 4 KB stack.
+ *
+ * Runs in the timer-service task context, which has a small stack
+ * (configTIMER_TASK_STACK_DEPTH) that cannot accommodate esp_restart()'s
+ * WiFi teardown.  If xTaskCreate fails the callback falls back to an
+ * in-timer esp_restart() — last-resort, may overflow but at least reboots
+ * the device so the operator is not stuck in OTA_STATE_REBOOTING.
+ */
 static void reboot_timer_cb(TimerHandle_t xTimer)
 {
     (void)xTimer;
@@ -161,7 +209,20 @@ static void reboot_timer_cb(TimerHandle_t xTimer)
     }
 }
 
-/* Schedule a system restart after delay_ms milliseconds. */
+/**
+ * @brief Schedule a system restart after delay_ms milliseconds.
+ *
+ * Creates a one-shot FreeRTOS software timer with reboot_timer_cb as the
+ * callback; the callback then spawns reboot_worker_task with a 4 KB stack
+ * to perform the actual esp_restart() (rc.1.2 carve-off — see file header).
+ * Sets state to OTA_STATE_REBOOTING for status consumers.
+ *
+ * @param delay_ms  Delay before reboot, in milliseconds.  Typical values are
+ *                  1000 ms (asset-success path) and 3000 ms (firmware-only
+ *                  fallback, gives T9 runway to flush the audit row to SD).
+ * @warning On xTimerCreate failure the function calls esp_restart()
+ *          immediately as a last resort — does not return in that case.
+ */
 static void schedule_reboot(uint32_t delay_ms)
 {
     set_state_locked(OTA_STATE_REBOOTING);
@@ -176,7 +237,8 @@ static void schedule_reboot(uint32_t delay_ms)
     }
 }
 
-/* a.6.34 — firmware-only fallback commit worker.
+/**
+ * @brief Firmware-only fallback commit worker (a.6.34).
  *
  * Spawned as a one-shot task from fw_done_fallback_cb() (the xTimerService
  * callback). The actual commit work — state check, audit log, partition
@@ -185,7 +247,13 @@ static void schedule_reboot(uint32_t delay_ms)
  * required: doing the commit directly in the timer callback produced clean
  * reboots at the correct time but the value_a=13 audit row never reached
  * SD, indicating an SD-write failure in the constrained timer-callback
- * stack/context. */
+ * stack/context.
+ *
+ * @param pv  Unused.
+ * @warning On esp_ota_set_boot_partition() failure the device remains on the
+ *          current bank with state = ERROR — operator must retry the OTA.
+ * @see   fw_done_fallback_cb(), schedule_reboot().
+ */
 static void fw_done_commit_task(void *pv)
 {
     (void)pv;
@@ -240,7 +308,8 @@ static void fw_done_commit_task(void *pv)
     vTaskDelete(NULL);
 }
 
-/* a.6.34 — firmware-only fallback timer callback (lightweight dispatcher).
+/**
+ * @brief Firmware-only fallback timer callback — lightweight dispatcher (a.6.34).
  *
  * Fires FW_DONE_FALLBACK_MS after ota_firmware_end() set state to FW_DONE
  * if no asset upload arrived in the window. Spawns fw_done_commit_task to
@@ -250,7 +319,14 @@ static void fw_done_commit_task(void *pv)
  *
  * Cancellation: ota_assets_begin() stops the timer; if a cancel races with
  * the fire, the spawned task's first action is a state re-check under s_mx
- * and it bails silently if state moved off FW_DONE. */
+ * and it bails silently if state moved off FW_DONE.
+ *
+ * @param xTimer  Unused (the singleton s_fw_done_timer handle).
+ * @note    On xTaskCreate failure the firmware-only commit is skipped for
+ *          this cycle; non-fatal because the operator can re-trigger by
+ *          uploading firmware again.
+ * @see   fw_done_commit_task(), ota_assets_begin().
+ */
 static void fw_done_fallback_cb(TimerHandle_t xTimer)
 {
     (void)xTimer;
@@ -634,10 +710,12 @@ bool ota_is_accepted(void)
 #define ZIP_METHOD_STORE    0
 #define ZIP_METHOD_DEFLATE  8
 
+/** @brief Read 16-bit little-endian unsigned integer from buffer. */
 static inline uint16_t rd16(const uint8_t *p)
 {
     return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
 }
+/** @brief Read 32-bit little-endian unsigned integer from buffer. */
 static inline uint32_t rd32(const uint8_t *p)
 {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8)
@@ -645,9 +723,28 @@ static inline uint32_t rd32(const uint8_t *p)
 }
 
 /**
- * Walk ZIP local file headers sequentially, writing each STORE entry to
- * the specified LittleFS partition.  Returns number of files written (≥0)
- * or -1 on error (error description written to err_buf).
+ * @brief Walk ZIP local file headers sequentially, writing each STORE entry to
+ *        the specified LittleFS partition.
+ *
+ * Stops on the first Central Directory header (0x02014B50) or EOCD record
+ * (0x06054B50).  Skips data-descriptor blocks (0x08074B50).  Rejects any
+ * deflate-compressed (method 8) file entry — the caller must repack with
+ * `zip -0`.
+ *
+ * Directory entries (names ending in '/') are silently skipped — the
+ * function only writes regular files.  Any leading directory component in
+ * a file name is stripped; only the basename is used as the LittleFS path.
+ * Names longer than 62 bytes are truncated to fit the 64-byte path buffer
+ * (including the leading '/' and NUL terminator).
+ *
+ * @param  buf      Pointer to the PSRAM-buffered ZIP archive.
+ * @param  buf_len  Total ZIP length in bytes.
+ * @param  part     Target LittleFS partition (LFS_PARTITION_A or
+ *                  LFS_PARTITION_B) — must already be mounted.
+ * @param  err_buf  Caller-owned buffer for a human-readable error message on
+ *                  failure; populated only when the return value is -1.
+ * @param  err_len  Capacity of err_buf in bytes.
+ * @return Non-negative count of files written on success, or -1 on error.
  */
 static int extract_zip_store(const uint8_t *buf, size_t buf_len,
                               lfs_partition_t part,

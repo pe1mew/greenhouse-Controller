@@ -19,6 +19,22 @@
  * certificate validation disabled (setInsecure) — see the impact analysis
  * for the trade-off.
  *
+ * ## Subsystem ownership
+ *  - **Reads**: `dm_cfg_snapshot()` once per cycle; `dm_status_snapshot()`
+ *    when a status POST is due; SD CSV files via `storage_sd_read()` during
+ *    log upload (streamed in 4 KB chunks).
+ *  - **Writes**: HTTPS POSTs to `cfg.status_url` (status + log endpoints);
+ *    Q3 via `log_post()` (LOG_SYSTEM rows for outcome accounting);
+ *    `dm_set_log_last_up()` on successful log upload (gh#25 dedup latch);
+ *    module-private `s_last_str` / `s_last_log_str` strings rendered by the
+ *    web GUI and LCD.
+ *  - **Task-notify consumer**: `T14_NOTIFY_LOG_ROTATED` (from T9 on CSV
+ *    rotation), `T14_NOTIFY_CFG_CHANGED` (from `dm_reload_web_cfg()` after
+ *    `/api/web` POST).
+ *
+ * @see status_json.h          (shared canonical JSON builder)
+ * @see status_post_supervisor.h (T15 — wedge/leak/respawn-storm watchdog)
+ *
  * @author Greenhouse Controller project
  */
 
@@ -63,7 +79,14 @@ extern "C" {
 
 /**
  * @brief T14 task entry. Spawned by main.cpp on Core 0 at TASK_PRIO_LOW.
+ *
+ * Loops forever; sleeps via `xTaskNotifyWait` with a 1 s cycle timeout
+ * (`CYCLE_WAIT_MS`) or the 60 s idle re-check when disabled. The notify
+ * mask consumes both `T14_NOTIFY_LOG_ROTATED` and `T14_NOTIFY_CFG_CHANGED`
+ * atomically.
+ *
  * @param pvParameters Unused; pass NULL.
+ * @see   T14_NOTIFY_LOG_ROTATED, T14_NOTIFY_CFG_CHANGED
  */
 void task_status_post(void *pvParameters);
 
@@ -76,7 +99,10 @@ void task_status_post(void *pvParameters);
  *   ""                          (no attempt yet this boot)
  *
  * @param buf  Destination buffer.
- * @param cap  Capacity of @p buf in bytes.
+ * @param cap  Capacity of @p buf in bytes (NUL is always written if cap > 0).
+ * @note  Safe to call from any task — copies the module's snapshot string
+ *        without locking; the writer is single-threaded (T14 itself) and
+ *        a torn read produces at worst a partial timestamp.
  */
 void status_post_last_str(char *buf, size_t cap);
 
@@ -85,6 +111,10 @@ void status_post_last_str(char *buf, size_t cap);
  *
  * Same shape as status_post_last_str(), but for the periodic log upload
  * (Phase E). Returns an empty string until Phase E is wired up.
+ *
+ * @param buf  Destination buffer.
+ * @param cap  Capacity of @p buf in bytes (NUL is always written if cap > 0).
+ * @see   status_post_last_str()
  */
 void status_post_last_log_str(char *buf, size_t cap);
 

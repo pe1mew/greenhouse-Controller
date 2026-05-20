@@ -1,25 +1,48 @@
 /**
  * @file fg6485a.h
- * @brief FG6485A Humidity and Temperature Transmitter driver — types and API.
+ * @brief FG6485A Humidity and Temperature Transmitter driver — LIB-FG.
  *
- * Thin driver over LIB-6 (modbus_rtu) for the ASAIR FG6485A RS485 Modbus
- * temperature/humidity sensor.  Provides:
+ * Thin driver over LIB-6 (modbus_rtu) for the ASAIR FG6485A RS-485 Modbus
+ * temperature/humidity sensor used inside the greenhouse.  Provides:
  *   - Measurement reads  (FC03, registers 0x0000–0x0001)
  *   - Device info reads  (FC03, registers 0x0008–0x000B)
  *   - Alarm config read/write (FC03/FC16, registers 0x000C–0x0013)
  *   - Correction writes  (FC16, registers 0x001D–0x001E)
  *   - A FreeRTOS periodic polling task
  *
- * Prerequisites:
- *   Call modbus_init() (from modbus_rtu.h) once before using any function
- *   in this driver.
+ * ## Hardware
+ *   - Sensor      : ASAIR FG6485A integrated T/RH transmitter (epoxy probe).
+ *   - Bus         : Modbus RTU over RS-485 (UART1 + SIT65HVD08P, see LIB-6).
+ *   - Wiring      : A/B differential pair to the SIT65HVD08P; DE/RE is driven
+ *                   by LIB-1 @ref gpio_set_rs485_direction() during each
+ *                   transaction.  See @c PIN_RS485_* in @c pin_config.h.
+ *   - Temperature : -40 to 120 °C, ±0.3 °C, resolution 0.1 °C.
+ *   - Humidity    : 0 to 99.9 %RH, ±3 %RH, resolution 0.1 %RH.
+ *   - Comm spec   : 9600 baud, 8N1 (matches @ref MODBUS_BAUD).
+ *   - Encoding    : raw register values are the engineering value × 10
+ *                   (signed int16 for temperature, unsigned uint16 for RH).
+ *   - Slave addr  : 1–255, set via the 8-position DIP switch on the PCB.
  *
- * Sensor specifications (from FG6485A datasheet v1.0):
- *   - Temperature range  : -40 to 120 °C,  accuracy ±0.3 °C, resolution 0.1 °C
- *   - Humidity range     : 0 to 99.9 %RH,  accuracy ±3 %RH,  resolution 0.1 %RH
- *   - Communication      : Modbus RTU, 9600 baud, 8N1, RS-485
- *   - Raw register values: integer × 10 of the actual engineering value
- *   - Slave address      : 1–255, set via 8-position DIP switch on PCB
+ * ## API summary
+ *   - @ref fg6485a_read_measurements   T/RH instantaneous read.
+ *   - @ref fg6485a_read_info           Device type / FW version / ID read.
+ *   - @ref fg6485a_read_all            Combined T/RH + info read.
+ *   - @ref fg6485a_read_alarm_config   Read on-device alarm thresholds.
+ *   - @ref fg6485a_write_alarm_config  Write on-device alarm thresholds.
+ *   - @ref fg6485a_write_temp_correction   Apply a permanent T offset.
+ *   - @ref fg6485a_write_humidity_correction  Apply a permanent RH offset.
+ *   - @ref fg6485a_task                FreeRTOS periodic-poll task.
+ *
+ * ## Thread safety
+ *   No internal mutex — LIB-6 (modBus) serialises all UART traffic at the
+ *   transceiver level, so two threads each calling this driver will not
+ *   collide on the wire.  However, the per-call output structs (@p out)
+ *   are written by the calling thread only; if a shared buffer is updated
+ *   by @ref fg6485a_task, callers must hold the @c task_param.mutex when
+ *   reading it.
+ *
+ * Prerequisites:
+ *   Call @c modbus_init() (LIB-6) once before any function in this driver.
  *
  * @author Greenhouse Controller project
  * @version 0.1.0
@@ -217,8 +240,14 @@ typedef struct {
  * divided by 10 before storing in @p out.
  *
  * @param slave_addr  Modbus slave address of the sensor (1–255).
- * @param out         Caller-supplied @ref fg6485a_measurement_t to fill.
- * @return @ref FG6485A_OK, @ref FG6485A_ERR_COMM, or @ref FG6485A_ERR_PARAM.
+ * @param out         Caller-supplied @ref fg6485a_measurement_t to fill
+ *                    (must not be NULL).
+ * @return @ref FG6485A_OK on success, @ref FG6485A_ERR_COMM on bus error
+ *         (CRC / timeout / Modbus exception), @ref FG6485A_ERR_PARAM if
+ *         @p out is NULL or @p slave_addr is 0 (broadcast).
+ * @note   Temperature is signed; values below −40 °C or above 120 °C should
+ *         be treated as faulty hardware by the caller.
+ * @see    fg6485a_read_all() — combined T/RH + device-info convenience read.
  */
 fg6485a_status_t fg6485a_read_measurements(uint8_t slave_addr,
                                             fg6485a_measurement_t *out);
@@ -271,7 +300,11 @@ fg6485a_status_t fg6485a_read_alarm_config(uint8_t slave_addr,
  *
  * @param slave_addr  Modbus slave address of the sensor.
  * @param cfg         Alarm configuration to write (must not be NULL).
- * @return @ref FG6485A_OK, @ref FG6485A_ERR_COMM, or @ref FG6485A_ERR_PARAM.
+ * @return @ref FG6485A_OK on success, @ref FG6485A_ERR_COMM on bus error,
+ *         @ref FG6485A_ERR_PARAM if @p cfg is NULL or @p slave_addr is 0.
+ * @note   The FG6485A persists alarm thresholds in its own non-volatile
+ *         memory; the values survive sensor power-cycles.
+ * @warning Out-of-range thresholds are silently clamped by the device.
  */
 fg6485a_status_t fg6485a_write_alarm_config(uint8_t                       slave_addr,
                                              const fg6485a_alarm_config_t *cfg);
@@ -279,9 +312,15 @@ fg6485a_status_t fg6485a_write_alarm_config(uint8_t                       slave_
 /**
  * @brief Write a temperature correction offset to register 0x001D.
  *
+ * The offset is applied by the sensor internally; subsequent
+ * @ref fg6485a_read_measurements calls report the corrected value.
+ *
  * @param slave_addr    Modbus slave address of the sensor.
  * @param correction_c  Offset in °C (multiplied by 10 and written as int16).
  * @return @ref FG6485A_OK, @ref FG6485A_ERR_COMM, or @ref FG6485A_ERR_PARAM.
+ * @warning The correction is persisted in the sensor's NVRAM and applies to
+ *          all future reads.  Apply only after a reference-instrument
+ *          calibration.
  */
 fg6485a_status_t fg6485a_write_temp_correction(uint8_t slave_addr,
                                                 float   correction_c);
@@ -289,9 +328,14 @@ fg6485a_status_t fg6485a_write_temp_correction(uint8_t slave_addr,
 /**
  * @brief Write a humidity correction offset to register 0x001E.
  *
+ * The offset is applied by the sensor internally; subsequent
+ * @ref fg6485a_read_measurements calls report the corrected value.
+ *
  * @param slave_addr      Modbus slave address of the sensor.
  * @param correction_pct  Offset in %RH (multiplied by 10 and written as int16).
  * @return @ref FG6485A_OK, @ref FG6485A_ERR_COMM, or @ref FG6485A_ERR_PARAM.
+ * @warning The correction is persisted in the sensor's NVRAM and applies to
+ *          all future reads.
  */
 fg6485a_status_t fg6485a_write_humidity_correction(uint8_t slave_addr,
                                                     float   correction_pct);
@@ -310,6 +354,10 @@ fg6485a_status_t fg6485a_write_humidity_correction(uint8_t slave_addr,
  *   - Core  : APP_CPU_NUM (core 1) to keep PRO_CPU free for comms
  *
  * @param pvParameters  Pointer to @ref fg6485a_task_param_t (must not be NULL).
+ * @warning Lifetime of the @ref fg6485a_task_param_t referenced by
+ *          @p pvParameters must outlive the task (use static storage or
+ *          a long-lived heap allocation).
+ * @see    fg6485a_read_measurements(), fg6485a_task_param_t.
  */
 void fg6485a_task(void *pvParameters);
 #endif /* NATIVE_TEST */

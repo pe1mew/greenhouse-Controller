@@ -5,6 +5,12 @@
  * Reads the WiFi-STA factory MAC via `esp_read_mac()` (works before WiFi is
  * initialised, unlike `WiFi.macAddress()` which requires the stack to be up).
  * Caches the result in a static so subsequent calls are O(1).
+ *
+ * Thread safety: the cache is lazy-initialised on first call. Subsequent
+ * loads of `s_cached` are aligned 16-bit reads, racy-but-safe — the same
+ * value would be computed on a concurrent first-call race.
+ *
+ * @author Greenhouse Controller project
  */
 
 #include "system_id.h"
@@ -12,18 +18,28 @@
 #include <esp_mac.h>      /* esp_read_mac, ESP_MAC_WIFI_STA */
 #include <stdio.h>
 
+/** @brief Cached 16-bit unit ID — set once by `load_unit_id()` then immutable. */
 static uint16_t s_cached  = 0u;
+/** @brief First-call gate for `load_unit_id()` so the eFuse read happens once. */
 static bool     s_inited  = false;
 
+/**
+ * @brief Lazy-load the unit ID from the WiFi-STA factory MAC.
+ *
+ * No-op after the first successful call. Reads bytes 4 and 5 of the
+ * eFuse-burned MAC; high byte is `mac[4]`, low byte is `mac[5]`.
+ *
+ * @note ESP_MAC_WIFI_STA matches what `WiFi.macAddress()` returns later —
+ *       keeping the two values aligned means the on-AP SSID
+ *       (`Greenhouse-XXXX`) and the on-log unit ID are always the same
+ *       four hex chars.
+ */
 static void load_unit_id(void)
 {
     if (s_inited) {
         return;
     }
     uint8_t mac[6] = {0};
-    /* ESP_MAC_WIFI_STA matches what WiFi.macAddress() returns later — keeping
-     * the two values aligned means the on-AP SSID and the on-log unit ID are
-     * always the same four hex chars. */
     (void)esp_read_mac(mac, ESP_MAC_WIFI_STA);
     s_cached = ((uint16_t)mac[4] << 8) | (uint16_t)mac[5];
     s_inited = true;

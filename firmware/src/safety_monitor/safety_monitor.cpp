@@ -5,11 +5,13 @@
  * Wind safety evaluation: speed threshold and direction exclusion zone.
  * Issues CMD_CLOSE_ALL / CMD_RESUME to Q1.  Maintains EG1.WIND_OVERRIDE.
  *
+ * See safety_monitor.h for the queue-table and the Q3 log-event mapping.
+ *
  * ## Implementation notes
  *
  *  1. T4 sends TN1 as `xTaskNotify(task_t3, 1u, eSetBits)`.  T3 receives
- *     it with `ulTaskNotifyTake(pdTRUE, portMAX_DELAY)` which treats the
- *     value as a binary count: non-zero → wake + clear.  Rapid back-to-back
+ *     it with `ulTaskNotifyTake(pdTRUE, …)` which treats the value as a
+ *     binary count: non-zero → wake + clear.  Rapid back-to-back
  *     notifications merge safely; T3 always reads the latest data from T4.
  *
  *  2. Q1 posts use timeout 0 (non-blocking) per design — T3 must never block
@@ -23,6 +25,11 @@
  *  4. MOTOR_ALARM: T3 evaluates normally and posts to Q1.  T2 discards Q1
  *     commands while EG1.MOTOR_ALARM is set; EG1.WIND_OVERRIDE is maintained
  *     correctly by T3 regardless.
+ *
+ *  5. WDT subscription (gh#13, since 1.17.29): T3 is safety-critical.  The
+ *     ulTaskNotifyTake uses a 2 s timeout instead of portMAX_DELAY so the
+ *     task can kick the WDT even when no new sensor reading has arrived
+ *     (a stuck T4 would otherwise wedge T3 silently).
  *
  * @author  Greenhouse Controller project
  */
@@ -42,16 +49,27 @@ static const char *TAG = "T3_WIND";
 
 /* -----------------------------------------------------------------------
  * Direction exclusion zone check
+ * ----------------------------------------------------------------------- */
+
+/**
+ * @brief Test whether a wind direction falls inside the configured exclusion arc.
  *
- * Returns true if dir_deg falls inside the configured [excl_low, excl_high]
- * arc on the 0–359° circle.
+ * Returns true if dir_deg falls inside the [excl_low, excl_high] arc on the
+ * 0–359° circle.
  *
  * Wrap-through-0° is handled when excl_low > excl_high:
  *   e.g. excl_low=330, excl_high=30  →  zone covers 330°–359° ∪ 0°–30°
  *
  * Zero-width zone (excl_low == excl_high) → disabled; returns false.
  * Negative bound (unset / invalid)        → disabled; returns false.
- * ----------------------------------------------------------------------- */
+ *
+ * @param  dir_deg    Current averaged wind direction, 0–359°.
+ * @param  excl_low   Low bound of the exclusion arc (degrees, signed so the
+ *                    "disabled / unset" sentinel −1 round-trips).
+ * @param  excl_high  High bound of the exclusion arc.
+ * @return true if dir_deg is inside the active exclusion arc; false if the
+ *         zone is disabled or dir_deg lies outside.
+ */
 static bool dir_in_exclusion_zone(uint16_t dir_deg,
                                   int16_t  excl_low,
                                   int16_t  excl_high)
@@ -72,6 +90,20 @@ static bool dir_in_exclusion_zone(uint16_t dir_deg,
 /* -----------------------------------------------------------------------
  * Convenience: build a LOG_ALARM event_t from T3
  * ----------------------------------------------------------------------- */
+
+/**
+ * @brief Build a LOG_ALARM log_event_t pre-populated for T3 wind events.
+ *
+ * Sets event_type=LOG_ALARM, initiator=LOG_BY_SYSTEM, channel=0,
+ * param_id=LOG_PARAM_NONE.  Caller supplies the timestamp and the two
+ * payload fields whose meaning per condition is documented in the table
+ * in safety_monitor.h.
+ *
+ * @param  ts  Unix timestamp (seconds) at which the event occurred.
+ * @param  va  First payload (value_a) — meaning per onset/clearance kind.
+ * @param  vb  Second payload (value_b) — meaning per onset/clearance kind.
+ * @return Populated log_event_t ready for log_post().
+ */
 static log_event_t make_wind_log(uint32_t ts, int16_t va, int16_t vb)
 {
     log_event_t e;
@@ -88,6 +120,29 @@ static log_event_t make_wind_log(uint32_t ts, int16_t va, int16_t vb)
 /* -----------------------------------------------------------------------
  * T3 task
  * ----------------------------------------------------------------------- */
+
+/**
+ * @brief T3 task body — wind safety state machine.
+ *
+ * Loop structure:
+ *  1. Kick the task WDT.
+ *  2. Block on TN1 with a 2 s timeout (continue + re-kick if it expires).
+ *  3. Snapshot the latest sensor + cfg state from T4.
+ *  4. Short-circuit if wind protection is disabled (clear any stale override).
+ *  5. Evaluate speed-unsafe / dir-unsafe; safe-fail to "unsafe" on
+ *     EG1_BIT_SENSOR_FAULT_W.
+ *  6. Drive the safe ↔ unsafe transition: set/clear EG1_BIT_WIND_OVERRIDE,
+ *     post CMD_CLOSE_ALL or CMD_RESUME to Q1, log LOG_ALARM to Q3.
+ *
+ * `alarm_active` is a task-local mirror of EG1_BIT_WIND_OVERRIDE used to
+ * detect transitions cheaply without re-reading the event group every
+ * iteration.
+ *
+ * @param  pvParameters  Unused; pass NULL.
+ * @warning Subscribes to the task WDT; the 2 s notify timeout is required
+ *          for WDT progress when no new sensor reading is available.  Do
+ *          not increase it without re-tuning the WDT timeout window.
+ */
 void task_safety_monitor(void *pvParameters)
 {
     (void)pvParameters;

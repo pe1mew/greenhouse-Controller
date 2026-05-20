@@ -91,53 +91,77 @@ static const char *TAG = "T9_LOG";
 /* -----------------------------------------------------------------------
  * SD rotation parameters
  * ----------------------------------------------------------------------- */
-/** Rotate to a new file when the current one reaches this many bytes. */
+
+/** @brief Rotate to a new file when the current one reaches this many bytes (512 KB). */
 #define SD_ROTATE_BYTES    (512UL * 1024UL)
 
-/** Maximum number of log files retained on the SD card. */
+/** @brief Maximum number of log files retained on the SD card before the oldest is deleted on rotation. */
 #define SD_MAX_FILES       10u
 
-/** Minimum number of files to retain; never delete below this floor. */
+/** @brief Minimum number of files to retain; never delete below this floor (3 files). */
 #define SD_MIN_FILES       3u
 
-/** Suspend (or reclaim) when free space drops below this many bytes. */
+/** @brief Suspend SD logging (or proactively reclaim) when free space drops below this many bytes (2 MB). */
 #define SD_FREE_MIN_BYTES  (2UL * 1024UL * 1024UL)
 
 /**
- * Length of an SD filename string including leading '/' and NUL.
+ * @brief Length of an SD filename string including leading '/' and NUL.
+ *
  * "/YYYYMMDDHHMMSS.csv" = 19 printable chars + '\0' = 20.  24 gives margin.
  */
 #define SD_FILENAME_LEN    24
 
 /**
- * Length of the name-only part (no leading '/') including NUL.
+ * @brief Length of the name-only part (no leading '/') including NUL.
+ *
  * "YYYYMMDDHHMMSS.csv" = 18 chars + '\0' = 19.  20 gives margin.
  */
 #define SD_NAME_ONLY_LEN   20
 
-/** CSV header line written at the start of every new log file. */
+/** @brief CSV header line written at the start of every new log file. */
 #define CSV_HEADER  "timestamp,type,initiator,ch,param,value_a,value_b\n"
 
 /* -----------------------------------------------------------------------
  * Module state
  * ----------------------------------------------------------------------- */
-static bool s_sd_ok = false;                    /**< true iff SD logging is active */
-static char s_cur_filename[SD_FILENAME_LEN];    /**< active file, with leading '/' */
+
+/** @brief true iff SD logging is active (card mounted, current file open). */
+static bool s_sd_ok = false;
+
+/** @brief Active SD log filename including the leading '/' (e.g. "/20260507143022.csv"). */
+static char s_cur_filename[SD_FILENAME_LEN];
 
 /**
- * Most recently *rotated-away* CSV filename (no leading '/'). Empty until
- * the first rotation of the boot. Read by T14's upload-on-rotation path
- * via event_logger_last_rotated(); written by rotate_sd_file() under
- * s_closed_mux. Thread-safety: short critical section copying a small
- * fixed-size string.
+ * @brief Spinlock guarding @ref s_last_closed.
+ *
+ * Held only for the brief moment of copying a fixed-size filename buffer in
+ * or out of static storage.
  */
 static portMUX_TYPE s_closed_mux = portMUX_INITIALIZER_UNLOCKED;
+
+/**
+ * @brief Most recently *rotated-away* CSV filename (no leading '/').
+ *
+ * Empty until the first rotation of the boot. Read by T14's
+ * upload-on-rotation path via event_logger_last_rotated(); written by
+ * rotate_sd_file() under @ref s_closed_mux. Thread-safety: short critical
+ * section copying a small fixed-size string.
+ */
 static char s_last_closed[SD_NAME_ONLY_LEN] = {};
 
 /* -----------------------------------------------------------------------
  * Drop counter — tracks events lost due to Q3 overflow
  * ----------------------------------------------------------------------- */
+
+/** @brief Spinlock protecting @ref g_q3_dropped against concurrent producers. */
 static portMUX_TYPE      g_drop_mux   = portMUX_INITIALIZER_UNLOCKED;
+
+/**
+ * @brief Cumulative count of Q3 events dropped since the last drain pass.
+ *
+ * Incremented by log_post() in the eviction path and the rare retry-fail
+ * path; read and cleared atomically by log_take_dropped_count().
+ */
 static volatile uint32_t g_q3_dropped = 0;
 
 /* -----------------------------------------------------------------------
@@ -148,11 +172,19 @@ static volatile uint32_t g_q3_dropped = 0;
  * back via event_logger_force_rotate() until the flag clears or its
  * timeout expires.
  * ----------------------------------------------------------------------- */
+
+/** @brief Spinlock guarding @ref s_force_rotate_req across T14/T9. */
 static portMUX_TYPE      s_rotate_mux = portMUX_INITIALIZER_UNLOCKED;
+
+/** @brief Force-rotate hand-off flag; raised by T14, cleared by T9 after rotate_sd_file(). */
 static volatile bool     s_force_rotate_req = false;
 
 /* -----------------------------------------------------------------------
  * log_post() — single entry point for all Q3 producers
+ *
+ * Implements the two-step evict-and-retry pattern documented in
+ * event_logger.h. The fast path is a single non-blocking xQueueSend; the
+ * slow path evicts the oldest entry, counts the drop, and retries once.
  * ----------------------------------------------------------------------- */
 
 void log_post(const log_event_t *evt)
@@ -176,7 +208,8 @@ void log_post(const log_event_t *evt)
 }
 
 /* -----------------------------------------------------------------------
- * log_take_dropped_count()
+ * log_take_dropped_count() — read-and-reset under spinlock; see header
+ * for the calling convention (T9 only, once per drain pass).
  * ----------------------------------------------------------------------- */
 
 uint32_t log_take_dropped_count(void)
@@ -199,6 +232,9 @@ uint32_t log_take_dropped_count(void)
  * (total 18 characters, e.g. "20250607143022.csv").  Files with any other
  * naming pattern — including old sequential-index files (`ghc_NNNN.csv`) —
  * are silently skipped by all scan operations.
+ *
+ * @param  name  Bare filename (no leading '/'). May be NULL.
+ * @return true if @p name is exactly 14 digits + ".csv"; false otherwise.
  */
 static bool is_ts_filename(const char *name)
 {
@@ -212,9 +248,17 @@ static bool is_ts_filename(const char *name)
 /**
  * @brief Create an SD filename from the current local time.
  *
- * Produces a path of the form "/YYYYMMDDHHMMSS.csv" in @p buf.
- * Local time is used so that filenames are human-readable without
- * timezone conversion when browsing the card directly.
+ * Produces a path of the form "/YYYYMMDDHHMMSS.csv" in @p buf.  Local time
+ * is used so that filenames are human-readable without timezone conversion
+ * when browsing the card directly.  T10 keeps the POSIX TZ environment
+ * variable up to date from `cfg.tz_str`, so localtime_r() honours the
+ * configured zone.
+ *
+ * @param  buf  Destination buffer; populated with a NUL-terminated path.
+ * @param  len  Capacity of @p buf in bytes; 24 is sufficient.
+ *
+ * @note Calls dm_get_unix_time() (T4 helper); safe before NTP sync because
+ *       the RTC is seeded from NVS at boot.
  */
 static void make_ts_filename(char *buf, size_t len)
 {
@@ -271,6 +315,9 @@ static bool sd_scan(char *list_buf, size_t list_len)
 
 /**
  * @brief Count the comma-separated entries in a scan list.
+ *
+ * @param  list  Output of sd_scan(); empty string returns 0.
+ * @return Number of comma-separated tokens.
  */
 static uint32_t scan_count(const char *list)
 {
@@ -321,7 +368,13 @@ static bool scan_find(const char *list, bool find_max,
 
 /**
  * @brief Delete the lexicographically oldest timestamp CSV file on the SD card.
- * @return true on success.
+ *
+ * Used by both check_free_space() (proactive reclaim) and write_to_sd()
+ * (reactive reclaim on STORAGE_ERR_FULL). Skips non-timestamp files via the
+ * is_ts_filename() filter inside sd_scan().
+ *
+ * @return true on successful deletion; false if no candidates were found
+ *         or the underlying storage_sd_delete() call failed.
  */
 static bool delete_oldest(void)
 {
@@ -339,9 +392,15 @@ static bool delete_oldest(void)
 }
 
 /**
- * @brief Check free space; if below SD_FREE_MIN_BYTES, delete the oldest
- *        file to reclaim space.  If already at SD_MIN_FILES floor and still
- *        low, suspend SD logging (s_sd_ok = false) and emit a LOG_SYSTEM event.
+ * @brief Enforce the free-space guard rail after a rotation.
+ *
+ * If `storage_sd_free_bytes()` is below SD_FREE_MIN_BYTES, deletes the
+ * lex-oldest file to reclaim space.  If the file count is already at the
+ * SD_MIN_FILES retention floor and free space is still low, suspends SD
+ * logging (clears @ref s_sd_ok) and emits a LOG_SYSTEM event with
+ * `value_a = -2` so the suspension is visible to operators.
+ *
+ * @note No-op when SD has plenty of free space (the common case).
  */
 static void check_free_space(void)
 {
@@ -375,6 +434,10 @@ static void check_free_space(void)
 
 /**
  * @brief Return a short ASCII name for a log_type_t value.
+ *
+ * @param  t  Raw event_type byte from a log_event_t.
+ * @return Static string ("SENSOR", "RELAY", "MODE", ...). Unknown values
+ *         return "UNKNWN" so the CSV line is never malformed.
  */
 static const char *evt_type_str(uint8_t t)
 {
@@ -392,6 +455,10 @@ static const char *evt_type_str(uint8_t t)
 
 /**
  * @brief Return a short ASCII name for a log_initiator_t value.
+ *
+ * @param  i  Raw initiator byte from a log_event_t.
+ * @return Static string ("SYS", "FARMER", "ADMIN", "MQTT", "WEB").
+ *         Unknown values return "UNK".
  */
 static const char *initiator_str(uint8_t i)
 {
@@ -444,10 +511,27 @@ static void build_csv_line(const log_event_t *evt, char *buf, size_t len)
 /**
  * @brief Advance to the next SD log file.
  *
- * Creates a new file named with the current UTC timestamp, writes the CSV
- * header, and deletes the lexicographically oldest timestamp file if the
- * total count now exceeds SD_MAX_FILES.  Calls check_free_space() after
- * the rotation.
+ * Sequence:
+ *  -# Captures the bare name of the soon-to-be-closed file in
+ *     @ref s_last_closed (under @ref s_closed_mux) so T14 can find it.
+ *  -# Generates a new timestamp filename via make_ts_filename().
+ *  -# Writes the CSV header (CSV_HEADER) to the new file.
+ *  -# Writes the unit-id preamble row (gh#17) — a LOG_SYSTEM value_a=11
+ *     event with `value_b = system_unit_id_u16()` — so every downloaded
+ *     CSV is self-identifying.
+ *  -# If the file count now exceeds SD_MAX_FILES, deletes the
+ *     lexicographically oldest timestamp file.
+ *  -# Calls check_free_space() to enforce the SD_FREE_MIN_BYTES guard.
+ *  -# Notifies T14 (@ref task_t14) via xTaskNotify(T14_NOTIFY_LOG_ROTATED)
+ *     so the upload-on-rotation path can consider the just-closed file.
+ *
+ * @note If the header write fails, @ref s_sd_ok is cleared and SD logging
+ *       is suspended; the failure also surfaces through write_to_sd()'s
+ *       subsequent attempts.
+ * @note NULL-safe with respect to @ref task_t14 — early-boot rotations
+ *       before T14 is spawned skip the notification.
+ * @see  event_logger_force_rotate
+ * @see  event_logger_last_rotated
  */
 static void rotate_sd_file(void)
 {
@@ -532,9 +616,15 @@ static void rotate_sd_file(void)
 /**
  * @brief Write one event as a CSV line to the current SD file.
  *
- * On STORAGE_ERR_FULL, attempts to delete the oldest log file and retry
- * the write before falling back to NVS-only mode.  Rotates to a new file
- * when the 512 KB threshold is reached.
+ * On STORAGE_ERR_FULL or STORAGE_ERR_IO, attempts to delete the oldest log
+ * file and retry the write before falling back to NVS-only mode (clears
+ * @ref s_sd_ok and emits a LOG_SYSTEM event with `value_a = -1`).  When the
+ * post-write file size reaches SD_ROTATE_BYTES, calls rotate_sd_file().
+ *
+ * @param  evt  Event to format and append. Must not be NULL.
+ *
+ * @note The retry-on-full path is bounded: a single oldest-file deletion
+ *       per write attempt, no retry on a second failure.
  */
 static void write_to_sd(const log_event_t *evt)
 {
@@ -583,6 +673,8 @@ static void write_to_sd(const log_event_t *evt)
  * call that lived here is gone. Events are now SD-only; if SD is absent or
  * the mount has failed, the event is dropped (and counted via the existing
  * `s_dropped` accumulator surfaced as a LOG_SYSTEM post on the next drain).
+ *
+ * @param  evt  Event to process. Must not be NULL.
  */
 static void process_event(const log_event_t *evt)
 {
@@ -596,12 +688,14 @@ static void process_event(const log_event_t *evt)
  * ======================================================================= */
 
 /**
- * @brief Scan the SD card for timestamp log files and set s_cur_filename.
+ * @brief Scan the SD card for timestamp log files and set @ref s_cur_filename.
  *
  * Resumes the most recent (lexicographically largest) file if its size is
- * below SD_ROTATE_BYTES.  Creates a new timestamp file otherwise.
+ * below SD_ROTATE_BYTES.  Creates a new timestamp file (with CSV header)
+ * otherwise.  Shared between T9 startup and event_logger_sd_remount().
  *
- * @return true if s_cur_filename now points to a usable file.
+ * @return true if @ref s_cur_filename now points to a usable file; false
+ *         if file creation failed (header write error).
  */
 static bool sd_open_active_file(void)
 {
@@ -637,6 +731,13 @@ static bool sd_open_active_file(void)
  * SD mount / unmount helpers — called by T11 web-server endpoints
  * ======================================================================= */
 
+/**
+ * @brief Attempt to mount the SD card and re-enable SD logging in T9.
+ *
+ * See event_logger.h for the full description. Belt-and-braces total-bytes
+ * check (gh#14) guards against drivers that report mount success on an
+ * effectively absent card.
+ */
 bool event_logger_sd_remount(void)
 {
     if (s_sd_ok) return true;
@@ -669,6 +770,12 @@ bool event_logger_sd_remount(void)
     return true;
 }
 
+/**
+ * @brief Stop SD logging in T9 and unmount the SD card.
+ *
+ * See event_logger.h. Clears @ref s_sd_ok first so T9 will not race on a
+ * card that is being torn down.
+ */
 void event_logger_sd_unmount(void)
 {
     s_sd_ok = false;
@@ -683,6 +790,18 @@ void event_logger_sd_unmount(void)
  * returns. See event_logger.h for the rationale (T13 fallback audit row).
  * ======================================================================= */
 
+/**
+ * @brief Synchronously write a LOG_SYSTEM event row to the current SD file.
+ *
+ * Full rationale in event_logger.h. Bypasses Q3 / T9 entirely so that the
+ * row reaches the SD card before the caller returns — required when a
+ * subsequent esp_restart() would otherwise cut off T9 before it drains.
+ *
+ * @param  value_a  Subtype encoding from the LOG_SYSTEM value_a table.
+ * @param  value_b  Subtype payload (count, id, sub-code; depends on value_a).
+ * @return true if the row was appended; false if SD is unmounted or the
+ *         write failed.
+ */
 bool event_logger_post_sync(int16_t value_a, int16_t value_b)
 {
     if (!s_sd_ok || s_cur_filename[0] == '\0') {
@@ -706,6 +825,11 @@ bool event_logger_post_sync(int16_t value_a, int16_t value_b)
  * Public — rotation-tracking helpers (T14)
  * ======================================================================= */
 
+/**
+ * @brief Return the most recently rotated-away CSV filename to T14.
+ *
+ * Reads @ref s_last_closed under @ref s_closed_mux. See event_logger.h.
+ */
 bool event_logger_last_rotated(char *out, size_t cap)
 {
     if (out == NULL || cap == 0u) { return false; }
@@ -718,6 +842,19 @@ bool event_logger_last_rotated(char *out, size_t cap)
     return out[0] != '\0';
 }
 
+/**
+ * @brief Force T9 to rotate the active SD log file (T14 daily-upload path).
+ *
+ * Raises @ref s_force_rotate_req under @ref s_rotate_mux, posts a synthetic
+ * LOG_SYSTEM(value_a=6) marker via log_post() to (a) wake T9 from
+ * `xQueueReceive(portMAX_DELAY)` and (b) leave a "why was this file closed?"
+ * trail in the outgoing file, then polls every 100 ms until T9 clears the
+ * flag or @p timeout_ms elapses.
+ *
+ * @note On timeout the request flag is intentionally left set — T9 will
+ *       still rotate when it next gets CPU time; the caller simply did not
+ *       observe completion in its budget.
+ */
 bool event_logger_force_rotate(uint32_t timeout_ms)
 {
     /* Refuse early if SD logging is currently inactive: rotation has no
@@ -762,6 +899,13 @@ bool event_logger_force_rotate(uint32_t timeout_ms)
     }
 }
 
+/**
+ * @brief Return the lex-newest closed (non-active) CSV name on SD.
+ *
+ * Used by T14 daily-fallback when no rotation occurred this boot. Falls back
+ * to @ref s_last_closed if the SD scan finds no candidate. Full contract in
+ * event_logger.h.
+ */
 bool event_logger_newest_closed(char *out, size_t cap)
 {
     if (out == NULL || cap == 0u) { return false; }
@@ -809,17 +953,25 @@ bool event_logger_newest_closed(char *out, size_t cap)
     return true;
 }
 
-/* -----------------------------------------------------------------------
- * event_logger_next_pending — a.6.35.2 multi-file upload helper
+/**
+ * @brief Return the smallest closed CSV name strictly greater than @p after.
  *
- * Scans the SD card and returns the lex-smallest closed CSV whose name is
- * strictly greater than @p after. T14's upload_pending walks this in a loop,
- * advancing `after` to each successful upload, so a backlog of missed files
- * (e.g. WiFi outage that spanned a rotation) gets drained in chronological
- * order on the next trigger. Closed-file enumeration is identical to
- * event_logger_newest_closed (same sd_scan() + active-file exclusion);
+ * a.6.35.2 multi-file upload helper. Scans the SD card and returns the
+ * lex-smallest closed CSV whose name is strictly greater than @p after.
+ * T14's upload_pending walks this in a loop, advancing `after` to each
+ * successful upload, so a backlog of missed files (e.g. WiFi outage that
+ * spanned a rotation) gets drained in chronological order on the next
+ * trigger. Closed-file enumeration is identical to
+ * event_logger_newest_closed() (same sd_scan() + active-file exclusion);
  * only the selection predicate differs: smallest > after, vs lex-max.
- * ----------------------------------------------------------------------- */
+ *
+ * Unlike event_logger_newest_closed() this routine does *not* fall back to
+ * the in-memory @ref s_last_closed record on SD failure, because the
+ * caller's intent is "walk all pending in order" — and an in-memory
+ * fallback cannot satisfy that.
+ *
+ * @see event_logger.h for the full @param/@return contract.
+ */
 bool event_logger_next_pending(const char *after, char *out, size_t cap)
 {
     if (out == NULL || cap == 0u) { return false; }
@@ -871,6 +1023,33 @@ bool event_logger_next_pending(const char *after, char *out, size_t cap)
  * T9 task
  * ======================================================================= */
 
+/**
+ * @brief T9 — Event Logger task body.
+ *
+ * See event_logger.h for the full responsibility statement.
+ *
+ * Lifecycle:
+ *  -# Mount the SD card via storage_init(); if it succeeds and
+ *     sd_open_active_file() opens a usable file, set @ref s_sd_ok = true.
+ *  -# Enter the infinite main loop:
+ *     - Block on xQueueReceive(Q3) — `portMAX_DELAY` when SD is healthy,
+ *       60 s timeout when SD is absent (the timeout drives automount
+ *       retries).
+ *     - process_event() each received event (writes to SD if mounted).
+ *     - Drain any further immediately-available events non-blocking.
+ *     - Attempt SD automount once per minute while @ref s_sd_ok is false,
+ *       even if Q3 keeps the receive busy.
+ *     - Read log_take_dropped_count(); if non-zero, synthesise a LOG_SYSTEM
+ *       row reporting the drop count and post it directly to Q3 (not via
+ *       log_post() — avoids re-entrant eviction; see header design notes).
+ *     - Honour any pending @ref s_force_rotate_req from T14.
+ *
+ * @param  pvParameters  Unused; pass NULL.
+ *
+ * @note   This function never returns. It is a FreeRTOS task entry point.
+ * @see    log_post
+ * @see    task_t14 (status_post.cpp) — the rotation-notify recipient.
+ */
 void task_event_logger(void *pvParameters)
 {
     (void)pvParameters;

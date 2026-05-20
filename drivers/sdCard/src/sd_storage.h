@@ -2,13 +2,43 @@
  * @file sd_storage.h
  * @brief SD card file I/O driver — FAT32 over SPI (LIB-8).
  *
- * Provides the primary event log storage for the greenhouse controller.
- * Implements append-only writes and log rotation (512 KB per file, 10 files
- * retained). Used exclusively by T9 (Event Logger). The driver is optional —
- * absent when the SD card feature is not fitted.
+ * Provides the primary event-log storage for the greenhouse controller.
+ * Implements append-only writes and log rotation (512 KB per file, 10
+ * files retained).  Used exclusively by T9 (Event Logger).  The driver
+ * is optional — absent when the SD card feature is not fitted.
  *
- * SPI pin assignment (LOLIN S3):
- *   MOSI = GPIO 47   MISO = GPIO 48   CLK = GPIO 39   CS = GPIO 40
+ * ## Hardware
+ *   - Card slot   : Standard µSD card holder on the LOLIN S3 carrier.
+ *   - Interface   : SPI mode (one-bit, native CMD line not used).
+ *   - SPI bus     : Dedicated VSPI instance (does NOT share with other
+ *                   peripherals on this project).
+ *   - Filesystem  : FAT32 (8.3 names, long names supported via VFS).
+ *   - Mount path  : @c /sdcard (managed by ESP-IDF VFS).
+ *
+ * ## SPI pin assignment (LOLIN S3 — see @c pin_config.h)
+ *   - @c PIN_SD_MOSI  GPIO 47   (Master Out → DI)
+ *   - @c PIN_SD_MISO  GPIO 48   (DO → Master In)
+ *   - @c PIN_SD_CLK   GPIO 39   (SCK)
+ *   - @c PIN_SD_CS    GPIO 40   (chip select, active LOW)
+ *
+ * ## API summary
+ *   - @ref storage_init               Bring up SPI bus and mount FAT32.
+ *   - @ref storage_sd_available       Quick mount-state query.
+ *   - @ref storage_sd_write_append    Append one line to a log file.
+ *   - @ref storage_sd_read            Random-access read.
+ *   - @ref storage_sd_file_size       File-size query.
+ *   - @ref storage_sd_free_bytes / @ref storage_sd_total_bytes
+ *                                     Volume capacity queries.
+ *   - @ref storage_sd_list_csv        Directory listing by extension.
+ *   - @ref storage_sd_delete          Remove a file.
+ *   - @ref storage_sd_unmount         Graceful tear-down before card removal.
+ *
+ * ## Thread safety
+ *   ESP-IDF VFS serialises POSIX-style file I/O internally.  This driver
+ *   adds no extra locking; callers from multiple tasks are safe at the
+ *   file-system level.  However, append patterns from concurrent tasks
+ *   interleave at line boundaries — consumers needing strict ordering
+ *   must serialise externally.
  *
  * @author Greenhouse Controller project
  * @version 0.1.0
@@ -31,14 +61,16 @@
 /* ---------------------------------------------------------------------------
  * Status codes
  * --------------------------------------------------------------------------- */
+
+/** @brief Return codes for all @c storage_sd_* functions. */
 typedef enum {
-    STORAGE_OK = 0,       /**< Operation succeeded */
-    STORAGE_ERR_NO_CARD,  /**< No SD card detected / card not inserted */
-    STORAGE_ERR_MOUNT,    /**< SPI bus or FAT32 mount failure */
-    STORAGE_ERR_IO,       /**< Read / write error */
-    STORAGE_ERR_NOT_FOUND,/**< File or path does not exist */
-    STORAGE_ERR_FULL,     /**< Card or file system is full */
-    STORAGE_ERR_PARAM     /**< Invalid parameter (NULL pointer, zero length, …) */
+    STORAGE_OK = 0,       /**< Operation succeeded. */
+    STORAGE_ERR_NO_CARD,  /**< No SD card detected / card not inserted. */
+    STORAGE_ERR_MOUNT,    /**< SPI bus or FAT32 mount failure. */
+    STORAGE_ERR_IO,       /**< Read / write error reported by the FAT layer. */
+    STORAGE_ERR_NOT_FOUND,/**< File or path does not exist. */
+    STORAGE_ERR_FULL,     /**< Card or file system is full. */
+    STORAGE_ERR_PARAM     /**< Invalid parameter (NULL pointer, zero length, …). */
 } storage_status_t;
 
 /* ---------------------------------------------------------------------------
@@ -48,12 +80,17 @@ typedef enum {
 /**
  * @brief Initialise the SPI bus and mount the FAT32 file system.
  *
- * Must be called once before any other storage_sd_* function.
- * Uses a custom SPIClass instance to drive the non-default LOLIN S3 pins.
+ * Uses a dedicated SPI instance to drive the non-default LOLIN S3 pins
+ * (see @ref SD_PIN_MOSI / @ref SD_PIN_MISO / @ref SD_PIN_CLK /
+ * @ref SD_PIN_CS).  Card capacity and format are read at mount time.
+ * The volume is mounted at @c /sdcard.
  *
- * @return STORAGE_OK        — card detected and mounted.
- * @return STORAGE_ERR_NO_CARD — no card inserted.
- * @return STORAGE_ERR_MOUNT — card present but FAT32 mount failed.
+ * @return @ref STORAGE_OK on success (card detected and mounted),
+ *         @ref STORAGE_ERR_NO_CARD if no card is inserted,
+ *         @ref STORAGE_ERR_MOUNT if the card is present but the FAT32
+ *         mount failed (corrupt FS, unsupported format).
+ * @warning Must be called once before any other @c storage_sd_* function.
+ * @see    storage_sd_unmount(), storage_sd_available().
  */
 storage_status_t storage_init(void);
 
@@ -65,15 +102,19 @@ storage_status_t storage_init(void);
 bool storage_sd_available(void);
 
 /**
- * @brief Append a single text line (including its newline) to a file.
+ * @brief Append a single text line to a file.
  *
  * The file is created if it does not already exist.  The line is written
- * verbatim; the caller is responsible for appending \\n if desired.
+ * verbatim; the caller is responsible for appending @c "\n" if desired.
  *
- * @param filename  Absolute path on the FAT32 volume, e.g. "/log001.csv".
+ * @param filename  Absolute path on the FAT32 volume, e.g. @c "/log001.csv".
+ *                  Must start with @c "/" (relative paths are rejected).
  * @param line      NUL-terminated string to write.
- * @return STORAGE_OK, STORAGE_ERR_PARAM, STORAGE_ERR_NO_CARD,
- *         STORAGE_ERR_FULL, STORAGE_ERR_IO.
+ * @return @ref STORAGE_OK, @ref STORAGE_ERR_PARAM, @ref STORAGE_ERR_NO_CARD,
+ *         @ref STORAGE_ERR_FULL, @ref STORAGE_ERR_IO.
+ * @note   Each call performs an @c fopen + @c fwrite + @c fclose cycle —
+ *         high-rate callers should batch lines themselves to amortise the
+ *         FAT update cost.
  */
 storage_status_t storage_sd_write_append(const char *filename, const char *line);
 
@@ -120,8 +161,14 @@ uint64_t storage_sd_total_bytes(void);
 /**
  * @brief Gracefully unmount the FAT32 volume and release the SPI bus.
  *
- * After this call, storage_sd_available() returns false and T9 falls back to
- * NVS-only logging.  Call storage_init() to re-mount after card re-insertion.
+ * After this call, @ref storage_sd_available returns @c false and T9
+ * falls back to in-memory event buffering.  Call @ref storage_init to
+ * re-mount after card re-insertion.
+ *
+ * @warning In-flight writes from other tasks are NOT aborted — callers
+ *          MUST ensure no @c storage_sd_* call is in progress before
+ *          invoking this function.
+ * @see    storage_init().
  */
 void storage_sd_unmount(void);
 

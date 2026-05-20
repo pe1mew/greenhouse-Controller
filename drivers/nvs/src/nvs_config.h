@@ -1,25 +1,44 @@
 /**
  * @file nvs_config.h
- * @brief NVS configuration driver — typed get/set, schema versioning,
- *        _or_default helpers, and ring-buffer event log (LIB-7).
+ * @brief NVS configuration driver — typed get/set, schema versioning, and
+ *        _or_default helpers (LIB-7).
  *
  * All persistent configuration for the greenhouse controller passes through
- * this driver. It wraps the ESP-IDF NVS API and adds:
+ * this driver.  It wraps the ESP-IDF NVS API and adds:
  *
- *  - Schema versioning: a `schema_ver` integer and a `fw_version` string are
- *    stored in the `system` namespace. nvs_cfg_init() compares `schema_ver`
- *    against NVS_SCHEMA_VERSION at startup and always overwrites `fw_version`
- *    with the current FIRMWARE_VERSION. On a version mismatch namespaces are
- *    NOT erased — existing user settings are preserved, new keys pick up
- *    factory defaults via _or_default on first access, and NVS_CFG_ERR_MIGRATION
- *    is returned so the caller can log the event.
+ *  - Schema versioning: a @c schema_ver integer and a @c fw_version string
+ *    are stored in the @c system namespace. @ref nvs_cfg_init compares
+ *    @c schema_ver against @ref NVS_SCHEMA_VERSION at startup and always
+ *    overwrites @c fw_version with the current @ref FIRMWARE_VERSION.  On a
+ *    version mismatch namespaces are NOT erased — existing user settings
+ *    are preserved, new keys pick up factory defaults via the
+ *    @c _or_default helpers on first access, and
+ *    @ref NVS_CFG_ERR_MIGRATION is returned so the caller can log the event.
  *
- *  - _or_default helpers: if a key is absent the default is written and
- *    returned, so callers never need to handle NVS_CFG_ERR_NOT_FOUND for
- *    optional/configurable parameters.
+ *  - @c _or_default helpers: if a key is absent the default is written and
+ *    returned, so callers never need to handle
+ *    @ref NVS_CFG_ERR_NOT_FOUND for optional/configurable parameters.
  *
- *  - Ring-buffer log: a 1000-entry FIFO stored in the `log` namespace as the
- *    fallback event store when no SD card is present.
+ * ## Hardware
+ *   - Storage      : ESP32-S3 internal NOR flash, dedicated @c nvs partition
+ *                    (see @c partitions.csv).
+ *   - Encryption   : NOT enabled in this firmware — secrets stored here are
+ *                    plaintext.  Use the @c access namespace for hashes only.
+ *
+ * ## API summary
+ *   - @ref nvs_cfg_init                      One-shot setup + schema check.
+ *   - @ref nvs_cfg_get_schema_version        Read stored schema version.
+ *   - @ref nvs_cfg_get_i32 / @ref nvs_cfg_set_i32         Integer.
+ *   - @ref nvs_cfg_get_str / @ref nvs_cfg_set_str         String.
+ *   - @ref nvs_cfg_get_blob / @ref nvs_cfg_set_blob       Binary blob.
+ *   - @ref nvs_cfg_get_i32_or_default / @ref nvs_cfg_get_str_or_default
+ *                                            Read-with-default helpers.
+ *   - @ref nvs_cfg_erase_namespace           Wipe a namespace.
+ *
+ * ## Thread safety
+ *   ESP-IDF NVS serialises all access internally; this driver adds no extra
+ *   locking and is safe to call concurrently from any task.  Caller-supplied
+ *   buffers (@p val, @p buf) are owned by the calling task only.
  *
  * @author Greenhouse Controller project
  * @version 0.1.0
@@ -130,38 +149,92 @@ nvs_cfg_status_t nvs_cfg_get_schema_version(int32_t *ver);
  * Typed get / set
  * --------------------------------------------------------------------------- */
 
-/** @brief Read a signed 32-bit integer. Returns NVS_CFG_ERR_NOT_FOUND if absent. */
+/**
+ * @brief Read a signed 32-bit integer.
+ *
+ * @param[in]  ns   Namespace (e.g. @ref NVS_NS_CLIMATE).
+ * @param[in]  key  Key name.
+ * @param[out] val  Receives the value (must not be NULL).
+ * @return @ref NVS_CFG_OK on success, @ref NVS_CFG_ERR_NOT_FOUND if absent,
+ *         @ref NVS_CFG_ERR_INIT on NVS-layer error.
+ * @see    nvs_cfg_get_i32_or_default() — write-default-on-absent variant.
+ */
 nvs_cfg_status_t nvs_cfg_get_i32(const char *ns, const char *key, int32_t *val);
 
-/** @brief Write a signed 32-bit integer and commit. */
+/**
+ * @brief Write a signed 32-bit integer and commit.
+ *
+ * @param ns   Namespace.
+ * @param key  Key name.
+ * @param val  Value to write.
+ * @return @ref NVS_CFG_OK on success, @ref NVS_CFG_ERR_WRITE on failure.
+ */
 nvs_cfg_status_t nvs_cfg_set_i32(const char *ns, const char *key, int32_t val);
 
 /**
  * @brief Read a null-terminated string into @p buf (max @p buf_len bytes).
  *
  * If the stored string is longer than @p buf_len the result is silently
- * truncated and null-terminated. Returns NVS_CFG_ERR_NOT_FOUND if absent.
+ * truncated and null-terminated.
+ *
+ * @param[in]  ns       Namespace.
+ * @param[in]  key      Key name.
+ * @param[out] buf      Destination buffer (must not be NULL).
+ * @param[in]  buf_len  Capacity of @p buf in bytes (including NUL).
+ * @return @ref NVS_CFG_OK on success, @ref NVS_CFG_ERR_NOT_FOUND if absent,
+ *         @ref NVS_CFG_ERR_INIT on NVS-layer error.
  */
 nvs_cfg_status_t nvs_cfg_get_str(const char *ns, const char *key,
                                   char *buf, size_t buf_len);
 
-/** @brief Write a null-terminated string and commit. */
+/**
+ * @brief Write a null-terminated string and commit.
+ *
+ * @param ns   Namespace.
+ * @param key  Key name.
+ * @param val  Null-terminated string to store.
+ * @return @ref NVS_CFG_OK, @ref NVS_CFG_ERR_WRITE.
+ */
 nvs_cfg_status_t nvs_cfg_set_str(const char *ns, const char *key,
                                   const char *val);
 
 /**
- * @brief Read a binary blob. On entry @p *len is the buffer capacity; on exit
- *        it is set to the number of bytes read. Returns NVS_CFG_ERR_NOT_FOUND
- *        if absent, NVS_CFG_ERR_INIT if the buffer is too small.
+ * @brief Read a binary blob.
+ *
+ * On entry @p *len is the buffer capacity; on exit it is set to the number
+ * of bytes actually read.
+ *
+ * @param[in]      ns   Namespace.
+ * @param[in]      key  Key name.
+ * @param[out]     buf  Destination buffer (must not be NULL).
+ * @param[in,out]  len  In: buffer capacity in bytes.  Out: bytes read.
+ * @return @ref NVS_CFG_OK, @ref NVS_CFG_ERR_NOT_FOUND if absent,
+ *         @ref NVS_CFG_ERR_INIT if @p buf is too small.
  */
 nvs_cfg_status_t nvs_cfg_get_blob(const char *ns, const char *key,
                                    void *buf, size_t *len);
 
-/** @brief Write a binary blob and commit. */
+/**
+ * @brief Write a binary blob and commit.
+ *
+ * @param ns    Namespace.
+ * @param key   Key name.
+ * @param data  Bytes to store (may contain NUL).
+ * @param len   Number of bytes to write.
+ * @return @ref NVS_CFG_OK, @ref NVS_CFG_ERR_WRITE.
+ */
 nvs_cfg_status_t nvs_cfg_set_blob(const char *ns, const char *key,
                                    const void *data, size_t len);
 
-/** @brief Erase every key in namespace @p ns and commit. */
+/**
+ * @brief Erase every key in namespace @p ns and commit.
+ *
+ * @param ns  Namespace to wipe.
+ * @return @ref NVS_CFG_OK on success, @ref NVS_CFG_ERR_WRITE on failure.
+ * @warning Destructive: deletes every key in the namespace, including any
+ *          factory-default values previously written by @c _or_default
+ *          helpers.  Intended for a "factory reset" command only.
+ */
 nvs_cfg_status_t nvs_cfg_erase_namespace(const char *ns);
 
 /* ---------------------------------------------------------------------------

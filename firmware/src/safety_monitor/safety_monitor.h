@@ -5,6 +5,15 @@
  * Evaluates wind speed and direction against configured thresholds on every
  * TN1 notification from T4 (new wind data available).
  *
+ * ## Task-graph slot
+ *  - TN1 (consumer)   — task-notification from T4 on every sensor update.
+ *  - Q1 (producer)    — CMD_CLOSE_ALL / CMD_RESUME with source=SRC_T3.
+ *  - Q3 (producer)    — LOG_ALARM via log_post() on every transition.
+ *  - EG1 (set/clear)  — owns EG1_BIT_WIND_OVERRIDE; reads
+ *                       EG1_BIT_SENSOR_FAULT_W and EG1_BIT_MOTOR_ALARM.
+ *  - MX2 (read)       — measurement snapshot via dm_meas_snapshot().
+ *  - MX4 (read)       — config snapshot via dm_cfg_snapshot().
+ *
  * ## Behaviour summary
  *  - Reads current wind measurement from T4 via dm_meas_snapshot() (MX2).
  *  - Reads configuration from T4 via dm_cfg_snapshot() (MX4).
@@ -43,6 +52,17 @@
 
 /**
  * @brief T3 — Safety Monitor task entry point.
- * @param pvParameters  Unused; pass NULL.
+ *
+ * Subscribes to the FreeRTOS task watchdog and runs an event-driven loop:
+ * blocks on TN1 (with a 2 s timeout that doubles as a WDT-kick heartbeat),
+ * then evaluates wind conditions and drives the wind-override state machine
+ * (see file header).
+ *
+ * @param  pvParameters  Unused; pass NULL.
+ * @warning Safety-critical.  A T3 hang would silently disable wind
+ *          protection — the 2 s timeout exists specifically so the task WDT
+ *          can detect a stuck loop.
+ * @see    task_relay_controller() (Q1 consumer), task_data_manager() (TN1
+ *         source).
  */
 void task_safety_monitor(void *pvParameters);

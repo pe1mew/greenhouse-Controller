@@ -2,9 +2,33 @@
  * @file gpio_util.h
  * @brief GPIO utility driver — types and API for LIB-1.
  *
- * Thin abstraction layer over the Arduino GPIO API used by every other driver.
- * Pin assignments are centralised in firmware/config/pin_config.h and exposed
- * here by inclusion so callers need only include this header.
+ * Thin abstraction layer over the Arduino GPIO API used by every other
+ * driver.  Pin assignments are centralised in @c firmware/config/pin_config.h
+ * and exposed here by inclusion so callers need only include this header.
+ *
+ * ## Hardware
+ *   - MCU         : Espressif ESP32-S3 (LOLIN S3).
+ *   - Logic level : 3.3 V CMOS; pins are not 5 V tolerant.
+ *   - Drive       : ~20 mA per pin sink/source; respect total package limit.
+ *   - Pull-ups    : Internal weak pull-up (~45 kΩ) selectable via
+ *                   @ref GPIO_INPUT_PULLUP.
+ *   - RS-485 ctrl : One dedicated pin @c PIN_RS485_DE_RE drives the
+ *                   SIT65HVD08P transceiver DE/RE jointly — HIGH = TX,
+ *                   LOW = RX.
+ *
+ * ## API summary
+ *   - @ref gpio_set_pin_mode         Configure direction / pull-up.
+ *   - @ref gpio_write / @ref gpio_read / @ref gpio_toggle
+ *                                    Generic pin I/O.
+ *   - @ref gpio_rs485_init           One-shot RS-485 DE/RE pin init.
+ *   - @ref gpio_set_rs485_direction  Toggle half-duplex transceiver direction.
+ *
+ * ## Thread safety
+ *   The Arduino GPIO peripheral writes are not protected by a mutex.  Two
+ *   tasks writing the same pin simultaneously will produce a last-writer-
+ *   wins outcome (no register corruption, but logical races are possible).
+ *   The RS-485 DE/RE pin is owned exclusively by LIB-6 (@c modbus_rtu) once
+ *   @ref gpio_rs485_init has run.
  *
  * @author Greenhouse Controller project
  * @version 0.1.0
@@ -82,9 +106,12 @@ void gpio_toggle(uint8_t pin);
 /**
  * @brief Initialise the RS-485 direction pin.
  *
- * Configures @ref PIN_RS485_DE_RE as a push-pull output and drives it LOW
- * (receiver enabled).  Must be called once before any call to
- * @ref gpio_set_rs485_direction().
+ * Configures @c PIN_RS485_DE_RE as a push-pull output and drives it LOW
+ * (receiver enabled — safe idle state on the differential bus).
+ *
+ * @warning Must be called once before any call to
+ *          @ref gpio_set_rs485_direction or any LIB-6 transaction.
+ * @see    gpio_set_rs485_direction(), modbus_init().
  */
 void gpio_rs485_init(void);
 
@@ -92,10 +119,16 @@ void gpio_rs485_init(void);
  * @brief Set the RS-485 transceiver direction.
  *
  * Controls the DE/RE line on the SIT65HVD08P (or equivalent) transceiver
- * via @ref PIN_RS485_DE_RE.
+ * via @c PIN_RS485_DE_RE.  DE and RE are tied together on the board so a
+ * single GPIO toggles the half-duplex direction.
  *
  * @param transmit @c true  — assert HIGH (driver enable / TX mode). \n
  *                 @c false — assert LOW  (receiver enable / RX mode).
+ * @warning The caller is responsible for inter-byte and turn-around timing.
+ *          The transceiver needs a few µs to switch direction; LIB-6 holds
+ *          DE HIGH until the final byte has clocked out of the UART FIFO
+ *          before dropping it LOW again.
+ * @see    gpio_rs485_init().
  */
 void gpio_set_rs485_direction(bool transmit);
 

@@ -473,6 +473,14 @@ static int32_t param_get(bool is_wind, int idx)
 /* ============================================================
  * Session helpers
  * ============================================================ */
+/**
+ * @brief Open a session and emit the LOG_SESSION open event.
+ *
+ * Resets the idle-tick counter and tags the LOG_SESSION row with the
+ * initiator (LOG_BY_FARMER or LOG_BY_ADMIN) matching the session level.
+ *
+ * @param level SESSION_FARMER or SESSION_ADMIN.
+ */
 static void session_open(session_t level)
 {
     s_session    = level;
@@ -486,6 +494,15 @@ static void session_open(session_t level)
     ESP_LOGI(TAG, "Session opened: level=%d", (int)level);
 }
 
+/**
+ * @brief Close the active session and emit the LOG_SESSION close event.
+ *
+ * No-op if no session is active. The LOG row carries `value_a=0` to
+ * distinguish close from open (which carries `value_a=level`).
+ *
+ * @param timeout true if closing because the idle timer fired; false if
+ *                an explicit logout. Only affects the serial log message.
+ */
 static void session_close(bool timeout)
 {
     if (s_session == SESSION_NONE) return;
@@ -502,6 +519,17 @@ static void session_close(bool timeout)
 /* ============================================================
  * Config change: post Q4 + log event
  * ============================================================ */
+/**
+ * @brief Post a setpoint change to Q4 for T4 to apply.
+ *
+ * T4 emits the LOG_SETPOINT audit row only after a successful NVS write,
+ * so a Q4 overflow correctly produces zero rows for the dropped change.
+ *
+ * @param p        Parameter descriptor (provides ns/key/log_id).
+ * @param new_val  Edited value (already clamped by the caller).
+ * @param old_val  Previous value, used for the diagnostic log line only.
+ *                 T4 will load the actual old value from NVS for the audit row.
+ */
 static void apply_param_change(const param_def_t *p, int32_t new_val, int32_t old_val)
 {
     /* a.6.35.5 — set initiator on the Q4 message so T4 can emit the audit
@@ -531,6 +559,7 @@ static void apply_param_change(const param_def_t *p, int32_t new_val, int32_t ol
 /* ============================================================
  * Transition helpers
  * ============================================================ */
+/** @brief Force the FSM back to UI_STATUS and reset rotation; mark dirty. */
 static void go_status(void)
 {
     s_state        = UI_STATUS;
@@ -700,6 +729,23 @@ static void execute_reset_action(uint8_t stage)
  * Render functions — fill s_row0 / s_row1; no flush
  * ============================================================ */
 
+/**
+ * @brief Render the current rotating status page (UI_STATUS).
+ *
+ * Switches on `s_status_page % STATUS_PAGES` and fills the two row
+ * buffers from the current sensor snapshot + EG1 alarms + network status +
+ * window FSM states. Auto-rotation is driven by `s_status_ticks` in the
+ * main loop, not by this function.
+ *
+ * Pages:
+ *   - 0: temperature / humidity (raw — most recent reading, NOT averaged)
+ *   - 1: wind speed + 8-point cardinal direction
+ *   - 2: mode + alarm + session badges
+ *   - 3: network (WiFi state + IP or AP SSID; "BK" badge when T14 backoff active)
+ *   - 4: time + NTP/RTC source + day/night indicator
+ *   - 5: M1/M2/M3 window states
+ *   - 6: firmware version + uptime + unit_id
+ */
 static void render_status(void)
 {
     sensor_reading_t meas = {};
@@ -891,6 +937,7 @@ static void render_status(void)
     lcd_set(r0, r1);
 }
 
+/** @brief Render the top-level menu (UI_MENU_ROOT). Static screen — no data sources. */
 static void render_menu_root(void)
 {
     lcd_set("1:Clim  2:Wind  ", "3:Access 4:Sys *");
@@ -977,12 +1024,23 @@ static void render_param_menu(bool is_wind)
     lcd_set(r0, r1);
 }
 
+/**
+ * @brief Render the access sub-menu (UI_MENU_ACCESS).
+ *
+ * Row 1 hides the Logout option when no session is active.
+ */
 static void render_menu_access(void)
 {
     lcd_set("1:Farmer 2:Admin",
             s_session != SESSION_NONE ? "3:Logout  *:Back" : "          *:Back");
 }
 
+/**
+ * @brief Render the system sub-menu (UI_MENU_SYSTEM).
+ *
+ * Row 1 reflects the current AP-mode state so the operator knows whether
+ * pressing 1 will turn the AP on or off.
+ */
 static void render_menu_system(void)
 {
     /* Show current AP status on row 1 so user knows state before pressing */
@@ -993,6 +1051,14 @@ static void render_menu_system(void)
     }
 }
 
+/**
+ * @brief Handle keypresses in UI_MENU_SYSTEM.
+ *
+ * 1 toggles the WiFi AP via a Q4 config_update on wifi/ap_enable
+ * (admin-only; prompts admin PIN when no session). * returns to MENU_ROOT.
+ *
+ * @param key ASCII key from Q2.
+ */
 static void handle_menu_system(char key)
 {
     switch (key) {
@@ -1035,6 +1101,12 @@ static void handle_menu_system(char key)
     }
 }
 
+/**
+ * @brief Render the date-entry screen (UI_SET_DATE).
+ *
+ * Row 0 shows the current date; row 1 shows the entry template with typed
+ * digits overwriting the template letters DDMMYY.
+ */
 static void render_set_date(void)
 {
     /* Row 0: current date for reference (DD-MM-YYYY) */
@@ -1057,6 +1129,11 @@ static void render_set_date(void)
     lcd_set(r0, r1);
 }
 
+/**
+ * @brief Render the time-entry screen (UI_SET_TIME).
+ *
+ * Row 0 shows the current HH:MM; row 1 shows the entry template HHmm.
+ */
 static void render_set_time(void)
 {
     /* Row 0: current time for reference */
@@ -1077,6 +1154,12 @@ static void render_set_time(void)
     lcd_set(r0, r1);
 }
 
+/**
+ * @brief Render the PIN-entry screen (UI_PIN_ENTRY).
+ *
+ * Row 0 shows the expected digit count and back-key hint; row 1 shows '*'
+ * for filled positions and '_' for remaining positions.
+ */
 static void render_pin_entry(void)
 {
     int max_len = (s_pin_role == PIN_ROLE_FARMER) ? PIN_FARMER_DIGITS : PIN_ADMIN_DIGITS;
@@ -1093,6 +1176,12 @@ static void render_pin_entry(void)
     lcd_set(r0, r1);
 }
 
+/**
+ * @brief Render the value-edit screen (UI_EDIT_VALUE).
+ *
+ * Row 0 shows the parameter's `edit_lbl`; row 1 shows the in-progress value
+ * (signed if the parameter allows negatives) plus the OK/Back hints.
+ */
 static void render_edit_value(void)
 {
     const param_def_t *p = s_edit_is_wind ? &WIND_PARAMS[s_edit_param]
@@ -1124,6 +1213,13 @@ static void render_edit_value(void)
 static void render_browse_cr(void);
 static void handle_browse_cr(char key);
 
+/**
+ * @brief Dispatch the appropriate per-state render function.
+ *
+ * Fills `s_row0` / `s_row1` but does NOT flush to hardware — the main
+ * loop calls `lcd_flush()` after this returns and clears `s_dirty` only
+ * on flush success.
+ */
 static void render(void)
 {
     switch (s_state) {
@@ -1147,6 +1243,7 @@ static void render(void)
  * Key handlers — one per FSM state
  * ============================================================ */
 
+/** @brief Enter UI_SET_DATE — reset the digit buffer and mark dirty. */
 static void enter_set_date(void)
 {
     memset(s_dt_buf, 0, sizeof(s_dt_buf));
@@ -1155,6 +1252,18 @@ static void enter_set_date(void)
     s_dirty  = true;
 }
 
+/**
+ * @brief Handle keypresses on the rotating UI_STATUS screens.
+ *
+ * D advances to the next status page. # on certain pages opens a related
+ * sub-menu (T/RH → Climate, Wind → Wind menu, WiFi → System menu admin,
+ * Time → date/time set admin). Any other key opens UI_MENU_ROOT. When
+ * the required session level is not present the FSM transitions to
+ * UI_PIN_ENTRY with the appropriate `s_return_menu` / pending flag set
+ * so the post-PIN flow resumes the desired sub-menu.
+ *
+ * @param key ASCII key from Q2.
+ */
 static void handle_status(char key)
 {
     /* D key → advance to the next status page and reset the rotation timer */
@@ -1247,6 +1356,13 @@ static void handle_status(char key)
     s_dirty    = true;
 }
 
+/**
+ * @brief Handle keypresses in UI_MENU_ROOT.
+ *
+ * 1 → Climate, 2 → Wind, 3 → Access, 4 → System, * → back to UI_STATUS.
+ *
+ * @param key ASCII key from Q2.
+ */
 static void handle_menu_root(char key)
 {
     switch (key) {
@@ -1369,6 +1485,15 @@ static void handle_browse_cr(char key)
     }
 }
 
+/**
+ * @brief Handle keypresses in a 2-per-page parameter menu.
+ *
+ * 1 / 2 select first / second parameter on the current page;
+ * \# advances to the next page (wrap), * returns to UI_MENU_ROOT.
+ *
+ * @param key      ASCII key from Q2.
+ * @param is_wind  true for WIND_PARAMS, false for CLIMATE_PARAMS.
+ */
 static void handle_param_menu(char key, bool is_wind)
 {
     const int n     = is_wind ? N_WIND   : N_CLIMATE;
@@ -1397,6 +1522,15 @@ static void handle_param_menu(char key, bool is_wind)
     }
 }
 
+/**
+ * @brief Handle keypresses in UI_MENU_ACCESS.
+ *
+ * 1 → login farmer (prompts PIN), 2 → login admin, 3 → logout,
+ * * → back to UI_MENU_ROOT. No-op if already authenticated at the
+ * requested level (shows a transient confirmation message).
+ *
+ * @param key ASCII key from Q2.
+ */
 static void handle_menu_access(char key)
 {
     switch (key) {
@@ -1446,6 +1580,18 @@ static void handle_menu_access(char key)
     }
 }
 
+/**
+ * @brief Handle keypresses in UI_PIN_ENTRY.
+ *
+ * Digits accumulate (max length depends on `s_pin_role`). * is backspace
+ * when digits exist, cancel-to-`s_return_menu` when empty. # submits the
+ * PIN to `pin_auth_verify()` and on success transitions to whichever
+ * pending action the caller set up (param edit, AP toggle, date/time set)
+ * or to `s_return_menu`.
+ *
+ * @param key ASCII key from Q2.
+ * @see pin_auth_verify, pin_auth_lockout_remaining_secs
+ */
 static void handle_pin(char key)
 {
     const int max_len = (s_pin_role == PIN_ROLE_FARMER) ? PIN_FARMER_DIGITS
@@ -1521,6 +1667,16 @@ static void handle_pin(char key)
     }
 }
 
+/**
+ * @brief Handle keypresses in UI_EDIT_VALUE.
+ *
+ * Digits accumulate into `s_edit_buf`. * is backspace / sign-clear /
+ * cancel (in that priority). B toggles the sign for parameters whose
+ * `val_min < 0`. # confirms — value is clamped to `[val_min, val_max]`
+ * and, if changed, posted to Q4 via `apply_param_change()`.
+ *
+ * @param key ASCII key from Q2.
+ */
 static void handle_edit(char key)
 {
     bool is_wind = s_edit_is_wind;
@@ -1584,6 +1740,15 @@ static void handle_edit(char key)
     }
 }
 
+/**
+ * @brief Handle keypresses in UI_SET_DATE.
+ *
+ * Accumulates DDMMYY (6 digits). * is backspace / cancel. # validates
+ * dd ∈ [1..31] and mm ∈ [1..12], saves to `s_dt_saved_*`, and advances
+ * to UI_SET_TIME for the second-half input.
+ *
+ * @param key ASCII key from Q2.
+ */
 static void handle_set_date(char key)
 {
     if (key >= '0' && key <= '9') {
@@ -1624,6 +1789,16 @@ static void handle_set_date(char key)
     }
 }
 
+/**
+ * @brief Handle keypresses in UI_SET_TIME.
+ *
+ * Accumulates HHMM (4 digits). * is backspace / back-to-date-entry
+ * (restores the previously typed date). # validates hh ∈ [0..23] and
+ * mm ∈ [0..59], computes the local-time epoch via `mktime()`, and pushes
+ * it into the RTC via `dm_set_manual_time()`. Returns to UI_STATUS.
+ *
+ * @param key ASCII key from Q2.
+ */
 static void handle_set_time(char key)
 {
     if (key >= '0' && key <= '9') {

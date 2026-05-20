@@ -10,6 +10,10 @@
  *    on the consumer side.
  *  - Numeric formatting matches the local UI's existing expectations: temp
  *    and wind are decimals with one fractional digit, RH/dir are integers.
+ *
+ * @see status_json.h (public API and parameter semantics)
+ *
+ * @author Greenhouse Controller project
  */
 
 #include "status_json.h"
@@ -43,7 +47,19 @@ const char *op_mode_str(op_mode_t m)
     }
 }
 
-/* Append-with-bounds helper. Returns false on overflow. */
+/**
+ * @brief Bounds-checked printf-append into a growing buffer.
+ *
+ * On overflow the buffer is NUL-terminated at the last writable byte and
+ * the caller's running success flag is cleared via the false return; the
+ * builder then short-circuits all subsequent `append()` calls.
+ *
+ * @param buf  Output buffer.
+ * @param cap  Total capacity of @p buf.
+ * @param pos  In/out write cursor (bytes already written excl. NUL).
+ * @param fmt  printf-style format string.
+ * @return true if the formatted text fit; false on overflow or vsnprintf error.
+ */
 static bool append(char *buf, size_t cap, size_t *pos, const char *fmt, ...)
     __attribute__((format(printf, 4, 5)));
 
@@ -72,7 +88,12 @@ static bool append(char *buf, size_t cap, size_t *pos, const char *fmt, ...)
  * also drives the WINDOW_CAL "current" mode string, but a separate badge is
  * still useful to indicate the cause.
  * ============================================================ */
-typedef struct { uint32_t bit; const char *name; } eg1_flag_t;
+/** @brief Static row in the EG1-bit → dashboard-flag-name lookup table. */
+typedef struct {
+    uint32_t    bit;   /**< Mask in EG1 (single bit, EG1_BIT_*). */
+    const char *name;  /**< Public flag string for the JSON `mode.flags[]` array. */
+} eg1_flag_t;
+
 static const eg1_flag_t EG1_FLAGS[] = {
     { EG1_BIT_WIND_OVERRIDE,    "wind_override"     },
     { EG1_BIT_SENSOR_FAULT_T,   "sensor_fault_temp" },
@@ -82,8 +103,15 @@ static const eg1_flag_t EG1_FLAGS[] = {
     { EG1_BIT_CALIBRATING,      "calibrating"       },
 };
 
-/* Highest-priority active mode label. Matches the dashboard's MODE_CLASS
- * lookup keys (AUTOMATIC / WIND_OVERRIDE / WINDOW_CAL / MOTOR_ALARM). */
+/**
+ * @brief Highest-priority active mode label for the JSON `mode.current` field.
+ *
+ * Priority order: MOTOR_ALARM > WIND_OVERRIDE > WINDOW_CAL (calibrating) >
+ * `op_mode_str(s->mode)`. Matches the dashboard's MODE_CLASS lookup keys.
+ *
+ * @param s  Snapshot — read-only.
+ * @return Static string literal — never NULL.
+ */
 static const char *current_mode_label(const status_snapshot_t *s)
 {
     if (s->eg1_bits & EG1_BIT_MOTOR_ALARM)   return "MOTOR_ALARM";

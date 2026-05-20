@@ -2,7 +2,33 @@
  * @file data_manager.h
  * @brief T4 — Data Manager public API.
  *
- * Central data store for the greenhouse controller.  T4 is the sole owner of:
+ * T4 is the project's authoritative data hub. It is the only task that
+ * *writes* to the configuration shadow (MX4), the latest-measurement
+ * snapshot (MX2), and the historical ring buffer (MX3). Every other task
+ * either reads through the snapshot getters declared in this header
+ * (`dm_cfg_snapshot`, `dm_meas_snapshot`, `dm_ring_read`, `dm_get_*`) or
+ * posts updates back via Q4 (config_update_t) and Q6 (sensor_reading_t).
+ *
+ * ## Inputs (queues consumed)
+ *  - Q6 — sensor_reading_t from T5 (xQueueOverwrite, depth 1).
+ *  - Q4 — config_update_t from T8 (LCD), T10 (WiFi), T11 (web).
+ *
+ * ## Outputs (notifications + queue posts)
+ *  - Q3 — log_event_t for LOG_SENSOR (every Q6), LOG_SETPOINT
+ *         (every Q4 with a known param_id), LOG_SYSTEM (boot, unit_id,
+ *         coredump-detected).
+ *  - TN1 — task_t3 (Safety Monitor) on each new sensor reading.
+ *  - TN2 — task_t6 (Climate Control) on each new sensor reading.
+ *  - xTaskNotify(task_t14, T14_NOTIFY_CFG_CHANGED) on web-cfg change
+ *    (via dm_reload_web_cfg() — not yet bound to a TN-N label).
+ *
+ * ## Mutexes owned (writer)
+ *  - MX1 — DS1307 I2C bus  (shared with T8's LCD I2C; brief critical sections)
+ *  - MX2 — current measurement snapshot
+ *  - MX3 — sensor history ring buffer
+ *  - MX4 — NVS configuration shadow
+ *
+ * T4 is the sole owner of:
  *   - MX4 — NVS-backed configuration shadow (cfg_shadow_t)
  *   - MX2 — latest sensor measurement (sensor_reading_t)
  *   - MX3 — historical sensor ring buffer (dm_ring_buf_t, DM_RING_DEPTH entries)
@@ -162,7 +188,17 @@ typedef struct {
 
 /**
  * @brief T4 — Data Manager task entry point.
+ *
+ * Performs the boot sequence (NVS load, TZ apply, RTC seed, sunrise compute,
+ * boot-reason log event, coredump check) then enters the main event loop.
+ * The loop blocks on Q6 with a 1 s timeout and on each tick drains Q4,
+ * checks for TN4 (NTP sync), and re-reads the RTC every ~60 s.
+ *
  * @param pvParameters  Unused; pass NULL.
+ * @note   Subscribes to esp_task_wdt; Q6's 1 s receive timeout keeps the
+ *         WDT happy even when no sensor data is flowing.
+ * @warning Must be started AFTER nvs_cfg_init(), MX1/MX2/MX3/MX4 creation,
+ *          and Q4/Q6 creation.
  */
 void task_data_manager(void *pvParameters);
 
@@ -177,15 +213,22 @@ void task_data_manager(void *pvParameters);
  * On timeout falls back to a lock-free copy (may be transiently stale).
  *
  * @param out  Caller-allocated cfg_shadow_t to fill.
+ * @note   Safe to call from any task. T6 calls this once per evaluation
+ *         cycle; T11 calls it from the web-server's async worker.
  */
 void dm_cfg_snapshot(cfg_shadow_t *out);
 
 /**
  * @brief Copy the latest sensor measurement under MX2.
  *
+ * Acquires MX2 (100 ms timeout), copies sensor_reading_t by value, releases.
+ * On timeout writes zeros to *out and *valid_out = false.
+ *
  * @param out        Caller-allocated sensor_reading_t to fill.
  * @param valid_out  Set to true if at least one Q6 message has been received
  *                   since boot.  May be NULL if caller does not need it.
+ * @note   Always check `*valid_out` (or the equivalent) before consuming
+ *         the fields — at boot, before T5 has run, the buffer is zeros.
  */
 void dm_meas_snapshot(sensor_reading_t *out, bool *valid_out);
 
@@ -199,6 +242,11 @@ void dm_meas_snapshot(sensor_reading_t *out, bool *valid_out);
  * @param buf        Caller-allocated buffer for up to @p count entries.
  * @param count      Maximum entries to copy.
  * @param read_out   Receives the actual number of entries copied.
+ * @note   On MX3 timeout (500 ms) the function returns 0 copied; check
+ *         `*read_out` rather than the buffer.
+ * @warning sizeof(sensor_reading_t) is non-trivial — sizing `buf` for the
+ *          whole ring (DM_RING_DEPTH entries) costs ~7 KB. Read in chunks.
+ * @see    dm_ring_count() — use before this to compute offset for newest N.
  */
 void dm_ring_read(uint16_t offset, sensor_reading_t *buf,
                   uint16_t count, uint16_t *read_out);

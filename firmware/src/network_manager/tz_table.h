@@ -8,13 +8,26 @@
  * Africa (major), Asia (full), Australia, Pacific, Americas.
  *
  * The table is a header (not a .cpp) so it stays static-const at compile
- * time — `iana_to_posix()` is the single consumer.
+ * time — `iana_to_posix()` is the single consumer. Inlining the entire
+ * lookup avoids cross-translation-unit linkage and keeps the table in
+ * flash (.rodata) instead of RAM.
  *
- * Format reference: POSIX TZ strings as documented by IEEE Std 1003.1.
- * Each entry maps a key returned in ip-api.com's `timezone` field to the
- * corresponding TZ string suitable for `setenv("TZ", …)` + `tzset()`.
+ * ## Format reference
+ * POSIX TZ strings as documented by IEEE Std 1003.1. Each entry maps a key
+ * returned in ip-api.com's `timezone` field to the corresponding TZ string
+ * suitable for `setenv("TZ", …)` + `tzset()`.
  *
- * Sentinel: terminator row with NULL.iana ends the table.
+ * ## Table termination
+ * Sentinel row `{NULL, NULL}` ends the table. `iana_to_posix()` iterates
+ * until it sees a NULL `iana` field, so callers MUST keep this sentinel
+ * intact when adding entries.
+ *
+ * ## Threading
+ * Read-only after compile time. Safe to call `iana_to_posix()` from any
+ * task without locking.
+ *
+ * @see network_manager.cpp — `run_geo_sync()` consumer
+ * @author Greenhouse Controller project
  */
 
 #pragma once
@@ -22,8 +35,25 @@
 #include <stddef.h>
 #include <string.h>
 
-struct tz_entry { const char *iana; const char *posix; };
+/**
+ * @brief One row in the IANA → POSIX timezone lookup table.
+ *
+ * Both fields point to static C-string literals in flash. The table
+ * terminates with a sentinel row where `iana == NULL`.
+ */
+struct tz_entry {
+    const char *iana;   /**< IANA timezone key (e.g. "Europe/Amsterdam"). NULL marks end-of-table. */
+    const char *posix;  /**< POSIX TZ string suitable for `setenv("TZ", …)` + `tzset()`. */
+};
 
+/**
+ * @brief Static const lookup table mapping IANA timezone keys to POSIX TZ
+ *        strings. Terminated by a `{NULL, NULL}` sentinel.
+ *
+ * Order is irrelevant to correctness — `iana_to_posix()` does a linear scan.
+ * The current grouping (UTC → Europe → Africa → Asia → Australia → Pacific
+ * → Americas) is for human readability.
+ */
 static const struct tz_entry s_tz_table[] = {
     /* UTC */
     { "UTC",                              "UTC0" },
@@ -156,6 +186,23 @@ static const struct tz_entry s_tz_table[] = {
     { NULL, NULL }
 };
 
+/**
+ * @brief Resolve an IANA timezone key to a POSIX TZ string.
+ *
+ * Linear-scans `s_tz_table` for the first row whose `iana` field matches
+ * @p iana via strcmp. O(N) — N is fixed at compile time (~100 entries), so
+ * the typical call cost is < 200 µs even on miss. Called once per boot
+ * from T10's geo-sync path; not on the hot path.
+ *
+ * @param  iana  Null-terminated IANA key as returned by ip-api.com's
+ *               `timezone` field (e.g. "Europe/Amsterdam"). MUST be
+ *               non-NULL — passing NULL invokes UB inside strcmp.
+ * @return Pointer to a static const POSIX TZ string suitable for
+ *         `setenv("TZ", …)`, or `NULL` if no entry matches @p iana.
+ * @note   The returned pointer aliases flash storage; do NOT modify or
+ *         free it. Valid for the lifetime of the firmware image.
+ * @see    network_manager.cpp run_geo_sync() — sole caller
+ */
 static inline const char *iana_to_posix(const char *iana)
 {
     for (size_t i = 0; s_tz_table[i].iana != NULL; i++) {

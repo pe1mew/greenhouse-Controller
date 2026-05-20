@@ -130,6 +130,26 @@ static char                s_last_ip[16]     = {0}; /* "xxx.xxx.xxx.xxx" + NUL *
 static TimerHandle_t s_reconnect_timer    = NULL;
 static uint32_t      s_reconnect_delay_ms = BACKOFF_INIT_MS;
 
+/**
+ * @brief FreeRTOS one-shot timer callback — fires `esp_wifi_connect()` and
+ *        bumps the exponential-backoff counter for the next attempt.
+ *
+ * Runs in the FreeRTOS timer-service task. Cheap (single esp_wifi_connect()
+ * call); does NOT block. The timer is created and (re-)armed by
+ * `nm_schedule_reconnect()` below, which is invoked from the
+ * WIFI_EVENT_STA_DISCONNECTED handler after the 3-shot fast-retry budget
+ * is exhausted.
+ *
+ * Back-off ladder: 2 → 4 → 8 → 16 → 32 → 60 s cap. Reset to
+ * `BACKOFF_INIT_MS` on the next successful `IP_EVENT_STA_GOT_IP`.
+ *
+ * @param  xTimer  Unused — the callback is per-handle but the handle isn't
+ *                 needed here.
+ * @warning Runs in the timer-service task context (small stack, ~2 KB).
+ *          Do NOT do anything heavyweight here — `esp_wifi_connect()` is
+ *          deliberately light. Heavy work (TLS handshakes etc.) belongs in
+ *          a dedicated task spawned by the disconnect handler.
+ */
 static void nm_reconnect_timer_cb(TimerHandle_t xTimer)
 {
     (void)xTimer;
@@ -143,6 +163,22 @@ static void nm_reconnect_timer_cb(TimerHandle_t xTimer)
     }
 }
 
+/**
+ * @brief Arm (or re-arm) the reconnect one-shot timer for the next attempt.
+ *
+ * Creates `s_reconnect_timer` lazily on first call; subsequent calls reuse
+ * the same handle. Uses `xTimerChangePeriod` to set the next firing delay
+ * (= `s_reconnect_delay_ms`) and to (re-)start the timer in one shot.
+ *
+ * Called from the WIFI_EVENT_STA_DISCONNECTED handler after the 3-shot
+ * fast-retry budget is exhausted. Subsequent disconnects within the same
+ * boot reuse the same timer with the back-off-bumped delay.
+ *
+ * @note   The fallback path (xTimerCreate failure) calls `esp_wifi_connect()`
+ *         immediately so the radio at least tries — better than silently
+ *         giving up forever.
+ * @see    nm_reconnect_timer_cb() — the registered callback.
+ */
 static void nm_schedule_reconnect(void)
 {
     if (s_reconnect_timer == NULL) {
@@ -162,9 +198,32 @@ static void nm_schedule_reconnect(void)
 }
 
 /**
- * Unified handler for WIFI_EVENT and IP_EVENT. Registered against the
- * default event loop. Runs in the event-loop task (priority 20 by default,
- * stack 2304 bytes — sufficient for ESP_LOGI + xEventGroupSetBits).
+ * @brief Unified handler for `WIFI_EVENT` and `IP_EVENT` (both bases).
+ *
+ * Registered ONCE during `nm_wifi_init_blocking()` against the default
+ * event loop. Stays alive after init returns — drives all subsequent
+ * reconnect cycles via the exponential-backoff `s_reconnect_timer`.
+ *
+ * Event handling:
+ *  - `WIFI_EVENT_STA_START` → calls `esp_wifi_connect()`. Doing this from
+ *    the event handler (rather than polling) is the structural fix for
+ *    gh#21 — the lwIP stack is already up by the time STA_START fires.
+ *  - `WIFI_EVENT_STA_DISCONNECTED` → first 3 retries are immediate via
+ *    `esp_wifi_connect()`. After that, signals BIT_DISCONNECTED on the
+ *    boot-time event group (releasing `nm_wifi_init_blocking()` from its
+ *    wait), then hands off to the back-off timer for indefinite retry.
+ *  - `IP_EVENT_STA_GOT_IP` → snprintfs the IP into `s_last_ip`, resets the
+ *    retry counter + back-off ladder, signals BIT_GOT_IP.
+ *  - `IP_EVENT_STA_LOST_IP` → logged only; no state mutation. lwIP usually
+ *    recovers via STA_DISCONNECTED + STA_GOT_IP roundtrip.
+ *
+ * @param  arg          Unused — single-handler, no user data needed.
+ * @param  event_base   `WIFI_EVENT` or `IP_EVENT`.
+ * @param  event_id     Specific event constant (WIFI_EVENT_STA_START, etc.).
+ * @param  event_data   Payload pointer (cast based on event_id).
+ * @warning Runs in the event-loop task (priority 20 by default, stack
+ *          2304 B). Avoid heavyweight work; the handler should signal +
+ *          schedule, never block.
  */
 static void nm_wifi_event_handler(void *arg, esp_event_base_t event_base,
                                   int32_t event_id, void *event_data)
@@ -235,9 +294,25 @@ static void nm_wifi_event_handler(void *arg, esp_event_base_t event_base,
 }
 
 /**
- * Best-effort SNTP run. Returns true if we got a plausible epoch within
- * the budget (~10 s of polling), false on timeout. Same logic as the
- * retired wifi_tickle.cpp:sntp_quick_sync().
+ * @brief Best-effort SNTP synchronisation against pool.ntp.org.
+ *
+ * Initialises the IDF v5 `esp_netif_sntp_*` module, then polls `time(NULL)`
+ * every 100 ms for up to 10 s waiting for the epoch to cross the
+ * "plausibly synced" threshold (2023-11-14 = 1700000000). On success or
+ * timeout, deinits the SNTP module so the next call starts clean.
+ *
+ * Same logic as the retired `wifi_tickle.cpp:sntp_quick_sync()`.
+ *
+ * @return `true` if `time(NULL)` ≥ MIN_EPOCH within the budget; `false`
+ *         if the timer expired without a plausible time. A `false` return
+ *         is non-fatal — the DS1307 RTC holds the last-known wall clock
+ *         and the periodic 24 h NTP resync (`run_ntp_resync()`) will retry.
+ * @note   The 10 s budget covers DNS resolution (1-2 s on residential
+ *         gateways) + UDP/123 RTT + the few SNTP packets needed to converge.
+ * @note   Blocks the calling task for up to 10 s. Only called once, from
+ *         `nm_wifi_init_blocking()`, before the task graph spawns — never
+ *         from inside a running task.
+ * @see    run_ntp_resync() — the long-running 24 h resync path.
  */
 static bool nm_sntp_quick_sync(void)
 {
@@ -436,6 +511,21 @@ static int64_t s_last_ntp_sync_us = 0;   /* 0 = never synced this boot */
  *  with value_a=3 (AP, value_b=1 start / 0 stop) and value_a=4 (geo,
  *  value_b=1 success). Matches the 1.20.3 LOG_SYSTEM value_a encoding
  *  documented in event_logger.h. */
+/**
+ * @brief Post a SYSTEM event with the given (value_a, value_b) payload to Q3.
+ *
+ * Thin wrapper around `log_post()` that fills the timestamp + event_type +
+ * initiator fields canonically (`LOG_SYSTEM` / `LOG_BY_SYSTEM`). Caller
+ * provides the discriminating value_a/value_b per the LOG_SYSTEM subtype
+ * table in `event_logger.h`.
+ *
+ * @param value_a SYSTEM-event subtype (1=STA up/down, 2=NTP synced/timeout,
+ *                3=AP up/down, etc.). See `event_logger.h` LOG_SYSTEM table.
+ * @param value_b Payload for the chosen subtype (1/0 booleans, or KB
+ *                metrics for heap subtypes, etc.).
+ * @note Non-blocking — Q3 has overflow accounting. If Q3 is full the event
+ *       is dropped (T9 accumulates the drop count separately).
+ */
 static void log_sys(int16_t value_a, int16_t value_b)
 {
     log_event_t ev = {};
@@ -450,10 +540,25 @@ static void log_sys(int16_t value_a, int16_t value_b)
 /**
  * @brief Build a `net_status_t` snapshot from the current esp_wifi/esp_netif state.
  *
- * client_connected = `esp_wifi_sta_get_ap_info` succeeds.
- * ap_active        = always false in this minimal T10 (AP support deferred).
- * ntp_synced       = `time(NULL) > NTP_MIN_EPOCH` (wall clock is plausible).
- * ip_str           = STA netif IP as dotted-decimal, or "" if not up.
+ * Captures the four fields T8's LCD WiFi page renders, in a single
+ * point-in-time sample. Called every NET_POLL_MS from the main loop;
+ * cheap (no syscalls beyond `esp_wifi_sta_get_ap_info` + one netif lookup).
+ *
+ * Field semantics:
+ *  - `client_connected` = `esp_wifi_sta_get_ap_info()` succeeded (we have
+ *    a live STA association with the AP).
+ *  - `ap_active`        = reflects the module-level `s_ap_active` latch
+ *    set by `start_ap()`/`stop_ap()` — single-task-owned by T10.
+ *  - `ntp_synced`       = `time(NULL) > NTP_MIN_EPOCH` (wall clock is
+ *    plausibly post-2023-11-14; not a guarantee of fresh sync).
+ *  - `ip_str`           = STA netif IPv4 as dotted-decimal, or "" if not up.
+ *
+ * @param[out] out  Caller-owned struct; zero-initialised before being
+ *                  populated.
+ * @warning Reads `s_ap_active` without locking — safe because T10 is the
+ *          sole writer (start_ap/stop_ap happen on the T10 task only) and
+ *          this function is called only from the T10 task.
+ * @see Q5 — consumer queue (depth 1, xQueueOverwrite semantics).
  */
 static void snapshot_state(net_status_t *out)
 {
@@ -483,11 +588,18 @@ static void snapshot_state(net_status_t *out)
 }
 
 /**
- * @brief Compare two net_status_t snapshots for material equality.
+ * @brief Compare two `net_status_t` snapshots for material equality.
  *
  * "Material" excludes flag-bit jitter that doesn't matter to T8's LCD.
  * In practice the entire struct is compared since every field drives
- * something visible.
+ * something visible to the operator (status icon, AP indicator, NTP tick,
+ * IP address line).
+ *
+ * @param a  First snapshot. Must be non-NULL.
+ * @param b  Second snapshot. Must be non-NULL.
+ * @return `true` if all four observed fields match; `false` otherwise.
+ * @note   Used by the T10 main loop to suppress redundant Q5 overwrites —
+ *         only posts to Q5 when something material has changed.
  */
 static bool snapshots_equal(const net_status_t *a, const net_status_t *b)
 {
@@ -519,14 +631,30 @@ static bool snapshots_equal(const net_status_t *a, const net_status_t *b)
 
 static bool s_geo_done = false;
 
-/** HTTP response accumulator — captured by the event handler below. */
+/**
+ * @brief HTTP response accumulator — captured by the geo event handler.
+ *
+ * Caller-owned buffer + capacity; the event handler appends `ON_DATA`
+ * chunks until it fills (truncating cleanly with a trailing NUL).
+ */
 typedef struct {
-    char  *buf;
-    size_t cap;
-    size_t len;
+    char  *buf;  /**< Caller-owned buffer; receives the response body + NUL. */
+    size_t cap;  /**< Buffer capacity in bytes (must be ≥ 1 for the NUL). */
+    size_t len;  /**< Bytes written so far, excluding the trailing NUL. */
 } geo_resp_t;
 
-/** esp_http_client event callback — appends body chunks into a geo_resp_t. */
+/**
+ * @brief esp_http_client event callback — appends body chunks into a geo_resp_t.
+ *
+ * Handles `HTTP_EVENT_ON_DATA` only; other events are ignored. Stops
+ * appending once the buffer is full so subsequent chunks don't overflow.
+ * NUL-terminates after every append so the buffer is always a valid
+ * C-string at the point any future strstr/strchr scans it.
+ *
+ * @param  evt  Event record from esp_http_client. `evt->user_data` is
+ *              expected to point to a `geo_resp_t`; non-NULL is the gate.
+ * @return Always `ESP_OK` — never aborts the request from the callback.
+ */
 static esp_err_t geo_http_event_cb(esp_http_client_event_t *evt)
 {
     if (evt->event_id == HTTP_EVENT_ON_DATA && evt->user_data != NULL) {
@@ -541,9 +669,24 @@ static esp_err_t geo_http_event_cb(esp_http_client_event_t *evt)
     return ESP_OK;
 }
 
-/** Convert a float coordinate to integer degrees + millidegree fraction.
- *  Example: 52.3676 → deg=52, frac=368  (frac = round(fractional * 1000)).
- *  Negative coordinates: deg is negative, frac is always non-negative. */
+/**
+ * @brief Convert a float coordinate to integer degrees + millidegree fraction.
+ *
+ * Splits a signed float (e.g. lat/lon in degrees) into two integers
+ * suitable for NVS storage. The carry logic handles values like
+ * `0.9995` → `deg=1, frac=0` (rather than `deg=0, frac=1000`).
+ *
+ * Examples:
+ *  - `52.3676`  → `deg=52,  frac=368`
+ *  - `-4.9`     → `deg=-4,  frac=900`
+ *  - `0.0`      → `deg=0,   frac=0`
+ *
+ * @param      val   Coordinate value in degrees (signed float).
+ * @param[out] deg   Integer degrees (signed; can be negative).
+ * @param[out] frac  Millidegree fraction (0..999, always non-negative).
+ * @note The sign of @p val attaches to @p deg only. @p frac is always
+ *       0..999 regardless.
+ */
 static void float_to_deg_frac(float val, int32_t *deg, int32_t *frac)
 {
     bool neg = (val < 0.0f);
@@ -554,9 +697,27 @@ static void float_to_deg_frac(float val, int32_t *deg, int32_t *frac)
     if (neg) *deg = -*deg;
 }
 
-/** Parse the ip-api.com JSON response.
- *  Expected: {"status":"success","lat":52.37,"lon":4.90,"timezone":"Europe/Amsterdam"}
- *  Returns true on success. */
+/**
+ * @brief Parse the ip-api.com JSON response into lat/lon/timezone.
+ *
+ * Lightweight ad-hoc parser (no cJSON dep). Searches for the three
+ * known keys via `strstr` and extracts the values via `atof`/`memcpy`.
+ *
+ * Expected body shape:
+ * @code
+ * {"status":"success","lat":52.37,"lon":4.90,"timezone":"Europe/Amsterdam"}
+ * @endcode
+ *
+ * @param      body     NUL-terminated response body (caller-owned).
+ * @param[out] out_lat  Receives the parsed latitude (degrees).
+ * @param[out] out_lon  Receives the parsed longitude (degrees).
+ * @param[out] out_tz   Receives the parsed IANA timezone key (NUL-terminated).
+ * @param      tz_len   Capacity of @p out_tz in bytes (≥ 1 for the NUL).
+ * @return `true` if all three fields were present and parsed; `false` on
+ *         any parse failure or non-success status.
+ * @note A `"status":"fail"` response (e.g. ip-api rate-limiting) returns
+ *       `false` cleanly — caller should retry on the next boot.
+ */
 static bool parse_geo_response(const char *body,
                                 float *out_lat, float *out_lon,
                                 char *out_tz, size_t tz_len)
@@ -583,8 +744,22 @@ static bool parse_geo_response(const char *body,
     return true;
 }
 
-/** Post a single i32 update to Q4 (T4 — Data Manager).
- *  T4 writes to NVS and updates the in-RAM shadow + recalcs sunrise. */
+/**
+ * @brief Post a single i32 config update to Q4 (consumed by T4).
+ *
+ * T4 receives the update, writes the value to NVS under (ns, key), updates
+ * its in-RAM `cfg_shadow_t` snapshot, and (if (ns,key) is one of the
+ * sunrise-relevant fields) recalculates sunrise/sunset for the new
+ * coordinates.
+ *
+ * @param ns     NVS namespace string ("system", "wifi", etc.). Must match
+ *               the namespaces declared in `nvs_config.h`.
+ * @param key    NVS key string (typically ≤ 15 chars per NVS rules).
+ * @param value  i32 payload — interpreted by T4 based on (ns, key).
+ * @note Non-blocking — Q4 is mutex-protected (MX4) with overflow drop.
+ *       Callers don't need to lock.
+ * @see config_update_t — Q4 message type.
+ */
 static void post_q4(const char *ns, const char *key, int32_t value)
 {
     config_update_t upd = {};
@@ -596,7 +771,31 @@ static void post_q4(const char *ns, const char *key, int32_t value)
     (void)xQueueSend(Q4, &upd, pdMS_TO_TICKS(200));
 }
 
-/** One-shot geo sync via ip-api.com. Caller gates on `s_geo_done`. */
+/**
+ * @brief One-shot IP geolocation sync via ip-api.com (HTTP, plain).
+ *
+ * Looks up the controller's public-IP-based lat/lon/timezone and:
+ *  -# Posts lat_deg + lat_frac + lon_deg + lon_frac to Q4 so T4 persists
+ *     them to NVS and refreshes the sunrise/sunset math.
+ *  -# Translates the IANA timezone key into a POSIX TZ string via
+ *     `iana_to_posix()`, writes it to NVS, then applies it via
+ *     `setenv("TZ", …) + tzset()` so subsequent `localtime_r` calls
+ *     return the local wall-clock time.
+ *  -# Posts a LOG_SYSTEM `value_a=4, value_b=1` audit event (a.6.33).
+ *  -# Sets `s_geo_done = true` so the next T10 main-loop iteration
+ *     doesn't re-run.
+ *
+ * Plain HTTP, NOT HTTPS — ip-api.com's free tier doesn't offer TLS. The
+ * MitM risk is operationally minor (worst case: sunrise calc drifts by a
+ * few minutes if an attacker injects bogus coordinates).
+ *
+ * @warning Caller MUST gate on `!s_geo_done` to enforce once-per-boot.
+ * @note   Synchronous — blocks the calling task for up to 5 s (HTTP
+ *         timeout). Called once from T10's main loop, never on the hot
+ *         path.
+ * @note   Failure modes are non-fatal: any error path returns silently
+ *         without setting `s_geo_done`, so the next boot retries cleanly.
+ */
 static void do_geo_sync(void)
 {
     ESP_LOGI(TAG, "[T10] Geo sync starting via ip-api.com");
@@ -707,9 +906,22 @@ static TickType_t    s_ap_started    = 0;
 static char          s_ap_ssid[20]   = {};
 static char          s_ap_psk[64]    = {};
 
-/** Reload AP SSID + PSK from NVS. Called once at task start AND on every
- *  start_ap() invocation so admin changes to NVS `wifi/ap_ssid` /
- *  `wifi/ap_psk` take effect on the next enable cycle without a reboot. */
+/**
+ * @brief Reload AP SSID + PSK from NVS into the module-static buffers.
+ *
+ * Called once at task start AND on every `start_ap()` invocation so admin
+ * changes to NVS `wifi/ap_ssid` / `wifi/ap_psk` take effect on the next
+ * enable cycle without a reboot.
+ *
+ * Source order:
+ *  - SSID: NVS `wifi/ap_ssid` (admin override) → MAC-derived `Greenhouse-XXYY`
+ *          default. Every fresh unit thus has a unique SSID without admin setup.
+ *  - PSK:  NVS `wifi/ap_psk` (admin override) → `AP_PSK_DEFAULT` ("0123456789").
+ *          Never an open AP — WPA2 requires the raw key.
+ *
+ * @warning Writes to module-static `s_ap_ssid` / `s_ap_psk`. Single-task-owned
+ *          by T10 — no locking. Do NOT call from other tasks.
+ */
 static void load_ap_credentials(void)
 {
     /* SSID source order: NVS `wifi/ap_ssid` (admin override) → MAC-derived
@@ -745,8 +957,18 @@ static void load_ap_credentials(void)
     s_ap_psk[sizeof(s_ap_psk)  - 1] = '\0';
 }
 
-/** One-shot AP init: load SSID + PSK from NVS. Called once at task start;
- *  no radio side effects. */
+/**
+ * @brief One-shot AP module init — populate SSID/PSK buffers, no radio change.
+ *
+ * Called once from `task_network_manager()` at task start. The radio stays
+ * in whatever mode `nm_wifi_init_blocking()` left it in (typically STA);
+ * AP only comes up when the admin flips `wifi/ap_enable=1` in NVS and
+ * `poll_ap()` notices the transition.
+ *
+ * @note Splitting `ap_init()` from `start_ap()` means a fresh boot doesn't
+ *       waste radio cycles starting an AP nobody asked for — even though
+ *       the credentials are ready to go on demand.
+ */
 static void ap_init(void)
 {
     load_ap_credentials();
@@ -754,8 +976,25 @@ static void ap_init(void)
              s_ap_ssid, (unsigned)strlen(s_ap_psk));
 }
 
-/** Start the soft-AP. Idempotent. Reloads SSID/PSK from NVS each call so
- *  admin can change them via the GUI and re-enable AP without a reboot. */
+/**
+ * @brief Start the WPA2-PSK soft-AP. Idempotent.
+ *
+ * Reloads SSID/PSK from NVS so admin GUI changes take effect on every
+ * enable cycle without a reboot. Creates the AP netif if missing, sets
+ * WiFi mode to APSTA, configures the AP, and posts a LOG_SYSTEM
+ * `value_a=3, value_b=1` audit event on success.
+ *
+ * AP defaults:
+ *  - Channel: `AP_CHANNEL` (1).
+ *  - Max clients: `AP_MAX_CONN` (4).
+ *  - Authmode: WPA2-PSK (esp_wifi enforces ≥ 8 char key).
+ *  - DHCP: auto-started on 192.168.4.0/24 by the IDF default AP netif.
+ *
+ * @note If `esp_wifi_set_config(WIFI_IF_AP, …)` fails the function rolls
+ *       back to `WIFI_MODE_STA` so the radio is left in a clean state.
+ * @warning Single-task-owned by T10 — do NOT call from other tasks.
+ * @see poll_ap() — only intended caller (gated on NVS `wifi/ap_enable`).
+ */
 static void start_ap(void)
 {
     if (s_ap_active) return;
@@ -813,7 +1052,16 @@ static void start_ap(void)
     log_sys(3, 1);
 }
 
-/** Stop the soft-AP. Returns mode to STA-only. Idempotent. */
+/**
+ * @brief Stop the soft-AP. Returns WiFi mode to STA-only. Idempotent.
+ *
+ * Posts a LOG_SYSTEM `value_a=3, value_b=0` audit event on success. The
+ * AP netif handle is retained for cheap reuse on the next `start_ap()`.
+ *
+ * @note Switching to `WIFI_MODE_STA` also tears down the AP's DHCP server
+ *       and disconnects any associated clients. The STA association
+ *       (controller ↔ home WiFi) is NOT affected.
+ */
 static void stop_ap(void)
 {
     if (!s_ap_active) return;
@@ -832,14 +1080,26 @@ static void stop_ap(void)
     log_sys(3, 0);
 }
 
-/** Read NVS `wifi/ap_enable` and start/stop on edge; enforce auto-shutdown.
+/**
+ * @brief Per-tick AP-state reconciliation: enable on NVS edge, auto-shutdown on timeout.
  *
- * alpha.6.31 — admin-only, no auto-enable. The AP is **only** enabled when
- * the admin writes `wifi/ap_enable=1` to NVS via the web GUI (security
- * policy: auto-enabling an open broadcast on credential loss would expose
- * an unconfigured greenhouse to anyone in radio range). After the
- * `cfg.ap_timeout_min` minutes timeout, T10 clears the flag in NVS so the
- * AP doesn't restart on the next tick.
+ * Called every NET_POLL_MS from the T10 main loop. Two responsibilities:
+ *
+ *  1. **NVS-edge handling.** Reads `wifi/ap_enable` from NVS. On any
+ *     change vs the previous tick (tracked by `s_ap_enable_nvs`), calls
+ *     `start_ap()` or `stop_ap()` accordingly. The first tick always
+ *     triggers a transition because `s_ap_enable_nvs` is initialised to
+ *     the sentinel `-1`.
+ *
+ *  2. **Auto-shutdown.** When AP is active AND `cfg.ap_timeout_min > 0`,
+ *     stops the AP after that many minutes elapsed since `start_ap()`.
+ *     Also clears the NVS flag via Q4 so the next poll doesn't restart it.
+ *
+ * @warning alpha.6.31 security policy: admin-only enable, no auto-enable
+ *          on credential loss. Auto-enabling on a failed STA would expose
+ *          an unconfigured greenhouse to anyone in radio range. The admin
+ *          must explicitly write `wifi/ap_enable=1` via the web GUI.
+ * @see start_ap() / stop_ap() — the actual radio-mode toggle.
  */
 static void poll_ap(void)
 {
@@ -896,6 +1156,34 @@ static void poll_ap(void)
  *   - Geo is NOT re-fetched (location is stable).
  * ============================================================ */
 
+/**
+ * @brief Periodic 24 h NTP resync — kicks a fresh SNTP query, re-applies TZ.
+ *
+ * Called from the T10 main loop when `esp_timer_get_time() - s_last_ntp_sync_us`
+ * exceeds `NTP_RESYNC_INTERVAL_S` (= 24 h). The DS1307 RTC is precise enough
+ * for multi-day operation, but slow drift accumulates — this brings the
+ * wall clock back to NTP-grade accuracy.
+ *
+ * Per-call behaviour:
+ *  -# Bail if `esp_sntp_get_sync_status()` reports IN_PROGRESS (avoid
+ *     double-kicking).
+ *  -# Configure pool.ntp.org + POLL mode; call `esp_sntp_init()` to kick
+ *     the query.
+ *  -# Wait up to 10 s (20 × 500 ms) for `SNTP_SYNC_STATUS_COMPLETED`.
+ *  -# On timeout: log a `value_a=2, value_b=0` audit row and bail (next
+ *     T10 cycle retries).
+ *  -# On success: re-apply persisted POSIX TZ (`esp_sntp` resets TZ to UTC
+ *     implicitly), update `s_last_ntp_sync_us`, notify T4 via
+ *     `DM_NOTIFY_NTP_SYNCED` so T4 writes the new time back to the DS1307.
+ *
+ * @note Blocks the calling task for up to 10 s. Acceptable because T10 is
+ *       a low-priority background monitor — climate-control tasks
+ *       preempt cleanly.
+ * @note Geo is NOT re-fetched during the periodic resync (location is
+ *       stable for a stationary controller). Only `do_geo_sync()` at boot
+ *       runs the IP-geolocation lookup.
+ * @see  nm_sntp_quick_sync() — the boot-time SNTP sync.
+ */
 static void run_ntp_resync(void)
 {
     ESP_LOGI(TAG, "[T10] Starting periodic NTP resync (24 h cadence)");

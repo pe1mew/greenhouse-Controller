@@ -160,11 +160,24 @@ static volatile size_t s_coredump_size_b   = 0u;
 
 /* ============================================================
  * Internal helper — RTC datetime → Unix UTC timestamp
- *
- * Manual implementation; avoids mktime()/timegm() portability concerns.
- * Supports years 1970–2099.
  * ============================================================ */
 
+/**
+ * @brief Convert a DS1307 rtc_datetime_t (UTC) to a Unix timestamp.
+ *
+ * Manual implementation that avoids mktime()/timegm() portability
+ * concerns and the TZ-environment dependence of timegm(). Counts days
+ * since 1970-01-01 by summing complete years (with the Gregorian leap
+ * rule) and complete months in the current year, then adds days,
+ * hours, minutes, seconds. Supports years 1970–2099.
+ *
+ * @param dt  Datetime in UTC; not validated. Caller must pass a
+ *            sensible struct from rtc_get_time().
+ * @return    Unix UTC seconds since 1970-01-01 00:00:00.
+ * @note   Returns 0 for `dt->year < 1970` (the year-loop is empty);
+ *         not exercised in normal operation because the DS1307
+ *         driver clamps reads.
+ */
 static uint32_t rtc_dt_to_unix(const rtc_datetime_t *dt)
 {
     /* Days-per-month lookup; index 1–12 (index 0 unused). */
@@ -199,10 +212,21 @@ static uint32_t rtc_dt_to_unix(const rtc_datetime_t *dt)
 
 /* ============================================================
  * Internal helper — recompute sunrise/sunset and is_daytime
- *
- * Must be called with MX4 held (or at boot before MX4 is contested).
  * ============================================================ */
 
+/**
+ * @brief Recompute the cached sunrise/sunset and is_daytime values.
+ *
+ * Reads `s_cfg.lat_*`, `s_cfg.lon_*`, and `s_cfg.current_unix_ts`, then
+ * writes `s_cfg.is_daytime`, `s_cfg.sunrise_mins_utc`, and
+ * `s_cfg.sunset_mins_utc`. Called every time the timestamp changes
+ * (after each RTC re-read and after every NTP sync) and whenever
+ * lat/lon are modified via Q4.
+ *
+ * @warning Must be called with MX4 held — or at boot before MX4 is
+ *          contested. Touches `s_cfg` directly.
+ * @see    sunrise_calc(), sunrise_is_daytime()
+ */
 static void update_sun_times(void)
 {
     float lat = (float)s_cfg.lat_deg + (float)s_cfg.lat_frac / 1000.0f;
@@ -217,6 +241,21 @@ static void update_sun_times(void)
  * Internal helper — read DS1307, seed system clock, update MX4
  * ============================================================ */
 
+/**
+ * @brief Read the DS1307 RTC, seed the ESP-IDF system clock, refresh MX4.
+ *
+ * Sequence:
+ *   1. Acquire MX1 (200 ms timeout) → rtc_get_time() → release.
+ *   2. Convert UTC datetime to Unix seconds via rtc_dt_to_unix().
+ *   3. settimeofday() so time(NULL) returns valid UTC before NTP completes.
+ *   4. Acquire MX4 → write current_unix_ts + recompute sun times → release.
+ *
+ * Mutex timeouts log a warning and skip the operation; no fatal errors.
+ * Called once at T4 boot and again every RTC_POLL_TICKS main-loop ticks
+ * (~60 s) to compensate for clock drift between NTP corrections.
+ *
+ * @note Has no effect on the DS1307 itself — read-only.
+ */
 static void read_rtc_and_seed_clock(void)
 {
     rtc_datetime_t dt;
@@ -261,8 +300,11 @@ static void read_rtc_and_seed_clock(void)
  * Internal helper — load NVS namespaces into s_cfg at boot
  *
  * Called before the scheduler is contested; no mutex needed.
+ * Each missing key is silently replaced with its factory default
+ * (defined in cfg_defaults.h) so a fresh device boots without errors.
  * ============================================================ */
 
+/** @brief Load NVS_NS_CLIMATE keys into the s_cfg climate fields. */
 static void nvs_load_climate(void)
 {
     int32_t v;
@@ -282,6 +324,7 @@ static void nvs_load_climate(void)
     nvs_cfg_get_i32_or_default(NVS_NS_CLIMATE, K_AVG_WIN_RH,  DEF_AVG_WIN_RH,  &v); s_cfg.avg_win_rh  = (int16_t)v;
 }
 
+/** @brief Load NVS_NS_WIND keys into the s_cfg wind fields. */
 static void nvs_load_wind(void)
 {
     int32_t v;
@@ -291,6 +334,15 @@ static void nvs_load_wind(void)
     nvs_cfg_get_i32_or_default(NVS_NS_WIND, K_WIND_PROT_EN,  DEF_WIND_PROT_EN,  &v); s_cfg.wind_prot_en  = (int16_t)v;
 }
 
+/**
+ * @brief Load NVS_NS_MOTOR keys for all 3 motor channels into s_cfg.
+ *
+ * Iterates over M1/M2/M3 reading `travel_mX`, `dwell_open_mX`, and
+ * `dwell_close_mX` from NVS. Per-channel keys are stored as separate
+ * NVS entries (not arrays) because the NVS API doesn't natively
+ * support int16 arrays; the parallel-arrays pattern keeps the code
+ * compact without sacrificing per-channel granularity.
+ */
 static void nvs_load_motor(void)
 {
     int32_t v;
@@ -322,6 +374,7 @@ static void nvs_load_motor(void)
     }
 }
 
+/** @brief Load NVS_NS_SYSTEM core keys (poll interval, location, TZ, LED) into s_cfg. */
 static void nvs_load_system(void)
 {
     nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_POLL_INTERVAL,   DEF_POLL_INTERVAL_S,     &s_cfg.poll_interval_s);
@@ -339,6 +392,15 @@ static void nvs_load_system(void)
                                 s_cfg.tz_str, sizeof(s_cfg.tz_str));
 }
 
+/**
+ * @brief Load NVS_NS_SYSTEM web-tab/status-website keys into s_cfg.
+ *
+ * Separated from nvs_load_system() because dm_reload_web_cfg() needs to
+ * refresh just this subset after the /api/web POST handler writes new
+ * values directly to NVS.
+ *
+ * @see dm_reload_web_cfg()
+ */
 static void nvs_load_web(void)
 {
     nvs_cfg_get_str_or_default(NVS_NS_SYSTEM, K_STATUS_URL,    DEF_STATUS_URL,
@@ -357,11 +419,24 @@ static void nvs_load_web(void)
 
 /* ============================================================
  * cfg_clamp — enforce per-key validation bounds on Q4 values.
- *
- * Returns the (possibly clamped) value.  Logs a warning whenever
- * clamping is applied so the operator can see the correction.
- * Unknown keys are passed through unchanged.
  * ============================================================ */
+
+/**
+ * @brief Clamp a Q4 config value to the per-key bounds in cfg_limits.h.
+ *
+ * Each known namespace/key pair has a documented [min, max] from
+ * cfg_limits.h. Values outside the range are pulled to the nearest
+ * endpoint and a warning row is logged so the operator can see the
+ * correction. Unknown keys are passed through unchanged — the caller
+ * later detects them as "not in shadow" and only the NVS write proceeds.
+ *
+ * @param ns    NVS namespace string (e.g. NVS_NS_CLIMATE).
+ * @param key   NVS key string (e.g. "t_max_day").
+ * @param v     Raw value from Q4.
+ * @return      Clamped value (== v if already in range, or for unknown keys).
+ * @note Clamping is permissive — a typo on `ns`/`key` returns the value
+ *       unchanged and lets the downstream NVS write proceed.
+ */
 static int32_t cfg_clamp(const char *ns, const char *key, int32_t v)
 {
 #define _CLAMP(lo, hi)                                                       \
@@ -420,11 +495,23 @@ static int32_t cfg_clamp(const char *ns, const char *key, int32_t v)
 
 /* ============================================================
  * ns/key → log_param_id_t mapping (a.6.35.5 audit logging).
- *
- * Returns the LOG_PARAM_* id and, for motor-channel keys, the 1-based
- * channel index. Returns LOG_PARAM_NONE for keys that aren't enumerated
- * in log_param_id_t — those changes still apply but emit no audit row.
  * ============================================================ */
+
+/**
+ * @brief Map an NVS namespace/key pair to its LOG_PARAM_* id for audit rows.
+ *
+ * Used by apply_config_update() to fill log_event_t::param_id when a Q4
+ * config change is committed. For motor dwell keys also writes the 1-based
+ * channel index (1/2/3) to *out_channel so the audit row carries which
+ * window the change affected.
+ *
+ * @param ns           NVS namespace string.
+ * @param key          NVS key string.
+ * @param out_channel  If non-NULL, set to 1/2/3 for motor keys, 0 otherwise.
+ * @return The matching LOG_PARAM_* id, or LOG_PARAM_NONE for keys that are
+ *         deliberately not enumerated (e.g. `travel_mX`, session/AP timeouts).
+ *         LOG_PARAM_NONE means "change still applied, no audit row".
+ */
 static log_param_id_t ns_key_to_log_id(const char *ns, const char *key,
                                        uint8_t *out_channel)
 {
@@ -493,21 +580,37 @@ static log_param_id_t ns_key_to_log_id(const char *ns, const char *key,
 
 /* ============================================================
  * Internal helper — apply a Q4 config_update_t
+ * ============================================================ */
+
+/**
+ * @brief Validate, persist, and apply a single Q4 config change.
  *
- * a.6.35.5: now also emits a LOG_SETPOINT audit row to Q3 after a
+ * Pipeline:
+ *   1. cfg_clamp() → in-range value.
+ *   2. nvs_cfg_set_i32() → persistent storage.
+ *   3. MX4 critical section: capture old value, write the in-RAM shadow,
+ *      call update_sun_times() if location changed.
+ *   4. Outside MX4: log INFO line + LOG_SETPOINT audit row to Q3 (skipped
+ *      for keys whose ns_key_to_log_id() returns LOG_PARAM_NONE).
+ *
+ * Since a.6.35.5: emits a LOG_SETPOINT audit row to Q3 after every
  * successful shadow update. The Q4 message carries the initiator
  * (LOG_BY_FARMER / LOG_BY_ADMIN from the LCD-UI session, LOG_BY_WEB
  * from the web server, or 0 / LOG_BY_SYSTEM from legacy callers that
  * didn't set it). Old → new (clamped) values are captured under the
  * same MX4 critical section that writes the shadow.
  *
- * Returns true on success (NVS written + shadow updated).
- * config_update_t carries only int32_t values; string-type keys
- * (tz_str) are not handled through Q4 — the web server writes them
- * to NVS directly and emits its own audit row (T11-side, with
- * initiator=LOG_BY_WEB).
- * ============================================================ */
-
+ * @param upd  Validated Q4 message (caller is T4's main loop after
+ *             xQueueReceive). Must be non-NULL.
+ * @return     true if the NVS write succeeded; the shadow may still be
+ *             stale if MX4 timed out (logged but not returned).
+ * @note   config_update_t carries only int32_t values; string-type keys
+ *         (tz_str) are not handled through Q4 — the web server writes
+ *         them to NVS directly and emits its own audit row (T11-side,
+ *         with initiator=LOG_BY_WEB).
+ * @warning NVS write happens BEFORE the MX4 update. On MX4 timeout the
+ *          persistent state is correct but the shadow is briefly stale.
+ */
 static bool apply_config_update(const config_update_t *upd)
 {
     /* Clamp to valid range before touching NVS or the shadow struct.
@@ -640,6 +743,22 @@ static bool apply_config_update(const config_update_t *upd)
  * Internal helper — handle a sensor_reading_t from Q6
  * ============================================================ */
 
+/**
+ * @brief Process a single Q6 sensor_reading_t: snapshot, ring, log, notify.
+ *
+ * Four-step fan-out called by the main loop whenever Q6 delivers a fresh
+ * reading from T5 (Sensor Poll):
+ *  1. Update MX2 (latest measurement) with a 50 ms acquire timeout.
+ *  2. Append to MX3 ring buffer (head advance, count saturates at DEPTH).
+ *  3. Post a LOG_SENSOR row to Q3 via log_post() (FR-LG09).
+ *  4. Notify T3 (TN1 — new wind data) and T6 (TN2 — new sensor data).
+ *
+ * @param r  Validated sensor reading; not NULL. Caller is the main loop
+ *           after a successful xQueueReceive on Q6.
+ * @warning Mutex timeouts here do NOT abort the function — each step is
+ *          independent, so a brief MX2 stall does not block MX3 or the
+ *          downstream task notifications.
+ */
 static void handle_sensor_reading(const sensor_reading_t *r)
 {
     /* 1. Update MX2 (current measurement). */
@@ -687,6 +806,22 @@ static void handle_sensor_reading(const sensor_reading_t *r)
  * Internal helper — handle TN4 (NTP sync confirmed by T10)
  * ============================================================ */
 
+/**
+ * @brief Handle a TN4 notification: write the freshly-NTP'd time to DS1307.
+ *
+ * Triggered when T10 (Network Manager) calls xTaskNotify(task_t4,
+ * DM_NOTIFY_NTP_SYNCED, eSetBits) after configTime() succeeds. By that
+ * point ESP-IDF's POSIX clock holds the correct UTC; this function reads
+ * time(NULL), converts to DS1307 datetime fields, and writes to the RTC
+ * under MX1 so the device retains correct time across power cycles.
+ *
+ * Also refreshes the MX4 shadow's current_unix_ts and recomputes sun
+ * times because NTP correction is typically a few seconds more accurate
+ * than the previously-loaded RTC value.
+ *
+ * @note   If time(NULL) returns an implausible pre-2000 value the DS1307
+ *         write is skipped to avoid corrupting the RTC with epoch zero.
+ */
 static void handle_ntp_sync(void)
 {
     time_t now = time(NULL);
@@ -740,6 +875,27 @@ static void handle_ntp_sync(void)
  * T4 task entry point
  * ============================================================ */
 
+/**
+ * @brief T4 task entry point — see data_manager.h for the contract.
+ *
+ * Implementation outline (boot + main loop):
+ *   Boot
+ *     1. esp_task_wdt_add() to subscribe to the watchdog.
+ *     2. Zero s_cfg/s_meas/s_ring and clear s_meas_valid.
+ *     3. nvs_load_climate/wind/motor/system/web() — full NVS pull.
+ *     4. setenv("TZ", ...) + tzset().
+ *     5. read_rtc_and_seed_clock() — DS1307 → POSIX clock + MX4.
+ *     6. Emit boot-reason LOG_SYSTEM row (since 1.17.31; previously
+ *        emitted from main.cpp at epoch zero).
+ *     7. Emit unit-id LOG_SYSTEM row (gh#17, since 1.18.3).
+ *     8. esp_core_dump_image_check() — cache + log if present (a.6.35.6).
+ *   Main loop (1 s tick)
+ *     - xQueueReceive(Q6, 1000 ms) → handle_sensor_reading().
+ *     - drain Q4 → apply_config_update().
+ *     - check TN4 → handle_ntp_sync().
+ *     - every RTC_POLL_TICKS s → read_rtc_and_seed_clock().
+ *     - esp_task_wdt_reset() at the top of every iteration.
+ */
 void task_data_manager(void *pvParameters)
 {
     (void)pvParameters;
@@ -898,6 +1054,7 @@ void task_data_manager(void *pvParameters)
  * Public getter implementations
  * ============================================================ */
 
+/** @brief Thread-safe full-cfg copy under MX4 (see data_manager.h). */
 void dm_cfg_snapshot(cfg_shadow_t *out)
 {
     if (xSemaphoreTake(MX4, pdMS_TO_TICKS(200u)) == pdTRUE) {
@@ -910,6 +1067,7 @@ void dm_cfg_snapshot(cfg_shadow_t *out)
     }
 }
 
+/** @brief Thread-safe latest-measurement copy under MX2 (see data_manager.h). */
 void dm_meas_snapshot(sensor_reading_t *out, bool *valid_out)
 {
     if (xSemaphoreTake(MX2, pdMS_TO_TICKS(100u)) == pdTRUE) {
@@ -922,6 +1080,28 @@ void dm_meas_snapshot(sensor_reading_t *out, bool *valid_out)
     }
 }
 
+/**
+ * @brief Build the aggregated status snapshot. See data_manager.h.
+ *
+ * Aggregates state from four sources into a single output struct:
+ *   - MX2 latest measurement (via dm_meas_snapshot)
+ *   - MX4 cfg shadow         (via dm_cfg_snapshot, plus derived setpoints)
+ *   - relay-controller spinlock window states (via t2_get_window_states)
+ *   - EG1 event-group bits   (raw + decoded operating mode)
+ *   - WiFi STA info          (esp_wifi_sta_get_ap_info + esp_netif_get_ip_info)
+ *   - LittleFS /manifest.json asset_version (cached after first read)
+ *
+ * Each underlying lock is taken and released independently — no critical
+ * section spans more than one source, so this can safely be called from
+ * any task without lock-order concerns.
+ *
+ * @param out  Caller-allocated status_snapshot_t; zero-initialised on entry.
+ *             Missing data appears as 0 / false / "" (e.g. before T5
+ *             produces its first reading).
+ * @note   The asset version is cached after first successful manifest read
+ *         (s_asset_ver_loaded / s_asset_ver) — the manifest doesn't change
+ *         at runtime, only across an OTA reboot.
+ */
 void dm_status_snapshot(status_snapshot_t *out)
 {
     if (out == NULL) { return; }
@@ -1096,6 +1276,14 @@ void dm_status_snapshot(status_snapshot_t *out)
     strncpy(out->assets, s_asset_ver, sizeof(out->assets) - 1u);
 }
 
+/**
+ * @brief Read up to @p count entries from the MX3-protected ring buffer.
+ *        See data_manager.h.
+ *
+ * Locates the oldest entry from the ring head and copies `to_copy =
+ * min(count, available - offset)` entries forward (wrap-aware). On MX3
+ * timeout no entries are copied and *read_out is set to 0.
+ */
 void dm_ring_read(uint16_t offset, sensor_reading_t *buf,
                   uint16_t count, uint16_t *read_out)
 {
@@ -1125,6 +1313,7 @@ void dm_ring_read(uint16_t offset, sensor_reading_t *buf,
     if (read_out != NULL) { *read_out = copied; }
 }
 
+/** @brief Return current ring buffer occupancy under MX3 (see data_manager.h). */
 uint16_t dm_ring_count(void)
 {
     uint16_t n = 0u;
@@ -1135,6 +1324,7 @@ uint16_t dm_ring_count(void)
     return n;
 }
 
+/** @brief Return the last-known Unix UTC timestamp from MX4 (see data_manager.h). */
 uint32_t dm_get_unix_time(void)
 {
     uint32_t v = 0u;
@@ -1145,6 +1335,7 @@ uint32_t dm_get_unix_time(void)
     return v;
 }
 
+/** @brief Return the configured sensor poll interval from MX4 (see data_manager.h). */
 int32_t dm_get_poll_interval_s(void)
 {
     int32_t v = DEF_POLL_INTERVAL_S;
@@ -1155,6 +1346,13 @@ int32_t dm_get_poll_interval_s(void)
     return v;
 }
 
+/**
+ * @brief Refresh the web/status NVS keys into the cfg shadow. See data_manager.h.
+ *
+ * Takes MX4 with a 500 ms timeout, calls nvs_load_web(), releases, then
+ * also notifies T14 via T14_NOTIFY_CFG_CHANGED so enable/URL/interval
+ * changes take effect within ~1 s instead of after T14's 60 s idle period.
+ */
 void dm_reload_web_cfg(void)
 {
     /* Synchronous: caller (typically the /api/web POST handler) blocks until
@@ -1181,6 +1379,14 @@ void dm_reload_web_cfg(void)
     }
 }
 
+/**
+ * @brief Persist the most recently uploaded log filename. See data_manager.h.
+ *
+ * Two-step write: NVS first (so the value survives reboot even if MX4
+ * times out next), then the MX4 shadow. The shadow update is best-effort;
+ * MX4 timeout leaves the persistent NVS value correct and the shadow
+ * mildly stale until the next reload.
+ */
 void dm_set_log_last_up(const char *filename)
 {
     if (filename == NULL) { return; }
@@ -1203,16 +1409,19 @@ void dm_set_log_last_up(const char *filename)
  * Coredump accessors (a.6.35.6)
  * ============================================================ */
 
+/** @brief Returns the cached "coredump-present-at-boot" flag (lock-free volatile load). */
 bool dm_coredump_present(void)
 {
     return s_coredump_present;
 }
 
+/** @brief Returns the cached size of the stored coredump in bytes (0 if none). */
 size_t dm_coredump_size_bytes(void)
 {
     return s_coredump_size_b;
 }
 
+/** @brief Drop the cached coredump flag after T11 erases the partition. See data_manager.h. */
 void dm_coredump_clear(void)
 {
     /* Called by T11 after a successful /api/coredump/erase. The actual
@@ -1225,6 +1434,18 @@ void dm_coredump_clear(void)
     ESP_LOGI(TAG, "dm_coredump_clear: cached state reset (post-erase)");
 }
 
+/**
+ * @brief Set the system clock and DS1307 RTC from a Unix UTC timestamp.
+ *        See data_manager.h.
+ *
+ * Three steps:
+ *   1. settimeofday() — POSIX clock updated immediately.
+ *   2. DS1307 write under MX1 — persistent across power cycles.
+ *   3. MX4 shadow current_unix_ts refresh.
+ *
+ * Mutex timeouts on MX1 or MX4 are logged and skipped; the POSIX clock
+ * always reflects the requested time regardless.
+ */
 void dm_set_manual_time(time_t unix_ts)
 {
     /* 1. Update the POSIX system clock immediately */

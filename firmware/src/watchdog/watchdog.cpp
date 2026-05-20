@@ -249,6 +249,21 @@ static void stack_hwm_sweep(void)
  * Task entry
  * ============================================================ */
 
+/**
+ * @brief T1 task body — subscribe TWDT, then run the 500 ms tick loop.
+ *
+ * Each tick (in order):
+ *  1. `esp_task_wdt_reset()` — highest priority concern.
+ *  2. `gpio_toggle(PIN_HB_LED)` — 1 Hz heartbeat LED.
+ *  3. `neopixel_tick()` — updates the WS2812B colour from EG1 + day/night.
+ *  4. Every 10 ticks (5 s): info-level uptime log.
+ *  5. Every 120 ticks (60 s): three heap rows (value_a 7/8/12).
+ *  6. Every 120 ticks at offset 60 (30 s after heap rows): integrity check.
+ *  7. Every 1200 ticks (10 min): stack-HWM sweep over T1..T15.
+ *  8. After OTA_HEALTHY_TICKS: `ota_mark_healthy()` once.
+ *
+ * @param pvParameters Unused; pass NULL.
+ */
 void task_watchdog(void *pvParameters)
 {
     (void)pvParameters;

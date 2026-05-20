@@ -6,6 +6,21 @@
  * state machines, 2 s inter-relay gap enforcement, travel and dwell
  * timers, and the deferred-ISR motor alarm handler (GPIO42 / RRK-3).
  *
+ * ## Internal vs public state
+ *
+ * T2's per-channel FSM extends the public window_state_t with two transient
+ * gap states (CH_GAP_TO_OPEN, CH_GAP_TO_CLOSE) used during direction
+ * reversal.  External consumers see only the five-value window_state_t via
+ * t2_get_window_states(); the mapping is performed inside that getter.
+ *
+ * ## gh#18 Phase 3 — NVS state recovery
+ *
+ * Each channel's terminal state (CH_CLOSED / CH_OPEN) is persisted to NVS on
+ * arrival, and NVS_STATE_UNKNOWN is written BEFORE every relay energisation.
+ * The boot path uses this to skip the expensive CLOSE_ALL calibration when
+ * all three channels are recorded as CLOSED — saving up to 171 s of
+ * climate-control outage on every clean reboot.
+ *
  * ## Design references
  *  - firmwareImplementationPlan.md §Phase 2
  *  - design/tasks.md  T2
@@ -118,6 +133,7 @@ static const uint8_t RELAY_CLOSE_PIN[NUM_CHANNELS] = {
  * window_state_t; mapping occurs in the reporting path (Phase 8+).
  * ============================================================ */
 
+/** @brief T2-internal per-channel FSM state (extends window_state_t). */
 typedef enum {
     CH_UNKNOWN,         /**< Position not established */
     CH_CLOSED,          /**< Fully closed; dwell timer may be running */
@@ -128,6 +144,7 @@ typedef enum {
     CH_GAP_TO_CLOSE,    /**< Both relays off; 2 s gap; will close next */
 } ch_state_t;
 
+/** @brief Per-channel runtime context (FSM state + timer deadlines + per-motor timings). */
 typedef struct {
     ch_state_t state;
     uint32_t   relay_deadline_ms;  /**< millis() when travel timer expires */
@@ -154,6 +171,16 @@ static portMUX_TYPE s_state_mux = portMUX_INITIALIZER_UNLOCKED;
 static volatile bool       s_alarm_edge      = false;
 static volatile TickType_t s_alarm_edge_tick = 0;
 
+/**
+ * @brief GPIO ISR — captures a motor-alarm edge on GPIO42.
+ *
+ * Records the FreeRTOS tick at which the edge occurred and sets a flag.
+ * The main loop runs the debounce + state machine in task context after
+ * ALARM_DEBOUNCE_MS (75 ms) has elapsed.
+ *
+ * @param arg  Unused — present to match gpio_isr_t (since alpha.6.9 IDF migration).
+ * @warning IRAM_ATTR; must not call any non-IRAM-safe functions.
+ */
 static void IRAM_ATTR isr_motor_alarm(void *arg)
 {
     /* arg unused — kept for the ESP-IDF gpio_isr_t signature (alpha.6.9). */
@@ -200,6 +227,13 @@ static inline void relay_ch_close(uint8_t ch)
  * Logging helpers
  * ============================================================ */
 
+/**
+ * @brief Post a LOG_RELAY entry for a channel state transition to Q3.
+ *
+ * @param ch_1based  Channel number 1..3 (M1=1, M2=2, M3=3).
+ * @param state      New ch_state_t value (carried in value_a so the log
+ *                   parser can render gap states too).
+ */
 static void log_relay_event(uint8_t ch_1based, ch_state_t state)
 {
     log_event_t evt;
@@ -213,6 +247,11 @@ static void log_relay_event(uint8_t ch_1based, ch_state_t state)
     log_post(&evt);
 }
 
+/**
+ * @brief Post a LOG_ALARM entry for motor-alarm onset or clearance to Q3.
+ *
+ * @param onset  1 = alarm onset, 0 = alarm clearance.
+ */
 static void log_alarm_event(int16_t onset)   /* 1 = onset, 0 = clearance */
 {
     log_event_t evt;
@@ -244,6 +283,18 @@ static void log_alarm_event(int16_t onset)   /* 1 = onset, 0 = clearance */
  * whether the CLOSE_ALL calibration can be skipped (saving up to 171 s
  * of climate-control outage on every clean reboot).
  * ============================================================ */
+
+/**
+ * @brief Persist a channel's window state to NVS.
+ *
+ * Only CH_CLOSED and CH_OPEN are mapped to their respective NVS markers;
+ * every other ch_state_t (including all MOVING and GAP states) maps to
+ * NVS_STATE_UNKNOWN.  Callers must invoke this with CH_UNKNOWN BEFORE
+ * energising a relay so that a power loss mid-move recovers safely.
+ *
+ * @param ch     Zero-based channel index (0=M1, 1=M2, 2=M3).
+ * @param state  Current ch_state_t value to encode and persist.
+ */
 static void persist_ch_state(uint8_t ch, ch_state_t state)
 {
     int32_t nvs_val = NVS_STATE_UNKNOWN;
@@ -545,6 +596,18 @@ static void calib_close_all(void)
  * Motor alarm onset / clearance
  * ============================================================ */
 
+/**
+ * @brief Assert the motor-alarm condition — first-priority safety response.
+ *
+ * De-energises all 6 relays immediately, marks every channel as
+ * position-unknown (in RAM and NVS — gh#18 Phase 3 invariant), sets
+ * EG1_BIT_MOTOR_ALARM so other tasks can observe the alarm, and posts a
+ * LOG_ALARM onset row to Q3.
+ *
+ * Called from the boot path, the calibration loop, the alarm guard wait,
+ * and the main-loop debounce — every site that detects the alarm pin LOW
+ * funnels through this single entry point (FR-MA01–FR-MA04).
+ */
 static void handle_alarm_onset(void)
 {
     /* Immediately de-energise all 6 relays — highest priority action. */
@@ -563,6 +626,23 @@ static void handle_alarm_onset(void)
                   "all window control suspended (FR-MA01–FR-MA04)");
 }
 
+/**
+ * @brief Handle motor-alarm clearance — guard, re-calibrate, resume.
+ *
+ * Three-phase recovery (FR-MA06, FR-MA07):
+ *  1. Clear EG1_BIT_MOTOR_ALARM and log the clearance immediately so other
+ *     tasks see the transition.
+ *  2. Wait ALARM_GUARD_MS (60 s) in 5 s chunks; re-check the alarm pin on
+ *     each chunk boundary so a re-assertion is acted on within 5 s, not 60 s.
+ *  3. Run synchronous CLOSE_ALL re-calibration to re-establish a known
+ *     reference position before normal control resumes.
+ *
+ * @warning Blocking — T2's main loop is suspended for up to (60 s +
+ *          171 s) ≈ 231 s during clearance.  Q1 commands accumulate and
+ *          process from a fully-CLOSED position afterwards.  The hardware
+ *          WDT is kicked by T1 on Core 1; the task WDT is kicked from
+ *          calib_close_all().
+ */
 static void handle_alarm_clearance(void)
 {
     /* Clear alarm state and log immediately so EG1 readers see the
@@ -622,6 +702,23 @@ static void handle_alarm_clearance(void)
  * Q1 command processing
  * ============================================================ */
 
+/**
+ * @brief Dispatch a Q1 window_cmd_t to the per-channel FSM.
+ *
+ * Commands are discarded while EG1_BIT_MOTOR_ALARM is set (FR-MA03) — the
+ * relays are already de-energised in that state and re-energising them
+ * would defeat the safety interlock.
+ *
+ * Action handling:
+ *  - CMD_CLOSE_ALL  — calls ch_start_close() on all three channels.
+ *  - CMD_OPEN/CLOSE — single-channel start; channel is 1-based (1..3).
+ *  - CMD_RESUME     — informational; T6 will re-issue OPEN commands as
+ *                     climate control dictates.  T2 has no action.
+ *
+ * @param cmd     Pointer to the dequeued command; must not be NULL.
+ * @param now_ms  Current millis()-style timestamp passed through to the
+ *                FSM helpers so all sites observe the same `now`.
+ */
 static void process_command(const window_cmd_t *cmd, uint32_t now_ms)
 {
     /* Discard all commands while motor alarm is active (FR-MA03). */

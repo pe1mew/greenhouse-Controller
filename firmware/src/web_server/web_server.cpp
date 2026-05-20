@@ -1,59 +1,91 @@
 /**
  * @file web_server.cpp
- * @brief T11 — Web Server task (Phase 6.16-α/β, minimal: static + auth).
- *
- * **alpha.6.16 minimal-T11 status** (2026-05-18):
+ * @brief T11 — Web Server task: 25+ HTTP routes + /ws WebSocket push.
  *
  * Replaces alpha.5 `web_server_tickle.cpp` (3-route hardcoded HTML) with
- * the real T11 backed by `esp_http_server` + LittleFS. The original
+ * the production T11 backed by `esp_http_server` + LittleFS. The original
  * 1.20.3 file (1330 lines, ESPAsyncWebServer-based) is archived as
  * `web_server_1.20.3_original.cpp.archived`.
  *
- * **This alpha lands the 7 baseline routes** required for the web GUI's
- * login flow to function:
+ * ## Route taxonomy
  *
- *  Static (4):
- *   GET  /                  → /index.html from active LittleFS
- *   GET  /style.css         → /style.css
- *   GET  /app.js            → /app.js
- *   GET  /manifest.json     → /manifest.json
+ * **Static (5)** — served from active LittleFS partition; placeholder page
+ * on factory-fresh unit so the operator can see T11 is up before OTA:
+ *   - GET  /                  → /index.html
+ *   - GET  /index.html        → /index.html (explicit alias of root)
+ *   - GET  /style.css         → /style.css
+ *   - GET  /app.js            → /app.js
+ *   - GET  /manifest.json     → /manifest.json
  *
- *  Auth (3):
- *   GET  /api/whoami        → {role:"farmer"|"admin"} or 401
- *   POST /api/login         → {role, pin} → set cookie + return ok or 401
- *   POST /api/logout        → clear cookie + invalidate session
+ * **Auth (3)**:
+ *   - GET  /api/whoami        → {role:"farmer"|"admin"} or 401
+ *   - POST /api/login         → {role, pin} → set cookie + return ok or 401
+ *   - POST /api/logout        → clear cookie + invalidate session
  *
- * **Deferred to follow-up alphas (6.16.X)** — listed here so the unmigrated
- * routes are not lost:
- *  - GET  /api/status              (needs status_json.cpp)
- *  - GET  /api/config              (full cfg dump)
- *  - GET  /api/config/limits       (per-key bounds)
- *  - POST /api/config              (farmer-keys + admin-keys policy)
- *  - POST /api/wifi                (admin)
- *  - POST /api/pin                 (admin)
- *  - GET  /api/history             (sensor ring buffer)
- *  - GET  /api/sd/status           (farmer + admin)
- *  - POST /api/sd/mount,unmount    (admin)
- *  - GET  /api/log/files
- *  - GET  /api/log/download
- *  - POST /api/ota/firmware        (multipart upload to T13)
- *  - POST /api/ota/assets          (PSRAM accumulator → T13 ZIP extract)
- *  - POST /api/web                 (asset bundle upload)
- *  - GET  /api/ota/status          (T13 progress)
- *  - WS   /ws                      (status push every 2 s)
+ * **Status (2, public)**:
+ *   - GET  /api/status        — canonical JSON snapshot (live tiles)
+ *   - GET  /api/history       — ?n=N last sensor rows (cap N=60)
  *
- * **Session model**: in-memory table of MAX_SESSIONS=4 slots, each holding
- * a 16-hex-char token, a `web_session_role_t` (PIN_ROLE_FARMER=1 or PIN_ROLE_ADMIN=2),
+ * **Config (3)**:
+ *   - GET  /api/config        — full cfg shadow dump (any session)
+ *   - GET  /api/config/limits — bounds for input validation (public)
+ *   - POST /api/config        — farmer-keys + admin-keys policy
+ *
+ * **Admin (2)**:
+ *   - POST /api/wifi          — credentials change → scheduled reboot
+ *   - POST /api/pin           — change farmer / admin PIN
+ *
+ * **SD + log (5)**:
+ *   - GET  /api/sd/status     — mounted, free / total (public)
+ *   - POST /api/sd/mount      — remount via T9 (admin)
+ *   - POST /api/sd/unmount    — flush + unmount (admin)
+ *   - GET  /api/log/files     — list .csv on SD (admin)
+ *   - GET  /api/log/download  — ?file=NAME (admin)
+ *
+ * **Coredump (3, admin + rate-limited)**:
+ *   - GET  /api/coredump/status
+ *   - GET  /api/coredump/download   — value_a=19 audit
+ *   - POST /api/coredump/erase      — value_a=20 audit
+ *
+ * **OTA + web-tab (5)**:
+ *   - GET  /api/ota/status    (any session)
+ *   - POST /api/ota/firmware  (admin)
+ *   - POST /api/ota/assets    (admin)
+ *   - GET  /api/web           (admin)
+ *   - POST /api/web           (admin; validates + audit-logs every field)
+ *
+ * **WebSocket (1, public)**:
+ *   - /ws                     — status push every 2 s
+ *
+ * ## Session model
+ * In-memory table of `MAX_SESSIONS=4` slots, each holding a 16-hex-char
+ * token, a `web_session_role_t` (WEB_ROLE_FARMER=0 or WEB_ROLE_ADMIN=1),
  * and an `expiry` Unix timestamp. Browsers store the token in a
  * `Set-Cookie: session=TOKEN; Path=/; HttpOnly` cookie. Each authenticated
  * request slides the expiry forward by `cfg.session_timeout_min × 60` s.
+ * Sessions are lost on reboot.
  *
- * **LittleFS fallback**: on a factory-fresh unit (LittleFS empty),
- * `/index.html` returns a tiny built-in placeholder page that says
- * "Web assets not yet uploaded — use OTA /api/web". Same for the other 3
- * static routes (return 404, but with content-type set so curl + browser
- * see a useful message). The placeholder lets the operator visually
- * confirm T11 is responding even before web-asset OTA.
+ * ## Audit trail
+ * Config changes that go via Q4 → T4 get their LOG_SETPOINT row emitted
+ * by T4 after the NVS write succeeds (initiator carried in
+ * `config_update_t::initiator`). Config changes that bypass T4 (PIN,
+ * WiFi creds, /api/web settings) emit their own audit rows from this
+ * file via `log_web_setpoint()`. Sensitive values (PINs, passphrases,
+ * shared secrets) log only a "set" marker (value_a=1) — the actual
+ * value is never written to the CSV.
+ *
+ * ## LittleFS fallback
+ * On a factory-fresh unit (LittleFS empty), `/index.html` returns a tiny
+ * built-in placeholder page that says "Web assets not yet uploaded — use
+ * OTA /api/web". The placeholder lets the operator visually confirm T11
+ * is responding even before web-asset OTA.
+ *
+ * ## Threading
+ * - httpd runs in its own task pool (spawned by `httpd_start()`) — each
+ *   handler can run concurrently with another.
+ * - Session table is guarded by `s_sess_mux` (200 ms acquire timeout).
+ * - `task_ws_push` is pinned to core 1 (APP_CPU) so a slow snapshot+JSON
+ *   build can't block httpd's accept/dispatch on core 0.
  *
  * @author  Greenhouse Controller project
  */
@@ -463,18 +495,52 @@ static esp_err_t serve_lfs_file(httpd_req_t *req, const char *fs_path,
     return err;
 }
 
+/**
+ * @brief HTTP GET / — serve the dashboard SPA index page.
+ *
+ * Used as the handler for both `/` and `/index.html`. Streams the file
+ * from the active LittleFS partition; falls back to a built-in placeholder
+ * on factory-fresh units.
+ *
+ * @param req esp_http_server request handle (no auth required).
+ * @return ESP_OK if a body was sent (200 or 404 placeholder); ESP_FAIL on
+ *         internal error (5xx already sent).
+ * @note Auth requirement: Public.
+ * @note Rate limit: none.
+ */
 static esp_err_t root_handler(httpd_req_t *req)
 {
     return serve_lfs_file(req, "/index.html", "text/html; charset=utf-8");
 }
+
+/**
+ * @brief HTTP GET /style.css — serve the SPA stylesheet from active LittleFS.
+ * @param req esp_http_server request handle.
+ * @return ESP_OK on success; ESP_FAIL on internal error.
+ * @note Auth requirement: Public.
+ */
 static esp_err_t style_handler(httpd_req_t *req)
 {
     return serve_lfs_file(req, "/style.css", "text/css; charset=utf-8");
 }
+
+/**
+ * @brief HTTP GET /app.js — serve the dashboard SPA JavaScript bundle.
+ * @param req esp_http_server request handle.
+ * @return ESP_OK on success; ESP_FAIL on internal error.
+ * @note Auth requirement: Public.
+ */
 static esp_err_t appjs_handler(httpd_req_t *req)
 {
     return serve_lfs_file(req, "/app.js", "application/javascript; charset=utf-8");
 }
+
+/**
+ * @brief HTTP GET /manifest.json — serve the PWA manifest.
+ * @param req esp_http_server request handle.
+ * @return ESP_OK on success; ESP_FAIL on internal error.
+ * @note Auth requirement: Public.
+ */
 static esp_err_t manifest_handler(httpd_req_t *req)
 {
     return serve_lfs_file(req, "/manifest.json", "application/manifest+json");
@@ -485,11 +551,17 @@ static esp_err_t manifest_handler(httpd_req_t *req)
  * ============================================================ */
 
 /**
- * GET /api/whoami → 200 {"role":"farmer"|"admin"} on valid session,
- *                  401 {"ok":false,"error":"no_session"} otherwise.
+ * @brief HTTP GET /api/whoami — report the current session role.
  *
  * Browsers call this on page load to know whether to show the login
  * overlay. Slides the session expiry forward on a hit (renewal).
+ *
+ * @param req esp_http_server request handle (cookie session is parsed inside).
+ * @return ESP_OK — response sent. 200 + `{"role":"farmer"|"admin"}` on valid
+ *         session, 401 + `{"ok":false,"error":"no_session"}` otherwise.
+ * @note Auth requirement: Public (and reveals only the role string on hit).
+ * @note Rate limit: none.
+ * @note Audit-logged: no (read-only endpoint).
  */
 static esp_err_t whoami_handler(httpd_req_t *req)
 {
@@ -561,13 +633,22 @@ static bool json_get_field(const char *json, const char *field,
 }
 
 /**
- * POST /api/login
+ * @brief HTTP POST /api/login — verify a PIN and open a session.
  *
- * Body: {"role":"farmer"|"admin","pin":"NNNN"}
+ * Body: `{"role":"farmer"|"admin","pin":"NNNN"}`. Calls
+ * `pin_auth_verify()` which enforces the lockout policy.
  *
- * On match: 200 {"ok":true,"role":"R"} + Set-Cookie session=TOKEN.
- * On wrong PIN: 401 {"ok":false,"locked":false}.
- * On lockout: 401 {"ok":false,"locked":true,"remaining":N}.
+ * @param req esp_http_server request handle.
+ * @return ESP_OK on response sent (200 or 401); ESP_FAIL on internal recv error.
+ *         - 200 + `{"ok":true,"role":"R"}` + `Set-Cookie: session=TOKEN` on match.
+ *         - 401 + `{"ok":false,"locked":false}` on wrong PIN.
+ *         - 401 + `{"ok":false,"locked":true,"remaining":N}` on lockout.
+ *         - 400 on bad payload.
+ * @note Auth requirement: Public (this IS the auth gate).
+ * @note Rate limit: enforced by `pin_auth_verify()` lockout policy
+ *       (PIN_LOCKOUT_MAX_DEFAULT failures → PIN_LOCKOUT_SECS_DEFAULT seconds).
+ * @note Audit-logged: implicit — `pin_auth_verify()` updates the NVS-stored
+ *       failure counters and lockout expiries.
  */
 static esp_err_t login_handler(httpd_req_t *req)
 {
@@ -659,7 +740,16 @@ static esp_err_t login_handler(httpd_req_t *req)
 }
 
 /**
- * POST /api/logout → invalidate session, clear cookie. Always returns 200.
+ * @brief HTTP POST /api/logout — invalidate the session, clear the cookie.
+ *
+ * Parses the session cookie (if any), closes the slot, then emits
+ * `Set-Cookie: session=; Max-Age=0` so the browser drops its copy too.
+ *
+ * @param req esp_http_server request handle.
+ * @return ESP_OK — always 200 with `{"ok":true}`, even if no session existed.
+ * @note Auth requirement: Public (idempotent on missing session).
+ * @note Rate limit: none.
+ * @note Audit-logged: no.
  */
 static esp_err_t logout_handler(httpd_req_t *req)
 {
@@ -699,6 +789,17 @@ static esp_err_t logout_handler(httpd_req_t *req)
  * Numeric /api/web fields (status_interval_s, status_enable, etc.) still
  * encode old → new the way the climate/wind setpoints do.
  * ============================================================ */
+/**
+ * @brief Post a LOG_SETPOINT row with initiator=LOG_BY_WEB.
+ *
+ * Used by the /api/wifi, /api/pin, /api/config (tz_str only) and /api/web
+ * paths to record audit events for changes that don't go through Q4 → T4.
+ *
+ * @param pid      Parameter identifier (LOG_PARAM_*).
+ * @param value_a  First payload — for sensitive fields, 1 = "changed";
+ *                 for numeric fields, the old value.
+ * @param value_b  Second payload — 0 for sensitive fields, new value otherwise.
+ */
 static void log_web_setpoint(log_param_id_t pid, int16_t value_a, int16_t value_b)
 {
     log_event_t ev = {};
@@ -711,6 +812,21 @@ static void log_web_setpoint(log_param_id_t pid, int16_t value_a, int16_t value_
     log_post(&ev);
 }
 
+/**
+ * @brief HTTP GET /api/status — canonical status JSON snapshot.
+ *
+ * Calls `dm_status_snapshot()` then `build_canonical_status_json()` with
+ * STATUS_EXPOSE_ALL + include_disabled_setpoints=true (local-UI mode,
+ * shows every tile group regardless of operator's expose mask). Same JSON
+ * shape as the /ws WebSocket push.
+ *
+ * @param req esp_http_server request handle.
+ * @return ESP_OK on response sent; ESP_FAIL on heap alloc or JSON build failure
+ *         (a 500 is sent in that case).
+ * @note Auth requirement: Public — same rationale as /ws (operator-visible
+ *       data is open by design; sensitive surfaces are individually gated).
+ * @note Rate limit: none.
+ */
 static esp_err_t status_handler(httpd_req_t *req)
 {
     /* status_snapshot_t is large (~600 B); use a heap allocation rather
@@ -755,6 +871,22 @@ static esp_err_t status_handler(httpd_req_t *req)
     return err;
 }
 
+/**
+ * @brief HTTP GET /api/history — last N sensor ring entries.
+ *
+ * Query string: `?n=N` (default 60, clamped to `1..HIST_MAX_ROWS`). Reads
+ * the most-recent N rows from T4's sensor ring buffer and emits JSON
+ * shaped `{"rows":[...]}` with field names matching the canonical status
+ * JSON's climate/wind blocks (so the dashboard's loader code can use the
+ * same accessor names everywhere).
+ *
+ * @param req esp_http_server request handle.
+ * @return ESP_OK on response sent; ESP_FAIL on heap alloc or read failure.
+ * @note Auth requirement: Public (read-only history of sensor data).
+ * @note Rate limit: none.
+ * @see  webUiMock/mock_server.py::_build_history for the JSON envelope
+ *       reference (matched at alpha.6.27).
+ */
 static esp_err_t history_handler(httpd_req_t *req)
 {
     /* Parse ?n=N from the query string. Bounds: 1 ≤ n ≤ HIST_MAX_ROWS. */
@@ -916,14 +1048,18 @@ static bool is_farmer_key(const char *ns, const char *key)
 }
 
 /**
- * GET /api/config — full configuration as a JSON object.
+ * @brief HTTP GET /api/config — full configuration as a JSON object.
  *
- * Auth-required (any logged-in session). Mirrors 1.20.3's build_config_json
- * exactly — same key names, same ordering, so the web UI's `app.js` reads
- * fields by the same identifiers it always has. Includes the running
- * fw_version from NVS (which nvs_cfg_init writes at every boot), the AP
- * SSID computed from the WiFi STA MAC, and the WiFi STA SSID (psk is
- * deliberately write-only).
+ * Mirrors 1.20.3's build_config_json exactly — same key names, same
+ * ordering, so the web UI's `app.js` reads fields by the same identifiers
+ * it always has. Includes the running fw_version from NVS, the AP SSID
+ * computed from the WiFi STA MAC, and the WiFi STA SSID. The PSK is
+ * deliberately write-only (never echoed back).
+ *
+ * @param req esp_http_server request handle (cookie session is parsed inside).
+ * @return ESP_OK on response sent; ESP_FAIL on heap alloc failure.
+ * @note Auth requirement: Farmer or Admin.
+ * @note Rate limit: none.
  */
 static esp_err_t config_get_handler(httpd_req_t *req)
 {
@@ -1000,11 +1136,17 @@ static esp_err_t config_get_handler(httpd_req_t *req)
 }
 
 /**
- * GET /api/config/limits — per-key min/max bounds (PUBLIC).
+ * @brief HTTP GET /api/config/limits — per-key min/max bounds for input validation.
  *
  * Single source of truth: cfg_limits.h. Stringified at compile time via
- * _LIMITS_STR — no runtime overhead, no allocation. app.js fetches this
- * once at page load and applies min/max to every <input> in the GUI.
+ * the `_LIMITS_STR` macro — no runtime overhead, no allocation. The
+ * dashboard fetches this once at page load and applies min/max to every
+ * `<input>` in the GUI.
+ *
+ * @param req esp_http_server request handle.
+ * @return ESP_OK on response sent.
+ * @note Auth requirement: Public.
+ * @note Rate limit: none.
  */
 static esp_err_t config_limits_handler(httpd_req_t *req)
 {
@@ -1047,8 +1189,16 @@ static esp_err_t config_limits_handler(httpd_req_t *req)
 }
 
 /**
- * @brief Helper: read up to `cap-1` bytes from the request body, NUL-terminate.
- * Returns true on success.
+ * @brief Read the full HTTP request body into a caller-supplied buffer.
+ *
+ * Loops on `httpd_req_recv` until `req->content_len` bytes have been
+ * received, then NUL-terminates. Rejects bodies that don't fit in `cap-1`
+ * bytes; callers should size the buffer for the worst-case JSON payload.
+ *
+ * @param buf  Destination buffer (`buf[cap-1]` reserved for the NUL).
+ * @param cap  Size of `buf` in bytes.
+ * @return true if all `content_len` bytes were received; false on overflow,
+ *         empty body, or recv failure.
  */
 static bool read_request_body(httpd_req_t *req, char *buf, size_t cap)
 {
@@ -1068,12 +1218,23 @@ static bool read_request_body(httpd_req_t *req, char *buf, size_t cap)
 }
 
 /**
- * POST /api/config — body {"ns","key","value" | "str_value"}.
+ * @brief HTTP POST /api/config — write a single setpoint or string field.
  *
- * Auth: farmer if (ns,key) is in FARMER_KEYS / FARMER_WIND_KEYS, else admin.
- * Integer writes go via Q4 → T4 → NVS (T4 validates against cfg_limits.h).
- * String writes (tz_str) go straight to NVS via nvs_cfg_set_str. On tz_str
- * the helper also applies the timezone live so localtime_r picks it up.
+ * Body: `{"ns","key","value" | "str_value"}`. Integer writes go via Q4 →
+ * T4 → NVS (T4 validates against cfg_limits.h and emits the LOG_SETPOINT
+ * audit row). String writes (tz_str) go straight to NVS via
+ * `nvs_cfg_set_str`. On tz_str the helper also applies the timezone live
+ * so `localtime_r` picks it up.
+ *
+ * @param req esp_http_server request handle.
+ * @return ESP_OK on response sent (200, 400, 403, 503); never returns ESP_FAIL.
+ * @note Auth requirement: Farmer if (ns,key) is in FARMER_KEYS /
+ *       FARMER_WIND_KEYS, otherwise Admin. Farmer attempting an
+ *       admin-key write gets 403.
+ * @note Rate limit: none (gated by Q4 depth of 16; queue-full returns 503).
+ * @note Audit-logged: integer fields via T4 from Q4 (LOG_SETPOINT, initiator
+ *       carried in `config_update_t::initiator = LOG_BY_WEB`); tz_str via
+ *       this file's `log_web_setpoint(LOG_PARAM_TZ_STR, 1, 0)`.
  */
 static esp_err_t config_post_handler(httpd_req_t *req)
 {
@@ -1167,6 +1328,9 @@ static esp_err_t config_post_handler(httpd_req_t *req)
  * @brief Worker task that delays 1 s then calls esp_restart().
  *
  * Spawned by /api/wifi so the HTTP response can flush before the reset.
+ *
+ * @param arg Unused.
+ * @warning Never returns; calls `esp_restart()` which reboots the chip.
  */
 static void wifi_apply_restart_task(void *arg)
 {
@@ -1177,16 +1341,15 @@ static void wifi_apply_restart_task(void *arg)
 }
 
 /**
- * POST /api/wifi — admin-only. Body may include any of {"ssid","psk","ap_psk"}.
+ * @brief Inline admin-auth check that sends the appropriate error response on miss.
  *
- * Each field provided is written to NVS namespace "wifi". On any STA-cred
- * or AP-cred change, schedules a 1-second-deferred esp_restart so T10's
- * NVS-load picks up the new values. The HTTP response flushes before the
- * reset.
- */
-/**
- * @brief Inline auth check that returns 401 (no session) or 403 (wrong role)
- *        with the right error body. Returns true on success.
+ * Parses the session cookie, looks up the role, and on failure sends:
+ *   - 401 + `{"ok":false,"error":"no_session"}` if no cookie / unknown token.
+ *   - 403 + `{"ok":false,"err":"admin only"}` if the session is farmer.
+ *
+ * @param req esp_http_server request handle.
+ * @return true if the request is authenticated as admin (caller proceeds);
+ *         false otherwise (caller MUST return ESP_OK — response already sent).
  */
 static bool admin_only_or_send_error(httpd_req_t *req)
 {
@@ -1209,6 +1372,22 @@ static bool admin_only_or_send_error(httpd_req_t *req)
     return true;
 }
 
+/**
+ * @brief HTTP POST /api/wifi — change WiFi credentials, scheduled reboot.
+ *
+ * Body may include any of `{"ssid","psk","ap_psk"}`. Each field provided
+ * is written to NVS namespace "wifi". On any STA-cred or AP-cred change,
+ * schedules a 1-second-deferred `esp_restart()` (in a dedicated worker
+ * task) so T10's NVS-load picks up the new values. The HTTP response
+ * flushes before the reset.
+ *
+ * @param req esp_http_server request handle.
+ * @return ESP_OK on response sent.
+ * @note Auth requirement: Admin only.
+ * @note Rate limit: none (reboot is the natural rate limit).
+ * @note Audit-logged: yes — LOG_PARAM_WIFI_SSID/PSK/AP_PSK with value_a=1
+ *       ("set"); the actual credentials are NEVER written to the CSV.
+ */
 static esp_err_t wifi_post_handler(httpd_req_t *req)
 {
     if (!admin_only_or_send_error(req)) return ESP_OK;
@@ -1259,10 +1438,19 @@ static esp_err_t wifi_post_handler(httpd_req_t *req)
 }
 
 /**
- * POST /api/pin — admin-only. Body {"role":"farmer"|"admin","pin":"NNNN"}.
+ * @brief HTTP POST /api/pin — change a stored PIN.
  *
- * Calls pin_auth_set which writes the salted SHA-256 hash to NVS. Returns
- * {"ok":true} on success; otherwise {"ok":false,"err":"..."}.
+ * Body: `{"role":"farmer"|"admin","pin":"NNNN"}`. Calls `pin_auth_set()`
+ * which writes the salted SHA-256 hash to NVS (the plaintext PIN never
+ * leaves this stack frame).
+ *
+ * @param req esp_http_server request handle.
+ * @return ESP_OK on response sent; 200 + `{"ok":true}` on success, else 200
+ *         with `{"ok":false,"err":"..."}`.
+ * @note Auth requirement: Admin only (admin may change either PIN).
+ * @note Rate limit: none.
+ * @note Audit-logged: yes — LOG_PARAM_PIN_FARMER / LOG_PARAM_PIN_ADMIN
+ *       with value_a=1 ("changed"); the new PIN is NEVER written to the CSV.
  */
 static esp_err_t pin_post_handler(httpd_req_t *req)
 {
@@ -1316,6 +1504,14 @@ static esp_err_t pin_post_handler(httpd_req_t *req)
  * so T9's internal state stays consistent with the operator's actions.
  * ============================================================ */
 
+/**
+ * @brief HTTP GET /api/sd/status — SD card mount state and capacity.
+ *
+ * @param req esp_http_server request handle.
+ * @return ESP_OK on response sent — 200 + `{"mounted":bool,"free_mb":N,"size_mb":N}`.
+ * @note Auth requirement: Public (status only; mount/unmount are admin-gated).
+ * @note Rate limit: none.
+ */
 static esp_err_t sd_status_handler(httpd_req_t *req)
 {
     const bool mounted = storage_sd_available();
@@ -1331,6 +1527,18 @@ static esp_err_t sd_status_handler(httpd_req_t *req)
     return httpd_resp_send(req, body, (n > 0) ? (size_t)n : 0);
 }
 
+/**
+ * @brief HTTP POST /api/sd/mount — remount the SD card via T9.
+ *
+ * Forwards to `event_logger_sd_remount()` so T9's internal state stays
+ * consistent with the operator's action.
+ *
+ * @param req esp_http_server request handle.
+ * @return ESP_OK on response sent — 200 `{"ok":true}` or `{"ok":false,...}` on failure.
+ * @note Auth requirement: Admin only.
+ * @note Rate limit: none.
+ * @note Audit-logged: no (state is reflected in subsequent /api/sd/status calls).
+ */
 static esp_err_t sd_mount_handler(httpd_req_t *req)
 {
     if (!admin_only_or_send_error(req)) return ESP_OK;
@@ -1345,6 +1553,18 @@ static esp_err_t sd_mount_handler(httpd_req_t *req)
         "{\"ok\":false,\"err\":\"mount failed\"}", HTTPD_RESP_USE_STRLEN);
 }
 
+/**
+ * @brief HTTP POST /api/sd/unmount — flush and unmount the SD card via T9.
+ *
+ * Forwards to `event_logger_sd_unmount()` so T9 closes the active CSV
+ * file cleanly before the unmount.
+ *
+ * @param req esp_http_server request handle.
+ * @return ESP_OK on response sent — 200 `{"ok":true}`.
+ * @note Auth requirement: Admin only.
+ * @note Rate limit: none.
+ * @note Audit-logged: no.
+ */
 static esp_err_t sd_unmount_handler(httpd_req_t *req)
 {
     if (!admin_only_or_send_error(req)) return ESP_OK;
@@ -1355,15 +1575,18 @@ static esp_err_t sd_unmount_handler(httpd_req_t *req)
 }
 
 /**
- * GET /api/log/files — list .csv files on SD, sorted chronologically.
+ * @brief HTTP GET /api/log/files — list .csv files on SD, sorted chronologically.
  *
- * `nvs_count` is intentionally absent — the NVS-ringbuffer log source
- * was retired in alpha.6.5. SD is the only source.
+ * Filenames follow YYYYMMDDHHMMSS.csv from T9, so lexicographic sort =
+ * chronological order. Includes any imported names too (e.g. 1.20.3-era
+ * log_YYYYMMDD_HHMMSS.csv) — the sort order is approximately right for
+ * those. The NVS-ringbuffer log source was retired in alpha.6.5; SD is the
+ * only source.
  *
- * Filename names follow YYYYMMDDHHMMSS.csv from T9, so lexicographic
- * sort = chronological order. Includes any imported names too
- * (e.g. 1.20.3-era log_YYYYMMDD_HHMMSS.csv) — the sort order is
- * approximately right for those.
+ * @param req esp_http_server request handle.
+ * @return ESP_OK on response sent; ESP_FAIL on heap alloc failure.
+ * @note Auth requirement: Admin only.
+ * @note Rate limit: none (capped at LOG_FILES_MAX=12 names in the response).
  */
 static esp_err_t log_files_handler(httpd_req_t *req)
 {
@@ -1428,12 +1651,18 @@ static esp_err_t log_files_handler(httpd_req_t *req)
 }
 
 /**
- * GET /api/log/download?file=NAME — stream a CSV file as
- *   Content-Disposition: attachment; filename="NAME".
+ * @brief HTTP GET /api/log/download?file=NAME — stream a single CSV file.
  *
- * Rejects path-traversal attempts (any '/' or "..") and requires
- * `file` query param. PSRAM-allocates the whole file (CSV files are
- * typically < 100 KB; with 8 MB PSRAM that's comfortable).
+ * Sends `Content-Disposition: attachment; filename="NAME"`. Rejects path-
+ * traversal attempts (any '/' or "..") and requires the `file` query
+ * param. PSRAM-allocates the whole file (CSV files are typically < 100 KB;
+ * with 8 MB PSRAM that's comfortable).
+ *
+ * @param req esp_http_server request handle.
+ * @return ESP_OK on response sent (200, 400, 404, 503); ESP_FAIL on PSRAM
+ *         alloc or read failure.
+ * @note Auth requirement: Admin only.
+ * @note Rate limit: none.
  */
 static esp_err_t log_download_handler(httpd_req_t *req)
 {
@@ -1537,12 +1766,25 @@ static esp_err_t log_download_handler(httpd_req_t *req)
  * admin-only gate + per-LAN deployment is the operational boundary.
  * ============================================================ */
 
-#define COREDUMP_RATE_LIMIT_MS  10000u  /* one access per 10 s */
-#define COREDUMP_CHUNK_BYTES    4096u   /* streaming chunk for the download */
+/** @brief Minimum interval (ms) between any two /api/coredump operations. */
+#define COREDUMP_RATE_LIMIT_MS  10000u
+/** @brief Streaming chunk size for /api/coredump/download (bytes). */
+#define COREDUMP_CHUNK_BYTES    4096u
 
-/** Rate-limit timestamp. Single int64 = atomic 64-bit load/store on ESP32. */
+/** @brief Rate-limit timestamp shared by /api/coredump/download + /erase. Single int64 = atomic 64-bit load/store on ESP32. */
 static int64_t s_coredump_last_access_us = 0;
 
+/**
+ * @brief Enforce the 10 s rate limit on /api/coredump operations.
+ *
+ * On violation: sends 429 Too Many Requests + Retry-After: 10 + a JSON
+ * error body, and the caller MUST return ESP_OK (response already sent).
+ * On success: records the current timestamp so the next call sees the limit.
+ *
+ * @param req esp_http_server request handle.
+ * @return true if the caller may proceed; false on rate-limit miss
+ *         (429 already sent — caller returns ESP_OK).
+ */
 static bool coredump_rate_limit_ok(httpd_req_t *req)
 {
     const int64_t now_us = esp_timer_get_time();
@@ -1560,7 +1802,13 @@ static bool coredump_rate_limit_ok(httpd_req_t *req)
     return true;
 }
 
-/** Emit a LOG_SYSTEM audit row for a coredump operation. */
+/**
+ * @brief Emit a LOG_SYSTEM audit row for a coredump operation.
+ *
+ * @param value_a 19 = downloaded, 20 = erased.
+ * @param value_b For downloads, approximate size in 256-byte units (clamped
+ *                to int16). For erases, 0.
+ */
 static void coredump_audit(int16_t value_a, int16_t value_b)
 {
     log_event_t ev = {};
@@ -1573,11 +1821,16 @@ static void coredump_audit(int16_t value_a, int16_t value_b)
 }
 
 /**
- * GET /api/coredump/status — JSON status of the stored coredump.
+ * @brief HTTP GET /api/coredump/status — JSON status of the stored coredump.
  *
- * Even without `present=true` the endpoint is useful — the GUI can poll
- * it on the Log tab to display "no coredump stored" vs "coredump available
- * (N bytes)". No flash read other than the cheap cached state from T4.
+ * Useful even without `present=true` — the GUI polls it on the Log tab to
+ * display "no coredump stored" vs "coredump available (N bytes)". No flash
+ * read other than the cheap cached state from T4.
+ *
+ * @param req esp_http_server request handle.
+ * @return ESP_OK on response sent — 200 + `{"present":bool,"size_bytes":N,...}`.
+ * @note Auth requirement: Admin only.
+ * @note Rate limit: none (cheap cached read).
  */
 static esp_err_t coredump_status_handler(httpd_req_t *req)
 {
@@ -1598,17 +1851,27 @@ static esp_err_t coredump_status_handler(httpd_req_t *req)
 }
 
 /**
- * GET /api/coredump/download — stream the partition contents.
+ * @brief HTTP GET /api/coredump/download — stream the partition contents.
  *
  * Returns 404 when no coredump is present. Otherwise reads the coredump
  * partition in 4 KB chunks and writes them out as application/octet-stream
  * with a Content-Disposition that names the file:
- *   coredump-<FIRMWARE_VERSION>-<unix_ts>.bin
- * Operator decodes offline with
- *   idf.py coredump-info -t raw -c <file> bin/<ver>/firmware-<ver>.elf
+ * `coredump-<FIRMWARE_VERSION>-<unix_ts>.bin`. Operator decodes offline with
+ * `idf.py coredump-info -t raw -c <file> bin/<ver>/firmware-<ver>.elf`.
  *
- * Does NOT auto-erase — call POST /api/coredump/erase after confirming
- * the decode succeeded.
+ * Does NOT auto-erase — operator confirms a successful decode before
+ * calling POST /api/coredump/erase.
+ *
+ * @param req esp_http_server request handle.
+ * @return ESP_OK on response sent; ESP_FAIL on heap alloc or partition_read failure.
+ * @note Auth requirement: Admin only.
+ * @note Rate limit: 1 op / 10 s via `coredump_rate_limit_ok()`; 429 + Retry-After
+ *       on violation. Shared with /api/coredump/erase via `s_coredump_last_access_us`.
+ * @note Audit-logged via LOG_SYSTEM value_a=19 on success
+ *       (value_b = size/256 clamped to int16).
+ * @warning The dumped image may contain RAM snapshots that include WiFi creds /
+ *          PINs / the status-website shared secret if those were in-flight at
+ *          panic time. The admin-only gate is the operational boundary.
  */
 static esp_err_t coredump_download_handler(httpd_req_t *req)
 {
@@ -1705,13 +1968,20 @@ static esp_err_t coredump_download_handler(httpd_req_t *req)
 }
 
 /**
- * POST /api/coredump/erase — wipe the partition.
+ * @brief HTTP POST /api/coredump/erase — wipe the coredump partition.
  *
  * Operator confirms a successful decode offline first, then clicks Erase
- * in the GUI. esp_core_dump_image_erase() clears the partition; T4's
- * cached state is dropped via dm_coredump_clear() so the next status
+ * in the GUI. `esp_core_dump_image_erase()` clears the partition; T4's
+ * cached state is dropped via `dm_coredump_clear()` so the next status
  * snapshot omits the `coredump_available` mode flag and the GUI badge
  * disappears.
+ *
+ * @param req esp_http_server request handle.
+ * @return ESP_OK on response sent (idempotent — 200 even when no coredump existed).
+ * @note Auth requirement: Admin only.
+ * @note Rate limit: 1 op / 10 s via `coredump_rate_limit_ok()` (shared with
+ *       /api/coredump/download).
+ * @note Audit-logged via LOG_SYSTEM value_a=20 on every successful erase.
  */
 static esp_err_t coredump_erase_handler(httpd_req_t *req)
 {
@@ -1756,6 +2026,17 @@ static esp_err_t coredump_erase_handler(httpd_req_t *req)
  * pattern is `httpd_req_recv` in a loop until `content_len` bytes read.
  * ============================================================ */
 
+/**
+ * @brief HTTP GET /api/ota/status — current OTA state machine snapshot.
+ *
+ * Reports the OTA state, progress percentage, last error string, active
+ * bank ('A'/'B') and whether the running image has been accepted yet.
+ *
+ * @param req esp_http_server request handle.
+ * @return ESP_OK on response sent.
+ * @note Auth requirement: Farmer or Admin.
+ * @note Rate limit: none.
+ */
 static esp_err_t ota_status_handler(httpd_req_t *req)
 {
     if (require_auth(req, WEB_ROLE_FARMER) == WEB_ROLE_NONE) return ESP_OK;
@@ -1784,11 +2065,19 @@ static esp_err_t ota_status_handler(httpd_req_t *req)
 }
 
 /**
- * POST /api/ota/firmware — admin only.
+ * @brief HTTP POST /api/ota/firmware — stream a firmware .bin to T13.
  *
- * Receives the .bin body in chunks via httpd_req_recv; each chunk is fed
- * straight into ota_firmware_write. content_len is required (Content-Length
- * header) so T13 can pre-validate the image size against the inactive bank.
+ * Receives the .bin body in chunks via `httpd_req_recv`; each chunk is fed
+ * straight into `ota_firmware_write()`. content_len is required
+ * (Content-Length header) so T13 can pre-validate the image size against
+ * the inactive bank.
+ *
+ * @param req esp_http_server request handle.
+ * @return ESP_OK on success — 200 + `{"ok":true,"awaiting_assets":true}`;
+ *         ESP_FAIL on recv/write/end failure.
+ * @note Auth requirement: Admin only.
+ * @note Rate limit: none (OTA mutex inside ota_manager serialises).
+ * @note Audit-logged: T13 emits its own LOG_SYSTEM rows for OTA milestones.
  */
 static esp_err_t ota_firmware_post_handler(httpd_req_t *req)
 {
@@ -1854,11 +2143,17 @@ static esp_err_t ota_firmware_post_handler(httpd_req_t *req)
 }
 
 /**
- * POST /api/ota/assets — admin only.
+ * @brief HTTP POST /api/ota/assets — stream a STORE-only ZIP of web assets.
  *
- * Accumulates a STORE-only .zip body into the T13 PSRAM buffer via
- * ota_assets_accumulate(data, len, offset). On the last chunk calls
- * ota_assets_end() which spawns T13 to extract to inactive LittleFS.
+ * Accumulates the body into the T13 PSRAM buffer via
+ * `ota_assets_accumulate(data, len, offset)`. On the last chunk calls
+ * `ota_assets_end()` which spawns T13 to extract to inactive LittleFS.
+ *
+ * @param req esp_http_server request handle.
+ * @return ESP_OK on success — 202 + `{"ok":true,"message":"extracting..."}`;
+ *         ESP_FAIL on recv/accumulate/end failure.
+ * @note Auth requirement: Admin only.
+ * @note Rate limit: none.
  */
 static esp_err_t ota_assets_post_handler(httpd_req_t *req)
 {
@@ -1922,10 +2217,18 @@ static esp_err_t ota_assets_post_handler(httpd_req_t *req)
 }
 
 /**
- * GET /api/web — admin only. Returns web-tab settings + last-attempt strings.
+ * @brief HTTP GET /api/web — read web-tab settings + last upload attempts.
  *
- * Secret is intentionally NOT echoed (write-only from the UI; the input
- * stays blank and "empty=keep" on POST).
+ * Returns the status-website URL, interval, enable flag, expose bitmask,
+ * scheduled log-upload time, and the last "[OK at ts]" / "[err ...]"
+ * strings from T14 and the log-uploader.
+ *
+ * @param req esp_http_server request handle.
+ * @return ESP_OK on response sent.
+ * @note Auth requirement: Admin only.
+ * @note Rate limit: none.
+ * @note Secret is intentionally NOT echoed (write-only from the UI; the
+ *       input stays blank and "empty=keep" on POST).
  */
 static esp_err_t web_get_handler(httpd_req_t *req)
 {
@@ -1965,13 +2268,25 @@ static esp_err_t web_get_handler(httpd_req_t *req)
 }
 
 /**
- * POST /api/web — admin only. Single-transaction Apply with bounds-check
- * before any NVS write, then `dm_reload_web_cfg()` so the cfg shadow
- * refreshes synchronously (T4 publishes under MX4 before this returns).
+ * @brief HTTP POST /api/web — apply web-tab settings (single transaction).
  *
- * URL validation matches 1.20.3: must start with http:// or https://, must
- * NOT contain ? or #, must end with "api.php" (T14 appends ?action=log
+ * Single-transaction Apply with bounds-check before any NVS write, then
+ * `dm_reload_web_cfg()` so the cfg shadow refreshes synchronously (T4
+ * publishes under MX4 before this returns).
+ *
+ * URL validation: must use `https://` (a.6.35 — plain HTTP rejected so the
+ * sourceidentifier shared secret cannot leak on the wire), must NOT
+ * contain `?` or `#`, must end with `api.php` (T14 appends ?action=log
  * itself; HTTPClient followed redirects silently which masked routing bugs).
+ *
+ * @param req esp_http_server request handle.
+ * @return ESP_OK on response sent (200, 400); 400 includes a human-readable
+ *         error string identifying the failed field.
+ * @note Auth requirement: Admin only.
+ * @note Rate limit: none.
+ * @note Audit-logged: yes — per-field via `log_web_setpoint()`. Sensitive
+ *       fields (URL, secret) log only "set" (value_a=1); numeric fields
+ *       log old → new. No-op Apply (all fields unchanged) emits zero rows.
  */
 static esp_err_t web_post_handler(httpd_req_t *req)
 {
@@ -2150,9 +2465,12 @@ static esp_err_t web_post_handler(httpd_req_t *req)
  * concurrent HTTP requests.
  * ============================================================ */
 
-#define WS_PUSH_MS  2000u   /**< matches 1.20.3 — 2 s status push cadence */
-#define WS_PUSH_BUF 4096u   /**< matches /api/status — 1.5–2.5 KB JSON + headroom */
-#define WS_MAX_CLIENTS 5    /**< must be ≥ httpd cfg.max_open_sockets - 2 */
+/** @brief WebSocket status-push cadence in ms — matches 1.20.3 (2 s). */
+#define WS_PUSH_MS     2000u
+/** @brief WS push body buffer in bytes — fits the 1.5–2.5 KB canonical JSON + headroom. */
+#define WS_PUSH_BUF    4096u
+/** @brief Maximum simultaneous WS clients tracked. Must be ≥ httpd `cfg.max_open_sockets - 2`. */
+#define WS_MAX_CLIENTS    5
 
 /**
  * @brief WebSocket URI handler for /ws.
@@ -2162,18 +2480,18 @@ static esp_err_t web_post_handler(httpd_req_t *req)
  * subsequent inbound frame. The handshake is auto-completed by the
  * httpd when this handler returns ESP_OK from the first call.
  *
- * Auth: PUBLIC (no gate). The pushed payload is byte-identical to the
- * already-public `GET /api/status` response — climate / wind / windows /
- * mode / sun / system (incl. fw_ver + unit_id). Operator-visible data is
- * open by design (matches 1.20.3 and webUiMock/mock_server.py's
- * unauthenticated `@sock.route("/ws")`). The gate added in alpha.6.21
- * was a mistake — symptom on the GUI was that after logout the WS
- * upgrade returned 401 and `ws.onclose` set the dashboard's badge to
- * "Offline", freezing all the live tiles, even though `/api/status`
- * itself would have answered fine.
+ * The dashboard sends no payloads, but per protocol we must drain any
+ * received frame to keep the socket alive.
  *
- * Sensitive surfaces stay gated separately (POST /api/config, POST
- * /api/wifi, POST /api/pin, the OTA + log endpoints).
+ * @param req esp_http_server request handle.
+ * @return ESP_OK on handshake or frame drained successfully; error code
+ *         from `httpd_ws_recv_frame()` on recv failure.
+ * @note Auth requirement: Public — same rationale as /api/status (the
+ *       pushed payload is byte-identical to that endpoint). Sensitive
+ *       surfaces stay gated separately. The gate added in alpha.6.21
+ *       was a mistake (logout would silently freeze the dashboard tiles
+ *       even though /api/status still answered).
+ * @note Rate limit: none.
  */
 static esp_err_t ws_handler(httpd_req_t *req)
 {
@@ -2213,12 +2531,15 @@ static esp_err_t ws_handler(httpd_req_t *req)
 /**
  * @brief Send `payload` of length `len` to every connected WS client.
  *
- * Uses httpd_get_client_list to enumerate active fds, then filters
- * by httpd_ws_get_fd_info to keep only WS-upgraded ones, then
- * httpd_ws_send_frame_async per matched fd. Stale fds (closed since
- * last enumeration) return an error from send_frame_async and are
+ * Uses `httpd_get_client_list` to enumerate active fds, then filters
+ * by `httpd_ws_get_fd_info` to keep only WS-upgraded ones, then
+ * `httpd_ws_send_frame_async` per matched fd. Stale fds (closed since
+ * last enumeration) return an error from `send_frame_async` and are
  * skipped — esp_http_server prunes them from its internal list on
  * its own schedule.
+ *
+ * @param payload UTF-8 JSON string (typically the canonical status JSON).
+ * @param len     Length in bytes (excluding any trailing NUL).
  */
 static void ws_broadcast(const char *payload, size_t len)
 {
@@ -2253,9 +2574,13 @@ static void ws_broadcast(const char *payload, size_t len)
  *        status JSON, broadcasts to all subscribed clients.
  *
  * Runs independent of the httpd worker pool so a slow
- * dm_status_snapshot() / build_canonical_status_json() can't block
- * concurrent HTTP requests. Buffers are heap-allocated once and
- * reused; the task is the sole owner.
+ * `dm_status_snapshot()` / `build_canonical_status_json()` can't block
+ * concurrent HTTP requests. Buffers are heap-allocated once and reused;
+ * the task is the sole owner. Skips the snapshot+build cost entirely
+ * when no WS client is currently subscribed.
+ *
+ * @param pvParameters Unused.
+ * @note Suggested xTaskCreatePinnedToCore: stack 4096 B, prio 4, core 1 (APP_CPU).
  */
 static void task_ws_push(void *pvParameters)
 {
@@ -2320,6 +2645,13 @@ static void task_ws_push(void *pvParameters)
 
 /* ============================================================
  * URI registration table
+ *
+ * Each entry is a `httpd_uri_t` descriptor registered with
+ * `httpd_register_uri_handler()` from `task_web_server`. The descriptors
+ * live at file scope so their addresses are stable for the duration of
+ * the httpd's lifetime. The list is also walked in `task_web_server` so
+ * adding a new route requires three edits: handler function, descriptor
+ * here, and the `uris[]` array further below.
  * ============================================================ */
 static const httpd_uri_t s_uri_root = {
     .uri = "/", .method = HTTP_GET, .handler = root_handler, .user_ctx = NULL };
@@ -2405,6 +2737,18 @@ static const httpd_uri_t s_uri_ws = {
 /* ============================================================
  * Task entry point
  * ============================================================ */
+/**
+ * @brief T11 task body — start httpd, register routes, idle.
+ *
+ * Creates `s_sess_mux`, starts `esp_http_server` on port 80, registers
+ * every URI from the descriptor table, and spawns `task_ws_push` pinned
+ * to core 1. After that the task body just idles at a 60 s tick — the
+ * httpd worker pool services requests concurrently in its own tasks.
+ *
+ * @param pvParameters Unused; pass NULL.
+ * @warning On `httpd_start()` failure the task self-deletes; no web server
+ *          will be available until reboot.
+ */
 void task_web_server(void *pvParameters)
 {
     (void)pvParameters;

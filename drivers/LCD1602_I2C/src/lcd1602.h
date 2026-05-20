@@ -4,26 +4,54 @@
  *
  * Drives both the original Waveshare LCD1602 (AiP31068L only) and the
  * LCD1602RGB module (AiP31068L + PCA9633DP2 RGB backlight).  Detection is
- * automatic in lcd_init(): the PCA9633 is probed at 0x60 and, if present, the
- * RGB backlight is initialised to BLUE at full brightness; if absent (legacy
- * monochrome module), the RGB-control functions become no-ops and the
- * character display continues to work unchanged.
+ * automatic in @ref lcd_init: the PCA9633 is probed at 0x60 and, if present,
+ * the RGB backlight is initialised to BLUE at full brightness; if absent
+ * (legacy monochrome module), the RGB-control functions become no-ops and
+ * the character display continues to work unchanged.
  *
- * All bus access goes through the LIB-2 i2c_bus driver; callers must call
- * i2c_init() before lcd_init().
+ * All bus access goes through the LIB-2 @c i2c_bus driver; callers must
+ * call @c i2c_init() before @ref lcd_init.
  *
- * AiP31068L write protocol (two bytes per transaction):
+ * ## Hardware
+ *   - Character ctrl : Asus AiP31068L (HD44780-compatible), 16×2 5×8 pixels.
+ *   - Backlight ctrl : NXP PCA9633DP2 (4-channel PWM), present on RGB variant.
+ *   - Bus            : I2C, Fast-mode 400 kHz (see @ref I2C_FREQ_HZ).
+ *   - Addresses      : 0x3E (AiP31068L, see @ref LCD_I2C_ADDR);
+ *                      0x60 (PCA9633DP2, see @ref LCD_RGB_I2C_ADDR).
+ *   - Channel wiring : The Waveshare LCD1602RGB does NOT follow the Grove
+ *                      convention — LED0=B, LED1=G, LED2=R, LED3=unused.
+ *                      @ref lcd_backlight_color hides this remap from callers.
+ *
+ * ## AiP31068L write protocol (two bytes per transaction)
  * @code
  *   byte 0: control byte — 0x00 = command (RS=0), 0x40 = data (RS=1)
  *   byte 1: HD44780 command or character byte
  * @endcode
  * The chip handles the parallel HD44780 interface internally (8-bit bus).
  *
- * PCA9633DP2 write protocol (auto-increment supported via the AI bit):
+ * ## PCA9633DP2 write protocol (auto-increment supported via the AI bit)
  * @code
  *   byte 0: control byte — register address; bit7 (AI) set = auto-increment
  *   byte 1+: register data
  * @endcode
+ *
+ * ## API summary
+ *   - @ref lcd_init                  Probe + reset + entry-mode setup.
+ *   - @ref lcd_clear / @ref lcd_home Erase or rewind cursor.
+ *   - @ref lcd_set_cursor            Position cursor.
+ *   - @ref lcd_print / @ref lcd_print_char / @ref lcd_write_row
+ *                                    Render text.
+ *   - @ref lcd_create_char           Define a custom CGRAM glyph.
+ *   - @ref lcd_display_on            Idempotent wake-after-idle.
+ *   - @ref lcd_backlight_color / @ref lcd_backlight_lumination
+ *                                    RGB colour and master brightness.
+ *   - @ref lcd_set_contrast          Runtime contrast override.
+ *
+ * ## Thread safety
+ *   No internal mutex.  Every public function MUST be called with the shared
+ *   I2C bus mutex (MX1) held — the LIB-2 calls under the hood will block on
+ *   the bus level if needed, but multi-step sequences (write-row → set-cursor
+ *   → write-row) require MX1 to remain held across the whole sequence.
  *
  * @author Greenhouse Controller project
  * @version 0.2.0
@@ -102,10 +130,17 @@ typedef enum {
  * Performs the HD44780 4-bit software-reset sequence then configures the
  * display (2-line mode, display on, cursor off, entry-mode increment).
  * Backlight is left on after init.
- * Must be called once before any other lcd_* function.
  *
- * @return @ref LCD_OK on success, @ref LCD_ERR_NO_DEVICE if the module
- *         does not respond.
+ * On the LCD1602RGB variant, also probes the PCA9633DP2 at 0x60 and
+ * initialises it to BLUE at full brightness.  When the PCA9633 is absent
+ * (legacy monochrome module) the RGB-control calls become silent no-ops.
+ *
+ * Must be called once before any other @c lcd_* function.
+ *
+ * @return @ref LCD_OK on success, @ref LCD_ERR_NO_DEVICE if the AiP31068L
+ *         does not respond at @ref LCD_I2C_ADDR.
+ * @warning @c i2c_init() (LIB-2) MUST have been called first.
+ * @see    lcd_display_on() — wake after long bus idle.
  */
 lcd_status_t lcd_init(void);
 

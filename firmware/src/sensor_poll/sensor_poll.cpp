@@ -65,16 +65,16 @@ static const char *TAG = "T5_SEN";
  * Constants
  * ========================================================================= */
 
-/** Maximum samples in any sliding-average buffer (matches ring-buffer depth). */
+/** @brief Maximum samples in any sliding-average buffer (matches ring depth). */
 #define SP_AVG_DEPTH  360u
 
-/** Minimum poll interval enforced by T5 regardless of NVS value (seconds). */
+/** @brief Minimum poll interval enforced by T5 regardless of NVS value (seconds). */
 #define SP_POLL_MIN_S  15
 
-/** Maximum poll interval enforced by T5 (seconds). */
+/** @brief Maximum poll interval enforced by T5 (seconds). */
 #define SP_POLL_MAX_S  120
 
-/** Delay between the first and second Modbus read attempt (ms). */
+/** @brief Delay between the first and second Modbus read attempt (ms). */
 #define SP_RETRY_DELAY_MS  100u
 
 /* =========================================================================
@@ -333,6 +333,12 @@ static void post_sensor_alarm(uint8_t sensor_kind, bool onset)
 /* =========================================================================
  * Uint8 clamp helper
  * ========================================================================= */
+
+/**
+ * @brief Round a float to the nearest integer and saturate to uint8 [0, 255].
+ * @param v  Input value (any magnitude / sign).
+ * @return Clamped uint8: 0 for negatives, 255 for values > 255, otherwise lroundf(v).
+ */
 static inline uint8_t clamp_u8(float v)
 {
     long r = lroundf(v);
@@ -345,6 +351,26 @@ static inline uint8_t clamp_u8(float v)
  * T5 task entry point
  * ========================================================================= */
 
+/**
+ * @brief T5 — Sensor Poll task implementation (see header for overview).
+ *
+ * Single forever-loop. Each iteration:
+ *  1. Sleep `poll_interval_s` (clamped [SP_POLL_MIN_S, SP_POLL_MAX_S]).
+ *  2. Refresh `cfg_shadow_t`; recompute window sizes; reset any context
+ *     whose window changed (config update).
+ *  3. Read FG6485A with one retry; on success update T+RH averages, on
+ *     two-fail update EG1 + post LOG_ALARM (edge only).
+ *  4. Read S200 with one retry; same fault treatment as step 3.
+ *  5. Build `sensor_reading_t` — raw fields from this poll (or last avg
+ *     on fault, to avoid Q6 ring gaps), plus the sliding averages.
+ *  6. `xQueueOverwrite(Q6, &reading)`. T4 receives this and itself emits
+ *     LOG_SENSOR; T5 does NOT post LOG_SENSOR (would duplicate, Phase 5
+ *     hardware verification Finding 1).
+ *
+ * @param pvParameters  Unused.
+ * @warning Modbus RTU bus must be exclusive to T5 — concurrent access
+ *          from any other task would corrupt mid-frame.
+ */
 void task_sensor_poll(void *pvParameters)
 {
     (void)pvParameters;

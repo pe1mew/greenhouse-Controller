@@ -84,47 +84,57 @@
 
 static const char *TAG = "T14_STA";
 
-/** Re-check interval when status_url is empty, interval==0, or status_enable==0. */
+/** @brief Re-check interval (ms) when status_url is empty, interval==0, or status_enable==0. */
 #define STATUS_IDLE_RECHECK_MS  60000u
 
-/** Connect timeout for esp_http_client. Generous for high-latency cells. */
+/** @brief Connect timeout for esp_http_client (ms). Generous for high-latency cells. */
 #define STATUS_HTTP_TIMEOUT_MS  10000u
 
 /**
- * Canonical-JSON build buffer size. The spec body is typically 600–900 B
- * with all tiles exposed; 2 KB gives ~2× safety margin against future tile
- * additions and is well under T11's 4 KB asynchronous-receive cap. Heap-
- * allocated per cycle so we don't burn the task stack.
+ * @brief Canonical-JSON build buffer size (bytes).
+ *
+ * The spec body is typically 600–900 B with all tiles exposed; 2 KB gives
+ * ~2× safety margin against future tile additions and is well under T11's
+ * 4 KB asynchronous-receive cap. Heap-allocated per cycle so we don't burn
+ * the task stack.
  */
 #define STATUS_JSON_BUF_BYTES   2048u
 
 /**
- * SD-log streaming chunk size. 4 KB matches the gh#23 follow-on tuning
- * (max_frag_len=1024 lands separately; per-write demand here is what bounds
- * mbedTLS per-handshake heap). Smaller chunks waste TLS overhead, larger
- * chunks blow up per-write heap. 4 KB is the sweet spot empirically.
+ * @brief SD-log streaming chunk size (bytes).
+ *
+ * 4 KB matches the gh#23 follow-on tuning (max_frag_len=1024 lands
+ * separately; per-write demand here is what bounds mbedTLS per-handshake
+ * heap). Smaller chunks waste TLS overhead, larger chunks blow up per-write
+ * heap. 4 KB is the sweet spot empirically.
  */
 #define LOG_UPLOAD_CHUNK_BYTES  4096u
 
-/** xTaskNotifyWait timeout at the bottom of each cycle (poll cadence). */
+/** @brief xTaskNotifyWait timeout at the bottom of each cycle (ms — poll cadence). */
 #define CYCLE_WAIT_MS           1000u
 
 /* ============================================================
  * Module state — exposed via accessor functions in status_post.h
  * ============================================================ */
 
-/** Heartbeat counter — incremented at the top of each loop tick. */
+/** @brief Heartbeat counter — incremented at the top of each loop tick (T15 watches for staleness). */
 static volatile uint32_t s_heartbeat = 0;
 
-/** Cumulative heap drop bytes (still 0 in a.6.35; gh#24 accumulator lands later). */
+/** @brief Cumulative heap drop bytes (still 0 in a.6.35; gh#24 signed-balance accumulator lands later). */
 static volatile uint32_t s_heap_drop_bytes = 0;
 
-/** Last-attempt outcome strings (rendered on T8 LCD + web Web tab). */
+/** @brief Last status-POST outcome string ("OK ts" / "FAIL ts code=N" / "DISABLED") — rendered on T8 LCD + web Web tab. */
 static char s_last_str[64]     = {0};
+
+/** @brief Last log-upload outcome string — same shape as s_last_str. */
 static char s_last_log_str[64] = {0};
 
-/** Last local-time minute we triggered the daily upload, to avoid firing
- *  multiple times within the same minute. -1 = none yet this boot. */
+/**
+ * @brief Last local-time minute the daily upload fired, to dedup within the same minute.
+ *
+ * The outer loop runs at ~1 Hz; without this guard we'd fire 60+ times in
+ * the matching minute. `-1` = none yet this boot.
+ */
 static int s_last_daily_min = -1;
 
 /* ============================================================
@@ -159,6 +169,17 @@ void status_post_last_log_str(char *buf, size_t cap)
  * HTTP event callback — minimal (no session-ticket reuse yet)
  * ============================================================ */
 
+/**
+ * @brief esp_http_client event hook — log connection lifecycle at DEBUG/WARN.
+ *
+ * No payload accumulation here (status POSTs use the synchronous
+ * `set_post_field` path; log uploads use streaming `client_open` +
+ * `client_write` with explicit `fetch_headers`). The callback exists only
+ * so `HTTP_EVENT_ERROR` surfaces in the log output for triage.
+ *
+ * @param evt  Event record from esp_http_client.
+ * @return Always ESP_OK — never abort the request from the callback.
+ */
 static esp_err_t http_event_cb(esp_http_client_event_t *evt)
 {
     switch (evt->event_id) {
@@ -185,6 +206,15 @@ static esp_err_t http_event_cb(esp_http_client_event_t *evt)
  *   3 = daily-slot fired but precondition blocked (value_a=0 only)
  * ============================================================ */
 
+/**
+ * @brief Post a LOG_SYSTEM event to Q3 for a T14 outcome row.
+ *
+ * @param value_a  0 = failure/skip, 1 = success.
+ * @param value_b  Sub-code (0 = status POST, 1 = log upload,
+ *                 2 = daily slot fired with no fresh file,
+ *                 3 = daily slot fired but precondition blocked).
+ * @see   event_logger.h (value_a/value_b encoding catalogue)
+ */
 static void post_log(int16_t value_a, int16_t value_b)
 {
     log_event_t evt = {};
@@ -199,6 +229,15 @@ static void post_log(int16_t value_a, int16_t value_b)
 /* ============================================================
  * Format a "OK YYYY-MM-DD HH:MM:SS" / "FAIL ... code=N" string into a buf.
  * ============================================================ */
+
+/**
+ * @brief Render an outcome line for the Web tab indicator (also used on LCD).
+ *
+ * @param buf          Destination; must be ≥ ~32 bytes for full message.
+ * @param cap          Capacity of @p buf in bytes.
+ * @param ok           true → "OK <ts>", false → "FAIL <ts> code=<status_code>".
+ * @param status_code  HTTP status code to embed in the FAIL line.
+ */
 static void format_outcome(char *buf, size_t cap, bool ok, int status_code)
 {
     char ts[20] = {0};
@@ -221,6 +260,19 @@ static void format_outcome(char *buf, size_t cap, bool ok, int status_code)
  * shared build_canonical_status_json with cfg.status_expose as the mask
  * and include_disabled_setpoints=false (public dashboard policy).
  * ============================================================ */
+/**
+ * @brief Take a status snapshot and serialise it into the canonical JSON body.
+ *
+ * Thin wrapper around `dm_status_snapshot()` + `build_canonical_status_json()`
+ * that hard-codes the public-dashboard policy (`include_disabled_setpoints
+ * = false`). T11 calls `build_canonical_status_json` directly with `true`
+ * for the local GUI.
+ *
+ * @param buf  Destination buffer (heap-allocated by caller).
+ * @param cap  Capacity of @p buf in bytes.
+ * @param cfg  Snapshot for `status_expose` mask only — never modified.
+ * @return Bytes written excluding the terminating NUL, or 0 on overflow.
+ */
 static size_t build_status_body(char *buf, size_t cap, const cfg_shadow_t *cfg)
 {
     if (buf == NULL || cap == 0) return 0;
@@ -238,6 +290,23 @@ static size_t build_status_body(char *buf, size_t cap, const cfg_shadow_t *cfg)
  *
  * Returns true on HTTP 2xx, false otherwise. Records s_last_str + Q3 row.
  * ============================================================ */
+
+/**
+ * @brief Execute one HTTPS status POST: build body, attach headers, send, log outcome.
+ *
+ * Synchronous: opens the connection, sends the entire JSON body via
+ * `esp_http_client_set_post_field` + `esp_http_client_perform`, then
+ * tears down. The `sourceidentifier` header is attached only when
+ * `cfg->status_secret` is non-empty (server-side validation is the
+ * server's problem). Records the outcome into `s_last_str` and posts a
+ * LOG_SYSTEM row (`value_a=1/0`, `value_b=0`).
+ *
+ * @param cfg  Caller's config snapshot — read-only.
+ * @return true on HTTP 2xx, false on any failure (init / build / network /
+ *         non-2xx status).
+ * @warning Allocates `STATUS_JSON_BUF_BYTES` (2 KB) from internal heap;
+ *          ALLOC_FAIL is reported and counted as a failure outcome.
+ */
 static bool do_status_post(const cfg_shadow_t *cfg)
 {
     /* Heap-allocate the body buffer; status_snapshot_t plus the formatted
@@ -325,6 +394,28 @@ static bool do_status_post(const cfg_shadow_t *cfg)
  * @param filename  Bare filename (no path), e.g. "20260507143022.csv".
  * @param cfg       Snapshot taken by the caller (used for url + secret).
  * ============================================================ */
+
+/**
+ * @brief Stream one closed CSV from the SD card to the status server.
+ *
+ * Opens an HTTPS POST to `<cfg.status_url>?action=log&file=<filename>` with
+ * Content-Length set to the file size, then reads the file in
+ * `LOG_UPLOAD_CHUNK_BYTES` (4 KB) chunks from SD and writes each chunk to
+ * the socket. Bounds per-write mbedTLS heap demand regardless of file size
+ * (gh#23). On HTTP 2xx the gh#25 dedup latch is advanced via
+ * `dm_set_log_last_up()`.
+ *
+ * @param filename  Bare filename (no leading '/'), e.g. "20260507143022.csv".
+ *                  An empty string is rejected up front.
+ * @param cfg       Caller's config snapshot — read for url + secret only.
+ * @return true on HTTP 2xx, false on any failure (missing file, alloc fail,
+ *         open fail, SD read fail, write fail, fetch_headers fail, non-2xx).
+ * @warning Allocates a `LOG_UPLOAD_CHUNK_BYTES + 1` byte chunk buffer from
+ *          internal heap. The +1 NUL slot prevents a single-byte overrun
+ *          into adjacent TLSF heap metadata — see the rc.1.2.1 comment at
+ *          the allocation site below.
+ * @see   storage_sd_read(), dm_set_log_last_up()
+ */
 static bool do_log_upload(const char *filename, const cfg_shadow_t *cfg)
 {
     if (filename == NULL || filename[0] == '\0') {
@@ -552,6 +643,28 @@ static int upload_pending(const cfg_shadow_t *cfg)
  * Task entry point
  * ============================================================ */
 
+/**
+ * @brief T14 — Status website POST task (see header for overview).
+ *
+ * Single forever-loop driven by `xTaskNotifyWait`. Each tick:
+ *  - Bump `s_heartbeat` (T15 watches this).
+ *  - Snapshot the config; check the three gates (enable / url / interval).
+ *    If any gate fails, idle up to `STATUS_IDLE_RECHECK_MS` waiting on any
+ *    notify bit (so `T14_NOTIFY_CFG_CHANGED` wakes us within ~1 s after an
+ *    operator clicks Apply).
+ *  - Daily trigger: if the local clock has just entered the configured
+ *    upload minute, drain pending CSVs via `upload_pending`.
+ *  - Cadence trigger: if `status_interval_s` has elapsed since the last
+ *    POST, call `do_status_post`.
+ *  - Wait up to `CYCLE_WAIT_MS` (1 s) for a notify bit. On
+ *    `T14_NOTIFY_LOG_ROTATED` and `cfg.log_upload_rot != 0`, drain pending
+ *    CSVs.
+ *
+ * @param pvParameters  Unused.
+ * @warning Holds no module-private lock — accessor functions
+ *          (`status_post_last_str()` etc.) are racy with the writer here
+ *          but only the read-after-NUL is observable, never UB.
+ */
 void task_status_post(void *pvParameters)
 {
     (void)pvParameters;
