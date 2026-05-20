@@ -2,7 +2,7 @@
 
 **Versie:** 1.17 — concept
 **Datum:** 2026-05-20
-**Firmware:** 2.0.0-rc.1.3 (release candidate 1, patch 3 — opruimrelease: wifi_tickle gevouwen in T10 als `nm_wifi_init_blocking()`, https_tickle verwijderd, dode bronbestanden opgeruimd, Lolin-S3 datasheets verplaatst naar `documentation/hardware/`. Geen gedragsverandering t.o.v. rc.1.2.1; vervangt rc.1.2.1 als kandidaat voor de 14-daagse Phase 7 soak)
+**Firmware:** 2.0.0-rc.1.3.1 (release candidate 1, patch 3.1 — fix voor 0.1 °C temperatuur-resolutie in webGUI en `/api/history`; temperatuurwaarden in de GUI eindigden eerder altijd op `.0` ondanks de `toFixed(1)` formattering. De FG6485A-sensor levert 0.1 °C resolutie maar T5 ronde af naar gehele °C — nu correct doorgegeven via `temperature_c10` / `t_avg_c10` velden in `sensor_reading_t`. LCD, klimaatregeling en SD-log blijven hele °C zoals voorheen.)
 
 ---
 

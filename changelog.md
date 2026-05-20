@@ -28,6 +28,73 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-rc.1.3.1]` — 2026-05-20  (temperature 0.1 °C precision fix; supersedes rc.1.3 as Phase 7 candidate)
+
+**Operator-reported precision-loss bug**: the web GUI's temperature tiles always rendered with `.0` as the fractional digit (e.g. `21.0 °C`, `22.0 °C`) even though the dashboard formatter uses `toFixed(1)`. The same happened in the `/api/history` JSON output. The operator wanted real 0.1 °C resolution surfaced.
+
+#### Root cause
+
+`firmware/src/sensor_poll/sensor_poll.cpp:535/539/553` rounded the FG6485A's float temperature reading down to whole `int16_t` °C via `lroundf()`, then stored that in `sensor_reading_t.temperature_c` / `t_avg_c`. T4 (`data_manager.cpp:1117`) "promoted" the integer back to ×10 representation by literally multiplying by 10:
+
+```c
+out->t_c10 = (int16_t)((int32_t)meas.temperature_c * 10);
+//                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+//                    can only end in .0 — source is int
+```
+
+The FG6485A driver header (`drivers/FG6485A/src/fg6485a.h:160`) is explicit: the sensor delivers `float temperature_c` with **0.1 °C resolution**. T5 was discarding it on receipt.
+
+The web_server `/api/history` code had a self-aware comment at line 965-969:
+> *"sensor_reading_t stores temperature as whole-°C integers — the sensor delivers integer °C and we don't upsample. Emit `%d.0` …"*
+
+The first sentence ("sensor delivers integer °C") is wrong — the driver gives 0.1 °C. The `%d.0` workaround perpetuated the loss.
+
+#### Fix
+
+Additive — added tenths-precision fields to `sensor_reading_t` alongside the existing integer ones (same pattern as `wind_speed_ms10`):
+
+```c
+typedef struct {
+    int16_t  temperature_c;     // whole °C — kept for climate_control,
+                                //   LCD render, LOG_SENSOR value_a
+    /* ...existing fields... */
+    int16_t  temperature_c10;   // ×10 (e.g. 234 = 23.4 °C) — added rc.1.3.1
+    int16_t  t_avg_c10;         // ×10 sliding-average — added rc.1.3.1
+    /* ... */
+} sensor_reading_t;
+```
+
+T5 populates both from the same float source. T4 reads the c10 fields verbatim (no more `* 10` lie). `/api/history` emits `%d.%d` from the c10 fields.
+
+Zero-blast-radius for code that doesn't need fractional precision:
+- **`climate_control.cpp`** continues using whole-°C `meas.t_avg_c` for setpoint comparisons — no change.
+- **`ui_display.cpp`** continues rendering `Temp: 23 °C` from `meas.temperature_c` — LCD doesn't need fractions.
+- **`data_manager.cpp:792`** still posts LOG_SENSOR with `value_a = r->t_avg_c` (integer) — **SD log format unchanged**, log parser unchanged, operator-visible CSV history continues with whole °C.
+
+The fix is operator-visible **only** in: the canonical status JSON `climate.temp_c` / `temp_avg_c`, the WS push, and the `/api/history` response — exactly where the precision is wanted.
+
+#### Files touched
+
+- `firmware/src/types/app_types.h` — added 2 new fields to `sensor_reading_t`.
+- `firmware/src/sensor_poll/sensor_poll.cpp` — T5 populates the new fields from the float source.
+- `firmware/src/data_manager/data_manager.cpp` — T4 reads the new fields directly into `status_snapshot_t.t_c10` / `t_avg_c10`.
+- `firmware/src/web_server/web_server.cpp` — `/api/history` emits `%d.%d` instead of `%d.0`.
+- `firmware/platformio.ini` — FIRMWARE_VERSION 2.0.0-rc.1.3 → 2.0.0-rc.1.3.1.
+- `webUiMock/mock_server.py` — `cfg["fw_ver"]` bumped in lockstep.
+- `manual/beheerderHandleiding.md` — header refreshed.
+- `bin/2.0.0-rc.1.3.1/release-notes.md` — new file.
+
+#### Build delta vs rc.1.3
+
+| Metric | rc.1.3 | rc.1.3.1 | Delta |
+|---|---:|---:|---:|
+| Firmware bin | 1 351 881 B | (build-pending) | minor (2 new int16_t struct fields + a few more snprintf format characters) |
+| RAM static | 60 568 B | (build-pending) | +4 B expected (2 × int16_t in `sensor_reading_t`'s singletons) |
+
+#### Phase 7 soak — clock reset (fifth time)
+
+Same drill. rc.1.3.1 deployed via paired OTA to the bench unit; day-0 of the 14-day clock restarts.
+
 ### `[2.0.0-rc.1.3]` — 2026-05-20  (housekeeping release; supersedes rc.1.2.1 as Phase 7 candidate)
 
 **Zero behavioural change. Pure source-quality cleanup pass.** The rc.1.2.1 8:35 success demonstrated that the four-stage rc.1 → rc.1.1 → rc.1.2 → rc.1.2.1 fix series is operationally complete; this release tidies up the codebase before the soak settles in for its 14-day run.

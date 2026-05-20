@@ -310,12 +310,20 @@ typedef struct {
 
 /** Q6 — sensor reading snapshot (T5 → T4; depth 1, xQueueOverwrite). */
 typedef struct {
-    int16_t  temperature_c;         /**< Raw temperature, integer °C */
+    int16_t  temperature_c;         /**< Raw temperature, integer °C
+                                      *  (kept for climate_control setpoint
+                                      *  comparison + LCD render + LOG_SENSOR
+                                      *  value_a; the operator-visible
+                                      *  precision lives in `temperature_c10`
+                                      *  below — rc.1.3.1) */
     uint8_t  humidity_pct;          /**< Raw relative humidity, 0–100 % */
     uint8_t  _reserved;             /**< Alignment padding */
     uint16_t wind_speed_ms10;       /**< Wind speed × 10 (e.g. 35 = 3.5 m/s) */
     uint16_t wind_dir_deg;          /**< Wind direction, 0–359 ° */
-    int16_t  t_avg_c;               /**< Sliding-average temperature, integer °C */
+    int16_t  t_avg_c;               /**< Sliding-average temperature, integer °C
+                                      *  (same role as `temperature_c` for
+                                      *  whole-°C consumers; tenths in
+                                      *  `t_avg_c10`) */
     uint8_t  rh_avg_pct;            /**< Sliding-average humidity, 0–100 % */
     uint8_t  _reserved2;            /**< Alignment padding */
     uint16_t wind_speed_avg_ms10;   /**< Sliding-average wind speed × 10 */
@@ -324,6 +332,16 @@ typedef struct {
                                       *  every direction sample in the current
                                       *  sliding window (0–359). E.g. wind
                                       *  oscillating 100° ↔ 160° gives 60. */
+    int16_t  temperature_c10;       /**< Raw temperature × 10 (e.g. 234 = 23.4 °C);
+                                      *  added rc.1.3.1 to preserve the
+                                      *  FG6485A's native 0.1 °C resolution
+                                      *  end-to-end into the canonical status
+                                      *  JSON + /api/history. Same source
+                                      *  float; only the storage precision
+                                      *  differs from `temperature_c`. */
+    int16_t  t_avg_c10;             /**< Sliding-average temperature × 10
+                                      *  (same precision policy as
+                                      *  `temperature_c10`). */
     uint32_t timestamp;             /**< Unix epoch seconds of this reading */
 } sensor_reading_t;
 
