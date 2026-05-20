@@ -397,8 +397,15 @@ static bool do_log_upload(const char *filename, const cfg_shadow_t *cfg)
         return false;
     }
 
-    /* Heap-allocate the chunk buffer to keep stack usage flat. */
-    uint8_t *chunk = (uint8_t *)heap_caps_malloc(LOG_UPLOAD_CHUNK_BYTES, MALLOC_CAP_INTERNAL);
+    /* Heap-allocate the chunk buffer to keep stack usage flat. The +1 is the
+     * NUL that storage_sd_read appends at offset `got` (≤ LOG_UPLOAD_CHUNK_BYTES
+     * for full chunks). Without it, the NUL spills one byte into the next TLSF
+     * block's metadata header, corrupting `block_is_free` and panicking the
+     * heap allocator on a later visit (rc.1.2 soak failure 2026-05-20 03:15 —
+     * see changelog [2.0.0-rc.1.2.1] / `bin/2.0.0-rc.1.2.1/release-notes.md`).
+     * The streaming write below still uses `got` so the wire payload size is
+     * unchanged. */
+    uint8_t *chunk = (uint8_t *)heap_caps_malloc(LOG_UPLOAD_CHUNK_BYTES + 1u, MALLOC_CAP_INTERNAL);
     if (chunk == NULL) {
         ESP_LOGW(TAG, "[T14] log upload: heap_caps_malloc(%u) failed",
                  (unsigned)LOG_UPLOAD_CHUNK_BYTES);
@@ -417,10 +424,10 @@ static bool do_log_upload(const char *filename, const cfg_shadow_t *cfg)
                                 ? LOG_UPLOAD_CHUNK_BYTES
                                 : (file_size - offset);
         size_t got = 0;
-        /* storage_sd_read NUL-terminates → buf_len must include the NUL.
-         * We pass want+1 and discard the NUL — but the +1 might exceed our
-         * allocation. Instead pass want bytes, accept the truncated NUL
-         * inside that count, and clamp the actual write to (got). */
+        /* storage_sd_read writes up to (buf_len - 1) data bytes and appends
+         * a NUL at offset `got`. Buf is allocated LOG_UPLOAD_CHUNK_BYTES+1
+         * so the NUL always lands inside the allocation. The wire write
+         * below clamps to `got` (excludes the NUL). */
         storage_status_t rrc = storage_sd_read(sd_path, offset,
                                                (char *)chunk, (size_t)(want + 1u), &got);
         if (rrc != STORAGE_OK || got == 0) {

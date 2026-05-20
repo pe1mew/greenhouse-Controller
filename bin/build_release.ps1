@@ -119,7 +119,13 @@ Write-Host ""
 Write-Host "--- Step 1/3: Build firmware ---" -ForegroundColor Yellow
 Push-Location $FIRMWARE_DIR
 try {
-    & $PIO run -e lolin_s3
+    # rc.1.2.1 — PIO emits "-Wmissing-field-initializers" warnings to stderr
+    # for the httpd_uri:: brace-init lists in web_server.cpp. Under
+    # $ErrorActionPreference='Stop', PowerShell treats those stderr lines as
+    # terminating errors even though pio's own exit code is 0. Merge stderr
+    # into stdout so the warnings stay informational, and gate failure on
+    # $LASTEXITCODE alone.
+    & $PIO run -e lolin_s3 2>&1 | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { throw "pio run failed (exit $LASTEXITCODE)" }
 } finally {
     Pop-Location
@@ -131,6 +137,40 @@ Copy-Item -Force $BIN_SRC $BIN_DST
 
 $bin_kb = [math]::Round((Get-Item $BIN_DST).Length / 1KB, 1)
 Write-Host "    -> $BIN_DST  ($bin_kb KB)" -ForegroundColor Green
+
+# rc.1.2.1 — Archive the matching ELF + linker map + partition table + bootloader
+# alongside the .bin. The ELF is REQUIRED to decode coredumps captured by the
+# running .bin (esp_coredump's SHA check refuses any non-matching ELF), and PIO
+# overwrites `.pio/build/lolin_s3/firmware.elf` on every subsequent build —
+# losing the per-build symbol set within minutes of cutting a release. Without
+# this archive, a coredump captured in the field can become un-decodable as
+# soon as a single `pio run` runs on the developer's box (this hit us during
+# the rc.1.2 03:15 soak failure — see changelog [2.0.0-rc.1.2.1]).
+#
+# All four are gitignored alongside the .bin (bin/**/*.{bin,elf,zip}), so the
+# archive lives locally per checkout but never bloats the repo. The release
+# build is reproducible from the matching tag if needed.
+$ELF_SRC = Join-Path $FIRMWARE_DIR ".pio\build\lolin_s3\firmware.elf"
+$MAP_SRC = Join-Path $FIRMWARE_DIR ".pio\build\lolin_s3\firmware.map"
+$BL_SRC  = Join-Path $FIRMWARE_DIR ".pio\build\lolin_s3\bootloader.bin"
+$PT_SRC  = Join-Path $FIRMWARE_DIR ".pio\build\lolin_s3\partitions.bin"
+
+foreach ($pair in @(
+    @($ELF_SRC, "firmware-$VERSION.elf"),
+    @($MAP_SRC, "firmware-$VERSION.map"),
+    @($BL_SRC,  "bootloader-$VERSION.bin"),
+    @($PT_SRC,  "partitions-$VERSION.bin")
+)) {
+    $src = $pair[0]
+    $dst = Join-Path $OUT_DIR $pair[1]
+    if (Test-Path $src) {
+        Copy-Item -Force $src $dst
+        $kb = [math]::Round((Get-Item $dst).Length / 1KB, 1)
+        Write-Host "    -> $dst  ($kb KB)" -ForegroundColor Green
+    } else {
+        Write-Host "    -- (skipped: $src not found)" -ForegroundColor Yellow
+    }
+}
 Write-Host ""
 
 # ---------------------------------------------------------------------------
@@ -139,7 +179,8 @@ Write-Host ""
 Write-Host "--- Step 2/3: Build LittleFS image ---" -ForegroundColor Yellow
 Push-Location $FIRMWARE_DIR
 try {
-    & $PIO run -e lolin_s3 -t buildfs
+    # rc.1.2.1 — same stderr-treated-as-error guard as Step 1.
+    & $PIO run -e lolin_s3 -t buildfs 2>&1 | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { throw "pio buildfs failed (exit $LASTEXITCODE)" }
 } finally {
     Pop-Location

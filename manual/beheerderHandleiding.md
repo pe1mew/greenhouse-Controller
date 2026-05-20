@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de beheerder
 
 **Versie:** 1.17 — concept
-**Datum:** 2026-05-19
-**Firmware:** 2.0.0-rc.1.1 (release candidate 1, patch 1 — UX-fix voor windrichting-weergave in de webGUI; vervangt rc.1 als kandidaat voor de 14-daagse Phase 7 soak)
+**Datum:** 2026-05-20
+**Firmware:** 2.0.0-rc.1.2.1 (release candidate 1, patch 2.1 — fix voor heap-overrun in T14 log-upload chunk-reader; rc.1.1 UX-fix en rc.1.2 OTA-reboot-fix blijven van kracht; vervangt rc.1.2 als kandidaat voor de 14-daagse Phase 7 soak)
 
 ---
 

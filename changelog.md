@@ -28,6 +28,72 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-rc.1.2.1]` — 2026-05-20  (T14 log-upload heap-overrun fix; supersedes rc.1.2 as Phase 7 candidate)
+
+**Day 0 of the rc.1.2 soak failed at 03:15 with a heap-corruption panic.** Reported by the operator as: log not uploaded at 3:15 to status page; unit reset 4 hours ago; coredump available. The panic was caught by TLSF's debug assertion at `block_trim_free` (heap/tlsf_control_functions.h:548), with the offending task identified from the captured coredump as **T14 status_post** in `do_log_upload` → `esp_http_client_write` of the 03:15 first-of-the-day log-upload attempt.
+
+The brief rc.1.2 entry that wasn't added to this changelog file (see `bin/2.0.0-rc.1.2/release-notes.md` for the full text) covered the OTA-reboot stack-overflow carve-off — that fix still applies and is unrelated to this bug. This patch (rc.1.2.1) is a one-line buffer-allocation correction on top of rc.1.2.
+
+#### The bug — `firmware/src/status_post/status_post.cpp:401`
+
+```c
+// before — 4096-byte allocation, NUL written at offset 4096 (one past the end)
+uint8_t *chunk = heap_caps_malloc(LOG_UPLOAD_CHUNK_BYTES, MALLOC_CAP_INTERNAL);
+//                                ↑ = 4096
+storage_sd_read(sd_path, offset, (char *)chunk, want + 1u /* = 4097 */, &got);
+//                                                ↑ tells storage to write up to 4097 B
+//                                                  into a 4096-B buffer → overrun
+```
+
+`storage_sd_read` writes up to `(buf_len - 1)` data bytes and NUL-terminates at offset `got`. The chunk reader passes `want + 1u` as `buf_len` (= 4097 for full chunks), expecting the NUL inside the allocation — but the allocation is only `want` bytes (= 4096). Every full-chunk read writes the NUL one byte past the end of `chunk`, landing in the TLSF metadata header of the *next* heap block and corrupting the `block_is_free` flag.
+
+TLSF doesn't assert immediately — only when the allocator next visits the corrupted block during a malloc/free. Under WiFi+TLS heap churn (each `esp_http_client_write(4096)` allocates several mbedtls + WiFi-TX buffers), the assertion fires after some unpredictable number of writes. On the bench unit this took the entire 4 KB chunk loop of file `20260518233026.csv` (an older stranded file picked up by the a.6.35.2 multi-file drain) before a 1494-B WiFi TX-buffer alloc hit the corrupt block and panicked.
+
+The original author had a TODO comment at lines 420-423 calling out exactly this hazard ("Instead pass want bytes, accept the truncated NUL inside that count") — the code below was never updated to match.
+
+#### The fix — one character (option 1 from the post-mortem)
+
+```diff
+-    uint8_t *chunk = (uint8_t *)heap_caps_malloc(LOG_UPLOAD_CHUNK_BYTES,      MALLOC_CAP_INTERNAL);
++    uint8_t *chunk = (uint8_t *)heap_caps_malloc(LOG_UPLOAD_CHUNK_BYTES + 1u, MALLOC_CAP_INTERNAL);
+```
+
+The 4097-byte allocation accommodates the NUL that storage_sd_read writes at offset `got` (≤ 4096 for full chunks). The wire write below still clamps to `got`, so each on-wire chunk stays at 4096 data bytes — no throughput change. The dangling TODO comment in the read site was rewritten to reflect the now-correct semantics.
+
+#### Coredump-decode infrastructure improvement
+
+The rc.1.2 post-mortem revealed a second problem: the rc.1.2 binary deployed on the bench had a different sha256 than what a fresh `pio run` produced from the (clean) working tree — build-time non-determinism. The original rc.1.2 `firmware.elf` had been clobbered by a subsequent build, so `esp_coredump info_corefile` refused to load the dump (SHA mismatch).
+
+To prevent this for every future release, `bin/build_release.ps1` now archives the matching `firmware.elf`, `firmware.map`, `bootloader.bin`, and `partitions.bin` to `bin/<version>/` alongside the `.bin`. All four are gitignored (per the existing `bin/**/*.{bin,elf,zip}` rules) so the repo stays clean; the per-version directory keeps the matching debug-info set indefinitely against the local checkout.
+
+For the rc.1.2 dump that's already captured, the rc.1.2 ELF is not recoverable — decode required a one-shot monkey-patch of `esp_coredump/corefile/loader.py` to downgrade the SHA-check to a warning. That patch was reverted after decode. Cross-references for future investigators are in `bin/2.0.0-rc.1.2/post-mortem/`:
+- `coredump-rc.1.2-post-reset.bin` — raw dump
+- `coredump.core.elf` — converted ELF (decodable against a same-source rebuild with the SHA-check downgraded)
+- `sd-log-20260519111829.csv` — SD log including the boot-loop section
+- `patch_dump_sha.py` — helper for future cross-build decodes
+
+#### Files touched
+
+- `firmware/src/status_post/status_post.cpp` — 4096 → 4097 allocation; comments rewritten.
+- `firmware/platformio.ini` — FIRMWARE_VERSION 2.0.0-rc.1.2 → 2.0.0-rc.1.2.1.
+- `webUiMock/mock_server.py` — `cfg["fw_ver"]` brought up to rc.1.2.1 (was still at rc.1.1 — the rc.1.2 commit didn't bump it).
+- `manual/beheerderHandleiding.md` — header refreshed (v1.17 still, firmware row updated).
+- `bin/build_release.ps1` — archive `.elf` / `.map` / `bootloader.bin` / `partitions.bin` per release.
+- `bin/2.0.0-rc.1.2.1/release-notes.md` — new file.
+
+#### Phase 7 soak — clock reset (third time)
+
+Same drill: rc.1.2.1 build deployed via paired OTA to the bench unit at 192.168.20.160, coredump partition erased, day-0 of the 14-day clock restarts. All other acceptance criteria from rc.1 carry over unchanged.
+
+#### Build delta vs rc.1.2
+
+| Metric | rc.1.2 | rc.1.2.1 | Delta |
+|---|---:|---:|---:|
+| Firmware bin | 1 354 368 B | (build-pending) | +0-ish (allocation constant increased by 1, no code-path change) |
+| RAM static | 60 568 B | (build-pending) | 0 expected |
+
+Full flash usage still ~64.6 % of the 2 MB OTA bank — same headroom as rc.1 / rc.1.1 / rc.1.2.
+
 ### `[2.0.0-rc.1.1]` — 2026-05-19  (web-GUI wind-direction surface fix; supersedes rc.1 as Phase 7 candidate)
 
 **Operator-reported UX mismatch resolved.** While bench-validating rc.1 with the real S200 wind sensor wired up (replacing the modbus emulator that the alpha-series had used), the operator observed:
