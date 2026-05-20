@@ -176,8 +176,12 @@
 #include "ds1307_rtc.h"
 #include "littlefs_storage.h"
 #include "sd_storage.h"
-#include "wifi_tickle.h"
-#include "https_tickle.h"
+/* wifi_tickle.h / https_tickle.h removed in rc.1.3 — folded into T10
+ * (network_manager) and discarded respectively. nm_wifi_init_blocking()
+ * exposed from network_manager/network_manager.h replaces wifi_tickle_run();
+ * the boot-time 5×google.com https_tickle test served its alpha-era
+ * gh#23 demonstration purpose and is no longer needed (T14's real status
+ * POSTs against the production server provide ongoing validation). */
 /* web_server_tickle.h removed in alpha.6.16 — replaced by web_server/web_server.h (real T11). */
 #include "web_server/web_server.h"
 #include "system_globals.h"
@@ -1285,18 +1289,19 @@ extern "C" void app_main(void)
      * IP_EVENT_STA_GOT_IP handler sets a bit on a FreeRTOS event group; the
      * tickle blocks on xEventGroupWaitBits with a 10 s budget.
      *
-     * Three possible outcomes:
-     *   WIFI_TICKLE_OK              — connected, got IP, SNTP synced.
-     *   WIFI_TICKLE_OK_NO_NTP       — connected, got IP, SNTP timed out
-     *                                 (this can happen if the bench AP has
-     *                                 no internet route to pool.ntp.org).
-     *   WIFI_TICKLE_NO_SSID         — NVS wifi/ssid empty (factory state
-     *                                 or operator-cleared) — graceful skip.
-     *   WIFI_TICKLE_CONNECT_TIMEOUT — STA_GOT_IP not received in budget;
+     * Three possible outcomes (enum renamed from WIFI_TICKLE_* to NM_WIFI_*
+     * in rc.1.3 when the function was folded into T10):
+     *   NM_WIFI_OK              — connected, got IP, SNTP synced.
+     *   NM_WIFI_OK_NO_NTP       — connected, got IP, SNTP timed out
+     *                             (this can happen if the bench AP has
+     *                             no internet route to pool.ntp.org).
+     *   NM_WIFI_NO_SSID         — NVS wifi/ssid empty (factory state
+     *                             or operator-cleared) — graceful skip.
+     *   NM_WIFI_CONNECT_TIMEOUT — STA_GOT_IP not received in budget;
      *                                 most likely cause is the WiFi
      *                                 network not being in range of Unit 2.
-     *   WIFI_TICKLE_DISCONNECTED    — auth failure or AP not found after
-     *                                 retries.
+     *   NM_WIFI_DISCONNECTED    — auth failure or AP not found after
+     *                             retries.
      *
      * The Unit 2 NVS holds whatever ssid/psk the 1.20.3 firmware persisted
      * there (lossless across reflashes). If the bench unit is physically
@@ -1308,27 +1313,28 @@ extern "C" void app_main(void)
      * budget here gives 2× headroom for slow APs / weak signal. */
     bool wifi_up = false;
     {
-        wifi_tickle_status_t wifi_st = wifi_tickle_run(/*connect_timeout_ms=*/10000u);
+        /* rc.1.3 — folded from wifi_tickle into T10 (network_manager).
+         * Same blocking boot-time WiFi STA bring-up + SNTP sync; the
+         * function just lives in T10's home now. The WIFI_EVENT/IP_EVENT
+         * handler registered here stays alive across this call and
+         * continues to drive reconnects via the exponential-backoff timer
+         * (alpha.6.31). Spawn T10's monitoring task below; T10 assumes
+         * WiFi init has already completed when it starts. */
+        nm_wifi_status_t wifi_st = nm_wifi_init_blocking(/*connect_timeout_ms=*/10000u);
         const char *wifi_msg =
-            (wifi_st == WIFI_TICKLE_OK)              ? "OK (connected + SNTP synced)" :
-            (wifi_st == WIFI_TICKLE_OK_NO_NTP)       ? "OK (connected, NTP timed out)" :
-            (wifi_st == WIFI_TICKLE_NO_SSID)         ? "NO_SSID (NVS wifi/ssid empty)" :
-            (wifi_st == WIFI_TICKLE_INIT_FAILED)     ? "INIT_FAILED" :
-            (wifi_st == WIFI_TICKLE_CONNECT_TIMEOUT) ? "CONNECT_TIMEOUT (AP out of range?)" :
-            (wifi_st == WIFI_TICKLE_DISCONNECTED)    ? "DISCONNECTED (auth fail / AP missing)" :
-                                                       "?";
-        ESP_LOGI(TAG, "wifi_tickle_run() returned %d (%s)", (int)wifi_st, wifi_msg);
-        /* alpha.6.31 — `wifi_up` now means "WiFi STACK initialized", not
-         * "STA connected". Previously T11 was gated on STA being up at
-         * boot, which broke the AP-mode recovery path: a unit with no
-         * `wifi/ssid` couldn't reach the GUI via AP because T11 was
-         * never spawned. Now T11 spawns as long as wifi_tickle_run got
-         * the stack to esp_wifi_start() — even NO_SSID counts, because
-         * the admin can later enable the AP from the LCD menu and T11
-         * binds httpd to all interfaces (incl. the AP netif at
-         * 192.168.4.1). The only state that still gates T11 is
-         * INIT_FAILED (genuine WiFi-driver failure). */
-        wifi_up = (wifi_st != WIFI_TICKLE_INIT_FAILED);
+            (wifi_st == NM_WIFI_OK)              ? "OK (connected + SNTP synced)" :
+            (wifi_st == NM_WIFI_OK_NO_NTP)       ? "OK (connected, NTP timed out)" :
+            (wifi_st == NM_WIFI_NO_SSID)         ? "NO_SSID (NVS wifi/ssid empty)" :
+            (wifi_st == NM_WIFI_INIT_FAILED)     ? "INIT_FAILED" :
+            (wifi_st == NM_WIFI_CONNECT_TIMEOUT) ? "CONNECT_TIMEOUT (AP out of range?)" :
+            (wifi_st == NM_WIFI_DISCONNECTED)    ? "DISCONNECTED (auth fail / AP missing)" :
+                                                   "?";
+        ESP_LOGI(TAG, "nm_wifi_init_blocking() returned %d (%s)", (int)wifi_st, wifi_msg);
+        /* alpha.6.31 — `wifi_up` means "WiFi STACK initialized", not "STA
+         * connected". T11 spawns as long as init reached esp_wifi_start()
+         * — even NO_SSID counts (AP-mode recovery flow). The only state
+         * that still gates T11 is INIT_FAILED (genuine WiFi-driver failure). */
+        wifi_up = (wifi_st != NM_WIFI_INIT_FAILED);
     }
 
     /* alpha.6.14 — spawn T10 minimal network_manager task.
@@ -1473,59 +1479,13 @@ extern "C" void app_main(void)
         ESP_LOGW(TAG, "alpha.6.2 sunrise tickle: skipped — no SNTP-synced time");
     }
 
-    /* alpha.4 — Phase 4 HTTPS client tickle (gh#23 payoff).
-     *
-     * Runs 5 back-to-back HTTPS GETs against Google's captive-portal
-     * detection endpoint (returns HTTP 204, fast, TLS-friendly, universally
-     * available). Each call logs:
-     *   - HTTP status code (expected: 204)
-     *   - elapsed ms (full TLS handshake on call 1; resume on calls 2-5
-     *                 IF the IDF stack keeps the session warm)
-     *   - free heap + largest block before/after the call
-     *
-     * The gh#23 signal source is the DELTA from call to call. Under
-     * arduino-esp32 HTTPClient + WiFiClientSecure, each call:
-     *   - dropped free heap ~20 KB (mbedtls handshake state held until end)
-     *   - dropped largest-block to 77-83 KB (fragmentation pinned)
-     *   - did NOT recover before the next call
-     *
-     * Cumulative drop over many calls drove the planned-reboot cadence
-     * (every 5.5 to 11 hours on Unit 2 under status_interval_s=240 s).
-     *
-     * With esp_http_client + keep_alive_enable + buffer_size=1024 the
-     * expectation is:
-     *   - Call 1: full handshake, ~20 KB transient drop (recoverable)
-     *   - Calls 2-5: near-zero drop (session reused)
-     *
-     * If WiFi tickle failed (no IP), skip — esp_http_client_perform would
-     * block until lwIP timeout (long; bad for boot UX). */
-    if (wifi_up) {
-        ESP_LOGI(TAG, "alpha.4 HTTPS tickle: 5 back-to-back HTTPS GETs");
-        for (int i = 0; i < 5; i++) {
-            https_tickle_result_t r = {};
-            https_tickle_status_t st = https_tickle_run(
-                "https://www.google.com/generate_204", &r);
-            const char *msg =
-                (st == HTTPS_TICKLE_OK)              ? "OK" :
-                (st == HTTPS_TICKLE_NO_URL)          ? "NO_URL" :
-                (st == HTTPS_TICKLE_INIT_FAILED)     ? "INIT_FAILED" :
-                (st == HTTPS_TICKLE_PERFORM_FAILED)  ? "PERFORM_FAILED" :
-                (st == HTTPS_TICKLE_HTTP_ERROR)      ? "HTTP_ERROR" : "?";
-            ESP_LOGI(TAG, "HTTPS #%d: %s status=%d elapsed=%lld ms; "
-                          "heap free %u -> %u (delta %+d), largest %u -> %u (delta %+d)",
-                     i + 1, msg, r.http_status_code, (long long)r.elapsed_ms,
-                     (unsigned)r.free_heap_before, (unsigned)r.free_heap_after,
-                     (int)((int32_t)r.free_heap_after - (int32_t)r.free_heap_before),
-                     (unsigned)r.largest_block_before, (unsigned)r.largest_block_after,
-                     (int)((int32_t)r.largest_block_after - (int32_t)r.largest_block_before));
-            /* Short pause between calls so any deferred lwIP teardown
-             * settles before the next sample. */
-            vTaskDelay(pdMS_TO_TICKS(200));
-        }
-        ESP_LOGI(TAG, "alpha.4 HTTPS tickle: done — see deltas above for gh#23 signal");
-    } else {
-        ESP_LOGW(TAG, "alpha.4 HTTPS tickle: skipped — WiFi not up");
-    }
+    /* rc.1.3 — alpha.4 HTTPS tickle (5×https_tickle_run against
+     * google.com/generate_204) removed. That block was the Phase-4
+     * gh#23 demonstration: it printed per-call heap deltas to prove
+     * the mbedTLS keep-alive + 1 KB buffers held heap steady. The
+     * demonstration succeeded (rc.1 onward) and T14's real status POSTs
+     * against the production server provide ongoing validation. The
+     * boot-time 5×google.com test now only added noise. */
 
     /* alpha.5 — Phase 5 web server tickle.
      *
