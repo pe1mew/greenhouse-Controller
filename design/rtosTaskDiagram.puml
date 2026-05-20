@@ -1,0 +1,291 @@
+@startuml rtosTaskDiagram
+title Greenhouse Controller — FreeRTOS Task Graph (firmware 2.0.0-rc.1.3)
+
+' =============================================================================
+' Layout: force top-to-bottom orientation so the many sibling components
+' don't sprawl into a single ultra-wide row. Use `together { ... }` blocks
+' to keep semantically-related nodes in clusters.
+' =============================================================================
+top to bottom direction
+
+skinparam shadowing false
+skinparam defaultFontName "Segoe UI"
+skinparam defaultFontSize 11
+skinparam linetype polyline
+skinparam ranksep 45
+skinparam nodesep 25
+skinparam wrapWidth 220
+
+skinparam component {
+    BackgroundColor #E8F1FB
+    BorderColor      #2C5AA0
+    FontColor        #1A1A1A
+}
+skinparam queue {
+    BackgroundColor #FFF3CD
+    BorderColor      #B7791F
+}
+skinparam database {
+    BackgroundColor #DCEEDC
+    BorderColor      #2E7D32
+}
+skinparam cloud {
+    BackgroundColor #FCE6E6
+    BorderColor      #C0392B
+}
+
+' =============================================================================
+' Hardware peripherals — top row
+' =============================================================================
+
+together {
+    component "**Relays**\n(M1/M2/M3)\nGPIO+timer" as RELAYS
+    component "**RRK-3**\nalarm GPIO ISR" as ALARM
+    component "**Keypad 4x4**\nGPIO matrix" as KEYPAD
+    component "**LCD 16x2**\nAiP31068L I2C" as LCD
+    component "**DS1307**\nbattery I2C RTC" as RTC
+    component "**FG6485A**\nT/RH Modbus" as FG
+    component "**S200**\nwind Modbus" as S200
+    component "**NeoPixel**\nWS2812B RMT" as RGB
+    component "**SD card**\nFAT32 SPI\n→/sdcard" as SD
+}
+
+' =============================================================================
+' Storage (right column, top)
+' =============================================================================
+
+together {
+    database "**NVS**\nseparate partition" as NVS
+    database "**LittleFS A/B**\n→/lfsa /lfsb" as LFS
+    database "**Coredump**\n64 KB partition" as COREDUMP
+}
+
+' =============================================================================
+' Tasks — grouped by role for legibility
+' =============================================================================
+
+package "Control & safety (T2/T3/T6)" {
+    component "T2 **relay_controller**\n4 KB · prio 6\n3-channel window FSM" as T2
+    component "T3 **safety_monitor**\n4 KB · prio 6\nwind override + alarm" as T3
+    component "T6 **climate_control**\n5 KB · prio 4\ngraduated ventilation" as T6
+}
+
+package "Sensing & data (T4/T5)" {
+    component "T4 **data_manager**\n6 KB · prio 5\ncfg + RTC + ring buf" as T4
+    component "T5 **sensor_poll**\n4 KB · prio 4\nModbus T/RH+wind" as T5
+}
+
+package "User I/O (T7/T8)" {
+    component "T7 **keypad_scan**\n3 KB · prio 4\n20 ms matrix scan" as T7
+    component "T8 **ui_display**\n6 KB · prio 4\nLCD + menu FSM" as T8
+}
+
+package "Logging (T9)" {
+    component "T9 **event_logger**\n5 KB · prio 4\nQ3 → SD CSV" as T9
+}
+
+package "Network stack (T10/T11/T13/T14)" {
+    component "T10 **network_manager**\n6 KB · prio 3\nSTA/AP/SNTP/geo" as T10
+    component "T11 **web_server**\n6 KB · prio 4\nesp_http_server" as T11
+    component "WS push child\n4 KB · prio 4 · core 1\n2 s status broadcast" as TWS
+    component "T13 **ota_manager**\n6 KB · prio 4\non-demand by T11" as T13
+    component "T14 **status_post**\n8 KB · prio 3\nperiodic HTTPS POST" as T14
+}
+
+package "System tasks" {
+    component "T1 **watchdog**\n3 KB · prio 5\nTWDT + heap + NeoPixel" as T1
+    component "T15 **status_post_supervisor**\nDORMANT — not in SRCS" as T15 #LightGray
+}
+
+note bottom of T15
+    Source on disk but not in
+    CMakeLists.txt SRCS as of rc.1.3.
+    gh#23 closure may keep it dormant
+    permanently. Decision deferred to
+    Phase 7 soak completion.
+end note
+
+' =============================================================================
+' Queues
+' =============================================================================
+
+together {
+    queue "Q1\nwindow_cmd_t\ndepth 8" as Q1
+    queue "Q2\nkey_event_t\ndepth 8" as Q2
+    queue "Q3\nlog_event_t\ndepth 32" as Q3
+    queue "Q4\nconfig_update_t\ndepth 16" as Q4
+    queue "Q5\nnet_status_t\ndepth 1 (overwrite)" as Q5
+    queue "Q6\nsensor_reading_t\ndepth 1 (overwrite)" as Q6
+}
+
+' =============================================================================
+' Event group + mutexes — kept in one cluster so they don't disperse
+' =============================================================================
+
+together {
+    component "EG1\n**event group**\n----\nbit 0 WIND_OVERRIDE\nbit 2 SENSOR_FAULT_T\nbit 3 SENSOR_FAULT_W\nbit 4 OTA_IN_PROGRESS\nbit 5 MOTOR_ALARM\nbit 6 CALIBRATING" as EG1 #FFF3CD
+
+    component "MX1\nI2C bus\n(LCD + RTC)" as MX1 #DCEEDC
+    component "MX2\nmeasurement\nsnapshot" as MX2 #DCEEDC
+    component "MX3\nhistory ring\n(/api/history)" as MX3 #DCEEDC
+    component "MX4\ncfg_shadow\n(NVS-backed)" as MX4 #DCEEDC
+    component "MX5\nLittleFS active\n(T11 vs T13)" as MX5 #DCEEDC
+}
+
+' =============================================================================
+' External services / network endpoints
+' =============================================================================
+
+together {
+    cloud "**Home WiFi**\nSTA primary\nAP fallback\n(Greenhouse-XXXX)" as WIFI
+    cloud "**pool.ntp.org**\nUDP/123 SNTP" as NTP
+    cloud "**ip-api.com**\nHTTP geo lookup" as GEO
+    cloud "**Status server**\npe1mew.nl/hbwv\napi.php" as STATUS
+    cloud "**Web browser**\nHTTP + WS on :80" as BROWSER
+}
+
+' =============================================================================
+' Wiring — queues (producer → queue → consumer)
+' =============================================================================
+
+' Q1 — window commands → T2
+T3 -down-> Q1
+T6 -down-> Q1
+Q1 -down-> T2
+
+' Q2 — keypad events → T8
+T7 -down-> Q2
+Q2 -down-> T8
+
+' Q3 — log fan-in → T9 (use single bus-style line to keep readable)
+T1 -down-> Q3
+T2 -down-> Q3
+T3 -down-> Q3
+T4 -down-> Q3
+T5 -down-> Q3
+T6 -down-> Q3
+T8 -down-> Q3
+T10 -down-> Q3
+T11 -down-> Q3
+T13 -down-> Q3
+T14 -down-> Q3
+Q3 -down-> T9
+
+' Q4 — config updates → T4
+T8 -down-> Q4
+T10 -down-> Q4
+T11 -down-> Q4
+Q4 -down-> T4
+
+' Q5 — network state → T8
+T10 -down-> Q5
+Q5 -down-> T8
+
+' Q6 — sensor readings → T4
+T5 -down-> Q6
+Q6 -down-> T4
+
+' =============================================================================
+' Wiring — EG1 (red = writers, blue = readers)
+' =============================================================================
+
+T3 -[#C0392B]-> EG1 : set/clear\nWIND_OVERRIDE,\nMOTOR_ALARM
+T5 -[#C0392B]-> EG1 : SENSOR_FAULT_T/W
+T13 -[#C0392B]-> EG1 : OTA_IN_PROGRESS
+T2 -[#C0392B]-> EG1 : CALIBRATING
+
+T1 -[#2C5AA0]-> EG1 : read\n(NeoPixel priority)
+T6 -[#2C5AA0]-> EG1 : read\n(gate ventilation)
+T8 -[#2C5AA0]-> EG1 : read (alarm icon)
+T11 -[#2C5AA0]-> EG1 : read (mode.flags)
+T14 -[#2C5AA0]-> EG1 : read (mode.flags)
+
+' =============================================================================
+' Wiring — task notifications (direct xTaskNotify, no queue)
+' =============================================================================
+
+T10 -[#7B7B7B,dashed]-> T4  : **TN4**\nDM_NOTIFY_NTP_SYNCED
+T9 -[#7B7B7B,dashed]-> T14 : **T14_NOTIFY_LOG_ROTATED**
+T11 -[#7B7B7B,dashed]-> T13 : spawn OTA\n(fw/asset/commit)
+
+' =============================================================================
+' Wiring — mutexes (dotted green)
+' =============================================================================
+
+T4 -[#2E7D32,dotted]- MX1
+T8 -[#2E7D32,dotted]- MX1
+T4 -[#2E7D32,dotted]- MX2
+T5 -[#2E7D32,dotted]- MX2
+T4 -[#2E7D32,dotted]- MX3
+T11 -[#2E7D32,dotted]- MX3
+T4 -[#2E7D32,dotted]- MX4
+T8 -[#2E7D32,dotted]- MX4
+T11 -[#2E7D32,dotted]- MX4
+T11 -[#2E7D32,dotted]- MX5
+T13 -[#2E7D32,dotted]- MX5
+
+' =============================================================================
+' Wiring — hardware peripherals
+' =============================================================================
+
+T2 -up-> RELAYS
+ALARM -down-> T2 : ISR
+T7 -up-> KEYPAD
+T8 -up-> LCD
+T4 -up-> RTC
+T5 -up-> FG
+T5 -up-> S200
+T1 -up-> RGB
+T9 -up-> SD
+
+' Storage
+T4 <-up-> NVS
+T11 -up-> LFS : read web assets
+T13 -up-> LFS : write inactive partition
+T1 -up-> COREDUMP : detect on boot
+T11 -up-> COREDUMP : /api/coredump\n(admin only)
+
+' T11 → WS push subtask + browser
+T11 .down.> TWS : spawn at httpd_start
+
+' =============================================================================
+' Wiring — external services
+' =============================================================================
+
+T10 -down-> WIFI : esp_wifi STA
+T10 -down-> NTP : SNTP poll\n(boot + 24h)
+T10 -down-> GEO : boot-time\n(lat/lon + tz)
+T14 -down-> STATUS : POST every\nstatus_interval_s\n+ daily log
+T11 <-down- BROWSER : HTTP\n(25+ routes)
+TWS <-down- BROWSER : WebSocket /ws\n(2 s push)
+T13 <-down- BROWSER : /api/ota/*\n(admin only)
+
+' =============================================================================
+' Periodic cadence notes (anchored next to each task)
+' =============================================================================
+
+note right of T1 : Tick 500 ms\nHeap rows every 60 s
+note right of T5 : Modbus poll every\ncfg.poll_interval_s
+note right of T6 : 1 s reconciliation
+note right of T14 : POST every\ncfg.status_interval_s\n(default 120 s)
+note right of TWS : Status push\nevery 2 000 ms
+note right of T9 : SD rotation per file\nSD_MAX_FILES = 10
+
+' =============================================================================
+' Legend
+' =============================================================================
+
+legend bottom
+|= Style |= Meaning |
+|<#FFF3CD>queue</#FFF3CD>| FIFO queue (Q1..Q6) |
+|<#FFF3CD>EG1 box</#FFF3CD>| Event group with named bits |
+|<#DCEEDC>green dotted</#DCEEDC>| Mutex acquire/release (MX1..MX5) |
+|<color:#7B7B7B,dashed>**dashed grey**</color>| Task notification (direct xTaskNotify, no queue) |
+|<color:#C0392B>**red**</color>| EG1 bit writer |
+|<color:#2C5AA0>**blue**</color>| EG1 bit reader |
+|<#E8F1FB>blue box</#E8F1FB>| FreeRTOS task |
+|<#FCE6E6>red cloud</#FCE6E6>| External / network endpoint |
+|<#DCEEDC>green database</#DCEEDC>| Persistent storage (NVS/LittleFS/SD/Coredump) |
+endlegend
+
+@enduml

@@ -962,21 +962,23 @@ static esp_err_t history_handler(httpd_req_t *req)
 
     for (uint16_t i = 0; i < n && pos < cap - 1; i++) {
         const sensor_reading_t *e = &rows[i];
-        /* `sensor_reading_t` stores temperature as whole-°C integers — the
-         * sensor delivers integer °C and we don't upsample. Emit `%d.0` so
-         * the dashboard's .toFixed(1) renders "21.0" rather than "21". Wind
-         * is ×10 fixed-point in storage; emit `%u.%u` to get "1.0" etc.
-         * Mirrors the status_json.cpp tenths trick. */
+        /* Temperature uses the ×10 fields populated by T5 from the FG6485A's
+         * native 0.1 °C resolution (rc.1.3.1). Wind is ×10 fixed-point in
+         * storage; emit `%u.%u`. Same tenths-format trick as
+         * `status_json.cpp:154-155` so the dashboard's .toFixed(1) renders
+         * "21.4" rather than the previous "21.0"-stuck output. */
         w = snprintf(body + pos, cap - pos,
             "%s{\"ts\":%lu,"
-              "\"temp_c\":%d.0,\"temp_avg_c\":%d.0,"
+              "\"temp_c\":%d.%d,\"temp_avg_c\":%d.%d,"
               "\"rh_pct\":%u,\"rh_avg_pct\":%u,"
               "\"speed_ms\":%u.%u,\"speed_avg_ms\":%u.%u,"
               "\"direction_deg\":%u,\"direction_variation_deg\":%u}",
             (i > 0) ? "," : "",
             (unsigned long)e->timestamp,
-            (int)e->temperature_c,
-            (int)e->t_avg_c,
+            e->temperature_c10 / 10,
+            (e->temperature_c10 < 0 ? -e->temperature_c10 : e->temperature_c10) % 10,
+            e->t_avg_c10 / 10,
+            (e->t_avg_c10 < 0 ? -e->t_avg_c10 : e->t_avg_c10) % 10,
             (unsigned)e->humidity_pct,
             (unsigned)e->rh_avg_pct,
             (unsigned)(e->wind_speed_ms10     / 10u),

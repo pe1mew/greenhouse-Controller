@@ -530,14 +530,23 @@ void task_sensor_poll(void *pvParameters)
          * sensor history table. */
         reading.timestamp = (uint32_t)time(NULL);
 
-        /* Raw T / RH */
+        /* Raw T / RH. Two precisions populated from the same float source:
+         *   - temperature_c   (whole °C)  — climate_control setpoint compare,
+         *                                   LCD render, LOG_SENSOR value_a.
+         *   - temperature_c10 (×10) — operator-visible GUI + status JSON
+         *                                   + /api/history. Preserves the
+         *                                   FG6485A's native 0.1 °C resolution
+         *                                   (rc.1.3.1). */
         if (t_ok) {
-            reading.temperature_c = (int16_t)lroundf(tm.temperature_c);
-            reading.humidity_pct  = clamp_u8(tm.humidity_pct);
+            reading.temperature_c   = (int16_t)lroundf(tm.temperature_c);
+            reading.temperature_c10 = (int16_t)lroundf(tm.temperature_c * 10.0f);
+            reading.humidity_pct    = clamp_u8(tm.humidity_pct);
         } else {
             /* Carry forward the last known average to avoid a gap */
-            reading.temperature_c = (int16_t)lroundf(avg_get(&s_avg_t));
-            reading.humidity_pct  = clamp_u8(avg_get(&s_avg_rh));
+            const float t_avg_f = avg_get(&s_avg_t);
+            reading.temperature_c   = (int16_t)lroundf(t_avg_f);
+            reading.temperature_c10 = (int16_t)lroundf(t_avg_f * 10.0f);
+            reading.humidity_pct    = clamp_u8(avg_get(&s_avg_rh));
         }
 
         /* Raw wind */
@@ -549,8 +558,13 @@ void task_sensor_poll(void *pvParameters)
             reading.wind_dir_deg    = (uint16_t)lroundf(dir_avg_get(&s_avg_wd));
         }
 
-        /* Sliding averages */
-        reading.t_avg_c              = (int16_t)lroundf(avg_get(&s_avg_t));
+        /* Sliding averages. Same two-precision policy for temperature as
+         * the raw block above (rc.1.3.1). */
+        {
+            const float t_avg_f = avg_get(&s_avg_t);
+            reading.t_avg_c     = (int16_t)lroundf(t_avg_f);
+            reading.t_avg_c10   = (int16_t)lroundf(t_avg_f * 10.0f);
+        }
         reading.rh_avg_pct           = clamp_u8(avg_get(&s_avg_rh));
         reading.wind_speed_avg_ms10  = (uint16_t)lroundf(avg_get(&s_avg_ws) * 10.0f);
         reading.wind_dir_avg_deg     = (uint16_t)lroundf(dir_avg_get(&s_avg_wd));

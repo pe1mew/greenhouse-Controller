@@ -1112,10 +1112,14 @@ void dm_status_snapshot(status_snapshot_t *out)
     bool meas_valid = false;
     dm_meas_snapshot(&meas, &meas_valid);
     if (meas_valid) {
-        /* Sensor reports integer °C; canonical shape uses ×10 to keep the
-         * builder integer-only. The actual °C resolution is unchanged. */
-        out->t_c10              = (int16_t)((int32_t)meas.temperature_c * 10);
-        out->t_avg_c10          = (int16_t)((int32_t)meas.t_avg_c       * 10);
+        /* T5 populates the ×10 fields directly from the FG6485A's float-
+         * precision reading (rc.1.3.1). Prior to rc.1.3.1 the integer
+         * `temperature_c` field was multiplied by 10 here, which could only
+         * produce values ending in .0 — the operator-visible "stuck at .0"
+         * bug. The current path uses the c10 fields verbatim, preserving
+         * the sensor's native 0.1 °C resolution end-to-end. */
+        out->t_c10              = meas.temperature_c10;
+        out->t_avg_c10          = meas.t_avg_c10;
         out->rh_pct             = meas.humidity_pct;
         out->rh_avg_pct         = meas.rh_avg_pct;
         out->w_ms10             = meas.wind_speed_ms10;
