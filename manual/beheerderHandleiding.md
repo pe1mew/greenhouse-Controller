@@ -2,7 +2,7 @@
 
 **Versie:** 1.17 — concept
 **Datum:** 2026-05-20
-**Firmware:** 2.0.0-rc.1.2.1 (release candidate 1, patch 2.1 — fix voor heap-overrun in T14 log-upload chunk-reader; rc.1.1 UX-fix en rc.1.2 OTA-reboot-fix blijven van kracht; vervangt rc.1.2 als kandidaat voor de 14-daagse Phase 7 soak)
+**Firmware:** 2.0.0-rc.1.3 (release candidate 1, patch 3 — opruimrelease: wifi_tickle gevouwen in T10 als `nm_wifi_init_blocking()`, https_tickle verwijderd, dode bronbestanden opgeruimd, Lolin-S3 datasheets verplaatst naar `documentation/hardware/`. Geen gedragsverandering t.o.v. rc.1.2.1; vervangt rc.1.2.1 als kandidaat voor de 14-daagse Phase 7 soak)
 
 ---
 

@@ -118,16 +118,22 @@ Write-Host ""
 # ---------------------------------------------------------------------------
 Write-Host "--- Step 1/3: Build firmware ---" -ForegroundColor Yellow
 Push-Location $FIRMWARE_DIR
+$prev_eap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'   # rc.1.3 — let stderr warnings through
 try {
-    # rc.1.2.1 — PIO emits "-Wmissing-field-initializers" warnings to stderr
-    # for the httpd_uri:: brace-init lists in web_server.cpp. Under
-    # $ErrorActionPreference='Stop', PowerShell treats those stderr lines as
-    # terminating errors even though pio's own exit code is 0. Merge stderr
-    # into stdout so the warnings stay informational, and gate failure on
-    # $LASTEXITCODE alone.
+    # PIO emits "-Wmissing-field-initializers" warnings to stderr for the
+    # httpd_uri:: brace-init lists in web_server.cpp. Under
+    # $ErrorActionPreference='Stop' (the script default), PowerShell treats
+    # those stderr lines as terminating errors even though pio's own exit
+    # code is 0. Locally switch to 'Continue' and gate failure on
+    # $LASTEXITCODE alone. The rc.1.2.1 attempt to do this with a `2>&1 |
+    # ForEach-Object { Write-Host $_ }` pipeline still tripped because the
+    # `2>&1` merge happened inside the strict-mode envelope; toggling EAP
+    # for just this block is the bulletproof fix.
     & $PIO run -e lolin_s3 2>&1 | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { throw "pio run failed (exit $LASTEXITCODE)" }
 } finally {
+    $ErrorActionPreference = $prev_eap
     Pop-Location
 }
 
@@ -178,11 +184,13 @@ Write-Host ""
 # ---------------------------------------------------------------------------
 Write-Host "--- Step 2/3: Build LittleFS image ---" -ForegroundColor Yellow
 Push-Location $FIRMWARE_DIR
+$prev_eap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'   # rc.1.3 — same EAP toggle as Step 1
 try {
-    # rc.1.2.1 — same stderr-treated-as-error guard as Step 1.
     & $PIO run -e lolin_s3 -t buildfs 2>&1 | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { throw "pio buildfs failed (exit $LASTEXITCODE)" }
 } finally {
+    $ErrorActionPreference = $prev_eap
     Pop-Location
 }
 Write-Host ""

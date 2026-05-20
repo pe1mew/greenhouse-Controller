@@ -24,8 +24,8 @@
 idf_component_register(
     SRCS
         "main.cpp"               # Phase 6.N.2 (2.0.0-alpha.6.23) — renamed from app_main_stub.cpp; the 1.20.3 Arduino-era main.cpp deleted in the same commit
-        "wifi_tickle.cpp"        # Phase 3 (2.0.0-alpha.3) — IDF-native STA + SNTP
-        "https_tickle.cpp"       # Phase 4 (2.0.0-alpha.4) — IDF-native HTTPS client + esp_tls
+        # wifi_tickle.cpp  REMOVED in 2.0.0-rc.1.3 — folded into network_manager.cpp as nm_wifi_init_blocking() (same boot ordering, same event-handler semantics)
+        # https_tickle.cpp REMOVED in 2.0.0-rc.1.3 — alpha-era gh#23 demonstration; superseded by T14's real status POSTs against the production server
         # web_server_tickle.cpp REMOVED in 2.0.0-alpha.6.16 — replaced by minimal T11 below
         "web_server/web_server.cpp"             # Phase 6.16-α/β (2.0.0-alpha.6.16) — T11 minimal web server (4 static + 3 auth routes); see file header for the 18+ deferred routes
         "status_post/status_json.cpp"           # Phase 6.16-γ (2.0.0-alpha.6.17) — canonical status JSON builder (shared by T11 /api/status and future T14 full payload)

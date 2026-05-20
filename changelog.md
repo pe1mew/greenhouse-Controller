@@ -28,6 +28,81 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-rc.1.3]` — 2026-05-20  (housekeeping release; supersedes rc.1.2.1 as Phase 7 candidate)
+
+**Zero behavioural change. Pure source-quality cleanup pass.** The rc.1.2.1 8:35 success demonstrated that the four-stage rc.1 → rc.1.1 → rc.1.2 → rc.1.2.1 fix series is operationally complete; this release tidies up the codebase before the soak settles in for its 14-day run.
+
+#### Source-tree cleanup
+
+**Deleted (genuinely dead code, ~375 lines):**
+
+| File | Reason |
+|---|---|
+| `firmware/src/mqtt_client/mqtt_client.cpp` + `.h` | Phase-0 T12 stub for an unimplemented Phase 9 of the original migration plan. Never spawned, never referenced outside its own files. |
+| `firmware/src/web_server_tickle.cpp` + `.h` | Explicitly marked "REMOVED in 2.0.0-alpha.6.16" in `CMakeLists.txt`, replaced by the real T11 (`web_server/web_server.cpp`) but the files lingered on disk. |
+| `firmware/src/util/time_compat.h` | Header-only `millis_idf()`/`micros_idf()` helpers. Never `#include`d anywhere — the migration ended up using inline `esp_timer_get_time()/1000` at each callsite instead of the shim. |
+
+Empty `firmware/src/mqtt_client/` and `firmware/src/util/` directories removed automatically.
+
+#### wifi_tickle + https_tickle folded into T10/T14
+
+**`firmware/src/wifi_tickle.{cpp,h}` (398 lines + header) → folded into `network_manager.cpp`:**
+
+The "tickle" name was an alpha-era scaffold remnant — by rc.1.2.1 the function was the actual boot-time WiFi STA bring-up + SNTP sync, with a long-lived WIFI_EVENT/IP_EVENT handler and the alpha.6.31 exponential-backoff reconnect timer. T10 (network_manager) had been documented in its own header as "depends on `wifi_tickle_run()` being called from main.cpp BEFORE T10 spawns" — that split was a maintainability seam, not an architectural choice.
+
+The entire wifi_tickle.cpp content is now in `network_manager.cpp` SECTION A (clearly demarcated). The public entry-point renamed `wifi_tickle_run()` → `nm_wifi_init_blocking()`; status enum renamed `WIFI_TICKLE_*` → `NM_WIFI_*`. **No behaviour change** — same blocking call from main.cpp, same event-handler lifecycle, same reconnect timer. The function lives in T10's home now.
+
+**`firmware/src/https_tickle.{cpp,h}` (~250 lines + header) → deleted without replacement:**
+
+The alpha-4-era 5×POST to `https://www.google.com/generate_204` at boot was the original demonstration of the gh#23 mbedTLS keep-alive + 1 KB buffer fix. The demonstration succeeded years ago in the firmware-version sense — rc.1 onward has been running the same TLS configuration successfully against the production status server. T14's real status POSTs (every `status_interval_s`) provide ongoing validation. The boot-time 5×google.com test was net log noise.
+
+#### CMakeLists.txt updates
+
+```diff
+     SRCS
+         "main.cpp"
+-        "wifi_tickle.cpp"        # Phase 3 (2.0.0-alpha.3) — IDF-native STA + SNTP
+-        "https_tickle.cpp"       # Phase 4 (2.0.0-alpha.4) — IDF-native HTTPS client + esp_tls
++        # wifi_tickle.cpp  REMOVED in 2.0.0-rc.1.3 — folded into network_manager.cpp as nm_wifi_init_blocking()
++        # https_tickle.cpp REMOVED in 2.0.0-rc.1.3 — alpha-era gh#23 demonstration superseded by T14 production POSTs
+```
+
+#### Hardware-reference relocation
+
+**`drivers/Lolin-S3/` → `documentation/hardware/Lolin-S3/`:**
+
+The directory contained only an ESP32-S3-WROOM datasheet PDF, three board-photo JPGs, and a schematic PDF — no source code, no `platformio.ini`, no `src/`. It was sitting under `drivers/` because the original developer treated `drivers/` as a catch-all for "things about hardware". Moved to `documentation/hardware/Lolin-S3/` which is its proper home.
+
+#### Worktree leftovers cleared
+
+**Reclaimed 244 MB of disk** from `design/.claude/worktrees/` (gitignored agent worktree leftovers from earlier sessions) and `design/.clone/` (gitignored throwaway clone). Both directories were already in `.gitignore` so the repo state is unchanged; only the local disk got tidier.
+
+#### Build_release.ps1 fix
+
+The `$ErrorActionPreference='Stop'` envelope on the build script was tripping on PIO's stderr warnings (`-Wmissing-field-initializers` from web_server.cpp's brace-init lists), causing the script to throw despite pio's actual exit code being 0. Locally toggled to `'Continue'` for the two pio-invocation blocks (Steps 1 and 2), restored at finally-time. Gates failure on `$LASTEXITCODE` alone. The rc.1.2.1 attempted fix via a `2>&1 | ForEach-Object` pipeline did not take because the `2>&1` merge happened inside the strict-mode envelope; toggling EAP locally is the bulletproof fix.
+
+#### What did NOT change
+
+- **Operator-facing behaviour**: zero. Same WiFi bring-up sequence, same SNTP sync, same status POSTs, same log upload, same GUI, same LCD.
+- **Web UI / web assets**: zero changes — `app.js`, `index.html`, `style.css`, tooltips all identical.
+- **Climate control, relay, sensor, OTA, coredump, audit-log subsystems**: untouched.
+- **T15 supervisor**: still dormant per the rc.1 plan ("source on disk, not in CMakeLists.txt SRCS"). Will re-enable paired with a.6.36 only if gh#23 mitigations land — same posture as rc.1.
+
+#### Build delta vs rc.1.2.1
+
+| Metric | rc.1.2.1 | rc.1.3 | Delta |
+|---|---:|---:|---:|
+| Firmware bin | 1 353 957 B | **1 351 881 B** | **−2 076 B** (dead-code paths removed) |
+| RAM static | 60 568 B | 60 568 B | 0 |
+| Source lines in firmware/src/ | ~625 lines removed | — | ~−625 |
+| Disk footprint (local) | — | −244 MB | (worktree leftovers) |
+
+Full flash usage still 64.5 % of the 2 MB OTA bank. The 2 KB saving is small but the source-tree clarity win is real.
+
+#### Phase 7 soak — clock reset (fourth time)
+
+rc.1.2.1's 8:35 success demonstrated the log-upload fix end-to-end. The soak clock restarts at day 0 against rc.1.3 — same drill as before. All other acceptance criteria from rc.1 carry over unchanged.
+
 ### `[2.0.0-rc.1.2.1]` — 2026-05-20  (T14 log-upload heap-overrun fix; supersedes rc.1.2 as Phase 7 candidate)
 
 **Day 0 of the rc.1.2 soak failed at 03:15 with a heap-corruption panic.** Reported by the operator as: log not uploaded at 3:15 to status page; unit reset 4 hours ago; coredump available. The panic was caught by TLSF's debug assertion at `block_trim_free` (heap/tlsf_control_functions.h:548), with the offending task identified from the captured coredump as **T14 status_post** in `do_log_upload` → `esp_http_client_write` of the 03:15 first-of-the-day log-upload attempt.

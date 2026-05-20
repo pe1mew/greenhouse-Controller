@@ -42,9 +42,13 @@
  *    soak shows drift.
  *
  * **Dependencies in place**:
- *  - `wifi_tickle_run()` (alpha.3.2) called from main.cpp BEFORE
- *    T10 spawns, so esp_wifi is already initialised + connected + SNTP
- *    synced by the time T10 starts its main loop.
+ *  - `nm_wifi_init_blocking()` — boot-time WiFi STA bring-up + SNTP sync.
+ *    Defined in SECTION A of this file (folded from the retired
+ *    `wifi_tickle.cpp` in 2.0.0-rc.1.3). Called from main.cpp BEFORE
+ *    `task_network_manager` spawns, so esp_wifi is already initialised +
+ *    connected + SNTP synced by the time T10's monitoring loop starts.
+ *    Same event-handler / reconnect-timer semantics as the legacy
+ *    wifi_tickle — only the file location changed.
  *  - `Q5` queue (depth 1, xQueueOverwrite) created by `system_globals_init`.
  *  - `task_t4` handle populated by alpha.6.7 spawn.
  *  - `task_t10` handle declared in `system_globals.cpp`, populated by
@@ -61,15 +65,20 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/event_groups.h"        /* rc.1.3 — folded from wifi_tickle */
+#include "freertos/timers.h"              /* rc.1.3 — folded from wifi_tickle (reconnect backoff) */
 
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_wifi.h"
+#include "esp_event.h"                    /* rc.1.3 — folded from wifi_tickle */
 #include "esp_netif.h"
+#include "esp_netif_sntp.h"               /* rc.1.3 — folded from wifi_tickle (esp_netif_sntp_*) */
 #include "esp_mac.h"                      /* alpha.6.29 — esp_read_mac for AP SSID */
 #include "esp_http_client.h"   /* alpha.6.28 — ip-api.com lookup */
 #include "esp_sntp.h"                     /* a.6.33 — periodic 24 h NTP resync */
 #include "esp_timer.h"                    /* a.6.33 — esp_timer_get_time for resync cadence */
+#include "nvs_flash.h"                    /* rc.1.3 — folded from wifi_tickle */
 #include "lwip/ip4_addr.h"
 
 #include "network_manager.h"
@@ -80,6 +89,317 @@
 #include "tz_table.h"                     /* alpha.6.28 — iana_to_posix() */
 
 static const char *TAG = "T10_NET";
+
+/* ============================================================================
+ * SECTION A — Boot-time WiFi init (folded from wifi_tickle.cpp in rc.1.3)
+ *
+ * This section owns the blocking boot-time WiFi STA bring-up that used to
+ * live in firmware/src/wifi_tickle.cpp (alpha.3.2). The function lives in
+ * T10's home because T10 already owns the long-running WiFi-state monitor;
+ * splitting bring-up across two files was an alpha-era scaffold seam that
+ * no longer serves a purpose. Identical event-handler / reconnect-timer
+ * semantics — the file move is the only change.
+ *
+ * The WIFI_EVENT/IP_EVENT handler registered here STAYS REGISTERED after
+ * `nm_wifi_init_blocking()` returns and continues to drive all subsequent
+ * disconnect events via the exponential-backoff `s_reconnect_timer`
+ * (alpha.6.31). `task_network_manager` below assumes this section has run
+ * to completion before it starts; main.cpp calls `nm_wifi_init_blocking()`
+ * BEFORE spawning T10.
+ * ============================================================================ */
+
+/* Event-group bits driven by the WiFi/IP event handlers. */
+#define BIT_GOT_IP        (1u << 0)
+#define BIT_DISCONNECTED  (1u << 1)
+
+static EventGroupHandle_t  s_wifi_init_evt   = NULL;
+static esp_netif_t        *s_sta_netif       = NULL;
+static int                 s_retry_count     = 0;   /* boot-time tickle's 3-shot fast path */
+static const int           kMaxRetries       = 3;
+static char                s_last_ip[16]     = {0}; /* "xxx.xxx.xxx.xxx" + NUL */
+
+/* alpha.6.31 — STA reconnect with infinite retry + exponential back-off.
+ * The wifi event handler kicks a one-shot timer on each disconnect; the
+ * timer expires and calls esp_wifi_connect(), retry budget never runs out.
+ * Back-off ladder mirrors the 1.20.3 design (2 → 4 → 8 → 16 → 32 → 60 s
+ * cap) so a permanently-down AP doesn't hammer the radio at full rate.
+ * Reset to BACKOFF_INIT_MS on every successful STA_GOT_IP. */
+#define BACKOFF_INIT_MS    2000u
+#define BACKOFF_MAX_MS    60000u
+
+static TimerHandle_t s_reconnect_timer    = NULL;
+static uint32_t      s_reconnect_delay_ms = BACKOFF_INIT_MS;
+
+static void nm_reconnect_timer_cb(TimerHandle_t xTimer)
+{
+    (void)xTimer;
+    ESP_LOGI(TAG, "Reconnect attempt (back-off was %lu ms)",
+             (unsigned long)s_reconnect_delay_ms);
+    esp_wifi_connect();
+    /* Bump the back-off for the *next* drop. Reset on STA_GOT_IP. */
+    s_reconnect_delay_ms <<= 1;
+    if (s_reconnect_delay_ms > BACKOFF_MAX_MS) {
+        s_reconnect_delay_ms = BACKOFF_MAX_MS;
+    }
+}
+
+static void nm_schedule_reconnect(void)
+{
+    if (s_reconnect_timer == NULL) {
+        s_reconnect_timer = xTimerCreate("wifi_reconnect",
+                                         pdMS_TO_TICKS(s_reconnect_delay_ms),
+                                         pdFALSE, NULL, nm_reconnect_timer_cb);
+        if (s_reconnect_timer == NULL) {
+            ESP_LOGE(TAG, "xTimerCreate(wifi_reconnect) failed — "
+                          "falling back to immediate retry");
+            esp_wifi_connect();
+            return;
+        }
+    }
+    /* xTimerChangePeriod auto-starts the timer. */
+    xTimerChangePeriod(s_reconnect_timer,
+                       pdMS_TO_TICKS(s_reconnect_delay_ms), 0);
+}
+
+/**
+ * Unified handler for WIFI_EVENT and IP_EVENT. Registered against the
+ * default event loop. Runs in the event-loop task (priority 20 by default,
+ * stack 2304 bytes — sufficient for ESP_LOGI + xEventGroupSetBits).
+ */
+static void nm_wifi_event_handler(void *arg, esp_event_base_t event_base,
+                                  int32_t event_id, void *event_data)
+{
+    (void)arg;
+
+    if (event_base == WIFI_EVENT) {
+        switch (event_id) {
+            case WIFI_EVENT_STA_START:
+                /* esp_wifi_start() completed — initiate the connect attempt.
+                 * Doing this from the event handler (rather than polling
+                 * WiFi.status() == WL_DISCONNECTED) is the structural fix
+                 * for gh#21: the lwip stack is already initialised by the
+                 * time STA_START fires, so esp_wifi_connect() can't race
+                 * against the tcpip_adapter setup. */
+                ESP_LOGI(TAG, "WIFI_EVENT_STA_START — calling esp_wifi_connect()");
+                esp_wifi_connect();
+                break;
+
+            case WIFI_EVENT_STA_DISCONNECTED: {
+                /* Boot-time tickle: kMaxRetries fast attempts so the boot
+                 * gate doesn't block forever on a missing AP. After that
+                 * we hand off to the back-off timer for indefinite retry.
+                 * alpha.6.31 — no terminal "give up". */
+                wifi_event_sta_disconnected_t *disc =
+                    (wifi_event_sta_disconnected_t *)event_data;
+                ESP_LOGW(TAG, "WIFI_EVENT_STA_DISCONNECTED reason=%d retry=%d/%d",
+                         (int)disc->reason, s_retry_count, kMaxRetries);
+
+                if (s_retry_count < kMaxRetries) {
+                    s_retry_count++;
+                    esp_wifi_connect();
+                } else {
+                    xEventGroupSetBits(s_wifi_init_evt, BIT_DISCONNECTED);
+                    nm_schedule_reconnect();
+                }
+                break;
+            }
+
+            default:
+                ESP_LOGD(TAG, "WIFI_EVENT id=%ld", (long)event_id);
+                break;
+        }
+    } else if (event_base == IP_EVENT) {
+        switch (event_id) {
+            case IP_EVENT_STA_GOT_IP: {
+                ip_event_got_ip_t *ev = (ip_event_got_ip_t *)event_data;
+                snprintf(s_last_ip, sizeof(s_last_ip), IPSTR, IP2STR(&ev->ip_info.ip));
+                ESP_LOGI(TAG, "IP_EVENT_STA_GOT_IP ip=%s gw=" IPSTR " netmask=" IPSTR,
+                         s_last_ip,
+                         IP2STR(&ev->ip_info.gw),
+                         IP2STR(&ev->ip_info.netmask));
+                s_retry_count        = 0;
+                s_reconnect_delay_ms = BACKOFF_INIT_MS;
+                xEventGroupSetBits(s_wifi_init_evt, BIT_GOT_IP);
+                break;
+            }
+
+            case IP_EVENT_STA_LOST_IP:
+                ESP_LOGW(TAG, "IP_EVENT_STA_LOST_IP");
+                break;
+
+            default:
+                ESP_LOGD(TAG, "IP_EVENT id=%ld", (long)event_id);
+                break;
+        }
+    }
+}
+
+/**
+ * Best-effort SNTP run. Returns true if we got a plausible epoch within
+ * the budget (~10 s of polling), false on timeout. Same logic as the
+ * retired wifi_tickle.cpp:sntp_quick_sync().
+ */
+static bool nm_sntp_quick_sync(void)
+{
+    ESP_LOGI(TAG, "Starting SNTP (pool.ntp.org)");
+    esp_sntp_config_t sntp_cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    esp_err_t err = esp_netif_sntp_init(&sntp_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "esp_netif_sntp_init failed: %s", esp_err_to_name(err));
+        return false;
+    }
+
+    /* Plausibility threshold: 2023-11-14. Matches the existing NTP_MIN_EPOCH
+     * below; redefined locally because the constant is declared after this
+     * section. */
+    const time_t MIN_EPOCH      = 1700000000;
+    const int    NTP_POLL_ITERS = 100;   /* 100 × 100 ms = 10 s */
+    bool synced = false;
+    for (int i = 0; i < NTP_POLL_ITERS; i++) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        time_t now = time(NULL);
+        if (now > MIN_EPOCH) {
+            ESP_LOGI(TAG, "SNTP synced after %d ms — epoch=%ld", i * 100, (long)now);
+            synced = true;
+            break;
+        }
+    }
+
+    if (!synced) {
+        ESP_LOGW(TAG, "SNTP did not reach a plausible epoch in budget");
+    }
+
+    esp_netif_sntp_deinit();
+    return synced;
+}
+
+nm_wifi_status_t nm_wifi_init_blocking(uint32_t connect_timeout_ms)
+{
+    /* Step 1: read credentials from NVS. */
+    char ssid[64] = {0};
+    char psk[64]  = {0};
+    nvs_cfg_get_str(NVS_NS_WIFI, "ssid", ssid, sizeof(ssid));
+    nvs_cfg_get_str(NVS_NS_WIFI, "psk",  psk,  sizeof(psk));
+
+    const bool have_sta_creds = (ssid[0] != '\0');
+    if (have_sta_creds) {
+        ESP_LOGI(TAG, "NVS credentials: ssid='%s' psk=%s",
+                 ssid, psk[0] ? "***(set)" : "(empty)");
+    } else {
+        /* alpha.6.30 — no SSID does NOT short-circuit stack init. T10's AP
+         * mode needs esp_wifi_init/_start to have happened even when no
+         * STA credentials are configured (recovery flow). */
+        ESP_LOGI(TAG, "no SSID in NVS — WiFi stack will init but skip STA-connect");
+    }
+
+    s_wifi_init_evt = xEventGroupCreate();
+    s_retry_count   = 0;
+    s_last_ip[0]    = '\0';
+    if (s_wifi_init_evt == NULL) {
+        ESP_LOGE(TAG, "xEventGroupCreate failed");
+        return NM_WIFI_INIT_FAILED;
+    }
+
+    esp_err_t err;
+    err = esp_netif_init();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "esp_netif_init: %s", esp_err_to_name(err));
+        return NM_WIFI_INIT_FAILED;
+    }
+    err = esp_event_loop_create_default();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "esp_event_loop_create_default: %s", esp_err_to_name(err));
+        return NM_WIFI_INIT_FAILED;
+    }
+
+    if (s_sta_netif == NULL) {
+        s_sta_netif = esp_netif_create_default_wifi_sta();
+        if (s_sta_netif == NULL) {
+            ESP_LOGE(TAG, "esp_netif_create_default_wifi_sta returned NULL");
+            return NM_WIFI_INIT_FAILED;
+        }
+    }
+
+    wifi_init_config_t init_cfg = WIFI_INIT_CONFIG_DEFAULT();
+    err = esp_wifi_init(&init_cfg);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "esp_wifi_init: %s", esp_err_to_name(err));
+        return NM_WIFI_INIT_FAILED;
+    }
+
+    err = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                               &nm_wifi_event_handler, NULL, NULL);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "register WIFI_EVENT handler: %s", esp_err_to_name(err));
+        return NM_WIFI_INIT_FAILED;
+    }
+    err = esp_event_handler_instance_register(IP_EVENT, ESP_EVENT_ANY_ID,
+                                               &nm_wifi_event_handler, NULL, NULL);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "register IP_EVENT handler: %s", esp_err_to_name(err));
+        return NM_WIFI_INIT_FAILED;
+    }
+
+    err = esp_wifi_set_mode(WIFI_MODE_STA);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_wifi_set_mode(STA): %s", esp_err_to_name(err));
+        return NM_WIFI_INIT_FAILED;
+    }
+
+    if (have_sta_creds) {
+        wifi_config_t cfg = {};
+        strncpy((char *)cfg.sta.ssid,     ssid, sizeof(cfg.sta.ssid)     - 1);
+        strncpy((char *)cfg.sta.password, psk,  sizeof(cfg.sta.password) - 1);
+        cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
+        cfg.sta.pmf_cfg.capable    = true;
+        cfg.sta.pmf_cfg.required   = false;
+        err = esp_wifi_set_config(WIFI_IF_STA, &cfg);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "esp_wifi_set_config: %s", esp_err_to_name(err));
+            return NM_WIFI_INIT_FAILED;
+        }
+    }
+
+    err = esp_wifi_start();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_wifi_start: %s", esp_err_to_name(err));
+        return NM_WIFI_INIT_FAILED;
+    }
+
+    if (!have_sta_creds) {
+        ESP_LOGI(TAG, "WiFi stack up; STA-connect skipped (no SSID) — ready for AP mode");
+        return NM_WIFI_NO_SSID;
+    }
+
+    ESP_LOGI(TAG, "esp_wifi_start OK — waiting up to %lu ms for STA_GOT_IP",
+             (unsigned long)connect_timeout_ms);
+
+    EventBits_t bits = xEventGroupWaitBits(s_wifi_init_evt,
+                                           BIT_GOT_IP | BIT_DISCONNECTED,
+                                           pdTRUE,   /* clear on exit */
+                                           pdFALSE,  /* OR semantics */
+                                           pdMS_TO_TICKS(connect_timeout_ms));
+
+    if (bits & BIT_GOT_IP) {
+        ESP_LOGI(TAG, "WiFi init: STA up, IP=%s", s_last_ip);
+        bool ntp_ok = nm_sntp_quick_sync();
+        return ntp_ok ? NM_WIFI_OK : NM_WIFI_OK_NO_NTP;
+    }
+
+    if (bits & BIT_DISCONNECTED) {
+        ESP_LOGW(TAG, "WiFi init: gave up after %d retries (reason in logs above)",
+                 kMaxRetries);
+        return NM_WIFI_DISCONNECTED;
+    }
+
+    ESP_LOGW(TAG, "WiFi init: STA_GOT_IP not received within %lu ms",
+             (unsigned long)connect_timeout_ms);
+    return NM_WIFI_CONNECT_TIMEOUT;
+}
+
+/* ============================================================================
+ * SECTION B — Long-running T10 task (original network_manager content)
+ * ============================================================================ */
 
 /** AP-mode latch (alpha.6.29). Forward-declared here because snapshot_state
  *  below reads it. The rest of the AP module-level state + helper functions
