@@ -66,6 +66,31 @@ function wsConnect() {
   };
 }
 
+// rc.1.3.2 — Synchronous "first paint" fetch of /api/status.
+//
+// Page load and post-login both used to leave the status tiles + alarms
+// shield blank until the first WS push arrived (0–2 s after the WS
+// handshake completed). Operator-visible symptom: "the status shields do
+// not get populated directly at load. the sensor status is loaded
+// directly, refresh and login does not help."
+//
+// The WS push remains the steady-state update channel; this fetch only
+// covers the cold-start gap. The payload is byte-identical to the WS
+// frame (same canonical_status_json builder, same STATUS_EXPOSE_ALL +
+// include_disabled_setpoints=true) so handleStatus() handles both
+// uniformly without branching.
+//
+// Failure-tolerant: if /api/status is unreachable (T11 not up yet, WiFi
+// hiccup, captive portal interstitial), the fetch silently no-ops and
+// the dashboard falls back to the WS-push timing. No retry needed —
+// wsConnect()'s reconnect timer takes over.
+function fetchStatusNow() {
+  fetch('/api/status', { credentials: 'same-origin' })
+    .then(r => r.ok ? r.json() : null)
+    .then(s => { if (s && s.type === 'status') handleStatus(s); })
+    .catch(function () { /* WS push will catch up within 2 s */ });
+}
+
 // ── Status handler ───────────────────────────────────────────────────────────
 const WIN_LABELS = { OPEN: 'OPEN', CLOSED: 'CLOSED',
                      MOVING_OPEN: 'MOVING', MOVING_CLOSE: 'MOVING', UNKNOWN: '?' };
@@ -262,6 +287,11 @@ function doLogin() {
         setRole(r.role);
         document.getElementById('login-err').textContent = '';
         document.getElementById('login-pin').value = '';
+        // rc.1.3.2 — refresh status tiles + alarms shield immediately on
+        // successful login so the role-gated rows (e.g. dimmed RH setpoints
+        // when farmer logs out, the OK / alarm-badge state) re-render
+        // without waiting for the next WS push tick.
+        fetchStatusNow();
       } else {
         const remaining = (r && r.remaining) ? '  (' + r.remaining + ' attempts left)' : '';
         document.getElementById('login-err').textContent =
@@ -1061,8 +1091,14 @@ function loadLimits() {
 // Connect WebSocket and load sensor history immediately — both are public.
 // Then check for an existing session so we can restore Settings if the user
 // had already logged in before reloading the page.
+//
+// rc.1.3.2 — `fetchStatusNow()` runs alongside `wsConnect()` so the status
+// tiles + alarms shield populate from the synchronous REST response
+// without waiting for the first WS push (which lands 0–2 s after the WS
+// handshake completes). The WS push remains the steady-state cadence.
 loadLimits();
 wsConnect();
+fetchStatusNow();
 loadHistory();
 loadSdStatus();
 fetch('/api/whoami')

@@ -2,7 +2,7 @@
 
 **Versie:** 1.17 — concept
 **Datum:** 2026-05-20
-**Firmware:** 2.0.0-rc.1.3.1 (release candidate 1, patch 3.1 — fix voor 0.1 °C temperatuur-resolutie in webGUI en `/api/history`; temperatuurwaarden in de GUI eindigden eerder altijd op `.0` ondanks de `toFixed(1)` formattering. De FG6485A-sensor levert 0.1 °C resolutie maar T5 ronde af naar gehele °C — nu correct doorgegeven via `temperature_c10` / `t_avg_c10` velden in `sensor_reading_t`. LCD, klimaatregeling en SD-log blijven hele °C zoals voorheen.)
+**Firmware:** 2.0.0-rc.1.3.2 (release candidate 1, patch 3.2 — fix voor de "kale" status-shields direct na page-load: handleStatus liep eerder uitsluitend bij het binnenkomen van een WS-push, waardoor tegels + alarm-shield tot 2 s leeg bleven. Nu wordt `/api/status` direct opgehaald bij page-load én na succesvolle login zodat tegels onmiddellijk gevuld zijn. WS-push blijft de steady-state update. Alleen `app.js` aangepast.)
 
 ---
 

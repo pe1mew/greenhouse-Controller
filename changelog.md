@@ -28,6 +28,51 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-rc.1.3.2]` — 2026-05-20  (initial /api/status fetch on page load + login; supersedes rc.1.3.1 as Phase 7 candidate)
+
+**Operator-reported UX bug**: on first browsing to the web GUI, the status shields (Alarms card, Mode badge, system info) stayed blank for up to 2 seconds while the sensor tiles appeared to populate. Refreshing the page + logging in didn't help — the same delay recurred every time.
+
+#### Root cause
+
+`firmware/data/app.js` had no synchronous fetch of `/api/status` at page load. The `handleStatus()` function was only invoked via the WebSocket `onmessage` callback. The page-load sequence was:
+
+```
+loadLimits() → wsConnect() → loadHistory() → loadSdStatus() → fetch('/api/whoami')
+```
+
+`wsConnect()` opens the WebSocket but the first push from `task_ws_push` arrives 0-2 s later (the task uses `vTaskDelayUntil(WS_PUSH_MS = 2000)` between pushes). Between page-load and the first WS message, the status tiles + alarms shield + mode badge were unpopulated. Sensor tiles "looked" loaded faster only because they had `—` placeholder values that the user already expected to see — when the shield element transitioned from "" to "OK badge" it was operator-visibly different.
+
+`doLogin()` had the same hole: after a successful PIN check, the role flipped (admin-only rows enabled) but no `/api/status` re-fetch was triggered. The user had to wait for the next WS push tick to see the role-gated rows re-render.
+
+#### Fix
+
+`firmware/data/app.js` — added `fetchStatusNow()` helper that GETs `/api/status` synchronously and pipes the response through the existing `handleStatus()` function. Invoked at two new sites:
+
+1. **Page load** — runs immediately alongside `wsConnect()`. The synchronous fetch lands before the first WS push, populating tiles + shields without any visible delay.
+2. **Post-successful-login** — runs at the end of the `doLogin().then(...)` happy path. Role-gated UI bits re-render immediately on login.
+
+The WS push remains the steady-state update channel (every 2 s); this fetch only covers the cold-start + role-change cases. Payload is byte-identical to the WS frame (same `build_canonical_status_json()` builder, same `STATUS_EXPOSE_ALL` + `include_disabled_setpoints=true`) so `handleStatus()` handles both uniformly.
+
+Failure-tolerant: if `/api/status` is unreachable at page-load time (T11 not up yet, WiFi hiccup), the fetch silently no-ops and the dashboard falls back to the WS-push timing.
+
+#### Files touched
+
+- `firmware/data/app.js` — added `fetchStatusNow()` helper + two call sites.
+- `firmware/platformio.ini` — FIRMWARE_VERSION 2.0.0-rc.1.3.1 → 2.0.0-rc.1.3.2.
+- `webUiMock/mock_server.py` — `cfg["fw_ver"]` bumped.
+- `manual/beheerderHandleiding.md` — header refreshed.
+- `bin/2.0.0-rc.1.3.2/release-notes.md` — new file.
+
+#### What did NOT change
+
+- Firmware C/C++ — zero changes. **`firmware.bin` is byte-identical to rc.1.3.1** (the FIRMWARE_VERSION string is the only ELF delta and goes into a different ELF section).
+- WS push task, status JSON builder, all other endpoints — unchanged.
+- All prior fixes (rc.1.1, rc.1.2, rc.1.2.1, rc.1.3, rc.1.3.1) — preserved verbatim.
+
+#### Phase 7 soak — clock reset (sixth time)
+
+JS-only patch but the firmware version increments because the manifest needs to keep firmware ↔ asset versions in sync (the MISMATCH badge logic in `handleStatus` triggers if `sys.fw_ver !== sys.asset_version`). Day 0 restarts against rc.1.3.2.
+
 ### `[2.0.0-rc.1.3.1]` — 2026-05-20  (temperature 0.1 °C precision fix; supersedes rc.1.3 as Phase 7 candidate)
 
 **Operator-reported precision-loss bug**: the web GUI's temperature tiles always rendered with `.0` as the fractional digit (e.g. `21.0 °C`, `22.0 °C`) even though the dashboard formatter uses `toFixed(1)`. The same happened in the `/api/history` JSON output. The operator wanted real 0.1 °C resolution surfaced.
