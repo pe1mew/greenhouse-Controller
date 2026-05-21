@@ -336,7 +336,7 @@
       <span class="save-ok" id="fb-session-timeout"></span>
     </div>
     <div class="slider-row">
-      <label data-tip="The controller's own WiFi access point shuts down automatically after this many minutes if no client is connected. Set to 0 to keep the AP running until manually disabled.">AP timeout (min, 0=never)</label>
+      <label data-tip="The controller's own WiFi access point shuts down automatically this many minutes after it was last enabled, regardless of whether a client is connected. Re-enable the AP from this page to reopen the window. Set to 0 to keep the AP up until manually disabled.">AP timeout (min, 0=never)</label>
       <input type="range"  id="cfg-ap-timeout-sl" step="1">
       <input type="number" id="cfg-ap-timeout"    step="1" class="short">
       <button onclick="postCfg('system','ap_timeout','cfg-ap-timeout','int')">Apply</button>
