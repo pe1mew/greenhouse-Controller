@@ -5,9 +5,7 @@
 |--------------|------------------------------------------------|
 | Document     | Technical Software Design Specification        |
 | Project      | Greenhouse Ventilation Controller              |
-| Version      | 0.4 (draft)                                   |
-| Date         | 2026-05-14                                    |
-| Status       | Draft — covers firmware up to 1.18.2          |
+| Status       | End-state architecture specification           |
 | Related docs | `functionalRequirementsSpecification.md`       |
 |              | `technicalHardwareDesignSpecification.md`      |
 |              | `tasks.md`                                    |
@@ -39,16 +37,15 @@
    - 5.4 Access Control and Session Management
    - 5.5 Local User Interface
    - 5.6 WiFi — Access Point Mode
-   - 5.7 WiFi — Client Mode (Optional)
+   - 5.7 WiFi — Client Mode
    - 5.8 Web Interface
    - 5.9 OTA Firmware Update
    - 5.10 NVS Configuration Storage Layout
    - 5.11 Watchdog and Fault Handling
    - 5.12 System Status RGB LED
    - 5.13 Status Website POST (T14)
-   - 5.14 Persistent Circuit Breaker (T14 internal)
-   - 5.15 Bulkhead Policy and Status-POST Supervisor (T15)
-6. [Open Issues](#6-open-issues)
+   - 5.14 Persistent Circuit Breaker (T14 internal — deferred)
+   - 5.15 Bulkhead Policy and Status-POST Supervisor (T15 — dormant)
 
 ---
 
@@ -137,12 +134,15 @@ greenhouse-controller/          ← Git repository root (GitHub / GitLab)
 
 ### 2.5 Testability
 
-Control logic modules (climate control, wind safety, conflict resolution, window state machine) shall be decoupled from hardware drivers to enable host-side unit testing via PlatformIO's test runner (TR-SW05). Hardware-dependent drivers (Modbus, relay GPIO, I2C) are abstracted behind interfaces so that logic modules can be tested on a host without target hardware.
+The firmware ships with a host-side acceptance test harness in the `test/` directory. The harness uses `pytest` and exercises the controller's HTTP and WebSocket surface against a running unit, asserting on canonical-JSON shape, role-gated endpoint behaviour, the boot sequence, climate setpoint round-trip, wind override, sensor fault handling, configuration round-trip, and session lifecycle. Each test file is independent and may be run in isolation.
+
+Pure-logic unit tests of the climate / wind / conflict-resolution algorithms are deferred. The acceptance test suite covers the operator-observable behaviour those algorithms produce.
 
 ### 2.6 Security
 
 - WiFi connections are protected with WPA2 minimum; WPA3 preferred if supported by the ESP32-S3 SDK (TR-NW01).
-- HTTPS on the web interface is **not implemented**. TLS termination on the ESP32-S3 is not feasible given the available RAM and CPU headroom. The threat model for TR-NW04 has been assessed and accepted — see §6 Open Issue #4 (TR-NW04).
+- HTTPS on the local web interface is **not implemented**. The local web GUI runs over HTTP on port 80 and is protected by shared-secret authentication (session cookie issued by `/api/login`) and confinement to same-LAN traffic. TLS termination on the ESP32-S3 for the inbound web server is not feasible given the RAM and CPU headroom available alongside the climate-critical task graph; the threat model for TR-NW04 has been assessed and accepted on this basis.
+- **HTTPS is required for the outbound status-website channel.** T14's status POST and SD log upload (§5.13) use `esp_http_client` over `esp_tls` against the remote status server. The configured status URL is validated at write time to begin with `https://`; non-HTTPS URLs are rejected. HTTPS enforcement is the responsibility of the remote server (the controller does not pin certificates); the shared-secret `sourceidentifier` header (carrying the per-unit `status_secret` from NVS) travels inside the TLS-protected request body and headers and is therefore not exposed on the wire.
 - User credentials are stored as salted SHA-256 hashes (`SHA-256(salt || pin_ascii)`, mbedTLS); plain-text storage is not permitted (FR-AC06).
 
 ---
@@ -160,14 +160,14 @@ The following items originate from system-level and functional requirements in t
 - Hardware credential recovery via GPIO0 BOOT button resets PINs (and optionally all NVS settings) to factory defaults without authentication; requires physical access to the device (FR-AC08, FR-AC09).
 
 **Event log**
-- Minimum 250 entries retained in persistent storage using a ring buffer (FR-LG06: worst-case 216 events/hour at 30 s poll + headroom); SD card preferred when present, internal flash as fallback (FR-LG07, FR-LG08).
+- SD card is the sole persistent log store (FR-LG06, FR-LG07). The log is written as CSV with rotating files (default 10 × 512 KB), oldest file deleted automatically when the cap is exceeded. There is no NVS ring-buffer fallback (FR-LG08): on SD-card absence, removal, or write failure, T9 suspends logging cleanly and surfaces the condition via the local UI and the web GUI; climate-critical operation continues unaffected; on SD re-insertion, logging resumes in a fresh file timestamped with the resumption moment.
 
 **Settings persistence**
 - All configuration settings stored in ESP32-S3 NVS flash partition; retained across power cycles and restarts (FR-CF06, TR-SW01).
 
 **Timekeeping and timezone**
-- Time source: **DS1307 RTC** with CR2032 backup fitted on PCB (THDS Open Issue #7 resolved; see THDS §4.6). DS1307 is the authoritative clock when WiFi is unavailable. TR-HW08 is satisfied.
-- When WiFi is available: synchronise system time via NTP on boot; on NTP success, T10 calls `do_geo_sync()` to auto-detect timezone via ip-api.com (FR-DN07); POSIX TZ string applied immediately via `setenv/tzset`; persisted to NVS `system/tz_str`. See §4.3 T10 and Open Issue #3.
+- Time source: **DS1307 RTC** with CR2032 backup fitted on PCB. DS1307 is the authoritative clock when WiFi is unavailable (TR-HW08).
+- When WiFi is available: synchronise system time via NTP on boot, then again on a 24-hour cadence; on initial NTP success, T10 calls `do_geo_sync()` to auto-detect timezone via ip-api.com (FR-DN07); POSIX TZ string applied immediately via `setenv/tzset`; persisted to NVS `system/tz_str`. See §4.3 T10.
 - When WiFi is unavailable: DS1307 is authoritative; no timestamp gap on power interruption; TZ string from last successful geolocation (or factory default `CET-1CEST,M3.5.0,M10.5.0/3`) applied from NVS at boot.
 - Administrator may manually set date/time via the LCD keyboard (FR-UI23) — see §5.5 and `dm_set_manual_time()` in §4.3 T4.
 
@@ -179,14 +179,14 @@ The following items originate from system-level and functional requirements in t
 - Hardware credential recovery via GPIO0 (LOLIN S3 BOOT button): a sustained press triggers a staged PIN and NVS reset without requiring any prior authentication; physical enclosure access is the only prerequisite. Three escalating levels are triggered by hold duration (5–10 s / 10–15 s / 15–20 s). See §4.3 T8 for the full implementation (FR-AC08, FR-AC09, FR-UI24).
 
 **Testability**
-- Control logic modules decoupled from hardware drivers for host-side unit testing via PlatformIO test runner (TR-SW05).
+- Host-side acceptance test suite under `test/` exercises the HTTP and WebSocket surface using `pytest` (TR-SW05). See §2.5.
 
 **WiFi security**
 - WPA2 minimum; WPA3 preferred (TR-NW01).
-- HTTPS on the web interface is **not implemented**; see §6 Open Issue #4 for the accepted threat model (TR-NW04).
+- Local web GUI is HTTP on the LAN, protected by shared-secret session cookie + same-LAN confinement (TR-NW04). Outbound status POST to the remote server is HTTPS (§5.13).
 
 **Setpoint and threshold data types**
-- All user-configurable setpoints and thresholds are stored and processed as **integers** (no fractional part): T_min, T_max (°C), RH_min, RH_max (%), v_max (m/s or Beaufort), wind direction exclusion centre and half-width (degrees), hysteresis bands, and dwell/timer durations (minutes). Fractional sensor readings are rounded to the nearest integer before comparison with setpoints. NVS keys for these parameters use `int16_t` (signed 16-bit integer). (FRS C11, FR-CF01–FR-CF11)
+- All user-configurable setpoints and thresholds are stored and processed as **integers** (no fractional part): T_min, T_max (°C), RH_min, RH_max (%), v_max (m/s or Beaufort), wind direction exclusion centre and half-width (degrees), hysteresis bands, and dwell/timer durations (minutes). NVS keys for these parameters use `int16_t` (signed 16-bit integer). Sensor readings are carried at native precision (0.1 °C for temperature, sub-degree for wind direction via vector averaging); comparisons against integer setpoints use the rounded integer value. (FRS C11, FR-CF01–FR-CF11)
 
 **Feature enable/disable flags**
 - Temperature-based climate control is permanently active; no enable/disable flag is stored or checked.
@@ -196,7 +196,7 @@ The following items originate from system-level and functional requirements in t
 - Changes to either flag are logged with timestamp and the operator's identity (FR-WS11).
 
 **Motor alarm detection**
-- The RRK-3 alarm relay (dry contact, closes on alarm) is wired to J10; the opto-isolated input drives GPIO 42 configured as INPUT_PULLUP. The opto-coupler output is **active-low**: contact closed (alarm active) → GPIO 42 **LOW**; contact open (no alarm) → GPIO 42 **HIGH**. The alarm fires when any motor fails to stop at its normal end-switch and reaches the emergency switch. Resolved — see Open Issue #1 (Closed). T2 uses a deferred-ISR pattern: `attachInterrupt(PIN_OPTO_INPUT, isr_handler, CHANGE)`; the ISR (`IRAM_ATTR`) records the first edge (volatile flag + tick timestamp) and returns immediately; T2 confirms after 75 ms by reading the live pin state. **Not suppressed during MOVING states** — a motor hitting the emergency switch during a T2-commanded move is the primary alarm scenario. On alarm assert confirmed: T2 immediately de-energises all 6 relays, sets EG1.MOTOR_ALARM, posts log event to Q3 (FR-MA01–FR-MA02). On alarm release confirmed: T2 clears EG1.MOTOR_ALARM, posts log event to Q3, waits a **60 s guard** (motor coast-down; relays remain de-energised), re-checks pin; if still clear, starts CLOSE_ALL re-calibration, then resumes AUTOMATIC (FR-MA06–FR-MA07). T2 checks EG1.MOTOR_ALARM before executing any Q1 command and discards the command if the alarm is active.
+- The RRK-3 alarm relay (dry contact, closes on alarm) is wired to J10; the input drives GPIO 42 configured as input with internal pull-up enabled (`GPIO_PULLUP_ENABLE`). The potential free output is **active-low**: contact closed (alarm active) → GPIO 42 **LOW**; contact open (no alarm) → GPIO 42 **HIGH**. The alarm fires when any motor fails to stop at its normal end-switch and reaches the emergency switch. T2 uses a deferred-ISR pattern via the ESP-IDF GPIO ISR service: `gpio_isr_handler_add(PIN_OPTO_INPUT, isr_handler, NULL)` after `gpio_install_isr_service(0)`. The IRAM-resident ISR records the first edge (volatile flag + FreeRTOS tick timestamp) and returns immediately; T2 confirms after 75 ms by reading the live pin state via `gpio_get_level()`. **Not suppressed during MOVING states** — a motor hitting the emergency switch during a T2-commanded move is the primary alarm scenario. On alarm assert confirmed: T2 immediately de-energises all 6 relays, sets EG1.MOTOR_ALARM, posts log event to Q3 (FR-MA01–FR-MA02). On alarm release confirmed: T2 clears EG1.MOTOR_ALARM, posts log event to Q3, waits a **60 s guard** (motor coast-down; relays remain de-energised), re-checks pin; if still clear, starts CLOSE_ALL re-calibration (EG1.CALIBRATING set for the duration), then resumes AUTOMATIC (FR-MA06–FR-MA07). T2 checks EG1.MOTOR_ALARM before executing any Q1 command and discards the command if the alarm is active.
 
 **Mutual exclusion of relay commands**
 - The firmware must never energise the OPEN and CLOSE relay of the same motor simultaneously. T2 (Relay Controller) is the sole owner of relay GPIO and enforces this constraint before asserting any relay (see §4.3).
@@ -207,48 +207,77 @@ The following items originate from system-level and functional requirements in t
 
 ### 4.1 Framework Selection
 
-The firmware uses the **Arduino framework** over ESP-IDF via PlatformIO (target board: `lolin_s3`). The Arduino framework provides a familiar API and extensive library ecosystem (Modbus, I2C, MQTT, web server) while PlatformIO manages the underlying ESP-IDF toolchain, flash partitioning, and OTA support. FreeRTOS is available through the ESP-IDF layer and is used directly for task management.
+The firmware is built directly against **ESP-IDF** via PlatformIO (`framework = espidf`, target board `lolin_s3`). FreeRTOS is provided by the IDF layer and is used directly for task management, queues, mutexes, event groups, and task notifications.
+
+The build is component-based. Each hardware driver lives in `drivers/<name>/src/` and is exposed to the firmware build through a proxy `firmware/components/<name>/CMakeLists.txt` that forwards sources and include directories. Managed components (currently `espressif/led_strip`) are pulled in via `idf_component.yml` manifests; the on-disk cache lives in `firmware/managed_components/` and is gitignored.
+
+Tier-1 hardening compiler flags (`-Wall`, `-Wextra`, `-Wformat=2`, `-Wshadow`, `-Wstack-usage=2200`, `-Wlogical-op`, `-Wstrict-overflow=2`, `-Wnull-dereference`) are applied component-scoped to the firmware's own source tree only. ESP-IDF framework components compile with their own flag baseline.
+
+Filesystem support:
+- **LittleFS** via the `joltwallet/littlefs` managed component, used for the web-asset bundle on each of two A/B partitions for paired-OTA support (§5.9).
+- **FAT32 over SPI** via the IDF-bundled `fatfs` + `sdmmc` + `driver` components, mounted at `/sdcard` for the event log (§5.3) and the coredump-download workflow (§5.11).
+
+Networking:
+- WiFi via `esp_wifi` + `esp_netif` + `esp_event` (event-driven STA + APSTA).
+- HTTP server via `esp_http_server` (§5.8).
+- Outbound HTTPS via `esp_http_client` + `esp_tls` against the IDF-bundled mbedtls (§5.13).
+- SNTP via `esp_netif_sntp` for initial sync and 24-hour cadence resync (§5.7).
+
+Filesystem-managed dependencies and the toolchain pin are reproducible from source: `firmware/platformio.ini` carries the platform pin (`espressif32@<version>`) and every paired-OTA release archives the matching `firmware-<version>.elf` + `firmware-<version>.map` + `bootloader-<version>.bin` + `partitions-<version>.bin` alongside the `.bin` for forensic reproducibility (see `bin/build_release.ps1`).
 
 ### 4.2 FreeRTOS Task Overview
 
-The firmware is structured as a set of FreeRTOS tasks. Each logical function is assigned a dedicated task with a defined priority, core assignment, and communication interface. `tasks.md` is the authoritative reference for the task architecture; this section summarises the design.
+The firmware is structured as a set of FreeRTOS tasks. Each logical function is assigned a dedicated task with a defined priority and communication interface; core placement is delegated to the FreeRTOS SMP scheduler (see §4.4). `tasks.md` is the authoritative reference for the task architecture; this section summarises the design.
 
-| ID  | Task Name            | Priority          | Core | Function |
-|-----|----------------------|-------------------|------|----------|
-| T1  | Watchdog / Heartbeat | Highest           | 1    | Hardware watchdog kick; HB LED toggling; RGB status LED update |
-| T2  | Relay Controller     | High              | 1    | Relay GPIO; window state machines; dwell timers; mutual exclusion; RRK-3 motor alarm detection |
-| T3  | Safety Monitor       | High              | 1    | Wind safety evaluation; issues CLOSE_ALL; overrides climate control |
-| T4  | Data Manager         | Medium-high       | 1    | Central store for all configuration settings and measurement data; ring buffers for sensor history |
-| T5  | Sensor Poll          | Medium-high       | 1    | Modbus RTU master; polls sensors; posts readings to T4 |
-| T6  | Climate Control      | Medium            | 1    | Evaluates setpoints; conflict resolution; posts actuation commands to T2 |
-| T7  | Keypad Scan          | Medium-high       | 1    | Matrix scan; debounce; posts key events to T8 |
-| T8  | UI / Display         | Medium            | 1    | LCD rendering; menu FSM; session management; posts config changes to T4 |
-| T9  | Event Logger         | Low               | 1    | Serialises log writes to NVS ring buffer and SD card |
-| T10 | Network Manager      | Low               | 0    | WiFi AP and client lifecycle; NTP trigger; posts status to T8 |
-| T11 | Web Server           | Low               | 0    | Serves configuration pages from LittleFS; applies session model; posts config changes to T4 |
-| T12 | MQTT Client          | Low               | 0    | Publishes sensor data and status; subscribes to command topics |
-| T13 | OTA                  | Low (on demand)   | 0    | Firmware and LittleFS update; manages dual-bank rollback |
-| T14 | Status website POST  | Low               | 0    | Periodic HTTP/HTTPS status POST to external dashboard; daily log upload; persistent circuit breaker (gh#18). Added 1.17.0; bulkhead-hardened 1.17.34+. |
-| T15 | Status-POST supervisor | 4 (between LOW and MED) | 0 | Bulkhead-policy supervisor (gh#18 Phase 4, since 1.18.0). Monitors T14 heartbeat + cumulative heap-drop; force-respawns T14 on wedge; issues a planned reboot via `esp_restart()` when respawn budget is exhausted. |
+| ID  | Task Name              | Priority          | Affinity | Function |
+|-----|------------------------|-------------------|----------|----------|
+| T1  | Watchdog / Heartbeat   | Highest           | any  | Subscribes to and kicks the IDF Task Watchdog; drives the heartbeat LED + WS2812B RGB status LED; emits periodic heap-instrumentation rows to the event log (free internal, free PSRAM, largest contiguous internal block, heap-integrity check, task stack high-water-mark sweep). |
+| T2  | Relay Controller       | High              | any  | Relay GPIO; per-channel window state machine; dwell timers; mutual exclusion; RRK-3 motor alarm detection. Persists terminal window state to NVS on every transition (§5.15). |
+| T3  | Safety Monitor         | High              | any  | Wind safety evaluation; issues CLOSE_ALL; overrides climate control. |
+| T4  | Data Manager           | Medium-high       | any  | Central store for all configuration settings and measurement data; ring buffers for sensor history; owner of the NVS-backed cfg shadow; coredump-presence cached at boot. |
+| T5  | Sensor Poll            | Medium-high       | any  | Modbus RTU master; polls FG6485A T/RH + S200 wind; posts readings to T4. Sole owner of the Modbus bus. |
+| T6  | Climate Control        | Medium            | any  | Evaluates setpoints; conflict resolution; posts actuation commands to T2. |
+| T7  | Keypad Scan            | Medium-high       | any  | Matrix scan; debounce; posts key events to T8. |
+| T8  | UI / Display           | Medium            | any  | LCD rendering; menu FSM; session management; posts config changes to T4. |
+| T9  | Event Logger           | Low               | any  | Drains Q3; writes log entries as CSV rows to SD card; manages rotating-file retention. |
+| T10 | Network Manager        | Low               | any  | WiFi STA + APSTA lifecycle; SNTP (boot + 24 h cadence); IP-based geo + TZ; posts net status to T8. Owns the boot-time `nm_wifi_init_blocking()` entry point called by `app_main` before this task is spawned. |
+| T11 | Web Server             | Low               | any  | `esp_http_server` serving the local GUI from LittleFS + a REST API surface; spawns a dedicated WebSocket-push child task for the 2-second canonical-JSON broadcast on `/ws`. |
+| T12 | MQTT Client            | Low               | any  | *(Could-have, reserved task slot.)* Architecture leaves room for an MQTT bridge that publishes sensor and status data to a configured broker and subscribes to a command topic set. Not currently active in the firmware build; the `task_t12` handle is declared and remains `NULL` until activation. |
+| T13 | OTA                    | Low (on demand)   | any  | Firmware and LittleFS update; manages dual-bank A/B rollback; firmware-only fallback timer for unpaired uploads; spawns a dedicated reboot worker task to host `esp_restart()` outside the FreeRTOS timer-service context (§5.9). |
+| T14 | Status website POST    | Low               | any  | Outbound HTTPS POST to the remote status server every `cfg.status_interval_s`; SD log upload at the configured daily slot and on T9 rotation (multi-file drain). Builds the canonical status JSON via the shared `build_canonical_status_json()` (§5.13). |
+| T15 | Status-POST supervisor | (deferred)        | any  | *(Dormant — see §5.15.)* Bulkhead supervisor for T14: heartbeat + cumulative-heap-drop monitor with respawn budget escalating to planned reboot. Source preserved on disk; excluded from the build. May be withdrawn pending soak outcome. |
 
 ### 4.3 Task Descriptions
 
 #### T1 — Watchdog / Heartbeat
 
-**Priority:** Highest | **Core:** 1
+**Priority:** Highest
 
-- Kicks the hardware watchdog timer at a fixed interval (e.g. every 500 ms).
-- Toggles the HB LED: 1 Hz in normal operation; 4 Hz during startup / initialisation.
-- Drives the WS2812B RGB status LED (GPIO 38) on each watchdog kick: reads EG1 to determine the current system state, maps it to Green / Amber / Red (see §5.12), and writes the colour with the appropriate brightness (day or night level). Event group reads are lock-free and impose no additional synchronisation cost.
-- Must never be starved by lower-priority tasks; its liveness confirms the whole system is running.
-- Can be implemented as a FreeRTOS software timer callback rather than a full task.
-- **Synchronization:** reads EG1 (all bits — lock-free) for RGB LED colour; acquires MX4 to read LED brightness and night-schedule settings from T4 (cached in local variables; refreshed on each tick or on config update).
+T1 is a full FreeRTOS task (not a software-timer callback). It is the system's liveness anchor and its instrumentation source.
+
+**Per-tick responsibilities (500 ms tick):**
+- Subscribes once to the IDF Task Watchdog Timer (`esp_task_wdt_add(NULL)`) and kicks it (`esp_task_wdt_reset()`) on every tick.
+- Toggles the green heartbeat LED at 1 Hz in steady state, 4 Hz during start-up initialisation, steady-on if the firmware has stopped before the watchdog fires, off otherwise.
+- Drives the WS2812B RGB status LED via the `led_strip` managed component (RMT TX backend): reads EG1 to determine the current system state, maps it to the colour convention in §5.12, and writes the chosen colour at the day or night brightness level taken from T4 (cached locally; refreshed on cfg update).
+- Detects the coredump-available condition cached by T4 at boot and reflects it in the RGB colour for one short post-boot window if other higher-priority flags are inactive.
+
+**Periodic instrumentation (every 60 s):**
+- Emits three heap-snapshot rows to Q3: total free internal heap, total free PSRAM, largest contiguous free internal block. The largest-block metric is the gh-class "heap fragmentation" signal — sampled at the same cadence as total-free so fragmentation (largest block falling while total-free remains stable) is visible from the SD log alone.
+- 30 seconds offset from the heap-snapshot moment, performs a `heap_caps_check_integrity_all()` sweep and emits a corruption event if the integrity check fails.
+
+**Periodic instrumentation (every 10 minutes):**
+- Stack high-water-mark sweep across every known task handle; writes one row to Q3 per task that has crossed a low-stack threshold.
+
+**OTA-healthy gating:**
+- After `OTA_HEALTHY_MS` of uninterrupted ticks following a fresh boot, calls `ota_mark_healthy()` to clear the boot-failure counter that drives the 3-fail rollback (§5.9). One NVS write per boot via a local boolean.
+
+**Synchronization:** reads EG1 (all bits — lock-free); reads cfg via `dm_cfg_snapshot()` (acquires MX4 internally) on cfg-change; posts to Q3 via `log_post()` for heap rows, integrity events, and stack-HWM warnings.
 
 ---
 
 #### T2 — Relay Controller
 
-**Priority:** High | **Core:** 1
+**Priority:** High
 
 - Sole owner of all 6 relay GPIO output pins (OPEN/CLOSE for M1, M2, M3); no other task may assert relay signals directly.
 - All actuation requests arrive via command queue Q1 (from T3 and T6 only — manual window commands from LCD/web/MQTT are out of scope, C9).
@@ -257,14 +286,14 @@ The firmware is structured as a set of FreeRTOS tasks. Each logical function is 
 - Reads motor travel times (`travel_mN`, seconds) and dwell times (`dwell_open_mN`, `dwell_close_mN`, minutes) from T4 (MX4) on startup and on each config update; converts travel time to ms for `vTaskDelay`.
 - **Travel timer:** energises each relay for `(travel_mN + MOTOR_TRAVEL_MARGIN_S_DEFAULT) * 1000` ms; de-energises on expiry; window is at end position. The margin ensures the end-switch fires before the relay drops. **De-energising the relay before expiry stops the motor immediately at the current (intermediate) position — therefore only complete open or close commands are issued.**
 - **Dwell timer:** after travel completes, enforces the minimum hold time before accepting the next command on that channel (FR-A09–FR-A12).
-- Monitors the RRK-3 opto-isolated alarm input (GPIO42) via a deferred-ISR pattern: `IRAM_ATTR` ISR records first edge (volatile flag + tick timestamp); T2 task loop confirms after 75 ms by reading live pin state. **Not suppressed during MOVING — a motor reaching the emergency switch during a T2-commanded move is the primary alarm scenario.** On alarm assert confirmed: de-energise all 6 relays immediately, set EG1.MOTOR_ALARM, post log event to Q3 (FR-MA01–FR-MA02). On alarm release confirmed: clear EG1.MOTOR_ALARM, post CLOSE_ALL to Q1 for re-calibration, post log event to Q3, resume AUTOMATIC (FR-MA06–FR-MA07). Checks EG1.MOTOR_ALARM before executing any Q1 command; discards the command if alarm is active.
+- Monitors the RRK-3 opto-isolated alarm input (GPIO42) via a deferred-ISR pattern: an `IRAM_ATTR` ISR registered with `gpio_isr_handler_add()` records the first edge (volatile flag + tick timestamp) and returns immediately; the T2 task loop confirms after 75 ms by reading the live pin state. **Not suppressed during MOVING — a motor reaching the emergency switch during a T2-commanded move is the primary alarm scenario.** On alarm assert confirmed: de-energise all 6 relays immediately, set EG1.MOTOR_ALARM, post log event to Q3 (FR-MA01–FR-MA02). On alarm release confirmed: clear EG1.MOTOR_ALARM, post CLOSE_ALL to Q1 for re-calibration, post log event to Q3, resume AUTOMATIC (FR-MA06–FR-MA07). Checks EG1.MOTOR_ALARM before executing any Q1 command; discards the command if alarm is active.
 - **Synchronization:** receives Q1 (actuation commands); checks EG1.MOTOR_ALARM before executing commands; posts to Q3 (log events via `log_post()`); sets/clears EG1.MOTOR_ALARM on GPIO42 alarm assert/release.
 
 ---
 
 #### T3 — Safety Monitor
 
-**Priority:** High | **Core:** 1
+**Priority:** High
 
 - Wakes on notification from T4 whenever new wind data is available.
 - Reads current wind speed and wind direction from T4.
@@ -281,12 +310,12 @@ The firmware is structured as a set of FreeRTOS tasks. Each logical function is 
 
 #### T4 — Data Manager
 
-**Priority:** Medium-high | **Core:** 1
+**Priority:** Medium-high
 
 T4 is the single source of truth for all runtime data and configuration. All tasks that need to read or write system state do so through T4. This eliminates distributed per-variable mutexes and provides a single serialisation point for NVS persistence.
 
 **Configuration settings**
-- Holds all configurable parameters in RAM: setpoints (T_min_day, T_max_day, T_min_night, T_max_night, RH_min_day, RH_max_day, RH_min_night, RH_max_night), wind thresholds, per-channel motor travel times (`travel_mN`, seconds — relay energisation duration) and dwell times (`dwell_open_mN` / `dwell_close_mN`, minutes — minimum hold after travel), hysteresis values, sliding average windows, geographic location (lat/lon), WiFi credentials, PIN hashes, display language, session timeout, WiFi AP timeout.
+- Holds all configurable parameters in RAM: setpoints (T_min_day, T_max_day, T_min_night, T_max_night, RH_min_day, RH_max_day, RH_min_night, RH_max_night), wind thresholds, per-channel motor travel times (`travel_mN`, seconds — relay energisation duration) and dwell times (`dwell_open_mN` / `dwell_close_mN`, minutes — minimum hold after travel), hysteresis values, sliding average windows, geographic location (lat/lon), WiFi credentials, PIN hashes, display language, session timeout, AP idle timeout, status-website URL/secret/interval/expose-mask, daily log-upload HH:MM.
 - Accepts write requests from T8 (UI) and T11 (web server); validates range before accepting.
 - Persists changed settings to NVS flash immediately on write.
 - Loads all settings from NVS on startup; applies defined defaults for any missing keys.
@@ -311,7 +340,7 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 **Measurement history ring buffers**
 - Maintains a separate ring buffer for each measured quantity: T, RH, wind speed, wind direction.
 - Each entry contains: timestamp and measured value.
-- Ring buffer depth: **360 entries per channel** (T, RH, wind speed, wind direction) = 11.5 KB total internal RAM. Resolved — see Open Issue #2 (Closed).
+- Ring buffer depth: **360 entries per channel** (T, RH, wind speed, wind direction) = 11.5 KB total internal RAM. At the default 30 s poll interval this yields 3 h of in-memory history; at the minimum 15 s poll interval, 1.5 h. The depth is sized to fit comfortably in ESP32-S3 internal SRAM with substantial headroom while still serving the web trend view and any future MQTT history publish channel.
 - Read by T8 (display history), T11 (web trend view), T12 (MQTT history). T9 no longer reads ring buffers for snapshots — T4 posts a `LOG_SENSOR` event to Q3 on each new poll result instead.
 
 **Operating state**
@@ -331,7 +360,7 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 
 #### T5 — Sensor Poll
 
-**Priority:** Medium-high | **Core:** 1
+**Priority:** Medium-high
 
 - Modbus RTU master on UART1 with SIT65HVD08P transceiver; manages DE/RE direction control pin.
 - Polls SenseCAP S200 (wind speed + direction) and FG6485A (T + RH) on a configurable interval (factory default 30 s; technician-configurable 15–120 s via web GUI).
@@ -343,7 +372,7 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 
 #### T6 — Climate Control
 
-**Priority:** Medium | **Core:** 1
+**Priority:** Medium
 
 - Wakes on notification from T4 that new sensor data is available.
 - Reads sliding-average T (T_avg) and RH (RH_avg) from T4; reads current day/night period (`is_daytime`) from T4; selects the applicable setpoint pair (T_min_day/T_max_day or T_min_night/T_max_night; RH_min_day/RH_max_day or RH_min_night/RH_max_night).
@@ -357,7 +386,7 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 
 #### T7 — Keypad Scan
 
-**Priority:** Medium-high | **Core:** 1
+**Priority:** Medium-high
 
 - Scans the 4×4 keypad matrix every ~20 ms.
 - Applies software debounce.
@@ -369,7 +398,7 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 
 #### T8 — UI / Display
 
-**Priority:** Medium | **Core:** 1
+**Priority:** Medium
 
 - Manages the LCD1602 display via I2C (shared bus with RTC). Any `delay()` calls in the LCD1602 driver must be replaced with `vTaskDelay(pdMS_TO_TICKS(ms))` so T8 yields to the scheduler rather than spinning.
 - Renders the main status screen: T, RH, wind speed and direction, window states, operating mode, active session, active alarms.
@@ -406,10 +435,10 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 
 #### T9 — Event Logger
 
-**Priority:** Low | **Core:** 1
+**Priority:** Low
 
 - Receives log events from all tasks via a dedicated queue; senders post and return immediately.
-- Serialises all writes to the NVS ring buffer and, when present, to the SD card.
+- Serialises all writes to, when present, the SD card.
 - The queue decouples log I/O from higher-priority tasks; no task is blocked by log write latency.
 - Queue overflow policy: drop-oldest enforced by `log_post()` in `event_logger.h` (Gap H); see §5.3 for the two-step evict-and-retry mechanism.
 - Periodic sensor-value snapshots: T4 posts a `LOG_SENSOR` event to Q3 every time it receives new sensor data from T5 via Q6. T9 consumes these like any other event — no separate timer or MX3 access required.
@@ -419,69 +448,166 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 
 #### T10 — Network Manager
 
-**Priority:** Low | **Core:** 0
+**Priority:** Low
 
-- Manages WiFi AP lifecycle: enable on admin command from T8 or T11; automatic shutdown after configurable timeout (timeout and SSID/PSK managed independently; AP can run concurrently with client connection).
-- Manages WiFi client: connect to configured SSID; monitor connection; reconnect on drop; supports DHCP and static IP; exponential backoff (2→4→…→60 s) on repeated failures; `WiFi.setAutoReconnect(false)` (T10 manages reconnection itself).
-- Posts connection state changes (connected / disconnected / assigned IP / NTP synced) to T8 via Q5 (`xQueueOverwrite`); `net_status_t` fields: `client_connected` (bool), `ap_active` (bool), `ntp_synced` (bool, latched true after first successful NTP sync), `ip_str[16]` (current IP as string).
-- Triggers NTP time synchronisation (`configTime(0, 0, "pool.ntp.org")`) when a client connection is established; polls `time(NULL) > 1700000000L` for up to 30 s; on success: sends TN4 to T4, sets `s_ntp_synced = true`, then calls `do_geo_sync()`.
-- **`do_geo_sync()` — automatic geolocation and timezone (FR-DN06, FR-DN07):**
-  - Performs HTTP GET `http://ip-api.com/json?fields=status,lat,lon,timezone` (5 s timeout; no SSL; `HTTPClient` from Arduino core — no additional `lib_deps` required).
-  - Parses JSON for `status`, `lat` (float), `lon` (float), `timezone` (IANA name string).
-  - Converts lat/lon to integer degree + millidegree parts via `float_to_deg_frac()`; posts `lat_deg`, `lat_frac`, `lon_deg`, `lon_frac` as `config_update_t` items to Q4 → T4 updates NVS + shadow + calls `update_sun_times()`.
-  - Looks up the IANA timezone name in `s_tz_table[]` (~100-entry static array mapping IANA names to POSIX strings) via `iana_to_posix()`; writes the resolved POSIX string to NVS `system/tz_str`; applies immediately via `setenv("TZ", posix_tz, 1); tzset()`.
-  - On HTTP failure, JSON parse failure, or unknown timezone name: silently skips the corresponding update; last stored values in NVS are retained.
-- Runs on Core 0 alongside the ESP32-S3 internal WiFi stack.
-- **Synchronization:** posts to Q5 (network status to T8); posts to Q4 (geolocation lat/lon updates to T4); sends TN4 to T4 on NTP sync success; posts to Q3 (log events); no mutexes held.
+T10 owns the WiFi subsystem end-to-end via the native ESP-IDF stack (`esp_wifi` + `esp_netif` + `esp_event`). Two distinct entry points: a blocking boot-time bring-up called from `app_main` *before* the long-running task is spawned, and the long-running task itself.
+
+**Boot-time entry: `nm_wifi_init_blocking(connect_timeout_ms)`**
+- Reads SSID and PSK from NVS `wifi` namespace; if no SSID is configured the WiFi stack is still initialised to STA mode (the radio comes up, no STA association is attempted; the AP-mode recovery path remains available).
+- Calls `esp_netif_init()`, `esp_event_loop_create_default()`, `esp_netif_create_default_wifi_sta()`, `esp_wifi_init()` with default config, registers a single unified handler for `WIFI_EVENT` and `IP_EVENT` against the default event loop, sets STA mode and config, calls `esp_wifi_start()`.
+- Blocks on a FreeRTOS event group for `IP_EVENT_STA_GOT_IP` (success) or `WIFI_EVENT_STA_DISCONNECTED` after a fast-retry budget (failure) or the caller-supplied timeout.
+- On `STA_GOT_IP`: runs initial SNTP synchronisation against `pool.ntp.org` for up to ~10 s, then returns.
+- The unified event handler is registered once here and **stays alive after this function returns** — it continues to drive all subsequent disconnect events via the exponential-backoff reconnect timer described below.
+
+**Long-running task: `task_network_manager`**
+
+Started by `app_main` *after* `nm_wifi_init_blocking()` has returned. Runs a 5-second monitor loop:
+- Each cycle, snapshots the current netif/wifi state into a `net_status_t` (`client_connected`, `ap_active`, `ntp_synced`, `ip_str[16]`) and overwrites Q5 (depth 1) so T8's LCD WiFi page always reads the freshest state with no blocking.
+- Polls the NVS `wifi/ap_enable` flag and toggles AP mode on the rising/falling edge. AP and STA run **simultaneously** in `WIFI_MODE_APSTA` when AP is enabled; SSID is `Greenhouse-<XXYY>` (last two bytes of WiFi STA MAC); PSK is read from NVS `wifi/ap_psk` (falls back to a default if unset, WPA2-PSK with a minimum 8-character key). When AP is disabled the radio returns to STA-only.
+- Sends `DM_NOTIFY_NTP_SYNCED` (TN4) to T4 once on the first successful NTP sync so T4 writes the post-SNTP system time back to the DS1307 RTC.
+- Runs `do_geo_sync()` once per boot after the first NTP sync: HTTP GET against `http://ip-api.com/json?fields=status,lat,lon,timezone`, parses lat/lon and IANA timezone, posts lat/lon updates to Q4 → T4 → NVS + sunrise recompute, looks up the IANA name in the static table (`iana_to_posix()`), writes the resolved POSIX string to NVS `system/tz_str`, applies immediately via `setenv("TZ", posix_tz, 1); tzset()`. All failure modes silently skip; last stored values are retained.
+- Runs periodic NTP resync on a **24-hour cadence** after the initial sync. The DS1307 RTC holds time precisely enough for multi-day operation, but slow drift accumulates; periodic resync brings the wall clock back to NTP accuracy. Audit-logged.
+
+**Reconnect behaviour**
+
+The unified WIFI_EVENT handler (registered by `nm_wifi_init_blocking`) drives reconnects via a FreeRTOS one-shot timer with exponential back-off (2 s → 4 s → 8 s → 16 s → 32 s → 60 s cap). On each successful `IP_EVENT_STA_GOT_IP` the back-off is reset. The handler is light: it signals the boot-time event group on first arrival and arms or re-arms the timer for subsequent disconnects. The timer callback fires `esp_wifi_connect()` directly.
+
+**STA address mode**
+
+DHCP only. Static-IP fields are not part of the current spec.
+
+**Synchronization:** posts to Q5 (network status to T8); posts to Q4 (geolocation lat/lon updates to T4); sends TN4 to T4 on first NTP sync success; posts to Q3 (log events for STA up/down, NTP synced/timeout, AP up/down, geo success); no mutexes held in the steady-state monitor loop.
 
 ---
 
-#### T11 — Web Server
+#### T11 — UI / Web Server
 
-**Priority:** Low | **Core:** 0
+**Priority:** Low | **Stack:** 8 KB (main handler task) + 4 KB (WS-push child task)
 
-- Serves HTML, CSS, and JavaScript from LittleFS via ESPAsyncWebServer (callback-driven).
-- Applies the same three-state session model (Normal / Farmer / Admin) and PIN codes as T8.
-- Reads configuration and current measurement data from T4; posts validated setting changes to T4.
-- Available on both WiFi AP and WiFi client interfaces simultaneously.
-- Authentication required before any page is served or any setting is changed.
-- **Synchronization:** acquires MX5 (LittleFS) to serialise concurrent HTTP file-serve requests against the active LittleFS partition; reads EG1.OTA_IN_PROGRESS (informational — T13 writes only to the inactive partition so T11 is not blocked during OTA, but the flag may be used to suppress OTA-page interactions); acquires MX2 to read current measurements; acquires MX4 to read configuration; posts to Q4 (validated config/state updates to T4); posts to Q3 (log events).
+T11 runs the local web GUI and its REST API via `esp_http_server` (HTTP on port 80; HTTPS is not used for the inbound local web — see §2.6). Static assets (HTML/CSS/JS/manifest) are served from the active LittleFS partition; the REST surface drives every operator-facing action.
+
+**Architecture**
+- A single `httpd_handle_t` server with all URI handlers registered at task start.
+- A separate child task `task_ws_push` is spawned (4 KB stack, priority 4, `tskNO_AFFINITY`). The child holds the same `httpd_handle_t`, wakes every 2 000 ms, builds the canonical status JSON (§5.13) when at least one WebSocket client is connected, and broadcasts it to every `/ws` socket via `httpd_ws_send_frame_async()`. Splitting the broadcast into its own task isolates the periodic JSON-build cost from the HTTP accept/dispatch loop.
+- The inbound `/ws` URI handler (registered as `is_websocket = true`) completes the HTTP-upgrade handshake on the first GET and drains client-sent frames silently on subsequent calls (the dashboard sends no client→server WS messages; draining is protocol housekeeping so the socket stays alive across pings).
+
+**URI groups served by the REST surface**
+
+| Group | Endpoints | Auth |
+|---|---|---|
+| Static | `/`, `/style.css`, `/app.js`, `/manifest.json` | public |
+| Auth | `/api/whoami`, `/api/login`, `/api/logout` | login is public, others session-aware |
+| Data | `/api/status`, `/api/history` | public |
+| Config | `/api/config` (GET, POST), `/api/config/limits`, `/api/wifi`, `/api/pin`, `/api/web` | session-gated (farmer / admin per field) |
+| SD | `/api/sd/status`, `/api/sd/mount`, `/api/sd/unmount` | admin |
+| Log | `/api/log/files`, `/api/log/download` | session-gated |
+| Coredump | `/api/coredump/status`, `/api/coredump/download`, `/api/coredump/erase` | admin (rate-limited; audit-logged) |
+| OTA | `/api/ota/status`, `/api/ota/firmware`, `/api/ota/assets` | admin |
+| WebSocket | `/ws` | public (payload identical to `/api/status`) |
+
+**Session model**
+- In-memory table of `MAX_SESSIONS` slots, each holding a random 16-hex-char token + role (`farmer` or `admin`) + expiry.
+- Browsers store the token in a `Set-Cookie: session=TOKEN; Path=/; HttpOnly` cookie.
+- Each authenticated request slides the expiry forward by `cfg.session_timeout_min × 60 s`.
+- PIN authentication backed by §5.4 (salted SHA-256 + lockout). Local-keyboard PIN and web PIN use the same NVS-stored hashes; the role enforcement at endpoint level uses `admin_only_or_send_error()` and equivalent helpers.
+
+**Cold-start performance**
+- The dashboard's `app.js` issues a synchronous `fetch('/api/status')` at page load and at the end of a successful `doLogin()` and pipes the response through the same `handleStatus()` function the WebSocket dispatcher uses. This closes the 0–2 s gap between page render and the first WS push.
+
+**Synchronization:** acquires MX5 (LittleFS active partition) to serialise file reads against T13's partition-switch on OTA commit; reads EG1.OTA_IN_PROGRESS for informational purposes (T13 writes only to the inactive partition so T11 is not blocked during OTA); acquires MX2 to read current measurements; acquires MX3 to read the history ring; acquires MX4 to read configuration; posts to Q4 (validated config writes to T4); posts to Q3 (log events for every audit-relevant action). The WS-push child is read-only against the same primitives.
 
 ---
 
 #### T12 — MQTT Client
 
-**Priority:** Low | **Core:** 0
+**Priority:** Low | **Status:** *Could-have, reserved task slot*
 
-- Publishes current T, RH, wind speed, wind direction, window states, operating mode, and alarm status to the configured MQTT broker at a configurable interval.
-- Reads all published values from T4.
-- Subscribes to configured command topics; posts received actuation commands to T2 and setting changes to T4.
-- Active only when WiFi client is connected and an MQTT broker is configured.
-- **Synchronization:** acquires MX2 to read current measurements for publishing; acquires MX4 to read MQTT broker configuration; posts to Q1 (commands received via MQTT); posts to Q4 (settings received via MQTT); posts to Q3 (log events).
+T12 is reserved as a future bridge to an external MQTT broker. The architecture leaves room for it: a `task_t12` FreeRTOS handle is declared in `app_types.h` and remains `NULL` until activation; `LOG_BY_MQTT` is allocated as an initiator code in the event-log enumeration; the NVS `mqtt` namespace exists as a placeholder for broker connection settings (broker URL, port, credentials, base topic, publish interval).
+
+When activated, the task is intended to:
+- Publish current T, RH, wind speed, wind direction, window states, operating mode, and alarm status to a configured MQTT broker at a configurable interval. Source-of-truth for the published values is T4 (read via `dm_meas_snapshot()` and `dm_status_snapshot()`).
+- Subscribe to a configured command topic set; route received actuation commands to T2 via Q1 and configuration changes to T4 via Q4.
+- Run only while the WiFi STA is connected and a broker is configured; degrade silently on broker unreachable.
+
+**Synchronization (when activated):** acquires MX2 to read current measurements for publishing; acquires MX4 to read broker configuration; posts to Q1 for inbound actuation commands; posts to Q4 for inbound configuration changes; posts to Q3 for log events with `LOG_BY_MQTT` initiator.
 
 ---
 
 #### T13 — OTA (on demand)
 
-**Priority:** Low (spawned on demand) | **Core:** 0
+**Priority:** Low (spawned on demand)
 
-- Activated via the web interface (T11).
-- Writes incoming firmware image to the inactive firmware bank (A or B).
-- Receives web asset zip, buffers it in PSRAM, and extracts it file-by-file to the **inactive** LittleFS partition (the partition paired with the inactive firmware bank). Writes `manifest.json` last.
-- The active LittleFS partition is never written during an update; T11 continues to serve the active partition uninterrupted while T13 writes to the inactive one.
-- On successful write of both firmware and web assets: marks the inactive firmware bank (and its paired LittleFS partition) as active and triggers a controlled system restart.
-- Implements 3-consecutive-fail rollback: if the new firmware fails to complete startup 3 times, the previous bank is restored as active — this also automatically restores the previous matching LittleFS partition.
-- Firmware and web asset updates belonging to the same release must both complete before either is activated.
-- **Synchronization:** does **not** acquire MX5 during web asset write (inactive LittleFS is not accessed by T11); sets EG1.OTA_IN_PROGRESS on start, clears on completion or failure; posts to Q3 (log events).
+T13 is spawned from T11 when a firmware or asset upload is received and tears itself down once the OTA cycle completes (or a fallback timer fires). It is not part of the steady-state task graph.
+
+**Firmware upload path**
+- Activated by `POST /api/ota/firmware` (admin only). The handler streams the raw image body chunk-by-chunk into T13's writer via `ota_firmware_write()`; the writer feeds `esp_ota_write()` against the inactive bank.
+- On `ota_firmware_end()`: ESP-IDF computes and verifies the image SHA, marks the new bank as the next-boot partition pending commit.
+
+**Asset upload path**
+- Activated by `POST /api/ota/assets` (admin only) after the firmware step. The handler streams the STORE-only ZIP body chunk-by-chunk into a PSRAM accumulator (`ota_assets_accumulate(data, len, offset)`); on completion, T13 extracts the ZIP entries directly into the **inactive** LittleFS partition (the partition paired with the inactive firmware bank) using the IDF `joltwallet/littlefs` VFS bindings, writing `manifest.json` last so the partition is only made consistent at the very end. T11 continues to serve from the **active** partition throughout.
+
+**Reboot path — `reboot_worker_task` carve-off**
+- When both firmware and assets are committed, T13 arms a 1-second one-shot reboot timer. The timer callback **does not call `esp_restart()` directly**: `esp_restart()` performs a WiFi-teardown chain (`esp_wifi_stop` → 802.11 ioctls → `queue_send_wrapper`) that consumes several KB of stack — more than the FreeRTOS timer-service task's ~2 KB allotment. Instead, the timer callback spawns a dedicated `reboot_worker_task` with a 4 KB stack and priority 5; the worker logs the impending reboot, calls `esp_restart()`, and never returns. On `xTaskCreate()` failure the timer falls back to in-timer `esp_restart()` (best-effort).
+
+**Firmware-only fallback timer**
+- If a firmware upload completes verification but no paired asset upload arrives within `FW_DONE_FALLBACK_MS` (120 s), T13 commits the firmware alone (`esp_ota_set_boot_partition`) and reboots via the same `reboot_worker_task` path. The asset partition stays at the previous version; on the next boot the new firmware runs against the old asset bundle. This guards against half-updates without forcing the operator to re-flash on a flaky upload.
+
+**Rollback**
+- Implements consecutive-boot-failure rollback (3-fail budget): if the new firmware fails to reach `ota_mark_healthy()` (called by T1 after `OTA_HEALTHY_MS` of stable uptime) 3 times in a row, the previous bank is restored as active on the next boot. The paired LittleFS partition follows the firmware automatically.
+
+**Synchronization**
+- Acquires MX5 only at the moment of partition-pointer commit (atomic flip from inactive→active); T11's reads of the active partition are not blocked during the write phase because T13 writes the inactive partition only.
+- Sets EG1.OTA_IN_PROGRESS on start; clears on commit or failure; posts to Q3 (log events for each OTA stage and outcome).
+
+#### T14 — Status Website POST
+
+**Priority:** Low (3) | **Stack:** 12 KB
+
+T14 is the outbound telemetry path to the status website. It is the only task that performs HTTPS handshakes and the only task that streams SD-card log files off-device. It owns one `esp_http_client` handle (with `keep_alive_enable = true`) and one `esp_tls_t` session; the handle is created once at task entry and retained for the lifetime of the task.
+
+**Status POST cycle**
+- Every `cfg.status_interval_s` (default 600 s; range 60–86400 s; `0` disables outbound POST entirely), T14 builds a status JSON payload via the shared `build_canonical_status_json()` helper used by `/api/status` and the `/ws` push. The payload is identical across all three channels except for `STATUS_EXPOSE_ALL` versus the configured `cfg.status_expose_mask` (bitmask selecting which top-level objects to include: sensors, modes, alarms, setpoints, network, sys).
+- The cycle is triggered by a one-shot FreeRTOS software timer that re-arms itself at the end of each cycle; `0` disables both the initial arm and the re-arm so the task idles indefinitely.
+- Request shape: `POST <cfg.status_url>` with `Content-Type: application/json`, `User-Agent: greenhouse-controller/<FIRMWARE_VERSION>`, and the `sourceidentifier: <cfg.status_secret>` shared-secret header. The secret is never logged; it lives in NVS namespace `status` and is masked in `/api/config` GET responses.
+- HTTPS is enforced by the remote endpoint; the controller does not enforce certificate pinning. `esp_tls` is configured with `skip_common_name_check = true` and `crt_bundle_attach = NULL` (server cert validation is delegated to the remote operator's certificate-rotation policy). The shared-secret header carried inside the TLS-encrypted body provides authenticity; the TLS channel provides confidentiality.
+- HTTP 200/201/204 = success. Any 4xx/5xx response is logged as `LOG_NET status_post_fail value_a=<http_status>` and counts against the breaker budget. Network errors (DNS, connect, TLS handshake) are logged as `LOG_NET status_post_fail value_a=-1`.
+
+**SD log upload cycle**
+- T14 owns the upload of completed SD log files to the status website. Trigger conditions are (a) a daily upload slot configured by `cfg.log_upload_hhmm` (HH×100 + MM, e.g. `0835` = 08:35), and (b) any T9 event-log rotation event (the prior log file's `closeout` marker is detected on Q3).
+- For each pending file under `/sdcard/log/`, T14 opens the file via `SDFileChunkedStream`, allocates a `LOG_UPLOAD_CHUNK_BYTES + 1u` heap buffer (one extra byte so the chunked reader can null-terminate without overrunning), then streams the file via `esp_http_client_open(fsize)` → `esp_http_client_write()` per chunk → `esp_http_client_fetch_headers()`.
+- Successful upload (HTTP 200): T14 deletes the local file via `f_unlink()` (after `f_sync()` to ensure the deletion is durable).
+- Failed upload: file is retained; T14 advances to the next file; the failed file is retried in the next upload window.
+- **Multi-file drain:** T14 walks the directory in one pass per trigger and uploads all eligible files in lexicographic order (chronological by filename `YYYY-MM-DD.log`). The drain is single-threaded — T14 never opens more than one upload connection at a time.
+- **Dedup latch:** for a given trigger source (daily-slot OR rotation), T14 sets a one-shot latch at trigger time and clears it once the drain completes (success or terminal failure). A second trigger arriving while the latch is set is ignored. This protects against the daily-slot timer firing during a rotation-triggered upload that has not yet completed.
+
+**Heap-drop measurement (deferred)**
+- The signed-balance heap-drop detector originally specified in §5.14 is **deferred**. T14 records pre/post free-heap around each `esp_http_client_perform()` for logging only (`LOG_NET value_a=<free_after>`); the budget accounting that would feed T15 supervisor decisions is not active in the end-state design captured here.
+
+**Synchronization**
+- Reads MX2 (current sensor values), MX3 (history rings), MX4 (configuration) when building the status JSON. No mutex held across the network call (build the JSON, drop the mutex, then transmit).
+- Posts to Q3 (log events for upload outcomes, breaker state changes, status-POST result codes).
+- No event-group bits owned by T14.
+
+#### T15 — Status-POST Supervisor (dormant)
+
+**Priority:** Low (3) | **Stack:** 4 KB
+
+T15 is **dormant in the end-state architecture**. The task slot is reserved and the source file (`firmware/src/status_post_supervisor/`) is preserved for a future bulkhead policy; no `xTaskCreate()` call activates it in the steady-state build.
+
+**Intended role (deferred design, not implemented):**
+- Heartbeat monitor: T14 would post a heartbeat to a private inter-task channel on each successful POST cycle. T15 would observe missed heartbeats and, after a configurable budget (`status_post_max_silent_cycles`), declare T14 wedged.
+- Heap-drop budget: T15 would track the cumulative signed-heap-drop measurements T14 reports per cycle and, once the cumulative drop crosses `cfg.heap_drop_budget_kb`, declare T14's heap footprint untenable.
+- Respawn budget: T15 would terminate and respawn T14 up to `cfg.status_post_max_respawns` times within a sliding window; on budget exhaustion T15 would escalate to a planned reboot via the same `reboot_worker_task` carve-off used by T13.
+
+The deferral rationale is documented in §5.15. The end-state expectation is that the ESP-IDF HTTPS client's keep-alive plus bounded mbedTLS buffers eliminate the per-cycle heap-drop pattern that originally motivated T15, making the supervisor unnecessary.
 
 ---
 
 ### 4.4 Core Assignment
 
-| Core | Tasks | Rationale |
-|------|-------|-----------|
-| **Core 1 (Application)** | T1, T2, T3, T4, T5, T6, T7, T8, T9 | Real-time control, sensor I/O, and local UI; isolated from the WiFi stack |
-| **Core 0 (Protocol)** | T10, T11, T12, T13 | WiFi stack, TCP/IP, and all network-facing tasks; the ESP32-S3 WiFi internals run on Core 0 |
+All application tasks are created with `tskNO_AFFINITY` so the FreeRTOS SMP scheduler may place them on either core based on the live ready-queue state. The ESP-IDF WiFi/lwIP internals run on the protocol core by configuration; no application task is statically pinned.
+
+The rationale for not pinning is that the workload mix is dominated by network-bound waits (T10, T11, T14) and short bursts of compute (T2, T3, T6); the scheduler's runtime balancing is preferred over a static partition that would over-serialise one core while leaving the other idle. The WiFi-driver-on-protocol-core constraint is satisfied by ESP-IDF's own internal task placement and does not require application-task pinning to enforce.
 
 ### 4.5 Inter-task Communication
 
@@ -505,13 +631,17 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 
   T7 Keypad ──── key events ──────────────────────► T8 UI / Display
 
-  T2, T3, T5, T6, T8, T10 ── log events ─────────► T9 Event Logger
+  T2, T3, T5, T6, T8, T10, T11, T14 ─ log events ─► T9 Event Logger
 
   T10 Network ─── status ─────────────────────────► T8 UI / Display
   T10 Network ─── NTP sync ───────────────────────► system clock
 
   T11 Web ─────── config/mode changes ────────────► T4 Data Manager
-  T12 MQTT ───── config/mode changes ─────────────► T4 Data Manager
+  T11 Web ─────── WS push (every 2 s) ────────────► browser clients
+
+  T4 Data ─────── reads (canonical JSON) ─────────► T14 Status POST
+  T14 Status ─── HTTPS POST every cfg.status_interval_s ─► status website
+  T14 Status ─── SD log upload (daily slot + T9 rotation) ► status website
 
   T11 Web ─────── OTA trigger ────────────────────► T13 OTA
 ```
@@ -524,7 +654,7 @@ FreeRTOS mutexes (`xSemaphoreCreateMutex`) implement priority inheritance, which
 
 | ID  | Name                      | Protects                                                                 | Writers                       | Readers                              |
 |-----|---------------------------|--------------------------------------------------------------------------|-------------------------------|--------------------------------------|
-| MX1 | I2C bus                   | Shared I2C bus (SDA/SCL) — LCD display and DS1307 RTC on the same wires | T8 (LCD write), T4 (RTC read) | —                                    |
+| MX1 | I2C bus                   | Shared I2C bus (SDA/SCL) — LCD display and DS1307 RTC on the same wires | T8 (LCD write via `i2c_master_transmit`), T4 (RTC read/write) | T1 may probe RTC presence at boot |
 | MX2 | Current measurement data  | Latest T, RH, wind speed, wind direction values in T4                   | T4 (on write from T5)         | T3, T6, T8, T11, T12                |
 | MX3 | Measurement ring buffers  | History ring buffers for T, RH, wind speed, wind direction in T4        | T4 (on write from T5)         | T8, T11, T12                        |
 | MX4 | Configuration settings    | All configurable parameters in T4                                        | T4 (on validated write from Q4) | T3, T6, T8, T11, T12             |
@@ -542,7 +672,7 @@ FreeRTOS queues (`xQueueCreate`) are thread-safe by design. All queue operations
 |----|-----------------------------|-------------|--------------------------------------------|----------|--------------------------|------------------------------------------------|
 | Q1 | Actuation command queue     | → T2        | T3, T6                                      | T2       | Actuation command struct | T3 posts with highest urgency; never blocking  |
 | Q2 | Key event queue             | → T8        | T7                                         | T8       | Key code                 | Depth to match max burst; T7 drops on full     |
-| Q3 | Log event queue             | → T9        | T2, T3, T5, T6, T8, T10, T11, T12, T13     | T9       | Log event struct         | Generous depth; drop-oldest on overflow        |
+| Q3 | Log event queue             | → T9        | T2, T3, T5, T6, T8, T10, T11, T13, T14     | T9       | Log event struct         | Generous depth; drop-oldest on overflow        |
 | Q4 | Config / state update queue | → T4        | T8, T11, T10                               | T4       | Config update struct     | T4 validates range; persists to NVS on accept  |
 | Q5 | Network status queue        | → T8        | T10                                        | T8       | `net_status_t` struct    | Depth 1 (`xQueueOverwrite`); latest status always relevant; struct fields: `client_connected` (bool), `ap_active` (bool), `ntp_synced` (bool), `ip_str[16]` |
 | Q6 | Sensor reading queue        | → T4        | T5                                         | T4       | Sensor reading struct    | Depth 1; overwrite semantics — only latest matters |
@@ -565,34 +695,39 @@ A single FreeRTOS event group (`xEventGroupCreate`) holds all system-wide boolea
 
 | Bit | Flag name          | Set by | Cleared by | Read by                 | Meaning when set                                         |
 |-----|--------------------|--------|------------|-------------------------|----------------------------------------------------------|
-| 0   | WIND_OVERRIDE      | T3     | T3         | T6, T8, T11, T12 (display only) | Wind safety threshold exceeded; all windows being closed |
+| 0   | WIND_OVERRIDE      | T3     | T3         | T6, T8, T11, T14 (display/payload only) | Wind safety threshold exceeded; all windows being closed |
 | 1   | *(reserved)*       | —      | —          | —                       | Previously MANUAL_OVERRIDE — removed; hardware does not support manual operation detection |
-| 2   | SENSOR_FAULT_T     | T5     | T5         | T6, T8, T9              | Temperature/humidity sensor fault active                  |
-| 3   | SENSOR_FAULT_W     | T5     | T5         | T3, T8, T9              | Wind sensor fault active; T3 treats wind as worst-case   |
+| 2   | SENSOR_FAULT_T     | T5     | T5         | T6, T8, T9, T11, T14   | Temperature/humidity sensor fault active                  |
+| 3   | SENSOR_FAULT_W     | T5     | T5         | T3, T8, T9, T11, T14   | Wind sensor fault active; T3 treats wind as worst-case   |
 | 4   | OTA_IN_PROGRESS    | T13    | T13        | T11                     | OTA update active; T11 defers LittleFS file requests     |
-| 5   | MOTOR_ALARM        | T2     | T2         | T3, T6, T8, T11, T12 (display only) | RRK-3 motor emergency stop active; all relays de-energised; all window control suspended; highest priority override |
+| 5   | MOTOR_ALARM        | T2     | T2         | T3, T6, T8, T11, T14 (display/payload only) | RRK-3 motor emergency stop active; all relays de-energised; all window control suspended; highest priority override |
+| 6   | CALIBRATING        | T2     | T2         | T1, T8, T11, T14       | CLOSE_ALL boot calibration in progress; window positions transitioning from `UNKNOWN` to `CLOSED`; RGB LED shows Blue |
 
 > **T3 and SENSOR_FAULT_W:** when the wind sensor fault flag is set, T3 shall treat the wind condition as exceeding all thresholds (safe-fail: close all windows) until the fault clears.
 
 > **T2 and MOTOR_ALARM:** MOTOR_ALARM takes priority over all other states. T2 discards all incoming Q1 commands while this flag is set. T3 CLOSE_ALL commands are also discarded — the relays are already de-energised and the alarm state persists until the RRK-3 alarm clears.
 
+> **CALIBRATING:** set by T2 at the start of the CLOSE_ALL boot sequence, cleared once all window state machines reach `CLOSED`. While set, T6 holds in standby (no automatic commands); T11 exposes the state in `/api/status.alarms.calibrating`; T14 includes it in the canonical status JSON; T1 drives the RGB LED Blue.
+
 #### 4.6.5 Primitive Cross-reference by Task
 
 | Task | Acquires (mutex) | Posts to (queue) | Receives from (queue) | Sends (notification) | Receives (notification) | Reads/Sets (event group) |
 |------|-----------------|------------------|-----------------------|----------------------|-------------------------|--------------------------|
-| T1   | MX4             | —                | —                     | —                    | —                       | Reads EG1 (all — for RGB status LED colour)  |
-| T2   | —               | Q3               | Q1                    | —                    | —                       | Sets/clears EG1.MOTOR_ALARM |
+| T1   | MX4             | Q3               | —                     | —                    | —                       | Reads EG1 (all — for RGB status LED colour); reads EG1.CALIBRATING for Blue state |
+| T2   | —               | Q3               | Q1                    | —                    | —                       | Sets/clears EG1.MOTOR_ALARM, EG1.CALIBRATING |
 | T3   | MX2             | Q1, Q3           | —                     | —                    | TN1 ← T4               | Sets/clears EG1.WIND_OVERRIDE; reads EG1.SENSOR_FAULT_W, EG1.MOTOR_ALARM |
 | T4   | MX1, MX2, MX3, MX4 | —            | Q4, Q6                | TN1 → T3, TN2 → T6   | TN4 ← T10              | —                        |
 | T5   | —               | Q3, Q6           | —                     | —                    | —                       | Sets/clears EG1.SENSOR_FAULT_T, EG1.SENSOR_FAULT_W |
-| T6   | MX2, MX4        | Q1, Q3           | —                     | —                    | TN2 ← T4               | Reads EG1 (MOTOR_ALARM, WIND_OVERRIDE, SENSOR_FAULT_T, SENSOR_FAULT_W) |
+| T6   | MX2, MX4        | Q1, Q3           | —                     | —                    | TN2 ← T4               | Reads EG1 (MOTOR_ALARM, WIND_OVERRIDE, SENSOR_FAULT_T, SENSOR_FAULT_W, CALIBRATING) |
 | T7   | —               | Q2               | —                     | —                    | —                       | —                        |
 | T8   | MX1, MX2, MX3, MX4 | Q3, Q4      | Q2, Q5                | —                    | —                       | Reads EG1 (all)          |
 | T9   | —               | —                | Q3                    | —                    | —                       | —                        |
 | T10  | —               | Q3, Q4, Q5       | —                     | TN4 → T4             | —                       | —                        |
-| T11  | MX2, MX4, MX5  | Q3, Q4           | —                     | —                    | —                       | Reads EG1.OTA_IN_PROGRESS |
-| T12  | MX2, MX4        | Q3, Q4           | —                     | —                    | —                       | —                        |
+| T11  | MX2, MX3, MX4, MX5 | Q3, Q4      | —                     | —                    | —                       | Reads EG1 (all — for `/api/status` and WS push payload) |
+| T12  | *(reserved)*    | —                | —                     | —                    | —                       | *(reserved)*             |
 | T13  | MX5             | Q3               | —                     | —                    | —                       | Sets/clears EG1.OTA_IN_PROGRESS |
+| T14  | MX2, MX3, MX4  | Q3               | —                     | —                    | —                       | Reads EG1 (all — for canonical status JSON) |
+| T15  | *(dormant)*     | —                | —                     | —                    | —                       | *(dormant)*              |
 
 ---
 
@@ -759,9 +894,9 @@ Conflict resolution is only active when `rh_ctrl_en` is true. The active conflic
 Total: 12 bytes. No padding needed — four uint8 fields (offset 4–7) fill the alignment gap before `value_a`.
 
 **Storage:**
-- Primary: SD card (FAT32), when present. See log rotation policy below.
-- Fallback: NVS dedicated log namespace. Ring buffer of minimum 250 fixed-size entries (FR-LG06); oldest entry overwritten when full.
-- T9 checks SD card presence on startup and on each write cycle; falls back to NVS if card is absent or returns an error (FR-LG07, FR-LG08).
+- **SD card (FAT32) is the sole event-log persistence target.** See log rotation policy below.
+- T9 checks SD card presence on startup and on each write cycle. If the card is absent, unmounted, or returns a write error, T9 suspends event logging (the call to `log_post()` still succeeds and the event is consumed from Q3, but no on-disk record is written) until the next successful mount. The card-absent condition is signalled on the LCD and in `/api/sd/status`.
+- The NVS `log` namespace once reserved as an event-log ring-buffer fallback is **not used** in the end-state design and shall not be defined in the NVS layout (§5.10). Removing the fallback simplifies the persistence path, avoids the wear-levelling cost of high-frequency NVS writes, and aligns the design with operator practice of treating the SD card as a mandatory installation component.
 
 **SD card log file format:**
 - CSV text file; first line is a fixed header row: `timestamp,type,initiator,ch,param,value_a,value_b`
@@ -789,7 +924,7 @@ The timestamp encodes the moment the file was created (local time). Files are st
 | Maximum file size | 512 KB | At ~90 KB/day typical rate, each file spans ~5–6 days. A power-loss event can corrupt only the currently open file; all closed files are intact. |
 | Files retained | 10 most recent | 10 × 512 KB = 5 MB maximum log footprint. Minimum guaranteed history: 9 closed files + 1 partial current file ≈ 45–60 days. |
 | Minimum retention floor | 3 files | The free-space guard never deletes below this count. |
-| Low free-space threshold | 2 MB | If SD free space drops below 2 MB and the file count is above the floor, the oldest file is deleted to reclaim space. If already at the floor (3 files) and space is still below 2 MB, SD logging is suspended and NVS fallback is activated. SD logging resumes on the next successful mount command. |
+| Low free-space threshold | 2 MB | If SD free space drops below 2 MB and the file count is above the floor, the oldest file is deleted to reclaim space. If already at the floor (3 files) and space is still below 2 MB, SD logging is suspended. SD logging resumes on the next successful mount command. |
 
 **Rotation procedure (triggered when current file reaches 512 KB):**
 1. Create a new file named with the current UTC timestamp (`YYYYMMDDHHMMSS.csv`).
@@ -797,7 +932,7 @@ The timestamp encodes the moment the file was created (local time). Files are st
 3. If the total timestamp-file count now exceeds 10, delete the lexicographically oldest file.
 4. Check free space (`storage_sd_free_bytes()`): if < 2 MB, invoke the free-space guard (delete oldest or suspend).
 
-**Write-failure reclaim:** if `storage_sd_write_append()` returns `STORAGE_ERR_FULL` or `STORAGE_ERR_IO`, T9 attempts a single oldest-file deletion and retries the write before falling back to NVS-only mode.
+**Write-failure reclaim:** if `storage_sd_write_append()` returns `STORAGE_ERR_FULL` or `STORAGE_ERR_IO`, T9 attempts a single oldest-file deletion and retries the write. If the retry also fails, T9 suspends event logging and surfaces the condition in `/api/sd/status`; subsequent `log_post()` calls drain Q3 without writing until the next successful mount.
 
 **Startup / resume behaviour:**
 On SD card mount, T9 calls `storage_sd_list_csv(".csv", ...)` and filters results through `is_ts_filename()` (14 decimal digits + `.csv`). The lexicographically largest matching filename is the most recent file. If its size is below 512 KB, T9 resumes appending to it; otherwise a new timestamp file is created. If no matching files exist, a new file is created immediately.
@@ -884,11 +1019,11 @@ The web interface applies the same three-state model and the same PIN codes as t
 
 ---
 
-### 5.5 Local User Interface
+### 5.5 Local User Interface (LCD / Keypad)
 
 **Implemented by:** T7 (Keypad Scan) and T8 (UI / Display)
 
-**LCD driver note:** The Waveshare LCD1602 module uses an **AiP31068L** I2C-to-parallel bridge at address **0x3E** (not PCF8574 at 0x27 as originally assumed). LIB-4 (`drivers/LCD1602_I2C/`) is implemented for this module and address.
+**LCD driver note:** The Waveshare LCD1602 module uses an **AiP31068L** I2C-to-parallel bridge at address **0x3E**. LIB-4 (`drivers/LCD1602_I2C/`) is implemented for this module and address.
 
 **Keypad handling:**
 - Matrix scan period: ~20 ms (software timer or dedicated task).
@@ -903,6 +1038,8 @@ Line 1: [T: xx.x°C  RH: xx%]
 Line 2: [W: x.x m/s  Mxx   ]
 ```
 Where `Mxx` encodes active window states (e.g. `M1O` = M1 open, `M2C` = M2 closed) and active alarms are indicated by a blinking character in line 2.
+
+**Precision policy for T on the main screen:** T is rendered with one decimal place (`xx.x°C`) directly from the `t_c10` integer field carried in T4's measurement struct (units of 0.1 °C). T8 must not round `t_c10` to the nearest integer before formatting; the LCD render path computes `t_c10 / 10` and `t_c10 % 10` independently to produce the integer and tenths digits, matching the precision shown on the web dashboard and the WS push.
 
 **Menu FSM:**
 - Maximum navigation depth: 4 key presses from the main screen to any first-level setting (FR-UI07).
@@ -937,31 +1074,32 @@ Where `Mxx` encodes active window states (e.g. `M1O` = M1 open, `M2C` = M2 close
 
 **Implemented by:** T10 (Network Manager)
 
-- WiFi AP mode is **mandatory** (Must have).
-- The AP does not start automatically on boot; it is enabled by the administrator via the local keyboard menu or web interface.
-- AP SSID is auto-generated as `"Greenhouse-"` followed by the hexadecimal representation of the last 2 bytes of the WiFi NIC MAC address (e.g., `"Greenhouse-A3F2"` if MAC ends in `A3:F2`). The SSID is not stored in NVS; it is regenerated from the MAC address on each AP start.
+- WiFi AP mode is **mandatory** (Must have). T10 always brings the radio up in `WIFI_MODE_APSTA` so both interfaces are simultaneously available.
+- The AP enable state is held in NVS (`wifi` / `ap_enable`, `int32` 0/1, default **0** — admin must explicitly opt in). T10's `poll_ap()` reads this key every `NET_POLL_MS` from the main loop; on any edge versus the previous tick, T10 calls `start_ap()` or `stop_ap()` accordingly. The `ap_active` flag in Q5 reflects the current radio state. Default-off is a security choice: auto-enabling on a failed STA association would expose an unconfigured greenhouse to anyone in radio range, so admin action is required to open the AP.
+- AP SSID is auto-generated as `"Greenhouse-"` followed by the hexadecimal representation of the last 2 bytes of the WiFi NIC MAC address (e.g. `"Greenhouse-A3F2"` if the MAC ends in `A3:F2`). The SSID is not stored in NVS; it is regenerated from the MAC address on each AP start.
 - AP password is stored in NVS (`wifi` / `ap_psk`) as **plaintext**. WPA2 requires the raw passphrase during the handshake; hashing is not applicable (contrast with the client PSK, which is stored as a hash because it only needs to match, not be transmitted). Default password: `0123456789`. Configurable by the administrator via the web interface.
-- Automatic AP shutdown timeout is configurable by the administrator; the AP disables itself when the timeout expires with no active client connections.
-- While the AP is active, the LCD displays "AP active" and the assigned AP IP address.
-- The HTTP configuration web interface (§5.8) is accessible to clients connected to the AP.
+- **AP auto-shutdown** (uptime timer): configurable per `cfg.ap_timeout_min`, stored in NVS as `system` / `ap_timeout` (`int32` minutes, default 30, range `[0, CFG_MAX_TIMEOUT_MIN]`; **`0` = stay up indefinitely**). The timer is a flat measurement of elapsed FreeRTOS ticks since `start_ap()` — it is **not** idle-based and does not consult the associated-station list. Once `elapsed_ms >= ap_timeout_min × 60 000`, T10's `poll_ap()` calls `stop_ap()` and posts `wifi/ap_enable = 0` via Q4 so the next poll does not restart the AP; the operator must re-enable `ap_enable` from the web interface to bring the AP back up.
+- While the AP is active, the LCD displays "AP active" and the assigned AP IP address; the LCD AP-status line is driven from the Q5 `ap_active` flag, not from `esp_wifi_get_mode()`.
+- The local HTTP web interface (§5.8) is accessible to clients connected to the AP on the soft-AP IP (`192.168.4.1` by default). The captive-portal redirect URL is the dashboard root `/`.
 - WPA2 security minimum (TR-NW01).
 
 ---
 
-### 5.7 WiFi — Client Mode (Optional)
+### 5.7 WiFi — Client Mode
 
 **Implemented by:** T10 (Network Manager)
 
-- WiFi client (station) mode is **optional** (Could have).
+- WiFi client (station) mode is **mandatory** (Must have) — the outbound status POST (T14) and NTP synchronisation depend on it. STA is enabled whenever `cfg.sta_ssid` is non-empty.
 - The HTTP configuration web interface (§5.8) is accessible to clients on the same network when the controller is connected.
-- TCP/IP settings configurable by the administrator:
-  - DHCP (automatic address assignment) or static IP.
-  - Static configuration: IP address, subnet mask, default gateway, DNS server.
-- LCD display shows current WiFi client status:
-  - *Disconnected* — client mode enabled but no network connection.
-  - *Connected* — connected to AP; displays assigned IP (DHCP) or configured static IP.
-- On client connection: T10 triggers NTP synchronisation; on NTP success: sends TN4 to T4 and calls `do_geo_sync()` to auto-detect location and timezone (FR-DN06, FR-DN07). See §4.3 T10 for full `do_geo_sync()` description.
-- Time display in all contexts (web dashboard, LCD page 4) uses `localtime_r()` after the TZ string has been applied, so the displayed time automatically reflects the correct timezone and DST offset.
+- **IP configuration: DHCP only.** Static-IP configuration is intentionally not supported — the controller is designed for residential / small-business networks where DHCP is the norm, and the configuration surface is kept small. Operators requiring a fixed IP shall do so via DHCP reservation on the upstream router.
+- LCD display shows current WiFi client status, driven from Q5:
+  - *Disconnected* — STA credentials configured but no association or no IP yet.
+  - *Connected* — associated and DHCP IP obtained; LCD shows the assigned address.
+- T10 is event-driven: it subscribes to `WIFI_EVENT` and `IP_EVENT` via `esp_event_handler_register()` and translates those callbacks into Q5 posts. Polling `esp_wifi_is_connected()` is not used in the steady-state path; the `EG1_BIT_NETIF_READY` style gating that existed before the IDF migration is now structurally implicit because IDF emits `IP_EVENT_STA_GOT_IP` only after the netif is fully wired up.
+- Reconnect backoff: on `WIFI_EVENT_STA_DISCONNECTED` T10 attempts an immediate reconnect; subsequent failures use an exponential backoff up to 30 s, then a steady 30 s retry cadence until success.
+- On `IP_EVENT_STA_GOT_IP`: T10 triggers NTP synchronisation. On NTP success it sends TN4 to T4 and calls `do_geo_sync()` to auto-detect location and timezone (FR-DN06, FR-DN07). See §4.3 T10 for the full `do_geo_sync()` description.
+- A periodic NTP resync runs every 24 hours after the first sync (and after each `WIFI_EVENT_STA_DISCONNECTED → IP_EVENT_STA_GOT_IP` recovery) to bound the drift of the on-board RTC. Each resync emits a `LOG_NET` audit event.
+- Time display in all contexts (web dashboard, LCD page 4, T14 payload) uses `localtime_r()` after the TZ string has been applied so the displayed time automatically reflects the correct timezone and DST offset.
 
 ---
 
@@ -970,18 +1108,61 @@ Where `Mxx` encodes active window states (e.g. `M1O` = M1 open, `M2C` = M2 close
 **Implemented by:** T11 (Web Server)
 
 **Technology:**
-- Web server: **`mathieucarbou/ESPAsyncWebServer @ ^3.3.6`** (callback-driven, non-blocking), with **`mathieucarbou/AsyncTCP @ ^3.3.2`** as its TCP layer. The `mathieucarbou` fork is used instead of the original `me-no-dev/ESPAsyncWebServer` because it is actively maintained for ESP-IDF 5.x / Arduino 3.x compatibility; the original fork does not build cleanly against the ESP32 Arduino 3 core. Both are declared in `firmware/platformio.ini` `lib_deps`.
-- HTML, CSS, and JavaScript files stored in LittleFS partition on ESP32-S3 flash, separate from the firmware binary.
+- Web server: ESP-IDF `esp_http_server` (component `esp_http_server`), driven from a single FreeRTOS task (T11) plus one child task for the WebSocket push (see §4.3 T11).
+- HTML, CSS, JavaScript, image and font assets live in the dual A/B LittleFS partitions on the ESP32-S3 flash, served from the partition matched to the active firmware bank. Asset versioning is enforced by the build pipeline so that `sys.fw_ver` and `sys.asset_version` always match on the active bank; T11 surfaces both fields so the dashboard can display a MISMATCH badge if the operator force-flashes only one half.
 - The web interface mirrors the local keyboard interface exactly: same three operating states (§5.4), same PIN codes, same parameter visibility rules.
 
+**Transport:**
+- The local web interface is served over plain HTTP on TCP port 80. It is intended for use on the LAN behind the operator's firewall (or on the controller's own AP). Confidentiality on the LAN is out of scope; PIN-based authentication and session cookies (§5.4) provide authorisation.
+- HTTPS is **not** offered on the local interface. The reason is heap footprint: terminating TLS in `esp_http_server` would require a sustained mbedTLS context per active session and would compete with T14's outbound `esp_tls` context. Operators requiring transport encryption on the local network shall front the controller with a reverse proxy.
+- The outbound status POST channel (T14) is a different matter — see §2.6 and §5.13.
+
 **Access control:**
-- Authentication required before any page is served or any setting is changed (FR-NW06).
-- Session cookie issued after successful PIN entry; cookie invalidated on logout or session timeout.
-- HTTPS is **not implemented** (TR-NW04 — not feasible on target hardware; threat model accepted, see §6 Open Issue #4).
+- Authentication required before any setting is changed or any non-public page is served (FR-NW06).
+- Session cookie (`session=<32-hex-char-token>`, `HttpOnly`, `SameSite=Lax`) issued after a successful `POST /api/login`; the token indexes the in-RAM session table (`firmware/src/auth/session.*`). Cookie cleared by `POST /api/logout`.
+- A request without a valid session that hits a non-public route receives HTTP 401. Public routes are the static dashboard shell (`/`, `/style.css`, `/app.js`, `/manifest.json`), the login endpoint (`POST /api/login`), the whoami probe (`GET /api/whoami`), the network-status JSON (`GET /api/status`), and the live WebSocket (`GET /ws`). All other API routes require an authenticated session at the appropriate role.
+- Cookie parsing is done by hand from the `Cookie:` request header using `httpd_req_get_hdr_value_str()` since `esp_http_server` provides no high-level cookie helper.
+
+**URI table:**
+
+The full set of routes registered by T11 at `httpd_start()`:
+
+| Method | URI | Role | Purpose |
+|--------|-----|------|---------|
+| GET | `/` | public | Static dashboard shell (`index.html` from LittleFS with cache-bust `?v=<FIRMWARE_VERSION>` injection) |
+| GET | `/style.css` | public | Static asset |
+| GET | `/app.js` | public | Static asset |
+| GET | `/manifest.json` | public | PWA manifest |
+| GET | `/favicon.ico` | public | Static asset |
+| POST | `/api/login` | public | PIN check; issues session cookie |
+| POST | `/api/logout` | any session | Invalidates the current session |
+| GET | `/api/whoami` | public | Returns `{role: "none"\|"farmer"\|"admin"}` for the current session |
+| GET | `/api/status` | public | Full canonical status JSON (sensors, modes, alarms, setpoints, network, sys) |
+| GET | `/api/history` | any session | Ring-buffer history for T, RH, wind speed, wind direction |
+| GET | `/api/config` | any session | Current configuration; admin-only fields masked for farmer sessions |
+| POST | `/api/config` | farmer/admin per field | Single-field write; T11 validates role per parameter before forwarding to T4 |
+| GET | `/api/wifi` | admin | Returns STA SSID (read-only) + AP enable + AP SSID + AP PSK masked |
+| POST | `/api/wifi` | admin | Update STA credentials or AP enable/PSK |
+| POST | `/api/pin` | admin | Change farmer or admin PIN |
+| GET | `/api/sd/status` | any session | SD card mount state, free bytes, file count |
+| POST | `/api/sd/mount` | admin | Manual SD mount |
+| POST | `/api/sd/unmount` | admin | Manual SD unmount (graceful — `f_sync()` before unmount) |
+| GET | `/api/log/files` | admin | Returns `{sd_files:[...]}` for the log-download dropdown |
+| GET | `/api/log/download` | admin | Streams a `.csv` log file to the browser; path-traversal guard rejects `/` and `..` |
+| POST | `/api/ota/firmware` | admin | Streams firmware image to T13's writer; multipart accumulator |
+| POST | `/api/ota/assets` | admin | Streams web-asset ZIP to T13's PSRAM accumulator |
+| POST | `/api/ota/commit` | admin | Marks the new bank as next-boot; arms reboot timer |
+| POST | `/api/ota/cancel` | admin | Aborts the in-progress upload; rolls back the partition writer |
+| POST | `/api/web` | admin | Direct web-asset ZIP push (no firmware pair); used for asset-only updates |
+| POST | `/api/factory_reset` | admin | Erases configuration namespaces; requires physical-confirmation header |
+| POST | `/api/reboot` | admin | Soft reboot via `reboot_worker_task` carve-off (same path as T13's reboot) |
+| GET | `/ws` | public (read-only) | WebSocket upgrade; pushes canonical status JSON every 2 s |
+
+The MQTT integration page that was reserved in earlier specifications is not exposed in the URI table; see T12 (§4.3) for the deferred-Could-be status.
 
 **Pages:**
 
-- **Dashboard** *(any authenticated session)*: live T, RH, wind speed, wind direction, window states (OPEN / MOVING / CLOSED per channel), operating mode, sunrise/sunset times for current day (FR-DN04), active alarms.
+- **Dashboard** *(any authenticated session, plus public read-only via WS)*: live T (0.1 °C precision), RH, wind speed, wind direction (averaged), window states (OPEN / MOVING / CLOSED per channel), operating mode, sunrise/sunset times for current day (FR-DN04), active alarms, calibrating indicator while EG1.CALIBRATING is set.
 
 - **Settings** *(sub-sections; access level per row)*:
 
@@ -991,27 +1172,19 @@ Where `Mxx` encodes active window states (e.g. `M1O` = M1 open, `M2C` = M2 close
   | **Wind** | Farmer (enable/disable only) / Admin (all) | Wind protection enable (`wind_prot_en`); v_max (Beaufort); direction exclusion zone centre and half-width (°); wind hysteresis timer (FR-CF09) |
   | **Motors** | Admin only | Motor travel times: M1, M2, M3 individually (seconds, range 5–300 s, factory defaults 21/21/171 s, FR-CF05); open-dwell time per window M1–M3 (minutes, FR-CF10); close-dwell time per window M1–M3 (minutes, FR-CF11) |
   | **Sensors** | Admin only | Sensor poll interval (15–120 s, factory default 30 s, FR-CF07); sliding average window for T and RH (1–60 min, FR-CF17) |
-  | **System** | Admin only | Session timeout (minutes); RGB LED day/night brightness and schedule (`led_day_brt`, `led_nite_brt`, `led_nite_from`, `led_nite_to`, FR-CF14); NTP timezone string |
+  | **System** | Admin only | Session timeout (minutes); RGB LED day/night brightness and schedule (`led_day_brt`, `led_nite_brt`, `led_nite_from`, `led_nite_to`, FR-CF14); NTP timezone string; status-website URL; status interval; status secret (write-only); status expose bitmask; daily log-upload time (HHMM) |
   | **Access** | Admin only | Change farmer PIN; change admin PIN; lockout threshold and duration |
 
   Each editable field shows its current value, the valid range, and the factory default. A **Restore defaults** button is available per sub-section (admin only); factory reset of all settings requires physical confirmation (admin only).
 
 - **Log** *(admin only)*: dedicated tab that consolidates SD card management and event log download:
-  - **SD card controls:** mount and unmount the SD card (identical to the controls previously located in the System tab).
-  - **Log download:** a dropdown populated by `GET /api/log/files` (returns `{nvs_count, sd_files:[...]}`) lists two source types:
-    - *NVS buffer* — the in-flash ring buffer; label shows current entry count.
-    - *SD file* — each `.csv` file found on the SD card, listed by filename.
-  - A **Download CSV** button triggers a browser file download via `GET /api/log/download?src=nvs` (filename `nvs_log.csv`) or `GET /api/log/download?src=sd&file=NAME` (filename preserved). Path-traversal guard on the server rejects any filename containing `/` or `..`. Returns HTTP 503 if SD is unmounted, 404 if file not found (FR-LG05).
+  - **SD card controls:** mount and unmount the SD card.
+  - **Log download:** a dropdown populated by `GET /api/log/files` (returns `{sd_files:[...]}`) lists each `.csv` file found on the SD card.
+  - A **Download CSV** button triggers a browser file download via `GET /api/log/download?file=NAME` (filename preserved). Path-traversal guard on the server rejects any filename containing `/` or `..`. Returns HTTP 503 if SD is unmounted, 404 if file not found (FR-LG05).
 
 - **OTA update** *(admin only)*: firmware binary upload and web-asset `.zip` upload (T13).
 
-- **Network** *(admin only)*: WiFi AP configuration (SSID suffix, password, auto-shutdown timeout); WiFi client configuration (SSID, PSK, DHCP / static IP); MQTT broker settings.
-
-**MQTT client (optional, FR-MQ01–FR-MQ05):**
-- Configured via the web interface (admin session).
-- Publishes: T, RH, wind speed, wind direction, window states, operating mode, alarm flags.
-- Subscribes to: OPEN/CLOSE commands per channel, mode change commands.
-- Authentication: username/password or client certificate, configurable by administrator.
+- **Network** *(admin only)*: WiFi AP configuration (auto-generated SSID, password, idle-timeout); WiFi client configuration (SSID, PSK; DHCP only — no static IP fields).
 
 ---
 
@@ -1023,13 +1196,14 @@ Where `Mxx` encodes active window states (e.g. `M1O` = M1 open, `M2C` = M2 close
 
 | Label | Type | SubType | Offset | Size | Role |
 |-------|------|---------|--------|------|------|
-| `nvs` | data | nvs | 0x009000 | 84 KB (0x15000) | Config namespaces + event-log ring buffer |
+| `nvs` | data | nvs | 0x009000 | 84 KB (0x15000) | Configuration namespaces |
 | `otadata` | data | ota | 0x01E000 | 8 KB (0x2000) | Active/inactive bank metadata (ESP-IDF OTA) |
 | `app0` | app | ota_0 | 0x020000 | 2 MB (0x200000) | Firmware Bank A |
 | `app1` | app | ota_1 | 0x220000 | 2 MB (0x200000) | Firmware Bank B |
 | `lfs0` | data | spiffs | 0x420000 | 1 MB (0x100000) | LittleFS A — web assets paired with Bank A |
 | `lfs1` | data | spiffs | 0x520000 | 1 MB (0x100000) | LittleFS B — web assets paired with Bank B |
-| *(unused)* | — | — | 0x620000 | ~9.9 MB | Reserved for future expansion |
+| `coredump` | data | coredump | 0x620000 | 64 KB (0x10000) | ESP-IDF coredump partition |
+| *(unused)* | — | — | 0x630000 | ~9.8 MB | Reserved for future expansion |
 
 > **LittleFS subtype note:** The ESP-IDF partition table has no dedicated `littlefs` subtype. Both `lfs0` and `lfs1` use subtype `spiffs`; the LittleFS library locates the partition by label (name), not subtype.
 
@@ -1049,12 +1223,12 @@ Where `Mxx` encodes active window states (e.g. `M1O` = M1 open, `M2C` = M2 close
 - Rollback events are logged.
 
 **Web asset update procedure:**
-1. Administrator uploads a `.zip` archive of HTML/CSS/JS files via the web interface (admin session required).
-2. T13 receives the zip and buffers it entirely in PSRAM.
+1. Administrator uploads a STORE-only `.zip` archive of HTML/CSS/JS/font/image files via the web interface (admin session required).
+2. T11's `/api/ota/assets` handler streams the request body chunk-by-chunk into T13's PSRAM accumulator via `ota_assets_accumulate(data, len, offset)`. The full archive is held in PSRAM only — never in flash — so an aborted or failed upload leaves the on-flash inactive partition untouched.
 3. T13 sets **EG1.OTA_IN_PROGRESS**.
-4. T13 mounts the **inactive** LittleFS partition independently. The active partition remains mounted by T11 and continues to serve requests uninterrupted — MX5 is not acquired during this phase.
-5. T13 extracts each file from the zip and writes it to the inactive LittleFS partition. Existing files are overwritten; new files are created; files absent from the zip are left as orphans (or the partition is formatted first for a clean state — implementation choice).
-6. T13 writes `manifest.json` to the inactive partition as the **last step**, only after all files have been extracted and verified:
+4. T13 formats the **inactive** LittleFS partition for a clean state, then mounts it. The active partition remains mounted by T11 and continues to serve requests uninterrupted — MX5 is not acquired during this phase.
+5. T13 walks the in-PSRAM ZIP central directory and extracts each entry directly to the inactive LittleFS partition. Because the archive is STORE-only (no deflate), each entry is a contiguous byte range that can be copied without an inflate pass.
+6. T13 writes `manifest.json` to the inactive partition as the **last step**, only after all files have been extracted and the partition flushed:
 
    ```json
    {
@@ -1063,8 +1237,12 @@ Where `Mxx` encodes active window states (e.g. `M1O` = M1 open, `M2C` = M2 close
    }
    ```
 
-7. T13 unmounts the inactive LittleFS partition and clears **EG1.OTA_IN_PROGRESS**.
+7. T13 unmounts the inactive LittleFS partition, frees the PSRAM buffer, and clears **EG1.OTA_IN_PROGRESS**.
 8. The inactive LittleFS is now ready. It is activated on the next firmware bank switch (step 3 of the firmware update procedure above), or immediately if only web assets are being updated (T13 switches the active bank pointer without a firmware image change).
+
+**Reboot and firmware-only fallback:**
+- The reboot that finalises an OTA cycle is performed by `reboot_worker_task` carved off the FreeRTOS timer-service task (see §4.3 T13). Calling `esp_restart()` from the timer callback directly would exceed the timer-service task's 2 KB stack because the WiFi-teardown chain inside `esp_restart()` consumes several KB.
+- If a firmware upload completes verification but no paired asset upload arrives within `FW_DONE_FALLBACK_MS` (120 s), T13 commits the firmware alone and reboots via the same `reboot_worker_task` path. The asset partition stays at the previous version; on the next boot the new firmware runs against the older asset bundle and surfaces a MISMATCH badge until the operator pushes matching assets.
 
 **Web asset version tracking:**
 - On startup, T11 reads `manifest.json` from its active LittleFS partition and compares `asset_version` against `system/fw_version` (from NVS):
@@ -1100,10 +1278,10 @@ Motor full-travel time defaults (`MOTOR_M1_TRAVEL_S_DEFAULT 21`, `MOTOR_M2_TRAVE
 | `wind` | `v_max`, `dir_excl_low`, `dir_excl_high`, `wind_prot_en` | `int16_t` / `uint8_t` | Wind speed threshold (m/s or Beaufort) and direction exclusion zone (degrees) (integers); `wind_prot_en`: wind protection enable flag (0 = disabled, 1 = enabled, default 1) |
 | `motor` | `travel_m1`, `travel_m2`, `travel_m3`, `dwell_open_m1`, `dwell_open_m2`, `dwell_open_m3`, `dwell_close_m1`, `dwell_close_m2`, `dwell_close_m3` | `int16_t` | **Travel times** (`travel_mN`, seconds, range 5–300): how long T2 energises the relay to move a window from one end-stop to the other. Read by T2 from T4 (MX4); converted to ms for `vTaskDelay`. Defaults: M1=21, M2=21, M3=171 (`MOTOR_MN_TRAVEL_S_DEFAULT` in `firmware/config/cfg_defaults.h`). Bounds enforced by `cfg_clamp()` from `firmware/config/cfg_limits.h::CFG_{MIN,MAX}_TRAVEL_S`. Configurable by technician via web GUI (FR-CF05, admin level). **Dwell times** (`dwell_open_mN` / `dwell_close_mN`, minutes): minimum hold period T2 enforces after travel completes before accepting the next command on that channel. `dwell_open_mN`: min hold at `OPEN` before CLOSE accepted. `dwell_close_mN`: min hold at `CLOSED` before OPEN accepted. Dwell timer starts when the travel timer expires (FR-A09–FR-A12). Default: 0 (no hold enforced). Configurable by technician via web GUI only (FR-CF10, FR-CF11). |
 | `access` | `pin_salt` (blob[16]), `pin_farmer_hash` (blob[32]), `pin_admin_hash` (blob[32]), `fail_cnt_f`, `fail_cnt_a`, `lockout_f`, `lockout_a`, `lockout_max`, `lockout_secs` | blob / int32 | `pin_salt`: 16-byte random salt, generated once at first boot. `pin_farmer_hash` / `pin_admin_hash`: SHA-256(salt \|\| pin_ascii) digest. `fail_cnt_f` / `fail_cnt_a`: per-role consecutive failure count. `lockout_f` / `lockout_a`: per-role lockout expiry as Unix timestamp (0 = not locked). `lockout_max`: threshold before lockout (default 5). `lockout_secs`: lockout duration (default 300 s). |
-| `wifi` | `ssid`, `psk_hash`, `ap_psk`, `ip_mode`, `ip_addr`, `ip_mask`, `ip_gw`, `ip_dns` | string | WiFi client and AP credentials and network settings; AP SSID is auto-generated from MAC address and not stored. `ap_psk` stored as **plaintext** (WPA2 requires raw key); default `"0123456789"`; configurable by admin via web interface. `psk_hash` (client password) stored as salted SHA-256 hash. |
-| `mqtt` | `broker_url`, `port`, `username`, `password`, `topic_prefix`, `interval` | string / uint16 | MQTT broker connection and publish settings. `password` stored as plaintext in NVS (MQTT protocol requires the actual password to authenticate to the broker; hashing is not possible). Accepted risk — same basis as no-HTTPS decision (Issue #5 closed). |
-| `system` | `poll_interval`, `session_timeout`, `ap_timeout`, `lang`, `log_pointer`, `schema_ver`, `fw_version`, `led_day_brt`, `led_nite_brt`, `led_nite_from`, `led_nite_to`, `lat_deg`, `lat_frac`, `lon_deg`, `lon_frac`, `tz_str` | uint16 / string / uint8 / int16 | System-wide configuration; `poll_interval` (uint16, seconds, default 30, technician-settable 15–120 via web GUI); `lat_deg` + `lat_frac` / `lon_deg` + `lon_frac`: geographic location stored as integer degree and fractional milli-degree parts (e.g. 52.0907°N stored as lat_deg=52, lat_frac=907) for sunrise/sunset calculation; populated manually via web GUI (FR-CF16) or automatically by `do_geo_sync()` (FR-DN06); `tz_str` (string[64]): POSIX TZ string e.g. `"CET-1CEST,M3.5.0,M10.5.0/3"`, factory default `"CET-1CEST,M3.5.0,M10.5.0/3"`, applied at boot via `setenv/tzset` and on each geolocation update (FR-DN07, FR-CF18); `schema_ver` (int32) tracks NVS layout version; `fw_version` (string `"MAJOR.MINOR.PATCH"`) overwritten on every boot; `led_day_brt` / `led_nite_brt` (uint8, 0–255, defaults 200/20); `led_nite_from` / `led_nite_to` (uint8, hour 0–23, defaults 22/6) |
-| `log` | Ring buffer entries (binary blob, fixed record size) | blob | Event log fallback when SD card absent |
+| `wifi` | `ssid`, `psk_hash`, `ap_enable`, `ap_psk` | string / int32 | WiFi client and AP credentials. STA: `ssid` and `psk_hash` (salted SHA-256 of PSK). DHCP is the only IP-acquisition mode supported (static-IP keys are not defined). AP: `ap_enable` (int32, 0/1, **default 0** — admin must explicitly opt in) toggles soft-AP at runtime; AP SSID is auto-generated from the MAC address and not stored; `ap_psk` is stored as **plaintext** (WPA2 requires the raw key), default `"0123456789"`, configurable by admin via web interface. The AP auto-shutdown timer is stored in the `system` namespace as `ap_timeout` (see below), not here. |
+| `mqtt` | *(reserved — no keys defined in the end-state design)* | — | The `mqtt` namespace is reserved for a future Could-be MQTT integration (T12). It is not provisioned with keys and shall not be written by the current firmware. |
+| `status` | `url`, `secret`, `interval_s`, `expose_mask`, `log_up_hhmm` | string / uint32 / uint8 / uint16 | Status website POST configuration (T14). `url` (string ≤127 chars): full HTTPS URL. `secret` (string ≤63 chars): shared secret transmitted in the `sourceidentifier` request header; masked in `/api/config` GET responses. `interval_s` (uint32, default 600, range 60–86400; `0` disables outbound POST). `expose_mask` (uint8): bitmask selecting which top-level objects of the canonical JSON are included in the POST (1=sensors, 2=modes, 4=alarms, 8=setpoints, 16=network, 32=sys; default 0x3F = all). `log_up_hhmm` (uint16, HH×100+MM, e.g. 0835; daily SD log-upload trigger time). |
+| `system` | `poll_interval`, `session_timeout`, `ap_timeout`, `lang`, `schema_ver`, `fw_version`, `led_day_brt`, `led_nite_brt`, `led_nite_from`, `led_nite_to`, `lat_deg`, `lat_frac`, `lon_deg`, `lon_frac`, `tz_str` | int32 / string / uint8 / int16 | System-wide configuration; `poll_interval` (int32, seconds, default 30, technician-settable 15–120 via web GUI); `session_timeout` (int32, minutes); `ap_timeout` (int32, minutes, default 30, range `[0, CFG_MAX_TIMEOUT_MIN]`; `0` = stay up indefinitely) — flat AP-uptime timer enforced by T10's `poll_ap()` (§5.6); `lat_deg` + `lat_frac` / `lon_deg` + `lon_frac`: geographic location stored as integer degree and fractional milli-degree parts (e.g. 52.0907°N stored as lat_deg=52, lat_frac=907) for sunrise/sunset calculation; populated manually via web GUI (FR-CF16) or automatically by `do_geo_sync()` (FR-DN06); `tz_str` (string[64]): POSIX TZ string e.g. `"CET-1CEST,M3.5.0,M10.5.0/3"`, factory default `"CET-1CEST,M3.5.0,M10.5.0/3"`, applied at boot via `setenv/tzset` and on each geolocation update (FR-DN07, FR-CF18); `schema_ver` (int32) tracks NVS layout version; `fw_version` (string `"MAJOR.MINOR.PATCH"`) overwritten on every boot; `led_day_brt` / `led_nite_brt` (uint8, 0–255, defaults 200/20); `led_nite_from` / `led_nite_to` (uint8, hour 0–23, defaults 22/6) |
 
 **Default values:**
 - Applied on first boot (no NVS key present) or after factory reset.
@@ -1141,16 +1319,29 @@ T4 checks the return of `nvs_cfg_init()`. If `NVS_CFG_ERR_MIGRATION` is returned
 
 **Implemented by:** T1 (Watchdog/Heartbeat) and T2 (Relay Controller)
 
-**Hardware watchdog:**
-- ESP32-S3 hardware watchdog timer is enabled during initialisation.
-- T1 kicks the watchdog every 500 ms; if T1 is starved and the watchdog fires, the MCU resets automatically (TR-SW03).
-- The watchdog timeout is set longer than the T1 kick interval but shorter than the maximum acceptable response latency for a fault condition.
+**Task watchdog:**
+- The ESP-IDF Task Watchdog Timer (TWDT) is enabled at boot via `esp_task_wdt_init()` with a 30 s timeout and `panic_on_timeout = true`.
+- Every long-running task (T1, T2, T3, T4, T5, T6, T8, T9, T10, T11, T14) registers itself with the TWDT via `esp_task_wdt_add(NULL)` at task entry and calls `esp_task_wdt_reset()` on every loop iteration. T1's iteration is the most frequent at 500 ms; the slower tasks (T9, T10) reset on their own cadence well inside the 30 s window.
+- If any subscribed task fails to reset within the timeout, the TWDT fires a panic, which is captured by the coredump backend (see below) and triggers an `ESP_RST_TASK_WDT` reset.
 
-**Restart sequence on watchdog reset:**
-- On boot after a watchdog reset: the firmware detects the reset reason via `esp_reset_reason()`.
-- Controlled restart: T2 closes all relay outputs immediately (CLOSE_ALL on all channels) to re-synchronise the estimated window position (FR-ST02).
-- The restart event and reset reason are logged to Q3 before normal operation resumes.
-- If 3 consecutive watchdog resets occur without completing the startup health check, T13 OTA rollback logic restores the previous firmware bank.
+**T1 instrumentation duties:**
+- T1 is the sole task that runs `esp_task_wdt_reset()` at a high cadence (500 ms) and also drives the RGB LED state machine (§5.12).
+- T1 emits periodic instrumentation events to Q3:
+  - Per-tick: nothing (silent).
+  - **Per 60 s:** `LOG_SYSTEM` with `value_a = uxTaskGetStackHighWaterMark()` for T1's own stack, and a free-heap sample (`heap_caps_get_free_size(MALLOC_CAP_INTERNAL)`).
+  - **Per 10 min:** a fuller heap snapshot (free + largest-free-block) plus a per-task high-water-mark dump for the long-running tasks.
+  - **OTA-healthy mark:** after `OTA_HEALTHY_MS` (default 60 s) of stable uptime in a freshly booted firmware bank, T1 calls `esp_ota_mark_app_valid_cancel_rollback()` so the OTA framework treats this boot as successful. This is the application-side participation in the rollback-on-three-failures policy (§5.9).
+
+**Coredump capture:**
+- A dedicated 64 KB `coredump` partition (label `coredump`, subtype `coredump`) is included in the partition table (§5.9).
+- The ESP-IDF coredump backend (`CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y`, ELF format) is enabled in `sdkconfig.defaults`.
+- On panic or task-watchdog firing the backend writes the full core image to the partition before the reset.
+- On the next boot T1 checks for a stored coredump via `esp_core_dump_image_check()`; if present it emits a `LOG_SYSTEM coredump_present value_a=<size>` event so the operator can pull the image off via `idf.py coredump-info` / `coredump-debug` and clear the partition.
+
+**Restart sequence on reset:**
+- On every boot the firmware detects the reset reason via `esp_reset_reason()` and emits one `LOG_SYSTEM boot_reason` event with the reason code in `value_a`.
+- Controlled restart: T2 closes all relay outputs immediately (CLOSE_ALL on all channels) to re-synchronise the estimated window position (FR-ST02); EG1.CALIBRATING is set for the duration of the boot CLOSE_ALL sequence.
+- If 3 consecutive resets occur without T1 reaching the OTA-healthy mark, the ESP-IDF OTA rollback restores the previous firmware bank automatically (§5.9).
 
 **Sensor fault handling:**
 - When EG1.SENSOR_FAULT_T is set: T6 inhibits climate control commands; the last known window state is maintained; LCD displays fault indication (FR-S05).
@@ -1171,7 +1362,7 @@ T4 checks the return of `nvs_cfg_init()`. If `NVS_CFG_ERR_MIGRATION` is returned
 
 **Hardware:**
 - WS2812B single-wire addressable LED integrated on the **LOLIN S3** module at **GPIO 38** (`LED_BUILTIN`).
-- Driven by the FastLED library (or Adafruit NeoPixel) via the single-wire protocol; no level-shifting or external wiring required.
+- Driven directly by the ESP-IDF RMT driver (`driver/rmt_tx`): one channel, 24-bit GRB frame per refresh, no external library dependency. The RMT-encoded waveform is generated in T1's local memory and transmitted via `rmt_transmit()`.
 - LED is mounted on the MCU board inside the MC001110 enclosure; it is visible through the transparent cover (FR-UI20).
 
 **Colour convention and state priority:**
@@ -1179,6 +1370,7 @@ T4 checks the return of `nvs_cfg_init()`. If `NVS_CFG_ERR_MIGRATION` is returned
 | Priority | Colour | Hex | Condition | FRS |
 |----------|--------|-----|-----------|-----|
 | Highest | **Red** | `#FF0000` | Critical alarm — `EG1.MOTOR_ALARM` active (RRK-3 emergency stop; all window control suspended), OR system halted (3 consecutive watchdog resets without startup completion) | FR-UI19 |
+| High | **Blue** | `#0000FF` | `EG1.CALIBRATING` active — boot CLOSE_ALL sequence in progress; window positions transitioning from `UNKNOWN` to `CLOSED`. Shown after MOTOR_ALARM in priority because operators need to distinguish "controller is moving relays right now to re-establish position" from a steady warning. | FR-UI16 |
 | Middle | **Amber** | `#FF8000` | Non-critical alarm or warning: `EG1.SENSOR_FAULT_T`, `EG1.SENSOR_FAULT_W`, `EG1.WIND_OVERRIDE`, wind protection disabled (`wind_prot_en == false`), or humidity control disabled (`rh_ctrl_en == false`) | FR-UI18 |
 | Lowest | **Green** | `#00FF00` | All above conditions false; system operating normally | FR-UI17 |
 
@@ -1189,6 +1381,9 @@ If multiple conditions apply simultaneously, the highest-priority colour is show
 ```
 if (halt_flag OR EG1.MOTOR_ALARM):
     colour ← RED
+
+else if (EG1.CALIBRATING):
+    colour ← BLUE
 
 else if (EG1.SENSOR_FAULT_T OR EG1.SENSOR_FAULT_W
          OR EG1.WIND_OVERRIDE
@@ -1205,10 +1400,10 @@ else:
 
 | Condition | Brightness applied |
 |-----------|-------------------|
-| Current local hour ∈ [`led_nite_from`, `led_nite_to`) — wrapping midnight | `led_nite_brt` (default 20 / 255) |
+| Current local hour ∈ (`led_nite_from`, `led_nite_to`) — wrapping midnight | `led_nite_brt` (default 20 / 255) |
 | All other hours | `led_day_brt` (default 200 / 255) |
 
-- Brightness is applied to the currently active colour via the FastLED `setBrightness()` API or equivalent.
+- Brightness is applied to the currently active colour by scaling each of the 8-bit GRB components in T1's RMT encoder before the frame is transmitted.
 - T1 reads the four NVS settings (`led_day_brt`, `led_nite_brt`, `led_nite_from`, `led_nite_to`) from T4 via MX4; values are cached in T1 local variables and refreshed on each tick to pick up any runtime configuration change.
 - Current local time is read from the ESP32 system clock (maintained by T4 after DS1307 read and NTP sync); no additional mutex is required for a `time()` / `localtime()` call on ESP32.
 
@@ -1227,121 +1422,134 @@ These four keys are part of the "Should" feature set (FR-UI21, FR-CF14); they de
 
 ### 5.13 Status Website POST (T14)
 
-> **Status:** added in firmware 1.17.0; hardened against external-network faults in 1.17.34 (Phase 1 of the gh#18 bulkhead policy, see §5.15).
+**Responsibility.** T14 is the sole producer of outbound HTTPS POSTs to the configured external status website. It serves two distinct traffic types over one persistent client:
 
-**Responsibility.** T14 is the sole producer of outbound HTTP/HTTPS POSTs to the configured external dashboard URL. Two endpoints:
+- `POST <cfg.status_url>` — periodic status snapshot every `cfg.status_interval_s` (default 600 s; range 60–86400 s; `0` disables outbound POST entirely).
+- `POST <cfg.status_url>` (Content-Type `text/csv`) — SD log-file upload at the configured daily slot `cfg.log_upload_hhmm`, plus a rotation-triggered drain when T9 closes a log file.
 
-- `POST <status_url>` — periodic status snapshot in canonical JSON (interval 60–300 s).
-- `POST <status_url>?action=log` — daily log-file upload (force-rotate then stream the most recent closed CSV).
+**HTTPS transport.** T14 uses `esp_http_client` configured for `HTTP_TRANSPORT_OVER_SSL`. One handle is created at task entry with `keep_alive_enable = true`, `buffer_size = 1024`, `buffer_size_tx = 1024`, `skip_cert_common_name_check = true`, and `event_handler = http_event_cb`. The handle persists for the lifetime of the task; subsequent calls to `esp_http_client_perform()` reuse the keep-alive TCP socket and (where the server cooperates) the mbedTLS session ticket emitted by the previous handshake.
 
-**Persistent TLS client.** `WiFiClientSecure` is held as a module-level `static` instance (`s_secure` in `firmware/src/status_post/status_post.cpp`). Combined with `HTTPClient::setReuse(true)` and the explicit `Connection: keep-alive` header, the TLS session and underlying TCP socket survive across status-POST cycles. The static instance is taken down (`s_secure.stop()` + `s_secure_inited = false`) on (a) the WiFi-disconnect edge, detected at the top of the T14 main loop; (b) any transport-level error return (HTTPClient return code ≤ 0). Audit of the underlying `stop_ssl_socket()` against arduino-esp32 #3808 in `design/tls_leak_audit.md` confirms this pattern releases all mbedtls contexts for our `setInsecure()` usage profile.
+The remote server's HTTPS enforcement and certificate-rotation policy are the operator's responsibility (TR-NW04 reference). The controller does not pin a server certificate; transport authenticity is delegated to the system-level CA bundle compiled in via `crt_bundle_attach`, and authenticity at the application layer is provided by the `sourceidentifier` shared-secret header carried inside the TLS-encrypted body.
 
-**Timeouts** are split: `T14_HTTP_CONNECT_TIMEOUT_MS = 3000` for TCP connect (and TLS handshake), `T14_HTTP_TIMEOUT_MS = 5000` for the status-POST response, and `T14_LOG_HTTP_TIMEOUT_MS = 30000` for the log-upload response (large body). A fully unreachable host therefore aborts within ~4 s of cycle start instead of waiting the full 5 s of the response timeout.
+**Request shape:**
 
-**Streaming log upload.** The daily upload uses `SDFileChunkedStream` (Arduino `Stream` adapter over `storage_sd_read`) with a single static 4 KB chunk buffer in BSS. `HTTPClient::sendRequest("POST", &stream, fsize)` pulls bytes as needed. Peak heap during a 5 MB upload is ~4 KB, vs. up to 5 MB of PSRAM in the pre-1.17.29 slurp-and-POST pattern.
+```
+POST /<status_url_path> HTTP/1.1
+Host: <status_url_host>
+User-Agent: greenhouse-controller/<FIRMWARE_VERSION>
+Content-Type: application/json
+sourceidentifier: <cfg.status_secret>
+Content-Length: <n>
+
+<canonical JSON body>
+```
+
+For log uploads, `Content-Type` is `text/csv`, `Content-Length` is the file size on disk, and the body is the raw CSV file streamed chunk-by-chunk.
+
+**Canonical JSON builder.** All three status channels (`/api/status`, `/ws`, T14 POST) call the same `build_canonical_status_json()` helper. The helper takes a `STATUS_EXPOSE_*` mask plus an `include_disabled_setpoints` boolean. The mask selects which top-level JSON objects appear in the payload (sensors / modes / alarms / setpoints / network / sys). T11's local endpoints pass `STATUS_EXPOSE_ALL`; T14 passes `cfg.status_expose_mask`. Because all three channels run through the same builder, the payload byte-shapes are identical for any given mask choice — the dashboard's `handleStatus()` does not need to branch on source.
+
+**Timeouts.** `esp_http_client_set_timeout_ms()` is set to 5000 ms for the status POST (small body) and 30000 ms for log uploads (large body). DNS resolution and TLS handshake share the same budget. If a cycle elapses without a completed POST, the cycle is recorded as failed and the breaker counter advances.
+
+**Streaming log upload.** Each upload begins with `SDFileChunkedStream` opening the target `.csv` file and a `LOG_UPLOAD_CHUNK_BYTES + 1u` heap buffer (the `+1u` reserves space for the chunked reader to null-terminate without overrunning). The transmit loop is:
+
+```
+esp_http_client_open(client, fsize);
+while ((n = sd_stream_read(buf, LOG_UPLOAD_CHUNK_BYTES)) > 0) {
+    esp_http_client_write(client, buf, n);
+}
+esp_http_client_fetch_headers(client);
+```
+
+Peak heap during a 5 MB upload is bounded by the chunk size (4 KB) plus the mbedTLS record buffer (~17 KB), independent of file size.
+
+**Multi-file drain.** Each trigger (daily slot or T9 rotation) causes T14 to walk `/sdcard/log/` once in lexicographic order and upload every eligible file in series. Successful uploads result in `f_unlink()` (after `f_sync()`); failed uploads leave the file in place for the next trigger. A dedup latch prevents concurrent triggers from interleaving uploads.
+
+**Status-expose bitmask.** `cfg.status_expose_mask` is a `uint8_t` with bit positions:
+
+| Bit | Name | Object included when set |
+|-----|------|--------------------------|
+| 0 | SENSORS | `sensors:{t_c10, t_avg_c10, rh, wind_kmh, wind_dir_deg, …}` |
+| 1 | MODES | `modes:{op_mode, m1, m2, m3, …}` |
+| 2 | ALARMS | `alarms:{motor, sensor_t, sensor_w, wind_override, calibrating}` |
+| 3 | SETPOINTS | `setpoints:{t_min_day, t_max_day, …, rh_min_day, …}` |
+| 4 | NETWORK | `network:{wifi_ip, ap_active, ntp_synced}` |
+| 5 | SYS | `sys:{fw_ver, asset_version, free_heap, uptime_s, reset_reason}` |
+| 6–7 | *(reserved)* | — |
+
+Default `0x3F` exposes every object. Operators may narrow the payload on bandwidth-constrained links by clearing bits.
 
 **Public state-getters** (lock-free reads of primitive types; no mutex required):
 
 | Function | Returns | Used by |
 |---|---|---|
-| `status_post_last_str(buf, cap)` | "OK 2026-05-10 14:30:22" or "" | `/api/web` GET handler |
-| `status_post_last_log_str(buf, cap)` | same shape, for the log upload | `/api/web` GET handler |
-| `status_post_backoff_active()` | `true` if either breaker is open | `status_json.cpp` (`net_backoff_active` flag) and `ui_display.cpp` (LCD page 3 `BK` badge) |
-| `status_post_heartbeat()` | monotonic uint32 incremented at top of every loop iteration | T15 supervisor |
-| `status_post_heap_drop_bytes()` | saturating uint32 of cumulative free-heap drop measured around every HTTPS call | T15 supervisor |
-| `status_post_force_teardown()` | idempotent close of `s_secure` | T15 supervisor (before `vTaskDelete(task_t14)`) |
+| `status_post_last_str(buf, cap)` | "OK 2026-05-10 14:30:22" or "" | `/api/status` builder |
+| `status_post_last_log_str(buf, cap)` | same shape, for the log upload | `/api/status` builder |
+| `status_post_backoff_active()` | `true` if the breaker is open | `status_json.cpp` and `ui_display.cpp` (LCD page 3 `BK` badge) |
+| `status_post_heartbeat()` | monotonic uint32 incremented at the top of every loop iteration | Reserved for T15 (dormant) |
+| `status_post_heap_drop_bytes()` | saturating uint32 of cumulative free-heap drop measured around every HTTPS call (logged only) | Reserved for T15 (dormant) |
+| `status_post_force_teardown()` | idempotent close of the `esp_http_client` handle | Reserved for T15 (dormant) |
 
-### 5.14 Persistent Circuit Breaker (T14 internal)
+### 5.14 Persistent Circuit Breaker (T14 internal — deferred)
 
-> **Status:** added in firmware 1.17.35 (Phase 2 of the gh#18 bulkhead policy).
+**Status: deferred.** The persistent NVS-backed circuit breaker that escalates outbound-POST hold times in the face of repeated failures is documented here for completeness but is **not active** in the end-state design captured in this specification. The motivation for the breaker was to limit retry energy during long external-network outages; with the ESP-IDF HTTPS stack's keep-alive plus bounded mbedTLS buffers, the per-cycle cost of a failed attempt is small enough that a simple linear retry has been deemed sufficient.
 
-**Purpose.** Throttle repeated outbound-POST failures so that an unreachable server cannot keep the controller continuously busy with hopeless retry attempts.
+**Intended design (deferred — for future re-enablement):**
+- Two independent breakers within T14: one for the periodic status POST, one for the SD-log upload, each tracking consecutive successes and failures.
+- Escalation schedule: `{0, 60, 300, 1800, 3600}` seconds of hold time. Three consecutive failures advance the breaker one step; five consecutive successes regress it one step. Maximum hold = 1 hour.
+- Persistence of the breaker phase and the next-reopen Unix timestamp in NVS so a reboot during an outage does not reset accumulated state.
+- Pre-NTP guard: the breaker cannot advance until the system clock has been synchronised at least once, because the next-reopen comparison requires a valid wall-clock.
 
-**State (`t14_breaker_t` in `status_post.cpp`):** two independent breakers — `s_post_breaker` for the periodic status POST, `s_log_breaker` for the daily log upload.
+**Current behaviour.** T14 retries on the natural cycle (`cfg.status_interval_s` for the status POST; next trigger for the log upload). Failure counts are surfaced as `LOG_NET` events but are not used to throttle future attempts.
 
-| Field | RAM/NVS | Purpose |
-|---|---|---|
-| `last_unix` / `last_ok` / `known` | RAM | Last-attempt record for `format_last()` |
-| `streak_logged_fail` | RAM | Suppresses duplicate fail-event SD writes during a failure streak |
-| `open_until_unix` | NVS | Unix UTC when the breaker reopens; 0 = closed |
-| `hold_phase` | NVS | 0..4 index into the escalation schedule |
-| `consec_fail` / `consec_ok` | RAM | Counters for advancing/regressing `hold_phase` |
+### 5.15 Bulkhead Policy and Status-POST Supervisor (T15 — dormant)
 
-**Schedule (`BREAKER_PHASE_S[]`):** `{0, 60, 300, 1800, 3600}` seconds. Three consecutive failures advance one phase (`BREAKER_FAIL_THRESHOLD = 3`); five consecutive successes regress one phase (`BREAKER_OK_TO_REGRESS = 5`). Hysteresis prevents the breaker yo-yoing under intermittent connectivity. Max phase capped at 4 (1 h).
+**Status: dormant.** T15's source file (`firmware/src/status_post_supervisor/status_post_supervisor.cpp`) is preserved in the tree as a structural placeholder, but no `xTaskCreate()` call activates it in the end-state build. The bulkhead policy is captured here as the design that would be re-enabled if a future regression re-introduces a per-cycle heap-drop pattern.
 
-**NVS keys (namespace `system`):** `t14_post_until`, `t14_post_phase`, `t14_log_until`, `t14_log_phase`. Written via `nvs_cfg_set_i32()` **only** on phase transitions (and on clearing of the open window). Steady-state success or fail-before-threshold writes zero NVS slots. Worst-case NVS wear during a hard outage: ~10 writes/day per breaker — well under the 100 k-cycle NVS endurance budget.
+**Design intent (deferred — for future re-enablement).** Provide a structural guarantee that secondary-network failures (T14 hang, TLS-stack memory leak, lwIP socket-leak) cannot disrupt the climate-critical primary loop. The supervisor would be small, lock-free, and isolated from T14's address-space contents: observing via the public getters in §5.13 and acting via the public setters there.
 
-**Pre-NTP safety.** Both `breaker_open()` (predicate) and `breaker_record()` (mutator) treat `current_unix_ts < 1700000000` as "do not act" — the breaker cannot advance or trip before the clock is sync'd, because the `open_until_unix` comparison would be meaningless. The pre-NTP guard in `ready_to_post()` already blocks the attempt for an orthogonal reason; the breaker simply does not interfere.
-
-### 5.15 Bulkhead Policy and Status-POST Supervisor (T15)
-
-> **Status:** added in firmware 1.18.0 (Phase 4 of the gh#18 bulkhead policy). Implements FR-BK01 through FR-BK08.
-
-**Module:** `firmware/src/status_post_supervisor/status_post_supervisor.cpp` (header `.h`).
-
-**Design intent.** Provide a structural guarantee that secondary-network failures (T14 hang, TLS-stack memory leak, lwIP socket-leak) cannot disrupt the climate-critical primary loop. The supervisor is small, lock-free, and isolated from T14's address-space contents: it observes via three public getters and acts via three public setters.
-
-**Detection signals:**
+**Intended detection signals:**
 
 | Signal | Threshold | Outcome |
 |---|---|---|
-| `status_post_heartbeat()` not advancing for 60 s | `T15_WEDGE_TIMEOUT_MS` | Respawn T14 |
-| `status_post_heap_drop_bytes()` ≥ 64 KB | `T15_HEAP_DROP_LIMIT` | Planned reboot via `esp_restart()` |
-| > 1 respawn in 5 minutes | `T15_MIN_RESPAWN_GAP_MS` | Planned reboot |
-| > 10 respawns in current hour | `T15_HOURLY_RESPAWN_LIMIT` | Planned reboot |
+| `status_post_heartbeat()` not advancing for 60 s | wedge timeout | Respawn T14 |
+| `status_post_heap_drop_bytes()` ≥ 64 KB | heap-drop limit | Planned reboot |
+| > 1 respawn in 5 minutes | min respawn gap | Planned reboot |
+| > 10 respawns in current hour | hourly respawn limit | Planned reboot |
 
-**Respawn sequence:**
+**Intended respawn sequence (deferred):**
 
 1. Confirm the respawn budgets above are not exhausted (else: planned reboot).
-2. Call `status_post_force_teardown()` — idempotent close of the persistent TLS session. The static `WiFiClientSecure` instance survives `vTaskDelete` (it lives in BSS, not on T14's task stack); without this explicit close the next incarnation would inherit a half-closed socket pointing at lwIP state the killed task never released.
+2. Call `status_post_force_teardown()` — idempotent close of the persistent `esp_http_client` handle. The handle survives `vTaskDelete` (it lives in BSS, not on T14's task stack); without this explicit close the next incarnation would inherit a half-closed socket pointing at lwIP state the killed task never released.
 3. `vTaskDelete(task_t14)`.
-4. `vTaskDelay(100 ms)` — empirical minimum for FreeRTOS's idle task to reclaim the deleted task's stack + TCB.
-5. `xTaskCreatePinnedToCore(task_status_post, "T14_WEB", 12288, NULL, TASK_PRIO_LOW, &task_t14, 0)` — recreate. The recreated task picks up the same module-scope state (breakers, heartbeat, heap-drop accumulator); only the stack/TCB is fresh.
+4. Short delay for FreeRTOS's idle task to reclaim the deleted task's stack + TCB.
+5. `xTaskCreate(task_status_post, "T14_WEB", 12288, NULL, TASK_PRIO_LOW, &task_t14)` — recreate.
 
-**Planned reboot:**
+**Intended planned-reboot sequence (deferred):**
 
-1. Set NVS `system/t15_planreboot = 1`.
-2. `vTaskDelay(250 ms)` for NVS commit and UART log to flush.
-3. `esp_restart()`. The boot-reason event posted by T4 in the next boot reports `esp_reset_reason = 3 (ESP_RST_SW)`, distinguishable from `ESP_RST_PANIC (4)` and `ESP_RST_INT_WDT (5)`.
-4. T15 clears `t15_planreboot` automatically after T14 completes one successful POST in the new boot — gives the web GUI a way to surface "this boot was a planned recovery" until normal operation resumes.
+1. Set a planned-reboot flag in NVS so the next boot's reset-reason log can disambiguate this from a panic.
+2. Short delay for NVS commit and log buffer flush.
+3. Invoke the same `reboot_worker_task` carve-off used by T13 (§4.3 T13). `esp_reset_reason()` on the next boot reports `ESP_RST_SW (3)`, distinguishable from `ESP_RST_PANIC (4)` and `ESP_RST_INT_WDT (5)`.
+4. Clear the planned-reboot flag once T14 completes one successful POST in the new boot.
 
-**Watchdog discipline.** T15 itself subscribes to the task watchdog (`esp_task_wdt_add(NULL)` at entry, same pattern as T1/T2 since 1.17.29). Its 30-second polling interval is broken into 1-second chunks each preceded by `esp_task_wdt_reset()`. This is the `T15_WDT_KICK_CHUNK_MS` invariant (see FR-BK08). The 1.18.0→1.18.1 regression — T15 starving the WDT — is documented in `changelog.md` [1.18.1] as a cautionary example.
+**Watchdog discipline.** Were T15 active, it would subscribe to the task watchdog at entry and break its 30 s polling interval into 1 s chunks each preceded by `esp_task_wdt_reset()`. This prevents the supervisor itself from starving the WDT while waiting on a slow signal.
 
-**NVS keys (namespace `system`):**
-
-| Key | Type | Purpose |
-|---|---|---|
-| `t15_respawn_h` | i32 | Respawn count in current hour (rolls at HH:00 boundary) |
-| `t15_resp_hr`  | i32 | Hour marker (0–23) for the above counter |
-| `t15_planreboot` | i32 | 1 = next boot is recovery from a planned reboot; cleared after first successful POST |
-
-**Cross-references for the related primary-side state:**
+**Cross-references for the related primary-side state (active in the current build):**
 
 - Per-channel persisted window state (`t2_st_ch0/1/2` in `motor`) — written by T2 on every transition to a terminal state (`CH_CLOSED`/`CH_OPEN`); written to `NVS_STATE_UNKNOWN` before every relay-energise. At boot, if all three channels are `CH_CLOSED` and the GPIO42 motor-alarm pin is not asserted, `calib_close_all()` is skipped (saves up to 171 s on the planned-reboot recovery path). Logged as `LOG_SYSTEM, value_a=10`. Implements FR-BK05.
-- T1's heap probe extends `LOG_SYSTEM, value_a=7` (free internal KB) and `value_a=8` (free PSRAM KB) with `value_a=12` (largest contiguous internal block, KB) since 1.18.2. Implements FR-BK07. A widening gap between `value_a=7` and `value_a=12` is the diagnostic signature of heap fragmentation under repeated TLS handshakes — see `design/tls_leak_audit.md` for the rationale.
+- T1's periodic heap probe emits `LOG_SYSTEM value_a=7` (free internal KB), `value_a=8` (free PSRAM KB), and `value_a=12` (largest contiguous internal block, KB). A widening gap between `value_a=7` and `value_a=12` is the diagnostic signature of heap fragmentation under repeated TLS handshakes.
 
-**Operator-visible surfaces:**
+**Operator-visible surfaces (active in the current build, regardless of T15 status):**
 
 - LCD page 3 (Network) row 1: when `status_post_backoff_active()` returns true, the row reads `WiFi: conn    BK` instead of `WiFi: connected `. The 4-char slack of the original layout absorbs the badge without truncating the IP address on row 2.
-- Status JSON: `mode.flags[]` array includes the string literal `"net_backoff_active"` while either breaker is open. The local web GUI (`app.js::flagBadges`) renders it as a yellow `<span class="badge warn">Net backoff</span>` on the Status tab's Alarms card.
-- Event log: every breaker phase transition writes a `LOG_SYSTEM, value_a=0..1, value_b=0..3` row (initiator `LOG_BY_WEB`) — see `event_logger.h` for the value_b sub-code table.
+- Status JSON: `mode.flags[]` array includes the string literal `"net_backoff_active"` while the breaker is open. The local web GUI renders it as a yellow warning badge on the Status tab's Alarms card.
+- Event log: breaker phase transitions write a `LOG_SYSTEM` row with sub-code in `value_b` — see `event_logger.h` for the sub-code table.
 
-**Platform-version pinning.** `firmware/platformio.ini` pins `platform = espressif32@6.12.0` (since 1.18.2) so that the mbedtls/lwIP/ESP-IDF combination compiled into a given firmware is reproducible across developer environments. Re-running `design/tls_leak_audit.md`'s static audit is required before bumping the pin.
-
-**Known limitation (per gh#18).** Hard faults *inside* ESP-IDF / mbedTLS / lwIP cannot be intercepted from the application layer on this single-chip architecture. The bulkhead policy makes such faults *bounded* (Phase 2 throttles the trigger rate; Phase 3 + Phase 4 ensure the recovery is a 2-second blip, not a 171-second outage). Eliminating the faults themselves would require hardware separation or a co-processor — explicitly out of scope.
+**Known structural limitation.** Hard faults *inside* ESP-IDF / mbedTLS / lwIP cannot be intercepted from the application layer on this single-chip architecture. The dormant bulkhead design, were it activated, would make such faults *bounded* (the breaker throttles the trigger rate; the supervisor ensures the recovery is a 2-second blip, not a 171-second outage). Eliminating the faults themselves would require hardware separation or a co-processor — explicitly out of scope.
 
 ---
 
-## 6. Open Issues
-
-| # | Issue | Owner | Status |
-|---|-------|-------|--------|
-| 1 | **Motor alarm signal — software response** — Hardware signal characterised (THDS Issue #1 closed): RRK-3 alarm relay (dry contact, closes on motor emergency stop) → J10 opto input → GPIO 42 (active-low: GPIO LOW = alarm active, INPUT_PULLUP). Normal manual window operation does NOT trigger this signal. **Resolution:** T2 uses a deferred-ISR pattern: `attachInterrupt(PIN_OPTO_INPUT, isr_handler, CHANGE)`; `IRAM_ATTR` ISR records first edge (volatile flag + FreeRTOS tick timestamp); T2 task loop confirms after 75 ms by reading live pin state; NOT suppressed during MOVING. On alarm assert: de-energise all 6 relays, set EG1.MOTOR_ALARM, post log to Q3. On alarm release: clear EG1.MOTOR_ALARM, post CLOSE_ALL re-calibration to Q1, post log to Q3, resume AUTOMATIC. Manual override detection (formerly FR-M08–FR-M11) removed — hardware does not support it. | Software engineer | **Closed** |
-| 2 | **Ring buffer depth** — **Resolution:** 360 entries per channel (T, RH, wind speed, wind direction) = 11.5 KB total internal RAM. At the default 30 s poll interval: 3 hours of in-memory history; at the minimum 15 s poll interval: 1.5 hours. Fits comfortably in ESP32-S3 internal SRAM with substantial headroom. Sufficient for web trend view and MQTT history. | Software engineer | **Closed** |
-| 3 | **NTP timezone handling** — Hardware time source resolved (THDS Issue #7 closed): DS1307 RTC is the authoritative offline clock; NTP synchronises on WiFi connect. **Resolution:** DST handling via POSIX TZ string — `setenv("TZ", tz_str, 1); tzset()` applied at boot and on every geolocation update. TZ string stored in NVS `system/tz_str`; factory default `"CET-1CEST,M3.5.0,M10.5.0/3"` (Europe/Amsterdam). **Auto-TZ from geolocation (FR-DN07):** after successful NTP sync, `do_geo_sync()` queries ip-api.com and resolves the IANA timezone name to a POSIX string via a ~100-entry lookup table (`s_tz_table[]` in `network_manager.cpp`); the resolved POSIX string is applied immediately and persisted to NVS. If geolocation or lookup fails, the NVS value from the previous run is used. Technician-configurable via web GUI (FR-CF18). | Software engineer | **Closed** |
-| 4 | **Web interface HTTPS — not implemented (TR-NW04 accepted)** — TLS termination on the ESP32-S3 is not feasible: the RAM and CPU overhead of a TLS stack would leave insufficient headroom for concurrent real-time tasks. **Decision:** HTTPS will not be implemented. **Accepted threat model:** the web interface is served over plain HTTP. The risk is mitigated by the following constraints: (a) the WiFi AP is disabled by default and enabled only on explicit admin command; (b) the AP has a configurable automatic timeout; (c) the controller is intended for use on a private, physically controlled greenhouse network and is not exposed to the public internet; (d) all credentials are stored as salted hashes and are never transmitted in plaintext; (e) session cookies are short-lived and invalidated on logout or timeout. This residual risk is accepted by the project owner. | Software engineer | **Closed — accepted** |
-| 5 | **MQTT authentication method** — **Resolution:** plain username + password over TCP. Client certificate authentication is not implemented. The MQTT `password` field is stored as plaintext in NVS `mqtt/password` (MQTT protocol requires the actual password; hashing is not applicable). Accepted risk: same threat model as Issue #4 (no-HTTPS decision) — controller is on a private greenhouse network. Risk documented and accepted by the project owner. | Software engineer | **Closed — accepted** |
+For the live list of design and integration issues see `firmware/issues.md` and the GitHub issue tracker. This specification is the end-state design; resolved-and-ratified issues are reflected directly in the body of the document, and open issues are not duplicated here.
 
 ---
 
-*End of document — version 0.4 draft (covers firmware up to 1.18.2)*
+*End of document.*
