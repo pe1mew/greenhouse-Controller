@@ -28,6 +28,58 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-rc.1.3.3]` — 2026-05-22  (T10 NTP-resync missing sntp_stop fix; supersedes rc.1.3.2 as Phase 7 candidate)
+
+**Soak panic on rc.1.3.2 at 2026-05-22 13:23:09**, ~74 h after boot, in the lwIP tcpip thread (`tiT`). Captured coredump decoded cleanly via `esp-coredump` and identified a structural bug in T10's 24-hour NTP-resync path. Full triage in `bin/2.0.0-rc.1.3.2/post-mortem/POST_MORTEM.md`.
+
+#### Root cause
+
+`firmware/src/network_manager/network_manager.cpp::run_ntp_resync()` (added in a.6.33) calls `esp_sntp_setoperatingmode(POLL)` then `esp_sntp_init()` to kick a fresh sync, but never calls `esp_sntp_stop()` afterwards. The first resync (~24 h after boot) succeeds and leaves `sntp_pcb` allocated. The next resync's call to `esp_sntp_setoperatingmode(POLL)` then trips lwIP's assertion in `lwip/src/apps/sntp/sntp.c:748` — *"Operating mode must not be set while SNTP client is running"* — causing `panic_abort` → `ESP_RST_PANIC`.
+
+The neighbouring boot-time `nm_sntp_quick_sync()` uses the high-level `esp_netif_sntp_init / esp_netif_sntp_deinit` pair correctly. The resync path uses the low-level API but skipped the matching stop. The author's comment in the function header incorrectly asserted that `esp_sntp_setoperatingmode` is idempotent — it is not.
+
+#### The fix
+
+`firmware/src/network_manager/network_manager.cpp` — call `esp_sntp_stop()` at the top of `run_ntp_resync()`:
+
+```c
+static void run_ntp_resync(void)
+{
+    ESP_LOGI(TAG, "[T10] Starting periodic NTP resync (24 h cadence)");
+
+    /* rc.1.3.3 — defensive stop before reconfiguring. The previous resync's
+     * esp_sntp_init() allocated sntp_pcb without a matching stop, which made
+     * the next invocation hit lwIP's assert in sntp_setoperatingmode
+     * (sntp.c:748). esp_sntp_stop() on an already-stopped client is a no-op,
+     * so this is safe on every entry. */
+    esp_sntp_stop();   /* ← new */
+
+    /* ... existing IN_PROGRESS guard + setoperatingmode + setservername + init ... */
+}
+```
+
+The matching comment-block update strikes the misleading idempotency claim and explains the new defensive stop.
+
+#### What did NOT change
+
+- LittleFS / web assets — `firmware.bin` and the ELF are the only changes; web-assets ZIP is byte-identical to rc.1.3.2.
+- All prior fixes (rc.1.1, rc.1.2, rc.1.2.1, rc.1.3, rc.1.3.1, rc.1.3.2) preserved verbatim.
+- No new event-types, no NVS schema changes, no API changes.
+
+#### Phase 7 soak day-counter
+
+Day-counter resets to day 0 against rc.1.3.3. The rc.1.3.2 panic at ~74 h invalidates the rc.1.3.2 soak; the 14-day clock starts over.
+
+#### Files changed
+
+- `firmware/src/network_manager/network_manager.cpp` — one-line `esp_sntp_stop()` added at top of `run_ntp_resync()`; doxygen comment-block above the function rewritten to reflect the new defensive-stop pattern.
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` `2.0.0-rc.1.3.2` → `2.0.0-rc.1.3.3`.
+- `changelog.md` — this entry.
+- `bin/2.0.0-rc.1.3.3/` — to be created by `bin/build_release.ps1` (firmware bin + ELF + sha256 + release-notes.md).
+- `bin/2.0.0-rc.1.3.2/post-mortem/` — full triage artefacts (coredump bin, coredump.core.elf, pre-panic + post-restart SD logs, POST_MORTEM.md).
+
+---
+
 ### `[2.0.0-rc.1.3.2]` — 2026-05-20  (initial /api/status fetch on page load + login; supersedes rc.1.3.1 as Phase 7 candidate)
 
 **Operator-reported UX bug**: on first browsing to the web GUI, the status shields (Alarms card, Mode badge, system info) stayed blank for up to 2 seconds while the sensor tiles appeared to populate. Refreshing the page + logging in didn't help — the same delay recurred every time.

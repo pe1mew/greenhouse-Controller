@@ -1145,10 +1145,17 @@ static void poll_ap(void)
  * Implementation notes:
  *   - esp_sntp_* directly, NOT wifi_tickle_run (which is a boot-time helper
  *     that re-initializes the event loop + netif).
- *   - esp_sntp_setoperatingmode / setservername are idempotent — they only
- *     change state if the new value differs. Safe to call on every resync.
- *   - esp_sntp_init() may be called repeatedly; second-and-later calls
- *     reinitialize the SNTP module.
+ *   - **esp_sntp_setoperatingmode is NOT idempotent on a running client.**
+ *     lwIP's sntp.c:748 asserts `sntp_pcb == NULL` (i.e. SNTP must be stopped).
+ *     The previous claim that "setoperatingmode / setservername are idempotent"
+ *     was wrong and produced the rc.1.3.2 panic — `esp_sntp_init()` on the
+ *     first resync allocates `sntp_pcb`; the second resync's setoperatingmode
+ *     call then asserts. rc.1.3.3 fixes this by calling `esp_sntp_stop()` at
+ *     the top of run_ntp_resync() so `sntp_pcb` is always freed before the
+ *     setoperatingmode call. Calling esp_sntp_stop() when already stopped is
+ *     a safe no-op in lwIP.
+ *   - esp_sntp_init() may be called repeatedly **provided the matching stop
+ *     has run**; second-and-later calls reinitialize the SNTP module.
  *   - Wait up to 10 s for a plausible epoch; on timeout, leave
  *     s_last_ntp_sync_us unchanged so the next iteration retries.
  *   - After success, re-apply cfg.tz_str (esp_sntp resets TZ to UTC) and
@@ -1188,16 +1195,27 @@ static void run_ntp_resync(void)
 {
     ESP_LOGI(TAG, "[T10] Starting periodic NTP resync (24 h cadence)");
 
+    /* rc.1.3.3 — defensive stop before reconfiguring. The previous resync's
+     * esp_sntp_init() allocated sntp_pcb without a matching stop, which made
+     * the next invocation hit lwIP's assert in sntp_setoperatingmode
+     * (sntp.c:748, "Operating mode must not be set while SNTP client is
+     * running"). esp_sntp_stop() on an already-stopped client is a no-op,
+     * so this is safe on every entry — including the very first call after
+     * boot, when sntp_pcb is already NULL from nm_sntp_quick_sync()'s
+     * esp_netif_sntp_deinit(). */
+    esp_sntp_stop();
+
     /* esp_sntp_get_sync_status returns IN_PROGRESS while a previous sync is
-     * still running. Avoid double-kicking. */
+     * still running. Avoid double-kicking. (After the stop above this can
+     * never be IN_PROGRESS, but the guard is kept as a belt-and-braces.) */
     sntp_sync_status_t st = esp_sntp_get_sync_status();
     if (st == SNTP_SYNC_STATUS_IN_PROGRESS) {
         ESP_LOGI(TAG, "[T10] NTP resync: another sync already in progress — skipping");
         return;
     }
 
-    /* Setup. esp_sntp_init() is repeatable; calling it again kicks a new
-     * query against the configured server. */
+    /* Setup. esp_sntp_init() is repeatable (given the stop above); calling
+     * it kicks a new query against the configured server. */
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
     esp_sntp_setservername(0, "pool.ntp.org");
     esp_sntp_init();
