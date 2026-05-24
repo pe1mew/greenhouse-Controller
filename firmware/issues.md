@@ -47,6 +47,77 @@ The `changelog.md` file is for what's *done*; this file is for what's *open*.
    - **Path C**: land this patch preemptively before any future T15
      re-enable.
 
+3. `(open — spec drift, UX gap)` → [gh#28](https://github.com/pe1mew/greenhouse-Controller/issues/28)
+   **`MODE_STANDBY` is declared in the firmware but never implemented.**
+   The enum value lives at `firmware/src/types/app_types.h:135` and the
+   JSON serialiser knows how to print it (`status_json.cpp:42`), but no
+   code path ever assigns it. The mode field is *derived* at status-
+   snapshot time in `data_manager.cpp:1213-1218` from EG1 bits only:
+   `MOTOR_ALARM` / `WIND_OVERRIDE` / `AUTOMATIC` — no STANDBY in the
+   if/else chain. There is no `EG1_BIT_STANDBY`, no `set_op_mode()`
+   setter, no `/api/mode` endpoint, no keypad/LCD menu entry, and T6
+   does not gate on standby anywhere.
+
+   **TSDS drift.** The end-state spec describes standby as real:
+   §5.2 FSM `[Standby] ◄── admin command ──► [Automatic]`; §4.3 T6
+   *"inhibited in Standby and Wind-override states"*; §4.3 T4 *"Holds
+   current operating mode (Automatic / Standby / …)"*. None of it is
+   implemented. The earlier TSDS audit
+   (`design/tsdsAuditReport.md`) missed this because the audit cross-
+   checked declared FR-* / TR-* requirements against the source and
+   STANDBY isn't called out as a numbered requirement — it's only in
+   the enum and prose. A "declared-but-never-used enum" sweep should
+   be added to the next audit pass.
+
+   **Operator-facing impact.** Today the only ways to suspend climate
+   control are indirect: wide-setpoint trick (`t_max_day=100`,
+   `t_min_day=-50`), disable wind protection (loses safety), or power
+   off (re-runs CLOSE_ALL on boot, ~3 min for M3). Meaningful UX gap
+   for routine maintenance windows or operator manual-control periods.
+
+   **Implementation sketch** (see gh#28 body for the full design):
+   add `EG1_BIT_STANDBY`, add `POST /api/mode`, have T6 read the bit
+   before posting actuation, extend the priority chain in
+   `data_manager.cpp` (STANDBY ranks below WIND_OVERRIDE so safety
+   still wins), add the dashboard toggle + keypad menu entry. Roughly
+   half a day of firmware plus matching UI plus FRS/TSDS catch-up.
+   Decisions to make before implementing: persistence across reboot
+   (RAM-only vs NVS-backed), window behaviour on STANDBY entry/exit.
+
+4. `(open — feature request)` → [gh#29](https://github.com/pe1mew/greenhouse-Controller/issues/29)
+   **Operator manual motor control from the physical controller.** Add
+   the ability to open/close M1/M2/M3 directly from the unit without
+   going through the web GUI. Use cases: maintenance with gloved hands,
+   network outage, commissioning, emergency override, community demos.
+
+   **Suggested approach (per the feature request).** Reorder the IO0
+   (BOOT button) handler so a **short tap** enters a manual-control
+   flow on the LCD (M1/M2/M3 picker + open/close action), while the
+   **existing 5–20 s staged factory-reset behaviour is preserved
+   unchanged**. The 16-key keypad remains dedicated to PIN entry and
+   the menu FSM; IO0 becomes a dual-function input.
+
+   **Half-built today.** T2 (`relay_controller.cpp`) already accepts
+   per-channel `CMD_OPEN` / `CMD_CLOSE` via Q1 — only the operator-
+   input surface is missing. Needs: a new `SRC_OPERATOR_MANUAL` value
+   in `cmd_source_t`, a Q1-producer helper in `ui_display.cpp`,
+   IO0 short-tap dispatch, two new LCD screens (motor picker + action
+   picker), audit-log row with a new `LOG_BY_OPERATOR_LOCAL` initiator,
+   and safety gates (rejected during `EG1.MOTOR_ALARM`; OPEN rejected
+   during `EG1.WIND_OVERRIDE`).
+
+   **Trust model.** Physical access to the unit is itself the
+   authentication, consistent with the existing factory-reset trigger
+   — no PIN required for manual control. Every command is audit-logged.
+
+   **Open design questions** (full list in gh#29 body): bypass-dwell
+   or honour-dwell, behaviour during MOVING states, interaction with
+   the future `MODE_STANDBY` (gh#28 — should coexist; manual command
+   does not implicitly enter or exit standby).
+
+   Estimated firmware effort: ~1 day plus FRS/TSDS catch-up and a
+   release-notes entry. Not blocking any current release.
+
 ## Closed (most recent first)
 
 ### 2.0.0 — ESP-IDF migration era
