@@ -104,7 +104,7 @@ Per indoor sample (still 30 s default), T5 emits **three** `LOG_SENSOR_HR` rows 
 
 ### 5.1 Window-state bitmask encoding
 
-A single 16-bit integer carries all three channel states:
+A single 16-bit integer carries all three channel states. Each channel uses the **public `window_state_t`** enum (`firmware/src/types/app_types.h`), packed into 2 bits per channel:
 
 ```
 bits  1..0  = M1 state    (0=CLOSED, 1=MOVING_OPEN, 2=OPEN, 3=MOVING_CLOSE)
@@ -119,6 +119,8 @@ bit  15     = reserved (0)
 
 A "fully open" snapshot with all three channels OPEN and no overrides reads `0x002A` (= `0b00101010`).
 
+**GAP states fold into the matching MOVING state.** T2's *internal* per-channel FSM uses the extended `ch_state_t` enum (`firmware/src/relay_controller/relay_controller.cpp:137`), which adds two transient `GAP_TO_OPEN` / `GAP_TO_CLOSE` states between direction reversals. These GAP states are not represented in the bitmask: at pack time `GAP_TO_OPEN` is rendered as `MOVING_OPEN` and `GAP_TO_CLOSE` as `MOVING_CLOSE`. The GAP intervals are bounded at ~2 s (relay-energise inter-frame delay) so the loss of distinction is negligible for thermal-profile fitting and keeps the field width at 2 bits per channel. The public `t2_get_window_states()` accessor already performs this collapse, so packing the bitmask from its output is the canonical implementation path.
+
 ### 5.2 Code touchpoints
 
 | File | Change |
@@ -126,8 +128,8 @@ A "fully open" snapshot with all three channels OPEN and no overrides reads `0x0
 | `firmware/src/types/app_types.h` | Append `LOG_SENSOR_HR` to `log_type_t` enum (after `LOG_SYSTEM`). The pre-existing `LOG_SENSOR` enum value stays in the enum so historical bench-soak files (rc.1.x) keep their stable type-column string when served by `/api/log/download`. |
 | `firmware/src/event_logger/event_logger.h` | Document the `LOG_SENSOR_HR` channel-sub-type table mirroring §5 above. Mark `LOG_SENSOR` as deprecated — no longer emitted by the firmware, but enum slot kept for historical-file readability. |
 | `firmware/src/event_logger/event_logger.cpp` (CSV row formatter) | Add the `LOG_SENSOR_HR` → `SENSOR_HR` string in the type column. Keep the legacy `LOG_SENSOR` → `SENSOR` mapping in the formatter so pre-campaign bench-soak files served by `/api/log/download` continue to display their original `SENSOR` type column unchanged. |
-| `firmware/src/sensor_poll/sensor_poll.cpp` | **Remove** the existing `log_post()` of `LOG_SENSOR` after `dm_post_sensor()`. **Add** three `LOG_SENSOR_HR` rows (channel 0/1/2) in its place. Read window-bitmask from `t2_get_window_states()` + EG1 bits. |
-| `firmware/src/relay_controller/relay_controller.h` | Add `t2_get_window_bitmask()` accessor if not already present (assembles the 6-bit per-channel field). |
+| `firmware/src/sensor_poll/sensor_poll.cpp` | **Remove** the existing `log_post()` of `LOG_SENSOR` after `dm_post_sensor()`. **Add** three `LOG_SENSOR_HR` rows (channel 0/1/2) in its place. Pack the window-bitmask (channel 2) from `t2_get_window_states()` (which already returns the public `window_state_t` — see §5.1 GAP-fold note) OR-ed with the EG1 override bits read via `xEventGroupGetBits(EG1)`. |
+| `firmware/src/relay_controller/relay_controller.h` | (Optional convenience) Add `t2_get_window_bitmask()` that wraps `t2_get_window_states()` and returns the 16-bit packed value per §5.1. Not strictly required — the caller can pack inline — but a single-call helper keeps the bitmask encoding centrally maintained alongside the channel-state accessor. |
 | `design/technicalSoftwareDesignSpecification.md` §5.3 | Post-campaign update: replace `LOG_SENSOR` row description with `LOG_SENSOR_HR` description. The TSDS describes the end-state design; once sunset lands in shipping firmware the TSDS must follow. |
 
 The enum extension is **append-only** — no existing event-type values shift. The change is forward-only: post-campaign firmware emits only `LOG_SENSOR_HR`; there is no revert path planned. Historical files containing `LOG_SENSOR` rows remain unchanged on disk and on the status server and stay readable forever — only the emitter is retired.
