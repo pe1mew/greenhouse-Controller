@@ -90,6 +90,17 @@ static const char *TAG = "T8_UI";
 #define STATUS_PAGE_TICKS    50u   /**< 5 s auto-rotate = 50 × 100 ms */
 #define STATUS_PAGES          7u   /**< Number of status pages (0=T/RH, 1=wind, 2=mode, 3=net, 4=time, 5=windows, 6=firmware) */
 #define AUTOROTATE_RETURN_TICKS  3000u  /**< 5 minutes of menu-idle = 5×60×(1000/UI_LOOP_MS) → return to UI_STATUS */
+/* rc.1.5.1 — the rc.1.5.0 MANUAL_MENU_IDLE_TICKS (10 s idle dismiss for the
+ * admin manual-motor menu) has been removed. Physical testing showed that
+ * the short idle dismiss let T6 reopen windows the admin had just closed,
+ * because the transient EG1_BIT_MANUAL_SESSION cleared on dismiss while T6
+ * still had hot-greenhouse signals. The menu now relies entirely on:
+ *   - explicit *=back from UI_MOTOR_PICK
+ *   - admin session timeout (cfg.session_timeout_min, default 5 min)
+ * to drive exit. The auto-set STANDBY (gh#29 + 2026-05-26 follow-up) keeps
+ * T6 gated for the entire menu lifetime regardless of how long the admin
+ * lingers between keypresses. See go_status() and the menu-auto-return
+ * tick block for the run-time consequences. */
 #define MX1_TIMEOUT_MS      200u   /**< MX1 acquire timeout */
 /* Session-timeout default lives in cfg_defaults.h as DEF_SESSION_TIMEOUT_MIN. */
 
@@ -190,6 +201,15 @@ typedef enum {
     UI_EDIT_VALUE,
     UI_SET_DATE,       /**< Admin: enter date DDMMYY; # applies, * cancels */
     UI_SET_TIME,       /**< Admin: enter time HHMM;   # writes RTC, * back to date */
+    UI_MODE_TOGGLE,    /**< rc.1.5.0 / gh#28 — Mode toggle menu reached via # on Scherm 3
+                        *   (Mode + Session). 1=Automatic, 2=Standby, *=Bk. Either
+                        *   Farmer or Admin session accepted; the menu commits via
+                        *   dm_set_standby(LOG_BY_FARMER|LOG_BY_ADMIN, surface=1). */
+    UI_MOTOR_PICK,     /**< rc.1.5.0 / gh#29 — Manual-motor menu reached via # on Scherm 6
+                        *   (Raamposities). 1=M1, 2=M2, 3=M3, *=Bk. Admin-only. */
+    UI_MOTOR_ACTION,   /**< rc.1.5.0 / gh#29 — Action picker for the motor chosen on
+                        *   UI_MOTOR_PICK. 1=Open, 2=Close, *=Bk. Posts a window_cmd_t
+                        *   to Q1 with source=SRC_OPERATOR_MANUAL on commit. */
 } ui_state_t;
 
 /* ============================================================
@@ -244,6 +264,40 @@ static pin_role_t   s_pin_role      = PIN_ROLE_FARMER;
 /* Manual date/time set state (UI_SET_DATE / UI_SET_TIME) */
 static bool         s_pending_settime = false; /**< # on time status page pending admin PIN */
 static bool         s_pending_ap      = false; /**< # on WiFi status page pending admin PIN */
+
+/* rc.1.5.0 — pending-action flags for the new gh#28/gh#29 surfaces.
+ *
+ *   s_pending_mode_toggle — # on Scherm 3 (Mode + Session) with no active
+ *     session. Routes to UI_MODE_TOGGLE on successful PIN; either Farmer
+ *     or Admin is accepted (see handle_pin role-by-digit-count logic).
+ *
+ *   s_pending_motor       — # on Scherm 6 (Raamposities) with no admin
+ *     session. Routes to UI_MOTOR_PICK on successful Admin PIN.
+ *
+ *   s_motor_pick_ch       — Motor selected on UI_MOTOR_PICK (1, 2 or 3).
+ *     Used to render Scherm "Mx: state" header and to build the
+ *     window_cmd_t.channel field on commit.
+ *
+ *   s_manual_set_standby_on_entry (rc.1.5.1+)
+ *     True if entering the gh#29 manual-motor menu auto-set STANDBY
+ *     because it wasn't already on. Used by go_status() to clear STANDBY
+ *     (without recalibration, per the 2026-05-26 follow-up decision) on
+ *     every exit path from the menu — explicit *=back, admin session
+ *     timeout, or the IO0 reset paths. If STANDBY was already on when the
+ *     menu was entered (admin had set it explicitly via Scherm 3 or web),
+ *     the flag stays false and STANDBY survives the menu exit untouched.
+ *
+ *     Rationale: rc.1.5.0 used a separate EG1_BIT_MANUAL_SESSION transient
+ *     bit which cleared on a 10-second LCD idle. In physical testing the
+ *     bit cleared between admin keypresses, T6 woke up on its next tick,
+ *     and reopened the window the admin had just closed. Using proper
+ *     STANDBY semantics — gated by the same session-timeout that gates
+ *     every other admin operation — fixes the regression.
+ */
+static bool         s_pending_mode_toggle      = false;
+static bool         s_pending_motor            = false;
+static uint8_t      s_motor_pick_ch            = 0;
+static bool         s_manual_set_standby_on_entry = false;
 static char         s_dt_buf[9]       = {0};   /**< Digit accumulator for date/time entry */
 static uint8_t      s_dt_len          = 0;     /**< Digits entered so far */
 static int          s_dt_saved_year   = 0;     /**< Year from date entry, passed to time entry */
@@ -514,6 +568,35 @@ static void session_close(bool timeout)
     log_post(&ev);
     ESP_LOGI(TAG, "Session closed (%s)", timeout ? "timeout" : "logout");
     s_session = SESSION_NONE;
+
+    /* rc.1.5.2 — auto-clear STANDBY if THIS admin session's manual-motor
+     * menu set it (gh#29). The clear happens HERE at session-end rather
+     * than at menu exit (rc.1.5.1 behaviour), so STANDBY persists across
+     * `*=back` and through any LCD navigation the admin does mid-session.
+     * T6 stays paused as a "respect window" for the full session — the
+     * admin's deliberate per-channel positions are honoured until either
+     * the session times out (cfg.session_timeout_min, default 5 min after
+     * last keypress) or the admin explicitly logs out. After that, T6
+     * resumes from the actual current per-channel state on its next tick.
+     *
+     * Operator feedback that motivated this (2026-05-26):
+     *   "during manual operation climate control kicked in and took over"
+     * Root cause: rc.1.5.1 cleared STANDBY on *=back, so T6 woke up on the
+     * next sensor poll (~30 s later) and overrode the admin's manual
+     * positions. Tying the clear to session-end gives the admin a full
+     * 5-minute respect window after their last menu interaction.
+     *
+     * `dm_set_standby_ex(..., recalibrate_on_clear=false)` suppresses the
+     * CLOSE_ALL sweep — the admin's manual positions are the baseline T6
+     * resumes from, not a forced CLOSED state. (Web/Scherm-3 STANDBY
+     * exits, which use the original `dm_set_standby()`, still recalibrate
+     * as designed for the gh#28 explicit-pause use-case.) */
+    if (s_manual_set_standby_on_entry) {
+        ESP_LOGI(TAG, "[T8] auto-clearing menu-set STANDBY on session %s",
+                 timeout ? "timeout" : "logout");
+        dm_set_standby_ex(false, LOG_BY_ADMIN, 1u /*=LCD*/, false /*no recal*/);
+        s_manual_set_standby_on_entry = false;
+    }
 }
 
 /* ============================================================
@@ -559,12 +642,35 @@ static void apply_param_change(const param_def_t *p, int32_t new_val, int32_t ol
 /* ============================================================
  * Transition helpers
  * ============================================================ */
-/** @brief Force the FSM back to UI_STATUS and reset rotation; mark dirty. */
+/** @brief Force the FSM back to UI_STATUS and reset rotation; mark dirty.
+ *
+ * rc.1.5.0 — central exit point for the gh#29 manual-motor menu and the
+ * gh#28 mode-toggle PIN flow. Every exit path routes through here
+ * (explicit `*=back`, IO0 reset paths, session-timeout, the 5-min menu-
+ * auto-return).
+ *
+ * rc.1.5.1 — auto-cleared STANDBY for the gh#29 case here.
+ *
+ * rc.1.5.2 — the STANDBY auto-clear was MOVED to `session_close()`. Operator
+ * feedback (2026-05-26): on a *=back from the manual-motor menu, climate
+ * control would resume on the next sensor poll (~30 s later) and immediately
+ * overwrite the admin's manual positions. Tying the clear to session-end
+ * instead gives the admin a full session-timeout "respect window" (default
+ * 5 min from last keypress) during which T6 stays paused and manual
+ * positions hold. The `s_manual_set_standby_on_entry` flag is now read by
+ * `session_close()` exclusively; `go_status()` only navigates state.
+ */
 static void go_status(void)
 {
     s_state        = UI_STATUS;
     s_status_ticks = 0;
     s_dirty        = true;
+
+    /* Defensive: clear pending-action flags so a stale flag (e.g. left over
+     * by a code path that didn't explicitly reset) can't route the next
+     * PIN entry to the wrong destination. */
+    s_pending_mode_toggle = false;
+    s_pending_motor       = false;
 }
 
 /**
@@ -808,10 +914,11 @@ static void render_status(void)
             }
             break;
 
-        case 2: { /* Mode / alarms */
+        case 2: { /* Mode / alarms (rc.1.5.0 — STANDBY added per gh#28) */
             if      (bits & EG1_BIT_MOTOR_ALARM)   snprintf(r0, sizeof(r0), "Mode: ALARM     ");
             else if (bits & EG1_BIT_WIND_OVERRIDE) snprintf(r0, sizeof(r0), "Mode: WIND      ");
             else if (bits & EG1_BIT_CALIBRATING)   snprintf(r0, sizeof(r0), "Mode:Window Cal.");
+            else if (bits & EG1_BIT_STANDBY)       snprintf(r0, sizeof(r0), "Mode: STANDBY   ");
             else                                    snprintf(r0, sizeof(r0), "Mode: AUTO      ");
             snprintf(r1, sizeof(r1), "Sess: %-6s%s",
                      (s_session == SESSION_ADMIN)  ? "Admin"  :
@@ -1205,6 +1312,83 @@ static void render_edit_value(void)
 }
 
 /* ============================================================
+ * rc.1.5.0 — gh#28 Mode toggle + gh#29 Manual motor renders
+ * ============================================================ */
+
+/**
+ * @brief rc.1.5.0 / gh#28 — render UI_MODE_TOGGLE.
+ *
+ * Row 0: current mode string ("Now: AUTO" or "Now: STANDBY"), derived from
+ *        dm_get_standby() so the screen tracks an out-of-band web-side
+ *        toggle without explicit polling.
+ * Row 1: hint "1=Auto 2=Stby *Bk" (16 chars).
+ */
+static void render_mode_toggle(void)
+{
+    char r0[17], r1[17];
+    snprintf(r0, sizeof(r0), "Now:%-12s",
+             dm_get_standby() ? "STANDBY" : "AUTO");
+    snprintf(r1, sizeof(r1), "1=Auto 2=Stby *B");
+    lcd_set(r0, r1);
+}
+
+/**
+ * @brief rc.1.5.0 / gh#29 — render UI_MOTOR_PICK.
+ *
+ * Row 0: header + per-channel state (CLOS/OPEN/MOV>/MOV</UNK), 16 cols.
+ *        Read fresh via t2_get_window_states() so concurrent T2 updates
+ *        (e.g. an admin-issued OPEN landing as the menu re-renders) are
+ *        reflected immediately.
+ * Row 1: hint "1=M1 2=M2 3=M3 *B".
+ */
+static void render_motor_pick(void)
+{
+    window_state_t ws[3];
+    t2_get_window_states(ws);
+    auto abbr = [](window_state_t s) -> const char * {
+        switch (s) {
+            case WIN_OPEN:         return "OPEN";
+            case WIN_CLOSED:       return "CLOS";
+            case WIN_MOVING_OPEN:  return "MOV>";
+            case WIN_MOVING_CLOSE: return "MOV<";
+            default:               return "UNK ";
+        }
+    };
+    char r0[17], r1[17];
+    snprintf(r0, sizeof(r0), "%-4s %-4s %-4s   ",
+             abbr(ws[0]), abbr(ws[1]), abbr(ws[2]));
+    snprintf(r1, sizeof(r1), "1=M1 2=M2 3=M3*B");
+    lcd_set(r0, r1);
+}
+
+/**
+ * @brief rc.1.5.0 / gh#29 — render UI_MOTOR_ACTION.
+ *
+ * Row 0: bracketed selected motor + its current state ("[M2] OPEN", 16 cols).
+ * Row 1: hint "1=Open 2=Close *B".
+ */
+static void render_motor_action(void)
+{
+    window_state_t ws[3];
+    t2_get_window_states(ws);
+    const char *st = "UNK";
+    if (s_motor_pick_ch >= 1u && s_motor_pick_ch <= 3u) {
+        switch (ws[s_motor_pick_ch - 1u]) {
+            case WIN_OPEN:         st = "OPEN";  break;
+            case WIN_CLOSED:       st = "CLOSED"; break;
+            case WIN_MOVING_OPEN:  st = "MOV>";  break;
+            case WIN_MOVING_CLOSE: st = "MOV<";  break;
+            default:               st = "UNK";   break;
+        }
+    }
+    char r0[17], r1[17];
+    snprintf(r0, sizeof(r0), "[M%u] %-10s",
+             (unsigned)s_motor_pick_ch, st);
+    snprintf(r1, sizeof(r1), "1=Open 2=Cls *Bk");
+    lcd_set(r0, r1);
+}
+
+/* ============================================================
  * Render dispatch
  * ============================================================ */
 /* Forward declarations — these helpers live further down in the file
@@ -1236,6 +1420,10 @@ static void render(void)
         case UI_EDIT_VALUE:    render_edit_value();             break;
         case UI_SET_DATE:      render_set_date();               break;
         case UI_SET_TIME:      render_set_time();               break;
+        /* rc.1.5.0 — gh#28 / gh#29 LCD surfaces */
+        case UI_MODE_TOGGLE:   render_mode_toggle();            break;
+        case UI_MOTOR_PICK:    render_motor_pick();             break;
+        case UI_MOTOR_ACTION:  render_motor_action();           break;
     }
 }
 
@@ -1286,15 +1474,17 @@ static void handle_status(char key)
             s_sub_page = 0;
             s_dirty    = true;
         } else {
-            s_pin_role        = PIN_ROLE_FARMER;
-            s_pin_len         = 0;
+            s_pin_role            = PIN_ROLE_FARMER;
+            s_pin_len             = 0;
             memset(s_pin_buf, 0, sizeof(s_pin_buf));
-            s_pending_param   = -1;
-            s_pending_ap      = false;
-            s_pending_settime = false;
-            s_return_menu     = UI_MENU_CLIMATE;
-            s_state           = UI_PIN_ENTRY;
-            s_dirty           = true;
+            s_pending_param       = -1;
+            s_pending_ap          = false;
+            s_pending_settime     = false;
+            s_pending_mode_toggle = false;
+            s_pending_motor       = false;
+            s_return_menu         = UI_MENU_CLIMATE;
+            s_state               = UI_PIN_ENTRY;
+            s_dirty               = true;
         }
         return;
     }
@@ -1305,15 +1495,44 @@ static void handle_status(char key)
             s_sub_page = 0;
             s_dirty    = true;
         } else {
-            s_pin_role        = PIN_ROLE_FARMER;
-            s_pin_len         = 0;
+            s_pin_role            = PIN_ROLE_FARMER;
+            s_pin_len             = 0;
             memset(s_pin_buf, 0, sizeof(s_pin_buf));
-            s_pending_param   = -1;
-            s_pending_ap      = false;
-            s_pending_settime = false;
-            s_return_menu     = UI_MENU_WIND;
-            s_state           = UI_PIN_ENTRY;
-            s_dirty           = true;
+            s_pending_param       = -1;
+            s_pending_ap          = false;
+            s_pending_settime     = false;
+            s_pending_mode_toggle = false;
+            s_pending_motor       = false;
+            s_return_menu         = UI_MENU_WIND;
+            s_state               = UI_PIN_ENTRY;
+            s_dirty               = true;
+        }
+        return;
+    }
+    /* rc.1.5.0 / gh#28 — # on the Mode/Session page (page 2) → Mode-toggle menu.
+     * Either Farmer or Admin session accepted; the locked design treats
+     * STANDBY as a routine operational toggle, not a configuration change.
+     * If no session is active, request PIN — handle_pin determines the role
+     * from the digit count entered (4 = Farmer, 8 = Admin). */
+    if (key == '#' && (s_status_page % STATUS_PAGES) == 2u) {
+        if (s_session >= SESSION_FARMER) {
+            s_state = UI_MODE_TOGGLE;
+            s_dirty = true;
+        } else {
+            /* Place-holder role; the real choice happens at # in handle_pin
+             * when we know how many digits were entered. PIN_ROLE_FARMER
+             * here keeps render_pin_entry's max-len display at 4. */
+            s_pin_role            = PIN_ROLE_FARMER;
+            s_pin_len             = 0;
+            memset(s_pin_buf, 0, sizeof(s_pin_buf));
+            s_pending_param       = -1;
+            s_pending_ap          = false;
+            s_pending_settime     = false;
+            s_pending_mode_toggle = true;
+            s_pending_motor       = false;
+            s_return_menu         = UI_STATUS;
+            s_state               = UI_PIN_ENTRY;
+            s_dirty               = true;
         }
         return;
     }
@@ -1323,14 +1542,16 @@ static void handle_status(char key)
             s_state = UI_MENU_SYSTEM;
             s_dirty = true;
         } else {
-            s_pin_role      = PIN_ROLE_ADMIN;
-            s_pin_len       = 0;
+            s_pin_role            = PIN_ROLE_ADMIN;
+            s_pin_len             = 0;
             memset(s_pin_buf, 0, sizeof(s_pin_buf));
-            s_pending_param = -1;
-            s_pending_ap    = true;
-            s_return_menu   = UI_STATUS;
-            s_state         = UI_PIN_ENTRY;
-            s_dirty         = true;
+            s_pending_param       = -1;
+            s_pending_ap          = true;
+            s_pending_mode_toggle = false;
+            s_pending_motor       = false;
+            s_return_menu         = UI_STATUS;
+            s_state               = UI_PIN_ENTRY;
+            s_dirty               = true;
         }
         return;
     }
@@ -1339,14 +1560,55 @@ static void handle_status(char key)
         if (s_session >= SESSION_ADMIN) {
             enter_set_date();
         } else {
-            s_pin_role        = PIN_ROLE_ADMIN;
-            s_pin_len         = 0;
+            s_pin_role            = PIN_ROLE_ADMIN;
+            s_pin_len             = 0;
             memset(s_pin_buf, 0, sizeof(s_pin_buf));
-            s_pending_param   = -1;
-            s_pending_settime = true;
-            s_return_menu     = UI_STATUS;
-            s_state           = UI_PIN_ENTRY;
-            s_dirty           = true;
+            s_pending_param       = -1;
+            s_pending_settime     = true;
+            s_pending_mode_toggle = false;
+            s_pending_motor       = false;
+            s_return_menu         = UI_STATUS;
+            s_state               = UI_PIN_ENTRY;
+            s_dirty               = true;
+        }
+        return;
+    }
+    /* rc.1.5.0 / gh#29 — # on the Motor states page (page 5) → manual motor
+     * control. Admin-only (locked design: farmers are supported by the
+     * controller's autonomous logic, not by bypassing it). PIN-flow runs
+     * first if no admin session is active. */
+    if (key == '#' && (s_status_page % STATUS_PAGES) == 5u) {
+        if (s_session >= SESSION_ADMIN) {
+            /* rc.1.5.1 — auto-enter STANDBY if it wasn't already on, so T6
+             * stays paused for the full menu lifetime.
+             * rc.1.5.2 — flag-set semantics adjusted so re-entries preserve
+             * the "this session set STANDBY" indicator across navigation:
+             *   - First entry, STANDBY off  → set STANDBY, flag = true
+             *   - Re-entry,  STANDBY on (we set it before) → don't set,
+             *                                                flag STAYS true
+             *   - First entry, STANDBY on (set via Scherm-3/web independently)
+             *                            → don't set, flag stays false
+             * The flag persists across `*=back` navigation; only
+             * `session_close()` clears both flag and STANDBY together. */
+            if (!dm_get_standby()) {
+                dm_set_standby_ex(true, LOG_BY_ADMIN, 1u /*=LCD*/, false);
+                s_manual_set_standby_on_entry = true;
+            }
+            s_motor_pick_ch = 0;
+            s_state         = UI_MOTOR_PICK;
+            s_dirty         = true;
+        } else {
+            s_pin_role            = PIN_ROLE_ADMIN;
+            s_pin_len             = 0;
+            memset(s_pin_buf, 0, sizeof(s_pin_buf));
+            s_pending_param       = -1;
+            s_pending_ap          = false;
+            s_pending_settime     = false;
+            s_pending_mode_toggle = false;
+            s_pending_motor       = true;
+            s_return_menu         = UI_STATUS;
+            s_state               = UI_PIN_ENTRY;
+            s_dirty               = true;
         }
         return;
     }
@@ -1594,8 +1856,14 @@ static void handle_menu_access(char key)
  */
 static void handle_pin(char key)
 {
-    const int max_len = (s_pin_role == PIN_ROLE_FARMER) ? PIN_FARMER_DIGITS
-                                                        : PIN_ADMIN_DIGITS;
+    /* For the gh#28 mode-toggle PIN flow either role is accepted; pick the
+     * role based on the digit count entered at # submission. Until then,
+     * permit up to PIN_ADMIN_DIGITS so the operator can finish either
+     * length without artificial truncation. */
+    const int max_len = s_pending_mode_toggle
+                        ? PIN_ADMIN_DIGITS
+                        : ((s_pin_role == PIN_ROLE_FARMER) ? PIN_FARMER_DIGITS
+                                                            : PIN_ADMIN_DIGITS);
 
     if (key >= '0' && key <= '9') {
         if (s_pin_len < (uint8_t)max_len) {
@@ -1609,16 +1877,30 @@ static void handle_pin(char key)
             s_pin_buf[--s_pin_len] = '\0';
             s_dirty = true;
         } else {
-            /* Cancel — return to the menu we came from */
-            s_pending_param = -1;
+            /* Cancel — return to the menu we came from. Clear all the
+             * pending-action flags so a subsequent PIN entry starts clean. */
+            s_pending_param       = -1;
+            s_pending_ap          = false;
+            s_pending_settime     = false;
+            s_pending_mode_toggle = false;
+            s_pending_motor       = false;
             s_state = s_return_menu;
             s_dirty = true;
         }
 
     } else if (key == '#') {
-        if (s_pin_len != (uint8_t)max_len) {
+        /* gh#28 either-role: pick role from digit count and override
+         * s_pin_role before verifying. 4 = Farmer, 8 = Admin; everything
+         * else is invalid. */
+        if (s_pending_mode_toggle) {
+            if      (s_pin_len == (uint8_t)PIN_FARMER_DIGITS) s_pin_role = PIN_ROLE_FARMER;
+            else if (s_pin_len == (uint8_t)PIN_ADMIN_DIGITS)  s_pin_role = PIN_ROLE_ADMIN;
+            else {
+                show_msg("Need 4 or 8 dig.", "then press #    ", 1200);
+                return;
+            }
+        } else if (s_pin_len != (uint8_t)max_len) {
             show_msg("Need all digits ", "then press #    ", 1000);
-            /* Stay in PIN_ENTRY */
             return;
         }
 
@@ -1640,6 +1922,25 @@ static void handle_pin(char key)
                 /* Resume pending date/time set */
                 s_pending_settime = false;
                 enter_set_date();
+            } else if (s_pending_mode_toggle) {
+                /* rc.1.5.0 / gh#28 — Resume pending Mode toggle */
+                s_pending_mode_toggle = false;
+                s_state               = UI_MODE_TOGGLE;
+                s_dirty               = true;
+            } else if (s_pending_motor) {
+                /* rc.1.5.0 / gh#29 — Resume pending Manual-motor menu.
+                 * rc.1.5.1 — auto-enter STANDBY (no recal on clear).
+                 * rc.1.5.2 — flag-set preserves "true" across re-entries
+                 * (see the # admin-session direct-entry path above for
+                 * full rationale). */
+                s_pending_motor = false;
+                if (!dm_get_standby()) {
+                    dm_set_standby_ex(true, LOG_BY_ADMIN, 1u /*=LCD*/, false);
+                    s_manual_set_standby_on_entry = true;
+                }
+                s_motor_pick_ch = 0;
+                s_state         = UI_MOTOR_PICK;
+                s_dirty         = true;
             } else if (s_pending_param >= 0) {
                 /* Resume pending param edit; s_return_menu already holds the
                  * browse state that was set when begin_edit() first redirected
@@ -1665,6 +1966,152 @@ static void handle_pin(char key)
             s_dirty = true;
         }
     }
+}
+
+/* ============================================================
+ * rc.1.5.0 — gh#28 Mode toggle + gh#29 Manual motor handlers
+ * ============================================================ */
+
+/**
+ * @brief rc.1.5.0 / gh#28 — handle keys in UI_MODE_TOGGLE.
+ *
+ * 1 → AUTOMATIC, 2 → STANDBY, * → back to UI_STATUS. The actual transition
+ * goes through `dm_set_standby()`, which handles the EG1 bit, NVS persistence,
+ * audit row, and the CMD_RECALIBRATE post on STANDBY exit. The initiator
+ * (LOG_BY_FARMER / LOG_BY_ADMIN) is taken from the active LCD session.
+ */
+static void handle_mode_toggle(char key)
+{
+    log_initiator_t init = (s_session == SESSION_ADMIN) ? LOG_BY_ADMIN
+                                                         : LOG_BY_FARMER;
+    switch (key) {
+        case '1':
+            dm_set_standby(false, init, 1u /* LCD surface */);
+            show_msg("Mode: Automatic", "calibrating...  ", 1500);
+            go_status();
+            break;
+        case '2':
+            dm_set_standby(true, init, 1u);
+            show_msg("Mode: STANDBY  ", "control paused  ", 1500);
+            go_status();
+            break;
+        case '*':
+            go_status();
+            break;
+        default:
+            break;
+    }
+}
+
+/**
+ * @brief rc.1.5.0 / gh#29 — handle keys in UI_MOTOR_PICK.
+ *
+ * 1/2/3 → select M1/M2/M3 and advance to UI_MOTOR_ACTION.
+ * *     → exit menu; clear EG1_BIT_MANUAL_SESSION so T6 resumes on its next
+ *         tick (T6 reads the bit on every loop iteration).
+ */
+static void handle_motor_pick(char key)
+{
+    switch (key) {
+        case '1': case '2': case '3':
+            s_motor_pick_ch = (uint8_t)(key - '0');
+            s_state         = UI_MOTOR_ACTION;
+            s_dirty         = true;
+            break;
+        case '*':
+            /* rc.1.5.2 — STANDBY-clear is now handled by `session_close()`,
+             * not by this menu-exit path. The admin can navigate back to
+             * the status screens via `*=back` and STANDBY stays on for the
+             * remainder of the admin session (default 5 min from last
+             * keypress), giving the admin's manual per-channel positions
+             * a respect window during which T6 cannot override them.
+             * Session-end (timeout or explicit logout) finally clears
+             * STANDBY (no recal) and T6 resumes on its next tick. */
+            go_status();
+            break;
+        default:
+            break;
+    }
+}
+
+/**
+ * @brief rc.1.5.0 / gh#29 — handle keys in UI_MOTOR_ACTION.
+ *
+ * 1 → OPEN, 2 → CLOSE on the previously selected motor (s_motor_pick_ch).
+ * *     → back to UI_MOTOR_PICK; EG1_BIT_MANUAL_SESSION stays set
+ *         (operator is still in the manual flow).
+ *
+ * Safety gates per the locked design:
+ *   - EG1.WIND_OVERRIDE blocks OPEN (CLOSE accepted — closing is always safe).
+ *   - EG1.MOTOR_ALARM   blocks all commands.
+ *   - EG1.CALIBRATING   (boot CLOSE_ALL window or STANDBY-exit recalibration)
+ *                       blocks all commands until calibration completes.
+ *
+ * Commands are posted to Q1 with `source = SRC_OPERATOR_MANUAL`. T2's
+ * dwell-timer check is bypassed for that source — the admin's deliberate
+ * choice overrides the anti-thrash protection that exists to gate the
+ * autonomous loop. T2 will emit the LOG_RELAY audit row when the relay
+ * is actually energised; the initiator chain (LOG_BY_ADMIN) carries
+ * forward via process_command()'s src_name() logging — the LOG_RELAY
+ * payload itself stays LOG_BY_SYSTEM because T2 is the agent doing the
+ * physical action. (Per the locked design's "LOG_RELAY + initiator=ADMIN
+ * + source field=SRC_OPERATOR_MANUAL" — we record SRC_OPERATOR_MANUAL
+ * via the existing source field and rely on the audit chain through
+ * Q1, not on a new LOG_RELAY initiator semantics.)
+ */
+static void handle_motor_action(char key)
+{
+    if (key == '*') {
+        s_state = UI_MOTOR_PICK;
+        s_dirty = true;
+        return;
+    }
+
+    if (key != '1' && key != '2') return;
+    if (s_motor_pick_ch < 1u || s_motor_pick_ch > 3u) return;
+
+    const EventBits_t bits = (EG1 != NULL) ? xEventGroupGetBits(EG1) : 0;
+    const bool open_request = (key == '1');
+
+    /* Safety-gate checks. Refuse silently with a transient message rather
+     * than committing a command that T2 would just discard. */
+    if (bits & EG1_BIT_MOTOR_ALARM) {
+        show_msg("MOTOR ALARM    ", "cmd refused    ", 1500);
+        return;
+    }
+    if (bits & EG1_BIT_CALIBRATING) {
+        show_msg("Calibrating    ", "wait + retry   ", 1500);
+        return;
+    }
+    if (open_request && (bits & EG1_BIT_WIND_OVERRIDE)) {
+        show_msg("WIND OVERRIDE  ", "OPEN refused   ", 1500);
+        return;
+    }
+
+    /* Build + post the command. */
+    window_cmd_t cmd = {};
+    cmd.action  = open_request ? CMD_OPEN : CMD_CLOSE;
+    cmd.channel = s_motor_pick_ch;
+    cmd.source  = SRC_OPERATOR_MANUAL;
+    if (xQueueSend(Q1, &cmd, pdMS_TO_TICKS(100)) != pdTRUE) {
+        ESP_LOGW(TAG, "[T8] Q1 full — manual cmd for M%u dropped",
+                 (unsigned)s_motor_pick_ch);
+        show_msg("Queue full     ", "try again      ", 1200);
+        return;
+    }
+    ESP_LOGI(TAG, "[T8] Manual %s M%u (admin)",
+             open_request ? "OPEN" : "CLOSE", (unsigned)s_motor_pick_ch);
+    {
+        char msg0[17], msg1[17];
+        snprintf(msg0, sizeof(msg0), "M%u %s        ",
+                 (unsigned)s_motor_pick_ch, open_request ? "opening" : "closing");
+        snprintf(msg1, sizeof(msg1), "command sent   ");
+        show_msg(msg0, msg1, 1500);
+    }
+    /* Stay in UI_MOTOR_ACTION — operator can hit `*` to pick another
+     * motor, or wait for the menu-auto-return tick to dismiss the menu.
+     * EG1_BIT_MANUAL_SESSION stays set until that exit. */
+    s_dirty = true;
 }
 
 /**
@@ -2092,6 +2539,10 @@ void task_ui_display(void *pvParameters)
                 case UI_EDIT_VALUE:    handle_edit(evt.key);                    break;
                 case UI_SET_DATE:      handle_set_date(evt.key);                break;
                 case UI_SET_TIME:      handle_set_time(evt.key);                break;
+                /* rc.1.5.0 — gh#28 / gh#29 LCD flows */
+                case UI_MODE_TOGGLE:   handle_mode_toggle(evt.key);             break;
+                case UI_MOTOR_PICK:    handle_motor_pick(evt.key);              break;
+                case UI_MOTOR_ACTION:  handle_motor_action(evt.key);            break;
             }
         }
 
@@ -2110,8 +2561,18 @@ void task_ui_display(void *pvParameters)
              * display is showing anything other than the rotating status
              * screens, jump back to UI_STATUS. Independent of the session-
              * timeout above — runs even when no user is logged in (e.g.
-             * casual visitor left the system on the menu). */
-            if (++s_menu_idle_ticks >= AUTOROTATE_RETURN_TICKS) {
+             * casual visitor left the system on the menu).
+             *
+             * rc.1.5.1 / gh#29 follow-up — the admin manual-motor menu is
+             * EXEMPT from menu-auto-return. The menu auto-sets STANDBY on
+             * entry, so as long as the admin is logged in the controller
+             * stays paused — there's no harm in leaving the menu open.
+             * Exit triggers are now only: (1) explicit *=back, (2) admin
+             * session timeout (5 min default, configurable via System tab).
+             * Both call go_status() which clears the auto-set STANDBY. */
+            const bool exempt = (s_state == UI_MOTOR_PICK ||
+                                 s_state == UI_MOTOR_ACTION);
+            if (!exempt && ++s_menu_idle_ticks >= AUTOROTATE_RETURN_TICKS) {
                 go_status();
                 s_menu_idle_ticks = 0;
             }

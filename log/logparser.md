@@ -59,12 +59,16 @@
 ## Purpose
 
 Converts raw CSV log files downloaded from the greenhouse controller into
-human-readable text.  Both log sources produce the same CSV format:
+human-readable text. Log files are SD-card CSVs in the format described in
+TSDS §5.3:
 
 | Source | How to obtain | Typical filename |
 |---|---|---|
-| NVS ring buffer | Web GUI → Log tab → Download NVS | `nvs_log.csv` |
 | SD card log file | Web GUI → Log tab → select SD file → Download | `20250607163022.csv` |
+
+> **rc.1.4.0 row-format upgrade.** From firmware 2.0.0-rc.1.4.0 onward, the periodic sensor snapshot is recorded as **three companion rows** per cycle (event type `SENSOR_HR`, sub-rows discriminated by `ch`: 0 = T+RH at 0.1 °C precision, 1 = wind, 2 = packed window-state bitmask) rather than the single `SENSOR` row used pre-rc.1.4.0. A new `SUN` event type records sunrise/sunset whenever the cached values change (~1 row/day in steady state). The parser decodes both row generations transparently — historical (pre-rc.1.4.0) files keep displaying their legacy `SENSOR` rows unchanged; rc.1.4.0+ files render the triplet + `SUN` rows; mixed files (an upgrade boundary) work too. See `model/logUpdatePlan.md` for the format-change rationale and the bitmask encoding.
+
+> **NVS ring buffer note.** The NVS event-log ring buffer (`nvs_log.csv`) was retired in the 2.0.0-alpha.6.5 series — log persistence is now SD-card-only. The parser remains backward-compatible with the `nvs_log.csv` artefacts that may still be in your archive.
 
 ---
 
@@ -137,17 +141,22 @@ Output:
 Each event is rendered as a single line:
 
 ```
-Timestamp (local)    Type        Initiator       Description
---------------------------------------------------------------------
-2025-06-07 14:30:22  [SENSOR ]   System          T=23 °C   RH=65 %
-2025-06-07 14:30:52  [RELAY  ]   System          M1: → MOVING_OPEN
-2025-06-07 14:31:10  [MODE   ]   System          Vent step → 1 (M1 open)  [T-demand: M1 open  RH-demand: neutral]
-2025-06-07 14:35:00  [SETPT  ]   Admin (LCD)     t_max_day: 25 °C → 27 °C
-2025-06-07 14:40:00  [SESSION]   Admin (LCD)     Session opened: Admin  [Admin (LCD)]
-2025-06-07 14:45:00  [ALARM  ]   System          WIND OVERRIDE: SET — speed 8.5 m/s ≥ v_max 5.0 m/s
-2025-06-07 14:50:00  [ALARM  ]   System          WIND OVERRIDE: CLEARED — speed 3.2 m/s, direction 180°
-2025-06-07 15:00:00  [SYSTEM ]   System          System boot
+Timestamp (local)    Type           Initiator       Description
+--------------------------------------------------------------------------------
+2026-05-26 05:30:00  [SUN      ]    System          sunrise=05:30 local  sunset=21:36 local
+2026-05-26 13:30:00  [SENSOR_HR]    System          T=23.4 degC   RH=65 %
+2026-05-26 13:30:00  [SENSOR_HR]    System          wind=3.5 m/s  dir=158 deg
+2026-05-26 13:30:00  [SENSOR_HR]    System          M1=OPEN  M2=OPEN  M3=OPEN  (0x002A)
+2026-05-26 13:30:52  [RELAY    ]    System          M1: -> MOVING_OPEN
+2026-05-26 13:31:10  [MODE     ]    System          Vent step -> 1 (M1 open)  [T-demand: M1 open  RH-demand: neutral]
+2026-05-26 14:35:00  [SETPT    ]    Admin (LCD)     t_max_day: 25 degC -> 27 degC
+2026-05-26 14:40:00  [SESSION  ]    Admin (LCD)     Session opened: Admin  [Admin (LCD)]
+2026-05-26 14:45:00  [ALARM    ]    System          WIND OVERRIDE: SET — speed 8.5 m/s >= v_max 5.0 m/s
+2026-05-26 14:50:00  [ALARM    ]    System          WIND OVERRIDE: CLEARED — speed 3.2 m/s, direction 180 deg
+2026-05-26 15:00:00  [SYSTEM   ]    System          System boot
 ```
+
+The output above mixes the rc.1.4.0+ event types (`SENSOR_HR`, `SUN`) with the carried-over types (`RELAY`, `MODE`, `SETPT`, `SESSION`, `ALARM`, `SYSTEM`). The legacy `SENSOR` row type is silently retained for pre-rc.1.4.0 files — see the Event type reference below.
 
 The **combined file** (wildcard mode) prepends a summary header and appends a
 total event count.
@@ -156,8 +165,8 @@ total event count.
 
 ## Event type reference
 
-### SENSOR
-Periodic sensor snapshot posted by the Data Manager (T4) on every poll cycle.
+### SENSOR (legacy, pre-rc.1.4.0 files only)
+Periodic sensor snapshot — **sunset in rc.1.4.0**, no longer emitted by current firmware. Retained here because historical log files (rc.1.3.x and earlier) still carry these rows. The parser continues to recognise them so older files remain readable.
 
 | Field | Meaning |
 |---|---|
@@ -168,7 +177,65 @@ Periodic sensor snapshot posted by the Data Manager (T4) on every poll cycle.
 
 **Example output:**
 ```
-2025-06-07 14:30:22  [SENSOR ]   System          T=23 °C   RH=65 %
+2025-06-07 14:30:22  [SENSOR   ]  System          T=23 degC   RH=65 %
+```
+
+---
+
+### SENSOR_HR (rc.1.4.0+)
+
+Periodic sensor snapshot posted by the Data Manager (T4) on every poll cycle. Replaces the single-row `SENSOR` format with **three companion rows** sharing the same timestamp, discriminated by `ch`. See `model/logUpdatePlan.md` §2 for the full specification.
+
+| `ch` | Subject | `value_a` | `value_b` |
+|--:|---|---|---|
+| 0 | Temperature + humidity | `t_c10` — temperature × 10 (0.1 °C precision) | `rh` — relative humidity, 0..100 % |
+| 1 | Wind | `wind_dms` — wind speed × 10 (deci-m/s) | `wind_dir_deg` — wind direction, 0..359 ° |
+| 2 | Window-state bitmask | 16-bit packed state + safety flags (see encoding below) | 0 (reserved) |
+
+The bitmask (ch=2, `value_a`) packs all three window-channel states + three EG1 safety flags:
+
+```
+bits  1..0  = M1 state    (0=CLOSED, 1=MOVING_OPEN, 2=OPEN, 3=MOVING_CLOSE)
+bits  3..2  = M2 state    (same encoding)
+bits  5..4  = M3 state    (same encoding)
+bits 11..6  = reserved (0)
+bit  12     = EG1_BIT_WIND_OVERRIDE   ("WIND" flag in parser output)
+bit  13     = EG1_BIT_MOTOR_ALARM     ("ALARM" flag)
+bit  14     = EG1_BIT_CALIBRATING     ("CAL" flag)
+bit  15     = reserved (0)
+```
+
+T2 internally uses an extended state enum with GAP states for direction reversals; those collapse to the matching MOVING state in the public `window_state_t` returned by the bitmask packer. The ~2 s GAP intervals are not visible in the log.
+
+**Example output:**
+```
+2026-05-26 13:30:00  [SENSOR_HR]  System          T=23.4 degC   RH=65 %
+2026-05-26 13:30:00  [SENSOR_HR]  System          wind=3.5 m/s  dir=158 deg
+2026-05-26 13:30:00  [SENSOR_HR]  System          M1=OPEN  M2=OPEN  M3=OPEN  (0x002A)
+2026-05-26 13:31:00  [SENSOR_HR]  System          M1=OPEN  M2=OPEN  M3=OPEN  [WIND]  (0x152A)
+2026-05-26 14:00:00  [SENSOR_HR]  System          M1=CLOS  M2=CLOS  M3=CLOS  [CAL]  (0x4000)
+```
+
+The bitmask is also printed in hex (`(0x002A)`) at the end of every channel-2 line so the raw value can be cross-checked against the encoding above.
+
+---
+
+### SUN (rc.1.4.0+)
+
+Sunrise/sunset record. Emitted by the Data Manager (T4) whenever its cached sun-time values change. In steady-state operation this fires once per local-midnight rollover (sunrise/sunset shifts 1–2 min/day in spring/autumn), once at boot, and once per operator coordinate edit via Q4. See `model/logUpdatePlan.md` §3 for the full specification.
+
+| Field | Meaning |
+|---|---|
+| `value_a` | Sunrise — minutes from local midnight (0..1439) |
+| `value_b` | Sunset — minutes from local midnight (0..1439) |
+| `ch` | 0 (not motor-specific) |
+| `param` | 0 (not a config event) |
+
+The values are **local time**, matching the existing CSV timestamp convention. A historical log file is self-sufficient for per-day night-shading reconstruction — no live `/api/status` lookup needed.
+
+**Example output:**
+```
+2026-05-26 05:30:00  [SUN      ]  System          sunrise=05:30 local  sunset=21:36 local
 ```
 
 ---

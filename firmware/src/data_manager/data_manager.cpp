@@ -119,6 +119,12 @@ static const char K_LOG_UPLOAD_M[]     = "log_upload_m";
 static const char K_LOG_UPLOAD_ROT[]   = "log_upload_rot";
 static const char K_LOG_LAST_UP[]      = "log_last_up";
 
+/* rc.1.5.0 (gh#28) — operating-mode persistence. NVS-backed so a power blip
+ * during a deliberate STANDBY does not silently re-enable climate control on
+ * reboot. Stored as i32: 0 = AUTOMATIC, 1 = STANDBY. Other modes (MOTOR_ALARM,
+ * WIND_OVERRIDE, CALIBRATING) are runtime conditions and are NOT persisted. */
+static const char K_MODE_STANDBY[]     = "mode_standby";
+
 /* ============================================================
  * Module-private state
  * ============================================================ */
@@ -227,6 +233,70 @@ static uint32_t rtc_dt_to_unix(const rtc_datetime_t *dt)
  *          contested. Touches `s_cfg` directly.
  * @see    sunrise_calc(), sunrise_is_daytime()
  */
+/* rc.1.4.0 — LOG_SUN change-detect cache. Initialised to a sentinel so the
+ * first update_sun_times() call after boot always emits (real sunrise/sunset
+ * values are in 0..1439, never -1). See model/logUpdatePlan.md §3.3. */
+static int32_t s_last_logged_sunrise_min = -1;
+static int32_t s_last_logged_sunset_min  = -1;
+
+/**
+ * @brief Convert cached UTC sunrise/sunset to local-time minutes-from-midnight.
+ *
+ * Computes the LT−GM offset from `time(NULL)` via `localtime_r`/`gmtime_r`
+ * (same math as `dm_status_snapshot`); applies it to the cached UTC values
+ * and normalises with the standard `+14400` (10 days of minutes) modulo
+ * trick so westward (negative-offset) TZs stay positive.
+ *
+ * @param out_sunrise_local  Receives local-time sunrise minutes (0..1439).
+ * @param out_sunset_local   Receives local-time sunset  minutes (0..1439).
+ * @note  Pure helper — no MX4 take. Caller must already hold MX4 (or be
+ *        in a boot-time pre-task-creation phase like update_sun_times()).
+ */
+static void sun_local_from_utc(int32_t *out_sunrise_local,
+                               int32_t *out_sunset_local)
+{
+    long off_min = 0;
+    time_t ts_now = (time_t)s_cfg.current_unix_ts;
+    if (ts_now > 0) {
+        struct tm lt, gm;
+        localtime_r(&ts_now, &lt);
+        gmtime_r(&ts_now, &gm);
+        int day_diff = lt.tm_yday - gm.tm_yday;
+        if      (lt.tm_year > gm.tm_year) day_diff =  1;
+        else if (lt.tm_year < gm.tm_year) day_diff = -1;
+        off_min = (long)day_diff * 1440L
+                + (long)(lt.tm_hour - gm.tm_hour) * 60L
+                + (long)(lt.tm_min  - gm.tm_min);
+    }
+    *out_sunrise_local = (int32_t)((s_cfg.sunrise_mins_utc + off_min + 14400L) % 1440);
+    *out_sunset_local  = (int32_t)((s_cfg.sunset_mins_utc  + off_min + 14400L) % 1440);
+}
+
+/**
+ * @brief rc.1.4.0 — Post a LOG_SUN row to Q3.
+ *
+ * Mirrors the `log_sys()` helper pattern: builds a minimal log_event_t and
+ * hands it to log_post() for T9 to drain. Initiator is always LOG_BY_SYSTEM
+ * (T4 owns the event; per logUpdatePlan §3.5 the matching SETPT,*,0,21,*,*
+ * row already carries the operator identity when an operator coordinate
+ * edit indirectly triggered the recompute).
+ *
+ * @param sunrise_min  Local-time sunrise minutes-from-midnight (0..1439).
+ * @param sunset_min   Local-time sunset  minutes-from-midnight (0..1439).
+ */
+static void log_sun_event(int32_t sunrise_min, int32_t sunset_min)
+{
+    log_event_t ev = {};
+    ev.timestamp  = (uint32_t)time(NULL);
+    ev.event_type = (uint8_t)LOG_SUN;
+    ev.initiator  = (uint8_t)LOG_BY_SYSTEM;
+    ev.channel    = 0u;
+    ev.param_id   = (uint8_t)LOG_PARAM_NONE;
+    ev.value_a    = (int16_t)sunrise_min;
+    ev.value_b    = (int16_t)sunset_min;
+    log_post(&ev);
+}
+
 static void update_sun_times(void)
 {
     float lat = (float)s_cfg.lat_deg + (float)s_cfg.lat_frac / 1000.0f;
@@ -235,6 +305,25 @@ static void update_sun_times(void)
 
     s_cfg.is_daytime = sunrise_is_daytime(ts, lat, lon);
     sunrise_calc(ts, lat, lon, &s_cfg.sunrise_mins_utc, &s_cfg.sunset_mins_utc);
+
+    /* rc.1.4.0 — emit LOG_SUN whenever the cached values change. Compares
+     * the LOCAL-time minutes-from-midnight (consistent with how the values
+     * are exposed via /api/status and how the plotter consumes them).
+     *
+     * In steady-state operation this fires:
+     *   - Once at boot (sentinel -1 vs first real value)
+     *   - Once per local midnight rollover (sunrise/sunset shift 1-2 min/day)
+     *   - Once per operator lat/lon edit via Q4
+     *
+     * See model/logUpdatePlan.md §3.3 for the emission-trigger table. */
+    int32_t sunrise_local, sunset_local;
+    sun_local_from_utc(&sunrise_local, &sunset_local);
+    if (sunrise_local != s_last_logged_sunrise_min ||
+        sunset_local  != s_last_logged_sunset_min) {
+        log_sun_event(sunrise_local, sunset_local);
+        s_last_logged_sunrise_min = sunrise_local;
+        s_last_logged_sunset_min  = sunset_local;
+    }
 }
 
 /* ============================================================
@@ -390,6 +479,27 @@ static void nvs_load_system(void)
     nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_LED_NITE_TO,     DEF_LED_NITE_TO,         &s_cfg.led_nite_to);
     nvs_cfg_get_str_or_default(NVS_NS_SYSTEM, K_TZ_STR,          DEF_TZ_STR,
                                 s_cfg.tz_str, sizeof(s_cfg.tz_str));
+}
+
+/**
+ * @brief rc.1.5.0 (gh#28) — load persisted STANDBY flag and seed EG1.
+ *
+ * Reads `system/mode_standby` (default 0). If non-zero, sets
+ * EG1_BIT_STANDBY so T6 starts gated on its very first tick — the unit
+ * comes back up in STANDBY exactly as it was when power was lost.
+ *
+ * Idempotent: safe to call at any point during boot; nothing else reads
+ * EG1_BIT_STANDBY until T6 enters its main loop, which happens after T4
+ * has run this helper.
+ */
+static void nvs_load_mode(void)
+{
+    int32_t v = 0;
+    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_MODE_STANDBY, 0, &v);
+    if (v != 0 && EG1 != NULL) {
+        xEventGroupSetBits(EG1, EG1_BIT_STANDBY);
+        ESP_LOGI(TAG, "[T4] STANDBY restored from NVS (gh#28)");
+    }
 }
 
 /**
@@ -782,15 +892,40 @@ static void handle_sensor_reading(const sensor_reading_t *r)
         ESP_LOGW(TAG, "MX3 timeout — ring buffer entry dropped");
     }
 
-    /* 3. Post LOG_SENSOR snapshot to Q3 (FR-LG09). */
+    /* 3. Post LOG_SENSOR_HR snapshot to Q3 (FR-LG09; rc.1.4.0 — replaces the
+     *    legacy LOG_SENSOR single-row format with three channel-discriminated
+     *    sub-rows per sample, per model/logUpdatePlan.md §2.
+     *
+     *    Channel 0 — T + RH at 0.1 °C precision   (raw values, not sliding avg)
+     *    Channel 1 — wind speed × 10 + direction  (raw values)
+     *    Channel 2 — packed window-state bitmask  (see logUpdatePlan §2.2)
+     *
+     *    LOG_SENSOR (the legacy single-row format) is sunset — no longer
+     *    emitted. Its enum value remains in `log_type_t` so historical SD
+     *    files served via /api/log/download keep their stable type-column
+     *    string. */
     log_event_t evt = {};
-    evt.timestamp   = r->timestamp;
-    evt.event_type  = (uint8_t)LOG_SENSOR;
-    evt.initiator   = (uint8_t)LOG_BY_SYSTEM;
-    evt.channel     = 0u;
-    evt.param_id    = (uint8_t)LOG_PARAM_NONE;
-    evt.value_a     = r->t_avg_c;
-    evt.value_b     = (int16_t)r->rh_avg_pct;
+    evt.timestamp  = r->timestamp;
+    evt.event_type = (uint8_t)LOG_SENSOR_HR;
+    evt.initiator  = (uint8_t)LOG_BY_SYSTEM;
+    evt.param_id   = (uint8_t)LOG_PARAM_NONE;
+
+    /* Channel 0 — T + RH (raw, 0.1 °C precision in value_a). */
+    evt.channel = 0u;
+    evt.value_a = r->temperature_c10;
+    evt.value_b = (int16_t)r->humidity_pct;
+    log_post(&evt);
+
+    /* Channel 1 — wind speed (m/s × 10) + direction (deg). */
+    evt.channel = 1u;
+    evt.value_a = (int16_t)r->wind_speed_ms10;
+    evt.value_b = (int16_t)r->wind_dir_deg;
+    log_post(&evt);
+
+    /* Channel 2 — packed window-state bitmask (see logUpdatePlan §2.2). */
+    evt.channel = 2u;
+    evt.value_a = t2_get_window_bitmask();
+    evt.value_b = 0;
     log_post(&evt);
 
     /* 4. Notify T3 (TN1 — new wind data) and T6 (TN2 — new sensor data). */
@@ -919,6 +1054,12 @@ void task_data_manager(void *pvParameters)
     nvs_load_motor();
     nvs_load_system();
     nvs_load_web();
+    /* rc.1.5.0 (gh#28) — seed EG1_BIT_STANDBY from persisted state so the
+     * unit comes back up in STANDBY after a reboot if that's what the
+     * operator last chose. Must run after EG1 is created (it is — system
+     * globals are constructed before any task starts) and before T6 enters
+     * its main loop (it does — T4 runs `nvs_load_*` here in boot phase). */
+    nvs_load_mode();
 
     /* Apply the stored TZ string so local-time functions are correct. */
     setenv("TZ", s_cfg.tz_str, 1);
@@ -1210,11 +1351,18 @@ void dm_status_snapshot(status_snapshot_t *out)
     /* Window states via the relay-controller spinlock-protected getter. */
     t2_get_window_states(out->win);
 
-    /* Mode is derived from EG1 in the same priority order T11 used. */
+    /* Mode is derived from EG1 in priority order. rc.1.5.0 (gh#28) inserts
+     * STANDBY below WIND_OVERRIDE — safety always wins, but a deliberate
+     * operator pause beats the default AUTOMATIC tile. CALIBRATING is
+     * orthogonal (early-boot transient): the LCD Scherm 3 renders
+     * "Window Cal." directly from the EG1 bit rather than going through
+     * op_mode_t, which keeps the canonical-JSON consumers (4-value enum)
+     * undisturbed. */
     EventBits_t eg1 = xEventGroupGetBits(EG1);
     out->eg1_bits = (uint32_t)eg1;
     if      (eg1 & EG1_BIT_MOTOR_ALARM)   { out->mode = MODE_MOTOR_ALARM;   }
     else if (eg1 & EG1_BIT_WIND_OVERRIDE) { out->mode = MODE_WIND_OVERRIDE; }
+    else if (eg1 & EG1_BIT_STANDBY)       { out->mode = MODE_STANDBY;      }
     else                                  { out->mode = MODE_AUTOMATIC;    }
 
     /* Network (alpha.6.7 — IDF replacement for Arduino WiFi.* calls).
@@ -1488,5 +1636,94 @@ void dm_set_manual_time(time_t unix_ts)
     if (xSemaphoreTake(MX4, pdMS_TO_TICKS(200u)) == pdTRUE) {
         s_cfg.current_unix_ts = (uint32_t)unix_ts;
         xSemaphoreGive(MX4);
+    }
+}
+
+/* ============================================================
+ * rc.1.5.0 (gh#28) — STANDBY mode set/get
+ * ============================================================ */
+
+bool dm_get_standby(void)
+{
+    if (EG1 == NULL) { return false; }
+    return (xEventGroupGetBits(EG1) & EG1_BIT_STANDBY) != 0;
+}
+
+void dm_set_standby(bool standby, log_initiator_t initiator, uint8_t channel)
+{
+    /* rc.1.5.1 — thin wrapper: keeps the original API stable for callers that
+     * want the gh#28 recalibration-on-exit semantics (web POST /api/mode,
+     * LCD Scherm 3 mode-toggle). */
+    dm_set_standby_ex(standby, initiator, channel, true);
+}
+
+void dm_set_standby_ex(bool standby,
+                        log_initiator_t initiator,
+                        uint8_t channel,
+                        bool recalibrate_on_clear)
+{
+    if (EG1 == NULL) { return; }
+
+    const bool current = dm_get_standby();
+    if (current == standby) {
+        /* Idempotent — already in desired state. */
+        return;
+    }
+
+    if (standby) {
+        xEventGroupSetBits(EG1, EG1_BIT_STANDBY);
+    } else {
+        xEventGroupClearBits(EG1, EG1_BIT_STANDBY);
+    }
+
+    /* Persist to NVS (0/1) so the state survives reboot (gh#28 locked
+     * decision). nvs_cfg_set_i32 is internally serialised by ESP-IDF NVS;
+     * no extra mutex needed. */
+    (void)nvs_cfg_set_i32(NVS_NS_SYSTEM, K_MODE_STANDBY, standby ? 1 : 0);
+
+    /* Audit-log the transition. LOG_MODE_CHANGE row:
+     *   initiator = caller-supplied (LCD farmer/admin or web)
+     *   channel   = surface hint (0=web, 1=LCD) — see dm_set_standby() doc
+     *   value_a   = 1 enter STANDBY | 0 leave STANDBY
+     *   value_b   = 0 reserved
+     */
+    {
+        log_event_t ev = {};
+        ev.timestamp  = (uint32_t)time(NULL);
+        ev.event_type = (uint8_t)LOG_MODE_CHANGE;
+        ev.initiator  = (uint8_t)initiator;
+        ev.channel    = channel;
+        ev.param_id   = (uint8_t)LOG_PARAM_NONE;
+        ev.value_a    = (int16_t)(standby ? 1 : 0);
+        ev.value_b    = 0;
+        log_post(&ev);
+    }
+
+    ESP_LOGI(TAG, "[T4] STANDBY %s (init=%u, surface=%u, recal_on_clear=%d)",
+             standby ? "ON" : "OFF",
+             (unsigned)initiator, (unsigned)channel,
+             (int)recalibrate_on_clear);
+
+    /* On STANDBY exit AND recalibrate_on_clear requested: post CMD_RECALIBRATE
+     * to Q1 so T2 re-runs the synchronous CLOSE_ALL sweep (sets
+     * EG1_BIT_CALIBRATING for the duration). The "calibrate windows on
+     * leave" decision was locked with the operator on 2026-05-26 — windows
+     * return to a known CLOSED baseline before T6 resumes.
+     *
+     * rc.1.5.1 — when recalibrate_on_clear is false (admin manual-motor menu
+     * exit per gh#29 + 2026-05-26 follow-up decision), skip the Q1 post:
+     * the admin's deliberate per-channel positions are preserved and T6
+     * takes its next decision based on the actual current state, not on a
+     * forced CLOSED baseline.
+     *
+     * On STANDBY entry: no Q1 post regardless; windows stay where they are. */
+    if (!standby && recalibrate_on_clear && Q1 != NULL) {
+        window_cmd_t cmd = {};
+        cmd.action  = CMD_RECALIBRATE;
+        cmd.channel = 0u;
+        cmd.source  = SRC_OPERATOR_MANUAL;   /* deliberate operator action */
+        if (xQueueSend(Q1, &cmd, 0) != pdTRUE) {
+            ESP_LOGW(TAG, "[T4] Q1 full — CMD_RECALIBRATE dropped on STANDBY exit");
+        }
     }
 }

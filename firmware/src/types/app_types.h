@@ -153,6 +153,17 @@ typedef enum {
     LOG_SESSION,      /**< User session open/close */
     LOG_ALARM,        /**< Alarm onset or clearance (motor alarm, sensor fault, wind) */
     LOG_SYSTEM,       /**< System event (boot, NVS migration, Q3 drop-overflow count) */
+    LOG_SENSOR_HR,    /**< rc.1.4.0 — High-resolution sensor snapshot. Three rows per
+                       *  sample, discriminated by `channel`:
+                       *    channel=0 → T+RH (value_a=t_c10, value_b=rh)
+                       *    channel=1 → wind (value_a=wind_dms, value_b=wind_dir_deg)
+                       *    channel=2 → window-state bitmask (value_a=bitmask, value_b=0)
+                       *  See model/logUpdatePlan.md §2 for the bitmask encoding. */
+    LOG_SUN,          /**< rc.1.4.0 — Sunrise/sunset record, local-time
+                       *  minutes-from-midnight. value_a=sunrise_min, value_b=sunset_min.
+                       *  Emitted by T4 whenever cached values change (boot,
+                       *  local midnight rollover, lat/lon edit). One row per day
+                       *  in steady-state operation. See model/logUpdatePlan.md §3. */
 } log_type_t;
 
 /** Log initiator — who or what triggered the event. */
@@ -225,20 +236,30 @@ typedef enum {
 
 /**
  * @brief Q1 actuation command source.
- * Only T3 (Safety Monitor) and T6 (Climate Control) post to Q1.
- * Manual window commands from LCD/web/MQTT are out of scope (C9).
+ *
+ * Originally T3 (safety) and T6 (climate) only. rc.1.5.0 (gh#29) added
+ * SRC_OPERATOR_MANUAL for admin-initiated LCD/keypad commands; T8 becomes
+ * a Q1 producer in that flow. The dwell-timer gate in T2 only fires for
+ * SRC_T6 — T3 (safety) and SRC_OPERATOR_MANUAL (deliberate admin override)
+ * both bypass it.
  */
 typedef enum {
-    SRC_T3,  /**< Safety Monitor (wind safety, CLOSE_ALL) */
-    SRC_T6,  /**< Climate Control (graduated ventilation) */
+    SRC_T3,              /**< Safety Monitor (wind safety, CLOSE_ALL) */
+    SRC_T6,              /**< Climate Control (graduated ventilation) */
+    SRC_OPERATOR_MANUAL, /**< Admin manual command from LCD keypad (gh#29 / rc.1.5.0) */
 } cmd_source_t;
 
 /** Q1 actuation command action. */
 typedef enum {
-    CMD_OPEN,       /**< Open the specified channel (full travel) */
-    CMD_CLOSE,      /**< Close the specified channel (full travel) */
-    CMD_CLOSE_ALL,  /**< Close all channels (calibration / safety) */
-    CMD_RESUME,     /**< Resume automatic mode after wind override */
+    CMD_OPEN,         /**< Open the specified channel (full travel) */
+    CMD_CLOSE,        /**< Close the specified channel (full travel) */
+    CMD_CLOSE_ALL,    /**< Close all channels (calibration / safety) */
+    CMD_RESUME,       /**< Resume automatic mode after wind override */
+    CMD_RECALIBRATE,  /**< rc.1.5.0 (gh#28) — re-run synchronous CLOSE_ALL
+                       *   calibration (sets EG1_BIT_CALIBRATING for the
+                       *   duration). Posted by dm_set_standby(false, ...)
+                       *   on STANDBY exit so windows return to a known
+                       *   CLOSED baseline before T6 resumes. */
 } cmd_action_t;
 
 /* ============================================================
@@ -495,3 +516,34 @@ typedef struct {
 #define EG1_BIT_MOTOR_ALARM      (1 << 5)
 /** @brief CLOSE_ALL calibration in progress — T2 is performing the boot-time calibration sweep. Write: T2. */
 #define EG1_BIT_CALIBRATING      (1 << 6)
+/**
+ * @brief rc.1.5.0 (gh#28) — Climate-control STANDBY active.
+ *
+ * Set by `dm_set_standby(true,...)` from any of three surfaces:
+ *   1. LCD Scherm 3 mode-toggle menu (Farmer or Admin PIN)
+ *   2. Web GUI Climate-tab Normal/Standby toggle
+ *   3. LCD Scherm 6 manual-motor menu entry (rc.1.5.1+) — auto-sets STANDBY
+ *      on entry so T6 stays paused for as long as the admin is in the menu,
+ *      regardless of how long that is.
+ *
+ * Cleared by `dm_set_standby(false,...)` (full recalibration on exit) or
+ * `dm_set_standby_ex(false, ..., false)` (no recalibration — used by the
+ * rc.1.5.1+ manual-menu exit so the admin's positions are preserved).
+ *
+ * T6 honours the bit as a "do nothing" gate. Persisted to NVS at
+ * `system/mode_standby` so the state survives reboot.
+ *
+ * Priority chain in `dm_status_snapshot()` (highest first):
+ *   MOTOR_ALARM → WIND_OVERRIDE → STANDBY → AUTOMATIC
+ * — STANDBY ranks below safety so wind/alarm still win.
+ *
+ * Write: T4 (via `dm_set_standby*()` helpers).
+ */
+#define EG1_BIT_STANDBY          (1 << 7)
+/* Bit 8 — formerly EG1_BIT_MANUAL_SESSION (gh#29 in rc.1.5.0); removed in
+ * rc.1.5.1. The transient bit was a weaker gate than STANDBY: it cleared on
+ * a 10-second LCD idle, which let T6 reopen the window the admin had just
+ * closed. rc.1.5.1 replaces the bit with proper STANDBY semantics — the
+ * admin menu now auto-sets STANDBY on entry and clears it on exit (only if
+ * THIS menu set it), so T6 stays gated as long as the admin is operating
+ * the menu OR until their PIN session times out. Bit 8 is now reserved. */

@@ -109,6 +109,20 @@
 
   <!-- Climate tab -->
   <div id="tab-climate" class="tab-pane active">
+    <!-- rc.1.5.0 / gh#28 — Climate-control STANDBY toggle. First control on
+         the tab; both Farmer and Admin sessions can use it. Disabled when
+         WIND_OVERRIDE, MOTOR_ALARM, or CALIBRATING is active (those override
+         operator intent — safety/early-boot states win the priority chain). -->
+    <h3>Climate control</h3>
+    <div class="row" id="row-mode-toggle">
+      <label data-tip="Pause or resume autonomous climate control. STANDBY leaves windows where they are and stops the controller from issuing new commands. Coming out of STANDBY re-runs the calibration sweep (all windows close to establish a known baseline) before normal control resumes. Safety overrides (wind, motor-alarm) still apply.">Mode</label>
+      <select id="cfg-mode">
+        <option value="automatic">Normal (autonomous)</option>
+        <option value="standby">Standby (paused)</option>
+      </select>
+      <button id="btn-mode-apply" onclick="postMode()">Apply</button>
+      <span class="save-ok" id="fb-mode"></span>
+    </div>
     <h3>Day setpoints</h3>
     <div class="slider-row farmer-hidden">
       <label data-tip="If the greenhouse temperature rises above this value during the day, windows open to cool it down. Windows open in steps: first M1, then M1+M2, then all three.">T max day (°C)</label>

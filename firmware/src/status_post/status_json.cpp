@@ -101,6 +101,14 @@ static const eg1_flag_t EG1_FLAGS[] = {
     { EG1_BIT_OTA_IN_PROGRESS,  "ota_in_progress"   },
     { EG1_BIT_MOTOR_ALARM,      "motor_alarm"       },
     { EG1_BIT_CALIBRATING,      "calibrating"       },
+    /* rc.1.5.1 — emit "standby" alongside mode.current="STANDBY" so that
+     * the Alarms card in both the local web GUI and the public dashboard
+     * shows a visible badge while STANDBY is active (operator request:
+     * "in web gui when in standby a amber badge shall appear in alarms
+     * shield"). Mirrors the EG1_BIT_CALIBRATING pattern: mode.current
+     * already carries the primary label, but a separate flag entry makes
+     * the state machine state visible in the badge area as well. */
+    { EG1_BIT_STANDBY,          "standby"           },
 };
 
 /**

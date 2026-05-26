@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de beheerder
 
-**Versie:** 1.17 — concept
-**Datum:** 2026-05-20
-**Firmware:** 2.0.0-rc.1.3.2 (release candidate 1, patch 3.2 — fix voor de "kale" status-shields direct na page-load: handleStatus liep eerder uitsluitend bij het binnenkomen van een WS-push, waardoor tegels + alarm-shield tot 2 s leeg bleven. Nu wordt `/api/status` direct opgehaald bij page-load én na succesvolle login zodat tegels onmiddellijk gevuld zijn. WS-push blijft de steady-state update. Alleen `app.js` aangepast.)
+**Versie:** 1.19 — concept
+**Datum:** 2026-05-26
+**Firmware:** 2.0.0-rc.1.5.2 (release candidate 1, patch 5.2)
 
 ---
 
@@ -275,9 +275,9 @@ Voor algemene uitleg over schermen, auto-rotatie en mode-regel: zie de [boer-han
 
 **Aanvullend voor de beheerder**:
 
-- **Achtergrondkleur LCD-display** geeft de veiligheidsstatus van de controller weer:
-  - **Blauw** — normale werking (geen alarmen actief)
-  - **Rood** — kritiek: **motor-alarm** OF **wind-alarm** OF **sensor-fault Temperatuur/Luchtvochtigheid**
+ - **Achtergrondkleur LCD-display** geeft de veiligheidsstatus van de controller weer:
+ - **Blauw** — normale werking (geen alarmen actief)
+ - **Rood** — kritiek: **motor-alarm** OF **wind-alarm** OF **sensor-fault Temperatuur/Luchtvochtigheid**
 
 ### 5.2 Toetsenbord
 Zie [boer-handleiding §5.2](handleiding.md#52-toetsenbord-4--4) voor het volledige overzicht van toetsfuncties per scherm. Geen Beheerder-specifieke uitbreidingen.
@@ -353,6 +353,7 @@ De kleuren van de badg geven de urgentie weer van de melding:
 | 🟡 | **Wind fault** | Twee opeenvolgende mislukte uitlezingen van de windsensor | Zie [§12.3](#123-sensor-fault--diagnose) |
 | 🟡 | **OTA active** | OTA-update loopt nu | Wacht tot voltooid; geen handeling vereist |
 | 🟡 | **Calibrating** | Window-Cal: ramen worden gesloten om positie vast te leggen | Wacht ~3 min; geen handeling vereist |
+| 🟡 | **Standby** | Klimaatregeling door operator gepauzeerd. Standby blijft actief tot je admin-sessie afloopt (5 min na laatste toetsdruk) of je expliciet uitlogt, daarna direct uit zonder recalibratie |
 | 🟡 | **Net backoff** | Status-website onbereikbaar — Updates zij tijdelijk gestopt na herhaalde fouten | Controleer netwerk + URL; herstelt automatisch |
 | 🟡 | **Wind protect off** | Boer/Beheerder heeft windbeveiliging uitgezet | Bewust — controleer of dit zo bedoeld is; ramen worden niet meer dichtgestuurd bij wind |
 | 🔵 | **Humidity ctrl off** | Boer/Beheerder heeft de luchtvochtigheid-regeling uitgezet | Bewust — alleen temperatuur stuurt nu de ramen |
@@ -382,7 +383,7 @@ Op het LCD-scherm roteren **zeven** statusschermen. Elk scherm staat 5 seconden,
 |---|---|---|
 | 1 | Temp/RH | `Temp: 23 °C` / `  RH: 65 %` |
 | 2 | Wind | `Wind: 2.3 m/s` / ` Dir: 180 ° (S )` |
-| 3 | Mode/Sess | `Mode: AUTO` / `Sess: NONE` |
+| 3 | Mode/Sess | `Mode: AUTO` / `Sess: NONE` (mode kan ook STANDBY, WIND, ALARM of Window Cal. zijn) |
 | 4 | WiFi | `WiFi: connected` / `192.168.20.150` |
 | 5 | Tijd | `06-05-2026 14:30` / `Src:NTP      Day` |
 | 6 | Raamposities | `M1    M2    M3 ` / `OPEN  CLOS  MOV>` |
@@ -471,14 +472,16 @@ Inloggen via het hoofdmenu — **dezelfde route als boer maar met Beheerder-PIN*
 
 ### Quick-jump via #-toets
 
-Op vier statusschermen kan je direct vanuit de auto-rotatie naar een instellingen-menu springen, waarbij PIN-invoer eerst wordt gevraagd als je nog niet ingelogd bent. `#` werkt op elk statusscherm dat een instellingen-menu heeft, en wordt genegeerd op de overige schermen (Mode/Sess en Raamposities).
+Op **zes** statusschermen kan je direct vanuit de auto-rotatie naar een instellingen-menu springen, waarbij PIN-invoer eerst wordt gevraagd als je nog niet ingelogd bent. Alleen op scherm 7 (Firmware/uptime) heeft `#` geen aparte functie en opent het, net als andere toetsen, het hoofdmenu.
 
 - **T/RH-status (scherm 1)** — `#` → vraagt **Boer-PIN** (4 cijfers) → daarna direct in Climate-menu (Day/Night setpoints + Conflict-prioriteit)
 - **Wind-status (scherm 2)** — `#` → vraagt **Boer-PIN** → daarna direct in Wind-menu (`Wnd-max`, `Wnd-prot`)
+- **Mode/Sess (scherm 3)** — `#` → vraagt **Boer- óf Beheerder-PIN** (de PIN-lengte bepaalt welke rol wordt geverifieerd: 4 cijfers = Boer, 8 cijfers = Beheerder) → daarna direct in Standby-toggle (`1=Auto 2=Stby *Bk`). Zie [§10.10](#1010-standby-modus--controller-tijdelijk-pauzeren) voor wanneer en hoe Standby gebruikt wordt.
 - **WiFi-status (scherm 4)** — `#` → vraagt **Beheerder-PIN** (8 cijfers) → daarna direct in System-menu (waar je AP kunt aan/uit zetten)
 - **Time-status (scherm 5)** — `#` → vraagt **Beheerder-PIN** → daarna direct in datum/tijd-invoer
+- **Raamposities (scherm 6)** — `#` → vraagt **alléén Beheerder-PIN** (8 cijfers) → daarna in een twee-trapsmenu om M1/M2/M3 handmatig open of dicht te zetten. Zie [§10.11](#1011-handmatige-raambediening-via-de-lcd-beheerder) voor de volledige procedure, veiligheidsregels en wat er met de autonome regeling gebeurt tijdens en na de sessie.
 
-> **Let op**: ben je al ingelogd als boer, dan zal `#` op de WiFi- of Time-status alsnog om de Beheerder-PIN vragen (deze schermen zijn admin-only). Andersom werkt voor een Beheerder elk van de vier sneltoetsen direct zonder extra PIN-invoer.
+> **Let op**: ben je al ingelogd als boer, dan zal `#` op de WiFi-, Time- of Raamposities-status alsnog om de Beheerder-PIN vragen (deze schermen zijn admin-only). Op scherm 3 (Mode/Sess) wordt de boer-sessie direct geaccepteerd — Standby is een normale operationele toggle die de boer ook mag bedienen. Andersom werkt voor een Beheerder elk van de zes sneltoetsen direct zonder extra PIN-invoer.
 
 ### In de webinterface
 
@@ -523,6 +526,10 @@ De LCD-route voor de door de **boer-bewerkbare** instellingen (T-max dag/ngt, RH
 ![SCHERMAFBEELDING: tab Climate, ingelogd als Beheerder, met Beheerder-only sectie zichtbaar](imagesBeheerder\kasControllerWebGUIClimateTab.png)
 
 *Figuur 7: Climate-tab, ingelogd als Beheerder, met Beheerder-only sectie zichtbaar*
+
+#### Mode-keuzelijst (bovenaan, Boer + Beheerder)
+
+Bovenaan de Climate-tab staat een aparte "Mode"-keuzelijst met **Normal (autonomous)** of **Standby (paused)**. Hiermee pauzeer je de autonome klimaatregeling zonder andere setpoints aan te raken. Zie [§10.10](#1010-standby-modus--controller-tijdelijk-pauzeren) voor wanneer/hoe je dit gebruikt. De keuzelijst is automatisch grijs gemaakt (uitgeschakeld) wanneer **Wind-override**, **Motor-alarm** of **Window Cal.** actief is: in die situaties domineert het veiligheids-/early-boot-mechanisme over operator-intentie.
 
 #### Boer-bewerkbare velden (Boer + Beheerder)
 
@@ -841,6 +848,130 @@ Algemene vuistregels:
 - **Luchtvochtigheid boven 85%** voor langere tijd; verhoogd schimmelrisico
 - **Luchtvochtigheid onder 50%** kan groei remmen
 - Begin met **default-waarden** en stel pas bij na een week observeren
+
+### 10.10 Standby-modus — controller tijdelijk pauzeren
+
+**Standby** is een door de operator geïnitieerde pauze van de autonome klimaatregeling. T6 (Climate Control) stopt met het uitvaardigen van openings- of sluitingscommando's; de ramen blijven in hun huidige positie staan zolang Standby actief is. De ramen worden **niet** automatisch gesloten bij Standby-entry — dat zou een werkschot betekenen dat de operator niet expliciet vroeg.
+
+#### Wanneer gebruik je Standby?
+
+| Situatie | Reden |
+|---|---|
+| Onderhoud aan de motoren, sensoren of raamconstructie | Voorkomt dat een autonome cyclus midden in jouw werk een raam in beweging zet |
+| Tijdelijk handmatig overnemen via de motorbox (zie [§15](#15-handmatige-overname-via-de-motorbox)) | De controller probeert niet meer te corrigeren wat jij handmatig instelt |
+| Demonstratie / rondleiding waarbij ramen in een bepaalde stand moeten blijven | Geen autonome wijzigingen tijdens het tonen |
+| Een korte test of meting waarbij je een stabiele uitgangstoestand nodig hebt | Geen interferentie door T6-tikken |
+
+#### Wat blijft wél actief tijdens Standby?
+
+- **Wind-override** (Mode: WIND): bij een storing of harde wind sluit T3 alsnog alle ramen. Standby overschrijft veiligheid niet.
+- **Motor-alarm** (Mode: ALARM): de RRK-3 noodstop blijft volledig actief.
+- **Logging, status-rapportage en sensor-poll** lopen normaal door — alleen de regel-loop (T6) staat in pauze.
+- **De gebruikersinterface** (LCD + web) blijft volledig bedienbaar.
+
+#### Standby aanzetten — twee surfaces
+
+**Via het LCD (Scherm 3 → `#`):**
+1. Druk `D` tot je op **scherm 3** (`Mode/Sess`) bent
+2. Druk `#`
+3. Niet ingelogd? Voer **Boer-PIN óf Beheerder-PIN** in (PIN-lengte bepaalt de rol); druk `#`
+4. Het menu toont `Now:AUTO` (of `STANDBY`) en de keuzes `1=Auto 2=Stby *B`
+5. Druk `2` om Standby aan te zetten; korte bevestiging `Mode: STANDBY / control paused` → LCD springt terug naar auto-rotatie, scherm 3 toont `Mode: STANDBY`
+
+**Via de webinterface (Climate-tab → "Mode" bovenaan):**
+1. Inloggen als Boer of Beheerder
+2. Tab **Climate** → bovenaan de keuzelijst "Mode" instellen op **Standby (paused)**
+3. Klik **Apply** → binnen ~2 seconden mirror't het LCD `Mode: STANDBY`
+
+#### Standby uitzetten + automatische kalibratie
+
+Dezelfde route, maar kies **Automatic** (LCD: toets `1`, web: "Normal (autonomous)" + Apply).
+
+**Belangrijk**: zodra Standby wordt verlaten, voert T2 automatisch een **CLOSE_ALL kalibratiecyclus** uit (identiek aan de boot-kalibratie):
+- Alle drie de motoren krijgen tegelijk een CLOSE-commando
+- Tijdens de cyclus toont scherm 3 `Mode:Window Cal.` en RGB-LED wordt amber
+- De cyclus duurt tot ~3 minuten (M3 bepaalt de tijd: 171 sec. travel time + marge)
+- Na voltooiing gaat de controller automatisch terug naar `Mode: AUTO` en T6 hervat de regelcyclus vanaf een bekende CLOSED-baseline
+
+Deze re-kalibratie is een **bewust ontwerp**: tijdens Standby kan iedereen handmatig aan de ramen hebben gezeten (via de motorbox-Hand-schakelaars of via §10.11 admin-only manual control), waardoor de gepersisteerde raampositie niet meer betrouwbaar is. Een verse kalibratie geeft T6 een schone slate om vanaf op te bouwen.
+
+#### Persistentie over een reboot
+
+Standby is **NVS-backed** (opgeslagen in permanent geheugen op de microprocessor). Een stroomstoring tijdens een bewuste maintenance-pauze schakelt de controller dus **niet** stilletjes weer in op `Mode: AUTO` — de unit komt terug in `Mode: STANDBY` precies zoals jij hem hebt achtergelaten. Vergeet daarom niet om Standby weer uit te zetten zodra het werk klaar is.
+
+In de logfile herken je een Standby-transitie als een `MODE` event:
+```
+2026-05-26T14:30:22,MODE,ADMIN,1,0,1,0    # Beheerder zet Standby AAN via LCD
+2026-05-26T15:45:11,MODE,WEB,0,0,0,0      # Iemand zet Standby UIT via web
+```
+De `channel`-kolom carriert de surface-hint: **0 = web GUI, 1 = LCD**. De `initiator`-kolom carriert de operator-rol (FARMER / ADMIN / WEB).
+
+#### Beperking — Standby kan niet bij actieve safety-overrides
+
+De web-toggle is automatisch grijs (uitgeschakeld) wanneer `WIND_OVERRIDE`, `MOTOR_ALARM` of `CALIBRATING` actief is. Op de LCD ben je de toggle wel kunt openen, maar de commit wordt geweigerd zolang die hogere prioriteiten gelden. De prioriteitsketen in `dm_status_snapshot()` is end-to-end: `MOTOR_ALARM → WIND_OVERRIDE → STANDBY → AUTOMATIC`.
+
+### 10.11 Handmatige raambediening via de LCD (Beheerder)
+
+Voor maintenance met handschoenen, een netwerkstoring, commissioning, een snel emergency-override of een demonstratie kan de Beheerder direct vanaf de kascontroller M1, M2 en M3 individueel openen of sluiten — **zonder via de webinterface te hoeven gaan**. Deze functie is **alleen voor de Beheerder** beschikbaar; de boer wordt expliciet niet ondersteund om bewust de autonome logica te kunnen omzeilen, omdat de controller dan niet kan leren van welke condities tot de override aanzetten.
+
+#### Procedure (Scherm 6 → `#`)
+
+1. Druk `D` tot je op **scherm 6** (`Raamposities`) bent
+2. Druk `#`
+3. Niet ingelogd als Beheerder? Voer **8-cijferige Beheerder-PIN** in (let op: Boer-PIN wordt hier afgewezen); druk `#`
+4. **Motor-pick-scherm**:
+   ```
+      +----------------+
+      |OPEN CLOS UNK   |
+      |1=M1 2=M2 3=M3*B|
+      +----------------+
+   ```
+   Rij 1 toont de actuele toestand per kanaal; rij 2 de toetsfuncties. Druk `1`, `2` of `3` om M1, M2 of M3 te kiezen; `*` om af te breken
+5. **Action-picker-scherm**:
+   ```
+      +----------------+
+      |[M2] CLOSED     |
+      |1=Open 2=Cls *Bk|
+      +----------------+
+   ```
+   De kop `[Mx]` toont welk raam je geselecteerd hebt en wat zijn huidige toestand is. Druk `1` voor OPEN, `2` voor CLOSE, `*` voor terug naar de motor-picker
+6. Bevestiging `Mx opening / command sent` (of `Mx closing`); het commando wordt onmiddellijk aan T2 doorgegeven en de motor gaat lopen. Je blijft op het action-scherm — kies opnieuw een actie voor hetzelfde raam of druk `*` om een ander raam te kiezen
+
+#### Wat gebeurt er onder de motorkap?
+
+- **De controller gaat automatisch in STANDBY-modus** zodra je het menu binnenkomt. T6 (Climate Control) blijft daardoor **gepauzeerd voor de volledige duur van je admin-sessie** — niet alleen terwijl je in het menu bent, maar ook ná `*=back` en totdat je sessie afloopt. Je handmatige raamposities worden niet stilletjes door T6 overschreven omdat de buitencondities veranderen
+- **De "respect-window" voor je manuele posities = je admin-sessie-timeout**. STANDBY blijft actief, en T6 blijft gepauzeerd, vanaf het moment dat je het menu binnenkomt tot het moment dat je sessie eindigt (5 minuten na je laatste toetsdruk, of expliciet uitloggen). Pressing `*=back` om uit het menu te gaan beëindigt de respect-window NIET — STANDBY blijft staan, Scherm 3 blijft `Mode: STANDBY` tonen
+- **Was STANDBY al actief** vóór je het menu binnenging (bijv. via Scherm 3 # of de web GUI), dan blijft STANDBY ook na sessie-einde gewoon actief — alleen STANDBY-modus die door het menu zelf is aangezet wordt bij sessie-einde auto-uitgezet
+- **Dwell-timers worden bypassed** voor manual commands (`SRC_OPERATOR_MANUAL`). Een raam dat zojuist autonoom geopend werd, mag onmiddellijk handmatig dichtgaan zonder op de `dwell_open_min` te wachten. De anti-thrash protectie geldt alleen voor T6's autonome loop, niet voor jouw bewuste keuzes
+- **Elk commando wordt geaudit-logd** als `LOG_RELAY`-rij (T2 emit'eert die wanneer hij de relay daadwerkelijk activeert). De `source = SRC_OPERATOR_MANUAL` veld in het Q1-bericht draagt de admin-attributie door naar de T2 per-command logregel
+- **De motor-positie wordt persistent opgeslagen** in NVS zoals bij elk T2-commando — geen aparte "laatste handmatige positie"-key
+- **De STANDBY-entry en -exit verschijnen als `MODE`-rijen in het logbestand** met `initiator=ADMIN` en `channel=1` (LCD-surface) — de STANDBY-on rij verschijnt bij menu-binnenkomst, de STANDBY-off rij pas bij sessie-einde (timeout of expliciete logout). De hele sessie is achteraf herleidbaar
+
+#### Veiligheids­gates blijven actief
+
+| Gate | Wat doet het bij manual command? |
+|---|---|
+| `EG1.MOTOR_ALARM` (Mode: ALARM) | **Weigert alle commando's** — LCD-toon: `MOTOR ALARM / cmd refused` |
+| `EG1.CALIBRATING` (Window Cal., boot of na Standby-exit) | **Weigert alle commando's** — LCD-toon: `Calibrating / wait + retry` |
+| `EG1.WIND_OVERRIDE` (Mode: WIND) | **Weigert manual OPEN; CLOSE wordt geaccepteerd** (sluiten is bij wind altijd veilig) — LCD-toon: `WIND OVERRIDE / OPEN refused` |
+
+De weigering is niet stilzwijgend — je krijgt een korte LCD-melding (~1.5 sec) en daarna ben je terug op het action-scherm om iets anders te proberen.
+
+#### Sessie-einde — wat resumeert er?
+
+Het manual-motor menu heeft géén korte idle-dismiss. STANDBY blijft actief totdat je expliciet uitlogt of totdat je admin-sessie afloopt.
+
+| Actie | Effect |
+|---|---|
+| **`*=back`** vanuit motor-picker | LCD keert terug naar auto-rotatie status­schermen. **STANDBY blijft echter actief** voor de rest van je admin-sessie — Scherm 3 toont nog steeds `Mode: STANDBY`, T6 blijft gepauzeerd. Je kunt opnieuw `D` drukken naar Scherm 6 en met `#` weer het menu in, om verder handmatig te bedienen zonder dat T6 tussendoor commando's stuurt |
+| **Expliciet uitloggen** (hoofdmenu → 3:Access → 3:Logout) | Sessie sluit direct. Auto-gezette STANDBY wordt uitgezet (zonder recalibratie). T6 hervat op zijn volgende sensor-tick (~30 sec) vanuit de actuele per-kanaal positie |
+| **Sessie-timeout** (`cfg.session_timeout_min`, default 5 min vanaf laatste toetsdruk) | Identiek aan expliciet uitloggen: "Session timeout" melding, LCD naar auto-rotatie, auto-gezette STANDBY uit (zonder recalibratie), T6 hervat |
+
+**Het "respect-window" voor handmatige posities is dus de sessie-timeout**: vanaf het moment dat je de laatste toets indrukt heb je standaard 5 minuten waarin je manueel ingestelde raamposities behouden blijven. Geen toetsdruk binnen die 5 min ⇒ sessie loopt af ⇒ STANDBY uit ⇒ T6 maakt zijn volgende beslissing vanuit de actuele raamstand.
+
+**Belangrijk — geen recalibratie op de auto-clear**: bij beide auto-clear-routes (logout + timeout) blijven de ramen precies staan waar je ze handmatig hebt geplaatst. Dit verschilt bewust van **Scherm 3 / web Standby-exit**, waar wél een CLOSE_ALL recalibratie volgt (~3 min). Bij gh#28 (Standby via Scherm 3 of web) is de pauze "los van een specifieke window-actie" en is een schone re-baseline gepast; bij gh#29 (Standby auto-gezet door het manual-motor menu) heb je net handmatig per-kanaal gepositioneerd, en die positie wíl je behouden.
+
+Als je écht een schone re-baseline wilt na een uitgebreide manual-sessie, gebruik dan **Standby aan** via Scherm 3 of web → kort wachten → **Standby uit**; die Standby-exit recalibratie sluit alle ramen en geeft T6 een verse baseline. Was STANDBY al aan via Scherm 3 toen je het manual-menu binnenging, dan blijft hij ook na sessie-einde aan — alleen door-dit-menu-aangezette STANDBY wordt auto-gewist.
 
 ---
 
@@ -1819,6 +1950,9 @@ Inhoudelijke wijzigingen aan de firmware staan beschreven in het bestand `change
 | 1.14 | 2026-05-16 | 1.20.2 (alleen documentatie — Bijlage G uitgebreid van 13 naar 28 gewassen passend bij de teelt in Wenumseveld: Meloen, Ananaskers, Spaghettiboon, Peulen, Rucola, Paksoi, Snijbiet, Raapsteel, Palmkool, Koolrabi, Bospeen, Bosbiet, Radijs, Groene selderij, Bloemen — geordend per gewas-familie. Inhoud blijft synchroon met boer-handleiding Bijlage B v1.12) |
 | 1.15 | 2026-05-17 | 1.20.3 |
 | 1.16 | 2026-05-19 | 2.0.0-a.6.32 → 2.0.0-a.6.35.7 |
+| 1.17 | 2026-05-26 | 2.0.0-rc.1.5.0 |
+| 1.18 | 2026-05-26 | 2.0.0-rc.1.5.1 |
+| 1.19 | 2026-05-26 | 2.0.0-rc.1.5.2 |
 
 ---
 

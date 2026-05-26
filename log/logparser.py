@@ -29,13 +29,15 @@ from datetime import datetime, timezone
 # ---------------------------------------------------------------------------
 
 _EVENT_TYPES = {
-    "SENSOR":  "SENSOR",
-    "RELAY":   "RELAY",
-    "MODE":    "MODE",
-    "SETPT":   "SETPT",
-    "SESSION": "SESSION",
-    "ALARM":   "ALARM",
-    "SYSTEM":  "SYSTEM",
+    "SENSOR":    "SENSOR",      # legacy single-row format — pre-rc.1.4.0 files only
+    "SENSOR_HR": "SENSOR_HR",   # rc.1.4.0+ — high-resolution triplet (T+RH, wind, bitmask)
+    "SUN":       "SUN",         # rc.1.4.0+ — sunrise/sunset record
+    "RELAY":     "RELAY",
+    "MODE":      "MODE",
+    "SETPT":     "SETPT",
+    "SESSION":   "SESSION",
+    "ALARM":     "ALARM",
+    "SYSTEM":    "SYSTEM",
 }
 
 _CH_STATE = {
@@ -124,7 +126,7 @@ _INITIATOR = {
 
 # Output column widths
 _COL_TS   = 20   # "2025-06-07 14:30:22"
-_COL_TYPE = 8    # "[SENSOR] "
+_COL_TYPE = 11   # "[SENSOR_HR ]"  (widest type string in rc.1.4.0+; was 8 pre-rc.1.4.0 for "[SENSOR  ]")
 _COL_INIT = 14   # "System        "
 
 # Regex that identifies a valid SD-card log filename: 14 digits + ".csv"
@@ -169,11 +171,86 @@ def _date_from_sd_filename(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _decode_sensor(row: dict) -> str:
-    """SENSOR: value_a=temp_°C  value_b=rh_%"""
+    """SENSOR (legacy, pre-rc.1.4.0 files only): value_a=temp_°C  value_b=rh_%"""
     try:
         temp = int(row["value_a"])
         rh   = int(row["value_b"])
         return f"T={temp} degC   RH={rh} %"
+    except (ValueError, KeyError):
+        return f"raw: a={row.get('value_a')} b={row.get('value_b')}"
+
+
+# rc.1.4.0 — public window_state_t encoding for the SENSOR_HR bitmask.
+# Per model/logUpdatePlan.md §2.2: 0=CLOSED, 1=MOVING_OPEN, 2=OPEN, 3=MOVING_CLOSE.
+# GAP states fold into the matching MOVING state in t2_get_window_states(),
+# so the bitmask packer never produces GAP encodings.
+_WIN_STATE_BITMASK = {
+    0: "CLOSED",
+    1: "MOVING_OPEN",
+    2: "OPEN",
+    3: "MOVING_CLOSE",
+}
+
+# Short 4-char rendering for the per-channel state shown on the LCD.
+_WIN_STATE_SHORT = {
+    0: "CLOS",
+    1: "MOV>",
+    2: "OPEN",
+    3: "MOV<",
+}
+
+
+def _decode_sensor_hr(row: dict) -> str:
+    """SENSOR_HR (rc.1.4.0+): three-row sensor triplet keyed by ch.
+
+      ch=0 → T+RH        : value_a = t_c10 (deci-deg C), value_b = rh_pct
+      ch=1 → wind        : value_a = wind speed × 10 (deci-m/s), value_b = wind_dir_deg
+      ch=2 → window bits : value_a = packed 16-bit bitmask (see logUpdatePlan §2.2)
+
+    See model/logUpdatePlan.md §2 + design/technicalSoftwareDesignSpecification.md §5.3.
+    """
+    try:
+        ch = int(row["ch"])
+        a  = int(row["value_a"])
+        b  = int(row["value_b"])
+    except (ValueError, KeyError):
+        return f"raw: ch={row.get('ch')} a={row.get('value_a')} b={row.get('value_b')}"
+
+    if ch == 0:
+        # T+RH — T in 0.1 °C precision; RH in integer %.
+        return f"T={a / 10:.1f} degC   RH={b} %"
+
+    if ch == 1:
+        # Wind — speed in deci-m/s, direction in degrees.
+        return f"wind={a / 10:.1f} m/s  dir={b} deg"
+
+    if ch == 2:
+        # Window-state bitmask — pack-uint16 of 3×2-bit channel fields + 3 EG1 flags.
+        mask = a & 0xFFFF
+        m1 = _WIN_STATE_SHORT.get((mask     ) & 0x3, "?   ")
+        m2 = _WIN_STATE_SHORT.get((mask >> 2) & 0x3, "?   ")
+        m3 = _WIN_STATE_SHORT.get((mask >> 4) & 0x3, "?   ")
+        flags = []
+        if mask & (1 << 12): flags.append("WIND")
+        if mask & (1 << 13): flags.append("ALARM")
+        if mask & (1 << 14): flags.append("CAL")
+        flag_str = f"  [{','.join(flags)}]" if flags else ""
+        return f"M1={m1}  M2={m2}  M3={m3}{flag_str}  (0x{mask:04X})"
+
+    return f"ch={ch} a={a} b={b}  (unknown SENSOR_HR sub-row)"
+
+
+def _decode_sun(row: dict) -> str:
+    """SUN (rc.1.4.0+): value_a=sunrise_min, value_b=sunset_min (local time).
+
+    Both values are minutes-from-local-midnight (0..1439). See logUpdatePlan §3.
+    """
+    try:
+        sr_min = int(row["value_a"])
+        ss_min = int(row["value_b"])
+        sr_hh, sr_mm = divmod(sr_min, 60)
+        ss_hh, ss_mm = divmod(ss_min, 60)
+        return f"sunrise={sr_hh:02d}:{sr_mm:02d} local  sunset={ss_hh:02d}:{ss_mm:02d} local"
     except (ValueError, KeyError):
         return f"raw: a={row.get('value_a')} b={row.get('value_b')}"
 
@@ -692,13 +769,15 @@ def _decode_system(row: dict) -> str:
 
 # Dispatch table
 _DECODERS = {
-    "SENSOR":  _decode_sensor,
-    "RELAY":   _decode_relay,
-    "MODE":    _decode_mode,
-    "SETPT":   _decode_setpoint,
-    "SESSION": _decode_session,
-    "ALARM":   _decode_alarm,
-    "SYSTEM":  _decode_system,
+    "SENSOR":    _decode_sensor,      # legacy pre-rc.1.4.0
+    "SENSOR_HR": _decode_sensor_hr,   # rc.1.4.0+ — three-row triplet
+    "SUN":       _decode_sun,         # rc.1.4.0+ — sunrise/sunset record
+    "RELAY":     _decode_relay,
+    "MODE":      _decode_mode,
+    "SETPT":     _decode_setpoint,
+    "SESSION":   _decode_session,
+    "ALARM":     _decode_alarm,
+    "SYSTEM":    _decode_system,
 }
 
 
@@ -723,7 +802,7 @@ def _format_row(row: dict, line_no: int) -> str:
         f"ch={row.get('ch')} param={row.get('param')}"
     )
 
-    type_col = f"[{etype:<7}]"
+    type_col = f"[{etype:<9}]"  # 9-char inner field accommodates "SENSOR_HR"
     init_col = f"{_INITIATOR.get(initiator, initiator):<{_COL_INIT}}"
 
     return f"{ts}  {type_col}  {init_col}  {description}"

@@ -482,14 +482,25 @@ void task_climate_control(void *pvParameters)
         /* ----------------------------------------------------------------
          * 2. Check EG1 inhibit flags.
          *    Skip evaluation while any of these are active:
-         *      WIND_OVERRIDE  — T3 has forced all windows closed
-         *      MOTOR_ALARM    — T2 has de-energised all relays (emergency)
-         *      SENSOR_FAULT_T — T/RH sensor unreliable; cannot evaluate T
+         *      WIND_OVERRIDE   — T3 has forced all windows closed
+         *      MOTOR_ALARM     — T2 has de-energised all relays (emergency)
+         *      SENSOR_FAULT_T  — T/RH sensor unreliable; cannot evaluate T
+         *      STANDBY         — rc.1.5.0 (gh#28) operator-initiated pause.
+         *                        rc.1.5.1 — also the gate during the admin
+         *                        manual-motor menu (gh#29): the menu entry
+         *                        auto-sets STANDBY so T6 stays paused for
+         *                        as long as the admin is operating, and
+         *                        clears it on exit. The transient
+         *                        EG1_BIT_MANUAL_SESSION bit that rc.1.5.0
+         *                        used has been removed — it cleared too
+         *                        quickly (10 s idle dismiss) and let T6
+         *                        reopen windows the admin had just closed.
          * ---------------------------------------------------------------- */
         EventBits_t bits = xEventGroupGetBits(EG1);
         bool inhibited = (bits & (EG1_BIT_WIND_OVERRIDE |
                                   EG1_BIT_MOTOR_ALARM   |
-                                  EG1_BIT_SENSOR_FAULT_T)) != 0;
+                                  EG1_BIT_SENSOR_FAULT_T|
+                                  EG1_BIT_STANDBY)) != 0;
 
         if (inhibited) {
             if (!prev_inhibited) {

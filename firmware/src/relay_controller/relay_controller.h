@@ -74,3 +74,32 @@ void task_relay_controller(void *pvParameters);
  *        wait-free on the producer side.
  */
 void t2_get_window_states(window_state_t out[3]);
+
+/**
+ * @brief Pack the per-channel window states + safety EG1 bits into a 16-bit
+ *        bitmask suitable for `LOG_SENSOR_HR,channel=2,value_a`.
+ *
+ * Encoding (per `model/logUpdatePlan.md` §2.2):
+ * ```
+ * bits  1..0  = M1 state    (0=CLOSED, 1=MOVING_OPEN, 2=OPEN, 3=MOVING_CLOSE)
+ * bits  3..2  = M2 state    (same encoding)
+ * bits  5..4  = M3 state    (same encoding)
+ * bits 11..6  = reserved (0)
+ * bit  12     = EG1_BIT_WIND_OVERRIDE
+ * bit  13     = EG1_BIT_MOTOR_ALARM
+ * bit  14     = EG1_BIT_CALIBRATING
+ * bit  15     = reserved (0)
+ * ```
+ *
+ * The state bits use 2-bit-wide fields with GAP states folded into the
+ * matching MOVING state (collapsed by `t2_get_window_states()` already).
+ * `WIN_UNKNOWN` packs as 0 (CLOSED) — the safest visual default; concurrent
+ * `EG1_BIT_CALIBRATING` flags the period as pre-calibration so analysts
+ * know to discount any window-state value during that interval.
+ *
+ * @return 16-bit packed bitmask (treated as `int16_t` for the log row).
+ * @note   Reads `t2_get_window_states()` (portMUX-protected) and EG1
+ *         (`xEventGroupGetBits`, atomic). Safe to call from any task.
+ * @see    LOG_SENSOR_HR in `firmware/src/types/app_types.h`
+ */
+int16_t t2_get_window_bitmask(void);
