@@ -343,8 +343,12 @@ static void ch_start_close(uint8_t ch, uint32_t now_ms, cmd_source_t source)
         return;
 
     case CH_OPEN:
-        /* Check dwell timer; SRC_T3 commands bypass it. */
-        if (source != SRC_T3 &&
+        /* Check dwell timer; only SRC_T6 (autonomous climate control)
+         * observes it. SRC_T3 (safety) and SRC_OPERATOR_MANUAL (deliberate
+         * admin override via gh#29 LCD menu) both bypass — safety commands
+         * must execute immediately; admin manual commands are explicit
+         * choices that override the anti-thrash dwell. */
+        if (source == SRC_T6 &&
             (int32_t)(now_ms - c->dwell_deadline_ms) < 0) {
             ESP_LOGD(TAG, "CH%u: CLOSE deferred — dwell %lu ms remaining",
                      ch + 1u, (unsigned long)(c->dwell_deadline_ms - now_ms));
@@ -400,7 +404,9 @@ static void ch_start_open(uint8_t ch, uint32_t now_ms, cmd_source_t source)
         return;
 
     case CH_CLOSED:
-        if (source != SRC_T3 &&
+        /* Dwell-timer policy mirrors ch_start_close(): only SRC_T6 (climate)
+         * observes; SRC_T3 (safety) + SRC_OPERATOR_MANUAL (admin) bypass. */
+        if (source == SRC_T6 &&
             (int32_t)(now_ms - c->dwell_deadline_ms) < 0) {
             ESP_LOGD(TAG, "CH%u: OPEN deferred — dwell %lu ms remaining",
                      ch + 1u, (unsigned long)(c->dwell_deadline_ms - now_ms));
@@ -702,6 +708,17 @@ static void handle_alarm_clearance(void)
  * Q1 command processing
  * ============================================================ */
 
+/** @brief 3-char source name for log lines. */
+static inline const char *src_name(cmd_source_t s)
+{
+    switch (s) {
+        case SRC_T3:              return "T3";
+        case SRC_T6:              return "T6";
+        case SRC_OPERATOR_MANUAL: return "ADM";   /* rc.1.5.0 / gh#29 */
+        default:                  return "??";
+    }
+}
+
 /**
  * @brief Dispatch a Q1 window_cmd_t to the per-channel FSM.
  *
@@ -710,10 +727,14 @@ static void handle_alarm_clearance(void)
  * would defeat the safety interlock.
  *
  * Action handling:
- *  - CMD_CLOSE_ALL  — calls ch_start_close() on all three channels.
- *  - CMD_OPEN/CLOSE — single-channel start; channel is 1-based (1..3).
- *  - CMD_RESUME     — informational; T6 will re-issue OPEN commands as
- *                     climate control dictates.  T2 has no action.
+ *  - CMD_CLOSE_ALL   — calls ch_start_close() on all three channels.
+ *  - CMD_OPEN/CLOSE  — single-channel start; channel is 1-based (1..3).
+ *  - CMD_RESUME      — informational; T6 will re-issue OPEN commands as
+ *                      climate control dictates.  T2 has no action.
+ *  - CMD_RECALIBRATE — rc.1.5.0 (gh#28) — synchronous CLOSE_ALL sweep with
+ *                      EG1_BIT_CALIBRATING set for the duration. Posted by
+ *                      dm_set_standby(false,...) so windows return to a
+ *                      known CLOSED baseline before T6 resumes.
  *
  * @param cmd     Pointer to the dequeued command; must not be NULL.
  * @param now_ms  Current millis()-style timestamp passed through to the
@@ -723,15 +744,15 @@ static void process_command(const window_cmd_t *cmd, uint32_t now_ms)
 {
     /* Discard all commands while motor alarm is active (FR-MA03). */
     if (xEventGroupGetBits(EG1) & EG1_BIT_MOTOR_ALARM) {
-        ESP_LOGW(TAG, "Q1 cmd (action=%d ch=%u src=%d) discarded — MOTOR_ALARM active",
-                 (int)cmd->action, cmd->channel, (int)cmd->source);
+        ESP_LOGW(TAG, "Q1 cmd (action=%d ch=%u src=%s) discarded — MOTOR_ALARM active",
+                 (int)cmd->action, cmd->channel, src_name(cmd->source));
         return;
     }
 
     switch (cmd->action) {
 
     case CMD_CLOSE_ALL:
-        ESP_LOGI(TAG, "CMD_CLOSE_ALL from %s", cmd->source == SRC_T3 ? "T3" : "T6");
+        ESP_LOGI(TAG, "CMD_CLOSE_ALL from %s", src_name(cmd->source));
         for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
             ch_start_close(ch, now_ms, cmd->source);
         }
@@ -740,7 +761,7 @@ static void process_command(const window_cmd_t *cmd, uint32_t now_ms)
     case CMD_OPEN:
         if (cmd->channel >= 1u && cmd->channel <= NUM_CHANNELS) {
             ESP_LOGI(TAG, "CMD_OPEN ch%u from %s",
-                     cmd->channel, cmd->source == SRC_T3 ? "T3" : "T6");
+                     cmd->channel, src_name(cmd->source));
             ch_start_open((uint8_t)(cmd->channel - 1u), now_ms, cmd->source);
         } else {
             ESP_LOGW(TAG, "CMD_OPEN: invalid channel %u", cmd->channel);
@@ -750,7 +771,7 @@ static void process_command(const window_cmd_t *cmd, uint32_t now_ms)
     case CMD_CLOSE:
         if (cmd->channel >= 1u && cmd->channel <= NUM_CHANNELS) {
             ESP_LOGI(TAG, "CMD_CLOSE ch%u from %s",
-                     cmd->channel, cmd->source == SRC_T3 ? "T3" : "T6");
+                     cmd->channel, src_name(cmd->source));
             ch_start_close((uint8_t)(cmd->channel - 1u), now_ms, cmd->source);
         } else {
             ESP_LOGW(TAG, "CMD_CLOSE: invalid channel %u", cmd->channel);
@@ -761,6 +782,23 @@ static void process_command(const window_cmd_t *cmd, uint32_t now_ms)
         /* T6 signals end of wind override — T2 has no action; T6 will
          * issue new OPEN commands as climate control dictates. */
         ESP_LOGI(TAG, "CMD_RESUME — acknowledged (no T2 action)");
+        break;
+
+    case CMD_RECALIBRATE:
+        /* rc.1.5.0 / gh#28 — STANDBY-exit recalibration. Posted by
+         * dm_set_standby(false,...). Run the same synchronous CLOSE_ALL
+         * sweep used at boot — sets EG1_BIT_CALIBRATING for the duration
+         * (so T6 stays gated and the LCD Scherm 3 shows "Window Cal."),
+         * persists each channel as CLOSED on its travel-timer expiry,
+         * and returns when the slowest motor has completed.
+         *
+         * Blocking — same characteristics as the boot calibration path:
+         * Q1 commands accumulate while we run, and are processed (from a
+         * fully-CLOSED position) once we return. The T1 hardware-WDT kick
+         * is unaffected; the task-WDT is kicked from inside the sweep. */
+        ESP_LOGI(TAG, "CMD_RECALIBRATE from %s — STANDBY-exit re-calibration",
+                 src_name(cmd->source));
+        calib_close_all();
         break;
 
     default:
@@ -788,6 +826,47 @@ void t2_get_window_states(window_state_t out[3])
         }
     }
     portEXIT_CRITICAL(&s_state_mux);
+}
+
+/* ============================================================
+ * Public bitmask packer — rc.1.4.0 (LOG_SENSOR_HR channel=2)
+ *
+ * See `model/logUpdatePlan.md` §2.2 for the encoding. The header doxygen
+ * carries the field-by-field layout; this file holds the implementation.
+ * ============================================================ */
+
+/** @brief Map a `window_state_t` value to its 2-bit bitmask encoding.
+ *
+ * Per logUpdatePlan §2.2: 0=CLOSED, 1=MOVING_OPEN, 2=OPEN, 3=MOVING_CLOSE.
+ * WIN_UNKNOWN packs as 0 (safest visual default; EG1_BIT_CALIBRATING flags
+ * the period for the analyst).
+ */
+static inline uint16_t win_state_to_bits(window_state_t s)
+{
+    switch (s) {
+        case WIN_CLOSED:       return 0u;
+        case WIN_MOVING_OPEN:  return 1u;
+        case WIN_OPEN:         return 2u;
+        case WIN_MOVING_CLOSE: return 3u;
+        case WIN_UNKNOWN:
+        default:               return 0u;
+    }
+}
+
+int16_t t2_get_window_bitmask(void)
+{
+    window_state_t states[3];
+    t2_get_window_states(states);
+
+    EventBits_t eg1 = xEventGroupGetBits(EG1);
+
+    uint16_t bitmask = win_state_to_bits(states[0])
+                     | (win_state_to_bits(states[1]) << 2)
+                     | (win_state_to_bits(states[2]) << 4);
+    if (eg1 & EG1_BIT_WIND_OVERRIDE) { bitmask |= (1u << 12); }
+    if (eg1 & EG1_BIT_MOTOR_ALARM)   { bitmask |= (1u << 13); }
+    if (eg1 & EG1_BIT_CALIBRATING)   { bitmask |= (1u << 14); }
+    return (int16_t)bitmask;
 }
 
 /* ============================================================

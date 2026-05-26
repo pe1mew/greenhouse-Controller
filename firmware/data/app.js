@@ -164,6 +164,61 @@ function handleStatus(s) {
       WINDOW_CAL: 'Window Cal.'
     };
     if (s.mode.current) setText('st-mode', modeNames[s.mode.current] || s.mode.current);
+    // rc.1.5.0 / gh#28 — mirror the live mode into the Climate-tab toggle.
+    // The select reflects the operator-controllable axis (Normal vs Standby);
+    // safety overrides (WIND_OVERRIDE/MOTOR_ALARM) and the early-boot
+    // CALIBRATING state grey the control out.
+    //
+    // rc.1.5.1 — when the system is in WINDOW_CAL (boot calibration OR the
+    // CLOSE_ALL recalibration triggered by a Standby-exit from Scherm 3 /
+    // the web GUI Mode select), insert a transient '_calibrating' option
+    // labelled 'Calibrating windows...' and select it. This matches the
+    // LCD's behaviour of replacing the Mode line on Scherm 3 with
+    // 'Mode: Window Cal.' for the duration — the operator sees the same
+    // state-name on both surfaces instead of the web select misleadingly
+    // showing 'Normal (autonomous)' during a 3-minute mechanical sweep.
+    // The transient option is removed automatically once calibration ends.
+    {
+      const sel = document.getElementById('cfg-mode');
+      const btn = document.getElementById('btn-mode-apply');
+      if (sel && btn) {
+        const current = s.mode.current;
+        const flags = Array.isArray(s.mode.flags) ? s.mode.flags : [];
+        const calibrating = flags.includes('calibrating');
+        const wind_lock   = flags.includes('wind_override');
+        const motor_lock  = flags.includes('motor_alarm');
+
+        // Calibrating: synthesise / preserve the '_calibrating' option, select
+        // it, and lock the control. The underscore prefix keeps the value out
+        // of the server contract — even if someone forced a POST with it,
+        // /api/mode would 400 on 'bad_mode'.
+        let calOpt = sel.querySelector('option[value="_calibrating"]');
+        if (calibrating) {
+          if (!calOpt) {
+            calOpt = document.createElement('option');
+            calOpt.value = '_calibrating';
+            calOpt.textContent = 'Calibrating windows...';
+            sel.prepend(calOpt);
+          }
+          sel.value     = '_calibrating';
+          sel.disabled  = true;
+          btn.disabled  = true;
+        } else {
+          if (calOpt) { calOpt.remove(); }
+          // Only flip the selection when no user interaction is in flight,
+          // so an operator's mid-edit choice is preserved across status pushes.
+          if (!sel.matches(':focus')) {
+            sel.value = (current === 'STANDBY') ? 'standby' : 'automatic';
+          }
+          // Safety overrides (wind/motor) still lock the control even outside
+          // a calibration cycle — the operator can't pause/unpause while the
+          // controller is defending the greenhouse.
+          const inhibited = wind_lock || motor_lock;
+          sel.disabled  = inhibited;
+          btn.disabled  = inhibited;
+        }
+      }
+    }
 
     const flagBadges = {
       wind_override:      '<span class="badge alarm">WIND</span>',
@@ -172,6 +227,12 @@ function handleStatus(s) {
       sensor_fault_wind:  '<span class="badge warn">Wind fault</span>',
       ota_in_progress:    '<span class="badge warn">OTA active</span>',
       calibrating:        '<span class="badge warn">Calibrating</span>',
+      // rc.1.5.1 - gh#28 follow-up. Operator pause is visible in the same
+      // place every other state is visible (the Alarms card / public
+      // dashboard badge area). Amber via the warn class so it reads at a
+      // glance as 'something operator-initiated; not a fault' but still
+      // attention-worthy. Pairs with the LCD's 'Mode: STANDBY' on Scherm 3.
+      standby:            '<span class="badge warn">Standby</span>',
       // gh#18 Phase 1 — T14 circuit breaker open. Phase 1 never emits this
       // flag (stub returns false); Phase 2 wires it to real breaker state.
       net_backoff_active: '<span class="badge warn">Net backoff</span>',
@@ -459,6 +520,17 @@ function postCfgStr(ns, key, inputId) {
   if (!el) return;
   post('/api/config', { ns, key, str_value: el.value })
     .then(r => feedback('fb-' + inputId.replace('cfg-',''), r && r.ok));
+}
+
+// rc.1.5.0 / gh#28 — POST /api/mode (Farmer or Admin session).
+// Server returns the post-transition mode in its response, but the live WS
+// push refreshes the select again within ~2 s so we don't bother round-
+// tripping; the feedback chip just flashes ✓ on the 200.
+function postMode() {
+  const el = document.getElementById('cfg-mode');
+  if (!el) return;
+  post('/api/mode', { mode: el.value })
+    .then(r => feedback('fb-mode', r && r.ok));
 }
 
 function postLocation() {

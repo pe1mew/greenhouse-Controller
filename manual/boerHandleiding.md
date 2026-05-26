@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de boer
 
-**Versie:** 1.13 — concept
-**Datum:** 2026-05-15
-**Firmware:** 1.20.3
+**Versie:** 1.15 — concept
+**Datum:** 2026-05-26
+**Firmware:** 2.0.0-rc.1.5.2
 
 ---
 
@@ -255,12 +255,13 @@ De controller doorloopt zeven schermen in vaste volgorde, elk 5 seconden zichtba
    +----------------+
 ```
 
- - Regel 1 toont de bedrijfsmodus (AUTO / WIND / ALARM / Window Cal.). 
+ - Regel 1 toont de bedrijfsmodus (AUTO / WIND / ALARM / STANDBY / Window Cal.). 
  - Regel 2 toont de actieve sessie, is er ingelogd op de controller en door wie:
 	- `Sess: NONE` — niemand ingelogd
 	- `Sess: Farmer` — Boer ingelogd
 	- `Sess: Admin` — Beheerder ingelogd
 	- Als er een over-the-air firmware-update (OTA) bezig is, verschijnt `OTA` aan het eind van regel 2
+ - Druk `#` op dit scherm om de **Standby-modus** aan of uit te zetten — de boer en de beheerder mogen dit allebei (zie [§10.4](#104-de-controller-tijdelijk-pauzeren--standby)). Als je nog niet ingelogd bent vraagt de controller eerst je PIN; voer dan je 4-cijferige Boer-PIN in en druk `#`.
 
 **Scherm 4 — Wifi-status:**
 
@@ -321,6 +322,8 @@ Drie mogelijke weergaven:
 	| `MOV<` | Raam wordt gesloten |
 	| `UNK ` | Raamopening onbekend (treedt op kort na opstart vóór de kalibratie) |
 
+ - Druk `#` op dit scherm om een raam handmatig open of dicht te zetten. Deze functie is **alleen voor de Beheerder** beschikbaar — als je als Boer op `#` drukt, vraagt de controller om de 8-cijferige Beheerder-PIN; je kunt met `*` annuleren en terug naar de auto-rotatie.
+
 **Scherm 7 — Firmware versie, unit-ID en bedrijfsduur:**
 
 ```
@@ -367,16 +370,18 @@ De functie van een toets hangt af van het **scherm** waar je je bevindt. Hierond
 
 > **Automatisch terug naar de auto-rotatie**: blijft het LCD 5 minuten op een menu of invoerscherm staan zonder dat er een toets wordt ingedrukt, dan keert de controller automatisch terug naar de roterende statusschermen. Je hoeft dus niet bang te zijn dat de display vast blijft staan op een halve invoer.
 
-De `#`-quick-jump werkt op vier statusschermen. Op het LCD zelf staat geen zichtbare hint; onthoud gewoon dat `#` op een statusscherm met instellingen direct het bijhorende menu opent:
+De `#`-quick-jump werkt op zes statusschermen. Op het LCD zelf staat geen zichtbare hint; onthoud gewoon dat `#` op een statusscherm met instellingen direct het bijhorende menu opent:
 
 | Scherm | `#` opent | Vraagt PIN? |
 |---|---|---|
 | 1 — Temperatuur/luchtvochtigheid | Klimaat-menu (setpoints) | Boer-PIN |
 | 2 — Wind | Wind-menu (Wnd-max, Wnd-prot) | Boer-PIN |
+| 3 — Mode/Sess | Standby-modus aan/uit (zie [§10.4](#104-de-controller-tijdelijk-pauzeren--standby)) | Boer- óf Beheerder-PIN |
 | 4 — WiFi | System-menu (AP aan/uit) | Beheerder-PIN |
 | 5 — Datum/tijd | Datum/tijd-invoer | Beheerder-PIN |
+| 6 — Raamposities | Handmatige raambediening | Beheerder-PIN — niet voor de Boer |
 
-Op de overige schermen (3 — Mode/Sess en 6 — Raamposities) heeft `#` geen functie omdat er niets is in te stellen en opent, net als andere toetsen, het hoofdmenu.
+Alleen op scherm 7 (Firmware/uptime) heeft `#` geen aparte functie; daar opent het, net als andere toetsen, het hoofdmenu.
 
 #### In een menu (root, climate, wind, access, system)
 
@@ -420,7 +425,7 @@ Een meerkleurige LED is zichtbaar door de deksel van de kast. De kleur geeft de 
 | Kleur | Betekenis |
 |---|---|
 | **Groen** | Normale werking — `Mode: AUTO`, geen waarschuwingen |
-| **Oranje (amber)** | Waarschuwing — wind-override actief, sensor-fout, windbeveiliging staat uit, of vochtregeling staat uit |
+| **Oranje (amber)** | Waarschuwing — wind-override actief, sensor-fout, windbeveiliging staat uit, vochtregeling staat uit, of operator-Standby actief |
 | **Rood** | Kritiek alarm — motor-noodstop (`Mode: ALARM`); de motoren worden niet meer aangestuurd |
 
 De LED dimt 's nachts automatisch.
@@ -755,7 +760,9 @@ Wanneer je in een menu of bewerk-scherm de ingestelde sessie-time-out (standaard
 
 *Figuur 4: Climate tab met sliders, velden en de keuzelijst voor T vs RH conflict-prioriteit*
 
-Per setpoint heb je een schuifregelaar + nummerveld + **Apply**-knop.
+Bovenaan de tab staat een aparte "Mode"-keuzelijst met **Normal** (Automatisch) of **Standby** (Pauze). Hiermee zet je de automatische klimaatregeling tijdelijk uit zonder andere instellingen aan te raken — handig tijdens onderhoud of wanneer je zelf de ramen wilt openen of sluiten. Lees [§10.4](#104-de-controller-tijdelijk-pauzeren--standby) voor wat de Standby-modus precies doet en wanneer je hem gebruikt. De keuzelijst is grijs gemaakt als wind-override, motor-alarm of kalibratie actief is — de controller laat veiligheidsregels altijd voorgaan op een operator-pauze.
+
+Per setpoint (daaronder) heb je een schuifregelaar + nummerveld + **Apply**-knop.
 
 | Veld op de webinterface | Betekenis |
 |---|---|
@@ -780,6 +787,53 @@ Algemene vuistregels:
 - **RH boven 85%** voor langere tijd vergroot het risico op schimmelziekten — houd RH-max liever onder 85%
 - **RH onder 50%** kan groei remmen en mijten in de hand werken
 - **Bij twijfel**: zie [Bijlage B — Aanbevolen startinstellingen per gewas](#20-bijlage-b--aanbevolen-startinstellingen-per-gewas) voor een tabel met richtwaarden voor de meest voorkomende gewassen, of vraag je teler / leverancier van de planten om aanbevolen klimaatzones
+
+### 10.4 De controller tijdelijk pauzeren — Standby
+
+Standby zet de **automatische klimaatregeling tijdelijk uit** zonder dat je instellingen hoeft te wijzigen. De ramen blijven staan waar ze stonden op het moment dat je Standby aanzet — de controller stuurt simpelweg geen nieuwe open- of dicht-commando's meer.
+
+#### Wanneer gebruik je Standby?
+
+- Tijdens **onderhoud aan de motoren of de ramen** — voorkomt dat de controller midden in jouw werk een raam in beweging zet
+- Tijdens **een rondleiding of demonstratie** waarbij de ramen tijdelijk in een bepaalde stand moeten blijven
+- Wanneer je **even zelf de ramen wilt bedienen** via de Hand-schakelaars op de motorbox (de controller probeert dan niet steeds tegen je in te werken)
+- **Tijdelijk uitschakelen** wanneer je weet dat de buitenomstandigheden bijzonder zijn (een schoonmaakdag waarbij de ramen open moeten staan, een korte test, …)
+
+#### Wat doet Standby NIET?
+
+- Standby **schakelt de veiligheidsregels niet uit**. Bij harde wind sluit de controller alle ramen alsnog automatisch (`Mode: WIND` blijft voorrang krijgen). Bij motor-alarm (`Mode: ALARM`) blijft de motor-noodstop actief.
+- Standby **doet de ramen niet automatisch dicht** wanneer je hem aanzet. Wil je dat alles dicht is voor onderhoud, doe dat dan eerst handmatig op de motorbox.
+
+#### Standby aanzetten — drie manieren
+
+**Via het LCD-scherm:**
+1. Druk `D` tot je op **scherm 3** (`Mode/Sess`) bent
+2. Druk `#`
+3. Als je nog niet ingelogd bent: voer je 4-cijferige Boer-PIN in, druk `#`
+4. Het menu toont `Now:AUTO` (of `STANDBY`) en de keuzes `1=Auto 2=Stby *B`
+5. Druk `2` om naar Standby te schakelen — bevestiging `Mode: STANDBY`, controller pauzeert. Het LCD springt terug naar de auto-rotatie en scherm 3 toont `Mode: STANDBY`
+
+**Via de webinterface (Climate-tab):**
+1. Log in als Boer
+2. Open tab **Climate**
+3. Bovenaan staat een "Mode"-keuzelijst — kies **Standby (paused)**
+4. Klik **Apply** — binnen een paar seconden verschijnt op scherm 3 `Mode: STANDBY`
+
+#### Standby uitzetten
+
+Dezelfde route, maar kies **Auto** (LCD: toets `1` op het menu, web: kies "Normal" en klik Apply).
+
+**Belangrijk — kort kalibratie-moment bij uitschakelen:** Zodra je Standby verlaat, voert de controller automatisch een **kalibratiecyclus** uit: alle drie de ramen sluiten zich gelijktijdig om een betrouwbare uitgangspositie te bepalen. Dit duurt **tot ~3 minuten** (zo lang als M3 nodig heeft om volledig dicht te zijn) en je ziet `Mode: Window Cal.` op scherm 3. Daarna gaat de controller automatisch verder met `Mode: AUTO` en past hij de ramen aan op basis van de actuele klimaatwaarden.
+
+> **Standby blijft staan bij stroomuitval.** Heb je Standby aangezet en gaat tussendoor de stroom uit? Na opstarten staat de controller weer in `Mode: STANDBY` — zodat een korte stroomonderbreking je onderhoudswerk niet onbedoeld onderbreekt. Vergeet niet om Standby weer uit te zetten als je klaar bent met je werk!
+
+#### Visuele bevestiging dat Standby actief is
+
+- **Op de controller (LCD)**: scherm 3 toont `Mode: STANDBY`
+- **In de webinterface**:
+  - Op de **Status**-pagina verschijnt een gele **Standby**-badge in de Alarms-tegel, naast de andere actieve waarschuwingen
+  - Op de **Climate**-tab toont de Mode-keuzelijst `Standby (paused)` en de Apply-knop is grijs (geen wijziging mogelijk tot je via dezelfde keuzelijst weer naar Normal stelt)
+  - Tijdens de korte kalibratiecyclus die direct ná het uitzetten van Standby loopt, toont de Mode-keuzelijst de transient tekst `Calibrating windows...` — wacht ~3 min, daarna keert hij vanzelf terug naar `Normal (autonomous)`
 
 ---
 
@@ -833,6 +887,7 @@ Dit hoofdstuk legt uit wat de mode-regel op het LCD betekent en wat je in elke s
 | LCD-tekst | Betekenis | Wat doet de controller? | Wat moet je doen? |
 |---|---|---|---|
 | `Mode: AUTO` | Normale automatische werking | Regelt Temperatuur en Luchtvochtigeid binnen de setpoints | Niets — alles werkt zoals het hoort |
+| `Mode: STANDBY` | Standby-modus — door operator gepauzeerd | **Geen klimaatcommando's; ramen blijven waar ze zijn** | Niets — dit is een bewuste pauze (zie [§10.4](#104-de-controller-tijdelijk-pauzeren--standby)). Vergeet niet om Standby uit te zetten als je klaar bent. |
 | `Mode: WIND` | Wind-override actief — wind te hard | **Alle ramen dicht; klimaatregeling onderdrukt** | Wachten tot de wind afneemt; zie [§12.5](#125-windbeveiliging-in-detail) |
 | `Mode: ALARM` | Motor-alarm (Hotraco RRK-3) | **Alle relais uit; motoren staan stil** | **Bel de beheerder onmiddellijk**; zie [§12.6](#126-motor-alarm-in-detail) |
 | `Mode:Window Cal.` | Kalibratie van de ramen — alle ramen sluiten om de uitgangspositie te bepalen | Sluit M1, M2, M3 gelijktijdig; duurt tot ~3 minuten | Wachten; niet ingrijpen, niet handmatig aan de ramen werken |
@@ -1444,6 +1499,8 @@ Inhoudelijke wijzigingen aan de firmware staan beschreven in het bestand `change
 | 1.11 | 2026-05-16 | 1.20.2 (alleen documentatie — Bijlage B *Aanbevolen startinstellingen per gewas* toegevoegd) |
 | 1.12 | 2026-05-16 | 1.20.2 (alleen documentatie — Bijlage B uitgebreid van 13 naar 28 gewassen passend bij de teelt in Wenumseveld: Meloen, Ananaskers, Spaghettiboon, Peulen, Rucola, Paksoi, Snijbiet, Raapsteel, Palmkool, Koolrabi, Bospeen, Bosbiet, Radijs, Groene selderij, Bloemen — geordend per gewas-familie) |
 | 1.13 | 2026-05-17 | 1.20.3 |
+| 1.14 | 2026-05-26 | 2.0.0-rc.1.5.0 |
+| 1.15 | 2026-05-26 | 2.0.0-rc.1.5.1 |
 
 ---
 

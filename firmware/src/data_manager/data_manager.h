@@ -315,6 +315,92 @@ void dm_set_log_last_up(const char *filename);
 void dm_set_manual_time(time_t unix_ts);
 
 /* ============================================================
+ * Operating-mode setter (rc.1.5.0, gh#28)
+ *
+ * STANDBY is a deliberate operator action: T6 (Climate Control) pauses
+ * its decision tick for the duration. Windows stay where they are on
+ * STANDBY entry (no forced movement). On STANDBY exit the controller
+ * issues CMD_RECALIBRATE so windows return to a known CLOSED baseline
+ * before T6 resumes — symmetric with the boot-time CLOSE_ALL calibration.
+ *
+ * Persistence: the bit is NVS-backed under `system/mode_standby`. A
+ * power blip during a deliberate STANDBY does NOT silently re-enable
+ * climate control on reboot — the controller comes back up in STANDBY.
+ * dm_init clears the bit only if NVS reads 0.
+ *
+ * Priority chain in dm_status_snapshot (highest first):
+ *   MOTOR_ALARM → WIND_OVERRIDE → STANDBY → AUTOMATIC
+ * — STANDBY ranks below safety so wind/alarm still win.
+ * ============================================================ */
+
+/**
+ * @brief Set or clear the operator-initiated STANDBY mode (gh#28).
+ *
+ * Transitions the EG1_BIT_STANDBY event-group bit and persists the new
+ * state to NVS. On a true→false transition (STANDBY exit) a CMD_RECALIBRATE
+ * is posted to Q1; T2 runs a synchronous CLOSE_ALL sweep (EG1_BIT_CALIBRATING
+ * set for the duration) before normal T6 evaluation resumes. On false→true
+ * (entry) T6 stops issuing commands on its next tick; windows stay put.
+ *
+ * Idempotent — calling with the value already in effect is a no-op (no log,
+ * no NVS write, no Q1 post).
+ *
+ * Thin wrapper around `dm_set_standby_ex()` with `recalibrate_on_clear=true`.
+ *
+ * @param standby   true = enter STANDBY; false = leave STANDBY.
+ * @param initiator log_initiator_t identifying who toggled the mode
+ *                  (LOG_BY_FARMER / LOG_BY_ADMIN / LOG_BY_WEB / LOG_BY_SYSTEM).
+ * @param channel   Surface hint carried into the audit row's `channel` field:
+ *                    0 = web GUI / API
+ *                    1 = LCD keypad
+ *                  Distinct from the operator role, which is captured by
+ *                  @p initiator.
+ */
+void dm_set_standby(bool standby, log_initiator_t initiator, uint8_t channel);
+
+/**
+ * @brief rc.1.5.1 — set/clear STANDBY with optional recalibration suppression.
+ *
+ * Identical to `dm_set_standby()` but lets the caller suppress the
+ * CMD_RECALIBRATE post on STANDBY exit. Used by the gh#29 admin manual-motor
+ * menu, which auto-sets STANDBY on entry and clears it on exit *without*
+ * forcing the windows back to a fully-CLOSED baseline (the admin's manual
+ * positions are deliberate — preserving them on menu exit matches
+ * FR-MM07's "the controller takes its next decision from the actual current
+ * state").
+ *
+ * Web/LCD-Scherm-3 STANDBY exits use `dm_set_standby()` (with
+ * `recalibrate_on_clear=true`) so their semantics are unchanged: those
+ * surfaces are explicit operator pauses and the operator expects a clean
+ * recalibration baseline when they un-pause.
+ *
+ * On entry (`standby=true`) the parameter is ignored — entries never
+ * recalibrate (recalibration only makes sense on exit). On idempotent calls
+ * (already in desired state) the parameter is also ignored — no transition
+ * means no recalibration regardless.
+ *
+ * @param standby                 true = enter STANDBY; false = leave STANDBY.
+ * @param initiator               Audit-row initiator (see dm_set_standby).
+ * @param channel                 Audit-row channel/surface hint (see dm_set_standby).
+ * @param recalibrate_on_clear    On a true→false transition: if true, post
+ *                                CMD_RECALIBRATE to Q1 (T2 runs calib_close_all);
+ *                                if false, just clear the bit and log — windows
+ *                                stay at their current per-channel state and T6
+ *                                resumes from there on its next decision tick.
+ */
+void dm_set_standby_ex(bool standby,
+                        log_initiator_t initiator,
+                        uint8_t channel,
+                        bool recalibrate_on_clear);
+
+/**
+ * @brief Return the current STANDBY state (== EG1_BIT_STANDBY set).
+ *
+ * Lock-free; reads EG1 directly. Safe to call from any task.
+ */
+bool dm_get_standby(void);
+
+/* ============================================================
  * Coredump accessors (a.6.35.6)
  *
  * T4 calls esp_core_dump_image_check() once during boot. If a coredump

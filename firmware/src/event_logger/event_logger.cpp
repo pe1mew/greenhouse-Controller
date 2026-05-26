@@ -92,17 +92,25 @@ static const char *TAG = "T9_LOG";
  * SD rotation parameters
  * ----------------------------------------------------------------------- */
 
-/** @brief Rotate to a new file when the current one reaches this many bytes (512 KB). */
-#define SD_ROTATE_BYTES    (512UL * 1024UL)
+/* rc.1.4.0 — rotation defaults bumped per model/logUpdatePlan.md §2.4. The
+ * LOG_SENSOR sunset + three LOG_SENSOR_HR rows per sample ~3× the row volume
+ * (~483 KB/day vs ~166 KB/day previously). The new defaults give ~63 days
+ * of on-SD history at the rotation cap (30 files × 1 MB = 30 MB), comfortably
+ * over-provisioned given daily T14 upload removes uploaded files anyway.
+ * The previous defaults (512 KB / 10 files / 3 floor / 2 MB free) are
+ * retained as comments for reference. */
+
+/** @brief Rotate to a new file when the current one reaches this many bytes (1 MB). */
+#define SD_ROTATE_BYTES    (1024UL * 1024UL)   /* was 512 KB pre-rc.1.4.0 */
 
 /** @brief Maximum number of log files retained on the SD card before the oldest is deleted on rotation. */
-#define SD_MAX_FILES       10u
+#define SD_MAX_FILES       30u                  /* was 10 pre-rc.1.4.0 */
 
-/** @brief Minimum number of files to retain; never delete below this floor (3 files). */
-#define SD_MIN_FILES       3u
+/** @brief Minimum number of files to retain; never delete below this floor (5 files). */
+#define SD_MIN_FILES       5u                   /* was 3 pre-rc.1.4.0 */
 
-/** @brief Suspend SD logging (or proactively reclaim) when free space drops below this many bytes (2 MB). */
-#define SD_FREE_MIN_BYTES  (2UL * 1024UL * 1024UL)
+/** @brief Suspend SD logging (or proactively reclaim) when free space drops below this many bytes (4 MB). */
+#define SD_FREE_MIN_BYTES  (4UL * 1024UL * 1024UL)   /* was 2 MB pre-rc.1.4.0 */
 
 /**
  * @brief Length of an SD filename string including leading '/' and NUL.
@@ -449,6 +457,8 @@ static const char *evt_type_str(uint8_t t)
         case LOG_SESSION:     return "SESSION";
         case LOG_ALARM:       return "ALARM";
         case LOG_SYSTEM:      return "SYSTEM";
+        case LOG_SENSOR_HR:   return "SENSOR_HR";   /* rc.1.4.0 — see logUpdatePlan §2 */
+        case LOG_SUN:         return "SUN";         /* rc.1.4.0 — see logUpdatePlan §3 */
         default:              return "UNKNWN";
     }
 }

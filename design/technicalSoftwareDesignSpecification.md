@@ -327,6 +327,7 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 - FR-DN05: if latitude and longitude are both zero (no location configured), daytime setpoints are applied as the safe default.
 - Determines current period by comparing the UTC time-of-day (derived from the Unix timestamp) against the computed sunrise/sunset windows.
 - Exposes `is_daytime` (boolean) and `sunrise_mins_utc` / `sunset_mins_utc` (minutes from midnight UTC) to all tasks via shared state under MX4.
+- Emits one `LOG_SUN` row via `log_post()` whenever the cached sunrise/sunset values change (change-detected at the top of `update_sun_times()`; sentinel `-1` cache means the first call after boot always emits). The row carries the **local-time** minutes-from-midnight (matching the values exposed by `/api/status`), so historical SD files are self-sufficient for per-day night-shading without needing a live `/api/status` lookup. In steady-state operation this produces one row per local day (the midnight rollover triggers the recompute and detects the ~1–2 min/day shift); see §5.3 for the row format.
 - T6 reads `is_daytime` to select the correct setpoint pair (day or night) before each evaluation cycle.
 - Web GUI displays `sunrise_mins_utc` and `sunset_mins_utc` converted to local time for farmer verification (FR-DN04).
 
@@ -379,8 +380,8 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 - Evaluates temperature and humidity against the active setpoints with hysteresis bands.
 - Runs conflict resolution algorithm when T and RH demand opposing window actions.
 - Posts open/close actuation commands to T2 via command queue.
-- Checks operating mode from T4 before acting; inhibited in Standby and Wind-override states.
-- **Synchronization:** wakes on TN2 (from T4, new sensor data); acquires MX2 to read current T and RH; acquires MX4 to read setpoints and hysteresis; reads EG1 (MOTOR_ALARM, WIND_OVERRIDE, SENSOR_FAULT_T, SENSOR_FAULT_W) before issuing any command; posts to Q1 (actuation commands); posts to Q3 (log events).
+- Checks operating mode from T4 before acting; **inhibited** by any of the EG1 bits in the "do nothing" mask. End-state mask (rc.1.5.1+): `MOTOR_ALARM | WIND_OVERRIDE | SENSOR_FAULT_T | STANDBY`. The first three are safety / data-validity gates; `STANDBY` is the operator-initiated pause (gh#28). The rc.1.5.0 transient `MANUAL_SESSION` bit (gh#29) was removed in rc.1.5.1 — the admin manual-motor LCD menu now auto-sets STANDBY on entry and clears it on exit (without recalibration, preserving the admin's manual positions per FR-MM07).
+- **Synchronization:** wakes on TN2 (from T4, new sensor data); acquires MX2 to read current T and RH; acquires MX4 to read setpoints and hysteresis; reads EG1 (MOTOR_ALARM, WIND_OVERRIDE, SENSOR_FAULT_T, SENSOR_FAULT_W, STANDBY) before issuing any command; posts to Q1 (actuation commands); posts to Q3 (log events).
 
 ---
 
@@ -402,13 +403,14 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 
 - Manages the LCD1602 display via I2C (shared bus with RTC). Any `delay()` calls in the LCD1602 driver must be replaced with `vTaskDelay(pdMS_TO_TICKS(ms))` so T8 yields to the scheduler rather than spinning.
 - Renders the main status screen: T, RH, wind speed and direction, window states, operating mode, active session, active alarms.
-- **Cyclic status pages (`STATUS_PAGES = 6`):** auto-rotates every 5 s through pages 0–5:
+- **Cyclic status pages (`STATUS_PAGES = 7`):** auto-rotates every 5 s through pages 0–6:
   - 0: temperature and humidity
   - 1: wind speed and direction
-  - 2: climate window-demand status (OPEN / MOVING / CLOSED per channel)
+  - 2: operating mode + active session (`Mode: AUTO/WIND/ALARM/STANDBY/Window Cal.` + `Sess: NONE/Farmer/Admin` ± `OTA`)
   - 3: network status (AP / client / IP)
   - 4: current date/time (local, via `localtime_r`) and time source label ("NTP" when `s_net.ntp_synced` true; "RTC" otherwise); pressing `#` on this page initiates the manual time-set flow (FR-UI22, FR-UI23)
   - 5: motor (window) states — row 0: `M1    M2    M3  `; row 1: per-channel state abbreviation (`OPEN` / `CLOS` / `MOV>` / `MOV<` / `UNK `); reads `window_state_t[3]` from T2 via `t2_get_window_states()` (FR-UI04)
+  - 6: firmware version (read-only diagnostic — `fw_ver` + `asset_version`)
 - **D-key page advance:** pressing `D` while in the auto-rotation loop (`UI_STATUS`) immediately advances to the next page (`s_status_page = (s_status_page + 1) % STATUS_PAGES`) and resets the 5-second display timer (`s_status_ticks = 0`); the new page then holds for a full 5 s before the next automatic advance.
 - Runs the menu FSM; navigation depth ≤ 4 key presses from the main screen to any first-level setting.
   - **FSM states:** `UI_STATUS`, `UI_MENU_ROOT`, `UI_MENU_CLIMATE`, `UI_MENU_WIND`, `UI_MENU_SYSTEM`, `UI_MENU_ACCESS`, `UI_EDIT_VALUE`, `UI_PIN_ENTRY`, **`UI_SET_DATE`**, **`UI_SET_TIME`**
@@ -884,14 +886,55 @@ Conflict resolution is only active when `rh_ctrl_en` is true. The active conflic
 | Field | Type | Offset | Description |
 |-------|------|--------|-------------|
 | timestamp | uint32 | 0 | Unix epoch seconds; marked invalid if no time source has synced |
-| event_type | uint8 | 4 | Category: SENSOR, RELAY, MODE_CHANGE, SETPOINT, SESSION, ALARM, SYSTEM |
+| event_type | uint8 | 4 | Category: SENSOR_HR, SUN, RELAY, MODE_CHANGE, SETPOINT, SESSION, ALARM, SYSTEM. (`SENSOR` is retained in the enum but no longer emitted; see "Sensor logging" below.) |
 | initiator | uint8 | 5 | SYSTEM, USER_FARMER, USER_ADMIN, MQTT, WEB |
-| channel | uint8 | 6 | Motor channel (M1/M2/M3) or 0 for non-motor events |
+| channel | uint8 | 6 | Motor channel (M1/M2/M3), `SENSOR_HR` sub-row id (0=T+RH, 1=wind, 2=window-bitmask), or 0 for non-channel events |
 | param_id | uint8 | 7 | `log_param_id_t`: identifies the specific CONFIG parameter (C1–C22); 0 for all non-CONFIG events. For C18/C19, `channel` identifies the motor and `param_id` distinguishes open vs close dwell. |
 | value_a | int16 | 8 | First payload (sensor value, old setting, reason code) |
 | value_b | int16 | 10 | Second payload (new setting, threshold, parameter) |
 
 Total: 12 bytes. No padding needed — four uint8 fields (offset 4–7) fill the alignment gap before `value_a`.
+
+**Sensor logging — `LOG_SENSOR_HR` triplet.** Each sensor poll cycle (30 s default; range 15–120 s) emits **three rows** rather than one, sharing the same Unix timestamp from the originating Q6 reading. The three rows are discriminated by the `channel` field:
+
+| channel | Subject | `value_a` | `value_b` |
+|--------:|---------|-----------|-----------|
+| 0 | Temperature + Humidity | `t_c10` — temperature × 10 (0.1 °C precision; e.g. `234` = 23.4 °C) | `rh` — humidity, 0..100 % |
+| 1 | Wind | `wind_dms` — wind speed × 10 (deci-m/s; e.g. `35` = 3.5 m/s) | `wind_dir_deg` — wind direction, 0..359 ° |
+| 2 | Window-state bitmask | 16-bit packed state — see encoding below | 0 (reserved) |
+
+The 16-bit window-state bitmask (channel = 2, `value_a`) packs all three channels' public `window_state_t` plus three EG1 safety bits:
+
+```
+bits  1..0  = M1 state    (0=CLOSED, 1=MOVING_OPEN, 2=OPEN, 3=MOVING_CLOSE)
+bits  3..2  = M2 state    (same encoding)
+bits  5..4  = M3 state    (same encoding)
+bits 11..6  = reserved (0)
+bit  12     = EG1_BIT_WIND_OVERRIDE  (1 if T3 has forced CLOSE_ALL)
+bit  13     = EG1_BIT_MOTOR_ALARM    (1 if RRK-3 emergency-stop active)
+bit  14     = EG1_BIT_CALIBRATING    (1 if boot CLOSE_ALL is running OR
+                                       STANDBY-exit recalibration is running)
+bit  15     = reserved (0) — rc.1.5.0 introduced EG1_BIT_STANDBY (bit 7 in
+              EG1) and EG1_BIT_MANUAL_SESSION (bit 8 in EG1), but neither is
+              mirrored into the SENSOR_HR ch=2 bitmask. STANDBY visibility
+              in the SD log goes through LOG_MODE_CHANGE rows; manual-motor
+              activity goes through LOG_RELAY rows (with source attribution
+              in the T2 per-command log line). The bit-15 slot stays
+              reserved for a possible future operator-mode tracking
+              extension if per-sample granularity ever proves needed.
+```
+
+T2's internal FSM uses an extended `ch_state_t` with two transient `GAP_TO_OPEN` / `GAP_TO_CLOSE` states for direction-reversal delays; these collapse to the matching MOVING state in the public `window_state_t` returned by `t2_get_window_states()` and packed by `t2_get_window_bitmask()`. GAP visibility (~2 s per reversal) is lost in the log; the analysis pipeline treats GAP-folded transitions as MOVING.
+
+The pre-existing single-row `LOG_SENSOR` format (`value_a = int16 °C`, `value_b = int16 % RH`) is **sunset and no longer emitted**. Its enum value is retained in `log_type_t` and its `"SENSOR"` type-column string is retained in the CSV row formatter so that historical SD files served via `/api/log/download` continue to display unchanged.
+
+**Sun-time logging — `LOG_SUN`.** A single row records sunrise and sunset (local-time minutes from midnight). Emitted by T4 only when the cached values change:
+
+| channel | Subject | `value_a` | `value_b` |
+|--------:|---------|-----------|-----------|
+| 0 | Sunrise / sunset (local) | `sunrise_min` — minutes from local midnight, 0..1439 | `sunset_min` — minutes from local midnight, 0..1439 |
+
+In steady-state operation this produces one row per local day (the midnight rollover triggers the recompute, which detects the ~1–2 min/day shift typical of spring/autumn). The trigger also fires once at boot (cache sentinel vs first computed value) and once per operator coordinate edit via Q4. The row makes per-day night-shading in the analysis pipeline self-contained — historical days no longer need a live `/api/status` lookup for their dawn/dusk values.
 
 **Storage:**
 - **SD card (FAT32) is the sole event-log persistence target.** See log rotation policy below.
@@ -900,8 +943,12 @@ Total: 12 bytes. No padding needed — four uint8 fields (offset 4–7) fill the
 
 **SD card log file format:**
 - CSV text file; first line is a fixed header row: `timestamp,type,initiator,ch,param,value_a,value_b`
-- Each subsequent line is one log entry. Example: `2025-06-07T14:30:22,SENSOR,SYS,0,0,235,650`
-- The `timestamp` field is an ISO 8601 UTC string (`YYYY-MM-DDTHH:MM:SS`), formatted via `strftime("%Y-%m-%dT%H:%M:%S")`. Average line length: ~55 bytes. Estimated daily volume: ~90 KB (1 440 sensor snapshots at 30 s default interval + ~100 discrete events).
+- Each subsequent line is one log entry. Examples:
+  - `2026-05-23T13:30:22,SENSOR_HR,SYS,0,0,234,65` — T+RH (23.4 °C / 65 % RH)
+  - `2026-05-23T13:30:22,SENSOR_HR,SYS,1,0,35,158` — wind (3.5 m/s / 158 °)
+  - `2026-05-23T13:30:22,SENSOR_HR,SYS,2,0,42,0` — bitmask 0x002A (all windows OPEN, no overrides)
+  - `2026-05-23T00:01:12,SUN,SYS,0,0,330,1296` — sunrise 05:30 / sunset 21:36 local
+- The `timestamp` field is an ISO 8601 **local-time** string (`YYYY-MM-DDTHH:MM:SS`), formatted via `localtime_r()` + `strftime("%Y-%m-%dT%H:%M:%S")`. Average line length: ~55 bytes. Estimated daily volume: ~483 KB (8 640 sensor sub-rows at 30 s default interval × 3 sub-rows per cycle + ~1 `SUN` row + ~150 discrete events).
 
 **SD card log file naming:**
 Files are named `YYYYMMDDHHMMSS.csv`, where:
@@ -921,16 +968,16 @@ The timestamp encodes the moment the file was created (local time). Files are st
 
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
-| Maximum file size | 512 KB | At ~90 KB/day typical rate, each file spans ~5–6 days. A power-loss event can corrupt only the currently open file; all closed files are intact. |
-| Files retained | 10 most recent | 10 × 512 KB = 5 MB maximum log footprint. Minimum guaranteed history: 9 closed files + 1 partial current file ≈ 45–60 days. |
-| Minimum retention floor | 3 files | The free-space guard never deletes below this count. |
-| Low free-space threshold | 2 MB | If SD free space drops below 2 MB and the file count is above the floor, the oldest file is deleted to reclaim space. If already at the floor (3 files) and space is still below 2 MB, SD logging is suspended. SD logging resumes on the next successful mount command. |
+| Maximum file size | 1 024 KB (1 MB) | At ~483 KB/day typical rate, each file spans ~2 days. A power-loss event can corrupt only the currently open file; all closed files are intact. |
+| Files retained | 30 most recent | 30 × 1 MB = 30 MB maximum log footprint — comfortable against any reasonable SD card. Minimum guaranteed on-card history: ~63 days, well over the daily T14 upload's catch-up window. |
+| Minimum retention floor | 5 files | The free-space guard never deletes below this count. |
+| Low free-space threshold | 4 MB | If SD free space drops below 4 MB and the file count is above the floor, the oldest file is deleted to reclaim space. If already at the floor (5 files) and space is still below 4 MB, SD logging is suspended. SD logging resumes on the next successful mount command. |
 
-**Rotation procedure (triggered when current file reaches 512 KB):**
-1. Create a new file named with the current UTC timestamp (`YYYYMMDDHHMMSS.csv`).
+**Rotation procedure (triggered when current file reaches 1 MB):**
+1. Create a new file named with the current local timestamp (`YYYYMMDDHHMMSS.csv`).
 2. Write the CSV header row to the new file.
-3. If the total timestamp-file count now exceeds 10, delete the lexicographically oldest file.
-4. Check free space (`storage_sd_free_bytes()`): if < 2 MB, invoke the free-space guard (delete oldest or suspend).
+3. If the total timestamp-file count now exceeds 30, delete the lexicographically oldest file.
+4. Check free space (`storage_sd_free_bytes()`): if < 4 MB, invoke the free-space guard (delete oldest or suspend).
 
 **Write-failure reclaim:** if `storage_sd_write_append()` returns `STORAGE_ERR_FULL` or `STORAGE_ERR_IO`, T9 attempts a single oldest-file deletion and retries the write. If the retry also fails, T9 suspends event logging and surfaces the condition in `/api/sd/status`; subsequent `log_post()` calls drain Q3 without writing until the next successful mount.
 
@@ -1047,13 +1094,14 @@ Where `Mxx` encodes active window states (e.g. `M1O` = M1 open, `M2C` = M2 close
 - `#` key: confirm / enter. `*` key: cancel / back. Numeric keys: input values. `A`/`B`: scroll up/down in lists.
 - On session timeout: menu FSM resets to main screen and session closes.
 
-**Status page cycling (`STATUS_PAGES = 6`):**
+**Status page cycling (`STATUS_PAGES = 7`):**
 - Page 0: temperature and humidity readings
 - Page 1: wind speed and direction
-- Page 2: climate window-demand states (OPEN / MOVING / CLOSED per channel)
+- Page 2: operating mode + active session (`Mode: AUTO/WIND/ALARM/STANDBY/Window Cal.` on row 0; `Sess: NONE/Farmer/Admin` ± `OTA` on row 1). **rc.1.5.0+ (gh#28):** `#` enters `UI_MODE_TOGGLE` (1=Auto, 2=Stby, *=back). Either Farmer or Admin PIN accepted — `handle_pin()` discriminates by digit count on submission (4 = Farmer, 8 = Admin). Commit calls `dm_set_standby(want, init, surface=1)`; that helper toggles `EG1_BIT_STANDBY`, persists to `system/mode_standby` NVS, emits a `LOG_MODE_CHANGE` audit row, and on STANDBY exit posts `CMD_RECALIBRATE` to Q1 (T2 runs `calib_close_all()` synchronously).
 - Page 3: network status (AP active / client IP)
 - Page 4: current local date/time (via `localtime_r`); source label "NTP" or "RTC" (from `s_net.ntp_synced`); pressing `#` enters the manual time-set flow (FR-UI22, FR-UI23)
-- Page 5: motor (window) states — row 0: `M1    M2    M3  `; row 1: four-character state per channel (`OPEN` / `CLOS` / `MOV>` / `MOV<` / `UNK `); state read via `t2_get_window_states()` (FR-UI04)
+- Page 5: motor (window) states — row 0: `M1    M2    M3  `; row 1: four-character state per channel (`OPEN` / `CLOS` / `MOV>` / `MOV<` / `UNK `); state read via `t2_get_window_states()` (FR-UI04). **rc.1.5.0+ (gh#29):** `#` enters `UI_MOTOR_PICK` (1=M1, 2=M2, 3=M3, *=back) → `UI_MOTOR_ACTION` (1=Open, 2=Close, *=back). **Admin PIN only.** **rc.1.5.2+ semantics**: menu entry auto-enters STANDBY via `dm_set_standby_ex(true, LOG_BY_ADMIN, 1, false)` (only if STANDBY wasn't already on; the auto-set fact is tracked in `s_manual_set_standby_on_entry`). T6 stays gated by the standard `EG1_BIT_STANDBY` for the entire admin PIN session — not just while the admin is keypressing in the menu. **Menu does NOT auto-dismiss on idle.** **`*=back` does NOT clear STANDBY** — it only navigates back to the auto-rotating status screens; STANDBY persists. STANDBY auto-clears (no recal) when the admin session ends via `session_close()` (5-minute timeout from last keypress or explicit logout). Re-entering the menu within the same session preserves the flag (`true` stays `true`). If STANDBY was already on before the menu was entered, the flag stays false and the session-end leaves STANDBY untouched. Actions post `window_cmd_t` to Q1 with `source = SRC_OPERATOR_MANUAL`; T2 dwell-timer check is bypassed for that source. Safety gates remain authoritative: `WIND_OVERRIDE` blocks OPEN (CLOSE accepted); `MOTOR_ALARM` and `CALIBRATING` block all manual commands.
+- Page 6: firmware version (`fw_ver` + `asset_version` from `system_id`); read-only diagnostic.
 
 **D-key page advance:** pressing `D` on any status page immediately increments `s_status_page` (modulo `STATUS_PAGES`) and resets `s_status_ticks` to 0, giving the new page a full 5 s dwell before the next auto-advance.
 

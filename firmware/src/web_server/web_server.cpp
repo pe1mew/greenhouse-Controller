@@ -1492,6 +1492,93 @@ static esp_err_t pin_post_handler(httpd_req_t *req)
 }
 
 /* ============================================================
+ * Operating-mode route (rc.1.5.0 / gh#28)
+ * ============================================================ */
+
+/**
+ * @brief HTTP POST /api/mode — set the operating mode.
+ *
+ * Body: `{"mode":"standby"|"automatic"}`. Accepts either Farmer or Admin
+ * session (STANDBY is a routine operational toggle per the gh#28 locked
+ * decision; only safety-critical configuration is admin-only).
+ *
+ * The actual transition is performed by `dm_set_standby()`, which:
+ *  - sets/clears EG1_BIT_STANDBY,
+ *  - persists the new state to NVS (`system/mode_standby`),
+ *  - emits a LOG_MODE_CHANGE audit row (initiator = LOG_BY_WEB,
+ *    channel = 0 [web surface], value_a = 1 enter / 0 leave),
+ *  - on STANDBY exit, posts CMD_RECALIBRATE to Q1 so T2 re-runs the
+ *    synchronous CLOSE_ALL sweep (visible to the operator as
+ *    "Mode: Window Cal." on the LCD until calibration completes).
+ *
+ * @param req esp_http_server request handle.
+ * @return ESP_OK on response sent (200 / 400 / 401); ESP_FAIL on recv error.
+ *         - 200 + `{"ok":true,"mode":"standby"|"automatic"}` on success.
+ *         - 400 on bad payload.
+ * @note Auth requirement: Farmer or Admin.
+ * @note Rate limit: none.
+ * @note Audit-logged: yes, by dm_set_standby() via LOG_MODE_CHANGE.
+ */
+static esp_err_t mode_post_handler(httpd_req_t *req)
+{
+    web_session_role_t role = require_auth(req, WEB_ROLE_FARMER);
+    if (role == WEB_ROLE_NONE) return ESP_OK;   /* require_auth already sent 401 */
+
+    /* Tiny payload — `{"mode":"automatic"}` is ~22 bytes. 64 is plenty. */
+    char body[64] = {0};
+    int total = (int)req->content_len;
+    if (total <= 0 || total >= (int)sizeof(body)) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_send(req,
+            "{\"ok\":false,\"error\":\"bad_body\"}", HTTPD_RESP_USE_STRLEN);
+    }
+    int read_total = 0;
+    while (read_total < total) {
+        int r = httpd_req_recv(req, body + read_total, total - read_total);
+        if (r <= 0) { httpd_resp_send_500(req); return ESP_FAIL; }
+        read_total += r;
+    }
+    body[read_total] = '\0';
+
+    char mode_str[16] = {0};
+    if (!json_get_field(body, "mode", mode_str, sizeof(mode_str))) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_send(req,
+            "{\"ok\":false,\"error\":\"missing_mode\"}", HTTPD_RESP_USE_STRLEN);
+    }
+
+    bool want_standby;
+    if      (strcmp(mode_str, "standby")   == 0) want_standby = true;
+    else if (strcmp(mode_str, "automatic") == 0) want_standby = false;
+    else {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_send(req,
+            "{\"ok\":false,\"error\":\"bad_mode\"}", HTTPD_RESP_USE_STRLEN);
+    }
+
+    /* Initiator = LOG_BY_WEB (web surface). channel = 0 (web). The role
+     * (farmer vs admin) is not preserved in the log row — the design
+     * locks STANDBY as accepted from both, so a single LOG_BY_WEB row
+     * captures the surface; surface vs role distinction lives in the
+     * session-event audit trail. */
+    dm_set_standby(want_standby, LOG_BY_WEB, 0u);
+
+    /* Reply with the new (or unchanged, on idempotent calls) state. */
+    char resp[64];
+    int n = snprintf(resp, sizeof(resp),
+                     "{\"ok\":true,\"mode\":\"%s\"}",
+                     dm_get_standby() ? "standby" : "automatic");
+    httpd_resp_set_type(req, "application/json");
+    ESP_LOGI(TAG, "[T11] /api/mode role=%s -> %s",
+             (role == WEB_ROLE_ADMIN) ? "admin" : "farmer",
+             dm_get_standby() ? "standby" : "automatic");
+    return httpd_resp_send(req, resp, (n > 0) ? (size_t)n : 0);
+}
+
+/* ============================================================
  * SD-card + log routes (alpha.6.19 / Phase 6.16-ε)
  *
  * GET  /api/sd/status      — {mounted, free_mb, size_mb} (PUBLIC)
@@ -2695,6 +2782,10 @@ static const httpd_uri_t s_uri_wifi_post = {
 static const httpd_uri_t s_uri_pin_post = {
     .uri = "/api/pin", .method = HTTP_POST, .handler = pin_post_handler, .user_ctx = NULL };
 
+/* rc.1.5.0 (gh#28) — operating-mode toggle. Farmer or Admin session. */
+static const httpd_uri_t s_uri_mode_post = {
+    .uri = "/api/mode", .method = HTTP_POST, .handler = mode_post_handler, .user_ctx = NULL };
+
 /* alpha.6.19 — SD + log routes (Phase 6.16-ε). */
 static const httpd_uri_t s_uri_sd_status = {
     .uri = "/api/sd/status", .method = HTTP_GET, .handler = sd_status_handler, .user_ctx = NULL };
@@ -2771,7 +2862,7 @@ void task_web_server(void *pvParameters)
     cfg.server_port      = 80;
     cfg.stack_size       = 8192;     /* +4 KB vs default for LFS_READ_BUF + JSON stack work */
     cfg.task_priority    = 5;
-    cfg.max_uri_handlers = 32;       /* +4 for /api/coredump trio (a.6.35.6) on top of the 28 prior routes */
+    cfg.max_uri_handlers = 32;       /* +1 for /api/mode (rc.1.5.0/gh#28); 30 routes total, 2 spare */
     cfg.max_open_sockets = 7;
     cfg.lru_purge_enable = true;
     cfg.recv_wait_timeout = 10;
@@ -2790,7 +2881,7 @@ void task_web_server(void *pvParameters)
         &s_uri_whoami, &s_uri_login, &s_uri_logout,
         &s_uri_status, &s_uri_history,
         &s_uri_config_get, &s_uri_config_limits, &s_uri_config_post,
-        &s_uri_wifi_post, &s_uri_pin_post,
+        &s_uri_wifi_post, &s_uri_pin_post, &s_uri_mode_post,
         &s_uri_sd_status, &s_uri_sd_mount, &s_uri_sd_unmount,
         &s_uri_log_files, &s_uri_log_download,
         &s_uri_coredump_status, &s_uri_coredump_download, &s_uri_coredump_erase,
@@ -2806,12 +2897,13 @@ void task_web_server(void *pvParameters)
         }
     }
 
-    ESP_LOGI(TAG, "[T11] HTTP server running on port 80 — 25 routes registered");
+    ESP_LOGI(TAG, "[T11] HTTP server running on port 80 — 30 routes registered");
     ESP_LOGI(TAG, "[T11]   static: /  /style.css  /app.js  /manifest.json");
     ESP_LOGI(TAG, "[T11]   auth:   GET /api/whoami  POST /api/login  POST /api/logout");
     ESP_LOGI(TAG, "[T11]   status: GET /api/status  GET /api/history?n=N");
     ESP_LOGI(TAG, "[T11]   config: GET /api/config  GET /api/config/limits  POST /api/config");
     ESP_LOGI(TAG, "[T11]   admin:  POST /api/wifi  POST /api/pin");
+    ESP_LOGI(TAG, "[T11]   mode:   POST /api/mode  (gh#28; farmer or admin)");
     ESP_LOGI(TAG, "[T11]   sd:     GET /api/sd/status  POST /api/sd/mount  POST /api/sd/unmount");
     ESP_LOGI(TAG, "[T11]   log:    GET /api/log/files  GET /api/log/download?file=NAME");
     ESP_LOGI(TAG, "[T11]   ota:    GET /api/ota/status  POST /api/ota/firmware  POST /api/ota/assets");

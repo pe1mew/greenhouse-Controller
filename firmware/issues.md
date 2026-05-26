@@ -47,8 +47,16 @@ The `changelog.md` file is for what's *done*; this file is for what's *open*.
    - **Path C**: land this patch preemptively before any future T15
      re-enable.
 
-3. `(open — spec drift, UX gap)` → [gh#28](https://github.com/pe1mew/greenhouse-Controller/issues/28)
+3. `(implemented in 2.0.0-rc.1.5.0 — 2026-05-26; ready for soak)` → [gh#28](https://github.com/pe1mew/greenhouse-Controller/issues/28)
    **`MODE_STANDBY` is declared in the firmware but never implemented.**
+   *(historical) — closed by rc.1.5.0; the description below is the original
+   problem statement and the implementation proposal, retained for the audit
+   trail. The shipped code matches the proposal; the three residual design
+   decisions (persistence, window behaviour, slot position) were locked on
+   2026-05-26 as: NVS-backed (survives reboot) / no movement on entry +
+   full recalibration on exit / page 2 (Scherm 3). See `changelog.md`
+   `[2.0.0-rc.1.5.0]` and `bin/2.0.0-rc.1.5.0/release-notes.md` for the
+   end-to-end change record.*
    The enum value lives at `firmware/src/types/app_types.h:135` and the
    JSON serialiser knows how to print it (`status_json.cpp:42`), but no
    code path ever assigns it. The mode field is *derived* at status-
@@ -75,45 +83,109 @@ The `changelog.md` file is for what's *done*; this file is for what's *open*.
    off (re-runs CLOSE_ALL on boot, ~3 min for M3). Meaningful UX gap
    for routine maintenance windows or operator manual-control periods.
 
-   **Implementation sketch** (see gh#28 body for the full design):
-   add `EG1_BIT_STANDBY`, add `POST /api/mode`, have T6 read the bit
-   before posting actuation, extend the priority chain in
-   `data_manager.cpp` (STANDBY ranks below WIND_OVERRIDE so safety
-   still wins), add the dashboard toggle + keypad menu entry. Roughly
-   half a day of firmware plus matching UI plus FRS/TSDS catch-up.
+   **Implementation proposal** (full design in gh#28 body) — two
+   parallel operator surfaces, one shared underlying state.
+
+   **LCD surface.** A **new status page — "Scherm 3: Bedrijfsmodus
+   en sessie"** — shows the current operating mode (line 1:
+   `Mode: AUTO` / `WIND` / `ALARM` / `STANDBY` / `Window Cal.`) and
+   the active session (line 2: `Sess: NONE` / `Farmer` / `Admin`,
+   with `OTA` appended when an OTA cycle is in progress). Pressing
+   `#` on the page jumps to a Mode-toggle menu (`MODE_STANDBY` /
+   `MODE_AUTO`); the existing PIN flow runs first if no session is
+   active. **Both Farmer- and Admin-PIN are accepted** — standby is
+   a routine operational toggle, not a configuration change.
+
+   **Web GUI surface.** A "Climate control: Normal / Standby" toggle
+   sits at the **top of the Climate tab**, as the first control on
+   the tab. Available to both Farmer and Admin sessions. Mirrors
+   the LCD state in real time via the existing 2-second WS push;
+   greyed out when WIND_OVERRIDE, MOTOR_ALARM, or CALIBRATING is
+   active (overrides win the priority chain).
+
+   Backend work: add `EG1_BIT_STANDBY` to EG1; extend the priority
+   chain in `data_manager.cpp:1213-1218` (STANDBY ranks below
+   WIND_OVERRIDE so safety still wins); gate T6 on the bit (same
+   shape as the existing WIND_OVERRIDE gate); render the new status
+   page in `ui_display.cpp`; wire `#` dispatch accepting either
+   Farmer- or Admin-PIN; add `POST /api/mode` endpoint and the
+   Climate-tab toggle in the web GUI. Audit-log every transition
+   with the originating initiator (`LOG_BY_FARMER` / `LOG_BY_ADMIN`)
+   and surface (LCD / web).
+
    Decisions to make before implementing: persistence across reboot
-   (RAM-only vs NVS-backed), window behaviour on STANDBY entry/exit.
+   (RAM-only vs NVS-backed), window behaviour on STANDBY entry/exit,
+   slot position of Scherm 3 in the status-page cycle.
 
-4. `(open — feature request)` → [gh#29](https://github.com/pe1mew/greenhouse-Controller/issues/29)
-   **Operator manual motor control from the physical controller.** Add
-   the ability to open/close M1/M2/M3 directly from the unit without
-   going through the web GUI. Use cases: maintenance with gloved hands,
-   network outage, commissioning, emergency override, community demos.
+4. `(implemented in 2.0.0-rc.1.5.0 — 2026-05-26; ready for soak)` → [gh#29](https://github.com/pe1mew/greenhouse-Controller/issues/29)
+   **Administrator manual motor control from the physical controller.**
+   *(historical) — closed by rc.1.5.0; the description below is the original
+   design and is preserved for the audit trail. The shipped code matches
+   the proposal. Audit-log decision was locked on 2026-05-26 as LOG_RELAY
+   with cmd_source_t.source=SRC_OPERATOR_MANUAL (no new log type — the
+   existing logparser.py decodes admin manual commands out of the box).
+   See `changelog.md` `[2.0.0-rc.1.5.0]` and the release-notes file.*
+   Add the ability for the Admin to open/close M1/M2/M3 directly from
+   the unit via the LCD + keypad, without going through the web GUI.
+   Use cases: maintenance with gloved hands, network outage,
+   commissioning, emergency admin override, community demos.
 
-   **Suggested approach (per the feature request).** Reorder the IO0
-   (BOOT button) handler so a **short tap** enters a manual-control
-   flow on the LCD (M1/M2/M3 picker + open/close action), while the
-   **existing 5–20 s staged factory-reset behaviour is preserved
-   unchanged**. The 16-key keypad remains dedicated to PIN entry and
-   the menu FSM; IO0 becomes a dual-function input.
+   **Implementation proposal** (full design in gh#29 body): a **new
+   LCD status page — "Scherm 6: Raamposities"** — shows per-channel
+   window state on row 2 (`OPEN` / `CLOS` / `MOV>` / `MOV<` / `UNK `).
+   Pressing `#` enters a two-level menu: motor picker (1=M1, 2=M2,
+   3=M3, *=back) → action picker (1=open, 2=close, *=back), with
+   square brackets around the selected motor name in the header on
+   the action screen (`[M1]`). The existing PIN flow runs first if
+   no admin session is active — **Admin PIN only** is accepted.
 
-   **Half-built today.** T2 (`relay_controller.cpp`) already accepts
-   per-channel `CMD_OPEN` / `CMD_CLOSE` via Q1 — only the operator-
-   input surface is missing. Needs: a new `SRC_OPERATOR_MANUAL` value
-   in `cmd_source_t`, a Q1-producer helper in `ui_display.cpp`,
-   IO0 short-tap dispatch, two new LCD screens (motor picker + action
-   picker), audit-log row with a new `LOG_BY_OPERATOR_LOCAL` initiator,
-   and safety gates (rejected during `EG1.MOTOR_ALARM`; OPEN rejected
-   during `EG1.WIND_OVERRIDE`).
+   **Access control: Admin-only.** Manual motor control is
+   structurally an Administrator task. Farmers are supposed to be
+   *supported by* the controller's autonomous climate logic, not
+   bypass it. If a farmer routinely overrides decisions, the
+   controller can't learn from what conditions triggered the
+   override. Web-GUI parity (if/when added) follows the same rule.
 
-   **Trust model.** Physical access to the unit is itself the
-   authentication, consistent with the existing factory-reset trigger
-   — no PIN required for manual control. Every command is audit-logged.
+   **NVS persistence + dwell-bypass.** Manual commands run to full
+   travel and the terminal state is persisted to NVS the same way T2
+   already persists `t2_st_ch0..2` today. Manual commands **bypass
+   the per-channel dwell timers** (`dwell_open_min` /
+   `dwell_close_min`); the admin's deliberate choice overrides the
+   anti-thrash protection that exists to gate the autonomous loop.
+   Dwell timers apply normally to any T6-issued commands after the
+   admin exits the menu.
 
-   **Open design questions** (full list in gh#29 body): bypass-dwell
-   or honour-dwell, behaviour during MOVING states, interaction with
-   the future `MODE_STANDBY` (gh#28 — should coexist; manual command
-   does not implicitly enter or exit standby).
+   **Session-stall recovery.** The Admin PIN session opened by `#`
+   inherits the controller's normal `cfg.session_timeout_min` (default
+   5 min). If the admin stalls — walks away without explicitly
+   exiting — the session expires and the controller resumes the
+   **previously set climate-control mode**: AUTOMATIC if STANDBY
+   (gh#28) was clear (T6 picks up from current per-channel state
+   and acts on next decision tick), or STANDBY if it was set (T6
+   stays paused; windows remain where the admin left them). The
+   admin's manual window positions are preserved across the timeout;
+   T6 just continues from there. Implementation flag: a transient
+   `EG1_BIT_MANUAL_SESSION` set on menu entry and cleared on any
+   exit path (explicit `*=back`, 10 s idle auto-dismiss, PIN-session
+   timeout, or LCD re-entry of normal status cycling); T6 honours
+   `STANDBY OR MANUAL_SESSION` as its "do nothing" gate.
+
+   **Safety gates remain authoritative.** `EG1.WIND_OVERRIDE` blocks
+   manual OPEN (CLOSE accepted); `EG1.MOTOR_ALARM` blocks all manual
+   commands; `EG1.CALIBRATING` (boot CLOSE_ALL window) blocks manual
+   commands until calibration completes.
+
+   **No IO0 change.** The earlier IO0-short-tap proposal is dropped.
+   IO0 stays dedicated to its existing staged factory-reset (5–10 s
+   PIN reset / 10–15 s settings reset / 15–20 s full reset + reboot).
+
+   Backend work: add `SRC_OPERATOR_MANUAL` to `cmd_source_t`; extend
+   T2 to skip dwell-timer checks when `source = SRC_OPERATOR_MANUAL`;
+   render Scherm 6 in `ui_display.cpp`; wire the `#`-dispatch
+   accepting only Admin-PIN; audit-log every manual command as
+   `LOG_RELAY` with initiator = `LOG_BY_ADMIN`. Remaining open
+   question: web-GUI parity (Motors-tab admin-only manual controls)
+   — separate follow-on, not blocking.
 
    Estimated firmware effort: ~1 day plus FRS/TSDS catch-up and a
    release-notes entry. Not blocking any current release.

@@ -28,6 +28,259 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
 
+### `[2.0.0-rc.1.5.2]` — 2026-05-26  (gh#29 follow-up #2 — STANDBY persists across manual-menu `*=back`; clears at admin session timeout)
+
+Second operator-visible bug-fix for the gh#29 admin manual-motor menu after the rc.1.5.1 OTA. Operator observed (paraphrased): *"during manual operation climate control kicked in and took over"*. Log analysis confirmed: the issue wasn't T6 acting during the menu (STANDBY correctly gated T6 for the full menu lifetime); the issue was T6 acting **7 seconds after `*=back`**, on the very next sensor poll. rc.1.5.1's "clear STANDBY on menu exit" undid the admin's manual positions almost immediately.
+
+#### What changed
+
+- **Manual-menu `*=back` no longer clears STANDBY.** It only navigates back to the auto-rotating status screens. STANDBY (and the `s_manual_set_standby_on_entry` flag) persists.
+- **STANDBY auto-clear moved from `go_status()` to `session_close()`.** Cleared (no recal) when the admin's PIN session ends — either timeout (`cfg.session_timeout_min` from last keypress, default 5 min) or explicit logout via `Access → Logout`. T6 resumes from the actual current per-channel state on its next sensor poll, exactly as rc.1.5.1 intended — but with a respect-window equal to the remaining session lifetime instead of a 7-second post-exit dead zone.
+- **Menu re-entry preserves the flag.** Within the same admin session, an admin can press `*=back` to look at the rotating status screens, then `D` back to Scherm 6 + `#` to re-enter the manual menu — STANDBY stays on the whole time, the flag stays `true`, and the eventual session-end auto-clear still fires.
+- **Pre-existing STANDBY still respected.** If the admin enters the manual menu with STANDBY already on (set via Scherm 3 or web), the flag stays false and STANDBY survives the session-end untouched — same as rc.1.5.1.
+
+#### Locked decision (2026-05-26 follow-up)
+
+> *"Respect window, T6 acts after the session timeout from admin at LCD."*
+
+The respect-window is the admin PIN-session timeout (`cfg.session_timeout_min`, default 5 min). After the admin's last keypress, the controller honours their manual positions for the full session-timeout duration. If they walk away, the timeout fires the auto-clear and T6 resumes. If they come back and press any key (even D-scrolling status screens or re-entering the menu), the timeout resets to 0 and the respect-window extends.
+
+#### Files changed
+
+| File | Δ |
+|---|---|
+| `firmware/src/ui_display/ui_display.cpp` | `go_status()` no longer auto-clears STANDBY; `session_close()` does (with the same `s_manual_set_standby_on_entry` flag check + `dm_set_standby_ex(false, ..., recalibrate_on_clear=false)` call). Menu-entry flag-set logic adjusted so re-entries preserve `true` (instead of overwriting to `!was_already_standby`) |
+| `firmware/platformio.ini` | FIRMWARE_VERSION 2.0.0-rc.1.5.1 → 2.0.0-rc.1.5.2 |
+| `design/functionalRequirementsSpecification.md` | FR-MM03 + FR-MM07 reworded for the respect-window-via-session-timeout model |
+| `design/technicalSoftwareDesignSpecification.md` | Scherm 6 # flow description rewritten for the new exit semantics |
+| `manual/beheerderHandleiding.md` | §10.11 "Sessie-einde — wat resumeert er?" table rewritten; v1.19 wijzigingshistorie row added |
+
+#### What did NOT change
+
+- `POST /api/mode` Standby toggle (gh#28) behaviour is unchanged — entry/exit log rows still land, and Scherm 3 / web exit still triggers CLOSE_ALL recalibration.
+- LCD Scherm 3 mode-toggle PIN flow + render is unchanged.
+- The Standby badge in the Alarms shield (rc.1.5.1) — unchanged. Now even more useful because STANDBY is visible for longer when the admin has used the manual menu.
+- The WINDOW_CAL select treatment (rc.1.5.1) — unchanged.
+- rc.1.4.0 SD-log format preserved.
+
+#### Build delta vs rc.1.5.1
+
+| Field | rc.1.5.1 | rc.1.5.2 | Δ |
+|---|---:|---:|---:|
+| `greenhouse-controller-*.bin` | 1 357 136 B | 1 357 216 B | +80 B |
+| `web-assets-*.zip` | 105 884 B | 105 884 B | 0 (content identical) |
+| RAM / Flash | 18.9 % / 64.7 % | 18.9 % / 64.7 % | unchanged |
+
+#### SHA-256
+
+```
+085c744a5520f844c4a145fbeaf8ef47e13e0ba6fcd34149456b09a27bab1a25  greenhouse-controller-2.0.0-rc.1.5.2.bin
+3e479f2cc0f2c2d80aa8963452ff89bd81b918b420144d9f39c7a99e36da0c7b  web-assets-2.0.0-rc.1.5.2.zip
+```
+
+#### Phase 7 soak
+
+rc.1.5.1 soak clock was 53 minutes old (rc.1.5.1 OTA'd 12:03 local; operator caught the issue at 12:13 local during the smoke test of the manual menu). Per the standing 14-day-clean criterion, the soak clock for rc.1.5.2 restarts at the moment of the rc.1.5.2 OTA.
+
+### `[2.0.0-rc.1.5.1]` — 2026-05-26  (gh#29 UX fix + web-GUI Standby badge + WINDOW_CAL select alignment — three operator-visible improvements bundled into one patch)
+
+Bug-fix release for rc.1.5.0 — operator observed that after issuing a manual OPEN/CLOSE on the LCD Scherm 6 menu, the climate-control loop (T6) would re-open the window the admin had just closed. Root cause: the transient `EG1_BIT_MANUAL_SESSION` bit cleared on the 10-second LCD idle dismiss, and T6 woke up on its next decision tick with a still-hot greenhouse and undid the admin's manual action.
+
+#### What changed
+
+- **The admin manual-motor menu (LCD Scherm 6 → `#`) now auto-enters STANDBY on menu entry** (via `dm_set_standby_ex(true, LOG_BY_ADMIN, 1, false)`). STANDBY persists for the full duration of the menu — there is no more keypress-idle dismissal, and T6 stays gated regardless of how long the admin spends between actions.
+- **The 10-second `MANUAL_MENU_IDLE_TICKS` idle dismiss is removed.** The 5-minute generic menu-auto-return is also EXEMPT for `UI_MOTOR_PICK` / `UI_MOTOR_ACTION`. The only exit triggers are now: (a) explicit `*=back` from `UI_MOTOR_PICK`, or (b) the admin PIN session timeout (`cfg.session_timeout_min`, default 5 min).
+- **The transient `EG1_BIT_MANUAL_SESSION` bit is removed entirely.** Bit 8 of EG1 is now reserved. T6's inhibit mask drops to `MOTOR_ALARM | WIND_OVERRIDE | SENSOR_FAULT_T | STANDBY` — STANDBY is the single gate.
+- **On menu exit, STANDBY clears WITHOUT recalibration** (via `dm_set_standby_ex(false, LOG_BY_ADMIN, 1, false)`). The admin's deliberate per-channel manual positions are preserved; T6 takes its next decision based on the actual current state. This matches the original FR-MM07 intent (preserve admin positions) and is distinct from the Scherm 3 / web GUI STANDBY exits which still recalibrate.
+- **Pre-existing STANDBY is respected.** If the admin walks into the manual menu with STANDBY already on (set via Scherm 3 or web), the menu-exit leaves STANDBY untouched. The tracking flag `s_manual_set_standby_on_entry` records whether THIS menu set STANDBY.
+
+#### API additions (data_manager)
+
+| Symbol | Purpose |
+|---|---|
+| `dm_set_standby_ex(bool standby, log_initiator_t init, uint8_t channel, bool recalibrate_on_clear)` | Same as `dm_set_standby()` but lets the caller suppress the CMD_RECALIBRATE post on STANDBY exit. Used by the gh#29 menu (entry calls with `false`, exit also with `false`). |
+| `dm_set_standby(...)` | Unchanged behaviour — now a thin wrapper calling `dm_set_standby_ex(..., true)`. Web POST `/api/mode` and LCD Scherm 3 mode-toggle keep the original recalibration-on-exit semantics. |
+
+#### What did NOT change
+
+- `POST /api/mode` Standby toggle (gh#28) behaviour is unchanged — entry/exit log rows still land, and exit still triggers CLOSE_ALL recalibration.
+- LCD Scherm 3 mode-toggle PIN flow + render is unchanged.
+- rc.1.4.0 SD-log format (`LOG_SENSOR_HR` triplet + `LOG_SUN`) preserved byte-for-byte.
+- rc.1.3.3 NTP-resync fix preserved.
+
+#### Bundled operator-visible improvements (folded into the same patch before any OTA)
+
+- **New `standby` flag in mode.flags array.** Firmware: added `EG1_BIT_STANDBY → "standby"` to the `EG1_FLAGS` table in `status_post/status_json.cpp`. Both the local web GUI Alarms card and the public dashboard now render a Standby badge whenever EG1_BIT_STANDBY is set. Web GUI: added `standby: '<span class="badge warn">Standby</span>'` (amber) to the `flagBadges` mapping in `data/app.js`. Operator request: *"in web gui when in standby a amber badge shall appear in alarms shield"*.
+- **WINDOW_CAL select alignment with LCD.** During a calibration cycle (boot calibration OR the Standby-exit recalibration triggered from Scherm 3 / web Mode select), the Climate-tab Mode select now displays a transient `Calibrating windows...` option as the visible label — the underlying `_calibrating` value is rejected by `/api/mode` as `bad_mode` so the operator can't accidentally commit it, the select is greyed out, and the Apply button is disabled. Pairs with the LCD's `Mode: Window Cal.` on Scherm 3 — the operator sees the same state-name on both surfaces instead of the previous misleading `Normal (autonomous)`. Operator request: *"webgui standby setting and behaviour shall follow the LCD behavior with respect to window cal."*
+
+#### Files changed (firmware + web; no manifest-only assets)
+
+| File | Δ |
+|---|---|
+| `firmware/src/types/app_types.h` | Removed `EG1_BIT_MANUAL_SESSION`, deprecation comment on bit 8 |
+| `firmware/src/data_manager/data_manager.{h,cpp}` | Added `dm_set_standby_ex()`, refactored `dm_set_standby()` as wrapper |
+| `firmware/src/climate_control/climate_control.cpp` | Dropped `EG1_BIT_MANUAL_SESSION` from inhibit mask |
+| `firmware/src/ui_display/ui_display.cpp` | Added `s_manual_set_standby_on_entry`; removed `MANUAL_MENU_IDLE_TICKS`; rewired `#` dispatch (admin path + PIN-success path) to auto-STANDBY; rewired `go_status()` to clear STANDBY only if menu set it; removed `EG1_BIT_MANUAL_SESSION` writes from `session_close()` and `handle_motor_pick()`; exempt UI_MOTOR_PICK / UI_MOTOR_ACTION from menu-auto-return |
+| `firmware/src/status_post/status_json.cpp` | Added `EG1_BIT_STANDBY → "standby"` to EG1_FLAGS table (Standby badge support) |
+| `firmware/data/app.js` | Added `standby` badge mapping; WINDOW_CAL select treatment (transient `_calibrating` option) |
+| `firmware/platformio.ini` | FIRMWARE_VERSION 2.0.0-rc.1.5.0 → 2.0.0-rc.1.5.1 |
+
+#### Build delta vs rc.1.5.0
+
+| Field | rc.1.5.0 | rc.1.5.1 | Δ |
+|---|---:|---:|---:|
+| `greenhouse-controller-*.bin` | 1 356 928 B | 1 357 136 B | **+208 B** |
+| `web-assets-*.zip` | 103 864 B | 105 884 B | **+2 020 B** (app.js Standby/WINDOW_CAL logic) |
+| RAM | 18.9 % | 18.9 % | unchanged |
+| Flash | 64.7 % | 64.7 % | unchanged |
+
+#### SHA-256
+
+```
+60b62190507092c8fd956e6ef13ce09dbb929eab9b22c467b458f61a637adf1b  greenhouse-controller-2.0.0-rc.1.5.1.bin
+50ce7f58bbd2b2bbb49971a0ed197be1bdb7bfb67ca031801869f2982f05b522  web-assets-2.0.0-rc.1.5.1.zip
+```
+
+#### Phase 7 soak
+
+rc.1.5.0 soak clock was 8 minutes old when rc.1.5.1 was built (rc.1.5.0 OTA'd at 2026-05-26 11:01:57 local; the UX bug was reported within the smoke-test window). Per the standing 14-day clean criterion, the soak clock for rc.1.5.1 restarts at the moment rc.1.5.1 is OTA'd. Day-14 ETA = `<flash date> + 14 d`.
+
+### `[2.0.0-rc.1.5.0]` — 2026-05-26  (gh#28 MODE_STANDBY + gh#29 admin manual motor control — two new operator surfaces, one shared T6 inhibit chain)
+
+Closes [gh#28](https://github.com/pe1mew/greenhouse-Controller/issues/28) and [gh#29](https://github.com/pe1mew/greenhouse-Controller/issues/29). Two interlocking features land together because they share the same EG1-bit-driven T6 inhibit pattern and the same Scherm 3 / Scherm 6 `#`-dispatch surface conventions.
+
+Design decisions for both items were locked interactively with the operator on 2026-05-24 (issues.md prose) and finalised on 2026-05-26 for the three residual gh#28 questions: **STANDBY is NVS-backed** (survives reboot); **entering STANDBY leaves windows where they are; leaving STANDBY triggers a full calibration sweep** (CMD_RECALIBRATE → calib_close_all()); **gh#29 audit rows are LOG_RELAY with `source = SRC_OPERATOR_MANUAL`** (no new log type — logparser.py keeps decoding admin manual commands as LOG_RELAY rows out of the box).
+
+#### Change A — `MODE_STANDBY` (gh#28)
+
+The `MODE_STANDBY` enum value has lived in `app_types.h::op_mode_t` since the original 1.x design but was never reachable — no `EG1_BIT_STANDBY`, no setter, no operator surface. This release fills in the missing chain end-to-end.
+
+- New `EG1_BIT_STANDBY` (bit 7). Priority in `dm_status_snapshot()`'s mode-derivation chain: ranked below `WIND_OVERRIDE` so safety still wins.
+- `dm_set_standby(bool, log_initiator_t, uint8_t channel)` — toggles the bit, persists to NVS (`system/mode_standby`), emits a `LOG_MODE_CHANGE` audit row (`value_a = 1 enter | 0 leave`, `value_b = 0`, `channel = 0 web | 1 LCD`), and on STANDBY exit posts `CMD_RECALIBRATE` to Q1 so T2 re-runs the synchronous `calib_close_all()` sweep — windows return to a known CLOSED baseline before T6 resumes (`EG1_BIT_CALIBRATING` visible to the operator as "Mode: Window Cal." on Scherm 3 for the duration).
+- `dm_get_standby()` — lock-free EG1 read for renderers.
+- T4 calls `nvs_load_mode()` during boot so a unit comes back up in STANDBY exactly as the operator last left it; survives brownouts during deliberate maintenance windows.
+- T6 (climate control): `EG1_BIT_STANDBY` added to the inhibit mask alongside `WIND_OVERRIDE` / `MOTOR_ALARM` / `SENSOR_FAULT_T`.
+- LCD: Scherm 3 (Mode + Session) gains `#`-key dispatch to a new `UI_MODE_TOGGLE` screen (1 = Automatic, 2 = Standby, * = back). **Both Farmer and Admin PIN accepted** — the PIN-entry digit count (4 or 8) selects the role on submission (per locked design: STANDBY is a routine operational toggle, not a configuration change). Scherm 3's mode-string set extended with "Mode: STANDBY" for the new state.
+- Web: `POST /api/mode` with `{"mode":"automatic"|"standby"}`. Farmer or Admin session accepted; greyed out in the GUI when `WIND_OVERRIDE` / `MOTOR_ALARM` / `CALIBRATING` is active (safety/early-boot overrides win the priority chain). Climate-tab toggle sits at the top of the tab.
+
+#### Change B — Admin manual motor control (gh#29)
+
+A new admin-only physical-controller surface for opening/closing M1/M2/M3 from the unit's keypad — for maintenance with gloved hands, network outages, commissioning, emergency overrides, and demos.
+
+- New `EG1_BIT_MANUAL_SESSION` (bit 8, RAM-only — meaningless across a reboot). Set on Scherm 6 menu entry; cleared on every exit path (explicit `*=back`, the new `MANUAL_MENU_IDLE_TICKS` 10 s idle dismiss, PIN-session timeout via `session_close()`, LCD-menu auto-return).
+- New `SRC_OPERATOR_MANUAL` cmd_source value. T2's dwell-timer check (`ch_start_close`/`ch_start_open`) reframed from `source != SRC_T3` to `source == SRC_T6` — only the autonomous loop observes dwell; safety and admin both bypass.
+- New `CMD_RECALIBRATE` action (also used by gh#28's STANDBY-exit path). T2 dispatches it to the existing synchronous `calib_close_all()`.
+- LCD: Scherm 6 (Window states) gains `#`-key dispatch to a two-level menu — `UI_MOTOR_PICK` (1=M1, 2=M2, 3=M3, *=back) → `UI_MOTOR_ACTION` (1=Open, 2=Close, *=back). **Admin PIN only** — farmers are supported by the controller's autonomous logic, not by bypassing it. Action screen header shows `[Mx]` with current state ("[M2] CLOSED").
+- Safety gates remain authoritative: `EG1.WIND_OVERRIDE` blocks manual OPEN (CLOSE accepted); `EG1.MOTOR_ALARM` and `EG1.CALIBRATING` block all manual commands. Refusal is non-silent (transient LCD message).
+- T6 gate extended to honour `STANDBY OR MANUAL_SESSION` as "do nothing" — climate control yields to the admin's manual positions until the session exits.
+- Audit log: every manual command produces the existing `LOG_RELAY` row (T2 emits it from `ch_start_open` / `ch_start_close` when the relay is actually energised); the `cmd_source_t source = SRC_OPERATOR_MANUAL` field in the Q1 message threads the admin attribution through the relay-controller log line (`process_command` now logs "from ADM"). No parser change required.
+
+#### Backend / API surface delta
+
+| Surface | Before rc.1.5.0 | rc.1.5.0+ |
+|---|---|---|
+| `op_mode_t` enum | 4 values (declared) — STANDBY unreachable | 4 values, STANDBY reachable |
+| EG1 bits used | 0, 2, 3, 4, 5, 6 | 0, 2, 3, 4, 5, 6, **7 (STANDBY), 8 (MANUAL_SESSION)** |
+| `cmd_source_t` | SRC_T3, SRC_T6 | + **SRC_OPERATOR_MANUAL** |
+| `cmd_action_t` | OPEN, CLOSE, CLOSE_ALL, RESUME | + **CMD_RECALIBRATE** |
+| HTTP routes | 29 | **30** (+ POST /api/mode) |
+| LCD FSM states | 13 | **16** (+ UI_MODE_TOGGLE, UI_MOTOR_PICK, UI_MOTOR_ACTION) |
+| NVS keys (system) | unchanged set | + **`system/mode_standby`** (i32: 0/1) |
+
+#### What did NOT change
+
+- rc.1.4.0 SD-log format (LOG_SENSOR_HR + LOG_SUN) is preserved byte-for-byte; rc.1.5.0 emits the same rows on the same cadence.
+- The rotation defaults bumped in rc.1.4.0 (1 MB / 30 files / 5 floor / 4 MB free) are preserved.
+- The LOG_SENSOR_HR ch=2 window-state bitmask format is unchanged (bit 15 stays reserved — STANDBY visibility happens via LOG_MODE_CHANGE rows, not via the bitmask).
+- logparser.py and plot_daily.py work on rc.1.5.0 SD files without modification — STANDBY/manual transitions show up as the already-decoded `LOG_MODE_CHANGE` (`MODE`) and `LOG_RELAY` rows.
+- The existing T2 NVS state persistence (`t2_st_ch0..2`) handles admin manual final positions automatically — when the manual OPEN/CLOSE travel completes, `ch_update` calls `persist_ch_state(ch, CH_OPEN|CH_CLOSED)` exactly as it does for autonomous commands.
+
+#### Build delta vs rc.1.4.0
+
+| Field | rc.1.4.0 | rc.1.5.0 | Δ |
+|---|---|---|---|
+| `greenhouse-controller-*.bin` | 1 353 088 B | 1 356 928 B | **+3 840 B** |
+| `web-assets-*.zip` | 101 133 B | 103 864 B | **+2 731 B** |
+| RAM usage (link report) | 18.9 % | 18.9 % | none material |
+| Flash usage (link report) | 64.5 % | 64.7 % | +0.2 % |
+
+#### SHA-256
+
+```
+3fb7c67b775fc971462f6bda588e5580a2353cccd4ed1146c5ca42ec73226c42  greenhouse-controller-2.0.0-rc.1.5.0.bin
+ac85d38838b8cf1d36855f4ae8f433807ebe23bf228b08e9f45b7ad48f44df15  web-assets-2.0.0-rc.1.5.0.zip
+```
+
+#### Phase 7 soak
+
+rc.1.4.0 soak clock (started 2026-05-26 08:06 local on unit 2344) was active when rc.1.5.0 was built. Per the standing 14-day-clean acceptance criterion the soak clock for rc.1.5.0 restarts at the moment rc.1.5.0 is OTA'd onto the soak unit. Day-14 ETA is `<flash date> + 14 d`.
+
+### `[2.0.0-rc.1.4.0]` — 2026-05-24  (SD-log format upgrade — LOG_SENSOR sunset → LOG_SENSOR_HR triplet + new LOG_SUN; rotation defaults bumped; minor bump signals format break)
+
+Implements the bundled "SD-Log Update Plan" (`model/logUpdatePlan.md`, all design decisions locked 2026-05-23). Two interrelated changes to the SD-card event-log format land in this release:
+
+#### Change A — `LOG_SENSOR` sunset → `LOG_SENSOR_HR` triplet
+
+The legacy `LOG_SENSOR` row (single row per sensor cycle, T in integer °C, RH in integer %, no wind, no window state) is **sunset and replaced** by three new `LOG_SENSOR_HR` rows per cycle. The replacement is **permanent and forward-only** — no parallel emission, no revert path.
+
+Per-sample emission (still 30 s default cadence, T4 owns the post):
+- `SENSOR_HR,SYS,0,0,t_c10,rh` — T at 0.1 °C precision (`temperature_c10`) + RH (raw `humidity_pct`)
+- `SENSOR_HR,SYS,1,0,wind_dms,wind_dir_deg` — wind speed × 10 + direction (raw values)
+- `SENSOR_HR,SYS,2,0,bitmask,0` — packed window-state bitmask + EG1 override bits (encoding in `model/logUpdatePlan.md` §2.2)
+
+The legacy `LOG_SENSOR` enum value and the `SENSOR` CSV type-column string are retained in the firmware so that pre-rc.1.4.0 SD files served via `/api/log/download` continue to display unchanged. Only the emit-site at `data_manager.cpp::handle_sensor_reading()` is changed.
+
+#### Change B — new `LOG_SUN` event type
+
+A new `SUN,SYS,0,0,sunrise_min,sunset_min` row records the local-time sunrise/sunset whenever T4's cached values change. In steady-state operation this fires:
+- Once at boot (sentinel cache vs first computed value)
+- Once per local midnight rollover (sunrise/sunset shifts 1–2 min/day)
+- Once per operator lat/lon edit via Q4
+
+Closes the gap surfaced during the thermal-profile plotter work: prior to this change the plotter had to fetch `/api/status` for sunrise/sunset because the SD log carried no record, which broke per-day night-shading for historical data.
+
+Volume cost: ~55 bytes/day in steady state, negligible against Change A's ~475 KB/day.
+
+#### Rotation defaults bumped (new permanent operational defaults)
+
+| Parameter | Pre-rc.1.4.0 | rc.1.4.0+ |
+|---|---:|---:|
+| `SD_ROTATE_BYTES` | 512 KB | 1 024 KB |
+| `SD_MAX_FILES` | 10 | 30 |
+| `SD_MIN_FILES` | 3 | 5 |
+| `SD_FREE_MIN_BYTES` | 2 MB | 4 MB |
+
+Result: ~63 days of on-SD history at full cap (30 files × 1 MB = 30 MB), comfortably over-provisioned given the daily T14 upload removes uploaded files anyway.
+
+#### Files changed
+
+- `firmware/src/types/app_types.h` — `LOG_SENSOR_HR` and `LOG_SUN` appended to `log_type_t` enum.
+- `firmware/src/event_logger/event_logger.cpp` — two new CSV type-column mappings (`"SENSOR_HR"`, `"SUN"`); rotation defaults bumped (`SD_ROTATE_BYTES`, `SD_MAX_FILES`, `SD_MIN_FILES`, `SD_FREE_MIN_BYTES`).
+- `firmware/src/relay_controller/relay_controller.h` + `.cpp` — new `t2_get_window_bitmask()` accessor packs window states + EG1 override bits per the §2.2 encoding.
+- `firmware/src/data_manager/data_manager.cpp` — `handle_sensor_reading()` emits three `LOG_SENSOR_HR` rows in place of the legacy `LOG_SENSOR`. New `log_sun_event()` helper, `sun_local_from_utc()` helper, `s_last_logged_sunrise_min` / `s_last_logged_sunset_min` change-detect cache, and `update_sun_times()` change-detect emit.
+- `firmware/platformio.ini` — `FIRMWARE_VERSION` `2.0.0-rc.1.3.3` → `2.0.0-rc.1.4.0`.
+- `changelog.md` — this entry.
+
+#### What did NOT change
+
+- The `LOG_SENSOR` enum value stays in `log_type_t` (its slot is reserved for historical-file readability).
+- The `t_avg_c` / `rh_avg_pct` sliding-average fields in `sensor_reading_t` are unchanged — `LOG_SENSOR_HR` emits raw values per the plan; sliding averages remain available to downstream consumers (`/api/history`, T6 climate logic, T3 wind safety).
+- All prior fixes (rc.1.1, rc.1.2, rc.1.2.1, rc.1.3, rc.1.3.1, rc.1.3.2, rc.1.3.3) preserved verbatim.
+- No NVS schema changes; no API surface changes; no T14 / status-website protocol change.
+
+#### Phase 7 soak day-counter
+
+Day-counter resets to day 0 against rc.1.4.0. The minor-version bump signals the on-disk-format break — operators reading the version string see immediately that this is not a drop-in patch over rc.1.3.x. Earlier soak progress on rc.1.3.3 is preserved as that line's clean record but does not transfer.
+
+#### Analyst follow-on (out of band)
+
+- Update the analysis-pipeline log parser to dispatch on the two new event types (`SENSOR_HR` per-channel sub-rows, `SUN` row).
+- Extend `temp/plot_daily.py` to consume `SUN` rows for per-day night-shading; fall back to live `/api/status` only when no `SUN` row exists in the day's window.
+- Update `design/technicalSoftwareDesignSpecification.md` §5.3 (event-log row-format description, rotation defaults).
+- Update `model/thermalProfileCampaign.md` §5.1 already carries the matching GAP-fold bitmask wording from the prior pass.
+
+---
+
 ### `[2.0.0-rc.1.3.3]` — 2026-05-22  (T10 NTP-resync missing sntp_stop fix; supersedes rc.1.3.2 as Phase 7 candidate)
 
 **Soak panic on rc.1.3.2 at 2026-05-22 13:23:09**, ~74 h after boot, in the lwIP tcpip thread (`tiT`). Captured coredump decoded cleanly via `esp-coredump` and identified a structural bug in T10's 24-hour NTP-resync path. Full triage in `bin/2.0.0-rc.1.3.2/post-mortem/POST_MORTEM.md`.
