@@ -293,26 +293,54 @@ static void nm_wifi_event_handler(void *arg, esp_event_base_t event_base,
     }
 }
 
+/** rc.1.5.3 — explicit SNTP-completed latch. Replaces the prior
+ *  `time(NULL) > NTP_MIN_EPOCH` heuristic in snapshot_state(). That
+ *  heuristic was correct when the system clock was always 0 at boot, but
+ *  T4's RTC pre-seed (data_manager.cpp:settimeofday from DS1307, around
+ *  boot+500ms) now primes the clock with a plausible 2026 epoch before
+ *  T10 ever takes a snapshot — so the heuristic produced a false-positive
+ *  "NTP synced" on any unit with a battery-backed RTC and no internet.
+ *
+ *  This flag is set only when ESP-IDF's `esp_sntp_get_sync_status()`
+ *  actually reports `SNTP_SYNC_STATUS_COMPLETED` — once from
+ *  `nm_sntp_quick_sync()` at boot, and again from `run_ntp_resync()` on
+ *  the periodic 24 h cadence. Monotonic-rising for the boot: once SNTP
+ *  has synced, the indicator stays "NTP" even across STA disconnect /
+ *  reconnect — the wall clock remains trustworthy and drift is bounded
+ *  by the next successful resync. Cleared only by reboot. */
+static bool s_sntp_synced = false;
+
 /**
  * @brief Best-effort SNTP synchronisation against pool.ntp.org.
  *
- * Initialises the IDF v5 `esp_netif_sntp_*` module, then polls `time(NULL)`
- * every 100 ms for up to 10 s waiting for the epoch to cross the
- * "plausibly synced" threshold (2023-11-14 = 1700000000). On success or
- * timeout, deinits the SNTP module so the next call starts clean.
+ * Initialises the IDF v5 `esp_netif_sntp_*` module, then polls
+ * `esp_sntp_get_sync_status()` every 100 ms for up to 10 s waiting for
+ * `SNTP_SYNC_STATUS_COMPLETED`. On success or timeout, deinits the SNTP
+ * module so the next call starts clean.
  *
- * Same logic as the retired `wifi_tickle.cpp:sntp_quick_sync()`.
+ * rc.1.5.3 — switched the success gate from the prior `time(NULL) >
+ * MIN_EPOCH` heuristic to the canonical IDF status query. T4's RTC
+ * pre-seed (data_manager.cpp:settimeofday from DS1307, ~boot+500ms)
+ * primes the system clock with a plausible 2026 epoch before this
+ * function runs, so the old heuristic returned true on iteration 0 —
+ * before SNTP could send a single packet — and immediately tore the
+ * client down via the deinit below. The status-query approach matches
+ * what `run_ntp_resync()` has always done and reflects whether ESP-IDF
+ * actually received a sync response. On success we also latch
+ * `s_sntp_synced` so `snapshot_state()` can drive the NTP/RTC indicator
+ * off real evidence rather than the RTC-primed wall clock.
  *
- * @return `true` if `time(NULL)` ≥ MIN_EPOCH within the budget; `false`
- *         if the timer expired without a plausible time. A `false` return
- *         is non-fatal — the DS1307 RTC holds the last-known wall clock
- *         and the periodic 24 h NTP resync (`run_ntp_resync()`) will retry.
+ * @return `true` if SNTP completed within the 10 s budget; `false` if it
+ *         timed out. A `false` return is non-fatal — the DS1307 RTC holds
+ *         the last-known wall clock and the periodic 24 h NTP resync
+ *         (`run_ntp_resync()`) will retry.
  * @note   The 10 s budget covers DNS resolution (1-2 s on residential
  *         gateways) + UDP/123 RTT + the few SNTP packets needed to converge.
  * @note   Blocks the calling task for up to 10 s. Only called once, from
  *         `nm_wifi_init_blocking()`, before the task graph spawns — never
  *         from inside a running task.
  * @see    run_ntp_resync() — the long-running 24 h resync path.
+ * @see    s_sntp_synced   — the module-scope latch this function sets on success.
  */
 static bool nm_sntp_quick_sync(void)
 {
@@ -324,24 +352,27 @@ static bool nm_sntp_quick_sync(void)
         return false;
     }
 
-    /* Plausibility threshold: 2023-11-14. Matches the existing NTP_MIN_EPOCH
-     * below; redefined locally because the constant is declared after this
-     * section. */
-    const time_t MIN_EPOCH      = 1700000000;
-    const int    NTP_POLL_ITERS = 100;   /* 100 × 100 ms = 10 s */
+    /* rc.1.5.3 — gate on esp_sntp_get_sync_status() == COMPLETED rather
+     * than on `time(NULL) > MIN_EPOCH`. The latter is fooled by T4's
+     * RTC pre-seed: the clock is already plausible at boot, so the old
+     * loop succeeded in 0 ms without ever waiting for an SNTP response. */
+    const int NTP_POLL_ITERS = 100;   /* 100 × 100 ms = 10 s */
     bool synced = false;
     for (int i = 0; i < NTP_POLL_ITERS; i++) {
         vTaskDelay(pdMS_TO_TICKS(100));
-        time_t now = time(NULL);
-        if (now > MIN_EPOCH) {
+        if (esp_sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) {
+            time_t now = time(NULL);
             ESP_LOGI(TAG, "SNTP synced after %d ms — epoch=%ld", i * 100, (long)now);
             synced = true;
             break;
         }
     }
 
-    if (!synced) {
-        ESP_LOGW(TAG, "SNTP did not reach a plausible epoch in budget");
+    if (synced) {
+        /* Latch — snapshot_state() reads this; monotonic-rising for the boot. */
+        s_sntp_synced = true;
+    } else {
+        ESP_LOGW(TAG, "SNTP did not complete in budget");
     }
 
     esp_netif_sntp_deinit();
@@ -505,6 +536,9 @@ static bool s_ap_active = false;
 #define NTP_RESYNC_INTERVAL_US ((uint64_t)NTP_RESYNC_INTERVAL_S * 1000000ULL)
 
 static int64_t s_last_ntp_sync_us = 0;   /* 0 = never synced this boot */
+/* s_sntp_synced is declared earlier in the file (before nm_sntp_quick_sync,
+ * which is its first reader). Kept up there because that function precedes
+ * this point textually; the comment block lives next to the declaration. */
 
 /** Post a single LOG_SYSTEM event to Q3 (T9 drains to SD CSV).
  *  a.6.33 — used by start_ap / stop_ap / do_geo_sync to log audit events
@@ -549,8 +583,13 @@ static void log_sys(int16_t value_a, int16_t value_b)
  *    a live STA association with the AP).
  *  - `ap_active`        = reflects the module-level `s_ap_active` latch
  *    set by `start_ap()`/`stop_ap()` — single-task-owned by T10.
- *  - `ntp_synced`       = `time(NULL) > NTP_MIN_EPOCH` (wall clock is
- *    plausibly post-2023-11-14; not a guarantee of fresh sync).
+ *  - `ntp_synced`       = `s_sntp_synced` — set only when ESP-IDF reports
+ *    `SNTP_SYNC_STATUS_COMPLETED` from `nm_sntp_quick_sync()` or
+ *    `run_ntp_resync()`. rc.1.5.3 replaced the prior
+ *    `time(NULL) > NTP_MIN_EPOCH` heuristic, which produced a
+ *    false-positive on every boot once T4's DS1307 RTC pre-seed primed the
+ *    system clock with a plausible 2026 epoch (LCD showed "NTP" with no
+ *    internet, audit log emitted a spurious NTP-synced row).
  *  - `ip_str`           = STA netif IPv4 as dotted-decimal, or "" if not up.
  *
  * @param[out] out  Caller-owned struct; zero-initialised before being
@@ -573,8 +612,13 @@ static void snapshot_state(net_status_t *out)
      * safe; no need to query esp_wifi_get_mode here. */
     out->ap_active = s_ap_active;
 
-    /* NTP sync state. */
-    out->ntp_synced = (time(NULL) > NTP_MIN_EPOCH);
+    /* NTP sync state. rc.1.5.3 — read the explicit s_sntp_synced latch
+     * instead of inferring from `time(NULL) > NTP_MIN_EPOCH`. T4's RTC
+     * pre-seed now makes the system clock plausible at boot, so the old
+     * heuristic could not distinguish "SNTP succeeded" from "RTC battery
+     * is alive". See the s_sntp_synced declaration near the top of this
+     * file for the full rationale. */
+    out->ntp_synced = s_sntp_synced;
 
     /* IP address — query the default STA netif. */
     esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
@@ -1220,10 +1264,13 @@ static void run_ntp_resync(void)
     esp_sntp_setservername(0, "pool.ntp.org");
     esp_sntp_init();
 
-    /* Wait up to 10 s for a plausible epoch. Note: we don't check for an
-     * absolute time delta, just for the system clock to be > NTP_MIN_EPOCH
-     * (which it already is from the boot sync — that's why we got here).
-     * A fresh sync simply updates the clock with sub-second accuracy. */
+    /* Wait up to 10 s for ESP-IDF to report SNTP_SYNC_STATUS_COMPLETED.
+     * A fresh sync simply updates the clock with sub-second accuracy;
+     * the wall-clock value is already trustworthy from the boot sync (or
+     * from T4's DS1307 pre-seed if WiFi was absent at boot). The previous
+     * comment referenced a time-delta heuristic that the loop never
+     * actually used. rc.1.5.3 — kept the (correct) status-query loop and
+     * removed the stale prose. */
     const int wait_steps = 20;   /* 20 × 500 ms = 10 s */
     bool ok = false;
     for (int i = 0; i < wait_steps; i++) {
@@ -1255,6 +1302,11 @@ static void run_ntp_resync(void)
     }
 
     s_last_ntp_sync_us = esp_timer_get_time();
+    /* rc.1.5.3 — latch the indicator flag. Idempotent (already true on any
+     * subsequent resync); kept here so a unit that came up without WiFi at
+     * boot — and therefore with s_sntp_synced still false — flips to "NTP"
+     * the moment its first periodic resync completes. */
+    s_sntp_synced = true;
     ESP_LOGI(TAG, "[T10] NTP resync complete");
 
     /* Notify T4 so it re-writes the DS1307 RTC with the freshly-synced time.
