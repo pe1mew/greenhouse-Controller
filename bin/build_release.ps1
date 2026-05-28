@@ -157,7 +157,7 @@ Write-Host "    -> $BIN_DST  ($bin_kb KB)" -ForegroundColor Green
 # archive lives locally per checkout but never bloats the repo. The release
 # build is reproducible from the matching tag if needed.
 $ELF_SRC = Join-Path $FIRMWARE_DIR ".pio\build\lolin_s3\firmware.elf"
-$MAP_SRC = Join-Path $FIRMWARE_DIR ".pio\build\lolin_s3\firmware.map"
+$MAP_SRC = Join-Path $FIRMWARE_DIR ".pio\build\lolin_s3\greenhouse_controller.map"
 $BL_SRC  = Join-Path $FIRMWARE_DIR ".pio\build\lolin_s3\bootloader.bin"
 $PT_SRC  = Join-Path $FIRMWARE_DIR ".pio\build\lolin_s3\partitions.bin"
 
