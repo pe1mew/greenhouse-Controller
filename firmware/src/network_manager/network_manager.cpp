@@ -310,6 +310,19 @@ static void nm_wifi_event_handler(void *arg, esp_event_base_t event_base,
  *  by the next successful resync. Cleared only by reboot. */
 static bool s_sntp_synced = false;
 
+/* rc.1.5.4 — public accessor so data_manager.cpp's status snapshot can
+ * read the same flag the LCD does via snapshot_state(). Without this,
+ * two surfaces would disagree: the LCD path goes through snapshot_state
+ * (correct) but the web GUI path went through `cfg.current_unix_ts >
+ * 1700000000UL` (the original time-comparison heuristic), and on a unit
+ * with a battery-backed RTC the web GUI showed "NTP synced" while the
+ * LCD correctly showed "RTC". Single-line wrapper kept here next to the
+ * declaration so future readers see the relationship immediately. */
+extern "C" bool nm_is_sntp_synced(void)
+{
+    return s_sntp_synced;
+}
+
 /**
  * @brief Best-effort SNTP synchronisation against pool.ntp.org.
  *
