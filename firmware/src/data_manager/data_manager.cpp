@@ -27,6 +27,7 @@
 #include "../event_logger/event_logger.h"
 #include "../relay_controller/relay_controller.h"
 #include "../status_post/status_post.h"  /* T14_NOTIFY_CFG_CHANGED (a.6.35.1) */
+#include "../network_manager/network_manager.h"  /* rc.1.5.4 — nm_is_sntp_synced() */
 
 #include "nvs_config.h"
 #include "ds1307_rtc.h"
@@ -1300,7 +1301,15 @@ void dm_status_snapshot(status_snapshot_t *out)
      * `coredump_available` mode flag and the GUI's blue Alarms-card badge. */
     out->coredump_available = s_coredump_present;
     out->ts_unix            = cfg.current_unix_ts;
-    out->ntp_synced         = (cfg.current_unix_ts > 1700000000UL);
+    /* rc.1.5.4 — read the same s_sntp_synced latch network_manager's
+     * snapshot_state() uses for the LCD path. The previous
+     * `cfg.current_unix_ts > 1700000000UL` test was fooled by T4's own
+     * DS1307 RTC pre-seed: the cached unix_ts is plausible at boot
+     * regardless of SNTP success, so the web GUI's /api/status would
+     * report `ntp_synced=true` and show "NTP synced" while the LCD
+     * (correctly) showed "RTC". The accessor returns the canonical flag
+     * driven only by `esp_sntp_get_sync_status() == COMPLETED`. */
+    out->ntp_synced         = nm_is_sntp_synced();
     out->update_interval_s  = (uint16_t)(cfg.status_interval_s > 0 ? cfg.status_interval_s
                                                                     : DEF_STATUS_INTERVAL_S);
 

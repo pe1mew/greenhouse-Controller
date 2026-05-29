@@ -116,6 +116,34 @@ nm_wifi_status_t nm_wifi_init_blocking(uint32_t connect_timeout_ms);
  */
 void task_network_manager(void *pvParameters);
 
+/**
+ * @brief Has SNTP actually completed since boot? (rc.1.5.4)
+ *
+ * Returns the `s_sntp_synced` module-scope latch from network_manager.cpp.
+ * The latch is set only when `esp_sntp_get_sync_status()` reports
+ * `SNTP_SYNC_STATUS_COMPLETED` — once from `nm_sntp_quick_sync()` at boot,
+ * and again from each successful `run_ntp_resync()` on the 24 h cadence.
+ *
+ * Use this accessor instead of testing `time(NULL) > NTP_MIN_EPOCH`:
+ * the time-based heuristic is fooled by T4's DS1307 RTC pre-seed at
+ * boot+500ms, which primes the system clock with a plausible 2026 epoch
+ * before SNTP has ever run. The pre-seed makes `time(NULL)` plausible
+ * regardless of internet presence, so any code path that drives a
+ * user-visible "NTP synced" indicator off the time comparison shows a
+ * false positive on units with battery-backed RTCs.
+ *
+ * rc.1.5.3 fixed `snapshot_state()` (which feeds Q5 → T8's LCD); rc.1.5.4
+ * adds this accessor so `dm_status_snapshot()` (which feeds the web
+ * GUI's /api/status JSON) can use the same trustworthy source.
+ *
+ * @return `true` if SNTP completed at least once since boot, else `false`.
+ * @note Monotonic-rising per boot. Cleared only by reboot.
+ * @note Safe to call from any task — read of a single `bool` is atomic
+ *       on Xtensa and the variable has no other writers besides the two
+ *       network_manager.cpp call sites.
+ */
+bool nm_is_sntp_synced(void);
+
 #ifdef __cplusplus
 }
 #endif
