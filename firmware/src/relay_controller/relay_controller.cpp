@@ -56,6 +56,7 @@
 #include <esp_log.h>
 #include <esp_task_wdt.h>   /* WDT subscription (1.17.29 / gh#13) */
 #include <driver/gpio.h>    /* alpha.6.9 — gpio_install_isr_service / handler_add */
+#include <driver/gpio_filter.h>  /* rc.1.5.5 — gpio_new_pin_glitch_filter (IO MUX glitch filter) */
 #include <esp_timer.h>      /* rc.1.5.3 — esp_timer_get_time() for ISR rate-limit */
 #include <time.h>
 
@@ -185,6 +186,14 @@ static volatile TickType_t s_alarm_edge_tick = 0;
  * far above the timescale on which kernel-killing chatter occurs. */
 #define ALARM_ISR_MIN_INTERVAL_US  5000
 static volatile int64_t    s_alarm_last_isr_us = 0;
+
+/* rc.1.5.5 — IO MUX pin glitch filter handle. Filters pulses shorter
+ * than ~2 IO MUX clock cycles (~25 ns at 80 MHz APB) at the silicon
+ * level, before the GPIO matrix raises an interrupt. Complement to the
+ * existing application-level rate-limit + 75 ms task debounce: hardware
+ * sets the duration floor, software still owns the decision logic.
+ * Created once during T2 init; never destroyed. */
+static gpio_glitch_filter_handle_t s_alarm_glitch_filter = NULL;
 
 /**
  * @brief GPIO ISR — captures a motor-alarm edge on GPIO42.
@@ -980,6 +989,34 @@ void task_relay_controller(void *pvParameters)
         ESP_ERROR_CHECK(gpio_isr_handler_add((gpio_num_t)PIN_OPTO_INPUT,
                                               isr_motor_alarm, NULL));
         ESP_ERROR_CHECK(gpio_intr_enable((gpio_num_t)PIN_OPTO_INPUT));
+
+        /* rc.1.5.5 — pin glitch filter. Silicon-level filter at the IO
+         * MUX that drops pulses shorter than ~2 IO MUX clock cycles
+         * (~25 ns @ 80 MHz APB) before they reach the GPIO matrix
+         * interrupt logic. Cheaper than the ISR rate-limit (no CPU
+         * cycles spent at all on short glitches) and composes
+         * multiplicatively with the 1.8 kΩ hardware shunt installed on
+         * unit 5C88 (2026-05-29): the shunt sets a current-amplitude
+         * floor that EMI must exceed; the filter sets a duration floor.
+         * Genuine alarm-contact transitions are mechanical (≥ 1 ms
+         * settle) so they pass through; nothing real is lost. Failure
+         * to create the filter is non-fatal — the rate-limit + 75 ms
+         * task debounce still cover the case, just less robustly. */
+        gpio_pin_glitch_filter_config_t glitch_cfg = {
+            .clk_src  = GLITCH_FILTER_CLK_SRC_DEFAULT,
+            .gpio_num = (gpio_num_t)PIN_OPTO_INPUT,
+        };
+        esp_err_t gf_rc = gpio_new_pin_glitch_filter(&glitch_cfg,
+                                                     &s_alarm_glitch_filter);
+        if (gf_rc == ESP_OK) {
+            ESP_ERROR_CHECK(gpio_glitch_filter_enable(s_alarm_glitch_filter));
+            ESP_LOGI(TAG, "GPIO42 pin glitch filter enabled (~25 ns IO MUX drop)");
+        } else {
+            ESP_LOGW(TAG,
+                "gpio_new_pin_glitch_filter failed: %s — falling back to "
+                "ISR rate-limit + task debounce only",
+                esp_err_to_name(gf_rc));
+        }
     }
     ESP_LOGI(TAG, "GPIO42 ISR attached (MOTOR_ALARM, ANYEDGE, IRAM, not suppressed during MOVING)");
 

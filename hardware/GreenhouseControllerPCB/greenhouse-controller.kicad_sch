@@ -5734,6 +5734,12 @@
 		(uuid "22e929de-2be6-4a97-a47a-9b1a7f0d6c6a")
 	)
 	(junction
+		(at 208.28 269.24)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "25950cac-a036-4f86-a986-e99183a27850")
+	)
+	(junction
 		(at 326.39 60.96)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -5774,6 +5780,12 @@
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "3fac0e30-419e-4eef-985e-6d555cfeba68")
+	)
+	(junction
+		(at 191.77 271.78)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "436deb99-ecf2-4d18-ac62-a42f307fefc4")
 	)
 	(junction
 		(at 246.38 60.96)
@@ -6313,6 +6325,16 @@
 	)
 	(wire
 		(pts
+			(xy 191.77 271.78) (xy 210.82 271.78)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "103e71b4-ee84-43b8-aac2-797dbb8490f7")
+	)
+	(wire
+		(pts
 			(xy 81.28 80.01) (xy 102.87 80.01)
 		)
 		(stroke
@@ -6490,6 +6512,16 @@
 			(type default)
 		)
 		(uuid "1e6696c3-e72d-4aef-a92c-4bba392b19f0")
+	)
+	(wire
+		(pts
+			(xy 208.28 269.24) (xy 210.82 269.24)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "1f0b6750-b94d-42b7-bcc4-43e511cad398")
 	)
 	(wire
 		(pts
@@ -6883,6 +6915,16 @@
 	)
 	(wire
 		(pts
+			(xy 208.28 274.32) (xy 208.28 269.24)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "3e2fdfac-9ae8-4d02-b7b3-204e4c871a4b")
+	)
+	(wire
+		(pts
 			(xy 339.09 140.97) (xy 339.09 143.51)
 		)
 		(stroke
@@ -6950,6 +6992,16 @@
 			(type default)
 		)
 		(uuid "4013591e-dcce-4199-a027-cd65ceecd9f2")
+	)
+	(wire
+		(pts
+			(xy 195.58 274.32) (xy 191.77 274.32)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "414f45e8-bea9-4627-a6ef-24aba85d2caf")
 	)
 	(wire
 		(pts
@@ -7083,6 +7135,16 @@
 	)
 	(wire
 		(pts
+			(xy 203.2 274.32) (xy 208.28 274.32)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "48b0ef52-41bd-475e-be1a-999f4ce1005d")
+	)
+	(wire
+		(pts
 			(xy 135.89 85.09) (xy 154.94 85.09)
 		)
 		(stroke
@@ -7123,7 +7185,7 @@
 	)
 	(wire
 		(pts
-			(xy 207.01 269.24) (xy 210.82 269.24)
+			(xy 207.01 269.24) (xy 208.28 269.24)
 		)
 		(stroke
 			(width 0)
@@ -8363,7 +8425,7 @@
 	)
 	(wire
 		(pts
-			(xy 177.8 271.78) (xy 210.82 271.78)
+			(xy 177.8 271.78) (xy 191.77 271.78)
 		)
 		(stroke
 			(width 0)
@@ -8720,6 +8782,16 @@
 			(type default)
 		)
 		(uuid "c99e7281-b18b-44a9-87d7-afca0b90c496")
+	)
+	(wire
+		(pts
+			(xy 191.77 274.32) (xy 191.77 271.78)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "cad3f09e-08ac-4bc9-816b-180bbc1aa0aa")
 	)
 	(wire
 		(pts
@@ -14435,6 +14507,85 @@
 			(project "greenhouse-controller"
 				(path "/2be5eb1b-bfdc-4766-9909-5178f7452cd9"
 					(reference "P1")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:R")
+		(at 199.39 274.32 270)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "9cc13ff9-b64c-486c-bcad-6ae869fdac15")
+		(property "Reference" "R25"
+			(at 199.39 278.13 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "1K8"
+			(at 199.39 280.67 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_1206_3216Metric_Pad1.30x1.75mm_HandSolder"
+			(at 199.39 272.542 90)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 199.39 274.32 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Resistor"
+			(at 199.39 274.32 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "5d733dba-6a6e-4517-87fd-5d2caede32c7")
+		)
+		(pin "2"
+			(uuid "45d1f70d-d2f7-4dd6-87c9-d9400f59d508")
+		)
+		(instances
+			(project "greenhouse-controller"
+				(path "/2be5eb1b-bfdc-4766-9909-5178f7452cd9"
+					(reference "R25")
 					(unit 1)
 				)
 			)
