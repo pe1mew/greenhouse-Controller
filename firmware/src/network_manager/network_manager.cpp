@@ -548,7 +548,28 @@ static bool s_ap_active = false;
 #endif
 #define NTP_RESYNC_INTERVAL_US ((uint64_t)NTP_RESYNC_INTERVAL_S * 1000000ULL)
 
-static int64_t s_last_ntp_sync_us = 0;   /* 0 = never synced this boot */
+/* rc.1.5.6 — retry cadence when boot SNTP failed. Until rc.1.5.6 the
+ * periodic resync (above) was gated on `s_last_ntp_sync_us != 0`, so a
+ * unit whose boot-time `nm_sntp_quick_sync()` timed out was stranded on
+ * RTC for the rest of the boot — the 24 h timer never started. The fix
+ * runs the resync on this shorter cadence while `s_last_ntp_sync_us`
+ * is still zero, then falls back to the 24 h cadence once the first
+ * sync lands. 5 min is short enough to recover within an operator
+ * coffee break but long enough to avoid hammering pool.ntp.org under
+ * a persistent DNS/UDP outage. Override at compile time with -D. */
+#ifndef NTP_RETRY_INTERVAL_S
+#define NTP_RETRY_INTERVAL_S   300u
+#endif
+#define NTP_RETRY_INTERVAL_US  ((uint64_t)NTP_RETRY_INTERVAL_S * 1000000ULL)
+
+static int64_t s_last_ntp_sync_us    = 0;   /* 0 = never synced this boot */
+/* rc.1.5.6 — last attempt timestamp (any SNTP try, success or fail).
+ * Used by the retry-cadence branch when s_last_ntp_sync_us is still
+ * zero. Seeded at T10 task start so the first retry waits a full
+ * NTP_RETRY_INTERVAL_S from there, not from boot — avoids an immediate
+ * back-to-back SNTP attempt right after the boot-time quick_sync has
+ * already tried (and possibly already failed). */
+static int64_t s_last_ntp_attempt_us = 0;
 /* s_sntp_synced is declared earlier in the file (before nm_sntp_quick_sync,
  * which is its first reader). Kept up there because that function precedes
  * this point textually; the comment block lives next to the declaration. */
@@ -1369,6 +1390,13 @@ void task_network_manager(void *pvParameters)
          * measured from the boot-time sync, not from T10 task start. */
         s_last_ntp_sync_us = esp_timer_get_time();
     }
+    /* rc.1.5.6 — seed the attempt timestamp regardless of boot SNTP
+     * outcome. The retry-cadence branch (below) uses this as the
+     * reference when no successful sync has happened yet. Without the
+     * seed it would be 0, so the first main-loop iteration's
+     * `now - 0 >= NTP_RETRY_INTERVAL` test would fire immediately and
+     * SNTP would be re-run back-to-back with the boot quick_sync. */
+    s_last_ntp_attempt_us = esp_timer_get_time();
 
     /* a.6.35.3 — emit boot-time STA / NTP snapshot rows.
      *
@@ -1399,16 +1427,35 @@ void task_network_manager(void *pvParameters)
          * cfg.ap_timeout_min auto-shutdown. */
         poll_ap();
 
-        /* a.6.33 — periodic 24 h NTP resync. Gated on STA connected AND
-         * a prior successful sync (so we have a non-zero last-sync timestamp
-         * to compare against). The check is cheap; the actual resync work
-         * only runs when the interval has elapsed. */
-        if (s_last_ntp_sync_us != 0 && prev.client_connected) {
-            int64_t elapsed_us = esp_timer_get_time() - s_last_ntp_sync_us;
-            if ((uint64_t)elapsed_us >= NTP_RESYNC_INTERVAL_US) {
+        /* rc.1.5.6 — periodic NTP resync. Two cadences depending on
+         * whether we've ever synced this boot:
+         *   - synced (s_last_ntp_sync_us != 0):
+         *       retry every NTP_RESYNC_INTERVAL_US (24 h, drift bound).
+         *   - never synced (boot SNTP timed out):
+         *       retry every NTP_RETRY_INTERVAL_US (5 min) so we catch up
+         *       quickly once the network recovers.
+         *
+         * Before rc.1.5.6 the test was `s_last_ntp_sync_us != 0 &&
+         * prev.client_connected`, which meant a unit whose boot SNTP
+         * timed out was stranded on RTC for the rest of the boot — the
+         * 24 h timer never started counting. The rc.1.5.4 web-GUI fix
+         * (using the real s_sntp_synced latch instead of the
+         * time-comparison heuristic) made the stuck state observable;
+         * this is the actual fix. */
+        if (prev.client_connected) {
+            int64_t now_us       = esp_timer_get_time();
+            bool    synced       = (s_last_ntp_sync_us != 0);
+            uint64_t interval_us = synced ? NTP_RESYNC_INTERVAL_US
+                                          : NTP_RETRY_INTERVAL_US;
+            int64_t reference_us = synced ? s_last_ntp_sync_us
+                                          : s_last_ntp_attempt_us;
+            if ((uint64_t)(now_us - reference_us) >= interval_us) {
+                s_last_ntp_attempt_us = now_us;
                 run_ntp_resync();
-                /* run_ntp_resync updates s_last_ntp_sync_us on success;
-                 * on failure leaves it unchanged so we retry next cycle. */
+                /* run_ntp_resync updates s_last_ntp_sync_us on success
+                 * (which flips us back to the 24 h branch from the next
+                 * iteration on); on failure leaves it unchanged so the
+                 * retry branch keeps firing every NTP_RETRY_INTERVAL_S. */
             }
         }
 
