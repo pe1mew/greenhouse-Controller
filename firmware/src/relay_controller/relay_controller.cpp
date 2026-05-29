@@ -56,6 +56,7 @@
 #include <esp_log.h>
 #include <esp_task_wdt.h>   /* WDT subscription (1.17.29 / gh#13) */
 #include <driver/gpio.h>    /* alpha.6.9 — gpio_install_isr_service / handler_add */
+#include <esp_timer.h>      /* rc.1.5.3 — esp_timer_get_time() for ISR rate-limit */
 #include <time.h>
 
 static const char *TAG = "T2";
@@ -171,6 +172,20 @@ static portMUX_TYPE s_state_mux = portMUX_INITIALIZER_UNLOCKED;
 static volatile bool       s_alarm_edge      = false;
 static volatile TickType_t s_alarm_edge_tick = 0;
 
+/* rc.1.5.3 — ISR-level rate limit (microseconds between accepted edges).
+ * Independent from the 75 ms task-level debounce — that one protects the
+ * application's alarm state machine from a single mechanical bounce; this
+ * one protects the FreeRTOS kernel from an electrical edge storm. Under
+ * production hardware conditions (motor relay clicks coupling into the
+ * opto-input return wiring), the ANYEDGE ISR fires fast enough to flood
+ * the timer-service command queue and overflow Tmr Svc's 2 KB stack —
+ * exactly the panic captured in the unit 5C88 coredump (2026-05-29).
+ * 5 ms is below the threshold of any genuine alarm event (relay bounce
+ * settles within ~1 ms; an actual fault stays asserted for many ms) and
+ * far above the timescale on which kernel-killing chatter occurs. */
+#define ALARM_ISR_MIN_INTERVAL_US  5000
+static volatile int64_t    s_alarm_last_isr_us = 0;
+
 /**
  * @brief GPIO ISR — captures a motor-alarm edge on GPIO42.
  *
@@ -178,15 +193,31 @@ static volatile TickType_t s_alarm_edge_tick = 0;
  * The main loop runs the debounce + state machine in task context after
  * ALARM_DEBOUNCE_MS (75 ms) has elapsed.
  *
+ * rc.1.5.3 — adds an IRAM-level rate-limit (`ALARM_ISR_MIN_INTERVAL_US`):
+ * edges closer than 5 ms apart are silently dropped. Real alarm events
+ * stay flush against the same logical asserted state for far longer than
+ * that, so genuine latches still fire on their first edge. The rate-limit
+ * exists only to protect the kernel from EMI-coupled chatter on the
+ * production motor-alarm wiring; without it, an edge storm cascades into
+ * heavy GPIO-ISR dispatcher + IDF internal timer activity that eventually
+ * overflows the FreeRTOS Tmr Svc 2 KB stack (cf. 5C88 coredump).
+ *
  * @param arg  Unused — present to match gpio_isr_t (since alpha.6.9 IDF migration).
  * @warning IRAM_ATTR; must not call any non-IRAM-safe functions.
+ *          `esp_timer_get_time()` is IRAM_ATTR-marked in IDF and is safe here.
  */
 static void IRAM_ATTR isr_motor_alarm(void *arg)
 {
     /* arg unused — kept for the ESP-IDF gpio_isr_t signature (alpha.6.9). */
     (void)arg;
-    s_alarm_edge_tick = xTaskGetTickCountFromISR();
-    s_alarm_edge      = true;
+    int64_t now_us = esp_timer_get_time();
+    if (now_us - s_alarm_last_isr_us < ALARM_ISR_MIN_INTERVAL_US) {
+        /* Edge storm suppression — see ALARM_ISR_MIN_INTERVAL_US comment. */
+        return;
+    }
+    s_alarm_last_isr_us = now_us;
+    s_alarm_edge_tick   = xTaskGetTickCountFromISR();
+    s_alarm_edge        = true;
 }
 
 /* ============================================================

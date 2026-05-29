@@ -60,6 +60,17 @@ CONFIG_FREERTOS_HZ=1000
 # Dual-core (default for ESP32-S3, listed here for explicitness against any
 # future single-core variant of the framework).
 CONFIG_FREERTOS_UNICORE=n
+# rc.1.5.3 — bump the software-timer service task (Tmr Svc) stack from the
+# IDF default of 2 KB to 4 KB. The 5C88 unit panicked repeatedly under
+# production-hardware deployment (2026-05-29) with reason
+#   ***ERROR*** A stack overflow in task Tmr Svc has been detected.
+# Root cause was an electrically-noisy motor-alarm input feeding the
+# ANYEDGE GPIO ISR fast enough to cascade into a backlog of IDF timer
+# events that the 2 KB stack couldn't carry. The application-side defence
+# is a 5 ms ISR rate-limit in relay_controller.cpp (cf. ALARM_ISR_MIN_INTERVAL_US);
+# this is the defence-in-depth kernel-side bump. ~2 KB additional RAM
+# allocation; we're at 18.9 % RAM used, well within budget.
+CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=4096
 
 # ----------------------------------------------------------------------------
 # Partition table (custom layout for dual-bank OTA + dual LittleFS + coredump)
