@@ -6,9 +6,151 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
-## [2.0.0] — *in progress on `dev/2.0.0-esp-idf` branch*
+## [2.0.3] — 2026-06-09  (gh#33 — T14/T10 L3 self-recovery ladder)
 
-> **This is a major-version release in active development.** The work is not yet on `main`. The 1.20.x line continues as the production line; this section will be consolidated and re-dated when 2.0.0 ships. Pre-releases (`2.0.0-alpha.N`, `2.0.0-rc.N`) accumulate below in chronological order, oldest first.
+T14 status-POST failures now drive a two-step recovery ladder against local L3 state — DHCP renew first, then full STA reassociate — eliminating the operator-intervention requirement that surfaced in the 2026-06-02 5C88 modem-NAT-stuck outage. After ~10 min of consecutive POST failures T10 stops+starts its DHCP client; after ~20 min it disconnects+reconnects the STA. Either action is enough to refresh the modem's local NAT/DHCP/DNS state for the controller's MAC, mimicking a manual modem power-cycle from the controller's side.
+
+### What changed
+
+- **`firmware/src/status_post/status_post.cpp`** — `do_status_post()` outcome path now increments a consecutive-fail counter and dispatches `xTaskNotify(task_t10, NM_NOTIFY_RENEW_DHCP)` at threshold A (5 fails) and `NM_NOTIFY_REASSOCIATE` at threshold B (10 fails). Counter and both single-shot latches clear on the next OK POST, OR after threshold B fires (so a still-broken upstream re-escalates rather than going silent past 10 fails). Thresholds tunable via `-DT14_FAIL_THRESHOLD_A=N` / `-DT14_FAIL_THRESHOLD_B=N`.
+- **`firmware/src/network_manager/network_manager.cpp`** — T10's main loop now wakes via `xTaskNotifyWait(0, ULONG_MAX, &notify, pdMS_TO_TICKS(NET_POLL_MS))` instead of the previous `vTaskDelay(NET_POLL_MS)`. Normal 5 s polling cadence preserved; a notification short-circuits the delay. Two handlers fire `esp_netif_dhcpc_stop/_start` and `esp_wifi_disconnect/_connect` respectively, each followed by a `log_sys(19, 0)` / `log_sys(19, 1)` audit row through T9.
+- **`firmware/src/network_manager/network_manager.h`** — `NM_NOTIFY_RENEW_DHCP` (`1u << 0`) and `NM_NOTIFY_REASSOCIATE` (`1u << 1`) public bit definitions, with full docstrings tying each bit to its threshold + audit row.
+
+### Audit logging
+
+| `LOG_SYSTEM` row | Meaning |
+|---|---|
+| `value_a=19, value_b=0` | T10 ran `esp_netif_dhcpc_stop`+`_start` after threshold A |
+| `value_a=19, value_b=1` | T10 ran `esp_wifi_disconnect`+`_connect` after threshold B |
+
+`logparser.py` will need a one-line label-table addition for `a=19` ("L3 recovery"); follow-up tooling commit.
+
+### What did NOT change
+
+- Retry cadence — still `cfg.status_interval_s` (default 120 s, range 60-300). Speeding up retries does not fix stale local L3 state; refreshing the stack does.
+- `esp_http_client` setup — still fresh client per POST, still `cleanup` after each attempt.
+- AP mode, NTP resync, geo sync, T15 supervisor — untouched.
+- `status_post_backoff_active()` — still returns false (the cosmetic flag was never wired; could be repurposed for "L3 recovery in progress" later).
+- Web-asset content, partitions.csv, sdkconfig — unchanged through the 2.0.x series.
+
+### Files changed
+
+| File | Δ |
+|---|---|
+| `firmware/src/status_post/status_post.cpp` | counter statics + threshold #defines + dispatch in `do_status_post()` outcome path; `+#include "../network_manager/network_manager.h"` |
+| `firmware/src/network_manager/network_manager.cpp` | `vTaskDelay` → `xTaskNotifyWait` + two notify-handler blocks |
+| `firmware/src/network_manager/network_manager.h` | `NM_NOTIFY_RENEW_DHCP` + `NM_NOTIFY_REASSOCIATE` public defines |
+| `firmware/platformio.ini` | FIRMWARE_VERSION 2.0.2 → 2.0.3 |
+
+### Build delta vs 2.0.2
+
+| Field | 2.0.2 | 2.0.3 | Δ |
+|---|---:|---:|---:|
+| `greenhouse-controller-*.bin` | 1 359 072 B | 1 359 920 B | +848 B |
+| `web-assets-*.zip` | 107 380 B | 107 380 B | 0 (content identical) |
+| RAM / Flash | 18.9 % / 64.8 % | 18.9 % / 64.8 % | +8 B RAM (uint32 + 2× bool), +848 B flash |
+
+### SHA-256
+
+```
+bfa3c8adb15e20a96f3cc4a7308532bce06d1cd06c64e9c9f8682655140e46ad  greenhouse-controller-2.0.3.bin
+77e4b73f04f437724e00f11e7d6bed38407777602a77f130c949859c0674dbe6  web-assets-2.0.3.zip
+```
+
+### Why
+
+The 2026-06-02 outage on unit 5C88 produced 228 consecutive POST failures over ~7.5 h. T14's retry cadence was correct, the task was not wedged, every fail attempt logged its outcome — yet the controller did not reconnect to `rfsee.net` until the operator power-cycled the modem. A Windows laptop on the same LAN/modem recovered the instant ISP service returned, isolating the cause to **stale local L3 state** on the controller (modem-local DNS, NAT, ARP, DHCP lease — none of which `esp_http_client_perform` failures refresh on their own). The modem power-cycle worked because it forced every connected client into a fresh L2+L3 handshake; 2.0.3 reproduces that effect from the controller's side without operator intervention.
+
+---
+
+## [2.0.2] — 2026-06-09  (gh#31 — SD mount-state in `/api/status` JSON)
+
+Three new fields in the canonical status JSON's `system` block so a remote observer (e.g. the `rfsee.net` dashboard) can detect SD failures without operator login. Same data `/api/sd/status` has served all along, now flowing through the same JSON channel T14 already POSTs every `cfg.status_interval_s` seconds.
+
+### What changed
+
+- `status_snapshot_t` gains three fields: `bool sd_mounted; uint32_t sd_free_mb; uint32_t sd_size_mb;`.
+- `dm_status_snapshot()` populates them via `storage_sd_available()` + `storage_sd_free_bytes()` / `storage_sd_total_bytes()`. When unmounted, both MB fields are 0 — distinguish via `sd_mounted` first.
+- `build_canonical_status_json()` appends `"sd_mounted":bool,"sd_free_mb":N,"sd_size_mb":N` to the existing `system` block (same output for `/api/status` and the T14 remote push).
+- `/api/sd/status` and `/api/status` web-API shape are otherwise unchanged. Dashboards that ignore unknown JSON keys see no breaking change.
+
+### Files changed
+
+| File | Δ |
+|---|---|
+| `firmware/src/types/app_types.h` | 3 fields added to `status_snapshot_t` |
+| `firmware/src/data_manager/data_manager.cpp` | `+#include "sd_storage.h"`; populate block in `dm_status_snapshot()` |
+| `firmware/src/status_post/status_json.cpp` | extended format-string in the `system` block |
+| `firmware/platformio.ini` | FIRMWARE_VERSION 2.0.1 → 2.0.2 |
+
+### Build delta vs 2.0.1
+
+| Field | 2.0.1 | 2.0.2 | Δ |
+|---|---:|---:|---:|
+| `greenhouse-controller-*.bin` | 1 358 928 B | 1 359 072 B | +144 B |
+| `web-assets-*.zip` | 107 380 B | 107 380 B | 0 (content identical) |
+| RAM / Flash | 18.9 % / 64.8 % | 18.9 % / 64.8 % | unchanged (the 9 struct bytes fit in existing padding) |
+
+### SHA-256
+
+```
+6c7b35dbd0f304a9c0e53fa630c257eb3fd898d2d01a482ca82fdcdee7e8dec5  greenhouse-controller-2.0.2.bin
+e9fae8b1604182d371c387feadf8a7f0f0e5e8d3f2606560f8deea03c1719ac0  web-assets-2.0.2.zip
+```
+
+### Why
+
+During the 2026-06-02 SD-card-failure event on unit 5C88, the status JSON kept reaching `rfsee.net` perfectly throughout the outage (controller didn't crash; web GUI never went down). But the dashboard had no signal that anything was wrong — fresh JSON arrived every 240 s, all keys looked normal. With this release, a server-side check on `sd_mounted == false` (or `sd_free_mb` below a threshold) detects the failure remotely without any operator action.
+
+---
+
+## [2.0.1] — 2026-06-09  (gh#30 — Prefix SD log filenames with unit ID)
+
+T9 now emits filenames of the form `/XXXX_YYYYMMDDHHMMSS.csv` where `XXXX` is the 4-hex unit ID. Mixed-form cards (legacy + new) are handled correctly with no operator action.
+
+### What changed
+
+- `make_ts_filename()` calls `system_unit_id_str()` (gh#17, present since 1.18.3) and prepends the result + `_` to the timestamp.
+- `is_ts_filename()` now recognises **both** the new 23-char prefixed form and the legacy 18-char un-prefixed form. Either form participates in rotation, oldest-delete, and boot-time resume.
+- `SD_FILENAME_LEN` 24 → 32, `SD_NAME_ONLY_LEN` 20 → 28 — buffer headroom for the prefix.
+
+### Files changed
+
+| File | Δ |
+|---|---|
+| `firmware/src/event_logger/event_logger.cpp` | `make_ts_filename`, `is_ts_filename`, the two buffer-size constants, and surrounding docstring updates |
+| `firmware/platformio.ini` | FIRMWARE_VERSION 2.0.0 → 2.0.1 |
+
+### What did NOT change
+
+- `/api/log/files` and `/api/log/download?file=NAME` — pass filenames verbatim. No web-API change needed.
+- `logparser.py` and `plot_daily.py` — already glob `*.csv`; both forms picked up.
+- CSV row format / SD-log triplet — unchanged.
+- Partitions, sdkconfig, web assets — unchanged.
+
+### Build delta vs 2.0.0
+
+| Field | 2.0.0 | 2.0.1 | Δ |
+|---|---:|---:|---:|
+| `greenhouse-controller-*.bin` | 1 358 592 B | 1 358 928 B | +336 B |
+| RAM / Flash | 18.9 % / 64.8 % | 18.9 % / 64.8 % | +16 B RAM, +340 B flash |
+
+### SHA-256
+
+```
+200b1309556678f9fc59b878c14f85f351dc9473cb4f65308a7d99f75e786f0e  greenhouse-controller-2.0.1.bin
+52ee1590267c8ec3d18c55826811aec54a721ebfc78c54832c3c8330096a4f0e  web-assets-2.0.1.zip
+```
+
+### Why
+
+When CSVs from multiple units are merged for cross-unit analysis (as happened multiple times during the rc.1.5.x soak when comparing 5C88 vs 2344), telling them apart at the OS file-listing level previously required either renaming files manually or opening each one to read the BOOT-row unit-ID field. The prefix makes the source unit visible in any directory listing, log viewer, or analysis-script glob.
+
+---
+
+## [2.0.0] — 2026-06-09
+
+The arduino-esp32 → ESP-IDF migration ships. Merged from `dev/2.0.0-esp-idf` into `main` 2026-06-09 (linear rebase + fast-forward, per the repo's no-merge-commit policy on `main`). The 1.20.x line remains as the maintenance branch for the original arduino-esp32 build.
 
 ### Why 2.0.0 — context
 
@@ -27,6 +169,162 @@ Migrate the firmware from the **arduino-esp32** framework to **pure ESP-IDF** (P
 | `2.0.0-alpha.6` | 6 | Misc cleanup (Adafruit_NeoPixel → RMT, pinMode → gpio_*, millis() → esp_timer, Arduino.h removal) |
 | `2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
 | `2.0.0` | 8 | Merge + release (fast-forward into `main`) |
+
+### `[2.0.0-rc.1.5.6]` — 2026-05-30  (NTP retry cadence so failed boot SNTP doesn't strand the unit)
+
+Single targeted fix in `network_manager.cpp`'s T10 main poll loop. Adds a 5-minute SNTP retry cadence while `s_last_ntp_sync_us == 0` (no successful sync this boot), then falls back to the canonical 24 h cadence once the first sync lands. The pre-2.0.0-rc.1.5.6 code gated the periodic resync on `s_last_ntp_sync_us != 0`, which left a unit with a failed 10-second boot SNTP stranded on RTC for the entire boot session.
+
+Observed on the soak unit 2344 at uptime 125 s with `wifi_rssi = −41 dBm`: `ntp_synced = false` despite healthy upstream — a real-world condition that reproduces about once every dozen boots when DNS/UDP to pool.ntp.org takes longer than 10 s. The rc.1.5.4 fix made the `ntp_synced` flag honest; this release adds the recovery path the honesty just exposed.
+
+#### What changed
+
+- New `NTP_RETRY_INTERVAL_S = 300` (overrideable via `-D`).
+- New `s_last_ntp_attempt_us` seeded at T10 task start so the first retry waits a full `NTP_RETRY_INTERVAL_S` from there rather than firing immediately back-to-back with the boot quick-sync.
+- The main-loop check now branches on `synced = (s_last_ntp_sync_us != 0)`: `interval_us = synced ? NTP_RESYNC_INTERVAL_US : NTP_RETRY_INTERVAL_US`; reference timestamp comes from `s_last_ntp_sync_us` when synced, `s_last_ntp_attempt_us` when not. On any attempt the attempt timestamp is rolled forward, so failures back off correctly.
+
+#### Verified in the wild
+
+On unit 5C88 immediately post-OTA — boot SNTP timed out, unit observed at `ntp_synced=false` for 5 minutes, then at uptime 322 s the retry fired and SNTP succeeded → latch flipped → indicator showed NTP. Without rc.1.5.6 the unit would have stayed on RTC until the next reboot.
+
+#### Files changed
+
+| File | Δ |
+|---|---|
+| `firmware/src/network_manager/network_manager.cpp` | dual-cadence retry, new attempt timestamp, NTP_RETRY_INTERVAL_US macro |
+| `firmware/platformio.ini` | FIRMWARE_VERSION 2.0.0-rc.1.5.5 → 2.0.0-rc.1.5.6 |
+
+#### Build delta vs rc.1.5.5
+
+| Field | rc.1.5.5 | rc.1.5.6 | Δ |
+|---|---:|---:|---:|
+| `greenhouse-controller-*.bin` | 1 358 357 B | 1 358 397 B | +40 B |
+| RAM | 18.9 % | 18.9 % (+8 B for `s_last_ntp_attempt_us` int64) | — |
+
+#### SHA-256
+
+```
+(rc.1.5.6 SHA preserved in bin/2.0.0-rc.1.5.6/release-notes.md)
+```
+
+### `[2.0.0-rc.1.5.5]` — 2026-05-29  (IO MUX pin glitch filter on GPIO42 — third layer of the motor-alarm EMI defense stack)
+
+Six-line firmware addition in T2 init. Installs `gpio_new_pin_glitch_filter()` on `PIN_OPTO_INPUT` — a silicon-level filter at the IO MUX that drops pulses shorter than ~2 IO-MUX clock cycles (~25 ns at 80 MHz APB) before they reach the GPIO matrix interrupt logic. Sub-25 ns pulses — the bulk of capacitively-coupled EMI on long unterminated cables — are dropped at silicon, costing zero CPU cycles. Genuine mechanical alarm-contact transitions settle in ≥ 1 ms so they pass through unaffected.
+
+#### Defense stack to date (running tally)
+
+| Layer | Origin | Function |
+|---|---|---|
+| 1.8 kΩ hardware shunt at J10 | board mod 2026-05-29 | amplitude floor; clamps GPIO node to ≤ 3.21 V; source impedance 1 kΩ → 643 Ω |
+| **IO MUX pin glitch filter (~25 ns)** | **this release** | **silicon-level duration floor** |
+| IRAM ISR rate-limit (5 ms) | rc.1.5.3 | application-level edge throttle |
+| Task debounce (75 ms) | rc.1.4 baseline | live pin re-read to reconcile against EG1 state |
+| Tmr Svc stack 4 KB | rc.1.5.3 sdkconfig | kernel-side headroom |
+
+For an EMI event to now produce a spurious alarm onset it must clear all four floors simultaneously.
+
+#### Files changed
+
+| File | Δ |
+|---|---|
+| `firmware/src/relay_controller/relay_controller.cpp` | `+#include <driver/gpio_filter.h>`; static `gpio_glitch_filter_handle_t s_alarm_glitch_filter = NULL;`; 8-line install block immediately after the existing `gpio_intr_enable()` call. Failure to create the filter is non-fatal (logged WARN). |
+| `firmware/platformio.ini` | FIRMWARE_VERSION 2.0.0-rc.1.5.4 → 2.0.0-rc.1.5.5 |
+
+#### Build delta vs rc.1.5.4
+
+| Field | rc.1.5.4 | rc.1.5.5 | Δ |
+|---|---:|---:|---:|
+| `greenhouse-controller-*.bin` | 1 356 853 B | 1 358 357 B | +1 504 B (IDF gpio_filter component pulled in) |
+| RAM | 18.9 % | 18.9 % (+8 B handle pointer in .bss) | — |
+
+#### SHA-256
+
+```
+(rc.1.5.5 SHA preserved in bin/2.0.0-rc.1.5.5/release-notes.md)
+```
+
+### `[2.0.0-rc.1.5.4]` — 2026-05-29  (web GUI ↔ LCD agreement on NTP indicator)
+
+Single-site bug fix in `data_manager.cpp` plus a new public accessor in `network_manager.h/.cpp`. rc.1.5.3-wip replaced the `time(NULL) > NTP_MIN_EPOCH` heuristic in `snapshot_state()` with a proper `s_sntp_synced` latch — but the **web-GUI path** in `data_manager.cpp:dm_status_snapshot()` had its own copy of the same heuristic (line 1303). The half-fix produced a confusing operator observation on unit 5C88: LCD correctly showed `Src:RTC`, web GUI incorrectly showed `NTP synced`.
+
+#### What changed
+
+- New `nm_is_sntp_synced()` accessor in `network_manager.h` — returns the canonical `s_sntp_synced` latch. Single-byte read; safe from any task.
+- `data_manager.cpp:1303` switches from `(cfg.current_unix_ts > 1700000000UL)` to `nm_is_sntp_synced()`. Both LCD and web GUI now derive `ntp_synced` from the same source — they agree by construction.
+
+#### What this didn't fix (carried forward to rc.1.5.6)
+
+The honest indicator immediately exposed a latent bug in the periodic NTP resync gate. See rc.1.5.6 for the recovery path.
+
+#### Files changed
+
+| File | Δ |
+|---|---|
+| `firmware/src/network_manager/network_manager.h` | `+ bool nm_is_sntp_synced(void);` |
+| `firmware/src/network_manager/network_manager.cpp` | `extern "C" bool nm_is_sntp_synced(void)` definition |
+| `firmware/src/data_manager/data_manager.cpp` | `+#include "../network_manager/network_manager.h"`; line 1303 swap |
+| `firmware/platformio.ini` | FIRMWARE_VERSION 2.0.0-rc.1.5.3 → 2.0.0-rc.1.5.4 |
+
+#### Build delta vs rc.1.5.3
+
+| Field | rc.1.5.3 | rc.1.5.4 | Δ |
+|---|---:|---:|---:|
+| `greenhouse-controller-*.bin` | 1 356 785 B | 1 356 853 B | +68 B |
+| RAM | 18.9 % | 18.9 % | — |
+
+#### SHA-256
+
+```
+(rc.1.5.4 SHA preserved in bin/2.0.0-rc.1.5.4/release-notes.md)
+```
+
+### `[2.0.0-rc.1.5.3]` — 2026-05-29  (Tmr Svc stack-overflow defenses + drop `-wip`)
+
+Closes the 5C88 production-hardware panic loop observed on 2026-05-29 (22 panics in 6 minutes; FreeRTOS Tmr Svc stack overflow detected at task-switch time). Two defense-in-depth firmware changes plus the version-string graduation from rc.1.5.3-wip.
+
+#### Root cause
+
+Cross-mount evidence: same LOLIN board, same firmware (rc.1.5.3-wip), production hardware = panic loop, soak hardware = stable. Pins the cause on something electrical in the production wiring, not on firmware or board. Coredump decoded under rc.1.5.3-wip's ELF:
+
+```
+***ERROR*** A stack overflow in task Tmr Svc has been detected.
+Crashed task: Tmr Svc (TCB 0x3fcb54ec, prio 1)
+Stack:        992 high-water / 1048 free  →  2 040 B total allocation
+```
+
+An electrically noisy motor-alarm input on `PIN_OPTO_INPUT` (GPIO42) was feeding the ANYEDGE GPIO ISR fast enough to cascade through the IDF GPIO-ISR dispatcher + lwIP/WiFi internal timer events and overflow the 2 KB Tmr Svc stack. The application-side 75 ms task-level debounce can't help because the storm overflows the kernel before the task gets to debounce.
+
+#### Defense 1 — IRAM ISR rate-limit (`relay_controller.cpp`)
+
+New `ALARM_ISR_MIN_INTERVAL_US = 5000`. Edges closer than 5 ms apart are silently dropped at IRAM level via `esp_timer_get_time()` (which is IRAM_ATTR-marked and safe from ISR). Genuine alarm events stay flush against the asserted state for far longer than 5 ms, so they still latch on the first edge.
+
+#### Defense 2 — Kernel-side Tmr Svc stack bump (`sdkconfig.defaults`)
+
+`CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=4096` (was IDF default 2048). Costs ~2 KB additional RAM allocated from heap at Tmr Svc creation time. RAM headroom at the time of change: 18.9 % used → plenty of room.
+
+#### Version stamp
+
+`platformio.ini` drops `-wip` from `FIRMWARE_VERSION` — this is the actual rc.1.5.3 release. rc.1.5.3-wip on the bench was the first cut that landed the NTP-indicator fix without these EMI defenses; preserved in tooling history but not as a tagged release.
+
+#### Files changed
+
+| File | Δ |
+|---|---|
+| `firmware/src/relay_controller/relay_controller.cpp` | `+#include <esp_timer.h>`; `ALARM_ISR_MIN_INTERVAL_US` macro; `s_alarm_last_isr_us` static; rate-limit gate at the top of `isr_motor_alarm()` |
+| `firmware/sdkconfig.defaults` | `CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=4096` |
+| `firmware/platformio.ini` | FIRMWARE_VERSION 2.0.0-rc.1.5.3-wip → 2.0.0-rc.1.5.3 |
+
+#### Build delta
+
+| Field | rc.1.5.3-wip | rc.1.5.3 | Δ |
+|---|---:|---:|---:|
+| `greenhouse-controller-*.bin` | 1 356 801 B | 1 356 785 B | −16 B (slightly shorter version string in `esp_app_desc`) |
+| RAM (static) | 18.9 % | 18.9 % | unchanged (Tmr Svc stack is heap-allocated, doesn't show in static analysis) |
+
+#### SHA-256
+
+```
+(rc.1.5.3 SHA preserved in bin/2.0.0-rc.1.5.3/release-notes.md)
+```
 
 ### `[2.0.0-rc.1.5.2]` — 2026-05-26  (gh#29 follow-up #2 — STANDBY persists across manual-menu `*=back`; clears at admin session timeout)
 

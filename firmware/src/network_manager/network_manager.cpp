@@ -1420,7 +1420,34 @@ void task_network_manager(void *pvParameters)
 
     /* Main loop — periodic state polling. */
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(NET_POLL_MS));
+        /* 2.0.3 (gh#33) — wait NET_POLL_MS for either a tick or a
+         * recovery notification from T14. Notify-driven wakeup short-
+         * circuits the delay when T14 has crossed a fail threshold; the
+         * normal 5 s polling cadence is unchanged. xTaskNotifyWait
+         * clears all bits on read so each notification is consumed
+         * exactly once. */
+        uint32_t notify = 0;
+        (void)xTaskNotifyWait(0, ULONG_MAX, &notify, pdMS_TO_TICKS(NET_POLL_MS));
+
+        if (notify & NM_NOTIFY_RENEW_DHCP) {
+            ESP_LOGW(TAG, "[T10] L3 recovery — DHCP renew (T14 fail-threshold A)");
+            esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+            if (sta != NULL) {
+                (void)esp_netif_dhcpc_stop(sta);
+                vTaskDelay(pdMS_TO_TICKS(100));     /* let lwIP release */
+                (void)esp_netif_dhcpc_start(sta);
+                log_sys(19, 0);                     /* a=19 b=0: DHCP renew */
+            } else {
+                ESP_LOGW(TAG, "[T10] DHCP renew skipped — STA netif handle NULL");
+            }
+        }
+        if (notify & NM_NOTIFY_REASSOCIATE) {
+            ESP_LOGW(TAG, "[T10] L3 recovery — STA reassociate (T14 fail-threshold B)");
+            (void)esp_wifi_disconnect();
+            vTaskDelay(pdMS_TO_TICKS(100));         /* let the radio settle */
+            (void)esp_wifi_connect();
+            log_sys(19, 1);                         /* a=19 b=1: STA reassociate */
+        }
 
         /* alpha.6.29 — operator-toggle AP. Reads NVS wifi/ap_enable; starts
          * or stops the soft-AP on the 0↔1 edge. Also enforces the

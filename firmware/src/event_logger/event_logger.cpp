@@ -20,7 +20,8 @@
  *     log_post() — avoids re-entrant eviction).
  *
  * ### SD log file naming
- * Files are named `YYYYMMDDHHMMSS.csv` where the timestamp encodes the
+ * Files are named `XXXX_YYYYMMDDHHMMSS.csv` where `XXXX` is the 4-hex
+ * unit ID (gh#30, 2.0.1+) and the timestamp encodes the
  * moment the file was created (UTC).  Lexicographic sort = chronological
  * order.  At most SD_MAX_FILES (10) files are retained; the lexicographically
  * oldest is deleted when a rotation would exceed this limit.
@@ -115,16 +116,20 @@ static const char *TAG = "T9_LOG";
 /**
  * @brief Length of an SD filename string including leading '/' and NUL.
  *
- * "/YYYYMMDDHHMMSS.csv" = 19 printable chars + '\0' = 20.  24 gives margin.
+ * 2.0.1 (gh#30) — filenames are now prefixed with the unit ID:
+ *   "/XXXX_YYYYMMDDHHMMSS.csv" = 24 printable chars + '\0' = 25.  32 gives
+ *   margin and aligns the buffer.  Old un-prefixed files (18-char names)
+ *   are still recognised by is_ts_filename() so existing cards keep working.
  */
-#define SD_FILENAME_LEN    24
+#define SD_FILENAME_LEN    32
 
 /**
  * @brief Length of the name-only part (no leading '/') including NUL.
  *
- * "YYYYMMDDHHMMSS.csv" = 18 chars + '\0' = 19.  20 gives margin.
+ * 2.0.1 (gh#30) — "XXXX_YYYYMMDDHHMMSS.csv" = 23 chars + '\0' = 24.
+ * 28 gives margin.  Pre-2.0.1 files (18-char names) still fit.
  */
-#define SD_NAME_ONLY_LEN   20
+#define SD_NAME_ONLY_LEN   28
 
 /** @brief CSV header line written at the start of every new log file. */
 #define CSV_HEADER  "timestamp,type,initiator,ch,param,value_a,value_b\n"
@@ -236,44 +241,86 @@ uint32_t log_take_dropped_count(void)
 /**
  * @brief Return true if @p name matches the timestamp filename pattern.
  *
- * A valid log filename is exactly 14 decimal digits followed by ".csv"
- * (total 18 characters, e.g. "20250607143022.csv").  Files with any other
- * naming pattern — including old sequential-index files (`ghc_NNNN.csv`) —
- * are silently skipped by all scan operations.
+ * 2.0.1 (gh#30) — two valid forms are now recognised:
+ *
+ *  - New prefixed form (since 2.0.1):
+ *      4 hex chars + '_' + 14 decimal digits + ".csv"  (total 23 chars,
+ *      e.g. "5C88_20260529164050.csv")
+ *  - Legacy un-prefixed form (pre-2.0.1):
+ *      14 decimal digits + ".csv"  (total 18 chars,
+ *      e.g. "20250607143022.csv")
+ *
+ * Both forms participate in all scan operations (rotation, oldest-delete,
+ * boot-time resume).  Newly-created files use the prefixed form so the
+ * unit ID is self-evident in cross-unit log archives; existing un-prefixed
+ * files on a card from a prior firmware version continue to be honoured.
+ * Files with any other naming pattern — including very old sequential-
+ * index files (`ghc_NNNN.csv`) — are silently skipped.
  *
  * @param  name  Bare filename (no leading '/'). May be NULL.
- * @return true if @p name is exactly 14 digits + ".csv"; false otherwise.
+ * @return true if @p name matches either accepted form; false otherwise.
  */
 static bool is_ts_filename(const char *name)
 {
-    if (!name || strlen(name) != 18) return false;
-    for (int i = 0; i < 14; i++) {
-        if (!isdigit((unsigned char)name[i])) return false;
+    if (!name) return false;
+    const size_t n = strlen(name);
+
+    /* New prefixed form: 4 hex + '_' + 14 digits + ".csv" = 23 chars. */
+    if (n == 23) {
+        for (int i = 0; i < 4; i++) {
+            if (!isxdigit((unsigned char)name[i])) return false;
+        }
+        if (name[4] != '_') return false;
+        for (int i = 5; i < 19; i++) {
+            if (!isdigit((unsigned char)name[i])) return false;
+        }
+        return strncmp(name + 19, ".csv", 4) == 0;
     }
-    return strncmp(name + 14, ".csv", 4) == 0;
+
+    /* Legacy un-prefixed form: 14 digits + ".csv" = 18 chars. */
+    if (n == 18) {
+        for (int i = 0; i < 14; i++) {
+            if (!isdigit((unsigned char)name[i])) return false;
+        }
+        return strncmp(name + 14, ".csv", 4) == 0;
+    }
+
+    return false;
 }
 
 /**
  * @brief Create an SD filename from the current local time.
  *
- * Produces a path of the form "/YYYYMMDDHHMMSS.csv" in @p buf.  Local time
- * is used so that filenames are human-readable without timezone conversion
- * when browsing the card directly.  T10 keeps the POSIX TZ environment
- * variable up to date from `cfg.tz_str`, so localtime_r() honours the
- * configured zone.
+ * 2.0.1 (gh#30) — produces a path of the form "/XXXX_YYYYMMDDHHMMSS.csv"
+ * in @p buf, where `XXXX` is the unit ID hex (`system_unit_id_str`) and
+ * the timestamp is local time.  The unit-ID prefix lets cross-unit log
+ * archives (e.g. when CSVs from multiple controllers are merged for
+ * analysis) be visually self-attributing without having to inspect the
+ * first BOOT row of each file.
+ *
+ * Local time is used so filenames are human-readable without timezone
+ * conversion when browsing the card directly.  T10 keeps the POSIX TZ
+ * environment variable up to date from `cfg.tz_str`, so localtime_r()
+ * honours the configured zone.
  *
  * @param  buf  Destination buffer; populated with a NUL-terminated path.
- * @param  len  Capacity of @p buf in bytes; 24 is sufficient.
+ * @param  len  Capacity of @p buf in bytes; 32 (SD_FILENAME_LEN) is
+ *              sufficient for the prefixed form.
  *
  * @note Calls dm_get_unix_time() (T4 helper); safe before NTP sync because
- *       the RTC is seeded from NVS at boot.
+ *       the RTC is seeded from NVS at boot.  Calls system_unit_id_str()
+ *       which reads cached eFuse-MAC state; safe before WiFi init.
  */
 static void make_ts_filename(char *buf, size_t len)
 {
+    char id[5] = {0};                                  /* "XXXX" + NUL */
+    system_unit_id_str(id, sizeof(id));
+
     time_t now = (time_t)dm_get_unix_time();
     struct tm tm_local;
     localtime_r(&now, &tm_local);
-    snprintf(buf, len, "/%04d%02d%02d%02d%02d%02d.csv",
+    snprintf(buf, len, "/%s_%04d%02d%02d%02d%02d%02d.csv",
+             id,
              tm_local.tm_year + 1900,
              tm_local.tm_mon  + 1,
              tm_local.tm_mday,

@@ -75,6 +75,7 @@
 
 #include "status_post.h"
 #include "status_json.h"                          /* build_canonical_status_json (a.6.35) */
+#include "../network_manager/network_manager.h"   /* 2.0.3 (gh#33) — NM_NOTIFY_RENEW_DHCP / REASSOCIATE */
 #include "../types/app_types.h"
 #include "../data_manager/data_manager.h"
 #include "../event_logger/event_logger.h"
@@ -136,6 +137,41 @@ static char s_last_log_str[64] = {0};
  * the matching minute. `-1` = none yet this boot.
  */
 static int s_last_daily_min = -1;
+
+/* ============================================================
+ * 2.0.3 (gh#33) — L3-state self-recovery ladder
+ *
+ * On consecutive status-POST failures (modem upstream lost, stale local
+ * DNS, ARP, or DHCP lease), T14 escalates twice before going silent:
+ *
+ *   Threshold A — T14_FAIL_THRESHOLD_A consecutive fails:
+ *     ask T10 (NM_NOTIFY_RENEW_DHCP) to stop+start the STA DHCP client.
+ *     Cheapest L3-state refresh; new lease, new DNS servers, fresh ARP.
+ *
+ *   Threshold B — T14_FAIL_THRESHOLD_B consecutive fails:
+ *     ask T10 (NM_NOTIFY_REASSOCIATE) to disconnect+reconnect the STA.
+ *     Equivalent on the modem side to a fresh client appearing — clears
+ *     stale NAT / DHCP / DNS state for our MAC.
+ *
+ * At default cfg.status_interval_s = 120 s the thresholds correspond to
+ * roughly 10 min and 20 min of failures.  Both are tunable via -D.
+ *
+ * Latches prevent re-firing each threshold within a single fail streak.
+ * On B firing the counter and both latches reset so a still-broken
+ * upstream re-escalates after another T14_FAIL_THRESHOLD_B fails (rather
+ * than going silent past 10 fails).  A single OK POST clears everything.
+ * ============================================================ */
+
+#ifndef T14_FAIL_THRESHOLD_A
+#define T14_FAIL_THRESHOLD_A   5u
+#endif
+#ifndef T14_FAIL_THRESHOLD_B
+#define T14_FAIL_THRESHOLD_B  10u
+#endif
+
+static uint32_t s_consecutive_post_fails = 0u;
+static bool     s_l3_recovery_a_fired    = false;
+static bool     s_l3_recovery_b_fired    = false;
 
 /* ============================================================
  * Public accessors — implementations required by status_post.h
@@ -374,10 +410,54 @@ static bool do_status_post(const cfg_shadow_t *cfg)
         ESP_LOGI(TAG, "[T14] status POST OK: status=%d resp_len=%d elapsed=%lld ms (body=%u B)",
                  status_code, content_len, elapsed_ms, (unsigned)body_len);
         post_log(1, 0);   /* value_a=1 outcome=success, sub=status POST */
+        /* 2.0.3 (gh#33) — clear the consecutive-fail counter + threshold
+         * latches. A single successful POST resets the L3-recovery ladder
+         * to its rest state. */
+        s_consecutive_post_fails = 0u;
+        s_l3_recovery_a_fired    = false;
+        s_l3_recovery_b_fired    = false;
     } else {
         ESP_LOGW(TAG, "[T14] status POST FAIL: err=%s status=%d elapsed=%lld ms",
                  esp_err_to_name(err), status_code, elapsed_ms);
         post_log(0, 0);
+        /* 2.0.3 (gh#33) — L3-state recovery ladder. After repeated POST
+         * failures, ask T10 to refresh the local network state. Driven by
+         * T14's own observation — no separate probe path. Two
+         * escalation thresholds (defaults 5 + 10 fails ≈ 10 + 20 min at
+         * 120 s status_interval_s):
+         *   A: DHCP renew  — fresh lease → new DNS + new ARP
+         *   B: reassociate — full L2+L3 re-handshake → modem-side state
+         *                    reset (NAT, DHCP, DNS) for our MAC
+         * On B firing, reset both latches and the counter so a stuck
+         * outage continues to escalate every fail-streak rather than
+         * stalling silently. */
+        s_consecutive_post_fails++;
+        if (s_consecutive_post_fails >= T14_FAIL_THRESHOLD_A &&
+            !s_l3_recovery_a_fired)
+        {
+            s_l3_recovery_a_fired = true;
+            ESP_LOGW(TAG, "[T14] %u consecutive POST fails — asking T10 for DHCP renew",
+                     (unsigned)T14_FAIL_THRESHOLD_A);
+            if (task_t10 != NULL) {
+                xTaskNotify(task_t10, NM_NOTIFY_RENEW_DHCP, eSetBits);
+            }
+        }
+        if (s_consecutive_post_fails >= T14_FAIL_THRESHOLD_B &&
+            !s_l3_recovery_b_fired)
+        {
+            s_l3_recovery_b_fired = true;
+            ESP_LOGW(TAG, "[T14] %u consecutive POST fails — asking T10 for STA reassociate",
+                     (unsigned)T14_FAIL_THRESHOLD_B);
+            if (task_t10 != NULL) {
+                xTaskNotify(task_t10, NM_NOTIFY_REASSOCIATE, eSetBits);
+            }
+            /* Reset the cycle so a still-broken upstream re-escalates
+             * after another T14_FAIL_THRESHOLD_B fails rather than going
+             * silent. */
+            s_consecutive_post_fails = 0u;
+            s_l3_recovery_a_fired    = false;
+            s_l3_recovery_b_fired    = false;
+        }
     }
     return ok;
 }

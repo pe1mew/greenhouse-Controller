@@ -284,20 +284,29 @@ size_t build_canonical_status_json(char *buf, size_t cap,
     if (ok && (expose_mask & STATUS_EXPOSE_SYSTEM)) {
         char unit_id_str[8] = {0};
         system_unit_id_str(unit_id_str, sizeof(unit_id_str));
+        /* 2.0.2 (gh#31) — sd_mounted / sd_free_mb / sd_size_mb appended
+         * at the end of the system block so remote observers (e.g. the
+         * rfsee.net dashboard) can detect SD failures without polling
+         * /api/sd/status. Same numerical convention as /api/sd/status
+         * (MB-rounded, mount-state boolean). */
         ok = ok && append(buf, cap, &pos,
             ",\"system\":{\"unit_id\":\"%s\","
             "\"wifi_ip\":\"%s\",\"wifi_rssi_dbm\":%d,"
             "\"ntp_synced\":%s,\"fw_ver\":\"%s\","
             "\"asset_version\":\"%s\","
             "\"uptime_s\":%lu,\"ts_unix\":%lu,"
-            "\"time_iso\":\"%s\",\"eg1\":%lu}",
+            "\"time_iso\":\"%s\",\"eg1\":%lu,"
+            "\"sd_mounted\":%s,\"sd_free_mb\":%lu,\"sd_size_mb\":%lu}",
             unit_id_str,
             s->ip, (int)s->rssi,
             s->ntp_synced ? "true" : "false",
             s->fw, s->assets,
             (unsigned long)s->uptime_s,
             (unsigned long)s->ts_unix, s->time_iso,
-            (unsigned long)s->eg1_bits);
+            (unsigned long)s->eg1_bits,
+            s->sd_mounted ? "true" : "false",
+            (unsigned long)s->sd_free_mb,
+            (unsigned long)s->sd_size_mb);
     }
 
     /* update_interval_s — always emitted. */

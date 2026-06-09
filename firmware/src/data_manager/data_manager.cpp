@@ -32,6 +32,7 @@
 #include "nvs_config.h"
 #include "ds1307_rtc.h"
 #include "littlefs_storage.h"
+#include "sd_storage.h"               /* 2.0.2 (gh#31) — SD state in status JSON */
 #include "../system_id/system_id.h"   /* unit_id at boot (gh#17, since 1.18.3) */
 
 /* alpha.6.7 — dropped vestigial #include <Arduino.h> and <WiFi.h>.
@@ -1369,6 +1370,23 @@ void dm_status_snapshot(status_snapshot_t *out)
      * undisturbed. */
     EventBits_t eg1 = xEventGroupGetBits(EG1);
     out->eg1_bits = (uint32_t)eg1;
+
+    /* 2.0.2 (gh#31) — SD state for the remote observer. Mount state plus
+     * MB-rounded total/free capacity. The same three fields are also
+     * served by /api/sd/status; emitting them through the canonical
+     * status JSON puts them in the same payload that T14 ships to
+     * rfsee.net every cfg.status_interval_s seconds — so a server-side
+     * watchdog can detect "SD unmounted" or "SD nearly full" without
+     * logging into the controller. */
+    out->sd_mounted = storage_sd_available();
+    if (out->sd_mounted) {
+        const uint64_t MIB = 1024ULL * 1024ULL;
+        out->sd_free_mb = (uint32_t)(storage_sd_free_bytes()  / MIB);
+        out->sd_size_mb = (uint32_t)(storage_sd_total_bytes() / MIB);
+    } else {
+        out->sd_free_mb = 0u;
+        out->sd_size_mb = 0u;
+    }
     if      (eg1 & EG1_BIT_MOTOR_ALARM)   { out->mode = MODE_MOTOR_ALARM;   }
     else if (eg1 & EG1_BIT_WIND_OVERRIDE) { out->mode = MODE_WIND_OVERRIDE; }
     else if (eg1 & EG1_BIT_STANDBY)       { out->mode = MODE_STANDBY;      }

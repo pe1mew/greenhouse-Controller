@@ -466,6 +466,16 @@ typedef struct {
                               *   `fw` above (same alpha-tag-length concern). */
     uint32_t uptime_s;       /**< Seconds since boot */
 
+    /* SD card — 2.0.2 (gh#31). Exposed via the status JSON so a remote
+     * observer can detect SD failures (mount failure, growing fullness,
+     * etc.) without having to log into the controller. Populated by
+     * dm_status_snapshot() from storage_sd_available() and
+     * storage_sd_free_bytes() / storage_sd_total_bytes(). When the card
+     * is not mounted, free_mb and size_mb are both 0. */
+    bool     sd_mounted;
+    uint32_t sd_free_mb;
+    uint32_t sd_size_mb;
+
     /* Top-level — always emitted regardless of expose mask */
     uint16_t update_interval_s;  /**< Cycle the controller advertises to the dashboard */
 } status_snapshot_t;

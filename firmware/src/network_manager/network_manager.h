@@ -117,6 +117,37 @@ nm_wifi_status_t nm_wifi_init_blocking(uint32_t connect_timeout_ms);
 void task_network_manager(void *pvParameters);
 
 /**
+ * @brief Task-notify bit asking T10 to renew the STA DHCP lease (2.0.3, gh#33).
+ *
+ * Fired by `do_status_post()` (T14) after `T14_FAIL_THRESHOLD_A` (default 5)
+ * consecutive status-POST failures. On receipt, T10 calls
+ * `esp_netif_dhcpc_stop()` + `esp_netif_dhcpc_start()` on the STA netif —
+ * a fresh DHCP bind reissues DNS-server addresses + clears stale gateway
+ * ARP state, which is the cheapest recovery action available without
+ * cycling the WiFi link layer. Independent of `cfg.status_interval_s`.
+ *
+ * Also emits a `LOG_SYSTEM value_a=19, value_b=0` audit row.
+ */
+#define NM_NOTIFY_RENEW_DHCP   (1u << 0)
+
+/**
+ * @brief Task-notify bit asking T10 to reassociate the STA (2.0.3, gh#33).
+ *
+ * Fired by `do_status_post()` after `T14_FAIL_THRESHOLD_B` (default 10)
+ * consecutive status-POST failures — i.e. when an earlier DHCP-renew did
+ * not clear the symptom. T10 calls `esp_wifi_disconnect()` +
+ * `esp_wifi_connect()` to force the full L2 → L3 setup from scratch,
+ * which from the AP / modem's perspective looks the same as a fresh
+ * client appearing (NAT table / DHCP lease / DNS resolver all
+ * re-initialise on the modem side). Equivalent to the manual
+ * modem-power-cycle the 2026-06-02 5C88 outage required, but from the
+ * controller's side and without operator intervention.
+ *
+ * Also emits a `LOG_SYSTEM value_a=19, value_b=1` audit row.
+ */
+#define NM_NOTIFY_REASSOCIATE  (1u << 1)
+
+/**
  * @brief Has SNTP actually completed since boot? (rc.1.5.4)
  *
  * Returns the `s_sntp_synced` module-scope latch from network_manager.cpp.
