@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# .githooks/pre-commit — guards against committing build-time artefacts.
+#
+# Currently enforces ONE rule:
+#
+#   firmware/data/manifest.json — must be staged in placeholder form,
+#       i.e. exactly  {"asset_version":"{{ASSET_VERSION}}","checksum":""}
+#       (no trailing newline). The build script `bin/build_release.ps1`
+#       overwrites this file with the literal version on every release
+#       build, so the placeholder discipline survives only if commits
+#       restore the placeholder. See gh#9.
+#
+# To enable:    git config core.hooksPath .githooks       (one-time, per clone)
+# To bypass:    git commit --no-verify  (do not use casually; see below)
+#
+# When this hook trips, the fix is almost always
+#   git checkout firmware/data/manifest.json
+# followed by re-staging whatever else you intended to commit.
+
+set -euo pipefail
+
+placeholder='{"asset_version":"{{ASSET_VERSION}}","checksum":""}'
+manifest='firmware/data/manifest.json'
+
+# Only check if the manifest is actually staged in this commit.
+if ! git diff --cached --name-only | grep -qx "$manifest"; then
+    exit 0
+fi
+
+# Read the staged content (':<path>' addresses the index, not the working tree).
+staged=$(git show ":$manifest")
+
+if [ "$staged" != "$placeholder" ]; then
+    cat >&2 <<EOF
+✗ pre-commit: $manifest is staged in stamped form, not the placeholder.
+
+  staged:      $staged
+  expected:    $placeholder
+
+  This usually means \`bin/build_release.ps1\` rewrote it for a release
+  build and the result was accidentally re-staged. The release artefacts
+  in bin/<version>/ already capture the literal-version manifest; the
+  in-tree file should stay as the placeholder.
+
+  Fix:
+    git restore --staged $manifest          # un-stage
+    git checkout $manifest                  # restore from HEAD (placeholder)
+    git add <other-files-you-meant-to-commit>
+    git commit ...
+
+  Override (use sparingly, only when intentionally bumping the baseline):
+    git commit --no-verify
+
+  Background: gh#9
+EOF
+    exit 1
+fi
+
+exit 0
