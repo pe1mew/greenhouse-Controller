@@ -1,4 +1,4 @@
-# GitHub integration
+# Token setup for bin/gh_issue.py
 
 This directory holds the local-only GitHub Personal Access Token used by
 `bin/gh_issue.py` to read and write issues on
