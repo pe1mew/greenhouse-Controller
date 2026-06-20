@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.1.0] — 2026-06-20  (gh#35 — independent wind averaging window)
+
+Introduces `avg_win_wind`: a dedicated, admin-only sliding-average window for wind speed and direction, independent of the temperature window (`avg_win_t`). Previously wind shared `avg_win_t`, making it impossible to tune climate averaging and wind-safety averaging independently. Default value 6 min (matches the old shared default) — existing units behave unchanged after OTA until the administrator reconfigures the parameter.
+
+### What changed
+
+- **`firmware/src/sensor_poll/sensor_poll.cpp:423`** — `win_w = win_t` replaced by `win_w = calc_win(cfg.avg_win_wind, poll_s_cfg)`. Wind averaging (speed + direction) now reads its own dedicated window parameter.
+- **`firmware/src/data_manager/data_manager.cpp`** — `K_AVG_WIN_WIND` key constant, `nvs_load_wind()` load, `cfg_clamp()` range-check, `ns_key_to_log_id()` log-ID mapping, and `apply_config_update()` live-update handler; all follow the existing pattern for wind-namespace keys.
+- **`firmware/src/data_manager/data_manager.h`** — `avg_win_wind` field added to `cfg_shadow_t`.
+- **`firmware/src/types/app_types.h`** — `LOG_PARAM_AVG_WIN_WIND = 38` added.
+- **`firmware/config/cfg_defaults.h`** — `DEF_AVG_WIN_WIND = 6` added.
+- **`firmware/src/web_server/web_server.cpp`** — `avg_win_wind` field added to `GET /api/config` JSON and to the limits block. NOT added to `FARMER_WIND_KEYS[]` → admin-only write by structural exclusion.
+- **`firmware/data/index.html`** — Wind tab gains "Wind avg window" slider-row (`admin-only` CSS class).
+- **`firmware/data/app.js`** — `loadConfig()` populates new slider; `linkAllSliders()` wires up slider↔number sync.
+- **`firmware/src/sensor_poll/sensor_poll.h`** — comment updated: T/wind/RH now use independent windows.
+
+### Access control
+
+`avg_win_wind` is absent from `FARMER_WIND_KEYS[]`. The existing `is_farmer_key()` guard in `POST /api/config` returns false → `403 Forbidden` for farmer sessions. No new enforcement code required.
+
+### Migration note
+
+First boot after OTA seeds `avg_win_wind = 6` from `DEF_AVG_WIN_WIND` (NVS key absent → `_or_default` fills it in RAM). If the administrator previously set `avg_win_t` to a non-default value, wind averaging resets to 6 min (it does not inherit the old value). Wind safety behaviour is unchanged until the administrator explicitly reconfigures `avg_win_wind`.
+
+---
+
 ## [2.0.3] — 2026-06-09  (gh#33 — T14/T10 L3 self-recovery ladder)
 
 T14 status-POST failures now drive a two-step recovery ladder against local L3 state — DHCP renew first, then full STA reassociate — eliminating the operator-intervention requirement that surfaced in the 2026-06-02 5C88 modem-NAT-stuck outage. After ~10 min of consecutive POST failures T10 stops+starts its DHCP client; after ~20 min it disconnects+reconnects the STA. Either action is enough to refresh the modem's local NAT/DHCP/DNS state for the controller's MAC, mimicking a manual modem power-cycle from the controller's side.

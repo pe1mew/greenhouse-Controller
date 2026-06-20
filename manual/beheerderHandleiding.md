@@ -197,7 +197,7 @@ De sensoren zijn **digitaal** en communiceren met de kascontroller via het **Mod
 **Effect van elke parameter**:
 
 - **Hysteresis**: Dit is de bandbreedte rondom een setpoint waarbinnen niet wordt geschakeld. Voorbeeld bij `hyst_t = 5`: bij `t_max_dag = 28 °C` opent een raam wanneer T ≥ 28 °C en sluit het pas weer wanneer T ≤ 23 °C. Voorkomt continu in/uit-schakelen rond een setpoint.
-- **Glijdend gemiddelde**: meetwaarden worden over de venstertijd in minuten gemiddeld voordat ze met een setpoint worden vergeleken. Een groter venster maakt de regeling rustiger en minder gevoelig voor pieken (een korte zonnestraal op de sensor); een kleiner venster reageert sneller. De live waarden op het LCD display toont de **ruwe** (laatste) meetwaarde zodat de gebruiker altijd het actuele resultaat ziet.
+- **Glijdend gemiddelde**: meetwaarden worden over de venstertijd in minuten gemiddeld voordat ze met een setpoint worden vergeleken. Een groter venster maakt de regeling rustiger en minder gevoelig voor pieken (een korte zonnestraal op de sensor); een kleiner venster reageert sneller. De live waarden op het LCD display toont de **ruwe** (laatste) meetwaarde zodat de gebruiker altijd het actuele resultaat ziet. Windsnelheid en -richting gebruiken een eigen venster (`avg_win_wind`, alleen instelbaar door de Beheerder in het Wind-tabblad).
 - **Vochtregeling aan/uit**: vochtregeling uit; alleen de temperatuur wordt geregeld. Dit kan zinvol zijn bij teelten waarbij luchtvochtigheid niet relevant is of wanneer de luchtvochtiheid sensor defect is.
 - **Conflict-prioriteit**:
   - `0` — Temperature first (Temperatuur regeling krijgt voorrang)
@@ -313,7 +313,7 @@ Dezelfde route als voor de boer: lees IP-adres af van het LCD, het WiFi-scherm, 
 |---|---|---|
 | **Status** | Iedereen | Live Temparatuur, Luchtvochtigheid, wind snelheid en richting, raamposities, mode, alarmen, klok, WiFi, SD-kaart informatie |
 | **Climate** | Boer + Beheerder | Setpoints; *Beheerder ziet ook hyst, avg_win, rh_ctrl_en* |
-| **Wind** | Boer + Beheerder | wind_prot_en; *Beheerder ziet ook v_max, dir_excl_low/high* |
+| **Wind** | Boer + Beheerder | wind_prot_en; *Beheerder ziet ook v_max, dir_excl_low/high, avg_win_wind* |
 | **Motors** | **Beheerder** | M1/M2/M3 travel + dwell open/close |
 | **System** | **Beheerder** | Sessie-timeout, AP-config, WiFi-client, NTP/timezone, locatie coordinaten, Over the Air Update (OTA) |
 | **Access** | **Beheerder** | PIN-management voor Farmer + Beheerder |
@@ -575,6 +575,9 @@ Per setpoint: schuifregelaar + nummerveld + **Apply**-knop.
 | Wind speed max | 6 | 1–30 | m/s |
 | Dir excl. zone low | — | 0–359 | ° |
 | Dir axcl. zone high | — | 0–359 | ° |
+| Wind gemiddelde window | 6 | 1–30 | min. |
+
+> **Wind gemiddelde window**: het aantal minuten waarover de windsnelheid en -richting worden gemiddeld voordat ze worden vergeleken met `v_max`. Een korter venster reageert sneller op windstoten; een langer venster dempt toevallige pieken. Standaard 6 min. (12 metingen bij 30 s poll-interval). Onafhankelijk van het klimaat-gemiddelde (`avg_win_t`).
 
 > **Wind-uitsluitings-zone**: windrichting waarbij de wind extra gevaarlijk is (bijvoorbeeld omdat ramen rechtstreeks in deze richting staan). Wind binnen deze hoek triggert wind-override ongeacht windsnelheid.
 

@@ -26,8 +26,8 @@
  *
  * ## Sliding average
  *  Window size (samples) = avg_win_x_min × 60 / poll_interval_s,
- *  clamped [1, 360].  T and wind share the same window (avg_win_t);
- *  RH uses avg_win_rh.  If the window size changes (config update) the
+ *  clamped [1, 360].  T uses avg_win_t; wind uses avg_win_wind; RH uses
+ *  avg_win_rh — all independent.  If the window size changes (config update) the
  *  context is reset and re-warms over the next N poll cycles.
  *
  *  Wind direction is averaged using unit-vector decomposition (atan2) to

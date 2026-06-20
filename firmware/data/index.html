@@ -267,6 +267,13 @@
       <button onclick="postCfg('wind','dir_excl_high','cfg-dir-excl-high','int')">Apply</button>
       <span class="save-ok" id="fb-dir-excl-high"></span>
     </div>
+    <div class="slider-row admin-only">
+      <label data-tip="Length of the sliding average for wind speed and direction before comparing with v_max. Lower = faster gust response; higher = fewer false triggers from brief spikes. Independent of the temperature averaging window.">Wind avg window (min)</label>
+      <input type="range"  id="cfg-avg-win-wind-sl" step="1">
+      <input type="number" id="cfg-avg-win-wind"    step="1" class="short">
+      <button onclick="postCfg('wind','avg_win_wind','cfg-avg-win-wind','int')">Apply</button>
+      <span class="save-ok" id="fb-avg-win-wind"></span>
+    </div>
   </div>
 
   <!-- Motors tab (admin only) -->

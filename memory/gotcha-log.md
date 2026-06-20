@@ -48,7 +48,7 @@ When something weird happens, check here BEFORE debugging from scratch. Entries 
 
 **Fix:** Use the full path: `"$HOME/.platformio/penv/Scripts/platformio.exe" run -e lolin_s3`. Same trick for `python.exe` from that venv when scripts need the PIO-bundled Python.
 
-## 2026-05-14 — `ets_loader.c` crash loop after greenfield flash (qio vs dio)
+## 2026-05-14 — `ets_loader.c` crash loop after greenfield flash (qio vs dio) [RESOLVED]
 
 **Problem:** Full-chip flash succeeds; device boots into an infinite `ets_loader.c` error loop and won't run user code.
 
@@ -70,7 +70,7 @@ esptool.py --chip esp32s3 --port COMx erase_region 0x620000 0x10000
 ```
 Encoded in [firmware/partitions.csv](../firmware/partitions.csv) header comment. gh#21 / 1.19.0.
 
-## 2026-04-XX — `manifest.json` placeholder accidentally shipped as literal version (gh#9)
+## 2026-04-XX — `manifest.json` placeholder accidentally shipped as literal version (gh#9) [RESOLVED]
 
 **Problem:** OTA goes out with a stale `asset_version` (last release's version, not the current one).
 
@@ -78,7 +78,7 @@ Encoded in [firmware/partitions.csv](../firmware/partitions.csv) header comment.
 
 **Fix:** Build script Step 3.5 restores the placeholder after Step 3. `.githooks/pre-commit` refuses commits where `manifest.json` is in literal form. Both are necessary; either alone is bypassable.
 
-## 2026-XX-XX — Reboot from FreeRTOS timer service task overflows its stack
+## 2026-XX-XX — Reboot from FreeRTOS timer service task overflows its stack [RESOLVED — 2.0.0-rc.1.2]
 
 **Problem:** Scheduled reboot via a software-timer callback calling `esp_restart()` directly produces a stack-overflow panic during reboot.
 
@@ -86,7 +86,7 @@ Encoded in [firmware/partitions.csv](../firmware/partitions.csv) header comment.
 
 **Fix:** Timer callback spawns a dedicated `reboot_worker_task` with a 4 KB stack; that task calls `esp_restart()`. `firmware/src/ota_manager/ota_manager.cpp` — `reboot_timer_cb` and `reboot_worker_task`. Landed in 2.0.0-rc.1.2.
 
-## 2026-XX-XX — Dual LittleFS partitions need separate VFS basePaths
+## 2026-XX-XX — Dual LittleFS partitions need separate VFS basePaths [RESOLVED]
 
 **Problem:** Mounting `lfs0` and `lfs1` to the same VFS basePath (`/lfs`) causes the second mount to overlay the first; assets are read from the wrong partition.
 
@@ -94,7 +94,7 @@ Encoded in [firmware/partitions.csv](../firmware/partitions.csv) header comment.
 
 **Fix:** Each partition gets its own basePath: `/lfsa` for `lfs0`, `/lfsb` for `lfs1`. The active-partition resolver picks via the running app bank. Encoded in `~/.claude/projects/.../memory/project_littlefs_basepath.md`.
 
-## 2026-05-XX — PowerShell 5.1 with `$ErrorActionPreference='Stop'` treats `pio` stderr warnings as fatal
+## 2026-05-XX — PowerShell 5.1 with `$ErrorActionPreference='Stop'` treats `pio` stderr warnings as fatal [RESOLVED — rc.1.3]
 
 **Problem:** `bin/build_release.ps1` exits with a terminating error even when `pio` itself returned exit code 0 — because PIO emits `-Wmissing-field-initializers` warnings to stderr and PS treats those as terminating errors under `EAP=Stop`.
 

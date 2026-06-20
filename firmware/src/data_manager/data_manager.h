@@ -115,6 +115,7 @@ typedef struct {
     int16_t  avg_win_rh;     /**< RH sliding-average window (minutes, C14) */
 
     /* ---- Wind (NVS_NS_WIND = "wind") ---- */
+    int16_t  avg_win_wind;   /**< Wind sliding-average window (minutes, C38) */
     int16_t  v_max;          /**< Wind speed threshold   (m/s, C15)  */
     int16_t  dir_excl_low;   /**< Excl. zone lower bound (°,  C16)  */
     int16_t  dir_excl_high;  /**< Excl. zone upper bound (°,  C17)  */

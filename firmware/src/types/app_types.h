@@ -198,6 +198,7 @@ typedef enum {
     LOG_PARAM_CR_PRIORITY  = 12,  /**< C12 cr_priority */
     LOG_PARAM_AVG_WIN_T    = 13,  /**< C13 avg_win_t */
     LOG_PARAM_AVG_WIN_RH   = 14,  /**< C14 avg_win_rh */
+    LOG_PARAM_AVG_WIN_WIND = 38,  /**< C38 avg_win_wind */
     LOG_PARAM_V_MAX        = 15,  /**< C15 v_max */
     LOG_PARAM_DIR_EXCL_LOW = 16,  /**< C16 dir_excl_low */
     LOG_PARAM_DIR_EXCL_HI  = 17,  /**< C17 dir_excl_high */

@@ -59,6 +59,7 @@
 #define DEF_DIR_EXCL_LOW    0   /**< No exclusion zone by default */
 #define DEF_DIR_EXCL_HIGH   0
 #define DEF_WIND_PROT_EN    1   /**< Wind override enabled by default */
+#define DEF_AVG_WIN_WIND    6   /**< Wind sliding-average window (min) — matches DEF_AVG_WIN_T for OTA backward compat */
 
 /* ── Motor — full-travel times (seconds) ────────────────────────────────── */
 /* Written to NVS on first boot; adjustable via web GUI (FR-CF05, admin).

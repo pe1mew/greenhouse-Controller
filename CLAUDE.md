@@ -68,5 +68,5 @@ Production deployment at Herenboeren Willemshoeve (Soest). Field units in active
 | `bin/<version>/` | Per-release archive: bin, zip, bootloader, partitions, elf, map, release-notes |
 | `manual/` | Operator manuals (Dutch: boer + beheerder + admin) |
 | `model/` | Greenhouse simulation model + scenario inputs |
-| `log/` | `logparser.py`, `plot_daily.py`, parsed historical CSVs |
+| `log/` | `logparser.py` + `logparser.md`, example log CSV + parsed output |
 | `memory/` | L3/L4 layer — `MEMORY.md` index, `architecture.md`, `gotcha-log.md` |

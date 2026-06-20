@@ -462,7 +462,7 @@ De beheerder moet de kascontroller eerst hebben verbonden met een wifi-netwerk. 
 |---|---|---|
 | **Status** | Iedereen (zonder inloggen) | temperatuur, luchtvochtigheid, wind, raamposities, mode, alarmen, klok, wifi, SD-kaart |
 | **Climate** | Boer + Beheerder | Setpoints voor dag en nacht, vochtregeling aan/uit, conflict-prioriteit |
-| **Wind** | Boer + Beheerder | Windbeveiliging aan/uit; windgrenzen instellen is alleen voor de Beheerder |
+| **Wind** | Boer + Beheerder | Windbeveiliging aan/uit; windgrenzen en windgemiddelde window instellen is alleen voor de Beheerder |
 
 
 ### Sensorhistorie

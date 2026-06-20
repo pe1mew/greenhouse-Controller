@@ -460,6 +460,7 @@ function loadConfig() {
       setVal('cfg-v-max',          cfg.v_max);
       setVal('cfg-dir-excl-low',   cfg.dir_excl_low);
       setVal('cfg-dir-excl-high',  cfg.dir_excl_high);
+      setVal('cfg-avg-win-wind',   cfg.avg_win_wind);
       setVal('cfg-wind-prot-en',   String(cfg.wind_prot_en));
       setVal('cfg-travel-m1',       cfg.travel_s && cfg.travel_s[0]);
       setVal('cfg-travel-m2',       cfg.travel_s && cfg.travel_s[1]);
@@ -1127,7 +1128,7 @@ function linkSlider(numId) {
     'cfg-t-max-ngt', /* 'cfg-t-min-ngt', HEATING CONTROL NOT IMPLEMENTED — preserved for future use */
     'cfg-rh-max-ngt', 'cfg-rh-min-ngt',
     'cfg-hyst-t', 'cfg-hyst-rh', 'cfg-avg-win-t', 'cfg-avg-win-rh',
-    'cfg-v-max', 'cfg-dir-excl-low', 'cfg-dir-excl-high',
+    'cfg-v-max', 'cfg-dir-excl-low', 'cfg-dir-excl-high', 'cfg-avg-win-wind',
     'cfg-travel-m1', 'cfg-travel-m2', 'cfg-travel-m3',
     'cfg-dwell-open-m1', 'cfg-dwell-open-m2', 'cfg-dwell-open-m3',
     'cfg-dwell-close-m1', 'cfg-dwell-close-m2', 'cfg-dwell-close-m3',

@@ -420,7 +420,7 @@ void task_sensor_poll(void *pvParameters)
 
         const uint16_t win_t  = calc_win(cfg.avg_win_t,  poll_s_cfg);
         const uint16_t win_rh = calc_win(cfg.avg_win_rh, poll_s_cfg);
-        const uint16_t win_w  = win_t;   /* wind window tracks temperature window */
+        const uint16_t win_w  = calc_win(cfg.avg_win_wind, poll_s_cfg);
 
         /* Reset contexts on window-size change to avoid stale sums */
         if (win_t != s_win_t_last) {

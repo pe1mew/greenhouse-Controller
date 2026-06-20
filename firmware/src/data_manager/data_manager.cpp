@@ -80,6 +80,7 @@ static const char K_AVG_WIN_T[]    = "avg_win_t";
 static const char K_AVG_WIN_RH[]   = "avg_win_rh";
 
 /* Wind namespace */
+static const char K_AVG_WIN_WIND[]   = "avg_win_wind";
 static const char K_V_MAX[]          = "v_max";
 static const char K_DIR_EXCL_LOW[]   = "dir_excl_low";
 static const char K_DIR_EXCL_HIGH[]  = "dir_excl_high";
@@ -419,6 +420,7 @@ static void nvs_load_climate(void)
 static void nvs_load_wind(void)
 {
     int32_t v;
+    nvs_cfg_get_i32_or_default(NVS_NS_WIND, K_AVG_WIN_WIND,  DEF_AVG_WIN_WIND,  &v); s_cfg.avg_win_wind  = (int16_t)v;
     nvs_cfg_get_i32_or_default(NVS_NS_WIND, K_V_MAX,         DEF_V_MAX,         &v); s_cfg.v_max         = (int16_t)v;
     nvs_cfg_get_i32_or_default(NVS_NS_WIND, K_DIR_EXCL_LOW,  DEF_DIR_EXCL_LOW,  &v); s_cfg.dir_excl_low  = (int16_t)v;
     nvs_cfg_get_i32_or_default(NVS_NS_WIND, K_DIR_EXCL_HIGH, DEF_DIR_EXCL_HIGH, &v); s_cfg.dir_excl_high = (int16_t)v;
@@ -575,7 +577,8 @@ static int32_t cfg_clamp(const char *ns, const char *key, int32_t v)
         else if (strcmp(key, K_AVG_WIN_RH) == 0) _CLAMP(CFG_MIN_AVG_WIN,    CFG_MAX_AVG_WIN);
 
     } else if (strcmp(ns, NVS_NS_WIND) == 0) {
-        if      (strcmp(key, K_V_MAX)         == 0) _CLAMP(CFG_MIN_V_MAX, CFG_MAX_V_MAX);
+        if      (strcmp(key, K_AVG_WIN_WIND)  == 0) _CLAMP(CFG_MIN_AVG_WIN, CFG_MAX_AVG_WIN);
+        else if (strcmp(key, K_V_MAX)         == 0) _CLAMP(CFG_MIN_V_MAX, CFG_MAX_V_MAX);
         else if (strcmp(key, K_DIR_EXCL_LOW)  == 0) _CLAMP(CFG_MIN_DIR,   CFG_MAX_DIR);
         else if (strcmp(key, K_DIR_EXCL_HIGH) == 0) _CLAMP(CFG_MIN_DIR,   CFG_MAX_DIR);
 
@@ -647,6 +650,7 @@ static log_param_id_t ns_key_to_log_id(const char *ns, const char *key,
         return LOG_PARAM_NONE;
     }
     if (strcmp(ns, NVS_NS_WIND) == 0) {
+        if (strcmp(key, K_AVG_WIN_WIND)  == 0) return LOG_PARAM_AVG_WIN_WIND;
         if (strcmp(key, K_V_MAX)         == 0) return LOG_PARAM_V_MAX;
         if (strcmp(key, K_DIR_EXCL_LOW)  == 0) return LOG_PARAM_DIR_EXCL_LOW;
         if (strcmp(key, K_DIR_EXCL_HIGH) == 0) return LOG_PARAM_DIR_EXCL_HI;
@@ -770,7 +774,8 @@ static bool apply_config_update(const config_update_t *upd)
         else { updated = false; }
 
     } else if (strcmp(ns_str, NVS_NS_WIND) == 0) {
-        if      (strcmp(key_str, K_V_MAX)         == 0) { old_val = s_cfg.v_max;         s_cfg.v_max         = v16; }
+        if      (strcmp(key_str, K_AVG_WIN_WIND)  == 0) { old_val = s_cfg.avg_win_wind;  s_cfg.avg_win_wind  = v16; }
+        else if (strcmp(key_str, K_V_MAX)         == 0) { old_val = s_cfg.v_max;         s_cfg.v_max         = v16; }
         else if (strcmp(key_str, K_DIR_EXCL_LOW)  == 0) { old_val = s_cfg.dir_excl_low;  s_cfg.dir_excl_low  = v16; }
         else if (strcmp(key_str, K_DIR_EXCL_HIGH) == 0) { old_val = s_cfg.dir_excl_high; s_cfg.dir_excl_high = v16; }
         else if (strcmp(key_str, K_WIND_PROT_EN)  == 0) { old_val = s_cfg.wind_prot_en;  s_cfg.wind_prot_en  = v16; }
