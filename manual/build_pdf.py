@@ -126,12 +126,17 @@ def make_rtf(tmp_html, rtf_path):
     import win32com.client
     word = win32com.client.Dispatch("Word.Application")
     word.Visible = False
+    word.DisplayAlerts = 0          # wdAlertsNone — suppress all dialogs
     try:
-        doc = word.Documents.Open(tmp_html)
-        doc.SaveAs(rtf_path, FileFormat=WD_FORMAT_RTF)
-        doc.Close(False)
+        doc = word.Documents.Open(
+            tmp_html,
+            ConfirmConversions=False,
+            ReadOnly=False,
+        )
+        doc.SaveAs2(rtf_path, FileFormat=WD_FORMAT_RTF)
+        doc.Close(SaveChanges=False)
     finally:
-        word.Quit()
+        word.Quit(SaveChanges=False)
     if os.path.exists(rtf_path):
         return os.path.getsize(rtf_path) // 1024
     raise RuntimeError("RTF not created")
