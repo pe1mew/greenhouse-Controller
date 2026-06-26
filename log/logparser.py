@@ -79,8 +79,8 @@ _PARAM = {
     10: ("hyst_rh",         "%"),
     11: ("rh_ctrl_en",      ""),
     12: ("cr_priority",     ""),
-    13: ("avg_win_t",       "samples"),
-    14: ("avg_win_rh",      "samples"),
+    13: ("avg_win_t",       "min"),
+    14: ("avg_win_rh",      "min"),
     15: ("v_max",           "m/s"),
     16: ("dir_excl_low",    "deg"),
     17: ("dir_excl_high",   "deg"),
@@ -108,6 +108,7 @@ _PARAM = {
     35: ("log_upload_m",    "min"),
     36: ("log_upload_rot",  ""),
     37: ("wind_prot_en",    ""),
+    38: ("avg_win_wind",    "min"),   # 2.1.0 — gh#35 independent wind averaging window
 }
 
 # Param IDs whose value semantics are "field was set/changed" (value_a=1
@@ -520,7 +521,8 @@ def _decode_system(row: dict) -> str:
 
     Subtypes:
       a=-1, b=count                   Q3 drop-overflow (T9 synthetic)
-      a=0,  b=0/1/2/3 (initiator=WEB) T14 outcome / diagnostic skip
+      a=0,  b=0/1/2/3 (initiator=WEB) T14 outcome / diagnostic skip (a=0 = no HTTP response)
+      a=HTTP 100-599, b=1 (initiator=WEB) T14 log upload HTTP error code (gh#34, 2.1.1+)
       a=1,  b=0/1                     STA (WiFi client) connected/disconnected
       a=2,  b=0/1                     NTP timeout / synced
       a=3,  b=0/1                     AP stopped / started
@@ -571,6 +573,10 @@ def _decode_system(row: dict) -> str:
             if vb == 1:
                 return "T14 log upload: success"
             return f"T14 SYSTEM event: a=1 b={vb} (Web)"
+
+        # T14 log upload HTTP error (gh#34, 2.1.1+): value_a holds HTTP status code
+        if 100 <= va <= 599 and initiator == "WEB" and vb == 1:
+            return f"T14 log upload: HTTP {va}"
 
         # ---------------------------------------------------------------
         # value_a=1..4 — network events (initiator=SYS, posted by T10)

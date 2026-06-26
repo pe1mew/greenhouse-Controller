@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.1.1] — 2026-06-26  (gh#34 — HTTP status code in log-upload audit row)
+
+Records the server's HTTP response code (e.g. 413) in the SD audit row when T14's log upload is rejected. Previously all upload failures logged `value_a=0`; now `value_a` holds the HTTP status code if a server response was received, or `0` for pre-HTTP failures (connection, write, heap). `logparser.py` updated to decode and display the code.
+
+---
+
 ## [2.1.0] — 2026-06-20  (gh#35 — independent wind averaging window)
 
 Introduces `avg_win_wind`: a dedicated, admin-only sliding-average window for wind speed and direction, independent of the temperature window (`avg_win_t`). Previously wind shared `avg_win_t`, making it impossible to tune climate averaging and wind-safety averaging independently. Default value 6 min (matches the old shared default) — existing units behave unchanged after OTA until the administrator reconfigures the parameter.

@@ -648,7 +648,10 @@ static bool do_log_upload(const char *filename, const cfg_shadow_t *cfg)
     } else {
         ESP_LOGW(TAG, "[T14] log upload FAIL: file=%s status=%d elapsed=%lld ms",
                  filename, status_code, elapsed_ms);
-        post_log(0, 1);
+        /* gh#34 — record HTTP status in audit row when the server responded.
+         * value_a = HTTP code (e.g. 413) if we got a response, else 0. */
+        const int16_t log_va = (write_ok && status_code > 0) ? (int16_t)status_code : 0;
+        post_log(log_va, 1);
     }
     return ok;
 }
