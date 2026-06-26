@@ -1,8 +1,11 @@
 # logparser — Greenhouse Controller Log Parser
 
 **File:** `log/logparser.py`
-**Document version:** 1.7 (matches firmware 2.0.0-rc.1.2.1 — legacy-heartbeat decoder added)
+**Document version:** 1.8 (matches firmware 2.1.1 — log-upload HTTP code in audit row)
 **Requires:** Python 3.10+, standard library only (no pip dependencies)
+
+**What's new in 1.8** (matches firmware 2.1.1, gh#34):
+- **T14 log-upload failure now records the HTTP status code in the audit row.** Previously all upload failures wrote `value_a=0`; from 2.1.1 onward `value_a` holds the HTTP response code (e.g. `413`) when the server rejected the upload, or `0` when the failure was pre-HTTP (connection, write, or heap error). Parser renders the code: `T14 log upload: HTTP 413`. SYSTEM table updated.
 
 **What's new in 1.7** (matches firmware 2.0.0-rc.1.2.1):
 - **Legacy main.cpp heartbeat decoder added.** Pre-a.6.35.3 firmware emitted a
@@ -467,14 +470,15 @@ should treat ALARM rows around boot or OTA windows with skepticism.
 ### SYSTEM
 
 Internal system events from various firmware tasks. `value_a` categorises the
-subtype; `value_b` is the payload. The current encoding (firmware 1.18.2)
+subtype; `value_b` is the payload. The current encoding (firmware 2.1.1)
 matches the LOG_SYSTEM table in `firmware/src/event_logger/event_logger.h`:
 
 | `value_a` | `value_b` | Initiator | Producer | Meaning |
 |---|---|---|---|---|
 | **−1** | drop count | SYS | T9 (synthetic) | Q3 queue overflow — N events dropped |
 | **0** | 0 | WEB | T14 status_post | Status POST failed (streak transition) |
-| **0** | 1 | WEB | T14 status_post | Log upload failed |
+| **0** | 1 | WEB | T14 status_post | Log upload failed — pre-HTTP (connection/write/alloc error; no server response) |
+| **HTTP 100–599** | 1 | WEB | T14 status_post | Log upload rejected by server — `value_a` is the HTTP status code (e.g. 413); 2.1.1+ (gh#34) |
 | **0** | 2 | WEB | T14 status_post | Daily slot fired, no closed file on SD (1.17.27+) |
 | **0** | 3 | WEB | T14 status_post | Daily slot fired, precondition blocked it (1.17.27+) |
 | **1** | 0 | SYS | T10 net_manager | STA WiFi client disconnected |
