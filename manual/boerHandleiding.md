@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de boer
 
-**Versie:** 1.15 — concept
-**Datum:** 2026-05-26
-**Firmware:** 2.0.0-rc.1.5.2
+**Versie:** 1.16
+**Datum:** 2026-06-26
+**Firmware:** 2.1.1
 
 ---
 
@@ -121,13 +121,14 @@ De kascontroller is de elektronische besturing van het hele systeem: een micropr
 
 Elke kascontroller een **unieke identificatie van vier letters** (bijvoorbeeld `5C88` of `12F0`).
 
-De ID ID wordt op vijf plaatsen gebruikt:
+De ID wordt op vier plaatsen gebruikt:
 
 | Waar | Hoe het eruit ziet |
 |---|---|
 | **AP-SSID** (LCD-scherm 4 wanneer de AP actief is) | `Greenhouse-5C88` |
-| **LCD-scherm 7** (Firmware/Uptime) | rechts op regel 1, naast het versienummer: `FW: 1.20.0  5C88` |
-| **Webinterface, voettekst** | onderaan de pagina: `Greenhouse Controller – v1.20.0 · 5C88` |
+| **LCD-scherm 7** (Firmware/Uptime) | rechts op regel 1, naast het versienummer: `FW: 2.1.1  5C88` |
+| **Webinterface, voettekst** | onderaan de pagina: `Greenhouse Controller – v2.1.1 · 5C88` |
+| **SD-logbestand (bestandsnaam)** | eerste vier tekens van de bestandsnaam: `5C88_20260507143022.csv` |
 
 ---
 
@@ -483,10 +484,10 @@ De kascontroller kent twee gebruikersrollen, elk met een eigen PIN-code:
 
 - **PIN**: 4 cijfers
   - Bij eerste levering staat deze op fabrieksstandaard `1234`
-  - **Wijzig deze direct na ingebruikname** — laat hem niet op de fabrieksstandaard staan. PIN-wijziging gaan alleen via de **webinterface** (Access-tab)en kan iet op de controller zelf.
+  - **Wijzig deze direct na ingebruikname** — laat hem niet op de fabrieksstandaard staan. PIN-wijziging gaan alleen via de **webinterface** (Access-tab)en kan niet op de controller zelf.
 - **Mag op de kas controller (LCD-menu)**:
   - Klimaat-setpoints instellen — T-max en RH-min/max voor dag en nacht
-  - Conflict-prioriteit kiezen (Temperauur eerst / Luchtvochtigeid eerst / Automatisch)
+  - Conflict-prioriteit kiezen (Temperatuur eerst / Luchtvochtigheid eerst / Automatisch)
   - Windbeveiliging (wind protection) aan- of uitzetten en windgrens (Wnd-max) aanpassen — **deze actie wordt gelogd**
 - **Mag aanvullend in de webinterface**:
   - Vochtregeling (humidity control) aan- of uitzetten
@@ -767,9 +768,11 @@ Per setpoint (daaronder) heb je een schuifregelaar + nummerveld + **Apply**-knop
 | Veld op de webinterface | Betekenis |
 |---|---|
 | T max day | Maximum dagtemperatuur — boven deze waarde gaan ramen open |
+| T min day | Minimum dagtemperatuur — beneden deze waarde sluiten ramen om warmte vast te houden |
 | RH max day | Maximum dagvochtigheid |
 | RH min day | Minimum dagvochtigheid |
 | T max night | Maximum nachttemperatuur |
+| T min night | Minimum nachttemperatuur — beneden deze waarde sluiten ramen |
 | RH max night | Maximum nachtvochtigheid |
 | RH min night | Minimum nachtvochtigheid |
 | **T vs RH conflict priority** | Keuzelijst met drie opties: *Temperature first* (default), *Humidity first*, *Largest deviation* — bepaalt welke regelactie voorrang krijgt als T en RH tegelijk om actie vragen |
@@ -886,7 +889,7 @@ Dit hoofdstuk legt uit wat de mode-regel op het LCD betekent en wat je in elke s
 
 | LCD-tekst | Betekenis | Wat doet de controller? | Wat moet je doen? |
 |---|---|---|---|
-| `Mode: AUTO` | Normale automatische werking | Regelt Temperatuur en Luchtvochtigeid binnen de setpoints | Niets — alles werkt zoals het hoort |
+| `Mode: AUTO` | Normale automatische werking | Regelt Temperatuur en Luchtvochtigheid binnen de setpoints | Niets — alles werkt zoals het hoort |
 | `Mode: STANDBY` | Standby-modus — door operator gepauzeerd | **Geen klimaatcommando's; ramen blijven waar ze zijn** | Niets — dit is een bewuste pauze (zie [§10.4](#104-de-controller-tijdelijk-pauzeren--standby)). Vergeet niet om Standby uit te zetten als je klaar bent. |
 | `Mode: WIND` | Wind-override actief — wind te hard | **Alle ramen dicht; klimaatregeling onderdrukt** | Wachten tot de wind afneemt; zie [§12.5](#125-windbeveiliging-in-detail) |
 | `Mode: ALARM` | Motor-alarm (Hotraco RRK-3) | **Alle relais uit; motoren staan stil** | **Bel de beheerder onmiddellijk**; zie [§12.6](#126-motor-alarm-in-detail) |
@@ -953,7 +956,7 @@ Als één of meer van deze drie waar zijn, gaat de controller in **wind-override
 | Windbeveiliging aan/uit | Wind-menu, item 2 (`Wnd-prot`) | Wind-tab | Boer |
 | Windgrens in m/s | Wind-menu, item 1 (`Wnd-max`) | Wind-tab | Boer |
 
-Het **gemiddeld windvenster** bepaalt over hoeveel minuten de windmetingen worden gemiddeld voordat ze met de grens worden vergeleken. Een langer venster reageert minder snel op een rukwind maar wel betrouwbaarder op aanhoudend stevige wind.
+Het **gemiddeld windvenster** bepaalt over hoeveel minuten de windmetingen worden gemiddeld voordat ze met de grens worden vergeleken. Een langer venster reageert minder snel op een rukwind maar wel betrouwbaarder op aanhoudend stevige wind. Dit venster is onafhankelijk van het temperatuurvenster en wordt uitsluitend door de beheerder ingesteld.
 
 #### Wat gebeurt er als wind-alarm actief wordt?
 
@@ -972,7 +975,7 @@ Het alarm valt **direct** af zodra **alle** onderstaande voorwaarden tegelijk wa
 - De gemiddelde windrichting valt **buiten** de uitsluitings-zone (indien ingesteld)
 - De wind-sensor levert weer geldige metingen
 
-Er is **geen extra wachttijd of hysteresis** — zodra de wind weer binnen de grenzen is, wordt het alarm onmiddellijk gewist en gaat de mode terug naar `Mode: AUTO`. De ramen blijven dicht; de klimaatregeling beslist daarna zelf op basis van temperatuur en Luchtvochtigeid of er weer geopend moet worden.
+Er is **geen extra wachttijd of hysteresis** — zodra de wind weer binnen de grenzen is, wordt het alarm onmiddellijk gewist en gaat de mode terug naar `Mode: AUTO`. De ramen blijven dicht; de klimaatregeling beslist daarna zelf op basis van temperatuur en Luchtvochtigheid of er weer geopend moet worden.
 
 > **Praktische tip**: doordat er geen hysteresis is, kan bij onstabiel weer (windvlagen rond de grens) het alarm meermaals snel achter elkaar in en uit gaan. Een **langer gemiddeld windvenster** (door de Beheerder in te stellen) dempt dit, omdat korte rukwinden dan minder snel de gemiddelde meetwaarde over de grens duwen.
 
@@ -1016,7 +1019,7 @@ Mogelijke oorzaken — bepaald door de RRK-3 zelf:
 2. **RGB-LED** en **LCD-scherm** wordt rood
 3. **Alle relais naar de motoren worden onmiddellijk uitgeschakeld** — alle drie de motoren stoppen direct met bewegen
 4. **De raamposities worden als "onbekend" gemarkeerd** (`UNK` op het raamposities-scherm) — na een noodstop weet de controller niet meer in welke positie de ramen staan
-5. **Klimaatregeling wordt onderdrukt** — geen evaluatie van temperatuur en Luchtvochtigeid zolang het alarm actief is
+5. **Klimaatregeling wordt onderdrukt** — geen evaluatie van temperatuur en Luchtvochtigheid zolang het alarm actief is
 6. **Alle nieuwe commando's worden genegeerd** — zelfs als je in de webinterface op iets klikt of een setpoint wijzigt, wordt er niets met de ramen gedaan zolang het alarm actief is
 7. De gebeurtenis wordt gelogd
 
@@ -1461,7 +1464,7 @@ De **windbeveiliging zelf** (aan/uit-schakelaar) moet **altijd AAN** staan tijde
 1. Zoek je gewas op in de tabel (of het meest vergelijkbare).
 2. Log in als boer op de webinterface of LCD (zie [§9](#9-inloggen-als-boer)).
 3. Stel achtereenvolgens in: **Climate-tab → T min/max dag en nacht → RH min/max dag en nacht → RH-regeling aan/uit → CR-prio**.
-4. **Observeer 2–3 dagen** voordat je nog iets aanpast. De sliding-average uitmiddeling (5 min standaard) zorgt voor stabiel gedrag, maar de cumulatieve invloed van een instelling op de plant zie je pas na een paar dagen.
+4. **Observeer 2–3 dagen** voordat je nog iets aanpast. De sliding-average uitmiddeling (6 min standaard) zorgt voor stabiel gedrag, maar de cumulatieve invloed van een instelling op de plant zie je pas na een paar dagen.
 5. Stel **één parameter tegelijk** bij als iets niet klopt. Twee tegelijk verandert maakt het onmogelijk te zien welke aanpassing welk effect had.
 
 ### Wat de tabel niet vervangt
@@ -1500,7 +1503,8 @@ Inhoudelijke wijzigingen aan de firmware staan beschreven in het bestand `change
 | 1.12 | 2026-05-16 | 1.20.2 (alleen documentatie — Bijlage B uitgebreid van 13 naar 28 gewassen passend bij de teelt in Wenumseveld: Meloen, Ananaskers, Spaghettiboon, Peulen, Rucola, Paksoi, Snijbiet, Raapsteel, Palmkool, Koolrabi, Bospeen, Bosbiet, Radijs, Groene selderij, Bloemen — geordend per gewas-familie) |
 | 1.13 | 2026-05-17 | 1.20.3 |
 | 1.14 | 2026-05-26 | 2.0.0-rc.1.5.0 |
-| 1.15 | 2026-05-26 | 2.0.0-rc.1.5.1 |
+| 1.15 | 2026-05-26 | 2.0.0-rc.1.5.1–rc.1.5.2 |
+| 1.16 | 2026-06-26 | 2.0.0 t/m 2.1.1 — T min dag/nacht gedocumenteerd (webinterface); SD-logbestand bestandsnaam eenheid-ID prefix (gh#30, 2.0.1); windgemiddelde onafhankelijk venster (gh#35, 2.1.0); standaard uitmiddelvenster gecorrigeerd naar 6 min; bugfix HTTP-statuscode in auditlog (gh#34, 2.1.1) |
 
 ---
 

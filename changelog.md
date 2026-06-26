@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [docs] — 2026-06-26  (handleidingen v1.16 / v1.20)
+
+Documentation-only update — geen firmware-wijzigingen.
+
+- **`manual/boerHandleiding.md` → v1.16**: T min dag/nacht toegevoegd aan Climate-tab; SD-logbestand bestandsnaam eenheid-ID prefix gedocumenteerd (gh#30/2.0.1); windgemiddelde onafhankelijk venster gedocumenteerd (gh#35/2.1.0); standaard uitmiddelvenster gecorrigeerd van 5 naar 6 min; §3.1 ID-locaties bijgewerkt naar vier plaatsen; spelfouten gecorrigeerd (Temperauur, Luchtvochtigeid, e.a.).
+- **`manual/beheerderHandleiding.md` → v1.20**: zelfde als boer plus: §10.7 Diagnostics/Coredump subsectie toegevoegd; NVS-ringbuffer logging verwijderd; `avg_win_wind` naam, namespace en standaard gecorrigeerd; logbestand bestandsnaampatroon consistent bijgewerkt; Bijlage G conceptnota verwijderd.
+- **`manual/boerQuickRef.md`**: versiereferentie bijgewerkt naar 2.1.1.
+- **`manual/build_pdf.py`**: nieuw script voor PDF-generatie (Python `markdown` + Edge headless print-to-PDF).
+
+---
+
 ## [2.1.1] — 2026-06-26  (gh#34 — HTTP status code in log-upload audit row)
 
 Records the server's HTTP response code (e.g. 413) in the SD audit row when T14's log upload is rejected. Previously all upload failures logged `value_a=0`; now `value_a` holds the HTTP status code if a server response was received, or `0` for pre-HTTP failures (connection, write, heap). `logparser.py` updated to decode and display the code.

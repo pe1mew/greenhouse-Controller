@@ -102,7 +102,7 @@ The two end-user manuals in `manual/` are the primary handover documents for gre
 | **Technical Beheerder / installer** (setup, configuration, maintenance, diagnosis) | [`manual/beheerderHandleiding.md`](manual/beheerderHandleiding.md) | [`manual/beheerderHandleiding.pdf`](manual/beheerderHandleiding.pdf) |
 | Quick reference card for the farmer | [`manual/boerQuickRef.md`](manual/boerQuickRef.md) | [`manual/boerQuickRef.pdf`](manual/boerQuickRef.pdf) |
 
-PDFs are generated from the Markdown sources by [`manual/md2pdf.py`](manual/md2pdf.py) (Python `markdown` library + Microsoft Edge headless print, with each chapter starting on a new page).
+PDFs are generated from the Markdown sources by [`manual/build_pdf.py`](manual/build_pdf.py) — run `python manual/build_pdf.py` from the repo root. Requires Python 3.10+, the `markdown` package, and Microsoft Edge.
 
 ## Developer Documentation
 

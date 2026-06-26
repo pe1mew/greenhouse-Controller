@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de beheerder
 
-**Versie:** 1.19 — concept
-**Datum:** 2026-05-26
-**Firmware:** 2.0.0-rc.1.5.2 (release candidate 1, patch 5.2)
+**Versie:** 1.20
+**Datum:** 2026-06-26
+**Firmware:** 2.1.1
 
 ---
 
@@ -387,7 +387,7 @@ Op het LCD-scherm roteren **zeven** statusschermen. Elk scherm staat 5 seconden,
 | 4 | WiFi | `WiFi: connected` / `192.168.20.150` |
 | 5 | Tijd | `06-05-2026 14:30` / `Src:NTP      Day` |
 | 6 | Raamposities | `M1    M2    M3 ` / `OPEN  CLOS  MOV>` |
-| 7 | Firmware + Uptime | `FW: 1.17.26` / `Up: 1d 4h 23m` |
+| 7 | Firmware + Uptime | `FW: 2.1.1` / `Up: 1d 4h 23m` |
 
 ### LCD — D-toets als directe terugkeer + 5-minuten time-out
 
@@ -538,10 +538,12 @@ Per setpoint: schuifregelaar + nummerveld + **Apply**-knop.
 | Label | Default | Bereik |
 |---|---|---|
 | Temperatuur max dag (°C) | 28 | 15–45 |
-| Temperatuur max nacht (°C) | 20 | 10–35 |
+| Temperatuur min dag (°C) | 16 | -20–60 |
 | Luchtvochtigheid (RH) max dag (%) | 75 | 40–98 |
-| Luchtvochtigheid (RH) max nacht (%) |  — | 40–98 |
-| Luchtvochtigheid (RH) min dag (%) |  50 | 20–90 |
+| Luchtvochtigheid (RH) min dag (%) | 50 | 20–90 |
+| Temperatuur max nacht (°C) | 20 | 10–35 |
+| Temperatuur min nacht (°C) | 14 | -20–60 |
+| Luchtvochtigheid (RH) max nacht (%) | — | 40–98 |
 | Luchtvochtigheid (RH) min nacht (%) | — | 20–90 |
 | Luchtvochtigheid (RH) besturing | Aan | Uit/Aan |
 | Temperatuur/Luchtvochtigheid conflict prioriteit | 0 | 0–2 |
@@ -574,10 +576,10 @@ Per setpoint: schuifregelaar + nummerveld + **Apply**-knop.
 |---|---|---|---|
 | Wind speed max | 6 | 1–30 | m/s |
 | Dir excl. zone low | — | 0–359 | ° |
-| Dir axcl. zone high | — | 0–359 | ° |
-| Wind gemiddelde window | 6 | 1–30 | min. |
+| Dir excl. zone high | — | 0–359 | ° |
+| Wind avg window | 6 | 1–30 | min. |
 
-> **Wind gemiddelde window**: het aantal minuten waarover de windsnelheid en -richting worden gemiddeld voordat ze worden vergeleken met `v_max`. Een korter venster reageert sneller op windstoten; een langer venster dempt toevallige pieken. Standaard 6 min. (12 metingen bij 30 s poll-interval). Onafhankelijk van het klimaat-gemiddelde (`avg_win_t`).
+> **Wind gemiddelde window (Wind avg window)**: het aantal minuten waarover de windsnelheid en -richting worden gemiddeld voordat ze worden vergeleken met `v_max`. Een korter venster reageert sneller op windstoten; een langer venster dempt toevallige pieken. Standaard 6 min. (12 metingen bij 30 s poll-interval). Onafhankelijk van het klimaat-gemiddelde (`avg_win_t`).
 
 > **Wind-uitsluitings-zone**: windrichting waarbij de wind extra gevaarlijk is (bijvoorbeeld omdat ramen rechtstreeks in deze richting staan). Wind binnen deze hoek triggert wind-override ongeacht windsnelheid.
 
@@ -721,18 +723,15 @@ De **Logout**-knop verschijnt op de Access-tab wanneer u ingelogd bent (Boer of 
 
 *Figuur 12: Log-tab — SD-kaart status en logbestand-download*
 
-De Log-tab biedt toegang tot het event-logbestand-systeem. De kascontroller schrijft alle relevante gebeurtenissen (sensor-readings, raam-bewegingen, mode-wisselingen, alarmen, configuratie-wijzigingen) naar twee bronnen:
-
-- **SD-kaart**: dag-bestanden in CSV-formaat — primaire opslag voor historische analyse. De firmware roteert automatisch naar een nieuw bestand bij 512 KB en bewaart maximaal 10 bestanden.
-- **NVS-ringbuffer**: laatste ~100 events in het flash-geheugen — fallback wanneer geen SD-kaart aanwezig of niet leesbaar is. Logging gaat dus altijd door, ook zonder SD-kaart.
+De Log-tab biedt toegang tot het event-logbestand-systeem. De kascontroller schrijft alle relevante gebeurtenissen (sensor-readings, raam-bewegingen, mode-wisselingen, alarmen, configuratie-wijzigingen) naar de **SD-kaart** in CSV-formaat. De firmware roteert automatisch naar een nieuw bestand bij 512 KB en bewaart maximaal 10 bestanden.
 
 #### Velden en knoppen
 
 | Element | Beschrijving |
 |---|---|
 | `SD card control` — **Mount** / **Unmount** | Handmatig mounten/unmounten van de SD-kaart |
-| `Log source` (keuzelijst) | Bron om te downloaden: NVS-ringbuffer, of een specifiek SD-bestand uit de lijst |
-| **Download CSV** | Download de gekozen logbron als CSV-bestand |
+| `Log source` (keuzelijst) | Kies een SD-bestand om te downloaden; zonder SD-kaart toont de lijst `— no SD log files —` |
+| **Download CSV** | Download het gekozen SD-bestand als CSV |
 | Refresh-knop (↻) | Vernieuwt de lijst beschikbare SD-bestanden |
 
 #### SD-kaart eisen
@@ -752,6 +751,28 @@ Plaats een SD-kaart tijdens bedrijf en binnen één minuut wordt er automatisch 
 > **Verplicht voordat u een SD-kaart fysiek verwijdert**: klik **Unmount** in de Log-tab. Anders kunnen de laatste log-events verloren gaan of kan het bestandssysteem corrupt raken.
 
 > **Logbestand-formaat**: het CSV-formaat (kolomnamen, event-types en parameter-ID's) en het meegeleverde Python-script `log/logparser.py` om ruwe logs naar leesbare tekst om te zetten, staan beschreven in [Bijlage F — Logbestand-formaat en `logparser` script](#bijlage-f--logbestand-formaat-en-logparser-script).
+
+#### Diagnostics — coredump
+
+Onderaan de Log-tab staat de sectie **Diagnostics**. Deze toont of er een coredump beschikbaar is in de flash-geheugenpartitie van de controller.
+
+| Element | Beschrijving |
+|---|---|
+| `Coredump` statusregel | `Available — N bytes (N KB) • captured on fw ...` als er een coredump aanwezig is; anders `Not present` |
+| **Download** | Download de coredump als `.bin`-bestand voor offline analyse |
+| **Erase** | Wist de coredump-partitie; doe dit pas **nadat** het bestand is gedownload |
+
+Een coredump wordt automatisch opgeslagen wanneer de firmware een **panic** heeft (ongeldige geheugen-toegang, task-watchdog-timeout). Bij het opstarten na een panic verschijnt op de Status-tab de blauwe badge **Coredump available** en staat in het SD-logbestand een `SYSTEM`-regel `Coredump from previous panic detected in flash`.
+
+> **Coredump offline ontleden** met ESP-IDF:
+> ```
+> idf.py coredump-info -t raw -c coredump-<fw-versie>-<tijdstempel>.bin firmware-<fw-versie>.elf
+> ```
+> Het `.elf`-bestand staat in de release-map `bin/<versie>/` van de repository.
+
+> **Coredump-inhoud kan gevoelige data bevatten** (WiFi-PSK, PIN, status-secret). Behandel het `.bin`-bestand als vertrouwelijke informatie en wis het van het werkstation zodra de analyse klaar is.
+
+Zie [§14 — Coredump ophalen na een panic](#coredump-ophalen-na-een-panic-vanaf-200) voor de volledige procedure.
 
 ---
 
@@ -789,7 +810,7 @@ Onderaan tab Web staan drie regels die elke 5 seconden ververst worden (zolang u
 |---|---|---|
 | `Last post` | Datum/tijd en uitkomst van laatste status-POST | `OK 2026-05-10 14:30:22` of `FAIL 2026-05-10 14:30:22` |
 | `Last log upload` | Idem voor laatste log-upload | `OK 2026-05-10 03:15:08` of leeg als nooit geprobeerd |
-| `Last uploaded file` | Bestandsnaam van het laatst succesvol geüploade logbestand | `20260507143022.csv` |
+| `Last uploaded file` | Bestandsnaam van het laatst succesvol geüploade logbestand | `5C88_20260507143022.csv` |
 
 De auto-refresh werkt alleen deze drie regels — uw invoer in `URL`, `Shared secret`, intervalkeuze of vinkjes wordt nooit overschreven terwijl u typt. Pas op het moment dat u op **Apply** klikt worden de waarden eerst gevalideerd, daarna naar permanent geheuge  geschreven en daarna teruggelezen, zodat de formuliervelden exact tonen wat er in permanente geheugen staat.
 
@@ -831,7 +852,7 @@ Endpoints met `https://` worden ondersteund maar **de controller controleert het
 
 #### Logbestand-upload — wat gaat er precies heen?
 
-De controller upload het **meest recent gesloten** CSV-logbestand op de SD-kaart (dus niet het bestand waar T9 op het moment van uploaden nog in schrijft). De bestandsnaam is van de vorm `YYYYMMDDHHMMSS.csv` (lokale tijd van aanmaak) en is maximaal 512 KB groot — daarboven heeft T9 het al gerouteerd naar een nieuwer bestand.
+De controller upload het **meest recent gesloten** CSV-logbestand op de SD-kaart (dus niet het bestand waar T9 op het moment van uploaden nog in schrijft). De bestandsnaam is van de vorm `<eenheid-ID>_YYYYMMDDHHMMSS.csv` (eenheid-ID + lokale aanmaaktijd), bijvoorbeeld `5C88_20260507143022.csv`, en is maximaal 512 KB groot — daarboven heeft T9 het al gerouteerd naar een nieuwer bestand.
 
 Twee triggers, beide aan te zetten of uit te zetten:
 - **On rotation**: zodra T9 een logbestand sluit (omdat het 512 KB heeft bereikt), wordt het vrijwel direct geüpload.
@@ -1036,7 +1057,7 @@ Onderstaande secties verdiepen de diagnose vanuit beheerder-perspectief.
 - Default 6 m/s is voor de meeste Nederlandse kassen veilig
 - Bij blootstelling aan harde rukwinden: **verlagen naar 4–5 m/s**
 - Bij geluwde locatie: **verhogen tot 8–10 m/s**
-- Combineer met een **groter `avg_win_w`** (gemiddeld windvenster) om kortdurende rukwinden te dempen
+- Combineer met een **groter `avg_win_wind`** (gemiddeld windvenster) om kortdurende rukwinden te dempen
 
 #### Uitsluitings-zone
 
@@ -1054,7 +1075,7 @@ Zone uitschakelen: `Dir excl. low = Dir excl. high` of negatief.
 
 #### Geen hysteresis — hoe omgaan met flapperen
 
-Bij wind rond `v_max` kan de override snel in/uit-flikkeren. **Verhoog `avg_win_w`** (Beheerder-only, namespace `system`, default 1 min., Bereik 1–30 min.). Een venster van 5–10 min. dempt flikkering goed.
+Bij wind rond `v_max` kan de override snel in/uit-flikkeren. **Verhoog `avg_win_wind`** (Beheerder-only, Wind-tab, standaard 6 min., bereik 1–30 min.). Een venster van 5–10 min. dempt flikkering goed.
 
 ### 12.2 Motor-alarm — diagnose
 
@@ -1091,7 +1112,7 @@ Bij `** SENSOR FAULT` op LCD (Temperatuur/Luchtvochtigheid-sensor) of `--` op wi
 
 #### Logbestand-analyse
 
-- Webinterface tab **Log** → SD-bestanden of NVS-ringbuffer downloaden (CSV-formaat)
+- Webinterface tab **Log** → SD-bestanden downloaden (CSV-formaat)
 - Zoek naar `ALARM`-events met sensor-fault-flag
 - Tijdstempels (UTC in het bestand) correleren met externe gebeurtenissen (storm, stroomdip)
 
@@ -1114,8 +1135,7 @@ Zie [boer-handleiding §12.3](handleiding.md#123-rgb-led-kleuren-samengevat). LC
 
 ### 12.6 Logbestand-formaten
 
-- **NVS-ringbuffer**: laatste ~100 events, altijd in geheugen
-- **SD-bestanden**: CSV-bestanden per opstart-sessie, opgeslagen op SD-kaart als die gemount is. Bestandsnamen volgen het patroon `YYYYMMDDHHMMSS.csv` (lokale tijd)
+- **SD-bestanden**: CSV-bestanden op de SD-kaart. Bestandsnamen volgen het patroon `<eenheid-ID>_YYYYMMDDHHMMSS.csv` (lokale aanmaaktijd), bijvoorbeeld `5C88_20260507143022.csv`
 - **CSV-velden**: timestamp (ISO 8601 UTC), event_type, initiator, ch, param, value_a, value_b
 - **Event-types**: `SENSOR`, `RELAY`, `MODE`, `SETPT`, `SESSION`, `ALARM`, `SYSTEM`
 - Download via webinterface tab **Log**
@@ -1229,7 +1249,7 @@ Een **MISMATCH**-badge in de Alarms-tegel wijst op een onvolledige OTA-update: d
 
 ### SD-kaart beheer
 
-De kascontroller schrijft logbestanden naar een SD-kaart. Wanneer er geen kaart aanwezig of niet leesbaar is, wordt logging automatisch teruggevallen op de **NVS-ringbuffer** (~100 events in flash-geheugen). De controller blijft dus altijd loggen — er gaat alleen historie naar de SD-kaart als die is geplaatst.
+De kascontroller schrijft logbestanden naar de SD-kaart. Wanneer er geen kaart aanwezig of niet leesbaar is, wordt logging onderbroken — er is geen permanente fallback-opslag. Zorg dat de SD-kaart altijd gemount is om een volledig logboek te hebben.
 
 #### Eisen aan de SD-kaart
 
@@ -1375,11 +1395,11 @@ Voor de volledige tabel van parameter-ID's en de gebruikte sentinel-codering: zi
 
 Om te voorkomen dat de SD-kaart vol raakt:
 
-- **Per logbestand** wordt geroteerd na ~512 KB; daarna start de firmware een nieuw bestand met een nieuwe timestamp-naam
+- **Per logbestand** wordt geroteerd na ~512 KB; daarna start de firmware een nieuw bestand met naam `<eenheid-ID>_YYYYMMDDHHMMSS.csv`
 - **Maximaal 10 logbestanden** worden bewaard; bij meer wordt het oudste bestand verwijderd
 - **Minimaal 3 bestanden** blijven altijd bewaard (vloer): zelfs bij weinig vrije ruimte wordt nooit onder dit aantal verwijderd
 - **Minimaal 2 MB vrije ruimte** vereist; daaronder probeert de firmware oudste bestanden te verwijderen om ruimte vrij te maken
-- Zit de controller op de bestands-vloer (3) **én** is er minder dan 2 MB vrij, dan wordt SD-logging tijdelijk **opgeschort** en valt logging terug op alleen NVS. Een `SYSTEM`-event met `value_a = -2` markeert dit moment in het log
+- Zit de controller op de bestands-vloer (3) **én** is er minder dan 2 MB vrij, dan wordt SD-logging tijdelijk **opgeschort**. Een `SYSTEM`-event met `value_a = -2` markeert dit moment in het log; events worden niet opgeslagen totdat er weer ruimte is
 
 > **Praktijk**: bij gewone bedrijfsvoering is een 8 GB-kaart ruim voldoende voor jaren logging. Bij vermoeden van problemen: download alle bestanden, formatteer de kaart opnieuw, plaats hem terug.
 
@@ -1523,7 +1543,7 @@ Voor algemene uitleg en consequenties: zie [boer-handleiding §15](handleiding.m
 |---|---|---|
 | SD-kaart niet herkend | FAT32? Card defect? | Andere kaart proberen, FAT32-formatteren |
 | Log-download faalt | Bestand te groot? | Tab Log → kleinere selectie |
-| NVS-ringbuffer vol | Normale toestand (cyclisch) | Geen actie nodig |
+| SD-kaart vol / bijna vol | Oudste logbestanden worden automatisch verwijderd tot de vloer (3 bestanden) is bereikt | Download bestanden, formatteer de kaart opnieuw |
 
 ### 16.8 Tijd
 
@@ -1747,7 +1767,7 @@ Modbus RTU wordt verstuurd over **RS485**, een differentieel seriële bus:
 
 ### Bijlage F — Logbestand-formaat en `logparser` script
 
-De kascontroller schrijft gebeurtenissen naar de **SD-kaart** als CSV-bestanden, één per opstart-sessie met bestandsnaam `YYYYMMDDHHMMSS.csv` (lokale tijd).
+De kascontroller schrijft gebeurtenissen naar de **SD-kaart** als CSV-bestanden. De bestandsnaam heeft het formaat `<eenheid-ID>_YYYYMMDDHHMMSS.csv` (eenheid-ID + lokale aanmaaktijd), bijvoorbeeld `5C88_20260507143022.csv`. De firmware roteert naar een nieuw bestand bij 512 KB en bewaart maximaal 10 bestanden.
 
 Download via webinterface tab **Log** (Beheerder-rol vereist).
 
@@ -1792,8 +1812,8 @@ In de [repository](https://github.com/pe1mew/greenhouse-Controller/tree/main/log
 
 ```bash
 # Eén bestand parsen
-python logparser.py nvs_log.csv
-# → output: parsed_nvs_log.txt
+python logparser.py 5C88_20260507143022.csv
+# → output: parsed_5C88_20260507143022.txt
 
 # Alle SD-bestanden in de huidige map parsen (chronologisch geordend, samengevoegd)
 python logparser.py *
@@ -1879,21 +1899,12 @@ De tabel is geordend per gewas-familie zodat verwante gewassen bij elkaar staan:
 - **CR-prio** (Conflict Resolution-prioriteit): wat doet de controller als T en RH tegelijk om tegengestelde acties vragen? **T** = temperatuur wint (gebruikelijk bij koel-seizoen-gewassen en warme zomers); **RH** = vochtigheid wint (gebruikelijk wanneer een gewas vochtigheids-gevoelig is — schimmelziektes, botrytis, meeldauw).
 - **Opmerkingen**: gewas-specifieke aandachtspunten waar de getallen alleen niet voldoende zijn.
 
-### Windbeveiliging — geldt voor alle gewassen
-
-De **windsnelheid-drempel** (`Wnd-max`) staat standaard op **6 m/s** en is **niet gewas-afhankelijk** maar **kas-constructie-afhankelijk**. Pas hem alleen aan wanneer:
-
-- Je merkt dat de ramen frequent dichtgaan bij wind die je intuïtief nog "rustig" zou noemen → verhoog naar 7–8 m/s.
-- Je merkt dat de wind ramen schade aanricht voordat de override inslaat → verlaag naar 4–5 m/s.
-
-De **windbeveiliging zelf** (aan/uit-schakelaar) moet **altijd AAN** staan tijdens de teelt. Alleen tijdelijk uitschakelen wanneer een beheerder lokaal aanwezig is en bewust met de ramen werkt.
-
 ### Hoe te gebruiken
 
 1. Zoek je gewas op in de tabel (of het meest vergelijkbare).
 2. Log in als boer op de webinterface of LCD (zie §9).
 3. Stel achtereenvolgens in: **Climate-tab → T min/max dag en nacht → RH min/max dag en nacht → RH-regeling aan/uit → CR-prio**.
-4. **Observeer 2–3 dagen** voordat je nog iets aanpast. De sliding-average uitmiddeling (5 min standaard) zorgt voor stabiel gedrag, maar de cumulatieve invloed van een instelling op de plant zie je pas na een paar dagen.
+4. **Observeer 2–3 dagen** voordat je nog iets aanpast. De sliding-average uitmiddeling (6 min standaard) zorgt voor stabiel gedrag, maar de cumulatieve invloed van een instelling op de plant zie je pas na een paar dagen.
 5. Stel **één parameter tegelijk** bij als iets niet klopt. Twee tegelijk verandert maakt het onmogelijk te zien welke aanpassing welk effect had.
 
 ### Wat de tabel niet vervangt
@@ -1908,25 +1919,6 @@ De **windbeveiliging zelf** (aan/uit-schakelaar) moet **altijd AAN** staan tijde
 - Lees de tabel als **eerste schatting** en pas aan op wat je in de kas ziet.
 - Bij ziekte/schade: noteer de instellingen die actief waren (Climate-tab) plus T-gemiddelde en RH-gemiddelde van de laatste 24 uur (Status-tab → Sensorhistorie). Stuur die naar de teeltvoorlichter of de Herenboeren-kennisgroep voor advies.
 - De **fabrieksinstellingen** van de kascontroller (Dag T = 18 / 28 °C, Nacht T = 16 / 25 °C, RH = 50 / 75 %) zijn een redelijke "tomaat-achtig" middelweg. Voor andere gewassen begin je beter direct vanaf de tabel-waarden.
-
----
-
-## Inbouwadvies voor de handleiding
-
-Twee plaatsingsopties:
-
-**Optie A — Nieuwe sub-sectie §10.5** *Aanbevolen startinstellingen per gewas*. Komt logisch direct na §10.4 (CR-prio) omdat de CR-prio-kolom van de tabel daar pas zin krijgt. Voordeel: leesvolgorde blijft natuurlijk (eerst leren hoe de regeling werkt, dan welke waarden invoeren). Nadeel: lange tabel onderbreekt het verhalend hoofdstuk.
-
-**Optie B — Nieuwe Bijlage G** *Aanbevolen startinstellingen per gewas*. Komt achter Bijlage F (CSV-formaat) maar nog vóór §20 (versiehistorie). Voordeel: blijft samen met de andere referentietabellen; gebruikers zoeken hem op wanneer nodig in plaats van hem in een leesvolgorde tegen te komen. Nadeel: minder ontdekbaar vanaf §10.
-
-Mijn voorkeur is **Optie B (Bijlage G)** — past beter bij het karakter van de tabel (referentie-materiaal, niet leerstof) en houdt §10 leesbaar. Een korte zin in §10.4 (*"Voor concrete aanbevelingen per gewas zie [Bijlage G](#bijlage-g--aanbevolen-startinstellingen-per-gewas)"*) maakt hem alsnog ontdekbaar.
-
-## Toetsen / vragen voor jou voordat het gepubliceerd wordt
-
-1. **Welke gewassen wil je werkelijk in de tabel?** De huidige selectie van 13 is mijn beste gok voor Nederlandse Herenboeren-kassen. Schrap wat niet relevant is, voeg toe wat ontbreekt (typisch missende kandidaten: snijbloemen, frambozen, jonge boomopkweek).
-2. **Klopt de teelttechnische inhoud?** Mijn waarden zijn gebaseerd op algemene horticultuur-vuistregels, geen specifieke ervaring met deze kas. Een teeltvoorlichter of een ervaren Herenboeren-collega kan de getallen reviewen en corrigeren waar nodig.
-3. **Is "min–max" als bereik in één cel duidelijk genoeg?** Alternatief is twee aparte kolommen per band (T dag min / T dag max), maar dan wordt de tabel breder. PDF-render kan dat moeilijk weergeven op A4 staand.
-4. **CR-prio met letters T/RH duidelijk?** Of beter een zin als "temperatuur eerst" / "vocht eerst"?
 
 ---
 
@@ -1956,6 +1948,7 @@ Inhoudelijke wijzigingen aan de firmware staan beschreven in het bestand `change
 | 1.17 | 2026-05-26 | 2.0.0-rc.1.5.0 |
 | 1.18 | 2026-05-26 | 2.0.0-rc.1.5.1 |
 | 1.19 | 2026-05-26 | 2.0.0-rc.1.5.2 |
+| 1.20 | 2026-06-26 | 2.0.0 t/m 2.1.1 — T min dag/nacht gedocumenteerd (webinterface); SD-logbestand bestandsnaam eenheid-ID prefix (gh#30, 2.0.1); `avg_win_wind` naam en standaard gecorrigeerd; windgemiddelde onafhankelijk venster (gh#35, 2.1.0); standaard uitmiddelvenster gecorrigeerd naar 6 min; bugfix HTTP-statuscode in auditlog (gh#34, 2.1.1) |
 
 ---
 

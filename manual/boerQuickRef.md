@@ -1,6 +1,6 @@
 # Quick-reference — Kascontroller voor de boer
 
-**Versie 2.0.0-rc.1.5.2** · 2026-05-26 · Volledige uitleg in `boerHandleiding.pdf` · Lamineren en naast de kast hangen.
+**Versie 2.1.1** · 2026-06-26 · Volledige uitleg in `boerHandleiding.pdf` · Lamineren en naast de kast hangen.
 
 ### RGB-LED · in één oogopslag
 
