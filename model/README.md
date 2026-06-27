@@ -114,10 +114,7 @@ The optimised firmware was released as **v1.16.22** (the bug fix) and **v1.16.23
 
 ### Settings files
 
-| File | Purpose |
-|---|---|
-| `settings_optimised.json` | **Current production defaults** for "general crops" (after the oscillation investigation). Contains the `hyst_t=5`, `avg_win_t=6`, `dwell_open` 300/300/900 s changes |
-| `new_settings_calibrated.json` | Settings after a fresh plant calibration against recent sensor logs — site-specific tuning variant |
+Settings files live in `campaign-defaultSettings/` — see Campaign archives below.
 
 ### Plant-model files
 
@@ -138,15 +135,7 @@ The optimised firmware was released as **v1.16.22** (the bug fix) and **v1.16.23
 
 ### Results (output of `simulation.py`)
 
-Per scenario, a simulation run produces two files: a CSV with all time series (sensor, window and mode state per time step) and a 4-panel PNG plot.
-
-| File | Contents |
-|---|---|
-| `results_input_S1_Daytime_Solar_Gain.csv` + `.png` | Result for scenario S1 |
-| `results_input_S2_High_Humidity_Mild_Day.csv` + `.png` | Result for scenario S2 |
-| `results_input_S3_Full_24h_Day-Night_Cycle.csv` + `.png` | Result for scenario S3 |
-| `results_input_S4_T_Below_Setpoint_RH_Critical.csv` + `.png` | Result for scenario S4 |
-| `results_input_S5_Motor_Stall_M2.csv` + `.png` | Result for scenario S5 |
+Current validated results live in `campaign-defaultSettings/` — see Campaign archives below. Running `simulation.py` writes `results_input_S*.csv` + `.png` to this directory; move them to the relevant campaign folder once validated.
 
 ### Forward plans
 
@@ -155,21 +144,34 @@ Per scenario, a simulation run produces two files: a CSV with all time series (s
 | `thermalProfileCampaign.md` | Approved plan for a 21-day real-greenhouse thermal profiling run — prerequisite for a higher-fidelity plant model |
 | `logUpdatePlan.md` | Locked firmware design for LOG_SENSOR_HR and LOG_SUN event types — prerequisite for thermalProfileCampaign.md |
 
-### Campaign archive
+### Campaign archives
+
+#### `campaign-defaultSettings/` — default settings determination
+
+Validated settings and scenario results that established the current firmware defaults.
 
 | Path | Contents |
 |---|---|
-| `campaign-spring-2026/` | All material from the spring 2026 calibration and oscillation-investigation campaign — the work that produced the current defaults |
-| `campaign-spring-2026/srcData/` | Raw LHT65 LoRaWAN sensor logs (March–May 2026) used to fit the plant model |
-| `campaign-spring-2026/simulationOptimisation.md` | Full analysis report of the oscillation investigation (root cause, intermediate results, validated fix) |
-| `campaign-spring-2026/settings.json` | Original firmware factory defaults — superseded by `settings_optimised.json` |
-| `campaign-spring-2026/plant_empty_greenhouse.json` | Empty-greenhouse plant model — used for the factory-defaults baseline run |
-| `campaign-spring-2026/default/` | Frozen `results_*` snapshot generated with the original factory defaults — baseline for comparison |
-| `campaign-spring-2026/images/` | Before/after control plots from the oscillation fix |
-| `campaign-spring-2026/calibrate_plant_LHT65-02_kas2.png` | Plant-model fit-vs-measurement plot for greenhouse 2 |
-| `campaign-spring-2026/calibrate_plant_LHT65-03_kas1.png` | Plant-model fit-vs-measurement plot for greenhouse 1 |
-| `campaign-spring-2026/airTemperature_2025-05-01_to_2025-09-01.csv` | Four months of outdoor air temperature (2025) — seasonal validation data |
-| `campaign-spring-2026/results_airTemperature_2025-05-01_to_2025-09-01.csv` | Output of the 4-month seasonal simulation run |
+| `settings_optimised.json` | **Current production defaults** — `hyst_t=5`, `avg_win_t=6`, `dwell_open` 300/300/900 s |
+| `new_settings_calibrated.json` | Site-specific variant after plant calibration (kas2) |
+| `results_input_S*.csv` + `.png` | Scenario results that validated the optimised defaults |
+
+#### `campaign-spring-2026/` — spring 2026 calibration and oscillation investigation
+
+Source data, calibration outputs, and the oscillation investigation that produced `campaign-defaultSettings/settings_optimised.json`.
+
+| Path | Contents |
+|---|---|
+| `srcData/` | Raw LHT65 LoRaWAN sensor logs (March–May 2026) used to fit the plant model |
+| `simulationOptimisation.md` | Full analysis report of the oscillation investigation (root cause, intermediate results, validated fix) |
+| `settings.json` | Original firmware factory defaults — superseded by `campaign-defaultSettings/settings_optimised.json` |
+| `plant_empty_greenhouse.json` | Empty-greenhouse plant model — used for the factory-defaults baseline run |
+| `default/` | Frozen `results_*` snapshot generated with the original factory defaults |
+| `images/` | Before/after control plots from the oscillation fix |
+| `calibrate_plant_LHT65-02_kas2.png` | Plant-model fit-vs-measurement plot for greenhouse 2 |
+| `calibrate_plant_LHT65-03_kas1.png` | Plant-model fit-vs-measurement plot for greenhouse 1 |
+| `airTemperature_2025-05-01_to_2025-09-01.csv` | Four months of outdoor air temperature (2025) — seasonal validation data |
+| `results_airTemperature_2025-05-01_to_2025-09-01.csv` | Output of the 4-month seasonal simulation run |
 
 ---
 
@@ -187,7 +189,7 @@ If you want to propose a new set of parameters — for example a higher `hyst_t`
    python simulation.py input_S4_T_Below_Setpoint_RH_Critical.csv settings_proposal.json
    python simulation.py input_S5_Motor_Stall_M2.csv settings_proposal.json
    ```
-4. **Compare** each `results_input_S*.png` with the baseline in `campaign-spring-2026/default/` and with `results_input_S*.png` for the current `settings_optimised.json`. Watch for:
+4. **Compare** each `results_input_S*.png` with the validated results in `campaign-defaultSettings/` and the baseline in `campaign-spring-2026/default/`. Watch for:
    - **Number of motor cycles** per channel — should not rise sharply
    - **Peak indoor T** — should not rise
    - **Time between opening and closing** — oscillation shows up as <30 min cycles

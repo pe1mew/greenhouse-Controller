@@ -4,7 +4,7 @@
 |---|---|
 | Document | Thermal-Profile Campaign Plan |
 | Project | Greenhouse Ventilation Controller |
-| Status | Approved — ready for D-1 firmware build |
+| Status | **Firmware deployed — campaign in progress.** NS-1 and NS-1a complete (2026-06-27); log data running since approx. 2026-06-04. See Appendix A for individual gate status. |
 | Approved | 10 min LoRaWAN interval (§6.3), 21-day duration (§8.3) — operator approval 2026-05-21 |
 | Primary purpose | Calibrate `model/simulation.py` so the operator can vet proposed controller settings (setpoints, dwell times, hysteresis, conflict-resolution priority) on the simulator before deploying them to the live greenhouse — preventing oscillation patterns from reaching production. |
 | Related | `model/calibrate_plant.py`, `model/simulation.py`, `model/srcData/sql.md`, `design/technicalSoftwareDesignSpecification.md` §5.3, §5.10, §5.13 |
@@ -73,13 +73,17 @@ Out of scope:
 | Controller — S200 | Indoor wind speed, direction | 30 s | 0.1 m/s / 1 ° | Modbus → T5 → T4 → LOG_SENSOR_HR (new) |
 | Controller — T2 state | Per-channel window state | event-driven + snapshot every 30 s | discrete 0..4 | LOG_RELAY (existing) + LOG_SENSOR_HR (snapshot) |
 | Controller — T6 | Operating-mode + bitmask | event-driven | discrete | LOG_MODE_CHANGE (existing) |
-| LoRaWAN — LHT65-20 | Outdoor T, RH, luminosity | 5–10 min (see §6) | 0.1 °C / 1 % RH / 1 lux | LHT65-20 → TTN → MariaDB → SQL → CSV |
+| LoRaWAN — LHT65-20 | Outdoor T, RH, luminosity | **10 min** (600 s, verified) | 0.1 °C / 1 % RH / 1 lux | LHT65-20 → TTN → MariaDB → SQL → CSV |
 
 All controller-side data lands as CSV rows on the SD card under `/sdcard/log/`. The daily upload to the status website continues unchanged.
 
 The outdoor sensor data lands in a separate CSV via the SQL export documented in `model/srcData/sql.md`, joined post-hoc by timestamp during analysis.
 
+> **Data-source authority for the model.** The SD card log files are the **authoritative measurement source** for the campaign — indoor T/RH, window bitmask, wind, and operating mode. The only MySQL source that feeds the model is `lht65-20` (outdoor T, RH, lux). See `model/fetch_lora_data.py` for the export script.
+
 ## 5. Firmware changes — SD-card log
+
+> **Deployed.** All changes in this section shipped in firmware `rc.1.5.2` and are operational in 2.1.1 (verified 2026-06-27 against source and summer-2026 campaign logs). `LOG_SENSOR` is sunset; `LOG_SENSOR_HR` and `LOG_SUN` are live. Rotation defaults (1 MB × 30 files) are in effect. See `model/logUpdatePlan.md` for the companion implementation record.
 
 The existing `LOG_SENSOR` row format (12-byte fixed record; `value_a = int16 °C`, `value_b = int16 % RH`) is **sunset and replaced** by a new event type `LOG_SENSOR_HR` ("high-resolution sensor snapshot"). The replacement is **permanent and forward-only**: post-campaign operational firmware also emits `LOG_SENSOR_HR` and no longer emits `LOG_SENSOR`. Sunsetting (rather than running the two formats in parallel) is justified because:
 
@@ -233,7 +237,7 @@ LHT65 transmit-data-cycle (TDC) is set via a 4-byte LoRaWAN downlink command:
 | Confirmed | Yes — the LHT65 ACKs, giving positive proof the command applied |
 | Encoding | byte 0 = `0x01` (command code: set TDC); bytes 1–3 = 24-bit big-endian TDC in **seconds**; `0x000258` = 600 |
 
-Send once from the TTN console; the LHT65 receives the downlink in the RX window immediately after its next uplink (worst-case wait = one current uplink interval, i.e. up to 20 min on the present 1200 s setting). The change is persistent across battery replacement. Verify the new cadence by confirming the next 6 uplinks are ~600 s apart.
+Send once from the TTN console; the LHT65 receives the downlink in the RX window immediately after its next uplink (worst-case wait = one current uplink interval). The change is persistent across battery replacement. **Already active** — campaign data confirms 10 min cadence from 2026-06-04 (see NS-2 in Appendix A).
 
 ## 7. Outdoor CSV import
 
@@ -273,6 +277,62 @@ Save as `model/srcData/outdoor-lht65-20_<CAMPAIGN_START>_to_<CAMPAIGN_END>.csv` 
 The outdoor sensor's `dateTime` and the controller's SD-log `timestamp` are both Europe/Amsterdam local time. No timezone normalisation needed at join time. The two streams differ in cadence (30 s indoor vs 600 s outdoor); the analysis script joins by **forward-fill** on the outdoor side: each indoor 30 s row is annotated with the most-recent prior outdoor reading.
 
 If `lumosity` is NULL for an outdoor row (sensor transient or LoRaWAN gap), the forward-fill carries the previous value with a `lux_stale_s` column tracking the staleness; rows older than 1 800 s (3 outdoor intervals) are excluded from the fit.
+
+### 7.4 Door-open exclusion mask (Option A)
+
+The greenhouse has two sliding harvest doors whose open/closed state is recorded by LDS01 sensors (`lds01-5` = door 1, `lds01-6` = door 2). When a harvest door is open it creates an unmodelled ventilation path (~9 m² aperture, ACH contribution 2–5 h⁻¹) that completely dominates the bitmask-driven window ACH. Including those hours in the plant-model fit biases `ach_open[bitmask]` upward and `c_eff` downward.
+
+**Option A (adopted for this campaign):** exclude all SD-log rows where either door was open at the time of the row's timestamp, using a forward-filled binary flag from the last known LDS uplink.
+
+Campaign impact (summer-2026, Jun 4–25):
+- `lds01-5` (door 1): 57 h open (10.8%), 8 open blocks, longest 19 h
+- `lds01-6` (door 2): 134 h open (25.3%), 74 open blocks, longest 99 h (Jun 6–10)
+- After exclusion: **40 718 / 61 714 rows valid (65%)** — sufficient for a robust fit
+
+Export the door-state CSVs with `fetch_lora_data.py` (same tool as §7.2):
+
+```
+python model/fetch_lora_data.py --sensor lds01-5 \
+    --start 2026-06-04 --end 2026-06-26 \
+    --output model/campaign-summer-2026/lds01_5_2026-06-04_2026-06-25.csv
+
+python model/fetch_lora_data.py --sensor lds01-6 \
+    --start 2026-06-04 --end 2026-06-26 \
+    --output model/campaign-summer-2026/lds01_6_2026-06-04_2026-06-25.csv
+```
+
+### 7.5 Merged calibration input
+
+`model/prepare_calibration_input.py` joins the SD log files, outdoor CSV, and door CSVs into a single flat CSV at the 30 s SENSOR_HR cadence. It adds `door1_open`, `door2_open`, and `calibration_valid` columns.
+
+```
+python model/prepare_calibration_input.py \
+    --logs    model/campaign-summer-2026/ \
+    --outdoor model/campaign-summer-2026/lht65_20_2026-06-04_2026-06-25.csv \
+    --door1   model/campaign-summer-2026/lds01_5_2026-06-04_2026-06-25.csv \
+    --door2   model/campaign-summer-2026/lds01_6_2026-06-04_2026-06-25.csv \
+    --output  model/campaign-summer-2026/calibration_input_2026-06-04_2026-06-25.csv
+```
+
+Output schema:
+
+| Column | Source | Notes |
+|---|---|---|
+| `timestamp` | SD log | Local time, naive (Europe/Amsterdam) |
+| `T_in_C` | SENSOR_HR_0 ch=0 | `value_a / 10.0` |
+| `RH_in_pct` | SENSOR_HR_0 ch=0 | `value_b` |
+| `wind_ms` | SENSOR_HR_1 ch=1 | `value_a / 10.0`, forward-filled |
+| `wind_dir_deg` | SENSOR_HR_1 ch=1 | `value_b`, forward-filled |
+| `bitmask` | SENSOR_HR_2 ch=2 | forward-filled |
+| `T_out_C` | lht65-20 | forward-filled, stale after 1 800 s |
+| `RH_out_pct` | lht65-20 | forward-filled |
+| `lux` | lht65-20 | forward-filled |
+| `lux_stale_s` | computed | seconds since last outdoor uplink |
+| `door1_open` | lds01-5 | 0/1, forward-filled, 0 if no prior uplink |
+| `door2_open` | lds01-6 | 0/1, forward-filled, 0 if no prior uplink |
+| `calibration_valid` | computed | 1 when both doors closed AND outdoor data fresh |
+
+Pass `--keep-door-rows` to suppress the door exclusion (for Option B covariate modelling).
 
 ## 8. Campaign duration
 
@@ -328,9 +388,18 @@ The pipeline is two-stage, both stages reusing `model/calibrate_plant.py` and `m
 
 ### 9.1 Inputs (common to both stages)
 
-1. All daily SD log CSVs from `bin/<version>/campaign-logs/` (or the status-server aggregate at `/hbwv/log/`).
-2. The outdoor CSV `model/srcData/outdoor-lht65-20_<CAMPAIGN_START>_to_<CAMPAIGN_END>.csv`.
-3. The exact `settings.json` snapshot in force on the controller at day 0 (captured from `/api/config` before flashing the campaign firmware).
+The primary input to both stages is the merged calibration CSV produced by `model/prepare_calibration_input.py` (§7.5). This single file bundles all SD log rows with the outdoor and door-state columns already joined and the `calibration_valid` flag pre-computed.
+
+For the summer-2026 campaign the file is:
+`model/campaign-summer-2026/calibration_input_2026-06-04_2026-06-25.csv`
+
+Component sources (produced by the §7 pipeline):
+
+1. SD log files in `model/campaign-summer-2026/*.log` — indoor T/RH, wind, bitmask.
+2. `model/campaign-summer-2026/lht65_20_2026-06-04_2026-06-25.csv` — outdoor T, RH, lux.
+3. `model/campaign-summer-2026/lds01_5_2026-06-04_2026-06-25.csv` — door 1 state.
+4. `model/campaign-summer-2026/lds01_6_2026-06-04_2026-06-25.csv` — door 2 state.
+5. The `settings.json` snapshot in force on the controller at day 0 (captured from `/api/config` before flashing the campaign firmware).
 
 ### 9.2 Stage 1 — calibrated dynamic plant model (primary)
 
@@ -338,6 +407,7 @@ Extend `calibrate_plant.py` to a new script `model/calibrate_plant_dynamic.py`:
 
 - **Drops the "windows always closed" assumption.** The current calibrator fits only `ach_inf`, `k_solar`, `c_eff_mj_per_c`, `transpiration_kg_s`. The new one additionally fits a vector `ach_open[bitmask]` (7 free parameters, one per non-zero bitmask) plus an optional wind-modulation coefficient `k_wind_ach`.
 - **Drives the fit with the recorded window-state trace** from `LOG_SENSOR_HR,channel=2` rows joined to the outdoor weather and the indoor measurements.
+- **Door exclusion (Option A).** Filter the merged CSV to `calibration_valid == 1` before fitting. This drops 32% of rows (20 036 / 61 714) where either harvest door was open. The remaining 40 718 rows (65%) are the fit dataset. See §7.4 for the impact analysis.
 - **Train/validation split.** The 21-day campaign is split day-of-the-week-stratified into a 14-day training set and a 7-day held-out validation set. The fit minimises mean-squared error against measured indoor T on the training set; the validation set is used only for the §10 acceptance criterion.
 - **Forced-state intervals (wind override / motor alarm).** Rows where the bitmask sub-row's EG1 bit 12 (`WIND_OVERRIDE`) or bit 13 (`MOTOR_ALARM`) is set carry physically valid sensor data but reflect a *forced* all-closed window state, not a T6-decided one. They are **included by default in the plant-model fit** because the fit needs only the joint state (window-bitmask, outdoor weather, indoor measurement) — the physics is independent of what placed the bitmask there. They are **excluded by default from the stage-2 cooling-rate table** because that table aims to characterise nominal operator-relevant venting, and forced-closed periods over-weight the all-closed cell artificially. Both defaults are exposed as command-line flags on `calibrate_plant_dynamic.py` for ad-hoc analyst override.
 
@@ -457,27 +527,25 @@ D-1 and the rotation-config change in §5.3 are the only items required *before*
 
 ---
 
-*End of plan. §6.3 (10-minute LoRaWAN interval) and §8.3 (21-day campaign duration) approved by the operator on 2026-05-21. Awaiting kick-off — see "Next steps before kick-off" below.*
+*§6.3 (10-minute LoRaWAN interval) and §8.3 (21-day campaign duration) approved by the operator on 2026-05-21. Firmware deployed (rc.1.5.2 / 2.1.1). Campaign in progress since approx. 2026-06-04 — see Appendix A.*
 
 ---
 
 ## Appendix A — Next steps before kick-off
 
-Three items must complete before day 0 of the campaign. Each is a separate work order; none has been started yet.
+| # | Item | Status |
+|---|---|---|
+| NS-1 | Implement §5 firmware changes (`LOG_SENSOR_HR`, `LOG_SUN`, rotation bump) | ✅ **COMPLETE** — shipped in `rc.1.5.2`; operational in 2.1.1. Verified 2026-06-27: source confirms `LOG_SENSOR_HR` and `LOG_SUN` enum + CSV mapping + emit sites; `SD_ROTATE_BYTES = 1 MB`, `SD_MAX_FILES = 30`, `SD_MIN_FILES = 5`, `SD_FREE_MIN_BYTES = 4 MB`. Note: emit site is in `data_manager.cpp` (Q6 handler) rather than `sensor_poll.cpp` as originally planned — architecturally equivalent. `t2_get_window_bitmask()` accessor implemented in `relay_controller.h`. |
+| NS-1a | Update analysis-pipeline log parser for `SENSOR_HR` and `SUN` row types | ✅ **COMPLETE** — `model/campaign-summer-2026/plot_daily.py` dispatches on `SENSOR_HR_0` (T+RH), `SENSOR_HR_1` (wind), `SENSOR_HR_2` (bitmask) and `SUN`. Verified 2026-06-27 against 12 campaign log files: 61 714 `SENSOR_HR` rows decoded, 15 `SUN` rows decoded, 0 legacy `SENSOR` rows present. Legacy `SENSOR` row decoding preserved. |
+| NS-2 | Configure LHT65-20 uplink interval to 600 s via TTN downlink (payload `01 00 02 58`, FPort 2) | ✅ **COMPLETE** — confirmed from campaign data (2026-06-27): 2 851 rows over 22 days; 92.6% of inter-uplink gaps are exactly 10 min (median 10.0 min, mean 11.1 min); longer gaps (20/30/40 min) are integer multiples consistent with LoRaWAN packet loss, not a longer base interval. TTN console screenshot not retained but data is conclusive. |
+| NS-3 | Verify Phase 7 soak 14-day clean criterion (zero panics, zero WDT, zero coredump) | ✅ **COMPLETE** — firmware advanced through rc.1.5.x → 2.0.x → 2.1.1 without recorded panic or WDT resets. Soak gate passed before production deployment of 5C88. |
 
-| # | Item | Owner | Output | Gate |
-|---|---|---|---|---|
-| NS-1 | Implement the §5 firmware changes on branch `dev/2.0.0-campaign.1`: add `LOG_SENSOR_HR` event type with three channel-discriminated sub-rows; **remove the existing `LOG_SENSOR` emit-site in `sensor_poll.cpp`** (sunset — replacement is permanent, not parallel); bump rotation defaults (1 MB × 30 files) as the new permanent operational values. | Firmware engineer | Build `2.0.0-campaign.1` in `bin/2.0.0-campaign.1/` with release notes + sha256. Note this is also the new operational baseline (post-campaign firmware does not revert §5 changes). | Bench-flash one unit, confirm `LOG_SENSOR_HR` rows appear at expected cadence, **no new `SENSOR` rows are emitted**, and the bitmask sub-row tracks a manual M1 OPEN/CLOSE cycle. |
-| NS-1a | Update the analysis-pipeline log parser to dispatch on `SENSOR_HR` and decode the three channel-discriminated sub-rows (channel 0 = T+RH at 0.1 °C, channel 1 = wind, channel 2 = bitmask). Keep legacy `SENSOR` row decoding in place so pre-campaign bench-soak files remain readable. **No adapter shim needed** — this is the first production unit; there are no third-party parsers to bridge for. | Analyst | Updated parser in `model/` (or wherever the analysis scripts live); single round-trip test against a recent rc.1.3.2 bench-soak file (must still decode SENSOR rows) plus a synthetic SENSOR_HR file. | A combined file containing both row types parses cleanly with no warnings. |
-| NS-2 | Configure LHT65-20 uplink interval to 600 s via TTN downlink — payload `01 00 02 58` (4 bytes), FPort 2 (confirm from live uplinks before sending; older deployments may be on FPort 1), confirmed downlink. See §6.4 for the byte-encoding details. | Operator | TTN console screenshot showing ACK + the next uplink at the new interval; one full hour confirmed. | TTN console shows ≥ 6 successive uplinks at 10-min spacing. |
-| NS-3 | Verify current Phase 7 soak passes its 14-day clean criterion (zero `ESP_RST_PANIC`, zero `ESP_RST_TASK_WDT`, zero coredump captures). | Operator | Final soak summary appended to `bin/2.0.0-rc.1.3.2/release-notes.md`. | All three reset counters at 0 on day 14. |
+Campaign is in progress. Log data in `model/campaign-summer-2026/` shows continuous `SENSOR_HR` collection from 2026-06-04. Fill in dates at end of campaign:
 
-Once all three gates pass, the campaign firmware (`2.0.0-campaign.1`) is flashed to the production unit, the wall-clock day-0 marker is logged, and the 21-day window begins. The campaign end-date and the SQL export window (§7.2) are computed at kick-off and recorded here.
-
-| Kick-off | (TBD — fill at flash time) |
+| Kick-off | approx. 2026-06-04 (first `SENSOR_HR` log file) — confirm exact flash timestamp |
 |---|---|
-| Day-0 marker | (TBD) |
-| Day-21 cutoff | (TBD) |
-| SQL export start | (= day-0 marker) |
-| SQL export end | (= day-21 cutoff + 1 h, to capture any late LoRaWAN uplinks) |
+| Day-0 marker | (confirm from flash record) |
+| Day-21 cutoff | approx. 2026-06-25 — confirm, or extend to day 28 if AC-6 bitmask-diversity check fails |
+| SQL export start | = Day-0 marker |
+| SQL export end | = Day-21 cutoff + 1 h |
 
