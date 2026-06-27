@@ -1,7 +1,6 @@
-"""Convert boerHandleiding.md and beheerderHandleiding.md to PDF and RTF.
+"""Convert boerHandleiding.md and beheerderHandleiding.md to PDF.
 
-PDF  — Edge headless print-to-PDF.
-RTF  — Word COM automation (requires pywin32: pip install pywin32).
+PDF — Edge headless print-to-PDF.
 """
 import markdown
 import subprocess
@@ -71,9 +70,6 @@ MANUALS = [
     ("beheerderHandleiding.md",  "beheerderHandleiding"),
 ]
 
-WD_FORMAT_RTF = 6
-
-
 def build_html(md_path):
     with open(md_path, encoding="utf-8") as f:
         text = f.read()
@@ -122,30 +118,9 @@ def make_pdf(tmp_html, pdf_path):
     raise RuntimeError(result.stderr[-300:] if result.stderr else "no output")
 
 
-def make_rtf(tmp_html, rtf_path):
-    import win32com.client
-    word = win32com.client.Dispatch("Word.Application")
-    word.Visible = False
-    word.DisplayAlerts = 0          # wdAlertsNone — suppress all dialogs
-    try:
-        doc = word.Documents.Open(
-            tmp_html,
-            ConfirmConversions=False,
-            ReadOnly=False,
-        )
-        doc.SaveAs2(rtf_path, FileFormat=WD_FORMAT_RTF)
-        doc.Close(SaveChanges=False)
-    finally:
-        word.Quit(SaveChanges=False)
-    if os.path.exists(rtf_path):
-        return os.path.getsize(rtf_path) // 1024
-    raise RuntimeError("RTF not created")
-
-
 for md_name, base_name in MANUALS:
     md_path  = os.path.join(BASE, md_name)
     pdf_path = os.path.join(BASE, base_name + ".pdf")
-    rtf_path = os.path.join(BASE, base_name + ".rtf")
 
     html = build_html(md_path)
     tmp  = write_tmp_html(html)
@@ -155,11 +130,5 @@ for md_name, base_name in MANUALS:
         print(f"OK  {base_name}.pdf  ({kb} KB)")
     except Exception as e:
         print(f"FAIL  {base_name}.pdf  — {e}")
-
-    try:
-        kb = make_rtf(tmp, rtf_path)
-        print(f"OK  {base_name}.rtf  ({kb} KB)")
-    except Exception as e:
-        print(f"FAIL  {base_name}.rtf  — {e}")
-
-    os.unlink(tmp)
+    finally:
+        os.unlink(tmp)
