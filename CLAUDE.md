@@ -67,6 +67,6 @@ Production deployment at Herenboeren Willemshoeve (Soest). Field units in active
 | `design/` | FRS, TSDS, implementation/migration plans, audit reports, `OTAimplementation.md` — the closest thing to ADRs |
 | `bin/<version>/` | Per-release archive: bin, zip, bootloader, partitions, elf, map, release-notes |
 | `manual/` | Operator manuals (Dutch: boer + beheerder + admin) |
-| `model/` | Greenhouse simulation model + scenario inputs |
+| `model/` | Plant model, calibration scripts (`calibrate_plant_*.py`), summer-2026 campaign data + thermal profile analysis (`thermalProfileCampaign.md`) |
 | `log/` | `logparser.py` + `logparser.md`, example log CSV + parsed output |
 | `memory/` | L3/L4 layer — `MEMORY.md` index, `architecture.md`, `gotcha-log.md` |

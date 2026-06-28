@@ -1,0 +1,19 @@
+{
+  "_comment": "Constrained 6-param calibration by calibrate_plant_constrained.py (summer-2026, Jun 4-18 training). Priors: ach_m2=ach_m1 (M1=M2 identical geometry); ach_m3 >= ach_m1 (M3 dominates, 171-step panel). Stage 1 (M3-closed, 24149 rows): k_solar=0.0872 W/lux, c_eff=2.89 MJ/degC, ach_inf=0.178 /h, ach_m1=0.163 /h. Stage 2 (M3-open, 2161 rows, primary=0b111): ach_m3=0.163 /h (1.0x ach_m1; area ratio 8.1x). Validation T RMSE=1.20 C, 95th-pct=2.19 C.",
+  "volume_m3": 2400.0,
+  "k_solar_w_per_lux": 0.08722,
+  "c_eff_mj_per_c": 2.894,
+  "transpiration_kg_s": 0.00031,
+  "ach_inf": 0.1776,
+  "ach_m1": 0.1625,
+  "ach_m2": 0.1625,
+  "ach_m3": 0.1625,
+  "_priors": {
+    "ach_m2_equals_ach_m1": true,
+    "ach_m3_lower_bound": 0.1625,
+    "m3_area_ratio_physical": 8.1,
+    "m3_m1_ratio_fitted": 1.0,
+    "m1_fraction_in_m1m3": 50.0
+  },
+  "solar_peak_w": 4319.0
+}

@@ -6,6 +6,18 @@ When something weird happens, check here BEFORE debugging from scratch. Entries 
 
 ---
 
+## 2026-06-27 — Word COM automation hangs on large HTML files [RESOLVED — removed]
+
+**Problem:** `make_rtf()` in `manual/build_pdf.py` calls `word.Documents.Open(html)` which hangs indefinitely on `beheerderHandleiding.html` (~180 KB, complex CSS). Multiple orphaned `WINWORD.EXE` processes accumulate; temp HTML files are left locked on disk.
+
+**Root cause:** Word's non-interactive COM rendering path stalls on large, CSS-heavy HTML. The hang is silent — no exception, no timeout — so `make_rtf()` never returns and the script blocks.
+
+**Fix:** Removed Word COM and all RTF generation from `manual/build_pdf.py` entirely. Script now generates PDF only via Edge headless. RTF files (if ever needed) must be created outside this script.
+
+**Where it lives:** `manual/build_pdf.py` — `make_rtf()` function and the `try/except` block in the main loop. Orphaned WINWORD processes can be killed via `Get-Process WINWORD | ForEach-Object { $_.Kill() }`.
+
+---
+
 ## 2026-06-26 — `plot_daily.py` sorted-set dedup fails when two SD download chains overlap
 
 **Problem:** Feeding log files from two independent SD card downloads of the same unit (different rotation boundaries, same time period) causes days in the overlap window to show ~2× the expected sample count (~5700 vs ~2860 per day). The `sorted(set(tuple(e)))` dedup at `load_logs()` line 182 does not remove the double-counted readings.
@@ -40,21 +52,21 @@ When something weird happens, check here BEFORE debugging from scratch. Entries 
 
 **Where it lives:** `firmware/src/ota_manager/ota_manager.cpp` — `do_fw_done_timer_cb`. Described in [design/OTAimplementation.md §4.1](../design/OTAimplementation.md).
 
-## 2026-06-10 — `HEAD /api/log/download` reports constant 45 B regardless of file size
+## 2026-06-10 — `HEAD /api/log/download` reports constant 45 B regardless of file size [RESOLVED — issue filed 2026-06-28]
 
 **Problem:** SD log file-size probe via HTTP HEAD returns `Content-Length: 45` even for 1 MB files. Misleads any tooling that uses HEAD to size files before downloading.
 
 **Root cause:** Suspected — HEAD handler emits a hard-coded short response rather than running the GET path's size calculation.
 
-**Fix:** Use GET with `Range: bytes=0-0` to read just one byte and inspect `Content-Range` for the total. Or just GET the whole file. Filing of a proper fix issue is pending.
+**Fix:** Use GET with `Range: bytes=0-0` to read just one byte and inspect `Content-Range` for the total. Or just GET the whole file. GitHub issue filed 2026-06-28 (see repository issue tracker).
 
-## 2026-06-10 — `rfsee.net/hbwv/api.php` rejects POSTs > ~1 MB with HTTP 413
+## 2026-06-10 — `rfsee.net/hbwv/api.php` rejects POSTs > ~1 MB with HTTP 413 [RESOLVED — server limit raised 2026-06-28]
 
 **Problem:** T14's daily log upload fails every day with `code=413` once an SD log file rotates to its 1 MB cap. The `log_last_up` field froze at a May 24 filename for 17 days while uploads silently failed.
 
-**Root cause:** Server-side `post_max_size` (PHP) and/or `client_max_body_size` (nginx) is below 1 MB on rfsee.net. SD rotation is correctly capped at `LOG_ROT_BYTES = 1 MB`; every rotated file exceeds the server limit.
+**Root cause:** Server-side `post_max_size` (PHP) and/or `client_max_body_size` (nginx) was below 1 MB on rfsee.net.
 
-**Fix (preferred):** Raise the server-side upload limit to ≥ 2 MB. Alternative: drop device-side rotation size, but the server fix is cleaner. Forensic visibility tracked in [gh#34](https://github.com/pe1mew/greenhouse-Controller/issues/34) (record HTTP code in SD audit row).
+**Fix:** Server-side upload limit raised to ≥ 2 MB (2026-06-28). Firmware side complete in 2.1.1 (gh#34 commit): T14 records HTTP status code in the SD audit row. Both sides now resolved; tracked in GH issues.
 
 ## 2026-06-09 — Branch protection on `main` rejects merge commits
 

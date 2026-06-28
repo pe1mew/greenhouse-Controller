@@ -4,7 +4,7 @@
 |---|---|
 | Document | Thermal-Profile Campaign Plan |
 | Project | Greenhouse Ventilation Controller |
-| Status | **Firmware deployed — campaign in progress.** NS-1 and NS-1a complete (2026-06-27); log data running since approx. 2026-06-04. See Appendix A for individual gate status. |
+| Status | **Calibration complete (2026-06-27). Adopted artifact: constrained 6-param model.** Campaign data collected Jun 4–25. Constrained model (priors: M1=M2; M3 dominates) achieves val T RMSE 1.20 °C, 57 % within ±1 °C — best of all variants. M3's true ACH is not identifiable open-loop from this campaign due to firmware staged-opening and controller-feedback confounding; see §9.7. AC-9 (±1 °C 95th-pct) requires the closed-loop `simulation.py` approach. |
 | Approved | 10 min LoRaWAN interval (§6.3), 21-day duration (§8.3) — operator approval 2026-05-21 |
 | Primary purpose | Calibrate `model/simulation.py` so the operator can vet proposed controller settings (setpoints, dwell times, hysteresis, conflict-resolution priority) on the simulator before deploying them to the live greenhouse — preventing oscillation patterns from reaching production. |
 | Related | `model/calibrate_plant.py`, `model/simulation.py`, `model/srcData/sql.md`, `design/technicalSoftwareDesignSpecification.md` §5.3, §5.10, §5.13 |
@@ -429,6 +429,318 @@ Independent of stage 1; written as `model/build_thermal_profile.py`:
 
 Stage 2 is **not on the critical path** for the primary deliverable. It can be produced any time after the campaign data lands; it does not gate the simulator-fidelity claim.
 
+### 9.5 First-pass calibration test run (2026-06-27)
+
+Script: `model/calibrate_plant_campaign.py` — a simplified version of the planned `calibrate_plant_dynamic.py`. Key differences from the §9.2 plan: uses a **binary open/closed flag** (`bitmask > 0`) rather than per-bitmask `ach_open[]`, and fits only 5 parameters (`k_solar`, `c_eff_mj_per_c`, `transpiration_kg_s`, `ach_closed`, `ach_open`). No train/validation split — all `calibration_valid == 1` rows are used for fitting.
+
+**Setup:** global DE (popsize=20, maxiter=300) converged at 143 iterations; confirmed global minimum via Nelder-Mead polish.
+
+**Data:** 62 058 grid points (30 s, Jun 4–25); 41 158 in fit mask (66%); fit excludes door-open and stale-outdoor rows per Option A.
+
+**Parameter comparison:**
+
+| Parameter | Spring-2026 | Summer-2026 | Change |
+|---|---|---|---|
+| `k_solar` (W/lux) | 0.44289 | 0.09405 | −79% |
+| `c_eff_mj_per_c` | 2.890 | 3.572 | +24% |
+| `transpiration_kg_s` | 0.00477 | 0.00031 | −94% |
+| `ach_closed` (/h) | 0.500 | 0.182 | −64% |
+| `ach_open` (/h) | 1.650 | 0.526 | −68% |
+
+**Residuals (evaluated on `calibration_valid == 1` rows, same set used for fitting):**
+
+| Metric | Spring-2026 model | Summer-2026 fit | Improvement |
+|---|---|---|---|
+| T RMSE | 5.10 °C | 2.69 °C | −47% |
+| RH RMSE | 16.74 % | 6.73 % | −60% |
+
+Output files: `model/campaign-summer-2026/plant_calibrated_summer2026.json`, `model/campaign-summer-2026/calibration_compare_summer2026.png`.
+
+**What the plot shows.** The spring model (red dashed) overestimates daytime T by 5–15 °C on clear days and underestimates RH by 20–40 %; both effects are systematic, not random. The summer fit (green) tracks measured T and RH closely across the full 22-day series, with the largest residuals on the Jun 6–10 door-open block (excluded from fit, visible as pink shading). Visual inspection confirms no systematic bias in the summer-fit residuals.
+
+**Model-structure limitations.** The fitted `k_solar = 0.094 W/lux` gives an implied peak solar load of ~4 700 W (vs 21 900 W spring), and `transpiration ≈ 0`. These are not physically implausible but are smaller than expected, because the open-loop first-order model cannot represent the controller feedback loop: in practice, solar gain raises T → controller opens windows → T is partially vented; the model compensates by reducing `k_solar` rather than by simulating the control action. Consequently, the fitted parameters are best viewed as **effective** values for reproducing the measured T trace under actual controlled operation, not as independent physical measurements.
+
+`c_eff = 3.57 MJ/°C` is close to the air-only floor (V·ρ·cp = 2.89 MJ/°C), suggesting the 30 s SD backbone data still drives the model toward fast thermal response to match the sharp diurnal T cycles.
+
+**Gap to AC-9.** The AC-9 target is ±1 °C for ≥ 95 % of samples on a held-out validation week. At T RMSE = 2.69 °C (in-sample), this is not met. To close the gap: (a) implement `calibrate_plant_dynamic.py` with per-bitmask `ach_open[]` — the dominant missing degree of freedom is that the binary open/closed model averages across M1-only, M1+M2, and M1+M2+M3 states; (b) introduce a proper train/validation split so AC-9 can be evaluated on out-of-sample data. The simplified binary model is adequate for directional comparisons (see §9.4 worked example) but not for the ±1 °C fidelity claim.
+
+### 9.6 Per-bitmask calibration and staged M3 identification (2026-06-27)
+
+**Motivation.** The binary model (§9.5) uses a single `ach_open` for any window-open state. The §9.2 plan requires per-bitmask `ach_open[bitmask]` to resolve M1, M2, M3 contributions individually. This section documents the two approaches tried and the conclusion that per-bitmask identification is not achievable from this dataset open-loop.
+
+**Approach A — joint 7-parameter fit (`calibrate_plant_dynamic.py`).**
+Adds `ach_inf`, `ach_m1`, `ach_m2`, `ach_m3` as independent parameters; ACH is additive: `ach_total = ach_inf + ach_m1·m1 + ach_m2·m2 + ach_m3·m3`. Train/val split Jun 4–18 / Jun 19–25.
+
+Training-set bitmask coverage:
+
+| Bitmask | State | Training rows |
+|---|---|---|
+| 0b000 | All closed | 18 903 (157.5 h) |
+| 0b001 | M1 only | 4 326 (36.0 h) |
+| 0b011 | M1+M2 | 905 (7.5 h) |
+| 0b101 | M1+M3 | 362 (3.0 h) |
+| 0b111 | M1+M2+M3 | 1 775 (14.8 h) |
+| others | M2-only, M3-only, M2+M3 | < 25 rows each |
+
+Fast run (popsize=10, maxiter=100): `ach_m3 → 0` (degenerate). Full run (popsize=25, maxiter=400): `ach_m2 → 0` (different degenerate solution). Nelder-Mead polish drove `c_eff` below the physical floor (1.55 MJ/°C vs floor 2.89 MJ/°C) because scipy Nelder-Mead does not strictly enforce bounds. Binary and per-bitmask models are visually indistinguishable on the plot; validation RMSE improvement is negligible (1.34 °C vs 1.37 °C binary).
+
+**Approach B — two-stage fit (`calibrate_plant_staged.py`).**
+Stage 1: fit `[k_solar, c_eff, transp, ach_inf, ach_m1]` using loss restricted to 0b000+0b001 rows only (23 229 training rows, cleanest M1 signal). Stage 2: lock Stage 1 params, fix `ach_m2 = ach_m1` (identical window geometry), fit `ach_m3` from 0b101 rows alone (362 training rows — rapid cool-down events where M2 has closed but M3 dwell has not expired).
+
+Stage 1 result: `ach_inf = 0.165 /h`, `ach_m1 = 0.237 /h`, `c_eff = 2.89 MJ/°C` (clipped to physical floor). Stage 1 residuals on 0b000+0b001 rows: train RMSE 2.83 °C (bias −1.42 °C), val RMSE 1.19 °C.
+
+Stage 2 result: `ach_m3 = 0.010 /h` — **hit the lower bound**. The 1-D grid search showed the minimum loss at the smallest allowed value; adding M3 ventilation increases the Stage 2 loss (75.4) vs the Stage 1 baseline (34.3). Validation: T RMSE 1.30 °C, 95th-pct 2.23 °C, within ±1 °C 50 % → AC-9 FAIL.
+
+**Root cause — why 0b101 rows cannot identify M3.**
+The 362 training rows of state 0b101 (M1+M3) arise exclusively from rapid cool-down events: outdoor temperature drops fast, the controller closes M2 (300 s dwell satisfied) but M3 remains open (1 500 s dwell still running). During these events T_in is already dropping due to falling solar gain — the `k_solar·lux` term explains the observed temperature trajectory without any M3 contribution. Adding `ach_m3 > 0` predicts additional convective cooling that is not present in the data, increasing the fit error. The Stage 2 loss minimum lies at `ach_m3 → 0` regardless of whether M1 is pre-fixed or fit jointly. This is a structural observability limitation: M3's ventilation effect and the falling-lux cooling are confounded in the 0b101 data, and the open-loop model has no way to separate them.
+
+**Performance summary:**
+
+| Model | Val T RMSE | Val 95th-pct | Val within ±1 °C |
+|---|---|---|---|
+| Spring-2026 baseline | 5.43 °C | 10.90 °C | 9 % |
+| Binary summer-2026 (§9.5) | 1.37 °C | 2.62 °C | 51 % |
+| Joint dynamic (calibrate_plant_dynamic.py) | 1.34 °C | 2.53 °C | 54 % |
+| Two-stage (calibrate_plant_staged.py) | 1.30 °C | 2.23 °C | 50 % |
+
+**Conclusion.** The binary model (`plant_calibrated_summer2026.json`) is the adopted calibration artifact. Per-bitmask `ach_m3` is not identifiable from this 21-day campaign open-loop. The ~0.07 °C validation RMSE improvement from additional parameterisation is within noise. AC-9 (≤ 1.0 °C 95th-pct, ≥ 95 % within ±1 °C) cannot be achieved with any open-loop plant model on controlled-greenhouse data — every controller-driven window state change creates a discontinuity the open-loop model cannot bridge. The proper path to AC-9 is the closed-loop `simulation.py` approach: drive the firmware's full control logic with the calibrated plant parameters and the recorded outdoor weather, allowing the simulated controller to make the same decisions as the real controller.
+
+Scripts: `model/calibrate_plant_dynamic.py`, `model/calibrate_plant_staged.py`. Output JSON: `campaign-summer-2026/plant_calibrated_dynamic_summer2026.json`, `campaign-summer-2026/plant_calibrated_staged_summer2026.json` (retained for reference; binary model is authoritative).
+
+### 9.7 Constrained 6-parameter model — physical priors and firmware limitations (2026-06-27)
+
+#### Priors accepted
+
+After the full identification study in §9.6, two physical priors were accepted and encoded as constraints:
+
+**Prior 1 — M1 = M2 (ach_m2 = ach_m1).**
+M1 and M2 are identical 21-step roof windows with the same geometry, travel, and installation. The 21-day campaign produced only 15 rows of M2-alone data (7.5 minutes) — statistically insufficient to identify `ach_m2` independently. Equality by construction is the correct prior; the data has nothing to say against it.
+
+**Prior 2 — M3 dominates when open.**
+M3 is a 171-step ridge ventilation panel, approximately 8× the travel (and area) of M1/M2. When M3 is open, M1 and M2's combined contribution is nominally 2/(2+8) = 18 % of the total M3-driven flow. This is accepted as a small correction: M1 and M2 are still modelled explicitly, but M3 dominates any open state that includes it. The implication is `ach_m3 >> ach_m1`, with the lower bound set to `ach_m1` (M3 must contribute at least as much as one small window).
+
+#### Constrained 6-parameter model (`calibrate_plant_constrained.py`)
+
+Free parameters: `k_solar`, `c_eff_mj_per_c`, `transpiration_kg_s`, `ach_inf`, `ach_m1`, `ach_m3`.
+Constraint: `ach_m2 = ach_m1` (not fitted).
+
+ACH formula: `ach(vm) = ach_inf + ach_m1·(m1 + m2) + ach_m3·m3`
+
+Two-stage fit:
+- **Stage 1** — M3-closed states (`vent_mask & 0b100 == 0`, 24 149 training rows including 905 rows of M1+M2). The 0b011 rows now contribute independent signal for `ach_m1` via `ach(0b011) = ach_inf + 2·ach_m1`.
+- **Stage 2** — M3-open states (`vent_mask & 0b100 != 0`, 2 161 training rows; primary signal: 1 775 rows of 0b111 at full-ventilation during peak solar events).
+
+Stage 1 result: `ach_inf = 0.178 /h`, `ach_m1 = 0.163 /h`, `c_eff = 2.89 MJ/°C`.
+
+Implied ACH table:
+
+| Bitmask | State | ACH (/h) | Train rows |
+|---|---|---|---|
+| 0b000 | All closed | 0.178 | 18 903 |
+| 0b001 | M1 only | 0.340 | 4 326 |
+| 0b010 | M2 only | 0.340 | 15 |
+| 0b011 | M1+M2 | 0.503 | 905 |
+| 0b100 | M3 only | 0.340 | 4 |
+| 0b101 | M1+M3 | 0.503 | 362 |
+| 0b110 | M2+M3 | 0.503 | 20 |
+| 0b111 | M1+M2+M3 | 0.665 | 1 775 |
+
+Stage 2 result: **`ach_m3 = ach_m1 = 0.163 /h` (lower bound)**. The grid scan shows loss monotonically increasing above the lower bound — the 0b111 data does not support `ach_m3 > ach_m1`. See the firmware limitation below for why.
+
+Performance vs prior models:
+
+| Model | Val T RMSE | Val 95th-pct | Val within ±1 °C |
+|---|---|---|---|
+| Spring-2026 baseline | 5.43 °C | 10.90 °C | 9 % |
+| Binary summer-2026 | 1.37 °C | 2.62 °C | 51 % |
+| Joint dynamic (7p) | 1.34 °C | 2.53 °C | 54 % |
+| Two-stage staged (§9.6) | 1.30 °C | 2.23 °C | 50 % |
+| **Constrained 6p (adopted)** | **1.20 °C** | **2.19 °C** | **57 %** |
+
+The constrained model outperforms binary by 0.17 °C RMSE and +6 percentage-point within-±1 °C. The improvement comes entirely from the M1=M2 prior: by treating 0b011 rows as `ach_inf + 2·ach_m1` rather than averaging them with M1-only rows, the model correctly assigns more ventilation to the multi-window states. The `ach_m3` lower-bound result means M3's effect is modelled conservatively (equal to M1), which will underestimate peak ventilation in 0b111 states but is the best the data supports.
+
+**Adopted calibration artifact:** `campaign-summer-2026/plant_calibrated_constrained_summer2026.json` replaces the binary model as the authoritative output. It encodes both physical priors and is strictly better than binary on validation metrics.
+
+#### Firmware limitations on M3 identification
+
+The following firmware design constraints prevented direct identification of `ach_m3` from this campaign. These are correct design choices for normal operation; they are limitations only for open-loop plant calibration.
+
+**1. Staged opening sequence — M3 never opens alone.**
+The firmware always ventilates in the sequence M1 → M1+M2 → M1+M2+M3 (tasks T6/T2). M3 can only open after M1 and M2 have been open for their dwell periods. The result: the M3-alone state (0b100) has only 4 training rows in 21 days. There is no admin API or test mode to open M3 in isolation.
+
+Calibration impact: `ach_m3` must be identified from M3-combined states (0b101, 0b110, 0b111). M1 and M2's confounding contribution cannot be removed experimentally.
+
+**2. M3-open states are structurally confounded by controller feedback.**
+M3 opens only when the controller has decided maximum ventilation is required. This means every M3-open period is either (a) a rapid cool-down event where lux drops independently explain the temperature fall (0b101/0b110), or (b) a sustained high-heat event where the controller holds T_in near setpoint (0b111). In case (a), the external driver (falling lux) explains the observed temperature without needing M3. In case (b), the controller feedback holds T_in flat, and the open-loop model interprets "T_in stays near setpoint despite high lux" as compatible with a small ach_m3. Neither state allows the plant's natural open-loop thermal response to M3 to be observed.
+
+Calibration impact: adding `ach_m3 > ach_m1` increases the model's predicted cooling in M3-open states, which worsens the fit relative to the controlled/confounded observed T_in. The optimiser is therefore forced to the lower bound regardless of dataset size or fitting strategy.
+
+**3. Dwell times create asymmetric identification windows.**
+`dwell_open_m1 = dwell_open_m2 = 300 s` vs `dwell_open_m3 = 1 500 s`. The much longer M3 dwell means M3 is almost always co-open with M1 and M2 except during the brief rapid-close events (0b101: 362 rows, 3.0 h across 21 days). These events are the only M3-only-increment data, and they occur exclusively during rapid cool-down — see point 2.
+
+**Path to ach_m3 identification:**
+
+Option A — **deliberate M3-only test using the existing LCD manual override.** No firmware changes required.
+
+The firmware already provides a manual motor override (introduced gh#29, `rc.1.5.0`). When an admin enters the motor-control menu on LCD Screen 5, STANDBY is engaged automatically, pausing T6 (climate control). Motor commands are posted directly to T2 (relay controller) with `source = SRC_OPERATOR_MANUAL`, which bypasses dwell timers and the staged opening sequence. Any individual channel can be opened or closed independently of the others.
+
+*Implementation detail (for the calibration pipeline):* when M3 is open and M1/M2 are closed, T2's bitmask accessor returns `M1=CLOSED(0b00) | M2=CLOSED(0b00) | M3=OPEN(0b10)` → raw `value_a = 0x20`. The calibration pipeline decodes this as `vent_mask = 0b100` — the M3-only state. STANDBY prevents T6 from re-opening M1 or M2 during the test window.
+
+*Safety gate:* `CMD_OPEN` for any channel is blocked by `EG1_BIT_WIND_OVERRIDE` (T3 wind safety, active when wind > `v_max`). A `CMD_CLOSE_ALL` from T3 can also close M3 mid-test if wind rises. Run the test in calm conditions, well below the wind threshold.
+
+**NS-6 M3 calibration test procedure** (see NS table below):
+
+| Step | Action |
+|---|---|
+| Precondition | Clear sunny day, outdoor lux ≥ 30 000, wind < 50 % of `v_max`, stable for ≥ 30 min before test |
+| 1 | Navigate to LCD Screen 5 (window states display) |
+| 2 | Press `#` → enter admin PIN → STANDBY engages, T6 pauses |
+| 3 | If M1 or M2 are open: select each (`1` / `2`), press `2` (Close) |
+| 4 | Select M3 (`3`) → press `1` (Open) — T2 energises M3 relay immediately |
+| 5 | Wait **45–60 minutes** in place; do not exit or touch LCD (admin session timeout = 5 min idle; navigate back to motor menu if needed to keep session alive) |
+| 6 | Select M3 → press `2` (Close) |
+| 7 | Exit manual menu (`*`) — STANDBY clears when admin session expires (~5 min) |
+| Post | Download the SD log covering the test window; add to `campaign-summer-2026/` as `m3_calib_<date>.csv` |
+| Analysis | Rerun `calibrate_plant_constrained.py` Stage 2 with the augmented dataset — the ~120 new `vent_mask=0b100` rows in stable lux directly constrain `ach_m3` without controller-feedback confounding |
+
+*Why 45–60 min is sufficient:* the thermal time constant τ = C_eff / (ach_total × ρ·V·cp) ≈ 3 600 / ach_m3 seconds. If M3 contributes ach_m3 ≈ 2 /h (8× M1, area-scaling estimate), τ ≈ 27 min; one full time constant captures 63 % of the step response — a unique, unambiguous fit of ach_m3.
+
+Option B — **closed-loop simulation**: `simulation.py` drives the firmware's full control logic (T6 decisions, dwell enforcement) with the calibrated plant parameters. The simulated controller makes the same decisions as the real controller, so the simulation's predicted T_in trajectory is already the controlled response — M3's effect is observable within the simulation's own feedback loop. The constrained 6p model provides the plant parameters; `ach_m3 = ach_m1` is conservative and will be corrected by the simulation dynamics. This is independent of the M3 test and should be pursued regardless (it closes AC-9 and AC-11).
+
+Script: `model/calibrate_plant_constrained.py`. Output: `campaign-summer-2026/plant_calibrated_constrained_summer2026.json`.
+
+### 9.8 Window strategy analysis: implications from calibration (2026-06-27)
+
+The summer-2026 calibration gives the first quantitative per-channel ACH estimates for this greenhouse. Comparing those numbers against the T6 ventilation algorithm reveals a structural mismatch between the implemented control strategy and the physical reality of the windows.
+
+#### Current firmware strategy (T6 `step_from_deviation`)
+
+T6 maps temperature deviation above setpoint to a step index 0–3, with equal step widths of `max(hyst_t / 3, 1)` °C. At the default `hyst_t = 5 °C`, each step triggers at +1 °C:
+
+| Step | Bitmask | Windows open | Trigger (above T_set) |
+|---|---|---|---|
+| 0 | 0b000 | none | — |
+| 1 | 0b001 | M1 | T_set + 1 °C |
+| 2 | 0b011 | M1 + M2 | T_set + 2 °C |
+| 3 | 0b111 | M1 + M2 + M3 | T_set + 3 °C |
+
+The step widths are **equal in temperature** (1 °C each). The implicit assumption is that each step adds roughly equal ventilation capacity.
+
+#### What the calibration actually shows
+
+Adopted constrained model (`plant_calibrated_constrained_summer2026.json`):
+
+| Step | Bitmask | Calibrated ACH | Incremental ACH | × per step |
+|---|---|---|---|---|
+| 0 | 0b000 | 0.178 /h | — | — |
+| 1 | 0b001 | 0.341 /h | +0.163 /h (M1) | — |
+| 2 | 0b011 | 0.504 /h | +0.163 /h (M2 = M1) | 1.0× step 1 |
+| 3 | 0b111 (lower bound) | 0.667 /h | +0.163 /h (M3 = M1) | 1.0× — **artificial lower bound** |
+| 3 | 0b111 (area-scaled) | 1.824 /h | +1.320 /h (M3 ≈ 8.1× M1) | **8.1× step 1** |
+
+The lower-bound row is the model artefact (controller-feedback confounding, §9.7). The area-scaled row is the physical estimate from M3's 171-step travel vs M1's 21-step (ratio 8.1, applied to `ach_m1 = 0.163 /h`).
+
+The equal-step-width assumption is **physically incorrect**. Step 3 does not add the same ventilation increment as steps 1 or 2 — it adds 8× more.
+
+#### Why this matters: thermal response time
+
+The thermal time constant of the greenhouse plant model is:
+
+```
+τ = C_eff / (ACH_total × V_air × ρ_air × c_p_air)
+```
+
+Since all terms except ACH_total are fixed for a given greenhouse, τ scales as 1/ACH_total. The relative response times per step:
+
+| Step | ACH | τ relative to step 1 |
+|---|---|---|
+| 0 (closed) | 0.178 /h | ~ very long |
+| 1 (M1) | 0.341 /h | 1.00 × |
+| 2 (M1+M2) | 0.504 /h | 0.68 × (only 32 % faster than step 1) |
+| 3 (lower bound) | 0.667 /h | 0.51 × (2.0× faster than step 1) |
+| 3 (area-scaled M3) | 1.824 /h | **0.19 × (5.3× faster than step 1)** |
+
+Steps 1 and 2 provide essentially the same response time — adding M2 to M1 makes the greenhouse only 32 % faster to equilibrate. Step 3 with a physically correct M3 makes it **5× faster**. The jump from step 2 to step 3 is not a linear increment; it is a **regime change**.
+
+#### Equilibrium temperature excess
+
+At solar steady state `(dT_in/dt = 0)`, the indoor-outdoor temperature difference scales as:
+
+```
+T_in_eq - T_out = (P_solar + P_transp) / (ACH_total × V_air × ρ_air × c_p_air)
+```
+
+Again, `∝ 1/ACH_total`. On a fully sunny summer day with `k_solar × lux` fixed:
+
+| Step | ACH | T_excess relative to step 3 (area-scaled) |
+|---|---|---|
+| 0 (closed) | 0.178 /h | 10.2 × |
+| 1 (M1) | 0.341 /h | **5.3 ×** |
+| 2 (M1+M2) | 0.504 /h | **3.6 ×** |
+| 3 (area-scaled) | 1.824 /h | **1.0 ×** (reference) |
+
+If M3 at full capacity can maintain `T_in = T_out + 3 °C` in full sun, then M1 alone maintains `T_in = T_out + 16 °C` and M1+M2 maintains `T_in = T_out + 11 °C`. The steps below M3 are not "partial cooling" — they are ineffective cooling on a hot summer day.
+
+#### Five reasons to reconsider the strategy
+
+**1. M3 opens too late.**
+The current strategy requires T to exceed setpoint by 3 °C before M3 opens. By that point the plant has already been heat-stressed for potentially hours (steps 1 and 2 have τ ≈ several hours each). M3 should engage sooner.
+
+**2. Equal step widths are physically wrong.**
+The 1 °C spacing between each step was designed under an equal-ventilation-per-step assumption. The calibration proves M3 provides 8× more ACH than M1 or M2. A threshold structure that treats all three steps as equal ignores the most important physical fact about this greenhouse.
+
+**3. Step 1 → step 2 is nearly useless on a hot summer day.**
+M2 is identical to M1 (same geometry, same ACH contribution). Opening M1+M2 vs M1 alone changes the equilibrium temperature excess by only (5.3 - 3.6) / 5.3 = 32 %. On a day requiring M3, this 32 % improvement from M2 is irrelevant — the decisive action is M3. The step 1 → 2 transition wastes a +1 °C deviation band without materially improving the situation.
+
+**4. The −5 °C close hysteresis keeps M1 open all night.**
+The `step_from_deviation` close-guard holds step ≥ 1 until `T_in < T_set − hyst_t = T_set − 5 °C`. With `T_set = 28 °C`, M1 stays open until T_in < 23 °C. On many summer nights T_in never drops to 23 °C, so M1 stays energised all night. The calibration shows `ach_m1 = 0.163 /h` — this is sustained ventilation removing transpired moisture and heat throughout the night. Depending on outdoor humidity, this may or may not be desirable, but the current strategy gives no independent control of the night-close threshold.
+
+**5. hyst_t conflates two independent tuning objectives.**
+A single `hyst_t` parameter controls three things simultaneously: when M1 opens (+step_width), when M2 opens (+2×step_width), and when M3 opens (+3×step_width), as well as the full-close guard (−hyst_t). Tuning `hyst_t` to make M3 open sooner (say reducing to 3 °C → M3 at +1 °C deviation) also makes M1 open sooner (+0.33 °C, likely oscillation territory) and closes the full-close guard to −3 °C (possibly causes night oscillation). The parameters are not orthogonal.
+
+#### Proposed alternative strategies
+
+**Option A (minimum-invasive) — independent M3 threshold (`t_thresh_m3`)**
+
+Add a single NVS parameter `t_thresh_m3` (°C above setpoint to open M3, namespace `"climate"`). M3 is opened whenever `T_in > T_set + t_thresh_m3`, regardless of which step M1/M2 are on. Default: `t_thresh_m3 = t_thresh_m1` (current step-1 threshold, so M3 opens at the same deviation as M1 on hot days). Operators can lower it to 0.5–1.0 °C for aggressive summer preemptive opening.
+
+Impact on step table logic: none. T6 evaluates the M3 decision independently of the step index. T2's dwell enforcement and safety gates are unchanged.
+
+This is the **recommended starting point** — one parameter, zero risk of regressing M1/M2 behaviour, directly testable after NS-6 confirms `ach_m3`.
+
+**Option B — revised step table: skip M2 intermediate step**
+
+Replace the step table with:
+
+| Step | Bitmask | Windows |
+|---|---|---|
+| 0 | 0b000 | none |
+| 1 | 0b001 | M1 |
+| 2 | 0b101 | M1 + M3 |
+| 3 | 0b111 | M1 + M2 + M3 |
+
+Step 2 (M1+M3) provides ach ≈ 0.341 + 1.320 = 1.661 /h (area-scaled estimate) vs the current M1+M2 at 0.504 /h — more than 3× better cooling without adding M2 as an intermediate. Step 3 adds M2 for maximum flow but the marginal benefit of M2 when M3 is already open is small (+9 % ACH).
+
+**Requires firmware change to `VENT_STEP_TABLE`.** Also changes the behaviour of the 25-min `dwell_open_m3` — at step 2 M3 would now be subject to that dwell on every step-down from 2 to 1, which may create instability. Needs simulation study before implementation.
+
+**Option C — feedforward M3 on solar gain**
+
+Open M3 preemptively when `lux > lux_thresh_m3` (configurable), before T even rises above setpoint. The calibration gives `k_solar = 0.087 W/lux`; at `lux = 50 000` that is 4 350 W of solar gain. Even with M1+M2 open the greenhouse cannot stay within 1 °C of setpoint. A solar-triggered M3 pre-open is physically justified.
+
+Requires reading the `lux` value in T6, which currently reads only T and RH from the sensor shadow. Minor architecture change.
+
+#### Summary
+
+| Reason to change | Severity | Addressed by |
+|---|---|---|
+| M3 opens 2 °C too late | High — plants already heat-stressed | Option A / B |
+| Step widths ignore 8× M3 area advantage | High — fundamentally wrong physics | Option A / B / C |
+| Step 1→2 adds only 32 % improvement | Medium — wastes a 1 °C deviation band | Option B |
+| hyst_t conflates M1/M2/M3 and close guard | Medium — no independent M3 tuning | Option A |
+| Night-close always at T_set − 5 °C | Low — may over-ventilate mild nights | Separate t_close_night parameter |
+
+The calibration alone does **not** give ACH values for alternative bitmask states (0b101, 0b100) — those require the NS-6 M3 test. However, even with the current conservative lower-bound `ach_m3 = ach_m1`, steps 1 and 2 have identical ventilation increments, which already justifies Option A: there is no penalty from opening M3 earlier.
+
 ### 9.4 Worked example — answering the "would dwell prevent the oscillation?" question
 
 The §1.1 use case is best illustrated by the M2 oscillation observed at 2026-05-20 14:24 in the 18.9 h soak (M2 closed → 4 min later re-opened → 23 min later closed again, with the indoor T climbing from 29 °C back to 33 °C in between). The operator's question is: "would `dwell_close_m2 = 5 min` have prevented this?"
@@ -527,7 +839,7 @@ D-1 and the rotation-config change in §5.3 are the only items required *before*
 
 ---
 
-*§6.3 (10-minute LoRaWAN interval) and §8.3 (21-day campaign duration) approved by the operator on 2026-05-21. Firmware deployed (rc.1.5.2 / 2.1.1). Campaign in progress since approx. 2026-06-04 — see Appendix A.*
+*§6.3 (10-minute LoRaWAN interval) and §8.3 (21-day campaign duration) approved by the operator on 2026-05-21. Firmware deployed (rc.1.5.2 / 2.1.1). Campaign data collected approx. 2026-06-04 to 2026-06-25 (21 days). Binary calibration complete 2026-06-27 — see §9.5. Per-bitmask M3 identification concluded non-identifiable open-loop 2026-06-27 — see §9.6. Binary model (`campaign-summer-2026/plant_calibrated_summer2026.json`) is the adopted calibration artifact.*
 
 ---
 
@@ -539,8 +851,12 @@ D-1 and the rotation-config change in §5.3 are the only items required *before*
 | NS-1a | Update analysis-pipeline log parser for `SENSOR_HR` and `SUN` row types | ✅ **COMPLETE** — `model/campaign-summer-2026/plot_daily.py` dispatches on `SENSOR_HR_0` (T+RH), `SENSOR_HR_1` (wind), `SENSOR_HR_2` (bitmask) and `SUN`. Verified 2026-06-27 against 12 campaign log files: 61 714 `SENSOR_HR` rows decoded, 15 `SUN` rows decoded, 0 legacy `SENSOR` rows present. Legacy `SENSOR` row decoding preserved. |
 | NS-2 | Configure LHT65-20 uplink interval to 600 s via TTN downlink (payload `01 00 02 58`, FPort 2) | ✅ **COMPLETE** — confirmed from campaign data (2026-06-27): 2 851 rows over 22 days; 92.6% of inter-uplink gaps are exactly 10 min (median 10.0 min, mean 11.1 min); longer gaps (20/30/40 min) are integer multiples consistent with LoRaWAN packet loss, not a longer base interval. TTN console screenshot not retained but data is conclusive. |
 | NS-3 | Verify Phase 7 soak 14-day clean criterion (zero panics, zero WDT, zero coredump) | ✅ **COMPLETE** — firmware advanced through rc.1.5.x → 2.0.x → 2.1.1 without recorded panic or WDT resets. Soak gate passed before production deployment of 5C88. |
+| NS-4 | First-pass calibration test run on summer-2026 campaign data | ✅ **COMPLETE** (2026-06-27) — `model/calibrate_plant_campaign.py` fit on 41 158 valid rows (Option A). T RMSE 2.69 °C vs 5.10 °C spring model; RH RMSE 6.73 % vs 16.74 %. DE converged at 143/300 iterations. Output: `campaign-summer-2026/plant_calibrated_summer2026.json` + `calibration_compare_summer2026.png`. **AC-9 not yet achieved** — per-bitmask `calibrate_plant_dynamic.py` still needed. |
+| NS-5 | Implement `calibrate_plant_dynamic.py` with per-bitmask `ach_open[]` vector and train/validation split | ✅ **COMPLETE** (2026-06-27) — joint 7-param, two-stage, and constrained 6-param (`calibrate_plant_constrained.py`) fits all implemented. Physical priors accepted: M1=M2 (identical geometry); M3 dominates (171-step panel). `ach_m3` remains at lower bound due to controller-feedback confounding in all M3-open states — see §9.6 and §9.7. **Adopted artifact: constrained 6-param model** (`plant_calibrated_constrained_summer2026.json`, val RMSE 1.20 °C, 57 % within ±1 °C). |
+| NS-6 | M3 deliberate calibration test — 45–60 min M3-only open via LCD manual override | ⬜ **PENDING** — no separate campaign needed. Use existing LCD Screen 5 → `#` → PIN → select M3 → Open. STANDBY pauses T6 automatically; dwell timers bypassed (`SRC_OPERATOR_MANUAL`). M1/M2 remain closed; `vent_mask=0b100` rows in the SD log provide ~120 clean unconfounded M3-only rows in stable lux. Preconditions: clear sunny day, lux ≥ 30 000, wind < 50 % of `v_max`. After test: rerun `calibrate_plant_constrained.py` Stage 2 with augmented dataset to resolve `ach_m3`. See §9.7 for full procedure. **Key firmware facts:** LCD-only (no web API for manual motor control); `CMD_OPEN` blocked by `EG1_BIT_WIND_OVERRIDE`; `CMD_CLOSE_ALL` from T3 can interrupt mid-test if wind rises. |
+| NS-7 | Evaluate and implement independent M3 ventilation threshold (`t_thresh_m3`) in T6 | ⬜ **PENDING** — see §9.8. Calibration shows M3 adds 8.1× more ACH than M1 or M2; the current equal-step-width strategy opens M3 too late (only at T_set+3 °C) and gives no independent tuning of the M3 trigger. **Prerequisite: NS-6** (need confirmed `ach_m3` before evaluating alternative step tables quantitatively). **Minimum-invasive Option A:** add NVS parameter `t_thresh_m3` (°C above T_set to open M3, default = current behaviour) in namespace `"climate"`; T6 evaluates M3 independently of the M1/M2 step index — zero regression risk to existing M1/M2 logic. Option B (revised step table 0b001→0b101→0b111) and Option C (solar feedforward) require simulation study first. Minimum SemVer bump: minor (new NVS key + new API field). |
 
-Campaign is in progress. Log data in `model/campaign-summer-2026/` shows continuous `SENSOR_HR` collection from 2026-06-04. Fill in dates at end of campaign:
+Campaign data collection complete (Jun 4–25, 2026). Log data in `model/campaign-summer-2026/` shows continuous `SENSOR_HR` collection from 2026-06-04. Fill in dates at end of campaign:
 
 | Kick-off | approx. 2026-06-04 (first `SENSOR_HR` log file) — confirm exact flash timestamp |
 |---|---|

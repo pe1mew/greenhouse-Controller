@@ -1,0 +1,13 @@
+{
+  "_comment": "Dynamic per-channel calibration by calibrate_plant_dynamic.py on summer-2026 campaign (Jun 4-18 training set, Option A door exclusion). k_solar=0.0469 W/lux, c_eff=1.55 MJ/degC, ach_inf=0.094 /h, ach_m1=0.075 /h, ach_m2=0.000 /h, ach_m3=0.094 /h. Validation T RMSE: 1.34 C.",
+  "volume_m3": 2400.0,
+  "ach_inf": 0.0942,
+  "ach_m1": 0.0745,
+  "ach_m2": 0.0,
+  "ach_m3": 0.0944,
+  "ach_roof": 0.0745,
+  "ach_wall": 0.0944,
+  "transpiration_kg_s": 0.000168,
+  "solar_peak_w": 2322.0,
+  "c_eff_mj_per_c": 1.548
+}

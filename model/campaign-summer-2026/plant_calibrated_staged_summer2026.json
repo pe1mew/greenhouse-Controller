@@ -1,0 +1,14 @@
+{
+  "_comment": "Two-stage calibration by calibrate_plant_staged.py (summer-2026, Option A, Jun 4-18 training). Stage 1 fit on 0b000+0b001 rows: k_solar=0.0877 W/lux, c_eff=2.89 MJ/degC, ach_inf=0.165 /h, ach_m1=0.237 /h. Stage 2 fit on 0b101 rows: ach_m3=0.010 /h (0.0x M1; physical area ratio 8.1x). ach_m2 = ach_m1 (identical window geometry). Validation T RMSE=1.30 C, 95th-pct=2.23 C.",
+  "volume_m3": 2400.0,
+  "k_solar_w_per_lux": 0.08766,
+  "c_eff_mj_per_c": 2.894,
+  "transpiration_kg_s": 0.000308,
+  "ach_inf": 0.1648,
+  "ach_m1": 0.2372,
+  "ach_m2": 0.2372,
+  "ach_m3": 0.01,
+  "ach_roof": 0.2372,
+  "ach_wall": 0.01,
+  "solar_peak_w": 4341.0
+}

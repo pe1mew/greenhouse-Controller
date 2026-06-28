@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [docs] — 2026-06-27  (boerHandleiding v1.17 + model campaign-defaultSettings)
+
+Documentation-only update — geen firmware-wijzigingen.
+
+- **`manual/boerHandleiding.md` → v1.17**: figuurcaptions toegevoegd en hernummerd (Figuur 2 schematisch overzicht, Figuur 6 reset-knop; Figuur 1–8 volledig consistent); "Standby" → "Stand-by" doorvoerd; "calibratie" → "kalibratie"; "in en uit gaan" → "in- en uitgaan"; "hoe lang" → "hoelang"; "fotos/smartfone" → "foto's/smartphone".
+- **`model/campaign-defaultSettings/`**: settings_optimised.json, new_settings_calibrated.json en alle S1–S5 scenario-resultaten (CSV + PNG) verplaatst van model/ naar dit nieuwe campagne-archief.
+- **`model/README.md`**: bijgewerkt met campaign-defaultSettings/-sectie.
+- **`manual/build_pdf.py`**: Word COM/RTF-generatie verwijderd; script genereert nu alleen PDF (Edge headless).
+- **`README.md`**: PDF-links bijgewerkt naar `_Final.pdf`; quick-reference-rij verwijderd.
+
+---
+
 ## [docs] — 2026-06-26  (handleidingen v1.16 / v1.20)
 
 Documentation-only update — geen firmware-wijzigingen.

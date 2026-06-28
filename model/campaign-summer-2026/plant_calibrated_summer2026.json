@@ -1,0 +1,12 @@
+{
+  "_comment": "Calibrated by calibrate_plant_campaign.py on summer-2026 campaign data (Option A door exclusion, binary open/closed model). k_solar=0.0940 W/lux, c_eff=3.57 MJ/degC, ach_open=0.526 /h, ach_closed=0.182 /h. T RMSE 2.69 C (all valid rows, no train/val split). DE converged at iter 143/300.",
+  "volume_m3": 2400.0,
+  "ach_closed_per_hr": 0.18221,
+  "ach_open_per_hr": 0.52572,
+  "ach_roof": 0.049,
+  "ach_wall": 0.245,
+  "transpiration_kg_s": 0.000306,
+  "solar_peak_w": 4657.0,
+  "c_eff_mj_per_c": 3.572,
+  "k_solar_w_per_lux": 0.09405
+}
