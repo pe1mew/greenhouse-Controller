@@ -1678,14 +1678,14 @@ static esp_err_t sd_unmount_handler(httpd_req_t *req)
  * @param req esp_http_server request handle.
  * @return ESP_OK on response sent; ESP_FAIL on heap alloc failure.
  * @note Auth requirement: Admin only.
- * @note Rate limit: none (capped at LOG_FILES_MAX=12 names in the response).
+ * @note Rate limit: none (capped at SD_MAX_FILES names in the response).
  */
 static esp_err_t log_files_handler(httpd_req_t *req)
 {
     if (!admin_only_or_send_error(req)) return ESP_OK;
 
     /* List buffer for storage_sd_list_csv (comma-separated string). */
-    const size_t LIST_LEN = 512u;
+    const size_t LIST_LEN = SD_LIST_BUF_LEN;
     char *list_buf = (char *)heap_caps_malloc(LIST_LEN, MALLOC_CAP_INTERNAL);
     if (list_buf == NULL) { httpd_resp_send_500(req); return ESP_FAIL; }
     list_buf[0] = '\0';
@@ -1694,7 +1694,7 @@ static esp_err_t log_files_handler(httpd_req_t *req)
     }
 
     /* Tokenize → fixed-size name array. */
-    enum { LOG_FILES_MAX = 12, LOG_FNAME_MAX = 24 };
+    enum { LOG_FILES_MAX = (int)SD_MAX_FILES, LOG_FNAME_MAX = SD_NAME_ONLY_LEN };
     char names[LOG_FILES_MAX][LOG_FNAME_MAX] = {};
     int n_names = 0;
     char *save = NULL;

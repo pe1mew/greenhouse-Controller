@@ -101,35 +101,8 @@ static const char *TAG = "T9_LOG";
  * The previous defaults (512 KB / 10 files / 3 floor / 2 MB free) are
  * retained as comments for reference. */
 
-/** @brief Rotate to a new file when the current one reaches this many bytes (1 MB). */
-#define SD_ROTATE_BYTES    (1024UL * 1024UL)   /* was 512 KB pre-rc.1.4.0 */
-
-/** @brief Maximum number of log files retained on the SD card before the oldest is deleted on rotation. */
-#define SD_MAX_FILES       30u                  /* was 10 pre-rc.1.4.0 */
-
-/** @brief Minimum number of files to retain; never delete below this floor (5 files). */
-#define SD_MIN_FILES       5u                   /* was 3 pre-rc.1.4.0 */
-
-/** @brief Suspend SD logging (or proactively reclaim) when free space drops below this many bytes (4 MB). */
-#define SD_FREE_MIN_BYTES  (4UL * 1024UL * 1024UL)   /* was 2 MB pre-rc.1.4.0 */
-
-/**
- * @brief Length of an SD filename string including leading '/' and NUL.
- *
- * 2.0.1 (gh#30) — filenames are now prefixed with the unit ID:
- *   "/XXXX_YYYYMMDDHHMMSS.csv" = 24 printable chars + '\0' = 25.  32 gives
- *   margin and aligns the buffer.  Old un-prefixed files (18-char names)
- *   are still recognised by is_ts_filename() so existing cards keep working.
- */
-#define SD_FILENAME_LEN    32
-
-/**
- * @brief Length of the name-only part (no leading '/') including NUL.
- *
- * 2.0.1 (gh#30) — "XXXX_YYYYMMDDHHMMSS.csv" = 23 chars + '\0' = 24.
- * 28 gives margin.  Pre-2.0.1 files (18-char names) still fit.
- */
-#define SD_NAME_ONLY_LEN   28
+/* SD_ROTATE_BYTES, SD_MAX_FILES, SD_MIN_FILES, SD_FREE_MIN_BYTES,
+ * SD_FILENAME_LEN, SD_NAME_ONLY_LEN, SD_LIST_BUF_LEN — defined in event_logger.h */
 
 /** @brief CSV header line written at the start of every new log file. */
 #define CSV_HEADER  "timestamp,type,initiator,ch,param,value_a,value_b\n"
@@ -342,7 +315,7 @@ static bool sd_scan(char *list_buf, size_t list_len)
     list_buf[0] = '\0';
     if (!s_sd_ok && !storage_sd_available()) return false;
 
-    char raw[512];
+    char raw[SD_LIST_BUF_LEN];
     if (storage_sd_list_csv(".csv", raw, sizeof(raw)) != STORAGE_OK) return false;
 
     /* Re-filter: keep only files matching the 14-digit timestamp pattern. */
@@ -433,7 +406,7 @@ static bool scan_find(const char *list, bool find_max,
  */
 static bool delete_oldest(void)
 {
-    char list[512];
+    char list[SD_LIST_BUF_LEN];
     if (!sd_scan(list, sizeof(list))) return false;
 
     char oldest[SD_NAME_ONLY_LEN];
@@ -641,7 +614,7 @@ static void rotate_sd_file(void)
      * provides a fallback identification path. */
 
     /* Enforce SD_MAX_FILES ceiling. */
-    char list[512];
+    char list[SD_LIST_BUF_LEN];
     if (sd_scan(list, sizeof(list))) {
         uint32_t count = scan_count(list);
         if (count > SD_MAX_FILES) {
@@ -756,7 +729,7 @@ static void process_event(const log_event_t *evt)
  */
 static bool sd_open_active_file(void)
 {
-    char list[512];
+    char list[SD_LIST_BUF_LEN];
     bool have_list = sd_scan(list, sizeof(list));
 
     char newest[SD_NAME_ONLY_LEN] = { '\0' };

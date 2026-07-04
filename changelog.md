@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.1.2] — 2026-07-04  (SD log file listing truncated beyond ~20 files)
+
+**Bug fix** — `/api/log/files` and T14 upload-on-startup both silently dropped files when the SD card held more entries than fit in a 512-byte buffer. Affected both units; manifested as the GUI showing only files up to ~June 22 and T14 ceasing uploads after that date.
+
+Root cause: `storage_sd_list_csv()` truncates silently on buffer overflow. Three callers used 512-byte buffers that overflow once `SD_MAX_FILES = 30` files accumulate (~25 bytes/entry × 30 = 750 bytes). The web handler also had a hard cap of `LOG_FILES_MAX = 12`.
+
+- **`firmware/src/event_logger/event_logger.cpp`**: bump `sd_scan` internal raw buffer 512 → 1024; bump all three `list[512]` callers (`delete_oldest`, `rotate_sd_file`, `sd_open_active_file`) to 1024.
+- **`firmware/src/web_server/web_server.cpp`**: `LIST_LEN` 512 → 1024; `LOG_FILES_MAX` 12 → 30; `LOG_FNAME_MAX` 24 → 28 (align with `SD_NAME_ONLY_LEN`).
+
+After OTA: web GUI shows all files; T14 upload-on-startup resumes from the newest unuploaded file.
+
+---
+
 ## [docs] — 2026-06-27  (boerHandleiding v1.17 + model campaign-defaultSettings)
 
 Documentation-only update — geen firmware-wijzigingen.

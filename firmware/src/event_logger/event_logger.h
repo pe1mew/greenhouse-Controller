@@ -74,11 +74,12 @@
  *
  * Log files are named `YYYYMMDDHHMMSS.csv` (local-time timestamp of creation,
  * e.g. `20250607163022.csv`).  Lexicographic sort = chronological order.
- * A new file is started when the current file reaches 512 KB.  At most 10
- * files are retained; the lexicographically oldest is deleted on each
- * rotation that would exceed this limit.  If free space drops below 2 MB,
- * the oldest file is proactively deleted; if already at the 3-file retention
- * floor, SD logging is suspended and NVS is used as fallback.
+ * A new file is started when the current file reaches SD_ROTATE_BYTES (1 MB).
+ * At most SD_MAX_FILES (30) files are retained; the lexicographically oldest
+ * is deleted on each rotation that would exceed this limit.  If free space
+ * drops below SD_FREE_MIN_BYTES (4 MB), the oldest file is proactively
+ * deleted; if already at the SD_MIN_FILES (5) retention floor, SD logging is
+ * suspended and NVS is used as fallback.
  *
  * Old sequential-index files (`ghc_NNNN.csv`) are ignored by the scan
  * filter and will not interfere with the new naming scheme.
@@ -163,6 +164,51 @@
 #include <stdint.h>
 
 /* -----------------------------------------------------------------------
+ * SD card capacity constants — single source of truth
+ *
+ * All callers that need to size scan buffers (#include this header) derive
+ * their constants from here.  Change SD_MAX_FILES or SD_NAME_ONLY_LEN and
+ * every buffer in event_logger.cpp and web_server.cpp adjusts automatically.
+ * ----------------------------------------------------------------------- */
+
+/** @brief Rotate to a new SD log file when the current one reaches this size (1 MB). */
+#define SD_ROTATE_BYTES    (1024UL * 1024UL)
+
+/** @brief Maximum number of log files retained on the SD card (oldest deleted on rotation). */
+#define SD_MAX_FILES       30u
+
+/** @brief Minimum number of files to retain; never delete below this floor. */
+#define SD_MIN_FILES       5u
+
+/** @brief Suspend SD logging when free space drops below this threshold (4 MB). */
+#define SD_FREE_MIN_BYTES  (4UL * 1024UL * 1024UL)
+
+/**
+ * @brief Length of an SD filename string including leading '/' and NUL.
+ *
+ * "/XXXX_YYYYMMDDHHMMSS.csv" = 24 printable chars + NUL = 25.
+ * 32 gives margin and aligns the buffer.
+ */
+#define SD_FILENAME_LEN    32
+
+/**
+ * @brief Length of the name-only part (no leading '/') including NUL.
+ *
+ * "XXXX_YYYYMMDDHHMMSS.csv" = 23 chars + NUL = 24. 28 gives margin.
+ * Pre-2.0.1 un-prefixed files (18-char names) still fit.
+ */
+#define SD_NAME_ONLY_LEN   28
+
+/**
+ * @brief Minimum buffer length for a comma-separated list of all SD filenames.
+ *
+ * Derived: SD_MAX_FILES × (SD_NAME_ONLY_LEN + 1 comma) + 1 NUL.
+ * Size all sd_scan / storage_sd_list_csv call-site buffers to at least this
+ * value — the function truncates silently without error on overflow.
+ */
+#define SD_LIST_BUF_LEN    ((SD_MAX_FILES) * ((SD_NAME_ONLY_LEN) + 1) + 1)
+
+/* -----------------------------------------------------------------------
  * Public API — log producer helper
  * ----------------------------------------------------------------------- */
 
@@ -207,7 +253,7 @@ uint32_t log_take_dropped_count(void);
  * Returns the bare filename (no leading '/'), e.g. "20260507143022.csv".
  *
  * @param out  Destination buffer; always NUL-terminated on return.
- * @param cap  Capacity of @p out. 24 bytes is sufficient.
+ * @param cap  Capacity of @p out. SD_NAME_ONLY_LEN bytes is sufficient.
  * @return true if at least one rotation has occurred this boot, false otherwise.
  */
 bool event_logger_last_rotated(char *out, size_t cap);
@@ -251,7 +297,7 @@ bool event_logger_force_rotate(uint32_t timeout_ms);
  * rotated file in memory when the SD scan finds no candidate.
  *
  * @param out  Destination buffer; always NUL-terminated on return.
- * @param cap  Capacity of @p out. 24 bytes is sufficient.
+ * @param cap  Capacity of @p out. SD_NAME_ONLY_LEN bytes is sufficient.
  * @return true if a closed file was found, false if none exists or SD is
  *         unavailable.
  */
@@ -357,8 +403,8 @@ bool event_logger_post_sync(int16_t value_a, int16_t value_b);
  *       the sole persistent store.
  *     - If an SD card is mounted, appends a CSV line to the current file
  *       via `storage_sd_write_append()`; rotates to a new file when the
- *       current file reaches 512 KB; deletes the oldest file when more
- *       than 10 files exist.
+ *       current file reaches SD_ROTATE_BYTES; deletes the oldest file when
+ *       more than SD_MAX_FILES files exist.
  *  4. After the drain pass, calls `log_take_dropped_count()`; if > 0,
  *     posts a synthetic `LOG_SYSTEM` event directly to Q3 (not via
  *     `log_post()`) with `value_a` = drop count.
