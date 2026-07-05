@@ -6,6 +6,52 @@ When something weird happens, check here BEFORE debugging from scratch. Entries 
 
 ---
 
+## 2026-07-05 — Model docs mis-identified M3 as a roof ridge panel for a week
+
+**Problem:** `thermalProfileCampaign.md` §9.6–9.8 and `calibrate_plant_constrained.py` described M3 as a "171-step ridge ventilation panel" in the roof, and used the travel-time ratio (171 s/21 s = 8.1×) as an "area ratio". All window-strategy physics reasoning built on this. User caught it 2026-07-05.
+
+**Root cause:** An earlier session inferred the window identity from motor travel times instead of checking the FRS. Authoritative facts (FRS + boerHandleiding): M1 = Dakbeluchting Zuid (south roof, ~8 m²), M2 = Dakbeluchting Noord (north roof, ~8 m²), **M3 = Zijwandbeluchting, north side WALL (~80 m²)**. Area ratio is 10× (80/8 m²); 8.1× is the travel ratio.
+
+**Fix:** Corrected in `thermalProfileCampaign.md` (erratum in §9.7, rewritten §9.9 finding 4), `calibrate_plant_constrained.py`, and user-global memory (window-identity table added). **Pattern: verify physical plant facts against the FRS before building analysis on them — never infer geometry from firmware constants.**
+
+**Where it lives:** `design/functionalRequirementsSpecification.md` (window table); `manual/boerHandleiding.md` (Figuur 1 + raam table).
+
+---
+
+## 2026-07-05 — System Python 3.11 lost its site-packages mid-project
+
+**Problem:** `plot_daily.py` failed with `ModuleNotFoundError: matplotlib`; system Python 3.11 (`AppData/Local/Programs/Python/Python311`) had an empty `pip list` even though the same interpreter ran matplotlib and scipy workloads earlier in the week.
+
+**Root cause:** Unknown — likely a Python reinstall/update wiped site-packages. Not investigated further.
+
+**Fix:** `python -m pip install mysql-connector-python numpy scipy matplotlib`. Note the PIO venv python (`~/.platformio/penv/Scripts/python.exe`) has matplotlib but **not** scipy or mysql-connector — it can run `plot_daily.py` but not the calibration or MySQL-fetch scripts.
+
+**Where it lives:** Model pipeline needs, in system Python 3.11: numpy, scipy, matplotlib, mysql-connector-python.
+
+---
+
+## 2026-07-05 — A different matplotlib version re-renders ALL campaign PNGs with byte diffs
+
+**Problem:** Running `plot_daily.py` under the PIO venv python (different matplotlib version) marked all 29 unchanged day-plots as modified in git — pure rendering churn, no data change.
+
+**Fix:** `git checkout --` the plots for days whose data did not change; stage only days with new/extended data. Generally: regenerate plots with the same interpreter/matplotlib the previous renders used, or accept a one-time full re-render in a dedicated commit.
+
+**Where it lives:** `model/campaign-summer-2026/plot_daily.py` output; any matplotlib-generated PNG under version control.
+
+---
+
+## 2026-07-04 — `storage_sd_list_csv()` truncates silently on a full buffer [RESOLVED — 2.1.2, gh#36]
+
+**Problem:** Web GUI showed no SD log files newer than ~Jun 22 and T14 stopped uploading after Jun 24, on both units. No error anywhere.
+
+**Root cause:** `storage_sd_list_csv()` returns `STORAGE_OK` even when entries didn't fit the caller's buffer — silent truncation by design (arduino-era behaviour). Three callers used 512-byte buffers that overflow at ~20 files (`SD_MAX_FILES=30` × ~25 B/name); the web handler additionally capped at `LOG_FILES_MAX=12`.
+
+**Fix:** All SD capacity constants moved to `event_logger.h` as single source of truth with derived `SD_LIST_BUF_LEN` (871 B); every scan buffer and the web handler cap now derive from it. **Pattern: when a list/scan API cannot signal truncation, size its buffers from a shared derived constant — never a local literal.**
+
+**Where it lives:** `firmware/src/event_logger/event_logger.h` (constants block); `drivers/sdCard/src/sd_storage.cpp:402` (the silently-truncating function, unchanged).
+
+---
+
 ## 2026-06-27 — Word COM automation hangs on large HTML files [RESOLVED — removed]
 
 **Problem:** `make_rtf()` in `manual/build_pdf.py` calls `word.Documents.Open(html)` which hangs indefinitely on `beheerderHandleiding.html` (~180 KB, complex CSS). Multiple orphaned `WINWORD.EXE` processes accumulate; temp HTML files are left locked on disk.
@@ -26,7 +72,7 @@ When something weird happens, check here BEFORE debugging from scratch. Entries 
 
 **Fix:** Keep only one chain per time window. Archive the overlapping files from the older chain (`archived_overlap/` subfolder). For the 5C88 campaign: Chain A (old downloads) covers Jun 4–15 uniquely; Chain B (new download) covers Jun 15–24. Archive the four Chain A files whose range is wholly covered by Chain B.
 
-**Where it lives:** `temp/5c88_modelCampaign/plot_daily.py` line 182 (`load_logs`). Chain overlap detection: `temp/5c88_modelCampaign/check_dupes.py`.
+**Where it lives:** `model/campaign-summer-2026/plot_daily.py` (`load_logs`). Chain overlap detection: `model/campaign-summer-2026/check_dupes.py`. *(Paths updated 2026-07-05 — scripts moved out of `temp/`.)*
 
 ---
 

@@ -39,7 +39,7 @@ Production deployment at Herenboeren Willemshoeve (Soest). Field units in active
 |---|---|
 | Touching a FreeRTOS task or subsystem | [memory/architecture.md](memory/architecture.md) — task graph T1-T15, subsystem map, partition layout |
 | Bumping firmware version | `firmware/platformio.ini` line 93 — and feature releases bump minor, not patch |
-| OTA work (any) | [design/OTAimplementation.md](design/OTAimplementation.md) — full reference, 11 sections |
+| OTA work (any) | [design/OTAimplementation.md](design/OTAimplementation.md) — full reference, 11 sections. Internet-pull OTA (study, not yet implemented): [design/remoteOTAstudy.md](design/remoteOTAstudy.md) |
 | Changing partition table | [design/migrationPlan_FullESP-IDFmigration.md](design/migrationPlan_FullESP-IDFmigration.md); update [firmware/partitions.csv](firmware/partitions.csv) header comment |
 | Changing T9/T14 audit log format | `log/logparser.py` must learn the new value_a/value_b encoding alongside the firmware change |
 | Changing the build pipeline | [bin/build_release.ps1](bin/build_release.ps1) — see manifest placeholder dance (Steps 0 and 3.5) and gh#9 history |
@@ -67,6 +67,6 @@ Production deployment at Herenboeren Willemshoeve (Soest). Field units in active
 | `design/` | FRS, TSDS, implementation/migration plans, audit reports, `OTAimplementation.md` — the closest thing to ADRs |
 | `bin/<version>/` | Per-release archive: bin, zip, bootloader, partitions, elf, map, release-notes |
 | `manual/` | Operator manuals (Dutch: boer + beheerder + admin) |
-| `model/` | Plant model, calibration scripts (`calibrate_plant_*.py`), summer-2026 campaign data + thermal profile analysis (`thermalProfileCampaign.md`) |
+| `model/` | Plant model, calibration scripts (`calibrate_plant_*.py`), summer-2026 campaign: results in `campaignResults_summer2026.md`, audit trail in `thermalProfileCampaign.md` |
 | `log/` | `logparser.py` + `logparser.md`, example log CSV + parsed output |
 | `memory/` | L3/L4 layer — `MEMORY.md` index, `architecture.md`, `gotcha-log.md` |

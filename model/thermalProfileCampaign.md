@@ -4,7 +4,7 @@
 |---|---|
 | Document | Thermal-Profile Campaign Plan |
 | Project | Greenhouse Ventilation Controller |
-| Status | **Calibration complete (2026-06-27). Adopted artifact: constrained 6-param model.** Campaign data collected Jun 4–25. Constrained model (priors: M1=M2; M3 dominates) achieves val T RMSE 1.20 °C, 57 % within ±1 °C — best of all variants. M3's true ACH is not identifiable open-loop from this campaign due to firmware staged-opening and controller-feedback confounding; see §9.7. AC-9 (±1 °C 95th-pct) requires the closed-loop `simulation.py` approach. |
+| Status | **Calibration complete (2026-07-04), all parameters identified.** Campaign data Jun 4 – Jul 4 (extended for NS-6 + heatwave). Adopted artifact: constrained 6-param free-m3 model, val T RMSE 1.19 °C. The NS-6 M3-only test resolved `ach_m3` ≤ 0.05 /h — area scaling refuted (§9.9). AC-9 requires the closed-loop `simulation.py` step. **Results summary: [campaignResults_summer2026.md](campaignResults_summer2026.md)** — this document is the working audit trail. |
 | Approved | 10 min LoRaWAN interval (§6.3), 21-day duration (§8.3) — operator approval 2026-05-21 |
 | Primary purpose | Calibrate `model/simulation.py` so the operator can vet proposed controller settings (setpoints, dwell times, hysteresis, conflict-resolution priority) on the simulator before deploying them to the live greenhouse — preventing oscillation patterns from reaching production. |
 | Related | `model/calibrate_plant.py`, `model/simulation.py`, `model/srcData/sql.md`, `design/technicalSoftwareDesignSpecification.md` §5.3, §5.10, §5.13 |
@@ -516,8 +516,8 @@ After the full identification study in §9.6, two physical priors were accepted 
 **Prior 1 — M1 = M2 (ach_m2 = ach_m1).**
 M1 and M2 are identical 21-step roof windows with the same geometry, travel, and installation. The 21-day campaign produced only 15 rows of M2-alone data (7.5 minutes) — statistically insufficient to identify `ach_m2` independently. Equality by construction is the correct prior; the data has nothing to say against it.
 
-**Prior 2 — M3 dominates when open.**
-M3 is a 171-step ridge ventilation panel, approximately 8× the travel (and area) of M1/M2. When M3 is open, M1 and M2's combined contribution is nominally 2/(2+8) = 18 % of the total M3-driven flow. This is accepted as a small correction: M1 and M2 are still modelled explicitly, but M3 dominates any open state that includes it. The implication is `ach_m3 >> ach_m1`, with the lower bound set to `ach_m1` (M3 must contribute at least as much as one small window).
+**Prior 2 — M3 dominates when open.** *(Refuted by NS-6 measurement — see §9.9.)*
+M3 is the north side-wall window (FRS: *Zijwandbeluchting*, ~80 m² vs ~8 m² per roof window — 10× area; 171 s travel vs 21 s — 8.1× travel). When M3 is open, M1 and M2's combined contribution is nominally small relative to the M3-driven flow. This was accepted as a physical prior: M1 and M2 are still modelled explicitly, but M3 was expected to dominate any open state that includes it. The implication was `ach_m3 >> ach_m1`, with the lower bound set to `ach_m1` (M3 must contribute at least as much as one small window). *Note (2026-07-04): an earlier revision of this document mis-identified M3 as a roof ridge panel; the FRS and boer manual place it in the north side wall.*
 
 #### Constrained 6-parameter model (`calibrate_plant_constrained.py`)
 
@@ -559,7 +559,7 @@ Performance vs prior models:
 
 The constrained model outperforms binary by 0.17 °C RMSE and +6 percentage-point within-±1 °C. The improvement comes entirely from the M1=M2 prior: by treating 0b011 rows as `ach_inf + 2·ach_m1` rather than averaging them with M1-only rows, the model correctly assigns more ventilation to the multi-window states. The `ach_m3` lower-bound result means M3's effect is modelled conservatively (equal to M1), which will underestimate peak ventilation in 0b111 states but is the best the data supports.
 
-**Adopted calibration artifact:** `campaign-summer-2026/plant_calibrated_constrained_summer2026.json` replaces the binary model as the authoritative output. It encodes both physical priors and is strictly better than binary on validation metrics.
+**Adopted calibration artifact:** `campaign-summer-2026/plant_calibrated_constrained_summer2026.json` replaces the binary model as the authoritative output. It encodes both physical priors and is strictly better than binary on validation metrics. *(Superseded 2026-07-04: the NS-6 test resolved `ach_m3`; the adopted artifact is now `plant_calibrated_constrained_summer2026_freem3.json` — see §9.9.)*
 
 #### Firmware limitations on M3 identification
 
@@ -611,6 +611,8 @@ Script: `model/calibrate_plant_constrained.py`. Output: `campaign-summer-2026/pl
 
 ### 9.8 Window strategy analysis: implications from calibration (2026-06-27)
 
+> **⚠ Superseded in part by §9.9 (2026-07-04).** This section's quantitative case rests on the *area-scaled* estimate ach_m3 ≈ 1.32 /h ("physical M3"). The NS-6 direct measurement refutes that estimate: ach_m3 ≤ 0.05 /h. Reasons 2–3 (M3 as dominant ventilator opened too late) do not survive; reasons 4–5 (night-long −5 °C close hysteresis; non-orthogonal `hyst_t`) are unaffected. See §9.9 for the revised conclusions.
+
 The summer-2026 calibration gives the first quantitative per-channel ACH estimates for this greenhouse. Comparing those numbers against the T6 ventilation algorithm reveals a structural mismatch between the implemented control strategy and the physical reality of the windows.
 
 #### Current firmware strategy (T6 `step_from_deviation`)
@@ -638,7 +640,7 @@ Adopted constrained model (`plant_calibrated_constrained_summer2026.json`):
 | 3 | 0b111 (lower bound) | 0.667 /h | +0.163 /h (M3 = M1) | 1.0× — **artificial lower bound** |
 | 3 | 0b111 (area-scaled) | 1.824 /h | +1.320 /h (M3 ≈ 8.1× M1) | **8.1× step 1** |
 
-The lower-bound row is the model artefact (controller-feedback confounding, §9.7). The area-scaled row is the physical estimate from M3's 171-step travel vs M1's 21-step (ratio 8.1, applied to `ach_m1 = 0.163 /h`).
+The lower-bound row is the model artefact (controller-feedback confounding, §9.7). The area-scaled row is the physical estimate from M3's 171 s travel vs M1's 21 s (ratio 8.1, applied to `ach_m1 = 0.163 /h`); the FRS area ratio (80 m² north-wall window vs 8 m² roof window) is 10× — either way the estimate was ~an order of magnitude, and NS-6 refuted it (§9.9).
 
 The equal-step-width assumption is **physically incorrect**. Step 3 does not add the same ventilation increment as steps 1 or 2 — it adds 8× more.
 
@@ -739,7 +741,84 @@ Requires reading the `lux` value in T6, which currently reads only T and RH from
 | hyst_t conflates M1/M2/M3 and close guard | Medium — no independent M3 tuning | Option A |
 | Night-close always at T_set − 5 °C | Low — may over-ventilate mild nights | Separate t_close_night parameter |
 
-The calibration alone does **not** give ACH values for alternative bitmask states (0b101, 0b100) — those require the NS-6 M3 test. However, even with the current conservative lower-bound `ach_m3 = ach_m1`, steps 1 and 2 have identical ventilation increments, which already justifies Option A: there is no penalty from opening M3 earlier.
+The calibration alone does **not** give ACH values for alternative bitmask states (0b101, 0b100) — those require the NS-6 M3 test. However, even with the current conservative lower-bound `ach_m3 = ach_m1`, steps 1 and 2 have identical ventilation increments, which already justifies Option A: there is no penalty from opening M3 earlier. *(2026-07-04: NS-6 measured `ach_m3` ≈ 0.05 /h — "no penalty" still holds, but the expected benefit collapses too; see §9.9.)*
+
+### 9.9 NS-6 M3-only test — execution and results (2026-07-04)
+
+**The test was executed on 2026-07-04 and refutes the area-scaling hypothesis.** `ach_m3` is small — comparable to a *fraction* of `ach_m1`, not 8× it.
+
+#### Execution
+
+Two M3-only windows via the LCD manual override (procedure §9.7), M1 = M2 = CLOSED, `vent_mask=0b100` in the SD log:
+
+| Window | Local time | Duration | Condition |
+|---|---|---|---|
+| 1 | 09:54:47 – 10:54:37 | 60 min | lux 20–53 k, wind 0.3–2.9 m/s |
+| 2 | 11:57:27 – 12:57:17 | 60 min | lux 16–36 k, wind 1.5–4.1 m/s |
+
+**Deviation from procedure:** greenhouse doors were open during much of both windows (Saturday farm activity) — door1 the whole of window 1; window 2 contaminated 11:57–12:23 (door1) and 12:40–12:57 (door2). The Option-A exclusion mask left a clean stretch **12:23–12:40** (33 rows, doors closed, fresh outdoor data). Across the extended dataset the 0b100 state now has **103 valid training rows** (was 4).
+
+#### Steady-state cross-check (clean stretch)
+
+By 12:23 the house had been in M3-only state for 26 min and T_in was nearly flat (quasi-steady). Mean values: T_in 30.6 °C, T_out 24.1 °C, ΔT 6.5 °C, lux 27 900. Heat balance with the Stage-1 parameters (k_solar 0.085 W/lux, P_transp ≈ 760 W):
+
+```
+UA_vent = (P_solar − P_transp − C_eff·dT/dt) / ΔT ≈ 214–257 W/K
+→ ACH_total ≈ 0.21–0.26 /h  →  implied ach_m3 ≈ 0.03–0.09 /h
+```
+
+A large north-wall window (~80 m²) yielding less incremental ventilation than the small (~8 m²) M1 roof window.
+
+#### Re-calibration (input extended Jun 4 → Jul 4)
+
+Input: `calibration_input_2026-06-04_2026-07-04.csv` (87 301 rows, 47 866 valid, 54 %). Validation window held at Jun 19–25 for comparability; training = Jun 4–18 + Jun 25–Jul 4 (includes the heatwave Jun 26–28 and the NS-6 test). Two Stage-2 variants (`--free-m3` flag added to `calibrate_plant_constrained.py`):
+
+| Variant | ach_m3 bound | ach_m3 result | Stage-2 loss | val T RMSE | val 95th | val ±1 °C |
+|---|---|---|---|---|---|---|
+| Bounded (area prior) | ≥ ach_m1 = 0.166 | **0.166 (pinned at bound)** | 38.83 | 1.32 °C | 2.49 °C | 54.4 % |
+| Free (NS-6 mode) | ≥ 0.05 floor | **0.050 (pinned at floor)** | 33.56 | **1.19 °C** | **2.11 °C** | 55.7 % |
+
+Stage-1 parameters (both variants, extended data): k_solar 0.0847 W/lux, c_eff 2.894 MJ/°C, transp 0.0003 kg/s, ach_inf 0.203 /h, ach_m1 = ach_m2 0.166 /h.
+
+The optimiser pushes `ach_m3` to whatever floor it is given, and the free variant fits better on *both* training and validation. Two independent signals agree:
+
+1. **The M3-only test rows** — direct, unconfounded (T6 paused, no feedback).
+2. **The heatwave 0b111 rows (Jun 26–28)** — the controller was *saturated* (all windows fully open, T_in up to 42.2 °C, far above setpoint), so no feedback confounding: this is open-loop data too, and only a small total ACH explains the observed peaks.
+
+**Adopted artifact (supersedes the 2026-06-27 adoption):** `campaign-summer-2026/plant_calibrated_constrained_summer2026_freem3.json` — val T RMSE 1.19 °C. The bounded variant is retained alongside for comparison.
+
+#### Findings
+
+| # | Finding |
+|---|---|
+| 1 | **Area scaling refuted.** ach_m3 ≤ 0.05 /h (boundary-pinned; steady-state check 0.03–0.09 /h) ≈ 0.3× ach_m1 — not the ~10× the FRS area ratio (80 m² wall window vs 8 m² roof window) predicted (§9.6, §9.8). |
+| 2 | **Full-open ventilation is modest.** ACH(0b111) ≈ 0.59 /h vs ACH(0b011) ≈ 0.54 /h — opening the 80 m² north-wall window on top of both roof windows adds ~9 %. |
+| 3 | **Heatwave behaviour is now explained.** With ~0.6 /h total ACH, Jun 26's T_max = 42.2 °C at 60–80 k lux is exactly what the model predicts; the earlier expectation that "physical M3" (1.8 /h) would hold setpoint up to T_out ≈ 26 °C was based on the refuted area scaling. |
+| 4 | **Physical interpretation, partial.** M3 is the window in the **north side wall** (FRS: *Zijwandbeluchting*) — the leeward side under the prevailing Dutch SW winds, so wind-driven exchange through it is weak. For 0b100 (M3 alone) the exchange is single-sided through one wall opening — buoyancy-only, inherently weak. Harder to explain is finding 2: with M1/M2 open, the low north-wall inlet + high roof outlets should form a stack circuit, yet the measured increment stays small. Hypotheses: (a) M3's *effective open aperture* is much smaller than 80 m² — the 171 s travel says nothing about how wide the wall actually opens or where the gap is; (b) if the opening gap sits near the top of the wall (gutter height), the stack height difference to the roof windows is small and the circuit is weak; (c) leeward sheltering suppresses the wind-assist in the observed 1–4 m/s range. → NS-8. |
+
+#### Robustness check — "but T drops fast when M3 opens" (2026-07-05)
+
+Objection: daily plots show temperature falling fast right after M3 opens, which seems to contradict a small `ach_m3`. Event study over all daytime channel-opening transitions (`m3_event_study.py`; slopes are medians, 15 min before vs +3…+18 min after):
+
+| Event (n) | T_in slope pre → post | RH_in slope pre → post | lux slope pre → post |
+|---|---|---|---|
+| M3 opens on M1+M2 (74) | +8.2 → −8.0 °C/h | +4.4 → **+13.0 %/h (rises)** | flat → −2 860 lux/h |
+| M2 opens, M3 closed (95) | +5.5 → −3.9 °C/h | +1.4 → −5.1 %/h | +1 370 → −2 390 lux/h |
+| M1 opens, all closed (42) | +10.2 → −5.3 °C/h | −9.3 → −12.0 %/h | flat → +3 240 lux/h |
+
+Resolution: (1) the slope swing after M3 opens (−16.2 °C/h) is nearly identical to the swing after **M1 alone** opens (−15.4 °C/h) — the fast drop is a property of the *trigger moment* (windows open exactly at the steepest rise; what follows a peak is decline), not of window area; (2) lux flips from flat to falling at the median M3 event — step 3 is reached at the daily solar knee, so the sun backs off exactly when M3 opens (§9.7 confounding, now quantified); (3) RH *rises* after M3 opens — cooling without much air exchange; a real flush of drier outdoor air would pull RH down. Difference-in-differences vs the controls gives M3 an extra ≈ −1 °C/h, matching the measured model (−0.4 °C/h predicted) and excluding area scaling (−10.3 °C/h predicted).
+
+Open question feeding NS-8: the **controller sensor's position relative to the north wall** — if it sits near M3, opening the wall washes the sensor locally (fast local relief, slow bulk exchange), which would explain both the visual impression and the controller's step-3 behaviour.
+
+#### Caveats
+
+- `ach_m3 = 0.05` is a floor pin, not an interior optimum — read it as "ach_m3 ≤ 0.05–0.09 /h", best available estimate, not a precise value.
+- Door contamination cost most of window 1; the conclusion rests on the clean 17-min stretch + the saturated heatwave rows, which agree.
+- Both test windows had light-to-moderate wind (≤ 4 m/s). A windy-day repeat would test the wind-driven hypothesis in finding 4.
+
+#### Consequences for NS-7 (window strategy)
+
+The §9.8 recommendation was premised on M3 being an 8× ventilator opened too late. Measurement inverts this: **opening M3 earlier (t_thresh_m3) buys almost nothing** — equilibrium temperature excess improves ~9 % — and no passive window strategy reaches setpoint on hot days, because total ventilation capacity (~0.6 /h) is the bottleneck, not the trigger schedule. NS-7 is re-scoped accordingly (see NS table): the actionable follow-up is NS-8 (understand *why* M3 is ineffective — mechanical aperture check first), after which a strategy revision can be re-evaluated on measured ground.
 
 ### 9.4 Worked example — answering the "would dwell prevent the oscillation?" question
 
@@ -852,11 +931,12 @@ D-1 and the rotation-config change in §5.3 are the only items required *before*
 | NS-2 | Configure LHT65-20 uplink interval to 600 s via TTN downlink (payload `01 00 02 58`, FPort 2) | ✅ **COMPLETE** — confirmed from campaign data (2026-06-27): 2 851 rows over 22 days; 92.6% of inter-uplink gaps are exactly 10 min (median 10.0 min, mean 11.1 min); longer gaps (20/30/40 min) are integer multiples consistent with LoRaWAN packet loss, not a longer base interval. TTN console screenshot not retained but data is conclusive. |
 | NS-3 | Verify Phase 7 soak 14-day clean criterion (zero panics, zero WDT, zero coredump) | ✅ **COMPLETE** — firmware advanced through rc.1.5.x → 2.0.x → 2.1.1 without recorded panic or WDT resets. Soak gate passed before production deployment of 5C88. |
 | NS-4 | First-pass calibration test run on summer-2026 campaign data | ✅ **COMPLETE** (2026-06-27) — `model/calibrate_plant_campaign.py` fit on 41 158 valid rows (Option A). T RMSE 2.69 °C vs 5.10 °C spring model; RH RMSE 6.73 % vs 16.74 %. DE converged at 143/300 iterations. Output: `campaign-summer-2026/plant_calibrated_summer2026.json` + `calibration_compare_summer2026.png`. **AC-9 not yet achieved** — per-bitmask `calibrate_plant_dynamic.py` still needed. |
-| NS-5 | Implement `calibrate_plant_dynamic.py` with per-bitmask `ach_open[]` vector and train/validation split | ✅ **COMPLETE** (2026-06-27) — joint 7-param, two-stage, and constrained 6-param (`calibrate_plant_constrained.py`) fits all implemented. Physical priors accepted: M1=M2 (identical geometry); M3 dominates (171-step panel). `ach_m3` remains at lower bound due to controller-feedback confounding in all M3-open states — see §9.6 and §9.7. **Adopted artifact: constrained 6-param model** (`plant_calibrated_constrained_summer2026.json`, val RMSE 1.20 °C, 57 % within ±1 °C). |
-| NS-6 | M3 deliberate calibration test — 45–60 min M3-only open via LCD manual override | ⬜ **PENDING** — no separate campaign needed. Use existing LCD Screen 5 → `#` → PIN → select M3 → Open. STANDBY pauses T6 automatically; dwell timers bypassed (`SRC_OPERATOR_MANUAL`). M1/M2 remain closed; `vent_mask=0b100` rows in the SD log provide ~120 clean unconfounded M3-only rows in stable lux. Preconditions: clear sunny day, lux ≥ 30 000, wind < 50 % of `v_max`. After test: rerun `calibrate_plant_constrained.py` Stage 2 with augmented dataset to resolve `ach_m3`. See §9.7 for full procedure. **Key firmware facts:** LCD-only (no web API for manual motor control); `CMD_OPEN` blocked by `EG1_BIT_WIND_OVERRIDE`; `CMD_CLOSE_ALL` from T3 can interrupt mid-test if wind rises. |
-| NS-7 | Evaluate and implement independent M3 ventilation threshold (`t_thresh_m3`) in T6 | ⬜ **PENDING** — see §9.8. Calibration shows M3 adds 8.1× more ACH than M1 or M2; the current equal-step-width strategy opens M3 too late (only at T_set+3 °C) and gives no independent tuning of the M3 trigger. **Prerequisite: NS-6** (need confirmed `ach_m3` before evaluating alternative step tables quantitatively). **Minimum-invasive Option A:** add NVS parameter `t_thresh_m3` (°C above T_set to open M3, default = current behaviour) in namespace `"climate"`; T6 evaluates M3 independently of the M1/M2 step index — zero regression risk to existing M1/M2 logic. Option B (revised step table 0b001→0b101→0b111) and Option C (solar feedforward) require simulation study first. Minimum SemVer bump: minor (new NVS key + new API field). |
+| NS-5 | Implement `calibrate_plant_dynamic.py` with per-bitmask `ach_open[]` vector and train/validation split | ✅ **COMPLETE** (2026-06-27) — joint 7-param, two-stage, and constrained 6-param (`calibrate_plant_constrained.py`) fits all implemented. Physical priors accepted: M1=M2 (identical geometry); M3 dominates (171-step panel). `ach_m3` remains at lower bound due to controller-feedback confounding in all M3-open states — see §9.6 and §9.7. **Adopted artifact: constrained 6-param model** (`plant_calibrated_constrained_summer2026.json`, val RMSE 1.20 °C, 57 % within ±1 °C). *(Artifact superseded 2026-07-04 by the NS-6 re-calibration — see NS-6 row and §9.9.)* |
+| NS-6 | M3 deliberate calibration test — 45–60 min M3-only open via LCD manual override | ✅ **COMPLETE** (2026-07-04) — two 60-min M3-only windows executed via LCD manual override (09:55–10:55 and 11:57–12:57 local). Doors open during much of both windows (Saturday farm activity) left one clean 17-min stretch + 103 valid `0b100` rows overall. Re-calibration with data extended to Jul 4 (val window Jun 19–25 unchanged): **`ach_m3` pins at any floor it is given — measured ≤ 0.05 /h, ≈ 0.3× ach_m1, refuting the 8.1× area-scaling estimate.** Adopted artifact: `plant_calibrated_constrained_summer2026_freem3.json` (val T RMSE 1.19 °C). Full analysis: §9.9. |
+| NS-7 | Evaluate and implement independent M3 ventilation threshold (`t_thresh_m3`) in T6 | ⏸ **ON HOLD — premise refuted by NS-6** (2026-07-04). The case for opening M3 earlier assumed ach_m3 ≈ 8× ach_m1; measurement gives ≤ 0.3× — earlier M3 opening improves equilibrium temperature excess by only ~9 %. No passive strategy reaches setpoint on hot days at ~0.6 /h total ACH. Re-evaluate only after NS-8 explains M3's ineffectiveness (and if a mechanical fix raises its real aperture). The unaffected §9.8 findings (night-long −5 °C close hysteresis; non-orthogonal `hyst_t`) can be pursued separately. See §9.9. |
+| NS-8 | Investigate why M3 (north-wall window, ~80 m²) is an ineffective ventilator | ⬜ **PENDING** (new, from NS-6) — ach_m3 ≤ 0.05 /h even with the roof windows open (wall-inlet → roof-outlet stack circuit) contradicts simple area scaling. (a) **Mechanical/geometric check first:** measure M3's actual open aperture at full 171 s travel — how wide does the wall really open, and where is the gap (top-hinged near the gutter = small stack height)? Photograph/measure on next site visit. (b) Note M3 faces **north = leeward** for prevailing SW winds; repeat the M3-only test on a windier day (>5 m/s, ideally N/NE wind) with door discipline to separate wind-driven from buoyancy exchange, §9.9 finding 4. (c) Check the controller T/RH sensor's position relative to the north wall — a sensor near M3 gets washed locally when the wall opens (fast local relief, slow bulk exchange), which would explain the visual fast-drop impression and the controller's step-3 behaviour (§9.9 robustness check). (d) Optional: smoke/tracer observation at the wall opening with M1+M2 open vs closed. Outcome decides whether NS-7 is revived. |
 
-Campaign data collection complete (Jun 4–25, 2026). Log data in `model/campaign-summer-2026/` shows continuous `SENSOR_HR` collection from 2026-06-04. Fill in dates at end of campaign:
+Campaign data collection complete (Jun 4 – Jul 4, 2026; originally Jun 4–25, extended for the NS-6 M3 test and heatwave coverage). Log data in `model/campaign-summer-2026/` shows continuous `SENSOR_HR` collection from 2026-06-04. Fill in dates at end of campaign:
 
 | Kick-off | approx. 2026-06-04 (first `SENSOR_HR` log file) — confirm exact flash timestamp |
 |---|---|

@@ -11,11 +11,12 @@ accepted after the full per-bitmask identification study (2026-06-27):
     choice; the data cannot refute it.
 
   Prior 2 — M3 dominates when open:  ach_m3 >> ach_m1
-    M3 is a 171-step ridge panel (~8x M1's travel and area). When M3 is open,
-    M1/M2's incremental contribution is ~1/(1+8) = 11 % of the M3-driven flow
-    — accepted as a small correction, modelled explicitly but not dominant.
-    This does NOT mean M3's contribution is dropped; it means M3 dominates the
-    ventilation in any state where it is open.
+    M3 is the north side-wall window (FRS: Zijwandbeluchting, ~80 m2 vs
+    ~8 m2 per roof window = 10x area; 171 s travel vs 21 s). The prior
+    expected M3 to dominate the ventilation in any state where it is open.
+    REFUTED by the NS-6 M3-only test (2026-07-04): the data pins ach_m3 at
+    any lower bound it is given (~<=0.05/h with --free-m3). Use --free-m3
+    for the measured artifact; see thermalProfileCampaign.md section 9.9.
 
 Six free parameters:  k_solar, c_eff_mj_per_c, transpiration_kg_s,
                        ach_inf, ach_m1, ach_m3
@@ -38,7 +39,7 @@ Two-stage fit:
       large enough ach_m3 to explain why T_in stays near setpoint despite high
       lux, given the known solar-gain coefficient from Stage 1.
       Lower bound: ach_m3 >= ach_m1_stage1 (M3 must contribute at least as
-      much as M1 given its larger panel area).
+      much as M1 given its larger window area).
 
 Firmware limitation:
     The staged opening sequence (M1 -> M1+M2 -> M1+M2+M3) means M3 is never
@@ -49,13 +50,22 @@ Firmware limitation:
 
 Usage:
     python model/calibrate_plant_constrained.py [--plot] [--fast]
+        [--input CSV] [--val-start ISO] [--val-end ISO]
+
+    --input     calibration-input CSV (default: the Jun 4-25 campaign file)
+    --val-start validation window start, ISO UTC (default 2026-06-18T22:00)
+    --val-end   validation window end, exclusive (default: end of data).
+                Training = all valid rows OUTSIDE the validation window, so an
+                extended campaign (e.g. through Jul 4 with the NS-6 M3-only
+                test) can be trained on while keeping the Jun 19-25 validation
+                window identical to earlier runs for comparability.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -136,12 +146,28 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--plot", action="store_true")
     ap.add_argument("--fast", action="store_true", help="Reduced DE budget")
+    ap.add_argument("--input", type=Path, default=CAL_IN,
+                    help="calibration-input CSV (default: %(default)s)")
+    ap.add_argument("--val-start", default=None,
+                    help="validation window start, ISO UTC (default 2026-06-18T22:00)")
+    ap.add_argument("--val-end", default=None,
+                    help="validation window end, exclusive ISO UTC (default: end of data)")
+    ap.add_argument("--free-m3", action="store_true",
+                    help="drop the ach_m3 >= ach_m1 prior (floor 0.05/h) — use when "
+                         "direct M3-only data exists (NS-6) and the bound must not "
+                         "mask a genuinely small ach_m3")
     args = ap.parse_args()
 
+    def parse_utc(s):
+        return datetime.fromisoformat(s).replace(tzinfo=timezone.utc).timestamp()
+
+    val_start = parse_utc(args.val_start) if args.val_start else VAL_SPLIT_UTC
+    val_end   = parse_utc(args.val_end)   if args.val_end   else None
+
     # ── load + grid ───────────────────────────────────────────────────────────
-    print(f"Loading {CAL_IN.name} ...")
+    print(f"Loading {args.input.name} ...")
     ts, T_in, RH_in, T_out, RH_out, lux, bitmask_raw, valid = \
-        load_calibration_input(CAL_IN)
+        load_calibration_input(args.input)
 
     print("Resampling to 30 s grid ...")
     (grid, gT_in, gRH_in, gT_out, gRH_out, glux, gbm_f), data_mask = \
@@ -153,9 +179,18 @@ def main():
 
     valid_grid = ffill_bool(ts, valid, grid)
     full_mask  = valid_grid & data_mask
-    train_mask = full_mask & (grid < VAL_SPLIT_UTC)
-    val_mask   = full_mask & (grid >= VAL_SPLIT_UTC)
+    in_val     = (grid >= val_start) & (grid < val_end) if val_end else (grid >= val_start)
+    train_mask = full_mask & ~in_val
+    val_mask   = full_mask & in_val
     lux_max    = float(glux.max())
+
+    def dt_lbl(t):
+        return datetime.utcfromtimestamp(t).strftime("%b %d")
+    data_end  = float(grid[-1])
+    train_lbl = f"train ({dt_lbl(float(grid[0]))}-{dt_lbl(val_start)}" + \
+                (f" + {dt_lbl(val_end)}-{dt_lbl(data_end)})" if val_end and val_end < data_end else ")")
+    val_lbl   = f"val ({dt_lbl(val_start)}-{dt_lbl(val_end) if val_end else dt_lbl(data_end)})"
+    print(f"  {train_lbl}: {train_mask.sum()} rows   {val_lbl}: {val_mask.sum()} rows")
 
     # M3-closed (Stage 1): vent_mask bits[4] = 0
     m3_closed = (vent_mask & 0b100) == 0
@@ -165,7 +200,7 @@ def main():
     s2_mask   = train_mask & m3_open
 
     print(f"\n  Priors: ach_m2 = ach_m1  (M1=M2, identical window geometry)")
-    print(f"          ach_m3 >= ach_m1  (M3 dominates, 171-step panel vs 21-step M1)")
+    print(f"          ach_m3 >= ach_m1  (M3 north-wall window 80 m2 vs 8 m2 roof window)")
     print(f"\n  Stage 1 mask (M3-closed): {s1_mask.sum()} training rows")
     for vm, label in [(0,"0b000 all-closed"), (1,"0b001 M1-only"),
                        (2,"0b010 M2-only"),   (3,"0b011 M1+M2")]:
@@ -211,11 +246,15 @@ def main():
     print(f"    train: T RMSE {r_s1_tr[0]:.2f} C  bias {r_s1_tr[3]:+.2f} C")
 
     # ── Stage 2 ───────────────────────────────────────────────────────────────
-    # Lower bound: M3 must contribute at least as much as M1 (physical prior)
-    lo_m3 = max(0.05, ach_m1_s1)
+    # Lower bound: M3 must contribute at least as much as M1 (physical prior),
+    # unless --free-m3: direct M3-only data (NS-6) may legitimately refute it.
+    lo_m3 = 0.05 if args.free_m3 else max(0.05, ach_m1_s1)
     s2_bounds = [(lo_m3, 60.0)]
     print(f"\nStage 2: ach_m3 from {s2_mask.sum()} M3-open rows ...")
-    print(f"  Lower bound: ach_m3 >= {lo_m3:.3f} /h (= ach_m1, M3 area >= M1 area)")
+    if args.free_m3:
+        print(f"  Lower bound: ach_m3 >= {lo_m3:.3f} /h (FREE — area prior dropped, NS-6 mode)")
+    else:
+        print(f"  Lower bound: ach_m3 >= {lo_m3:.3f} /h (= ach_m1, M3 area >= M1 area)")
     print(f"  Primary signal: {int((train_mask & (vent_mask==7)).sum())} rows of 0b111 (M1+M2+M3)")
 
     fn2 = lambda p: loss_s2(p, s1_p, lo_m3, gT_out, gRH_out, glux,
@@ -234,7 +273,7 @@ def main():
     print(f"  DE done: ach_m3={ach_m3:.5f} /h  loss={res2_de.fun:.4f}")
 
     ratio = ach_m3 / ach_m1_s1 if ach_m1_s1 > 0 else float("inf")
-    physical_ratio = 171.0 / 21.0
+    physical_ratio = 80.0 / 8.0   # FRS areas: M3 north-wall 80 m2 / roof window 8 m2
     print(f"\n  ach_m3 / ach_m1 = {ratio:.1f}x  (physical area ratio M3/M1 = {physical_ratio:.1f}x)")
     print(f"  M1 contribution in M1+M3 state: {100*ach_m1_s1/(ach_m1_s1+ach_m3):.1f}%  "
           f"-> 'M3+M1 approx= M3' {'SUPPORTED' if ratio > 3 else 'WEAK'}")
@@ -267,7 +306,7 @@ def main():
                   bp["transpiration_kg_s"], bp["ach_closed_per_hr"], bp["ach_open_per_hr"]]),
         gT_out, gRH_out, glux, bin_starts, bin_is_open)
 
-    print(f"\n{'':24} {'train (Jun 4-18)':>26} {'val (Jun 19-25)':>26}")
+    print(f"\n{'':24} {train_lbl:>26} {val_lbl:>26}")
     print("=" * 80)
     def row(label, T_sim, RH_sim):
         def fmt(r):
@@ -293,9 +332,9 @@ def main():
     plant = {
         "_comment": (
             f"Constrained 6-param calibration by calibrate_plant_constrained.py "
-            f"(summer-2026, Jun 4-18 training). "
+            f"(summer-2026, input {args.input.name}, {train_lbl}, {val_lbl}). "
             f"Priors: ach_m2=ach_m1 (M1=M2 identical geometry); "
-            f"ach_m3 >= ach_m1 (M3 dominates, 171-step panel). "
+            f"ach_m3 >= ach_m1 (M3 north-wall window, 80 m2). "
             f"Stage 1 (M3-closed, {s1_mask.sum()} rows): "
             f"k_solar={k_solar:.4f} W/lux, c_eff={c_eff:.2f} MJ/degC, "
             f"ach_inf={ach_inf:.3f} /h, ach_m1={ach_m1:.3f} /h. "
@@ -320,9 +359,11 @@ def main():
         },
         "solar_peak_w": round(k_solar * lux_max, 0),
     }
-    with open(OUT_PLANT, "w") as f:
+    out_plant = OUT_PLANT if not args.free_m3 else \
+        OUT_PLANT.with_name(OUT_PLANT.stem + "_freem3" + OUT_PLANT.suffix)
+    with open(out_plant, "w") as f:
         json.dump(plant, f, indent=2)
-    print(f"\nWrote {OUT_PLANT.relative_to(Path(__file__).parent)}")
+    print(f"\nWrote {out_plant.relative_to(Path(__file__).parent)}")
 
     # ── Plot ──────────────────────────────────────────────────────────────────
     if not args.plot:
@@ -337,14 +378,15 @@ def main():
 
         invalid_grid = ~valid_grid & data_mask
         dts = [datetime.utcfromtimestamp(t) for t in grid]
-        val_start_dt = datetime.utcfromtimestamp(VAL_SPLIT_UTC)
+        val_start_dt = datetime.utcfromtimestamp(val_start)
+        val_end_dt   = datetime.utcfromtimestamp(val_end) if val_end else None
 
         fig, axes = plt.subplots(4, 1, figsize=(17, 14), sharex=True)
         fig.suptitle(
             "Constrained 6-param calibration  |  Priors: ach_m2=ach_m1 (M1=M2);  M3 dominates when open\n"
             f"ach_inf={ach_inf:.3f}  ach_m1=ach_m2={ach_m1:.3f}  "
             f"ach_m3={ach_m3:.3f} /h  ({ratio:.1f}x ach_m1; area ratio {physical_ratio:.1f}x)\n"
-            f"Training: Jun 4-18  |  Validation: Jun 19-25  "
+            f"{train_lbl}  |  {val_lbl}  "
             f"(AC-9 target: +-1 degC >=95%)",
             fontsize=9, fontweight="bold"
         )
@@ -359,6 +401,8 @@ def main():
                             transform=ax.get_xaxis_transform(),
                             color="#e67e22", alpha=0.12, label="_nolegend_")
             ax.axvline(val_start_dt, color="purple", lw=1.2, ls="--", alpha=0.5)
+            if val_end_dt:
+                ax.axvline(val_end_dt, color="purple", lw=1.2, ls="--", alpha=0.5)
 
         # Panel 0 — temperature
         ax = axes[0]
@@ -434,9 +478,11 @@ def main():
         axes[-1].xaxis.set_major_formatter(mdates.ConciseDateFormatter(loc))
         fig.autofmt_xdate(rotation=0, ha="center")
         plt.tight_layout(rect=[0, 0, 1, 0.93])
-        fig.savefig(OUT_PNG, dpi=130, bbox_inches="tight")
+        out_png = OUT_PNG if not args.free_m3 else \
+            OUT_PNG.with_name(OUT_PNG.stem + "_freem3" + OUT_PNG.suffix)
+        fig.savefig(out_png, dpi=130, bbox_inches="tight")
         plt.close(fig)
-        print(f"Saved {OUT_PNG.relative_to(Path(__file__).parent)}")
+        print(f"Saved {out_png.relative_to(Path(__file__).parent)}")
 
     except ImportError:
         print("matplotlib not available -- skipping plot")

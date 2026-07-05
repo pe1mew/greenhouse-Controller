@@ -137,11 +137,12 @@ Settings files live in `campaign-defaultSettings/` — see Campaign archives bel
 
 Current validated results live in `campaign-defaultSettings/` — see Campaign archives below. Running `simulation.py` writes `results_input_S*.csv` + `.png` to this directory; move them to the relevant campaign folder once validated.
 
-### Forward plans
+### Campaign plans and reports
 
 | File | Purpose |
 |---|---|
-| `thermalProfileCampaign.md` | Approved plan for a 21-day real-greenhouse thermal profiling run — prerequisite for a higher-fidelity plant model |
+| `campaignResults_summer2026.md` | **Results summary of the summer-2026 calibration campaign** — adopted parameters, key findings (incl. the M3 refutation), AC status, open items. Read this first. |
+| `thermalProfileCampaign.md` | Campaign plan + working audit trail (executed Jun 4 – Jul 4 2026); full derivations in §9.5–9.9 |
 | `logUpdatePlan.md` | Locked firmware design for LOG_SENSOR_HR and LOG_SUN event types — prerequisite for thermalProfileCampaign.md |
 
 ### Campaign archives
@@ -155,6 +156,21 @@ Validated settings and scenario results that established the current firmware de
 | `settings_optimised.json` | **Current production defaults** — `hyst_t=5`, `avg_win_t=6`, `dwell_open` 300/300/900 s |
 | `new_settings_calibrated.json` | Site-specific variant after plant calibration (kas2) |
 | `results_input_S*.csv` + `.png` | Scenario results that validated the optimised defaults |
+
+#### `campaign-summer-2026/` — summer 2026 thermal-profile campaign (Jun 4 – Jul 4)
+
+30 days of 30 s SD-log data from production unit 5C88 + LoRa outdoor/door sensors; produced the currently adopted plant model. Results: [`campaignResults_summer2026.md`](campaignResults_summer2026.md).
+
+| Path | Contents |
+|---|---|
+| `plant_calibrated_constrained_summer2026_freem3.json` | **Adopted plant model** (6-param, ach_m3 measured via NS-6 M3-only test) |
+| `plant_calibrated_*.json` | Other fit variants (binary, 7-param, staged, bounded-prior) for comparison |
+| `calibration_input_2026-06-04_2026-07-04.csv` | Merged calibration input (SD logs + outdoor + doors) |
+| `*.log` | Raw SD log files from 5C88 |
+| `lht65_20_*.csv`, `lds01_*.csv` | Outdoor sensor + door-sensor exports from the Wenumseveld MySQL DB |
+| `plot_daily.py`, `plot_2026-*.png` | Daily T/RH/wind/window-state plots for every campaign day |
+| `m3_event_study.py` | Event study: what happens when M1/M2/M3 open (F3 robustness check) |
+| `calibration_constrained_summer2026*.png` | Fit-vs-measurement plots (bounded + free-m3 variants) |
 
 #### `campaign-spring-2026/` — spring 2026 calibration and oscillation investigation
 
