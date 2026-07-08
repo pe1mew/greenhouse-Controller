@@ -57,7 +57,7 @@ Production deployment at Herenboeren Willemshoeve (Soest). Field units in active
 5. OTA push to soak 2344: `python bin/ota_push.py bin/X.Y.Z/greenhouse-controller-X.Y.Z.bin`
 6. Verify both `fw_ver` and `asset_version` from `/api/status`
 7. Soak ≥ overnight (or longer for high-risk changes)
-8. OTA production (5C88 etc.) only after soak passes
+8. Production (5C88) only after soak passes — **and only on a physical site visit**: 5C88 is behind NAT, outbound-only, no remote push path (that is what [design/remoteOTAstudy.md](design/remoteOTAstudy.md) would add). Production updates queue up until someone is at the farm.
 
 ## Key directories
 

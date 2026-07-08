@@ -167,6 +167,16 @@ static volatile size_t s_coredump_size_b   = 0u;
 /** @brief Re-read RTC every this many main-loop ticks (≈ RTC_POLL_TICKS s). */
 #define RTC_POLL_TICKS  60u
 
+/** @brief 2.1.3 (gh#37) — warn when DS1307 and system clock diverge by more
+ *  than this many seconds while NTP-synced. A healthy DS1307 is rewritten
+ *  after every SNTP sync (TN4) and stays within 1–2 s. */
+#define RTC_DIVERGENCE_WARN_S    10
+
+/** @brief 2.1.3 (gh#37) — minimum RTC-poll calls between divergence audit
+ *  rows (60 calls ≈ 1 h at RTC_POLL_TICKS=60). Prevents a permanently sick
+ *  RTC from spamming one LOG_SYSTEM row per minute. */
+#define RTC_DIVERGENCE_LOG_CALLS 60u
+
 /* ============================================================
  * Internal helper — RTC datetime → Unix UTC timestamp
  * ============================================================ */
@@ -334,17 +344,34 @@ static void update_sun_times(void)
  * ============================================================ */
 
 /**
- * @brief Read the DS1307 RTC, seed the ESP-IDF system clock, refresh MX4.
+ * @brief Read the DS1307 RTC; seed the system clock ONLY while NTP-unsynced.
  *
- * Sequence:
+ * 2.1.3 (gh#37) — trust inversion. Pre-2.1.3 this function unconditionally
+ * called settimeofday() from the DS1307 on every poll (~60 s), which made
+ * the RTC chip outrank SNTP: each hourly SNTP correction was overwritten
+ * within a minute by whatever the DS1307 said. Observed on unit 2344
+ * (2026-07-08): a failing DS1307 froze overnight, restarted 4 h 35 m
+ * behind, and dragged the NTP-correct system clock back every 60 s — an
+ * hourly ±16 500 s see-saw in the SD log, wrong sun times, corrupted
+ * timestamps.
+ *
+ * Sequence (per RTC_POLL_TICKS ≈ 60 s call):
  *   1. Acquire MX1 (200 ms timeout) → rtc_get_time() → release.
  *   2. Convert UTC datetime to Unix seconds via rtc_dt_to_unix().
- *   3. settimeofday() so time(NULL) returns valid UTC before NTP completes.
- *   4. Acquire MX4 → write current_unix_ts + recompute sun times → release.
+ *   3. NTP not yet synced (nm_is_sntp_synced() false — boot window or
+ *      no-internet operation): settimeofday() from the DS1307 as before.
+ *      The RTC is the best available source until SNTP first succeeds.
+ *   4. NTP synced: system clock is authoritative (ESP crystal free-runs at
+ *      ppm accuracy between SNTP syncs; SNTP re-syncs periodically; TN4
+ *      rewrites the DS1307 after each sync). The DS1307 is NOT applied.
+ *      If |DS1307 − system| > RTC_DIVERGENCE_WARN_S the RTC is misbehaving:
+ *      emit LOG_SYSTEM value_a=21 (value_b = divergence s, clamped int16),
+ *      rate-limited to one row per RTC_DIVERGENCE_LOG_CALLS calls (~1 h).
+ *   5. Acquire MX4 → write current_unix_ts (authoritative time) + recompute
+ *      sun times → release.
  *
  * Mutex timeouts log a warning and skip the operation; no fatal errors.
- * Called once at T4 boot and again every RTC_POLL_TICKS main-loop ticks
- * (~60 s) to compensate for clock drift between NTP corrections.
+ * Called once at T4 boot (pre-NTP → seeds) and every RTC_POLL_TICKS ticks.
  *
  * @note Has no effect on the DS1307 itself — read-only.
  */
@@ -368,23 +395,50 @@ static void read_rtc_and_seed_clock(void)
 
     uint32_t unix_ts = rtc_dt_to_unix(&dt);
 
-    /* Seed the ESP-IDF system clock so time(NULL) is valid before NTP. */
-    struct timeval tv = { .tv_sec = (time_t)unix_ts, .tv_usec = 0 };
-    settimeofday(&tv, NULL);
+    if (!nm_is_sntp_synced()) {
+        /* Pre-NTP (boot window / no internet): DS1307 is the best source. */
+        struct timeval tv = { .tv_sec = (time_t)unix_ts, .tv_usec = 0 };
+        settimeofday(&tv, NULL);
+    } else {
+        /* NTP-synced: system clock is authoritative — never let the RTC
+         * chip drag it around (gh#37). Surface RTC sickness instead. */
+        int64_t div = (int64_t)unix_ts - (int64_t)time(NULL);
+        if (div > RTC_DIVERGENCE_WARN_S || div < -RTC_DIVERGENCE_WARN_S) {
+            static uint32_t s_calls_since_log = RTC_DIVERGENCE_LOG_CALLS;
+            ESP_LOGW(TAG, "RTC diverges %+lld s from NTP-synced clock — DS1307 ignored",
+                     (long long)div);
+            if (++s_calls_since_log > RTC_DIVERGENCE_LOG_CALLS) {
+                s_calls_since_log = 0u;
+                int16_t vb = (div > 32767) ? 32767 :
+                             (div < -32768) ? -32768 : (int16_t)div;
+                log_event_t ev = {};
+                ev.timestamp  = (uint32_t)time(NULL);
+                ev.event_type = (uint8_t)LOG_SYSTEM;
+                ev.initiator  = (uint8_t)LOG_BY_SYSTEM;
+                ev.channel    = 0u;
+                ev.param_id   = (uint8_t)LOG_PARAM_NONE;
+                ev.value_a    = 21;   /* RTC divergence (gh#37) */
+                ev.value_b    = vb;
+                log_post(&ev);
+            }
+        }
+    }
 
-    /* Update the MX4 shadow. */
+    /* Update the MX4 shadow from the authoritative clock (== DS1307 when
+     * it was just seeded; == NTP-disciplined system time otherwise). */
+    uint32_t now_ts = (uint32_t)time(NULL);
     if (xSemaphoreTake(MX4, pdMS_TO_TICKS(200u)) == pdTRUE) {
-        s_cfg.current_unix_ts = unix_ts;
+        s_cfg.current_unix_ts = now_ts;
         update_sun_times();
         xSemaphoreGive(MX4);
     } else {
         ESP_LOGW(TAG, "MX4 timeout — RTC timestamp not written to shadow");
     }
 
-    ESP_LOGI(TAG, "RTC: %04u-%02u-%02u %02u:%02u:%02u UTC  unix=%lu  daytime=%s",
+    ESP_LOGI(TAG, "RTC: %04u-%02u-%02u %02u:%02u:%02u UTC  unix=%lu  sys=%lu  daytime=%s",
              (unsigned)dt.year, (unsigned)dt.month, (unsigned)dt.day,
              (unsigned)dt.hour, (unsigned)dt.minute, (unsigned)dt.second,
-             (unsigned long)unix_ts,
+             (unsigned long)unix_ts, (unsigned long)now_ts,
              s_cfg.is_daytime ? "yes" : "no");
 }
 
@@ -1035,7 +1089,9 @@ static void handle_ntp_sync(void)
  *     - xQueueReceive(Q6, 1000 ms) → handle_sensor_reading().
  *     - drain Q4 → apply_config_update().
  *     - check TN4 → handle_ntp_sync().
- *     - every RTC_POLL_TICKS s → read_rtc_and_seed_clock().
+ *     - every RTC_POLL_TICKS s → read_rtc_and_seed_clock() (2.1.3/gh#37:
+ *       seeds from DS1307 only while NTP-unsynced; when synced it only
+ *       checks divergence and refreshes the MX4 shadow/sun times).
  *     - esp_task_wdt_reset() at the top of every iteration.
  */
 void task_data_manager(void *pvParameters)

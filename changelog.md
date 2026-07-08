@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.1.3] — 2026-07-08  (system clock followed a failing DS1307 over NTP, gh#37)
+
+**Bug fix** — T4 reseeded `settimeofday()` from the DS1307 every ~60 s, unconditionally. The RTC chip therefore outranked SNTP: every hourly SNTP correction was overwritten within a minute. On 2344 a failing DS1307 (froze overnight 2026-07-08, restarted 4 h 35 m behind) dragged the system clock 4.6 h off with `ntp_synced=true` — wrong sun times, corrupted log timestamps, hourly ±16 500 s see-saw in the SD log.
+
+- **`firmware/src/data_manager/data_manager.cpp`**: `read_rtc_and_seed_clock()` now seeds the system clock from the DS1307 **only while NTP-unsynced** (boot window / no internet). When synced, the system clock is authoritative; a DS-vs-system divergence > 10 s emits a new `LOG_SYSTEM value_a=21` audit row (value_b = divergence seconds, rate-limited ~1/h) so a sick RTC surfaces in the SD log. MX4 shadow/sun times now always follow the authoritative clock.
+- **`firmware/src/event_logger/event_logger.h`**: value_a=21 documented.
+- **`log/logparser.py`**: decodes value_a=21.
+
+Hardware follow-up (open): check/replace the DS1307 backup battery on 2344.
+
+---
+
 ## [2.1.2] — 2026-07-04  (SD log file listing truncated beyond ~20 files)
 
 **Bug fix** — `/api/log/files` and T14 upload-on-startup both silently dropped files when the SD card held more entries than fit in a 512-byte buffer. Affected both units; manifested as the GUI showing only files up to ~June 22 and T14 ceasing uploads after that date.

@@ -130,6 +130,7 @@
  *  18     | Coredump available at boot (since 2.0.0-a.6.35.6) | size in KB (rounded up) | T4 data_manager (esp_core_dump_image_check OK during boot)
  *  19     | Coredump downloaded by admin (since 2.0.0-a.6.35.6) | bytes_streamed / 256 (clamped int16) | T11 web_server (initiator=WEB)
  *  20     | Coredump erased by admin   (since 2.0.0-a.6.35.6) | 0 = unused             | T11 web_server (initiator=WEB)
+ *  21     | RTC divergence (since 2.1.3, gh#37) | DS1307 − system clock, seconds (clamped int16). Emitted when |div| > 10 s while NTP-synced; rate-limited ~1/h | T4 data_manager read_rtc_and_seed_clock()
  *  -1     | Q3 drop-overflow    | dropped count                        | T9 (synthetic)
  *
  * ### value_a=0 sub-codes (T14 outcome / diagnostic skip)

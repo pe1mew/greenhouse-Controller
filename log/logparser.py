@@ -718,6 +718,17 @@ def _decode_system(row: dict) -> str:
             return "Coredump erased by admin (partition wiped)"
 
         # ---------------------------------------------------------------
+        # RTC divergence (value_a=21, since 2.1.3 / gh#37).
+        # value_b = DS1307 minus NTP-synced system clock, seconds (clamped
+        # int16). Emitted by T4 when |divergence| > 10 s while NTP-synced;
+        # rate-limited to ~1 row/hour. The DS1307 is NOT applied to the
+        # system clock in this state — a persistent stream of these rows
+        # means the RTC chip (or its backup battery) is failing.
+        # ---------------------------------------------------------------
+        if va == 21 and initiator == "SYS":
+            return f"RTC divergence: DS1307 is {vb:+d} s vs NTP-synced clock (DS1307 ignored — check RTC/battery)"
+
+        # ---------------------------------------------------------------
         # Legacy / ambiguous: pre-1.17.31 boot marker
         # ---------------------------------------------------------------
         if va == 0 and vb == 0 and initiator in ("SYS", ""):
