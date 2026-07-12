@@ -16,8 +16,8 @@ Direct answers to the commissioning questions:
 
 - **New task:** yes — **T16**, a permanent low-priority task that *reuses* the existing T13 ingestion machinery, preserving the paired-commit invariant by construction (§4).
 - **GUI:** an admin-only "Internet OTA" group in the existing System-tab OTA section — enable checkbox, check-interval (hours), server URL, device secret (§4.5).
-- **Mutual identification — is asymmetric key an option?** Yes, three ways (mTLS with software key, with the ESP32-S3 DS peripheral, with a secure element). But in stage 1 the highest-value use of asymmetric crypto is the **artefact signature, not the transport**: a signed release manifest + signed app image, with the private key offline on the build PC, protects the fleet even if the VPS itself is compromised. Recommended stage-1 combo: **O6 (signed artefacts) + O2 (per-device HMAC identity)** (§5).
-- **Firmware signing — possible?** Yes, twice over: ESP-IDF signed-app verification on OTA write (`CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT`) — software-only, zero eFuse burns, fully reversible, effort S — plus the signed release manifest that also covers the web-assets ZIP, which today has no integrity check at all (§7).
+- **Mutual identification — is asymmetric key an option?** Yes, three ways (mTLS with software key, with the ESP32-S3 DS peripheral, with a secure element). **Per operator decision R1 (§3.1), mutual authentication before firmware is offered is the Must** — the stage-1 baseline is **O2 (per-device HMAC mutual identification)** or **O3 (mTLS)**, with the server side allowed to use a **pinned self-signed certificate** uploaded via the GUI or embedded in firmware (R5) — which removes the CA-bundle/renewal dependency entirely.
+- **Firmware signing — possible?** Yes, twice over: ESP-IDF signed-app verification on OTA write (`CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT`) — software-only, zero eFuse burns, fully reversible, effort S — plus the signed release manifest that also covers the web-assets ZIP, which today has no integrity check at all (§7). **Per R2 (§3.1) signing is a Would** — desirable hardening, not required for the first implementation.
 - **Server — PHP or dedicated software?** **PHP is entirely adequate** at 2–20 units and matches the stack already running at rfsee.net; two small PHP files next to the existing `api.php`, artefacts outside the webroot, flat-file device registry. A dedicated service is not justified below ~50 units; the only capability PHP cannot deliver alone is mTLS termination (web-server/vhost config — access level unconfirmed, open question) (§8).
 - **Key management for a fleet:** per-device HMAC keys in a server-side registry (revocation = one row edit); a tiny in-house CA only when mTLS arrives; the firmware-signing key lives on the build PC and **never on the VPS** (§9).
 - **Scalability / maintainability:** nothing structural changes until ~50 units; the stage-1 design (manifest format, channels, registry, publish pipeline) survives later upgrades of transport auth and server runtime (§9.5).
@@ -38,7 +38,7 @@ Direct answers to the commissioning questions:
 - **Push OTA only.** `ota_push.py` logs in with the admin PIN, POSTs the app binary (~1.36 MB) to `/api/ota/firmware`, then the web-assets ZIP (~108 KB) to `/api/ota/assets`. T13 (`ota_manager`) stages, verifies size/SHA-integrity, extracts assets into the passive LittleFS partition and atomically swaps both banks. A 120 s `FW_DONE` fallback timer commits firmware alone if assets never arrive — the known stranded-assets failure mode.
 - **No cryptographic authenticity.** `esp_ota_end()` checks the image header and appended SHA-256 digest — integrity, not authenticity. Anyone with the admin PIN can flash arbitrary code ([OTAimplementation.md](OTAimplementation.md) says this explicitly). The assets ZIP has no check at all: `extract_zip_store()` (ota_manager.cpp:749-834) parses local-file headers but never reads or verifies the CRC-32 field.
 - **Outbound HTTPS already works.** T14 POSTs status JSON every ~120 s and uploads SD logs daily to `https://rfsee.net/hbwv/api.php` using `esp_http_client` + the mbedTLS CA bundle. Certificate **expiry is not checked** (`CONFIG_MBEDTLS_HAVE_TIME_DATE` unset).
-- **Device auth today is one fleet-wide secret** (`sourceidentifier` header) — no per-unit identity, no replay protection. The production unit 5C88 is outbound-only (NAT); rfsee.net is its only communication path.
+- **Device auth today is a unit-specific shared secret.** Each unit carries its own `status_secret` (NVS, `system` namespace), sent as the `sourceidentifier` header on every periodic status POST and log upload to rfsee.net, which presents the controller state on the web (status_post.cpp:393-394, :552-553). So per-unit identity and per-unit revocation exist today; what is missing is replay protection and keeping the secret off the wire — it travels bearer-style with every request. The production unit 5C88 is outbound-only (NAT); rfsee.net is its only communication path.
 - **Fleet:** 5C88 (production) + 2344 (soak). Release discipline: build → OTA soak → overnight → production.
 
 ## 3. Requirements traceability
@@ -56,6 +56,26 @@ Direct answers to the commissioning questions:
 | 9 | Server impact; PHP vs dedicated | §8 |
 | 10 | Key management, multiple controllers | §9 |
 | 11 | Scalability, small-company maintainability | §8, §9.5 |
+
+### 3.1 Normative decisions (operator, 2026-07-12)
+
+The following decisions are **authoritative** and take precedence over the study's original emphasis wherever they differ (MoSCoW priorities per FRS convention):
+
+| # | Decision | Priority |
+|---|---|---|
+| R1 | Controller and OTA site/server **shall mutually authenticate each other before new firmware is offered**. Mutual authentication is the minimum bar for any internet-pull OTA. | **Must** |
+| R2 | Firmware signing (signed app image and/or signed release manifest, §7) is desirable but **not required** for the first implementation. | **Would** |
+| R3 | Device identity: the unit id is the **last 2 bytes of the WiFi MAC**. The **full WiFi MAC may be used as the unique identifier by default**; it may be overridden or replaced by a better mechanism or a longer key later. | Must (default) |
+| R4 | The server shall serve the **mainstream release for the unit type** by default, **or a specific pinned version** for a unit when configured so. | Must |
+| R5 | Where possible the server **may use a self-signed certificate** for TLS / server identification. The accompanying certificate **shall be uploadable via the controller's web GUI** and **may also be embedded in the firmware** as a default. | Should |
+
+**Consequences for the study's recommendation:**
+
+- R1 promotes transport-level *mutual* authentication from "recommended" to the Must: the stage-1 baseline is **O2 (per-device HMAC request signing — mutual identification without server TLS reconfiguration)**, or **O3 (mTLS)** where vhost access allows. O1 alone (bearer key) does not satisfy R1 as the end state.
+- R2 demotes O6 and §7.1 (signed apps) from "carries the security load" to a later hardening step. Consequence to state honestly: **without artefact signing, firmware integrity rests entirely on the mutually-authenticated transport and on the VPS not being compromised** (threat TH1 is accepted rather than mitigated until R2 is implemented).
+- R5 substantially simplifies the server-auth side of R1: a **pinned self-signed server certificate** (uploaded via the GUI, with an optional firmware-embedded default) replaces the public CA bundle for the OTA connection — no Let's Encrypt renewal dependency, long validity chosen at generation time, and DNS-hijack (TH4) collapses because only the pinned cert is accepted. `esp_http_client` supports this directly (`cert_pem` instead of `esp_crt_bundle_attach`). The client design (§4.6) gains a cert-management surface: admin-only PEM upload endpoint + storage (NVS blob or LittleFS file, ~2 KB) with fallback to the embedded default.
+- R4 maps onto the channel design in §8: `channels/<unit-type>.json` is the mainstream pointer; a per-unit `pinned_version` field in the device registry overrides it when set.
+- R3 confirms §9.1's `unit_id` derivation and its collision remedy (fall back to the full MAC, or a longer provisioned key) as the default identity scheme.
 
 ---
 
@@ -114,7 +134,7 @@ Apply (flash feed + commit) and reboot are gated on a **quiet window**, re-check
 - `EG1_BIT_WIND_OVERRIDE` clear (an active protective close must finish first) and `EG1_BIT_MOTOR_ALARM` clear;
 - no active web session slot and no LCD PIN session (T8) — minimal "manual session" check.
 
-If not quiet: poll every 60 s; if still busy after 30 min, release the OTA state (stay on old bank — nothing was committed) and retry next check cycle, audit "deferred". Once committed by T13, reboot goes through the existing two-stage `schedule_reboot()` → `reboot_worker_task` pattern (ota_manager.cpp:195-238) with the 1 s asset-success delay — no new mechanism. Farmer notification: none beyond the existing LCD " OTA" suffix driven by `EG1_BIT_OTA_IN_PROGRESS` (ui_display.cpp:926); an update applied in a quiet window is invisible by design.
+**Additionally (§11 Q2, resolved 2026-07-12): apply+reboot is restricted to a configured night window** — NVS `ota_win_lo` / `ota_win_hi` (hours, default 02–04 local; equal values = window disabled). The check/download/verify phases run at any time; only the flash-feed/commit/reboot waits for the window ∩ quiet gate. If not quiet within the window: poll every 60 s; if still busy when the window closes, release the OTA state (stay on old bank — nothing was committed) and retry the next night, audit "deferred". Once committed by T13, reboot goes through the existing two-stage `schedule_reboot()` → `reboot_worker_task` pattern (ota_manager.cpp:195-238) with the 1 s asset-success delay — no new mechanism. Farmer notification: none beyond the existing LCD " OTA" suffix driven by `EG1_BIT_OTA_IN_PROGRESS` (ui_display.cpp:926); an update applied in a quiet window is invisible by design.
 
 Rollback after a bad update is the existing 3-strike NVS counter (`ota_check_rollback()`, cpp:352-410) + `ota_mark_healthy()` at 30 s uptime; bank-paired LFS rolls assets back with the bank. No new code (§7.4).
 
@@ -128,6 +148,8 @@ Namespace **`system`**, following the T14 `status_*` precedent (data_manager.cpp
 | `ota_check_h` | i32 hours | 24 | 1–168 | 40 (old→new) |
 | `ota_url` | str ≤128 (`CFG_MAX_URL_LEN`) | "" (= disabled) | `https://` only | 41 ("set" marker, value never logged) |
 | `ota_secret` | str 16–64 | "" | — | 42 ("set" marker) |
+| `ota_win_lo` | i32 hour | 2 | 0–23 | 43 (old→new) |
+| `ota_win_hi` | i32 hour | 4 | 0–23 | 44 (old→new) |
 
 `ota_secret` is the per-device HMAC key of §5 O2/§9.2 — **one location, one name**: `system/ota_secret`, provisioned via the endpoint below (see §9.2 for the provisioning flow; the firmware has no serial console, so a console-based injection path would be new scope).
 
@@ -135,7 +157,7 @@ Touch points, exactly per the established pattern: `K_` constants + load lines i
 
 **Write path:** a dedicated admin transaction endpoint `GET/POST /api/ota/config`, cloned from `web_get_handler`/`web_post_handler` (web_server.cpp:2325-2360 / 2383-2532) — mandatory because `ota_url` (128) exceeds the 79-char `str_value` cap of `POST /api/config` (web_server.cpp:1257). Same discipline: validate all fields before any write, `https://`-only URL check (server-side clone of :2424-2446, client-side clone of `validateStatusUrl()`, app.js:1009-1017), "empty secret = keep", per-field audit rows, then shadow reload + `xTaskNotify(task_t16, …)`.
 
-**GUI:** extend the existing System-tab OTA section (index.html:427-448) with an "Internet OTA" group — checkbox (`cfg-web-enable` idiom, index.html:502), number input for interval hours, `<input type="url" maxlength="128">` + password-style secret field (`cfg-web-url`/secret idiom, :489-495), one Apply button via a `postOtaCfg()` clone of `postWebCfg()` (app.js:1019-1057), and a read-only "last check / result" line fed from `/api/ota/status`. Everything carries `class="admin-only"`; server-side the new endpoint uses `admin_only_or_send_error()`, and none of the keys enter `FARMER_KEYS`/`FARMER_WIND_KEYS` (web_server.cpp:1030-1036) — farmers can neither see nor set any of it.
+**GUI:** extend the existing System-tab OTA section (index.html:427-448) with an "Internet OTA" group — checkbox (`cfg-web-enable` idiom, index.html:502), number input for interval hours, `<input type="url" maxlength="128">` + password-style secret field (`cfg-web-url`/secret idiom, :489-495), one Apply button via a `postOtaCfg()` clone of `postWebCfg()` (app.js:1019-1057), and a read-only "last check / result" line fed from `/api/ota/status`. Per §3.1 R5, the group also carries a **server-certificate upload** (PEM textarea or file upload, ~2 KB, admin-only): the uploaded cert is pinned for the OTA TLS connection (stored as NVS blob or LittleFS file), with a firmware-embedded default as fallback; a self-signed server certificate is acceptable. Everything carries `class="admin-only"`; server-side the new endpoint uses `admin_only_or_send_error()`, and none of the keys enter `FARMER_KEYS`/`FARMER_WIND_KEYS` (web_server.cpp:1030-1036) — farmers can neither see nor set any of it.
 
 ### 4.7 Observability
 
@@ -203,14 +225,14 @@ The requirement splits into two independent questions, and keeping them separate
 
 The distinction matters because the signing key for O6 lives **offline on the build PC** and never touches the VPS. Even with the weakest transport option, a fully compromised rfsee.net cannot produce runnable firmware. Conversely, even perfect mTLS does not help if the server itself is hostile. [RFC 9019](https://www.rfc-editor.org/info/rfc9019) (IETF SUIT architecture) makes exactly this split: end-to-end security lives in the signed manifest, not the transport.
 
-Baseline for calibration: today's `api.php` device-auth is a single fleet-wide `sourceidentifier` header (status_post.cpp:393-395) — no per-unit identity, no replay protection — and the OTA endpoints have no internet exposure at all. Every option below is an improvement.
+Baseline for calibration: today's `api.php` device-auth is a **unit-specific** shared secret — each unit's own `status_secret` sent as the `sourceidentifier` header on its periodic status/log uploads (status_post.cpp:393-394). Per-unit identity and revocation therefore already exist; the remaining gaps are that the secret travels on the wire with every request (bearer-token grade) and there is no replay protection. The OTA endpoints have no internet exposure at all. The options below strengthen this baseline.
 
 ### O1 — HTTPS server-auth + static per-device API key (baseline)
 
 - **How:** keep the existing `esp_crt_bundle_attach` TLS client (the T14 pattern, status_post.cpp:369-379); add header `X-Device-Key: <unit_id>:<key>`. Server looks the key up in a per-device table.
 - **Client stores:** 32-byte random key in NVS. **Server stores:** `unit_id → key-hash` table.
 - **CIA:** C — key protected in transit by TLS; I — server identity via CA bundle only; device identity is bearer-token grade (whoever holds the key *is* the device); A — no impact.
-- **Effort: S.** **Stage 1: yes.** Strictly better than today because the key is per-device → revocable per-unit.
+- **Effort: S.** **Stage 1: yes.** This simply extends today's per-unit `status_secret` pattern to the OTA endpoints — same trust grade, same per-unit revocability; a dedicated key keeps OTA and status credentials independently revocable (see open question 4).
 
 ### O2 — HTTPS server-auth + per-device HMAC request signing
 
@@ -258,7 +280,7 @@ Baseline for calibration: today's `api.php` device-auth is a single fleet-wide `
 | O5 ATECC608 | nothing extractable | CA cert + allowlist | No | XL | Stage 2 |
 | O6 signed artefacts | 1 public key | nothing | **Yes** | M | Yes |
 
-**Recommendation — stage 1: O6 + O2**, plus enabling `CONFIG_MBEDTLS_HAVE_TIME_DATE` (cert expiry checking is compiled out today, sdkconfig.lolin_s3:1889). O6 carries the actual security load; O2 gives per-device identity and replay protection with no server TLS reconfiguration and no CA to operate. The direct answer to "is asymmetric key an option": yes — and in stage 1 the highest-value use of asymmetric crypto is the **artefact signature**, not the transport. Defer mTLS until there is a reason (fleet growth, per-device artefact entitlements). **Stage 1.5:** if mTLS is adopted, put the key in the DS peripheral (O4) at the next physical touch of each unit. **Stage 2:** ATECC608 only with a board respin.
+**Recommendation — revised per §3.1 (operator decisions).** Stage 1 = **O2 (per-device HMAC mutual identification)** as the R1 Must, with **server authentication via a pinned certificate** (R5: self-signed allowed; PEM uploadable through the admin GUI, embedded default in firmware) — pinning replaces the CA bundle for the OTA connection and removes the renewal dependency, making `CONFIG_MBEDTLS_HAVE_TIME_DATE` optional for this path (still recommended for the status path). Full mTLS (O3/O4) is the stronger R1 implementation where VPS vhost access allows. **O6 (signed artefacts) is a Would (R2)** — implement later as hardening; until then, firmware integrity rests on the mutually-authenticated transport and VPS custody (TH1 accepted). **Stage 1.5:** if mTLS is adopted, put the key in the DS peripheral (O4) at the next physical touch of each unit. **Stage 2:** ATECC608 only with a board respin.
 
 ---
 
@@ -276,7 +298,7 @@ Framing per [NIST SP 800-193](https://csrc.nist.gov/pubs/sp/800/193/final): *pro
 | TH2 | Malicious insider at hosting provider | Same as TH1, plus theft of server-side device-key table (O1/O2) → device impersonation *to the server* | O6 for firmware; per-device keys bound the blast radius; O3/O4 remove server-held secrets entirely | Insider can still drop/serve stale updates (availability) |
 | TH3 | MITM on path | Intercept/modify download | Existing CA-bundle TLS + CN check — but **cert expiry is not verified today** (`MBEDTLS_HAVE_TIME_DATE` off); enable it, making DS1307/SNTP load-bearing | O6 backstops any TLS failure |
 | TH4 | DNS hijack of rfsee.net | Redirect device to attacker host | Attacker still needs a cert from one of ~200 bundle CAs; optional custom-bundle pinning trades agility for surface | O6 backstops; pinning deferred |
-| TH5 | Stolen device credential | Today: one fleet-wide secret = whole-fleet impersonation | Per-device key (O1/O2): revoke one registry row; mTLS: allowlist edit | Physical flash dump reads NVS keys until O4 (DS-held key) or NVS encryption (§7.3) |
+| TH5 | Stolen device credential | Today's per-unit `status_secret` travels bearer-style on the wire; a stolen one impersonates that unit (blast radius is already per-unit, not fleet-wide) | O1 keeps the per-unit bearer model for OTA (revoke = one registry row); O2 takes the secret off the wire + kills replays; mTLS: allowlist edit | Physical flash dump reads NVS keys until O4 (DS-held key) or NVS encryption (§7.3) |
 | TH6 | Downgrade attack (replay of old, validly-signed firmware) | Old vulnerable release re-served | Manifest monotonic `seq` + device rule: never accept `seq` ≤ running, high-water mark in NVS (§7.4). eFuse anti-rollback exists but is irreversible — software check suffices for stage 1 | Requires the version check to be in the *verified* manifest, not the URL |
 | TH7 | Bricked unit mid-update (power loss) | Flash write interrupted | Dual bank: download lands in the passive slot; `esp_ota_set_boot_partition` is atomic. Recovery is the existing 3-strike NVS rollback (`ota_check_rollback()`, ota_manager.cpp:352-410); IDF pending-verify rollback (`CONFIG_APP_ROLLBACK_ENABLE`) is deliberately **not** enabled — its semantics collide with the custom counter (§7.4) | A unit that boots but can't reach WiFi still relies on the local 3-strike fallback; bench-verify the currently-inert `esp_ota_mark_app_invalid_rollback_and_reboot()` call (:398) on 2344 |
 | TH8 | Stranded assets (fw committed, assets not) | Existing known failure mode: 120 s `FW_DONE` fallback (ota_manager.cpp:88) | Pull flow fixes this structurally: download **both** artefacts, verify both digests against the manifest, then commit — the manifest binds the pair; post-boot verify `fw_ver == asset_version` exactly as `ota_push.py` does | Keep the fallback timer as last resort, but it should now never fire |
@@ -287,7 +309,7 @@ Framing per [NIST SP 800-193](https://csrc.nist.gov/pubs/sp/800/193/final): *pro
 
 | Configuration | Confidentiality | Integrity | Availability |
 |---|---|---|---|
-| Today (fleet secret, no signing, local push only) | Weak — shared secret, plaintext NVS | Weak — SHA-256 only, any admin-PIN holder flashes anything | Good — dual bank, but stranded-assets mode open |
+| Today (per-unit bearer secret, no signing, local push only) | Adequate — per-unit `status_secret`, but bearer-on-wire and plaintext NVS | Weak — SHA-256 only, any admin-PIN holder flashes anything | Good — dual bank, but stranded-assets mode open |
 | O1 only | Adequate — TLS + bearer key | Poor — trusts server entirely | Good |
 | O2 only | Good — key never on wire | Fair — transport tamper-proof, server still trusted for content | Good |
 | **O2 + O6 (stage-1 pick)** | Good | **Strong — end-to-end signed pair, anti-downgrade** | Good — pair-atomic commit closes TH8 |
@@ -312,6 +334,8 @@ Framing per [NIST SP 800-193](https://csrc.nist.gov/pubs/sp/800/193/final): *pro
 ---
 
 ## 7. Firmware signing and platform security (ESP32-S3 / ESP-IDF 5.5)
+
+> **Priority note (§3.1 R2):** everything in this section is a **Would** — desirable hardening, not required for the first implementation. Mutual transport authentication (§3.1 R1) is the Must; this section documents what signing would add and how, for when it is picked up.
 
 Today the device performs **no cryptographic authentication of firmware images**. `esp_ota_end()` (ota_manager.cpp:493) checks only the image header and the appended SHA-256 *digest* — an integrity check, not an authenticity check. Anyone who can reach an OTA path with admin rights can flash arbitrary code. The moment OTA moves from the LAN to the internet, that gap becomes the single largest risk in this study. The good news: the ESP32-S3 + IDF 5.5 stack has a clean, staged ladder from "software-only signing" to "hardware root of trust", and stage 1 is cheap and fully reversible.
 
@@ -425,13 +449,13 @@ Proposal — a **signed release manifest** as the unit of trust, which also happ
 
 ### 8.1 Can it be done in PHP?
 
-**Yes.** Everything the pull-OTA server must do — serve a per-channel JSON manifest, stream two static binaries, verify a per-device HMAC, append an audit row — sits comfortably in PHP next to the `hbwv/api.php` that already exists. The one capability that is *not* a PHP problem is **mTLS**: client-certificate verification terminates in the web server (Apache `SSLVerifyClient require` / nginx `ssl_verify_client on`), which needs vhost-level and probably root access. SSH/SCP deploy access is confirmed, but the actual web-server stack (Apache vs nginx) and root access are **unconfirmed — open question to resolve before committing to mTLS**. Recommendation: **stage 1 in PHP with per-device HMAC; mTLS in stage 2, contingent on confirming vhost access.** Dedicated software is not needed at 2–20 units.
+**Yes.** Everything the pull-OTA server must do — serve a per-channel JSON manifest, stream two static binaries, verify a per-device HMAC, append an audit row — sits comfortably in PHP next to the `hbwv/api.php` that already exists. The one capability that is *not* a PHP problem is **mTLS**: client-certificate verification terminates in the web server. **Resolved (§11 Q1, 2026-07-12): rfsee.net runs nginx with full root access** — `ssl_verify_client` is available in a dedicated OTA server block, and `X-Accel-Redirect` is available for download offload. mTLS is therefore fully on the table as the R1 implementation whenever wanted; stage 1 can still start with per-device HMAC (O2) for zero server-TLS changes. Dedicated software is not needed at 2–20 units.
 
 ### 8.2 Required capabilities
 
 | # | Capability | Notes |
 |---|---|---|
-| 1 | Manifest per device/channel | The signed release manifest of §7.7, served per channel; the check-in doubles as fleet telemetry |
+| 1 | Manifest per device/channel | The release manifest of §7.7 (signature optional per R2), served per **unit type's mainstream channel** by default, or a **per-unit pinned version** when set in the registry (R4); the check-in doubles as fleet telemetry |
 | 2 | Binary hosting | Plain full-body GET is all the recommended client (§4.3 shape a) needs. Range/206 support is optional future-proofing (~30 lines parsing the general `bytes=N-M` form) — cheap and standard, required only if a future client switches to `esp_https_ota` |
 | 3 | Device authentication | Per chosen option: HMAC header (stage 1), client cert (stage 2) |
 | 4 | Check-in / result audit | Who polled, when, running what, and the last update result |
@@ -452,7 +476,7 @@ ota-store/                 # OUTSIDE the webroot
   releases/2.2.0/manifest-2.2.0.json          # incl. detached signature
   channels/soak.json       # which release each channel points at
   channels/production.json
-  devices.json             # registry: unit_id → {key, channel, enabled, last_seen, fw_ver}
+  devices.json             # registry: unit_id → {key, channel, pinned_version, enabled, last_seen, fw_ver}
   checkins.csv             # append-only audit
 ```
 
@@ -471,8 +495,8 @@ if (!$ok) { http_response_code(204); exit; }     /* silent drop, same policy as 
 ```
 
   Authenticated requests get **real** status codes (200/404/416) — unlike api.php's everything-is-204 posture, because the OTA client state machine needs them. Only failed auth gets the silent 204. Note the HMAC authenticates the client to the server (gates downloads and registry writes); firmware *integrity* comes from the offline signature, not from this.
-- **Downloads:** `fopen` + 64 KB `fread`/`echo` loop from `ota-store/` (never `readfile()` into memory limits). The optional Range handler (capability #2) parses `bytes=N-M` and emits `206`/`Content-Range`/`Accept-Ranges`; `mod_xsendfile` / `X-Accel-Redirect` would be nicer but depends on the unconfirmed stack — don't design around it.
-- **Why mTLS is the awkward part in PHP:** PHP never sees the TLS handshake; the client cert is verified by Apache/nginx config and surfaced to PHP only as `SSL_CLIENT_*` variables if the vhost exports them. Feasible only with root/vhost access — **open question**, see §8.1.
+- **Downloads:** `fopen` + 64 KB `fread`/`echo` loop from `ota-store/` (never `readfile()` into memory limits). The optional Range handler (capability #2) parses `bytes=N-M` and emits `206`/`Content-Range`/`Accept-Ranges`. Since the stack is confirmed nginx (§11 Q1), `X-Accel-Redirect` is the cleaner upgrade: PHP authenticates, nginx streams the file.
+- **mTLS in PHP — resolved:** PHP never sees the TLS handshake; the client cert is verified by the web server and surfaced as `SSL_CLIENT_*` / `$_SERVER` variables. With nginx + root confirmed (§11 Q1), `ssl_verify_client` in the OTA server block plus `fastcgi_param SSL_CLIENT_S_DN` passing is straightforwardly available.
 
 **Verdict:** at 2–20 units PHP is entirely adequate, matches the maintainer's existing stack, and is running the moment `scp` completes. Effort **M** including registry tooling.
 
@@ -509,13 +533,13 @@ Extend [bin/build_release.ps1](../bin/build_release.ps1) with a **Step 4 — pub
 
 ### 9.1 Device identity
 
-`unit_id` already exists — 4 hex chars from eFuse MAC bytes 4+5 (`firmware/src/system_id/system_id.cpp`). Today it appears only *inside* the status JSON body and is suppressible via `status_expose` bit 5; there is no transport-level identity at all. The OTA path must promote it to a first-class lookup key: sent on every manifest/download request, never suppressible, and used as the HMAC key id. Caveat: 16 bits collide eventually — birthday odds ≈ 2 % at 50 units, ≈ 25 % at 200 — so provisioning must reject duplicate `unit_id`s and fall back to the full MAC for the colliding unit.
+`unit_id` already exists — 4 hex chars from eFuse MAC bytes 4+5 (`firmware/src/system_id/system_id.cpp`). Today the unit's transport-level identity is its per-unit `status_secret` (`sourceidentifier` header); `unit_id` itself appears only *inside* the status JSON body and is suppressible via `status_expose` bit 5. The OTA path should promote `unit_id` to the first-class lookup key: sent on every manifest/download request, never suppressible, and used as the HMAC key id (with the secret as the key material, mirroring the status-path pattern). Caveat: 16 bits collide eventually — birthday odds ≈ 2 % at 50 units, ≈ 25 % at 200. Per §3.1 R3: the short `unit_id` is the last 2 bytes of the WiFi MAC; the **full WiFi MAC may serve as the unique identifier by default** (collision-free for practical purposes), and the identifier may later be **overridden or replaced by a better mechanism or a longer provisioned key** — the server registry should key on a string field from day one so that swap costs nothing.
 
 ### 9.2 Stage 1 — one secret per device
 
 - **Generate on the build PC**: `openssl rand -hex 32`, one per unit, at provisioning time.
 - **Inject at first flash / bench**: via the admin-PIN'd `/api/ota/config` endpoint (§4.6) over the unit's AP or the bench LAN — the write path already exists in the design, logs a "set" audit row without echoing the value, and the key crosses only the local bench link once. (The firmware has no serial console/REPL; adding one just for key injection would be new scope for no security gain at bench distance.) Stored as `system/ota_secret` — the same key `/api/ota/config`'s "empty = keep" path protects.
-- **Server side**: the same key lands in `devices.json` (outside webroot, mode 0600) with `channel` and `enabled`. HMAC means the server holds the raw key — accepted for stage 1; that is the same trust level as today's fleet-wide secret, with two improvements: a leaked registry compromises device *authentication* but never firmware *integrity* (signing key is offline), and compromise is per-device — delete one row instead of rotating the whole fleet.
+- **Server side**: the same key lands in `devices.json` (outside webroot, mode 0600) with `channel` and `enabled`. HMAC means the server holds the raw key — accepted for stage 1; that is the same trust grade as today's per-unit `status_secret`, with the decisive improvement that a leaked registry compromises device *authentication* but never firmware *integrity* (the signing key is offline). Per-device revocation (delete one row) matches what the status path already offers today.
 
 ### 9.3 Stage 1.5/2 — a tiny CA for mTLS
 
@@ -577,10 +601,10 @@ Nothing structural changes until ~50 units, and the stage-1 design is not throwa
 
 Version impact: stage 1 is a feature release → **minor bump** (new NVS keys, new API endpoint, new status-JSON fields). The signed-apps Kconfig flip (stage 0) is also minor — it changes what future OTA accepts.
 
-## 11. Open questions
+## 11. Open questions — all resolved (operator, 2026-07-12)
 
-1. **VPS access level** — Apache or nginx? root/vhost access available? Determines whether mTLS (stage 1.5/2) is possible at all on rfsee.net, and whether `mod_xsendfile`-style download offload is available. Resolve before committing to O3/O4.
-2. **Reboot window policy** — is "motors idle + no wind override + no active session" sufficient, or should remote updates additionally be restricted to a configured time window (e.g. 02:00–04:00)? A `ota_window_h` NVS param would be a trivial addition.
-3. **Should the existing push path also require signatures once stage 0 lands?** Yes by mechanism (same `esp_ota_end()` enforcement) — but the team must remember: after stage 0, `ota_push.py` can only push signed binaries. `build_release.ps1` signing makes this automatic; ad-hoc dev builds need the key available.
-4. **`ota_secret` vs `status_secret` unification** — T14's status POST auth and T16's OTA auth could share one per-device credential and one server registry. Attractive (one provisioning step), but couples the two failure domains; decide at implementation time.
-5. **Firmware binary confidentiality** — accepted as non-secret in this study (TH10). If that changes (licensing, IP), revisit GitHub-Releases hosting and add O1/O2 gating to downloads (already designed in).
+1. **VPS access level — RESOLVED: nginx, full root.** mTLS (`ssl_verify_client`) is available in a dedicated OTA server block whenever wanted, and `X-Accel-Redirect` is available for download offload. O3/O4 are unblocked; §8.1/§8.3 updated.
+2. **Reboot window policy — RESOLVED: yes, night window.** Apply/commit/reboot restricted to a configurable window (NVS `ota_win_lo`/`ota_win_hi`, default 02:00–04:00 local) *in addition to* the motors-idle/no-session/no-override quiet gate. Check/download/verify phases run at any time. §4.5/§4.6 updated.
+3. **Signatures on the push path — RESOLVED: uniform enforcement, both paths, when R2 (signing, Would) is implemented.** One gate in `esp_ota_end()`, no exemptions. Accepted consequence: from the first signing-enabled release onward, `ota_push.py` can only push signed binaries; `build_release.ps1` signs automatically, ad-hoc dev builds need the key present.
+4. **`ota_secret` vs `status_secret` — RESOLVED: separate `ota_secret`.** Rationale: the status secret travels bearer-style on the wire ~every 2 min; reusing it as the OTA HMAC key would mix bearer and signing usage of one credential and couple the failure domains. Provisioning writes both secrets in one step, so operational cost is nil. Revisit unification only if managing two keys ever becomes a real burden.
+5. **Firmware binary confidentiality — RESOLVED: non-secret (TH10 confirmed).** No credentials live in the image. Downloads on rfsee.net are auth-gated anyway as a side effect of R1; public artefact hosting (GitHub Releases, §8.5) remains a permissible future bandwidth offload.

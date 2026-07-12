@@ -21,7 +21,7 @@ Six-parameter lumped thermal model, `ach_m2 = ach_m1` by prior (identical window
 | `transpiration` | 0.0003 kg/s | canopy latent-heat sink | High |
 | `ach_inf` | 0.203 /h | infiltration, all closed | High — thousands of night rows |
 | `ach_m1` = `ach_m2` | 0.166 /h | per roof window (8 m²) | High |
-| `ach_m3` | **0.050 /h** | north-wall window (80 m²) | **Upper bound** — optimiser pins at any floor given; steady-state check gives 0.03–0.09 /h |
+| `ach_m3` | **0.050 /h** | north-wall window (80 m²) | **Leeward (SW-wind) regime value** — under windward N/NE flow the window delivers ~3–8 /h (F2, §9.10); the model needs NS-9 for direction dependence |
 
 ACH by window state: all closed 0.20 → M1 0.37 → M1+M2 0.54 → **all open 0.59 /h**.
 
@@ -39,20 +39,17 @@ ACH by window state: all closed 0.20 → M1 0.37 → M1+M2 0.54 → **all open 0
 
 **F1 — The model works, and is 4× better than its predecessor.** Val T RMSE 1.19 °C vs 4.96 °C for the spring artifact. It reproduced the Jun 26 heatwave peak (42.2 °C) and daily profiles across 30 days including a heatwave, cool spells, and rain days.
 
-**F2 — M3 is an ineffective ventilator (the campaign's central surprise).** The 80 m² north-wall window (*Zijwandbeluchting*) contributes ≤ 0.05 /h — about **0.3× one 8 m² roof window**, where area scaling predicted ~10×. Three independent lines of evidence agree:
-1. *Direct test (NS-6, 2026-07-04):* two 60-min M3-only openings; indoor temperature **rose** ~2.4 °C/h at 30–50 k lux with the wall wide open.
-2. *Saturated-controller data:* heatwave days with all windows fully open and T_in far above setpoint (no feedback confounding) — only a small total ACH explains the observed peaks.
-3. *Steady-state heat balance* on the cleanest M3-only stretch: total ACH 0.21–0.26 /h.
+**F2 — M3's ventilation is wind-direction-dependent, swinging ~30–100× (the campaign's central surprise, revised 2026-07-12).** The 80 m² north-wall window (*Zijwandbeluchting*) contributes **≤ 0.05 /h when leeward** (SW wind — the prevailing summer condition, and what the Jul 4 test sampled at 241–280°) but **~3–8 /h when windward** (N/NE wind), even at just 1.6 m/s: three operator-forced M3-only openings on cloudy Jul 11 under 7–84° wind flushed the house completely — T_in converged to T_out and indoor absolute humidity landed on the outdoor value within ~30 min (§9.10). The leeward evidence stands on its own three legs (direct Jul 4 test where T *rose* with the wall open; saturated heatwave rows; steady-state balance). **A constant-per-state ACH cannot represent this window** — the fitted 0.05 /h is the SW-regime average. Wind speeds were identical on both test days; direction alone decides.
 
 **F3 — The "fast drop when M3 opens" is a trigger artifact, not ventilation.** Event study over all daytime openings: the slope swing after M3 opens (−16.2 °C/h) is nearly identical to the swing after *M1 alone* opens (−15.4 °C/h, an 8 m² window). Windows open at the steepest temperature rise; lux is falling at the median M3-opening (−2 860 lux/h); and RH *rises* (+13 %/h) after M3 opens — cooling without much air exchange. M3's extra effect vs matched controls: ≈ −1 °C/h (area scaling would require −10 °C/h). See §9.9 robustness check + `campaign-summer-2026/m3_event_study.py`.
 
-**F4 — Total passive ventilation capacity is the bottleneck: ~0.6 /h with everything open.** On hot days (T_out ≳ 25 °C at high lux) no window schedule reaches setpoint — the Jun 26–28 heatwave demonstrated this live. Strategy tuning cannot fix a capacity problem.
+**F4 — Under SW/leeward wind, total passive ventilation capacity is the bottleneck: ~0.6 /h with everything open** *(scope narrowed 2026-07-12)*. On hot days with the prevailing SW flow (incl. the Jun 26–28 heatwave) no window schedule reaches setpoint — strategy tuning cannot fix that regime. Under N/E wind the picture inverts: M3 alone provides several air changes per hour (F2), so capacity is *not* the constraint there. Note NL heat waves typically arrive with S–E continental flow, so the leeward ceiling is the operationally common hot-day case.
 
 **F5 — Window identity erratum (2026-07-05).** Earlier analysis mis-identified M3 as a roof ridge panel. Authoritative (FRS + boerHandleiding): M1 = south roof slope 8 m², M2 = north roof slope 8 m², M3 = **north side wall** 80 m² — the leeward side under prevailing SW winds. Also: 8.1× is the motor *travel* ratio (171 s/21 s); the *area* ratio is 10× (80/8 m²).
 
-**F6 — Strategy consequences.**
-- NS-7 (independent earlier-opening threshold for M3, `t_thresh_m3`): **on hold — premise refuted.** Expected benefit collapsed from "8× ventilator opened too late" to ~9 % equilibrium improvement.
-- Still valid from the §9.8 analysis, unaffected by the M3 result: the −5 °C close hysteresis keeps M1 open all night, and `hyst_t` conflates trigger spacing with the close guard (not independently tunable).
+**F6 — Strategy consequences** *(revised 2026-07-12)*.
+- NS-7 as originally proposed (plain `t_thresh_m3`): dead — M3 is not a constant-capacity ventilator. The evidence-backed successor is a **wind-direction-gated M3 strategy**: T6 already receives wind direction from T5; open M3 aggressively when wind is ~N (315–45°), treat it as near-dead when ~SW. Requires NS-9 (direction-dependent model) to size thresholds.
+- Still valid from the §9.8 analysis, unaffected by all M3 revisions: the −5 °C close hysteresis keeps M1 open all night, and `hyst_t` conflates trigger spacing with the close guard (not independently tunable).
 
 ## 3. Acceptance criteria
 
@@ -67,9 +64,9 @@ Both criteria were written for the model's end use: vetting controller settings 
 
 | Item | What | Why |
 |---|---|---|
-| NS-8 | Why is M3 ineffective? (a) measure real open aperture at full 171 s travel; (b) note north = leeward, repeat test on a windy N/NE day with door discipline; (c) check controller sensor position relative to the north wall (local-wash hypothesis); (d) optional smoke test | Decides whether NS-7 is ever revived; possibly reveals a mechanical fix worth more than any firmware change |
+| ~~NS-8~~ | ✅ Resolved 2026-07-12: **wind direction decides** — windward N/NE flow at 1.6 m/s flushes the house through M3; leeward WSW gives ~nothing (§9.10) | Closed by the operator's forced Jul 11 tests |
+| NS-9 | Wind-direction-dependent `ach_m3` in the plant model (windward coefficient from the Jul 11 windows; optional 2-node air+structure extension for flush transients) | Prerequisite for the direction-gated M3 strategy (F6) and for simulating N/E-wind days; the adopted artifact is valid for the SW-wind regime only |
 | Closed-loop sim | Run `simulation.py` with the adopted artifact | Closes AC-9/AC-11; enables settings vetting (the campaign's primary purpose) |
-| `ach_m3` precision | Value is a floor pin (≤ 0.05–0.09 /h) | Adequate for all current decisions; only NS-8 outcomes would justify refining it |
 | Volume | V = 2 900 m³ assumed | Measure/estimate from drawings if absolute ACH ever matters |
 
 ## 5. Reproducibility

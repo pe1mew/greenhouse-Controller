@@ -745,7 +745,9 @@ The calibration alone does **not** give ACH values for alternative bitmask state
 
 ### 9.9 NS-6 M3-only test — execution and results (2026-07-04)
 
-**The test was executed on 2026-07-04 and refutes the area-scaling hypothesis.** `ach_m3` is small — comparable to a *fraction* of `ach_m1`, not 8× it.
+> **⚠ Revised by §9.10 (2026-07-12).** This section's `ach_m3 ≤ 0.05 /h` is the **leeward (SW-wind) value** — the Jul 4 test sampled WSW wind, M3's sheltered side. Forced tests on 2026-07-11 under N/NE wind at the *same speeds* show near-complete air exchange (ACH ~3–8 /h). M3's ventilation is wind-direction-dependent; see §9.10.
+
+**The test was executed on 2026-07-04 and refutes the area-scaling hypothesis** (as a constant property of the window). `ach_m3` measured small under the test's WSW-wind conditions — comparable to a *fraction* of `ach_m1`, not 8× it.
 
 #### Execution
 
@@ -819,6 +821,61 @@ Open question feeding NS-8: the **controller sensor's position relative to the n
 #### Consequences for NS-7 (window strategy)
 
 The §9.8 recommendation was premised on M3 being an 8× ventilator opened too late. Measurement inverts this: **opening M3 earlier (t_thresh_m3) buys almost nothing** — equilibrium temperature excess improves ~9 % — and no passive window strategy reaches setpoint on hot days, because total ventilation capacity (~0.6 /h) is the bottleneck, not the trigger schedule. NS-7 is re-scoped accordingly (see NS table): the actionable follow-up is NS-8 (understand *why* M3 is ineffective — mechanical aperture check first), after which a strategy revision can be re-evaluated on measured ground.
+
+### 9.10 Jul 11 forced M3 tests — wind-direction dependence discovered (2026-07-12)
+
+**§9.9's conclusion is revised: `ach_m3 ≤ 0.05 /h` is the *leeward* value, not a property of the window.** Three operator-forced M3-only openings on Sat 2026-07-11 (cloudy, bright overcast 12–37 k lux, no direct sun) show near-complete air exchange within ~30 min — under the *same wind speeds* as the Jul 4 test but the *opposite wind direction*.
+
+| Window (M1=M2 closed) | T_in | AH_in (g/m³) | Wind | Implied ACH |
+|---|---|---|---|---|
+| W1 10:09–10:37 | 23.7 → 21.2 °C (= T_out) | 16.0 → 14.8 (= AH_out) | 1.6 m/s, 32–84° | ≳ 6 /h |
+| W2 11:17–11:45 | 25.9 → 22.4 °C (T_out 24.2) | 17.6 → 15.3 | 1.6 m/s, 12–72° | ~5–8 /h |
+| W3 12:21–12:49 | 28.8 → 27.1 °C (T_out 25.4) | 17.9 → 16.3 | 2.3 m/s, 348–24° | ~3 /h |
+
+The decisive comparison:
+
+| | Jul 4 (NS-6) | Jul 11 (this test) |
+|---|---|---|
+| Wind direction | 241–280° **WSW — north wall leeward** | 7–84° **N–ENE — north wall windward** |
+| Wind speed | 1.5–2.4 m/s | 1.6–2.3 m/s (same) |
+| Measured M3-only effect | ach ≈ 0.2–0.26 /h total (T_in *rose*) | full flush: T_in → T_out, AH_in → AH_out |
+
+**Findings:**
+
+1. **M3's ventilation is wind-direction-driven, swinging ~30–100×.** Windward N/NE flow at merely 1.6 m/s flushes the 2 900 m³ house through the 80 m² wall opening in under 30 min; leeward WSW flow at the same speed yields almost nothing. NS-8 hypothesis (b) confirmed — no strong wind needed, direction alone decides.
+2. **Both measurements were correct; the model abstraction was wrong.** A constant-per-state additive ACH cannot represent M3. The campaign's fitted 0.05 /h is dominated by feedback-confounded normal-operation (0b111) data — not by wind climate: the valid-era wind rose (`campaign-summer-2026/wind_rose_speed_count.png`) shows W–N–NE winds actually prevailed at this site; windward *weather* is common, clean windward *M3-open* data is not. §9.9's evidence and the event study remain valid for the leeward/confounded regime they sampled.
+3. **Model limitation exposed by the controls:** the all-closed segments between the Jul 11 windows re-heated at +4.6…+6.4 °C/30 min under 23–37 k lux — 2–3× faster than `k_solar·lux` allows. After a full flush the warm structure/soil re-heats the fresh air; the single-node `C_eff` (≈ air-only) does not hold for flush transients. The window ACH estimates above are accordingly *under*estimates.
+4. **Operational upside:** the controller already measures wind direction (T5). A wind-direction-gated M3 strategy — treat M3 as a high-capacity ventilator when wind is ~N (315–45°), as near-dead when ~SW — is now evidence-backed. Reframes NS-7 (see NS table).
+5. Caveat: door-exclusion mask deliberately not applied (operator instruction); with T_in and AH_in converging fully to outdoor values, doors cannot account for the magnitude, but the numeric ACH values carry that reservation. Analysis script: `campaign-summer-2026/m3_jul11_analysis.py` *(scratchpad-derived; wind-direction comparison in §9.10 table)*.
+
+**Consequences:** `plant_calibrated_constrained_summer2026_freem3.json` remains the adopted artifact **with a documented validity domain: SW-wind (leeward-M3) conditions**, which dominate the campaign period. For simulation of N/E-wind days or any M3-strategy study, `ach_m3` must become wind-direction-dependent (e.g. `ach_m3(dir, v)` with a windward/leeward split) — new NS-9. The §9.9 "capacity ceiling ~0.6 /h" statement holds only in the leeward regime.
+
+### 9.11 NS-9 step 1 — direction-stratified ACH estimation (2026-07-12)
+
+**Data-quality constraint (applies to all wind-based analysis):** wind measurements are valid from **2026-06-19 12:00** (vane commissioning). All earlier wind columns — including the wind numbers in `plot_summary.txt` for Jun 4–19 — must not be used.
+
+Method: per-segment local fits (`ns9_direction_stratified.py`) — every continuous window-state segment ≥ 15 min is fitted for its total ACH by simulating the single-node model from the segment's measured starting T_in; `ach_m3 = ach_total − ach_inf − ach_m1·(n_open_roof)`. Method control: all-closed segments recover the calibrated model within +0.06 /h.
+
+**Complete M3-only segment inventory (wind-valid era)** (polar view: `campaign-summer-2026/m3_ach_polar.png`, generator `m3_ach_polar.py`):
+
+| Segment | Dur | Wind | Dir | ach_m3 fit |
+|---|---|---|---|---|
+| Jun 25 05:19 (night) | 19 min | 0.8 m/s | 325° N | ≈ 0 |
+| Jul 1 03:31 (night) | 23 min | 0.4 m/s | 277° W | ≈ 0 |
+| Jul 4 09:52 (NS-6) | 62 min | 1.5 m/s | 261° W | ≈ 0 |
+| Jul 4 11:54 (NS-6) | 62 min | 2.4 m/s | 268° W | ≈ 0 |
+| Jul 11 10:06 (forced) | 30 min | 1.6 m/s | 65° ENE | **4.1 /h** |
+| Jul 11 11:14 (forced) | 30 min | 1.6 m/s | 26° NNE | **10.2 /h** |
+| Jul 11 12:18 (forced) | 30 min | 2.2 m/s | 21° NNE | **2.6 /h** |
+
+**Findings:**
+
+1. **The direction split is binary and clean in the M3-only data:** W-sector wind (261–277°) → zero M3 ventilation at any observed speed (0.4–2.4 m/s); N/NE-sector wind (21–65°) at 1.6–2.2 m/s → several air changes per hour. Windward values are noisy (2.6–10.2 /h) — single-node structure-reheat bias and unfiltered doors — read as "order 3–10 /h".
+2. **One puzzle row:** Jun 25 05:19, 325° (windward) at 0.8 m/s → ≈ 0. Either windward flow needs v ≳ 1–1.5 m/s to engage, or stable night stratification suppressed it, or a single 19-min night segment is just unreliable. Step 2 needs this resolved (more windward observations at varied speeds).
+3. **The 0b111 (all-open) bins from normal operation are NOT usable** for the windward coefficient: those segments are controller-feedback-confounded, and the method control shows the local fit biases low (−0.3…−0.5 /h) on daytime open-window segments (structure reheat, §9.10 finding 3). The windward coefficient must come from forced/step segments.
+4. Windward M3-open minutes in the entire campaign outside Jul 11: essentially zero clean data. **The three forced Jul 11 windows are the entire windward evidence base.**
+
+**Step 2 direction (proposed model form):** `ach_m3 = max(ach_lee, C_ww · v · g(θ))` with `g(θ)` a clipped cosine projection onto the north-wall normal and `ach_lee = 0.05`. The Jul 11 points give C_ww ≈ 2–5 per m/s — too uncertain to adopt; **more forced M3 openings on windward days at different speeds are the highest-value data collection** (same LCD procedure as Jul 11; any weather; ~30 min each; note wind vane reading before/after). Opportunity is plentiful: the valid-era wind rose (`wind_rose_speed_count.png`) shows ~⅓ of all samples fall in the windward sector (315–45°) — W–N–NE winds dominate this site, contrary to the "prevailing SW" assumption used in earlier sections.
 
 ### 9.4 Worked example — answering the "would dwell prevent the oscillation?" question
 
@@ -932,9 +989,10 @@ D-1 and the rotation-config change in §5.3 are the only items required *before*
 | NS-3 | Verify Phase 7 soak 14-day clean criterion (zero panics, zero WDT, zero coredump) | ✅ **COMPLETE** — firmware advanced through rc.1.5.x → 2.0.x → 2.1.1 without recorded panic or WDT resets. Soak gate passed before production deployment of 5C88. |
 | NS-4 | First-pass calibration test run on summer-2026 campaign data | ✅ **COMPLETE** (2026-06-27) — `model/calibrate_plant_campaign.py` fit on 41 158 valid rows (Option A). T RMSE 2.69 °C vs 5.10 °C spring model; RH RMSE 6.73 % vs 16.74 %. DE converged at 143/300 iterations. Output: `campaign-summer-2026/plant_calibrated_summer2026.json` + `calibration_compare_summer2026.png`. **AC-9 not yet achieved** — per-bitmask `calibrate_plant_dynamic.py` still needed. |
 | NS-5 | Implement `calibrate_plant_dynamic.py` with per-bitmask `ach_open[]` vector and train/validation split | ✅ **COMPLETE** (2026-06-27) — joint 7-param, two-stage, and constrained 6-param (`calibrate_plant_constrained.py`) fits all implemented. Physical priors accepted: M1=M2 (identical geometry); M3 dominates (171-step panel). `ach_m3` remains at lower bound due to controller-feedback confounding in all M3-open states — see §9.6 and §9.7. **Adopted artifact: constrained 6-param model** (`plant_calibrated_constrained_summer2026.json`, val RMSE 1.20 °C, 57 % within ±1 °C). *(Artifact superseded 2026-07-04 by the NS-6 re-calibration — see NS-6 row and §9.9.)* |
-| NS-6 | M3 deliberate calibration test — 45–60 min M3-only open via LCD manual override | ✅ **COMPLETE** (2026-07-04) — two 60-min M3-only windows executed via LCD manual override (09:55–10:55 and 11:57–12:57 local). Doors open during much of both windows (Saturday farm activity) left one clean 17-min stretch + 103 valid `0b100` rows overall. Re-calibration with data extended to Jul 4 (val window Jun 19–25 unchanged): **`ach_m3` pins at any floor it is given — measured ≤ 0.05 /h, ≈ 0.3× ach_m1, refuting the 8.1× area-scaling estimate.** Adopted artifact: `plant_calibrated_constrained_summer2026_freem3.json` (val T RMSE 1.19 °C). Full analysis: §9.9. |
-| NS-7 | Evaluate and implement independent M3 ventilation threshold (`t_thresh_m3`) in T6 | ⏸ **ON HOLD — premise refuted by NS-6** (2026-07-04). The case for opening M3 earlier assumed ach_m3 ≈ 8× ach_m1; measurement gives ≤ 0.3× — earlier M3 opening improves equilibrium temperature excess by only ~9 %. No passive strategy reaches setpoint on hot days at ~0.6 /h total ACH. Re-evaluate only after NS-8 explains M3's ineffectiveness (and if a mechanical fix raises its real aperture). The unaffected §9.8 findings (night-long −5 °C close hysteresis; non-orthogonal `hyst_t`) can be pursued separately. See §9.9. |
-| NS-8 | Investigate why M3 (north-wall window, ~80 m²) is an ineffective ventilator | ⬜ **PENDING** (new, from NS-6) — ach_m3 ≤ 0.05 /h even with the roof windows open (wall-inlet → roof-outlet stack circuit) contradicts simple area scaling. (a) **Mechanical/geometric check first:** measure M3's actual open aperture at full 171 s travel — how wide does the wall really open, and where is the gap (top-hinged near the gutter = small stack height)? Photograph/measure on next site visit. (b) Note M3 faces **north = leeward** for prevailing SW winds; repeat the M3-only test on a windier day (>5 m/s, ideally N/NE wind) with door discipline to separate wind-driven from buoyancy exchange, §9.9 finding 4. (c) Check the controller T/RH sensor's position relative to the north wall — a sensor near M3 gets washed locally when the wall opens (fast local relief, slow bulk exchange), which would explain the visual fast-drop impression and the controller's step-3 behaviour (§9.9 robustness check). (d) Optional: smoke/tracer observation at the wall opening with M1+M2 open vs closed. Outcome decides whether NS-7 is revived. |
+| NS-6 | M3 deliberate calibration test — 45–60 min M3-only open via LCD manual override | ✅ **COMPLETE** (2026-07-04) — two 60-min M3-only windows executed via LCD manual override (09:55–10:55 and 11:57–12:57 local). Doors open during much of both windows (Saturday farm activity) left one clean 17-min stretch + 103 valid `0b100` rows overall. Re-calibration with data extended to Jul 4 (val window Jun 19–25 unchanged): **`ach_m3` pins at any floor it is given — measured ≤ 0.05 /h, ≈ 0.3× ach_m1, refuting the 8.1× area-scaling estimate.** Adopted artifact: `plant_calibrated_constrained_summer2026_freem3.json` (val T RMSE 1.19 °C). Full analysis: §9.9. *(Revised 2026-07-12: the measured value is the leeward/SW-wind regime — see §9.10.)* |
+| NS-7 | Evaluate and implement independent M3 ventilation threshold (`t_thresh_m3`) in T6 | ⏸ **ON HOLD — reframed twice** (§9.9 then §9.10). The original premise (M3 = constant 8× ventilator) is dead, but §9.10 shows M3 is a *conditional* high-capacity ventilator: ~3–8 /h under windward N/NE flow, ~0.05 /h leeward. A plain `t_thresh_m3` is the wrong shape; the evidence-backed idea is a **wind-direction-gated M3 strategy** (T6 already has wind direction from T5). Requires NS-9 first (direction-dependent model) to size it. §9.8's unaffected findings (night-long −5 °C close hysteresis; non-orthogonal `hyst_t`) can still be pursued separately. |
+| NS-8 | Investigate why M3 (north-wall window, ~80 m²) is an ineffective ventilator | ✅ **RESOLVED** (2026-07-12, §9.10) — hypothesis (b) confirmed by the operator's forced tests of Jul 11: **wind direction decides**. Windward N/NE flow at 1.6 m/s → full house flush (~3–8 /h); leeward WSW at the same speed (Jul 4) → ~0.05 /h. No strong wind required, no mechanical defect implied; (a) aperture measurement and (c) sensor-position check are no longer needed to explain the data (though (a) remains mildly interesting for quantifying the windward coefficient). |
+| NS-9 | Wind-direction-dependent `ach_m3` in the plant model | 🔶 **STEP 1 DONE** (2026-07-12, §9.11) — direction-stratified per-segment fits over the wind-valid era (≥ Jun 19 12:00). Result: W-sector → ach_m3 ≈ 0 at all speeds; N/NE-sector at 1.6–2.2 m/s → ~3–10 /h; the three forced Jul 11 windows are the *entire* windward evidence base; 0b111 normal-operation data unusable (feedback + single-node bias). **Step 2 blocked on data:** need more forced ~30-min M3-only openings on windward (N/E-wind) days at varied speeds to fit `C_ww` in `ach_m3 = max(0.05, C_ww·v·g(θ))`. Step 3 (optional): 2-node air+structure model for flush transients. |
 
 Campaign data collection complete (Jun 4 – Jul 4, 2026; originally Jun 4–25, extended for the NS-6 M3 test and heatwave coverage). Log data in `model/campaign-summer-2026/` shows continuous `SENSOR_HR` collection from 2026-06-04. Fill in dates at end of campaign:
 
