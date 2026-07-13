@@ -37,3 +37,12 @@
  * @note Suggested xTaskCreatePinnedToCore: stack 4096 B, prio 5, core 0.
  */
 void task_web_server(void *pvParameters);
+
+/**
+ * @brief True if any web session is currently live (non-expired).
+ *
+ * Used by the ROTA quiet gate (R-P02) to defer an apply/reboot while an
+ * operator is logged in over the web GUI. Fails safe: returns true if the
+ * session mutex cannot be taken.
+ */
+bool web_any_active_session(void);

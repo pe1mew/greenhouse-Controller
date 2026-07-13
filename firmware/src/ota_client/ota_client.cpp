@@ -15,6 +15,7 @@
 #include "../event_logger/event_logger.h"
 
 #include <string.h>
+#include <strings.h>   /* strcasecmp for SHA-256 hex compare */
 #include <stdlib.h>
 #include <time.h>
 
@@ -27,8 +28,13 @@
 #include <esp_heap_caps.h>
 #include <esp_http_client.h>
 #include <mbedtls/md.h>
+#include <mbedtls/sha256.h>
 
 #include "nvs_config.h"
+#include "../ota_manager/ota_manager.h"        /* 3.8 apply — reuse the T13 push-OTA machinery */
+#include "../relay_controller/relay_controller.h" /* 3.8 quiet gate — t2_get_window_states */
+#include "../web_server/web_server.h"           /* 3.8 quiet gate — web_any_active_session */
+#include "../ui_display/ui_display.h"           /* 3.8 quiet gate — ui_pin_session_active */
 
 static const char *TAG = "T16_OTA";
 
@@ -38,9 +44,14 @@ static const char *TAG = "T16_OTA";
 #define ROTA_BOOT_SETTLE_MS 30000u
 /** Backoff ceiling on repeated failure (R-C09). */
 #define ROTA_BACKOFF_MAX_S (24u * 3600u)
+/** Artefact-size ceilings (R-C04): firmware < app partition, assets = LittleFS. */
+#define ROTA_FW_MAX     0x1E0000u   /* 1 966 080 B — leaves margin under the 2 MB app bank */
+#define ROTA_ASSETS_MAX 0x100000u   /* 1 048 576 B — the LittleFS partition size */
 
 /** NVS key (system ns) for the operator-uploaded pinned cert. ≤ 15 chars. */
 static const char K_OTA_CERT[] = "ota_cert";
+/** NVS key (system ns) for the accepted-release high-water `seq` (R-V02). */
+static const char K_FW_HIWATER[] = "fw_hiwater";
 
 /** Wall-clock sanity floor — 2020-01-01 UTC. Below this, SNTP has not run. */
 #define ROTA_EPOCH_FLOOR 1577836800LL
@@ -258,27 +269,36 @@ bool rota_cert_is_custom(void)
 
 /* ── T16 task — periodic manifest check (rota_tds.md §2.4) ─────────────── */
 
-/* T16 last-check status, for /api/ota/status (task 3.9). Single writer (T16). */
-static rota_status_t s_status = { 0, -1, 0, 0u, {0} };
+/* T16 last-check status, for /api/ota/check (task 3.9). Single writer (T16). */
+static rota_status_t s_status = { 0, -1, 0, 0u, {0}, -1, -1 };
 
 void rota_status_get(rota_status_t *out)
 {
     if (out != NULL) *out = s_status;   /* small struct copy; benign torn read */
 }
 
-/** Check-outcome audit row: LOG_SYSTEM value_a=22 (rota_tds.md §4.4). */
-static void audit_check(int16_t sub)
+/** Post a LOG_SYSTEM audit row (rota_tds.md §4.4). */
+static void audit_row(int16_t a, int16_t b)
 {
     log_event_t e = {};
     e.timestamp  = (uint32_t)time(NULL);
     e.event_type = (uint8_t)LOG_SYSTEM;
     e.initiator  = (uint8_t)LOG_BY_SYSTEM;
-    e.value_a    = 22;
-    e.value_b    = sub;   /* 0 no update · 1 update found · 2 unreachable/HTTP · 3 skip · 4 auth fail */
+    e.value_a    = a;
+    e.value_b    = b;
     log_post(&e);
-    s_status.last_result      = sub;
-    s_status.last_check_epoch = (int64_t)e.timestamp;
 }
+/** Check outcome (22): 0 no-update · 1 update · 2 unreachable · 3 skip · 4 auth-fail. */
+static void audit_check(int16_t sub)
+{
+    audit_row(22, sub);
+    s_status.last_result      = sub;
+    s_status.last_check_epoch = (int64_t)time(NULL);
+}
+/** Download/verify outcome (23): 0 ok · 1 TLS/pin · 2 SHA/size · 3 downgrade · 4 min_version. */
+static void audit_dl(int16_t sub)    { audit_row(23, sub); s_status.last_dl = sub; }
+/** Apply outcome (24): 0 committed · 1 deferred · 2 failed. */
+static void audit_apply(int16_t sub) { audit_row(24, sub); s_status.last_apply = sub; }
 
 /** Dotted-numeric SemVer compare: >0 if a newer than b, 0 equal, <0 older. */
 static int semver_cmp(const char *a, const char *b)
@@ -294,13 +314,18 @@ static int semver_cmp(const char *a, const char *b)
     return 0;
 }
 
-/** Extract the "version" string field from a manifest JSON body. */
-static bool manifest_version(const char *json, char *out, size_t cap)
+/* ── Manifest parsing (ad-hoc, house style — no cJSON dep) ─────────────── */
+
+/** Extract a JSON string field `"key":"value"` from a flat manifest body. */
+static bool json_str_field(const char *json, const char *key, char *out, size_t cap)
 {
-    const char *p = strstr(json, "\"version\"");
+    char pat[48];
+    int pn = snprintf(pat, sizeof(pat), "\"%s\"", key);
+    if (pn < 0 || (size_t)pn >= sizeof(pat)) return false;
+    const char *p = strstr(json, pat);
     if (p == NULL) return false;
-    p = strchr(p, ':'); if (p == NULL) return false;
-    p = strchr(p, '"'); if (p == NULL) return false;
+    p = strchr(p + pn, ':'); if (p == NULL) return false;
+    p = strchr(p, '"');      if (p == NULL) return false;   /* opening quote of value */
     p++;
     const char *e = strchr(p, '"'); if (e == NULL) return false;
     size_t n = (size_t)(e - p);
@@ -308,6 +333,309 @@ static bool manifest_version(const char *json, char *out, size_t cap)
     memcpy(out, p, n);
     out[n] = '\0';
     return true;
+}
+
+/** Extract a JSON numeric field `"key": <int>` from a flat manifest body. */
+static bool json_num_field(const char *json, const char *key, long *out)
+{
+    char pat[48];
+    int pn = snprintf(pat, sizeof(pat), "\"%s\"", key);
+    if (pn < 0 || (size_t)pn >= sizeof(pat)) return false;
+    const char *p = strstr(json, pat);
+    if (p == NULL) return false;
+    p = strchr(p + pn, ':'); if (p == NULL) return false;
+    p++;
+    while (*p == ' ' || *p == '\t') p++;
+    char *end = NULL;
+    long v = strtol(p, &end, 10);
+    if (end == p) return false;
+    *out = v;
+    return true;
+}
+
+/** Resolved manifest (rota_tds.md §4.3). */
+typedef struct {
+    char    version[24];
+    int32_t seq;
+    char    min_version[24];   /* "" if absent */
+    char    fw_file[80];
+    char    fw_sha256[65];
+    long    fw_size;
+    char    assets_file[80];
+    char    assets_sha256[65];
+    long    assets_size;
+} rota_manifest_t;
+
+static bool parse_manifest(const char *body, rota_manifest_t *m)
+{
+    memset(m, 0, sizeof(*m));
+    long seq = 0, fsz = 0, asz = 0;
+    bool ok =
+        json_str_field(body, "version",       m->version,       sizeof(m->version)) &&
+        json_num_field(body, "seq",           &seq) &&
+        json_str_field(body, "fw_file",       m->fw_file,       sizeof(m->fw_file)) &&
+        json_str_field(body, "fw_sha256",     m->fw_sha256,     sizeof(m->fw_sha256)) &&
+        json_num_field(body, "fw_size",       &fsz) &&
+        json_str_field(body, "assets_file",   m->assets_file,   sizeof(m->assets_file)) &&
+        json_str_field(body, "assets_sha256", m->assets_sha256, sizeof(m->assets_sha256)) &&
+        json_num_field(body, "assets_size",   &asz);
+    (void)json_str_field(body, "min_version", m->min_version, sizeof(m->min_version)); /* optional */
+    m->seq = (int32_t)seq; m->fw_size = fsz; m->assets_size = asz;
+    return ok;
+}
+
+/** SHA-256 of @p len bytes → 64 lowercase hex + NUL into @p out (≥65). */
+static bool sha256_hex(const uint8_t *data, size_t len, char *out)
+{
+    uint8_t dg[32];
+    if (mbedtls_sha256(data, len, dg, 0) != 0) return false;   /* 0 = SHA-256 */
+    to_hex(dg, 32, out);
+    return true;
+}
+
+/* ── 3.7 Download + verify (R-C04/C05/R-R06) ──────────────────────────── */
+
+/**
+ * @brief GET one artefact via download.php, verify size + SHA-256 (R-C05).
+ *
+ * @return ESP_OK with *out_buf (heap, caller frees) on a fully-verified match;
+ *   an esp_err_t otherwise (nothing kept): ESP_ERR_INVALID_STATE = server 204
+ *   (auth/pin), ESP_ERR_INVALID_SIZE / ESP_ERR_INVALID_CRC = size / hash miss.
+ */
+static esp_err_t rota_download_verify(const cfg_shadow_t *cfg, const char *cert,
+                                      const char *file_kw, const char *version,
+                                      const char *expect_sha, long expect_size,
+                                      uint8_t **out_buf, size_t *out_len)
+{
+    *out_buf = NULL; *out_len = 0;
+
+    char req[112];
+    (void)snprintf(req, sizeof(req), "/download.php?file=%s&v=%s", file_kw, version);
+    const char *slash = "";
+    size_t ul = strlen(cfg->ota_url);
+    if (ul > 0 && cfg->ota_url[ul - 1] != '/') slash = "/";
+    char url[288];
+    int un = snprintf(url, sizeof(url), "%s%sdownload.php?file=%s&v=%s",
+                      cfg->ota_url, slash, file_kw, version);
+    if (un < 0 || (size_t)un >= sizeof(url)) return ESP_ERR_INVALID_ARG;
+
+    int status = 0; char *body = NULL; size_t blen = 0;
+    xSemaphoreTake(MX_TLS, portMAX_DELAY);           /* serialise TLS with T14 (R-C07) */
+    esp_err_t err = rota_https_get(url, req, cert, cfg->ota_secret,
+                                   (size_t)expect_size + 64u, &status, &body, &blen);
+    xSemaphoreGive(MX_TLS);
+
+    if (err != ESP_OK || status != 200 || body == NULL) {
+        if (body != NULL) free(body);
+        ESP_LOGW(TAG, "download %s: err=%s status=%d", file_kw, esp_err_to_name(err), status);
+        if (err == ESP_ERR_INVALID_SIZE) return ESP_ERR_INVALID_SIZE;  /* body exceeded cap */
+        return (status == 204) ? ESP_ERR_INVALID_STATE : ESP_FAIL;
+    }
+    if ((long)blen != expect_size) {
+        ESP_LOGW(TAG, "download %s: size %u != manifest %ld",
+                 file_kw, (unsigned)blen, expect_size);
+        free(body);
+        return ESP_ERR_INVALID_SIZE;
+    }
+    char got[65];
+    if (!sha256_hex((const uint8_t *)body, blen, got) ||
+        strcasecmp(got, expect_sha) != 0) {
+        ESP_LOGW(TAG, "download %s: SHA-256 mismatch", file_kw);
+        free(body);
+        return ESP_ERR_INVALID_CRC;
+    }
+    ESP_LOGI(TAG, "download %s: %u B, SHA-256 OK", file_kw, (unsigned)blen);
+    *out_buf = (uint8_t *)body; *out_len = blen;
+    return ESP_OK;
+}
+
+/** Map a rota_download_verify() failure to its audit-23 sub-code. */
+static int16_t dl_err_to_sub(esp_err_t e)
+{
+    return (e == ESP_ERR_INVALID_SIZE || e == ESP_ERR_INVALID_CRC) ? 2   /* SHA/size */
+                                                                    : 1;  /* TLS/pin/transport */
+}
+
+/* ── 3.8 Apply — night-window ∩ quiet-gate, then feed T13 (R-P01..P06) ── */
+
+/* Scheduler hint: when >0, T16 sleeps this many seconds next cycle instead of
+ * the normal interval. Set when an update was downloaded+verified but its apply
+ * was deferred (outside the window / quiet gate, R-P04) so the next wake lands
+ * in the window rather than one full check-interval later. Single writer/reader
+ * (T16), so no lock needed. */
+static uint32_t s_apply_wait_s = 0u;
+
+/** Local hour [0,23] from the wall clock (TZ set by T4, R-P01 "local time"). */
+static int local_hour_now(void)
+{
+    time_t t = time(NULL);
+    struct tm tmv;
+    localtime_r(&t, &tmv);
+    return tmv.tm_hour;
+}
+
+/** R-P01 night-window test. lo==hi disables the window (apply any hour). */
+static bool in_night_window(int32_t lo, int32_t hi)
+{
+    if (lo == hi) return true;               /* window disabled = unrestricted */
+    int h = local_hour_now();
+    if (lo < hi) return (h >= lo && h < hi);
+    return (h >= lo || h < hi);              /* window wraps past midnight */
+}
+
+/** Seconds until the next apply opportunity: a short retry if already in the
+ *  window (quiet-gate may clear), else the time to the next local `lo`:00 with
+ *  a spread so a fleet does not re-download in lockstep (R-C02). 0 if disabled. */
+static uint32_t secs_to_window(int32_t lo, int32_t hi)
+{
+    if (lo == hi) return 0u;                    /* window disabled → no wait */
+    if (in_night_window(lo, hi)) return 300u;   /* in window; retry quiet gate soon */
+    time_t t = time(NULL);
+    struct tm tmv;
+    localtime_r(&t, &tmv);
+    int now_s = tmv.tm_hour * 3600 + tmv.tm_min * 60 + tmv.tm_sec;
+    int delta = (int)lo * 3600 - now_s;
+    if (delta <= 0) delta += 24 * 3600;
+    return (uint32_t)delta + (esp_random() % 600u);   /* +0..10 min spread */
+}
+
+/** R-P02 quiet gate: true only when it is safe to flash + reboot. */
+static bool quiet_gate(void)
+{
+    window_state_t w[3];
+    t2_get_window_states(w);
+    for (int i = 0; i < 3; i++) {
+        if (w[i] == WIN_MOVING_OPEN || w[i] == WIN_MOVING_CLOSE) return false;
+    }
+    EventBits_t b = xEventGroupGetBits(EG1);
+    if (b & (EG1_BIT_WIND_OVERRIDE | EG1_BIT_MOTOR_ALARM | EG1_BIT_CALIBRATING)) return false;
+    if (web_any_active_session()) return false;
+    if (ui_pin_session_active())  return false;
+    return true;
+}
+
+/**
+ * @brief Apply a downloaded+verified update under the night/quiet policy.
+ *
+ * Takes ownership of @p fw and @p assets (frees both on every path). On a
+ * committed apply the unit reboots via T13 shortly after return.
+ */
+static void rota_apply(const rota_manifest_t *m,
+                       uint8_t *fw, size_t fw_len,
+                       uint8_t *assets, size_t as_len)
+{
+    cfg_shadow_t cfg; dm_cfg_snapshot(&cfg);
+
+    /* R-P01/P02/P05: apply/commit/reboot only inside the night window with a
+     * clear quiet gate (download+verify already happened, any hour). */
+    if (!in_night_window(cfg.ota_win_lo, cfg.ota_win_hi) || !quiet_gate()) {
+        ESP_LOGI(TAG, "apply deferred: window/quiet gate not met (retry near window)");
+        audit_apply(1);                 /* R-P04: nothing committed, retry later */
+        s_apply_wait_s = secs_to_window(cfg.ota_win_lo, cfg.ota_win_hi);
+        free(fw); free(assets);
+        return;
+    }
+
+    /* Stream the verified firmware into the inactive bank. No commit yet —
+     * ota_firmware_end() is deferred until the final gate re-check passes. */
+    bool ok = ota_firmware_begin(fw_len);
+    for (size_t off = 0; ok && off < fw_len; off += 8192u) {
+        size_t n = (fw_len - off < 8192u) ? (fw_len - off) : 8192u;
+        ok = ota_firmware_write(fw + off, n);
+    }
+    free(fw); fw = NULL;                 /* flashed (or aborted) — buffer done */
+    if (!ok) {
+        ESP_LOGE(TAG, "apply: firmware write failed: %s", ota_get_error());
+        audit_apply(2);
+        free(assets);
+        return;                         /* esp_ota auto-aborted; old bank boots */
+    }
+
+    /* R-P03: re-check the quiet gate immediately (< 5 s) before committing.
+     * If activity resumed, abort cleanly BEFORE ota_firmware_end() so no
+     * FW_DONE fallback timer can strand a firmware-only commit. */
+    if (!quiet_gate()) {
+        ESP_LOGW(TAG, "apply aborted at final gate — activity resumed");
+        ota_firmware_abort();
+        audit_apply(1);
+        s_apply_wait_s = 300u;          /* still in window; retry the quiet gate soon */
+        free(assets);
+        return;
+    }
+
+    /* Commit point: finalise firmware then feed assets back-to-back so the
+     * 120 s FW_DONE fallback never fires (ota_assets_begin cancels it). T13's
+     * ota_assets_end() switches the boot bank and reboots (R-P06). */
+    ok = ota_firmware_end();
+    if (ok) ok = ota_assets_begin(as_len);
+    if (ok) ok = ota_assets_accumulate(assets, as_len, 0);
+    if (ok) ok = ota_assets_end();      /* spawns T13 → extract → bank switch → reboot */
+    free(assets); assets = NULL;
+    if (!ok) {
+        ESP_LOGE(TAG, "apply: commit/assets stage failed: %s", ota_get_error());
+        audit_apply(2);
+        return;
+    }
+
+    /* R-V02: persist the accepted seq high-water mark before the imminent
+     * reboot so a replay of this manifest after reboot is rejected. */
+    (void)nvs_cfg_set_i32(NVS_NS_SYSTEM, K_FW_HIWATER, m->seq);
+    ESP_LOGW(TAG, "ROTA apply committed: %s (seq %ld) — rebooting via T13",
+             m->version, (long)m->seq);
+    audit_apply(0);
+    /* T13 reboots shortly (schedule_reboot). */
+}
+
+/* ── 3.6 Decision + orchestration (R-V01/V02/V03) ─────────────────────── */
+
+/** A newer manifest was offered — gate it, download+verify both, then apply. */
+static void rota_handle_update(const rota_manifest_t *m)
+{
+    /* R-V01/V02: seq must beat the persisted high-water mark (anti-downgrade). */
+    int32_t hiwater = 0;
+    (void)nvs_cfg_get_i32(NVS_NS_SYSTEM, K_FW_HIWATER, &hiwater);
+    if (m->seq <= hiwater) {
+        ESP_LOGW(TAG, "reject: seq %ld <= hiwater %ld (downgrade/replay)",
+                 (long)m->seq, (long)hiwater);
+        audit_dl(3);
+        return;
+    }
+    /* R-V03: refuse a jump the running firmware is too old to take. */
+    if (m->min_version[0] != '\0' &&
+        semver_cmp(FIRMWARE_VERSION, m->min_version) < 0) {
+        ESP_LOGW(TAG, "reject: running %s < min_version %s (manual step needed)",
+                 FIRMWARE_VERSION, m->min_version);
+        audit_dl(4);
+        return;
+    }
+    /* R-C04: sanity-check sizes before allocating PSRAM. */
+    if (m->fw_size <= 0 || (size_t)m->fw_size > ROTA_FW_MAX ||
+        m->assets_size <= 0 || (size_t)m->assets_size > ROTA_ASSETS_MAX) {
+        ESP_LOGW(TAG, "reject: implausible size fw=%ld assets=%ld",
+                 m->fw_size, m->assets_size);
+        audit_dl(2);
+        return;
+    }
+
+    cfg_shadow_t cfg; dm_cfg_snapshot(&cfg);
+    char cert[ROTA_CERT_MAX];
+    if (rota_cert_get(cert, sizeof(cert)) < 0) { audit_dl(1); return; }
+
+    /* R-C05/R-R06: download AND verify BOTH artefacts before any flash write. */
+    uint8_t *fw = NULL, *assets = NULL; size_t fw_len = 0, as_len = 0;
+    esp_err_t e = rota_download_verify(&cfg, cert, "fw", m->version,
+                                       m->fw_sha256, m->fw_size, &fw, &fw_len);
+    if (e != ESP_OK) { audit_dl(dl_err_to_sub(e)); return; }
+
+    e = rota_download_verify(&cfg, cert, "assets", m->version,
+                             m->assets_sha256, m->assets_size, &assets, &as_len);
+    if (e != ESP_OK) { free(fw); audit_dl(dl_err_to_sub(e)); return; }
+
+    ESP_LOGI(TAG, "both artefacts verified (fw %u B, assets %u B) — ready to apply",
+             (unsigned)fw_len, (unsigned)as_len);
+    audit_dl(0);
+
+    rota_apply(m, fw, fw_len, assets, as_len);   /* takes ownership; frees both */
 }
 
 /**
@@ -384,19 +712,20 @@ static bool ota_check_once(void)
         audit_check(2);
         reached = false;
     } else {
-        char ver[40];
-        if (!manifest_version(body, ver, sizeof(ver))) {
-            ESP_LOGW(TAG, "manifest 200 but no parseable version");
+        rota_manifest_t m;
+        if (!parse_manifest(body, &m)) {
+            ESP_LOGW(TAG, "manifest 200 but unparseable / missing fields");
             audit_check(2);
         } else {
-            snprintf(s_status.offered_ver, sizeof(s_status.offered_ver), "%s", ver);
-            if (semver_cmp(ver, FIRMWARE_VERSION) > 0) {
-                ESP_LOGI(TAG, "UPDATE AVAILABLE: %s > running %s "
-                              "(download/verify/apply = tasks 3.6-3.8, not yet implemented)",
-                         ver, FIRMWARE_VERSION);
+            snprintf(s_status.offered_ver, sizeof(s_status.offered_ver), "%s", m.version);
+            if (semver_cmp(m.version, FIRMWARE_VERSION) > 0) {
+                ESP_LOGI(TAG, "update found: %s > running %s (seq %ld)",
+                         m.version, FIRMWARE_VERSION, (long)m.seq);
                 audit_check(1);
+                /* 3.6 → 3.7 → 3.8: gate, download+verify, apply. */
+                rota_handle_update(&m);
             } else {
-                ESP_LOGI(TAG, "up to date: offered %s, running %s", ver, FIRMWARE_VERSION);
+                ESP_LOGI(TAG, "up to date: offered %s, running %s", m.version, FIRMWARE_VERSION);
                 audit_check(0);
             }
         }
@@ -415,7 +744,13 @@ void task_ota_client(void *pvParameters)
         bool reached = ota_check_once();
 
         uint32_t sleep_s;
-        if (!reached) {
+        if (s_apply_wait_s > 0u) {
+            /* An update is verified but its apply was deferred — wake near the
+             * next window instead of a full interval later (R-P04). */
+            sleep_s = s_apply_wait_s;
+            s_apply_wait_s = 0u;
+            backoff_s = 0u;
+        } else if (!reached) {
             /* Exponential backoff: 1h, 2h, 4h … capped (R-C09). */
             backoff_s = (backoff_s == 0u) ? 3600u
                         : (backoff_s * 2u > ROTA_BACKOFF_MAX_S ? ROTA_BACKOFF_MAX_S

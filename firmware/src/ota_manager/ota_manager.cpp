@@ -539,6 +539,21 @@ bool ota_firmware_end(void)
     return true;
 }
 
+bool ota_firmware_abort(void)
+{
+    if (s_state != OTA_STATE_FW_WRITING && s_state != OTA_STATE_FW_VERIFYING) {
+        return false;   /* nothing open to abort */
+    }
+    if (s_ota_handle != 0) {
+        esp_ota_abort(s_ota_handle);
+        s_ota_handle = 0;
+    }
+    xEventGroupClearBits(EG1, EG1_BIT_OTA_IN_PROGRESS);
+    set_state_locked(OTA_STATE_IDLE);
+    ESP_LOGW(TAG, "[OTA] firmware write aborted before commit (ROTA deferral) — boot partition unchanged");
+    return true;
+}
+
 /* ============================================================
  * Web-asset OTA
  * ============================================================ */

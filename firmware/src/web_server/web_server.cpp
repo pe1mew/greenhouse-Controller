@@ -212,6 +212,20 @@ static web_session_role_t session_find_and_renew(const char *token)
     return role;
 }
 
+/* True if any web session is currently live (ROTA quiet gate, R-P02). */
+bool web_any_active_session(void)
+{
+    bool active = false;
+    const int32_t now = (int32_t)time(NULL);
+    if (s_sess_mux == NULL) return false;
+    if (xSemaphoreTake(s_sess_mux, pdMS_TO_TICKS(200)) != pdTRUE) return true; /* busy → treat as active (safe) */
+    for (int i = 0; i < MAX_SESSIONS; i++) {
+        if (s_sessions[i].expiry > now) { active = true; break; }
+    }
+    xSemaphoreGive(s_sess_mux);
+    return active;
+}
+
 /**
  * @brief Allocate a session slot, generate a token, return it.
  *
@@ -2571,13 +2585,15 @@ static esp_err_t rota_check_get_handler(httpd_req_t *req)
                       ? RES[st.last_result] : "none";
     char id[13] = {0};
     system_mac_str(id, sizeof(id));   /* device id the unit signs with (§4.2) */
-    char out[360];
+    char out[400];
     int n = snprintf(out, sizeof(out),
         "{\"ok\":true,\"id\":\"%s\",\"last_check\":%ld,\"result\":\"%s\",\"result_code\":%ld,"
-        "\"http\":%ld,\"checks\":%lu,\"offered\":\"%s\",\"running\":\"%s\"}",
+        "\"http\":%ld,\"checks\":%lu,\"offered\":\"%s\",\"running\":\"%s\","
+        "\"dl\":%ld,\"apply\":%ld}",
         id, (long)st.last_check_epoch, res, (long)st.last_result,
         (long)st.last_http, (unsigned long)st.checks_total,
-        st.offered_ver, FIRMWARE_VERSION);
+        st.offered_ver, FIRMWARE_VERSION,
+        (long)st.last_dl, (long)st.last_apply);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, out, (n > 0 && n < (int)sizeof(out)) ? n : 0);
 }

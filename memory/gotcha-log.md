@@ -259,3 +259,11 @@ Encoded in [firmware/partitions.csv](../firmware/partitions.csv) header comment.
 **Root cause:** PowerShell 5.1's interaction between strict mode and native-tool stderr.
 
 **Fix:** Locally toggle `$ErrorActionPreference='Continue'` around the `& $PIO run` call; gate failure on `$LASTEXITCODE` alone. Landed in rc.1.3. See header comment block in [bin/build_release.ps1](../bin/build_release.ps1) Step 1.
+
+## 2026-07-13 — Rapid OTA reboots rate-limit SNTP → T16 (ROTA) skips checks
+
+**Problem:** During ROTA client testing on a dev unit (FDA4), T16's manifest check kept returning `result:"skipped", code:3` for many minutes, even though `/api/status` reported a correct wall-clock time. `system.ntp_synced` stayed `false`.
+
+**Root cause:** OTA-pushing/reflashing the *same* unit many times in an hour makes it re-run `nm_sntp_quick_sync()` on every boot; pool.ntp.org rate-limits (KoD) the source IP after the burst, so the fresh per-boot sync never completes and the `nm_is_sntp_synced()` latch never sets. The internal ESP32 RTC retains valid time across warm reboots (so the *clock* is right), but T16 gates on the strict SNTP latch by design (see [rotaImplementationPlan.md](../design/rotaImplementationPlan.md) risk #3), so it skips rather than sign a request on an untrusted clock.
+
+**Fix:** Not a firmware bug — a test-environment artifact. Wait it out: T16 recovers on the rc.1.5.6 SNTP retry cadence (`NTP_RETRY_INTERVAL_S=300`, 5 min). To avoid it, batch firmware changes before pushing rather than reflashing the same unit in a tight loop when you need a synced clock. Never arises in production (units don't reboot 8×/hour). Check state via `/api/ota/check` (`result`) + `/api/status` (`system.ntp_synced`).

@@ -38,3 +38,11 @@
  * @note Suggested xTaskCreatePinnedToCore: stack 4096 B, prio 4, core 1.
  */
 void task_ui_display(void *pvParameters);
+
+/**
+ * @brief True if a Farmer/Admin PIN session is currently open on the LCD.
+ *
+ * Used by the ROTA quiet gate (R-P02) to defer an apply/reboot while an
+ * operator is interacting with the physical keypad/LCD.
+ */
+bool ui_pin_session_active(void);

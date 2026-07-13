@@ -8,9 +8,14 @@
  *   - a certificate-pinned HTTPS GET (R-A02: the OTA server is authenticated
  *     by a pinned self-signed cert, NOT the public CA bundle).
  *
- * This module is transport only — it neither parses manifests nor touches
- * flash. Higher layers (manifest decision, download+verify, apply via T13)
- * build on these. Kept separate from ota_manager (T13 push-OTA state machine).
+ * Beyond the request primitives, the T16 task also implements the full pull
+ * pipeline (tasks 3.6–3.8): manifest decision (SemVer + seq high-water +
+ * min_version, R-V01/V02/V03), download + SHA-256/size verify of both
+ * artefacts into PSRAM before any flash write (R-C04/C05), and apply under the
+ * night-window and quiet-gate policy by feeding the existing T13 push-OTA
+ * entry points (ota_firmware_begin/write/end, then ota_assets_begin/end).
+ * Kept separate from ota_manager (T13 owns the dual-bank flash state machine;
+ * this module drives it).
  *
  * @author Greenhouse Controller project
  * @since 2.2.0 (ROTA)
@@ -127,9 +132,10 @@ bool rota_cert_is_custom(void);
  *
  * Periodically (every `ota_check_h` hours ± jitter, after a short boot settle)
  * checks the OTA server for a newer release: preconditions gate → pinned-cert
- * manifest GET with HMAC auth → semver decision → `LOG_SYSTEM value_a=22`
- * audit. Download/verify/apply (§2.4 steps 5+, tasks 3.6–3.8) are stubbed in
- * this skeleton — an available update is logged but not yet applied.
+ * manifest GET with HMAC auth → SemVer/seq/min_version decision (audit 22/23)
+ * → download + verify both artefacts → apply under the night/quiet policy via
+ * T13 (audit 24), which switches the boot bank and reboots. A manual check can
+ * be requested at any time (see rota_status / POST /api/ota/check).
  *
  * @param pvParameters Unused; pass NULL.
  */
@@ -146,10 +152,12 @@ void task_ota_client(void *pvParameters);
  */
 typedef struct {
     int64_t  last_check_epoch;  /**< Wall-clock (Unix s) of the last completed check; 0 = never. */
-    int32_t  last_result;       /**< Last audit sub-code: -1 none, 0 up-to-date, 1 update-avail, 2 unreachable, 3 skipped, 4 auth-fail. */
+    int32_t  last_result;       /**< Last check audit sub (22): -1 none, 0 up-to-date, 1 update-avail, 2 unreachable, 3 skipped, 4 auth-fail. */
     int32_t  last_http;         /**< Last manifest HTTP status; 0 = transport failure. */
     uint32_t checks_total;      /**< Manifest GETs attempted since boot. */
     char     offered_ver[40];   /**< Server-offered version at the last HTTP 200; "" otherwise. */
+    int32_t  last_dl;           /**< Last download/verify audit sub (23): -1 none, 0 ok, 1 TLS/pin, 2 SHA/size, 3 downgrade, 4 min_version. */
+    int32_t  last_apply;        /**< Last apply audit sub (24): -1 none, 0 committed, 1 deferred, 2 failed. */
 } rota_status_t;
 
 /**

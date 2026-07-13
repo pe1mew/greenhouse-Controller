@@ -535,6 +535,12 @@ static int32_t param_get(bool is_wind, int idx)
  *
  * @param level SESSION_FARMER or SESSION_ADMIN.
  */
+/* True if a Farmer/Admin PIN session is open on the LCD (ROTA quiet gate, R-P02). */
+bool ui_pin_session_active(void)
+{
+    return s_session != SESSION_NONE;
+}
+
 static void session_open(session_t level)
 {
     s_session    = level;

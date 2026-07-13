@@ -205,6 +205,20 @@ bool ota_firmware_write(const uint8_t *chunk, size_t len);
  */
 bool ota_firmware_end(void);
 
+/**
+ * @brief Abort an in-progress firmware write that has NOT been finalised.
+ *
+ * Releases the esp_ota session (esp_ota_abort), clears EG1_BIT_OTA_IN_PROGRESS,
+ * and returns the state machine to IDLE without switching the boot partition.
+ * Intended for the ROTA client (T16): if the R-P03 quiet gate fails after
+ * firmware bytes were staged but before ota_firmware_end(), this backs out
+ * cleanly instead of entering FW_DONE (whose fallback timer would otherwise
+ * strand a firmware-only commit). No-op unless state is FW_WRITING/FW_VERIFYING.
+ *
+ * @return true if a session was aborted; false if none was open.
+ */
+bool ota_firmware_abort(void);
+
 /* ─────────────────────────────────────────────────────────────────────────
  * Web-asset OTA — called from T11 HTTP body callback
  * ───────────────────────────────────────────────────────────────────────── */
