@@ -148,6 +148,13 @@ typedef struct {
     char     status_secret[65];   /**< Shared secret for sourceidentifier header */
     int32_t  status_interval_s;   /**< POST cycle (s); 60–300 */
     int32_t  status_enable;       /**< Master enable (0 = off) */
+    /* 2.2.0 (ROTA) — internet-pull OTA config (rota_tds.md §2.7). */
+    char     ota_url[129];        /**< OTA server base URL ("" = disabled), https:// only */
+    char     ota_secret[65];      /**< Per-unit HMAC secret for X-OTA-Auth (separate from status_secret) */
+    int32_t  ota_enable;          /**< Master enable for pull-OTA (0 = off) */
+    int32_t  ota_check_h;         /**< Update-check interval (hours); 1–168 */
+    int32_t  ota_win_lo;          /**< Night apply-window start hour (0–23; == hi disables window) */
+    int32_t  ota_win_hi;          /**< Night apply-window end hour (0–23) */
     int32_t  status_expose;       /**< Bitmask: bits 0..5 = climate/wind/windows/mode/sun/system */
     int32_t  log_upload_h;        /**< Daily log-upload local hour (0–23) */
     int32_t  log_upload_m;        /**< Daily log-upload local minute (0–59) */

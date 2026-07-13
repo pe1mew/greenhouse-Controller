@@ -78,3 +78,9 @@
 #define CFG_MIN_SECRET_LEN          16   /* below this gives weak shared-secret protection */
 #define CFG_MAX_URL_LEN            128
 #define CFG_MAX_SECRET_LEN          64
+
+/* ── Internet-pull OTA (ROTA, T16) — rota_tds.md §2.7 R-F01 ───────────────── */
+#define CFG_MIN_OTA_CHECK_H          1   /* hourly is the fastest sensible check cadence */
+#define CFG_MAX_OTA_CHECK_H        168   /* weekly (7×24) */
+/* ota_win_lo/hi use CFG_MIN_HOUR..CFG_MAX_HOUR (0–23); ota_url/ota_secret
+ * reuse CFG_MAX_URL_LEN / CFG_MIN_SECRET_LEN / CFG_MAX_SECRET_LEN. */

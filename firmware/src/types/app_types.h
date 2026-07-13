@@ -233,6 +233,17 @@ typedef enum {
 
     /* Wind subsystem boolean (since 1.20.x; not previously enumerated). */
     LOG_PARAM_WIND_PROT_EN   = 37,  /**< wind/wind_prot_en — old → new */
+
+    /* 38 reserved for wind/avg_win_wind (gh#35, not yet implemented; already
+     * decoded by log/logparser.py). OTA starts at 39 to avoid the collision. */
+
+    /* 2.2.0 (ROTA) — internet-pull OTA config (rota_tds.md §2.7 R-F01). */
+    LOG_PARAM_OTA_ENABLE     = 39,  /**< system/ota_enable  — old → new */
+    LOG_PARAM_OTA_CHECK_H    = 40,  /**< system/ota_check_h — old → new */
+    LOG_PARAM_OTA_URL        = 41,  /**< system/ota_url     — value_a=1=set */
+    LOG_PARAM_OTA_SECRET     = 42,  /**< system/ota_secret  — value_a=1=set */
+    LOG_PARAM_OTA_WIN_LO     = 43,  /**< system/ota_win_lo  — old → new */
+    LOG_PARAM_OTA_WIN_HI     = 44,  /**< system/ota_win_hi  — old → new */
 } log_param_id_t;
 
 /**

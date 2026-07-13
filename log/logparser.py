@@ -109,12 +109,19 @@ _PARAM = {
     36: ("log_upload_rot",  ""),
     37: ("wind_prot_en",    ""),
     38: ("avg_win_wind",    "min"),   # 2.1.0 — gh#35 independent wind averaging window
+    # 2.2.0 (ROTA) — internet-pull OTA config (rota_tds.md §2.7 R-F01):
+    39: ("ota_enable",      ""),
+    40: ("ota_check_h",     "h"),
+    41: ("ota_url",         "(set)"),
+    42: ("ota_secret",      "(set)"),
+    43: ("ota_win_lo",      "h"),
+    44: ("ota_win_hi",      "h"),
 }
 
 # Param IDs whose value semantics are "field was set/changed" (value_a=1
 # is a sentinel, not a real old/new pair). The decoder renders these with
 # just the field name + "(set)" / "(changed)" rather than "1 -> 0".
-_PARAM_SENTINEL_VALUE = frozenset({23, 24, 25, 26, 27, 28, 29, 30})
+_PARAM_SENTINEL_VALUE = frozenset({23, 24, 25, 26, 27, 28, 29, 30, 41, 42})
 
 # Initiator strings shown in CSV → friendly label
 _INITIATOR = {
@@ -343,6 +350,8 @@ def _decode_setpoint(row: dict) -> str:
             if param_id == 36:   # log_upload_rot — boolean
                 return "enabled" if v else "disabled"
             if param_id == 37:   # wind_prot_en — boolean
+                return "enabled" if v else "disabled"
+            if param_id == 39:   # ota_enable — boolean
                 return "enabled" if v else "disabled"
             if param_id == 33:   # status_expose — hex bitmask
                 return f"0x{v:02X}"

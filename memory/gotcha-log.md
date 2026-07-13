@@ -4,6 +4,44 @@ Append-only. Newest at top. Format per entry: **Problem → Root cause → Fix �
 
 When something weird happens, check here BEFORE debugging from scratch. Entries that recur or affect multiple subsystems graduate up to a topic file or to [CLAUDE.md](../CLAUDE.md) hard constraints.
 
+## Promoted patterns
+
+- **[PATTERN] Python CLI output on this machine must be ASCII-only.** The Windows console is cp1252; any `print()` (or the harness capturing stdout) crashes with `UnicodeEncodeError` on `→ … ✓ ✗ °` etc. Recurred 5+ times (calibration scripts, `check_dupes.py`, `rota_sim.py`, ad-hoc probes). Rule: write `->`, `...`, `deg`, `OK`/`FAIL` — never Unicode glyphs — in Python that prints. If Unicode is unavoidable, set `PYTHONIOENCODING=utf-8` on the invocation. Do NOT trust a crude keyword scan of captured serial/HTTP output either — loose substrings (`corrupted`, `format`) throw false positives; match on the specific message.
+
+---
+
+## 2026-07-13 — ROTA server (rfsee.net VPS): registry/permission setup traps
+
+**Problem:** After deploying the FOTA server, authenticated requests kept returning `204` (looked like auth failure) then `404 manifest_missing` — cost several round trips to diagnose.
+
+**Root causes (both operator-side config, not code):** (1) `devices.json` was pasted as a bare `"id": {…}` row **without the wrapping `{ }`** → invalid JSON → `json_decode` null → empty registry → every device 204 (the server fails closed, so it *looks* like auth failure). (2) A hand-place command computed `sha256sum`/`stat` as the login user against **root-owned** files → "Permission denied" → empty vars → a manifest written with `"fw_size":,` (invalid JSON) → 404.
+
+**Fix / rules for VPS work:** validate every JSON file after editing (`php -r 'echo json_decode(file_get_contents($f))===null?"INVALID":"valid";'`). Run file-creating command blocks entirely as root (`sudo bash -c '…'`) so the reads inside succeed. To check a file php-fpm will read, test **as php-fpm's user**: `sudo -u www-data cat <file>` — a `remko`-run `cat` on a `www-data`-owned file gives a misleading "Permission denied". After creating store files, `chown -R www-data:www-data` so php-fpm can read/write (registry `.lock`/`.tmp`, `checkins.csv`, `nonce-cache/`).
+
+**Where it lives:** `greenhouse-Controller-FOTA-server` — `tools/init-store.sh`, `examples/devices.example.json` (the correct full-object shape), `public/lib/rota_lib.php` (fails closed on unparseable registry — safe, but hard to diagnose).
+
+---
+
+## 2026-07-13 — Greenfield cable-flash: web assets need `mklittlefs`, NOT `pio buildfs`
+
+**Problem:** After a from-scratch esptool flash of a new S3 (bootloader + partitions + otadata + app all fine, board boots clean), the web GUI served "Web assets not yet uploaded / requested path /index.html". The firmware ran but the LittleFS assets partition (lfs0) had no readable `index.html`.
+
+**Root cause:** Two-part. (1) `platformio.ini` has **no `board_build.filesystem` setting**, so `pio run -t buildfs` produces a **SPIFFS** image (`spiffs.bin`) — but the firmware mounts **LittleFS** on lfs0/lfs1. Flashing that SPIFFS image → mount finds nothing. (2) `firmware/data/manifest.json` in source form carries the `{{ASSET_VERSION}}` placeholder (restored by build_release Step 3.5, gh#9), so a naive image also has a placeholder asset_version.
+
+**Fix:** Build the LittleFS image directly with the bundled tool and flash it to the active bank:
+```
+# stamp version, build littlefs (esp params b=4096 p=256, size = lfs0 partition 0x100000)
+printf '{"asset_version":"2.1.3","checksum":""}' > firmware/data/manifest.json
+~/.platformio/packages/tool-mklittlefs/mklittlefs.exe -c firmware/data -b 4096 -p 256 -s 0x100000 lfs_assets.bin
+esptool ... write_flash 0x420000 lfs_assets.bin          # lfs0 = app0's /lfsa
+printf '{"asset_version":"{{ASSET_VERSION}}","checksum":""}' > firmware/data/manifest.json   # restore placeholder (gh#9)
+```
+Verify: serial shows `littlefs_mount(A (lfs0)) returned 0 (OK)` + `/index.html exists`. The normal (non-greenfield) asset path is OTA zip extraction via `POST /api/ota/assets` — greenfield-by-cable is the exception that needs the raw LittleFS image.
+
+**Full greenfield recipe:** `esptool erase_flash` (clears coredump @0x620000) → `write_flash --flash_mode dio` bootloader@0x0 / partitions@0x8000 / otadata@0xe000 / app@0x20000 → `mklittlefs` image @0x420000. Offsets from `firmware/.pio/build/lolin_s3/flash_args` + `partitions.csv`.
+
+**Where it lives:** `firmware/platformio.ini` (no filesystem setting); `bin/build_release.ps1` Step 2 (calls it "LFS image" though buildfs defaults to SPIFFS here — works in the release ZIP path because assets ship as an OTA STORE zip, not a flashed image).
+
 ---
 
 ## 2026-07-13 — Branch switch carried the whole staging area into the wrong commit

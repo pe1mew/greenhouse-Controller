@@ -45,6 +45,7 @@ idf_component_register(
         "auth/pin_auth.cpp"                     # Phase 6.12 — PIN session + lockout (called from T8 + future T11 web routes)
         # status_post_stub.cpp REMOVED in 2.0.0-alpha.6.15 — minimal status_post.cpp below provides status_post_backoff_active() and friends
         "ota_manager/ota_manager.cpp"           # Phase 6.13 (2.0.0-alpha.6.13) — T13 OTA manager (firmware + assets); spawned on-demand by T11
+        "ota_client/ota_client.cpp"             # 2.2.0 (ROTA) — T16 pull-OTA request layer: HMAC X-OTA-Auth + pinned-cert HTTPS GET (rota_tds.md §4)
         "network_manager/network_manager.cpp"   # Phase 6.14 (2.0.0-alpha.6.14) — T10 minimal network manager (Q5 producer, TN4 to T4); see file header for deferred features
         "status_post/status_post.cpp"           # Phase 6.15 (2.0.0-alpha.6.15) — T14 minimal status_post (periodic HTTPS POST); see file header for deferred features (T15 supervisor + gh#23 mitigations)
         "watchdog/watchdog.cpp"                 # Phase 6.N.1 (2.0.0-alpha.6.22) — T1 minimal watchdog (TWDT subscriber + ota_mark_healthy at 30s); see file header for deferred features (NeoPixel + heap-integrity + stack-HWM)
@@ -84,6 +85,7 @@ idf_component_register(
         # Pulls in esp_http_client + esp-tls (uses bundled mbedtls).
         esp_http_client    # esp_http_client_init/_perform/_cleanup + event API
         esp-tls            # transitive: TLS context for HTTP_TRANSPORT_OVER_SSL
+        mbedtls            # 2.2.0 (ROTA) — direct <mbedtls/md.h> for HMAC-SHA256 (ota_client)
         esp_timer          # esp_timer_get_time for elapsed-ms measurement
         # Phase 5 (2.0.0-alpha.5) — IDF-native web server.
         esp_http_server    # httpd_start/_stop/_register_uri_handler

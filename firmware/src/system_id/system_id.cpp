@@ -61,3 +61,14 @@ void system_unit_id_str(char *buf, size_t cap)
      * uint16 value. cap >= 5 is enforced above. */
     (void)snprintf(buf, cap, "%04X", (unsigned)s_cached);
 }
+
+void system_mac_str(char *buf, size_t cap)
+{
+    if (buf == NULL || cap < 13u) {
+        return;
+    }
+    uint8_t mac[6] = {0};
+    (void)esp_read_mac(mac, ESP_MAC_WIFI_STA);   /* same source as the unit id */
+    (void)snprintf(buf, cap, "%02x%02x%02x%02x%02x%02x",
+                   mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}

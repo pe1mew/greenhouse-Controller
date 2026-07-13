@@ -122,6 +122,16 @@ static const char K_LOG_UPLOAD_M[]     = "log_upload_m";
 static const char K_LOG_UPLOAD_ROT[]   = "log_upload_rot";
 static const char K_LOG_LAST_UP[]      = "log_last_up";
 
+/* 2.2.0 (ROTA) — internet-pull OTA config, system namespace, web-reloadable
+ * alongside status_*. Written via the dedicated /api/ota/config endpoint;
+ * see rota_tds.md §2.7 (R-F01). All keys ≤ 15 chars. */
+static const char K_OTA_ENABLE[]       = "ota_enable";
+static const char K_OTA_CHECK_H[]      = "ota_check_h";
+static const char K_OTA_URL[]          = "ota_url";
+static const char K_OTA_SECRET[]       = "ota_secret";
+static const char K_OTA_WIN_LO[]       = "ota_win_lo";
+static const char K_OTA_WIN_HI[]       = "ota_win_hi";
+
 /* rc.1.5.0 (gh#28) — operating-mode persistence. NVS-backed so a power blip
  * during a deliberate STANDBY does not silently re-enable climate control on
  * reboot. Stored as i32: 0 = AUTOMATIC, 1 = STANDBY. Other modes (MOTOR_ALARM,
@@ -583,6 +593,16 @@ static void nvs_load_web(void)
     nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_LOG_UPLOAD_ROT,  DEF_LOG_UPLOAD_ROT,    &s_cfg.log_upload_rot);
     nvs_cfg_get_str_or_default(NVS_NS_SYSTEM, K_LOG_LAST_UP,    DEF_LOG_LAST_UP,
                                 s_cfg.log_last_up, sizeof(s_cfg.log_last_up));
+
+    /* 2.2.0 (ROTA) — internet-pull OTA config (R-F01). */
+    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_OTA_ENABLE,  DEF_OTA_ENABLE,  &s_cfg.ota_enable);
+    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_OTA_CHECK_H, DEF_OTA_CHECK_H, &s_cfg.ota_check_h);
+    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_OTA_WIN_LO,  DEF_OTA_WIN_LO,  &s_cfg.ota_win_lo);
+    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_OTA_WIN_HI,  DEF_OTA_WIN_HI,  &s_cfg.ota_win_hi);
+    nvs_cfg_get_str_or_default(NVS_NS_SYSTEM, K_OTA_URL,     DEF_OTA_URL,
+                                s_cfg.ota_url,    sizeof(s_cfg.ota_url));
+    nvs_cfg_get_str_or_default(NVS_NS_SYSTEM, K_OTA_SECRET,  DEF_OTA_SECRET,
+                                s_cfg.ota_secret, sizeof(s_cfg.ota_secret));
 }
 
 /* ============================================================
@@ -656,6 +676,10 @@ static int32_t cfg_clamp(const char *ns, const char *key, int32_t v)
         else if (strcmp(key, K_LOG_UPLOAD_H)    == 0) _CLAMP(CFG_MIN_HOUR,              CFG_MAX_HOUR);
         else if (strcmp(key, K_LOG_UPLOAD_M)    == 0) _CLAMP(CFG_MIN_MINUTE,            CFG_MAX_MINUTE);
         else if (strcmp(key, K_LOG_UPLOAD_ROT)  == 0) _CLAMP(0, 1);
+        else if (strcmp(key, K_OTA_ENABLE)      == 0) _CLAMP(0, 1);
+        else if (strcmp(key, K_OTA_CHECK_H)     == 0) _CLAMP(CFG_MIN_OTA_CHECK_H,       CFG_MAX_OTA_CHECK_H);
+        else if (strcmp(key, K_OTA_WIN_LO)      == 0) _CLAMP(CFG_MIN_HOUR,              CFG_MAX_HOUR);
+        else if (strcmp(key, K_OTA_WIN_HI)      == 0) _CLAMP(CFG_MIN_HOUR,              CFG_MAX_HOUR);
     }
 
 #undef _CLAMP
@@ -742,6 +766,12 @@ static log_param_id_t ns_key_to_log_id(const char *ns, const char *key,
         if (strcmp(key, K_LOG_UPLOAD_H)    == 0) return LOG_PARAM_LOG_UPLOAD_H;
         if (strcmp(key, K_LOG_UPLOAD_M)    == 0) return LOG_PARAM_LOG_UPLOAD_M;
         if (strcmp(key, K_LOG_UPLOAD_ROT)  == 0) return LOG_PARAM_LOG_UPLOAD_ROT;
+        if (strcmp(key, K_OTA_ENABLE)      == 0) return LOG_PARAM_OTA_ENABLE;
+        if (strcmp(key, K_OTA_CHECK_H)     == 0) return LOG_PARAM_OTA_CHECK_H;
+        if (strcmp(key, K_OTA_WIN_LO)      == 0) return LOG_PARAM_OTA_WIN_LO;
+        if (strcmp(key, K_OTA_WIN_HI)      == 0) return LOG_PARAM_OTA_WIN_HI;
+        /* ota_url / ota_secret (strings) logged by the /api/ota/config endpoint
+         * with LOG_PARAM_OTA_URL / _OTA_SECRET, mirroring status_url/secret. */
         /* session_timeout_min / ap_timeout_min / led_* not enumerated. */
         return LOG_PARAM_NONE;
     }

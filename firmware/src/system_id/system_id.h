@@ -47,6 +47,18 @@ uint16_t system_unit_id_u16(void);
  */
 void system_unit_id_str(char *buf, size_t cap);
 
+/**
+ * @brief Write the full WiFi-STA MAC as 12 lowercase hex chars (no separators).
+ *
+ * Format: `"a0b1c2d3e4f5"`. This is the ROTA device identifier (rota_tds.md
+ * R-I02) — the key into the FOTA server's device registry. The caller-supplied
+ * buffer must be at least 13 bytes (12 chars + NUL). On error (NULL buf or
+ * cap < 13) the function is a no-op.
+ *
+ * @since 2.2.0 (ROTA).
+ */
+void system_mac_str(char *buf, size_t cap);
+
 #ifdef __cplusplus
 }
 #endif

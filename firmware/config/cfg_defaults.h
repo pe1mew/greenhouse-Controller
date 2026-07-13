@@ -115,6 +115,14 @@
 #define DEF_STATUS_INTERVAL_S   240             /**< POST cycle (s); spec range 60–300. Default raised 120→240 in 1.20.3 (gh#23) to slow the mbedTLS-handshake heap-drop accumulation rate; with 240 s the supervisor's planned-reboot cadence extends from ~5.5 h to ~11 h. Operator can override via Web tab → Interval (s). */
 #define DEF_STATUS_ENABLE       0               /**< 0 = disabled by default */
 #define DEF_STATUS_EXPOSE       0x3F            /**< Bits 0..5 = climate/wind/windows/mode/sun/system */
+
+/* 2.2.0 (ROTA) — internet-pull OTA config (rota_tds.md §2.7 R-F01). */
+#define DEF_OTA_ENABLE          0               /**< 0 = pull-OTA disabled by default (factory-safe) */
+#define DEF_OTA_CHECK_H         24              /**< Update-check interval, hours */
+#define DEF_OTA_URL             ""              /**< OTA server base URL ("" = disabled), https:// only */
+#define DEF_OTA_SECRET          ""              /**< Per-unit HMAC secret ("" = not provisioned) */
+#define DEF_OTA_WIN_LO          2               /**< Night apply-window start hour (local) */
+#define DEF_OTA_WIN_HI          4               /**< Night apply-window end hour (local) */
 #define DEF_LOG_UPLOAD_H        3               /**< Daily upload local hour (0–23) */
 #define DEF_LOG_UPLOAD_M        15              /**< Daily upload local minute (0–59) */
 #define DEF_LOG_UPLOAD_ROT      1               /**< Also upload on T9 rotation */

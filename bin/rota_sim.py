@@ -54,7 +54,7 @@ class PinnedHTTPS(http.client.HTTPSConnection):
         if self._expected_fp and not hmac.compare_digest(got, self._expected_fp):
             self.close()
             raise ssl.SSLError(
-                "cert pin mismatch: got %s… expected %s…"
+                "cert pin mismatch: got %s... expected %s..."
                 % (got[:16], self._expected_fp[:16]))
 
 
@@ -130,12 +130,12 @@ def main():
         ap.error("--cert is required for https (certificate pinning)")
     fp = fingerprint_from_pem(args.cert) if (is_https and args.cert) else None
     if fp:
-        print("pinning server cert %s…%s" % (fp[:16], fp[-4:]))
+        print("pinning server cert %s...%s" % (fp[:16], fp[-4:]))
 
     MANIFEST = "/manifest.php?fw=" + args.fw
     r = Runner()
 
-    # 1. Happy path — valid auth → 200 + parseable manifest.
+    # 1. Happy path — valid auth -> 200 + parseable manifest.
     st, body, _ = do(args.base_url, fp, MANIFEST, args.id, secret)
     ok = st == 200
     man = None
@@ -148,47 +148,47 @@ def main():
     r.check("happy path: manifest 200 + schema", ok,
             "version=%s" % (man.get("version") if man else "HTTP %d" % st))
 
-    # 2. Wrong secret → 204.
+    # 2. Wrong secret -> 204.
     st, _, _ = do(args.base_url, fp, MANIFEST, args.id, secret + "00")
-    r.check("wrong secret → 204", st == 204, "HTTP %d" % st)
+    r.check("wrong secret -> 204", st == 204, "HTTP %d" % st)
 
-    # 3. Tampered MAC → 204.
+    # 3. Tampered MAC -> 204.
     st, _, _ = do(args.base_url, fp, MANIFEST, args.id, secret, tamper_mac=True)
-    r.check("tampered MAC → 204", st == 204, "HTTP %d" % st)
+    r.check("tampered MAC -> 204", st == 204, "HTTP %d" % st)
 
-    # 4. Clock skew (ts 6 min old) → 204.
+    # 4. Clock skew (ts 6 min old) -> 204.
     st, _, _ = do(args.base_url, fp, MANIFEST, args.id, secret, ts=int(time.time()) - 360)
-    r.check("skew +360 s → 204", st == 204, "HTTP %d" % st)
+    r.check("skew +360 s -> 204", st == 204, "HTTP %d" % st)
 
-    # 5. Replay: reuse a nonce that just succeeded → 204 on second use.
+    # 5. Replay: reuse a nonce that just succeeded -> 204 on second use.
     hdr, nonce = auth_header(args.id, secret, MANIFEST)
     c = connect(args.base_url, fp); c.request("GET", MANIFEST, headers={"X-OTA-Auth": hdr})
     first = c.getresponse(); first.read(); c.close()
     st2, _, _ = do(args.base_url, fp, MANIFEST, args.id, secret, nonce=nonce,
                    ts=int(hdr.split(":")[1]))
-    r.check("nonce replay → 204", first.status == 200 and st2 == 204,
+    r.check("nonce replay -> 204", first.status == 200 and st2 == 204,
             "first=%d replay=%d" % (first.status, st2))
 
-    # 6. Unknown device id → 204.
+    # 6. Unknown device id -> 204.
     st, _, _ = do(args.base_url, fp, MANIFEST, "0000deadbeef", secret)
-    r.check("unknown device → 204", st == 204, "HTTP %d" % st)
+    r.check("unknown device -> 204", st == 204, "HTTP %d" % st)
 
     # 7. Certificate pinning rejects a non-matching cert (https only).
     if fp:
         bad = "f" * 64
         try:
             do(args.base_url, bad, MANIFEST, args.id, secret)
-            r.check("wrong-cert pin → rejected", False, "connection was NOT refused")
+            r.check("wrong-cert pin -> rejected", False, "connection was NOT refused")
         except ssl.SSLError:
-            r.check("wrong-cert pin → rejected", True, "SSLError as expected")
+            r.check("wrong-cert pin -> rejected", True, "SSLError as expected")
         except Exception as e:
-            r.check("wrong-cert pin → rejected", False, "unexpected: %r" % e)
+            r.check("wrong-cert pin -> rejected", False, "unexpected: %r" % e)
 
     # 8. Download the firmware artefact named by the manifest.
     if man:
         dpath = "/download.php?file=fw&v=" + man["version"]
         st, body, _ = do(args.base_url, fp, dpath, args.id, secret)
-        r.check("download fw → 200 + bytes", st == 200 and len(body) > 0,
+        r.check("download fw -> 200 + bytes", st == 200 and len(body) > 0,
                 "HTTP %d, %d bytes" % (st, len(body)))
 
     # 9. Optional: pinned-version resolution differs from mainstream.
@@ -196,7 +196,7 @@ def main():
         st, body, _ = do(args.base_url, fp, "/manifest.php?fw=2.0.0",
                          args.pinned_id, args.pinned_secret)
         v = json.loads(body).get("version") if st == 200 else None
-        r.check("pinned unit → pinned version", v == args.expect_pinned,
+        r.check("pinned unit -> pinned version", v == args.expect_pinned,
                 "got %s expected %s" % (v, args.expect_pinned))
 
     sys.exit(r.report())
