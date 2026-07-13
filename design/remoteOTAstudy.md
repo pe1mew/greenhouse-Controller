@@ -447,6 +447,8 @@ Proposal — a **signed release manifest** as the unit of trust, which also happ
 
 ## 8. Server-side design (rfsee.net VPS)
 
+> Implemented in its own repository `pe1mew/greenhouse-Controller-FOTA-server`, separate from the firmware (study R-T06 / [rota_tds.md](rota_tds.md)). The wire contract (§4 of the TDS) is the interface between the two.
+
 ### 8.1 Can it be done in PHP?
 
 **Yes.** Everything the pull-OTA server must do — serve a per-channel JSON manifest, stream two static binaries, verify a per-device HMAC, append an audit row — sits comfortably in PHP next to the `hbwv/api.php` that already exists. The one capability that is *not* a PHP problem is **mTLS**: client-certificate verification terminates in the web server. **Resolved (§11 Q1, 2026-07-12): rfsee.net runs nginx with full root access** — `ssl_verify_client` is available in a dedicated OTA server block, and `X-Accel-Redirect` is available for download offload. mTLS is therefore fully on the table as the R1 implementation whenever wanted; stage 1 can still start with per-device HMAC (O2) for zero server-TLS changes. Dedicated software is not needed at 2–20 units.

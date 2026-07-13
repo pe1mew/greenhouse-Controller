@@ -116,7 +116,7 @@ Requirement keywords **shall / should / may** follow RFC 2119/RFC 8174. Prioriti
 
 | ID | Requirement | Priority | Pass/Fail criterion |
 |------|---|---|---|
-| R-S01 | The server **shall** run as PHP under the existing rfsee.net nginx (full root confirmed, study Q1) at `/hbwv/ota/` with two endpoints: `manifest.php` and `download.php`. | Must | Both endpoints functional over the pinned-cert TLS host. |
+| R-S01 | The server **shall** run as PHP under the existing rfsee.net nginx (full root confirmed, study Q1) at `/ghc/rota/` with two endpoints: `manifest.php` and `download.php`. | Must | Both endpoints functional over the pinned-cert TLS host. |
 | R-S02 | Release artefacts, the device registry, and channel pointers **shall** live outside the webroot; only the two PHP endpoints are web-reachable. | Must | Direct URL probes to `ota-store/` paths return 404/403. |
 | R-S03 | The registry **shall** key on the opaque identifier string (R-I02/03) and hold at least: secret, unit type, channel, `pinned_version`, `enabled`, `last_seen`, last reported version. | Must | Registry review; disable flag blocks a unit immediately. |
 | R-S04 | The server **shall** resolve a unit's offer as: `pinned_version` if set, else the mainstream release of the unit's type (`channels/<type>.json`) (study R4). | Must | Pinning a unit yields the pinned manifest while mainstream differs. |
@@ -136,6 +136,8 @@ Requirement keywords **shall / should / may** follow RFC 2119/RFC 8174. Prioriti
 | R-T03 | Provisioning tooling **shall** write `ota_secret` (+ cert if non-default) to a unit at the bench and create/update its registry row in one documented step. | Must | Provisioning a fresh unit takes ≤ 10 min following the doc. |
 | R-T04 | A Python device simulator **shall** exercise the server contract (auth, replay, skew, pinning, channel/pin resolution) as the server acceptance suite, runnable without any ESP32. | Must | Simulator suite green on the production server config. |
 | R-T05 | Production enablement on 5C88 **shall** follow: 2.2.0 installed locally on a site visit, unit initially pinned to its current version, unpinned only after ≥ 1 successful observed soak-unit pull cycle. | Must | Rollout checklist in the release notes, ticked. |
+| R-T06 | The ROTA server **shall** be developed and versioned in its own git repository (`pe1mew/greenhouse-Controller-FOTA-server`), separate from the firmware; the wire contract (§4 of this TDS) is the interface between the repositories, and the server repository **shall** pin the TDS version/commit it implements. | Must | Server repo `greenhouse-Controller-FOTA-server` holds no firmware sources; its README names the implemented TDS version/tag. |
+| R-T07 | All deployment/publishing scripts (server deploy from the server repo; artefact publish from this repo) **shall** authenticate to the VPS using SSH public-key authentication with host-key verification enabled; no passwords, private keys, or device secrets **shall** be stored in either repository. | Must | Deploy succeeds only with the operator's key; repo scan finds no credential material; `StrictHostKeyChecking` is active in the scripts. |
 
 ## 3. Verification overview (V-model right side)
 
@@ -152,22 +154,40 @@ Requirement keywords **shall / should / may** follow RFC 2119/RFC 8174. Prioriti
 | TC-09 | R-C07/08, R-R05 | Heap + cadence instrumentation during full update on soak |
 | TC-10 | R-O01–O05 | Log parse of a complete soak cycle; dashboard field check |
 | TC-11 | R-S01–S07 | Server code review + endpoint probes (unauth 204, path probes, atomic write kill test) |
-| TC-12 | R-T01/02/05 | End-to-end release rehearsal: build → publish → soak pull → promote → (pinned) production |
+| TC-12 | R-T01/02/05/06/07 | End-to-end release rehearsal across both repos: build → publish (key-auth) → soak pull → promote → (pinned) production; credential-scan both repos |
 | TC-13 | R-R02/03/04 | 48 h server-down soak; crash-loop rollback; zero code-13 audit scan |
 | TC-14 | R-F01–F06 | Config/GUI review incl. farmer-session negative tests; manual diffs present |
 
 ## 4. Interface definitions (normative)
 
+> **Wire contract v1.0 — FROZEN (plan task 0.1).** This section is the interface between the firmware repo and `greenhouse-Controller-FOTA-server`. After the freeze tag is set, changes require a new contract version and coordinated updates on both sides. Freeze tag: `rota-contract-v1.0` (set on the commit containing this section).
+
 ### 4.1 Endpoints
 
 | Endpoint | Method | Auth | Function |
 |---|---|---|---|
-| `/hbwv/ota/manifest.php` | GET | `X-OTA-Auth` | Resolve unit → offered release; return manifest JSON; record check-in |
+| `/hbwv/ota/manifest.php?fw=<running-version>[&res=<a>.<b>]` | GET | `X-OTA-Auth` | Resolve unit → offered release; return manifest JSON (HTTP 200, always the full resolved manifest — the *client* decides whether it is newer); record check-in with the reported running version and optional last audit outcome (`res` = last `value_a.value_b` pair, e.g. `24.0`) |
 | `/hbwv/ota/download.php?file=fw\|assets&v=<version>` | GET | `X-OTA-Auth` | Stream artefact (nginx `X-Accel-Redirect`) |
+
+HTTP status semantics: **204 is reserved exclusively for failed authentication** (silent drop, R-A08). Authenticated requests receive 200 (success), 404 (unknown unit/file/version), 500 (server fault). "No newer version" is *not* an HTTP condition — the manifest is always returned and compared client-side.
 
 ### 4.2 Authentication header
 
-`X-OTA-Auth: <id>:<ts>:<nonce>:<mac>` with `mac = HMAC-SHA256(ota_secret, id + "|" + ts + "|" + nonce + "|" + request-URI)`, `ts` = Unix seconds, `nonce` = 8-byte random hex. Server: window ±300 s, nonce cache 10 min, `hash_equals` compare, failure → 204.
+```
+X-OTA-Auth: <id>:<ts>:<nonce>:<mac>
+mac = HMAC-SHA256(ota_secret, id + "|" + ts + "|" + nonce + "|" + request_uri)
+```
+
+| Field | Definition |
+|---|---|
+| `id` | Full WiFi station MAC (R-I02): 12 lowercase hex chars, no separators, e.g. `a0b1c2d3e4f5` |
+| `ts` | Unix seconds, decimal ASCII |
+| `nonce` | 8 random bytes, 16 lowercase hex chars |
+| `request_uri` | Path **and** query string exactly as sent, e.g. `/hbwv/ota/manifest.php?fw=2.2.0` |
+| `mac` | 64 lowercase hex chars (SHA-256 output) |
+| `ota_secret` | The per-unit secret (R-A06), used as raw ASCII bytes |
+
+Server checks: window ±300 s, nonce cache 10 min, constant-time compare (`hash_equals`), any failure → 204 empty.
 
 ### 4.3 Manifest schema
 

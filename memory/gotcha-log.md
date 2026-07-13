@@ -6,13 +6,37 @@ When something weird happens, check here BEFORE debugging from scratch. Entries 
 
 ---
 
+## 2026-07-13 — Branch switch carried the whole staging area into the wrong commit
+
+**Problem:** Creating the `rota` feature branch while ~23 unrelated files were staged, then committing "model changes" on `main`, swept the rota-only work (TDS + 2.2.0 version bump) into the model commit on `main` (`32ce6b5`). Cleanup needed a compensating commit on main (`5c3c6cc`, version back to 2.1.3) and re-pointing `rota` to the new tip.
+
+**Root cause:** Git's index is shared across branch switches — `git checkout -b` carries all staged changes, and a broad `git commit` on the other branch commits everything staged, regardless of which "stream" of work it belongs to.
+
+**Fix / pattern:** When work spans branches, commit (or stash) each stream *before* switching. When Claude stages changes that belong to different destinations, it must say so explicitly at hand-off and repeat the warning before any branch operation. Recovery recipe when it happens anyway: compensating commit on the polluted branch + re-point the feature branch (`git branch -D` + recreate at tip works when the feature branch has no own commits).
+
+**Where it lives:** Process, not code. Commits `32ce6b5`/`5c3c6cc` are the example.
+
+---
+
+## 2026-07-13 — Wind measurements before 2026-06-19 12:00 are invalid
+
+**Problem:** Wind speed/direction columns exist in SD logs and campaign data from Jun 4, but the wind vane was only commissioned **2026-06-19 12:00**. Earlier values (including the wind columns in `plot_summary.txt` for Jun 4–19) are garbage and must not be used in any analysis.
+
+**Root cause:** Sensor commissioning happened mid-campaign; the log format carries the columns regardless.
+
+**Fix:** Constraint recorded in `thermalProfileCampaign.md` §9.11 and enforced in `ns9_direction_stratified.py` (`WIND_VALID_FROM`). Any new wind-based analysis script must filter `timestamp >= 2026-06-19T12:00`.
+
+**Where it lives:** `model/campaign-summer-2026/ns9_direction_stratified.py` (the reference filter); campaign doc §9.11.
+
+---
+
 ## 2026-07-08 — Clock hours wrong while `ntp_synced=true` — DS1307 outranked SNTP [RESOLVED — 2.1.3, gh#37]
 
 **Problem:** 2344's clock read 09:31 at real 14:06 (4 h 35 m behind) with `ntp_synced=true`. SD log showed an hourly ±16 500 s see-saw: SNTP set the correct time at :40 past, something dragged it back within a minute.
 
 **Root cause:** Two-layer. (1) Firmware: T4 called `settimeofday()` from the DS1307 every ~60 s unconditionally — the RTC chip outranked SNTP by design. (2) Hardware: 2344's DS1307 was failing — lost ~40 s/h on Jul 7, froze overnight (rows stamped exactly `00:50:52` = halted oscillator), restarted 4 h 35 m behind; TN4's post-sync corrective writes did not hold.
 
-**Fix:** 2.1.3 — DS1307 seeds the clock only while `nm_is_sntp_synced()` is false; once synced the system clock is authoritative and DS-vs-system divergence > 10 s emits `LOG_SYSTEM value_a=21` (~1/h). Hardware: battery swap on 2344 pending (gh#37 stays open until a clean day of logs).
+**Fix:** 2.1.3 — DS1307 seeds the clock only while `nm_is_sntp_synced()` is false; once synced the system clock is authoritative and DS-vs-system divergence > 10 s emits `LOG_SYSTEM value_a=21` (~1/h). Hardware: battery replaced 2026-07-08; gh#37 closed 2026-07-09 (firmware verified: zero clock jumps in 24 h of logs). Follow-up enhancement (immediate DS self-heal instead of the 24 h TN4 cadence) tracked as gh#38.
 
 **Diagnostic notes for next time:** `time_iso`/`ts_unix` in `/api/status` report the MX4 shadow, refreshed once per 60 s poll — they read 0–60 s stale by design; don't mistake that sawtooth for drift. A frozen repeated timestamp in SD rows = halted RTC oscillator. `ntp_synced` is a per-boot latch — it says SNTP succeeded once, not that the clock is currently right.
 

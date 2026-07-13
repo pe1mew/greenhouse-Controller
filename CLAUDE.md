@@ -39,7 +39,7 @@ Production deployment at Herenboeren Willemshoeve (Soest). Field units in active
 |---|---|
 | Touching a FreeRTOS task or subsystem | [memory/architecture.md](memory/architecture.md) — task graph T1-T15, subsystem map, partition layout |
 | Bumping firmware version | `firmware/platformio.ini` line 93 — and feature releases bump minor, not patch |
-| OTA work (any) | [design/OTAimplementation.md](design/OTAimplementation.md) — full reference, 11 sections. Internet-pull OTA (study, not yet implemented): [design/remoteOTAstudy.md](design/remoteOTAstudy.md) |
+| OTA work (any) | [design/OTAimplementation.md](design/OTAimplementation.md) — full reference, 11 sections. Internet-pull OTA (**ROTA**, in development on branch `rota`): TDS [design/rota_tds.md](design/rota_tds.md), plan [design/rotaImplementationPlan.md](design/rotaImplementationPlan.md), study [design/remoteOTAstudy.md](design/remoteOTAstudy.md). Server lives in the separate `greenhouse-Controller-FOTA-server` repo |
 | Changing partition table | [design/migrationPlan_FullESP-IDFmigration.md](design/migrationPlan_FullESP-IDFmigration.md); update [firmware/partitions.csv](firmware/partitions.csv) header comment |
 | Changing T9/T14 audit log format | `log/logparser.py` must learn the new value_a/value_b encoding alongside the firmware change |
 | Changing the build pipeline | [bin/build_release.ps1](bin/build_release.ps1) — see manifest placeholder dance (Steps 0 and 3.5) and gh#9 history |
