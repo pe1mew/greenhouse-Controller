@@ -103,6 +103,7 @@ extern TaskHandle_t task_t12;  /**< T12 — MQTT Client (optional; may be NULL i
 /* task_t13 (OTA) is created on demand by T11 — no permanent handle. */
 extern TaskHandle_t task_t14;  /**< T14 — Status website POST: periodic JSON upload to remote dashboard. */
 extern TaskHandle_t task_t15;  /**< T15 — Status-POST supervisor (gh#18 Phase 4): circuit-breaker for T14 backoff. */
+extern TaskHandle_t task_t16;  /**< T16 — ROTA pull-OTA client (2.2.0): periodic manifest check + apply. */
 
 /* Event group (defined in system_globals.cpp). */
 extern EventGroupHandle_t EG1; /**< System state flags — see Section 5 for bit definitions. */
@@ -113,6 +114,7 @@ extern SemaphoreHandle_t MX2;  /**< Current measurement data (sensor_reading_t s
 extern SemaphoreHandle_t MX3;  /**< Measurement ring buffers (sensor history, served by /api/history). */
 extern SemaphoreHandle_t MX4;  /**< Configuration settings (NVS-backed cfg_shadow_t). */
 extern SemaphoreHandle_t MX5;  /**< LittleFS active partition (T11 read vs T13 OTA cross-bank write). */
+extern SemaphoreHandle_t MX_TLS; /**< 2.2.0 (ROTA, R-C07) — serialises TLS handshakes between T14 and T16 (gh#23 heap budget). */
 
 /* ============================================================
  * Section 3 — Enumeration types

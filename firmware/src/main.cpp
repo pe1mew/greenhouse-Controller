@@ -199,6 +199,7 @@
 #include "network_manager/network_manager.h"
 #include "status_post/status_post.h"
 #include "ota_manager/ota_manager.h"  /* alpha.6.22 — ota_check_rollback at boot */
+#include "ota_client/ota_client.h"    /* 2.2.0 (ROTA) — T16 pull-OTA client */
 #include "watchdog/watchdog.h"        /* alpha.6.22 — T1 task_watchdog (TWDT + ota_mark_healthy) */
 #include "types/app_types.h"  /* Q1..Q6, MX1..MX5, EG1, task_t1..15, key_event_t etc. */
 
@@ -1487,6 +1488,27 @@ extern "C" void app_main(void)
             ESP_LOGI(TAG, "alpha.6.15: T14 status_post task spawned (handle=%p); "
                           "periodic HTTPS POST every cfg.status_interval_s",
                      (void *)task_t14);
+        }
+    }
+
+    /* 2.2.0 (ROTA) — T16 pull-OTA client. Same 8 KB / prio-3 / no-affinity
+     * profile as T14 (TLS handshake stack; latency-tolerant). Idle unless
+     * cfg.ota_enable=1; serialises its TLS session with T14 via MX_TLS
+     * (R-C07). See ota_client.cpp + rota_tds.md §2.4. */
+    {
+        BaseType_t rc = xTaskCreatePinnedToCore(
+            task_ota_client,
+            "T16-rota",
+            8192,                  /* stack words */
+            NULL,
+            3,                     /* priority — latency-tolerant network task */
+            &task_t16,
+            tskNO_AFFINITY);
+        if (rc != pdPASS) {
+            ESP_LOGE(TAG, "2.2.0: xTaskCreate T16 (ROTA) failed (rc=%d)", (int)rc);
+        } else {
+            ESP_LOGI(TAG, "2.2.0: T16 ROTA pull-OTA client spawned (handle=%p)",
+                     (void *)task_t16);
         }
     }
 

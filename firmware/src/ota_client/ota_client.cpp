@@ -9,11 +9,19 @@
 #include "ota_client.h"
 #include "ota_cert_default.h"
 #include "../system_id/system_id.h"
+#include "../types/app_types.h"
+#include "../data_manager/data_manager.h"
+#include "../network_manager/network_manager.h"
+#include "../event_logger/event_logger.h"
 
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/semphr.h>
+#include <freertos/event_groups.h>
 #include <esp_log.h>
 #include <esp_random.h>
 #include <esp_heap_caps.h>
@@ -23,6 +31,13 @@
 #include "nvs_config.h"
 
 static const char *TAG = "T16_OTA";
+
+/** Manifest JSON is small; cap the response body generously. */
+#define ROTA_MANIFEST_MAX 4096u
+/** Boot settle before the first check — let WiFi + SNTP come up (R-C03). */
+#define ROTA_BOOT_SETTLE_MS 30000u
+/** Backoff ceiling on repeated failure (R-C09). */
+#define ROTA_BACKOFF_MAX_S (24u * 3600u)
 
 /** NVS key (system ns) for the operator-uploaded pinned cert. ≤ 15 chars. */
 static const char K_OTA_CERT[] = "ota_cert";
@@ -239,4 +254,187 @@ bool rota_cert_is_custom(void)
     char probe[16] = {0};
     (void)nvs_cfg_get_str(NVS_NS_SYSTEM, K_OTA_CERT, probe, sizeof(probe));
     return looks_like_pem(probe);   /* only the "-----BEGIN" prefix is needed */
+}
+
+/* ── T16 task — periodic manifest check (rota_tds.md §2.4) ─────────────── */
+
+/* T16 last-check status, for /api/ota/status (task 3.9). Single writer (T16). */
+static rota_status_t s_status = { 0, -1, 0, 0u, {0} };
+
+void rota_status_get(rota_status_t *out)
+{
+    if (out != NULL) *out = s_status;   /* small struct copy; benign torn read */
+}
+
+/** Check-outcome audit row: LOG_SYSTEM value_a=22 (rota_tds.md §4.4). */
+static void audit_check(int16_t sub)
+{
+    log_event_t e = {};
+    e.timestamp  = (uint32_t)time(NULL);
+    e.event_type = (uint8_t)LOG_SYSTEM;
+    e.initiator  = (uint8_t)LOG_BY_SYSTEM;
+    e.value_a    = 22;
+    e.value_b    = sub;   /* 0 no update · 1 update found · 2 unreachable/HTTP · 3 skip · 4 auth fail */
+    log_post(&e);
+    s_status.last_result      = sub;
+    s_status.last_check_epoch = (int64_t)e.timestamp;
+}
+
+/** Dotted-numeric SemVer compare: >0 if a newer than b, 0 equal, <0 older. */
+static int semver_cmp(const char *a, const char *b)
+{
+    while (*a || *b) {
+        long na = strtol(a, (char **)&a, 10);
+        long nb = strtol(b, (char **)&b, 10);
+        if (na != nb) return (na > nb) ? 1 : -1;
+        if (*a == '.') a++;
+        if (*b == '.') b++;
+        if (*a == '-' || *b == '-') break;   /* ignore pre-release tail for now */
+    }
+    return 0;
+}
+
+/** Extract the "version" string field from a manifest JSON body. */
+static bool manifest_version(const char *json, char *out, size_t cap)
+{
+    const char *p = strstr(json, "\"version\"");
+    if (p == NULL) return false;
+    p = strchr(p, ':'); if (p == NULL) return false;
+    p = strchr(p, '"'); if (p == NULL) return false;
+    p++;
+    const char *e = strchr(p, '"'); if (e == NULL) return false;
+    size_t n = (size_t)(e - p);
+    if (n == 0 || n + 1u > cap) return false;
+    memcpy(out, p, n);
+    out[n] = '\0';
+    return true;
+}
+
+/**
+ * @brief Run one check cycle.
+ * @return true if the check reached the server (whatever the result); false on
+ *         a transport/precondition failure that should trigger backoff.
+ */
+static bool ota_check_once(void)
+{
+    cfg_shadow_t cfg;
+    dm_cfg_snapshot(&cfg);
+
+    /* Preconditions (R-C03). Disabled/unconfigured is a silent skip (not
+     * audited every idle cycle); a blocked-but-enabled check is audited. */
+    if (cfg.ota_enable == 0 || cfg.ota_url[0] == '\0' || cfg.ota_secret[0] == '\0') {
+        return true;   /* nothing to do; normal-interval sleep */
+    }
+    if (!nm_is_sntp_synced()) {
+        ESP_LOGI(TAG, "check skipped: SNTP not synced");
+        audit_check(3);
+        return false;  /* retry sooner */
+    }
+    if (xEventGroupGetBits(EG1) & EG1_BIT_OTA_IN_PROGRESS) {
+        ESP_LOGI(TAG, "check skipped: OTA already in progress");
+        audit_check(3);
+        return true;
+    }
+
+    /* Build url + request_uri. ota_url is the base (e.g. https://host/); the
+     * signed request_uri is the path+query the server sees. */
+    char req[160];
+    (void)snprintf(req, sizeof(req), "/manifest.php?fw=%s", FIRMWARE_VERSION);
+    const char *slash = "";
+    size_t ul = strlen(cfg.ota_url);
+    if (ul > 0 && cfg.ota_url[ul - 1] != '/') slash = "/";
+    char url[256];
+    int un = snprintf(url, sizeof(url), "%s%smanifest.php?fw=%s",
+                      cfg.ota_url, slash, FIRMWARE_VERSION);
+    if (un < 0 || (size_t)un >= sizeof(url)) {
+        audit_check(2);
+        return false;
+    }
+
+    char cert[ROTA_CERT_MAX];
+    if (rota_cert_get(cert, sizeof(cert)) < 0) {
+        audit_check(2);
+        return false;
+    }
+
+    int status = 0; char *body = NULL; size_t blen = 0;
+    /* Serialise the TLS handshake with T14 (R-C07, gh#23 heap budget). */
+    xSemaphoreTake(MX_TLS, portMAX_DELAY);
+    esp_err_t err = rota_https_get(url, req, cert, cfg.ota_secret,
+                                   ROTA_MANIFEST_MAX, &status, &body, &blen);
+    xSemaphoreGive(MX_TLS);
+
+    s_status.last_http = status;        /* 0 = transport failure */
+    s_status.checks_total++;
+    s_status.offered_ver[0] = '\0';     /* set below only on a parseable 200 */
+
+    bool reached = true;
+    if (err != ESP_OK && status == 0) {
+        ESP_LOGW(TAG, "manifest GET transport failure: %s", esp_err_to_name(err));
+        audit_check(2);
+        reached = false;
+    } else if (status == 204) {
+        ESP_LOGW(TAG, "manifest GET -> 204 (auth rejected by server)");
+        audit_check(4);
+    } else if (status == 404) {
+        ESP_LOGI(TAG, "manifest GET -> 404 (no release offered)");
+        audit_check(0);
+    } else if (status != 200 || body == NULL) {
+        ESP_LOGW(TAG, "manifest GET -> HTTP %d (unexpected)", status);
+        audit_check(2);
+        reached = false;
+    } else {
+        char ver[40];
+        if (!manifest_version(body, ver, sizeof(ver))) {
+            ESP_LOGW(TAG, "manifest 200 but no parseable version");
+            audit_check(2);
+        } else {
+            snprintf(s_status.offered_ver, sizeof(s_status.offered_ver), "%s", ver);
+            if (semver_cmp(ver, FIRMWARE_VERSION) > 0) {
+                ESP_LOGI(TAG, "UPDATE AVAILABLE: %s > running %s "
+                              "(download/verify/apply = tasks 3.6-3.8, not yet implemented)",
+                         ver, FIRMWARE_VERSION);
+                audit_check(1);
+            } else {
+                ESP_LOGI(TAG, "up to date: offered %s, running %s", ver, FIRMWARE_VERSION);
+                audit_check(0);
+            }
+        }
+    }
+    if (body != NULL) free(body);
+    return reached;
+}
+
+void task_ota_client(void *pvParameters)
+{
+    (void)pvParameters;
+    vTaskDelay(pdMS_TO_TICKS(ROTA_BOOT_SETTLE_MS));   /* let WiFi + SNTP settle */
+
+    uint32_t backoff_s = 0u;
+    for (;;) {
+        bool reached = ota_check_once();
+
+        uint32_t sleep_s;
+        if (!reached) {
+            /* Exponential backoff: 1h, 2h, 4h … capped (R-C09). */
+            backoff_s = (backoff_s == 0u) ? 3600u
+                        : (backoff_s * 2u > ROTA_BACKOFF_MAX_S ? ROTA_BACKOFF_MAX_S
+                                                               : backoff_s * 2u);
+            sleep_s = backoff_s;
+        } else {
+            backoff_s = 0u;
+            cfg_shadow_t cfg;
+            dm_cfg_snapshot(&cfg);
+            int32_t h = cfg.ota_check_h;
+            if (h < 1) h = 24;
+            uint32_t base_s = (uint32_t)h * 3600u;
+            /* ±10 % jitter so a fleet never checks in lockstep (R-C02). */
+            uint32_t span = base_s / 5u;                 /* 20 % of base */
+            uint32_t jit  = (span > 0u) ? (esp_random() % span) : 0u;
+            sleep_s = base_s - base_s / 10u + jit;       /* base −10 % + [0,20 %) */
+        }
+        /* Interruptible sleep: a config change (or any producer) can wake T16
+         * early via xTaskNotifyGive(task_t16) to re-check now (R-F04). */
+        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS((TickType_t)sleep_s * 1000u));
+    }
 }

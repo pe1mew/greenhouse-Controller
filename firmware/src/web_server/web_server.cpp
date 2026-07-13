@@ -119,6 +119,8 @@
 #include "../event_logger/event_logger.h" /* alpha.6.19 — event_logger_sd_remount / _unmount */
 #include "../ota_manager/ota_manager.h"   /* alpha.6.20 — ota_firmware_/assets_/get_* */
 #include "../status_post/status_post.h"   /* alpha.6.20 — status_post_last_str (web tab) */
+#include "../ota_client/ota_client.h"     /* 2.2.0 (ROTA) — rota_cert_set/_is_custom for /api/ota/config */
+#include "../system_id/system_id.h"       /* 2.2.0 (ROTA) — system_mac_str: device id for /api/ota/check */
 #include "littlefs_storage.h"
 #include "sd_storage.h"        /* alpha.6.19 — storage_sd_* for SD status + log list/download */
 #include "nvs_config.h"        /* alpha.6.18 — nvs_cfg_get_str / nvs_cfg_set_str for /api/wifi + /api/config GET */
@@ -2532,6 +2534,153 @@ static esp_err_t web_post_handler(httpd_req_t *req)
 }
 
 /* ============================================================
+ * /api/ota/config — ROTA pull-OTA config (admin) — 2.2.0
+ *
+ * Dedicated endpoint (rota_tds.md R-F02/R-F03) because ota_url (128) exceeds
+ * the generic /api/config str cap, and it also carries the pinned-cert PEM.
+ * GET never echoes the secret (R-A09) — only a "secret_set" boolean.
+ * ============================================================ */
+
+static esp_err_t ota_config_get_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+    cfg_shadow_t cfg = {};
+    dm_cfg_snapshot(&cfg);
+    char out[420];
+    int n = snprintf(out, sizeof(out),
+        "{\"ok\":true,\"enable\":%ld,\"check_h\":%ld,\"url\":\"%s\","
+        "\"secret_set\":%s,\"win_lo\":%ld,\"win_hi\":%ld,\"cert_custom\":%s}",
+        (long)cfg.ota_enable, (long)cfg.ota_check_h, cfg.ota_url,
+        cfg.ota_secret[0] ? "true" : "false",
+        (long)cfg.ota_win_lo, (long)cfg.ota_win_hi,
+        rota_cert_is_custom() ? "true" : "false");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, out, (n > 0 && n < (int)sizeof(out)) ? n : 0);
+}
+
+/* GET /api/ota/check — T16 last-check observability (task 3.9). Admin-only.
+ * (Distinct from /api/ota/status, which reports the push-OTA state machine.) */
+static esp_err_t rota_check_get_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+    rota_status_t st;
+    rota_status_get(&st);
+    static const char *const RES[] = {
+        "up_to_date", "update_available", "unreachable", "skipped", "auth_fail" };
+    const char *res = (st.last_result >= 0 && st.last_result <= 4)
+                      ? RES[st.last_result] : "none";
+    char id[13] = {0};
+    system_mac_str(id, sizeof(id));   /* device id the unit signs with (§4.2) */
+    char out[360];
+    int n = snprintf(out, sizeof(out),
+        "{\"ok\":true,\"id\":\"%s\",\"last_check\":%ld,\"result\":\"%s\",\"result_code\":%ld,"
+        "\"http\":%ld,\"checks\":%lu,\"offered\":\"%s\",\"running\":\"%s\"}",
+        id, (long)st.last_check_epoch, res, (long)st.last_result,
+        (long)st.last_http, (unsigned long)st.checks_total,
+        st.offered_ver, FIRMWARE_VERSION);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, out, (n > 0 && n < (int)sizeof(out)) ? n : 0);
+}
+
+/* POST /api/ota/check — ask T16 to run a manifest check now (R-F04). Admin-only. */
+static esp_err_t rota_check_post_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+    httpd_resp_set_type(req, "application/json");
+    if (task_t16 != NULL) { xTaskNotifyGive(task_t16); }
+    return httpd_resp_send(req, "{\"ok\":true,\"queued\":true}", HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t ota_config_post_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+    httpd_resp_set_type(req, "application/json");
+
+    /* Body may carry a ~1.5 KB PEM → heap-allocate to spare the httpd stack. */
+    const size_t BODY_MAX = 2600u;
+    char *body = (char *)calloc(1, BODY_MAX);
+    char *cert = (char *)calloc(1, ROTA_CERT_MAX);
+    if (body == NULL || cert == NULL) {
+        free(body); free(cert);
+        return httpd_resp_send(req, "{\"ok\":false,\"err\":\"nomem\"}", HTTPD_RESP_USE_STRLEN);
+    }
+
+    esp_err_t rc = ESP_OK;
+    if (!read_request_body(req, body, BODY_MAX)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        rc = httpd_resp_send(req, "{\"ok\":false,\"err\":\"bad body\"}", HTTPD_RESP_USE_STRLEN);
+        goto done;
+    }
+
+    {
+        char url[CFG_MAX_URL_LEN + 1] = {};
+        char secret[CFG_MAX_SECRET_LEN + 1] = {};
+        char vbuf[16] = {};
+        const bool h_url  = json_get_field(body, "url",    url,    sizeof(url));
+        const bool h_sec  = json_get_field(body, "secret", secret, sizeof(secret));
+        const bool h_cert = json_get_field(body, "cert",   cert,   ROTA_CERT_MAX);
+        int32_t enable = 0, check_h = 0, win_lo = 0, win_hi = 0;
+        const bool h_en = json_get_field(body, "enable",  vbuf, sizeof(vbuf)); if (h_en) enable  = atoi(vbuf);
+        const bool h_ch = json_get_field(body, "check_h", vbuf, sizeof(vbuf)); if (h_ch) check_h = atoi(vbuf);
+        const bool h_wl = json_get_field(body, "win_lo",  vbuf, sizeof(vbuf)); if (h_wl) win_lo  = atoi(vbuf);
+        const bool h_wh = json_get_field(body, "win_hi",  vbuf, sizeof(vbuf)); if (h_wh) win_hi  = atoi(vbuf);
+
+        /* ---- validate (reject before any write, R-F03) ---- */
+        const char *err = NULL;
+        if (h_url && url[0] != '\0') {
+            if (strncmp(url, "https://", 8) != 0)                       err = "URL must use https://";
+            else if (strchr(url, '?') || strchr(url, '#'))             err = "URL must not contain ? or #";
+        }
+        if (!err && h_sec && secret[0] && strlen(secret) < (size_t)CFG_MIN_SECRET_LEN) err = "secret too short";
+        if (!err && h_en && (enable  < 0 || enable  > 1))              err = "enable out of range";
+        if (!err && h_ch && (check_h < CFG_MIN_OTA_CHECK_H || check_h > CFG_MAX_OTA_CHECK_H)) err = "check_h out of range";
+        if (!err && h_wl && (win_lo  < CFG_MIN_HOUR || win_lo > CFG_MAX_HOUR)) err = "win_lo out of range";
+        if (!err && h_wh && (win_hi  < CFG_MIN_HOUR || win_hi > CFG_MAX_HOUR)) err = "win_hi out of range";
+        if (!err && h_cert && cert[0] && strncmp(cert, "-----BEGIN", 10) != 0)  err = "cert must be PEM";
+        if (err != NULL) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            char msg[96];
+            snprintf(msg, sizeof(msg), "{\"ok\":false,\"err\":\"%s\"}", err);
+            rc = httpd_resp_send(req, msg, HTTPD_RESP_USE_STRLEN);
+            goto done;
+        }
+
+        /* ---- persist (empty secret/cert = keep current, R-F03) ---- */
+        cfg_shadow_t prev = {};
+        dm_cfg_snapshot(&prev);
+        if (h_url)              (void)nvs_cfg_set_str(NVS_NS_SYSTEM, "ota_url",    url);
+        if (h_sec && secret[0]) (void)nvs_cfg_set_str(NVS_NS_SYSTEM, "ota_secret", secret);
+        if (h_en)               (void)nvs_cfg_set_i32(NVS_NS_SYSTEM, "ota_enable", enable);
+        if (h_ch)               (void)nvs_cfg_set_i32(NVS_NS_SYSTEM, "ota_check_h", check_h);
+        if (h_wl)               (void)nvs_cfg_set_i32(NVS_NS_SYSTEM, "ota_win_lo",  win_lo);
+        if (h_wh)               (void)nvs_cfg_set_i32(NVS_NS_SYSTEM, "ota_win_hi",  win_hi);
+        if (h_cert && cert[0])  (void)rota_cert_set(cert);
+        dm_reload_web_cfg();
+
+        /* ---- audit (strings log "set"; ints log old → new; R-F04, R-A09) ---- */
+        if (h_url && strcmp(url, prev.ota_url) != 0) log_web_setpoint(LOG_PARAM_OTA_URL, 1, 0);
+        if (h_sec && secret[0])                      log_web_setpoint(LOG_PARAM_OTA_SECRET, 1, 0);
+        if (h_cert && cert[0])                       log_web_setpoint(LOG_PARAM_OTA_SECRET, 1, 0);
+        if (h_en && enable  != prev.ota_enable)  log_web_setpoint(LOG_PARAM_OTA_ENABLE,  (int16_t)prev.ota_enable,  (int16_t)enable);
+        if (h_ch && check_h != prev.ota_check_h) log_web_setpoint(LOG_PARAM_OTA_CHECK_H, (int16_t)prev.ota_check_h, (int16_t)check_h);
+        if (h_wl && win_lo  != prev.ota_win_lo)  log_web_setpoint(LOG_PARAM_OTA_WIN_LO,  (int16_t)prev.ota_win_lo,  (int16_t)win_lo);
+        if (h_wh && win_hi  != prev.ota_win_hi)  log_web_setpoint(LOG_PARAM_OTA_WIN_HI,  (int16_t)prev.ota_win_hi,  (int16_t)win_hi);
+
+        /* Wake T16 to apply the new config on its next tick (R-F04). */
+        if (task_t16 != NULL) { xTaskNotifyGive(task_t16); }
+
+        ESP_LOGI(TAG, "[T11] /api/ota/config updated: enable=%ld check_h=%ld url=%s",
+                 (long)enable, (long)check_h, h_url ? url : "(unchanged)");
+        rc = httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
+    }
+
+done:
+    free(body);
+    free(cert);
+    return rc;
+}
+
+/* ============================================================
  * WebSocket — /ws  (Phase 6.16-η, alpha.6.21)
  *
  * Pushes the canonical status JSON every WS_PUSH_MS (2 s) to every
@@ -2820,6 +2969,16 @@ static const httpd_uri_t s_uri_web_get = {
     .uri = "/api/web", .method = HTTP_GET, .handler = web_get_handler, .user_ctx = NULL };
 static const httpd_uri_t s_uri_web_post = {
     .uri = "/api/web", .method = HTTP_POST, .handler = web_post_handler, .user_ctx = NULL };
+/* 2.2.0 (ROTA) — pull-OTA config (admin). */
+static const httpd_uri_t s_uri_ota_cfg_get = {
+    .uri = "/api/ota/config", .method = HTTP_GET, .handler = ota_config_get_handler, .user_ctx = NULL };
+static const httpd_uri_t s_uri_ota_cfg_post = {
+    .uri = "/api/ota/config", .method = HTTP_POST, .handler = ota_config_post_handler, .user_ctx = NULL };
+/* 2.2.0 (ROTA) — pull-OTA check status (GET) + manual trigger (POST), admin. */
+static const httpd_uri_t s_uri_rota_check_get = {
+    .uri = "/api/ota/check", .method = HTTP_GET, .handler = rota_check_get_handler, .user_ctx = NULL };
+static const httpd_uri_t s_uri_rota_check_post = {
+    .uri = "/api/ota/check", .method = HTTP_POST, .handler = rota_check_post_handler, .user_ctx = NULL };
 
 /* alpha.6.21 — WebSocket route (Phase 6.16-η, final T11 route). */
 static const httpd_uri_t s_uri_ws = {
@@ -2865,7 +3024,7 @@ void task_web_server(void *pvParameters)
     cfg.server_port      = 80;
     cfg.stack_size       = 8192;     /* +4 KB vs default for LFS_READ_BUF + JSON stack work */
     cfg.task_priority    = 5;
-    cfg.max_uri_handlers = 32;       /* +1 for /api/mode (rc.1.5.0/gh#28); 30 routes total, 2 spare */
+    cfg.max_uri_handlers = 36;       /* +4 for /api/ota/config + /api/ota/check GET+POST (2.2.0 ROTA); 34 routes total, 2 spare */
     cfg.max_open_sockets = 7;
     cfg.lru_purge_enable = true;
     cfg.recv_wait_timeout = 10;
@@ -2890,6 +3049,8 @@ void task_web_server(void *pvParameters)
         &s_uri_coredump_status, &s_uri_coredump_download, &s_uri_coredump_erase,
         &s_uri_ota_status, &s_uri_ota_firmware, &s_uri_ota_assets,
         &s_uri_web_get, &s_uri_web_post,
+        &s_uri_ota_cfg_get, &s_uri_ota_cfg_post,
+        &s_uri_rota_check_get, &s_uri_rota_check_post,
         &s_uri_ws,
     };
     for (size_t i = 0; i < sizeof(uris)/sizeof(uris[0]); i++) {
@@ -2900,7 +3061,7 @@ void task_web_server(void *pvParameters)
         }
     }
 
-    ESP_LOGI(TAG, "[T11] HTTP server running on port 80 — 30 routes registered");
+    ESP_LOGI(TAG, "[T11] HTTP server running on port 80 — 34 routes registered");
     ESP_LOGI(TAG, "[T11]   static: /  /style.css  /app.js  /manifest.json");
     ESP_LOGI(TAG, "[T11]   auth:   GET /api/whoami  POST /api/login  POST /api/logout");
     ESP_LOGI(TAG, "[T11]   status: GET /api/status  GET /api/history?n=N");

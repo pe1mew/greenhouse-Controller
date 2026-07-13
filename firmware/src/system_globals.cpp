@@ -73,6 +73,7 @@ TaskHandle_t task_t11 = NULL;
 TaskHandle_t task_t12 = NULL;
 TaskHandle_t task_t14 = NULL;
 TaskHandle_t task_t15 = NULL;
+TaskHandle_t task_t16 = NULL;
 
 /* Event group */
 EventGroupHandle_t EG1 = NULL;
@@ -83,6 +84,7 @@ SemaphoreHandle_t MX2 = NULL;
 SemaphoreHandle_t MX3 = NULL;
 SemaphoreHandle_t MX4 = NULL;
 SemaphoreHandle_t MX5 = NULL;
+SemaphoreHandle_t MX_TLS = NULL;
 
 /* ============================================================
  * system_globals_init
@@ -116,9 +118,10 @@ extern "C" int system_globals_init(void)
     MX3 = xSemaphoreCreateMutex();
     MX4 = xSemaphoreCreateMutex();
     MX5 = xSemaphoreCreateMutex();
+    MX_TLS = xSemaphoreCreateMutex();   /* 2.2.0 (ROTA) — T14/T16 TLS serialisation */
 
     if (MX1 == NULL || MX2 == NULL || MX3 == NULL ||
-        MX4 == NULL || MX5 == NULL) {
+        MX4 == NULL || MX5 == NULL || MX_TLS == NULL) {
         ESP_LOGE(TAG, "mutex creation FAILED — out of heap?");
         return -2;
     }

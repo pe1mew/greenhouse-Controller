@@ -120,6 +120,44 @@ esp_err_t rota_cert_clear(void);
 /** @brief True if an operator-uploaded certificate is currently stored. */
 bool rota_cert_is_custom(void);
 
+/* ── T16 task ──────────────────────────────────────────────────────────── */
+
+/**
+ * @brief T16 — ROTA pull-OTA client task (rota_tds.md §2.4).
+ *
+ * Periodically (every `ota_check_h` hours ± jitter, after a short boot settle)
+ * checks the OTA server for a newer release: preconditions gate → pinned-cert
+ * manifest GET with HMAC auth → semver decision → `LOG_SYSTEM value_a=22`
+ * audit. Download/verify/apply (§2.4 steps 5+, tasks 3.6–3.8) are stubbed in
+ * this skeleton — an available update is logged but not yet applied.
+ *
+ * @param pvParameters Unused; pass NULL.
+ */
+void task_ota_client(void *pvParameters);
+
+/* ── T16 observability (rota_tds.md §2.4, task 3.9) ────────────────────── */
+
+/**
+ * @brief Snapshot of T16's last manifest-check outcome, for `/api/ota/status`.
+ *
+ * Written only by T16, read by the web task. Fields are small scalars plus a
+ * short string; a reader may observe a struct mid-update (benign for a status
+ * view — at worst a stale field for one poll).
+ */
+typedef struct {
+    int64_t  last_check_epoch;  /**< Wall-clock (Unix s) of the last completed check; 0 = never. */
+    int32_t  last_result;       /**< Last audit sub-code: -1 none, 0 up-to-date, 1 update-avail, 2 unreachable, 3 skipped, 4 auth-fail. */
+    int32_t  last_http;         /**< Last manifest HTTP status; 0 = transport failure. */
+    uint32_t checks_total;      /**< Manifest GETs attempted since boot. */
+    char     offered_ver[40];   /**< Server-offered version at the last HTTP 200; "" otherwise. */
+} rota_status_t;
+
+/**
+ * @brief Copy T16's current status snapshot into @p out (never fails).
+ * @param out Destination; ignored if NULL.
+ */
+void rota_status_get(rota_status_t *out);
+
 #ifdef __cplusplus
 }
 #endif

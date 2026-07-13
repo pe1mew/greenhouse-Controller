@@ -378,8 +378,13 @@ static bool do_status_post(const cfg_shadow_t *cfg)
     cfg_http.buffer_size_tx               = 1024;
     cfg_http.skip_cert_common_name_check  = false;
 
+    /* 2.2.0 (ROTA, R-C07) — serialise the TLS handshake with T16: only one
+     * mbedtls session at a time (gh#23 largest-block heap budget). */
+    if (MX_TLS != NULL) { xSemaphoreTake(MX_TLS, portMAX_DELAY); }
+
     esp_http_client_handle_t client = esp_http_client_init(&cfg_http);
     if (client == NULL) {
+        if (MX_TLS != NULL) { xSemaphoreGive(MX_TLS); }
         ESP_LOGW(TAG, "[T14] esp_http_client_init failed");
         heap_caps_free(body);
         snprintf(s_last_str, sizeof(s_last_str), "INIT_FAIL");
@@ -401,6 +406,7 @@ static bool do_status_post(const cfg_shadow_t *cfg)
     const int status_code = esp_http_client_get_status_code(client);
     const int content_len = esp_http_client_get_content_length(client);
     esp_http_client_cleanup(client);
+    if (MX_TLS != NULL) { xSemaphoreGive(MX_TLS); }
     heap_caps_free(body);
 
     const bool ok = (err == ESP_OK && status_code >= 200 && status_code < 300);
@@ -707,7 +713,12 @@ static int upload_pending(const cfg_shadow_t *cfg)
             break;   /* no more pending files */
         }
         ESP_LOGI(TAG, "[T14] upload_pending: %s (after=\"%s\")", next, after);
-        if (!do_log_upload(next, cfg)) {
+        /* 2.2.0 (ROTA, R-C07) — serialise this TLS session with T16 (wrapping
+         * the call covers do_log_upload's multiple internal exit points). */
+        if (MX_TLS != NULL) { xSemaphoreTake(MX_TLS, portMAX_DELAY); }
+        bool up_ok = do_log_upload(next, cfg);
+        if (MX_TLS != NULL) { xSemaphoreGive(MX_TLS); }
+        if (!up_ok) {
             ESP_LOGW(TAG, "[T14] upload_pending: stopped at %s — next trigger resumes",
                      next);
             break;   /* failure: leave for the next trigger */
