@@ -160,14 +160,16 @@ Requirement keywords **shall / should / may** follow RFC 2119/RFC 8174. Prioriti
 
 ## 4. Interface definitions (normative)
 
-> **Wire contract v1.0 — FROZEN (plan task 0.1).** This section is the interface between the firmware repo and `greenhouse-Controller-FOTA-server`. After the freeze tag is set, changes require a new contract version and coordinated updates on both sides. Freeze tag: `rota-contract-v1.0` (set on the commit containing this section).
+> **Wire contract v1.1 — FROZEN (plan task 0.1).** This section is the interface between the firmware repo and `greenhouse-Controller-FOTA-server`. Changes require a new contract version and coordinated updates on both sides. Freeze tag: `rota-contract-v1.1`. *(v1.0, tagged 2026-07-13, never deployed; superseded before implementation by moving the endpoints to the dedicated `ota.rfsee.net` root — no `hbwv/ota/` prefix — so the OTA host is fully separate from the status site. The path is part of the signed `request_uri`, hence the version bump.)*
+>
+> **OTA base URL: `https://ota.rfsee.net/`** — a dedicated vhost, wholly separate from the `rfsee.net/hbwv/` status site. Endpoints sit at the root.
 
 ### 4.1 Endpoints
 
 | Endpoint | Method | Auth | Function |
 |---|---|---|---|
-| `/hbwv/ota/manifest.php?fw=<running-version>[&res=<a>.<b>]` | GET | `X-OTA-Auth` | Resolve unit → offered release; return manifest JSON (HTTP 200, always the full resolved manifest — the *client* decides whether it is newer); record check-in with the reported running version and optional last audit outcome (`res` = last `value_a.value_b` pair, e.g. `24.0`) |
-| `/hbwv/ota/download.php?file=fw\|assets&v=<version>` | GET | `X-OTA-Auth` | Stream artefact (nginx `X-Accel-Redirect`) |
+| `/manifest.php?fw=<running-version>[&res=<a>.<b>]` | GET | `X-OTA-Auth` | Resolve unit → offered release; return manifest JSON (HTTP 200, always the full resolved manifest — the *client* decides whether it is newer); record check-in with the reported running version and optional last audit outcome (`res` = last `value_a.value_b` pair, e.g. `24.0`) |
+| `/download.php?file=fw\|assets&v=<version>` | GET | `X-OTA-Auth` | Stream artefact (nginx `X-Accel-Redirect`) |
 
 HTTP status semantics: **204 is reserved exclusively for failed authentication** (silent drop, R-A08). Authenticated requests receive 200 (success), 404 (unknown unit/file/version), 500 (server fault). "No newer version" is *not* an HTTP condition — the manifest is always returned and compared client-side.
 
@@ -183,7 +185,7 @@ mac = HMAC-SHA256(ota_secret, id + "|" + ts + "|" + nonce + "|" + request_uri)
 | `id` | Full WiFi station MAC (R-I02): 12 lowercase hex chars, no separators, e.g. `a0b1c2d3e4f5` |
 | `ts` | Unix seconds, decimal ASCII |
 | `nonce` | 8 random bytes, 16 lowercase hex chars |
-| `request_uri` | Path **and** query string exactly as sent, e.g. `/hbwv/ota/manifest.php?fw=2.2.0` |
+| `request_uri` | Path **and** query string exactly as sent, e.g. `/manifest.php?fw=2.2.0` |
 | `mac` | 64 lowercase hex chars (SHA-256 output) |
 | `ota_secret` | The per-unit secret (R-A06), used as raw ASCII bytes |
 
@@ -219,7 +221,7 @@ Server checks: window ±300 s, nonce cache 10 min, constant-time compare (`hash_
 ### 4.5 Server store layout
 
 ```
-/hbwv/ota/                 manifest.php, download.php        (webroot)
+ota.rfsee.net webroot/     manifest.php, download.php        (endpoints at vhost root)
 ota-store/                 (outside webroot)
   releases/<version>/      bin + zip + manifest-<version>.json
   channels/<unit-type>.json  mainstream pointer per unit type

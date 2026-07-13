@@ -448,6 +448,8 @@ Proposal — a **signed release manifest** as the unit of trust, which also happ
 ## 8. Server-side design (rfsee.net VPS)
 
 > Implemented in its own repository `pe1mew/greenhouse-Controller-FOTA-server`, separate from the firmware (study R-T06 / [rota_tds.md](rota_tds.md)). The wire contract (§4 of the TDS) is the interface between the two.
+>
+> **Superseded detail (2026-07-13):** the "under the existing `hbwv/` site" option sketched in §8.3 below was *not* adopted. The OTA server runs on a **dedicated vhost `ota.rfsee.net` with endpoints at the root** (`/manifest.php`, `/download.php`) — wholly separate from the `rfsee.net/hbwv/` status site, no shared path prefix. The §8.3 `httproot/hbwv/` sketch is retained only as the illustrative PHP structure; read the authoritative layout in TDS §4.
 
 ### 8.1 Can it be done in PHP?
 
