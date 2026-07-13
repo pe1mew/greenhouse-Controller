@@ -127,17 +127,37 @@ _Not covered:_ GUI cert upload → NVS persistence → reboot survival (TC-03 fu
 
 Executed earlier with `bin/rota_sim.py` against `ota.rfsee.net`: **8/8** — TLS + pinned-cert, HMAC accept, wrong-secret reject, nonce replay reject, `ROTA_SKEW_S` clock-skew reject, MITM/other-cert reject, version resolution, `X-Accel-Redirect` download, unauthenticated `204`. Full results live in the `greenhouse-Controller-FOTA-server` repo (TC-02 / TC-11 server side).
 
+### Test 9 — Full pull-install, end-to-end (R-V*, R-C04/05, R-P01–P06 / TC-06/07/08) ✅
+
+**The headline test: a real internet-pull firmware update on live hardware.**
+
+**First attempt (2.2.0→2.2.1) — CRASH, then FIXED.** T16 crash-looped (reboots ~35 s, stuck on old version). Coredump (`bin/2.2.0/coredump-*.bin`, decoded with `esp-coredump ... --core-format raw`): **stack overflow in `T16-rota`**. Root cause: 8 KB task stack fit the manifest check but not the download path, which nests a **second** mbedTLS handshake inside `ota_check_once`'s live frame with a `cert[2048]` on the stack in both `ota_check_once` and `rota_handle_update`. Fix (2.2.1): T16 stack **8→16 KB** + both cert PEM buffers moved **stack→heap**. See [gotcha-log](../memory/gotcha-log.md).
+
+**Second attempt (2.2.1→2.2.2, fixed code):** FDA4 on fixed 2.2.1; server `mainstream/ghc1` → fixed 2.2.2 (`seq 32`). Re-enabled ROTA, triggered, watched unauthenticated `/api/status`:
+
+| Phase | Observed | Proves |
+|---|---|---|
+| Check | `result=update_available, http=200, offered=2.2.2` | 3.6 decision (SemVer + `seq 32 > hiwater 0` + `min_version 2.1.0 ≤ 2.2.1`) |
+| Download+verify | `dl:0` (both artefacts: 1.37 MB fw + 108 KB assets, SHA-256 OK) | 3.7 — **no crash** (stack fix holds) |
+| Apply (1st) | `apply:1` (deferred) — a web session was active | R-P02 quiet gate correctly blocks reboot during a session |
+| Apply (retry) | committed on next 5-min retry once gate clear; reboot | R-P04 deferral→retry scheduler; R-P06 T13 reboot |
+| Post-reboot | **`fw_ver=2.2.2` AND `asset_version=2.2.2`**, fresh uptime, stable | paired-commit invariant; 3.8 apply |
+| Steady state | next check `result=up_to_date, http=200` | `fw_hiwater=32` persisted (R-V02) → no re-apply loop |
+
+**Note (gh#23 TLS heap):** during the heaviest concurrent test traffic (dozens of rapid login/check/status requests) the manifest GET transiently returned `http:0` (transport failure); it recovered once request load dropped. Server was unaffected (`rota_sim` from the same NAT IP stayed 8/8). Consistent with the tight ~31 KB TLS-handshake heap budget — fine under normal 24 h cadence, but **the heap headroom must be characterised under soak (TC-09)** and a free-heap field should be added to `/api/status` for observability.
+
 ---
 
 ## Not yet covered (open)
 
-| Area | TC | Blocked by |
+| Area | TC | Status |
 |---|---|---|
-| Manifest decision: `seq`/`fw_hiwater`, `min_version` guard | TC-08 | task 3.6 **implemented (2026-07-13), builds clean** — hardware verify pending (needs higher version published) |
-| Download + SHA-256/size verify; corrupted/truncated artefact | TC-05 | task 3.7 **implemented (2026-07-13), builds clean** — hardware verify pending |
-| Apply via T13; kill-power matrix; night-window ∩ quiet-gate | TC-06, TC-07 | task 3.8 **implemented (2026-07-13), builds clean** — hardware verify pending |
-| Heap + cadence during a full pull-update | TC-09 | verify with 3.7–3.8 on hardware |
-| Re-check of the CHECK path on the 3.6+ build (full manifest parse) | TC-08 | **blocked now:** FDA4 SNTP rate-limited from repeated reboots → T16 skips; retry when SNTP re-syncs |
+| Manifest decision: `seq`/`fw_hiwater`, `min_version` guard | TC-08 | ✅ **VERIFIED 2026-07-13** — see Test 9 (pull 2.2.1→2.2.2, `seq 32` high-water persisted) |
+| Download + SHA-256/size verify | TC-05 | ✅ **VERIFIED 2026-07-13** — Test 9 (`dl:0`, 1.37 MB fw + 108 KB assets verified) |
+| Apply via T13; night-window ∩ quiet-gate | TC-06, TC-07 | ✅ **VERIFIED 2026-07-13** — Test 9 (deferred on active session, committed on clean gate, paired fw+assets commit) |
+| Corrupted/truncated artefact fault injection | TC-05 | Not yet (needs a deliberately-bad artefact on the server) |
+| Kill-power matrix during apply | TC-06 | Not yet |
+| Heap + cadence during a full pull-update | TC-09 | Partly — see Test 9 note on transient TLS-heap pressure (gh#23); needs a real soak |
 | Interval/jitter + backoff ladder over a real soak | TC-04 (full) | Phase 5 soak |
 | Custom cert upload + reboot persistence | TC-03 (full) | GUI (task 3.3) |
 | Farmer-session config negatives; System-tab GUI | TC-14 (full) | GUI (task 3.3) |
