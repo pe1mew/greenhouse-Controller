@@ -402,8 +402,8 @@ If a periodic status push is running concurrently with the flash write, the flas
 
 - **Resumable uploads.** A dropped connection mid-firmware means restarting the firmware POST from byte 0. Trade-off chosen to keep the protocol stateless; in our LAN scenario, dropped connections are rare and the retry cost is acceptable.
 - **Authenticated firmware signing.** The device verifies SHA-256 of the OTA bin but does not check a signature. Anyone who can authenticate to the device's admin role can flash arbitrary firmware. This is intentional given the deployment context (private LAN, single operator); change it if your threat model is different.
-- **HTTPS.** The HTTP endpoints are plaintext. TLS adds significant code size and certificate-management overhead; we accept the trade-off for a LAN-only deployment.
-- **Background download.** The device is the upload target, not a downloader. Adding a "pull from URL" mode would mean adding HTTP client + TLS + signature verification + retry/resume logic — call it a separate project.
+- **HTTPS.** The *push* endpoints are plaintext on the LAN. TLS adds significant code size and certificate-management overhead; we accept the trade-off for the LAN path. (The *pull* path added in 2.2.0 uses pinned TLS — see §12.)
+- **Background download.** The device is the upload target, not a downloader — *for the push path*. Adding a "pull from URL" mode meant HTTP client + TLS + verify + retry/window logic; that became its own project, **ROTA (2.2.0, §12)**.
 - **A/B testing or staged rollouts coordinated at the cloud level.** The push client targets one device at a time; orchestration across many devices is the operator's responsibility.
 - **In-place upgrades during active operations.** The device defers non-critical work during OTA but does not interrupt critical control loops (motor control, sensor reads). The OTA window is a brief degraded mode, not a complete pause.
 
@@ -467,3 +467,51 @@ This spec captures the design that landed in the Greenhouse Controller project a
 - **gh#33 / 2.0.3** — independently relevant: T14 → T10 L3 recovery ladder ensures status pushes survive upstream outages, which is what gives OTA observability in the wild.
 
 The version of this spec lives at `temp/OTAimplementation.md`; the canonical implementation lives in `firmware/src/ota_manager/`, `firmware/src/web_server/web_server.cpp` (lines ~2100-2310 for the HTTP handlers), `bin/build_release.ps1`, and `bin/ota_push.py`.
+
+---
+
+## 12. Addendum — Internet-pull OTA (ROTA, 2.2.0)
+
+Everything above (§1–§11) is the LAN-only, operator-driven **push** path. **ROTA
+(Remote OTA)** adds an *internet-pull* path so a NAT'd, outbound-only unit (e.g.
+production 5C88) can update itself without a farm visit. It is additive — push
+OTA is unchanged and stays the bench/recovery path.
+
+This section is a pointer + the reuse contract; the full specification is
+[design/rota_tds.md](rota_tds.md) (wire contract, requirements `R-*`), with the
+build-out in [design/rotaImplementationPlan.md](rotaImplementationPlan.md) and
+the server in the separate `greenhouse-Controller-FOTA-server` repo.
+
+**Two §9 "deliberately NOT" items are now done — for the pull path only:**
+- *Background download* → a new task **T16** (`firmware/src/ota_client/`) is an
+  HTTP **client** that pulls a manifest + artefacts from a server.
+- *HTTPS* → the pull path is TLS with the server's self-signed cert **pinned**
+  by the firmware (not the CA bundle), plus a per-unit HMAC (`X-OTA-Auth`, ±300 s
+  skew + nonce cache). The push endpoints stay plaintext-on-LAN; only the
+  outbound pull uses TLS. Firmware *signing* (§9) is still deferred (`key_id`
+  reserved).
+
+**What ROTA reuses (does NOT reimplement):**
+- The **dual-bank + paired-commit machinery** and **3-fail rollback** (§2, §4).
+  After T16 downloads and SHA-verifies BOTH artefacts, it feeds them to the same
+  `ota_firmware_begin/_write/_end` → `ota_assets_begin/_accumulate/_end` path
+  (T13); the boot-bank switch, `manifest.json` write, and rollback are identical
+  to a push. A new `ota_firmware_abort()` allows a clean pre-commit deferral.
+- The **FW_DONE fallback + paired-commit invariant** (§2.3, §4.1): T16 verifies
+  both artefacts first, then feeds firmware→assets back-to-back so the 120 s
+  fallback never strands a firmware-only commit.
+
+**What ROTA adds on top:**
+- **Mutual auth** (pinned cert + per-unit HMAC) and **anti-downgrade** (persisted
+  `seq` high-water mark + `min_version`); artefacts verified against manifest
+  SHA-256 + size **before any flash write**.
+- **A policy gate** — apply/commit/reboot only inside a night window
+  (`ota_win_lo`–`ota_win_hi`) behind a quiet gate (no window motion / wind
+  override / motor alarm / calibration / web or LCD session), re-checked < 5 s
+  before reboot; otherwise deferred to the next window.
+- **Config + observability** — `/api/ota/config` (admin), `/api/ota/check`,
+  audit rows `value_a=22/23/24`, and an "Update pending" Alarms-shield badge.
+
+**Gotcha carried over (§8.4):** the coredump partition is erased only on a
+greenfield flash, so a stale dump survives an OTA and `/api/coredump/status`
+mislabels it with the *running* version — see gh#39.

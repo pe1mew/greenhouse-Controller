@@ -941,6 +941,88 @@ function eraseCoredump() {
     .catch(() => feedback('fb-cd', false, 'Network error'));
 }
 
+// ── Remote update (ROTA) — /api/ota/config + /api/ota/check (admin only) ──────
+// /api/ota/config is a single validate-then-write transaction: a blank Secret
+// or blank Cert means "keep the stored value". Farmers never reach the System
+// tab, so g_role==='admin' is the only guard needed.
+function loadOtaConfig() {
+  if (g_role !== 'admin') return;
+  fetch('/api/ota/config', { credentials: 'same-origin' })
+    .then(r => r.ok ? r.json() : null)
+    .then(c => {
+      if (!c || !c.ok) return;
+      const en = document.getElementById('cfg-ota-enable');
+      if (en && en !== document.activeElement) en.checked = (c.enable === 1);
+      setVal('cfg-ota-check-h', c.check_h);
+      setVal('cfg-ota-url',     c.url);
+      setVal('cfg-ota-win-lo',  c.win_lo);
+      setVal('cfg-ota-win-hi',  c.win_hi);
+      setText('cfg-ota-secret-set', c.secret_set ? '(a secret is stored)' : '(no secret set)');
+      const cert = document.getElementById('cfg-ota-cert');
+      if (cert) cert.placeholder = c.cert_custom
+        ? '(a custom certificate is stored — paste a PEM to replace it)'
+        : '(embedded default in use — paste a PEM here to override)';
+    });
+}
+
+function postOtaConfig() {
+  const en = document.getElementById('cfg-ota-enable');
+  const body = {
+    enable:  (en && en.checked) ? 1 : 0,
+    check_h: parseInt(document.getElementById('cfg-ota-check-h').value, 10),
+    url:     document.getElementById('cfg-ota-url').value,
+    win_lo:  parseInt(document.getElementById('cfg-ota-win-lo').value, 10),
+    win_hi:  parseInt(document.getElementById('cfg-ota-win-hi').value, 10),
+  };
+  const secret = document.getElementById('cfg-ota-secret').value;
+  if (secret) body.secret = secret;                 // blank → keep stored secret
+  const cert = document.getElementById('cfg-ota-cert').value.trim();
+  if (cert) body.cert = cert;                        // blank → keep stored cert
+  post('/api/ota/config', body).then(r => {
+    feedback('fb-ota-cfg', r && r.ok, (r && !r.ok && r.err) ? r.err : undefined);
+    if (r && r.ok) {
+      document.getElementById('cfg-ota-secret').value = '';  // applied — don't leave it in the field
+      document.getElementById('cfg-ota-cert').value = '';
+      loadOtaConfig();
+    }
+  });
+}
+
+// Read-only "Last check" line from /api/ota/check.
+const ROTA_RESULT_TEXT = {
+  up_to_date: 'Up to date', update_available: 'Update available',
+  unreachable: 'Server unreachable', skipped: 'Skipped (clock not ready)',
+  auth_fail: 'Rejected by server', none: 'No check yet'
+};
+function renderOtaCheck(d) {
+  const el = document.getElementById('ota-check-line');
+  if (!el) return;
+  if (!d || !d.ok) { el.textContent = '— unavailable —'; return; }
+  let s = ROTA_RESULT_TEXT[d.result] || d.result || '—';
+  s += ' • running ' + (d.running || '?');
+  if (d.offered && d.offered !== (d.running || '')) s += ', offered ' + d.offered;
+  if (d.apply === 1) s += ' • update pending (installs during the window)';
+  if (d.last_check && d.last_check > 0) {
+    s += ' • ' + new Date(d.last_check * 1000).toLocaleString();
+  }
+  el.textContent = s;
+}
+function loadOtaCheck() {
+  if (g_role !== 'admin') return;
+  fetch('/api/ota/check', { credentials: 'same-origin' })
+    .then(r => r.ok ? r.json() : null).then(renderOtaCheck)
+    .catch(() => { const el = document.getElementById('ota-check-line'); if (el) el.textContent = '— unavailable —'; });
+}
+function checkOtaNow() {
+  post('/api/ota/check', {}).then(r => {
+    feedback('fb-ota-cfg', r && r.ok, r && r.ok ? 'Checking…' : undefined);
+    if (!(r && r.ok)) return;
+    // T16 runs the check asynchronously — poll the result a few times.
+    let n = 0;
+    const iv = setInterval(() => { loadOtaCheck(); if (++n >= 6) clearInterval(iv); }, 2500);
+  });
+}
+
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 function showTab(id) {
   document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
@@ -953,8 +1035,8 @@ function showTab(id) {
   });
   // Refresh log file list each time the Log tab is opened
   if (id === 'tab-log') { loadLogFiles(); refreshCoredumpStatus(); }
-  // Refresh OTA status each time the System tab is opened
-  if (id === 'tab-system' && g_role === 'admin') loadOtaStatus();
+  // Refresh OTA status + ROTA config/last-check each time the System tab opens
+  if (id === 'tab-system' && g_role === 'admin') { loadOtaStatus(); loadOtaConfig(); loadOtaCheck(); }
   // Refresh status-website settings + last-attempt indicators on the Web tab
   if (id === 'tab-web'    && g_role === 'admin') loadWebCfg();
 }

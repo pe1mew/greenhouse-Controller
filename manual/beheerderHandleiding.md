@@ -694,6 +694,29 @@ Geldt voor zowel LCD als webinterface. Een te lange waarde (bv. 60 min) is een v
 
 In de System-tab staat ook de sectie **OTA update** met twee upload-knoppen: één voor het firmware-binair (`.bin`) en één voor de web-assets-ZIP. De volledige update-procedure inclusief verificatie-stappen staat in [§14 Firmware-update / OTA](#firmware-update--ota).
 
+#### Remote update (ROTA) — automatische internet-update
+
+Naast de handmatige upload hierboven kan de controller firmware- en asset-updates **zelf van een internet-updateserver ophalen** (ROTA — *Remote OTA*, vanaf firmware 2.2.0). Zo kan een unit achter NAT (zoals de productie-unit) zichzelf bijwerken zonder bezoek ter plaatse. De sectie **Remote update (ROTA)** in de System-tab is **alleen zichtbaar voor de Beheerder**; de Boer kan deze instellingen niet zien of wijzigen.
+
+| Veld | Beschrijving | Bereik / standaard |
+|---|---|---|
+| **Enable** | Zet automatische internet-updates aan of uit. Uit = de controller neemt nooit contact op met de updateserver. | uit (standaard) |
+| **Check interval (h)** | Hoe vaak de controller de updateserver controleert op een nieuwere versie, in uren. | 1–168, standaard 24 |
+| **Server URL** | Basis-URL van de updateserver. **Moet `https://` zijn.** | — |
+| **Secret** | Per-unit gedeeld geheim waarmee de controller zich bij de server authenticeert (HMAC). **Wordt nooit getoond**; laat leeg om het opgeslagen geheim te behouden. | — |
+| **Apply window (local h)** | Nachtvenster (lokale uren) waarin een gedownloade update geïnstalleerd mag worden en de controller mag herstarten. Beide velden gelijk = venster uitgeschakeld (installeren zodra geverifieerd). | 0–23, standaard 02–04 |
+| **Server cert (PEM)** | Optioneel: plak een PEM-certificaat om de server vast te pinnen in plaats van het ingebouwde standaardcertificaat. Laat leeg om het huidige te behouden. | — |
+| **Last check** | Alleen-lezen: uitkomst van de laatste controle (bijv. *Up to date*, *Update available*, *Server unreachable*), de draaiende en aangeboden versie, en het tijdstip. | — |
+| **Check now** | Vraagt de controller nu direct de updateserver te controleren. | — |
+
+Klik **Apply ROTA settings** om op te slaan (validatie-dan-schrijven: een lege *Secret* of *Cert* laat de opgeslagen waarde ongewijzigd).
+
+**Werking.** Als ROTA aanstaat controleert de controller periodiek de server. Vindt hij een nieuwere, geldige release, dan downloadt en **verifieert** hij beide bestanden (SHA-256 + grootte) vóór er iets naar flash wordt geschreven. De installatie (en herstart) gebeurt **alleen binnen het nachtvenster** en alleen als het rustig is (geen bewegende ramen, geen wind- of motoralarm, geen actieve web- of LCD-sessie). Buiten die voorwaarden wordt de update **uitgesteld** en de volgende nacht opnieuw geprobeerd. Zolang een geverifieerde update op zijn venster wacht, verschijnt er een blauwe badge **Update pending** in het Alarms-kaartje.
+
+> **Beveiliging.** De controller pint het (zelf-ondertekende) servercertificaat en authenticeert zich met een per-unit HMAC. Een verkeerd geheim levert geen update op; een server met een ander certificaat wordt geweigerd. Volledige technische beschrijving: `design/rota_tds.md`.
+
+> **Provisioning.** Een unit moet vooraf een `ota_secret` krijgen (via deze pagina of het provisioning-script) én in het `devices.json`-register op de server worden opgenomen.
+
 ---
 
 ### 10.6 Access-tab (alleen Beheerder)

@@ -738,6 +738,35 @@ def _decode_system(row: dict) -> str:
             return f"RTC divergence: DS1307 is {vb:+d} s vs NTP-synced clock (DS1307 ignored — check RTC/battery)"
 
         # ---------------------------------------------------------------
+        # ROTA — internet-pull OTA audit (value_a=22..24, since 2.2.0).
+        # See rota_tds.md §4.4; initiator is SYS (T16). value_b sub-codes:
+        #   22 check    : 0 up-to-date · 1 update found · 2 unreachable/HTTP
+        #                 · 3 skipped (clock/OTA busy) · 4 auth rejected (204)
+        #   23 dl/verify: 0 ok · 1 TLS/pin fail · 2 SHA/size mismatch
+        #                 · 3 downgrade/seq rejected · 4 min_version refusal
+        #   24 apply    : 0 committed (reboot scheduled) · 1 deferred
+        #                 (window/quiet gate) · 2 apply failed
+        # A normal remote update is 22.1 → 23.0 → 24.0 → BOOT; a daytime find
+        # that waits for the night window is 22.1 → 23.0 → 24.1 (… later 24.0).
+        # ---------------------------------------------------------------
+        if va in (22, 23, 24):
+            _ROTA_CHECK = {0: "up to date", 1: "update found",
+                           2: "server unreachable / HTTP error",
+                           3: "skipped (clock not ready / OTA busy)",
+                           4: "auth rejected by server"}
+            _ROTA_DL    = {0: "OK", 1: "TLS/pinned-cert failure",
+                           2: "SHA-256/size mismatch",
+                           3: "downgrade / seq rejected", 4: "min_version refusal"}
+            _ROTA_APPLY = {0: "committed — reboot scheduled",
+                           1: "deferred (night-window / quiet gate)",
+                           2: "apply failed"}
+            if va == 22:
+                return f"ROTA check: {_ROTA_CHECK.get(vb, f'sub={vb}')}"
+            if va == 23:
+                return f"ROTA download/verify: {_ROTA_DL.get(vb, f'sub={vb}')}"
+            return f"ROTA apply: {_ROTA_APPLY.get(vb, f'sub={vb}')}"
+
+        # ---------------------------------------------------------------
         # Legacy / ambiguous: pre-1.17.31 boot marker
         # ---------------------------------------------------------------
         if va == 0 and vb == 0 and initiator in ("SYS", ""):

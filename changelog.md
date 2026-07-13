@@ -6,6 +6,62 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.2.0] — 2026-07-13  (ROTA — internet-pull OTA)
+
+**Feature** — the controller can now pull firmware + web-asset updates from an
+internet OTA server on its own (branch `rota`), alongside the existing push-OTA
+upload. A new FreeRTOS task **T16** periodically checks a configured server,
+downloads and verifies a release, and installs it during a night window — no
+farm visit or LAN push required. Full design in
+[design/rota_tds.md](design/rota_tds.md); this is the operator-facing summary.
+
+**Security (mutual auth).** The controller pins the server's self-signed
+certificate (SHA-256) and authenticates itself with a per-unit HMAC-SHA256
+header (`X-OTA-Auth`, ±300 s skew window + nonce replay cache). A device with
+the wrong secret gets no manifest; a server presenting any other certificate is
+rejected. Firmware signing is deferred (a `key_id` field is reserved).
+
+**Safety.**
+- Both artefacts download into PSRAM and are checked against the manifest
+  SHA-256 + size **before any flash write** (a mismatch aborts; the old bank boots).
+- Anti-downgrade: only a release whose version is newer **and** whose `seq` beats
+  the persisted NVS high-water mark is accepted; `min_version` is honored.
+- Apply/commit/reboot happen **only** inside the night window (`ota_win_lo`–
+  `ota_win_hi`, default 02–04 local) behind a quiet gate (no window motion, no
+  wind override / motor alarm / calibration, no web or LCD session), re-checked
+  < 5 s before reboot. Otherwise the update is deferred and retried the next
+  window. Firmware + assets commit together, reusing the T13 push-OTA machinery
+  and its 3-fail rollback.
+
+**Configuration (admin only; Farmers excluded).** New System-tab group in the
+web GUI (and `/api/ota/config`): enable, check interval (h), server URL, per-unit
+secret (never echoed), night window, optional PEM to pin a custom server cert. A
+read-only "Last check" line shows the latest outcome, and an **Update pending**
+badge appears on the Alarms shield while a verified update waits for its window.
+
+**Observability.** New audit rows `LOG_SYSTEM value_a=22` (check), `23`
+(download/verify), `24` (apply); `/api/ota/check` reports the last-check state
+(result, HTTP, offered version, download/apply outcome, device id).
+`log/logparser.py` decodes 22–24 and the new config parameters.
+
+**Server.** Runs as PHP under nginx in the separate
+`greenhouse-Controller-FOTA-server` repo (endpoints `manifest.php`,
+`download.php`; per-device registry; `X-Accel-Redirect` streaming).
+
+**Bring-up note.** The first live pull uncovered and fixed a T16 stack overflow
+on the download path — the task stack was raised 8 → 16 KB and the pinned-cert
+PEM buffers were moved off-stack. Verified end-to-end on the bench unit: a pull
+downloaded, verified, deferred on an active session, then committed and rebooted
+with matching `fw_ver` + `asset_version`. Coredump-labeling gap filed as gh#39.
+
+Files: new `firmware/src/ota_client/` (T16 + request layer + pinned-cert store);
+`system_id` (device id); config plumbing in `data_manager` + `config/cfg_*.h`;
+`/api/ota/config` + `/api/ota/check` + the System-tab UI; `status_json`
+`rota_update_pending` flag. Requires a per-unit `ota_secret` provisioned on the
+device and registered on the server.
+
+---
+
 ## [2.1.3] — 2026-07-08  (system clock followed a failing DS1307 over NTP, gh#37)
 
 **Bug fix** — T4 reseeded `settimeofday()` from the DS1307 every ~60 s, unconditionally. The RTC chip therefore outranked SNTP: every hourly SNTP correction was overwritten within a minute. On 2344 a failing DS1307 (froze overnight 2026-07-08, restarted 4 h 35 m behind) dragged the system clock 4.6 h off with `ntp_synced=true` — wrong sun times, corrupted log timestamps, hourly ±16 500 s see-saw in the SD log.

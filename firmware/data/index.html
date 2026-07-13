@@ -445,6 +445,45 @@
     <div id="ota-progress-wrap" style="display:none">
       <div class="ota-progress-bar"><div id="ota-progress-fill" style="width:0%"></div></div>
     </div>
+
+    <hr>
+    <h3>Remote update (ROTA) <span class="tip-icon" data-tip="Internet-pull firmware updates. When enabled the controller periodically checks the update server and installs a newer release automatically during the night window. Admin only — Farmers cannot see or change these settings.">ⓘ</span></h3>
+    <div class="row">
+      <label data-tip="Turn automatic internet-pull updates on or off. When off the controller never contacts the update server; use the Firmware/Assets upload above for manual updates.">Enable</label>
+      <input type="checkbox" id="cfg-ota-enable">
+    </div>
+    <div class="row">
+      <label data-tip="How often the controller checks the update server for a newer release, in hours. Range 1–168. Default 24.">Check interval (h)</label>
+      <input type="number" id="cfg-ota-check-h" class="short" step="1" min="1" max="168">
+    </div>
+    <div class="row">
+      <label data-tip="Base URL of the update server. Must be https://. The manifest.php and download.php endpoints are resolved under it.">Server URL</label>
+      <input type="text" id="cfg-ota-url" class="wide" placeholder="https://ota.example.net/" autocomplete="off">
+    </div>
+    <div class="row">
+      <label data-tip="Per-unit shared secret used to authenticate to the update server (HMAC). Leave blank to keep the stored secret — it is never shown.">Secret</label>
+      <input type="password" id="cfg-ota-secret" class="wide" autocomplete="new-password" placeholder="(unchanged)">
+      <span class="hint" id="cfg-ota-secret-set">—</span>
+    </div>
+    <div class="row">
+      <label data-tip="Night window in local hours during which a downloaded update is allowed to install and reboot. Set both values equal to disable the window (install as soon as verified). Default 02–04.">Apply window (local h)</label>
+      <input type="number" id="cfg-ota-win-lo" class="short" step="1" min="0" max="23">
+      <span style="align-self:center">–</span>
+      <input type="number" id="cfg-ota-win-hi" class="short" step="1" min="0" max="23">
+    </div>
+    <div class="row">
+      <label data-tip="Optional: paste a PEM certificate to pin the update server, replacing the firmware-embedded default. Leave blank to keep the current certificate.">Server cert (PEM)</label>
+      <textarea id="cfg-ota-cert" class="wide" rows="3" placeholder="(embedded default in use — paste a PEM here to override)" autocomplete="off"></textarea>
+    </div>
+    <div class="row" style="margin-top:.25rem">
+      <button onclick="postOtaConfig()">Apply ROTA settings</button>
+      <span class="save-ok" id="fb-ota-cfg"></span>
+    </div>
+    <div class="row">
+      <label data-tip="Outcome of the most recent update check by the controller.">Last check</label>
+      <span id="ota-check-line" style="flex:1">—</span>
+      <button onclick="checkOtaNow()" data-tip="Ask the controller to check the update server for a newer release right now.">Check now</button>
+    </div>
   </div>
 
   <!-- Log tab (admin only) -->

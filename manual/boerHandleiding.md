@@ -902,6 +902,8 @@ Dit hoofdstuk legt uit wat de mode-regel op het LCD betekent en wat je in elke s
 | `** SENSOR FAULT` (regel 2) | T/RH-sensor reageert niet | **Bel de beheerder**; controleer kort of de sensorkabel zichtbaar beschadigd is of of de sensor losgekoppeld lijkt |
 | Geen wind-meting / `--` op windscherm | Wind-sensor reageert niet | Bel de beheerder; controleer of de wind-sensor buiten niet bedekt is door bladeren of beschadigd lijkt |
 
+> **Web-badge "Update pending".** Ziet u in de webinterface (kaartje *Alarms*) een blauwe badge **Update pending**? Dan heeft de beheerder automatische internet-updates (ROTA) aangezet en staat er een nieuwe firmwareversie klaar. Die installeert zichzelf 's nachts automatisch — **u hoeft niets te doen**. De kascontroller herstart daarbij kort, net als bij een gewone update. Het is dus géén storing.
+
 ### 12.3 RGB-LED kleuren samengevat
 
 | LED-kleur | Betekenis |
