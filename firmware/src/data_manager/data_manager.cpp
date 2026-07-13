@@ -1484,8 +1484,9 @@ void dm_status_snapshot(status_snapshot_t *out)
         out->sd_size_mb = 0u;
     }
     /* Internal-RAM heap (TC-09 / TLS-OTA heap-budget observability). */
-    out->heap_free_b = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    out->heap_min_b  = (uint32_t)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    out->heap_free_b    = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    out->heap_min_b     = (uint32_t)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    out->heap_largest_b = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
     if      (eg1 & EG1_BIT_MOTOR_ALARM)   { out->mode = MODE_MOTOR_ALARM;   }
     else if (eg1 & EG1_BIT_WIND_OVERRIDE) { out->mode = MODE_WIND_OVERRIDE; }
     else if (eg1 & EG1_BIT_STANDBY)       { out->mode = MODE_STANDBY;      }

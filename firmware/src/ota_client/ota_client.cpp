@@ -18,6 +18,7 @@
 #include <strings.h>   /* strcasecmp for SHA-256 hex compare */
 #include <stdlib.h>
 #include <time.h>
+#include <errno.h>     /* gh#40 diag — socket errno on TLS/connect failure */
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -52,6 +53,10 @@ static const char *TAG = "T16_OTA";
 static const char K_OTA_CERT[] = "ota_cert";
 /** NVS key (system ns) for the accepted-release high-water `seq` (R-V02). */
 static const char K_FW_HIWATER[] = "fw_hiwater";
+
+/* gh#40 diag — errno from the last failed esp_http_client_perform, captured in
+ * rota_https_get before cleanup clobbers it; surfaced via ota_check_once. */
+static int s_last_https_errno = 0;
 
 /** Wall-clock sanity floor — 2020-01-01 UTC. Below this, SNTP has not run. */
 #define ROTA_EPOCH_FLOOR 1577836800LL
@@ -204,9 +209,14 @@ esp_err_t rota_https_get(const char *url, const char *request_uri,
             buf = NULL;                        /* ownership transferred */
         }
     } else {
-        ESP_LOGW(TAG, "GET %s failed: %s", request_uri, esp_err_to_name(err));
+        s_last_https_errno = errno;   /* capture before cleanup clobbers it (gh#40) */
+        ESP_LOGW(TAG, "GET %s failed: %s (errno=%d)", request_uri,
+                 esp_err_to_name(err), s_last_https_errno);
     }
 
+    /* gh#40 — always close() before cleanup() so the socket is released even if
+     * a future keep-alive/error path would otherwise leak it (cf. T14 fix). */
+    esp_http_client_close(c);
     esp_http_client_cleanup(c);
     if (buf != NULL) {
         free(buf);
@@ -270,7 +280,7 @@ bool rota_cert_is_custom(void)
 /* ── T16 task — periodic manifest check (rota_tds.md §2.4) ─────────────── */
 
 /* T16 last-check status, for /api/ota/check (task 3.9). Single writer (T16). */
-static rota_status_t s_status = { 0, -1, 0, 0u, {0}, -1, -1 };
+static rota_status_t s_status = { 0, -1, 0, 0u, {0}, -1, -1, {0}, 0 };
 
 /* True while a verified update is downloaded but its apply is deferred (waiting
  * for the night window / quiet gate). Drives the status-shield "update pending"
@@ -728,7 +738,10 @@ static bool ota_check_once(void)
 
     bool reached = true;
     if (err != ESP_OK && status == 0) {
-        ESP_LOGW(TAG, "manifest GET transport failure: %s", esp_err_to_name(err));
+        snprintf(s_status.last_err, sizeof(s_status.last_err), "%s", esp_err_to_name(err));
+        s_status.last_errno = s_last_https_errno;   /* gh#40: EMFILE/ENFILE => socket exhaustion */
+        ESP_LOGW(TAG, "manifest GET transport failure: %s (errno=%d)",
+                 s_status.last_err, s_status.last_errno);
         audit_check(2);
         reached = false;
     } else if (status == 204) {

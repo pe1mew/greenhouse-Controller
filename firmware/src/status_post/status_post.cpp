@@ -405,6 +405,12 @@ static bool do_status_post(const cfg_shadow_t *cfg)
     const int64_t elapsed_ms = (esp_timer_get_time() - t0) / 1000;
     const int status_code = esp_http_client_get_status_code(client);
     const int content_len = esp_http_client_get_content_length(client);
+    /* gh#40 — with keep_alive_enable=true, cleanup() alone leaks the socket;
+     * close() first releases it. Matches the log-upload path (below). Without
+     * this, T14's ~2-min posts exhaust CONFIG_LWIP_MAX_SOCKETS (10) in ~15 min,
+     * after which ALL TLS (incl. the T16 ROTA pull) fails ESP_ERR_HTTP_CONNECT
+     * / errno ENFILE. */
+    esp_http_client_close(client);
     esp_http_client_cleanup(client);
     if (MX_TLS != NULL) { xSemaphoreGive(MX_TLS); }
     heap_caps_free(body);

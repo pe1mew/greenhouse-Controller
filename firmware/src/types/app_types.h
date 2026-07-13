@@ -502,6 +502,7 @@ typedef struct {
      * The floor is the pre-production TLS/OTA heap-budget gate (TC-09). */
     uint32_t heap_free_b;
     uint32_t heap_min_b;
+    uint32_t heap_largest_b; /**< Largest contiguous free block (fragmentation) — the metric a TLS handshake alloc actually needs (gh#40). */
 
     /* Top-level — always emitted regardless of expose mask */
     uint16_t update_interval_s;  /**< Cycle the controller advertises to the dashboard */

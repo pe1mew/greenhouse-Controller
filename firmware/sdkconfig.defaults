@@ -101,13 +101,20 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 # ----------------------------------------------------------------------------
 # mbedTLS — TLS record-buffer memory (gh#40)
 # ----------------------------------------------------------------------------
-# 2.2.5 — the ROTA pull (T16) and status-POST (T14) each open a TLS session;
-# with fixed 16 KB IN + 4 KB OUT record buffers held in INTERNAL RAM, one
-# handshake transiently consumed ~57 KB (heap_min hit 24 KB fresh, and by
-# ~28 min uptime the internal-heap floor dropped below the handshake need →
-# manifest GET failed http:0 → ROTA pull blocked). DYNAMIC_BUFFER right-sizes
-# the RX/TX buffers to the actual record and frees them between operations,
-# cutting the internal-RAM transient sharply. Applies to all TLS (T14 too).
+# 2.2.5 (gh#40) — the ROTA pull (T16) and status-POST (T14) each open a TLS
+# session. With fixed 16 KB IN + 4 KB OUT record buffers in INTERNAL RAM a
+# handshake consumed ~57 KB; over uptime the internal heap FRAGMENTS until the
+# largest free block is too small for a TLS alloc even with ~80 KB total free
+# → manifest GET fails http:0 → ROTA pull blocked (~15 min uptime). DYNAMIC_
+# BUFFER right-sizes + frees the RX/TX record buffer per record, raising the
+# fresh floor (24→53 KB) and cutting the peak. Applies to all TLS (T14 too).
+#
+# NOTE (2.2.7, reverted): CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC (mbedtls → PSRAM)
+# was tried to remove internal fragmentation entirely, but it BROKE the TLS
+# handshake on the ESP32-S3 — the hardware crypto DMA can't operate on PSRAM
+# buffers, so every check failed http:0. Do NOT re-enable without also moving
+# crypto to software (slow) or a DMA-bounce fix. Fragmentation-at-uptime stays
+# open in gh#40 — needs the fragmentation source (T14, cf #23) or a mitigation.
 CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 
 # ----------------------------------------------------------------------------
