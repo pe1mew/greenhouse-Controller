@@ -7,6 +7,7 @@
  */
 
 #include "ota_client.h"
+#include "ota_cert_default.h"
 #include "../system_id/system_id.h"
 
 #include <string.h>
@@ -19,7 +20,12 @@
 #include <esp_http_client.h>
 #include <mbedtls/md.h>
 
+#include "nvs_config.h"
+
 static const char *TAG = "T16_OTA";
+
+/** NVS key (system ns) for the operator-uploaded pinned cert. ≤ 15 chars. */
+static const char K_OTA_CERT[] = "ota_cert";
 
 /** Wall-clock sanity floor — 2020-01-01 UTC. Below this, SNTP has not run. */
 #define ROTA_EPOCH_FLOOR 1577836800LL
@@ -180,4 +186,57 @@ esp_err_t rota_https_get(const char *url, const char *request_uri,
         free(buf);
     }
     return err;
+}
+
+/* ── Pinned-cert storage (R-A03/A04) ───────────────────────────────────── */
+
+/** A stored value looks like a cert only if it begins a PEM block. */
+static bool looks_like_pem(const char *s)
+{
+    return s != NULL && strncmp(s, "-----BEGIN", 10) == 0;
+}
+
+int rota_cert_get(char *buf, size_t cap)
+{
+    if (buf == NULL || cap == 0u) {
+        return -1;
+    }
+    /* Prefer the operator-uploaded cert; fall back to the embedded default. */
+    buf[0] = '\0';
+    (void)nvs_cfg_get_str(NVS_NS_SYSTEM, K_OTA_CERT, buf, cap);
+    if (!looks_like_pem(buf)) {
+        size_t n = strlen(OTA_DEFAULT_CERT_PEM);
+        if (n + 1u > cap) {
+            return -1;
+        }
+        memcpy(buf, OTA_DEFAULT_CERT_PEM, n + 1u);
+        return (int)n;
+    }
+    return (int)strlen(buf);
+}
+
+esp_err_t rota_cert_set(const char *pem)
+{
+    if (pem == NULL || pem[0] == '\0') {
+        return rota_cert_clear();
+    }
+    if (strlen(pem) + 1u > ROTA_CERT_MAX || !looks_like_pem(pem)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return (nvs_cfg_set_str(NVS_NS_SYSTEM, K_OTA_CERT, pem) == NVS_CFG_OK)
+               ? ESP_OK : ESP_FAIL;
+}
+
+esp_err_t rota_cert_clear(void)
+{
+    /* Store an empty string → rota_cert_get() falls back to the default. */
+    return (nvs_cfg_set_str(NVS_NS_SYSTEM, K_OTA_CERT, "") == NVS_CFG_OK)
+               ? ESP_OK : ESP_FAIL;
+}
+
+bool rota_cert_is_custom(void)
+{
+    char probe[16] = {0};
+    (void)nvs_cfg_get_str(NVS_NS_SYSTEM, K_OTA_CERT, probe, sizeof(probe));
+    return looks_like_pem(probe);   /* only the "-----BEGIN" prefix is needed */
 }

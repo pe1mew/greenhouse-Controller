@@ -87,6 +87,39 @@ esp_err_t rota_https_get(const char *url, const char *request_uri,
                          size_t max_body,
                          int *out_status, char **out_body, size_t *out_len);
 
+/* ── Pinned-cert storage (R-A03/A04) ───────────────────────────────────── */
+
+/** @brief Max PEM size for the pinned server cert (RSA-3072 self-signed ≈ 1.5 KB). */
+#define ROTA_CERT_MAX 2048u
+
+/**
+ * @brief Copy the active pinned server certificate into @p buf.
+ *
+ * Returns the operator-uploaded cert (NVS `system/ota_cert`) if present,
+ * otherwise the firmware-embedded default (`OTA_DEFAULT_CERT_PEM`, R-A04).
+ * The result is a NUL-terminated PEM suitable to pass as `cert_pem` to
+ * rota_https_get().
+ *
+ * @param buf  Destination; recommend ≥ ROTA_CERT_MAX.
+ * @param cap  Capacity of @p buf.
+ * @return PEM length (excl NUL) on success, -1 if @p buf is too small / bad args.
+ */
+int rota_cert_get(char *buf, size_t cap);
+
+/**
+ * @brief Store an operator-uploaded pinned certificate (PEM) in NVS.
+ * @param pem  NUL-terminated PEM (≤ ROTA_CERT_MAX). Empty/NULL reverts to the
+ *             embedded default (equivalent to rota_cert_clear()).
+ * @return ESP_OK on success.
+ */
+esp_err_t rota_cert_set(const char *pem);
+
+/** @brief Remove any uploaded cert; subsequent rota_cert_get() returns the default. */
+esp_err_t rota_cert_clear(void);
+
+/** @brief True if an operator-uploaded certificate is currently stored. */
+bool rota_cert_is_custom(void);
+
 #ifdef __cplusplus
 }
 #endif
