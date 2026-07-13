@@ -28,6 +28,7 @@
 #include "../relay_controller/relay_controller.h"
 #include "../status_post/status_post.h"  /* T14_NOTIFY_CFG_CHANGED (a.6.35.1) */
 #include "../network_manager/network_manager.h"  /* rc.1.5.4 — nm_is_sntp_synced() */
+#include "../ota_client/ota_client.h"             /* 2.2.x ROTA — rota_update_pending() */
 
 #include "nvs_config.h"
 #include "ds1307_rtc.h"
@@ -1392,6 +1393,9 @@ void dm_status_snapshot(status_snapshot_t *out)
      * esp_core_dump_image_check() result. Drives the canonical JSON's
      * `coredump_available` mode flag and the GUI's blue Alarms-card badge. */
     out->coredump_available = s_coredump_present;
+    /* 2.2.x ROTA — "update pending" indicator: T16 has a verified update waiting
+     * for its apply window. Drives the `rota_update_pending` mode flag + badge. */
+    out->rota_update_pending = rota_update_pending();
     out->ts_unix            = cfg.current_unix_ts;
     /* rc.1.5.4 — read the same s_sntp_synced latch network_manager's
      * snapshot_state() uses for the LCD path. The previous

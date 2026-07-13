@@ -250,7 +250,12 @@ function handleStatus(s) {
       // (same class as humidity_ctrl_off) — surfaced on the dashboard so the
       // operator sees the dump exists without going to the Log tab. The
       // dump itself is downloaded from Log → Diagnostics → Download.
-      coredump_available: '<span class="badge info">Coredump available</span>'
+      coredump_available: '<span class="badge info">Coredump available</span>',
+      // 2.2.x ROTA — a downloaded+verified internet update is waiting for its
+      // apply window (night-window/quiet gate); it installs automatically then.
+      // Blue info badge — it's a heads-up, not a fault. Distinct from
+      // ota_in_progress ("OTA active"), which means a flash write is underway.
+      rota_update_pending: '<span class="badge info">Update pending</span>'
     };
     alarmBadges = (Array.isArray(s.mode.flags) ? s.mode.flags : [])
       .map(f => flagBadges[f]).filter(x => x);

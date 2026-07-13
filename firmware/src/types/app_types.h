@@ -444,6 +444,13 @@ typedef struct {
                               *   operator wipes the partition via
                               *   POST /api/coredump/erase. (a.6.35.6+) */
 
+    bool    rota_update_pending; /**< True iff T16 (ROTA) has a downloaded+verified
+                              *   update awaiting its apply window. Set from
+                              *   rota_update_pending() in dm_status_snapshot();
+                              *   drives the `rota_update_pending` mode-flag and
+                              *   the GUI Alarms-card "Update pending" badge.
+                              *   (2.2.x ROTA) */
+
     /* Windows */
     window_state_t win[3];   /**< M1 = win[0], M2 = win[1], M3 = win[2] */
 

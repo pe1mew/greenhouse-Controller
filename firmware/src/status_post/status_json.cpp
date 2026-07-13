@@ -257,6 +257,17 @@ size_t build_canonical_status_json(char *buf, size_t cap,
                 "%s\"coredump_available\"", first ? "" : ",");
             first = false;
         }
+
+        /* 2.2.x ROTA — "update pending": T16 has a downloaded+verified update
+         * waiting for its apply window (night-window/quiet gate). Surfaced as a
+         * badge on the Alarms shield so the operator knows an update will
+         * install during the next window. Cleared once applied / no longer
+         * offered / ROTA disabled (see rota_update_pending()). */
+        if (ok && s->rota_update_pending) {
+            ok = ok && append(buf, cap, &pos,
+                "%s\"rota_update_pending\"", first ? "" : ",");
+            first = false;
+        }
         ok = ok && append(buf, cap, &pos, "]}");
     }
 

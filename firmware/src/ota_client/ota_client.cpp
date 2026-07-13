@@ -272,9 +272,19 @@ bool rota_cert_is_custom(void)
 /* T16 last-check status, for /api/ota/check (task 3.9). Single writer (T16). */
 static rota_status_t s_status = { 0, -1, 0, 0u, {0}, -1, -1 };
 
+/* True while a verified update is downloaded but its apply is deferred (waiting
+ * for the night window / quiet gate). Drives the status-shield "update pending"
+ * badge. Single writer (T16); a stale read is harmless for a UI hint. */
+static bool s_update_pending = false;
+
 void rota_status_get(rota_status_t *out)
 {
     if (out != NULL) *out = s_status;   /* small struct copy; benign torn read */
+}
+
+bool rota_update_pending(void)
+{
+    return s_update_pending;
 }
 
 /** Post a LOG_SYSTEM audit row (rota_tds.md §4.4). */
@@ -294,6 +304,7 @@ static void audit_check(int16_t sub)
     audit_row(22, sub);
     s_status.last_result      = sub;
     s_status.last_check_epoch = (int64_t)time(NULL);
+    if (sub == 0) s_update_pending = false;   /* no newer release → nothing pending */
 }
 /** Download/verify outcome (23): 0 ok · 1 TLS/pin · 2 SHA/size · 3 downgrade · 4 min_version. */
 static void audit_dl(int16_t sub)    { audit_row(23, sub); s_status.last_dl = sub; }
@@ -531,6 +542,7 @@ static void rota_apply(const rota_manifest_t *m,
     if (!in_night_window(cfg.ota_win_lo, cfg.ota_win_hi) || !quiet_gate()) {
         ESP_LOGI(TAG, "apply deferred: window/quiet gate not met (retry near window)");
         audit_apply(1);                 /* R-P04: nothing committed, retry later */
+        s_update_pending = true;        /* verified update waiting → shield badge */
         s_apply_wait_s = secs_to_window(cfg.ota_win_lo, cfg.ota_win_hi);
         free(fw); free(assets);
         return;
@@ -558,6 +570,7 @@ static void rota_apply(const rota_manifest_t *m,
         ESP_LOGW(TAG, "apply aborted at final gate — activity resumed");
         ota_firmware_abort();
         audit_apply(1);
+        s_update_pending = true;        /* verified update waiting → shield badge */
         s_apply_wait_s = 300u;          /* still in window; retry the quiet gate soon */
         free(assets);
         return;
@@ -582,6 +595,7 @@ static void rota_apply(const rota_manifest_t *m,
     (void)nvs_cfg_set_i32(NVS_NS_SYSTEM, K_FW_HIWATER, m->seq);
     ESP_LOGW(TAG, "ROTA apply committed: %s (seq %ld) — rebooting via T13",
              m->version, (long)m->seq);
+    s_update_pending = false;           /* applied — reboot into it imminently */
     audit_apply(0);
     /* T13 reboots shortly (schedule_reboot). */
 }
@@ -597,6 +611,7 @@ static void rota_handle_update(const rota_manifest_t *m)
     if (m->seq <= hiwater) {
         ESP_LOGW(TAG, "reject: seq %ld <= hiwater %ld (downgrade/replay)",
                  (long)m->seq, (long)hiwater);
+        s_update_pending = false;       /* not an applicable update */
         audit_dl(3);
         return;
     }
@@ -605,6 +620,7 @@ static void rota_handle_update(const rota_manifest_t *m)
         semver_cmp(FIRMWARE_VERSION, m->min_version) < 0) {
         ESP_LOGW(TAG, "reject: running %s < min_version %s (manual step needed)",
                  FIRMWARE_VERSION, m->min_version);
+        s_update_pending = false;       /* won't apply without manual intervention */
         audit_dl(4);
         return;
     }
@@ -656,6 +672,7 @@ static bool ota_check_once(void)
     /* Preconditions (R-C03). Disabled/unconfigured is a silent skip (not
      * audited every idle cycle); a blocked-but-enabled check is audited. */
     if (cfg.ota_enable == 0 || cfg.ota_url[0] == '\0' || cfg.ota_secret[0] == '\0') {
+        s_update_pending = false;   /* ROTA off/unconfigured → nothing pending */
         return true;   /* nothing to do; normal-interval sleep */
     }
     if (!nm_is_sntp_synced()) {

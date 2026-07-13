@@ -166,6 +166,17 @@ typedef struct {
  */
 void rota_status_get(rota_status_t *out);
 
+/**
+ * @brief True when a verified update is downloaded and awaiting its apply
+ *        window (i.e. an apply was deferred by the night-window/quiet gate).
+ *
+ * Drives the "update pending" badge on the status shield (mirrors the
+ * `coredump_available` informational-flag pattern). Cleared once the update is
+ * applied (the unit then reboots into it), no longer offered, or ROTA is
+ * disabled. Volatile — false at boot, re-derived on the next check.
+ */
+bool rota_update_pending(void);
+
 #ifdef __cplusplus
 }
 #endif
