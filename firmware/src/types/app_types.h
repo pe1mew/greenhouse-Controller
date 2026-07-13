@@ -497,6 +497,12 @@ typedef struct {
     uint32_t sd_free_mb;
     uint32_t sd_size_mb;
 
+    /* Internal-RAM heap (bytes) — current free and the min-ever-free "floor"
+     * since boot. Emitted as heap_free_kb / heap_min_kb in the system block.
+     * The floor is the pre-production TLS/OTA heap-budget gate (TC-09). */
+    uint32_t heap_free_b;
+    uint32_t heap_min_b;
+
     /* Top-level — always emitted regardless of expose mask */
     uint16_t update_interval_s;  /**< Cycle the controller advertises to the dashboard */
 } status_snapshot_t;

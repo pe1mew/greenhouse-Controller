@@ -22,7 +22,7 @@ ROTA spans **two git repositories** (TDS R-T06). The server repository already e
 | 0.1 | Freeze TDS §4 (endpoints, header formula, manifest schema incl. reserved `key_id`, audit codes 22–24, store layout). Tag the TDS commit; the server repo references this tag. **Status: §4 precision-passed and marked frozen 2026-07-13** (id = full MAC 12-hex; manifest request carries `fw=`/`res=`; 204 reserved for auth-fail only; HMAC field encodings pinned; audit code 21 verified taken → 22–24 confirmed free). Awaiting operator commit + tag `rota-contract-v1.0`. | R-A05, R-A10, R-T06 | TDS §4 tagged; no open questions on the wire format. |
 | 0.2 | Scaffold the existing `greenhouse-Controller-FOTA-server` repo (README naming the TDS tag, `.gitignore` excluding any `*.pem`/`*.secret`/`devices.json`/`.deploy.env`, PHP-lint CI). **Status: scaffolded 2026-07-13** — README pins `rota-contract-v1.0`; endpoint stubs (501) carrying the contract as header comments; `nginx/ota.conf` fragment; `tools/deploy.sh` (SSH-key auth, StrictHostKeyChecking, `.deploy.env` pattern); CI = PHP lint + R-T07 credential scan. | R-T06, R-T07 | Repo scaffolded, CI lints PHP. |
 | 0.3 | Generate the long-lived self-signed **server** certificate (e.g. 20 y) for the OTA hostname; keep the private key off both repos (operator's secret store). Decide the OTA URL/vhost name. **Status: done 2026-07-13** — OTA host decided: **`ota.rfsee.net`** (dedicated SNI vhost, port 443; DNS record to be added by operator); cert CN/SAN `ota.rfsee.net`, RSA-3072, valid 20 y (to 2046-07), in the operator's secret store. `ota_url` will be `https://ota.rfsee.net/` (endpoints at the vhost root — no `hbwv/ota/` prefix; fully separate from the status site). | R-A02, R-A04 | Cert + key generated; public cert earmarked for the firmware-embedded default and GUI test. |
-| 0.4 | Generate per-unit `ota_secret`s for 2344 and 5C88 (`openssl rand -hex 32`), distinct from `status_secret`. Store in the operator's secret store, not in git. **Status: done 2026-07-13** — two 64-hex secrets generated into the operator's secret store; values never surfaced in any log or document. | R-A06, R-T07 | Two secrets recorded out-of-repo. |
+| 0.4 | Generate per-unit `ota_secret`s for 2344 and 5C88 (`openssl rand -hex 32`), distinct from `status_secret`. Store in the operator's secret store, not in git. **Status: done 2026-07-13** — two 64-hex secrets generated into the operator's secret store; values never surfaced in any log or document. **2026-07-13:** a third secret was generated for **FDA4** (the actual ROTA soak unit); 2344's secret is unused/reserved since 2344 stays on non-ROTA firmware for training (see Phase 5). | R-A06, R-T07 | Secrets recorded out-of-repo. |
 
 ## Phase 1 — Server (`greenhouse-Controller-FOTA-server` repo) (M) — no firmware dependency
 
@@ -71,7 +71,15 @@ Ordered so each layer is testable before the next stacks on it.
 | 4.2 | **`bin/ota_promote.ps1`** — soak → mainstream (`channels/<type>.json`); per-unit `pin`/`unpin` subcommands. Separate command from publish (human soak gate). | R-T02 | TC-12 |
 | 4.3 | **Provisioning tool** — write `ota_secret` (+ cert if non-default) to a unit via the admin `/api/ota/config` endpoint over the bench LAN, and create/update its `devices.json` row in one documented step (row edit shipped as a server-repo helper). | R-T03, R-I02 | TC-12 |
 
-## Phase 5 — Verification on soak unit 2344 (M, over a soak week)
+## Phase 5 — Verification on soak unit FDA4 (M, over a soak week)
+
+> **Soak unit is FDA4, not 2344 (updated 2026-07-13).** 2344 is reserved for
+> plant-model training and **must never be flashed with ROTA firmware** — the
+> earlier plan (and the 0.4 secret generated for 2344) predates that constraint.
+> The ROTA soak runs on the dedicated bench unit **FDA4** (`192.168.20.169`,
+> id `30eda0a0fda4`), which has been through the full pull-install already. The
+> general push-OTA release cycle (CLAUDE.md) can still soak on 2344 with
+> non-ROTA builds; only the *ROTA* soak moves to FDA4.
 
 Runs the TDS §3 case matrix against a **staging channel**. Each row is a gate, not a nicety.
 
@@ -84,7 +92,7 @@ Runs the TDS §3 case matrix against a **staging channel**. Each row is a gate, 
 | 5.5 | Kill-power matrix (mid-download / mid-flash / post-commit). | TC-06 |
 | 5.6 | Window + quiet-gate: forced sessions, wind override, motion during window. | TC-07 |
 | 5.7 | Downgrade / replay / min_version from staging. | TC-08 |
-| 5.8 | Heap-floor (≥ 20 KB) + control cadence during full update. | TC-09 |
+| 5.8 | Heap-floor (≥ 20 KB) + control cadence during full update. **Now measurable:** `/api/status` emits `heap_free_kb` + `heap_min_kb` (min-ever-free floor); `heap_min_kb` captures the low-water for a *deferred* pull remotely, and T16 logs it (serial) for the *committed* path. Tracked as **gh#40**. | TC-09 |
 | 5.9 | Full log parse + dashboard field check; zero `value_a=13` from pull cycles. | TC-10, TC-13 |
 | 5.10 | 48 h server-down soak; crash-loop rollback. | TC-13 |
 | 5.11 | ≥ 1 week nightly-check soak before production exposure. | (soak gate) |
@@ -94,7 +102,7 @@ Runs the TDS §3 case matrix against a **staging channel**. Each row is a gate, 
 | # | Task | Satisfies |
 |---|---|---|
 | 6.1 | Site visit: install 2.2.0 locally (`ota_push.py`), provision `ota_secret` + cert, create the registry row, enable ROTA **pinned to 5C88's current version**. The visit that ends visits. | R-T05 |
-| 6.2 | First real remote update = the next release (2.2.1): publish → soak channel → 2344 overnight pull → `ota_promote` to mainstream → watch 5C88's dashboard `rota_*` fields next morning. | R-T02, R-O03 |
+| 6.2 | First real remote update = the next release: publish → soak channel → **FDA4** overnight pull → `ota_promote` to mainstream → watch 5C88's dashboard `rota_*` fields next morning. | R-T02, R-O03 |
 | 6.3 | Update CLAUDE.md release cycle step 8 (production no longer queues for a farm visit); keep `ota_push.py` as bench/recovery path. | — |
 
 ## Phase 7 — Deferred hardening (explicitly out of scope for 2.2.0)
@@ -106,7 +114,7 @@ Firmware/manifest signing (R2/R-A10; `key_id` reserved), mTLS client certs (R-A1
 **Critical path:** 0.1 (contract freeze) → 1.x + 2.x (server, in parallel with firmware) → 3.4–3.8 (client core) → 5.x (soak) → 6.1 (site visit). Server and firmware proceed in parallel once §4 is frozen; the device simulator (2.1) lets the server reach "done" with no ESP32.
 
 **Top risks, watch early:**
-1. **TLS heap serialization with T14** (R-C07/R-R05, gh#23 ~31 KB budget) — validate in task 3.4/3.5, not at soak. The sharpest technical risk.
+1. **TLS heap floor on the pull path** (R-C07/R-R05, ~31 KB per handshake) — the sharpest technical risk, now with **field evidence**: T16's manifest GET transiently returned `http:0` under heavy bench load and recovered (device-side, not the server). T16 shares `MX_TLS` with T14 (R-C07). Observability landed (`heap_min_kb` on `/api/status`); the ≥ 20 KB floor is a **hard pre-production gate**, tracked as **gh#40** (closed #23 was the T14-specific instance).
 2. **FW_DONE fallback must never fire on the pull path** (R-R04) — a `value_a=13` row during Phase 5 means the pairing logic has a bug; treat as a stop-ship.
 3. **Clock validity load-bearing** for the night window (R-P01) — mitigated by the 2.1.3 RTC-over-NTP fix already on main; T16's NTP precondition (R-C03) is the backstop.
    - **Decision (2026-07-13):** T16's R-C03 gate stays on the strict `nm_is_sntp_synced()` latch (not a relaxed "wall-clock ≥ 2025" check). The operator confirmed both the soak and the 5C88 production networks currently allow outbound NTP (UDP/123), so a valid clock is always reached within ≤5 min of boot (rc.1.5.6 retry). The device-side gate is only a "don't waste a request on an untrusted clock" optimisation — the actual auth-freshness control is server-side (`ROTA_SKEW_S=300` + nonce + HMAC). **Revisit trigger:** a future deployment site that blocks outbound NTP but allows HTTPS → then relax the gate to accept RTC-backed time (degrades gracefully to a harmless 204).

@@ -307,7 +307,8 @@ size_t build_canonical_status_json(char *buf, size_t cap,
             "\"asset_version\":\"%s\","
             "\"uptime_s\":%lu,\"ts_unix\":%lu,"
             "\"time_iso\":\"%s\",\"eg1\":%lu,"
-            "\"sd_mounted\":%s,\"sd_free_mb\":%lu,\"sd_size_mb\":%lu}",
+            "\"sd_mounted\":%s,\"sd_free_mb\":%lu,\"sd_size_mb\":%lu,"
+            "\"heap_free_kb\":%lu,\"heap_min_kb\":%lu}",
             unit_id_str,
             s->ip, (int)s->rssi,
             s->ntp_synced ? "true" : "false",
@@ -317,7 +318,12 @@ size_t build_canonical_status_json(char *buf, size_t cap,
             (unsigned long)s->eg1_bits,
             s->sd_mounted ? "true" : "false",
             (unsigned long)s->sd_free_mb,
-            (unsigned long)s->sd_size_mb);
+            (unsigned long)s->sd_size_mb,
+            /* internal-RAM heap (TC-09 / gh follow-up): current free and the
+             * min-ever-free "floor" since boot. For a *deferred* ROTA update
+             * (no reboot) heap_min_kb captures the download/verify low-water. */
+            (unsigned long)(s->heap_free_b / 1024u),
+            (unsigned long)(s->heap_min_b  / 1024u));
     }
 
     /* update_interval_s — always emitted. */

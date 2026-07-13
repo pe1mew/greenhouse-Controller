@@ -99,6 +99,18 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 
 # ----------------------------------------------------------------------------
+# mbedTLS — TLS record-buffer memory (gh#40)
+# ----------------------------------------------------------------------------
+# 2.2.5 — the ROTA pull (T16) and status-POST (T14) each open a TLS session;
+# with fixed 16 KB IN + 4 KB OUT record buffers held in INTERNAL RAM, one
+# handshake transiently consumed ~57 KB (heap_min hit 24 KB fresh, and by
+# ~28 min uptime the internal-heap floor dropped below the handshake need →
+# manifest GET failed http:0 → ROTA pull blocked). DYNAMIC_BUFFER right-sizes
+# the RX/TX buffers to the actual record and frees them between operations,
+# cutting the internal-RAM transient sharply. Applies to all TLS (T14 too).
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+
+# ----------------------------------------------------------------------------
 # FATFS — Long File Name support
 # ----------------------------------------------------------------------------
 # Phase 2.11.1 (2.0.0-alpha.2.11.1) — ESP-IDF defaults CONFIG_FATFS_LFN_NONE=y,

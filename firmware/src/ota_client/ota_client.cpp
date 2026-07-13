@@ -654,6 +654,12 @@ static void rota_handle_update(const rota_manifest_t *m)
 
     ESP_LOGI(TAG, "both artefacts verified (fw %u B, assets %u B) — ready to apply",
              (unsigned)fw_len, (unsigned)as_len);
+    /* TC-09 heap-budget gate: the TLS handshakes are the internal-RAM low-water.
+     * min-since-boot is also on /api/status (heap_min_kb) for the deferred path;
+     * logged here too for the committed path (reboot resets the min). */
+    ESP_LOGI(TAG, "heap after download/verify: free=%u B, min-since-boot=%u B (internal)",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
     audit_dl(0);
 
     rota_apply(m, fw, fw_len, assets, as_len);   /* takes ownership; frees both */
