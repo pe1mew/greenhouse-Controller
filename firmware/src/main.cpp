@@ -1491,15 +1491,18 @@ extern "C" void app_main(void)
         }
     }
 
-    /* 2.2.0 (ROTA) — T16 pull-OTA client. Same 8 KB / prio-3 / no-affinity
-     * profile as T14 (TLS handshake stack; latency-tolerant). Idle unless
+    /* 2.2.0 (ROTA) — T16 pull-OTA client. 16 KB / prio-3 / no-affinity. Needs
+     * more stack than T14's 8 KB: the download/apply path nests a second
+     * mbedTLS handshake (artefact download) inside the same call chain as the
+     * manifest check, so two TLS contexts' worth of stack can be live at once
+     * (an 8 KB stack overflowed here — crash loop, fixed 2.2.1). Idle unless
      * cfg.ota_enable=1; serialises its TLS session with T14 via MX_TLS
      * (R-C07). See ota_client.cpp + rota_tds.md §2.4. */
     {
         BaseType_t rc = xTaskCreatePinnedToCore(
             task_ota_client,
             "T16-rota",
-            8192,                  /* stack words */
+            16384,                 /* stack bytes (ESP-IDF) — TLS + OTA feed */
             NULL,
             3,                     /* priority — latency-tolerant network task */
             &task_t16,

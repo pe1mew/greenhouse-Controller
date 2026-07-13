@@ -618,17 +618,22 @@ static void rota_handle_update(const rota_manifest_t *m)
     }
 
     cfg_shadow_t cfg; dm_cfg_snapshot(&cfg);
-    char cert[ROTA_CERT_MAX];
-    if (rota_cert_get(cert, sizeof(cert)) < 0) { audit_dl(1); return; }
+    /* Heap, not stack: the 2 KB PEM must not sit on T16's stack while a nested
+     * mbedTLS handshake runs (stack-overflow crash loop, fixed 2.2.1). */
+    char *cert = (char *)malloc(ROTA_CERT_MAX);
+    if (cert == NULL || rota_cert_get(cert, ROTA_CERT_MAX) < 0) {
+        free(cert); audit_dl(1); return;
+    }
 
     /* R-C05/R-R06: download AND verify BOTH artefacts before any flash write. */
     uint8_t *fw = NULL, *assets = NULL; size_t fw_len = 0, as_len = 0;
     esp_err_t e = rota_download_verify(&cfg, cert, "fw", m->version,
                                        m->fw_sha256, m->fw_size, &fw, &fw_len);
-    if (e != ESP_OK) { audit_dl(dl_err_to_sub(e)); return; }
-
-    e = rota_download_verify(&cfg, cert, "assets", m->version,
-                             m->assets_sha256, m->assets_size, &assets, &as_len);
+    if (e == ESP_OK) {
+        e = rota_download_verify(&cfg, cert, "assets", m->version,
+                                 m->assets_sha256, m->assets_size, &assets, &as_len);
+    }
+    free(cert);
     if (e != ESP_OK) { free(fw); audit_dl(dl_err_to_sub(e)); return; }
 
     ESP_LOGI(TAG, "both artefacts verified (fw %u B, assets %u B) — ready to apply",
@@ -679,8 +684,9 @@ static bool ota_check_once(void)
         return false;
     }
 
-    char cert[ROTA_CERT_MAX];
-    if (rota_cert_get(cert, sizeof(cert)) < 0) {
+    char *cert = (char *)malloc(ROTA_CERT_MAX);   /* heap, not the task stack */
+    if (cert == NULL || rota_cert_get(cert, ROTA_CERT_MAX) < 0) {
+        free(cert);
         audit_check(2);
         return false;
     }
@@ -691,6 +697,7 @@ static bool ota_check_once(void)
     esp_err_t err = rota_https_get(url, req, cert, cfg.ota_secret,
                                    ROTA_MANIFEST_MAX, &status, &body, &blen);
     xSemaphoreGive(MX_TLS);
+    free(cert);                          /* only needed for the handshake above */
 
     s_status.last_http = status;        /* 0 = transport failure */
     s_status.checks_total++;
