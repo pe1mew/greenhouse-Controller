@@ -38,6 +38,9 @@
  */
 void task_web_server(void *pvParameters);
 
+/** @brief Web session token length in hex chars (buffers need +1 for the NUL). */
+#define WEB_SESSION_TOKEN_LEN 16
+
 /**
  * @brief True if any web session is currently live (non-expired).
  *
@@ -46,3 +49,13 @@ void task_web_server(void *pvParameters);
  * session mutex cannot be taken.
  */
 bool web_any_active_session(void);
+
+/**
+ * @brief True if any web session OTHER THAN @p exempt_token is currently live.
+ *
+ * Same as web_any_active_session() but ignores the one session whose token
+ * matches @p exempt_token (NULL/empty = ignore nothing). Lets the ROTA quiet
+ * gate exempt the operator's own GUI-triggered update from its own session so
+ * the apply is not deferred forever (gh#41); every other session still counts.
+ */
+bool web_any_active_session_except(const char *exempt_token);

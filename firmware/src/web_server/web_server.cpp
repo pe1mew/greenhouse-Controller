@@ -212,18 +212,33 @@ static web_session_role_t session_find_and_renew(const char *token)
     return role;
 }
 
-/* True if any web session is currently live (ROTA quiet gate, R-P02). */
-bool web_any_active_session(void)
+/* True if any web session OTHER THAN exempt_token is live (ROTA quiet gate,
+ * R-P02). exempt_token NULL/empty counts every session. The "except" form lets
+ * an operator's own GUI-triggered ROTA update ignore the triggering session so
+ * the apply is not deferred forever on their own login (gh#41). */
+bool web_any_active_session_except(const char *exempt_token)
 {
     bool active = false;
     const int32_t now = (int32_t)time(NULL);
     if (s_sess_mux == NULL) return false;
     if (xSemaphoreTake(s_sess_mux, pdMS_TO_TICKS(200)) != pdTRUE) return true; /* busy → treat as active (safe) */
     for (int i = 0; i < MAX_SESSIONS; i++) {
-        if (s_sessions[i].expiry > now) { active = true; break; }
+        if (s_sessions[i].expiry > now) {
+            if (exempt_token != NULL && exempt_token[0] != '\0' &&
+                strcmp(s_sessions[i].token, exempt_token) == 0) {
+                continue;                    /* the triggering session — exempt (gh#41) */
+            }
+            active = true; break;
+        }
     }
     xSemaphoreGive(s_sess_mux);
     return active;
+}
+
+/* True if any web session is currently live (ROTA quiet gate, R-P02). */
+bool web_any_active_session(void)
+{
+    return web_any_active_session_except(NULL);
 }
 
 /**
@@ -2598,12 +2613,17 @@ static esp_err_t rota_check_get_handler(httpd_req_t *req)
     return httpd_resp_send(req, out, (n > 0 && n < (int)sizeof(out)) ? n : 0);
 }
 
-/* POST /api/ota/check — ask T16 to run a manifest check now (R-F04). Admin-only. */
+/* POST /api/ota/check — ask T16 to run a manifest check now (R-F04). Admin-only.
+ * Passes the triggering admin's session token so the apply quiet gate exempts
+ * this one session — otherwise a GUI-triggered update defers forever on the
+ * operator's own login (gh#41). */
 static esp_err_t rota_check_post_handler(httpd_req_t *req)
 {
     if (!admin_only_or_send_error(req)) return ESP_OK;
     httpd_resp_set_type(req, "application/json");
-    if (task_t16 != NULL) { xTaskNotifyGive(task_t16); }
+    char token[TOKEN_LEN + 1] = {0};
+    (void)cookie_get_session(req, token);   /* admin already validated above */
+    ota_client_request_check(token);
     return httpd_resp_send(req, "{\"ok\":true,\"queued\":true}", HTTPD_RESP_USE_STRLEN);
 }
 

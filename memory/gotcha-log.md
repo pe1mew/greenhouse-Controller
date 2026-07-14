@@ -10,6 +10,18 @@ When something weird happens, check here BEFORE debugging from scratch. Entries 
 
 ---
 
+## 2026-07-14 — logrotate: validate as root, and group-writable /var/log needs `su`
+
+**Problem:** A new `/etc/logrotate.d/rota` config passed `logrotate --debug` when validated as `remko`, but failed under `sudo` (the real cron context) with `error: skipping "/var/log/rota-pull.log" because parent directory has insecure permissions ... Set "su" directive`.
+
+**Root cause:** Two things. (1) logrotate only enforces its parent-directory security check when running **as root** — a non-root `--debug` run silently skips it, so a normal-user dry-run is NOT a valid test. (2) `/var/log` is `root:syslog 0775` (the standard rsyslog layout — group-writable by `syslog`); logrotate 3.14+ refuses to rotate a log whose parent dir is writable by a non-root group unless the config names a rotation user via `su`.
+
+**Fix:** Add `su root root` inside the config block (root renames/creates in `/var/log`; the `create 0664 www-data www-data` line still hands the fresh log back to www-data). Always validate logrotate configs with `sudo logrotate --debug <file>`, never as a normal user, or the check won't fire.
+
+**Where it lives:** `greenhouse-Controller-FOTA-server` — `tools/rota-logrotate` (carries the `su root root` + a comment explaining why), `tools/bootstrap.md` §7.
+
+---
+
 ## 2026-07-13 — ROTA server (rfsee.net VPS): registry/permission setup traps
 
 **Problem:** After deploying the FOTA server, authenticated requests kept returning `204` (looked like auth failure) then `404 manifest_missing` — cost several round trips to diagnose.

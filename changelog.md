@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.2.13] — 2026-07-14  (gh#41 — GUI-triggered ROTA update no longer self-blocks)
+
+**Fixed.**
+- **ROTA quiet gate blocked the operator's own triggering session (gh#41).**
+  An update kicked off from the admin GUI (`POST /api/ota/check`) treated the
+  operator's *own* live web session as "not quiet" (R-P02) and deferred the
+  reboot indefinitely — it committed only once every session had logged out. The
+  apply now exempts the single session that triggered the check: the handler
+  passes the admin's session token to T16, and the quiet gate ignores that one
+  token (`web_any_active_session_except()`) while the update is pending. Every
+  *other* web session and any LCD PIN session still block; the exemption is
+  dropped once the update applies or is no longer pending; a scheduled
+  (non-triggered) check is unaffected (all sessions must still be clear).
+  *Footgun #2 in the issue — re-downloading both artefacts on each genuine
+  deferral — is not addressed here: with the self-block gone, a GUI-triggered
+  update applies on the first cycle, so it no longer re-downloads.*
+
+---
+
 ## [2.2.12] — 2026-07-14  (ROTA hardening — test build)
 
 Consolidates the heap/socket work done across the un-released 2.2.1–2.2.11 dev

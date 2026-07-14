@@ -280,6 +280,14 @@ static rota_status_t s_status = { 0, -1, 0, 0u, {0}, -1, -1 };
  * badge. Single writer (T16); a stale read is harmless for a UI hint. */
 static bool s_update_pending = false;
 
+/* gh#41: token of the web session that triggered a manual check
+ * (POST /api/ota/check). While that operator's update is still pending, the
+ * quiet gate ignores this one session so a GUI-triggered update is not deferred
+ * by the operator's own login. Empty = no exemption (scheduled/config checks).
+ * Written by the web task (ota_client_request_check), cleared by T16; a torn
+ * read at worst mis-evaluates the gate for one cycle (which just retries). */
+static char s_exempt_token[WEB_SESSION_TOKEN_LEN + 1] = {0};
+
 void rota_status_get(rota_status_t *out)
 {
     if (out != NULL) *out = s_status;   /* small struct copy; benign torn read */
@@ -288,6 +296,17 @@ void rota_status_get(rota_status_t *out)
 bool rota_update_pending(void)
 {
     return s_update_pending;
+}
+
+void ota_client_request_check(const char *exempt_token)
+{
+    if (exempt_token != NULL && exempt_token[0] != '\0') {
+        strncpy(s_exempt_token, exempt_token, sizeof(s_exempt_token) - 1u);
+        s_exempt_token[sizeof(s_exempt_token) - 1u] = '\0';
+    } else {
+        s_exempt_token[0] = '\0';
+    }
+    if (task_t16 != NULL) { xTaskNotifyGive(task_t16); }
 }
 
 /** Post a LOG_SYSTEM audit row (rota_tds.md §4.4). */
@@ -523,7 +542,7 @@ static bool quiet_gate(void)
     }
     EventBits_t b = xEventGroupGetBits(EG1);
     if (b & (EG1_BIT_WIND_OVERRIDE | EG1_BIT_MOTOR_ALARM | EG1_BIT_CALIBRATING)) return false;
-    if (web_any_active_session()) return false;
+    if (web_any_active_session_except(s_exempt_token)) return false;  /* gh#41: exempt the triggering session */
     if (ui_pin_session_active())  return false;
     return true;
 }
@@ -775,6 +794,12 @@ void task_ota_client(void *pvParameters)
     uint32_t backoff_s = 0u;
     for (;;) {
         bool reached = ota_check_once();
+
+        /* gh#41: the triggering-session exemption lives only as long as that
+         * operator's update is still pending (deferred → retrying). Once it
+         * applied, was rejected, or nothing is offered, drop it so a later
+         * scheduled check evaluates the quiet gate for every session. */
+        if (!s_update_pending) s_exempt_token[0] = '\0';
 
         uint32_t sleep_s;
         if (s_apply_wait_s > 0u) {

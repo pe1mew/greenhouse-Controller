@@ -141,6 +141,21 @@ bool rota_cert_is_custom(void);
  */
 void task_ota_client(void *pvParameters);
 
+/**
+ * @brief Request an immediate manifest check now (POST /api/ota/check, R-F04).
+ *
+ * Wakes T16 to run a check without waiting for the periodic interval.
+ *
+ * @param exempt_token  Session token of the operator who triggered the check,
+ *        or NULL/"" for none (scheduled/config-driven checks pass NULL). While
+ *        the resulting update is pending, the apply quiet gate (R-P02) ignores
+ *        this one session, so a GUI-triggered update is not deferred by the
+ *        operator's own login (gh#41). Every other web session and an LCD PIN
+ *        session still block. The exemption is dropped once the update applies
+ *        or is no longer pending.
+ */
+void ota_client_request_check(const char *exempt_token);
+
 /* ── T16 observability (rota_tds.md §2.4, task 3.9) ────────────────────── */
 
 /**
