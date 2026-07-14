@@ -73,7 +73,8 @@ CONTRACT = "rota-contract-v1.1"
 # GitHub Releases transport (public repo; creating a release needs a write token).
 GH_REPO = "pe1mew/greenhouse-Controller"
 GH_API = "https://api.github.com/repos/" + GH_REPO
-TOKEN_FILE = REPO_ROOT / ".github" / "token.local"
+TOKEN_FILE = REPO_ROOT / ".github" / "token.local"   # legacy fallback
+_TOKEN_FILE = None   # dedicated release-token path (ROTA_TOKEN_FILE); set in main()
 
 # Same token rule the server enforces (rota_lib.php rota_valid_version).
 VERSION_RE = re.compile(r"^[0-9A-Za-z.\-]+$")
@@ -98,7 +99,7 @@ def load_env():
                 continue
             k, v = line.split("=", 1)
             cfg[k.strip()] = v.strip()
-    for k in ("ROTA_SSH", "ROTA_STORE", "ROTA_UNIT_TYPE",
+    for k in ("ROTA_SSH", "ROTA_STORE", "ROTA_UNIT_TYPE", "ROTA_TOKEN_FILE",
               "ROTA_MIN_VERSION", "ROTA_BASE_URL", "ROTA_CERT"):
         if os.environ.get(k):
             cfg[k] = os.environ[k]
@@ -126,12 +127,14 @@ def gh_token():
     tok = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if tok:
         return tok.strip()
-    if TOKEN_FILE.is_file():
-        tok = _read_token_file(TOKEN_FILE)
-        if tok:
-            return tok
-    die("no GitHub token: set GITHUB_TOKEN or create .github/token.local "
-        "(needs 'Contents: read and write' on %s; see bin/gh_issue.py)." % GH_REPO)
+    for cand in (_TOKEN_FILE, str(TOKEN_FILE)):     # dedicated release token, then legacy
+        if cand and pathlib.Path(cand).is_file():
+            tok = _read_token_file(pathlib.Path(cand))
+            if tok:
+                return tok
+    die("no GitHub token (needs 'Contents: Read and write' on %s): point "
+        "ROTA_TOKEN_FILE (in bin/.rota_release.env) at the token file, or set "
+        "GITHUB_TOKEN." % GH_REPO)
 
 
 def _gh_headers(extra=None):
@@ -762,6 +765,8 @@ def build_parser():
 def main():
     args = build_parser().parse_args()
     cfg = load_env()
+    global _TOKEN_FILE
+    _TOKEN_FILE = cfg.get("ROTA_TOKEN_FILE")     # dedicated release-token path, if configured
     if args.cmd == "release":                    # GitHub transport, no ota-store
         return cmd_release(args, cfg) or 0
     store = make_store(args, cfg)

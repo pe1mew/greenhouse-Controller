@@ -47,8 +47,11 @@ repo ledger), creates the release at tag `v<version>` on the current HEAD, and
 uploads the `.bin`, `.zip` and manifest as assets. A **full release** signals
 the server to point `soak`; a **`--prerelease`** stages the bytes without
 pointing any channel. Promotion to mainstream stays a manual server-side step.
-Creating the release needs a write token in `.github/token.local` (same as
-`bin/gh_issue.py`); the VPS-side retriever (`ota-store-update.sh`) is step 2.
+Creating the release needs a token in `.github/token.local` with **Contents:
+Read and write** on the repo — the Issues-scoped `gh_issue.py` token is *not*
+sufficient (add the Contents permission to that fine-grained PAT, or point
+`GITHUB_TOKEN` at one that has it). The VPS-side retriever
+(`ota-store-update.sh`) is step 2.
 
 > Security note: until firmware signing lands (`key_id`/R-A10), write access to
 > a release == ability to ship firmware to the *soak* bench. Protect the tag/
