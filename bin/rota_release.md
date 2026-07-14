@@ -29,6 +29,31 @@ device on `mainstream` (production) pulls it only after `promote` — and only i
 not held by a `pinned_version` in `devices.json` (R-T05: production stays pinned
 until a good soak cycle, unpinned on-site).
 
+## Pull-based deploy via GitHub Releases (recommended)
+
+Instead of scp-ing straight to the VPS, `release` publishes to a **GitHub
+Release** and the FOTA server pulls it (public repo → tokenless fetch). This
+keeps every VPS-write key off GitHub — the server pulls with its existing
+read-only access, mirroring how the server code already deploys.
+
+```
+bin/build_release.ps1
+python bin/rota_release.py release <version>              # -> GitHub Release (points soak)
+python bin/rota_release.py release <version> --prerelease # -> staged, soak NOT pointed
+```
+
+`release` authors the same `manifest-<version>.json` (correct `seq` from the
+repo ledger), creates the release at tag `v<version>` on the current HEAD, and
+uploads the `.bin`, `.zip` and manifest as assets. A **full release** signals
+the server to point `soak`; a **`--prerelease`** stages the bytes without
+pointing any channel. Promotion to mainstream stays a manual server-side step.
+Creating the release needs a write token in `.github/token.local` (same as
+`bin/gh_issue.py`); the VPS-side retriever (`ota-store-update.sh`) is step 2.
+
+> Security note: until firmware signing lands (`key_id`/R-A10), write access to
+> a release == ability to ship firmware to the *soak* bench. Protect the tag/
+> release path (branch protection); mainstream is never auto-pointed.
+
 ## One-time setup
 
 1. Copy the config template and fill it in (git-ignored):
@@ -51,7 +76,9 @@ until a good soak cycle, unpinned on-site).
 ## Commands
 
 ```
-python bin/rota_release.py publish 2.2.12            # publish to soak
+python bin/rota_release.py release 2.2.12            # GitHub Release -> soak (pull deploy)
+python bin/rota_release.py release 2.2.12 --dry-run  # preview, no token/network
+python bin/rota_release.py publish 2.2.12            # scp to ota-store -> soak (push deploy)
 python bin/rota_release.py publish 2.2.12 --dry-run  # preview, no changes
 python bin/rota_release.py promote 2.2.12            # promote soak -> mainstream
 python bin/rota_release.py status                    # show both channels
