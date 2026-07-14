@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.2.12] — 2026-07-14  (ROTA hardening — test build)
+
+Consolidates the heap/socket work done across the un-released 2.2.1–2.2.11 dev
+iterations into a clean build for ROTA soak testing on FDA4, and removes the
+temporary diagnostics that were added to hunt the socket leak.
+
+**Fixed.**
+- **TLS socket leak (gh#40).** With `keep_alive_enable=true`, the T14 status-POST
+  path called `esp_http_client_cleanup()` without a preceding
+  `esp_http_client_close()`, leaking one LWIP socket per post. Over uptime this
+  exhausted `CONFIG_LWIP_MAX_SOCKETS` (~15 min), after which **all** TLS —
+  including the T16 ROTA pull — failed `ESP_ERR_HTTP_CONNECT` / `errno` ENFILE.
+  Fix: `close()` before `cleanup()`, matching the log-upload path.
+
+**Changed.**
+- `CONFIG_MBEDTLS_DYNAMIC_BUFFER=y` — right-sizes the TLS record buffers per
+  record instead of holding a fixed 16 KB IN + 4 KB OUT in internal RAM, raising
+  the fresh internal-heap floor (~24→53 KB) and cutting the handshake transient.
+- `CONFIG_LWIP_MAX_SOCKETS` 10 → 16 — headroom for web + WebSocket + T14 + T16 +
+  SNTP/DNS against bursts / TIME_WAIT (the leak was the root cause; this is margin).
+
+**Added.**
+- Heap observability on `/api/status` — `heap_free_kb`, `heap_min_kb` (min since
+  boot), `heap_largest_kb` (largest contiguous block, the metric a TLS handshake
+  alloc actually needs). Supports the gh#23 / TC-09 pre-production heap-floor gate.
+
+**Removed.**
+- The gh#40 errno diagnostic instrumentation (`rota_status_t.last_err` /
+  `last_errno`, the `err` / `errno` fields on `/api/ota/check`, and the
+  `errno=` log detail). It captured `ENFILE` and pinpointed the leak; with the
+  root cause fixed it is no longer needed. `/api/ota/check` keeps the functional
+  `dl` / `apply` outcome fields.
+
+---
+
 ## [2.2.0] — 2026-07-13  (ROTA — internet-pull OTA)
 
 **Feature** — the controller can now pull firmware + web-asset updates from an

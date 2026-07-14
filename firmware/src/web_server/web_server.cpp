@@ -2589,12 +2589,11 @@ static esp_err_t rota_check_get_handler(httpd_req_t *req)
     int n = snprintf(out, sizeof(out),
         "{\"ok\":true,\"id\":\"%s\",\"last_check\":%ld,\"result\":\"%s\",\"result_code\":%ld,"
         "\"http\":%ld,\"checks\":%lu,\"offered\":\"%s\",\"running\":\"%s\","
-        "\"dl\":%ld,\"apply\":%ld,\"err\":\"%s\",\"errno\":%ld}",
+        "\"dl\":%ld,\"apply\":%ld}",
         id, (long)st.last_check_epoch, res, (long)st.last_result,
         (long)st.last_http, (unsigned long)st.checks_total,
         st.offered_ver, FIRMWARE_VERSION,
-        (long)st.last_dl, (long)st.last_apply,
-        st.last_err, (long)st.last_errno);
+        (long)st.last_dl, (long)st.last_apply);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, out, (n > 0 && n < (int)sizeof(out)) ? n : 0);
 }

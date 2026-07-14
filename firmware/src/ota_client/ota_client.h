@@ -158,8 +158,6 @@ typedef struct {
     char     offered_ver[40];   /**< Server-offered version at the last HTTP 200; "" otherwise. */
     int32_t  last_dl;           /**< Last download/verify audit sub (23): -1 none, 0 ok, 1 TLS/pin, 2 SHA/size, 3 downgrade, 4 min_version. */
     int32_t  last_apply;        /**< Last apply audit sub (24): -1 none, 0 committed, 1 deferred, 2 failed. */
-    char     last_err[24];      /**< esp_err_to_name() of the last transport failure ("" if none) — gh#40 diag. */
-    int32_t  last_errno;        /**< errno captured right after the last failed esp_http_client_perform (EMFILE/ENFILE => socket exhaustion). */
 } rota_status_t;
 
 /**

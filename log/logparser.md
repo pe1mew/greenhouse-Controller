@@ -1,8 +1,27 @@
 # logparser — Greenhouse Controller Log Parser
 
 **File:** `log/logparser.py`
-**Document version:** 1.8 (matches firmware 2.1.1 — log-upload HTTP code in audit row)
+**Document version:** 1.9 (matches firmware 2.2.0 — ROTA internet-pull OTA audit + config)
 **Requires:** Python 3.10+, standard library only (no pip dependencies)
+
+**What's new in 1.9** (matches firmware 2.2.0 — ROTA internet-pull OTA):
+- **ROTA audit events (`value_a=22/23/24`).** The T16 internet-pull OTA client
+  (`firmware/src/ota_client/ota_client.cpp`) writes a `LOG_SYSTEM` audit row at
+  each stage of a remote update — `22` check, `23` download/verify, `24` apply —
+  each carrying a `value_b` sub-code. A normal remote update reads
+  `22.1 → 23.0 → 24.0 → BOOT`; a daytime find that waits for the night window
+  reads `22.1 → 23.0 → 24.1` (then `24.0` when the window opens and the quiet
+  gate clears). See the new **ROTA audit sub-codes** table under SYSTEM.
+- **6 new SETPT parameter IDs (39-44)** for the ROTA config keys — `ota_enable`,
+  `ota_check_h`, `ota_url`, `ota_secret`, `ota_win_lo`, `ota_win_hi`. `ota_url`
+  (41) and `ota_secret` (42) follow the sensitive-value sentinel policy
+  (`value_a=1` = "set"; the URL/secret is never written to the CSV).
+- **Backfilled two decoders that shipped in the parser but were never documented
+  here:** SYSTEM `value_a=21` (RTC-vs-NTP divergence, T4, since 2.1.3/gh#37) and
+  SETPT ID `38` (`avg_win_wind`, since 2.1.0/gh#35).
+- **Corrected the unit** on SETPT `avg_win_t` (13) / `avg_win_rh` (14) from
+  *samples* to **min** — the parser has always rendered these config values in
+  minutes; the table was stale.
 
 **What's new in 1.8** (matches firmware 2.1.1, gh#34):
 - **T14 log-upload failure now records the HTTP status code in the audit row.** Previously all upload failures wrote `value_a=0`; from 2.1.1 onward `value_a` holds the HTTP response code (e.g. `413`) when the server rejected the upload, or `0` when the failure was pre-HTTP (connection, write, or heap error). Parser renders the code: `T14 log upload: HTTP 413`. SYSTEM table updated.
@@ -334,8 +353,8 @@ Configuration parameter changed.  Posted by:
 | 10 | hyst_rh | % | numeric, old → new |
 | 11 | rh_ctrl_en | (enabled/disabled) | boolean, old → new |
 | 12 | cr_priority | | numeric, old → new |
-| 13 | avg_win_t | samples | numeric, old → new |
-| 14 | avg_win_rh | samples | numeric, old → new |
+| 13 | avg_win_t | min | numeric, old → new |
+| 14 | avg_win_rh | min | numeric, old → new |
 | 15 | v_max | m/s | numeric, old → new |
 | 16 | dir_excl_low | ° | numeric, old → new |
 | 17 | dir_excl_high | ° | numeric, old → new |
@@ -359,6 +378,13 @@ Configuration parameter changed.  Posted by:
 | 35 | log_upload_m | min | numeric, old → new |
 | 36 | log_upload_rot | (enabled/disabled) | boolean, old → new |
 | 37 | wind_prot_en | (enabled/disabled) | boolean, old → new |
+| 38 | avg_win_wind | min | numeric, old → new (2.1.0, gh#35 — independent wind averaging window) |
+| 39 | ota_enable | (enabled/disabled) | boolean, old → new (2.2.0 ROTA) |
+| 40 | ota_check_h | h | numeric, old → new — daily ROTA check hour, local time (2.2.0 ROTA) |
+| 41 | ota_url | *(set)* | **sentinel** — ROTA manifest URL was changed (URL not logged; 2.2.0) |
+| 42 | ota_secret | *(set)* | **sentinel** — ROTA per-unit HMAC secret was changed (secret not logged; 2.2.0) |
+| 43 | ota_win_lo | h | numeric, old → new — apply-window start hour, local (lo==hi disables the window; 2.2.0) |
+| 44 | ota_win_hi | h | numeric, old → new — apply-window end hour, local time (2.2.0) |
 
 **Sensitive-value policy (since 2.0.0-a.6.35.5).** Param IDs 23-30 cover
 admin-sensitive settings — PIN rotations, WiFi credentials, the
@@ -368,7 +394,8 @@ URL. For these the firmware uses `value_a = 1` as a sentinel for "set" or
 CSV. The audit row stamps *who* changed *what kind of field* and *when*
 without making the SD card a credential exfil surface. The parser renders
 these rows as `<field> (set)` or `<field> (changed)` rather than the
-misleading `1 -> 0`.
+misleading `1 -> 0`. Param IDs 41-42 (`ota_url`, `ota_secret`) join the same
+sentinel set in 2.2.0 (ROTA).
 
 **Example output:**
 ```
@@ -470,7 +497,7 @@ should treat ALARM rows around boot or OTA windows with skepticism.
 ### SYSTEM
 
 Internal system events from various firmware tasks. `value_a` categorises the
-subtype; `value_b` is the payload. The current encoding (firmware 2.1.1)
+subtype; `value_b` is the payload. The current encoding (firmware 2.2.0)
 matches the LOG_SYSTEM table in `firmware/src/event_logger/event_logger.h`:
 
 | `value_a` | `value_b` | Initiator | Producer | Meaning |
@@ -506,6 +533,10 @@ matches the LOG_SYSTEM table in `firmware/src/event_logger/event_logger.h`:
 | **18** | KB | SYS | T4 data_manager | Coredump from previous panic detected in flash at boot (2.0.0-a.6.35.6+) — download via GUI Log → Diagnostics |
 | **19** | ≈ bytes/256 | WEB | T11 web_server | Admin downloaded the coredump via `GET /api/coredump/download` (2.0.0-a.6.35.6+) |
 | **20** | 0 | WEB | T11 web_server | Admin erased the coredump partition via `POST /api/coredump/erase` (2.0.0-a.6.35.6+) |
+| **21** | ± s (int16) | SYS | T4 data_manager | RTC (DS1307) vs NTP-synced clock divergence exceeds ±10 s — DS1307 ignored; check RTC/battery (2.1.3+, gh#37; rate-limited ~1/h) |
+| **22** | sub-code | SYS | T16 ota_client | ROTA update **check** outcome — see ROTA sub-code table below (2.2.0+) |
+| **23** | sub-code | SYS | T16 ota_client | ROTA **download/verify** outcome — see ROTA sub-code table below (2.2.0+) |
+| **24** | sub-code | SYS | T16 ota_client | ROTA **apply** outcome — see ROTA sub-code table below (2.2.0+) |
 
 **esp_reset_reason codes (value_a=5):**
 
@@ -521,6 +552,27 @@ matches the LOG_SYSTEM table in `firmware/src/event_logger/event_logger.h`:
 | 8 | DEEPSLEEP |
 | 9 | BROWNOUT |
 | 10 | SDIO |
+
+**ROTA audit sub-codes (`value_a=22/23/24`; `value_b` = sub-code):**
+
+| `value_a` | Stage | `value_b` sub-codes |
+|---|---|---|
+| **22** | check | 0 up to date · 1 update found · 2 server unreachable / HTTP error · 3 skipped (clock not ready / OTA busy) · 4 auth rejected by server |
+| **23** | download/verify | 0 OK · 1 TLS / pinned-cert failure · 2 SHA-256 / size mismatch · 3 downgrade / seq rejected · 4 min_version refusal |
+| **24** | apply | 0 committed — reboot scheduled · 1 deferred (night-window / quiet gate) · 2 apply failed |
+
+A normal remote update logs `22.1 → 23.0 → 24.0 → BOOT`. A daytime update that
+waits for the configured night window logs `22.1 → 23.0 → 24.1`, then `24.0`
+once the window opens and the quiet gate is clear (no window motion, no active
+web/LCD session; see `design/rota_tds.md` §4.4).
+
+**Example output (ROTA remote update, deferred to the night window):**
+```
+2026-07-13 14:02:04  [SYSTEM ]  System          ROTA check: update found
+2026-07-13 14:02:11  [SYSTEM ]  System          ROTA download/verify: OK
+2026-07-13 14:02:11  [SYSTEM ]  System          ROTA apply: deferred (night-window / quiet gate)
+2026-07-13 02:00:07  [SYSTEM ]  System          ROTA apply: committed — reboot scheduled
+```
 
 **Example output (real 1.18.0 crash-loop excerpt):**
 ```

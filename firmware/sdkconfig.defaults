@@ -118,6 +118,16 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 
 # ----------------------------------------------------------------------------
+# LWIP — socket pool (gh#40)
+# ----------------------------------------------------------------------------
+# 2.2.11 — the default of 10 is tight for this device: web server + WebSocket
+# push + T14 status-POST TLS + T16 ROTA TLS + SNTP/DNS all draw from it. The
+# real bug was a socket leak in T14 (fixed in 2.2.10), but 10 leaves little
+# headroom against bursts / concurrent GUI connections / TIME_WAIT. 16 gives
+# margin without meaningful RAM cost.
+CONFIG_LWIP_MAX_SOCKETS=16
+
+# ----------------------------------------------------------------------------
 # FATFS — Long File Name support
 # ----------------------------------------------------------------------------
 # Phase 2.11.1 (2.0.0-alpha.2.11.1) — ESP-IDF defaults CONFIG_FATFS_LFN_NONE=y,
