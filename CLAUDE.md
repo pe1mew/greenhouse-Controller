@@ -45,7 +45,7 @@ Production deployment at Herenboeren Willemshoeve (Soest). Field units in active
 | Changing the build pipeline | [bin/build_release.ps1](bin/build_release.ps1) — see manifest placeholder dance (Steps 0 and 3.5) and gh#9 history |
 | OTA-pushing to a unit | `python bin/ota_push.py <bin-path> --host <ip>` — current unit IPs in user-global memory; default host = 2344 soak unit; default PIN `12345678` |
 | Publishing a release to ROTA (internet-pull) | `python bin/rota_release.py publish <version>` (→ soak) / `promote <version>` (→ mainstream) / `status` — see [bin/rota_release.md](bin/rota_release.md); config in `bin/.rota_release.env`; server in the `greenhouse-Controller-FOTA-server` repo |
-| Filing / commenting / closing a GitHub issue | `python bin/gh_issue.py {list,show,create,comment,close,reopen,edit}` — token in `.github/token.local`. **No `gh` CLI on this machine.** |
+| Filing / commenting / closing a GitHub issue | `python bin/gh_issue.py {list,show,create,comment,close,reopen,edit}` — token in the operator's secret store, path via git-ignored `.github/gh_issue.local`. **No `gh` CLI on this machine.** |
 | Anything affecting greenhouse behaviour | [design/functionalRequirementsSpecification.md](design/functionalRequirementsSpecification.md); soak on 2344 before any production push |
 | Anything weird / unexpected | [memory/gotcha-log.md](memory/gotcha-log.md) — check before debugging from scratch |
 

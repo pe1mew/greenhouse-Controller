@@ -35,6 +35,10 @@ REST API v3 with a Personal Access Token.
    The env vars GITHUB_TOKEN / GH_TOKEN are also recognised if you'd rather
    keep the token there.
 
+   To keep the token in the operator's secret store instead, put its path in
+   .github/gh_issue.local (git-ignored) as `GH_ISSUE_TOKEN_FILE=<path>`, or set
+   the GH_ISSUE_TOKEN_FILE env var. The token needs Issues: Read and write.
+
 ## Usage
 
     python bin/gh_issue.py list                        # open issues
@@ -63,9 +67,11 @@ import urllib.request
 
 REPO   = "pe1mew/greenhouse-Controller"
 API    = f"https://api.github.com/repos/{REPO}"
-# Token resolution order: env GITHUB_TOKEN → env GH_TOKEN → .github/token.local
+# Token resolution: env GITHUB_TOKEN/GH_TOKEN → GH_ISSUE_TOKEN_FILE (env, or the
+# git-ignored .github/gh_issue.local pointer) → .github/token.local (legacy).
 ROOT   = pathlib.Path(__file__).resolve().parent.parent
-TOKEN_FILE = ROOT / ".github" / "token.local"
+TOKEN_FILE  = ROOT / ".github" / "token.local"      # legacy default
+CONFIG_FILE = ROOT / ".github" / "gh_issue.local"   # git-ignored (*.local) path pointer
 
 
 def _read_token_file(path: pathlib.Path) -> str:
@@ -89,29 +95,41 @@ def _read_token_file(path: pathlib.Path) -> str:
     return text.strip().replace("\x00", "").replace("\r", "").replace("\n", "")
 
 
+def _token_file() -> pathlib.Path:
+    """Resolve the token file path without hardcoding the secret-store location:
+    GH_ISSUE_TOKEN_FILE env → the git-ignored .github/gh_issue.local pointer
+    (line `GH_ISSUE_TOKEN_FILE=<path>`) → legacy .github/token.local."""
+    p = os.environ.get("GH_ISSUE_TOKEN_FILE")
+    if p:
+        return pathlib.Path(p)
+    if CONFIG_FILE.is_file():
+        for line in CONFIG_FILE.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = line.strip()
+            if line.startswith("GH_ISSUE_TOKEN_FILE=") and line.split("=", 1)[1].strip():
+                return pathlib.Path(line.split("=", 1)[1].strip())
+    return TOKEN_FILE
+
+
 def get_token() -> str:
     tok = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if tok:
         return tok.strip()
-    if TOKEN_FILE.exists():
+    tf = _token_file()
+    if tf.exists():
         try:
-            tok = _read_token_file(TOKEN_FILE)
+            tok = _read_token_file(tf)
         except OSError as e:
-            print(f"error: could not read {TOKEN_FILE}: {e}", file=sys.stderr)
+            print(f"error: could not read {tf}: {e}", file=sys.stderr)
             sys.exit(2)
         if not tok:
-            print(
-                f"error: {TOKEN_FILE} is empty or contained only whitespace.\n"
-                f"  Write the token on a single line, e.g.:\n"
-                f"    printf '%s' 'ghp_xxx' > .github/token.local",
-                file=sys.stderr,
-            )
+            print(f"error: {tf} is empty or contained only whitespace.", file=sys.stderr)
             sys.exit(2)
         return tok
     print(
-        f"error: no GitHub token found.\n"
-        f"  Set env GITHUB_TOKEN, or create {TOKEN_FILE} with the token on a single line.\n"
-        f"  See the docstring at the top of bin/gh_issue.py for setup steps.",
+        f"error: no GitHub token found (looked at {tf}).\n"
+        f"  Set GITHUB_TOKEN, or GH_ISSUE_TOKEN_FILE, or put\n"
+        f"  GH_ISSUE_TOKEN_FILE=<path> in .github/gh_issue.local (git-ignored).\n"
+        f"  The token needs Issues: Read and write.",
         file=sys.stderr,
     )
     sys.exit(2)

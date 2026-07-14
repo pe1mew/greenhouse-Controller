@@ -14,26 +14,33 @@ This directory holds the local-only GitHub Personal Access Token used by
      - **Metadata**: *Read-only* (auto-granted)
    - **Expiry**: pick a value you're comfortable with (90 days is sensible).
 
-2. Save the token to `.github/token.local` (this folder, file is `.gitignored`).
+2. Store the token. Resolution order is `GITHUB_TOKEN`/`GH_TOKEN` env →
+   `GH_ISSUE_TOKEN_FILE` (env, or the git-ignored `.github/gh_issue.local`
+   pointer) → `.github/token.local`. Two common setups:
 
-   **From Git Bash** (recommended — no BOM, no trailing newline):
+   **a. In the operator's secret store (current setup).** Keep the token file
+   outside this repo and point `gh_issue.py` at it with a git-ignored
+   `.github/gh_issue.local` (covered by the `*.local` ignore rule):
+
+   ```
+   GH_ISSUE_TOKEN_FILE=/path/in/operator-secret-store/gh_issue_token
+   ```
+
+   **b. In this folder (simple default).** Save the token to
+   `.github/token.local` (git-ignored). From **Git Bash** (no BOM):
 
    ```bash
-   printf '%s' 'ghp_xxxxxxxxxxxx' > .github/token.local
+   printf '%s' 'github_pat_xxxx' > .github/token.local
    ```
 
-   **From PowerShell** — beware the encoding default. Plain `> file` and
-   `Out-File` in Windows PowerShell 5.1 write **UTF-16 LE with a BOM**,
-   which trips naive UTF-8 readers. Always pass an explicit encoding:
+   From **PowerShell** — pass an explicit encoding (5.1 defaults to UTF-16+BOM):
 
    ```powershell
-   Set-Content -Path .github/token.local -Value 'ghp_xxxxxxxxxxxx' `
-               -Encoding utf8 -NoNewline
+   Set-Content -Path .github/token.local -Value 'github_pat_xxxx' -Encoding utf8 -NoNewline
    ```
 
-   (The `gh_issue.py` token reader is tolerant of common BOMs and CRLF
-   line endings — so a file written with the wrong encoding still works
-   — but a clean UTF-8 file is preferable.)
+   The reader tolerates BOMs and CRLF, so a wrongly-encoded file still works,
+   but a clean single-line UTF-8 file is preferable either way.
 
 3. Verify it works:
 
@@ -57,18 +64,21 @@ This directory holds the local-only GitHub Personal Access Token used by
 | `python bin/gh_issue.py close 6 --reason completed` | Close (with reason) |
 | `python bin/gh_issue.py reopen 6` | Reopen |
 
-The `GITHUB_TOKEN` and `GH_TOKEN` env vars are also recognised if you'd
-rather keep the token in your shell environment than in a file. The env vars
-take precedence over `.github/token.local`.
+The `GITHUB_TOKEN` / `GH_TOKEN` env vars hold the token value directly and take
+precedence over any file. `GH_ISSUE_TOKEN_FILE` (env, or the
+`.github/gh_issue.local` pointer) selects which file to read.
+
+The token that publishes **releases** (needs Contents: Read and write) is a
+separate token — see [`bin/rota_release.md`](../bin/rota_release.md).
 
 ## Token leak — what to do
 
-If `.github/token.local` ever leaks (accidentally committed, copied
+If the token file ever leaks (accidentally committed, copied
 somewhere visible, etc.):
 
 1. Immediately revoke the leaked token at
    <https://github.com/settings/tokens>.
-2. Generate a fresh one and rewrite `.github/token.local`.
+2. Generate a fresh one and rewrite the token file.
 3. If the leak was via git, also rewrite history via `git filter-repo` to
    purge the bytes — revocation alone makes the token unusable but the
    string is still visible in the repo's history.
