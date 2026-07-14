@@ -72,6 +72,7 @@ De kascontroller is een geautomatiseerd systeem dat het **klimaat in één kas**
 - Opent en sluit drie ramen automatisch om T en RH binnen de gewenste grenzen te houden
 - Schakelt automatisch tussen **dag-** en **nachtinstellingen** op basis van zonsopkomst en zonsondergang
 - Sluit alle ramen automatisch wanneer de wind te hard wordt (windbeveiliging)
+- Kan zichzelf **'s nachts automatisch bijwerken** met nieuwe software van de fabrikant — je hoeft hier niets voor te doen; na afloop herstart hij kort
 
 **Wat doet de kascontroller niet:**
 - Geen verwarming

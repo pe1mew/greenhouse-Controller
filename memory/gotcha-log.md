@@ -10,6 +10,30 @@ When something weird happens, check here BEFORE debugging from scratch. Entries 
 
 ---
 
+## 2026-07-14 — `-Werror=format-truncation`: enlarging a char buffer broke a DOWNSTREAM snprintf
+
+**Problem:** The 2.2.14 build failed with `error: '%s' directive output may be truncated writing up to 79 bytes into a region of size 74 [-Werror=format-truncation=]` at `web_server.cpp` — pointing at the `Content-Disposition` snprintf, a line I had NOT changed.
+
+**Root cause:** For the gh#39 filename change I enlarged `fname[64]` → `fname[80]`. GCC's `-Werror=format-truncation` computes a worst case for every `%s`: the downstream `snprintf(disp[96], "attachment; filename=\"%s\"", fname)` now assumed `%s` could write up to `sizeof(fname)-1 = 79` chars, and 23 (literal) + 79 + NUL > 96 → hard error. The *enlarged buffer*, not the changed line, tripped it.
+
+**Fix:** Size buffers to their real max, not "generously" — reverted to `fname[64]` (actual max ~47). **Lesson:** on a `-Werror=format-truncation` build, enlarging a `char[]` can break a *different* `snprintf` that formats it into a fixed buffer; the error points at the downstream line, not the one you changed.
+
+**Where it lives:** `firmware/src/web_server/web_server.cpp` (coredump download filename + `disp`).
+
+---
+
+## 2026-07-14 — testing the ROTA quiet gate / session exemption needs the night window OPEN
+
+**Problem:** The gh#41 hardware test (a session-triggered update must apply without deferring) looked like it FAILED — FDA4 held `apply=1` (deferred) for 3 min with the session active, as if the fix were broken.
+
+**Root cause:** `rota_apply()` gates on `if (!in_night_window(lo,hi) || !quiet_gate())` — the night window is tested FIRST and short-circuits `||`, so `quiet_gate()` (and the session exemption) never runs when the window is shut. FDA4's window was `22–04` and it was 16:44 local → deferred on the *window*, not the session. `eg1=0` (no gate bits) confirmed the gate itself was clear.
+
+**Fix:** To exercise the quiet gate / session logic, open the window first — `POST /api/ota/config {"win_lo":0,"win_hi":0}` (equal = disabled = apply any hour), test, then restore. With the window open the fix applied immediately while the session stayed active (confirmed). **Lesson:** before diagnosing a ROTA "downloads but won't install," check `GET /api/ota/config` win_lo/win_hi against the local hour — the window blocks *before* the quiet gate.
+
+**Where it lives:** `firmware/src/ota_client/ota_client.cpp` (`rota_apply`, `in_night_window`, `quiet_gate`).
+
+---
+
 ## 2026-07-14 — logrotate: validate as root, and group-writable /var/log needs `su`
 
 **Problem:** A new `/etc/logrotate.d/rota` config passed `logrotate --debug` when validated as `remko`, but failed under `sudo` (the real cron context) with `error: skipping "/var/log/rota-pull.log" because parent directory has insecure permissions ... Set "su" directive`.
