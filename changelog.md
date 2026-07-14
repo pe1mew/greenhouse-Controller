@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.2.14] — 2026-07-14  (gh#39 — honest coredump version attribution)
+
+**Fixed.**
+- **Coredump status/filename mislabelled a stale dump with the running version
+  (gh#39).** `/api/coredump/status` reported `"fw_ver":"<running>"` and the
+  download filename used the running version, so a crash dump left from an older
+  image (the coredump partition isn't erased on OTA) read as "the running
+  version crashed." At boot, the dump's ELF-SHA (from
+  `esp_core_dump_get_summary()`) is now compared to the running image's, and the
+  result is cached as a `stale` flag. `/api/coredump/status` reports
+  `"running_fw_ver"` (honestly the version running *now*) plus `"stale":<bool>`;
+  the download filename gains a `-stale` marker; and the Log-tab GUI shows "from
+  an EARLIER firmware (running X)" instead of "captured on fw X".
+
+**Changed.**
+- `/api/coredump/status` field `fw_ver` → **`running_fw_ver`** (an admin
+  diagnostic endpoint; the bundled GUI is updated in the same release). Any
+  external consumer reading `fw_ver` from this endpoint must switch to
+  `running_fw_ver`.
+
+**Decision.**
+- An OTA apply **does not** erase the coredump partition (operator choice —
+  gh#39 part 2). No crash dump is ever lost to an update; the new `stale` flag
+  keeps a lingering dump's attribution honest instead.
+
+---
+
 ## [2.2.13] — 2026-07-14  (gh#41 — GUI-triggered ROTA update no longer self-blocks)
 
 **Fixed.**

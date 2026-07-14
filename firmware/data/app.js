@@ -885,8 +885,12 @@ function refreshCoredumpStatus() {
         return;
       }
       if (d.present) {
-        el.textContent = 'Available — ' + d.size_bytes + ' bytes (' + d.size_kb + ' KB)' +
-                         (d.fw_ver ? ' • captured on fw ' + d.fw_ver : '');
+        // gh#39: running_fw_ver is the version running NOW; d.stale => the dump
+        // predates it (from an earlier firmware), so don't imply it crashed now.
+        const verTxt = d.stale
+          ? ' • from an EARLIER firmware (running ' + (d.running_fw_ver || '?') + ')'
+          : (d.running_fw_ver ? ' • captured on fw ' + d.running_fw_ver : '');
+        el.textContent = 'Available — ' + d.size_bytes + ' bytes (' + d.size_kb + ' KB)' + verTxt;
         bd.disabled = false;
         be.disabled = !g_cd_downloaded_this_session;
       } else {

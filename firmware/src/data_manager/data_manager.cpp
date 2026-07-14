@@ -48,6 +48,9 @@
 #include <esp_task_wdt.h>   /* WDT subscription (1.17.29 / gh#13) */
 #include <esp_timer.h>
 #include <esp_core_dump.h>  /* a.6.35.6 — boot-time check + erase from web GUI */
+#include <esp_app_desc.h>   /* gh#39 — esp_app_get_elf_sha256 for coredump staleness */
+#include <stdlib.h>         /* gh#39 — malloc/free for the coredump summary struct */
+#include <string.h>         /* gh#39 — strncmp for the ELF-SHA compare */
 #include <time.h>
 #include <sys/time.h>    /* settimeofday() — alpha.6.7, was via Arduino.h */
 #include <string.h>
@@ -175,6 +178,11 @@ static dm_ring_buf_t s_ring;
  * Since 2.0.0-a.6.35.6. */
 static volatile bool   s_coredump_present  = false;
 static volatile size_t s_coredump_size_b   = 0u;
+/* gh#39: true when the stored dump is from a DIFFERENT image than the one now
+ * running (i.e. it predates an OTA). Computed once at boot by comparing the
+ * dump's ELF-SHA to the running app's, so /api/coredump/status never mislabels
+ * a stale dump with the running firmware version. */
+static volatile bool   s_coredump_stale    = false;
 
 /** @brief Re-read RTC every this many main-loop ticks (≈ RTC_POLL_TICKS s). */
 #define RTC_POLL_TICKS  60u
@@ -1228,6 +1236,28 @@ void task_data_manager(void *pvParameters)
             if (esp_core_dump_image_get(&cd_addr, &cd_size) == ESP_OK && cd_size > 0u) {
                 s_coredump_present = true;
                 s_coredump_size_b  = cd_size;
+                /* gh#39: is this dump from the running image, or a stale one
+                 * left across an OTA? Compare the crashed image's ELF-SHA (from
+                 * the dump summary) with the running app's — different => stale. */
+                {
+                    esp_core_dump_summary_t *sum =
+                        (esp_core_dump_summary_t *)malloc(sizeof(*sum));
+                    if (sum != NULL && esp_core_dump_get_summary(sum) == ESP_OK) {
+                        char run_sha[APP_ELF_SHA256_SZ] = {0};
+                        (void)esp_app_get_elf_sha256(run_sha, sizeof(run_sha));
+                        s_coredump_stale =
+                            (strncmp((const char *)sum->app_elf_sha256, run_sha,
+                                     APP_ELF_SHA256_SZ) != 0);
+                        ESP_LOGW(TAG, "coredump elf-sha=%s running=%s -> %s",
+                                 (const char *)sum->app_elf_sha256, run_sha,
+                                 s_coredump_stale ? "STALE (predates running fw)"
+                                                  : "matches running fw");
+                    } else {
+                        s_coredump_stale = false;   /* cannot parse -> not stale */
+                        ESP_LOGW(TAG, "coredump summary unavailable -> stale=false");
+                    }
+                    free(sum);
+                }
                 ESP_LOGW(TAG, "Coredump from previous boot detected: %u bytes at flash 0x%06x",
                          (unsigned)cd_size, (unsigned)cd_addr);
 
@@ -1700,6 +1730,11 @@ size_t dm_coredump_size_bytes(void)
     return s_coredump_size_b;
 }
 
+bool dm_coredump_stale(void)
+{
+    return s_coredump_stale;
+}
+
 /** @brief Drop the cached coredump flag after T11 erases the partition. See data_manager.h. */
 void dm_coredump_clear(void)
 {
@@ -1710,6 +1745,7 @@ void dm_coredump_clear(void)
      * Alarms-card badge disappears. */
     s_coredump_present = false;
     s_coredump_size_b  = 0u;
+    s_coredump_stale   = false;
     ESP_LOGI(TAG, "dm_coredump_clear: cached state reset (post-erase)");
 }
 

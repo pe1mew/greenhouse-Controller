@@ -1961,14 +1961,20 @@ static esp_err_t coredump_status_handler(httpd_req_t *req)
 
     const bool   present = dm_coredump_present();
     const size_t bytes   = dm_coredump_size_bytes();
+    const bool   stale   = present && dm_coredump_stale();  /* gh#39 */
 
-    char body[160];
+    /* gh#39: `running_fw_ver` is the version RUNNING NOW, not the version that
+     * produced the dump; `stale` is true when the dump predates the running
+     * image (its ELF-SHA differs), so an old dump is never read as "the running
+     * version crashed". */
+    char body[200];
     int n = snprintf(body, sizeof(body),
         "{\"ok\":true,\"present\":%s,\"size_bytes\":%u,\"size_kb\":%u,"
-         "\"fw_ver\":\"" FIRMWARE_VERSION "\"}",
+         "\"running_fw_ver\":\"" FIRMWARE_VERSION "\",\"stale\":%s}",
         present ? "true" : "false",
         (unsigned)bytes,
-        (unsigned)((bytes + 1023u) / 1024u));
+        (unsigned)((bytes + 1023u) / 1024u),
+        stale ? "true" : "false");
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, body, (n > 0) ? (size_t)n : 0);
 }
@@ -2039,9 +2045,13 @@ static esp_err_t coredump_download_handler(httpd_req_t *req)
 
     /* Versioned + timestamped filename so the operator's Downloads folder
      * disambiguates dumps from multiple panic cycles. */
+    /* gh#39: name reflects the RUNNING version; append -stale when the dump
+     * predates it, so a downloaded file is never mistaken for a running-version
+     * crash. */
     char fname[64];
     snprintf(fname, sizeof(fname),
-             "coredump-" FIRMWARE_VERSION "-%lu.bin",
+             "coredump-" FIRMWARE_VERSION "%s-%lu.bin",
+             dm_coredump_stale() ? "-stale" : "",
              (unsigned long)time(NULL));
     char disp[96];
     snprintf(disp, sizeof(disp), "attachment; filename=\"%s\"", fname);

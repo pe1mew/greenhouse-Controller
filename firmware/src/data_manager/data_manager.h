@@ -434,6 +434,13 @@ bool dm_coredump_present(void);
 size_t dm_coredump_size_bytes(void);
 
 /**
+ * @brief True when a stored coredump is STALE — from a different image than the
+ *        one now running (it predates an OTA). False when no dump is present or
+ *        the dump matches the running firmware. Computed once at boot (gh#39).
+ */
+bool dm_coredump_stale(void);
+
+/**
  * @brief Clear the cached "coredump present" flag.
  *
  * Called by T11 immediately after a successful esp_core_dump_image_erase()
