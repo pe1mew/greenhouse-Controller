@@ -696,16 +696,16 @@ In de System-tab staat ook de sectie **OTA update** met twee upload-knoppen: é�
 
 #### Remote update (ROTA) — automatische internet-update
 
-Naast de handmatige upload hierboven kan de controller firmware- en asset-updates **zelf van een internet-updateserver ophalen** (ROTA — *Remote OTA*, vanaf firmware 2.2.0). Zo kan een unit achter NAT (zoals de productie-unit) zichzelf bijwerken zonder bezoek ter plaatse. De sectie **Remote update (ROTA)** in de System-tab is **alleen zichtbaar voor de Beheerder**; de Boer kan deze instellingen niet zien of wijzigen.
+Naast de handmatige upload hierboven kan de controller firmware- en asset-updates **zelf ophalen** van een internet-updateserver die door de **fabrikant wordt beheerd** (ROTA — *Remote OTA*). Zo werkt een unit zichzelf bij zonder bezoek ter plaatse — ook een unit die achter NAT staat. De sectie **Remote update (ROTA)** in de System-tab is **alleen zichtbaar voor de Beheerder**; de Boer kan deze instellingen niet zien of wijzigen.
 
 | Veld | Beschrijving | Bereik / standaard |
 |---|---|---|
 | **Enable** | Zet automatische internet-updates aan of uit. Uit = de controller neemt nooit contact op met de updateserver. | uit (standaard) |
 | **Check interval (h)** | Hoe vaak de controller de updateserver controleert op een nieuwere versie, in uren. | 1–168, standaard 24 |
 | **Server URL** | Basis-URL van de updateserver. **Moet `https://` zijn.** | — |
-| **Secret** | Per-unit gedeeld geheim waarmee de controller zich bij de server authenticeert (HMAC). **Wordt nooit getoond**; laat leeg om het opgeslagen geheim te behouden. | — |
+| **Secret** | Toegangssleutel voor de updateserver, door de fabrikant verstrekt. **Wordt nooit getoond**; laat leeg om de opgeslagen waarde te behouden. | — |
 | **Apply window (local h)** | Nachtvenster (lokale uren) waarin een gedownloade update geïnstalleerd mag worden en de controller mag herstarten. Beide velden gelijk = venster uitgeschakeld (installeren zodra geverifieerd). | 0–23, standaard 02–04 |
-| **Server cert (PEM)** | Optioneel: plak een PEM-certificaat om de server vast te pinnen in plaats van het ingebouwde standaardcertificaat. Laat leeg om het huidige te behouden. | — |
+| **Server cert (PEM)** | Optioneel servercertificaat, door de fabrikant verstrekt. Laat leeg om het huidige te behouden. | — |
 | **Last check** | Alleen-lezen: uitkomst van de laatste controle (bijv. *Up to date*, *Update available*, *Server unreachable*), de draaiende en aangeboden versie, en het tijdstip. | — |
 | **Check now** | Vraagt de controller nu direct de updateserver te controleren. | — |
 
@@ -713,9 +713,9 @@ Klik **Apply ROTA settings** om op te slaan (validatie-dan-schrijven: een lege *
 
 **Werking.** Als ROTA aanstaat controleert de controller periodiek de server. Vindt hij een nieuwere, geldige release, dan downloadt en **verifieert** hij beide bestanden (SHA-256 + grootte) vóór er iets naar flash wordt geschreven. De installatie (en herstart) gebeurt **alleen binnen het nachtvenster** en alleen als het rustig is (geen bewegende ramen, geen wind- of motoralarm, geen actieve web- of LCD-sessie). Buiten die voorwaarden wordt de update **uitgesteld** en de volgende nacht opnieuw geprobeerd. Zolang een geverifieerde update op zijn venster wacht, verschijnt er een blauwe badge **Update pending** in het Alarms-kaartje.
 
-> **Beveiliging.** De controller pint het (zelf-ondertekende) servercertificaat en authenticeert zich met een per-unit HMAC. Een verkeerd geheim levert geen update op; een server met een ander certificaat wordt geweigerd. Volledige technische beschrijving: `design/rota_tds.md`.
+**Kanalen.** Een unit kan meedraaien op het **hoofdkanaal** (de reguliere, vrijgegeven versie) of op het **ontwikkelkanaal** (*soak* — nieuwe versies die eerst op een testunit worden beproefd voordat ze breed worden uitgerold). Welk kanaal een unit volgt, wordt door de fabrikant **op de server** ingesteld — niet op de unit zelf. De controller haalt eenvoudig de versie op die de server voor die unit aanbiedt.
 
-> **Provisioning.** Een unit moet vooraf een `ota_secret` krijgen (via deze pagina of het provisioning-script) én in het `devices.json`-register op de server worden opgenomen.
+> De verbinding met de updateserver is beveiligd en de fabrikant beheert de server en de toegang van elke unit. Als Beheerder hoeft u alleen ROTA in te schakelen en desgewenst het nachtvenster in te stellen; de overige verbindingsgegevens worden door de fabrikant verstrekt.
 
 ---
 
