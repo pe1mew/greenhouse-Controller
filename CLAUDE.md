@@ -7,7 +7,7 @@ Auto-loaded by Claude Code into every session in this repo. Keep terse; deeper m
 
 ESP32-S3 firmware for a greenhouse ventilation controller. ESP-IDF 5.5 via PlatformIO (`framework=espidf`, `espressif32@6.12.0`). FreeRTOS task-graph design. Custom partition table (dual app banks + dual LittleFS + coredump). Dutch operator manuals (boer + beheerder).
 
-Production deployment at Herenboeren Willemshoeve (Soest). Field units in active service: **5C88** (production) and **2344** (soak / bench). Current addresses and access routes live in user-global memory.
+Production deployment at Herenboeren Willemshoeve (Soest). Field units in active service: **5C88** (production), **FDA4** (ROTA dev/test/soak bench unit), and **2344** (plant-model training soak — **must never run ROTA firmware**). Current addresses and access routes live in user-global memory.
 
 ## Hard constraints
 

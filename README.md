@@ -13,15 +13,16 @@ An embedded controller for automated ventilation management of a single greenhou
 - Local user interface: 4×4 membrane keypad and 16×2 LCD with RGB status backlight (blue = OK, red = critical)
 - PIN-based access control with two roles — Farmer (4-digit PIN) and Admin (8-digit PIN), salted-SHA-256 hashed
 - Battery-backed DS1307 RTC for accurate timestamping; NTP sync when WiFi is available
-- Event logging to internal NVS ring buffer; optional SD card for extended retention (CSV, parseable with the supplied `logparser`)
-- Built-in web GUI (HTML/JS served from LittleFS) with WebSocket live status, REST API, and OTA firmware/asset updates
+- Event logging to SD card in CSV format — climate readings, relay actions, a config-change audit trail, and system events — parseable with the supplied `logparser`
+- Built-in web GUI (HTML/JS served from LittleFS) with WebSocket live status, REST API, and push-OTA firmware/web-asset updates
+- Remote OTA (ROTA): optional autonomous internet-pull updates — the controller authenticates to a configured server (per-unit HMAC, pinned server certificate), verifies each release against its manifest (SHA-256 + size) before flashing, and installs during a night window with anti-downgrade protection
 - Status LEDs: RGB (system status), heartbeat (firmware alive)
 
 ## Hardware
 
 | Component | Details |
 |-----------|---------|
-| Microcontroller | WEMOS LOLIN S3 (ESP32-S3, dual-core 240 MHz, 8 MB flash, 8 MB PSRAM) |
+| Microcontroller | WEMOS LOLIN S3 (ESP32-S3, dual-core 240 MHz, 16 MB flash, 8 MB PSRAM) |
 | Wind sensor | Seeed SenseCAP S200 — ultrasonic, Modbus RS485, 0–60 m/s |
 | T/RH sensor | FG6485A — Modbus RS485, 9–36 VDC |
 | RS485 transceiver | MAX485 (TTL ↔ RS485 conversion) |
@@ -117,6 +118,7 @@ PDFs are generated from the Markdown sources by [`manual/build_pdf.py`](manual/b
 | [Logparser manual](log/logparser.md) | CSV log format reference and `logparser.py` usage |
 | [Web UI Mock Server](webUiMock/README.md) | How to develop the web GUI without the device |
 | [Installation Wiring Guide](realisation/installation.md) | Field wiring of sensors, motor box, mains and network |
+| [Remote OTA (ROTA) design](design/rota_tds.md) | Internet-pull OTA — server contract, mutual-auth security model, night-window apply (branch `rota`; see also [`BRANCH_NOTES.md`](BRANCH_NOTES.md)) |
 | [Changelog](changelog.md) | Per-version firmware change log |
 
 ## Getting Started — Build & Flash the Firmware

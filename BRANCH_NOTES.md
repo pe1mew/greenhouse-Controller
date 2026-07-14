@@ -1,68 +1,96 @@
-# Branch: `dev/2.0.0-esp-idf` — full ESP-IDF migration
+# Branch: `rota` — remote (internet-pull) OTA
 
 ## What this branch is
 
-This branch hosts the **v2.0.0 migration** of the greenhouse-Controller firmware from the **arduino-esp32** framework to **pure ESP-IDF** (PlatformIO `framework = espidf`). The migration plan lives at `~/.claude/plans/do-not-make-changes-toasty-salamander.md` and is summarised in the upcoming `[2.0.0]` section of `changelog.md`.
+This branch adds **ROTA** — remote, internet-pull OTA — to the
+greenhouse-Controller firmware. A new FreeRTOS task (**T16**) periodically
+checks a configured OTA server over the internet, downloads and verifies a
+release (firmware + web assets), and installs it during a night window — no
+farm visit and no LAN push required. It runs **alongside** the existing
+push-OTA (web-GUI upload) path, which is unchanged.
 
-The last released arduino-esp32 build is **v1.20.3**, immutably preserved by the annotated git tag `v1.20.3-arduino-final`. That tag is the rollback point for the entire migration: as long as it exists, the full pre-migration state can be checked out at any time.
+- Technical design: [`design/rota_tds.md`](design/rota_tds.md)
+- Implementation plan: [`design/rotaImplementationPlan.md`](design/rotaImplementationPlan.md)
+- Feasibility study: [`design/remoteOTAstudy.md`](design/remoteOTAstudy.md)
+- Operator-facing summary: the `[2.2.0]` section of [`changelog.md`](changelog.md)
+
+This work builds on the **completed v2.0.0 ESP-IDF migration** (arduino-esp32 →
+pure ESP-IDF, `framework = espidf`), which shipped and is the baseline on
+`main`. The current firmware line is **2.2.x**.
+
+## Three-repository split
+
+ROTA spans three repositories:
+
+| Repo | Role |
+|---|---|
+| **greenhouse-Controller** (this repo) | Firmware T16 pull client + System-tab web-GUI config |
+| **greenhouse-Controller-FOTA-server** | OTA server — PHP under nginx (`manifest.php`, `download.php`) |
+| Operator's secret store (private) | Per-unit `ota_secret`s and the server key/certificate material |
 
 ## Why a separate branch
 
-- The 1.20.3 binary running on Units 1 and 2 is **production**. It must not be disturbed by experimental work.
-- The migration is **multi-phase, multi-week**. A direct in-place rewrite on `main` would leave the project broken for an indeterminate period.
-- A separate branch allows **independent acceptance testing** of each phase (`2.0.0-alpha.0` through `2.0.0-rc.1`) on bench hardware before any production unit is touched.
+- **5C88** is production at Herenboeren Willemshoeve (Soest). It must not be
+  disturbed by in-development remote-update code. 5C88 is behind NAT
+  (outbound-only) with no remote push path — production updates queue until
+  someone is on-site.
+- ROTA is a multi-part feature — device client, server, and a mutual-auth
+  security model — developed and soak-tested on a bench unit before any
+  production exposure.
+- Branch protection on `main` rejects merge commits and force-pushes; this
+  branch **rebases + fast-forwards** into `main` when ROTA is production-ready.
+
+## Security model (summary — full detail in the TDS)
+
+- The server's self-signed certificate is **pinned by SHA-256**; a server
+  presenting any other certificate is rejected.
+- The device authenticates with a **per-unit HMAC-SHA256** header (`X-OTA-Auth`,
+  ±300 s skew window + nonce replay cache). Wrong secret → no manifest.
+- **Anti-downgrade**: a release is accepted only if its version is newer **and**
+  its `seq` beats the persisted NVS high-water mark; `min_version` is honored.
+- Both artefacts are downloaded into PSRAM and checked against the manifest
+  SHA-256 + size **before any flash write** (mismatch aborts; the old bank boots).
+- Apply/commit/reboot happen **only** inside the night window behind a quiet gate
+  (no window motion; no wind override / motor alarm / calibration; no active web
+  or LCD session), reusing the T13 push-OTA machinery and its 3-fail rollback.
+- Firmware signing is deferred (a `key_id` field is reserved).
+
+## Test / soak discipline
+
+- Dev + soak unit: **FDA4** (bench).
+- **Never** flash unit **2344** with ROTA firmware — 2344 is reserved for
+  plant-model training and must not run remote-update code.
+- Current test build: **2.2.12** (see [`changelog.md`](changelog.md)).
+- **Paired-commit invariant**: firmware and web assets must publish/commit
+  together — a firmware-only push strands the asset partition. Verify a ROTA
+  install by reading **both** `fw_ver` and `asset_version` from `/api/status`.
 
 ## Working policy — `main` vs this branch
 
-| Concern | `main` (1.20.x line) | `dev/2.0.0-esp-idf` (this branch) |
+| Concern | `main` (2.2.x baseline) | `rota` (this branch) |
 |---|---|---|
-| Active development | Maintenance only | Active migration |
-| New features | No | Phase-by-phase |
-| Bug fixes | Yes (1.20.4+) | Cherry-picked from `main` with `-x` |
-| Forward merges | None planned | Final fast-forward to `main` at v2.0.0 |
-| Force-pushes | Blocked by GitHub branch protection | Blocked by GitHub branch protection |
+| Active development | Maintenance / production fixes | ROTA feature work |
+| New features | No | ROTA + supporting changes |
+| Forward merge | — | Rebase + fast-forward into `main` when production-ready |
+| Force-pushes | Blocked by branch protection | Blocked by branch protection |
 | Linear history | Required | Required |
 
-### Backport discipline
+## Predecessor — the v2.0.0 ESP-IDF migration
 
-Critical bugs found on production (Units 1/2 running 1.20.x) get fixed in this order:
+The immediately-prior major effort was the arduino-esp32 → ESP-IDF migration
+(the `dev/2.0.0-esp-idf` branch), now shipped and merged. Its rollback anchor —
+the last arduino-esp32 build — remains the annotated tag
+`v1.20.3-arduino-final`. The phase-by-phase migration narrative is in the
+`[2.0.0]` section of `changelog.md`.
 
-1. Fix on `main`. Bump 1.20.x patch version. Release.
-2. Cherry-pick the same commit onto `dev/2.0.0-esp-idf` with `git cherry-pick -x <sha>`.
-3. The `-x` flag annotates the cherry-pick commit with the original SHA so future bisecting against `main` is straightforward.
-4. If the fix conflicts with migration work already on this branch, resolve by hand. **Never drop the fix**; either rewrite it for the new architecture or open a tracking issue for it.
-
-## Phase progression
-
-Each phase produces a tagged pre-release. The full sequence:
-
-| Tag | Phase | Description |
-|---|---|---|
-| `v2.0.0-alpha.0` | 0 | Branch + scaffolding (this commit) |
-| `v2.0.0-alpha.1` | 1 | `framework = espidf` flip + smoke boot |
-| `v2.0.0-alpha.2` | 2 | Driver layer (10 drivers, dependency order) |
-| `v2.0.0-alpha.3` | 3 | Network stack (`WiFi` → `esp_wifi`) |
-| `v2.0.0-alpha.4` | 4 | HTTPS client (`HTTPClient` → `esp_http_client`) — gh#23 payoff |
-| `v2.0.0-alpha.5` | 5 | Web server (`ESPAsyncWebServer` → `esp_http_server`) — biggest chunk |
-| `v2.0.0-alpha.6` | 6 | Misc Arduino cleanup (NeoPixel, GPIO, millis, headers) |
-| `v2.0.0-rc.1` | 7 | 14-day verification soak on bench unit |
-| `v2.0.0` | 8 | Merge + release (fast-forward into `main`) |
-
-## How to switch back to the 1.20.3 production line
+## How to switch back to the released line
 
 ```bash
-git checkout main                             # 1.20.x maintenance line
-# or, for the exact 1.20.3 release state:
-git checkout v1.20.3-arduino-final
+git checkout main          # 2.2.x baseline (ESP-IDF, production line)
 ```
-
-## Decision log (chronological)
-
-- **2026-05-17** — branch created from `main` at commit `d8436ad` (1.20.3 release commit). Build system decision: PlatformIO with `framework = espidf` (not native `idf.py`). Backport policy: cherry-pick from main to dev branch with `-x`.
 
 ## See also
 
-- Migration plan: see the `2.0.0` section of `changelog.md` (full phase-by-phase narrative)
-- gh#23 (mbedTLS root cause) — the technical motivation
-- gh#27 (heap-sample timing) — orthogonal alternative, may close once Phase 4 lands
-- Tag `v1.20.3-arduino-final` — pre-migration anchor
+- [`design/OTAimplementation.md`](design/OTAimplementation.md) — push-OTA reference (11 sections) + §12 ROTA addendum
+- [`design/rota_tds.md`](design/rota_tds.md) — ROTA technical design spec
+- `changelog.md` — `[2.2.0]` (ROTA feature) and `[2.2.12]` (ROTA hardening test build)
