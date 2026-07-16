@@ -692,6 +692,11 @@ Geldt voor zowel LCD als webinterface. Een te lange waarde (bv. 60 min) is een v
 
 #### OTA — firmware-update
 
+![SCHERMAFBEELDING: tab System - OTA/ROTA, ingelogd als Beheerder](imagesBeheerder\kasControllerWebGUISystemTabBeheerder.png)
+
+*Figuur 11: System-tab, ingelogd als Beheerder — alle systeem-instellingen op één plek: OTA instellingen*
+
+
 In de System-tab staat ook de sectie **OTA update** met twee upload-knoppen: één voor het firmware-binair (`.bin`) en één voor de web-assets-ZIP. De volledige update-procedure inclusief verificatie-stappen staat in [§14 Firmware-update / OTA](#firmware-update--ota).
 
 #### Remote update (ROTA) — automatische internet-update
@@ -723,7 +728,7 @@ Klik **Apply ROTA settings** om op te slaan (validatie-dan-schrijven: een lege *
 
 ![SCHERMAFBEELDING: tab Access, ingelogd als Beheerder](imagesBeheerder\kasControllerWebGUIAccessTab.png)
 
-*Figuur 11: Access-tab — PIN-beheer voor beide gebruikersrollen*
+*Figuur 12: Access-tab — PIN-beheer voor beide gebruikersrollen*
 
 In de Access-tab wijzigt u de PIN-code van de Boer en die van de Beheerder. Zie [§9 PIN-management voor de Beheerder (webinterface, Access-tab)](#pin-management-voor-de-beheerder-webinterface-access-tab) voor de volledige procedure en de regels rondom lockout.
 
@@ -744,7 +749,7 @@ De **Logout**-knop verschijnt op de Access-tab wanneer u ingelogd bent (Boer of 
 
 ![SCHERMAFBEELDING: tab Log, ingelogd als Beheerder](imagesBeheerder\kasControllerWebGUILogTabBeheerder.png)
 
-*Figuur 12: Log-tab — SD-kaart status en logbestand-download*
+*Figuur 13: Log-tab — SD-kaart status en logbestand-download*
 
 De Log-tab biedt toegang tot het event-logbestand-systeem. De kascontroller schrijft alle relevante gebeurtenissen (sensor-readings, raam-bewegingen, mode-wisselingen, alarmen, configuratie-wijzigingen) naar de **SD-kaart** in CSV-formaat. De firmware roteert automatisch naar een nieuw bestand bij 512 KB en bewaart maximaal 10 bestanden.
 
@@ -803,7 +808,7 @@ Zie [§14 — Coredump ophalen na een panic](#coredump-ophalen-na-een-panic-vana
 
 ![SCHERMAFBEELDING: tab Web, ingelogd als Beheerder](imagesBeheerder\kasControllerWebGUIWebTabBeheerder.png)
 
-*Figuur 13: Web-tab — configuratie van status-rapportage naar een externe web-server*
+*Figuur 14: Web-tab — configuratie van status-rapportage naar een externe web-server*
 
 De kascontroller kan zijn actuele toestand periodiek naar een **externe web-server** sturen. Op die web-server draait een dashboard dat dezelfde gegevens toont als de eigen webinterface — zo kan iemand op afstand toch de werking van de kas volgen. Daarnaast wordt het laatst-gesloten logbestand van de SD-kaart één keer per dag (en/of bij elke logrotatie) naar dezelfde server geüpload.
 
@@ -811,7 +816,7 @@ De feature staat **standaard uit**. Inschakelen gebeurt volledig in deze tab.
 
 ![ComponentDiagramStatusWebsite](imagesBeheerder\StatusWebsiteComponentDiagram.png)
 
-*Figuur 14: Overzicht Status-website*
+*Figuur 15: Overzicht Status-website*
 
 #### Velden op tab Web
 
@@ -1225,7 +1230,7 @@ Symptomen:
 
 ![FOTO: CR2032 batterijhouder op het microprocessorboard, met de juiste oriëntatie + plus zichtbaar](imagesBeheerder\kasControllerRTCBackupBattery.png)
 
-*Figuur 15: R2032 batterijhouder op het microprocessorboard, met de juiste oriëntatie + plus zichtbaar*
+*Figuur 16: R2032 batterijhouder op het microprocessorboard, met de juiste oriëntatie + plus zichtbaar*
 
 1. Voeding van kascontroller wegnemen (stekker of zekering uit)
 2. Open de kast van de controller; houdt rekening met de flat-cable van het toetenbord
@@ -1432,7 +1437,7 @@ Zie [boer-handleiding §14](handleiding.md#14-onderhoud--wat-de-boer-zelf-doet).
 
 ![FOTO: microprocessorboard met RESET-knop en BOOT-knop duidelijk gemarkeerd](images\LolinS3Reset.png)
 
-*Figuur 16: microprocessorboard met RESET-knop*
+*Figuur 17: microprocessorboard met RESET-knop*
 
 #### Window Cal bij opstart — wanneer wel, wanneer niet
 
@@ -1493,7 +1498,7 @@ Voor algemene uitleg en consequenties: zie [boer-handleiding §15](handleiding.m
 
 ![Hotraco RRK-3 motorbox met de drie schakelaars per kanaal duidelijk in beeld; markeer welke positie hoort bij "automatisch" en welke bij "handbediening"](images\RBMotorControllerKnoppenstand.png)
 
-*Figuur 17: Hotraco RRK-3 motorbox met de drie schakelaars per kanaal*
+*Figuur 18: Hotraco RRK-3 motorbox met de drie schakelaars per kanaal*
 
 ---
 
