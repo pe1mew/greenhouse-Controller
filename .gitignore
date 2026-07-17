@@ -12,14 +12,15 @@
 
 # Release artefacts — binaries + web-asset bundles must not enter git.
 # Each tagged release directory (bin/<version>/) keeps its release-notes.md
-# (the source-of-truth evidence trail), but the .bin / .elf / .zip outputs
-# are local-only — they are reproducible from the matching firmware/ +
+# (the source-of-truth evidence trail), but the .bin / .elf / .zip / .map
+# outputs are local-only — they are reproducible from the matching firmware/ +
 # firmware/data/ checkout at the tagged commit via `bin/build_release.ps1`.
 # Committing them bloats the repo without adding traceable value, and the
-# .elf files in particular can leak debug strings + symbol names.
+# .elf / .map files in particular can leak debug strings + symbol names.
 bin/**/*.bin
 bin/**/*.elf
 bin/**/*.zip
+bin/**/*.map
 
 # Scratch dotfiles produced by curl-based acceptance scripts running out of
 # the repo root (cookie jars, JSON request bodies, serial-capture logs).

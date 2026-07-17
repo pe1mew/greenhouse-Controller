@@ -70,8 +70,11 @@ daily/rotation trigger. Verify a new file lands in the status site's
 
 | Artefact | Size (bytes) | SHA-256 |
 |---|---|---|
-| `greenhouse-controller-2.2.15.bin` | _(filled after build)_ | _(filled after build)_ |
-| `web-assets-2.2.15.zip` | _(filled after build)_ | _(filled after build)_ |
+| `greenhouse-controller-2.2.15.bin` | 1379072 | `e14d276dad2d4461feb72209923906076febf3cd4312e070f09fd2b059febe18` |
+| `web-assets-2.2.15.zip` | 115725 | `3e69638d5c44354ee071b583444f6652da593518ce3ede0a11e929112f572fcc` |
+
+Flash: 1 378 669 B of 2 097 152 (65.7 %). Web assets unchanged from 2.2.14 (the
+zip differs only by the `asset_version` stamp in `manifest.json`).
 
 ## Verify post-OTA
 
