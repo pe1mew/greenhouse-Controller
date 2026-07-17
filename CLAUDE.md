@@ -7,7 +7,7 @@ Auto-loaded by Claude Code into every session in this repo. Keep terse; deeper m
 
 ESP32-S3 firmware for a greenhouse ventilation controller. ESP-IDF 5.5 via PlatformIO (`framework=espidf`, `espressif32@6.12.0`). FreeRTOS task-graph design. Custom partition table (dual app banks + dual LittleFS + coredump). Dutch operator manuals (boer + beheerder).
 
-Production deployment at Herenboeren Willemshoeve (Soest). Field units in active service: **5C88** (production), **FDA4** (ROTA dev/test/soak bench unit), and **2344** (plant-model training soak — **must never run ROTA firmware**). Current addresses and access routes live in user-global memory.
+Production deployment at Herenboeren Willemshoeve (Soest). Field units in active service: **5C88** (production, ROTA `mainstream` channel), **FDA4** (ROTA dev/test bench), and **2344** (plant-model training soak — now **also** a ROTA `soak`-channel unit). All three run the 2.2.x ROTA firmware. Current addresses, `devices.json` MAC keys, and access routes live in user-global memory.
 
 ## Hard constraints
 
@@ -39,7 +39,7 @@ Production deployment at Herenboeren Willemshoeve (Soest). Field units in active
 |---|---|
 | Touching a FreeRTOS task or subsystem | [memory/architecture.md](memory/architecture.md) — task graph T1-T15, subsystem map, partition layout |
 | Bumping firmware version | `firmware/platformio.ini` line 93 — and feature releases bump minor, not patch |
-| OTA work (any) | [design/OTAimplementation.md](design/OTAimplementation.md) — full reference, 11 sections. Internet-pull OTA (**ROTA**, implemented + soaking on FDA4, branch `rota`): TDS [design/rota_tds.md](design/rota_tds.md), plan [design/rotaImplementationPlan.md](design/rotaImplementationPlan.md), study [design/remoteOTAstudy.md](design/remoteOTAstudy.md). Server + operator guide (`documentation/documentation.md`) in the separate `greenhouse-Controller-FOTA-server` repo |
+| OTA work (any) | [design/OTAimplementation.md](design/OTAimplementation.md) — full reference, 11 sections. Internet-pull OTA (**ROTA**, mainline since 2.2.x — developed on the now-merged `rota` branch): TDS [design/rota_tds.md](design/rota_tds.md), plan [design/rotaImplementationPlan.md](design/rotaImplementationPlan.md), study [design/remoteOTAstudy.md](design/remoteOTAstudy.md). Server + operator guide (`documentation/documentation.md`) in the separate `greenhouse-Controller-FOTA-server` repo |
 | Changing partition table | [design/migrationPlan_FullESP-IDFmigration.md](design/migrationPlan_FullESP-IDFmigration.md); update [firmware/partitions.csv](firmware/partitions.csv) header comment |
 | Changing T9/T14 audit log format | `log/logparser.py` must learn the new value_a/value_b encoding alongside the firmware change |
 | Changing the build pipeline | [bin/build_release.ps1](bin/build_release.ps1) — see manifest placeholder dance (Steps 0 and 3.5) and gh#9 history |
@@ -58,7 +58,7 @@ Production deployment at Herenboeren Willemshoeve (Soest). Field units in active
 5. OTA push to soak 2344: `python bin/ota_push.py bin/X.Y.Z/greenhouse-controller-X.Y.Z.bin`
 6. Verify both `fw_ver` and `asset_version` from `/api/status`
 7. Soak ≥ overnight (or longer for high-risk changes)
-8. Production (5C88) only after soak passes — **and only on a physical site visit**: 5C88 is behind NAT, outbound-only, no remote push path (that is what [design/remoteOTAstudy.md](design/remoteOTAstudy.md) would add). Production updates queue up until someone is at the farm.
+8. Production (5C88) only after soak passes. 5C88 now pulls via **ROTA** on the `mainstream` channel — `python bin/rota_release.py promote <ver>` (or hand-edit `channels/mainstream.json`) and it applies in its own night window, **no site visit** (this is what ROTA added, per [design/remoteOTAstudy.md](design/remoteOTAstudy.md)). 5C88 is still behind NAT/outbound-only, so there is no *push* path — but the ROTA *pull* path now covers routine production updates.
 
 ## Key directories
 

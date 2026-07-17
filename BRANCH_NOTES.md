@@ -1,5 +1,14 @@
 # Branch: `rota` — remote (internet-pull) OTA
 
+> **STATUS — CLOSED (2026-07-17).** ROTA shipped across the 2.2.x series; the
+> `rota` branch was **merged to `main` (fast-forward) and deleted**. ROTA is now
+> mainline and development continues on `main`. This file is kept as the
+> historical branch record — for current ROTA reference use
+> [`design/rota_tds.md`](design/rota_tds.md), [`changelog.md`](changelog.md), and
+> the FOTA-server repo's `documentation/documentation.md`. **Superseded below:**
+> the "never flash 2344 with ROTA" rule — 2344 and FDA4 are now both ROTA
+> `soak`-channel units, and 5C88 runs ROTA on `mainstream`.
+
 ## What this branch is
 
 This branch adds **ROTA** — remote, internet-pull OTA — to the
@@ -57,10 +66,10 @@ ROTA spans three repositories:
 
 ## Test / soak discipline
 
-- Dev + soak unit: **FDA4** (bench).
-- **Never** flash unit **2344** with ROTA firmware — 2344 is reserved for
-  plant-model training and must not run remote-update code.
-- Current test build: **2.2.12** (see [`changelog.md`](changelog.md)).
+- Dev + soak units: **FDA4** and **2344** (both on the ROTA `soak` channel).
+  *(Historical: 2344 was originally reserved for plant-model training only; it
+  now runs a ROTA soak alongside that.)*
+- Latest release: **2.2.15** (gh#42 SD-scan buffer fix — see [`changelog.md`](changelog.md)).
 - **Paired-commit invariant**: firmware and web assets must publish/commit
   together — a firmware-only push strands the asset partition. Verify a ROTA
   install by reading **both** `fw_ver` and `asset_version` from `/api/status`.

@@ -118,7 +118,7 @@ PDFs are generated from the Markdown sources by [`manual/build_pdf.py`](manual/b
 | [Logparser manual](log/logparser.md) | CSV log format reference and `logparser.py` usage |
 | [Web UI Mock Server](webUiMock/README.md) | How to develop the web GUI without the device |
 | [Installation Wiring Guide](realisation/installation.md) | Field wiring of sensors, motor box, mains and network |
-| [Remote OTA (ROTA) design](design/rota_tds.md) | Internet-pull OTA — server contract, mutual-auth security model, night-window apply (branch `rota`; see also [`BRANCH_NOTES.md`](BRANCH_NOTES.md)) |
+| [Remote OTA (ROTA) design](design/rota_tds.md) | Internet-pull OTA — server contract, mutual-auth security model, night-window apply (mainline since 2.2.x; branch history in [`BRANCH_NOTES.md`](BRANCH_NOTES.md)) |
 | [Changelog](changelog.md) | Per-version firmware change log |
 
 ## Getting Started — Build & Flash the Firmware
