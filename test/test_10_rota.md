@@ -1,9 +1,11 @@
 # TC-01…14 — ROTA (internet-pull OTA) — Verification Results
 
-**Feature:** ROTA / T16 pull-OTA client (branch `rota`, firmware 2.2.0)
+**Feature:** ROTA / T16 pull-OTA client (firmware 2.2.0; ROTA is now mainline)
 **Test cases:** defined in [design/rota_tds.md](../design/rota_tds.md) §7; plan mapping in [design/rotaImplementationPlan.md](../design/rotaImplementationPlan.md)
 **Automated:** Partial — device driven over the REST API from `bin/ota_push.py` + ad-hoc `urllib` scripts; server side via the `bin/rota_sim.py` device simulator
 **Status of feature under test:** check path (auth → manifest → decision → observability) implemented (tasks 3.1–3.5, 3.9). Download/verify/apply (tasks 3.6–3.8) **not yet implemented** — see "Not yet covered".
+
+> **Update (2026-07-17):** point-in-time record of the 2026-07-13 run. Since then ROTA merged to `main` (mainline), the download/verify/apply path shipped across 2.2.x (proven end-to-end through 2.2.15), and **2344's training-only reservation was lifted** — 2344 is now an active ROTA `soak`-channel unit. The "2344 reserved / untouched" notes below describe the 2026-07-13 environment, not current state.
 
 ---
 
