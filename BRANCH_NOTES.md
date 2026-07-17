@@ -68,7 +68,7 @@ ROTA spans three repositories:
 
 - Dev + soak units: **FDA4** and **2344** (both on the ROTA `soak` channel).
   *(Historical: 2344 was originally reserved for plant-model training only; it
-  now runs a ROTA soak alongside that.)*
+  is now a ROTA soak unit, back in active service.)*
 - Latest release: **2.2.15** (gh#42 SD-scan buffer fix — see [`changelog.md`](changelog.md)).
 - **Paired-commit invariant**: firmware and web assets must publish/commit
   together — a firmware-only push strands the asset partition. Verify a ROTA
