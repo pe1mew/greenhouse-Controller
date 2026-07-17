@@ -37,7 +37,7 @@ Production deployment at Herenboeren Willemshoeve (Soest). Field units in active
 
 | Task | Read first |
 |---|---|
-| Touching a FreeRTOS task or subsystem | [memory/architecture.md](memory/architecture.md) — task graph T1-T15, subsystem map, partition layout |
+| Touching a FreeRTOS task or subsystem | [memory/architecture.md](memory/architecture.md) — task graph T1-T16, subsystem map, partition layout |
 | Bumping firmware version | `firmware/platformio.ini` line 93 — and feature releases bump minor, not patch |
 | OTA work (any) | [design/OTAimplementation.md](design/OTAimplementation.md) — full reference, 11 sections. Internet-pull OTA (**ROTA**, mainline since 2.2.x — developed on the now-merged `rota` branch): TDS [design/rota_tds.md](design/rota_tds.md), plan [design/rotaImplementationPlan.md](design/rotaImplementationPlan.md), study [design/remoteOTAstudy.md](design/remoteOTAstudy.md). Server + operator guide (`documentation/documentation.md`) in the separate `greenhouse-Controller-FOTA-server` repo |
 | Changing partition table | [design/migrationPlan_FullESP-IDFmigration.md](design/migrationPlan_FullESP-IDFmigration.md); update [firmware/partitions.csv](firmware/partitions.csv) header comment |
@@ -66,7 +66,7 @@ Production deployment at Herenboeren Willemshoeve (Soest). Field units in active
 |---|---|
 | `firmware/src/` | Production firmware source (~21 600 LOC, 41 files) |
 | `design/` | FRS, TSDS, implementation/migration plans, audit reports, `OTAimplementation.md` — the closest thing to ADRs |
-| `bin/<version>/` | Per-release archive: bin, zip, bootloader, partitions, elf, map, release-notes |
+| `bin/<version>/` | Per-release archive: bin, zip, bootloader, partitions, elf, map, release-notes; `manifest-<version>.json` (ROTA seq ledger — tracked in git) |
 | `manual/` | Operator manuals (Dutch: boer + beheerder + admin) |
 | `model/` | Plant model, calibration scripts (`calibrate_plant_*.py`), summer-2026 campaign: results in `campaignResults_summer2026.md`, audit trail in `thermalProfileCampaign.md` |
 | `log/` | `logparser.py` + `logparser.md`, example log CSV + parsed output |
