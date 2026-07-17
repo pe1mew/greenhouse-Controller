@@ -6,6 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.2.15] — 2026-07-17  (gh#42 — log upload stops silently once the SD holds >~21 files)
+
+**Fixed.**
+- **T14 log upload silently stopped once a unit's SD held more than ~21 CSV files
+  (gh#42 — incomplete gh#36 fix).** The two enumerators T14 uses to choose the
+  next file to upload — `event_logger_next_pending()` (both the daily slot and
+  the on-rotation trigger drain through it) and `event_logger_newest_closed()` —
+  scanned the SD file list into a local `char list[512]` instead of the shared
+  `SD_LIST_BUF_LEN` (871 B, sized for all `SD_MAX_FILES`=30 names). Past ~21 files
+  the scan silently truncated (the gh#36 `storage_sd_list_csv()` "returns OK on
+  overflow" behaviour), dropping the **newest** closed files — precisely the ones
+  lex-greater than the `log_last_up` dedup latch — so `next_pending()` reported
+  "nothing to upload" and uploads stopped permanently. Rotation, status POSTs,
+  TLS, heap and the SD card were all unaffected, so the unit looked perfectly
+  healthy while silently ceasing to deliver logs. Field-confirmed on 5C88 (last
+  upload 2026-07-13 19:29; `value_a=0, value_b=2` "daily slot fired but no closed
+  file" logged at 03:30 daily while closed files demonstrably sat on the card).
+  Fix: both enumerators size their scan buffer from `SD_LIST_BUF_LEN`, matching
+  the three other scan callers (`delete_oldest`, `rotate_sd_file`,
+  `sd_open_active_file`). The two `check_free_space`/`write_to_sd` scans that also
+  use `char list[512]` are intentionally left (they only compare `scan_count`
+  against `SD_MIN_FILES`=5 — truncation can't change that verdict — and they run
+  on T9's 6 KB stack) with a clarifying comment.
+
+**Scope.** Latent in every prior 2.x build (the gh#36 sweep in 2.1.2 fixed the
+GUI/list callers but missed these two upload enumerators); any unit silently
+stops uploading around its 22nd log file — production 5C88 is stuck now, and
+2344/FDA4 will hit it once they accumulate >~21 files. Interim recovery without a
+firmware update: delete ~10 of the oldest already-uploaded CSVs via the web GUI
+Log tab so the file count drops under ~21 and the drainer resumes.
+
+---
+
 ## [2.2.14] — 2026-07-14  (gh#39 — honest coredump version attribution)
 
 **Fixed.**

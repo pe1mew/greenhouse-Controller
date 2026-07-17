@@ -434,6 +434,9 @@ static void check_free_space(void)
 {
     if (storage_sd_free_bytes() >= SD_FREE_MIN_BYTES) return;
 
+    /* count-only vs SD_MIN_FILES (5): a truncated scan past ~21 files can't flip
+     * the >5 verdict, so 512 is adequate and keeps T9's rotate-path stack small.
+     * (The upload enumerators at :953/:1020 DO need SD_LIST_BUF_LEN — gh#42.) */
     char list[512];
     sd_scan(list, sizeof(list));
     uint32_t count = scan_count(list);
@@ -665,6 +668,8 @@ static void write_to_sd(const log_event_t *evt)
 
     /* On full/IO error, attempt to reclaim space by deleting the oldest file. */
     if (rc == STORAGE_ERR_FULL || rc == STORAGE_ERR_IO) {
+        /* count-only vs SD_MIN_FILES (5): 512 is adequate (see gh#42); no need
+         * for SD_LIST_BUF_LEN on T9's rotate-path stack. */
         char list[512];
         if (sd_scan(list, sizeof(list)) && scan_count(list) > SD_MIN_FILES) {
             if (delete_oldest()) {
@@ -950,7 +955,10 @@ bool event_logger_newest_closed(char *out, size_t cap)
         active_bare[sizeof(active_bare) - 1u] = '\0';
     }
 
-    char list[512];
+    /* Must fit all SD_MAX_FILES names: a 512-byte literal silently truncates the
+     * scan past ~21 files (gh#36 behaviour) and hides the newest closed file
+     * from T14's upload path (gh#42). Size from the shared constant. */
+    char list[SD_LIST_BUF_LEN];
     if (!sd_scan(list, sizeof(list))) {
         /* SD unavailable — fall back to in-memory rotation record. */
         return event_logger_last_rotated(out, cap);
@@ -1017,7 +1025,10 @@ bool event_logger_next_pending(const char *after, char *out, size_t cap)
         active_bare[sizeof(active_bare) - 1u] = '\0';
     }
 
-    char list[512];
+    /* Must fit all SD_MAX_FILES names: a 512-byte literal silently truncates the
+     * scan past ~21 files and hides the newest pending file, stalling uploads
+     * once the card fills past ~21 CSVs (gh#42 — incomplete gh#36 fix). */
+    char list[SD_LIST_BUF_LEN];
     if (!sd_scan(list, sizeof(list))) {
         /* SD unavailable / scan failed — no enumeration possible. Unlike
          * newest_closed we do NOT fall back to event_logger_last_rotated

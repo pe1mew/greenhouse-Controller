@@ -10,6 +10,26 @@ When something weird happens, check here BEFORE debugging from scratch. Entries 
 
 ---
 
+## 2026-07-17 — 5C88 log uploads stopped: T14's upload enumerator truncates its SD-scan buffer once >~21 files exist (gh#36 redux — NOT a card/SD fault)
+
+**Problem:** 5C88 (production, **2.1.3**) stopped uploading SD logs to `rfsee.net/hbwv` after Jul 13 19:29, with **zero** upload-failure rows — it just went silent. Status POSTs kept succeeding the whole time.
+
+**FALSE START (recorded so the next person doesn't repeat it):** first hypothesis was an SD **write-fault** — "mounted but unwritable, `s_sd_ok` oscillating." **Disproven** the moment the operator pulled the local files: three cleanly-rotating CSVs (`5C88_20260713192815` → `…0715142154` → `…0717090944`, ~1.8-day cadence). The card writes and T9 rotates *perfectly*. Lesson: **before theorising a storage failure, get the actual files off the card** — filename timestamps alone prove whether rotation is happening. Don't infer "no new files" from the *upload* side going quiet.
+
+**Root cause (confirmed in code + log data):** both T14 upload triggers — daily (`status_post.cpp` ~L862) and on-rotation (~L904) — call `upload_pending()` → **`event_logger_next_pending()`**, which scans the SD file list into a **`char list[512]`** (`event_logger.cpp:1020`; `event_logger_newest_closed()` at `:953` has the same bug). The correct size is **`SD_LIST_BUF_LEN` = SD_MAX_FILES(30) × (SD_NAME_ONLY_LEN(28)+1) + 1 = 871 B**, used correctly by the other three scan callers (`:409/:617/:732`). 512 B holds only **~21** names (`5C88_YYYYMMDDHHMMSS.csv,` = 24 B each). Once the SD carries **>~21 CSVs**, `sd_scan()` **silently truncates** (the same `storage_sd_list_csv()` "returns OK on overflow" behavior as the 2026-07-04 gh#36 gotcha) and the **newest** closed files drop out of the list. `next_pending(after=log_last_up)` then finds nothing newer than the last-uploaded latch → returns false → `upload_pending` returns 0 → daily logs `value_a=0,value_b=2` "no closed file", on-rotation uploads nothing. **Uploads stop permanently** while rotation / status POST / TLS / heap stay perfectly healthy. This is an **incomplete gh#36 fix**: the a.6.35.2 multi-file drainer (added before the 2.1.2 gh#36 sweep) kept/reintroduced the `512` literal in these two functions and the sweep missed them.
+
+**This is LIVE in current firmware (2.2.14/rota), not just 2.1.3** — `:953` and `:1020` still read `char list[512]` on the `rota` branch. Any unit silently stops uploading ~when it reaches its 22nd log file. 2344/FDA4 will hit it too (2344 booted fresh Jul 16 with few files, so it uploads *now* but has a ~2–3 week fuse). Plausibly the real cause of 2344's own pre-swap Jul-14 stop as well (board swap confounds it).
+
+**The `0,2` diagnostic is the tell:** in the SD audit rows, `initiator=WEB, value_a=0, value_b=2` = "daily slot fired but found no closed file." If you see it while closed files demonstrably exist on the card, the enumerator is truncating — not the card, not the network. (Encoding catalogue: `event_logger.h` value_a/value_b table; WEB `1,1`=upload OK, `1,0`=status POST OK, `0,1`=upload fail/HTTP-code, `0,2`=nothing fresh.)
+
+**Fix:** change `char list[512]` → `char list[SD_LIST_BUF_LEN]` at `event_logger.cpp:953` and `:1020` (also `:437`/`:668` in `check_free_space` for consistency — less harmful there since they only compare against SD_MIN_FILES=5). Bug-fix → **patch** bump; soak on 2344/FDA4 (needs >21 files on the card, or temporarily lower SD_MAX_FILES, to exercise the truncation). **Interim recovery for 5C88 with no firmware update:** have farm-hands delete ~10 of the **oldest already-uploaded** CSVs via the web GUI Log tab (keep the ones newer than the Jul-13 latch) → count drops under ~21 → the 512-B scan fits again → `upload_pending` drains the pending files → verify a new file lands in `…/hbwv/log/logs/`.
+
+**Diagnostic that reframed it (keep for next "unit stopped uploading"):** the status site's live cached `…/hbwv/data/status.json` proved the unit was alive (fresh `time_iso`, `uptime_s` = 6 d ⇒ no reboot, climate running, heap flat) — ruling out offline/crash/leak remotely. Then the **local CSVs** proved rotation works and carried the `0,2` markers. (Note `eg1` in that JSON is the climate EventGroup — WIND_OVERRIDE/MOTOR_ALARM/SENSOR_FAULT/STANDBY — not a T9/SD flag; `eg1:0` = no alarms.)
+
+**Where it lives:** `firmware/src/event_logger/event_logger.cpp` — `event_logger_next_pending` (`:1020`), `event_logger_newest_closed` (`:953`); `firmware/src/status_post/status_post.cpp` — `upload_pending` (`:705`), daily trigger (`:862`), on-rotation trigger (`:904`).
+
+---
+
 ## 2026-07-14 — `-Werror=format-truncation`: enlarging a char buffer broke a DOWNSTREAM snprintf
 
 **Problem:** The 2.2.14 build failed with `error: '%s' directive output may be truncated writing up to 79 bytes into a region of size 74 [-Werror=format-truncation=]` at `web_server.cpp` — pointing at the `Content-Disposition` snprintf, a line I had NOT changed.
