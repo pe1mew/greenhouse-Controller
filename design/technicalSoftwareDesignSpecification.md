@@ -160,7 +160,7 @@ The following items originate from system-level and functional requirements in t
 - Hardware credential recovery via GPIO0 BOOT button resets PINs (and optionally all NVS settings) to factory defaults without authentication; requires physical access to the device (FR-AC08, FR-AC09).
 
 **Event log**
-- SD card is the sole persistent log store (FR-LG06, FR-LG07). The log is written as CSV with rotating files (default 10 × 512 KB), oldest file deleted automatically when the cap is exceeded. There is no NVS ring-buffer fallback (FR-LG08): on SD-card absence, removal, or write failure, T9 suspends logging cleanly and surfaces the condition via the local UI and the web GUI; climate-critical operation continues unaffected; on SD re-insertion, logging resumes in a fresh file timestamped with the resumption moment.
+- SD card is the sole persistent log store (FR-LG06, FR-LG07). The log is written as CSV with rotating files (default 30 × 1024 KB — FR-LG06; `SD_MAX_FILES` × `SD_ROTATE_BYTES` in `event_logger.h`), oldest file deleted automatically when the cap is exceeded. There is no NVS ring-buffer fallback (FR-LG08): on SD-card absence, removal, or write failure, T9 suspends logging cleanly and surfaces the condition via the local UI and the web GUI; climate-critical operation continues unaffected; on SD re-insertion, logging resumes in a fresh file timestamped with the resumption moment.
 
 **Settings persistence**
 - All configuration settings stored in ESP32-S3 NVS flash partition; retained across power cycles and restarts (FR-CF06, TR-SW01).
@@ -982,7 +982,7 @@ The timestamp encodes the moment the file was created (local time). Files are st
 **Write-failure reclaim:** if `storage_sd_write_append()` returns `STORAGE_ERR_FULL` or `STORAGE_ERR_IO`, T9 attempts a single oldest-file deletion and retries the write. If the retry also fails, T9 suspends event logging and surfaces the condition in `/api/sd/status`; subsequent `log_post()` calls drain Q3 without writing until the next successful mount.
 
 **Startup / resume behaviour:**
-On SD card mount, T9 calls `storage_sd_list_csv(".csv", ...)` and filters results through `is_ts_filename()` (14 decimal digits + `.csv`). The lexicographically largest matching filename is the most recent file. If its size is below 512 KB, T9 resumes appending to it; otherwise a new timestamp file is created. If no matching files exist, a new file is created immediately.
+On SD card mount, T9 calls `storage_sd_list_csv(".csv", ...)` and filters results through `is_ts_filename()` (14 decimal digits + `.csv`). The lexicographically largest matching filename is the most recent file. If its size is below `SD_ROTATE_BYTES` (1 MB), T9 resumes appending to it; otherwise a new timestamp file is created. If no matching files exist, a new file is created immediately.
 
 **Corruption resilience:**
 - Power loss during a write may leave the last partial CSV line incomplete; all preceding complete lines remain parseable.
