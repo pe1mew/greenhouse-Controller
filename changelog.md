@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.2.16] — 2026-07-17  (gh#43 — Log-tab layout consistency)
+
+**Changed.**
+- **Log tab — the Download button now shares the Log-source line, right-aligned
+  (gh#43).** In the web GUI's Log tab, **Download CSV** moved onto the same row as
+  the Log-source selector and is right-aligned (`margin-left:auto`), mirroring the
+  Coredump line; the file dropdown is shrunk from full-width (`flex:1`) to
+  `min-width:12rem`, since log filenames are short. **Purely cosmetic** — no
+  behaviour change (`downloadLog()` / `loadLogFiles()` handlers untouched).
+  Web-assets only (`firmware/data/index.html`).
+
+---
+
 ## [2.2.15] — 2026-07-17  (gh#42 — log upload stops silently once the SD holds >~21 files)
 
 **Fixed.**

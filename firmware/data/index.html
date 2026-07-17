@@ -500,13 +500,11 @@
     <h3>Download log</h3>
     <div class="row">
       <label data-tip="Select an SD-card CSV log file to download. The list is populated when an SD card is mounted; without a card the dropdown shows '— no SD log files —'.">Log source</label>
-      <select id="log-src-select" style="flex:1;min-width:0">
+      <select id="log-src-select" style="min-width:12rem">
         <option value="">— loading… —</option>
       </select>
       <button onclick="loadLogFiles()" data-tip="Refresh the list of available log files from the device.">↻</button>
-    </div>
-    <div class="row">
-      <button onclick="downloadLog()">Download CSV</button>
+      <button onclick="downloadLog()" style="margin-left:auto">Download CSV</button>
       <span class="save-ok" id="fb-log-dl"></span>
     </div>
 
