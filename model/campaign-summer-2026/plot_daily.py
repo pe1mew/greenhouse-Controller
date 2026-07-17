@@ -432,6 +432,25 @@ def plot_day(date_key, events, cfg, out_path: Path, dawn_dusk):
                    else "Wind speed [m/s]\n(spot values at\nALARM rows only)")
     ax3.set_ylim(0, max(cfg["v_max"] + 5, max_ms_seen + 2))
 
+    # Wind DIRECTION on a secondary y-axis (0–360°, labelled N/E/S/W). Rendered
+    # as a scatter — not a line — so the trace does not draw spurious vertical
+    # strokes when the bearing wraps 360°↔0°. rc.1.4.0+ SENSOR_HR_1 carries the
+    # direction in vb (degrees). (Reminder: wind is only valid from
+    # 2026-06-19 12:00 — the vane's commissioning; earlier bearings are garbage.)
+    ax3b = None
+    if wind_dts:
+        wind_dir = [vb % 360 for _, _, vb in wind_hr]
+        ax3b = ax3.twinx()
+        ax3b.scatter(wind_dts, wind_dir, s=4, c="#8e44ad", alpha=0.35, zorder=1,
+                     label=f"Wind direction ({len(wind_dir)} samples)")
+        ax3b.set_ylim(0, 360)
+        ax3b.invert_yaxis()   # N at top, reading N -> E -> S -> W -> N downward
+        ax3b.set_yticks([0, 90, 180, 270, 360])
+        ax3b.set_yticklabels(["N", "E", "S", "W", "N"])
+        ax3b.set_ylabel("Wind direction", color="#8e44ad")
+        ax3b.tick_params(axis="y", labelcolor="#8e44ad")
+        ax3b.set_xlim(day_start, day_end)
+
     handles = []
     labels = []
     if interval_handle is not None:
@@ -440,6 +459,10 @@ def plot_day(date_key, events, cfg, out_path: Path, dawn_dusk):
     h_axes, l_axes = ax3.get_legend_handles_labels()
     handles.extend(h_axes)
     labels.extend(l_axes)
+    if ax3b is not None:
+        h_dir, l_dir = ax3b.get_legend_handles_labels()
+        handles.extend(h_dir)
+        labels.extend(l_dir)
     if handles:
         ax3.legend(handles, labels, fontsize=7, loc="upper right")
     ax3.grid(True, alpha=0.25)
@@ -563,6 +586,22 @@ def main():
     days = sorted({d.date() for d, _, _ in events["SENSOR"]}
                   | {d.date() for d, _, _ in events["SENSOR_HR_0"]})
 
+    # Optional single-day mode: `plot_daily.py YYYY-MM-DD` renders just that day
+    # (focused analysis, without re-rendering the whole campaign or clobbering
+    # the full plot_summary.txt).
+    single_day = None
+    if len(sys.argv) > 1:
+        try:
+            single_day = datetime.strptime(sys.argv[1], "%Y-%m-%d").date()
+        except ValueError:
+            print(f"[error] bad date '{sys.argv[1]}' — expected YYYY-MM-DD")
+            sys.exit(2)
+        days = [d for d in days if d == single_day]
+        if not days:
+            print(f"[error] no sensor data for {sys.argv[1]}")
+            sys.exit(2)
+        print(f"[filter] single-day mode: {sys.argv[1]}")
+
     # Sunrise / sunset for night-shading.
     # Pulled live from temp/status.json (controller's /api/status snapshot) —
     # the values are minutes-from-local-midnight, which matches our naive
@@ -622,7 +661,8 @@ def main():
         generated.append(out_png)
 
     summary_path = temp_dir / "plot_summary.txt"
-    summary_path.write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
+    if single_day is None:                       # don't clobber the full summary in single-day mode
+        summary_path.write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
     print("\n".join(summary_lines))
     print(f"\nGenerated {len(generated)} PNG(s) in {temp_dir}")
 
