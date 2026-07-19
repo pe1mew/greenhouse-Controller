@@ -2,6 +2,48 @@
 
 An embedded controller for automated ventilation management of a single greenhouse. The controller reads internal climate (temperature and humidity) and external weather (wind speed and direction), and opens or closes three motorised ventilation windows to keep the climate within the setpoints configured by the farmer. A 4×4 keypad and 16×2 LCD provide local operation; optional WiFi and a built-in web GUI allow remote monitoring and configuration.
 
+## What it does
+
+The controller automatically ventilates a greenhouse by opening and closing three motorized windows to keep temperature and humidity within set limits, while protecting the structure from wind. It runs locally, keeps a full record of what it does, and can update itself.
+
+### Automatic climate control (its main job)
+- Continuously measures inside temperature and humidity and outside wind speed and direction; readings are smoothed so brief gusts or blips don't cause needless window movement.
+- Opens or closes the windows to hold temperature and humidity within target ranges, with **separate day and night targets** — day and night are worked out from the local sunrise and sunset.
+- When ventilation and humidity goals pull in opposite directions, a configurable priority decides which wins; humidity control can also be switched off entirely.
+- The three windows — two roof vents and one large side-wall vent — are controlled independently, each with its own timing so movements are smooth and not too frequent.
+
+### Wind safety
+- If average wind speed exceeds a set limit, or the wind comes from a direction marked as risky, the windows are forced closed to protect the greenhouse — overriding normal climate control.
+
+### Operating modes and manual control
+- Three modes: **automatic**, **manual** (the operator positions the windows), and **standby** (automatic control paused).
+- An administrator can drive each window by hand from the unit; doing so automatically pauses automatic control for that session so hand-set positions aren't overwritten.
+
+### Safety and reliability
+- Detects a window that fails to reach its commanded position and faults in the sensors, and raises an alarm.
+- Ventilation and safety functions are kept isolated from the networking functions, so a network problem can never interfere with climate control.
+- The controller monitors its own health, restarts cleanly if it ever locks up, and keeps a diagnostic record of any crash for later analysis.
+
+### Local operation
+- A keypad and display on the controller show live status — climate, wind, window positions, mode, network, and time — on rotating screens.
+- Settings and manual control are protected by a PIN, with two access levels: a limited **farmer** role and a full **administrator** role.
+- A recovery button lets someone reset the PIN or all settings, or restart the unit, without special tools.
+
+### Web interface
+- A built-in web page lets an operator view live status and change settings from a phone or computer.
+
+### Configuration
+- All settings — day/night temperature and humidity targets, wind limits, per-window timings, smoothing windows, location, and so on — are stored on the unit and changeable from the keypad or the web interface. Every change is recorded together with who made it.
+- Local sunrise and sunset and daylight saving are determined from the geographical location of the internet connection.
+
+### Remote monitoring and record-keeping
+- Connects to WiFi and keeps accurate time.
+- Records a detailed log of readings and events (mode changes, alarms, restarts, setting changes) to a memory card, automatically managing storage space.
+- Regularly reports its status to a remote dashboard for off-site monitoring, and uploads its log files there too.
+
+### Automatic updates
+- The software and web interface can be updated two ways: by uploading an update through the web page, or by the unit fetching updates from a central server on its own and installing them overnight — no site visit needed. Updates are verified before installation, and the unit rolls back to the previous version if an update fails to start.
+
 ## Features
 
 - Automatic climate control based on temperature and relative humidity setpoints (day / night)
