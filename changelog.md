@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
-## [2.2.16] — 2026-07-17  (gh#43 — Log-tab layout consistency)
+## [2.2.16] — 2026-07-19  (gh#43 — Log-tab layout consistency)
 
 **Changed.**
 - **Log tab — the Download button now shares the Log-source line, right-aligned
@@ -44,11 +44,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   on T9's 6 KB stack) with a clarifying comment.
 
 **Scope.** Latent in every prior 2.x build (the gh#36 sweep in 2.1.2 fixed the
-GUI/list callers but missed these two upload enumerators); any unit silently
-stops uploading around its 22nd log file — production 5C88 is stuck now, and
-2344/FDA4 will hit it once they accumulate >~21 files. Interim recovery without a
-firmware update: delete ~10 of the oldest already-uploaded CSVs via the web GUI
-Log tab so the file count drops under ~21 and the drainer resumes.
+GUI/list callers but missed these two upload enumerators); any affected unit
+silently stopped uploading around its 22nd log file. Production 5C88 was stuck,
+and 2344/FDA4 would have hit it past ~21 files; all three are now on 2.2.15 —
+2344/FDA4 via soak, 5C88 via the 2026-07-19 mainstream promote. The interim
+recovery while a unit still lacked the fix was to delete ~10 of the oldest
+already-uploaded CSVs via the web GUI Log tab, dropping the file count under ~21
+so the drainer resumed.
 
 ---
 
