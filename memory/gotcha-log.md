@@ -128,7 +128,14 @@ Verify: serial shows `littlefs_mount(A (lfs0)) returned 0 (OK)` + `/index.html e
 
 **Fix / pattern:** When work spans branches, commit (or stash) each stream *before* switching. When Claude stages changes that belong to different destinations, it must say so explicitly at hand-off and repeat the warning before any branch operation. Recovery recipe when it happens anyway: compensating commit on the polluted branch + re-point the feature branch (`git branch -D` + recreate at tip works when the feature branch has no own commits).
 
-**Where it lives:** Process, not code. Commits `32ce6b5`/`5c3c6cc` are the example.
+**RECURRED 2026-07-20 (2nd time) — no branch switch involved; `commit -a` was enough.** Three unrelated streams were pending (a one-file repair of `memory/gotcha-archive.md`, ~115 lines of T15 firmware hardening, and a new `log/heap_soak.py`). Only the repair was staged, and it was announced as such. The commit still swept the firmware in, because **`git commit -a` / `git add -A` picks up every modified tracked file regardless of what was deliberately staged**. Result: `cb6a178` carries the T15 build guard, stub markers and corrected header docs under the message "docs(memory): add the gotcha-archive file 46b709f left untracked". Already pushed, and branch protection forbids the rewrite, so it stands.
+
+**Lesson that the 2026-07-13 version missed:** staging one stream does **not** protect the others. Selective staging only works if the commit is also selective (`git commit` with no `-a`). Two consequences:
+
+- If the workflow is `commit -a`, then **everything pending will land in one commit** — so the honest move is to stage *all* pending work together and write a message that covers all of it, not to stage one stream and hope.
+- A brand-new file the commit *depends on* is the sharpest edge: `46b709f` committed `gotcha-log.md` + the memory index both linking to `gotcha-archive.md` while the archive itself sat untracked, so HEAD briefly had two dangling links and had lost the three retired entries outright. **Untracked-and-load-bearing must be called out explicitly at hand-off, not listed among `??` entries.**
+
+**Where it lives:** Process, not code. Commits `32ce6b5`/`5c3c6cc` (branch-switch variant) and `46b709f`/`cb6a178` (`commit -a` variant) are the examples.
 
 ---
 
