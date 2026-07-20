@@ -64,7 +64,7 @@ Production deployment at Herenboeren Willemshoeve (Soest). Field units in active
 
 | Path | Contents |
 |---|---|
-| `firmware/src/` | Production firmware source (~21 600 LOC, 41 files) |
+| `firmware/src/` | Production firmware source (~23 300 LOC, 44 files) |
 | `design/` | FRS, TSDS, implementation/migration plans, audit reports, `OTAimplementation.md` — the closest thing to ADRs |
 | `bin/<version>/` | Per-release archive: bin, zip, bootloader, partitions, elf, map, release-notes; `manifest-<version>.json` (ROTA seq ledger — tracked in git) |
 | `manual/` | Operator manuals (Dutch: boer + beheerder + admin) |

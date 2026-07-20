@@ -6,7 +6,23 @@ When something weird happens, check here BEFORE debugging from scratch. Entries 
 
 ## Promoted patterns
 
+- **[PATTERN] One log chain per time window — never let two chains of the same unit's logs coexist in an analysis folder.** The dedup in `plot_daily.py` is tuple-exact and does **not** catch it; the symptom is a day showing ~2× the expected sample count (~5700 vs ~2860). Recurred twice: 2026-06-26 (two independent SD downloads with different rotation boundaries) and 2026-07-20 (files pulled off the card by hand vs. the unit's own later upload of the same files). Rule: **before plotting, run `check_dupes.py`; archive the superseded chain to `archived_overlap/`** rather than deleting it, and sanity-check sample counts in `plot_summary.txt` afterwards. Free verification: if `git status` shows the archived copy and the new file as a rename (`R old -> new`), they are byte-identical.
+
 - **[PATTERN] Python CLI output on this machine must be ASCII-only.** The Windows console is cp1252; any `print()` (or the harness capturing stdout) crashes with `UnicodeEncodeError` on `→ … ✓ ✗ °` etc. Recurred 5+ times (calibration scripts, `check_dupes.py`, `rota_sim.py`, ad-hoc probes). Rule: write `->`, `...`, `deg`, `OK`/`FAIL` — never Unicode glyphs — in Python that prints. If Unicode is unavoidable, set `PYTHONIOENCODING=utf-8` on the invocation. Do NOT trust a crude keyword scan of captured serial/HTTP output either — loose substrings (`corrupted`, `format`) throw false positives; match on the specific message.
+
+---
+
+## 2026-07-20 — you cannot tell which firmware wrote an SD log; post-OTA proof must come from `/api/status`
+
+**Problem:** Trying to confirm that 5C88 had actually pulled 2.2.15 (to explain why its uploads resumed), the obvious move was to read the version out of the freshly-uploaded logs. There is nothing to read. Two separate reasons, both non-obvious.
+
+**Root cause:** (1) The SD CSV format carries **no firmware-version field** — `SYSTEM` rows log unit ID, heap, reset info and OTA *progress* ("firmware verified OK", "ROTA apply: committed"), but never the version string itself. (2) Worse, even the OTA-apply *event* is unreachable at the moment you want it: a unit applies an update and keeps writing to its **currently-active** log file, which by definition has not rotated and therefore has not uploaded. The apply record for version N sits on the card until the *next* rotation. So the uploaded corpus is always one file behind the event you are trying to confirm.
+
+**Fix:** Treat uploaded logs as evidence of **behaviour**, never of **version**. Version confirmation has exactly one source: `GET /api/status` → both `fw_ver` **and** `asset_version` (the paired-commit invariant in CLAUDE.md). Logs can strongly *corroborate* — 5C88's six-day `0,2` run ending in a backlog drain is about as good as behavioural evidence gets — but "the behaviour changed" is not "the version is X", and the two must not be conflated in a report.
+
+**Tool note:** `log/logparser.py <file>` writes `parsed_<name>.txt` **next to the input** and prints only a one-line summary to stdout — piping it to `grep` looks like the parser found nothing. Grep the output file. It also decodes the window bitmask to `M1=CLOS M2=CLOS M3=OPEN (0x…)`, which makes per-motor state greppable without touching the raw encoding.
+
+**Where it lives:** `log/logparser.py`; `firmware/src/event_logger/event_logger.h` (value_a/value_b catalogue — note the absence of a version field); CLAUDE.md "Releases & OTA" hard constraints.
 
 ---
 
@@ -18,7 +34,9 @@ When something weird happens, check here BEFORE debugging from scratch. Entries 
 
 **Root cause (confirmed in code + log data):** both T14 upload triggers — daily (`status_post.cpp` ~L862) and on-rotation (~L904) — call `upload_pending()` → **`event_logger_next_pending()`**, which scans the SD file list into a **`char list[512]`** (`event_logger.cpp:1020`; `event_logger_newest_closed()` at `:953` has the same bug). The correct size is **`SD_LIST_BUF_LEN` = SD_MAX_FILES(30) × (SD_NAME_ONLY_LEN(28)+1) + 1 = 871 B**, used correctly by the other three scan callers (`:409/:617/:732`). 512 B holds only **~21** names (`5C88_YYYYMMDDHHMMSS.csv,` = 24 B each). Once the SD carries **>~21 CSVs**, `sd_scan()` **silently truncates** (the same `storage_sd_list_csv()` "returns OK on overflow" behavior as the 2026-07-04 gh#36 gotcha) and the **newest** closed files drop out of the list. `next_pending(after=log_last_up)` then finds nothing newer than the last-uploaded latch → returns false → `upload_pending` returns 0 → daily logs `value_a=0,value_b=2` "no closed file", on-rotation uploads nothing. **Uploads stop permanently** while rotation / status POST / TLS / heap stay perfectly healthy. This is an **incomplete gh#36 fix**: the a.6.35.2 multi-file drainer (added before the 2.1.2 gh#36 sweep) kept/reintroduced the `512` literal in these two functions and the sweep missed them.
 
-**Affected every build through 2.2.14** (the a.6.35.2 drainer kept the `512` literal at `:953`/`:1020`), not just 2.1.3 — any such unit silently stops uploading ~at its 22nd log file. **Fixed in 2.2.15** (gh#42): both functions now size from `SD_LIST_BUF_LEN`. **Verified on hardware 2026-07-17** (2344 on 2.2.15): a **26-file** card rotated to 27 and T14 uploaded the newest-closed ~1 MB file (`2344_20260717111737.csv` → server `2026-07-17_154407.log`, 1,024.0 KB) plus drained the fillers to `pe1mew.nl/hbwv` — the exact truncation failure, exercised and **passed**; gh#42 closed. This is what stalled 5C88; plausibly 2344's pre-swap Jul-14 stop too (board swap confounds it). 5C88 (on `mainstream`) picks the fix up once 2.2.15 is promoted (held for an overnight soak first).
+**Affected every build through 2.2.14** (the a.6.35.2 drainer kept the `512` literal at `:953`/`:1020`), not just 2.1.3 — any such unit silently stops uploading ~at its 22nd log file. **Fixed in 2.2.15** (gh#42): both functions now size from `SD_LIST_BUF_LEN`. **Verified on hardware 2026-07-17** (2344 on 2.2.15): a **26-file** card rotated to 27 and T14 uploaded the newest-closed ~1 MB file (`2344_20260717111737.csv` → server `2026-07-17_154407.log`, 1,024.0 KB) plus drained the fillers to `pe1mew.nl/hbwv` — the exact truncation failure, exercised and **passed**; gh#42 closed. This is what stalled 5C88; plausibly 2344's pre-swap Jul-14 stop too (board swap confounds it).
+
+**Confirmed in production 2026-07-20 — a six-day A/B on one unit.** After 2.2.15 reached `mainstream`, 5C88's own T14 rows tell the whole story: last upload success **Jul 13 19:29**, then the `0,2` "no closed file" diagnostic on **six consecutive daily slots (Jul 14, 15, 16, 17, 18, 19)** while closed files demonstrably accumulated, then a clean **three-file backlog drain at Jul 20 03:30** (uploads 26 s apart). Same card, same 03:30 slot, same site — only the firmware changed. Recovered from the drained files themselves: `2026-07-20_033026/_033052/_033112.log`.
 
 **The `0,2` diagnostic is the tell:** in the SD audit rows, `initiator=WEB, value_a=0, value_b=2` = "daily slot fired but found no closed file." If you see it while closed files demonstrably exist on the card, the enumerator is truncating — not the card, not the network. (Encoding catalogue: `event_logger.h` value_a/value_b table; WEB `1,1`=upload OK, `1,0`=status POST OK, `0,1`=upload fail/HTTP-code, `0,2`=nothing fresh.)
 
@@ -120,7 +138,7 @@ Verify: serial shows `littlefs_mount(A (lfs0)) returned 0 (OK)` + `/index.html e
 
 **Fix:** Constraint recorded in `thermalProfileCampaign.md` §9.11 and enforced in `ns9_direction_stratified.py` (`WIND_VALID_FROM`). Any new wind-based analysis script must filter `timestamp >= 2026-06-19T12:00`.
 
-**Where it lives:** `model/campaign-summer-2026/ns9_direction_stratified.py` (the reference filter); campaign doc §9.11.
+**Where it lives:** `model/campaign-summer-2026/ns9_direction_stratified.py` (the reference filter); campaign doc §9.11; `model/campaign-summer-2026/plot_daily.py` — the day-plot wind-direction axis is gated on the same date, so pre-Jun-19 plots render **without** a direction scatter by design (added 2026-07-20; if you regenerate all plots, `git checkout --` the pre-Jun-19 PNGs).
 
 ---
 
@@ -203,6 +221,8 @@ Verify: serial shows `littlefs_mount(A (lfs0)) returned 0 (OK)` + `/index.html e
 **Root cause:** The two chains have different SD file boundaries, so their `SENSOR_HR` event tuples differ in context (e.g., mode-change rows, BOOT rows) even though the sensor data timestamps are identical. The dedup is tuple-exact — any field difference between the two chains' representations of the same timestamp prevents deduplication.
 
 **Fix:** Keep only one chain per time window. Archive the overlapping files from the older chain (`archived_overlap/` subfolder). For the 5C88 campaign: Chain A (old downloads) covers Jun 4–15 uniquely; Chain B (new download) covers Jun 15–24. Archive the four Chain A files whose range is wholly covered by Chain B.
+
+**RECURRED 2026-07-20 (2nd time) — new shape, same trap.** This time the two chains were (a) log files pulled off 5C88's SD **by hand** during the gh#42 investigation and (b) the unit's **own later upload of the same files** once the fix landed. Two of the three were byte-identical, the third a strict prefix of a longer file. Same remedy (archive the superseded chain to `archived_overlap/`), and a free verification trick: **if `git status` reports the archived copy and the new file as a rename (`R old -> new`), they are byte-identical** — git's rename detection doubles as dedup proof. Promoted to a pattern, see top of file.
 
 **Where it lives:** `model/campaign-summer-2026/plot_daily.py` (`load_logs`). Chain overlap detection: `model/campaign-summer-2026/check_dupes.py`. *(Paths updated 2026-07-05 — scripts moved out of `temp/`.)*
 
