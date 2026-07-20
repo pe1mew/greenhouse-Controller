@@ -30,15 +30,52 @@
  *    main.cpp used at first boot. Stores the new handle into `task_t14`.
  *
  * @warning This translation unit is currently **excluded from the build**
- *          (not listed in `firmware/src/CMakeLists.txt` SRCS). The source
- *          and documentation reflect the intended-future-state interface;
- *          re-enable by adding the file back to SRCS when T14 leak/wedge
- *          telemetry warrants resuming supervision.
+ *          (not listed in `firmware/src/CMakeLists.txt` SRCS), and it must
+ *          NOT simply be added back: **3 of its 4 T14 dependencies are
+ *          stubs** (gh#44). Adding the file to SRCS compiles and links
+ *          cleanly, so a revived T15 would run *degraded and silent* — see
+ *          the build guard immediately below, which turns that into a
+ *          compile error instead.
  *
  * @see status_post_supervisor.h
  *
  * @author Greenhouse Controller project
  */
+
+/* ============================================================
+ * BUILD GUARD — gh#44. Read this before defining the macro below.
+ *
+ * T15 reads four things from T14. Three of them are stubs that were left
+ * behind when the a.6.35 rewrite (`7f3ddfa`) and the ESP-IDF migration
+ * (`d74ea08`) landed on 2026-06-09:
+ *
+ *   (a) status_post_heartbeat()        LIVE   — s_heartbeat++ in the T14 loop.
+ *   (b) status_post_heap_drop_bytes()  STUB   — never written, always 0, so
+ *                                               the 64 KB leak detector below
+ *                                               can never fire.
+ *   (c) status_post_backoff_active()   STUB   — always false, so the
+ *                                               planned-reboot housekeeping
+ *                                               reads "breaker closed"
+ *                                               unconditionally. FR-BK03 was
+ *                                               deferred and never built.
+ *   (d) status_post_force_teardown()   STUB   — no-op, so respawn_t14() does
+ *                                               not close sockets as FR-BK04
+ *                                               requires.
+ *
+ * Only (a) works. Nothing at build or run time distinguishes that from a
+ * healthy supervisor, which is why this guard exists rather than a comment.
+ *
+ * Before enabling T15, settle the FRS 5.15 question first: FR-BK03/BK04/BK06
+ * are marked *deferred, may be withdrawn pending soak outcome*. Withdrawing
+ * them means deleting this task, not reviving it. `log/heap_soak.py` produces
+ * the soak evidence that decision needs. If instead T15 is to return,
+ * implement (b), (c) and (d) — see gh#27 (closed obsolete) on why the old
+ * heap sampling point was itself suspect — then define the macro below in
+ * `platformio.ini` build_flags and add this file to CMakeLists SRCS.
+ * ============================================================ */
+#ifndef T15_STUBBED_DEPENDENCIES_IMPLEMENTED
+#error "T15 disabled: status_post heap-drop / backoff / force-teardown are stubs (gh#44). Implement them, or withdraw FR-BK03/BK04/BK06 and delete T15. See the build guard comment above."
+#endif
 
 #include "status_post_supervisor.h"
 

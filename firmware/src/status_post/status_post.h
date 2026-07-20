@@ -123,9 +123,16 @@ void status_post_last_log_str(char *buf, size_t cap);
  *
  * Surfaced as the `net_backoff_active` flag in the canonical status JSON
  * (rendered as a "Net backoff" badge on the Alarms card) and on the LCD.
- * Always returns false in Phase 1 (v1.17.34); wired to real breaker state
- * in Phase 2 (v1.17.35). Lock-free read of a primitive type — caller need
- * not hold any mutex.
+ *
+ * @warning **T15-BLOCKING STUB (gh#44) — ALWAYS RETURNS FALSE.** There is
+ * still no circuit breaker; FR-BK03 is deferred (FRS 5.15) and was never
+ * implemented. The "wired to real breaker state in Phase 2 (v1.17.35)" note
+ * that stood here was never true and has been removed. T15's planned-reboot
+ * housekeeping treats a false return as "breaker closed", so that check
+ * passes unconditionally — see the build guard in
+ * `status_post_supervisor.cpp`. The status-JSON flag and LCD badge are
+ * likewise permanently false. Lock-free read of a primitive type — caller
+ * need not hold any mutex.
  *
  * @return true iff the status-post or log-upload breaker is open.
  */
@@ -156,22 +163,39 @@ uint32_t status_post_heartbeat(void);
 /**
  * @brief Cumulative heap drop attributed to T14 since the last counter reset.
  *
- * T14 samples free internal heap immediately before and after each
- * HTTPS call (status POST + log upload). The signed delta is accumulated
- * here; negative deltas (heap freed back) are clamped to zero so transient
- * recovery doesn't mask a real leak. Supervisor compares against the
- * 64 KB planned-reboot threshold.
+ * @warning **T15-BLOCKING STUB (gh#44) — ALWAYS RETURNS 0.** Nothing writes
+ * the underlying counter. The `record_heap_drop()` producer and the
+ * before/after sampling around each HTTPS call were deleted in `7f3ddfa`
+ * (a.6.35 T14 rewrite); only this getter survived. T15's leak detector
+ * compares the result against a 64 KB threshold, so that branch is
+ * unreachable — see the build guard in `status_post_supervisor.cpp`.
+ *
+ * Intended behaviour once implemented: sample free internal heap immediately
+ * before and after each HTTPS call (status POST + log upload) and accumulate
+ * the signed delta, clamping negative deltas (heap freed back) to zero so
+ * transient recovery does not mask a real leak. Note gh#27 (closed obsolete)
+ * argued the *sampling point* itself was misleading — re-read it before
+ * re-implementing, and gather fresh field data rather than reusing the
+ * 1.20.2-era measurements.
  */
 uint32_t status_post_heap_drop_bytes(void);
 
 /**
  * @brief Force a clean teardown of the persistent TLS session.
  *
- * Called by the supervisor immediately before `vTaskDelete(task_t14)`. The
- * static `WiFiClientSecure` (`s_secure`) survives task deletion — without
- * this call, the next T14 incarnation would inherit a half-closed socket
- * pointing at lwIP state that the killed task never had a chance to release.
- * Idempotent: safe to call multiple times.
+ * @warning **T15-BLOCKING STUB (gh#44) — CURRENTLY A NO-OP.** T14 holds no
+ * persistent TLS state post-ESP-IDF migration, so there is nothing to tear
+ * down and the body is empty. T15's `respawn_t14()` calls this immediately
+ * before `vTaskDelete(task_t14)` to satisfy FR-BK04's "cleanly closing any
+ * persistent network sockets first" — with a no-op that requirement is not
+ * met. See the build guard in `status_post_supervisor.cpp`.
+ *
+ * The original rationale (Arduino era): the static `WiFiClientSecure`
+ * (`s_secure`) survived task deletion, so without this call the next T14
+ * incarnation inherited a half-closed socket pointing at lwIP state the
+ * killed task never released. If T14 regains persistent TLS state — e.g.
+ * session-ticket reuse from the gh#23 mitigation set — this must be
+ * implemented before T15 is re-enabled. Idempotent by contract.
  */
 void status_post_force_teardown(void);
 

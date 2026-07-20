@@ -121,7 +121,12 @@ static const char *TAG = "T14_STA";
 /** @brief Heartbeat counter — incremented at the top of each loop tick (T15 watches for staleness). */
 static volatile uint32_t s_heartbeat = 0;
 
-/** @brief Cumulative heap drop bytes (still 0 in a.6.35; gh#24 signed-balance accumulator lands later). */
+/** @brief Cumulative heap drop bytes.
+ *  @warning T15-BLOCKING STUB (gh#44) — never written, so always 0. The
+ *  `record_heap_drop()` producer was deleted in `7f3ddfa`; T15's leak
+ *  detector reads this and can therefore never fire. Do not enable T15
+ *  until this is implemented — the build guard in
+ *  `status_post_supervisor.cpp` enforces that. */
 static volatile uint32_t s_heap_drop_bytes = 0;
 
 /** @brief Last status-POST outcome string ("OK ts" / "FAIL ts code=N" / "DISABLED") — rendered on T8 LCD + web Web tab. */
@@ -179,13 +184,22 @@ static bool     s_l3_recovery_b_fired    = false;
 
 bool status_post_backoff_active(void)
 {
-    /* Still no circuit breaker in a.6.35 — re-introduces with T15 supervisor. */
+    /* T15-BLOCKING STUB (gh#44) — no circuit breaker exists. FR-BK03 is
+     * deferred (FRS 5.15) and was never implemented, so this is a constant
+     * false, not a "breaker currently closed" reading. T15's planned-reboot
+     * housekeeping treats false as "breaker closed" and so passes that check
+     * unconditionally. Guarded in status_post_supervisor.cpp. */
     return false;
 }
 
 uint32_t status_post_heartbeat(void)         { return s_heartbeat; }
 uint32_t status_post_heap_drop_bytes(void)   { return s_heap_drop_bytes; }
-void     status_post_force_teardown(void)    { /* no persistent TLS state yet */ }
+/* T15-BLOCKING STUB (gh#44) — no-op. T14 holds no persistent TLS state after
+ * the ESP-IDF migration, so there is nothing to close. T15 calls this before
+ * vTaskDelete(task_t14) to satisfy FR-BK04's "cleanly closing any persistent
+ * network sockets first"; with a no-op that requirement is unmet. Guarded in
+ * status_post_supervisor.cpp. */
+void     status_post_force_teardown(void)    { }
 
 void status_post_last_str(char *buf, size_t cap)
 {
