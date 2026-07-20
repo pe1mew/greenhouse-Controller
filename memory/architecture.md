@@ -59,6 +59,7 @@ See [`../firmware/partitions.csv`](../firmware/partitions.csv) for offsets and t
 - Dual LittleFS `lfs0` / `lfs1` (1 MB each) at `0x420000` / `0x520000`
 - NVS at `0x10000`, otadata at `0xe000`, coredump at `0x620000`
 - **Coupling rule:** active app bank A → mount `lfs0`; active app bank B → mount `lfs1`. T13 enforces this.
+- **Separate VFS mountpoints per partition (invariant, since 1.17.9).** `drivers/littleFS/src/littlefs_storage.cpp` mounts each partition via `LittleFSFS::begin(formatOnFail, basePath, maxFiles, partitionLabel)`, where basePath is the ESP-IDF VFS mountpoint. Keep `MOUNT_A = "/lfsa"` and `MOUNT_B = "/lfsb"` **distinct** — never share one path between partitions; a third LFS partition would need its own (`/lfsc`). Up to 1.17.8a both used `"/lfs"`: VFS silently rebound the path, so T13's writes never reliably reached lfs1 and the device booted to stale assets from a prior cycle. **Symptom to recognise:** "OTA flipped the firmware version but the assets stayed old" — check basePaths first. The diagnostic stack that exposes it within one OTA round-trip (manifest.json on the LFS, the `/manifest.json` route, the `<!-- web-assets X.Y.Z -->` HTML stamp, the OTA diagnostic card) has been in place since 1.17.7.
 - **Greenfield flash requires erasing the coredump partition** — see CLAUDE.md hard constraint and gotcha-log.
 
 ## See also

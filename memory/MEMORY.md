@@ -8,6 +8,7 @@ Layer-3 index for the greenhouse-Controller project. Auto-loaded by Claude Code 
 |---|---|---|
 | Architecture (task graph + subsystem map + partitions) | [architecture.md](architecture.md) | Before touching any FreeRTOS task or subsystem |
 | Gotcha log | [gotcha-log.md](gotcha-log.md) | When something weird happens, before debugging from scratch |
+| Gotcha archive | [gotcha-archive.md](gotcha-archive.md) | Rarely — only when tracing the history of a fix that can no longer recur. Never for triage |
 
 ## Conventions
 

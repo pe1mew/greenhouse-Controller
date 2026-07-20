@@ -4,6 +4,8 @@ Append-only. Newest at top. Format per entry: **Problem → Root cause → Fix �
 
 When something weird happens, check here BEFORE debugging from scratch. Entries that recur or affect multiple subsystems graduate up to a topic file or to [CLAUDE.md](../CLAUDE.md) hard constraints.
 
+Entries that are resolved **and can no longer recur** (code deleted, design changed, fixed both sides) retire to [gotcha-archive.md](gotcha-archive.md) — history only, never needed for triage. Everything still able to bite you is in this file. Being `[RESOLVED]` is *not* sufficient to retire: most resolved entries here stay because an active constraint still depends on them.
+
 ## Promoted patterns
 
 - **[PATTERN] One log chain per time window — never let two chains of the same unit's logs coexist in an analysis folder.** The dedup in `plot_daily.py` is tuple-exact and does **not** catch it; the symptom is a day showing ~2× the expected sample count (~5700 vs ~2860). Recurred twice: 2026-06-26 (two independent SD downloads with different rotation boundaries) and 2026-07-20 (files pulled off the card by hand vs. the unit's own later upload of the same files). Rule: **before plotting, run `check_dupes.py`; archive the superseded chain to `archived_overlap/`** rather than deleting it, and sanity-check sample counts in `plot_summary.txt` afterwards. Free verification: if `git status` shows the archived copy and the new file as a rename (`R old -> new`), they are byte-identical.
@@ -80,7 +82,7 @@ When something weird happens, check here BEFORE debugging from scratch. Entries 
 
 **Fix:** Add `su root root` inside the config block (root renames/creates in `/var/log`; the `create 0664 www-data www-data` line still hands the fresh log back to www-data). Always validate logrotate configs with `sudo logrotate --debug <file>`, never as a normal user, or the check won't fire.
 
-**Where it lives:** `greenhouse-Controller-FOTA-server` — `tools/rota-logrotate` (carries the `su root root` + a comment explaining why), `tools/bootstrap.md` §7.
+**Where it lives:** ⧉ **separate repo** `greenhouse-Controller-FOTA-server` (these paths do **not** resolve in this repo) — `tools/rota-logrotate` (carries the `su root root` + a comment explaining why), `tools/bootstrap.md` §7.
 
 ---
 
@@ -92,7 +94,7 @@ When something weird happens, check here BEFORE debugging from scratch. Entries 
 
 **Fix / rules for VPS work:** validate every JSON file after editing (`php -r 'echo json_decode(file_get_contents($f))===null?"INVALID":"valid";'`). Run file-creating command blocks entirely as root (`sudo bash -c '…'`) so the reads inside succeed. To check a file php-fpm will read, test **as php-fpm's user**: `sudo -u www-data cat <file>` — a `remko`-run `cat` on a `www-data`-owned file gives a misleading "Permission denied". After creating store files, `chown -R www-data:www-data` so php-fpm can read/write (registry `.lock`/`.tmp`, `checkins.csv`, `nonce-cache/`).
 
-**Where it lives:** `greenhouse-Controller-FOTA-server` — `tools/init-store.sh`, `examples/devices.example.json` (the correct full-object shape), `public/lib/rota_lib.php` (fails closed on unparseable registry — safe, but hard to diagnose).
+**Where it lives:** ⧉ **separate repo** `greenhouse-Controller-FOTA-server` (these paths do **not** resolve in this repo) — `tools/init-store.sh`, `examples/devices.example.json` (the correct full-object shape), `public/lib/rota_lib.php` (fails closed on unparseable registry — safe, but hard to diagnose). The files named in the body above (`devices.json`, `checkins.csv`, `nonce-cache/`, `.lock`/`.tmp`) are **deployed server state on the VPS**, in neither repo.
 
 ---
 
@@ -202,18 +204,6 @@ Verify: serial shows `littlefs_mount(A (lfs0)) returned 0 (OK)` + `/index.html e
 
 ---
 
-## 2026-06-27 — Word COM automation hangs on large HTML files [RESOLVED — removed]
-
-**Problem:** `make_rtf()` in `manual/build_pdf.py` calls `word.Documents.Open(html)` which hangs indefinitely on `beheerderHandleiding.html` (~180 KB, complex CSS). Multiple orphaned `WINWORD.EXE` processes accumulate; temp HTML files are left locked on disk.
-
-**Root cause:** Word's non-interactive COM rendering path stalls on large, CSS-heavy HTML. The hang is silent — no exception, no timeout — so `make_rtf()` never returns and the script blocks.
-
-**Fix:** Removed Word COM and all RTF generation from `manual/build_pdf.py` entirely. Script now generates PDF only via Edge headless. RTF files (if ever needed) must be created outside this script.
-
-**Where it lives:** `manual/build_pdf.py` — `make_rtf()` function and the `try/except` block in the main loop. Orphaned WINWORD processes can be killed via `Get-Process WINWORD | ForEach-Object { $_.Kill() }`.
-
----
-
 ## 2026-06-26 — `plot_daily.py` sorted-set dedup fails when two SD download chains overlap
 
 **Problem:** Feeding log files from two independent SD card downloads of the same unit (different rotation boundaries, same time period) causes days in the overlap window to show ~2× the expected sample count (~5700 vs ~2860 per day). The `sorted(set(tuple(e)))` dedup at `load_logs()` line 182 does not remove the double-counted readings.
@@ -258,14 +248,6 @@ Verify: serial shows `littlefs_mount(A (lfs0)) returned 0 (OK)` + `/index.html e
 
 **Fix:** Use GET with `Range: bytes=0-0` to read just one byte and inspect `Content-Range` for the total. Or just GET the whole file. GitHub issue filed 2026-06-28 (see repository issue tracker).
 
-## 2026-06-10 — `rfsee.net/hbwv/api.php` rejects POSTs > ~1 MB with HTTP 413 [RESOLVED — server limit raised 2026-06-28]
-
-**Problem:** T14's daily log upload fails every day with `code=413` once an SD log file rotates to its 1 MB cap. The `log_last_up` field froze at a May 24 filename for 17 days while uploads silently failed.
-
-**Root cause:** Server-side `post_max_size` (PHP) and/or `client_max_body_size` (nginx) was below 1 MB on rfsee.net.
-
-**Fix:** Server-side upload limit raised to ≥ 2 MB (2026-06-28). Firmware side complete in 2.1.1 (gh#34 commit): T14 records HTTP status code in the SD audit row. Both sides now resolved; tracked in GH issues.
-
 ## 2026-06-09 — Branch protection on `main` rejects merge commits
 
 **Problem:** `git merge dev/X --no-ff && git push origin main` rejected with "This branch must not contain merge commits".
@@ -288,7 +270,7 @@ Verify: serial shows `littlefs_mount(A (lfs0)) returned 0 (OK)` + `/index.html e
 
 **Root cause:** Bootloader header byte must be `dio` for the ESP32-S3 ROM. esptool's default header doesn't match the runtime `flash_mode = qio` setting.
 
-**Fix:** Pass `--flash_mode dio` to esptool for the full-chip flash; runtime `board_build.flash_mode = qio` in `platformio.ini` stays.
+**Fix:** Pass `--flash_mode dio` to esptool for the full-chip flash; runtime `board_build.flash_mode = qio` in `firmware/platformio.ini` stays.
 
 **Where it lives:** Canonical statement in [`../CLAUDE.md`](../CLAUDE.md) "Releases & OTA" hard constraints. User-global personal copy at `~/.claude/projects/.../memory/feedback_full_flash_mode.md`.
 
@@ -312,21 +294,13 @@ Encoded in [firmware/partitions.csv](../firmware/partitions.csv) header comment.
 
 **Fix:** Build script Step 3.5 restores the placeholder after Step 3. `.githooks/pre-commit` refuses commits where `manifest.json` is in literal form. Both are necessary; either alone is bypassable.
 
-## 2026-XX-XX — Reboot from FreeRTOS timer service task overflows its stack [RESOLVED — 2.0.0-rc.1.2]
-
-**Problem:** Scheduled reboot via a software-timer callback calling `esp_restart()` directly produces a stack-overflow panic during reboot.
-
-**Root cause:** `esp_wifi_stop()`'s teardown consumes several KB of stack. The timer service task's `configTIMER_TASK_STACK_DEPTH` doesn't have enough headroom.
-
-**Fix:** Timer callback spawns a dedicated `reboot_worker_task` with a 4 KB stack; that task calls `esp_restart()`. `firmware/src/ota_manager/ota_manager.cpp` — `reboot_timer_cb` and `reboot_worker_task`. Landed in 2.0.0-rc.1.2.
-
 ## 2026-XX-XX — Dual LittleFS partitions need separate VFS basePaths [RESOLVED]
 
 **Problem:** Mounting `lfs0` and `lfs1` to the same VFS basePath (`/lfs`) causes the second mount to overlay the first; assets are read from the wrong partition.
 
 **Root cause:** ESP-IDF's VFS treats basePath as the mount point; identical basePaths collide.
 
-**Fix:** Each partition gets its own basePath: `/lfsa` for `lfs0`, `/lfsb` for `lfs1`. The active-partition resolver picks via the running app bank. Encoded in `~/.claude/projects/.../memory/project_littlefs_basepath.md`.
+**Fix:** Each partition gets its own basePath: `/lfsa` for `lfs0`, `/lfsb` for `lfs1`. The active-partition resolver picks via the running app bank. **Invariant + full mechanism now recorded in [architecture.md](architecture.md) "Partition table"** (moved there 2026-07-20 from user-global memory, so it is tracked in git and reachable by anyone).
 
 ## 2026-05-XX — PowerShell 5.1 with `$ErrorActionPreference='Stop'` treats `pio` stderr warnings as fatal [RESOLVED — rc.1.3]
 
@@ -350,7 +324,7 @@ Encoded in [firmware/partitions.csv](../firmware/partitions.csv) header comment.
 
 **Root cause:** T16 was created with an 8 KB stack — enough for the manifest *check* (one mbedTLS handshake + a `cert[2048]` on the stack), but the *download* path nests a **second** mbedTLS handshake (`rota_download_verify → rota_https_get`) inside `ota_check_once`'s still-live frame, with a `cert[2048]` buffer live in **both** `ota_check_once` and `rota_handle_update`. Two TLS contexts + two 2 KB PEM buffers blew past 8 KB. It only surfaced on a real artefact download (the earlier 204/200 check tests never entered this path).
 
-**Fix (2.2.1):** T16 stack 8 KB → **16 KB** (matches T13's OTA-work sizing, `main.cpp`), and both `cert[ROTA_CERT_MAX]` PEM buffers moved from stack to `malloc`/`free` (`ota_client.cpp`, −4 KB peak). **Lesson:** any task that runs `esp_http_client` over TLS needs ≥ ~12–16 KB; never stack-allocate the pinned-cert PEM. A stack that survives a small GET can still overflow on a large download that nests a second handshake.
+**Fix (2.2.1):** T16 stack 8 KB → **16 KB** (matches T13's OTA-work sizing, `firmware/src/main.cpp`), and both `cert[ROTA_CERT_MAX]` PEM buffers moved from stack to `malloc`/`free` (`ota_client.cpp`, −4 KB peak). **Lesson:** any task that runs `esp_http_client` over TLS needs ≥ ~12–16 KB; never stack-allocate the pinned-cert PEM. A stack that survives a small GET can still overflow on a large download that nests a second handshake.
 
 ## [RESOLVED 2.2.14] 2026-07-13 — `/api/coredump/status` labels a stale dump with the RUNNING version, not the crashed one
 

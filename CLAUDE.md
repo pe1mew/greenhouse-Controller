@@ -22,7 +22,7 @@ Production deployment at Herenboeren Willemshoeve (Soest). Field units in active
 
 - **Paired-commit invariant.** Push firmware AND assets within 120 s of each other (`FW_DONE` fallback timer commits firmware alone after that, stranding the asset partition).
 - **Verify post-OTA** by reading both `fw_ver` AND `asset_version` from `/api/status`. Neither alone is sufficient — a mismatch means the asset partition was left behind.
-- **SemVer cadence:** feature releases bump minor (1.16.x → 1.17.0); patch is for bug-fix-only.
+- **SemVer cadence:** feature releases bump minor (1.16.x → 1.17.0); patch is for bug-fix-only. Decide by asking: *did this add a user-visible feature, a new task, a new NVS namespace/key, or a payload-shape change?* If yes → minor, reset patch to 0. Don't let a run of patch-only commits pull the next bump into patch by inertia.
 - **Greenfield flash uses `--flash_mode dio`** for the bootloader header byte. Runtime `board_build.flash_mode = qio` stays. Mixing them causes an `ets_loader.c` boot loop.
 - **First flash on every new unit must erase the coredump partition** at `0x620000` (size `0x10000`). IDF reads garbage otherwise and panics on every subsequent boot.
 
