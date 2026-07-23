@@ -8,13 +8,37 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ## Promoted patterns
 
+- **[PATTERN] The git index is a single shared, easily-misread resource — verify it, never narrate it.** Three incidents (2026-07-13 branch switch, 2026-07-20 `commit -a` sweep, 2026-07-23 false "staged" report): each time the index's real state diverged from what was said or assumed about it. Rules: (1) after staging, show `git status --short` / `git diff --cached --stat` and report THAT, never a claim from memory; (2) staging one stream protects nothing if the commit is `-a` — if anything tracked-modified is pending, either stage it all with a covering message or say explicitly what must not be committed; (3) an untracked file that a staged change links to must be called out by name, not left among the `??` noise; (4) before any branch switch, empty the index.
+
 - **[PATTERN] One log chain per time window — never let two chains of the same unit's logs coexist in an analysis folder.** The dedup in `plot_daily.py` is tuple-exact and does **not** catch it; the symptom is a day showing ~2× the expected sample count (~5700 vs ~2860). Recurred twice: 2026-06-26 (two independent SD downloads with different rotation boundaries) and 2026-07-20 (files pulled off the card by hand vs. the unit's own later upload of the same files). Rule: **before plotting, run `check_dupes.py`; archive the superseded chain to `archived_overlap/`** rather than deleting it, and sanity-check sample counts in `plot_summary.txt` afterwards. Free verification: if `git status` shows the archived copy and the new file as a rename (`R old -> new`), they are byte-identical.
 
 - **[PATTERN] Python CLI output on this machine must be ASCII-only.** The Windows console is cp1252; any `print()` (or the harness capturing stdout) crashes with `UnicodeEncodeError` on `→ … ✓ ✗ °` etc. Recurred 5+ times (calibration scripts, `check_dupes.py`, `rota_sim.py`, ad-hoc probes). Rule: write `->`, `...`, `deg`, `OK`/`FAIL` — never Unicode glyphs — in Python that prints. If Unicode is unavoidable, set `PYTHONIOENCODING=utf-8` on the invocation. Do NOT trust a crude keyword scan of captured serial/HTTP output either — loose substrings (`corrupted`, `format`) throw false positives; match on the specific message.
 
 ---
 
-## 2026-07-23 — logparser mislabels a wind-override SET at `speed == v_max` as a "direction" event (gh#45)
+## 2026-07-23 — `test/` is gitignored but 15 files inside it remain tracked (deliberate mixed state)
+
+**Problem (future trap, recorded pre-emptively):** `.gitignore` carries `/test/` (operator decision: the pytest HIL bench harness — `conftest.py`, `lib/`, `test_01..09` — stays local-only). But 15 files under `test/` were tracked *before* the rule and deliberately stay tracked: `softwareTestPlan.md`, `testPlan.md`, `softwareTestResult.md`, `firmwareIntegrationTestPlan.md`, `manualREST.md`, `test_10_rota.md`, and the `3_3_*`/`3_4_*`/`5_3_2_*` manual-test records. Consequences a future session will hit: (1) **a NEW file created under `test/` never appears in `git status`** — it silently stays local (`git add` needs `-f`); (2) edits to the 15 tracked files still show and commit normally; (3) `softwareTestPlan.md` cross-references `[→ TC-xx]` implementations that exist only on the bench machine — that is by design, not an omission.
+
+**Root cause:** gitignore only affects untracked files; the operator chose to keep the previously-tracked spec/result docs while excluding the executable harness.
+
+**Fix / rule:** to add a new *document* under `test/` to the repo, use `git add -f test/<file>` knowingly — or better, ask whether it belongs elsewhere. Never "fix" the situation by bulk `git rm --cached` (the tracked 15 are referenced by CLAUDE.md workflows and the 2.3.0 release notes) or by deleting the `/test/` rule.
+
+**Where it lives:** `.gitignore` (rule + inline note); operator decision 2026-07-23.
+
+---
+
+## 2026-07-23 — `rota_release.py release` aborts silently-looking under a null-stdin shell: interactive [y/N] prompt
+
+**Problem:** First `python bin/rota_release.py release 2.3.0` printed the full plan then ended with `Create GitHub release v2.3.0 and upload 3 assets? [y/N] aborted.` — the harness shell has stdin on the null device, the prompt read EOF, and the tool aborted (correctly, but after a full round trip).
+
+**Fix:** pass **`--yes`** when running any `rota_release.py` mutating subcommand from Claude's shell (`release`, `promote`, `publish` all share the confirmation flag via the common parser). Print the plan first without `--yes` only if the operator should review it before execution — the abort-on-EOF behaviour makes that a safe two-step. Also note: the tool warns "working tree has uncommitted changes" whenever ANY untracked file exists; if the release-relevant files are committed and the artefact hashes match the release notes, that warning is noise.
+
+**Where it lives:** `bin/rota_release.py` (`--yes` on the common argument parser, `:720`).
+
+---
+
+## 2026-07-23 — logparser mislabels a wind-override SET at `speed == v_max` as a "direction" event (gh#45) [RESOLVED 2.3.0 — both parts shipped same day]
 
 **Problem:** 5C88's wind alarms on Sunday 2026-07-19 parsed as *"WIND OVERRIDE: SET - direction 60 deg in exclusion zone (low bound 60 deg)"* at 12:35:16 and 14:14:31. Taken at face value that says the wind blew from 60° (ENE) into a directional exclusion zone. **It didn't** — the instantaneous wind at both moments was from the NNW (~326–358°), never near 60°, and there is no evidence a directional exclusion was even configured. All three of that day's episodes were **speed** triggers (gusts to 7–9 m/s pushing the ~6-min averaged wind onto `v_max`).
 
@@ -26,7 +50,9 @@ Deeper point: `60,60` is **genuinely ambiguous from the row alone** — a real d
 - **Immediate (parser, low-risk):** change the speed test at `logparser.py:462` from `va > vb` to `va >= vb`. This is strictly an improvement — it captures the `va == vb` boundary as a speed SET (the common, observed case) and changes nothing else (the CLEARED branch needs `vb > va`, mutually exclusive). It does **not** resolve the residual speed-vs-direction overlap; add a caveat comment saying so.
 - **Proper (firmware, the real fix — tracked in gh#45):** disambiguate at the source the way T5 sensor faults already did (see the `_fmt_alarm` docstring: "the new ch-based encoding lets T2/T3 keep ch=0 and T5 own ch≥4"). Give T3 wind-override rows a `channel` (or `param`) discriminator — e.g. speed-SET / direction-SET / CLEAR each get their own code — so the parser reads the type instead of guessing. **Per CLAUDE.md this is a log-format change: `log/logparser.py` must learn the new encoding in the same changeset**, and it needs a version bump.
 
-**How to recognise it:** a wind "direction" override whose reported bearing does **not** match the `SENSOR_HR` wind-direction samples around the same timestamp, especially when the bearing numerically equals `v_max×10` (60 = 6.0 m/s, 80 = 8.0, …). Cross-check every "direction" wind event against the instantaneous wind before believing it. This sits alongside the ASCII-only promoted pattern's warning: don't trust a decode you can cross-check but didn't.
+**RESOLUTION (2026-07-23, 2.3.0):** both fixes landed the same day. Part 1 (`>=` in the parser) in `e15a17b`; Part 2 (the source-side discriminator) shipped in **2.3.0** — `make_wind_log()` stamps `param` 240–243, parser+plotter decode param-first, legacy rows keep the heuristic (campaign replay byte-identical). The recognition heuristic below still applies to **pre-2.3.0 logs**, which is every campaign file before Jul 2026.
+
+**How to recognise it (legacy `param=0` rows only):** a wind "direction" override whose reported bearing does **not** match the `SENSOR_HR` wind-direction samples around the same timestamp, especially when the bearing numerically equals `v_max×10` (60 = 6.0 m/s, 80 = 8.0, …). Cross-check every "direction" wind event against the instantaneous wind before believing it. This sits alongside the ASCII-only promoted pattern's warning: don't trust a decode you can cross-check but didn't.
 
 **Where it lives:** `log/logparser.py` — `_fmt_alarm()` disambiguation block (`:445`–`:490`); source encoding in `firmware/src/safety_monitor/safety_monitor.cpp` (T3) and the `value_a/value_b` catalogue in `firmware/src/event_logger/event_logger.h`.
 
@@ -153,7 +179,9 @@ Verify: serial shows `littlefs_mount(A (lfs0)) returned 0 (OK)` + `/index.html e
 - If the workflow is `commit -a`, then **everything pending will land in one commit** — so the honest move is to stage *all* pending work together and write a message that covers all of it, not to stage one stream and hope.
 - A brand-new file the commit *depends on* is the sharpest edge: `46b709f` committed `gotcha-log.md` + the memory index both linking to `gotcha-archive.md` while the archive itself sat untracked, so HEAD briefly had two dangling links and had lost the three retired entries outright. **Untracked-and-load-bearing must be called out explicitly at hand-off, not listed among `??` entries.**
 
-**Where it lives:** Process, not code. Commits `32ce6b5`/`5c3c6cc` (branch-switch variant) and `46b709f`/`cb6a178` (`commit -a` variant) are the examples.
+**RECURRED 2026-07-23 (3rd time, new variant): Claude REPORTED ".gitignore staged" without having run `git add` at all.** The edit existed only in the working tree; the "staged" claim was narrative, not verified state. Caught one turn later when staging the manifest showed a one-file index. No damage (nothing lost, the files were untracked-safe), but the operator's mental model of the index was wrong for a full turn. Lesson: **a staging claim must be backed by `git status --short` output in the same turn — state what git says, not what you meant to do.** Promoted with the other two variants, see top of file.
+
+**Where it lives:** Process, not code. Commits `32ce6b5`/`5c3c6cc` (branch-switch variant), `46b709f`/`cb6a178` (`commit -a` variant), and the 2026-07-23 false-staged report (no commit — caught in-session) are the examples.
 
 ---
 
