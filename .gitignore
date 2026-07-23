@@ -58,6 +58,13 @@ __pycache__/
 debug/
 /.tmp
 
+# Parsed siblings of SD logs — produced by log/logparser.py next to whatever
+# log it decodes (parsed_<name>.txt). Pure derived output, reproducible from
+# the .log + the parser at any commit; keeping them off git stops them
+# cluttering `git status` every time a campaign log is analysed. No such file
+# is tracked. The source .log/.csv files themselves are NOT ignored.
+parsed_*.txt
+
 # ESP-IDF build-system artefacts (appearing from 2.0.0-alpha.1 onwards when
 # framework = espidf replaces framework = arduino). PlatformIO+espidf still
 # writes most of its build output under .pio/ (already ignored above), but

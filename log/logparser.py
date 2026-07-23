@@ -458,17 +458,32 @@ def _decode_alarm(row: dict) -> str:
             #                   vb is direction (0–359, often > va)
             #
             # Disambiguation heuristic (best-effort):
-            #   1. va > vb AND vb <= 200  →  speed SET  (vb is v_max*10, max 20 m/s)
-            #   2. va < 150  AND vb > va  →  CLEARED    (va is now-safe speed*10)
-            #   3. otherwise              →  direction SET
+            #   1. va >= vb AND vb <= 200  →  speed SET  (vb is v_max*10, max 20 m/s)
+            #   2. va < 150  AND vb > va   →  CLEARED    (va is now-safe speed*10)
+            #   3. otherwise               →  direction SET
+            #
+            # Rule 1 uses `>=`, not `>`: the firmware fires on speed >= v_max, so a
+            # gust landing exactly on the limit gives va == vb (e.g. 60,60 = 6.0 m/s
+            # == v_max 6.0). With strict `>` that row fell through to "direction SET"
+            # and invented a bearing that never occurred (gh#45, 5C88 2026-07-19).
+            #
+            # RESIDUAL AMBIGUITY (gh#45, not fixable in the parser): va==vb, and more
+            # generally any direction SET with direction > excl_low and excl_low <= 200,
+            # is indistinguishable from a speed SET on the row alone — the (va,vb) space
+            # carries no type tag. This heuristic therefore defaults such rows to speed
+            # (the common case). Cross-check any "direction" wind event against the
+            # SENSOR_HR wind-direction samples at the same time before trusting it. The
+            # real fix is a source-side discriminator in `ch` (like T5 sensor faults);
+            # until then legacy ch=0 rows stay best-effort.
 
             if vb == 0:
                 # No direction reading available at clear time
                 speed = va / 10.0
                 return f"WIND OVERRIDE: CLEARED - speed now {speed:.1f} m/s"
 
-            if va > vb and vb <= 200:
-                # Speed SET: measured speed exceeded v_max
+            if va >= vb and vb <= 200:
+                # Speed SET: measured speed met or exceeded v_max (gh#45: >= not >,
+                # so the speed==v_max boundary row is not misread as a direction event)
                 speed = va / 10.0
                 v_max = vb / 10.0
                 return (

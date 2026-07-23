@@ -14,6 +14,24 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ---
 
+## 2026-07-23 — logparser mislabels a wind-override SET at `speed == v_max` as a "direction" event (gh#45)
+
+**Problem:** 5C88's wind alarms on Sunday 2026-07-19 parsed as *"WIND OVERRIDE: SET - direction 60 deg in exclusion zone (low bound 60 deg)"* at 12:35:16 and 14:14:31. Taken at face value that says the wind blew from 60° (ENE) into a directional exclusion zone. **It didn't** — the instantaneous wind at both moments was from the NNW (~326–358°), never near 60°, and there is no evidence a directional exclusion was even configured. All three of that day's episodes were **speed** triggers (gusts to 7–9 m/s pushing the ~6-min averaged wind onto `v_max`).
+
+**Root cause:** The raw rows are `value_a=60, value_b=60`. For a wind-override SET, `event_logger.h` encodes **speed** as `va=speed×10, vb=v_max×10` and **direction** as `va=direction°, vb=excl_low°` — two different meanings in one un-tagged `(va,vb)` space. `logparser.py`'s `_fmt_alarm()` disambiguation (`:462`) tests speed with **`va > vb`** (strict). But the firmware fires on `speed >= v_max` (confirmed by the same day's 14:16 row `62,60` → "6.2 >= 6.0"). At exactly `speed == v_max`, `va == vb` (60==60), the strict `>` fails, the CLEARED test (`vb > va`) fails too, and it falls through to the "otherwise → direction SET" branch, which reinterprets the *speed* `60` as a *bearing* of 60° and the `v_max` `60` as `excl_low`. Pure coincidence that 6.0 m/s ×10 = 60 is also a plausible angle.
+
+Deeper point: `60,60` is **genuinely ambiguous from the row alone** — a real direction event with `direction == excl_low == 60°` produces the identical bytes. And the overlap isn't only at the boundary: any direction SET with `direction > excl_low` and `excl_low ≤ 200` already gets grabbed by the speed branch. No parser heuristic can fully separate the two; only a source-side discriminator can.
+
+**Fix:**
+- **Immediate (parser, low-risk):** change the speed test at `logparser.py:462` from `va > vb` to `va >= vb`. This is strictly an improvement — it captures the `va == vb` boundary as a speed SET (the common, observed case) and changes nothing else (the CLEARED branch needs `vb > va`, mutually exclusive). It does **not** resolve the residual speed-vs-direction overlap; add a caveat comment saying so.
+- **Proper (firmware, the real fix — tracked in gh#45):** disambiguate at the source the way T5 sensor faults already did (see the `_fmt_alarm` docstring: "the new ch-based encoding lets T2/T3 keep ch=0 and T5 own ch≥4"). Give T3 wind-override rows a `channel` (or `param`) discriminator — e.g. speed-SET / direction-SET / CLEAR each get their own code — so the parser reads the type instead of guessing. **Per CLAUDE.md this is a log-format change: `log/logparser.py` must learn the new encoding in the same changeset**, and it needs a version bump.
+
+**How to recognise it:** a wind "direction" override whose reported bearing does **not** match the `SENSOR_HR` wind-direction samples around the same timestamp, especially when the bearing numerically equals `v_max×10` (60 = 6.0 m/s, 80 = 8.0, …). Cross-check every "direction" wind event against the instantaneous wind before believing it. This sits alongside the ASCII-only promoted pattern's warning: don't trust a decode you can cross-check but didn't.
+
+**Where it lives:** `log/logparser.py` — `_fmt_alarm()` disambiguation block (`:445`–`:490`); source encoding in `firmware/src/safety_monitor/safety_monitor.cpp` (T3) and the `value_a/value_b` catalogue in `firmware/src/event_logger/event_logger.h`.
+
+---
+
 ## 2026-07-20 — you cannot tell which firmware wrote an SD log; post-OTA proof must come from `/api/status`
 
 **Problem:** Trying to confirm that 5C88 had actually pulled 2.2.15 (to explain why its uploads resumed), the obvious move was to read the version out of the freshly-uploaded logs. There is nothing to read. Two separate reasons, both non-obvious.
