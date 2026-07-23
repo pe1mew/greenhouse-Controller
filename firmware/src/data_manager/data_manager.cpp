@@ -90,6 +90,7 @@ static const char K_V_MAX[]          = "v_max";
 static const char K_DIR_EXCL_LOW[]   = "dir_excl_low";
 static const char K_DIR_EXCL_HIGH[]  = "dir_excl_high";
 static const char K_WIND_PROT_EN[]   = "wind_prot_en";
+static const char K_WIND_HYST[]      = "wind_hyst";
 
 /* Motor namespace */
 static const char K_TRAVEL_M1[]       = "travel_m1";
@@ -499,6 +500,7 @@ static void nvs_load_wind(void)
     nvs_cfg_get_i32_or_default(NVS_NS_WIND, K_DIR_EXCL_LOW,  DEF_DIR_EXCL_LOW,  &v); s_cfg.dir_excl_low  = (int16_t)v;
     nvs_cfg_get_i32_or_default(NVS_NS_WIND, K_DIR_EXCL_HIGH, DEF_DIR_EXCL_HIGH, &v); s_cfg.dir_excl_high = (int16_t)v;
     nvs_cfg_get_i32_or_default(NVS_NS_WIND, K_WIND_PROT_EN,  DEF_WIND_PROT_EN,  &v); s_cfg.wind_prot_en  = (int16_t)v;
+    nvs_cfg_get_i32_or_default(NVS_NS_WIND, K_WIND_HYST,     DEF_WIND_HYST,     &v); s_cfg.wind_hyst     = (int16_t)v;
 }
 
 /**
@@ -665,6 +667,7 @@ static int32_t cfg_clamp(const char *ns, const char *key, int32_t v)
         else if (strcmp(key, K_V_MAX)         == 0) _CLAMP(CFG_MIN_V_MAX, CFG_MAX_V_MAX);
         else if (strcmp(key, K_DIR_EXCL_LOW)  == 0) _CLAMP(CFG_MIN_DIR,   CFG_MAX_DIR);
         else if (strcmp(key, K_DIR_EXCL_HIGH) == 0) _CLAMP(CFG_MIN_DIR,   CFG_MAX_DIR);
+        else if (strcmp(key, K_WIND_HYST)     == 0) _CLAMP(CFG_MIN_WIND_HYST, CFG_MAX_WIND_HYST);
 
     } else if (strcmp(ns, NVS_NS_MOTOR) == 0) {
         static const char * const ktr[] = { K_TRAVEL_M1,      K_TRAVEL_M2,      K_TRAVEL_M3      };
@@ -743,6 +746,7 @@ static log_param_id_t ns_key_to_log_id(const char *ns, const char *key,
         if (strcmp(key, K_DIR_EXCL_LOW)  == 0) return LOG_PARAM_DIR_EXCL_LOW;
         if (strcmp(key, K_DIR_EXCL_HIGH) == 0) return LOG_PARAM_DIR_EXCL_HI;
         if (strcmp(key, K_WIND_PROT_EN)  == 0) return LOG_PARAM_WIND_PROT_EN;
+        if (strcmp(key, K_WIND_HYST)     == 0) return LOG_PARAM_WIND_HYST;
         return LOG_PARAM_NONE;
     }
     if (strcmp(ns, NVS_NS_MOTOR) == 0) {
@@ -873,6 +877,7 @@ static bool apply_config_update(const config_update_t *upd)
         else if (strcmp(key_str, K_DIR_EXCL_LOW)  == 0) { old_val = s_cfg.dir_excl_low;  s_cfg.dir_excl_low  = v16; }
         else if (strcmp(key_str, K_DIR_EXCL_HIGH) == 0) { old_val = s_cfg.dir_excl_high; s_cfg.dir_excl_high = v16; }
         else if (strcmp(key_str, K_WIND_PROT_EN)  == 0) { old_val = s_cfg.wind_prot_en;  s_cfg.wind_prot_en  = v16; }
+        else if (strcmp(key_str, K_WIND_HYST)     == 0) { old_val = s_cfg.wind_hyst;     s_cfg.wind_hyst     = v16; }
         else { updated = false; }
 
     } else if (strcmp(ns_str, NVS_NS_MOTOR) == 0) {

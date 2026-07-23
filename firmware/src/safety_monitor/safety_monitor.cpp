@@ -31,6 +31,19 @@
  *     task can kick the WDT even when no new sensor reading has arrived
  *     (a stuck T4 would otherwise wedge T3 silently).
  *
+ *  6. Speed hysteresis (2.3.0, gh#46): SET at avg >= v_max; while the
+ *     override is active the speed threshold drops to (v_max - wind_hyst),
+ *     so CLEAR needs avg < v_max - wind_hyst AND direction safe.  Stops the
+ *     Jul-2026 chatter (repeated CLOSE_ALL/RESUME with wind hovering at
+ *     v_max — sub-minute reversals of M3's 171 s travel).  wind_hyst = 0
+ *     restores the legacy single-threshold behaviour.  Note the lowered
+ *     threshold applies while active regardless of which condition
+ *     triggered — a direction-triggered override with speed sitting in the
+ *     band [v_max - wind_hyst, v_max) holds until speed leaves the band
+ *     too.  Deliberate: conservative, and cheaper than per-cause latching
+ *     in a safety task.  Runtime guard caps eff_hyst at v_max - 1 so no
+ *     config combination can make the override un-clearable.
+ *
  * @author  Greenhouse Controller project
  */
 
@@ -104,14 +117,19 @@ static bool dir_in_exclusion_zone(uint16_t dir_deg,
  * @param  vb  Second payload (value_b) — meaning per onset/clearance kind.
  * @return Populated log_event_t ready for log_post().
  */
-static log_event_t make_wind_log(uint32_t ts, int16_t va, int16_t vb)
+static log_event_t make_wind_log(uint32_t ts, log_param_id_t subtype,
+                                 int16_t va, int16_t vb)
 {
     log_event_t e;
     e.timestamp  = ts;
     e.event_type = (uint8_t)LOG_ALARM;
     e.initiator  = (uint8_t)LOG_BY_SYSTEM;
     e.channel    = 0;
-    e.param_id   = (uint8_t)LOG_PARAM_NONE;
+    /* 2.3.0 (gh#45): param carries the event subtype (LOG_PARAM_ALARM_WIND_*)
+     * so consumers decode the row type directly instead of guessing from
+     * value_a/value_b magnitudes — the guess broke at speed == v_max.
+     * Legacy rows (pre-2.3.0) have param == LOG_PARAM_NONE.               */
+    e.param_id   = (uint8_t)subtype;
     e.value_a    = va;
     e.value_b    = vb;
     return e;
@@ -189,7 +207,7 @@ void task_safety_monitor(void *pvParameters)
                 xQueueSend(Q1, &cmd, 0);
 
                 /* value_a = 0, value_b = 0: disabled-while-active clearance */
-                log_event_t evt = make_wind_log(now, 0, 0);
+                log_event_t evt = make_wind_log(now, LOG_PARAM_ALARM_WIND_CLEAR, 0, 0);
                 log_post(&evt);
 
                 ESP_LOGI(TAG, "[T3] WIND_OVERRIDE cleared — wind protection disabled");
@@ -206,7 +224,8 @@ void task_safety_monitor(void *pvParameters)
         if (sensor_fault) {
             /*
              * SENSOR_FAULT_W active: safe-fail — treat wind as worst-case
-             * (FR-W04, TSDS §5.12).  T5 has already posted the S3 fault event;
+             * (FR-W04, TSDS §5.11 Watchdog and Fault Handling).  T5 has
+             * already posted the S3 fault event;
              * T3 records the WIND_OVERRIDE onset with value_a = -1.
              */
             speed_unsafe = true;
@@ -214,10 +233,22 @@ void task_safety_monitor(void *pvParameters)
             /* Speed threshold: compare wind_speed_avg_ms10 (m/s × 10) vs
              * v_max (m/s, integer) × 10.  Use int32 arithmetic to avoid
              * overflow on both sides before the comparison.
-             * v_max <= 0 is treated as disabled (no speed-based closure).   */
+             * v_max <= 0 is treated as disabled (no speed-based closure).
+             *
+             * Hysteresis (2.3.0, gh#46 — implementation note 6): while the
+             * override is active the threshold drops by wind_hyst m/s, so a
+             * wind hovering at v_max cannot chatter SET/CLEAR.  eff_hyst is
+             * capped at v_max - 1 m/s so the clear threshold stays >= 1 m/s
+             * and the override always remains clearable, whatever the
+             * operator sets (static clamp is 0..5; this is the belt to that
+             * braces).  wind_hyst = 0 → eff_hyst 0 → legacy behaviour.      */
             if (cfg.v_max > 0) {
+                int32_t eff_hyst = alarm_active ? (int32_t)cfg.wind_hyst : 0;
+                if (eff_hyst >= (int32_t)cfg.v_max) {
+                    eff_hyst = (int32_t)cfg.v_max - 1;
+                }
                 speed_unsafe = ((int32_t)meas.wind_speed_avg_ms10 >=
-                                (int32_t)cfg.v_max * 10);
+                                ((int32_t)cfg.v_max - eff_hyst) * 10);
             }
 
             /* Direction exclusion zone */
@@ -244,7 +275,7 @@ void task_safety_monitor(void *pvParameters)
             /* Log alarm onset ------------------------------------------- */
             if (sensor_fault) {
                 /* Fault-triggered: value_a = −1, value_b = 0 */
-                log_event_t evt = make_wind_log(now, -1, 0);
+                log_event_t evt = make_wind_log(now, LOG_PARAM_ALARM_WIND_FAULT, -1, 0);
                 log_post(&evt);
                 ESP_LOGW(TAG,
                          "[T3] WIND_OVERRIDE set — SENSOR_FAULT_W safe-fail");
@@ -252,7 +283,7 @@ void task_safety_monitor(void *pvParameters)
                 if (speed_unsafe) {
                     /* W1: speed exceeded
                      * value_a = current speed × 10,  value_b = v_max × 10  */
-                    log_event_t evt = make_wind_log(now,
+                    log_event_t evt = make_wind_log(now, LOG_PARAM_ALARM_WIND_SPEED,
                         (int16_t)meas.wind_speed_avg_ms10,
                         (int16_t)((int32_t)cfg.v_max * 10));
                     log_post(&evt);
@@ -266,7 +297,7 @@ void task_safety_monitor(void *pvParameters)
                     /* W2: direction excluded
                      * value_a = current direction (deg),
                      * value_b = excl zone low bound (deg)                   */
-                    log_event_t evt = make_wind_log(now,
+                    log_event_t evt = make_wind_log(now, LOG_PARAM_ALARM_WIND_DIR,
                         (int16_t)meas.wind_dir_avg_deg,
                         cfg.dir_excl_low);
                     log_post(&evt);
@@ -289,7 +320,7 @@ void task_safety_monitor(void *pvParameters)
             /* W3: wind override ended
              * value_a = current speed × 10  (or 0 if no valid reading)
              * value_b = current direction   (or 0 if no valid reading)      */
-            log_event_t evt = make_wind_log(now,
+            log_event_t evt = make_wind_log(now, LOG_PARAM_ALARM_WIND_CLEAR,
                 meas_valid ? (int16_t)meas.wind_speed_avg_ms10 : 0,
                 meas_valid ? (int16_t)meas.wind_dir_avg_deg    : 0);
             log_post(&evt);

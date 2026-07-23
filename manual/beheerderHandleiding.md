@@ -245,7 +245,7 @@ Niet alle parameters zijn direct na het aanpassen actief; sommige vereisen een p
 | Parameter | Reboot vereist? |
 |---|---|
 | Climate setpoints, hyst, avg_win, rh_ctrl_en, cr_priority | Nee — direct actief |
-| Wind v_max, dir_excl_low/high, Wind protection | Nee — direct actief |
+| Wind v_max, dir_excl_low/high, wind_hyst, Wind protection | Nee — direct actief |
 | Motor travel- + dwell-times | Nee — geldt voor volgende beweging |
 | WiFi SSID/PSK client | Nee — connect/reconnect binnen ~30 s |
 | WiFi AP enable / AP password | Nee — direct actief |
@@ -313,7 +313,7 @@ Dezelfde route als voor de boer: lees IP-adres af van het LCD, het WiFi-scherm, 
 |---|---|---|
 | **Status** | Iedereen | Live Temparatuur, Luchtvochtigheid, wind snelheid en richting, raamposities, mode, alarmen, klok, WiFi, SD-kaart informatie |
 | **Climate** | Boer + Beheerder | Setpoints; *Beheerder ziet ook hyst, avg_win, rh_ctrl_en* |
-| **Wind** | Boer + Beheerder | wind_prot_en; *Beheerder ziet ook v_max, dir_excl_low/high, avg_win_wind* |
+| **Wind** | Boer + Beheerder | wind_prot_en; *Beheerder ziet ook v_max, dir_excl_low/high, avg_win_wind, wind_hyst* |
 | **Motors** | **Beheerder** | M1/M2/M3 travel + dwell open/close |
 | **System** | **Beheerder** | Sessie-timeout, AP-config, WiFi-client, NTP/timezone, locatie coordinaten, Over the Air Update (OTA) |
 | **Access** | **Beheerder** | PIN-management voor Farmer + Beheerder |
@@ -578,8 +578,11 @@ Per setpoint: schuifregelaar + nummerveld + **Apply**-knop.
 | Dir excl. zone low | — | 0–359 | ° |
 | Dir excl. zone high | — | 0–359 | ° |
 | Wind avg window | 6 | 1–30 | min. |
+| Wind hysteresis | 1 | 0–5 | m/s |
 
 > **Wind gemiddelde window (Wind avg window)**: het aantal minuten waarover de windsnelheid en -richting worden gemiddeld voordat ze worden vergeleken met `v_max`. Een korter venster reageert sneller op windstoten; een langer venster dempt toevallige pieken. Standaard 6 min. (12 metingen bij 30 s poll-interval). Onafhankelijk van het klimaat-gemiddelde (`avg_win_t`).
+
+> **Wind hysteresis** *(sinds 2.3.0)*: dode band onder `v_max` voordat een actieve wind-override wordt vrijgegeven. De ramen sluiten zodra het windgemiddelde `v_max` bereikt, maar gaan pas weer open als het gemiddelde onder `v_max − wind_hyst` zakt. Dit voorkomt herhaald sluiten/openen (motorslijtage — M3 doet 171 s over een volledige slag) wanneer de wind rond de grens blijft hangen. Standaard 1 m/s; `0` = direct vrijgeven onder `v_max` (oud gedrag).
 
 > **Wind-uitsluitings-zone**: windrichting waarbij de wind extra gevaarlijk is (bijvoorbeeld omdat ramen rechtstreeks in deze richting staan). Wind binnen deze hoek triggert wind-override ongeacht windsnelheid.
 
@@ -1101,9 +1104,11 @@ Wanneer Noord binnen de uitsluitings-zone ligt (door 0°): bijv. uitsluiting NO-
 
 Zone uitschakelen: `Dir excl. low = Dir excl. high` of negatief.
 
-#### Geen hysteresis — hoe omgaan met flapperen
+#### Hysteresis — flapperen rond v_max
 
-Bij wind rond `v_max` kan de override snel in/uit-flikkeren. **Verhoog `avg_win_wind`** (Beheerder-only, Wind-tab, standaard 6 min., bereik 1–30 min.). Een venster van 5–10 min. dempt flikkering goed.
+*(Sinds 2.3.0)* de override heeft een ingebouwde dode band: sluiten bij `v_max`, weer vrijgeven pas onder `v_max − wind_hyst` (standaard 1 m/s, Wind-tab, Beheerder-only). Flikkert de override desondanks — bijvoorbeeld bij sterk vlagerige wind die telkens door de hele band heen zakt — **verhoog dan eerst `wind_hyst`** (bereik 0–5 m/s) en **daarnaast `avg_win_wind`** (standaard 6 min., bereik 1–30 min.; een venster van 5–10 min. dempt vlagen goed). `wind_hyst = 0` herstelt het oude gedrag zonder dode band.
+
+*Ter referentie*: op 19 juli 2026 flikkerde de override op de productie-unit drie keer binnen enkele minuten bij wind die precies rond `v_max = 6.0` m/s hing — de aanleiding voor deze functie.
 
 ### 12.2 Motor-alarm — diagnose
 

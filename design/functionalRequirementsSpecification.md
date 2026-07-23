@@ -266,16 +266,17 @@ The system operates with two climate setpoint profiles — daytime and night-tim
 | ID | Requirement | MoSCoW |
 |----|-------------|--------|
 | FR-WS01 | The administrator **shall** be able to set a maximum wind speed threshold (v_max, in m/s or Beaufort scale). | Must |
-| FR-WS02 | When the measured wind speed exceeds v_max, the system **shall** immediately close all windows, overriding the climate control logic. | Must |
+| FR-WS02 | When the measured wind speed reaches or exceeds v_max, the system **shall** immediately close all windows, overriding the climate control logic. | Must |
 | FR-WS03 | The administrator **shall** be able to define a wind direction exclusion zone as a centre angle and a half-width (e.g. "close if wind is within ±30° of 315°N"). | Must |
 | FR-WS04 | When the measured wind direction falls within the configured exclusion zone, the system **shall** close all windows, overriding the climate control logic. | Must |
 | FR-WS05 | Wind safety closures **shall** take priority over all other window commands (climate control, MOTOR_ALARM resume). Manual window commands from LCD, web GUI, or MQTT are out of scope (C9). | Must |
 | FR-WS06 | When a wind safety override is active, the system **shall** show a dedicated wind-override alarm message on the LCD display, indicating which condition triggered the override (wind speed or wind direction). This indication **shall** remain visible on the display for as long as the override is active. | Must |
 | FR-WS07 | When wind conditions return to safe values, the system **shall** resume automatic climate control. | Must |
-| FR-WS08 | The administrator **should** be able to set a minimum duration that wind must be within safe limits before windows are re-opened (wind hysteresis timer). | Should |
+| FR-WS08 | The administrator **should** be able to set a minimum duration that wind must be within safe limits before windows are re-opened (wind hysteresis **timer**). *Not yet implemented — deferred behind the FR-WS12 dead band; revisit only if soak still shows chatter (gh#46).* | Should |
 | FR-WS09 | The farmer and the administrator **shall** each be able to enable or disable wind protection (both wind speed and wind direction safety). When wind protection is disabled, the system **shall** not issue wind-safety close commands; climate control operates without wind override. | Must |
 | FR-WS10 | When wind protection is disabled, the system **shall** show a persistent warning on the LCD display to inform the operator that wind safety is inactive. This warning **shall** remain visible for as long as wind protection is disabled. | Must |
 | FR-WS11 | Disabling or re-enabling wind protection **shall** be available to both the farmer and the administrator; the action **shall** be logged with a timestamp and the operator's identity. | Must |
+| FR-WS12 | A wind override raised on speed **shall** clear only after the averaged wind speed falls below `v_max − wind_hyst`, where `wind_hyst` (m/s, administrator-only, default 1, range 0–5) is a speed-hysteresis dead band; `wind_hyst = 0` disables the dead band (clear immediately below v_max). This prevents repeated close/open motor cycles when the wind hovers at v_max. *(Implemented 2.3.0, gh#46 — the dead-band counterpart of the FR-WS08 timer.)* | Should |
 
 ### 5.6 Conflict Resolution
 

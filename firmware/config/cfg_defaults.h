@@ -60,6 +60,10 @@
 #define DEF_DIR_EXCL_HIGH   0
 #define DEF_WIND_PROT_EN    1   /**< Wind override enabled by default */
 #define DEF_AVG_WIN_WIND    6   /**< Wind sliding-average window (min) — matches DEF_AVG_WIN_T for OTA backward compat */
+#define DEF_WIND_HYST       1   /**< Speed-hysteresis dead band (m/s, gh#46): SET at v_max, CLEAR below v_max−1.
+                                 *   Deliberately ACTIVE by default (not 0/back-compat): fail-safe directional —
+                                 *   never delays closing, only re-opening — and default-0 would leave production
+                                 *   chattering (5C88 2026-07-19: 3 SET/CLEAR cycles at v_max, sub-minute M3 reversal). */
 
 /* ── Motor — full-travel times (seconds) ────────────────────────────────── */
 /* Written to NVS on first boot; adjustable via web GUI (FR-CF05, admin).

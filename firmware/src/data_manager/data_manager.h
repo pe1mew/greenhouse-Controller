@@ -120,6 +120,8 @@ typedef struct {
     int16_t  dir_excl_low;   /**< Excl. zone lower bound (°,  C16)  */
     int16_t  dir_excl_high;  /**< Excl. zone upper bound (°,  C17)  */
     int16_t  wind_prot_en;   /**< Wind protection enable (0=off, 1=on) */
+    int16_t  wind_hyst;      /**< Speed-hysteresis dead band (m/s, C45, gh#46):
+                              *   override clears only below v_max − wind_hyst */
 
     /* ---- Motor (NVS_NS_MOTOR = "motor") ---- */
     int16_t  travel_s[3];         /**< Full-travel time per channel (s)

@@ -298,8 +298,9 @@ T1 is a full FreeRTOS task (not a software-timer callback). It is the system's l
 - Wakes on notification from T4 whenever new wind data is available.
 - Reads current wind speed and wind direction from T4.
 - Checks the `wind_prot_en` flag (from T4) before evaluating thresholds. If wind protection is disabled, T3 takes no action and clears EG1.WIND_OVERRIDE if previously set.
-- Compares against v_max threshold and wind direction exclusion zone (configuration from T4) — only when `wind_prot_en` is true.
+- Compares against v_max threshold and wind direction exclusion zone (configuration from T4) — only when `wind_prot_en` is true. The speed comparison is `avg ≥ v_max` (FR-WS02: reaches or exceeds).
 - Posts a `CLOSE_ALL` actuation command to T2 immediately when a threshold is exceeded.
+- **Speed hysteresis (2.3.0, gh#46, FR-WS12):** while the override is active, the speed threshold drops to `v_max − wind_hyst` (admin-only, default 1 m/s, 0 = legacy single threshold). The override clears only when the averaged speed is below that lowered threshold AND the direction is outside the exclusion zone — a wind hovering at v_max can no longer chatter CLOSE_ALL/RESUME. The effective hysteresis is capped at `v_max − 1` at runtime so the override always remains clearable. The lowered threshold applies while active regardless of which condition triggered (deliberate: conservative, avoids per-cause latching in a safety task).
 - Posts a `RESUME` notification to T6 when conditions return to safe limits.
 - Always active (task remains scheduled), but evaluation and actuation are suppressed when wind protection is disabled.
 - Independent of Automatic / Standby operating mode.

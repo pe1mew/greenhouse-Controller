@@ -408,8 +408,18 @@ def _decode_alarm(row: dict) -> str:
       had no way to disambiguate. The new ch-based encoding lets T2/T3
       keep ch=0 and T5 own ch>=4.)
 
-    Channel-based dispatch handles T5 first; everything else falls through
-    to the legacy va-based disambiguation:
+    Channel-based dispatch handles T5 first. Then, for 2.3.0+ firmware
+    (gh#45), T3 wind rows are self-identifying: `param` carries a subtype
+    discriminator from the reserved band 240–243 —
+      240 = wind SET (speed)      va=speed×10, vb=v_max×10
+      241 = wind SET (direction)  va=direction°, vb=excl_low°
+      242 = wind CLEAR            va=speed×10|0, vb=direction°|0
+      243 = wind SET (sensor-fault safe-fail)  va=-1, vb=0
+    — decoded exactly, no guessing. Motor-alarm (T2) rows keep param=0, so
+    on 2.3.0+ data a (0,0) row is unambiguous.
+
+    Rows with param == 0 (all pre-2.3.0 logs, and T2 motor alarm) fall
+    through to the legacy va-based disambiguation:
       value_a ==  1  → motor alarm onset
       value_a == -1  → wind override: sensor fault safe-fail
       value_a ==  0  → motor alarm cleared  OR  wind override cleared (disabled)
@@ -429,6 +439,28 @@ def _decode_alarm(row: dict) -> str:
             return ("Wind sensor fault: "
                     + ("triggered (two consecutive read failures)"
                        if va else "cleared"))
+
+        # ── 2.3.0+ (gh#45): param discriminator — exact decode, no guessing ──
+        pa = int(row.get("param", 0) or 0)
+        if pa == 240:
+            return (f"WIND OVERRIDE: SET - speed {va / 10.0:.1f} m/s"
+                    f" >= v_max {vb / 10.0:.1f} m/s")
+        if pa == 241:
+            return (f"WIND OVERRIDE: SET - direction {va} deg"
+                    f" in exclusion zone (low bound {vb} deg)")
+        if pa == 242:
+            if va == 0 and vb == 0:
+                # Firmware logs (0,0) both for disabled-while-active and for a
+                # clear with no valid wind reading — same code, same meaning
+                # for the operator: the override ended without a measurement.
+                return ("WIND OVERRIDE: CLEARED"
+                        " (no wind reading, or wind protection disabled)")
+            if vb == 0:
+                return f"WIND OVERRIDE: CLEARED - speed now {va / 10.0:.1f} m/s"
+            return (f"WIND OVERRIDE: CLEARED - speed {va / 10.0:.1f} m/s,"
+                    f" direction {vb} deg")
+        if pa == 243:
+            return "WIND OVERRIDE: SET - wind sensor fault safe-fail"
 
         if va == 1 and vb == 0:
             return "MOTOR ALARM: triggered - all relays de-energised"

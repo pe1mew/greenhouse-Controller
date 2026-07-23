@@ -6,6 +6,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.3.0] — 2026-07-23  (gh#45 Part 2 + gh#46 — wind-alarm log discriminator & speed hysteresis)
+
+Feature release (minor bump: new NVS key + log-encoding extension). Both changes
+grew out of analysing 5C88's wind alarms of Sunday 2026-07-19 — three speed
+episodes at exactly `v_max = 6.0 m/s`, two of which the log parser mislabelled
+as direction events, and two of which chattered SET→CLEAR→SET within ~3 minutes.
+T3's protection itself behaved correctly throughout; neither change alters when
+the alarm *engages*.
+
+**Added.**
+- **`wind_hyst` — wind-speed hysteresis dead band (gh#46, FR-WS12).** New
+  admin-only config (NVS `wind/wind_hyst`, C45, default **1 m/s**, range 0–5,
+  web GUI Wind tab). The override still SETs at `avg ≥ v_max`, but while active
+  the speed threshold drops to `v_max − wind_hyst`, so it clears only once the
+  averaged wind is below the band (and direction is safe). Stops the Jul-19
+  pattern of sub-minute CLOSE_ALL/RESUME pairs reversing M3 mid-travel (171 s
+  stroke). `wind_hyst = 0` restores the legacy single-threshold behaviour. The
+  effective value is capped at `v_max − 1` at runtime so the override can never
+  become un-clearable. Default deliberately active (not 0): fail-safe
+  directional — never delays closing, only re-opening. The FR-WS08 hysteresis
+  *timer* remains deferred (revisit if soak still shows chatter).
+- **Wind ALARM rows are now self-identifying (gh#45 Part 2).** Every T3 wind
+  event stamps a subtype into the previously-unused `param` column, from a
+  reserved band far above the config space: **240** speed-SET, **241**
+  direction-SET, **242** CLEAR, **243** sensor-fault SET. Consumers
+  (`log/logparser.py`, `model/.../plot_daily.py`) decode the type directly —
+  no more magnitude heuristics, which mis-read a speed-SET at exactly
+  `speed == v_max` as a phantom direction event (the gh#45 Part 1 parser fix
+  treated the symptom; this removes the cause). Side effect: on 2.3.0+ data a
+  `(0,0)` ALARM row is no longer ambiguous — `param=242` is a wind clear,
+  `param=0` a T2 motor-alarm clear. Legacy (pre-2.3.0) rows keep decoding via
+  the old heuristic; replay of the full 5C88 campaign archive is byte-identical.
+
+**Documentation / tests.**
+- FRS: FR-WS02 reworded to "reaches or exceeds" (matches the firmware's `>=`,
+  as the Jul-19 boundary triggers proved); new FR-WS12 (dead band); FR-WS08
+  annotated as the deferred timer variant. TSDS T3 section gains the hysteresis
+  behaviour; stale "TSDS §5.12" safe-fail reference in `safety_monitor.cpp`
+  corrected to §5.11.
+- Manuals: beheerder Wind-tab table + uitleg (dead band, motor-wear rationale),
+  the "Geen hysteresis" troubleshooting section rewritten (it is no longer
+  true), boer manual notes the reopen margin and that it is Beheerder-only.
+- Tests: TC-11…TC-15 added to `test/test_04_wind_override.py` (boundary
+  `speed == v_max`, hold inside band, clear below band, `wind_hyst=0` legacy
+  regression, farmer 403); test plan rows IT-CC-034…038 + IT-EL-020.
+- Design record: `design/windAlarmImplementationPlan.md`.
+
+---
+
 ## [2.2.16] — 2026-07-19  (gh#43 — Log-tab layout consistency)
 
 **Changed.**

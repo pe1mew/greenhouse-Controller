@@ -1132,6 +1132,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
         "\"avg_win_t\":%d,\"avg_win_rh\":%d,"
         "\"avg_win_wind\":%d,"
         "\"v_max\":%d,\"wind_prot_en\":%d,"
+        "\"wind_hyst\":%d,"
         "\"dir_excl_low\":%d,\"dir_excl_high\":%d,"
         "\"travel_s\":[%d,%d,%d],"
         "\"dwell_open_min\":[%d,%d,%d],"
@@ -1154,6 +1155,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
         (int)cfg.avg_win_t, (int)cfg.avg_win_rh,
         (int)cfg.avg_win_wind,
         (int)cfg.v_max, (int)cfg.wind_prot_en,
+        (int)cfg.wind_hyst,
         (int)cfg.dir_excl_low, (int)cfg.dir_excl_high,
         (int)cfg.travel_s[0], (int)cfg.travel_s[1], (int)cfg.travel_s[2],
         (int)cfg.dwell_open_min[0], (int)cfg.dwell_open_min[1], (int)cfg.dwell_open_min[2],
@@ -1203,6 +1205,7 @@ static esp_err_t config_limits_handler(httpd_req_t *req)
         "\"avg_win_rh\":"     "[" _LIMITS_STR(CFG_MIN_AVG_WIN)      "," _LIMITS_STR(CFG_MAX_AVG_WIN)      "],"
         "\"avg_win_wind\":"   "[" _LIMITS_STR(CFG_MIN_AVG_WIN)      "," _LIMITS_STR(CFG_MAX_AVG_WIN)      "],"
         "\"v_max\":"          "[" _LIMITS_STR(CFG_MIN_V_MAX)        "," _LIMITS_STR(CFG_MAX_V_MAX)        "],"
+        "\"wind_hyst\":"      "[" _LIMITS_STR(CFG_MIN_WIND_HYST)    "," _LIMITS_STR(CFG_MAX_WIND_HYST)    "],"
         "\"dir_excl_low\":"   "[" _LIMITS_STR(CFG_MIN_DIR)          "," _LIMITS_STR(CFG_MAX_DIR)          "],"
         "\"dir_excl_high\":"  "[" _LIMITS_STR(CFG_MIN_DIR)          "," _LIMITS_STR(CFG_MAX_DIR)          "],"
         "\"travel_m1\":"      "[" _LIMITS_STR(CFG_MIN_TRAVEL_S)     "," _LIMITS_STR(CFG_MAX_TRAVEL_S)     "],"

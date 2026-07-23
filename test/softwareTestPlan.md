@@ -319,6 +319,11 @@ TSDS reference: §5.2 | FRS: FR-C01–FR-C12, FR-CR01–FR-CR04, FR-MA01–FR-MA
 |----|-------|-------------|-------|-----------------|
 | UT-CC-032 | UT | RH control disabled: no window commands on RH trigger | Set rh_ctrl_en = false; inject RH = 90% (far above RH_max) | No OPEN command issued; VENT_STEP_NEUTRAL returned for RH; no conflict resolution |
 | IT-CC-033 | IT | Wind protection disabled: no CLOSE_ALL on wind threshold breach | Set wind_prot_en = false; inject Speed = 20 m/s | No WIND_OVERRIDE set; mode remains AUTOMATIC; no CLOSE command from T3 `[→ TC-10]` |
+| IT-CC-034 | IT | Speed exactly == v_max triggers override (FR-WS02 "reaches or exceeds"; 2.3.0/gh#45 boundary) | Set v_max = 5; inject constant Speed = 5.0 so the average converges to exactly 5.0 | WIND_OVERRIDE set, serial reports the *speed* form ("speed 5.0 m/s >= v_max 5"), never a direction event `[→ TC-11]` |
+| IT-CC-035 | IT | Hysteresis dead band holds the override (FR-WS12, gh#46) | Set v_max = 5, wind_hyst = 2; trigger override at Speed = 8; drop to Speed = 4.0 (inside [3,5)) | Override stays active; no RESUME posted; mode remains wind_override `[→ TC-12]` |
+| IT-CC-036 | IT | Override clears below the dead band (FR-WS12) | Continue from IT-CC-035 state; drop to Speed = 2.5 (< v_max − wind_hyst = 3.0) | WIND_OVERRIDE cleared; RESUME posted; mode returns to AUTOMATIC `[→ TC-13]` |
+| IT-CC-037 | IT | wind_hyst = 0 restores legacy single-threshold clear (FR-WS12 back-compat) | Set v_max = 5, wind_hyst = 0; trigger at Speed = 8; drop to Speed = 4.5 | Override clears just below v_max — value sits inside what the default (1 m/s) band would hold, proving the band is off `[→ TC-14]` |
+| IT-CC-038 | IT | wind_hyst is administrator-only (FR-WS12, FR-CF-role model) | Farmer session POSTs {ns:"wind", key:"wind_hyst", value:3} | HTTP 403; value unchanged; admin session can set it `[→ TC-15]` |
 
 ---
 
@@ -361,6 +366,7 @@ TSDS reference: §5.3 | FRS: FR-LG01–FR-LG09
 | IT-EL-012 | IT | SETPOINT change log entry contains operator identity and old/new values (FR-LG02–FR-LG04) | Login as farmer; change T_max_day from 25 to 28 via web; read log | Log entry: event_type = SETPOINT, initiator = USER_FARMER, value_a = 25 (old), value_b = 28 (new), param_id matches T_max_day |
 | IT-EL-013 | IT | LOG_SENSOR event emitted on each poll cycle with T, RH, wind values (FR-LG09) | Set poll_interval = 30 s; inject T=22, RH=65, Speed=3, Dir=90; wait 1 cycle | LOG_SENSOR entry in Q3/log with correct T (22), RH (65), and wind values; timestamp within 2 s of poll |
 | IT-EL-014 | IT | Wind-override onset event logged with SYSTEM initiator (FR-MA08 analog, FR-WS11) | Trigger wind override by exceeding v_max; read log | LOG_ALARM entry: event_type = ALARM, initiator = SYSTEM; onset and clearance both logged |
+| IT-EL-020 | IT | Wind ALARM rows carry the param subtype discriminator (2.3.0, gh#45) | Trigger a speed override, a clear, and (with an exclusion zone) a direction override; download the SD CSV | Rows carry param 240 (speed SET), 242 (CLEAR), 241 (dir SET); T2 motor-alarm rows keep param 0; `log/logparser.py` renders each without invoking the legacy heuristic — in particular a speed SET at exactly v_max (row `240,60,60` at v_max 6) decodes as speed, the gh#45 regression case |
 
 ### 7.5 SD Log File Format and Lifecycle
 

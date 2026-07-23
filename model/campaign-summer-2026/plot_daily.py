@@ -163,9 +163,14 @@ def load_logs(temp_dir: Path):
                         #   onset W2: va = wind_dir_avg_deg,    vb = dir_excl_low
                         #   onset sensor-fault: va = -1, vb = 0
                         #   clearance: va = wind_speed_avg_ms10 (or 0), vb = wind_dir_avg_deg (or 0)
-                        # We can't perfectly distinguish onset from clearance from the row
-                        # alone — but track all rows; the per-day plotter will infer state.
-                        events["ALARM_W"].append((dt, va, vb))
+                        # 2.3.0+ rows (gh#45) stamp the subtype into `param`
+                        # (240 speed-SET, 241 dir-SET, 242 CLEAR, 243 fault-SET)
+                        # → kind is exact. Legacy rows have par == 0 → kind None
+                        # and infer_wind_override_intervals falls back to the
+                        # value heuristic.
+                        kind = {240: "onset", 241: "onset",
+                                242: "clear", 243: "onset"}.get(par)
+                        events["ALARM_W"].append((dt, kind, va, vb))
                     elif ch == 4:
                         events["ALARM_T"].append((dt, va))
                     elif ch == 5:
@@ -193,6 +198,10 @@ def infer_wind_override_intervals(alarm_w_events):
     Simplification: any ALARM_W row toggles state; we treat consecutive
     onset-style rows as a continuous interval until the next clear-style row.
 
+    2.3.0+ rows (gh#45) carry an exact kind ("onset"/"clear") decoded from the
+    param discriminator — used directly, no guessing. Legacy rows (kind None)
+    fall back to the value heuristic:
+
     Onset detection: va > 0 with vb > 0 (both populated indicate spot values),
                      OR va == -1 (sensor fault),
                      OR (va, vb) == (1, 0) or (2, 0) — code-only onset rows.
@@ -200,19 +209,25 @@ def infer_wind_override_intervals(alarm_w_events):
                          OR rows with va > 0 and vb > 0 but speed (va/10) < threshold (vb/10)
                          OR fault clearance: previous was -1 and we see normal speed values.
 
-    This is heuristic — the SD log doesn't carry an explicit onset/clear bit.
+    (Legacy caveat: pre-2.3.0 SD logs don't carry an explicit onset/clear bit,
+    and a legacy speed-SET at exactly speed == v_max has va == vb — the
+    va < vb clearance test correctly leaves that as onset.)
     """
     intervals = []
     active = False
     open_dt = None
-    for dt, va, vb in alarm_w_events:
-        # Clearance heuristic — both zero OR speed below threshold
-        is_clear = (va == 0 and vb == 0)
-        if not is_clear and va > 0 and vb > 0:
-            # speed-with-threshold form. If va < vb the spot speed is below
-            # threshold => almost certainly a clearance row.
-            if va < vb:
-                is_clear = True
+    for dt, kind, va, vb in alarm_w_events:
+        if kind is not None:
+            # Exact subtype from the 2.3.0+ param discriminator.
+            is_clear = (kind == "clear")
+        else:
+            # Clearance heuristic — both zero OR speed below threshold
+            is_clear = (va == 0 and vb == 0)
+            if not is_clear and va > 0 and vb > 0:
+                # speed-with-threshold form. If va < vb the spot speed is below
+                # threshold => almost certainly a clearance row.
+                if va < vb:
+                    is_clear = True
         if is_clear:
             if active and open_dt is not None:
                 intervals.append((open_dt, dt))
@@ -291,7 +306,7 @@ def plot_day(date_key, events, cfg, out_path: Path, dawn_dusk):
 
     relay  = [(d, c, s) for d, c, s in events["RELAY"]  if in_day(d)]
     modev  = [(d, r, t, rh) for d, r, t, rh in events["MODE"] if in_day(d)]
-    aw     = [(d, va, vb) for d, va, vb in events["ALARM_W"] if in_day(d)]
+    aw     = [(d, k, va, vb) for d, k, va, vb in events["ALARM_W"] if in_day(d)]
     boots  = [(d, rsn) for d, rsn in events["BOOT"] if in_day(d)]
 
     if len(sensor) < 30:
@@ -414,7 +429,7 @@ def plot_day(date_key, events, cfg, out_path: Path, dawn_dusk):
     # Mode (b): legacy ALARM-row spot values (only when no continuous trace).
     spot_dts, spot_ms = [], []
     if not wind_dts:
-        for d, va, vb in aw:
+        for d, _k, va, vb in aw:
             if va == -1:
                 continue
             if va > 0 and vb > 0 and va < 2000:

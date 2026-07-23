@@ -52,6 +52,11 @@
 #define CFG_MAX_V_MAX        30
 #define CFG_MIN_DIR           0
 #define CFG_MAX_DIR         359
+/* Speed-hysteresis dead band (2.3.0, gh#46). 0 = legacy single-threshold.
+ * Static clamp; T3 additionally caps the effective value at v_max - 1 at
+ * runtime so the override can always clear (belt + braces). */
+#define CFG_MIN_WIND_HYST     0
+#define CFG_MAX_WIND_HYST     5
 
 /* ── Motor (seconds) ─────────────────────────────────────────────────────── */
 #define CFG_MIN_TRAVEL_S      5   /* below 5 s motor cannot complete full stroke */

@@ -167,7 +167,7 @@ Soms vraagt de temperatuur om ramen open (te warm) en de vochtigheid om ramen di
 - **Auto** — de regeling kijkt naar welke afwijking het grootst is en geeft daaraan voorrang
 
 **Windbeveiliging:**
-Bij te harde wind sluit de controller **alle ramen automatisch**, ongeacht wat het klimaat vraagt. Dit beschermt de motoren en de raamconstructie. De windgrenswaarden worden door de beheerder ingesteld.
+Bij te harde wind sluit de controller **alle ramen automatisch**, ongeacht wat het klimaat vraagt. Dit beschermt de motoren en de raamconstructie. De ramen gaan pas weer open wanneer de wind duidelijk onder de grens is gezakt (kleine veiligheidsmarge) — zo gaan ze bij aanhoudende wind rond de grenswaarde niet steeds open en dicht. De windgrenswaarden en de marge worden door de beheerder ingesteld.
 
 ---
 
@@ -464,7 +464,7 @@ De beheerder moet de kascontroller eerst hebben verbonden met een wifi-netwerk. 
 |---|---|---|
 | **Status** | Iedereen (zonder inloggen) | temperatuur, luchtvochtigheid, wind, raamposities, mode, alarmen, klok, wifi, SD-kaart |
 | **Climate** | Boer + Beheerder | Setpoints voor dag en nacht, vochtregeling aan/uit, conflict-prioriteit |
-| **Wind** | Boer + Beheerder | Windbeveiliging aan/uit; windgrenzen en windgemiddelde window instellen is alleen voor de Beheerder |
+| **Wind** | Boer + Beheerder | Windbeveiliging aan/uit; windgrenzen, windgemiddelde window en wind-hysteresis instellen is alleen voor de Beheerder |
 
 
 ### Sensorhistorie

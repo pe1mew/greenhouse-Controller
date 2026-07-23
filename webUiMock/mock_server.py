@@ -114,8 +114,10 @@ cfg: dict = {
     "cr_priority":          0,
     "avg_win_t":            6,    # DEF_AVG_WIN_T
     "avg_win_rh":          10,    # DEF_AVG_WIN_RH (1.16.31)
+    "avg_win_wind":         6,    # DEF_AVG_WIN_WIND (gh#35 — was missing from the mock)
     "v_max":                6,    # DEF_V_MAX
     "wind_prot_en":         1,
+    "wind_hyst":            1,    # DEF_WIND_HYST (2.3.0, gh#46)
     "dir_excl_low":         0,
     "dir_excl_high":        0,
     "travel_s":            [21, 21, 171],     # MOTOR_M{1,2,3}_TRAVEL_S_DEFAULT
@@ -246,10 +248,12 @@ NVS_MAP: dict[tuple, tuple] = {
     ("climate", "avg_win_rh"):      ("avg_win_rh",          None),
     ("climate", "rh_ctrl_en"):      ("rh_ctrl_en",          None),
     ("climate", "cr_priority"):     ("cr_priority",         None),
+    ("wind",    "avg_win_wind"):    ("avg_win_wind",        None),
     ("wind",    "v_max"):           ("v_max",               None),
     ("wind",    "dir_excl_low"):    ("dir_excl_low",        None),
     ("wind",    "dir_excl_high"):   ("dir_excl_high",       None),
     ("wind",    "wind_prot_en"):    ("wind_prot_en",        None),
+    ("wind",    "wind_hyst"):       ("wind_hyst",           None),  # admin-only: NOT in FARMER_ALLOWED
     ("motor",   "travel_m1"):       ("travel_s",               0),
     ("motor",   "travel_m2"):       ("travel_s",               1),
     ("motor",   "travel_m3"):       ("travel_s",               2),
@@ -590,7 +594,9 @@ CONFIG_LIMITS: dict[str, list[int]] = {
     "hyst_rh":        [ 2, 20],
     "avg_win_t":      [ 1, 30],
     "avg_win_rh":     [ 1, 30],
+    "avg_win_wind":   [ 1, 30],
     "v_max":          [ 1, 30],
+    "wind_hyst":      [ 0, 5],
     "dir_excl_low":   [ 0, 359],
     "dir_excl_high":  [ 0, 359],
     "travel_m1":      [ 5, 300],

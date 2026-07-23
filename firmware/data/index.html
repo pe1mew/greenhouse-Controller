@@ -274,6 +274,13 @@
       <button onclick="postCfg('wind','avg_win_wind','cfg-avg-win-wind','int')">Apply</button>
       <span class="save-ok" id="fb-avg-win-wind"></span>
     </div>
+    <div class="slider-row admin-only">
+      <label data-tip="Dead band below v_max before an active wind override releases: windows close when the averaged wind reaches v_max, but reopen only once it drops below v_max minus this value. Prevents repeated close/open cycles (motor wear) when the wind hovers at the limit. 0 = release immediately below v_max (legacy).">Wind hysteresis (m/s)</label>
+      <input type="range"  id="cfg-wind-hyst-sl" step="1">
+      <input type="number" id="cfg-wind-hyst"    step="1" class="short">
+      <button onclick="postCfg('wind','wind_hyst','cfg-wind-hyst','int')">Apply</button>
+      <span class="save-ok" id="fb-wind-hyst"></span>
+    </div>
   </div>
 
   <!-- Motors tab (admin only) -->

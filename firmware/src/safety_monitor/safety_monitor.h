@@ -31,13 +31,22 @@
  *    while EG1.MOTOR_ALARM is set.
  *
  * ## Log events posted to Q3
- *  | Condition                   | event_type | value_a                     | value_b                |
- *  |-----------------------------|------------|-----------------------------|------------------------|
- *  | Onset — speed exceeded (W1) | LOG_ALARM  | wind_speed_avg_ms10         | v_max × 10             |
- *  | Onset — dir excluded   (W2) | LOG_ALARM  | wind_dir_avg_deg            | dir_excl_low           |
- *  | Onset — sensor fault        | LOG_ALARM  | −1 (fault indicator)        | 0                      |
- *  | Clearance             (W3)  | LOG_ALARM  | wind_speed_avg_ms10 (or 0)  | wind_dir_avg_deg (or 0)|
- *  | Disabled-while-active       | LOG_ALARM  | 0                           | 0                      |
+ *
+ * Since 2.3.0 (gh#45) every wind row stamps its subtype into `param`
+ * (LOG_PARAM_ALARM_WIND_*, band 240–243) so consumers decode the type
+ * directly. Pre-2.3.0 rows carry param = LOG_PARAM_NONE and must be
+ * decoded by the legacy value-magnitude heuristic.
+ *
+ *  | Condition                   | event_type | param                       | value_a                     | value_b                |
+ *  |-----------------------------|------------|-----------------------------|-----------------------------|------------------------|
+ *  | Onset — speed exceeded (W1) | LOG_ALARM  | ALARM_WIND_SPEED (240)      | wind_speed_avg_ms10         | v_max × 10             |
+ *  | Onset — dir excluded   (W2) | LOG_ALARM  | ALARM_WIND_DIR   (241)      | wind_dir_avg_deg            | dir_excl_low           |
+ *  | Onset — sensor fault        | LOG_ALARM  | ALARM_WIND_FAULT (243)      | −1 (fault indicator)        | 0                      |
+ *  | Clearance             (W3)  | LOG_ALARM  | ALARM_WIND_CLEAR (242)      | wind_speed_avg_ms10 (or 0)  | wind_dir_avg_deg (or 0)|
+ *  | Disabled-while-active       | LOG_ALARM  | ALARM_WIND_CLEAR (242)      | 0                           | 0                      |
+ *
+ * (T2 motor-alarm rows keep param = LOG_PARAM_NONE, so on 2.3.0+ firmware a
+ * (0,0) ALARM row is unambiguous: param 242 = wind clear, NONE = motor.)
  *
  * ## Design references
  *  - firmwareImplementationPlan.md §Phase 4

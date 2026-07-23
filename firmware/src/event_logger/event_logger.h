@@ -98,7 +98,13 @@
  * type       | string  | SENSOR / RELAY / MODE / SETPT / SESSION / ALARM / SYSTEM
  * initiator  | string  | SYS / FARMER / ADMIN / MQTT / WEB
  * ch         | uint8   | Motor channel (1/2/3) or 0 for non-motor events
- * param      | uint8   | log_param_id_t; 0 for non-CONFIG events
+ * param      | uint8   | log_param_id_t; 0 for non-CONFIG events — except
+ *            |         | T3 wind ALARM rows (2.3.0+, gh#45), which stamp an
+ *            |         | event-subtype discriminator from the reserved band
+ *            |         | 240–243 (LOG_PARAM_ALARM_WIND_*): 240 speed-SET,
+ *            |         | 241 dir-SET, 242 CLEAR, 243 sensor-fault SET.
+ *            |         | ALARM rows with param 0 = legacy encoding (decode
+ *            |         | by heuristic; see safety_monitor.h table).
  * value_a    | int16   | First payload (sensor value, reason code, etc.)
  * value_b    | int16   | Second payload (threshold, new setting, etc.)
  *

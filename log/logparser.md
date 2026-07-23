@@ -452,18 +452,38 @@ Wind override and motor alarm events.
 
 #### Wind override (T3 Safety Monitor)
 
+**Since firmware 2.3.0 (gh#45)** every wind row stamps its subtype into the
+`param` column, from a reserved discriminator band far above the config
+parameter space. The parser decodes these exactly — no heuristics:
+
+| `param` | `value_a` | `value_b` | Meaning |
+|---|---|---|---|
+| 240 | speed×10 | v_max×10 | SET — averaged speed reached v_max |
+| 241 | direction° | excl_low° | SET — direction inside exclusion zone |
+| 242 | speed×10 (or 0) | direction° (or 0) | CLEARED (0,0 = no wind reading, or protection disabled) |
+| 243 | −1 | 0 | SET — wind sensor fault safe-fail |
+
+Motor-alarm (T2) rows keep `param=0`, so on 2.3.0+ data a `(0,0)` ALARM row
+is unambiguous: `param=242` = wind clear, `param=0` = motor alarm clear.
+
+**Pre-2.3.0 logs** carry `param=0` on wind rows too and are decoded by a
+value-magnitude heuristic:
+
 | `value_a` | `value_b` | Meaning |
 |---|---|---|
 | −1 | 0 | SET — wind sensor fault safe-fail |
-| speed×10 | v_max×10 | SET — measured speed exceeded limit |
+| speed×10 | v_max×10 | SET — measured speed met or exceeded limit |
 | direction° | excl_low° | SET — direction inside exclusion zone |
 | 0 | 0 | CLEARED — wind protection was disabled while active |
 | speed×10 | direction° | CLEARED — conditions normalised |
 
-> **Note:** `value_a=0, value_b=0` is ambiguous between motor alarm clearance
-> and wind override clearance (disabled path).  The parser reports both
-> possibilities.  Context from surrounding RELAY/MODE events will clarify which
-> occurred.
+> **Legacy caveats (param=0 rows only):** `value_a=0, value_b=0` is ambiguous
+> between motor alarm clearance and wind override clearance (disabled path) —
+> the parser reports both possibilities; use surrounding RELAY/MODE events.
+> The speed-SET vs direction-SET split is a best-effort magnitude heuristic
+> (gh#45): a direction row with `direction > excl_low ≤ 200` decodes as a
+> speed row. Cross-check any legacy "direction" event against the SENSOR_HR
+> wind samples at the same timestamp before trusting it.
 
 #### Sensor read fault (T5 Sensor Poll, since 2.0.0-a.6.35.3)
 

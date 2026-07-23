@@ -236,8 +236,8 @@ typedef enum {
     /* Wind subsystem boolean (since 1.20.x; not previously enumerated). */
     LOG_PARAM_WIND_PROT_EN   = 37,  /**< wind/wind_prot_en — old → new */
 
-    /* 38 reserved for wind/avg_win_wind (gh#35, not yet implemented; already
-     * decoded by log/logparser.py). OTA starts at 39 to avoid the collision. */
+    /* 38 = wind/avg_win_wind (gh#35) — defined above with the other AVG_WIN
+     * entries (LOG_PARAM_AVG_WIN_WIND). OTA starts at 39 to avoid collision. */
 
     /* 2.2.0 (ROTA) — internet-pull OTA config (rota_tds.md §2.7 R-F01). */
     LOG_PARAM_OTA_ENABLE     = 39,  /**< system/ota_enable  — old → new */
@@ -246,6 +246,24 @@ typedef enum {
     LOG_PARAM_OTA_SECRET     = 42,  /**< system/ota_secret  — value_a=1=set */
     LOG_PARAM_OTA_WIN_LO     = 43,  /**< system/ota_win_lo  — old → new */
     LOG_PARAM_OTA_WIN_HI     = 44,  /**< system/ota_win_hi  — old → new */
+
+    /* 2.3.0 (gh#46) — wind-speed hysteresis dead band. */
+    LOG_PARAM_WIND_HYST      = 45,  /**< wind/wind_hyst — old → new (m/s) */
+
+    /* ── ALARM event-subtype discriminators (2.3.0, gh#45) ─────────────────
+     * NOT config C-numbers. Reserved band 240..254, kept far above the
+     * config space so the two can never collide. Stamped into `param` on
+     * T3 wind LOG_ALARM rows so consumers decode the row type directly
+     * instead of guessing from value_a/value_b magnitudes (the guess broke
+     * at speed == v_max, gh#45). An ALARM row with param == LOG_PARAM_NONE
+     * is the legacy pre-2.3.0 encoding: decode by heuristic.
+     * Motor-alarm (T2) rows deliberately KEEP param == LOG_PARAM_NONE —
+     * which now also disambiguates the (0,0) wind-clear vs motor-clear
+     * alias on new firmware. ──────────────────────────────────────────── */
+    LOG_PARAM_ALARM_WIND_SPEED = 240, /**< wind SET, speed: va=speed×10, vb=v_max×10 */
+    LOG_PARAM_ALARM_WIND_DIR   = 241, /**< wind SET, direction: va=dir°, vb=excl_low° */
+    LOG_PARAM_ALARM_WIND_CLEAR = 242, /**< wind CLEAR: va=speed×10|0, vb=dir°|0 (incl. disabled-while-active 0,0) */
+    LOG_PARAM_ALARM_WIND_FAULT = 243, /**< wind SET, sensor-fault safe-fail: va=-1, vb=0 */
 } log_param_id_t;
 
 /**
