@@ -65,6 +65,15 @@ debug/
 # is tracked. The source .log/.csv files themselves are NOT ignored.
 parsed_*.txt
 
+# Bench test harness — operator decision 2026-07-23: test/ is local-only
+# (pytest HIL harness with bench IPs/COM port/PIN defaults; runs only on the
+# bench machine). NOTE: ~15 files under test/ were tracked BEFORE this rule
+# (softwareTestPlan.md, testPlan.md, softwareTestResult.md, the 3_x/5_x
+# manual-test records, test_10_rota.md) — gitignore does not untrack them;
+# they stay in the repo and keep showing diffs until deliberately git
+# rm --cached'd. New files under test/ are ignored from here on.
+/test/
+
 # ESP-IDF build-system artefacts (appearing from 2.0.0-alpha.1 onwards when
 # framework = espidf replaces framework = arduino). PlatformIO+espidf still
 # writes most of its build output under .pio/ (already ignored above), but
