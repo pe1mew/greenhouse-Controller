@@ -16,6 +16,36 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ---
 
+## 2026-07-28 — replaying T6 control logic from SD logs: five traps, each of which silently produces plausible-but-wrong numbers
+
+**Problem:** building `model/vent_step_replay.py` (replay the ventilation-step decision under candidate `hyst_t`) took **three failed model iterations** before it validated. Every failure produced authoritative-looking output that was simply wrong; only an explicit validation gate (reproduce the logged T-demand, ≥ 90 %) caught them.
+
+**Root causes — all five will bite any future log analysis:**
+
+1. **`model/campaign-summer-2026/config.json` is 2344's config, and stale** (`ap_ssid: Greenhouse-2344`, `fw_ver: 2.0.0-rc.1.5.6`). It is the source of the setpoint lines on the 5C88 day-plots. Using it as "the unit's config" for a 5C88 replay gives wrong `avg_win_t`. **Read the live config from the unit** (`GET /api/config`, admin session) or ask the operator. *(5C88 and 2344 do differ: `avg_win_t` is 3 on 5C88, 6 on 2344.)*
+2. **A `MODE` row is logged only when the resolved step CHANGES**, but T6 evaluates on **every** sensor cycle and carries `current_step` statefully. Stepping a simulation only at MODE rows instead of at every sample diverged the hysteresis state and fitted only ~50 %.
+3. **`meas.t_avg_c` is the ROUNDED integer °C, not truncated.** With `hyst_t = 5` the step width is `5/3 = 1 °C`, so a 1-degree rounding error is a whole ventilation step — truncating collapsed the fit from ~97 % to ~59 %.
+4. **Window bitmask (`SENSOR_HR` ch=2): OPEN = 2, not 1.** Two bits per channel, `0 = CLOSED, 2 = OPEN, 1/3 = moving`. Decoding OPEN as 1 makes every window read as "moving" forever.
+5. **RELAY `value_a` is a state enum where 2 = MOVING_OPEN and 3 = OPEN** (`0 UNKNOWN, 1 CLOSED, 2 MOVING_OPEN, 3 OPEN, 4 MOVING_CLOSE, 5/6 gap`). Treating 2 as OPEN measures *travel duration* (~3 min for M3) and reports it as "open time" — which looks plausible and is off by an order of magnitude. The authoritative table is `RELAY_STATE_NAME` in `plot_daily.py`.
+
+**Fix:** `model/vent_step_replay.py` ports `step_from_deviation()` / `vent_resolve_conflict()` faithfully, documents traps 2 and 3 in its module docstring, and **refuses to print projections unless the replay first reproduces ≥ 90 % of the logged T-demands** at the unit's configured settings (currently 97.8 %). Reuse that gate for any future replay — it is the only thing that distinguishes a model from a plausible guess.
+
+**Where it lives:** `model/vent_step_replay.py`; encoding tables in `log/logparser.py` and `model/campaign-summer-2026/plot_daily.py` (`RELAY_STATE_NAME`); `firmware/src/climate_control/climate_control.cpp` (`step_from_deviation`, call site at `:556` confirming `t_avg_c` units).
+
+---
+
+## 2026-07-28 — an emulator-driven hardware test is void if the sensor emulator is still being fed live data
+
+**Problem:** the first gh#48 wind-bypass regression run on 2344 pushed 12 m/s and the unit's average stalled at 2.7 m/s. The test reported INCONCLUSIVE after 3 minutes.
+
+**Root cause:** the sensor emulator was still receiving live sensor data, which overwrote every injected value. Setting the sensors to REST mode (`POST /config/sensor {"sensor":..,"mode":3}`) is **not** sufficient on its own if something upstream keeps writing.
+
+**Fix:** before any emulator-driven test, **inject a distinctive value and confirm the unit actually sees it** — e.g. push `Speed=9.9, Direction=312` and check `/api/status` reports raw 9.9 / 312 one poll cycle later. Costs ~45 s and converts a silent false result into a known-good starting state. Build the same guard into test scripts: assert the precondition rather than assuming it, so a spoiled run reports INCONCLUSIVE instead of a wrong PASS/FAIL.
+
+**Where it lives:** sensor emulator at `192.168.20.226` (`/config/sensor`, `/api/data`); pattern used in the gh#48 test.
+
+---
+
 ## 2026-07-23 — `test/` is gitignored but 15 files inside it remain tracked (deliberate mixed state)
 
 **Problem (future trap, recorded pre-emptively):** `.gitignore` carries `/test/` (operator decision: the pytest HIL bench harness — `conftest.py`, `lib/`, `test_01..09` — stays local-only). But 15 files under `test/` were tracked *before* the rule and deliberately stay tracked: `softwareTestPlan.md`, `testPlan.md`, `softwareTestResult.md`, `firmwareIntegrationTestPlan.md`, `manualREST.md`, `test_10_rota.md`, and the `3_3_*`/`3_4_*`/`5_3_2_*` manual-test records. Consequences a future session will hit: (1) **a NEW file created under `test/` never appears in `git status`** — it silently stays local (`git add` needs `-f`); (2) edits to the 15 tracked files still show and commit normally; (3) `softwareTestPlan.md` cross-references `[→ TC-xx]` implementations that exist only on the bench machine — that is by design, not an omission.
