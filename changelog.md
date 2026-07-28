@@ -6,6 +6,47 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.3.1] — 2026-07-28  (gh#48 — anti-thrash dwell was unguarded during travel)
+
+**Fixed.**
+- **A window could be reversed mid-stroke by climate control, with no dwell
+  protection (gh#48).** The anti-thrash dwell timer only arms when a stroke
+  *completes* (`CH_MOVING_OPEN` → `CH_OPEN`), and `ch_start_close()` had no
+  dwell check in its `CH_MOVING_OPEN` branch at all — it reversed
+  unconditionally. A window still travelling was therefore entirely
+  unprotected. **M3 was the exposed case**: its 171 s stroke left a ~3 min
+  window on every opening, versus ~21 s for M1/M2. Field evidence on 5C88
+  (2026-07-27 03:02:39 `MOVING_OPEN` → 03:04:42 `MOVING_CLOSE`) shows M3
+  reversed 123 s into a 171 s stroke, 72 % open, having never reached
+  `CH_OPEN` and so never armed its 25-minute `dwell_open_m3`.
+  Fix: a reversing command from **T6 (climate)** is now **deferred** while a
+  stroke is in progress — the travel completes and the existing settled-state
+  dwell then governs. The command is not lost: T6's reconciliation is
+  level-triggered and re-issues it every cycle until honoured. **T3 (wind
+  safety) and operator-manual commands are unchanged** and still reverse
+  immediately, which matters — a wind override must be able to shut a window
+  mid-travel. Mirror guard added in `ch_start_open()` for `CH_MOVING_CLOSE`.
+  No new state, no new config key, no behaviour change once a window is
+  settled.
+
+**Note.** Trade-off recorded in the TSDS: a climate close issued during an
+opening stroke now waits up to travel + dwell (M3: ~3 min + 25 min). That is
+the same behaviour the window already had once open, so it is consistent
+rather than new.
+
+**Documentation / tests.** TSDS §T2 FSM table + dwell section document the
+in-travel policy; test plan gains UT-CC-033 (climate defers), UT-CC-034
+(safety bypasses), UT-CC-035 (deferred command is re-issued, not lost).
+
+**Context.** Found while investigating M3 cycling for gh#47, which was closed
+`not planned`: replaying the campaign data showed the proposed `vent_hyst`
+dead band would not have reduced the cycling at all (the temperature makes
+full 5 °C excursions past the threshold, not boundary-hovering), and that the
+actuator is not in fact being thrashed — dwell already holds M3 open for its
+full 25 minutes. This mid-stroke reversal was the one genuine defect.
+
+---
+
 ## [2.3.0] — 2026-07-23  (gh#45 Part 2 + gh#46 — wind-alarm log discriminator & speed hysteresis)
 
 Feature release (minor bump: new NVS key + log-encoding extension). Both changes

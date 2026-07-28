@@ -354,6 +354,13 @@ static void persist_ch_state(uint8_t ch, ch_state_t state)
  * inserted before the CLOSE relay is energised.  The dwell timer (post-OPEN
  * rest period) is bypassed when source == SRC_T3 (safety commands always
  * execute immediately).
+ *
+ * Anti-thrash applies in two places (gh#48):
+ *   - settled (CH_OPEN)      — the dwell timer must have expired;
+ *   - in travel (CH_MOVING_OPEN) — the stroke must complete first.
+ * Both defer SRC_T6 only; SRC_T3 and SRC_OPERATOR_MANUAL always act
+ * immediately.  Deferred climate commands are re-issued by T6's
+ * level-triggered reconciliation, so nothing is lost.
  */
 static void ch_start_close(uint8_t ch, uint32_t now_ms, cmd_source_t source)
 {
@@ -367,6 +374,27 @@ static void ch_start_close(uint8_t ch, uint32_t now_ms, cmd_source_t source)
         return;  /* already at target or already moving there */
 
     case CH_MOVING_OPEN:
+        /* gh#48 — in-travel anti-thrash. The dwell timer only arms when a
+         * stroke COMPLETES (see the CH_MOVING_OPEN → CH_OPEN transition in
+         * the tick handler), so before this guard a climate command could
+         * reverse a window mid-stroke with no dwell protection at all. M3
+         * is uniquely exposed: its 171 s travel leaves a ~3 min window on
+         * every opening (field case: 5C88 2026-07-27 03:02:39 MOVING_OPEN →
+         * 03:04:42 MOVING_CLOSE, 123 s in).
+         *
+         * Climate (SRC_T6) therefore DEFERS rather than reverses: let the
+         * stroke finish, and the normal CH_OPEN dwell then governs. The
+         * command is not lost — T6 reconciles level-triggered on every
+         * cycle, so it is re-issued until it is honoured (climate_control.cpp
+         * header, item 6).
+         *
+         * SRC_T3 (wind safety) and SRC_OPERATOR_MANUAL keep the immediate
+         * reversal below — a wind override must be able to slam a window
+         * shut mid-travel, and an admin command is a deliberate choice. */
+        if (source == SRC_T6) {
+            ESP_LOGD(TAG, "CH%u: CLOSE deferred — stroke in progress (gh#48)", ch + 1u);
+            return;
+        }
         /* Reversal: de-energise OPEN relay, insert gap, then close.
          * NVS already records UNKNOWN from the original MOVING_OPEN entry. */
         relay_ch_off(ch);
@@ -417,8 +445,10 @@ static void ch_start_close(uint8_t ch, uint32_t now_ms, cmd_source_t source)
 /**
  * @brief Initiate an OPEN move on channel ch.
  *
- * Mirror of ch_start_close().  The dwell timer (post-CLOSED rest period) is
- * bypassed when source == SRC_T3.
+ * Mirror of ch_start_close(), including the gh#48 in-travel guard: a
+ * CH_MOVING_CLOSE stroke is allowed to finish before a climate OPEN is
+ * honoured.  The dwell timer (post-CLOSED rest period) is bypassed when
+ * source == SRC_T3.
  */
 static void ch_start_open(uint8_t ch, uint32_t now_ms, cmd_source_t source)
 {
@@ -432,6 +462,11 @@ static void ch_start_open(uint8_t ch, uint32_t now_ms, cmd_source_t source)
         return;
 
     case CH_MOVING_CLOSE:
+        /* gh#48 — mirror of the in-travel guard in ch_start_close(). */
+        if (source == SRC_T6) {
+            ESP_LOGD(TAG, "CH%u: OPEN deferred — stroke in progress (gh#48)", ch + 1u);
+            return;
+        }
         relay_ch_off(ch);
         c->gap_deadline_ms = now_ms + RELAY_GAP_MS;
         c->state = CH_GAP_TO_OPEN;

@@ -285,6 +285,9 @@ TSDS reference: §5.2 | FRS: FR-C01–FR-C12, FR-CR01–FR-CR04, FR-MA01–FR-MA
 | UT-CC-011 | UT | OPEN + CLOSE mutual exclusion enforced | Issue simultaneous OPEN and CLOSE commands for M1 | Only one relay asserted at a time; second command rejected or queued; no concurrent assertion |
 | UT-CC-012 | UT | Close-dwell prevents immediate reopen | Issue OPEN then immediately CLOSE then OPEN for M1 | Second OPEN command not executed until close-dwell timer expires |
 | UT-CC-013 | UT | All three channels (M1, M2, M3) operate independently | Issue OPEN M1, CLOSE M2, OPEN M3 simultaneously | All three channels transition correctly and independently without mutual interference |
+| UT-CC-033 | UT | In-travel reversal from climate is deferred, not actioned (gh#48) | Command M3 OPEN (`SRC_T6`); while still `MOVING_OPEN` (< 171 s) issue CLOSE from `SRC_T6` | No relay reversal; channel stays `MOVING_OPEN` and completes to `OPEN`; open-dwell then arms and governs the subsequent close. Mirror case: CLOSE then OPEN during `MOVING_CLOSE` |
+| UT-CC-034 | UT | In-travel reversal from safety is immediate (gh#48 bypass) | Command M3 OPEN (`SRC_T6`); while `MOVING_OPEN` issue CLOSE from `SRC_T3` | Relay de-energised at once, 2 s gap inserted, channel advances `GAP_TO_CLOSE` → `MOVING_CLOSE`. Same for `SRC_OPERATOR_MANUAL` |
+| UT-CC-035 | UT | Deferred climate command is not lost (gh#48) | As UT-CC-033; hold the climate demand at CLOSE throughout the stroke | Once `OPEN` is reached and open-dwell expires, T6's level-triggered reconciliation re-issues the CLOSE and it executes — no manual re-trigger needed |
 
 ### 6.3 Setpoints and Hysteresis
 

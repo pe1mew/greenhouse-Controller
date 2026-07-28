@@ -800,9 +800,9 @@ The J5 heater supply connection (HEATING_POS / HEATING_NEG) has been removed fro
 |---------------|----------------|----------------|-----------|
 | `UNKNOWN`     | Boot | CLOSE_ALL boot sequence completes | Assert CLOSE relay; advance to `MOVING_CLOSE` |
 | `CLOSED`      | Travel timer expired after CLOSE command; or boot CLOSE_ALL complete | OPEN command received AND close-dwell elapsed | Assert OPEN relay; advance to `MOVING_OPEN` |
-| `MOVING_OPEN` | OPEN relay energised | **Travel timer** (`(MOTOR_MN_TRAVEL_S_DEFAULT + MOTOR_TRAVEL_MARGIN_S_DEFAULT) × 1000 ms`) expires | De-energise relay; advance to `OPEN` |
+| `MOVING_OPEN` | OPEN relay energised | **Travel timer** (`(MOTOR_MN_TRAVEL_S_DEFAULT + MOTOR_TRAVEL_MARGIN_S_DEFAULT) × 1000 ms`) expires | De-energise relay; advance to `OPEN`. A **climate** CLOSE arriving mid-travel is **deferred**, not actioned (gh#48); safety/manual still reverse immediately via the 2 s gap |
 | `OPEN`        | Travel timer expired after OPEN command | CLOSE command received AND open-dwell elapsed | Assert CLOSE relay; advance to `MOVING_CLOSE` |
-| `MOVING_CLOSE`| CLOSE relay energised | **Travel timer** (`(MOTOR_MN_TRAVEL_S_DEFAULT + MOTOR_TRAVEL_MARGIN_S_DEFAULT) × 1000 ms`) expires | De-energise relay; advance to `CLOSED` |
+| `MOVING_CLOSE`| CLOSE relay energised | **Travel timer** (`(MOTOR_MN_TRAVEL_S_DEFAULT + MOTOR_TRAVEL_MARGIN_S_DEFAULT) × 1000 ms`) expires | De-energise relay; advance to `CLOSED`. A **climate** OPEN arriving mid-travel is **deferred** (gh#48, mirror of the above) |
 
 **Travel timer vs. dwell timer — critical distinction:**
 
@@ -814,6 +814,7 @@ The J5 heater supply connection (HEATING_POS / HEATING_NEG) has been removed fro
 
 - OPEN + CLOSE mutual exclusion is enforced in T2 before asserting any relay output; a 2 s gap is inserted after de-energising the outgoing relay.
 - Dwell timers start when the travel timer expires (window reaches end position), not when the command is issued (FR-A09–FR-A12).
+- **In-travel anti-thrash (gh#48, since 2.3.1):** because the dwell timer only arms on arrival, a window still in `MOVING_OPEN` / `MOVING_CLOSE` would otherwise carry no reversal protection at all. T2 therefore **defers** a reversing command from T6 (climate) until the stroke completes, at which point the normal dwell governs; the command is not lost, as T6 reconciles level-triggered every cycle. T3 (wind safety) and operator-manual commands are unaffected and still reverse mid-travel immediately. M3 was the exposed case: its 171 s stroke left a ~3 min unguarded window on every opening.
 
 **Climate setpoints and hysteresis:**
 - T_min_day / T_max_day and T_min_night / T_max_night: day and night temperature thresholds (configurable, farmer level). T6 selects the active pair based on `is_daytime` from T4. Stored and compared as integer °C. Always active; cannot be disabled.
