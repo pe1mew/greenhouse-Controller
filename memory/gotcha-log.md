@@ -16,6 +16,22 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ---
 
+## 2026-07-31 — anti-thrash dwell was unguarded during travel (gh#48) [RESOLVED 2.3.1 — confirmed in production]
+
+**Problem:** M3 could be commanded to reverse **mid-stroke** by climate control, with no dwell protection. Observed on 5C88, 2026-07-27 03:02:39 `MOVING_OPEN` → 03:04:42 `MOVING_CLOSE` — 123 s into a 176 s travel, 72 % open.
+
+**Root cause:** `dwell_deadline_ms` arms only when a stroke **completes** (`CH_MOVING_OPEN` → `CH_OPEN`, `relay_controller.cpp:492`), and `ch_start_close()` carried its dwell check **only in the settled `CH_OPEN` branch** — its `CH_MOVING_OPEN` branch reversed unconditionally. So a window in motion had no protection at all. M3 was uniquely exposed: 171 s travel leaves a ~3 min window on every opening, versus ~21 s for M1/M2.
+
+**Fix (2.3.1):** a reversing command from **T6 (climate) is deferred** while a stroke is in progress — the travel completes and the settled-state dwell then governs. Nothing is lost: T6 reconciles level-triggered and re-issues every cycle. **T3 (wind safety) and SRC_OPERATOR_MANUAL still reverse immediately** — verified on hardware 2026-07-28 (M3 reversed 4 s after the override, 32 s into a 176 s stroke).
+
+**Confirmed in production 2026-07-31**, before vs after the 2.3.1 apply on 5C88: 8 strokes / **1** mid-stroke reversal (2.3.0) → 15 strokes / **0** (2.3.1), with **median OPEN dwell rising 25 → 40 min**. The dwell shift is the stronger evidence — it is the deferral leaving a positive fingerprint, whereas zero reversals over 2.5 days is only *consistent* with the fix (the pre-fix rate was ~1 per 9 days).
+
+**Detection heuristic — and the way I got it wrong.** The 2.3.1 release notes first proposed scanning logs for "any `MOVING_OPEN` → `MOVING_CLOSE` pair shorter than the travel time". **That check is wrong and will cry wolf**: a legitimate wind override produces exactly that pattern by design, and the hardware test proved it. **A mid-stroke reversal is only a defect if it is NOT immediately preceded by a wind `ALARM` row (param 240/241/243).** Correlate the two, or every correct safety reversal reads as a regression.
+
+**Where it lives:** `firmware/src/relay_controller/relay_controller.cpp` — `ch_start_close()` / `ch_start_open()` in-travel guards, dwell arming at `:492`; TSDS §T2 FSM table + dwell section; test plan UT-CC-033/034/035; gh#48.
+
+---
+
 ## 2026-07-28 — replaying T6 control logic from SD logs: five traps, each of which silently produces plausible-but-wrong numbers
 
 **Problem:** building `model/vent_step_replay.py` (replay the ventilation-step decision under candidate `hyst_t`) took **three failed model iterations** before it validated. Every failure produced authoritative-looking output that was simply wrong; only an explicit validation gate (reproduce the logged T-demand, ≥ 90 %) caught them.
