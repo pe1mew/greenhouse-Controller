@@ -16,6 +16,20 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ---
 
+## 2026-08-16 — a full `plot_daily.py` run now exceeds a 2-minute command timeout (it still succeeds)
+
+**Problem:** running `python plot_daily.py` with no arguments returned exit 143 (SIGTERM) under a 2-minute tool timeout, which reads as a failure. It was not: the run had already printed `Generated 71 PNG(s)` and every plot was written correctly.
+
+**Root cause:** the campaign has grown to **39 log files and 71 day-plots** (Jun 4 – Aug 14). The full run re-renders *every* day, and matplotlib's per-figure cost now pushes the total past two minutes. Nothing is wrong; the job is simply bigger than it was when the 30-plot habit formed.
+
+**Fix:** give the full run a longer timeout (5 min is comfortable), or avoid it entirely — `python plot_daily.py YYYY-MM-DD` renders a single day and returns in seconds. **Check `Generated N PNG(s)` before treating a timeout as a failure**, and confirm with `ls plot_*.png | wc -l`; a killed run leaves the already-written PNGs intact, so a re-run is safe and idempotent.
+
+**Related:** the full run also re-renders unchanged days, which is why the pre-Jun-19 plots must be `git checkout --`'d afterwards (matplotlib version churn — 2026-07-05 entry). Both problems disappear with single-day mode.
+
+**Where it lives:** `model/campaign-summer-2026/plot_daily.py` (single-day CLI mode added 2026-07-19).
+
+---
+
 ## 2026-07-31 — anti-thrash dwell was unguarded during travel (gh#48) [RESOLVED 2.3.1 — confirmed in production]
 
 **Problem:** M3 could be commanded to reverse **mid-stroke** by climate control, with no dwell protection. Observed on 5C88, 2026-07-27 03:02:39 `MOVING_OPEN` → 03:04:42 `MOVING_CLOSE` — 123 s into a 176 s travel, 72 % open.

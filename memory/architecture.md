@@ -12,7 +12,7 @@ Full task graph diagram in [`../design/rtosTaskDiagram.png`](../design/rtosTaskD
 | T2 | `relay_controller` | Per-channel (M1/M2/M3) window state machine |
 | T3 | `safety_monitor` | Motor-alarm + sensor-fault detection |
 | T4 | `data_manager` | Status snapshot for `/api/status`; notifies T6 on new sensor data |
-| T5 | `sensor_poll` | Sensor read scheduling; HR-rate logging |
+| T5 | `sensor_poll` | Sensor read scheduling; HR-rate logging. Owns the Modbus/RS485 bus **exclusively** (no mutex — single-owner by convention) and polls all sensors at one global `poll_interval_s` (default 30 s). Both drivers are hard-coded at fixed addresses. A refactor to roles + a scheduled bus is designed but **not implemented** — see [../design/refactorSensorConfiguration.md](../design/refactorSensorConfiguration.md) |
 | T6 | `climate_control` | Mode + setpoint logic; consumes T4 notifications |
 | T7 | `keypad_scan` | Keypad input (4×4 matrix) |
 | T8 | `ui_display` | LCD + UI state machine; Q5 consumer |
