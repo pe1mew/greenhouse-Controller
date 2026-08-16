@@ -24,7 +24,16 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 **Fix (2.3.1):** a reversing command from **T6 (climate) is deferred** while a stroke is in progress — the travel completes and the settled-state dwell then governs. Nothing is lost: T6 reconciles level-triggered and re-issues every cycle. **T3 (wind safety) and SRC_OPERATOR_MANUAL still reverse immediately** — verified on hardware 2026-07-28 (M3 reversed 4 s after the override, 32 s into a 176 s stroke).
 
-**Confirmed in production 2026-07-31**, before vs after the 2.3.1 apply on 5C88: 8 strokes / **1** mid-stroke reversal (2.3.0) → 15 strokes / **0** (2.3.1), with **median OPEN dwell rising 25 → 40 min**. The dwell shift is the stronger evidence — it is the deferral leaving a positive fingerprint, whereas zero reversals over 2.5 days is only *consistent* with the fix (the pre-fix rate was ~1 per 9 days).
+**Confirmed in production**, before vs after the 2.3.1 apply on 5C88, over the full dataset to 2026-08-11:
+
+| | span | M3 strokes | mid-stroke reversals | median OPEN dwell |
+|---|---|---|---|---|
+| before 2.3.1 | 28 days | 152 | **7** | 25 min |
+| after 2.3.1 | 12.7 days | 66 | **0** | **25 min** |
+
+If the pre-fix rate (7/152 ≈ 4.6 % of strokes) were unchanged, `P(0 in 66) = (1 − 7/152)^66 ≈ 0.044` → **p ≈ 4 %**. Statistically meaningful, and resting entirely on the reversal count.
+
+**CORRECTION (2026-08-12) — an earlier version of this entry, and the gh#48 closing comment, claimed the median OPEN dwell rose 25 → 40 min and called that "the stronger signal, the deferral leaving a positive fingerprint". Both the number and the reasoning were wrong.** The 40 min came from a 2.5-day window with only 15 strokes — small-sample noise; over the full data the median is unchanged at 25 min. And it *should* be unchanged: the guard only alters strokes that would otherwise have been reversed (7 of 152, under 5 %), so it cannot move a median dominated by the 95 % of strokes that never meet it. **Lesson: before calling a shifted summary statistic "evidence", check whether the mechanism could plausibly move it, and whether the sample is large enough to have detected it.** The conclusion survived; the argument for it did not.
 
 **Detection heuristic — and the way I got it wrong.** The 2.3.1 release notes first proposed scanning logs for "any `MOVING_OPEN` → `MOVING_CLOSE` pair shorter than the travel time". **That check is wrong and will cry wolf**: a legitimate wind override produces exactly that pattern by design, and the hardware test proved it. **A mid-stroke reversal is only a defect if it is NOT immediately preceded by a wind `ALARM` row (param 240/241/243).** Correlate the two, or every correct safety reversal reads as a regression.
 
