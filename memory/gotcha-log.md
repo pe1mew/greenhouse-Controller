@@ -16,6 +16,24 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ---
 
+## 2026-08-25 — an SD log's FILENAME is its upload time, not its coverage window
+
+**Problem:** looking for a wind event timestamped `2026-08-22T15:35:56`, I opened `2026-08-22_001307.log` — the obvious choice by name — and the parser produced no ALARM rows at all. It looked briefly like the parser was dropping them, i.e. a firmware/parser bug.
+
+**Root cause:** the filename is the moment T14 **uploaded** the file, which is always *after* the period it covers, and by a variable margin. `2026-08-22_001307.log` actually spans **Aug 20 07:13 -> Aug 22 02:12**; the 15:35 event lives in `2026-08-23_190517.log` (Aug 22 02:12 -> Aug 23 21:04). Off-by-one-file, every time, and it fails *silently* — you get a valid parse of the wrong period, not an error.
+
+**Fix:** never select a file by name. Resolve coverage first:
+
+```bash
+for f in *.log; do echo "$f  $(head -2 "$f" | tail -1 | cut -d, -f1)  ->  $(tail -1 "$f" | cut -d, -f1)"; done
+```
+
+or simply `grep` the timestamp across all of them and let the match name the file. The contiguity table produced at the start of every log-processing run already contains the answer — read it rather than the filenames.
+
+**Where it lives:** SD filenames are set at upload by T14 (`status_post.cpp`); the campaign chain in `model/campaign-summer-2026/`.
+
+---
+
 ## 2026-08-16 — a full `plot_daily.py` run now exceeds a 2-minute command timeout (it still succeeds)
 
 **Problem:** running `python plot_daily.py` with no arguments returned exit 143 (SIGTERM) under a 2-minute tool timeout, which reads as a failure. It was not: the run had already printed `Generated 71 PNG(s)` and every plot was written correctly.
