@@ -16,6 +16,39 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ---
 
+## 2026-08-26 — sensor-fault transients on 5C88: a recurring ~59 s T/RH blip, and one long wind fault that is fully explained
+
+**Every sensor-fault pair in the campaign to date** (`ALARM` rows on ch 4 = T/RH, ch 5 = wind; `value_a` 1 = triggered, 0 = cleared):
+
+| when | sensor | duration | reading |
+|---|---|---|---|
+| 2026-06-10 16:04:14 | T/RH | same second | early-campaign blip |
+| 2026-06-19 09:39:46 -> 11:19:21 | wind | **~100 min** | **pre-commissioning — not a field failure**, see below |
+| 2026-07-22 04:02:38 -> 04:03:37 | T/RH | 59 s | |
+| 2026-07-29 17:11:54 -> 17:12:53 | T/RH | 59 s | |
+| 2026-08-18 17:07:56 | wind | same second | T3 raised and released the safe-fail override correctly (`param=243`) |
+| 2026-08-23 03:19:19 -> 03:20:18 | T/RH | 59 s | |
+
+**The ~59 s T/RH blip is the recurring one** — four T/RH events total, three of them exactly 59 s (Jul 22, Jul 29, Aug 23). All self-cleared; climate control rode through on the last good average and none is visible as an excursion in the day-plots. Consistent with an occasional Modbus read collision or a transient on the RS485 pair, not a failing sensor. **Note the spacing is irregular** — Jul 22 and Jul 29 are only a week apart — so "roughly monthly" would be wrong.
+
+**The 100-minute wind fault is explained and is not a defect:** the wind vane was commissioned on **2026-06-19 at 12:00** (see the 2026-07-13 wind-validity entry). The fault ran 09:39 -> 11:19 that same morning, i.e. entirely *before* the sensor was in service. It is an installation artefact. Anything wind-related before 2026-06-19 12:00 should be read the same way.
+
+**Why this is logged:** so the next occurrence is recognised rather than investigated from scratch, and so nobody re-derives the Jun 19 alarm as a mystery.
+
+**When the T/RH blip would become worth chasing:** duration exceeding a couple of minutes, a fault that does *not* self-clear, a rising rate, or clustering by time of day or weather — the last would point at motor electrical noise on the RS485 pair rather than the sensor.
+
+**Count them with:**
+
+```bash
+grep -h ",ALARM," *.log | awk -F, '$4==4 || $4==5'
+```
+
+**A caution learned writing this entry:** an earlier draft claimed "2 occurrences, roughly monthly" from memory. Running the command above immediately showed six pairs across two sensors, including the 100-minute one. **Run the count before characterising a pattern** — a fault log is exactly the place where recollection is unreliable.
+
+**Where it lives:** `firmware/src/sensor_poll/sensor_poll.cpp` (two-consecutive-failure fault policy); `EG1_BIT_SENSOR_FAULT_T` / `_W`; ch 4/5 encoding per `logparser.py`.
+
+---
+
 ## 2026-08-25 — an SD log's FILENAME is its upload time, not its coverage window
 
 **Problem:** looking for a wind event timestamped `2026-08-22T15:35:56`, I opened `2026-08-22_001307.log` — the obvious choice by name — and the parser produced no ALARM rows at all. It looked briefly like the parser was dropping them, i.e. a firmware/parser bug.
