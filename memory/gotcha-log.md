@@ -28,14 +28,19 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 | 2026-07-29 17:11:54 -> 17:12:53 | T/RH | 59 s | |
 | 2026-08-18 17:07:56 | wind | same second | T3 raised and released the safe-fail override correctly (`param=243`) |
 | 2026-08-23 03:19:19 -> 03:20:18 | T/RH | 59 s | |
+| 2026-09-04 19:32:18 -> 19:33:16 | T/RH | 58 s | added 2026-09-05 |
 
-**The ~59 s T/RH blip is the recurring one** — four T/RH events total, three of them exactly 59 s (Jul 22, Jul 29, Aug 23). All self-cleared; climate control rode through on the last good average and none is visible as an excursion in the day-plots. Consistent with an occasional Modbus read collision or a transient on the RS485 pair, not a failing sensor. **Note the spacing is irregular** — Jul 22 and Jul 29 are only a week apart — so "roughly monthly" would be wrong.
+**The ~59 s T/RH blip is the recurring one** — five T/RH events total, four of them 58-59 s (Jul 22, Jul 29, Aug 23, Sep 4; intervals 7 / 25 / 12 days). All self-cleared; climate control rode through on the last good average and none is visible as an excursion in the day-plots. Consistent with an occasional Modbus read collision or a transient on the RS485 pair, not a failing sensor. **Note the spacing is irregular** — Jul 22 and Jul 29 are only a week apart — so "roughly monthly" would be wrong.
 
 **The 100-minute wind fault is explained and is not a defect:** the wind vane was commissioned on **2026-06-19 at 12:00** (see the 2026-07-13 wind-validity entry). The fault ran 09:39 -> 11:19 that same morning, i.e. entirely *before* the sensor was in service. It is an installation artefact. Anything wind-related before 2026-06-19 12:00 should be read the same way.
 
 **Why this is logged:** so the next occurrence is recognised rather than investigated from scratch, and so nobody re-derives the Jun 19 alarm as a mystery.
 
 **When the T/RH blip would become worth chasing:** duration exceeding a couple of minutes, a fault that does *not* self-clear, a rising rate, or clustering by time of day or weather — the last would point at motor electrical noise on the RS485 pair rather than the sensor.
+
+**Motor-noise hypothesis tested 2026-09-05 and ruled out.** None of the five T/RH faults falls within +/-120 s of any `RELAY` transition on any channel (0 of 5). Whatever causes the dropout, it is not window-motor switching.
+
+**The constant duration is itself a clue.** T5 raises the fault on the *second* consecutive failed read and clears it on the *first* success (`sensor_poll.cpp` header, lines 14-18). At the 30 s poll, a 58-59 s fault therefore means: failure #1, failure #2 (trigger logged), failure #3, success at read #4 (clear logged) -- **every one of the four events is exactly three failed reads.** Random bus collisions would mostly give two-failure (~30 s) events with a spread of lengths; four identical three-failure events point at a deterministic ~60-90 s outage in the sensor itself -- an internal reset or watchdog is the obvious candidate -- rather than at the RS485 bus. *Inference from duration statistics only, not verified; if it ever matters, the FG6485A's diagnostic registers (its driver has an info helper) would show a reset counter.*
 
 **Count them with:**
 
