@@ -1,6 +1,6 @@
 # Window position sensor (M3) — requirements study
 
-**Status:** PRELIMINARY STUDY — not adopted. Nothing in the firmware, FRS, TSDS or test plan has been changed on account of this document. Requirement IDs below (`FR-WP*`, `NF-WP*`) are proposed, not allocated.
+**Status:** PRELIMINARY STUDY — not adopted. Nothing in the firmware, FRS, TSDS or test plan has been changed on account of this document. Requirement IDs below (`FR-WP*`, `NF-WP*`) are proposed, not allocated. **§12 (2026-09-05) evaluates a concrete candidate device against these requirements.**
 
 **Date:** 2026-07-28
 **Scope:** requirements a Modbus window-position sensor must meet to be fitted to **M3** and used to enhance climate control.
@@ -59,6 +59,8 @@ Four consequences follow, and they drive the requirements below:
 4. **A single rigid shaft synchronises all ropes**, which largely answers the uniformity concern a 40 m aperture would otherwise raise. It does not eliminate it: a 40 m shaft driven from one end will wind up torsionally under load, and per-drum differences accumulate along the run, so the far end may lag the driven end.
 
 **A hanging flap is also wind-exposed by construction** — it hangs free in front of the opening rather than being rigidly framed. Sway and billowing under wind are expected, which introduces a measurement question that a rigid window would not have (FR-WP21).
+
+> **Stroke correction (2026-09-05).** The sensor project records the fitted M3 stroke as **1.5 m** (8.77 mm/s over 171 s), not the ~2 m derived above from the 80 m² / 40 m aperture figure. Every per-cent-of-stroke figure in this study is unchanged (0.585 %/s); millimetre figures in §3 scale by 0.75 (1 Hz overshoot ≈ 8.8 mm, not 12 mm). The 2 m text is left in place as the geometric estimate it was. See §12.
 
 ---
 
@@ -164,7 +166,7 @@ Wind protection (T3) closes windows on the wind average alone and must remain ab
 | FR-WP17 | On sensor fault the controller **shall** fall back to the existing time-based open-loop control and continue operating with M3 as a binary actuator. Loss of the sensor **shall not** disable ventilation. | Must |
 | FR-WP18 | Wind override, motor-alarm handling and the boot CLOSE_ALL recalibration **shall not** depend on the position sensor in any way. | Must |
 | FR-WP19 | The sensor fault **shall** be surfaced to the operator on the same footing as the existing T/RH and wind sensor faults (event log, status payload, LCD/GUI indication). | Must |
-| FR-WP20 | Out-of-range or implausible readings (outside stroke, or a jump exceeding the mechanically possible rate of 0.58 %/s) **should** be rejected by the controller rather than acted upon. | Should |
+| FR-WP20 | Out-of-range or implausible readings (outside stroke, or a jump well beyond the mechanically possible rate) **should** be rejected by the controller rather than acted upon. *Amended 2026-09-05: the 0.58 %/s originally written here is M3's **nominal** speed (1.5 m / 171 s), so it cannot serve as the limit — a healthy reading plus quantisation would be rejected. The limit must carry margin: **twice nominal**, i.e. abs(30012) > 175 on the candidate device (§12, spec §4.6/§8.1).* | Should |
 
 **Fit with existing fault handling.** T5 already flags a sensor fault after **two consecutive read failures**, raising `EG1_BIT_SENSOR_FAULT_T` / `_W`; T5 logs faults on `channel` 4/5 with the ch-based encoding. A position sensor would follow the same pattern and needs its own channel code and EG1 bit. Note the wind-sensor precedent is **safe-fail** — a failed wind sensor forces windows closed. A failed *position* sensor must **not** do that; it should degrade to open-loop, per FR-WP17. The distinction is deliberate and worth stating explicitly in any future FRS text.
 
@@ -193,7 +195,7 @@ All five original items are now closed or reduced to a site measurement.
 | # | Item | Outcome |
 |---|---|---|
 | 1 | **M3 mechanism and stroke geometry** | **RESOLVED** (operator, 2026-07-28). Hanging flap on ropes, wound by a single 40 m line shaft; vertical travel ~2 m over 171 s; raised = closed, lowered = open. Full description and its four consequences in §1.4. Sensor type narrowed in §9. |
-| 2 | **Polling architecture** | **RESOLVED — feasible.** Not achievable by configuration (`CFG_MIN_POLL_S` = 30, `SP_POLL_MIN_S` = 15; even 15 s leaves 8.75 % overshoot), and there is **no mutex on the Modbus bus** — T5 is sole owner by convention, and T2 holds no Modbus references at all. But T5 can sleep in 1 s chunks instead of one 30 s block and read *only the position register* on each chunk while a channel is moving. That yields 1 Hz with **no mutex, no new task, and the climate cadence unchanged at exactly 30 s**. See the warning below. |
+| 2 | **Polling architecture** | **RESOLVED — feasible.** Not achievable by configuration (`CFG_MIN_POLL_S` = 30, `SP_POLL_MIN_S` = 15; even 15 s leaves 8.75 % overshoot), and there is **no mutex on the Modbus bus** — T5 is sole owner by convention, and T2 holds no Modbus references at all. **Verified 2026-09-05:** `modbus_rtu.h` (lines 35, 100) *claims* the driver serialises wire access with a UART mutex created in `modbus_init()`; `modbus_rtu.cpp` contains no semaphore, mutex or critical section of any kind. The claim is false — do not let a second task call the driver on the strength of it (gotcha log 2026-09-05). But T5 can sleep in 1 s chunks instead of one 30 s block and read *only the position register* on each chunk while a channel is moving. That yields 1 Hz with **no mutex, no new task, and the climate cadence unchanged at exactly 30 s**. See the warning below. |
 | 3 | **Supply voltage and cable run** | **MOSTLY RESOLVED.** `realisation/installation.md`: existing sensors take **+24 V, GND, RS485-A, RS485-B** on 4-pin terminals (J9 FG6485A, J5 S200), shielded twisted pair, shield earthed one end. A third device uses the identical pattern, and `hardware/ModBusRS485SingleCableJunction/` exists for adding drops. At 9600 baud over 40 m, RS485 is electrically trivial. **Remaining: the physical cable route to the M3 flap — a survey item, not a design risk.** |
 | 4 | **One sensor or three** | **RESOLVED — M3 only.** M1/M2 are ~8 m² each at 21 s travel and contribute 16 m² spread over two steps; they are already graded. The limit cycle is caused specifically by M3's 80 m² arriving as a single ~6× aperture jump. Fitting all three triples cost to fix a problem only M3 has. |
 | 5 | **Existing drive feedback** | **RESOLVED — none.** Operator confirms OPEN/CLOSE windings only, consistent with `installation.md`. A standalone Modbus position sensor is the only route. |
@@ -253,3 +255,70 @@ The three requirements most likely to be overlooked, and most likely to make a p
 3. **Measured at the leaf, not the motor** (FR-WP03) — otherwise slip and obstruction stay invisible, discarding a large part of the value.
 
 And the honest caveat: the sensor is a **prerequisite** for fixing the ventilation limit cycle, not a fix. The control-logic rework that would actually use it is the larger piece of work and has not been scoped.
+
+---
+
+## 12. Candidate evaluation — wire-encoder Modbus interface, contract v1.2 (2026-09-05)
+
+**Evaluated:** [modbusInterfaceContractSpecification.md](modbusInterfaceContractSpecification.md) v1.2, copied into this directory on 2026-09-05 from the `wire-encoder-modbus-interface` project, where `design/TDS.md` v0.7 is normative and wins on any disagreement. Cross-read with that project's `design/requirementsCompliance.md` (its own check against this study), `design/integrationPlan.md` and `software/hil/testReport.md`.
+
+**What the device is.** A draw-wire (string-pot) sensor — this study's §9 first choice — mounted on the frame with the wire on the flap; a 10 kΩ potentiometer read ratiometrically by a 10-bit ADC; two inductive end-stop sensors on one supervised input; a pure Modbus RTU slave at address 40 or 45 (solder jumper), 9600 8N1; 24 V on the same four wires as the existing sensors. Electronics in an IP65 box; **the draw-wire unit itself is IP50 and sits outside it.**
+
+### 12.1 Verdict
+
+**Fit for purpose as the M3 position source, and the interface is better than these requirements asked for.** Every Must in §2–§6 that is the sensor's to meet is met by construction or by HIL evidence. Three residuals remain, none of them interface matters:
+
+| # | Residual | Requirement | Kind |
+|---|---|---|---|
+| 1 | Draw-wire unit is **IP50** in a greenhouse that condenses most nights | NF-WP05 (Must, ≥ IP65) | **Procurement — the only outright miss.** Sheltered mounting, a shroud, or a higher-rated unit before anything is fitted |
+| 2 | Fully-closed indication holds only if the end-sensor zone covers the overtravel (spec §5.3) | FR-WP07 (Should) | Installation — the commissioning check in spec §5.3 decides it |
+| 3 | Address is a solder jumper, 40 or 45, no register | FR-WP11 (Must) | Partial. Adequate for one M3 sensor; two devices per segment is the ceiling |
+
+Two faults the device **cannot** see, which the controller must cover (spec §11): a **wiper shorted to a rail reads as fully closed** — plausible-but-wrong, the worst case for a closed-loop controller — and an **open end-sensor cable reads as a window that never reaches a stop**. §12.4 rule 1 catches both.
+
+### 12.2 Where this evaluation adds to, or differs from, the sensor project's compliance matrix
+
+| ID | Finding |
+|---|---|
+| FR-WP04/05/06 | Resolution 0.12 % of stroke (≈1.8 mm/count with headroom). Repeatability and accuracy rest on the supplier's 0.2 % figure; the firmware's own accuracy test (FR-E03) is **not yet verified** — needs a precision resistance box. Proceed; AT-WP02 on the real window is the test that matters |
+| FR-WP08/09 | Met with 40002 = 500 ms and 40003 = 1 s. **The shipped defaults (1000 ms / 10 s) do not meet FR-WP08** — write them at commissioning (spec §8) and never during a move: a 40002 write aborts the window in progress and re-asserts the start-up gate |
+| FR-WP10 | 4.08 ms median response, measured over 1 000 requests. The recommended full-map read costs ≈52 ms of bus time at 9600 (8-byte request + 35-byte response + two 3.5-character gaps; the spec's "~35 ms" counts the response alone). ≈5 % utilisation at 1 Hz while travelling, ≈0.16 % averaged over a day at 3 % travel duty |
+| FR-WP12 | Better than asked: all 15 input registers in one FC04 come from the same measurement update (spec §4.3) |
+| FR-WP16 | Wiper **open** → 65535 in every position register plus bit 2 — explicit and out-of-band. Wiper **short** → undetected, reads fully closed (spec §7.1, narrowed 2026-09-01). Bit 6 is the defence and only works with electrical headroom (spec §7.3 commissioning check). *The sensor project's `requirementsCompliance.md` FR-WP16 row and its §5 "supervised switch cable" bullet still describe the pre-2026-08-29 behaviour and are stale against its own spec.* |
+| FR-WP20 | The spec corrects this study: 0.58 %/s is M3's *nominal* speed. Limit at twice nominal, abs(30012) > 175. Row amended in §6 |
+| NF-WP01/02 | Met — the same +24 V / GND / A / B pattern as J5/J9, daisy-chain connectors, terminator jumper, bias, TVS |
+| NF-WP03 | −25 … +70 °C after the 2026-08-29 end-switch change; +70 °C is asserted from the electronics' part set, not chamber-measured |
+| NF-WP08 | > 100 000 cycles specified for the draw-wire unit, 4× the need; endpoints are re-teachable over the bus if wear shifts them |
+
+### 12.3 What it enables in the controller — and what each costs
+
+| Capability (§7.1) | Register basis | Firmware work |
+|---|---|---|
+| **Stop at a target aperture** — the limit-cycle prerequisite (§1.1) | 30001 or 30015 polled at 1 Hz. Overshoot ≤ 4.4 mm staleness + ≤ 8.8 mm poll latency + the T5→T2 hand-off ≈ **1 % of stroke**, inside FR-WP04/05 | **T2:** a target input to `CH_MOVING_OPEN` / `CH_MOVING_CLOSE` that de-energises at target, keeping the travel timer as the ceiling (`relay_controller.cpp:439`, `:500`); a partial position is a new persisted state (NVS schema → minor bump). **T6:** `VENT_STEP_TABLE` must express partial M3 steps, and `step_width = max(hyst_t / NUM_VENT_STEPS, 1)` integer division gets *worse* with more steps (5 / 6 = 0 → every step 1 °C) — the F8 arithmetic must be reworked first. **This is the larger part of the effort, unchanged from §7.3** |
+| **End-stop confirmation** | bit 3 + position (spec §5.2), trustworthy only after the §5.3 zone check | T2: treat "bit 3 set with position ≈ 0 / ≈ 40004" as travel-complete for M3; timer stays as fallback |
+| **Slip, obstruction, dead sensor** (§1.2) | 30012 rate; 30013/30014 against 40005/40006 at every stop arrival — a free drift diagnostic (spec §6.5) | §12.4 rule 1; a drift threshold; fault → degrade to time-based control (FR-WP17) |
+| **Power-loss recovery** (§1.3) | absolute position at boot, gated by bit 0 | An FRS decision: boot CLOSE_ALL stays (FR-WP18) but may be *shortened* — stop when bit 3 sets at position ≈ 0 — rather than skipped |
+| **Travel-time self-calibration** | bit 3 timestamps, 30012 | Measure `travel_m3` instead of configuring it, or at least check it |
+| **Aperture for the plant model** (§7.2, NS-9) | 30015 at the existing 30 s cadence when not moving | Log on the next free channel (ch 3); `logparser.py` and `plot_daily.py` in the same changeset |
+
+**Bus access — the constraint §3 and §8 item 2 left open — is unchanged, and now verified.** The driver header claims a UART mutex; the implementation has none. T5 must remain the only caller, polling the position in 1 s chunks while a channel is moving, and T2 must never block on the bus. Either the chunked sleep of §8 item 2 or the JIT queue in [refactorSensorConfiguration.md](refactorSensorConfiguration.md) §2.2 satisfies this — and this device is the natural first customer of that study's generic register driver: FC04 `0x0000` × 15 for the poll, FC16 for configuration, `int16` decode for 30012. The greenhouse driver has FC03/04/16 but **no FC06**: arm and abort the teach with FC16, quantity 1, to `0x0006` — FR-MB28 rejects only quantity 0.
+
+### 12.4 Controller-side rules the spec's own limits require
+
+1. **Moving means moving.** While M3's relay is energised, abs(30012) must exceed ≈40 (half nominal) within ≈5 s and stay there; otherwise declare a position-sensor fault and fall back to the travel timer. This catches a slipped or snapped wire, an obstruction, and — because a shorted wiper reads a *constant* — the wiper short the device cannot report.
+2. **A stop that arrives too early is a fault, not a success.** A CLOSE that "reaches 0" in much less than the travel time with bit 3 never set (spec §5.4) is reported, not believed.
+3. **Never gate anything safety-related on position.** Wind override, motor-alarm handling and boot CLOSE_ALL stay time-based (FR-WP18). Bits 2/4 are alarms → fallback; bits 6/7 are health → operator notice; neither ever stops ventilation.
+4. **Check 30007 at start-up** and refuse build type `0x81` (a bench build carrying a deliberate hang hook). Treat a firmware-version change as a register-map review: the contract is v1.2 against a TDS still at v0.7 and not frozen.
+5. **Commissioning, in order:** 30007; FC03 of the holdings (factory 0 / 1023 means untaught); write 40003 then 40002 = 500, and 40004 = the tape-measured sensor-to-sensor distance; teach *with movement* (≈6–7 min, two full traverses — not in AUTOMATIC mode); then the two installation checks, sensor zone (spec §5.3) and electrical headroom (spec §7.3), recording whether bit 6 is armed on this installation.
+
+### 12.5 Verification maturity
+
+HIL acceptance suite **8 passed / 0 failed**; protocol matrix, latency over 1 000 requests, teach 7/7, the wiper-fault machine and the draw-wire-detachment health test all executed on the bench rig. **Not yet:** FR-E03 accuracy at five ratios, FR-E15 bounce injection, the NFR-ENV01 chamber run — and nothing on a real window. Every "target window" number in the spec is *derived* from 171 s and 1.5 m, not measured in situ. **The interface is mature; the mechanics are unproven on M3.**
+
+### 12.6 Recommendation
+
+Adopt the interface as the M3 position source, with **NF-WP05 (the IP50 draw-wire unit) as a procurement condition** before anything is fitted.
+
+Then stage the controller work **read-only first**: the driver, 1 s chunked position polling in T5, and aperture logging on ch 3 — fitted on 5C88's M3 with the control logic untouched. That validates FR-WP03/05 and both installation checks on the real flap, yields NS-9 aperture data immediately, and defers the T2/T6 rework — the expensive, behaviour-changing part — until the sensor has earned trust in situ. This deliberately inverts §8's warning ("procuring without committing to the control logic yields diagnostics and nothing else"): diagnostics *first* is the point here, because the sensor's failure modes are exactly the ones only the real installation can reveal.
+
+**Housekeeping for the sensor project (operator-owned):** the spec was *moved* out of that repository (`git status` there shows `D docs/modbusInterfaceContractSpecification.md`, uncommitted), leaving dangling references in its `changelog.md`, `design/README.md` and `design/requirementsCompliance.md`. Since the TDS there is normative, the source should live there and this copy should be read as a dated snapshot. Also stale there: the compliance doc's FR-WP16 row and §5 switch-cable bullet (pre-PNP behaviour), and the integration plan's §6 "stage D and E have not started" beneath a header that says A–F are complete.

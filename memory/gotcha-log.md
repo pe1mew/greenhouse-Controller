@@ -16,6 +16,18 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ---
 
+## 2026-09-05 — `modbus_rtu.h` promises a UART mutex that does not exist
+
+**Problem:** the Modbus driver header says, twice (lines 35 and 100), that the driver "serialises wire access internally with a UART mutex" created in `modbus_init()`. Read that and you would happily let a second task — T2 stopping a window on a position reading, say — call `modbus_read_input_registers()` alongside T5.
+
+**Root cause:** `drivers/modBus/src/modbus_rtu.cpp` contains **no semaphore, mutex or critical section of any kind** (grep for `Semaphore|mutex|CRITICAL` finds nothing outside the loopback test). The comment describes an intention, not the code. It is harmless today only because T5 is the sole caller — which is exactly the "single-owner by convention" rule in `architecture.md`, and it is load-bearing, not decorative.
+
+**Fix:** treat the header as wrong. Any second caller needs the mutex to be *added* (one `xSemaphoreCreateMutex()` in `modbus_init()`, take/give around each transaction — but a 200 ms timeout inside a High-priority WDT-subscribed task is still a bad idea, so prefer keeping all bus I/O in T5 or a dedicated bus task, per `design/refactorSensorConfiguration.md` §2.2). Found while evaluating the M3 position sensor (`design/windowPositionSensorRequirements.MD` §12), whose 1 Hz polling is the first thing that would tempt a second caller.
+
+**Where it lives:** `drivers/modBus/src/modbus_rtu.h:35`, `:100`; `drivers/modBus/src/modbus_rtu.cpp` (no lock); `memory/architecture.md` T5 row.
+
+---
+
 ## 2026-08-26 — sensor-fault transients on 5C88: a recurring ~59 s T/RH blip, and one long wind fault that is fully explained
 
 **Every sensor-fault pair in the campaign to date** (`ALARM` rows on ch 4 = T/RH, ch 5 = wind; `value_a` 1 = triggered, 0 = cleared):
