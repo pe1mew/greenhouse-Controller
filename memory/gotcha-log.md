@@ -30,6 +30,42 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ---
 
+## 2026-09-07 — the Modbus driver never yields, so any high-rate poller trips the task watchdog
+
+**Problem:** two tasks issuing back-to-back Modbus transactions on core 1 would have panicked the board within 5 s instead of producing a result. Caught by reading `sdkconfig.lolin_s3` **before** flashing, not by a crash.
+
+**Root cause — two facts that only bite together:**
+
+1. `modbus_rtu.cpp`'s receive loop spins on `uart1_available()` with **no `vTaskDelay`**, for up to `MODBUS_TIMEOUT_MS` (200 ms) per transaction. The DE guard and settle delays are `esp_rom_delay_us()` busy-waits too. A transaction is ~25-30 ms of pure spin even when it succeeds.
+2. `CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y` **and** `..._CPU1=y`, with `CONFIG_ESP_TASK_WDT_TIMEOUT_S=5`.
+
+So a task above idle priority that runs transactions continuously starves that core's idle task, and the TWDT panics in 5 s. **T5 is safe only because it polls every 30 s and sleeps in between** — the driver has never been asked to run flat out.
+
+**Fix:** any task issuing back-to-back transactions must `vTaskDelay(pdMS_TO_TICKS(1))` between them. One tick per ~25 ms transaction is ample for the idle task and costs no throughput. See `firmware/src/diag/modbus_probe.cpp`.
+
+**Why this matters beyond the probe:** [`design/refactorSensorConfiguration.md`](../design/refactorSensorConfiguration.md) §2.2 proposes **1 Hz position polling** during a window stroke. At 1 Hz with a 30 ms transaction the duty is ~3 % and the idle task is fine — but a **tight retry loop, a burst read, or a `series()` request with a short interval** would hit this. Anyone building the JIT bus task should either add the yield in the scheduler or fix the driver's receive loop to block on `uart_read_bytes` with a timeout instead of spinning. The second is the better fix and has never been attempted.
+
+**Where it lives:** `drivers/modBus/src/modbus_rtu.cpp` (receive loop ~`:347`, busy-wait delays); `firmware/sdkconfig.lolin_s3` (TWDT settings); `firmware/src/diag/modbus_probe.cpp` (the yield, with rationale).
+
+---
+
+## 2026-09-07 — a string-replace anchored on the first occurrence lands in a comment
+
+**Problem:** inserting a source file into `firmware/src/CMakeLists.txt`'s `SRCS` list broke the build with `Parse error. Expected a command name, got quoted argument`. The new entry had been written into a **comment block** 30 lines above the real list.
+
+**Root cause:** the edit script anchored on `s.index('"status_post/status_post.cpp"')`. That filename appears **first** in a phase-progression comment (`# Phase 4 (alpha.4): "status_post/status_post.cpp"`) and only later in the actual `idf_component_register(SRCS ...)` call. `index()` returns the first match, which was prose.
+
+**Fix:** anchor after a **structural** marker, not on a bare identifier:
+
+```python
+reg = s.index("idf_component_register(")   # structural anchor first
+i   = s.index('"status_post/status_post.cpp"', reg)   # then search from there
+```
+
+**Where this bites in this repo:** files that document their own history inline — `firmware/src/CMakeLists.txt` (phase-progression comments listing files not yet added), `firmware/platformio.ini` (a commented-out `[env:test_t2_relay]`), `changelog.md` (every filename ever). In all of them the *first* occurrence of a name is usually narrative, not the live entry. **Verify after every scripted edit**: build it, or at minimum print the surrounding lines — this one was only caught because CMake refused to parse.
+
+---
+
 ## 2026-09-07 — the Modbus bus does not survive boot: `main.cpp`'s `modbus_init()` is dead by the time T5 starts
 
 **Problem:** a diagnostic task placed early in `app_main` (right after T5 is spawned, t ≈ 1.8 s) got **1000/1000 Modbus timeouts** — not one response from either sensor. The same firmware, same boot, moments later: T5 polled both sensors perfectly (`T=29 °C RH=60 % ws=2.3 m/s`). The sensors were fine; the bus was not.
