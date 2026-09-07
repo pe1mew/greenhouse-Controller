@@ -122,13 +122,14 @@ De kascontroller is de elektronische besturing van het hele systeem: een micropr
 
 Elke kascontroller een **unieke identificatie van vier letters** (bijvoorbeeld `5C88` of `12F0`).
 
-De ID wordt op vier plaatsen gebruikt:
+De ID wordt op vijf plaatsen gebruikt:
 
 | Waar | Hoe het eruit ziet |
 |---|---|
 | **AP-SSID** (LCD-scherm 4 wanneer de AP actief is) | `Greenhouse-5C88` |
 | **LCD-scherm 7** (Firmware/Uptime) | rechts op regel 1, naast het versienummer: `FW: 2.1.1  5C88` |
 | **Webinterface, voettekst** | onderaan de pagina: `Greenhouse Controller – v2.1.1 · 5C88` |
+| **Webinterface, browsertabblad** | de tabtitel begint met de ID: `5C88 · Greenhouse Controller` — zo zie je bij meerdere geopende tabbladen meteen welke kas je voor je hebt |
 | **SD-logbestand (bestandsnaam)** | eerste vier tekens van de bestandsnaam: `5C88_20260507143022.csv` |
 
 ---

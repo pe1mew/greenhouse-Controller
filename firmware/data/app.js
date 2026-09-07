@@ -91,6 +91,38 @@ function fetchStatusNow() {
     .catch(function () { /* WS push will catch up within 2 s */ });
 }
 
+// ── Unit identity: footer + browser tab title ────────────────────────────────
+// The firmware version reaches the page from two independent sources:
+//
+//   1. the status push / cold-start fetch — system.fw_ver AND system.unit_id
+//   2. GET /api/config (loadConfig)       — fw_ver only, there is no unit_id
+//      in the config payload
+//
+// Both used to write #fw-ver directly, so whichever fired last won. loadConfig()
+// runs on login (setRole) and again every 60 s while the user is active, and its
+// write silently dropped the unit ID until the next WS push replaced it — a
+// visible flicker of up to one push interval, repeating for the whole session.
+//
+// Fix: neither writer touches the DOM. Both update the last-known values here
+// and re-render, so a config refresh that carries no unit_id can no longer
+// erase one that a status push already supplied.
+// gh#50.
+let g_fw_ver  = null;
+let g_unit_id = null;
+
+function renderIdentity() {
+  const parts = [];
+  if (g_fw_ver)  parts.push('v' + g_fw_ver);
+  if (g_unit_id) parts.push(g_unit_id);
+  setText('fw-ver', parts.join(' · ') || '—');
+
+  // Unit ID FIRST in the tab title: browser tabs truncate from the right, so an
+  // operator with several units open still sees which tab is which unit. Falls
+  // back to the bare product name until the first status arrives.
+  document.title = g_unit_id ? g_unit_id + ' · Greenhouse Controller'
+                             : 'Greenhouse Controller';
+}
+
 // ── Status handler ───────────────────────────────────────────────────────────
 const WIN_LABELS = { OPEN: 'OPEN', CLOSED: 'CLOSED',
                      MOVING_OPEN: 'MOVING', MOVING_CLOSE: 'MOVING', UNKNOWN: '?' };
@@ -293,17 +325,18 @@ function handleStatus(s) {
     if (sys.wifi_rssi_dbm !== undefined) setText('st-wifi-rssi', sys.wifi_rssi_dbm);
     if (sys.wifi_ip)                     setText('st-wifi-ip',   sys.wifi_ip);
     if (sys.uptime_s !== undefined)      setText('st-uptime',    fmtUptime(sys.uptime_s));
-    // Firmware version + unit_id (gh#17) go into the page footer.
-    // Format: "v1.20.0 · 12F0". The unit_id (last 2 bytes of WiFi-STA MAC, 4
-    // hex chars) is appended after a middot so an operator looking at the
-    // GUI can identify which physical unit they're talking to without going
-    // to System → Network. Mirrors the LCD case-6 row-0 layout. Set on every
-    // push (idempotent setText) so it remains correct after a re-render and
+    // Firmware version + unit_id (gh#17) go into the page footer and the tab
+    // title. Format: "v1.20.0 · 12F0". The unit_id (last 2 bytes of WiFi-STA
+    // MAC, 4 hex chars) is appended after a middot so an operator looking at
+    // the GUI can identify which physical unit they're talking to without
+    // going to System → Network. Mirrors the LCD case-6 row-0 layout. Set on
+    // every push (idempotent) so it remains correct after a re-render and
     // there is no first-message gating window where the field stays at "—".
-    if (sys.fw_ver) {
-      const id = sys.unit_id ? ' · ' + sys.unit_id : '';
-      setText('fw-ver', 'v' + sys.fw_ver + id);
-    }
+    // Rendering goes through renderIdentity() — see the note there for why
+    // this must not write #fw-ver directly.
+    if (sys.fw_ver)  g_fw_ver  = sys.fw_ver;
+    if (sys.unit_id) g_unit_id = sys.unit_id;
+    if (sys.fw_ver || sys.unit_id) renderIdentity();
     // sys.asset_version is consumed by the Alarms-card mismatch check
     // above; no separate visible field — a mismatch shows up as the
     // MISMATCH badge alongside the mode-derived alarms.
@@ -484,7 +517,10 @@ function loadConfig() {
       setVal('cfg-wifi-ssid',      cfg.wifi_ssid);
       setText('cfg-ap-ssid',       cfg.ap_ssid);
       setVal('cfg-tz',             cfg.tz_str);
-      if (cfg.fw_ver) setText('fw-ver', 'v' + cfg.fw_ver);
+      // /api/config carries fw_ver but NOT unit_id, so this must not write the
+      // footer directly — doing so dropped the unit ID on every config refresh
+      // until the next status push. renderIdentity() keeps the last unit_id.
+      if (cfg.fw_ver) { g_fw_ver = cfg.fw_ver; renderIdentity(); }
       if (cfg.lat_deg !== undefined && cfg.lat_frac !== undefined) {
         setVal('cfg-lat', (cfg.lat_deg + cfg.lat_frac / 1000.0).toFixed(3));
       }
