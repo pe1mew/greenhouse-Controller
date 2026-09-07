@@ -119,7 +119,10 @@
 #include "../event_logger/event_logger.h" /* alpha.6.19 — event_logger_sd_remount / _unmount */
 #include "../ota_manager/ota_manager.h"   /* alpha.6.20 — ota_firmware_/assets_/get_* */
 #include "../status_post/status_post.h"   /* alpha.6.20 — status_post_last_str (web tab) */
-#include "../ota_client/ota_client.h"     /* 2.2.0 (ROTA) — rota_cert_set/_is_custom for /api/ota/config */
+#include "../ota_client/ota_client.h"
+#ifdef MODBUS_BENCH
+#include "../diag/modbus_bench.h"   /* dev-only bench Modbus access */
+#endif     /* 2.2.0 (ROTA) — rota_cert_set/_is_custom for /api/ota/config */
 #include "../system_id/system_id.h"       /* 2.2.0 (ROTA) — system_mac_str: device id for /api/ota/check */
 #include "littlefs_storage.h"
 #include "sd_storage.h"        /* alpha.6.19 — storage_sd_* for SD status + log list/download */
@@ -3018,6 +3021,59 @@ static const httpd_uri_t s_uri_web_get = {
     .uri = "/api/web", .method = HTTP_GET, .handler = web_get_handler, .user_ctx = NULL };
 static const httpd_uri_t s_uri_web_post = {
     .uri = "/api/web", .method = HTTP_POST, .handler = web_post_handler, .user_ctx = NULL };
+#ifdef MODBUS_BENCH
+/* ---------------------------------------------------------------------------
+ * POST /api/diag/modbus — arbitrary Modbus transaction (admin, DEV BUILDS ONLY)
+ *
+ * Phase 0 commissioning of the wire-encoder position sensor, which the product
+ * API cannot reach: it only ever addresses the FG6485A (1) and S200 (44).
+ * See firmware/src/diag/modbus_bench.h for the safety contract — notably that
+ * writes are confined to addresses 40/45.
+ *
+ *   read : {"addr":40,"fc":4,"reg":0,"count":15}
+ *   write: {"addr":40,"fc":16,"reg":6,"value":1}      (FC16, quantity 1)
+ * --------------------------------------------------------------------------- */
+static esp_err_t diag_modbus_post_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+    httpd_resp_set_type(req, "application/json");
+
+    char body[192] = {0};
+    int  rlen = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (rlen <= 0) {
+        return httpd_resp_send(req, "{\"ok\":false,\"err\":\"no_body\"}", HTTPD_RESP_USE_STRLEN);
+    }
+    body[rlen] = '\0';
+
+    char v[16];
+    int addr  = json_get_field(body, "addr",  v, sizeof(v)) ? atoi(v) : 0;
+    int fc    = json_get_field(body, "fc",    v, sizeof(v)) ? atoi(v) : 0;
+    int reg   = json_get_field(body, "reg",   v, sizeof(v)) ? atoi(v) : 0;
+    int count = json_get_field(body, "count", v, sizeof(v)) ? atoi(v) : 0;
+    int value = json_get_field(body, "value", v, sizeof(v)) ? atoi(v) : 0;
+
+    uint16_t regs[MODBUS_BENCH_MAX_REGS] = {0};
+    size_t   n = 0;
+    const char *err = "unset";
+    const uint16_t arg = (uint16_t)((fc == 16) ? value : count);
+
+    const bool ok = modbus_bench_exec((uint8_t)addr, (uint8_t)fc, (uint16_t)reg,
+                                      arg, regs, MODBUS_BENCH_MAX_REGS, &n, &err);
+
+    char resp[512];
+    int off = snprintf(resp, sizeof(resp),
+                       "{\"ok\":%s,\"status\":\"%s\",\"addr\":%d,\"fc\":%d,"
+                       "\"reg\":%d,\"n\":%u,\"regs\":[",
+                       ok ? "true" : "false", err, addr, fc, reg, (unsigned)n);
+    for (size_t i = 0; i < n && off > 0 && off < (int)sizeof(resp) - 16; i++) {
+        off += snprintf(resp + off, sizeof(resp) - (size_t)off,
+                        "%s%u", (i == 0) ? "" : ",", (unsigned)regs[i]);
+    }
+    if (off > 0 && off < (int)sizeof(resp) - 3) snprintf(resp + off, sizeof(resp) - (size_t)off, "]}");
+    return httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
+}
+#endif /* MODBUS_BENCH */
+
 /* 2.2.0 (ROTA) — pull-OTA config (admin). */
 static const httpd_uri_t s_uri_ota_cfg_get = {
     .uri = "/api/ota/config", .method = HTTP_GET, .handler = ota_config_get_handler, .user_ctx = NULL };
@@ -3028,6 +3084,11 @@ static const httpd_uri_t s_uri_rota_check_get = {
     .uri = "/api/ota/check", .method = HTTP_GET, .handler = rota_check_get_handler, .user_ctx = NULL };
 static const httpd_uri_t s_uri_rota_check_post = {
     .uri = "/api/ota/check", .method = HTTP_POST, .handler = rota_check_post_handler, .user_ctx = NULL };
+
+#ifdef MODBUS_BENCH
+static const httpd_uri_t s_uri_diag_modbus = {
+    .uri = "/api/diag/modbus", .method = HTTP_POST, .handler = diag_modbus_post_handler, .user_ctx = NULL };
+#endif
 
 /* alpha.6.21 — WebSocket route (Phase 6.16-η, final T11 route). */
 static const httpd_uri_t s_uri_ws = {
@@ -3101,6 +3162,9 @@ void task_web_server(void *pvParameters)
         &s_uri_ota_cfg_get, &s_uri_ota_cfg_post,
         &s_uri_rota_check_get, &s_uri_rota_check_post,
         &s_uri_ws,
+#ifdef MODBUS_BENCH
+        &s_uri_diag_modbus,
+#endif
     };
     for (size_t i = 0; i < sizeof(uris)/sizeof(uris[0]); i++) {
         err = httpd_register_uri_handler(s_server, uris[i]);

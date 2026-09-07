@@ -33,9 +33,13 @@ Development happens on **FDA4**, which is being fitted with a mechanical mock of
 
 **Representative of:** the entire software path — three devices on one bus, relay drive, position feedback, teach, fault handling, both commissioning checks, T2 stopping logic, the polling architecture.
 
-**Not representative of:** anything thermal. No greenhouse means the limit cycle (requirements §1.1), `ach_m3`, and T6 step selection **cannot be validated on the rig**. It proves the mechanism, never the control strategy. Also outside its reach: the 40 m torsional lag (FR-WP22), rope-drum nonlinearity, and wind sway of a hanging flap.
+**Not representative of:** the *consequence* of moving. FDA4 is fed **live measurements from the production environment and acts on them** (operator, 2026-09-07), so T6 step selection and T3 wind safety do run against real weather — but **no window is driven**, so opening a vent changes nothing that comes back as a measurement. The rig is **open-loop**: real inputs, real decisions, no feedback. The limit cycle (requirements §1.1) and `ach_m3` therefore stay unprovable here, as does any control-strategy outcome. Also outside its reach: the 40 m torsional lag (FR-WP22), rope-drum nonlinearity, and wind sway of a hanging flap.
 
-**Confirmed met:** traverse ≥ 5 s (`CFG_MIN_TRAVEL_S`), sensor address 40 or 45 (both clear of FG6485A@1 and S200@44), +24 V/GND/A/B daisy-chained, both end-stop switches fitted, sensor-zone overtravel checked.
+> Do not read this as "FDA4 cannot exercise the climate loop". It exercises the whole of it except the part where the greenhouse answers back.
+
+**Rig specification — agreed, and every requirement is satisfiable:** traverse ≥ 5 s (`CFG_MIN_TRAVEL_S`), sensor address 40 or 45 (both clear of FG6485A@1 and S200@44), +24 V/GND/A/B daisy-chained, both end-stop switches fitted, sensor-zone overtravel checked.
+
+> **Build status 2026-09-07: NOT YET BUILT.** The wire sensor is **not physically on FDA4's RS485 bus** — it still carries only FG6485A@1 and S200@44, and no window is driven. The specification above is a design agreement, not an as-built record. **Phase 0 cannot start until the sensor is on the bus**; everything before that point is desk work and firmware that builds but has nothing to talk to.
 
 ---
 
@@ -129,7 +133,11 @@ Requirements §3 left "who polls at 1 Hz" explicitly unsolved. The rig's 150 ms 
 
 ## 5. Phases
 
-### Phase 0 — bring-up and commissioning *(no firmware — bench tooling only)*
+### Phase 0 — bring-up and commissioning *(bench tooling; **BLOCKED on hardware**)*
+
+> **Status 2026-09-07: cannot start.** The wire sensor is not on FDA4's bus (§2). Everything below needs a device to answer.
+
+> **This phase was mis-scoped as "no firmware".** It is not. The product API only ever addresses the FG6485A (1) and the S200 (44) — there is **no passthrough**, so nothing in the shipped firmware can reach a device at 40/45. A bench access path had to be built before Phase 0 could be attempted at all: `firmware/src/diag/modbus_bench.{h,cpp}` and an admin-only `POST /api/diag/modbus`, both behind `-DMODBUS_BENCH` (env `lolin_s3_bench`, which reports `2.4.1-bench` so a dev build carrying an open Modbus write route can never be mistaken for the release). Writes are confined to addresses 40/45. **That tooling is written, builds, and is unflashed** — it is waiting on the same hardware this phase is.
 
 > **Sequencing note.** §3.5's traverse measurement is a **GUI action**, which is firmware work — a web route plus UI. It cannot land here: you cannot build a GUI for a device the firmware cannot yet talk to. Phase 0 stays a manual bench activity to prove the device works at all; **GUI-driven commissioning (teach, traverse measurement, accept/reject) lands with the GUI work in §6.3**, once the driver and position task exist. Until then no measured rate exists and the configured `travel_m3` is used — exactly the fallback §3.5 specifies.
 
