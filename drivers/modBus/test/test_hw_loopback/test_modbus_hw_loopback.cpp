@@ -564,10 +564,24 @@ static void conc_responder_task(void *pvParam)
         resp[7] = (uint8_t)(crc & 0xFFu);
         resp[8] = (uint8_t)(crc >> 8);
 
-        /* Let the driver's receive window open before injecting. */
-        vTaskDelay(pdMS_TO_TICKS(3));
+        /* Inject INSIDE the driver's receive window, not before it opens.
+         * modbus_transaction() waits 2000 us (DE guard) + 1500 us (settle)
+         * = 3.5 ms after TX before it starts reading, so a 3 ms delay raced
+         * the window open and could clip the first byte. 5 ms is safely in. */
+        vTaskDelay(pdMS_TO_TICKS(5));
         Serial2.write(resp, sizeof(resp));
         Serial2.flush();
+
+        /* Resync — MANDATORY under concurrency (measured: 18 CRC errors per
+         * 1000 without it, on a driver that is correctly serialising).
+         *
+         * Anything that arrived on the sniff line while we were building and
+         * injecting belongs to a transaction that has already moved on. Serving
+         * it would inject a response into the NEXT transaction's window, and
+         * the caller reports CRC — which reads as a driver defect and is not.
+         * The single-transaction tests never hit this because nothing is
+         * queued behind them. */
+        while (Serial2.available()) (void)Serial2.read();
     }
     vTaskDelete(NULL);
 }
@@ -598,6 +612,20 @@ static void conc_caller_task(void *pvParam)
             case MODBUS_ERR_BUSY:    c->busy++;    break;
             default:                 c->other++;   break;
         }
+
+        /* Yield between transactions — MANDATORY, for two separate reasons.
+         *
+         * 1. Fairness. Without it a caller releases the mutex and immediately
+         *    re-acquires in the same tick, barging past the task already
+         *    blocked on it. Measured: 37 spurious MODBUS_ERR_BUSY per 1000 as
+         *    the starved caller exceeded MODBUS_LOCK_TIMEOUT_MS — a test
+         *    artifact that reads as a driver defect.
+         * 2. The driver's receive loop never yields (see the gotcha of
+         *    2026-09-07), so back-to-back transactions starve the idle task
+         *    and can trip the TWDT.
+         *
+         * modbus_probe.cpp does the same for the same reasons. */
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
     c->done = true;
     vTaskDelete(NULL);
