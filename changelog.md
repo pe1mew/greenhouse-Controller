@@ -6,6 +6,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.4.0] — 2026-09-07  (gh#50 — unit ID erased from the web-GUI footer)
+
+**Fixed.**
+- **The unit ID disappeared from the web-GUI footer on login, and again every
+  60 s thereafter (gh#50).** Two writers targeted the same `#fw-ver` element
+  with different formats: the status push carries `system.fw_ver` **and**
+  `system.unit_id`, while `loadConfig()` reads `GET /api/config`, which has no
+  `unit_id` field at all (`web_server.cpp:1146`). The config writer could not
+  reproduce the ID, so it simply overwrote it. `loadConfig()` runs on login
+  (`setRole()`) and every 60 s while the user is active; the next status push
+  restored the ID ~2 s later, so the field dropped it for up to one push
+  interval, repeatedly, for the whole session. Measured on `webUiMock` at 25 ms
+  sampling: ID present at 26 ms, gone at 326 ms, restored at 2100 ms.
+  Both writers now update last-known values and call a single
+  `renderIdentity()` instead of touching the DOM, so a config refresh carrying
+  no `unit_id` can no longer erase one the status push supplied.
+
+**Added.**
+- **Unit ID in the browser tab title**, as `FDA4 · Greenhouse Controller`. The
+  ID comes **first** because browser tabs truncate from the right — with
+  several units open it is the part that survives. The static `<title>` stays
+  as the bare product name; it is the pre-JS fallback and the ID is not known
+  until the first status arrives. `manual/boerHandleiding.md` §3 updated: the
+  unit ID is now listed in **five** places rather than four.
+
+**Notes.**
+- **No firmware source changed.** The binary is a rebuild of 2.3.1's sources
+  under a new version string; the whole behavioural delta is in
+  `firmware/data/app.js`. It ships as a paired firmware+assets release because
+  the OTA path has no assets-only mode, and because shipping changed assets
+  under an unchanged `asset_version` would break the version-to-content mapping
+  the paired-commit invariant protects.
+- Minor rather than patch: the tab title is new operator-visible behaviour, and
+  is documented as such in the farmer manual.
+- **Deployed and verified on FDA4 (192.168.20.169)**: `fw_ver` and
+  `asset_version` both 2.4.0 on an independent post-reboot `/api/status` read;
+  `app.js` fetched back from the device is byte-identical to the release zip;
+  and a real farmer login on the device recorded zero footer changes across the
+  login and a `loadConfig()`. Not soaked — FDA4 is the bench unit; 2344 and
+  5C88 untouched.
+
+---
+
 ## [2.3.1] — 2026-07-28  (gh#48 — anti-thrash dwell was unguarded during travel)
 
 **Fixed.**
