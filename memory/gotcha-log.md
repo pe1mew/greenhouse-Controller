@@ -16,7 +16,93 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ---
 
-## 2026-09-05 — `modbus_rtu.h` promises a UART mutex that does not exist
+## 2026-09-07 — every bench reset counts as a boot failure: four short USB sessions trigger an OTA rollback
+
+**Problem:** connecting FDA4 over USB and resetting it a few times for short serial captures silently walked the OTA fail counter up. It was already at **2** on arrival, and two 12-14 s captures took it to **3** — one boot away from the rollback branch, which would have reverted the unit to whatever bank B held, mid-debug, for no reason connected to firmware health.
+
+**Root cause — read from `ota_manager.cpp:352-410`, not inferred:**
+
+- The counter lives in **NVS** (`NVS_NS_SYSTEM` / `OTA_FAIL_KEY`), so it **survives reflashing the app**. Only an NVS erase or a healthy boot clears it.
+- `ota_check_rollback()` runs early in `setup()`. It reads the counter, and **if the value read is >= 3 it calls `esp_ota_mark_app_invalid_rollback_and_reboot()`**; otherwise it increments and continues. So the sequence is 0 -> 1 -> 2 -> 3 -> **rollback on the fourth consecutive boot**.
+- The **only** thing that resets it is `ota_mark_healthy()`, called by T1 after `OTA_HEALTHY_MS` = **30 000 ms** of uptime (`watchdog.cpp:324`). Nothing else does.
+- The one exemption — `esp_reset_reason() == ESP_RST_SW` plus the `t15_planreboot` NVS flag — **cannot fire on current firmware**: T15 is dormant and excluded from the build. A DTR/RTS bench reset reports `rst:0x1 (POWERON)` anyway, so it would miss the gate regardless.
+
+**The design is correct** — it is what makes a genuinely bad OTA revert itself. The trap is that **a deliberate short bench session is indistinguishable from a crash loop**: unplug the board, or capture for 15 s and stop, and the firmware records exactly what a boot failure looks like.
+
+**Fix — on the bench, let it run past 30 s:**
+
+- Size every serial capture **> 35 s** so the log shows `[OTA] Boot marked healthy - fail counter reset to 0`. That line, not the absence of a panic, is the proof the board is in a clean state.
+- **Read `[OTA] Boot fail counter = N` at the start of every session.** A non-zero value means the previous session left it dirty; N = 3 means the next boot rolls back.
+- Before unplugging, leave the board powered 30 s. Note `esptool` operations each end with a hard reset, so a flash or a `read_flash` also starts a fresh sub-30 s boot if you stop there.
+- After a cable flash, do one settle run and confirm the healthy line before calling the unit done.
+
+**Not fully observed:** the boot(s) between `write_flash` finishing (esptool hard-resets) and the verification capture were not recorded, so the counter's exact path across the flash is unreconstructed. Verified values only: **2 -> 3** before the flash, and **1 -> 2 -> cleared to 0 at 31 s** after it. The mechanism above is from the source, not from that gap.
+
+**Where it lives:** `firmware/src/ota_manager/ota_manager.cpp:352` (`ota_check_rollback`), `:412` (`ota_mark_healthy`); `firmware/src/ota_manager/ota_manager.h:82` (`OTA_HEALTHY_MS`); `firmware/src/watchdog/watchdog.cpp:324` (T1 calls it).
+
+---
+
+## 2026-09-07 — `mklittlefs` builds a perfectly valid image of an EMPTY directory, and every downstream check passes
+
+**Problem:** while cable-flashing FDA4 to 2.3.1, the step that extracts `web-assets-<ver>.zip` into a staging directory failed — but `mklittlefs -c <empty dir>` then produced a **1 048 576-byte image containing zero files, exit code 0, no warning**. Had it been flashed, the result would have been a web GUI serving "Web assets not yet uploaded".
+
+**Root cause — two independent traps, and the second is the dangerous one:**
+
+1. *The extraction failed silently in the same command block.* Under Git Bash the shell path `/c/Users/...` is **not** a valid path for the native Windows Python, and an inline `python -c` that tried to convert it (`.replace('/','\\\\')`) died with a `SyntaxError`. The `mkdir -p` had already run, so a valid **empty** directory was waiting.
+2. *`mklittlefs` treats an empty source directory as a legitimate request.* It is not an error to build an empty filesystem, so it does not warn.
+
+**Every check downstream also passes**, which is what makes this worth an entry:
+
+| Stage | What it reports on an empty image |
+|---|---|
+| `mklittlefs -c` | exit 0, correct file size |
+| `esptool write_flash` | **"Hash of data verified"** — it faithfully wrote the empty image |
+| firmware boot | `littlefs_mount(A (lfs0)) returned 0 (OK)` — an empty LittleFS mounts fine |
+| firmware self-test | `LFS write/read verify: PASS` — it writes its own probe file, which succeeds |
+
+Only `/index.html` being absent reveals it, and that surfaces in the browser, not on the console.
+
+**Fix — list the image before flashing it:**
+
+```bash
+mklittlefs -l <image>.bin -b 4096 -p 256 -s 0x100000
+```
+
+It must show `index.html`, `app.js`, `style.css` and `manifest.json` with plausible sizes. Also verify `manifest.json` carries the intended `asset_version` *before* building, and after flashing read the partition back (`esptool read_flash 0x420000 0x40000`) and grep for `{"asset_version":"X.Y.Z"` — that is a check against the **device**, not against intent, and it is the only `asset_version` confirmation available when the unit has no working network (the canonical `/api/status` pair-read needs WiFi).
+
+**Also:** pass Windows paths to native tools via `cygpath -w`, and hand them to Python as **argv**, never embedded in `-c` source — `python -c "import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$(cygpath -w a.zip)" "$(cygpath -w outdir)"`.
+
+**Related:** the 2026-07-13 greenfield entry below — a *different* cause (`pio buildfs` emits SPIFFS, not LittleFS) producing the **identical** symptom. Two ways to get an unreadable assets partition; both look healthy from the serial log. Extract the release zip to a scratch directory rather than stamping `firmware/data/manifest.json`, and the gh#9 placeholder dance is avoided entirely — the released zip already carries the correct `asset_version`.
+
+**Where it lives:** `~/.platformio/packages/tool-mklittlefs/mklittlefs.exe`; the recipe in the 2026-07-13 entry; `bin/build_release.ps1` Step 2.
+
+---
+
+## 2026-09-05 — `gh_issue.py` returns `401 Bad credentials` on every call: the fine-grained PAT expired
+
+**Problem:** `create`, then `list`, then everything else answered `HTTP 401 Bad credentials`. It looked like a broken script or a revoked repository permission; the same script had commented on gh#45 nine days earlier.
+
+**Root cause:** the token is a GitHub **fine-grained PAT** created 2026-06-06 with the 90-day default lifetime, so it expired on 2026-09-04. Nothing warns; the file just stops working. The pointer in `.github/gh_issue.local` resolved, no env override was shadowing it, the token had no stray whitespace — the credential itself was simply dead.
+
+**Fix:** regenerate it in GitHub (Settings → Developer settings → Fine-grained tokens; Issues: Read and write on the repo) and overwrite the file named on the `GH_ISSUE_TOKEN_FILE=` line of `.github/gh_issue.local` — that file lives in the operator's secret store (never name it here). **Diagnose in one step:** `python bin/gh_issue.py list` — if even that 401s, stop debugging the call. Renewed 2026-09-05; with the default lifetime it lapses again around **2026-12-04**.
+
+**Where it lives:** `bin/gh_issue.py` (resolution order: env `GITHUB_TOKEN`/`GH_TOKEN` → `GH_ISSUE_TOKEN_FILE` → legacy `.github/token.local`); `.github/gh_issue.local`.
+
+---
+
+## 2026-09-05 — a ~14 KB `python - <<'PY'` heredoc dies at parse time with "unexpected EOF while looking for matching `''"
+
+**Problem:** a long inline Python edit script (the §12 write-up for the position-sensor study) failed before a single line ran — no file changed, the bash parser reported an unterminated quote. Heredocs of a few KB in the same session had worked repeatedly.
+
+**Root cause:** the command was cut short before the heredoc terminator, so bash reached EOF inside the body and then tripped over an apostrophe in the prose. A length limit on inline commands, not a quoting mistake in the script.
+
+**Fix:** write long scripts to the scratchpad with the Write tool and run `python <path>`; keep inline heredocs to a few KB. Side benefit: nothing to escape. (Distinct from the ASCII-only pattern above, which is about *printing*, not parsing.)
+
+**Where it lives:** agent tooling, not the repo.
+
+---
+
+## 2026-09-05 — `modbus_rtu.h` promises a UART mutex that does not exist (gh#49)
 
 **Problem:** the Modbus driver header says, twice (lines 35 and 100), that the driver "serialises wire access internally with a UART mutex" created in `modbus_init()`. Read that and you would happily let a second task — T2 stopping a window on a position reading, say — call `modbus_read_input_registers()` alongside T5.
 
@@ -24,7 +110,7 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 **Fix:** treat the header as wrong. Any second caller needs the mutex to be *added* (one `xSemaphoreCreateMutex()` in `modbus_init()`, take/give around each transaction — but a 200 ms timeout inside a High-priority WDT-subscribed task is still a bad idea, so prefer keeping all bus I/O in T5 or a dedicated bus task, per `design/refactorSensorConfiguration.md` §2.2). Found while evaluating the M3 position sensor (`design/windowPositionSensorRequirements.MD` §12), whose 1 Hz polling is the first thing that would tempt a second caller.
 
-**Where it lives:** `drivers/modBus/src/modbus_rtu.h:35`, `:100`; `drivers/modBus/src/modbus_rtu.cpp` (no lock); `memory/architecture.md` T5 row.
+**Where it lives:** `drivers/modBus/src/modbus_rtu.h:35`, `:100`; `drivers/modBus/src/modbus_rtu.cpp` (no lock); `memory/architecture.md` T5 row. **Filed as gh#49** (options: fix the doc / add the mutex / both — both recommended).
 
 ---
 
