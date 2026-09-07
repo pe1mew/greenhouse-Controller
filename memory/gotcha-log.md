@@ -22,7 +22,7 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ## Index — by where it bites you
 
-48 entries is too many to scan. Find your subsystem, then **Ctrl+F the date** to jump.
+49 entries is too many to scan. Find your subsystem, then **Ctrl+F the date** to jump.
 Hooks are the *symptom*, not the title — you rarely know the cause when you arrive here.
 Entries stay in reverse-chronological order below; this index is the only grouped view.
 
@@ -82,6 +82,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-05-XX** — PowerShell treats `pio` stderr warnings as fatal (`$ErrorActionPreference='Stop'`) [RESOLVED]
 
 ### Git, GitHub & scripted editing
+- **2026-09-07** — you swap boards and the COM port is identical, so you flash the wrong one (CH340 has no serial)
 - **2026-09-07** — a string-replace anchored on the first occurrence lands in a comment and breaks the build
 - **2026-09-05** — `gh_issue.py` 401s on every call: the fine-grained PAT expired (not a script bug)
 - **2026-09-05** — a large inline heredoc dies at parse time before running
@@ -92,6 +93,26 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
 
+
+## 2026-09-07 — swapping boards keeps the SAME COM port *and* the same DeviceID, so the port cannot identify a unit
+
+**Problem:** with FDA4 unplugged and a different board attached to the same USB socket, Windows reported an identical port — `USB-SERIAL CH340 (COM10)`, DeviceID `USB\VID_1A86&PID_7523\5&2C6AC496&0&1`. Byte-for-byte what FDA4 had shown minutes earlier. Trusting it would have flashed hardware-test firmware onto the development controller.
+
+**Root cause:** the CH340 has **no USB serial number**, so Windows cannot distinguish two of them. It enumerates by *socket*: the same physical port yields the same COM number and the same instance path regardless of which board is in it. The DeviceID looks unique and specific — it identifies the socket, not the device.
+
+**Fix — identify by MAC, always, before any write:**
+
+```bash
+python ~/.platformio/packages/tool-esptoolpy/esptool.py --port COM10 --no-stub read_mac
+```
+
+The ESP32's MAC is burned into eFuse and is the only reliable identity. The unit ID is its last two bytes, so the mapping is direct: `30:ed:a0:a0:fd:a4` = FDA4, `64:e8:33:7c:12:f0` = 12F0, `64:e8:33:7c:23:44` = 2344. Full table in user-global `project_unit_inventory.md`.
+
+**Also:** when only one board needs to be written, unplug the others. `pio test` and `pio run -t upload` auto-detect ports, and a `--upload-port` flag is a defence you have to remember every time; an empty socket is one you cannot forget.
+
+**Where it lives:** any bench session with more than one board — the dev controller and the loopback board are both LOLIN S3 with CH340.
+
+---
 
 ## 2026-09-07 — `lib_deps = file://../x` compiles a stale COPY; editing the source changes nothing
 
