@@ -2,9 +2,11 @@
 
 Append-only. Newest at top. Format per entry: **Problem → Root cause → Fix → Where it lives.**
 
-When something weird happens, check here BEFORE debugging from scratch. Entries that recur or affect multiple subsystems graduate up to a topic file or to [CLAUDE.md](../CLAUDE.md) hard constraints.
+When something weird happens, check here BEFORE debugging from scratch. **Start at the [index](#index--by-where-it-bites-you)** — it groups every entry by subsystem with symptom-first hooks, which is faster than scrolling 48 entries. **Adding an entry means adding its index line too**; the pair is checked by counting `^## 20` headings against `^- \*\*20` index lines. Entries that recur or affect multiple subsystems graduate up to a topic file or to [CLAUDE.md](../CLAUDE.md) hard constraints.
 
 Entries that are resolved **and can no longer recur** (code deleted, design changed, fixed both sides) retire to [gotcha-archive.md](gotcha-archive.md) — history only, never needed for triage. Everything still able to bite you is in this file. Being `[RESOLVED]` is *not* sufficient to retire: most resolved entries here stay because an active constraint still depends on them.
+
+> **Archive pass 2026-09-07 — all 48 entries reviewed, none retired.** The bar is *resolved **and** can no longer recur*, and nothing clears it. Every `[RESOLVED]` entry is held by something live: an active CLAUDE.md hard constraint (qio/dio, coredump erase, paired-commit, the broken HEAD endpoint), a diagnostic fact about *current* firmware found nowhere else (the DS1307 entry's "`time_iso` is the MX4 shadow, 0–60 s stale by design"), the ability to read **historical** logs (gh#45's pre-2.3.0 misparse, wind invalid before 2026-06-19), a documented **recurrence** (the branch-switch entry recurred 2026-07-20; SD-buffer truncation recurred as gh#42), or an environmental trap that was never code-fixed (PowerShell `2>&1`, `pio` not on PATH). The log is large because it is load-bearing, not because it hoards. **Re-run the pass only after a release that deletes code**, not on size alone. The pass did find a live defect: `rota_tds.md` R-C01 still specified the 8 KB T16 stack that crash-looped FDA4 — corrected the same day.
 
 ## Promoted patterns
 
@@ -17,6 +19,79 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 - **[PATTERN] A cross-reference is a claim about a file, not evidence — open the target and confirm it says what the citation says.** A link check proves only that a path resolves; nearly all the damage lives in the half it cannot test, whether the target actually contains the claim. **2026-09-07:** this log's own ff-only-merge entry said *"Recovery sequence documented in `BRANCH_NOTES.md`"* — that file never contained one; the steps were sitting in the entry itself. The false pointer survived because nobody opened the target, and it surfaced only because the file was read before being deleted. **Earlier, 2026-07:** an `audit-context` pass flagged bare filename citations that resolved ambiguously; fixed inline and — the second half of the lesson — **never logged**, which is why this pattern rests on one recorded incident plus one recalled. Rules: (1) before repeating or acting on a cross-reference, open it and confirm the specific claim is present; (2) cite a path **plus** a section or line anchor, never a bare filename — `foo.cpp:352` can be checked, `foo.cpp` cannot; (3) when deleting a file, grep for inbound references **and read them** — one may be wrong in a way that changes whether anything is actually lost; (4) when a citation turns out to be false, fix the *citation*, do not re-point it at another unread file.
 
 ---
+
+## Index — by where it bites you
+
+48 entries is too many to scan. Find your subsystem, then **Ctrl+F the date** to jump.
+Hooks are the *symptom*, not the title — you rarely know the cause when you arrive here.
+Entries stay in reverse-chronological order below; this index is the only grouped view.
+
+### Modbus bus, sensors & clock (T5, drivers)
+- **2026-09-07** — a task polling flat out panics the board after 5 s (driver never yields; TWDT idle check)
+- **2026-09-07** — every Modbus read times out early in boot, but T5 works fine later (bus dies during RTC/LittleFS/SD init)
+- **2026-09-07** — `pio run` on a driver env fails with `UART_SCLK_DEFAULT was not declared` [RESOLVED]
+- **2026-09-05** — the header promises a UART mutex the source never creates (gh#49)
+- **2026-08-26** — a ~59 s T/RH sensor fault that clears itself, roughly monthly; plus one 100-min wind fault that is *not* a defect
+- **2026-07-28** — a hardware test "passes" but the emulator was still fed live data
+- **2026-07-13** — wind readings before 2026-06-19 12:00 are meaningless (vane not commissioned)
+- **2026-07-08** — clock hours wrong while `ntp_synced=true`; also: `time_iso` is a 0–60 s stale shadow **by design** [RESOLVED]
+
+### Climate control & relays (T2, T6)
+- **2026-07-31** — a window reverses mid-stroke; and how to tell a defect from a legitimate wind override (gh#48) [RESOLVED]
+- **2026-07-28** — replaying T6 from SD logs gives plausible-but-wrong numbers (five traps; MODE is logged only on *change*)
+- **2026-07-05** — M3 is the north **side wall**, not a roof panel; 8.1× is travel time, 10× is area
+
+### OTA & ROTA releases
+- **2026-09-07** — `rota_release --dry-run` writes the seq-ledger manifest despite claiming no changes
+- **2026-09-07** — the ROTA night window and check interval are on `/api/ota/config`, not `/api/config`; a wide window inverts gh#41 so a stray browser tab blocks updates
+- **2026-09-07** — a few short USB bench sessions silently arm an OTA rollback (4 boots under 30 s)
+- **2026-07-23** — `rota_release release` looks like it hung; it aborted on an interactive prompt under null stdin
+- **2026-07-20** — an SD log cannot tell you which firmware wrote it; post-OTA proof needs `/api/status`
+- **2026-07-14** — the quiet-gate/session-exemption test does nothing unless the night window is open
+- **2026-07-13** — ROTA server (VPS) registry and permission traps
+- **2026-07-13** — T16 crash-loops on the first live pull-install (8 KB stack, nested TLS) [RESOLVED]
+- **2026-07-13** — rapid OTA reboots rate-limit SNTP, so T16 skips its checks
+- **2026-06-20** — `ota_push.py` exits 1 at step [8] even though the OTA worked (PowerShell `2>&1`)
+- **2026-06-10** — a firmware-only push silently strands the asset partition (paired-commit invariant)
+- **2026-04-XX** — `{{ASSET_VERSION}}` shipped to a unit as a literal string (gh#9) [RESOLVED]
+
+### Flash, partitions & boot
+- **2026-09-07** — `mklittlefs` builds a valid image of an EMPTY directory and every downstream check passes
+- **2026-07-13** — greenfield cable-flash web assets need `mklittlefs`; `pio buildfs` emits SPIFFS
+- **2026-05-14** — `ets_loader.c` crash loop after a full flash (qio vs dio header byte) [RESOLVED]
+- **2026-05-XX** — panic on every boot of a brand-new unit (coredump partition garbage)
+- **2026-XX-XX** — OTA flips the firmware version but assets stay old (shared LittleFS basePath) [RESOLVED]
+
+### SD logging & the log parser
+- **2026-08-25** — an SD log's FILENAME is its upload time, not its coverage window (silently parses the wrong period)
+- **2026-07-23** — a wind override at `speed == v_max` is mislabelled a "direction" event (gh#45) [RESOLVED, but pre-2.3.0 logs still misparse]
+- **2026-07-17** — log uploads stop dead once the card holds >~21 files (gh#42) [RESOLVED]
+- **2026-07-04** — `storage_sd_list_csv()` truncates silently on a full buffer (gh#36) [RESOLVED]
+- **2026-06-10** — `HEAD /api/log/download` always reports 45 B — **never** use it to check for gaps
+
+### Model, campaign & plotting
+- **2026-08-16** — `plot_daily.py` exits 143 under a 2-minute timeout but has already succeeded
+- **2026-07-05** — a matplotlib upgrade re-renders every campaign PNG with byte diffs
+- **2026-06-26** — a day shows ~2× the expected samples (two overlapping SD download chains)
+
+### Build, toolchain & shell
+- **2026-09-07** — you fix a file, rebuild, and get the identical error (`lib_deps = file://../x` compiles a stale copy)
+- **2026-07-14** — enlarging one buffer breaks a `-Werror=format-truncation` in a *different* function
+- **2026-07-05** — system Python 3.11 loses its site-packages mid-project
+- **2026-05-XX** — `pio: command not found` in Git Bash
+- **2026-05-XX** — PowerShell treats `pio` stderr warnings as fatal (`$ErrorActionPreference='Stop'`) [RESOLVED]
+
+### Git, GitHub & scripted editing
+- **2026-09-07** — a string-replace anchored on the first occurrence lands in a comment and breaks the build
+- **2026-09-05** — `gh_issue.py` 401s on every call: the fine-grained PAT expired (not a script bug)
+- **2026-09-05** — a large inline heredoc dies at parse time before running
+- **2026-07-23** — `test/` is gitignored yet 15 files inside it are tracked (deliberate)
+- **2026-07-13** — a branch switch carried the whole staging area into the wrong commit *(recurred 2026-07-20)*
+- **2026-06-09** — branch protection on `main` rejects merge commits
+
+### Server side (VPS)
+- **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
+
 
 ## 2026-09-07 — `lib_deps = file://../x` compiles a stale COPY; editing the source changes nothing
 

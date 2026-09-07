@@ -49,7 +49,7 @@ Requirement keywords **shall / should / may** follow RFC 2119/RFC 8174. Prioriti
 
 | ID | Requirement | Priority | Pass/Fail criterion |
 |------|---|---|---|
-| R-C01 | ROTA **shall** run as a dedicated FreeRTOS task T16 (priority 3, network band; 8 KB stack; heap-allocated work buffers), not inside T13 or T14. | Must | Task list shows T16; stack high-water ≥ 1 KB margin during a full update. |
+| R-C01 | ROTA **shall** run as a dedicated FreeRTOS task T16 (priority 3, network band; **16 KB stack** — 8 KB was specified here originally and **crash-looped FDA4 on the first live pull-install**: the download path nests a second mbedTLS context inside the manifest handshake. Raised to 16 KB in 2.2.1 and corrected here 2026-09-07; see the gotcha-log entry of 2026-07-13; heap-allocated work buffers), not inside T13 or T14. | Must | Task list shows T16; stack high-water ≥ 1 KB margin during a full update. |
 | R-C02 | T16 **shall** check for updates every `ota_check_h` hours (configurable 1–168, default 24) with ±10 % uniform jitter per cycle. | Must | Observed check intervals over 5 cycles fall within `ota_check_h` ± 10 %. |
 | R-C03 | A check **shall** run only when all preconditions hold: `ota_enable=1`, `ota_url` non-empty, WiFi STA connected, SNTP synced (`nm_is_sntp_synced()`), no OTA in progress (`EG1_BIT_OTA_IN_PROGRESS` clear). A skipped check **shall** be audited. | Must | Each precondition individually blocks the check and produces the audit row. |
 | R-C04 | Firmware image (~1.4 MB) and web-assets ZIP **shall** both be fully staged in PSRAM and verified before the first flash write (no streaming to flash). | Must | Heap trace shows SPIRAM allocations; no `esp_ota_begin` before both SHA checks pass. |
