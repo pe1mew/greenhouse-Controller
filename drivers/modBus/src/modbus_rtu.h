@@ -31,11 +31,35 @@
  *   - @ref modbus_read_input_registers       FC04 read.
  *   - @ref modbus_write_multiple_registers   FC16 write.
  *
- * ## Thread safety
- *   The driver serialises wire access internally with a UART mutex — two
- *   tasks may safely call any combination of these functions concurrently
- *   and the per-request DE/RE timing remains correct.  Per-call output
- *   buffers are owned by the calling task only.
+ * ## Thread safety — NOT re-entrant.  One caller only. (gh#49)
+ *   This driver performs **no internal locking of any kind**.  Exactly one
+ *   task may use it.  In this firmware that task is **T5 (sensor_poll)**, by
+ *   convention rather than by enforcement — see memory/architecture.md.
+ *
+ *   (Until 2026-09-07 this block claimed the driver "serialises wire access
+ *   internally with a UART mutex".  It never did; no such mutex was ever
+ *   created.  The claim is removed rather than made true because the
+ *   single-owner rule below stands on its own grounds — see the plan in
+ *   design/addModbusMutex.md for adding a lock.)
+ *
+ *   A second concurrent caller corrupts three shared resources, not one:
+ *     1. the DE/RE direction GPIO — asserting DE mid-response garbles the
+ *        wire AND blinds the in-flight caller;
+ *     2. `s_frame_end_us`, the inter-frame-gap timestamp, which is
+ *        read-modify-written per transaction to enforce RTU t3.5 silence;
+ *     3. the single UART RX FIFO — two readers steal each other's response
+ *        bytes, and the receive path drains *exactly* 8 half-duplex echo
+ *        bytes on the assumption that the FIFO holds only its own echo.
+ *   The visible symptom of (3) is a CRC or framing error blamed on the
+ *   sensor, which is why this is worth stating rather than assuming.
+ *
+ *   A lock would fix correctness but NOT permission: MODBUS_TIMEOUT_MS is
+ *   200 ms, and blocking that long inside a High-priority, WDT-subscribed
+ *   task (T2 relay_controller, T3 safety_monitor) could delay a wind-override
+ *   response.  Bus I/O belongs in T5 — or in the dedicated bus task of
+ *   design/refactorSensorConfiguration.md §2.2 — for timing reasons too.
+ *
+ *   Per-call output buffers are owned by the calling task only.
  *
  * Depends on LIB-1 (gpio/) for RS-485 direction control via
  * @ref gpio_set_rs485_direction.
@@ -97,12 +121,20 @@ typedef enum {
  * @brief Initialise the Modbus RTU driver.
  *
  * Configures UART1 at @ref MODBUS_BAUD (8N1) on GPIO @ref MODBUS_UART_TX /
- * @ref MODBUS_UART_RX, creates the UART mutex, and sets the RS-485
- * transceiver to receive mode via @ref gpio_set_rs485_direction(@c false).
+ * @ref MODBUS_UART_RX and sets the RS-485 transceiver to receive mode via
+ * @ref gpio_set_rs485_direction(@c false).  It creates **no** mutex — this
+ * driver has no internal locking at all (gh#49; the claim was removed here
+ * on 2026-09-07).
  *
- * @warning Must be called once before any transaction function.  The
- *          internal DE/RE init also runs here; do NOT call
- *          @ref gpio_rs485_init separately.
+ * @warning Must be called before any transaction function.  The internal
+ *          DE/RE init also runs here; do NOT call @ref gpio_rs485_init
+ *          separately.
+ * @note    Deliberately called **twice** in this firmware — once at boot
+ *          (`main.cpp`) and again by T5 at task entry, which reconfirms the
+ *          driver state.  It is idempotent for the UART: it deletes and
+ *          reinstalls the driver.  That delete is why a second concurrent
+ *          caller would be unsafe even beyond the locking question — a
+ *          transaction in flight during a re-init is a use-after-delete.
  * @see    modbus_read_holding_registers(), modbus_write_multiple_registers().
  */
 void modbus_init(void);

@@ -706,13 +706,24 @@ extern "C" void app_main(void)
     }
 
     /* alpha.2.6 — Modbus RTU master tickle. Initialise UART1 + RS-485
-     * direction control. The heartbeat task uses the bus to poll the
-     * FG6485A (slave 1, via LIB-FG since alpha.2.8) AND the S200 wind
-     * sensor (slave 44, via LIB-S200 since alpha.2.7).
+     * direction control.
      *
-     * Init only here; the actual polls move into heartbeat_task below. */
+     * CORRECTED 2026-09-07 (gh#49): this comment used to say "the heartbeat
+     * task uses the bus to poll the FG6485A AND the S200". That has been
+     * false since **alpha.6.8**, which removed those polls from the
+     * heartbeat — see the note at the top of heartbeat_task() below. The
+     * only bus user in this firmware is **T5 (sensor_poll)**.
+     *
+     * This init is deliberately duplicated: T5 calls modbus_init() again at
+     * its own task entry to reconfirm driver state (see the T5 spawn comment
+     * further down). modbus_init() is idempotent for the UART — but note it
+     * deletes and reinstalls the driver, so it must never run while another
+     * task has a transaction in flight. Today nothing else touches the bus,
+     * which is what makes that safe. The driver has NO internal locking;
+     * see drivers/modBus/src/modbus_rtu.h "Thread safety" and the plan in
+     * design/addModbusMutex.md. */
     modbus_init();
-    ESP_LOGI(TAG, "modbus_init() done — heartbeat will poll FG6485A@1 + S200@44");
+    ESP_LOGI(TAG, "modbus_init() done — bus is T5-owned (sensor_poll)");
 
     /* alpha.2.9 — DS1307 RTC tickle. Probe the chip at 0x68 (already
      * confirmed present by the alpha.2.4 i2c_scan), report the CH bit
