@@ -51,6 +51,7 @@
   #include "driver/uart.h"
   #include "esp_timer.h"
   #include "esp_rom_sys.h"           /* esp_rom_delay_us */
+  #include "esp_idf_version.h"        /* ESP_IDF_VERSION_VAL — see the UART_SCLK guard */
   #include "freertos/FreeRTOS.h"
   #include "freertos/task.h"          /* pdMS_TO_TICKS, vTaskDelay (not used; ticks only) */
   #include "freertos/semphr.h"        /* bus mutex (gh#49) */
@@ -254,7 +255,16 @@ void modbus_init(void)
     cfg.parity     = UART_PARITY_DISABLE;
     cfg.stop_bits  = UART_STOP_BITS_1;
     cfg.flow_ctrl  = UART_HW_FLOWCTRL_DISABLE;
+    /* UART_SCLK_DEFAULT is IDF 5.0+. The Arduino-framework driver envs
+     * (arduino-esp32 2.x -> IDF 4.4) only have UART_SCLK_APB, which is what
+     * DEFAULT resolves to on the ESP32-S3 anyway — so this guard changes
+     * nothing at runtime for the firmware (IDF 5.5 takes the first branch)
+     * and unblocks every Arduino-framework env that compiles this file. */
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
     cfg.source_clk = UART_SCLK_DEFAULT;
+#else
+    cfg.source_clk = UART_SCLK_APB;
+#endif
 
     (void)uart_driver_install(MODBUS_UART_PORT,
                               MODBUS_RX_BUF, MODBUS_TX_BUF,

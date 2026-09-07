@@ -18,6 +18,18 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ---
 
+## 2026-09-07 — `lib_deps = file://../x` compiles a stale COPY; editing the source changes nothing
+
+**Problem:** after fixing `modbus_rtu.cpp`, three driver envs built cleanly and `FG6485A -e lolin_s3` still failed — with the *original* error, on a file I had just corrected.
+
+**Root cause:** the path in the error was the giveaway: `.pio/libdeps/lolin_s3/modbus_rtu/src/modbus_rtu.cpp`. PlatformIO resolves `lib_deps = file://../modBus` by **copying** the library into the consuming project's `.pio/libdeps/`, and does not reliably re-copy when the source changes. The build was compiling a snapshot taken before the edit — confirmed by grepping the cached copy for the new code and finding none.
+
+**Fix:** `rm -rf <project>/.pio/libdeps` and rebuild. **Read the path in the error message**: a `.pio/libdeps/` prefix means you are not looking at the file you edited.
+
+**Where it hides:** the driver projects that consume `modBus` this way — `drivers/FG6485A`, `drivers/s200`. The firmware does *not* have this problem: it uses component proxies (`firmware/components/*/CMakeLists.txt`) that reference `drivers/*/src/*.cpp` by path, so it always compiles the real file.
+
+---
+
 ## 2026-09-07 — the Modbus bus does not survive boot: `main.cpp`'s `modbus_init()` is dead by the time T5 starts
 
 **Problem:** a diagnostic task placed early in `app_main` (right after T5 is spawned, t ≈ 1.8 s) got **1000/1000 Modbus timeouts** — not one response from either sensor. The same firmware, same boot, moments later: T5 polled both sensors perfectly (`T=29 °C RH=60 % ws=2.3 m/s`). The sensors were fine; the bus was not.
@@ -34,7 +46,7 @@ This is what the comment at `main.cpp:1025` means by *"T5's own modbus_init **re
 
 ---
 
-## 2026-09-07 — the modBus hardware test suite has been unbuildable since the ESP-IDF migration
+## 2026-09-07 — the modBus hardware test suite has been unbuildable since the ESP-IDF migration [RESOLVED same day]
 
 **Problem:** `pio test -e lolin_s3_loopback -d drivers/modBus` — the driver's whole hardware suite, HW-MB-001…011 — fails to compile:
 
@@ -56,7 +68,21 @@ cp /tmp/mine.cpp drivers/modBus/src/modbus_rtu.cpp
 
 **The wider trap:** `drivers/*/` each carry their own `platformio.ini` with their own platform/framework, independent of `firmware/platformio.ini`. A driver source file shared between them can compile in one and not the other, and the divergence is silent until someone runs the neglected env. **Do not read a green `pio test -e native` as evidence the driver builds everywhere** — the native env also `#define`s `NATIVE_TEST`, which stubs out real behaviour (for gh#49 it shims the bus lock to a no-op, so the 12 host tests say nothing about the mutex).
 
-**Fix:** unresolved as of 2026-09-07; options recorded in `design/addModbusMutex.md` §4.3a. Not fixed inline because changing production code to satisfy a test env, or re-platforming the env, are both bigger decisions than the change that surfaced it.
+**Fix — a 4-line version guard, and my first cost estimate was badly wrong.** I judged this "a half-day of migration work" and recommended re-platforming the env, on the assumption the Arduino/ESP-IDF divergence would cascade. **It does not: `UART_SCLK_DEFAULT` is the ONLY error.** arduino-esp32 *is* ESP-IDF underneath, so every other IDF call in the driver (`uart_driver_install`, `uart_read_bytes`, `esp_timer_get_time`, `esp_rom_delay_us`…) resolves fine. Only that one symbol is IDF 5.0+; the Arduino platform (arduino-esp32 2.0.9 -> IDF 4.4) has `UART_SCLK_APB`, which is what `DEFAULT` resolves to on the S3 anyway:
+
+```c
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+    cfg.source_clk = UART_SCLK_DEFAULT;
+#else
+    cfg.source_clk = UART_SCLK_APB;
+#endif
+```
+
+**Lesson: count the errors before estimating the fix.** One `pio run` would have replaced the whole options table I wrote.
+
+**Blast radius was wider than the loopback suite** — every Arduino-framework env compiling this file was dead: `modBus -e lolin_s3_loopback` (HW-MB-001…011), `modBus -e lolin_s3`, `FG6485A -e lolin_s3`, `s200 -e lolin_s3`. All four build after the guard; firmware flash size is byte-identical (1 378 949) and the 12 host tests still pass.
+
+**Still cannot RUN**, only build: HW-MB-001…012 need three jumper wires (GPIO 17->38, 21->18, 8->16) on a board that is not the assembled dev unit.
 
 **Where it lives:** `drivers/modBus/platformio.ini` `[env:lolin_s3_loopback]`; `drivers/modBus/src/modbus_rtu.cpp:257`.
 

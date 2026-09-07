@@ -106,7 +106,7 @@ Extend `drivers/modBus/test/test_hw_loopback/` with a concurrency case: two task
 
 The test is written (`HW-MB-012`, `test_concurrent_callers_do_not_corrupt_each_other`) but **has never been executed**. Neither obstacle is caused by gh#49:
 
-**1. The loopback env does not build — and has not for some time.**
+**1. The loopback env does not build — and has not for some time.** *(RESOLVED 2026-09-07: a 4-line version guard, not the half-day re-platform estimated below. Only `UART_SCLK_DEFAULT` was wrong — see the options table's correction at the end of this sub-section.)*
 
 ```
 src/modbus_rtu.cpp:257:22: error: 'UART_SCLK_DEFAULT' was not declared in this scope
@@ -114,13 +114,25 @@ src/modbus_rtu.cpp:257:22: error: 'UART_SCLK_DEFAULT' was not declared in this s
 
 `[env:lolin_s3_loopback]` is `platform = espressif32` (**unpinned**) with `framework = arduino`, whose bundled ESP-IDF predates `UART_SCLK_DEFAULT`. The driver moved to pure ESP-IDF in the v2.0.0 migration; this Arduino-framework test env was left behind. **Verified by building the env against `HEAD`'s `modbus_rtu.cpp` with all gh#49 changes removed — identical failure.** So the whole hardware suite (HW-MB-001…011) has been unbuildable since the migration, not just the new case.
 
-Options, none yet chosen:
+Options as originally assessed — **superseded**, see the correction below:
 
 | | Fix | Cost / doubt |
 |---|---|---|
 | a | Pin the env to `espressif32@6.12.0` | Cheapest, but Arduino-framework 6.x ships IDF 4.4, which likely still lacks the symbol — may not work |
 | b | Swap `UART_SCLK_DEFAULT` for a symbol both frameworks have | Changes **production** code to satisfy a test env; least attractive |
 | c | Convert the env to `framework = espidf` to match the driver | The real fix, and the largest |
+
+> **Correction, same day.** The options table above rests on an assumption I never checked: that the Arduino/ESP-IDF divergence would cascade. It does not — `UART_SCLK_DEFAULT` is the **only** error, because arduino-esp32 is ESP-IDF underneath and every other IDF call in the driver resolves. The fix is option (b) done safely, as a version guard that leaves the firmware byte-identical (flash 1 378 949 either way, 12/12 host tests):
+>
+> ```c
+> #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+>     cfg.source_clk = UART_SCLK_DEFAULT;
+> #else
+>     cfg.source_clk = UART_SCLK_APB;
+> #endif
+> ```
+>
+> It unblocked **four** dead envs, not one: `modBus -e lolin_s3_loopback`, `modBus -e lolin_s3`, `FG6485A -e lolin_s3`, `s200 -e lolin_s3`. Option (c) is no longer worth doing for this reason — though `test_t2_relay` remains disabled on its own (Arduino Unity) merits.
 
 **2. No board to run it on.** The suite needs three jumper wires (GPIO 17→38, 21→18, 8→16) on a board that is not the live controller. FDA4 is the only unit in service, fully assembled and jumper-free; 2344 is stowed. Fitting jumpers to FDA4 means taking the greenhouse's only controller out of service.
 
