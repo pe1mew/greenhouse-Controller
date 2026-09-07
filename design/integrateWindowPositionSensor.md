@@ -77,6 +77,31 @@ Requirements §6 originally wrote 0.58 %/s, which is production's *nominal* spee
 ### 3.4 Consequence for the read
 
 A single-register read of `30001` costs ~27 ms on the wire; the contract's recommended 15-register coherent snapshot costs ~52 ms. At 6.7 Hz the fast path must be the **single register** (18 % bus utilisation while travelling, 2 % on production). Keep the full-map read as a **low-rate diagnostic**, not the control path.
+### 3.5 Measure the traverse, do not trust the typed value *(operator proposal 2026-09-07 — adopted)*
+
+Everything in §3.1–3.3 derives from `travel_m3`, which today is a number a human types. That makes the typed value a **single point of failure for three derived constants at once** — mistype it and the poll interval, the sensor's measurement window and the plausibility threshold are all silently wrong, with no symptom except degraded positioning.
+
+**Measure it during commissioning instead.** Three reasons it is better than deriving from configuration:
+
+1. **It is free.** The Route B teach (contract §6.2) already drives the leaf to each end stop in turn. Timing those traverses is a by-product of motion that is happening anyway — one operator action, two results.
+2. **It measures what configuration cannot express.** `travel_ms` is a **single value used for both directions** (`relay_controller.cpp:439` close, `:500` open), yet requirements §1.4 item 3 states the mechanism *is* asymmetric: the motor lifts the flap against gravity to close and pays it out to open, so rope tension, backlash and slack all differ by direction. The real open and close times probably differ, and no amount of careful typing captures that.
+3. **It needs no working wiper.** Time between **end-switch transitions** (bit 3), not between position readings — so the rate is available before the position calibration is itself trusted.
+
+**Design:**
+
+- Configured `travel_m3` becomes the **seed and the sanity bound**, not the source of truth.
+- The commissioning teach measures actual traverse time **per direction**, from one bit-3 assertion to the next.
+- **Accept only clean, full stop-to-stop traverses.** Reject any interrupted by a wind override, a reversal, a motor alarm, or any fault raised during the run.
+- **Sanity-band against the configured value** (propose ±50 %). Outside the band, reject and report: a 3× discrepancy means something is wrong with the mechanism or the wiring, not that the configuration is merely stale.
+- Store in NVS — **new keys, so a minor version bump** when this lands.
+- **Log which value is in use at boot**, measured or configured. "Am I running on a measurement or a guess?" must never be a guess itself.
+
+**Using two numbers where the firmware wants one.** T2 still has a single `travel_ms` per channel, and changing that is a control-model change — Phase 5 territory. For this cycle: measure both directions, **derive the constants from the shorter** (conservative: a shorter traverse means a faster rate, so a tighter poll interval), and **log both**. If the asymmetry turns out to be material, that is a finding worth having before anyone designs per-direction travel configuration.
+
+**The risk this introduces, and it is real:** a bad measurement is *silent*, whereas a typed value at least the operator knows they typed. If an obstruction slows a traverse during commissioning, a wrong rate gets baked in. The sanity band, the clean-traverse requirement, and logging both values are the defences — the last one matters most, because it lets a later reader spot the discrepancy without re-running anything.
+
+**Later, optionally:** the device already refreshes `30013`/`30014` at *every* stop arrival for drift detection (contract §6.5). The same principle would let the rate be refined passively on every full traverse. Start with the explicit commissioning measurement; passive refinement is a small addition once the measured path is trusted.
+
 
 ---
 
@@ -105,6 +130,7 @@ Confirm the device before writing code against it. Per contract §9: read `30007
 - Teach with **movement** (contract §6.2) — never arm with the leaf resting at a stop it has not moved to since power-on.
 - **Our driver has no FC06.** Arm and abort the teach with **FC16, quantity 1**, to `0x0006`; `FR-MB28` rejects only quantity 0.
 - Write `40004` = the tape-measured **sensor-to-sensor** distance, not the hard stops.
+- **Measure the traverse time per direction** while the teach drives each stop (§3.5). Record both, and record which one the derived constants ended up using.
 - Run both installation checks and **record the answers** — they change what the firmware can rely on:
   - **Sensor-zone** (contract §5.3): drive fully closed, confirm bit 3 stays set. If it clears, FR-WP07 is not met on this rig and "bit 3 clear" must be read as *not proven at a stop*, never *proven away from one*.
   - **Electrical headroom** (contract §7.3): with the window fully closed and fully open, `30005` must not sit near 0 or 1023. If it does, **bit 6 is inert** and a shorted wiper will read as a perfectly closed window.
@@ -254,7 +280,9 @@ Note what production logging unlocks that the rig cannot: a **real** 171 s trave
 
 | Risk | Mitigation |
 |---|---|
-| A rate constant gets hardcoded to a production value | §3's derived rules, with the computed values logged at boot |
+| A rate constant gets hardcoded to a production value | §3's derived rules, with the computed values logged at boot. **Largely retired by §3.5**: the rate is measured at commissioning rather than typed |
+| A *bad* traverse measurement is baked in silently | §3.5's three defences: clean-traverse-only, ±50 % sanity band against configured `travel_m3`, and both values logged so a discrepancy is visible after the fact |
+| Open and close traverse times differ materially | Expected — requirements §1.4 says the mechanism is asymmetric. Measured per direction; constants derive from the shorter. Acting on the asymmetry is Phase 5 |
 | Bit 6 inert on this installation (no electrical headroom) | Phase 0 records it; if inert, a shorted wiper reads as *closed* and §12.4 rule 1 is the only defence |
 | Position polling disturbs climate averaging | §4 keeps T5 untouched — that is the whole reason for a separate task |
 | The rig's speed masks a slow-turnaround problem | AT-WP05's 24 h coexistence run; the contract's measured 4.08 ms response is the reference |
