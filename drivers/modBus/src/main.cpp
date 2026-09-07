@@ -55,6 +55,7 @@ static const char *status_str(modbus_status_t s)
         case MODBUS_ERR_EXCEPTION: return "MODBUS_ERR_EXCEPTION";
         case MODBUS_ERR_FRAMING:   return "MODBUS_ERR_FRAMING";
         case MODBUS_ERR_PARAM:     return "MODBUS_ERR_PARAM";
+        case MODBUS_ERR_BUSY:      return "MODBUS_ERR_BUSY";   /* gh#49 */
         default:                   return "MODBUS_ERR_UNKNOWN";
     }
 }

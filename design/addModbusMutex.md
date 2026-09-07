@@ -5,7 +5,7 @@
 | Document | Implementation plan |
 | Issue | [gh#49](https://github.com/pe1mew/greenhouse-Controller/issues/49) — `modbus_rtu.h` documents a UART mutex that `modbus_rtu.cpp` never creates |
 | Date | 2026-09-07 |
-| Status | **Phase 1 in progress**; phases 2–4 not started |
+| Status | **Phases 1–2 complete** (code written, builds + host tests green, **not yet run on hardware**). Phase 3 (concurrency test) and Phase 4 (policy record) not started |
 | Scope | `drivers/modBus/`, one comment in `firmware/src/main.cpp`, one test in `drivers/modBus/test/` |
 
 ---
@@ -110,9 +110,9 @@ Record in the header and in `memory/architecture.md` that all bus I/O stays in T
 
 ---
 
-## 5. Open decision — the lock-timeout return code
+## 5. Decision taken — the lock-timeout return code
 
-**Recommendation: add `MODBUS_ERR_BUSY`.**
+**`MODBUS_ERR_BUSY` added** (operator decision, 2026-09-07).
 
 Reusing the existing `MODBUS_ERR_TIMEOUT` conflates *"another task holds the bus"* with *"the slave did not answer"*. T5 raises a sensor fault after **two consecutive failures**, so contention would surface as a **sensor fault** — sending an operator to hunt a sensor that is perfectly healthy. The diagnostic cost outweighs the small API churn; callers overwhelmingly test `!= MODBUS_OK`.
 

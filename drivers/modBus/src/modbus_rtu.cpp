@@ -53,6 +53,7 @@
   #include "esp_rom_sys.h"           /* esp_rom_delay_us */
   #include "freertos/FreeRTOS.h"
   #include "freertos/task.h"          /* pdMS_TO_TICKS, vTaskDelay (not used; ticks only) */
+  #include "freertos/semphr.h"        /* bus mutex (gh#49) */
 #endif
 
 /* ---------------------------------------------------------------------------
@@ -175,11 +176,70 @@ static uint16_t modbus_crc16(const uint8_t *buf, uint8_t len)
 static uint32_t s_frame_end_us = 0u;
 
 /* ---------------------------------------------------------------------------
+ * Bus lock (gh#49)
+ *
+ * Serialises whole transactions.  The critical section must span from the
+ * inter-frame-gap guard through the last response byte, because a transaction
+ * touches three shared resources and interleaving corrupts all three:
+ *
+ *   1. the DE/RE direction GPIO;
+ *   2. s_frame_end_us, read-modify-written to enforce RTU t3.5 silence;
+ *   3. the single UART RX FIFO — two readers steal each other's bytes, and
+ *      the receive path drains exactly 8 half-duplex echo bytes assuming the
+ *      FIFO holds only its own echo.
+ *
+ * Worst-case hold ≈ 215 ms: IFG 4 ms + TX 8 bytes ≈ 8.3 ms + 2 ms DE guard +
+ * 1.5 ms settle + MODBUS_TIMEOUT_MS 200 ms.  MODBUS_LOCK_TIMEOUT_MS is sized
+ * at roughly twice that, so a caller that times out waiting has genuinely hit
+ * contention rather than one slow-but-normal transaction.
+ *
+ * xSemaphoreCreateMutex (not a binary semaphore) for priority inheritance.
+ *
+ * s_bus_mtx == NULL means "no lock available" — a host (NATIVE_TEST) build,
+ * or a call before modbus_init().  Both proceed unlocked, preserving the
+ * pre-gh#49 behaviour rather than introducing a new failure mode.
+ *
+ * NOTE this fixes correctness, NOT permission.  Blocking up to
+ * MODBUS_TIMEOUT_MS inside a High-priority WDT-subscribed task (T2, T3) could
+ * still delay a wind-override response, so bus I/O stays in T5 by policy.
+ * See modbus_rtu.h "Thread safety" and design/addModbusMutex.md.
+ * --------------------------------------------------------------------------- */
+#ifndef NATIVE_TEST
+static SemaphoreHandle_t s_bus_mtx = NULL;
+
+static inline bool bus_lock(void)
+{
+    if (s_bus_mtx == NULL) return true;   /* pre-init: behave as before */
+    return xSemaphoreTake(s_bus_mtx,
+                          pdMS_TO_TICKS(MODBUS_LOCK_TIMEOUT_MS)) == pdTRUE;
+}
+
+static inline void bus_unlock(void)
+{
+    if (s_bus_mtx != NULL) (void)xSemaphoreGive(s_bus_mtx);
+}
+#else
+/* Host build: no FreeRTOS, and the unit tests are single-threaded. */
+static inline bool bus_lock(void)   { return true; }
+static inline void bus_unlock(void) { }
+#endif
+
+/* ---------------------------------------------------------------------------
  * Public API
  * --------------------------------------------------------------------------- */
 
 void modbus_init(void)
 {
+#ifndef NATIVE_TEST
+    /* Create the bus mutex ONCE.  modbus_init() is deliberately called twice
+     * in this firmware — at boot from main.cpp and again by T5 at task entry
+     * — so an unconditional create here would orphan the first handle and
+     * strand anything blocked on it forever. */
+    if (s_bus_mtx == NULL) {
+        s_bus_mtx = xSemaphoreCreateMutex();
+    }
+#endif
+
     gpio_rs485_init();                 /* configure DE/RE pin as output, LOW */
 
 #ifndef NATIVE_TEST
@@ -354,10 +414,12 @@ static modbus_status_t modbus_transaction(uint8_t  device_addr,
     return MODBUS_OK;
 }
 
-modbus_status_t modbus_write_multiple_registers(uint8_t         device_addr,
-                                                 uint16_t        start_reg,
-                                                 uint8_t         count,
-                                                 const uint16_t *values)
+/* Body of FC16.  Runs with the bus lock already held — see the public
+ * wrapper below.  Never call this directly. */
+static modbus_status_t write_multiple_locked(uint8_t         device_addr,
+                                             uint16_t        start_reg,
+                                             uint8_t         count,
+                                             const uint16_t *values)
 {
     if (device_addr == 0) {
         return MODBUS_ERR_PARAM;
@@ -477,12 +539,25 @@ modbus_status_t modbus_write_multiple_registers(uint8_t         device_addr,
     return MODBUS_OK;
 }
 
+/* ---------------------------------------------------------------------------
+ * Public entry points (gh#49)
+ *
+ * Each is a thin take -> call -> give wrapper around a body that runs with the
+ * lock held.  The bodies contain multiple returns (parameter validation, the
+ * receive-loop timeout, CRC and framing failures); doing the unlock in exactly
+ * one place per function makes a missed release structurally impossible rather
+ * than a review obligation.  A missed release would wedge the bus permanently
+ * and present as every sensor failing at once.
+ * --------------------------------------------------------------------------- */
 modbus_status_t modbus_read_holding_registers(uint8_t  device_addr,
                                                uint16_t start_reg,
                                                uint8_t  count,
                                                uint16_t *out)
 {
-    return modbus_transaction(device_addr, 0x03, start_reg, count, out);
+    if (!bus_lock()) return MODBUS_ERR_BUSY;
+    modbus_status_t s = modbus_transaction(device_addr, 0x03, start_reg, count, out);
+    bus_unlock();
+    return s;
 }
 
 modbus_status_t modbus_read_input_registers(uint8_t  device_addr,
@@ -490,5 +565,19 @@ modbus_status_t modbus_read_input_registers(uint8_t  device_addr,
                                              uint8_t  count,
                                              uint16_t *out)
 {
-    return modbus_transaction(device_addr, 0x04, start_reg, count, out);
+    if (!bus_lock()) return MODBUS_ERR_BUSY;
+    modbus_status_t s = modbus_transaction(device_addr, 0x04, start_reg, count, out);
+    bus_unlock();
+    return s;
+}
+
+modbus_status_t modbus_write_multiple_registers(uint8_t         device_addr,
+                                                 uint16_t        start_reg,
+                                                 uint8_t         count,
+                                                 const uint16_t *values)
+{
+    if (!bus_lock()) return MODBUS_ERR_BUSY;
+    modbus_status_t s = write_multiple_locked(device_addr, start_reg, count, values);
+    bus_unlock();
+    return s;
 }

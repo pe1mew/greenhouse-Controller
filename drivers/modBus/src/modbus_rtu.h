@@ -31,18 +31,26 @@
  *   - @ref modbus_read_input_registers       FC04 read.
  *   - @ref modbus_write_multiple_registers   FC16 write.
  *
- * ## Thread safety — NOT re-entrant.  One caller only. (gh#49)
- *   This driver performs **no internal locking of any kind**.  Exactly one
- *   task may use it.  In this firmware that task is **T5 (sensor_poll)**, by
- *   convention rather than by enforcement — see memory/architecture.md.
+ * ## Thread safety — locked, but still one caller by policy (gh#49)
+ *   Since 2026-09-07 the driver **does** serialise whole transactions with a
+ *   FreeRTOS mutex created in @ref modbus_init.  Concurrent calls are now
+ *   safe for **correctness**: the loser waits up to
+ *   @ref MODBUS_LOCK_TIMEOUT_MS and then gets @ref MODBUS_ERR_BUSY with
+ *   nothing put on the wire.
  *
- *   (Until 2026-09-07 this block claimed the driver "serialises wire access
- *   internally with a UART mutex".  It never did; no such mutex was ever
- *   created.  The claim is removed rather than made true because the
- *   single-owner rule below stands on its own grounds — see the plan in
- *   design/addModbusMutex.md for adding a lock.)
+ *   **That is not permission to call it from anywhere.**  A transaction can
+ *   hold the bus for ~215 ms (@ref MODBUS_TIMEOUT_MS dominates), and blocking
+ *   that long inside a High-priority, WDT-subscribed task — T2
+ *   (relay_controller) or T3 (safety_monitor) — could delay a wind-override
+ *   response.  **All bus I/O stays in T5 (sensor_poll)**, or in the dedicated
+ *   bus task of design/refactorSensorConfiguration.md §2.2.  The lock is a
+ *   safety net beneath that rule, not a replacement for it.
  *
- *   A second concurrent caller corrupts three shared resources, not one:
+ *   (Historical: before 2026-09-07 this block claimed a UART mutex that had
+ *   never been implemented.  gh#49 removed the false claim, then made it
+ *   true.  Plan and rationale: design/addModbusMutex.md.)
+ *
+ *   What the lock protects — three shared resources, not one:
  *     1. the DE/RE direction GPIO — asserting DE mid-response garbles the
  *        wire AND blinds the in-flight caller;
  *     2. `s_frame_end_us`, the inter-frame-gap timestamp, which is
@@ -52,12 +60,6 @@
  *        bytes on the assumption that the FIFO holds only its own echo.
  *   The visible symptom of (3) is a CRC or framing error blamed on the
  *   sensor, which is why this is worth stating rather than assuming.
- *
- *   A lock would fix correctness but NOT permission: MODBUS_TIMEOUT_MS is
- *   200 ms, and blocking that long inside a High-priority, WDT-subscribed
- *   task (T2 relay_controller, T3 safety_monitor) could delay a wind-override
- *   response.  Bus I/O belongs in T5 — or in the dedicated bus task of
- *   design/refactorSensorConfiguration.md §2.2 — for timing reasons too.
  *
  *   Per-call output buffers are owned by the calling task only.
  *
@@ -91,6 +93,17 @@
 /** @brief Maximum time to wait for a complete response frame (ms). */
 #define MODBUS_TIMEOUT_MS   200
 
+/**
+ * @brief Maximum time to wait for the bus lock before giving up (ms).
+ *
+ * A transaction holds the lock for at most ~215 ms (inter-frame gap 4 ms +
+ * 8-byte TX ~8.3 ms + 2 ms DE guard + 1.5 ms settle + @ref MODBUS_TIMEOUT_MS).
+ * 500 ms is roughly twice that, so a caller that gives up has hit genuine
+ * contention rather than one slow-but-legitimate transaction ahead of it.
+ * Exceeding it yields @ref MODBUS_ERR_BUSY and puts nothing on the wire.
+ */
+#define MODBUS_LOCK_TIMEOUT_MS  500u
+
 /** @} */ /* end modbus_pins */
 
 /* ---------------------------------------------------------------------------
@@ -107,7 +120,21 @@ typedef enum {
     MODBUS_ERR_CRC,         /**< Response CRC does not match computed value. */
     MODBUS_ERR_EXCEPTION,   /**< Device returned a Modbus exception response. */
     MODBUS_ERR_FRAMING,     /**< Invalid response length or function code mismatch. */
-    MODBUS_ERR_PARAM        /**< Caller supplied an invalid parameter. */
+    MODBUS_ERR_PARAM,       /**< Caller supplied an invalid parameter. */
+    /**
+     * @brief Another task held the bus for longer than
+     *        @ref MODBUS_LOCK_TIMEOUT_MS; nothing was put on the wire.
+     *
+     * Deliberately distinct from @ref MODBUS_ERR_TIMEOUT (gh#49). Folding the
+     * two together would make bus contention indistinguishable from "the slave
+     * did not answer" — and T5 raises a **sensor fault** after two consecutive
+     * read failures, so contention would send an operator hunting a sensor that
+     * is perfectly healthy. Treat BUSY as a scheduling problem, TIMEOUT as a
+     * device problem.
+     *
+     * Should not occur while the single-caller policy below holds.
+     */
+    MODBUS_ERR_BUSY
 } modbus_status_t;
 
 /** @} */ /* end modbus_status */
@@ -121,10 +148,13 @@ typedef enum {
  * @brief Initialise the Modbus RTU driver.
  *
  * Configures UART1 at @ref MODBUS_BAUD (8N1) on GPIO @ref MODBUS_UART_TX /
- * @ref MODBUS_UART_RX and sets the RS-485 transceiver to receive mode via
- * @ref gpio_set_rs485_direction(@c false).  It creates **no** mutex — this
- * driver has no internal locking at all (gh#49; the claim was removed here
- * on 2026-09-07).
+ * @ref MODBUS_UART_RX, creates the bus mutex, and sets the RS-485 transceiver
+ * to receive mode via @ref gpio_set_rs485_direction(@c false).
+ *
+ * The mutex is created **only if it does not already exist** — see the @note
+ * below on the deliberate double call.  If creation fails (heap exhaustion at
+ * boot) the driver falls back to running unlocked, which is exactly the
+ * pre-gh#49 behaviour and is safe under the single-caller policy.
  *
  * @warning Must be called before any transaction function.  The internal
  *          DE/RE init also runs here; do NOT call @ref gpio_rs485_init
