@@ -5,7 +5,7 @@
 | Document | Implementation plan |
 | Issue | [gh#49](https://github.com/pe1mew/greenhouse-Controller/issues/49) — `modbus_rtu.h` documents a UART mutex that `modbus_rtu.cpp` never creates |
 | Date | 2026-09-07 |
-| Status | **Phases 1–3 complete.** The lock is **verified on hardware** — FDA4, 2026-09-07, fail-first protocol observed (§4.3c). Phase 4 not started |
+| Status | **COMPLETE — all four phases.** The lock is verified on hardware (FDA4, 2026-09-07, fail-first protocol observed, §4.3c) and the single-owner policy is recorded in `modbus_rtu.h` and `memory/architecture.md`. gh#49 closed |
 | Scope | `drivers/modBus/`, one comment in `firmware/src/main.cpp`, one test in `drivers/modBus/test/` |
 
 ---
@@ -258,7 +258,10 @@ This is exactly what `main.cpp:1025` means by *"T5's own modbus_init **reconfirm
 
 The probe exercises **two** callers on a **quiet** bus with **cooperative** slaves. It does not cover malformed or adversarial frames, three or more callers, or a slave that answers late — that is what `HW-MB-012` and the §4.3a env work are for. The lock is verified, not exhaustively characterised.
 
-### Phase 4 — keep single-owner as policy
+### Phase 4 — keep single-owner as policy — **DONE 2026-09-07**
+
+Recorded in two places: `modbus_rtu.h`'s "Thread safety" block ("locked, but still one caller by policy") and the T5 row of `memory/architecture.md`. Both state the reason is **timing, not correctness** — the lock removes the corruption hazard, but ~215 ms of blocking must stay out of T2/T3 regardless.
+
 
 The mutex buys **correctness, not permission**. A 200 ms `MODBUS_TIMEOUT_MS` inside High-priority, WDT-subscribed T2 or T3 could still delay a wind-override response.
 
