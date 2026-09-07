@@ -98,7 +98,13 @@ Everything in §3.1–3.3 derives from `travel_m3`, which today is a number a hu
 
 **Using two numbers where the firmware wants one.** T2 still has a single `travel_ms` per channel, and changing that is a control-model change — Phase 5 territory. For this cycle: measure both directions, **derive the constants from the shorter** (conservative: a shorter traverse means a faster rate, so a tighter poll interval), and **log both**. If the asymmetry turns out to be material, that is a finding worth having before anyone designs per-direction travel configuration.
 
-**The risk this introduces, and it is real:** a bad measurement is *silent*, whereas a typed value at least the operator knows they typed. If an obstruction slows a traverse during commissioning, a wrong rate gets baked in. The sanity band, the clean-traverse requirement, and logging both values are the defences — the last one matters most, because it lets a later reader spot the discrepancy without re-running anything.
+**It is a manual GUI action, and that is the primary safeguard** (operator, 2026-09-07). The measurement is initiated by the operator from the web GUI — it never runs in the background, so a rate can never change without someone having asked for it. An earlier draft of this section called a bad measurement "silent"; that was wrong.
+
+**What operator presence does not by itself catch:** a traverse that completes *normally but wrongly*. A slightly binding window taking 18 s instead of 15 s looks like a clean run, sits inside the ±50 % band, and would be accepted. The operator witnessed it without being in a position to judge it.
+
+> **So the GUI must show the result and require explicit acceptance**, not merely start the run. Display the measured open and close times, the implied rate, and the configured `travel_m3` beside them; the operator confirms or rejects. That converts presence into an actual check — the person who just watched the window move is the only party who knows whether it moved *freely*.
+
+Ranked defences, strongest first: **operator acceptance of a displayed result**; clean-traverse-only (reject anything interrupted by a wind override, reversal or fault); the ±50 % band as a machine guard rail behind human judgement; and both values logged, so a later reader can spot a discrepancy without re-running anything.
 
 **Later, optionally:** the device already refreshes `30013`/`30014` at *every* stop arrival for drift detection (contract §6.5). The same principle would let the rate be refined passively on every full traverse. Start with the explicit commissioning measurement; passive refinement is a small addition once the measured path is trusted.
 
@@ -123,7 +129,10 @@ Requirements §3 left "who polls at 1 Hz" explicitly unsolved. The rig's 150 ms 
 
 ## 5. Phases
 
-### Phase 0 — bring-up and commissioning *(no firmware)*
+### Phase 0 — bring-up and commissioning *(no firmware — bench tooling only)*
+
+> **Sequencing note.** §3.5's traverse measurement is a **GUI action**, which is firmware work — a web route plus UI. It cannot land here: you cannot build a GUI for a device the firmware cannot yet talk to. Phase 0 stays a manual bench activity to prove the device works at all; **GUI-driven commissioning (teach, traverse measurement, accept/reject) lands with the GUI work in §6.3**, once the driver and position task exist. Until then no measured rate exists and the configured `travel_m3` is used — exactly the fallback §3.5 specifies.
+
 
 Confirm the device before writing code against it. Per contract §9: read `30007` (**refuse build type `0x81`** — a bench build with a deliberate hang hook), read the holdings, then teach.
 
@@ -249,7 +258,9 @@ Using bit 3 rather than "position == 0" for the terminal states is the right cal
 
 ### 6.3 Web GUI
 
-Show the opening percentage per §9.1, with the sensor fault surfaced alongside the existing T/RH and wind faults (FR-WP19). Farmer-visible, so `boerHandleiding` syncs in the same changeset.
+Show the opening percentage per §6.1, with the sensor fault surfaced alongside the existing T/RH and wind faults (FR-WP19). Farmer-visible, so `boerHandleiding` syncs in the same changeset.
+
+**Also hosts commissioning** (admin-only): arm/abort the teach, watch bit 5, and run the §3.5 traverse measurement — **displaying measured open and close times against the configured `travel_m3` for explicit acceptance**. This is the screen that makes the measurement trustworthy rather than merely automatic.
 
 ### 6.4 Remote status site
 
@@ -281,7 +292,7 @@ Note what production logging unlocks that the rig cannot: a **real** 171 s trave
 | Risk | Mitigation |
 |---|---|
 | A rate constant gets hardcoded to a production value | §3's derived rules, with the computed values logged at boot. **Largely retired by §3.5**: the rate is measured at commissioning rather than typed |
-| A *bad* traverse measurement is baked in silently | §3.5's three defences: clean-traverse-only, ±50 % sanity band against configured `travel_m3`, and both values logged so a discrepancy is visible after the fact |
+| A traverse that completes *normally but wrongly* (slight binding) is accepted | It is a manual GUI action, so it never happens unnoticed — but presence alone cannot judge a plausible-looking run. **The GUI displays the result for explicit operator acceptance** (§3.5), behind clean-traverse-only, the ±50 % band, and both values logged |
 | Open and close traverse times differ materially | Expected — requirements §1.4 says the mechanism is asymmetric. Measured per direction; constants derive from the shorter. Acting on the asymmetry is Phase 5 |
 | Bit 6 inert on this installation (no electrical headroom) | Phase 0 records it; if inert, a shorted wiper reads as *closed* and §12.4 rule 1 is the only defence |
 | Position polling disturbs climate averaging | §4 keeps T5 untouched — that is the whole reason for a separate task |
