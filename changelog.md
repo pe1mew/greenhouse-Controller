@@ -6,6 +6,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.4.1] — 2026-09-07  (gh#49 — the documented Modbus mutex now exists)
+
+**Fixed.**
+- **`modbus_rtu.h` claimed a UART mutex the driver never created (gh#49).** The claim
+  had stood since before 2.0; no semaphore, mutex or critical section existed in
+  `modbus_rtu.cpp`. Harmless only because T5 is the sole caller — but a reader
+  trusting the header would have added a second one. The driver now serialises
+  whole transactions with `xSemaphoreCreateMutex` (priority inheritance), held from
+  the inter-frame-gap guard through the last response byte, because a transaction
+  touches three shared resources: the DE/RE GPIO, the `s_frame_end_us` t3.5
+  timestamp, and the single UART RX FIFO. The three public functions are now thin
+  take/call/give wrappers around locked bodies, so a missed unlock — which would
+  wedge the bus permanently — is structurally impossible rather than a review
+  obligation.
+- **Four driver build environments had been dead since 2026-06-09.**
+  `UART_SCLK_DEFAULT` is IDF 5.0+, and the Arduino-framework driver envs run
+  IDF 4.4. A version guard resolving to `UART_SCLK_APB` restores
+  `modBus -e lolin_s3_loopback`, `modBus -e lolin_s3`, `FG6485A -e lolin_s3` and
+  `s200 -e lolin_s3`, and leaves the firmware byte-identical on IDF 5.5.
+
+**Added.**
+- `MODBUS_ERR_BUSY`, returned when the bus lock is not acquired within
+  `MODBUS_LOCK_TIMEOUT_MS` (500 ms, ~2x the worst-case hold). Deliberately distinct
+  from `MODBUS_ERR_TIMEOUT`: T5 raises a sensor fault after two consecutive read
+  failures, so folding contention into TIMEOUT would send an operator hunting a
+  healthy sensor.
+
+**Notes.**
+- **Patch, not minor** — the plan originally called this a minor and that was wrong.
+  No user-visible feature, task, NVS key or payload-shape change; the enum is
+  internal plumbing and the lock is never contended under the single-caller policy.
+  Web assets are byte-identical to 2.4.0.
+- **Verified on hardware twice, fail-first both times.** Real-slave probe on FDA4:
+  lock disabled 0/1000 clean, lock enabled 1000/1000. Loopback suite on the 12F0
+  bench board: lock disabled 533 CRC errors, lock enabled 12/12 pass — including
+  11 tests that had not run since the ESP-IDF migration because the env would not
+  compile.
+- The lock buys **correctness, not permission**: ~215 ms of blocking must stay out
+  of T2/T3, so all bus I/O remains in T5 by policy. See `design/addModbusMutex.md`.
+
+---
+
 ## [2.4.0] — 2026-09-07  (gh#50 — unit ID erased from the web-GUI footer)
 
 **Fixed.**

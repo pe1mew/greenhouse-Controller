@@ -287,7 +287,7 @@ Record in the header and in `memory/architecture.md` that all bus I/O stays in T
 
 Reusing the existing `MODBUS_ERR_TIMEOUT` conflates *"another task holds the bus"* with *"the slave did not answer"*. T5 raises a sensor fault after **two consecutive failures**, so contention would surface as a **sensor fault** — sending an operator to hunt a sensor that is perfectly healthy. The diagnostic cost outweighs the small API churn; callers overwhelmingly test `!= MODBUS_OK`.
 
-**Version consequence:** Phase 1 alone is a **patch**. Phase 2 plus a new enum value is an internal API change → **minor** under the CLAUDE.md SemVer heuristic.
+**Version consequence — revised 2026-09-07 at release time: this is a PATCH (2.4.1), not a minor.** The original call of "minor" was wrong. The CLAUDE.md heuristic asks for a user-visible feature, a new task, a new NVS namespace/key, or a payload-shape change; a new C enum value is none of those, and under the single-caller policy the mutex is never contended, so runtime behaviour is unchanged. `MODBUS_ERR_BUSY` is internal plumbing, not a payload shape.
 
 ---
 
