@@ -1,7 +1,7 @@
 # Greenhouse Controller — top-level CMakeLists.txt
 #
 # Required by PlatformIO + framework=espidf (introduced in v2.0.0-alpha.1
-# during the ESP-IDF migration; see BRANCH_NOTES.md at repo root).
+# during the ESP-IDF migration; see the [2.0.0] section of changelog.md).
 #
 # This file is the entry point for the ESP-IDF CMake project. It pulls in
 # the IDF's project.cmake glue, which then walks the directory tree looking

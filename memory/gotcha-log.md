@@ -16,6 +16,37 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ---
 
+## 2026-09-07 — `rota_release.py --dry-run` is not side-effect free: it writes the release manifest
+
+**Problem:** `--dry-run` is documented as *"print planned actions; make no changes"* and prints `[dry-run] would create GitHub release`. It nevertheless **writes `bin/<version>/manifest-<version>.json` to disk** — proven by running it twice on 2.4.0 and watching the file's `released_at` change (07:59:30Z, then 08:00:46Z).
+
+**Why it matters:** that file is the **seq ledger's master copy** — `cmd_release` derives the next seq solely from local `bin/*/manifest-*.json` (R-S08). A dry-run therefore mutates the input to the very calculation it claims to only preview. In this instance the seq stayed correct at 45 (the tool excludes the version being released from its own max), so no harm — but the mechanism is there.
+
+**Unresolved, and worth knowing:** a published GitHub Release `v2.4.0` already existed when the real `release --yes` ran, created at 08:00:34Z — bracketing the second dry-run (08:00:46Z) between its create and publish timestamps. The operator may have run the release themselves; that is the likely explanation. **It is not proven either way**, and proving it would mean deliberately dry-running another version to see whether a release appears. If a future `--dry-run` is followed by an unexpected "release already exists", this is the first thing to check.
+
+**Fix / how to work:** treat `--dry-run` as read-mostly, not read-only. Check `git status bin/<version>/` after one. Before concluding a release is missing or duplicated, query the API directly:
+`curl -s https://api.github.com/repos/pe1mew/greenhouse-Controller/releases/tags/v<ver>` — it shows `draft`, `assets`, and the commit the tag resolves to. **Never reach for `--force` on the strength of "already exists"**: verify the existing release first. Here it was complete and correct (tag on the right commit, all three assets, sha256s matching the local build), so forcing would have replaced good artefacts for nothing.
+
+**Where it lives:** `bin/rota_release.py` (`cmd_release`, `local_bin_seqs`); ledger files `bin/*/manifest-*.json` (tracked in git since 2.2.15).
+
+---
+
+## 2026-09-07 — ROTA runtime settings are on `/api/ota/config`, NOT `/api/config` — and a wide window inverts gh#41
+
+**Problem:** looking for the ROTA night window, `GET /api/config` returned nothing matching (`ota_win_lo` / `ota_win_hi` are absent from that payload even though they are real NVS keys in `data_manager.cpp:138-139`).
+
+**Root cause:** ROTA has its own admin endpoints. `GET/POST /api/ota/config` carries `enable`, `url`, `check_h`, `win_lo`, `win_hi`, `secret_set`, `cert_custom`. `GET/POST /api/ota/check` reports and forces the manifest check (`result`, `offered`, `running`, `last_check`, `http`). Both are admin-only.
+
+**The operationally important part — FDA4 is not on a night window.** Read 2026-09-07: `win_lo = 1`, `win_hi = 23`, i.e. the apply window is **01:00-23:00, open 22 h a day**; `check_h = 1`.
+
+That **inverts the gh#41 failure mode.** `rota_apply()` gates on `if (!in_night_window(lo,hi) || !quiet_gate())`, and `||` short-circuits — so the quiet gate is only *skipped* when the window is shut. On a 22-04 unit you defer on the clock and never reach the session check. With 1-23 the window is nearly always open, so `quiet_gate()` **always** runs, and it returns false on *any other active web session* (`ota_client.cpp:536`), plus a window MOVING, `WIND_OVERRIDE` / `MOTOR_ALARM` / `CALIBRATING`, or an LCD PIN session. Deferral retries every 300 s.
+
+**So on FDA4 the thing that silently blocks an update is a stray logged-in browser tab, not the clock** — with no visible symptom beyond the update never applying. `POST /api/ota/check` exempts *its own* session (`s_exempt_token`), so trigger from the GUI you are sitting in, and close the others.
+
+**Where it lives:** `firmware/src/web_server/web_server.cpp:3023-3030` (routes); `firmware/src/ota_client/ota_client.cpp:511` `in_night_window`, `:536` `quiet_gate`, `:564` the gate expression.
+
+---
+
 ## 2026-09-07 — every bench reset counts as a boot failure: four short USB sessions trigger an OTA rollback
 
 **Problem:** connecting FDA4 over USB and resetting it a few times for short serial captures silently walked the OTA fail counter up. It was already at **2** on arrival, and two 12-14 s captures took it to **3** — one boot away from the rollback branch, which would have reverted the unit to whatever bank B held, mid-debug, for no reason connected to firmware health.
@@ -530,7 +561,7 @@ Verify: serial shows `littlefs_mount(A (lfs0)) returned 0 (OK)` + `/index.html e
 
 **Root cause:** Repo settings enforce linear history on `main`.
 
-**Fix:** Rebase the feature branch onto `origin/main`, then `git checkout main && git merge --ff-only dev/X && git push origin main`. Never `--force` to `main`. Recovery sequence documented in `BRANCH_NOTES.md`.
+**Fix:** Rebase the feature branch onto `origin/main`, then `git checkout main && git merge --ff-only dev/X && git push origin main`. Never `--force` to `main`. The recovery sequence is the one given above — it was previously said to live in `BRANCH_NOTES.md`, which never actually contained it; that file was deleted 2026-09-07.
 
 ## 2026-05-XX — `pio: command not found` in Git Bash / MINGW64
 

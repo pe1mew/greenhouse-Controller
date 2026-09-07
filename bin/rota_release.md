@@ -124,4 +124,3 @@ python bin/rota_sim.py --base-url http://127.0.0.1:8099 \
 - [design/rota_tds.md](../design/rota_tds.md) §4 — wire contract v1.1 (endpoints, manifest, store layout)
 - `greenhouse-Controller-FOTA-server/examples/README.md` — store schema + role split
 - [bin/rota_sim.py](rota_sim.py) — device-side acceptance suite (verify a publish)
-- [BRANCH_NOTES.md](../BRANCH_NOTES.md) — the `rota` branch overview

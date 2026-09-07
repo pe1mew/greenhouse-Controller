@@ -10,7 +10,7 @@ Where PATH_TO_BIN is e.g.:
 The sibling web-assets-<version>.zip is auto-discovered in the same directory.
 Version is parsed from the .bin filename.
 
-Defaults: host 192.168.20.160, pin 12345678. Stdlib-only.
+Defaults: host 192.168.20.169 (FDA4, the dev/soak unit), pin 12345678. Stdlib-only.
 
 Flow:
   1. POST /api/login                                                  → cookie
@@ -30,7 +30,11 @@ import re
 import sys
 import time
 
-HOST_DEFAULT = "192.168.20.160"
+# FDA4 — the dev/soak unit since 2026-09-07, and the only local unit in
+# service. Was 192.168.20.160 (2344) until 2344 was powered down and stowed as
+# a cold spare, at which point the old default silently targeted a dead address.
+# If 2344 ever returns, re-point deliberately rather than leaving both live.
+HOST_DEFAULT = "192.168.20.169"
 PIN_DEFAULT  = "12345678"
 
 

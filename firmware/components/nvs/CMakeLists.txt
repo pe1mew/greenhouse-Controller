@@ -10,7 +10,7 @@
 # test mains).
 #
 # Same proxy pattern as gpio + keyPad components. See those CMakeLists.txt
-# files (or BRANCH_NOTES.md) for full rationale of why proxies instead of
+# files for the full rationale of why proxies instead of
 # EXTRA_COMPONENT_DIRS.
 
 idf_component_register(
