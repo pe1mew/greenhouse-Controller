@@ -48,6 +48,10 @@ idf_component_register(
         "ota_client/ota_client.cpp"             # 2.2.0 (ROTA) — T16 pull-OTA request layer: HMAC X-OTA-Auth + pinned-cert HTTPS GET (rota_tds.md §4)
         "network_manager/network_manager.cpp"   # Phase 6.14 (2.0.0-alpha.6.14) — T10 minimal network manager (Q5 producer, TN4 to T4); see file header for deferred features
         "status_post/status_post.cpp"           # Phase 6.15 (2.0.0-alpha.6.15) — T14 minimal status_post (periodic HTTPS POST); see file header for deferred features (T15 supervisor + gh#23 mitigations)
+        # Dev-only diagnostics (gh#49). Entirely inside
+        # #ifdef MODBUS_CONCURRENCY_PROBE, so it compiles to nothing in a
+        # release build. Enabled by the lolin_s3_mbprobe env.
+        "diag/modbus_probe.cpp"                 # Modbus bus-lock concurrency probe — design/addModbusMutex.md §4.3b
         "watchdog/watchdog.cpp"                 # Phase 6.N.1 (2.0.0-alpha.6.22) — T1 minimal watchdog (TWDT subscriber + ota_mark_healthy at 30s); see file header for deferred features (NeoPixel + heap-integrity + stack-HWM)
     INCLUDE_DIRS
         "."

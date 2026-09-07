@@ -191,6 +191,9 @@
 #include "event_logger/event_logger.h"
 #include "data_manager/data_manager.h"
 #include "sensor_poll/sensor_poll.h"
+#ifdef MODBUS_CONCURRENCY_PROBE
+#include "diag/modbus_probe.h"   /* gh#49 dev-only bus-lock probe */
+#endif
 #include "relay_controller/relay_controller.h"
 #include "climate_control/climate_control.h"
 #include "safety_monitor/safety_monitor.h"
@@ -1079,6 +1082,16 @@ extern "C" void app_main(void)
                      (void *)task_t5);
         }
     }
+
+#ifdef MODBUS_CONCURRENCY_PROBE
+    /* gh#49 — dev-only Modbus bus-lock concurrency probe. Runs once, here,
+     * because T5 now exists (the probe suspends it) and the bus is otherwise
+     * idle. Blocks app_main for ~30 s and logs a PASS/FAIL verdict.
+     *
+     * DEV UNIT ONLY (FDA4). Compiled in only by the lolin_s3_mbprobe env;
+     * never present in a release build. See design/addModbusMutex.md §4.3b. */
+    modbus_probe_run();
+#endif
 
     /* alpha.6.9 — relay GPIO pin configuration + spawn T2 relay_controller.
      *

@@ -36,7 +36,7 @@
  *
  * Run with:  pio test -e lolin_s3_loopback
  *
- * Test IDs: HW-MB-001 … HW-MB-011
+ * Test IDs: HW-MB-001 … HW-MB-012  (012 = gh#49 bus-lock concurrency)
  *
  * @author  Greenhouse Controller project
  * @version 0.1.0
@@ -486,6 +486,178 @@ void test_exception_response_returns_exception_error(void)
 /* ===========================================================================
  * Arduino entry point — Unity test runner
  * =========================================================================== */
+/* ===========================================================================
+ * HW-MB-012 — bus lock under concurrent callers (gh#49)
+ *
+ * THE POINT OF THIS TEST IS THAT IT MUST FAIL WITHOUT THE MUTEX.
+ * Before trusting a green run, revert drivers/modBus/src/modbus_rtu.cpp to the
+ * pre-gh#49 revision and confirm this case FAILS. A concurrency test that
+ * passes against the broken driver is worse than no test: it manufactures
+ * confidence in the exact code path every sensor read depends on.
+ *
+ * What two unsynchronised callers corrupt (modbus_rtu.h "Thread safety"):
+ *   1. the DE/RE GPIO — one caller asserts DE while the other is receiving;
+ *   2. s_frame_end_us — read-modify-written per transaction for RTU t3.5;
+ *   3. the single UART RX FIFO — the killer. Two readers steal each other's
+ *      bytes, and the receive path drains exactly 8 half-duplex echo bytes
+ *      assuming the FIFO holds only its own echo.
+ *
+ * Detection strategy — self-identifying responses. Each caller polls a
+ * distinct slave address and the responder echoes that address into the
+ * register payload. A caller that receives the OTHER caller's data has been
+ * handed a stolen frame: that is `mis` below, and it is the assertion that
+ * speaks directly to failure mode 3. CRC/framing/timeout counts catch 1 and 2,
+ * which corrupt frames rather than misroute them.
+ *
+ * Runs both callers on core 1 so they contend for the driver rather than
+ * being serialised by the scheduler onto separate cores.
+ * =========================================================================== */
+
+#define CONC_ADDR_A      1u      /* caller A — mirrors FG6485A's address     */
+#define CONC_ADDR_B     44u      /* caller B — mirrors S200's address        */
+#define CONC_ITERATIONS 500u     /* per caller; 1000 transactions total      */
+
+typedef struct {
+    uint8_t  addr;               /* slave address this caller polls          */
+    bool     fc03;               /* true = FC03 holding, false = FC04 input  */
+    uint32_t ok;                 /* MODBUS_OK with the right payload         */
+    uint32_t mis;                /* MODBUS_OK but the OTHER caller's payload */
+    uint32_t crc;                /* MODBUS_ERR_CRC                           */
+    uint32_t framing;            /* MODBUS_ERR_FRAMING                       */
+    uint32_t timeout;            /* MODBUS_ERR_TIMEOUT                       */
+    uint32_t busy;               /* MODBUS_ERR_BUSY — lock contention        */
+    uint32_t other;              /* any other status                         */
+    volatile bool done;
+} conc_ctx_t;
+
+static volatile bool s_conc_responder_run = false;
+
+/* ---------------------------------------------------------------------------
+ * Continuous responder — unlike responder_task() this serves an unbounded
+ * stream of requests. It reads whatever frame appears on the sniff UART,
+ * takes the slave address from byte 0, and replies with two registers whose
+ * value is that address repeated (addr 1 -> 0x0101, addr 44 -> 0x2C2C). The
+ * response is therefore self-identifying: a caller can tell whose frame it
+ * received without any external bookkeeping.
+ * --------------------------------------------------------------------------- */
+static void conc_responder_task(void *pvParam)
+{
+    (void)pvParam;
+    while (s_conc_responder_run) {
+        if (Serial2.available() < 8) { vTaskDelay(1); continue; }
+
+        uint8_t req[8];
+        for (uint8_t i = 0; i < 8u; i++) req[i] = (uint8_t)Serial2.read();
+
+        const uint8_t addr = req[0];
+        const uint8_t fc   = req[1];
+        if (fc != 0x03u && fc != 0x04u) continue;   /* not ours; resync */
+
+        /* Build a 2-register response: [addr][fc][len=4][hi lo][hi lo][crc] */
+        uint8_t resp[9];
+        resp[0] = addr;
+        resp[1] = fc;
+        resp[2] = 4u;
+        resp[3] = addr; resp[4] = addr;             /* register 0 = addr:addr */
+        resp[5] = addr; resp[6] = addr;             /* register 1 = addr:addr */
+        const uint16_t crc = hw_crc16(resp, 7);   /* file-local helper, :103 */
+        resp[7] = (uint8_t)(crc & 0xFFu);
+        resp[8] = (uint8_t)(crc >> 8);
+
+        /* Let the driver's receive window open before injecting. */
+        vTaskDelay(pdMS_TO_TICKS(3));
+        Serial2.write(resp, sizeof(resp));
+        Serial2.flush();
+    }
+    vTaskDelete(NULL);
+}
+
+/* ---------------------------------------------------------------------------
+ * Caller task — hammers the driver and classifies every outcome.
+ * --------------------------------------------------------------------------- */
+static void conc_caller_task(void *pvParam)
+{
+    conc_ctx_t *c = (conc_ctx_t *)pvParam;
+    const uint16_t expect = (uint16_t)((c->addr << 8) | c->addr);
+
+    for (uint32_t i = 0; i < CONC_ITERATIONS; i++) {
+        uint16_t regs[2] = { 0, 0 };
+        modbus_status_t s = c->fc03
+            ? modbus_read_holding_registers(c->addr, 0x0000u, 2u, regs)
+            : modbus_read_input_registers(c->addr, 0x0000u, 2u, regs);
+
+        switch (s) {
+            case MODBUS_OK:
+                /* The assertion that matters: did we get OUR data? */
+                if (regs[0] == expect && regs[1] == expect) c->ok++;
+                else                                        c->mis++;
+                break;
+            case MODBUS_ERR_CRC:     c->crc++;     break;
+            case MODBUS_ERR_FRAMING: c->framing++; break;
+            case MODBUS_ERR_TIMEOUT: c->timeout++; break;
+            case MODBUS_ERR_BUSY:    c->busy++;    break;
+            default:                 c->other++;   break;
+        }
+    }
+    c->done = true;
+    vTaskDelete(NULL);
+}
+
+static void test_concurrent_callers_do_not_corrupt_each_other(void)
+{
+    static conc_ctx_t a, b;
+    memset(&a, 0, sizeof(a));
+    memset(&b, 0, sizeof(b));
+    a.addr = CONC_ADDR_A; a.fc03 = true;
+    b.addr = CONC_ADDR_B; b.fc03 = false;
+
+    /* Drain anything the previous test left in the instrument UART. */
+    while (Serial2.available()) (void)Serial2.read();
+
+    s_conc_responder_run = true;
+    xTaskCreatePinnedToCore(conc_responder_task, "conc_resp", 4096, NULL, 3, NULL, 0);
+
+    /* Both callers on core 1 so they genuinely contend for the driver. */
+    xTaskCreatePinnedToCore(conc_caller_task, "conc_a", 4096, &a, 2, NULL, 1);
+    xTaskCreatePinnedToCore(conc_caller_task, "conc_b", 4096, &b, 2, NULL, 1);
+
+    /* Generous ceiling: 1000 transactions, worst case ~215 ms each if every
+     * one timed out. Poll rather than block so a hang fails loudly. */
+    const uint32_t deadline = millis() + 300000UL;
+    while ((!a.done || !b.done) && millis() < deadline) delay(50);
+    s_conc_responder_run = false;
+    delay(50);
+
+    TEST_ASSERT_TRUE_MESSAGE(a.done && b.done,
+        "concurrency test did not finish - a caller is wedged (missed unlock?)");
+
+    char msg[192];
+    snprintf(msg, sizeof(msg),
+             "A ok=%lu mis=%lu crc=%lu frm=%lu to=%lu busy=%lu | "
+             "B ok=%lu mis=%lu crc=%lu frm=%lu to=%lu busy=%lu",
+             (unsigned long)a.ok, (unsigned long)a.mis, (unsigned long)a.crc,
+             (unsigned long)a.framing, (unsigned long)a.timeout, (unsigned long)a.busy,
+             (unsigned long)b.ok, (unsigned long)b.mis, (unsigned long)b.crc,
+             (unsigned long)b.framing, (unsigned long)b.timeout, (unsigned long)b.busy);
+    UnityPrint(msg);
+    UNITY_PRINT_EOL();
+
+    /* Misattribution is the direct evidence of RX-FIFO stealing. */
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, a.mis + b.mis,
+        "a caller received the other caller's response - RX FIFO was shared");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, a.crc + b.crc,
+        "CRC errors under concurrency - frames interleaved on the wire");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, a.framing + b.framing,
+        "framing errors under concurrency");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, a.busy + b.busy,
+        "MODBUS_ERR_BUSY seen - a transaction held the lock beyond "
+        "MODBUS_LOCK_TIMEOUT_MS; investigate before dismissing");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(CONC_ITERATIONS, a.ok,
+        "caller A did not complete every transaction cleanly");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(CONC_ITERATIONS, b.ok,
+        "caller B did not complete every transaction cleanly");
+}
+
 void setup(void)
 {
     /* With ARDUINO_USB_CDC_ON_BOOT=0, Serial maps to hardware UART0
@@ -532,6 +704,10 @@ void setup(void)
     RUN_TEST(test_no_response_returns_timeout);          /* HW-MB-009 */
     RUN_TEST(test_corrupt_crc_response_returns_crc_error); /* HW-MB-010 */
     RUN_TEST(test_exception_response_returns_exception_error); /* HW-MB-011 */
+
+    /* Concurrency — gh#49 bus lock. MUST fail without the mutex; see the
+     * note above the test body before trusting a green run. */
+    RUN_TEST(test_concurrent_callers_do_not_corrupt_each_other); /* HW-MB-012 */
 
     UNITY_END();
 }

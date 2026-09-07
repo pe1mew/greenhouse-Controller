@@ -18,6 +18,50 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ---
 
+## 2026-09-07 — the Modbus bus does not survive boot: `main.cpp`'s `modbus_init()` is dead by the time T5 starts
+
+**Problem:** a diagnostic task placed early in `app_main` (right after T5 is spawned, t ≈ 1.8 s) got **1000/1000 Modbus timeouts** — not one response from either sensor. The same firmware, same boot, moments later: T5 polled both sensors perfectly (`T=29 °C RH=60 % ws=2.3 m/s`). The sensors were fine; the bus was not.
+
+**Root cause:** `main.cpp:714` calls `modbus_init()` at t ≈ 1.4 s. Boot then brings up the **RTC (I²C)**, **LittleFS**, and the **SD card over SPI** — including a `storage_sd_unmount()` — and the Modbus UART/DE-RE state does not survive that sequence. T5 works only because it calls `modbus_init()` **again** at its own task entry (`sensor_poll.cpp:384`, t ≈ 9.5 s).
+
+This is what the comment at `main.cpp:1025` means by *"T5's own modbus_init **reconfirms** the driver state at task entry"* — the word is doing real work. Somebody hit this before and wrote a comment instead of an entry.
+
+**Fix:** anything that touches the Modbus bus outside T5 must call `modbus_init()` itself first, not rely on the boot-time init. It is idempotent (it deletes and reinstalls the UART driver), so this is safe **provided nothing else is mid-transaction** — see the use-after-delete note in `modbus_rtu.h`.
+
+**Do not "fix" this by moving `main.cpp`'s init later** without establishing which of RTC / LittleFS / SD actually breaks it. The exact culprit is **not yet identified** — only the window is. A blind reorder would move the dead zone rather than remove it.
+
+**Where it lives:** `firmware/src/main.cpp:714` (early init) and `:1025` (the comment that hints at it); `firmware/src/sensor_poll/sensor_poll.cpp:384` (T5's re-init); `firmware/src/diag/modbus_probe.cpp` (calls `modbus_init()` for exactly this reason). Full write-up: `design/addModbusMutex.md` §4.3c.
+
+---
+
+## 2026-09-07 — the modBus hardware test suite has been unbuildable since the ESP-IDF migration
+
+**Problem:** `pio test -e lolin_s3_loopback -d drivers/modBus` — the driver's whole hardware suite, HW-MB-001…011 — fails to compile:
+
+```
+src/modbus_rtu.cpp:257:22: error: 'UART_SCLK_DEFAULT' was not declared in this scope
+                                   suggested alternative: 'UART_SCLK_XTAL'
+```
+
+**Root cause:** `[env:lolin_s3_loopback]` is `platform = espressif32` (**unpinned**) with `framework = arduino`; the firmware is `espressif32@6.12.0` with `framework = espidf`. `modbus_rtu.cpp` moved to pure ESP-IDF in the v2.0.0 migration and uses `UART_SCLK_DEFAULT`, which the Arduino platform's older bundled IDF does not define. The test env was left on the old framework and nobody noticed, because a hardware suite needing three jumper wires is rarely run.
+
+**Confirm it is not your change:** build the env against `HEAD`'s source. Copy the file aside, `git show HEAD:<file> > <file>`, build, restore — pure file operations, no stash or index games:
+
+```bash
+cp drivers/modBus/src/modbus_rtu.cpp /tmp/mine.cpp
+git show HEAD:drivers/modBus/src/modbus_rtu.cpp > drivers/modBus/src/modbus_rtu.cpp
+pio run -e lolin_s3_loopback -d drivers/modBus     # same error => pre-existing
+cp /tmp/mine.cpp drivers/modBus/src/modbus_rtu.cpp
+```
+
+**The wider trap:** `drivers/*/` each carry their own `platformio.ini` with their own platform/framework, independent of `firmware/platformio.ini`. A driver source file shared between them can compile in one and not the other, and the divergence is silent until someone runs the neglected env. **Do not read a green `pio test -e native` as evidence the driver builds everywhere** — the native env also `#define`s `NATIVE_TEST`, which stubs out real behaviour (for gh#49 it shims the bus lock to a no-op, so the 12 host tests say nothing about the mutex).
+
+**Fix:** unresolved as of 2026-09-07; options recorded in `design/addModbusMutex.md` §4.3a. Not fixed inline because changing production code to satisfy a test env, or re-platforming the env, are both bigger decisions than the change that surfaced it.
+
+**Where it lives:** `drivers/modBus/platformio.ini` `[env:lolin_s3_loopback]`; `drivers/modBus/src/modbus_rtu.cpp:257`.
+
+---
+
 ## 2026-09-07 — `rota_release.py --dry-run` is not side-effect free: it writes the release manifest
 
 **Problem:** `--dry-run` is documented as *"print planned actions; make no changes"* and prints `[dry-run] would create GitHub release`. It nevertheless **writes `bin/<version>/manifest-<version>.json` to disk** — proven by running it twice on 2.4.0 and watching the file's `released_at` change (07:59:30Z, then 08:00:46Z).
