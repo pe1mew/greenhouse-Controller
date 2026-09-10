@@ -6,6 +6,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.4.3] — 2026-09-10  (gh#51 — the rest of the config-cache audit)
+
+Groups B and C of `design/fixMotorTimingRefresh.md`. 2.4.2 made motor timings apply
+without a reboot; this release makes the change **visible in the audit log**, and
+fixes a second instance of the same root cause on the LCD.
+
+Both are prerequisites for the M3 window-control work: that rework changes travel
+timing as a commissioning activity, so a travel change has to leave a record, and
+a factory reset has to actually reset.
+
+**Fixed.**
+- **The LCD factory-reset screen reported an action that had not happened.** IO0
+  menu case 2 (*"Reset all NVS namespaces + PINs; no reboot"*) erased seven
+  namespaces and displayed *"Settings Reset! / Defaults loaded"*, but nothing
+  reloaded T4's config shadow or T2's cached motor timings. Three sources
+  disagreed afterwards: NVS (erased), the shadow (pre-reset), T2 (pre-reset).
+  Same root cause as gh#51 and broader — climate and wind were stale too.
+  New `dm_reload_all_cfg()` re-reads every config namespace and notifies T2 and
+  T14; because the loaders go through `nvs_cfg_get_*_or_default()`, reading an
+  erased namespace also writes the factory default back, which is what makes the
+  claim true rather than merely displayed.
+- **`logparser.py` never learned `LOG_PARAM_WIND_HYST` (45).** Shipped in 2.3.0
+  (gh#46); the parser's table stopped at 44, so every `wind_hyst` change logged
+  since has rendered as the bare `param#45`, no name and no unit. Unknown ids
+  degrade rather than crash, which is why it survived three minor releases.
+
+**Added.**
+- **`LOG_PARAM_TRAVEL` (46) — motor travel time is now audited.** It mapped to
+  `LOG_PARAM_NONE` on the grounds that it was set once at commissioning; the SD
+  log therefore held no record of travel times at all. Defensible while the value
+  took effect only at reboot — 2.4.2 removed that. Row carries the motor in
+  `channel` and old —> new in seconds, matching `dwell_open`/`dwell_close`.
+  `log/logparser.py` and `log/logparser.md` updated in the same change.
+
+**Known limitation.** `dm_reload_all_cfg()` deliberately does **not** reset the
+operating mode. `nvs_load_mode()` only ever *sets* `EG1_BIT_STANDBY` and never
+clears it, and clearing STANDBY properly means `dm_set_standby(false, ...)`, which
+posts `CMD_RECALIBRATE` and drives a full CLOSE_ALL sweep — an actuation the
+operator has not asked for from a menu that promises no reboot. A unit in STANDBY
+when case 2 is used stays in STANDBY, and comes up AUTOMATIC on its next boot
+because the key was erased. WiFi and MQTT connectivity likewise survive the erase
+until reboot; those credentials are not part of the config shadow.
+
+**Unchanged.** No web-asset changes in this release.
+
+---
+
 ## [2.4.2] — 2026-09-10  (gh#51 — motor travel/dwell changes apply without a reboot)
 
 **Fixed.**

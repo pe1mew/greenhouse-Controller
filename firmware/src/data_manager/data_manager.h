@@ -300,6 +300,38 @@ void dm_status_snapshot(status_snapshot_t *out);
 void dm_reload_web_cfg(void);
 
 /**
+ * @brief Re-read every NVS-backed config namespace into the cfg shadow.
+ *
+ * The broad sibling of dm_reload_web_cfg(). Added for gh#51 Group C: the LCD
+ * IO0 factory-reset menu has a "reset everything, no reboot" entry that
+ * erases seven namespaces and then reports "Defaults loaded" — while nothing
+ * reloaded the shadow or T2's cached motor timings. Three sources disagreed
+ * afterwards: NVS (empty), the shadow (pre-reset), T2 (pre-reset).
+ *
+ * Synchronous. Takes MX4 (500 ms), calls the internal nvs_load_* helpers,
+ * releases, then notifies T2 and T14 so their cached copies follow. T6 and
+ * T3 need no notification — they snapshot once per loop iteration.
+ *
+ * Because the loaders go through nvs_cfg_get_*_or_default(), reading an
+ * erased namespace also writes the factory default back to NVS. That is what
+ * makes the "Defaults loaded" claim true rather than merely displayed.
+ *
+ * @note Operating mode is deliberately NOT reloaded. nvs_load_mode() only
+ *       ever *sets* EG1_BIT_STANDBY (it is written for boot, where the bit
+ *       starts clear) and never clears it, so calling it here would be a
+ *       no-op after an erase. Clearing STANDBY properly means
+ *       dm_set_standby(false, ...), which posts CMD_RECALIBRATE and drives a
+ *       full CLOSE_ALL sweep — an actuation the operator has not asked for
+ *       from a menu that promises no reboot. The erased key means the unit
+ *       comes up AUTOMATIC on its next boot regardless.
+ *
+ * @warning Does not restore WiFi or MQTT connectivity. Those credentials are
+ *          owned by other tasks and are not part of the cfg shadow; a live
+ *          connection survives the erase until the next reboot.
+ */
+void dm_reload_all_cfg(void);
+
+/**
  * @brief Persist the most recently uploaded log filename.
  *
  * Called by T14 after a successful log upload. Writes log_last_up to NVS and

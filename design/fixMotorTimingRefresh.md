@@ -4,10 +4,10 @@
 |---|---|
 | Document | Implementation plan |
 | Date | 2026-09-10 |
-| Status | **Group A COMPLETE and HARDWARE-VERIFIED** (released 2.4.2, on FDA4). **Group B IMPLEMENTED** — firmware builds, parser verified against synthetic rows, **firmware side not yet exercised on hardware** (needs a release). Groups C–E not started |
+| Status | **Group A COMPLETE and HARDWARE-VERIFIED** (2.4.2, on FDA4). **Groups B and C IMPLEMENTED**, targeted at **2.4.3** — both build; B's parser side is verified, B's firmware side and all of C are **not hardware-verified**. Groups D–E not started |
 | Issue | [gh#51](https://github.com/pe1mew/greenhouse-Controller/issues/51) |
 | Trigger | Operator question 2026-09-10: "when travel time of a motor is set, when will the new value be applied?" Answer: at the next boot. The manual says next movement |
-| Target | 2.4.2 (patch — no new NVS key, no new task, no new user-visible feature) |
+| Target | 2.4.2 (Group A, shipped) → **2.4.3** (Groups B+C). Patch, per operator 2026-09-10: this is a mandatory correction on the path to the M3 window-control rework, not a feature line of its own |
 
 ---
 
@@ -226,6 +226,69 @@ call.
 ---
 
 ## 4. Group C — the LCD reset that claims a completed action
+
+> **Implemented 2026-09-10** as `dm_reload_all_cfg()` + one call site. The MX4-nesting
+> question flagged before writing is **settled** — see §4.1.
+
+### 4.1 The nesting check, and the one thing it changed
+
+**MX4 nesting: clear.** All six `nvs_load_*` helpers and `update_sun_times()` were
+checked for an internal `xSemaphoreTake`/MX4 reference: **zero in all seven**. MX4 is
+`xSemaphoreCreateMutex()` (`system_globals.cpp:119`) — plain, non-recursive — so a
+nested take would have deadlocked T4 outright. Calling them inside the critical
+section is safe.
+
+**`nvs_load_mode()` is excluded, and that is a deliberate design decision, not an
+oversight.** It only ever *sets* `EG1_BIT_STANDBY`:
+
+```c
+nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_MODE_STANDBY, 0, &v);
+if (v != 0 && EG1 != NULL) { xEventGroupSetBits(EG1, EG1_BIT_STANDBY); }
+```
+
+It never clears it, because it is written for boot, where the bit starts clear.
+After an erase the key reads 0, so calling it here would do **nothing**. Clearing
+STANDBY properly means `dm_set_standby(false, ...)` — which posts
+`CMD_RECALIBRATE` and drives a **full CLOSE_ALL sweep**. On 5C88 that is a real
+three-minute window actuation, triggered from a menu whose entire distinguishing
+feature is *"no reboot"*.
+
+Three options, and the choice is the operator's:
+
+| | Behaviour | Cost |
+|---|---|---|
+| **a (implemented)** | Leave mode alone | A unit in STANDBY stays in STANDBY; NVS says AUTOMATIC. Residual divergence until reboot — the same defect class, narrowed to one bit |
+| b | `dm_set_standby(false, ...)` | Honest, and makes case 2 equal case 3 minus the reboot. But a reset menu silently starts a CLOSE_ALL sweep |
+| c | Clear `EG1_BIT_STANDBY` directly | No actuation, but skips the recalibration `dm_set_standby` exists to perform, leaving window state unknown |
+
+**(a) is implemented** because it is the only one that changes no greenhouse
+behaviour, and because the erased key means the unit comes up AUTOMATIC on its
+next boot regardless. Recorded here rather than buried: this is the one place
+Group C knowingly leaves a divergence.
+
+**WiFi and MQTT are out of reach too.** Case 2 erases those namespaces, but the
+credentials are owned by other tasks and are not part of the cfg shadow, so a live
+connection survives until reboot. Noted in the function's `@warning`.
+
+### 4.2 Verification — not possible over the network
+
+Case 2 is reached by the **physical IO0 button** on the controller. There is no web
+or API route to it, so unlike Group A this cannot be exercised remotely. To verify
+on FDA4, with 2.4.3 flashed:
+
+1. Change a setting away from default and confirm it via `GET /api/config`
+   (e.g. `hyst_t`, or `travel_m1` — which also re-exercises Group A).
+2. Hold IO0 to reach the reset menu and select stage 2.
+3. **Without rebooting**, `GET /api/config` → every value should read its factory
+   default.
+4. Confirm the serial log shows `cfg shadow reloaded from NVS (all namespaces);
+   T2 + T14 notified` followed by T2's three `CH%u: travel=... dwell_open=...` lines.
+5. Trigger a recalibration (mode standby → automatic) and confirm M1's pulse
+   returns to the default 21+5 = 26 s — proving T2's cache followed, not just the
+   shadow.
+
+Step 5 is the one that matters: steps 3–4 only prove T4 reloaded.
+
 
 IO0 menu case 2, *"Reset all NVS namespaces + PINs; no reboot"* (`ui_display.cpp:799`), erases seven namespaces and displays **"Settings Reset! / Defaults loaded"**. Nothing reloads DM's shadow or T2's cache, so afterwards three sources disagree: NVS is empty (defaults materialise on the next read), DM's shadow holds pre-reset values, T2's cache holds pre-reset timings.
 

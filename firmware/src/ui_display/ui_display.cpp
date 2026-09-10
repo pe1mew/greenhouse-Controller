@@ -806,6 +806,12 @@ static void execute_reset_action(uint8_t stage)
             nvs_cfg_erase_namespace(NVS_NS_SYSTEM);
             pin_auth_init();
             session_close(false);
+            /* gh#51 Group C -- without this the screen below lied. Erasing the
+             * namespaces leaves T4's cfg shadow and T2's cached motor timings
+             * holding pre-reset values, so "Defaults loaded" described nothing
+             * that had happened until the next reboot. Reloading also writes
+             * the factory defaults back into the erased namespaces. */
+            dm_reload_all_cfg();
             ESP_LOGW(TAG, "IO0: full settings reset to defaults");
             show_msg("Settings Reset! ", "Defaults loaded ", 5000);
             break;

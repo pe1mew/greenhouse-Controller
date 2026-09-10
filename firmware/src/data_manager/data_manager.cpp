@@ -1684,6 +1684,36 @@ int32_t dm_get_poll_interval_s(void)
  * also notifies T14 via T14_NOTIFY_CFG_CHANGED so enable/URL/interval
  * changes take effect within ~1 s instead of after T14's 60 s idle period.
  */
+/** @brief Re-read every config namespace into the shadow. See data_manager.h. */
+void dm_reload_all_cfg(void)
+{
+    /* Verified 2026-09-10: none of the nvs_load_* helpers takes MX4 itself,
+     * so calling them from inside the critical section is safe. MX4 is a
+     * plain (non-recursive) mutex — a nested take would deadlock T4. */
+    if (xSemaphoreTake(MX4, pdMS_TO_TICKS(500u)) != pdTRUE) {
+        ESP_LOGW(TAG, "dm_reload_all_cfg: MX4 timeout -- shadow NOT refreshed");
+        return;
+    }
+
+    nvs_load_climate();
+    nvs_load_wind();
+    nvs_load_motor();
+    nvs_load_system();
+    nvs_load_web();
+    update_sun_times();   /* lat/lon may have reverted to defaults */
+    /* nvs_load_mode() deliberately omitted -- see the @note in the header. */
+
+    xSemaphoreGive(MX4);
+
+    /* Tasks that cache config privately have to be told. T2 caches motor
+     * timings (gh#51 Group A); T14 caches the status-post schedule. T6 and T3
+     * snapshot per loop iteration and need nothing. */
+    if (task_t2  != NULL) { xTaskNotify(task_t2,  T2_NOTIFY_CFG_CHANGED,  eSetBits); }
+    if (task_t14 != NULL) { xTaskNotify(task_t14, T14_NOTIFY_CFG_CHANGED, eSetBits); }
+
+    ESP_LOGW(TAG, "cfg shadow reloaded from NVS (all namespaces); T2 + T14 notified");
+}
+
 void dm_reload_web_cfg(void)
 {
     /* Synchronous: caller (typically the /api/web POST handler) blocks until
