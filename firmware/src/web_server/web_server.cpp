@@ -123,6 +123,7 @@
 #ifdef MODBUS_BENCH
 #include "../diag/modbus_bench.h"   /* dev-only bench Modbus access */
 #include "window_pos.h"            /* Phase 1 driver, exercised by /api/diag/windowpos */
+#include "../window_pos/window_pos_task.h" /* Phase 2 — T17 snapshot + derived cfg */
 #endif     /* 2.2.0 (ROTA) — rota_cert_set/_is_custom for /api/ota/config */
 #include "../system_id/system_id.h"       /* 2.2.0 (ROTA) — system_mac_str: device id for /api/ota/check */
 #include "littlefs_storage.h"
@@ -3178,7 +3179,17 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
     uint8_t build = 0u, ver = 0u;
     (void)windowpos_read_ident(WINDOWPOS_DEFAULT_ADDR, &build, &ver);
 
-    char body[512];
+    /* Phase 2: also report what T17 has, so the task can be observed rather than
+     * inferred. `t17_*` is the task's own snapshot; the fields above are a fresh
+     * direct read. They should agree while travelling and diverge while idle,
+     * because T17 stops polling at rest by design. */
+    windowpos_reading_t t;
+    uint32_t t_age = 0u;
+    const bool have_t = windowpos_task_snapshot(&t, &t_age);
+    windowpos_derived_t d;
+    const bool have_d = windowpos_task_derived(&d);
+
+    char body[768];
     snprintf(body, sizeof(body),
              "{\"ok\":true,\"addr\":%u,\"build\":%u,\"fw\":%u,"
              "\"opening_mm_x10\":%u,\"percent_x10\":%u,\"rate_mm_s_x10\":%d,"
@@ -3197,6 +3208,37 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
              r.implausible ? "true" : "false",
              r.not_following ? "true" : "false",
              r.sensor_fault ? "true" : "false");
+
+    /* Append T17's view. Kept as a second snprintf so the first stays readable
+     * and a truncation here cannot corrupt the fields above. */
+    const size_t used = strlen(body);
+    if (used + 1u < sizeof(body)) {
+        snprintf(body + used - 1u, sizeof(body) - used + 1u,
+                 ",\"t17\":{\"have\":%s,\"age_ms\":%lu,\"opening_mm_x10\":%u,"
+                 "\"percent_x10\":%u,\"rate_mm_s_x10\":%d,\"derived\":%s,"
+                 "\"poll_ms\":%lu,\"window_ms\":%u,\"nominal_x10\":%u,\"reject_above\":%u}}",
+                 have_t ? "true" : "false", (unsigned long)t_age,
+                 (unsigned)(have_t ? t.opening_mm_x10 : 0u),
+                 (unsigned)(have_t ? t.percent_x10 : 0u),
+                 (int)(have_t ? t.rate_mm_s_x10 : 0),
+                 have_d ? "true" : "false",
+                 (unsigned long)(have_d ? d.poll_ms : 0u),
+                 (unsigned)(have_d ? d.window_ms : 0u),
+                 (unsigned)(have_d ? d.nominal_rate_x10 : 0u),
+                 (unsigned)(have_d ? d.rate_limit_x10 : 0u));
+    }
+    /* Soak counters last, so a truncation loses only these. */
+    windowpos_counters_t cn;
+    windowpos_task_counters(&cn);
+    const size_t used2 = strlen(body);
+    if (used2 + 1u < sizeof(body)) {
+        snprintf(body + used2 - 1u, sizeof(body) - used2 + 1u,
+                 ",\"soak\":{\"reads_ok\":%lu,\"err_busy\":%lu,\"err_comm\":%lu,"
+                 "\"rejected_rate\":%lu,\"strokes\":%lu}}",
+                 (unsigned long)cn.reads_ok, (unsigned long)cn.err_busy,
+                 (unsigned long)cn.err_comm, (unsigned long)cn.rejected_rate,
+                 (unsigned long)cn.strokes);
+    }
     return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
 }
 

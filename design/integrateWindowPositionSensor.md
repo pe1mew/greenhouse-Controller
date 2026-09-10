@@ -460,6 +460,77 @@ The task of §4, with §3's rules implemented as **derived** values, not constan
 
 *Exit:* during a mock stroke, position advances monotonically at ~6.7 Hz with no `MODBUS_ERR_BUSY` and no added read failures on FG6485A or S200 over ≥ 24 h (this is AT-WP05).
 
+#### Phase 2 results — FDA4, 2026-09-10
+
+**T17 implemented and running**: `firmware/src/window_pos/window_pos_task.{h,cpp}`, priority **4**
+(below T2/T3 at 6 and T4/T5/T6 at 5 — in phases 2-3 it is a read-only observer and must never
+delay control work), 4 KB stack, idle unless a channel is travelling.
+
+**Derived config, logged at every stroke start and confirmed live:**
+
+```
+travel_m3=13 s -> poll=100 ms  window=100 ms  nominal=1153 (0.1mm/s)  reject>3459
+```
+
+| exit criterion | result |
+|---|---|
+| position advances monotonically | **PASS** — 0.0 -> 1500.0 mm, 7/7 non-decreasing |
+| polls at the derived rate | **PASS** — snapshot age held ~97 ms against a 100 ms derive |
+| idle when nothing moves | **PASS** — age climbed 1490 -> 20334 ms after the stroke ended |
+| no `MODBUS_ERR_BUSY`, no added FG6485A/S200 failures over >=24 h (AT-WP05) | **NOT RUN** — needs a soak |
+
+### Two derivation rules were wrong as specified, and the rig proved both
+
+**1. `poll = travel/100` (3.1) spends the entire FR-WP04 budget.** Overshoot = poll x speed =
+(t/100) x (100/t) = **exactly 1.00 %, by construction, at every travel time**. The rule was
+written to *hit* the requirement, so nothing is left for jitter, scheduling or a Modbus retry.
+**Implemented as /150.** This affects production identically — it was simply invisible while the
+number was hypothetical.
+
+**2. `reject above 2x nominal` (3.3) would have false-tripped.** Measured peak rate **2100**
+against a 2x threshold of **2306**: 9 % margin. The cause is structural: nominal derives from
+`travel_m3` (13 s) but that covers switch-to-**limit**, while the position span is
+switch-to-**switch** (10 s) — the leaf spends ~3.5 s in the blind overlap with position clamped.
+So the real speed across the measured span is ~30 % higher than nominal, and **2x nominal is not
+2x real**. **Implemented as 3x.** A false trip here silently discards good position samples, which
+is the worst failure mode available to a plausibility check.
+
+**The device's 100 ms floor on `40002` is the binding constraint on a fast rig**, not our poll
+interval: at ~150 mm/s that floor alone is 15 mm = 1 % of a 1500 mm stroke. On the rig FR-WP04 is
+met exactly and **cannot be beaten by polling harder** — the sensor is the limit. On production
+(171 s, ~8.8 mm/s) the same floor is 0.88 mm, 0.06 % of stroke, irrelevant.
+
+**Observation surface:** `GET /api/diag/windowpos` (bench builds only) now returns T17's own
+snapshot and derived config alongside a fresh direct read, so the task is observed rather than
+inferred.
+#### AT-WP05 soak — RUNNING from 2026-09-10 22:13
+
+**The soak could not measure its own criterion until this build.** `MODBUS_ERR_BUSY` was folded
+into `WINDOWPOS_ERR_COMM`, so "did the second bus caller cost T5 anything" — the whole question —
+was unanswerable. `WINDOWPOS_ERR_BUSY` is now a distinct code and T17 counts outcomes separately.
+
+**Baseline (FDA4, `2.4.5-bench`, uptime 53 s):**
+
+| | value |
+|---|---|
+| `reads_ok` / `err_busy` / `err_comm` / `rejected_rate` / `strokes` | 0 / 0 / 0 / 0 / 0 |
+| `eg1` | 0 |
+| SD log | `FDA4_20260909112816.csv`, 845365 B |
+| ALARM rows total | 11 (T/RH ch4: **1**, wind ch5: **5**) |
+
+Baseline JSON: `scratchpad/soak_baseline.json`.
+
+**Pass criteria after >= 24 h:**
+
+- `err_busy` **stays 0** — no lock contention with T5. This is the one that matters; it is the
+  reason 4 deliberately sits below T5's priority and the reason T17 idles at rest.
+- `err_comm` low and flat.
+- `rejected_rate` **stays 0** — confirms the 3x threshold does not false-trip. At 2x it would
+  have (peak 2100 vs 2306), which is what prompted the change.
+- ch-4 / ch-5 ALARM counts do not grow beyond their pre-T17 rate — i.e. T17 has not degraded
+  the FG6485A or S200 reads it shares a bus with.
+
+Read the counters any time with `GET /api/diag/windowpos` -> `soak`.
 ### Phase 3 — read-only logging *(the first thing with lasting value)*
 
 Per CLAUDE.md, `log/logparser.py` **and** `model/campaign-summer-2026/plot_daily.py` learn every new channel **in the same changeset**.

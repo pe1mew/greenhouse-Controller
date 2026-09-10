@@ -203,6 +203,7 @@
 #include "status_post/status_post.h"
 #include "ota_manager/ota_manager.h"  /* alpha.6.22 — ota_check_rollback at boot */
 #include "ota_client/ota_client.h"    /* 2.2.0 (ROTA) — T16 pull-OTA client */
+#include "window_pos/window_pos_task.h" /* Phase 2 — T17 window position task */
 #include "watchdog/watchdog.h"        /* alpha.6.22 — T1 task_watchdog (TWDT + ota_mark_healthy) */
 #include "types/app_types.h"  /* Q1..Q6, MX1..MX5, EG1, task_t1..15, key_event_t etc. */
 
@@ -1539,6 +1540,37 @@ extern "C" void app_main(void)
         } else {
             ESP_LOGI(TAG, "2.2.0: T16 ROTA pull-OTA client spawned (handle=%p)",
                      (void *)task_t16);
+        }
+    }
+
+    /* Phase 2 (design/integrateWindowPositionSensor.md) — spawn T17, the window
+     * position task.
+     *
+     * Placement: after T2 (it reads t2_get_window_states), after T4 (it takes a
+     * cfg snapshot for travel_m3) and after T5 (which owns modbus_init).
+     *
+     * Priority 4 is deliberate and is BELOW T2/T3 (both 6) and below T4/T5/T6
+     * (5). A Modbus transaction can hold the bus ~215 ms; the gh#49 mutex makes
+     * that correct but not free, and it must never sit in front of a wind
+     * override. In phases 2-3 this task is a read-only observer, so it has no
+     * claim on priority over control work.
+     *
+     * 4 KB stack: no TLS, no large buffers — one 15-register Modbus read and a
+     * handful of u32s. */
+    {
+        BaseType_t rc = xTaskCreatePinnedToCore(
+            task_window_pos,
+            "T17-wpos",
+            4096,                  /* stack bytes (ESP-IDF) */
+            NULL,
+            4,                     /* priority — below T2/T3 (6) and T4/T5/T6 (5) */
+            &task_t17,
+            tskNO_AFFINITY);
+        if (rc != pdPASS) {
+            ESP_LOGE(TAG, "Phase 2: xTaskCreate T17 (window position) failed (rc=%d)", (int)rc);
+        } else {
+            ESP_LOGI(TAG, "Phase 2: T17 window position task spawned (handle=%p)",
+                     (void *)task_t17);
         }
     }
 

@@ -104,6 +104,7 @@ extern TaskHandle_t task_t12;  /**< T12 — MQTT Client (optional; may be NULL i
 extern TaskHandle_t task_t14;  /**< T14 — Status website POST: periodic JSON upload to remote dashboard. */
 extern TaskHandle_t task_t15;  /**< T15 — Status-POST supervisor (gh#18 Phase 4): circuit-breaker for T14 backoff. */
 extern TaskHandle_t task_t16;  /**< T16 — ROTA pull-OTA client (2.2.0): periodic manifest check + apply. */
+extern TaskHandle_t task_t17;  /**< T17 — window position (Phase 2, design/integrateWindowPositionSensor.md). */
 
 /* Event group (defined in system_globals.cpp). */
 extern EventGroupHandle_t EG1; /**< System state flags — see Section 5 for bit definitions. */

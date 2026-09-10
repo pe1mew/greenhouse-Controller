@@ -53,6 +53,7 @@ idf_component_register(
         # release build. Enabled by the lolin_s3_mbprobe env.
         "diag/modbus_probe.cpp"                 # Modbus bus-lock concurrency probe — design/addModbusMutex.md §4.3b
         "diag/modbus_bench.cpp"                 # gh#49-era bench Modbus access for Phase 0 commissioning (MODBUS_BENCH)
+        "window_pos/window_pos_task.cpp"        # T17 — window position task (Phase 2)
         "watchdog/watchdog.cpp"                 # Phase 6.N.1 (2.0.0-alpha.6.22) — T1 minimal watchdog (TWDT subscriber + ota_mark_healthy at 30s); see file header for deferred features (NeoPixel + heap-integrity + stack-HWM)
     INCLUDE_DIRS
         "."

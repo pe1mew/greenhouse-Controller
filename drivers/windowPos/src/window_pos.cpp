@@ -33,16 +33,17 @@
 /**
  * @brief Map a Modbus status to a driver status.
  *
- * MODBUS_ERR_PARAM passes through as a parameter error; everything else --
- * timeout, CRC, exception, and MODBUS_ERR_BUSY -- is a comms failure from the
- * caller's point of view. BUSY is folded in deliberately: it means another
- * task held the bus lock, which is a transient the caller retries exactly as
- * it would a timeout.
+ * MODBUS_ERR_PARAM passes through as a parameter error. MODBUS_ERR_BUSY gets
+ * its OWN code rather than being folded into COMM: this driver is a second
+ * caller on a bus T5 owns, and lock-contention frequency is the question
+ * AT-WP05 exists to answer. Everything else -- timeout, CRC, exception -- is a
+ * comms failure.
  */
 static windowpos_status_t map_status(modbus_status_t s)
 {
     if (s == MODBUS_OK)        { return WINDOWPOS_OK; }
     if (s == MODBUS_ERR_PARAM) { return WINDOWPOS_ERR_PARAM; }
+    if (s == MODBUS_ERR_BUSY)  { return WINDOWPOS_ERR_BUSY; }
     return WINDOWPOS_ERR_COMM;
 }
 
