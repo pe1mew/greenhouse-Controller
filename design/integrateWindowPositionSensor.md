@@ -565,6 +565,42 @@ Status and failure events, so the log explains *why* a trace looks how it does. 
 
 *Exit:* a stroke replays from the log as a clean monotonic ramp, and a full teach cycle — including a deliberately refused one — is readable end to end.
 
+#### Phase 3 results — FDA4, 2026-09-10
+
+Both parsers learned the encodings **in the same changeset**, per CLAUDE.md.
+
+**Position samples — `SENSOR_HR` ch 3**, `value_a` = 0.1 mm from `30001` (**-1 on fault**, matching
+the wind-fault `va=-1` convention), `value_b` = signed 0.1 mm/s from `30012`, `param` = window.
+Raw millimetres, never percent: percent derives from `40004`, so a mis-measured travel corrupts a
+logged percentage beyond recovery while percent stays recomputable from millimetres.
+
+**Events — `ALARM` ch 6**, params **244** fault, **245** teach, **246** status, **247** restart.
+Channel 6 continues T5's ch-based split (4 = T/RH, 5 = wind); the param band continues wind's
+240-243 with 248-255 left free.
+
+| exit criterion | result |
+|---|---|
+| stroke replays as a clean monotonic ramp | **PASS** — 214 rows, **214/214 non-decreasing**, 0.0 -> 1122.3 mm |
+| teach cycle readable end to end | **PARTIAL** — armed -> aborted verified live (`245,1` then `245,0`, calibration untouched). **Refused is NOT emitted** |
+| both parsers updated | **PASS** — verified against the real log, not synthetic rows |
+
+**Why `245 va=3` (refused) is not emitted.** Refusal leaves bit 5 **set** with `40007` still 1
+(contract 6.2) — a *non-transition*, indistinguishable from a teach still in progress. T17 observes
+only; it never reads `30013`/`30014` because that read is what commits, and a logger must not commit
+a calibration as a side effect. The code is reserved for the commissioning path that drives the
+teach (6.3, Phase 4+).
+
+**Real device status decoded from the live log:** `0x88 [end sensor, NOT FOLLOWING]` — the exact
+signature of the loose draw-wire from 2a.7, now readable straight out of the parser.
+
+**`plot_daily.py`** gained a fifth panel. It **splits the trace on fault rows** rather than
+interpolating across them: a line drawn through an outage would read as "the window moved smoothly",
+which is the one thing the log does not say. Teach and restart events are drawn as verticals so
+discontinuities have an explanation next to them.
+
+**Noted, not fixed** (operator deferred): a refused manual LCD command leaves no log row at all —
+three `EG1` gates each show 1500 ms of text and return. `SENSOR_HR ch=2` bits 12/13/14 reconstruct
+which gate was active to within 30 s. See the 2026-09-10 gotcha entry.
 ### Phase 4 — fault handling and travel-complete *(still no control change)*
 
 > **Alarm *handling* is deferred to Phase 5** (operator decision 2026-09-07). This phase **detects and records; it does not act.** Control behaviour is unchanged, which is automatic here because nothing consumes position yet. The likely eventual behaviour is a fall-back to full open/close on wire-sensor failure — i.e. exactly today's time-based control, FR-WP17 — but that is **TBD** and is not implemented here.

@@ -8,6 +8,10 @@
 #include "../types/app_types.h"
 #include "../data_manager/data_manager.h"
 #include "../relay_controller/relay_controller.h"
+#include "../event_logger/event_logger.h"
+
+#include "modbus_rtu.h"
+#include <time.h>
 
 #include <esp_log.h>
 #include <esp_task_wdt.h>
@@ -44,6 +48,23 @@ static const char *TAG = "T17";
 /** Sleep between checks for "is anything moving?" while idle. */
 #define IDLE_TICK_MS          500u
 
+/**
+ * Idle logging cadence (Phase 3, plan 3a).
+ *
+ * **Deliberately temporary** (operator decision 2026-09-07): it exists to build
+ * trust in the implementation and costs ~2880 rows/day, roughly +37 % of total
+ * log volume. Phase 2 idled with zero bus cost at rest; this trades that for
+ * visibility and should be removed once the trace is trusted.
+ */
+#define IDLE_LOG_MS         30000u
+
+/** SENSOR_HR channel for position samples (0/1/2 taken; plan 3a). */
+#define LOG_CH_POSITION         3u
+/** LOG_ALARM channel for position events (4 = T/RH, 5 = wind; plan 3b). */
+#define LOG_CH_WPOS_EVENT       6u
+/** Which window these samples describe. One channel serves all three. */
+#define LOG_PARAM_WINDOW_M3     3u
+
 /* ------------------------------------------------------------------- state */
 
 static portMUX_TYPE       s_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -53,6 +74,15 @@ static bool                s_have_reading = false;
 static windowpos_derived_t s_derived;
 static bool                s_have_derived = false;
 static windowpos_counters_t s_cnt;
+
+/* Phase 3 event-edge tracking. Owned by the task, no locking needed. */
+static bool     s_ev_init        = false;
+static bool     s_ev_fault       = false;
+static bool     s_ev_teach       = false;
+static uint16_t s_ev_status      = 0u;
+static uint16_t s_ev_uptime      = 0u;
+static uint16_t s_ev_raw_closed  = 0u;
+static uint16_t s_ev_raw_open    = 0u;
 
 static inline uint32_t now_ms(void)
 {
@@ -149,6 +179,136 @@ bool windowpos_task_derived(windowpos_derived_t *out)
     return have;
 }
 
+/**
+ * @brief Emit one position sample (SENSOR_HR, channel 3).
+ *
+ * `value_a` is the RAW position in 0.1 mm, never the percentage. `30015` is
+ * derived from `40004`; if the travel figure is ever mis-measured a logged
+ * percentage is corrupt beyond recovery, whereas percentage is always
+ * recomputable from a logged millimetre value (plan 3a).
+ *
+ * On sensor fault the position is logged as **-1**, matching the wind-fault
+ * convention (`LOG_PARAM_ALARM_WIND_FAULT` uses va = -1). The device's own
+ * 65535 sentinel would truncate to -1 in the int16 log field anyway; making it
+ * explicit means the intent survives a reader who does not know that.
+ */
+static void log_position(const windowpos_reading_t *r)
+{
+    log_event_t e = {};
+    e.timestamp  = (uint32_t)time(NULL);
+    e.event_type = (uint8_t)LOG_SENSOR_HR;
+    e.initiator  = (uint8_t)LOG_BY_SYSTEM;
+    e.channel    = LOG_CH_POSITION;
+    e.param_id   = LOG_PARAM_WINDOW_M3;
+    e.value_a    = r->sensor_fault ? (int16_t)-1 : (int16_t)r->opening_mm_x10;
+    e.value_b    = r->sensor_fault ? (int16_t)0  : r->rate_mm_s_x10;
+    log_post(&e);
+}
+
+/** @brief Emit one position event (ALARM, channel 6, param 244..247). */
+static void log_wpos_event(uint8_t param, int16_t va, int16_t vb)
+{
+    log_event_t e = {};
+    e.timestamp  = (uint32_t)time(NULL);
+    e.event_type = (uint8_t)LOG_ALARM;
+    e.initiator  = (uint8_t)LOG_BY_SYSTEM;
+    e.channel    = LOG_CH_WPOS_EVENT;
+    e.param_id   = param;
+    e.value_a    = va;
+    e.value_b    = vb;
+    log_post(&e);
+}
+
+/**
+ * @brief Emit events for whatever changed since the previous reading.
+ *
+ * Edge-triggered, so the log explains *why* a trace looks how it does without
+ * repeating steady state.
+ *
+ * Bits 0 and 1 are masked out of the status-change comparison: they are the
+ * startup gates and toggle whenever `40002` is written, which would otherwise
+ * emit an event on every stroke start.
+ */
+static void emit_events(const windowpos_reading_t *r, uint8_t addr)
+{
+    const uint16_t st_cmp = (uint16_t)(r->status_bits & ~0x0003u);
+
+    if (!s_ev_init) {
+        s_ev_init   = true;
+        s_ev_fault  = r->sensor_fault;
+        s_ev_teach  = r->teach_armed;
+        s_ev_status = st_cmp;
+        return;                    /* first reading is a baseline, not an edge */
+    }
+
+    if (r->sensor_fault != s_ev_fault) {
+        s_ev_fault = r->sensor_fault;
+        log_wpos_event(LOG_PARAM_WPOS_FAULT, s_ev_fault ? 1 : 0, (int16_t)r->status_bits);
+        ESP_LOGW(TAG, "position sensor fault %s", s_ev_fault ? "SET" : "cleared");
+    }
+
+    if (st_cmp != s_ev_status) {
+        s_ev_status = st_cmp;
+        log_wpos_event(LOG_PARAM_WPOS_STATUS, (int16_t)r->status_bits, 0);
+    }
+
+    /* Teach lifecycle. T17 only OBSERVES: it never reads 30013/30014, because
+     * that read is what commits (contract 6.2 d) and T17 must not commit a
+     * calibration as a side effect of logging.
+     *
+     * On disarm, the holdings say which way it went: changed endpoints mean the
+     * device committed, unchanged means aborted. **`3 = refused` is NOT emitted
+     * here** -- refusal leaves bit 5 SET with 40007 still 1, which is a
+     * non-transition T17 cannot distinguish from a teach still in progress. It
+     * is reserved for the commissioning path that drives the teach (plan 6.3). */
+    if (r->teach_armed != s_ev_teach) {
+        s_ev_teach = r->teach_armed;
+        if (s_ev_teach) {
+            windowpos_config_t c;
+            if (windowpos_read_config(addr, &c) == WINDOWPOS_OK) {
+                s_ev_raw_closed = c.raw_closed;
+                s_ev_raw_open   = c.raw_open;
+            }
+            log_wpos_event(LOG_PARAM_WPOS_TEACH, 1, 0);
+            ESP_LOGI(TAG, "teach armed");
+        } else {
+            windowpos_config_t c;
+            int16_t what = 0;                       /* aborted */
+            if (windowpos_read_config(addr, &c) == WINDOWPOS_OK
+                && (c.raw_closed != s_ev_raw_closed || c.raw_open != s_ev_raw_open)) {
+                what = 2;                           /* committed */
+            }
+            log_wpos_event(LOG_PARAM_WPOS_TEACH, what, 0);
+            ESP_LOGI(TAG, "teach %s", (what == 2) ? "COMMITTED" : "aborted");
+        }
+    }
+}
+
+/**
+ * @brief Emit param 247 if the device restarted since the last check.
+ *
+ * `30008` is a saturating uptime; **it going backwards is the only tell** that
+ * the sensor rebooted (contract 7). That matters because a restart resets
+ * `40007` to 0 and re-asserts the startup gates, so a teach in progress is
+ * silently lost -- and the calibration in 40005/40006 survives, which makes the
+ * restart otherwise invisible.
+ *
+ * Checked at the idle cadence rather than every poll: it is diagnostic, not
+ * control, and 30 s is well inside the window where it still explains a trace.
+ */
+static void check_restart(uint8_t addr)
+{
+    uint16_t regs[9] = {0};
+    if (modbus_read_input_registers(addr, 0x0000u, 9u, regs) != MODBUS_OK) { return; }
+    const uint16_t up = regs[7];             /* 0x0007 = 30008 */
+    if (s_ev_uptime != 0u && up < s_ev_uptime) {
+        log_wpos_event(LOG_PARAM_WPOS_RESTART, (int16_t)(up & 0x7FFFu), 0);
+        ESP_LOGW(TAG, "sensor restarted (uptime %u -> %u) -- any armed teach is lost",
+                 (unsigned)s_ev_uptime, (unsigned)up);
+    }
+    s_ev_uptime = up;
+}
+
 /** @brief True while any channel is mid-stroke. */
 static bool any_channel_travelling(void)
 {
@@ -180,14 +340,30 @@ void task_window_pos(void *pvParameters)
         ESP_LOGI(TAG, "sensor build 0x%02X fw v%u", (unsigned)build, (unsigned)ver);
     }
 
-    uint16_t pushed_window_ms = 0u;
-    bool     was_travelling   = false;
+    uint16_t pushed_window_ms  = 0u;
+    bool     was_travelling    = false;
+    uint32_t last_idle_log_ms  = 0u;
 
     for (;;) {
         esp_task_wdt_reset();
 
         if (!any_channel_travelling()) {
             was_travelling = false;
+            /* Phase 3: still sample at the idle cadence so the log shows the
+             * window sitting still, not a gap. Phase 2 idled with zero bus
+             * cost; this is the deliberate, temporary trade (see IDLE_LOG_MS). */
+            if ((uint32_t)(now_ms() - last_idle_log_ms) >= IDLE_LOG_MS) {
+                last_idle_log_ms = now_ms();
+                windowpos_reading_t ir;
+                if (windowpos_read(WINDOWPOS_DEFAULT_ADDR, &ir) == WINDOWPOS_OK) {
+                    check_restart(WINDOWPOS_DEFAULT_ADDR);
+                    emit_events(&ir, WINDOWPOS_DEFAULT_ADDR);
+                    log_position(&ir);
+                    portENTER_CRITICAL(&s_mux);
+                    s_last = ir; s_last_ms = now_ms(); s_have_reading = true; s_cnt.reads_ok++;
+                    portEXIT_CRITICAL(&s_mux);
+                }
+            }
             vTaskDelay(pdMS_TO_TICKS(IDLE_TICK_MS));
             continue;
         }
@@ -261,6 +437,8 @@ void task_window_pos(void *pvParameters)
                 s_have_reading = true;
                 s_cnt.reads_ok++;
                 portEXIT_CRITICAL(&s_mux);
+                emit_events(&r, WINDOWPOS_DEFAULT_ADDR);
+                log_position(&r);
             }
         } else if (st == WINDOWPOS_ERR_BUSY) {
             /* T5 held the bus. Counted separately because AT-WP05 asks exactly
