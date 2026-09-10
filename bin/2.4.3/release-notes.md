@@ -54,7 +54,9 @@ WiFi and MQTT connectivity likewise survive the erase until reboot — those cre
 
 Both directions, the channel carried, and param 45 confirmed against real firmware output rather than the synthetic rows used during development.
 
-**Group C — NOT verified.** IO0 case 2 is reached only by the **physical button**; no web or API route touches it, so it cannot be exercised remotely. To verify with 2.4.3 flashed:
+**Group C — verified on FDA4 2026-09-10**, by physical IO0 press released at the `Reset settings?` stage. Eight settings were moved off-default first, because the unit was already at defaults for nearly everything and the test would otherwise have proved nothing. **11/11 reverted at `uptime_s = 12456` (no reboot)**, and T2's cached timings followed: M1's pulse went 36.5 s → **24.4 s** (travel 33 → 21) and M3's went 16.2 s → **174.8 s** (travel 13 → 171). The M3 result is the decisive one — a 158-second change on a channel never touched during setup. Full detail in `design/fixMotorTimingRefresh.md` §4.3.
+
+The reset destroyed three secrets that cannot be read back from the device (WiFi PSK, ROTA HMAC secret, status-post secret). **Capture `/api/config`, `/api/ota/config` and `/api/web` before running this test.** Original steps, for reference:
 
 1. Change a setting off-default and confirm via `GET /api/config`.
 2. Hold IO0 → reset menu → stage 2.

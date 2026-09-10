@@ -4,7 +4,7 @@
 |---|---|
 | Document | Implementation plan |
 | Date | 2026-09-10 |
-| Status | **Groups A, B, C implemented; A and B HARDWARE-VERIFIED.** A shipped in 2.4.2; B and C shipped in **2.4.3**, on FDA4. B verified against real SD rows. **C is NOT verified** — IO0 case 2 has no API route, so it needs the physical button. Group D not started |
+| Status | **Groups A, B and C COMPLETE and HARDWARE-VERIFIED.** A in 2.4.2; B and C in **2.4.3**, all verified on FDA4 (C by physical IO0 press, 2026-09-10). **Group D is all that remains.** |
 | Issue | [gh#51](https://github.com/pe1mew/greenhouse-Controller/issues/51) |
 | Trigger | Operator question 2026-09-10: "when travel time of a motor is set, when will the new value be applied?" Answer: at the next boot. The manual says next movement |
 | Target | 2.4.2 (Group A, shipped) → **2.4.3** (Groups B+C). Patch, per operator 2026-09-10: this is a mandatory correction on the path to the M3 window-control rework, not a feature line of its own |
@@ -280,7 +280,7 @@ connection survives until reboot. Noted in the function's `@warning`.
 
 ### 4.2 Verification — not possible over the network
 
-> **Still outstanding as of 2.4.3 on FDA4.** The steps below have not been run.
+> **Run and passed 2026-09-10** — results in §4.3.
 
 Case 2 is reached by the **physical IO0 button** on the controller. There is no web
 or API route to it, so unlike Group A this cannot be exercised remotely. To verify
@@ -298,6 +298,55 @@ on FDA4, with 2.4.3 flashed:
    shadow.
 
 Step 5 is the one that matters: steps 3–4 only prove T4 reloaded.
+
+### 4.3 Result — verified on FDA4, 2026-09-10 (2.4.3)
+
+Run with the physical IO0 button, released at the `Reset settings?` stage.
+
+**Setup mattered.** FDA4 was already at factory defaults for nearly everything — only
+`travel_m3` (13 vs 171) and lat/lon differed — so a reset would have been almost
+invisible and the test would have proved nothing. Eight settings were moved
+off-default first, and a **baseline pulse measured** to confirm T2 was genuinely
+running the marker value rather than merely reporting it.
+
+| | Before reset | After reset | Factory default |
+|---|---|---|---|
+| `travel_m1` | 33 | **21** | 21 |
+| `travel_m3` | 13 | **171** | 171 |
+| `dwell_close_m1` | 42 | **0** | 0 |
+| `hyst_t` | 9 | **5** | 5 |
+| `t_max_day` | 31 | **28** | 28 |
+| `avg_win_t` | 13 | **6** | 6 |
+| `v_max` | 11 | **6** | 6 |
+| `wind_hyst` | 3 | **1** | 1 |
+| `poll_interval` | 45 | **30** | 30 |
+| lat / lon | 52.225 / 5.964 | **52.0 / 5.0** | 52.0 / 5.0 |
+
+11/11 reverted, at `uptime_s = 12456` — **no reboot**. That proves T4's shadow
+reloaded.
+
+**The step that actually mattered** — T2's private cache:
+
+| | Before | After | Expected |
+|---|---|---|---|
+| M1 pulse | 36.5 s (travel 33) | **24.4 s** | ~26 = 21+5 |
+| M3 pulse | 16.2 s (travel 13) | **174.8 s** | ~176 = 171+5 |
+
+M3 is the decisive one: a **158-second** change in pulse length, on a channel never
+touched during setup, explicable only by T2 re-reading NVS live. Had the cache not
+followed, M1 would have stayed at ~38 s.
+
+**Cost, as predicted.** The reset erased three secrets that are not readable from
+the device — WiFi PSK, ROTA HMAC secret (`secret_set` went `true` —> `false`), and
+the status-post secret. Everything else was restored from a pre-reset capture of
+`/api/config`, `/api/ota/config` and `/api/web`. **Capture that before running this
+test again.**
+
+**Found in passing:** `POST /api/config` accepts an unrecognised key, returns
+`{"ok":true}`, writes it to NVS and applies nothing — hit by using `poll_interval_s`
+(the JSON field name) instead of `poll_interval` (the NVS key). Filed as
+[gh#53](https://github.com/pe1mew/greenhouse-Controller/issues/53); same
+false-success shape as gh#51.
 
 
 IO0 menu case 2, *"Reset all NVS namespaces + PINs; no reboot"* (`ui_display.cpp:799`), erases seven namespaces and displays **"Settings Reset! / Defaults loaded"**. Nothing reloads DM's shadow or T2's cache, so afterwards three sources disagree: NVS is empty (defaults materialise on the next read), DM's shadow holds pre-reset values, T2's cache holds pre-reset timings.
