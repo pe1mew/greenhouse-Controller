@@ -4,7 +4,7 @@
 |---|---|
 | Document | Implementation plan |
 | Date | 2026-09-10 |
-| Status | **Group A IMPLEMENTED, NOT YET VERIFIED ON HARDWARE.** All three envs build (`lolin_s3`, `lolin_s3_mbprobe`, `lolin_s3_bench`) and both sides of the notification API link in. Groups B–E not started. §8 has not been run — no claim is made that the fix works until the fail-first procedure has been executed on FDA4 |
+| Status | **Group A COMPLETE and HARDWARE-VERIFIED** — released as 2.4.2, OTA'd to FDA4 2026-09-10, fail-first protocol observed (§8.1). Groups B–E not started |
 | Issue | [gh#51](https://github.com/pe1mew/greenhouse-Controller/issues/51) |
 | Trigger | Operator question 2026-09-10: "when travel time of a motor is set, when will the new value be applied?" Answer: at the next boot. The manual says next movement |
 | Target | 2.4.2 (patch — no new NVS key, no new task, no new user-visible feature) |
@@ -263,6 +263,51 @@ Asset-only change; same paired-commit rule.
 ---
 
 ## 8. Verification — fail-first, on FDA4
+
+### 8.1 Results — FDA4, 2026-09-10 (Group A)
+
+No serial or LCD access was available, so the measurement was made entirely over
+HTTP. **The instrument:** `POST /api/mode` standby → automatic makes
+`dm_set_standby(false)` post `CMD_RECALIBRATE`; `calib_close_all()` (`:621`)
+energises all three channels **unconditionally** using `s_ch[ch].travel_ms`, and
+window states appear in `/api/status`. Polling at 1 Hz therefore measures the
+pulse the firmware actually used. Measurements read ~2 s short of the true
+duration because the poll baseline starts after the mode POSTs; the offset is
+constant across runs. Script: `travel_probe.py` (scratchpad).
+
+| Run | Firmware | `travel_m1` written | T2's boot-loaded value | Measured M1 | Reading |
+|---|---|---|---|---|---|
+| 1 | 2.4.1 | **40** | 21 | **24.0 s** (~26 = 21+5) | old value used — **defect reproduced** |
+| 2 | 2.4.2 | **21** | 40 | **23.6 s** (~26 = 21+5) | new value used, no reboot |
+| 3 | 2.4.2 | **60** | 40 | **63.3 s** (~65 = 60+5) | matches neither 26 nor 45 |
+
+**Run 1 is the fail-first gate** and it failed as required, on the unpatched build,
+with the same instrument.
+
+**Why run 3 exists.** Runs 1 and 2 both measure ~24 s — the same number from a
+defect and from a fix, separated only by what NVS held at boot. That is correct
+reasoning but poor evidence: too easy to misread, and impossible to check later
+without reconstructing the boot state. 60 s matches neither the cached 40 (45 s)
+nor the old 21 (26 s), so only a genuine runtime reload explains it. Run 3 also
+carries its own control: **M2 (unchanged, 21) stayed at 23.9 s and M3 (unchanged,
+13) at 15.7 s in the same sweep** — only the channel written moved.
+
+**Also confirmed in passing:** `/api/config` reported `travel_s = 40` while T2 was
+still pulsing 26 s (§6 issue 1, on live hardware); and the Q4 hand-off has a
+sub-second latency — a `GET /api/config` 0.2 s after the POST still read the old
+value, the shadow updating shortly after. That latency is not the defect, but it
+is why the GUI's success tick cannot be read as "in force".
+
+**Cases 3–8 below were NOT run:** mid-stroke change, motor alarm, mid-calibration,
+boot-calibration skip, audit row (Group B not implemented), LCD case 2 (Group C not
+implemented).
+
+**Post-state:** `fw_ver` and `asset_version` both 2.4.2 (read post-reboot),
+`eg1 = 0x0`, AUTOMATIC, all CLOSED, `travel_s` restored to `[21, 21, 13]`.
+
+**Incidental:** FDA4's `travel_m3` is **13 s**, not the production 171 — worth
+knowing before reading any FDA4 timing measurement as production-representative.
+
 
 There is no native test target for T2 (`drivers/modBus/test/` is the only test tree), so this is hardware-only. FDA4 drives no window, so the evidence is T2's own log line at `:442`/`:503`: `CH%u: → MOVING_OPEN (travel %lu ms)`.
 

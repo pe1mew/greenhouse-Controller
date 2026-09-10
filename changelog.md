@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.4.2] — 2026-09-10  (gh#51 — motor travel/dwell changes apply without a reboot)
+
+**Fixed.**
+- **Motor travel and dwell times only took effect after a reboot (gh#51).** T2 read
+  them from NVS once at task entry and cached them per channel; nothing told it a
+  value had changed. The manual states twice that they apply to the next movement
+  (`beheerderHandleiding.md:249`, `:1479`) — so the documentation was right and
+  the code was wrong, and the fix required no manual edit. `relay_controller.cpp`
+  was the only task that never called `dm_cfg_snapshot()`; T6 and T3 snapshot once
+  per loop iteration, which is why climate and wind parameters genuinely were live
+  and these were not. T4 now posts `T2_NOTIFY_CFG_CHANGED` on any `motor`
+  namespace write, and T2 re-reads NVS at the top of its next loop pass.
+  The worst consequence was on the safety path: T3's wind-protection
+  `CMD_CLOSE_ALL` drives the same travel pulse, so an operator raising `travel_m3`
+  because M3 was not fully closing saw the GUI update and a success tick while the
+  safety close kept the old short pulse until reboot — and because T2 marks
+  CLOSED on travel-timer expiry rather than position, every surface reported
+  CLOSED for a partly-open window.
+
+**Added.**
+- `T2_NOTIFY_CFG_CHANGED` (`relay_controller.h`) — T4 to T2 config-change
+  notification, mirroring `T14_NOTIFY_CFG_CHANGED`. A task notification rather
+  than a Q1 message: Q1 is discarded wholesale while `EG1_BIT_MOTOR_ALARM` is set
+  (FR-MA03), so a change made during a motor alarm would have been dropped
+  silently and stayed stale until reboot; the notification bit also survives the
+  blocking CLOSE_ALL calibration and coalesces repeated changes.
+
+**Unchanged.** No web-asset changes in this release.
+
+---
+
 ## [2.4.1] — 2026-09-07  (gh#49 — the documented Modbus mutex now exists)
 
 **Fixed.**
