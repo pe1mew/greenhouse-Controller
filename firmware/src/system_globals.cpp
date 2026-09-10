@@ -74,6 +74,7 @@ TaskHandle_t task_t12 = NULL;
 TaskHandle_t task_t14 = NULL;
 TaskHandle_t task_t15 = NULL;
 TaskHandle_t task_t16 = NULL;
+TaskHandle_t task_t17 = NULL;
 
 /* Event group */
 EventGroupHandle_t EG1 = NULL;

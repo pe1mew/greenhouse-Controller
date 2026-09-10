@@ -84,8 +84,18 @@
 /** Return codes. Mirrors the fg6485a/s200 convention. */
 typedef enum {
     WINDOWPOS_OK        = 0, /**< Transaction completed. */
-    WINDOWPOS_ERR_COMM  = 1, /**< Modbus timeout / CRC / exception / bus busy. */
+    WINDOWPOS_ERR_COMM  = 1, /**< Modbus timeout / CRC / exception. */
     WINDOWPOS_ERR_PARAM = 2, /**< NULL pointer, addr 0, or out-of-range argument. */
+    /**
+     * @brief The bus lock was not acquired within `MODBUS_LOCK_TIMEOUT_MS`.
+     *
+     * Kept DISTINCT from @ref WINDOWPOS_ERR_COMM deliberately. Both are
+     * transients the caller retries identically, so folding them was tempting
+     * -- but this is a second caller on a bus T5 owns, and "how often did we
+     * lose the lock" is exactly the question AT-WP05 asks. Folded into COMM it
+     * is unanswerable.
+     */
+    WINDOWPOS_ERR_BUSY  = 3,
 } windowpos_status_t;
 
 /**
