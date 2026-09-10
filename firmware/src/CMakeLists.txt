@@ -77,6 +77,11 @@ idf_component_register(
         modBus        # LIB-6 — migrated 2.0.0-alpha.2.6 (Serial1 → uart_driver_*, depends on gpio)
         s200          # LIB-S200 — migrated 2.0.0-alpha.2.7 (trivial cleanup, depends on modBus)
         FG6485A       # LIB-FG — migrated 2.0.0-alpha.2.8 (trivial cleanup, depends on modBus)
+        windowPos     # LIB-WP — wire-encoder window position sensor (contract v1.2, addr 40).
+                      #   Phase 1 of design/integrateWindowPositionSensor.md. Read-only
+                      #   plus the commissioning write surface; depends on modBus. The
+                      #   polling task is Phase 2 and lives in firmware/src, because it
+                      #   needs travel_m3, which the driver must not know about.
         DS1307_RTC    # LIB-3 — migrated 2.0.0-alpha.2.9 (trivial cleanup, depends on i2c)
         littleFS      # LIB-9 — migrated 2.0.0-alpha.2.10 (LittleFS.h → esp_vfs_littlefs_*; managed component)
         sdCard        # LIB-8 — migrated 2.0.0-alpha.2.11 (SD.h → esp_vfs_fat_sdspi_*; FAT32 over SPI; LAST Phase-2 driver)
