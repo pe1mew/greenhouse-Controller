@@ -4,7 +4,7 @@ Reference material extracted from `CLAUDE.md` (per audit-context structural lint
 
 ## FreeRTOS task graph
 
-Full task graph diagram in [`../design/rtosTaskDiagram.png`](../design/rtosTaskDiagram.png). Roles verified against `xTaskCreate*` sites in `firmware/src/main.cpp` (T1-T11, T14, T16) and on-demand spawn points (T13, T15):
+Full task graph diagram in [`../design/rtosTaskDiagram.png`](../design/rtosTaskDiagram.png). Roles verified against `xTaskCreate*` sites in `firmware/src/main.cpp` (T1-T11, T14, T16, T17) and on-demand spawn points (T13, T15):
 
 | Task | Subsystem | Role |
 |---|---|---|
@@ -24,8 +24,9 @@ Full task graph diagram in [`../design/rtosTaskDiagram.png`](../design/rtosTaskD
 | T14 | `status_post` | Periodic HTTPS POST to remote (configurable via `cfg.status_url`) |
 | T15 | `status_post_supervisor` | **Dormant** — excluded from build via CMakeLists.txt |
 | T16 | `ota_client` | **ROTA** internet-pull OTA client (2.2.0+): periodic manifest check → download + SHA-256 verify of both artefacts → apply via T13 inside the night window + quiet gate. Created at boot in `main.cpp` |
+| T17 | `window_pos` | **Window position** (Phase 2, 2026-09-10): polls the M3 wire encoder at a **derived** interval while a channel travels, idle otherwise. Priority **4** — deliberately below T2/T3 (6) and T4/T5/T6 (5): a Modbus transaction can hold the bus ~215 ms and must never sit in front of a wind override. **Only possible because 2.4.1 shipped the bus mutex (gh#49)** — a second bus caller was a data race before that. Read-only in phases 2-3; publishes a snapshot, changes no control |
 
-Also: a low-priority `heartbeat_task` is spawned at `main.cpp:1599` as a serial-only liveness indicator — not part of T1-T16 numbering.
+Also: a low-priority `heartbeat_task` is spawned at `main.cpp:1599` as a serial-only liveness indicator — not part of T1-T17 numbering.
 
 **Shared state:** Q1-Q6 queues + EG1 event group. The bit most callers respect is `EG1_BIT_OTA_IN_PROGRESS` — defer non-essential work while set.
 
@@ -41,6 +42,7 @@ Also: a low-priority `heartbeat_task` is spawned at `main.cpp:1599` as a serial-
 | `network_manager/` | T10 — WiFi, SNTP, geo lookup; L3 self-recovery (gh#33) |
 | `ota_manager/` | T13 — dual-bank OTA + 3-fail rollback |
 | `ota_client/` | T16 — ROTA internet-pull OTA client (manifest, download + verify, apply via T13) |
+| `window_pos/` | T17 — M3 wire-encoder polling + derived config; logs position (SENSOR_HR ch3) and device events (ALARM ch6). Driver lives in `drivers/windowPos/` |
 | `relay_controller/` | T2 — window motor state machine |
 | `safety_monitor/` | Motor alarm, sensor fault detection |
 | `sensor_poll/` | Sensor read scheduling |
