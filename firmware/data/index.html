@@ -309,21 +309,21 @@
     </div>
     <h3>Dwell open (seconds)</h3>
     <div class="slider-row">
-      <label data-tip="Minimum time M1 must remain fully open before a close command is accepted. Longer values reduce oscillation by giving the greenhouse temperature time to respond. 0 = no hold enforced. Max 600 s.">M1 dwell open (s)</label>
+      <label data-tip="Minimum time M1 must remain fully open before a close command is accepted. Longer values reduce oscillation by giving the greenhouse temperature time to respond. 0 = no hold enforced. Max 1500 s (25 min).">M1 dwell open (s)</label>
       <input type="range"  id="cfg-dwell-open-m1-sl" step="1">
       <input type="number" id="cfg-dwell-open-m1"    step="1" class="short">
       <button onclick="postCfg('motor','dwell_open_m1','cfg-dwell-open-m1','int')">Apply</button>
       <span class="save-ok" id="fb-dwell-open-0"></span>
     </div>
     <div class="slider-row">
-      <label data-tip="Minimum hold at fully open for M2. 0 = no hold enforced. Max 600 s.">M2 dwell open (s)</label>
+      <label data-tip="Minimum hold at fully open for M2. 0 = no hold enforced. Max 1500 s (25 min).">M2 dwell open (s)</label>
       <input type="range"  id="cfg-dwell-open-m2-sl" step="1">
       <input type="number" id="cfg-dwell-open-m2"    step="1" class="short">
       <button onclick="postCfg('motor','dwell_open_m2','cfg-dwell-open-m2','int')">Apply</button>
       <span class="save-ok" id="fb-dwell-open-1"></span>
     </div>
     <div class="slider-row">
-      <label data-tip="Minimum hold at fully open for M3. 0 = no hold enforced. Max 600 s.">M3 dwell open (s)</label>
+      <label data-tip="Minimum hold at fully open for M3. 0 = no hold enforced. Max 1500 s (25 min).">M3 dwell open (s)</label>
       <input type="range"  id="cfg-dwell-open-m3-sl" step="1">
       <input type="number" id="cfg-dwell-open-m3"    step="1" class="short">
       <button onclick="postCfg('motor','dwell_open_m3','cfg-dwell-open-m3','int')">Apply</button>
@@ -331,21 +331,21 @@
     </div>
     <h3>Dwell close (seconds)</h3>
     <div class="slider-row">
-      <label data-tip="Minimum time M1 must remain fully closed before an open command is accepted. 0 = no hold enforced. Max 300 s.">M1 dwell close (s)</label>
+      <label data-tip="Minimum time M1 must remain fully closed before an open command is accepted. 0 = no hold enforced. Max 1500 s (25 min).">M1 dwell close (s)</label>
       <input type="range"  id="cfg-dwell-close-m1-sl" step="1">
       <input type="number" id="cfg-dwell-close-m1"    step="1" class="short">
       <button onclick="postCfg('motor','dwell_close_m1','cfg-dwell-close-m1','int')">Apply</button>
       <span class="save-ok" id="fb-dwell-close-0"></span>
     </div>
     <div class="slider-row">
-      <label data-tip="Minimum hold at fully closed for M2. 0 = no hold enforced. Max 300 s.">M2 dwell close (s)</label>
+      <label data-tip="Minimum hold at fully closed for M2. 0 = no hold enforced. Max 1500 s (25 min).">M2 dwell close (s)</label>
       <input type="range"  id="cfg-dwell-close-m2-sl" step="1">
       <input type="number" id="cfg-dwell-close-m2"    step="1" class="short">
       <button onclick="postCfg('motor','dwell_close_m2','cfg-dwell-close-m2','int')">Apply</button>
       <span class="save-ok" id="fb-dwell-close-1"></span>
     </div>
     <div class="slider-row">
-      <label data-tip="Minimum hold at fully closed for M3. 0 = no hold enforced. Max 300 s.">M3 dwell close (s)</label>
+      <label data-tip="Minimum hold at fully closed for M3. 0 = no hold enforced. Max 1500 s (25 min).">M3 dwell close (s)</label>
       <input type="range"  id="cfg-dwell-close-m3-sl" step="1">
       <input type="number" id="cfg-dwell-close-m3"    step="1" class="short">
       <button onclick="postCfg('motor','dwell_close_m3','cfg-dwell-close-m3','int')">Apply</button>

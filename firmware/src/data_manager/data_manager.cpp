@@ -538,8 +538,8 @@ static void nvs_load_motor(void)
 
     for (uint8_t i = 0u; i < 3u; i++) {
         nvs_cfg_get_i32_or_default(NVS_NS_MOTOR, ktr[i], def_tr[i], &v); s_cfg.travel_s[i]        = (int16_t)v;
-        nvs_cfg_get_i32_or_default(NVS_NS_MOTOR, kdo[i], def_do[i], &v); s_cfg.dwell_open_min[i]  = (int16_t)v;
-        nvs_cfg_get_i32_or_default(NVS_NS_MOTOR, kdc[i], def_dc[i], &v); s_cfg.dwell_close_min[i] = (int16_t)v;
+        nvs_cfg_get_i32_or_default(NVS_NS_MOTOR, kdo[i], def_do[i], &v); s_cfg.dwell_open_s[i]  = (int16_t)v;
+        nvs_cfg_get_i32_or_default(NVS_NS_MOTOR, kdc[i], def_dc[i], &v); s_cfg.dwell_close_s[i] = (int16_t)v;
     }
 }
 
@@ -893,8 +893,8 @@ static bool apply_config_update(const config_update_t *upd)
         updated = false;
         for (uint8_t i = 0u; i < 3u; i++) {
             if (strcmp(key_str, ktr[i]) == 0) { old_val = s_cfg.travel_s[i];        s_cfg.travel_s[i]        = v16; updated = true; break; }
-            if (strcmp(key_str, kdo[i]) == 0) { old_val = s_cfg.dwell_open_min[i];  s_cfg.dwell_open_min[i]  = v16; updated = true; break; }
-            if (strcmp(key_str, kdc[i]) == 0) { old_val = s_cfg.dwell_close_min[i]; s_cfg.dwell_close_min[i] = v16; updated = true; break; }
+            if (strcmp(key_str, kdo[i]) == 0) { old_val = s_cfg.dwell_open_s[i];  s_cfg.dwell_open_s[i]  = v16; updated = true; break; }
+            if (strcmp(key_str, kdc[i]) == 0) { old_val = s_cfg.dwell_close_s[i]; s_cfg.dwell_close_s[i] = v16; updated = true; break; }
         }
 
     } else if (strcmp(ns_str, NVS_NS_SYSTEM) == 0) {

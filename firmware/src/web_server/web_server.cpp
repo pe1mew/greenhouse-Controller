@@ -1138,6 +1138,13 @@ static esp_err_t config_get_handler(httpd_req_t *req)
         "\"wind_hyst\":%d,"
         "\"dir_excl_low\":%d,\"dir_excl_high\":%d,"
         "\"travel_s\":[%d,%d,%d],"
+        /* gh#51 Group D — _s is canonical since 2.4.4. The _min pair is
+         * emitted alongside for ONE release so external consumers can move;
+         * both carry SECONDS. The old suffix was always wrong, and
+         * convincing because session_timeout_min / ap_timeout_min below
+         * really are minutes. Drop the _min pair in the next minor. */
+        "\"dwell_open_s\":[%d,%d,%d],"
+        "\"dwell_close_s\":[%d,%d,%d],"
         "\"dwell_open_min\":[%d,%d,%d],"
         "\"dwell_close_min\":[%d,%d,%d],"
         "\"poll_interval_s\":%ld,"
@@ -1161,8 +1168,10 @@ static esp_err_t config_get_handler(httpd_req_t *req)
         (int)cfg.wind_hyst,
         (int)cfg.dir_excl_low, (int)cfg.dir_excl_high,
         (int)cfg.travel_s[0], (int)cfg.travel_s[1], (int)cfg.travel_s[2],
-        (int)cfg.dwell_open_min[0], (int)cfg.dwell_open_min[1], (int)cfg.dwell_open_min[2],
-        (int)cfg.dwell_close_min[0], (int)cfg.dwell_close_min[1], (int)cfg.dwell_close_min[2],
+        (int)cfg.dwell_open_s[0],  (int)cfg.dwell_open_s[1],  (int)cfg.dwell_open_s[2],
+        (int)cfg.dwell_close_s[0], (int)cfg.dwell_close_s[1], (int)cfg.dwell_close_s[2],
+        (int)cfg.dwell_open_s[0],  (int)cfg.dwell_open_s[1],  (int)cfg.dwell_open_s[2],   /* deprecated _min alias */
+        (int)cfg.dwell_close_s[0], (int)cfg.dwell_close_s[1], (int)cfg.dwell_close_s[2],  /* deprecated _min alias */
         (long)cfg.poll_interval_s, (long)cfg.session_timeout_min,
         (long)cfg.ap_timeout_min,
         (long)cfg.lat_deg, (long)cfg.lat_frac,

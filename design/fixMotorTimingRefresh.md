@@ -4,7 +4,7 @@
 |---|---|
 | Document | Implementation plan |
 | Date | 2026-09-10 |
-| Status | **Groups A, B and C COMPLETE and HARDWARE-VERIFIED.** A in 2.4.2; B and C in **2.4.3**, all verified on FDA4 (C by physical IO0 press, 2026-09-10). **Group D is all that remains.** |
+| Status | **COMPLETE and CLOSED.** All four groups shipped and hardware-verified on FDA4: A in 2.4.2, B and C in 2.4.3, D in 2.4.4. gh#51 closed 2026-09-10 |
 | Issue | [gh#51](https://github.com/pe1mew/greenhouse-Controller/issues/51) |
 | Trigger | Operator question 2026-09-10: "when travel time of a motor is set, when will the new value be applied?" Answer: at the next boot. The manual says next movement |
 | Target | 2.4.2 (Group A, shipped) → **2.4.3** (Groups B+C). Patch, per operator 2026-09-10: this is a mandatory correction on the path to the M3 window-control rework, not a feature line of its own |
@@ -392,6 +392,8 @@ One line after `pin_auth_init(); session_close(false);`. The reload re-reads the
 
 ## 5. Group D — naming and bounds
 
+> **Implemented 2026-09-10** and released as **2.4.4**. Two findings changed the framing — see §5.1.
+
 ### D1. `cfg_shadow_t` field names carry the wrong unit
 
 `data_manager.h:129-132` documents `dwell_open_min[3]` / `dwell_close_min[3]` as **minutes**. They hold **seconds**: `CFG_MIN/MAX_DWELL_OPEN_S` is 0-1500, T2 multiplies by 1000, and the GUI labels the field "(s)". The misnomer is exposed in the public API as the JSON keys `dwell_open_min` / `dwell_close_min` (`web_server.cpp:1141-1142`).
@@ -512,3 +514,53 @@ Soak on FDA4 overnight before any `promote` to 5C88.
 2. **Group D's JSON keys** — dual-emit for one release as proposed, or rename outright? Dual-emit is safer; outright is cleaner if there are genuinely no external consumers.
 3. **Group C scope** — full `dm_reload_all_cfg()`, or the one-line "make case 2 reboot" fallback?
 4. **Should `travel` also appear in the boot LOG_SYSTEM row?** SETPT rows give the change history, but a log with no SETPT row leaves the in-force value implicit. Probably unnecessary; noted rather than assumed.
+
+### 5.1 Two things the survey changed
+
+**The `_min` suffix is a real convention, not a typo.** `session_timeout_min` and
+`ap_timeout_min` sit a few lines below in the same struct and the same JSON object,
+and both genuinely are minutes (defaults 5 and 30). The dwell pair followed the
+convention while meaning seconds, which is precisely why it survived this long. The
+name was ambiguous a second way too: the doc comment opens *"**Min** hold at
+OPEN…"*, so `_min` could be read as "minimum". `_s` kills both readings and lines
+up with `DEF_DWELL_OPEN_M1_S` and `CFG_MAX_DWELL_OPEN_S`.
+
+**The dwell-close tooltip was the worse of the six.** It claimed *"Max 300 s"*
+against a real ceiling of 1500 — and M3's own factory default for dwell-close is
+**600 s**. An operator reading that tooltip would have concluded the shipped default
+was out of range. The dwell-open trio said 600 against M3's 1500 default, same shape.
+
+**Checked before adding to the JSON:** `/api/config` builds into a 1536-byte buffer
+with no truncation guard on the `snprintf` return — it sends `n` bytes, which would
+over-read if it ever truncated. The live response is 620 bytes and the two new arrays
+add ~60, so this lands at 44% of cap. Ample, but the missing guard is worth knowing
+about before anyone adds a large field there.
+
+### 5.2 Group D verified — FDA4, 2.4.4, 2026-09-10
+
+| Check | Result |
+|---|---|
+| `/api/config` dual-emits `_s` and `_min`, identical values | `[300,300,1500]` / `[0,0,600]` |
+| `app.js` parses; fallback logic evaluated in the live page | `[1500, 600]` for new **and** old firmware shapes |
+| Six tooltips | 6x `Max 1500 s (25 min)`, 0 stale |
+| Motors tab populates all six dwell fields | confirmed visually |
+| Dwell round-trip emits its audit row | `dwell_open (M1): 300 s -> 420 s` and back |
+
+`app.js` was the check that mattered: it is an **asset**, so the firmware build never
+parses it and a syntax error would have left the Motors tab blank with everything else
+looking normal. `/api/config` came out at **676 bytes** against the 1536 buffer.
+
+**The tooltips had been contradicting the control beside them.** Sliders always took
+their bounds from `/api/config/limits` (1500), so a dwell-open slider ran to 1500 while
+its own tooltip claimed a 600 s maximum — and for dwell-close the tooltip said 300
+against M3's *factory default* of 600.
+
+### 5.3 Left open deliberately
+
+- **gh#52** — `nvs_load_mode()` sets `EG1_BIT_STANDBY` and never clears it.
+- **gh#53** — `POST /api/config` accepts an unknown key, returns `ok:true`, writes junk
+  to NVS and applies nothing.
+- **Deprecation:** drop the `dwell_open_min` / `dwell_close_min` JSON aliases in the next
+  minor.
+- **Not this issue:** the ROTA soak channel offers 2.4.1 while FDA4 runs 2.4.4 — 2.4.2
+  through 2.4.4 were push-OTA'd and never published.

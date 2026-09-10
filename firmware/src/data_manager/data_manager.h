@@ -126,10 +126,16 @@ typedef struct {
     /* ---- Motor (NVS_NS_MOTOR = "motor") ---- */
     int16_t  travel_s[3];         /**< Full-travel time per channel (s)
                                     *  Index 0=M1, 1=M2, 2=M3 (C18)    */
-    int16_t  dwell_open_min[3];   /**< Min hold at OPEN before CLOSE accepted
-                                    *  (minutes, C18)                   */
-    int16_t  dwell_close_min[3];  /**< Min hold at CLOSED before OPEN accepted
-                                    *  (minutes, C19)                   */
+    /* Renamed from dwell_open_min / dwell_close_min in 2.4.4 (gh#51 Group D).
+     * They were documented as minutes and are seconds: FDA4 reports
+     * [300, 300, 1500] against CFG_MAX_DWELL_OPEN_S = 1500. The suffix was
+     * convincing because session_timeout_min and ap_timeout_min in the same
+     * struct genuinely ARE minutes — _min is a real convention here, and
+     * these two were the outliers misreporting under it. */
+    int16_t  dwell_open_s[3];     /**< Minimum hold at OPEN before a CLOSE is
+                                    *  accepted (SECONDS, C18)          */
+    int16_t  dwell_close_s[3];    /**< Minimum hold at CLOSED before an OPEN
+                                    *  is accepted (SECONDS, C19)       */
 
     /* ---- System (NVS_NS_SYSTEM = "system") ---- */
     int32_t  poll_interval_s;     /**< Sensor poll interval  (s, C20)       */

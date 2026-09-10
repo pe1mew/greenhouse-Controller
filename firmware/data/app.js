@@ -504,12 +504,18 @@ function loadConfig() {
       setVal('cfg-travel-m1',       cfg.travel_s && cfg.travel_s[0]);
       setVal('cfg-travel-m2',       cfg.travel_s && cfg.travel_s[1]);
       setVal('cfg-travel-m3',       cfg.travel_s && cfg.travel_s[2]);
-      setVal('cfg-dwell-open-m1',   cfg.dwell_open_min && cfg.dwell_open_min[0]);
-      setVal('cfg-dwell-open-m2',   cfg.dwell_open_min && cfg.dwell_open_min[1]);
-      setVal('cfg-dwell-open-m3',   cfg.dwell_open_min && cfg.dwell_open_min[2]);
-      setVal('cfg-dwell-close-m1',  cfg.dwell_close_min && cfg.dwell_close_min[0]);
-      setVal('cfg-dwell-close-m2',  cfg.dwell_close_min && cfg.dwell_close_min[1]);
-      setVal('cfg-dwell-close-m3',  cfg.dwell_close_min && cfg.dwell_close_min[2]);
+      // gh#51 Group D -- dwell_open_s / dwell_close_s are canonical since 2.4.4.
+      // Fall back to the _min names so this page still works against firmware
+      // older than 2.4.4 (and through the paired-commit window, where assets
+      // and firmware can briefly disagree). Both carry SECONDS.
+      const dwo = cfg.dwell_open_s  || cfg.dwell_open_min;
+      const dwc = cfg.dwell_close_s || cfg.dwell_close_min;
+      setVal('cfg-dwell-open-m1',   dwo && dwo[0]);
+      setVal('cfg-dwell-open-m2',   dwo && dwo[1]);
+      setVal('cfg-dwell-open-m3',   dwo && dwo[2]);
+      setVal('cfg-dwell-close-m1',  dwc && dwc[0]);
+      setVal('cfg-dwell-close-m2',  dwc && dwc[1]);
+      setVal('cfg-dwell-close-m3',  dwc && dwc[2]);
       setVal('cfg-session-timeout', cfg.session_timeout_min);
       g_session_timeout_ms = (cfg.session_timeout_min > 0 ? cfg.session_timeout_min : 5) * 60 * 1000;
       setVal('cfg-ap-timeout',     cfg.ap_timeout_min);

@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.4.4] — 2026-09-10  (gh#51 Group D — the dwell fields said minutes and carried seconds)
+
+Last group of `design/fixMotorTimingRefresh.md`. Closes gh#51.
+
+**Fixed.**
+- **`cfg_shadow_t.dwell_open_min[]` / `dwell_close_min[]` were documented as minutes
+  and hold seconds.** Renamed to `dwell_open_s` / `dwell_close_s`, with the unit
+  corrected in the doc comments. Confirmed against live data before changing
+  anything: FDA4 reports `[300, 300, 1500]` against `CFG_MAX_DWELL_OPEN_S = 1500`.
+  The suffix was convincing because `session_timeout_min` and `ap_timeout_min` in
+  the same struct genuinely **are** minutes — `_min` is a real convention here,
+  and these two were the outliers misreporting under it.
+- **Six wrong bounds in the Motors-tab tooltips.** Three dwell-open tooltips said
+  *"Max 600 s"* and three dwell-close said *"Max 300 s"*; the limit is **1500 s**
+  for both, and always has been (`CFG_MAX_DWELL_OPEN_S` / `CFG_MAX_DWELL_CLOSE_S`).
+  An operator following the tooltip would have believed M3's own 1500 s default
+  was out of range.
+
+**Changed — `/api/config` (additive, nothing breaks).**
+- Emits `dwell_open_s` and `dwell_close_s`. **`dwell_open_min` / `dwell_close_min`
+  are still emitted, carrying the same values**, and will be dropped in the next
+  minor. External consumers should move to the `_s` names.
+- The bundled dashboard reads `_s` with a `_min` fallback, so it works against
+  firmware older than 2.4.4 and through the paired-commit window.
+
+**Assets change in this release** (`app.js`, `index.html`), so firmware and assets
+must be pushed within 120 s of each other.
+
+---
+
 ## [2.4.3] — 2026-09-10  (gh#51 — the rest of the config-cache audit)
 
 Groups B and C of `design/fixMotorTimingRefresh.md`. 2.4.2 made motor timings apply
