@@ -4,11 +4,11 @@
 |---|---|
 | Document | Implementation plan |
 | Date | 2026-09-07 |
-| Status | **PLAN — nothing implemented.** Scope is **phases 0–4**. **Phase 5 (proportional control) is OUT OF SCOPE for this cycle** (operator decision 2026-09-07) and is kept below as the recorded end state, not as work |
+| Status | **UNBLOCKED 2026-09-10 — the rig is built and operational.** Wire sensor live on FDA4's Modbus bus, window emulator on M3's open/close relays, end contacts fitted. Both prerequisites shipped (gh#49 in 2.4.1, gh#51 in 2.4.2—2.4.4). Phase 0 tooling committed (`de92c27`) but **not flashed** — FDA4 runs the release build, which excludes `MODBUS_BENCH`. **Phase 0 is ready to run.** Phases 1—4 not started; Phase 5 out of scope |
 | Requirements | [`windowPositionSensorRequirements.MD`](windowPositionSensorRequirements.MD) — FR-WP01–22, and §12 evaluating this sensor |
 | Device contract | [`modbusInterfaceContractSpecification.md`](modbusInterfaceContractSpecification.md) v1.2 (normative source is the sensor project's `design/TDS.md`) |
 | Bus architecture | [`refactorSensorConfiguration.md`](refactorSensorConfiguration.md) — the end state this plan deliberately does *not* build |
-| Prerequisite | [`addModbusMutex.md`](addModbusMutex.md) — **shipped in 2.4.1**, and it is what makes §4's architecture possible |
+| Prerequisites | Both **DONE**. (1) [`addModbusMutex.md`](addModbusMutex.md) — gh#49, shipped **2.4.1**: the bus lock is what makes §4's architecture possible. (2) [`fixMotorTimingRefresh.md`](fixMotorTimingRefresh.md) — gh#51, shipped **2.4.2—2.4.4**: motor config written at runtime now reaches T2 without a reboot, is audited in the SD log, and survives a factory reset honestly. §3.5 below depends on all three of those |
 
 ---
 
@@ -28,8 +28,8 @@ Development happens on **FDA4**, which is being fitted with a mechanical mock of
 
 | | Production M3 | FDA4 mock |
 |---|---|---|
-| Full traverse | 171 s | **15 s** |
-| Speed | 0.585 %/s | **6.67 %/s** (11.4× faster) |
+| Full traverse | 171 s | **13 s** (measured, as-built) |
+| Speed | 0.585 %/s | **7.69 %/s** (13.2× faster) |
 
 **Representative of:** the entire software path — three devices on one bus, relay drive, position feedback, teach, fault handling, both commissioning checks, T2 stopping logic, the polling architecture.
 
@@ -39,7 +39,11 @@ Development happens on **FDA4**, which is being fitted with a mechanical mock of
 
 **Rig specification — agreed, and every requirement is satisfiable:** traverse ≥ 5 s (`CFG_MIN_TRAVEL_S`), sensor address 40 or 45 (both clear of FG6485A@1 and S200@44), +24 V/GND/A/B daisy-chained, both end-stop switches fitted, sensor-zone overtravel checked.
 
-> **Build status 2026-09-07: NOT YET BUILT.** The wire sensor is **not physically on FDA4's RS485 bus** — it still carries only FG6485A@1 and S200@44, and no window is driven. The specification above is a design agreement, not an as-built record. **Phase 0 cannot start until the sensor is on the bus**; everything before that point is desk work and firmware that builds but has nothing to talk to.
+> **Build status 2026-09-10: BUILT AND OPERATIONAL** (operator). The wire position sensor is live on FDA4's RS485 bus — a **third device** alongside FG6485A@1 and S200@44 — the window emulator is driven by M3's open/close relays, and end contacts are fitted. The specification above is now an as-built record.
+>
+> **`travel_m3 = 13 s` is the emulator's REAL traverse time, not a placeholder.** It is a correct setting and must never be "corrected" to production's 171 s. The 15 s figure used when this plan was written was an estimate; every derived constant below is recomputed for 13 s.
+>
+> M1 and M2 still drive nothing — their chain ends at the relay contact. No greenhouse window is driven by FDA4 in any case; the emulator is a bench mechanism.
 
 ---
 
@@ -60,6 +64,21 @@ Overshoot when stopping = poll interval × speed. FR-WP04 asks for ≤ 1 % of st
 > Production 171 s → 1710 ms. Mock 15 s → **150 ms**.
 
 The requirements study's "1 Hz is sufficient" is a *production* conclusion. Hardcoding it makes the rig overshoot 6.7 % and look like a positioning defect that is not one.
+
+> **Recomputed for the as-built 13 s (2026-09-10), and it surfaced two things.**
+>
+> **1. `poll = travel/100` meets FR-WP04 with EXACTLY zero margin, at every traverse time.**
+> Overshoot = poll × speed = (t/100) × (100/t) = **1.00 % by construction** — rig and production
+> alike. The rule was written to *hit* the ≤1 % requirement, so it consumes the entire budget and
+> leaves nothing for poll jitter, task scheduling, or a Modbus retry. In practice it will exceed
+> the requirement. **Recommend `travel/150` (0.67 %) or `travel/200` (0.50 %)** — on the rig that is
+> 87 ms or 65 ms, both still above the 50 ms floor. This is a defect in the rule, not in the rig.
+>
+> **2. At 13 s the `40002` derivation falls below the device's floor.** `poll × 2/3` = **86.7 ms**,
+> and the contract's range starts at 100 ms, so the rig runs **clamped up to 100 ms** — a window
+> ~15 % longer than the rule wants, i.e. position data slightly staler than designed. Movement per
+> 100 ms window at rig speed is 0.77 % of stroke, so it is tolerable — but the clamp is now *active*
+> rather than theoretical, and Phase 0 should confirm the device actually accepts 100 ms.
 
 ### 3.2 The sensor's measurement window (`40002`) — it inverts
 
@@ -99,6 +118,8 @@ Everything in §3.1–3.3 derives from `travel_m3`, which today is a number a hu
 - **Sanity-band against the configured value** (propose ±50 %). Outside the band, reject and report: a 3× discrepancy means something is wrong with the mechanism or the wiring, not that the configuration is merely stale.
 - Store in NVS — **new keys, so a minor version bump** when this lands.
 - **Log which value is in use at boot**, measured or configured. "Am I running on a measurement or a guess?" must never be a guess itself.
+
+> **The delivery mechanism §3.5 needs now exists (gh#51, shipped 2026-09-10).** When this was written, a measured traverse written to NVS would not have reached T2 until the next reboot — so the operator action that *measures* the value could not *apply* it. T4 now posts `T2_NOTIFY_CFG_CHANGED` on any `motor` write and T2 re-reads at the top of its loop (hardware-verified: M3's pulse tracked 13 s → 171 s live). A travel change also emits a `LOG_PARAM_TRAVEL` audit row, so "which value was in force?" is answerable from the SD log — which it was not before. **§3.5 needs no reboot step, and the commissioning teach can end by applying what it measured.**
 
 **Using two numbers where the firmware wants one.** T2 still has a single `travel_ms` per channel, and changing that is a control-model change — Phase 5 territory. For this cycle: measure both directions, **derive the constants from the shorter** (conservative: a shorter traverse means a faster rate, so a tighter poll interval), and **log both**. If the asymmetry turns out to be material, that is a finding worth having before anyone designs per-direction travel configuration.
 

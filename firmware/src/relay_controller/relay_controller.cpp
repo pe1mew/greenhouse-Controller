@@ -155,6 +155,7 @@ typedef struct {
     uint32_t   travel_ms;          /**< Full energisation duration (ms) */
     uint32_t   dwell_open_ms;      /**< Dwell after reaching OPEN (ms) */
     uint32_t   dwell_close_ms;     /**< Dwell after reaching CLOSED (ms) */
+    bool       dwell_defer_logged; /**< One INFO line per deferral episode, not per cycle */
 } ch_t;
 
 static ch_t s_ch[NUM_CHANNELS];
@@ -418,8 +419,15 @@ static void ch_start_close(uint8_t ch, uint32_t now_ms, cmd_source_t source)
          * choices that override the anti-thrash dwell. */
         if (source == SRC_T6 &&
             (int32_t)(now_ms - c->dwell_deadline_ms) < 0) {
-            ESP_LOGD(TAG, "CH%u: CLOSE deferred — dwell %lu ms remaining",
-                     ch + 1u, (unsigned long)(c->dwell_deadline_ms - now_ms));
+            /* gh#51-era finding: this was ESP_LOGD, i.e. below the default log
+             * level and absent from the SD log, so a 25-minute refusal on M3 left
+             * no trace anywhere.  INFO, latched to one line per episode. */
+            if (!c->dwell_defer_logged) {
+                c->dwell_defer_logged = true;
+                ESP_LOGI(TAG, "CH%u: CLOSE from T6 DEFERRED — dwell %lu s remaining",
+                         ch + 1u,
+                         (unsigned long)((c->dwell_deadline_ms - now_ms) / 1000u));
+            }
             return;
         }
         break;
@@ -483,8 +491,15 @@ static void ch_start_open(uint8_t ch, uint32_t now_ms, cmd_source_t source)
          * observes; SRC_T3 (safety) + SRC_OPERATOR_MANUAL (admin) bypass. */
         if (source == SRC_T6 &&
             (int32_t)(now_ms - c->dwell_deadline_ms) < 0) {
-            ESP_LOGD(TAG, "CH%u: OPEN deferred — dwell %lu ms remaining",
-                     ch + 1u, (unsigned long)(c->dwell_deadline_ms - now_ms));
+            /* gh#51-era finding: this was ESP_LOGD, i.e. below the default log
+             * level and absent from the SD log, so a 25-minute refusal on M3 left
+             * no trace anywhere.  INFO, latched to one line per episode. */
+            if (!c->dwell_defer_logged) {
+                c->dwell_defer_logged = true;
+                ESP_LOGI(TAG, "CH%u: OPEN from T6 DEFERRED — dwell %lu s remaining",
+                         ch + 1u,
+                         (unsigned long)((c->dwell_deadline_ms - now_ms) / 1000u));
+            }
             return;
         }
         break;
@@ -525,6 +540,7 @@ static void ch_update(uint8_t ch, uint32_t now_ms)
             relay_ch_off(ch);
             c->state = CH_OPEN;
             c->dwell_deadline_ms = now_ms + c->dwell_open_ms;
+            c->dwell_defer_logged = false;
             persist_ch_state(ch, CH_OPEN);   /* gh#18 Phase 3 */
             log_relay_event((uint8_t)(ch + 1u), CH_OPEN);
             ESP_LOGI(TAG, "CH%u: OPEN (travel complete)", ch + 1u);
@@ -536,6 +552,7 @@ static void ch_update(uint8_t ch, uint32_t now_ms)
             relay_ch_off(ch);
             c->state = CH_CLOSED;
             c->dwell_deadline_ms = now_ms + c->dwell_close_ms;
+            c->dwell_defer_logged = false;
             persist_ch_state(ch, CH_CLOSED); /* gh#18 Phase 3 */
             log_relay_event((uint8_t)(ch + 1u), CH_CLOSED);
             ESP_LOGI(TAG, "CH%u: CLOSED (travel complete)", ch + 1u);
@@ -1185,6 +1202,15 @@ void task_relay_controller(void *pvParameters)
             if ((notify_bits & T2_NOTIFY_CFG_CHANGED) != 0u) {
                 ESP_LOGI(TAG, "config change: reloading motor timings");
                 load_motor_timings();
+            }
+            if ((notify_bits & T2_NOTIFY_CLEAR_DWELL) != 0u) {
+                /* Admin manual session ended: drop the anti-thrash debt so T6
+                 * can act immediately.  See T2_NOTIFY_CLEAR_DWELL in the header. */
+                for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
+                    s_ch[ch].dwell_deadline_ms = 0u;
+                    s_ch[ch].dwell_defer_logged = false;
+                }
+                ESP_LOGI(TAG, "manual session ended: dwell deadlines cleared on all channels");
             }
         }
 

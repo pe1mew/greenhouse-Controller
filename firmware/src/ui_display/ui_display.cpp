@@ -592,15 +592,36 @@ static void session_close(bool timeout)
      * positions. Tying the clear to session-end gives the admin a full
      * 5-minute respect window after their last menu interaction.
      *
-     * `dm_set_standby_ex(..., recalibrate_on_clear=false)` suppresses the
-     * CLOSE_ALL sweep — the admin's manual positions are the baseline T6
-     * resumes from, not a forced CLOSED state. (Web/Scherm-3 STANDBY
-     * exits, which use the original `dm_set_standby()`, still recalibrate
-     * as designed for the gh#28 explicit-pause use-case.) */
+     * 2026-09-10 — `recalibrate_on_clear` flipped back to TRUE, and the dwell
+     * debt is dropped with it. rc.1.5.2 fixed the 2026-05-26 complaint in two
+     * ways at once: it moved the STANDBY clear to session-end (the respect
+     * window, which is what actually fixed it) AND suppressed the CLOSE_ALL.
+     * The second half went further than the complaint required and had a
+     * consequence nobody traced at the time: T6 resumed in AUTOMATIC against
+     * windows left wherever the admin put them, computed the correct target,
+     * and had every command refused by the per-channel dwell timer — up to
+     * 25 minutes on M3 (`dwell_open_m3` = 1500 s), logged only at ESP_LOGD.
+     * The system read AUTOMATIC and did nothing, invisibly.
+     *
+     * The respect window still holds positions for the whole session, so the
+     * 2026-05-26 complaint stays fixed. What changed is that positions no
+     * longer survive PAST the session: session-end returns the windows to a
+     * known CLOSED baseline and T6 resumes from that. (Web/Scherm-3 STANDBY
+     * exits use the original `dm_set_standby()` and always did this.) */
     if (s_manual_set_standby_on_entry) {
         ESP_LOGI(TAG, "[T8] auto-clearing menu-set STANDBY on session %s",
                  timeout ? "timeout" : "logout");
-        dm_set_standby_ex(false, LOG_BY_ADMIN, 1u /*=LCD*/, false /*no recal*/);
+
+        /* Drop the anti-thrash dwell debt BEFORE clearing STANDBY. A position
+         * the admin set by hand is a new baseline, not a T6 oscillation, so T6
+         * must not inherit a debt it did not incur. T2 applies this in its own
+         * context at the top of its next loop, ahead of the CMD_RECALIBRATE
+         * that dm_set_standby_ex() posts to Q1 below. */
+        if (task_t2 != NULL) {
+            xTaskNotify(task_t2, T2_NOTIFY_CLEAR_DWELL, eSetBits);
+        }
+
+        dm_set_standby_ex(false, LOG_BY_ADMIN, 1u /*=LCD*/, true /*recalibrate*/);
         s_manual_set_standby_on_entry = false;
     }
 }

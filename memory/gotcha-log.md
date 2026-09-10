@@ -10,6 +10,8 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ## Promoted patterns
 
+- **[PATTERN] This codebase has a recurring class of defect: an affirmative success signal for something that did not happen. Never accept a UI tick, an HTTP 200 or an LCD confirmation as evidence of effect.** Four instances, three of them found in a single session (2026-09-10): (1) **gh#51** -- the Motors tab showed a new travel time with a green tick while T2 kept running the old one until reboot, because `/api/config` reads T4's shadow and T2 caches its own copy; (2) **gh#51 Group C** -- the LCD showed "Settings Reset! / Defaults loaded" after an IO0 stage-2 erase while T4's shadow and T2's cache both still held pre-reset values; (3) **gh#53** -- `POST /api/config` with an unrecognised key returns `{"ok":true}`, writes junk to NVS and applies nothing; (4) the standing **paired-commit rule** exists for the same reason -- a firmware-only OTA reports success while stranding the asset partition, which is why both `fw_ver` AND `asset_version` must be read post-reboot. Rules: (a) a 200 from an async endpoint means *queued*, not *applied* -- find the endpoint that reports the outcome (`GET /api/ota/check`, not `POST`); (b) when a value is cached by a task, verify the **behaviour** it controls, not the field that reports it (measure the relay pulse, do not read `/api/config`); (c) when adding any new confirmation to a UI, ask what would have to be true for it to lie, and make the check assert that instead.
+
 - **[PATTERN] The git index is a single shared, easily-misread resource — verify it, never narrate it.** Three incidents (2026-07-13 branch switch, 2026-07-20 `commit -a` sweep, 2026-07-23 false "staged" report): each time the index's real state diverged from what was said or assumed about it. Rules: (1) after staging, show `git status --short` / `git diff --cached --stat` and report THAT, never a claim from memory; (2) staging one stream protects nothing if the commit is `-a` — if anything tracked-modified is pending, either stage it all with a covering message or say explicitly what must not be committed; (3) an untracked file that a staged change links to must be called out by name, not left among the `??` noise; (4) before any branch switch, empty the index.
 
 - **[PATTERN] One log chain per time window — never let two chains of the same unit's logs coexist in an analysis folder.** The dedup in `plot_daily.py` is tuple-exact and does **not** catch it; the symptom is a day showing ~2× the expected sample count (~5700 vs ~2860). Recurred twice: 2026-06-26 (two independent SD downloads with different rotation boundaries) and 2026-07-20 (files pulled off the card by hand vs. the unit's own later upload of the same files). Rule: **before plotting, run `check_dupes.py`; archive the superseded chain to `archived_overlap/`** rather than deleting it, and sanity-check sample counts in `plot_summary.txt` afterwards. Free verification: if `git status` shows the archived copy and the new file as a rename (`R old -> new`), they are byte-identical.
@@ -22,9 +24,15 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ## Index — by where it bites you
 
-49 entries is too many to scan. Find your subsystem, then **Ctrl+F the date** to jump.
+53 entries is too many to scan. Find your subsystem, then **Ctrl+F the date** to jump.
 Hooks are the *symptom*, not the title — you rarely know the cause when you arrive here.
 Entries stay in reverse-chronological order below; this index is the only grouped view.
+
+### Windows, climate & manual control (T2, T6, T8)
+- **2026-09-10** — windows sit where the admin left them, mode says AUTOMATIC, T6 does nothing for
+  up to 25 min (dwell debt from a manual move; T6 is fine, T2 is refusing it) **[RECURRENCE of a
+  May-2026 issue whose fix was recorded only in a code comment]**
+- **2026-07-31** — anti-thrash dwell was unguarded during travel (gh#48)
 
 ### Modbus bus, sensors & clock (T5, drivers)
 - **2026-09-07** — a task polling flat out panics the board after 5 s (driver never yields; TWDT idle check)
@@ -93,6 +101,114 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
 
+
+## 2026-09-10 — after LCD manual window control, T6 resumes in AUTOMATIC and is silently refused for up to 25 minutes (RECURRENCE)
+
+**Problem:** Admin drives windows by hand from the LCD, logs out. Mode reads AUTOMATIC, `/api/status` shows the
+real window states, T6 is running — and nothing happens. The controller looks correct and does nothing, with no
+trace in the SD log, on the web GUI, or in the serial log at default level.
+
+**Root cause — two halves, and only the second is the defect.**
+
+1. T6 is **not** confused. `reconcile_to_step()` is level-triggered: it runs **every cycle unconditionally**
+   (`climate_control.cpp:589`), reads **actual** window states via `t2_get_window_states()`, and posts
+   per-channel `CMD_OPEN`/`CMD_CLOSE` for whatever disagrees. It does not care how the windows got there.
+   **Do not go looking for a stale step variable — there isn't one.**
+2. T2 **refuses** those commands. `ch_start_open`/`ch_start_close` (`relay_controller.cpp:483`) defer
+   `SRC_T6` while a dwell deadline is pending. The asymmetry is the bug: `SRC_OPERATOR_MANUAL` **bypasses**
+   the dwell going in, but completing any move **sets** the dwell deadline in `ch_update()`, which has **no
+   source parameter** — so a hand-set position leaves T6 holding an anti-thrash debt it never incurred.
+
+On FDA4 `dwell_open_m3` is **1500 s**: manually open M3, log out, and T6 retries every 30 s and is refused
+for **25 minutes**. `dwell_close_m3` is 600 s, so the reverse costs 10.
+
+**Why it was invisible:** the deferral logged at `ESP_LOGD` — below the default level, serial-only, never in
+the SD log. Four deferral sites had this (`:395`, `:421`, `:467`, `:486`).
+
+**Why it RECURRED — this is the part worth remembering.** The operator hit this class of problem in May 2026
+(*"during manual operation climate control kicked in and took over"*, 2026-05-26) and rc.1.5.2 fixed it two
+ways at once: it moved the STANDBY clear to session-end (the respect window — which is what actually fixed
+the complaint) **and** suppressed the CLOSE_ALL via `dm_set_standby_ex(..., recalibrate_on_clear=false)`.
+The second half went further than the complaint required. Its rationale was written up carefully — in a
+**code comment inside `session_close()`** — but **nothing went into this log**, so nobody searching for
+"T6 out of sync after manual control" could find it. The comment recorded *why the suppression was chosen*.
+It never recorded *what would now not happen*. Four months later the consequence was rediscovered from
+scratch.
+
+**Fix (2026-09-10):**
+- `session_close()` now posts **`T2_NOTIFY_CLEAR_DWELL`** (new bit, `relay_controller.h`) so T2 drops the
+  dwell debt in its own context — T2 stays the only writer of `s_ch[]`, no cross-task race.
+- `recalibrate_on_clear` flipped back to **true**: session-end returns the windows to a known CLOSED baseline
+  and T6 resumes from that. The respect window still holds positions for the whole session, so the 2026-05-26
+  complaint stays fixed — what changed is that positions no longer survive *past* the session.
+- The two dwell deferrals are now **`ESP_LOGI`, latched to one line per episode** via `dwell_defer_logged`
+  (reset wherever a fresh dwell is set), so it is visible without being spam.
+
+**Rules:**
+- **If a command source bypasses a timer, decide explicitly whether it should also clear the debt that timer
+  leaves behind.** Bypassing on the way in and not on the way out is the trap; it looks correct at both sites.
+- **If a fix SUPPRESSES a mechanism, log what will now not happen, not just why you suppressed it.** A
+  rationale in a code comment is findable only by someone already reading that function — which is nobody,
+  because the symptom appears in a different task.
+- **Never diagnose "T6 is out of sync" as a T6 state-model problem.** It is level-triggered and state-based.
+  Look at what is refusing its commands: dwell (`:483`), the gh#48 in-travel guard (`:395`/`:467`), the
+  MOTOR_ALARM discard (`:821`), or an EG1 inhibit bit.
+
+## 2026-09-10 — Two concurrent `pio run` invocations on the same env report a spurious FAILED
+
+**Problem:** Verifying the gh#51 Group A edits, `pio run -e lolin_s3 -e lolin_s3_mbprobe -e lolin_s3_bench` reported `lolin_s3_mbprobe  FAILED` while the other two succeeded. Re-running that env alone: `SUCCESS` in 3.7 s. Nothing in the source had changed between the two runs.
+
+**Root cause:** self-inflicted. A background `pio run -e lolin_s3_mbprobe -e lolin_s3_bench` was still running when the foreground build of the overlapping envs started. Both processes write `.pio/build/<env>/`, so they clobber each other's objects and link artefacts. The reported failure belongs to the collision, not the code.
+
+**Fix:** never run two `pio run` invocations over overlapping envs at once — background one only if the foreground work touches different envs, or just wait. **Diagnostic rule:** a build failure with no matching compiler diagnostic in the output is a build-system artefact, not a code defect — re-run the single env in isolation before touching source. This is the second artefact of this shape this session (the first was a stale `lolin_s3_mbprobe` binary that rebuilt SUCCESS), so the reflex is worth having: **confirm a failure reproduces in isolation before believing it.**
+
+## 2026-09-10 — a before/after measurement that lands on the SAME number for opposite reasons is not evidence
+
+**Problem:** Verifying gh#51 Group A on FDA4. Fail-first run (buggy 2.4.1, travel_m1 set to 40, T2 cached 21) measured **24.0 s**. Post-fix run (2.4.2, travel_m1 set to 21, T2 booted with 40) measured **23.6 s**. Both "passed" their intended reading, and the two numbers are indistinguishable. The only thing separating a reproduced defect from a confirmed fix was a chain of reasoning about what NVS happened to hold at boot -- unreconstructable from the logs a week later.
+
+**Root cause:** The two runs were designed as "old value vs new value", but the old value in run 1 and the new value in run 2 were **the same number (21)**. The measurement could not discriminate; only the surrounding argument could.
+
+**Fix:** Added a third run at a value matching neither side -- travel_m1 = 60, measured **63.3 s**, which is neither the cached 40 (45 s) nor the old 21 (26 s). It also carried its own control: M2 (unchanged, 21) held 23.9 s and M3 (unchanged, 13) held 15.7 s in the same sweep, so only the written channel moved. **Rule: before running a before/after test, check that the two expected results differ. If either side's expected value appears anywhere in the other side's setup, pick a third value that appears in neither.** Prefer a delta large enough to be unmistakable -- the Group C confirmation used travel_m3 13 -> 171, a 158-second change in pulse length, which needs no argument at all.
+
+## 2026-09-10 — web assets are NEVER parsed by the firmware build: a broken `app.js` ships silently
+
+**Problem:** gh#51 Group D edited `firmware/data/app.js`. `pio run` reported SUCCESS for every env, and `build_release.ps1` packaged the file happily. Neither one parses JavaScript. A syntax error would have shipped, and the failure mode is quiet: the Motors tab renders with six blank fields while every other tab looks normal.
+
+**Root cause:** `firmware/data/` is packed into a LittleFS image byte-for-byte. There is no lint, no parse, no test in the release path. The C toolchain's warnings-as-errors discipline creates a false sense that "it built" means "it is valid".
+
+**Fix:** `node` is not installed on this machine, so pre-flash checking is structural only (brace/paren/bracket balance, and reading the edited block). **The real check is post-flash: load the served page and confirm the functions exist** -- `javascript_tool` with `['setVal','postCfg','renderIdentity'].map(n => typeof window[n])` returned three `function`s, and the console showed only the expected 401 from the admin-gated config fetch. Do that for any asset change; "the firmware built" proves nothing about `app.js`, `index.html` or `style.css`.
+
+## 2026-09-10 — `/api/config` field names are NOT the NVS keys, and an unknown key is written to NVS with `ok:true`
+
+**Problem:** Restoring FDA4 after a factory reset, `POST /api/config {"ns":"system","key":"poll_interval_s","value":45}` returned `200 {"ok":true}` and changed nothing. The NVS key is `poll_interval`; `poll_interval_s` is the field name `/api/config` **returns**. So reading the API and writing its own output back is exactly the mistake that triggers it.
+
+**Root cause:** Two things compound. The 200 only means "queued to Q4" -- the handler returns before T4 applies anything. And `apply_config_update()` calls `nvs_cfg_set_i32()` **before** it knows whether the key is recognised, so an unknown key is persisted as a junk NVS entry, skips `cfg_clamp()`, updates no shadow field, emits no audit row, and logs nothing (the INFO line sits inside `if (updated)`).
+
+**Fix:** Filed as gh#53 with a suggested `cfg_key_is_known()` predicate + 400 response. Until then: **never assume a JSON field name is the NVS key.** The authoritative list is the `K_*[]` string constants at the top of `data_manager.cpp`; the GUI's `postCfg('ns','key',...)` calls in `index.html` are a second reliable source. Known mismatch today: `poll_interval` (NVS) vs `poll_interval_s` (JSON).
+
+## 2026-09-10 — `POST /api/ota/check` only QUEUES; the result comes from `GET` on the same path
+
+**Problem:** Verifying the restored ROTA secret. `POST /api/ota/check` returned `{"ok":true,"queued":true}` and `/api/ota/status` then read `{"state":"idle","error":""}`. That looked like a clean pass but proves nothing -- an idle state with no error is also what you see if the check never ran.
+
+**Root cause:** Two handlers share the URI: `rota_check_post_handler` queues a check and returns immediately (`web_server.cpp:2645`), `rota_check_get_handler` returns the last result. `/api/ota/status` reports the *download/apply* state machine, not the manifest check.
+
+**Fix:** `GET /api/ota/check` gives the real answer: `{"id":"30eda0a0fda4","result":"up_to_date","result_code":0,"http":200,"checks":3,"offered":"2.4.1","running":"2.4.4"}`. **`http: 200` is what proves the per-unit HMAC matches** -- a wrong secret returns 401/403, so `secret_set: true` on `/api/ota/config` only means "a secret is stored", not "the right one". The same call also exposes channel lag: `offered` vs `running`.
+
+## 2026-09-10 — the LCD factory reset (IO0 stage 2) destroys three secrets that cannot be read back
+
+**Problem:** Verifying gh#51 Group C required a real IO0 stage-2 reset on FDA4. It erases seven namespaces. Three of the erased values are **not readable from the device at any endpoint**: the WiFi PSK, the ROTA per-unit HMAC secret (`/api/ota/config` shows only `secret_set: bool`), and the status-post shared secret (no field at all in `/api/web`).
+
+**Root cause:** Write-only-by-design, correctly -- the SD card and the API must not become a credential exfil surface. The consequence is that a reset is only reversible if you hold those values elsewhere.
+
+**Fix:** **Capture `/api/config`, `/api/ota/config` and `/api/web` before the press** -- everything else (about 30 settings incl. ROTA url/window/enable and the status schedule) restores from that in seconds by script. The three secrets come from the operator's secret store and must be re-entered by hand. Also note the exposure window: WiFi credentials are gone but the *connection* survives until reboot, so a power blip between the reset and the re-provision strands the unit off the LAN with ROTA unable to recover it. Restore WiFi first. FDA4 also reverts `travel_m3` 13 -> 171, which is not a fault -- 13 is FDA4's mock value, 171 is the production default.
+
+## 2026-09-10 — when a Python script generates C/JS source, syntax-check the GENERATOR before running it
+
+**Problem:** Two separate bugs in edit-generator scripts this session. In `groupA.py`, a log line was written inside a single-quoted Python string, so `" + DASH + "` would have been emitted **literally** into the C source. In `groupC.py`, `" + DASH " an actuation"` was missing a `+` and died at import with a SyntaxError.
+
+**Root cause:** Building source text by concatenating string literals with a unicode `DASH` variable puts two languages' quoting rules in the same line. The second failed loudly; the first would not have -- it would have produced a file that compiles nowhere near the mistake, or worse, silently in a comment.
+
+**Fix:** `python -c "import ast,io; ast.parse(io.open(f,encoding='utf-8').read())"` on the generator before running it catches the loud class. For the quiet class, **grep the generated region afterwards** -- and prefer building long comment blocks as a list of lines joined with `"\n".join([...])` over `+`-concatenation, which is where both bugs lived.
 
 ## 2026-09-07 — swapping boards keeps the SAME COM port *and* the same DeviceID, so the port cannot identify a unit
 
@@ -655,6 +771,14 @@ Verify: serial shows `littlefs_mount(A (lfs0)) returned 0 (OK)` + `/index.html e
 
 ---
 
+## 2026-07-13 — Rapid OTA reboots rate-limit SNTP → T16 (ROTA) skips checks
+
+**Problem:** During ROTA client testing on a dev unit (FDA4), T16's manifest check kept returning `result:"skipped", code:3` for many minutes, even though `/api/status` reported a correct wall-clock time. `system.ntp_synced` stayed `false`.
+
+**Root cause:** OTA-pushing/reflashing the *same* unit many times in an hour makes it re-run `nm_sntp_quick_sync()` on every boot; pool.ntp.org rate-limits (KoD) the source IP after the burst, so the fresh per-boot sync never completes and the `nm_is_sntp_synced()` latch never sets. The internal ESP32 RTC retains valid time across warm reboots (so the *clock* is right), but T16 gates on the strict SNTP latch by design (see [rotaImplementationPlan.md](../design/rotaImplementationPlan.md) risk #3), so it skips rather than sign a request on an untrusted clock.
+
+**Fix:** Not a firmware bug — a test-environment artifact. Wait it out: T16 recovers on the rc.1.5.6 SNTP retry cadence (`NTP_RETRY_INTERVAL_S=300`, 5 min). To avoid it, batch firmware changes before pushing rather than reflashing the same unit in a tight loop when you need a synced clock. Never arises in production (units don't reboot 8×/hour). Check state via `/api/ota/check` (`result`) + `/api/status` (`system.ntp_synced`).
+
 ## 2026-07-08 — Clock hours wrong while `ntp_synced=true` — DS1307 outranked SNTP [RESOLVED — 2.1.3, gh#37]
 
 **Problem:** 2344's clock read 09:31 at real 14:06 (4 h 35 m behind) with `ntp_synced=true`. SD log showed an hourly ±16 500 s see-saw: SNTP set the correct time at :40 past, something dragged it back within a minute.
@@ -821,14 +945,6 @@ Encoded in [firmware/partitions.csv](../firmware/partitions.csv) header comment.
 
 **Fix:** Locally toggle `$ErrorActionPreference='Continue'` around the `& $PIO run` call; gate failure on `$LASTEXITCODE` alone. Landed in rc.1.3. See header comment block in [bin/build_release.ps1](../bin/build_release.ps1) Step 1.
 
-## 2026-07-13 — Rapid OTA reboots rate-limit SNTP → T16 (ROTA) skips checks
-
-**Problem:** During ROTA client testing on a dev unit (FDA4), T16's manifest check kept returning `result:"skipped", code:3` for many minutes, even though `/api/status` reported a correct wall-clock time. `system.ntp_synced` stayed `false`.
-
-**Root cause:** OTA-pushing/reflashing the *same* unit many times in an hour makes it re-run `nm_sntp_quick_sync()` on every boot; pool.ntp.org rate-limits (KoD) the source IP after the burst, so the fresh per-boot sync never completes and the `nm_is_sntp_synced()` latch never sets. The internal ESP32 RTC retains valid time across warm reboots (so the *clock* is right), but T16 gates on the strict SNTP latch by design (see [rotaImplementationPlan.md](../design/rotaImplementationPlan.md) risk #3), so it skips rather than sign a request on an untrusted clock.
-
-**Fix:** Not a firmware bug — a test-environment artifact. Wait it out: T16 recovers on the rc.1.5.6 SNTP retry cadence (`NTP_RETRY_INTERVAL_S=300`, 5 min). To avoid it, batch firmware changes before pushing rather than reflashing the same unit in a tight loop when you need a synced clock. Never arises in production (units don't reboot 8×/hour). Check state via `/api/ota/check` (`result`) + `/api/status` (`system.ntp_synced`).
-
 ## 2026-07-13 — T16 (ROTA) 8 KB stack overflows on the download/apply path [RESOLVED — 2.2.1]
 
 **Problem:** First live pull-install put FDA4 into a **crash loop** (reboots at ~35 s uptime, stayed on the old version, GUI slow). Coredump: `A stack overflow in task T16-rota has been detected` (`esp-coredump ... info_corefile --core-format raw`).
@@ -846,11 +962,3 @@ Encoded in [firmware/partitions.csv](../firmware/partitions.csv) header comment.
 **Fix / workaround:** Before believing a coredump matches the running version, verify: `cmp` against known prior dumps, or decode it (`esp-coredump ... --core-format raw <that-version's elf>`) and check the backtrace/task set. Erase a known-stale dump with `POST /api/coredump/erase`. **Improvements to consider:** erase the coredump partition as part of the OTA apply (T13 + T16/rota_apply) so a dump always matches the running image; and/or have the status endpoint report the version parsed from the dump's `esp_app_desc` instead of `FIRMWARE_VERSION`.
 
 **Resolved (2.2.14, gh#39):** Part 1 done — at boot the dump's ELF-SHA (`esp_core_dump_get_summary`) is compared to the running image's (`esp_app_get_elf_sha256`) and cached as `stale`. `/api/coredump/status` now reports `running_fw_ver` (not the misleading `fw_ver`) + `"stale":bool`; the download filename gains a `-stale` marker; the Log-tab GUI shows "from an EARLIER firmware (running X)." Part 2 (erase the coredump on OTA apply) was **deliberately NOT done** — the operator chose to preserve dumps across updates and rely on the `stale` flag, so no crash data is ever lost to an update.
-
-## 2026-09-10 — Two concurrent `pio run` invocations on the same env report a spurious FAILED
-
-**Problem:** Verifying the gh#51 Group A edits, `pio run -e lolin_s3 -e lolin_s3_mbprobe -e lolin_s3_bench` reported `lolin_s3_mbprobe  FAILED` while the other two succeeded. Re-running that env alone: `SUCCESS` in 3.7 s. Nothing in the source had changed between the two runs.
-
-**Root cause:** self-inflicted. A background `pio run -e lolin_s3_mbprobe -e lolin_s3_bench` was still running when the foreground build of the overlapping envs started. Both processes write `.pio/build/<env>/`, so they clobber each other's objects and link artefacts. The reported failure belongs to the collision, not the code.
-
-**Fix:** never run two `pio run` invocations over overlapping envs at once — background one only if the foreground work touches different envs, or just wait. **Diagnostic rule:** a build failure with no matching compiler diagnostic in the output is a build-system artefact, not a code defect — re-run the single env in isolation before touching source. This is the second artefact of this shape this session (the first was a stale `lolin_s3_mbprobe` binary that rebuilt SUCCESS), so the reflex is worth having: **confirm a failure reproduces in isolation before believing it.**

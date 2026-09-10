@@ -47,6 +47,23 @@
 #define T2_NOTIFY_CFG_CHANGED  (1u << 0)
 
 /**
+ * @brief T8 -> T2: drop any outstanding anti-thrash dwell debt.
+ *
+ * Posted by the LCD's session_close() when an admin manual-motor session
+ * ends (timeout or logout).  The dwell timers exist to stop T6 oscillating
+ * its OWN commands; a position the admin set by hand is a new baseline, not
+ * a T6 oscillation, so T6 must not inherit a debt it did not incur.
+ *
+ * Without this, T6 resumes in AUTOMATIC, computes the correct target, posts
+ * CMD_OPEN/CMD_CLOSE every cycle, and T2 refuses all of them until the dwell
+ * expires — on M3 that is up to 25 minutes of the controller looking
+ * correct and doing nothing.
+ *
+ * Handled in T2's own context so T2 stays the only writer of s_ch[].
+ */
+#define T2_NOTIFY_CLEAR_DWELL  (1u << 1)
+
+/**
  * @brief T2 — Relay Controller task entry point.
  *
  * Responsibilities:
