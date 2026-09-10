@@ -301,6 +301,15 @@ typedef enum {
     LOG_PARAM_ALARM_WIND_DIR   = 241, /**< wind SET, direction: va=dir°, vb=excl_low° */
     LOG_PARAM_ALARM_WIND_CLEAR = 242, /**< wind CLEAR: va=speed×10|0, vb=dir°|0 (incl. disabled-while-active 0,0) */
     LOG_PARAM_ALARM_WIND_FAULT = 243, /**< wind SET, sensor-fault safe-fail: va=-1, vb=0 */
+
+    /* Window position sensor events (Phase 3, integrateWindowPositionSensor.md 3b).
+     * Continues the wind band; 248..255 remain free and the band is nearly
+     * spent, so spend the rest deliberately. Carried on LOG_ALARM rows with
+     * channel = 6 (4 = T/RH fault, 5 = wind fault are taken). */
+    LOG_PARAM_WPOS_FAULT   = 244, /**< value_a: 1 = fault set, 0 = cleared */
+    LOG_PARAM_WPOS_TEACH   = 245, /**< value_a: 1 armed, 2 committed, 3 refused, 0 aborted */
+    LOG_PARAM_WPOS_STATUS  = 246, /**< value_a: the 30006 status bitfield */
+    LOG_PARAM_WPOS_RESTART = 247, /**< value_a: new 30008 uptime (it went backwards) */
 } log_param_id_t;
 
 /**

@@ -94,6 +94,9 @@ def load_logs(temp_dir: Path):
         "SENSOR_HR_0": [],   # (dt, t_c10, rh_pct)               — rc.1.4.0+ ch=0
         "SENSOR_HR_1": [],   # (dt, wind_dms, wind_dir_deg)      — rc.1.4.0+ ch=1
         "SENSOR_HR_2": [],   # (dt, bitmask)                     — rc.1.4.0+ ch=2 (window state)
+        # Phase 3 (integrateWindowPositionSensor.md 3a/3b) — M3 wire encoder.
+        "SENSOR_HR_3": [],   # (dt, win, pos_mm_x10, rate_x10)   — ch=3; pos -1 = sensor fault
+        "ALARM_WPOS":  [],   # (dt, param, va, vb)               — ALARM ch=6, params 244..247
         "SUN":         [],   # (dt, sunrise_min, sunset_min)     — rc.1.4.0+ (local time)
         "RELAY":   [],   # (dt, channel 1/2/3, state_name)
         "MODE":    [],   # (dt, resolved_step, step_t, step_rh)
@@ -138,6 +141,14 @@ def load_logs(temp_dir: Path):
                         events["SENSOR_HR_1"].append((dt, va, vb))   # wind_dms, wind_dir_deg
                     elif ch == 2:
                         events["SENSOR_HR_2"].append((dt, va & 0xFFFF))  # bitmask
+                    elif ch == 3:
+                        # Position: value_a = 0.1 mm (-1 = sensor fault),
+                        # value_b = SIGNED 0.1 mm/s, param = window 1/2/3.
+                        try:
+                            win = int(row.get("param", 3) or 3)
+                        except ValueError:
+                            win = 3
+                        events["SENSOR_HR_3"].append((dt, win, va, vb))
                 elif typ == "SUN":
                     # rc.1.4.0+ — sunrise/sunset in local-time minutes-from-midnight.
                     events["SUN"].append((dt, va, vb))
@@ -165,7 +176,15 @@ def load_logs(temp_dir: Path):
                         step_rh -= 256
                     events["MODE"].append((dt, va, step_t, step_rh))
                 elif typ == "ALARM":
-                    if ch == 0:
+                    if ch == 6:
+                        # Window position events (plan 3b). Kept raw: the panel
+                        # decides what to draw, the loader does not editorialise.
+                        try:
+                            pa = int(row.get("param", 0) or 0)
+                        except ValueError:
+                            pa = 0
+                        events["ALARM_WPOS"].append((dt, pa, va, vb))
+                    elif ch == 0:
                         # Wind override family. Per safety_monitor.h:
                         #   onset W1: va = wind_speed_avg_ms10, vb = v_max × 10
                         #   onset W2: va = wind_dir_avg_deg,    vb = dir_excl_low
@@ -341,11 +360,11 @@ def plot_day(date_key, events, cfg, out_path: Path, dawn_dusk):
     else:
         unit_id_hex = "????"
 
-    fig = plt.figure(figsize=(16, 12))
+    fig = plt.figure(figsize=(16, 14.5))
     fig.suptitle(
         f"Greenhouse — {date_key.isoformat()} local   ({fmt_tag} on unit 0x{unit_id_hex})",
         fontsize=13, fontweight="bold")
-    gs = gridspec.GridSpec(4, 1, figure=fig, hspace=0.38)
+    gs = gridspec.GridSpec(5, 1, figure=fig, hspace=0.42)
 
     # rc.1.4.0+ SUN rows — per-day lookup. Prefer the day's own SUN row
     # (whichever fires last in the local-midnight window covers the date's
@@ -552,9 +571,62 @@ def plot_day(date_key, events, cfg, out_path: Path, dawn_dusk):
     ax4.xaxis.set_major_locator(loc)
     ax4.xaxis.set_major_formatter(fmt)
 
+    # ---------------------------------------------------------------- Panel 5
+    # M3 position from the wire encoder (Phase 3, ch=3). Absent on any log
+    # predating the sensor, so the panel self-labels rather than drawing an
+    # empty axis that looks like a data gap.
+    ax5 = fig.add_subplot(gs[4], sharex=ax1)
+    pos_today = [(d, w, a, b) for d, w, a, b in events["SENSOR_HR_3"] if in_day(d)]
+
+    if pos_today:
+        # Split on sensor-fault rows (-1) so matplotlib draws a GAP rather than
+        # interpolating a straight line through the fault. A line across the
+        # outage would read as "the window moved smoothly", which is the one
+        # thing we know it did not tell us.
+        seg_t, seg_v, segs = [], [], []
+        for d, _w, a, _b in pos_today:
+            if a < 0:
+                if seg_t:
+                    segs.append((seg_t, seg_v)); seg_t, seg_v = [], []
+            else:
+                seg_t.append(d); seg_v.append(a / 10.0)
+        if seg_t:
+            segs.append((seg_t, seg_v))
+        for st_, sv in segs:
+            ax5.plot(st_, sv, lw=1.2, color="tab:purple")
+
+        faults = [d for d, _w, a, _b in pos_today if a < 0]
+        for d in faults:
+            ax5.axvline(d, color="red", lw=0.8, alpha=0.5)
+        if faults:
+            ax5.plot([], [], color="red", lw=0.8, label=f"sensor fault ({len(faults)} samples)")
+
+        # Teach / restart events, which explain discontinuities in the trace.
+        for d, pa, va, _vb in [e for e in events["ALARM_WPOS"] if in_day(e[0])]:
+            if pa == 245:
+                ax5.axvline(d, color="tab:orange", ls=":", lw=1.2)
+            elif pa == 247:
+                ax5.axvline(d, color="brown", ls="-.", lw=1.2)
+        ax5.set_ylabel("M3 position (mm)")
+        ax5.legend(fontsize=7, loc="upper right")
+    else:
+        ax5.text(0.5, 0.5, "no position data (pre-Phase-3 log)",
+                 transform=ax5.transAxes, ha="center", va="center",
+                 fontsize=9, color="grey")
+        ax5.set_yticks([])
+
+    shade_night(ax5, day_start, day_end, sunrise_min, sunset_min)
+    ax5.set_xlabel("Time (local \u2014 Europe/Amsterdam)")
+    ax5.grid(True, alpha=0.25)
+    ax5.xaxis.set_major_locator(loc)
+    ax5.xaxis.set_major_formatter(fmt)
+
+    # Panel 4 no longer carries the x-label; panel 5 is the bottom axis now.
+    ax4.set_xlabel("")
+
     # Boot/reset markers across all panels
     for d, rsn in boots:
-        for ax in (ax1, ax2, ax3, ax4):
+        for ax in (ax1, ax2, ax3, ax4, ax5):
             ax.axvline(d, color="red", ls="--", lw=1.0, alpha=0.6, zorder=2)
             if ax is ax1:
                 ax.text(d, ax.get_ylim()[1] * 0.97,

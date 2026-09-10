@@ -239,6 +239,20 @@ def _decode_sensor_hr(row: dict) -> str:
         # Wind — speed in deci-m/s, direction in degrees.
         return f"wind={a / 10:.1f} m/s  dir={b} deg"
 
+    if ch == 3:
+        # Window position (Phase 3, integrateWindowPositionSensor.md 3a).
+        #   value_a = position in 0.1 mm from reg 30001, or -1 on sensor fault
+        #   value_b = rate, SIGNED 0.1 mm/s from reg 30012 (+ opening, - closing)
+        #   param   = which window (1/2/3)
+        # Raw millimetres are logged, never the percentage: percent derives from
+        # 40004, so a mis-measured travel corrupts a logged percentage beyond
+        # recovery while percent stays recomputable from millimetres.
+        win = row.get("param", "?")
+        if a < 0:
+            return f"M{win} position: SENSOR FAULT"
+        arrow = "opening" if b > 0 else ("closing" if b < 0 else "at rest")
+        return f"M{win} position: {a / 10:.1f} mm   rate {b / 10:+.1f} mm/s ({arrow})"
+
     if ch == 2:
         # Window-state bitmask — pack-uint16 of 3×2-bit channel fields + 3 EG1 flags.
         mask = a & 0xFFFF
@@ -418,6 +432,31 @@ def _decode_session(row: dict) -> str:
         return f"raw: a={row.get('value_a')}"
 
 
+
+# Window position sensor events (Phase 3, plan 3b). LOG_ALARM rows on channel 6
+# -- 4 and 5 are the T/RH and wind sensor-fault channels. The param band
+# continues wind's 240-243; 248-255 remain free.
+_WPOS_TEACH = {0: "aborted", 1: "armed", 2: "COMMITTED", 3: "REFUSED"}
+
+_WPOS_STATUS_BITS = [
+    (0x0001, "startup:window"), (0x0002, "startup:avg"), (0x0004, "WIPER OPEN"),
+    (0x0008, "end sensor"),     (0x0010, "BOTH ends"),   (0x0020, "teach armed"),
+    (0x0040, "implausible"),    (0x0080, "NOT FOLLOWING"),
+]
+
+
+def _decode_wpos_event(param: int, va: int, vb: int) -> str:
+    if param == 244:
+        return ("position sensor FAULT set" if va else "position sensor fault cleared") +                (f"  (status 0x{vb & 0xFF:02X})" if vb else "")
+    if param == 245:
+        return f"teach {_WPOS_TEACH.get(va, f'?{va}')}"
+    if param == 246:
+        on = [n for m, n in _WPOS_STATUS_BITS if va & m]
+        return f"device status 0x{va & 0xFF:02X}" + (f" [{', '.join(on)}]" if on else " [none]")
+    if param == 247:
+        return f"device RESTARTED (uptime now {va} s -- any armed teach is lost)"
+    return f"wpos event param#{param} a={va} b={vb}"
+
 def _decode_alarm(row: dict) -> str:
     """
     ALARM — three producers in the firmware:
@@ -473,6 +512,12 @@ def _decode_alarm(row: dict) -> str:
             return ("Wind sensor fault: "
                     + ("triggered (two consecutive read failures)"
                        if va else "cleared"))
+
+        # Window position sensor events (Phase 3, plan 3b) - channel 6, params
+        # 244..247. Same ch-based dispatch idea as T5's 4/5: it keeps T2/T3 on
+        # ch=0 and lets each later producer own a channel of its own.
+        if ch == 6:
+            return _decode_wpos_event(int(row.get("param", 0) or 0), va, vb)
 
         # ── 2.3.0+ (gh#45): param discriminator — exact decode, no guessing ──
         pa = int(row.get("param", 0) or 0)
