@@ -27,6 +27,25 @@
 
 #include "../types/app_types.h"  /* window_state_t */
 
+/* ============================================================
+ * Task-notification bits (gh#51)
+ * ============================================================ */
+
+/**
+ * @brief T4 -> T2: a `motor` namespace config key changed; reload timings.
+ *
+ * Posted by apply_config_update() with eSetBits.  T2 consumes it at the
+ * top of its main loop and re-reads travel/dwell from NVS, so a value set
+ * from the GUI governs the next movement rather than the next boot.
+ *
+ * A task notification is used rather than a Q1 message because Q1 is
+ * discarded wholesale while EG1_BIT_MOTOR_ALARM is set (FR-MA03) and is
+ * only 8 deep; the notification bit also survives the blocking CLOSE_ALL
+ * calibration and coalesces repeated changes.  Mirrors
+ * T14_NOTIFY_CFG_CHANGED in status_post.h.
+ */
+#define T2_NOTIFY_CFG_CHANGED  (1u << 0)
+
 /**
  * @brief T2 — Relay Controller task entry point.
  *

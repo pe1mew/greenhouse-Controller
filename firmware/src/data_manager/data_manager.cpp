@@ -924,6 +924,17 @@ static bool apply_config_update(const config_update_t *upd)
             ESP_LOGI(TAG, "Q4 applied: %.15s/%.15s = %ld", ns_str, key_str, (long)clamped);
         }
 
+        /* gh#51 — T2 caches travel/dwell in its own channel struct, read
+         * once at task entry.  Without this nudge a new value would not
+         * take effect until the next reboot, while the GUI showed it
+         * immediately (it reads this shadow) and
+         * beheerderHandleiding.md:249 promised the next movement.
+         * See design/fixMotorTimingRefresh.md for why a notification and
+         * not a Q1 message. */
+        if (strcmp(ns_str, NVS_NS_MOTOR) == 0 && task_t2 != NULL) {
+            xTaskNotify(task_t2, T2_NOTIFY_CFG_CHANGED, eSetBits);
+        }
+
         /* a.6.35.5 — emit the audit row. Only when ns/key maps to a
          * documented log_param_id_t; admin-internal keys (session_timeout,
          * ap_timeout, led_*) update silently. */

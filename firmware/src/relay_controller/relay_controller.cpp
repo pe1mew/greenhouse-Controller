@@ -945,27 +945,37 @@ int16_t t2_get_window_bitmask(void)
 }
 
 /* ============================================================
- * Task entry point
+ * Configuration refresh (gh#51)
  * ============================================================ */
 
-void task_relay_controller(void *pvParameters)
+/**
+ * @brief (Re)load travel and dwell timings from NVS into the channel cache.
+ *
+ * Called at task entry, and again whenever T4 posts T2_NOTIFY_CFG_CHANGED
+ * after a `motor` namespace write.  Before gh#51 the read ran only at task
+ * entry, so a travel time set from the GUI did not take effect until the
+ * next reboot — while beheerderHandleiding.md:249 promised it applied to
+ * the next movement.
+ *
+ * Runs in T2's own context, so T2 remains the only reader and writer of
+ * these fields and no lock is needed.  An in-flight movement is unaffected:
+ * relay_deadline_ms was computed once when the stroke started, so the new
+ * value first governs the *next* stroke — which is the documented
+ * behaviour.  The same holds for a dwell already counting down.
+ *
+ * @warning Touches ONLY the three timing fields.  Channel state and the
+ *          three deadlines are initialised by the boot path alone: resetting
+ *          them on a live refresh would discard window state and cancel a
+ *          running travel or dwell timer mid-stroke.  Do not be tempted to
+ *          fold that initialisation back in here — it lived in this loop
+ *          before gh#51 only because the loop ran exactly once.
+ *
+ * nvs_cfg_get_i32_or_default() writes the factory default to NVS on first
+ * boot if the key is absent, so subsequent reads always return a valid
+ * value.
+ */
+static void load_motor_timings(void)
 {
-    (void)pvParameters;
-
-    /* Subscribe to the task watchdog (1.17.29 / gh#13). T2's main loop ticks
-     * every LOOP_TICK_MS (20 ms) → far faster than the WDT timeout, so a
-     * simple reset at the top of each iteration is sufficient. */
-    esp_task_wdt_add(NULL);
-
-    ESP_LOGI(TAG, "T2 starting");
-
-    /* ------------------------------------------------------------------
-     * 1. Read travel and dwell times from NVS.
-     *
-     *    nvs_cfg_get_i32_or_default() writes the factory default to NVS
-     *    on first boot if the key is absent, so subsequent reads always
-     *    return a valid value.
-     * ------------------------------------------------------------------ */
     for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
         int32_t travel_s    = 0;
         int32_t dwell_open  = 0;
@@ -985,17 +995,46 @@ void task_relay_controller(void *pvParameters)
         if (dwell_open  < 0) dwell_open  = 0;
         if (dwell_close < 0) dwell_close = 0;
 
-        s_ch[ch].travel_ms        = (uint32_t)(travel_s + MOTOR_TRAVEL_MARGIN_S_DEFAULT) * 1000u;
-        s_ch[ch].dwell_open_ms    = (uint32_t)dwell_open  * 1000u;
-        s_ch[ch].dwell_close_ms   = (uint32_t)dwell_close * 1000u;
-        s_ch[ch].state            = CH_UNKNOWN;
-        s_ch[ch].relay_deadline_ms = 0u;
-        s_ch[ch].gap_deadline_ms   = 0u;
-        s_ch[ch].dwell_deadline_ms = 0u;
+        s_ch[ch].travel_ms      = (uint32_t)(travel_s + MOTOR_TRAVEL_MARGIN_S_DEFAULT) * 1000u;
+        s_ch[ch].dwell_open_ms  = (uint32_t)dwell_open  * 1000u;
+        s_ch[ch].dwell_close_ms = (uint32_t)dwell_close * 1000u;
 
         ESP_LOGI(TAG, "CH%u: travel=%ld s  dwell_open=%ld s  dwell_close=%ld s",
                  (unsigned)(ch + 1u),
                  (long)travel_s, (long)dwell_open, (long)dwell_close);
+    }
+}
+
+/* ============================================================
+ * Task entry point
+ * ============================================================ */
+
+void task_relay_controller(void *pvParameters)
+{
+    (void)pvParameters;
+
+    /* Subscribe to the task watchdog (1.17.29 / gh#13). T2's main loop ticks
+     * every LOOP_TICK_MS (20 ms) → far faster than the WDT timeout, so a
+     * simple reset at the top of each iteration is sufficient. */
+    esp_task_wdt_add(NULL);
+
+    ESP_LOGI(TAG, "T2 starting");
+
+    /* ------------------------------------------------------------------
+     * 1. Load travel and dwell times, then initialise channel state.
+     *
+     *    The NVS read lives in load_motor_timings() because it also runs
+     *    on T2_NOTIFY_CFG_CHANGED (gh#51).  The state initialisation below
+     *    stays here and is deliberately NOT part of that function — see its
+     *    @warning.
+     * ------------------------------------------------------------------ */
+    load_motor_timings();
+
+    for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
+        s_ch[ch].state             = CH_UNKNOWN;
+        s_ch[ch].relay_deadline_ms = 0u;
+        s_ch[ch].gap_deadline_ms   = 0u;
+        s_ch[ch].dwell_deadline_ms = 0u;
     }
 
     /* ------------------------------------------------------------------
@@ -1135,6 +1174,22 @@ void task_relay_controller(void *pvParameters)
      * ------------------------------------------------------------------ */
     for (;;) {
         esp_task_wdt_reset();   /* WDT kick (1.17.29 / gh#13) */
+
+        /* ---- 4a0. Config refresh (gh#51) ----
+         * Non-blocking (zero ticks).  A change posted while calib_close_all()
+         * was running is not lost: the notification bit persists in the task's
+         * notification value and is consumed on the next pass.  Clearing all
+         * bits on exit keeps the value from latching. */
+        uint32_t notify_bits = 0u;
+        if (xTaskNotifyWait(0u, 0xFFFFFFFFu, &notify_bits, 0u) == pdTRUE) {
+            if ((notify_bits & T2_NOTIFY_CFG_CHANGED) != 0u) {
+                ESP_LOGI(TAG, "config change: reloading motor timings");
+                load_motor_timings();
+            }
+        }
+
+        /* Sampled after the refresh above: load_motor_timings() does nine
+         * NVS reads, and the alarm debounce below compares against this. */
         uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
 
         /* ---- 4a. Motor alarm ISR debounce ---- */
