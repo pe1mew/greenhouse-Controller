@@ -707,15 +707,15 @@ static int32_t cfg_clamp(const char *ns, const char *key, int32_t v)
  * @brief Map an NVS namespace/key pair to its LOG_PARAM_* id for audit rows.
  *
  * Used by apply_config_update() to fill log_event_t::param_id when a Q4
- * config change is committed. For motor dwell keys also writes the 1-based
- * channel index (1/2/3) to *out_channel so the audit row carries which
- * window the change affected.
+ * config change is committed. For motor travel and dwell keys also writes
+ * the 1-based channel index (1/2/3) to *out_channel so the audit row carries
+ * which window the change affected.
  *
  * @param ns           NVS namespace string.
  * @param key          NVS key string.
  * @param out_channel  If non-NULL, set to 1/2/3 for motor keys, 0 otherwise.
  * @return The matching LOG_PARAM_* id, or LOG_PARAM_NONE for keys that are
- *         deliberately not enumerated (e.g. `travel_mX`, session/AP timeouts).
+ *         deliberately not enumerated (e.g. session/AP timeouts, led_*).
  *         LOG_PARAM_NONE means "change still applied, no audit row".
  */
 static log_param_id_t ns_key_to_log_id(const char *ns, const char *key,
@@ -750,9 +750,14 @@ static log_param_id_t ns_key_to_log_id(const char *ns, const char *key,
         return LOG_PARAM_NONE;
     }
     if (strcmp(ns, NVS_NS_MOTOR) == 0) {
+        static const char * const ktr[] = { K_TRAVEL_M1,      K_TRAVEL_M2,      K_TRAVEL_M3      };
         static const char * const kdo[] = { K_DWELL_OPEN_M1,  K_DWELL_OPEN_M2,  K_DWELL_OPEN_M3  };
         static const char * const kdc[] = { K_DWELL_CLOSE_M1, K_DWELL_CLOSE_M2, K_DWELL_CLOSE_M3 };
         for (uint8_t i = 0u; i < 3u; i++) {
+            if (strcmp(key, ktr[i]) == 0) {
+                if (out_channel) { *out_channel = (uint8_t)(i + 1u); }
+                return LOG_PARAM_TRAVEL;
+            }
             if (strcmp(key, kdo[i]) == 0) {
                 if (out_channel) { *out_channel = (uint8_t)(i + 1u); }
                 return LOG_PARAM_DWELL_OPEN;
@@ -762,10 +767,11 @@ static log_param_id_t ns_key_to_log_id(const char *ns, const char *key,
                 return LOG_PARAM_DWELL_CLOSE;
             }
         }
-        /* travel_m{1,2,3} not enumerated in log_param_id_t — falls to NONE.
-         * Motor travel time is set during commissioning and rarely changes;
-         * not surfacing it via SETPT is a deliberate choice from the C1..C22
-         * table in logAnalysis.md. */
+        /* gh#51 — travel_m{1,2,3} used to fall through to NONE here, on the
+         * grounds that it was set once at commissioning.  It is enumerated as
+         * LOG_PARAM_TRAVEL since 2.4.2: the same release made it take effect
+         * without a reboot, and an unlogged change to a motor safety timeout
+         * that applies immediately is a different proposition. */
         return LOG_PARAM_NONE;
     }
     if (strcmp(ns, NVS_NS_SYSTEM) == 0) {

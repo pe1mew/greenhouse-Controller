@@ -250,6 +250,12 @@ typedef enum {
     /* 2.3.0 (gh#46) — wind-speed hysteresis dead band. */
     LOG_PARAM_WIND_HYST      = 45,  /**< wind/wind_hyst — old → new (m/s) */
 
+    /* 2.4.2 (gh#51) — motor travel time.  Deliberately unenumerated until
+     * now, on the grounds that it was a commissioning-only value; since
+     * 2.4.2 it takes effect without a reboot, so a silent change to a motor
+     * safety timeout is no longer acceptable.  Channel carries the motor. */
+    LOG_PARAM_TRAVEL         = 46,  /**< motor/travel_mX — old → new (s), channel = 1/2/3 */
+
     /* ── ALARM event-subtype discriminators (2.3.0, gh#45) ─────────────────
      * NOT config C-numbers. Reserved band 240..254, kept far above the
      * config space so the two can never collide. Stamped into `param` on

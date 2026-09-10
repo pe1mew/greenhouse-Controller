@@ -116,6 +116,12 @@ _PARAM = {
     42: ("ota_secret",      "(set)"),
     43: ("ota_win_lo",      "h"),
     44: ("ota_win_hi",      "h"),
+    # 2.3.0 (gh#46) - wind-speed hysteresis dead band. Added to the parser in
+    # 2.4.2: the firmware has emitted param 45 since 2.3.0 but the table stopped
+    # at 44, so those rows rendered as the bare "param#45".
+    45: ("wind_hyst",       "m/s"),
+    # 2.4.2 (gh#51) - motor travel time, previously never logged at all.
+    46: ("travel",          "s"),
 }
 
 # Param IDs whose value semantics are "field was set/changed" (value_a=1
@@ -312,7 +318,7 @@ def _decode_setpoint(row: dict) -> str:
     SETPT (LOG_SETPOINT):
       param = log_param_id_t identifying the config key
       value_a = old value   value_b = new value
-      ch = motor channel for dwell_open/dwell_close, 0 otherwise
+      ch = motor channel for travel/dwell_open/dwell_close, 0 otherwise
 
     Since 2.0.0-a.6.35.5 the parameter space includes audit-only entries
     for sensitive admin operations (PIN changes, WiFi credentials, the
@@ -339,8 +345,9 @@ def _decode_setpoint(row: dict) -> str:
             # but won't be invisible if it does.
             return f"{param_name} {unit}  [raw a={old_val} b={new_val}]"
 
-        # Motor-specific params include the channel
-        ch_suffix = f" (M{ch})" if ch in (1, 2, 3) and param_id in (18, 19) else ""
+        # Motor-specific params include the channel.  46 (travel) joined
+        # 18/19 in 2.4.2 -- for travel the motor is the whole point of the row.
+        ch_suffix = f" (M{ch})" if ch in (1, 2, 3) and param_id in (18, 19, 46) else ""
 
         def _fmt(v: int) -> str:
             if param_id == 11:   # rh_ctrl_en — boolean

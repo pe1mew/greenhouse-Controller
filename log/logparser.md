@@ -335,7 +335,7 @@ Configuration parameter changed.  Posted by:
 | `param` | Parameter ID (see table below) |
 | `value_a` | Old value (or sentinel `1` for "set/changed" on sensitive fields) |
 | `value_b` | New value (or `0` for sensitive fields) |
-| `ch` | Motor channel (only relevant for `dwell_open` / `dwell_close`) |
+| `ch` | Motor channel (only relevant for `travel` / `dwell_open` / `dwell_close`) |
 
 **Parameter IDs:**
 
@@ -385,6 +385,8 @@ Configuration parameter changed.  Posted by:
 | 42 | ota_secret | *(set)* | **sentinel** — ROTA per-unit HMAC secret was changed (secret not logged; 2.2.0) |
 | 43 | ota_win_lo | h | numeric, old → new — apply-window start hour, local (lo==hi disables the window; 2.2.0) |
 | 44 | ota_win_hi | h | numeric, old → new — apply-window end hour, local time (2.2.0) |
+| 45 | wind_hyst | m/s | numeric, old → new — wind-speed release dead band (2.3.0, gh#46). **The firmware has emitted this since 2.3.0; the parser only learned it in 2.4.2**, so rows in logs from 2.3.0-2.4.1 render as `param#45` |
+| 46 | travel | s (per channel) | numeric, old → new — motor full-travel time (2.4.2, gh#51). Never logged before 2.4.2, because until then it only took effect at reboot |
 
 **Sensitive-value policy (since 2.0.0-a.6.35.5).** Param IDs 23-30 cover
 admin-sensitive settings — PIN rotations, WiFi credentials, the

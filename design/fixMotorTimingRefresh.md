@@ -4,7 +4,7 @@
 |---|---|
 | Document | Implementation plan |
 | Date | 2026-09-10 |
-| Status | **Group A COMPLETE and HARDWARE-VERIFIED** — released as 2.4.2, OTA'd to FDA4 2026-09-10, fail-first protocol observed (§8.1). Groups B–E not started |
+| Status | **Group A COMPLETE and HARDWARE-VERIFIED** (released 2.4.2, on FDA4). **Group B IMPLEMENTED** — firmware builds, parser verified against synthetic rows, **firmware side not yet exercised on hardware** (needs a release). Groups C–E not started |
 | Issue | [gh#51](https://github.com/pe1mew/greenhouse-Controller/issues/51) |
 | Trigger | Operator question 2026-09-10: "when travel time of a motor is set, when will the new value be applied?" Answer: at the next boot. The manual says next movement |
 | Target | 2.4.2 (patch — no new NVS key, no new task, no new user-visible feature) |
@@ -141,6 +141,8 @@ The rejected alternative of having T2 call `dm_cfg_snapshot()` would put a 200 m
 
 ## 3. Group B — audit trail
 
+> **Implemented 2026-09-10.** Three deviations and one bonus, all found while tracing the consumers — see §3.1.
+
 Today `travel_mX` maps to `LOG_PARAM_NONE` (`data_manager.cpp:748`) so no SETPT row is written, and T2's boot line is `ESP_LOGI` — serial only. **The SD log contains no record of travel times at all.** That was defensible while the value was commissioning-only; once it takes effect immediately, a silent change to a motor safety timeout is not.
 
 ### B1. `app_types.h` — add the enum member
@@ -166,6 +168,60 @@ Replace the `return LOG_PARAM_NONE;` fall-through for travel with a channel-stam
 Next to the existing `18: ("dwell_open", "s")`.
 
 **`model/campaign-summer-2026/plot_daily.py` needs no change** — verified: it reads `param` only for the 240-243 ALARM band, and ignores config-band SETPOINT params.
+
+---
+
+### 3.1 What tracing the consumers turned up
+
+**The parser had already fallen behind, and not because of this change.**
+`_PARAM` in `logparser.py` stopped at **44**. `LOG_PARAM_WIND_HYST = 45` shipped
+in **2.3.0 (gh#46)** and the parser was never taught it, so every `wind_hyst`
+change logged since 2.3.0 renders as the bare `param#45` with no name and no
+unit. Unknown ids degrade rather than crash (`_PARAM.get(param_id, (f"param#{id}", ""))`),
+which is why nobody noticed. Fixed here alongside 46, because it is the same
+one-line omission and the CLAUDE.md rule it violates is the rule this group
+exists to satisfy.
+
+**The channel-suffix set is separate from the name table.** `_decode_setpoint`
+carries its own whitelist, `param_id in (18, 19)`. Adding 46 to `_PARAM` alone
+rendered `travel: 171 s -> 30 s` with **no motor identified** — for travel the
+channel is the entire point of the row. Two lists, one concept; 46 is now in
+both. Verified by output, not by inspection.
+
+**`wind_hyst` is unscaled.** Checked rather than assumed, because the gh#45 ALARM
+rows encode speed as `×10`. `CFG_MIN/MAX_WIND_HYST` is 0..5 and it is compared
+directly against `v_max` (1..30), so both are whole m/s and the parser needs no
+divide.
+
+**`design/logAnalysis.md`'s param table stops at 22.** Ids 23–45 were never added
+to it. Rather than silently extend a table with a 23-row hole, the gap is now
+stated in the document, pointing at `app_types.h` as the authoritative enum and
+`log/logparser.md` as the complete decode table.
+
+**Verification (parser side only).** Synthetic SETPT rows through `logparser.py`:
+
+```
+travel (M3): 171 s -> 30 s          <- param 46, channel carried
+travel (M1): 21 s -> 60 s           <- param 46, second channel
+wind_hyst: 10 m/s -> 15 m/s         <- param 45, previously "param#45"
+dwell_open (M1): 300 s -> 600 s     <- control, unchanged behaviour
+dwell_close (M2): 60 s -> 120 s     <- control, unchanged behaviour
+```
+
+The two dwell rows are controls: they exercise the path 46 now shares, so a
+regression in the shared `ch_suffix`/`_fmt` logic would show up there.
+
+**Not verified:** the firmware side. `ns_key_to_log_id()` returning
+`LOG_PARAM_TRAVEL` only becomes observable in a real SD row, which needs a
+release and an OTA. `lolin_s3` and `lolin_s3_bench` build.
+
+**Version:** recommend **2.5.0 (minor)**, not a patch. Every prior param-id
+addition landed in a minor (2.1.0 `avg_win_wind`, 2.2.0 ROTA, 2.3.0 `wind_hyst`),
+an older `logparser.py` renders the new rows as `param#46`, and CLAUDE.md treats
+"changing the T9/T14 audit log format" as a change tooling must track. The
+counter-argument is real though: the 12-byte record shape is untouched and this
+is a new *value* in an existing field, which would make it 2.4.3. Operator's
+call.
 
 ---
 
@@ -221,6 +277,10 @@ One line after `pin_auth_init(); session_close(false);`. The reload re-reads the
 Rename the C fields to `dwell_open_s[3]` / `dwell_close_s[3]` and fix the doc comments — internal, zero risk.
 
 For the JSON keys, **emit both for one release**: add `dwell_open_s` / `dwell_close_s` alongside the existing keys, move `firmware/data/app.js:507-512` to the new names, and mark the old pair deprecated in a comment. Renaming outright would break any external `/api/config` consumer with no deprecation window. This is an asset change, so the **paired-commit invariant applies** — firmware and assets within 120 s.
+
+### D1a. `design/logAnalysis.md` states dwell in minutes
+
+Rows C18/C19 (`:147`, `:148`) give the dwell value as *"Old value (min)"* / *"New value (min)"*. They are seconds. Same root misnomer as D1, propagated into a design document — found while adding param 46 to that file's table, and left for D1 so the naming work lands in one commit.
 
 ### D2. Six wrong tooltip bounds in `index.html`
 
