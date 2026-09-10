@@ -4,7 +4,7 @@
 |---|---|
 | Document | Implementation plan |
 | Date | 2026-09-10 |
-| Status | **Group A COMPLETE and HARDWARE-VERIFIED** (2.4.2, on FDA4). **Groups B and C IMPLEMENTED**, targeted at **2.4.3** — both build; B's parser side is verified, B's firmware side and all of C are **not hardware-verified**. Groups D–E not started |
+| Status | **Groups A, B, C implemented; A and B HARDWARE-VERIFIED.** A shipped in 2.4.2; B and C shipped in **2.4.3**, on FDA4. B verified against real SD rows. **C is NOT verified** — IO0 case 2 has no API route, so it needs the physical button. Group D not started |
 | Issue | [gh#51](https://github.com/pe1mew/greenhouse-Controller/issues/51) |
 | Trigger | Operator question 2026-09-10: "when travel time of a motor is set, when will the new value be applied?" Answer: at the next boot. The manual says next movement |
 | Target | 2.4.2 (Group A, shipped) → **2.4.3** (Groups B+C). Patch, per operator 2026-09-10: this is a mandatory correction on the path to the M3 window-control rework, not a feature line of its own |
@@ -211,9 +211,17 @@ dwell_close (M2): 60 s -> 120 s     <- control, unchanged behaviour
 The two dwell rows are controls: they exercise the path 46 now shares, so a
 regression in the shared `ch_suffix`/`_fmt` logic would show up there.
 
-**Not verified:** the firmware side. `ns_key_to_log_id()` returning
-`LOG_PARAM_TRAVEL` only becomes observable in a real SD row, which needs a
-release and an OTA. `lolin_s3` and `lolin_s3_bench` build.
+**Verified on hardware 2026-09-10** (FDA4, 2.4.3), real SD rows, not synthetic:
+
+```
+2026-09-10T13:40:02,SETPT,WEB,1,46,21,25   ->  travel (M1): 21 s -> 25 s
+2026-09-10T13:40:04,SETPT,WEB,1,46,25,21   ->  travel (M1): 25 s -> 21 s
+2026-09-10T13:40:07,SETPT,WEB,0,45,1,2     ->  wind_hyst: 1 m/s -> 2 m/s
+2026-09-10T13:40:09,SETPT,WEB,0,45,2,1     ->  wind_hyst: 2 m/s -> 1 m/s
+```
+
+Both directions, channel carried, and param 45 confirmed against real firmware
+output — closing the 2.3.0 gap with evidence rather than inspection.
 
 **Version:** recommend **2.5.0 (minor)**, not a patch. Every prior param-id
 addition landed in a minor (2.1.0 `avg_win_wind`, 2.2.0 ROTA, 2.3.0 `wind_hyst`),
@@ -239,7 +247,7 @@ nested take would have deadlocked T4 outright. Calling them inside the critical
 section is safe.
 
 **`nvs_load_mode()` is excluded, and that is a deliberate design decision, not an
-oversight.** It only ever *sets* `EG1_BIT_STANDBY`:
+oversight — filed as [gh#52](https://github.com/pe1mew/greenhouse-Controller/issues/52).** It only ever *sets* `EG1_BIT_STANDBY`:
 
 ```c
 nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_MODE_STANDBY, 0, &v);
@@ -271,6 +279,8 @@ credentials are owned by other tasks and are not part of the cfg shadow, so a li
 connection survives until reboot. Noted in the function's `@warning`.
 
 ### 4.2 Verification — not possible over the network
+
+> **Still outstanding as of 2.4.3 on FDA4.** The steps below have not been run.
 
 Case 2 is reached by the **physical IO0 button** on the controller. There is no web
 or API route to it, so unlike Group A this cannot be exercised remotely. To verify

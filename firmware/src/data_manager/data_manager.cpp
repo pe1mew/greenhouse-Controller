@@ -1701,7 +1701,7 @@ void dm_reload_all_cfg(void)
     nvs_load_system();
     nvs_load_web();
     update_sun_times();   /* lat/lon may have reverted to defaults */
-    /* nvs_load_mode() deliberately omitted -- see the @note in the header. */
+    /* nvs_load_mode() deliberately omitted -- gh#52, and the @note in the header. */
 
     xSemaphoreGive(MX4);
 

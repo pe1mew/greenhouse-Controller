@@ -40,7 +40,7 @@ a factory reset has to actually reset.
   `channel` and old —> new in seconds, matching `dwell_open`/`dwell_close`.
   `log/logparser.py` and `log/logparser.md` updated in the same change.
 
-**Known limitation.** `dm_reload_all_cfg()` deliberately does **not** reset the
+**Known limitation (gh#52).** `dm_reload_all_cfg()` deliberately does **not** reset the
 operating mode. `nvs_load_mode()` only ever *sets* `EG1_BIT_STANDBY` and never
 clears it, and clearing STANDBY properly means `dm_set_standby(false, ...)`, which
 posts `CMD_RECALIBRATE` and drives a full CLOSE_ALL sweep — an actuation the

@@ -316,7 +316,7 @@ void dm_reload_web_cfg(void);
  * erased namespace also writes the factory default back to NVS. That is what
  * makes the "Defaults loaded" claim true rather than merely displayed.
  *
- * @note Operating mode is deliberately NOT reloaded. nvs_load_mode() only
+ * @note Operating mode is deliberately NOT reloaded (gh#52). nvs_load_mode() only
  *       ever *sets* EG1_BIT_STANDBY (it is written for boot, where the bit
  *       starts clear) and never clears it, so calling it here would be a
  *       no-op after an erase. Clearing STANDBY properly means
