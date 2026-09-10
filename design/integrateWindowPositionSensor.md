@@ -47,6 +47,187 @@ Development happens on **FDA4**, which is being fitted with a mechanical mock of
 
 ---
 
+## 2a. The physical model — reference and design limitations
+
+*Operator drawing + description, 2026-09-10, corroborated by the Phase 0 teach measurements
+below. **Normative for phases 1-5.** The rig was built to this and production is being built
+to it.*
+
+### 2a.1 Three nested ranges, not two
+
+```
+  0 V |------------------ potmeter (wire sensor) range ------------------| 3.3 V
+         |------------- physical range of the window -------------|
+            [LOWER SW]---- opening range of the window ----[HIGHER SW]
+                              (e.g. 1000 mm; 1500 mm on this rig)
+```
+
+From widest to narrowest:
+
+1. **Potmeter range** — the wire sensor's full electrical travel, 0 V .. 3.3 V. **Wider than
+   the window at BOTH ends by design**, so the window never runs the sensor into either rail.
+2. **Physical range of the window** — what the mechanism can traverse. Ends at the motor's
+   end protection.
+3. **Opening range** — **lower end switch to higher end switch. This is 0 % .. 100 %.** It is
+   what the operator means by "closed" and "open", and it is narrower than the physical range
+   because **blinds overlap** at both ends.
+
+**The end switches mark the fully closed / fully open WINDOW, not the motor limits.** The
+motor limits sit outside them, and the leaf overtravels past each switch into the overlap
+until the end protection stops it.
+
+### 2a.2 Rig vs production — the same geometry, different proportions
+
+| | test rig | expected real window |
+|---|---|---|
+| Window's share of the potmeter range | **most of it** | a **minority** — 2 m sensor, ~1.5 m window |
+| Stop-to-stop time | **~13 s** | ~171 s (**~13x slower**) |
+| Switch/overlap/limit geometry | identical | identical |
+
+**The rig behaves exactly as the real window will. The only difference is speed.** So every
+constant 3 derives from `travel_m3` transfers; nothing thermal does (2).
+
+The proportion difference matters in one place: production leaves far more unused sensor
+range, so its per-count resolution in millimetres will be **coarser** than the rig's for the
+same ADC span. Do not read rig resolution figures as production figures.
+
+### 2a.3 What the current firmware does — the thing being replaced
+
+**The shipped logic is timer-only.** T2 energises a relay for `travel_ms` and stops; it never
+reads the end switches. The motor is stopped by its own **end protection**, so **every full
+stroke ends with the motor stalled against a mechanical limit** for whatever time is left on
+the timer.
+
+That is today's design and it works. **The new logic must account for the end switches**
+(FR-WP07, contract bit 3) instead of driving blind into the end protection.
+
+### 2a.4 Measured on the rig, 2026-09-10 (Phase 0 teach)
+
+| landmark | raw ADC | how observed |
+|---|---|---|
+| lower (closed) switch | **0** | bit 3 made; teach captured 0 -> 40005 |
+| closed rest (motor limit) | **0** | live read at rest |
+| higher (open) switch | **867** | bit 3 made; teach captured 867 -> 40006 |
+| open rest (motor limit) | **986** | live read at rest, bit 3 **still set** |
+
+**Open-end overtravel: 119 counts** — the blind overlap, exactly as drawn. Far too large to be
+capture staleness (bounded at ~10 counts by 40002 = 100 ms and ~147 mm/s).
+
+**Contract 5.3 sensor-zone check: PASS at the open end.** Bit 3 made at 867 and stayed made
+through rest at 986, so "bit 3 set" genuinely means fully open. `OPEN` can be displayed
+honestly.
+
+### 2a.5 Consequences that constrain the design
+
+1. **The DEVICE clamps position to `40004`; the overtravel is invisible.** *(Corrected
+   2026-09-10 — an earlier draft of this section claimed readings beyond 100 % are normal and
+   must not be clamped. Measured on the rig, that is wrong: the device clamps them itself.)*
+   `30001` matches `raw × 40004 / (40006 - 40005)` exactly up to the open switch and then
+   saturates:
+
+   | raw | reads | |
+   |---|---|---|
+   | 619 | 1070.9 mm | matches the formula |
+   | 775 | 1340.8 mm | matches |
+   | 937 | **1500.0 mm** | predicted 1621.1 — **clamped** |
+   | 986 | **1500.0 mm** | predicted 1705.9 — **clamped** |
+
+   **Consequence for the new logic: position cannot distinguish "at the open switch" from
+   "driven into the end protection".** Both read 100 % and both have bit 3 set. Anything that
+   needs to know how far into the overlap the leaf sits must get it from elsewhere — or accept
+   that it cannot. 0-100 % is therefore the correct display scale after all.
+
+2. **The end switches are authoritative for 0 % and 100 %; the wire sensor interpolates.**
+   This is a cleaner split than earlier drafts assumed, and it degrades well: a wiper fault
+   falls back to *today's* behaviour (switch + timer), not to nothing.
+
+3. **Stopping at the switch removes a stall that happens on every stroke today.** Cutting the
+   relay when bit 3 makes is a mechanical improvement, not only a positioning one. It also
+   means the **effective travel time becomes shorter than the configured `travel_ms`**, which
+   today must cover switch-to-limit as well.
+
+4. **`40004` is the switch-to-switch opening range**, never stop-to-stop (contract 6.4:
+   "travel between the calibration points" — and the calibration points are the switches the
+   teach captured).
+
+### 2a.6 Closed-end headroom — ACCEPTED as a known limitation (operator, 2026-09-10)
+
+Raw reads **0** at the closed switch and at closed rest. Contract 7.3 wants margin at both
+landmarks; there is none at this end.
+
+**Shifting the mount cannot fix it, and the range budget is why:**
+
+```
+closed rest raw 0  ->  open rest raw 986   = 986 counts of mechanical travel
+potentiometer usable range                 = 1023 counts
+spare, TOTAL across both ends              =   37 counts
+```
+
+Giving the closed end the ~52 counts it needs puts open rest at **1038, past the 1023 rail**
+— it moves the clipping to the other end and loses the open overtravel with it. **The
+draw-wire's electrical range is barely larger than the full mechanical travel**, so meaningful
+headroom at both ends is not achievable with this sensor and this overtravel. This is a
+hardware constraint, not a mounting error.
+
+**Decision: accept it.** The consequences the design must carry:
+
+- **Bit 6 (implausible) is inert in the closed direction.** A shorted wiper reads 0, which is
+  indistinguishable from a genuinely closed window. **Requirements 12.4 rule 1 is the only
+  defence** and must be implemented, not assumed.
+- **Closed-end overtravel is unmeasurable.** The reading cannot go below 0, so the motion
+  between the closed switch and the closed limit is clipped.
+- Bit 7 (not following) still works at this end and is unaffected — it needs excursion, not
+  absolute level. Proven on this rig: see 2a.7.
+
+Revisit only if the mechanical overtravel is reduced (freeing counts) or the sensor is
+replaced with one whose range materially exceeds the travel.
+
+### 2a.7 Bit 7 validated on a real fault, unplanned (2026-09-10)
+
+While re-mounting the sensor the draw-wire came loose. The device caught it exactly as
+specified: **bit 7 set, bit 6 clear, bit 2 clear** — which 7.2 decodes as *"the mechanism:
+tangled, snapped or slipping draw-wire; the potentiometer itself is usually fine."* Raw sat at
+0 across repeated full strokes while `30011` showed the sensor reading happily and `30009`
+showed a clean bus.
+
+Re-attaching the wire cleared bit 7 on the **first** good stop-to-stop sequence, as 7.2 says
+it should, with raw sweeping 0..990.
+
+**This is the fault no electrical test can find**, and it was validated here by accident
+rather than by design. Worth keeping: a bench check for the position path should include
+detaching the wire, not just shorting or opening the wiper.
+
+### 2a.9 Committed calibration (2026-09-10, rig)
+
+| register | value | |
+|---|---|---|
+| `40001` zero offset | 0 | |
+| `40002` measurement window | **100 ms** | not the 1000 ms default — see below |
+| `40003` averaging window | 10 s | default |
+| `40004` full travel | **15000** | 1500 mm, switch-to-switch |
+| `40005` raw closed | **0** | at the rail; accepted per 2a.6 |
+| `40006` raw open | **858** | |
+
+**Scale: 858 counts over 1500 mm = 1.748 mm per count.**
+
+**`40002` must be set before any teach, not after.** The teach captures `30005` at the sensor transition, and `30005` only refreshes once per measurement window. At the 1000 ms default and ~150 mm/s the capture could be a full second stale — up to 150 mm, ~86 counts of calibration error, with nothing to indicate it. At 100 ms that bound is ~15 mm.
+
+Successive teaches captured the open end at 867, then 904 observed / 858 committed. The spread is real: it is where the switch makes on that pass, plus up to one measurement window of staleness. **Treat a single teach as ~±20 counts (~35 mm) repeatable, not exact** — and re-teach rather than hand-tuning if the number looks wrong.
+
+### 2a.8 Traverse timing, measured (2026-09-10)
+
+| leg | time |
+|---|---|
+| switch-to-switch (the actual opening range) | **10.0 s** |
+| switch-to-limit (the blind overlap) | **~3.5 s** |
+| total, limit to limit | **~13.5 s** — consistent with `travel_m3` = 13 s covering both |
+
+**So today's timer-only logic spends ~3.5 s of every stroke stalled against the end
+protection.** New logic that cuts the relay on bit 3 removes that (2a.5 item 3), and the
+effective travel time it should configure is the **10 s** switch-to-switch figure, not 13.
+
+---
+
 ## 3. The central design rule: derive every rate constant from `travel_m3`
 
 **The rig being 11.4× faster is not a caveat — it is the most useful thing about it.** It forces constants out of the code that would otherwise have been silently production-only.
@@ -173,6 +354,57 @@ Confirm the device before writing code against it. Per contract §9: read `30007
   - **Sensor-zone** (contract §5.3): drive fully closed, confirm bit 3 stays set. If it clears, FR-WP07 is not met on this rig and "bit 3 clear" must be read as *not proven at a stop*, never *proven away from one*.
   - **Electrical headroom** (contract §7.3): with the window fully closed and fully open, `30005` must not sit near 0 or 1023. If it does, **bit 6 is inert** and a shorted wiper will read as a perfectly closed window.
 
+#### Phase 0 results — FDA4, 2026-09-10 (steps 1-3, no movement yet)
+
+Run over `POST /api/diag/modbus` on the `2.4.5-bench` build (`fw_ver` and `asset_version` both
+`2.4.5-bench`, so the dev build is unmistakable).
+
+**Device: address 40.** 45 times out. `30007` = `0x0101` — build type **0x01 (release)**, firmware v1.
+Not the `0x81` bench build, so §9's refusal does not apply. Uptime 34768 s (9.7 h), `30009` bus CRC
+errors **0**.
+
+**The sensor is COMPLETELY UNCOMMISSIONED.** Every holding is at its factory default:
+
+| reg | value | default? | note |
+|---|---|---|---|
+| 40001 zero offset | 0 | yes | |
+| 40002 measurement window | **1000 ms** | yes | plan §3.2 wants ~100 ms for a 13 s traverse — see the conflict below |
+| 40003 averaging window | 10 s | yes | |
+| 40004 full travel | **10000** (= 1.0 m) | yes | **needs the tape-measured sensor-to-sensor distance** |
+| 40005 raw closed | 0 | yes | |
+| 40006 raw open | 1023 | yes | |
+| 40007 teach | 0 | yes | reads 0 after every reset |
+
+**So every position reading is currently meaningless** — 30001/30015 are scaled against default
+endpoints, not taught ones.
+
+**Stale teach captures are present but uncommitted:** `30013` = 6 (closed end), `30014` = 830 (open
+end), while 40005/40006 remain 0/1023. A teach was run at some point and abandoned before the
+read-to-commit handshake in §6.2(d). **Reading them did NOT commit them** — re-read confirmed the
+holdings unchanged, so the commit needs an *armed* session. A fresh teach is required; the captures
+are usable as expected values, not as configuration.
+
+**⚠ Electrical headroom (§7.3) looks like it FAILS at the closed end.** With the window at the closed
+stop (`30006` = 0x08, end sensor active) the live raw ADC `30005` reads **0**, and the stale capture
+agrees at 6. §7.3 requires the raw code not to sit near 0 or 1023 at either stop, because otherwise
+**bit 6 (implausible) is inert and a shorted wiper reads as a perfectly plausible closed window**.
+The open end is fine (830, i.e. 193 counts of margin below 1023). This needs the proper drive-both-
+ends confirmation, but the early reading is unambiguous and it is the check that decides whether
+§12.4 rule 1 is the only defence we have.
+
+**⚠ The contract's own worked table contradicts this plan's §3.2 at rig speed.** §4.2 tabulates, for a
+reference 8.77 mm/s rig: at `40002` = 100 ms the position changes on roughly *every other* update and
+**`30012` quantises to steps of ±180 — twice the true speed**, i.e. the rate register becomes
+useless. §3.2 here derives ~100 ms for a 13 s traverse, and §3.3 then depends on `|30012|` for the
+FR-WP20 plausibility threshold. **The two rules do not compose at rig speed.** Resolve before Phase 2:
+either drop the FR-WP20 rate check on fast rigs, derive the threshold from successive 30001 deltas
+instead of 30012, or accept a longer 40002 and a coarser freshness bound.
+
+**Checked, not a fault:** `30011` = 1 is *seconds since the last valid reading* (§7), not a fault
+counter — healthy at 40002 = 1000 ms. `30010` = 2 is the served-request count.
+
+**Not yet done — needs movement and a tape measure:** the teach (§6.2), `40004`, the per-direction
+traverse timing (§3.5), and the sensor-zone check (§5.3).
 ### Phase 1 — driver
 
 Thin driver over the existing Modbus layer. FC04 for input registers, FC03 for holdings, FC16 for writes.
@@ -183,6 +415,45 @@ Thin driver over the existing Modbus layer. FC04 for input registers, FC03 for h
 
 *Exit:* a bench read returns plausible position, rate sign follows direction, and disconnecting the wiper produces the fault within ~2 s.
 
+#### Phase 1 results — FDA4, 2026-09-10: COMPLETE, all exit criteria met
+
+`drivers/windowPos/` + `firmware/components/windowPos/` proxy, wired into
+`firmware/src/CMakeLists.txt`. Exercised on hardware through a dev-only
+`GET /api/diag/windowpos` (bench builds only — **0 symbols in the release ELF, 1 in bench**).
+
+**The route is deliberately a SECOND path to the same device.** `POST /api/diag/modbus`
+returns raw registers; `GET /api/diag/windowpos` returns what the driver made of them. A wrong
+offset or a bad sign decode surfaces as a mismatch instead of a plausible number. All five
+cross-checked fields matched.
+
+| exit criterion | result |
+|---|---|
+| plausible position | **PASS** — tracked 1381.1 -> 132.8 mm smoothly across a full close, percent 92.0 -> 8.8 |
+| rate sign follows direction | **PASS** — see below |
+| wiper disconnect -> fault | **PASS** — status 0x0C, opening and percent both 65535, `sensor_fault` set |
+
+**The signed decode, proven rather than asserted.** On a forced CLOSE_ALL:
+
+```
+driver rate = -1570 (0.1 mm/s)      raw 30012 = 63966
+```
+
+63966 as `int16` is -1570. **Read unsigned it says the window is closing at 6.4 m/s** — a
+plausible-looking number, which is exactly why this is the trap most likely to ship unnoticed.
+
+**Wiper fault, measured from both sides:** the fault set (status 0x0C, bit 2 + both value
+registers at the 65535 sentinel) and cleared within **0.4 s** of reconnection, with `30011`
+back to 0. **The ~2 s set latency was NOT measured** — `30011` already read 25 s at first
+sample, so the disconnect preceded the observation. The fault is confirmed; the latency figure
+remains the device's claim.
+
+**Noticed in passing:** T6 drove the window fully open *while the wiper was disconnected*, and
+the controller neither noticed nor cared — the control loop is still timer-only and does not
+consume the sensor. That is correct today and is precisely what Phase 2 changes.
+
+**Forcing a stroke without the LCD:** `POST /api/mode` standby then automatic posts
+`CMD_RECALIBRATE`, which drives a full CLOSE_ALL. That is the remote lever for any test
+needing a closing traverse.
 ### Phase 2 — position task + derived configuration
 
 The task of §4, with §3's rules implemented as **derived** values, not constants. Log the derived numbers at boot so a wrong `travel_m3` is visible immediately.
@@ -274,6 +545,8 @@ Position replaces the binary state on the rich surfaces, but the **end switch st
 | At a stop (bit 3) with position ≈ 0 | **CLOSED** |
 | At a stop (bit 3) with position ≈ `40004` | **OPEN** |
 | Anything else | **the opening as a percentage** |
+
+> **The percentage scale must not clamp at 0/100 — see §2a.5.** The leaf rests at ~113.7 % at the open end and below 0 % at the closed end, because the end switches mark the *window* extremes while the motor drives on into the blind overlap. Displaying a correctly parked window as "100 %" by clamping hides the overtravel that proves it reached its limit; displaying it as a fault is worse. Render the true value, and reserve fault styling for `65535` and the status bits.
 
 Using bit 3 rather than "position == 0" for the terminal states is the right call: it is a physical witness rather than an inference, and it keeps the display honest about a window that is nearly-but-not-quite shut.
 

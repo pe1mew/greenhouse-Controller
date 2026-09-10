@@ -122,6 +122,7 @@
 #include "../ota_client/ota_client.h"
 #ifdef MODBUS_BENCH
 #include "../diag/modbus_bench.h"   /* dev-only bench Modbus access */
+#include "window_pos.h"            /* Phase 1 driver, exercised by /api/diag/windowpos */
 #endif     /* 2.2.0 (ROTA) — rota_cert_set/_is_custom for /api/ota/config */
 #include "../system_id/system_id.h"       /* 2.2.0 (ROTA) — system_mac_str: device id for /api/ota/check */
 #include "littlefs_storage.h"
@@ -3152,6 +3153,53 @@ static const httpd_uri_t s_uri_web_post = {
  *   read : {"addr":40,"fc":4,"reg":0,"count":15}
  *   write: {"addr":40,"fc":16,"reg":6,"value":1}      (FC16, quantity 1)
  * --------------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------------
+ * GET /api/diag/windowpos - decoded window-sensor reading (admin, DEV BUILDS ONLY)
+ *
+ * Exercises the Phase 1 driver against real hardware. Deliberately a SECOND
+ * path to the same device as POST /api/diag/modbus: that route returns raw
+ * registers, this one returns what the driver made of them, so the two can be
+ * compared. A register-offset or sign-decode mistake shows up as a mismatch
+ * rather than as a plausible-looking number.
+ * --------------------------------------------------------------------------- */
+static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+    httpd_resp_set_type(req, "application/json");
+
+    windowpos_reading_t r;
+    const windowpos_status_t st = windowpos_read(WINDOWPOS_DEFAULT_ADDR, &r);
+    if (st != WINDOWPOS_OK) {
+        char e[96];
+        snprintf(e, sizeof(e), "{\"ok\":false,\"err\":\"read_failed\",\"status\":%d}", (int)st);
+        return httpd_resp_send(req, e, HTTPD_RESP_USE_STRLEN);
+    }
+
+    uint8_t build = 0u, ver = 0u;
+    (void)windowpos_read_ident(WINDOWPOS_DEFAULT_ADDR, &build, &ver);
+
+    char body[512];
+    snprintf(body, sizeof(body),
+             "{\"ok\":true,\"addr\":%u,\"build\":%u,\"fw\":%u,"
+             "\"opening_mm_x10\":%u,\"percent_x10\":%u,\"rate_mm_s_x10\":%d,"
+             "\"opening_avg_x10\":%u,\"raw_adc\":%u,\"status_bits\":%u,"
+             "\"starting_up\":%s,\"wiper_fault\":%s,\"at_end_sensor\":%s,"
+             "\"both_end_sensors\":%s,\"teach_armed\":%s,\"implausible\":%s,"
+             "\"not_following\":%s,\"sensor_fault\":%s}",
+             (unsigned)WINDOWPOS_DEFAULT_ADDR, (unsigned)build, (unsigned)ver,
+             (unsigned)r.opening_mm_x10, (unsigned)r.percent_x10, (int)r.rate_mm_s_x10,
+             (unsigned)r.opening_avg_x10, (unsigned)r.raw_adc, (unsigned)r.status_bits,
+             r.starting_up ? "true" : "false",
+             r.wiper_fault ? "true" : "false",
+             r.at_end_sensor ? "true" : "false",
+             r.both_end_sensors ? "true" : "false",
+             r.teach_armed ? "true" : "false",
+             r.implausible ? "true" : "false",
+             r.not_following ? "true" : "false",
+             r.sensor_fault ? "true" : "false");
+    return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
+}
+
 static esp_err_t diag_modbus_post_handler(httpd_req_t *req)
 {
     if (!admin_only_or_send_error(req)) return ESP_OK;
@@ -3205,6 +3253,8 @@ static const httpd_uri_t s_uri_rota_check_post = {
     .uri = "/api/ota/check", .method = HTTP_POST, .handler = rota_check_post_handler, .user_ctx = NULL };
 
 #ifdef MODBUS_BENCH
+static const httpd_uri_t s_uri_diag_windowpos = {
+    .uri = "/api/diag/windowpos", .method = HTTP_GET, .handler = diag_windowpos_get_handler, .user_ctx = NULL };
 static const httpd_uri_t s_uri_diag_modbus = {
     .uri = "/api/diag/modbus", .method = HTTP_POST, .handler = diag_modbus_post_handler, .user_ctx = NULL };
 #endif
@@ -3283,6 +3333,7 @@ void task_web_server(void *pvParameters)
         &s_uri_ws,
 #ifdef MODBUS_BENCH
         &s_uri_diag_modbus,
+        &s_uri_diag_windowpos,
 #endif
     };
     for (size_t i = 0; i < sizeof(uris)/sizeof(uris[0]); i++) {
