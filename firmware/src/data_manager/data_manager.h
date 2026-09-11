@@ -322,8 +322,9 @@ void dm_reload_web_cfg(void);
  * erased namespace also writes the factory default back to NVS. That is what
  * makes the "Defaults loaded" claim true rather than merely displayed.
  *
- * @note Since 2.4.6 (gh#52 option c) the operating mode **is** restored, as the
- *       last step and OUTSIDE MX4, via dm_set_standby_ex(). It is routed that
+ * @note Since 2.4.6 (gh#52 option c) the operating mode **is** restored — after
+ *       T2/T14 are notified (2.4.7 ordering) and OUTSIDE MX4 — via
+ *       dm_set_standby_ex(). It is routed that
  *       way rather than through the old set-only `nvs_load_mode()` (now
  *       `nvs_restore_standby_at_boot()`, boot-only by contract) because
  *       clearing STANDBY is not bookkeeping: the CLOSE_ALL sweep is what makes
@@ -336,7 +337,14 @@ void dm_reload_web_cfg(void);
  *          owned by other tasks and are not part of the cfg shadow; a live
  *          connection survives the erase until the next reboot.
  */
-void dm_reload_all_cfg(void);
+/*
+ * @param initiator  Attribution for the LOG_MODE_CHANGE row this may emit
+ *                   (LOG_BY_ADMIN / LOG_BY_FARMER / LOG_BY_WEB). Do NOT pass
+ *                   LOG_BY_SYSTEM with channel 0: that pair is exactly a T6
+ *                   vent-step row's signature on the shared type (gh#54).
+ * @param channel    Surface hint carried in the same row: 0 = web, 1 = LCD.
+ */
+void dm_reload_all_cfg(log_initiator_t initiator, uint8_t channel);
 
 /**
  * @brief gh#53 — is @p ns / @p key an int32 config key the controller applies?
@@ -357,6 +365,11 @@ void dm_reload_all_cfg(void);
  * @return true if the key names a field the config pipeline can apply.
  *
  * @note Int32 keys only. String keys (`tz_str`) never travel through Q4.
+ * @note "Known" is **not** "has a shadow field". Since 2.4.7 the classifier
+ *       behind this has three kinds: UNKNOWN (rejected), SHADOW (NVS + shadow +
+ *       audit row) and NVS-ONLY (NVS write only — the consumer polls NVS
+ *       itself; today just `wifi/ap_enable`, read by T10). 2.4.6 collapsed the
+ *       last two and disabled the LCD AP toggle.
  * @note A true return means "appliable", NOT "permitted for this session" —
  *       the farmer/admin policy is a separate check in the web server.
  */

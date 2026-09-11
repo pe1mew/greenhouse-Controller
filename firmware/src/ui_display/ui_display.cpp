@@ -832,7 +832,7 @@ static void execute_reset_action(uint8_t stage)
              * holding pre-reset values, so "Defaults loaded" described nothing
              * that had happened until the next reboot. Reloading also writes
              * the factory defaults back into the erased namespaces. */
-            dm_reload_all_cfg();
+            dm_reload_all_cfg(LOG_BY_ADMIN, 1u /*=LCD*/);
             ESP_LOGW(TAG, "IO0: full settings reset to defaults");
             show_msg("Settings Reset! ", "Defaults loaded ", 5000);
             break;

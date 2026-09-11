@@ -579,6 +579,10 @@ against M3's *factory default* of 600.
   to NVS and applies nothing.~~ **FIXED in 2.4.6** — `dm_cfg_key_is_known()` +
   synchronous 400 in the POST handler, and the same predicate gates the NVS write for
   the LCD's Q4 path. The string path had the identical hole and is now `tz_str`-only.
+  **Corrected in 2.4.7:** the 2.4.6 predicate was a boolean whose "known" meant "has a
+  shadow field", which rejected `wifi/ap_enable` (NVS-only, polled by T10) and broke the
+  LCD AP toggle. Now a three-way `cfg_key_kind()`. See
+  `design/releaseComparison_2.3.1_vs_2.4.6.md` §1 #1.
 - **Deprecation:** drop the `dwell_open_min` / `dwell_close_min` JSON aliases in the next
   minor.
 - **Not this issue:** the ROTA soak channel offers 2.4.1 while FDA4 runs 2.4.4 — 2.4.2

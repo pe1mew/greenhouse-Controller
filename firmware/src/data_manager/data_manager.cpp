@@ -690,6 +690,11 @@ static int32_t cfg_clamp(const char *ns, const char *key, int32_t v)
             if (strcmp(key, kdc[i]) == 0) { _CLAMP(CFG_MIN_DWELL_CLOSE_S, CFG_MAX_DWELL_CLOSE_S); break; }
         }
 
+    } else if (strcmp(ns, NVS_NS_WIFI) == 0) {
+        /* 2.4.7 — the one NVS-only Q4 key (see cfg_key_kind()). Producers send
+         * 0/1; clamp anyway, because /api/config accepts it from an admin. */
+        if      (strcmp(key, "ap_enable")       == 0) _CLAMP(0, 1);
+
     } else if (strcmp(ns, NVS_NS_SYSTEM) == 0) {
         if      (strcmp(key, K_POLL_INTERVAL)   == 0) _CLAMP(CFG_MIN_POLL_S,            CFG_MAX_POLL_S);
         else if (strcmp(key, K_SESSION_TIMEOUT) == 0) _CLAMP(CFG_MIN_TIMEOUT_MIN,       CFG_MAX_TIMEOUT_MIN);
@@ -810,16 +815,41 @@ static log_param_id_t ns_key_to_log_id(const char *ns, const char *key,
 }
 
 /* ============================================================
- * gh#53 — cfg_key_is_known: does this ns/key name an appliable int32 key?
+ * gh#53 / 2.4.7 — cfg_key_kind: what kind of int32 config key is this ns/key?
  * ============================================================ */
 
 /**
- * @brief True if @p ns / @p key names an int32 config key this module applies.
+ * @brief Classification of a Q4 ns/key pair. Three kinds, not two.
  *
- * The authoritative definition of "known" is the shadow ladder inside
- * apply_config_update() below: a key is known exactly when that ladder has an
- * arm writing a cfg_shadow_t field for it. **This table mirrors those four
- * arms and must be kept in step with them** — add a key there, add it here.
+ * 2.4.6 shipped a boolean "known / unknown" whose definition of known was
+ * "has a cfg_shadow_t field" — and that silently rejected `wifi/ap_enable`,
+ * which has NO shadow field on purpose: T10 polls it straight out of NVS every
+ * 5 s (network_manager.cpp, poll_ap()). For that key the NVS write IS the
+ * mechanism, so gh#53's "junk write" was load-bearing, and 2.4.6 disabled the
+ * LCD System-menu AP toggle and T10's own stale-flag clear — the recovery path
+ * for a unit that has lost its station credentials. Found on FDA4 by the
+ * operator on 2026-09-11, fixed in 2.4.7.
+ */
+typedef enum {
+    CFG_KEY_UNKNOWN = 0, /**< Nothing in this firmware writes it via Q4 — reject. */
+    CFG_KEY_SHADOW,      /**< Has a cfg_shadow_t field: NVS + shadow + audit row. */
+    CFG_KEY_NVS_ONLY,    /**< Legitimate Q4 traffic with NO shadow field: the
+                              consumer reads NVS directly. NVS write only. */
+} cfg_key_kind_t;
+
+/**
+ * @brief Classify @p ns / @p key.
+ *
+ * CFG_KEY_SHADOW is defined by the shadow ladder inside apply_config_update()
+ * below: a key is SHADOW exactly when that ladder has an arm writing a
+ * cfg_shadow_t field for it. **The four tables here mirror those arms and must
+ * be kept in step with them** — add a key there, add it here.
+ *
+ * CFG_KEY_NVS_ONLY is an explicit allow-list of keys posted to Q4 by
+ * firmware-internal producers and consumed from NVS, never from the shadow.
+ * **Every entry must name its producers and its consumer.** This is the
+ * category 2.4.6 forgot; the way to add one is to grep every `xQueueSend(Q4`
+ * and `post_q4(` in the tree, not to reason about which task "probably" writes.
  *
  * Deliberately NOT derived from the two existing near-miss tables:
  *   - cfg_clamp() passes unknown keys straight through, and also carries the
@@ -829,23 +859,33 @@ static log_param_id_t ns_key_to_log_id(const char *ns, const char *key,
  *     keys (session_timeout, ap_timeout, led_*), so "has no log id" does not
  *     mean "is not a key".
  *
- * @param ns   NVS namespace string; NULL is treated as unknown.
- * @param key  NVS key string; NULL is treated as unknown.
- * @return true if apply_config_update() has a shadow field for this pair.
+ * @param ns   NVS namespace string; NULL classifies as UNKNOWN.
+ * @param key  NVS key string; NULL classifies as UNKNOWN.
  *
  * @note String-valued keys never reach Q4 and are not listed (see
  *       data_manager.h); the web server validates `tz_str` itself.
- * @note This makes a third copy of the key set (here, cfg_clamp(),
+ * @note This is a third copy of the shadow key set (here, cfg_clamp(),
  *       ns_key_to_log_id()). Collapsing all three onto one descriptor table is
  *       the right fix and is deliberately not attempted in a patch release
  *       bound for production — left as a follow-up. Drift is at least
- *       *detectable*: a key that passes here but matches no ladder arm logs an
- *       ERROR in apply_config_update().
+ *       *detectable*: a SHADOW key that matches no ladder arm logs an ERROR in
+ *       apply_config_update().
  */
-static bool cfg_key_is_known(const char *ns, const char *key)
+static cfg_key_kind_t cfg_key_kind(const char *ns, const char *key)
 {
-    if (ns == NULL || key == NULL) { return false; }
+    if (ns == NULL || key == NULL) { return CFG_KEY_UNKNOWN; }
 
+    /* ---- NVS-only keys: producer -> NVS -> consumer, no shadow ------------
+     *
+     * wifi/ap_enable — WRITTEN by the LCD System menu (ui_display.cpp,
+     * handle_menu_system() key '1') and by T10 itself to clear a stale flag on
+     * AP timeout (network_manager.cpp, poll_ap()); READ by T10's 5 s NVS poll.
+     * Nothing in cfg_shadow_t carries it, by design (alpha.6.29). */
+    if (strcmp(ns, NVS_NS_WIFI) == 0 && strcmp(key, "ap_enable") == 0) {
+        return CFG_KEY_NVS_ONLY;
+    }
+
+    /* ---- shadow keys: mirror of the apply_config_update() ladders --------- */
     static const char * const climate_keys[] = {
         K_T_MIN_DAY,  K_T_MAX_DAY,  K_T_MIN_NGT,  K_T_MAX_NGT,
         K_RH_MIN_DAY, K_RH_MAX_DAY, K_RH_MIN_NGT, K_RH_MAX_NGT,
@@ -876,17 +916,17 @@ static bool cfg_key_is_known(const char *ns, const char *key)
     else if (strcmp(ns, NVS_NS_WIND)    == 0) { tbl = wind_keys;    n = sizeof(wind_keys)    / sizeof(wind_keys[0]);    }
     else if (strcmp(ns, NVS_NS_MOTOR)   == 0) { tbl = motor_keys;   n = sizeof(motor_keys)   / sizeof(motor_keys[0]);   }
     else if (strcmp(ns, NVS_NS_SYSTEM)  == 0) { tbl = system_keys;  n = sizeof(system_keys)  / sizeof(system_keys[0]);  }
-    else                                      { return false; }
+    else                                      { return CFG_KEY_UNKNOWN; }
 
     for (size_t i = 0u; i < n; i++) {
-        if (strcmp(key, tbl[i]) == 0) { return true; }
+        if (strcmp(key, tbl[i]) == 0) { return CFG_KEY_SHADOW; }
     }
-    return false;
+    return CFG_KEY_UNKNOWN;
 }
 
 bool dm_cfg_key_is_known(const char *ns, const char *key)
 {
-    return cfg_key_is_known(ns, key);
+    return cfg_key_kind(ns, key) != CFG_KEY_UNKNOWN;
 }
 
 /* ============================================================
@@ -933,7 +973,8 @@ static bool apply_config_update(const config_update_t *upd)
      * and emitted no audit row. /api/config now rejects unknown keys
      * synchronously with 400; this is defence in depth for the other Q4
      * producers (the LCD menus). */
-    if (!cfg_key_is_known(upd->ns, upd->key)) {
+    const cfg_key_kind_t kind = cfg_key_kind(upd->ns, upd->key);
+    if (kind == CFG_KEY_UNKNOWN) {
         ESP_LOGW(TAG, "Q4 unknown key REJECTED: %.15s/%.15s = %ld  (nothing written)",
                  upd->ns, upd->key, (long)upd->value);
         return false;
@@ -949,6 +990,17 @@ static bool apply_config_update(const config_update_t *upd)
         ESP_LOGW(TAG, "Q4 NVS write failed  ns=%.15s key=%.15s val=%ld  err=%d",
                  upd->ns, upd->key, (long)upd->value, (int)ns);
         return false;
+    }
+
+    /* 2.4.7 — NVS-only keys stop here. There is no shadow field to update, no
+     * old value to capture and no audit row to emit: the producer logs its own
+     * transition (the LCD posts a LOG_SYSTEM row, T10 logs the AP edge).
+     * Continuing would only reach the "no shadow arm claimed it" ERROR below,
+     * which is reserved for genuine table drift. */
+    if (kind == CFG_KEY_NVS_ONLY) {
+        ESP_LOGI(TAG, "Q4 applied (NVS-only): %.15s/%.15s = %ld",
+                 upd->ns, upd->key, (long)clamped);
+        return true;
     }
 
     /* Update the in-RAM shadow under MX4. Also reads the *old* value of the
@@ -1072,11 +1124,12 @@ static bool apply_config_update(const config_update_t *upd)
             log_post(&ev);
         }
     } else {
-        /* Since 2.4.6 this is unreachable unless cfg_key_is_known()'s table has
-         * drifted out of step with the ladder above: the key passed the
-         * predicate, so NVS was written, but no arm claimed it. ERROR, not
-         * WARN — this is the one symptom that drift produces. */
-        ESP_LOGE(TAG, "Q4 key passed cfg_key_is_known() but no shadow arm claimed it: "
+        /* Since 2.4.6 this is unreachable unless cfg_key_kind()'s SHADOW tables
+         * have drifted out of step with the ladder above: the key classified
+         * SHADOW, so NVS was written, but no arm claimed it. ERROR, not WARN —
+         * this is the one symptom that drift produces. (An NVS-only key never
+         * gets here; it returned after the NVS write.) */
+        ESP_LOGE(TAG, "Q4 key classified SHADOW but no shadow arm claimed it: "
                       "%.15s/%.15s = %ld  (NVS written; shadow unchanged)",
                  ns_str, key_str, (long)clamped);
     }
@@ -1796,7 +1849,7 @@ int32_t dm_get_poll_interval_s(void)
  * changes take effect within ~1 s instead of after T14's 60 s idle period.
  */
 /** @brief Re-read every config namespace into the shadow. See data_manager.h. */
-void dm_reload_all_cfg(void)
+void dm_reload_all_cfg(log_initiator_t initiator, uint8_t channel)
 {
     /* Verified 2026-09-10: none of the nvs_load_* helpers takes MX4 itself,
      * so calling them from inside the critical section is safe. MX4 is a
@@ -1815,40 +1868,46 @@ void dm_reload_all_cfg(void)
 
     xSemaphoreGive(MX4);
 
-    /* gh#52 option (c), 2.4.6 -- restore the operating mode too, so mode, NVS
-     * and the actual window baseline all agree by the time this returns.
-     * Until 2.4.6 mode was deliberately excluded and the divergence was
-     * documented as a known limitation; it is now handled here.
-     *
-     * OUTSIDE the MX4 section above, deliberately: dm_set_standby_ex() writes
-     * NVS, posts an audit row and may post CMD_RECALIBRATE to Q1. MX4 is a
-     * plain (non-recursive) mutex, and the nvs_load_* helpers are the only
-     * things safe to call under it -- a nested take would deadlock T4.
-     *
-     * Routed through dm_set_standby_ex() rather than a bare
-     * xEventGroupClearBits(): clearing STANDBY is not bookkeeping. The
-     * CLOSE_ALL sweep is what makes the window positions agree with the mode
-     * just restored. dm_set_standby_ex() is idempotent -- it returns early
-     * when the bit already matches -- so the only caller today (the LCD IO0
-     * stage-2 reset, whose session_close() has cleared STANDBY and queued a
-     * recalibration since 2.4.5) costs nothing here and does NOT sweep twice.
-     *
-     * LOG_BY_SYSTEM / channel 0: a mode change that falls out of a config
-     * reload was not an operator toggling a switch. The operator action that
-     * triggered the reload is audited on its own path. */
-    {
-        int32_t want_standby = 0;
-        nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_MODE_STANDBY, 0, &want_standby);
-        dm_set_standby_ex((want_standby != 0), LOG_BY_SYSTEM, 0u, true);
-    }
-
     /* Tasks that cache config privately have to be told. T2 caches motor
      * timings (gh#51 Group A); T14 caches the status-post schedule. T6 and T3
      * snapshot per loop iteration and need nothing. */
     if (task_t2  != NULL) { xTaskNotify(task_t2,  T2_NOTIFY_CFG_CHANGED,  eSetBits); }
     if (task_t14 != NULL) { xTaskNotify(task_t14, T14_NOTIFY_CFG_CHANGED, eSetBits); }
 
-    ESP_LOGW(TAG, "cfg shadow reloaded from NVS (all namespaces); T2 + T14 notified");
+    /* gh#52 option (c), 2.4.6 / reordered 2.4.7 -- restore the operating mode
+     * too, so mode, NVS and the actual window baseline all agree by the time
+     * this returns. Until 2.4.6 mode was deliberately excluded and the
+     * divergence was documented as a known limitation.
+     *
+     * AFTER the T2 notify above, deliberately (2.4.7): dm_set_standby_ex() may
+     * post CMD_RECALIBRATE to Q1, and T2 consumes task notifications at the
+     * top of its loop BEFORE it drains Q1. Posting the notify first therefore
+     * guarantees the sweep runs on the timings just reloaded, not on whatever
+     * T2 cached before the reset. 2.4.6 had this the other way round.
+     *
+     * OUTSIDE the MX4 section, deliberately: dm_set_standby_ex() writes NVS,
+     * posts an audit row and may post to Q1. MX4 is a plain (non-recursive)
+     * mutex, and the nvs_load_* helpers are the only things safe under it.
+     *
+     * Routed through dm_set_standby_ex() rather than a bare
+     * xEventGroupClearBits(): clearing STANDBY is not bookkeeping. The
+     * CLOSE_ALL sweep is what makes the window positions agree with the mode
+     * just restored. dm_set_standby_ex() is idempotent -- it returns early when
+     * the bit already matches -- so the only caller today (the LCD IO0 stage-2
+     * reset, whose session_close() has cleared STANDBY and queued a
+     * recalibration since 2.4.5) costs nothing here and does NOT sweep twice.
+     *
+     * The initiator/channel come from the CALLER (2.4.7). 2.4.6 hard-coded
+     * LOG_BY_SYSTEM / channel 0, which is byte-for-byte the signature of a T6
+     * vent-step row on the shared LOG_MODE_CHANGE type (gh#54) -- the parser
+     * would have rendered a STANDBY clear as a ventilation decision. */
+    {
+        int32_t want_standby = 0;
+        nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_MODE_STANDBY, 0, &want_standby);
+        dm_set_standby_ex((want_standby != 0), initiator, channel, true);
+    }
+
+    ESP_LOGW(TAG, "cfg shadow reloaded from NVS (all namespaces); T2 + T14 notified; mode restored");
 }
 
 void dm_reload_web_cfg(void)

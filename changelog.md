@@ -6,6 +6,75 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.4.7] — 2026-09-11  (2.4.6 broke the WiFi-AP toggle — the gh#53 fix rejected a key that was never meant to have a shadow field)
+
+**Fixed.**
+
+- **The LCD "Enable/disable WiFi AP" menu item, T10's stale-flag clear, and
+  `POST /api/config` all silently rejected `wifi/ap_enable`.** Regression introduced in
+  2.4.6 by the [gh#53](https://github.com/pe1mew/greenhouse-Controller/issues/53) fix,
+  found by the operator on FDA4 within minutes of the OTA.
+
+  `wifi/ap_enable` has **no `cfg_shadow_t` field, by design**: T10 polls it straight out
+  of NVS every 5 s (`network_manager.cpp`, `poll_ap()`). For that key the NVS write *is*
+  the mechanism — so gh#53's "junk write for an unknown key" was load-bearing, and the
+  2.4.6 predicate's definition of *known* ("has a shadow-ladder arm") rejected it before
+  the write. Consequences: the AP could not be started or stopped from the LCD; a stale
+  `ap_enable=1` could no longer be cleared by T10's timeout path, so it would restart the
+  AP on every boot; and the web route returned 400. The AP is the recovery path for a
+  unit that has lost its station credentials, and on 5C88 — behind NAT, no push path —
+  the only way in.
+
+  The boolean is replaced by a three-way classification, `cfg_key_kind()`:
+  **UNKNOWN** (rejected, as 2.4.6), **SHADOW** (NVS + shadow + audit row, as before) and
+  **NVS-ONLY** (NVS write only; the consumer reads NVS itself). `wifi/ap_enable` is the
+  one NVS-only entry, its producers and consumer are named in the table, and it is now
+  range-clamped 0/1 as well. `dm_cfg_key_is_known()` keeps its signature and means
+  "not UNKNOWN".
+
+  **Why it was missed.** The 2.4.6 verification enumerated the web GUI's 33 posted keys
+  from `app.js` and reasoned about the LCD and T10 instead of listing their producers —
+  the code comment even asserted the predicate was "defence in depth for the LCD". The
+  LCD *parameter* tables were fine; the System-menu toggle and T10's `post_q4()` were
+  not in any list. Every `xQueueSend(Q4` / `post_q4(` in the tree is now enumerated in
+  `design/releaseComparison_2.3.1_vs_2.4.6.md` §2.2 and in the gotcha log.
+
+- **`dm_reload_all_cfg()` restored the operating mode before telling T2 to reload its
+  timings.** `dm_set_standby_ex()` may post `CMD_RECALIBRATE`; T2 consumes task
+  notifications at the top of its loop *before* draining Q1, so posting
+  `T2_NOTIFY_CFG_CHANGED` first guarantees any sweep runs on the freshly reloaded travel
+  times. 2.4.6 had it the other way round. Unreachable on the only caller (the LCD IO0
+  stage-2 reset, whose `session_close()` clears STANDBY first, so the restore
+  early-returns) — it would have bitten the next one.
+
+**Changed.**
+
+- **`dm_reload_all_cfg(initiator, channel)`** — the caller now attributes the
+  `LOG_MODE_CHANGE` row the reload may emit. 2.4.6 hard-coded `LOG_BY_SYSTEM` / channel
+  0, which is byte-for-byte the signature of a T6 vent-step row on the shared event type
+  ([gh#54](https://github.com/pe1mew/greenhouse-Controller/issues/54)): a STANDBY clear
+  would have been parsed as a ventilation decision. The IO0 reset passes
+  `LOG_BY_ADMIN`, 1. gh#54's parser fix and a distinct `param_id` are still open.
+
+**Known limitation.** On the IO0 stage-2 reset, the recalibration is queued by
+`session_close()` *before* `dm_reload_all_cfg()` runs, so it sweeps on the **pre-erase**
+motor timings. Observed on FDA4 2026-09-11: M3 swept in 18 s (cached 13 s) while NVS
+already held the 171 s default. Benign on production (pre-reset values are almost always
+the defaults) and it happened to be the safe direction on the rig. Reordering the reset
+sequence changes post-reset dwell semantics — the calibration sets `dwell_close`
+deadlines that a `T2_NOTIFY_CLEAR_DWELL` arriving mid-sweep would wipe — so it is not a
+hotfix change. Revisit with gh#54.
+
+**Verification.** A full mechanical comparison of every functional surface between
+2.3.1 (production) and 2.4.6 was done before this release —
+`design/releaseComparison_2.3.1_vs_2.4.6.md`. It found the two defects above and
+nothing else new; the control paths (T3, T5, T6, T10, T13, T14, T16, logger, storage)
+have empty non-comment diffs against 2.3.1.
+
+**Unchanged.** No web-asset changes.
+
+---
+
 ## [2.4.6] — 2026-09-11  (gh#52 + gh#53 — the config write path stops reporting success it did not achieve)
 
 First release from the re-split `main`. The M3 window-position-sensor work — task T17,
