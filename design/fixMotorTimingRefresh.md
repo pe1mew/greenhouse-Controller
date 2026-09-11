@@ -261,6 +261,22 @@ STANDBY properly means `dm_set_standby(false, ...)` — which posts
 three-minute window actuation, triggered from a menu whose entire distinguishing
 feature is *"no reboot"*.
 
+> **RESOLVED in 2.4.6 (2026-09-11) — gh#52 option (c).** The reasoning above still
+> describes why it was left out of 2.4.3, but the conclusion no longer holds, for a
+> reason that arrived afterwards: **2.4.5 made `session_close()` clear STANDBY and
+> queue a recalibration**, and IO0 case 2 calls `session_close(false)` at
+> `ui_display.cpp:829` — immediately *before* `dm_reload_all_cfg()`. So on the only
+> caller that exists, the sweep this paragraph was protecting against already happens,
+> and the divergence it accepted is already closed.
+>
+> `dm_reload_all_cfg()` now restores mode as its **last step and outside MX4**, via
+> `dm_set_standby_ex()` (which writes NVS, posts an audit row and may post
+> `CMD_RECALIBRATE` — none of it safe under a non-recursive mutex). The call is
+> idempotent, so it costs nothing on the IO0 path and does **not** sweep twice. What it
+> buys is that the helper is now correct for whatever calls it next, which was gh#52's
+> actual concern. `nvs_load_mode()` is renamed **`nvs_restore_standby_at_boot()`** with
+> the boot-only precondition in a `@warning` (option (a)).
+
 Three options, and the choice is the operator's:
 
 | | Behaviour | Cost |
@@ -557,9 +573,12 @@ against M3's *factory default* of 600.
 
 ### 5.3 Left open deliberately
 
-- **gh#52** — `nvs_load_mode()` sets `EG1_BIT_STANDBY` and never clears it.
-- **gh#53** — `POST /api/config` accepts an unknown key, returns `ok:true`, writes junk
-  to NVS and applies nothing.
+- ~~**gh#52** — `nvs_load_mode()` sets `EG1_BIT_STANDBY` and never clears it.~~
+  **FIXED in 2.4.6** (options a + c) — see the resolution note in §4.1.
+- ~~**gh#53** — `POST /api/config` accepts an unknown key, returns `ok:true`, writes junk
+  to NVS and applies nothing.~~ **FIXED in 2.4.6** — `dm_cfg_key_is_known()` +
+  synchronous 400 in the POST handler, and the same predicate gates the NVS write for
+  the LCD's Q4 path. The string path had the identical hole and is now `tz_str`-only.
 - **Deprecation:** drop the `dwell_open_min` / `dwell_close_min` JSON aliases in the next
   minor.
 - **Not this issue:** the ROTA soak channel offers 2.4.1 while FDA4 runs 2.4.4 — 2.4.2

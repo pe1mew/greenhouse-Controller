@@ -1329,6 +1329,17 @@ static esp_err_t config_post_handler(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
 
     if (has_str) {
+        /* gh#53 — `tz_str` is the ONLY string key this route owns: status_url /
+         * status_secret go via /api/web, ota_url / ota_secret via
+         * /api/ota/config. Until 2.4.6 any other string key was written
+         * straight to NVS and answered {"ok":true}, leaving an entry nothing
+         * reads and only a namespace erase reclaims. */
+        if (strcmp(ns, NVS_NS_SYSTEM) != 0 || strcmp(key, "tz_str") != 0) {
+            ESP_LOGW(TAG, "[T11] /api/config REJECTED unknown str key %s/%s", ns, key);
+            httpd_resp_set_status(req, "400 Bad Request");
+            return httpd_resp_send(req,
+                "{\"ok\":false,\"err\":\"unknown ns/key\"}", HTTPD_RESP_USE_STRLEN);
+        }
         (void)nvs_cfg_set_str(ns, key, str_value);
         if (strcmp(key, "tz_str") == 0 && str_value[0] != '\0') {
             setenv("TZ", str_value, 1);
@@ -1349,6 +1360,22 @@ static esp_err_t config_post_handler(httpd_req_t *req)
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_send(req,
             "{\"ok\":false,\"err\":\"ns/key too long\"}", HTTPD_RESP_USE_STRLEN);
+    }
+
+    /* gh#53 — reject an unrecognised ns/key HERE, synchronously, because the
+     * HTTP response is the only place the GUI can see the answer. Until 2.4.6
+     * the handler queued it to Q4 and returned {"ok":true}; T4 then wrote it
+     * to NVS, skipped cfg_clamp(), matched no shadow field, emitted no audit
+     * row and logged nothing at INFO — so the Apply tick was
+     * indistinguishable from a real change.
+     *
+     * The GUI drives its per-field tick off `r.ok`, so a 400 with ok:false
+     * now shows the operator a failure instead of a false success. */
+    if (!dm_cfg_key_is_known(ns, key)) {
+        ESP_LOGW(TAG, "[T11] /api/config REJECTED unknown key %s/%s (nothing written)", ns, key);
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_send(req,
+            "{\"ok\":false,\"err\":\"unknown ns/key\"}", HTTPD_RESP_USE_STRLEN);
     }
 
     /* upd.ns/upd.key are 16-byte buffers; src ns/key may be up to 16/32

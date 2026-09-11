@@ -6,6 +6,131 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.4.6] — 2026-09-11  (gh#52 + gh#53 — the config write path stops reporting success it did not achieve)
+
+First release from the re-split `main`. The M3 window-position-sensor work — task T17,
+the wire-encoder driver, the `windowPos` component and the position/event log encodings
+— moved to the **`ropeSensor`** branch on 2026-09-11. `main` ships the controller
+without it. Nothing was removed from the shipped feature set: T17 had never appeared in
+a release.
+
+**Fixed.**
+
+- **gh#53 — `POST /api/config` accepted a key it could not apply, answered
+  `{"ok":true}`, wrote the key to NVS and applied nothing.** Three consequences, none of
+  them visible anywhere: the junk key persisted across reboots and consumed a slot in
+  that namespace with no garbage collection; `cfg_clamp()` was skipped entirely, so no
+  range check ran; and neither the audit row nor the INFO line was emitted, because both
+  sit inside `if (updated)`.
+
+  The trap is that **`GET /api/config` returns field names, which are not always the NVS
+  keys** — `poll_interval_s` vs `poll_interval`, `status_interval_s` vs
+  `status_intv_s`. Reading the API and posting it straight back is the obvious thing for
+  a caller to do, and it half-worked silently. Found on FDA4 while restoring settings
+  after the gh#51 Group C verification.
+
+  New **`dm_cfg_key_is_known(ns, key)`** mirrors the four shadow ladders in
+  `apply_config_update()`. The POST handler calls it **synchronously** and returns
+  **400 `{"ok":false,"err":"unknown ns/key"}`**. Synchronous is the whole point: the
+  route queues to Q4 and T4 applies it later, so the 200 never meant more than
+  *accepted*, and the HTTP response is the only place a caller can see the answer.
+  `apply_config_update()` checks the same predicate before touching NVS, as defence in
+  depth for the LCD — the other Q4 producer.
+
+  The string path had the identical hole: any `str_value` key was written to NVS and
+  answered `ok:true` while only `tz_str` did anything. `tz_str` is now the only string
+  key this route accepts (`status_url` / `status_secret` belong to `/api/web`,
+  `ota_url` / `ota_secret` to `/api/ota/config`).
+
+- **gh#52 — `nvs_load_mode()` only ever *set* `EG1_BIT_STANDBY` and never cleared it**:
+  correct at boot, where the bit starts clear, and a silent no-op anywhere else. Renamed
+  to **`nvs_restore_standby_at_boot()`** with the precondition stated in a `@warning`.
+  The old name put it in the `nvs_load_*` family and invited exactly the call that could
+  not work — and it is the only member of that family that writes an **event group**
+  rather than the `s_cfg` shadow.
+
+  `dm_reload_all_cfg()` now restores the operating mode too, as its last step and
+  **outside MX4** — `dm_set_standby_ex()` writes NVS, posts an audit row and may post
+  `CMD_RECALIBRATE`, none of which is safe under a non-recursive mutex. It goes through
+  `dm_set_standby_ex()` rather than a bare `xEventGroupClearBits()` because clearing
+  STANDBY is not bookkeeping: the CLOSE_ALL sweep is what makes the window positions
+  agree with the mode just restored. 2.4.3 recorded this omission as a known limitation;
+  it is now closed.
+
+  **No new actuation in practice.** The call is idempotent, and the only caller — the
+  LCD IO0 stage-2 reset — already clears STANDBY and queues a recalibration through
+  `session_close()`, which 2.4.5 added. It costs nothing there and does not sweep twice.
+  What it buys is that `dm_reload_all_cfg()` is correct for whatever calls it next,
+  which was gh#52's actual concern.
+
+**Changed — API.**
+
+- `POST /api/config` returns **400** for an `ns`/`key` pair it cannot apply, where it
+  previously returned 200. This includes the four `ota_*` keys, which `/api/ota/config`
+  owns (`rota_tds.md` R-F02/R-F03) and this route has never been able to apply — posting
+  them here used to persist to NVS and take effect only on the next reload. Every key the
+  bundled GUI posts was checked against the new predicate and passes: all 14 `climate`,
+  9 `motor` and 6 `wind` keys, plus `poll_interval` / `session_timeout` / `ap_timeout` /
+  `lat_*` / `lon_*` in `system`, and `tz_str` on the string path.
+
+**Unchanged.** No web-asset changes, and the GUI needs none: `post()` already returns
+`null` for a non-OK response and `feedback()` renders that as **"✗ Error"** in red — so a
+rejected key now shows the operator a failure where it previously showed "✓ Saved".
+
+**Known limitation.** The key set now exists in three places — `cfg_key_is_known()`,
+`cfg_clamp()` and `ns_key_to_log_id()` — which are near-misses rather than duplicates:
+`cfg_clamp()` passes unknown keys through and also carries the `ota_*` keys, and
+`ns_key_to_log_id()` returns `LOG_PARAM_NONE` for several genuinely known keys
+(`session_timeout`, `ap_timeout`, `led_*`). Collapsing all three onto one descriptor
+table is the right fix and was deliberately not attempted in a patch release bound for
+production. Drift is at least *detectable*: a key that passes the predicate but matches
+no ladder arm now logs an **ERROR**.
+
+**Still open.** Drop the `dwell_open_min` / `dwell_close_min` JSON aliases in the next
+minor, as promised in 2.4.4.
+
+---
+
+## [2.4.5] — 2026-09-10  (LCD manual control: session end now recalibrates)
+
+**Fixed.**
+- **After driving windows by hand from the LCD, the controller returned to AUTOMATIC and then did
+  nothing for up to 25 minutes — invisibly.** T6 was never confused: `reconcile_to_step()` is
+  level-triggered, runs every cycle, and reads *actual* window states. **T2 was refusing it.**
+  `ch_start_open()` / `ch_start_close()` defer `SRC_T6` while a dwell deadline is pending, and
+  although `SRC_OPERATOR_MANUAL` bypasses the dwell on the way in, *completing* any move sets the
+  deadline in `ch_update()` — which has no source parameter. T6 therefore inherited an
+  anti-thrash debt it never incurred: **1500 s on M3**, 300 s on M1/M2.
+
+  It was invisible because the deferral logged at `ESP_LOGD` — below the default level,
+  serial-only, and absent from the SD log. The controller read AUTOMATIC and did nothing, with no
+  trace anywhere.
+
+  `session_close()` now posts the new **`T2_NOTIFY_CLEAR_DWELL`** so T2 drops the debt in its own
+  context (T2 remains the sole writer of `s_ch[]` — no cross-task race), and passes
+  `recalibrate_on_clear = true` so session end returns the windows to a known CLOSED baseline that
+  T6 resumes from.
+
+**Changed — operator-visible.**
+- **Manual window positions no longer survive past the session.** Ending an admin manual session
+  (explicit logout *or* the 5-minute idle timeout) now runs a CLOSE_ALL calibration.
+- **The respect window is unchanged:** positions still hold for the entire session. This is a
+  deliberate partial revert of rc.1.5.2, which fixed the 2026-05-26 complaint (*"during manual
+  operation climate control kicked in and took over"*) two ways at once — moving the STANDBY clear
+  to session-end, which is what actually fixed it, **and** suppressing the CLOSE_ALL, which went
+  further than the complaint required and caused the defect above. The first half is kept.
+- Dwell deferrals now log at **`ESP_LOGI`**, latched to one line per episode (`dwell_defer_logged`)
+  so a 25-minute wait produces one line rather than fifty.
+
+**Note.** This was a **recurrence**. The rc.1.5.2 rationale was recorded only in a code comment
+inside `session_close()`, so the consequence was rediscovered from scratch four months later. The
+analysis and three preventive rules are now in `memory/gotcha-log.md`, with a new
+"Windows, climate & manual control" index section and a pointer in `CLAUDE.md`.
+
+**Unchanged.** No web-asset changes in this release.
+
+---
+
 ## [2.4.4] — 2026-09-10  (gh#51 Group D — the dwell fields said minutes and carried seconds)
 
 Last group of `design/fixMotorTimingRefresh.md`. Closes gh#51.

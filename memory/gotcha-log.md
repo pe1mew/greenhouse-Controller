@@ -10,6 +10,8 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ## Promoted patterns
 
+- **[PATTERN] A rule written to *hit* a requirement exactly will fail it in practice. Check whether the derivation leaves margin, and test it on the fastest hardware you have.** Two instances in the window-sensor work, both found only because the rig runs ~13x faster than production and both affecting production identically once seen. (1) `poll = travel/100` was chosen so overshoot would meet FR-WP04's 1 % of stroke — but overshoot = poll x speed = (t/100) x (100/t) = **exactly 1.00 %, by construction, at every travel time**, leaving nothing for poll jitter, task scheduling or a Modbus retry. (2) `reject rate above 2x nominal` was measured at a **9 % margin** (peak 2100 vs threshold 2306) because nominal derives from `travel_m3`, which covers switch-to-limit while the position span is switch-to-switch — so 2x nominal was really ~1.5x real. Rules: (a) when a derived constant is defined so that it *equals* the limit, treat that as a defect, not a tight fit — budget it at 1/2 to 2/3; (b) **a fast rig is not a nuisance, it is the only place these show up** — a production-speed bench would have shipped both; (c) a plausibility check that false-trips **discards good data silently**, which is worse than not having the check.
+
 - **[PATTERN] This codebase has a recurring class of defect: an affirmative success signal for something that did not happen. Never accept a UI tick, an HTTP 200 or an LCD confirmation as evidence of effect.** Four instances, three of them found in a single session (2026-09-10): (1) **gh#51** -- the Motors tab showed a new travel time with a green tick while T2 kept running the old one until reboot, because `/api/config` reads T4's shadow and T2 caches its own copy; (2) **gh#51 Group C** -- the LCD showed "Settings Reset! / Defaults loaded" after an IO0 stage-2 erase while T4's shadow and T2's cache both still held pre-reset values; (3) **gh#53** -- `POST /api/config` with an unrecognised key returns `{"ok":true}`, writes junk to NVS and applies nothing; (4) the standing **paired-commit rule** exists for the same reason -- a firmware-only OTA reports success while stranding the asset partition, which is why both `fw_ver` AND `asset_version` must be read post-reboot. Rules: (a) a 200 from an async endpoint means *queued*, not *applied* -- find the endpoint that reports the outcome (`GET /api/ota/check`, not `POST`); (b) when a value is cached by a task, verify the **behaviour** it controls, not the field that reports it (measure the relay pulse, do not read `/api/config`); (c) when adding any new confirmation to a UI, ask what would have to be true for it to lie, and make the check assert that instead.
 
 - **[PATTERN] The git index is a single shared, easily-misread resource — verify it, never narrate it.** Three incidents (2026-07-13 branch switch, 2026-07-20 `commit -a` sweep, 2026-07-23 false "staged" report): each time the index's real state diverged from what was said or assumed about it. Rules: (1) after staging, show `git status --short` / `git diff --cached --stat` and report THAT, never a claim from memory; (2) staging one stream protects nothing if the commit is `-a` — if anything tracked-modified is pending, either stage it all with a covering message or say explicitly what must not be committed; (3) an untracked file that a staged change links to must be called out by name, not left among the `??` noise; (4) before any branch switch, empty the index.
@@ -101,6 +103,38 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
 
+
+## 2026-09-10 — a refused manual LCD command leaves NO trace, so "it got rejected" is unreconstructable
+
+**Problem:** Operator drove M3 from the LCD, saw a refusal, and later could not say which one. There
+was no way to find out from the logs.
+
+**Root cause:** `ui_display.cpp:2109` has three gates, each with its own 1500 ms `show_msg()` and
+then a bare `return`:
+
+| gate | message | blocks |
+|---|---|---|
+| `EG1_BIT_MOTOR_ALARM` | `MOTOR ALARM / cmd refused` | everything |
+| `EG1_BIT_CALIBRATING` | `Calibrating / wait + retry` | everything |
+| `EG1_BIT_WIND_OVERRIDE` | `WIND OVERRIDE / OPEN refused` | **OPEN only**, CLOSE always allowed |
+
+**None of them writes a log row.** The command never reaches Q1, so T2 logs nothing either. The only
+record is 1.5 s of LCD text. Same shape as the dwell deferral fixed in 2.4.5 — a refusal that is
+correct behaviour but invisible afterwards.
+
+**Fix (partial, 2026-09-10):** none applied — operator deferred it. The **workaround** is the
+window-state bitmask in `SENSOR_HR ch=2`, which carries bit 12 WIND_OVERRIDE, bit 13 MOTOR_ALARM and
+bit 14 CALIBRATING at the 30 s sample cadence. That reconstructs *which gate was active* to within
+30 s, which was enough to narrow this case to two candidates but not to one.
+
+**Rules:**
+- **When diagnosing "the controller refused my command", go to `SENSOR_HR ch=2` first** and decode
+  bits 12/13/14 around the timestamp. Do not assume dwell: `SRC_OPERATOR_MANUAL` bypasses the dwell
+  timer and the gh#48 in-travel guard defers `SRC_T6` only, so a manual refusal is **always** one of
+  the three LCD gates, never T2.
+- **Wind override blocks OPEN and permits CLOSE.** "It refused my open but the close worked" is that
+  gate, not a fault.
+- If a gate refuses an operator's deliberate action, it should leave an audit row. Three do not.
 
 ## 2026-09-10 — after LCD manual window control, T6 resumes in AUTOMATIC and is silently refused for up to 25 minutes (RECURRENCE)
 

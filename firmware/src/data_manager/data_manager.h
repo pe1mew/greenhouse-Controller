@@ -322,20 +322,45 @@ void dm_reload_web_cfg(void);
  * erased namespace also writes the factory default back to NVS. That is what
  * makes the "Defaults loaded" claim true rather than merely displayed.
  *
- * @note Operating mode is deliberately NOT reloaded (gh#52). nvs_load_mode() only
- *       ever *sets* EG1_BIT_STANDBY (it is written for boot, where the bit
- *       starts clear) and never clears it, so calling it here would be a
- *       no-op after an erase. Clearing STANDBY properly means
- *       dm_set_standby(false, ...), which posts CMD_RECALIBRATE and drives a
- *       full CLOSE_ALL sweep — an actuation the operator has not asked for
- *       from a menu that promises no reboot. The erased key means the unit
- *       comes up AUTOMATIC on its next boot regardless.
+ * @note Since 2.4.6 (gh#52 option c) the operating mode **is** restored, as the
+ *       last step and OUTSIDE MX4, via dm_set_standby_ex(). It is routed that
+ *       way rather than through the old set-only `nvs_load_mode()` (now
+ *       `nvs_restore_standby_at_boot()`, boot-only by contract) because
+ *       clearing STANDBY is not bookkeeping: the CLOSE_ALL sweep is what makes
+ *       the window positions agree with the mode just restored. The call is
+ *       idempotent, so on the only caller today — the LCD IO0 stage-2 reset,
+ *       whose session_close() has cleared STANDBY and queued a recalibration
+ *       since 2.4.5 — it costs nothing and does not sweep twice.
  *
  * @warning Does not restore WiFi or MQTT connectivity. Those credentials are
  *          owned by other tasks and are not part of the cfg shadow; a live
  *          connection survives the erase until the next reboot.
  */
 void dm_reload_all_cfg(void);
+
+/**
+ * @brief gh#53 — is @p ns / @p key an int32 config key the controller applies?
+ *
+ * Exposed so the web server can reject an unrecognised ns/key **synchronously**
+ * with 400, which is the only point at which the caller can see the answer.
+ * `POST /api/config` is queued to Q4 and applied later by T4, so its 200 has
+ * never meant more than "accepted" — before 2.4.6 an unknown key got that 200,
+ * a junk NVS entry, no clamp, no shadow update and no audit row.
+ *
+ * Beware the round-trip trap this closes: `GET /api/config` returns **field**
+ * names, which are not always the NVS keys (`poll_interval_s` vs
+ * `poll_interval`, `status_interval_s` vs `status_intv_s`). Reading the API and
+ * POSTing it straight back used to half-work silently.
+ *
+ * @param ns   NVS namespace string; NULL is treated as unknown.
+ * @param key  NVS key string; NULL is treated as unknown.
+ * @return true if the key names a field the config pipeline can apply.
+ *
+ * @note Int32 keys only. String keys (`tz_str`) never travel through Q4.
+ * @note A true return means "appliable", NOT "permitted for this session" —
+ *       the farmer/admin policy is a separate check in the web server.
+ */
+bool dm_cfg_key_is_known(const char *ns, const char *key);
 
 /**
  * @brief Persist the most recently uploaded log filename.

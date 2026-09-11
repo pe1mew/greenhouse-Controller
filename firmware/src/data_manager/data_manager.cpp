@@ -562,17 +562,28 @@ static void nvs_load_system(void)
 }
 
 /**
- * @brief rc.1.5.0 (gh#28) — load persisted STANDBY flag and seed EG1.
+ * @brief rc.1.5.0 (gh#28) — seed EG1_BIT_STANDBY from NVS **at boot only**.
  *
  * Reads `system/mode_standby` (default 0). If non-zero, sets
  * EG1_BIT_STANDBY so T6 starts gated on its very first tick — the unit
  * comes back up in STANDBY exactly as it was when power was lost.
  *
- * Idempotent: safe to call at any point during boot; nothing else reads
- * EG1_BIT_STANDBY until T6 enters its main loop, which happens after T4
- * has run this helper.
+ * @warning **Set-only, and correct ONLY when the bit is already clear.**
+ *          This helper never clears EG1_BIT_STANDBY, so calling it on a unit
+ *          that is currently in STANDBY while NVS says AUTOMATIC is a silent
+ *          no-op: the `if (v != 0)` does not fire and the stale bit survives.
+ *          The one legitimate caller is T4's boot phase, where EG1 has just
+ *          been created and every bit is known-clear. Renamed from
+ *          `nvs_load_mode()` in 2.4.6 (gh#52) because the old name put it in
+ *          the `nvs_load_*` family and invited exactly that call.
+ *
+ * @note Unlike the six real `nvs_load_*` helpers this writes to an **event
+ *       group**, not to the `s_cfg` shadow — which is why it is not, and must
+ *       not be, part of dm_reload_all_cfg()'s run under MX4.
+ * @see dm_reload_all_cfg() — restores the mode the symmetric way, via
+ *      dm_set_standby_ex(), outside MX4.
  */
-static void nvs_load_mode(void)
+static void nvs_restore_standby_at_boot(void)
 {
     int32_t v = 0;
     nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_MODE_STANDBY, 0, &v);
@@ -799,6 +810,86 @@ static log_param_id_t ns_key_to_log_id(const char *ns, const char *key,
 }
 
 /* ============================================================
+ * gh#53 — cfg_key_is_known: does this ns/key name an appliable int32 key?
+ * ============================================================ */
+
+/**
+ * @brief True if @p ns / @p key names an int32 config key this module applies.
+ *
+ * The authoritative definition of "known" is the shadow ladder inside
+ * apply_config_update() below: a key is known exactly when that ladder has an
+ * arm writing a cfg_shadow_t field for it. **This table mirrors those four
+ * arms and must be kept in step with them** — add a key there, add it here.
+ *
+ * Deliberately NOT derived from the two existing near-miss tables:
+ *   - cfg_clamp() passes unknown keys straight through, and also carries the
+ *     four `ota_*` keys that /api/ota/config owns (rota_tds.md R-F02/R-F03)
+ *     and this route cannot apply;
+ *   - ns_key_to_log_id() returns LOG_PARAM_NONE for several genuinely known
+ *     keys (session_timeout, ap_timeout, led_*), so "has no log id" does not
+ *     mean "is not a key".
+ *
+ * @param ns   NVS namespace string; NULL is treated as unknown.
+ * @param key  NVS key string; NULL is treated as unknown.
+ * @return true if apply_config_update() has a shadow field for this pair.
+ *
+ * @note String-valued keys never reach Q4 and are not listed (see
+ *       data_manager.h); the web server validates `tz_str` itself.
+ * @note This makes a third copy of the key set (here, cfg_clamp(),
+ *       ns_key_to_log_id()). Collapsing all three onto one descriptor table is
+ *       the right fix and is deliberately not attempted in a patch release
+ *       bound for production — left as a follow-up. Drift is at least
+ *       *detectable*: a key that passes here but matches no ladder arm logs an
+ *       ERROR in apply_config_update().
+ */
+static bool cfg_key_is_known(const char *ns, const char *key)
+{
+    if (ns == NULL || key == NULL) { return false; }
+
+    static const char * const climate_keys[] = {
+        K_T_MIN_DAY,  K_T_MAX_DAY,  K_T_MIN_NGT,  K_T_MAX_NGT,
+        K_RH_MIN_DAY, K_RH_MAX_DAY, K_RH_MIN_NGT, K_RH_MAX_NGT,
+        K_HYST_T,     K_HYST_RH,    K_RH_CTRL_EN, K_CR_PRIORITY,
+        K_AVG_WIN_T,  K_AVG_WIN_RH,
+    };
+    static const char * const wind_keys[] = {
+        K_AVG_WIN_WIND, K_V_MAX, K_DIR_EXCL_LOW, K_DIR_EXCL_HIGH,
+        K_WIND_PROT_EN, K_WIND_HYST,
+    };
+    static const char * const motor_keys[] = {
+        K_TRAVEL_M1,      K_TRAVEL_M2,      K_TRAVEL_M3,
+        K_DWELL_OPEN_M1,  K_DWELL_OPEN_M2,  K_DWELL_OPEN_M3,
+        K_DWELL_CLOSE_M1, K_DWELL_CLOSE_M2, K_DWELL_CLOSE_M3,
+    };
+    static const char * const system_keys[] = {
+        K_POLL_INTERVAL,   K_SESSION_TIMEOUT, K_AP_TIMEOUT,
+        K_LAT_DEG,         K_LAT_FRAC,        K_LON_DEG,       K_LON_FRAC,
+        K_LED_DAY_BRT,     K_LED_NITE_BRT,    K_LED_NITE_FROM, K_LED_NITE_TO,
+        K_STATUS_INTERVAL, K_STATUS_ENABLE,   K_STATUS_EXPOSE,
+        K_LOG_UPLOAD_H,    K_LOG_UPLOAD_M,    K_LOG_UPLOAD_ROT,
+    };
+
+    const char * const *tbl = NULL;
+    size_t n = 0u;
+
+    if      (strcmp(ns, NVS_NS_CLIMATE) == 0) { tbl = climate_keys; n = sizeof(climate_keys) / sizeof(climate_keys[0]); }
+    else if (strcmp(ns, NVS_NS_WIND)    == 0) { tbl = wind_keys;    n = sizeof(wind_keys)    / sizeof(wind_keys[0]);    }
+    else if (strcmp(ns, NVS_NS_MOTOR)   == 0) { tbl = motor_keys;   n = sizeof(motor_keys)   / sizeof(motor_keys[0]);   }
+    else if (strcmp(ns, NVS_NS_SYSTEM)  == 0) { tbl = system_keys;  n = sizeof(system_keys)  / sizeof(system_keys[0]);  }
+    else                                      { return false; }
+
+    for (size_t i = 0u; i < n; i++) {
+        if (strcmp(key, tbl[i]) == 0) { return true; }
+    }
+    return false;
+}
+
+bool dm_cfg_key_is_known(const char *ns, const char *key)
+{
+    return cfg_key_is_known(ns, key);
+}
+
+/* ============================================================
  * Internal helper — apply a Q4 config_update_t
  * ============================================================ */
 
@@ -833,6 +924,21 @@ static log_param_id_t ns_key_to_log_id(const char *ns, const char *key,
  */
 static bool apply_config_update(const config_update_t *upd)
 {
+    /* gh#53 — recognise the key BEFORE writing anything.
+     *
+     * Until 2.4.6 an unrecognised ns/key was clamped (a no-op: cfg_clamp()
+     * passes unknown keys through), written to NVS, and only then found to
+     * match no shadow field. The write survived reboots, consumed a slot in
+     * that namespace, was never garbage-collected, skipped every range check
+     * and emitted no audit row. /api/config now rejects unknown keys
+     * synchronously with 400; this is defence in depth for the other Q4
+     * producers (the LCD menus). */
+    if (!cfg_key_is_known(upd->ns, upd->key)) {
+        ESP_LOGW(TAG, "Q4 unknown key REJECTED: %.15s/%.15s = %ld  (nothing written)",
+                 upd->ns, upd->key, (long)upd->value);
+        return false;
+    }
+
     /* Clamp to valid range before touching NVS or the shadow struct.
      * cfg_clamp() logs a warning for every out-of-range value. */
     const int32_t clamped = cfg_clamp(upd->ns, upd->key, upd->value);
@@ -966,7 +1072,12 @@ static bool apply_config_update(const config_update_t *upd)
             log_post(&ev);
         }
     } else {
-        ESP_LOGW(TAG, "Q4 key not in shadow: %.15s/%.15s = %ld  (NVS written; shadow unchanged)",
+        /* Since 2.4.6 this is unreachable unless cfg_key_is_known()'s table has
+         * drifted out of step with the ladder above: the key passed the
+         * predicate, so NVS was written, but no arm claimed it. ERROR, not
+         * WARN — this is the one symptom that drift produces. */
+        ESP_LOGE(TAG, "Q4 key passed cfg_key_is_known() but no shadow arm claimed it: "
+                      "%.15s/%.15s = %ld  (NVS written; shadow unchanged)",
                  ns_str, key_str, (long)clamped);
     }
     return true;
@@ -1184,7 +1295,7 @@ void task_data_manager(void *pvParameters)
      * operator last chose. Must run after EG1 is created (it is — system
      * globals are constructed before any task starts) and before T6 enters
      * its main loop (it does — T4 runs `nvs_load_*` here in boot phase). */
-    nvs_load_mode();
+    nvs_restore_standby_at_boot();
 
     /* Apply the stored TZ string so local-time functions are correct. */
     setenv("TZ", s_cfg.tz_str, 1);
@@ -1701,9 +1812,35 @@ void dm_reload_all_cfg(void)
     nvs_load_system();
     nvs_load_web();
     update_sun_times();   /* lat/lon may have reverted to defaults */
-    /* nvs_load_mode() deliberately omitted -- gh#52, and the @note in the header. */
 
     xSemaphoreGive(MX4);
+
+    /* gh#52 option (c), 2.4.6 -- restore the operating mode too, so mode, NVS
+     * and the actual window baseline all agree by the time this returns.
+     * Until 2.4.6 mode was deliberately excluded and the divergence was
+     * documented as a known limitation; it is now handled here.
+     *
+     * OUTSIDE the MX4 section above, deliberately: dm_set_standby_ex() writes
+     * NVS, posts an audit row and may post CMD_RECALIBRATE to Q1. MX4 is a
+     * plain (non-recursive) mutex, and the nvs_load_* helpers are the only
+     * things safe to call under it -- a nested take would deadlock T4.
+     *
+     * Routed through dm_set_standby_ex() rather than a bare
+     * xEventGroupClearBits(): clearing STANDBY is not bookkeeping. The
+     * CLOSE_ALL sweep is what makes the window positions agree with the mode
+     * just restored. dm_set_standby_ex() is idempotent -- it returns early
+     * when the bit already matches -- so the only caller today (the LCD IO0
+     * stage-2 reset, whose session_close() has cleared STANDBY and queued a
+     * recalibration since 2.4.5) costs nothing here and does NOT sweep twice.
+     *
+     * LOG_BY_SYSTEM / channel 0: a mode change that falls out of a config
+     * reload was not an operator toggling a switch. The operator action that
+     * triggered the reload is audited on its own path. */
+    {
+        int32_t want_standby = 0;
+        nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_MODE_STANDBY, 0, &want_standby);
+        dm_set_standby_ex((want_standby != 0), LOG_BY_SYSTEM, 0u, true);
+    }
 
     /* Tasks that cache config privately have to be told. T2 caches motor
      * timings (gh#51 Group A); T14 caches the status-post schedule. T6 and T3
