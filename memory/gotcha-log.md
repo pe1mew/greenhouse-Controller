@@ -1137,3 +1137,22 @@ Encoded in [firmware/partitions.csv](../firmware/partitions.csv) header comment.
 **Fix / rule:** *before asserting on an effect, name the mechanism that produces it and wait for that mechanism, not for a round number of seconds.* Q4 writes need a settle or a poll-until-stable; a cadence change needs one whole old period; leaving STANDBY needs the recalibration sweep to clear `eg1`. And make the expected transition observable — if the value you expect already equals the current value, move it to a different base first, or a broken implementation and a working one read identically.
 
 **Related:** the mirror-image failure, a harness reporting false PASSes because it did not JSON-parse `HTTPError` bodies (2026-09-11), and one reporting a false FAIL because it never status-checked its second fetch of the same resource (2026-09-12).
+
+## 2026-09-12 — `rota_release.py release` warns "working tree has uncommitted changes" on UNTRACKED files
+
+**Problem:** The 2.6.0 publish printed
+
+```
+warning   : working tree has uncommitted changes; the release tags HEAD (a8226e7e),
+            which may not match these artefacts.
+```
+
+on a tree where `git status --short` showed **zero** modified tracked files. Taken at face value the warning says the published binary may not correspond to the tag, which for a release that field units pull is the one thing that must not be true.
+
+**Root cause:** the check is coarse — it looks at `git status` broadly, so untracked files trip it. Three were present: `bin/2.6.0/manifest-2.6.0.json`, which the release run itself had just authored, and `firmware/sdkconfig.lolin_s3_bench` / `firmware/sdkconfig.lolin_s3_mbprobe`, which belong to the bench and mbprobe environments and are not inputs to the `lolin_s3` release build. So the warning was a false positive, and it will fire on essentially every release, because the tool always writes a new untracked manifest before checking.
+
+**How it was settled, rather than assumed:** `git status --short | grep -v '^??'` showed no tracked modification, so every tracked input to the build matched the tagged commit. Then the release was verified independently against the public API: the tag dereferences to the committed HEAD, the release is neither draft nor prerelease, and the firmware and asset zip were **re-downloaded and hashed** equal to the local files (12/12).
+
+**Rules:** *don't dismiss this warning and don't trust it either — resolve it.* `git status --short | grep -v '^??'` answers the question the warning was trying to ask. And *after any outward-facing publish, verify the artefact from the outside*: a hash of the re-downloaded file proves both the upload and the tag, which no amount of local checking can.
+
+**Worth fixing in the tool:** the dirty check should consider tracked modifications only, and ideally run before it writes the manifest. Until then the warning carries no signal.
