@@ -10,6 +10,8 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ## Promoted patterns
 
+- **[PATTERN] A grep is a claim about spelling; only running the code is evidence about behaviour.** Four instances: the real gh#51 Group B parser gap was found **by running the parser** after inspection had missed it (2026-09-10); then three false findings in a single audit (2026-09-12) — a mistyped symbol (`persist_state` for `persist_ch_state`) "proved" a function had no callers, a guessed variable name (`s_win_ws_last` for `s_win_w_last`) "proved" a config change was ignored, and a `va == N` regex "proved" a decoder missed six subtypes it handles. Rules: (a) to test a decoder, **feed it rows and read the output** — never enumerate its branches; (b) to test a call graph, grep the *exact* symbol, print the hit list, and sanity-check the count; (c) **a negative grep is the weakest evidence in the toolbox** — before reporting "X never happens", find the positive case you expect to exist and confirm the same grep finds *that* first (the fail-first rule, applied to searching); (d) sibling of the cross-reference pattern below — a link check and a grep both test the address, not the content.
+
 - **[PATTERN] A failure that only reaches the serial console has not been logged. Anything that changes control behaviour or hides a state must produce an SD row.** Four instances: (1) T2's dwell deferral of T6 at `ESP_LOGD` — the controller sat inert for 25 min with no trace (2.4.5); (2) a refused manual LCD command leaves nothing (2026-09-10); (3) the IO0 stage-2 factory reset leaves nothing — seven namespaces erased, no row (2026-09-11); (4) a failed DS1307 read at `ESP_LOGW` — the only evidence was a boot row stamped 1970 (gh#55, 2026-09-11). Rules: (a) if a code path can change what T6/T2/T3 do, or can make the unit refuse an operator, it emits a `LOG_SYSTEM` row with a value_a code and the parser learns it in the same change; (b) "it's in the serial log" is not observability on a unit in a greenhouse; (c) when a symptom has "no trace", search the log for rows stamped 1970 and for rows the *shadow* stamps differently from `time(NULL)` — the absence has a shape.
 
 - **[PATTERN] Show the check can fail before trusting a pass.** Three instances in two days: (1) a before/after motor-timing measurement landed on the same 24 s for opposite reasons (2026-09-10) — a third run at a different setting was the evidence; (2) AT-WP05's headline counter `err_busy` **cannot fail with two callers** (500 ms lock timeout vs ~215 ms hold) — 7117 clean reads proved nothing about contention (2026-09-11); (3) the gh#52 hardware test run from AUTOMATIC passed on code where the fix is inert (2026-09-11). Rules: (a) before reading a pass, name the input that would make the check fail and confirm the check sees it — the Modbus fail-first rule generalised; (b) a criterion that no plausible failure can trip is a *description*, not a test — say so in the results; (c) a fix to a transition is tested from the state the transition leaves.
@@ -109,6 +111,18 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
 
+
+## 2026-09-12 — a regex over source is not evidence of coverage: three false findings in one audit
+
+**Problem**: During the duplicated-state audit I reported three defects that do not exist.
+(1) *"`persist_ch_state()` has no callers"* — it has **seven** (`relay_controller.cpp` 443/512/544/556/635/678/717); I had grepped `persist_state`.
+(2) *"a change to `avg_win_wind` never resets the wind averages"* — it does, at `sensor_poll.cpp:436`, resetting both the speed and direction contexts; I had grepped for `s_win_ws_last` / `s_win_wd_last` when the variable is `s_win_w_last`.
+(3) *"`logparser.py` does not decode `LOG_SYSTEM` subtypes 16–21"* — it decodes all six correctly, including 21 = RTC divergence; my `va == N` regex missed the branch form those use.
+Two of the three were one sentence away from being filed as issues.
+
+**Root cause**: In each case I inferred behaviour from a pattern match over source text and stopped. **A regex tests my guess at the spelling, not the property I care about** — and a *negative* result is indistinguishable from a typo in the pattern.
+
+**Fix**: Execute the thing. Thirteen synthetic CSV rows through `logparser.py` settled all four multi-emitter event types in one call — which is the same method that found the real gh#51 Group B gap on 2026-09-10, after inspection had missed it. For a call graph, grep the exact symbol, print the hit list, and check the count against expectation.
 
 ## 2026-09-11 — a fix to a mode transition tested from the wrong starting state passes vacuously (gh#52)
 
