@@ -296,6 +296,19 @@ pin_auth_result_t pin_auth_set(pin_role_t role, const char *new_pin)
     if (new_pin == NULL)                     return PIN_AUTH_ERR_PARAM;
     if (strlen(new_pin) != required_digits(role)) return PIN_AUTH_ERR_PARAM;
 
+    /* 2.4.9 (gh#60) — the charset was never checked, only the length. The LCD
+     * PIN entry accepts '0'-'9' ONLY (ui_display.cpp, handle_pin()), so a PIN
+     * containing any other character can be set through /api/pin and then
+     * never typed at the panel. For the admin role that makes the LCD admin
+     * login permanently impossible — and the LCD is the only surface for
+     * manual motor control (gh#29) and for the IO0 reset confirmations, so the
+     * recovery left is IO0 level 1 or pin_auth_reset_admin(), which is
+     * hardware-recovery-only by contract. Validated here rather than in the
+     * handler because this is the one choke point both surfaces share. */
+    for (const char *p = new_pin; *p != '\0'; ++p) {
+        if (*p < '0' || *p > '9') return PIN_AUTH_ERR_PARAM;
+    }
+
     uint8_t hash[PIN_HASH_LEN];
     compute_hash(s_salt, new_pin, hash);
 

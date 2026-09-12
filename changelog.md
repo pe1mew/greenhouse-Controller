@@ -6,6 +6,77 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.4.10] — 2026-09-12  (gh#60 + gh#61 — two ways an operator action did not mean what it said)
+
+Both found by the phase-3 operator-path sweep on FDA4. Both pre-existing and unchanged
+since 2.3.1.
+
+**Fixed.**
+
+- **gh#61 — a deliberate `POST /api/sd/unmount` was silently undone within ~60 s.** T9
+  retries `event_logger_sd_remount()` on its 60 s receive timeout whenever `s_sd_ok` is
+  false, so a card inserted after boot is picked up automatically. The flag could not
+  distinguish *unavailable* from *released on request*, so an admin unmount was reverted
+  too. Observed on FDA4: unmount reported `mounted=false, free=0`, and the card was back
+  to `mounted=true, free=1849 MB` within 30 s with no mount command sent.
+
+  That mattered because `beheerderHandleiding.md` makes unmounting **mandatory** before
+  physically removing the card — stated three times (`:782`, `:1318`, `:1320-1322`) with
+  no deadline. The operator had about a minute to open the enclosure and extract the card
+  before the firmware remounted it and resumed writing, which is exactly the corruption
+  the documented procedure exists to prevent.
+
+  New `s_sd_released` latch in `event_logger.cpp`: set by `event_logger_sd_unmount()`,
+  cleared by `event_logger_sd_remount()`, and checked at **both** of T9's automount call
+  sites. A deliberate release now holds until an explicit mount request or a reboot.
+  **Hot-insertion is unchanged** — an absent or failed card never sets the latch. The latch
+  is cleared on a mount request whether or not the mount succeeds, so a
+  released-then-reinserted card cannot strand the unit.
+
+  **There are two automount paths, and the first attempt only guarded one.** A 2.4.9 bench
+  build (never committed, never published) latched the 60 s `xQueueReceive` timeout branch
+  and missed the elapsed-time check that runs *after* events are processed — the one that
+  exists precisely because the sensor poll keeps Q3 busy, so the timeout branch never
+  fires in service. The card remounted itself 30 s after a deliberate unmount. Caught by
+  the release's own verification step, which waits 135 s — more than twice the retry
+  interval — rather than the 30 s the first draft used. Both call sites are now guarded
+  (`event_logger.cpp:1162` and `:1186`).
+
+- **gh#60 — `POST /api/pin` accepted an unknown `role` and silently changed the farmer
+  PIN.** The mapping was `(strcmp(role_str,"admin") == 0) ? PIN_ROLE_ADMIN :
+  PIN_ROLE_FARMER` with `json_get_field()`'s result discarded, so `"Admin"`, `"ADMIN"`, a
+  typo, or an **absent** `role` field all fell through to farmer and answered
+  `{"ok":true}`. An admin changing the admin PIN with a capitalisation slip ended up with
+  the admin PIN unchanged, the farmer PIN replaced by their intended admin PIN, and a
+  success response. Now both roles are matched exactly and anything else — including a
+  missing field — returns **400 `{"ok":false,"err":"unknown role"}`**.
+
+- **gh#60 — `pin_auth_set()` validated only the PIN length, never the charset.** The LCD
+  PIN entry accepts `'0'`–`'9'` only (`ui_display.cpp`, `handle_pin()`), so a PIN
+  containing any other character could be set through the API and then never typed at the
+  panel. For the admin role that made the LCD admin login permanently impossible, leaving
+  only IO0 level 1 or `pin_auth_reset_admin()` — which is hardware-recovery-only by
+  contract. Verified accepted before the fix: `{"role":"farmer","pin":"12a4"}` →
+  `200 {"ok":true}`. Validated in `pin_auth_set()` rather than the handler because it is
+  the one choke point both surfaces share.
+
+**Changed — API.**
+
+- `POST /api/pin` returns **400** for a rejected request where it previously returned
+  `200 {"ok":false,...}`. `/api/config` was changed the same way in 2.4.6 (gh#53); this
+  route still signalled failure only in the body, so a caller checking the HTTP status saw
+  success. The bundled GUI reads `r.ok` from the parsed JSON, so it is unaffected.
+
+**Deliberately not changed.** The audit row for a PIN change (`LOG_PARAM_PIN_FARMER` /
+`_ADMIN`) still records only *which* PIN changed, not which role was *requested*, so a
+typo'd-role case is not reconstructable from the log. Recording the requested role means
+redefining `value_b`, which is a payload change and therefore a minor — left with gh#60's
+follow-up notes alongside gh#59's logging work.
+
+**Unchanged.** No web-asset changes.
+
+---
+
 ## [2.4.8] — 2026-09-12  (gh#56 — the factory reset kept the WiFi credentials it claimed to erase)
 
 **Fixed.**

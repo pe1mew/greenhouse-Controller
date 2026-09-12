@@ -114,6 +114,27 @@ static const char *TAG = "T9_LOG";
 /** @brief true iff SD logging is active (card mounted, current file open). */
 static bool s_sd_ok = false;
 
+/**
+ * @brief 2.4.9 (gh#61) — true when the operator deliberately released the card.
+ *
+ * `s_sd_ok == false` conflates two different situations: the card is
+ * *unavailable* (absent at boot, failed, or swapped) and the card was
+ * *released on request* via `POST /api/sd/unmount`. T9's 60 s retry exists for
+ * the first — a card inserted after boot is picked up within a minute — and
+ * used to fire for the second as well, silently remounting a card the admin had
+ * just asked to be released.
+ *
+ * That mattered because `beheerderHandleiding.md` makes unmounting **mandatory**
+ * before physically removing the card (:782, :1318, :1320-1322) and states no
+ * deadline. The operator had about 60 seconds to open the enclosure and pull
+ * the card before the firmware remounted it and resumed writing — which is
+ * exactly the corruption the documented procedure exists to prevent.
+ *
+ * Set by event_logger_sd_unmount(), cleared by event_logger_sd_remount(), so a
+ * deliberate release is honoured until an explicit mount request or a reboot.
+ */
+static bool s_sd_released = false;
+
 /** @brief Active SD log filename including the leading '/' (e.g. "/20260507143022.csv"). */
 static char s_cur_filename[SD_FILENAME_LEN];
 
@@ -777,6 +798,12 @@ bool event_logger_sd_remount(void)
 {
     if (s_sd_ok) return true;
 
+    /* gh#61 — an explicit mount request is the operator taking the card back
+     * into service, so it clears the release latch regardless of whether the
+     * mount below succeeds. Leaving it set on failure would strand a unit whose
+     * card was released and then reinserted. */
+    s_sd_released = false;
+
     storage_status_t rc = storage_init();
     if (rc != STORAGE_OK) {
         ESP_LOGW(TAG, "[T9] SD remount failed (%d)", (int)rc);
@@ -814,8 +841,12 @@ bool event_logger_sd_remount(void)
 void event_logger_sd_unmount(void)
 {
     s_sd_ok = false;
+    /* gh#61 — latch the release so T9's 60 s retry does not remount the card
+     * under an operator who is on their way to physically remove it. */
+    s_sd_released = true;
     storage_sd_unmount();
-    ESP_LOGI(TAG, "[T9] SD unmounted via web request");
+    ESP_LOGW(TAG, "[T9] SD released on request — automount suppressed until an "
+                  "explicit mount or reboot (gh#61)");
 }
 
 /* =======================================================================
@@ -1125,7 +1156,10 @@ void task_event_logger(void *pvParameters)
 
         if (xQueueReceive(Q3, &evt, wait) != pdTRUE) {
             /* Timeout — no event arrived; try to (re)mount the SD card. */
-            if (!s_sd_ok) {
+            /* gh#61 — do not undo a deliberate unmount. s_sd_released is only
+             * set by event_logger_sd_unmount(); an absent or failed card leaves
+             * it false, so hot-insertion still works. */
+            if (!s_sd_ok && !s_sd_released) {
                 s_last_remount_ticks = xTaskGetTickCount();
                 if (event_logger_sd_remount()) {
                     ESP_LOGI(TAG, "[T9] SD automounted");
@@ -1141,8 +1175,15 @@ void task_event_logger(void *pvParameters)
 
         /* When events are flowing, the 60-s timeout above never fires.
          * Check elapsed time here so automount is attempted even while
-         * the sensor poll keeps Q3 busy (e.g. poll_interval = 30 s). */
-        if (!s_sd_ok) {
+         * the sensor poll keeps Q3 busy (e.g. poll_interval = 30 s).
+         *
+         * gh#61 — s_sd_released is checked here too. This is the path that
+         * actually fires in service: the sensor poll posts three rows every
+         * 30 s, so the queue is never idle long enough for the timeout branch
+         * above to run. The first 2.4.9 bench build guarded only that branch
+         * and the card remounted itself 30 s after a deliberate unmount —
+         * caught by the release's own 135 s verification step. */
+        if (!s_sd_ok && !s_sd_released) {
             TickType_t now = xTaskGetTickCount();
             if ((now - s_last_remount_ticks) >= pdMS_TO_TICKS(60000)) {
                 s_last_remount_ticks = now;

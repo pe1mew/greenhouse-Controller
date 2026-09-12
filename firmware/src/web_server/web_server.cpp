@@ -1543,11 +1543,29 @@ static esp_err_t pin_post_handler(httpd_req_t *req)
     }
 
     char role_str[12] = {}, pin_str[16] = {};
-    json_get_field(body, "role", role_str, sizeof(role_str));
+    /* 2.4.9 (gh#60) — the return value used to be discarded, so a request with
+     * no "role" field fell through to PIN_ROLE_FARMER below and changed the
+     * wrong credential with a 200. */
+    const bool have_role = json_get_field(body, "role", role_str, sizeof(role_str));
     json_get_field(body, "pin",  pin_str,  sizeof(pin_str));
 
-    pin_role_t pr = (strcmp(role_str, "admin") == 0) ? PIN_ROLE_ADMIN
-                                                     : PIN_ROLE_FARMER;
+    /* 2.4.9 (gh#60) — exact match on both roles, never a fall-through.
+     * The old form was `(strcmp(role_str,"admin")==0) ? ADMIN : FARMER`,
+     * so "Admin", "ADMIN", a typo or an absent field all silently
+     * rewrote the FARMER pin and answered {"ok":true}. An admin changing
+     * the admin PIN with a capitalisation slip ended up with the admin PIN
+     * unchanged, the farmer PIN replaced by their intended admin PIN, and a
+     * success response. */
+    const bool is_admin  = (strcmp(role_str, "admin")  == 0);
+    const bool is_farmer = (strcmp(role_str, "farmer") == 0);
+    if (!have_role || (!is_admin && !is_farmer)) {
+        ESP_LOGW(TAG, "[T11] /api/pin REJECTED unknown role %.11s", role_str);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_send(req,
+            "{\"ok\":false,\"err\":\"unknown role\"}", HTTPD_RESP_USE_STRLEN);
+    }
+    pin_role_t pr = is_admin ? PIN_ROLE_ADMIN : PIN_ROLE_FARMER;
     pin_auth_result_t res = pin_auth_set(pr, pin_str);
 
     httpd_resp_set_type(req, "application/json");
@@ -1563,6 +1581,10 @@ static esp_err_t pin_post_handler(httpd_req_t *req)
         return httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
     }
     ESP_LOGW(TAG, "[T11] /api/pin: pin_auth_set failed rc=%d", (int)res);
+    /* 2.4.9 (gh#60) — 400, not 200. /api/config was changed the same way in
+     * 2.4.6 (gh#53); this route still signalled failure only in the body, so a
+     * caller checking the HTTP status saw success. */
+    httpd_resp_set_status(req, "400 Bad Request");
     return httpd_resp_send(req,
         "{\"ok\":false,\"err\":\"pin_auth_set failed\"}", HTTPD_RESP_USE_STRLEN);
 }
