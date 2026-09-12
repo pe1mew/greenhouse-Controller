@@ -6,6 +6,65 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.4.8] — 2026-09-12  (gh#56 — the factory reset kept the WiFi credentials it claimed to erase)
+
+**Fixed.**
+
+- **IO0 factory reset (level 2 and 3) did not erase the WiFi credentials.** Reported by
+  the operator on FDA4 while verifying 2.4.7: a full reset left the controller
+  reconnecting to the previous network.
+
+  The erase itself worked — `nvs_cfg_erase_namespace(NVS_NS_WIFI)` removed `wifi/ssid`
+  and `wifi/psk`, and `/api/config` duly reported an empty SSID. But **that is only half
+  the stored state.** This firmware never calls `esp_wifi_set_storage()`, so IDF's
+  default `WIFI_STORAGE_FLASH` applies and every `esp_wifi_set_config(WIFI_IF_STA, …)`
+  *also* persisted the SSID/PSK into IDF's own NVS namespace (`nvs.net80211`), which
+  `nvs_cfg_erase_namespace("wifi")` does not touch. On the next boot
+  `nm_wifi_init_blocking()` found the app's keys empty, logged *"no SSID in NVS — WiFi
+  stack will init but skip STA-connect"* and skipped `esp_wifi_set_config()` — then
+  `esp_wifi_start()` loaded IDF's surviving copy and auto-connected. The controller ran
+  connected to a network it believed it had no credentials for.
+
+  New **`nm_wifi_erase_persistent()`** wraps `esp_wifi_restore()` and is called from
+  `execute_reset_action()` cases 2 and 3, right where the app's namespace is erased, so
+  both copies go at once. **Not** called for level 1 — a PIN reset must leave WiFi alone.
+
+  Three consequences this closes: a relocated controller joining the old site's network
+  (the documented "Verhuizing kascontroller → Niveau 3" case); a System tab showing an
+  empty SSID while the unit sits on that SSID; and the AP recovery flow being defeated,
+  because an operator who factory-resets *in order to* re-provision found the unit back
+  on the old LAN and never saw the AP.
+
+  **Level 2's "no reboot" contract is unchanged.** WiFi is reboot-to-apply by design
+  (`/api/wifi` writes then restarts), so the erase takes effect at the next restart like
+  every other WiFi change.
+
+**Not in this release, deliberately.** `esp_wifi_set_storage(WIFI_STORAGE_RAM)` would
+remove the duplicate copy entirely and is the tidier architecture, but it is held back:
+with RAM storage a unit whose `wifi/ssid` is empty will not connect **at all**, and a
+unit that was reset and never re-provisioned — because it kept working, which is this
+very bug — is in exactly that state. 5C88 is behind NAT with no push path and no endpoint
+exposes the configured SSID, so its state cannot be confirmed from here. See
+[gh#56](https://github.com/pe1mew/greenhouse-Controller/issues/56) for the prerequisite.
+
+**Pre-existing, not a 2.4.x regression.** `network_manager.cpp` is byte-identical to
+`v2.3.1`, so production behaves the same way.
+
+**Documentation.** Both operator manuals had link rot around the reset procedure, fixed
+separately from this release: 17 broken links in total — 15 cross-references to a
+`handleiding.md` that does not exist (the file is `boerHandleiding.md`), the boer
+manual's own table of contents and all six internal reset links pointing at a `BOOT-knop`
+anchor while its heading says `IO0-knop`, and the beheerder reinstall checklist pointing
+at a `§11.x` numbering that no longer exists. Added: a decommissioning warning (a reset
+erases NVS *logically*, not the flash sectors, and neither flash nor NVS encryption is
+enabled, so the previous site's PSK stays readable with `esptool` until the board is
+fully reflashed) and a note that level 2's WiFi changes only take effect at the next
+restart.
+
+**Unchanged.** No web-asset changes.
+
+---
+
 ## [2.4.7] — 2026-09-11  (2.4.6 broke the WiFi-AP toggle — the gh#53 fix rejected a key that was never meant to have a shadow field)
 
 **Fixed.**

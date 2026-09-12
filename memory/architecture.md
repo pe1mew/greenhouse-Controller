@@ -11,7 +11,7 @@ Full task graph diagram in [`../design/rtosTaskDiagram.png`](../design/rtosTaskD
 | T1 | `watchdog` | TWDT subscribers; calls `ota_mark_healthy()` after 30 s uptime |
 | T2 | `relay_controller` | Per-channel (M1/M2/M3) window state machine |
 | T3 | `safety_monitor` | Motor-alarm + sensor-fault detection |
-| T4 | `data_manager` | Status snapshot for `/api/status`; notifies T6 on new sensor data |
+| T4 | `data_manager` | Status snapshot for `/api/status`; notifies T6 on new sensor data. Owns the config pipeline: Q4 → `cfg_key_kind()` (UNKNOWN / SHADOW / **NVS-ONLY**, 2.4.7) → NVS → shadow → audit row; `wifi/ap_enable` is NVS-only and read by T10, not the shadow. Seeds the clock from the DS1307 at boot and every 60 s while NTP-unsynced — a failed read leaves the shadow timestamp 0, the web clock blank and T6 on night thresholds (gh#55) |
 | T5 | `sensor_poll` | Sensor read scheduling; HR-rate logging. **The only task that touches the Modbus/RS485 bus**, polling all sensors at one global `poll_interval_s` (default 30 s); both drivers hard-coded at fixed addresses. **Single-owner is policy, and the reason is timing — not correctness (gh#49, Phase 4).** Since 2026-09-07 the driver *does* serialise transactions with a mutex (`modbus_rtu.cpp`, verified on FDA4: the unpatched driver managed 0/1000 clean transactions under two callers, the locked one 1000/1000). So a second caller is no longer a *correctness* hazard — but a transaction can hold the bus ~215 ms (`MODBUS_TIMEOUT_MS` dominates), and blocking that long inside High-priority, WDT-subscribed **T2** or **T3** could delay a wind-override response. **Keep all bus I/O in T5**, or in the dedicated bus task of [../design/refactorSensorConfiguration.md](../design/refactorSensorConfiguration.md) §2.2. Two further traps: `modbus_init()` deletes and reinstalls the UART driver, so a re-init during another task's transaction is a use-after-delete; and **the bus does not survive boot** — `main.cpp`'s early `modbus_init()` is dead by the time T5 starts, which is why T5 re-inits (gotcha 2026-09-07). Rationale and evidence: [../design/addModbusMutex.md](../design/addModbusMutex.md). A refactor to roles + a scheduled bus is designed but **not implemented** |
 | T6 | `climate_control` | Mode + setpoint logic; consumes T4 notifications |
 | T7 | `keypad_scan` | Keypad input (4×4 matrix) |
@@ -35,7 +35,7 @@ Also: a low-priority `heartbeat_task` is spawned at `main.cpp:1599` as a serial-
 |---|---|
 | `auth/` | PIN auth, Farmer/Admin roles |
 | `climate_control/` | Mode + setpoint logic |
-| `data_manager/` | Status snapshot for `/api/status` and T14 push |
+| `data_manager/` | Status snapshot for `/api/status` and T14 push; config pipeline (`apply_config_update`, `cfg_key_kind`, `dm_reload_all_cfg`); clock seeding (DS1307 / SNTP / manual — priority under review in gh#55) |
 | `event_logger/` | T9 — SD CSV writer (gh#30 unit-id prefix) |
 | `keypad_scan/` | Keypad input |
 | `network_manager/` | T10 — WiFi, SNTP, geo lookup; L3 self-recovery (gh#33) |

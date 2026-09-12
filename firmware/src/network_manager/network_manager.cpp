@@ -323,6 +323,27 @@ extern "C" bool nm_is_sntp_synced(void)
     return s_sntp_synced;
 }
 
+/* 2.4.8 (gh#56) — clear IDF's OWN persisted WiFi config. See the header for the
+ * full mechanism. Short version: the app's `wifi/ssid` + `wifi/psk` are one copy,
+ * IDF's `nvs.net80211` is another, the IO0 reset only erased the first, and
+ * `esp_wifi_start()` reconnected from the second.
+ *
+ * The two copies only ever disagree immediately after a reset — anything that
+ * writes one writes the other — so clearing IDF's copy at exactly the point the
+ * app's copy is cleared closes the gap completely, with no change to any other
+ * path. Called from T8 (`execute_reset_action()`); the esp_wifi_* API is
+ * internally locked, so the cross-task call is safe. */
+extern "C" void nm_wifi_erase_persistent(void)
+{
+    const esp_err_t err = esp_wifi_restore();
+    if (err == ESP_OK) {
+        ESP_LOGW(TAG, "[T10] IDF-persisted WiFi config cleared (esp_wifi_restore)");
+    } else {
+        ESP_LOGE(TAG, "[T10] esp_wifi_restore failed: %s — the previous network's "
+                      "credentials may survive this reset", esp_err_to_name(err));
+    }
+}
+
 /**
  * @brief Best-effort SNTP synchronisation against pool.ntp.org.
  *

@@ -36,7 +36,7 @@
 15. [Handmatige overname via de motorbox](#15-handmatige-overname-via-de-motorbox)
 16. [Probleemoplossing — Beheerder-niveau](#16-probleemoplossing--Beheerder-niveau)
 17. [Verklarende woordenlijst](#17-verklarende-woordenlijst)
-18. [Reset-procedure (BOOT-knop)](#18-reset-procedure-boot-knop-op-microprocessorboard)
+18. [Reset-procedure (BOOT-knop)](#18-reset-procedure-io0-knop-op-microprocessorboard)
 19. [Bijlagen](#19-bijlagen)
 20. [Versie en wijzigingshistorie](#20-versie-en-wijzigingshistorie)
 
@@ -271,7 +271,7 @@ Niet alle parameters zijn direct na het aanpassen actief; sommige vereisen een p
 
 ### 5.1 LCD-display
 
-Voor algemene uitleg over schermen, auto-rotatie en mode-regel: zie de [boer-handleiding §5.1](handleiding.md#51-lcd-display-16--2-tekens).
+Voor algemene uitleg over schermen, auto-rotatie en mode-regel: zie de [boer-handleiding §5.1](boerHandleiding.md#51-lcd-display).
 
 **Aanvullend voor de beheerder**:
 
@@ -280,12 +280,12 @@ Voor algemene uitleg over schermen, auto-rotatie en mode-regel: zie de [boer-han
  - **Rood** — kritiek: **motor-alarm** OF **wind-alarm** OF **sensor-fault Temperatuur/Luchtvochtigheid**
 
 ### 5.2 Toetsenbord
-Zie [boer-handleiding §5.2](handleiding.md#52-toetsenbord-4--4) voor het volledige overzicht van toetsfuncties per scherm. Geen Beheerder-specifieke uitbreidingen.
+Zie [boer-handleiding §5.2](boerHandleiding.md#52-toetsenbord-4--4) voor het volledige overzicht van toetsfuncties per scherm. Geen Beheerder-specifieke uitbreidingen.
 
 ### 5.3 LED-indicatoren
 
 #### RGB-LED kleuren
-Zie [boer-handleiding §5.3](handleiding.md#53-led-indicatoren). 
+Zie [boer-handleiding §5.3](boerHandleiding.md#53-led-indicatoren). 
 
 > Nachtmodus voorkomt een felle LED in een verduisterde kas of woonruimte naast de kas.
 
@@ -357,7 +357,7 @@ De kleuren van de badg geven de urgentie weer van de melding:
 | 🟡 | **Net backoff** | Status-website onbereikbaar — Updates zij tijdelijk gestopt na herhaalde fouten | Controleer netwerk + URL; herstelt automatisch |
 | 🟡 | **Wind protect off** | Boer/Beheerder heeft windbeveiliging uitgezet | Bewust — controleer of dit zo bedoeld is; ramen worden niet meer dichtgestuurd bij wind |
 | 🔵 | **Humidity ctrl off** | Boer/Beheerder heeft de luchtvochtigheid-regeling uitgezet | Bewust — alleen temperatuur stuurt nu de ramen |
-| 🔵 | **Coredump available** | De firmware is gecrashed *panic*; er staat een coredump flash die gedownload kan worden voor analyse | Tab Log → Diagnostics — zie [§14 Coredump ophalen na een panic](#coredump-ophalen-na-een-panic-vanaf-200) |
+| 🔵 | **Coredump available** | De firmware is gecrashed *panic*; er staat een coredump flash die gedownload kan worden voor analyse | Tab Log → Diagnostics — zie [§14 Coredump ophalen na een panic](#coredump-ophalen-na-een-panic) |
 
 ### Status-tab — actieve setpoints op de tegels
 
@@ -406,7 +406,7 @@ Op het LCD-scherm roteren **zeven** statusschermen. Elk scherm staat 5 seconden,
 
 ### Beheerer (Technisch beheerder van installatie)
 - 8-cijferige PIN
-- **Geen default in deze handleiding genoemd** — wordt door installateur ingesteld bij oplevering, de webinterface door de beheerder of via fysieke reset op fabrieksstandaard teruggezet (zie [§18](#18-reset-procedure-boot-knop-op-microprocessorboard))
+- **Geen default in deze handleiding genoemd** — wordt door installateur ingesteld bij oplevering, de webinterface door de beheerder of via fysieke reset op fabrieksstandaard teruggezet (zie [§18](#18-reset-procedure-io0-knop-op-microprocessorboard))
 - Volledige toegang tot alle beheers-functies
 
 ### Lockout
@@ -439,7 +439,7 @@ Op het LCD-scherm roteren **zeven** statusschermen. Elk scherm staat 5 seconden,
 5. Communiceer de nieuwe PIN aan de Boer
 
 > **Boer is zijn PIN vergeten** → Beheerder reset Boer-PIN via deze procedure.
-> **Beheerder is zijn PIN vergeten** → fysieke reset niveau 1 op de IO0-knop (zie [§18](#18-reset-procedure-boot-knop-op-microprocessorboard)).
+> **Beheerder is zijn PIN vergeten** → fysieke reset niveau 1 op de IO0-knop (zie [§18](#18-reset-procedure-io0-knop-op-microprocessorboard)).
 
 ### Sessie-timeout instellen
 - Default: 5 min
@@ -451,7 +451,7 @@ Op het LCD-scherm roteren **zeven** statusschermen. Elk scherm staat 5 seconden,
 
 ## 8. Gebruik zonder inloggen — informatiemenu
 
-Geen beheer-specifieke verschillen. Zie [boer-handleiding §8](handleiding.md#8-gebruik-zonder-inloggen--informatiemenu) voor de volledige uitleg.
+Geen beheer-specifieke verschillen. Zie [boer-handleiding §8](boerHandleiding.md#8-gebruik-zonder-inloggen--informatiemenu) voor de volledige uitleg.
 
 Alle beheer-functies vereisen een ingelogde sessie als Beheerder.
 
@@ -507,7 +507,7 @@ Op **zes** statusschermen kan je direct vanuit de auto-rotatie naar een instelli
 
 ### 10.1 Op de kas controller (LCD en numeriek toetsenbord)
 
-De LCD-route voor de door de **boer-bewerkbare** instellingen (T-max dag/ngt, RH-max/min dag/ngt, T vs RH conflict priority) staat in de [boer-handleiding §10.1](handleiding.md#101-op-de-kas-controller).
+De LCD-route voor de door de **boer-bewerkbare** instellingen (T-max dag/ngt, RH-max/min dag/ngt, T vs RH conflict priority) staat in de [boer-handleiding §10.1](boerHandleiding.md#101-op-de-kas-controller).
 
 **Beschikbaar via LCD voor de Beheerder** (allemaal ook voor de Boer toegankelijk):
 - Climate-menu → 1 dag / 2 nacht → setpoints
@@ -742,7 +742,7 @@ In de Access-tab wijzigt u de PIN-code van de Boer en die van de Beheerder. Zie 
 
 > **Eigen Beheerder-PIN wijzigen kan alleen vanaf de webinterface** — niet vanaf de LCD. De LCD-menu's bieden geen PIN-wijzigings-functie. Voor het wijzigen van een Boer-PIN is een Beheerder-sessie vereist.
 
-> **Beheerer-PIN vergeten** is niet zonder fysiek toegang oplosbaar. Zie [§18 Reset-procedure (BOOT-knop)](#18-reset-procedure-boot-knop-op-microprocessorboard) voor de fabrieksreset die ook de PIN's resetten.
+> **Beheerer-PIN vergeten** is niet zonder fysiek toegang oplosbaar. Zie [§18 Reset-procedure (BOOT-knop)](#18-reset-procedure-io0-knop-op-microprocessorboard) voor de fabrieksreset die ook de PIN's resetten.
 
 De **Logout**-knop verschijnt op de Access-tab wanneer u ingelogd bent (Boer of Beheerder); klik hierop om de sessie direct te beëindigen, anders verloopt deze na de in System ingestelde sessie-timeout.
 
@@ -803,7 +803,7 @@ Een coredump wordt automatisch opgeslagen wanneer de firmware een **panic** heef
 
 > **Coredump-inhoud kan gevoelige data bevatten** (WiFi-PSK, PIN, status-secret). Behandel het `.bin`-bestand als vertrouwelijke informatie en wis het van het werkstation zodra de analyse klaar is.
 
-Zie [§14 — Coredump ophalen na een panic](#coredump-ophalen-na-een-panic-vanaf-200) voor de volledige procedure.
+Zie [§14 — Coredump ophalen na een panic](#coredump-ophalen-na-een-panic) voor de volledige procedure.
 
 ---
 
@@ -1032,7 +1032,7 @@ Als je écht een schone re-baseline wilt na een uitgebreide manual-sessie, gebru
 
 ## 11. Eerste-installatie WiFi-verbinding
 
-Dit hoofdstuk beschrijft uitsluitend de **eenmalige procedure** om de kascontroller voor het eerst op een WiFi-netwerk te krijgen — bijvoorbeeld na de fabriekslevering of na een reset op niveau 2/3 (zie [§18 Reset-procedure](#18-reset-procedure-boot-knop-op-microprocessorboard)). Voor reguliere WiFi-aanpassingen ná de eerste installatie (AP-wachtwoord, client-SSID, NTP, locatie, sessie-timeout) gebruikt u de **System-tab** in de webinterface — zie [§10.5 System-tab](#105-system-tab-alleen-beheerder).
+Dit hoofdstuk beschrijft uitsluitend de **eenmalige procedure** om de kascontroller voor het eerst op een WiFi-netwerk te krijgen — bijvoorbeeld na de fabriekslevering of na een reset op niveau 2/3 (zie [§18 Reset-procedure](#18-reset-procedure-io0-knop-op-microprocessorboard)). Voor reguliere WiFi-aanpassingen ná de eerste installatie (AP-wachtwoord, client-SSID, NTP, locatie, sessie-timeout) gebruikt u de **System-tab** in de webinterface — zie [§10.5 System-tab](#105-system-tab-alleen-beheerder).
 
 ### 11.1 Eerste keer WiFi configureren (na fabrieksreset of nieuwe installatie)
 
@@ -1077,7 +1077,7 @@ De controller voert **automatisch een herstart uit** wanneer een WiFi instelling
 
 ## 12. Alarmen en bedrijfsmodi — diagnose en herstel
 
-Voor algemene uitleg van bedrijfsmodi: zie [boer-handleiding §12](handleiding.md#12-alarmen-en-bedrijfsmodi--wat-betekenen-ze-wat-te-doen).
+Voor algemene uitleg van bedrijfsmodi: zie [boer-handleiding §12](boerHandleiding.md#12-alarmen-en-bedrijfsmodi--wat-betekenen-ze-wat-te-doen).
 
 Onderstaande secties verdiepen de diagnose vanuit beheerder-perspectief.
 
@@ -1112,7 +1112,7 @@ Zone uitschakelen: `Dir excl. low = Dir excl. high` of negatief.
 
 ### 12.2 Motor-alarm — diagnose
 
-Voor algemene uitleg: zie [boer-handleiding §12.6](handleiding.md#126-motor-alarm-in-detail).
+Voor algemene uitleg: zie [boer-handleiding §12.6](boerHandleiding.md#126-motor-alarm-in-detail).
 
 **Diagnose-stappen door de beheerder**:
 
@@ -1164,7 +1164,7 @@ Bij `** SENSOR FAULT` op LCD (Temperatuur/Luchtvochtigheid-sensor) of `--` op wi
 
 ### 12.5 RGB-LED kleuren samengevat
 
-Zie [boer-handleiding §12.3](handleiding.md#123-rgb-led-kleuren-samengevat). LCD-achtergrond mirror-t dezelfde status (blauw=OK, rood=alarm).
+Zie [boer-handleiding §12.3](boerHandleiding.md#123-rgb-led-kleuren-samengevat). LCD-achtergrond mirror-t dezelfde status (blauw=OK, rood=alarm).
 
 ### 12.6 Logbestand-formaten
 
@@ -1191,7 +1191,7 @@ Elke kascontroller een **vier-tekens hex-ID** afgeleid van de lage 2 bytes van h
 
 ## 13. Inschakelen na stroomuitval
 
-Voor algemene procedure: zie [boer-handleiding §13](handleiding.md#13-inschakelen-na-stroomuitval).
+Voor algemene procedure: zie [boer-handleiding §13](boerHandleiding.md#13-inschakelen-na-stroomuitval).
 
 ### Beheerder-specifieke checklist
 
@@ -1438,7 +1438,7 @@ Om te voorkomen dat de SD-kaart vol raakt:
 
 ### Power-cycle uitvoeren
 
-Zie [boer-handleiding §14](handleiding.md#14-onderhoud--wat-de-boer-zelf-doet). Identieke procedure.
+Zie [boer-handleiding §14](boerHandleiding.md#14-onderhoud--wat-de-boer-zelf-doet). Identieke procedure.
 
 ![FOTO: microprocessorboard met RESET-knop en BOOT-knop duidelijk gemarkeerd](images\LolinS3Reset.png)
 
@@ -1478,7 +1478,7 @@ Bij élke opstart van de controller (power-cycle, druk op RESET-knop, geplande h
 | Na herstel van een stroomuitval | Geen actie nodig; de controller doet automatisch het juiste op basis van de NVS-staat. |
 | Bij wijziging van motor-travel-times in de webinterface | Niet strikt vereist (nieuwe waardes worden direct toegepast op de volgende beweging). Voor verificatie: forceer een kalibratie door één raam handmatig te openen vóór een power-cycle. |
 | Na firmware-update (OTA) | Geen actie nodig. De controller herstart automatisch en evalueert de skip-conditie. |
-| Bij motor-alarm-clearance | Niet vereist — de controller doet automatisch een 60-seconden guard + CLOSE_ALL re-kalibratie zodra het alarm wegvalt (zie [boer-handleiding §12.6](handleiding.md#126-motor-alarm-in-detail)). |
+| Bij motor-alarm-clearance | Niet vereist — de controller doet automatisch een 60-seconden guard + CLOSE_ALL re-kalibratie zodra het alarm wegvalt (zie [boer-handleiding §12.6](boerHandleiding.md#126-motor-alarm-in-detail)). |
 
 > **Praktische tip**: plan een power-cycle die een kalibratie *moet* uitvoeren op een rustig moment (bv. avond). Tijdens de ~3 minuten kalibratie staan alle ramen dicht en is de klimaatregeling tijdelijk inactief. Een power-cycle waarbij de skip-conditie zal opgaan (alle ramen al dicht) is daarentegen elke moment veilig — hersteltijd ~2 sec.
 
@@ -1486,7 +1486,7 @@ Bij élke opstart van de controller (power-cycle, druk op RESET-knop, geplande h
 
 ## 15. Handmatige overname via de motorbox
 
-Voor algemene uitleg en consequenties: zie [boer-handleiding §15](handleiding.md#15-handmatige-overname-via-de-motorbox).
+Voor algemene uitleg en consequenties: zie [boer-handleiding §15](boerHandleiding.md#15-handmatige-overname-via-de-motorbox).
 
 ### Voor de beheerder bij onderhoud aan motoren of constructie
 
@@ -1497,9 +1497,9 @@ Voor algemene uitleg en consequenties: zie [boer-handleiding §15](handleiding.m
 3. **Indien werkzaamheden aan motor zelf** (bedrading, vervangen): zet bovendien de motor-zekering in de RRK-3 uit, of haal de stekker eruit
 4. Voer onderhoud uit
 5. Na onderhoud: **eerst zekering / stekker terug**, dan **schakelaars terug op automatisch**
-6. **Power-cycle de kascontroller** (zie [§14](#14-onderhoud--wat-de-beheerder-doet)) **met ten minste één raam fysiek open** om de CLOSE_ALL kalibratie af te dwingen — alleen zo weet de controller weer met zekerheid waar de ramen staan. Power-cyclen terwijl alle drie de ramen dicht staan trip mogelijk de NVS-skip (sinds 1.17.36, zie [§17](#17-reset-procedure-boot-knop-op-microprocessorboard)) waardoor de kalibratie wordt overgeslagen en de controller-aanname ongetest blijft
+6. **Power-cycle de kascontroller** (zie [§14](#14-onderhoud--wat-de-beheerder-doet)) **met ten minste één raam fysiek open** om de CLOSE_ALL kalibratie af te dwingen — alleen zo weet de controller weer met zekerheid waar de ramen staan. Power-cyclen terwijl alle drie de ramen dicht staan trip mogelijk de NVS-skip (sinds 1.17.36, zie [§18](#18-reset-procedure-io0-knop-op-microprocessorboard)) waardoor de kalibratie wordt overgeslagen en de controller-aanname ongetest blijft
 
-> Zie [boer-handleiding §15 — De kascontroller weet niet dat hij is uitgeschakeld](handleiding.md#de-kascontroller-weet-niet-dat-hij-is-uitgeschakeld) voor de gevolgen van handmatige stand zonder power-cycle achteraf.
+> Zie [boer-handleiding §15 — De kascontroller weet niet dat hij is uitgeschakeld](boerHandleiding.md#de-kascontroller-weet-niet-dat-hij-is-uitgeschakeld) voor de gevolgen van handmatige stand zonder power-cycle achteraf.
 
 ![Hotraco RRK-3 motorbox met de drie schakelaars per kanaal duidelijk in beeld; markeer welke positie hoort bij "automatisch" en welke bij "handbediening"](images\RBMotorControllerKnoppenstand.png)
 
@@ -1516,7 +1516,7 @@ Voor algemene uitleg en consequenties: zie [boer-handleiding §15](handleiding.m
 | LCD blank, heartbeat-LED uit | Voeding weg | Voeding controleren; zekering nameten |
 | LCD blank, heartbeat-LED knippert | LCD-bus probleem | Power-cycle; bij blijvende fout LCD-module vervangen |
 | Heartbeat-LED steady aan (niet knipperend) | Firmware vastgelopen | Power-cycle of reset; bij herhaling firmware re-flash |
-| Controller herstart onverwacht | **Software-panic** wordt vrijwel altijd opgevangen in een coredump | Inloggen als Beheerder → tab **Log** → sectie **Diagnostics** → check op `Coredump available`-badge in de Alarms-tegel. Download het `.bin`-bestand voor offline analyse — zie [§14 Coredump ophalen na een panic](#coredump-ophalen-na-een-panic-vanaf-200). Tegelijkertijd: SD-logbestand downloaden — de regel direct vóór de boot-marker (`SYSTEM value_a=5`) toont wat de controller deed kort vóór de crash |
+| Controller herstart onverwacht | **Software-panic** wordt vrijwel altijd opgevangen in een coredump | Inloggen als Beheerder → tab **Log** → sectie **Diagnostics** → check op `Coredump available`-badge in de Alarms-tegel. Download het `.bin`-bestand voor offline analyse — zie [§14 Coredump ophalen na een panic](#coredump-ophalen-na-een-panic). Tegelijkertijd: SD-logbestand downloaden — de regel direct vóór de boot-marker (`SYSTEM value_a=5`) toont wat de controller deed kort vóór de crash |
 
 ### 16.2 Sensor-problemen
 
@@ -1590,7 +1590,7 @@ Voor algemene uitleg en consequenties: zie [boer-handleiding §15](handleiding.m
 
 | Probleem | Diagnose | Actie |
 |---|---|---|
-| Beheerder-PIN vergeten | — | BOOT-knop niveau 1 reset (zie [§18](#18-reset-procedure-boot-knop-op-microprocessorboard)) |
+| Beheerder-PIN vergeten | — | BOOT-knop niveau 1 reset (zie [§18](#18-reset-procedure-io0-knop-op-microprocessorboard)) |
 | Farmer-PIN vergeten | — | Beheerder reset via webinterface Access-tab |
 | Lockout opheffen | Wachttijd resterend | 5 min wachten OF BOOT-knop niveau 1 (reset PIN's én lockout) |
 
@@ -1635,13 +1635,13 @@ Voor algemene uitleg en consequenties: zie [boer-handleiding §15](handleiding.m
 | **FreeRTOS** | Real-time operating system gebruikt door ESP-IDF |
 
 ### Engels-Nederlands LCD-termen
-Zie [boer-handleiding §16](handleiding.md#16-verklarende-woordenlijst) — identieke set strings.
+Zie [boer-handleiding §17](boerHandleiding.md#17-verklarende-woordenlijst) — identieke set strings.
 
 ---
 
-## 18. Reset-procedure (BOOT-knop op microprocessorboard)
+## 18. Reset-procedure (IO0-knop op microprocessorboard)
 
-Zie ook [boer-handleiding §17](handleiding.md#17-reset-procedure-boot-knop-op-microprocessorboard) voor de basisprocedure.
+Zie ook [boer-handleiding §18](boerHandleiding.md#18-reset-procedure-io0-knop-op-microprocessorboard) voor de basisprocedure.
 
 ### Niveau-overzicht
 
@@ -1649,7 +1649,7 @@ Zie ook [boer-handleiding §17](handleiding.md#17-reset-procedure-boot-knop-op-m
 |---:|---|---|
 | 0–5 sec. | (geen melding) | Geen actie |
 | 5–10 sec. | `Reset PIN?` | Niveau 1 — PIN's terug naar fabrieksstandaard |
-| 10–15 sec. | `Reset settings?` | Niveau 2 — alle instellingen + PIN's reset |
+| 10–15 sec. | `Reset settings?` | Niveau 2 — alle instellingen + PIN's reset. **Geen reboot** — en omdat WiFi-instellingen pas bij de volgende herstart worden toegepast, blijft de controller tot dat moment op het oude netwerk |
 | 15–20 sec. | `Restarting?` | Niveau 3 — volledige reset + reboot |
 | 20+ sec. | `Restart!` / `Restarting...` | Auto-trigger niveau 3 |
 
@@ -1664,13 +1664,24 @@ Zie ook [boer-handleiding §17](handleiding.md#17-reset-procedure-boot-knop-op-m
 | Volledig terug naar fabriek | Niveau 3 |
 | Verhuizing kascontroller | Niveau 3 (alle locatiegebonden config wissen) |
 
+> **Let op bij verhuizing, reparatie of afvoer van een controller.** Een reset wist NVS
+> *logisch* — niet de flash-sectoren — en de flash van deze controller is **niet
+> versleuteld** (`CONFIG_SECURE_FLASH_ENC_ENABLED` en `CONFIG_NVS_ENCRYPTION` staan uit).
+> Het WiFi-wachtwoord en de overige instellingen van de vorige locatie blijven daarmee met
+> `esptool` uitleesbaar zolang de board niet volledig is herschreven. **Een reset op
+> niveau 3 is hiervoor niet voldoende.** Verlaat een controller de locatie — verhuizing,
+> retour voor reparatie, of afvoer — neem dan één van deze twee stappen:
+>
+> 1. **Wijzig het WiFi-wachtwoord van de kas** nadat de controller is verwijderd, of
+> 2. **Flash de controller volledig opnieuw** (greenfield-procedure — wist de hele flash).
+
 ### Na niveau 2 of 3 — checklist herinstallatie
 
 1. ☐ WiFi configureren (AP → client-mode, [§11.1](#111-eerste-keer-WiFi-configureren-na-fabrieksreset-of-nieuwe-installatie))
-2. ☐ AP-wachtwoord wijzigen ([§11.3](#113-ap-wachtwoord-wijzigen))
-3. ☐ Tijdzone instellen ([§11.7](#117-ntp-en-tijdzone))
-4. ☐ Geografische locatie controleren / instellen ([§11.8](#118-geografische-locatie))
-5. ☐ Sessie-timeout naar wens instellen ([§11.9](#119-sessie-timeout))
+2. ☐ AP-wachtwoord wijzigen ([§10.5](#wifi-ap-access-point-op-de-controller))
+3. ☐ Tijdzone instellen ([§10.5](#ntp-en-tijdzone))
+4. ☐ Geografische locatie controleren / instellen ([§10.5](#geografische-locatie-location))
+5. ☐ Sessie-timeout naar wens instellen ([§10.5](#sessie-timeout))
 6. ☐ Motor-tijden controleren / instellen ([§10.4](#104-motors-tab-alleen-Beheerder))
 7. ☐ Klimaat-setpoints instellen (boer of Beheerder namens boer)
 8. ☐ hysteresis, glijdend gemiddelde fijnafstemmen

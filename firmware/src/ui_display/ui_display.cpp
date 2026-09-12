@@ -76,6 +76,7 @@
 #include "../event_logger/event_logger.h"
 #include "../system_id/system_id.h"      /* unit_id for FW screen (1.20.0) */
 #include "../status_post/status_post.h"      /* status_post_backoff_active (gh#18 Phase 4) */
+#include "../network_manager/network_manager.h" /* nm_wifi_erase_persistent (2.4.8, gh#56) */
 #include "../auth/pin_auth.h"
 #include "lcd1602.h"
 #include "cfg_limits.h"
@@ -823,6 +824,10 @@ static void execute_reset_action(uint8_t stage)
             nvs_cfg_erase_namespace(NVS_NS_MOTOR);
             nvs_cfg_erase_namespace(NVS_NS_ACCESS);
             nvs_cfg_erase_namespace(NVS_NS_WIFI);
+            /* gh#56 — the namespace above is only the app's copy of the
+             * credentials. IDF keeps its own persisted copy that survives
+             * the erase and would silently rejoin the previous network. */
+            nm_wifi_erase_persistent();
             nvs_cfg_erase_namespace(NVS_NS_MQTT);
             nvs_cfg_erase_namespace(NVS_NS_SYSTEM);
             pin_auth_init();
@@ -843,6 +848,10 @@ static void execute_reset_action(uint8_t stage)
             nvs_cfg_erase_namespace(NVS_NS_MOTOR);
             nvs_cfg_erase_namespace(NVS_NS_ACCESS);
             nvs_cfg_erase_namespace(NVS_NS_WIFI);
+            /* gh#56 — the namespace above is only the app's copy of the
+             * credentials. IDF keeps its own persisted copy that survives
+             * the erase and would silently rejoin the previous network. */
+            nm_wifi_erase_persistent();
             nvs_cfg_erase_namespace(NVS_NS_MQTT);
             nvs_cfg_erase_namespace(NVS_NS_SYSTEM);
             pin_auth_init();

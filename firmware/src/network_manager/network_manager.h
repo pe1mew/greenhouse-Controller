@@ -175,6 +175,33 @@ void task_network_manager(void *pvParameters);
  */
 bool nm_is_sntp_synced(void);
 
+/**
+ * @brief Clear **ESP-IDF's own** persisted WiFi configuration (gh#56).
+ *
+ * The application keeps the station credentials in NVS as `wifi/ssid` +
+ * `wifi/psk`, and the IO0 factory reset (levels 2 and 3) erases that namespace.
+ * That is only half of the stored state: this firmware never calls
+ * `esp_wifi_set_storage()`, so IDF's default `WIFI_STORAGE_FLASH` applies and
+ * every `esp_wifi_set_config(WIFI_IF_STA, …)` *also* wrote the SSID/PSK into
+ * IDF's own NVS namespace (`nvs.net80211`) — which
+ * `nvs_cfg_erase_namespace(NVS_NS_WIFI)` does not touch. `esp_wifi_start()` then
+ * loads that surviving copy and auto-connects, so a "full reset" rejoined the
+ * previous site's network while `nm_wifi_init_blocking()` was logging
+ * *"no SSID in NVS"*. Reported by the operator on FDA4, 2026-09-11.
+ *
+ * Call this wherever `NVS_NS_WIFI` is erased, so both copies go at once.
+ *
+ * @note **Not for level 1** (PIN reset) — WiFi must survive that.
+ * @note WiFi is reboot-to-apply by design (`/api/wifi` restarts after writing),
+ *       so this does not change level 2's "no reboot" contract: the erase takes
+ *       effect at the next restart like every other WiFi change.
+ * @note Requires the WiFi stack to be initialised; at reset time it is. A
+ *       failure is logged at ERROR because the credentials then survive.
+ * @see gh#56 — and why `esp_wifi_set_storage(WIFI_STORAGE_RAM)` (which would
+ *      remove the duplication entirely) is deliberately held back.
+ */
+void nm_wifi_erase_persistent(void);
+
 #ifdef __cplusplus
 }
 #endif

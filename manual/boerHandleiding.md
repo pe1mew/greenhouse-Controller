@@ -33,7 +33,7 @@
 15. [Handmatige overname via de motorbox](#15-handmatige-overname-via-de-motorbox)
 16. [Probleemoplossing (FAQ)](#16-probleemoplossing-faq)
 17. [Verklarende woordenlijst](#17-verklarende-woordenlijst)
-18. [Reset-procedure (BOOT-knop)](#18-reset-procedure-boot-knop-op-microprocessorboard)
+18. [Reset-procedure (BOOT-knop)](#18-reset-procedure-io0-knop-op-microprocessorboard)
 19. [Bijlage A — contactgegevens beheerder](#19-bijlage-a--contactgegevens-beheerder)
 20. [Bijlage B — Aanbevolen startinstellingen per gewas](#20-bijlage-b--aanbevolen-startinstellingen-per-gewas)
 21. [Versie en wijzigingshistorie](#21-versie-en-wijzigingshistorie)
@@ -516,7 +516,7 @@ Als je 5 keer achter elkaar een verkeerde PIN invoert, wordt de invoer voor die 
 
 PIN's worden versleuteld opgeslagen (gehasht). Ze kunnen niet worden teruggelezen — alleen vervangen. Als je je PIN bent vergeten:
 - **Farmer-PIN vergeten**: de beheerder kan deze openieu instellen via het Beheerder-menu
-- **Admin-PIN vergeten**: gebruik de fysieke reset-procedure (zie [§18](#18-reset-procedure-boot-knop-op-microprocessorboard))
+- **Admin-PIN vergeten**: gebruik de fysieke reset-procedure (zie [§18](#18-reset-procedure-io0-knop-op-microprocessorboard))
 
 ---
 
@@ -536,7 +536,7 @@ Wanneer er geen gebruiker is ingelogd, rouleren de schermen op het LCD-display a
 6. **Raamposities** — Staus van de ramen `M1`, `M2`, `M3` met `OPEN` / `CLOS` / `MOV>` / `MOV<`
 7. **Systeem status** - Firmware `FW` unit-ID, en uptime `Up`.
 
-Volledige beschrijving van elk scherm staat in [§5.1](#51-lcd-display-16--2-tekens).
+Volledige beschrijving van elk scherm staat in [§5.1](#51-lcd-display).
 
 **Handmatig navigeren** (zonder inloggen):
 - `D` — direct naar het volgende statusscherm
@@ -751,7 +751,7 @@ Vanuit het hoofdmenu druk je `2` om in het Wind-menu te komen:
 
 #### PIN wijzigen op de kas controller — niet beschikbaar
 
-Er is op de kascontroller geen menu om je PIN te wijzigen. Je PIN wijzigen kan alleen via de **webinterface** (Access-tab) door de Beheerder. Bij verlies van een PIN-code: zie de fysieke reset-procedure in [§18](#18-reset-procedure-boot-knop-op-microprocessorboard).
+Er is op de kascontroller geen menu om je PIN te wijzigen. Je PIN wijzigen kan alleen via de **webinterface** (Access-tab) door de Beheerder. Bij verlies van een PIN-code: zie de fysieke reset-procedure in [§18](#18-reset-procedure-io0-knop-op-microprocessorboard).
 
 #### Time-out
 
@@ -1126,7 +1126,7 @@ Soms helpt het om de controller volledig opnieuw op te starten — bijvoorbeeld 
 
 *Figuur 6: Reset-knop op het microprocessorboard*
 
-> **Waarschuwing**: druk niet op de **IO0-knop** in plaats van de RESET-knop, tenzij je bewust de fysieke reset-procedure uitvoert (zie [§18](#18-reset-procedure-boot-knop-op-microprocessorboard)). De IO0-knop start een fabrieksreset wanneer je hem te lang ingedrukt houdt.
+> **Waarschuwing**: druk niet op de **IO0-knop** in plaats van de RESET-knop, tenzij je bewust de fysieke reset-procedure uitvoert (zie [§18](#18-reset-procedure-io0-knop-op-microprocessorboard)). De IO0-knop start een fabrieksreset wanneer je hem te lang ingedrukt houdt.
 
 ---
 
@@ -1211,8 +1211,8 @@ Direct na het terugschakelen naar automatisch:
 | **Heartbeat-LED knippert niet** | Controller is bevroren; doe een power-cycle (zie [§14](#14-onderhoud--wat-de-boer-zelf-doet)) |
 | **RGB-LED is rood** | Kritiek alarm (`Mode: ALARM`); bel de beheerder |
 | **RGB-LED is oranje** | Waarschuwing; lees mode-regel en eventuele `** SENSOR FAULT` op de LCD |
-| **PIN vergeten (Farmer)** | Beheerder kan resetten via Admin-menu, of via fysieke reset-procedure ([§18](#18-reset-procedure-boot-knop-op-microprocessorboard)) |
-| **PIN vergeten (Admin)** | Fysieke reset-procedure op het microprocessorboard ([§18](#18-reset-procedure-boot-knop-op-microprocessorboard)) |
+| **PIN vergeten (Farmer)** | Beheerder kan resetten via Admin-menu, of via fysieke reset-procedure ([§18](#18-reset-procedure-io0-knop-op-microprocessorboard)) |
+| **PIN vergeten (Admin)** | Fysieke reset-procedure op het microprocessorboard ([§18](#18-reset-procedure-io0-knop-op-microprocessorboard)) |
 | **Webinterface niet bereikbaar** | IP-adres juist gelezen op LCD? Apparaat op hetzelfde wifi-netwerk? Anders: bel beheerder |
 | **Ramen reageren niet** | Controleer mode-regel: bij `Mode: WIND` zit de wind-override aan; bij `Mode: ALARM` motor-alarm. Controleer ook of de schakelaars op de motorbox in de automatische stand staan (zie [§15](#15-handmatige-overname-via-de-motorbox)). Bel beheerder bij ALARM |
 | **Setpoint accepteert mijn waarde niet** | Controleer bereik: T-max day 15–45 °C, T-max ngt 10–35 °C, RH-max 40–98 %, RH-min 20–90 %. Waarden buiten bereik worden automatisch tot het minimum of maximum geknepen |
@@ -1361,7 +1361,7 @@ Voor het geval de Beheerder-PIN vergeten is, of de controller moet volledig teru
 |---:|---|---|
 | **0–5 sec.** | (geen melding) | Geen actie — los gelaten zonder gevolgen |
 | **5–10 sec.** | `Reset PIN?` | **Niveau 1 — PIN's resetten**: alleen de PIN-codes worden teruggezet naar fabrieksstandaard. Andere instellingen (klimaat, wifi, motor) blijven behouden. Geen reboot. |
-| **10–15 sec.** | `Reset settings?` | **Niveau 2 — alle instellingen resetten**: klimaat, wind, motor, wifi, MQTT en systeem-instellingen worden allemaal teruggezet. PIN's ook gereset. Geen reboot. |
+| **10–15 sec.** | `Reset settings?` | **Niveau 2 — alle instellingen resetten**: klimaat, wind, motor, wifi, MQTT en systeem-instellingen worden allemaal teruggezet. PIN's ook gereset. Geen reboot — WiFi-instellingen worden pas bij de volgende herstart toegepast, dus tot dat moment blijft de controller op het oude netwerk. |
 | **15–20 sec.** | `Restart!` / `Restarting...` | **Niveau 3 — volledige reset + herstart**: alles wordt gereset en de controller start opnieuw op |
 
 5. Bij **20 seconden continu vasthouden** voert de controller automatisch een niveau 3 reset uit (volledige reset + herstart). Het is dus niet nodig om langer dan 20 seconden vast te houden
