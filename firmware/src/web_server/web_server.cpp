@@ -111,6 +111,9 @@
 #include "esp_partition.h"     /* a.6.35.6  — coredump partition read */
 #include "esp_timer.h"         /* a.6.35.6  — rate-limit timestamp */
 
+#include "modbus_rtu.h"        /* modbus_get_counters -- bus tallies on the
+                                 * bench diag endpoint. Declarations only;
+                                 * harmless in a release build. */
 #include "web_server.h"
 #include "../types/app_types.h"
 #include "../data_manager/data_manager.h"
@@ -3210,9 +3213,9 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
     windowpos_derived_t d;
     const bool have_d = windowpos_task_derived(&d);
 
-    /* 1024, not 768: the reading + t17 + soak blocks already came to ~720
-     * bytes worst-case, and the gate block adds ~155 more. */
-    char body[1024];
+    /* 1408: reading + t17 + soak + gate came to ~880 worst-case and the
+     * modbus tally block adds ~180 more. */
+    char body[1408];
     snprintf(body, sizeof(body),
              "{\"ok\":true,\"addr\":%u,\"build\":%u,\"fw\":%u,"
              "\"opening_mm_x10\":%u,\"percent_x10\":%u,\"rate_mm_s_x10\":%d,"
@@ -3291,6 +3294,30 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
                  (unsigned long)cn.err_comm, (unsigned long)cn.rejected_rate,
                  (unsigned long)cn.strokes, (unsigned long)cn.probe_fail,
                  (unsigned long)cn.mode_changes, (unsigned long)cn.gated_polls);
+    }
+    /* Bus tallies last. Costs no bus access -- these are counters -- so this
+     * is the one part of the response that is safe to read at any time. Note
+     * the REQUEST itself does a ~215 ms direct read above, so do not poll this
+     * endpoint during a stroke: it becomes a third caller and perturbs exactly
+     * the contention it is here to measure. Read it AFTER the stroke. */
+    modbus_counters_t mc;
+    modbus_get_counters(&mc);
+    const size_t used4 = strlen(body);
+    if (used4 + 1u < sizeof(body)) {
+        snprintf(body + used4 - 1u, sizeof(body) - used4 + 1u,
+                 ",\"modbus\":{\"ok\":%lu,\"timeout\":%lu,\"crc\":%lu,"
+                 "\"exception\":%lu,\"framing\":%lu,\"param\":%lu,\"busy\":%lu,"
+                 "\"last_status\":%u,\"last_addr\":%u,"
+                 "\"last_fail_status\":%u,\"last_fail_addr\":%u,"
+                 "\"to_received\":%u,\"to_expected\":%u,\"lock_wait_ms\":%lu}}",
+                 (unsigned long)mc.ok, (unsigned long)mc.timeout,
+                 (unsigned long)mc.crc, (unsigned long)mc.exception,
+                 (unsigned long)mc.framing, (unsigned long)mc.param,
+                 (unsigned long)mc.busy, (unsigned)mc.last_status,
+                 (unsigned)mc.last_addr, (unsigned)mc.last_fail_status,
+                 (unsigned)mc.last_fail_addr,
+                 (unsigned)mc.last_to_received, (unsigned)mc.last_to_expected,
+                 (unsigned long)mc.last_lock_wait_ms);
     }
     return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
 }

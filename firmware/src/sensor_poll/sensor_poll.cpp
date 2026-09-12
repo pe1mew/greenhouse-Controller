@@ -366,7 +366,17 @@ static uint16_t calc_win(int32_t win_min, int32_t poll_s)
  * @param sensor_kind  4 = T/RH, 5 = wind.
  * @param onset        true = fault triggered, false = fault cleared.
  */
-static void post_sensor_alarm(uint8_t sensor_kind, bool onset)
+/**
+ * @brief Post a sensor fault/clear row, recording WHY.
+ *
+ * `value_b` used to be hard-coded 0 with the comment "sensor faults are binary
+ * on/off". They are not: a fault can mean the sensor did not answer, answered
+ * corrupt, or was never asked because another task held the bus. Those have
+ * different fixes, and a wind alarm was chased through three wrong root causes
+ * because the log did not distinguish them. `value_b` now carries the driver
+ * status (@ref s200_status_t / @ref fg6485a_status_t), 0 on a clear.
+ */
+static void post_sensor_alarm(uint8_t sensor_kind, bool onset, uint8_t reason)
 {
     log_event_t evt;
     memset(&evt, 0, sizeof(evt));
@@ -375,7 +385,7 @@ static void post_sensor_alarm(uint8_t sensor_kind, bool onset)
     evt.initiator  = (uint8_t)LOG_BY_SYSTEM;
     evt.channel    = sensor_kind;             /* 4 = T/RH, 5 = wind */
     evt.value_a    = onset ? 1 : 0;
-    /* value_b stays 0 — sensor faults are binary on/off. */
+    evt.value_b    = (int16_t)reason;         /* driver status; 0 on a clear */
     log_post(&evt);
 }
 
@@ -519,7 +529,7 @@ void task_sensor_poll(void *pvParameters)
                 /* Fault cleared — update EG1, log once */
                 xEventGroupClearBits(EG1, EG1_BIT_SENSOR_FAULT_T);
                 t_fault_active = false;
-                post_sensor_alarm(/*sensor_kind=*/4u, /*onset=*/false);
+                post_sensor_alarm(/*sensor_kind=*/4u, /*onset=*/false, 0u);
                 ESP_LOGI(TAG, "[T5] T/RH sensor fault cleared (T=%.1f°C RH=%.1f%%)",
                          (double)tm.temperature_c, (double)tm.humidity_pct);
             }
@@ -538,7 +548,7 @@ void task_sensor_poll(void *pvParameters)
                 /* Fault onset — update EG1, log once */
                 xEventGroupSetBits(EG1, EG1_BIT_SENSOR_FAULT_T);
                 t_fault_active = true;
-                post_sensor_alarm(/*sensor_kind=*/4u, /*onset=*/true);
+                post_sensor_alarm(/*sensor_kind=*/4u, /*onset=*/true, (uint8_t)tst);
                 ESP_LOGW(TAG, "[T5] T/RH sensor FAULT — %s",
                          (tst == FG6485A_ERR_BUSY)
                              ? "bus unavailable past the grace deadline"
@@ -570,7 +580,7 @@ void task_sensor_poll(void *pvParameters)
             if (w_fault_active) {
                 xEventGroupClearBits(EG1, EG1_BIT_SENSOR_FAULT_W);
                 w_fault_active = false;
-                post_sensor_alarm(/*sensor_kind=*/5u, /*onset=*/false);
+                post_sensor_alarm(/*sensor_kind=*/5u, /*onset=*/false, 0u);
                 ESP_LOGI(TAG, "[T5] Wind sensor fault cleared (ws=%.1f m/s wd=%.0f°)",
                          (double)wm.wind_speed_avg_ms, (double)wm.wind_dir_avg_deg);
             }
@@ -590,7 +600,7 @@ void task_sensor_poll(void *pvParameters)
             if (!w_fault_active) {
                 xEventGroupSetBits(EG1, EG1_BIT_SENSOR_FAULT_W);
                 w_fault_active = true;
-                post_sensor_alarm(/*sensor_kind=*/5u, /*onset=*/true);
+                post_sensor_alarm(/*sensor_kind=*/5u, /*onset=*/true, (uint8_t)wst);
                 ESP_LOGW(TAG, "[T5] Wind sensor FAULT — %s",
                          (wst == S200_ERR_BUSY)
                              ? "bus unavailable past the grace deadline"
