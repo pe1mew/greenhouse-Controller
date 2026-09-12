@@ -772,7 +772,7 @@ Deeper point: `60,60` is **genuinely ambiguous from the row alone** — a real d
 
 ---
 
-## 2026-07-14 — testing the ROTA quiet gate / session exemption needs the night window OPEN
+## 2026-07-14 — testing the ROTA quiet gate / session exemption needs the night window OPEN [CONFIRMED IN THE FIELD 2026-09-12, gh#41]
 
 **Problem:** The gh#41 hardware test (a session-triggered update must apply without deferring) looked like it FAILED — FDA4 held `apply=1` (deferred) for 3 min with the session active, as if the fix were broken.
 
@@ -863,13 +863,17 @@ Verify: serial shows `littlefs_mount(A (lfs0)) returned 0 (OK)` + `/index.html e
 
 ---
 
-## 2026-07-13 — Rapid OTA reboots rate-limit SNTP → T16 (ROTA) skips checks
+## 2026-07-13 — Rapid OTA reboots rate-limit SNTP [RECURRED 2026-09-12] → T16 (ROTA) skips checks
 
 **Problem:** During ROTA client testing on a dev unit (FDA4), T16's manifest check kept returning `result:"skipped", code:3` for many minutes, even though `/api/status` reported a correct wall-clock time. `system.ntp_synced` stayed `false`.
 
 **Root cause:** OTA-pushing/reflashing the *same* unit many times in an hour makes it re-run `nm_sntp_quick_sync()` on every boot; pool.ntp.org rate-limits (KoD) the source IP after the burst, so the fresh per-boot sync never completes and the `nm_is_sntp_synced()` latch never sets. The internal ESP32 RTC retains valid time across warm reboots (so the *clock* is right), but T16 gates on the strict SNTP latch by design (see [rotaImplementationPlan.md](../design/rotaImplementationPlan.md) risk #3), so it skips rather than sign a request on an untrusted clock.
 
 **Fix:** Not a firmware bug — a test-environment artifact. Wait it out: T16 recovers on the rc.1.5.6 SNTP retry cadence (`NTP_RETRY_INTERVAL_S=300`, 5 min). To avoid it, batch firmware changes before pushing rather than reflashing the same unit in a tight loop when you need a synced clock. Never arises in production (units don't reboot 8×/hour). Check state via `/api/ota/check` (`result`) + `/api/status` (`system.ntp_synced`).
+
+**RECURRED 2026-09-12 — and I did not read this entry first.** Eight OTA reboots across two modules in about five hours (2.4.8, 2.4.10, 2.5.0, a 2.5.0 rebuild, 2.5.1 and 2.6.0 on FDA4; then 2.6.0 and 2.7.0 on 2344) reproduced it exactly: `ntp_synced` stayed false for eight minutes after the 2.6.0 boots, with `LOG_SYSTEM value_a=2, value_b=0` (NTP timeout) rows on **both** boots, and it recovered on the 300 s retry as written above. Note this entry had already named the threshold — *"units don't reboot 8x/hour"* — and that is precisely what I did.
+
+**I investigated it from scratch instead**, concluded "FDA4 could not reach pool.ntp.org at that moment", and published that attribution as field evidence on gh#55 before finding this entry during end-of-session curation. The correction is posted there. `CLAUDE.md`'s pointer table says to read this log **before** debugging from scratch, for exactly this case: the symptom was "weird and unexpected", the answer was already written down, and the cost of not looking was a round of wasted investigation plus a wrong public claim.
 
 ## 2026-07-08 — Clock hours wrong while `ntp_synced=true` — DS1307 outranked SNTP [RESOLVED — 2.1.3, gh#37]
 
@@ -1200,3 +1204,49 @@ The edit helper used throughout this session already did this for its own patter
 **Root cause:** `git diff --cached --name-only` lists paths whose **index content differs from HEAD**. `git add` on a file identical to HEAD produces no such difference, so the path never appears and the hook's guard correctly decides the commit does not touch that file. The hook was right; the test was staging nothing.
 
 **Fix:** to exercise a path-guarded hook, stage an actual modification. In the harness this became "append a harmless trailing comment, stage, run the hook, restore".
+
+## 2026-09-12 — I read an environment variable out of MY shell and told the operator it applied to THEIRS
+
+**Problem:** Before a `git rebase --continue`, I checked whether an editor would open, saw
+`GIT_EDITOR=true`, and told the operator none would. Vim opened on their very next command
+and they were stuck in it mid-rebase.
+
+**Root cause:** `GIT_EDITOR=true` is set in the environment my Bash tool runs in. It is not
+set in the operator's interactive MINGW64 shell. Two different processes, two different
+environments, and I inferred one from the other. `git config core.editor` was genuinely
+unset, which is the part that transfers; the env var was not.
+
+**Fix / rule:** *my shell is not the operator's shell.* Anything environment-dependent
+(`$GIT_EDITOR`, `$EDITOR`, `$PATH`, the working directory, an active venv) must be checked
+where it will actually run, or stated as a conditional — "if an editor opens, save and
+close". Config that lives in files (`git config`, `.env`) does transfer; exported variables
+do not. The recovery is cheap once known: `export GIT_EDITOR=true` in their shell, or
+`:wq`.
+
+## 2026-09-12 — test a rebase read-only before running it, and check containment before merging a doc conflict
+
+**Problem:** `ropeSensor` was 14 commits behind `main` with 11 files touched by both,
+including three that shared a log-encoding space. Going in blind risked a silent encoding
+collision (the gh#54 shape: two producers, one decoder).
+
+**What worked, and is reusable:**
+
+- **A read-only trial predicts the conflict surface exactly.** Per file,
+  `git diff $(git merge-base A B) B -- <f> | git apply --check -` reports clean or
+  conflict and **writes nothing** — no refs, no objects, no worktree change. It named 4
+  of 4 conflicts correctly and cleared every source file, which is what made it safe to
+  proceed. Far better than reasoning about hunk offsets, which I started to do and would
+  have got wrong.
+- **Check containment before hand-merging a doc conflict.** `main` already contained **all
+  34** of ropeSensor's added `gotcha-log.md` lines and **all 40** of its `changelog.md`
+  lines, because the same curation had been applied to both branches. My written plan said
+  "keep both sets", which would have duplicated 34 lines including a whole promoted
+  PATTERN. Comparing each added line against the other side's current content caught it.
+
+**Rule:** *before merging a doc conflict by hand, test whether one side already contains
+the other.* The interesting case is not "both changed it" but "one already has it", and
+that case looks identical in a conflict marker.
+
+**Also:** during a rebase `--ours` is the branch being replayed **onto**, not the branch
+being replayed. That is the reverse of the merge intuition and worth saying out loud in any
+resolution instructions.
