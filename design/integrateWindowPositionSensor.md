@@ -671,13 +671,97 @@ documented in [../log/logparser.md](../log/logparser.md) and decoded by
 audit log and nothing else.** That is why the log row carries the *reason* and
 not merely the fact.
 
-**Verification status: compiler and parser only.** Both environments build with
-no new warnings (release 66.3 % flash, bench 66.4 %), the source file was proved
-to be in the build with a fail-first `static_assert`, and all ten mode/reason
-combinations round-trip through `logparser.py` with no `raw:` fallback.
-**There has been no hardware run** — 2344 is the fitted dev module and is held on
-2.7.0 by operator instruction. AT-WP06 and AT-WP07 above remain unexecuted, and
-the gate must not be described as hardware-verified until they are.
+#### Verification — FDA4, 2026-09-12, `2.7.0-bench`
+
+FDA4 was refitted to the dev rig and took `2.7.0-bench` by push-OTA;
+**`fw_ver` and `asset_version` both read `2.7.0-bench`** after reboot. The
+asset zip is 2.7.0's with only `manifest.json` rewritten — a content diff proved
+`index.html`/`app.js`/`style.css` identical to `firmware/data/` on this branch,
+so the branch carries no GUI of its own. `travel_s` read `[21, 21, 13]` before
+the flash, so the rig's 13 s M3 value had survived the module swap.
+
+**What the hardware proved:**
+
+| Behaviour | Evidence |
+|---|---|
+| Gate opens at boot, sensor identified | `gate: {mode: timed, reason: ok}`, `build: 1` (not BENCH, so the latch correctly did not fire) |
+| **Mode is NOT promoted at boot** | `mode_str: timed` with `reason_str: ok` while at rest — the intermediate state the asymmetry is for, reading as *not yet promoted* rather than *still probing* |
+| Promotion happens at the stroke boundary | `timed -> position` at the `CMD_RECALIBRATE` sweep; `strokes: 1`, `mode_changes: 1` |
+| Poll cadence still derived | `poll_ms: 100` (13000/150 = 86, floored at `DEVICE_MIN_WINDOW_MS`) |
+| Edge-triggered logging | **3 rows for 2 boots + 1 stroke against 162 polls.** `logparser.py` decodes the real rows, and the whole 3577-row file parses with **zero** `raw:` fallbacks |
+| No spurious demotion | 75 s continuous observation: `probe_fail: 0`, `err_comm: 0`, `gated_polls: 0`, gate never shut |
+| Idle sampling resumes after the stroke | `reads_ok` flat from ~31 s, then +1 at ~61 s — the 30 s idle cadence |
+
+**Still NOT verified, and why:**
+
+- **AT-WP06 was run and FAILED, which found a real defect.** The operator pulled
+  the encoder for 50 s. **The gate did not demote**: `err_comm` stayed 0 and the
+  mode stayed `POSITION` with nothing on the other end of the cable. The idle
+  branch was `if (windowpos_read(...) == OK) { ... }` **with no else**, so it
+  swallowed both failed reads — visible in the log only as a **91 s hole** in the
+  `ch3` rows (17:30:16 to 17:31:47) and, on reconnect, a `param 247` row with
+  `value_a = 18`: the encoder's own uptime register going backwards.
+
+  Every other demotion path needs a stroke in progress or an already-shut gate,
+  so the gate was **blind whenever M3 was at rest** — which is most of the time,
+  and all night. The published authority could have claimed `POSITION` for hours
+  after the sensor vanished. **Fixed**: the idle read now feeds the same
+  two-consecutive-failure counter as the stroke poll, so at the 30 s idle
+  cadence an absent sensor is detected in ~60 s and the shut gate's 30 s
+  re-probe recovers on its own. The fix is built and flashed but **the pull has
+  not been repeated**, so demotion and recovery are still unproven — a re-run
+  needs the cable out for **at least 90 s** now, to span two idle samples.
+- **`WPOS_GATE_DEVICE_FAULT` is narrower than it looks.**
+  `windowpos_reading_t::sensor_fault` is the **wiper-open** bit or the `65535`
+  sentinel, so pulling the *bus* cable yields `NO_SENSOR`; `DEVICE_FAULT` needs
+  the *wiper* wire open specifically. Two different physical tests.
+- **`WINDOWPOS_ERR_BUSY` never counting as a failure.** `err_busy` stayed 0 even
+  with three bus callers, for the same reason AT-WP05 was a qualified pass: the
+  500 ms lock timeout comfortably exceeds the ~215 ms hold. The rule is correct
+  by construction but **untested on hardware.**
+- **The BENCH latch.** Needs a sensor running a bench firmware.
+
+#### Rig finding — T17's stroke poll starves T5, and it looks like a wind alarm
+
+The operator reported a **wind alarm persisting after a reset while the wind
+sensor was reading valid**. It is not wind. Across four SD log files (2026-09-05
+to 09-12, ~78 000 rows, 66 boots) there are **8** `EG1_BIT_SENSOR_FAULT_W`
+onsets, and the measured wind at every one was **0.0—1.9 m/s** — nowhere near any
+`v_max`. The chain is:
+
+1. T5 loses **two consecutive** S200 reads and sets `EG1_BIT_SENSOR_FAULT_W`.
+2. T3 **safe-fails** on that bit and raises a wind override — logged as
+   `ALARM ch0 param 243`, *"wind sensor fault safe-fail"*.
+3. The GUI/LCD still show a plausible wind speed, because on a failed read T5
+   fills `wind_speed_ms10` from `avg_get(&s_avg_ws)` — **the last known average,
+   carried forward** to avoid a gap in T4's ring. So the operator sees a valid
+   reading and an alarm at the same time, which is exactly the symptom.
+
+**5 of the 8 coincide with T17 stroke-polling** (63—158 `ch3` samples within
++/-30 s). That is the rig-only pathology: a `travel_m3/150` poll floored at
+`DEVICE_MIN_WINDOW_MS` = **100 ms**, against a **~215 ms** Modbus transaction, in
+a receive loop that never yields — i.e. **a poll period shorter than one
+transaction, so bus duty is ~100 % for the whole stroke** and T5 cannot get in
+within its 500 ms lock timeout. Production polls at 1140 ms (~18 % duty) and
+does not have it.
+
+**3 of the 8 had no `ch3` samples at all**, and two of those had M3 relay rows
+within +/-30 s — so there is a **second contributor independent of T17**, most
+plausibly relay-switching noise on the shared RS485 run. **2344 shows 0 faults
+across 13 boots** in the pre-encoder era, so the encoder's presence on the bus
+is implicated in the T17 half but cannot explain the other half.
+
+**"After a reset" is a red herring, and this was measured.** A reset is normally
+*followed* by M3 movement, and the movement is the trigger. The 2026-09-12
+17:39/17:40 reflash produced two boots with **`strokes: 0`** — boot calibration
+was skipped because M3 already sat on its end switch — and **neither boot
+produced a wind fault**. No stroke, no alarm.
+
+Two consequences for this plan: **do not poll `GET /api/diag/windowpos` hard
+during a stroke** (it adds a third ~215 ms caller — that is how the 17:20:47
+fault was provoked), and **the `DEVICE_MIN_WINDOW_MS` poll floor needs raising
+above one Modbus transaction**, to roughly 3x it, so T5 keeps a share of the
+bus. Neither is caused by the presence gate; both are exposed by it.
 
 ---
 
