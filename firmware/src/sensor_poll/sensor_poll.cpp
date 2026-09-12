@@ -77,6 +77,55 @@ static const char *TAG = "T5_SEN";
 /** @brief Delay between the first and second Modbus read attempt (ms). */
 #define SP_RETRY_DELAY_MS  100u
 
+/**
+ * @brief How long an unreadable-because-BUSY sensor may go unreported (ms).
+ *
+ * A lost bus race says nothing about the sensor -- gh#49 split
+ * @c MODBUS_ERR_BUSY from @c MODBUS_ERR_TIMEOUT for exactly that reason --
+ * so the first one must not raise a sensor fault. On FDA4 it did, and that
+ * turned every manual M3 stroke into a wind alarm on a calm day: T3
+ * safe-fails on @c EG1_BIT_SENSOR_FAULT_W, and T17 polls the position
+ * encoder at 100 ms against a ~215 ms transaction.
+ *
+ * It cannot be tolerated indefinitely either: a permanently jammed bus would
+ * leave the wind protection silently disabled, which is the dangerous
+ * failure. So this is a **deadline on flying blind, not a retry count** --
+ * deliberately in time rather than in polls, because `poll_interval` is
+ * operator-configurable 15-120 s and a count of two would tolerate 240 s at
+ * the top of that range.
+ *
+ * 60 s covers the dev rig 18 s M3 stroke with room to spare. Production
+ * polls the encoder at 1140 ms (~18 % bus duty) and should not contend.
+ */
+#define SP_BUSY_TOLERANCE_MS  60000u
+
+/** @brief Free-running millisecond clock for the BUSY deadline. */
+static inline uint32_t sp_now_ms(void)
+{
+    return (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+}
+
+/**
+ * @brief Track an unbroken BUSY run and say whether it has outlived the grace.
+ *
+ * @param since  Caller-owned timestamp of the first BUSY in the current run;
+ *               0 means no run is in progress. Set on the first call, left
+ *               alone afterwards, and cleared by the caller on a good read.
+ * @return false while the sensor should still be given the benefit of the
+ *         doubt, true once the deadline has passed and a fault is warranted.
+ */
+static bool busy_deadline_passed(uint32_t *since)
+{
+    const uint32_t now = sp_now_ms();
+    if (*since == 0u) {
+        /* 0 doubles as "no run in progress", so never store it as a real
+         * timestamp -- one tick in 49.7 days lands on it. */
+        *since = (now == 0u) ? 1u : now;
+        return false;
+    }
+    return (uint32_t)(now - *since) >= SP_BUSY_TOLERANCE_MS;
+}
+
 /* =========================================================================
  * Sliding-average context types
  * ========================================================================= */
@@ -393,6 +442,12 @@ void task_sensor_poll(void *pvParameters)
     bool t_fault_active = false;
     bool w_fault_active = false;
 
+    /* First moment of an unbroken BUSY run, per sensor. 0 = not in one.
+     * Measured against SP_BUSY_TOLERANCE_MS so contention is forgiven
+     * briefly and a jammed bus is still reported. */
+    uint32_t t_busy_since = 0u;
+    uint32_t w_busy_since = 0u;
+
     uint32_t iter = 0u;
 
     for (;;) {
@@ -447,14 +502,17 @@ void task_sensor_poll(void *pvParameters)
 
         fg6485a_measurement_t tm;
         memset(&tm, 0, sizeof(tm));
-        bool t_ok = false;
+        /* Keep the STATUS, not just a bool: FG6485A_ERR_BUSY has to be
+         * told apart from FG6485A_ERR_COMM below. */
+        fg6485a_status_t tst = FG6485A_ERR_COMM;
 
-        for (int attempt = 0; attempt < 2 && !t_ok; attempt++) {
+        for (int attempt = 0; attempt < 2 && tst != FG6485A_OK; attempt++) {
             if (attempt > 0) {
                 vTaskDelay(pdMS_TO_TICKS(SP_RETRY_DELAY_MS));
             }
-            t_ok = (fg6485a_read_measurements(FG6485A_DEFAULT_ADDR, &tm) == FG6485A_OK);
+            tst = fg6485a_read_measurements(FG6485A_DEFAULT_ADDR, &tm);
         }
+        const bool t_ok = (tst == FG6485A_OK);
 
         if (t_ok) {
             if (t_fault_active) {
@@ -465,15 +523,26 @@ void task_sensor_poll(void *pvParameters)
                 ESP_LOGI(TAG, "[T5] T/RH sensor fault cleared (T=%.1f°C RH=%.1f%%)",
                          (double)tm.temperature_c, (double)tm.humidity_pct);
             }
+            t_busy_since = 0u;
             avg_push(&s_avg_t,  tm.temperature_c, win_t);
             avg_push(&s_avg_rh, tm.humidity_pct,  win_rh);
+        } else if (tst == FG6485A_ERR_BUSY && !busy_deadline_passed(&t_busy_since)) {
+            /* Lost the bus, not a broken sensor. Report nothing yet; the
+             * averages simply do not advance this pass. */
+            ESP_LOGW(TAG, "[T5] T/RH read lost the bus (BUSY) — no fault raised, "
+                          "%lu ms into a %lu ms grace",
+                     (unsigned long)(sp_now_ms() - t_busy_since),
+                     (unsigned long)SP_BUSY_TOLERANCE_MS);
         } else {
             if (!t_fault_active) {
                 /* Fault onset — update EG1, log once */
                 xEventGroupSetBits(EG1, EG1_BIT_SENSOR_FAULT_T);
                 t_fault_active = true;
                 post_sensor_alarm(/*sensor_kind=*/4u, /*onset=*/true);
-                ESP_LOGW(TAG, "[T5] T/RH sensor FAULT — two consecutive read failures");
+                ESP_LOGW(TAG, "[T5] T/RH sensor FAULT — %s",
+                         (tst == FG6485A_ERR_BUSY)
+                             ? "bus unavailable past the grace deadline"
+                             : "two consecutive read failures");
             }
         }
 
@@ -484,14 +553,18 @@ void task_sensor_poll(void *pvParameters)
 
         s200_measurement_t wm;
         memset(&wm, 0, sizeof(wm));
-        bool w_ok = false;
+        /* Keep the STATUS, not just a bool. This one matters most: T3
+         * safe-fails on EG1_BIT_SENSOR_FAULT_W, so collapsing BUSY into
+         * COMM here is what closed the greenhouse on a calm day. */
+        s200_status_t wst = S200_ERR_COMM;
 
-        for (int attempt = 0; attempt < 2 && !w_ok; attempt++) {
+        for (int attempt = 0; attempt < 2 && wst != S200_OK; attempt++) {
             if (attempt > 0) {
                 vTaskDelay(pdMS_TO_TICKS(SP_RETRY_DELAY_MS));
             }
-            w_ok = (s200_read_measurements(S200_DEFAULT_ADDR, &wm) == S200_OK);
+            wst = s200_read_measurements(S200_DEFAULT_ADDR, &wm);
         }
+        const bool w_ok = (wst == S200_OK);
 
         if (w_ok) {
             if (w_fault_active) {
@@ -501,14 +574,27 @@ void task_sensor_poll(void *pvParameters)
                 ESP_LOGI(TAG, "[T5] Wind sensor fault cleared (ws=%.1f m/s wd=%.0f°)",
                          (double)wm.wind_speed_avg_ms, (double)wm.wind_dir_avg_deg);
             }
+            w_busy_since = 0u;
             avg_push(&s_avg_ws, wm.wind_speed_avg_ms, win_w);
             dir_avg_push(&s_avg_wd, wm.wind_dir_avg_deg, win_w);
+        } else if (wst == S200_ERR_BUSY && !busy_deadline_passed(&w_busy_since)) {
+            /* Lost the bus, not a broken anemometer. Raising the fault here
+             * makes T3 safe-fail and close the greenhouse -- which is what
+             * happened on every manual M3 stroke on FDA4, three times in a
+             * row, with the wind measuring 1.1-1.7 m/s. */
+            ESP_LOGW(TAG, "[T5] Wind read lost the bus (BUSY) — no fault raised, "
+                          "%lu ms into a %lu ms grace",
+                     (unsigned long)(sp_now_ms() - w_busy_since),
+                     (unsigned long)SP_BUSY_TOLERANCE_MS);
         } else {
             if (!w_fault_active) {
                 xEventGroupSetBits(EG1, EG1_BIT_SENSOR_FAULT_W);
                 w_fault_active = true;
                 post_sensor_alarm(/*sensor_kind=*/5u, /*onset=*/true);
-                ESP_LOGW(TAG, "[T5] Wind sensor FAULT — two consecutive read failures");
+                ESP_LOGW(TAG, "[T5] Wind sensor FAULT — %s",
+                         (wst == S200_ERR_BUSY)
+                             ? "bus unavailable past the grace deadline"
+                             : "two consecutive read failures");
             }
         }
 

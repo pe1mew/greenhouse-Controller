@@ -176,6 +176,31 @@ static uint16_t modbus_crc16(const uint8_t *buf, uint8_t len)
 
 static uint32_t s_frame_end_us = 0u;
 
+/**
+ * @brief Discard everything sitting in the RX FIFO.
+ *
+ * Called before every transmit and on every error exit, so no transaction
+ * can inherit another one's leftovers. Since gh#49 made two callers legal
+ * this is not hygiene, it is correctness: T17 polls the position encoder
+ * while T5 polls the T/RH and wind sensors, and a frame fragment left by
+ * one is read as the other's response, fails CRC, and -- because the CRC
+ * exit used to return without draining -- poisons the transaction after
+ * that as well. On FDA4 that cascade declared the wind sensor faulty and
+ * T3 safe-failed the greenhouse closed on a calm day.
+ *
+ * The 2 ms settle lets a straggler byte still in flight land in the FIFO
+ * so it is discarded now rather than surfacing in the next frame.
+ */
+static void drain_rx(void)
+{
+    delayMicroseconds(2000);
+#ifndef NATIVE_TEST
+    while (uart1_available()) (void)uart1_read();
+#else
+    while (Serial1.available()) (void)Serial1.read();
+#endif
+}
+
 /* ---------------------------------------------------------------------------
  * Bus lock (gh#49)
  *
@@ -319,6 +344,12 @@ static modbus_status_t modbus_transaction(uint8_t  device_addr,
             delayMicroseconds(MODBUS_IFG_US - elapsed);
         }
     }
+    /* Start from a known-empty FIFO. The IFG above has elapsed and nothing of
+     * ours is on the wire yet, so anything here is stale -- another caller's
+     * leftovers, or a slave answering after we gave up. Inheriting it makes
+     * the counted echo drain below consume the wrong bytes and the CRC fail.
+     * See drain_rx(). */
+    drain_rx();
     gpio_set_rs485_direction(true);   /* DE/RE HIGH — driver enable */
 #ifndef NATIVE_TEST
     uart1_write(req, 8);
@@ -389,21 +420,28 @@ static modbus_status_t modbus_transaction(uint8_t  device_addr,
                       | ((uint16_t)resp[expected_len - 1] << 8);
     uint16_t calc_crc = modbus_crc16(resp, (uint8_t)(expected_len - 2));
     if (recv_crc != calc_crc) {
+        /* A bad CRC usually means the FIFO held bytes that were not ours, so
+         * leaving the rest of them behind hands the next transaction the same
+         * failure. This exit is the one that made the fault cascade. */
+        drain_rx();
         return MODBUS_ERR_CRC;
     }
 
     /* Detect exception after CRC is confirmed valid */
     if (resp[1] & 0x80) {
+        drain_rx();
         return MODBUS_ERR_EXCEPTION;
     }
 
     /* Validate address and function code */
     if (resp[0] != device_addr || resp[1] != fc) {
+        drain_rx();
         return MODBUS_ERR_FRAMING;
     }
 
     /* Validate data byte count */
     if (resp[2] != (uint8_t)(count * 2)) {
+        drain_rx();
         return MODBUS_ERR_FRAMING;
     }
 
@@ -468,6 +506,7 @@ static modbus_status_t write_multiple_locked(uint8_t         device_addr,
             delayMicroseconds(MODBUS_IFG_US - elapsed);
         }
     }
+    drain_rx();   /* same reason as FC03/FC04 — see drain_rx() */
     gpio_set_rs485_direction(true);
 #ifndef NATIVE_TEST
     uart1_write(req, (size_t)(payload_len + 2));
@@ -527,14 +566,20 @@ static modbus_status_t write_multiple_locked(uint8_t         device_addr,
                       | ((uint16_t)resp[expected_len - 1] << 8);
     uint16_t calc_crc = modbus_crc16(resp, (uint8_t)(expected_len - 2));
     if (recv_crc != calc_crc) {
+        /* A bad CRC usually means the FIFO held bytes that were not ours, so
+         * leaving the rest of them behind hands the next transaction the same
+         * failure. This exit is the one that made the fault cascade. */
+        drain_rx();
         return MODBUS_ERR_CRC;
     }
 
     if (resp[1] & 0x80) {
+        drain_rx();
         return MODBUS_ERR_EXCEPTION;
     }
 
     if (resp[0] != device_addr || resp[1] != 0x10) {
+        drain_rx();
         return MODBUS_ERR_FRAMING;
     }
 
