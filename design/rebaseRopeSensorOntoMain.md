@@ -78,14 +78,39 @@ against `main` as it stands. Everything not listed here applies clean.
 
 | file | why | resolution |
 |---|---|---|
-| `firmware/platformio.ini` | `ropeSensor` bumped 2.4.4 → 2.4.5; `main` is now 2.7.0 | **take `main`'s 2.7.0.** `ropeSensor` changed nothing else in this file — the IDF component is wired in `firmware/components/windowPos/CMakeLists.txt` and `firmware/src/CMakeLists.txt`, both clean |
-| `bin/2.4.5/release-notes.md` | add/add: both sides created it, 80 lines each | **byte-identical** (md5 `ee1861f8…` on both). Take either side |
-| `memory/gotcha-log.md` | both appended entries at the end | **keep both sets.** Append `ropeSensor`'s window-sensor entries after `main`'s; nothing is contradictory |
-| `CLAUDE.md` | `main`'s copy was rewritten heavily on 2026-09-12 | **take `main`'s**, then re-add `ropeSensor`'s window-sensor pointer row. Do **not** take `ropeSensor`'s side wholesale: it predates the swappable-module correction, the two-windows facts, the six-table checker row and the 2.4.6–2.7.0 history |
+| `firmware/platformio.ini` | `ropeSensor` bumped 2.4.4 -> 2.4.5; `main` is now 2.7.0 | **`git checkout --ours`.** `ropeSensor` changed nothing else in this file; the IDF component is wired in `firmware/components/windowPos/CMakeLists.txt` and `firmware/src/CMakeLists.txt`, both clean |
+| `bin/2.4.5/release-notes.md` | add/add: both sides created it, 80 lines each | **`git checkout --ours`.** Byte-identical (md5 `ee1861f8...` both sides) |
+| `memory/gotcha-log.md` | both appended entries | **`git checkout --ours`.** See the containment result below |
+| `CLAUDE.md` | `main`'s copy was rewritten heavily on 2026-09-12 | **the only real merge.** A pre-built resolved file is in the session scratchpad as `resolved_CLAUDE.md`; copy it over the conflicted path |
+
+During a rebase `--ours` is the branch being replayed **onto** (`main`) and
+`--theirs` is the commit being replayed (`ropeSensor`). That is the reverse of the
+intuition most people carry from a merge, so it is worth saying out loud.
+
+### Containment check: three of the four conflicts lose nothing
+
+Before resolving a doc conflict by hand, test whether `main` already contains the
+other side. For every file `ropeSensor` touches, comparing its added lines against
+`main`'s current content gives:
+
+| file | lines `ropeSensor` adds | unique to `ropeSensor` |
+|---|---|---|
+| `memory/gotcha-log.md` | 34 | **0** |
+| `changelog.md` | 40 | **0** (and it applies clean anyway) |
+| `CLAUDE.md` | 1 (the pointer row) | **1** |
+| `memory/architecture.md` | 4 | 4 (applies clean) |
+| `design/integrateWindowPositionSensor.md` | 380 | 281 (applies clean) |
+
+So `main` is a **strict superset** for the gotcha log and the changelog: the same
+window-sensor entries were curated onto `main` as well. My first draft of this
+document said "keep both sets" for the gotcha log, which would have duplicated 34
+lines including a whole promoted PATTERN entry. **Check containment before merging
+a doc conflict by hand** — the interesting case is not "both changed it" but
+"one already has the other's content".
 
 ### Two resolutions that are not just "keep both"
 
-**`memory/gotcha-log.md` — `ropeSensor`'s only new entry is already fixed on `main`.**
+**`memory/gotcha-log.md` needs no merge at all, but note what `main` already says.**
 Its single added heading is *"2026-09-10 — a refused manual LCD command leaves NO trace,
 so 'it got rejected' is unreconstructable"*. That is gh#59 item 3, and `main` closed it in
 2.6.0: `LOG_SYSTEM value_a = 27` now records a Q1 command discarded while the motor alarm
