@@ -608,7 +608,7 @@ CONFIG_LIMITS: dict[str, list[int]] = {
     "dwell_close_m1": [ 0, 1500],   # 1.16.31: matched to dwell_open ceiling
     "dwell_close_m2": [ 0, 1500],
     "dwell_close_m3": [ 0, 1500],
-    "poll_interval":  [30, 300],
+    "poll_interval":  [15, 120],   # 2.5.1 gh#57: FR-S03/FR-CF07, matches T5
     "session_timeout":[ 1, 1440],
     "ap_timeout":     [ 0, 1440],
     # 2.5.0 (gh#57): eleven keys that were clamped nowhere and published

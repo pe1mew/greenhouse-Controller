@@ -1092,3 +1092,25 @@ Encoded in [firmware/partitions.csv](../firmware/partitions.csv) header comment.
 **Fix:** strip comments **before** splitting on any C token. The prose semicolon was also changed to a full stop, so the next naive tool does not trip on it either.
 
 **Rule:** *when parsing C from a script, remove comments as step one — anything you split on can legally appear inside one.*
+
+## 2026-09-12 — a file named "single source of truth" was the newest and the wrongest statement of a bound
+
+**Problem:** gh#57 recorded `poll_interval` as a stand-off: FR-S03 and FR-CF07 (both "Must") say 15–120 s, `cfg_limits.h` says 30–300, so "either amend the FRS or change the code". Filed as a decision for the operator. It was not a stand-off at all.
+
+**Root cause:** the search stopped at the config layer. `sensor_poll.cpp` — the task that actually sets the cadence — defines `SP_POLL_MIN_S = 15` / `SP_POLL_MAX_S = 120` and clamps to them on every loop pass, four lines above the `vTaskDelay`. The TSDS states 15–120 in five places citing FR-CF07. The manual's own advice lines say 15–30 short / 60–120 long. `git log -S` on the constants shows `cfg_limits.h` was created whole in v1.16.25 (2026-05-07) while `SP_POLL_MIN_S = 15` already existed in that commit's parent. The header of `cfg_limits.h` claims to be the "single source of truth for all integer config parameter bounds", and that claim is exactly what made it look authoritative.
+
+**Consequence of believing it:** a stored 300 was accepted, reported back by `/api/config`, written to the audit log — and polled at 120. Worse, T5 sizes the averaging window from the **raw** shadow value (`poll_s_cfg`), not the clamped one, so a 6-minute window at a stored 300 became `(6*60)/300 = 1` sample: averaging silently gone, which is the noise rejection FR-S06 asks for.
+
+**Fix:** `cfg_limits.h` narrowed to 15/120 in 2.5.1, which also makes the clamped and raw variables identical over the whole legal range. Verified on FDA4: 15 s stored and the SD `SENSOR_HR` cadence measured at eight consecutive 15 s gaps, with no reboot.
+
+**Rule (promoted):** *a bound in a config/limits table is a claim, not the truth. Before trusting it, check the consuming task for its own clamp and the FRS/TSDS for the requirement — and when they disagree, `git log -S` the constants to see which one drifted. A config bound WIDER than the consumer's clamp is a silent lie, not a harmless slack.*
+
+## 2026-09-12 — a poll-cadence change cannot be measured until the in-flight sleep drains
+
+**Problem:** After setting `poll_interval = 15`, a check waited 100 s and asserted the last four `SENSOR_HR` gaps were ~15 s. It failed: the gaps read `[..., 31, 76, 31, 15]`.
+
+**Root cause:** T5 reads the interval at the **top** of its loop and only then sleeps (`poll_s = dm_get_poll_interval_s()` at `:404`, `vTaskDelay` at `:408`). A change therefore takes effect after the currently in-flight sleep completes, so the worst-case latency is one whole **old** interval. The clamp tests immediately before had set 120 s twice, so a 120 s sleep was in flight and the measurement window straddled the transition. The firmware was correct; the 76 s and 120 s gaps are the old cadence draining.
+
+**Fix:** wait out a worst-case old interval *plus* several new cycles before measuring, then assert on the tail only. Re-run gave `[15, 15, 16, 15, 15, 16, 15, 15]`.
+
+**Also learned the same run:** a verification that sleeps more than `session_timeout` (default **5 min**) loses its cookie and starts getting `401 no_session` mid-script. Long-running harnesses need a 401 retry that re-logs in, not just an `HTTPError` body parse.

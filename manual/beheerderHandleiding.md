@@ -1155,9 +1155,12 @@ Bij `** SENSOR FAULT` op LCD (Temperatuur/Luchtvochtigheid-sensor) of `--` op wi
 
 | Configuratie item | Beschrijving | Default | Bereik |
 |---|---|---|---|
-| `Sensor poll interval` | Sensor-leesfrequentie | 30 s | 30–300 s |
+| `Sensor poll interval` | Sensor-leesfrequentie | 30 s | 15–120 s |
 
-> **Reboot vereist** na wijziging.
+> **Geen reboot nodig.** De wijziging geldt vanaf de **volgende poll-cyclus**: T5 leest het
+> interval elke ronde opnieuw uit de configuratie. Eerdere versies van deze handleiding en
+> de tooltip in de web-GUI vermeldden ten onrechte “reboot vereist” en een bereik van
+> 30–300 s; beide zijn gecorrigeerd in firmware 2.5.1 (gh#57).
 
 - Korter (15–30 s): snellere reactie, meer Modbus-traffic
 - Langer (60–120 s): minder bus-belasting, minder snelle reactie, langer voordat sensor-fault wordt gedetecteerd (2 mislukte polls)
@@ -1170,7 +1173,7 @@ Zie [boer-handleiding §12.3](boerHandleiding.md#123-rgb-led-kleuren-samengevat)
 
 - **SD-bestanden**: CSV-bestanden op de SD-kaart. Bestandsnamen volgen het patroon `<eenheid-ID>_YYYYMMDDHHMMSS.csv` (lokale aanmaaktijd), bijvoorbeeld `5C88_20260507143022.csv`
 - **CSV-velden**: timestamp (ISO 8601 UTC), event_type, initiator, ch, param, value_a, value_b
-- **Event-types**: `SENSOR`, `RELAY`, `MODE`, `SETPT`, `SESSION`, `ALARM`, `SYSTEM`
+- **Event-types**: `SENSOR_HR`, `SUN`, `RELAY`, `MODE`, `SETPT`, `SESSION`, `ALARM`, `SYSTEM`, `PIN_AUTH`. (`SENSOR` is de oude enkelvoudige sensor-rij van vóór rc.1.4.0 — die komt in nieuwe bestanden niet meer voor, maar `logparser.py` leest hem nog voor oude archieven. `PIN_AUTH` is nieuw in 2.5.1 en registreert mislukte PIN-invoer en de lockout.)
 - Download via webinterface tab **Log**
 
 Voor de complete uitleg van het logbestand-formaat (alle velden, event-types, parameter-ID's, channel-states, alarm-codes) en het gebruik van het meegeleverde `logparser`-script: zie [Bijlage F](#bijlage-f--logbestand-formaat-en-logparser-script).

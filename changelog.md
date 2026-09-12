@@ -6,6 +6,80 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.5.1] — 2026-09-12  (gh#57 part 2 — the poll-interval range now matches the requirement it always claimed to)
+
+Patch: a bounds correction plus three documentation fixes. No payload change, no
+new key, no new behaviour.
+
+**Fixed.**
+
+- **gh#57 part 2 — `poll_interval` accepted 30–300 s where FR-S03 and FR-CF07 (both
+  "Must") specify 15–120.** The resolution was not a coin-toss between amending the
+  requirements and changing the code, because **the code already implemented the
+  requirement at the only place that sets the cadence.** `sensor_poll.cpp` defines
+  `SP_POLL_MIN_S = 15` and `SP_POLL_MAX_S = 120` and clamps to that range on every
+  loop pass, immediately before the `vTaskDelay`. Six statements of the range exist
+  and only one said 30–300:
+
+  | source | range |
+  |---|---|
+  | FR-S03, FR-CF07 (both Must) | 15–120 |
+  | TSDS, five places, citing FR-CF07 | 15–120 |
+  | `sensor_poll.cpp` `SP_POLL_MIN_S`/`MAX_S` — **the actual poller** | 15–120 |
+  | `sensor_poll.cpp` file header | 15–120 |
+  | `beheerderHandleiding.md` §12.4 advice lines | 15–30 / 60–120 |
+  | `cfg_limits.h` and everything derived from it | **30–300** |
+
+  Git settles which one drifted: `cfg_limits.h` was created whole in `v1.16.25`
+  (2026-05-07) and `SP_POLL_MIN_S = 15` is already present in that commit's parent.
+  The file that calls itself the single source of truth is the newcomer, and its
+  recorded rationale ("below 30 s provides no benefit for greenhouse dynamics") was
+  written in the same commit that introduced the divergence.
+
+  `CFG_MIN_POLL_S` is now 15 and `CFG_MAX_POLL_S` is 120. Consequences: **15 s is
+  reachable for the first time** (it was silently clamped up to 30), and a stored
+  300 is no longer possible (it was accepted verbatim while T5 polled at 120).
+  Costs nothing: the sliding-average buffer is a fixed `SP_AVG_DEPTH = 360` slots
+  per channel, and a 30-minute window at a 15 s poll needs 120 of them.
+
+- **The GUI tooltip for the poll interval was wrong twice over.** It said
+  "Range: 30–300 s. Default: 60 s. Takes effect after reboot." The default has been
+  30 s since `DEF_POLL_INTERVAL_S` was set, and **no reboot is needed** — T5 calls
+  `dm_get_poll_interval_s()` at the top of every loop pass, so a change lands on the
+  next cycle. Now reads "Range: 15–120 s. Default: 30 s. Takes effect on the next
+  poll cycle — no reboot needed."
+
+- **`beheerderHandleiding.md` §12.4 repeated both errors.** Its table said 30–300 s
+  and it carried a "**Reboot vereist** na wijziging" note. Both corrected, with a
+  line saying what the earlier text claimed so an operator who remembers it is not
+  left wondering. Note the section's own *advice* lines already said 15–30 s for
+  short and 60–120 s for long, which is further evidence that 15–120 was the
+  intended range throughout.
+
+- **The manual's event-type list was missing three types.** §12.6 listed seven and
+  omitted `SENSOR_HR` and `SUN` (both since rc.1.4.0) and `PIN_AUTH` (2.5.0). Now
+  complete, with `SENSOR` marked as the pre-rc.1.4.0 form that `logparser.py` still
+  reads for old archives.
+
+- `webUiMock/mock_server.py` follows the new bounds; the cross-check confirms the
+  mock and the firmware still agree key-for-key on all 40 keys.
+
+**Known, filed separately.** T5 sizes the averaging window from the **raw** stored
+`poll_interval`, not the clamped one (`poll_s_cfg` at `sensor_poll.cpp:418` versus
+`poll_s` at `:404`). Narrowing the config bounds makes the two identical across the
+whole legal range, so no new unit can reach the bad state — but
+`nvs_cfg_get_i32_or_default()` does not clamp on load, so a unit still holding a
+legacy out-of-range value keeps it across a boot and would compute an averaging
+depth from a cadence it does not use. Filed as its own issue rather than fixed here,
+so the fix and its hardware evidence stand on their own.
+
+**Unchanged.** The averaging-window range is untouched: FR-CF17 and FR-S07 say
+1–60 minutes and `cfg_limits.h` says 1–30. That is the same divergence shape in the
+same coupled pair and it needs the same kind of decision; it is recorded in the
+issue above rather than changed on my own judgement.
+
+---
+
 ## [2.5.0] — 2026-09-12  (gh#57 part 1 + gh#58 — validation that was never enforced, and failures that were never recorded)
 
 Minor rather than patch: `LOG_PIN_AUTH` is a new log event type, which is a

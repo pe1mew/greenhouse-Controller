@@ -13,7 +13,7 @@
  * Anti-oscillation critical minimums (see simulation/simulationOptimisation.md):
  *   CFG_MIN_HYST_T  = 2   narrower dead band collapses step_width to 0
  *   CFG_MIN_V_MAX   = 1   0 would permanently assert wind override
- *   CFG_MIN_POLL_S  = 30  faster polling gives no benefit for greenhouse dynamics
+ *   CFG_MIN_POLL_S  = 15  matches FR-S03 / FR-CF07 and T5's own SP_POLL_MIN_S
  */
 
 #pragma once
@@ -75,8 +75,26 @@
 #define CFG_MAX_DWELL_CLOSE_S 1500  /* matched to dwell_open ceiling so M3 can run a symmetric closed-state hold */
 
 /* ── System ───────────────────────────────────────────────────────────────── */
-#define CFG_MIN_POLL_S       30   /* below 30 s provides no benefit for greenhouse dynamics */
-#define CFG_MAX_POLL_S      300   /* above 5 min climate response becomes too slow */
+/* 2.5.1 (gh#57 part 2) — was 30..300, which contradicted every other statement
+ * of this range in the project and was the newest of them:
+ *   FR-S03 and FR-CF07 (both "Must")        15..120, default 30
+ *   TSDS, five places, citing FR-CF07       15..120, default 30
+ *   sensor_poll.cpp SP_POLL_MIN_S/MAX_S     15..120  <- the ACTUAL poller
+ *   sensor_poll.cpp file header              15..120
+ *   beheerderHandleiding 12.4 advice        15..30 short / 60..120 long
+ * T5 clamps to [SP_POLL_MIN_S, SP_POLL_MAX_S] on every loop pass immediately
+ * before the vTaskDelay that sets the cadence, and has done so since before
+ * this file existed (cfg_limits.h was created whole in v1.16.25, 2026-05-07;
+ * SP_POLL_MIN_S = 15 is present in that commit's parent). So a stored 300 was
+ * silently polled at 120, and worse: T5 sizes the averaging window from the
+ * RAW shadow value, not the clamped one, so a 6-minute window at a stored 300
+ * became (6*60)/300 = 1 sample, i.e. no averaging at all. Narrowing here makes
+ * the two variables identical over the whole legal range and removes that
+ * divergence by construction. Tracked separately for legacy stored values,
+ * which this change does NOT retro-clamp: nvs_load_system() reads the key with
+ * nvs_cfg_get_i32_or_default() and does not clamp on load. */
+#define CFG_MIN_POLL_S       15   /* FR-S03 / FR-CF07; == SP_POLL_MIN_S in sensor_poll.cpp */
+#define CFG_MAX_POLL_S      120   /* FR-S03 / FR-CF07; == SP_POLL_MAX_S in sensor_poll.cpp */
 #define CFG_MIN_TIMEOUT_MIN   1
 #define CFG_MAX_TIMEOUT_MIN 1440  /* 24 h */
 #define CFG_MIN_AP_TIMEOUT    0   /* 0 = AP stays up indefinitely */
