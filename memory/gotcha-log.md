@@ -10,11 +10,13 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ## Promoted patterns
 
-- **[PATTERN] A grep is a claim about spelling; only running the code is evidence about behaviour.** Four instances: the real gh#51 Group B parser gap was found **by running the parser** after inspection had missed it (2026-09-10); then three false findings in a single audit (2026-09-12) — a mistyped symbol (`persist_state` for `persist_ch_state`) "proved" a function had no callers, a guessed variable name (`s_win_ws_last` for `s_win_w_last`) "proved" a config change was ignored, and a `va == N` regex "proved" a decoder missed six subtypes it handles. Rules: (a) to test a decoder, **feed it rows and read the output** — never enumerate its branches; (b) to test a call graph, grep the *exact* symbol, print the hit list, and sanity-check the count; (c) **a negative grep is the weakest evidence in the toolbox** — before reporting "X never happens", find the positive case you expect to exist and confirm the same grep finds *that* first (the fail-first rule, applied to searching); (d) sibling of the cross-reference pattern below — a link check and a grep both test the address, not the content.
+- **[PATTERN] Mutual exclusion is necessary and not sufficient on a shared bus, and a constant that has never been reached is untested.** 2026-09-12: the RS485 lock (gh#49) correctly serialised *access*, so the operator's framing was exactly right — *"the semaphore should only add jitter"*. What it does not provide is the **silence** the RTU protocol requires between frames, and `MODBUS_IFG_US` was set at the spec floor plus 9.7 % (3.84 character times vs a t3.5 minimum of 3.646 ms). **With one caller that guard had never executed once** — frames sat 30 s apart, so the wait was always skipped. T17 made frames adjacent for the first time in three years and the S200 began silently discarding requests it saw as a continuation of the previous frame, which presents as *zero bytes and a timeout*, never a CRC error. Rules: (a) when adding a second user to any shared resource, audit the constants that were **latent** under single use — a threshold never approached is a guess, not a tested value; (b) ask what the protocol requires **between** operations, not only during them; (c) leave a shared resource in the state the next user is entitled to assume — the IFG is now paid before `bus_unlock()`, and the RX FIFO drained on every exit, for the same reason; (d) *"a compliant slave must stay silent on a bad-CRC request"* means **a silent slave is evidence about the framing, not about the slave**.
 
-- **[PATTERN] A failure that only reaches the serial console has not been logged. Anything that changes control behaviour or hides a state must produce an SD row.** Four instances: (1) T2's dwell deferral of T6 at `ESP_LOGD` — the controller sat inert for 25 min with no trace (2.4.5); (2) a refused manual LCD command leaves nothing (2026-09-10); (3) the IO0 stage-2 factory reset leaves nothing — seven namespaces erased, no row (2026-09-11); (4) a failed DS1307 read at `ESP_LOGW` — the only evidence was a boot row stamped 1970 (gh#55, 2026-09-11). Rules: (a) if a code path can change what T6/T2/T3 do, or can make the unit refuse an operator, it emits a `LOG_SYSTEM` row with a value_a code and the parser learns it in the same change; (b) "it's in the serial log" is not observability on a unit in a greenhouse; (c) when a symptom has "no trace", search the log for rows stamped 1970 and for rows the *shadow* stamps differently from `time(NULL)` — the absence has a shape.
+- **[PATTERN] A grep is a claim about spelling; only running the code is evidence about behaviour.** Four instances: the real gh#51 Group B parser gap was found **by running the parser** after inspection had missed it (2026-09-10); then three false findings in a single audit (2026-09-12) — a mistyped symbol (`persist_state` for `persist_ch_state`) "proved" a function had no callers, a guessed variable name (`s_win_ws_last` for `s_win_w_last`) "proved" a config change was ignored, and a `va == N` regex "proved" a decoder missed six subtypes it handles. Rules: (a) to test a decoder, **feed it rows and read the output** — never enumerate its branches; (b) to test a call graph, grep the *exact* symbol, print the hit list, and sanity-check the count; (c) **a negative grep is the weakest evidence in the toolbox** — before reporting "X never happens", find the positive case you expect to exist and confirm the same grep finds *that* first (the fail-first rule, applied to searching); (d) sibling of the cross-reference pattern below — a link check and a grep both test the address, not the content; (e) **the same trap applies to filters over data, not just greps over source** — 2026-09-12, `$2=="MODE_CHANGE"` returned zero rows because the CSV type is `MODE`, and the zero was nearly reported as "no mode transitions were logged". Printing the distinct values of the field found 19. **When a filter returns nothing, print the domain of the field before believing it.**
 
-- **[PATTERN] Show the check can fail before trusting a pass.** Three instances in two days: (1) a before/after motor-timing measurement landed on the same 24 s for opposite reasons (2026-09-10) — a third run at a different setting was the evidence; (2) AT-WP05's headline counter `err_busy` **cannot fail with two callers** (500 ms lock timeout vs ~215 ms hold) — 7117 clean reads proved nothing about contention (2026-09-11); (3) the gh#52 hardware test run from AUTOMATIC passed on code where the fix is inert (2026-09-11). Rules: (a) before reading a pass, name the input that would make the check fail and confirm the check sees it — the Modbus fail-first rule generalised; (b) a criterion that no plausible failure can trip is a *description*, not a test — say so in the results; (c) a fix to a transition is tested from the state the transition leaves.
+- **[PATTERN] A failure that only reaches the serial console has not been logged. Anything that changes control behaviour or hides a state must produce an SD row.** Four instances: (1) T2's dwell deferral of T6 at `ESP_LOGD` — the controller sat inert for 25 min with no trace (2.4.5); (2) a refused manual LCD command leaves nothing (2026-09-10); (3) the IO0 stage-2 factory reset leaves nothing — seven namespaces erased, no row (2026-09-11); (4) a failed DS1307 read at `ESP_LOGW` — the only evidence was a boot row stamped 1970 (gh#55, 2026-09-11). Rules: (a) if a code path can change what T6/T2/T3 do, or can make the unit refuse an operator, it emits a `LOG_SYSTEM` row with a value_a code and the parser learns it in the same change; (b) "it's in the serial log" is not observability on a unit in a greenhouse; (c) when a symptom has "no trace", search the log for rows stamped 1970 and for rows the *shadow* stamps differently from `time(NULL)` — the absence has a shape. **Fifth instance, 2026-09-12, a sharper variant: the row existed and carried no REASON.** `post_sensor_alarm()` hard-coded `value_b = 0` with the comment *"sensor faults are binary on/off"*. They are not — a fault can mean no answer, a corrupt frame, or **never asked** — and with the reason absent, three successive wrong root causes were each fully consistent with the evidence. (d) **a fault row must record why, not just that**: an enum that distinguishes the causes with different fixes, learned by the parser in the same change. One instrumented reading (`to_received = 0 of 29`, `crc = 0`, `busy = 0`) ended a four-hour misdiagnosis.
+
+- **[PATTERN] Show the check can fail before trusting a pass.** Three instances in two days: (1) a before/after motor-timing measurement landed on the same 24 s for opposite reasons (2026-09-10) — a third run at a different setting was the evidence; (2) AT-WP05's headline counter `err_busy` **cannot fail with two callers** (500 ms lock timeout vs ~215 ms hold) — 7117 clean reads proved nothing about contention (2026-09-11); (3) the gh#52 hardware test run from AUTOMATIC passed on code where the fix is inert (2026-09-11). Rules: (a) before reading a pass, name the input that would make the check fail and confirm the check sees it — the Modbus fail-first rule generalised; (b) a criterion that no plausible failure can trip is a *description*, not a test — say so in the results; (c) a fix to a transition is tested from the state the transition leaves. **Fourth instance, 2026-09-12, the inverse shape:** an A/B that *passed* proved nothing — the encoder was unplugged and M3 stroked **twice** with no wind alarm, read as evidence, when at the measured rate (~4 failures in 600 transactions) two strokes span one or two polls and the null hypothesis predicts zero events anyway. (d) before treating an A/B as evidence, **compute how many events the null hypothesis predicts in that sample size** — if it is under ~1, the run cannot discriminate and saying so is the result.
 
 - **[PATTERN] When a change gates a shared queue, table or key set, enumerate every producer and consumer with `grep` and put the list in the release notes — never reason about "the other callers".** 2026-09-11, 2.4.6: the gh#53 fix rejected any `/api/config` key without a `cfg_shadow_t` field. The verification enumerated the web GUI's 33 keys from `app.js`, then *reasoned* about the LCD and T10 (the code comment said "defence in depth for the LCD"). `grep -rn 'xQueueSend(Q4\|post_q4('` lists five producers; two of them post `wifi/ap_enable`, which has no shadow field on purpose because T10 polls NVS for it. The AP toggle — the recovery path for a unit that has lost its WiFi — was dead within minutes of the OTA, and the operator found it, not the tests. Rules: (a) the enumeration is a `grep` output pasted into the notes, not a sentence; (b) a key set defined as "the set of things X handles" is wrong whenever some consumer reads the store directly — ask *who reads NVS / the queue without going through X*; (c) the full 2.3.1→2.4.6 surface comparison (`design/releaseComparison_2.3.1_vs_2.4.6.md`) is the template — regenerate its §2 mechanically for the next production candidate.
 
@@ -39,12 +41,15 @@ Hooks are the *symptom*, not the title — you rarely know the cause when you ar
 Entries stay in reverse-chronological order below; this index is the only grouped view.
 
 ### Windows, climate & manual control (T2, T6, T8)
+- **2026-09-12** — unit stuck in STANDBY forever; LCD login/logout will not clear it (gh#65 — NVS state, RAM-only release flag)
 - **2026-09-10** — windows sit where the admin left them, mode says AUTOMATIC, T6 does nothing for
   up to 25 min (dwell debt from a manual move; T6 is fine, T2 is refusing it) **[RECURRENCE of a
   May-2026 issue whose fix was recorded only in a code comment]**
 - **2026-07-31** — anti-thrash dwell was unguarded during travel (gh#48)
 
 ### Modbus bus, sensors & clock (T5, drivers)
+- **2026-09-12** — a sensor stops answering only once a SECOND task shares the bus (inter-frame gap was at the spec floor and had never been reached)
+- **2026-09-12** — "sensor fault" with no reason recorded: three wrong root causes before instrumenting
 - **2026-09-07** — a task polling flat out panics the board after 5 s (driver never yields; TWDT idle check)
 - **2026-09-07** — every Modbus read times out early in boot, but T5 works fine later (bus dies during RTC/LittleFS/SD init)
 - **2026-09-07** — `pio run` on a driver env fails with `UART_SCLK_DEFAULT was not declared` [RESOLVED]
@@ -60,6 +65,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-07-05** — M3 is the north **side wall**, not a roof panel; 8.1× is travel time, 10× is area
 
 ### OTA & ROTA releases
+- **2026-09-12** — GUI unreachable, multi-second asset loads, "heap leak", failing downloads — all one interfered WiFi AP (paired ping test first)
 - **2026-09-07** — `rota_release --dry-run` writes the seq-ledger manifest despite claiming no changes
 - **2026-09-07** — the ROTA night window and check interval are on `/api/ota/config`, not `/api/config`; a wide window inverts gh#41 so a stray browser tab blocks updates
 - **2026-09-07** — a few short USB bench sessions silently arm an OTA rollback (4 boots under 30 s)
@@ -100,6 +106,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-05-XX** — PowerShell treats `pio` stderr warnings as fatal (`$ErrorActionPreference='Stop'`) [RESOLVED]
 
 ### Git, GitHub & scripted editing
+- **2026-09-12** — a failed fetch that looks like data: stale target file, a traceback in a cookie file, a zero-row filter, an underpowered A/B
 - **2026-09-07** — you swap boards and the COM port is identical, so you flash the wrong one (CH340 has no serial)
 - **2026-09-07** — a string-replace anchored on the first occurrence lands in a comment and breaks the build
 - **2026-09-05** — `gh_issue.py` 401s on every call: the fine-grained PAT expired (not a script bug)
@@ -111,6 +118,160 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
 
+
+## 2026-09-12 — a constant pinned to the spec floor was DEAD CODE with one bus caller, and became load-bearing the moment a second arrived
+
+**Problem**: After T17 joined the RS485 bus, the S200 wind sensor intermittently
+did not answer. T5 declared a sensor fault, T3 safe-failed on
+`EG1_BIT_SENSOR_FAULT_W`, and M3 closed with the wind measuring 1 m/s. Once per
+stroke session, reproducible 3/3 by moving M3 by hand. **Never seen in three
+years with a single caller, and never before the wire-rope work.**
+
+**Root cause**: `MODBUS_IFG_US` was **4000 us = 3.84 character times** at 9600
+baud 8N1, against an RTU t3.5 minimum of 3646 us — the spec floor plus 9.7 %,
+which the driver's own comment called "a comfortable margin". **With one caller
+the IFG guard had never executed once**: frames sat 30 s apart, so `elapsed`
+always dwarfed the gap and the wait was skipped every time. T17 made frames
+*adjacent* for the first time. If the slave's receive-idle timer wants more than
+3.84 characters — ordinary for a device whose idle timer runs on a coarse tick
+— the next request is appended to the previous frame, the merged frame fails
+CRC, and **a compliant slave must stay silent on a bad-CRC request**. So the
+requester sees *zero bytes and a timeout*, never a CRC error.
+
+**Fix**: `MODBUS_IFG_US` to 20 000 us (~19 characters, 5.5x t3.5). 779
+transactions across 3 strokes: 0 timeouts, 0 CRC, no wind alarm, against 4
+timeouts + 1 CRC in ~600 transactions before. Then, on operator instruction, the
+wait moved from transaction *entry* to just before `bus_unlock()`, so the lock's
+guarantee became "the bus is yours AND it is idle" instead of leaving each
+acquirer to ask for silence it had not created. `wait_ifg()` yields the
+millisecond part via `vTaskDelay` rather than spinning 20 ms inside the lock.
+
+**Where it lives**: `drivers/modBus/src/modbus_rtu.cpp` (`MODBUS_IFG_US`,
+`wait_ifg()`, the three public wrappers);
+`design/integrateWindowPositionSensor.md` "Three defects found".
+
+## 2026-09-12 — a fault row that records no REASON gets misdiagnosed: three wrong root causes before instrumenting
+
+**Problem**: The wind alarm above was attributed to three different causes in
+sequence. Two were real defects and neither was this failure: (1) both sensor
+drivers collapsed `MODBUS_ERR_BUSY` into `*_ERR_COMM`, so "I could not get the
+bus" was indistinguishable from "the sensor did not answer"; (2) four of six
+`modbus_transaction()` exits returned without draining the RX FIFO, so one
+transaction's residue poisoned the next. Both were fixed and shipped. **The
+alarm kept firing.** A fourth attempt — making an unused heating-temperature
+read non-fatal — was the operator's cue that the approach was wrong: *"the
+semaphore should only add jitter; removing a read is not that architecture."*
+
+**Root cause**: `post_sensor_alarm()` hard-coded `value_b = 0` with the comment
+*"sensor faults are binary on/off"*. They are not: a fault can mean no answer, a
+corrupt frame, or **never asked**. With no reason recorded anywhere, every
+hypothesis was equally consistent with the evidence, so each fix was aimed at an
+inferred mechanism rather than a measured one.
+
+**Fix**: instrument first, then fix. `modbus_get_counters()` — per-status
+tallies, the last *failing* status and address kept separately from the last
+status, the **received-vs-expected byte counts of the last timeout**, and the
+bus-lock wait. `post_sensor_alarm()` now carries the driver status in `value_b`,
+and `logparser.py`/`logparser.md` learned it in the same change. One reading
+ended the guessing: `to_received = 0 of 29` (the slave said nothing, so not a
+truncated frame), `crc = 0` (not defect 2), `busy = 0` and `lock_wait_ms = 0`
+(not contention — the semaphore was working).
+
+**Where it lives**: `drivers/modBus/src/modbus_rtu.{h,cpp}`;
+`firmware/src/sensor_poll/sensor_poll.cpp`; `log/logparser.py` +
+`log/logparser.md` (`ch = 4/5`, `value_b`). Promoted, see top of file.
+
+## 2026-09-12 — an A/B test with no statistical power read as proof, and three ways a failed query looked like an answer
+
+**Problem**: Four evidence-handling errors in one investigation, each of which
+sent it sideways.
+
+**Root cause and fix, one by one**:
+- **Underpowered experiment.** The encoder was unplugged and M3 stroked **twice**
+  with no alarm, which I reported as evidence that T17's traffic was the cause.
+  At the measured failure rate (~4 in 600 transactions, roughly one per stroke
+  session) two strokes span one or two T5 polls and prove nothing either way.
+  **Before treating an A/B as evidence, compute how many events the null
+  hypothesis predicts in the sample.** Sibling of "show the check can fail".
+- **A failed download left the previous one in place.** `curl` returned
+  `http=000` with `bytes=0`, but the target file still held a *successful*
+  earlier download, so a `[ "$rows" -gt 1000 ]` guard passed on stale data and
+  pre-instrumentation rows were analysed as fresh. **Delete the target before
+  fetching, and gate on the HTTP code, not the size.**
+- **A login timeout wrote a Python traceback into the cookie file**, so every
+  subsequent request 401'd and I briefly blamed the unit's session table.
+  **Validate the shape of a captured token before using it.**
+- **A filter returning zero rows was believed.** `$2=="MODE_CHANGE"` matched
+  nothing because the CSV type is `MODE`; I almost concluded no mode transitions
+  had been logged. Printing the distinct values of the field found 19 of them.
+  **When a filter returns zero, print the domain of the field before believing
+  the zero** — the negative-grep rule, applied to data.
+
+**Where it lives**: this entry. The negative-evidence pattern at the top of this
+file now covers the data-filter variant.
+
+## 2026-09-12 — 60 % WiFi packet loss presented as firmware: GUI stalls, an apparent heap leak, and failing downloads
+
+**Problem**: The operator reported the web GUI unreachable and unresponsive.
+Asset loads took 7 s and 9 s; a 33-byte HTTP 401 took 2.85 s; log downloads
+failed repeatedly all evening. Heap appeared to decline 81 -> 57 kB over three
+hours, which I flagged as a possible leak.
+
+**Root cause**: the controller was **pinned to one local AP that was suffering
+interference**. 60 % ICMP loss to the unit while the gateway was 0 % at 1 ms
+flat, and the unit's *minimum* RTT stayed 2 ms while its average was ~500 ms
+— whole packets vanishing, not a slow stack. **Stock 2.7.0 with no T17 and none
+of the session's changes showed the identical 60 % loss**, which is what settled
+it. The operator unpinned the AP; after a power cycle the station associated
+with an AP **30 dB weaker** (—74 vs —41 dBm) at **0 % loss** — strong signal
+with heavy loss, weak signal with none, i.e. interference, not range.
+
+**Fix / lessons**:
+- **Run the paired ping test before suspecting code**: `ping -n 20 <unit>` and
+  `ping -n 10 <gateway>` in the same minute. Different loss = the unit's link.
+- The heap "decline" was **retransmission buffers**, not a leak; it returned to
+  81 kB free / 31 kB largest once the link was clean. Web sessions cannot leak
+  heap in any case — `MAX_SESSIONS` is a `static` array of 4 slots, no
+  allocation, so ~130 polling logins merely recycled them.
+- **Repeated OTA pushes make the GUI look broken.** Each push reboots twice and
+  takes the unit offline ~30 s; six pushes in sixteen minutes is what produced
+  the first "GUI unreachable" report. Ask before flashing while the operator is
+  working on the rig.
+- `esp_wifi_set_ps()` is never called, so the station runs the IDF default
+  `WIFI_PS_MIN_MODEM`. Unproven as a contributor, but it fits the residual
+  ~111 ms average RTT on the clean link (gateway 1 ms) and the device is
+  mains-powered.
+
+**Where it lives**: this entry; user-global memory
+`reference_fda4_wifi_ap.md`.
+
+## 2026-09-12 — LCD-set STANDBY survives a reboot but its auto-clear flag does not, pausing ventilation indefinitely (gh#65)
+
+**Problem**: FDA4 sat in STANDBY for over two hours. Three later LCD admin
+sessions opened and closed normally without clearing it, and logging out of the
+web GUI did nothing. The `MODE` log shows `STANDBY entered` via LCD at 18:11:16
+and **no matching exit**.
+
+**Root cause**: the state is persisted, the authorisation to clear it is not.
+`ui_display.cpp:301` holds `static bool s_manual_set_standby_on_entry` — RAM
+only, false on every boot — and `session_close()` clears STANDBY **only** if
+that flag is set. Meanwhile `data_manager.cpp:2177` writes the STANDBY to NVS
+and `:1435` restores it at boot. Any reboot between "menu sets STANDBY" and
+"session closes" keeps the state and loses the permission to release it, after
+which no future session can ever clear it. Surfaced because the unit had been
+OTA-flashed six times in sixteen minutes.
+
+**Fix**: filed as **gh#65**, not yet fixed. Only an *explicit* exit works, since
+that path calls `dm_set_standby()` unconditionally: the LCD Scherm-3 toggle, or
+`POST /api/mode {"mode":"automatic"}` (which posts `CMD_RECALIBRATE` and drives
+the channels). **On production this is worse than on the rig**: a power blip or
+a ROTA night-window update during an open admin session leaves 5C88 with
+ventilation paused indefinitely, reporting `mode: STANDBY` truthfully with no
+fault anywhere. Rule to keep: **a state that survives a reboot must not depend
+on RAM to be released.**
+
+**Where it lives**: gh#65; `firmware/src/ui_display/ui_display.cpp:301`/`:612`;
+`firmware/src/data_manager/data_manager.cpp:1435`/`:2177`.
 
 ## 2026-09-12 — a regex over source is not evidence of coverage: three false findings in one audit
 
@@ -534,6 +695,13 @@ It must show `index.html`, `app.js`, `style.css` and `manifest.json` with plausi
 ---
 
 ## 2026-09-05 — a ~14 KB `python - <<'PY'` heredoc dies at parse time with "unexpected EOF while looking for matching `''"
+
+**RECURRED 2026-09-12 (again).** A quoted heredoc carrying C string literals with
+`\"` escapes died the same way mid-session, after several smaller ones had worked.
+The size threshold is not the reliable predictor — **content is**. Standing remedy
+confirmed: write the script to the scratchpad with the Write tool and run it by
+path. I re-learn this roughly once per long session; treat any heredoc carrying
+escaped quotes or regex as already broken.
 
 **Problem:** a long inline Python edit script (the §12 write-up for the position-sensor study) failed before a single line ran — no file changed, the bash parser reported an unterminated quote. Heredocs of a few KB in the same session had worked repeatedly.
 
@@ -988,6 +1156,16 @@ Verify: serial shows `littlefs_mount(A (lfs0)) returned 0 (OK)` + `/index.html e
 **Fix:** Rebase the feature branch onto `origin/main`, then `git checkout main && git merge --ff-only dev/X && git push origin main`. Never `--force` to `main`. The recovery sequence is the one given above — it was previously said to live in `BRANCH_NOTES.md`, which never actually contained it; that file was deleted 2026-09-07.
 
 ## 2026-05-XX — `pio: command not found` in Git Bash / MINGW64
+
+**RECURRED 2026-09-12 — and it is not on PowerShell's PATH either.** Both shells
+failed; the working invocation is the full interpreter path,
+`/c/Users/drasv/.platformio/penv/Scripts/pio.exe`. Related trap found the same
+session: **`touch` does not force a PlatformIO rebuild** (an 18 s no-op build
+reported SUCCESS having compiled nothing), so a clean build proves nothing about
+the code you just edited. Deleting the object file also failed — the object is
+`.o`, not `.obj`. What worked was a **fail-first `static_assert(false)`**: confirm
+the build FAILS at the expected line, then remove it. Sibling of the
+`lib_deps = file://` stale-copy entry (2026-09-07).
 
 **Problem:** Running `pio run` in Git Bash returns "command not found" even though PlatformIO is installed.
 
