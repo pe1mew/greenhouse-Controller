@@ -65,6 +65,17 @@ static const char *TAG = "T17";
 /** Which window these samples describe. One channel serves all three. */
 #define LOG_PARAM_WINDOW_M3     3u
 
+/* ---- sensor-presence gate (Phase 4) ---------------------------------------
+ * PROBE_FAIL_LIMIT is 2 to match T5's house convention (sensor_poll.cpp: "on
+ * two consecutive failures"), not because 2 is special. One failure is a
+ * transient; two running is a sensor that is not answering.
+ *
+ * PROBE_RETRY_MS is 30 s -- the same cadence the idle path already spent on one
+ * read -- so a shut gate costs no more bus time than Phase 3 spent at rest, and
+ * strictly less than it spent during a stroke. */
+#define PROBE_FAIL_LIMIT        2u
+#define PROBE_RETRY_MS      30000u
+
 /* ------------------------------------------------------------------- state */
 
 static portMUX_TYPE       s_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -74,6 +85,17 @@ static bool                s_have_reading = false;
 static windowpos_derived_t s_derived;
 static bool                s_have_derived = false;
 static windowpos_counters_t s_cnt;
+
+/* ---- gate state. Published via windowpos_task_ctrl_mode(). -----------------
+ * s_gate_open means "the sensor answers and is sane". s_ctrl_mode is what other
+ * tasks act on. They are deliberately NOT the same variable: the gate may open
+ * mid-stroke, but the mode is only promoted at a stroke boundary. */
+static bool                    s_gate_open     = false;
+static windowpos_gate_reason_t s_gate_reason   = WPOS_GATE_PROBING;
+static bool                    s_bench_latched = false;
+static uint32_t                s_probe_fail    = 0u;
+static uint32_t                s_last_probe_ms = 0u;
+static windowpos_ctrl_mode_t   s_ctrl_mode     = WPOS_CTRL_TIMED;
 
 /* Phase 3 event-edge tracking. Owned by the task, no locking needed. */
 static bool     s_ev_init        = false;
@@ -167,6 +189,18 @@ void windowpos_task_counters(windowpos_counters_t *out)
     portENTER_CRITICAL(&s_mux);
     *out = s_cnt;
     portEXIT_CRITICAL(&s_mux);
+}
+
+windowpos_ctrl_mode_t windowpos_task_ctrl_mode(windowpos_gate_reason_t *out_reason)
+{
+    windowpos_ctrl_mode_t m;
+    windowpos_gate_reason_t why;
+    portENTER_CRITICAL(&s_mux);
+    m   = s_ctrl_mode;
+    why = s_gate_reason;
+    portEXIT_CRITICAL(&s_mux);
+    if (out_reason != NULL) { *out_reason = why; }
+    return m;
 }
 
 bool windowpos_task_derived(windowpos_derived_t *out)
@@ -320,6 +354,115 @@ static bool any_channel_travelling(void)
     return false;
 }
 
+/**
+ * @brief Publish the control mode, logging only on a transition.
+ *
+ * Edge-triggered for the reason gh#59 exists: a row per poll would bury the one
+ * event that matters, and no row at all leaves the log unable to say which
+ * control law M3 was under. Uses LOG_PARAM_WPOS_MODE (248) on the ALARM ch6
+ * band T17 already owns, so no new event type is needed.
+ */
+static void publish_mode(windowpos_ctrl_mode_t mode, windowpos_gate_reason_t why)
+{
+    portENTER_CRITICAL(&s_mux);
+    const bool mode_changed   = (s_ctrl_mode != mode);
+    const bool reason_changed = (s_gate_reason != why);
+    s_ctrl_mode   = mode;
+    s_gate_reason = why;
+    if (mode_changed) { s_cnt.mode_changes++; }
+    portEXIT_CRITICAL(&s_mux);
+
+    if (!mode_changed && !reason_changed) { return; }
+
+    ESP_LOGW(TAG, "M3 control mode -> %s (reason %u)",
+             (mode == WPOS_CTRL_POSITION) ? "POSITION (opening distance)"
+                                          : "TIMED (travel timer fallback)",
+             (unsigned)why);
+    log_wpos_event((uint8_t)LOG_PARAM_WPOS_MODE, (int16_t)mode, (int16_t)why);
+}
+
+/**
+ * @brief Shut the gate and fall back. Demotion is immediate, by design.
+ *
+ * WINDOWPOS_ERR_BUSY must never reach here: losing the bus lock to T5 says the
+ * bus was busy, not that the sensor is absent. Counting it would let ordinary
+ * contention disable a working sensor, which is the opposite of what gh#49's
+ * mutex was for.
+ */
+static void gate_close(windowpos_gate_reason_t why)
+{
+    /* Count the TRANSITION, not the attempt. Guarding on s_gate_open alone
+     * would never count a sensor that was absent from boot (the gate was never
+     * open), and counting every call would climb every PROBE_RETRY_MS for as
+     * long as the sensor stays away. Neither is what the field documents. */
+    if (s_gate_open || s_gate_reason != why) {
+        portENTER_CRITICAL(&s_mux);
+        s_cnt.probe_fail++;
+        portEXIT_CRITICAL(&s_mux);
+    }
+    s_gate_open = false;
+    publish_mode(WPOS_CTRL_TIMED, why);
+}
+
+/**
+ * @brief One presence probe: identify, and decide whether the gate may open.
+ *
+ * Identify first because contract 9 requires it: a BENCH build carries a
+ * deliberate hang hook and must be refused. That refusal is latched permanently
+ * because it cannot change without reflashing the device, so there is nothing a
+ * re-probe could discover.
+ *
+ * @return true if the gate is open after this probe.
+ */
+static bool probe_sensor(void)
+{
+    s_last_probe_ms = now_ms();
+
+    uint8_t build = 0u, ver = 0u;
+    const windowpos_status_t ist =
+        windowpos_read_ident(WINDOWPOS_DEFAULT_ADDR, &build, &ver);
+
+    if (ist == WINDOWPOS_ERR_BUSY) {
+        /* No evidence either way. Leave the counter and the gate untouched. */
+        portENTER_CRITICAL(&s_mux);
+        s_cnt.err_busy++;
+        portEXIT_CRITICAL(&s_mux);
+        return s_gate_open;
+    }
+
+    if (ist != WINDOWPOS_OK) {
+        if (s_probe_fail < PROBE_FAIL_LIMIT) { s_probe_fail++; }
+        if (s_probe_fail >= PROBE_FAIL_LIMIT) { gate_close(WPOS_GATE_NO_SENSOR); }
+        return false;
+    }
+
+    if (build == WINDOWPOS_BUILD_BENCH) {
+        s_bench_latched = true;
+        ESP_LOGE(TAG, "sensor reports BENCH build 0x%02X -- REFUSING permanently "
+                      "(contract 9)", (unsigned)build);
+        gate_close(WPOS_GATE_BENCH_BUILD);
+        return false;
+    }
+
+    s_probe_fail = 0u;
+    if (!s_gate_open) {
+        s_gate_open = true;
+        ESP_LOGI(TAG, "sensor present: build 0x%02X fw v%u -- gate OPEN",
+                 (unsigned)build, (unsigned)ver);
+        /* Deliberately NOT promoting the mode here. Promotion waits for a stroke
+         * boundary so no consumer sees position control gain authority
+         * underneath a movement already committed to the timer.
+         *
+         * The REASON is published now, though, keeping the mode as it is: the
+         * sensor has been identified, so leaving the reason at
+         * WPOS_GATE_PROBING would claim we are still deciding. Between boot and
+         * the first stroke the honest state is TIMED-because-not-yet-promoted,
+         * not TIMED-because-probing. */
+        publish_mode(s_ctrl_mode, WPOS_GATE_OK);
+    }
+    return true;
+}
+
 void task_window_pos(void *pvParameters)
 {
     (void)pvParameters;
@@ -327,17 +470,15 @@ void task_window_pos(void *pvParameters)
 
     ESP_LOGI(TAG, "T17 starting (window position, addr %u)", (unsigned)WINDOWPOS_DEFAULT_ADDR);
 
-    /* ---- identify before trusting anything (contract §9) ---------------- */
-    uint8_t build = 0u, ver = 0u;
-    if (windowpos_read_ident(WINDOWPOS_DEFAULT_ADDR, &build, &ver) != WINDOWPOS_OK) {
-        ESP_LOGW(TAG, "no sensor at addr %u -- T17 idle, position unavailable",
-                 (unsigned)WINDOWPOS_DEFAULT_ADDR);
-    } else if (build == WINDOWPOS_BUILD_BENCH) {
-        /* Contract §9: this build carries a deliberate hang hook. Refusing is
-         * the specified behaviour, not caution. */
-        ESP_LOGE(TAG, "sensor reports BENCH build 0x%02X -- REFUSING to use it", (unsigned)build);
-    } else {
-        ESP_LOGI(TAG, "sensor build 0x%02X fw v%u", (unsigned)build, (unsigned)ver);
+    /* ---- presence gate: probe before trusting anything (contract 9) ------
+     * Before Phase 4 these three branches logged and then fell through into the
+     * loop regardless, so "T17 idle" did not idle and "REFUSING" did not
+     * refuse. The probe now decides, and the loop below respects it. */
+    (void)probe_sensor();
+    if (!s_gate_open && s_gate_reason == WPOS_GATE_PROBING) {
+        /* One failure is not a verdict; PROBE_FAIL_LIMIT is 2. Say so rather
+         * than leaving the log implying the sensor was ruled absent. */
+        ESP_LOGW(TAG, "first probe failed -- retrying, no verdict yet");
     }
 
     uint16_t pushed_window_ms  = 0u;
@@ -346,6 +487,35 @@ void task_window_pos(void *pvParameters)
 
     for (;;) {
         esp_task_wdt_reset();
+
+        /* ---- the gate ---------------------------------------------------
+         * Placed here, above every bus-touching path, rather than at each
+         * call site: the stroke poll, the 30 s idle sample and check_restart()
+         * all touch the bus, and guarding them one by one guarantees the next
+         * one added is missed. (T17 never *drives* a teach -- it decodes teach
+         * state out of the ordinary poll -- so there is no teach request left
+         * stranded here. The commissioning path drives a teach through the
+         * bench endpoint, which reads the device directly and is deliberately
+         * outside the gate.) */
+        if (!s_gate_open) {
+            /* Count only ticks with a stroke in progress. That is the case the
+             * gate exists to remove -- a 100 ms derived poll against a ~215 ms
+             * timeout holds the bus continuously for the whole stroke. Counting
+             * every tick instead would reach ~172 800/day on an idle unit and
+             * measure nothing. */
+            if (any_channel_travelling()) {
+                portENTER_CRITICAL(&s_mux);
+                s_cnt.gated_polls++;
+                portEXIT_CRITICAL(&s_mux);
+            }
+
+            if (!s_bench_latched &&
+                (uint32_t)(now_ms() - s_last_probe_ms) >= PROBE_RETRY_MS) {
+                (void)probe_sensor();
+            }
+            vTaskDelay(pdMS_TO_TICKS(IDLE_TICK_MS));
+            continue;
+        }
 
         if (!any_channel_travelling()) {
             was_travelling = false;
@@ -371,6 +541,13 @@ void task_window_pos(void *pvParameters)
         /* ---- stroke start: derive, log, push 40002 ---------------------- */
         if (!was_travelling) {
             was_travelling = true;
+
+            /* Stroke boundary: the only place the mode is allowed to be
+             * PROMOTED. See windowpos_task_ctrl_mode()'s note on the
+             * asymmetry -- demotion is immediate, promotion waits. */
+            if (s_gate_open && s_ctrl_mode != WPOS_CTRL_POSITION) {
+                publish_mode(WPOS_CTRL_POSITION, WPOS_GATE_OK);
+            }
             portENTER_CRITICAL(&s_mux);
             s_cnt.strokes++;
             portEXIT_CRITICAL(&s_mux);
@@ -440,6 +617,14 @@ void task_window_pos(void *pvParameters)
                 emit_events(&r, WINDOWPOS_DEFAULT_ADDR);
                 log_position(&r);
             }
+            /* Talking, but useless: the device says its own reading is bad, so
+             * position cannot drive the window even though the sensor is there.
+             * Distinct from absence, hence its own reason code. */
+            if (r.sensor_fault) {
+                gate_close(WPOS_GATE_DEVICE_FAULT);
+            } else {
+                s_probe_fail = 0u;
+            }
         } else if (st == WINDOWPOS_ERR_BUSY) {
             /* T5 held the bus. Counted separately because AT-WP05 asks exactly
              * how often a second caller loses that race. */
@@ -452,6 +637,11 @@ void task_window_pos(void *pvParameters)
             s_cnt.err_comm++;
             portEXIT_CRITICAL(&s_mux);
             ESP_LOGD(TAG, "read failed (comm)");
+            /* Same two-consecutive-failures rule as the boot probe, and the
+             * same counter, so "absent at boot" and "went away mid-stroke"
+             * share one state machine instead of two that can disagree. */
+            if (s_probe_fail < PROBE_FAIL_LIMIT) { s_probe_fail++; }
+            if (s_probe_fail >= PROBE_FAIL_LIMIT) { gate_close(WPOS_GATE_NO_SENSOR); }
         }
 
         vTaskDelay(pdMS_TO_TICKS(d.poll_ms ? d.poll_ms : IDLE_TICK_MS));

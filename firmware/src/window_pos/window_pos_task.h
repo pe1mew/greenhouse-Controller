@@ -28,12 +28,41 @@
  * task would otherwise be the heaviest user of a bus shared with the T/RH and
  * wind sensors.
  *
- * ## What Phase 2 does NOT do
+ * ## What this task does NOT do
  *
- * Nothing here changes control. T2 still stops on its timer; T6 still steps on
- * temperature. This task observes and publishes a snapshot. Acting on position
- * is Phase 4 (travel-complete) and Phase 5 (proportional), and Phase 5 is out of
+ * It still changes no control directly. T2 stops on its timer; T6 steps on
+ * temperature. This task observes, publishes a snapshot, and **publishes which
+ * control law is admissible** (@ref windowpos_task_ctrl_mode). Acting on that
+ * is Phase 4 (travel-complete) and Phase 5 (proportional); Phase 5 is out of
  * scope for this cycle.
+ *
+ * ## The sensor-presence gate (Phase 4)
+ *
+ * Before the gate, all three startup branches logged and then fell through into
+ * the polling loop: "T17 idle" did not idle and "REFUSING" did not refuse. On a
+ * unit with no sensor at addr 40 that cost a failed ~215 ms transaction per
+ * poll, and because the derived poll floor is 100 ms, on the 13 s dev rig the
+ * period is **shorter than the timeout** — so the bus was held continuously for
+ * the whole stroke, against T5 whose receive loop never yields.
+ *
+ * The gate follows T5's house pattern deliberately (`sensor_poll.cpp`):
+ * **two consecutive failures** flip the state, recovery is on the **first**
+ * success, and the transition is **edge-logged**. What differs is the
+ * consequence: T5 reports a fault and keeps polling, because a missing T/RH or
+ * wind sensor is a fault the operator must see and because T3 safe-fails on
+ * `EG1_BIT_SENSOR_FAULT_W` — the fault bit *is* the feature. Position is
+ * optional, so here the consequence is to stop touching the bus and fall back.
+ *
+ * **In a release build the audit log is the only window onto this.** Every
+ * T17 HTTP field, these counters included, lives under @c #ifdef MODBUS_BENCH,
+ * so on a production unit the LOG_PARAM_WPOS_MODE row is the whole story --
+ * which is why it is logged on every transition and why its `value_b` carries
+ * the reason rather than just the fact.
+ *
+ * A shut gate re-probes every @c PROBE_RETRY_MS so a sensor connected
+ * mid-session recovers by itself. That is one failed transaction per 30 s,
+ * which is exactly what the idle path already spent. The bench build is the one
+ * permanent latch: it cannot change without reflashing the device.
  */
 
 #pragma once
@@ -42,6 +71,55 @@
 #include <stdint.h>
 
 #include "window_pos.h"
+
+/**
+ * @brief Which control law M3 is under.
+ *
+ * Phase 4. The sensor-presence gate exists to answer this, not merely to save
+ * bus time: with a trustworthy position the window can be driven to an opening
+ * **distance**; without one the controller must fall back to T2's **travel
+ * timer**, which is what it has always done and remains the proven behaviour.
+ *
+ * **TIMED is the safe default and the failure direction.** It is what ships on
+ * `main`, so falling back costs nothing that was ever guaranteed. Anything that
+ * makes position untrustworthy — absent sensor, comms gone, a device-reported
+ * fault, a bench build — selects TIMED.
+ */
+typedef enum {
+    WPOS_CTRL_TIMED    = 0, /**< Fallback: T2's travel timer. Today's behaviour. */
+    WPOS_CTRL_POSITION = 1, /**< Position available and trusted; drive to distance. */
+} windowpos_ctrl_mode_t;
+
+/**
+ * @brief Why the gate is in the state it is in.
+ *
+ * Carried in `value_b` of the LOG_PARAM_WPOS_MODE audit row, so a log answers
+ * *why* M3 fell back and not just *that* it did.
+ */
+typedef enum {
+    WPOS_GATE_OK           = 0, /**< Sensor present, identified, reading. */
+    WPOS_GATE_PROBING      = 1, /**< Boot: no verdict yet. */
+    WPOS_GATE_NO_SENSOR    = 2, /**< Ident/read failed PROBE_FAIL_LIMIT times running. */
+    WPOS_GATE_BENCH_BUILD  = 3, /**< Contract 9 refusal. Latched; never re-probed. */
+    WPOS_GATE_DEVICE_FAULT = 4, /**< Present and talking, but reporting a fault. */
+} windowpos_gate_reason_t;
+
+/**
+ * @brief The control law currently in force for M3, and why.
+ *
+ * Safe to call from any task; takes no locks the caller can observe.
+ *
+ * @param out_reason  May be NULL. Receives the current gate reason.
+ * @return @ref WPOS_CTRL_TIMED or @ref WPOS_CTRL_POSITION.
+ *
+ * @note **Demotion to TIMED is immediate; promotion to POSITION happens only at
+ *       a stroke boundary.** The asymmetry is deliberate: dropping to the timer
+ *       mid-stroke is safe because the timer is what would have run anyway,
+ *       whereas switching *to* position control underneath a consumer that has
+ *       already committed to a timed stroke is not. A caller therefore never
+ *       sees the mode gain authority in the middle of a movement.
+ */
+windowpos_ctrl_mode_t windowpos_task_ctrl_mode(windowpos_gate_reason_t *out_reason);
 
 /**
  * @brief Derived polling configuration, recomputed at the start of every stroke.
@@ -70,6 +148,11 @@ typedef struct {
     uint32_t err_comm;      /**< Timeout / CRC / exception. */
     uint32_t rejected_rate; /**< Samples dropped by the FR-WP20 plausibility check. */
     uint32_t strokes;       /**< Strokes observed since boot. */
+    uint32_t probe_fail;    /**< Consecutive-failure probes that closed the gate. */
+    uint32_t mode_changes;  /**< TIMED/POSITION transitions since boot. */
+    uint32_t gated_polls;   /**< Ticks with a stroke in progress in which the
+                             *   shut gate suppressed a poll. Not a count of
+                             *   idle samples, which are negligible. */
 } windowpos_counters_t;
 
 /** @brief Copy the soak counters. @param out Destination, must not be NULL. */

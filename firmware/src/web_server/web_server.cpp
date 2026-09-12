@@ -3189,7 +3189,9 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
     windowpos_derived_t d;
     const bool have_d = windowpos_task_derived(&d);
 
-    char body[768];
+    /* 1024, not 768: the reading + t17 + soak blocks already came to ~720
+     * bytes worst-case, and the gate block adds ~155 more. */
+    char body[1024];
     snprintf(body, sizeof(body),
              "{\"ok\":true,\"addr\":%u,\"build\":%u,\"fw\":%u,"
              "\"opening_mm_x10\":%u,\"percent_x10\":%u,\"rate_mm_s_x10\":%d,"
@@ -3227,6 +3229,34 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
                  (unsigned)(have_d ? d.nominal_rate_x10 : 0u),
                  (unsigned)(have_d ? d.rate_limit_x10 : 0u));
     }
+    /* The sensor-presence gate: which control law M3 is under, and why.
+     *
+     * This answers the question the fields above cannot. A gated unit reports
+     * `t17.have:false` and `poll_ms:0` for two entirely different reasons --
+     * the window is simply at rest, or the gate is shut and T17 will never
+     * poll -- and only `gate.reason` tells them apart.
+     *
+     * Note this handler reads the device DIRECTLY, above, deliberately
+     * bypassing the gate: a diagnostic that refused to probe would be useless
+     * exactly when the gate is shut and you need to know whether the sensor
+     * has come back. That is one transaction per admin request, on a dev
+     * build only, which is not the per-poll cost the gate exists to remove. */
+    windowpos_gate_reason_t gr = WPOS_GATE_OK;
+    const windowpos_ctrl_mode_t gm = windowpos_task_ctrl_mode(&gr);
+    static const char *const k_reason[] = {
+        "ok", "probing", "no_sensor", "bench_build", "device_fault"
+    };
+    const size_t used3 = strlen(body);
+    if (used3 + 1u < sizeof(body)) {
+        snprintf(body + used3 - 1u, sizeof(body) - used3 + 1u,
+                 ",\"gate\":{\"mode\":%d,\"mode_str\":\"%s\","
+                 "\"reason\":%d,\"reason_str\":\"%s\"}}",
+                 (int)gm, (gm == WPOS_CTRL_POSITION) ? "position" : "timed",
+                 (int)gr,
+                 ((unsigned)gr < (sizeof(k_reason) / sizeof(k_reason[0])))
+                     ? k_reason[gr] : "?");
+    }
+
     /* Soak counters last, so a truncation loses only these. */
     windowpos_counters_t cn;
     windowpos_task_counters(&cn);
@@ -3234,10 +3264,12 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
     if (used2 + 1u < sizeof(body)) {
         snprintf(body + used2 - 1u, sizeof(body) - used2 + 1u,
                  ",\"soak\":{\"reads_ok\":%lu,\"err_busy\":%lu,\"err_comm\":%lu,"
-                 "\"rejected_rate\":%lu,\"strokes\":%lu}}",
+                 "\"rejected_rate\":%lu,\"strokes\":%lu,\"probe_fail\":%lu,"
+                 "\"mode_changes\":%lu,\"gated_polls\":%lu}}",
                  (unsigned long)cn.reads_ok, (unsigned long)cn.err_busy,
                  (unsigned long)cn.err_comm, (unsigned long)cn.rejected_rate,
-                 (unsigned long)cn.strokes);
+                 (unsigned long)cn.strokes, (unsigned long)cn.probe_fail,
+                 (unsigned long)cn.mode_changes, (unsigned long)cn.gated_polls);
     }
     return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
 }

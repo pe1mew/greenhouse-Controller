@@ -438,6 +438,18 @@ def _decode_session(row: dict) -> str:
 # continues wind's 240-243; 248-255 remain free.
 _WPOS_TEACH = {0: "aborted", 1: "armed", 2: "COMMITTED", 3: "REFUSED"}
 
+# Phase 4 sensor-presence gate. value_a = the control law now in force,
+# value_b = why. TIMED is the fallback T2 has always used; POSITION means
+# the window is driven to an opening distance instead.
+_WPOS_MODE = {0: "TIMED (travel timer)", 1: "POSITION (opening distance)"}
+_WPOS_GATE_REASON = {
+    0: "sensor present and trusted",
+    1: "probing, no verdict yet",
+    2: "no sensor answering at addr 40",
+    3: "BENCH build refused (contract 9, permanent)",
+    4: "sensor present but reporting a fault",
+}
+
 _WPOS_STATUS_BITS = [
     (0x0001, "startup:window"), (0x0002, "startup:avg"), (0x0004, "WIPER OPEN"),
     (0x0008, "end sensor"),     (0x0010, "BOTH ends"),   (0x0020, "teach armed"),
@@ -455,6 +467,10 @@ def _decode_wpos_event(param: int, va: int, vb: int) -> str:
         return f"device status 0x{va & 0xFF:02X}" + (f" [{', '.join(on)}]" if on else " [none]")
     if param == 247:
         return f"device RESTARTED (uptime now {va} s -- any armed teach is lost)"
+    if param == 248:
+        mode = _WPOS_MODE.get(va, f"mode {va}")
+        why = _WPOS_GATE_REASON.get(vb, f"reason {vb}")
+        return f"M3 CONTROL MODE -> {mode}  [{why}]"
     return f"wpos event param#{param} a={va} b={vb}"
 
 def _decode_alarm(row: dict) -> str:
