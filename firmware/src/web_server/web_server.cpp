@@ -1184,15 +1184,15 @@ static esp_err_t config_get_handler(httpd_req_t *req)
         "\"wind_hyst\":%d,"
         "\"dir_excl_low\":%d,\"dir_excl_high\":%d,"
         "\"travel_s\":[%d,%d,%d],"
-        /* gh#51 Group D — _s is canonical since 2.4.4. The _min pair is
-         * emitted alongside for ONE release so external consumers can move;
-         * both carry SECONDS. The old suffix was always wrong, and
-         * convincing because session_timeout_min / ap_timeout_min below
-         * really are minutes. Drop the _min pair in the next minor. */
+        /* gh#51 Group D — _s is canonical since 2.4.4. 2.7.0 (gh#63) DROPPED
+         * the deprecated _min pair that was emitted alongside it for the
+         * migration window: the name said minutes while the value carried
+         * SECONDS, three lines above session_timeout_min / ap_timeout_min,
+         * which really are minutes. A client taking dwell_open_min at its word
+         * was off by a factor of 60 on the parameter that governs how long a
+         * window is held open. Do not reintroduce them. */
         "\"dwell_open_s\":[%d,%d,%d],"
         "\"dwell_close_s\":[%d,%d,%d],"
-        "\"dwell_open_min\":[%d,%d,%d],"
-        "\"dwell_close_min\":[%d,%d,%d],"
         "\"poll_interval_s\":%ld,"
         "\"session_timeout_min\":%ld,"
         "\"ap_timeout_min\":%ld,"
@@ -1216,8 +1216,6 @@ static esp_err_t config_get_handler(httpd_req_t *req)
         (int)cfg.travel_s[0], (int)cfg.travel_s[1], (int)cfg.travel_s[2],
         (int)cfg.dwell_open_s[0],  (int)cfg.dwell_open_s[1],  (int)cfg.dwell_open_s[2],
         (int)cfg.dwell_close_s[0], (int)cfg.dwell_close_s[1], (int)cfg.dwell_close_s[2],
-        (int)cfg.dwell_open_s[0],  (int)cfg.dwell_open_s[1],  (int)cfg.dwell_open_s[2],   /* deprecated _min alias */
-        (int)cfg.dwell_close_s[0], (int)cfg.dwell_close_s[1], (int)cfg.dwell_close_s[2],  /* deprecated _min alias */
         (long)cfg.poll_interval_s, (long)cfg.session_timeout_min,
         (long)cfg.ap_timeout_min,
         (long)cfg.lat_deg, (long)cfg.lat_frac,

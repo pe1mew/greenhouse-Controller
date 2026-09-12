@@ -504,12 +504,13 @@ function loadConfig() {
       setVal('cfg-travel-m1',       cfg.travel_s && cfg.travel_s[0]);
       setVal('cfg-travel-m2',       cfg.travel_s && cfg.travel_s[1]);
       setVal('cfg-travel-m3',       cfg.travel_s && cfg.travel_s[2]);
-      // gh#51 Group D -- dwell_open_s / dwell_close_s are canonical since 2.4.4.
-      // Fall back to the _min names so this page still works against firmware
-      // older than 2.4.4 (and through the paired-commit window, where assets
-      // and firmware can briefly disagree). Both carry SECONDS.
-      const dwo = cfg.dwell_open_s  || cfg.dwell_open_min;
-      const dwc = cfg.dwell_close_s || cfg.dwell_close_min;
+      // gh#63 (2.7.0) -- the deprecated _min fallback is gone along with the
+      // fields themselves. dwell_open_s / dwell_close_s carry SECONDS and have
+      // been canonical since 2.4.4. Assets and firmware ship as a pair within
+      // 120 s, so a mixed pairing is a transient the operator re-pushes, not a
+      // case worth carrying a misnamed alias for.
+      const dwo = cfg.dwell_open_s;
+      const dwc = cfg.dwell_close_s;
       setVal('cfg-dwell-open-m1',   dwo && dwo[0]);
       setVal('cfg-dwell-open-m2',   dwo && dwo[1]);
       setVal('cfg-dwell-open-m3',   dwo && dwo[2]);

@@ -583,7 +583,10 @@ against M3's *factory default* of 600.
   shadow field", which rejected `wifi/ap_enable` (NVS-only, polled by T10) and broke the
   LCD AP toggle. Now a three-way `cfg_key_kind()`. See
   `design/releaseComparison_2.3.1_vs_2.4.6.md` §1 #1.
-- **Deprecation:** drop the `dwell_open_min` / `dwell_close_min` JSON aliases in the next
-  minor.
+- **Deprecation: DONE in 2.7.0 (gh#63).** The `dwell_open_min` / `dwell_close_min` JSON
+  aliases are gone from `GET /api/config`, along with `app.js`'s fallback to them and
+  the mock's copy — the mock had never learned the `_s` names, so that fallback was
+  really covering a mock/firmware mismatch rather than an old-firmware one. Overdue by
+  one minor: the migration window was meant to be a single release from 2.4.4.
 - **Not this issue:** the ROTA soak channel offers 2.4.1 while FDA4 runs 2.4.4 — 2.4.2
   through 2.4.4 were push-OTA'd and never published.

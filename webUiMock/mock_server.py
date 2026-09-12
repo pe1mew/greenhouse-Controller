@@ -121,8 +121,11 @@ cfg: dict = {
     "dir_excl_low":         0,
     "dir_excl_high":        0,
     "travel_s":            [21, 21, 171],     # MOTOR_M{1,2,3}_TRAVEL_S_DEFAULT
-    "dwell_open_min":      [300, 300, 1500],  # DEF_DWELL_OPEN_M{1,2,3}_S (1.16.31: per-motor split, M3=1500)
-    "dwell_close_min":     [  0,   0,  600],  # DEF_DWELL_CLOSE_M{1,2,3}_S (1.16.31: per-motor split, M3=600)
+    # gh#63 (2.7.0): renamed from the misnamed _min aliases, which the mock
+    # still served long after the firmware made _s canonical in 2.4.4 -- that
+    # mismatch is what app.js's now-removed fallback was really covering for.
+    "dwell_open_s":        [300, 300, 1500],  # DEF_DWELL_OPEN_M{1,2,3}_S (1.16.31: per-motor split, M3=1500)
+    "dwell_close_s":       [  0,   0,  600],  # DEF_DWELL_CLOSE_M{1,2,3}_S (1.16.31: per-motor split, M3=600)
     "poll_interval_s":     30,    # DEF_POLL_INTERVAL_S
     "session_timeout_min":  5,    # DEF_SESSION_TIMEOUT_MIN
     "ap_timeout_min":      30,    # DEF_AP_TIMEOUT_MIN
@@ -257,12 +260,12 @@ NVS_MAP: dict[tuple, tuple] = {
     ("motor",   "travel_m1"):       ("travel_s",               0),
     ("motor",   "travel_m2"):       ("travel_s",               1),
     ("motor",   "travel_m3"):       ("travel_s",               2),
-    ("motor",   "dwell_open_m1"):   ("dwell_open_min",         0),
-    ("motor",   "dwell_open_m2"):   ("dwell_open_min",         1),
-    ("motor",   "dwell_open_m3"):   ("dwell_open_min",         2),
-    ("motor",   "dwell_close_m1"):  ("dwell_close_min",        0),
-    ("motor",   "dwell_close_m2"):  ("dwell_close_min",        1),
-    ("motor",   "dwell_close_m3"):  ("dwell_close_min",        2),
+    ("motor",   "dwell_open_m1"):   ("dwell_open_s",           0),
+    ("motor",   "dwell_open_m2"):   ("dwell_open_s",           1),
+    ("motor",   "dwell_open_m3"):   ("dwell_open_s",           2),
+    ("motor",   "dwell_close_m1"):  ("dwell_close_s",          0),
+    ("motor",   "dwell_close_m2"):  ("dwell_close_s",          1),
+    ("motor",   "dwell_close_m3"):  ("dwell_close_s",          2),
     ("system",  "session_timeout"): ("session_timeout_min", None),
     ("system",  "ap_timeout"):      ("ap_timeout_min",      None),
     ("system",  "poll_interval"):   ("poll_interval_s",     None),

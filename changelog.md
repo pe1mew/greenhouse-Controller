@@ -6,6 +6,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.7.0] — 2026-09-12  (gh#63 — the misnamed dwell aliases are gone)
+
+Minor: removing a field from a documented API response is a payload-shape change.
+
+**Removed.**
+
+- **`dwell_open_min` and `dwell_close_min` are no longer emitted by
+  `GET /api/config`** (gh#63). They were kept for one release as a migration
+  alias when `_s` became canonical in 2.4.4, and the code comment beside them said
+  to drop them in the next minor. That was **2.5.0**; this is three minors late.
+
+  They were worse than ordinary staleness. The name said minutes while the value
+  carried **seconds**, three lines above `session_timeout_min` and
+  `ap_timeout_min`, which really are minutes. A client reading
+  `"dwell_open_min":[300,300,1500]` alongside `"session_timeout_min":5` had every
+  reason to treat all of them as minutes, and taking the dwell field at its word
+  is a factor-60 error on the parameter that governs how long a window is held
+  open. That misnomer was the original gh#51 Group D defect; only the JSON
+  surface still carried it.
+
+**Changed.**
+
+- `app.js` no longer falls back to the `_min` names. The stated reason for that
+  fallback was old firmware, but **the mock was the only thing actually serving
+  `_min`** — `webUiMock/mock_server.py` had never learned `_s` at all, in its
+  config payload or its `NVS_MAP`. So the fallback was quietly covering a
+  mock/firmware mismatch rather than the version skew it documented. The mock now
+  serves `_s`, and both are gone.
+- `beheerderHandleiding.md` §on dwell bypass referred to `dwell_open_min` in
+  prose; now `dwell_open_s`.
+- `design/fixMotorTimingRefresh.md`'s open deprecation item is marked done, and
+  the corresponding reminder is removed from `CLAUDE.md`.
+
+**Unchanged.** `dwell_open_s` / `dwell_close_s` keep their values and their
+meaning, the write path is untouched (`POST /api/config` never accepted the
+`_min` spelling), and `session_timeout_min` / `ap_timeout_min` are genuinely
+minutes and stay as they are. No NVS migration, no partition change.
+
+**Verification.** Built clean (`-Werror`); the removal deleted two format
+specifiers and six `snprintf` arguments, and `-Wformat` passing is what proves
+the argument list still matches — a mismatch there would have emitted garbage
+JSON rather than failing loudly. Flash down 96 bytes.
+
+Pushed to **2344**, the module currently fitted to the dev rig, with an explicit
+`--host` because `ota_push.py` defaults to FDA4's address and FDA4 is swapped
+out. 16/16 on hardware: both version fields read 2.7.0; `/api/config` parses and
+contains neither alias nor even the literal string; `dwell_open_s` still reads
+`[300, 300, 1500]`; the two real `_min` fields are untouched; a dwell write still
+round-trips; and the served `app.js` contains no fallback.
+
+---
+
 ## [2.6.0] — 2026-09-12  (gh#54 + gh#59 — the audit log stops lying, and starts recording)
 
 Minor: a new `LOG_SETPOINT` param id and six new `LOG_SYSTEM` subtypes are both
