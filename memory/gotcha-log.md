@@ -1156,3 +1156,21 @@ on a tree where `git status --short` showed **zero** modified tracked files. Tak
 **Rules:** *don't dismiss this warning and don't trust it either — resolve it.* `git status --short | grep -v '^??'` answers the question the warning was trying to ask. And *after any outward-facing publish, verify the artefact from the outside*: a hash of the re-downloaded file proves both the upload and the tag, which no amount of local checking can.
 
 **Worth fixing in the tool:** the dirty check should consider tracked modifications only, and ideally run before it writes the manifest. Until then the warning carries no signal.
+
+## 2026-09-12 — a dev module that does not answer is the one not fitted, not a crashed one
+
+**Problem:** FDA4 stopped answering mid-session. It had been healthy minutes earlier (uptime 1511 s, `eg1 = 0`, heap steady), and `ping` returned "destination host unreachable" while another unit on the same subnet answered fine from the same host. I treated it as an incident and polled it for three minutes before the operator stopped me.
+
+**Root cause:** there are only **two hardware rigs**, production and development, and the dev rig takes a **swappable Lolin ESP32-S3 module**. `FDA4` and `2344` are modules, not separate units — they take turns in that one rig. FDA4 had been physically swapped out for 2344. Being unreachable was the correct state.
+
+**Fix / rule:** *before diagnosing a dev board as hung, establish which module is currently fitted.* Addresses settle it because they are fixed DHCP reservations: **FDA4 is always `192.168.20.169`, 2344 is always `192.168.20.160`**, so probing both and reading `unit_id` from the public `/api/status` identifies the fitted one in one step. Two corollaries: **`ota_push.py`'s default host is .169 (FDA4)**, so a push while 2344 is fitted goes nowhere; and **swapping modules ends any soak**, while the SD card stays with the rig, so a swap splices two firmwares into one log file. Full detail in user-global memory under the dev-rig entry.
+
+## 2026-09-12 — ROTA's `dl` and `apply` status fields reset to −1; the SD log is the authority
+
+**Problem:** After 2344 successfully pulled and committed 2.6.0, `GET /api/ota/check` reported `dl: -1` and `apply: -1`, which read as "download failed / apply failed" and produced two false FAILs in the acceptance harness. The pull had in fact succeeded — both `fw_ver` and `asset_version` read 2.6.0.
+
+**Root cause:** those fields describe the **most recent check cycle**, not the last successful install. Once a later check returns `up_to_date` there was no download and no apply in that cycle, so both go to the −1 "not applicable" sentinel. The successful outcomes had already scrolled out of the status object.
+
+**Fix:** verify a pull from the **audit rows**, which are permanent: `SYSTEM value_a=23` sub-code 0 is download/verify OK, `value_a=24` sub-code 0 is apply committed, and `value_a=5` is the boot that followed. On 2344 those read `23,0` then `24,0` at 13:48:15/13:48:27, then a boot with reason 3. The status endpoint is a snapshot; the log is the record.
+
+**Bonus, same run — gh#41 confirmed live.** The two earlier `24,1` rows (apply *deferred*) at 13:37 and 13:43 were caused by my own admin web session: the quiet gate treats any active session as "not quiet", and 2344's window is 1–23 so the clock was not the blocker. It committed only once I stayed logged out. **When watching a ROTA pull, poll the public `/api/status` only and do not log in** — and note each deferral re-downloads both artefacts.
