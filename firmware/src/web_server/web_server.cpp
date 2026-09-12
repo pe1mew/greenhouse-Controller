@@ -3171,8 +3171,29 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
     windowpos_reading_t r;
     const windowpos_status_t st = windowpos_read(WINDOWPOS_DEFAULT_ADDR, &r);
     if (st != WINDOWPOS_OK) {
-        char e[96];
-        snprintf(e, sizeof(e), "{\"ok\":false,\"err\":\"read_failed\",\"status\":%d}", (int)st);
+        /* Report the GATE even though the read failed. AT-WP06 (FDA4,
+         * 2026-09-12) spent the whole outage returning nothing but
+         * "read_failed", which is the one situation where gate.reason is the
+         * answer you came for: is the gate shut because the sensor is absent,
+         * or is it still open and about to find out? Gate state is task state
+         * and needs no bus, so there is no reason to withhold it. The counters
+         * come too -- err_comm is how you tell a sensor that vanished from one
+         * that never answered. */
+        windowpos_gate_reason_t egr = WPOS_GATE_OK;
+        const windowpos_ctrl_mode_t egm = windowpos_task_ctrl_mode(&egr);
+        windowpos_counters_t ecn;
+        windowpos_task_counters(&ecn);
+        char e[352];
+        snprintf(e, sizeof(e),
+                 "{\"ok\":false,\"err\":\"read_failed\",\"status\":%d,"
+                 "\"gate\":{\"mode\":%d,\"mode_str\":\"%s\",\"reason\":%d},"
+                 "\"soak\":{\"reads_ok\":%lu,\"err_busy\":%lu,\"err_comm\":%lu,"
+                 "\"probe_fail\":%lu,\"mode_changes\":%lu,\"gated_polls\":%lu}}",
+                 (int)st, (int)egm,
+                 (egm == WPOS_CTRL_POSITION) ? "position" : "timed", (int)egr,
+                 (unsigned long)ecn.reads_ok, (unsigned long)ecn.err_busy,
+                 (unsigned long)ecn.err_comm, (unsigned long)ecn.probe_fail,
+                 (unsigned long)ecn.mode_changes, (unsigned long)ecn.gated_polls);
         return httpd_resp_send(req, e, HTTPD_RESP_USE_STRLEN);
     }
 

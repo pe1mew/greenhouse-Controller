@@ -694,23 +694,52 @@ the flash, so the rig's 13 s M3 value had survived the module swap.
 
 **Still NOT verified, and why:**
 
-- **AT-WP06 was run and FAILED, which found a real defect.** The operator pulled
-  the encoder for 50 s. **The gate did not demote**: `err_comm` stayed 0 and the
-  mode stayed `POSITION` with nothing on the other end of the cable. The idle
-  branch was `if (windowpos_read(...) == OK) { ... }` **with no else**, so it
-  swallowed both failed reads — visible in the log only as a **91 s hole** in the
-  `ch3` rows (17:30:16 to 17:31:47) and, on reconnect, a `param 247` row with
-  `value_a = 18`: the encoder's own uptime register going backwards.
+##### AT-WP06 — failed first, then passed after a fix
 
-  Every other demotion path needs a stroke in progress or an already-shut gate,
-  so the gate was **blind whenever M3 was at rest** — which is most of the time,
-  and all night. The published authority could have claimed `POSITION` for hours
-  after the sensor vanished. **Fixed**: the idle read now feeds the same
-  two-consecutive-failure counter as the stroke poll, so at the 30 s idle
-  cadence an absent sensor is detected in ~60 s and the shut gate's 30 s
-  re-probe recovers on its own. The fix is built and flashed but **the pull has
-  not been repeated**, so demotion and recovery are still unproven — a re-run
-  needs the cable out for **at least 90 s** now, to span two idle samples.
+**Run 1 FAILED and found a real defect.** The operator pulled the encoder for
+50 s. **The gate did not demote**: `err_comm` stayed 0 and the mode stayed
+`POSITION` with nothing on the other end of the cable. The idle branch was
+`if (windowpos_read(...) == OK) { ... }` **with no else**, so it swallowed both
+failed reads — visible in the log only as a **91 s hole** in the `ch3` rows
+(17:30:16 to 17:31:47) and, on reconnect, a `param 247` row with `value_a = 18`:
+the encoder's own uptime register going backwards.
+
+Every other demotion path needs a stroke in progress or an already-shut gate, so
+the gate was **blind whenever M3 was at rest** — which is most of the time, and
+all night. The published authority could have claimed `POSITION` for hours after
+the sensor vanished. Fixed by giving the idle read the same
+two-consecutive-failure treatment as the stroke poll.
+
+**Run 2 PASSED.** Same 50 s pull, measured end to end:
+
+```
+17:45:46  ALARM ch6 248,0,2   TIMED [no sensor answering at addr 40]   <- demotion
+17:46:17  ALARM ch6 248,0,0   TIMED [sensor present and trusted]       <- recovery
+17:46:17  ALARM ch6 247,21,0  device RESTARTED (uptime now 21 s)       <- encoder power-cycled
+```
+
+and over the diag endpoint: `timed / no_sensor` with `err_comm = 2`,
+`probe_fail = 1`, then `timed / ok` once the re-probe succeeded. **Recovery
+landed 31 s after demotion, against `PROBE_RETRY_MS` = 30 000** — the re-probe
+cadence, measured. `err_comm = 2` is exactly the two consecutive idle-read
+failures that tripped it; before the fix that counter read 0.
+
+Two by-design zeros worth reading correctly: `mode_changes` stayed **0** because
+the mode was already TIMED (no stroke since the reflash) so only the *reason*
+moved; and `gated_polls` stayed **0** because it counts only ticks with a stroke
+in progress, and M3 was at rest throughout.
+
+**A 50 s pull is enough** — the *effective* outage is longer, because the encoder
+power-cycles on reconnect and must complete a measurement window before it
+answers again. Run 1's 50 s pull produced a 91 s hole.
+
+**Run 2 also exposed a second defect, now fixed.** For the whole outage
+`GET /api/diag/windowpos` returned nothing but
+`{"ok":false,"err":"read_failed","status":1}`: the handler does its direct read
+first and returns early, so `gate.reason` — the one field you want when the
+sensor is missing — was never printed. Gate state is task state and needs no bus,
+so the failure path now carries `gate` and the counters too. **Compiler-verified
+only:** confirming that JSON needs another pull.
 - **`WPOS_GATE_DEVICE_FAULT` is narrower than it looks.**
   `windowpos_reading_t::sensor_fault` is the **wiper-open** bit or the `65535`
   sentinel, so pulling the *bus* cable yields `NO_SENSOR`; `DEVICE_FAULT` needs
