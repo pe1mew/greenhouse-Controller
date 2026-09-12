@@ -876,6 +876,15 @@ it. `delayMicroseconds()` busy-waits inside the bus lock at task priority, and
 — enough to starve T9 and the HTTP server, and to worsen this driver's already
 documented TWDT exposure.
 
+**The wait is paid before releasing the lock, not after taking it** (operator,
+2026-09-12). That makes the lock's guarantee *"the bus is yours AND it is
+idle"*, so a caller may transmit the moment it acquires. Waiting at
+acquisition instead makes every caller pay for silence it did not create, and
+leaves the invariant resting on each caller remembering to ask — the same trap
+as draining the RX FIFO at the next transaction's start rather than at this
+one's exit. Total lock hold is unchanged (~234 ms worst case, still 2.1x inside
+`MODBUS_LOCK_TIMEOUT_MS`); what changes is who waits, and what the lock promises.
+
 > **Rule worth keeping:** on a shared RTU bus, mutual exclusion is necessary and
 > **not sufficient**. The protocol also requires *silence* between frames, and a
 > gap set at the spec floor stays untested for as long as there is only one

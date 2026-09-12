@@ -197,6 +197,13 @@ static uint32_t s_frame_end_us = 0u;
 /**
  * @brief Block until @ref MODBUS_IFG_US of silence has passed on the wire.
  *
+ * **Called before releasing the bus lock, not after taking it.** That makes the
+ * lock's guarantee "the bus is yours AND it is idle", so a caller may transmit
+ * the moment it acquires. Waiting at acquisition instead would make every
+ * caller pay for silence it did not create, and would leave the invariant
+ * resting on each caller remembering to ask -- the same trap as draining the RX
+ * FIFO at the next transaction's start rather than at this one's exit.
+ *
  * Spinning the whole gap would be wrong at this size. delayMicroseconds() is a
  * busy-wait and this runs inside the bus lock at task priority, so a 20 ms gap
  * across ~6 transactions/s during an M3 stroke is ~120 ms/s of pure spin --
@@ -429,6 +436,10 @@ static modbus_status_t modbus_transaction(uint8_t  device_addr,
     /* Transmit
      * Enforce the Modbus RTU 3.5-char-time inter-frame gap relative to the
      * actual end of the last frame on the wire, regardless of caller latency. */
+    /* Backstop. The wrappers now pay the inter-frame silence before they
+     * release the lock, so this normally returns at once. It still matters on
+     * the pre-init path (s_bus_mtx == NULL proceeds unlocked, so no wrapper
+     * discipline applies) and for any future caller reaching a body directly. */
     wait_ifg();
     /* Start from a known-empty FIFO. The IFG above has elapsed and nothing of
      * ours is on the wire yet, so anything here is stale -- another caller's
@@ -591,6 +602,10 @@ static modbus_status_t write_multiple_locked(uint8_t         device_addr,
     req[payload_len + 1] = (uint8_t)(req_crc >> 8);
 
     /* Transmit — same IFG discipline as FC03/FC04 */
+    /* Backstop. The wrappers now pay the inter-frame silence before they
+     * release the lock, so this normally returns at once. It still matters on
+     * the pre-init path (s_bus_mtx == NULL proceeds unlocked, so no wrapper
+     * discipline applies) and for any future caller reaching a body directly. */
     wait_ifg();
     drain_rx();   /* same reason as FC03/FC04 — see drain_rx() */
     gpio_set_rs485_direction(true);
@@ -699,6 +714,7 @@ modbus_status_t modbus_read_holding_registers(uint8_t  device_addr,
 {
     if (!bus_lock()) return tally(MODBUS_ERR_BUSY, device_addr);
     modbus_status_t s = modbus_transaction(device_addr, 0x03, start_reg, count, out);
+    wait_ifg();                       /* leave the bus quiet, then release */
     bus_unlock();
     return tally(s, device_addr);
 }
@@ -710,6 +726,7 @@ modbus_status_t modbus_read_input_registers(uint8_t  device_addr,
 {
     if (!bus_lock()) return tally(MODBUS_ERR_BUSY, device_addr);
     modbus_status_t s = modbus_transaction(device_addr, 0x04, start_reg, count, out);
+    wait_ifg();                       /* leave the bus quiet, then release */
     bus_unlock();
     return tally(s, device_addr);
 }
@@ -721,6 +738,7 @@ modbus_status_t modbus_write_multiple_registers(uint8_t         device_addr,
 {
     if (!bus_lock()) return tally(MODBUS_ERR_BUSY, device_addr);
     modbus_status_t s = write_multiple_locked(device_addr, start_reg, count, values);
+    wait_ifg();                       /* leave the bus quiet, then release */
     bus_unlock();
     return tally(s, device_addr);
 }
