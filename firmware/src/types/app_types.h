@@ -273,6 +273,19 @@ typedef enum {
      * safety timeout is no longer acceptable.  Channel carries the motor. */
     LOG_PARAM_TRAVEL         = 46,  /**< motor/travel_mX — old → new (s), channel = 1/2/3 */
 
+    /* 2.6.0 (gh#54) — LOG_MODE_CHANGE has TWO emitters with different payload
+     * meanings, and every consumer decoded only the first:
+     *   A  T6 climate_control.cpp post_log_mode() — param_id = NONE,
+     *      value_a = resolved vent step, value_b = packed step_t/step_rh
+     *   B  T4 data_manager.cpp dm_set_standby_ex() — this param_id,
+     *      value_a = 1 enter STANDBY / 0 leave, value_b reserved 0
+     * Emitter B existed unmarked since rc.1.5.0 (gh#28), so every STANDBY
+     * transition parsed as a ventilation decision that never happened —
+     * including a fabricated "T-demand / RH-demand" read out of the reserved
+     * value_b. param_id now separates them unambiguously, independent of
+     * initiator and channel. */
+    LOG_PARAM_MODE_STANDBY   = 47,  /**< LOG_MODE_CHANGE emitter B (STANDBY enter/leave) */
+
     /* ── ALARM event-subtype discriminators (2.3.0, gh#45) ─────────────────
      * NOT config C-numbers. Reserved band 240..254, kept far above the
      * config space so the two can never collide. Stamped into `param` on

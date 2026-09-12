@@ -146,6 +146,14 @@ def load_logs(temp_dir: Path):
                     if name and ch in (1, 2, 3):
                         events["RELAY"].append((dt, ch, name))
                 elif typ == "MODE":
+                    # 2.6.0 (gh#54): MODE has two emitters. param == 47 is
+                    # dm_set_standby_ex() (STANDBY enter/leave), NOT a vent
+                    # step -- ingesting it produced a phantom step change on
+                    # the plot, with value_b = 0 unpacked as two zero demands.
+                    # Skip it. Rows from firmware before 2.6.0 carry param 0
+                    # and remain indistinguishable.
+                    if par == 47:
+                        continue
                     # value_a = resolved_step
                     # value_b = packed: high byte = step_t (int8), low byte = step_rh (int8)
                     vb_unsigned = vb & 0xFFFF

@@ -6,6 +6,80 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.6.0] — 2026-09-12  (gh#54 + gh#59 — the audit log stops lying, and starts recording)
+
+Minor: a new `LOG_SETPOINT` param id and six new `LOG_SYSTEM` subtypes are both
+payload-shape changes. Every consumer learns them in this same changeset, per the
+standing rule.
+
+**Fixed.**
+
+- **gh#54 — every STANDBY transition was parsed as a ventilation decision.**
+  `LOG_MODE_CHANGE` has two unrelated emitters: T6's vent-step decision, and
+  `dm_set_standby_ex()`'s STANDBY enter/leave (since rc.1.5.0, gh#28). Both carried
+  `param_id = 0`, so all three consumers decoded the second as the first. A STANDBY
+  row rendered as *"Vent step → 1 (M1 open)"* with a **fabricated** "T-demand: all
+  closed / RH-demand: all closed" read out of a `value_b` the emitter reserves as
+  zero. Adjacent `RELAY` rows from the same event said the opposite.
+
+  Emitter B now sets **`LOG_PARAM_MODE_STANDBY = 47`**, which separates the two
+  unambiguously and independently of initiator and channel — the discriminator 2.4.6
+  briefly destroyed by making a SYSTEM/channel-0 STANDBY row byte-identical to a
+  genuine step-0 vent row. `logparser.py` renders it as a STANDBY transition with the
+  surface; `plot_daily.py` and `vent_step_replay.py` **skip** it.
+
+  `vent_step_replay.py` is the one that mattered most: `CLAUDE.md` points at it for
+  *"judging whether climate control is misbehaving"*, and it refuses to project unless
+  it first reproduces ≥ 90 % of the logged T-demands. A STANDBY row injected a
+  fabricated demand-free step into that gate, so it could fail a healthy configuration
+  or shift a projection.
+
+- **gh#59 — seven control-relevant events now write an SD audit row.** Each reached
+  at most the serial console, which on a unit in a greenhouse is not observability.
+
+  | `value_a` | event | payload |
+  |---|---|---|
+  | 25 | `is_daytime` flipped | `value_b` 0 = night, 1 = day |
+  | 26 | factory reset executed | `value_b` = IO0 level 1/2/3 |
+  | 27 | Q1 command discarded, motor alarm | hi byte action, lo byte source; `channel` = requested |
+  | 28 | DS1307 unreadable | `value_b` = `rtc_status_t` 1/2/3, rate-limited ~1/h |
+  | 29 | T6 move deferred on dwell | seconds remaining, **sign = direction**; `channel` = motor |
+  | 30 | Q4 write rejected, unknown key | `initiator` = the producer that tried |
+
+  Plus the seventh, found while verifying gh#58: **a successful web login wrote no
+  audit row at all.** `LOG_SESSION` was emitted only by `ui_display.cpp`, so the log
+  recorded who got in at the panel and nothing about who got in over the network. That
+  became actively misleading once 2.5.0 started logging *failed* attempts from both
+  surfaces: a run of `PIN_AUTH`/WEB failures followed by silence could not be told
+  from one followed by a successful break-in. `session_open()` and `session_close()`
+  now emit `LOG_SESSION` with `LOG_BY_WEB`, using the LCD's exact encoding so the
+  parser needed no new branch.
+
+  Two implementation points worth knowing:
+
+  - **The factory-reset row is written synchronously**, not through Q3.
+    `execute_reset_action()` level 3 calls `esp_restart()` a few lines later, which
+    would cut T9 off before it ever drained the queue. `event_logger_post_sync()`
+    existed for exactly this and had **zero callers**; it now takes an `initiator` and
+    `channel` so the row reads as the operator action it is rather than as SYSTEM.
+  - **Subtype 28 is rate-limited** on the same ~1/h budget as the existing
+    divergence row. gh#59's volume check called these all edge events, but a dead
+    DS1307 fails *every* poll.
+
+**Corrected — the subtype table was stale, and gh#59 was filed on it.**
+
+`event_logger.h`'s `LOG_SYSTEM value_a` table ran −1 and 0–21, and gh#59 said on that
+basis that "next free is 22 and upward". **22, 23 and 24 have been ROTA check /
+download / apply since 2.2.0** — visible in `ota_client.cpp`'s `audit_check()`,
+`audit_dl()`, `audit_apply()` and already decoded by `logparser.py`, but never added
+to the table. Taking the comment at its word would have collided all three. The
+occupied set was re-derived from the emitters, the new subtypes start at **25**, and
+the table now documents 22–30 with a note saying the emitters are authoritative.
+
+**Unchanged.** No NVS migration, no partition change, no config-key change.
+
+---
+
 ## [2.5.1] — 2026-09-12  (gh#57 part 2 — the poll-interval range now matches the requirement it always claimed to)
 
 Patch: a bounds correction plus three documentation fixes. No payload change, no

@@ -1114,3 +1114,26 @@ Encoded in [firmware/partitions.csv](../firmware/partitions.csv) header comment.
 **Fix:** wait out a worst-case old interval *plus* several new cycles before measuring, then assert on the tail only. Re-run gave `[15, 15, 16, 15, 15, 16, 15, 15]`.
 
 **Also learned the same run:** a verification that sleeps more than `session_timeout` (default **5 min**) loses its cookie and starts getting `401 no_session` mid-script. Long-running harnesses need a 401 retry that re-logs in, not just an `HTTPError` body parse.
+
+## 2026-09-12 — the documented subtype table was three entries behind, and an issue was filed on its authority
+
+**Problem:** gh#59 asked for six new `LOG_SYSTEM` subtypes and stated *"Next free `LOG_SYSTEM` `value_a` subtypes are 22 and upward (the documented table in `event_logger.h` runs −1 and 0–21)"*. Implementing that verbatim would have given the six new events subtypes 22–27, silently colliding the first three with ROTA.
+
+**Root cause:** 22 = ROTA check, 23 = ROTA download/verify, 24 = ROTA apply have existed since firmware 2.2.0. They were never added to the table in `event_logger.h`, and they are invisible to the obvious grep because they go through a helper — `audit_row(22, sub)` inside `ota_client.cpp`, not `ev.value_a = 22`. `logparser.py` decoded them the whole time, so the parser was ahead of the firmware's own documentation.
+
+**Fix:** the occupied set was re-derived from the emitters plus the parser before anything was assigned; the new subtypes start at 25. `event_logger.h` now documents 22–30 and carries a note that the emitters are authoritative and this comment is not.
+
+**Rule (promoted):** *a "documented encoding table" in a header is a claim about the past. Before consuming a free slot in ANY enumerated space — log subtypes, param ids, NVS keys, bit positions — derive the occupied set from the emitters AND from every consumer, and remember that values passed through a helper function will not match a grep for the literal assignment.* Same shape as the 2026-09-11 lesson that an empty grep is evidence about the pattern, not the codebase.
+
+## 2026-09-12 — three verification failures in one day, all of them the harness not waiting
+
+**Problem:** Across 2.5.1 and 2.6.0, five assertions failed against correct firmware:
+- a config read-back straight after `POST /api/config` returned the *previous* value (13 false FAILs), because the write goes through Q4 and T4 applies it a loop later;
+- a poll-cadence measurement taken 100 s after setting 15 s read `[..., 31, 76, 31, 15]`, because T5 reads the interval at the **top** of its loop and only then sleeps, so a change lands after the in-flight sleep drains — worst case one whole **old** interval;
+- `mode == AUTOMATIC` and `eg1 == 0` checked 12 s after leaving STANDBY, while the `CMD_RECALIBRATE` sweep that leaving STANDBY triggers was still running with `EG1_BIT_CALIBRATING` set.
+
+**Root cause:** every one is a queue or a state machine between the request and the observable, and in each case the HTTP 200 means *accepted*, not *in effect*.
+
+**Fix / rule:** *before asserting on an effect, name the mechanism that produces it and wait for that mechanism, not for a round number of seconds.* Q4 writes need a settle or a poll-until-stable; a cadence change needs one whole old period; leaving STANDBY needs the recalibration sweep to clear `eg1`. And make the expected transition observable — if the value you expect already equals the current value, move it to a different base first, or a broken implementation and a working one read identically.
+
+**Related:** the mirror-image failure, a harness reporting false PASSes because it did not JSON-parse `HTTPError` bodies (2026-09-11), and one reporting a false FAIL because it never status-checked its second fetch of the same resource (2026-09-12).

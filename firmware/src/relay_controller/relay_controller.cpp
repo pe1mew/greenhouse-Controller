@@ -424,9 +424,22 @@ static void ch_start_close(uint8_t ch, uint32_t now_ms, cmd_source_t source)
              * no trace anywhere.  INFO, latched to one line per episode. */
             if (!c->dwell_defer_logged) {
                 c->dwell_defer_logged = true;
+                const uint32_t rem_s = (c->dwell_deadline_ms - now_ms) / 1000u;
                 ESP_LOGI(TAG, "CH%u: CLOSE from T6 DEFERRED — dwell %lu s remaining",
-                         ch + 1u,
-                         (unsigned long)((c->dwell_deadline_ms - now_ms) / 1000u));
+                         ch + 1u, (unsigned long)rem_s);
+                /* 2.6.0 (gh#59 item 5) — INFO only since 2.4.5, so a 25-minute
+                 * inert window on M3 still left no SD trace. Latched to one row
+                 * per deferral episode by the flag above, so volume is bounded.
+                 * Sign of value_b carries the direction: NEGATIVE = CLOSE. */
+                log_event_t dv = {};
+                dv.timestamp  = (uint32_t)time(NULL);
+                dv.event_type = (uint8_t)LOG_SYSTEM;
+                dv.initiator  = (uint8_t)LOG_BY_SYSTEM;
+                dv.channel    = (uint8_t)(ch + 1u);
+                dv.param_id   = (uint8_t)LOG_PARAM_NONE;
+                dv.value_a    = 29;
+                dv.value_b    = -(int16_t)((rem_s > 32767u) ? 32767u : rem_s);
+                log_post(&dv);
             }
             return;
         }
@@ -496,9 +509,20 @@ static void ch_start_open(uint8_t ch, uint32_t now_ms, cmd_source_t source)
              * no trace anywhere.  INFO, latched to one line per episode. */
             if (!c->dwell_defer_logged) {
                 c->dwell_defer_logged = true;
+                const uint32_t rem_s = (c->dwell_deadline_ms - now_ms) / 1000u;
                 ESP_LOGI(TAG, "CH%u: OPEN from T6 DEFERRED — dwell %lu s remaining",
-                         ch + 1u,
-                         (unsigned long)((c->dwell_deadline_ms - now_ms) / 1000u));
+                         ch + 1u, (unsigned long)rem_s);
+                /* 2.6.0 (gh#59 item 5) — see the CLOSE counterpart in
+                 * ch_start_close(). Sign of value_b: POSITIVE = OPEN. */
+                log_event_t dv = {};
+                dv.timestamp  = (uint32_t)time(NULL);
+                dv.event_type = (uint8_t)LOG_SYSTEM;
+                dv.initiator  = (uint8_t)LOG_BY_SYSTEM;
+                dv.channel    = (uint8_t)(ch + 1u);
+                dv.param_id   = (uint8_t)LOG_PARAM_NONE;
+                dv.value_a    = 29;
+                dv.value_b    = (int16_t)((rem_s > 32767u) ? 32767u : rem_s);
+                log_post(&dv);
             }
             return;
         }
@@ -838,6 +862,21 @@ static void process_command(const window_cmd_t *cmd, uint32_t now_ms)
     if (xEventGroupGetBits(EG1) & EG1_BIT_MOTOR_ALARM) {
         ESP_LOGW(TAG, "Q1 cmd (action=%d ch=%u src=%s) discarded — MOTOR_ALARM active",
                  (int)cmd->action, cmd->channel, src_name(cmd->source));
+        /* 2.6.0 (gh#59 item 3) — an operator whose manual command is swallowed
+         * here gets no trace at all, so "it got rejected" was
+         * unreconstructable; the 2026-09-10 gotcha entry exists because of
+         * exactly this. Both the action and the source are packed so the log
+         * distinguishes a refused MANUAL command from a refused T6 or T3 one. */
+        log_event_t dev = {};
+        dev.timestamp  = (uint32_t)time(NULL);
+        dev.event_type = (uint8_t)LOG_SYSTEM;
+        dev.initiator  = (uint8_t)LOG_BY_SYSTEM;
+        dev.channel    = cmd->channel;
+        dev.param_id   = (uint8_t)LOG_PARAM_NONE;
+        dev.value_a    = 27;   /* Q1 command discarded, motor alarm active */
+        dev.value_b    = (int16_t)(((int16_t)cmd->action << 8) |
+                                   ((int16_t)cmd->source & 0x00FF));
+        log_post(&dev);
         return;
     }
 

@@ -286,6 +286,26 @@ static bool session_open(web_session_role_t role, int32_t timeout_s,
 
     xSemaphoreGive(s_sess_mux);
 
+    /* 2.6.0 (gh#59) — a successful WEB login wrote no audit row at all.
+     * LOG_SESSION was emitted only by ui_display.cpp, so the log recorded who
+     * got in at the panel and nothing about who got in over the network. That
+     * became visible when 2.5.0 started logging FAILED attempts from both
+     * surfaces (gh#58): a run of PIN_AUTH/WEB failures followed by silence
+     * could not be told from a run followed by a successful break-in.
+     * Encoding matches the LCD emitter exactly — value_a 0 = closed,
+     * 1 = farmer, 2 = admin — so logparser needs no new branch. */
+    {
+        log_event_t sev = {};
+        sev.timestamp  = (uint32_t)time(NULL);
+        sev.event_type = (uint8_t)LOG_SESSION;
+        sev.initiator  = (uint8_t)LOG_BY_WEB;
+        sev.channel    = 0u;
+        sev.param_id   = (uint8_t)LOG_PARAM_NONE;
+        sev.value_a    = (int16_t)((role == WEB_ROLE_ADMIN) ? 2 : 1);
+        sev.value_b    = 0;
+        log_post(&sev);
+    }
+
     ESP_LOGI(TAG, "[T11] session opened: role=%d slot=%d timeout=%lds",
              (int)role, chosen, (long)timeout_s);
     return true;
@@ -297,14 +317,37 @@ static bool session_open(web_session_role_t role, int32_t timeout_s,
 static void session_close(const char *token)
 {
     if (token == NULL || token[0] == '\0') return;
+    bool found = false;
     xSemaphoreTake(s_sess_mux, pdMS_TO_TICKS(200));
     for (int i = 0; i < MAX_SESSIONS; i++) {
         if (strcmp(s_sessions[i].token, token) == 0) {
+            found = true;                       /* role not needed: value_a=0 */
             memset(&s_sessions[i], 0, sizeof(s_sessions[i]));
             break;
         }
     }
     xSemaphoreGive(s_sess_mux);
+
+    /* 2.6.0 (gh#59) — matching close row for the open above; value_a = 0 is
+     * the LCD emitter's "closed" encoding.
+     *
+     * NOTE this covers an EXPLICIT logout only. A web session that lapses by
+     * timeout is still unlogged, because there is no reaper: the slot simply
+     * stops validating once `expiry <= now` and is reused only when a later
+     * login evicts it, so there is no single site at which a timeout could be
+     * recorded. Giving web sessions a real expiry sweep is a separate change
+     * and is NOT done here. */
+    if (found) {
+        log_event_t sev = {};
+        sev.timestamp  = (uint32_t)time(NULL);
+        sev.event_type = (uint8_t)LOG_SESSION;
+        sev.initiator  = (uint8_t)LOG_BY_WEB;
+        sev.channel    = 0u;
+        sev.param_id   = (uint8_t)LOG_PARAM_NONE;
+        sev.value_a    = 0;
+        sev.value_b    = 0;
+        log_post(&sev);
+    }
 }
 
 /* ============================================================

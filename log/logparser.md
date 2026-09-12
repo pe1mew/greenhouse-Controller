@@ -1,8 +1,28 @@
 # logparser — Greenhouse Controller Log Parser
 
 **File:** `log/logparser.py`
-**Document version:** 1.10 (matches firmware 2.5.0 — PIN_AUTH event type)
+**Document version:** 1.11 (matches firmware 2.6.0 — MODE param discriminator, SYSTEM 25-30)
 **Requires:** Python 3.10+, standard library only (no pip dependencies)
+
+**What's new in 1.11** (matches firmware 2.6.0 — gh#54 + gh#59):
+- **`MODE` rows now carry a discriminator.** `LOG_MODE_CHANGE` has two emitters:
+  T6's vent-step decision (`param = 0`) and `dm_set_standby_ex()`'s STANDBY
+  enter/leave (`param = 47`). Until 2.6.0 both carried `param = 0`, so every
+  STANDBY transition was rendered as a ventilation decision that never happened,
+  complete with a fabricated T/RH demand pair unpacked from a reserved zero.
+  **Rows written by firmware before 2.6.0 cannot be separated** — if an old log
+  shows a vent step at the moment an operator toggled STANDBY, that is why.
+  `plot_daily.py` and `vent_step_replay.py` now skip `param = 47` rows.
+- **Six new `SYSTEM` subtypes, 25-30** (gh#59): `is_daytime` flip, factory reset,
+  Q1 command discarded on motor alarm, DS1307 unreadable, T6 move deferred on
+  dwell, and Q4 write rejected as an unknown key. See the SYSTEM table.
+- **Subtypes 22-24 documented at last.** They have been ROTA check / download /
+  apply since firmware 2.2.0 and the parser has always decoded them, but
+  `event_logger.h`'s table stopped at 21 — which is how gh#59 came to be filed
+  claiming 22 was free.
+- **A successful *web* login now writes a `SESSION` row** with initiator `WEB`.
+  Before 2.6.0 only the LCD emitted `SESSION`, so the log recorded panel logins
+  and nothing about network ones.
 
 **What's new in 1.10** (matches firmware 2.5.0 — gh#58):
 - **New event type `PIN_AUTH`.** Failed PIN entry, the lockout that follows five
@@ -303,8 +323,26 @@ channel transitions to a new state.
 ---
 
 ### MODE
-Ventilation step change.  Posted by the Climate Controller (T6) each time it
-recalculates the desired ventilation step.
+**`MODE` has TWO emitters, discriminated by `param` since firmware 2.6.0
+(gh#54).** Check `param` before reading `value_a` / `value_b`.
+
+| `param` | emitter | meaning |
+|---|---|---|
+| **0** | T6 `climate_control.cpp` | ventilation step decision — the table below |
+| **47** | T4 `dm_set_standby_ex()` | STANDBY enter/leave — `value_a` 1 = entered, 0 = left; `value_b` reserved 0; `ch` = surface, 0 web / 1 LCD |
+
+> **Old logs cannot be separated.** Emitter B has existed since rc.1.5.0 (gh#28)
+> but carried `param = 0` until 2.6.0, so in any log written before 2.6.0 a
+> STANDBY transition is rendered as a ventilation decision — including a
+> fabricated "T-demand / RH-demand" pair unpacked from the reserved zero
+> `value_b`. If an old log shows a vent step at the exact moment an operator
+> toggled STANDBY, that is why. `plot_daily.py` and `vent_step_replay.py` skip
+> `param = 47` rows; for pre-2.6.0 logs they cannot.
+
+### Emitter A — ventilation step change (`param = 0`)
+
+Posted by the Climate Controller (T6) each time it recalculates the desired
+ventilation step.
 
 | Field | Meaning |
 |---|---|
@@ -608,6 +646,12 @@ matches the LOG_SYSTEM table in `firmware/src/event_logger/event_logger.h`:
 | **22** | sub-code | SYS | T16 ota_client | ROTA update **check** outcome — see ROTA sub-code table below (2.2.0+) |
 | **23** | sub-code | SYS | T16 ota_client | ROTA **download/verify** outcome — see ROTA sub-code table below (2.2.0+) |
 | **24** | sub-code | SYS | T16 ota_client | ROTA **apply** outcome — see ROTA sub-code table below (2.2.0+) |
+| **25** | 0 night / 1 day | SYS | T4 `update_sun_times()` | **`is_daytime` FLIPPED** — the one-bit input that selects the day or night setpoint set. Fires at boot (on a −1 sentinel) and at each dawn/dusk crossing, so a log can always answer *which thresholds was the controller using?* (2.6.0+, gh#59) |
+| **26** | IO0 level 1/2/3 | ADMIN | T8 ui_display | **FACTORY RESET executed.** 1 = PINs only, 2 = all settings no reboot, 3 = all settings + reboot. Written **synchronously** to SD because level 3 reboots immediately (2.6.0+, gh#59) |
+| **27** | packed: hi byte = action, lo byte = source | SYS | T2 relay_controller | **Q1 command DISCARDED** because `EG1_BIT_MOTOR_ALARM` is set (FR-MA03). `ch` = requested channel, 0 = all. Actions 0 OPEN · 1 CLOSE · 2 CLOSE_ALL · 3 RESUME · 4 RECALIBRATE. Sources 0 T3 wind-safety · 1 T6 climate · 2 OPERATOR MANUAL (2.6.0+, gh#59) |
+| **28** | `rtc_status_t` 1/2/3 | SYS | T4 data_manager | **DS1307 UNREADABLE** — 1 NO_DEVICE (no I2C ACK) · 2 COMM (I2C error) · 3 INVALID (out-of-range registers). Distinct from **21**, which is a chip that reads but diverges. This is the case that took the clock down in gh#55. Rate-limited ~1/h (2.6.0+, gh#59) |
+| **29** | seconds remaining, **signed** | SYS | T2 relay_controller | **T6 move DEFERRED on the dwell timer.** `ch` = motor 1/2/3. **Sign carries direction: positive = OPEN deferred, negative = CLOSE deferred.** Latched to one row per deferral episode, so an M3 dwell of up to 25 min produces one row, not hundreds (2.6.0+, gh#59) |
+| **30** | 0 | producer | T4 `apply_config_update()` | **Q4 config write REJECTED, unknown ns/key.** `initiator` identifies which producer tried; the key name is on the serial console only, because the 12-byte row cannot carry it. `/api/config` returns 400 before reaching Q4, so this fires only for the LCD/T10 producers or a future one (2.6.0+, gh#59) |
 
 **esp_reset_reason codes (value_a=5):**
 

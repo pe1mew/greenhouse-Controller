@@ -284,14 +284,40 @@ def _decode_relay(row: dict) -> str:
 
 def _decode_mode(row: dict) -> str:
     """
-    MODE (LOG_MODE_CHANGE from climate_control.cpp):
-      value_a = resolved ventilation step (0–3)
+    MODE (LOG_MODE_CHANGE) has TWO emitters, discriminated by `param`
+    since firmware 2.6.0 (gh#54):
+
+    param = 0  -- emitter A, T6 climate_control.cpp post_log_mode():
+      value_a = resolved ventilation step (0-3)
       value_b = packed int16: high byte = step_t (int8), low byte = step_rh (int8)
                 step = -1 means VENT_STEP_NEUTRAL (no demand from that sensor)
+
+    param = 47 -- emitter B, T4 data_manager.cpp dm_set_standby_ex():
+      value_a = 1 entered STANDBY, 0 left STANDBY
+      value_b = 0 (reserved)
+      ch      = surface hint, 0 = web, 1 = LCD
+
+    Emitter B has existed since rc.1.5.0 (gh#28) but carried param = 0 until
+    2.6.0, so every STANDBY transition was rendered as a ventilation decision
+    that never happened -- including a fabricated "T-demand / RH-demand" read
+    out of the reserved value_b. Rows from firmware BEFORE 2.6.0 cannot be
+    told apart here; see the note this function prints for them.
     """
     try:
+        par      = int(row.get("param", 0) or 0)
         resolved = int(row["value_a"])
         packed   = int(row["value_b"])
+
+        if par == 47:
+            initiator = row.get("initiator", "?").strip()
+            by        = _INITIATOR.get(initiator, initiator)
+            surface   = {0: "web", 1: "LCD"}.get(
+                int(row.get("ch", 0) or 0), f"surface {row.get('ch')}")
+            if resolved == 1:
+                return f"STANDBY entered (climate control paused) via {surface}  [{by}]"
+            if resolved == 0:
+                return f"STANDBY left (climate control resumed) via {surface}  [{by}]"
+            return f"STANDBY event a={resolved} via {surface}  [{by}]"
 
         # Unpack the two signed int8 values from the int16
         packed_u = packed & 0xFFFF
@@ -608,6 +634,8 @@ def _decode_system(row: dict) -> str:
         va        = int(row["value_a"])
         vb        = int(row["value_b"])
         initiator = row.get("initiator", "SYS").strip()
+        # 2.6.0 (gh#59): subtypes 27 and 29 carry a channel.
+        ch        = int(row.get("ch", 0) or 0)
 
         # ---------------------------------------------------------------
         # Q3 drop overflow (T9 synthetic)
@@ -804,6 +832,47 @@ def _decode_system(row: dict) -> str:
         # A normal remote update is 22.1 → 23.0 → 24.0 → BOOT; a daytime find
         # that waits for the night window is 22.1 → 23.0 → 24.1 (… later 24.0).
         # ---------------------------------------------------------------
+        # ---- gh#59 (2.6.0): events that previously reached the console only ----
+        if va == 25:
+            return ("is_daytime FLIPPED to "
+                    + ("DAY" if vb else "NIGHT")
+                    + " - T6 switched to the "
+                    + ("day" if vb else "night")
+                    + " setpoint set")
+        if va == 26:
+            stage = {1: "level 1: PIN codes only",
+                     2: "level 2: all settings, no reboot",
+                     3: "level 3: all settings + reboot"}.get(vb, f"level {vb}")
+            return f"FACTORY RESET executed via IO0 - {stage}"
+        if va == 27:
+            act = {0: "OPEN", 1: "CLOSE", 2: "CLOSE_ALL",
+                   3: "RESUME", 4: "RECALIBRATE"}
+            src = {0: "T3 wind-safety", 1: "T6 climate",
+                   2: "OPERATOR MANUAL"}
+            u = vb & 0xFFFF
+            a = (u >> 8) & 0xFF
+            s = u & 0xFF
+            ch_txt = f"ch{ch}" if ch else "all channels"
+            return (f"Q1 command DISCARDED (motor alarm active): "
+                    f"{act.get(a, f'action {a}')} {ch_txt} "
+                    f"from {src.get(s, f'src {s}')}")
+        if va == 28:
+            st = {1: "NO_DEVICE (no I2C ACK)", 2: "COMM (I2C error)",
+                  3: "INVALID (out-of-range registers)"}
+            return (f"RTC READ FAILED - DS1307 unreadable: "
+                    f"{st.get(vb, f'status {vb}')}  "
+                    f"(clock not advancing; check RTC/battery - gh#55)")
+        if va == 29:
+            ch_txt = f"M{ch}" if ch else "?"
+            direction = "OPEN" if vb >= 0 else "CLOSE"
+            return (f"T6 {direction} on {ch_txt} DEFERRED - "
+                    f"dwell {abs(vb)} s remaining (one row per episode)")
+        if va == 30:
+            initiator = row.get("initiator", "?").strip()
+            by = _INITIATOR.get(initiator, initiator)
+            return (f"Q4 config write REJECTED - unknown ns/key  [{by}]  "
+                    f"(key name is on the serial console only)")
+
         if va in (22, 23, 24):
             _ROTA_CHECK = {0: "up to date", 1: "update found",
                            2: "server unreachable / HTTP error",

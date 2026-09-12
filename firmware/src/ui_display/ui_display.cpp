@@ -814,6 +814,19 @@ static void execute_reset_action(uint8_t stage)
             nvs_cfg_erase_namespace(NVS_NS_ACCESS);
             pin_auth_init();
             session_close(false);
+            /* 2.6.0 (gh#59 item 2) — the highest-value row in that issue.
+             * execute_reset_action() contained ZERO log_post calls while
+             * erasing up to seven NVS namespaces, both PINs and (since 2.4.8)
+             * ESP-IDF's own WiFi store. Three resets on 2026-09-11/12 left no
+             * distinguishing row, so every later "why is this value back to
+             * default?" was guesswork — including the three travel_m3
+             * reversions on the M3 rig.
+             *
+             * Written SYNCHRONOUSLY, not via log_post(): stage 3 calls
+             * esp_restart() a few lines below, which would cut T9 off before
+             * it ever drained Q3. Stages 1 and 2 do not reboot, but use the
+             * same path so all three rows look identical in the log. */
+            (void)event_logger_post_sync(26, 1, LOG_BY_ADMIN, 1u);
             ESP_LOGW(TAG, "IO0: PIN reset to defaults");
             show_msg("PIN Reset!      ", "Default PINs set", 5000);
             break;
@@ -838,6 +851,8 @@ static void execute_reset_action(uint8_t stage)
              * that had happened until the next reboot. Reloading also writes
              * the factory defaults back into the erased namespaces. */
             dm_reload_all_cfg(LOG_BY_ADMIN, 1u /*=LCD*/);
+            /* 2.6.0 (gh#59 item 2) — see stage 1. */
+            (void)event_logger_post_sync(26, 2, LOG_BY_ADMIN, 1u);
             ESP_LOGW(TAG, "IO0: full settings reset to defaults");
             show_msg("Settings Reset! ", "Defaults loaded ", 5000);
             break;
@@ -856,6 +871,10 @@ static void execute_reset_action(uint8_t stage)
             nvs_cfg_erase_namespace(NVS_NS_SYSTEM);
             pin_auth_init();
             session_close(false);
+            /* 2.6.0 (gh#59 item 2) — MUST be the synchronous writer here:
+             * esp_restart() below never returns, so a queued row would die
+             * with T9. This is the row that explains a wiped unit. */
+            (void)event_logger_post_sync(26, 3, LOG_BY_ADMIN, 1u);
             ESP_LOGW(TAG, "IO0: full reset — restarting");
             /* Restart is immediate — use a blocking delay here so the message
              * is actually visible; non-blocking show_msg won't work because

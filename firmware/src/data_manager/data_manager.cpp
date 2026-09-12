@@ -337,7 +337,36 @@ static void update_sun_times(void)
     float lon = (float)s_cfg.lon_deg + (float)s_cfg.lon_frac / 1000.0f;
     int32_t ts = (int32_t)s_cfg.current_unix_ts;
 
+    /* 2.6.0 (gh#59 item 1) — is_daytime is the one-bit input that selects
+     * t_max_day/rh_*_day versus the night set, and it was logged NOWHERE.
+     * LOG_SUN carries sunrise_min/sunset_min but not the derived boolean, so
+     * "which thresholds was the controller using?" was unanswerable after the
+     * fact — which is exactly the question gh#55 left open when a dead DS1307
+     * drove the sun times to 00:00 and T6 onto night setpoints in daylight.
+     * Emitted here because this is the single place the flag changes. The
+     * sentinel starts at -1 so the first evaluation after boot always records
+     * the initial state rather than waiting for a transition. */
+    static int8_t s_daytime_last = -1;
+
     s_cfg.is_daytime = sunrise_is_daytime(ts, lat, lon);
+
+    {
+        const int8_t now_day = s_cfg.is_daytime ? 1 : 0;
+        if (now_day != s_daytime_last) {
+            s_daytime_last = now_day;
+            log_event_t dev = {};
+            dev.timestamp  = (uint32_t)time(NULL);
+            dev.event_type = (uint8_t)LOG_SYSTEM;
+            dev.initiator  = (uint8_t)LOG_BY_SYSTEM;
+            dev.channel    = 0u;
+            dev.param_id   = (uint8_t)LOG_PARAM_NONE;
+            dev.value_a    = 25;                 /* is_daytime flipped */
+            dev.value_b    = (int16_t)now_day;   /* 0 = night, 1 = day  */
+            log_post(&dev);
+            ESP_LOGI(TAG, "[T4] is_daytime -> %s (T6 setpoint set switched)",
+                     now_day ? "DAY" : "NIGHT");
+        }
+    }
     sunrise_calc(ts, lat, lon, &s_cfg.sunrise_mins_utc, &s_cfg.sunset_mins_utc);
 
     /* rc.1.4.0 — emit LOG_SUN whenever the cached values change. Compares
@@ -410,7 +439,28 @@ static void read_rtc_and_seed_clock(void)
     xSemaphoreGive(MX1);
 
     if (st != RTC_OK) {
+        /* 2.6.0 (gh#59 item 4) — the chip being UNREADABLE is a different
+         * event from value_a=21 (readable but diverged), and it is the one
+         * that actually bit: on 2026-09-11 (gh#55) this path fired, the clock
+         * stopped advancing, sun times went to 00:00 and T6 ran night
+         * thresholds — and the only persistent trace was a boot row stamped
+         * 1970 sitting beside rows stamped 2026. The absence WAS the
+         * diagnosis. Rate-limited on the same ~1/h budget as value_a=21,
+         * because a dead chip fails every poll and this is not an edge event. */
         ESP_LOGW(TAG, "RTC read failed (st=%d)", (int)st);
+        static uint32_t s_rtc_fail_calls = RTC_DIVERGENCE_LOG_CALLS;
+        if (++s_rtc_fail_calls > RTC_DIVERGENCE_LOG_CALLS) {
+            s_rtc_fail_calls = 0u;
+            log_event_t fev = {};
+            fev.timestamp  = (uint32_t)time(NULL);
+            fev.event_type = (uint8_t)LOG_SYSTEM;
+            fev.initiator  = (uint8_t)LOG_BY_SYSTEM;
+            fev.channel    = 0u;
+            fev.param_id   = (uint8_t)LOG_PARAM_NONE;
+            fev.value_a    = 28;              /* RTC unreadable            */
+            fev.value_b    = (int16_t)st;     /* rtc_status_t 1/2/3        */
+            log_post(&fev);
+        }
         return;
     }
 
@@ -997,6 +1047,20 @@ static bool apply_config_update(const config_update_t *upd)
     if (kind == CFG_KEY_UNKNOWN) {
         ESP_LOGW(TAG, "Q4 unknown key REJECTED: %.15s/%.15s = %ld  (nothing written)",
                  upd->ns, upd->key, (long)upd->value);
+        /* 2.6.0 (gh#59 item 6) — /api/config answers 400 so the web GUI shows
+         * an error, but a rejection reaching Q4 from any OTHER producer (the
+         * LCD menus, T10) was invisible. The 12-byte row cannot carry the key
+         * name, so `initiator` is the payload that matters: it says which
+         * surface tried. The name stays on the console line above. */
+        log_event_t rev = {};
+        rev.timestamp  = (uint32_t)time(NULL);
+        rev.event_type = (uint8_t)LOG_SYSTEM;
+        rev.initiator  = upd->initiator;
+        rev.channel    = 0u;
+        rev.param_id   = (uint8_t)LOG_PARAM_NONE;
+        rev.value_a    = 30;   /* Q4 write rejected, unknown key */
+        rev.value_b    = 0;
+        log_post(&rev);
         return false;
     }
 
@@ -2112,11 +2176,19 @@ void dm_set_standby_ex(bool standby,
      * no extra mutex needed. */
     (void)nvs_cfg_set_i32(NVS_NS_SYSTEM, K_MODE_STANDBY, standby ? 1 : 0);
 
-    /* Audit-log the transition. LOG_MODE_CHANGE row:
+    /* Audit-log the transition. LOG_MODE_CHANGE row, emitter B:
      *   initiator = caller-supplied (LCD farmer/admin or web)
      *   channel   = surface hint (0=web, 1=LCD) — see dm_set_standby() doc
+     *   param_id  = LOG_PARAM_MODE_STANDBY  <- 2.6.0, gh#54
      *   value_a   = 1 enter STANDBY | 0 leave STANDBY
      *   value_b   = 0 reserved
+     *
+     * 2.6.0 (gh#54): param_id was LOG_PARAM_NONE, which is what T6's
+     * vent-step emitter also uses, so the two were indistinguishable and all
+     * three consumers read this row as a ventilation decision. The param_id
+     * is now the discriminator — do NOT set it back to NONE, and do not rely
+     * on initiator/channel instead: 2.4.6 briefly made a SYSTEM/channel-0
+     * variant of this row byte-identical to a genuine step-0 vent row.
      */
     {
         log_event_t ev = {};
@@ -2124,7 +2196,7 @@ void dm_set_standby_ex(bool standby,
         ev.event_type = (uint8_t)LOG_MODE_CHANGE;
         ev.initiator  = (uint8_t)initiator;
         ev.channel    = channel;
-        ev.param_id   = (uint8_t)LOG_PARAM_NONE;
+        ev.param_id   = (uint8_t)LOG_PARAM_MODE_STANDBY;
         ev.value_a    = (int16_t)(standby ? 1 : 0);
         ev.value_b    = 0;
         log_post(&ev);

@@ -864,12 +864,17 @@ void event_logger_sd_unmount(void)
  * row reaches the SD card before the caller returns — required when a
  * subsequent esp_restart() would otherwise cut off T9 before it drains.
  *
- * @param  value_a  Subtype encoding from the LOG_SYSTEM value_a table.
- * @param  value_b  Subtype payload (count, id, sub-code; depends on value_a).
+ * @param  value_a    Subtype encoding from the LOG_SYSTEM value_a table.
+ * @param  value_b    Subtype payload (count, id, sub-code; depends on value_a).
+ * @param  initiator  Attribution for the row. 2.6.0 (gh#59) added this
+ *                    parameter: the factory-reset row (value_a=26) is an
+ *                    operator action and must not read as LOG_BY_SYSTEM.
+ * @param  channel    Channel/surface hint, 0 when not applicable.
  * @return true if the row was appended; false if SD is unmounted or the
  *         write failed.
  */
-bool event_logger_post_sync(int16_t value_a, int16_t value_b)
+bool event_logger_post_sync(int16_t value_a, int16_t value_b,
+                            log_initiator_t initiator, uint8_t channel)
 {
     if (!s_sd_ok || s_cur_filename[0] == '\0') {
         return false;
@@ -879,7 +884,8 @@ bool event_logger_post_sync(int16_t value_a, int16_t value_b)
     memset(&evt, 0, sizeof(evt));
     evt.timestamp  = (uint32_t)time(NULL);
     evt.event_type = (uint8_t)LOG_SYSTEM;
-    evt.initiator  = (uint8_t)LOG_BY_SYSTEM;
+    evt.initiator  = (uint8_t)initiator;
+    evt.channel    = channel;
     evt.value_a    = value_a;
     evt.value_b    = value_b;
 

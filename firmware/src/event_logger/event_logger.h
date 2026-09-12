@@ -137,7 +137,23 @@
  *  19     | Coredump downloaded by admin (since 2.0.0-a.6.35.6) | bytes_streamed / 256 (clamped int16) | T11 web_server (initiator=WEB)
  *  20     | Coredump erased by admin   (since 2.0.0-a.6.35.6) | 0 = unused             | T11 web_server (initiator=WEB)
  *  21     | RTC divergence (since 2.1.3, gh#37) | DS1307 − system clock, seconds (clamped int16). Emitted when |div| > 10 s while NTP-synced; rate-limited ~1/h | T4 data_manager read_rtc_and_seed_clock()
+ *  22     | ROTA check outcome  (since 2.2.0) | 0 no-update · 1 update · 2 unreachable · 3 skip · 4 auth-fail | T16 ota_client.cpp audit_check()
+ *  23     | ROTA download/verify (since 2.2.0) | 0 ok · 1 TLS/pin · 2 SHA/size · 3 downgrade · 4 min_version | T16 ota_client.cpp audit_dl()
+ *  24     | ROTA apply outcome  (since 2.2.0) | 0 committed · 1 deferred · 2 failed | T16 ota_client.cpp audit_apply()
+ *  25     | is_daytime FLIPPED  (since 2.6.0, gh#59) | 0 = now night, 1 = now day | T4 update_sun_times()
+ *  26     | Factory reset executed (since 2.6.0, gh#59) | IO0 stage: 1 = PINs only, 2 = full, no reboot, 3 = full + reboot | T8 ui_display execute_reset_action(), written SYNCHRONOUSLY
+ *  27     | Q1 command DISCARDED, motor alarm active (since 2.6.0, gh#59) | hi byte = cmd_action_t, lo byte = cmd_source_t; `channel` = requested channel | T2 relay_controller process_command()
+ *  28     | RTC read FAILED, chip unreadable (since 2.6.0, gh#59) | rtc_status_t: 1 = NO_DEVICE, 2 = COMM, 3 = INVALID. Rate-limited ~1/h like value_a=21 | T4 read_rtc_and_seed_clock()
+ *  29     | T6 command DEFERRED on dwell (since 2.6.0, gh#59) | seconds of dwell remaining; **sign carries direction**: positive = OPEN deferred, negative = CLOSE deferred. `channel` = motor 1/2/3 | T2 ch_start_open() / ch_start_close()
+ *  30     | Q4 config write REJECTED, unknown key (since 2.6.0, gh#59) | 0 = unused. `initiator` is the producer that tried | T4 apply_config_update()
  *  -1     | Q3 drop-overflow    | dropped count                        | T9 (synthetic)
+ *
+ * **Subtypes 22–24 shipped in 2.2.0 and were absent from this table until
+ * 2.6.0.** gh#59 was filed stating "next free is 22 and upward" on the
+ * strength of it, and would have collided all three ROTA subtypes had the
+ * occupied set not been re-derived from the emitters. The authoritative set is
+ * what `log_post()` callers actually pass, not this comment — keep both in
+ * step, and grep the emitters before claiming a subtype is free.
  *
  * ### value_a=0 sub-codes (T14 outcome / diagnostic skip)
  *
@@ -389,7 +405,8 @@ void event_logger_sd_unmount(void);
  * @return false if SD is unmounted, the current filename is empty, or the
  *               write failed.
  */
-bool event_logger_post_sync(int16_t value_a, int16_t value_b);
+bool event_logger_post_sync(int16_t value_a, int16_t value_b,
+                            log_initiator_t initiator, uint8_t channel);
 
 /* -----------------------------------------------------------------------
  * T9 task entry point

@@ -114,6 +114,7 @@ def load(paths):
                     try:
                         ts = datetime.strptime(row["timestamp"], "%Y-%m-%dT%H:%M:%S")
                         ch = int(row["ch"])
+                        par = int(row.get("param", 0) or 0)
                         va = int(row["value_a"])
                         vb = int(row["value_b"])
                     except (ValueError, TypeError, KeyError):
@@ -122,6 +123,17 @@ def load(paths):
                     if typ == "SENSOR_HR" and ch == 0:
                         temps.append((ts, va / 10.0))
                     elif typ == "MODE":
+                        # 2.6.0 (gh#54): param == 47 is a STANDBY transition
+                        # from dm_set_standby_ex(), not a vent-step decision.
+                        # This matters more here than anywhere else: the
+                        # reproduction gate below refuses to project unless it
+                        # reproduces >=90 % of the logged T-demands, and a
+                        # STANDBY row injects a fabricated demand-free step --
+                        # so it could fail the gate for a healthy config, or
+                        # shift a projection. Rows from firmware before 2.6.0
+                        # carry param 0 and cannot be separated.
+                        if par == 47:
+                            continue
                         u = vb & 0xFFFF
                         st = (u >> 8) & 0xFF
                         sr = u & 0xFF
