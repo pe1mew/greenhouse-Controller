@@ -684,10 +684,10 @@ per poll. `value_b` carries the reason:
 | `value_b` | meaning |
 |---|---|
 | `0` | sensor present and trusted |
-| `1` | probing, no verdict yet (boot) |
+| `1` | probing, no verdict yet — **never appears in a log row** (see below) |
 | `2` | no sensor answering at address 40 |
 | `3` | bench build refused, contract 9 — **permanent**, never re-probed |
-| `4` | sensor present but reporting its own fault |
+| `4` | sensor present but reporting its own fault — specifically the **wiper-open** bit or the `65535` sentinel, not any status bit |
 
 **TIMED is the fallback and the failure direction**, and it is what `main`
 ships, so a log full of `TIMED` rows is a unit behaving exactly as it always
@@ -695,11 +695,19 @@ has. **Demotion to TIMED is immediate; promotion to POSITION appears only at a
 stroke boundary**, so a `POSITION` row always sits at the start of a movement
 and never inside one.
 
-Expect the pair `TIMED [probing]` then `TIMED [sensor present and trusted]` at
-boot on a healthy unit, and the second `TIMED` becoming `POSITION` at the first
-stroke. A unit with no sensor logs one `TIMED [no sensor answering]` about 30 s
-after boot — two consecutive failed probes, matching T5's convention — and
-then nothing further.
+**A healthy boot logs exactly ONE row**, `TIMED [sensor present and trusted]`,
+which then becomes `POSITION` at the first stroke. `value_b = 1` (probing) is
+**structurally unloggable**: the publisher has three call sites and none can pass
+it — it is the initial value, visible only through `GET /api/diag/windowpos` in
+the sub-second window before the first probe returns. Verified on FDA4
+2026-09-12: two OTA reboots produced one `TIMED [ok]` row each, and the stroke
+produced one `POSITION` row — three rows against 162 polls, which is what
+edge-triggered is supposed to look like.
+
+A unit with no sensor logs one `TIMED [no sensor answering]` about 30 s after
+boot — two consecutive failed probes, matching T5's convention — and then
+nothing further. **Not yet observed on hardware** (it needs the encoder's bus
+cable pulled); the healthy path above is measured.
 
 **`param = 247` matters more than it looks.** The device restarting silently
 discards an armed teach, so a restart row sitting between an *armed* and an
@@ -712,8 +720,9 @@ expected *committed* row explains a calibration that appears to have been lost.
 2026-09-12 16:02:00  [ALARM    ]  System   teach COMMITTED
 2026-09-12 16:02:30  [ALARM    ]  System   device status 0x0C [WIPER OPEN, end sensor]
 2026-09-12 16:03:00  [ALARM    ]  System   device RESTARTED (uptime now 25 s -- any armed teach is lost)
-2026-09-12 16:03:30  [ALARM    ]  System   M3 CONTROL MODE -> TIMED (travel timer)  [no sensor answering at addr 40]
-2026-09-12 16:05:00  [ALARM    ]  System   M3 CONTROL MODE -> POSITION (opening distance)  [sensor present and trusted]
+2026-09-12 17:18:41  [ALARM    ]  System   M3 CONTROL MODE -> TIMED (travel timer)  [sensor present and trusted]
+2026-09-12 17:20:47  [ALARM    ]  System   M3 CONTROL MODE -> POSITION (opening distance)  [sensor present and trusted]
+2026-09-12 17:20:47  [ALARM    ]  System   Wind sensor fault: triggered (two consecutive read failures)
 ```
 
 ---

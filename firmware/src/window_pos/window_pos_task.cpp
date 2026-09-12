@@ -525,13 +525,46 @@ void task_window_pos(void *pvParameters)
             if ((uint32_t)(now_ms() - last_idle_log_ms) >= IDLE_LOG_MS) {
                 last_idle_log_ms = now_ms();
                 windowpos_reading_t ir;
-                if (windowpos_read(WINDOWPOS_DEFAULT_ADDR, &ir) == WINDOWPOS_OK) {
+                const windowpos_status_t ist = windowpos_read(WINDOWPOS_DEFAULT_ADDR, &ir);
+                if (ist == WINDOWPOS_OK) {
                     check_restart(WINDOWPOS_DEFAULT_ADDR);
                     emit_events(&ir, WINDOWPOS_DEFAULT_ADDR);
                     log_position(&ir);
                     portENTER_CRITICAL(&s_mux);
                     s_last = ir; s_last_ms = now_ms(); s_have_reading = true; s_cnt.reads_ok++;
                     portEXIT_CRITICAL(&s_mux);
+                    if (ir.sensor_fault) {
+                        gate_close(WPOS_GATE_DEVICE_FAULT);
+                    } else {
+                        s_probe_fail = 0u;
+                    }
+                } else if (ist == WINDOWPOS_ERR_BUSY) {
+                    /* T5 held the bus. No evidence about the sensor. */
+                    portENTER_CRITICAL(&s_mux);
+                    s_cnt.err_busy++;
+                    portEXIT_CRITICAL(&s_mux);
+                } else {
+                    /* The idle read MUST judge the sensor too, not just log it.
+                     * Phase 3 wrote `if (read == OK) {...}` with no else, and
+                     * AT-WP06 on FDA4 (2026-09-12) showed what that costs once
+                     * a gate depends on it: the encoder was unplugged for 50 s,
+                     * two idle reads vanished without a trace (a 91 s hole in
+                     * the ch3 rows), err_comm stayed 0 and the mode stayed
+                     * POSITION with nothing on the other end of the cable.
+                     *
+                     * Every other demotion path needs a stroke in progress or
+                     * an already-shut gate, so without this branch the gate is
+                     * blind exactly when M3 is at rest -- which is most of the
+                     * time, and all night. Same counter and same limit as the
+                     * stroke poll, so "absent at rest", "absent at boot" and
+                     * "went away mid-stroke" stay one state machine. */
+                    portENTER_CRITICAL(&s_mux);
+                    s_cnt.err_comm++;
+                    portEXIT_CRITICAL(&s_mux);
+                    if (s_probe_fail < PROBE_FAIL_LIMIT) { s_probe_fail++; }
+                    if (s_probe_fail >= PROBE_FAIL_LIMIT) {
+                        gate_close(WPOS_GATE_NO_SENSOR);
+                    }
                 }
             }
             vTaskDelay(pdMS_TO_TICKS(IDLE_TICK_MS));
