@@ -924,6 +924,105 @@ The larger part of the effort, and the part the rig **cannot validate**.
 
 **What only 5C88 over a summer can prove:** that doing so actually damps the ~42 min / ~4.9 °C limit cycle. The plant model gives a prediction, not evidence.
 
+#### 5a. Target architecture — operator brief, 2026-09-12
+
+Recorded from the operator, and it reframes Phase 5: the goal is not "M3 gains a
+position input", it is **a per-window actuator abstraction with declared
+capability**.
+
+**The shape:**
+
+1. A **central algorithm** holds per-window state and issues a setpoint per
+   window: `open`, `close`, or `0—100 %`.
+2. Each window has a **delegated actuator process** that applies the setpoint and
+   **reports back: done, or failed**. T17 is M3's; M1 and M2 get siblings.
+3. Each window **declares its own capability**: **linear** while a position
+   sensor is fitted and responsive, **digital (open/closed, timed)** when the
+   sensor is faulty or absent. Absent a sensor, every window is digital — which
+   is exactly what `main` ships today.
+4. The central algorithm is **informed of that capability per window** and plans
+   against it.
+5. **Dwell timers stay** for timed full open/close. Linear control gets its **own
+   dwell, configurable, default 0 (off)**.
+
+**The current stepped logic** — one window per degree over threshold — is to be
+replaced by something dynamic (PID or fuzzy). That decision belongs to the
+central algorithm; everything below constrains what the actuator layer must
+offer it.
+
+##### What already exists, and what does not
+
+**The capability contract is already prototyped.** Phase 4's
+`windowpos_task_ctrl_mode()` returns exactly this: a mode (POSITION / TIMED) plus
+a `windowpos_gate_reason_t` saying why. It generalises to per-window unchanged,
+with M1/M2 siblings always reporting digital. Its asymmetry is the right
+semantic and should survive into the final shape: **demotion immediate,
+promotion only at a stroke boundary**, so no consumer sees a window gain linear
+authority underneath a movement already committed to the timer.
+
+**The feedback half does not exist in any form.** `Q1` is documented as
+*consumer-only* — commands in, no return path — so "applies it and feeds back
+when done or fails" is new construction, not an extension. Worth stating the
+upside plainly: building it **retires a known defect class** rather than merely
+adding a feature. gh#51's symptom was T6 being silently refused by a dwell timer
+at `ESP_LOGD`, invisible for up to 25 minutes on M3. That is precisely a missing
+completion/failure channel, and the promoted "a failure that only reaches the
+serial console has not been logged" pattern is the same gap seen from the log
+side.
+
+##### Four constraints that are already measured
+
+**1. `0 %` and `100 %` are the two setpoints the sensor can least confirm.** The
+device **clamps** position at `40004`, so 100 % cannot be told from
+driven-into-the-end-stop (see section 2a), and with no closed-end ADC headroom
+**bit 6 is inert closing** — a shorted wiper reads as a perfectly plausible
+closed window. Consequence for the API: the linear range should be
+**interior-only** (5—95 % or similar), with `0` and `100` delegated to the timed
+path and the **end switches**, which *can* confirm them. A uniform 0—100 linear
+interface would be dishonest at both ends.
+
+**2. Capability loss mid-move is the sharpest unresolved case.** A window
+commanded to 60 % that loses its sensor at 30 % has unknown remaining travel. The
+contract must define the outcome — likely a timed full open or close plus a
+**failed, position unknown** report — because **FR-WP18 keeps every safety path
+time-based regardless**: wind override, motor-alarm handling and boot CLOSE_ALL
+never gate on position.
+
+**3. Dwell default 0 for linear is right, but the anti-thrash problem changes
+form rather than disappearing.** Under stepped control it was aperture
+oscillation; under linear control it becomes **motor duty and mechanical wear**.
+The natural mechanism for that is a **minimum-move deadband** — do not energise
+for a 2 % correction — which is magnitude-based, not time-based. Keep both
+knobs, and be explicit that dwell answers "how often may this window move" while
+deadband answers "is this correction worth moving for".
+
+**4. Safety stays centralised even though positioning is delegated.** T2/T3 keep
+the motor alarm, the wind override and CLOSE_ALL; a delegated actuator must not
+acquire its own safety path. Delegation is about *positioning*, not authority.
+
+##### Two prerequisites, not nice-to-haves
+
+- **gh#64's descriptor refactor comes first.** Per-window capability and
+  per-window config keys land straight in the six-table drift problem (gh#57,
+  gh#64). Adding a per-window key set to six hand-maintained tables is how the
+  next silent gap ships.
+- **The `step_width` arithmetic must be reworked before the step table is
+  touched** (see the bullet above): integer division that gets *worse* with more
+  steps is a landmine directly under "express partial apertures".
+
+##### Note on the present intermediate state
+
+T17 currently polls while **any** channel is travelling, not only M3 —
+`any_channel_travelling()`. **This is deliberate scaffolding** (operator,
+2026-09-12): it generates bus activity for testing, measurement and debugging
+while the final shape is undecided, and it is what made the 2026-09-12 soak a
+real load test rather than an idle one. It is **not** the target behaviour: the
+cadence derives from `travel_m3`, the log row is hardcoded to
+`LOG_PARAM_WINDOW_M3`, and `t2_get_window_states()` already documents index 2 as
+M3, so narrowing it is a one-line change whenever the scaffolding is no longer
+wanted. Recorded here because it reads as a defect on inspection — it was
+diagnosed as one before the operator corrected it.
+
 ---
 
 ## 6. Operator-facing surfaces
