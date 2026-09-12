@@ -220,6 +220,48 @@ modbus_status_t modbus_read_input_registers(uint8_t  device_addr,
  * @param values      Caller-supplied buffer of @p count uint16_t values.
  * @return @ref MODBUS_OK on success, or a @ref modbus_status_t error code.
  */
+/**
+ * @brief Per-status transaction tallies, for diagnosing a shared bus.
+ *
+ * Added because a wind alarm was chased through three wrong root causes
+ * without anyone being able to say which error the failing read actually
+ * returned. On a single-caller bus the distinction rarely matters; with two
+ * callers it is the whole question.
+ *
+ * Counts are monotonic since boot and are not locked: they are written inside
+ * the bus mutex and read for diagnostics only, so a torn 32-bit read is not
+ * worth a critical section.
+ */
+typedef struct {
+    uint32_t ok;         /**< Completed transactions. */
+    uint32_t timeout;    /**< @ref MODBUS_ERR_TIMEOUT. */
+    uint32_t crc;        /**< @ref MODBUS_ERR_CRC. */
+    uint32_t exception;  /**< @ref MODBUS_ERR_EXCEPTION. */
+    uint32_t framing;    /**< @ref MODBUS_ERR_FRAMING. */
+    uint32_t param;      /**< @ref MODBUS_ERR_PARAM. */
+    uint32_t busy;       /**< @ref MODBUS_ERR_BUSY -- lock not acquired. */
+    uint8_t  last_status;/**< Status of the most recent transaction. */
+    uint8_t  last_addr;  /**< Slave address it was addressed to. */
+    uint8_t  last_fail_status; /**< Status of the most recent FAILING one. */
+    uint8_t  last_fail_addr;   /**< Slave address of that failure. */
+
+    /* Detail of the most recent TIMEOUT. The distinction these two carry is
+     * the whole diagnosis: 0 bytes means the slave never answered (it never
+     * accepted our request as a frame, or dropped it on CRC), while a
+     * partial count means the response started and was cut short. */
+    uint8_t  last_to_received; /**< Bytes in hand when the deadline passed. */
+    uint8_t  last_to_expected; /**< Bytes the frame should have had. */
+    uint32_t last_lock_wait_ms;/**< How long the last caller waited for the
+                                *   bus lock. busy==0 says a caller always
+                                *   got it, not that it got it promptly. */
+} modbus_counters_t;
+
+/**
+ * @brief Copy the transaction tallies out.
+ * @param out Destination; ignored if NULL.
+ */
+void modbus_get_counters(modbus_counters_t *out);
+
 modbus_status_t modbus_write_multiple_registers(uint8_t         device_addr,
                                                  uint16_t        start_reg,
                                                  uint8_t         count,

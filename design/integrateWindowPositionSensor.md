@@ -795,76 +795,94 @@ baseline, so the fix has something to be measured against.
 only the second one was firing. Recording both, because the first is real and
 the sequence is the lesson.
 
-##### Defect 1 (real, fixed, but NOT the cause): drivers collapse BUSY into COMM
+##### Three defects found. The third one was the cause.
 
-The Modbus layer already keeps
-`MODBUS_ERR_BUSY` distinct from `MODBUS_ERR_TIMEOUT` — gh#49 put it there so a
-lost bus race could not be read as a dead device, and `modbus_rtu.h` says so in
-as many words. **Both sensor drivers then threw that away:**
+Recording all three, in the order they were found, because the two wrong
+answers were both real bugs — which is exactly why they were convincing.
 
-```c
-if (s == MODBUS_OK)        return X_OK;
-if (s == MODBUS_ERR_PARAM) return X_ERR_PARAM;
-return X_ERR_COMM;            // <-- MODBUS_ERR_BUSY landed here
-```
+**Defect 1 — drivers collapse `MODBUS_ERR_BUSY` into `*_ERR_COMM`.** The Modbus
+layer keeps BUSY distinct from a timeout (gh#49 put it there so a lost bus race
+could not be read as a dead device, and `modbus_rtu.h` says so). Both sensor
+drivers threw it away in `map_status()`, so *"I could not get the bus"* reached
+T5 indistinguishable from *"the sensor did not answer"*. Fixed: `S200_ERR_BUSY`
+and `FG6485A_ERR_BUSY` appended as 3, carried through, and T5 treats BUSY as no
+evidence about the sensor — bounded by `SP_BUSY_TOLERANCE_MS` = 60 s, a
+deadline rather than a retry count, because `poll_interval` is
+operator-configurable 15—120 s and a count of two would tolerate 240 s of
+blindness on a safety input. **`busy` counted 0 for the entire investigation, so
+this was never it.**
 
-so *"I could not get the bus"* reached T5 indistinguishable from *"the sensor did
-not answer"*, and T5 raised a sensor fault. T3 safe-fails on that bit, so the
-greenhouse closed because **T17 was talking to the position encoder**. It is the
-same category error the presence gate refuses to make for `WINDOWPOS_ERR_BUSY`
-one layer up — the gate got it right and the older path did not.
+**Defect 2 — four of six transaction exits leave the RX FIFO dirty.** Success
+and timeout drain it; `MODBUS_ERR_CRC`, `MODBUS_ERR_EXCEPTION` and both
+`MODBUS_ERR_FRAMING` exits returned with bytes still in the buffer, which the
+next transaction — a different task, a different slave — then consumes as its
+own echo and response. Fixed by flushing before every transmit and draining on
+every error exit. **`crc` counted 0, then 1, so this was not it either.**
 
-**The fix** carries BUSY through both drivers (`S200_ERR_BUSY`,
-`FG6485A_ERR_BUSY`, appended as 3) and lets T5 treat it as *no evidence about
-the sensor* — **bounded by a deadline, not a retry count**
-(`SP_BUSY_TOLERANCE_MS` = 60 s). A permanently jammed bus must still raise the
-fault, because an unavailable wind reading is unsafe whatever the cause; it just
-must not do so on the first lost race. The deadline is in time rather than polls
-because `poll_interval` is operator-configurable 15—120 s, where a count of two
-would tolerate 240 s of blindness. **Genuine-fault latency is unchanged**: a
-timeout, CRC or exception from the sensor itself still faults immediately.
+**Defect 3 — THE CAUSE: the inter-frame gap was the spec floor plus 9.7 %, and
+a single caller never exercised it.**
 
-The T/RH path had the identical defect and is fixed in the same changeset — a
-one-sided fix is how this class of bug returns.
+`MODBUS_IFG_US` was **4000 us** = **3.84 character times** at 9600 baud 8N1,
+against an RTU t3.5 minimum of 3.646 ms. The driver's own comment called that
+"a comfortable margin".
 
-**That fix did not stop the alarm**, and the way it failed identified the real
-cause. The first BUSY is forgiven unconditionally, yet the fault still fired on
-the *first* failed read — so the status was never BUSY. T5 was not losing the
-lock; its transaction was failing **on the wire**.
+The decisive observation is that **with one bus caller the IFG guard never ran
+at all.** Frames sat 30 s apart, so `elapsed` always dwarfed `MODBUS_IFG_US` and
+the wait was skipped every single time. The constant became load-bearing only
+when T17 joined the bus and made frames *adjacent* — which is precisely when
+the S200 began failing to answer (operator: never observed before the wire-rope
+work, and never with the semaphore and a single task).
 
-##### Defect 2 (the one that fired): four of six transaction exits leave the RX FIFO dirty
+If the S200's receive-idle timer wants more than 3.84 character times — very
+plausible for a device whose idle timer runs on a coarse tick — then a request
+arriving at the floor is appended to the preceding addr-40 frame, the merged
+frame fails CRC, and **a compliant slave must stay silent on a bad-CRC
+request.** So the requester gets *zero bytes and a timeout*, never a CRC error.
 
-`modbus_transaction()` and `write_multiple_locked()` each drain the UART RX FIFO
-on exactly **two** paths, success and timeout. `MODBUS_ERR_CRC`,
-`MODBUS_ERR_EXCEPTION` and both `MODBUS_ERR_FRAMING` exits `return` with
-whatever is still in the FIFO.
+That is exactly what was measured, and it is why the instrumentation was worth
+the detour:
 
-Before gh#49 that was survivable, because there was one caller. **With two it is
-a correctness bug**: T17 polls the encoder at addr 40 while T5 polls addr 1 and
-addr 44, and a fragment left by one is consumed by the next as its echo and its
-response. The CRC then fails — **and that exit does not drain either, so the
-corruption cascades into the transaction after it.** That is precisely why
-*both* of T5's attempts, 100 ms apart, fail: one corruption event poisons the
-buffer for both. Two consecutive failures is what raises the fault, T3
-safe-fails on `EG1_BIT_SENSOR_FAULT_W`, and the greenhouse closes on a calm day
-**because T17 left bytes in a FIFO**.
+| measurement | value | what it ruled out |
+|---|---|---|
+| `to_received` / `to_expected` | **0 of 29** | not a truncated frame — the slave said nothing at all |
+| `crc` | **0** | not Defect 2 |
+| `busy`, `lock_wait_ms` | **0**, **0 ms** | not lock contention; the semaphore was working correctly |
+| `last_fail_addr` | **44** | the S200, while T17 read addr 40 flawlessly in the same stroke |
 
-It also explains the history cleanly: 2344 never saw it (one caller), it began
-with the encoder on the bus, and the 3-of-8 faults with M3 relay rows but no
-`ch3` samples fit too — relay noise corrupts a frame, the CRC exit leaves the
-residue, and the next read inherits it. **The same cascade covers both
-populations, so the "second contributor" may not be separate after all.**
+**Result of raising it to 20 ms (~19.2 character times, 5.5x t3.5):**
 
-Fixed in two parts: **flush before transmitting**, so a transaction can never
-inherit anything regardless of how any previous exit behaved (safe there — the
-IFG has elapsed and nothing of ours is on the wire, so anything present is
-stale); and **drain on every error exit**, so "every exit leaves a clean
-buffer" is a local invariant instead of a repair the next caller has to make.
+| | 4 ms IFG | 20 ms IFG |
+|---|---|---|
+| transactions | ~600 | **779** |
+| timeouts | 4 | **0** |
+| CRC | 1 | **0** |
+| wind alarms | one per stroke session | **none** |
 
-> **Rule worth keeping:** a shared half-duplex bus needs the receive buffer
-> cleared on **every** exit path, not just the happy one and the timeout. gh#49
-> made two callers legal on this bus; it did not make the error paths
-> multi-caller-safe, and the audit that added the mutex did not check them.
+**Kept at 20 ms rather than tuned down.** The only argument for a smaller gap
+was T17's sample resolution, and it does not survive the arithmetic: the rig
+sample interval is 1.54 % of stroke at 4 ms and 1.70 % at 20 ms, because the
+dominant terms are the 100 ms poll delay and the 36 ms response, not the gap.
+The rig was **already over the 1 % FR-WP04 budget** before this change (AT-WP05
+measured 168 ms effective against 100 ms intended, `vTaskDelay` being relative),
+and on production the poll is 1140 ms so any of these values is under 0.2 %. The
+threshold lies somewhere in (3.84, 19.2] character times and was deliberately
+**not** bracketed: locating it would cost several flash-and-stroke cycles and
+buy robustness in the wrong direction for a path whose failure mode is *the
+greenhouse closes on a calm day*.
+
+`wait_ifg()` yields the millisecond-scale part of the wait rather than spinning
+it. `delayMicroseconds()` busy-waits inside the bus lock at task priority, and
+20 ms across ~6 transactions/s during a stroke would be ~120 ms/s of pure spin
+— enough to starve T9 and the HTTP server, and to worsen this driver's already
+documented TWDT exposure.
+
+> **Rule worth keeping:** on a shared RTU bus, mutual exclusion is necessary and
+> **not sufficient**. The protocol also requires *silence* between frames, and a
+> gap set at the spec floor stays untested for as long as there is only one
+> caller. gh#49 made two callers legal; it did not make the inter-frame gap
+> adequate for two, and the audit that added the mutex had no reason to examine
+> a constant that had never once been reached.
+
 
 Two things this leaves for this plan, neither now load-bearing: **do not poll
 `GET /api/diag/windowpos` hard during a stroke** (it adds a third ~215 ms caller

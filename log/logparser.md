@@ -677,6 +677,25 @@ claim it. The decode exists for a future device build that reports it.
 | `0x40` | `implausible` | raw code outside the calibrated band |
 | `0x80` | `NOT FOLLOWING` | switches saw movement, position did not |
 
+**The T5 sensor-fault rows (`ch = 4` T/RH, `ch = 5` wind) now carry a reason
+in `value_b`.** It used to be hard-coded 0, with the firmware commenting that
+*"sensor faults are binary on/off"*. They are not, and that missing byte is why
+a wind alarm was chased through three wrong root causes: a fault can mean the
+sensor did not answer, answered corrupt, or **was never asked** because another
+task held the bus.
+
+| `value_b` | meaning |
+|---|---|
+| `0` | on a **clear** row, nothing; on an **onset**, a firmware build from before the reason was logged |
+| `1` | `COMM` — no answer, or a corrupt frame |
+| `2` | `PARAM` — a bad call, i.e. a firmware bug |
+| `3` | `BUSY` — another task held the RS485 bus past the grace deadline; **nothing was ever put on the wire** |
+
+A `3` means the sensor is probably fine and the *bus* is the problem — look for
+a second caller, which on the `ropeSensor` branch means T17 polling the window
+encoder during a stroke. **`T3 safe-fails on a wind fault regardless of the
+reason`**, so either value closes the greenhouse.
+
 **`param = 248` is the row that says which control law M3 was under.** The
 sensor-presence gate publishes it, edge-triggered — one row per transition, not
 per poll. `value_b` carries the reason:

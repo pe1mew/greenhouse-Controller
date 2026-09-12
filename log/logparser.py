@@ -436,6 +436,15 @@ def _decode_session(row: dict) -> str:
 # Window position sensor events (Phase 3, plan 3b). LOG_ALARM rows on channel 6
 # -- 4 and 5 are the T/RH and wind sensor-fault channels. The param band
 # continues wind's 240-243; 248-255 remain free.
+# T5 sensor-fault reasons: the driver status stored in value_b. s200_status_t
+# and fg6485a_status_t share this numbering by construction.
+_SENSOR_FAULT_REASON = {
+    0: "reason not recorded (firmware before the reason was logged)",
+    1: "COMM - no answer or corrupt frame",
+    2: "PARAM - bad call, a firmware bug",
+    3: "BUSY - bus held by another task past the grace deadline, never asked",
+}
+
 _WPOS_TEACH = {0: "aborted", 1: "armed", 2: "COMMITTED", 3: "REFUSED"}
 
 # Phase 4 sensor-presence gate. value_a = the control law now in force,
@@ -520,14 +529,18 @@ def _decode_alarm(row: dict) -> str:
         vb = int(row["value_b"])
 
         # T5 sensor faults — channel carries the sensor kind (4 = T/RH, 5 = wind).
-        if ch == 4:
-            return ("T/RH sensor fault: "
-                    + ("triggered (two consecutive read failures)"
-                       if va else "cleared"))
-        if ch == 5:
-            return ("Wind sensor fault: "
-                    + ("triggered (two consecutive read failures)"
-                       if va else "cleared"))
+        # value_b carries the DRIVER STATUS on an onset (0 on a clear): 1 = COMM
+        # (the sensor did not answer, or answered corrupt), 2 = PARAM,
+        # 3 = BUSY (another task held the RS485 bus past the grace deadline --
+        # nothing was ever put on the wire). Rows written before that was added
+        # carry 0, which is why "unrecorded" is spelled out rather than guessed.
+        if ch in (4, 5):
+            who = "T/RH" if ch == 4 else "Wind"
+            if not va:
+                return f"{who} sensor fault: cleared"
+            return (f"{who} sensor fault: triggered "
+                    f"(two consecutive read failures) "
+                    f"[{_SENSOR_FAULT_REASON.get(vb, f'driver status {vb}')}]")
 
         # Window position sensor events (Phase 3, plan 3b) - channel 6, params
         # 244..247. Same ch-based dispatch idea as T5's 4/5: it keeps T2/T3 on

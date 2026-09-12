@@ -172,9 +172,94 @@ static uint16_t modbus_crc16(const uint8_t *buf, uint8_t len)
  * timestamp, so the gap is enforced against the actual wire event regardless
  * of how long the caller takes between transactions.
  * --------------------------------------------------------------------------- */
-#define MODBUS_IFG_US  4000u
+/* EXPERIMENT 2026-09-12, not a shipping value.
+ *
+ * 4000u is the RTU t3.5 floor (3646 us at 9600 baud 8N1) plus 9.7 %. With a
+ * single bus caller this constant was dead code -- frames sat 30 s apart, so
+ * the guard below never waited once. It became load-bearing only when T17
+ * joined the bus, which is precisely when the S200 began failing to answer
+ * (operator: never observed before the wire-rope work, never with the
+ * semaphore and a single task).
+ *
+ * If the S200's receive-idle timer wants more than 3.84 character times, a
+ * request arriving at the floor is appended to the preceding addr-40 frame,
+ * the merged frame fails CRC, and a compliant slave MUST stay silent -- giving
+ * the requester zero bytes and a timeout, never a CRC error. That is exactly
+ * what was measured: to_received = 0 of 29, crc = 0, busy = 0, lock_wait = 0.
+ *
+ * 20 ms (~19 character times) is deliberately oversized to settle the question
+ * in one flash. If the timeouts stop, tune down to the smallest reliable value
+ * and justify it; if they persist, inter-frame silence is not the cause. */
+#define MODBUS_IFG_US  20000u
 
 static uint32_t s_frame_end_us = 0u;
+
+/**
+ * @brief Block until @ref MODBUS_IFG_US of silence has passed on the wire.
+ *
+ * Spinning the whole gap would be wrong at this size. delayMicroseconds() is a
+ * busy-wait and this runs inside the bus lock at task priority, so a 20 ms gap
+ * across ~6 transactions/s during an M3 stroke is ~120 ms/s of pure spin --
+ * enough to starve T9 and the HTTP server (which is how the GUI became
+ * unusable earlier today) and to push the receive loop's known TWDT risk.
+ *
+ * So yield the millisecond-scale part and spin only the sub-millisecond
+ * remainder, where the tick granularity cannot help. Sleeping LONGER than the
+ * gap is harmless -- the protocol wants a minimum silence, not an exact one.
+ */
+static void wait_ifg(void)
+{
+    uint32_t elapsed = micros() - s_frame_end_us;
+    if (elapsed >= MODBUS_IFG_US) { return; }
+
+    uint32_t need = MODBUS_IFG_US - elapsed;
+#ifndef NATIVE_TEST
+    if (need > 2000u) {
+        /* Leave ~1 ms to spin: vTaskDelay rounds DOWN to whole ticks, so it
+         * can return marginally early, and the whole point is a minimum. */
+        vTaskDelay(pdMS_TO_TICKS((need - 1000u) / 1000u));
+        elapsed = micros() - s_frame_end_us;
+        if (elapsed >= MODBUS_IFG_US) { return; }
+        need = MODBUS_IFG_US - elapsed;
+    }
+#endif
+    delayMicroseconds(need);
+}
+
+/* Transaction tallies (see modbus_get_counters). Written inside the bus lock
+ * by tally(), read unlocked for diagnostics. */
+static modbus_counters_t s_cnt;
+
+/**
+ * @brief Record the outcome of one transaction.
+ *
+ * Keeps the last FAILING status separately from the last status: by the time a
+ * diagnostic is read, several successful polls have usually overwritten the
+ * failure that mattered.
+ */
+static modbus_status_t tally(modbus_status_t s, uint8_t addr)
+{
+    s_cnt.last_status = (uint8_t)s;
+    s_cnt.last_addr   = addr;
+    switch (s) {
+        case MODBUS_OK:            s_cnt.ok++;        return s;
+        case MODBUS_ERR_TIMEOUT:   s_cnt.timeout++;   break;
+        case MODBUS_ERR_CRC:       s_cnt.crc++;       break;
+        case MODBUS_ERR_EXCEPTION: s_cnt.exception++; break;
+        case MODBUS_ERR_FRAMING:   s_cnt.framing++;   break;
+        case MODBUS_ERR_PARAM:     s_cnt.param++;     break;
+        case MODBUS_ERR_BUSY:      s_cnt.busy++;      break;
+        default:                                      break;
+    }
+    s_cnt.last_fail_status = (uint8_t)s;
+    s_cnt.last_fail_addr   = addr;
+    return s;
+}
+
+void modbus_get_counters(modbus_counters_t *out)
+{
+    if (out != NULL) { *out = s_cnt; }
+}
 
 /**
  * @brief Discard everything sitting in the RX FIFO.
@@ -236,8 +321,14 @@ static SemaphoreHandle_t s_bus_mtx = NULL;
 static inline bool bus_lock(void)
 {
     if (s_bus_mtx == NULL) return true;   /* pre-init: behave as before */
-    return xSemaphoreTake(s_bus_mtx,
+    /* Time the wait. A caller that always gets the lock (busy == 0) may still
+     * be getting it late, and a long wait followed by a 200 ms response
+     * deadline is a different failure story from an immediate one. */
+    const uint32_t t0 = (uint32_t)millis();
+    const bool got = xSemaphoreTake(s_bus_mtx,
                           pdMS_TO_TICKS(MODBUS_LOCK_TIMEOUT_MS)) == pdTRUE;
+    s_cnt.last_lock_wait_ms = (uint32_t)millis() - t0;
+    return got;
 }
 
 static inline void bus_unlock(void)
@@ -338,12 +429,7 @@ static modbus_status_t modbus_transaction(uint8_t  device_addr,
     /* Transmit
      * Enforce the Modbus RTU 3.5-char-time inter-frame gap relative to the
      * actual end of the last frame on the wire, regardless of caller latency. */
-    {
-        uint32_t elapsed = micros() - s_frame_end_us;
-        if (elapsed < MODBUS_IFG_US) {
-            delayMicroseconds(MODBUS_IFG_US - elapsed);
-        }
-    }
+    wait_ifg();
     /* Start from a known-empty FIFO. The IFG above has elapsed and nothing of
      * ours is on the wire yet, so anything here is stale -- another caller's
      * leftovers, or a slave answering after we gave up. Inheriting it makes
@@ -387,6 +473,11 @@ static modbus_status_t modbus_transaction(uint8_t  device_addr,
 
     while (received < expected_len) {
         if (millis() - start > MODBUS_TIMEOUT_MS) {
+            /* Record HOW the deadline was missed before cleaning up: 0 bytes
+             * means the slave never answered, a partial count means the frame
+             * was cut short. Different causes, different fixes. */
+            s_cnt.last_to_received = received;
+            s_cnt.last_to_expected = expected_len;
             /* Drain any late-arriving bytes before returning so the next
              * transaction starts with a clean buffer. */
             delayMicroseconds(2000);
@@ -500,12 +591,7 @@ static modbus_status_t write_multiple_locked(uint8_t         device_addr,
     req[payload_len + 1] = (uint8_t)(req_crc >> 8);
 
     /* Transmit — same IFG discipline as FC03/FC04 */
-    {
-        uint32_t elapsed = micros() - s_frame_end_us;
-        if (elapsed < MODBUS_IFG_US) {
-            delayMicroseconds(MODBUS_IFG_US - elapsed);
-        }
-    }
+    wait_ifg();
     drain_rx();   /* same reason as FC03/FC04 — see drain_rx() */
     gpio_set_rs485_direction(true);
 #ifndef NATIVE_TEST
@@ -538,6 +624,8 @@ static modbus_status_t write_multiple_locked(uint8_t         device_addr,
 
     while (received < expected_len) {
         if (millis() - start > MODBUS_TIMEOUT_MS) {
+            s_cnt.last_to_received = received;
+            s_cnt.last_to_expected = expected_len;
             delayMicroseconds(2000);
 #ifndef NATIVE_TEST
             while (uart1_available()) (void)uart1_read();
@@ -609,10 +697,10 @@ modbus_status_t modbus_read_holding_registers(uint8_t  device_addr,
                                                uint8_t  count,
                                                uint16_t *out)
 {
-    if (!bus_lock()) return MODBUS_ERR_BUSY;
+    if (!bus_lock()) return tally(MODBUS_ERR_BUSY, device_addr);
     modbus_status_t s = modbus_transaction(device_addr, 0x03, start_reg, count, out);
     bus_unlock();
-    return s;
+    return tally(s, device_addr);
 }
 
 modbus_status_t modbus_read_input_registers(uint8_t  device_addr,
@@ -620,10 +708,10 @@ modbus_status_t modbus_read_input_registers(uint8_t  device_addr,
                                              uint8_t  count,
                                              uint16_t *out)
 {
-    if (!bus_lock()) return MODBUS_ERR_BUSY;
+    if (!bus_lock()) return tally(MODBUS_ERR_BUSY, device_addr);
     modbus_status_t s = modbus_transaction(device_addr, 0x04, start_reg, count, out);
     bus_unlock();
-    return s;
+    return tally(s, device_addr);
 }
 
 modbus_status_t modbus_write_multiple_registers(uint8_t         device_addr,
@@ -631,8 +719,8 @@ modbus_status_t modbus_write_multiple_registers(uint8_t         device_addr,
                                                  uint8_t         count,
                                                  const uint16_t *values)
 {
-    if (!bus_lock()) return MODBUS_ERR_BUSY;
+    if (!bus_lock()) return tally(MODBUS_ERR_BUSY, device_addr);
     modbus_status_t s = write_multiple_locked(device_addr, start_reg, count, values);
     bus_unlock();
-    return s;
+    return tally(s, device_addr);
 }
