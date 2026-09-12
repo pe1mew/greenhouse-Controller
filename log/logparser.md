@@ -1,8 +1,18 @@
 # logparser — Greenhouse Controller Log Parser
 
 **File:** `log/logparser.py`
-**Document version:** 1.11 (matches firmware 2.6.0 — MODE param discriminator, SYSTEM 25-30)
+**Document version:** 1.12 (matches firmware 2.7.0 + the `ropeSensor` window-sensor encodings)
 **Requires:** Python 3.10+, standard library only (no pip dependencies)
+
+**What's new in 1.12** (window-sensor encodings, `ropeSensor` branch):
+- **`SENSOR_HR ch = 3` — M3 window position**, and **`ALARM ch = 6` params
+  244—247** — the device events. Both have been emitted by T17 and decoded by
+  `logparser.py` since Phase 3 (2026-09-10) but were **never documented here**, which
+  is a standing-rule violation: a new encoding is supposed to be learned by the parser
+  *and* written down in the same changeset. Paid off after the branch was rebased onto
+  2.7.0. **Neither appears in a log from `main`**, which ships without the sensor.
+- Also removed the `dwell_*_min` aliases from 2.7.0; they were an `/api/config` field,
+  not a log encoding, so nothing here changes for them.
 
 **What's new in 1.11** (matches firmware 2.6.0 — gh#54 + gh#59):
 - **`MODE` rows now carry a discriminator.** `LOG_MODE_CHANGE` has two emitters:
@@ -269,6 +279,38 @@ T2 internally uses an extended state enum with GAP states for direction reversal
 ```
 
 The bitmask is also printed in hex (`(0x002A)`) at the end of every channel-2 line so the raw value can be cross-checked against the encoding above.
+
+
+#### `ch = 3` — M3 window position (ropeSensor branch only)
+
+Emitted by **T17** (`firmware/src/window_pos/window_pos_task.cpp`), the window
+position task. Present only on the `ropeSensor` branch; `main` ships without it,
+so a log from a production unit never contains this sub-row.
+
+| Field | Meaning |
+|---|---|
+| `ch` | `3` |
+| `param` | which window these samples describe — `3` = M3. One channel serves all three windows |
+| `value_a` | opening in **0.1 mm** (device register 30001), or **`-1`** on sensor fault |
+| `value_b` | rate, **SIGNED**, 0.1 mm/s (register 30012). Positive = opening, negative = closing, zero = at rest |
+
+**Raw millimetres are logged, never a percentage.** Percent derives from register
+40004 (the calibrated full travel), so a mis-measured travel corrupts a logged
+percentage beyond recovery, while millimetres stay recomputable.
+
+`value_b` is the **only** signed register in the device contract. Read unsigned,
+a closing window at 157 mm/s appears as 6.4 m/s — that mistake is what the
+signed decode was proven against on real hardware.
+
+**Cadence.** T17 polls only while a channel is travelling, at
+`travel_m3 / 150` ms, and otherwise emits one sample every 30 s so the log shows
+the window sitting still rather than a gap.
+
+**Example output:**
+```
+2026-09-12 16:00:01  [SENSOR_HR]  System   M3 position: 741.2 mm   rate -157.0 mm/s (closing)
+2026-09-12 16:00:31  [SENSOR_HR]  System   M3 position: SENSOR FAULT
+```
 
 ---
 
@@ -599,6 +641,79 @@ should treat ALARM rows around boot or OTA windows with skepticism.
 2025-06-07 14:50:00  [ALARM  ]   System          WIND OVERRIDE: CLEARED — speed 3.2 m/s, direction 180°
 2025-06-07 16:00:00  [ALARM  ]   System          MOTOR ALARM: triggered — all relays de-energised
 2025-06-07 16:01:05  [ALARM  ]   System          Motor alarm / wind override: CLEARED
+```
+
+
+#### Window position sensor events (T17, channel 6, ropeSensor branch only)
+
+Emitted by **T17**. The channel-based dispatch follows T5's 4/5 convention: T2
+and T3 keep `ch = 0`, and each later producer owns a channel of its own. `param`
+then names the event within that channel, from the reserved band **244—247**.
+
+| `param` | event | `value_a` | `value_b` |
+|---|---|---|---|
+| **244** | sensor fault set/cleared | `1` = fault set, `0` = cleared | device status bits (low byte), `0` when not carried |
+| **245** | teach-mode transition | `0` aborted, `1` armed, `2` COMMITTED, `3` REFUSED | 0 |
+| **246** | device status bitfield | the raw register-30006 bitfield | 0 |
+| **247** | device restarted | new register-30008 uptime in seconds (masked to 15 bits) | 0 |
+| **248** | **M3 control mode changed** | `0` = TIMED (travel timer), `1` = POSITION (opening distance) | gate reason, below |
+
+**`param = 245`, `value_a = 3` (REFUSED) is decoded but never emitted.** A refused
+teach leaves status bit 5 set with register 40007 still `1`, which is
+indistinguishable from *still armed* at the next poll, so the firmware does not
+claim it. The decode exists for a future device build that reports it.
+
+**`param = 246` status bits**, as decoded, matching `WINDOWPOS_ST_*` in
+`drivers/windowPos/src/window_pos.h`:
+
+| bit | name | meaning |
+|---|---|---|
+| `0x01` | `startup:window` | no measurement window completed yet |
+| `0x02` | `startup:avg` | averaging accumulator not filled |
+| `0x04` | `WIPER OPEN` | wiper open (FR-E07) |
+| `0x08` | `end sensor` | an end sensor is active |
+| `0x10` | `BOTH ends` | both active — distrust bit 3 (FR-E16) |
+| `0x20` | `teach armed` | teach armed |
+| `0x40` | `implausible` | raw code outside the calibrated band |
+| `0x80` | `NOT FOLLOWING` | switches saw movement, position did not |
+
+**`param = 248` is the row that says which control law M3 was under.** The
+sensor-presence gate publishes it, edge-triggered — one row per transition, not
+per poll. `value_b` carries the reason:
+
+| `value_b` | meaning |
+|---|---|
+| `0` | sensor present and trusted |
+| `1` | probing, no verdict yet (boot) |
+| `2` | no sensor answering at address 40 |
+| `3` | bench build refused, contract 9 — **permanent**, never re-probed |
+| `4` | sensor present but reporting its own fault |
+
+**TIMED is the fallback and the failure direction**, and it is what `main`
+ships, so a log full of `TIMED` rows is a unit behaving exactly as it always
+has. **Demotion to TIMED is immediate; promotion to POSITION appears only at a
+stroke boundary**, so a `POSITION` row always sits at the start of a movement
+and never inside one.
+
+Expect the pair `TIMED [probing]` then `TIMED [sensor present and trusted]` at
+boot on a healthy unit, and the second `TIMED` becoming `POSITION` at the first
+stroke. A unit with no sensor logs one `TIMED [no sensor answering]` about 30 s
+after boot — two consecutive failed probes, matching T5's convention — and
+then nothing further.
+
+**`param = 247` matters more than it looks.** The device restarting silently
+discards an armed teach, so a restart row sitting between an *armed* and an
+expected *committed* row explains a calibration that appears to have been lost.
+
+**Example output:**
+```
+2026-09-12 16:01:00  [ALARM    ]  System   position sensor FAULT set
+2026-09-12 16:01:30  [ALARM    ]  System   position sensor fault cleared
+2026-09-12 16:02:00  [ALARM    ]  System   teach COMMITTED
+2026-09-12 16:02:30  [ALARM    ]  System   device status 0x0C [WIPER OPEN, end sensor]
+2026-09-12 16:03:00  [ALARM    ]  System   device RESTARTED (uptime now 25 s -- any armed teach is lost)
+2026-09-12 16:03:30  [ALARM    ]  System   M3 CONTROL MODE -> TIMED (travel timer)  [no sensor answering at addr 40]
+2026-09-12 16:05:00  [ALARM    ]  System   M3 CONTROL MODE -> POSITION (opening distance)  [sensor present and trusted]
 ```
 
 ---

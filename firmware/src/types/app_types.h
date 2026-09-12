@@ -310,6 +310,13 @@ typedef enum {
     LOG_PARAM_WPOS_TEACH   = 245, /**< value_a: 1 armed, 2 committed, 3 refused, 0 aborted */
     LOG_PARAM_WPOS_STATUS  = 246, /**< value_a: the 30006 status bitfield */
     LOG_PARAM_WPOS_RESTART = 247, /**< value_a: new 30008 uptime (it went backwards) */
+    LOG_PARAM_WPOS_MODE    = 248, /**< Phase 4 — M3 control mode changed.
+                                   *  value_a: 0 = TIMED fallback, 1 = POSITION.
+                                   *  value_b: windowpos_gate_reason_t.
+                                   *  Edge-triggered: one row per transition, not
+                                   *  per poll. This is the row that answers "which
+                                   *  control law was M3 under at the time?" — the
+                                   *  gh#59 lesson applied before the fact. */
 } log_param_id_t;
 
 /**

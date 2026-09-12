@@ -620,6 +620,67 @@ Volume is bounded and speed-independent: because interval = `travel_m3` / 100, a
 
 ---
 
+#### 4a. The sensor-presence gate — landed 2026-09-12 *(operator decision; resolves the TBD above)*
+
+The paragraph opening this phase left the failure behaviour **TBD**. The
+operator settled it:
+
+> *"T17 failure report will select one of two modes: 1: with working rope sensor the window will be controlled using opening distance, 2: without working rope sensor the fallback will be timed opening as we have currently implemented."*
+
+So the gate is not a bus-time optimisation that happens to report a fault — it is
+**the authority that selects the control law**, and it publishes that choice:
+
+```c
+windowpos_ctrl_mode_t windowpos_task_ctrl_mode(windowpos_gate_reason_t *out_reason);
+```
+
+**What it fixes.** All three startup branches in `window_pos_task.cpp` previously
+logged and then fell through into the polling loop: *"T17 idle"* did not idle and
+*"REFUSING"* did not refuse. On a unit with no sensor at address 40 that cost a
+failed ~215 ms transaction per poll, and because the derived poll floor is
+`DEVICE_MIN_WINDOW_MS` = 100 ms, on the 13 s rig the period is **shorter than the
+Modbus timeout** — the bus was held continuously for the whole stroke, against
+T5, whose receive loop never yields.
+
+**It follows T5's house pattern on purpose** (`sensor_poll.cpp`): two
+consecutive failures flip the state, recovery is on the first success, the
+transition is edge-logged. What differs is the *consequence*. T5 reports a fault
+and keeps polling, because T3 safe-fails on `EG1_BIT_SENSOR_FAULT_W` — there the
+fault bit **is** the feature. Position is optional, so here the consequence is to
+stop touching the bus and fall back.
+
+| Decision | Why |
+|---|---|
+| Demotion to TIMED is **immediate**; promotion to POSITION happens **only at a stroke boundary** | Dropping to the timer mid-stroke is safe — the timer is what would have run anyway. Gaining position authority underneath a consumer already committed to a timed stroke is not. |
+| A shut gate re-probes every **30 s** | One failed transaction per 30 s is exactly what the Phase 3 idle path already spent, so a shut gate costs no more at rest and strictly less during a stroke. A sensor connected mid-session recovers by itself. |
+| `WINDOWPOS_BUILD_BENCH` is a **permanent latch** | Contract 9. It cannot change without reflashing the device, so there is nothing a re-probe could discover. |
+| `WINDOWPOS_ERR_BUSY` never counts as a failure | Losing the bus lock to T5 says the bus was busy, not that the sensor is absent. Counting it would let ordinary contention disable a working sensor — the opposite of what gh#49's mutex was for. |
+| A device-reported fault gets its **own** reason code | "Talking but says its own reading is bad" is not "absent", and the log has to tell them apart. |
+
+**The GATE below is still not crossed.** The mode is published; **nothing
+consumes it yet**. T2 still stops on its timer and T6 still steps on
+temperature, so greenhouse behaviour is unchanged. Acting on the mode is the
+next step, and it is the one that crosses the gate.
+
+**Observability.** `LOG_PARAM_WPOS_MODE` = **248** on the `ALARM ch6` band,
+edge-triggered, `value_a` = mode, `value_b` = `windowpos_gate_reason_t`;
+documented in [../log/logparser.md](../log/logparser.md) and decoded by
+`logparser.py`. Plus `gate.mode` / `gate.reason` and three counters
+(`probe_fail`, `mode_changes`, `gated_polls`) on `GET /api/diag/windowpos`
+— but **that endpoint is `#ifdef MODBUS_BENCH`, so a release build has the
+audit log and nothing else.** That is why the log row carries the *reason* and
+not merely the fact.
+
+**Verification status: compiler and parser only.** Both environments build with
+no new warnings (release 66.3 % flash, bench 66.4 %), the source file was proved
+to be in the build with a fail-first `static_assert`, and all ten mode/reason
+combinations round-trip through `logparser.py` with no `raw:` fallback.
+**There has been no hardware run** — 2344 is the fitted dev module and is held on
+2.7.0 by operator instruction. AT-WP06 and AT-WP07 above remain unexecuted, and
+the gate must not be described as hardware-verified until they are.
+
+---
+
 ### ▲ GATE — everything above changes no control behaviour
 
 Phases 0–4 add a sensor, logging and diagnostics. The greenhouse behaves exactly as it does today. Cross this gate only when the rig has produced clean aperture data over a sustained period **and** the Phase 5 scope decision (§8) has been taken.
