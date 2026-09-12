@@ -120,6 +120,21 @@ typedef enum {
     S200_OK        = 0, /**< Operation completed successfully. */
     S200_ERR_COMM  = 1, /**< Modbus communication error (timeout / CRC / exception). */
     S200_ERR_PARAM = 2, /**< Caller supplied an invalid parameter (NULL pointer, addr=0). */
+    /**
+     * @brief Could not acquire the RS485 bus lock within
+     *        @c MODBUS_LOCK_TIMEOUT_MS. **Nothing was put on the wire.**
+     *
+     * Appended, never inserted: 0-2 are stored in callers' state.
+     *
+     * Kept DISTINCT from @ref S200_ERR_COMM on purpose, mirroring gh#49's
+     * split in @c modbus_status_t. The two mean opposite things about the
+     * device: COMM says *the sensor did not answer*, BUSY says *we never
+     * asked*. Folding them cost a false wind alarm every time M3 moved -- T5
+     * faulted, T3 safe-failed, and the greenhouse closed on a calm day
+     * (FDA4 2026-09-12). A caller that treats BUSY as a sensor failure is
+     * reporting its own bus contention as broken hardware.
+     */
+    S200_ERR_BUSY  = 3,
 } s200_status_t;
 
 /**

@@ -37,13 +37,20 @@
 
 /**
  * Map a modbus_status_t to the coarser s200_status_t.
- * MODBUS_ERR_PARAM passes through as S200_ERR_PARAM; all other errors
- * collapse to S200_ERR_COMM.
+ *
+ * MODBUS_ERR_PARAM passes through as S200_ERR_PARAM, MODBUS_ERR_BUSY as
+ * S200_ERR_BUSY; all other errors collapse to S200_ERR_COMM.
+ *
+ * BUSY must NOT collapse. gh#49 made it distinct in modbus_status_t so a lost
+ * bus race could not be read as a dead device, and collapsing it here undid
+ * that one layer up: T5 faulted the wind sensor on its own contention and T3
+ * closed the greenhouse on a calm day (FDA4 2026-09-12).
  */
 static s200_status_t map_status(modbus_status_t s)
 {
     if (s == MODBUS_OK)         return S200_OK;
     if (s == MODBUS_ERR_PARAM)  return S200_ERR_PARAM;
+    if (s == MODBUS_ERR_BUSY)   return S200_ERR_BUSY;
     return S200_ERR_COMM;
 }
 

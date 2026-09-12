@@ -786,11 +786,96 @@ is implicated in the T17 half but cannot explain the other half.
 was skipped because M3 already sat on its end switch — and **neither boot
 produced a wind fault**. No stroke, no alarm.
 
-Two consequences for this plan: **do not poll `GET /api/diag/windowpos` hard
-during a stroke** (it adds a third ~215 ms caller — that is how the 17:20:47
-fault was provoked), and **the `DEVICE_MIN_WINDOW_MS` poll floor needs raising
-above one Modbus transaction**, to roughly 3x it, so T5 keeps a share of the
-bus. Neither is caused by the presence gate; both are exposed by it.
+**Reproduced on demand and then FIXED — 2026-09-12.** The operator moved M3
+manually and raised the wind alarm **3 times out of 3**, with the wind measuring
+1.1—1.7 m/s, unpolluted by any diagnostic polling of mine. That is a fail-first
+baseline, so the fix has something to be measured against.
+
+**Root cause, at the third attempt.** Two defects were found on the way, and
+only the second one was firing. Recording both, because the first is real and
+the sequence is the lesson.
+
+##### Defect 1 (real, fixed, but NOT the cause): drivers collapse BUSY into COMM
+
+The Modbus layer already keeps
+`MODBUS_ERR_BUSY` distinct from `MODBUS_ERR_TIMEOUT` — gh#49 put it there so a
+lost bus race could not be read as a dead device, and `modbus_rtu.h` says so in
+as many words. **Both sensor drivers then threw that away:**
+
+```c
+if (s == MODBUS_OK)        return X_OK;
+if (s == MODBUS_ERR_PARAM) return X_ERR_PARAM;
+return X_ERR_COMM;            // <-- MODBUS_ERR_BUSY landed here
+```
+
+so *"I could not get the bus"* reached T5 indistinguishable from *"the sensor did
+not answer"*, and T5 raised a sensor fault. T3 safe-fails on that bit, so the
+greenhouse closed because **T17 was talking to the position encoder**. It is the
+same category error the presence gate refuses to make for `WINDOWPOS_ERR_BUSY`
+one layer up — the gate got it right and the older path did not.
+
+**The fix** carries BUSY through both drivers (`S200_ERR_BUSY`,
+`FG6485A_ERR_BUSY`, appended as 3) and lets T5 treat it as *no evidence about
+the sensor* — **bounded by a deadline, not a retry count**
+(`SP_BUSY_TOLERANCE_MS` = 60 s). A permanently jammed bus must still raise the
+fault, because an unavailable wind reading is unsafe whatever the cause; it just
+must not do so on the first lost race. The deadline is in time rather than polls
+because `poll_interval` is operator-configurable 15—120 s, where a count of two
+would tolerate 240 s of blindness. **Genuine-fault latency is unchanged**: a
+timeout, CRC or exception from the sensor itself still faults immediately.
+
+The T/RH path had the identical defect and is fixed in the same changeset — a
+one-sided fix is how this class of bug returns.
+
+**That fix did not stop the alarm**, and the way it failed identified the real
+cause. The first BUSY is forgiven unconditionally, yet the fault still fired on
+the *first* failed read — so the status was never BUSY. T5 was not losing the
+lock; its transaction was failing **on the wire**.
+
+##### Defect 2 (the one that fired): four of six transaction exits leave the RX FIFO dirty
+
+`modbus_transaction()` and `write_multiple_locked()` each drain the UART RX FIFO
+on exactly **two** paths, success and timeout. `MODBUS_ERR_CRC`,
+`MODBUS_ERR_EXCEPTION` and both `MODBUS_ERR_FRAMING` exits `return` with
+whatever is still in the FIFO.
+
+Before gh#49 that was survivable, because there was one caller. **With two it is
+a correctness bug**: T17 polls the encoder at addr 40 while T5 polls addr 1 and
+addr 44, and a fragment left by one is consumed by the next as its echo and its
+response. The CRC then fails — **and that exit does not drain either, so the
+corruption cascades into the transaction after it.** That is precisely why
+*both* of T5's attempts, 100 ms apart, fail: one corruption event poisons the
+buffer for both. Two consecutive failures is what raises the fault, T3
+safe-fails on `EG1_BIT_SENSOR_FAULT_W`, and the greenhouse closes on a calm day
+**because T17 left bytes in a FIFO**.
+
+It also explains the history cleanly: 2344 never saw it (one caller), it began
+with the encoder on the bus, and the 3-of-8 faults with M3 relay rows but no
+`ch3` samples fit too — relay noise corrupts a frame, the CRC exit leaves the
+residue, and the next read inherits it. **The same cascade covers both
+populations, so the "second contributor" may not be separate after all.**
+
+Fixed in two parts: **flush before transmitting**, so a transaction can never
+inherit anything regardless of how any previous exit behaved (safe there — the
+IFG has elapsed and nothing of ours is on the wire, so anything present is
+stale); and **drain on every error exit**, so "every exit leaves a clean
+buffer" is a local invariant instead of a repair the next caller has to make.
+
+> **Rule worth keeping:** a shared half-duplex bus needs the receive buffer
+> cleared on **every** exit path, not just the happy one and the timeout. gh#49
+> made two callers legal on this bus; it did not make the error paths
+> multi-caller-safe, and the audit that added the mutex did not check them.
+
+Two things this leaves for this plan, neither now load-bearing: **do not poll
+`GET /api/diag/windowpos` hard during a stroke** (it adds a third ~215 ms caller
+— that is how the 17:20:47 fault was first provoked), and **the
+`DEVICE_MIN_WINDOW_MS` poll floor is still below one Modbus transaction**, so
+T17 runs at ~68 % bus duty during a rig stroke. That is now a fairness and
+efficiency question rather than a correctness one, and raising it would trade
+against the FR-WP04 analysis in section 3.1 — so it is deliberately **not**
+changed here. The relay-noise contributor (3 of the 8 historical faults, no T17
+samples, M3 relay rows nearby) is untouched by this fix and still open: those
+are genuine CRC/timeout errors and *should* be reported.
 
 ---
 

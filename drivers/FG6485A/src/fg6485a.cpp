@@ -32,13 +32,19 @@
 
 /**
  * Map a modbus_status_t to the coarser fg6485a_status_t.
- * MODBUS_ERR_PARAM passes through as FG6485A_ERR_PARAM; all other errors
- * collapse to FG6485A_ERR_COMM.
+ *
+ * MODBUS_ERR_PARAM passes through as FG6485A_ERR_PARAM, MODBUS_ERR_BUSY as
+ * FG6485A_ERR_BUSY; all other errors collapse to FG6485A_ERR_COMM.
+ *
+ * BUSY must NOT collapse -- see the S200 driver's note. The T/RH path had the
+ * identical defect; it is fixed here in the same changeset because a
+ * one-sided fix is how this class of bug comes back.
  */
 static fg6485a_status_t map_status(modbus_status_t s)
 {
     if (s == MODBUS_OK)         return FG6485A_OK;
     if (s == MODBUS_ERR_PARAM)  return FG6485A_ERR_PARAM;
+    if (s == MODBUS_ERR_BUSY)   return FG6485A_ERR_BUSY;
     return FG6485A_ERR_COMM;
 }
 
