@@ -1,0 +1,20 @@
+# Line-ending policy.
+#
+# core.autocrlf is true on the development machine, so without a rule here git
+# rewrites every text file to CRLF on checkout. That is harmless for the C, INI,
+# Python and Markdown sources, and it is deliberately left alone for them.
+#
+# It is NOT safe to depend on for shell scripts. `bash` treats a trailing \r as
+# part of the token, so a CRLF script can fail with
+#   set: pipefail\r: invalid option name
+# depending on the bash build. Measured 2026-09-12: the Git Bash on this machine
+# tolerates it, so `.githooks/pre-commit` is not broken today — this pin removes
+# the dependency on that tolerance rather than fixing a live fault. The hooks are
+# the one place it matters, because a hook that fails to parse fails OPEN: the
+# commit proceeds unchecked.
+#
+# Scope is deliberately narrow. The only tracked shell script in the repo is
+# .githooks/pre-commit, so this changes exactly one file's checkout form.
+
+*.sh          text eol=lf
+.githooks/*   text eol=lf

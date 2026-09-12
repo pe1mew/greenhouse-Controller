@@ -1174,3 +1174,29 @@ on a tree where `git status --short` showed **zero** modified tracked files. Tak
 **Fix:** verify a pull from the **audit rows**, which are permanent: `SYSTEM value_a=23` sub-code 0 is download/verify OK, `value_a=24` sub-code 0 is apply committed, and `value_a=5` is the boot that followed. On 2344 those read `23,0` then `24,0` at 13:48:15/13:48:27, then a boot with reason 3. The status endpoint is a snapshot; the log is the record.
 
 **Bonus, same run — gh#41 confirmed live.** The two earlier `24,1` rows (apply *deferred*) at 13:37 and 13:43 were caused by my own admin web session: the quiet gate treats any active session as "not quiet", and 2344's window is 1–23 so the clock was not the blocker. It committed only once I stayed logged out. **When watching a ROTA pull, poll the public `/api/status` only and do not log in** — and note each deferral re-downloads both artefacts.
+
+## 2026-09-12 — `git checkout` silently rewrote LF to CRLF, so a literal anchor stopped matching while `git status` stayed clean
+
+**Problem:** A test harness restored `data_manager.cpp` with `git checkout -- <file>`, then a later step matched a source line ending in `\n` and found **zero** occurrences. The line was plainly there (`grep -n` showed it). `git status` reported the tree clean, so nothing looked wrong.
+
+**Root cause:** `core.autocrlf` is active on this machine, and every `git status`/`git add` in this session had been warning about it (*"LF will be replaced by CRLF the next time Git touches it"*). A `git checkout` **is** git touching it: the file came back **CRLF** while the index and HEAD keep LF, so git compares them as identical and reports clean. The working file is now a different byte sequence from the one the previous script wrote.
+
+**Fix:** never hard-code the EOL in an anchor. Detect it from the file being edited and convert the pattern to match:
+
+```python
+raw = io.open(path, encoding="utf-8", newline="").read()
+e   = "\r\n" if "\r\n" in raw else "\n"
+line = "    some_source_line();" + e
+```
+
+The edit helper used throughout this session already did this for its own pattern strings; the harness that restored files did not, which is why only the harness broke.
+
+**Rule:** *a file's line endings can change under you without git reporting a modification. Any script that matches source text literally must derive the EOL from the file it is reading, not assume the one the file had last time.* Corollary: `git status` being clean does not mean the working bytes are unchanged.
+
+## 2026-09-12 — `git add` on an unmodified file stages nothing, so a hook that reads `--cached` correctly skips
+
+**Problem:** A test staged a key-table source file with `git add` and asserted the pre-commit hook would run the config-table check. It did not, and the assertion looked like a hook bug.
+
+**Root cause:** `git diff --cached --name-only` lists paths whose **index content differs from HEAD**. `git add` on a file identical to HEAD produces no such difference, so the path never appears and the hook's guard correctly decides the commit does not touch that file. The hook was right; the test was staging nothing.
+
+**Fix:** to exercise a path-guarded hook, stage an actual modification. In the harness this became "append a harmless trailing comment, stage, run the hook, restore".

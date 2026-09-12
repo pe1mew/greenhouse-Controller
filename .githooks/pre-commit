@@ -1,38 +1,43 @@
 #!/usr/bin/env bash
-# .githooks/pre-commit — guards against committing build-time artefacts.
+# .githooks/pre-commit — guards against committing build-time artefacts and
+# against the config-key tables drifting apart.
 #
-# Currently enforces ONE rule:
+# Two rules, each checked only when the commit actually touches the relevant
+# files:
 #
-#   firmware/data/manifest.json — must be staged in placeholder form,
+#   1. firmware/data/manifest.json — must be staged in placeholder form,
 #       i.e. exactly  {"asset_version":"{{ASSET_VERSION}}","checksum":""}
 #       (no trailing newline). The build script `bin/build_release.ps1`
 #       overwrites this file with the literal version on every release
 #       build, so the placeholder discipline survives only if commits
 #       restore the placeholder. See gh#9.
 #
+#   2. the config-key tables — six independent tables carry a key list
+#       (accepted / shadow field / clamped / audited / published / mock) and
+#       they drift. Every gap so far has SHIPPED: gh#53, gh#57 part 1 and
+#       part 2, gh#51 Group B. `bin/check_cfg_tables.py` cross-checks them
+#       against a declared allow-list of deliberate omissions. See gh#64.
+#
 # To enable:    git config core.hooksPath .githooks       (one-time, per clone)
 # To bypass:    git commit --no-verify  (do not use casually; see below)
-#
-# When this hook trips, the fix is almost always
-#   git checkout firmware/data/manifest.json
-# followed by re-staging whatever else you intended to commit.
 
 set -euo pipefail
 
+staged_files=$(git diff --cached --name-only)
+
+# ---------------------------------------------------------------------------
+# Rule 1 — asset manifest placeholder (gh#9)
+# ---------------------------------------------------------------------------
 placeholder='{"asset_version":"{{ASSET_VERSION}}","checksum":""}'
 manifest='firmware/data/manifest.json'
 
-# Only check if the manifest is actually staged in this commit.
-if ! git diff --cached --name-only | grep -qx "$manifest"; then
-    exit 0
-fi
+if printf '%s\n' "$staged_files" | grep -qx "$manifest"; then
+    # Read the staged content (':<path>' addresses the index, not the working tree).
+    staged=$(git show ":$manifest")
 
-# Read the staged content (':<path>' addresses the index, not the working tree).
-staged=$(git show ":$manifest")
-
-if [ "$staged" != "$placeholder" ]; then
-    cat >&2 <<EOF
-✗ pre-commit: $manifest is staged in stamped form, not the placeholder.
+    if [ "$staged" != "$placeholder" ]; then
+        cat >&2 <<EOF
+x pre-commit: $manifest is staged in stamped form, not the placeholder.
 
   staged:      $staged
   expected:    $placeholder
@@ -53,7 +58,54 @@ if [ "$staged" != "$placeholder" ]; then
 
   Background: gh#9
 EOF
-    exit 1
+        exit 1
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Rule 2 — config-key table consistency (gh#64)
+# ---------------------------------------------------------------------------
+if printf '%s\n' "$staged_files" | grep -qE \
+      '^(firmware/src/data_manager/data_manager\.cpp|firmware/src/web_server/web_server\.cpp|firmware/config/cfg_limits\.h|webUiMock/mock_server\.py|bin/check_cfg_tables\.py)$'; then
+
+    py=""
+    for cand in python python3 py; do
+        if command -v "$cand" >/dev/null 2>&1; then py="$cand"; break; fi
+    done
+
+    if [ -z "$py" ]; then
+        # An unrunnable check must not look like a pass, so say so loudly
+        # rather than exiting quietly. Not fatal: a missing interpreter is an
+        # environment problem, not a defect in the commit.
+        cat >&2 <<'EOF'
+! pre-commit: SKIPPED the config-key table check — no python interpreter found.
+  This commit touches one of the key tables and was NOT verified. Run
+  `python bin/check_cfg_tables.py` wherever python is available before pushing.
+  Background: gh#64
+EOF
+    elif ! "$py" bin/check_cfg_tables.py; then
+        cat >&2 <<EOF
+
+x pre-commit: the config-key tables disagree (see above).
+
+  Six tables carry a key list and they must agree, or a key ends up
+  accepted-but-unclamped, clamped-but-unpublished, or applied-but-unaudited.
+  That is the gh#57 defect class, and it has shipped four times.
+
+  If the gap is DELIBERATE, declare it: add the key to EXPECTED_GAPS in
+  bin/check_cfg_tables.py with a one-line reason. That is a reviewable
+  assertion, which an absence is not.
+
+  If it is not deliberate, read the key's consumer and give it whatever it
+  is missing — a bound, a published range, a param_id.
+
+  Override (only with a reason you would defend in review):
+    git commit --no-verify
+
+  Background: gh#64
+EOF
+        exit 1
+    fi
 fi
 
 exit 0
