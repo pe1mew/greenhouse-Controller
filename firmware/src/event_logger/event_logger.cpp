@@ -494,7 +494,7 @@ static void check_free_space(void)
 static const char *evt_type_str(uint8_t t)
 {
     switch ((log_type_t)t) {
-        case LOG_SENSOR:      return "SENSOR";
+        case LOG_SENSOR:      return "SENSOR";     /* reserved; no emitter since rc.1.4.0 */
         case LOG_RELAY:       return "RELAY";
         case LOG_MODE_CHANGE: return "MODE";
         case LOG_SETPOINT:    return "SETPT";
@@ -503,6 +503,7 @@ static const char *evt_type_str(uint8_t t)
         case LOG_SYSTEM:      return "SYSTEM";
         case LOG_SENSOR_HR:   return "SENSOR_HR";   /* rc.1.4.0 — see logUpdatePlan §2 */
         case LOG_SUN:         return "SUN";         /* rc.1.4.0 — see logUpdatePlan §3 */
+        case LOG_PIN_AUTH:    return "PIN_AUTH";    /* 2.5.0 (gh#58) — failed PIN / lockout */
         default:              return "UNKNWN";
     }
 }

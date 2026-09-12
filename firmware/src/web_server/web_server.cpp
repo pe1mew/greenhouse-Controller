@@ -727,7 +727,10 @@ static esp_err_t login_handler(httpd_req_t *req)
             "{\"ok\":false,\"error\":\"bad_role\"}", HTTPD_RESP_USE_STRLEN);
     }
 
-    pin_auth_result_t r = pin_auth_verify((pin_role_t)role, pin_str);
+    /* 2.5.0 (gh#58) — the third argument records WHICH surface the attempt
+     * came from in the LOG_PIN_AUTH audit row. WEB_ROLE_FARMER/ADMIN are 0/1
+     * and match PIN_ROLE_FARMER/ADMIN, which is what the cast relies on. */
+    pin_auth_result_t r = pin_auth_verify((pin_role_t)role, pin_str, LOG_BY_WEB);
     httpd_resp_set_type(req, "application/json");
 
     if (r == PIN_AUTH_OK) {
@@ -1231,7 +1234,24 @@ static esp_err_t config_limits_handler(httpd_req_t *req)
         "\"dwell_close_m3\":" "[" _LIMITS_STR(CFG_MIN_DWELL_CLOSE_S) "," _LIMITS_STR(CFG_MAX_DWELL_CLOSE_S) "],"
         "\"poll_interval\":"  "[" _LIMITS_STR(CFG_MIN_POLL_S)       "," _LIMITS_STR(CFG_MAX_POLL_S)       "],"
         "\"session_timeout\":" "[" _LIMITS_STR(CFG_MIN_TIMEOUT_MIN)  "," _LIMITS_STR(CFG_MAX_TIMEOUT_MIN)  "],"
-        "\"ap_timeout\":"     "[" _LIMITS_STR(CFG_MIN_AP_TIMEOUT)   "," _LIMITS_STR(CFG_MAX_TIMEOUT_MIN)  "]"
+        "\"ap_timeout\":"     "[" _LIMITS_STR(CFG_MIN_AP_TIMEOUT)   "," _LIMITS_STR(CFG_MAX_TIMEOUT_MIN)  "],"
+        /* 2.5.0 (gh#57) — these eleven were clamped nowhere AND published
+         * nowhere, so neither the server nor a client constrained them. The
+         * three enums are <select> elements in the bundled GUI and the two
+         * coordinate inputs already carry their own min/max attributes, so
+         * publishing changes nothing for app.js. It is the documented contract
+         * for every other /api/config caller. */
+        "\"cr_priority\":"   "[" _LIMITS_STR(CFG_MIN_CR_PRIORITY)  "," _LIMITS_STR(CFG_MAX_CR_PRIORITY)  "],"
+        "\"rh_ctrl_en\":"    "[0,1],"
+        "\"wind_prot_en\":"  "[0,1],"
+        "\"lat_deg\":"       "[" _LIMITS_STR(CFG_MIN_LAT_DEG)      "," _LIMITS_STR(CFG_MAX_LAT_DEG)      "],"
+        "\"lat_frac\":"      "[" _LIMITS_STR(CFG_MIN_COORD_FRAC)   "," _LIMITS_STR(CFG_MAX_COORD_FRAC)   "],"
+        "\"lon_deg\":"       "[" _LIMITS_STR(CFG_MIN_LON_DEG)      "," _LIMITS_STR(CFG_MAX_LON_DEG)      "],"
+        "\"lon_frac\":"      "[" _LIMITS_STR(CFG_MIN_COORD_FRAC)   "," _LIMITS_STR(CFG_MAX_COORD_FRAC)   "],"
+        "\"led_day_brt\":"   "[" _LIMITS_STR(CFG_MIN_LED_BRT)      "," _LIMITS_STR(CFG_MAX_LED_BRT)      "],"
+        "\"led_nite_brt\":"  "[" _LIMITS_STR(CFG_MIN_LED_BRT)      "," _LIMITS_STR(CFG_MAX_LED_BRT)      "],"
+        "\"led_nite_from\":" "[" _LIMITS_STR(CFG_MIN_HOUR)         "," _LIMITS_STR(CFG_MAX_HOUR)         "],"
+        "\"led_nite_to\":"   "[" _LIMITS_STR(CFG_MIN_HOUR)         "," _LIMITS_STR(CFG_MAX_HOUR)         "]"
         "}";
 #undef _LIMITS_STR2
 #undef _LIMITS_STR

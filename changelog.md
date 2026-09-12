@@ -6,6 +6,99 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.5.0] — 2026-09-12  (gh#57 part 1 + gh#58 — validation that was never enforced, and failures that were never recorded)
+
+Minor rather than patch: `LOG_PIN_AUTH` is a new log event type, which is a
+payload-shape change. Both defects were found by the operator-path sweep on FDA4 and
+both are pre-existing — `cfg_clamp()`, `pin_auth.cpp` and `log_type_t` are unchanged
+since `v2.3.1`, so 5C88 behaves identically today.
+
+**Added.**
+
+- **`LOG_PIN_AUTH` (gh#58) — failed PIN entry is now in the audit log.** Before this
+  release a failed PIN left **no record anywhere**: `pin_auth.cpp` contained no logging
+  calls at all, the LCD only painted `Wrong PIN!` on the screen, and the web login wrote
+  a console line that a unit in a greenhouse has nobody to read. Repeated PIN guessing —
+  the signature of someone trying to get in — was unreconstructable after the fact on
+  both surfaces. `LOG_SESSION` recorded who got in; nothing recorded who tried.
+
+  The row is emitted from `pin_auth_verify()`, the one place both the LCD keypad (T8)
+  and `POST /api/login` (T11) pass through. `initiator` is the surface, `channel` is the
+  role (1 = farmer, 2 = admin), and:
+
+  | `value_a` | meaning | `value_b` |
+  |---|---|---|
+  | 0 | attempt failed | running failure count |
+  | 1 | lockout armed | lockout duration (s) |
+  | 2 | refused while locked out | seconds remaining |
+
+  A **success** emits nothing here — it is already a `LOG_SESSION` row — so the type
+  carries failures only. The entered digits are never logged. An attempt with a wrong
+  PIN *length* is also deliberately not logged: it cannot move the failure counter, so
+  it can never reach the lockout or succeed, and logging it would hand an
+  unauthenticated caller an unbounded way to flood the audit log. `log/logparser.py`
+  learns the encoding in this same changeset, per the standing rule.
+
+  `pin_auth_verify()` gains a required third parameter, `log_initiator_t surface`.
+  Required rather than defaulted so a future third caller cannot silently lose the
+  attribution — the same reasoning that made `cfg_key_kind()` three-way in 2.4.7.
+  `pin_auth.cpp` also gains the console lines it never had, including for the two
+  paths that are deliberately not given SD rows.
+
+- **`/api/config/limits` publishes eleven more keys (gh#57).** `cr_priority`,
+  `rh_ctrl_en`, `wind_prot_en`, `lat_deg`, `lat_frac`, `lon_deg`, `lon_frac`,
+  `led_day_brt`, `led_nite_brt`, `led_nite_from`, `led_nite_to`. The endpoint now
+  returns 40 keys.
+
+**Fixed.**
+
+- **gh#57 — eleven config keys accepted any `int32`.** `cfg_clamp()` covered 32 keys
+  while the shadow ladder in `apply_config_update()` covered 46. The eleven in the gap
+  were clamped nowhere *and* absent from `/api/config/limits`, so neither the server nor
+  a client constrained them. Demonstrated live on 2.4.8: `POST {"ns":"climate",
+  "key":"cr_priority","value":99}` answered `200 {"ok":true}` and stored `99`.
+
+  Bounds taken from the consumers, not invented: `cr_priority` 0–2 (`vent_resolve_conflict()`
+  implements exactly 0/1/2), `rh_ctrl_en` / `wind_prot_en` 0–1 (read as `!= 0`),
+  `lat_deg` ±90, `lon_deg` ±180, `lat_frac` / `lon_frac` 0–999 (thousandths),
+  `led_*_brt` 0–255 (8-bit PWM duty), `led_nite_from` / `led_nite_to` 0–23 (local hours,
+  reusing `CFG_MIN_HOUR`/`CFG_MAX_HOUR`).
+
+  The lat/lon four are the ones that mattered: they feed `update_sun_times()`, which sets
+  `s_cfg.is_daytime`, which T6 uses to pick day or night setpoints. An out-of-range
+  latitude could put the controller on night thresholds in daylight from a single HTTP
+  request — the same harm shape as gh#55. The GUI already carried `min`/`max` attributes
+  on its decimal-degree inputs; the server did not, and `POST /api/config` is a
+  documented API, so "the GUI would not do that" was not a validation strategy.
+
+**Changed.**
+
+- `LOG_SENSOR` is documented as **reserved**: it has had no emitter since rc.1.4.0, when
+  `LOG_SENSOR_HR` superseded it. The enum member and the parser branch stay so
+  pre-rc.1.4.0 archives keep decoding; the ordinal must not be reused.
+- Two comments in `main.cpp` referred to `LOG_CFG_CHANGE` and `LOG_PIN_AUTH`, neither of
+  which existed. `LOG_CFG_CHANGE` was the pre-release name for `LOG_SETPOINT`;
+  `LOG_PIN_AUTH` was described in those comments for four minors before it existed, and
+  now does.
+- `webUiMock/mock_server.py` mirrors the new limits payload so the dev GUI matches the
+  firmware. A cross-check script confirms the two agree key-for-key.
+
+**Deliberately not changed.**
+
+- **gh#57 part 2 — `poll_interval` 15–120 s (FRS) vs 30–300 s (code) is untouched.**
+  FR-S03 and FR-CF07 are both "Must" and both say 15–120; `cfg_limits.h` says 30–300 and
+  has a recorded rationale for the 30 s floor. That is a decision, not a patch: either
+  amend the two requirements and record why, or change the code. gh#57 stays **open** for
+  it. Nothing in this release moves those bounds.
+- The audit row for a PIN *change* (`LOG_PARAM_PIN_FARMER` / `_ADMIN`) still records only
+  which PIN changed, not which role was requested — the gh#60 follow-up, unchanged here.
+
+**Unchanged.** No NVS migration, no partition change, no web-asset behaviour change
+(the three enum keys are `<select>` elements and lat/lon already carried their own
+`min`/`max`, so the new limits entries change nothing in `app.js`).
+
+---
+
 ## [2.4.10] — 2026-09-12  (gh#60 + gh#61 — two ways an operator action did not mean what it said)
 
 Both found by the phase-3 operator-path sweep on FDA4. Both pre-existing and unchanged

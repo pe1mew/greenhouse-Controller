@@ -38,6 +38,7 @@ _EVENT_TYPES = {
     "SESSION":   "SESSION",
     "ALARM":     "ALARM",
     "SYSTEM":    "SYSTEM",
+    "PIN_AUTH":  "PIN_AUTH",  # 2.5.0+ -- failed PIN entry / lockout (gh#58)
 }
 
 _CH_STATE = {
@@ -876,6 +877,46 @@ def _decode_system(row: dict) -> str:
         return f"raw: a={row.get('value_a')} b={row.get('value_b')}"
 
 
+def _decode_pin_auth(row: dict) -> str:
+    """
+    PIN_AUTH -- firmware 2.5.0 (gh#58).
+
+    Emitted by pin_auth_verify() for every attempt that did NOT succeed. A
+    successful login is recorded as SESSION instead, so these two types
+    together are the full authentication picture; before 2.5.0 only the
+    successes were recorded.
+
+      initiator = surface -- FARMER/ADMIN = LCD keypad, WEB = POST /api/login
+      channel   = role attempted -- 1 = farmer, 2 = admin
+
+      value_a = 0  attempt failed               value_b = running failure count
+      value_a = 1  lockout armed                value_b = lockout duration (s)
+      value_a = 2  refused while locked out     value_b = seconds remaining
+
+    The entered digits are never logged, by design. A malformed-length attempt
+    is not logged either -- it cannot move the failure counter, so logging it
+    would let an unauthenticated caller flood the log.
+    """
+    try:
+        what      = int(row["value_a"])
+        detail    = int(row["value_b"])
+        ch        = int(row.get("ch", 0) or 0)
+        initiator = row.get("initiator", "?").strip()
+        by        = _INITIATOR.get(initiator, initiator)
+        role      = {1: "farmer", 2: "admin"}.get(ch, f"role {ch}")
+
+        if what == 0:
+            return f"PIN failed: {role}, failure #{detail}  [{by}]"
+        elif what == 1:
+            return f"PIN LOCKOUT ARMED: {role} locked for {detail}s  [{by}]"
+        elif what == 2:
+            return f"PIN refused, {role} locked out, {detail}s remaining  [{by}]"
+        else:
+            return f"PIN auth event {what}: {role}, b={detail}  [{by}]"
+    except (ValueError, KeyError):
+        return f"raw: a={row.get('value_a')} b={row.get('value_b')}"
+
+
 # Dispatch table
 _DECODERS = {
     "SENSOR":    _decode_sensor,      # legacy pre-rc.1.4.0
@@ -887,6 +928,7 @@ _DECODERS = {
     "SESSION":   _decode_session,
     "ALARM":     _decode_alarm,
     "SYSTEM":    _decode_system,
+    "PIN_AUTH":  _decode_pin_auth,  # 2.5.0+ -- gh#58
 }
 
 

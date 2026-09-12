@@ -1310,7 +1310,10 @@ extern "C" void app_main(void)
      * button held 20 s). It consumes Q2 (key events from T7) and Q5 (net
      * status from T10 — dormant in this phase, so Q5 stays empty and the
      * LCD shows "WiFi: ---" until Phase 6.N). It posts to Q4 (config
-     * changes via menu) and Q3 (LOG_CFG_CHANGE / LOG_PIN_AUTH events).
+     * changes via menu) and Q3 (LOG_SETPOINT / LOG_SESSION / LOG_PIN_AUTH
+     * events). 2.5.0: LOG_CFG_CHANGE was the pre-release name for
+     * LOG_SETPOINT; LOG_PIN_AUTH was described here for four minors before
+     * it existed, and landed with gh#58.
      *
      * Major migration changes (all single-line):
      *   - <Arduino.h> + <WiFi.h> dropped.
@@ -1322,7 +1325,7 @@ extern "C" void app_main(void)
      * Dependencies satisfied:
      *   - T7 alpha.6.4 — produces Q2 key events.
      *   - T4 alpha.6.7 — consumes Q4 config updates (drains the queue in main loop).
-     *   - T9 alpha.6.6 — log_post() for LOG_CFG_CHANGE / LOG_PIN_AUTH.
+     *   - T9 alpha.6.6 — log_post() for LOG_SETPOINT / LOG_SESSION / LOG_PIN_AUTH.
      *   - MX1 — shared with LCD/RTC paths; T8 takes it for LCD writes.
      *   - pin_auth.cpp — added to SRCS this phase (framework-agnostic, no Arduino deps).
      *   - status_post.cpp — NOT activated yet (Phase 6.N); status_post_stub.cpp

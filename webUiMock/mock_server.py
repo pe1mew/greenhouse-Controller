@@ -611,6 +611,21 @@ CONFIG_LIMITS: dict[str, list[int]] = {
     "poll_interval":  [30, 300],
     "session_timeout":[ 1, 1440],
     "ap_timeout":     [ 0, 1440],
+    # 2.5.0 (gh#57): eleven keys that were clamped nowhere and published
+    # nowhere. The three enums are <select> in the GUI and lat/lon carry their
+    # own HTML min/max, so this changes nothing for app.js -- it keeps the mock
+    # honest as the documented /api/config contract.
+    "cr_priority":    [ 0, 2],
+    "rh_ctrl_en":     [ 0, 1],
+    "wind_prot_en":   [ 0, 1],
+    "lat_deg":        [-90, 90],
+    "lat_frac":       [ 0, 999],
+    "lon_deg":        [-180, 180],
+    "lon_frac":       [ 0, 999],
+    "led_day_brt":    [ 0, 255],
+    "led_nite_brt":   [ 0, 255],
+    "led_nite_from":  [ 0, 23],
+    "led_nite_to":    [ 0, 23],
 }
 
 

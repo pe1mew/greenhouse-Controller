@@ -148,7 +148,11 @@ typedef enum {
 
 /** Event log entry type — stored as `event_type` field in log_entry_t. */
 typedef enum {
-    LOG_SENSOR,       /**< Periodic sensor snapshot (T, RH, wind) */
+    LOG_SENSOR,       /**< RESERVED, no emitter. Periodic sensor snapshot
+                       *  (T, RH, wind), superseded by LOG_SENSOR_HR at
+                       *  rc.1.4.0. Kept so ordinal 0 stays stable for
+                       *  pre-rc.1.4.0 archives, which logparser.py still
+                       *  decodes. Do not emit; do not renumber. */
     LOG_RELAY,        /**< Relay state change (window open/close/stop) */
     LOG_MODE_CHANGE,  /**< Operating mode transition */
     LOG_SETPOINT,     /**< Configuration parameter change */
@@ -166,6 +170,19 @@ typedef enum {
                        *  Emitted by T4 whenever cached values change (boot,
                        *  local midnight rollover, lat/lon edit). One row per day
                        *  in steady-state operation. See model/logUpdatePlan.md §3. */
+    LOG_PIN_AUTH,     /**< 2.5.0 (gh#58) — a PIN authentication attempt that did
+                       *  NOT succeed. Success is already recorded as LOG_SESSION,
+                       *  so this type carries failures only. Emitted by
+                       *  pin_auth_verify(), the one place both surfaces share.
+                       *    initiator = surface: LOG_BY_FARMER / LOG_BY_ADMIN for
+                       *                the LCD keypad, LOG_BY_WEB for /api/login
+                       *    channel   = role attempted: 1 = farmer, 2 = admin
+                       *    value_a=0 → attempt failed      value_b = failure count
+                       *    value_a=1 → lockout armed       value_b = lockout secs
+                       *    value_a=2 → refused, locked out value_b = secs left
+                       *  The entered digits are deliberately never logged.
+                       *  APPENDED, never inserted — the ordinal is stored in every
+                       *  archived CSV row and NVS blob. */
 } log_type_t;
 
 /** Log initiator — who or what triggered the event. */

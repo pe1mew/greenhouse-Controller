@@ -1,8 +1,18 @@
 # logparser — Greenhouse Controller Log Parser
 
 **File:** `log/logparser.py`
-**Document version:** 1.9 (matches firmware 2.2.0 — ROTA internet-pull OTA audit + config)
+**Document version:** 1.10 (matches firmware 2.5.0 — PIN_AUTH event type)
 **Requires:** Python 3.10+, standard library only (no pip dependencies)
+
+**What's new in 1.10** (matches firmware 2.5.0 — gh#58):
+- **New event type `PIN_AUTH`.** Failed PIN entry, the lockout that follows five
+  failures, and an attempt refused while locked out. Before 2.5.0 none of this was
+  recorded anywhere — not on SD, and on the LCD not even on the serial console — so
+  repeated PIN guessing left no trace. `SESSION` still records the successes, and
+  `PIN_AUTH` deliberately carries **only** the failures, so the two together are the
+  full picture. See the **PIN_AUTH** section below. Ordinal 9, appended after `SUN`.
+- **`SENSOR` is now marked reserved.** It has had no emitter since rc.1.4.0
+  (superseded by `SENSOR_HR`); the decoder stays for pre-rc.1.4.0 archives.
 
 **What's new in 1.9** (matches firmware 2.2.0 — ROTA internet-pull OTA):
 - **ROTA audit events (`value_a=22/23/24`).** The T16 internet-pull OTA client
@@ -439,6 +449,45 @@ User session opened or closed.  Posted by the UI task (T8).
 2025-06-07 14:40:00  [SESSION]   Admin (LCD)     Session opened: Admin  [Admin (LCD)]
 2025-06-07 14:55:00  [SESSION]   Admin (LCD)     Session closed  [Admin (LCD)]
 ```
+
+---
+
+### PIN_AUTH (2.5.0+)
+A PIN authentication attempt that did **not** succeed. Posted by
+`pin_auth_verify()` (`firmware/src/auth/pin_auth.cpp`), which is the single choke
+point both the LCD keypad (T8) and `POST /api/login` (T11) go through.
+
+A **successful** login emits no `PIN_AUTH` row — it is recorded as `SESSION`
+instead (LCD only; see *Known limitations*). Read the two types together.
+
+| Field | Meaning |
+|---|---|
+| `initiator` | The surface: `FARMER` / `ADMIN` = LCD keypad, `WEB` = `POST /api/login` |
+| `ch` | The role attempted: 1 = farmer, 2 = admin |
+| `value_a` | 0 = attempt failed, 1 = lockout armed, 2 = refused while locked out |
+| `value_b` | Running failure count (0), lockout duration in s (1), seconds remaining (2) |
+
+The entered digits are never logged.
+
+**Not logged, by design:** an attempt whose PIN is the wrong *length*. It cannot
+move the failure counter and so can never reach the lockout or succeed; logging it
+would give an unauthenticated caller an unbounded way to flood the audit log. Those
+reach the serial console only (`ESP_LOGW`).
+
+**Example output** — five failures arming a 300 s lockout, then an attempt refused
+during it, then one wrong admin PIN on its own counter (real rows from FDA4,
+2026-09-12):
+```
+2026-09-12 11:39:53  [PIN_AUTH ]  Web UI          PIN failed: farmer, failure #1  [Web UI]
+2026-09-12 11:39:55  [PIN_AUTH ]  Web UI          PIN failed: farmer, failure #2  [Web UI]
+2026-09-12 11:39:57  [PIN_AUTH ]  Web UI          PIN failed: farmer, failure #3  [Web UI]
+2026-09-12 11:39:58  [PIN_AUTH ]  Web UI          PIN failed: farmer, failure #4  [Web UI]
+2026-09-12 11:39:59  [PIN_AUTH ]  Web UI          PIN LOCKOUT ARMED: farmer locked for 300s  [Web UI]
+2026-09-12 11:40:01  [PIN_AUTH ]  Web UI          PIN refused, farmer locked out, 298s remaining  [Web UI]
+2026-09-12 11:40:06  [PIN_AUTH ]  Web UI          PIN failed: admin, failure #1  [Web UI]
+```
+
+Counters and lockouts are **per role**: a farmer lockout does not affect admin.
 
 ---
 

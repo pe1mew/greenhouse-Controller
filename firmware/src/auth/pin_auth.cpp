@@ -24,11 +24,16 @@
 
 #include "pin_auth.h"
 #include "nvs_config.h"        /* LIB-7 — NVS get/set wrappers              */
+#include "../event_logger/event_logger.h"  /* 2.5.0 gh#58 — log_post()      */
+
+#include <esp_log.h>           /* 2.5.0 gh#58 — console trail alongside Q3   */
 
 #include <mbedtls/sha256.h>    /* SHA-256 via ESP-IDF bundled mbedTLS        */
 #include <esp_random.h>        /* esp_fill_random() — hardware TRNG          */
 #include <string.h>
 #include <time.h>              /* time() — Unix timestamp from system clock  */
+
+static const char *TAG = "PIN_AUTH";
 
 /* ---------------------------------------------------------------------------
  * NVS key names (namespace NVS_NS_ACCESS = "access", defined in nvs_config.h)
@@ -156,6 +161,37 @@ static pin_auth_result_t write_default_hashes(void)
     return PIN_AUTH_OK;
 }
 
+/**
+ * @brief Post one LOG_PIN_AUTH audit row for an attempt that did not succeed.
+ *
+ * 2.5.0 (gh#58). Values are saturated into int16 because value_a/value_b are
+ * int16 and lockout_secs / lockout_max are operator-settable int32 NVS keys —
+ * a 40000 s lockout would otherwise be logged as a negative number.
+ *
+ * @param role     Role whose PIN was attempted (carried as channel 1/2).
+ * @param surface  LOG_BY_FARMER / LOG_BY_ADMIN (LCD) or LOG_BY_WEB (/api/login).
+ * @param what     0 = failed, 1 = lockout armed, 2 = refused while locked out.
+ * @param detail   Failure count, lockout seconds, or seconds remaining.
+ * @note  Posts to Q3 only. Adds NO NVS write — pin_auth_verify() already
+ *        writes one int32 per call, so a brute-force attempt is a flash-wear
+ *        path and must not be made a worse one.
+ */
+static void log_pin_auth(pin_role_t role, log_initiator_t surface,
+                         int16_t what, int32_t detail)
+{
+    if (detail > 32767)  detail = 32767;
+    if (detail < -32768) detail = -32768;
+
+    log_event_t ev = {};
+    ev.timestamp  = (uint32_t)time(NULL);
+    ev.event_type = LOG_PIN_AUTH;
+    ev.initiator  = (uint8_t)surface;
+    ev.channel    = (uint8_t)((role == PIN_ROLE_ADMIN) ? 2u : 1u);
+    ev.value_a    = what;
+    ev.value_b    = (int16_t)detail;
+    log_post(&ev);
+}
+
 /* ---------------------------------------------------------------------------
  * Public API
  * --------------------------------------------------------------------------- */
@@ -218,26 +254,49 @@ pin_auth_result_t pin_auth_init(void)
  *   5. On miss: increment failure counter; arm lockout if the threshold is
  *      reached. Return PIN_AUTH_WRONG (or PIN_AUTH_LOCKED_OUT on threshold).
  *
- * @param role  PIN_ROLE_FARMER or PIN_ROLE_ADMIN.
- * @param pin   ASCII digit string; length must match `role`.
- * @return      PIN_AUTH_OK, PIN_AUTH_WRONG, PIN_AUTH_LOCKED_OUT, or error.
+ * 2.5.0 (gh#58): steps 2 and 5 also emit one LOG_PIN_AUTH row via
+ * log_pin_auth(). Step 4 emits nothing — a success is already a LOG_SESSION
+ * row, so this type carries failures only. Step 1 and the NVS-read failure in
+ * step 3 reach the console only; see the comments at those sites for why.
+ *
+ * @param role     PIN_ROLE_FARMER or PIN_ROLE_ADMIN.
+ * @param pin      ASCII digit string; length must match `role`.
+ * @param surface  Attribution for the audit row: LOG_BY_FARMER / LOG_BY_ADMIN
+ *                 from the LCD keypad (T8), LOG_BY_WEB from /api/login (T11).
+ * @return         PIN_AUTH_OK, PIN_AUTH_WRONG, PIN_AUTH_LOCKED_OUT, or error.
  * @note   Every call writes at least one int32 to NVS (counter reset or
- *         increment); callers that probe speculatively will wear flash.
+ *         increment); callers that probe speculatively will wear flash. The
+ *         audit row adds no further NVS write.
  */
-pin_auth_result_t pin_auth_verify(pin_role_t role, const char *pin)
+pin_auth_result_t pin_auth_verify(pin_role_t role, const char *pin,
+                                  log_initiator_t surface)
 {
     if (!s_initialized)         return PIN_AUTH_ERR_INIT;
     if (pin == NULL)            return PIN_AUTH_ERR_PARAM;
-    if (strlen(pin) != required_digits(role)) return PIN_AUTH_ERR_PARAM;
+    if (strlen(pin) != required_digits(role)) {
+        /* 2.5.0 (gh#58) — console only, deliberately NOT an SD row. A malformed
+         * length never touches the failure counter, so it can never reach the
+         * lockout and can never succeed; logging it to Q3 would hand an
+         * unauthenticated caller an unbounded way to flood the audit log. */
+        ESP_LOGW(TAG, "verify: malformed PIN length for role=%d (surface=%d)",
+                 (int)role, (int)surface);
+        return PIN_AUTH_ERR_PARAM;
+    }
 
     /* --- Lockout check ---------------------------------------------------- */
     int32_t lockout_until = 0;
     nvs_cfg_get_i32(NVS_NS_ACCESS, lockout_key(role), &lockout_until);
     if (lockout_until != 0) {
         int32_t now = (int32_t)time(NULL);
-        if (now < lockout_until)
+        if (now < lockout_until) {
+            ESP_LOGW(TAG, "verify: REFUSED, role=%d locked for %lds more",
+                     (int)role, (long)(lockout_until - now));
+            log_pin_auth(role, surface, 2, lockout_until - now);
             return PIN_AUTH_LOCKED_OUT;
+        }
         /* Lockout expired — reset counter. */
+        ESP_LOGI(TAG, "verify: lockout expired for role=%d, counter cleared",
+                 (int)role);
         nvs_cfg_set_i32(NVS_NS_ACCESS, lockout_key(role), 0);
         nvs_cfg_set_i32(NVS_NS_ACCESS, fail_key(role), 0);
     }
@@ -249,8 +308,12 @@ pin_auth_result_t pin_auth_verify(pin_role_t role, const char *pin)
     uint8_t stored_hash[PIN_HASH_LEN];
     size_t  stored_len = PIN_HASH_LEN;
     if (nvs_cfg_get_blob(NVS_NS_ACCESS, hash_key(role), stored_hash, &stored_len) != NVS_CFG_OK ||
-        stored_len != PIN_HASH_LEN)
+        stored_len != PIN_HASH_LEN) {
+        /* Console only: this is a storage fault, not an authentication event,
+         * and the SD writer is downstream of the same NVS subsystem. */
+        ESP_LOGE(TAG, "verify: stored hash unreadable for role=%d", (int)role);
         return PIN_AUTH_ERR_NVS;
+    }
 
     if (hash_equal(entered_hash, stored_hash, PIN_HASH_LEN)) {
         /* Correct PIN — reset failure counter. */
@@ -272,9 +335,18 @@ pin_auth_result_t pin_auth_verify(pin_role_t role, const char *pin)
     if (fail_count >= lockout_max) {
         int32_t expiry = (int32_t)time(NULL) + lockout_secs;
         nvs_cfg_set_i32(NVS_NS_ACCESS, lockout_key(role), expiry);
+        ESP_LOGW(TAG, "verify: role=%d LOCKED OUT after %ld failures, %lds",
+                 (int)role, (long)fail_count, (long)lockout_secs);
+        /* One row per attempt: the attempt that arms the lockout is logged as
+         * value_a=1 and not additionally as a plain failure. The failure count
+         * at that moment is lockout_max by definition. */
+        log_pin_auth(role, surface, 1, lockout_secs);
         return PIN_AUTH_LOCKED_OUT;
     }
 
+    ESP_LOGW(TAG, "verify: WRONG PIN role=%d, failure %ld of %ld",
+             (int)role, (long)fail_count, (long)lockout_max);
+    log_pin_auth(role, surface, 0, fail_count);
     return PIN_AUTH_WRONG;
 }
 

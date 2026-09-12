@@ -40,6 +40,11 @@
 
 #include <stdint.h>
 
+/* 2.5.0 (gh#58) — log_initiator_t, for the surface argument to
+ * pin_auth_verify(). Pulls in the shared queue/log types; every translation
+ * unit that includes this header already includes them. */
+#include "../types/app_types.h"
+
 /* ---------------------------------------------------------------------------
  * Constants
  * --------------------------------------------------------------------------- */
@@ -119,12 +124,31 @@ pin_auth_result_t pin_auth_init(void);
  * incremented; when it reaches the configured maximum the role is locked
  * for the configured duration.
  *
- * @param role  PIN_ROLE_FARMER or PIN_ROLE_ADMIN.
- * @param pin   Null-terminated ASCII digit string (exactly PIN_FARMER_DIGITS
- *              or PIN_ADMIN_DIGITS characters depending on role).
- * @return      PIN_AUTH_OK, PIN_AUTH_WRONG, PIN_AUTH_LOCKED_OUT, or error.
+ * ## Audit logging (2.5.0, gh#58)
+ *
+ * Every attempt that does NOT succeed emits one LOG_PIN_AUTH row to Q3 — a
+ * failure, the attempt that arms the lockout, and an attempt refused while
+ * locked out. A success emits nothing here; the caller's LOG_SESSION row
+ * already records it. Before 2.5.0 none of this was recorded anywhere, on
+ * either surface, so repeated PIN guessing left no trace.
+ *
+ * `surface` exists because this function is the only place that sees every
+ * attempt from every surface, and the row is useless without knowing which
+ * one it came from. It is a required parameter rather than a defaulted one
+ * so that a future third caller cannot silently lose the attribution.
+ *
+ * @param role     PIN_ROLE_FARMER or PIN_ROLE_ADMIN.
+ * @param pin      Null-terminated ASCII digit string (exactly PIN_FARMER_DIGITS
+ *                 or PIN_ADMIN_DIGITS characters depending on role).
+ * @param surface  Where the attempt came from, for the audit row:
+ *                 LOG_BY_FARMER / LOG_BY_ADMIN from the LCD keypad (T8),
+ *                 LOG_BY_WEB from POST /api/login (T11).
+ * @return         PIN_AUTH_OK, PIN_AUTH_WRONG, PIN_AUTH_LOCKED_OUT, or error.
+ * @note   Callable from T8 or T11. Posts to Q3 via log_post(), which is
+ *         non-blocking and drops the oldest row when the queue is full.
  */
-pin_auth_result_t pin_auth_verify(pin_role_t role, const char *pin);
+pin_auth_result_t pin_auth_verify(pin_role_t role, const char *pin,
+                                  log_initiator_t surface);
 
 /**
  * @brief Replace the stored PIN hash for the given role.

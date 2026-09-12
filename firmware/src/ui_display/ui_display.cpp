@@ -1947,7 +1947,12 @@ static void handle_pin(char key)
         }
 
         s_pin_buf[s_pin_len] = '\0';
-        pin_auth_result_t res = pin_auth_verify(s_pin_role, s_pin_buf);
+        /* 2.5.0 (gh#58) — tag the attempt's surface for the LOG_PIN_AUTH row.
+         * The LCD reports the role being attempted, matching how session_open()
+         * tags its LOG_SESSION row; a web attempt reports LOG_BY_WEB instead. */
+        pin_auth_result_t res = pin_auth_verify(s_pin_role, s_pin_buf,
+                                                (s_pin_role == PIN_ROLE_ADMIN)
+                                                ? LOG_BY_ADMIN : LOG_BY_FARMER);
 
         if (res == PIN_AUTH_OK) {
             session_t lvl = (s_pin_role == PIN_ROLE_FARMER) ? SESSION_FARMER

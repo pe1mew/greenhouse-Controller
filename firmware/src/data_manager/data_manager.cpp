@@ -672,6 +672,11 @@ static int32_t cfg_clamp(const char *ns, const char *key, int32_t v)
         else if (strcmp(key, K_HYST_RH)    == 0) _CLAMP(CFG_MIN_HYST_RH,    CFG_MAX_HYST_RH);
         else if (strcmp(key, K_AVG_WIN_T)  == 0) _CLAMP(CFG_MIN_AVG_WIN,    CFG_MAX_AVG_WIN);
         else if (strcmp(key, K_AVG_WIN_RH) == 0) _CLAMP(CFG_MIN_AVG_WIN,    CFG_MAX_AVG_WIN);
+        /* 2.5.0 (gh#57) — previously unclamped: POST /api/config stored any
+         * int32. rh_ctrl_en is read as (v != 0), so a non-zero value behaved
+         * as "on" by luck rather than by validation. */
+        else if (strcmp(key, K_RH_CTRL_EN)  == 0) _CLAMP(0, 1);
+        else if (strcmp(key, K_CR_PRIORITY) == 0) _CLAMP(CFG_MIN_CR_PRIORITY, CFG_MAX_CR_PRIORITY);
 
     } else if (strcmp(ns, NVS_NS_WIND) == 0) {
         if      (strcmp(key, K_AVG_WIN_WIND)  == 0) _CLAMP(CFG_MIN_AVG_WIN, CFG_MAX_AVG_WIN);
@@ -679,6 +684,8 @@ static int32_t cfg_clamp(const char *ns, const char *key, int32_t v)
         else if (strcmp(key, K_DIR_EXCL_LOW)  == 0) _CLAMP(CFG_MIN_DIR,   CFG_MAX_DIR);
         else if (strcmp(key, K_DIR_EXCL_HIGH) == 0) _CLAMP(CFG_MIN_DIR,   CFG_MAX_DIR);
         else if (strcmp(key, K_WIND_HYST)     == 0) _CLAMP(CFG_MIN_WIND_HYST, CFG_MAX_WIND_HYST);
+        /* 2.5.0 (gh#57) — previously unclamped; read as (v != 0). */
+        else if (strcmp(key, K_WIND_PROT_EN)  == 0) _CLAMP(0, 1);
 
     } else if (strcmp(ns, NVS_NS_MOTOR) == 0) {
         static const char * const ktr[] = { K_TRAVEL_M1,      K_TRAVEL_M2,      K_TRAVEL_M3      };
@@ -699,6 +706,19 @@ static int32_t cfg_clamp(const char *ns, const char *key, int32_t v)
         if      (strcmp(key, K_POLL_INTERVAL)   == 0) _CLAMP(CFG_MIN_POLL_S,            CFG_MAX_POLL_S);
         else if (strcmp(key, K_SESSION_TIMEOUT) == 0) _CLAMP(CFG_MIN_TIMEOUT_MIN,       CFG_MAX_TIMEOUT_MIN);
         else if (strcmp(key, K_AP_TIMEOUT)      == 0) _CLAMP(CFG_MIN_AP_TIMEOUT,        CFG_MAX_TIMEOUT_MIN);
+        /* 2.5.0 (gh#57) — previously unclamped. lat/lon feed update_sun_times()
+         * -> s_cfg.is_daytime -> T6's active setpoints, so an out-of-range
+         * latitude could put the controller on night thresholds in daylight
+         * from one HTTP request. The GUI already carried min/max attributes
+         * for its decimal-degree inputs; the server did not. */
+        else if (strcmp(key, K_LAT_DEG)         == 0) _CLAMP(CFG_MIN_LAT_DEG,           CFG_MAX_LAT_DEG);
+        else if (strcmp(key, K_LAT_FRAC)        == 0) _CLAMP(CFG_MIN_COORD_FRAC,        CFG_MAX_COORD_FRAC);
+        else if (strcmp(key, K_LON_DEG)         == 0) _CLAMP(CFG_MIN_LON_DEG,           CFG_MAX_LON_DEG);
+        else if (strcmp(key, K_LON_FRAC)        == 0) _CLAMP(CFG_MIN_COORD_FRAC,        CFG_MAX_COORD_FRAC);
+        else if (strcmp(key, K_LED_DAY_BRT)     == 0) _CLAMP(CFG_MIN_LED_BRT,           CFG_MAX_LED_BRT);
+        else if (strcmp(key, K_LED_NITE_BRT)    == 0) _CLAMP(CFG_MIN_LED_BRT,           CFG_MAX_LED_BRT);
+        else if (strcmp(key, K_LED_NITE_FROM)   == 0) _CLAMP(CFG_MIN_HOUR,              CFG_MAX_HOUR);
+        else if (strcmp(key, K_LED_NITE_TO)     == 0) _CLAMP(CFG_MIN_HOUR,              CFG_MAX_HOUR);
         else if (strcmp(key, K_STATUS_INTERVAL) == 0) _CLAMP(CFG_MIN_STATUS_INTERVAL_S, CFG_MAX_STATUS_INTERVAL_S);
         else if (strcmp(key, K_STATUS_ENABLE)   == 0) _CLAMP(0, 1);
         else if (strcmp(key, K_STATUS_EXPOSE)   == 0) _CLAMP(0, 0x3F);

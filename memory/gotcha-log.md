@@ -1054,3 +1054,41 @@ Encoded in [firmware/partitions.csv](../firmware/partitions.csv) header comment.
 **Fix / workaround:** Before believing a coredump matches the running version, verify: `cmp` against known prior dumps, or decode it (`esp-coredump ... --core-format raw <that-version's elf>`) and check the backtrace/task set. Erase a known-stale dump with `POST /api/coredump/erase`. **Improvements to consider:** erase the coredump partition as part of the OTA apply (T13 + T16/rota_apply) so a dump always matches the running image; and/or have the status endpoint report the version parsed from the dump's `esp_app_desc` instead of `FIRMWARE_VERSION`.
 
 **Resolved (2.2.14, gh#39):** Part 1 done — at boot the dump's ELF-SHA (`esp_core_dump_get_summary`) is compared to the running image's (`esp_app_get_elf_sha256`) and cached as `stale`. `/api/coredump/status` now reports `running_fw_ver` (not the misleading `fw_ver`) + `"stale":bool`; the download filename gains a `-stale` marker; the Log-tab GUI shows "from an EARLIER firmware (running X)." Part 2 (erase the coredump on OTA apply) was **deliberately NOT done** — the operator chose to preserve dumps across updates and rely on the `stale` flag, so no crash data is ever lost to an update.
+
+## 2026-09-12 — `POST /api/config` is asynchronous, so a read-back right after the write returns the PREVIOUS value
+
+**Problem:** The 2.5.0 clamp verification harness POSTed an out-of-range value, immediately `GET /api/config`, and reported **13 FAILs out of 43** — every one of them showing the value from the *previous* write in the loop. The clamp was working correctly the whole time. Worse, the run left two keys (`t_max_day`, `cr_priority`) mid-flight because the "restore" step was itself read back too early and looked like it had not applied.
+
+**Root cause:** `/api/config` does not write NVS on the request thread. It validates, then enqueues onto **Q4**; T4 drains Q4 on a later loop pass and only then clamps, writes NVS and updates the shadow. The HTTP 200 means *accepted*, not *applied*. The lag is one T4 loop period, which is long enough to lose a race against a script but short enough to look like a flaky clamp.
+
+**Fix:** Never assert on a value read straight after a POST. Either settle (a few seconds) or poll until the stored value stops changing. And make the transition **observable**: if the original value already equals the bound you expect, move the key to a different in-range base first — otherwise a broken clamp and a working one produce identical read-backs.
+
+**Rule (promoted):** *when a write goes through a queue, the HTTP status tells you it was accepted, not that it took effect — prove the effect separately, and make sure the expected effect is distinguishable from no-op.*
+
+## 2026-09-12 — a verification step that does not check its own HTTP status can report a false FAILURE
+
+**Problem:** The gh#58 harness verified "a successful login adds no PIN_AUTH row" by downloading the SD log twice and comparing raw line counts. It reported `0 new rows` after five minutes — impossible, since sensor rows land every 30 s — and therefore a FAIL. The firmware was fine.
+
+**Root cause:** the second `GET /api/log/download` result was never status-checked. Any non-200 (or any body that was not the CSV) silently became "the file did not grow". This is the mirror image of the 2026-09-11 harness bug that reported five false PASSes by not JSON-parsing `HTTPError` bodies — same class, opposite sign.
+
+**Fix:** assert the shape of every response the assertion depends on, including the *second* fetch of the same resource. Then count the thing you actually care about (PIN_AUTH rows: 7 before, 7 after) rather than a proxy (total line count) that a broken fetch can fake. Re-run gave 7/7.
+
+**Rule (promoted):** *every fetch an assertion rests on needs its own status and shape check — a silently empty response is indistinguishable from "nothing happened".*
+
+## 2026-09-12 — `log_type_t` is in `types/app_types.h`, not `event_logger.h`
+
+**Problem:** Went looking for the log event enum in `firmware/src/event_logger/event_logger.h` — where a prior session's notes said it lived — and `grep -n "log_type"` returned **nothing**, twice, on a 426-line file that plainly exists. Briefly suspected a broken grep or an encoding problem.
+
+**Root cause:** the enum is declared in `firmware/src/types/app_types.h` (section 3, with the other queue/message types); `event_logger.h` only documents the `LOG_SYSTEM` `value_a` subtypes. The note was wrong about the file.
+
+**Fix:** `grep -rn "LOG_MODE_CHANGE" --include=*.h firmware/` finds it in one step. This is the same lesson as the three false findings from bad greps on 2026-09-11: *an empty grep is evidence about the pattern, not about the codebase* — when a grep for something you are sure exists comes back empty, the search is wrong before the tree is.
+
+## 2026-09-12 — a semicolon inside a C comment truncates any "split on `;`" tool
+
+**Problem:** The 2.5.0 pre-flight check that expands `LIMITS_JSON` and `json.loads` it failed with `Expecting property name ... char 624` — the JSON stopped dead after `"ap_timeout"`, exactly where a newly added comment block sat. Looked like the eleven new entries had not been added.
+
+**Root cause:** the checker did `split("static const char LIMITS_JSON[] =")[1].split(";", 1)[0]` to grab the initialiser, and only *then* stripped comments. The new comment contained the prose "...nothing for app.js; it is the documented contract" — so the split cut the body at that semicolon. The firmware was correct; the C compiler strips comments first.
+
+**Fix:** strip comments **before** splitting on any C token. The prose semicolon was also changed to a full stop, so the next naive tool does not trip on it either.
+
+**Rule:** *when parsing C from a script, remove comments as step one — anything you split on can legally appear inside one.*

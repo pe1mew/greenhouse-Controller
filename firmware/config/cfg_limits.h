@@ -34,6 +34,14 @@
 #define CFG_MIN_RH_MIN       20
 #define CFG_MAX_RH_MIN       90
 
+/* -- Conflict resolution (2.5.0, gh#57) ----------------------------------- */
+/* vent_resolve_conflict() (climate_control.cpp) implements exactly 0/1/2, and
+ * `case 0:` shares an arm with `default:` — so before 2.5.0 an out-of-range
+ * cr_priority was stored verbatim and silently degraded to TEMP_FIRST.
+ *   0 = CR_TEMP_FIRST   1 = CR_RH_FIRST   2 = CR_DEVIATION (higher step wins) */
+#define CFG_MIN_CR_PRIORITY   0
+#define CFG_MAX_CR_PRIORITY   2
+
 /* ── Hysteresis ───────────────────────────────────────────────────────────── */
 /* Must be ≥ 2: with NUM_VENT_STEPS=3, hyst/3 = step_width; below 2 it rounds
  * to 0 and the floor-to-1 gives a 1-unit effective dead band. */
@@ -72,6 +80,31 @@
 #define CFG_MIN_TIMEOUT_MIN   1
 #define CFG_MAX_TIMEOUT_MIN 1440  /* 24 h */
 #define CFG_MIN_AP_TIMEOUT    0   /* 0 = AP stays up indefinitely */
+
+/* -- Geolocation (2.5.0, gh#57) -------------------------------------------- */
+/* update_sun_times() assembles `lat_deg + lat_frac / 1000.0f`, and the result
+ * drives s_cfg.is_daytime, which T6 uses to pick day vs night setpoints. An
+ * absurd latitude therefore changes greenhouse behaviour, so these are clamped
+ * server-side and not only by the GUI's own min/max attributes.
+ * NOTE the fraction is unsigned in this encoding: for a negative degree the
+ * fraction moves the value TOWARD zero (lat_deg=-52, lat_frac=500 -> -51.5).
+ * Correct for the northern hemisphere, which is where the encoding is used;
+ * changing it would be a payload change, so it is documented, not altered. */
+#define CFG_MIN_LAT_DEG     -90
+#define CFG_MAX_LAT_DEG      90
+#define CFG_MIN_LON_DEG    -180
+#define CFG_MAX_LON_DEG     180
+#define CFG_MIN_COORD_FRAC    0   /* thousandths of a degree */
+#define CFG_MAX_COORD_FRAC  999
+
+/* -- Status LED (2.5.0, gh#57) --------------------------------------------- */
+/* 8-bit PWM duty. watchdog.cpp:123-125 already clamps defensively at the
+ * consumer; this clamp keeps the STORED value honest so the GUI and the audit
+ * log agree with what the LED actually does.
+ * led_nite_from / led_nite_to are local hours and reuse CFG_MIN_HOUR/MAX_HOUR
+ * (`to` is exclusive, so from=22,to=6 means 22:00-06:00). */
+#define CFG_MIN_LED_BRT       0
+#define CFG_MAX_LED_BRT     255
 
 /* ── Status website reporting (T14) ──────────────────────────────────────── */
 #define CFG_MIN_STATUS_INTERVAL_S   60   /* spec floor; faster wastes bandwidth */
