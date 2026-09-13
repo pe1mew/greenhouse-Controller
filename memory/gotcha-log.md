@@ -36,7 +36,7 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ## Index — by where it bites you
 
-53 entries is too many to scan. Find your subsystem, then **Ctrl+F the date** to jump.
+54 entries is too many to scan. Find your subsystem, then **Ctrl+F the date** to jump.
 Hooks are the *symptom*, not the title — you rarely know the cause when you arrive here.
 Entries stay in reverse-chronological order below; this index is the only grouped view.
 
@@ -54,7 +54,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-09-07** — every Modbus read times out early in boot, but T5 works fine later (bus dies during RTC/LittleFS/SD init)
 - **2026-09-07** — `pio run` on a driver env fails with `UART_SCLK_DEFAULT was not declared` [RESOLVED]
 - **2026-09-05** — the header promises a UART mutex the source never creates (gh#49)
-- **2026-08-26** — a ~59 s T/RH sensor fault that clears itself, roughly monthly; plus one 100-min wind fault that is *not* a defect
+- **2026-08-26** — a ~59 s T/RH sensor fault that clears itself; plus one 100-min wind fault that is *not* a defect **[extended 2026-09-13: wind speed at every event, 8 genuine faults, 2 of 2 wind faults closed the greenhouse]**
 - **2026-07-28** — a hardware test "passes" but the emulator was still fed live data
 - **2026-07-13** — wind readings before 2026-06-19 12:00 are meaningless (vane not commissioned)
 - **2026-07-08** — clock hours wrong while `ntp_synced=true`; also: `time_iso` is a 0–60 s stale shadow **by design** [RESOLVED]
@@ -87,6 +87,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-XX-XX** — OTA flips the firmware version but assets stay old (shared LittleFS basePath) [RESOLVED]
 
 ### SD logging & the log parser
+- **2026-09-13** — alarm rows land 30-55 s after their timestamp, out of order; also: a single failed read leaves NO trace, and SENSOR_HR keeps flowing through a fault
 - **2026-08-25** — an SD log's FILENAME is its upload time, not its coverage window (silently parses the wrong period)
 - **2026-07-23** — a wind override at `speed == v_max` is mislabelled a "direction" event (gh#45) [RESOLVED, but pre-2.3.0 logs still misparse]
 - **2026-07-17** — log uploads stop dead once the card holds >~21 files (gh#42) [RESOLVED]
@@ -118,6 +119,26 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
 
+
+## 2026-09-13 — ALARM rows reach the SD 30-55 s AFTER their timestamp, so file order is not event order
+
+**Problem:** reading 5C88's logs for gh#66, the alarm rows for one wind fault appeared *between* rows stamped 30 s later than them, and two events came out with every alarm row collapsed onto a single timestamp — which read as a zero-duration fault, i.e. a fault that raised and cleared in the same second. That is impossible: T5 clears a fault on the first success at a *later* poll, so the shortest real fault is one poll interval.
+
+**Root cause:** `ALARM` goes through **Q3**, which is slow — the sensor poll keeps it busy (same queue pressure behind the gh#61 automount entry). `SENSOR_HR` takes a faster path. The row's **timestamp is the event time and is correct**; what lags is the *write*, by 30-55 s in the cases measured. So within a file the alarm rows sit later than their timestamp, interleaved among rows that were written promptly, and a run of alarms from one incident can compress onto one stamp.
+
+**Fix:** **sort by timestamp, never by file position, whenever alarms are involved.** Two corollaries:
+
+- pairing an onset to a clear by "first clear at or after this onset **in file order**" produces nonsense; pair by timestamp and consume the match.
+- a zero-duration fault is not a real observation. It means the stamps collapsed, not that the sensor recovered instantly.
+
+**Two more things the log cannot tell you, worth knowing at the same time:**
+
+- **A single failed sensor read leaves no trace at all** — no row, no counter. Only a *double* failure inside one poll emits an `ALARM`. Any failure count taken from the SD log is a **lower bound** on something unmeasured. (This is what gh#66 Part 2's per-sensor indicators exist to fix.)
+- **`SENSOR_HR` rows continue unbroken through a sensor fault and prove nothing.** By design (`sensor_poll.cpp` Step 5) a faulted sensor's raw fields carry the **last known average**, to avoid a zero-gap in T4's ring — and that value keeps changing as the window slides, so it reads exactly like a live sensor. I very nearly concluded the S200 was answering during its own fault, which would have sent the whole investigation the wrong way.
+
+**Where it lives:** `firmware/src/sensor_poll/sensor_poll.cpp` (Step 5, and `post_sensor_alarm`); Q3 and T9 in `event_logger.cpp`; ch 4/5 decoding in `log/logparser.py`.
+
+---
 
 ## 2026-09-12 — a constant pinned to the spec floor was DEAD CODE with one bus caller, and became load-bearing the moment a second arrived
 
@@ -729,17 +750,38 @@ escaped quotes or regex as already broken.
 
 **Every sensor-fault pair in the campaign to date** (`ALARM` rows on ch 4 = T/RH, ch 5 = wind; `value_a` 1 = triggered, 0 = cleared):
 
-| when | sensor | duration | reading |
-|---|---|---|---|
-| 2026-06-10 16:04:14 | T/RH | same second | early-campaign blip |
-| 2026-06-19 09:39:46 -> 11:19:21 | wind | **~100 min** | **pre-commissioning — not a field failure**, see below |
-| 2026-07-22 04:02:38 -> 04:03:37 | T/RH | 59 s | |
-| 2026-07-29 17:11:54 -> 17:12:53 | T/RH | 59 s | |
-| 2026-08-18 17:07:56 | wind | same second | T3 raised and released the safe-fail override correctly (`param=243`) |
-| 2026-08-23 03:19:19 -> 03:20:18 | T/RH | 59 s | |
-| 2026-09-04 19:32:18 -> 19:33:16 | T/RH | 58 s | added 2026-09-05 |
+| when | sensor | duration | wind then | reading |
+|---|---|---|---|---|
+| 2026-06-10 16:04:14 | T/RH | same second | 0.4 m/s | early-campaign blip |
+| 2026-06-19 09:39:46 -> 11:19:21 | wind | **~100 min** | *(invalid)* | **pre-commissioning — not a field failure**, see below |
+| 2026-07-22 04:02:38 -> 04:03:37 | T/RH | 59 s | 1.2 m/s | |
+| 2026-07-29 17:11:54 -> 17:12:53 | T/RH | 59 s | 0.9 m/s | |
+| 2026-08-18 17:07:56 | wind | same second | **1.6 m/s** | T3 raised and released the safe-fail override correctly (`param=243`) |
+| 2026-08-23 03:19:19 -> 03:20:18 | T/RH | 59 s | 1.7 m/s | |
+| 2026-09-04 19:32:18 -> 19:33:16 | T/RH | 58 s | 2.6 m/s | added 2026-09-05 |
+| 2026-09-06 18:05:56 -> 18:06:55 | T/RH | 59 s | 0.7 m/s | added 2026-09-13 |
+| 2026-09-10 12:42:16 -> 12:43:15 | wind | 59 s | **1.4 m/s** | added 2026-09-13. **Greenhouse CLOSED** (`param=243`), second ever |
 
-**The ~59 s T/RH blip is the recurring one** — five T/RH events total, four of them 58-59 s (Jul 22, Jul 29, Aug 23, Sep 4; intervals 7 / 25 / 12 days). All self-cleared; climate control rode through on the last good average and none is visible as an excursion in the day-plots. Consistent with an occasional Modbus read collision or a transient on the RS485 pair, not a failing sensor. **Note the spacing is irregular** — Jul 22 and Jul 29 are only a week apart — so "roughly monthly" would be wrong.
+**The wind column was added 2026-09-13 and it is the column that matters for
+gh#66.** Every genuine fault in 98.5 days of coverage happened between **0.4 and
+2.6 m/s** — so **none of these is a weather event**, and the two wind faults are
+two ventilation decisions made on a bus artefact. Since commissioning there have
+been exactly **two** genuine wind faults and **both closed the greenhouse: 2 of 2**.
+
+**Rates over the 98.5 days of logged coverage (98 % of the calendar window),
+excluding the pre-commissioning artefact — 8 genuine faults:** T/RH one per
+**16.4 days**, wind one per **41.7 days** (measured from commissioning, 83.3 d),
+overall one per **12.3 days**. By month Jun/Jul/Aug/Sep: **1 / 2 / 2 / 3** —
+stable, not degrading.
+
+**Why this matters beyond 5C88 (added 2026-09-13):** this unit runs 2.3.1 with
+**no T17, no wire encoder on the bus and a single bus caller**, so it is the
+standing control for the window-sensor work. That is what retired the dev-rig
+arm A / arm B experiment in
+[`design/integrateWindowPositionSensor.md`](../design/integrateWindowPositionSensor.md)
+— the control arm already exists, in production, with 98 days in it.
+
+**The ~59 s T/RH blip is the recurring one** — **six** T/RH events total (Sep 6 added 2026-09-13), five of them 58-59 s (Jul 22, Jul 29, Aug 23, Sep 4, Sep 6; intervals 7 / 25 / 12 / 13 days). All self-cleared; climate control rode through on the last good average and none is visible as an excursion in the day-plots. Consistent with an occasional Modbus read collision or a transient on the RS485 pair, not a failing sensor. **Note the spacing is irregular** — Jul 22 and Jul 29 are only a week apart — so "roughly monthly" would be wrong.
 
 **The 100-minute wind fault is explained and is not a defect:** the wind vane was commissioned on **2026-06-19 at 12:00** (see the 2026-07-13 wind-validity entry). The fault ran 09:39 -> 11:19 that same morning, i.e. entirely *before* the sensor was in service. It is an installation artefact. Anything wind-related before 2026-06-19 12:00 should be read the same way.
 
@@ -756,6 +798,8 @@ escaped quotes or regex as already broken.
 ```bash
 grep -h ",ALARM," *.log | awk -F, '$4==4 || $4==5'
 ```
+
+**A second caution, 2026-09-13 — this entry got re-derived from scratch, less accurately.** Asked to "read the 5C88 logs" for gh#66, I ran a fresh 98-day analysis without opening this file first, and reported **9** faults at one per 10.9 days to the issue. Nine includes the 2026-06-19 pre-commissioning artefact that the row above already excludes, and the entry above had also already worked out the attempt count (three failed reads) that I only hedged at. CLAUDE.md says to check this log **before** debugging from scratch; "read the logs" is a debugging task and the rule applies to it. **A fresh analysis of a subsystem is exactly when this file is most likely to already have the answer, and least likely to be opened.**
 
 **A caution learned writing this entry:** an earlier draft claimed "2 occurrences, roughly monthly" from memory. Running the command above immediately showed six pairs across two sensors, including the 100-minute one. **Run the count before characterising a pattern** — a fault log is exactly the place where recollection is unreliable.
 
