@@ -86,7 +86,7 @@
       <p><span data-tip="WiFi signal strength in dBm. Above −70 dBm is good. Below −85 dBm may cause connection drops or slow responses.">RSSI</span>: <strong id="st-wifi-rssi">—</strong> dBm</p>
     </div>
     <div class="card" id="card-bus" hidden>
-      <h3>Modbus bus <span class="tip-icon" data-tip="Per-sensor traffic on the RS485 bus, counted since the last reboot. Every sensor shares one pair of wires, so this table is how you tell a failing sensor from a failing bus: if one row shows errors and the others do not, the problem is that device or its wiring. An occasional error is normal and the controller retries.">ⓘ</span></h3>
+      <h3>Modbus bus <span class="tip-icon" data-tip="Per-sensor traffic on the RS485 bus, counted since the last reboot. Every sensor shares one pair of wires, so this table is how you tell a failing sensor from a failing bus: if one row shows errors and the others do not, the problem is that device or its wiring. An occasional error is normal and the controller retries. All counts are since the last reboot, so they restart at zero after a power cut or an update; the hour-by-hour trend is kept in the event log.">ⓘ</span></h3>
       <table id="bus-tbl" style="width:100%;font-size:.85em;text-align:right;white-space:nowrap">
         <thead><tr>
           <th>Sensor</th>
@@ -96,7 +96,6 @@
         </tr></thead>
         <tbody></tbody>
       </table>
-      <p class="muted" style="font-size:.85em">Since last reboot. Hourly trends are in the event log.</p>
     </div>
     <div class="card">
       <h3>SD Card <span class="tip-icon" data-tip="Status of the microSD card used for event log storage (FAT32 over SPI).">ⓘ</span></h3>
