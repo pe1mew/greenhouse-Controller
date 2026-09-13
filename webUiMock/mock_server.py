@@ -444,6 +444,15 @@ def _build_status() -> dict:
             "direction_avg_deg":       wind_dir,
             "direction_variation_deg": wind_var,
         },
+        "bus": [
+            # gh#66 -- per-slave Modbus indicators, since boot. Shaped like the
+            # firmware's: a=address, ok, err, busy, max=longest consecutive-fail
+            # run. Delete this key to exercise the no-bus path, where the card
+            # must hide entirely rather than render zeros.
+            {"a": 1,  "ok": 4821, "err": 2,   "busy": 0, "max": 1},
+            {"a": 40, "ok": 1190, "err": 0,   "busy": 3, "max": 0},
+            {"a": 44, "ok": 4823, "err": 0,   "busy": 0, "max": 0},
+        ],
         "windows": {
             "M1": "CLOSED",
             "M2": "CLOSED",

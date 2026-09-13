@@ -257,6 +257,19 @@ typedef struct {
     uint32_t framing;
     uint32_t param;
     uint32_t busy;
+
+    /** Current run of consecutive failures, and the high-water mark since
+     *  boot. **This is the number that predicts a fault**, because T5 faults on
+     *  consecutive failures rather than on a rate -- a slave can sit at 0.1 %
+     *  forever without ever faulting, or fault at the same rate if the failures
+     *  arrive together.
+     *
+     *  @c MODBUS_ERR_BUSY does **not** break or extend the run: losing the bus
+     *  lock says the bus was busy, not that this slave failed. Counting it would
+     *  let ordinary contention predict a fault, which is the same mistake that
+     *  collapsing BUSY into COMM made in the sensor drivers. */
+    uint16_t consec_fail;
+    uint16_t consec_fail_max;
 } modbus_slave_counters_t;
 
 typedef struct {

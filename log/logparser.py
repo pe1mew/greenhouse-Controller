@@ -123,6 +123,14 @@ _PARAM = {
     45: ("wind_hyst",       "m/s"),
     # 2.4.2 (gh#51) - motor travel time, previously never logged at all.
     46: ("travel",          "s"),
+    # ---- Modbus bus performance indicators (gh#66 Part 2, fw 2.8.0) -------
+    # These are NOT config params. They ride on LOG_SYSTEM value_a = 31, where
+    # `channel` is the SLAVE ADDRESS and value_b is the INTERVAL DELTA for one
+    # hour -- never a cumulative count. Listed here so a bare param number never
+    # renders as "param#50", but the decoding lives in _decode_system().
+    50: ("bus_ok",          "txn"),
+    51: ("bus_fail",        "txn"),
+    52: ("bus_maxfail",     "run"),
 }
 
 # Param IDs whose value semantics are "field was set/changed" (value_a=1
@@ -669,6 +677,15 @@ _ESP_RESET_REASON = {
 }
 
 
+# Modbus slave addresses, for LOG_SYSTEM value_a=31 rows. Addresses are fixed
+# by the installation, not configurable, so a literal table is honest here.
+_MODBUS_SLAVES = {
+    1:  "addr 1 (FG6485A T/RH)",
+    40: "addr 40 (window encoder)",
+    44: "addr 44 (S200 wind)",
+}
+
+
 def _decode_system(row: dict) -> str:
     """
     SYSTEM events. value_a categorises the SYSTEM-event subtype; value_b is
@@ -946,6 +963,23 @@ def _decode_system(row: dict) -> str:
             by = _INITIATOR.get(initiator, initiator)
             return (f"Q4 config write REJECTED - unknown ns/key  [{by}]  "
                     f"(key name is on the serial console only)")
+
+        if va == 31:
+            # gh#66 Part 2. channel = slave address, param = which KPI,
+            # value_b = the delta over the preceding hour.
+            who = _MODBUS_SLAVES.get(ch, f"addr {ch}")
+            pid = int(row.get("param", 0) or 0)
+            if pid == 50:
+                return f"bus KPI  {who}: {vb} transactions OK in the last hour"
+            if pid == 51:
+                return (f"bus KPI  {who}: {vb} transaction(s) FAILED in the last "
+                        f"hour  (bus-busy excluded - that is contention, not a "
+                        f"slave fault)")
+            if pid == 52:
+                return (f"bus KPI  {who}: longest run of consecutive failures "
+                        f"since boot = {vb}  (this is the number that predicts a "
+                        f"fault; T5 faults on consecutive failures, not on a rate)")
+            return f"bus KPI  {who}: param {pid} = {vb}"
 
         if va in (22, 23, 24):
             _ROTA_CHECK = {0: "up to date", 1: "update found",

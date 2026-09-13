@@ -37,6 +37,7 @@
 #include "sd_storage.h"               /* 2.0.2 (gh#31) — SD state in status JSON */
 #include "../system_id/system_id.h"   /* unit_id at boot (gh#17, since 1.18.3) */
 #include "../window_pos/window_pos_task.h" /* 6.3 — M3 opening for the status payload */
+#include "modbus_rtu.h"                    /* gh#66 — hourly per-slave bus KPIs */
 
 /* alpha.6.7 — dropped vestigial #include <Arduino.h> and <WiFi.h>.
  * The 3 WiFi.* call sites in dm_status_snapshot() are rewritten below
@@ -367,6 +368,16 @@ static volatile bool   s_coredump_stale    = false;
 
 /** @brief Re-read RTC every this many main-loop ticks (≈ RTC_POLL_TICKS s). */
 #define RTC_POLL_TICKS  60u
+
+/**
+ * @brief Bus-KPI emission period in main-loop ticks (≈ 1 h).
+ *
+ * Sparse on purpose. T17's idle position logging costs ~2880 rows/day and about
+ * +37 % of log volume; this costs **~144 rows/day**, under 2 %, because the
+ * interval is an hour rather than a poll. Volume is not a cosmetic concern here
+ * — rows shorten the SD rotation period and so raise the daily upload count.
+ */
+#define BUS_KPI_TICKS   3600u
 
 /** @brief 2.1.3 (gh#37) — warn when DS1307 and system clock diverge by more
  *  than this many seconds while NTP-synced. A healthy DS1307 is rewritten
@@ -1269,6 +1280,104 @@ static void handle_ntp_sync(void)
     }
 }
 
+/**
+ * @brief Emit one hour's Modbus performance indicators, per slave (gh#66).
+ *
+ * Reads the driver's per-slave table, subtracts the previous hour's snapshot,
+ * and posts the **differences**. Three reasons it is a delta and not the
+ * counter:
+ *
+ *  - a cumulative counter resets at reboot, and the series then reads as a
+ *    cliff rather than a restart;
+ *  - a delta *is* the rate the DEGRADED level needs, with no arithmetic at the
+ *    reader;
+ *  - `int16_t value_b` would overflow a cumulative count on a unit with 43 days
+ *    of uptime. An hour cannot overflow it: T5 does ~360 transactions/h and T17
+ *    ~120/h at rest.
+ *
+ * OK and FAIL go out **even when the hour was quiet**, because a row emitted
+ * only on error gives errors with no denominator and no rate can be computed
+ * from it. `0 errors in 1080 transactions` is precisely the datum that
+ * establishes a per-installation baseline, and no such baseline exists for 5C88
+ * today. MAXFAIL is emitted only when non-zero — zero is implied by FAIL = 0.
+ *
+ * BUSY is excluded from FAIL by the driver: losing the bus lock says the bus was
+ * busy, not that the slave failed.
+ *
+ * Posts straight to Q3 like the other T4 rows. A full queue drops the row and
+ * the next hour simply reports a larger delta, which is the right failure mode
+ * for a diagnostic — it must never block the task that produces it.
+ */
+static void emit_bus_kpi(void)
+{
+    static modbus_counters_t s_prev;      /* last hour's snapshot, zero at boot */
+    static bool              s_primed;    /* first call establishes the origin  */
+
+    modbus_counters_t now;
+    modbus_get_counters(&now);
+
+    if (!s_primed) {
+        /* The first interval after boot is short and partial, so publishing it
+         * would put a meaningless outlier at the head of every trace. Take the
+         * origin and report from the next full hour. */
+        s_prev   = now;
+        s_primed = true;
+        return;
+    }
+
+    for (unsigned i = 0; i < MODBUS_MAX_TRACKED_SLAVES; i++) {
+        const uint8_t addr = now.slave[i].addr;
+        if (addr == 0u) { continue; }
+
+        /* Match by ADDRESS, not by slot. Rows are claimed in first-seen order,
+         * so a reboot -- or simply a different slave answering first -- can
+         * reshuffle them; diffing slot i against slot i would then subtract two
+         * different devices. */
+        const modbus_slave_counters_t *p = NULL;
+        for (unsigned j = 0; j < MODBUS_MAX_TRACKED_SLAVES; j++) {
+            if (s_prev.slave[j].addr == addr) { p = &s_prev.slave[j]; break; }
+        }
+
+        const uint32_t p_ok   = p ? p->ok : 0u;
+        const uint32_t p_fail = p ? (p->timeout + p->crc + p->exception +
+                                     p->framing + p->param) : 0u;
+        const uint32_t n_fail = now.slave[i].timeout + now.slave[i].crc +
+                                now.slave[i].exception + now.slave[i].framing +
+                                now.slave[i].param;
+
+        /* Unsigned subtraction guarded: a counter can only go backwards if the
+         * driver re-initialised under us, and a negative delta is worse than a
+         * missing one. */
+        const uint32_t d_ok   = (now.slave[i].ok >= p_ok)   ? (now.slave[i].ok - p_ok)   : 0u;
+        const uint32_t d_fail = (n_fail          >= p_fail) ? (n_fail          - p_fail) : 0u;
+
+        struct { uint8_t param; uint32_t val; bool always; } row[3] = {
+            { (uint8_t)LOG_PARAM_BUS_OK,      d_ok,                          true  },
+            { (uint8_t)LOG_PARAM_BUS_FAIL,    d_fail,                        true  },
+            { (uint8_t)LOG_PARAM_BUS_MAXFAIL, now.slave[i].consec_fail_max,  false },
+        };
+
+        for (unsigned k = 0; k < 3u; k++) {
+            if (!row[k].always && row[k].val == 0u) { continue; }
+            log_event_t ev = {};
+            ev.timestamp  = (uint32_t)time(NULL);
+            ev.event_type = (uint8_t)LOG_SYSTEM;
+            ev.initiator  = (uint8_t)LOG_BY_SYSTEM;
+            ev.channel    = addr;                      /* the slave, not a motor */
+            ev.param_id   = row[k].param;
+            ev.value_a    = (int16_t)31;               /* bus KPI subtype */
+            ev.value_b    = (int16_t)((row[k].val > 32767u) ? 32767u : row[k].val);
+            log_post(&ev);
+        }
+
+        ESP_LOGI(TAG, "[T4] bus KPI addr=%u ok=+%lu fail=+%lu maxrun=%u",
+                 (unsigned)addr, (unsigned long)d_ok, (unsigned long)d_fail,
+                 (unsigned)now.slave[i].consec_fail_max);
+    }
+
+    s_prev = now;
+}
+
 /* ============================================================
  * T4 task entry point
  * ============================================================ */
@@ -1445,6 +1554,9 @@ void task_data_manager(void *pvParameters)
      * ---------------------------------------------------------------- */
     uint32_t tick_count    = 0u;
     uint32_t last_rtc_tick = 0u;
+    /* gh#66 — the first KPI call only takes the origin snapshot, so the
+     * first published interval is a full hour rather than a partial one. */
+    uint32_t last_kpi_tick = 0u;
 
     for (;;) {
         esp_task_wdt_reset();   /* WDT kick (1.17.29 / gh#13) */
@@ -1474,6 +1586,12 @@ void task_data_manager(void *pvParameters)
         if ((tick_count - last_rtc_tick) >= RTC_POLL_TICKS) {
             read_rtc_and_seed_clock();
             last_rtc_tick = tick_count;
+        }
+
+        /* ---- 5. Hourly Modbus performance indicators (gh#66 Part 2). ---- */
+        if ((tick_count - last_kpi_tick) >= BUS_KPI_TICKS) {
+            emit_bus_kpi();
+            last_kpi_tick = tick_count;
         }
     }
 }

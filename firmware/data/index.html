@@ -85,6 +85,19 @@
       <p><span data-tip="IP address assigned to the controller. Use this address to reach the web GUI from any device on the same network.">IP</span>: <strong id="st-wifi-ip">—</strong></p>
       <p><span data-tip="WiFi signal strength in dBm. Above −70 dBm is good. Below −85 dBm may cause connection drops or slow responses.">RSSI</span>: <strong id="st-wifi-rssi">—</strong> dBm</p>
     </div>
+    <div class="card" id="card-bus" hidden>
+      <h3>Modbus bus <span class="tip-icon" data-tip="Per-sensor traffic on the RS485 bus, counted since the last reboot. Every sensor shares one pair of wires, so this table is how you tell a failing sensor from a failing bus: if one row shows errors and the others do not, the problem is that device or its wiring. An occasional error is normal and the controller retries.">ⓘ</span></h3>
+      <table id="bus-tbl" style="width:100%;font-size:.85em;text-align:right;white-space:nowrap">
+        <thead><tr>
+          <th>Sensor</th>
+          <th data-tip="Transactions completed successfully since the last reboot.">OK</th>
+          <th data-tip="Transactions that failed since the last reboot. A bus that is busy because another task holds it is NOT counted here — that is contention, not a fault.">Err</th>
+          <th data-tip="Longest run of consecutive failures since the last reboot. This is the number that matters: the controller raises a sensor fault on consecutive failures, not on an error rate, so a sensor can show a steady trickle of errors for months without ever faulting — and a short burst can close the greenhouse.">Max</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      <p class="muted" style="font-size:.85em">Since last reboot. Hourly trends are in the event log.</p>
+    </div>
     <div class="card">
       <h3>SD Card <span class="tip-icon" data-tip="Status of the microSD card used for event log storage (FAT32 over SPI).">ⓘ</span></h3>
       <p><span data-tip="Whether the SD card file system is currently mounted and accessible for logging.">Status</span>: <strong id="st-sd-status">—</strong></p>

@@ -19,6 +19,7 @@
 #include "status_json.h"
 #include "status_post.h"   /* status_post_backoff_active() — gh#18 Phase 1 */
 #include "../system_id/system_id.h"  /* unit_id (gh#17, since 1.18.3) */
+#include "modbus_rtu.h"   /* gh#66 — per-slave bus KPIs (read unlocked, by design) */
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -353,6 +354,45 @@ size_t build_canonical_status_json(char *buf, size_t cap,
             (unsigned long)(s->heap_free_b    / 1024u),
             (unsigned long)(s->heap_min_b     / 1024u),
             (unsigned long)(s->heap_largest_b / 1024u));
+
+        /* gh#66 Part 2 — per-slave Modbus indicators.
+         *
+         * These are SINCE-BOOT totals; the hourly LOG_SYSTEM 31 rows carry the
+         * deltas. Both are needed and they answer different questions: the
+         * totals say "how is the bus right now", the log rows say "how has it
+         * been trending for six weeks", and a 43-day uptime makes the second
+         * unanswerable from the first.
+         *
+         * Emitted as an ARRAY, and **omitted entirely when no slave has
+         * answered** — absent, not an array of zeros, so a consumer can tell a
+         * unit with no bus from a bus with no traffic. Same rule §6.3 applied to
+         * the M3 position keys.
+         *
+         * `busy` is reported separately from `err` throughout: losing the bus
+         * lock is contention, not a slave failure, and folding the two together
+         * is what made the 2026-09-12 wind alarm unreadable.
+         *
+         * Keys are short because this rides in a fixed buffer alongside
+         * everything else: a=addr, ok, err, busy, max=longest consecutive-failure
+         * run since boot. */
+        modbus_counters_t mc;
+        modbus_get_counters(&mc);
+        bool any = false;
+        for (unsigned i = 0; ok && i < MODBUS_MAX_TRACKED_SLAVES; i++) {
+            if (mc.slave[i].addr == 0u) { continue; }
+            const unsigned long err = (unsigned long)mc.slave[i].timeout +
+                                      mc.slave[i].crc + mc.slave[i].exception +
+                                      mc.slave[i].framing + mc.slave[i].param;
+            ok = ok && append(buf, cap, &pos,
+                "%s{\"a\":%u,\"ok\":%lu,\"err\":%lu,\"busy\":%lu,\"max\":%u}",
+                any ? "," : ",\"bus\":[",
+                (unsigned)mc.slave[i].addr,
+                (unsigned long)mc.slave[i].ok, err,
+                (unsigned long)mc.slave[i].busy,
+                (unsigned)mc.slave[i].consec_fail_max);
+            any = true;
+        }
+        if (ok && any) { ok = ok && append(buf, cap, &pos, "]"); }
     }
 
     /* update_interval_s — always emitted. */

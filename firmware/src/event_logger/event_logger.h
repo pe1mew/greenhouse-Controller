@@ -146,6 +146,7 @@
  *  28     | RTC read FAILED, chip unreadable (since 2.6.0, gh#59) | rtc_status_t: 1 = NO_DEVICE, 2 = COMM, 3 = INVALID. Rate-limited ~1/h like value_a=21 | T4 read_rtc_and_seed_clock()
  *  29     | T6 command DEFERRED on dwell (since 2.6.0, gh#59) | seconds of dwell remaining; **sign carries direction**: positive = OPEN deferred, negative = CLOSE deferred. `channel` = motor 1/2/3 | T2 ch_start_open() / ch_start_close()
  *  30     | Q4 config write REJECTED, unknown key (since 2.6.0, gh#59) | 0 = unused. `initiator` is the producer that tried | T4 apply_config_update()
+ *  31     | **Modbus bus KPI, one slave, one metric, one hour** (since 2.8.0, gh#66) | `value_b` = the INTERVAL DELTA; `channel` = slave address; `param_id` = 50 ok / 51 fail / 52 max consecutive fails (see `log_param_id_t`) | T4 emit_bus_kpi()
  *  -1     | Q3 drop-overflow    | dropped count                        | T9 (synthetic)
  *
  * **Subtypes 22–24 shipped in 2.2.0 and were absent from this table until

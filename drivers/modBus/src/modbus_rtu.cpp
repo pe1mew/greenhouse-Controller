@@ -268,6 +268,20 @@ static modbus_status_t tally(modbus_status_t s, uint8_t addr)
     s_cnt.last_status = (uint8_t)s;
     s_cnt.last_addr   = addr;
     modbus_slave_counters_t *row = slave_row(addr);
+
+    /* Maintain the consecutive-failure run before the tallies below, so the
+     * BUSY case can leave it untouched rather than having to undo it. */
+    if (row) {
+        if (s == MODBUS_OK) {
+            row->consec_fail = 0u;
+        } else if (s != MODBUS_ERR_BUSY) {
+            if (row->consec_fail < 0xFFFFu) { row->consec_fail++; }
+            if (row->consec_fail > row->consec_fail_max) {
+                row->consec_fail_max = row->consec_fail;
+            }
+        }
+    }
+
     switch (s) {
         case MODBUS_OK:
             s_cnt.ok++;        if (row) { row->ok++; }        return s;

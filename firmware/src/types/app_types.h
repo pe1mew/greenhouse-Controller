@@ -287,6 +287,30 @@ typedef enum {
      * initiator and channel. */
     LOG_PARAM_MODE_STANDBY   = 47,  /**< LOG_MODE_CHANGE emitter B (STANDBY enter/leave) */
 
+    /* ---- Modbus bus performance indicators (gh#66 Part 2) ----------------
+     * Carried on **LOG_SYSTEM value_a = 31**, one row per slave per metric per
+     * hour, with `channel` = the Modbus slave address (1 = FG6485A,
+     * 40 = window encoder, 44 = S200) and `value_b` = the **interval delta**.
+     *
+     * Deltas, never cumulative: a cumulative counter resets at reboot and the
+     * series then reads as a cliff, and a delta *is* the rate a DEGRADED level
+     * needs.
+     *
+     * OK and FAIL are emitted **unconditionally**, including when both are
+     * quiet. That is deliberate: a row only on error gives errors with no
+     * denominator, and a rate cannot be computed from that -- "0 errors in 1080
+     * transactions" is the datum that establishes a per-installation baseline.
+     * MAXFAIL is emitted only when non-zero, because zero is implied by
+     * FAIL = 0 and carries nothing.
+     *
+     * A new KPI is a new param_id here, NOT a new LOG_SYSTEM subtype -- the
+     * subtype space is the scarce one. This is what makes the encoding a
+     * template for every Modbus actor: a slave gets rows by having an address.
+     */
+    LOG_PARAM_BUS_OK         = 50,  /**< transactions completed this interval */
+    LOG_PARAM_BUS_FAIL       = 51,  /**< transactions failed this interval (BUSY excluded) */
+    LOG_PARAM_BUS_MAXFAIL    = 52,  /**< longest consecutive-failure run; omitted when 0 */
+
     /* ── ALARM event-subtype discriminators (2.3.0, gh#45) ─────────────────
      * NOT config C-numbers. Reserved band 240..254, kept far above the
      * config space so the two can never collide. Stamped into `param` on

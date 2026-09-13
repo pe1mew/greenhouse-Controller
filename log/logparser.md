@@ -1,7 +1,7 @@
 # logparser — Greenhouse Controller Log Parser
 
 **File:** `log/logparser.py`
-**Document version:** 1.12 (matches firmware 2.7.0 + the `ropeSensor` window-sensor encodings)
+**Document version:** 1.13 (matches firmware 2.8.0 + the `ropeSensor` window-sensor encodings; adds LOG_SYSTEM value_a=31 bus KPIs, gh#66)
 **Requires:** Python 3.10+, standard library only (no pip dependencies)
 
 **What's new in 1.12** (window-sensor encodings, `ropeSensor` branch):
@@ -795,6 +795,37 @@ matches the LOG_SYSTEM table in `firmware/src/event_logger/event_logger.h`:
 | **28** | `rtc_status_t` 1/2/3 | SYS | T4 data_manager | **DS1307 UNREADABLE** — 1 NO_DEVICE (no I2C ACK) · 2 COMM (I2C error) · 3 INVALID (out-of-range registers). Distinct from **21**, which is a chip that reads but diverges. This is the case that took the clock down in gh#55. Rate-limited ~1/h (2.6.0+, gh#59) |
 | **29** | seconds remaining, **signed** | SYS | T2 relay_controller | **T6 move DEFERRED on the dwell timer.** `ch` = motor 1/2/3. **Sign carries direction: positive = OPEN deferred, negative = CLOSE deferred.** Latched to one row per deferral episode, so an M3 dwell of up to 25 min produces one row, not hundreds (2.6.0+, gh#59) |
 | **30** | 0 | producer | T4 `apply_config_update()` | **Q4 config write REJECTED, unknown ns/key.** `initiator` identifies which producer tried; the key name is on the serial console only, because the 12-byte row cannot carry it. `/api/config` returns 400 before reaching Q4, so this fires only for the LCD/T10 producers or a future one (2.6.0+, gh#59) |
+| **31** | the **interval delta** | SYS | T4 `emit_bus_kpi()` | **Modbus bus performance indicator**, one slave, one metric, one hour. **`ch` is the SLAVE ADDRESS, not a motor** (1 FG6485A · 40 window encoder · 44 S200), and `param` selects the metric: **50** transactions OK · **51** transactions FAILED · **52** longest consecutive-failure run since boot. See the note below (2.8.0+, gh#66) |
+
+> **Reading the `value_a = 31` rows.**
+>
+> **`value_b` is a DELTA over the preceding hour, not a running total.** A
+> cumulative counter resets at reboot and the series then reads as a cliff rather
+> than a restart; a delta is also directly the rate a degradation threshold needs,
+> and it cannot overflow `int16_t` the way 43 days of uptime would.
+>
+> **Params 50 and 51 are emitted even when the hour was completely quiet, and
+> that is the point.** A row only on error gives errors with no denominator, and
+> no rate can be computed from that — `0 errors in 1080 transactions` is the datum
+> that establishes a per-installation baseline. **Param 52 is emitted only when
+> non-zero**, since zero is implied by a FAILED count of zero.
+>
+> **Bus-busy is excluded from the FAILED count.** Losing the bus lock to another
+> task is contention, not a slave failure; folding the two together is what made
+> the 2026-09-12 wind-alarm investigation unreadable.
+>
+> **Param 52 is the number that predicts a fault.** T5 raises a sensor fault on
+> *consecutive* failures, not on a rate — so a slave can sit at 0.1 % indefinitely
+> without ever faulting, or fault at that same rate if its failures arrive
+> together. A rising `bus_maxfail` is the early warning; a rising `bus_fail` alone
+> is not.
+>
+> **These rows do not exist before firmware 2.8.0**, so their absence in an older
+> log means "not instrumented", never "no errors". A single failed read has never
+> left a trace of any kind — only two failures inside one poll produce an `ALARM`
+> row — so any failure count taken from a pre-2.8.0 log is a lower bound.
+
+
 
 **esp_reset_reason codes (value_a=5):**
 

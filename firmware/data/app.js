@@ -393,6 +393,53 @@ function handleStatus(s) {
     // sys.asset_version is consumed by the Alarms-card mismatch check
     // above; no separate visible field — a mismatch shows up as the
     // MISMATCH badge alongside the mode-derived alarms.
+
+  }
+
+  // gh#66 — per-slave Modbus indicators.
+  //
+  // Deliberately NOT inside the `s.system` guard. `bus` is a top-level key,
+  // so reading it from a block gated on a SIBLING key is a coupling the
+  // payload does not justify — it would break silently the day the builder
+  // moves `bus`, or stops gating it on STATUS_EXPOSE_SYSTEM as it does today.
+  // (The two do travel together right now: the firmware emits `bus` inside
+  // the SYSTEM expose block even though the key lands at top level.)
+  //
+  // The array is ABSENT, not empty, on firmware without the feature and on a
+  // unit where no slave has answered, so the whole card hides rather than
+  // showing a table of zeros or an invented "0 errors" nobody measured.
+  //
+  // No DEGRADED badge here on purpose: that needs a threshold, and the
+  // threshold is deliberately unset until a per-installation baseline is
+  // measured — which is what the hourly log rows exist to produce. Lighting a
+  // badge from a guessed number would be a warning nobody can trust.
+  const busCard = document.getElementById('card-bus');
+  if (busCard) {
+    const busRows = Array.isArray(s.bus) ? s.bus : null;
+    busCard.hidden = !busRows || busRows.length === 0;
+    if (busRows && busRows.length) {
+      // Short labels: the card is narrow and the long form wrapped to three
+      // lines per row. The address stays visible because it is what the log
+      // rows and the Modbus wiring are keyed by.
+      const BUS_NAMES = { 1: 'T/RH · 1', 40: 'M3 · 40', 44: 'Wind · 44' };
+      const tb = busCard.querySelector('tbody');
+      if (tb) {
+        tb.innerHTML = '';
+        busRows.forEach(function (bs) {
+          const tr = document.createElement('tr');
+          // Non-zero counts are styled; a styled zero invites reading it as a
+          // guarantee, when it is only the absence of a failure so far.
+          [BUS_NAMES[bs.a] || ('addr ' + bs.a), bs.ok, bs.err, bs.max]
+            .forEach(function (v, i) {
+              const td = document.createElement('td');
+              td.textContent = v;
+              if (i >= 2 && v > 0) { td.className = 'win-moving'; }
+              tr.appendChild(td);
+            });
+          tb.appendChild(tr);
+        });
+      }
+    }
   }
 
   wsInitialized = true;

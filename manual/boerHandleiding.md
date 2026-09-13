@@ -564,6 +564,24 @@ Is op **M3** een raamstandsensor gemonteerd, dan lees je bij M3 niet alleen `OPE
 
 > **Iets méér dan 100 % is normaal en geen storing.** Zie je bij een volledig geopend raam een waarde als `113.7 %`, dan klopt dat. De sensor markeert waar het **raam** open is; daarna loopt de motor nog een stukje door tot zijn eigen **eindschakelaar** hem stopt (zie [§3](#3-de-kas-en-het-systeem)), en dat stukje telt mee in de meting. Het is juist het bewijs dát het raam zijn eindstand echt gehaald heeft.
 
+#### Kaartje "Modbus bus" — hoeveel de sensoren gepraat hebben
+
+Alle sensoren hangen aan **één paar draden** (de RS485-bus). Dit kaartje telt per sensor hoeveel berichten sinds de laatste herstart goed gingen en hoeveel er misgingen:
+
+| kolom | betekenis |
+|---|---|
+| **OK** | berichten die goed gingen |
+| **Err** | berichten die misgingen |
+| **Max** | de langste reeks fouten áchter elkaar |
+
+> **Een enkele fout is normaal en hoeft je niets te doen.** De kascontroller probeert het meteen opnieuw en je merkt er niets van. Pas als er véél fouten bij één sensor staan is er iets aan de hand.
+
+**Waarvoor het kaartje echt bedoeld is:** uitzoeken **welke** sensor een probleem heeft. Staan de fouten bij één sensor en zijn de andere schoon, dan zit het probleem bij díé sensor of zijn bekabeling. Hebben ze allemaal fouten, dan is het de bus zelf. Dat onderscheid kon de beheerder vroeger niet maken zonder ter plaatse te meten.
+
+**De kolom `Max` is de belangrijkste**, en niet `Err`. De kascontroller meldt pas een sensorstoring als er een paar berichten **achter elkaar** mislukken — een sensor kan dus maandenlang een enkele fout laten zien zonder ooit een storing te geven, terwijl een korte reeks fouten wél tot een storing (en bij de windsensor tot ramen dicht) leidt.
+
+Alle getallen tellen vanaf de laatste herstart en beginnen dus weer bij nul na een stroomuitval of update. Het verloop per uur bewaart de kascontroller in het logboek; daar kijkt de beheerder naar.
+
 > **Badge "Window sensor fault".** Reageert de raamstandsensor niet meer, dan verschijnt in de tegel *Alarms* een gele badge **Window sensor fault**, en valt M3 terug op de gewone tijdgestuurde bediening — `OPEN` / `CLOSED`, precies zoals een raam zónder sensor. **De ventilatie blijft gewoon werken.** Deze storing sluit geen ramen en legt de klimaatregeling niet stil, dus je hoeft niet in te grijpen — meld hem wel bij de beheerder. Op het LCD-scherm van de controller is deze melding **niet** zichtbaar, alleen in de webinterface.
 
 ### Wat zichtbaar na login?
