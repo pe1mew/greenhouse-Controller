@@ -999,6 +999,56 @@ behaved correctly overnight" is an assertion. The 2026-09-12 investigation is
 the worked example — three wrong root causes were proposed before instrumenting,
 and one reading (`to_received = 0 of 29`, `crc = 0`, `busy = 0`) ended it.
 
+###### The bus will never be flawless, and it is not supposed to be
+
+**Operator, 2026-09-13.** A faultless bus is *preferable*, not *required*. The
+bus **shall be robust to some level of errors** and shall fault only when that
+level becomes too much. What must always be possible is **observing performance
+and degradation before failure**. During **development** the target stays
+**faultless** — a deliberate asymmetry, tight in the lab and tolerant in
+service.
+
+This corrects the criterion used for the 2026-09-12/13 soak, which was set at
+**zero** bus errors and therefore reported 9 errors in 10,286 transactions as a
+failure. By the standard above that soak was a **pass with a degradation figure
+attached**: 0.087 %, against 0.83 % before the inter-frame-gap fix, and **zero
+sensor faults and zero wind overrides** across 13 h and 9 vent cycles.
+
+**Two levels, and today there is only one.**
+
+| level | trigger | consequence |
+|---|---|---|
+| **DEGRADED** | an error *rate* over a window | observable and logged. **No control change.** |
+| **FAULT** | consecutive failures, as now | `EG1_BIT_SENSOR_FAULT_*`, T3 safe-fails, the greenhouse closes |
+
+Today only the second exists, and it is reached from two failed attempts 100 ms
+apart — so the bus goes from *no signal at all* to *closing the greenhouse* with
+nothing in between. The indicators above are what make the first level possible:
+a rate and a trend, not an event.
+
+**There is already one instance of the shape**, added 2026-09-12:
+`SP_BUSY_TOLERANCE_MS` lets T5 tolerate a busy bus for 60 s before faulting —
+tolerate, bounded, then fault. Generalising that to the other error classes is
+what this asks for.
+
+**On "should there be a minimum threshold?"** — yes, but **the number should be
+measured, not invented**, and that is the reason for building the indicators
+first:
+
+- The threshold is a **departure from a known baseline**, not an absolute. The
+  dev rig now sits at 0.087 %; 5C88's baseline is unknown and may legitimately
+  differ (different cable run, different noise environment, no encoder on the
+  bus).
+- So: instrument, establish a per-installation baseline over a meaningful
+  period, then set DEGRADED at a multiple of it. A number chosen today would be
+  a guess dressed as a specification.
+- **Per slave, not per bus** — for the same reason the counters are keyed by
+  address. One degrading sensor should not be hidden by two healthy ones.
+- **The FAULT threshold is a separate decision and a safety one.** Loosening it
+  slows detection of a genuinely dead wind sensor, and that path protects the
+  structure (FR-WP18 keeps the safety paths time-based for the same reason).
+  DEGRADED may be tuned freely; FAULT may not.
+
 **Tracked separately as gh#66**, which carries the T5 half: the residual ~0.087 %
 non-response rate on addr 1 and addr 44, observed on the dev rig and reported on
 production. The template built here is what that issue consumes.
