@@ -1257,6 +1257,69 @@ finish it. Both were built on 2026-09-12 while diagnosing the wind alarm:
 4. **`consecutive_fail_max`** — the one number that actually predicts a fault,
    since T5 faults on consecutive failures rather than on a rate.
 
+###### Where they land (decided 2026-09-13)
+
+**Today they land nowhere.** `diag_windowpos_get_handler` is inside
+`#ifdef MODBUS_BENCH` (`web_server.cpp:3148—3424`), so on a release build — every
+unit in service, 5C88 included — the endpoint does not exist. On the bench they
+are read on demand and cumulative since boot, so a reboot erases them. During
+AT-WP05 the only thing preserving them is an operator curling them into a CSV
+off-device. That is not a surface.
+
+**Two destinations, for different readers.**
+
+| | reader | why that one |
+|---|---|---|
+| `/api/status` | GUI + remote dashboard | the live view, and the only thing that can be trended off-device |
+| a periodic `LOG_SYSTEM` row | whoever reads the SD/ROTA trail | 5C88 is behind NAT, so this is the **only** channel that reaches anyone off-site |
+
+**The log row encoding.** A row is 12 bytes and `LOG_SYSTEM` spends `value_a` on
+the subtype, which leaves `channel`, `param_id` and one `int16`. Use them like
+this:
+
+| field | carries |
+|---|---|
+| `value_a` | the new subtype — **derive it from the emitters, not from the header comment** (gh#59 was filed claiming 22 was free when 22/23/24 had been ROTA since 2.2.0) |
+| `channel` | **the slave address** (1 / 40 / 44 — all fit a `uint8`, and `channel` is already documented as "0 for non-motor events") |
+| `param_id` | **which KPI** — ok-count, error-count, later `consecutive_fail_max` |
+| `value_b` | the value, as a **delta for the interval, never cumulative** |
+
+Delta rather than cumulative is not a detail: a cumulative counter resets at
+reboot and the series then reads as a cliff, and a delta *is* the rate the
+DEGRADED level needs.
+
+**This encoding is what makes it a template.** Any Modbus actor gets rows simply
+by having an address, and a new KPI is a new `param_id` — not a new subtype,
+which is the scarce resource here.
+
+**Cadence: hourly, and unconditional.** Emitting only when something went wrong
+gives errors with no denominator, and a rate cannot be computed from that.
+`0 errors in 1080 transactions` is the datum that establishes 5C88's baseline,
+which is the entire reason the DEGRADED threshold is still unset. Cost is
+3 slaves x 2 metrics x 24 = **144 rows/day**, under **2 %** of current log
+volume — set against T17's idle logging at ~2880 rows/day, so this is not the
+`IDLE_LOG_MS` problem in miniature. Hourly counts run to the hundreds
+(T5 ~360/h, T17 ~120/h at rest), comfortably inside `int16`.
+
+**GUI: two separate things that must not be merged.**
+
+- **the numbers** on the System tab, admin-facing. A farmer does not act on a
+  0.09 % bus error rate.
+- **a DEGRADED badge** on the Alarms tile when the threshold is crossed. This is
+  the farmer-visible half, and it is precisely the missing middle level: today
+  the bus goes from *no signal at all* to *closing the greenhouse*, with two
+  failed attempts 100 ms apart as the only step between.
+
+**One consequence to accept before building it.** `/api/status` is shared by the
+local GUI and the remote POST through `build_canonical_status_json()`, differing
+only by expose mask. Putting the KPIs there means deciding they go off-site —
+which for 5C88 is the whole point, but it makes this a payload-shape change for
+the dashboard too: **minor** bump, and the fields must be **absent** rather than
+zero on older firmware, exactly as §6.3 handled `M3_percent_x10`.
+
+`logparser.py` **and** `logparser.md` learn the encoding in the same changeset
+(CLAUDE.md rule).
+
 **Why this slice and not later.** The indicators are how the M3 implementation
 is shown to work at all: the presence gate, the promotion/demotion asymmetry and
 the 12.4 controller-side rules each produce a counter, and without them "it
@@ -1317,6 +1380,22 @@ first:
 **Tracked separately as gh#66**, which carries the T5 half: the residual ~0.087 %
 non-response rate on addr 1 and addr 44, observed on the dev rig and reported on
 production. The template built here is what that issue consumes.
+
+**How much of gh#66 this feature actually closes** — close to all of it, but not
+all, and the remainder is the safety-shaped part:
+
+| gh#66 | this feature | |
+|---|---|---|
+| **Part 2** — per-sensor indicators | **closes it outright** | it *is* Part 2 |
+| **Part 1**, question 2 of the operator's reframing: *is it observable before it becomes a failure?* | **closes it** | today the answer is no; this is what makes it yes |
+| **Part 1**, question 1: *is the rate within tolerance?* | **enables, does not answer** | a tolerance needs a **baseline**, and a baseline needs the indicators shipped **plus run time**. 5C88 cannot be characterised at all today |
+| **Part 1**, investigation step 2 — the control experiment | **already running** as AT-WP05 arm A | and its result decides whether Part 1 needs any code at all: if T5's rate holds at ~0.1 % with T17 off the bus, the residual is the sensors' own baseline and there is nothing to fix; if it drops to zero, T17's mere presence still matters and `MODBUS_IFG_US` needs raising past 20 ms |
+| **Part 1**, question 3: *is the FAULT threshold appropriate?* | **does NOT close it** | adding DEGRADED is instrumentation and is in scope. **Moving FAULT is a control change and a safety decision** — a slower fault means slower detection of a genuinely dead wind sensor, and that path protects the structure. gh#66 fences this off deliberately and so does this plan |
+
+So: build this, and gh#66 reduces to **one measurement that needs elapsed time**
+and **one safety decision that needs an explicit call**. Neither is a coding
+task. The issue should not be closed when this ships — it should be updated to
+say so.
 
 **Why this order is right**, beyond it being the instruction:
 
