@@ -39,7 +39,7 @@ Development happens on **FDA4**, which is being fitted with a mechanical mock of
 
 **Rig specification — agreed, and every requirement is satisfiable:** traverse ≥ 5 s (`CFG_MIN_TRAVEL_S`), sensor address 40 or 45 (both clear of FG6485A@1 and S200@44), +24 V/GND/A/B daisy-chained, both end-stop switches fitted, sensor-zone overtravel checked.
 
-> **Build status 2026-09-10: BUILT AND OPERATIONAL** (operator). The wire position sensor is live on FDA4's RS485 bus — a **third device** alongside FG6485A@1 and S200@44 — the window emulator is driven by M3's open/close relays, and end contacts are fitted. The specification above is now an as-built record.
+> **Build status 2026-09-10: BUILT AND OPERATIONAL** (operator). The wire position sensor is live on FDA4's RS485 bus — a **third device** alongside FG6485A@1 and S200@44 — the window emulator is driven by M3's open/close relays, and end sensors are fitted. The specification above is now an as-built record.
 >
 > **`travel_m3 = 13 s` is the emulator's REAL traverse time, not a placeholder.** It is a correct setting and must never be "corrected" to production's 171 s. The 15 s figure used when this plan was written was an estimate; every derived constant below is recomputed for 13 s.
 >
@@ -55,11 +55,30 @@ to it.*
 
 ### 2a.1 Three nested ranges, not two
 
+> **Terminology — fixed 2026-09-13, and it matters.** These are two different
+> devices, and this plan had been calling each by the other's name.
+>
+> | term | what it is | can firmware see it? |
+> |---|---|---|
+> | **end switch** | the switch that **stops the motor** at the physical end | **No.** It acts outside the controller's view; firmware never sees it fire |
+> | **end sensor** | the indicator that the window is **0 % or 100 %** | **Yes** — it sets **bit 3** (`WINDOWPOS_ST_END_SENSOR`), and **bit 4** when both are active at once, which is a loop fault |
+>
+> The firmware already uses this convention, so the code was right and the
+> document was wrong. **The end sensors define the opening range** — they *are*
+> 0 % and 100 %. **The end switches sit outside them**, and the leaf overtravels
+> past each end sensor into the blind overlap until an end switch stops it.
+>
+> Conflating the two is what made the endpoint reasoning in 5a come out
+> backwards on 2026-09-12: the endpoints are the **best**-known points in the
+> range, precisely because they have their own sensor.
+
 ```
   0 V |------------------ potmeter (wire sensor) range ------------------| 3.3 V
-         |------------- physical range of the window -------------|
-            [LOWER SW]---- opening range of the window ----[HIGHER SW]
-                              (e.g. 1000 mm; 1500 mm on this rig)
+     [END SWITCH]--------- physical range of the window --------[END SWITCH]
+       motor stops here, firmware never sees it
+         [END SENSOR]---- opening range of the window ----[END SENSOR]
+              0 %          (1500 mm on this rig)            100 %
+                   bit 3 is set at either end sensor
 ```
 
 From widest to narrowest:
@@ -67,14 +86,14 @@ From widest to narrowest:
 1. **Potmeter range** — the wire sensor's full electrical travel, 0 V .. 3.3 V. **Wider than
    the window at BOTH ends by design**, so the window never runs the sensor into either rail.
 2. **Physical range of the window** — what the mechanism can traverse. Ends at the motor's
-   end protection.
-3. **Opening range** — **lower end switch to higher end switch. This is 0 % .. 100 %.** It is
+   end switch.
+3. **Opening range** — **lower end sensor to higher end sensor. This is 0 % .. 100 %.** It is
    what the operator means by "closed" and "open", and it is narrower than the physical range
    because **blinds overlap** at both ends.
 
-**The end switches mark the fully closed / fully open WINDOW, not the motor limits.** The
-motor limits sit outside them, and the leaf overtravels past each switch into the overlap
-until the end protection stops it.
+**The end sensors mark the fully closed / fully open WINDOW, not the end switches.** The
+end switches sit outside them, and the leaf overtravels past each end sensor into the overlap
+until the end switch stops it.
 
 ### 2a.2 Rig vs production — the same geometry, different proportions
 
@@ -94,21 +113,21 @@ same ADC span. Do not read rig resolution figures as production figures.
 ### 2a.3 What the current firmware does — the thing being replaced
 
 **The shipped logic is timer-only.** T2 energises a relay for `travel_ms` and stops; it never
-reads the end switches. The motor is stopped by its own **end protection**, so **every full
+reads the end sensors. The motor is stopped by its own **end switch**, so **every full
 stroke ends with the motor stalled against a mechanical limit** for whatever time is left on
 the timer.
 
-That is today's design and it works. **The new logic must account for the end switches**
-(FR-WP07, contract bit 3) instead of driving blind into the end protection.
+That is today's design and it works. **The new logic must account for the end sensors**
+(FR-WP07, contract bit 3) instead of driving blind into the end switch.
 
 ### 2a.4 Measured on the rig, 2026-09-10 (Phase 0 teach)
 
 | landmark | raw ADC | how observed |
 |---|---|---|
 | lower (closed) switch | **0** | bit 3 made; teach captured 0 -> 40005 |
-| closed rest (motor limit) | **0** | live read at rest |
+| closed rest (end switch) | **0** | live read at rest |
 | higher (open) switch | **867** | bit 3 made; teach captured 867 -> 40006 |
-| open rest (motor limit) | **986** | live read at rest, bit 3 **still set** |
+| open rest (end switch) | **986** | live read at rest, bit 3 **still set** |
 
 **Open-end overtravel: 119 counts** — the blind overlap, exactly as drawn. Far too large to be
 capture staleness (bounded at ~10 counts by 40002 = 100 ms and ~147 mm/s).
@@ -122,7 +141,7 @@ honestly.
 1. **The DEVICE clamps position to `40004`; the overtravel is invisible.** *(Corrected
    2026-09-10 — an earlier draft of this section claimed readings beyond 100 % are normal and
    must not be clamped. Measured on the rig, that is wrong: the device clamps them itself.)*
-   `30001` matches `raw × 40004 / (40006 - 40005)` exactly up to the open switch and then
+   `30001` matches `raw × 40004 / (40006 - 40005)` exactly up to the open end sensor and then
    saturates:
 
    | raw | reads | |
@@ -132,27 +151,27 @@ honestly.
    | 937 | **1500.0 mm** | predicted 1621.1 — **clamped** |
    | 986 | **1500.0 mm** | predicted 1705.9 — **clamped** |
 
-   **Consequence for the new logic: position cannot distinguish "at the open switch" from
-   "driven into the end protection".** Both read 100 % and both have bit 3 set. Anything that
+   **Consequence for the new logic: position cannot distinguish "at the open end sensor" from
+   "driven into the end switch".** Both read 100 % and both have bit 3 set. Anything that
    needs to know how far into the overlap the leaf sits must get it from elsewhere — or accept
    that it cannot. 0-100 % is therefore the correct display scale after all.
 
-2. **The end switches are authoritative for 0 % and 100 %; the wire sensor interpolates.**
+2. **The end sensors are authoritative for 0 % and 100 %; the wire sensor interpolates.**
    This is a cleaner split than earlier drafts assumed, and it degrades well: a wiper fault
    falls back to *today's* behaviour (switch + timer), not to nothing.
 
-3. **Stopping at the switch removes a stall that happens on every stroke today.** Cutting the
+3. **Stopping at the end sensor removes a stall that happens on every stroke today.** Cutting the
    relay when bit 3 makes is a mechanical improvement, not only a positioning one. It also
    means the **effective travel time becomes shorter than the configured `travel_ms`**, which
-   today must cover switch-to-limit as well.
+   today must cover sensor-to-switch as well.
 
-4. **`40004` is the switch-to-switch opening range**, never stop-to-stop (contract 6.4:
-   "travel between the calibration points" — and the calibration points are the switches the
+4. **`40004` is the sensor-to-sensor opening range**, never switch-to-switch (contract 6.4:
+   "travel between the calibration points" — and the calibration points are the end sensors the
    teach captured).
 
 ### 2a.6 Closed-end headroom — ACCEPTED as a known limitation (operator, 2026-09-10)
 
-Raw reads **0** at the closed switch and at closed rest. Contract 7.3 wants margin at both
+Raw reads **0** at the closed end sensor and at closed rest. Contract 7.3 wants margin at both
 landmarks; there is none at this end.
 
 **Shifting the mount cannot fix it, and the range budget is why:**
@@ -175,7 +194,7 @@ hardware constraint, not a mounting error.
   indistinguishable from a genuinely closed window. **Requirements 12.4 rule 1 is the only
   defence** and must be implemented, not assumed.
 - **Closed-end overtravel is unmeasurable.** The reading cannot go below 0, so the motion
-  between the closed switch and the closed limit is clipped.
+  between the closed end sensor and the end switch is clipped.
 - Bit 7 (not following) still works at this end and is unaffected — it needs excursion, not
   absolute level. Proven on this rig: see 2a.7.
 
@@ -190,7 +209,7 @@ tangled, snapped or slipping draw-wire; the potentiometer itself is usually fine
 0 across repeated full strokes while `30011` showed the sensor reading happily and `30009`
 showed a clean bus.
 
-Re-attaching the wire cleared bit 7 on the **first** good stop-to-stop sequence, as 7.2 says
+Re-attaching the wire cleared bit 7 on the **first** good switch-to-switch sequence, as 7.2 says
 it should, with raw sweeping 0..990.
 
 **This is the fault no electrical test can find**, and it was validated here by accident
@@ -201,13 +220,13 @@ detaching the wire, not just shorting or opening the wiper.
 
 | leg | time |
 |---|---|
-| switch-to-switch (the actual opening range) | **10.0 s** |
-| switch-to-limit (the blind overlap) | **~3.5 s** |
-| total, limit to limit | **~13.5 s** — consistent with `travel_m3` = 13 s covering both |
+| sensor-to-sensor (the actual opening range) | **10.0 s** |
+| sensor-to-switch (the blind overlap) | **~3.5 s** |
+| total, switch-to-switch | **~13.5 s** — consistent with `travel_m3` = 13 s covering both |
 
 **So today's timer-only logic spends ~3.5 s of every stroke stalled against the end
-protection.** New logic that cuts the relay on bit 3 removes that (2a.5 item 3), and the
-effective travel time it should configure is the **10 s** switch-to-switch figure, not 13.
+switch.** New logic that cuts the relay on bit 3 removes that (2a.5 item 3), and the
+effective travel time it should configure is the **10 s** sensor-to-sensor figure, not 13.
 
 ### 2a.9 Committed calibration (2026-09-10, rig)
 
@@ -216,7 +235,7 @@ effective travel time it should configure is the **10 s** switch-to-switch figur
 | `40001` zero offset | 0 | |
 | `40002` measurement window | **100 ms** | not the 1000 ms default — see below |
 | `40003` averaging window | 10 s | default |
-| `40004` full travel | **15000** | 1500 mm, switch-to-switch |
+| `40004` full travel | **15000** | 1500 mm, sensor-to-sensor |
 | `40005` raw closed | **0** | at the rail; accepted per 2a.6 |
 | `40006` raw open | **858** | |
 
@@ -224,7 +243,7 @@ effective travel time it should configure is the **10 s** switch-to-switch figur
 
 **`40002` must be set before any teach, not after.** The teach captures `30005` at the sensor transition, and `30005` only refreshes once per measurement window. At the 1000 ms default and ~150 mm/s the capture could be a full second stale — up to 150 mm, ~86 counts of calibration error, with nothing to indicate it. At 100 ms that bound is ~15 mm.
 
-Successive teaches captured the open end at 867, then 904 observed / 858 committed. The spread is real: it is where the switch makes on that pass, plus up to one measurement window of staleness. **Treat a single teach as ~±20 counts (~35 mm) repeatable, not exact** — and re-teach rather than hand-tuning if the number looks wrong.
+Successive teaches captured the open end at 867, then 904 observed / 858 committed. The spread is real: it is where the end sensor makes on that pass, plus up to one measurement window of staleness. **Treat a single teach as ~±20 counts (~35 mm) repeatable, not exact** — and re-teach rather than hand-tuning if the number looks wrong.
 
 ---
 
@@ -287,15 +306,15 @@ Everything in §3.1–3.3 derives from `travel_m3`, which today is a number a hu
 
 **Measure it during commissioning instead.** Three reasons it is better than deriving from configuration:
 
-1. **It is free.** The Route B teach (contract §6.2) already drives the leaf to each end stop in turn. Timing those traverses is a by-product of motion that is happening anyway — one operator action, two results.
+1. **It is free.** The Route B teach (contract §6.2) already drives the leaf to each end switch in turn. Timing those traverses is a by-product of motion that is happening anyway — one operator action, two results.
 2. **It measures what configuration cannot express.** `travel_ms` is a **single value used for both directions** (`relay_controller.cpp:439` close, `:500` open), yet requirements §1.4 item 3 states the mechanism *is* asymmetric: the motor lifts the flap against gravity to close and pays it out to open, so rope tension, backlash and slack all differ by direction. The real open and close times probably differ, and no amount of careful typing captures that.
-3. **It needs no working wiper.** Time between **end-switch transitions** (bit 3), not between position readings — so the rate is available before the position calibration is itself trusted.
+3. **It needs no working wiper.** Time between **end sensor transitions** (bit 3), not between position readings — so the rate is available before the position calibration is itself trusted.
 
 **Design:**
 
 - Configured `travel_m3` becomes the **seed and the sanity bound**, not the source of truth.
 - The commissioning teach measures actual traverse time **per direction**, from one bit-3 assertion to the next.
-- **Accept only clean, full stop-to-stop traverses.** Reject any interrupted by a wind override, a reversal, a motor alarm, or any fault raised during the run.
+- **Accept only clean, full switch-to-switch traverses.** Reject any interrupted by a wind override, a reversal, a motor alarm, or any fault raised during the run.
 - **Sanity-band against the configured value** (propose ±50 %). Outside the band, reject and report: a 3× discrepancy means something is wrong with the mechanism or the wiring, not that the configuration is merely stale.
 - Store in NVS — **new keys, so a minor version bump** when this lands.
 - **Log which value is in use at boot**, measured or configured. "Am I running on a measurement or a guess?" must never be a guess itself.
@@ -354,7 +373,7 @@ shorter pulses, find where displacement stops tracking pulse width), and it
 should be done before a deadband value is fixed.
 
 **The endpoints are exempt.** A setpoint of `0` or `100` terminates on **bit 3**
-and runs to the switch however small the remaining distance is (see 6.1 and the
+and runs to the end sensor however small the remaining distance is (see 6.1 and the
 corrected constraint 1 in 5a). Applying the deadband there would park the leaf
 just short of its stop with bit 3 never asserting — which is also the FR-E16
 signature for a broken end-sensor cable, so it would read as a hardware fault.
@@ -707,7 +726,7 @@ alike. At ~3.3 M3 strokes/day that is a few hundred extra rows against ~2864
 | **AT-WP06** | **PASSED** — and only after failing first and exposing a real defect (the idle read swallowed failures, so the gate was blind at rest). Recovery measured at **31 s** against `PROBE_RETRY_MS` = 30 s. See below. |
 | **AT-WP07** | **not run** |
 | **AT-WP09** | **not run, and not yet runnable** — it needs 12.4 rule 1, which *is* the divergence detector |
-| monotonic ramp from the log | **not demonstrated.** The strokes observed so far were driven closed onto the end stop, so the traces are flat at 0 rather than ramps. A deliberate open stroke with the gate in POSITION is what would show it. |
+| monotonic ramp from the log | **not demonstrated.** The strokes observed so far were driven closed onto the end switch, so the traces are flat at 0 rather than ramps. A deliberate open stroke with the gate in POSITION is what would show it. |
 
 ---
 
@@ -874,7 +893,7 @@ is implicated in the T17 half but cannot explain the other half.
 **"After a reset" is a red herring, and this was measured.** A reset is normally
 *followed* by M3 movement, and the movement is the trigger. The 2026-09-12
 17:39/17:40 reflash produced two boots with **`strokes: 0`** — boot calibration
-was skipped because M3 already sat on its end switch — and **neither boot
+was skipped because M3 already sat on its end sensor — and **neither boot
 produced a wind fault**. No stroke, no alarm.
 
 **Reproduced on demand and then FIXED — 2026-09-12.** The operator moved M3
@@ -1170,7 +1189,7 @@ algorithm only; the LCD remains a binary commander, and the `> 0 mm` counts as
 OPEN display rule stands. This matters beyond the display: **the LCD is an
 operator-manual command source** (`SRC_OPERATOR_MANUAL`, which bypasses the
 dwell timers), so the actuator API must accept a plain open/close from it and
-reach the end switch, with no percentage anywhere in that path. No
+reach the end sensor, with no percentage anywhere in that path. No
 `boerHandleiding` change follows.
 
 #### 5a. Target architecture — operator brief, 2026-09-12
@@ -1226,7 +1245,7 @@ have their own sensor.** *(Corrected 2026-09-13. The first draft of this section
 claimed the opposite and recommended an "interior-only" linear range. That was
 wrong, and the correction changes the design for the better.)*
 
-Section 2a.1 is normative: the **opening range is lower end switch to higher end
+Section 2a.1 is normative: the **opening range is lower end sensor to higher end
 switch, and that IS 0 % .. 100 %**. The endpoints are not inferred from the
 analogue value at all — they are reported directly by **status bit 3**
 (`WINDOWPOS_ST_END_SENSOR`), and they *define* the scale. It is the **interior**
@@ -1234,11 +1253,10 @@ that depends on the analogue reading and on `40004`/`40005`/`40006` being
 calibrated correctly.
 
 The `40004` clamp is real but answers a different question. It means **position
-must not be used to detect an endpoint** — clamped, "at the switch" and
+must not be used to detect an endpoint** — clamped, "at the end sensor" and
 "overtravelled into the overlap" read identically — which is precisely why bit 3
-exists. Two distinct mechanisms, easily conflated: the **end switches** mark the
-fully closed / fully open *window* and are visible over Modbus; the **motor end
-protection** sits outside them, stops the leaf in the overlap, and is invisible
+exists. Two distinct mechanisms, easily conflated: the **end sensors** mark the
+fully closed / fully open *window* and are visible over Modbus; the **end switch** sits outside them, stops the leaf in the overlap, and is invisible
 to the controller (2a.1).
 
 **Consequence for the actuator API, and it is an improvement on today:**
@@ -1246,7 +1264,7 @@ to the controller (2a.1).
 - A setpoint of `0` or `100` **terminates on bit 3**, with the travel timer as a
   **ceiling**, not the other way round. Today's logic is timer-only, and 2a.3
   records the cost: *every full stroke ends with the motor stalled against a
-  mechanical limit for whatever time is left*. De-energising at the switch ends
+  mechanical limit for whatever time is left*. De-energising at the end sensor ends
   that stalling — a win that has nothing to do with proportional control and
   could land ahead of it.
 - **"Timer expired without bit 3" is a reportable failure**, not a silent
@@ -1256,7 +1274,7 @@ to the controller (2a.1).
   cross-check for it is "commanded closed + position 0 + rate 0 + bit 3 never
   set" (contract 5.4).
 - **Bit 4 (`WINDOWPOS_ST_BOTH_ENDS`) voids bit 3.** Both switches active at once
-  is an **end-switch loop fault and an alarm** (FR-E16); position keeps tracking
+  is an **end sensor loop fault and an alarm** (FR-E16); position keeps tracking
   unchanged, so the actuator must fall back to the timer and report degraded
   rather than trust the endpoint signal.
 - **Bit 6 stays inert closing** on this rig (no closed-end ADC headroom), so a
@@ -1314,7 +1332,7 @@ diagnosed as one before the operator corrected it.
 
 ### 6.1 The display rule
 
-Position replaces the binary state on the rich surfaces, but the **end switch stays the authority for the terminal states** (operator decision 2026-09-07):
+Position replaces the binary state on the rich surfaces, but the **end sensor stays the authority for the terminal states** (operator decision 2026-09-07):
 
 | Condition | Shown |
 |---|---|
@@ -1323,7 +1341,7 @@ Position replaces the binary state on the rich surfaces, but the **end switch st
 | At a stop (bit 3) with position ≈ `40004` | **OPEN** |
 | Anything else | **the opening as a percentage** |
 
-> **The percentage scale must not clamp at 0/100 — see §2a.5.** The leaf rests at ~113.7 % at the open end and below 0 % at the closed end, because the end switches mark the *window* extremes while the motor drives on into the blind overlap. Displaying a correctly parked window as "100 %" by clamping hides the overtravel that proves it reached its limit; displaying it as a fault is worse. Render the true value, and reserve fault styling for `65535` and the status bits.
+> **The percentage scale must not clamp at 0/100 — see §2a.5.** The leaf rests at ~113.7 % at the open end and below 0 % at the closed end, because the end sensors mark the *window* extremes while the motor drives on into the blind overlap. Displaying a correctly parked window as "100 %" by clamping hides the overtravel that proves it reached its limit; displaying it as a fault is worse. Render the true value, and reserve fault styling for `65535` and the status bits.
 
 Using bit 3 rather than "position == 0" for the terminal states is the right call: it is a physical witness rather than an inference, and it keeps the display honest about a window that is nearly-but-not-quite shut.
 
@@ -1357,7 +1375,7 @@ Add the opening to the `windows` object in `build_canonical_status_json`, gated 
 
 ## 7. Rollout, including production
 
-Production is **not** waiting for Phase 5. In parallel with firmware development on the FDA4 mock, 5C88's real M3 is being fitted with the wire sensor, end switches and Modbus interface (operator, 2026-09-07).
+Production is **not** waiting for Phase 5. In parallel with firmware development on the FDA4 mock, 5C88's real M3 is being fitted with the wire sensor, end sensors and Modbus interface (operator, 2026-09-07).
 
 1. Develop and verify phases 0–4 on the FDA4 mock.
 2. Soak on FDA4 until the traverse record is trusted.
