@@ -554,7 +554,7 @@ De **Status**-tab is direct zichtbaar in de browser, zonder inloggen. Hier zie j
 
 #### Raamstand van M3 (alleen met raamstandsensor)
 
-Is op **M3** een raamstandsensor gemonteerd, dan lees je bij M3 niet alleen `OPEN` of `CLOSED`, maar **hoever het raam open staat**. M1 en M2 blijven `OPEN` / `CLOSED` / `MOVING`.
+Is op **M3** een raamstandsensor gemonteerd, dan lees je bij M3 niet alleen `OPEN` of `CLOSED`, maar **hoever het raam open staat**. M1 en M2 blijven `OPEN` / `CLOSED` / `OPENING` / `CLOSING`.
 
 | Weergave bij M3 | Betekenis |
 |---|---|

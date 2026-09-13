@@ -124,8 +124,11 @@ function renderIdentity() {
 }
 
 // ── Status handler ───────────────────────────────────────────────────────────
+// A travelling window shows its DIRECTION. The payload has always carried
+// MOVING_OPEN and MOVING_CLOSE separately and the LCD has always shown `MOV>` /
+// `MOV<`; this table was the only place collapsing them into one word.
 const WIN_LABELS = { OPEN: 'OPEN', CLOSED: 'CLOSED',
-                     MOVING_OPEN: 'MOVING', MOVING_CLOSE: 'MOVING', UNKNOWN: '?' };
+                     MOVING_OPEN: 'OPENING', MOVING_CLOSE: 'CLOSING', UNKNOWN: '?' };
 const WIN_CLASS  = { OPEN: 'win-open', CLOSED: 'win-closed',
                      MOVING_OPEN: 'win-moving', MOVING_CLOSE: 'win-moving', UNKNOWN: 'win-unknown' };
 
@@ -177,7 +180,7 @@ function handleStatus(s) {
   // states, because it is a physical witness rather than an inference from a
   // number. Order of authority:
   //
-  //   travelling          -> OPENING / CLOSING   (window state, unchanged)
+  //   travelling          -> OPENING / CLOSING   (window state; all 3 windows)
   //   bit 3 and pos ~ 0   -> CLOSED
   //   bit 3 and pos ~ max -> OPEN
   //   otherwise           -> the opening as a percentage
@@ -215,12 +218,11 @@ function handleStatus(s) {
           el.textContent = pct.toFixed(1) + ' %';
           el.className = (pct <= 2) ? WIN_CLASS.CLOSED : WIN_CLASS.OPEN;
         }
-      } else if (hasPos && movingNow) {
-        // Direction is worth more than a number while travelling, and the
-        // number is stale by up to one poll anyway.
-        el.textContent = (st === 'MOVING_OPEN') ? 'OPENING' : 'CLOSING';
-        el.className = WIN_CLASS[st] || '';
       } else {
+        // Covers a travelling M3 too: direction is worth more than a number
+        // while the leaf is moving, and the number is stale by up to one poll
+        // anyway. WIN_LABELS already yields OPENING / CLOSING, so M3 needs no
+        // special case here.
         el.textContent = WIN_LABELS[st] || st;
         el.className = WIN_CLASS[st] || '';
       }
