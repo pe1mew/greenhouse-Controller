@@ -3187,6 +3187,35 @@ static const char *const k_reason[] = {
     "ok", "probing", "no_sensor", "bench_build", "device_fault"
 };
 
+/**
+ * @brief Append the T17 soak counters to a JSON object already in @p buf.
+ *
+ * Overwrites the object's closing brace and re-adds it, exactly as
+ * @ref append_modbus_json does.
+ *
+ * Shared so the two diag paths cannot disagree. They did: the failure path
+ * carried six of these fields and the success path eight, which AT-WP05 arm A
+ * found the hard way -- that arm runs entirely on the failure path, so
+ * `rejected_rate` and `strokes` were missing for the whole run. A field list
+ * kept in two places drifts; this is the same defect shape as gh#64's six
+ * config tables, just smaller.
+ */
+static void append_soak_json(char *buf, size_t cap)
+{
+    windowpos_counters_t cn;
+    windowpos_task_counters(&cn);
+    const size_t used = strlen(buf);
+    if (used == 0u || used + 1u >= cap) { return; }
+    snprintf(buf + used - 1u, cap - used + 1u,
+             ",\"soak\":{\"reads_ok\":%lu,\"err_busy\":%lu,\"err_comm\":%lu,"
+             "\"rejected_rate\":%lu,\"strokes\":%lu,\"probe_fail\":%lu,"
+             "\"mode_changes\":%lu,\"gated_polls\":%lu}}",
+             (unsigned long)cn.reads_ok, (unsigned long)cn.err_busy,
+             (unsigned long)cn.err_comm, (unsigned long)cn.rejected_rate,
+             (unsigned long)cn.strokes, (unsigned long)cn.probe_fail,
+             (unsigned long)cn.mode_changes, (unsigned long)cn.gated_polls);
+}
+
 static void append_modbus_json(char *buf, size_t cap)
 {
     modbus_counters_t mc;
@@ -3252,23 +3281,18 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
          * that never answered. */
         windowpos_gate_reason_t egr = WPOS_GATE_OK;
         const windowpos_ctrl_mode_t egm = windowpos_task_ctrl_mode(&egr);
-        windowpos_counters_t ecn;
-        windowpos_task_counters(&ecn);
         snprintf(body, sizeof(body),
                  "{\"ok\":false,\"err\":\"read_failed\",\"status\":%d,"
                  "\"gate\":{\"mode\":%d,\"mode_str\":\"%s\",\"reason\":%d,"
-                 "\"reason_str\":\"%s\"},"
-                 "\"soak\":{\"reads_ok\":%lu,\"err_busy\":%lu,\"err_comm\":%lu,"
-                 "\"probe_fail\":%lu,\"mode_changes\":%lu,\"gated_polls\":%lu}}",
+                 "\"reason_str\":\"%s\"}}",
                  (int)st, (int)egm,
                  (egm == WPOS_CTRL_POSITION) ? "position" : "timed", (int)egr,
                  ((unsigned)egr < (sizeof(k_reason) / sizeof(k_reason[0])))
-                     ? k_reason[egr] : "?",
-                 (unsigned long)ecn.reads_ok, (unsigned long)ecn.err_busy,
-                 (unsigned long)ecn.err_comm, (unsigned long)ecn.probe_fail,
-                 (unsigned long)ecn.mode_changes, (unsigned long)ecn.gated_polls);
-        /* AT-WP05 arm A reads the bus tallies with the encoder unplugged, so
-         * they MUST be on this path -- it is the only response that arm sees. */
+                     ? k_reason[egr] : "?");
+        /* AT-WP05 arm A reads these with the encoder unplugged, so both blocks
+         * MUST be on this path -- it is the only response that arm ever sees.
+         * Same helpers as the success path, so the two cannot drift apart. */
+        append_soak_json(body, sizeof(body));
         append_modbus_json(body, sizeof(body));
         return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
     }
@@ -3349,19 +3373,7 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
     }
 
     /* Soak counters last, so a truncation loses only these. */
-    windowpos_counters_t cn;
-    windowpos_task_counters(&cn);
-    const size_t used2 = strlen(body);
-    if (used2 + 1u < sizeof(body)) {
-        snprintf(body + used2 - 1u, sizeof(body) - used2 + 1u,
-                 ",\"soak\":{\"reads_ok\":%lu,\"err_busy\":%lu,\"err_comm\":%lu,"
-                 "\"rejected_rate\":%lu,\"strokes\":%lu,\"probe_fail\":%lu,"
-                 "\"mode_changes\":%lu,\"gated_polls\":%lu}}",
-                 (unsigned long)cn.reads_ok, (unsigned long)cn.err_busy,
-                 (unsigned long)cn.err_comm, (unsigned long)cn.rejected_rate,
-                 (unsigned long)cn.strokes, (unsigned long)cn.probe_fail,
-                 (unsigned long)cn.mode_changes, (unsigned long)cn.gated_polls);
-    }
+    append_soak_json(body, sizeof(body));
     /* Bus tallies last. Costs no bus access -- these are counters -- so this
      * is the one part of the response that is safe to read at any time. Note
      * the REQUEST itself does a ~215 ms direct read above, so do not poll this
