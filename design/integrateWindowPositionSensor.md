@@ -544,7 +544,7 @@ travel_m3=13 s -> poll=100 ms  window=100 ms  nominal=1153 (0.1mm/s)  reject>345
 | position advances monotonically | **PASS** — 0.0 -> 1500.0 mm, 7/7 non-decreasing |
 | polls at the derived rate | **PASS** — snapshot age held ~97 ms against a 100 ms derive |
 | idle when nothing moves | **PASS** — age climbed 1490 -> 20334 ms after the stroke ended |
-| no `MODBUS_ERR_BUSY`, no added FG6485A/S200 failures over >=24 h (AT-WP05) | **NOT RUN** — needs a soak |
+| no `MODBUS_ERR_BUSY`, no added FG6485A/S200 failures over >=24 h (AT-WP05) | **RUN 2026-09-11, PASS DOWNGRADED 2026-09-13** — the criterion was not measurable then. See below |
 
 ### Two derivation rules were wrong as specified, and the rig proved both
 
@@ -570,7 +570,75 @@ met exactly and **cannot be beaten by polling harder** — the sensor is the lim
 **Observation surface:** `GET /api/diag/windowpos` (bench builds only) now returns T17's own
 snapshot and derived config alongside a fresh direct read, so the task is observed rather than
 inferred.
-#### AT-WP05 soak — RUNNING from 2026-09-10 22:13
+#### AT-WP05 soak — run 2026-09-11, **pass DOWNGRADED 2026-09-13**, re-specified
+
+> **Status: NOT CLOSED.** It ran, it was evaluated, the result was never written
+> into this document, and on review the pass tested a **weaker proposition than
+> the one specified**. Recorded here in full so it stops living in session
+> memory — the sibling finding "`strokes` counts ANY channel" decayed exactly
+> that way and was re-derived from scratch as a suspected defect on 2026-09-13.
+
+**What was measured (FDA4, 23.3 h, ending 2026-09-11):** 7117 reads, **0
+`err_busy` / 0 `err_comm` / 0 `rejected_rate`**, 31 strokes, no heap leak, T5's
+poll cadence unperturbed. Reported at the time as a *qualified* pass.
+
+**Why the pass is downgraded.** The requirement is *"**zero added read
+failures** on either existing sensor"* (FR-WP13/14). The only evidence available
+in 2026-09-11 firmware was the count of `ALARM ch4`/`ch5` rows — and **those
+rows appear only on a two-in-one-poll FAULT.** A single failed read left no row,
+no counter and no API field anywhere. So the soak could establish *"no added
+**faults**"*, which is a much weaker claim than *"no added **failures**"*, and
+the difference is the entire point of the test.
+
+We now know the distinction is not academic: with counters, the same bus shows
+**8 timeouts + 1 CRC in 13 h**, all of them on T5's slaves. None of those would
+have produced a single `ALARM` row.
+
+**Three qualifications, two of which were never recorded here:**
+
+1. **`err_busy` cannot fail with two callers** — the lock timeout is 500 ms
+   against a ~215 ms worst-case hold, so the headline counter had no way to trip.
+   An instance of the "show the check can fail" pattern; 7117 clean reads proved
+   nothing about contention.
+2. **The encoder moved only ~105 s in 23.3 h.** Bus load from T17 was therefore
+   near its minimum for almost the whole run, so the run barely exercised the
+   condition it was testing.
+3. **Effective poll was 168 ms, not the derived 100 ms** — `vTaskDelay` is
+   relative, so the period is delay *plus* transaction. This is the figure 3.6
+   now uses for the deadband floor.
+
+**Re-specified so the counters can test it.** The criterion becomes a
+**comparison between two arms**, which is what "added" always meant:
+
+| arm | configuration | what it gives |
+|---|---|---|
+| **A — baseline** | encoder **unplugged**, so the presence gate shuts and T17 stops touching the bus. Same binary, same config | T5's failure rate with **one** bus caller |
+| **B — with T17** | encoder connected, gate open, T17 polling normally | T5's failure rate with **two** bus callers |
+
+Measure `modbus_get_counters()` at the start and end of each arm, per slave
+address. **PASS = arm B's T5 failure rate is not materially above arm A's.**
+
+> **How long, and be honest about what it can resolve.** T5 runs ~8640
+> transactions/day (30 s poll × 3 transactions), so at the measured 0.087 %
+> that is **~7.5 failures/day**. Poisson, per arm:
+>
+> | effect T17 would have | 1 day | 3 days | 7 days |
+> |---|---|---|---|
+> | doubles it (3.8 — 7.5/day) | 1.1 sigma | 1.9 sigma | 3.0 sigma |
+> | 5× (1.5 — 7.5) | 2.0 sigma | 3.5 sigma | 5.3 sigma |
+> | 10× (0.75 — 7.5) | 2.4 sigma | 4.1 sigma | 6.2 sigma |
+>
+> **So the specified 24 h resolves a LARGE contribution (5—10×) and cannot
+> resolve a doubling.** That is probably acceptable — the failure this test
+> guards against is the inter-frame-gap class, which was ~10× — but the
+> criterion should say so rather than imply a precision it does not have.
+> Detecting a doubling at 3 sigma needs **~7 days per arm**.
+
+**Blocker, must be fixed before arm A can run.** `GET /api/diag/windowpos`
+returns early when the direct read fails, and that early return carries `gate`
+and `soak` but **not `modbus`**. With the encoder unplugged — arm A by
+definition — the bus counters are invisible. One-line class of fix: emit the
+`modbus` block on the failure path too, exactly as `gate` and `soak` already are.
 
 **The soak could not measure its own criterion until this build.** `MODBUS_ERR_BUSY` was folded
 into `WINDOWPOS_ERR_COMM`, so "did the second bus caller cost T5 anything" — the whole question —
@@ -691,7 +759,7 @@ which gate was active to within 30 s. See the 2026-09-10 gotcha entry.
 > uncrossed** and greenhouse behaviour is unchanged — which is what Phase 4
 > promised.
 
-> **Alarm *handling* is deferred to Phase 5** (operator decision 2026-09-07). This phase **detects and records; it does not act.** Control behaviour is unchanged, which is automatic here because nothing consumes position yet. The likely eventual behaviour is a fall-back to full open/close on wire-sensor failure — i.e. exactly today's time-based control, FR-WP17 — but that is **TBD** and is not implemented here.
+> **Alarm *handling* is deferred to Phase 5** (operator decision 2026-09-07). This phase **detects and records; it does not act.** Control behaviour is unchanged, which is automatic here because nothing consumes position yet. **Resolved in §4a (2026-09-12); this paragraph is kept for context.** On sensor fault the controller falls back to **time-based open-loop control, treating M3 as a binary actuator** (FR-WP17). **It does NOT drive the window anywhere.** Demotion changes the *control law*, not the position: the leaf stays where it is and the *next* command runs on the timer. FR-WP17 is explicit that *"loss of the sensor shall not disable ventilation"*, and AT-WP06's criterion is *"falls back to time-based control; ventilation continues"*. Closing on sensor loss would be a control action taken because a **diagnostic** failed — the same pathology that makes a wind-sensor read error close the greenhouse, which is correct there only because wind is a *safety* input and position explicitly is not (FR-WP18). An earlier draft of this sentence said "fall-back to full open/close", which reads as *drive to an end* rather than *revert to binary control*, and was misread that way on 2026-09-13.
 
 - Detect and **log** the fault conditions (§3b), and surface them on the operator-facing surfaces (§6). Do not change any control decision on them.
 - T2 may treat "bit 3 set at position ≈ 0 or ≈ `40004`" as travel-complete, **with the travel timer retained as the ceiling**.

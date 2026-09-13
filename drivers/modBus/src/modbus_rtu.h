@@ -232,6 +232,33 @@ modbus_status_t modbus_read_input_registers(uint8_t  device_addr,
  * the bus mutex and read for diagnostics only, so a torn 32-bit read is not
  * worth a critical section.
  */
+/** @brief How many distinct slave addresses get their own counter row. */
+#define MODBUS_MAX_TRACKED_SLAVES 6u
+
+/**
+ * @brief Per-slave transaction tallies.
+ *
+ * Bus-wide totals cannot answer the question that matters on a shared bus:
+ * *which device* is failing. Keying by address here, inside the driver, gives
+ * every caller its own row with no per-task bookkeeping -- one table each task
+ * reads its own row from, rather than a struct each task reimplements.
+ *
+ * The need is not theoretical. AT-WP05 arm A runs with the encoder deliberately
+ * unplugged, so the presence gate's 30 s re-probes against addr 40 pile up
+ * timeouts that are indistinguishable, in the totals, from the T5 read failures
+ * the test is actually measuring.
+ */
+typedef struct {
+    uint8_t  addr;       /**< Slave address; **0 means the slot is unused**. */
+    uint32_t ok;
+    uint32_t timeout;
+    uint32_t crc;
+    uint32_t exception;
+    uint32_t framing;
+    uint32_t param;
+    uint32_t busy;
+} modbus_slave_counters_t;
+
 typedef struct {
     uint32_t ok;         /**< Completed transactions. */
     uint32_t timeout;    /**< @ref MODBUS_ERR_TIMEOUT. */
@@ -254,6 +281,11 @@ typedef struct {
     uint32_t last_lock_wait_ms;/**< How long the last caller waited for the
                                 *   bus lock. busy==0 says a caller always
                                 *   got it, not that it got it promptly. */
+
+    /** Per-slave breakdown. Rows with @c addr == 0 are unused. A slave beyond
+     *  @ref MODBUS_MAX_TRACKED_SLAVES still counts in the totals above, just
+     *  without a row of its own. */
+    modbus_slave_counters_t slave[MODBUS_MAX_TRACKED_SLAVES];
 } modbus_counters_t;
 
 /**

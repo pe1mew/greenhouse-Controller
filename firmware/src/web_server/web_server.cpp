@@ -3167,10 +3167,77 @@ static const httpd_uri_t s_uri_web_post = {
  * compared. A register-offset or sign-decode mistake shows up as a mismatch
  * rather than as a plausible-looking number.
  * --------------------------------------------------------------------------- */
+/**
+ * @brief Append the Modbus bus tallies to a JSON object already in `buf`.
+ *
+ * Overwrites the trailing `}` and re-closes, the same append idiom the rest of
+ * this handler uses. Costs no bus access -- these are counters -- so it is safe
+ * on any path, including the one where the device did not answer.
+ *
+ * Shared by the success and failure paths deliberately. Two hand-maintained
+ * copies of one field list is how every config-table gap in this project began
+ * (gh#57, gh#64), and the failure path is the one that matters most: AT-WP05
+ * arm A runs with the encoder unplugged, so the direct read CANNOT succeed and
+ * the early return is the only response the test will ever see.
+ */
+/** Gate reasons, indexed by windowpos_gate_reason_t. ONE table, read by both
+ *  the success and the failure path -- they drifted once already (the failure
+ *  path emitted `reason` without `reason_str`). */
+static const char *const k_reason[] = {
+    "ok", "probing", "no_sensor", "bench_build", "device_fault"
+};
+
+static void append_modbus_json(char *buf, size_t cap)
+{
+    modbus_counters_t mc;
+    modbus_get_counters(&mc);
+    const size_t used = strlen(buf);
+    if (used == 0u || used + 1u >= cap) { return; }
+    snprintf(buf + used - 1u, cap - used + 1u,
+             ",\"modbus\":{\"ok\":%lu,\"timeout\":%lu,\"crc\":%lu,"
+             "\"exception\":%lu,\"framing\":%lu,\"param\":%lu,\"busy\":%lu,"
+             "\"last_status\":%u,\"last_addr\":%u,"
+             "\"last_fail_status\":%u,\"last_fail_addr\":%u,"
+             "\"to_received\":%u,\"to_expected\":%u,\"lock_wait_ms\":%lu}}",
+             (unsigned long)mc.ok, (unsigned long)mc.timeout,
+             (unsigned long)mc.crc, (unsigned long)mc.exception,
+             (unsigned long)mc.framing, (unsigned long)mc.param,
+             (unsigned long)mc.busy, (unsigned)mc.last_status,
+             (unsigned)mc.last_addr, (unsigned)mc.last_fail_status,
+             (unsigned)mc.last_fail_addr,
+             (unsigned)mc.last_to_received, (unsigned)mc.last_to_expected,
+             (unsigned long)mc.last_lock_wait_ms);
+
+    /* Per-slave rows, compact keys so three slaves fit the buffer: a=addr,
+     * to=timeout, ex=exception, fr=framing, pa=param, bu=busy. Only rows that
+     * have seen traffic are emitted. THIS is the block AT-WP05 reads -- the
+     * totals cannot separate the gate's re-probes against an absent encoder
+     * from the T5 read failures under test. */
+    for (unsigned i = 0; i < MODBUS_MAX_TRACKED_SLAVES; i++) {
+        if (mc.slave[i].addr == 0u) { continue; }
+        const size_t u = strlen(buf);
+        if (u + 1u >= cap) { break; }
+        snprintf(buf + u - 1u, cap - u + 1u,
+                 ",\"s%u\":{\"a\":%u,\"ok\":%lu,\"to\":%lu,\"crc\":%lu,"
+                 "\"ex\":%lu,\"fr\":%lu,\"pa\":%lu,\"bu\":%lu}}",
+                 (unsigned)mc.slave[i].addr, (unsigned)mc.slave[i].addr,
+                 (unsigned long)mc.slave[i].ok, (unsigned long)mc.slave[i].timeout,
+                 (unsigned long)mc.slave[i].crc, (unsigned long)mc.slave[i].exception,
+                 (unsigned long)mc.slave[i].framing, (unsigned long)mc.slave[i].param,
+                 (unsigned long)mc.slave[i].busy);
+    }
+}
+
 static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
 {
     if (!admin_only_or_send_error(req)) return ESP_OK;
     httpd_resp_set_type(req, "application/json");
+
+    /* ONE buffer for both paths. Giving the failure path its own array cost
+     * 2320 bytes of frame against -Wstack-usage=2200 (caught 2026-09-13); the
+     * compiler does not overlap the two scopes. 1600 leaves room for the
+     * per-slave rows (~65 bytes each, 3 slaves in service). */
+    char body[1600];
 
     windowpos_reading_t r;
     const windowpos_status_t st = windowpos_read(WINDOWPOS_DEFAULT_ADDR, &r);
@@ -3187,18 +3254,23 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
         const windowpos_ctrl_mode_t egm = windowpos_task_ctrl_mode(&egr);
         windowpos_counters_t ecn;
         windowpos_task_counters(&ecn);
-        char e[352];
-        snprintf(e, sizeof(e),
+        snprintf(body, sizeof(body),
                  "{\"ok\":false,\"err\":\"read_failed\",\"status\":%d,"
-                 "\"gate\":{\"mode\":%d,\"mode_str\":\"%s\",\"reason\":%d},"
+                 "\"gate\":{\"mode\":%d,\"mode_str\":\"%s\",\"reason\":%d,"
+                 "\"reason_str\":\"%s\"},"
                  "\"soak\":{\"reads_ok\":%lu,\"err_busy\":%lu,\"err_comm\":%lu,"
                  "\"probe_fail\":%lu,\"mode_changes\":%lu,\"gated_polls\":%lu}}",
                  (int)st, (int)egm,
                  (egm == WPOS_CTRL_POSITION) ? "position" : "timed", (int)egr,
+                 ((unsigned)egr < (sizeof(k_reason) / sizeof(k_reason[0])))
+                     ? k_reason[egr] : "?",
                  (unsigned long)ecn.reads_ok, (unsigned long)ecn.err_busy,
                  (unsigned long)ecn.err_comm, (unsigned long)ecn.probe_fail,
                  (unsigned long)ecn.mode_changes, (unsigned long)ecn.gated_polls);
-        return httpd_resp_send(req, e, HTTPD_RESP_USE_STRLEN);
+        /* AT-WP05 arm A reads the bus tallies with the encoder unplugged, so
+         * they MUST be on this path -- it is the only response that arm sees. */
+        append_modbus_json(body, sizeof(body));
+        return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
     }
 
     uint8_t build = 0u, ver = 0u;
@@ -3214,9 +3286,6 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
     windowpos_derived_t d;
     const bool have_d = windowpos_task_derived(&d);
 
-    /* 1408: reading + t17 + soak + gate came to ~880 worst-case and the
-     * modbus tally block adds ~180 more. */
-    char body[1408];
     snprintf(body, sizeof(body),
              "{\"ok\":true,\"addr\":%u,\"build\":%u,\"fw\":%u,"
              "\"opening_mm_x10\":%u,\"percent_x10\":%u,\"rate_mm_s_x10\":%d,"
@@ -3268,9 +3337,6 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
      * build only, which is not the per-poll cost the gate exists to remove. */
     windowpos_gate_reason_t gr = WPOS_GATE_OK;
     const windowpos_ctrl_mode_t gm = windowpos_task_ctrl_mode(&gr);
-    static const char *const k_reason[] = {
-        "ok", "probing", "no_sensor", "bench_build", "device_fault"
-    };
     const size_t used3 = strlen(body);
     if (used3 + 1u < sizeof(body)) {
         snprintf(body + used3 - 1u, sizeof(body) - used3 + 1u,
@@ -3301,25 +3367,7 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
      * the REQUEST itself does a ~215 ms direct read above, so do not poll this
      * endpoint during a stroke: it becomes a third caller and perturbs exactly
      * the contention it is here to measure. Read it AFTER the stroke. */
-    modbus_counters_t mc;
-    modbus_get_counters(&mc);
-    const size_t used4 = strlen(body);
-    if (used4 + 1u < sizeof(body)) {
-        snprintf(body + used4 - 1u, sizeof(body) - used4 + 1u,
-                 ",\"modbus\":{\"ok\":%lu,\"timeout\":%lu,\"crc\":%lu,"
-                 "\"exception\":%lu,\"framing\":%lu,\"param\":%lu,\"busy\":%lu,"
-                 "\"last_status\":%u,\"last_addr\":%u,"
-                 "\"last_fail_status\":%u,\"last_fail_addr\":%u,"
-                 "\"to_received\":%u,\"to_expected\":%u,\"lock_wait_ms\":%lu}}",
-                 (unsigned long)mc.ok, (unsigned long)mc.timeout,
-                 (unsigned long)mc.crc, (unsigned long)mc.exception,
-                 (unsigned long)mc.framing, (unsigned long)mc.param,
-                 (unsigned long)mc.busy, (unsigned)mc.last_status,
-                 (unsigned)mc.last_addr, (unsigned)mc.last_fail_status,
-                 (unsigned)mc.last_fail_addr,
-                 (unsigned)mc.last_to_received, (unsigned)mc.last_to_expected,
-                 (unsigned long)mc.last_lock_wait_ms);
-    }
+    append_modbus_json(body, sizeof(body));
     return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
 }
 

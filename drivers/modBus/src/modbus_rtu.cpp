@@ -238,6 +238,25 @@ static void wait_ifg(void)
 static modbus_counters_t s_cnt;
 
 /**
+ * @brief Find this address's counter row, claiming a free slot on first sight.
+ * @return NULL when the table is full -- the caller still counts the bus-wide
+ *         totals, so a transaction is never lost, only its per-slave detail.
+ */
+static modbus_slave_counters_t *slave_row(uint8_t addr)
+{
+    for (unsigned i = 0; i < MODBUS_MAX_TRACKED_SLAVES; i++) {
+        if (s_cnt.slave[i].addr == addr) { return &s_cnt.slave[i]; }
+    }
+    for (unsigned i = 0; i < MODBUS_MAX_TRACKED_SLAVES; i++) {
+        if (s_cnt.slave[i].addr == 0u) {
+            s_cnt.slave[i].addr = addr;
+            return &s_cnt.slave[i];
+        }
+    }
+    return NULL;
+}
+
+/**
  * @brief Record the outcome of one transaction.
  *
  * Keeps the last FAILING status separately from the last status: by the time a
@@ -248,15 +267,23 @@ static modbus_status_t tally(modbus_status_t s, uint8_t addr)
 {
     s_cnt.last_status = (uint8_t)s;
     s_cnt.last_addr   = addr;
+    modbus_slave_counters_t *row = slave_row(addr);
     switch (s) {
-        case MODBUS_OK:            s_cnt.ok++;        return s;
-        case MODBUS_ERR_TIMEOUT:   s_cnt.timeout++;   break;
-        case MODBUS_ERR_CRC:       s_cnt.crc++;       break;
-        case MODBUS_ERR_EXCEPTION: s_cnt.exception++; break;
-        case MODBUS_ERR_FRAMING:   s_cnt.framing++;   break;
-        case MODBUS_ERR_PARAM:     s_cnt.param++;     break;
-        case MODBUS_ERR_BUSY:      s_cnt.busy++;      break;
-        default:                                      break;
+        case MODBUS_OK:
+            s_cnt.ok++;        if (row) { row->ok++; }        return s;
+        case MODBUS_ERR_TIMEOUT:
+            s_cnt.timeout++;   if (row) { row->timeout++; }   break;
+        case MODBUS_ERR_CRC:
+            s_cnt.crc++;       if (row) { row->crc++; }       break;
+        case MODBUS_ERR_EXCEPTION:
+            s_cnt.exception++; if (row) { row->exception++; } break;
+        case MODBUS_ERR_FRAMING:
+            s_cnt.framing++;   if (row) { row->framing++; }   break;
+        case MODBUS_ERR_PARAM:
+            s_cnt.param++;     if (row) { row->param++; }     break;
+        case MODBUS_ERR_BUSY:
+            s_cnt.busy++;      if (row) { row->busy++; }      break;
+        default:                                              break;
     }
     s_cnt.last_fail_status = (uint8_t)s;
     s_cnt.last_fail_addr   = addr;
