@@ -634,11 +634,15 @@ address. **PASS = arm B's T5 failure rate is not materially above arm A's.**
 > criterion should say so rather than imply a precision it does not have.
 > Detecting a doubling at 3 sigma needs **~7 days per arm**.
 
-**Blocker, must be fixed before arm A can run.** `GET /api/diag/windowpos`
+~~**Blocker, must be fixed before arm A can run.** `GET /api/diag/windowpos`
 returns early when the direct read fails, and that early return carries `gate`
 and `soak` but **not `modbus`**. With the encoder unplugged — arm A by
-definition — the bus counters are invisible. One-line class of fix: emit the
-`modbus` block on the failure path too, exactly as `gate` and `soak` already are.
+definition — the bus counters are invisible.~~ **FIXED 2026-09-13** (`c5d59dc`),
+and taken further than the one-line fix: the failure path now emits `modbus`,
+`reason_str`, **and per-slave rows keyed by address**. Bus-wide totals would
+not have been enough — with addr 40 deliberately absent, the gate's 30 s
+re-probes dominate the totals and are indistinguishable there from the T5
+failures the test is actually measuring.
 
 **The soak could not measure its own criterion until this build.** `MODBUS_ERR_BUSY` was folded
 into `WINDOWPOS_ERR_COMM`, so "did the second bus caller cost T5 anything" — the whole question —
@@ -666,6 +670,49 @@ Baseline JSON: `scratchpad/soak_baseline.json`.
   the FG6485A or S200 reads it shares a bus with.
 
 Read the counters any time with `GET /api/diag/windowpos` -> `soak`.
+
+#### Arm A — started 2026-09-13
+
+FDA4, `2.7.0-bench` (fw **and** asset version both verified post-reboot),
+encoder unplugged by the operator at uptime ~280 s.
+
+| | at start (uptime 68 s) | at t0, unplugged (uptime 287 s) |
+|---|---|---|
+| gate | `timed` / **`ok`** | `timed` / **`no_sensor`** |
+| bus total ok / timeout | 12 / 0 | 38 / **8** |
+| **addr 1** (FG6485A) ok / to | 1 / 0 | 9 / **0** |
+| **addr 40** (encoder) ok / to | 9 / 0 | 11 / **8** |
+| **addr 44** (S200) ok / to | 2 / 0 | 18 / **0** |
+| `err_busy` | 0 | **0** |
+| heap free | — | 73 kB |
+| SD | mounted, 1849 / 1880 MB free | |
+
+**Every one of the 8 bus timeouts is on addr 40**, and addresses 1 and 44 are
+untouched. That is the per-slave table earning its place on the first reading:
+8 timeouts in 5 minutes is an alarming number until you can see they are all
+the same absent device. The spacing (219 s / 8 ≈ 27 s) matches
+`PROBE_RETRY_MS` = 30 s, so the shut gate is re-probing at exactly its
+specified rate and no faster.
+
+**Two honesty notes for whoever reads the result.**
+
+1. **Arm A is not literally "one bus caller".** A shut gate still probes every
+   30 s, so T17 keeps making one transaction per 30 s — as this section's own
+   gate table intends ("exactly what the Phase 3 idle path already spent").
+   The arm A / arm B difference is therefore *T17 polling during strokes*, not
+   *T17 present versus absent*. That is the sharper comparison, but the table
+   above overstates it and should be read this way.
+2. **An overnight run cannot resolve a doubling.** Per the Poisson table above,
+   ~1 arm-day resolves a 5—10× contribution at 2.0—2.4 sigma and a doubling at
+   only ~1.1 sigma. Report it as what it is: a check for a *large* effect of
+   the inter-frame-gap class, not evidence that T17 costs T5 nothing.
+
+**Instrument gap found at t0, not worth a reflash mid-soak:** the diag's
+failure path emits **six** `soak` keys where the success path emits eight —
+`rejected_rate` and `strokes` are missing. Arm A runs entirely on the failure
+path, so neither is available from diag for this run. `rejected_rate` cannot
+move when no read succeeds, and strokes are recoverable from the SD `RELAY`
+rows, so the run is unaffected — but the two paths should emit the same block.
 ### Phase 3 — read-only logging *(**COMPLETE** — FDA4 2026-09-10. The first thing with lasting value)*
 
 Per CLAUDE.md, `log/logparser.py` **and** `model/campaign-summer-2026/plot_daily.py` learn every new channel **in the same changeset**.
