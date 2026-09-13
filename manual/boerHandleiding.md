@@ -1184,7 +1184,9 @@ De kascontroller heeft **geen enkele terugmelding** uit de RRK-3 over de stand v
 
 - **Mode-regel blijft `Mode: AUTO`** — er verschijnt geen waarschuwing dat de uitvoering is onderbroken
 - De controller blijft setpoints evalueren en **commando's naar de motorbox sturen** — alleen worden die commando's door de RRK-3 in de hand-stand genegeerd
-- De **raamposities** op het LCD en in de webinterface (`OPEN`, `CLOS`, `MOV>`, `MOV<`) zijn de **interne aanname** van de controller op basis van zijn eigen verzonden commando's. Wordt een raam handmatig in een andere stand gezet, dan **weet de controller daar niets van** — wat het scherm toont kan dan flink afwijken van de werkelijke positie
+- De **raamposities** op het LCD (`OPEN`, `CLOS`, `MOV>`, `MOV<`) en in de webinterface (`OPEN`, `CLOSED`, `OPENING`, `CLOSING`) zijn de **interne aanname** van de controller op basis van zijn eigen verzonden commando's. Wordt een raam handmatig in een andere stand gezet, dan **weet de controller daar niets van** — wat het scherm toont kan dan flink afwijken van de werkelijke positie
+
+  **Eén uitzondering: M3 met raamstandsensor.** Die sensor meet het raam zelf, niet de commando's. Zet iemand M3 handmatig in een andere stand, dan **zie je dat wél** — als gemeten percentage in de webinterface (zie [§8](#8-gebruik-zonder-inloggen--informatiemenu)). Let op de grenzen: dit geldt **alleen voor M3**, **alleen met sensor**, en **alleen in de webinterface** — het LCD toont ook voor M3 de interne aanname. M1 en M2 blijven volledig onzichtbaar bij handmatige bediening, en de controller *stuurt* nog steeds op tijd, ook op M3
 - **Wind-override blijft binnen de controller werken**: bij harde wind stuurt hij `CMD_CLOSE_ALL` naar de motorbox. De motorbox negeert dit. Op het LCD zie je dan keurig `Mode: WIND` en de controller "denkt" dat alle ramen dicht zijn — fysiek kunnen ze nog volledig open staan. Dit is precies waarom **windbeveiliging effectief uitstaat** zolang ook maar één schakelaar handmatig staat
 - Het systeemlog blijft normale events vastleggen — er staat **geen waarschuwing** in het log dat de uitvoering richting de motoren is onderbroken
 

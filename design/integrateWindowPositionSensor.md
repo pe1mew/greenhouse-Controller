@@ -1186,6 +1186,42 @@ So there are now **two gates**, not one, and they are crossed in order:
 - **Performance indicators for the bus and for the sensor** (operator,
   2026-09-13), built here **as the template for the other Modbus actors** — see
   immediately below.
+- **The operator manuals**, which state the opposite of what this slice builds
+  — see immediately below. They are a deliverable of the slice, not an
+  afterthought to it.
+
+##### The manuals are a dependency of this slice
+
+Both manuals rest, in seven places, on *the controller has no position
+feedback*. Six of them stay **correct until the ▲ GATE is crossed** and must
+not be edited before then: nothing consumes position today, so an edit now
+would claim feedback the controller does not use — a worse error than the one
+it fixes. They come due **in this slice**, with the control change, and the
+sharpest is `beheerderHandleiding:1471`, which calls the CLOSE_ALL calibration
+*the only way* to re-align the internal assumption with physical reality. A
+flap-mounted encoder is a second way, and a better one.
+
+| file | line | claim | when it breaks |
+|---|---|---|---|
+| `beheerderHandleiding` | 101 | "geen positie-feedback van motoren … werkt op tijd-gestuurde commando's" | gate crossed |
+| `beheerderHandleiding` | 1470 | tracks positions internally from its own commands | gate crossed |
+| `beheerderHandleiding` | **1471** | CLOSE_ALL is **the only way** to re-align the assumption | gate crossed — **flatly false** then |
+| `beheerderHandleiding` | 1503 | the power-cycle recovery procedure that rests on 1471 | gate crossed |
+| `boerHandleiding` | 1196, 1216 | same power-cycle advice, farmer wording | gate crossed |
+| `boerHandleiding` | **1187** | positions shown on LCD **and in the web interface** are the controller's assumption | **already**, see below |
+
+**1187 was already inconsistent and is FIXED (2026-09-13).** §6.3 shipped a
+*measured* percentage for M3 in the web interface that same morning, into the
+same manual whose §8 now documents it. The correction is worth more than its
+own accuracy: §15 is the manual-takeover section, and a hand-crank at the
+RRK-3 is precisely the case a flap-mounted encoder **does** see, because it
+measures the leaf and not the commands. **M3 with a sensor is the one window
+where a manual move is visible** — and on the web only; the LCD still shows
+the assumption, which is why §6.2 left it alone.
+
+That asymmetry is a **finding about the sensor's value**, not merely a
+documentation fix: the failure mode §15 exists to warn about is one the sensor
+partially detects. Worth carrying into whatever alarm handling this slice adds.
 
 ##### Performance indicators — build them in this slice, as the template
 
