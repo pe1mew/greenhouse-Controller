@@ -3,8 +3,8 @@
 | Field | Value |
 |---|---|
 | Document | Implementation plan |
-| Date | 2026-09-07 |
-| Status | **UNBLOCKED 2026-09-10 — the rig is built and operational.** Wire sensor live on FDA4's Modbus bus, window emulator on M3's open/close relays, end contacts fitted. Both prerequisites shipped (gh#49 in 2.4.1, gh#51 in 2.4.2—2.4.4). Phase 0 tooling committed (`de92c27`) but **not flashed** — FDA4 runs the release build, which excludes `MODBUS_BENCH`. **Phase 0 is ready to run.** Phases 1—4 not started; Phase 5 out of scope |
+| Date | 2026-09-07, last revised **2026-09-13** |
+| Status | **Phases 0—3 COMPLETE and hardware-verified** (FDA4, 2026-09-10). **Phase 4 is SPLIT** (2026-09-13): the sensor-presence gate landed and is hardware-verified 2026-09-12, fault logging is done, and the control-side half — travel-complete, the two 12.4 rules, the operator surfaces — moved into the section 5.0 M3 slice. **Nothing consumes position yet, so the GATE before Phase 5 is still uncrossed and greenhouse behaviour is unchanged.** Phase 5 is **sequenced behind section 5.0**, no longer simply out of scope. Both prerequisites shipped (gh#49 in 2.4.1, gh#51 in 2.4.2—2.4.4). Runs on `ropeSensor` only; `main` ships without any of it |
 | Requirements | [`windowPositionSensorRequirements.MD`](windowPositionSensorRequirements.MD) — FR-WP01–22, and §12 evaluating this sensor |
 | Device contract | [`modbusInterfaceContractSpecification.md`](modbusInterfaceContractSpecification.md) v1.2 (normative source is the sensor project's `design/TDS.md`) |
 | Bus architecture | [`refactorSensorConfiguration.md`](refactorSensorConfiguration.md) — the end state this plan deliberately does *not* build |
@@ -197,6 +197,18 @@ it should, with raw sweeping 0..990.
 rather than by design. Worth keeping: a bench check for the position path should include
 detaching the wire, not just shorting or opening the wiper.
 
+### 2a.8 Traverse timing, measured (2026-09-10)
+
+| leg | time |
+|---|---|
+| switch-to-switch (the actual opening range) | **10.0 s** |
+| switch-to-limit (the blind overlap) | **~3.5 s** |
+| total, limit to limit | **~13.5 s** — consistent with `travel_m3` = 13 s covering both |
+
+**So today's timer-only logic spends ~3.5 s of every stroke stalled against the end
+protection.** New logic that cuts the relay on bit 3 removes that (2a.5 item 3), and the
+effective travel time it should configure is the **10 s** switch-to-switch figure, not 13.
+
 ### 2a.9 Committed calibration (2026-09-10, rig)
 
 | register | value | |
@@ -213,18 +225,6 @@ detaching the wire, not just shorting or opening the wiper.
 **`40002` must be set before any teach, not after.** The teach captures `30005` at the sensor transition, and `30005` only refreshes once per measurement window. At the 1000 ms default and ~150 mm/s the capture could be a full second stale — up to 150 mm, ~86 counts of calibration error, with nothing to indicate it. At 100 ms that bound is ~15 mm.
 
 Successive teaches captured the open end at 867, then 904 observed / 858 committed. The spread is real: it is where the switch makes on that pass, plus up to one measurement window of staleness. **Treat a single teach as ~±20 counts (~35 mm) repeatable, not exact** — and re-teach rather than hand-tuning if the number looks wrong.
-
-### 2a.8 Traverse timing, measured (2026-09-10)
-
-| leg | time |
-|---|---|
-| switch-to-switch (the actual opening range) | **10.0 s** |
-| switch-to-limit (the blind overlap) | **~3.5 s** |
-| total, limit to limit | **~13.5 s** — consistent with `travel_m3` = 13 s covering both |
-
-**So today's timer-only logic spends ~3.5 s of every stroke stalled against the end
-protection.** New logic that cuts the relay on bit 3 removes that (2a.5 item 3), and the
-effective travel time it should configure is the **10 s** switch-to-switch figure, not 13.
 
 ---
 
@@ -315,6 +315,54 @@ Ranked defences, strongest first: **operator acceptance of a displayed result**;
 **Later, optionally:** the device already refreshes `30013`/`30014` at *every* stop arrival for drift detection (contract §6.5). The same principle would let the rate be refined passively on every full traverse. Start with the explicit commissioning measurement; passive refinement is a small addition once the measured path is trusted.
 
 
+### 3.6 Minimum-move deadband — derived, like everything else here
+
+*(Moved into this section 2026-09-13. It had been two sentences inside 5a's dwell
+discussion, which is the wrong place twice over: it is an **actuator** property,
+not a control-algorithm one, so the M3 slice needs it the moment it implements
+"drive to a setpoint"; and it was given as a flat "2 %", which was invented.)*
+
+Under stepped control the anti-thrash problem was **aperture oscillation**, and
+`dwell_*_s` answers it. Under linear control it becomes **motor duty and
+mechanical wear**, and the mechanism for that is magnitude-based, not
+time-based: **do not energise for a correction smaller than the deadband.** The
+two are complements, not alternatives — *dwell* answers "how often may this
+window move", *deadband* answers "is this correction worth moving for".
+
+**It has two independent floors. The deadband is the larger of them.**
+
+**Floor 1 — sampling resolution.** The leaf travels `poll_ms — speed` between
+samples, so a deadband below that commands a correction smaller than the error
+the sampling itself introduces. It will chatter.
+
+| | travel | speed | effective poll | one sample | % of stroke |
+|---|---|---|---|---|---|
+| dev rig | 13 s | 115.4 mm/s | **170 ms** (measured, AT-WP05 — `vTaskDelay` is relative) | 19.6 mm | **1.31 %** |
+| production | 171 s | 8.8 mm/s | 1140 ms | 10.0 mm | **0.67 %** |
+
+**The floor is ~2x tighter on production than on the rig**, which is precisely
+why a fixed percentage cannot serve both and why this belongs in section 3: it
+derives from `travel_m3` like the poll interval, the measurement window and the
+rate threshold. The rig figure is corroborated by `nominal_x10 = 1153` read
+from the device.
+
+**Floor 2 — the shortest pulse that actually moves the leaf.** Energising a
+contactor for 50 ms to correct 0.5 % is wear for no motion: static friction and
+contactor make/break time mean a short pulse may move nothing at all. **This
+term is not yet measured** — it is a rig experiment (command progressively
+shorter pulses, find where displacement stops tracking pulse width), and it
+should be done before a deadband value is fixed.
+
+**The endpoints are exempt.** A setpoint of `0` or `100` terminates on **bit 3**
+and runs to the switch however small the remaining distance is (see 6.1 and the
+corrected constraint 1 in 5a). Applying the deadband there would park the leaf
+just short of its stop with bit 3 never asserting — which is also the FR-E16
+signature for a broken end-sensor cable, so it would read as a hardware fault.
+
+**Consequence for configuration:** the linear dwell defaults to 0 (5a), but the
+**deadband must not** — a zero deadband is the chattering case. Derive it, expose
+it, and let the operator raise it; do not let it start at zero.
+
 ---
 
 ## 4. Architecture: a dedicated position task
@@ -335,7 +383,7 @@ Requirements §3 left "who polls at 1 Hz" explicitly unsolved. The rig's 150 ms 
 
 ## 5. Phases
 
-### Phase 0 — bring-up and commissioning *(bench tooling; **BLOCKED on hardware**)*
+### Phase 0 — bring-up and commissioning *(bench tooling; **COMPLETE, FDA4 2026-09-10**)*
 
 > **Status 2026-09-07: cannot start.** The wire sensor is not on FDA4's bus (§2). Everything below needs a device to answer.
 
@@ -405,7 +453,7 @@ counter — healthy at 40002 = 1000 ms. `30010` = 2 is the served-request count.
 
 **Not yet done — needs movement and a tape measure:** the teach (§6.2), `40004`, the per-direction
 traverse timing (§3.5), and the sensor-zone check (§5.3).
-### Phase 1 — driver
+### Phase 1 — driver *(**COMPLETE**, all exit criteria met — FDA4 2026-09-10)*
 
 Thin driver over the existing Modbus layer. FC04 for input registers, FC03 for holdings, FC16 for writes.
 
@@ -454,7 +502,7 @@ consume the sensor. That is correct today and is precisely what Phase 2 changes.
 **Forcing a stroke without the LCD:** `POST /api/mode` standby then automatic posts
 `CMD_RECALIBRATE`, which drives a full CLOSE_ALL. That is the remote lever for any test
 needing a closing traverse.
-### Phase 2 — position task + derived configuration
+### Phase 2 — position task + derived configuration *(**COMPLETE** — FDA4 2026-09-10)*
 
 The task of §4, with §3's rules implemented as **derived** values, not constants. Log the derived numbers at boot so a wrong `travel_m3` is visible immediately.
 
@@ -531,7 +579,7 @@ Baseline JSON: `scratchpad/soak_baseline.json`.
   the FG6485A or S200 reads it shares a bus with.
 
 Read the counters any time with `GET /api/diag/windowpos` -> `soak`.
-### Phase 3 — read-only logging *(the first thing with lasting value)*
+### Phase 3 — read-only logging *(**COMPLETE** — FDA4 2026-09-10. The first thing with lasting value)*
 
 Per CLAUDE.md, `log/logparser.py` **and** `model/campaign-summer-2026/plot_daily.py` learn every new channel **in the same changeset**.
 
@@ -955,7 +1003,7 @@ Phases 0–4 add a sensor, logging and diagnostics. The greenhouse behaves exact
 
 ---
 
-### Phase 5 — proportional M3 control *(OUT OF SCOPE this cycle — recorded, not planned)*
+### Phase 5 — proportional M3 control *(**SEQUENCED behind 5.0**, not started — was "out of scope, recorded not planned" until 2026-09-13)*
 
 The larger part of the effort, and the part the rig **cannot validate**.
 
@@ -1348,4 +1396,29 @@ Note what production logging unlocks that the rig cannot: a **real** 171 s trave
 ~~1. Is Phase 5 in scope for this cycle?~~ **Decided 2026-09-07: no.** Phases 0–4 stand alone and deliver position logging, mechanical fault detection and faster power-loss recovery without touching control.
 
 2. **Operator-facing surfaces** — LCD, web GUI, remote status site — settled, see §6.
-3. **Alarm handling** — deferred to Phase 5, see the note in Phase 4.
+   **Reconfirmed 2026-09-13:** LCD unchanged, and **LCD control uses full
+   open/close, not a percentage**.
+3. ~~**Alarm handling** — deferred to Phase 5.~~ **Superseded 2026-09-13:** the
+   §5.0 sequencing gate pulls alarm handling **into the M3 slice**, ahead of the
+   control change.
+
+**Decided since, and recorded where they belong:**
+
+4. ~~What happens on sensor failure?~~ **Decided 2026-09-12** — two control laws,
+   POSITION with a trusted sensor and TIMED without one, selected by the
+   presence gate. See §4a.
+5. ~~Does the control logic change with the M3 work?~~ **Decided 2026-09-13** —
+   no: finish M3 end to end first. See §5.0.
+6. ~~Must the bus be error-free?~~ **Decided 2026-09-13** — no. Robust to a level
+   of errors, observable before failure, faultless only as a *development*
+   target. See §5.0.
+
+**Still open:**
+
+7. **The DEGRADED threshold value** — deliberately unset until a per-installation
+   baseline is measured (§5.0). The FAULT threshold is a separate, safety
+   decision, and gh#66 carries both.
+8. **The minimum-move deadband value** — floor 2 (the shortest pulse that actually
+   moves the leaf) is unmeasured; see §3.6.
+9. **PID or fuzzy** for the central algorithm, and how a mixed
+   discrete/continuous plant is expressed to it. See §5a.
