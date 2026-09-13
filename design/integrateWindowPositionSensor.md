@@ -924,6 +924,112 @@ The larger part of the effort, and the part the rig **cannot validate**.
 
 **What only 5C88 over a summer can prove:** that doing so actually damps the ~42 min / ~4.9 °C limit cycle. The plant model gives a prediction, not evidence.
 
+#### 5.0 SEQUENCING GATE — finish M3 end to end before touching the control logic
+
+**Operator decision, 2026-09-13:** build the **full M3 implementation with the
+window sensor** — including the GUI and LCD integration, alarm handling and
+logging — **before** any change to the control logic.
+
+So there are now **two gates**, not one, and they are crossed in order:
+
+| | Gate | What it permits |
+|---|---|---|
+| 1 | the existing ▲ GATE below | M3 may be *positioned* using the sensor. The vent algorithm is untouched. |
+| 2 | this section 5.0 | the vent algorithm may change (section 5a: per-window setpoints, central algorithm, PID/fuzzy). |
+
+**What "full implementation" means concretely**, given phases 0—4 are built:
+
+- M3 **acted on** by position: travel-complete detection, de-energise at target,
+  travel timer retained as the ceiling — while the **existing stepped logic
+  still decides** open/closed. The actuator changes; the decision does not.
+- The two **controller-side rules from requirements 12.4** that the device
+  cannot self-report: *moving means moving*, and *a stop that arrives too early
+  is a fault, not a success*. These must exist **before** position is trusted for
+  control, not alongside the algorithm that consumes it.
+- **Operator surfaces, section 6**: the display rule (6.1), the web GUI including
+  the commissioning screen (6.3), and the remote status payload (6.4).
+- **Alarm handling** — which Phase 4 deliberately deferred to Phase 5 ("detects
+  and records; it does not act"). Under this sequencing it belongs to the M3
+  slice, ahead of the control change.
+- **Logging** — already built (SENSOR_HR ch3, ALARM ch6 244—248, both parsers,
+  logparser.md 1.12), so this part is done and only needs extending for whatever
+  the alarm handling adds.
+- **Performance indicators for the bus and for the sensor** (operator,
+  2026-09-13), built here **as the template for the other Modbus actors** — see
+  immediately below.
+
+##### Performance indicators — build them in this slice, as the template
+
+**Operator decision, 2026-09-13.** The M3 slice adds performance indicators for
+**the bus** and for **the sensor**, and that implementation is the **template
+the other Modbus actors follow** — the FG6485A at addr 1, the S200 at addr 44,
+and anything added later.
+
+**Half of it already exists**, which is exactly why this is the right place to
+finish it. Both were built on 2026-09-12 while diagnosing the wind alarm:
+
+| what | where | holds |
+|---|---|---|
+| bus-wide | `modbus_counters_t` | `ok` / `timeout` / `crc` / `exception` / `framing` / `param` / `busy`, the last status **and the last FAILING status** kept apart, `to_received` vs `to_expected` for the last timeout, and the last bus-lock wait |
+| the sensor | `windowpos_counters_t` | `reads_ok`, `err_busy`, `err_comm`, `rejected_rate`, `strokes`, `probe_fail`, `mode_changes`, `gated_polls` |
+
+**What is missing, and it is the part that makes them a template:**
+
+1. **Per-slave, not bus-wide.** `modbus_counters_t` totals every transaction
+   together. It was `last_fail_addr` alone that made the 2026-09-13 diagnosis
+   possible — addr 40 clean while addr 1 and addr 44 failed. **Key the counters
+   by slave address inside the driver** and every actor gets its own indicators
+   for free, with no per-task code at all. That is the template insight: it is
+   not a struct to copy into each task, it is one table in the driver that each
+   task reads its own row from.
+2. **Production-visible.** Both surfaces are behind `#ifdef MODBUS_BENCH`, so a
+   release build — i.e. **every unit in service** — exposes nothing. 5C88 is
+   behind NAT, so `/api/status` plus a **sparse** `LOG_SYSTEM` row is the only
+   path that reaches anyone off-site. Sparse matters: this must not become
+   another `IDLE_LOG_MS` volume problem.
+3. **A rolling rate, not only since-boot totals.** 5C88 has run 43 days; a
+   cumulative counter says nothing about trend on that timescale.
+4. **`consecutive_fail_max`** — the one number that actually predicts a fault,
+   since T5 faults on consecutive failures rather than on a rate.
+
+**Why this slice and not later.** The indicators are how the M3 implementation
+is shown to work at all: the presence gate, the promotion/demotion asymmetry and
+the 12.4 controller-side rules each produce a counter, and without them "it
+behaved correctly overnight" is an assertion. The 2026-09-12 investigation is
+the worked example — three wrong root causes were proposed before instrumenting,
+and one reading (`to_received = 0 of 29`, `crc = 0`, `busy = 0`) ended it.
+
+**Tracked separately as gh#66**, which carries the T5 half: the residual ~0.087 %
+non-response rate on addr 1 and addr 44, observed on the dev rig and reported on
+production. The template built here is what that issue consumes.
+
+**Why this order is right**, beyond it being the instruction:
+
+- **Attribution.** Change the actuator and the decision logic together and no
+  observed behaviour change is attributable to either. The stepped logic is the
+  known-good reference; keeping it fixed makes the actuator the only variable.
+- **It is Phase 4's own principle extended.** Phase 4's stated minimal end result
+  is a movement trace, *"what earns trust in the implementation before anything
+  acts on it"*. The same argument applies one level up: earn trust in
+  position-as-actuator before rebuilding the thing that commands it.
+- **The operator surfaces are what make the sensor trustworthy**, not decoration.
+  A position the farmer cannot see and an alarm nobody is told about is not a
+  working implementation, it is an instrumented one.
+- **It de-risks the part that cannot be validated on the rig.** Section 5 already
+  notes the rig can prove the controller reaches intermediate apertures, but only
+  5C88 over a summer can prove that doing so damps the limit cycle. Finishing M3
+  first means the unprovable part is the *only* thing outstanding when it starts.
+
+**The LCD stays as section 6.2 has it** (operator, 2026-09-13, confirming the
+2026-09-07 decision): **no change, and LCD control uses full open/close, not a
+percentage.** So the linear setpoint surface is the web GUI and the central
+algorithm only; the LCD remains a binary commander, and the `> 0 mm` counts as
+OPEN display rule stands. This matters beyond the display: **the LCD is an
+operator-manual command source** (`SRC_OPERATOR_MANUAL`, which bypasses the
+dwell timers), so the actuator API must accept a plain open/close from it and
+reach the end switch, with no percentage anywhere in that path. No
+`boerHandleiding` change follows.
+
 #### 5a. Target architecture — operator brief, 2026-09-12
 
 Recorded from the operator, and it reframes Phase 5: the goal is not "M3 gains a
@@ -972,14 +1078,50 @@ side.
 
 ##### Four constraints that are already measured
 
-**1. `0 %` and `100 %` are the two setpoints the sensor can least confirm.** The
-device **clamps** position at `40004`, so 100 % cannot be told from
-driven-into-the-end-stop (see section 2a), and with no closed-end ADC headroom
-**bit 6 is inert closing** — a shorted wiper reads as a perfectly plausible
-closed window. Consequence for the API: the linear range should be
-**interior-only** (5—95 % or similar), with `0` and `100` delegated to the timed
-path and the **end switches**, which *can* confirm them. A uniform 0—100 linear
-interface would be dishonest at both ends.
+**1. The endpoints are the BEST-known points in the range, not the worst — they
+have their own sensor.** *(Corrected 2026-09-13. The first draft of this section
+claimed the opposite and recommended an "interior-only" linear range. That was
+wrong, and the correction changes the design for the better.)*
+
+Section 2a.1 is normative: the **opening range is lower end switch to higher end
+switch, and that IS 0 % .. 100 %**. The endpoints are not inferred from the
+analogue value at all — they are reported directly by **status bit 3**
+(`WINDOWPOS_ST_END_SENSOR`), and they *define* the scale. It is the **interior**
+that depends on the analogue reading and on `40004`/`40005`/`40006` being
+calibrated correctly.
+
+The `40004` clamp is real but answers a different question. It means **position
+must not be used to detect an endpoint** — clamped, "at the switch" and
+"overtravelled into the overlap" read identically — which is precisely why bit 3
+exists. Two distinct mechanisms, easily conflated: the **end switches** mark the
+fully closed / fully open *window* and are visible over Modbus; the **motor end
+protection** sits outside them, stops the leaf in the overlap, and is invisible
+to the controller (2a.1).
+
+**Consequence for the actuator API, and it is an improvement on today:**
+
+- A setpoint of `0` or `100` **terminates on bit 3**, with the travel timer as a
+  **ceiling**, not the other way round. Today's logic is timer-only, and 2a.3
+  records the cost: *every full stroke ends with the motor stalled against a
+  mechanical limit for whatever time is left*. De-energising at the switch ends
+  that stalling — a win that has nothing to do with proportional control and
+  could land ahead of it.
+- **"Timer expired without bit 3" is a reportable failure**, not a silent
+  completion. That is the first real customer for the *failed* half of the
+  done/failed channel: FR-E16 is an acknowledged blind spot — an **open
+  end-sensor cable means bit 3 never sets at all**, and the contract's own
+  cross-check for it is "commanded closed + position 0 + rate 0 + bit 3 never
+  set" (contract 5.4).
+- **Bit 4 (`WINDOWPOS_ST_BOTH_ENDS`) voids bit 3.** Both switches active at once
+  is an **end-switch loop fault and an alarm** (FR-E16); position keeps tracking
+  unchanged, so the actuator must fall back to the timer and report degraded
+  rather than trust the endpoint signal.
+- **Bit 6 stays inert closing** on this rig (no closed-end ADC headroom), so a
+  shorted wiper reads as a plausible closed window. That is an argument for
+  requirements 12.4 rule 1 — "moving means moving" — not against commanding 0 %.
+
+So the linear interface **can be a uniform 0—100**, with the endpoints served by
+a better signal than the middle rather than a worse one.
 
 **2. Capability loss mid-move is the sharpest unresolved case.** A window
 commanded to 60 % that loses its sensor at 30 % has unknown remaining travel. The
@@ -1045,6 +1187,10 @@ Using bit 3 rather than "position == 0" for the terminal states is the right cal
 > **One consequence to expect, and it is not a bug.** Contract §5.3: bit 3 reports the *sensor*, not the window. Where the sensor zone is shorter than the overtravel, the leaf comes to rest past the sensor and bit 3 **clears** while the window is fully closed — so the display shows `0 %` rather than `CLOSED`. Phase 0's sensor-zone check tells us which regime this installation is in; if it is the short-zone case, that is the display telling the truth about what it can actually prove.
 
 ### 6.2 LCD (T8) — no change
+
+> **Reconfirmed 2026-09-13** when the Phase 5 sequencing was set: no change, and
+> **LCD control uses full open/close, not a percentage**. The percentage surface
+> is the web GUI (6.3) and the remote status payload (6.4). See section 5.0.
 
 16×2 leaves nothing spare (`M1:C M2:C M3:45%` is exactly 16 characters), and the diagnostic value of a percentage is better carried by an event than by a number the farmer must interpret.
 
