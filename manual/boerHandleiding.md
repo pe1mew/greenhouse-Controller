@@ -79,7 +79,9 @@ De kascontroller is een geautomatiseerd systeem dat het **klimaat in één kas**
 - Geen koeling
 - Geen klimaatschermen
 - Geen besproeiing of CO₂-dosering
-- Hij weet niet hoeveel een raam open staat — hij stuurt alleen volledige open- of sluit-commando's. Een raam is in de praktijk **OPEN** of **DICHT**, niet "30%". De controller varieert het ventilatie-oppervlak door verschillende ramen op verschillende momenten te openen.
+- Hij stuurt alleen **volledige** open- of sluit-commando's. Een raam gaat **OPEN** of **DICHT**; hij zet het niet op "30%". De controller varieert het ventilatie-oppervlak door verschillende ramen op verschillende momenten te openen.
+
+  Is op **M3** een **raamstandsensor** gemonteerd, dan méét de controller wél hoever dat raam open staat, en toont hij dat als percentage in de webinterface (zie [§8](#8-gebruik-zonder-inloggen--informatiemenu)). Dat verandert alleen het **aflezen**, niet het **sturen**: ook M3 krijgt volledige open- en sluit-commando's. Zonder sensor verandert er niets en lees je gewoon `OPEN` of `CLOSED`.
 
 ---
 
@@ -549,6 +551,20 @@ Volledige beschrijving van elk scherm staat in [§5.1](#51-lcd-display).
 ### In de webinterface
 
 De **Status**-tab is direct zichtbaar in de browser, zonder inloggen. Hier zie je dezelfde informatie als op de LCD, maar dan overzichtelijk gepresenteerd, plus een tabel met de metingen van de afgelopen tijd.
+
+#### Raamstand van M3 (alleen met raamstandsensor)
+
+Is op **M3** een raamstandsensor gemonteerd, dan lees je bij M3 niet alleen `OPEN` of `CLOSED`, maar **hoever het raam open staat**. M1 en M2 blijven `OPEN` / `CLOSED` / `MOVING`.
+
+| Weergave bij M3 | Betekenis |
+|---|---|
+| `OPEN` / `CLOSED` | Het raam heeft zijn eindstand bereikt en de sensor **meldt** dat zelf — een harde melding, geen conclusie uit het getal |
+| `45.2 %` | Het raam staat ergens onderweg; het getal is de gemeten opening |
+| `OPENING` / `CLOSING` | Het raam beweegt op dit moment. Dan toont de controller de richting in plaats van een getal, want tijdens het bewegen loopt het getal altijd een slag achter |
+
+> **Iets méér dan 100 % is normaal en geen storing.** Zie je bij een volledig geopend raam een waarde als `113.7 %`, dan klopt dat. De sensor markeert waar het **raam** open is; daarna loopt de motor nog een stukje door tot zijn eigen **eindschakelaar** hem stopt (zie [§3](#3-de-kas-en-het-systeem)), en dat stukje telt mee in de meting. Het is juist het bewijs dát het raam zijn eindstand echt gehaald heeft.
+
+> **Badge "Window sensor fault".** Reageert de raamstandsensor niet meer, dan verschijnt in de tegel *Alarms* een gele badge **Window sensor fault**, en valt M3 terug op de gewone tijdgestuurde bediening — `OPEN` / `CLOSED`, precies zoals een raam zónder sensor. **De ventilatie blijft gewoon werken.** Deze storing sluit geen ramen en legt de klimaatregeling niet stil, dus je hoeft niet in te grijpen — meld hem wel bij de beheerder. Op het LCD-scherm van de controller is deze melding **niet** zichtbaar, alleen in de webinterface.
 
 ### Wat zichtbaar na login?
 

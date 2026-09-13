@@ -525,6 +525,21 @@ typedef struct {
     /* Windows */
     window_state_t win[3];   /**< M1 = win[0], M2 = win[1], M3 = win[2] */
 
+    /* M3 window position (T17, `ropeSensor`). A unit with no sensor fitted
+     * leaves `wpos_have` false and the JSON omits the fields entirely --
+     * **absent, not zero**, so a consumer can tell "no sensor" from "closed".
+     *
+     * `wpos_percent_x10` is deliberately NOT clamped to 0..1000: the leaf
+     * rests at ~113.7 % at the open end because the end sensors mark the
+     * WINDOW extremes while the motor drives on into the blind overlap
+     * (plan 2a.5). Clamping would hide the overtravel that proves the window
+     * reached its limit. */
+    bool     wpos_have;          /**< A trusted reading exists. */
+    bool     wpos_fault;         /**< Sensor faulted, or the gate is shut. */
+    bool     wpos_at_end_sensor; /**< Device bit 3 -- authority for OPEN/CLOSED. */
+    uint16_t wpos_percent_x10;   /**< Opening, 0.1 %. Unclamped. */
+    uint16_t wpos_mm_x10;        /**< Opening, 0.1 mm. */
+
     /* Mode + raw EG1 bits (for local-UI badges; harmless on the public dashboard) */
     op_mode_t mode;
     uint32_t  eg1_bits;

@@ -1126,8 +1126,10 @@ So there are now **two gates**, not one, and they are crossed in order:
   control, not alongside the algorithm that consumes it. **Their criteria are
   specified in Phase 4 and are not repeated here** — that section stays the
   specification, this one is the tracker.
-- **Operator surfaces, section 6**: the display rule (6.1), the web GUI including
-  the commissioning screen (6.3), and the remote status payload (6.4).
+- **Operator surfaces, section 6**: the display rule (6.1), the web GUI (6.3)
+  and the remote status payload (6.4) are **BUILT** (2026-09-13, mock-verified —
+  see §6.3). What remains here is the **admin commissioning screen** alone,
+  which needs the rig.
 - **Alarm handling** — which Phase 4 deliberately deferred to Phase 5 ("detects
   and records; it does not act"). Under this sequencing it belongs to the M3
   slice, ahead of the control change.
@@ -1431,6 +1433,19 @@ Show the opening percentage per §6.1, with the sensor fault surfaced alongside 
 
 **Also hosts commissioning** (admin-only): arm/abort the teach, watch bit 5, and run the §3.5 traverse measurement — **displaying measured open and close times against the configured `travel_m3` for explicit acceptance**. This is the screen that makes the measurement trustworthy rather than merely automatic.
 
+**Status 2026-09-13 — the read-only half is BUILT, the commissioning screen is NOT.**
+
+| | |
+|---|---|
+| **Built** | The snapshot carries the opening (`app_types.h`), `data_manager` fills it from the gate + T17, `build_canonical_status_json()` emits `M3_percent_x10` / `M3_mm_x10` / `M3_at_end_sensor`, the GUI applies the §6.1 rule, the `Window sensor fault` badge is surfaced, and the M3 tooltip explains the over-100 % rest position. `boerHandleiding` §2 and §8 synced in the same changeset |
+| **Split out** | The **admin commissioning screen** — teach arm/abort, bit 5, and the §3.5 traverse measurement with explicit acceptance. It needs new admin routes **and the rig**, because it cannot be finished without moving M3. It belongs to the §5.0 M3 slice |
+| **Verified** | Against `webUiMock` only (a `/api/__mock/m3` backdoor drives the opening, so the display rule can be walked by hand). **Not yet seen on hardware** — the rig is committed to AT-WP05 |
+
+Two deliberate choices worth not relitigating:
+
+- **The keys are OMITTED, not zeroed**, when no sensor is fitted. A consumer must be able to tell *no sensor* from *fully closed*, and an older dashboard must be unaffected. It is a payload-shape change either way, so the next release is a **minor** bump.
+- **No EG1 bit for the position fault** (operator, 2026-09-13). EG1 is what T3 reads, and FR-WP18 forbids any safety path depending on position — a bit there would invite exactly the coupling the requirement rules out. The flag rides the status payload instead, the way `standby` does.
+
 ### 6.4 Remote status site
 
 Add the opening to the `windows` object in `build_canonical_status_json`, gated by `STATUS_EXPOSE_WINDOWS`. This is a **payload-shape change → minor version bump**, and the dashboard is a separate site that must tolerate the field being **absent** (not zero) on any unit without a sensor.
@@ -1508,3 +1523,33 @@ Note what production logging unlocks that the rig cannot: a **real** 171 s trave
    moves the leaf) is unmeasured; see §3.6.
 9. **PID or fuzzy** for the central algorithm, and how a mixed
    discrete/continuous plant is expressed to it. See §5a.
+10. **Two M3 config keys, specified but NOT yet created** (noted 2026-09-13 when
+    the operator looked for the deadband setting and found none). They are
+    correctly absent today, and the reasons are worth keeping because
+    *correctly absent* and *forgotten* look identical from outside:
+
+    | key | default | answers |
+    |---|---|---|
+    | **minimum-move deadband** | **derived** from `travel_m3`, and **never 0** (§3.6) | *is this correction worth moving for?* |
+    | **linear dwell** | **0, off** (§5a, operator) | *how often may this window move?* |
+
+    Easy to conflate, and their defaults point opposite ways: a **zero deadband
+    is the chattering case**, whereas zero dwell is the intended starting point.
+
+    **Why not now:**
+    - **Nothing consumes them.** The deadband governs linear control, and
+      nothing consumes position — T2 makes no `windowpos_*` calls and the
+      ▲ GATE is uncrossed. A key today is a knob the operator can turn that
+      changes nothing, which is this codebase's own promoted anti-pattern:
+      *an affirmative success signal for something that did not happen*. gh#51
+      was a green tick on a travel time T2 was ignoring; a deadband slider with
+      no consumer is the same shape.
+    - **gh#64 comes first**, as §5.0 already records. A new key must enter six
+      hand-maintained tables (`cfg_clamp()`, `ns_key_to_log_id()`,
+      `cfg_key_kind()`, `LIMITS_JSON`, `cfg_limits.h`, and the mock's
+      `CONFIG_LIMITS`); the matrix already carries **51 keys with 17 declared
+      gaps**.
+
+    Sequence: **gh#64 refactor → linear control consumes position → then the
+    keys**, all inside the §5.0 M3 slice. `bin/check_cfg_tables.py` is the gate
+    that will catch a partial addition.

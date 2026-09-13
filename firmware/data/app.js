@@ -170,15 +170,60 @@ function handleStatus(s) {
     if (w.direction_variation_deg !== undefined) setText('st-wind-var', '±' + (w.direction_variation_deg / 2).toFixed(0));
   }
 
-  // Windows — object keyed M1/M2/M3
+  // Windows — object keyed M1/M2/M3.
+  //
+  // §6.1 display rule. A window with a position sensor shows its OPENING;
+  // the END SENSOR (device bit 3) stays the authority for the terminal
+  // states, because it is a physical witness rather than an inference from a
+  // number. Order of authority:
+  //
+  //   travelling          -> OPENING / CLOSING   (window state, unchanged)
+  //   bit 3 and pos ~ 0   -> CLOSED
+  //   bit 3 and pos ~ max -> OPEN
+  //   otherwise           -> the opening as a percentage
+  //
+  // The percentage is deliberately NOT clamped to 0..100. The leaf rests at
+  // ~113.7 % at the open end because the end sensors mark the WINDOW extremes
+  // while the motor drives on into the blind overlap (plan §2a.5). Showing a
+  // correctly parked window as "100 %" would hide the overtravel that proves
+  // it reached its limit, and showing it as a fault would be worse. Fault
+  // styling is reserved for the sensor fault itself.
+  //
+  // The M3_* keys are ABSENT on a unit with no sensor — not zero — so the
+  // `in` test below is what distinguishes "no sensor" from "fully closed".
   if (s.windows) {
     const ids = ['M1', 'M2', 'M3'];
     for (let i = 0; i < 3; i++) {
       const el = document.getElementById('st-win' + i);
       if (!el) continue;
       const st = s.windows[ids[i]] || 'UNKNOWN';
-      el.textContent = WIN_LABELS[st] || st;
-      el.className = WIN_CLASS[st] || '';
+      const movingNow = (st === 'MOVING_OPEN' || st === 'MOVING_CLOSE');
+      const hasPos = (ids[i] === 'M3') && ('M3_percent_x10' in s.windows);
+
+      if (hasPos && !movingNow) {
+        const pct = s.windows.M3_percent_x10 / 10;
+        const atEnd = !!s.windows.M3_at_end_sensor;
+        if (atEnd && pct <= 2) {
+          el.textContent = WIN_LABELS.CLOSED;
+          el.className = WIN_CLASS.CLOSED;
+        } else if (atEnd && pct >= 98) {
+          el.textContent = WIN_LABELS.OPEN;
+          el.className = WIN_CLASS.OPEN;
+        } else {
+          // One decimal: the rig resolves ~1.3 % per sample, so more digits
+          // would imply precision the sampling does not have (plan §3.6).
+          el.textContent = pct.toFixed(1) + ' %';
+          el.className = (pct <= 2) ? WIN_CLASS.CLOSED : WIN_CLASS.OPEN;
+        }
+      } else if (hasPos && movingNow) {
+        // Direction is worth more than a number while travelling, and the
+        // number is stale by up to one poll anyway.
+        el.textContent = (st === 'MOVING_OPEN') ? 'OPENING' : 'CLOSING';
+        el.className = WIN_CLASS[st] || '';
+      } else {
+        el.textContent = WIN_LABELS[st] || st;
+        el.className = WIN_CLASS[st] || '';
+      }
     }
   }
 
@@ -257,6 +302,12 @@ function handleStatus(s) {
       motor_alarm:        '<span class="badge alarm">MOTOR ALARM</span>',
       sensor_fault_temp:  '<span class="badge warn">T/RH fault</span>',
       sensor_fault_wind:  '<span class="badge warn">Wind fault</span>',
+      // FR-WP19 — the position fault on the same footing as the other two.
+      // Emitted from the status payload, NOT from an EG1 bit: EG1 is what T3
+      // reads and FR-WP18 forbids safety depending on position. Warn, not
+      // alarm — losing the sensor drops M3 to timed control, it does not
+      // stop ventilation (FR-WP17).
+      sensor_fault_position: '<span class="badge warn">Window sensor fault</span>',
       ota_in_progress:    '<span class="badge warn">OTA active</span>',
       calibrating:        '<span class="badge warn">Calibrating</span>',
       // rc.1.5.1 - gh#28 follow-up. Operator pause is visible in the same

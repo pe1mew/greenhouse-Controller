@@ -36,6 +36,7 @@
 #include "littlefs_storage.h"
 #include "sd_storage.h"               /* 2.0.2 (gh#31) — SD state in status JSON */
 #include "../system_id/system_id.h"   /* unit_id at boot (gh#17, since 1.18.3) */
+#include "../window_pos/window_pos_task.h" /* 6.3 — M3 opening for the status payload */
 
 /* alpha.6.7 — dropped vestigial #include <Arduino.h> and <WiFi.h>.
  * The 3 WiFi.* call sites in dm_status_snapshot() are rewritten below
@@ -1647,6 +1648,29 @@ void dm_status_snapshot(status_snapshot_t *out)
 
     /* Window states via the relay-controller spinlock-protected getter. */
     t2_get_window_states(out->win);
+
+    /* 6.3 — M3 opening. Reported only when the presence gate says the reading
+     * can be trusted, so a unit without a sensor omits the fields rather than
+     * publishing a plausible zero. The gate reason distinguishes "no sensor
+     * fitted" from "sensor present but faulted"; both leave wpos_have false,
+     * and only the second raises wpos_fault, because a unit that never had a
+     * sensor is not in a fault state. */
+    {
+        windowpos_gate_reason_t why = WPOS_GATE_OK;
+        (void)windowpos_task_ctrl_mode(&why);
+        windowpos_reading_t wr;
+        uint32_t wr_age = 0u;
+        const bool have = windowpos_task_snapshot(&wr, &wr_age);
+
+        out->wpos_have          = have && !wr.sensor_fault &&
+                                  (why != WPOS_GATE_NO_SENSOR) &&
+                                  (why != WPOS_GATE_BENCH_BUILD);
+        out->wpos_fault         = (why == WPOS_GATE_DEVICE_FAULT) ||
+                                  (have && wr.sensor_fault);
+        out->wpos_at_end_sensor = have && wr.at_end_sensor;
+        out->wpos_percent_x10   = have ? wr.percent_x10 : 0u;
+        out->wpos_mm_x10        = have ? wr.opening_mm_x10 : 0u;
+    }
 
     /* Mode is derived from EG1 in priority order. rc.1.5.0 (gh#28) inserts
      * STANDBY below WIND_OVERRIDE — safety always wins, but a deliberate

@@ -191,13 +191,29 @@ size_t build_canonical_status_json(char *buf, size_t cap,
             (unsigned)s->w_dir_variation_deg);
     }
 
-    /* windows — object keyed M1/M2/M3. */
+    /* windows — object keyed M1/M2/M3.
+     *
+     * 6.3/6.4: M3 additionally carries its opening when a position sensor is
+     * fitted and trusted. The extra keys are **omitted entirely** otherwise --
+     * absent, not zero -- so a consumer can distinguish "no sensor" from
+     * "fully closed", and so an older dashboard is unaffected. This is a
+     * payload-shape change: minor version bump. */
     if (ok && (expose_mask & STATUS_EXPOSE_WINDOWS)) {
         ok = ok && append(buf, cap, &pos,
-            ",\"windows\":{\"M1\":\"%s\",\"M2\":\"%s\",\"M3\":\"%s\"}",
+            ",\"windows\":{\"M1\":\"%s\",\"M2\":\"%s\",\"M3\":\"%s\"",
             window_state_str(s->win[0]),
             window_state_str(s->win[1]),
             window_state_str(s->win[2]));
+        if (ok && s->wpos_have) {
+            /* percent_x10 is NOT clamped -- see the snapshot field comment and
+             * plan 2a.5. A correctly parked open window reads ~1137. */
+            ok = ok && append(buf, cap, &pos,
+                ",\"M3_percent_x10\":%u,\"M3_mm_x10\":%u,\"M3_at_end_sensor\":%s",
+                (unsigned)s->wpos_percent_x10,
+                (unsigned)s->wpos_mm_x10,
+                s->wpos_at_end_sensor ? "true" : "false");
+        }
+        ok = ok && append(buf, cap, &pos, "}");
     }
 
     /* mode — object {current, flags[]}. The dashboard renders `current` as
@@ -207,6 +223,18 @@ size_t build_canonical_status_json(char *buf, size_t cap,
             ",\"mode\":{\"current\":\"%s\",\"flags\":[",
             current_mode_label(s));
         bool first = true;
+        /* FR-WP19 wants the position fault on the same footing as the T/RH
+         * and wind faults. It deliberately does NOT get an EG1 bit (operator,
+         * 2026-09-13): EG1 is what T3 reads, and FR-WP18 forbids any safety
+         * path depending on position, so a bit there would invite exactly the
+         * coupling the requirement rules out. Emitted from the snapshot
+         * instead -- same badge, no new safety-adjacent bit. */
+        if (ok && s->wpos_fault) {
+            ok = ok && append(buf, cap, &pos, "%s\"sensor_fault_position\"",
+                              first ? "" : ",");
+            first = false;
+        }
+
         for (size_t i = 0; ok && i < (sizeof(EG1_FLAGS) / sizeof(EG1_FLAGS[0])); i++) {
             if (s->eg1_bits & EG1_FLAGS[i].bit) {
                 ok = ok && append(buf, cap, &pos,

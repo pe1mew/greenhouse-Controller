@@ -182,6 +182,31 @@ BOOT_TIME: float = time.monotonic()
 sd: dict = {"mounted": True, "size_mb": 7500, "free_mb": 7100}
 
 # ---------------------------------------------------------------------------
+# M3 window position (6.3). Drivable so the 6.1 display rule can be walked by
+# hand:
+#
+#   curl -X POST "http://localhost:5000/api/__mock/m3?percent=45.2"
+#   curl -X POST "http://localhost:5000/api/__mock/m3?percent=113.7&at_end=true"
+#   curl -X POST "http://localhost:5000/api/__mock/m3?state=MOVING_OPEN"
+#   curl -X POST "http://localhost:5000/api/__mock/m3?fault=true"
+#   curl -X POST "http://localhost:5000/api/__mock/m3?fitted=false"
+#
+# `fitted=false` omits the M3_* keys entirely -- absent, not zero -- which is
+# how a unit with no sensor reports, and the GUI must render exactly as it did
+# before the sensor existed.
+#
+# percent is NOT clamped: 113.7 is a correctly parked open window, because the
+# end sensors mark the WINDOW extremes and the motor drives on into the blind
+# overlap before its end switch stops it (plan 2a.5).
+M3_POS = {
+    "fitted":        True,
+    "percent_x10":   452,     # 45.2 % -- mid-travel, so the rule is visible
+    "at_end_sensor": False,
+    "state":         "OPEN",
+    "fault":         False,
+}
+
+# ---------------------------------------------------------------------------
 # Synthetic log data (mirrors log_entry_t / log_event_t from firmware)
 # Fields: timestamp, event_type, initiator, channel, param_id, value_a, value_b
 # event_type → string: 0=SENSOR 1=RELAY 2=MODE 3=SETPT 4=SESSION 5=ALARM 6=SYSTEM
@@ -343,6 +368,11 @@ def _mode_flags() -> list[str]:
     Mirrors the emission order in status_json.cpp so the GUI's badge order
     matches between mock and real device."""
     out: list[str] = []
+    # 6.3 — the position fault. Emitted FIRST, mirroring status_json.cpp, where
+    # it is appended ahead of the EG1 loop. It deliberately has no EG1 bit:
+    # EG1 is what T3 reads and FR-WP18 forbids safety depending on position.
+    if M3_POS.get("fault"):
+        out.append("sensor_fault_position")
     # a.6.35.4 — operator-disabled-feature flags
     if cfg.get("wind_prot_en", 1) == 0:
         out.append("wind_protect_off")
@@ -417,7 +447,14 @@ def _build_status() -> dict:
         "windows": {
             "M1": "CLOSED",
             "M2": "CLOSED",
-            "M3": "CLOSED",
+            "M3": M3_POS["state"],
+            # 6.3 -- these three keys are present ONLY when a sensor is fitted
+            # and trusted; see M3_POS above and /api/__mock/m3.
+            **({
+                "M3_percent_x10":   M3_POS["percent_x10"],
+                "M3_mm_x10":        int(M3_POS["percent_x10"] * 15000 / 1000),
+                "M3_at_end_sensor": M3_POS["at_end_sensor"],
+            } if M3_POS["fitted"] else {}),
         },
         # mode.flags now also carries the three operator-aware flags added in
         # a.6.35.4 (wind_protect_off, humidity_ctrl_off) and a.6.35.6
@@ -1128,6 +1165,24 @@ def coredump_erase():
 # The real firmware has no such backdoor — coredumps are written by the IDF
 # panic handler only.
 # ---------------------------------------------------------------------------
+@app.route("/api/__mock/m3", methods=["POST"])
+def m3_mock_set():
+    """Drive M3's reported opening. Mock-only; the firmware has no such route."""
+    a = request.args
+    if "percent" in a:
+        M3_POS["percent_x10"] = int(round(float(a["percent"]) * 10))
+    if "at_end" in a:
+        M3_POS["at_end_sensor"] = a["at_end"].lower() in ("1", "true", "yes")
+    if "fitted" in a:
+        M3_POS["fitted"] = a["fitted"].lower() in ("1", "true", "yes")
+    if "fault" in a:
+        M3_POS["fault"] = a["fault"].lower() in ("1", "true", "yes")
+    if "state" in a:
+        M3_POS["state"] = a["state"].upper()
+    print(f"[mock] /api/__mock/m3 -> {M3_POS}", file=sys.stderr)
+    return {"ok": True, "m3": M3_POS}
+
+
 @app.route("/api/__mock/coredump", methods=["POST"])
 def coredump_mock_toggle():
     present = request.args.get("present", "false").lower() in ("1", "true", "yes")
