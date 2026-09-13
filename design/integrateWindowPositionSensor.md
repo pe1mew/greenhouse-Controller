@@ -603,6 +603,27 @@ three `EG1` gates each show 1500 ms of text and return. `SENSOR_HR ch=2` bits 12
 which gate was active to within 30 s. See the 2026-09-10 gotcha entry.
 ### Phase 4 — fault handling and travel-complete *(still no control change)*
 
+> **STATUS, 2026-09-13 — Phase 4 is split, and this section is now the
+> SPECIFICATION rather than the tracker.** The detection and observability half
+> landed; the control-side half moved into the section 5.0 M3 slice and is
+> tracked there. The criteria below are **not** restated in 5.0 — it references
+> them — so this is where the detail lives.
+>
+> | deliverable | status |
+> |---|---|
+> | sensor-presence gate (4a) | **LANDED** 2026-09-12, hardware-verified |
+> | movement trace, every stroke logged at the measurement interval | **done** — built in Phase 3 |
+> | fault detection and logging (`ALARM ch6` 244—248) | **done**, both parsers + `logparser.md` 1.12 |
+> | T2 treats bit 3 as travel-complete, timer as ceiling | **not started** — T2 makes no `windowpos_*` calls at all → 5.0 |
+> | 12.4 rule 1, *moving means moving* | **not started** → 5.0 |
+> | 12.4 rule 2, *an early stop is a fault* | **not started** → 5.0 |
+> | surface faults on the operator surfaces (6) | **not started** — `app.js` carries no position reference; the only surface is the `MODBUS_BENCH` diag endpoint → 5.0 |
+> | alarm *handling* | deferred 2026-09-07, now inside the 5.0 slice |
+>
+> **Nothing consumes position yet**, so the ▲ GATE below is **still
+> uncrossed** and greenhouse behaviour is unchanged — which is what Phase 4
+> promised.
+
 > **Alarm *handling* is deferred to Phase 5** (operator decision 2026-09-07). This phase **detects and records; it does not act.** Control behaviour is unchanged, which is automatic here because nothing consumes position yet. The likely eventual behaviour is a fall-back to full open/close on wire-sensor failure — i.e. exactly today's time-based control, FR-WP17 — but that is **TBD** and is not implemented here.
 
 - Detect and **log** the fault conditions (§3b), and surface them on the operator-facing surfaces (§6). Do not change any control decision on them.
@@ -614,9 +635,31 @@ which gate was active to within 30 s. See the 2026-09-10 gotcha entry.
 
 **Minimal end result of this phase (operator decision 2026-09-07): a movement trace.** Every stroke is logged at the **measurement interval**, giving a full position-vs-time record of each traverse. That is what earns trust in the implementation before anything acts on it.
 
-Volume is bounded and speed-independent: because interval = `travel_m3` / 100, a stroke is **exactly 100 rows** on the rig and on production alike. At ~3.3 M3 strokes/day that is ~330 extra rows against ~2864 `SENSOR_HR` rows — **+11 %**.
+Volume is bounded and speed-independent: because the interval derives from
+`travel_m3`, a stroke costs a fixed number of rows on the rig and on production
+alike. At ~3.3 M3 strokes/day that is a few hundred extra rows against ~2864
+`SENSOR_HR` rows — of the order of **+11 %**.
+
+> **Two corrections to the original arithmetic, both measured (2026-09-13).**
+> The divisor is **/150, not /100** (see 3.1 — /100 spends the entire FR-WP04
+> budget by construction), so a stroke is ~150 rows, not "exactly 100". And the
+> trigger is currently `any_channel_travelling()`, **deliberate scaffolding**
+> (see 5a) — so an M1-only or M1+M2 vent step also produces a full burst of rows
+> labelled M3. Real overnight measurement: **2721 `ch3` rows in 13 h** across 10
+> bursts. The +11 % figure is the right order; the "exactly 100 rows" claim is
+> not, and neither number should be quoted as a bound while the scaffolding
+> stands.
 
 *Exit:* a stroke replays from the log as a clean monotonic ramp; plus AT-WP06 (disconnect mid-operation → fault within 2 poll cycles, ventilation continues), AT-WP07 (wind override still closes with the sensor disconnected), AT-WP09 (obstruct mid-travel → divergence reported).
+
+**Exit status, 2026-09-13:**
+
+| criterion | status |
+|---|---|
+| **AT-WP06** | **PASSED** — and only after failing first and exposing a real defect (the idle read swallowed failures, so the gate was blind at rest). Recovery measured at **31 s** against `PROBE_RETRY_MS` = 30 s. See below. |
+| **AT-WP07** | **not run** |
+| **AT-WP09** | **not run, and not yet runnable** — it needs 12.4 rule 1, which *is* the divergence detector |
+| monotonic ramp from the log | **not demonstrated.** The strokes observed so far were driven closed onto the end stop, so the traces are flat at 0 rather than ramps. A deliberate open stroke with the gate in POSITION is what would show it. |
 
 ---
 
@@ -945,7 +988,9 @@ So there are now **two gates**, not one, and they are crossed in order:
 - The two **controller-side rules from requirements 12.4** that the device
   cannot self-report: *moving means moving*, and *a stop that arrives too early
   is a fault, not a success*. These must exist **before** position is trusted for
-  control, not alongside the algorithm that consumes it.
+  control, not alongside the algorithm that consumes it. **Their criteria are
+  specified in Phase 4 and are not repeated here** — that section stays the
+  specification, this one is the tracker.
 - **Operator surfaces, section 6**: the display rule (6.1), the web GUI including
   the commissioning screen (6.3), and the remote status payload (6.4).
 - **Alarm handling** — which Phase 4 deliberately deferred to Phase 5 ("detects
