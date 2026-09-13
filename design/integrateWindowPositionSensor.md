@@ -722,12 +722,13 @@ strongest control this project can get, and it was already on disk.
 
 | | |
 |---|---|
-| sensor-fault onsets | **9** — 6 on T/RH (addr 1), 3 on wind (addr 44) |
-| rate | **one per 10.9 days** (T/RH one per 16 d, wind one per 33 d) |
-| **greenhouse closed by one** | **2** (`ALARM ch0 param 243`), 2026-08-18 and 2026-09-10 |
+| genuine sensor-fault onsets | **8** — 6 on T/RH (addr 1), **2** on wind (addr 44) |
+| excluded | **1** — the 2026-06-19 100-minute wind fault is a **pre-commissioning artefact**, not a field failure. The vane went into service at 12:00 that day and the fault ran 09:39—11:19. See the gotcha log, 2026-08-26 and 2026-07-13 |
+| rate | **one per 12.3 days** (T/RH one per 16.4 d; wind one per 41.7 d, measured from commissioning) |
+| **greenhouse closed by one** | **2** (`ALARM ch0 param 243`), 2026-08-18 and 2026-09-10 — which is **both** genuine wind faults, **2 of 2** |
 | wind measured at those two closures | **1.6 m/s** and **1.4 m/s** |
-| wind at *every* one of the 9 | **0.4 — 2.6 m/s** |
-| trend by month (Jun/Jul/Aug/Sep) | **2 / 2 / 2 / 3** |
+| wind at *every* one of the 8 | **0.4 — 2.6 m/s** |
+| trend by month (Jun/Jul/Aug/Sep) | **1 / 2 / 2 / 3** |
 
 **What this settles.**
 
@@ -757,14 +758,30 @@ it looks:
   faster path). **File order is not event order for alarms.** Any analysis that
   sorts by position rather than timestamp will mis-sequence them.
 
-**Six of the seven closed faults lasted 58—59 s** and one lasted 5975 s
-(2026-06-19, a genuine 100-minute outage). Since T5 clears a fault on the first
-success at a *later* poll and polls every 30 s, a 59 s fault did not clear at the
-next poll either — which points at a **~1-minute outage of a single slave** rather
-than a pair of unlucky reads, while the other slave on the same bus kept answering.
-**Recorded as an observation, not a conclusion:** the alarm timestamps and the poll
-boundaries do not line up cleanly enough to assert the attempt count, and the
-write-latency above is why. Confirming it needs the per-slave indicators.
+**Six of the eight lasted 58—59 s.** Since T5 clears a fault on the first success
+at a *later* poll and polls every 30 s, a 59 s fault did not clear at the next poll
+either — a **~1-minute outage of a single slave**, while the other slave on the same
+bus kept answering.
+
+> **This was already worked out, more precisely, before today.** The gotcha log's
+> 2026-08-26 entry counts the attempts exactly — *failure #1, failure #2 (trigger
+> logged), failure #3, success at read #4* — so **each event is exactly three
+> failed reads**, and argues that several identically-sized events point at a
+> deterministic outage **inside the sensor** (an internal reset or watchdog) rather
+> than at the RS485 pair, with the FG6485A's diagnostic registers as the way to
+> confirm. It also records that the **motor-noise hypothesis was tested 2026-09-05
+> and ruled out**: 0 of 5 faults within ±120 s of any `RELAY` transition.
+>
+> **Process note.** CLAUDE.md says to check the gotcha log before debugging from
+> scratch. This 98-day analysis was run without doing so and re-derived that entry
+> less accurately, including counting the pre-commissioning artefact as a fault.
+> *A fresh analysis of a subsystem is exactly when that file is most likely to hold
+> the answer already, and least likely to be opened.*
+
+**What this pass genuinely adds** to the existing entry: the **wind speed at each
+event** (the column that shows none of these is weather, which is what gh#66 needs),
+the two new September events, the T17-independence framing, and the ALARM
+write-latency trap above.
 
 #### Arm A — started 2026-09-13 *(read as a gate robustness soak — see the retirement note above)*
 
