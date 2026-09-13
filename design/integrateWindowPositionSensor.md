@@ -607,8 +607,50 @@ have produced a single `ALARM` row.
    relative, so the period is delay *plus* transaction. This is the figure 3.6
    now uses for the deadband floor.
 
-**Re-specified so the counters can test it.** The criterion becomes a
-**comparison between two arms**, which is what "added" always meant:
+> ### ~~Arms A and B~~ — **RETIRED 2026-09-13, not rescheduled**
+>
+> The operator asked the question that ends it: **what are we proving?**
+>
+> The A/B design was built to answer **"did adding T17 make the bus worse?"**
+> That question was **settled on 2026-09-12 by root cause, not by statistics**:
+> `MODBUS_IFG_US` sat at the RTU spec floor and, with a single caller, had never
+> once executed; T17 made frames adjacent and the S200 began discarding requests
+> it read as continuations. Mechanism found, fix applied, symptom gone. A week of
+> Poisson counting adds very little to a diagnosis that already has all three.
+>
+> Supporting evidence was already in hand and pointed the same way: over the 13 h
+> soak T17 carried **37.5 % of the traffic and failed zero times**. Uniform
+> failure across transactions predicts ~3.4 of the 9; observing zero has
+> **p ≈ 0.015**. One test on 9 events is not decisive alone — next to a known
+> mechanism it is more than a week of underpowered soak would buy.
+>
+> **And the arms cannot answer what is left**, because neither remaining question
+> is about T17:
+>
+> | question | about T17? | answered by |
+> |---|---|---|
+> | did T17 make the bus worse? | yes | **already answered**, by root cause |
+> | is there a residual rate independent of T17? | **no** — it appears on 5C88, which has never run T17 | 5C88's logs. **Done 2026-09-13, below** |
+> | what is "too much" for this bus? | **no** | per-installation baselines + elapsed time. Not an experiment |
+>
+> **What replaces it.** Per-slave counters attribute failures by address
+> continuously, so the physical unplug that the A arm existed to perform is no
+> longer how you separate the actors — the driver does it. And the control arm
+> already exists: **5C88 runs 2.3.1 with no T17, no encoder and one bus caller,
+> continuously, in production.** The comparison to make is each unit against
+> **its own longitudinal baseline**, watching for a *step* when T17 is
+> introduced — no unplugging, no dedicated arm, no rig time.
+>
+> **The arm A run of 2026-09-13 still went ahead** and is recorded below. Read it
+> as a **presence-gate robustness soak** — does the gate demote correctly, re-probe
+> at its specified rate, and leave the other slaves clean overnight — **not** as
+> half of a bus-statistics comparison. It was never going to be reusable as one:
+> an A arm and a B arm must share a build and a rig, and any B arm would come
+> from a much later full build.
+
+**The original re-specification, kept because the reasoning above is what
+retired it.** The criterion was to become a **comparison between two arms**,
+which is what "added" always meant:
 
 | arm | configuration | what it gives |
 |---|---|---|
@@ -671,7 +713,60 @@ Baseline JSON: `scratchpad/soak_baseline.json`.
 
 Read the counters any time with `GET /api/diag/windowpos` -> `soak`.
 
-#### Arm A — started 2026-09-13
+#### 5C88 production baseline — read 2026-09-13 (gh#66 step 1, **DONE**)
+
+`model/campaign-summer-2026/*.log` is the 5C88 SD archive (`model/README.md:169`).
+**98.5 days of logged coverage over a 100.2-day window (98 %), 1.35 M rows**, on a
+unit running 2.3.1 with **no T17, no encoder on the bus and one bus caller** — the
+strongest control this project can get, and it was already on disk.
+
+| | |
+|---|---|
+| sensor-fault onsets | **9** — 6 on T/RH (addr 1), 3 on wind (addr 44) |
+| rate | **one per 10.9 days** (T/RH one per 16 d, wind one per 33 d) |
+| **greenhouse closed by one** | **2** (`ALARM ch0 param 243`), 2026-08-18 and 2026-09-10 |
+| wind measured at those two closures | **1.6 m/s** and **1.4 m/s** |
+| wind at *every* one of the 9 | **0.4 — 2.6 m/s** |
+| trend by month (Jun/Jul/Aug/Sep) | **2 / 2 / 2 / 3** |
+
+**What this settles.**
+
+1. **The residual is real, and it is not ours.** It predates T17, runs on hardware
+   that has never seen T17, and sits at a stable rate across four months. gh#66's
+   leading hypothesis — *a pre-existing baseline that was never observable* — is
+   confirmed on production data.
+2. **It has a real consequence, twice in 100 days.** Not a theoretical concern:
+   the greenhouse closed on a calm day, twice, and the only person who could
+   notice was on site.
+3. **It is not weather.** All nine events occurred between 0.4 and 2.6 m/s.
+4. **It is not degrading**, so there is no urgency — but nor is it going away.
+
+**Three cautions about this data**, because the log is a blunter instrument than
+it looks:
+
+- **A single failed read still leaves no trace.** Only a *double* failure inside
+  one poll emits a row, so these 9 are a lower bound on something unmeasured.
+  This is precisely what the §5.0 indicators exist to fix.
+- **SENSOR_HR rows continue unbroken through a fault and prove nothing.** By
+  design (`sensor_poll.cpp` Step 5) a faulted sensor's raw fields carry the *last
+  known average* to avoid a gap in T4's ring, and that value keeps changing as the
+  window slides — so it reads exactly like a live sensor. I nearly concluded the
+  S200 was answering during its own fault.
+- **ALARM rows are written to SD 30—55 s after their timestamp**, interleaved out
+  of order among rows that were written promptly (Q3 latency; SENSOR_HR takes a
+  faster path). **File order is not event order for alarms.** Any analysis that
+  sorts by position rather than timestamp will mis-sequence them.
+
+**Six of the seven closed faults lasted 58—59 s** and one lasted 5975 s
+(2026-06-19, a genuine 100-minute outage). Since T5 clears a fault on the first
+success at a *later* poll and polls every 30 s, a 59 s fault did not clear at the
+next poll either — which points at a **~1-minute outage of a single slave** rather
+than a pair of unlucky reads, while the other slave on the same bus kept answering.
+**Recorded as an observation, not a conclusion:** the alarm timestamps and the poll
+boundaries do not line up cleanly enough to assert the attempt count, and the
+write-latency above is why. Confirming it needs the per-slave indicators.
+
+#### Arm A — started 2026-09-13 *(read as a gate robustness soak — see the retirement note above)*
 
 FDA4, `2.7.0-bench` (fw **and** asset version both verified post-reboot),
 encoder unplugged by the operator at uptime ~280 s.
