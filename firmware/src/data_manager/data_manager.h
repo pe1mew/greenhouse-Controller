@@ -136,6 +136,13 @@ typedef struct {
                                     *  accepted (SECONDS, C18)          */
     int16_t  dwell_close_s[3];    /**< Minimum hold at CLOSED before an OPEN
                                     *  is accepted (SECONDS, C19)       */
+    /* M3 only: the other two windows have no position sensor, so there is
+     * nothing to hold a linear setpoint against and no deadband to apply. A
+     * [3] array here would be two slots that can never mean anything. */
+    int16_t  deadzone_m3_mm;      /**< Smallest position error worth energising
+                                    *  M3 for, under linear control (mm).
+                                    *  NOT YET CONSUMED — linear control does
+                                    *  not drive the window (plan 3.6, 5.0). */
 
     /* ---- System (NVS_NS_SYSTEM = "system") ---- */
     int32_t  poll_interval_s;     /**< Sensor poll interval  (s, C20)       */

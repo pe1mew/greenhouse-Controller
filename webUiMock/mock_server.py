@@ -657,6 +657,9 @@ CONFIG_LIMITS: dict[str, list[int]] = {
     "dwell_close_m1": [ 0, 1500],   # 1.16.31: matched to dwell_open ceiling
     "dwell_close_m2": [ 0, 1500],
     "dwell_close_m3": [ 0, 1500],
+    # 2.8.x: M3 linear-control deadband (mm). Not yet consumed by any control
+    # law -- the GUI groups it under "Linear control", which says so.
+    "deadzone_m3":    [ 1, 200],
     "poll_interval":  [15, 120],   # 2.5.1 gh#57: FR-S03/FR-CF07, matches T5
     "session_timeout":[ 1, 1440],
     "ap_timeout":     [ 0, 1440],

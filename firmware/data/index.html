@@ -374,11 +374,11 @@
         <span class="save-ok" id="fb-window-mm"></span>
       </div>
       <div class="slider-row">
-        <label data-tip="Smallest position error worth moving the window for, in millimetres. Too small and the window hunts back and forth on noise; zero would make it chatter continuously. Only used once linear control drives the window, so it is shown here but not yet settable — a value nothing reads is a knob that lies. It needs its own config key, which is sequenced behind the gh#64 descriptor refactor.">Deadzone (mm)</label>
-        <input type="range"  id="cfg-deadzone-m3-sl" min="1" max="200" step="1" value="20" disabled>
-        <input type="number" id="cfg-deadzone-m3"    min="1" max="200" step="1" value="20" class="short" disabled>
-        <button disabled>Apply</button>
-        <span class="save-ok muted" id="fb-deadzone-m3">stored once linear control reads it</span>
+        <label data-tip="Smallest position error worth energising M3 for, in millimetres. Too small and the window hunts on sampling noise; zero is the chattering case, which is why the minimum is 1 and not 0. The default of 20 mm covers the distance the leaf travels between position samples on both rigs (19.6 mm here, 10.0 mm in production) — but the other floor, the shortest pulse that actually moves the leaf, has not been measured yet, so 20 can only be too small, never too large. Stored and audited now; the linear control law that reads it is not in service.">Deadzone (mm)</label>
+        <input type="range"  id="cfg-deadzone-m3-sl" min="1" max="200" step="1">
+        <input type="number" id="cfg-deadzone-m3"    min="1" max="200" step="1" class="short">
+        <button onclick="postCfg('motor','deadzone_m3','cfg-deadzone-m3','int')">Apply</button>
+        <span class="save-ok" id="fb-deadzone-m3"></span>
       </div>
       <div class="slider-row">
         <label data-tip="Whether the sensor&apos;s calibration is usable. The teach maps its raw reading onto the window size above, so a completed teach is self-consistent — you should not need to judge the numbers, only to re-teach when this says something is wrong. One blind spot: a shorted wiper reads the same as a genuinely closed window on this installation, so VALID does not exclude that fault.">Calibration</label>

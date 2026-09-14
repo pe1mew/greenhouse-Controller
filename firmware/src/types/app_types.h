@@ -286,6 +286,7 @@ typedef enum {
      * value_b. param_id now separates them unambiguously, independent of
      * initiator and channel. */
     LOG_PARAM_MODE_STANDBY   = 47,  /**< LOG_MODE_CHANGE emitter B (STANDBY enter/leave) */
+    LOG_PARAM_DEADZONE_M3    = 48,  /**< M3 linear-control deadband (mm) */
 
     /* ---- Modbus bus performance indicators (gh#66 Part 2) ----------------
      * Carried on **LOG_SYSTEM value_a = 31**, one row per slave per metric per

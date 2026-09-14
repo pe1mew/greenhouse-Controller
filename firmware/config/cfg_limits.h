@@ -74,6 +74,21 @@
 #define CFG_MIN_DWELL_CLOSE_S   0
 #define CFG_MAX_DWELL_CLOSE_S 1500  /* matched to dwell_open ceiling so M3 can run a symmetric closed-state hold */
 
+/* ── Motor: linear-control deadband (millimetres) ─────────────────────────
+ *
+ * Minimum position error worth energising the motor for, under linear control.
+ * The complement of dwell_*_s, not an alternative to it: dwell answers "how
+ * often may this window move", deadband answers "is this correction worth
+ * moving for" (integrateWindowPositionSensor.md 3.6).
+ *
+ * MIN is 1, not 0, deliberately: a zero deadband IS the chattering case, so
+ * the floor must not be reachable by an operator dragging a slider down.
+ * MAX 200 is ~13 % of the 1500 mm M3 window — coarse, but an operator fighting
+ * a noisy installation should be able to get there without a firmware change.
+ */
+#define CFG_MIN_DEADZONE_MM     1
+#define CFG_MAX_DEADZONE_MM   200
+
 /* ── System ───────────────────────────────────────────────────────────────── */
 /* 2.5.1 (gh#57 part 2) — was 30..300, which contradicted every other statement
  * of this range in the project and was the newest of them:

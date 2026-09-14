@@ -105,6 +105,7 @@ static const char K_DWELL_OPEN_M3[]   = "dwell_open_m3";
 static const char K_DWELL_CLOSE_M1[]  = "dwell_close_m1";
 static const char K_DWELL_CLOSE_M2[]  = "dwell_close_m2";
 static const char K_DWELL_CLOSE_M3[]  = "dwell_close_m3";
+static const char K_DEADZONE_M3[]     = "deadzone_m3";
 
 /* System namespace */
 static const char K_POLL_INTERVAL[]    = "poll_interval";

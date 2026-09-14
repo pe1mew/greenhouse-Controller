@@ -1199,6 +1199,11 @@ static esp_err_t config_get_handler(httpd_req_t *req)
          * window is held open. Do not reintroduce them. */
         "\"dwell_open_s\":[%d,%d,%d],"
         "\"dwell_close_s\":[%d,%d,%d],"
+        /* M3 only -- the other two windows have no position sensor, so
+         * there is no linear setpoint to hold and no deadband to apply.
+         * Emitted so the key is not write-only: a stored value nothing can
+         * read back cannot be verified, which is gh#67 for the led_* four. */
+        "\"deadzone_m3_mm\":%d,"
         "\"poll_interval_s\":%ld,"
         "\"session_timeout_min\":%ld,"
         "\"ap_timeout_min\":%ld,"
@@ -1222,6 +1227,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
         (int)cfg.travel_s[0], (int)cfg.travel_s[1], (int)cfg.travel_s[2],
         (int)cfg.dwell_open_s[0],  (int)cfg.dwell_open_s[1],  (int)cfg.dwell_open_s[2],
         (int)cfg.dwell_close_s[0], (int)cfg.dwell_close_s[1], (int)cfg.dwell_close_s[2],
+        (int)cfg.deadzone_m3_mm,
         (long)cfg.poll_interval_s, (long)cfg.session_timeout_min,
         (long)cfg.ap_timeout_min,
         (long)cfg.lat_deg, (long)cfg.lat_frac,

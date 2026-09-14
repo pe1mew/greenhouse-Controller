@@ -123,6 +123,11 @@ _PARAM = {
     45: ("wind_hyst",       "m/s"),
     # 2.4.2 (gh#51) - motor travel time, previously never logged at all.
     46: ("travel",          "s"),
+    # M3 linear-control deadband (mm), fw 2.8.x. A config param like the
+    # rest of the 40s band; nothing consumes the value yet, but the change
+    # is audited from the day the key exists.
+    48: ("deadzone_m3",     "mm"),
+
     # ---- Modbus bus performance indicators (gh#66 Part 2, fw 2.8.0) -------
     # These are NOT config params. They ride on LOG_SYSTEM value_a = 31, where
     # `channel` is the SLAVE ADDRESS and value_b is the INTERVAL DELTA for one

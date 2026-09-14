@@ -132,13 +132,24 @@ def clamp_bounds():
     body = C.fn_body(dm, r"int32_t\s+cfg_clamp\s*\(", "cfg_clamp")
     out = {}
     # arrays: static const char * const kxx[] = { K_A, K_B, K_C };  ... _CLAMP(a,b)
-    for arr, names, mn, mx in re.findall(
-            r"static const char \* const (\w+)\[\]\s*=\s*\{([^}]*)\};"
-            r"(?:.*?)\1\[i\][^;]*?_CLAMP\(\s*([A-Z0-9_]+)\s*,\s*([A-Z0-9_]+)\s*\)",
-            body, re.S):
+    #
+    # TWO passes, for the same reason array_branches() needs them: the three
+    # arrays are declared consecutively, so a single regex spanning declaration
+    # to use has its first match CONSUME the other two declarations, and
+    # re.findall returns non-overlapping matches. Only ktr came out; kdo and kdc
+    # silently fell through to the published bounds, which are plain integers --
+    # so dwell_open_* and dwell_close_* landed in the descriptor as literals
+    # `0, 1500` instead of CFG_MIN/MAX_DWELL_*_S. Same shape of bug as the one
+    # fixed in array_branches(), fixed in one place and not the other.
+    for arr, names in re.findall(
+            r"static const char \* const (\w+)\[\]\s*=\s*\{([^}]*)\};", body):
+        m = re.search(re.escape(arr) + r"\[i\][^;]*?_CLAMP\(\s*([A-Z0-9_]+)\s*,"
+                      r"\s*([A-Z0-9_]+)\s*\)", body, re.S)
+        if not m:
+            continue
         for cname in re.findall(r"K_[A-Z0-9_]+", names):
             if cname in kmap:
-                out[kmap[cname]] = (mn, mx)
+                out[kmap[cname]] = (m.group(1), m.group(2))
     # singles: no braces, and the bound may be an integer literal rather than a
     # CFG_* macro. `ap_enable` is matched as a bare string because it is written
     # as one in the source.
@@ -552,18 +563,53 @@ def emit_main(rows, write):
         print("MISSING: %s -- run python bin/gen_cfg_desc.py --emit"
               % os.path.relpath(DESC_PATH, ROOT))
         return 1
-    if have != text:
-        import difflib
-        print("DRIFT: %s no longer matches the tables it was derived from."
+    # Compare PER KEY, not as whole text. Keys added after the migration are
+    # expected and must not read as drift -- the six tables this derives from
+    # were frozen at that commit and will never know about them.
+    #
+    # Getting this wrong is actively dangerous: the whole-text version told the
+    # operator to "regenerate with --emit", which would have silently DELETED
+    # every key added since. A regression guard that advises destroying work is
+    # worse than no guard.
+    def rows_by_key(blob):
+        out, cur, key = {}, [], None
+        for line in blob.splitlines(True):
+            if line.lstrip().startswith("{ NVS_NS_"):
+                if key:
+                    out[key] = "".join(cur)
+                cur, key = [line], line.split(",")[1].strip()
+            elif key:
+                cur.append(line)
+                if line.rstrip().endswith("},"):
+                    out[key] = "".join(cur)
+                    cur, key = [], None
+        return out
+
+    derived, committed = rows_by_key(text), rows_by_key(have)
+    changed = sorted(k for k in derived
+                     if k in committed and derived[k] != committed[k])
+    dropped = sorted(k for k in derived if k not in committed)
+    added = sorted(k for k in committed if k not in derived)
+
+    if changed or dropped:
+        print("DRIFT: %s no longer reproduces the tables it was derived from."
               % os.path.relpath(DESC_PATH, ROOT))
-        for line in list(difflib.unified_diff(
-                have.splitlines(), text.splitlines(),
-                "committed", "derived", lineterm=""))[:40]:
-            print("  %s" % line)
-        print("\nRegenerate with: python bin/gen_cfg_desc.py --emit")
+        for k in changed:
+            print("  CHANGED  %s" % k)
+            print("    derived  : %s" % " ".join(derived[k].split())[:120])
+            print("    committed: %s" % " ".join(committed[k].split())[:120])
+        for k in dropped:
+            print("  MISSING   %s -- a migrated key has been removed" % k)
+        print("\nFix the row by hand, or re-derive a SINGLE key. Do NOT run")
+        print("--emit to 'fix' this: it rewrites the whole file from the frozen")
+        print("tables and would delete every key added since the migration (%d)."
+              % len(added))
         return 1
-    print("%s matches the tables it was derived from (%d rows)"
-          % (os.path.relpath(DESC_PATH, ROOT), len(rows)))
+
+    print("%s reproduces all %d migrated rows%s"
+          % (os.path.relpath(DESC_PATH, ROOT), len(derived),
+             ("; %d key(s) added since the migration: %s"
+              % (len(added), ", ".join(added))) if added else ""))
     return 0
 
 

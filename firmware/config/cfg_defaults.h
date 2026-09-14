@@ -87,6 +87,23 @@
 #define DEF_DWELL_CLOSE_M2_S     0   /**< M2: no mandatory closed-state hold */
 #define DEF_DWELL_CLOSE_M3_S   600   /**< M3: 10 min closed-state hold — symmetric anti-oscillation counterpart to the open hold */
 
+/* M3 linear-control deadband, millimetres.
+ *
+ * 20 mm satisfies FLOOR 1 only — sampling resolution, the distance the leaf
+ * travels between position samples: 19.6 mm on the dev rig (13 s travel,
+ * 170 ms effective poll) and 10.0 mm in production (171 s, 1140 ms). A deadband
+ * below that commands a correction smaller than the error the sampling itself
+ * introduces, and chatters. 20 clears both, so one number serves both rigs.
+ *
+ * FLOOR 2 IS NOT MEASURED. The shortest pulse that actually moves the leaf —
+ * static friction plus contactor make/break — is a rig experiment nobody has
+ * run (plan 3.6: "it should be done before a deadband value is fixed"). The
+ * true deadband is the LARGER of the two floors, so this default can only be
+ * too small, never too large. Treat it as a starting point, not an answer, and
+ * do not quote it as derived until floor 2 exists.
+ */
+#define DEF_DEADZONE_M3_MM      20
+
 /* ── System ─────────────────────────────────────────────────────────────── */
 #define DEF_POLL_INTERVAL_S      30   /**< 30 s poll: doubles smoothing-buffer depth at same time-window without the firmware-revisit overhead of finer rates */
 #define DEF_SESSION_TIMEOUT_MIN   5   /**< Idle session expiry (minutes) */

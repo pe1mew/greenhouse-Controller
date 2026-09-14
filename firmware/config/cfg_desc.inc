@@ -84,17 +84,23 @@ static const cfg_desc_t CFG_DESC[] = {
 
     /* ---- NVS_NS_MOTOR ---- */
     { NVS_NS_MOTOR, K_DWELL_CLOSE_M1, CFG_KEY_SHADOW, 1u, CFG_F_PUB | CFG_P_Q4, LOG_PARAM_DWELL_CLOSE,
-      0, 1500, DEF_DWELL_CLOSE_M1_S, CFG_SH(dwell_close_s[0]) },
+      CFG_MIN_DWELL_CLOSE_S, CFG_MAX_DWELL_CLOSE_S, DEF_DWELL_CLOSE_M1_S, CFG_SH(dwell_close_s[0]) },
     { NVS_NS_MOTOR, K_DWELL_CLOSE_M2, CFG_KEY_SHADOW, 2u, CFG_F_PUB | CFG_P_Q4, LOG_PARAM_DWELL_CLOSE,
-      0, 1500, DEF_DWELL_CLOSE_M2_S, CFG_SH(dwell_close_s[1]) },
+      CFG_MIN_DWELL_CLOSE_S, CFG_MAX_DWELL_CLOSE_S, DEF_DWELL_CLOSE_M2_S, CFG_SH(dwell_close_s[1]) },
     { NVS_NS_MOTOR, K_DWELL_CLOSE_M3, CFG_KEY_SHADOW, 3u, CFG_F_PUB | CFG_P_Q4, LOG_PARAM_DWELL_CLOSE,
-      0, 1500, DEF_DWELL_CLOSE_M3_S, CFG_SH(dwell_close_s[2]) },
+      CFG_MIN_DWELL_CLOSE_S, CFG_MAX_DWELL_CLOSE_S, DEF_DWELL_CLOSE_M3_S, CFG_SH(dwell_close_s[2]) },
+    /* Added after the migration, by hand -- the generator derives the 51 rows
+     * that replaced the six tables and knows nothing of keys added since.
+     * THIS ROW IS THE WHOLE ENROLMENT: clamp, shadow write, boot default,
+     * audit id, kind, route and the published limits all read it. */
+    { NVS_NS_MOTOR, K_DEADZONE_M3, CFG_KEY_SHADOW, 3u, CFG_F_PUB | CFG_P_Q4, LOG_PARAM_DEADZONE_M3,
+      CFG_MIN_DEADZONE_MM, CFG_MAX_DEADZONE_MM, DEF_DEADZONE_M3_MM, CFG_SH(deadzone_m3_mm) },
     { NVS_NS_MOTOR, K_DWELL_OPEN_M1, CFG_KEY_SHADOW, 1u, CFG_F_PUB | CFG_P_Q4, LOG_PARAM_DWELL_OPEN,
-      0, 1500, DEF_DWELL_OPEN_M1_S, CFG_SH(dwell_open_s[0]) },
+      CFG_MIN_DWELL_OPEN_S, CFG_MAX_DWELL_OPEN_S, DEF_DWELL_OPEN_M1_S, CFG_SH(dwell_open_s[0]) },
     { NVS_NS_MOTOR, K_DWELL_OPEN_M2, CFG_KEY_SHADOW, 2u, CFG_F_PUB | CFG_P_Q4, LOG_PARAM_DWELL_OPEN,
-      0, 1500, DEF_DWELL_OPEN_M2_S, CFG_SH(dwell_open_s[1]) },
+      CFG_MIN_DWELL_OPEN_S, CFG_MAX_DWELL_OPEN_S, DEF_DWELL_OPEN_M2_S, CFG_SH(dwell_open_s[1]) },
     { NVS_NS_MOTOR, K_DWELL_OPEN_M3, CFG_KEY_SHADOW, 3u, CFG_F_PUB | CFG_P_Q4, LOG_PARAM_DWELL_OPEN,
-      0, 1500, DEF_DWELL_OPEN_M3_S, CFG_SH(dwell_open_s[2]) },
+      CFG_MIN_DWELL_OPEN_S, CFG_MAX_DWELL_OPEN_S, DEF_DWELL_OPEN_M3_S, CFG_SH(dwell_open_s[2]) },
     { NVS_NS_MOTOR, K_TRAVEL_M1, CFG_KEY_SHADOW, 1u, CFG_F_PUB | CFG_P_Q4, LOG_PARAM_TRAVEL,
       CFG_MIN_TRAVEL_S, CFG_MAX_TRAVEL_S, MOTOR_M1_TRAVEL_S_DEFAULT, CFG_SH(travel_s[0]) },
     { NVS_NS_MOTOR, K_TRAVEL_M2, CFG_KEY_SHADOW, 2u, CFG_F_PUB | CFG_P_Q4, LOG_PARAM_TRAVEL,

@@ -751,6 +751,7 @@ function loadConfig() {
       setVal('cfg-dwell-close-m1',  dwc && dwc[0]);
       setVal('cfg-dwell-close-m2',  dwc && dwc[1]);
       setVal('cfg-dwell-close-m3',  dwc && dwc[2]);
+      setVal('cfg-deadzone-m3',     cfg.deadzone_m3_mm);
       setVal('cfg-session-timeout', cfg.session_timeout_min);
       g_session_timeout_ms = (cfg.session_timeout_min > 0 ? cfg.session_timeout_min : 5) * 60 * 1000;
       setVal('cfg-ap-timeout',     cfg.ap_timeout_min);
@@ -1503,6 +1504,7 @@ function linkSlider(numId) {
     'cfg-travel-m1', 'cfg-travel-m2', 'cfg-travel-m3',
     'cfg-dwell-open-m1', 'cfg-dwell-open-m2', 'cfg-dwell-open-m3',
     'cfg-dwell-close-m1', 'cfg-dwell-close-m2', 'cfg-dwell-close-m3',
+    'cfg-deadzone-m3',
     'cfg-session-timeout', 'cfg-ap-timeout', 'cfg-poll-interval',
   ].forEach(linkSlider);
 })();
