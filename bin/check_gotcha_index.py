@@ -16,6 +16,11 @@ to scan". A claim in prose that nothing enforces is the same shape as
 publishing a wider range (gh#57 part 2). This is the check the file already
 claims to have.
 
+Entries with a placeholder date (`## 2026-05-XX`, used where the exact day was
+never recorded) are invisible to this check -- both sides are matched with the
+same strict pattern, so they are skipped consistently rather than reported as
+orphans. There are a handful; they are indexed, just not verifiable here.
+
 It matches on DATE, not on title: the index hook is deliberately the symptom
 rather than the heading, so the text will not match and must not be compared.
 A date with entries but no index line is the failure that matters; the reverse

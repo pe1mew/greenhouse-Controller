@@ -2,7 +2,7 @@
 
 Append-only. Newest at top. Format per entry: **Problem → Root cause → Fix → Where it lives.**
 
-When something weird happens, check here BEFORE debugging from scratch. **Start at the [index](#index--by-where-it-bites-you)** — it groups every entry by subsystem with symptom-first hooks, which is faster than scrolling 48 entries. **Adding an entry means adding its index line too**; the pair is checked by counting `^## 20` headings against `^- \*\*20` index lines. Entries that recur or affect multiple subsystems graduate up to a topic file or to [CLAUDE.md](../CLAUDE.md) hard constraints.
+When something weird happens, check here BEFORE debugging from scratch. **Start at the [index](#index--by-where-it-bites-you)** — it groups every entry by subsystem with symptom-first hooks, which is faster than scrolling 87 entries. **Adding an entry means adding its index line too**; the pair is checked by counting `^## 20` headings against `^- \*\*20` index lines. Entries that recur or affect multiple subsystems graduate up to a topic file or to [CLAUDE.md](../CLAUDE.md) hard constraints.
 
 Entries that are resolved **and can no longer recur** (code deleted, design changed, fixed both sides) retire to [gotcha-archive.md](gotcha-archive.md) — history only, never needed for triage. Everything still able to bite you is in this file. Being `[RESOLVED]` is *not* sufficient to retire: most resolved entries here stay because an active constraint still depends on them.
 
@@ -40,21 +40,31 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ## Index — by where it bites you
 
-54 entries is too many to scan. Find your subsystem, then **Ctrl+F the date** to jump.
+87 entries is too many to scan. Find your subsystem, then **Ctrl+F the date** to jump.
 Hooks are the *symptom*, not the title — you rarely know the cause when you arrive here.
 Entries stay in reverse-chronological order below; this index is the only grouped view.
 
 ### Windows, climate & manual control (T2, T6, T8)
-- **2026-09-14** — a bus probe decodes two slaves and never the third; the firmware is fine (software-UART decoder free-runs after an RS485 turnaround glitch)
 - **2026-09-12** — unit stuck in STANDBY forever; LCD login/logout will not clear it (gh#65 — NVS state, RAM-only release flag)
+- **2026-09-12** — a config value you just wrote reads back as the OLD one (`POST /api/config` is async: Q4 -> T4 applies a loop later)
+- **2026-09-12** — a stored setting is silently never used, or is refused as out of range (the file called "single source of truth" was the newest and the wrongest statement of the bound)
+- **2026-09-11** — a mode-transition fix passes on hardware but the bug is still there (tested from the state the transition already leaves -- gh#52)
 - **2026-09-10** — windows sit where the admin left them, mode says AUTOMATIC, T6 does nothing for
+- **2026-09-10** — an LCD command you gave was simply ignored and nothing anywhere says so (a refused manual command leaves no trace)
+- **2026-09-10** — a before/after measurement lands on the SAME number and looks like proof (it landed there for opposite reasons -- motor timing)
+- **2026-09-10** — `POST /api/config` returns `ok:true` and the setting does nothing (field names are NOT the NVS keys; the junk write persisted) [RESOLVED]
   up to 25 min (dwell debt from a manual move; T6 is fine, T2 is refusing it) **[RECURRENCE of a
   May-2026 issue whose fix was recorded only in a code comment]**
 - **2026-07-31** — anti-thrash dwell was unguarded during travel (gh#48)
 
 ### Modbus bus, sensors & clock (T5, drivers)
+- **2026-09-14** — a bus probe decodes two slaves and never the third, and the firmware is fine (software-UART decoder free-runs after an RS485 turnaround glitch; check `crc`/`framing` first)
 - **2026-09-12** — a sensor stops answering only once a SECOND task shares the bus (inter-frame gap was at the spec floor and had never been reached)
 - **2026-09-12** — "sensor fault" with no reason recorded: three wrong root causes before instrumenting
+- **2026-09-12** — a poll-interval change appears not to take effect (the in-flight `vTaskDelay` has to drain first)
+- **2026-09-11** — a BOOT row stamped 1970 sits beside rows stamped 2026 (DS1307 seed failed, system clock survived the soft reset -- gh#55)
+- **2026-09-11** — the polling cadence is slower than configured (`vTaskDelay(period)` AFTER a blocking transaction gives period + transaction)
+- **2026-09-11** — a soak result looks alarming until you notice you were the load (read your own interference out before reading the soak)
 - **2026-09-07** — a task polling flat out panics the board after 5 s (driver never yields; TWDT idle check)
 - **2026-09-07** — every Modbus read times out early in boot, but T5 works fine later (bus dies during RTC/LittleFS/SD init)
 - **2026-09-07** — `pio run` on a driver env fails with `UART_SCLK_DEFAULT was not declared` [RESOLVED]
@@ -71,6 +81,10 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 
 ### OTA & ROTA releases
 - **2026-09-12** — GUI unreachable, multi-second asset loads, "heap leak", failing downloads — all one interfered WiFi AP (paired ping test first)
+- **2026-09-12** — `rota_release.py release` warns "working tree has uncommitted changes" on a clean tree (it counts UNTRACKED files, including the manifest it just wrote)
+- **2026-09-12** — ROTA `dl` and `apply` status read -1 after a pull that clearly happened (the fields reset; the SD log is the authority)
+- **2026-09-11** — no commit on `main` actually *is* the release you are looking for (the paperwork rode inside the next feature commit)
+- **2026-09-10** — `POST /api/ota/check` returns nothing useful (it only QUEUES; the result comes from `GET` on the same path)
 - **2026-09-07** — `rota_release --dry-run` writes the seq-ledger manifest despite claiming no changes
 - **2026-09-07** — the ROTA night window and check interval are on `/api/ota/config`, not `/api/config`; a wide window inverts gh#41 so a stray browser tab blocks updates
 - **2026-09-07** — a few short USB bench sessions silently arm an OTA rollback (4 boots under 30 s)
@@ -85,14 +99,18 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-04-XX** — `{{ASSET_VERSION}}` shipped to a unit as a literal string (gh#9) [RESOLVED]
 
 ### Flash, partitions & boot
+- **2026-XX-XX** — OTA flips the firmware version but assets stay old (shared LittleFS basePath) [RESOLVED]
+- **2026-09-12** — a dev module will not answer and looks hung (it is the one not fitted -- the rig takes one module at a time)
+- **2026-09-10** — after an IO0 factory reset the unit cannot reach WiFi/ROTA/status and nobody knows the values (three secrets destroyed, none readable back)
 - **2026-09-07** — `mklittlefs` builds a valid image of an EMPTY directory and every downstream check passes
 - **2026-07-13** — greenfield cable-flash web assets need `mklittlefs`; `pio buildfs` emits SPIFFS
-- **2026-05-14** — `ets_loader.c` crash loop after a full flash (qio vs dio header byte) [RESOLVED]
 - **2026-05-XX** — panic on every boot of a brand-new unit (coredump partition garbage)
-- **2026-XX-XX** — OTA flips the firmware version but assets stay old (shared LittleFS basePath) [RESOLVED]
+- **2026-05-14** — `ets_loader.c` crash loop after a full flash (qio vs dio header byte) [RESOLVED]
 
 ### SD logging & the log parser
 - **2026-09-13** — alarm rows land 30-55 s after their timestamp, out of order; also: a single failed read leaves NO trace, and SENSOR_HR keeps flowing through a fault
+- **2026-09-12** — `log_type_t` is not where you expect (it lives in `types/app_types.h`, NOT `event_logger.h`)
+- **2026-09-12** — an issue is filed against a documented table that is three entries stale (the EMITTERS are authoritative, not the comment -- gh#59 claimed 22 free when 22/23/24 had shipped)
 - **2026-08-25** — an SD log's FILENAME is its upload time, not its coverage window (silently parses the wrong period)
 - **2026-07-23** — a wind override at `speed == v_max` is mislabelled a "direction" event (gh#45) [RESOLVED, but pre-2.3.0 logs still misparse]
 - **2026-07-17** — log uploads stop dead once the card holds >~21 files (gh#42) [RESOLVED]
@@ -105,6 +123,14 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-06-26** — a day shows ~2× the expected samples (two overlapping SD download chains)
 
 ### Build, toolchain & shell
+- **2026-09-12** — a verification step reports FAILURE on a unit that is fine (the step never checked its own HTTP status)
+- **2026-09-12** — a "split on `;`" tool silently truncates its input (a semicolon inside a C comment)
+- **2026-09-12** — three verification failures in one day, all the same cause (the harness not waiting for the thing it was measuring)
+- **2026-09-12** — an environment variable you read does not apply where you claimed (it was YOUR shell, not the operator's)
+- **2026-09-11** — three tooling traps that each cost a turn (encoding, quoting, and a stale path)
+- **2026-09-10** — two concurrent `pio run` on the same env report a spurious FAILED
+- **2026-09-10** — a broken `app.js` ships and nothing complains (web assets are NEVER parsed by the firmware build)
+- **2026-09-10** — generated C/JS is malformed in a way that is hard to place (syntax-check the GENERATOR before running it)
 - **2026-09-07** — you fix a file, rebuild, and get the identical error (`lib_deps = file://../x` compiles a stale copy)
 - **2026-07-14** — enlarging one buffer breaks a `-Werror=format-truncation` in a *different* function
 - **2026-07-05** — system Python 3.11 loses its site-packages mid-project
@@ -113,6 +139,10 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 
 ### Git, GitHub & scripted editing
 - **2026-09-12** — a failed fetch that looks like data: stale target file, a traceback in a cookie file, a zero-row filter, an underpowered A/B
+- **2026-09-12** — a grep or regex over source "proves" coverage that is not there (three false findings in one audit)
+- **2026-09-12** — a literal anchor stops matching while `git status` stays clean (`git checkout` rewrote LF to CRLF)
+- **2026-09-12** — a pre-commit hook reading `--cached` correctly skips and looks broken (`git add` on an unmodified file stages nothing)
+- **2026-09-12** — a rebase or doc merge is about to be run blind (test it read-only first, and check containment before merging a doc conflict)
 - **2026-09-07** — you swap boards and the COM port is identical, so you flash the wrong one (CH340 has no serial)
 - **2026-09-07** — a string-replace anchored on the first occurrence lands in a comment and breaks the build
 - **2026-09-05** — `gh_issue.py` 401s on every call: the fine-grained PAT expired (not a script bug)
