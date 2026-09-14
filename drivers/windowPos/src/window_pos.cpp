@@ -17,6 +17,7 @@
 #define HOLD_BLOCK_START 0x0000u  /* 40001 */
 #define HOLD_BLOCK_COUNT 7u       /* through 40007 */
 #define HOLD_WINDOW_MS   0x0001u  /* 40002 */
+#define HOLD_FULL_TRAVEL 0x0003u  /* 40004 */
 #define HOLD_TEACH       0x0006u  /* 40007 */
 
 /* Indices into the 15-register input block. */
@@ -138,6 +139,17 @@ windowpos_status_t windowpos_set_window_ms(uint8_t slave_addr, uint16_t window_m
         return WINDOWPOS_ERR_PARAM;
     }
     return write_one(slave_addr, HOLD_WINDOW_MS, window_ms);
+}
+
+windowpos_status_t windowpos_set_full_travel(uint8_t slave_addr,
+                                             uint16_t full_travel_x10)
+{
+    /* 100 mm is below any real vent; 5000 mm is beyond the 2 m draw-wire unit.
+     * Sanity, not policy -- the real bound is what the installer measured. */
+    if (full_travel_x10 < 1000u || full_travel_x10 > 50000u) {
+        return WINDOWPOS_ERR_PARAM;
+    }
+    return write_one(slave_addr, HOLD_FULL_TRAVEL, full_travel_x10);
 }
 
 windowpos_status_t windowpos_teach(uint8_t slave_addr, bool arm)

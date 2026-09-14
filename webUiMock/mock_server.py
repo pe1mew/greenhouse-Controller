@@ -1174,6 +1174,83 @@ def coredump_erase():
 # The real firmware has no such backdoor — coredumps are written by the IDF
 # panic handler only.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# M3 commissioning (§6.3 item 4). The firmware's state machine is driven by the
+# leaf crossing its end sensors; here it is driven by a timer, which is enough
+# to walk every GUI branch.
+#
+#   curl "http://localhost:5000/api/diag/commission"
+#   curl -X POST .../api/diag/commission -d '{"action":"start"}'
+#   curl -X POST "http://localhost:5000/api/__mock/commission?state=result"
+COMM = {
+    # calibration, as the device would report it. The rig's real numbers: the
+    # teach captured 0 and 858 of 1023 (84 % of the ADC range) across a 1500 mm
+    # gap between the end sensors.
+    "verdict": "valid", "cal_reason": "none",
+    "window_mm": 1500, "taught_closed": 0, "taught_open": 858,
+    "span": 858, "span_pct": 84, "teach_armed": False,
+    # a teach run
+    "state": "idle", "run_reason": "none", "dir": "open",
+    "at_end": True,
+}
+_COMM_T0 = [0.0]
+
+
+@app.route("/api/diag/commission", methods=["GET"])
+def commission_get():
+    if _get_role() != "admin":
+        return {"ok": False, "error": "admin_only"}, 403
+    # advance the simulated traverse so the GUI's live counter has something
+    # to show -- 13 s is the dev rig's real M3 traverse
+    # simulate the traverse taking the rig's real 13 s
+    if COMM["state"] == "traversing" and time.time() - _COMM_T0[0] >= 13.0:
+        COMM.update(state="done", teach_armed=False, verdict="valid",
+                    cal_reason="none", taught_closed=0, taught_open=858,
+                    span=858, span_pct=84)
+    return {"ok": True, **COMM}
+
+
+@app.route("/api/diag/commission", methods=["POST"])
+def commission_post():
+    if _get_role() != "admin":
+        return {"ok": False, "error": "admin_only"}, 403
+    body = request.get_json(silent=True) or {}
+    a = body.get("action", "")
+    if a == "teach":
+        # the device picks its capture register from the direction of travel, so
+        # a teach must start parked on an end sensor
+        if not COMM["at_end"]:
+            COMM.update(state="failed", run_reason="not_at_end")
+            return {"ok": False, "state": 5, "run_reason": 1}
+        COMM.update(state="traversing", run_reason="none", teach_armed=True)
+        _COMM_T0[0] = time.time()
+    elif a == "abort":
+        COMM.update(state="idle", run_reason="none", teach_armed=False)
+    elif a == "refresh":
+        pass
+    elif a == "window":
+        mm = int(body.get("mm", 0))
+        if mm < 100 or mm > 5000:
+            return {"ok": False, "error": "out_of_range"}
+        COMM["window_mm"] = mm
+    else:
+        return {"ok": False, "error": "unknown_action"}
+    return {"ok": True, "state": 0, "run_reason": 0}
+
+
+@app.route("/api/__mock/commission", methods=["POST"])
+def commission_mock_set():
+    """Force a state so every GUI branch can be inspected without waiting."""
+    for k, v in request.args.items():
+        if k in ("open_ms", "close_ms", "elapsed_ms", "configured_s"):
+            COMM[k] = int(v)
+        elif k in ("teach_armed", "at_end", "both_ends"):
+            COMM[k] = v.lower() in ("1", "true", "yes")
+        else:
+            COMM[k] = v
+    return {"ok": True, "commission": COMM}
+
+
 @app.route("/api/__mock/m3", methods=["POST"])
 def m3_mock_set():
     """Drive M3's reported opening. Mock-only; the firmware has no such route."""

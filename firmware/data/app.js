@@ -123,6 +123,140 @@ function renderIdentity() {
                              : 'Greenhouse Controller';
 }
 
+// ── M3 commissioning (§6.3 item 4) ───────────────────────────────────────────
+//
+// The teach maps the sensor's raw ADC onto a KNOWN distance — the gap between
+// the two end sensors, written to the device's 40004. So a completed teach is
+// self-consistent by construction and there is nothing here for an admin to
+// ratify. What this screen shows is a machine VERDICT, so a re-teach happens
+// when something is actually wrong rather than on a schedule.
+//
+// Only a commissioning build serves /api/diag/commission, so the whole Linear
+// control group stays hidden on a release build and the Motors tab looks
+// exactly as it did.
+const CM_CAL_WHY = {
+  no_device:      'the sensor is not answering.',
+  no_window_size: 'no window size is set on the device — measure it and apply it above.',
+  not_taught:     'never taught: both captures are identical.',
+  span_narrow:    'the two captures are too close together — the teach did not see a full traverse.',
+  teach_armed:    'a teach is still armed and has not completed.',
+  wiper_open:     'the wiper circuit is open (bit 2).',
+  implausible:    'the reading is outside the calibrated band (bit 6).',
+  not_following:  'the window moved but the reading did not (bit 7) — wire detached, slipping or seized.'
+};
+const CM_RUN_WHY = {
+  not_at_end:   'M3 was not parked at an end sensor.',
+  both_ends:    'both end sensors read active, so the sensor cannot tell which end M3 is at.',
+  sensor:       'the sensor faulted or stopped answering.',
+  wind:         'a wind override intervened.',
+  motor_alarm:  'the motor alarm fired.',
+  timeout:      'M3 did not reach the far end in time.',
+  device_write: 'the sensor refused a setting.'
+};
+const CM_STATE = {
+  idle: '—', arming: 'arming…', traversing: 'M3 MOVING…',
+  committing: 'saving…', done: 'teach complete', failed: 'teach failed'
+};
+
+// Set the moment the operator touches either control, cleared when the value
+// has been applied (or the edit abandoned). While set, the poll leaves the
+// field alone.
+let commWindowDirty = false;
+(function watchWindowEdits() {
+  ['cfg-window-mm', 'cfg-window-mm-sl'].forEach(function (id) {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('input', function () { commWindowDirty = true; });
+  });
+})();
+
+function commRender(c) {
+  // Verdict, reusing the window-state colours rather than inventing any.
+  const v = document.getElementById('cm-verdict');
+  if (v) {
+    v.textContent = (c.verdict || '').toUpperCase();
+    v.className = c.verdict === 'valid' ? 'win-open'
+                : c.verdict === 'invalid' ? 'win-moving' : '';
+  }
+  // On a good calibration show WHAT was taught, so a later drift is visible by
+  // comparison; on a bad one show why, because that is the actionable half.
+  setText('cm-detail',
+    c.verdict === 'valid'
+      ? 'taught ' + c.taught_closed + '…' + c.taught_open +
+        ' (' + c.span_pct + ' % of range), window ' + c.window_mm + ' mm'
+      : (CM_CAL_WHY[c.cal_reason] || ''));
+
+  setText('cm-state', CM_STATE[c.state] || c.state || '—');
+  setText('cm-hint',
+    c.state === 'failed' ? (CM_RUN_WHY[c.run_reason] || 'teach failed.')
+    : c.state === 'traversing' ? 'let it run to the far end.'
+    : '');
+
+  // Reflect the device's window size into the input ONLY while the operator is
+  // not editing it. The first version tested document.activeElement against the
+  // number input alone, so dragging the SLIDER (a different element) let the 1 s
+  // poll write the old value straight back — the field stepped back as you moved
+  // it. Every other config field is populated once from /api/config and then left
+  // alone; this one polls, so it needs an explicit dirty flag.
+  const w = document.getElementById('cfg-window-mm');
+  if (w && !commWindowDirty && c.window_mm) {
+    w.value = c.window_mm;
+    const sl = document.getElementById('cfg-window-mm-sl');
+    if (sl) sl.value = c.window_mm;
+  }
+}
+
+function commPoll() {
+  fetch('/api/diag/commission', { credentials: 'same-origin' })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (c) {
+      const card = document.getElementById('card-commission');
+      if (!card) return;
+      card.hidden = !(c && c.ok);
+      if (c && c.ok) commRender(c);
+    })
+    .catch(function () { /* release build, or logged out — stays hidden */ });
+}
+
+function commAct(action, extra) {
+  const body = Object.assign({ action: action }, extra || {});
+  fetch('/api/diag/commission', {
+    method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  }).then(commPoll).catch(commPoll);
+}
+
+// The window size goes to the DEVICE (40004), not to controller config, so it
+// does not go through postCfg().
+function commWindow() {
+  const el = document.getElementById('cfg-window-mm');
+  if (!el || !el.value) return;
+  // Released only after the device has taken it, so a rejected value stays on
+  // screen for correction rather than silently reverting.
+  fetch('/api/diag/commission', {
+    method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'window', mm: parseInt(el.value, 10) })
+  })
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      feedback('fb-window-mm', j && j.ok);
+      if (j && j.ok) commWindowDirty = false;
+    })
+    .then(commPoll)
+    .catch(function () { feedback('fb-window-mm', false); });
+}
+
+// A teach drives the window. Say so before it moves — this is the one control
+// on the settings page that actuates the greenhouse.
+function commTeach() {
+  if (!confirm('This will MOVE M3 across its full travel to calibrate the sensor.\n\n' +
+               'M3 must be parked at one end before starting. Continue?')) return;
+  commAct('teach');
+}
+
+setInterval(commPoll, 1000);
+
 // ── Status handler ───────────────────────────────────────────────────────────
 // A travelling window shows its DIRECTION. The payload has always carried
 // MOVING_OPEN and MOVING_CLOSE separately and the LCD has always shown `MOV>` /
@@ -1365,6 +1499,7 @@ function linkSlider(numId) {
     'cfg-hyst-t', 'cfg-hyst-rh', 'cfg-avg-win-t', 'cfg-avg-win-rh',
     'cfg-v-max', 'cfg-dir-excl-low', 'cfg-dir-excl-high', 'cfg-avg-win-wind',
     'cfg-wind-hyst',
+    'cfg-window-mm',
     'cfg-travel-m1', 'cfg-travel-m2', 'cfg-travel-m3',
     'cfg-dwell-open-m1', 'cfg-dwell-open-m2', 'cfg-dwell-open-m3',
     'cfg-dwell-close-m1', 'cfg-dwell-close-m2', 'cfg-dwell-close-m3',

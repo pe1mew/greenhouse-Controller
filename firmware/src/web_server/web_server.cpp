@@ -126,6 +126,7 @@
 #ifdef MODBUS_BENCH
 #include "../diag/modbus_bench.h"   /* dev-only bench Modbus access */
 #include "window_pos.h"            /* Phase 1 driver, exercised by /api/diag/windowpos */
+#include "../window_pos/commission.h" /* §6.3 item 4 — traverse measurement + teach */
 #include "../window_pos/window_pos_task.h" /* Phase 2 — T17 snapshot + derived cfg */
 #endif     /* 2.2.0 (ROTA) — rota_cert_set/_is_custom for /api/ota/config */
 #include "../system_id/system_id.h"       /* 2.2.0 (ROTA) — system_mac_str: device id for /api/ota/check */
@@ -3383,6 +3384,108 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
     return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
 }
 
+/**
+ * GET /api/diag/commission — wire-sensor calibration + teach state (admin, DEV ONLY)
+ *
+ * Plan §6.3 item 4. The teach maps the sensor's raw ADC onto a **known
+ * distance** — the gap between the two end sensors, written to `40004` — so a
+ * completed teach is self-consistent by construction. The admin is therefore
+ * not asked to assess it; this reports a machine verdict, and a re-teach happens
+ * when that verdict says so.
+ */
+static esp_err_t diag_commission_get_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+    httpd_resp_set_type(req, "application/json");
+
+    commission_status_t c;
+    commission_status(&c);
+
+    static const char *k_verdict[] = { "unknown", "valid", "invalid" };
+    static const char *k_cal[] = { "none", "no_device", "no_window_size",
+                                   "not_taught", "span_narrow", "teach_armed",
+                                   "wiper_open", "implausible", "not_following" };
+    static const char *k_state[] = { "idle", "arming", "traversing",
+                                     "committing", "done", "failed" };
+    static const char *k_run[] = { "none", "not_at_end", "both_ends", "sensor",
+                                   "wind", "motor_alarm", "timeout", "device_write" };
+
+    char body[512];
+    snprintf(body, sizeof(body),
+             "{\"ok\":true,\"verdict\":\"%s\",\"cal_reason\":\"%s\","
+             "\"window_mm\":%u,\"taught_closed\":%u,\"taught_open\":%u,"
+             "\"span\":%u,\"span_pct\":%u,\"teach_armed\":%s,"
+             "\"state\":\"%s\",\"run_reason\":\"%s\",\"dir\":\"%s\"}",
+             ((unsigned)c.verdict < 3u) ? k_verdict[c.verdict] : "?",
+             ((unsigned)c.cal_reason < 9u) ? k_cal[c.cal_reason] : "?",
+             (unsigned)c.window_mm, (unsigned)c.taught_closed,
+             (unsigned)c.taught_open, (unsigned)c.span, (unsigned)c.span_pct,
+             c.teach_armed ? "true" : "false",
+             ((unsigned)c.state < 6u) ? k_state[c.state] : "?",
+             ((unsigned)c.run_reason < 8u) ? k_run[c.run_reason] : "?",
+             c.dir_is_open ? "open" : "close");
+    return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
+}
+
+/**
+ * POST /api/diag/commission — drive commissioning (admin, DEV BUILDS ONLY)
+ *
+ * Body: {"action":"teach"|"abort"|"refresh"|"window"[,"mm":1500]}
+ *
+ * `teach` **moves the window**: it arms the device and commands M3 across a full
+ * traverse, because the capture register is chosen by direction of travel and a
+ * stationary teach records nothing usable.
+ *
+ * `window` writes the end-sensor-to-end-sensor distance to `40004`. That is NOT
+ * the travel time: the motor overdrives past both end sensors into the blind
+ * overlap, so its run is always the longer of the two.
+ */
+static esp_err_t diag_commission_post_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+    httpd_resp_set_type(req, "application/json");
+
+    char body[128] = {0};
+    int  rlen = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (rlen <= 0) {
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"empty_body\"}",
+                               HTTPD_RESP_USE_STRLEN);
+    }
+    body[rlen] = '\0';
+
+    char act[24] = {0};
+    if (!json_get_field(body, "action", act, sizeof(act))) {
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"no_action\"}",
+                               HTTPD_RESP_USE_STRLEN);
+    }
+
+    bool ok = false;
+    if (strcmp(act, "teach") == 0) {
+        ok = commission_teach_start();
+    } else if (strcmp(act, "abort") == 0) {
+        commission_teach_abort(); ok = true;
+    } else if (strcmp(act, "refresh") == 0) {
+        commission_refresh(); ok = true;
+    } else if (strcmp(act, "window") == 0) {
+        char mm[12] = {0};
+        if (!json_get_field(body, "mm", mm, sizeof(mm))) {
+            return httpd_resp_send(req, "{\"ok\":false,\"error\":\"no_mm\"}",
+                                   HTTPD_RESP_USE_STRLEN);
+        }
+        ok = commission_set_window_mm((uint16_t)atoi(mm));
+    } else {
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"unknown_action\"}",
+                               HTTPD_RESP_USE_STRLEN);
+    }
+
+    commission_status_t c;
+    commission_status(&c);
+    char out[96];
+    snprintf(out, sizeof(out), "{\"ok\":%s,\"state\":%d,\"run_reason\":%d}",
+             ok ? "true" : "false", (int)c.state, (int)c.run_reason);
+    return httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
+}
+
 static esp_err_t diag_modbus_post_handler(httpd_req_t *req)
 {
     if (!admin_only_or_send_error(req)) return ESP_OK;
@@ -3440,6 +3543,10 @@ static const httpd_uri_t s_uri_diag_windowpos = {
     .uri = "/api/diag/windowpos", .method = HTTP_GET, .handler = diag_windowpos_get_handler, .user_ctx = NULL };
 static const httpd_uri_t s_uri_diag_modbus = {
     .uri = "/api/diag/modbus", .method = HTTP_POST, .handler = diag_modbus_post_handler, .user_ctx = NULL };
+static const httpd_uri_t s_uri_diag_commission_get = {
+    .uri = "/api/diag/commission", .method = HTTP_GET, .handler = diag_commission_get_handler, .user_ctx = NULL };
+static const httpd_uri_t s_uri_diag_commission_post = {
+    .uri = "/api/diag/commission", .method = HTTP_POST, .handler = diag_commission_post_handler, .user_ctx = NULL };
 #endif
 
 /* alpha.6.21 — WebSocket route (Phase 6.16-η, final T11 route). */
@@ -3517,6 +3624,7 @@ void task_web_server(void *pvParameters)
 #ifdef MODBUS_BENCH
         &s_uri_diag_modbus,
         &s_uri_diag_windowpos,
+        &s_uri_diag_commission_get, &s_uri_diag_commission_post,
 #endif
     };
     for (size_t i = 0; i < sizeof(uris)/sizeof(uris[0]); i++) {

@@ -140,7 +140,11 @@ typedef struct {
     uint16_t zero_offset_x10;   /**< 40001 */
     uint16_t window_ms;         /**< 40002 */
     uint16_t averaging_s;       /**< 40003 */
-    uint16_t full_travel_x10;   /**< 40004 — switch-to-switch, NOT stop-to-stop. */
+    uint16_t full_travel_x10;   /**< 40004 — **end sensor to end sensor**, the
+                                 *   teach's reference distance. NOT the motor's
+                                 *   run, which overdrives past both into the
+                                 *   blind overlap. (Wording predates the
+                                 *   2026-09-13 switch/sensor terminology fix.) */
     uint16_t raw_closed;        /**< 40005 */
     uint16_t raw_open;          /**< 40006 */
     uint16_t teach_cmd;         /**< 40007 — reads 0 after every device reset. */
@@ -213,6 +217,22 @@ windowpos_status_t windowpos_set_window_ms(uint8_t slave_addr, uint16_t window_m
  *          direction of travel, and the "hasn't moved since power-on" fallback
  *          is meaningless on a device still holding its factory calibration.
  */
+/**
+ * @brief Set the distance between the end sensors (`40004`, 0.1 mm).
+ *
+ * **This is the teach's reference quantity** — the known distance the raw ADC
+ * codes are correlated against — so it must be written *before* arming a teach.
+ * It spans **end sensor to end sensor**, which is NOT the travel time: the motor
+ * deliberately overdrives past both end sensors into the blind overlap, so the
+ * motor run is always the longer of the two.
+ *
+ * @param slave_addr      Modbus address.
+ * @param full_travel_x10 1000..50000 (100 mm .. 5000 mm).
+ * @return @ref WINDOWPOS_OK, or @ref WINDOWPOS_ERR_PARAM if out of range.
+ */
+windowpos_status_t windowpos_set_full_travel(uint8_t slave_addr,
+                                             uint16_t full_travel_x10);
+
 windowpos_status_t windowpos_teach(uint8_t slave_addr, bool arm);
 
 /**

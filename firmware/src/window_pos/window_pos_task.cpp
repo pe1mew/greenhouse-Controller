@@ -4,6 +4,9 @@
  */
 
 #include "window_pos_task.h"
+#ifdef MODBUS_BENCH
+#include "commission.h"   /* §6.3 item 4 — traverse measurement watches the same readings */
+#endif
 
 #include "../types/app_types.h"
 #include "../data_manager/data_manager.h"
@@ -554,6 +557,9 @@ void task_window_pos(void *pvParameters)
                     check_restart(WINDOWPOS_DEFAULT_ADDR);
                     emit_events(&ir, WINDOWPOS_DEFAULT_ADDR);
                     log_position(&ir);
+#ifdef MODBUS_BENCH
+                    commission_tick(&ir, now_ms());
+#endif
                     portENTER_CRITICAL(&s_mux);
                     s_last = ir; s_last_ms = now_ms(); s_have_reading = true; s_cnt.reads_ok++;
                     portEXIT_CRITICAL(&s_mux);
@@ -673,6 +679,9 @@ void task_window_pos(void *pvParameters)
                 portEXIT_CRITICAL(&s_mux);
                 emit_events(&r, WINDOWPOS_DEFAULT_ADDR);
                 log_position(&r);
+#ifdef MODBUS_BENCH
+                commission_tick(&r, now_ms());
+#endif
             }
             /* Talking, but useless: the device says its own reading is bad, so
              * position cannot drive the window even though the sensor is there.
