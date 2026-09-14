@@ -93,8 +93,8 @@
  * divergence by construction. Tracked separately for legacy stored values,
  * which this change does NOT retro-clamp: nvs_load_system() reads the key with
  * nvs_cfg_get_i32_or_default() and does not clamp on load. */
-#define CFG_MIN_POLL_S       15   /* FR-S03 / FR-CF07; == SP_POLL_MIN_S in sensor_poll.cpp */
-#define CFG_MAX_POLL_S      120   /* FR-S03 / FR-CF07; == SP_POLL_MAX_S in sensor_poll.cpp */
+#define CFG_MIN_POLL_S       15   /* FR-S03 / FR-CF07; _Static_assert'd == SP_POLL_MIN_S */
+#define CFG_MAX_POLL_S      120   /* FR-S03 / FR-CF07; _Static_assert'd == SP_POLL_MAX_S */
 #define CFG_MIN_TIMEOUT_MIN   1
 #define CFG_MAX_TIMEOUT_MIN 1440  /* 24 h */
 #define CFG_MIN_AP_TIMEOUT    0   /* 0 = AP stays up indefinitely */

@@ -47,6 +47,7 @@
 #include <esp_log.h>
 
 #include "sensor_poll.h"
+#include "cfg_limits.h"     /* gh#64 — the static_asserts below need the bounds */
 #include "../types/app_types.h"
 #include "../data_manager/data_manager.h"
 #include "../event_logger/event_logger.h"
@@ -73,6 +74,30 @@ static const char *TAG = "T5_SEN";
 
 /** @brief Maximum poll interval enforced by T5 (seconds). */
 #define SP_POLL_MAX_S  120
+
+/* gh#64 — the config layer and this task must agree, and the compiler is what
+ * says so.
+ *
+ * gh#57 part 2 was exactly this pair disagreeing: cfg_limits.h published
+ * 30-300 while these two enforced 15-120, so a stored 300 was polled at 120 and
+ * silently collapsed the averaging window to a single sample. It went unnoticed
+ * because the agreement was asserted in a COMMENT -- cfg_limits.h still carries
+ * one saying "== SP_POLL_MIN_S in sensor_poll.cpp" -- and a comment is not
+ * checked. gh#64 asks for one of two things here: either the descriptor becomes
+ * the sole authority and this clamp goes, or a build-time assertion proves they
+ * match. This is the assertion.
+ *
+ * The clamp STAYS rather than deferring to the descriptor, because it guards a
+ * different route: nvs_load_system() does not clamp on load (gh#62), so a
+ * legacy out-of-range value already in NVS reaches T5 without ever passing
+ * through cfg_clamp(). Defence in depth is the right call; an unverified
+ * duplicate of a bound is not. */
+_Static_assert(SP_POLL_MIN_S == CFG_MIN_POLL_S,
+               "T5's poll floor disagrees with CFG_MIN_POLL_S -- a config bound "
+               "wider than its consumer is a silent lie (gh#57 part 2)");
+_Static_assert(SP_POLL_MAX_S == CFG_MAX_POLL_S,
+               "T5's poll ceiling disagrees with CFG_MAX_POLL_S -- a stored "
+               "value above this is accepted and then never used (gh#57 part 2)");
 
 /** @brief Delay between the first and second Modbus read attempt (ms). */
 #define SP_RETRY_DELAY_MS  100u
