@@ -216,6 +216,67 @@ Minimum tijd dat een raam in een stand moet blijven voordat de controller hem op
 
 > De M3 default-waarden zijn op kas gekalibreerd voor eem lange responstijd. Andere kassen kunnen andere waarden vergen.
 
+### Motors-tab: per raam gegroepeerd
+
+Sinds 2.8.0 staan de instellingen **per motor** bij elkaar (M1, M2, M3) in plaats van per soort instelling. Bij M3 staan ze bovendien in twee groepen:
+
+| Groep | Wat het stuurt |
+|---|---|
+| **Time control** · *in gebruik* | Loopttijd en dwelltijden — dit is wat de ramen vandaag aanstuurt |
+| **Linear control** · *raamstandsensor* | Instellingen voor de raamstandsensor. **Deze sturen het raam nog niet aan**; ze horen bij de lineaire regeling die nog niet in gebruik is |
+
+De groep *Linear control* is alleen zichtbaar op een **commissioning-build** met de sensor gemonteerd. Op een gewone release-build ziet de Motors-tab er precies zo uit als voorheen.
+
+### M3 raamstandsensor — kalibratie (commissioning)
+
+#### Twee afstanden, en ze zijn niet hetzelfde
+
+Dit is de belangrijkste val in dit scherm. De motor stuurt het raam **voorbij** de eindsensoren door tot zijn eigen eindschakelaars hem stoppen — die extra afstand heet de *blinde overlap*.
+
+| Instelling | Meet van | Waar hij heen gaat |
+|---|---|---|
+| **Loopttijd (s)** | **eindschakelaar tot eindschakelaar** — de volledige motorloop, inclusief de blinde overlap | `travel_m3` in de controller; dit is wat de relais aanstuurt |
+| **Raamgrootte (mm)** | **eindsensor tot eindsensor** — het bereik dat 0 tot 100 % heet | register `40004` in de sensor zelf |
+
+> **De loopttijd is dus altijd langer dan de raamgrootte suggereert.** Verwissel je ze, dan is de kalibratie stil verkeerd: de sensor rekent dan met een afstand die het raam nooit aflegt.
+
+De raamgrootte meet je met een rolmaat, in millimeters, tussen de twee eindsensoren. Vul die in **vóór** je een teach start — het is de bekende afstand waartegen de sensor zijn eigen meetwaarde ijkt.
+
+#### Wat de teach doet
+
+De sensor meet intern een weerstandswaarde. Op zichzelf is dat een getal zonder betekenis. De **teach koppelt dat getal aan de raamgrootte**: tijdens één volledige raamgang legt de sensor vast welke meetwaarde bij "helemaal dicht" en welke bij "helemaal open" hoort. Daarna weet hij millimeters.
+
+**Daarom hoef je de uitkomst niet te beoordelen.** Jij gaf de afstand, de sensor nam de twee eindpunten waar, de rest volgt. Het scherm toont in plaats daarvan een **oordeel**, en alleen als dat oordeel iets meldt is er reden om opnieuw te teachen.
+
+> **De knop Teach laat het raam bewegen.** M3 moet aan één uiterste staan voordat je start: de sensor kiest aan de richting van beweging welk eindpunt hij vastlegt, dus een teach die niet van de ene eindsensor naar de andere loopt levert niets bruikbaars op. Er volgt een bevestigingsvraag.
+
+#### Het kalibratie-oordeel
+
+| Melding | Betekenis | Wat te doen |
+|---|---|---|
+| **VALID** | Alle controles in orde. Het scherm toont erbij wat er geleerd is, bijvoorbeeld *"taught 0…858 (84 % of range), window 1500 mm"* | Niets |
+| geen raamgrootte | `40004` staat op nul — er is nooit geteacht | Raamgrootte invullen, dan teachen |
+| nooit geteacht | De twee vastgelegde waarden zijn gelijk | Teachen |
+| bereik te smal | De twee waarden liggen te dicht bij elkaar: de teach heeft geen volledige raamgang gezien | Raam echt van uiterste tot uiterste laten lopen en opnieuw teachen |
+| teach nog actief | Een teach is gestart maar niet afgerond | Afbreken of afronden |
+| draad-circuit open | De meetdraad is onderbroken (bit 2) | Bekabeling naar de sensor controleren |
+| buiten bereik | De meetwaarde valt buiten het geijkte gebied (bit 6) | Opnieuw teachen; blijft het terugkomen, dan is de montage verschoven |
+| volgt niet | Het raam bewoog wel maar de meetwaarde niet (bit 7) | Mechanisch nakijken: trekdraad los, slippend of vastgelopen |
+
+> **Eén blinde vlek, en die is het vermelden waard.** Bij een volledig gesloten raam staat de meetwaarde op nul. Een *kortgesloten* meetdraad geeft óók nul. Die twee zijn op deze installatie niet uit elkaar te houden, dus **VALID sluit die ene storing niet uit**. Zie het plan §2a.6.
+
+#### Wanneer opnieuw teachen
+
+Niet periodiek. Alleen wanneer:
+
+- het kalibratie-oordeel iets anders dan VALID meldt;
+- er aan de raamstandsensor of de trekdraad is gewerkt;
+- de mechanica van M3 is aangepast, waardoor de afstand tussen de eindsensoren verandert — vul dan **eerst** de nieuwe raamgrootte in.
+
+#### Dodezone (mm)
+
+De kleinste afwijking waarvoor het raam nog bijgestuurd wordt. Te klein en het raam gaat op ruis heen en weer; nul zou het onafgebroken laten klapperen. **Dit veld is nog niet instelbaar**: er is nog geen regeling die het uitleest, en een knop die niets doet is misleidender dan een knop die er nog niet is. Hij wordt actief wanneer de lineaire regeling in gebruik komt.
+
 ### Stapsgewijs ventileren
 
 De controller telt een interne ventilatie-stap-teller (0–3) per regel-as (Temperatuur en Luchtvochtigheid):

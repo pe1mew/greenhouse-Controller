@@ -1763,7 +1763,11 @@ Using bit 3 rather than "position == 0" for the terminal states is the right cal
 
 Show the opening percentage per §6.1, with the sensor fault surfaced alongside the existing T/RH and wind faults (FR-WP19). Farmer-visible, so `boerHandleiding` syncs in the same changeset.
 
-**Also hosts commissioning** (admin-only): arm/abort the teach, watch bit 5, and run the §3.5 traverse measurement — **displaying measured open and close times against the configured `travel_m3` for explicit acceptance**. This is the screen that makes the measurement trustworthy rather than merely automatic.
+**Also hosts commissioning** (admin-only): set the window size, teach the sensor, and read the calibration verdict.
+
+> **Superseded 2026-09-13→14.** An earlier draft of this item timed the traverse and asked the operator to accept the measured seconds. That was built on a wrong premise about what the teach is for. **The teach maps the sensor's raw ADC onto a KNOWN distance** — the gap between the two end sensors, written to the device's `40004` — so a completed teach is self-consistent *by construction* and there is nothing in it for an admin to ratify. The screen publishes a **machine verdict** instead, and a re-teach happens when that verdict says so rather than on a schedule. See §6.3a.
+
+> **The commissioning surface stays inside `#ifdef MODBUS_BENCH` — accepted by the operator, 2026-09-14.** It sits beside the teach, which already lived there. The cost is explicit: commissioning a sensor on a production unit means flashing a build that also opens the arbitrary Modbus write route, so it is a deliberate, temporary state and the release build must be restored afterwards.
 
 **Status 2026-09-13 — the read-only half is BUILT, the commissioning screen is NOT.**
 
@@ -1885,3 +1889,12 @@ Note what production logging unlocks that the rig cannot: a **real** 171 s trave
     Sequence: **gh#64 refactor → linear control consumes position → then the
     keys**, all inside the §5.0 M3 slice. `bin/check_cfg_tables.py` is the gate
     that will catch a partial addition.
+
+    > **Confirmed by the operator 2026-09-14: address gh#64 first, then add the
+    > deadzone key.** So the deadzone control shipped in §6.3 item 4 is present
+    > in the *Linear control* group but **disabled**, labelled "stored once
+    > linear control reads it". That is deliberate and should not be read as an
+    > unfinished edge: a settable value that nothing consumes is the knob that
+    > lies, and the group heading carries the honesty instead of a disclaimer.
+    > Wiring it is a clean follow-on once gh#64 lands — one key, six tables,
+    > verified by `check_cfg_tables.py`.
