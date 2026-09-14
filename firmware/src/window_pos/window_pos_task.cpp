@@ -344,14 +344,34 @@ static void check_restart(uint8_t addr)
 }
 
 /** @brief True while any channel is mid-stroke. */
-static bool any_channel_travelling(void)
+/**
+ * @brief Is **M3** travelling?
+ *
+ * M3 only, and the name says so. Until 2026-09-14 this was
+ * `any_channel_travelling()` and returned true for any of the three windows,
+ * which put T17 into stroke cadence whenever M1 or M2 moved — against a sensor
+ * that measures M3 and nothing else.
+ *
+ * On the dev rig that cost **~155 transactions per M1/M2 stroke** (100 ms poll,
+ * ~168 ms effective, 26 s believed MOVING) re-reading a position that had not
+ * changed; in production ~18, because a 171 s travel derives a 1140 ms poll.
+ * Wrong on both, and it inflated the very bus load the AT-WP05 arms exist to
+ * measure.
+ *
+ * It also let M3's control mode be **promoted** on another window's stroke
+ * boundary. The promotion asymmetry (immediate demotion, promotion only at a
+ * boundary) exists so position authority is not gained underneath a consumer
+ * already committed to a *timed M3 stroke*; an M1 move says nothing about that.
+ *
+ * A second instrumented window does **not** belong in this predicate — it gets
+ * its own task keyed by its own Modbus address, the way the driver is already
+ * structured.
+ */
+static bool m3_travelling(void)
 {
     window_state_t st[3];
-    t2_get_window_states(st);
-    for (int i = 0; i < 3; i++) {
-        if (st[i] == WIN_MOVING_OPEN || st[i] == WIN_MOVING_CLOSE) { return true; }
-    }
-    return false;
+    t2_get_window_states(st);   /* M1 = st[0], M2 = st[1], M3 = st[2] */
+    return (st[2] == WIN_MOVING_OPEN || st[2] == WIN_MOVING_CLOSE);
 }
 
 /**
@@ -498,12 +518,16 @@ void task_window_pos(void *pvParameters)
          * bench endpoint, which reads the device directly and is deliberately
          * outside the gate.) */
         if (!s_gate_open) {
-            /* Count only ticks with a stroke in progress. That is the case the
-             * gate exists to remove -- a 100 ms derived poll against a ~215 ms
-             * timeout holds the bus continuously for the whole stroke. Counting
-             * every tick instead would reach ~172 800/day on an idle unit and
-             * measure nothing. */
-            if (any_channel_travelling()) {
+            /* Count only ticks with an **M3** stroke in progress. That is the
+             * case the gate exists to remove -- a 100 ms derived poll against a
+             * ~215 ms timeout holds the bus continuously for the whole stroke.
+             * Counting every tick instead would reach ~172 800/day on an idle
+             * unit and measure nothing.
+             *
+             * M3-only since 2026-09-14: counting M1/M2 strokes here overstated
+             * what the gate saves, because with the predicate fixed T17 would
+             * not have polled during those strokes either. */
+            if (m3_travelling()) {
                 portENTER_CRITICAL(&s_mux);
                 s_cnt.gated_polls++;
                 portEXIT_CRITICAL(&s_mux);
@@ -517,7 +541,7 @@ void task_window_pos(void *pvParameters)
             continue;
         }
 
-        if (!any_channel_travelling()) {
+        if (!m3_travelling()) {
             was_travelling = false;
             /* Phase 3: still sample at the idle cadence so the log shows the
              * window sitting still, not a gap. Phase 2 idled with zero bus
