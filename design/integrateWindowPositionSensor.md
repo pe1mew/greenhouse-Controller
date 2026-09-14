@@ -607,46 +607,72 @@ have produced a single `ALARM` row.
    relative, so the period is delay *plus* transaction. This is the figure 3.6
    now uses for the deadband floor.
 
-> ### ~~Arms A and B~~ — **RETIRED 2026-09-13, not rescheduled**
+> ### Arms A and B — **RETIRED 2026-09-13, UN-RETIRED 2026-09-14**
 >
-> The operator asked the question that ends it: **what are we proving?**
+> **The retirement was wrong, and arm A is what disproved it.**
 >
-> The A/B design was built to answer **"did adding T17 make the bus worse?"**
-> That question was **settled on 2026-09-12 by root cause, not by statistics**:
-> `MODBUS_IFG_US` sat at the RTU spec floor and, with a single caller, had never
-> once executed; T17 made frames adjacent and the S200 began discarding requests
-> it read as continuations. Mechanism found, fix applied, symptom gone. A week of
-> Poisson counting adds very little to a diagnosis that already has all three.
+> The argument on 2026-09-13 was: the A/B design existed to answer *did adding
+> T17 make the bus worse*, that question was settled on 2026-09-12 by root cause
+> (`MODBUS_IFG_US` at the RTU spec floor), and a week of Poisson counting adds
+> nothing to a diagnosis that already has a mechanism, a fix and a vanished
+> symptom. The arm A run then in progress was relabelled a *presence-gate
+> robustness soak* on the grounds that it could never be half of a comparison.
 >
-> Supporting evidence was already in hand and pointed the same way: over the 13 h
-> soak T17 carried **37.5 % of the traffic and failed zero times**. Uniform
-> failure across transactions predicts ~3.4 of the 9; observing zero has
-> **p ≈ 0.015**. One test on 9 events is not decisive alone — next to a known
-> mechanism it is more than a week of underpowered soak would buy.
+> It ran 18 h 33 m and was exactly that half.
 >
-> **And the arms cannot answer what is left**, because neither remaining question
-> is about T17:
->
-> | question | about T17? | answered by |
+> | | T5 transactions | failures |
 > |---|---|---|
-> | did T17 make the bus worse? | yes | **already answered**, by root cause |
-> | is there a residual rate independent of T17? | **no** — it appears on 5C88, which has never run T17 | 5C88's logs. **Done 2026-09-13, below** |
-> | what is "too much" for this bus? | **no** | per-installation baselines + elapsed time. Not an experiment |
+> | **arm B** — encoder connected, T17 polling (the 13 h soak, 2026-09-12/13) | ~6 434 | **9** |
+> | **arm A** — encoder unplugged, gate shut (2026-09-13/14) | **6 579** | **0** |
 >
-> **What replaces it.** Per-slave counters attribute failures by address
-> continuously, so the physical unplug that the A arm existed to perform is no
-> longer how you separate the actors — the driver does it. And the control arm
-> already exists: **5C88 runs 2.3.1 with no T17, no encoder and one bus caller,
-> continuously, in production.** The comparison to make is each unit against
-> **its own longitudinal baseline**, watching for a *step* when T17 is
-> introduced — no unplugging, no dedicated arm, no rig time.
+> Near-identical denominators. At arm B's rate you would expect ~9 failures in
+> 6 579; observing **zero** has **p ≈ 1e-4**.
 >
-> **The arm A run of 2026-09-13 still went ahead** and is recorded below. Read it
-> as a **presence-gate robustness soak** — does the gate demote correctly, re-probe
-> at its specified rate, and leave the other slaves clean overnight — **not** as
-> half of a bus-statistics comparison. It was never going to be reusable as one:
-> an A arm and a B arm must share a build and a rig, and any B arm would come
-> from a much later full build.
+> **Build equivalence was checked, not assumed.** The 13 h soak ended
+> 2026-09-13 11:11, before `c5d59dc` (12:44); the arm A build adds only the
+> per-slave counters and the §6.3 GUI work — **nothing touching Modbus timing**.
+> Same rig, same bus firmware, encoder present or absent as the material
+> difference.
+>
+> **`gated_polls` = 778, so M3 did move during arm A.** This is not a
+> quiet-house artefact, and it weakens the competing explanation that arm B's
+> failures came from motor switching rather than from T17's traffic — an
+> explanation already dented by the 5C88 finding that 0 of 5 faults fell within
+> ±120 s of any `RELAY` transition.
+>
+> **What the retirement got right, and keeps.** Neither arm can answer the two
+> questions that are *not* about T17: whether a residual exists independently of
+> it (5C88 answers that, and did), and what counts as "too much" for this bus
+> (a per-installation baseline plus elapsed time, not an experiment). Those
+> stand. What does not stand is the claim that T17's own contribution was
+> already settled.
+>
+> **What the retirement got wrong, worth keeping as a lesson.** A root cause
+> that explains a *large* effect does not establish there is no *residual*
+> effect. The IFG defect was ~10x and is genuinely fixed; that says nothing
+> about a second, smaller mechanism, and "the symptom stopped" was measured
+> against the symptom (wind alarms), not against the rate. Retiring a
+> measurement because its headline question looks answered discards the very
+> thing that would have shown the answer was partial.
+>
+> ### Arm B — the matched rerun (2026-09-14, encoder reconnected)
+>
+> Arm B above is borrowed from a soak whose counters were **bus-wide**, with the
+> per-slave attribution inferred from `last_fail_addr`. Rerun it on the arm A
+> build so both halves share firmware *and* instrumentation:
+>
+> | | |
+> |---|---|
+> | build | the arm A build, unchanged — **do not flash 2.8.0 until this completes**, or the arms diverge again |
+> | duration | >= 18 h, to match arm A's denominator |
+> | measure | per-slave `ok` / `to` on addr 1 and addr 44, from `GET /api/diag/windowpos` |
+> | **precondition** | **T17 must actually be polling.** The gate demotes immediately but promotes only at a **stroke boundary**, so after reconnection it stays TIMED until M3 next completes a move. Confirm `gate.mode_str` = `position` before starting the clock — an arm B where T17 never polls is arm A with the plug in |
+> | PASS | arm B's addr 1 + addr 44 failure rate is **not materially above** arm A's zero |
+>
+> A third arm is available for free and worth recording: 5C88 runs continuously
+> with **no T17 at all**, so its ~one-fault-per-12-days is the long-baseline
+> version of arm A on different hardware.
+
 
 **The original re-specification, kept because the reasoning above is what
 retired it.** The criterion was to become a **comparison between two arms**,
@@ -783,7 +809,39 @@ event** (the column that shows none of these is weather, which is what gh#66 nee
 the two new September events, the T17-independence framing, and the ALARM
 write-latency trap above.
 
-#### Arm A — started 2026-09-13 *(read as a gate robustness soak — see the retirement note above)*
+#### Arm A — ran 2026-09-13/14, **18 h 33 m, PASS with zero failures**
+
+**Result first.** Over 18 h 33 m of continuous uptime (no reboot):
+
+| slave | ok | timeouts |
+|---|---|---|
+| **addr 1** — FG6485A T/RH | **2 193** | **0** |
+| **addr 44** — S200 wind | **4 386** | **0** |
+| addr 40 — the absent encoder | 11 | 2 205, every one a 30 s gate re-probe |
+
+`err_busy` **0**, `crc` **0**, `gated_polls` **778** (so M3 moved during the run —
+this is not a quiet house). **6 579 live-slave transactions, zero failures.**
+
+Two things this establishes, and they are different in kind:
+
+1. **The presence gate is robust over a long run with the device absent.** It
+   demoted once, re-probed ~2 200 times at its specified 30 s, never faulted a
+   healthy slave, never leaked, and never mistook contention for absence
+   (`err_busy` = 0). That was the whole of what this run was expected to show.
+2. **It is also the arm A half of the comparison that had just been retired** —
+   see the un-retirement above. Set against the 13 h soak's 9 failures in ~6 434
+   transactions with the encoder connected, zero in 6 579 has **p ≈ 1e-4**.
+
+**A link fault, diagnosed and excluded.** During the morning readout roughly one
+HTTP request in three stalled ~15 s. The paired ping test (the gotcha log's rule:
+run it *before* suspecting code) returned **90 % loss to the unit and 0 % to the
+gateway over the same path**, at **−47 dBm** — the 2026-09-12 interference
+signature, where a strong RSSI with heavy loss means interference rather than
+range. **It does not touch these numbers**: the counters are internal to the
+firmware and the audit trail is on the SD card, so nothing here is transported
+over the bad link.
+
+**Run record**
 
 FDA4, `2.7.0-bench` (fw **and** asset version both verified post-reboot),
 encoder unplugged by the operator at uptime ~280 s.
