@@ -1231,10 +1231,22 @@ static esp_err_t config_get_handler(httpd_req_t *req)
 /**
  * @brief HTTP GET /api/config/limits — per-key min/max bounds for input validation.
  *
- * Single source of truth: cfg_limits.h. Stringified at compile time via
- * the `_LIMITS_STR` macro — no runtime overhead, no allocation. The
- * dashboard fetches this once at page load and applies min/max to every
- * `<input>` in the GUI.
+ * Generated from the config descriptor table (gh#64), which is also what the
+ * write path clamps against — so a bound cannot be published here that is not
+ * also enforced on POST /api/config. Until 2.8.x this was a hand-written JSON
+ * literal maintained separately from the clamp ladder, and they drifted twice
+ * in one release: eleven keys were clamped nowhere and published nowhere
+ * (gh#57 part 1), and `poll_interval` published 30–300 while T5 enforced
+ * 15–120, so a stored 300 was silently polled at 120 (gh#57 part 2).
+ *
+ * Values still come from cfg_limits.h; the descriptor references those macros
+ * rather than restating them. The dashboard fetches this once at page load and
+ * applies min/max to every `<input>` in the GUI.
+ *
+ * @note Key ORDER changed with the generation: it now follows the descriptor
+ *       (namespace, then key) rather than the old literal's hand-kept order.
+ *       No consumer indexes it positionally — app.js does `limits[key]` — and
+ *       JSON object order is not significant.
  *
  * @param req esp_http_server request handle.
  * @return ESP_OK on response sent.
@@ -1243,61 +1255,50 @@ static esp_err_t config_get_handler(httpd_req_t *req)
  */
 static esp_err_t config_limits_handler(httpd_req_t *req)
 {
-#define _LIMITS_STR2(x) #x
-#define _LIMITS_STR(x)  _LIMITS_STR2(x)
-    static const char LIMITS_JSON[] =
-        "{"
-        "\"t_max_day\":"      "[" _LIMITS_STR(CFG_MIN_T_MAX_DAY)    "," _LIMITS_STR(CFG_MAX_T_MAX_DAY)    "],"
-        "\"t_min_day\":"      "[" _LIMITS_STR(CFG_MIN_T_MIN_DAY)    "," _LIMITS_STR(CFG_MAX_T_MIN_DAY)    "],"
-        "\"t_max_ngt\":"      "[" _LIMITS_STR(CFG_MIN_T_MAX_NGT)    "," _LIMITS_STR(CFG_MAX_T_MAX_NGT)    "],"
-        "\"t_min_ngt\":"      "[" _LIMITS_STR(CFG_MIN_T_MIN_NGT)    "," _LIMITS_STR(CFG_MAX_T_MIN_NGT)    "],"
-        "\"rh_max_day\":"     "[" _LIMITS_STR(CFG_MIN_RH_MAX)       "," _LIMITS_STR(CFG_MAX_RH_MAX)       "],"
-        "\"rh_min_day\":"     "[" _LIMITS_STR(CFG_MIN_RH_MIN)       "," _LIMITS_STR(CFG_MAX_RH_MIN)       "],"
-        "\"rh_max_ngt\":"     "[" _LIMITS_STR(CFG_MIN_RH_MAX)       "," _LIMITS_STR(CFG_MAX_RH_MAX)       "],"
-        "\"rh_min_ngt\":"     "[" _LIMITS_STR(CFG_MIN_RH_MIN)       "," _LIMITS_STR(CFG_MAX_RH_MIN)       "],"
-        "\"hyst_t\":"         "[" _LIMITS_STR(CFG_MIN_HYST_T)       "," _LIMITS_STR(CFG_MAX_HYST_T)       "],"
-        "\"hyst_rh\":"        "[" _LIMITS_STR(CFG_MIN_HYST_RH)      "," _LIMITS_STR(CFG_MAX_HYST_RH)      "],"
-        "\"avg_win_t\":"      "[" _LIMITS_STR(CFG_MIN_AVG_WIN)      "," _LIMITS_STR(CFG_MAX_AVG_WIN)      "],"
-        "\"avg_win_rh\":"     "[" _LIMITS_STR(CFG_MIN_AVG_WIN)      "," _LIMITS_STR(CFG_MAX_AVG_WIN)      "],"
-        "\"avg_win_wind\":"   "[" _LIMITS_STR(CFG_MIN_AVG_WIN)      "," _LIMITS_STR(CFG_MAX_AVG_WIN)      "],"
-        "\"v_max\":"          "[" _LIMITS_STR(CFG_MIN_V_MAX)        "," _LIMITS_STR(CFG_MAX_V_MAX)        "],"
-        "\"wind_hyst\":"      "[" _LIMITS_STR(CFG_MIN_WIND_HYST)    "," _LIMITS_STR(CFG_MAX_WIND_HYST)    "],"
-        "\"dir_excl_low\":"   "[" _LIMITS_STR(CFG_MIN_DIR)          "," _LIMITS_STR(CFG_MAX_DIR)          "],"
-        "\"dir_excl_high\":"  "[" _LIMITS_STR(CFG_MIN_DIR)          "," _LIMITS_STR(CFG_MAX_DIR)          "],"
-        "\"travel_m1\":"      "[" _LIMITS_STR(CFG_MIN_TRAVEL_S)     "," _LIMITS_STR(CFG_MAX_TRAVEL_S)     "],"
-        "\"travel_m2\":"      "[" _LIMITS_STR(CFG_MIN_TRAVEL_S)     "," _LIMITS_STR(CFG_MAX_TRAVEL_S)     "],"
-        "\"travel_m3\":"      "[" _LIMITS_STR(CFG_MIN_TRAVEL_S)     "," _LIMITS_STR(CFG_MAX_TRAVEL_S)     "],"
-        "\"dwell_open_m1\":"  "[" _LIMITS_STR(CFG_MIN_DWELL_OPEN_S)  "," _LIMITS_STR(CFG_MAX_DWELL_OPEN_S)  "],"
-        "\"dwell_open_m2\":"  "[" _LIMITS_STR(CFG_MIN_DWELL_OPEN_S)  "," _LIMITS_STR(CFG_MAX_DWELL_OPEN_S)  "],"
-        "\"dwell_open_m3\":"  "[" _LIMITS_STR(CFG_MIN_DWELL_OPEN_S)  "," _LIMITS_STR(CFG_MAX_DWELL_OPEN_S)  "],"
-        "\"dwell_close_m1\":" "[" _LIMITS_STR(CFG_MIN_DWELL_CLOSE_S) "," _LIMITS_STR(CFG_MAX_DWELL_CLOSE_S) "],"
-        "\"dwell_close_m2\":" "[" _LIMITS_STR(CFG_MIN_DWELL_CLOSE_S) "," _LIMITS_STR(CFG_MAX_DWELL_CLOSE_S) "],"
-        "\"dwell_close_m3\":" "[" _LIMITS_STR(CFG_MIN_DWELL_CLOSE_S) "," _LIMITS_STR(CFG_MAX_DWELL_CLOSE_S) "],"
-        "\"poll_interval\":"  "[" _LIMITS_STR(CFG_MIN_POLL_S)       "," _LIMITS_STR(CFG_MAX_POLL_S)       "],"
-        "\"session_timeout\":" "[" _LIMITS_STR(CFG_MIN_TIMEOUT_MIN)  "," _LIMITS_STR(CFG_MAX_TIMEOUT_MIN)  "],"
-        "\"ap_timeout\":"     "[" _LIMITS_STR(CFG_MIN_AP_TIMEOUT)   "," _LIMITS_STR(CFG_MAX_TIMEOUT_MIN)  "],"
-        /* 2.5.0 (gh#57) — these eleven were clamped nowhere AND published
-         * nowhere, so neither the server nor a client constrained them. The
-         * three enums are <select> elements in the bundled GUI and the two
-         * coordinate inputs already carry their own min/max attributes, so
-         * publishing changes nothing for app.js. It is the documented contract
-         * for every other /api/config caller. */
-        "\"cr_priority\":"   "[" _LIMITS_STR(CFG_MIN_CR_PRIORITY)  "," _LIMITS_STR(CFG_MAX_CR_PRIORITY)  "],"
-        "\"rh_ctrl_en\":"    "[0,1],"
-        "\"wind_prot_en\":"  "[0,1],"
-        "\"lat_deg\":"       "[" _LIMITS_STR(CFG_MIN_LAT_DEG)      "," _LIMITS_STR(CFG_MAX_LAT_DEG)      "],"
-        "\"lat_frac\":"      "[" _LIMITS_STR(CFG_MIN_COORD_FRAC)   "," _LIMITS_STR(CFG_MAX_COORD_FRAC)   "],"
-        "\"lon_deg\":"       "[" _LIMITS_STR(CFG_MIN_LON_DEG)      "," _LIMITS_STR(CFG_MAX_LON_DEG)      "],"
-        "\"lon_frac\":"      "[" _LIMITS_STR(CFG_MIN_COORD_FRAC)   "," _LIMITS_STR(CFG_MAX_COORD_FRAC)   "],"
-        "\"led_day_brt\":"   "[" _LIMITS_STR(CFG_MIN_LED_BRT)      "," _LIMITS_STR(CFG_MAX_LED_BRT)      "],"
-        "\"led_nite_brt\":"  "[" _LIMITS_STR(CFG_MIN_LED_BRT)      "," _LIMITS_STR(CFG_MAX_LED_BRT)      "],"
-        "\"led_nite_from\":" "[" _LIMITS_STR(CFG_MIN_HOUR)         "," _LIMITS_STR(CFG_MAX_HOUR)         "],"
-        "\"led_nite_to\":"   "[" _LIMITS_STR(CFG_MIN_HOUR)         "," _LIMITS_STR(CFG_MAX_HOUR)         "]"
-        "}";
-#undef _LIMITS_STR2
-#undef _LIMITS_STR
+    /* gh#64 — built once from the descriptor table, then cached. The payload
+     * is fixed at link time (every bound is a compile-time constant), so the
+     * build cost is paid on the first request and never again.
+     *
+     * Sized with headroom over the ~850 bytes the current 40 keys produce.
+     * A truncating snprintf would emit malformed JSON, so the loop stops and
+     * the handler fails loudly instead — a 500 the operator can see beats a
+     * silently short limits table that makes the GUI stop validating. */
+    static char s_json[1280];
+    static bool s_built = false;
+
+    if (!s_built) {
+        const size_t n = dm_cfg_pub_count();
+        size_t off = 0u;
+        int w = snprintf(s_json, sizeof(s_json), "{");
+        if (w < 0) { return httpd_resp_send_500(req); }
+        off = (size_t)w;
+
+        for (size_t i = 0u; i < n; i++) {
+            const char *key = NULL;
+            int32_t lo = 0, hi = 0;
+            if (!dm_cfg_pub_at(i, &key, &lo, &hi)) { break; }
+            w = snprintf(s_json + off, sizeof(s_json) - off,
+                         "%s\"%s\":[%ld,%ld]",
+                         (i == 0u) ? "" : ",", key, (long)lo, (long)hi);
+            if (w < 0 || (size_t)w >= sizeof(s_json) - off) {
+                ESP_LOGE(TAG, "limits JSON does not fit in %u bytes at key %s "
+                              "-- grow s_json", (unsigned)sizeof(s_json), key);
+                return httpd_resp_send_500(req);
+            }
+            off += (size_t)w;
+        }
+
+        w = snprintf(s_json + off, sizeof(s_json) - off, "}");
+        if (w < 0 || (size_t)w >= sizeof(s_json) - off) {
+            return httpd_resp_send_500(req);
+        }
+        s_built = true;
+        ESP_LOGI(TAG, "limits JSON built: %u keys, %u bytes",
+                 (unsigned)n, (unsigned)(off + 1u));
+    }
+
     httpd_resp_set_type(req, "application/json");
-    return httpd_resp_send(req, LIMITS_JSON, HTTPD_RESP_USE_STRLEN);
+    return httpd_resp_send(req, s_json, HTTPD_RESP_USE_STRLEN);
 }
 
 /**

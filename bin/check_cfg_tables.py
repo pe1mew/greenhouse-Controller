@@ -357,6 +357,26 @@ def main():
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     os.chdir(here)
 
+    # gh#64 collapsed the six tables this script compares into ONE descriptor
+    # table, so on a current tree there is nothing here to cross-check and every
+    # table reads back empty. That produces a correct but baffling exit 2, which
+    # in a pre-commit hook looks like a broken tool rather than a moved one.
+    # Hand over to the script that checks what replaced them.
+    #
+    # The parsing helpers below are still live: gen_cfg_desc.py imports them to
+    # re-derive the descriptor from the pre-gh#64 sources
+    # (`python bin/gen_cfg_desc.py --from-rev <rev> --check`), which is what
+    # keeps the equivalence claim re-runnable. Do not gut this file.
+    if os.path.exists(os.path.join("firmware", "config", "cfg_desc.inc")) \
+            and not args.list_gaps:
+        import subprocess
+        print("check_cfg_tables: the six key tables were collapsed into "
+              "firmware/config/cfg_desc.inc (gh#64).")
+        print("  running bin/check_cfg_desc.py instead.\n")
+        return subprocess.call([sys.executable,
+                                os.path.join("bin", "check_cfg_desc.py")]
+                               + (["-v"] if args.verbose else []))
+
     if args.list_gaps:
         print("declared deliberate gaps (%d):\n" % len(EXPECTED_GAPS))
         for key in sorted(EXPECTED_GAPS):

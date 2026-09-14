@@ -51,6 +51,7 @@
 #include <esp_app_desc.h>   /* gh#39 — esp_app_get_elf_sha256 for coredump staleness */
 #include <stdlib.h>         /* gh#39 — malloc/free for the coredump summary struct */
 #include <string.h>         /* gh#39 — strncmp for the ELF-SHA compare */
+#include <stddef.h>         /* gh#64 — offsetof() for the descriptor table */
 #include <time.h>
 #include <sys/time.h>    /* settimeofday() — alpha.6.7, was via Arduino.h */
 #include <string.h>
@@ -143,6 +144,86 @@ static const char K_OTA_WIN_HI[]       = "ota_win_hi";
  * reboot. Stored as i32: 0 = AUTOMATIC, 1 = STANDBY. Other modes (MOTOR_ALARM,
  * WIND_OVERRIDE, CALIBRATING) are runtime conditions and are NOT persisted. */
 static const char K_MODE_STANDBY[]     = "mode_standby";
+
+/* ============================================================
+ * gh#64 — the config key descriptor table
+ * ============================================================ */
+
+/**
+ * @brief Classification of a Q4 ns/key pair.
+ *
+ * 2.4.6 shipped a boolean "known / unknown" whose definition of known was
+ * "has a cfg_shadow_t field" — and that silently rejected `wifi/ap_enable`,
+ * which has NO shadow field on purpose: T10 polls it straight out of NVS every
+ * 5 s (network_manager.cpp, poll_ap()). For that key the NVS write IS the
+ * mechanism, so gh#53's "junk write" was load-bearing, and 2.4.6 disabled the
+ * LCD System-menu AP toggle and T10's own stale-flag clear — the recovery path
+ * for a unit that has lost its station credentials. Found on FDA4 by the
+ * operator on 2026-09-11, fixed in 2.4.7.
+ */
+typedef enum {
+    CFG_KEY_UNKNOWN = 0, /**< Nothing in this firmware writes it via Q4 — reject. */
+    CFG_KEY_SHADOW,      /**< Has a cfg_shadow_t field: NVS + shadow + audit row. */
+    CFG_KEY_NVS_ONLY,    /**< Legitimate Q4 traffic with NO shadow field: the
+                              consumer reads NVS directly. NVS write only. */
+    CFG_KEY_NOT_Q4,      /**< A real key with real bounds that a DIFFERENT route
+                              owns (the four ota_*, held by /api/ota/config).
+                              Listed so its bounds have one home; Q4 must still
+                              refuse it, so cfg_key_kind() maps it to UNKNOWN. */
+} cfg_key_kind_t;
+
+#define CFG_F_PUB   (1u << 0)  /**< Published by GET /api/config/limits. */
+#define CFG_F_SUN   (1u << 1)  /**< Writing it must re-run update_sun_times(). */
+
+/**
+ * @brief One config key, described once.
+ *
+ * Before 2.8.x the key set was written out six times — cfg_key_kind(), the
+ * apply_config_update() shadow ladder, cfg_clamp(), ns_key_to_log_id(),
+ * LIMITS_JSON and the mock server — and they drifted. Every drift so far
+ * reached a release (gh#53, gh#57 twice, gh#51 group D), because a key missing
+ * from one table produces no error, just a quietly weaker write path.
+ *
+ * `shadow_off` / `shadow_sz` are what let the ladder go: the arms differed only
+ * in which field they assigned and in the field's width (int16_t for climate,
+ * wind and motor; int32_t for system), and both of those are data.
+ */
+typedef struct {
+    const char *ns;          /**< NVS namespace string.                       */
+    const char *key;         /**< NVS key string.                             */
+    uint8_t     kind;        /**< cfg_key_kind_t.                             */
+    uint8_t     channel;     /**< 1/2/3 for per-window motor keys, else 0.     */
+    uint8_t     flags;       /**< CFG_F_*.                                    */
+    uint8_t     param_id;    /**< log_param_id_t; LOG_PARAM_NONE = unaudited.  */
+    int32_t     min;         /**< Inclusive lower bound.                      */
+    int32_t     max;         /**< Inclusive upper bound.                      */
+    uint16_t    shadow_off;  /**< offsetof into cfg_shadow_t (0 if none).     */
+    uint8_t     shadow_sz;   /**< sizeof that field: 2 or 4 (0 if none).      */
+} cfg_desc_t;
+
+#include "cfg_desc.inc"
+
+#define CFG_DESC_N (sizeof(CFG_DESC) / sizeof(CFG_DESC[0]))
+
+/**
+ * @brief Find the descriptor for @p ns / @p key, or NULL.
+ *
+ * Linear over 51 rows with an early namespace reject. This runs on the Q4
+ * config path — a handful of writes per operator action, not per loop — so the
+ * scan is far below anything that matters, and a sorted table plus a bsearch
+ * would add an ordering invariant for no measurable gain.
+ */
+static const cfg_desc_t *cfg_desc_find(const char *ns, const char *key)
+{
+    if (ns == NULL || key == NULL) { return NULL; }
+    for (size_t i = 0u; i < CFG_DESC_N; i++) {
+        if (strcmp(ns, CFG_DESC[i].ns) == 0 &&
+            strcmp(key, CFG_DESC[i].key) == 0) {
+            return &CFG_DESC[i];
+        }
+    }
+    return NULL;
+}
 
 /* ============================================================
  * Module-private state
@@ -700,88 +781,23 @@ static void nvs_load_web(void)
  */
 static int32_t cfg_clamp(const char *ns, const char *key, int32_t v)
 {
-#define _CLAMP(lo, hi)                                                       \
-    do {                                                                     \
-        int32_t _lo = (lo), _hi = (hi);                                      \
-        if      (v < _lo) { ESP_LOGW(TAG, "cfg clamp %s/%s: %ld → %ld (min)", \
-                                     ns, key, (long)v, (long)_lo); v = _lo; } \
-        else if (v > _hi) { ESP_LOGW(TAG, "cfg clamp %s/%s: %ld → %ld (max)", \
-                                     ns, key, (long)v, (long)_hi); v = _hi; } \
-    } while (0)
+    const cfg_desc_t *d = cfg_desc_find(ns, key);
 
-    if (strcmp(ns, NVS_NS_CLIMATE) == 0) {
-        if      (strcmp(key, K_T_MAX_DAY)  == 0) _CLAMP(CFG_MIN_T_MAX_DAY,  CFG_MAX_T_MAX_DAY);
-        else if (strcmp(key, K_T_MIN_DAY)  == 0) _CLAMP(CFG_MIN_T_MIN_DAY,  CFG_MAX_T_MIN_DAY);
-        else if (strcmp(key, K_T_MAX_NGT)  == 0) _CLAMP(CFG_MIN_T_MAX_NGT,  CFG_MAX_T_MAX_NGT);
-        else if (strcmp(key, K_T_MIN_NGT)  == 0) _CLAMP(CFG_MIN_T_MIN_NGT,  CFG_MAX_T_MIN_NGT);
-        else if (strcmp(key, K_RH_MAX_DAY) == 0) _CLAMP(CFG_MIN_RH_MAX,     CFG_MAX_RH_MAX);
-        else if (strcmp(key, K_RH_MIN_DAY) == 0) _CLAMP(CFG_MIN_RH_MIN,     CFG_MAX_RH_MIN);
-        else if (strcmp(key, K_RH_MAX_NGT) == 0) _CLAMP(CFG_MIN_RH_MAX,     CFG_MAX_RH_MAX);
-        else if (strcmp(key, K_RH_MIN_NGT) == 0) _CLAMP(CFG_MIN_RH_MIN,     CFG_MAX_RH_MIN);
-        else if (strcmp(key, K_HYST_T)     == 0) _CLAMP(CFG_MIN_HYST_T,     CFG_MAX_HYST_T);
-        else if (strcmp(key, K_HYST_RH)    == 0) _CLAMP(CFG_MIN_HYST_RH,    CFG_MAX_HYST_RH);
-        else if (strcmp(key, K_AVG_WIN_T)  == 0) _CLAMP(CFG_MIN_AVG_WIN,    CFG_MAX_AVG_WIN);
-        else if (strcmp(key, K_AVG_WIN_RH) == 0) _CLAMP(CFG_MIN_AVG_WIN,    CFG_MAX_AVG_WIN);
-        /* 2.5.0 (gh#57) — previously unclamped: POST /api/config stored any
-         * int32. rh_ctrl_en is read as (v != 0), so a non-zero value behaved
-         * as "on" by luck rather than by validation. */
-        else if (strcmp(key, K_RH_CTRL_EN)  == 0) _CLAMP(0, 1);
-        else if (strcmp(key, K_CR_PRIORITY) == 0) _CLAMP(CFG_MIN_CR_PRIORITY, CFG_MAX_CR_PRIORITY);
+    /* Unknown keys pass through unchanged, exactly as the ladder did. Since
+     * 2.4.6 apply_config_update() rejects them before reaching here, so this
+     * is the defence-in-depth arm rather than the normal path. */
+    if (d == NULL) { return v; }
 
-    } else if (strcmp(ns, NVS_NS_WIND) == 0) {
-        if      (strcmp(key, K_AVG_WIN_WIND)  == 0) _CLAMP(CFG_MIN_AVG_WIN, CFG_MAX_AVG_WIN);
-        else if (strcmp(key, K_V_MAX)         == 0) _CLAMP(CFG_MIN_V_MAX, CFG_MAX_V_MAX);
-        else if (strcmp(key, K_DIR_EXCL_LOW)  == 0) _CLAMP(CFG_MIN_DIR,   CFG_MAX_DIR);
-        else if (strcmp(key, K_DIR_EXCL_HIGH) == 0) _CLAMP(CFG_MIN_DIR,   CFG_MAX_DIR);
-        else if (strcmp(key, K_WIND_HYST)     == 0) _CLAMP(CFG_MIN_WIND_HYST, CFG_MAX_WIND_HYST);
-        /* 2.5.0 (gh#57) — previously unclamped; read as (v != 0). */
-        else if (strcmp(key, K_WIND_PROT_EN)  == 0) _CLAMP(0, 1);
-
-    } else if (strcmp(ns, NVS_NS_MOTOR) == 0) {
-        static const char * const ktr[] = { K_TRAVEL_M1,      K_TRAVEL_M2,      K_TRAVEL_M3      };
-        static const char * const kdo[] = { K_DWELL_OPEN_M1,  K_DWELL_OPEN_M2,  K_DWELL_OPEN_M3  };
-        static const char * const kdc[] = { K_DWELL_CLOSE_M1, K_DWELL_CLOSE_M2, K_DWELL_CLOSE_M3 };
-        for (uint8_t i = 0u; i < 3u; i++) {
-            if (strcmp(key, ktr[i]) == 0) { _CLAMP(CFG_MIN_TRAVEL_S,      CFG_MAX_TRAVEL_S);      break; }
-            if (strcmp(key, kdo[i]) == 0) { _CLAMP(CFG_MIN_DWELL_OPEN_S,  CFG_MAX_DWELL_OPEN_S);  break; }
-            if (strcmp(key, kdc[i]) == 0) { _CLAMP(CFG_MIN_DWELL_CLOSE_S, CFG_MAX_DWELL_CLOSE_S); break; }
-        }
-
-    } else if (strcmp(ns, NVS_NS_WIFI) == 0) {
-        /* 2.4.7 — the one NVS-only Q4 key (see cfg_key_kind()). Producers send
-         * 0/1; clamp anyway, because /api/config accepts it from an admin. */
-        if      (strcmp(key, "ap_enable")       == 0) _CLAMP(0, 1);
-
-    } else if (strcmp(ns, NVS_NS_SYSTEM) == 0) {
-        if      (strcmp(key, K_POLL_INTERVAL)   == 0) _CLAMP(CFG_MIN_POLL_S,            CFG_MAX_POLL_S);
-        else if (strcmp(key, K_SESSION_TIMEOUT) == 0) _CLAMP(CFG_MIN_TIMEOUT_MIN,       CFG_MAX_TIMEOUT_MIN);
-        else if (strcmp(key, K_AP_TIMEOUT)      == 0) _CLAMP(CFG_MIN_AP_TIMEOUT,        CFG_MAX_TIMEOUT_MIN);
-        /* 2.5.0 (gh#57) — previously unclamped. lat/lon feed update_sun_times()
-         * -> s_cfg.is_daytime -> T6's active setpoints, so an out-of-range
-         * latitude could put the controller on night thresholds in daylight
-         * from one HTTP request. The GUI already carried min/max attributes
-         * for its decimal-degree inputs; the server did not. */
-        else if (strcmp(key, K_LAT_DEG)         == 0) _CLAMP(CFG_MIN_LAT_DEG,           CFG_MAX_LAT_DEG);
-        else if (strcmp(key, K_LAT_FRAC)        == 0) _CLAMP(CFG_MIN_COORD_FRAC,        CFG_MAX_COORD_FRAC);
-        else if (strcmp(key, K_LON_DEG)         == 0) _CLAMP(CFG_MIN_LON_DEG,           CFG_MAX_LON_DEG);
-        else if (strcmp(key, K_LON_FRAC)        == 0) _CLAMP(CFG_MIN_COORD_FRAC,        CFG_MAX_COORD_FRAC);
-        else if (strcmp(key, K_LED_DAY_BRT)     == 0) _CLAMP(CFG_MIN_LED_BRT,           CFG_MAX_LED_BRT);
-        else if (strcmp(key, K_LED_NITE_BRT)    == 0) _CLAMP(CFG_MIN_LED_BRT,           CFG_MAX_LED_BRT);
-        else if (strcmp(key, K_LED_NITE_FROM)   == 0) _CLAMP(CFG_MIN_HOUR,              CFG_MAX_HOUR);
-        else if (strcmp(key, K_LED_NITE_TO)     == 0) _CLAMP(CFG_MIN_HOUR,              CFG_MAX_HOUR);
-        else if (strcmp(key, K_STATUS_INTERVAL) == 0) _CLAMP(CFG_MIN_STATUS_INTERVAL_S, CFG_MAX_STATUS_INTERVAL_S);
-        else if (strcmp(key, K_STATUS_ENABLE)   == 0) _CLAMP(0, 1);
-        else if (strcmp(key, K_STATUS_EXPOSE)   == 0) _CLAMP(0, 0x3F);
-        else if (strcmp(key, K_LOG_UPLOAD_H)    == 0) _CLAMP(CFG_MIN_HOUR,              CFG_MAX_HOUR);
-        else if (strcmp(key, K_LOG_UPLOAD_M)    == 0) _CLAMP(CFG_MIN_MINUTE,            CFG_MAX_MINUTE);
-        else if (strcmp(key, K_LOG_UPLOAD_ROT)  == 0) _CLAMP(0, 1);
-        else if (strcmp(key, K_OTA_ENABLE)      == 0) _CLAMP(0, 1);
-        else if (strcmp(key, K_OTA_CHECK_H)     == 0) _CLAMP(CFG_MIN_OTA_CHECK_H,       CFG_MAX_OTA_CHECK_H);
-        else if (strcmp(key, K_OTA_WIN_LO)      == 0) _CLAMP(CFG_MIN_HOUR,              CFG_MAX_HOUR);
-        else if (strcmp(key, K_OTA_WIN_HI)      == 0) _CLAMP(CFG_MIN_HOUR,              CFG_MAX_HOUR);
+    if (v < d->min) {
+        ESP_LOGW(TAG, "cfg clamp %s/%s: %ld \u2192 %ld (min)",
+                 ns, key, (long)v, (long)d->min);
+        return d->min;
     }
-
-#undef _CLAMP
+    if (v > d->max) {
+        ESP_LOGW(TAG, "cfg clamp %s/%s: %ld \u2192 %ld (max)",
+                 ns, key, (long)v, (long)d->max);
+        return d->max;
+    }
     return v;
 }
 
@@ -807,196 +823,72 @@ static int32_t cfg_clamp(const char *ns, const char *key, int32_t v)
 static log_param_id_t ns_key_to_log_id(const char *ns, const char *key,
                                        uint8_t *out_channel)
 {
-    if (out_channel) { *out_channel = 0u; }
-
-    if (strcmp(ns, NVS_NS_CLIMATE) == 0) {
-        if (strcmp(key, K_T_MIN_DAY)   == 0) return LOG_PARAM_T_MIN_DAY;
-        if (strcmp(key, K_T_MAX_DAY)   == 0) return LOG_PARAM_T_MAX_DAY;
-        if (strcmp(key, K_T_MIN_NGT)   == 0) return LOG_PARAM_T_MIN_NGT;
-        if (strcmp(key, K_T_MAX_NGT)   == 0) return LOG_PARAM_T_MAX_NGT;
-        if (strcmp(key, K_RH_MIN_DAY)  == 0) return LOG_PARAM_RH_MIN_DAY;
-        if (strcmp(key, K_RH_MAX_DAY)  == 0) return LOG_PARAM_RH_MAX_DAY;
-        if (strcmp(key, K_RH_MIN_NGT)  == 0) return LOG_PARAM_RH_MIN_NGT;
-        if (strcmp(key, K_RH_MAX_NGT)  == 0) return LOG_PARAM_RH_MAX_NGT;
-        if (strcmp(key, K_HYST_T)      == 0) return LOG_PARAM_HYST_T;
-        if (strcmp(key, K_HYST_RH)     == 0) return LOG_PARAM_HYST_RH;
-        if (strcmp(key, K_RH_CTRL_EN)  == 0) return LOG_PARAM_RH_CTRL_EN;
-        if (strcmp(key, K_CR_PRIORITY) == 0) return LOG_PARAM_CR_PRIORITY;
-        if (strcmp(key, K_AVG_WIN_T)   == 0) return LOG_PARAM_AVG_WIN_T;
-        if (strcmp(key, K_AVG_WIN_RH)  == 0) return LOG_PARAM_AVG_WIN_RH;
-        return LOG_PARAM_NONE;
-    }
-    if (strcmp(ns, NVS_NS_WIND) == 0) {
-        if (strcmp(key, K_AVG_WIN_WIND)  == 0) return LOG_PARAM_AVG_WIN_WIND;
-        if (strcmp(key, K_V_MAX)         == 0) return LOG_PARAM_V_MAX;
-        if (strcmp(key, K_DIR_EXCL_LOW)  == 0) return LOG_PARAM_DIR_EXCL_LOW;
-        if (strcmp(key, K_DIR_EXCL_HIGH) == 0) return LOG_PARAM_DIR_EXCL_HI;
-        if (strcmp(key, K_WIND_PROT_EN)  == 0) return LOG_PARAM_WIND_PROT_EN;
-        if (strcmp(key, K_WIND_HYST)     == 0) return LOG_PARAM_WIND_HYST;
-        return LOG_PARAM_NONE;
-    }
-    if (strcmp(ns, NVS_NS_MOTOR) == 0) {
-        static const char * const ktr[] = { K_TRAVEL_M1,      K_TRAVEL_M2,      K_TRAVEL_M3      };
-        static const char * const kdo[] = { K_DWELL_OPEN_M1,  K_DWELL_OPEN_M2,  K_DWELL_OPEN_M3  };
-        static const char * const kdc[] = { K_DWELL_CLOSE_M1, K_DWELL_CLOSE_M2, K_DWELL_CLOSE_M3 };
-        for (uint8_t i = 0u; i < 3u; i++) {
-            if (strcmp(key, ktr[i]) == 0) {
-                if (out_channel) { *out_channel = (uint8_t)(i + 1u); }
-                return LOG_PARAM_TRAVEL;
-            }
-            if (strcmp(key, kdo[i]) == 0) {
-                if (out_channel) { *out_channel = (uint8_t)(i + 1u); }
-                return LOG_PARAM_DWELL_OPEN;
-            }
-            if (strcmp(key, kdc[i]) == 0) {
-                if (out_channel) { *out_channel = (uint8_t)(i + 1u); }
-                return LOG_PARAM_DWELL_CLOSE;
-            }
-        }
-        /* gh#51 — travel_m{1,2,3} used to fall through to NONE here, on the
-         * grounds that it was set once at commissioning.  It is enumerated as
-         * LOG_PARAM_TRAVEL since 2.4.2: the same release made it take effect
-         * without a reboot, and an unlogged change to a motor safety timeout
-         * that applies immediately is a different proposition. */
-        return LOG_PARAM_NONE;
-    }
-    if (strcmp(ns, NVS_NS_SYSTEM) == 0) {
-        if (strcmp(key, K_POLL_INTERVAL)  == 0) return LOG_PARAM_POLL_INTV;
-        if (strcmp(key, K_LAT_DEG)        == 0 ||
-            strcmp(key, K_LAT_FRAC)       == 0 ||
-            strcmp(key, K_LON_DEG)        == 0 ||
-            strcmp(key, K_LON_FRAC)       == 0) return LOG_PARAM_LAT_LON;
-        if (strcmp(key, K_STATUS_INTERVAL) == 0) return LOG_PARAM_STATUS_INTV;
-        if (strcmp(key, K_STATUS_ENABLE)   == 0) return LOG_PARAM_STATUS_ENABLE;
-        if (strcmp(key, K_STATUS_EXPOSE)   == 0) return LOG_PARAM_STATUS_EXPOSE;
-        if (strcmp(key, K_LOG_UPLOAD_H)    == 0) return LOG_PARAM_LOG_UPLOAD_H;
-        if (strcmp(key, K_LOG_UPLOAD_M)    == 0) return LOG_PARAM_LOG_UPLOAD_M;
-        if (strcmp(key, K_LOG_UPLOAD_ROT)  == 0) return LOG_PARAM_LOG_UPLOAD_ROT;
-        if (strcmp(key, K_OTA_ENABLE)      == 0) return LOG_PARAM_OTA_ENABLE;
-        if (strcmp(key, K_OTA_CHECK_H)     == 0) return LOG_PARAM_OTA_CHECK_H;
-        if (strcmp(key, K_OTA_WIN_LO)      == 0) return LOG_PARAM_OTA_WIN_LO;
-        if (strcmp(key, K_OTA_WIN_HI)      == 0) return LOG_PARAM_OTA_WIN_HI;
-        /* ota_url / ota_secret (strings) logged by the /api/ota/config endpoint
-         * with LOG_PARAM_OTA_URL / _OTA_SECRET, mirroring status_url/secret. */
-        /* session_timeout_min / ap_timeout_min / led_* not enumerated. */
-        return LOG_PARAM_NONE;
-    }
-    return LOG_PARAM_NONE;
+    const cfg_desc_t *d = cfg_desc_find(ns, key);
+    if (out_channel) { *out_channel = (d != NULL) ? d->channel : 0u; }
+    return (d != NULL) ? (log_param_id_t)d->param_id : LOG_PARAM_NONE;
 }
 
-/* ============================================================
- * gh#53 / 2.4.7 — cfg_key_kind: what kind of int32 config key is this ns/key?
- * ============================================================ */
-
 /**
- * @brief Classification of a Q4 ns/key pair. Three kinds, not two.
+ * @brief Classify @p ns / @p key for the Q4 write path.
  *
- * 2.4.6 shipped a boolean "known / unknown" whose definition of known was
- * "has a cfg_shadow_t field" — and that silently rejected `wifi/ap_enable`,
- * which has NO shadow field on purpose: T10 polls it straight out of NVS every
- * 5 s (network_manager.cpp, poll_ap()). For that key the NVS write IS the
- * mechanism, so gh#53's "junk write" was load-bearing, and 2.4.6 disabled the
- * LCD System-menu AP toggle and T10's own stale-flag clear — the recovery path
- * for a unit that has lost its station credentials. Found on FDA4 by the
- * operator on 2026-09-11, fixed in 2.4.7.
- */
-typedef enum {
-    CFG_KEY_UNKNOWN = 0, /**< Nothing in this firmware writes it via Q4 — reject. */
-    CFG_KEY_SHADOW,      /**< Has a cfg_shadow_t field: NVS + shadow + audit row. */
-    CFG_KEY_NVS_ONLY,    /**< Legitimate Q4 traffic with NO shadow field: the
-                              consumer reads NVS directly. NVS write only. */
-} cfg_key_kind_t;
-
-/**
- * @brief Classify @p ns / @p key.
- *
- * CFG_KEY_SHADOW is defined by the shadow ladder inside apply_config_update()
- * below: a key is SHADOW exactly when that ladder has an arm writing a
- * cfg_shadow_t field for it. **The four tables here mirror those arms and must
- * be kept in step with them** — add a key there, add it here.
- *
- * CFG_KEY_NVS_ONLY is an explicit allow-list of keys posted to Q4 by
- * firmware-internal producers and consumed from NVS, never from the shadow.
- * **Every entry must name its producers and its consumer.** This is the
- * category 2.4.6 forgot; the way to add one is to grep every `xQueueSend(Q4`
- * and `post_q4(` in the tree, not to reason about which task "probably" writes.
- *
- * Deliberately NOT derived from the two existing near-miss tables:
- *   - cfg_clamp() passes unknown keys straight through, and also carries the
- *     four `ota_*` keys that /api/ota/config owns (rota_tds.md R-F02/R-F03)
- *     and this route cannot apply;
- *   - ns_key_to_log_id() returns LOG_PARAM_NONE for several genuinely known
- *     keys (session_timeout, ap_timeout, led_*), so "has no log id" does not
- *     mean "is not a key".
+ * The classification itself lives in the descriptor table (gh#64); this is the
+ * lookup. Before 2.8.x it was a fourth hand-written key list that had to be
+ * "kept in step" with the shadow ladder by hand, and in 2.4.6 it was not:
+ * `wifi/ap_enable` has no shadow field on purpose (T10 polls NVS for it every
+ * 5 s), the predicate defined *known* as *has a shadow field*, and the LCD
+ * System-menu AP toggle went dead within minutes of the OTA.
  *
  * @param ns   NVS namespace string; NULL classifies as UNKNOWN.
  * @param key  NVS key string; NULL classifies as UNKNOWN.
+ * @return CFG_KEY_SHADOW, CFG_KEY_NVS_ONLY, or CFG_KEY_UNKNOWN. Never
+ *         CFG_KEY_NOT_Q4 — those rows are real keys that another route owns,
+ *         and Q4 must refuse them.
  *
- * @note String-valued keys never reach Q4 and are not listed (see
+ * @note String-valued keys never reach Q4 and are not in the table (see
  *       data_manager.h); the web server validates `tz_str` itself.
- * @note This is a third copy of the shadow key set (here, cfg_clamp(),
- *       ns_key_to_log_id()). Collapsing all three onto one descriptor table is
- *       the right fix and is deliberately not attempted in a patch release
- *       bound for production — left as a follow-up. Drift is at least
- *       *detectable*: a SHADOW key that matches no ladder arm logs an ERROR in
- *       apply_config_update().
  */
 static cfg_key_kind_t cfg_key_kind(const char *ns, const char *key)
 {
-    if (ns == NULL || key == NULL) { return CFG_KEY_UNKNOWN; }
+    const cfg_desc_t *d = cfg_desc_find(ns, key);
+    if (d == NULL) { return CFG_KEY_UNKNOWN; }
 
-    /* ---- NVS-only keys: producer -> NVS -> consumer, no shadow ------------
-     *
-     * wifi/ap_enable — WRITTEN by the LCD System menu (ui_display.cpp,
-     * handle_menu_system() key '1') and by T10 itself to clear a stale flag on
-     * AP timeout (network_manager.cpp, poll_ap()); READ by T10's 5 s NVS poll.
-     * Nothing in cfg_shadow_t carries it, by design (alpha.6.29). */
-    if (strcmp(ns, NVS_NS_WIFI) == 0 && strcmp(key, "ap_enable") == 0) {
-        return CFG_KEY_NVS_ONLY;
-    }
+    /* CFG_KEY_NOT_Q4 rows (the four ota_*) are listed for their bounds and
+     * audit id; POST /api/ota/config owns them and validates them itself. Q4
+     * must refuse them exactly as it did when they were absent from this
+     * table altogether, so they classify UNKNOWN here. */
+    if (d->kind == (uint8_t)CFG_KEY_NOT_Q4) { return CFG_KEY_UNKNOWN; }
 
-    /* ---- shadow keys: mirror of the apply_config_update() ladders --------- */
-    static const char * const climate_keys[] = {
-        K_T_MIN_DAY,  K_T_MAX_DAY,  K_T_MIN_NGT,  K_T_MAX_NGT,
-        K_RH_MIN_DAY, K_RH_MAX_DAY, K_RH_MIN_NGT, K_RH_MAX_NGT,
-        K_HYST_T,     K_HYST_RH,    K_RH_CTRL_EN, K_CR_PRIORITY,
-        K_AVG_WIN_T,  K_AVG_WIN_RH,
-    };
-    static const char * const wind_keys[] = {
-        K_AVG_WIN_WIND, K_V_MAX, K_DIR_EXCL_LOW, K_DIR_EXCL_HIGH,
-        K_WIND_PROT_EN, K_WIND_HYST,
-    };
-    static const char * const motor_keys[] = {
-        K_TRAVEL_M1,      K_TRAVEL_M2,      K_TRAVEL_M3,
-        K_DWELL_OPEN_M1,  K_DWELL_OPEN_M2,  K_DWELL_OPEN_M3,
-        K_DWELL_CLOSE_M1, K_DWELL_CLOSE_M2, K_DWELL_CLOSE_M3,
-    };
-    static const char * const system_keys[] = {
-        K_POLL_INTERVAL,   K_SESSION_TIMEOUT, K_AP_TIMEOUT,
-        K_LAT_DEG,         K_LAT_FRAC,        K_LON_DEG,       K_LON_FRAC,
-        K_LED_DAY_BRT,     K_LED_NITE_BRT,    K_LED_NITE_FROM, K_LED_NITE_TO,
-        K_STATUS_INTERVAL, K_STATUS_ENABLE,   K_STATUS_EXPOSE,
-        K_LOG_UPLOAD_H,    K_LOG_UPLOAD_M,    K_LOG_UPLOAD_ROT,
-    };
-
-    const char * const *tbl = NULL;
-    size_t n = 0u;
-
-    if      (strcmp(ns, NVS_NS_CLIMATE) == 0) { tbl = climate_keys; n = sizeof(climate_keys) / sizeof(climate_keys[0]); }
-    else if (strcmp(ns, NVS_NS_WIND)    == 0) { tbl = wind_keys;    n = sizeof(wind_keys)    / sizeof(wind_keys[0]);    }
-    else if (strcmp(ns, NVS_NS_MOTOR)   == 0) { tbl = motor_keys;   n = sizeof(motor_keys)   / sizeof(motor_keys[0]);   }
-    else if (strcmp(ns, NVS_NS_SYSTEM)  == 0) { tbl = system_keys;  n = sizeof(system_keys)  / sizeof(system_keys[0]);  }
-    else                                      { return CFG_KEY_UNKNOWN; }
-
-    for (size_t i = 0u; i < n; i++) {
-        if (strcmp(key, tbl[i]) == 0) { return CFG_KEY_SHADOW; }
-    }
-    return CFG_KEY_UNKNOWN;
+    return (cfg_key_kind_t)d->kind;
 }
 
 bool dm_cfg_key_is_known(const char *ns, const char *key)
 {
     return cfg_key_kind(ns, key) != CFG_KEY_UNKNOWN;
+}
+
+size_t dm_cfg_pub_count(void)
+{
+    size_t n = 0u;
+    for (size_t i = 0u; i < CFG_DESC_N; i++) {
+        if ((CFG_DESC[i].flags & CFG_F_PUB) != 0u) { n++; }
+    }
+    return n;
+}
+
+bool dm_cfg_pub_at(size_t idx, const char **key, int32_t *min, int32_t *max)
+{
+    size_t n = 0u;
+    for (size_t i = 0u; i < CFG_DESC_N; i++) {
+        if ((CFG_DESC[i].flags & CFG_F_PUB) == 0u) { continue; }
+        if (n == idx) {
+            if (key) { *key = CFG_DESC[i].key; }
+            if (min) { *min = CFG_DESC[i].min; }
+            if (max) { *max = CFG_DESC[i].max; }
+            return true;
+        }
+        n++;
+    }
+    return false;
 }
 
 /* ============================================================
@@ -1043,6 +935,7 @@ static bool apply_config_update(const config_update_t *upd)
      * and emitted no audit row. /api/config now rejects unknown keys
      * synchronously with 400; this is defence in depth for the other Q4
      * producers (the LCD menus). */
+    const cfg_desc_t    *desc = cfg_desc_find(upd->ns, upd->key);
     const cfg_key_kind_t kind = cfg_key_kind(upd->ns, upd->key);
     if (kind == CFG_KEY_UNKNOWN) {
         ESP_LOGW(TAG, "Q4 unknown key REJECTED: %.15s/%.15s = %ld  (nothing written)",
@@ -1095,72 +988,33 @@ static bool apply_config_update(const config_update_t *upd)
         return false;
     }
 
-    bool    updated = true;
+    /* gh#64 — one generic write, driven by the descriptor's offset and width.
+     * The 51 ladder arms differed only in WHICH cfg_shadow_t field they
+     * assigned and whether it is 16 or 32 bits wide; both are now data, so the
+     * last hand-written key list on the write path is gone. `old_val` is still
+     * read inside the same MX4 section as the write, so the audit row's
+     * old->new pair stays atomic against any racing reader. */
+    bool    updated = false;
     int32_t old_val = 0;            /* captured before the shadow write */
-    int16_t v16     = (int16_t)clamped;
-    int32_t v32     = clamped;
     const char *ns_str  = upd->ns;
     const char *key_str = upd->key;
 
-    if (strcmp(ns_str, NVS_NS_CLIMATE) == 0) {
-        if      (strcmp(key_str, K_T_MIN_DAY)   == 0) { old_val = s_cfg.t_min_day;   s_cfg.t_min_day   = v16; }
-        else if (strcmp(key_str, K_T_MAX_DAY)   == 0) { old_val = s_cfg.t_max_day;   s_cfg.t_max_day   = v16; }
-        else if (strcmp(key_str, K_T_MIN_NGT)   == 0) { old_val = s_cfg.t_min_ngt;   s_cfg.t_min_ngt   = v16; }
-        else if (strcmp(key_str, K_T_MAX_NGT)   == 0) { old_val = s_cfg.t_max_ngt;   s_cfg.t_max_ngt   = v16; }
-        else if (strcmp(key_str, K_RH_MIN_DAY)  == 0) { old_val = s_cfg.rh_min_day;  s_cfg.rh_min_day  = v16; }
-        else if (strcmp(key_str, K_RH_MAX_DAY)  == 0) { old_val = s_cfg.rh_max_day;  s_cfg.rh_max_day  = v16; }
-        else if (strcmp(key_str, K_RH_MIN_NGT)  == 0) { old_val = s_cfg.rh_min_ngt;  s_cfg.rh_min_ngt  = v16; }
-        else if (strcmp(key_str, K_RH_MAX_NGT)  == 0) { old_val = s_cfg.rh_max_ngt;  s_cfg.rh_max_ngt  = v16; }
-        else if (strcmp(key_str, K_HYST_T)      == 0) { old_val = s_cfg.hyst_t;      s_cfg.hyst_t      = v16; }
-        else if (strcmp(key_str, K_HYST_RH)     == 0) { old_val = s_cfg.hyst_rh;     s_cfg.hyst_rh     = v16; }
-        else if (strcmp(key_str, K_RH_CTRL_EN)  == 0) { old_val = s_cfg.rh_ctrl_en;  s_cfg.rh_ctrl_en  = v16; }
-        else if (strcmp(key_str, K_CR_PRIORITY) == 0) { old_val = s_cfg.cr_priority; s_cfg.cr_priority = v16; }
-        else if (strcmp(key_str, K_AVG_WIN_T)   == 0) { old_val = s_cfg.avg_win_t;   s_cfg.avg_win_t   = v16; }
-        else if (strcmp(key_str, K_AVG_WIN_RH)  == 0) { old_val = s_cfg.avg_win_rh;  s_cfg.avg_win_rh  = v16; }
-        else { updated = false; }
-
-    } else if (strcmp(ns_str, NVS_NS_WIND) == 0) {
-        if      (strcmp(key_str, K_AVG_WIN_WIND)  == 0) { old_val = s_cfg.avg_win_wind;  s_cfg.avg_win_wind  = v16; }
-        else if (strcmp(key_str, K_V_MAX)         == 0) { old_val = s_cfg.v_max;         s_cfg.v_max         = v16; }
-        else if (strcmp(key_str, K_DIR_EXCL_LOW)  == 0) { old_val = s_cfg.dir_excl_low;  s_cfg.dir_excl_low  = v16; }
-        else if (strcmp(key_str, K_DIR_EXCL_HIGH) == 0) { old_val = s_cfg.dir_excl_high; s_cfg.dir_excl_high = v16; }
-        else if (strcmp(key_str, K_WIND_PROT_EN)  == 0) { old_val = s_cfg.wind_prot_en;  s_cfg.wind_prot_en  = v16; }
-        else if (strcmp(key_str, K_WIND_HYST)     == 0) { old_val = s_cfg.wind_hyst;     s_cfg.wind_hyst     = v16; }
-        else { updated = false; }
-
-    } else if (strcmp(ns_str, NVS_NS_MOTOR) == 0) {
-        static const char * const ktr[] = { K_TRAVEL_M1,      K_TRAVEL_M2,      K_TRAVEL_M3      };
-        static const char * const kdo[] = { K_DWELL_OPEN_M1,  K_DWELL_OPEN_M2,  K_DWELL_OPEN_M3  };
-        static const char * const kdc[] = { K_DWELL_CLOSE_M1, K_DWELL_CLOSE_M2, K_DWELL_CLOSE_M3 };
-        updated = false;
-        for (uint8_t i = 0u; i < 3u; i++) {
-            if (strcmp(key_str, ktr[i]) == 0) { old_val = s_cfg.travel_s[i];        s_cfg.travel_s[i]        = v16; updated = true; break; }
-            if (strcmp(key_str, kdo[i]) == 0) { old_val = s_cfg.dwell_open_s[i];  s_cfg.dwell_open_s[i]  = v16; updated = true; break; }
-            if (strcmp(key_str, kdc[i]) == 0) { old_val = s_cfg.dwell_close_s[i]; s_cfg.dwell_close_s[i] = v16; updated = true; break; }
-        }
-
-    } else if (strcmp(ns_str, NVS_NS_SYSTEM) == 0) {
-        if      (strcmp(key_str, K_POLL_INTERVAL)   == 0) { old_val = s_cfg.poll_interval_s;     s_cfg.poll_interval_s     = v32; }
-        else if (strcmp(key_str, K_SESSION_TIMEOUT) == 0) { old_val = s_cfg.session_timeout_min; s_cfg.session_timeout_min = v32; }
-        else if (strcmp(key_str, K_AP_TIMEOUT)      == 0) { old_val = s_cfg.ap_timeout_min;      s_cfg.ap_timeout_min      = v32; }
-        else if (strcmp(key_str, K_LAT_DEG)         == 0) { old_val = s_cfg.lat_deg;  s_cfg.lat_deg  = v32; update_sun_times(); }
-        else if (strcmp(key_str, K_LAT_FRAC)        == 0) { old_val = s_cfg.lat_frac; s_cfg.lat_frac = v32; update_sun_times(); }
-        else if (strcmp(key_str, K_LON_DEG)         == 0) { old_val = s_cfg.lon_deg;  s_cfg.lon_deg  = v32; update_sun_times(); }
-        else if (strcmp(key_str, K_LON_FRAC)        == 0) { old_val = s_cfg.lon_frac; s_cfg.lon_frac = v32; update_sun_times(); }
-        else if (strcmp(key_str, K_LED_DAY_BRT)     == 0) { old_val = s_cfg.led_day_brt;   s_cfg.led_day_brt   = v32; }
-        else if (strcmp(key_str, K_LED_NITE_BRT)    == 0) { old_val = s_cfg.led_nite_brt;  s_cfg.led_nite_brt  = v32; }
-        else if (strcmp(key_str, K_LED_NITE_FROM)   == 0) { old_val = s_cfg.led_nite_from; s_cfg.led_nite_from = v32; }
-        else if (strcmp(key_str, K_LED_NITE_TO)     == 0) { old_val = s_cfg.led_nite_to;   s_cfg.led_nite_to   = v32; }
-        else if (strcmp(key_str, K_STATUS_INTERVAL) == 0) { old_val = s_cfg.status_interval_s; s_cfg.status_interval_s = v32; }
-        else if (strcmp(key_str, K_STATUS_ENABLE)   == 0) { old_val = s_cfg.status_enable;     s_cfg.status_enable     = v32; }
-        else if (strcmp(key_str, K_STATUS_EXPOSE)   == 0) { old_val = s_cfg.status_expose;     s_cfg.status_expose     = v32; }
-        else if (strcmp(key_str, K_LOG_UPLOAD_H)    == 0) { old_val = s_cfg.log_upload_h;      s_cfg.log_upload_h      = v32; }
-        else if (strcmp(key_str, K_LOG_UPLOAD_M)    == 0) { old_val = s_cfg.log_upload_m;      s_cfg.log_upload_m      = v32; }
-        else if (strcmp(key_str, K_LOG_UPLOAD_ROT)  == 0) { old_val = s_cfg.log_upload_rot;    s_cfg.log_upload_rot    = v32; }
-        else { updated = false; }
-    } else {
-        updated = false;
+    if (desc->shadow_sz == (uint8_t)sizeof(int16_t)) {
+        int16_t *f = (int16_t *)((uint8_t *)&s_cfg + desc->shadow_off);
+        old_val = (int32_t)*f;
+        *f      = (int16_t)clamped;
+        updated = true;
+    } else if (desc->shadow_sz == (uint8_t)sizeof(int32_t)) {
+        int32_t *f = (int32_t *)((uint8_t *)&s_cfg + desc->shadow_off);
+        old_val = *f;
+        *f      = clamped;
+        updated = true;
     }
+
+    /* 2.5.0 (gh#57) — lat/lon feed update_sun_times() -> s_cfg.is_daytime ->
+     * T6's active setpoints, so the recalculation is part of applying the
+     * value, not a follow-up. Called inside MX4, exactly as the ladder did. */
+    if (updated && (desc->flags & CFG_F_SUN) != 0u) { update_sun_times(); }
 
     xSemaphoreGive(MX4);
 

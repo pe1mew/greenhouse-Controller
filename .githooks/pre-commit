@@ -12,11 +12,14 @@
 #       build, so the placeholder discipline survives only if commits
 #       restore the placeholder. See gh#9.
 #
-#   2. the config-key tables — six independent tables carry a key list
-#       (accepted / shadow field / clamped / audited / published / mock) and
-#       they drift. Every gap so far has SHIPPED: gh#53, gh#57 part 1 and
-#       part 2, gh#51 Group B. `bin/check_cfg_tables.py` cross-checks them
-#       against a declared allow-list of deliberate omissions. See gh#64.
+#   2. the config key descriptor — a key is declared once, in
+#       firmware/config/cfg_desc.inc, and `bin/check_cfg_desc.py` verifies it.
+#       Six independent tables used to carry the key list (accepted / shadow
+#       field / clamped / audited / published / mock) and they drifted every
+#       time: gh#53, gh#57 part 1 and part 2, gh#51 Group D all SHIPPED.
+#       gh#64 collapsed them. The residual risk moved: the shadow write is
+#       offsetof-driven, so a wrong field name writes the wrong setting and
+#       compiles cleanly — which is mostly what this check now guards.
 #
 # To enable:    git config core.hooksPath .githooks       (one-time, per clone)
 # To bypass:    git commit --no-verify  (do not use casually; see below)
@@ -66,7 +69,7 @@ fi
 # Rule 2 — config-key table consistency (gh#64)
 # ---------------------------------------------------------------------------
 if printf '%s\n' "$staged_files" | grep -qE \
-      '^(firmware/src/data_manager/data_manager\.cpp|firmware/src/web_server/web_server\.cpp|firmware/config/cfg_limits\.h|webUiMock/mock_server\.py|bin/check_cfg_tables\.py)$'; then
+      '^(firmware/config/cfg_desc\.inc|firmware/src/data_manager/data_manager\.(cpp|h)|firmware/src/web_server/web_server\.cpp|firmware/config/cfg_limits\.h|webUiMock/mock_server\.py|bin/check_cfg_(desc|tables)\.py)$'; then
 
     py=""
     for cand in python python3 py; do
@@ -79,25 +82,28 @@ if printf '%s\n' "$staged_files" | grep -qE \
         # environment problem, not a defect in the commit.
         cat >&2 <<'EOF'
 ! pre-commit: SKIPPED the config-key table check — no python interpreter found.
-  This commit touches one of the key tables and was NOT verified. Run
-  `python bin/check_cfg_tables.py` wherever python is available before pushing.
+  This commit touches the config key table and was NOT verified. Run
+  `python bin/check_cfg_desc.py` wherever python is available before pushing.
   Background: gh#64
 EOF
-    elif ! "$py" bin/check_cfg_tables.py; then
+    elif ! "$py" bin/check_cfg_desc.py; then
         cat >&2 <<EOF
 
-x pre-commit: the config-key tables disagree (see above).
+x pre-commit: the config key descriptor does not check out (see above).
 
-  Six tables carry a key list and they must agree, or a key ends up
-  accepted-but-unclamped, clamped-but-unpublished, or applied-but-unaudited.
-  That is the gh#57 defect class, and it has shipped four times.
+  Since gh#64 a config key is declared ONCE, in firmware/config/cfg_desc.inc,
+  and the clamp, the shadow write, the audit id and GET /api/config/limits all
+  read it. Adding a key is one row; there is no second table to keep in step.
 
-  If the gap is DELIBERATE, declare it: add the key to EXPECTED_GAPS in
-  bin/check_cfg_tables.py with a one-line reason. That is a reviewable
-  assertion, which an absence is not.
+  What this check is really guarding is the price of that collapse: the shadow
+  write is driven by offsetof(), so naming the WRONG FIELD compiles, runs, and
+  quietly writes a real but different setting. Nothing downstream would notice.
+  If it is complaining about a shadow field, believe it.
 
-  If it is not deliberate, read the key's consumer and give it whatever it
-  is missing — a bound, a published range, a param_id.
+  It also fails when webUiMock/mock_server.py drifts from the firmware — that
+  is the one copy of the limits still living outside the table — and when a
+  consumer starts growing its own key list again, which is how all six tables
+  drifted the first time.
 
   Override (only with a reason you would defend in review):
     git commit --no-verify

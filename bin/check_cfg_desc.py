@@ -1,0 +1,421 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""Verify the config key descriptor table (gh#64).
+
+Replaces bin/check_cfg_tables.py, which cross-checked six hand-maintained key
+lists against each other. There are no longer six lists: firmware/config/
+cfg_desc.inc is the one place a config key is declared, and the write path,
+the clamp, the audit id and GET /api/config/limits all read it. So the job
+changes shape -- there is nothing left to cross-check the table AGAINST inside
+the firmware, and the risk moves to the table's edges:
+
+  1. A bound macro that does not exist in cfg_limits.h.
+  2. A CFG_SH() field that does not exist in cfg_shadow_t, or whose width is
+     not the 2 or 4 bytes the generic write handles. An offsetof() typo here
+     writes the WRONG FIELD -- the one failure mode the old six-table drift
+     could not produce, and the price of collapsing the ladder.
+  3. A hand-written key list creeping back into a consumer.
+  4. The published set drifting from the mock server (webUiMock), which is the
+     one copy of the limits that still lives outside the firmware.
+  5. The published payload drifting from what the pre-refactor firmware served,
+     if a golden capture is supplied.
+
+Checks 1, 2 and 3 are the ones that matter most: they are what the six-table
+design could not get wrong and this one can.
+
+Usage:
+    python bin/check_cfg_desc.py                 # quiet unless something is wrong
+    python bin/check_cfg_desc.py -v              # print the table
+    python bin/check_cfg_desc.py --golden F.json # also diff against a capture
+                                                 # of GET /api/config/limits
+
+Exit code 0 = consistent, 1 = a check failed, 2 = a source could not be read
+(treated as failure, never as a pass -- an unparseable table must not look clean).
+
+Stdlib only. ASCII output only (Windows consoles here are cp1252).
+"""
+
+import argparse
+import io
+import json
+import os
+import re
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+
+DESC_PATH = os.path.join(ROOT, "firmware", "config", "cfg_desc.inc")
+LIM_PATH = os.path.join(ROOT, "firmware", "config", "cfg_limits.h")
+DM_C_PATH = os.path.join(ROOT, "firmware", "src", "data_manager", "data_manager.cpp")
+DM_H_PATH = os.path.join(ROOT, "firmware", "src", "data_manager", "data_manager.h")
+MOCK_PATH = os.path.join(ROOT, "webUiMock", "mock_server.py")
+
+_ERRORS = []
+_FATAL = []
+
+
+def err(msg):
+    _ERRORS.append(msg)
+
+
+def fatal(msg):
+    _FATAL.append(msg)
+
+
+def read(path):
+    try:
+        with io.open(path, "r", encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except Exception as exc:                                  # noqa: BLE001
+        fatal("cannot read %s: %s" % (os.path.relpath(path, ROOT), exc))
+        return ""
+
+
+def strip_c_comments(text):
+    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
+    return re.sub(r"//[^\n]*", " ", text)
+
+
+# ---------------------------------------------------------------- sources ---
+
+def macro_values():
+    """{CFG_MIN_X: int} from cfg_limits.h, expanded as the preprocessor would."""
+    out = {}
+    for name, val in re.findall(
+            r"#define\s+(CFG_(?:MIN|MAX)_[A-Z0-9_]+)\s+(\(?-?(?:0[xX][0-9a-fA-F]+|\d+)\)?)",
+            read(LIM_PATH)):
+        out[name] = int(val.strip("()"), 0)
+    return out
+
+
+def key_constants():
+    """{K_CONSTANT: "key_string"} from data_manager.cpp."""
+    return dict(re.findall(
+        r'static const char (K_[A-Z0-9_]+)\[\]\s*=\s*"([a-z0-9_]+)"',
+        strip_c_comments(read(DM_C_PATH))))
+
+
+def shadow_fields():
+    """{field: (width_bytes, array_len or None)} for cfg_shadow_t's scalars.
+
+    Widths are what the generic write in apply_config_update() switches on, so
+    a field of any other width silently would not be written at all."""
+    src = strip_c_comments(read(DM_H_PATH))
+    m = re.search(r"typedef struct\s*\{(.*?)\}\s*cfg_shadow_t\s*;", src, re.S)
+    if not m:
+        fatal("could not find cfg_shadow_t in data_manager.h")
+        return {}
+    width = {"int8_t": 1, "uint8_t": 1, "int16_t": 2, "uint16_t": 2,
+             "int32_t": 4, "uint32_t": 4, "bool": 1, "char": 1}
+    out = {}
+    for typ, name, arr in re.findall(
+            r"\b(int8_t|uint8_t|int16_t|uint16_t|int32_t|uint32_t|bool|char)\s+"
+            r"(\w+)\s*(?:\[\s*(\d+)\s*\])?\s*;", m.group(1)):
+        out[name] = (width[typ], int(arr) if arr else None)
+    return out
+
+
+ROW_RE = re.compile(
+    r"\{\s*(NVS_NS_[A-Z]+)\s*,\s*(K_[A-Z0-9_]+|\"[a-z0-9_]+\")\s*,"
+    r"\s*(CFG_KEY_\w+)\s*,\s*(\d+)u\s*,\s*([^,]+?)\s*,\s*(LOG_PARAM_\w+)\s*,"
+    r"\s*([^,]+?)\s*,\s*([^,]+?)\s*,"
+    r"\s*(CFG_SH\(\s*([A-Za-z0-9_\[\]]+)\s*\)|CFG_NOSH)\s*\}", re.S)
+
+
+def parse_desc(macros, kconsts):
+    """Parse cfg_desc.inc into rows, resolving macros and key constants."""
+    src = strip_c_comments(read(DESC_PATH))
+    rows = []
+    for m in ROW_RE.finditer(src):
+        (ns, kc, kind, chan, flags, pid, lo, hi, sh, fld) = m.groups()
+        key = kc.strip('"') if kc.startswith('"') else kconsts.get(kc)
+        if key is None:
+            err("row references %s, which is not a key constant in "
+                "data_manager.cpp" % kc)
+            continue
+
+        def resolve(tok):
+            tok = tok.strip()
+            if re.fullmatch(r"-?(?:0[xX][0-9a-fA-F]+|\d+)", tok):
+                return int(tok, 0)
+            if tok not in macros:
+                err("%s: bound %s is not defined in cfg_limits.h" % (key, tok))
+                return None
+            return macros[tok]
+
+        rows.append({
+            "ns": ns, "key": key, "kconst": kc, "kind": kind,
+            "channel": int(chan),
+            "published": "CFG_F_PUB" in flags,
+            "sun": "CFG_F_SUN" in flags,
+            "param": pid,
+            "min": resolve(lo), "max": resolve(hi),
+            "shadow": fld if sh.startswith("CFG_SH") else None,
+        })
+    if not rows:
+        fatal("no descriptor rows parsed from %s"
+              % os.path.relpath(DESC_PATH, ROOT))
+    return rows
+
+
+# ----------------------------------------------------------------- checks ---
+
+def check_bounds(rows):
+    for r in rows:
+        if r["min"] is None or r["max"] is None:
+            continue                       # already reported by resolve()
+        if r["min"] > r["max"]:
+            err("%s: min %d is above max %d" % (r["key"], r["min"], r["max"]))
+
+
+def check_shadow(rows, fields):
+    """Every CFG_SH() field must exist and be 2 or 4 bytes wide.
+
+    This is the check the six-table design never needed. Collapsing the ladder
+    traded 51 explicit assignments for one offsetof-driven write, and the new
+    way to be wrong is to name the wrong field -- which compiles, and writes
+    a real but different setting."""
+    if not fields:
+        return
+    for r in rows:
+        fld = r["shadow"]
+        is_shadow = r["kind"] == "CFG_KEY_SHADOW"
+        if (fld is not None) != is_shadow:
+            err("%s: kind is %s but shadow field is %s"
+                % (r["key"], r["kind"], fld or "absent"))
+        if fld is None:
+            continue
+        m = re.match(r"^(\w+)(?:\[(\d+)\])?$", fld)
+        base, idx = m.group(1), m.group(2)
+        if base not in fields:
+            err("%s: cfg_shadow_t has no field '%s'" % (r["key"], base))
+            continue
+        wide, arrlen = fields[base]
+        if wide not in (2, 4):
+            err("%s: field '%s' is %d bytes; the generic write handles only "
+                "2 and 4, so this key would never be applied"
+                % (r["key"], base, wide))
+        if idx is None and arrlen is not None:
+            err("%s: field '%s' is an array but is referenced without an index"
+                % (r["key"], base))
+        if idx is not None:
+            if arrlen is None:
+                err("%s: field '%s' is not an array but is indexed"
+                    % (r["key"], base))
+            elif int(idx) >= arrlen:
+                err("%s: field '%s'[%s] is past the end of a [%d] array -- "
+                    "this would write over a neighbouring setting"
+                    % (r["key"], base, idx, arrlen))
+
+    # A field claimed by two keys means one of them writes the wrong setting.
+    seen = {}
+    for r in rows:
+        if r["shadow"] is None:
+            continue
+        if r["shadow"] in seen:
+            err("%s and %s both write cfg_shadow_t.%s -- one of them is wrong"
+                % (seen[r["shadow"]], r["key"], r["shadow"]))
+        seen[r["shadow"]] = r["key"]
+
+
+def check_no_ladders():
+    """No consumer may grow its own key list again.
+
+    The whole property being bought is 'one place'. A K_* reference inside any
+    of these functions means a second list has started forming, which is how
+    all six drifted the first time."""
+    src = strip_c_comments(read(DM_C_PATH))
+    for sig, label in (
+            (r"static int32_t\s+cfg_clamp\s*\(", "cfg_clamp()"),
+            (r"static log_param_id_t\s+ns_key_to_log_id\s*\(", "ns_key_to_log_id()"),
+            (r"static cfg_key_kind_t\s+cfg_key_kind\s*\(", "cfg_key_kind()"),
+            (r"static bool\s+apply_config_update\s*\(", "apply_config_update()")):
+        m = re.search(sig, src)
+        if not m:
+            fatal("could not find %s in data_manager.cpp" % label)
+            continue
+        i = src.index("{", m.end() - 1)
+        depth, j = 0, i
+        while j < len(src):
+            if src[j] == "{":
+                depth += 1
+            elif src[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        body = src[i:j]
+        stray = sorted(set(re.findall(r"\bK_[A-Z0-9_]+\b", body)))
+        if stray:
+            err("%s references key constants directly (%s) -- the descriptor "
+                "table is meant to be the only key list" % (label, ", ".join(stray)))
+
+
+LOAD_RE = re.compile(
+    r"nvs_cfg_get_i32_or_default\(\s*(NVS_NS_[A-Z]+)\s*,\s*"
+    r"(K_[A-Z0-9_]+|\w+\[i\])\s*,\s*[^,]+,\s*&\s*(?:s_cfg\.(\w+(?:\[i\])?)|(\w+))\s*\)"
+    r"\s*;\s*(?:s_cfg\.(\w+(?:\[i\])?)\s*=)?")
+
+
+def boot_loads(kconsts):
+    """{key: shadow_field} that the nvs_load_*() helpers actually restore at boot.
+
+    gh#64 counted six tables; the BOOT LOADER is a seventh, and it was not in
+    the six. It matters more than its absence from the issue suggests: a key
+    that is in the descriptor but not loaded here is accepted, clamped,
+    audited and published, and then silently reset to its zero value on every
+    reboot. Nothing logs it. That is the gh#57 defect class one layer down.
+
+    Not collapsed into the descriptor yet because these helpers also carry the
+    factory DEFAULTS and run in the boot path, so folding them in needs a
+    hardware round. Until then the drift is at least visible."""
+    src = strip_c_comments(read(DM_C_PATH))
+    # Which K_* constants each per-channel array holds, so ktr[i] resolves.
+    arrays = {}
+    for arr, names in re.findall(
+            r"static const char \* const (\w+)\[\]\s*=\s*\{([^}]*)\};", src):
+        arrays[arr] = [c for c in re.findall(r"K_[A-Z0-9_]+", names)]
+
+    out = {}
+    for m in LOAD_RE.finditer(src):
+        ns, kc, direct, _tmp, assigned = m.groups()
+        field = direct or assigned
+        if field is None:
+            continue
+        idx = re.match(r"^(\w+)\[i\]$", kc)
+        if idx:
+            names = arrays.get(idx.group(1), [])
+            base = re.sub(r"\[i\]$", "", field)
+            for i, cname in enumerate(names):
+                key = kconsts.get(cname)
+                if key:
+                    out[key] = "%s[%d]" % (base, i)
+        else:
+            key = kconsts.get(kc)
+            if key:
+                out[key] = field
+    return out
+
+
+def check_boot_loads(rows, loads):
+    if not loads:
+        fatal("parsed no nvs_load_*() calls from data_manager.cpp")
+        return
+    for r in rows:
+        if r["kind"] != "CFG_KEY_SHADOW":
+            continue        # NVS_ONLY and NOT_Q4 keys have their own consumers
+        got = loads.get(r["key"])
+        if got is None:
+            err("%s: no nvs_load_*() call restores it at boot -- it would be "
+                "accepted, clamped, audited and published, then silently reset "
+                "to 0 on every reboot" % r["key"])
+        elif got != r["shadow"]:
+            err("%s: boot loads cfg_shadow_t.%s but the descriptor writes .%s "
+                "-- one of them targets the wrong setting"
+                % (r["key"], got, r["shadow"]))
+
+
+def published_json(rows):
+    """The payload GET /api/config/limits will emit, rendered as the firmware
+    renders it: descriptor order, CFG_F_PUB rows only."""
+    return [(r["key"], [r["min"], r["max"]]) for r in rows if r["published"]]
+
+
+def mock_limits():
+    """{key: [min, max]} from webUiMock/mock_server.py's CONFIG_LIMITS."""
+    src = read(MOCK_PATH)
+    m = re.search(r"CONFIG_LIMITS[^=]*=\s*\{(.*?)\n\}", src, re.S)
+    if not m:
+        fatal("could not find CONFIG_LIMITS in mock_server.py")
+        return {}
+    body = re.sub(r"#[^\n]*", "", m.group(1))
+    out = {}
+    for k, lo, hi in re.findall(
+            r'"([a-z0-9_]+)"\s*:\s*\[\s*(-?\d+)\s*,\s*(-?\d+)\s*\]', body):
+        out[k] = [int(lo), int(hi)]
+    return out
+
+
+def compare(label, want, have):
+    """Bidirectional: a key on either side and not the other is a failure.
+    A one-way check is how 2.5.0 shipped eleven keys that were in the shadow
+    ladder and in neither the clamp nor the published limits."""
+    wk, hk = set(want), set(have)
+    for k in sorted(wk - hk):
+        err("%s: missing '%s' (the descriptor publishes it)" % (label, k))
+    for k in sorted(hk - wk):
+        err("%s: has '%s', which the descriptor does not publish" % (label, k))
+    for k in sorted(wk & hk):
+        if list(want[k]) != list(have[k]):
+            err("%s: '%s' is %s, descriptor says %s"
+                % (label, k, have[k], list(want[k])))
+
+
+# ------------------------------------------------------------------- main ---
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("-v", "--verbose", action="store_true",
+                    help="print the descriptor table")
+    ap.add_argument("--golden", metavar="FILE",
+                    help="a captured GET /api/config/limits to diff against")
+    args = ap.parse_args()
+
+    macros = macro_values()
+    kconsts = key_constants()
+    fields = shadow_fields()
+    rows = parse_desc(macros, kconsts)
+
+    if _FATAL:
+        for m in _FATAL:
+            sys.stderr.write("FATAL: %s\n" % m)
+        return 2
+
+    check_bounds(rows)
+    check_shadow(rows, fields)
+    check_no_ladders()
+    check_boot_loads(rows, boot_loads(kconsts))
+
+    pub = dict(published_json(rows))
+    compare("webUiMock/mock_server.py CONFIG_LIMITS", pub, mock_limits())
+
+    if args.golden:
+        try:
+            with io.open(args.golden, "r", encoding="utf-8") as fh:
+                compare("golden capture %s" % os.path.basename(args.golden),
+                        pub, json.load(fh))
+        except Exception as exc:                              # noqa: BLE001
+            fatal("cannot read golden %s: %s" % (args.golden, exc))
+
+    if args.verbose:
+        print("%-16s %-8s %-13s %-3s %-24s %-12s %s"
+              % ("key", "ns", "kind", "pub", "param_id", "bounds", "shadow"))
+        print("-" * 100)
+        for r in rows:
+            print("%-16s %-8s %-13s %-3s %-24s %-12s %s%s"
+                  % (r["key"], r["ns"].replace("NVS_NS_", "").lower(),
+                     r["kind"].replace("CFG_KEY_", ""),
+                     "y" if r["published"] else ".", r["param"],
+                     "%s..%s" % (r["min"], r["max"]),
+                     r["shadow"] or "-", "  +sun" if r["sun"] else ""))
+        print("")
+
+    if _FATAL:
+        for m in _FATAL:
+            sys.stderr.write("FATAL: %s\n" % m)
+        return 2
+    if _ERRORS:
+        sys.stderr.write("cfg descriptor check FAILED (%d):\n" % len(_ERRORS))
+        for m in _ERRORS:
+            sys.stderr.write("  - %s\n" % m)
+        return 1
+
+    print("cfg descriptor OK: %d keys, %d published; bounds, shadow fields, "
+          "mock server%s all agree"
+          % (len(rows), len(pub), " and golden" if args.golden else ""))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

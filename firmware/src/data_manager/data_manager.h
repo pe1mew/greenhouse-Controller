@@ -376,6 +376,30 @@ void dm_reload_all_cfg(log_initiator_t initiator, uint8_t channel);
 bool dm_cfg_key_is_known(const char *ns, const char *key);
 
 /**
+ * @brief Number of config keys published by GET /api/config/limits.
+ *
+ * gh#64 — the published set used to be a hand-written JSON literal in
+ * web_server.cpp, which is how eleven keys came to be clamped nowhere AND
+ * published nowhere (gh#57 part 1) and how a published range came to disagree
+ * with the clamp that enforced it (gh#57 part 2). Both sides now read the one
+ * descriptor table, so a bound cannot be published that is not also enforced.
+ *
+ * @return Count of descriptor rows carrying CFG_F_PUB.
+ */
+size_t dm_cfg_pub_count(void);
+
+/**
+ * @brief Read the @p idx-th published config key and its bounds.
+ *
+ * @param idx  0 .. dm_cfg_pub_count()-1.
+ * @param key  If non-NULL, receives the NVS key string (static storage).
+ * @param min  If non-NULL, receives the inclusive lower bound.
+ * @param max  If non-NULL, receives the inclusive upper bound.
+ * @return true if @p idx was in range; false leaves the outputs untouched.
+ */
+bool dm_cfg_pub_at(size_t idx, const char **key, int32_t *min, int32_t *max);
+
+/**
  * @brief Persist the most recently uploaded log filename.
  *
  * Called by T14 after a successful log upload. Writes log_last_up to NVS and
