@@ -32,12 +32,20 @@ applies them -- an earlier version of this test called them unreachable, which
 was wrong: they were invisible, not unreachable, and being invisible is exactly
 how a key goes unverified for years.
 
-Coverage is reported honestly. Only the four led_* remain unverified, because
-no endpoint reads them back at all -- a pre-existing gap, not a gh#64 one.
+GET /api/ota/config is merged too, for the four ota_* keys. Those are
+CFG_KEY_NOT_Q4 -- POST /api/config refuses them and that refusal is asserted --
+but their BOOT path is the descriptor like everything else, so reading them is
+what puts those four offsets under test at all.
+
+Coverage is reported honestly, and in three parts: written-and-checked,
+read-only (boot-load covered by --expect-defaults), and not readable at all.
+Only the four led_* fall in the last group, because no endpoint reads them back
+-- a pre-existing gap, not a gh#64 one.
 
 Usage:
     python bin/at_cfg_roundtrip.py --host 192.168.20.x [--pin 12345678]
-    python bin/at_cfg_roundtrip.py --host ... --reboot-check   # persistence too
+    python bin/at_cfg_roundtrip.py --host ... --reboot-check    # persistence
+    python bin/at_cfg_roundtrip.py --host ... --expect-defaults # after an NVS wipe
 
 Exit 0 = every covered key round-trips to its own field. Stdlib only.
 """
@@ -73,16 +81,45 @@ WEB_FIELDS = {
     "log_rot":    "log_upload_rot",
 }
 
+# GET /api/ota/config JSON name -> cfg_shadow_t field.
+#
+# These four are CFG_KEY_NOT_Q4: POST /api/config refuses them, so the sweep
+# below cannot write them. Their BOOT path is the descriptor all the same --
+# cfg_load_group() restores them through shadow_off like everything else -- so
+# reading them here is what puts those four offsets under test. Without this
+# they were the only shadow fields nothing on hardware ever checked.
+OTA_FIELDS = {
+    "enable":  "ota_enable",
+    "check_h": "ota_check_h",
+    "win_lo":  "ota_win_lo",
+    "win_hi":  "ota_win_hi",
+}
+
 
 # ----------------------------------------------------------------- transport --
 
 class Unit(object):
     def __init__(self, host, pin):
         self.host = host
+        self.pin = pin
         self.cookie = None
         self._login(pin)
 
-    def _req(self, method, path, body=None):
+    def _req(self, method, path, body=None, _retry=True):
+        """One request, re-authenticating once on a 401.
+
+        The admin session expires after session_timeout minutes (default 5) and
+        this sweep runs longer than that, so a mid-run 401 is expected rather
+        than exceptional -- it stopped the first full run dead. Same reason the
+        OTA push client re-logins (OTAimplementation.md 8.7)."""
+        sc, body_out = self._raw(method, path, body)
+        if sc == 401 and _retry and path != "/api/login":
+            self.cookie = None
+            self._login(self.pin)
+            return self._raw(method, path, body)
+        return sc, body_out
+
+    def _raw(self, method, path, body=None):
         c = http.client.HTTPConnection(self.host, 80, timeout=10)
         hdr = {"Content-Type": "application/json"}
         if self.cookie:
@@ -128,6 +165,12 @@ class Unit(object):
         for jname, field in WEB_FIELDS.items():
             if isinstance(w.get(jname), int) and not isinstance(w.get(jname), bool):
                 out[field] = w[jname]
+        sc, o = self._req("GET", "/api/ota/config")
+        if sc != 200:
+            sys.exit("GET /api/ota/config returned HTTP %s" % sc)
+        for jname, field in OTA_FIELDS.items():
+            if isinstance(o.get(jname), int) and not isinstance(o.get(jname), bool):
+                out[field] = o[jname]
         return out
 
     def post_cfg(self, ns, key, value):
@@ -154,10 +197,24 @@ class Unit(object):
         showed up as a second field moving, which is indistinguishable from the
         wrong-offsetof bug this test exists to find. 12 of 36 keys failed that
         way and every one of them was a false alarm."""
+        # Poll only the endpoint that owns this field. A full three-endpoint
+        # snapshot per poll made the sweep outrun the 5-minute session timeout.
+        if field in WEB_FIELDS.values():
+            path, names = "/api/web", WEB_FIELDS
+        elif field in OTA_FIELDS.values():
+            path, names = "/api/ota/config", OTA_FIELDS
+        else:
+            path, names = "/api/config", None
+
         deadline = time.time() + secs
         while time.time() < deadline:
             time.sleep(0.35)
-            if self.config().get(field) == want:
+            sc, j = self._req("GET", path)
+            if sc != 200 or not isinstance(j, dict):
+                continue
+            got = flatten(j).get(field) if names is None else \
+                next((j.get(n) for n, f in names.items() if f == field), None)
+            if got == want:
                 return True
         return False
 
@@ -197,6 +254,12 @@ def main():
     ap.add_argument("--reboot-check", action="store_true",
                     help="after the sweep, reboot and confirm values survive "
                          "(exercises the nvs_load_* boot path, the seventh table)")
+    ap.add_argument("--expect-defaults", action="store_true",
+                    help="assert every reachable key equals its descriptor "
+                         "default and exit. Run this on a unit whose NVS has "
+                         "just been wiped: it is what proves the factory "
+                         "defaults survived being moved out of nvs_load_*() "
+                         "into the table (gh#64's seventh list).")
     ap.add_argument("--reset-port", metavar="COMx",
                     help="serial port used to reset the board for --reboot-check. "
                          "There is NO /api/reboot route, so the reset has to come "
@@ -220,19 +283,73 @@ def main():
         sys.exit("REFUSING: %s is the production unit. This test writes every "
                  "config key it can reach." % uid)
 
+    if args.expect_defaults:
+        # T10's do_geo_sync() posts all four coordinate keys to Q4 within
+        # seconds of boot, so on a wiped unit they hold the GEOLOCATED position,
+        # not the compiled default. That is the feature working (CLAUDE.md:
+        # "lat/lon self-heal via T10 geolocation"), and it is also incidental
+        # proof that the descriptor's write path serves a non-GUI Q4 producer.
+        # Excluded by name and with a reason -- never silently.
+        GEO_SELFHEAL = ("lat_deg", "lat_frac", "lon_deg", "lon_frac")
+        defs = D.default_values()
+        live = u.config()
+        bad, okn, skipped = [], 0, []
+        for r in rows:
+            f = r["shadow"]
+            if r["key"] in GEO_SELFHEAL:
+                continue
+            if f is None or f not in live:
+                if f is not None:
+                    skipped.append(r["key"])
+                continue
+            tok = r["def_tok"]
+            want = int(tok, 0) if re.fullmatch(r"-?(?:0[xX][0-9a-fA-F]+|\d+)", tok) \
+                else defs.get(tok)
+            if want is None:
+                bad.append("%s: default %s does not resolve" % (r["key"], tok))
+            elif live[f] != want:
+                bad.append("%s: is %s, descriptor default is %s (%s)"
+                           % (r["key"], live[f], want, tok))
+            else:
+                okn += 1
+                print("  ok   %-16s %-7s (%s)" % (r["key"], want, tok))
+        print("\n%d keys at their descriptor default" % okn)
+        print("excluded, self-healed by T10 geolocation at boot: %s"
+              % ", ".join(GEO_SELFHEAL))
+        if skipped:
+            print("not readable over the network: %s" % ", ".join(sorted(skipped)))
+        if bad:
+            print("\nMISMATCHES (%d):" % len(bad))
+            for b in bad:
+                print("  - %s" % b)
+            return 1
+        print("DEFAULTS OK -- a wiped unit boots to exactly what the table says")
+        return 0
+
     live = u.config()
     # Everything below writes config. Keep the unit's real settings so they can
     # be put back at the end -- the reboot-check in particular used to leave its
     # marker values in place, which on the dev rig would silently have changed
     # cr_priority and the wind exclusion zone.
     original = dict(live)
-    covered = sorted(f for f in by_field if f in live)
+    # Only CFG_KEY_SHADOW keys are writable through Q4. The four ota_* are
+    # CFG_KEY_NOT_Q4 -- POST /api/config refuses them with 400, and that refusal
+    # is itself asserted further down. They are still READ here, so a stray
+    # write landing in one of their fields would be caught; their own boot-load
+    # correctness is what --expect-defaults covers.
+    writable = {f: r for f, r in by_field.items() if r["kind"] == "CFG_KEY_SHADOW"}
+    covered = sorted(f for f in writable if f in live)
+    readonly = sorted(f for f in by_field if f not in writable and f in live)
     missing = sorted(f for f in by_field if f not in live)
 
-    print("\n%d shadow keys; %d reachable on GET /api/config, %d not"
-          % (len(by_field), len(covered), len(missing)))
-    print("  not reachable (verified elsewhere or not at all): %s"
-          % ", ".join(by_field[f]["key"] for f in missing))
+    print("\n%d shadow fields; %d writable via Q4 and readable, %d read-only, %d not readable"
+          % (len(by_field), len(covered), len(readonly), len(missing)))
+    if readonly:
+        print("  read-only here, another route owns the write: %s"
+              % ", ".join(by_field[f]["key"] for f in readonly))
+    if missing:
+        print("  not readable at all: %s"
+              % ", ".join(by_field[f]["key"] for f in missing))
 
     fails, done = [], []
     print("\n--- one key at a time: exactly one field must move ---")
@@ -370,10 +487,14 @@ def main():
                              "left changed" % (field, original[field]))
 
     print("\n" + "=" * 70)
-    print("verified %d of %d shadow keys round-trip to their own field" % (len(done), len(by_field)))
+    print("verified %d of %d Q4-writable keys round-trip to their own field"
+          % (len(done), len(writable)))
     if missing:
         print("unverified over the network: %s"
               % ", ".join(by_field[f]["key"] for f in missing))
+    if readonly:
+        print("read-only on this path, boot-load verified by --expect-defaults: %s"
+              % ", ".join(by_field[f]["key"] for f in readonly))
     if fails:
         print("\nFAILURES (%d):" % len(fails))
         for f in fails:

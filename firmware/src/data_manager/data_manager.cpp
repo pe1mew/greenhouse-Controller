@@ -174,6 +174,11 @@ typedef enum {
 
 #define CFG_F_PUB   (1u << 0)  /**< Published by GET /api/config/limits. */
 #define CFG_F_SUN   (1u << 1)  /**< Writing it must re-run update_sun_times(). */
+#define CFG_F_WEB   (1u << 2)  /**< Belongs to the web/status/OTA group, which
+                                    dm_reload_web_cfg() reloads on its own —
+                                    so the boot loader splits on this bit
+                                    rather than on the namespace, which is
+                                    `system` for both halves. */
 
 /**
  * @brief One config key, described once.
@@ -191,12 +196,13 @@ typedef enum {
 typedef struct {
     const char *ns;          /**< NVS namespace string.                       */
     const char *key;         /**< NVS key string.                             */
-    uint8_t     kind;        /**< cfg_key_kind_t.                             */
+    uint8_t     kind;        /**< cfg_key_kind_t — governs the Q4 path only.   */
     uint8_t     channel;     /**< 1/2/3 for per-window motor keys, else 0.     */
     uint8_t     flags;       /**< CFG_F_*.                                    */
     uint8_t     param_id;    /**< log_param_id_t; LOG_PARAM_NONE = unaudited.  */
     int32_t     min;         /**< Inclusive lower bound.                      */
     int32_t     max;         /**< Inclusive upper bound.                      */
+    int32_t     def;         /**< Factory default, from cfg_defaults.h.       */
     uint16_t    shadow_off;  /**< offsetof into cfg_shadow_t (0 if none).     */
     uint8_t     shadow_sz;   /**< sizeof that field: 2 or 4 (0 if none).      */
 } cfg_desc_t;
@@ -225,12 +231,78 @@ static const cfg_desc_t *cfg_desc_find(const char *ns, const char *key)
     return NULL;
 }
 
+
 /* ============================================================
  * Module-private state
  * ============================================================ */
 
 /** @brief NVS-backed configuration shadow.  Protected by MX4. */
 static cfg_shadow_t   s_cfg;
+
+/**
+ * @brief Write @p v into @p d's cfg_shadow_t field. Returns the previous value.
+ *
+ * The ONE place a config value enters the shadow. Both callers go through it —
+ * the Q4 write in apply_config_update() and the boot loader below — so the
+ * int16/int32 split is decided once. Two copies of this switch is how a key
+ * comes to be applied one way on write and another on reboot.
+ *
+ * @param d  Descriptor row; must have shadow_sz != 0.
+ * @param v  Clamped value to store.
+ * @return   The field's value before the write (for the audit row's old→new).
+ * @note Caller holds MX4.
+ */
+static int32_t cfg_shadow_store(const cfg_desc_t *d, int32_t v)
+{
+    uint8_t *base = (uint8_t *)&s_cfg + d->shadow_off;
+    int32_t old = 0;
+
+    if (d->shadow_sz == (uint8_t)sizeof(int16_t)) {
+        int16_t *f = (int16_t *)base;
+        old = (int32_t)*f;
+        *f  = (int16_t)v;
+    } else if (d->shadow_sz == (uint8_t)sizeof(int32_t)) {
+        int32_t *f = (int32_t *)base;
+        old = *f;
+        *f  = v;
+    }
+    return old;
+}
+
+/**
+ * @brief Load one namespace's int32 keys from NVS into the shadow (gh#64).
+ *
+ * This replaced the five nvs_load_*() ladders, which were the SEVENTH copy of
+ * the key list — the one gh#64 did not count, and the one that also carried the
+ * factory defaults. A key missing from it was accepted, clamped, audited and
+ * published, then silently reset to 0 on every reboot.
+ *
+ * @param ns   Namespace to load.
+ * @param web  Select the web/status/OTA half of NVS_NS_SYSTEM (CFG_F_WEB) or
+ *             the other half. Both live in the same namespace, and
+ *             dm_reload_web_cfg() reloads only the web half, so the split has
+ *             to be a property of the key rather than of the namespace.
+ *
+ * @note String-valued keys (tz_str, status_url, ota_secret, …) are NOT in the
+ *       descriptor — they never travel through Q4 — and are still loaded
+ *       explicitly by the callers.
+ */
+static void cfg_load_group(const char *ns, bool web)
+{
+    for (size_t i = 0u; i < CFG_DESC_N; i++) {
+        const cfg_desc_t *d = &CFG_DESC[i];
+
+        /* No shadow field means nothing to restore: wifi/ap_enable is
+         * NVS-only on purpose, because T10 polls NVS for it directly. */
+        if (d->shadow_sz == 0u)                          { continue; }
+        if (strcmp(d->ns, ns) != 0)                      { continue; }
+        if ((((d->flags & CFG_F_WEB) != 0u)) != web)     { continue; }
+
+        int32_t v = 0;
+        (void)nvs_cfg_get_i32_or_default(d->ns, d->key, d->def, &v);
+        (void)cfg_shadow_store(d, v);
+    }
+}
 
 /** @brief Latest sensor reading from T5.  Protected by MX2. */
 static sensor_reading_t s_meas;
@@ -605,33 +677,13 @@ static void read_rtc_and_seed_clock(void)
 /** @brief Load NVS_NS_CLIMATE keys into the s_cfg climate fields. */
 static void nvs_load_climate(void)
 {
-    int32_t v;
-    nvs_cfg_get_i32_or_default(NVS_NS_CLIMATE, K_T_MIN_DAY,   DEF_T_MIN_DAY,   &v); s_cfg.t_min_day  = (int16_t)v;
-    nvs_cfg_get_i32_or_default(NVS_NS_CLIMATE, K_T_MAX_DAY,   DEF_T_MAX_DAY,   &v); s_cfg.t_max_day  = (int16_t)v;
-    nvs_cfg_get_i32_or_default(NVS_NS_CLIMATE, K_T_MIN_NGT,   DEF_T_MIN_NGT,   &v); s_cfg.t_min_ngt  = (int16_t)v;
-    nvs_cfg_get_i32_or_default(NVS_NS_CLIMATE, K_T_MAX_NGT,   DEF_T_MAX_NGT,   &v); s_cfg.t_max_ngt  = (int16_t)v;
-    nvs_cfg_get_i32_or_default(NVS_NS_CLIMATE, K_RH_MIN_DAY,  DEF_RH_MIN_DAY,  &v); s_cfg.rh_min_day = (int16_t)v;
-    nvs_cfg_get_i32_or_default(NVS_NS_CLIMATE, K_RH_MAX_DAY,  DEF_RH_MAX_DAY,  &v); s_cfg.rh_max_day = (int16_t)v;
-    nvs_cfg_get_i32_or_default(NVS_NS_CLIMATE, K_RH_MIN_NGT,  DEF_RH_MIN_NGT,  &v); s_cfg.rh_min_ngt = (int16_t)v;
-    nvs_cfg_get_i32_or_default(NVS_NS_CLIMATE, K_RH_MAX_NGT,  DEF_RH_MAX_NGT,  &v); s_cfg.rh_max_ngt = (int16_t)v;
-    nvs_cfg_get_i32_or_default(NVS_NS_CLIMATE, K_HYST_T,      DEF_HYST_T,      &v); s_cfg.hyst_t     = (int16_t)v;
-    nvs_cfg_get_i32_or_default(NVS_NS_CLIMATE, K_HYST_RH,     DEF_HYST_RH,     &v); s_cfg.hyst_rh    = (int16_t)v;
-    nvs_cfg_get_i32_or_default(NVS_NS_CLIMATE, K_RH_CTRL_EN,  DEF_RH_CTRL_EN,  &v); s_cfg.rh_ctrl_en  = (int16_t)v;
-    nvs_cfg_get_i32_or_default(NVS_NS_CLIMATE, K_CR_PRIORITY, DEF_CR_PRIORITY, &v); s_cfg.cr_priority = (int16_t)v;
-    nvs_cfg_get_i32_or_default(NVS_NS_CLIMATE, K_AVG_WIN_T,   DEF_AVG_WIN_T,   &v); s_cfg.avg_win_t   = (int16_t)v;
-    nvs_cfg_get_i32_or_default(NVS_NS_CLIMATE, K_AVG_WIN_RH,  DEF_AVG_WIN_RH,  &v); s_cfg.avg_win_rh  = (int16_t)v;
+    cfg_load_group(NVS_NS_CLIMATE, false);
 }
 
 /** @brief Load NVS_NS_WIND keys into the s_cfg wind fields. */
 static void nvs_load_wind(void)
 {
-    int32_t v;
-    nvs_cfg_get_i32_or_default(NVS_NS_WIND, K_AVG_WIN_WIND,  DEF_AVG_WIN_WIND,  &v); s_cfg.avg_win_wind  = (int16_t)v;
-    nvs_cfg_get_i32_or_default(NVS_NS_WIND, K_V_MAX,         DEF_V_MAX,         &v); s_cfg.v_max         = (int16_t)v;
-    nvs_cfg_get_i32_or_default(NVS_NS_WIND, K_DIR_EXCL_LOW,  DEF_DIR_EXCL_LOW,  &v); s_cfg.dir_excl_low  = (int16_t)v;
-    nvs_cfg_get_i32_or_default(NVS_NS_WIND, K_DIR_EXCL_HIGH, DEF_DIR_EXCL_HIGH, &v); s_cfg.dir_excl_high = (int16_t)v;
-    nvs_cfg_get_i32_or_default(NVS_NS_WIND, K_WIND_PROT_EN,  DEF_WIND_PROT_EN,  &v); s_cfg.wind_prot_en  = (int16_t)v;
-    nvs_cfg_get_i32_or_default(NVS_NS_WIND, K_WIND_HYST,     DEF_WIND_HYST,     &v); s_cfg.wind_hyst     = (int16_t)v;
+    cfg_load_group(NVS_NS_WIND, false);
 }
 
 /**
@@ -645,51 +697,20 @@ static void nvs_load_wind(void)
  */
 static void nvs_load_motor(void)
 {
-    int32_t v;
-
-    /* Parallel arrays for motor 1/2/3 key names and factory defaults. */
-    static const char * const ktr[]  = { K_TRAVEL_M1,      K_TRAVEL_M2,      K_TRAVEL_M3      };
-    static const char * const kdo[]  = { K_DWELL_OPEN_M1,  K_DWELL_OPEN_M2,  K_DWELL_OPEN_M3  };
-    static const char * const kdc[]  = { K_DWELL_CLOSE_M1, K_DWELL_CLOSE_M2, K_DWELL_CLOSE_M3 };
-    static const int32_t def_tr[]    = {
-        MOTOR_M1_TRAVEL_S_DEFAULT,
-        MOTOR_M2_TRAVEL_S_DEFAULT,
-        MOTOR_M3_TRAVEL_S_DEFAULT
-    };
-    static const int32_t def_do[3] = {
-        DEF_DWELL_OPEN_M1_S,
-        DEF_DWELL_OPEN_M2_S,
-        DEF_DWELL_OPEN_M3_S
-    };
-    static const int32_t def_dc[3] = {
-        DEF_DWELL_CLOSE_M1_S,
-        DEF_DWELL_CLOSE_M2_S,
-        DEF_DWELL_CLOSE_M3_S
-    };
-
-    for (uint8_t i = 0u; i < 3u; i++) {
-        nvs_cfg_get_i32_or_default(NVS_NS_MOTOR, ktr[i], def_tr[i], &v); s_cfg.travel_s[i]        = (int16_t)v;
-        nvs_cfg_get_i32_or_default(NVS_NS_MOTOR, kdo[i], def_do[i], &v); s_cfg.dwell_open_s[i]  = (int16_t)v;
-        nvs_cfg_get_i32_or_default(NVS_NS_MOTOR, kdc[i], def_dc[i], &v); s_cfg.dwell_close_s[i] = (int16_t)v;
-    }
+    /* The parallel ktr[]/kdo[]/kdc[] and def_tr[]/def_do[]/def_dc[] arrays are
+     * gone: the descriptor carries each channel's key, default and shadow slot
+     * on its own row, so M1/M2/M3 are three rows rather than three positions
+     * that had to stay aligned across six arrays. */
+    cfg_load_group(NVS_NS_MOTOR, false);
 }
 
 /** @brief Load NVS_NS_SYSTEM core keys (poll interval, location, TZ, LED) into s_cfg. */
 static void nvs_load_system(void)
 {
-    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_POLL_INTERVAL,   DEF_POLL_INTERVAL_S,     &s_cfg.poll_interval_s);
-    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_SESSION_TIMEOUT, DEF_SESSION_TIMEOUT_MIN, &s_cfg.session_timeout_min);
-    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_AP_TIMEOUT,      DEF_AP_TIMEOUT_MIN,      &s_cfg.ap_timeout_min);
-    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_LAT_DEG,         DEF_LAT_DEG,             &s_cfg.lat_deg);
-    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_LAT_FRAC,        DEF_LAT_FRAC,            &s_cfg.lat_frac);
-    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_LON_DEG,         DEF_LON_DEG,             &s_cfg.lon_deg);
-    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_LON_FRAC,        DEF_LON_FRAC,            &s_cfg.lon_frac);
-    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_LED_DAY_BRT,     DEF_LED_DAY_BRT,         &s_cfg.led_day_brt);
-    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_LED_NITE_BRT,    DEF_LED_NITE_BRT,        &s_cfg.led_nite_brt);
-    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_LED_NITE_FROM,   DEF_LED_NITE_FROM,       &s_cfg.led_nite_from);
-    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_LED_NITE_TO,     DEF_LED_NITE_TO,         &s_cfg.led_nite_to);
-    nvs_cfg_get_str_or_default(NVS_NS_SYSTEM, K_TZ_STR,          DEF_TZ_STR,
-                                s_cfg.tz_str, sizeof(s_cfg.tz_str));
+    cfg_load_group(NVS_NS_SYSTEM, false);
+    /* tz_str is a string: not in the descriptor, never through Q4. */
+    nvs_cfg_get_str_or_default(NVS_NS_SYSTEM, K_TZ_STR, DEF_TZ_STR,
+                               s_cfg.tz_str, sizeof(s_cfg.tz_str));
 }
 
 /**
@@ -735,28 +756,21 @@ static void nvs_restore_standby_at_boot(void)
  */
 static void nvs_load_web(void)
 {
-    nvs_cfg_get_str_or_default(NVS_NS_SYSTEM, K_STATUS_URL,    DEF_STATUS_URL,
-                                s_cfg.status_url,    sizeof(s_cfg.status_url));
-    nvs_cfg_get_str_or_default(NVS_NS_SYSTEM, K_STATUS_SECRET, DEF_STATUS_SECRET,
-                                s_cfg.status_secret, sizeof(s_cfg.status_secret));
-    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_STATUS_INTERVAL, DEF_STATUS_INTERVAL_S, &s_cfg.status_interval_s);
-    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_STATUS_ENABLE,   DEF_STATUS_ENABLE,     &s_cfg.status_enable);
-    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_STATUS_EXPOSE,   DEF_STATUS_EXPOSE,     &s_cfg.status_expose);
-    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_LOG_UPLOAD_H,    DEF_LOG_UPLOAD_H,      &s_cfg.log_upload_h);
-    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_LOG_UPLOAD_M,    DEF_LOG_UPLOAD_M,      &s_cfg.log_upload_m);
-    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_LOG_UPLOAD_ROT,  DEF_LOG_UPLOAD_ROT,    &s_cfg.log_upload_rot);
-    nvs_cfg_get_str_or_default(NVS_NS_SYSTEM, K_LOG_LAST_UP,    DEF_LOG_LAST_UP,
-                                s_cfg.log_last_up, sizeof(s_cfg.log_last_up));
+    cfg_load_group(NVS_NS_SYSTEM, true);
 
-    /* 2.2.0 (ROTA) — internet-pull OTA config (R-F01). */
-    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_OTA_ENABLE,  DEF_OTA_ENABLE,  &s_cfg.ota_enable);
-    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_OTA_CHECK_H, DEF_OTA_CHECK_H, &s_cfg.ota_check_h);
-    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_OTA_WIN_LO,  DEF_OTA_WIN_LO,  &s_cfg.ota_win_lo);
-    nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_OTA_WIN_HI,  DEF_OTA_WIN_HI,  &s_cfg.ota_win_hi);
-    nvs_cfg_get_str_or_default(NVS_NS_SYSTEM, K_OTA_URL,     DEF_OTA_URL,
-                                s_cfg.ota_url,    sizeof(s_cfg.ota_url));
-    nvs_cfg_get_str_or_default(NVS_NS_SYSTEM, K_OTA_SECRET,  DEF_OTA_SECRET,
-                                s_cfg.ota_secret, sizeof(s_cfg.ota_secret));
+    /* String-valued keys: not in the descriptor, never through Q4. The four
+     * ota_* int32 keys ARE in it (CFG_KEY_NOT_Q4 with real shadow fields) and
+     * are loaded by the call above. */
+    nvs_cfg_get_str_or_default(NVS_NS_SYSTEM, K_STATUS_URL,    DEF_STATUS_URL,
+                               s_cfg.status_url,    sizeof(s_cfg.status_url));
+    nvs_cfg_get_str_or_default(NVS_NS_SYSTEM, K_STATUS_SECRET, DEF_STATUS_SECRET,
+                               s_cfg.status_secret, sizeof(s_cfg.status_secret));
+    nvs_cfg_get_str_or_default(NVS_NS_SYSTEM, K_LOG_LAST_UP,   DEF_LOG_LAST_UP,
+                               s_cfg.log_last_up,   sizeof(s_cfg.log_last_up));
+    nvs_cfg_get_str_or_default(NVS_NS_SYSTEM, K_OTA_URL,       DEF_OTA_URL,
+                               s_cfg.ota_url,       sizeof(s_cfg.ota_url));
+    nvs_cfg_get_str_or_default(NVS_NS_SYSTEM, K_OTA_SECRET,    DEF_OTA_SECRET,
+                               s_cfg.ota_secret,    sizeof(s_cfg.ota_secret));
 }
 
 /* ============================================================
@@ -994,16 +1008,13 @@ static bool apply_config_update(const config_update_t *upd)
      * last hand-written key list on the write path is gone. `old_val` is still
      * read inside the same MX4 section as the write, so the audit row's
      * old->new pair stays atomic against any racing reader. */
-    bool    updated = false;
+    bool    updated = (desc->shadow_sz != 0u);
     int32_t old_val = 0;            /* captured before the shadow write */
     const char *ns_str  = upd->ns;
     const char *key_str = upd->key;
 
-    if (desc->shadow_sz == (uint8_t)sizeof(int16_t)) {
-        int16_t *f = (int16_t *)((uint8_t *)&s_cfg + desc->shadow_off);
-        old_val = (int32_t)*f;
-        *f      = (int16_t)clamped;
-        updated = true;
+    if (updated) {
+        old_val = cfg_shadow_store(desc, clamped);
     } else if (desc->shadow_sz == (uint8_t)sizeof(int32_t)) {
         int32_t *f = (int32_t *)((uint8_t *)&s_cfg + desc->shadow_off);
         old_val = *f;

@@ -265,6 +265,69 @@ def shadow_fields():
     return out
 
 
+DEF_PATH = os.path.join(ROOT, "firmware", "config", "cfg_defaults.h")
+
+LOADERS = ("nvs_load_climate", "nvs_load_wind", "nvs_load_motor",
+           "nvs_load_system", "nvs_load_web")
+
+
+def default_values():
+    """{DEF_X: int} from cfg_defaults.h. Hex-aware -- DEF_STATUS_EXPOSE is 0x3F,
+    and a decimal-only pattern reads that as 0 (the same alternation-ordering
+    trap that hid status_expose's clamp)."""
+    out = {}
+    for name, val in re.findall(
+            r"#define\s+((?:DEF|MOTOR)_[A-Z0-9_]+)\s+"
+            r"(\(?-?(?:0[xX][0-9a-fA-F]+|\d+)\)?)\s*(?:/\*|$)",
+            read(DEF_PATH), re.M):
+        out[name] = int(val.strip("()"), 0)
+    return out
+
+
+CALL_RE = re.compile(
+    r"nvs_cfg_get_i32_or_default\(\s*(NVS_NS_[A-Z]+)\s*,\s*([A-Za-z0-9_\[\]]+)\s*,"
+    r"\s*([A-Za-z0-9_\[\]]+)\s*,\s*&\s*([A-Za-z0-9_.\[\]]+)\s*\)\s*;"
+    r"(?:\s*s_cfg\.([A-Za-z0-9_\[\]]+)\s*=)?", re.S)
+
+
+def boot_defaults():
+    """{key: (DEF_MACRO, loader_name, field)} from the nvs_load_*() helpers.
+
+    This is the SEVENTH key list -- the one gh#64 did not count. It carries the
+    key set AND the factory defaults, and a key missing from it is accepted,
+    clamped, audited and published and then silently reset to 0 on every reboot.
+
+    Derived rather than typed, for the same reason as everything else here.
+    Three call shapes exist and all three are load-bearing: a direct
+    `&s_cfg.field`, a two-statement `&v); s_cfg.field =` (used wherever the
+    field is int16), and the per-channel motor form over parallel key/default
+    arrays, where position in the array IS the channel."""
+    dm = C.strip_c_comments(read(DM_PATH))
+    kmap = const_to_key(dm)
+    out = {}
+    for fn in LOADERS:
+        body = C.fn_body(dm, r"static void\s+" + fn + r"\s*\(", fn)
+        arrays = {}
+        for arr, items in re.findall(
+                r"static const (?:char \* const|int32_t) (\w+)\[[0-9]*\]\s*=\s*\{([^}]*)\};",
+                body):
+            arrays[arr] = [t for t in re.findall(r"[A-Z_][A-Z0-9_]*", items)]
+        for ns, kexpr, dexpr, target, assigned in CALL_RE.findall(body):
+            field = assigned if target == "v" else target.replace("s_cfg.", "")
+            ki = re.match(r"^(\w+)\[i\]$", kexpr)
+            if ki:
+                di = re.match(r"^(\w+)\[i\]$", dexpr)
+                keys = arrays.get(ki.group(1), [])
+                defs = arrays.get(di.group(1), []) if di else []
+                base = re.sub(r"\[i\]$", "", field)
+                for idx, cname in enumerate(keys):
+                    if cname in kmap and idx < len(defs):
+                        out[kmap[cname]] = (defs[idx], fn, "%s[%d]" % (base, idx))
+            elif kexpr in kmap:
+                out[kmap[kexpr]] = (dexpr, fn, field)
+    return out
+
+
 def build():
     sets = C.collect()
     if C._FATAL:
@@ -278,6 +341,7 @@ def build():
     shadow = shadow_fields()
     kconsts = {v: k for k, v in
                const_to_key(C.strip_c_comments(read(DM_PATH))).items()}
+    bdefs = boot_defaults()
 
     def resolve(tokn):
         """A bound is either a CFG_* macro or an integer literal written
@@ -305,8 +369,23 @@ def build():
         else:
             mn = mx = mn_m = mx_m = None
         fld, sun = shadow.get(key, (None, False))
+
+        # The boot loader knows where a key lives too, and for the four ota_*
+        # it is the ONLY thing that knows: they never reach Q4, so the shadow
+        # ladder has no arm for them, yet they do have cfg_shadow_t fields.
+        # Where both know, they must agree -- if the ladder and the boot loader
+        # targeted different fields, a value would move on write and move back
+        # on reboot, which is a genuinely horrible bug to chase.
+        dmac, loader, bfld = bdefs.get(key, (None, None, None))
+        if fld and bfld and fld != bfld:
+            sys.exit("%s: the shadow ladder writes s_cfg.%s but nvs_load_*() "
+                     "restores s_cfg.%s" % (key, fld, bfld))
+        fld = fld or bfld
+
         rows.append({
             "key": key,
+            "default": dmac,
+            "web": loader == "nvs_load_web",
             # `ap_enable` has no K_* constant -- it is written as a bare string
             # literal at both its call sites. Emit it the same way rather than
             # inventing a constant the rest of the tree does not know about.
@@ -391,12 +470,15 @@ def emit_c(rows):
                 flags.append("CFG_F_PUB")
             if r["sun"]:
                 flags.append("CFG_F_SUN")
+            if r["web"]:
+                flags.append("CFG_F_WEB")
             out.append(
                 "    { %s, %s, %s, %uu, %s, %s,\n"
-                "      %s, %s, %s },\n"
+                "      %s, %s, %s, %s },\n"
                 % (nsc, r["kconst"], r["kind"].replace("CFG_KIND_", "CFG_KEY_"),
                    r["channel"], (" | ".join(flags) or "0u"), r["param"],
                    bound(r["min"], r["min_macro"]), bound(r["max"], r["max_macro"]),
+                   r["default"] if r["default"] else "0",
                    ("CFG_SH(%s)" % r["shadow"]) if r["shadow"] else "CFG_NOSH"))
         out.append("\n")
     out.append("};\n\n#undef CFG_SH\n#undef CFG_NOSH\n")
@@ -474,12 +556,18 @@ def verify(rows, pub, quiet):
     # unbounded, because its _CLAMP(0, 0x3F) is written in hex and the bound
     # token regex accepted only decimal.
     unbounded = [r["key"] for r in rows if r["min"] is None]
-    # Check 4 -- being SHADOW and having a shadow field must be the same thing.
-    # cfg_key_kind() asserts that equivalence in prose ("a key is SHADOW exactly
-    # when that ladder has an arm writing a cfg_shadow_t field for it"); here it
-    # is tested. 2.4.6 shipped a release in which it was false.
+    # Check 4 -- kind and shadow-field presence must be consistent, but they are
+    # NOT the same thing, and conflating them is what hid the ota_* fields.
+    #   SHADOW   must have a field: the Q4 generic write needs somewhere to put it.
+    #   NVS_ONLY must NOT: ap_enable has no shadow by design (T10 polls NVS).
+    #   NOT_Q4   may have one: all four ota_* do, written only by the boot loader.
     miskind = [r["key"] for r in rows
-               if (r["kind"] == "CFG_KIND_SHADOW") != (r["shadow"] is not None)]
+               if (r["kind"] == "CFG_KIND_SHADOW" and r["shadow"] is None)
+               or (r["kind"] == "CFG_KIND_NVS_ONLY" and r["shadow"] is not None)]
+    # Every key that has a home in the shadow must be restored at boot, or it
+    # silently reverts to 0 on every reboot -- gh#57 part 1, one layer down.
+    noboot = [r["key"] for r in rows
+              if r["shadow"] is not None and not r["default"]]
     nons = [r["key"] for r in rows if not r["ns"]]
 
     say("\n%d keys" % len(rows))
@@ -497,7 +585,10 @@ def verify(rows, pub, quiet):
     if miskind:
         print("KIND/SHADOW DISAGREE for: %s" % ", ".join(miskind))
         return 1
-    say("every SHADOW key has a shadow field, and no other key has one")
+    if noboot:
+        print("NO BOOT DEFAULT (would reset to 0 every reboot): %s" % ", ".join(noboot))
+        return 1
+    say("kind and shadow-field presence agree; every shadow field is restored at boot")
     if problems:
         for m in problems:
             print("  DISAGREES  %s" % m)
