@@ -22,10 +22,18 @@ pass happily while two keys shared a field.
 GET /api/config emits the cfg_shadow_t FIELD names (poll_interval_s, travel_s[],
 ap_timeout_min), not the NVS key names, so the mapping to the descriptor's
 CFG_SH() field is direct and needs no second table -- which is the whole point.
+GET /api/web is merged into the same snapshot for the six status_*/log_upload_*
+keys it alone displays; that endpoint predates the descriptor and uses its own
+names, so WEB_FIELDS below translates them.
 
-Coverage is reported honestly: 10 of the 46 shadow keys are not on this
-endpoint (the four led_* are write-only, and status_*/log_upload_* live on
-/api/web), so they are listed as unverified rather than quietly skipped.
+All six of those are written through POST /api/config like everything else.
+They are CFG_KEY_SHADOW, so Q4 accepts them and the descriptor's offsetof write
+applies them -- an earlier version of this test called them unreachable, which
+was wrong: they were invisible, not unreachable, and being invisible is exactly
+how a key goes unverified for years.
+
+Coverage is reported honestly. Only the four led_* remain unverified, because
+no endpoint reads them back at all -- a pre-existing gap, not a gh#64 one.
 
 Usage:
     python bin/at_cfg_roundtrip.py --host 192.168.20.x [--pin 12345678]
@@ -49,6 +57,21 @@ import check_cfg_desc as D          # reuse the descriptor parser, not a copy
 
 PIN_DEFAULT = "12345678"
 SETTLE_S = 4.0          # POST /api/config is async: Q4 -> T4 applies a loop later
+
+# GET /api/web JSON name -> cfg_shadow_t field name.
+#
+# The one hand-written mapping in this file, and it has to be: unlike
+# /api/config, the web endpoint does NOT emit the shadow field names. It
+# predates the descriptor. Keep it short and keep it here rather than letting
+# it spread -- a second name table is how six of these got out of step before.
+WEB_FIELDS = {
+    "interval_s": "status_interval_s",
+    "enable":     "status_enable",
+    "expose":     "status_expose",
+    "log_h":      "log_upload_h",
+    "log_m":      "log_upload_m",
+    "log_rot":    "log_upload_rot",
+}
 
 
 # ----------------------------------------------------------------- transport --
@@ -83,10 +106,29 @@ class Unit(object):
             sys.exit("login failed (HTTP %s) -- wrong PIN, or the unit is not up" % sc)
 
     def config(self):
+        """One merged snapshot of every shadow field any endpoint will show.
+
+        The six status_*/log_upload_* keys are NOT on GET /api/config, which is
+        why the first version of this test called them unreachable. They are
+        perfectly writable through POST /api/config -- they are CFG_KEY_SHADOW,
+        so Q4 accepts them and the descriptor's offsetof write applies them --
+        they were merely invisible. GET /api/web shows them.
+
+        Merging both into one snapshot makes the central assertion stronger
+        rather than just wider: changing a climate key must now also leave the
+        web block untouched, and vice versa. A descriptor offset that strayed
+        across that boundary had nothing to trip over before."""
         sc, j = self._req("GET", "/api/config")
         if sc != 200:
             sys.exit("GET /api/config returned HTTP %s" % sc)
-        return flatten(j)
+        out = flatten(j)
+        sc, w = self._req("GET", "/api/web")
+        if sc != 200:
+            sys.exit("GET /api/web returned HTTP %s" % sc)
+        for jname, field in WEB_FIELDS.items():
+            if isinstance(w.get(jname), int) and not isinstance(w.get(jname), bool):
+                out[field] = w[jname]
+        return out
 
     def post_cfg(self, ns, key, value):
         return self._req("POST", "/api/config", {"ns": ns, "key": key, "value": value})[0]

@@ -19,6 +19,13 @@ the firmware, and the risk moves to the table's edges:
      one copy of the limits that still lives outside the firmware.
   5. The published payload drifting from what the pre-refactor firmware served,
      if a golden capture is supplied.
+  6. A key the boot path does not restore. gh#64 counted six tables; the
+     nvs_load_*() helpers are a SEVENTH, and they carry the defaults. A key
+     missing there is accepted, clamped, audited and published, then silently
+     reset to 0 on every reboot, with nothing logged.
+  7. POST /api/web's inline bounds. That endpoint does NOT go through Q4 -- it
+     writes NVS directly and reloads -- so it never meets cfg_clamp() and keeps
+     its own copy of six keys' bounds. An EIGHTH place, three of them literals.
 
 Checks 1, 2 and 3 are the ones that matter most: they are what the six-table
 design could not get wrong and this one can.
@@ -49,6 +56,7 @@ DESC_PATH = os.path.join(ROOT, "firmware", "config", "cfg_desc.inc")
 LIM_PATH = os.path.join(ROOT, "firmware", "config", "cfg_limits.h")
 DM_C_PATH = os.path.join(ROOT, "firmware", "src", "data_manager", "data_manager.cpp")
 DM_H_PATH = os.path.join(ROOT, "firmware", "src", "data_manager", "data_manager.h")
+WS_PATH = os.path.join(ROOT, "firmware", "src", "web_server", "web_server.cpp")
 MOCK_PATH = os.path.join(ROOT, "webUiMock", "mock_server.py")
 
 _ERRORS = []
@@ -316,6 +324,68 @@ def check_boot_loads(rows, loads):
                 % (r["key"], got, r["shadow"]))
 
 
+# POST /api/web local variable -> the config key it validates.
+WEB_VARS = {"interval": "status_intv_s", "log_h": "log_upload_h",
+            "log_m": "log_upload_m", "enable": "status_enable",
+            "log_rot": "log_upload_rot", "expose": "status_expose"}
+
+
+def check_web_handler_bounds(rows, macros):
+    """POST /api/web restates these six keys' bounds inline -- check they agree.
+
+    Found while extending AT-CFG64: /api/web does NOT go through Q4. It calls
+    nvs_cfg_set_i32() directly and then dm_reload_web_cfg(), so it never reaches
+    cfg_clamp() and never sees the descriptor. It validates instead, with its own
+    copy of each bound written into the handler -- an EIGHTH place a bound lives,
+    and one gh#64 did not touch.
+
+    Three of the six are literals there (`enable > 1`, `log_rot > 1`,
+    `expose > 0x3F`), so they cannot even drift together with cfg_limits.h the
+    way the macro-valued ones would. The endpoint also REJECTS rather than
+    clamping, which is a deliberate difference (same as /api/ota/config) and not
+    what this checks; only the numbers have to match.
+    """
+    src = strip_c_comments(read(WS_PATH))
+    m = re.search(r"static esp_err_t\s+web_post_handler\s*\(", src)
+    if not m:
+        fatal("could not find web_post_handler in web_server.cpp")
+        return
+    body = src[m.end():m.end() + 12000]
+    by_key = {r["key"]: r for r in rows}
+
+    # Hex alternative FIRST. Regex alternation is ordered, so `-?\d+` ahead of
+    # it matches just the leading 0 of `0x3F` and status_expose reads as 0..0 --
+    # which is the same mistake that hid status_expose's bounds from the
+    # generator, made twice.
+    _num = r"(-?0[xX][0-9a-fA-F]+|-?\d+|CFG_[A-Z0-9_]+)"
+    seen = {}
+    for var, lo, hi in re.findall(
+            r"\b(\w+)\s*<\s*" + _num + r"\s*\|\|\s*\1\s*>\s*" + _num, body, re.S):
+        key = WEB_VARS.get(var)
+        if not key:
+            continue
+
+        def val(tok):
+            if re.fullmatch(r"-?(?:0[xX][0-9a-fA-F]+|\d+)", tok):
+                return int(tok, 0)
+            return macros.get(tok)
+
+        seen[key] = (val(lo), val(hi))
+
+    for var, key in sorted(WEB_VARS.items()):
+        row = by_key.get(key)
+        if row is None:
+            err("POST /api/web validates '%s', which is not a descriptor key" % key)
+            continue
+        got = seen.get(key)
+        if got is None:
+            err("POST /api/web writes %s but no bounds check for it was found "
+                "-- it would store any int32 the way gh#57 part 1 did" % key)
+        elif got != (row["min"], row["max"]):
+            err("POST /api/web bounds %s for '%s' disagree with the descriptor's %s"
+                % (list(got), key, [row["min"], row["max"]]))
+
+
 def published_json(rows):
     """The payload GET /api/config/limits will emit, rendered as the firmware
     renders it: descriptor order, CFG_F_PUB rows only."""
@@ -376,6 +446,7 @@ def main():
     check_shadow(rows, fields)
     check_no_ladders()
     check_boot_loads(rows, boot_loads(kconsts))
+    check_web_handler_bounds(rows, macros)
 
     pub = dict(published_json(rows))
     compare("webUiMock/mock_server.py CONFIG_LIMITS", pub, mock_limits())
