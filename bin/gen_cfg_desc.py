@@ -29,7 +29,12 @@ table and the consumers read it.
 what gh#64 did, and this is what produced the table that replaced them. So on a
 current tree it must be pointed at the revision that still had them:
 
-    python bin/gen_cfg_desc.py --from-rev 433f3e9 --check
+    python bin/gen_cfg_desc.py --from-rev ':/tools.gh#64' --check
+
+`:/text` is git's search-by-message syntax, used deliberately in place of a
+literal hash: this commit gets cherry-picked between `main` and `ropeSensor`,
+which rewrites its hash, and a pinned hash would quietly stop resolving on
+whichever branch did not originate it. (`.` not `\(` because :/ takes a regex.)
 
 That is not a formality. It is the standing proof that the descriptor still
 reproduces what the six tables did -- re-runnable by anyone, at any time,
@@ -38,10 +43,10 @@ rather than a claim in a commit message. For checking the descriptor itself
 against HEAD and is what the pre-commit hook calls.
 
 Usage:
-    python bin/gen_cfg_desc.py --from-rev REV            # print the table
-    python bin/gen_cfg_desc.py --from-rev REV --check    # diff against the
-                                                         # committed .inc
-    python bin/gen_cfg_desc.py --from-rev REV --emit     # (re)write it
+    python bin/gen_cfg_desc.py --from-rev ':/tools.gh#64'            # print the table
+    python bin/gen_cfg_desc.py --from-rev ':/tools.gh#64' --check    # diff against the
+                                                          # committed .inc
+    python bin/gen_cfg_desc.py --from-rev ':/tools.gh#64' --emit     # (re)write it
 """
 import os
 import re
@@ -513,11 +518,25 @@ def use_revision(rev):
     descriptor reproduces what the six tables did" remains something anyone can
     re-run rather than something they have to take on trust:
 
-        python bin/gen_cfg_desc.py --from-rev 433f3e9 --check
+        python bin/gen_cfg_desc.py --from-rev ':/tools.gh#64' --check
     """
     import subprocess, tempfile
     global DM_PATH, WS_PATH, LIM_PATH
-    tmp = tempfile.mkdtemp(prefix="cfgdesc-%s-" % rev.replace("/", "_"))
+
+    # Resolve to a SHA before doing anything else. `git show <rev>:<path>` cannot
+    # parse a `:/text` search spec glued to a path, and `:/text` is exactly what
+    # this is normally called with -- the commit is cherry-picked between main
+    # and ropeSensor, so its hash is not stable and must not be pinned.
+    try:
+        sha = subprocess.check_output(["git", "rev-parse", "--verify", rev],
+                                      cwd=ROOT, stderr=subprocess.STDOUT)
+        sha = sha.decode().strip()
+    except subprocess.CalledProcessError as exc:                  # noqa: BLE001
+        sys.exit("cannot resolve revision %r: %s"
+                 % (rev, exc.output.decode(errors="replace").strip()))
+
+    # `rev` may contain path-hostile characters; name the temp dir by the SHA.
+    tmp = tempfile.mkdtemp(prefix="cfgdesc-%s-" % sha[:12])
     wanted = {
         "firmware/src/data_manager/data_manager.cpp": None,
         "firmware/src/web_server/web_server.cpp": None,
@@ -530,10 +549,10 @@ def use_revision(rev):
         if not os.path.isdir(d):
             os.makedirs(d)
         try:
-            blob = subprocess.check_output(["git", "show", "%s:%s" % (rev, rel)],
+            blob = subprocess.check_output(["git", "show", "%s:%s" % (sha, rel)],
                                            cwd=ROOT)
         except subprocess.CalledProcessError:
-            sys.exit("cannot read %s at revision %s" % (rel, rev))
+            sys.exit("cannot read %s at revision %s" % (rel, sha))
         with open(dst, "wb") as fh:
             fh.write(blob)
         wanted[rel] = dst
@@ -544,7 +563,7 @@ def use_revision(rev):
     # check_cfg_tables.py resolves its four sources relative to the working
     # directory, so putting us inside the extracted tree redirects it too.
     os.chdir(tmp)
-    print("reading the pre-refactor tables from %s\n" % rev)
+    print("reading the pre-refactor tables from %s (%s)\n" % (rev, sha[:9]))
 
 
 def main():
