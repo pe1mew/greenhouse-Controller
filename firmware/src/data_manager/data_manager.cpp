@@ -164,21 +164,45 @@ static const char K_MODE_STANDBY[]     = "mode_standby";
 typedef enum {
     CFG_KEY_UNKNOWN = 0, /**< Nothing in this firmware writes it via Q4 — reject. */
     CFG_KEY_SHADOW,      /**< Has a cfg_shadow_t field: NVS + shadow + audit row. */
-    CFG_KEY_NVS_ONLY,    /**< Legitimate Q4 traffic with NO shadow field: the
-                              consumer reads NVS directly. NVS write only. */
-    CFG_KEY_NOT_Q4,      /**< A real key with real bounds that a DIFFERENT route
-                              owns (the four ota_*, held by /api/ota/config).
-                              Listed so its bounds have one home; Q4 must still
-                              refuse it, so cfg_key_kind() maps it to UNKNOWN. */
+    CFG_KEY_NVS_ONLY,    /**< No shadow field: the consumer reads NVS directly
+                              (today only wifi/ap_enable, polled by T10). */
 } cfg_key_kind_t;
 
+/* ---- flags: what is true ABOUT the key ---- */
 #define CFG_F_PUB   (1u << 0)  /**< Published by GET /api/config/limits. */
 #define CFG_F_SUN   (1u << 1)  /**< Writing it must re-run update_sun_times(). */
-#define CFG_F_WEB   (1u << 2)  /**< Belongs to the web/status/OTA group, which
-                                    dm_reload_web_cfg() reloads on its own —
-                                    so the boot loader splits on this bit
-                                    rather than on the namespace, which is
-                                    `system` for both halves. */
+
+/* ---- paths: WHICH ROUTES may write the key --------------------------------
+ *
+ * Three routes write config keys, and each has ONE validation policy:
+ *
+ *   CFG_P_Q4   POST /api/config, the LCD menus, T10's geo sync.  CLAMPS.
+ *   CFG_P_WEB  POST /api/web  — the Web tab's whole-form Save.   REJECTS (400).
+ *   CFG_P_OTA  POST /api/ota/config — the ROTA form's Save.      REJECTS (400).
+ *
+ * The policy belongs to the ROUTE, not to the key: six keys are reachable by
+ * two routes and are clamped on one and rejected on the other. That is not
+ * drift — a per-field Apply behind a bounded slider should clamp, while a
+ * multi-field form must reject so the operator sees WHICH submission failed
+ * rather than silently storing something they did not type. gh#64 asked for a
+ * per-key `validate` field; that is why there cannot be one.
+ *
+ * Which routes may write a key IS per-key, and genuinely multi-valued, so it
+ * is a mask. CFG_KEY_NOT_Q4 used to encode "another route owns it" inside
+ * `kind`, which fused "where the value lives" with "who may write it" — the
+ * fusion that first gave the four ota_* keys no shadow field when they have
+ * one. Absence of CFG_P_Q4 now says it, and says only it.
+ *
+ * There is no CFG_F_WEB. The boot-reload group is exactly the union of the two
+ * form routes — both handlers call dm_reload_web_cfg() — so a separate flag was
+ * a second name for the same fact.
+ */
+#define CFG_P_Q4    (1u << 3)
+#define CFG_P_WEB   (1u << 4)
+#define CFG_P_OTA   (1u << 5)
+
+/** @brief Keys the two form endpoints own, and reload synchronously. */
+#define CFG_P_FORMS (CFG_P_WEB | CFG_P_OTA)
 
 /**
  * @brief One config key, described once.
@@ -278,25 +302,27 @@ static int32_t cfg_shadow_store(const cfg_desc_t *d, int32_t v)
  * published, then silently reset to 0 on every reboot.
  *
  * @param ns   Namespace to load.
- * @param web  Select the web/status/OTA half of NVS_NS_SYSTEM (CFG_F_WEB) or
- *             the other half. Both live in the same namespace, and
- *             dm_reload_web_cfg() reloads only the web half, so the split has
- *             to be a property of the key rather than of the namespace.
+ * @param forms  Select the keys the two whole-form endpoints own (CFG_P_FORMS)
+ *               or the rest. Both halves live in NVS_NS_SYSTEM, and
+ *               dm_reload_web_cfg() reloads only the form half, so the split
+ *               is a property of the key, not of the namespace. It needs no
+ *               flag of its own: "owned by a form endpoint" is exactly
+ *               CFG_P_WEB | CFG_P_OTA.
  *
  * @note String-valued keys (tz_str, status_url, ota_secret, …) are NOT in the
  *       descriptor — they never travel through Q4 — and are still loaded
  *       explicitly by the callers.
  */
-static void cfg_load_group(const char *ns, bool web)
+static void cfg_load_group(const char *ns, bool forms)
 {
     for (size_t i = 0u; i < CFG_DESC_N; i++) {
         const cfg_desc_t *d = &CFG_DESC[i];
 
         /* No shadow field means nothing to restore: wifi/ap_enable is
          * NVS-only on purpose, because T10 polls NVS for it directly. */
-        if (d->shadow_sz == 0u)                          { continue; }
-        if (strcmp(d->ns, ns) != 0)                      { continue; }
-        if ((((d->flags & CFG_F_WEB) != 0u)) != web)     { continue; }
+        if (d->shadow_sz == 0u)                             { continue; }
+        if (strcmp(d->ns, ns) != 0)                         { continue; }
+        if (((d->flags & CFG_P_FORMS) != 0u) != forms)      { continue; }
 
         int32_t v = 0;
         (void)nvs_cfg_get_i32_or_default(d->ns, d->key, d->def, &v);
@@ -866,11 +892,11 @@ static cfg_key_kind_t cfg_key_kind(const char *ns, const char *key)
     const cfg_desc_t *d = cfg_desc_find(ns, key);
     if (d == NULL) { return CFG_KEY_UNKNOWN; }
 
-    /* CFG_KEY_NOT_Q4 rows (the four ota_*) are listed for their bounds and
-     * audit id; POST /api/ota/config owns them and validates them itself. Q4
-     * must refuse them exactly as it did when they were absent from this
-     * table altogether, so they classify UNKNOWN here. */
-    if (d->kind == (uint8_t)CFG_KEY_NOT_Q4) { return CFG_KEY_UNKNOWN; }
+    /* In the table but not writable through THIS route. The four ota_* are
+     * listed for their bounds, their audit id and their boot default, and
+     * POST /api/ota/config owns the writing. Q4 refuses them exactly as it did
+     * when they were absent from the table altogether. */
+    if ((d->flags & CFG_P_Q4) == 0u) { return CFG_KEY_UNKNOWN; }
 
     return (cfg_key_kind_t)d->kind;
 }

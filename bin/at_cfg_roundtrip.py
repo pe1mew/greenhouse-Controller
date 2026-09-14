@@ -27,15 +27,16 @@ keys it alone displays; that endpoint predates the descriptor and uses its own
 names, so WEB_FIELDS below translates them.
 
 All six of those are written through POST /api/config like everything else.
-They are CFG_KEY_SHADOW, so Q4 accepts them and the descriptor's offsetof write
+They declare CFG_P_Q4, so Q4 accepts them and the descriptor's offsetof write
 applies them -- an earlier version of this test called them unreachable, which
 was wrong: they were invisible, not unreachable, and being invisible is exactly
 how a key goes unverified for years.
 
-GET /api/ota/config is merged too, for the four ota_* keys. Those are
-CFG_KEY_NOT_Q4 -- POST /api/config refuses them and that refusal is asserted --
-but their BOOT path is the descriptor like everything else, so reading them is
-what puts those four offsets under test at all.
+GET /api/ota/config is merged too, for the four ota_* keys. Those do not
+declare CFG_P_Q4, so POST /api/config refuses them -- and the refusal set is
+DERIVED from that flag rather than hardcoded -- but their BOOT path is the
+descriptor like everything else, so reading them is what puts those four
+offsets under test at all.
 
 Coverage is reported honestly, and in three parts: written-and-checked,
 read-only (boot-load covered by --expect-defaults), and not readable at all.
@@ -337,7 +338,7 @@ def main():
     # is itself asserted further down. They are still READ here, so a stray
     # write landing in one of their fields would be caught; their own boot-load
     # correctness is what --expect-defaults covers.
-    writable = {f: r for f, r in by_field.items() if r["kind"] == "CFG_KEY_SHADOW"}
+    writable = {f: r for f, r in by_field.items() if "CFG_P_Q4" in r["paths"]}
     covered = sorted(f for f in writable if f in live)
     readonly = sorted(f for f in by_field if f not in writable and f in live)
     missing = sorted(f for f in by_field if f not in live)
@@ -412,11 +413,15 @@ def main():
         u.settle(field, keep)
 
     # ---- keys another route owns must still be refused here -----------------
+    # Derived from the table, not hardcoded: every key that does NOT declare
+    # CFG_P_Q4 must be refused on this route. Previously two of the four were
+    # listed by hand, so adding a fifth non-Q4 key would have gone untested.
     print("\n--- keys Q4 must refuse ---")
-    for ns, key, why in (("system", "ota_enable", "owned by /api/ota/config"),
-                         ("system", "ota_check_h", "owned by /api/ota/config"),
-                         ("climate", "not_a_key", "unknown key"),
-                         ("nosuchns", "t_max_day", "unknown namespace")):
+    refuse = [(r["ns"].replace("NVS_NS_", "").lower(), r["key"],
+               "not CFG_P_Q4; %s" % (" | ".join(r["paths"]) or "no write route"))
+              for r in rows if "CFG_P_Q4" not in r["paths"]]
+    for ns, key, why in refuse + [("climate", "not_a_key", "unknown key"),
+                                  ("nosuchns", "t_max_day", "unknown namespace")]:
         sc = u.post_cfg(ns, key, 1)
         if sc == 400:
             print("  ok   %-12s %-14s 400 (%s)" % (ns, key, why))

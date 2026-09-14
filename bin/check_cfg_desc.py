@@ -23,9 +23,20 @@ the firmware, and the risk moves to the table's edges:
      nvs_load_*() helpers are a SEVENTH, and they carry the defaults. A key
      missing there is accepted, clamped, audited and published, then silently
      reset to 0 on every reboot, with nothing logged.
-  7. POST /api/web's inline bounds. That endpoint does NOT go through Q4 -- it
-     writes NVS directly and reloads -- so it never meets cfg_clamp() and keeps
-     its own copy of six keys' bounds. An EIGHTH place, three of them literals.
+  7. The two whole-form endpoints, POST /api/web and POST /api/ota/config.
+     Neither goes through Q4 -- both write NVS directly and reload -- so
+     neither meets cfg_clamp(), and each keeps its own copy of its keys'
+     bounds. The descriptor DECLARES which route may write each key
+     (CFG_P_Q4 / CFG_P_WEB / CFG_P_OTA) and this checks each handler against
+     that declaration, both ways.
+  8. A key with no resolvable factory default, or one outside its own clamp.
+
+Note what is deliberately NOT a table field: the validation POLICY. Q4 clamps;
+both form endpoints reject with 400. That belongs to the ROUTE, not the key --
+six keys are reachable by two routes and are clamped on one and rejected on the
+other. A per-field Apply behind a bounded slider should clamp; a multi-field
+form must reject so the operator sees which submission failed. gh#64 asked for
+a per-key `validate` field; this is why there cannot be one.
 
 Checks 1, 2 and 3 are the ones that matter most: they are what the six-table
 design could not get wrong and this one can.
@@ -83,6 +94,30 @@ def read(path):
 def strip_c_comments(text):
     text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
     return re.sub(r"//[^\n]*", " ", text)
+
+
+def fn_body(src, signature_re, label):
+    """The brace-matched body of one function, or None (and a FATAL).
+
+    Every caller here used to take a fixed character window from the signature
+    instead. That silently includes whatever follows the closing brace, which in
+    web_server.cpp is another handler with near-identical code."""
+    m = re.search(signature_re, src)
+    if not m:
+        fatal("could not find %s" % label)
+        return None
+    i = src.index("{", m.end() - 1)
+    depth, j = 0, i
+    while j < len(src):
+        if src[j] == "{":
+            depth += 1
+        elif src[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return src[i:j]
+        j += 1
+    fatal("unbalanced braces reading %s" % label)
+    return None
 
 
 # ---------------------------------------------------------------- sources ---
@@ -160,7 +195,8 @@ def parse_desc(macros, kconsts):
             "param": pid,
             "min": resolve(lo), "max": resolve(hi),
             "def_tok": dflt.strip(),
-            "web": "CFG_F_WEB" in flags,
+            "paths": [p for p in ("CFG_P_Q4", "CFG_P_WEB", "CFG_P_OTA")
+                      if p in flags],
             "shadow": fld if sh.startswith("CFG_SH") else None,
         })
     if not rows:
@@ -329,65 +365,64 @@ def check_defaults(rows, defaults):
                 % (r["key"], val, tok, r["min"], r["max"]))
 
 
-# POST /api/web local variable -> the config key it validates.
-WEB_VARS = {"interval": "status_intv_s", "log_h": "log_upload_h",
-            "log_m": "log_upload_m", "enable": "status_enable",
-            "log_rot": "log_upload_rot", "expose": "status_expose"}
+FORM_ROUTES = (("web_post_handler", "CFG_P_WEB", "POST /api/web"),
+               ("ota_config_post_handler", "CFG_P_OTA", "POST /api/ota/config"))
 
 
-def check_web_handler_bounds(rows, macros):
-    """POST /api/web restates these six keys' bounds inline -- check they agree.
+def check_form_routes(rows, macros):
+    """Each form endpoint must write exactly the keys that declare its path.
 
-    /api/web does NOT go through Q4. It calls nvs_cfg_set_i32() directly and
-    then dm_reload_web_cfg(), so it never reaches cfg_clamp() and never sees the
-    descriptor. It validates instead, with its own copy of each bound written
-    into the handler -- an EIGHTH place a bound lives.
+    Bidirectional, and that is the point of the path flags: the table DECLARES
+    which routes may write a key, and this verifies the handler agrees. Before
+    the flags this check carried its own hand-written variable->key map, which
+    was a side table of exactly the kind gh#64 exists to delete.
 
-    Three of the six are literals there (`enable > 1`, `log_rot > 1`,
-    `expose > 0x3F`), so they cannot even drift together with cfg_limits.h the
-    way the macro-valued ones would. The endpoint also REJECTS rather than
-    clamping -- a deliberate difference, verified on hardware, and not what this
-    checks; only the numbers have to match.
-    """
+    Neither form endpoint goes through Q4: both call nvs_cfg_set_i32() directly
+    and then dm_reload_web_cfg(), so they never meet cfg_clamp() and each keeps
+    its own copy of the bounds. That duplication is not removed here, only made
+    declared and checked."""
     src = strip_c_comments(read(WS_PATH))
-    m = re.search(r"static esp_err_t\s+web_post_handler\s*\(", src)
-    if not m:
-        fatal("could not find web_post_handler in web_server.cpp")
-        return
-    body = src[m.end():m.end() + 12000]
     by_key = {r["key"]: r for r in rows}
 
-    # Hex alternative FIRST. Regex alternation is ordered, so `-?\d+` ahead of
-    # it matches just the leading 0 of `0x3F` and status_expose reads as 0..0 --
-    # which is the same mistake that hid status_expose's bounds from the
-    # generator, made twice.
-    _num = r"(-?0[xX][0-9a-fA-F]+|-?\d+|CFG_[A-Z0-9_]+)"
-    seen = {}
-    for var, lo, hi in re.findall(
-            r"\b(\w+)\s*<\s*" + _num + r"\s*\|\|\s*\1\s*>\s*" + _num, body, re.S):
-        key = WEB_VARS.get(var)
-        if not key:
+    for fn, flag, label in FORM_ROUTES:
+        body = fn_body(src, r"static esp_err_t\s+" + fn + r"\s*\(", fn)
+        if body is None:
             continue
+        writes = set(re.findall(
+            r'nvs_cfg_set_i32\(\s*NVS_NS_[A-Z]+\s*,\s*"([a-z0-9_]+)"', body))
+        declared = {r["key"] for r in rows if flag in r["paths"]}
+
+        for k in sorted(writes - declared):
+            err("%s writes '%s' but the descriptor does not give it %s"
+                % (label, k, flag))
+        for k in sorted(declared - writes):
+            err("%s: the descriptor gives '%s' %s but the handler never writes it"
+                % (label, k, flag))
+
+        # Bounds: the handler restates them inline. Hex alternative FIRST --
+        # `-?\d+` ahead of it matches only the leading 0 of 0x3F.
+        _num = r"(-?0[xX][0-9a-fA-F]+|-?\d+|CFG_[A-Z0-9_]+)"
+        seen = {}
+        for var, lo, hi in re.findall(
+                r"\b(\w+)\s*<\s*" + _num + r"\s*\|\|\s*\1\s*>\s*" + _num, body, re.S):
+            seen[var] = (lo, hi)
 
         def val(tok):
             if re.fullmatch(r"-?(?:0[xX][0-9a-fA-F]+|\d+)", tok):
                 return int(tok, 0)
             return macros.get(tok)
 
-        seen[key] = (val(lo), val(hi))
-
-    for var, key in sorted(WEB_VARS.items()):
-        row = by_key.get(key)
-        if row is None:
-            err("POST /api/web validates '%s', which is not a descriptor key" % key)
-            continue
-        got = seen.get(key)
-        if got is None:
-            err("POST /api/web writes %s but no bounds check for it was found "
-                "-- it would store any int32 the way gh#57 part 1 did" % key)
-        elif got != (row["min"], row["max"]):
-            err("POST /api/web bounds %s for '%s' disagree with the descriptor's %s"
-                % (list(got), key, [row["min"], row["max"]]))
+        for k in sorted(writes & declared):
+            row = by_key.get(k)
+            if row is None or row["min"] is None:
+                continue
+            # The handler's local name is not the key name; match on the bound
+            # PAIR instead, which is what actually has to be right.
+            if not any(val(lo) == row["min"] and val(hi) == row["max"]
+                       for lo, hi in seen.values()):
+                err("%s: no bounds check matching the descriptor's [%s, %s] for "
+                    "'%s' -- it would store a value the write path rejects"
+                    % (label, row["min"], row["max"], k))
 
 
 def published_json(rows):
@@ -450,7 +485,7 @@ def main():
     check_shadow(rows, fields)
     check_no_ladders()
     check_defaults(rows, default_values())
-    check_web_handler_bounds(rows, macros)
+    check_form_routes(rows, macros)
 
     pub = dict(published_json(rows))
     compare("webUiMock/mock_server.py CONFIG_LIMITS", pub, mock_limits())

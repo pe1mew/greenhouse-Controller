@@ -328,6 +328,37 @@ def boot_defaults():
     return out
 
 
+FORM_HANDLERS = (("web_post_handler", "CFG_P_WEB"),
+                 ("ota_config_post_handler", "CFG_P_OTA"))
+
+
+def form_routes():
+    """{key: CFG_P_*} for the two whole-form endpoints that bypass Q4.
+
+    Derived from the handlers' own nvs_cfg_set_i32() calls, not typed, so the
+    table cannot claim a key is writable by a route that does not write it.
+
+    These two are the ONLY writers of descriptor keys outside Q4 -- verified by
+    enumerating every nvs_cfg_set_i32() in firmware/src. Everything else that
+    writes NVS_NS_SYSTEM (K_MODE_STANDBY, K_FW_HIWATER, OTA_FAIL_KEY,
+    K_PLAN_REBOOT, K_RESPAWN_H/HR) writes keys that are not config keys at all:
+    being in the system namespace does NOT make something a descriptor key.
+    """
+    ws = C.strip_c_comments(read(WS_PATH))
+    out = {}
+    for fn, flag in FORM_HANDLERS:
+        # Brace-matched body, NOT a fixed window. A 12 000-char window from the
+        # handler's start ran past its closing brace into the next function, so
+        # web_post_handler "wrote" the four ota_* keys and they came out
+        # CFG_P_WEB. The counts still looked right (41/6/4), which is precisely
+        # how that kind of mistake survives a glance.
+        body = C.fn_body(ws, r"static esp_err_t\s+" + fn + r"\s*\(", fn)
+        for key in re.findall(
+                r'nvs_cfg_set_i32\(\s*NVS_NS_[A-Z]+\s*,\s*"([a-z0-9_]+)"', body):
+            out.setdefault(key, flag)
+    return out
+
+
 def build():
     sets = C.collect()
     if C._FATAL:
@@ -342,6 +373,7 @@ def build():
     kconsts = {v: k for k, v in
                const_to_key(C.strip_c_comments(read(DM_PATH))).items()}
     bdefs = boot_defaults()
+    froutes = form_routes()
 
     def resolve(tokn):
         """A bound is either a CFG_* macro or an integer literal written
@@ -357,9 +389,18 @@ def build():
     for key in universe:
         in_a = key in sets["A"]
         in_b = key in sets["B"]
-        kind = ("CFG_KIND_SHADOW" if in_b else
-                "CFG_KIND_NVS_ONLY" if in_a else
-                "CFG_KIND_NOT_Q4")      # owned by a dedicated route (the ota_* four)
+
+        # Two independent facts, kept independent. `kind` says WHERE the value
+        # lives; `paths` says WHICH ROUTES may write it. The first cut fused
+        # them into one enum, and that is exactly what made the four ota_* keys
+        # come out as CFG_NOSH when they have real cfg_shadow_t fields.
+        #
+        # Q4-writable is membership of the pre-refactor cfg_key_kind() tables;
+        # the form routes are read out of the handlers themselves.
+        paths = (["CFG_P_Q4"] if (in_a or in_b) else [])
+        if key in froutes:
+            paths.append(froutes[key])
+        kind = "CFG_KIND_NVS_ONLY" if (in_a and not in_b) else "CFG_KIND_SHADOW"
         if key in clamps:
             mn, mn_m = resolve(clamps[key][0])
             mx, mx_m = resolve(clamps[key][1])
@@ -385,7 +426,7 @@ def build():
         rows.append({
             "key": key,
             "default": dmac,
-            "web": loader == "nvs_load_web",
+            "paths": paths,
             # `ap_enable` has no K_* constant -- it is written as a bare string
             # literal at both its call sites. Emit it the same way rather than
             # inventing a constant the rest of the tree does not know about.
@@ -470,8 +511,10 @@ def emit_c(rows):
                 flags.append("CFG_F_PUB")
             if r["sun"]:
                 flags.append("CFG_F_SUN")
-            if r["web"]:
-                flags.append("CFG_F_WEB")
+            # CFG_F_WEB is gone: the boot group IS the union of the two form
+            # routes -- both handlers call dm_reload_web_cfg() -- so a separate
+            # flag for it was a second name for the same fact.
+            flags += r["paths"]
             out.append(
                 "    { %s, %s, %s, %uu, %s, %s,\n"
                 "      %s, %s, %s, %s },\n"
