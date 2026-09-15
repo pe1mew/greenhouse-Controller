@@ -65,6 +65,7 @@ DEFAULT_PIN = "12345678"
 CFG_MIN_V_MAX = 1          # cfg_limits.h -- 0 would assert the override forever
 EG1_WIND_OVERRIDE = 1 << 0
 EG1_SENSOR_FAULT_W = 1 << 3
+EG1_STANDBY        = 1 << 7   # T6 suspended; a setpoint change moves nothing
 POLL_S = 1.0
 SETTLE_S = 20
 
@@ -156,6 +157,9 @@ def main():
     ap.add_argument("--pin", default=DEFAULT_PIN)
     ap.add_argument("--force-vmax", action="store_true",
                     help="lower v_max under the measured wind to raise the override")
+    ap.add_argument("--hold-open", action="store_true",
+                    help="lower the active T maximum so T6 opens M3 and HOLDS it open "
+                         "for the duration; restored in the finally")
     ap.add_argument("--timeout", type=int, default=300)
     args = ap.parse_args()
 
@@ -171,6 +175,70 @@ def main():
     if "5C88" in uid.upper():
         sys.exit("REFUSING: %s is the production unit. This test forces a wind "
                  "override, which closes the greenhouse." % uid)
+
+    # ---- optionally open M3 first, and KEEP it open ------------------------
+    # The test needs M3 open when the override rises, and it needs T6 to be
+    # actively WANTING it open -- otherwise "M3 closed" is ambiguous between
+    # "the override closed it" and "T6 closed it anyway because demand fell".
+    # Holding the demand up for the whole test makes the attribution clean:
+    # the vent algorithm wants it open and the override takes it closed.
+    restore_setpoint = None
+    # Whichever maximum is ACTIVE right now -- lowering the other one does
+    # nothing, and the test would then sit waiting for a stroke that cannot come.
+    sp_field = "t_max_day" if (st.get("sun") or {}).get("is_daytime", True) else "t_max_ngt"
+
+    # STANDBY suspends T6, so lowering a setpoint cannot open anything. Writing
+    # it anyway is worse than useless: the run then PRINTS "holding M3 open"
+    # while nothing holds it, and a later reader credits the hold for a window
+    # that someone opened by hand. Found on the 2026-09-15 run, where an LCD
+    # manual move had left the unit in STANDBY (bit 7) for the whole test.
+    if args.hold_open and (eg1_of(st) & EG1_STANDBY):
+        print("\n  NOT holding M3 open: the unit is in STANDBY, so T6 is suspended")
+        print("  and a setpoint change cannot move anything. Open M3 by hand (LCD),")
+        print("  which is dwell-free anyway, and note that T6 is NOT competing for")
+        print("  the window during this test.")
+        args.hold_open = False
+
+    if args.hold_open:
+        c = u.get_cfg()
+        cur_sp = c.get(sp_field) if isinstance(c, dict) else None
+        if cur_sp is None:
+            print("\nCannot read %s from /api/config." % sp_field)
+            return 2
+        tavg = float((st.get("climate") or {}).get("temp_avg_c", 0) or 0)
+        tgt = int(max(1, int(tavg) - 5))
+        print("\n  holding M3 open: %s %s -> %d (temp_avg %.1f)"
+              % (sp_field, cur_sp, tgt, tavg))
+        if u.post_cfg("climate", sp_field, tgt) != 200:
+            print("  POST /api/config rejected the write")
+            return 2
+        restore_setpoint = cur_sp
+        u.settle_cfg(sp_field, tgt)
+
+    try:
+        return _run(u, args, st, sp_field)
+    finally:
+        if restore_setpoint is not None:
+            print("\n  restoring %s -> %s ..." % (sp_field, restore_setpoint))
+            ok = (u.post_cfg("climate", sp_field, restore_setpoint) == 200 and
+                  u.settle_cfg(sp_field, restore_setpoint))
+            print("  restored and confirmed." if ok else
+                  "  *** RESTORE FAILED -- set %s back to %s BY HAND NOW ***"
+                  % (sp_field, restore_setpoint))
+
+
+def _run(u, args, st, sp_field):
+    # Wait for M3 to actually open before judging preconditions, otherwise the
+    # hold above is raced by the precondition check it exists to satisfy.
+    if args.hold_open:
+        print("  waiting for M3 to open ...")
+        end = time.time() + 240
+        while time.time() < end:
+            st = u.status()
+            if m3_of(st) in ("OPEN", "MOVING_OPEN"):
+                break
+            time.sleep(2.0)
+        print("  M3 now %s" % m3_of(st))
 
     # ---- preconditions, each of which would otherwise pass vacuously ------
     m3 = m3_of(st)
