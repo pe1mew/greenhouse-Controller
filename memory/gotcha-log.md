@@ -58,6 +58,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-07-31** — anti-thrash dwell was unguarded during travel (gh#48)
 
 ### Modbus bus, sensors & clock (T5, drivers)
+- **2026-09-15** — two slaves on one bus fail thousands of times more often than a third (the emulated slaves' replies never assert one differential rail — ~76 mV of noise margin, BER 4e-05; NOT a firmware or bus fault)
 - **2026-09-14** — a bus probe decodes two slaves and never the third, and the firmware is fine (software-UART decoder free-runs after an RS485 turnaround glitch; check `crc`/`framing` first)
 - **2026-09-12** — a sensor stops answering only once a SECOND task shares the bus (inter-frame gap was at the spec floor and had never been reached)
 - **2026-09-12** — "sensor fault" with no reason recorded: three wrong root causes before instrumenting
@@ -154,6 +155,42 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
 
+
+## 2026-09-15 — the emulated slaves' replies never assert one differential rail, so T5 has a bit error rate and T17 does not
+
+**Problem.** On one bus, one master, one firmware, the failure rates differ by orders of magnitude and had been read as *"T17's traffic degrades the bus"*:
+
+| slave | transactions | failures | rate |
+|---|---|---|---|
+| addr 1 FG6485A — **emulated** | 4 082 | 15 | **1 in 272** |
+| addr 44 S200 — **emulated** | 8 137 | 2 | 1 in 4 069 |
+| addr 40 wire encoder — **real** | 12 828 | **0** | — |
+
+**Root cause — a physical-layer defect in the emulator, not in the bus, the master or the firmware.** Two Scopy M2k captures (8 000 samples @ 10 ksps, 0.8 s; `T5.csv` and `T17.csv`) measured against the RS485 receiver's ±200 mV switching threshold:
+
+| | swing | above **+200 mV** | below −200 mV | inside dead band |
+|---|---|---|---|---|
+| master request (T5, n=3) | 3.00 V | 36–43 % | 54–61 % | 3–4 % |
+| real encoder (T17, n=2) | 3.09 V | 27–28 % | 64–67 % | 6–8 % |
+| **emulator reply (T5, n=3)** | **1.31 V** | **0.0 %** | 77–82 % | **18–23 %** |
+
+**The emulator never asserts the positive differential state at all** — zero samples reach +200 mV, in all three replies. Its rails are **+0.076 V / −1.23 V** about idle, against the master's +1.44 / −1.57 and the encoder's +1.52 / −1.60. It drives one leg of the pair only, or its bias/termination is wrong.
+
+It works at all because RS485 fail-safe bias resolves a sub-threshold input to *mark*. So every mark bit is decided with **~76 mV of margin instead of ~1 500 mV** — a ~26 dB loss — and ~20 % of the waveform is electrically undecidable versus 3–8 % (transition edges) for a real driver. Backing the bit error rate out of the counters: **4.1e-05 per bit** on addr 1, 1.5e-06 on addr 44, against the **below 1e-12** a healthy RS485 link should show. That is the signature of a link decided at the threshold, and it explains why the failures present as **timeouts with `crc 0` and `framing 0`** — the byte stream never arrives coherently enough to *become* a frame with a bad CRC.
+
+**Why the measurement is trustworthy despite 10 ksps.** The master transmits in **both** captures, so it is the cross-capture calibration reference: 3.004 V swing in T5 against 3.086 V in T17, 2.7 % apart. Same probe, same gain, so the slave levels are directly comparable. Rails are the p5/p95 *inside* each burst, not peak-to-peak, which turnaround ringing inflates.
+
+**Fix.** None in firmware, and none attempted — the defect is on the slave side. Filed as **gh#68** with the full measurement; **deliberately not chased further** (operator, 2026-09-15) because the linear window control on `ropeSensor` has priority and must be finished and merged to `main` first.
+
+**What this costs gh#66's dev-rig evidence.** The original root cause — *"the S200 began discarding requests it read as a continuation of the previous frame"* — was diagnosed against **this emulator**, and `MODBUS_IFG_US` = 20 000 µs was tuned to satisfy it. Arm A vs arm B (0/6 579 against 17/12 219, p ≈ 1.1e-4) compared traffic levels against slaves whose replies are sub-threshold, so *"T17 degrades the bus"* may substantially be *"more traffic means more exposure to a broken-driver slave"*. It is a concrete reason the restraint on raising `MODBUS_IFG_US` past 20 ms on rig evidence was right.
+
+**Not merely a harness artefact: production shows similar degradation** (operator, 2026-09-15). 5C88 runs real sensors with no T17 and faults ~once per 12 days. So a marginal-level mechanism on a long cable run is a live hypothesis for the field unit and the rig finding is the way in, not a reason to dismiss it.
+
+**Still open.** The voltage defect is *shared* by all three replies at identical rails, so it explains T5-vs-T17 but **not** why addr 1 fails 15× more per transaction than addr 44 — especially as addr 44's reply is the longer frame and should fare worse. Attributing frames to addresses needs a decodable capture: **differential across A/B with bias at ≥76.8 ksps** (8× oversample of 9600 baud), ideally 100 ksps+. At 10 ksps (~1.04 samples/bit) no address, function code or CRC is recoverable — these captures are envelope and level analysis only, and the ±200 mV comparison assumes CH1 is across A/B rather than a single-ended tap.
+
+**Where it lives.** Measurement scripts in the session scratchpad, not repo code. Captures: `T5.csv` / `T17.csv` plus the two Scopy PNGs, on the operator's desktop. No firmware changed.
+
+**Constraint for any bus measurement on this rig — sharpens the 2026-09-14 entry below.** That entry closed with *"the two emulated slaves are easy targets precisely because they are slow"*. They are also easy targets because **their replies are electrically marginal**: any rig figure for addr 1 or addr 44 — fault rate, latency, retry behaviour — characterises a slave that is out of spec on levels, and does not transfer to a field sensor. Establish which slaves are emulated before drawing a bus conclusion.
 
 ## 2026-09-14 — an M2k bus probe saw two slaves and never the third; the firmware was never at fault
 
