@@ -883,6 +883,76 @@ failure path emits **six** `soak` keys where the success path emits eight —
 path, so neither is available from diag for this run. `rejected_rate` cannot
 move when no read succeeds, and strokes are recoverable from the SD `RELAY`
 rows, so the run is unaffected — but the two paths should emit the same block.
+#### Arm B — ran 2026-09-14/15, **21 h 15 m**, and the pair now answers gh#66's step 2
+
+**Result first.** Arm B is the same rig with the encoder **fitted** and T17
+polling, run to a longer window than arm A so the comparison cannot be blamed on
+exposure.
+
+| | duration | T5 transactions (addr 1 + 44) | failures |
+|---|---|---|---|
+| **arm A** — encoder unplugged, gate shut | 18 h 33 m | 6 579 | **0** |
+| **arm B** — encoder fitted, T17 polling | 21 h 15 m | 7 583 | **10** (1 in 758) |
+
+Under one shared rate the 10 failures should split ~4.6 / 5.4 by exposure.
+Observed 0 / 10 — **one-sided p = 0.0019**.
+
+gh#66 set the decision rule before either arm ran: *"If T5's rate stays ~0.1 %,
+the residual is the sensors' own baseline and the bus architecture is done. If
+it drops to zero, T17's mere presence still matters and `MODBUS_IFG_US` needs
+raising past 20 ms."* **It drops to zero.**
+
+**It replicates across a firmware change.** This is a second arm B, not a
+re-reading of the first:
+
+| arm B run | firmware | transactions | failures | rate |
+|---|---|---|---|---|
+| 2026-09-12/13, ~13 h | 2.7.0-bench | ~6 434 | 9 | 1 in 714 |
+| 2026-09-14/15, 21 h | 2.8.0-bench | 7 583 | 10 | 1 in 758 |
+
+**A negative result, recorded because it was expected to go the other way.**
+`317ea00` ("poll on M3's travel, not any window's") reduces how often T17 polls,
+and therefore how often encoder frames sit adjacent to T5's — the mechanism the
+inter-frame-gap defect implicates. At the 5.6 h mark arm B was showing **1
+failure in 5 952** and looked like confirmation. The full run lands at 1 in 758,
+indistinguishable from the pre-fix rate. **Reducing T17's polling frequency did
+not reduce the residual**, and calling the run at 5.6 h would have produced a
+wrong and encouraging answer.
+
+**The encoder is the cause, not the victim.**
+
+| slave | transactions | failures | |
+|---|---|---|---|
+| addr 1 — FG6485A T/RH | 2 533 | **9** | 1 in 281 |
+| addr 44 — S200 wind | 5 050 | **1** | 1 in 5 050 |
+| addr 40 — the encoder | 8 704 | **0** | none |
+
+addr 40 carries more traffic than the other two combined and fails least, which
+matches the earlier soak (3 852 transactions, 0 failures). **The 18x asymmetry
+between addr 1 and addr 44 is new and unexplained** — and it is a reversal from
+2026-09-12, when the S200 was the slave the inter-frame-gap defect silenced.
+Recorded as an observation, not a finding.
+
+**Two caveats that limit what this establishes.**
+
+1. **Both affected slaves are EMULATED on this rig** (CLAUDE.md, corrected
+   2026-09-14). Only addr 40 is real hardware. So this measures how an emulator
+   tolerates a third caller's bus timing. The *direction* is solid; the *rate*
+   must not be carried to 5C88.
+2. **It does not explain production.** 5C88 runs arm A's configuration — no T17,
+   no encoder, one bus caller — and still produced 8 genuine fault onsets in
+   98.5 days, both wind faults closing the greenhouse. Arm A produced zero in
+   18.5 h. Not contradictory (18.5 h cannot see a once-per-12-days event), but
+   it means **the dev-rig residual and the production faults are probably two
+   different phenomena**, and closing one does not close the other.
+
+**Not done here:** raising `MODBUS_IFG_US`. The rule says to, but the value that
+suits an emulator may not suit a real FG6485A, a longer IFG slows every
+transaction, and T17's cadence derives from `travel_m3` — the interaction wants
+checking, and the change wants its own soak.
+
+---
+
 ### Phase 3 — read-only logging *(**COMPLETE** — FDA4 2026-09-10. The first thing with lasting value)*
 
 Per CLAUDE.md, `log/logparser.py` **and** `model/campaign-summer-2026/plot_daily.py` learn every new channel **in the same changeset**.
