@@ -1,8 +1,15 @@
 # logparser — Greenhouse Controller Log Parser
 
 **File:** `log/logparser.py`
-**Document version:** 1.14 (matches firmware 2.8.0 + the `ropeSensor` window-sensor encodings; adds `ALARM ch6 param 249`, §12.4 rule 1 "moving means moving")
+**Document version:** 1.15 (matches firmware 2.8.0 + the `ropeSensor` window-sensor encodings; adds `ALARM ch6 param 250`, §12.4 rule 2 "an early stop is a fault")
 **Requires:** Python 3.10+, standard library only (no pip dependencies)
+
+**What's new in 1.15** (`ropeSensor` branch):
+- **`ALARM ch = 6` param 250 — M3 CLOSE stopped early.** §12.4 rule 2: a CLOSE
+  whose position claimed ~0 in far less than `travel_m3` while bit 3 (an end
+  sensor) was never made for the whole stroke. `value_a` = elapsed seconds,
+  `value_b` = `travel_m3` seconds, so the row states its own basis for "too
+  early". With param 249 this completes the two controller-side §12.4 rules.
 
 **What's new in 1.14** (`ropeSensor` branch):
 - **`ALARM ch = 6` param 249 — M3 not following.** §12.4 rule 1: the relay was
@@ -666,6 +673,7 @@ then names the event within that channel, from the reserved band **244—247**.
 | **247** | device restarted | new register-30008 uptime in seconds (masked to 15 bits) | 0 |
 | **248** | **M3 control mode changed** | `0` = TIMED (travel timer), `1` = POSITION (opening distance) | gate reason, below |
 | **249** | **M3 not following** (§12.4 rule 1) | peak `\|rate\|` observed during the grace window, 0.1 mm/s | the threshold it had to beat (half nominal), 0.1 mm/s |
+| **250** | **M3 CLOSE stopped early** (§12.4 rule 2) | elapsed stroke time, seconds | `travel_m3`, seconds |
 
 **`param = 249` is the only evidence of a shorted wiper.** That fault makes the
 device report a perfectly plausible **constant** position, so every status bit
@@ -678,6 +686,20 @@ so a reader never has to re-derive nominal from `travel_m3` to judge it.
 One row per **stroke**, not per poll, and only after at least one *accepted*
 sample — an encoder that goes absent mid-stroke is `WPOS_GATE_NO_SENSOR`, not a
 leaf that failed to follow, and the two must not be confused in the log.
+
+**`param = 250` says the position claim was not corroborated, not that the
+window moved wrongly.** At the closed switch the device reads 0 **and** makes
+bit 3 (plan §2a), so the two arrive together; a CLOSE reporting ~0 with bit 3
+never made for the whole stroke is a claim with nothing behind it. Both numbers
+are logged so the row carries its own basis for "too early" and never has to be
+read against a config snapshot from some other time.
+
+The bit-3 condition is what makes a legitimate part-way CLOSE safe: a window
+starting at 30 % genuinely reaches 0 at 30 % of travel, but it arrives at the
+switch, bit 3 is made, and the rule stays silent. The timing is the weaker half
+of the test — corroboration, not the trigger. Bit 4 (`both_end_sensors`) is an
+end-sensor loop fault, so while it is set bit 3 is not believed in either
+direction and the rule withholds judgement rather than guessing.
 
 **`param = 245`, `value_a = 3` (REFUSED) is decoded but never emitted.** A refused
 teach leaves status bit 5 set with register 40007 still `1`, which is

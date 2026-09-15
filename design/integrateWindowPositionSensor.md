@@ -1038,7 +1038,7 @@ which gate was active to within 30 s. See the 2026-09-10 gotcha entry.
 > | fault detection and logging (`ALARM ch6` 244—248) | **done**, both parsers + `logparser.md` 1.12 |
 > | T2 treats bit 3 as travel-complete, timer as ceiling | **not started** — T2 makes no `windowpos_*` calls at all → 5.0 |
 > | 12.4 rule 1, *moving means moving* | **DETECTOR LANDED 2026-09-15** — `LOG_PARAM_WPOS_STALL` = 249, `stall_faults` counter, parser + `logparser.md` 1.14. **Reports, does not act** (see below); the response belongs with the T2 change → 5.0 |
-> | 12.4 rule 2, *an early stop is a fault* | **not started** → 5.0 |
+> | 12.4 rule 2, *an early stop is a fault* | **DETECTOR LANDED 2026-09-15** — `LOG_PARAM_WPOS_EARLY` = 250, `early_stops` counter, parser + `logparser.md` 1.15. **Reports, does not act**, same reasoning as rule 1 |
 > | surface faults on the operator surfaces (6) | **LANDED** — `3c7b479` put M3 opening on the status payload and in the web GUI (§6.3), and the admin commissioning screen is built (`firmware/src/window_pos/commission.cpp`). *This row said "not started — `app.js` carries no position reference" until 2026-09-15; it had been stale since `3c7b479`.* |
 > | alarm *handling* | deferred 2026-09-07, now inside the 5.0 slice |
 >
@@ -1059,6 +1059,16 @@ which gate was active to within 30 s. See the 2026-09-10 gotcha entry.
      >
      > **It reports and does not act.** Nothing consumes position yet, so demoting the gate here would change no behaviour while committing to a recovery policy with no consumer to validate it — in particular what re-promotes after a trip, given that reads keep succeeding on a snapped wire. That decision belongs with the T2 change that first makes position drive the actuator.
   2. **A stop that arrives too early is a fault, not a success.** A CLOSE that "reaches 0" in far less than `travel_m3` with bit 3 never set is reported, not believed.
+
+     > **DETECTOR IMPLEMENTED 2026-09-15**, stroke-local like rule 1: `ALARM ch6` param **250** (`LOG_PARAM_WPOS_EARLY`), `value_a` = elapsed seconds, `value_b` = `travel_m3` seconds, so the row states its own basis for "too early". One row per stroke, plus an `early_stops` counter.
+     >
+     > **Bit 3 is the load-bearing condition; the timing is corroboration.** At the closed switch the device reads 0 **and** makes bit 3 (§2a, teach table), so the two arrive together — a CLOSE claiming ~0 with bit 3 never made for the whole stroke is a position claim nothing supports. That is also what keeps a legitimate part-way CLOSE safe: a window starting at 30 % genuinely reaches 0 at 30 % of travel, well inside the "too early" window, but it arrives *at the switch*, bit 3 is made, and the rule stays silent. Reading the timing as the trigger instead would false-trip on every partial close.
+     >
+     > **"~0" is `deadzone_m3`**, not a new constant — that key is the operator's own statement of the smallest position error worth acting on, so it is already the definition of "close enough to closed", and inventing a second threshold here would let the two disagree. This is its first consumer.
+     >
+     > **Bit 4 (`both_end_sensors`) withholds judgement.** It means the end-sensor loop is faulted and bit 3 cannot be believed in either direction, so the rule resets rather than guessing. Two consecutive confirming samples (~1.3 % of any stroke, since the poll is travel/150) cover the race where position reads 0 one poll before the switch is made.
+     >
+     > **Known limitation, deliberate:** a genuinely closed window whose *end sensor* is faulty or unwired trips this rule. That is correct in the sense that something is wrong — either the position or the end sensor is lying — but the row names the position, so read it with the end-sensor wiring in mind before blaming the encoder.
 - **Never gate anything safety-related on position** (FR-WP18): wind override, motor-alarm handling and boot CLOSE_ALL stay time-based.
 
 **Minimal end result of this phase (operator decision 2026-09-07): a movement trace.** Every stroke is logged at the **measurement interval**, giving a full position-vs-time record of each traverse. That is what earns trust in the implementation before anything acts on it.

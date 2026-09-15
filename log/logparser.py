@@ -448,7 +448,7 @@ def _decode_session(row: dict) -> str:
 
 # Window position sensor events (Phase 3, plan 3b). LOG_ALARM rows on channel 6
 # -- 4 and 5 are the T/RH and wind sensor-fault channels. The param band
-# continues wind's 240-243; 250-255 remain free.
+# continues wind's 240-243; 251-255 remain free.
 # T5 sensor-fault reasons: the driver status stored in value_b. s200_status_t
 # and fg6485a_status_t share this numbering by construction.
 _SENSOR_FAULT_REASON = {
@@ -493,6 +493,14 @@ def _decode_wpos_event(param: int, va: int, vb: int) -> str:
         mode = _WPOS_MODE.get(va, f"mode {va}")
         why = _WPOS_GATE_REASON.get(vb, f"reason {vb}")
         return f"M3 CONTROL MODE -> {mode}  [{why}]"
+    if param == 250:
+        # 12.4 rule 2. va = elapsed stroke seconds, vb = travel_m3 seconds, so
+        # the row carries its own basis for "too early" and never has to be
+        # read against a config snapshot from some other time.
+        pct = (100.0 * va / vb) if vb else 0.0
+        return (f"M3 CLOSE STOPPED EARLY - claimed closed after {va} s of a "
+                f"{vb} s traverse ({pct:.0f} %), no end sensor to corroborate "
+                f"it (12.4 rule 2: position not believed)")
     if param == 249:
         # 12.4 rule 1. va = peak |rate| seen during the grace window, vb = the
         # threshold it had to beat (half nominal). Both in 0.1 mm/s, and both

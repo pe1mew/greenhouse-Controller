@@ -328,7 +328,7 @@ typedef enum {
     LOG_PARAM_ALARM_WIND_FAULT = 243, /**< wind SET, sensor-fault safe-fail: va=-1, vb=0 */
 
     /* Window position sensor events (Phase 3, integrateWindowPositionSensor.md 3b).
-     * Continues the wind band; 250..255 remain free and the band is nearly
+     * Continues the wind band; 251..255 remain free and the band is nearly
      * spent, so spend the rest deliberately. Carried on LOG_ALARM rows with
      * channel = 6 (4 = T/RH fault, 5 = wind fault are taken). */
     LOG_PARAM_WPOS_FAULT   = 244, /**< value_a: 1 = fault set, 0 = cleared */
@@ -358,6 +358,18 @@ typedef enum {
                                    *  re-derive nominal from `travel_m3`.
                                    *  One row per stroke, on the stroke that
                                    *  failed — not per poll. */
+    LOG_PARAM_WPOS_EARLY   = 250, /**< §12.4 rule 2 — "a stop that arrives too
+                                   *  early is a fault, not a success".
+                                   *  A CLOSE whose position reached ~0 in far
+                                   *  less than `travel_m3` while bit 3 (an end
+                                   *  sensor) was never made. At the closed
+                                   *  switch the device reads 0 AND makes bit 3
+                                   *  (plan §2a), so zero without bit 3 is a
+                                   *  position claim nothing corroborates.
+                                   *  value_a: elapsed stroke time, seconds.
+                                   *  value_b: `travel_m3`, seconds — so the row
+                                   *  states its own basis for "too early".
+                                   *  One row per stroke. */
 } log_param_id_t;
 
 /**

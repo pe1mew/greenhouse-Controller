@@ -62,6 +62,27 @@ static const char *TAG = "T17";
 #define RULE1_GRACE_MS       5000u
 #define RULE1_RATE_DIVISOR      2u
 
+/**
+ * §12.4 rule 2, "a stop that arrives too early is a fault, not a success":
+ * how early is too early, and how many consecutive samples must agree.
+ *
+ * The plan says "far less than `travel_m3`"; half is the reading taken here,
+ * and the timing is deliberately the WEAKER half of the test. The load-bearing
+ * condition is bit 3: at the closed switch the device reads 0 **and makes bit 3**
+ * (plan §2a), so a position of ~0 with no end sensor is a claim nothing
+ * corroborates. That is what makes a legitimate part-way CLOSE safe -- a window
+ * starting at 30 % genuinely reaches 0 at 30 % of travel, well inside this
+ * window, but it arrives at the switch and bit 3 is made, so the rule stays
+ * silent.
+ *
+ * CONFIRM_SAMPLES exists only for the race that leaves: position may read 0 one
+ * poll before bit 3 is made. Two accepted samples is ~1.3 % of any stroke (the
+ * poll is travel/150), long enough for a mechanical switch and short enough
+ * that a genuine fault is still caught within a percent of the traverse.
+ */
+#define RULE2_EARLY_DIVISOR     2u
+#define RULE2_CONFIRM_SAMPLES   2u
+
 /** Device floor for `40002` (contract §4.2). Also the fastest useful poll. */
 #define DEVICE_MIN_WINDOW_MS  100u
 #define DEVICE_MAX_WINDOW_MS 60000u
@@ -399,6 +420,20 @@ static bool m3_travelling(void)
 }
 
 /**
+ * @brief True while M3 is being driven in the CLOSE direction.
+ *
+ * §12.4 rule 2 applies to a CLOSE only: it is about a window claiming to have
+ * reached the *closed* end. Read once at the stroke boundary and held for the
+ * stroke, because T2 can finish the stroke while the rule is still deciding.
+ */
+static bool m3_closing(void)
+{
+    window_state_t st[3];
+    t2_get_window_states(st);
+    return (st[2] == WIN_MOVING_CLOSE);
+}
+
+/**
  * @brief Publish the control mode, logging only on a transition.
  *
  * Edge-triggered for the reason gh#59 exists: a row per poll would bury the one
@@ -537,6 +572,16 @@ void task_window_pos(void *pvParameters)
     uint16_t stroke_samples    = 0u;
     bool     stall_reported    = false;
 
+    /* §12.4 rule 2 state, same stroke-local lifetime. `stroke_closing` and
+     * `stroke_deadzone_x10` are latched at the boundary: T2 may end the stroke
+     * while the rule is still confirming, and re-reading either mid-stroke
+     * would change the question being asked. */
+    bool     stroke_closing      = false;
+    bool     stroke_end_seen     = false;
+    uint16_t stroke_deadzone_x10 = 0u;
+    uint8_t  near_zero_run       = 0u;
+    bool     early_reported      = false;
+
     for (;;) {
         esp_task_wdt_reset();
 
@@ -634,11 +679,15 @@ void task_window_pos(void *pvParameters)
         if (!was_travelling) {
             was_travelling = true;
 
-            /* §12.4 rule 1: a fresh verdict for this stroke. */
-            stroke_start_ms = now_ms();
-            stroke_peak_x10 = 0u;
-            stroke_samples  = 0u;
-            stall_reported  = false;
+            /* §12.4 rules 1 and 2: a fresh verdict for this stroke. */
+            stroke_start_ms  = now_ms();
+            stroke_peak_x10  = 0u;
+            stroke_samples   = 0u;
+            stall_reported   = false;
+            stroke_closing   = m3_closing();
+            stroke_end_seen  = false;
+            near_zero_run    = 0u;
+            early_reported   = false;
 
             /* Stroke boundary: the only place the mode is allowed to be
              * PROMOTED. See windowpos_task_ctrl_mode()'s note on the
@@ -652,6 +701,15 @@ void task_window_pos(void *pvParameters)
 
             cfg_shadow_t cfg;
             dm_cfg_snapshot(&cfg);
+
+            /* §12.4 rule 2's "~0" band. `deadzone_m3` is the operator's own
+             * statement of the smallest position error worth acting on, so it
+             * is the right definition of "close enough to closed" -- inventing a
+             * second constant here would let the two disagree. Position is
+             * 0.1 mm, the key is mm. */
+            stroke_deadzone_x10 = (uint16_t)clamp_u32(
+                (uint32_t)(cfg.deadzone_m3_mm > 0 ? cfg.deadzone_m3_mm : 0) * 10u,
+                0u, 65535u);
 
             windowpos_config_t dev;
             uint16_t full_travel_x10 = 0u;
@@ -717,6 +775,20 @@ void task_window_pos(void *pvParameters)
                     stroke_peak_x10 = (uint16_t)clamp_u32((uint32_t)mag, 0u, 65535u);
                 }
                 if (stroke_samples < 0xFFFFu) { stroke_samples++; }
+
+                /* §12.4 rule 2 evidence. `both_end_sensors` (bit 4) means the
+                 * end-sensor loop is faulted and bit 3 must not be believed in
+                 * either direction, so while it is set this rule has no basis
+                 * to judge on and the run is reset rather than advanced. */
+                if (r.at_end_sensor || r.both_end_sensors) {
+                    stroke_end_seen = true;
+                    near_zero_run   = 0u;
+                } else if (stroke_closing && !r.sensor_fault &&
+                           r.opening_mm_x10 <= stroke_deadzone_x10) {
+                    if (near_zero_run < 0xFFu) { near_zero_run++; }
+                } else {
+                    near_zero_run = 0u;
+                }
                 portENTER_CRITICAL(&s_mux);
                 s_last         = r;
                 s_last_ms      = now_ms();
@@ -810,6 +882,42 @@ void task_window_pos(void *pvParameters)
                          "or shorted wiper)",
                          (unsigned long)grace, (unsigned)stroke_peak_x10,
                          (unsigned long)threshold);
+            }
+        }
+
+        /* ---- §12.4 rule 2 — an early stop is a fault, not a success -----
+         * A CLOSE whose position claims ~0 in far less than `travel_m3`, with
+         * bit 3 never made for the whole stroke, is a claim nothing
+         * corroborates: at the closed switch the device reads 0 AND makes bit 3
+         * (plan §2a), so the two should arrive together.
+         *
+         * `stroke_end_seen` is checked over the WHOLE stroke rather than the
+         * current sample, which is what the plan's "never set" asks for: a
+         * stroke that touched an end sensor at any point has physical
+         * corroboration and is not this fault.
+         *
+         * Reports and does not act, for the same reason as rule 1 -- nothing
+         * consumes position yet, and T2 stops this stroke on its own timer
+         * regardless. What it changes is that the log no longer records a
+         * CLOSE that "succeeded" in a fifth of the time it physically takes. */
+        if (!early_reported && stroke_closing && !stroke_end_seen &&
+            near_zero_run >= RULE2_CONFIRM_SAMPLES && d.travel_ms != 0u) {
+            const uint32_t elapsed = (uint32_t)(now_ms() - stroke_start_ms);
+            if (elapsed < (d.travel_ms / RULE2_EARLY_DIVISOR)) {
+                early_reported = true;
+                portENTER_CRITICAL(&s_mux);
+                s_cnt.early_stops++;
+                portEXIT_CRITICAL(&s_mux);
+                log_wpos_event((uint8_t)LOG_PARAM_WPOS_EARLY,
+                               (int16_t)clamp_u32(elapsed / 1000u, 0u, 32767u),
+                               (int16_t)clamp_u32(d.travel_ms / 1000u, 0u, 32767u));
+                ESP_LOGW(TAG,
+                         "12.4 rule 2: M3 CLOSE claims %u (0.1mm) <= deadzone "
+                         "after %lu s of a %lu s traverse, no end sensor -- "
+                         "position not believed",
+                         (unsigned)stroke_deadzone_x10,
+                         (unsigned long)(elapsed / 1000u),
+                         (unsigned long)(d.travel_ms / 1000u));
             }
         }
 

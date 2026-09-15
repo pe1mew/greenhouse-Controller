@@ -157,6 +157,9 @@ typedef struct {
                              *   energised and the leaf never reached half the
                              *   nominal rate. One per stroke, not per poll, so
                              *   this divided by `strokes` is a rate. */
+    uint32_t early_stops;   /**< §12.4 rule 2 trips: CLOSE strokes that claimed
+                             *   ~0 far too early with no end sensor to
+                             *   corroborate it. One per stroke. */
 } windowpos_counters_t;
 
 /** @brief Copy the soak counters. @param out Destination, must not be NULL. */
