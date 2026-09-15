@@ -3216,11 +3216,12 @@ static void append_soak_json(char *buf, size_t cap)
     snprintf(buf + used - 1u, cap - used + 1u,
              ",\"soak\":{\"reads_ok\":%lu,\"err_busy\":%lu,\"err_comm\":%lu,"
              "\"rejected_rate\":%lu,\"strokes\":%lu,\"probe_fail\":%lu,"
-             "\"mode_changes\":%lu,\"gated_polls\":%lu}}",
+             "\"mode_changes\":%lu,\"gated_polls\":%lu,\"stall_faults\":%lu}}",
              (unsigned long)cn.reads_ok, (unsigned long)cn.err_busy,
              (unsigned long)cn.err_comm, (unsigned long)cn.rejected_rate,
              (unsigned long)cn.strokes, (unsigned long)cn.probe_fail,
-             (unsigned long)cn.mode_changes, (unsigned long)cn.gated_polls);
+             (unsigned long)cn.mode_changes, (unsigned long)cn.gated_polls,
+             (unsigned long)cn.stall_faults);
 }
 
 static void append_modbus_json(char *buf, size_t cap)

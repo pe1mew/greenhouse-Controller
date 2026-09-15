@@ -153,6 +153,10 @@ typedef struct {
     uint32_t gated_polls;   /**< Ticks with a stroke in progress in which the
                              *   shut gate suppressed a poll. Not a count of
                              *   idle samples, which are negligible. */
+    uint32_t stall_faults;  /**< §12.4 rule 1 trips: strokes where the relay was
+                             *   energised and the leaf never reached half the
+                             *   nominal rate. One per stroke, not per poll, so
+                             *   this divided by `strokes` is a rate. */
 } windowpos_counters_t;
 
 /** @brief Copy the soak counters. @param out Destination, must not be NULL. */

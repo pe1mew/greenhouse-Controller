@@ -328,7 +328,7 @@ typedef enum {
     LOG_PARAM_ALARM_WIND_FAULT = 243, /**< wind SET, sensor-fault safe-fail: va=-1, vb=0 */
 
     /* Window position sensor events (Phase 3, integrateWindowPositionSensor.md 3b).
-     * Continues the wind band; 248..255 remain free and the band is nearly
+     * Continues the wind band; 250..255 remain free and the band is nearly
      * spent, so spend the rest deliberately. Carried on LOG_ALARM rows with
      * channel = 6 (4 = T/RH fault, 5 = wind fault are taken). */
     LOG_PARAM_WPOS_FAULT   = 244, /**< value_a: 1 = fault set, 0 = cleared */
@@ -342,6 +342,22 @@ typedef enum {
                                    *  per poll. This is the row that answers "which
                                    *  control law was M3 under at the time?" — the
                                    *  gh#59 lesson applied before the fact. */
+    LOG_PARAM_WPOS_STALL   = 249, /**< §12.4 rule 1 — "moving means moving".
+                                   *  The relay was energised for the grace
+                                   *  period and the measured rate never reached
+                                   *  half nominal, so the leaf is not following
+                                   *  the motor: a slipped or snapped wire, an
+                                   *  obstruction, or a shorted wiper (which
+                                   *  reads a CONSTANT and is therefore invisible
+                                   *  to the device's own status bits — this row
+                                   *  is the only evidence of it).
+                                   *  value_a: peak |rate| seen, 0.1 mm/s.
+                                   *  value_b: the threshold it had to beat,
+                                   *  0.1 mm/s. Both are logged so the row is
+                                   *  self-describing: a reader never has to
+                                   *  re-derive nominal from `travel_m3`.
+                                   *  One row per stroke, on the stroke that
+                                   *  failed — not per poll. */
 } log_param_id_t;
 
 /**

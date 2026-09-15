@@ -1037,9 +1037,9 @@ which gate was active to within 30 s. See the 2026-09-10 gotcha entry.
 > | movement trace, every stroke logged at the measurement interval | **done** — built in Phase 3 |
 > | fault detection and logging (`ALARM ch6` 244—248) | **done**, both parsers + `logparser.md` 1.12 |
 > | T2 treats bit 3 as travel-complete, timer as ceiling | **not started** — T2 makes no `windowpos_*` calls at all → 5.0 |
-> | 12.4 rule 1, *moving means moving* | **not started** → 5.0 |
+> | 12.4 rule 1, *moving means moving* | **DETECTOR LANDED 2026-09-15** — `LOG_PARAM_WPOS_STALL` = 249, `stall_faults` counter, parser + `logparser.md` 1.14. **Reports, does not act** (see below); the response belongs with the T2 change → 5.0 |
 > | 12.4 rule 2, *an early stop is a fault* | **not started** → 5.0 |
-> | surface faults on the operator surfaces (6) | **not started** — `app.js` carries no position reference; the only surface is the `MODBUS_BENCH` diag endpoint → 5.0 |
+> | surface faults on the operator surfaces (6) | **LANDED** — `3c7b479` put M3 opening on the status payload and in the web GUI (§6.3), and the admin commissioning screen is built (`firmware/src/window_pos/commission.cpp`). *This row said "not started — `app.js` carries no position reference" until 2026-09-15; it had been stale since `3c7b479`.* |
 > | alarm *handling* | deferred 2026-09-07, now inside the 5.0 slice |
 >
 > **Nothing consumes position yet**, so the ▲ GATE below is **still
@@ -1052,6 +1052,12 @@ which gate was active to within 30 s. See the 2026-09-10 gotcha entry.
 - T2 may treat "bit 3 set at position ≈ 0 or ≈ `40004`" as travel-complete, **with the travel timer retained as the ceiling**.
 - Implement the two controller-side rules from requirements §12.4 that the device cannot self-report:
   1. **Moving means moving.** While the relay is energised, `|30012|` must exceed ~half nominal within ~5 s. This catches a slipped or snapped wire, an obstruction, and — because a shorted wiper reads a *constant* — the wiper short the device cannot detect.
+
+     > **DETECTOR IMPLEMENTED 2026-09-15** in `window_pos_task.cpp`, stroke-local and edge-triggered: `ALARM ch6` param **249** (`LOG_PARAM_WPOS_STALL`), `value_a` = peak `|rate|` seen, `value_b` = the threshold it had to beat, both 0.1 mm/s so the row never has to re-derive nominal. One row per stroke, plus a `stall_faults` counter on `GET /api/diag/windowpos`.
+     >
+     > Three decisions worth keeping. **(a)** The grace is `min(5 s, travel_ms / 2)` — `travel_m3` may legally be `CFG_MIN_TRAVEL_S` = 5 s, exactly the ungated grace, so a fixed 5 s would expire only as the stroke ended and the rule would never reach a verdict on the fastest windows. **(b)** Only **accepted** samples count as evidence of movement; a sample the FR-WP20 plausibility check rejected says nothing in either direction, by that check's own reasoning. The consequence is deliberate — a stroke whose every sample is implausible trips the rule, because there is then no trustworthy evidence the leaf moved. **(c)** It requires **at least one accepted sample** before reaching a verdict. Without that, an encoder that goes absent mid-stroke trips this rule (reads fail → peak stays 0 → grace expires) and reports *not following* when the truth is *no sensor*, which `WPOS_GATE_NO_SENSOR` already states correctly. The gate does shut first in practice (2 failed reads, ~340 ms, against a 2.5–5 s grace) but that ordering is a timing accident, not a basis for attributing a fault.
+     >
+     > **It reports and does not act.** Nothing consumes position yet, so demoting the gate here would change no behaviour while committing to a recovery policy with no consumer to validate it — in particular what re-promotes after a trip, given that reads keep succeeding on a snapped wire. That decision belongs with the T2 change that first makes position drive the actuator.
   2. **A stop that arrives too early is a fault, not a success.** A CLOSE that "reaches 0" in far less than `travel_m3` with bit 3 never set is reported, not believed.
 - **Never gate anything safety-related on position** (FR-WP18): wind override, motor-alarm handling and boot CLOSE_ALL stay time-based.
 

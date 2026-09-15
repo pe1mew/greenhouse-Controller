@@ -1,8 +1,16 @@
 # logparser — Greenhouse Controller Log Parser
 
 **File:** `log/logparser.py`
-**Document version:** 1.13 (matches firmware 2.8.0 + the `ropeSensor` window-sensor encodings; adds LOG_SYSTEM value_a=31 bus KPIs, gh#66)
+**Document version:** 1.14 (matches firmware 2.8.0 + the `ropeSensor` window-sensor encodings; adds `ALARM ch6 param 249`, §12.4 rule 1 "moving means moving")
 **Requires:** Python 3.10+, standard library only (no pip dependencies)
+
+**What's new in 1.14** (`ropeSensor` branch):
+- **`ALARM ch = 6` param 249 — M3 not following.** §12.4 rule 1: the relay was
+  energised for the grace window and the measured rate never reached half
+  nominal, so the leaf is not tracking the motor — a slipped or snapped wire, an
+  obstruction, or a shorted wiper. `value_a` = peak `|rate|` seen, `value_b` =
+  the threshold, both 0.1 mm/s. **This is the only detector for a shorted
+  wiper**, which the device itself cannot report. See the param table below.
 
 **What's new in 1.12** (window-sensor encodings, `ropeSensor` branch):
 - **`SENSOR_HR ch = 3` — M3 window position**, and **`ALARM ch = 6` params
@@ -657,6 +665,19 @@ then names the event within that channel, from the reserved band **244—247**.
 | **246** | device status bitfield | the raw register-30006 bitfield | 0 |
 | **247** | device restarted | new register-30008 uptime in seconds (masked to 15 bits) | 0 |
 | **248** | **M3 control mode changed** | `0` = TIMED (travel timer), `1` = POSITION (opening distance) | gate reason, below |
+| **249** | **M3 not following** (§12.4 rule 1) | peak `\|rate\|` observed during the grace window, 0.1 mm/s | the threshold it had to beat (half nominal), 0.1 mm/s |
+
+**`param = 249` is the only evidence of a shorted wiper.** That fault makes the
+device report a perfectly plausible **constant** position, so every status bit
+stays clear and `sensor_fault` stays false — and bit 6, which would otherwise
+catch it, is inert on this installation for lack of electrical headroom. Without
+this row a shorted wiper reads as a window that simply never leaves 0 %. The row
+is self-describing on purpose: both the peak rate and the threshold are logged,
+so a reader never has to re-derive nominal from `travel_m3` to judge it.
+
+One row per **stroke**, not per poll, and only after at least one *accepted*
+sample — an encoder that goes absent mid-stroke is `WPOS_GATE_NO_SENSOR`, not a
+leaf that failed to follow, and the two must not be confused in the log.
 
 **`param = 245`, `value_a = 3` (REFUSED) is decoded but never emitted.** A refused
 teach leaves status bit 5 set with register 40007 still `1`, which is

@@ -41,6 +41,27 @@ static const char *TAG = "T17";
  */
 #define RATE_LIMIT_MULT       3u
 
+/**
+ * §12.4 rule 1, "moving means moving": how long the relay may be energised
+ * before the absence of movement is a fault, and the fraction of nominal the
+ * measured rate must beat to count as moving.
+ *
+ * The plan specifies "~half nominal within ~5 s". Both numbers are deliberately
+ * loose: this detects a leaf that is not moving AT ALL, not one moving slightly
+ * slow, so the threshold sits far below anything a healthy stroke produces
+ * (a real stroke runs at nominal by construction -- nominal IS full travel over
+ * `travel_m3`). Sizing it tight would trade the thing it catches for false
+ * trips on motor run-up.
+ *
+ * The grace is additionally capped at half the stroke, because `travel_m3` can
+ * legally be as low as CFG_MIN_TRAVEL_S = 5 s -- exactly the ungated grace. At
+ * that setting a fixed 5 s would expire only as the stroke ended, so the rule
+ * would never get a verdict on the fastest windows. Half the stroke always
+ * leaves half of it to measure.
+ */
+#define RULE1_GRACE_MS       5000u
+#define RULE1_RATE_DIVISOR      2u
+
 /** Device floor for `40002` (contract §4.2). Also the fastest useful poll. */
 #define DEVICE_MIN_WINDOW_MS  100u
 #define DEVICE_MAX_WINDOW_MS 60000u
@@ -508,6 +529,14 @@ void task_window_pos(void *pvParameters)
     bool     was_travelling    = false;
     uint32_t last_idle_log_ms  = 0u;
 
+    /* §12.4 rule 1 state, reset at every stroke boundary. Stroke-local rather
+     * than static: the question is always "did THIS stroke move?", and carrying
+     * a verdict across strokes would let one stalled stroke silence the next. */
+    uint32_t stroke_start_ms   = 0u;
+    uint16_t stroke_peak_x10   = 0u;
+    uint16_t stroke_samples    = 0u;
+    bool     stall_reported    = false;
+
     for (;;) {
         esp_task_wdt_reset();
 
@@ -605,6 +634,12 @@ void task_window_pos(void *pvParameters)
         if (!was_travelling) {
             was_travelling = true;
 
+            /* §12.4 rule 1: a fresh verdict for this stroke. */
+            stroke_start_ms = now_ms();
+            stroke_peak_x10 = 0u;
+            stroke_samples  = 0u;
+            stall_reported  = false;
+
             /* Stroke boundary: the only place the mode is allowed to be
              * PROMOTED. See windowpos_task_ctrl_mode()'s note on the
              * asymmetry -- demotion is immediate, promotion waits. */
@@ -671,6 +706,17 @@ void task_window_pos(void *pvParameters)
                 ESP_LOGW(TAG, "rate %ld beyond %ux nominal (%u) -- sample rejected",
                          (long)rate, (unsigned)RATE_LIMIT_MULT, (unsigned)d.rate_limit_x10);
             } else {
+                /* §12.4 rule 1 evidence, from ACCEPTED samples only. A sample
+                 * the plausibility check rejected says nothing about movement
+                 * in either direction (FR-WP20's own reasoning), so it must not
+                 * be counted as proof the leaf moved. The consequence is
+                 * deliberate: a stroke whose every sample is implausible trips
+                 * rule 1, because there is then no trustworthy evidence the
+                 * window moved -- which is exactly the state worth reporting. */
+                if ((uint32_t)mag > (uint32_t)stroke_peak_x10) {
+                    stroke_peak_x10 = (uint16_t)clamp_u32((uint32_t)mag, 0u, 65535u);
+                }
+                if (stroke_samples < 0xFFFFu) { stroke_samples++; }
                 portENTER_CRITICAL(&s_mux);
                 s_last         = r;
                 s_last_ms      = now_ms();
@@ -708,6 +754,63 @@ void task_window_pos(void *pvParameters)
              * share one state machine instead of two that can disagree. */
             if (s_probe_fail < PROBE_FAIL_LIMIT) { s_probe_fail++; }
             if (s_probe_fail >= PROBE_FAIL_LIMIT) { gate_close(WPOS_GATE_NO_SENSOR); }
+        }
+
+        /* ---- §12.4 rule 1 — "moving means moving" -----------------------
+         * The relay is energised (we are in the travelling branch). If the
+         * measured rate has not reached half nominal by the grace deadline, the
+         * leaf is not following the motor.
+         *
+         * This is the ONLY detector for a shorted wiper: that fault makes the
+         * device report a perfectly plausible CONSTANT position, so every
+         * status bit stays clear, `sensor_fault` stays false, and bit 6 is
+         * inert on this installation for lack of electrical headroom. Without
+         * this row a shorted wiper reads as a window that never leaves 0 %.
+         *
+         * Reports and does not act (Phase 4: "detects and records"). Nothing
+         * consumes position yet, so demoting the gate here would change no
+         * behaviour while committing to a recovery policy that has no consumer
+         * to validate it -- that decision belongs with the T2 change that first
+         * makes position drive the actuator.
+         *
+         * One row per stroke: the latch is cleared only at a stroke boundary. A
+         * row per poll would bury the event, which is the gh#59 lesson.
+         *
+         * `stroke_samples != 0` is load-bearing, not defensive. Without it an
+         * encoder that goes ABSENT mid-stroke trips this rule: its reads fail,
+         * the peak stays 0, and the grace expires -- reporting "the leaf is not
+         * following" when the truth is "the sensor is gone", which
+         * WPOS_GATE_NO_SENSOR already says correctly. The gate does shut first
+         * in practice (PROBE_FAIL_LIMIT is 2 reads, ~340 ms, against a grace of
+         * 2.5-5 s), but that ordering is a timing accident and not something to
+         * rest a fault attribution on. Requiring one accepted sample makes the
+         * two faults discriminable by construction: no data is never read as
+         * no movement. */
+        if (!stall_reported && d.nominal_rate_x10 != 0u && stroke_samples != 0u) {
+            const uint32_t threshold = (uint32_t)d.nominal_rate_x10 / RULE1_RATE_DIVISOR;
+            uint32_t grace = RULE1_GRACE_MS;
+            if (d.travel_ms != 0u && (d.travel_ms / 2u) < grace) {
+                grace = d.travel_ms / 2u;
+            }
+            if ((uint32_t)stroke_peak_x10 >= threshold) {
+                /* Moved. Settle the verdict for this stroke so the deadline
+                 * cannot trip later in a long traverse that pauses. */
+                stall_reported = true;
+            } else if ((uint32_t)(now_ms() - stroke_start_ms) >= grace) {
+                stall_reported = true;
+                portENTER_CRITICAL(&s_mux);
+                s_cnt.stall_faults++;
+                portEXIT_CRITICAL(&s_mux);
+                log_wpos_event((uint8_t)LOG_PARAM_WPOS_STALL,
+                               (int16_t)clamp_u32((uint32_t)stroke_peak_x10, 0u, 32767u),
+                               (int16_t)clamp_u32(threshold, 0u, 32767u));
+                ESP_LOGW(TAG,
+                         "12.4 rule 1: M3 energised %lu ms, peak rate %u < %lu "
+                         "(0.1mm/s) -- leaf not following (wire, obstruction, "
+                         "or shorted wiper)",
+                         (unsigned long)grace, (unsigned)stroke_peak_x10,
+                         (unsigned long)threshold);
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(d.poll_ms ? d.poll_ms : IDLE_TICK_MS));

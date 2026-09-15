@@ -448,7 +448,7 @@ def _decode_session(row: dict) -> str:
 
 # Window position sensor events (Phase 3, plan 3b). LOG_ALARM rows on channel 6
 # -- 4 and 5 are the T/RH and wind sensor-fault channels. The param band
-# continues wind's 240-243; 248-255 remain free.
+# continues wind's 240-243; 250-255 remain free.
 # T5 sensor-fault reasons: the driver status stored in value_b. s200_status_t
 # and fg6485a_status_t share this numbering by construction.
 _SENSOR_FAULT_REASON = {
@@ -493,6 +493,14 @@ def _decode_wpos_event(param: int, va: int, vb: int) -> str:
         mode = _WPOS_MODE.get(va, f"mode {va}")
         why = _WPOS_GATE_REASON.get(vb, f"reason {vb}")
         return f"M3 CONTROL MODE -> {mode}  [{why}]"
+    if param == 249:
+        # 12.4 rule 1. va = peak |rate| seen during the grace window, vb = the
+        # threshold it had to beat (half nominal). Both in 0.1 mm/s, and both
+        # logged so this line never has to re-derive nominal from travel_m3.
+        return (f"M3 NOT FOLLOWING - relay energised, peak rate "
+                f"{va / 10.0:.1f} mm/s < {vb / 10.0:.1f} mm/s required "
+                f"(12.4 rule 1: slipped/snapped wire, obstruction, or a "
+                f"shorted wiper reading a constant)")
     return f"wpos event param#{param} a={va} b={vb}"
 
 def _decode_alarm(row: dict) -> str:
