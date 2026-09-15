@@ -6,6 +6,118 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.7.1] — 2026-09-15  (gh#64 — one table, not seven)
+
+Patch: no user-visible feature, no new task, no new NVS key, and no payload-shape
+change. `GET /api/config/limits` stopped being a hand-written literal and is now
+generated from the table, so that last point was verified rather than assumed —
+the 2.7.0 literal was extracted at its tag, its `CFG_MIN_*`/`CFG_MAX_*` macros
+resolved from that tag's `cfg_limits.h`, and diffed against the descriptor: **all
+40 published keys carry identical bounds; only key order differs**, which JSON
+does not make significant and which `app.js` does not depend on.
+
+**Changed.**
+
+- **A config key is now declared ONCE**, in `firmware/config/cfg_desc.inc` — one
+  row carrying its namespace, kind, write routes, bounds, factory default, audit
+  id, channel and shadow slot (gh#64). `cfg_clamp()`, `ns_key_to_log_id()`,
+  `cfg_key_kind()`, the `apply_config_update()` shadow ladder, the published
+  limits and the boot loader all read that row.
+
+  Six hand-maintained lists carried the key set before, and they drifted **every
+  single time**: gh#53 (kind written as a boolean — the LCD WiFi-AP toggle went
+  dead), gh#57 part 1 (11 keys in the shadow ladder but in neither the clamp nor
+  the limits, so `POST /api/config` stored any `int32`), gh#57 part 2
+  (`cfg_limits.h` wider than T5's own clamp — a stored 300 was polled at 120 and
+  collapsed the averaging window to 1 sample), gh#51 group D. A key missing from
+  one list produced no error, only a quietly weaker write path.
+
+- **The boot loader was a SEVENTH list and gh#64 did not count it.**
+  `nvs_load_climate/wind/motor/system/web()` carried the key set *and* the
+  factory defaults, and appeared in none of the six. A key present everywhere
+  else but absent there was accepted, clamped, audited and published, then
+  **silently reset to 0 on every reboot**, with nothing logged. The five helpers
+  are now one `cfg_load_group()` call each; the descriptor carries a `def` field
+  that still references the `cfg_defaults.h` macros, which remain the only place
+  a default is written.
+
+- **Write routes are a flag mask on the row** — `CFG_P_Q4`, `CFG_P_WEB`,
+  `CFG_P_OTA`. Of the 51 rows, 47 declare `CFG_P_Q4` (6 of those also
+  `CFG_P_WEB`) and 4 are `CFG_P_OTA` only. `POST /api/config` derives the set it
+  must refuse from that flag instead of a hand-kept list of two, so a fifth
+  non-Q4 key is covered the day its row is written.
+
+- **`GET /api/config/limits` is generated from the table** and cached in a
+  `static char s_json[1280]` built on first request. Every bound is a
+  compile-time constant, so the payload cannot change at runtime.
+
+**Added.**
+
+- **`_Static_assert` that a config bound equals its consumer's clamp**
+  (`sensor_poll.cpp`). gh#57 part 2 was `cfg_limits.h` and T5 disagreeing with
+  the agreement recorded only in a *comment*; the compiler now enforces it.
+  Proven fail-first — restoring `CFG_MAX_POLL_S = 300` reproduces the original
+  defect and the build refuses.
+- **`bin/check_cfg_desc.py`**, wired into `.githooks/pre-commit`: bounds, shadow
+  fields, boot defaults, route declarations, agreement with
+  `webUiMock/mock_server.py` (the one copy of the limits still outside the
+  table), and a check that no consumer has started growing its own key ladder
+  again. `-v` prints the table.
+- **`bin/gen_cfg_desc.py`** — the table was *derived* from the six lists it
+  replaces rather than retyped, and the derivation stays re-runnable as the
+  equivalence proof: `python bin/gen_cfg_desc.py --from-rev ':/tools.gh#64' --check`.
+- **`bin/at_cfg_roundtrip.py`** (AT-CFG64) — the hardware round-trip, merging
+  `/api/config`, `/api/web` and `/api/ota/config` into one snapshot.
+- **`bin/check_gotcha_index.py`** and **`bin/resolve_md_rebase.py`** — the first
+  enforces the gotcha log's own entry/index pairing claim, the second resolves
+  the per-line markdown conflict that every `ropeSensor` rebase produces and
+  **refuses** when both sides changed a line.
+
+**Fixed.**
+
+- 30 gotcha-log entries existed without the index line the log's own convention
+  requires, so they were unfindable from the index. Backfilled, and
+  `check_gotcha_index.py` now fails on a recurrence.
+
+**Documentation.**
+
+- The M2k bus-probe constraint: a single-ended threshold probe cannot decode a
+  reply arriving within a few ms of the master releasing the line. A 9 h capture
+  decoded 1 598 transactions from Modbus addr 1 and addr 44 and **not one** from
+  addr 40, while the controller read that encoder thousands of times an hour with
+  `crc 0` and `framing 0`. **The firmware was never at fault** — check
+  `GET /api/diag/windowpos` before blaming the bus.
+
+**Verification.** `check_cfg_desc.py` (51 keys, 40 published) and the
+`gen_cfg_desc.py --check` derivation both clean; 20 injected defects across four
+suites each caught fail-first with sources restored byte-identical; and AT-CFG64
+on bench board **12F0** (no rig hardware, so the config path alone): **42 of the
+46 Q4-writable shadow fields** each proving *exactly one* field moved and that it
+was the one the descriptor names — the assertion that matters, because the shadow
+write is `offsetof`-driven and naming the wrong field compiles, runs and logs
+`Q4 applied` while writing a real but different setting. Plus 12 clamp probes,
+6 refusals derived from the flags, reboot persistence, and **a wiped NVS booting
+to 42 keys at exactly their descriptor default** — which is what proves the
+defaults survived moving out of the boot loader.
+
+**Not verified:** the four `led_*` keys, because no endpoint reads them back at
+all, so their clamp cannot be checked over the network. Pre-existing rather than
+a gh#64 regression; filed as gh#67.
+
+**Not implemented, deliberately:** gh#64's `validate` and `path` as per-key table
+fields. Six keys are writable by two routes with *different* policies —
+`status_expose` is clamped via Q4 and rejected with 400 via `/api/web` — so a
+per-key `validate` would have to encode a falsehood. Which routes may write a key
+*is* per-key and is now a flag mask; what a route does with an out-of-range value
+belongs to the route.
+
+**Size.** App image 1 385 456 → **1 378 256** bytes (−7 200): `.flash.text` falls
+7 560 B as the `strcmp` ladders go, `.flash.rodata` rises 368 B net for the table
+minus the deleted `LIMITS_JSON`. Static RAM 62 776 → 64 064 (+1 288), which is
+the cached limits buffer and its flag, and nothing else.
+
+---
+
 ## [2.7.0] — 2026-09-12  (gh#63 — the misnamed dwell aliases are gone)
 
 Minor: removing a field from a documented API response is a payload-shape change.
