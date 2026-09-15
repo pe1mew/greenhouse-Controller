@@ -1096,7 +1096,7 @@ alike. At ~3.3 M3 strokes/day that is a few hundred extra rows against ~2864
 |---|---|
 | **AT-WP06** | **PASSED** — and only after failing first and exposing a real defect (the idle read swallowed failures, so the gate was blind at rest). Recovery measured at **31 s** against `PROBE_RETRY_MS` = 30 s. See below. |
 | **AT-WP07** | **not run** |
-| **AT-WP09** | **not run, and not yet runnable** — it needs 12.4 rule 1, which *is* the divergence detector |
+| **AT-WP09** | **RUNNABLE since 2026-09-15** — 12.4 rule 1 landed and *is* the divergence detector. Harness written: **`python bin/at_wp09.py --host <ip>`**, plus **`--healthy`** for the false-positive half, which is the one that matters for a detector on a mechanism that moves several times a day. **Still not run** — it needs the rig and a physical divergence (detach the draw-wire, or obstruct the leaf) |
 | monotonic ramp from the log | **not demonstrated.** The strokes observed so far were driven closed onto the end switch, so the traces are flat at 0 rather than ramps. A deliberate open stroke with the gate in POSITION is what would show it. |
 
 ---
@@ -1389,7 +1389,23 @@ are genuine CRC/timeout errors and *should* be reported.
 
 ### ▲ GATE — everything above changes no control behaviour
 
-Phases 0–4 add a sensor, logging and diagnostics. The greenhouse behaves exactly as it does today. Cross this gate only when the rig has produced clean aperture data over a sustained period **and** the Phase 5 scope decision (§8) has been taken.
+Phases 0–4 add a sensor, logging and diagnostics. The greenhouse behaves exactly as it does today. Cross this gate only when the rig has produced clean aperture data over a sustained period **and** the Phase 5 scope decision has been taken.
+
+> **Status of the two prerequisites, checked 2026-09-15.** *(The scope-decision
+> clause cited "§8" until now; §8 is **Risks**. The decisions live in **§10**,
+> items 1 and 5 — a cross-reference is a claim about a file, and this one was
+> wrong.)*
+>
+> | prerequisite | state |
+> |---|---|
+> | Phase 5 scope decision taken | **YES** — §10.1 (2026-09-07) and §10.5 (2026-09-13). Note what was decided: the *vent algorithm* does not change. Positioning M3 by sensor is gate 1 and is in the §5.0 slice; changing the algorithm is gate 2. |
+> | clean aperture data over a sustained period | **NO.** Phase 3's exit table still reads *"monotonic ramp from the log: **not demonstrated** — the strokes observed so far were driven closed onto the end switch, so the traces are flat at 0 rather than ramps."* AT-WP07 and AT-WP09 are also unrun. |
+>
+> **So this gate is NOT crossable today, and the blocker is evidence rather than
+> code.** What it needs is a deliberate OPEN stroke with the gate in POSITION,
+> producing a ramp, plus AT-WP09. Writing T2's position consumer first would be
+> building the control path on a sensor that has never once been shown to trace a
+> traverse — precisely what the gate exists to prevent.
 
 ---
 
