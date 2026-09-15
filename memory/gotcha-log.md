@@ -58,6 +58,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-07-31** — anti-thrash dwell was unguarded during travel (gh#48)
 
 ### Modbus bus, sensors & clock (T5, drivers)
+- **2026-09-15** — a packaged binary reports the wrong version on the unit after an OTA (build script parameterised half-way: right env BUILT, wrong env's binary COPIED; only the post-reboot verify caught it)
 - **2026-09-15** — two slaves on one bus fail thousands of times more often than a third (the emulated slaves' replies never assert one differential rail — ~76 mV of noise margin, BER 4e-05; NOT a firmware or bus fault)
 - **2026-09-14** — a bus probe decodes two slaves and never the third, and the firmware is fine (software-UART decoder free-runs after an RS485 turnaround glitch; check `crc`/`framing` first)
 - **2026-09-12** — a sensor stops answering only once a SECOND task shares the bus (inter-frame gap was at the spec floor and had never been reached)
@@ -155,6 +156,22 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
 
+
+## 2026-09-15 — a build script parameterised half-way: the right env was BUILT and the wrong env's binary was COPIED, and it reached hardware
+
+**Problem.** `build_release.ps1` gained an `-Environment` parameter so the bench build could be packaged with the same verified pipeline (the ZIP must be STORE — `Compress-Archive` deflates by default and the on-device extractor rejects that at flash time). The two `pio run -e` calls were parameterised. **`$BIN_SRC` and four sibling paths were not** — they stayed hardcoded at `.pio\build\lolin_s3\`.
+
+So the script built `lolin_s3_bench` correctly and then copied the **release** binary, which happened to be sitting there from an earlier build. Everything downstream agreed with the label: the output directory was `bin/2.8.0-bench/`, the filename said `2.8.0-bench`, the ZIP manifest said `2.8.0-bench`. The only thing that disagreed was the binary. It was OTA'd to FDA4 and the unit came up reporting **`2.8.0`**.
+
+**Root cause.** Parameterising the *action* but not the *artefact paths*. A half-parameterised script is worse than an unparameterised one: the unparameterised version is honestly wrong for every env but the default, while this one is right in the parts you look at and wrong in the part you do not.
+
+**Fix.** All five source paths now follow `$Environment`, and — the part that matters — the script **verifies the packaged binary actually contains the version string on its label** before going further. `FIRMWARE_VERSION` is compiled into the image, so this is a substring scan of the bytes. Proven fail-first against the bad artefact itself: the file labelled `2.8.0-bench` contains `2.8.0` and does **not** contain `2.8.0-bench`, and the real bench build (7 KB larger) does.
+
+**What caught it, and what did not.** No check in the build caught it. `ota_push.py`'s **post-reboot verify** caught it — `MISMATCH, expected fw=2.8.0-bench, got fw=2.8.0`, exit 1. That step exists because of the paired-commit invariant, and here it did duty as the only end-to-end assertion that the thing on the unit is the thing that was asked for. **A packaging step with no check on its own output is a step that can only be caught by the device.**
+
+**A second symptom on the same push, worth recognising.** The first push also reported `asset_version = 2.8.0` even though the uploaded ZIP's manifest said `2.8.0-bench` — and the firmware deliberately **preserves** the ZIP's manifest (`ota_manager.cpp`: T13 used to overwrite it, which "defeated the mismatch detector"). The likely cause is the **FW_DONE fallback**: step 3 of that push waited ~129 s for the reboot (uptime 133 094 -> 133 223), crossing the 120 s threshold, so the firmware committed **alone** and the asset partition was stranded — exactly the failure the paired-commit invariant names. The corrected push completed its asset POST in 0.4 s and reported both fields as `2.8.0-bench`. **Stated as the likely cause, not a proven one** — it was not instrumented, and the clean re-push removed the evidence.
+
+**Where it lives.** `bin/build_release.ps1` Steps 1 and 1.5.
 
 ## 2026-09-15 — the emulated slaves' replies never assert one differential rail, so T5 has a bit error rate and T17 does not
 

@@ -25,7 +25,25 @@
     The web-assets ZIP uses ZIP STORE (no compression) because the on-device
     OTA extractor only handles method=0.  DEFLATE entries are rejected at
     flash time with a diagnostic error message.
+.PARAMETER Environment
+    PlatformIO environment to build. Defaults to `lolin_s3`, the release build,
+    so existing invocations are unchanged.
+
+    Pass `lolin_s3_bench` to package the dev/commissioning build. That env sets
+    its own FIRMWARE_VERSION (the `-bench` suffix is deliberate: a unit running
+    it must never report a plain release version, because it carries an open
+    Modbus write route), so the version is read from THAT env's section rather
+    than the first match in the file.
+
+    Added 2026-09-15. Before this, packaging a bench build meant hand-rolling
+    the pipeline, and the trap waiting there is Step 3: the ZIP must be STORE,
+    and `Compress-Archive` deflates by default, which the on-device extractor
+    rejects at flash time. Reusing this script is what avoids that.
 #>
+
+param(
+    [string]$Environment = "lolin_s3"
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -54,8 +72,26 @@ $ini_text = Get-Content $INI_PATH -Raw
 #   2.0.0-alpha.6.25
 #   2.0.0-rc.1
 #   2.0.0
-if ($ini_text -match 'FIRMWARE_VERSION=\\"([0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.\-]+)?)\\"') {
+# Scoped to the selected environment's own section. `lolin_s3_bench` extends
+# `lolin_s3` but restates FIRMWARE_VERSION with a `-bench` suffix, so the first
+# match in the file is the WRONG one for any env but the default -- it would
+# package a bench binary under a plain release version, which is precisely the
+# version-does-not-match-content trap that suffix exists to prevent.
+$env_section = $null
+if ($ini_text -match "(?ms)^\[env:$([regex]::Escape($Environment))\](.*?)(?=^\[|\z)") {
+    $env_section = $Matches[1]
+} else {
+    Write-Error "No [env:$Environment] section in $INI_PATH"
+    exit 1
+}
+
+$ver_re = 'FIRMWARE_VERSION=\\"([0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.\-]+)?)\\"'
+if ($env_section -match $ver_re) {
     $VERSION = $Matches[1]
+} elseif ($ini_text -match $ver_re) {
+    # The env inherits its version from a base env rather than restating it.
+    $VERSION = $Matches[1]
+    Write-Host "    (env:$Environment inherits FIRMWARE_VERSION)" -ForegroundColor DarkGray
 } else {
     Write-Error "Could not find FIRMWARE_VERSION in $INI_PATH"
     exit 1
@@ -130,19 +166,45 @@ try {
     # ForEach-Object { Write-Host $_ }` pipeline still tripped because the
     # `2>&1` merge happened inside the strict-mode envelope; toggling EAP
     # for just this block is the bulletproof fix.
-    & $PIO run -e lolin_s3 2>&1 | ForEach-Object { Write-Host $_ }
+    & $PIO run -e $Environment 2>&1 | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { throw "pio run failed (exit $LASTEXITCODE)" }
 } finally {
     $ErrorActionPreference = $prev_eap
     Pop-Location
 }
 
-$BIN_SRC = Join-Path $FIRMWARE_DIR ".pio\build\lolin_s3\firmware.bin"
+$BIN_SRC = Join-Path $FIRMWARE_DIR ".pio\build\$Environment\firmware.bin"
 $BIN_DST = Join-Path $OUT_DIR "greenhouse-controller-$VERSION.bin"
 Copy-Item -Force $BIN_SRC $BIN_DST
 
+# ---------------------------------------------------------------------------
+# The packaged binary must actually BE the version on the label.
+#
+# Added 2026-09-15 after this script packaged a bench build under a release
+# binary and OTA'd it to FDA4. The cause was that `pio run -e` was
+# parameterised but $BIN_SRC still pointed at .pio\build\lolin_s3\, so the
+# correct env was BUILT and the wrong env's binary was COPIED. Nothing
+# downstream noticed: the filename said 2.8.0-bench, the zip said
+# 2.8.0-bench, and only the unit -- after two reboots -- reported 2.8.0.
+#
+# FIRMWARE_VERSION is compiled into the image, so the string is present in the
+# bytes. Checking it here turns "packaged the wrong environment" from a
+# silent, hardware-reaching mistake into a build failure. This is the one
+# check that would have caught it, and it costs a substring scan.
+# ---------------------------------------------------------------------------
+$bin_bytes  = [System.IO.File]::ReadAllBytes($BIN_DST)
+$bin_latin1 = [System.Text.Encoding]::GetEncoding(28591).GetString($bin_bytes)
+if ($bin_latin1.IndexOf($VERSION) -lt 0) {
+    Write-Error ("Packaged binary does not contain the string '$VERSION'.`n" +
+                 "  source : $BIN_SRC`n" +
+                 "  Built env:$Environment but copied a binary that does not " +
+                 "carry its version. Check that .pio\build\$Environment\ exists " +
+                 "and that the build in Step 1 actually succeeded.")
+    exit 1
+}
+
 $bin_kb = [math]::Round((Get-Item $BIN_DST).Length / 1KB, 1)
-Write-Host "    -> $BIN_DST  ($bin_kb KB)" -ForegroundColor Green
+Write-Host "    -> $BIN_DST  ($bin_kb KB, version string verified)" -ForegroundColor Green
 
 # rc.1.2.1 — Archive the matching ELF + linker map + partition table + bootloader
 # alongside the .bin. The ELF is REQUIRED to decode coredumps captured by the
@@ -156,10 +218,10 @@ Write-Host "    -> $BIN_DST  ($bin_kb KB)" -ForegroundColor Green
 # All four are gitignored alongside the .bin (bin/**/*.{bin,elf,zip}), so the
 # archive lives locally per checkout but never bloats the repo. The release
 # build is reproducible from the matching tag if needed.
-$ELF_SRC = Join-Path $FIRMWARE_DIR ".pio\build\lolin_s3\firmware.elf"
-$MAP_SRC = Join-Path $FIRMWARE_DIR ".pio\build\lolin_s3\greenhouse_controller.map"
-$BL_SRC  = Join-Path $FIRMWARE_DIR ".pio\build\lolin_s3\bootloader.bin"
-$PT_SRC  = Join-Path $FIRMWARE_DIR ".pio\build\lolin_s3\partitions.bin"
+$ELF_SRC = Join-Path $FIRMWARE_DIR ".pio\build\$Environment\firmware.elf"
+$MAP_SRC = Join-Path $FIRMWARE_DIR ".pio\build\$Environment\greenhouse_controller.map"
+$BL_SRC  = Join-Path $FIRMWARE_DIR ".pio\build\$Environment\bootloader.bin"
+$PT_SRC  = Join-Path $FIRMWARE_DIR ".pio\build\$Environment\partitions.bin"
 
 foreach ($pair in @(
     @($ELF_SRC, "firmware-$VERSION.elf"),
@@ -187,7 +249,7 @@ Push-Location $FIRMWARE_DIR
 $prev_eap = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'   # rc.1.3 — same EAP toggle as Step 1
 try {
-    & $PIO run -e lolin_s3 -t buildfs 2>&1 | ForEach-Object { Write-Host $_ }
+    & $PIO run -e $Environment -t buildfs 2>&1 | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { throw "pio buildfs failed (exit $LASTEXITCODE)" }
 } finally {
     $ErrorActionPreference = $prev_eap
