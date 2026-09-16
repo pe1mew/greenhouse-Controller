@@ -211,12 +211,30 @@ def cmd_report(u, args):
     print("  gate now       : %s" % now["gate"])
 
     # Power first: a clean result on too small a sample is not a pass.
-    if hours < args.hours or d["strokes"] < args.min_strokes:
-        print("\nINCONCLUSIVE: the sample is too small to mean anything yet.")
-        print("Zero faults across %d stroke(s) in %.2f h is not evidence that the"
-              % (d["strokes"], hours))
-        print("detectors stay quiet over a period -- it is mostly evidence that")
-        print("little happened. Keep soaking.")
+    #
+    # Name WHICH criterion is short. The first version said "mostly evidence
+    # that little happened" whenever either was, and printed exactly that over
+    # a run with 13 strokes and every counter clean -- where plenty had
+    # happened and only the clock was short. A message that misdescribes its
+    # own evidence teaches the reader to discount it.
+    short_time = hours < args.hours
+    short_strokes = d["strokes"] < args.min_strokes
+    if short_time or short_strokes:
+        print("\nINCONCLUSIVE:")
+        if short_strokes:
+            print("  too few strokes: %d against %d needed. Zero faults across %d"
+                  % (d["strokes"], args.min_strokes, d["strokes"]))
+            print("  stroke(s) is mostly evidence that little moved, not that the")
+            print("  detectors stay quiet.")
+        if short_time:
+            print("  not long enough: %.2f h against %.1f needed%s."
+                  % (hours, args.hours,
+                     " -- the stroke count is already there" if not short_strokes else ""))
+        if not short_strokes:
+            print("\n  Nothing is wrong: %d strokes, all counters clean, gate %s."
+                  % (d["strokes"], now["gate"]))
+            print("  It needs %.2f more hours." % max(0.0, args.hours - hours))
+        print("\nKeep soaking.")
         return 2
 
     fails = []

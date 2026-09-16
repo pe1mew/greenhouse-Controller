@@ -364,8 +364,9 @@
       <button onclick="postCfg('motor','dwell_close_m3','cfg-dwell-close-m3','int')">Apply</button>
       <span class="save-ok" id="fb-dwell-close-m3"></span>
     </div>
-    <div id="card-commission" hidden>
+    <div id="card-commission">
       <h3>Linear control <span class="muted">· position sensor, not yet driving the window</span></h3>
+      <p id="cm-unavailable" class="disabled-why"></p>
       <div class="slider-row">
         <label data-tip="Distance between the two END SENSORS, in millimetres — measure it with a tape. This is the known length the teach correlates the sensor&apos;s raw reading against, so it must be right before teaching. It is NOT the travel time above: the motor overdrives past both end sensors, so its run is always longer.">Window size (mm)</label>
         <input type="range"  id="cfg-window-mm-sl" min="100" max="5000" step="1">

@@ -264,6 +264,38 @@ body.is-admin  .farmer-hidden { display: flex; }
   pointer-events: none;
 }
 
+/* ── Unavailable, but still VISIBLE ──────────────────────────────────
+ * The general form of the rule `.rh-disabled` already follows: a control
+ * the operator cannot use right now is GREYED OUT, never removed.
+ *
+ * Hiding it answers no question. An operator looking for a setting that is
+ * not on screen cannot tell "this build does not have it" from "I am on the
+ * wrong tab" from "it is broken", and has nothing to search for or quote.
+ * That is not hypothetical here: the whole Linear control group was
+ * `hidden` whenever /api/diag/commission did not answer, and when two routes
+ * silently failed to register (2026-09-16) the deadzone setting simply
+ * vanished with no way to tell why from the GUI.
+ *
+ * So: dim it, make it inert, and say WHY in `.disabled-why` next to it.
+ * `pointer-events: none` covers the whole subtree, so nothing inside is
+ * clickable or draggable even though it is still readable. */
+.disabled-block {
+  opacity: 0.4;
+  pointer-events: none;
+}
+.disabled-why {
+  color: var(--yellow);
+  font-size: 0.85rem;
+  margin: 0.25rem 0 0.5rem 0;
+}
+/* The reason must stay READABLE and SELECTABLE even though the block it
+ * explains is inert -- it is the one thing the operator needs to act on or
+ * quote, so it opts out of both the dimming and the pointer-events block. */
+.disabled-block .disabled-why {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 /* ── OTA progress bar ────────────────────────────────────────────── */
 .ota-progress-bar {
   width: 100%;

@@ -131,9 +131,9 @@ function renderIdentity() {
 // ratify. What this screen shows is a machine VERDICT, so a re-teach happens
 // when something is actually wrong rather than on a schedule.
 //
-// Only a commissioning build serves /api/diag/commission, so the whole Linear
-// control group stays hidden on a release build and the Motors tab looks
-// exactly as it did.
+// Only a commissioning build serves /api/diag/commission. On a release build
+// the whole Linear control group is therefore GREYED OUT with the reason shown
+// beside it -- not hidden. See `commSetAvailable()`.
 const CM_CAL_WHY = {
   no_device:      'the sensor is not answering.',
   no_window_size: 'no window size is set on the device — measure it and apply it above.',
@@ -205,16 +205,46 @@ function commRender(c) {
   }
 }
 
+// Why the Linear control group is unavailable, in the operator's terms.
+// Reached with the HTTP status, because the statuses mean different things and
+// "it is not there" is the least useful of the possible answers.
+function commWhyUnavailable(status) {
+  if (status === 404) {
+    return 'Not available on this firmware: /api/diag/commission is not served. '
+         + 'Commissioning lives in a bench build — or a route failed to register at boot.';
+  }
+  if (status === 401 || status === 403) {
+    return 'Not available: log in as admin to commission the position sensor.';
+  }
+  if (status === 0) {
+    return 'Not available: the controller did not answer.';
+  }
+  return 'Not available: /api/diag/commission returned HTTP ' + status + '.';
+}
+
+// GREY OUT, never hide. See style.css `.disabled-block`: an operator looking
+// for a setting that is not on screen cannot tell a build without the feature
+// from a wrong tab from a fault, and has nothing to quote. This group was
+// `hidden` until 2026-09-16, when two routes silently failed to register and
+// the deadzone setting simply vanished.
+function commSetAvailable(status, c) {
+  const card = document.getElementById('card-commission');
+  if (!card) return;
+  const live = !!(c && c.ok);
+  card.classList.toggle('disabled-block', !live);
+  card.setAttribute('aria-disabled', live ? 'false' : 'true');
+  setText('cm-unavailable', live ? '' : commWhyUnavailable(status));
+  if (live) commRender(c);
+}
+
 function commPoll() {
   fetch('/api/diag/commission', { credentials: 'same-origin' })
-    .then(function (r) { return r.ok ? r.json() : null; })
-    .then(function (c) {
-      const card = document.getElementById('card-commission');
-      if (!card) return;
-      card.hidden = !(c && c.ok);
-      if (c && c.ok) commRender(c);
+    .then(function (r) {
+      if (!r.ok) return { status: r.status, body: null };
+      return r.json().then(function (j) { return { status: r.status, body: j }; });
     })
-    .catch(function () { /* release build, or logged out — stays hidden */ });
+    .then(function (res) { commSetAvailable(res.status, res.body); })
+    .catch(function () { commSetAvailable(0, null); });
 }
 
 function commAct(action, extra) {
