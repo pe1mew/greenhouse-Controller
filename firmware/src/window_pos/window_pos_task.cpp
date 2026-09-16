@@ -538,6 +538,25 @@ static bool probe_sensor(void)
          * the first stroke the honest state is TIMED-because-not-yet-promoted,
          * not TIMED-because-probing. */
         publish_mode(s_ctrl_mode, WPOS_GATE_OK);
+#ifdef MODBUS_BENCH
+        /* Judge the sensor's calibration now that it is confirmed present.
+         *
+         * Before 2026-09-16 nothing did this at boot: commission_refresh() ran
+         * only after an operator action (set window size, teach, abort, or an
+         * explicit "refresh" POST that the GUI never sends), and the GET
+         * handler serves a cached status. So after every reboot the Linear
+         * control card reported a fully calibrated encoder as verdict UNKNOWN
+         * with window size 0 -- right beside a "Teach (moves M3)" button. That
+         * is an invitation to re-teach a working sensor, which MOVES the
+         * window and can mis-calibrate it.
+         *
+         * Here rather than once at task start: this runs every time the gate
+         * re-opens, so a sensor that was absent at boot, or unplugged and
+         * refitted, is re-judged when it comes back instead of keeping a stale
+         * NO_DEVICE verdict. It costs one holding-register read per gate
+         * opening, on the task that already owns this device. */
+        commission_refresh();
+#endif
     }
     return true;
 }

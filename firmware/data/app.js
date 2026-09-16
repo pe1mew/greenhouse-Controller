@@ -198,10 +198,25 @@ function commRender(c) {
   // it. Every other config field is populated once from /api/config and then left
   // alone; this one polls, so it needs an explicit dirty flag.
   const w = document.getElementById('cfg-window-mm');
-  if (w && !commWindowDirty && c.window_mm) {
-    w.value = c.window_mm;
-    const sl = document.getElementById('cfg-window-mm-sl');
-    if (sl) sl.value = c.window_mm;
+  if (w && !commWindowDirty) {
+    const sl  = document.getElementById('cfg-window-mm-sl');
+    const row = w.closest('.slider-row');
+    if (c.window_mm) {
+      w.value = c.window_mm;
+      w.placeholder = '';
+      if (sl) sl.value = c.window_mm;
+      if (row) row.classList.remove('dimmed');
+    } else {
+      // No window size on the device. A range input ALWAYS shows a thumb, and
+      // its default midpoint reads as a real ~2550 mm -- which is what the card
+      // showed on 2026-09-16 beside an empty number field. Say "not set" and dim
+      // the row so the thumb is not taken for a value. Dimmed, not disabled:
+      // setting a size is exactly what the operator needs to do here, so the
+      // control stays usable (`.dimmed` does not block pointer events).
+      w.value = '';
+      w.placeholder = 'not set';
+      if (row) row.classList.add('dimmed');
+    }
   }
 }
 
