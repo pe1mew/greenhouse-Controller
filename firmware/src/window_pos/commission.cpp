@@ -41,6 +41,16 @@ static uint32_t            s_t_start_ms;
 static bool                s_prev_at_end;
 static bool                s_have_prev;
 
+/* The just-committed-teach window (CAL_ERR_VERIFYING). See commission.h. */
+static bool                s_verifying;
+static uint32_t            s_verify_start_ms;   /* compared by elapsed time: wrap-safe */
+
+/** How long a committed teach may wait for the sensor to clear bit 5 before the
+ *  real verdict is shown regardless. A healthy sensor clears it in well under a
+ *  second; one that never does has REFUSED the teach, and this is what lets that
+ *  surface as INVALID instead of "verifying" forever. */
+#define VERIFY_TIMEOUT_MS  30000u
+
 static uint16_t configured_travel_s(void)
 {
     cfg_shadow_t cfg;
@@ -143,7 +153,16 @@ static void commission_refresh_with(const windowpos_reading_t *fresh)
     s_st.span          = span;
     s_st.span_pct      = pct;
     s_st.teach_armed   = armed;
+    s_verifying        = false;      /* a real judgement ends the verify window */
     portEXIT_CRITICAL(&s_mux);
+}
+
+bool commission_wants_prompt_read(void)
+{
+    portENTER_CRITICAL(&s_mux);
+    const bool v = s_verifying;
+    portEXIT_CRITICAL(&s_mux);
+    return v;
 }
 
 void commission_refresh(void)
@@ -245,10 +264,36 @@ void commission_tick(const windowpos_reading_t *r, uint32_t now_ms)
 {
     teach_state_t state;
     bool          cached_armed;
+    bool          verifying;
+    uint32_t      verify_start;
     portENTER_CRITICAL(&s_mux);
     state        = s_st.state;
     cached_armed = s_st.teach_armed;
+    verifying    = s_verifying;
+    verify_start = s_verify_start_ms;
     portEXIT_CRITICAL(&s_mux);
+
+    /* A committed teach whose sensor never clears bit 5 has been REFUSED. Stop
+     * saying "verifying" and show the real verdict, which will be INVALID. */
+    if (verifying && (uint32_t)(now_ms - verify_start) >= VERIFY_TIMEOUT_MS) {
+        ESP_LOGW(TAG, "teach commit not confirmed within %u ms -- judging anyway",
+                 (unsigned)VERIFY_TIMEOUT_MS);
+        commission_refresh();
+        bool still_armed;
+        portENTER_CRITICAL(&s_mux);
+        still_armed = s_st.teach_armed;
+        portEXIT_CRITICAL(&s_mux);
+        if (still_armed) {
+            /* The sensor never accepted the commit. That is a FAILED teach, not
+             * a complete one -- leaving the state at DONE would recreate the
+             * "teach complete" / "still armed" contradiction this whole change
+             * exists to remove. teach_fail() also disarms the sensor, so nothing
+             * is left armed; re-judge after that. */
+            teach_fail(TEACH_ERR_DEVICE_WRITE);
+            commission_refresh();
+        }
+        return;
+    }
 
     /* Self-correction: the stored verdict must follow the live teach bit.
      *
@@ -303,12 +348,27 @@ void commission_tick(const windowpos_reading_t *r, uint32_t now_ms)
     ESP_LOGW(TAG, "teach committed: closed=%u open=%u", (unsigned)cap_closed,
              (unsigned)cap_open);
 
+    /* Do NOT judge here. The commit has only just been requested; the sensor
+     * clears bit 5 and persists the captures a moment later, so any reading
+     * taken now -- even a fresh one -- still says "armed" and still holds the
+     * previous capture. Judging here produced "teach complete" beside
+     * "INVALID: teach still armed" on every teach (measured 2026-09-16, and the
+     * first attempt at fixing it, a fresh read, did not help for exactly this
+     * reason).
+     *
+     * Instead: say VERIFYING, keep teach_armed true (it IS still armed on the
+     * device), and let the self-correction above judge on the first reading
+     * with bit 5 clear. That reading is also late enough to carry the
+     * persisted captures. commission_wants_prompt_read() makes T17 take that
+     * reading promptly instead of on its 30 s idle cadence. */
     portENTER_CRITICAL(&s_mux);
-    s_st.state = TEACH_DONE;
+    s_st.state           = TEACH_DONE;
+    s_st.verdict         = CAL_UNKNOWN;
+    s_st.cal_reason      = CAL_ERR_VERIFYING;
+    s_st.teach_armed     = true;
+    s_verifying          = true;
+    s_verify_start_ms    = now_ms;
     portEXIT_CRITICAL(&s_mux);
-
-    /* Judge it immediately -- the operator should not have to ask. */
-    commission_refresh();
 }
 
 #endif /* MODBUS_BENCH */

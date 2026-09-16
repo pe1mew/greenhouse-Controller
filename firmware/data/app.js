@@ -142,7 +142,8 @@ const CM_CAL_WHY = {
   teach_armed:    'a teach is still armed and has not completed.',
   wiper_open:     'the wiper circuit is open (bit 2).',
   implausible:    'the reading is outside the calibrated band (bit 6).',
-  not_following:  'the window moved but the reading did not (bit 7) — wire detached, slipping or seized.'
+  not_following:  'the window moved but the reading did not (bit 7) — wire detached, slipping or seized.',
+  verifying:      'the teach has finished; the sensor is still saving it. This settles within a few seconds.'
 };
 const CM_RUN_WHY = {
   not_at_end:   'M3 was not parked at an end sensor.',
@@ -173,7 +174,11 @@ function commRender(c) {
   // Verdict, reusing the window-state colours rather than inventing any.
   const v = document.getElementById('cm-verdict');
   if (v) {
-    v.textContent = (c.verdict || '').toUpperCase();
+    // A just-committed teach reports verdict "unknown" with reason "verifying".
+    // Show that as CHECKING: "UNKNOWN" right after "teach complete" reads like a
+    // fault, and the previous behaviour here -- INVALID -- was simply wrong.
+    const checking = c.cal_reason === 'verifying';
+    v.textContent = checking ? 'CHECKING' : (c.verdict || '').toUpperCase();
     v.className = c.verdict === 'valid' ? 'win-open'
                 : c.verdict === 'invalid' ? 'win-moving' : '';
   }

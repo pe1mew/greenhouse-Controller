@@ -3429,9 +3429,14 @@ static esp_err_t diag_commission_get_handler(httpd_req_t *req)
     commission_status(&c);
 
     static const char *k_verdict[] = { "unknown", "valid", "invalid" };
+    /* Indexed by cal_err_t: order MUST match commission.h, and new reasons are
+     * appended there and here together. */
     static const char *k_cal[] = { "none", "no_device", "no_window_size",
                                    "not_taught", "span_narrow", "teach_armed",
-                                   "wiper_open", "implausible", "not_following" };
+                                   "wiper_open", "implausible", "not_following",
+                                   "verifying" };
+    _Static_assert(sizeof(k_cal) / sizeof(k_cal[0]) == (size_t)CAL_ERR_VERIFYING + 1u,
+                   "k_cal[] must have one string per cal_err_t value, in order");
     static const char *k_state[] = { "idle", "arming", "traversing",
                                      "committing", "done", "failed" };
     static const char *k_run[] = { "none", "not_at_end", "both_ends", "sensor",
@@ -3444,7 +3449,10 @@ static esp_err_t diag_commission_get_handler(httpd_req_t *req)
              "\"span\":%u,\"span_pct\":%u,\"teach_armed\":%s,"
              "\"state\":\"%s\",\"run_reason\":\"%s\",\"dir\":\"%s\"}",
              ((unsigned)c.verdict < 3u) ? k_verdict[c.verdict] : "?",
-             ((unsigned)c.cal_reason < 9u) ? k_cal[c.cal_reason] : "?",
+             /* Bound derived from the table: this was a hardcoded 9, which a
+              * new reason would have silently turned into "?" (2026-09-16). */
+             ((unsigned)c.cal_reason < sizeof(k_cal) / sizeof(k_cal[0]))
+                 ? k_cal[c.cal_reason] : "?",
              (unsigned)c.window_mm, (unsigned)c.taught_closed,
              (unsigned)c.taught_open, (unsigned)c.span, (unsigned)c.span_pct,
              c.teach_armed ? "true" : "false",

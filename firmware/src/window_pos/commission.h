@@ -78,6 +78,21 @@ typedef enum {
     CAL_ERR_WIPER_OPEN,    /**< bit 2 — the wiper circuit is open */
     CAL_ERR_IMPLAUSIBLE,   /**< bit 6 — raw code outside the calibrated band */
     CAL_ERR_NOT_FOLLOWING, /**< bit 7 — switches saw movement, position did not */
+    /**
+     * A teach has JUST committed and the sensor has not yet finished storing it.
+     * Appended, never inserted: the web server maps these to strings by index.
+     *
+     * Reading the captures is the commit, but the sensor clears bit 5 and
+     * persists 40005/40006 a moment AFTER that read. Measured on FDA4
+     * 2026-09-16: a fresh read immediately after the commit still showed bit 5
+     * set and the PREVIOUS capture (848 where the teach had taken 850). Judging
+     * at that instant is therefore always wrong, and it was: every teach ended
+     * "teach complete" beside "INVALID: teach still armed". So the commit shows
+     * this instead, and the real verdict follows on the first reading with bit
+     * 5 clear -- or at VERIFY_TIMEOUT_MS, which is what a REFUSED teach (bit 5
+     * stays set) needs in order to surface as INVALID rather than wait forever.
+     */
+    CAL_ERR_VERIFYING,
 } cal_err_t;
 
 /** @brief Where a teach run is. */
@@ -151,6 +166,18 @@ void commission_teach_abort(void);
 
 /** @brief Re-read the calibration from the device and re-judge it. */
 void commission_refresh(void);
+
+/**
+ * @brief True while a just-committed teach is waiting for the sensor to finish
+ *        storing it (@ref CAL_ERR_VERIFYING).
+ *
+ * T17 samples at rest only every 30 s, so without this the "verifying" state
+ * would sit on screen for up to half a minute after the sensor had already
+ * finished. While this is true T17 samples on every idle tick instead, which
+ * resolves the verdict within about half a second of bit 5 clearing. It is true
+ * only for those few seconds, so the extra bus reads are negligible.
+ */
+bool commission_wants_prompt_read(void);
 
 /**
  * @brief Feed one sensor reading to the teach runner. Called from T17 only.

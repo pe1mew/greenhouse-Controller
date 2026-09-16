@@ -655,7 +655,17 @@ void task_window_pos(void *pvParameters)
             /* Phase 3: still sample at the idle cadence so the log shows the
              * window sitting still, not a gap. Phase 2 idled with zero bus
              * cost; this is the deliberate, temporary trade (see IDLE_LOG_MS). */
-            if ((uint32_t)(now_ms() - last_idle_log_ms) >= IDLE_LOG_MS) {
+            bool idle_sample_due =
+                (uint32_t)(now_ms() - last_idle_log_ms) >= IDLE_LOG_MS;
+#ifdef MODBUS_BENCH
+            /* A just-committed teach is waiting on a reading with bit 5 clear.
+             * At the 30 s idle cadence the operator would watch "verifying" for
+             * up to half a minute after the sensor had already finished --
+             * which is what the 2026-09-16 hardware run showed. Sample every
+             * idle tick until it resolves; that is a few seconds at most. */
+            if (commission_wants_prompt_read()) { idle_sample_due = true; }
+#endif
+            if (idle_sample_due) {
                 last_idle_log_ms = now_ms();
                 windowpos_reading_t ir;
                 const windowpos_status_t ist = windowpos_read(WINDOWPOS_DEFAULT_ADDR, &ir);
