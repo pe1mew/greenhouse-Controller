@@ -170,16 +170,17 @@ A graceful client treats "GET /api/ota/status connection refused" during polling
         │REBOOTING │
         └──────────┘
 
-  Any state on error → ERROR (with error string set)
-  ERROR → IDLE on next valid POST
+  Any failure → session released → ERROR (with error string set)
+  ERROR → next valid POST is accepted at once (no reboot needed)
 ```
 
 **Invariants:**
 
-1. `IDLE` is the only state in which a fresh POST is accepted without surprise. From `ERROR` and `FW_DONE`, fresh POSTs are also accepted (these are "graceful retry" entries).
-2. Exactly one OTA session can be in any non-IDLE/ERROR/FW_DONE state at a time. The state mutex enforces this.
-3. The OTA-in-progress flag (the project uses an EG1 event-group bit) is set when entering any active state and cleared on every exit path, including error. Other tasks read this bit to defer non-essential work (in our case: WiFi reconnect timers, status pushes).
+1. `IDLE` is the only state in which a fresh POST is accepted without surprise. From `ERROR`, both POSTs are also accepted (a "graceful retry" entry). From `FW_DONE` only the **assets** POST is — a second firmware POST is refused until the fallback has fired.
+2. Exactly one OTA session can be in any non-IDLE/ERROR/FW_DONE state at a time. The state mutex enforces this, and a begin **claims** its state under the mutex before the multi-second erase, so a second begin cannot slip into that window.
+3. The OTA-in-progress flag (the project uses an EG1 event-group bit) is set when entering any active state and cleared on every exit path, including error. Other tasks read this bit to defer non-essential work (in our case: WiFi reconnect timers, status pushes). **All non-installing exits go through one teardown** (§8.11), which is what makes this invariant hold rather than merely be intended.
 4. The state mutex must NOT be held during the actual flash erase/program calls — those can take seconds and would lock out the status endpoint.
+5. **A failure never installs anything.** Once an assets POST has started from `FW_DONE`, the verified firmware is installed together with those assets or not at all: an asset failure discards it too, and the fallback timer (already cancelled when the assets POST began) is not re-armed. Re-arming it would install the firmware alone and strand the asset partition — the outcome `FW_DONE` exists to prevent.
 
 ### 4.1 Why FW_DONE is a separate state
 
@@ -396,11 +397,24 @@ The `.elf` and `.map` files are needed for coredump decoding for the lifetime of
 
 If a periodic status push is running concurrently with the flash write, the flash write goes 3-5× slower because of bus contention and interrupt latency. Other tasks should check the OTA-in-progress flag and defer non-essential work for the duration. We do this via an event-group bit; any cross-task signal works.
 
+### 8.11 An interrupted upload must release the session — on every exit
+
+**2026-09-16, FDA4:** a firmware upload cut off at 60 % by a lossy WiFi link left the unit in `fw_writing` until it was rebooted. The handler's receive-failure exit sent a 500 and returned; nothing released the session. With the state busy and the OTA-in-progress flag set, every later upload was refused (the client saw a connection reset), ROTA skipped every check, and the LCD said OTA. The only remote reboot path is completing an OTA — the one thing being refused.
+
+The same audit found four more exits of the same shape: a sender that goes **silent** without closing (no FIN or RST ever arrives, and the handler retried its receive timeout for ever — holding the single httpd task, so the whole web server, not just the OTA); an asset-buffer allocation failure after `FW_DONE`; a failed firmware-only fallback commit (both left the flag set); and a staged image pointer that was never cleared, so a later **asset-only** upload would switch the boot partition to whatever the inactive bank held — a half-written image, a ROTA image that was backed out, or even the previous release.
+
+The rules that came out of it:
+
+- **One teardown for every non-installing exit** (`session_release()` in `ota_manager.cpp`): abort the `esp_ota` handle, forget the staged image, free the ZIP buffer, stop the fallback timer, clear the flag — under the state mutex, with the state changed **last**, so no new session can start while the old one's resources still exist. It leaves `ERROR` with a message that says nothing was installed, and writes an audit row (`LOG_SYSTEM value_a = 32`, see `log/logparser.md`) with the reason and how far the upload got.
+- **The manager releases what it failed itself; the caller releases what failed on its side** (the connection). Only the owner of a session may release it, and never after one of the manager's calls has already returned false — by then another task may own the state.
+- **Bound the silence.** The upload handlers give up after 30 s without a byte (`OTA_UPLOAD_STALL_S`, three `recv_wait_timeout`s). A Windows sender stops retransmitting after about that anyway.
+- **Test it by breaking uploads on purpose:** `python bin/at_ota_abort.py --phase {fw-cut,fw-stall,assets-cut,paired-cut}` cuts or silences an upload, requires the unit to leave the busy state, clear the flag and log the row, then requires a complete paired upload to be accepted and installed. Pre-fix firmware fails it — and stays stuck until rebooted.
+
 ---
 
 ## 9. Things this design deliberately does NOT do
 
-- **Resumable uploads.** A dropped connection mid-firmware means restarting the firmware POST from byte 0. Trade-off chosen to keep the protocol stateless; in our LAN scenario, dropped connections are rare and the retry cost is acceptable.
+- **Resumable uploads.** A dropped connection mid-firmware means restarting the firmware POST from byte 0 — which the device accepts at once, because the dropped session is released (§8.11). Trade-off chosen to keep the protocol stateless; in our LAN scenario, dropped connections are rare and the retry cost is acceptable.
 - **Authenticated firmware signing.** The device verifies SHA-256 of the OTA bin but does not check a signature. Anyone who can authenticate to the device's admin role can flash arbitrary firmware. This is intentional given the deployment context (private LAN, single operator); change it if your threat model is different.
 - **HTTPS.** The *push* endpoints are plaintext on the LAN. TLS adds significant code size and certificate-management overhead; we accept the trade-off for the LAN path. (The *pull* path added in 2.2.0 uses pinned TLS — see §12.)
 - **Background download.** The device is the upload target, not a downloader — *for the push path*. Adding a "pull from URL" mode meant HTTP client + TLS + verify + retry/window logic; that became its own project, **ROTA (2.2.0, §12)**.
@@ -425,6 +439,7 @@ Use this as a build-order TODO when porting to another project:
 - [ ] **Three-fail rollback** with `ota_check_rollback()` at boot, `ota_mark_healthy()` after uptime threshold, exempt for planned-reboot flag.
 - [ ] **Reboot scheduling** via a worker task spawned by a timer callback (not direct from the timer service task).
 - [ ] **OTA-in-progress flag** that other tasks honor.
+- [ ] **One session teardown** used by every exit that does not install, a **silence bound** on the upload receive loop, and a test that cuts and stalls uploads on purpose (§8.11).
 - [ ] **HTTP endpoints** (`POST /api/ota/firmware`, `POST /api/ota/assets`, `GET /api/ota/status`) with admin auth and required-Content-Length checks.
 - [ ] **Status JSON** carrying `fw_ver`, `asset_version`, `uptime_s`, `unit_id` for the push client to verify against.
 

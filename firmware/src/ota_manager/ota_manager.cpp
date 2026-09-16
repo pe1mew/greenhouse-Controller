@@ -72,13 +72,30 @@ static SemaphoreHandle_t s_mx = NULL;
 
 static volatile ota_state_t s_state    = OTA_STATE_IDLE;
 static volatile uint8_t     s_progress = 0;
-static          char        s_error[80] = {};
+/* 128: a released session's text carries the cause plus what to do next
+ * ("…; nothing installed, upload firmware then assets again"). */
+static          char        s_error[128] = {};
 
 /* Firmware OTA */
+/* 0 = no handle open (IDF numbers handles from 1). esp_ota_end() frees the
+ * handle on every path, so it is zeroed before that call, not after. */
 static esp_ota_handle_t       s_ota_handle = 0;
+/* The image staged or verified in THIS session; NULL otherwise. Set only once
+ * esp_ota_begin() succeeds, cleared by every release. T13 reads NULL as "no
+ * firmware in this session" and takes the asset-only path, so a stale value
+ * here would switch the boot partition to whatever that bank holds: a
+ * half-written image, a ROTA image that was backed out, or — after an
+ * esp_ota_begin() that failed before erasing — the previous release. */
 static const esp_partition_t *s_ota_part   = NULL;
 static size_t                 s_fw_total   = 0;
 static size_t                 s_fw_written = 0;
+
+/* LOG_SYSTEM value_a=32 `channel`: which half of the OTA ended. */
+#define OTA_STAGE_FW      1u
+#define OTA_STAGE_ASSETS  2u
+
+/** @brief Bit for one state, so a caller can name the states it may act from. */
+#define OTA_ST(s)  (1u << (unsigned)(s))
 
 /* a.6.34 — firmware-only fallback timer.
  *
@@ -125,14 +142,28 @@ static void set_state_locked(ota_state_t st)
     if (s_mx) xSemaphoreGive(s_mx);
 }
 
-/** @brief Set state to ERROR with a message; logs at ESP_LOGE. */
-static void set_error_locked(const char *msg)
+/**
+ * @brief Atomically move from any state in @p from_mask to @p to.
+ *
+ * The begin functions used to check "busy" under s_mx, release it, and set
+ * the new state only after esp_ota_begin()'s multi-second erase — a window in
+ * which a second begin also passed the check.
+ *
+ * @param from_mask  OTA_ST() set of acceptable current states.
+ * @param to         State to enter.
+ * @param prev       If not NULL, receives the state that was left.
+ * @return false (state untouched) if the current state is not in the mask.
+ */
+static bool claim_state(uint32_t from_mask, ota_state_t to, ota_state_t *prev)
 {
-    if (s_mx) xSemaphoreTake(s_mx, portMAX_DELAY);
-    s_state = OTA_STATE_ERROR;
-    snprintf(s_error, sizeof(s_error), "%s", msg);
-    if (s_mx) xSemaphoreGive(s_mx);
-    ESP_LOGE(TAG, "[OTA] error: %s", msg);
+    ota_mx_init();
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    const ota_state_t cur = s_state;
+    const bool ok = (OTA_ST(cur) & from_mask) != 0u;
+    if (ok) s_state = to;
+    xSemaphoreGive(s_mx);
+    if (prev != NULL) *prev = cur;
+    return ok;
 }
 
 /** @brief Update s_progress to (done × 100 / total); 0 if total == 0. */
@@ -151,19 +182,123 @@ static void update_progress(size_t done, size_t total)
  *   15  OTA firmware-end / verified
  *   16  OTA asset-complete
  *   17  OTA asset-fail
+ *   32  OTA session ended without installing (channel = stage,
+ *       value_b = reason << 8 | progress %)
  *
  * a.6.35.3 — OTA stage codes were moved from 0..2 to 14..17 to avoid
  * colliding with T14 status outcomes, T10 STA/NTP markers, and T9 Q3
  * drop-overflow counts that share the LOG_SYSTEM event_type.
  */
-static void post_log(int16_t val_a)
+static void post_log(int16_t val_a, int16_t val_b = 0, uint8_t channel = 0)
 {
     log_entry_t evt = {};
     evt.timestamp  = (uint32_t)time(NULL);
     evt.event_type = (uint8_t)LOG_SYSTEM;
     evt.initiator  = (uint8_t)LOG_BY_SYSTEM;
+    evt.channel    = channel;
     evt.value_a    = val_a;
+    evt.value_b    = val_b;
     log_post(&evt);
+}
+
+/** @brief Operator wording for an ota_end_reason_t. */
+static const char *end_reason_text(ota_end_reason_t why)
+{
+    switch (why) {
+        case OTA_END_BACKED_OUT:    return "backed out";
+        case OTA_END_CONN_LOST:     return "connection lost";
+        case OTA_END_STALLED:       return "sender went silent";
+        case OTA_END_SETUP_FAILED:  return "could not set up";
+        case OTA_END_WRITE_FAILED:  return "write refused";
+        case OTA_END_VERIFY_FAILED: return "image failed verification";
+        case OTA_END_COMMIT_FAILED: return "install failed";
+    }
+    return "unknown";
+}
+
+/**
+ * @brief End the current session WITHOUT installing anything.
+ *
+ * The one teardown every non-installing exit goes through, so each leaves
+ * the same state behind. Before it existed the web upload's receive-failure
+ * exit tore down nothing: the unit stayed in FW_WRITING with the EG1 bit set,
+ * refused every later upload, and ROTA skipped every check until a reboot.
+ *
+ * Releases the fallback timer (it must not install a firmware this session no
+ * longer owns), the esp_ota handle, the staged image, the ZIP buffer and
+ * EG1_BIT_OTA_IN_PROGRESS. The boot partition and the active LittleFS are not
+ * touched, so the unit keeps running what it ran before the session began.
+ * All of it happens under s_mx with the state changed LAST, so no begin can
+ * find a free state while this session's handle or buffer still exists.
+ *
+ * @param from_mask  OTA_ST() set the caller may release from. In any other
+ *                   state nothing is touched and false is returned — a
+ *                   caller never tears down a session it did not open.
+ * @param stage      OTA_STAGE_FW or OTA_STAGE_ASSETS (the row's `channel`).
+ * @param why        OTA_END_BACKED_OUT leaves IDLE; any other reason, ERROR.
+ * @param detail     Specific cause for the error text, or NULL for a generic
+ *                   "<stage> upload failed at N%: <reason>".
+ * @return true if a session was released.
+ */
+static bool session_release(uint32_t from_mask, uint8_t stage,
+                            ota_end_reason_t why, const char *detail)
+{
+    ota_mx_init();
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    if ((OTA_ST(s_state) & from_mask) == 0u) {
+        xSemaphoreGive(s_mx);
+        return false;
+    }
+    const uint8_t pct = s_progress;
+    /* Say so when a verified image goes too: the natural retry after a failed
+     * asset upload is the ZIP alone, which would install new assets on the old
+     * firmware. */
+    const bool fw_discarded = (stage == OTA_STAGE_ASSETS && s_ota_part != NULL);
+
+    if (s_fw_done_timer != NULL) (void)xTimerStop(s_fw_done_timer, 0);
+    if (s_ota_handle != 0) {
+        (void)esp_ota_abort(s_ota_handle);
+        s_ota_handle = 0;
+    }
+    s_ota_part = NULL;
+    if (s_zip_buf != NULL) {
+        heap_caps_free(s_zip_buf);
+        s_zip_buf = NULL;
+    }
+    s_zip_total = 0;
+    s_zip_rcvd  = 0;
+    s_progress  = 0;
+
+    char text[sizeof(s_error)];
+    if (why == OTA_END_BACKED_OUT) {
+        snprintf(text, sizeof(text), "%s backed out at %u%%",
+                 (stage == OTA_STAGE_FW) ? "firmware" : "assets", (unsigned)pct);
+        s_error[0] = '\0';
+        s_state = OTA_STATE_IDLE;
+    } else {
+        char cause[72];
+        if (detail != NULL) {
+            snprintf(cause, sizeof(cause), "%s", detail);
+        } else {
+            snprintf(cause, sizeof(cause), "%s upload failed at %u%%: %s",
+                     (stage == OTA_STAGE_FW) ? "firmware" : "assets",
+                     (unsigned)pct, end_reason_text(why));
+        }
+        snprintf(s_error, sizeof(s_error), "%s; nothing installed%s", cause,
+                 fw_discarded ? ", upload firmware then assets again" : "");
+        snprintf(text, sizeof(text), "%s", s_error);
+        s_state = OTA_STATE_ERROR;
+    }
+    xSemaphoreGive(s_mx);
+    xEventGroupClearBits(EG1, EG1_BIT_OTA_IN_PROGRESS);
+
+    if (why == OTA_END_BACKED_OUT) {
+        ESP_LOGW(TAG, "[OTA] session released: %s — nothing installed", text);
+    } else {
+        ESP_LOGE(TAG, "[OTA] session released (%s): %s", end_reason_text(why), text);
+    }
+    post_log(32, (int16_t)(((unsigned)why << 8) | pct), stage);
+    return true;
 }
 
 /**
@@ -258,13 +393,13 @@ static void fw_done_commit_task(void *pv)
 {
     (void)pv;
 
-    /* State check under s_mx. If anything else (asset upload, error, retry)
-     * has moved the state away from FW_DONE, this fallback is no longer the
-     * right action — silently bail. */
-    xSemaphoreTake(s_mx, portMAX_DELAY);
-    bool should_commit = (s_state == OTA_STATE_FW_DONE);
-    xSemaphoreGive(s_mx);
-    if (!should_commit) {
+    /* Claim the commit under s_mx. If anything else (asset upload, error,
+     * retry) has moved the state away from FW_DONE, this fallback is no longer
+     * the right action — silently bail. Claiming REBOOTING rather than only
+     * checking closes the window in which an asset upload could start while
+     * this task switches the boot partition underneath it: such an upload is
+     * now refused as busy. */
+    if (!claim_state(OTA_ST(OTA_STATE_FW_DONE), OTA_STATE_REBOOTING, NULL)) {
         ESP_LOGI(TAG, "[OTA] firmware-only fallback worker started but state moved "
                       "off FW_DONE — bailing (likely an asset upload started)");
         vTaskDelete(NULL);
@@ -272,9 +407,11 @@ static void fw_done_commit_task(void *pv)
     }
 
     if (s_ota_part == NULL) {
-        /* Shouldn't happen — s_ota_part is set in ota_firmware_begin() and not
-         * cleared until the next OTA. Belt-and-braces. */
-        ESP_LOGE(TAG, "[OTA] firmware-only fallback: s_ota_part is NULL — refusing to commit");
+        /* Shouldn't happen — FW_DONE is only entered with an image staged, and
+         * only a release clears it. Belt-and-braces. */
+        (void)session_release(OTA_ST(OTA_STATE_REBOOTING), OTA_STAGE_FW,
+                              OTA_END_COMMIT_FAILED,
+                              "fw-only fallback: no staged image");
         vTaskDelete(NULL);
         return;
     }
@@ -291,13 +428,16 @@ static void fw_done_commit_task(void *pv)
 
     esp_err_t err = esp_ota_set_boot_partition(s_ota_part);
     if (err != ESP_OK) {
-        char msg[80];
+        char msg[72];
         snprintf(msg, sizeof(msg),
-                 "fw-only fallback: esp_ota_set_boot_partition: %s",
+                 "fw-only fallback: set_boot_partition: %s",
                  esp_err_to_name(err));
-        set_error_locked(msg);
+        /* Device stays on the current bank. This path used to set ERROR but
+         * leave EG1_BIT_OTA_IN_PROGRESS set, which blocked ROTA until reboot. */
+        (void)session_release(OTA_ST(OTA_STATE_REBOOTING), OTA_STAGE_FW,
+                              OTA_END_COMMIT_FAILED, msg);
         vTaskDelete(NULL);
-        return;   /* leave state = ERROR; device stays on current bank */
+        return;
     }
 
     /* 3 s deferred-reboot — T9 has plenty of runway to flush the value_a=13
@@ -421,39 +561,45 @@ void ota_mark_healthy(void)
 
 bool ota_firmware_begin(size_t total_bytes)
 {
-    ota_mx_init();
-
-    /* Reject if another OTA is already running. */
-    xSemaphoreTake(s_mx, portMAX_DELAY);
-    bool busy = (s_state != OTA_STATE_IDLE && s_state != OTA_STATE_ERROR);
-    xSemaphoreGive(s_mx);
-    if (busy) {
-        ESP_LOGW(TAG, "[OTA] ota_firmware_begin: OTA already in progress");
+    /* Reject if another OTA is already running — and claim the state in the
+     * same step, BEFORE the erase in esp_ota_begin() (seconds), so a second
+     * begin cannot pass the check in the meantime. */
+    ota_state_t prev = OTA_STATE_IDLE;
+    if (!claim_state(OTA_ST(OTA_STATE_IDLE) | OTA_ST(OTA_STATE_ERROR),
+                     OTA_STATE_FW_WRITING, &prev)) {
+        ESP_LOGW(TAG, "[OTA] ota_firmware_begin: OTA already in progress (state %d)",
+                 (int)prev);
         return false;
     }
-
-    s_ota_part = esp_ota_get_next_update_partition(NULL);
-    if (!s_ota_part) {
-        set_error_locked("no inactive OTA partition available");
-        return false;
-    }
-
-    esp_err_t err = esp_ota_begin(s_ota_part,
-                                  (total_bytes > 0) ? total_bytes : OTA_SIZE_UNKNOWN,
-                                  &s_ota_handle);
-    if (err != ESP_OK) {
-        char msg[64];
-        snprintf(msg, sizeof(msg), "esp_ota_begin: %s", esp_err_to_name(err));
-        set_error_locked(msg);
-        return false;
-    }
-
     xEventGroupSetBits(EG1, EG1_BIT_OTA_IN_PROGRESS);
     s_fw_total   = total_bytes;
     s_fw_written = 0;
     s_progress   = 0;
     s_error[0]   = '\0';
-    set_state_locked(OTA_STATE_FW_WRITING);
+
+    const esp_partition_t *part = esp_ota_get_next_update_partition(NULL);
+    if (!part) {
+        (void)session_release(OTA_ST(OTA_STATE_FW_WRITING), OTA_STAGE_FW,
+                              OTA_END_SETUP_FAILED,
+                              "no inactive OTA partition available");
+        return false;
+    }
+
+    esp_ota_handle_t handle = 0;
+    esp_err_t err = esp_ota_begin(part,
+                                  (total_bytes > 0) ? total_bytes : OTA_SIZE_UNKNOWN,
+                                  &handle);
+    /* Kept even on failure: IDF registers the handle before its erase, so a
+     * failed erase leaves one behind that the release must abort. */
+    s_ota_handle = handle;
+    if (err != ESP_OK) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "esp_ota_begin: %s", esp_err_to_name(err));
+        (void)session_release(OTA_ST(OTA_STATE_FW_WRITING), OTA_STAGE_FW,
+                              OTA_END_SETUP_FAILED, msg);
+        return false;
+    }
+    s_ota_part = part;
 
     ESP_LOGI(TAG, "[OTA] Firmware OTA begin — target partition: %s, size: %u B",
              s_ota_part->label, (unsigned)total_bytes);
@@ -472,11 +618,10 @@ bool ota_firmware_write(const uint8_t *chunk, size_t len)
 
     esp_err_t err = esp_ota_write(s_ota_handle, chunk, len);
     if (err != ESP_OK) {
-        esp_ota_abort(s_ota_handle);
         char msg[64];
         snprintf(msg, sizeof(msg), "esp_ota_write: %s", esp_err_to_name(err));
-        set_error_locked(msg);
-        xEventGroupClearBits(EG1, EG1_BIT_OTA_IN_PROGRESS);
+        (void)session_release(OTA_ST(OTA_STATE_FW_WRITING), OTA_STAGE_FW,
+                              OTA_END_WRITE_FAILED, msg);
         return false;
     }
 
@@ -487,15 +632,19 @@ bool ota_firmware_write(const uint8_t *chunk, size_t len)
 
 bool ota_firmware_end(void)
 {
-    if (s_state != OTA_STATE_FW_WRITING) return false;
-    set_state_locked(OTA_STATE_FW_VERIFYING);
+    if (!claim_state(OTA_ST(OTA_STATE_FW_WRITING), OTA_STATE_FW_VERIFYING, NULL)) {
+        return false;
+    }
 
-    esp_err_t err = esp_ota_end(s_ota_handle);
+    /* esp_ota_end() frees the handle whatever it returns. */
+    const esp_ota_handle_t handle = s_ota_handle;
+    s_ota_handle = 0;
+    esp_err_t err = esp_ota_end(handle);
     if (err != ESP_OK) {
         char msg[64];
         snprintf(msg, sizeof(msg), "esp_ota_end: %s", esp_err_to_name(err));
-        set_error_locked(msg);
-        xEventGroupClearBits(EG1, EG1_BIT_OTA_IN_PROGRESS);
+        (void)session_release(OTA_ST(OTA_STATE_FW_VERIFYING), OTA_STAGE_FW,
+                              OTA_END_VERIFY_FAILED, msg);
         return false;
     }
 
@@ -539,19 +688,11 @@ bool ota_firmware_end(void)
     return true;
 }
 
-bool ota_firmware_abort(void)
+bool ota_firmware_abort(ota_end_reason_t why)
 {
-    if (s_state != OTA_STATE_FW_WRITING && s_state != OTA_STATE_FW_VERIFYING) {
-        return false;   /* nothing open to abort */
-    }
-    if (s_ota_handle != 0) {
-        esp_ota_abort(s_ota_handle);
-        s_ota_handle = 0;
-    }
-    xEventGroupClearBits(EG1, EG1_BIT_OTA_IN_PROGRESS);
-    set_state_locked(OTA_STATE_IDLE);
-    ESP_LOGW(TAG, "[OTA] firmware write aborted before commit (ROTA deferral) — boot partition unchanged");
-    return true;
+    /* FW_WRITING only: FW_VERIFYING exists solely inside ota_firmware_end(),
+     * which releases the session itself if verification fails. */
+    return session_release(OTA_ST(OTA_STATE_FW_WRITING), OTA_STAGE_FW, why, NULL);
 }
 
 /* ============================================================
@@ -560,17 +701,18 @@ bool ota_firmware_abort(void)
 
 bool ota_assets_begin(size_t total_bytes)
 {
-    ota_mx_init();
-
-    xSemaphoreTake(s_mx, portMAX_DELAY);
-    bool busy = (s_state != OTA_STATE_IDLE &&
-                 s_state != OTA_STATE_ERROR &&
-                 s_state != OTA_STATE_FW_DONE);
-    xSemaphoreGive(s_mx);
-    if (busy) {
-        ESP_LOGW(TAG, "[OTA] ota_assets_begin: OTA already in progress");
+    /* Claim first (see ota_firmware_begin). From FW_DONE the claim is also
+     * what stops the firmware-only fallback: its worker installs only while it
+     * still sees FW_DONE. */
+    ota_state_t prev = OTA_STATE_IDLE;
+    if (!claim_state(OTA_ST(OTA_STATE_IDLE) | OTA_ST(OTA_STATE_ERROR) |
+                         OTA_ST(OTA_STATE_FW_DONE),
+                     OTA_STATE_ASSETS_BUFFERING, &prev)) {
+        ESP_LOGW(TAG, "[OTA] ota_assets_begin: OTA already in progress (state %d)",
+                 (int)prev);
         return false;
     }
+    xEventGroupSetBits(EG1, EG1_BIT_OTA_IN_PROGRESS);
 
     /* a.6.34 — cancel the firmware-only fallback timer if it was armed by a
      * preceding ota_firmware_end(). The asset upload supersedes the
@@ -580,6 +722,11 @@ bool ota_assets_begin(size_t total_bytes)
     if (s_fw_done_timer != NULL) {
         xTimerStop(s_fw_done_timer, 0);
     }
+    /* Only a session that continues FW_DONE pairs with a staged image. Every
+     * release clears it already; this states the rule where T13 relies on it. */
+    if (prev != OTA_STATE_FW_DONE) {
+        s_ota_part = NULL;
+    }
 
     /* Free any stale buffer from a previous failed attempt. */
     if (s_zip_buf) {
@@ -587,20 +734,24 @@ bool ota_assets_begin(size_t total_bytes)
         s_zip_buf = NULL;
     }
 
-    s_zip_buf = (uint8_t *)heap_caps_malloc(total_bytes,
-                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_zip_buf) {
-        set_error_locked("PSRAM alloc failed for ZIP buffer");
-        return false;
-    }
-
     s_zip_total = total_bytes;
     s_zip_rcvd  = 0;
     s_progress  = 0;
     s_error[0]  = '\0';
-    xEventGroupSetBits(EG1, EG1_BIT_OTA_IN_PROGRESS);
-    set_state_locked(OTA_STATE_ASSETS_BUFFERING);
-    ESP_LOGI(TAG, "[OTA] Assets OTA begin — buffering %u B in PSRAM", (unsigned)total_bytes);
+    s_zip_buf = (uint8_t *)heap_caps_malloc(total_bytes,
+                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_zip_buf) {
+        /* Used to set ERROR and return with the EG1 bit still set, the
+         * fallback cancelled and a verified image still staged. */
+        (void)session_release(OTA_ST(OTA_STATE_ASSETS_BUFFERING), OTA_STAGE_ASSETS,
+                              OTA_END_SETUP_FAILED,
+                              "PSRAM alloc failed for ZIP buffer");
+        return false;
+    }
+
+    ESP_LOGI(TAG, "[OTA] Assets OTA begin — buffering %u B in PSRAM%s",
+             (unsigned)total_bytes,
+             (s_ota_part != NULL) ? " (pairs with the verified firmware)" : "");
     return true;
 }
 
@@ -608,8 +759,9 @@ bool ota_assets_accumulate(const uint8_t *chunk, size_t len, size_t offset)
 {
     if (s_state != OTA_STATE_ASSETS_BUFFERING) return false;
     if (!s_zip_buf || offset + len > s_zip_total) {
-        set_error_locked("ZIP accumulate: buffer overrun");
-        xEventGroupClearBits(EG1, EG1_BIT_OTA_IN_PROGRESS);
+        (void)session_release(OTA_ST(OTA_STATE_ASSETS_BUFFERING), OTA_STAGE_ASSETS,
+                              OTA_END_WRITE_FAILED,
+                              "ZIP accumulate: buffer overrun");
         return false;
     }
     memcpy(s_zip_buf + offset, chunk, len);
@@ -618,19 +770,26 @@ bool ota_assets_accumulate(const uint8_t *chunk, size_t len, size_t offset)
     return true;
 }
 
+bool ota_assets_abort(ota_end_reason_t why)
+{
+    return session_release(OTA_ST(OTA_STATE_ASSETS_BUFFERING), OTA_STAGE_ASSETS,
+                           why, NULL);
+}
+
 bool ota_assets_end(void)
 {
-    if (s_state != OTA_STATE_ASSETS_BUFFERING) return false;
-
-    if (s_zip_rcvd < s_zip_total) {
-        set_error_locked("incomplete ZIP received");
-        heap_caps_free(s_zip_buf);
-        s_zip_buf = NULL;
-        xEventGroupClearBits(EG1, EG1_BIT_OTA_IN_PROGRESS);
+    /* Claimed here, not after the checks: from ASSETS_WRITING on, the buffer
+     * is T13's and no other session can start. */
+    if (!claim_state(OTA_ST(OTA_STATE_ASSETS_BUFFERING), OTA_STATE_ASSETS_WRITING, NULL)) {
         return false;
     }
 
-    set_state_locked(OTA_STATE_ASSETS_WRITING);
+    if (s_zip_rcvd < s_zip_total) {
+        (void)session_release(OTA_ST(OTA_STATE_ASSETS_WRITING), OTA_STAGE_ASSETS,
+                              OTA_END_WRITE_FAILED, "incomplete ZIP received");
+        return false;
+    }
+
     s_progress = 0;
 
     /* Spawn T13; it takes ownership of s_zip_buf + s_zip_total. */
@@ -643,10 +802,8 @@ bool ota_assets_end(void)
         0        /* Core 0 (protocol core) */
     );
     if (rc != pdPASS) {
-        set_error_locked("T13 task spawn failed");
-        heap_caps_free(s_zip_buf);
-        s_zip_buf = NULL;
-        xEventGroupClearBits(EG1, EG1_BIT_OTA_IN_PROGRESS);
+        (void)session_release(OTA_ST(OTA_STATE_ASSETS_WRITING), OTA_STAGE_ASSETS,
+                              OTA_END_SETUP_FAILED, "T13 task spawn failed");
         return false;
     }
 
@@ -871,6 +1028,11 @@ void task_ota_manager(void *pvParameters)
     bool         ok       = false;
     bool         lfs_open = false;
     lfs_status_t lfs_st;   /* hoisted: declaration must precede all gotos */
+    /* The failure text is held here and the state left at ASSETS_WRITING until
+     * the cleanup below is done. Setting ERROR at the point of failure (as this
+     * task used to) made the state free while the buffer was still to be freed,
+     * so an asset upload starting in that window had ITS buffer freed. */
+    char         fail[80] = "asset OTA failed";
 
     /* Ensure the inactive partition is not already mounted (e.g. retry path).
      * We do NOT format/erase before writing: littlefs_write() truncates each
@@ -904,13 +1066,13 @@ void task_ota_manager(void *pvParameters)
         if (fmt_st != LFS_OK) {
             ESP_LOGE(TAG, "[T13] littlefs_format(%c) failed: %d",
                      (inactive_lfs == LFS_PARTITION_A) ? 'A' : 'B', (int)fmt_st);
-            set_error_locked("inactive LittleFS format failed");
+            snprintf(fail, sizeof(fail), "inactive LittleFS format failed");
             goto t13_done;
         }
         lfs_st = littlefs_mount(inactive_lfs);
         if (lfs_st != LFS_OK) {
             ESP_LOGE(TAG, "[T13] post-format remount failed: %d", (int)lfs_st);
-            set_error_locked("inactive LittleFS remount after format failed");
+            snprintf(fail, sizeof(fail), "inactive LittleFS remount after format failed");
             goto t13_done;
         }
         ESP_LOGI(TAG, "[T13] inactive LFS formatted + mounted");
@@ -923,11 +1085,11 @@ void task_ota_manager(void *pvParameters)
         int  nfiles = extract_zip_store(zip_buf, zip_size,
                                         inactive_lfs, zip_err, sizeof(zip_err));
         if (nfiles < 0) {
-            set_error_locked(zip_err);
+            snprintf(fail, sizeof(fail), "%s", zip_err);
             goto t13_done;
         }
         if (nfiles == 0) {
-            set_error_locked("no files extracted from ZIP");
+            snprintf(fail, sizeof(fail), "no files extracted from ZIP");
             goto t13_done;
         }
         ESP_LOGI(TAG, "[T13] Extracted %d file(s) from ZIP", nfiles);
@@ -1020,10 +1182,8 @@ t13_done:
          * assets activate together on the reboot below. */
         esp_err_t err = esp_ota_set_boot_partition(s_ota_part);
         if (err != ESP_OK) {
-            char msg[64];
-            snprintf(msg, sizeof(msg),
+            snprintf(fail, sizeof(fail),
                      "esp_ota_set_boot_partition: %s", esp_err_to_name(err));
-            set_error_locked(msg);
             ok = false;
         }
     }
@@ -1036,9 +1196,12 @@ t13_done:
         s_progress = 100;
         schedule_reboot(1000);
     } else {
-        ESP_LOGE(TAG, "[T13] Asset OTA failed: %s", s_error);
+        ESP_LOGE(TAG, "[T13] Asset OTA failed: %s", fail);
         post_log(17);   /* 17 = OTA asset-fail (a.6.35.3 re-numbering) */
-        xEventGroupClearBits(EG1, EG1_BIT_OTA_IN_PROGRESS);
+        /* A verified firmware this session was carrying goes with it: the
+         * boot partition is unchanged, so nothing is installed (ota_state_t). */
+        (void)session_release(OTA_ST(OTA_STATE_ASSETS_WRITING), OTA_STAGE_ASSETS,
+                              OTA_END_COMMIT_FAILED, fail);
     }
 
     vTaskDelete(NULL);

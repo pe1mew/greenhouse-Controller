@@ -51,6 +51,7 @@
 
 #ifndef NATIVE_TEST
   #include "gpio_util.h"
+  #include "sdkconfig.h"              /* CONFIG_UART_ISR_IN_IRAM -- the gh#70 build guard */
   #include "driver/uart.h"
   #include "esp_timer.h"
   #include "esp_rom_sys.h"           /* esp_rom_delay_us */
@@ -274,13 +275,36 @@ static modbus_counters_t s_cnt;
 #define MODBUS_DE_BY_UART 0
 #endif
 
+/* BUILD GUARD (gh#70). Handing DE/RE to the UART is only half the fix: the
+ * TX-done interrupt that drops it must also run in IRAM, or a flash write holds
+ * it back exactly as it held back the task, and OTA loses replies again.
+ *
+ * firmware/sdkconfig.defaults sets CONFIG_UART_ISR_IN_IRAM, but ESP-IDF applies
+ * the defaults only when it CREATES firmware/sdkconfig.<env>. An existing file
+ * keeps its own value, and none of those files is tracked, so no diff shows it.
+ * A checkout whose file predates gh#70 built without the setting, and a release
+ * gave no sign of it: only bench builds report de_ctrl ("uart"). This checks
+ * the value the compiler actually sees, which also catches Kconfig dropping the
+ * option (it depends on !CONFIG_RINGBUF_PLACE_ISR_FUNCTIONS_INTO_FLASH).
+ *
+ * Arduino-framework envs (the driver sketches, the 12F0 loopback suite) are
+ * exempt. They link arduino-esp32's precompiled UART driver, whose sdkconfig.h
+ * does not define the option and cannot be changed from a project, and they
+ * are bench tools that never ship. */
+#if MODBUS_DE_BY_UART && !defined(ARDUINO) && !defined(CONFIG_UART_ISR_IN_IRAM)
+#error "gh#70: CONFIG_UART_ISR_IN_IRAM is not set, so a flash write (OTA) holds back the UART interrupt that releases RS-485 DE/RE and Modbus replies are lost. An existing firmware/sdkconfig.<env> overrides sdkconfig.defaults: set CONFIG_UART_ISR_IN_IRAM=y in it, or delete it so the build regenerates it. See the build guard comment above."
+#endif
+
 const char *modbus_de_control(void)
 {
 #if MODBUS_DE_BY_UART
 #  if defined(CONFIG_UART_ISR_IN_IRAM)
     return "uart+iram";
 #  else
-    return "uart";   /* released by the ISR, which a flash write still holds back */
+    /* ISR in flash, so a flash write still holds the release back. Reachable
+     * only in the Arduino bench envs: the build guard above refuses it
+     * everywhere else. */
+    return "uart";
 #  endif
 #else
     return "task";

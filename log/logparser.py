@@ -894,6 +894,8 @@ def _decode_system(row: dict) -> str:
         #
         # A normal OTA cycle produces rows 14 → 15 → 16 → BOOT.
         # An interrupted cycle (a.6.34 fallback) is 14 → 15 → 13 → BOOT.
+        # A session that ends without installing closes with value_a=32
+        # (since 2026-09-16), e.g. 14 → 32, or 14 → 15 → 32, or 17 → 32.
         # ---------------------------------------------------------------
         if va == 14:
             return "OTA: firmware POST started (bytes streaming to inactive bank)"
@@ -1017,6 +1019,29 @@ def _decode_system(row: dict) -> str:
                         f"since boot = {vb}  (this is the number that predicts a "
                         f"fault; T5 faults on consecutive failures, not on a rate)")
             return f"bus KPI  {who}: param {pid} = {vb}"
+
+        if va == 32:
+            # An OTA session ended WITHOUT installing anything (2026-09-16).
+            # ch = which half (1 firmware, 2 web assets); value_b packs the
+            # reason (high byte) and the progress % it reached (low byte).
+            # Before this row existed an interrupted upload left the unit
+            # refusing every later OTA until a reboot, with nothing on the SD.
+            u = vb & 0xFFFF
+            why, pct = (u >> 8) & 0xFF, u & 0xFF
+            half = {1: "firmware", 2: "web-asset"}.get(ch, f"stage {ch}")
+            if why == 0:
+                return (f"OTA {half} session BACKED OUT at {pct}% on purpose "
+                        f"(ROTA final quiet gate) - nothing installed, not a failure")
+            cause = {1: "the uploader's connection was lost",
+                     2: "the uploader stopped sending",
+                     3: "could not set up (partition / flash erase / memory / task)",
+                     4: "a chunk was refused (not a firmware image?) or the ZIP "
+                        "length did not match",
+                     5: "the firmware image failed verification",
+                     6: "extraction or the boot-partition switch failed",
+                     }.get(why, f"reason {why}")
+            return (f"OTA {half} session FAILED at {pct}%: {cause} - nothing "
+                    f"installed, session released (the next upload is accepted)")
 
         if va in (22, 23, 24):
             _ROTA_CHECK = {0: "up to date", 1: "update found",

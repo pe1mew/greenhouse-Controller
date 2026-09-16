@@ -196,7 +196,8 @@ bool modbus_reinit_is_locked(void);
  *
  * @return "uart+iram" -- the UART, from an interrupt that runs during flash
  *         writes (the fix); "uart" -- the UART, but its interrupt is not in
- *         IRAM, so a flash write still holds the release back; "task" -- this
+ *         IRAM, so a flash write still holds the release back (Arduino bench
+ *         envs only: the firmware refuses to build this way); "task" -- this
  *         driver, from task context (host tests, and the fail-first build
  *         `MODBUS_FAILFIRST_TASK_DE`). Reported so an OTA test result can
  *         never be read off the wrong build.

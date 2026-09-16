@@ -587,10 +587,11 @@ static void rota_apply(const rota_manifest_t *m,
 
     /* R-P03: re-check the quiet gate immediately (< 5 s) before committing.
      * If activity resumed, abort cleanly BEFORE ota_firmware_end() so no
-     * FW_DONE fallback timer can strand a firmware-only commit. */
+     * FW_DONE fallback timer can strand a firmware-only commit. BACKED_OUT is
+     * the one release that is not a failure: it leaves IDLE, not ERROR. */
     if (!quiet_gate()) {
         ESP_LOGW(TAG, "apply aborted at final gate — activity resumed");
-        ota_firmware_abort();
+        (void)ota_firmware_abort(OTA_END_BACKED_OUT);
         audit_apply(1);
         s_update_pending = true;        /* verified update waiting → shield badge */
         s_apply_wait_s = 300u;          /* still in window; retry the quiet gate soon */

@@ -1367,6 +1367,9 @@ Een **MISMATCH**-badge in de Alarms-tegel wijst op een onvolledige OTA-update: d
 - Symptomen van rollback: onverwachte oude versie na update — controleer ook de Alarms-tegel (na rollback met oude web-assets verschijnt **MISMATCH** zolang nog niet beide pakketten opnieuw geladen zijn)
 
 #### Firmware-update mislukt
+- **Upload halverwege afgebroken** (bijvoorbeeld door een slechte WiFi-verbinding): de OTA-status in tab **System** toont een foutmelding die eindigt op `nothing installed`. Er is dan **niets geïnstalleerd**: de controller draait gewoon door op de huidige versie, en een nieuwe poging kan **direct**, zonder herstart. Het SD-logboek bevat een `SYSTEM`-regel met `value_a = 32` en de reden.
+- Eindigt de melding op `upload firmware then assets again`, dan brak de upload van de **web-assets** af nadat de firmware al was geüpload. Die firmware is dan ook verworpen: upload **eerst opnieuw de firmware en daarna de web-assets**. Alleen de ZIP opnieuw uploaden zet nieuwe web-assets op de oude firmware (**MISMATCH**).
+- Valt de laptop tijdens een upload weg zonder de verbinding netjes te sluiten, dan reageert de webinterface tot ongeveer **30 seconden** niet. Daarna geeft de controller de upload op en toont de status de foutmelding.
 - Controleer laptop-WiFi stabiel
 - Probeer kleinere chunks (browser-instelling)
 - Bij blijvende fout: USB-flash via het LOLIN S3-board (procedure: zie `firmware/README.md` of leverancier)

@@ -2,7 +2,7 @@
 
 Append-only. Newest at top. Format per entry: **Problem → Root cause → Fix → Where it lives.**
 
-When something weird happens, check here BEFORE debugging from scratch. **Start at the [index](#index--by-where-it-bites-you)** — it groups every entry by subsystem with symptom-first hooks, which is faster than scrolling 94 entries. **Adding an entry means adding its index line too**; the pair is checked by counting `^## 20` headings against `^- \*\*20` index lines. Entries that recur or affect multiple subsystems graduate up to a topic file or to [CLAUDE.md](../CLAUDE.md) hard constraints.
+When something weird happens, check here BEFORE debugging from scratch. **Start at the [index](#index--by-where-it-bites-you)** — it groups every entry by subsystem with symptom-first hooks, which is faster than scrolling 95 entries. **Adding an entry means adding its index line too**; the pair is checked by counting `^## 20` headings against `^- \*\*20` index lines. Entries that recur or affect multiple subsystems graduate up to a topic file or to [CLAUDE.md](../CLAUDE.md) hard constraints.
 
 Entries that are resolved **and can no longer recur** (code deleted, design changed, fixed both sides) retire to [gotcha-archive.md](gotcha-archive.md) — history only, never needed for triage. Everything still able to bite you is in this file. Being `[RESOLVED]` is *not* sufficient to retire: most resolved entries here stay because an active constraint still depends on them.
 
@@ -84,6 +84,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-07-05** — M3 is the north **side wall**, not a roof panel; 8.1× is travel time, 10× is area
 
 ### OTA & ROTA releases
+- **2026-09-16** — after one upload cut off by the network, the unit refuses every OTA and ROTA skips its checks until someone presses reset (the error exit released nothing)
 - **2026-09-12** — GUI unreachable, multi-second asset loads, "heap leak", failing downloads — all one interfered WiFi AP (paired ping test first)
 - **2026-09-12** — `rota_release.py release` warns "working tree has uncommitted changes" on a clean tree (it counts UNTRACKED files, including the manifest it just wrote)
 - **2026-09-12** — ROTA `dl` and `apply` status read -1 after a pull that clearly happened (the fields reset; the SD log is the authority)
@@ -164,6 +165,41 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
 
 
+## 2026-09-16 — an OTA upload cut off by the network left the unit refusing every later OTA until someone pressed reset
+
+**Problem.** During the teach tests a firmware upload to FDA4 was cut off at 60 % by a lossy WiFi link (15 % ping loss to the unit, 0 % to the gateway). From then on:
+- every upload was refused, and the client saw a connection reset;
+- `/api/ota/status` stayed `fw_writing` and the `ota_in_progress` flag stayed set;
+- ROTA skipped every check.
+
+The unit has no remote reboot path other than completing an OTA, which was exactly what it refused, so it took the reset button.
+
+**Root cause.** The upload handler's receive-failure exit sent a 500 and returned. Nothing released the OTA session, even though `ota_firmware_abort()` existed; only ROTA called it. Auditing every exit found four more of the same shape:
+- **A sender that goes silent without closing** held the single httpd task, and with it the whole web server, for as long as the socket stayed open: the receive timeout was retried forever.
+- **A PSRAM allocation failure after `FW_DONE`** left the flag set.
+- **A failed firmware-only fallback commit** left the flag set too.
+- **The staged-image pointer was never cleared,** so a later asset-only upload could switch the boot partition to whatever the inactive bank held: a half-written image, a backed-out ROTA image, or the previous release.
+
+**Fix.**
+- **One teardown, `session_release()`, for every exit that does not install.** It releases the handle, the image, the buffer, the fallback timer and the flag, and changes the state last. It records a reason code and writes a `LOG_SYSTEM value_a = 32` row.
+- **States are claimed atomically, before the multi-second erase.**
+- **A 30 s silence bound** on the upload receive loop.
+- **A broken asset upload discards a verified firmware** rather than installing it alone.
+
+**Verified on FDA4, fail-first,** with `python bin/at_ota_abort.py`:
+- **The build without the fix failed `fw-cut`.** After a firmware upload cut at 60 %, the state stayed `fw_writing`, the flag stayed set, no row was written, and the next complete upload was refused with HTTP 500. The unit needed the reset button again.
+- **The fixed build passed all five runs:** `fw-cut`, `fw-stall`, `assets-cut`, `paired-cut`, and `fw-cut` closed with an RST at 20 %. Every session was released at once, with a reason-coded error text and a `value_a = 32` row, and the next complete upload installed with `fw_ver` and `asset_version` both matching.
+  - In `fw-stall` the web server answered a second request 30.2 s after the last byte.
+  - In `paired-cut` the verified firmware was discarded, not installed alone.
+- **Not shown on the old build:** `fw-stall`, `assets-cut` and `paired-cut`, each of which would have cost another reset. Their pre-fix behaviour rests on code reading and on tests against a simulated unit.
+
+**The generalisable part.**
+- **Every exit of a handler that holds a shared resource must release it.** The error exits that "just send a 500" are the ones nobody tests.
+- **A unit whose only remote reboot path is the operation that failed must never be able to wedge itself** in a state that only a reboot clears.
+- **Suspect the link before the firmware** when an upload fails: run the paired ping test. Then ask what the failed upload left behind.
+
+**Where it lives.** `firmware/src/ota_manager/ota_manager.cpp` (`session_release()`, `claim_state()`), `firmware/src/web_server/web_server.cpp` (`ota_upload_recv()`, `OTA_UPLOAD_STALL_S`), `design/OTAimplementation.md` §8.11, `log/logparser.md` (`SYSTEM value_a = 32`), `bin/at_ota_abort.py`.
+
 ## 2026-09-16 — a rebuild of the same tree is a DIFFERENT binary: PlatformIO relinks on every run and orders our libraries differently each time
 
 **Problem.** After two comment-only edits, the rebuilt bench binary was 400 bytes smaller than the one just tested on FDA4, and ~200 library functions (wpa_supplicant, newlib, lwip) had changed size. It looked as if the edits had changed code.
@@ -195,8 +231,9 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **A timing that protects the wire must not depend on the scheduler.** A busy-wait in task context is a lower bound, never an upper one, and on an ESP32 running from flash any flash write is an unbounded upper one.
 - **Instrument the margin, not just the outcome.** Timeouts said "the slave did not answer"; the release-latency counter said *why*, and separated this failure population from the emulated slaves' (on-time releases, #68) in the same run.
 - **Dense test traffic has side effects on the rig:** it tripped the emulated sensors into two WIND OVERRIDE safe-fails. The harness now refuses to run unless the unit is in STANDBY with every window closed.
+- **A line in `sdkconfig.defaults` reaches only a configuration that does not exist yet.** ESP-IDF applies the defaults when it *creates* `firmware/sdkconfig.<env>`; an existing file keeps its own value, and none of those files is tracked, so no diff shows the gap. Shown the same day: with the defaults at `=y` and the one line flipped in `sdkconfig.lolin_s3`, the generated `sdkconfig.h` had no `CONFIG_UART_ISR_IN_IRAM`. A release built that way ships half this fix, and says nothing even at run time: `de_ctrl` exists only in bench builds (`/api/diag/windowpos` is `MODBUS_BENCH`), so a release image does not carry it. `modbus_rtu.cpp` now refuses to compile without the option, which stops `build_release.ps1` at Step 1. **A fix that depends on a Kconfig option needs a compile-time guard next to the code that depends on it.**
 
-**Where it lives.** `drivers/modBus/src/modbus_rtu.cpp` (`send_request()`, `modbus_init()`, `modbus_de_control()`, the `listen_*` counters), `firmware/sdkconfig.defaults` (`CONFIG_UART_ISR_IN_IRAM`), `firmware/src/diag/modbus_bench.cpp` (`{"action":"traffic"}`), `bin/at_modbus_ota.py`, gh#70.
+**Where it lives.** `drivers/modBus/src/modbus_rtu.cpp` (`send_request()`, `modbus_init()`, `modbus_de_control()` and the build guard above it, the `listen_*` counters), `firmware/sdkconfig.defaults` (`CONFIG_UART_ISR_IN_IRAM`), `firmware/src/diag/modbus_bench.cpp` (`{"action":"traffic"}`), `bin/at_modbus_ota.py`, gh#70.
 
 ## 2026-09-16 — a hazard written down as "safe today because T5 is the only caller" panicked the board once T17 became a second caller
 

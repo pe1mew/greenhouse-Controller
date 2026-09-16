@@ -1,8 +1,18 @@
 # logparser — Greenhouse Controller Log Parser
 
 **File:** `log/logparser.py`
-**Document version:** 1.17 (matches firmware 2.8.0 + the `ropeSensor` window-sensor encodings; adds `MODE param 47` `value_b` = 1, a STANDBY held for a teach's admin session)
+**Document version:** 1.18 (matches firmware 2.8.0 + the `ropeSensor` window-sensor encodings; 1.17 added `MODE param 47` `value_b` = 1, a STANDBY held for a teach's admin session; 1.18 adds `SYSTEM value_a = 32`)
 **Requires:** Python 3.10+, standard library only (no pip dependencies)
+
+**What's new in 1.18** (2026-09-16):
+- **`SYSTEM value_a = 32` — an OTA session ended WITHOUT installing anything.**
+  Every OTA session that neither installs nor reboots now closes with this
+  row, so a `14` (firmware POST started) is always followed by `15`, `13`,
+  `32` or a BOOT row. `ch` says which half ended (1 firmware, 2 web assets);
+  `value_b` packs the reason (high byte) and the progress it reached (low
+  byte) — see the table below. Before this row existed, an upload cut off by a
+  bad WiFi link left the unit refusing every later OTA until it was rebooted,
+  and the SD log showed only the `14`.
 
 **What's new in 1.16** (`ropeSensor` branch):
 - **`ALARM ch = 6` param 245, `value_a = 4` — orphaned teach aborted.** T17
@@ -873,6 +883,7 @@ matches the LOG_SYSTEM table in `firmware/src/event_logger/event_logger.h`:
 | **29** | seconds remaining, **signed** | SYS | T2 relay_controller | **T6 move DEFERRED on the dwell timer.** `ch` = motor 1/2/3. **Sign carries direction: positive = OPEN deferred, negative = CLOSE deferred.** Latched to one row per deferral episode, so an M3 dwell of up to 25 min produces one row, not hundreds (2.6.0+, gh#59) |
 | **30** | 0 | producer | T4 `apply_config_update()` | **Q4 config write REJECTED, unknown ns/key.** `initiator` identifies which producer tried; the key name is on the serial console only, because the 12-byte row cannot carry it. `/api/config` returns 400 before reaching Q4, so this fires only for the LCD/T10 producers or a future one (2.6.0+, gh#59) |
 | **31** | the **interval delta** | SYS | T4 `emit_bus_kpi()` | **Modbus bus performance indicator**, one slave, one metric, one hour. **`ch` is the SLAVE ADDRESS, not a motor** (1 FG6485A · 40 window encoder · 44 S200), and `param` selects the metric: **50** transactions OK · **51** transactions FAILED · **52** longest consecutive-failure run since boot. See the note below (2.8.0+, gh#66) |
+| **32** | packed: hi byte = reason, lo byte = progress % | SYS | T13 ota_manager `session_release()` | **OTA session ended WITHOUT installing anything** — boot partition unchanged, and the session is released, so the next upload is accepted at once. `ch` = **1** firmware · **2** web assets. Reasons: **0** backed out on purpose (ROTA's final quiet gate — *not a failure*) · **1** the uploader's connection was lost · **2** the uploader stopped sending (30 s of silence) · **3** set-up failed (no partition, flash erase, PSRAM, task) · **4** a chunk was refused (not a firmware image?) or the ZIP length was wrong · **5** the firmware image failed verification · **6** extraction or the boot-partition switch failed. A `ch 2` row that follows a `15` means the verified firmware was **discarded** with the assets: upload both again (2.8.0+, 2026-09-16) |
 
 > **Reading the `value_a = 31` rows.**
 >

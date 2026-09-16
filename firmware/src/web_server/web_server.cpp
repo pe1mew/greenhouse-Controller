@@ -150,6 +150,12 @@ _Static_assert(TOKEN_LEN == WEB_SESSION_TOKEN_LEN,
                "holders size their token copies from WEB_SESSION_TOKEN_LEN");
 #define COOKIE_HEADER_MAX  128   /**< Max Cookie: header size we'll parse */
 #define LFS_READ_BUF       4096  /**< LittleFS chunk buffer for streaming */
+#define HTTPD_RECV_TIMEOUT_S 10u /**< httpd recv_wait_timeout: one httpd_req_recv() wait */
+/** An OTA upload whose sender has sent nothing for this long is abandoned.
+ *  The httpd task is single: while an upload waits, no other request is served,
+ *  so this bounds how long a vanished laptop can hold the whole web server. A
+ *  Windows sender gives up retransmitting after ~30 s anyway. */
+#define OTA_UPLOAD_STALL_S   30u
 #define SESSION_DEFAULT_S  600u  /**< 10 min default if cfg.session_timeout_min unset */
 
 /* ============================================================
@@ -2380,6 +2386,58 @@ static esp_err_t ota_status_handler(httpd_req_t *req)
 }
 
 /**
+ * @brief Receive the next chunk of an OTA upload body.
+ *
+ * httpd_req_recv() gives up after HTTPD_RECV_TIMEOUT_S of silence. Both upload
+ * handlers used to retry that for ever, so a sender that vanished without a
+ * FIN or RST — a laptop leaving WiFi range; nothing here sends, so nothing
+ * ever notices — held the single httpd task, and with it the whole web server
+ * and the OTA session, until a reboot. OTA_UPLOAD_STALL_S of silence now ends
+ * the upload.
+ *
+ * @param req   esp_http_server request handle.
+ * @param buf   Destination.
+ * @param want  Bytes to ask for (> 0).
+ * @param[out] why  Set on failure: OTA_END_CONN_LOST (peer closed, or a socket
+ *                  error) or OTA_END_STALLED.
+ * @return Bytes received (> 0), or 0 when the upload must end.
+ */
+static int ota_upload_recv(httpd_req_t *req, uint8_t *buf, size_t want,
+                           ota_end_reason_t *why)
+{
+    unsigned silent_s = 0u;
+    for (;;) {
+        const int n = httpd_req_recv(req, (char *)buf, want);
+        if (n > 0) return n;
+        if (n != HTTPD_SOCK_ERR_TIMEOUT) {   /* 0 = peer closed; < 0 = socket error */
+            *why = OTA_END_CONN_LOST;
+            return 0;
+        }
+        silent_s += HTTPD_RECV_TIMEOUT_S;
+        if (silent_s >= OTA_UPLOAD_STALL_S) {
+            *why = OTA_END_STALLED;
+            return 0;
+        }
+    }
+}
+
+/**
+ * @brief Answer an OTA upload that ended on the connection's side.
+ *
+ * Usually nobody is left to read it; a stalled sender might be.
+ */
+static esp_err_t ota_upload_send_interrupted(httpd_req_t *req, ota_end_reason_t why)
+{
+    httpd_resp_set_status(req, (why == OTA_END_STALLED) ? "408 Request Timeout"
+                                                        : "500 Internal Server Error");
+    httpd_resp_set_type(req, "application/json");
+    (void)httpd_resp_send(req,
+        "{\"ok\":false,\"err\":\"upload interrupted; nothing installed\"}",
+        HTTPD_RESP_USE_STRLEN);
+    return ESP_FAIL;   /* closes the connection: the body was not consumed */
+}
+
+/**
  * @brief HTTP POST /api/ota/firmware — stream a firmware .bin to T13.
  *
  * Receives the .bin body in chunks via `httpd_req_recv`; each chunk is fed
@@ -2387,12 +2445,20 @@ static esp_err_t ota_status_handler(httpd_req_t *req)
  * (Content-Length header) so T13 can pre-validate the image size against
  * the inactive bank.
  *
+ * Every exit after a successful ota_firmware_begin() either leaves a verified
+ * image (FW_DONE) or a released session, so a failed upload never makes the
+ * unit refuse the next one. The manager releases the session itself when
+ * ota_firmware_write()/_end() fail; this handler releases it when the
+ * connection is lost or goes silent — and must not call ota_firmware_abort()
+ * after a manager call has already returned false (see ota_manager.h).
+ *
  * @param req esp_http_server request handle.
  * @return ESP_OK on success — 200 + `{"ok":true,"awaiting_assets":true}`;
  *         ESP_FAIL on recv/write/end failure.
  * @note Auth requirement: Admin only.
  * @note Rate limit: none (OTA mutex inside ota_manager serialises).
- * @note Audit-logged: T13 emits its own LOG_SYSTEM rows for OTA milestones.
+ * @note Audit-logged: T13 emits its own LOG_SYSTEM rows for OTA milestones,
+ *       and value_a=32 when a session ends without installing.
  */
 static esp_err_t ota_firmware_post_handler(httpd_req_t *req)
 {
@@ -2407,6 +2473,8 @@ static esp_err_t ota_firmware_post_handler(httpd_req_t *req)
             HTTPD_RESP_USE_STRLEN);
     }
 
+    /* Refused = the session is someone else's (or setup failed and was
+     * released already): nothing of ours to release. */
     if (!ota_firmware_begin(total)) {
         httpd_resp_set_type(req, "application/json");
         httpd_resp_send_500(req);
@@ -2419,17 +2487,19 @@ static esp_err_t ota_firmware_post_handler(httpd_req_t *req)
     uint8_t buf[4096];
     size_t received = 0;
     while (received < total) {
-        int want = (int)((total - received) > sizeof(buf)
-                         ? sizeof(buf) : (total - received));
-        int n = httpd_req_recv(req, (char *)buf, (size_t)want);
+        const size_t want = ((total - received) > sizeof(buf))
+                            ? sizeof(buf) : (total - received);
+        ota_end_reason_t why = OTA_END_CONN_LOST;
+        const int n = ota_upload_recv(req, buf, want, &why);
         if (n <= 0) {
-            if (n == HTTPD_SOCK_ERR_TIMEOUT) continue;
-            ESP_LOGE(TAG, "[T11] /api/ota/firmware: recv failed at %u/%u",
+            ESP_LOGE(TAG, "[T11] /api/ota/firmware: %s at %u/%u B — releasing the OTA session",
+                     (why == OTA_END_STALLED) ? "sender silent" : "connection lost",
                      (unsigned)received, (unsigned)total);
-            httpd_resp_send_500(req);
-            return ESP_FAIL;
+            (void)ota_firmware_abort(why);
+            return ota_upload_send_interrupted(req, why);
         }
         if (!ota_firmware_write(buf, (size_t)n)) {
+            /* Released by the manager — no abort here (see function doc). */
             ESP_LOGE(TAG, "[T11] /api/ota/firmware: write failed at %u/%u",
                      (unsigned)received, (unsigned)total);
             httpd_resp_set_type(req, "application/json");
@@ -2441,7 +2511,7 @@ static esp_err_t ota_firmware_post_handler(httpd_req_t *req)
         received += (size_t)n;
     }
 
-    if (!ota_firmware_end()) {
+    if (!ota_firmware_end()) {   /* released by the manager */
         httpd_resp_set_type(req, "application/json");
         httpd_resp_send(req,
             "{\"ok\":false,\"err\":\"OTA verify failed\"}",
@@ -2464,6 +2534,11 @@ static esp_err_t ota_firmware_post_handler(httpd_req_t *req)
  * `ota_assets_accumulate(data, len, offset)`. On the last chunk calls
  * `ota_assets_end()` which spawns T13 to extract to inactive LittleFS.
  *
+ * Same exit rule as the firmware handler. A lost or silent connection
+ * releases the session with ota_assets_abort(), which frees the PSRAM buffer
+ * — and, if this upload was pairing with a verified firmware, discards that
+ * image too: nothing is installed and both files must be uploaded again.
+ *
  * @param req esp_http_server request handle.
  * @return ESP_OK on success — 202 + `{"ok":true,"message":"extracting..."}`;
  *         ESP_FAIL on recv/accumulate/end failure.
@@ -2483,6 +2558,7 @@ static esp_err_t ota_assets_post_handler(httpd_req_t *req)
             HTTPD_RESP_USE_STRLEN);
     }
 
+    /* Refused = someone else's session, or released already (see firmware). */
     if (!ota_assets_begin(total)) {
         httpd_resp_set_type(req, "application/json");
         httpd_resp_send_500(req);
@@ -2492,17 +2568,19 @@ static esp_err_t ota_assets_post_handler(httpd_req_t *req)
     uint8_t buf[4096];
     size_t received = 0;
     while (received < total) {
-        int want = (int)((total - received) > sizeof(buf)
-                         ? sizeof(buf) : (total - received));
-        int n = httpd_req_recv(req, (char *)buf, (size_t)want);
+        const size_t want = ((total - received) > sizeof(buf))
+                            ? sizeof(buf) : (total - received);
+        ota_end_reason_t why = OTA_END_CONN_LOST;
+        const int n = ota_upload_recv(req, buf, want, &why);
         if (n <= 0) {
-            if (n == HTTPD_SOCK_ERR_TIMEOUT) continue;
-            ESP_LOGE(TAG, "[T11] /api/ota/assets: recv failed at %u/%u",
+            ESP_LOGE(TAG, "[T11] /api/ota/assets: %s at %u/%u B — releasing the OTA session",
+                     (why == OTA_END_STALLED) ? "sender silent" : "connection lost",
                      (unsigned)received, (unsigned)total);
-            httpd_resp_send_500(req);
-            return ESP_FAIL;
+            (void)ota_assets_abort(why);
+            return ota_upload_send_interrupted(req, why);
         }
         if (!ota_assets_accumulate(buf, (size_t)n, received)) {
+            /* Released by the manager — no abort here (see firmware handler). */
             ESP_LOGE(TAG, "[T11] /api/ota/assets: accumulate failed at %u",
                      (unsigned)received);
             httpd_resp_set_type(req, "application/json");
@@ -2514,7 +2592,7 @@ static esp_err_t ota_assets_post_handler(httpd_req_t *req)
         received += (size_t)n;
     }
 
-    if (!ota_assets_end()) {
+    if (!ota_assets_end()) {   /* released by the manager */
         httpd_resp_set_type(req, "application/json");
         httpd_resp_send(req,
             "{\"ok\":false,\"err\":\"assets spawn failed\"}",
@@ -3777,7 +3855,7 @@ void task_web_server(void *pvParameters)
     cfg.max_uri_handlers = (uint16_t)(ARRAY_LEN(uris) + 2u);   /* + spare */
     cfg.max_open_sockets = 7;
     cfg.lru_purge_enable = true;
-    cfg.recv_wait_timeout = 10;
+    cfg.recv_wait_timeout = HTTPD_RECV_TIMEOUT_S;   /* OTA_UPLOAD_STALL_S counts these */
     cfg.send_wait_timeout = 10;
 
     esp_err_t err = httpd_start(&s_server, &cfg);
