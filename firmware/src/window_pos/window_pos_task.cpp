@@ -582,6 +582,19 @@ void task_window_pos(void *pvParameters)
     uint8_t  near_zero_run       = 0u;
     bool     early_reported      = false;
 
+    /* §12.4 rule 1 exemption: a stroke driven toward the end the leaf is
+     * ALREADY at cannot move -- the motor's end switch cuts the drive, by
+     * design and outside the controller's view -- so "no movement" there is
+     * correct behaviour, not a stall. Found by the 2026-09-16 soak: every
+     * CLOSE_ALL recalibration on a closed M3 tripped rule 1 -- each boot
+     * (twice per OTA push), and each LCD logout.
+     *
+     * `stroke_at_target` starts true and is cleared by the first accepted
+     * sample that is NOT sitting on the target end. See its use for the
+     * reasoning; `stroke_full_x10` is `40004`, the open end's position. */
+    uint16_t stroke_full_x10    = 0u;
+    bool     stroke_at_target   = true;
+
     for (;;) {
         esp_task_wdt_reset();
 
@@ -688,6 +701,7 @@ void task_window_pos(void *pvParameters)
             stroke_end_seen  = false;
             near_zero_run    = 0u;
             early_reported   = false;
+            stroke_at_target = true;
 
             /* Stroke boundary: the only place the mode is allowed to be
              * PROMOTED. See windowpos_task_ctrl_mode()'s note on the
@@ -716,6 +730,11 @@ void task_window_pos(void *pvParameters)
             if (windowpos_read_config(WINDOWPOS_DEFAULT_ADDR, &dev) == WINDOWPOS_OK) {
                 full_travel_x10 = dev.full_travel_x10;
             }
+            /* The OPEN end's position for rule 1's at-target test. The device
+             * clamps position at 40004, so a leaf at the open end reads
+             * exactly this. 0 means the read failed: the OPEN test then
+             * cannot pass, which fails SAFE toward judging the stroke. */
+            stroke_full_x10 = full_travel_x10;
 
             windowpos_derived_t d;
             derive((uint16_t)cfg.travel_s[2], full_travel_x10, &d);
@@ -775,6 +794,50 @@ void task_window_pos(void *pvParameters)
                     stroke_peak_x10 = (uint16_t)clamp_u32((uint32_t)mag, 0u, 65535u);
                 }
                 if (stroke_samples < 0xFFFFu) { stroke_samples++; }
+
+                /* §12.4 rule 1 exemption evidence: is the leaf SITTING ON the
+                 * end it is being driven toward? Cleared by the first sample
+                 * that is not, and never re-set within the stroke.
+                 *
+                 * Both conditions, on EVERY sample of the grace window:
+                 *
+                 *  - bit 3 made (and bit 4 clear -- bit 4 means the end-sensor
+                 *    loop is faulted and bit 3 is not to be believed), and
+                 *  - position within `deadzone_m3` of the TARGET end.
+                 *
+                 * CONTINUITY is what makes this safe, not either condition on
+                 * its own. The case that matters is the one rule 1 exists for:
+                 * a SHORTED WIPER reads a constant 0 whatever the leaf does,
+                 * so on an open window a CLOSE starts at "position 0, bit 3
+                 * made" -- bit 3 because the OPEN end sensor is active. A
+                 * first-sample test would call that "already closed" and
+                 * exempt the very fault the rule is for. But bit 3 comes from
+                 * the end sensor, not the wiper, and it DROPS as soon as the
+                 * leaf leaves the open end -- ~1.8 s on this rig, inside the
+                 * 5 s grace -- so continuity catches it.
+                 *
+                 * T2's own belief cannot stand in for this: after a reboot T2
+                 * reports WIN_UNKNOWN until the CLOSE_ALL calibration finishes,
+                 * which is exactly the stroke that needs the exemption.
+                 *
+                 * The TARGET end matters too: an OPEN stroke on a leaf sitting
+                 * at the CLOSED end (the detached-wire case, 2026-09-15 22:36)
+                 * fails the position test and is still judged. */
+                {
+                    const bool on_end = r.at_end_sensor && !r.both_end_sensors
+                                        && !r.sensor_fault;
+                    bool at_pos;
+                    if (stroke_closing) {
+                        at_pos = (r.opening_mm_x10 <= stroke_deadzone_x10);
+                    } else {
+                        at_pos = (stroke_full_x10 != 0u) &&
+                                 ((uint32_t)r.opening_mm_x10 + (uint32_t)stroke_deadzone_x10
+                                  >= (uint32_t)stroke_full_x10);
+                    }
+                    if (!(on_end && at_pos)) {
+                        stroke_at_target = false;
+                    }
+                }
 
                 /* §12.4 rule 2 evidence. `both_end_sensors` (bit 4) means the
                  * end-sensor loop is faulted and bit 3 must not be believed in
@@ -868,6 +931,22 @@ void task_window_pos(void *pvParameters)
                 /* Moved. Settle the verdict for this stroke so the deadline
                  * cannot trip later in a long traverse that pauses. */
                 stall_reported = true;
+            } else if ((uint32_t)(now_ms() - stroke_start_ms) >= grace &&
+                       stroke_at_target) {
+                /* Driven toward the end it was already at, and it never left
+                 * it: the end switch did its job and the leaf correctly did
+                 * not move. Not a stall. Counted, so an exemption that fires
+                 * too often -- or one that hides a real fault -- is visible in
+                 * the soak rather than silent, and so the soak can refuse to
+                 * count these strokes towards its power. */
+                stall_reported = true;
+                portENTER_CRITICAL(&s_mux);
+                s_cnt.at_end_exempt++;
+                portEXIT_CRITICAL(&s_mux);
+                ESP_LOGI(TAG, "12.4 rule 1: M3 %s stroke began and stayed on its "
+                              "target end (bit 3 continuous) -- no movement expected, "
+                              "not judged",
+                         stroke_closing ? "CLOSE" : "OPEN");
             } else if ((uint32_t)(now_ms() - stroke_start_ms) >= grace) {
                 stall_reported = true;
                 portENTER_CRITICAL(&s_mux);

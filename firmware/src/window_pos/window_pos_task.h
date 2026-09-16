@@ -160,6 +160,12 @@ typedef struct {
     uint32_t early_stops;   /**< §12.4 rule 2 trips: CLOSE strokes that claimed
                              *   ~0 far too early with no end sensor to
                              *   corroborate it. One per stroke. */
+    uint32_t at_end_exempt; /**< Strokes rule 1 did NOT judge because the leaf
+                             *   began and stayed on the end it was driven
+                             *   toward (bit 3 continuous) -- a CLOSE_ALL
+                             *   recalibration of a closed window, typically.
+                             *   Not a fault. A soak must subtract these from
+                             *   `strokes` before counting its sample. */
 } windowpos_counters_t;
 
 /** @brief Copy the soak counters. @param out Destination, must not be NULL. */

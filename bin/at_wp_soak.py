@@ -23,8 +23,10 @@ CRITERIA
 Over the soak window, with the sensor fitted and trusted:
 
   duration      >= --hours (default 12)
-  strokes       >= --min-strokes (default 10) -- the denominator. Without
-                  traverses, elapsed time measures an idle bus, not aperture data
+  JUDGED strokes >= --min-strokes (default 10) -- the denominator. Without
+                  traverses, elapsed time measures an idle bus, not aperture data.
+                  Judged = strokes - at_end_exempt: a CLOSE_ALL recalibration
+                  of a closed window is exempt from rule 1 and must not count
   stall_faults   == 0   12.4 rule 1 must not false-trip across many real strokes.
                         THIS is the criterion the period exists to test: one
                         healthy stroke proved it can stay silent once
@@ -115,14 +117,15 @@ class Unit(object):
 
 FIELDS = ("reads_ok", "err_comm", "err_busy", "rejected_rate", "strokes",
           "probe_fail", "mode_changes", "stall_faults", "early_stops",
-          "gated_polls")
+          "gated_polls", "at_end_exempt")
 
 
 def snapshot(u):
     st, dg = u.status(), u.diag()
     sysb = st.get("system") or {}
     s = dg.get("soak") or {}
-    missing = [f for f in ("stall_faults", "early_stops") if f not in s]
+    missing = [f for f in ("stall_faults", "early_stops", "at_end_exempt")
+               if f not in s]
     if missing:
         sys.exit("this build has no %s -- the 12.4 rules are not in it, so the\n"
                  "soak cannot judge them. An ABSENT counter must never be read as\n"
@@ -200,7 +203,14 @@ def cmd_report(u, args):
 
     print("soak report -- %s fw %s" % (now["unit_id"], now["fw_ver"]))
     print("  elapsed        : %.2f h   (need >= %s)" % (hours, args.hours))
-    print("  strokes        : %d       (need >= %d)" % (d["strokes"], args.min_strokes))
+    # JUDGED strokes are the sample, not all strokes. A CLOSE_ALL
+    # recalibration of a closed window is exempt from 12.4 rule 1 (the leaf
+    # cannot move and should not), so counting it towards the sample would let
+    # a soak made of nothing but recalibrations pass on strokes rule 1 never
+    # looked at -- the same vacuous-pass shape as an absent counter.
+    judged = d["strokes"] - d["at_end_exempt"]
+    print("  strokes        : %d       (%d exempt at end -> %d judged, need >= %d)"
+          % (d["strokes"], d["at_end_exempt"], judged, args.min_strokes))
     print("  reads_ok       : %d" % d["reads_ok"])
     print("  stall_faults   : %d       (need 0)" % d["stall_faults"])
     print("  early_stops    : %d       (need 0)" % d["early_stops"])
@@ -218,12 +228,12 @@ def cmd_report(u, args):
     # happened and only the clock was short. A message that misdescribes its
     # own evidence teaches the reader to discount it.
     short_time = hours < args.hours
-    short_strokes = d["strokes"] < args.min_strokes
+    short_strokes = judged < args.min_strokes
     if short_time or short_strokes:
         print("\nINCONCLUSIVE:")
         if short_strokes:
-            print("  too few strokes: %d against %d needed. Zero faults across %d"
-                  % (d["strokes"], args.min_strokes, d["strokes"]))
+            print("  too few JUDGED strokes: %d against %d needed. Zero faults across %d"
+                  % (judged, args.min_strokes, judged))
             print("  stroke(s) is mostly evidence that little moved, not that the")
             print("  detectors stay quiet.")
         if short_time:
@@ -231,8 +241,8 @@ def cmd_report(u, args):
                   % (hours, args.hours,
                      " -- the stroke count is already there" if not short_strokes else ""))
         if not short_strokes:
-            print("\n  Nothing is wrong: %d strokes, all counters clean, gate %s."
-                  % (d["strokes"], now["gate"]))
+            print("\n  Nothing is wrong: %d judged strokes, all counters clean, gate %s."
+                  % (judged, now["gate"]))
             print("  It needs %.2f more hours." % max(0.0, args.hours - hours))
         print("\nKeep soaking.")
         return 2
@@ -255,7 +265,7 @@ def cmd_report(u, args):
         return 1
 
     print("\nPASS: %.2f h, %d strokes, no false trips, no rejected samples, no comm"
-          % (hours, d["strokes"]))
+          % (hours, judged))
     print("errors, gate settled. That is the GATE's 'clean aperture data over a")
     print("sustained period'. Record it in the plan with these numbers.")
     return 0
