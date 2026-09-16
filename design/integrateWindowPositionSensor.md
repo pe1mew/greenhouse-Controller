@@ -1883,13 +1883,19 @@ Show the opening percentage per §6.1, with the sensor fault surfaced alongside 
 > - The hold is logged as `MODE param 47` with `value_b` = 1.
 > - The GUI shows the pause under the teach button for as long as it lasts.
 >
-> **Verified on FDA4** with `bin/at_wp_teach_standby.py` (all four cases passed):
+> **Verified on FDA4** with `bin/at_wp_teach_standby.py`, on the committed build (a bench build of `260d1fe`, pushed and confirmed by a bank flip). All four cases passed:
 > - **A (logout):** STANDBY was on from the start of the teach and still on after `done`. It cleared at logout, and a recalibration followed.
 > - **B (timeout):** with a 60 s session timeout, STANDBY cleared 78 s after the session's last request. The extra time is T17's check, at most 30 s at rest.
 > - **C (operator's own STANDBY):** it was not held and still on 45 s after logout.
-> - **D (reboot):** STANDBY was off after a reboot.
+> - **D (reboot):** with the teach's session left open, STANDBY was off after a reboot.
 >
-> **Fail-first.** The build without the hold failed case A: STANDBY was never set. **Not yet run:** the check that a build persisting the hold (`DM_FAILFIRST_PERSIST_STANDBY_HOLD`) fails case D. Its upload was cut off by a lossy Wi-Fi link (15 % loss), and the interrupted upload left the unit's OTA state stuck, which blocks further uploads until a reboot. The original `bin/at_wp_teach.py` still passes.
+> The original `bin/at_wp_teach.py` passes too, with three teaches under one hold.
+>
+> **Fail-first.**
+> - The build without the hold failed case A: STANDBY was never set.
+> - A build with `DM_FAILFIRST_PERSIST_STANDBY_HOLD`, which persists the hold the way the LCD persists its STANDBY, failed case D: STANDBY came back after the reboot with nothing left to release it — the gh#65 shape.
+>
+> **That second check first PASSED, and so exposed a flaw in case D itself.** The test logged out after the upload that reboots the unit. The logout reached the unit before the reboot and released the hold, so the earlier "reboot" passes had tested nothing. Case D now abandons the session instead, and refuses to judge a hold that ended before the reboot. Both builds were then run again, with the results above.
 
 **Status 2026-09-13 — the read-only half is BUILT, the commissioning screen is NOT.**
 
