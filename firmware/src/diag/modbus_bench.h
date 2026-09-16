@@ -106,6 +106,19 @@ bool modbus_bench_exec(uint8_t   addr,
  */
 bool modbus_bench_reinit_start(uint16_t count, uint16_t interval_ms, bool hammer);
 
+/**
+ * @brief Companion reads only, for @p duration_ms -- no re-inits (gh#70).
+ *
+ * A steady stream of back-to-back encoder transactions to lay over something
+ * else and see what it does to the bus: an OTA upload, an asset extraction.
+ * Progress and results through modbus_bench_reinit_status() (`requested` and
+ * `done` stay 0).
+ *
+ * @param duration_ms 1 s .. 10 min.
+ * @return false if a run is already going or the duration is out of range.
+ */
+bool modbus_bench_traffic_start(uint32_t duration_ms);
+
 /** @brief Progress of the current or last re-init run. */
 typedef struct {
     bool     running;
@@ -113,6 +126,7 @@ typedef struct {
     uint16_t requested;
     uint16_t done;          /**< re-inits called so far */
     uint16_t interval_ms;
+    uint32_t duration_ms;   /**< traffic-only run: how long; 0 for a re-init run */
     uint32_t elapsed_ms;
     uint32_t hammer_ok;     /**< reads the companion task completed */
     uint32_t hammer_fail;   /**< reads that failed, for any reason */

@@ -146,10 +146,22 @@ static void storm_task(void *arg)
     (void)arg;
     const int64_t t0 = esp_timer_get_time();
     uint16_t n, ival;
+    uint32_t dur;
     portENTER_CRITICAL(&s_rmux);
     n    = s_run.requested;
     ival = s_run.interval_ms;
+    dur  = s_run.duration_ms;
     portEXIT_CRITICAL(&s_rmux);
+
+    /* Traffic-only run: just keep time while the companion reads. */
+    while (dur != 0u) {
+        const uint32_t el = (uint32_t)((esp_timer_get_time() - t0) / 1000);
+        portENTER_CRITICAL(&s_rmux);
+        s_run.elapsed_ms = el;
+        portEXIT_CRITICAL(&s_rmux);
+        if (el >= dur) { break; }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
 
     for (uint16_t i = 0u; i < n; i++) {
         modbus_init();
@@ -221,6 +233,47 @@ bool modbus_bench_reinit_start(uint16_t count, uint16_t interval_ms, bool hammer
     ESP_LOGW(TAG, "re-init stress: %u x modbus_init() every %u ms, hammer %s, re-init %s",
              (unsigned)count, (unsigned)interval_ms, hammer ? "on" : "off",
              modbus_reinit_is_locked() ? "LOCKED" : "UNLOCKED -- fail-first build");
+    return true;
+}
+
+bool modbus_bench_traffic_start(uint32_t duration_ms)
+{
+    if (duration_ms < 1000u || duration_ms > 600000u) { return false; }
+    if (s_hammer_alive) { return false; }
+    const uint32_t heap = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+
+    portENTER_CRITICAL(&s_rmux);
+    if (s_run.running) {
+        portEXIT_CRITICAL(&s_rmux);
+        return false;
+    }
+    s_run = modbus_bench_reinit_t{};
+    s_run.running     = true;
+    s_run.hammer      = true;
+    s_run.duration_ms = duration_ms;
+    s_run.heap_before = heap;
+    portEXIT_CRITICAL(&s_rmux);
+
+    s_hammer_stop  = false;
+    s_hammer_alive = true;
+    if (xTaskCreatePinnedToCore(hammer_task, "mbR-hammer", STRESS_STACK, NULL,
+                                HAMMER_PRIO, NULL, tskNO_AFFINITY) != pdPASS) {
+        s_hammer_alive = false;
+        portENTER_CRITICAL(&s_rmux);
+        s_run.running = false;
+        portEXIT_CRITICAL(&s_rmux);
+        return false;
+    }
+    /* The timekeeper: the same task as a re-init run, with nothing to re-init. */
+    if (xTaskCreatePinnedToCore(storm_task, "mbR-storm", STRESS_STACK, NULL,
+                                STORM_PRIO, NULL, tskNO_AFFINITY) != pdPASS) {
+        s_hammer_stop = true;
+        portENTER_CRITICAL(&s_rmux);
+        s_run.running = false;
+        portEXIT_CRITICAL(&s_rmux);
+        return false;
+    }
+    ESP_LOGW(TAG, "bus traffic: companion reads for %lu ms", (unsigned long)duration_ms);
     return true;
 }
 

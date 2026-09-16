@@ -3184,6 +3184,8 @@ static const httpd_uri_t s_uri_web_post = {
  *   write: {"addr":40,"fc":16,"reg":6,"value":1}      (FC16, quantity 1)
  *   gh#69: {"action":"reinit","count":N,"interval_ms":M,"hammer":1} starts the
  *          re-init stress; {"action":"reinit_status"} reports it.
+ *   gh#70: {"action":"traffic","duration_ms":N} runs the companion reads alone
+ *          for N ms; progress through the same reinit_status.
  * --------------------------------------------------------------------------- */
 /* ---------------------------------------------------------------------------
  * GET /api/diag/windowpos - decoded window-sensor reading (admin, DEV BUILDS ONLY)
@@ -3258,7 +3260,9 @@ static void append_modbus_json(char *buf, size_t cap)
              "\"last_status\":%u,\"last_addr\":%u,"
              "\"last_fail_status\":%u,\"last_fail_addr\":%u,"
              "\"to_received\":%u,\"to_expected\":%u,\"lock_wait_ms\":%lu,"
-             "\"reinit\":%lu,\"reinit_skipped\":%lu,\"reinit_locked\":%s}}",
+             "\"reinit\":%lu,\"reinit_skipped\":%lu,\"reinit_locked\":%s,"
+             "\"de_late\":%lu,\"de_late_failed\":%lu,\"de_lat_max_us\":%lu,"
+             "\"last_fail_de_lat_us\":%lu}}",
              (unsigned long)mc.ok, (unsigned long)mc.timeout,
              (unsigned long)mc.crc, (unsigned long)mc.exception,
              (unsigned long)mc.framing, (unsigned long)mc.param,
@@ -3268,7 +3272,9 @@ static void append_modbus_json(char *buf, size_t cap)
              (unsigned)mc.last_to_received, (unsigned)mc.last_to_expected,
              (unsigned long)mc.last_lock_wait_ms,
              (unsigned long)mc.reinit, (unsigned long)mc.reinit_skipped,
-             modbus_reinit_is_locked() ? "true" : "false");
+             modbus_reinit_is_locked() ? "true" : "false",
+             (unsigned long)mc.de_late, (unsigned long)mc.de_late_failed,
+             (unsigned long)mc.de_lat_max_us, (unsigned long)mc.last_fail_de_lat_us);
 
     /* Per-slave rows, compact keys so three slaves fit the buffer: a=addr,
      * to=timeout, ex=exception, fr=framing, pa=param, bu=busy. Only rows that
@@ -3569,21 +3575,30 @@ static esp_err_t diag_modbus_post_handler(httpd_req_t *req)
                      modbus_reinit_is_locked() ? "true" : "false");
             return httpd_resp_send(req, r, HTTPD_RESP_USE_STRLEN);
         }
+        if (strcmp(act, "traffic") == 0) {
+            /* gh#70: the companion reads alone, no re-inits -- a steady stream
+             * of encoder transactions to lay over something else (an OTA). */
+            const int dur = json_get_field(body, "duration_ms", v, sizeof(v)) ? atoi(v) : 30000;
+            const bool started = dur > 0 && modbus_bench_traffic_start((uint32_t)dur);
+            char r[48];
+            snprintf(r, sizeof(r), "{\"ok\":%s}", started ? "true" : "false");
+            return httpd_resp_send(req, r, HTTPD_RESP_USE_STRLEN);
+        }
         if (strcmp(act, "reinit_status") == 0) {
             modbus_bench_reinit_t st;
             modbus_bench_reinit_status(&st);
             modbus_counters_t mc;
             modbus_get_counters(&mc);
-            char r[420];
+            char r[480];
             snprintf(r, sizeof(r),
                      "{\"ok\":true,\"running\":%s,\"hammer\":%s,\"requested\":%u,"
-                     "\"done\":%u,\"interval_ms\":%u,\"elapsed_ms\":%lu,"
+                     "\"done\":%u,\"interval_ms\":%u,\"duration_ms\":%lu,\"elapsed_ms\":%lu,"
                      "\"hammer_ok\":%lu,\"hammer_fail\":%lu,\"hammer_busy\":%lu,"
                      "\"heap_before\":%lu,\"heap_now\":%lu,"
                      "\"reinit\":%lu,\"reinit_skipped\":%lu,\"reinit_locked\":%s}",
                      st.running ? "true" : "false", st.hammer ? "true" : "false",
                      (unsigned)st.requested, (unsigned)st.done, (unsigned)st.interval_ms,
-                     (unsigned long)st.elapsed_ms, (unsigned long)st.hammer_ok,
+                     (unsigned long)st.duration_ms, (unsigned long)st.elapsed_ms, (unsigned long)st.hammer_ok,
                      (unsigned long)st.hammer_fail, (unsigned long)st.hammer_busy,
                      (unsigned long)st.heap_before, (unsigned long)st.heap_now,
                      (unsigned long)mc.reinit, (unsigned long)mc.reinit_skipped,

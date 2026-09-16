@@ -238,6 +238,34 @@ static void wait_ifg(void)
  * by tally(), read unlocked for diagnostics. */
 static modbus_counters_t s_cnt;
 
+/* ---------------------------------------------------------------------------
+ * DE/RE release timing (gh#70) -- see modbus_counters_t::de_late.
+ * --------------------------------------------------------------------------- */
+/** One 8N1 character at 9600 baud: 10 bits x 104.17 us. */
+#define CHAR_US      1042u
+/** A release later than this after the last request bit is "late": the 2 ms
+ *  guard plus margin, and still under the encoder's ~5 ms answer time. */
+#define DE_LATE_US   4000u
+
+/** Release latency of the transaction in progress (0 before any release). */
+static uint32_t s_last_de_lat_us = 0u;
+
+/**
+ * @brief Record how late DE/RE was released, relative to the request's last
+ *        bit on the wire.
+ * @param t_tx0   micros() right after the request was queued for transmit.
+ * @param nbytes  request length in characters.
+ */
+static void note_de_release(uint32_t t_tx0, uint32_t nbytes)
+{
+    const uint32_t wire_end = t_tx0 + nbytes * CHAR_US;
+    const int32_t  d        = (int32_t)(micros() - wire_end);   /* wrap-safe */
+    const uint32_t lat      = (d > 0) ? (uint32_t)d : 0u;
+    s_last_de_lat_us = lat;
+    if (lat > s_cnt.de_lat_max_us) { s_cnt.de_lat_max_us = lat; }
+    if (lat > DE_LATE_US)          { s_cnt.de_late++; }
+}
+
 /**
  * @brief Find this address's counter row, claiming a free slot on first sight.
  * @return NULL when the table is full -- the caller still counts the bus-wide
@@ -302,6 +330,13 @@ static modbus_status_t tally(modbus_status_t s, uint8_t addr)
     }
     s_cnt.last_fail_status = (uint8_t)s;
     s_cnt.last_fail_addr   = addr;
+    /* A reply that never arrived or arrived damaged: was the line released in
+     * time? (BUSY and PARAM never transmitted, and an EXCEPTION is a reply,
+     * so none of those says anything about the release.) */
+    if (s == MODBUS_ERR_TIMEOUT || s == MODBUS_ERR_CRC || s == MODBUS_ERR_FRAMING) {
+        s_cnt.last_fail_de_lat_us = s_last_de_lat_us;
+        if (s_last_de_lat_us > DE_LATE_US) { s_cnt.de_late_failed++; }
+    }
     return s;
 }
 
@@ -549,11 +584,14 @@ static modbus_status_t modbus_transaction(uint8_t  device_addr,
      * See drain_rx(). */
     drain_rx();
     gpio_set_rs485_direction(true);   /* DE/RE HIGH — driver enable */
+    s_last_de_lat_us = 0u;
 #ifndef NATIVE_TEST
     uart1_write(req, 8);
+    const uint32_t t_tx0 = micros();  /* the bytes are clocking out from here */
     uart1_flush_tx();
 #else
     Serial1.write(req, 8);
+    const uint32_t t_tx0 = micros();
     Serial1.flush();
 #endif
     s_frame_end_us = micros();        /* last TX bit left the wire */
@@ -562,6 +600,7 @@ static modbus_status_t modbus_transaction(uint8_t  device_addr,
      * At 9600 baud, 1 character ≈ 1.04 ms → 2 ms is ample. */
     delayMicroseconds(2000);
     gpio_set_rs485_direction(false);  /* DE/RE LOW — receiver enable */
+    note_de_release(t_tx0, 8u);
 
     /* Wait one full character time (≈1.04 ms at 9600 baud) so the last
      * echoed stop bit has settled into the RX FIFO, then discard exactly
@@ -710,16 +749,20 @@ static modbus_status_t write_multiple_locked(uint8_t         device_addr,
     wait_ifg();
     drain_rx();   /* same reason as FC03/FC04 — see drain_rx() */
     gpio_set_rs485_direction(true);
+    s_last_de_lat_us = 0u;
 #ifndef NATIVE_TEST
     uart1_write(req, (size_t)(payload_len + 2));
+    const uint32_t t_tx0 = micros();
     uart1_flush_tx();
 #else
     Serial1.write(req, (size_t)(payload_len + 2));
+    const uint32_t t_tx0 = micros();
     Serial1.flush();
 #endif
     s_frame_end_us = micros();        /* last TX bit left the wire */
     delayMicroseconds(2000);
     gpio_set_rs485_direction(false);
+    note_de_release(t_tx0, (uint32_t)payload_len + 2u);
 
     /* Counted drain: discard exactly the echo bytes produced during TX.
      * For FC16 the frame is (payload_len + 2) bytes long. */

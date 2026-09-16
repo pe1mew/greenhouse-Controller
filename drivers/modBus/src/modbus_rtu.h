@@ -319,6 +319,22 @@ typedef struct {
                                 *   was left alone. Anything but 0 means a
                                 *   caller held the bus far too long. */
 
+    /* DE/RE release timing (gh#70). The transceiver must stop driving before
+     * the slave starts to answer, and the wire encoder answers ~5 ms after the
+     * last request bit. The release happens in task context, so anything that
+     * stalls the task -- a flash erase stalls both cores -- delays it. Latency
+     * is measured from the request's last bit ON THE WIRE (transmit start plus
+     * one character time per byte), not from when the task noticed TX was
+     * done, because a stalled task notices late. Nominal: ~2 ms, the guard. */
+    uint32_t de_late;            /**< Releases more than 4 ms after the last bit. */
+    uint32_t de_late_failed;     /**< ...after which the transaction timed out or
+                                  *   failed CRC/framing. Close to @c de_late
+                                  *   means late releases lose replies. */
+    uint32_t de_lat_max_us;      /**< Worst release latency seen, microseconds. */
+    uint32_t last_fail_de_lat_us;/**< Release latency of the most recent
+                                  *   transaction that timed out or failed
+                                  *   CRC/framing. */
+
     /** Per-slave breakdown. Rows with @c addr == 0 are unused. A slave beyond
      *  @ref MODBUS_MAX_TRACKED_SLAVES still counts in the totals above, just
      *  without a row of its own. */
