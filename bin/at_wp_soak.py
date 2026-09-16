@@ -118,6 +118,9 @@ class Unit(object):
 FIELDS = ("reads_ok", "err_comm", "err_busy", "rejected_rate", "strokes",
           "probe_fail", "mode_changes", "stall_faults", "early_stops",
           "gated_polls", "at_end_exempt")
+# Reported, not judged, and absent from builds before 2026-09-16 -- so they are
+# read with a default and never make an older baseline unusable.
+INFO_FIELDS = ("orphan_aborts",)
 
 
 def snapshot(u):
@@ -138,6 +141,7 @@ def snapshot(u):
         "eg1": int(sysb.get("eg1", 0) or 0),
         "gate": str((dg.get("gate") or {}).get("mode_str", "?")),
         "counters": dict((f, int(s.get(f, 0))) for f in FIELDS),
+        "info": dict((f, s.get(f)) for f in INFO_FIELDS),
     }
 
 
@@ -219,6 +223,16 @@ def cmd_report(u, args):
     print("  err_busy       : %d       (informational -- T5 contention)" % d["err_busy"])
     print("  mode_changes   : %d       (need <= %d)" % (d["mode_changes"], args.max_mode_changes))
     print("  gate now       : %s" % now["gate"])
+    # An orphan is a teach armed with nothing on the controller running it,
+    # which T17 aborts. No teach runs during a soak, so one here means something
+    # armed the sensor behind the controller's back. Not a detector failure,
+    # so reported rather than judged -- but worth reading.
+    ob = (base.get("info") or {}).get("orphan_aborts")
+    on = (now.get("info") or {}).get("orphan_aborts")
+    if ob is None or on is None:
+        print("  orphan_aborts  : n/a     (not in this build or not in the baseline)")
+    else:
+        print("  orphan_aborts  : %d       (informational -- should be 0)" % (on - ob))
 
     # Power first: a clean result on too small a sample is not a pass.
     #

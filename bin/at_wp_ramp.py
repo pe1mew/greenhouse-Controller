@@ -102,6 +102,17 @@ class Unit(object):
         if sc != 200 or not self.cookie:
             sys.exit("login failed (HTTP %s) -- wrong PIN, or the unit is not up" % sc)
 
+    def logout(self):
+        """Give the session slot back. The unit holds FOUR, RAM-only, so a
+        harness that exits without this can lock the operator out until the
+        5-minute idle timeout frees one."""
+        if self.cookie:
+            try:
+                self._raw("POST", "/api/logout", {})
+            except Exception:                                  # noqa: BLE001
+                pass                       # best effort: the timeout still frees it
+            self.cookie = None
+
     def status(self):
         j = self._req("GET", "/api/status")[1]
         if not isinstance(j, dict) or "system" not in j:

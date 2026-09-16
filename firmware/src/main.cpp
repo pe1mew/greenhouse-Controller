@@ -720,11 +720,13 @@ extern "C" void app_main(void)
      *
      * This init is deliberately duplicated: T5 calls modbus_init() again at
      * its own task entry to reconfirm driver state (see the T5 spawn comment
-     * further down). modbus_init() is idempotent for the UART — but note it
-     * deletes and reinstalls the driver, so it must never run while another
-     * task has a transaction in flight. Today nothing else touches the bus,
-     * which is what makes that safe. The driver has NO internal locking;
-     * see drivers/modBus/src/modbus_rtu.h "Thread safety" and the plan in
+     * further down). modbus_init() is idempotent for the UART — but it
+     * deletes and reinstalls the driver, so a re-init takes the bus mutex
+     * (gh#49) and waits out any transaction in flight. It did not until
+     * 2026-09-16: "nothing else touches the bus" had stopped being true on
+     * ropeSensor, where T17 polls it, and T5's entry re-init deleted the
+     * driver under a T17 read -- two panics in a row on FDA4. See
+     * drivers/modBus/src/modbus_rtu.h "Thread safety" and
      * design/addModbusMutex.md. */
     modbus_init();
     ESP_LOGI(TAG, "modbus_init() done — bus is T5-owned (sensor_poll)");

@@ -3235,13 +3235,13 @@ static void append_soak_json(char *buf, size_t cap)
              ",\"soak\":{\"reads_ok\":%lu,\"err_busy\":%lu,\"err_comm\":%lu,"
              "\"rejected_rate\":%lu,\"strokes\":%lu,\"probe_fail\":%lu,"
              "\"mode_changes\":%lu,\"gated_polls\":%lu,\"stall_faults\":%lu,"
-             "\"early_stops\":%lu,\"at_end_exempt\":%lu}}",
+             "\"early_stops\":%lu,\"at_end_exempt\":%lu,\"orphan_aborts\":%lu}}",
              (unsigned long)cn.reads_ok, (unsigned long)cn.err_busy,
              (unsigned long)cn.err_comm, (unsigned long)cn.rejected_rate,
              (unsigned long)cn.strokes, (unsigned long)cn.probe_fail,
              (unsigned long)cn.mode_changes, (unsigned long)cn.gated_polls,
              (unsigned long)cn.stall_faults, (unsigned long)cn.early_stops,
-             (unsigned long)cn.at_end_exempt);
+             (unsigned long)cn.at_end_exempt, (unsigned long)cn.orphan_aborts);
 }
 
 static void append_modbus_json(char *buf, size_t cap)
@@ -3429,36 +3429,46 @@ static esp_err_t diag_commission_get_handler(httpd_req_t *req)
     commission_status(&c);
 
     static const char *k_verdict[] = { "unknown", "valid", "invalid" };
-    /* Indexed by cal_err_t: order MUST match commission.h, and new reasons are
-     * appended there and here together. */
+    /* Indexed by the enums in commission.h: order MUST match, and each table is
+     * checked against its enum's count so a missing string fails the build
+     * instead of reaching the operator as "?". The bounds below come from the
+     * tables for the same reason -- k_run's used to be a hardcoded 8, and the
+     * 2026-09-16 teach rework added five reasons. */
     static const char *k_cal[] = { "none", "no_device", "no_window_size",
                                    "not_taught", "span_narrow", "teach_armed",
-                                   "wiper_open", "implausible", "not_following",
-                                   "verifying" };
-    _Static_assert(sizeof(k_cal) / sizeof(k_cal[0]) == (size_t)CAL_ERR_VERIFYING + 1u,
+                                   "wiper_open", "implausible", "not_following" };
+    _Static_assert(sizeof(k_cal) / sizeof(k_cal[0]) == (size_t)CAL_ERR_COUNT_,
                    "k_cal[] must have one string per cal_err_t value, in order");
     static const char *k_state[] = { "idle", "arming", "traversing",
                                      "committing", "done", "failed" };
-    static const char *k_run[] = { "none", "not_at_end", "both_ends", "sensor",
-                                   "wind", "motor_alarm", "timeout", "device_write" };
+    _Static_assert(sizeof(k_state) / sizeof(k_state[0]) == (size_t)TEACH_STATE_COUNT_,
+                   "k_state[] must have one string per teach_state_t value, in order");
+    static const char *k_run[] = { "none", "m3_busy", "both_ends", "sensor",
+                                   "wind", "motor_alarm", "timeout", "device_write",
+                                   "no_start", "no_move", "end_missed", "refused",
+                                   "dropped" };
+    _Static_assert(sizeof(k_run) / sizeof(k_run[0]) == (size_t)TEACH_ERR_COUNT_,
+                   "k_run[] must have one string per teach_err_t value, in order");
+#define TABLE_STR(t, i) (((unsigned)(i) < sizeof(t) / sizeof((t)[0])) ? (t)[(i)] : "?")
 
     char body[512];
     snprintf(body, sizeof(body),
              "{\"ok\":true,\"verdict\":\"%s\",\"cal_reason\":\"%s\","
              "\"window_mm\":%u,\"taught_closed\":%u,\"taught_open\":%u,"
              "\"span\":%u,\"span_pct\":%u,\"teach_armed\":%s,"
-             "\"state\":\"%s\",\"run_reason\":\"%s\",\"dir\":\"%s\"}",
-             ((unsigned)c.verdict < 3u) ? k_verdict[c.verdict] : "?",
-             /* Bound derived from the table: this was a hardcoded 9, which a
-              * new reason would have silently turned into "?" (2026-09-16). */
-             ((unsigned)c.cal_reason < sizeof(k_cal) / sizeof(k_cal[0]))
-                 ? k_cal[c.cal_reason] : "?",
+             "\"state\":\"%s\",\"run_reason\":\"%s\",\"dir\":\"%s\","
+             "\"leg\":%u,\"legs_max\":%u,\"ends\":%u}",
+             TABLE_STR(k_verdict, c.verdict),
+             TABLE_STR(k_cal, c.cal_reason),
              (unsigned)c.window_mm, (unsigned)c.taught_closed,
              (unsigned)c.taught_open, (unsigned)c.span, (unsigned)c.span_pct,
              c.teach_armed ? "true" : "false",
-             ((unsigned)c.state < 6u) ? k_state[c.state] : "?",
-             ((unsigned)c.run_reason < 8u) ? k_run[c.run_reason] : "?",
-             c.dir_is_open ? "open" : "close");
+             TABLE_STR(k_state, c.state),
+             TABLE_STR(k_run, c.run_reason),
+             c.dir_is_open ? "open" : "close",
+             (unsigned)c.leg, (unsigned)COMMISSION_TEACH_MAX_LEGS,
+             (unsigned)c.ends_made);
+#undef TABLE_STR
     return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
 }
 
@@ -3467,9 +3477,10 @@ static esp_err_t diag_commission_get_handler(httpd_req_t *req)
  *
  * Body: {"action":"teach"|"abort"|"refresh"|"window"[,"mm":1500]}
  *
- * `teach` **moves the window**: it arms the device and commands M3 across a full
- * traverse, because the capture register is chosen by direction of travel and a
- * stationary teach records nothing usable.
+ * `teach` **moves the window**: it arms the device, and T17 then drives M3 to
+ * BOTH end sensors in turn -- two traverses, three if T2's idea of where M3 is
+ * was wrong. The device captures each end as its sensor makes, so a teach that
+ * does not reach both records nothing it can commit. M3 may start anywhere.
  *
  * `window` writes the end-sensor-to-end-sensor distance to `40004`. That is NOT
  * the travel time: the motor overdrives past both end sensors into the blind

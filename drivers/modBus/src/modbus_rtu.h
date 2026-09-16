@@ -162,9 +162,14 @@ typedef enum {
  * @note    Deliberately called **twice** in this firmware — once at boot
  *          (`main.cpp`) and again by T5 at task entry, which reconfirms the
  *          driver state.  It is idempotent for the UART: it deletes and
- *          reinstalls the driver.  That delete is why a second concurrent
- *          caller would be unsafe even beyond the locking question — a
- *          transaction in flight during a re-init is a use-after-delete.
+ *          reinstalls the driver, and a transaction in flight during that is
+ *          a use-after-delete.  **A re-init therefore takes the bus mutex**
+ *          (waiting up to 2 s) and, if it cannot, leaves the installed driver
+ *          alone and logs an error.  Until 2026-09-16 it took nothing, which
+ *          was safe only while T5 was the sole caller: with T17 polling on
+ *          `ropeSensor`, T5's entry re-init deleted the driver under a T17
+ *          read and the board panicked (LoadProhibited in
+ *          `uart_get_buffered_data_len`), twice in a row.
  * @see    modbus_read_holding_registers(), modbus_write_multiple_registers().
  */
 void modbus_init(void);

@@ -166,6 +166,12 @@ typedef struct {
                              *   recalibration of a closed window, typically.
                              *   Not a fault. A soak must subtract these from
                              *   `strokes` before counting its sample. */
+    uint32_t orphan_aborts; /**< Episodes in which the sensor was found with a
+                             *   teach armed that nothing on this controller was
+                             *   running, and T17 aborted it (log param 245,
+                             *   value 4). Expected only after a restart or a
+                             *   sensor dropout mid-teach; a teach run or an
+                             *   operator abort must never move it. */
 } windowpos_counters_t;
 
 /** @brief Copy the soak counters. @param out Destination, must not be NULL. */
@@ -190,6 +196,18 @@ bool windowpos_task_snapshot(windowpos_reading_t *out, uint32_t *out_age_ms);
  * @return false before the first stroke has derived them.
  */
 bool windowpos_task_derived(windowpos_derived_t *out);
+
+/**
+ * @brief The `40002` measurement window T17 would derive for a travel time.
+ *
+ * The same derivation a stroke start uses, available before the first stroke
+ * since boot -- which is when windowpos_task_derived() has nothing to offer.
+ * The commissioning path needs it to set `40002` BEFORE arming a teach.
+ *
+ * @param travel_s `motor/travel_m3`, seconds.
+ * @return milliseconds, already clamped to the device's 100..60000.
+ */
+uint16_t windowpos_task_window_ms_for(uint16_t travel_s);
 
 /**
  * @brief T17 task entry point. Never returns.

@@ -55,6 +55,7 @@
   #include "freertos/FreeRTOS.h"
   #include "freertos/task.h"          /* pdMS_TO_TICKS, vTaskDelay (not used; ticks only) */
   #include "freertos/semphr.h"        /* bus mutex (gh#49) */
+  #include "esp_log.h"                /* modbus_init() refusing a re-init */
 #endif
 
 /* ---------------------------------------------------------------------------
@@ -393,15 +394,40 @@ static inline void bus_unlock(void) { }
  * Public API
  * --------------------------------------------------------------------------- */
 
+#ifndef NATIVE_TEST
+/**
+ * How long a RE-init waits for the bus. Longer than any transaction's wait
+ * (@ref MODBUS_LOCK_TIMEOUT_MS): a re-init must not go ahead without the lock,
+ * and one worst-case transaction holds it ~235 ms.
+ */
+#define MODBUS_INIT_LOCK_MS  2000u
+#endif
+
 void modbus_init(void)
 {
 #ifndef NATIVE_TEST
     /* Create the bus mutex ONCE.  modbus_init() is deliberately called twice
      * in this firmware — at boot from main.cpp and again by T5 at task entry
      * — so an unconditional create here would orphan the first handle and
-     * strand anything blocked on it forever. */
-    if (s_bus_mtx == NULL) {
+     * strand anything blocked on it forever.
+     *
+     * A RE-init deletes and reinstalls the UART driver, so it must hold the
+     * bus like any transaction. It did not, and "nothing else touches the bus
+     * yet" stopped being true when T17 became a second caller: on 2026-09-16
+     * FDA4 panicked twice in a row (LoadProhibited at 0x14 inside
+     * uart_get_buffered_data_len, called from T17's stroke poll) because T5's
+     * entry re-init, 8 s after boot, deleted the driver under a transaction
+     * T17 had in flight -- M3 was moving in T2's boot recalibration, so T17
+     * was polling every 100 ms. The first call has nobody to wait for. */
+    const bool reinit = (s_bus_mtx != NULL);
+    if (!reinit) {
         s_bus_mtx = xSemaphoreCreateMutex();
+    } else if (xSemaphoreTake(s_bus_mtx, pdMS_TO_TICKS(MODBUS_INIT_LOCK_MS)) != pdTRUE) {
+        /* The driver is already installed by the first call. Leaving it as
+         * it is is safe; deleting it under a live transaction is not. */
+        ESP_LOGE("MODBUS", "re-init skipped: bus held for over %u ms -- "
+                 "driver left as installed", (unsigned)MODBUS_INIT_LOCK_MS);
+        return;
     }
 #endif
 
@@ -443,6 +469,12 @@ void modbus_init(void)
 
     gpio_set_rs485_direction(false);   /* start in receive mode */
     s_frame_end_us = micros();         /* start IFG timer from driver init */
+
+#ifndef NATIVE_TEST
+    if (reinit) {
+        (void)xSemaphoreGive(s_bus_mtx);
+    }
+#endif
 }
 
 /* ---------------------------------------------------------------------------

@@ -8,7 +8,7 @@
  * no physical meaning. The **teach maps that code onto a known distance**: the
  * operator measures the gap between the two **end sensors** and writes it to
  * `40004` ("full travel between calibration points", 0.1 mm), then the device
- * captures the raw code at each end-sensor transition during a full traverse.
+ * captures the raw code as each end sensor makes while M3 is driven to both ends.
  * Code and millimetres are correlated from then on.
  *
  * So a completed teach is **self-consistent by construction** — the distance was
@@ -33,16 +33,38 @@
  * Confusing them is easy and expensive: the motor deliberately overdrives past
  * the end sensors, so the travel time is always the larger of the two.
  *
- * ## Ordering the teach requires (device contract §6.2)
+ * ## How a teach runs (device contract §6.2, §6.3)
  *
- *  1. `40002` measurement window **first** — `30005` refreshes once per window,
+ * The device captures the raw code **at the moment an end sensor makes** -- its
+ * inactive-to-active transition -- and only while armed. Arming discards any
+ * earlier capture. It commits once BOTH ends are captured and both capture
+ * registers have been read since, and it shows the commit by **clearing bit 5**.
+ *
+ *  1. `40002` measurement window **first** -- `30005` refreshes once per window,
  *     and a stale capture is ~86 counts of silent calibration error at rig speed;
- *  2. `40004` = the measured window size;
- *  3. arm `40007`;
- *  4. **a full traverse with movement** — the capture register is chosen by
- *     direction of travel, so a stationary teach is meaningless;
- *  5. read the captures, which **commits** them to `40005`/`40006` and clears
- *     the teach. That read is not an inspection; it is the commit.
+ *  2. arm `40007`, then wait for a reading with bit 5 set: the window does not
+ *     move until the device has confirmed it is listening;
+ *  3. **drive M3 to both end sensors, one after the other, from wherever it
+ *     starts.** Each leg goes the opposite way to where T2 believes M3 is,
+ *     because T2 ignores a command to go where it thinks M3 already is. The
+ *     run needs two end sensors to MAKE, and a leaf parked on an end cannot
+ *     make that end's sensor without leaving it first -- so a teach from an end
+ *     is always two traverses, and three when T2's belief is wrong (the first
+ *     leg then runs into the end switch and moves nothing);
+ *  4. nothing extra to commit. T17's ordinary poll is the full 15-register map,
+ *     which includes `30013`/`30014`, so it satisfies the read handshake on its
+ *     own (§6.3: "so does the 15-register full-map read").
+ *
+ * **Where M3 starts, and which way it goes first, do not affect the result.**
+ *
+ * *History, 2026-09-16.* The first version drove ONE traverse from a parked end
+ * and then read `30013`/`30014`, believing that read was the commit. It could
+ * only ever capture the far end, so the device never committed on its own
+ * account. From OPEN it appeared to work, because T6 reopened the window
+ * afterwards and made the open sensor by chance; from CLOSED, T6 was held off
+ * by dwell and the teach was disarmed before T6 moved. Success depended on T6,
+ * not on the teach. The "persist race" diagnosed the same day, and the
+ * VERIFYING state added for it, were built on that misreading and are gone.
  *
  * Dev builds only, alongside the rest of the bench commissioning surface.
  */
@@ -78,43 +100,37 @@ typedef enum {
     CAL_ERR_WIPER_OPEN,    /**< bit 2 — the wiper circuit is open */
     CAL_ERR_IMPLAUSIBLE,   /**< bit 6 — raw code outside the calibrated band */
     CAL_ERR_NOT_FOLLOWING, /**< bit 7 — switches saw movement, position did not */
-    /**
-     * A teach has JUST committed and the sensor has not yet finished storing it.
-     * Appended, never inserted: the web server maps these to strings by index.
-     *
-     * Reading the captures is the commit, but the sensor clears bit 5 and
-     * persists 40005/40006 a moment AFTER that read. Measured on FDA4
-     * 2026-09-16: a fresh read immediately after the commit still showed bit 5
-     * set and the PREVIOUS capture (848 where the teach had taken 850). Judging
-     * at that instant is therefore always wrong, and it was: every teach ended
-     * "teach complete" beside "INVALID: teach still armed". So the commit shows
-     * this instead, and the real verdict follows on the first reading with bit
-     * 5 clear -- or at VERIFY_TIMEOUT_MS, which is what a REFUSED teach (bit 5
-     * stays set) needs in order to surface as INVALID rather than wait forever.
-     */
-    CAL_ERR_VERIFYING,
+    CAL_ERR_COUNT_         /**< not a reason: how many there are. The web server's
+                            *   string table is checked against it at compile time. */
 } cal_err_t;
 
 /** @brief Where a teach run is. */
 typedef enum {
     TEACH_IDLE = 0,
-    TEACH_ARMING,      /**< writing 40002 / 40004 / 40007 */
-    TEACH_TRAVERSING,  /**< M3 commanded; waiting for both end sensors */
-    TEACH_COMMITTING,  /**< reading the captures, which persists them */
+    TEACH_ARMING,      /**< 40007 written; waiting for a reading with bit 5 set */
+    TEACH_TRAVERSING,  /**< driving legs; fewer than two end sensors have made */
+    TEACH_COMMITTING,  /**< both ends captured; waiting for the device to clear bit 5 */
     TEACH_DONE,
     TEACH_FAILED,
+    TEACH_STATE_COUNT_ /**< not a state: how many there are */
 } teach_state_t;
 
 /** @brief Why a teach run aborted. */
 typedef enum {
     TEACH_ERR_NONE = 0,
-    TEACH_ERR_NOT_AT_END,   /**< refused: M3 was not parked on an end sensor */
-    TEACH_ERR_BOTH_ENDS,    /**< bit 4: bit 3 cannot say which end M3 is at */
+    TEACH_ERR_M3_BUSY,      /**< M3 was moving at the start, or something else moved it mid-teach */
+    TEACH_ERR_BOTH_ENDS,    /**< bit 4: the end-sensor loop is faulted, bit 3 cannot be believed */
     TEACH_ERR_SENSOR,       /**< the sensor faulted or stopped answering */
     TEACH_ERR_WIND,         /**< wind override intervened */
     TEACH_ERR_MOTOR_ALARM,  /**< RRK-3 motor alarm */
-    TEACH_ERR_TIMEOUT,      /**< no end sensor within twice the configured travel */
-    TEACH_ERR_DEVICE_WRITE, /**< a register write was refused */
+    TEACH_ERR_TIMEOUT,      /**< a leg outlasted twice T2's own stroke time */
+    TEACH_ERR_DEVICE_WRITE, /**< a register write failed, or bit 5 never appeared after arming */
+    TEACH_ERR_NO_START,     /**< T2 did not start the commanded stroke */
+    TEACH_ERR_NO_MOVE,      /**< M3 did not leave its end sensor in EITHER direction */
+    TEACH_ERR_END_MISSED,   /**< a stroke ended between the end sensors -- travel_m3 too short? */
+    TEACH_ERR_REFUSED,      /**< both ends made but bit 5 stayed set: captures < 64 counts apart */
+    TEACH_ERR_DROPPED,      /**< bit 5 cleared before both ends had made -- sensor restarted? */
+    TEACH_ERR_COUNT_        /**< not a reason: how many there are */
 } teach_err_t;
 
 /** @brief Everything the commissioning screen renders. */
@@ -132,8 +148,13 @@ typedef struct {
     /* --- a teach run in progress --- */
     teach_state_t state;
     teach_err_t   run_reason;
-    bool          dir_is_open;    /**< direction currently commanded */
+    bool          dir_is_open;    /**< direction of the leg being driven */
+    uint8_t       leg;            /**< 1-based leg being driven; 0 before the first */
+    uint8_t       ends_made;      /**< end sensors that have made since arming, 0..2 */
 } commission_status_t;
+
+/** Legs a teach may drive: two, plus one for a T2 belief that turns out wrong. */
+#define COMMISSION_TEACH_MAX_LEGS  3u
 
 /** @brief Snapshot for the GUI. Safe from any task. */
 void commission_status(commission_status_t *out);
@@ -151,11 +172,12 @@ void commission_status(commission_status_t *out);
 bool commission_set_window_mm(uint16_t mm);
 
 /**
- * @brief Start a teach: arm the device, then drive M3 through a full traverse.
+ * @brief Start a teach: arm the device; T17 then drives M3 to both end sensors.
  *
- * **This moves the window.** Refused unless M3 is parked on an end sensor with
- * bit 4 clear — the capture register is chosen by direction of travel, so a
- * teach must start from a known end and cross to the other.
+ * **This moves the window** -- two full traverses, three when T2's idea of
+ * where M3 is turns out to be wrong. M3 may start anywhere: open, closed or
+ * part-way. Refused while M3 is moving, while bit 4 is set, or when a fresh
+ * reading fails or reports a fault.
  *
  * @return false if refused; the reason is in the status.
  */
@@ -168,22 +190,35 @@ void commission_teach_abort(void);
 void commission_refresh(void);
 
 /**
- * @brief True while a just-committed teach is waiting for the sensor to finish
- *        storing it (@ref CAL_ERR_VERIFYING).
+ * @brief True while an armed teach on the device is this module's doing.
  *
- * T17 samples at rest only every 30 s, so without this the "verifying" state
- * would sit on screen for up to half a minute after the sensor had already
- * finished. While this is true T17 samples on every idle tick instead, which
- * resolves the verdict within about half a second of bit 5 clearing. It is true
- * only for those few seconds, so the extra bus reads are negligible.
+ * That is: a run is active, OR the arm write is in flight before the run is
+ * published, OR we disarmed within the last few seconds and bit 5 may not have
+ * cleared yet. T17 uses it to tell our teach from an ORPHAN -- a device armed
+ * with nothing here behind it, which T17 aborts (window_pos_task.cpp).
+ */
+bool commission_owns_teach(void);
+
+/**
+ * @brief True while a teach is running, and for a few readings after it ends.
+ *
+ * T17 samples at rest only every 30 s. A teach needs readings at rest too: to
+ * see bit 5 appear before the first leg, to start the next leg when a stroke
+ * ends, and to see bit 5 clear. While this is true T17 samples on every idle
+ * tick (500 ms) instead. The few readings after the end let the stored verdict
+ * catch up with the device's bit 5, which clears a moment after a disarm.
  */
 bool commission_wants_prompt_read(void);
 
 /**
  * @brief Feed one sensor reading to the teach runner. Called from T17 only.
  *
- * @param r      the reading just taken, or NULL if the read failed.
- * @param now_ms monotonic milliseconds.
+ * This is where the legs are commanded, so T17 is a Q1 producer on bench
+ * builds while a teach runs.
+ *
+ * @param r      the reading just taken, or NULL when T17 has no sensor to read
+ *               (its presence gate is shut) -- a running teach then fails.
+ * @param now_ms monotonic milliseconds, T17's clock.
  */
 void commission_tick(const windowpos_reading_t *r, uint32_t now_ms);
 

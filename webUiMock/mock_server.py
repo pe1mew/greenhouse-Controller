@@ -1210,11 +1210,13 @@ def coredump_erase():
 # ---------------------------------------------------------------------------
 # M3 commissioning (§6.3 item 4). The firmware's state machine is driven by the
 # leaf crossing its end sensors; here it is driven by a timer, which is enough
-# to walk every GUI branch.
+# to walk every GUI branch. Like the firmware, a teach drives M3 to BOTH end
+# sensors from wherever it starts: arming, then two 13 s legs (the dev rig's
+# real traverse), then a moment of "committing" before the result.
 #
 #   curl "http://localhost:5000/api/diag/commission"
-#   curl -X POST .../api/diag/commission -d '{"action":"start"}'
-#   curl -X POST "http://localhost:5000/api/__mock/commission?state=result"
+#   curl -X POST .../api/diag/commission -d '{"action":"teach"}'
+#   curl -X POST "http://localhost:5000/api/__mock/commission?state=failed&run_reason=end_missed"
 COMM = {
     # calibration, as the device would report it. The rig's real numbers: the
     # teach captured 0 and 858 of 1023 (84 % of the ADC range) across a 1500 mm
@@ -1224,9 +1226,33 @@ COMM = {
     "span": 858, "span_pct": 84, "teach_armed": False,
     # a teach run
     "state": "idle", "run_reason": "none", "dir": "open",
-    "at_end": True,
+    "leg": 0, "legs_max": 3, "ends": 0,
 }
 _COMM_T0 = [0.0]
+_COMM_LEG_S = 13.0      # the dev rig's M3 traverse
+_COMM_ARM_S = 1.0
+
+
+def _comm_advance():
+    """Walk a running teach along the clock: arming, leg 1, leg 2, commit."""
+    if COMM["state"] not in ("arming", "traversing", "committing"):
+        return
+    t = time.time() - _COMM_T0[0]
+    first_open = COMM.get("_first_open", True)
+    if t < _COMM_ARM_S:
+        COMM.update(state="arming", leg=0, ends=0)
+    elif t < _COMM_ARM_S + _COMM_LEG_S:
+        COMM.update(state="traversing", leg=1, ends=0,
+                    dir="open" if first_open else "close")
+    elif t < _COMM_ARM_S + 2 * _COMM_LEG_S:
+        COMM.update(state="traversing", leg=2, ends=1,
+                    dir="close" if first_open else "open")
+    elif t < _COMM_ARM_S + 2 * _COMM_LEG_S + 1.0:
+        COMM.update(state="committing", leg=2, ends=2)
+    else:
+        COMM.update(state="done", teach_armed=False, verdict="valid",
+                    cal_reason="none", taught_closed=0, taught_open=858,
+                    span=858, span_pct=84, ends=2)
 
 
 @app.route("/api/diag/commission", methods=["GET"])
@@ -1234,14 +1260,8 @@ def commission_get():
     denied = _admin_only()
     if denied:
         return denied
-    # advance the simulated traverse so the GUI's live counter has something
-    # to show -- 13 s is the dev rig's real M3 traverse
-    # simulate the traverse taking the rig's real 13 s
-    if COMM["state"] == "traversing" and time.time() - _COMM_T0[0] >= 13.0:
-        COMM.update(state="done", teach_armed=False, verdict="valid",
-                    cal_reason="none", taught_closed=0, taught_open=858,
-                    span=858, span_pct=84)
-    return {"ok": True, **COMM}
+    _comm_advance()
+    return {"ok": True, **{k: v for k, v in COMM.items() if not k.startswith("_")}}
 
 
 @app.route("/api/diag/commission", methods=["POST"])
@@ -1252,15 +1272,18 @@ def commission_post():
     body = request.get_json(silent=True) or {}
     a = body.get("action", "")
     if a == "teach":
-        # the device picks its capture register from the direction of travel, so
-        # a teach must start parked on an end sensor
-        if not COMM["at_end"]:
-            COMM.update(state="failed", run_reason="not_at_end")
-            return {"ok": False, "state": 5, "run_reason": 1}
-        COMM.update(state="traversing", run_reason="none", teach_armed=True)
+        # M3 may start anywhere; only a teach already running is refused
+        if COMM["state"] in ("arming", "traversing", "committing"):
+            return {"ok": False, "state": 1, "run_reason": 0}
+        # the first leg goes away from where the controller believes M3 is:
+        # CLOSED -> open first, anything else -> close first
+        m3 = M3_POS.get("state", "CLOSED")
+        COMM.update(state="arming", run_reason="none", teach_armed=True,
+                    leg=0, ends=0, _first_open=(m3 == "CLOSED"))
         _COMM_T0[0] = time.time()
     elif a == "abort":
-        COMM.update(state="idle", run_reason="none", teach_armed=False)
+        COMM.update(state="idle", run_reason="none", teach_armed=False,
+                    leg=0, ends=0)
     elif a == "refresh":
         pass
     elif a == "window":
@@ -1277,9 +1300,10 @@ def commission_post():
 def commission_mock_set():
     """Force a state so every GUI branch can be inspected without waiting."""
     for k, v in request.args.items():
-        if k in ("open_ms", "close_ms", "elapsed_ms", "configured_s"):
+        if k in ("leg", "legs_max", "ends", "window_mm", "taught_closed",
+                 "taught_open", "span", "span_pct"):
             COMM[k] = int(v)
-        elif k in ("teach_armed", "at_end", "both_ends"):
+        elif k in ("teach_armed",):
             COMM[k] = v.lower() in ("1", "true", "yes")
         else:
             COMM[k] = v

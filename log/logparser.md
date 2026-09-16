@@ -1,8 +1,17 @@
 # logparser — Greenhouse Controller Log Parser
 
 **File:** `log/logparser.py`
-**Document version:** 1.15 (matches firmware 2.8.0 + the `ropeSensor` window-sensor encodings; adds `ALARM ch6 param 250`, §12.4 rule 2 "an early stop is a fault")
+**Document version:** 1.16 (matches firmware 2.8.0 + the `ropeSensor` window-sensor encodings; adds `ALARM ch6 param 245` value `4`, an orphaned teach found and aborted)
 **Requires:** Python 3.10+, standard library only (no pip dependencies)
+
+**What's new in 1.16** (`ropeSensor` branch):
+- **`ALARM ch = 6` param 245, `value_a = 4` — orphaned teach aborted.** T17
+  found the sensor with a teach armed that nothing on the controller was
+  running, and aborted it. A controller restart or a sensor dropout mid-teach
+  leaves one behind; left alone, the next two strokes would commit it
+  unwatched. `value_b` = the abort write's driver status (`0` = it reached the
+  sensor; anything else is retried on later readings). Normally followed by an
+  `aborted` row within a second.
 
 **What's new in 1.15** (`ropeSensor` branch):
 - **`ALARM ch = 6` param 250 — M3 CLOSE stopped early.** §12.4 rule 2: a CLOSE
@@ -663,12 +672,12 @@ should treat ALARM rows around boot or OTA windows with skepticism.
 
 Emitted by **T17**. The channel-based dispatch follows T5's 4/5 convention: T2
 and T3 keep `ch = 0`, and each later producer owns a channel of its own. `param`
-then names the event within that channel, from the reserved band **244—247**.
+then names the event within that channel, from the reserved band **244—250**.
 
 | `param` | event | `value_a` | `value_b` |
 |---|---|---|---|
 | **244** | sensor fault set/cleared | `1` = fault set, `0` = cleared | device status bits (low byte), `0` when not carried |
-| **245** | teach-mode transition | `0` aborted, `1` armed, `2` COMMITTED, `3` REFUSED | 0 |
+| **245** | teach-mode transition | `0` aborted, `1` armed, `2` COMMITTED, `3` REFUSED, `4` ORPHAN found and aborted | 0; for `4`, the abort write's driver status (`0` = reached the sensor) |
 | **246** | device status bitfield | the raw register-30006 bitfield | 0 |
 | **247** | device restarted | new register-30008 uptime in seconds (masked to 15 bits) | 0 |
 | **248** | **M3 control mode changed** | `0` = TIMED (travel timer), `1` = POSITION (opening distance) | gate reason, below |
@@ -700,6 +709,21 @@ switch, bit 3 is made, and the rule stays silent. The timing is the weaker half
 of the test — corroboration, not the trigger. Bit 4 (`both_end_sensors`) is an
 end-sensor loop fault, so while it is set bit 3 is not believed in either
 direction and the rule withholds judgement rather than guessing.
+
+**`param = 245`, `value_a = 4` means nothing on the controller owned the
+armed teach.** The sensor keeps a teach armed across a *controller* restart
+(only its own reset clears it), and T17's ordinary poll is the read that lets
+an armed teach commit — so an orphan would be completed by whichever strokes
+next make both end sensors. T17 aborts it at gate open and on any reading. A
+teach the commissioning path is running, or has just aborted itself, is never
+reported: `bin/at_wp_teach.py` fails if T17's `orphan_aborts` counter moves
+during a run.
+
+**`param = 245`, `value_a = 0/2` is judged by T17 from the endpoints**: changed
+`40005`/`40006` read as COMMITTED, unchanged as aborted. A re-teach that
+captures exactly the old endpoints is therefore logged as *aborted*; the
+controller's own serial log line (`teach COMMITTED after N legs`) is the
+authority in that case.
 
 **`param = 245`, `value_a = 3` (REFUSED) is decoded but never emitted.** A refused
 teach leaves status bit 5 set with register 40007 still `1`, which is

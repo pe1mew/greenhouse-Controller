@@ -15,6 +15,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 
+#include "cfg_defaults.h"   /* MOTOR_TRAVEL_MARGIN_S_DEFAULT -- T2's stroke is travel + this */
 #include "../data_manager/data_manager.h"
 #include "../relay_controller/relay_controller.h"
 #include "window_pos_task.h"
@@ -32,24 +33,72 @@ static const char *TAG = "COMMISSION";
  * well above the noise of a wiper that never moved.
  */
 #define SPAN_MIN_PCT        30u
-/** Give up on a traverse after this multiple of the configured travel time. */
-#define TEACH_TIMEOUT_MULT  2u
+
+/** T2 drains Q1 every 20 ms, so a stroke that has not begun by now is not coming. */
+#define LEG_START_MS        3000u
+/**
+ * A stroke counts as ended once T2 has been at rest this long. The pause lets
+ * the device's debounced end-sensor bit reach a reading before the leg is
+ * judged, and it is shorter than any dwell, so T6 cannot slip a move in between
+ * two legs (T6 observes dwell; our SRC_OPERATOR_MANUAL legs do not).
+ */
+#define LEG_END_MS          1000u
+/** A leg may take this multiple of T2's own stroke time. T2 always ends a stroke
+ *  on its own timer, so this is a backstop, not a measurement. */
+#define LEG_TIMEOUT_MULT    2u
+/** The device must show bit 5 within this long of the arm write. */
+#define ARM_CONFIRM_MS      3000u
+/**
+ * Both ends made, T2 at rest, bit 5 still set: after this long the device has
+ * refused. The commit needs one read after the second capture plus one
+ * measurement window -- at most ~0.8 s on production (derived window 760 ms),
+ * T17 reads every 500 ms here, and the second capture happened before the
+ * stroke's overdrive even began.
+ */
+#define COMMIT_SETTLE_MS    5000u
+/** Prompt readings kept up after a run ends. See commission_wants_prompt_read(). */
+#define LINGER_READS        10u
 
 static portMUX_TYPE        s_mux = portMUX_INITIALIZER_UNLOCKED;
 static commission_status_t s_st;
-static uint32_t            s_t_start_ms;
-static bool                s_prev_at_end;
-static bool                s_have_prev;
+static uint8_t             s_linger;       /* prompt reads still owed after a run */
+/* Both keep T17's orphan check off a teach that is ours. s_starting spans
+ * commission_teach_start()'s arm write, before TEACH_ARMING is published.
+ * s_quiet spans our own DISARM: bit 5 stays set for a moment after the write
+ * while the state already says it is over, so without it an operator abort
+ * was logged as an orphan (FDA4, 2026-09-16 12:47:29). If our disarm write
+ * failed, the orphan check takes over once the grace has passed. */
+static bool                s_starting;
+static bool                s_quiet;
+static TickType_t          s_quiet_from;
+#define DISARM_GRACE_MS    5000u
 
-/* The just-committed-teach window (CAL_ERR_VERIFYING). See commission.h. */
-static bool                s_verifying;
-static uint32_t            s_verify_start_ms;   /* compared by elapsed time: wrap-safe */
+/*
+ * The run. commission_teach_start() (web task) initialises all of it BEFORE it
+ * publishes TEACH_ARMING; from then on only T17, through commission_tick(),
+ * touches it.
+ */
+typedef enum {
+    LEG_NONE = 0,      /* no stroke of ours in progress */
+    LEG_STARTING,      /* Q1 command sent; T2 has not shown the stroke yet */
+    LEG_RUNNING,       /* T2 is driving M3 */
+    LEG_STOPPING,      /* T2 at rest; waiting LEG_END_MS before judging the leg */
+} leg_phase_t;
 
-/** How long a committed teach may wait for the sensor to clear bit 5 before the
- *  real verdict is shown regardless. A healthy sensor clears it in well under a
- *  second; one that never does has REFUSED the teach, and this is what lets that
- *  surface as INVALID instead of "verifying" forever. */
-#define VERIFY_TIMEOUT_MS  30000u
+static leg_phase_t s_phase;
+static bool        s_stamped;       /* s_arm_ms holds T17's clock */
+static uint32_t    s_arm_ms;        /* first ARMING tick */
+static uint32_t    s_leg_ms;        /* when the current leg was commanded */
+static uint32_t    s_rest_ms;       /* when T2 was first seen at rest this leg */
+static uint32_t    s_settle_ms;     /* when the last leg ended with both ends made */
+static bool        s_have_prev;
+static bool        s_prev_at_end;   /* bit 3 on the previous reading */
+static bool        s_seen_armed;    /* a reading has shown bit 5 during this run */
+static bool        s_leg_left_end;  /* bit 3 was clear at some point this leg */
+static bool        s_leg_made;      /* an end sensor made during this leg */
+static uint8_t     s_legs;          /* legs commanded so far */
+static uint8_t     s_noop_legs;     /* consecutive legs that never left their end */
+static uint8_t     s_ends;          /* end sensors made since arming, 0..2 */
 
 static uint16_t configured_travel_s(void)
 {
@@ -58,14 +107,16 @@ static uint16_t configured_travel_s(void)
     return (uint16_t)cfg.travel_s[2];
 }
 
-static void teach_fail(teach_err_t why)
+static bool teach_active(teach_state_t s)
 {
-    portENTER_CRITICAL(&s_mux);
-    s_st.state      = TEACH_FAILED;
-    s_st.run_reason = why;
-    portEXIT_CRITICAL(&s_mux);
-    (void)windowpos_teach(WINDOWPOS_DEFAULT_ADDR, false);   /* leave nothing armed */
-    ESP_LOGW(TAG, "teach aborted, reason %d", (int)why);
+    return s == TEACH_ARMING || s == TEACH_TRAVERSING || s == TEACH_COMMITTING;
+}
+
+static bool m3_moving(void)
+{
+    window_state_t w[3];
+    t2_get_window_states(w);   /* reversal gaps report as MOVING too */
+    return w[2] == WIN_MOVING_OPEN || w[2] == WIN_MOVING_CLOSE;
 }
 
 void commission_status(commission_status_t *out)
@@ -87,19 +138,10 @@ void commission_status(commission_status_t *out)
  * is inert in the CLOSED direction on this installation. The raw code sits at 0
  * at the closed stop, so a shorted wiper is indistinguishable from a genuinely
  * closed window (plan §2a.6). A verdict of VALID does not exclude that fault.
- */
-/*
- * @param fresh  A reading taken NOW, or NULL to take one here.
  *
- * The live status bits must be current, and "current" is the whole bug this
- * parameter exists for (2026-09-16). This used to read them from T17's cached
- * snapshot. On the commit path that snapshot is the reading in which the leaf
- * reached the far end -- taken BEFORE windowpos_read_captures(), which IS the
- * commit and clears the teach. So every successful teach was judged against a
- * reading that still had bit 5 set, and ended "teach complete" beside
- * "INVALID: a teach is still armed". Deterministic: it happened on the very
- * first teach anyone ran from the GUI. The verdict was then cached and never
- * recomputed, so it stayed wrong while the device said otherwise.
+ * @param fresh  A reading taken NOW, or NULL to take one here. Never T17's
+ *               cached snapshot: its age is unbounded at rest, and a verdict
+ *               judged on a stale bit 5 was the first bug this module had.
  */
 static void commission_refresh_with(const windowpos_reading_t *fresh)
 {
@@ -153,21 +195,62 @@ static void commission_refresh_with(const windowpos_reading_t *fresh)
     s_st.span          = span;
     s_st.span_pct      = pct;
     s_st.teach_armed   = armed;
-    s_verifying        = false;      /* a real judgement ends the verify window */
     portEXIT_CRITICAL(&s_mux);
-}
-
-bool commission_wants_prompt_read(void)
-{
-    portENTER_CRITICAL(&s_mux);
-    const bool v = s_verifying;
-    portEXIT_CRITICAL(&s_mux);
-    return v;
 }
 
 void commission_refresh(void)
 {
     commission_refresh_with(NULL);   /* take a fresh reading -- never the cache */
+}
+
+bool commission_owns_teach(void)
+{
+    portENTER_CRITICAL(&s_mux);
+    bool v = s_starting || teach_active(s_st.state);
+    if (!v && s_quiet) {
+        if ((TickType_t)(xTaskGetTickCount() - s_quiet_from) < pdMS_TO_TICKS(DISARM_GRACE_MS)) {
+            v = true;
+        } else {
+            s_quiet = false;
+        }
+    }
+    portEXIT_CRITICAL(&s_mux);
+    return v;
+}
+
+bool commission_wants_prompt_read(void)
+{
+    portENTER_CRITICAL(&s_mux);
+    const bool v = teach_active(s_st.state) || (s_linger != 0u);
+    portEXIT_CRITICAL(&s_mux);
+    return v;
+}
+
+/**
+ * @brief End a run as FAILED and leave nothing armed.
+ *
+ * The disarm matters beyond tidiness: a device left armed keeps capturing, so
+ * the next ordinary T6 strokes could complete a teach nobody is watching --
+ * which is exactly how the first version of this module appeared to work. If
+ * this write fails, T17's orphan check retries it (window_pos_task.cpp).
+ */
+static void teach_fail(teach_err_t why)
+{
+    portENTER_CRITICAL(&s_mux);
+    s_st.state      = TEACH_FAILED;
+    s_st.run_reason = why;
+    s_linger        = LINGER_READS;
+    s_quiet         = true;             /* our disarm follows: not an orphan */
+    s_quiet_from    = xTaskGetTickCount();
+    portEXIT_CRITICAL(&s_mux);
+    s_phase = LEG_NONE;
+    (void)windowpos_teach(WINDOWPOS_DEFAULT_ADDR, false);
+    ESP_LOGW(TAG, "teach FAILED, reason %d (legs %u, ends %u)",
+             (int)why, (unsigned)s_legs, (unsigned)s_ends);
+    /* The device clears bit 5 a moment after the disarm, so this verdict may
+     * still say "armed"; the self-correction in commission_tick() fixes that
+     * on one of the LINGER_READS prompt readings. */
+    commission_refresh();
 }
 
 bool commission_set_window_mm(uint16_t mm)
@@ -185,190 +268,343 @@ bool commission_set_window_mm(uint16_t mm)
 
 bool commission_teach_start(void)
 {
-    /* A FRESH reading, not T17's cache. This check gates a window MOVEMENT, and
-     * it used to read windowpos_task_snapshot() while ignoring the age that call
-     * returns -- although that call's own header warns that ages of many minutes
-     * are normal at rest, because T17 stops polling. With a short dwell, T6 can
-     * move M3 well inside that window, so a stale "at an end sensor" could arm a
-     * teach on a leaf that is actually mid-travel: one capture and a useless
-     * calibration, which is precisely what this check is here to refuse. A read
-     * that fails -- including ERR_BUSY -- refuses the teach rather than moving
-     * the window on uncertain data; the operator can simply press it again. */
+    portENTER_CRITICAL(&s_mux);
+    const bool running = teach_active(s_st.state);
+    portEXIT_CRITICAL(&s_mux);
+    if (running) { return false; }   /* one teach at a time; the status says which */
+
+    /* Initialise the run before anything can observe it -- and before any
+     * refusal below, whose log line reports these counters. No run is active,
+     * so T17 is not touching them. */
+    s_phase        = LEG_NONE;
+    s_stamped      = false;
+    s_arm_ms       = 0u;
+    s_leg_ms       = 0u;
+    s_rest_ms      = 0u;
+    s_settle_ms    = 0u;
+    s_have_prev    = false;
+    s_prev_at_end  = false;
+    s_seen_armed   = false;
+    s_leg_left_end = false;
+    s_leg_made     = false;
+    s_legs         = 0u;
+    s_noop_legs    = 0u;
+    s_ends         = 0u;
+
+    /* A FRESH reading, not T17's cache: this check gates a window movement,
+     * and T17's cache can be many minutes old at rest. A read that fails --
+     * including ERR_BUSY -- refuses rather than moving the window on
+     * uncertain data; the operator can simply press again. */
     windowpos_reading_t r;
     if (windowpos_read(WINDOWPOS_DEFAULT_ADDR, &r) != WINDOWPOS_OK || r.sensor_fault) {
         teach_fail(TEACH_ERR_SENSOR);
         return false;
     }
     if (r.both_end_sensors) { teach_fail(TEACH_ERR_BOTH_ENDS); return false; }
-    /* The capture register is chosen by DIRECTION of travel, so a teach has to
-     * start parked on one end sensor and cross to the other. Starting mid-travel
-     * produces one capture and a useless calibration. */
-    if (!r.at_end_sensor)   { teach_fail(TEACH_ERR_NOT_AT_END); return false; }
-
-    portENTER_CRITICAL(&s_mux);
-    s_st.state      = TEACH_ARMING;
-    s_st.run_reason = TEACH_ERR_NONE;
-    portEXIT_CRITICAL(&s_mux);
+    if (m3_moving())        { teach_fail(TEACH_ERR_M3_BUSY);   return false; }
+    const EventBits_t eg = xEventGroupGetBits(EG1);
+    if (eg & EG1_BIT_MOTOR_ALARM)   { teach_fail(TEACH_ERR_MOTOR_ALARM); return false; }
+    if (eg & EG1_BIT_WIND_OVERRIDE) { teach_fail(TEACH_ERR_WIND);        return false; }
+    /* There is deliberately NO "must be parked at an end" check any more.
+     * Every leg moves the leaf, so the device always knows the direction of
+     * the movement that made each sensor, whatever the starting point. */
 
     /* Contract §6.2 order: measurement window BEFORE arming. `30005` refreshes
      * once per window, so a stale capture is silent calibration error -- ~86
-     * counts at rig speed with the 1000 ms default. */
-    windowpos_derived_t d;
-    windowpos_task_derived(&d);
-    if (d.window_ms != 0u &&
-        windowpos_set_window_ms(WINDOWPOS_DEFAULT_ADDR, d.window_ms) != WINDOWPOS_OK) {
-        teach_fail(TEACH_ERR_DEVICE_WRITE);
-        return false;
-    }
-    if (windowpos_teach(WINDOWPOS_DEFAULT_ADDR, true) != WINDOWPOS_OK) {
+     * counts at rig speed with the 1000 ms default. Derived here from the
+     * configured travel rather than taken from T17, which has nothing to offer
+     * before its first stroke since boot. An unchanged value is a no-op on the
+     * device (contract §8), so T17 re-writing the same number at the first
+     * leg's stroke start costs nothing. */
+    const uint16_t win_ms = windowpos_task_window_ms_for(configured_travel_s());
+    if (windowpos_set_window_ms(WINDOWPOS_DEFAULT_ADDR, win_ms) != WINDOWPOS_OK) {
         teach_fail(TEACH_ERR_DEVICE_WRITE);
         return false;
     }
 
-    /* Drive AWAY from the end we are parked on. Position is meaningful only
-     * after the teach, so the direction comes from the leaf's own reading:
-     * near zero means closed, so open; otherwise close. */
-    const bool go_open = (r.percent_x10 < 500u);
-    window_cmd_t cmd = {};
-    cmd.action  = go_open ? CMD_OPEN : CMD_CLOSE;
-    cmd.channel = 3u;                      /* M3 */
-    cmd.source  = SRC_OPERATOR_MANUAL;     /* an admin asked for this, explicitly */
-    if (xQueueSend(Q1, &cmd, pdMS_TO_TICKS(500)) != pdTRUE) {
+    s_have_prev    = true;
+    s_prev_at_end  = r.at_end_sensor;
+
+    portENTER_CRITICAL(&s_mux);
+    s_starting = true;
+    portEXIT_CRITICAL(&s_mux);
+    if (windowpos_teach(WINDOWPOS_DEFAULT_ADDR, true) != WINDOWPOS_OK) {
+        portENTER_CRITICAL(&s_mux);
+        s_starting = false;
+        portEXIT_CRITICAL(&s_mux);
         teach_fail(TEACH_ERR_DEVICE_WRITE);
         return false;
     }
 
     portENTER_CRITICAL(&s_mux);
-    s_st.state       = TEACH_TRAVERSING;
-    s_st.dir_is_open = go_open;
+    s_st.state      = TEACH_ARMING;     /* published last: T17 acts on it */
+    s_st.run_reason = TEACH_ERR_NONE;
+    s_st.leg        = 0u;
+    s_st.ends_made  = 0u;
+    s_linger        = 0u;
+    s_starting      = false;            /* the state now says it */
     portEXIT_CRITICAL(&s_mux);
-    s_t_start_ms = 0u;                     /* set on the first tick */
-    s_have_prev  = false;
-    ESP_LOGW(TAG, "teach armed; driving M3 %s -- THE WINDOW WILL MOVE",
-             go_open ? "OPEN" : "CLOSED");
+    ESP_LOGW(TAG, "teach armed (window %u ms); M3 moves once the sensor confirms",
+             (unsigned)win_ms);
     return true;
 }
 
 void commission_teach_abort(void)
 {
-    (void)windowpos_teach(WINDOWPOS_DEFAULT_ADDR, false);
+    /* State first, so a T17 tick already past its state read is the only one
+     * that can still act -- and a leg it starts is ended by T2's own timer. */
     portENTER_CRITICAL(&s_mux);
     s_st.state      = TEACH_IDLE;
     s_st.run_reason = TEACH_ERR_NONE;
+    s_linger        = LINGER_READS;
+    s_quiet         = true;             /* our disarm follows: not an orphan */
+    s_quiet_from    = xTaskGetTickCount();
     portEXIT_CRITICAL(&s_mux);
+    (void)windowpos_teach(WINDOWPOS_DEFAULT_ADDR, false);
     ESP_LOGW(TAG, "teach abandoned by the operator");
     commission_refresh();
+}
+
+/**
+ * @brief Command the next leg: the opposite way to where T2 believes M3 is.
+ *
+ * T2 ignores a command to go where it thinks M3 already is
+ * (`ch_start_open/close`), so this is the direction that always makes T2
+ * energise the relay. If the belief is wrong, the leaf is already at that
+ * end: the motor's end switch cuts the drive, nothing moves, and the leg is
+ * a no-op that the next leg recovers from. UNKNOWN drives either way; close
+ * first, towards the safe end.
+ */
+static bool start_leg(uint32_t now_ms)
+{
+    window_state_t w[3];
+    t2_get_window_states(w);
+    if (w[2] == WIN_MOVING_OPEN || w[2] == WIN_MOVING_CLOSE) {
+        teach_fail(TEACH_ERR_M3_BUSY);   /* someone else is driving M3 */
+        return false;
+    }
+    const bool go_open = (w[2] == WIN_CLOSED);
+
+    /* The operator may have aborted since this tick read the state; an abort
+     * must not be followed by one more stroke. What is left of the race is the
+     * few instructions between here and the send. */
+    portENTER_CRITICAL(&s_mux);
+    const bool still_running = teach_active(s_st.state);
+    portEXIT_CRITICAL(&s_mux);
+    if (!still_running) {
+        s_phase = LEG_NONE;
+        return false;
+    }
+
+    window_cmd_t cmd = {};
+    cmd.action  = go_open ? CMD_OPEN : CMD_CLOSE;
+    cmd.channel = 3u;                      /* M3 */
+    cmd.source  = SRC_OPERATOR_MANUAL;     /* an admin asked for this, explicitly */
+    if (xQueueSend(Q1, &cmd, pdMS_TO_TICKS(100)) != pdTRUE) {
+        teach_fail(TEACH_ERR_NO_START);
+        return false;
+    }
+
+    s_legs++;
+    s_phase        = LEG_STARTING;
+    s_leg_ms       = now_ms;
+    s_leg_made     = false;
+    s_leg_left_end = !s_prev_at_end;   /* part-way already counts as off an end */
+
+    portENTER_CRITICAL(&s_mux);
+    s_st.leg         = s_legs;
+    s_st.dir_is_open = go_open;
+    portEXIT_CRITICAL(&s_mux);
+    ESP_LOGW(TAG, "teach leg %u: driving M3 %s -- THE WINDOW WILL MOVE",
+             (unsigned)s_legs, go_open ? "OPEN" : "CLOSED");
+    return true;
+}
+
+/**
+ * @brief A stroke has ended: judge the leg, then start the next or wait.
+ * @return false if the run is over (failed).
+ */
+static bool finish_leg(uint32_t now_ms)
+{
+    s_phase = LEG_NONE;
+
+    if (s_leg_made) {
+        s_noop_legs = 0u;
+    } else if (!s_leg_left_end) {
+        /* Never left its end sensor: driven into the end it was already at.
+         * Expected once, when T2's belief was wrong. Twice in a row means the
+         * leaf will not move in EITHER direction. */
+        if (++s_noop_legs >= 2u) { teach_fail(TEACH_ERR_NO_MOVE); return false; }
+        ESP_LOGW(TAG, "teach leg %u moved nothing -- M3 was already there",
+                 (unsigned)s_legs);
+    } else {
+        /* Left a sensor (or started between them) and stopped short of the
+         * next one. T2 drives travel_m3 + margin; if that is shorter than the
+         * real traverse, this is where it shows. */
+        teach_fail(TEACH_ERR_END_MISSED);
+        return false;
+    }
+
+    if (s_ends >= 2u) {
+        s_settle_ms = now_ms;          /* wait for bit 5 to clear */
+        return true;
+    }
+    if (s_legs >= COMMISSION_TEACH_MAX_LEGS) {
+        /* Not reachable with the leg rule above -- after a made leg the next
+         * one always moves -- but a run must end somewhere. */
+        teach_fail(TEACH_ERR_TIMEOUT);
+        return false;
+    }
+    return start_leg(now_ms);
 }
 
 void commission_tick(const windowpos_reading_t *r, uint32_t now_ms)
 {
     teach_state_t state;
     bool          cached_armed;
-    bool          verifying;
-    uint32_t      verify_start;
     portENTER_CRITICAL(&s_mux);
     state        = s_st.state;
     cached_armed = s_st.teach_armed;
-    verifying    = s_verifying;
-    verify_start = s_verify_start_ms;
+    if (!teach_active(state) && s_linger != 0u) { s_linger--; }
     portEXIT_CRITICAL(&s_mux);
 
-    /* A committed teach whose sensor never clears bit 5 has been REFUSED. Stop
-     * saying "verifying" and show the real verdict, which will be INVALID. */
-    if (verifying && (uint32_t)(now_ms - verify_start) >= VERIFY_TIMEOUT_MS) {
-        ESP_LOGW(TAG, "teach commit not confirmed within %u ms -- judging anyway",
-                 (unsigned)VERIFY_TIMEOUT_MS);
-        commission_refresh();
-        bool still_armed;
-        portENTER_CRITICAL(&s_mux);
-        still_armed = s_st.teach_armed;
-        portEXIT_CRITICAL(&s_mux);
-        if (still_armed) {
-            /* The sensor never accepted the commit. That is a FAILED teach, not
-             * a complete one -- leaving the state at DONE would recreate the
-             * "teach complete" / "still armed" contradiction this whole change
-             * exists to remove. teach_fail() also disarms the sensor, so nothing
-             * is left armed; re-judge after that. */
-            teach_fail(TEACH_ERR_DEVICE_WRITE);
-            commission_refresh();
+    if (!teach_active(state)) {
+        /* Self-correction: the stored verdict must follow the live teach bit.
+         * A verdict computed once and stored drifts from the device, and bit 5
+         * in particular clears a moment AFTER a disarm. Re-judge whenever a
+         * real reading disagrees, using THAT reading (T17 calls this before it
+         * updates its snapshot on the idle path). Changes are rare, so so is
+         * the config read this costs. */
+        if (r != NULL && !r->sensor_fault && r->teach_armed != cached_armed) {
+            commission_refresh_with(r);
         }
         return;
     }
 
-    /* Self-correction: the stored verdict must follow the live teach bit.
-     *
-     * A verdict computed once and stored can drift from the device, and
-     * nothing re-judged it -- that is how "teach complete" sat beside
-     * "teach still armed" indefinitely. Re-judge whenever a real reading shows
-     * bit 5 differing from what the verdict assumed, using THAT reading (this
-     * is called before T17 updates its snapshot on the idle path, so the
-     * snapshot would be stale here too). Skipped during an active teach, where
-     * bit 5 is legitimately set and re-judging would only cost bus reads.
-     * Changes are rare, so so is the config read this triggers. */
-    if (r != NULL && !r->sensor_fault && r->teach_armed != cached_armed &&
-        state != TEACH_TRAVERSING && state != TEACH_COMMITTING) {
-        commission_refresh_with(r);
-    }
-
-    if (state != TEACH_TRAVERSING) { return; }
-
-    if (s_t_start_ms == 0u) { s_t_start_ms = now_ms; }
-
+    /* ---- guards that end any run ------------------------------------- */
     if (r == NULL || r->sensor_fault) { teach_fail(TEACH_ERR_SENSOR); return; }
     if (r->both_end_sensors)          { teach_fail(TEACH_ERR_BOTH_ENDS); return; }
-
-    /* A teach interrupted by safety is not a teach. The leaf may have been
-     * commanded somewhere else entirely mid-traverse. */
+    /* A teach interrupted by safety is not a teach: the leaf may have been
+     * commanded somewhere else entirely mid-leg. */
     const EventBits_t eg = xEventGroupGetBits(EG1);
     if (eg & EG1_BIT_MOTOR_ALARM)   { teach_fail(TEACH_ERR_MOTOR_ALARM); return; }
     if (eg & EG1_BIT_WIND_OVERRIDE) { teach_fail(TEACH_ERR_WIND); return; }
 
-    if ((now_ms - s_t_start_ms) >
-        (uint32_t)configured_travel_s() * 1000u * TEACH_TIMEOUT_MULT) {
-        teach_fail(TEACH_ERR_TIMEOUT);
+    /* ---- end-sensor makes: the events the device captures on --------- */
+    const bool at_end = r->at_end_sensor;
+    if (s_phase != LEG_NONE) {
+        if (!at_end) { s_leg_left_end = true; }
+        if (s_have_prev && !s_prev_at_end && at_end && !s_leg_made) {
+            s_leg_made = true;               /* one per leg: it moves one way */
+            if (s_ends < 2u) { s_ends++; }
+            ESP_LOGW(TAG, "teach leg %u: end sensor made (%u of 2), raw %u",
+                     (unsigned)s_legs, (unsigned)s_ends, (unsigned)r->raw_adc);
+        }
+    }
+    s_prev_at_end = at_end;
+    s_have_prev   = true;
+
+    const bool moving = m3_moving();
+    portENTER_CRITICAL(&s_mux);
+    s_st.teach_armed = r->teach_armed;       /* live bit 5, for the screen */
+    s_st.ends_made   = s_ends;
+    if (state == TEACH_TRAVERSING && s_ends >= 2u) {
+        s_st.state = TEACH_COMMITTING;       /* the rest is the device's move */
+        state = TEACH_COMMITTING;
+    }
+    portEXIT_CRITICAL(&s_mux);
+
+    /* ---- bit 5: the commit, or the device giving up on its own -------- */
+    if (r->teach_armed) {
+        s_seen_armed = true;
+    } else if (s_seen_armed) {
+        if (s_ends < 2u) {
+            /* Nobody but this module writes 40007, so a clear before both
+             * ends means the device dropped the teach -- a restart does that. */
+            teach_fail(TEACH_ERR_DROPPED);
+            return;
+        }
+        /* Committed. The contract orders it commit, persist, clear bit 5, so
+         * THIS reading is late enough to judge on, and the config read inside
+         * commission_refresh_with() carries the new 40005/40006. */
+        commission_refresh_with(r);
+        portENTER_CRITICAL(&s_mux);
+        s_st.state = TEACH_DONE;
+        s_linger   = LINGER_READS;
+        const uint16_t lo = s_st.taught_closed, hi = s_st.taught_open;
+        portEXIT_CRITICAL(&s_mux);
+        s_phase = LEG_NONE;
+        ESP_LOGW(TAG, "teach COMMITTED after %u legs: closed=%u open=%u%s",
+                 (unsigned)s_legs, (unsigned)lo, (unsigned)hi,
+                 moving ? " (M3 still finishing its stroke)" : "");
         return;
     }
 
-    if (!s_have_prev) { s_prev_at_end = r->at_end_sensor; s_have_prev = true; }
-    const bool reached_far_end = (!s_prev_at_end && r->at_end_sensor);
-    s_prev_at_end = r->at_end_sensor;
-    if (!reached_far_end) { return; }
+    /* ---- arming: nothing moves until the device confirms -------------- */
+    if (state == TEACH_ARMING) {
+        if (!s_stamped) { s_arm_ms = now_ms; s_stamped = true; }
+        if (s_seen_armed) {
+            if (start_leg(now_ms)) {
+                portENTER_CRITICAL(&s_mux);
+                if (s_st.state == TEACH_ARMING) { s_st.state = TEACH_TRAVERSING; }
+                portEXIT_CRITICAL(&s_mux);
+            }
+        } else if ((uint32_t)(now_ms - s_arm_ms) >= ARM_CONFIRM_MS) {
+            teach_fail(TEACH_ERR_DEVICE_WRITE);
+        }
+        return;
+    }
 
-    /* Both ends seen. Reading the captures is the COMMIT (contract §6.2 step d):
-     * it persists them to 40005/40006 and clears the teach. It is not a look. */
-    portENTER_CRITICAL(&s_mux);
-    s_st.state = TEACH_COMMITTING;
-    portEXIT_CRITICAL(&s_mux);
+    /* ---- the current leg ---------------------------------------------- */
+    switch (s_phase) {
+    case LEG_STARTING:
+        if (moving) {
+            s_phase = LEG_RUNNING;
+        } else if ((uint32_t)(now_ms - s_leg_ms) >= LEG_START_MS) {
+            teach_fail(TEACH_ERR_NO_START);
+        }
+        return;
 
-    uint16_t cap_closed = 0u, cap_open = 0u;
-    const windowpos_status_t s =
-        windowpos_read_captures(WINDOWPOS_DEFAULT_ADDR, &cap_closed, &cap_open);
-    if (s != WINDOWPOS_OK) { teach_fail(TEACH_ERR_DEVICE_WRITE); return; }
+    case LEG_RUNNING: {
+        const uint32_t stroke_ms =
+            ((uint32_t)configured_travel_s() + MOTOR_TRAVEL_MARGIN_S_DEFAULT) * 1000u;
+        if ((uint32_t)(now_ms - s_leg_ms) > stroke_ms * LEG_TIMEOUT_MULT) {
+            teach_fail(TEACH_ERR_TIMEOUT);
+        } else if (!moving) {
+            s_phase   = LEG_STOPPING;
+            s_rest_ms = now_ms;
+        }
+        return;
+    }
 
-    ESP_LOGW(TAG, "teach committed: closed=%u open=%u", (unsigned)cap_closed,
-             (unsigned)cap_open);
+    case LEG_STOPPING:
+        if (moving) {
+            /* M3 started again, and not on our command: T6 with a zero dwell,
+             * or an operator. The leaf is no longer where this run thinks. */
+            teach_fail(TEACH_ERR_M3_BUSY);
+        } else if ((uint32_t)(now_ms - s_rest_ms) >= LEG_END_MS) {
+            (void)finish_leg(now_ms);
+        }
+        return;
 
-    /* Do NOT judge here. The commit has only just been requested; the sensor
-     * clears bit 5 and persists the captures a moment later, so any reading
-     * taken now -- even a fresh one -- still says "armed" and still holds the
-     * previous capture. Judging here produced "teach complete" beside
-     * "INVALID: teach still armed" on every teach (measured 2026-09-16, and the
-     * first attempt at fixing it, a fresh read, did not help for exactly this
-     * reason).
-     *
-     * Instead: say VERIFYING, keep teach_armed true (it IS still armed on the
-     * device), and let the self-correction above judge on the first reading
-     * with bit 5 clear. That reading is also late enough to carry the
-     * persisted captures. commission_wants_prompt_read() makes T17 take that
-     * reading promptly instead of on its 30 s idle cadence. */
-    portENTER_CRITICAL(&s_mux);
-    s_st.state           = TEACH_DONE;
-    s_st.verdict         = CAL_UNKNOWN;
-    s_st.cal_reason      = CAL_ERR_VERIFYING;
-    s_st.teach_armed     = true;
-    s_verifying          = true;
-    s_verify_start_ms    = now_ms;
-    portEXIT_CRITICAL(&s_mux);
+    case LEG_NONE:
+    default:
+        /* Only reached with both ends made and the last stroke over. */
+        if (moving) {
+            teach_fail(TEACH_ERR_M3_BUSY);
+        } else if ((uint32_t)(now_ms - s_settle_ms) >= COMMIT_SETTLE_MS) {
+            /* Both ends made and read, yet bit 5 stays set: the device refused
+             * the pair (contract §6.2: captures closer than 64 counts). Show
+             * what it captured before disarming discards it. */
+            uint16_t c = 0u, o = 0u;
+            if (windowpos_read_captures(WINDOWPOS_DEFAULT_ADDR, &c, &o) == WINDOWPOS_OK) {
+                ESP_LOGW(TAG, "teach refused by the sensor: captured closed=%u open=%u",
+                         (unsigned)c, (unsigned)o);
+            }
+            teach_fail(TEACH_ERR_REFUSED);
+        }
+        return;
+    }
 }
 
 #endif /* MODBUS_BENCH */

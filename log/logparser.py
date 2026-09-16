@@ -458,7 +458,10 @@ _SENSOR_FAULT_REASON = {
     3: "BUSY - bus held by another task past the grace deadline, never asked",
 }
 
-_WPOS_TEACH = {0: "aborted", 1: "armed", 2: "COMMITTED", 3: "REFUSED"}
+_WPOS_TEACH = {0: "aborted", 1: "armed", 2: "COMMITTED", 3: "REFUSED",
+               # 4: the sensor was armed with nothing on the controller running
+               # a teach (a restart or dropout mid-teach); T17 aborted it.
+               4: "ORPHAN found (armed, no teach running) - ABORTED"}
 
 # Phase 4 sensor-presence gate. value_a = the control law now in force,
 # value_b = why. TIMED is the fallback T2 has always used; POSITION means
@@ -483,6 +486,10 @@ def _decode_wpos_event(param: int, va: int, vb: int) -> str:
     if param == 244:
         return ("position sensor FAULT set" if va else "position sensor fault cleared") +                (f"  (status 0x{vb & 0xFF:02X})" if vb else "")
     if param == 245:
+        if va == 4 and vb:
+            # value_b carries the abort write's driver status; non-zero means
+            # the abort did not reach the sensor and T17 will retry it.
+            return f"teach {_WPOS_TEACH[4]}  (abort write FAILED, status {vb} - retried)"
         return f"teach {_WPOS_TEACH.get(va, f'?{va}')}"
     if param == 246:
         on = [n for m, n in _WPOS_STATUS_BITS if va & m]

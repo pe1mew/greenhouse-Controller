@@ -332,7 +332,7 @@ typedef enum {
      * spent, so spend the rest deliberately. Carried on LOG_ALARM rows with
      * channel = 6 (4 = T/RH fault, 5 = wind fault are taken). */
     LOG_PARAM_WPOS_FAULT   = 244, /**< value_a: 1 = fault set, 0 = cleared */
-    LOG_PARAM_WPOS_TEACH   = 245, /**< value_a: 1 armed, 2 committed, 3 refused, 0 aborted */
+    LOG_PARAM_WPOS_TEACH   = 245, /**< value_a: 1 armed, 2 committed, 3 refused, 0 aborted, 4 orphan found and aborted (value_b = abort write status) */
     LOG_PARAM_WPOS_STATUS  = 246, /**< value_a: the 30006 status bitfield */
     LOG_PARAM_WPOS_RESTART = 247, /**< value_a: new 30008 uptime (it went backwards) */
     LOG_PARAM_WPOS_MODE    = 248, /**< Phase 4 — M3 control mode changed.

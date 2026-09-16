@@ -215,6 +215,13 @@ static void derive(uint16_t cfg_travel_s, uint16_t full_travel_x10,
     out->rate_limit_x10   = (uint16_t)clamp_u32(nominal * RATE_LIMIT_MULT, 2u, 65535u);
 }
 
+uint16_t windowpos_task_window_ms_for(uint16_t travel_s)
+{
+    windowpos_derived_t d;
+    derive(travel_s, 0u, &d);        /* the window does not depend on 40004 */
+    return d.window_ms;
+}
+
 bool windowpos_task_snapshot(windowpos_reading_t *out, uint32_t *out_age_ms)
 {
     bool have;
@@ -317,7 +324,22 @@ static void emit_events(const windowpos_reading_t *r, uint8_t addr)
         s_ev_fault  = r->sensor_fault;
         s_ev_teach  = r->teach_armed;
         s_ev_status = st_cmp;
-        return;                    /* first reading is a baseline, not an edge */
+        if (s_ev_teach) {
+            /* Armed before T17's first look. The disarm below compares the
+             * endpoints against the ones taken at arm time, so take them now:
+             * left at 0/0, any disarm on a taught sensor logged as COMMITTED --
+             * an abort included. Seen 2026-09-16, when a teach started before
+             * T17's first idle sample after a reboot. Logged as armed too, so
+             * the COMMITTED/aborted row that follows has its opening row. */
+            windowpos_config_t c;
+            if (windowpos_read_config(addr, &c) == WINDOWPOS_OK) {
+                s_ev_raw_closed = c.raw_closed;
+                s_ev_raw_open   = c.raw_open;
+            }
+            log_wpos_event(LOG_PARAM_WPOS_TEACH, 1, 0);
+            ESP_LOGI(TAG, "teach already armed at the first reading");
+        }
+        return;                    /* otherwise a baseline, not an edge */
     }
 
     if (r->sensor_fault != s_ev_fault) {
@@ -331,15 +353,21 @@ static void emit_events(const windowpos_reading_t *r, uint8_t addr)
         log_wpos_event(LOG_PARAM_WPOS_STATUS, (int16_t)r->status_bits, 0);
     }
 
-    /* Teach lifecycle. T17 only OBSERVES: it never reads 30013/30014, because
-     * that read is what commits (contract 6.2 d) and T17 must not commit a
-     * calibration as a side effect of logging.
+    /* Teach lifecycle, observed from the ordinary poll.
+     *
+     * Correction, 2026-09-16: this comment used to say T17 never reads
+     * 30013/30014. It reads them on EVERY poll -- windowpos_read() is the full
+     * 15-register map, and contract 6.3 says that read satisfies the commit
+     * handshake. So T17's poll is what completes an armed teach once both ends
+     * are captured; the only thing keeping that from being a side effect is
+     * that nothing but the commissioning path ever arms one.
      *
      * On disarm, the holdings say which way it went: changed endpoints mean the
-     * device committed, unchanged means aborted. **`3 = refused` is NOT emitted
-     * here** -- refusal leaves bit 5 SET with 40007 still 1, which is a
-     * non-transition T17 cannot distinguish from a teach still in progress. It
-     * is reserved for the commissioning path that drives the teach (plan 6.3). */
+     * device committed, unchanged means aborted -- so a re-teach that captures
+     * exactly the old endpoints logs as "aborted" here; the commissioning log
+     * line is the authority on that. **`3 = refused` is NOT emitted here** --
+     * refusal leaves bit 5 SET with 40007 still 1, which is a non-transition
+     * T17 cannot distinguish from a teach still in progress. */
     if (r->teach_armed != s_ev_teach) {
         s_ev_teach = r->teach_armed;
         if (s_ev_teach) {
@@ -359,6 +387,87 @@ static void emit_events(const windowpos_reading_t *r, uint8_t addr)
             }
             log_wpos_event(LOG_PARAM_WPOS_TEACH, what, 0);
             ESP_LOGI(TAG, "teach %s", (what == 2) ? "COMMITTED" : "aborted");
+        }
+    }
+}
+
+/** `LOG_PARAM_WPOS_TEACH` value_a: an orphaned teach was found and aborted. */
+#define WPOS_TEACH_EV_ORPHAN  4
+
+static bool s_orphan_reported = false;   /* one log row per orphan episode */
+
+/**
+ * @brief Abort a teach that nothing on this controller is running.
+ *
+ * **No teach may run unwatched.** The sensor keeps an armed teach across a
+ * CONTROLLER restart -- only its own reset clears `40007` (contract 6.2) -- and
+ * a teach whose disarm write failed, or whose sensor dropped out mid-run, is
+ * left armed too. The device then keeps capturing, and T17's ordinary poll is
+ * the full-map read that satisfies the commit handshake (contract 6.3), so the
+ * next two strokes that make both end sensors would commit a calibration
+ * nobody asked for or watched. A release build can never be running a teach,
+ * so there every armed device is an orphan.
+ *
+ * Checked on every reading T17 takes, from the flag that reading already
+ * carries, so it costs a bus write only when it acts.
+ *
+ * @param r    a reading taken just now.
+ * @param addr device address.
+ * @return true if an abort reached the device -- the caller should read again
+ *         soon, so the log and the verdict follow bit 5 clearing. A FAILED
+ *         write returns false: it is retried at the normal cadence, not every
+ *         idle tick, so a device that ignores it is not polled flat out.
+ */
+static bool check_orphan_teach(const windowpos_reading_t *r, uint8_t addr)
+{
+    if (!r->teach_armed) {
+        s_orphan_reported = false;
+        return false;
+    }
+#ifdef MODBUS_BENCH
+    if (commission_owns_teach()) { return false; }   /* ours, and watched */
+#endif
+    const windowpos_status_t ws = windowpos_teach(addr, false);
+    if (!s_orphan_reported) {
+        s_orphan_reported = true;
+        portENTER_CRITICAL(&s_mux);
+        s_cnt.orphan_aborts++;
+        portEXIT_CRITICAL(&s_mux);
+        log_wpos_event(LOG_PARAM_WPOS_TEACH, WPOS_TEACH_EV_ORPHAN, (int16_t)ws);
+        ESP_LOGW(TAG, "sensor armed with no teach running -- aborting it (write status %d)",
+                 (int)ws);
+    }
+    return ws == WINDOWPOS_OK;
+}
+
+/**
+ * @brief The gate has just opened: clear an orphan BEFORE anything judges the
+ *        calibration, and wait briefly for the device to show it.
+ *
+ * A fresh read rather than waiting for the first idle sample, which is up to
+ * 30 s away -- long enough for the commissioning card to report "teach still
+ * armed" after every boot that follows an interrupted teach.
+ */
+static void clear_orphan_at_gate_open(uint8_t addr)
+{
+    windowpos_reading_t r;
+    if (windowpos_read(addr, &r) != WINDOWPOS_OK || !check_orphan_teach(&r, addr)) {
+        return;
+    }
+    /* Bit 5 clears a moment after the write. Up to ~2 s, polled here rather
+     * than through the idle path, whose failures count towards closing the
+     * gate: on 2026-09-16 fast idle reads during an OTA asset upload closed
+     * it within 1.5 s. These reads count for nothing.
+     *
+     * The watchdog is fed on every pass: a read that waits out the bus lock
+     * (500 ms) and then times out (~215 ms) makes eight passes ~7.7 s, past
+     * T17's 5 s TWDT. */
+    for (int i = 0; i < 8; i++) {
+        esp_task_wdt_reset();
+        vTaskDelay(pdMS_TO_TICKS(250));
+        if (windowpos_read(addr, &r) == WINDOWPOS_OK && !r.teach_armed) {
+            s_orphan_reported = false;
+            break;
         }
     }
 }
@@ -538,6 +647,7 @@ static bool probe_sensor(void)
          * the first stroke the honest state is TIMED-because-not-yet-promoted,
          * not TIMED-because-probing. */
         publish_mode(s_ctrl_mode, WPOS_GATE_OK);
+        clear_orphan_at_gate_open(WINDOWPOS_DEFAULT_ADDR);
 #ifdef MODBUS_BENCH
         /* Judge the sensor's calibration now that it is confirmed present.
          *
@@ -554,7 +664,10 @@ static bool probe_sensor(void)
          * re-opens, so a sensor that was absent at boot, or unplugged and
          * refitted, is re-judged when it comes back instead of keeping a stale
          * NO_DEVICE verdict. It costs one holding-register read per gate
-         * opening, on the task that already owns this device. */
+         * opening, on the task that already owns this device.
+         *
+         * After clear_orphan_at_gate_open(), above, so a teach left armed by a
+         * restart is judged as the abort left it, not as "still armed". */
         commission_refresh();
 #endif
     }
@@ -582,6 +695,7 @@ void task_window_pos(void *pvParameters)
     uint16_t pushed_window_ms  = 0u;
     bool     was_travelling    = false;
     uint32_t last_idle_log_ms  = 0u;
+    bool     resample_soon     = false;   /* an orphan abort wants a prompt re-read */
 
     /* §12.4 rule 1 state, reset at every stroke boundary. Stroke-local rather
      * than static: the question is always "did THIS stroke move?", and carrying
@@ -646,6 +760,12 @@ void task_window_pos(void *pvParameters)
                 (uint32_t)(now_ms() - s_last_probe_ms) >= PROBE_RETRY_MS) {
                 (void)probe_sensor();
             }
+#ifdef MODBUS_BENCH
+            /* No readings reach the teach runner while the gate is shut, so a
+             * teach running when the sensor went away would otherwise wait for
+             * ever. NULL tells it there is no sensor; idle, it does nothing. */
+            commission_tick(NULL, now_ms());
+#endif
             vTaskDelay(pdMS_TO_TICKS(IDLE_TICK_MS));
             continue;
         }
@@ -655,24 +775,26 @@ void task_window_pos(void *pvParameters)
             /* Phase 3: still sample at the idle cadence so the log shows the
              * window sitting still, not a gap. Phase 2 idled with zero bus
              * cost; this is the deliberate, temporary trade (see IDLE_LOG_MS). */
-            bool idle_sample_due =
+            bool idle_sample_due = resample_soon ||
                 (uint32_t)(now_ms() - last_idle_log_ms) >= IDLE_LOG_MS;
 #ifdef MODBUS_BENCH
-            /* A just-committed teach is waiting on a reading with bit 5 clear.
-             * At the 30 s idle cadence the operator would watch "verifying" for
-             * up to half a minute after the sensor had already finished --
-             * which is what the 2026-09-16 hardware run showed. Sample every
-             * idle tick until it resolves; that is a few seconds at most. */
+            /* A running teach needs readings at rest as well: to see bit 5
+             * appear before the first leg, to start each next leg when a
+             * stroke ends, and to see bit 5 clear. The 30 s idle cadence would
+             * stall it between legs, so sample every idle tick while it runs
+             * (and for a few ticks after, see commission_wants_prompt_read). */
             if (commission_wants_prompt_read()) { idle_sample_due = true; }
 #endif
             if (idle_sample_due) {
                 last_idle_log_ms = now_ms();
+                resample_soon    = false;
                 windowpos_reading_t ir;
                 const windowpos_status_t ist = windowpos_read(WINDOWPOS_DEFAULT_ADDR, &ir);
                 if (ist == WINDOWPOS_OK) {
                     check_restart(WINDOWPOS_DEFAULT_ADDR);
                     emit_events(&ir, WINDOWPOS_DEFAULT_ADDR);
                     log_position(&ir);
+                    resample_soon = check_orphan_teach(&ir, WINDOWPOS_DEFAULT_ADDR);
 #ifdef MODBUS_BENCH
                     commission_tick(&ir, now_ms());
 #endif
@@ -811,6 +933,13 @@ void task_window_pos(void *pvParameters)
                 portEXIT_CRITICAL(&s_mux);
                 ESP_LOGW(TAG, "rate %ld beyond %ux nominal (%u) -- sample rejected",
                          (long)rate, (unsigned)RATE_LIMIT_MULT, (unsigned)d.rate_limit_x10);
+#ifdef MODBUS_BENCH
+                /* The teach runner still gets it. The rejection distrusts the
+                 * POSITION; bits 3, 4 and 5 come from the end sensors and the
+                 * teach state, not the wiper, and a leg whose every sample was
+                 * rejected would otherwise hide its end-sensor make. */
+                commission_tick(&r, now_ms());
+#endif
             } else {
                 /* §12.4 rule 1 evidence, from ACCEPTED samples only. A sample
                  * the plausibility check rejected says nothing about movement
@@ -889,6 +1018,7 @@ void task_window_pos(void *pvParameters)
                 portEXIT_CRITICAL(&s_mux);
                 emit_events(&r, WINDOWPOS_DEFAULT_ADDR);
                 log_position(&r);
+                (void)check_orphan_teach(&r, WINDOWPOS_DEFAULT_ADDR);
 #ifdef MODBUS_BENCH
                 commission_tick(&r, now_ms());
 #endif

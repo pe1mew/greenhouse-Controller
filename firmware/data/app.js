@@ -142,17 +142,21 @@ const CM_CAL_WHY = {
   teach_armed:    'a teach is still armed and has not completed.',
   wiper_open:     'the wiper circuit is open (bit 2).',
   implausible:    'the reading is outside the calibrated band (bit 6).',
-  not_following:  'the window moved but the reading did not (bit 7) — wire detached, slipping or seized.',
-  verifying:      'the teach has finished; the sensor is still saving it. This settles within a few seconds.'
+  not_following:  'the window moved but the reading did not (bit 7) — wire detached, slipping or seized.'
 };
 const CM_RUN_WHY = {
-  not_at_end:   'M3 was not parked at an end sensor.',
+  m3_busy:      'M3 was moving — at the start, or something else moved it during the teach. Wait for it to stop and try again.',
   both_ends:    'both end sensors read active, so the sensor cannot tell which end M3 is at.',
   sensor:       'the sensor faulted or stopped answering.',
   wind:         'a wind override intervened.',
   motor_alarm:  'the motor alarm fired.',
-  timeout:      'M3 did not reach the far end in time.',
-  device_write: 'the sensor refused a setting.'
+  timeout:      'a stroke took far longer than the configured travel time.',
+  device_write: 'the sensor did not accept the teach settings.',
+  no_start:     'the motor controller did not start the stroke.',
+  no_move:      'M3 did not leave its end sensor in either direction — is the motor running?',
+  end_missed:   'M3 stopped between the end sensors. Is the M3 travel time long enough to reach them?',
+  refused:      'the sensor refused the result: both ends were reached but the readings were almost the same. Is the draw-wire attached?',
+  dropped:      'the sensor dropped the teach before both ends were reached — did it restart?'
 };
 const CM_STATE = {
   idle: '—', arming: 'arming…', traversing: 'M3 MOVING…',
@@ -174,11 +178,7 @@ function commRender(c) {
   // Verdict, reusing the window-state colours rather than inventing any.
   const v = document.getElementById('cm-verdict');
   if (v) {
-    // A just-committed teach reports verdict "unknown" with reason "verifying".
-    // Show that as CHECKING: "UNKNOWN" right after "teach complete" reads like a
-    // fault, and the previous behaviour here -- INVALID -- was simply wrong.
-    const checking = c.cal_reason === 'verifying';
-    v.textContent = checking ? 'CHECKING' : (c.verdict || '').toUpperCase();
+    v.textContent = (c.verdict || '').toUpperCase();
     v.className = c.verdict === 'valid' ? 'win-open'
                 : c.verdict === 'invalid' ? 'win-moving' : '';
   }
@@ -190,10 +190,21 @@ function commRender(c) {
         ' (' + c.span_pct + ' % of range), window ' + c.window_mm + ' mm'
       : (CM_CAL_WHY[c.cal_reason] || ''));
 
-  setText('cm-state', CM_STATE[c.state] || c.state || '—');
+  // A teach drives M3 to BOTH end sensors, from wherever it starts: two
+  // traverses, three when the controller's idea of where M3 is was wrong. On
+  // production a traverse is ~3 min, so say which leg is running and how many
+  // ends are done -- a screen that only says "moving" invites an early abort.
+  const moving = c.state === 'traversing' || c.state === 'committing';
+  setText('cm-state',
+    moving && c.leg
+      ? 'leg ' + c.leg + ' of up to ' + (c.legs_max || 3) + ' — M3 '
+        + (c.dir === 'open' ? 'OPENING' : 'CLOSING')
+      : (CM_STATE[c.state] || c.state || '—'));
   setText('cm-hint',
     c.state === 'failed' ? (CM_RUN_WHY[c.run_reason] || 'teach failed.')
-    : c.state === 'traversing' ? 'let it run to the far end.'
+    : c.state === 'arming' ? 'waiting for the sensor to confirm; M3 moves next.'
+    : c.state === 'traversing' ? (c.ends || 0) + ' of 2 end sensors reached — let it run.'
+    : c.state === 'committing' ? 'both end sensors reached — the sensor is saving the result.'
     : '');
 
   // Reflect the device's window size into the input ONLY while the operator is
@@ -308,8 +319,8 @@ function commWindow() {
 // A teach drives the window. Say so before it moves — this is the one control
 // on the settings page that actuates the greenhouse.
 function commTeach() {
-  if (!confirm('This will MOVE M3 across its full travel to calibrate the sensor.\n\n' +
-               'M3 must be parked at one end before starting. Continue?')) return;
+  if (!confirm('This will MOVE M3 to both ends to calibrate the sensor: two full ' +
+               'traverses, sometimes three. M3 may start anywhere.\n\nContinue?')) return;
   commAct('teach');
 }
 

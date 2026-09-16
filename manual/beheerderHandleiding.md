@@ -225,7 +225,7 @@ Sinds 2.8.0 staan de instellingen **per motor** bij elkaar (M1, M2, M3) in plaat
 | **Time control** · *in gebruik* | Loopttijd en dwelltijden — dit is wat de ramen vandaag aanstuurt |
 | **Linear control** · *raamstandsensor* | Instellingen voor de raamstandsensor. **Deze sturen het raam nog niet aan**; ze horen bij de lineaire regeling die nog niet in gebruik is |
 
-De groep *Linear control* is alleen zichtbaar op een **commissioning-build** met de sensor gemonteerd. Op een gewone release-build ziet de Motors-tab er precies zo uit als voorheen.
+De groep *Linear control* is alleen **bruikbaar** op een **commissioning-build** met de sensor gemonteerd. Op een gewone release-build staat hij er wel, maar **grijs**, met erbij waarom hij niet beschikbaar is. Dat is bewust: een instelling die simpelweg verdwijnt is niet te onderscheiden van een verkeerd tabblad of een storing.
 
 ### M3 raamstandsensor — kalibratie (commissioning)
 
@@ -244,11 +244,28 @@ De raamgrootte meet je met een rolmaat, in millimeters, tussen de twee eindsenso
 
 #### Wat de teach doet
 
-De sensor meet intern een weerstandswaarde. Op zichzelf is dat een getal zonder betekenis. De **teach koppelt dat getal aan de raamgrootte**: tijdens één volledige raamgang legt de sensor vast welke meetwaarde bij "helemaal dicht" en welke bij "helemaal open" hoort. Daarna weet hij millimeters.
+De sensor meet intern een weerstandswaarde. Op zichzelf is dat een getal zonder betekenis. De **teach koppelt dat getal aan de raamgrootte**: de controller rijdt M3 naar **beide** eindsensoren, en op het moment dat een eindsensor schakelt legt de sensor vast welke meetwaarde bij "helemaal dicht" en welke bij "helemaal open" hoort. Daarna weet hij millimeters.
 
 **Daarom hoef je de uitkomst niet te beoordelen.** Jij gaf de afstand, de sensor nam de twee eindpunten waar, de rest volgt. Het scherm toont in plaats daarvan een **oordeel**, en alleen als dat oordeel iets meldt is er reden om opnieuw te teachen.
 
-> **De knop Teach laat het raam bewegen.** M3 moet aan één uiterste staan voordat je start: de sensor kiest aan de richting van beweging welk eindpunt hij vastlegt, dus een teach die niet van de ene eindsensor naar de andere loopt levert niets bruikbaars op. Er volgt een bevestigingsvraag.
+> **De knop Teach laat het raam bewegen: twee volledige raamgangen, soms drie.** Het maakt niet uit waar M3 staat — open, dicht of halverwege. De controller rijdt eerst weg van de stand waarin hij M3 denkt te weten en daarna weer terug, zodat **beide** eindsensoren schakelen. Een raam dat al tegen een eindsensor staat kan die kant pas vastleggen nadat het er eerst vanaf is geweest; daarom is één raamgang nooit genoeg. Klopt de stand die de controller denkt te weten niet, dan loopt de eerste gang tegen de eindschakelaar en volgt er een derde. Er volgt eerst een bevestigingsvraag.
+>
+> Tijdens de teach toont het scherm welke gang loopt en hoeveel eindsensoren al bereikt zijn, bijvoorbeeld *"leg 2 of up to 3 — M3 CLOSING"* met *"1 of 2 end sensors reached"*. Op het productieraam duurt één gang ongeveer drie minuten: **laat hem lopen** tot er *teach complete* staat. *Abort* stopt de teach; het raam maakt de gang waarin het zit wel af.
+
+#### Als de teach mislukt
+
+Naast *teach failed* staat de reden. Een mislukte teach laat de bestaande kalibratie ongemoeid.
+
+| Reden (op het scherm) | Betekenis | Wat te doen |
+|---|---|---|
+| *M3 stopped between the end sensors* | Een gang eindigde voordat er een eindsensor schakelde | **Loopttijd M3** controleren: die moet de hele weg tot voorbij de eindsensoren dekken |
+| *M3 did not leave its end sensor in either direction* | Het raam bewoog in geen van beide richtingen | Motor, relais en eindschakelaars nakijken |
+| *the sensor refused the result* | Beide eindsensoren schakelden, maar de twee meetwaarden lagen vrijwel gelijk | Trekdraad controleren (los, of loopt niet mee) en opnieuw teachen |
+| *M3 was moving* | M3 bewoog al bij de start, of iets anders stuurde M3 tijdens de teach | Wachten tot M3 stilstaat en opnieuw starten |
+| *the sensor dropped the teach* | De sensor liet de teach los voordat beide eindsensoren bereikt waren — meestal een herstart van de sensor | Opnieuw teachen |
+| *a wind override intervened* / *the motor alarm fired* | Een veiligheidsfunctie greep in | Na afloop opnieuw teachen |
+
+> **Een teach die niemand meer volgt, wordt afgebroken.** Wordt de controller tijdens een teach herstart, dan blijft de sensor wachten op eindsensoren — en de eerstvolgende gewone raambewegingen zouden de teach dan onbewaakt afmaken. De controller breekt zo'n achtergebleven teach daarom zelf af. In het logboek staat dat als *teach ORPHAN found (armed, no teach running) - ABORTED*; dat is geen storing.
 
 #### Het kalibratie-oordeel
 
@@ -257,7 +274,7 @@ De sensor meet intern een weerstandswaarde. Op zichzelf is dat een getal zonder 
 | **VALID** | Alle controles in orde. Het scherm toont erbij wat er geleerd is, bijvoorbeeld *"taught 0…858 (84 % of range), window 1500 mm"* | Niets |
 | geen raamgrootte | `40004` staat op nul — er is nooit geteacht | Raamgrootte invullen, dan teachen |
 | nooit geteacht | De twee vastgelegde waarden zijn gelijk | Teachen |
-| bereik te smal | De twee waarden liggen te dicht bij elkaar: de teach heeft geen volledige raamgang gezien | Raam echt van uiterste tot uiterste laten lopen en opnieuw teachen |
+| bereik te smal | De twee waarden liggen te dicht bij elkaar: de meetdraad heeft de beweging niet volledig gevolgd | Trekdraad controleren en opnieuw teachen |
 | teach nog actief | Een teach is gestart maar niet afgerond | Afbreken of afronden |
 | draad-circuit open | De meetdraad is onderbroken (bit 2) | Bekabeling naar de sensor controleren |
 | buiten bereik | De meetwaarde valt buiten het geijkte gebied (bit 6) | Opnieuw teachen; blijft het terugkomen, dan is de montage verschoven |
