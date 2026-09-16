@@ -161,3 +161,18 @@ CONFIG_FATFS_MAX_LFN=255
 # httpd_uri_t.is_websocket field, httpd_ws_send_frame_async(),
 # httpd_ws_recv_frame(), and httpd_ws_get_fd_info().
 CONFIG_HTTPD_WS_SUPPORT=y
+
+# ----------------------------------------------------------------------------
+# UART — interrupt handler in IRAM (gh#70, 2026-09-16)
+# ----------------------------------------------------------------------------
+# The Modbus driver hands RS-485 direction (DE/RE) to UART1: RS485 half-duplex
+# mode, RTS on the DE/RE pin, released in the UART's TX-done interrupt. A flash
+# erase or write stalls both cores and holds back every interrupt NOT placed in
+# IRAM, so without this the release still waits out the flash operation --
+# up to 665 ms measured during an OTA upload, against a wire encoder that
+# answers ~4.5 ms after the request. In IRAM, the interrupt runs during the
+# flash operation: it drops DE/RE on time and buffers the reply meanwhile.
+#
+# NOTE: an existing firmware/sdkconfig.<env> keeps its own value, whatever this
+# file says. Set the line there too (or delete the file to regenerate it).
+CONFIG_UART_ISR_IN_IRAM=y

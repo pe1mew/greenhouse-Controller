@@ -3261,8 +3261,8 @@ static void append_modbus_json(char *buf, size_t cap)
              "\"last_fail_status\":%u,\"last_fail_addr\":%u,"
              "\"to_received\":%u,\"to_expected\":%u,\"lock_wait_ms\":%lu,"
              "\"reinit\":%lu,\"reinit_skipped\":%lu,\"reinit_locked\":%s,"
-             "\"de_late\":%lu,\"de_late_failed\":%lu,\"de_lat_max_us\":%lu,"
-             "\"last_fail_de_lat_us\":%lu}}",
+             "\"de_ctrl\":\"%s\",\"listen_late\":%lu,\"listen_late_failed\":%lu,"
+             "\"listen_lat_max_us\":%lu,\"last_fail_listen_lat_us\":%lu}}",
              (unsigned long)mc.ok, (unsigned long)mc.timeout,
              (unsigned long)mc.crc, (unsigned long)mc.exception,
              (unsigned long)mc.framing, (unsigned long)mc.param,
@@ -3273,8 +3273,9 @@ static void append_modbus_json(char *buf, size_t cap)
              (unsigned long)mc.last_lock_wait_ms,
              (unsigned long)mc.reinit, (unsigned long)mc.reinit_skipped,
              modbus_reinit_is_locked() ? "true" : "false",
-             (unsigned long)mc.de_late, (unsigned long)mc.de_late_failed,
-             (unsigned long)mc.de_lat_max_us, (unsigned long)mc.last_fail_de_lat_us);
+             modbus_de_control(),
+             (unsigned long)mc.listen_late, (unsigned long)mc.listen_late_failed,
+             (unsigned long)mc.listen_lat_max_us, (unsigned long)mc.last_fail_listen_lat_us);
 
     /* Per-slave rows, compact keys so three slaves fit the buffer: a=addr,
      * to=timeout, ex=exception, fr=framing, pa=param, bu=busy. Only rows that

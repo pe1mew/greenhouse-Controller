@@ -2,7 +2,7 @@
 
 Append-only. Newest at top. Format per entry: **Problem → Root cause → Fix → Where it lives.**
 
-When something weird happens, check here BEFORE debugging from scratch. **Start at the [index](#index--by-where-it-bites-you)** — it groups every entry by subsystem with symptom-first hooks, which is faster than scrolling 93 entries. **Adding an entry means adding its index line too**; the pair is checked by counting `^## 20` headings against `^- \*\*20` index lines. Entries that recur or affect multiple subsystems graduate up to a topic file or to [CLAUDE.md](../CLAUDE.md) hard constraints.
+When something weird happens, check here BEFORE debugging from scratch. **Start at the [index](#index--by-where-it-bites-you)** — it groups every entry by subsystem with symptom-first hooks, which is faster than scrolling 94 entries. **Adding an entry means adding its index line too**; the pair is checked by counting `^## 20` headings against `^- \*\*20` index lines. Entries that recur or affect multiple subsystems graduate up to a topic file or to [CLAUDE.md](../CLAUDE.md) hard constraints.
 
 Entries that are resolved **and can no longer recur** (code deleted, design changed, fixed both sides) retire to [gotcha-archive.md](gotcha-archive.md) — history only, never needed for triage. Everything still able to bite you is in this file. Being `[RESOLVED]` is *not* sufficient to retire: most resolved entries here stay because an active constraint still depends on them.
 
@@ -59,7 +59,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-07-31** — anti-thrash dwell was unguarded during travel (gh#48)
 
 ### Modbus bus, sensors & clock (T5, drivers)
-- **2026-09-16** — a slave stops answering only while the flash is being written (OTA): the RS485 direction line is released by the task, and a flash write stalls the task up to 665 ms (gh#70; the encoder, answering in ~5 ms, is hit first)
+- **2026-09-16** — a slave stops answering only while the flash is being written (OTA): the RS485 direction line was released by the task, and a flash write stalls the task up to 665 ms (gh#70, fixed: the UART drives DE/RE now)
 - **2026-09-16** — the board PANICs ~10 s after boot, twice, then runs fine (gh#69; T5's entry `modbus_init()` deleted the UART under a T17 read — a hazard logged 9 days earlier as "safe while T5 is the only caller"; coredump says LoadProhibited in `uart_get_buffered_data_len`)
 - **2026-09-15** — two slaves on one bus fail thousands of times more often than a third (the emulated slaves' replies never assert one differential rail — ~76 mV of noise margin, BER 4e-05; NOT a firmware or bus fault)
 - **2026-09-14** — a bus probe decodes two slaves and never the third, and the firmware is fine (software-UART decoder free-runs after an RS485 turnaround glitch; check `crc`/`framing` first)
@@ -130,6 +130,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-09-16** — a setting is MISSING from the GUI entirely (two routes exceeded `max_uri_handlers` and never registered; the card depending on them was hidden rather than greyed, so the only symptom was an absence)
 
 ### Build, toolchain & shell
+- **2026-09-16** — a rebuild of the same tree has a different hash and different library sizes (PlatformIO relinks every run and orders our libraries differently; compare symbol sizes with `nm`, not hashes)
 - **2026-09-15** — a packaged binary reports the wrong version on the unit after an OTA (build script parameterised half-way: right env BUILT, wrong env's binary COPIED; only the post-reboot verify caught it)
 - **2026-09-12** — a verification step reports FAILURE on a unit that is fine (the step never checked its own HTTP status)
 - **2026-09-12** — a "split on `;`" tool silently truncates its input (a semicolon inside a C comment)
@@ -163,6 +164,22 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
 
 
+## 2026-09-16 — a rebuild of the same tree is a DIFFERENT binary: PlatformIO relinks on every run and orders our libraries differently each time
+
+**Problem.** After two comment-only edits, the rebuilt bench binary was 400 bytes smaller than the one just tested on FDA4, and ~200 library functions (wpa_supplicant, newlib, lwip) had changed size. It looked as if the edits had changed code.
+
+**Root cause.** `pio run` relinks even when it compiles nothing, and passes the project's own libraries (`libkeyPad.a`, `libnvs.a`, `libi2c.a`, …) in a different order each time: two back-to-back runs with no change at all gave two orders and two hashes. The order moves our driver code around, and when that shifts the code after it, library functions change size too (Xtensa linker relaxation depends on call distances — the likely mechanism, not traced). No object file differed. The order comes from PlatformIO, not from our scripts.
+
+**How to tell.** Compare symbol tables (`xtensa-esp32s3-elf-nm -S -C`), not hashes or file sizes. Two links of the same tree give every project function the same size and move only addresses: the 15:26 and 15:42 builds agreed on the size of all 8 810 symbols, and the 127 that moved were all in our driver libraries.
+
+**Consequences.**
+
+- **A rebuilt release cannot be hash-matched to the published one.** "Reproducible from the matching tag" (`build_release.ps1`) holds for the code, not for the bytes.
+- **The tested binary is the one to ship.** Push the package you tested, not a rebuild of it.
+- **A new hash after a rebuild proves nothing** about whether the code changed.
+
+**Where it lives.** PlatformIO's link step; `bin/build_release.ps1` packages whatever the last link produced.
+
 ## 2026-09-16 — the RS485 direction line is released by the TASK, so anything that delays the task loses the fastest slave's reply — a flash write delays it by up to 665 ms
 
 **Problem.** On 4 of 12 OTA pushes, T17's gate closed ("no sensor answering at addr 40") during the web-asset extraction. No crash; the unit rebooted seconds later anyway, so it looked harmless.
@@ -171,7 +188,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 
 **Why it hid.** T17 was idle (one read per 30 s) during 8 of the 12 extractions, and the gate needs two consecutive failures; the 4 that tripped all had T17 polling fast. A symptom that only shows when two unrelated activities overlap reads as "rare", not as "always, when".
 
-**Fix.** Not yet implemented — proposed on gh#70: UART1 in `UART_MODE_RS485_HALF_DUPLEX` with RTS routed to the DE/RE pin (the driver's TX-done interrupt releases it, no task involved), `CONFIG_UART_ISR_IN_IRAM=y` so that interrupt runs during flash operations, and a last look for bytes before a receive timeout. `python bin/at_modbus_ota.py --phase {baseline,fw,assets}` is the fail-first test: the current driver fails all three.
+**Fix (gh#70, closed).** UART1 in `UART_MODE_RS485_HALF_DUPLEX` with RTS routed to the DE/RE pin (ESP-IDF's TX-done interrupt releases it, no task involved), `CONFIG_UART_ISR_IN_IRAM=y` so that interrupt runs during flash operations, and the receive deadline judged only when no byte is waiting. **Fail-first on FDA4** with `python bin/at_modbus_ota.py --phase {baseline,fw,assets}`: the fixed build passed baseline 2 166 reads / 0 failures (was ~1 in 540), firmware upload 686 / 0 (was 16 and 13), asset extraction 112 / 0 (was 7 and 9); the same code with `MODBUS_FAILFIRST_TASK_DE` failed the firmware phase, 17/17 after a late release, **with the interrupt already in IRAM** — the IRAM setting alone is not the fix, handing the line to the UART is. **Two traps met on the way:** deleting the UART driver disables the RTS pin's output, so a re-init must drive DE/RE low *after* the delete; and a freshly installed UART holds RTS *high* (transmit) until RS485 mode is set, so the mode goes on *before* the pin is routed.
 
 **The generalisable part.**
 
@@ -179,7 +196,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **Instrument the margin, not just the outcome.** Timeouts said "the slave did not answer"; the release-latency counter said *why*, and separated this failure population from the emulated slaves' (on-time releases, #68) in the same run.
 - **Dense test traffic has side effects on the rig:** it tripped the emulated sensors into two WIND OVERRIDE safe-fails. The harness now refuses to run unless the unit is in STANDBY with every window closed.
 
-**Where it lives.** `drivers/modBus/src/modbus_rtu.cpp` (`note_de_release()`, the `de_*` counters), `firmware/src/diag/modbus_bench.cpp` (`{"action":"traffic"}`), `bin/at_modbus_ota.py`, gh#70.
+**Where it lives.** `drivers/modBus/src/modbus_rtu.cpp` (`send_request()`, `modbus_init()`, `modbus_de_control()`, the `listen_*` counters), `firmware/sdkconfig.defaults` (`CONFIG_UART_ISR_IN_IRAM`), `firmware/src/diag/modbus_bench.cpp` (`{"action":"traffic"}`), `bin/at_modbus_ota.py`, gh#70.
 
 ## 2026-09-16 — a hazard written down as "safe today because T5 is the only caller" panicked the board once T17 became a second caller
 

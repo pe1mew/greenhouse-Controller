@@ -6,12 +6,16 @@ WHY THIS EXISTS
 ---------------
 During OTA uploads the wire encoder (addr 40) stopped answering long enough for
 T17's presence gate to close. Root cause, measured 2026-09-16: the driver
-releases the RS485 transceiver's DE/RE line from TASK context, after
+released the RS485 transceiver's DE/RE line from TASK context, after
 `uart_wait_tx_done()` and a 2 ms guard. A flash erase or write stalls both
-cores and holds back the UART's TX-done interrupt (not in IRAM), so the release
-comes late -- up to 399 ms during a firmware upload -- while the encoder
-answers ~5 ms after the request. The transceiver is still driving when the
-reply arrives, and the reply is lost (0 of 7 bytes) or clipped (6 of 7, CRC).
+cores and held back the UART's TX-done interrupt (then not in IRAM), so the
+release came late -- up to 665 ms during a firmware upload -- while the encoder
+answers ~4.5 ms after the request. The transceiver was still driving when the
+reply arrived, and the reply was lost (0 of 7 bytes) or clipped (6 of 7, CRC).
+
+The fix hands DE/RE to the UART (RS485 half-duplex mode, RTS on the DE/RE pin,
+released in the TX-done interrupt) and puts that interrupt in IRAM. The unit
+reports which it runs as `de_ctrl`: "uart+iram" is the fix, "task" the old way.
 
 WHAT IT DOES
 ------------
@@ -30,17 +34,21 @@ given -- an OTA test must not change what the unit runs.
 VERDICT
 -------
 PASS when no encoder transaction timed out or failed CRC/framing during the
-run. The driver's DE-release counters say which mechanism a failure had: after
-a late release (> 4 ms past the last request bit) it is this one; with an
-on-time release it is something else. Failures of the emulated slaves (addr 1
-and 44) are reported but not judged: on the dev rig they fail under dense
-traffic whatever the DE timing (gh#68).
+run. The driver's listen-latency counters say when it started listening after
+each request. With `de_ctrl` "task" that moment IS the DE/RE release, and a
+failure after a late one (> 4 ms) is this mechanism. With "uart+iram" the UART
+released DE/RE on time in its interrupt and a late listen is harmless -- the
+counters then only show how stalled the task was. Failures of the emulated
+slaves (addr 1 and 44) are reported but not judged: on the dev rig they fail
+under dense traffic whatever the DE timing (gh#68).
 
 FAIL-FIRST
 ----------
-A build that releases DE/RE in task context must FAIL `--phase fw` (measured:
-16 failures, 16 of them after a late release). Only then trust a PASS from a
-build that claims to fix it.
+A build that releases DE/RE in task context must FAIL `--phase fw` (measured on
+the pre-fix driver: 16 and 13 failures, every one after a late release). Build
+one by defining `MODBUS_FAILFIRST_TASK_DE` (one line near the top of
+`drivers/modBus/src/modbus_rtu.cpp`); it reports `de_ctrl` "task". Only then
+trust a PASS from the real build, which must report "uart+iram".
 
 **SIDE EFFECTS ON THE DEV RIG -- read before running.** The traffic is denser
 than anything the product generates, and the rig's emulated sensors fail under
@@ -139,10 +147,15 @@ def main():
             print("upload: %s" % (bin_path.name if a.phase == "fw" else zip_path.name))
 
         a0 = snap(u)
-        if a0 is None or "de_late" not in (a0["d"].get("modbus") or {}):
-            print("this build has no DE-release counters or no traffic mode -- "
-                  "it predates the gh#70 test")
+        if a0 is None or "listen_late" not in (a0["d"].get("modbus") or {}):
+            print("this build has no listen-latency counters or no traffic mode -- "
+                  "it predates the gh#70 fix")
             return 2
+        de_ctrl = a0["d"]["modbus"].get("de_ctrl")
+        print("DE/RE driven by: %s%s" % (de_ctrl, {
+            "uart+iram": "  (the gh#70 fix)",
+            "uart": "  (UART-driven, but its interrupt is not in IRAM -- a flash write still delays it)",
+            "task": "  (task-driven: the pre-fix behaviour -- a FAIL is expected)"}.get(de_ctrl, "")))
         if not a0["d"].get(ENCODER):
             print("no counter row for the encoder at addr 40 -- nothing to judge")
             return 2
@@ -181,12 +194,12 @@ def main():
             last = b
             mb = b["d"].get("modbus") or {}
             s = b["s"]
-            print("  t+%5.1fs  reads ok %4s fail %3s | encoder fail %3d | DE late %s (failed %s) worst %s us"
+            print("  t+%5.1fs  reads ok %4s fail %3s | encoder fail %3d | late listen %s (failed %s) worst %s us"
                   % (time.time() - t0, s.get("hammer_ok"), s.get("hammer_fail"),
                      delta(a0, b, ENCODER, "to") + delta(a0, b, ENCODER, "crc") + delta(a0, b, ENCODER, "fr"),
-                     int(mb.get("de_late") or 0) - int(a0["d"]["modbus"].get("de_late") or 0),
-                     int(mb.get("de_late_failed") or 0) - int(a0["d"]["modbus"].get("de_late_failed") or 0),
-                     mb.get("de_lat_max_us")))
+                     int(mb.get("listen_late") or 0) - int(a0["d"]["modbus"].get("listen_late") or 0),
+                     int(mb.get("listen_late_failed") or 0) - int(a0["d"]["modbus"].get("listen_late_failed") or 0),
+                     mb.get("listen_lat_max_us")))
             if not s.get("running") and time.time() - t0 > UPLOAD_AT_S + 1:
                 break
             time.sleep(0.3 if a.phase == "assets" else 1.0)
@@ -196,8 +209,8 @@ def main():
         enc_crc = delta(a0, last, ENCODER, "crc")
         enc_fr = delta(a0, last, ENCODER, "fr")
         enc_fail = enc_to + enc_crc + enc_fr
-        de_late = int(m1.get("de_late") or 0) - int(m0.get("de_late") or 0)
-        de_late_failed = int(m1.get("de_late_failed") or 0) - int(m0.get("de_late_failed") or 0)
+        late = int(m1.get("listen_late") or 0) - int(m0.get("listen_late") or 0)
+        late_failed = int(m1.get("listen_late_failed") or 0) - int(m0.get("listen_late_failed") or 0)
         print("\n--- %s ---" % a.phase)
         if up:
             print("upload              : HTTP %s, t+%.1f s .. t+%.1f s"
@@ -208,8 +221,10 @@ def main():
               % (delta(a0, last, ENCODER, "ok"), enc_to, enc_crc, enc_fr))
         print("emulated addr 1/44  : timeout +%d / +%d (reported, not judged -- gh#68)"
               % (delta(a0, last, "s1", "to"), delta(a0, last, "s44", "to")))
-        print("DE release          : %d late (> 4 ms), %d of them followed by a failure; worst %s us"
-              % (de_late, de_late_failed, m1.get("de_lat_max_us")))
+        print("listening started   : %d late (> 4 ms), %d of them followed by a failure; worst %s us%s"
+              % (late, late_failed, m1.get("listen_lat_max_us"),
+                 "  [= the DE/RE release]" if de_ctrl == "task"
+                 else "  [task wake-up only: the UART released DE/RE]"))
         print("last timeout        : %s of %s bytes (addr %s)"
               % (m1.get("to_received"), m1.get("to_expected"), m1.get("last_fail_addr")))
         if a.phase == "fw":
@@ -218,9 +233,14 @@ def main():
             print("NOTE: the unit rebooted after the extraction; samples end there.")
 
         if enc_fail:
-            print("\nRESULT: FAIL -- %d encoder transactions failed%s" % (
-                enc_fail, " (%d after a late DE release: the gh#70 mechanism)" % de_late_failed
-                if de_late_failed else ""))
+            why = ""
+            if late_failed and de_ctrl == "task":
+                why = " (%d after a late DE/RE release: the gh#70 mechanism)" % late_failed
+            print("\nRESULT: FAIL -- %d encoder transactions failed%s" % (enc_fail, why))
+            return 1
+        if de_ctrl == "task":
+            print("\nRESULT: PASSED ON A TASK-DRIVEN BUILD -- this run did not reproduce the"
+                  " gh#70 failure, so a pass on the fixed build proves nothing yet")
             return 1
         print("\nRESULT: PASS -- no encoder transaction failed during the %s phase" % a.phase)
         return 0

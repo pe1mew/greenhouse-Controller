@@ -15,15 +15,20 @@
  *                   is on the controller PCB.
  *   - Frame       : 9600 baud, 8N1 (see @ref MODBUS_BAUD).
  *
- * ## Half-duplex DE/RE timing
- *   Each transaction:
- *     1. Assert DE HIGH (TX) via LIB-1 @ref gpio_set_rs485_direction.
- *     2. Write the request bytes; wait for TX FIFO + shift register drain
- *        before dropping DE — premature drop truncates the final byte.
- *     3. Drop DE LOW (RX) and wait for the response within
- *        @ref MODBUS_TIMEOUT_MS (200 ms is comfortable for FG6485A and
- *        SenseCAP S200 at 9600 baud).
- *     4. Validate length, function code, and CRC.
+ * ## Half-duplex DE/RE timing (gh#70)
+ *   The UART drives DE/RE: UART1 runs in UART_MODE_RS485_HALF_DUPLEX with its
+ *   RTS output on @c PIN_RS485_DE_RE, and ESP-IDF raises it when a request
+ *   enters the TX FIFO and drops it in the TX-done interrupt, right after the
+ *   last stop bit. With CONFIG_UART_ISR_IN_IRAM that interrupt also runs while
+ *   the flash is written. Each transaction:
+ *     1. Write the request bytes (DE rises); wait for TX done (DE has fallen).
+ *     2. Wait for the response within @ref MODBUS_TIMEOUT_MS (200 ms is
+ *        comfortable for FG6485A and SenseCAP S200 at 9600 baud). The deadline
+ *        is judged only when no byte is waiting, so a stalled task still
+ *        collects a reply the UART buffered meanwhile.
+ *     3. Validate length, function code, and CRC.
+ *   Until 2026-09-16 the task dropped DE itself, 2 ms after TX; a flash write
+ *   stalled it up to 665 ms and the wire encoder's ~4.5 ms reply was lost.
  *
  * ## API summary
  *   - @ref modbus_init                       UART + DE/RE setup.
@@ -51,8 +56,9 @@
  *   true.  Plan and rationale: design/addModbusMutex.md.)
  *
  *   What the lock protects — three shared resources, not one:
- *     1. the DE/RE direction GPIO — asserting DE mid-response garbles the
- *        wire AND blinds the in-flight caller;
+ *     1. the DE/RE direction — the UART's RTS since gh#70; a second
+ *        transmission mid-response would raise it, garbling the wire AND
+ *        blinding the in-flight caller;
  *     2. `s_frame_end_us`, the inter-frame-gap timestamp, which is
  *        read-modify-written per transaction to enforce RTU t3.5 silence;
  *     3. the single UART RX FIFO — two readers steal each other's response
@@ -184,6 +190,18 @@ void modbus_init(void);
  * False in a host (NATIVE_TEST) build, which has no lock at all.
  */
 bool modbus_reinit_is_locked(void);
+
+/**
+ * @brief Who drives the RS-485 DE/RE line in this build (gh#70).
+ *
+ * @return "uart+iram" -- the UART, from an interrupt that runs during flash
+ *         writes (the fix); "uart" -- the UART, but its interrupt is not in
+ *         IRAM, so a flash write still holds the release back; "task" -- this
+ *         driver, from task context (host tests, and the fail-first build
+ *         `MODBUS_FAILFIRST_TASK_DE`). Reported so an OTA test result can
+ *         never be read off the wrong build.
+ */
+const char *modbus_de_control(void);
 
 /**
  * @brief Read holding registers (FC03).
@@ -319,21 +337,21 @@ typedef struct {
                                 *   was left alone. Anything but 0 means a
                                 *   caller held the bus far too long. */
 
-    /* DE/RE release timing (gh#70). The transceiver must stop driving before
-     * the slave starts to answer, and the wire encoder answers ~5 ms after the
-     * last request bit. The release happens in task context, so anything that
-     * stalls the task -- a flash erase stalls both cores -- delays it. Latency
-     * is measured from the request's last bit ON THE WIRE (transmit start plus
-     * one character time per byte), not from when the task noticed TX was
-     * done, because a stalled task notices late. Nominal: ~2 ms, the guard. */
-    uint32_t de_late;            /**< Releases more than 4 ms after the last bit. */
-    uint32_t de_late_failed;     /**< ...after which the transaction timed out or
-                                  *   failed CRC/framing. Close to @c de_late
-                                  *   means late releases lose replies. */
-    uint32_t de_lat_max_us;      /**< Worst release latency seen, microseconds. */
-    uint32_t last_fail_de_lat_us;/**< Release latency of the most recent
-                                  *   transaction that timed out or failed
-                                  *   CRC/framing. */
+    /* When the driver started listening for the reply, measured from the
+     * request's last bit ON THE WIRE (transmit start plus one character time
+     * per byte) -- gh#70. See modbus_de_control() for what it means:
+     *   "task": this IS the DE/RE release; later than the slave's answer (the
+     *           wire encoder: ~4.5 ms) and the reply is lost. Nominal ~2 ms.
+     *   "uart"/"uart+iram": the UART released DE/RE in its TX-done interrupt;
+     *           this is only when the task resumed. Late costs nothing -- the
+     *           reply is buffered -- but a stall stays visible. Nominal ~0.1 ms. */
+    uint32_t listen_late;             /**< Listening started > 4 ms after the last bit. */
+    uint32_t listen_late_failed;      /**< ...after which the transaction timed out
+                                       *   or failed CRC/framing. */
+    uint32_t listen_lat_max_us;       /**< Worst listen latency seen, microseconds. */
+    uint32_t last_fail_listen_lat_us; /**< Listen latency of the most recent
+                                       *   transaction that timed out or failed
+                                       *   CRC/framing. */
 
     /** Per-slave breakdown. Rows with @c addr == 0 are unused. A slave beyond
      *  @ref MODBUS_MAX_TRACKED_SLAVES still counts in the totals above, just

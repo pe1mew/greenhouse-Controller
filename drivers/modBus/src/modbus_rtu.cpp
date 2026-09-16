@@ -3,18 +3,21 @@
  * @brief Modbus RTU master driver implementation (LIB-6).
  *
  * Migrated from arduino-esp32's `Serial1` to ESP-IDF's `uart_driver_*`
- * API in 2.0.0-alpha.2.6 (Phase 2.6). All RS-485 direction control goes
- * through gpio_util (LIB-1, migrated in alpha.2.1).
+ * API in 2.0.0-alpha.2.6 (Phase 2.6).
+ *
+ * **RS-485 direction (DE/RE) is driven by the UART, not by this code** (gh#70,
+ * 2026-09-16). UART1 runs in UART_MODE_RS485_HALF_DUPLEX with its RTS output
+ * on the DE/RE pin; see "RS-485 direction control" below for why. Only host
+ * tests and the fail-first build still toggle DE/RE through gpio_util (LIB-1).
  *
  * Transaction sequence per request:
- *  1. Assert DE/RE HIGH via gpio_set_rs485_direction(true).
- *  2. Write 8-byte request frame to UART1.
- *  3. Wait for TX FIFO to drain via uart_wait_tx_done().
- *  4. Assert DE/RE LOW via gpio_set_rs485_direction(false).
- *  5. Read bytes with per-frame timeout until (count*2 + 5) bytes received.
+ *  1. Write the request frame to UART1 -- the UART raises DE/RE.
+ *  2. Wait for TX done via uart_wait_tx_done() -- the UART has already
+ *     dropped DE/RE, in its TX-done interrupt, right after the stop bit.
+ *  3. Read bytes with per-frame timeout until (count*2 + 5) bytes received.
  *     After byte 1: if fc|0x80, adjust expected length to 5 (exception frame).
- *  6. Validate CRC16 (polynomial 0xA001).
- *  7. Return parsed register values, or an error code.
+ *  4. Validate CRC16 (polynomial 0xA001).
+ *  5. Return parsed register values, or an error code.
  *
  * Frame format:
  *   Request  (8 bytes): [addr][fc][reg_hi][reg_lo][cnt_hi][cnt_lo][crc_lo][crc_hi]
@@ -31,10 +34,10 @@
  *   millis()                    → esp_timer_get_time() / 1000 (likewise)
  *   delayMicroseconds(us)       → esp_rom_delay_us(us)
  *
- * The migration preserves the original code's exact pacing (IFG enforcement,
+ * The migration preserved the original code's exact pacing (IFG enforcement,
  * RS-485 direction flip timing, 8-byte echo drain, counted RX with timeout).
- * Modbus timing is critical — any deviation can break frame detection on
- * slow buses or with slaves that produce bursty replies.
+ * gh#70 retired the task-side direction flip and the echo drain on target:
+ * a task cannot be trusted to flip DE/RE on time while the flash is written.
  *
  * @author Greenhouse Controller project
  */
@@ -239,31 +242,82 @@ static void wait_ifg(void)
 static modbus_counters_t s_cnt;
 
 /* ---------------------------------------------------------------------------
- * DE/RE release timing (gh#70) -- see modbus_counters_t::de_late.
+ * RS-485 direction control (gh#70)
+ *
+ * On target, UART1 runs in UART_MODE_RS485_HALF_DUPLEX with its RTS output on
+ * the DE/RE pin. ESP-IDF raises RTS when bytes enter the TX FIFO and drops it
+ * in the TX-done interrupt, right after the last stop bit (RTS high = transmit,
+ * which is what this transceiver's tied DE/RE wants). No task is involved, and
+ * with CONFIG_UART_ISR_IN_IRAM that interrupt keeps running while the flash is
+ * being written. The UART also ignores its RX line while transmitting and
+ * clears the RX FIFO at TX done, so there is no echo to drain.
+ *
+ * Before 2026-09-16 this code dropped DE/RE itself: uart_wait_tx_done(), a
+ * 2 ms guard, then gpio_set_rs485_direction(false). A flash erase or write
+ * stalls both cores and holds back the (then non-IRAM) TX-done interrupt, so
+ * during an OTA the release came up to 665 ms late -- while the wire encoder
+ * answers ~4.5 ms after the request. Its replies were lost (0 of 7 bytes) or
+ * clipped (6 of 7, CRC), and T17's presence gate closed.
+ *
+ * The task-driven path remains for host tests (NATIVE_TEST: the UART mock has
+ * no RS485 mode) and for the fail-first build of bin/at_modbus_ota.py:
+ *
+ * FAIL-FIRST SWITCH -- NEVER define this in a build that runs anywhere but the
+ * bench. It restores the task-driven DE/RE release, so the OTA test can be
+ * shown to catch it. A build with it reports `de_ctrl: "task"`.
  * --------------------------------------------------------------------------- */
+/* #define MODBUS_FAILFIRST_TASK_DE */
+
+#if !defined(NATIVE_TEST) && !defined(MODBUS_FAILFIRST_TASK_DE)
+#define MODBUS_DE_BY_UART 1
+#else
+#define MODBUS_DE_BY_UART 0
+#endif
+
+const char *modbus_de_control(void)
+{
+#if MODBUS_DE_BY_UART
+#  if defined(CONFIG_UART_ISR_IN_IRAM)
+    return "uart+iram";
+#  else
+    return "uart";   /* released by the ISR, which a flash write still holds back */
+#  endif
+#else
+    return "task";
+#endif
+}
+
 /** One 8N1 character at 9600 baud: 10 bits x 104.17 us. */
 #define CHAR_US      1042u
-/** A release later than this after the last request bit is "late": the 2 ms
- *  guard plus margin, and still under the encoder's ~5 ms answer time. */
-#define DE_LATE_US   4000u
+/** Listening that starts later than this after the last request bit is
+ *  "late": the task path's 2 ms guard plus margin, and still under the
+ *  encoder's ~4.5 ms answer time. */
+#define LISTEN_LATE_US   4000u
 
-/** Release latency of the transaction in progress (0 before any release). */
-static uint32_t s_last_de_lat_us = 0u;
+/** Listen latency of the transaction in progress (0 before it is known). */
+static uint32_t s_last_listen_lat_us = 0u;
 
 /**
- * @brief Record how late DE/RE was released, relative to the request's last
- *        bit on the wire.
+ * @brief Record when the driver started listening for the reply, relative to
+ *        the request's last bit on the wire.
+ *
+ * Task-driven DE/RE: this IS the release, and a late one loses the reply.
+ * UART-driven DE/RE: the release already happened in the TX-done interrupt;
+ * this is only when the task resumed, and a late value costs nothing because
+ * the reply is buffered meanwhile. Reported either way, so a stall stays
+ * visible after the fix; `de_ctrl` says which of the two it means.
+ *
  * @param t_tx0   micros() right after the request was queued for transmit.
  * @param nbytes  request length in characters.
  */
-static void note_de_release(uint32_t t_tx0, uint32_t nbytes)
+static void note_listen(uint32_t t_tx0, uint32_t nbytes)
 {
     const uint32_t wire_end = t_tx0 + nbytes * CHAR_US;
     const int32_t  d        = (int32_t)(micros() - wire_end);   /* wrap-safe */
     const uint32_t lat      = (d > 0) ? (uint32_t)d : 0u;
-    s_last_de_lat_us = lat;
-    if (lat > s_cnt.de_lat_max_us) { s_cnt.de_lat_max_us = lat; }
-    if (lat > DE_LATE_US)          { s_cnt.de_late++; }
+    s_last_listen_lat_us = lat;
+    if (lat > s_cnt.listen_lat_max_us) { s_cnt.listen_lat_max_us = lat; }
+    if (lat > LISTEN_LATE_US)          { s_cnt.listen_late++; }
 }
 
 /**
@@ -334,8 +388,8 @@ static modbus_status_t tally(modbus_status_t s, uint8_t addr)
      * time? (BUSY and PARAM never transmitted, and an EXCEPTION is a reply,
      * so none of those says anything about the release.) */
     if (s == MODBUS_ERR_TIMEOUT || s == MODBUS_ERR_CRC || s == MODBUS_ERR_FRAMING) {
-        s_cnt.last_fail_de_lat_us = s_last_de_lat_us;
-        if (s_last_de_lat_us > DE_LATE_US) { s_cnt.de_late_failed++; }
+        s_cnt.last_fail_listen_lat_us = s_last_listen_lat_us;
+        if (s_last_listen_lat_us > LISTEN_LATE_US) { s_cnt.listen_late_failed++; }
     }
     return s;
 }
@@ -377,14 +431,14 @@ static void drain_rx(void)
  * inter-frame-gap guard through the last response byte, because a transaction
  * touches three shared resources and interleaving corrupts all three:
  *
- *   1. the DE/RE direction GPIO;
+ *   1. the DE/RE direction -- the UART's RTS since gh#70, which one
+ *      transmission raises and its TX-done drops;
  *   2. s_frame_end_us, read-modify-written to enforce RTU t3.5 silence;
- *   3. the single UART RX FIFO — two readers steal each other's bytes, and
- *      the receive path drains exactly 8 half-duplex echo bytes assuming the
- *      FIFO holds only its own echo.
+ *   3. the single UART RX FIFO — two readers steal each other's bytes.
  *
- * Worst-case hold ≈ 215 ms: IFG 4 ms + TX 8 bytes ≈ 8.3 ms + 2 ms DE guard +
- * 1.5 ms settle + MODBUS_TIMEOUT_MS 200 ms.  MODBUS_LOCK_TIMEOUT_MS is sized
+ * Worst-case hold ≈ 230 ms: IFG 20 ms + TX 8 bytes ≈ 8.3 ms + drain 2 ms +
+ * MODBUS_TIMEOUT_MS 200 ms. (Before gh#70 the task-side DE guard and settle
+ * added another 3.5 ms.)  MODBUS_LOCK_TIMEOUT_MS is sized
  * at roughly twice that, so a caller that times out waiting has genuinely hit
  * contention rather than one slow-but-normal transaction.
  *
@@ -456,6 +510,55 @@ bool modbus_reinit_is_locked(void)
 #endif
 }
 
+/**
+ * @brief Put one request on the wire; return once the reply can be read.
+ *
+ * Runs with the bus lock held, after wait_ifg() and drain_rx().
+ */
+static void send_request(const uint8_t *req, size_t n)
+{
+    s_last_listen_lat_us = 0u;
+#if MODBUS_DE_BY_UART
+    uart1_write(req, n);              /* the UART raises DE/RE */
+    const uint32_t t_tx0 = micros();  /* the bytes are clocking out from here */
+    uart1_flush_tx();                 /* ...and it has dropped DE/RE by the time this returns */
+    s_frame_end_us = micros();        /* last TX bit left the wire */
+    note_listen(t_tx0, (uint32_t)n);
+#else
+    gpio_set_rs485_direction(true);   /* DE/RE HIGH — driver enable */
+#  ifndef NATIVE_TEST
+    uart1_write(req, n);
+    const uint32_t t_tx0 = micros();
+    uart1_flush_tx();
+#  else
+    Serial1.write(req, n);
+    const uint32_t t_tx0 = micros();
+    Serial1.flush();
+#  endif
+    s_frame_end_us = micros();        /* last TX bit left the wire */
+    /* Guard: one extra character time so the shift register finishes
+     * clocking out the stop bit before DE/RE is deasserted.
+     * At 9600 baud, 1 character ≈ 1.04 ms → 2 ms is ample. */
+    delayMicroseconds(2000);
+    gpio_set_rs485_direction(false);  /* DE/RE LOW — receiver enable */
+    note_listen(t_tx0, (uint32_t)n);
+
+    /* Wait one full character time (≈1.04 ms at 9600 baud) so the last
+     * echoed stop bit has settled into the RX FIFO, then discard exactly
+     * the n echo bytes produced by the half-duplex transceiver during TX.
+     * A counted drain (not a "drain all") avoids discarding an early slave
+     * response byte that may have arrived before DE/RE settled. */
+    delayMicroseconds(1500);
+    for (size_t i = 0; i < n; i++) {
+#  ifndef NATIVE_TEST
+        if (uart1_available()) (void)uart1_read();
+#  else
+        if (Serial1.available()) (void)Serial1.read();
+#  endif
+    }
+#endif
+}
+
 void modbus_init(void)
 {
 #ifndef NATIVE_TEST
@@ -491,13 +594,20 @@ void modbus_init(void)
     }
 #endif
 
-    gpio_rs485_init();                 /* configure DE/RE pin as output, LOW */
-
 #ifndef NATIVE_TEST
     /* Install UART driver if not already installed (idempotent guard). */
     if (uart_is_driver_installed(MODBUS_UART_PORT)) {
         uart_driver_delete(MODBUS_UART_PORT);
     }
+#endif
+
+    /* DE/RE as a plain GPIO output, LOW (receive). AFTER the delete: when the
+     * UART owns the pin as RTS, deleting the driver disables the pin's output
+     * and would leave the transceiver's direction floating until the UART takes
+     * the pin back below. */
+    gpio_rs485_init();
+
+#ifndef NATIVE_TEST
 
     uart_config_t cfg = {};
     cfg.baud_rate  = MODBUS_BAUD;
@@ -520,14 +630,31 @@ void modbus_init(void)
                               MODBUS_RX_BUF, MODBUS_TX_BUF,
                               0, NULL, 0);
     (void)uart_param_config(MODBUS_UART_PORT, &cfg);
+#  if MODBUS_DE_BY_UART
+    /* The mode BEFORE the pin: RS485 half-duplex sets RTS inactive (low), so
+     * the pin passes from GPIO-low to RTS-low without a transmit glitch. The
+     * default RTS level of a freshly installed UART is high -- "transmit". */
+    esp_err_t mst = uart_set_mode(MODBUS_UART_PORT, UART_MODE_RS485_HALF_DUPLEX);
+    esp_err_t pst = uart_set_pin(MODBUS_UART_PORT,
+                                 MODBUS_UART_TX, MODBUS_UART_RX,
+                                 PIN_RS485_DE_RE, UART_PIN_NO_CHANGE);
+    if (mst != ESP_OK || pst != ESP_OK) {
+        /* Every transaction would fail: nothing would drive DE/RE. */
+        ESP_LOGE("MODBUS", "RS485 mode %d / RTS on DE/RE pin %d FAILED -- "
+                 "the bus cannot work", (int)mst, (int)pst);
+    }
+#  else
     (void)uart_set_pin(MODBUS_UART_PORT,
                        MODBUS_UART_TX, MODBUS_UART_RX,
                        UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+#  endif
 #else
     Serial1.begin(MODBUS_BAUD, SERIAL_8N1, MODBUS_UART_RX, MODBUS_UART_TX);
 #endif
 
+#if !MODBUS_DE_BY_UART
     gpio_set_rs485_direction(false);   /* start in receive mode */
+#endif
     s_frame_end_us = micros();         /* start IFG timer from driver init */
 
 #ifndef NATIVE_TEST
@@ -583,38 +710,7 @@ static modbus_status_t modbus_transaction(uint8_t  device_addr,
      * the counted echo drain below consume the wrong bytes and the CRC fail.
      * See drain_rx(). */
     drain_rx();
-    gpio_set_rs485_direction(true);   /* DE/RE HIGH — driver enable */
-    s_last_de_lat_us = 0u;
-#ifndef NATIVE_TEST
-    uart1_write(req, 8);
-    const uint32_t t_tx0 = micros();  /* the bytes are clocking out from here */
-    uart1_flush_tx();
-#else
-    Serial1.write(req, 8);
-    const uint32_t t_tx0 = micros();
-    Serial1.flush();
-#endif
-    s_frame_end_us = micros();        /* last TX bit left the wire */
-    /* Guard: one extra character time so the shift register finishes
-     * clocking out the stop bit before DE/RE is deasserted.
-     * At 9600 baud, 1 character ≈ 1.04 ms → 2 ms is ample. */
-    delayMicroseconds(2000);
-    gpio_set_rs485_direction(false);  /* DE/RE LOW — receiver enable */
-    note_de_release(t_tx0, 8u);
-
-    /* Wait one full character time (≈1.04 ms at 9600 baud) so the last
-     * echoed stop bit has settled into the RX FIFO, then discard exactly
-     * the 8 echo bytes produced by the half-duplex transceiver during TX.
-     * A counted drain (not a "drain all") avoids discarding an early slave
-     * response byte that may have arrived before DE/RE settled. */
-    delayMicroseconds(1500);
-    for (uint8_t i = 0; i < 8u; i++) {
-#ifndef NATIVE_TEST
-        if (uart1_available()) (void)uart1_read();
-#else
-        if (Serial1.available()) (void)Serial1.read();
-#endif
-    }
+    send_request(req, 8u);
 
     /* Receive response */
     uint8_t  resp[256];
@@ -623,6 +719,22 @@ static modbus_status_t modbus_transaction(uint8_t  device_addr,
     uint32_t start        = millis();
 
     while (received < expected_len) {
+#ifndef NATIVE_TEST
+        if (uart1_available()) {
+            resp[received++] = (uint8_t)uart1_read();
+#else
+        if (Serial1.available()) {
+            resp[received++] = (uint8_t)Serial1.read();
+#endif
+            /* After the function-code byte: check for exception response */
+            if (received == 2 && (resp[1] & 0x80)) {
+                expected_len = 5;   /* exception frame: addr+fc+exc_code+crc_lo+crc_hi */
+            }
+            continue;
+        }
+        /* The deadline is judged only when nothing is waiting (gh#70): a task
+         * stall longer than the deadline -- 665 ms measured during an OTA --
+         * must not throw away a reply the UART received meanwhile. */
         if (millis() - start > MODBUS_TIMEOUT_MS) {
             /* Record HOW the deadline was missed before cleaning up: 0 bytes
              * means the slave never answered, a partial count means the frame
@@ -639,18 +751,6 @@ static modbus_status_t modbus_transaction(uint8_t  device_addr,
 #endif
             s_frame_end_us = micros();   /* IFG measured from here */
             return MODBUS_ERR_TIMEOUT;
-        }
-#ifndef NATIVE_TEST
-        if (uart1_available()) {
-            resp[received++] = (uint8_t)uart1_read();
-#else
-        if (Serial1.available()) {
-            resp[received++] = (uint8_t)Serial1.read();
-#endif
-            /* After the function-code byte: check for exception response */
-            if (received == 2 && (resp[1] & 0x80)) {
-                expected_len = 5;   /* exception frame: addr+fc+exc_code+crc_lo+crc_hi */
-            }
         }
     }
     /* Record the wire timestamp as soon as the last response byte is in hand.
@@ -748,32 +848,7 @@ static modbus_status_t write_multiple_locked(uint8_t         device_addr,
      * discipline applies) and for any future caller reaching a body directly. */
     wait_ifg();
     drain_rx();   /* same reason as FC03/FC04 — see drain_rx() */
-    gpio_set_rs485_direction(true);
-    s_last_de_lat_us = 0u;
-#ifndef NATIVE_TEST
-    uart1_write(req, (size_t)(payload_len + 2));
-    const uint32_t t_tx0 = micros();
-    uart1_flush_tx();
-#else
-    Serial1.write(req, (size_t)(payload_len + 2));
-    const uint32_t t_tx0 = micros();
-    Serial1.flush();
-#endif
-    s_frame_end_us = micros();        /* last TX bit left the wire */
-    delayMicroseconds(2000);
-    gpio_set_rs485_direction(false);
-    note_de_release(t_tx0, (uint32_t)payload_len + 2u);
-
-    /* Counted drain: discard exactly the echo bytes produced during TX.
-     * For FC16 the frame is (payload_len + 2) bytes long. */
-    delayMicroseconds(1500);
-    for (uint8_t i = 0; i < (uint8_t)(payload_len + 2u); i++) {
-#ifndef NATIVE_TEST
-        if (uart1_available()) (void)uart1_read();
-#else
-        if (Serial1.available()) (void)Serial1.read();
-#endif
-    }
+    send_request(req, (size_t)(payload_len + 2u));
 
     /* Receive 8-byte normal response (or 5-byte exception) */
     uint8_t  resp[8];
@@ -782,6 +857,19 @@ static modbus_status_t write_multiple_locked(uint8_t         device_addr,
     uint32_t start        = millis();
 
     while (received < expected_len) {
+#ifndef NATIVE_TEST
+        if (uart1_available()) {
+            resp[received++] = (uint8_t)uart1_read();
+#else
+        if (Serial1.available()) {
+            resp[received++] = (uint8_t)Serial1.read();
+#endif
+            if (received == 2 && (resp[1] & 0x80)) {
+                expected_len = 5;   /* exception frame */
+            }
+            continue;
+        }
+        /* Deadline judged only when nothing is waiting -- see FC03/FC04. */
         if (millis() - start > MODBUS_TIMEOUT_MS) {
             s_cnt.last_to_received = received;
             s_cnt.last_to_expected = expected_len;
@@ -793,17 +881,6 @@ static modbus_status_t write_multiple_locked(uint8_t         device_addr,
 #endif
             s_frame_end_us = micros();
             return MODBUS_ERR_TIMEOUT;
-        }
-#ifndef NATIVE_TEST
-        if (uart1_available()) {
-            resp[received++] = (uint8_t)uart1_read();
-#else
-        if (Serial1.available()) {
-            resp[received++] = (uint8_t)Serial1.read();
-#endif
-            if (received == 2 && (resp[1] & 0x80)) {
-                expected_len = 5;   /* exception frame */
-            }
         }
     }
     s_frame_end_us = micros();   /* last response bit received */

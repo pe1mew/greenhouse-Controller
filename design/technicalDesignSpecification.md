@@ -719,7 +719,7 @@ The table below lists all allocated functions on the ESP32-S3. Specific GPIO num
 |----------|-----------|---------------------|-----------|
 | RS485 Modbus TX | UART | UART1 TX | 1 |
 | RS485 Modbus RX | UART | UART1 RX | 1 |
-| RS485 direction (DE/RE) | GPIO output | — | 1 |
+| RS485 direction (DE/RE) | UART RTS output (RS485 half-duplex mode, via the GPIO matrix — gh#70) | UART1 RTS | 1 |
 | LCD display (SDA) | I2C | I2C0 SDA | 1 |
 | LCD display (SCL) | I2C | I2C0 SCL | 1 |
 | RTC DS1307 (SDA) | I2C | I2C0 SDA (shared) | — |

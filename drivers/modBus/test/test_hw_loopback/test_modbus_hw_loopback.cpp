@@ -565,9 +565,11 @@ static void conc_responder_task(void *pvParam)
         resp[8] = (uint8_t)(crc >> 8);
 
         /* Inject INSIDE the driver's receive window, not before it opens.
-         * modbus_transaction() waits 2000 us (DE guard) + 1500 us (settle)
-         * = 3.5 ms after TX before it starts reading, so a 3 ms delay raced
-         * the window open and could clip the first byte. 5 ms is safely in. */
+         * Before gh#70 the task waited 2000 us (DE guard) + 1500 us (settle)
+         * after TX before it started reading, so a 3 ms delay raced the
+         * window and could clip the first byte; 5 ms was safely in. Since
+         * gh#70 the UART drops DE/RE at TX done and the window opens at once,
+         * so 5 ms is safely in either way. */
         vTaskDelay(pdMS_TO_TICKS(5));
         Serial2.write(resp, sizeof(resp));
         Serial2.flush();
