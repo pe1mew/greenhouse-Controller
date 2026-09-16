@@ -279,7 +279,10 @@ typedef enum {
      *   A  T6 climate_control.cpp post_log_mode() — param_id = NONE,
      *      value_a = resolved vent step, value_b = packed step_t/step_rh
      *   B  T4 data_manager.cpp dm_set_standby_ex() — this param_id,
-     *      value_a = 1 enter STANDBY / 0 leave, value_b reserved 0
+     *      value_a = 1 enter STANDBY / 0 leave,
+     *      value_b = 0 explicit (persisted) / 1 a session HOLD (2026-09-16:
+     *      dm_standby_hold() entered it without NVS, or dm_standby_release()
+     *      left it because the holding session ended)
      * Emitter B existed unmarked since rc.1.5.0 (gh#28), so every STANDBY
      * transition parsed as a ventilation decision that never happened —
      * including a fabricated "T-demand / RH-demand" read out of the reserved
@@ -707,8 +710,12 @@ typedef struct {
  * `dm_set_standby_ex(false, ..., false)` (no recalibration — used by the
  * rc.1.5.1+ manual-menu exit so the admin's positions are preserved).
  *
+ * Also set by `dm_standby_hold()` (2026-09-16) — a web teach holds STANDBY
+ * until its admin session ends. A hold is NOT persisted and is released by
+ * `dm_standby_release()`; see data_manager.h.
+ *
  * T6 honours the bit as a "do nothing" gate. Persisted to NVS at
- * `system/mode_standby` so the state survives reboot.
+ * `system/mode_standby` so the state survives reboot (except a hold).
  *
  * Priority chain in `dm_status_snapshot()` (highest first):
  *   MOTOR_ALARM → WIND_OVERRIDE → STANDBY → AUTOMATIC

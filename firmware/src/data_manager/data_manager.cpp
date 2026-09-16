@@ -2172,6 +2172,88 @@ void dm_set_manual_time(time_t unix_ts)
  * rc.1.5.0 (gh#28) — STANDBY mode set/get
  * ============================================================ */
 
+/* Session holds (2026-09-16) — see data_manager.h. Non-zero only while STANDBY
+ * is on AND was entered by dm_standby_hold(); such a STANDBY is never in NVS.
+ * s_standby_mtx serialises every STANDBY transition, so a hold, a release and
+ * an explicit request from different tasks (T11, T8, T17, T4) cannot
+ * interleave. Before the holds existed there was no lock at all. */
+static uint8_t           s_standby_holders  = 0u;
+static SemaphoreHandle_t s_standby_mtx      = NULL;
+static portMUX_TYPE      s_standby_mtx_init = portMUX_INITIALIZER_UNLOCKED;
+
+/* Fail-first switch for bin/at_wp_teach_standby.py case D. Defined, a hold is
+ * persisted the way the LCD persists its menu STANDBY, so a reboot strands the
+ * unit in STANDBY (the gh#65 shape) and case D must FAIL. Never ship it defined. */
+/* #define DM_FAILFIRST_PERSIST_STANDBY_HOLD */
+
+static bool standby_lock(void)
+{
+    if (s_standby_mtx == NULL) {
+        /* Created on first use. Creating allocates, so it cannot run inside the
+         * critical section; a task that loses the race deletes its copy. */
+        SemaphoreHandle_t m = xSemaphoreCreateMutex();
+        portENTER_CRITICAL(&s_standby_mtx_init);
+        if (s_standby_mtx == NULL) { s_standby_mtx = m; m = NULL; }
+        portEXIT_CRITICAL(&s_standby_mtx_init);
+        if (m != NULL) { vSemaphoreDelete(m); }
+    }
+    if (s_standby_mtx == NULL) { return false; }
+    if (xSemaphoreTake(s_standby_mtx, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        ESP_LOGE(TAG, "[T4] STANDBY lock not free after 2 s -- transition runs unserialised");
+        return false;
+    }
+    return true;
+}
+
+static void standby_unlock(bool locked)
+{
+    if (locked) { (void)xSemaphoreGive(s_standby_mtx); }
+}
+
+/* Audit-log a STANDBY transition. LOG_MODE_CHANGE row, emitter B:
+ *   initiator = caller-supplied (LCD farmer/admin or web)
+ *   channel   = surface hint (0=web, 1=LCD) — see dm_set_standby() doc
+ *   param_id  = LOG_PARAM_MODE_STANDBY  <- 2.6.0, gh#54
+ *   value_a   = 1 enter STANDBY | 0 leave STANDBY
+ *   value_b   = 0 explicit (persisted) | 1 a session hold (2026-09-16):
+ *               entered without NVS, or left because the session ended
+ *
+ * 2.6.0 (gh#54): param_id was LOG_PARAM_NONE, which is what T6's
+ * vent-step emitter also uses, so the two were indistinguishable and all
+ * three consumers read this row as a ventilation decision. The param_id
+ * is now the discriminator — do NOT set it back to NONE, and do not rely
+ * on initiator/channel instead: 2.4.6 briefly made a SYSTEM/channel-0
+ * variant of this row byte-identical to a genuine step-0 vent row.
+ */
+static void standby_log(bool standby, log_initiator_t initiator, uint8_t channel, bool held)
+{
+    log_event_t ev = {};
+    ev.timestamp  = (uint32_t)time(NULL);
+    ev.event_type = (uint8_t)LOG_MODE_CHANGE;
+    ev.initiator  = (uint8_t)initiator;
+    ev.channel    = channel;
+    ev.param_id   = (uint8_t)LOG_PARAM_MODE_STANDBY;
+    ev.value_a    = (int16_t)(standby ? 1 : 0);
+    ev.value_b    = (int16_t)(held ? 1 : 0);
+    log_post(&ev);
+}
+
+/* On STANDBY exit: T2 re-runs the synchronous CLOSE_ALL sweep (sets
+ * EG1_BIT_CALIBRATING for the duration), so windows return to a known CLOSED
+ * baseline before T6 resumes — the "calibrate windows on leave" decision locked
+ * with the operator on 2026-05-26. */
+static void standby_post_recalibrate(void)
+{
+    if (Q1 == NULL) { return; }
+    window_cmd_t cmd = {};
+    cmd.action  = CMD_RECALIBRATE;
+    cmd.channel = 0u;
+    cmd.source  = SRC_OPERATOR_MANUAL;   /* deliberate operator action */
+    if (xQueueSend(Q1, &cmd, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "[T4] Q1 full — CMD_RECALIBRATE dropped on STANDBY exit");
+    }
+}
+
 bool dm_get_standby(void)
 {
     if (EG1 == NULL) { return false; }
@@ -2193,11 +2275,19 @@ void dm_set_standby_ex(bool standby,
 {
     if (EG1 == NULL) { return; }
 
-    const bool current = dm_get_standby();
-    if (current == standby) {
+    const bool    locked  = standby_lock();
+    const bool    current = dm_get_standby();
+    const uint8_t held_by = s_standby_holders;
+    if (current == standby && !(standby && held_by != 0u)) {
         /* Idempotent — already in desired state. */
+        standby_unlock(locked);
         return;
     }
+
+    /* An explicit request ends every hold. Asking for STANDBY while one is held
+     * makes the pause the operator's own: from here it is persisted like any
+     * other, and no session end will clear it. */
+    s_standby_holders = 0u;
 
     if (standby) {
         xEventGroupSetBits(EG1, EG1_BIT_STANDBY);
@@ -2206,61 +2296,97 @@ void dm_set_standby_ex(bool standby,
     }
 
     /* Persist to NVS (0/1) so the state survives reboot (gh#28 locked
-     * decision). nvs_cfg_set_i32 is internally serialised by ESP-IDF NVS;
-     * no extra mutex needed. */
+     * decision). nvs_cfg_set_i32 is internally serialised by ESP-IDF NVS. */
     (void)nvs_cfg_set_i32(NVS_NS_SYSTEM, K_MODE_STANDBY, standby ? 1 : 0);
 
-    /* Audit-log the transition. LOG_MODE_CHANGE row, emitter B:
-     *   initiator = caller-supplied (LCD farmer/admin or web)
-     *   channel   = surface hint (0=web, 1=LCD) — see dm_set_standby() doc
-     *   param_id  = LOG_PARAM_MODE_STANDBY  <- 2.6.0, gh#54
-     *   value_a   = 1 enter STANDBY | 0 leave STANDBY
-     *   value_b   = 0 reserved
-     *
-     * 2.6.0 (gh#54): param_id was LOG_PARAM_NONE, which is what T6's
-     * vent-step emitter also uses, so the two were indistinguishable and all
-     * three consumers read this row as a ventilation decision. The param_id
-     * is now the discriminator — do NOT set it back to NONE, and do not rely
-     * on initiator/channel instead: 2.4.6 briefly made a SYSTEM/channel-0
-     * variant of this row byte-identical to a genuine step-0 vent row.
-     */
-    {
-        log_event_t ev = {};
-        ev.timestamp  = (uint32_t)time(NULL);
-        ev.event_type = (uint8_t)LOG_MODE_CHANGE;
-        ev.initiator  = (uint8_t)initiator;
-        ev.channel    = channel;
-        ev.param_id   = (uint8_t)LOG_PARAM_MODE_STANDBY;
-        ev.value_a    = (int16_t)(standby ? 1 : 0);
-        ev.value_b    = 0;
-        log_post(&ev);
-    }
+    standby_log(standby, initiator, channel, false);
 
-    ESP_LOGI(TAG, "[T4] STANDBY %s (init=%u, surface=%u, recal_on_clear=%d)",
+    ESP_LOGI(TAG, "[T4] STANDBY %s (init=%u, surface=%u, recal_on_clear=%d, was held by 0x%02x)",
              standby ? "ON" : "OFF",
              (unsigned)initiator, (unsigned)channel,
-             (int)recalibrate_on_clear);
+             (int)recalibrate_on_clear, (unsigned)held_by);
 
-    /* On STANDBY exit AND recalibrate_on_clear requested: post CMD_RECALIBRATE
-     * to Q1 so T2 re-runs the synchronous CLOSE_ALL sweep (sets
-     * EG1_BIT_CALIBRATING for the duration). The "calibrate windows on
-     * leave" decision was locked with the operator on 2026-05-26 — windows
-     * return to a known CLOSED baseline before T6 resumes.
-     *
-     * rc.1.5.1 — when recalibrate_on_clear is false (admin manual-motor menu
+    /* rc.1.5.1 — when recalibrate_on_clear is false (admin manual-motor menu
      * exit per gh#29 + 2026-05-26 follow-up decision), skip the Q1 post:
      * the admin's deliberate per-channel positions are preserved and T6
      * takes its next decision based on the actual current state, not on a
      * forced CLOSED baseline.
      *
      * On STANDBY entry: no Q1 post regardless; windows stay where they are. */
-    if (!standby && recalibrate_on_clear && Q1 != NULL) {
-        window_cmd_t cmd = {};
-        cmd.action  = CMD_RECALIBRATE;
-        cmd.channel = 0u;
-        cmd.source  = SRC_OPERATOR_MANUAL;   /* deliberate operator action */
-        if (xQueueSend(Q1, &cmd, 0) != pdTRUE) {
-            ESP_LOGW(TAG, "[T4] Q1 full — CMD_RECALIBRATE dropped on STANDBY exit");
-        }
+    if (!standby && recalibrate_on_clear) {
+        standby_post_recalibrate();
     }
+    standby_unlock(locked);
+}
+
+bool dm_standby_hold(uint8_t who, log_initiator_t initiator, uint8_t channel)
+{
+    if (EG1 == NULL || who == 0u) { return false; }
+
+    const bool locked = standby_lock();
+    bool held = false;
+    if (!dm_get_standby()) {
+        /* NVS must say 0 while a hold exists, or a reboot would bring the
+         * STANDBY back without its holder. It does, unless an earlier write
+         * failed -- so make sure rather than assume. */
+        int32_t nv = 0;
+        nvs_cfg_get_i32_or_default(NVS_NS_SYSTEM, K_MODE_STANDBY, 0, &nv);
+        if (nv != 0) {
+            (void)nvs_cfg_set_i32(NVS_NS_SYSTEM, K_MODE_STANDBY, 0);
+        }
+#ifdef DM_FAILFIRST_PERSIST_STANDBY_HOLD
+        (void)nvs_cfg_set_i32(NVS_NS_SYSTEM, K_MODE_STANDBY, 1);   /* the gh#65 shape, on purpose */
+#endif
+        xEventGroupSetBits(EG1, EG1_BIT_STANDBY);
+        s_standby_holders = who;
+        standby_log(true, initiator, channel, true);
+        ESP_LOGI(TAG, "[T4] STANDBY ON, held by 0x%02x: ends with its session, "
+                 "not kept across a reboot", (unsigned)who);
+        held = true;
+    } else if (s_standby_holders != 0u) {
+        s_standby_holders = (uint8_t)(s_standby_holders | who);
+        held = true;
+    }
+    /* else: the operator's own STANDBY -- theirs to end, not a holder's */
+    standby_unlock(locked);
+    return held;
+}
+
+void dm_standby_release(uint8_t who, log_initiator_t initiator, uint8_t channel)
+{
+    if (EG1 == NULL || who == 0u) { return; }
+
+    const bool locked = standby_lock();
+    if ((s_standby_holders & who) == 0u) {
+        standby_unlock(locked);
+        return;
+    }
+    s_standby_holders = (uint8_t)(s_standby_holders & (uint8_t)~who);
+    if (s_standby_holders != 0u) {
+        standby_unlock(locked);          /* another session still holds it */
+        return;
+    }
+
+    /* The last hold is gone: leave STANDBY the way the LCD session end does.
+     * The dwell debt goes first -- positions set during the hold are a new
+     * baseline, not a T6 oscillation -- and T2 applies that at the top of its
+     * next loop, ahead of the CMD_RECALIBRATE posted below. */
+    if (task_t2 != NULL) {
+        xTaskNotify(task_t2, T2_NOTIFY_CLEAR_DWELL, eSetBits);
+    }
+    xEventGroupClearBits(EG1, EG1_BIT_STANDBY);
+    /* NVS already says 0: a hold never writes 1 (see dm_standby_hold()). */
+#ifdef DM_FAILFIRST_PERSIST_STANDBY_HOLD
+    (void)nvs_cfg_set_i32(NVS_NS_SYSTEM, K_MODE_STANDBY, 0);        /* as the LCD's exit does */
+#endif
+    standby_log(false, initiator, channel, true);
+    ESP_LOGI(TAG, "[T4] STANDBY OFF: the last hold (0x%02x) ended -- recalibrating",
+             (unsigned)who);
+    standby_post_recalibrate();
+    standby_unlock(locked);
+}
+
+uint8_t dm_standby_holders(void)
+{
+    return s_standby_holders;            /* one byte: a torn read is impossible */
 }

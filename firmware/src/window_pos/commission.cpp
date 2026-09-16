@@ -18,6 +18,7 @@
 #include "cfg_defaults.h"   /* MOTOR_TRAVEL_MARGIN_S_DEFAULT -- T2's stroke is travel + this */
 #include "../data_manager/data_manager.h"
 #include "../relay_controller/relay_controller.h"
+#include "../web_server/web_server.h"   /* web_session_is_live() -- the STANDBY hold */
 #include "window_pos_task.h"
 #include "../types/app_types.h"
 
@@ -73,6 +74,44 @@ static bool                s_quiet;
 static TickType_t          s_quiet_from;
 #define DISARM_GRACE_MS    5000u
 
+/* The teach's STANDBY hold (operator decision, 2026-09-16: automatic control
+ * pauses during a teach, until the admin's session ends). s_hold_token is the
+ * web session that started the most recent teach; s_hold_ended says it has
+ * logged out. Both under s_mux.
+ *
+ * s_hold_mtx makes "take the hold and record its owner" (T11) and "decide and
+ * release" (T17, or T11 at logout) atomic with respect to each other. Without
+ * it a release check running between the take and the record saw no owner and
+ * dropped a hold a new teach had just taken. */
+static char                s_hold_token[WEB_SESSION_TOKEN_LEN + 1];
+static bool                s_hold_ended;
+static SemaphoreHandle_t   s_hold_mtx;
+static portMUX_TYPE        s_hold_mtx_init = portMUX_INITIALIZER_UNLOCKED;
+
+static bool hold_lock(void)
+{
+    if (s_hold_mtx == NULL) {
+        /* Created on first use; creating allocates, so not inside the
+         * critical section. A task that loses the race deletes its copy. */
+        SemaphoreHandle_t m = xSemaphoreCreateMutex();
+        portENTER_CRITICAL(&s_hold_mtx_init);
+        if (s_hold_mtx == NULL) { s_hold_mtx = m; m = NULL; }
+        portEXIT_CRITICAL(&s_hold_mtx_init);
+        if (m != NULL) { vSemaphoreDelete(m); }
+    }
+    if (s_hold_mtx != NULL &&
+        xSemaphoreTake(s_hold_mtx, pdMS_TO_TICKS(2000)) == pdTRUE) {
+        return true;
+    }
+    ESP_LOGW(TAG, "STANDBY hold lock not free after 2 s -- continuing unserialised");
+    return false;
+}
+
+static void hold_unlock(bool locked)
+{
+    if (locked) { (void)xSemaphoreGive(s_hold_mtx); }
+}
+
 /*
  * The run. commission_teach_start() (web task) initialises all of it BEFORE it
  * publishes TEACH_ARMING; from then on only T17, through commission_tick(),
@@ -125,6 +164,68 @@ void commission_status(commission_status_t *out)
     portENTER_CRITICAL(&s_mux);
     *out = s_st;
     portEXIT_CRITICAL(&s_mux);
+    out->standby_held = (dm_standby_holders() & DM_STANDBY_HOLD_TEACH) != 0u;
+}
+
+/**
+ * @brief Release the teach's STANDBY hold once its session is over.
+ *
+ * "Over" is: logged out, or no longer valid in the session table (idle
+ * timeout, evicted by a fifth login, or gone with a reboot). A RUNNING teach
+ * keeps the hold whatever the session does -- the release recalibrates, and a
+ * CLOSE_ALL in the middle of a leg would wreck the run -- so the release then
+ * waits for the run to end. Called on every T17 reading and at logout.
+ */
+static void hold_forget(void)
+{
+    portENTER_CRITICAL(&s_mux);
+    s_hold_token[0] = '\0';
+    s_hold_ended    = false;
+    portEXIT_CRITICAL(&s_mux);
+}
+
+static void hold_check(void)
+{
+    const bool locked = hold_lock();
+    if ((dm_standby_holders() & DM_STANDBY_HOLD_TEACH) == 0u) {
+        /* Nothing held: never was, already released, or an explicit STANDBY
+         * or AUTOMATIC request took the pause over. Forget the owner. */
+        hold_forget();
+        hold_unlock(locked);
+        return;
+    }
+
+    char tok[sizeof(s_hold_token)];
+    bool ended, running;
+    portENTER_CRITICAL(&s_mux);
+    running = s_starting || teach_active(s_st.state);
+    ended   = s_hold_ended;
+    memcpy(tok, s_hold_token, sizeof(tok));
+    portEXIT_CRITICAL(&s_mux);
+
+    if (running || (!ended && tok[0] != '\0' && web_session_is_live(tok))) {
+        hold_unlock(locked);
+        return;
+    }
+
+    ESP_LOGW(TAG, "teach STANDBY released: its admin session %s",
+             ended ? "logged out" : "has ended (timeout, eviction or reboot)");
+    dm_standby_release(DM_STANDBY_HOLD_TEACH, LOG_BY_WEB, 0u /*=web*/);
+    hold_forget();
+    hold_unlock(locked);
+}
+
+void commission_session_ended(const char *token)
+{
+    if (token == NULL || token[0] == '\0') { return; }
+    bool ours = false;
+    portENTER_CRITICAL(&s_mux);
+    if (s_hold_token[0] != '\0' && strcmp(s_hold_token, token) == 0) {
+        s_hold_ended = true;
+        ours = true;
+    }
+    portEXIT_CRITICAL(&s_mux);
+    if (ours) { hold_check(); }        /* now, unless a teach is still running */
 }
 
 /**
@@ -266,7 +367,7 @@ bool commission_set_window_mm(uint16_t mm)
     return (s == WINDOWPOS_OK);
 }
 
-bool commission_teach_start(void)
+bool commission_teach_start(const char *owner_token)
 {
     portENTER_CRITICAL(&s_mux);
     const bool running = teach_active(s_st.state);
@@ -309,6 +410,26 @@ bool commission_teach_start(void)
      * Every leg moves the leaf, so the device always knows the direction of
      * the movement that made each sensor, whatever the starting point. */
 
+    /* Automatic control pauses for the teach and stays paused until the
+     * admin's session ends (operator decision, 2026-09-16) -- held only now
+     * that the refusals have passed, so a teach that never starts leaves
+     * climate control alone. What remains is a moment between the M3 check
+     * above and this line in which T6 could still start a stroke; the first
+     * leg then fails with m3_busy, and a retry runs with T6 paused.
+     * The hold lock stays taken until the run is published (or refused), so
+     * no release check can judge the hold in between: until then nothing says
+     * a teach is running. */
+    const bool hold_locked = hold_lock();
+    if (dm_standby_hold(DM_STANDBY_HOLD_TEACH, LOG_BY_WEB, 0u /*=web*/)) {
+        const size_t n = (owner_token != NULL) ? strnlen(owner_token, WEB_SESSION_TOKEN_LEN) : 0u;
+        portENTER_CRITICAL(&s_mux);
+        memcpy(s_hold_token, (n != 0u) ? owner_token : "", n);
+        s_hold_token[n] = '\0';
+        s_hold_ended = (n == 0u);          /* no session to wait for: ends with the teach */
+        portEXIT_CRITICAL(&s_mux);
+        ESP_LOGW(TAG, "automatic control paused (STANDBY held) until the admin session ends");
+    }
+
     /* Contract §6.2 order: measurement window BEFORE arming. `30005` refreshes
      * once per window, so a stale capture is silent calibration error -- ~86
      * counts at rig speed with the 1000 ms default. Derived here from the
@@ -319,6 +440,7 @@ bool commission_teach_start(void)
     const uint16_t win_ms = windowpos_task_window_ms_for(configured_travel_s());
     if (windowpos_set_window_ms(WINDOWPOS_DEFAULT_ADDR, win_ms) != WINDOWPOS_OK) {
         teach_fail(TEACH_ERR_DEVICE_WRITE);
+        hold_unlock(hold_locked);
         return false;
     }
 
@@ -333,6 +455,7 @@ bool commission_teach_start(void)
         s_starting = false;
         portEXIT_CRITICAL(&s_mux);
         teach_fail(TEACH_ERR_DEVICE_WRITE);
+        hold_unlock(hold_locked);
         return false;
     }
 
@@ -344,6 +467,7 @@ bool commission_teach_start(void)
     s_linger        = 0u;
     s_starting      = false;            /* the state now says it */
     portEXIT_CRITICAL(&s_mux);
+    hold_unlock(hold_locked);
     ESP_LOGW(TAG, "teach armed (window %u ms); M3 moves once the sensor confirms",
              (unsigned)win_ms);
     return true;
@@ -467,6 +591,8 @@ void commission_tick(const windowpos_reading_t *r, uint32_t now_ms)
     cached_armed = s_st.teach_armed;
     if (!teach_active(state) && s_linger != 0u) { s_linger--; }
     portEXIT_CRITICAL(&s_mux);
+
+    hold_check();                         /* the STANDBY hold outlives no session */
 
     if (!teach_active(state)) {
         /* Self-correction: the stored verdict must follow the live teach bit.

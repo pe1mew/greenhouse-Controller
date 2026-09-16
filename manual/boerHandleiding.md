@@ -866,6 +866,8 @@ Dezelfde route, maar kies **Auto** (LCD: toets `1` op het menu, web: kies "Norma
 
 > **Stand-by blijft staan bij stroomuitval.** Heb je Stand-by aangezet en gaat tussendoor de stroom uit? Na opstarten staat de controller weer in `Mode: STANDBY` — zodat een korte stroomonderbreking je onderhoudswerk niet onbedoeld onderbreekt. Vergeet niet om Stand-by weer uit te zetten als je klaar bent met je werk!
 
+> **Stand-by kan ook van de beheerder komen.** Tijdens het kalibreren van de raamsensor van M3 (de "teach") zet de controller zichzelf in Stand-by. Die pauze verdwijnt vanzelf zodra de beheerder uitlogt of de sessie van de beheerder verloopt, en ook bij een herstart. Daarna sluiten de ramen één keer en regelt de controller weer automatisch. Zie je `Mode: STANDBY` terwijl jij niets hebt ingesteld, dan is dit waarschijnlijk de reden.
+
 #### Visuele bevestiging dat Stand-by actief is
 
 - **Op de controller (LCD)**: scherm 3 toont `Mode: STANDBY`
@@ -926,7 +928,7 @@ Dit hoofdstuk legt uit wat de mode-regel op het LCD betekent en wat je in elke s
 | LCD-tekst | Betekenis | Wat doet de controller? | Wat moet je doen? |
 |---|---|---|---|
 | `Mode: AUTO` | Normale automatische werking | Regelt Temperatuur en Luchtvochtigheid binnen de setpoints | Niets — alles werkt zoals het hoort |
-| `Mode: STANDBY` | Stand-by-modus — door operator gepauzeerd | **Geen klimaatcommando's; ramen blijven waar ze zijn** | Niets — dit is een bewuste pauze (zie [§10.4](#104-de-controller-tijdelijk-pauzeren--stand-by)). Vergeet niet om Stand-by uit te zetten als je klaar bent. |
+| `Mode: STANDBY` | Stand-by-modus — door operator gepauzeerd, of door de beheerder tijdens het kalibreren van de raamsensor | **Geen klimaatcommando's; ramen blijven waar ze zijn** | Niets — dit is een bewuste pauze (zie [§10.4](#104-de-controller-tijdelijk-pauzeren--stand-by)). Vergeet niet om Stand-by uit te zetten als je klaar bent. |
 | `Mode: WIND` | Wind-override actief — wind te hard | **Alle ramen dicht; klimaatregeling onderdrukt** | Wachten tot de wind afneemt; zie [§12.5](#125-windbeveiliging-in-detail) |
 | `Mode: ALARM` | Motor-alarm (Hotraco RRK-3) | **Alle relais uit; motoren staan stil** | **Bel de beheerder onmiddellijk**; zie [§12.6](#126-motor-alarm-in-detail) |
 | `Mode:Window Cal.` | Kalibratie van de ramen — alle ramen sluiten om de uitgangspositie te bepalen | Sluit M1, M2, M3 gelijktijdig; duurt tot ~3 minuten | Wachten; niet ingrijpen, niet handmatig aan de ramen werken |

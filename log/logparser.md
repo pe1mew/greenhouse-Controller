@@ -1,7 +1,7 @@
 # logparser — Greenhouse Controller Log Parser
 
 **File:** `log/logparser.py`
-**Document version:** 1.16 (matches firmware 2.8.0 + the `ropeSensor` window-sensor encodings; adds `ALARM ch6 param 245` value `4`, an orphaned teach found and aborted)
+**Document version:** 1.17 (matches firmware 2.8.0 + the `ropeSensor` window-sensor encodings; adds `MODE param 47` `value_b` = 1, a STANDBY held for a teach's admin session)
 **Requires:** Python 3.10+, standard library only (no pip dependencies)
 
 **What's new in 1.16** (`ropeSensor` branch):
@@ -395,7 +395,7 @@ channel transitions to a new state.
 | `param` | emitter | meaning |
 |---|---|---|
 | **0** | T6 `climate_control.cpp` | ventilation step decision — the table below |
-| **47** | T4 `dm_set_standby_ex()` | STANDBY enter/leave — `value_a` 1 = entered, 0 = left; `value_b` reserved 0; `ch` = surface, 0 web / 1 LCD |
+| **47** | T4 `dm_set_standby_ex()` | STANDBY enter/leave — `value_a` 1 = entered, 0 = left; `value_b` 0 = explicit, 1 = a session **hold** (below); `ch` = surface, 0 web / 1 LCD |
 
 > **Old logs cannot be separated.** Emitter B has existed since rc.1.5.0 (gh#28)
 > but carried `param = 0` until 2.6.0, so in any log written before 2.6.0 a
@@ -404,6 +404,16 @@ channel transitions to a new state.
 > `value_b`. If an old log shows a vent step at the exact moment an operator
 > toggled STANDBY, that is why. `plot_daily.py` and `vent_step_replay.py` skip
 > `param = 47` rows; for pre-2.6.0 logs they cannot.
+
+> **`value_b` = 1 is a session hold** (firmware 2.8.0, 2026-09-16). A web teach
+> pauses climate control by *holding* STANDBY until the admin session that
+> started it ends. A held entry is not stored in NVS, so a reboot ends the
+> hold. A held exit means that session ended: logout, idle timeout, or eviction
+> by a fifth login. If a hold was on when the unit rebooted, the log shows the
+> entry and **no** matching exit; the boot row that follows closes it.
+> An explicit entry (`value_b` = 0) right after a held one means an operator
+> asked for STANDBY during the hold, and from then on it is an ordinary,
+> persisted STANDBY. Rows from before 2.8.0 always carry 0.
 
 ### Emitter A — ventilation step change (`param = 0`)
 

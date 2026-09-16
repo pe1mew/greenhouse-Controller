@@ -146,6 +146,8 @@ static const char *TAG = "T11_WEB";
  * ============================================================ */
 #define MAX_SESSIONS        4    /**< Max concurrent web sessions */
 #define TOKEN_LEN          16    /**< Session token length (hex chars) */
+_Static_assert(TOKEN_LEN == WEB_SESSION_TOKEN_LEN,
+               "holders size their token copies from WEB_SESSION_TOKEN_LEN");
 #define COOKIE_HEADER_MAX  128   /**< Max Cookie: header size we'll parse */
 #define LFS_READ_BUF       4096  /**< LittleFS chunk buffer for streaming */
 #define SESSION_DEFAULT_S  600u  /**< 10 min default if cfg.session_timeout_min unset */
@@ -248,6 +250,25 @@ bool web_any_active_session_except(const char *exempt_token)
 bool web_any_active_session(void)
 {
     return web_any_active_session_except(NULL);
+}
+
+/* Session still valid? Unlike session_find_and_renew() this never slides the
+ * expiry: the caller is a holder watching for the end, not the session itself. */
+bool web_session_is_live(const char *token)
+{
+    if (token == NULL || token[0] == '\0') return false;
+    if (s_sess_mux == NULL) return false;              /* server not up: no sessions */
+    if (xSemaphoreTake(s_sess_mux, pdMS_TO_TICKS(200)) != pdTRUE) return true; /* busy: assume live */
+    bool live = false;
+    const int32_t now = (int32_t)time(NULL);
+    for (int i = 0; i < MAX_SESSIONS; i++) {
+        if (s_sessions[i].expiry > now && strcmp(s_sessions[i].token, token) == 0) {
+            live = true;
+            break;
+        }
+    }
+    xSemaphoreGive(s_sess_mux);
+    return live;
 }
 
 /**
@@ -842,6 +863,11 @@ static esp_err_t logout_handler(httpd_req_t *req)
     if (cookie_get_session(req, token)) {
         session_close(token);
         ESP_LOGI(TAG, "[T11] /api/logout session closed");
+#ifdef MODBUS_BENCH
+        /* A teach holds STANDBY until its session ends: release it now rather
+         * than at T17's next reading (up to 30 s at rest). */
+        commission_session_ended(token);
+#endif
     }
     cookie_clear_session(req);
     httpd_resp_set_type(req, "application/json");
@@ -3469,7 +3495,7 @@ static esp_err_t diag_commission_get_handler(httpd_req_t *req)
              "\"window_mm\":%u,\"taught_closed\":%u,\"taught_open\":%u,"
              "\"span\":%u,\"span_pct\":%u,\"teach_armed\":%s,"
              "\"state\":\"%s\",\"run_reason\":\"%s\",\"dir\":\"%s\","
-             "\"leg\":%u,\"legs_max\":%u,\"ends\":%u}",
+             "\"leg\":%u,\"legs_max\":%u,\"ends\":%u,\"standby_held\":%s}",
              TABLE_STR(k_verdict, c.verdict),
              TABLE_STR(k_cal, c.cal_reason),
              (unsigned)c.window_mm, (unsigned)c.taught_closed,
@@ -3479,7 +3505,8 @@ static esp_err_t diag_commission_get_handler(httpd_req_t *req)
              TABLE_STR(k_run, c.run_reason),
              c.dir_is_open ? "open" : "close",
              (unsigned)c.leg, (unsigned)COMMISSION_TEACH_MAX_LEGS,
-             (unsigned)c.ends_made);
+             (unsigned)c.ends_made,
+             c.standby_held ? "true" : "false");
 #undef TABLE_STR
     return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
 }
@@ -3519,7 +3546,10 @@ static esp_err_t diag_commission_post_handler(httpd_req_t *req)
 
     bool ok = false;
     if (strcmp(act, "teach") == 0) {
-        ok = commission_teach_start();
+        /* The teach holds STANDBY until THIS session ends (commission.h). */
+        char token[TOKEN_LEN + 1] = {0};
+        (void)cookie_get_session(req, token);   /* admin already validated above */
+        ok = commission_teach_start(token);
     } else if (strcmp(act, "abort") == 0) {
         commission_teach_abort(); ok = true;
     } else if (strcmp(act, "refresh") == 0) {

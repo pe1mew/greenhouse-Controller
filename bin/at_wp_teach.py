@@ -26,8 +26,9 @@ clear, a span >= 30 % of the ADC, it did not trip 12.4 rule 1 or 2, and T17's
 `orphan_aborts` did not move -- our own teach, or our own abort, must never be
 taken for an orphaned one.
 The run PASSES when both teaches pass AND they started at different ends.
-T6 stays in charge throughout (AUTOMATIC), as in real use: it may move M3
-between runs, which is fine -- the start end is read at each start.
+Each teach pauses automatic control (it holds STANDBY until this script's admin
+session ends; `bin/at_wp_teach_standby.py` tests that), so T6 cannot move M3
+between legs. The start end is read at each start anyway.
 
 **THE WINDOW MOVES**: about five traverses on the dev rig (~2 min). Do not run
 it on production without meaning to: there a traverse is ~3 minutes.

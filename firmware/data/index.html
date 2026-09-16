@@ -387,12 +387,13 @@
         <span id="cm-detail" class="muted"></span>
       </div>
       <div class="slider-row">
-        <label data-tip="Arms the sensor and drives M3 to BOTH end sensors, one after the other, to calibrate it. THE WINDOW WILL MOVE: two full traverses, three if the controller&apos;s idea of where M3 is turns out wrong. M3 may start anywhere — open, closed or part-way. The sensor records each end as its end sensor switches, so let it run until it says complete.">Teach</label>
+        <label data-tip="Arms the sensor and drives M3 to BOTH end sensors, one after the other, to calibrate it. THE WINDOW WILL MOVE: two full traverses, three if the controller&apos;s idea of where M3 is turns out wrong. M3 may start anywhere — open, closed or part-way. The sensor records each end as its end sensor switches, so let it run until it says complete. Automatic climate control pauses (STANDBY) when the teach starts and resumes when you log out or your session times out, as with manual window control on the controller itself.">Teach</label>
         <strong id="cm-state">—</strong>
         <button onclick="commTeach()">Teach (moves M3)</button>
         <button onclick="commAct('abort')">Abort</button>
         <span class="save-ok" id="cm-hint"></span>
       </div>
+      <p id="cm-standby" class="muted"></p>
     </div>
   </div>
 

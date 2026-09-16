@@ -59,3 +59,14 @@ bool web_any_active_session(void);
  * the apply is not deferred forever (gh#41); every other session still counts.
  */
 bool web_any_active_session_except(const char *exempt_token);
+
+/**
+ * @brief True while the session with @p token is valid. Does NOT renew it.
+ *
+ * For code that holds something on a session's behalf and must let go when
+ * the session ends -- by logout, idle timeout, eviction from the four-slot
+ * table, or a reboot. The teach's STANDBY hold is the first user
+ * (commission.cpp). Fails safe towards "still live" if the session mutex
+ * cannot be taken, so a busy server never ends a hold early.
+ */
+bool web_session_is_live(const char *token);

@@ -206,6 +206,14 @@ function commRender(c) {
     : c.state === 'traversing' ? (c.ends || 0) + ' of 2 end sensors reached — let it run.'
     : c.state === 'committing' ? 'both end sensors reached — the sensor is saving the result.'
     : '');
+  // A teach pauses automatic control, like manual window control on the LCD,
+  // and the pause lasts until this admin session ends -- so say so for as long
+  // as it lasts, including after the teach has finished.
+  setText('cm-standby', c.standby_held
+    ? 'Automatic climate control is paused (STANDBY) because of the teach. It resumes '
+      + 'when you log out or your session times out; all windows then close once to '
+      + 'recalibrate.'
+    : '');
 
   // Reflect the device's window size into the input ONLY while the operator is
   // not editing it. The first version tested document.activeElement against the
@@ -320,7 +328,9 @@ function commWindow() {
 // on the settings page that actuates the greenhouse.
 function commTeach() {
   if (!confirm('This will MOVE M3 to both ends to calibrate the sensor: two full ' +
-               'traverses, sometimes three. M3 may start anywhere.\n\nContinue?')) return;
+               'traverses, sometimes three. M3 may start anywhere.\n\n' +
+               'Automatic climate control pauses (STANDBY) from now until you log out ' +
+               'or your session times out.\n\nContinue?')) return;
   commAct('teach');
 }
 

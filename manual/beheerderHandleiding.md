@@ -252,6 +252,14 @@ De sensor meet intern een weerstandswaarde. Op zichzelf is dat een getal zonder 
 >
 > Tijdens de teach toont het scherm welke gang loopt en hoeveel eindsensoren al bereikt zijn, bijvoorbeeld *"leg 2 of up to 3 — M3 CLOSING"* met *"1 of 2 end sensors reached"*. Op het productieraam duurt één gang ongeveer drie minuten: **laat hem lopen** tot er *teach complete* staat. *Abort* stopt de teach; het raam maakt de gang waarin het zit wel af.
 
+> **Tijdens de teach staat de automatische klimaatregeling stil.** Zodra de teach start, zet de controller zichzelf in **Stand-by**, net als bij handmatige raambediening op het LCD. Die Stand-by blijft staan tot je uitlogt of je sessie verloopt (standaard na 5 minuten zonder activiteit), ook als de teach al klaar is. Daarna sluiten alle ramen één keer om te kalibreren en neemt de regeling het weer over. Zolang de pauze duurt, staat dat onder de teach-knop.
+>
+> Er zijn drie uitzonderingen:
+>
+> - **Een Stand-by die al aan stond blijft staan.** Stond de controller al in Stand-by omdat iemand dat zo had ingesteld, dan raakt de teach die niet aan; hij verdwijnt dus ook niet als je uitlogt.
+> - **Een herstart beëindigt de pauze.** Deze Stand-by wordt niet opgeslagen. Wordt de controller tijdens of na de teach herstart, dan regelt hij na het opstarten gewoon weer automatisch.
+> - **Een eigen keuze gaat voor.** Kies je tussendoor zelf *Stand-by* of *Normal* in de Mode-keuzelijst, dan geldt jouw keuze, en een gekozen Stand-by blijft dan ook na het uitloggen staan.
+
 #### Als de teach mislukt
 
 Naast *teach failed* staat de reden. Een mislukte teach laat de bestaande kalibratie ongemoeid.
@@ -1031,6 +1039,8 @@ Deze re-kalibratie is een **bewust ontwerp**: tijdens Standby kan iedereen handm
 #### Persistentie over een reboot
 
 Standby is **NVS-backed** (opgeslagen in permanent geheugen op de microprocessor). Een stroomstoring tijdens een bewuste maintenance-pauze schakelt de controller dus **niet** stilletjes weer in op `Mode: AUTO` — de unit komt terug in `Mode: STANDBY` precies zoals jij hem hebt achtergelaten. Vergeet daarom niet om Standby weer uit te zetten zodra het werk klaar is.
+
+**Uitzondering:** de Stand-by die een teach van de raamstandsensor zet, wordt níét opgeslagen en vervalt bij een herstart (zie [M3 raamstandsensor — kalibratie](#m3-raamstandsensor--kalibratie-commissioning)). In het logboek herken je die aan `value_b` = 1 in de `MODE`-regel.
 
 In de logfile herken je een Standby-transitie als een `MODE` event:
 ```

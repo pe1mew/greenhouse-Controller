@@ -321,7 +321,10 @@ def _decode_mode(row: dict) -> str:
 
     param = 47 -- emitter B, T4 data_manager.cpp dm_set_standby_ex():
       value_a = 1 entered STANDBY, 0 left STANDBY
-      value_b = 0 (reserved)
+      value_b = 0 explicit: an operator asked, and it is kept across a reboot
+                1 a session HOLD (firmware 2.8.0, 2026-09-16): entered by a
+                  web teach and NOT kept across a reboot, or left because the
+                  admin session holding it ended
       ch      = surface hint, 0 = web, 1 = LCD
 
     Emitter B has existed since rc.1.5.0 (gh#28) but carried param = 0 until
@@ -340,11 +343,17 @@ def _decode_mode(row: dict) -> str:
             by        = _INITIATOR.get(initiator, initiator)
             surface   = {0: "web", 1: "LCD"}.get(
                 int(row.get("ch", 0) or 0), f"surface {row.get('ch')}")
+            if packed == 1 and resolved == 1:
+                return (f"STANDBY entered (climate control paused) via {surface}, "
+                        f"held for a teach until the admin session ends  [{by}]")
+            if packed == 1 and resolved == 0:
+                return (f"STANDBY left (climate control resumed) via {surface}: "
+                        f"the admin session holding it ended  [{by}]")
             if resolved == 1:
                 return f"STANDBY entered (climate control paused) via {surface}  [{by}]"
             if resolved == 0:
                 return f"STANDBY left (climate control resumed) via {surface}  [{by}]"
-            return f"STANDBY event a={resolved} via {surface}  [{by}]"
+            return f"STANDBY event a={resolved} b={packed} via {surface}  [{by}]"
 
         # Unpack the two signed int8 values from the int16
         packed_u = packed & 0xFFFF

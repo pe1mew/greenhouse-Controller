@@ -633,6 +633,7 @@ def login():
 def logout():
     token = request.cookies.get("session", "")
     _session_destroy(token)
+    COMM["standby_held"] = False     # a teach's STANDBY hold ends with its session
     resp = make_response({"ok": True})
     resp.set_cookie("session", "", max_age=0, path="/")
     return resp
@@ -1227,6 +1228,8 @@ COMM = {
     # a teach run
     "state": "idle", "run_reason": "none", "dir": "open",
     "leg": 0, "legs_max": 3, "ends": 0,
+    # automatic control: a teach holds STANDBY until its admin session ends
+    "standby_held": False,
 }
 _COMM_T0 = [0.0]
 _COMM_LEG_S = 13.0      # the dev rig's M3 traverse
@@ -1279,7 +1282,8 @@ def commission_post():
         # CLOSED -> open first, anything else -> close first
         m3 = M3_POS.get("state", "CLOSED")
         COMM.update(state="arming", run_reason="none", teach_armed=True,
-                    leg=0, ends=0, _first_open=(m3 == "CLOSED"))
+                    leg=0, ends=0, _first_open=(m3 == "CLOSED"),
+                    standby_held=True)   # released at logout, as on the unit
         _COMM_T0[0] = time.time()
     elif a == "abort":
         COMM.update(state="idle", run_reason="none", teach_armed=False,

@@ -266,8 +266,15 @@ void tearDown(void) {}
 /* ===========================================================================
  * HW-MB-001  DE/RE LOW after modbus_init() — driver starts in receive mode
  *
- * modbus_init() calls gpio_set_rs485_direction(false) → GPIO 8 LOW.
+ * Since gh#70 GPIO 8 is the UART's RTS output, and RS485 half-duplex mode
+ * holds it LOW (receive) between frames. A task-driven build
+ * (MODBUS_FAILFIRST_TASK_DE) drives it LOW as a plain GPIO instead.
  * The monitor pin (GPIO 16), wired to GPIO 8, must read LOW.
+ *
+ * This test catches DE/RE stuck HIGH (it FAILED on a build that left RS485
+ * mode unset with RTS high, 12F0, 2026-09-16). It cannot catch a MISSING
+ * wire: with no wire, GPIO 16 floats and read LOW, so this test passed.
+ * HW-MB-002 is the check that the wire is there.
  * =========================================================================== */
 void test_dere_low_after_init(void)
 {
@@ -281,9 +288,19 @@ void test_dere_low_after_init(void)
 /* ===========================================================================
  * HW-MB-002  DE/RE HIGH while driver is transmitting
  *
- * The driver asserts DE/RE HIGH before the first Serial1.write().
+ * Since gh#70 the UART raises DE/RE (RTS) when the request enters its TX FIFO
+ * and drops it in the TX-done interrupt, right after the last stop bit.
  * The responder task samples GPIO 16 the moment the first byte appears on
- * UART2 RX (= GPIO 38, wired to GPIO 17 MODBUS TX).
+ * UART2 RX (= GPIO 38, wired to GPIO 17 MODBUS TX): about 1 ms into an
+ * 8-byte request, while DE/RE must still be HIGH. It FAILED on a build that
+ * never routed RTS to GPIO 8 (12F0, 2026-09-16), and without the GPIO 16 wire.
+ *
+ * "About 1 ms" depends on the Arduino core: at 57600 baud or less,
+ * HardwareSerial::begin() sets the RX FIFO-full threshold to ONE byte, so each
+ * byte reaches Serial2.available() right after its stop bit. With the IDF
+ * default threshold the first byte would surface only on the RX timeout,
+ * after the whole frame, when a correct driver has already released DE/RE,
+ * and this test would fail it. Keep TEST_LOOPBACK_BAUD at 57600 or less.
  * =========================================================================== */
 void test_dere_high_during_tx(void)
 {
@@ -375,7 +392,8 @@ void test_tx_frame_crc_valid(void)
  *
  * The driver must deassert DE/RE (enable the RS485 receiver) before any
  * response byte is placed on the bus.  The responder task confirms GPIO 8
- * is LOW the instant before it injects the response.
+ * is LOW the instant before it injects the response. Like HW-MB-001 this
+ * catches DE/RE stuck HIGH (it FAILED on that build) but not a missing wire.
  * =========================================================================== */
 void test_dere_low_before_response_injected(void)
 {

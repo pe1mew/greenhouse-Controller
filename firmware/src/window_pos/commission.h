@@ -151,6 +151,9 @@ typedef struct {
     bool          dir_is_open;    /**< direction of the leg being driven */
     uint8_t       leg;            /**< 1-based leg being driven; 0 before the first */
     uint8_t       ends_made;      /**< end sensors that have made since arming, 0..2 */
+
+    /* --- automatic control --- */
+    bool          standby_held;   /**< a teach holds STANDBY until its admin session ends */
 } commission_status_t;
 
 /** Legs a teach may drive: two, plus one for a T2 belief that turns out wrong. */
@@ -179,9 +182,25 @@ bool commission_set_window_mm(uint16_t mm);
  * part-way. Refused while M3 is moving, while bit 4 is set, or when a fresh
  * reading fails or reports a fault.
  *
+ * **Automatic control pauses** (operator decision, 2026-09-16). Once the
+ * refusals have passed, the teach HOLDS STANDBY (dm_standby_hold()) until the
+ * admin session that started it has ended -- logout, idle timeout, eviction or
+ * reboot -- and no teach is running any more. That is the rule the LCD applies
+ * to manual window control, except that a hold is never persisted, so a reboot
+ * cannot leave the unit paused (gh#65). A STANDBY the operator had already set
+ * is theirs: the teach does not hold it and never releases it.
+ *
+ * @param owner_token  the starting web session's token; NULL or empty means no
+ *                     session to wait for, so the hold ends with the teach.
  * @return false if refused; the reason is in the status.
  */
-bool commission_teach_start(void);
+bool commission_teach_start(const char *owner_token);
+
+/**
+ * @brief A web session has been logged out (T11). If it owns the teach's
+ *        STANDBY hold, release it now -- or when the running teach ends.
+ */
+void commission_session_ended(const char *token);
 
 /** @brief Abandon a teach run and abort the device's teach. */
 void commission_teach_abort(void);
@@ -214,7 +233,8 @@ bool commission_wants_prompt_read(void);
  * @brief Feed one sensor reading to the teach runner. Called from T17 only.
  *
  * This is where the legs are commanded, so T17 is a Q1 producer on bench
- * builds while a teach runs.
+ * builds while a teach runs. It is also where a STANDBY hold is released once
+ * its session has ended -- so at rest that happens within T17's 30 s cadence.
  *
  * @param r      the reading just taken, or NULL when T17 has no sensor to read
  *               (its presence gate is shut) -- a running teach then fails.

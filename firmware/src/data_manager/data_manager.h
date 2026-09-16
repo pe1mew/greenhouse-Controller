@@ -443,7 +443,8 @@ void dm_set_manual_time(time_t unix_ts);
  * Persistence: the bit is NVS-backed under `system/mode_standby`. A
  * power blip during a deliberate STANDBY does NOT silently re-enable
  * climate control on reboot — the controller comes back up in STANDBY.
- * dm_init clears the bit only if NVS reads 0.
+ * dm_init clears the bit only if NVS reads 0. The one exception is a session
+ * HOLD (dm_standby_hold(), below), which is deliberately never persisted.
  *
  * Priority chain in dm_status_snapshot (highest first):
  *   MOTOR_ALARM → WIND_OVERRIDE → STANDBY → AUTOMATIC
@@ -516,6 +517,54 @@ void dm_set_standby_ex(bool standby,
  * Lock-free; reads EG1 directly. Safe to call from any task.
  */
 bool dm_get_standby(void);
+
+/* ------------------------------------------------------------
+ * Session holds (2026-09-16)
+ *
+ * A HOLD is STANDBY for the length of one operator session, and never across a
+ * reboot: it is not written to NVS, so the state and what releases it both
+ * live in RAM and a reboot ends them together. The LCD's manual-motor STANDBY
+ * is the model, minus its flaw (gh#65): that one IS persisted while the flag
+ * that lets its session end clear it is not, so a reboot strands the unit in
+ * STANDBY with nothing left to clear it.
+ *
+ * Explicit operator requests always win: dm_set_standby(true) during a hold
+ * makes it an ordinary, persisted STANDBY and drops every holder;
+ * dm_set_standby(false) ends it outright.
+ * ------------------------------------------------------------ */
+
+/** Holder: a web teach (commission.cpp), until the admin session that started it ends. */
+#define DM_STANDBY_HOLD_TEACH  0x01u
+
+/**
+ * @brief Hold STANDBY for one operator session.
+ *
+ * - STANDBY off: enters it WITHOUT writing NVS; the audit row carries
+ *   `value_b` = 1 (held).
+ * - STANDBY already held: adds @p who to the holders; no new row.
+ * - STANDBY on at an operator's explicit request: changes nothing and returns
+ *   false. That pause is the operator's, and @p who must not end it.
+ *
+ * @param who        one DM_STANDBY_HOLD_* bit.
+ * @param initiator  audit-row initiator, as for dm_set_standby().
+ * @param channel    audit-row surface, as for dm_set_standby().
+ * @return true if @p who now holds STANDBY.
+ */
+bool dm_standby_hold(uint8_t who, log_initiator_t initiator, uint8_t channel);
+
+/**
+ * @brief Drop @p who's hold; when the last hold goes, STANDBY is released.
+ *
+ * The release is the LCD session end's (ui_display.cpp session_close()): T2's
+ * dwell debt is dropped, STANDBY is cleared (audit row `value_b` = 1) and a
+ * CMD_RECALIBRATE is posted, so T6 resumes from a known CLOSED baseline.
+ * No-op if @p who holds nothing: it never did, or an explicit request has
+ * already taken the pause over or ended it.
+ */
+void dm_standby_release(uint8_t who, log_initiator_t initiator, uint8_t channel);
+
+/** @brief Current holders (DM_STANDBY_HOLD_* bits); 0 when STANDBY is off or explicit. */
+uint8_t dm_standby_holders(void);
 
 /* ============================================================
  * Coredump accessors (a.6.35.6)

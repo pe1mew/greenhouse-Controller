@@ -1871,6 +1871,26 @@ Show the opening percentage per §6.1, with the sensor fault surfaced alongside 
 
 > **The commissioning surface stays inside `#ifdef MODBUS_BENCH` — accepted by the operator, 2026-09-14.** It sits beside the teach, which already lived there. The cost is explicit: commissioning a sensor on a production unit means flashing a build that also opens the arbitrary Modbus write route, so it is a deliberate, temporary state and the release build must be restored afterwards.
 
+> **A teach pauses automatic control — operator decision, 2026-09-16.** Until then T6 stayed in charge during a teach and could move M3 between two legs, which ends the run with `m3_busy` at best.
+>
+> **How it works.** Once its refusals have passed, a teach **holds** STANDBY (`dm_standby_hold()`) until two things are true: the admin session that started it has ended, and no teach is running. A session ends by logout, idle timeout, or eviction from the four-slot session table. The release works like the LCD session end: the dwell debt is dropped and the windows recalibrate with a CLOSE_ALL.
+>
+> **One deliberate difference from the LCD model: a hold is never written to NVS.** The LCD's menu STANDBY is persisted, but the flag that lets its session end clear it is not, so a reboot strands the unit in STANDBY (gh#65). A hold and its release both live in RAM, so a reboot ends both.
+>
+> **Other rules.**
+> - An operator's own STANDBY is left alone.
+> - An explicit mode choice during a hold wins: STANDBY makes the pause persistent, AUTOMATIC ends it.
+> - The hold is logged as `MODE param 47` with `value_b` = 1.
+> - The GUI shows the pause under the teach button for as long as it lasts.
+>
+> **Verified on FDA4** with `bin/at_wp_teach_standby.py` (all four cases passed):
+> - **A (logout):** STANDBY was on from the start of the teach and still on after `done`. It cleared at logout, and a recalibration followed.
+> - **B (timeout):** with a 60 s session timeout, STANDBY cleared 78 s after the session's last request. The extra time is T17's check, at most 30 s at rest.
+> - **C (operator's own STANDBY):** it was not held and still on 45 s after logout.
+> - **D (reboot):** STANDBY was off after a reboot.
+>
+> **Fail-first.** The build without the hold failed case A: STANDBY was never set. **Not yet run:** the check that a build persisting the hold (`DM_FAILFIRST_PERSIST_STANDBY_HOLD`) fails case D. Its upload was cut off by a lossy Wi-Fi link (15 % loss), and the interrupted upload left the unit's OTA state stuck, which blocks further uploads until a reboot. The original `bin/at_wp_teach.py` still passes.
+
 **Status 2026-09-13 — the read-only half is BUILT, the commissioning screen is NOT.**
 
 | | |
