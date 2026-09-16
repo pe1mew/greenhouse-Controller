@@ -228,8 +228,11 @@ function commWhyUnavailable(status) {
     return 'Not available on this firmware: /api/diag/commission is not served. '
          + 'Commissioning lives in a bench build — or a route failed to register at boot.';
   }
-  if (status === 401 || status === 403) {
-    return 'Not available: log in as admin to commission the position sensor.';
+  if (status === 401) {
+    return 'Not available: your session has ended — log in again.';
+  }
+  if (status === 403) {
+    return 'Not available: commissioning needs an admin login, not a farmer one.';
   }
   if (status === 0) {
     return 'Not available: the controller did not answer.';
@@ -250,6 +253,11 @@ function commSetAvailable(status, c) {
   card.setAttribute('aria-disabled', live ? 'false' : 'true');
   setText('cm-unavailable', live ? '' : commWhyUnavailable(status));
   if (live) commRender(c);
+  // A 401 means the SESSION is gone, not just this card's access. Handle it the
+  // way every other fetch in this file does, so the header stops claiming the
+  // operator is logged in. Before 2026-09-16 an expired session came back as
+  // 403, which slipped past all of those handlers; the server now sends 401.
+  if (status === 401) showLogin();
 }
 
 function commPoll() {

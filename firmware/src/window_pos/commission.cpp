@@ -78,7 +78,20 @@ void commission_status(commission_status_t *out)
  * at the closed stop, so a shorted wiper is indistinguishable from a genuinely
  * closed window (plan §2a.6). A verdict of VALID does not exclude that fault.
  */
-void commission_refresh(void)
+/*
+ * @param fresh  A reading taken NOW, or NULL to take one here.
+ *
+ * The live status bits must be current, and "current" is the whole bug this
+ * parameter exists for (2026-09-16). This used to read them from T17's cached
+ * snapshot. On the commit path that snapshot is the reading in which the leaf
+ * reached the far end -- taken BEFORE windowpos_read_captures(), which IS the
+ * commit and clears the teach. So every successful teach was judged against a
+ * reading that still had bit 5 set, and ended "teach complete" beside
+ * "INVALID: a teach is still armed". Deterministic: it happened on the very
+ * first teach anyone ran from the GUI. The verdict was then cached and never
+ * recomputed, so it stayed wrong while the device said otherwise.
+ */
+static void commission_refresh_with(const windowpos_reading_t *fresh)
 {
     windowpos_config_t dev;
     cal_verdict_t v = CAL_UNKNOWN;
@@ -98,8 +111,17 @@ void commission_refresh(void)
         pct = (uint8_t)((span * 100u) / ADC_FULL_SCALE);
 
         windowpos_reading_t r;
-        uint32_t age = 0u;
-        const bool have = windowpos_task_snapshot(&r, &age);
+        bool have;
+        if (fresh != NULL) {
+            r = *fresh;
+            have = true;
+        } else {
+            /* ERR_BUSY (T5 holds the bus) leaves `have` false, which skips the
+             * live-bit checks rather than guessing. A genuinely armed teach is
+             * then caught by commission_tick()'s self-correction on T17's next
+             * reading, so this fails towards "recheck", not towards "wrong". */
+            have = (windowpos_read(WINDOWPOS_DEFAULT_ADDR, &r) == WINDOWPOS_OK);
+        }
         armed = have && r.teach_armed;
 
         v = CAL_VALID;
@@ -124,6 +146,11 @@ void commission_refresh(void)
     portEXIT_CRITICAL(&s_mux);
 }
 
+void commission_refresh(void)
+{
+    commission_refresh_with(NULL);   /* take a fresh reading -- never the cache */
+}
+
 bool commission_set_window_mm(uint16_t mm)
 {
     /* 100 mm is smaller than any real vent; 5000 mm is larger than the 2 m
@@ -139,9 +166,17 @@ bool commission_set_window_mm(uint16_t mm)
 
 bool commission_teach_start(void)
 {
+    /* A FRESH reading, not T17's cache. This check gates a window MOVEMENT, and
+     * it used to read windowpos_task_snapshot() while ignoring the age that call
+     * returns -- although that call's own header warns that ages of many minutes
+     * are normal at rest, because T17 stops polling. With a short dwell, T6 can
+     * move M3 well inside that window, so a stale "at an end sensor" could arm a
+     * teach on a leaf that is actually mid-travel: one capture and a useless
+     * calibration, which is precisely what this check is here to refuse. A read
+     * that fails -- including ERR_BUSY -- refuses the teach rather than moving
+     * the window on uncertain data; the operator can simply press it again. */
     windowpos_reading_t r;
-    uint32_t age = 0u;
-    if (!windowpos_task_snapshot(&r, &age) || r.sensor_fault) {
+    if (windowpos_read(WINDOWPOS_DEFAULT_ADDR, &r) != WINDOWPOS_OK || r.sensor_fault) {
         teach_fail(TEACH_ERR_SENSOR);
         return false;
     }
@@ -209,9 +244,27 @@ void commission_teach_abort(void)
 void commission_tick(const windowpos_reading_t *r, uint32_t now_ms)
 {
     teach_state_t state;
+    bool          cached_armed;
     portENTER_CRITICAL(&s_mux);
-    state = s_st.state;
+    state        = s_st.state;
+    cached_armed = s_st.teach_armed;
     portEXIT_CRITICAL(&s_mux);
+
+    /* Self-correction: the stored verdict must follow the live teach bit.
+     *
+     * A verdict computed once and stored can drift from the device, and
+     * nothing re-judged it -- that is how "teach complete" sat beside
+     * "teach still armed" indefinitely. Re-judge whenever a real reading shows
+     * bit 5 differing from what the verdict assumed, using THAT reading (this
+     * is called before T17 updates its snapshot on the idle path, so the
+     * snapshot would be stale here too). Skipped during an active teach, where
+     * bit 5 is legitimately set and re-judging would only cost bus reads.
+     * Changes are rare, so so is the config read this triggers. */
+    if (r != NULL && !r->sensor_fault && r->teach_armed != cached_armed &&
+        state != TEACH_TRAVERSING && state != TEACH_COMMITTING) {
+        commission_refresh_with(r);
+    }
+
     if (state != TEACH_TRAVERSING) { return; }
 
     if (s_t_start_ms == 0u) { s_t_start_ms = now_ms; }

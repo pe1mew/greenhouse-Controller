@@ -435,11 +435,10 @@ static void cookie_clear_session(httpd_req_t *req)
  *
  * Returns role on success, WEB_ROLE_NONE on failure (and sends 401).
  *
- * Currently unused — the 7 minimal routes don't gate on this helper
- * (whoami is intentionally public; login/logout are pre-session). The
- * 18+ deferred routes (config, sd, ota, etc.) all need it, so we keep
- * it here ready for them. __attribute__((unused)) suppresses the
- * -Wunused-function warning until a deferred route calls in.
+ * In use (at least the config handler calls it). The comment here used to
+ * say "currently unused", which stopped being true long ago. Most admin-only
+ * routes go through admin_only_or_send_error() instead; the two must agree
+ * that an unknown or expired token is 401 -- see the note there.
  * ============================================================ */
 __attribute__((unused))
 static web_session_role_t require_auth(httpd_req_t *req, web_session_role_t min_role)
@@ -1514,6 +1513,25 @@ static bool admin_only_or_send_error(httpd_req_t *req)
         return false;
     }
     web_session_role_t role = session_find_and_renew(token);
+    /* A cookie whose token the table no longer holds -- expired on the idle
+     * timeout, evicted from the 4-slot table, or wiped by a reboot -- is NOT
+     * AUTHENTICATED, and that is 401, not 403.
+     *
+     * This used to fold it into the 403 below, reporting "you are not an
+     * admin" to someone whose session had simply ended. Every GUI fetch
+     * handles a lost session as `if (r.status === 401) showLogin()`, so a 403
+     * slipped straight past all of them: the page kept showing the operator as
+     * logged in while every admin card went dark. Found 2026-09-16 after a day
+     * of OTA reboots and harness logins had churned the session table. */
+    if (role == WEB_ROLE_NONE) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_status(req, "401 Unauthorized");
+        httpd_resp_send(req, "{\"ok\":false,\"error\":\"session_expired\"}",
+                        HTTPD_RESP_USE_STRLEN);
+        return false;
+    }
+    /* Authenticated, but as the wrong role (a farmer). Genuinely forbidden --
+     * sending this person to the login page would not help them. */
     if (role != WEB_ROLE_ADMIN) {
         httpd_resp_set_type(req, "application/json");
         httpd_resp_set_status(req, "403 Forbidden");

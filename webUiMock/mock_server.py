@@ -351,6 +351,26 @@ def _get_role() -> str | None:
     token = request.cookies.get("session", "")
     return _session_find(token)
 
+
+def _admin_only():
+    """Mirror firmware admin_only_or_send_error().
+
+    No session, or a token the table no longer holds (expired, evicted,
+    rebooted away) -> 401: the caller is NOT AUTHENTICATED. An authenticated
+    non-admin -> 403: genuinely forbidden. Admin -> None.
+
+    Most admin routes here used `if _get_role() != "admin": ... 403`, which
+    sent 403 even with no session at all -- worse than the firmware ever was.
+    The GUI handles a lost session as `if (r.status === 401) showLogin()`, so
+    a 403 there hides the fact that the session is gone (2026-09-16).
+    """
+    role = _get_role()
+    if not role:
+        return {"ok": False, "error": "session_expired"}, 401
+    if role != "admin":
+        return {"ok": False, "err": "admin only"}, 403
+    return None
+
 # ---------------------------------------------------------------------------
 # Sensor / status data generators
 # ---------------------------------------------------------------------------
@@ -726,8 +746,9 @@ def config_post():
 
 @app.route("/api/wifi", methods=["POST"])
 def wifi():
-    if _get_role() != "admin":
-        return {"ok": False, "err": "admin only"}, 403
+    denied = _admin_only()
+    if denied:
+        return denied
     body = request.get_json(force=True, silent=True) or {}
     if "ssid" in body:
         cfg["wifi_ssid"] = body["ssid"]
@@ -752,8 +773,9 @@ def wifi():
 
 @app.route("/api/pin", methods=["POST"])
 def pin_change():
-    if _get_role() != "admin":
-        return {"ok": False, "err": "admin only"}, 403
+    denied = _admin_only()
+    if denied:
+        return denied
     body     = request.get_json(force=True, silent=True) or {}
     role_req = body.get("role", "farmer")
     new_pin  = body.get("pin",  "")
@@ -771,8 +793,9 @@ def pin_change():
 # ---------------------------------------------------------------------------
 @app.route("/api/web", methods=["GET"])
 def web_get():
-    if _get_role() != "admin":
-        return {"ok": False, "err": "admin only"}, 403
+    denied = _admin_only()
+    if denied:
+        return denied
     # Secret is intentionally never echoed (matches firmware).  The UI uses
     # an empty input + "send empty to keep" idiom.
     return {
@@ -791,8 +814,9 @@ def web_get():
 
 @app.route("/api/web", methods=["POST"])
 def web_post():
-    if _get_role() != "admin":
-        return {"ok": False, "err": "admin only"}, 403
+    denied = _admin_only()
+    if denied:
+        return denied
     body = request.get_json(force=True, silent=True) or {}
 
     # URL: empty disables the feature; non-empty must be https:// (a.6.35:
@@ -889,16 +913,18 @@ def sd_status():
 
 @app.route("/api/sd/mount", methods=["POST"])
 def sd_mount():
-    if _get_role() != "admin":
-        return {"ok": False, "err": "admin only"}, 403
+    denied = _admin_only()
+    if denied:
+        return denied
     sd["mounted"] = True
     return {"ok": True}
 
 
 @app.route("/api/sd/unmount", methods=["POST"])
 def sd_unmount():
-    if _get_role() != "admin":
-        return {"ok": False, "err": "admin only"}, 403
+    denied = _admin_only()
+    if denied:
+        return denied
     sd["mounted"] = False
     return {"ok": True}
 
@@ -910,8 +936,9 @@ def log_files():
     """Firmware alpha.6.19 returns {sd_files:[...]} only. The 1.20.x nvs_count
     field was retired in alpha.6.5 along with the NVS-ringbuffer log source.
     """
-    if _get_role() != "admin":
-        return {"ok": False, "err": "admin only"}, 403
+    denied = _admin_only()
+    if denied:
+        return denied
     sd_files = _sd_log_files() if sd["mounted"] else []
     return {"sd_files": sd_files}
 
@@ -923,8 +950,9 @@ def log_download():
     source; SD is the only remaining source and the file query parameter is
     the bare filename (no namespace prefix).
     """
-    if _get_role() != "admin":
-        return {"ok": False, "err": "admin only"}, 403
+    denied = _admin_only()
+    if denied:
+        return denied
 
     filename = request.args.get("file", "")
     # Path-traversal guard (mirrors firmware web_server.cpp:log_download_handler)
@@ -1017,8 +1045,9 @@ def ota_status():
 
 @app.route("/api/ota/firmware", methods=["POST"])
 def ota_firmware():
-    if _get_role() != "admin":
-        return {"ok": False, "err": "admin only"}, 403
+    denied = _admin_only()
+    if denied:
+        return denied
     content_length = request.content_length or 512 * 1024
     with ota_lock:
         if ota["state"] not in ("idle", "error"):
@@ -1038,8 +1067,9 @@ def ota_firmware():
 
 @app.route("/api/ota/assets", methods=["POST"])
 def ota_assets():
-    if _get_role() != "admin":
-        return {"ok": False, "err": "admin only"}, 403
+    denied = _admin_only()
+    if denied:
+        return denied
     content_length = request.content_length or 128 * 1024
     with ota_lock:
         if ota["state"] not in ("idle", "error", "fw_done"):
@@ -1201,8 +1231,9 @@ _COMM_T0 = [0.0]
 
 @app.route("/api/diag/commission", methods=["GET"])
 def commission_get():
-    if _get_role() != "admin":
-        return {"ok": False, "error": "admin_only"}, 403
+    denied = _admin_only()
+    if denied:
+        return denied
     # advance the simulated traverse so the GUI's live counter has something
     # to show -- 13 s is the dev rig's real M3 traverse
     # simulate the traverse taking the rig's real 13 s
@@ -1215,8 +1246,9 @@ def commission_get():
 
 @app.route("/api/diag/commission", methods=["POST"])
 def commission_post():
-    if _get_role() != "admin":
-        return {"ok": False, "error": "admin_only"}, 403
+    denied = _admin_only()
+    if denied:
+        return denied
     body = request.get_json(silent=True) or {}
     a = body.get("action", "")
     if a == "teach":
