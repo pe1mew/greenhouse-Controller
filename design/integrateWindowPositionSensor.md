@@ -1236,6 +1236,26 @@ only:** confirming that JSON needs another pull.
   by construction but **untested on hardware.**
 - **The BENCH latch.** Needs a sensor running a bench firmware.
 
+#### Release build without an encoder — FDA4, 2026-09-16, `2.8.0` (the path 5C88 takes)
+
+**Why.** Every earlier gate check ran a bench build, but 5C88 runs a release build and has no encoder. A shut gate still re-probes addr 40 every 30 s. Each probe is one read of one register, which holds the bus for the 200 ms timeout plus the 20 ms frame gap: about 0.75 % of the time. That is new traffic on the unit whose fault rate is still unexplained (gh#66 / gh#68).
+
+**Method.** The encoder was unplugged, and FDA4 took the `2.8.0` release build (d8c7332) by push-OTA: bank B to A, `fw_ver` and `asset_version` both `2.8.0`. A release build serves neither `/api/diag/windowpos` nor `/api/diag/commission` (both 404). So the public `/api/status` was polled every 30 s for 30 min, and the SD log was read afterwards. Then the encoder was plugged back in.
+
+| Check | Result |
+|---|---|
+| Gate at boot | Shut 35 s after boot, at the second failed probe, with one row: `M3 CONTROL MODE -> TIMED [no sensor answering at addr 40]`. No other window-sensor row in the 30 min, and no `ch3` rows |
+| Re-probe cadence | 60 failed probes at addr 40 in 1 801 s: exactly one per 30 s |
+| T5 (addr 1, addr 44) | 59 and 118 reads, **0 errors, 0 `busy`**. No sensor-fault or wind-override rows |
+| Status | AUTOMATIC with no flags throughout. The M3 position keys were absent (not zeroed), and there was no `sensor_fault_position` flag |
+| Heap | Never below 68 KB free or a 26 KB largest block. No reboot |
+| Deadzone setting | Served by `/api/config` (`deadzone_m3_mm` 20) and `/api/config/limits` ([1, 200]) |
+| Reconnect | The first probe after the plug-in found the encoder, 30 s after the last failed one, and logged `TIMED [sensor present and trusted]`. `/api/status` carried the position again 2 s later. At the next stroke boundary (a forced recalibration) the mode went to `POSITION`, and the CLOSE of the already-closed window raised no stall |
+
+**Not exercised: a stroke while the encoder was out.** The boot skipped its calibration, because the saved state was all CLOSED, and T6 kept the windows closed for the whole 30 min. With the gate shut, T17 does nothing during a stroke except count `gated_polls`. Arm A counted 778 such ticks on a bench build with the same shut-gate path.
+
+**What 30 min can and cannot say.** It shows that the release build takes the path it should, and that the probes do not collide with T5 (0 `busy`), with gh#70's UART changes in place. It cannot resolve a change in T5's failure *rate*. The evidence for that is arm A: 18 h 33 m, 6 579 T5 reads, 0 failures, same probe traffic.
+
 #### Rig finding — T17's stroke poll starves T5, and it looks like a wind alarm
 
 The operator reported a **wind alarm persisting after a reset while the wind
