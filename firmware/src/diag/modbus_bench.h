@@ -83,6 +83,56 @@ bool modbus_bench_exec(uint8_t   addr,
                        size_t   *n_out,
                        const char **err);
 
+/**
+ * @brief Re-init stress: the fail-first test for gh#69.
+ *
+ * Calls modbus_init() @p count times, @p interval_ms apart, from a task at
+ * T5's priority -- T5's entry re-init is the call that once deleted the UART
+ * driver under a T17 read and panicked the board. With @p hammer, a second task
+ * runs back-to-back reads of the encoder's identification register meanwhile,
+ * so a transaction is nearly always in flight when a re-init lands, whatever
+ * T5 and T17 happen to be doing.
+ *
+ * On a correct build every re-init waits for the bus and nothing happens. On
+ * the fail-first build (`MODBUS_FAILFIRST_UNLOCKED_REINIT`) the board panics,
+ * usually within a second -- which is the point: it shows the test can see
+ * the defect. Driven by `bin/at_modbus_reinit.py`.
+ *
+ * Bench only. Each re-init restarts the inter-frame timer, so T5 and T17 poll
+ * a little slower while a run goes.
+ *
+ * @return false if a run is already going, an argument is out of range, or a
+ *         task could not be created.
+ */
+bool modbus_bench_reinit_start(uint16_t count, uint16_t interval_ms, bool hammer);
+
+/** @brief Progress of the current or last re-init run. */
+typedef struct {
+    bool     running;
+    bool     hammer;
+    uint16_t requested;
+    uint16_t done;          /**< re-inits called so far */
+    uint16_t interval_ms;
+    uint32_t elapsed_ms;
+    uint32_t hammer_ok;     /**< reads the companion task completed */
+    uint32_t hammer_fail;   /**< reads that failed, for any reason */
+    uint32_t hammer_busy;   /**< of those, MODBUS_ERR_BUSY (lock not free in 500 ms) */
+    uint32_t heap_before;   /**< free internal heap before the run's tasks were created, bytes */
+    /**
+     * Free internal heap NOW, taken by modbus_bench_reinit_status() itself.
+     *
+     * Deliberately not a figure taken by the run's own task at its end: that
+     * task and the companion still hold their stacks then (8 KB), and FreeRTOS
+     * frees a deleted task's memory later, from the idle task. Measured that
+     * way the first runs "lost" 2-10 KB that were back seconds later. Compare
+     * this against heap_before a few seconds after `running` goes false.
+     */
+    uint32_t heap_now;
+} modbus_bench_reinit_t;
+
+/** @brief Snapshot of the re-init run. Safe from any task. */
+void modbus_bench_reinit_status(modbus_bench_reinit_t *out);
+
 #ifdef __cplusplus
 }
 #endif

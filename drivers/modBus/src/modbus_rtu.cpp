@@ -401,7 +401,25 @@ static inline void bus_unlock(void) { }
  * and one worst-case transaction holds it ~235 ms.
  */
 #define MODBUS_INIT_LOCK_MS  2000u
+
+/*
+ * FAIL-FIRST SWITCH (gh#69) -- NEVER define this in a build that runs anywhere
+ * but the bench. It restores the behaviour before 2026-09-16: a re-init deletes
+ * the UART driver WITHOUT the bus lock. It exists so `bin/at_modbus_reinit.py`
+ * can be shown to catch that (the board must panic) before a pass on the real
+ * build is trusted. A variant built with it reports `reinit_locked: false`.
+ */
+/* #define MODBUS_FAILFIRST_UNLOCKED_REINIT */
 #endif
+
+bool modbus_reinit_is_locked(void)
+{
+#if defined(NATIVE_TEST) || defined(MODBUS_FAILFIRST_UNLOCKED_REINIT)
+    return false;
+#else
+    return true;
+#endif
+}
 
 void modbus_init(void)
 {
@@ -420,11 +438,18 @@ void modbus_init(void)
      * T17 had in flight -- M3 was moving in T2's boot recalibration, so T17
      * was polling every 100 ms. The first call has nobody to wait for. */
     const bool reinit = (s_bus_mtx != NULL);
+#ifdef MODBUS_FAILFIRST_UNLOCKED_REINIT
+    const bool take = false;             /* the bug, on purpose -- see above */
+#else
+    const bool take = reinit;
+#endif
     if (!reinit) {
         s_bus_mtx = xSemaphoreCreateMutex();
-    } else if (xSemaphoreTake(s_bus_mtx, pdMS_TO_TICKS(MODBUS_INIT_LOCK_MS)) != pdTRUE) {
+    } else if (take &&
+               xSemaphoreTake(s_bus_mtx, pdMS_TO_TICKS(MODBUS_INIT_LOCK_MS)) != pdTRUE) {
         /* The driver is already installed by the first call. Leaving it as
          * it is is safe; deleting it under a live transaction is not. */
+        s_cnt.reinit_skipped++;
         ESP_LOGE("MODBUS", "re-init skipped: bus held for over %u ms -- "
                  "driver left as installed", (unsigned)MODBUS_INIT_LOCK_MS);
         return;
@@ -472,6 +497,9 @@ void modbus_init(void)
 
 #ifndef NATIVE_TEST
     if (reinit) {
+        s_cnt.reinit++;                  /* inside the lock, like tally() */
+    }
+    if (take) {
         (void)xSemaphoreGive(s_bus_mtx);
     }
 #endif

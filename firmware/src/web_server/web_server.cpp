@@ -3182,6 +3182,8 @@ static const httpd_uri_t s_uri_web_post = {
  *
  *   read : {"addr":40,"fc":4,"reg":0,"count":15}
  *   write: {"addr":40,"fc":16,"reg":6,"value":1}      (FC16, quantity 1)
+ *   gh#69: {"action":"reinit","count":N,"interval_ms":M,"hammer":1} starts the
+ *          re-init stress; {"action":"reinit_status"} reports it.
  * --------------------------------------------------------------------------- */
 /* ---------------------------------------------------------------------------
  * GET /api/diag/windowpos - decoded window-sensor reading (admin, DEV BUILDS ONLY)
@@ -3255,7 +3257,8 @@ static void append_modbus_json(char *buf, size_t cap)
              "\"exception\":%lu,\"framing\":%lu,\"param\":%lu,\"busy\":%lu,"
              "\"last_status\":%u,\"last_addr\":%u,"
              "\"last_fail_status\":%u,\"last_fail_addr\":%u,"
-             "\"to_received\":%u,\"to_expected\":%u,\"lock_wait_ms\":%lu}}",
+             "\"to_received\":%u,\"to_expected\":%u,\"lock_wait_ms\":%lu,"
+             "\"reinit\":%lu,\"reinit_skipped\":%lu,\"reinit_locked\":%s}}",
              (unsigned long)mc.ok, (unsigned long)mc.timeout,
              (unsigned long)mc.crc, (unsigned long)mc.exception,
              (unsigned long)mc.framing, (unsigned long)mc.param,
@@ -3263,7 +3266,9 @@ static void append_modbus_json(char *buf, size_t cap)
              (unsigned)mc.last_addr, (unsigned)mc.last_fail_status,
              (unsigned)mc.last_fail_addr,
              (unsigned)mc.last_to_received, (unsigned)mc.last_to_expected,
-             (unsigned long)mc.last_lock_wait_ms);
+             (unsigned long)mc.last_lock_wait_ms,
+             (unsigned long)mc.reinit, (unsigned long)mc.reinit_skipped,
+             modbus_reinit_is_locked() ? "true" : "false");
 
     /* Per-slave rows, compact keys so three slaves fit the buffer: a=addr,
      * to=timeout, ex=exception, fr=framing, pa=param, bu=busy. Only rows that
@@ -3545,6 +3550,50 @@ static esp_err_t diag_modbus_post_handler(httpd_req_t *req)
     body[rlen] = '\0';
 
     char v[16];
+
+    /* gh#69 re-init stress, the fail-first test for the boot panic:
+     *   {"action":"reinit","count":N,"interval_ms":M,"hammer":1}  -- start
+     *   {"action":"reinit_status"}                                 -- progress
+     * See modbus_bench_reinit_start(). Driven by bin/at_modbus_reinit.py. */
+    char act[20] = {0};
+    if (json_get_field(body, "action", act, sizeof(act))) {
+        if (strcmp(act, "reinit") == 0) {
+            const int cnt  = json_get_field(body, "count", v, sizeof(v)) ? atoi(v) : 200;
+            const int ival = json_get_field(body, "interval_ms", v, sizeof(v)) ? atoi(v) : 20;
+            const int hm   = json_get_field(body, "hammer", v, sizeof(v)) ? atoi(v) : 1;
+            const bool started = cnt > 0 && cnt <= 0xFFFF && ival > 0 && ival <= 0xFFFF &&
+                modbus_bench_reinit_start((uint16_t)cnt, (uint16_t)ival, hm != 0);
+            char r[96];
+            snprintf(r, sizeof(r), "{\"ok\":%s,\"reinit_locked\":%s}",
+                     started ? "true" : "false",
+                     modbus_reinit_is_locked() ? "true" : "false");
+            return httpd_resp_send(req, r, HTTPD_RESP_USE_STRLEN);
+        }
+        if (strcmp(act, "reinit_status") == 0) {
+            modbus_bench_reinit_t st;
+            modbus_bench_reinit_status(&st);
+            modbus_counters_t mc;
+            modbus_get_counters(&mc);
+            char r[420];
+            snprintf(r, sizeof(r),
+                     "{\"ok\":true,\"running\":%s,\"hammer\":%s,\"requested\":%u,"
+                     "\"done\":%u,\"interval_ms\":%u,\"elapsed_ms\":%lu,"
+                     "\"hammer_ok\":%lu,\"hammer_fail\":%lu,\"hammer_busy\":%lu,"
+                     "\"heap_before\":%lu,\"heap_now\":%lu,"
+                     "\"reinit\":%lu,\"reinit_skipped\":%lu,\"reinit_locked\":%s}",
+                     st.running ? "true" : "false", st.hammer ? "true" : "false",
+                     (unsigned)st.requested, (unsigned)st.done, (unsigned)st.interval_ms,
+                     (unsigned long)st.elapsed_ms, (unsigned long)st.hammer_ok,
+                     (unsigned long)st.hammer_fail, (unsigned long)st.hammer_busy,
+                     (unsigned long)st.heap_before, (unsigned long)st.heap_now,
+                     (unsigned long)mc.reinit, (unsigned long)mc.reinit_skipped,
+                     modbus_reinit_is_locked() ? "true" : "false");
+            return httpd_resp_send(req, r, HTTPD_RESP_USE_STRLEN);
+        }
+        return httpd_resp_send(req, "{\"ok\":false,\"err\":\"unknown_action\"}",
+                               HTTPD_RESP_USE_STRLEN);
+    }
+
     int addr  = json_get_field(body, "addr",  v, sizeof(v)) ? atoi(v) : 0;
     int fc    = json_get_field(body, "fc",    v, sizeof(v)) ? atoi(v) : 0;
     int reg   = json_get_field(body, "reg",   v, sizeof(v)) ? atoi(v) : 0;

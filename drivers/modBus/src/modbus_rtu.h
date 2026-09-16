@@ -175,6 +175,17 @@ typedef enum {
 void modbus_init(void);
 
 /**
+ * @brief Does this build hold the bus lock across a re-init? (gh#69)
+ *
+ * Always true on target, except in a deliberately built fail-first variant
+ * (`MODBUS_FAILFIRST_UNLOCKED_REINIT`, see modbus_rtu.cpp) whose only purpose
+ * is to show that `bin/at_modbus_reinit.py` catches the unlocked re-init. The
+ * test reports this value so a pass can never be read off the wrong build.
+ * False in a host (NATIVE_TEST) build, which has no lock at all.
+ */
+bool modbus_reinit_is_locked(void);
+
+/**
  * @brief Read holding registers (FC03).
  *
  * Sends a Modbus FC03 request to @p device_addr and returns @p count
@@ -299,6 +310,14 @@ typedef struct {
     uint32_t last_lock_wait_ms;/**< How long the last caller waited for the
                                 *   bus lock. busy==0 says a caller always
                                 *   got it, not that it got it promptly. */
+
+    /* Re-inits (gh#69). The first modbus_init() is not counted: only a call
+     * that deletes and reinstalls a live driver is. */
+    uint32_t reinit;           /**< Re-inits that reinstalled the driver. */
+    uint32_t reinit_skipped;   /**< Re-inits refused: the bus lock was not
+                                *   free within 2 s, so the installed driver
+                                *   was left alone. Anything but 0 means a
+                                *   caller held the bus far too long. */
 
     /** Per-slave breakdown. Rows with @c addr == 0 are unused. A slave beyond
      *  @ref MODBUS_MAX_TRACKED_SLAVES still counts in the totals above, just
