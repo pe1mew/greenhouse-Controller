@@ -3595,26 +3595,8 @@ void task_web_server(void *pvParameters)
         return;
     }
 
-    /* HTTPD config. HTTPD_DEFAULT_CONFIG: port 80, stack 4 KB, prio 5,
-     * 8 max URI handlers (room for the 7 routes here + 1 spare). */
-    httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.server_port      = 80;
-    cfg.stack_size       = 8192;     /* +4 KB vs default for LFS_READ_BUF + JSON stack work */
-    cfg.task_priority    = 5;
-    cfg.max_uri_handlers = 36;       /* +4 for /api/ota/config + /api/ota/check GET+POST (2.2.0 ROTA); 34 routes total, 2 spare */
-    cfg.max_open_sockets = 7;
-    cfg.lru_purge_enable = true;
-    cfg.recv_wait_timeout = 10;
-    cfg.send_wait_timeout = 10;
-
-    esp_err_t err = httpd_start(&s_server, &cfg);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "[T11] httpd_start failed: %s", esp_err_to_name(err));
-        vTaskDelete(NULL);
-        return;
-    }
-
-    /* Register URIs. */
+    /* The route table, declared BEFORE the config so the handler limit can be
+     * sized from it rather than counted by hand. */
     const httpd_uri_t *uris[] = {
         &s_uri_root, &s_uri_index, &s_uri_style, &s_uri_appjs, &s_uri_manifest,
         &s_uri_whoami, &s_uri_login, &s_uri_logout,
@@ -3635,15 +3617,69 @@ void task_web_server(void *pvParameters)
         &s_uri_diag_commission_get, &s_uri_diag_commission_post,
 #endif
     };
-    for (size_t i = 0; i < sizeof(uris)/sizeof(uris[0]); i++) {
-        err = httpd_register_uri_handler(s_server, uris[i]);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "[T11] register %s failed: %s",
-                     uris[i]->uri, esp_err_to_name(err));
-        }
+#define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
+
+    /* HTTPD config. HTTPD_DEFAULT_CONFIG: port 80, stack 4 KB, prio 5,
+     * 8 max URI handlers (room for the 7 routes here + 1 spare). */
+    httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
+    cfg.server_port      = 80;
+    cfg.stack_size       = 8192;     /* +4 KB vs default for LFS_READ_BUF + JSON stack work */
+    cfg.task_priority    = 5;
+    /* Derived from the route table below, never hand-counted.
+     *
+     * It was 36 with the comment "34 routes total, 2 spare" -- true of the
+     * RELEASE build. MODBUS_BENCH adds four (diag_modbus, diag_windowpos and
+     * the commission GET+POST), taking the bench build to 38, and the limit was
+     * never raised. Registration is in array order, so 35 and 36 succeeded and
+     * the last two -- BOTH commission routes -- failed. `/api/diag/commission`
+     * then 404s, `commPoll()` in app.js hides `#card-commission` on any
+     * non-ok reply, and the entire Linear control section (window size,
+     * deadzone, calibration, teach) is invisible on precisely the build that
+     * exists to commission the sensor. Found 2026-09-16 by the operator asking
+     * where the deadzone setting had gone.
+     *
+     * The failure was silent enough to survive: one ESP_LOGE on the serial
+     * console at boot, on a unit in a greenhouse, and a banner below that
+     * hardcoded "34 routes". Sizing from the table removes the arithmetic. */
+    cfg.max_uri_handlers = (uint16_t)(ARRAY_LEN(uris) + 2u);   /* + spare */
+    cfg.max_open_sockets = 7;
+    cfg.lru_purge_enable = true;
+    cfg.recv_wait_timeout = 10;
+    cfg.send_wait_timeout = 10;
+
+    esp_err_t err = httpd_start(&s_server, &cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "[T11] httpd_start failed: %s", esp_err_to_name(err));
+        vTaskDelete(NULL);
+        return;
     }
 
-    ESP_LOGI(TAG, "[T11] HTTP server running on port 80 — 34 routes registered");
+    /* Register URIs. A route that fails to register is a feature that is
+     * simply absent at runtime with the source still claiming it -- exactly
+     * how the commission endpoints went missing -- so count the failures and
+     * say so loudly rather than leaving one ESP_LOGE per route in the scroll. */
+    size_t reg_ok = 0u, reg_fail = 0u;
+    for (size_t i = 0; i < ARRAY_LEN(uris); i++) {
+        err = httpd_register_uri_handler(s_server, uris[i]);
+        if (err != ESP_OK) {
+            reg_fail++;
+            ESP_LOGE(TAG, "[T11] register %s failed: %s",
+                     uris[i]->uri, esp_err_to_name(err));
+        } else {
+            reg_ok++;
+        }
+    }
+    if (reg_fail != 0u) {
+        ESP_LOGE(TAG, "[T11] %u of %u ROUTES FAILED TO REGISTER -- those "
+                      "endpoints will 404 and any GUI depending on them stays "
+                      "hidden. Raise cfg.max_uri_handlers.",
+                 (unsigned)reg_fail, (unsigned)ARRAY_LEN(uris));
+    }
+
+    /* Counted, not asserted: this line said "34 routes" while two had silently
+     * failed to register. */
+    ESP_LOGI(TAG, "[T11] HTTP server running on port 80 — %u of %u routes registered",
+             (unsigned)reg_ok, (unsigned)ARRAY_LEN(uris));
     ESP_LOGI(TAG, "[T11]   static: /  /style.css  /app.js  /manifest.json");
     ESP_LOGI(TAG, "[T11]   auth:   GET /api/whoami  POST /api/login  POST /api/logout");
     ESP_LOGI(TAG, "[T11]   status: GET /api/status  GET /api/history?n=N");
