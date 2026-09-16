@@ -322,9 +322,10 @@ def _decode_mode(row: dict) -> str:
     param = 47 -- emitter B, T4 data_manager.cpp dm_set_standby_ex():
       value_a = 1 entered STANDBY, 0 left STANDBY
       value_b = 0 explicit: an operator asked, and it is kept across a reboot
-                1 a session HOLD (firmware 2.8.0, 2026-09-16): entered by a
-                  web teach and NOT kept across a reboot, or left because the
-                  admin session holding it ended
+                1 a session HOLD (firmware 2.8.0, 2026-09-16): NOT kept
+                  across a reboot. Entered by a web teach (ch 0) or by the LCD
+                  manual-motor menu (ch 1, gh#65); left because the admin
+                  session holding it ended
       ch      = surface hint, 0 = web, 1 = LCD
 
     Emitter B has existed since rc.1.5.0 (gh#28) but carried param = 0 until
@@ -344,8 +345,10 @@ def _decode_mode(row: dict) -> str:
             surface   = {0: "web", 1: "LCD"}.get(
                 int(row.get("ch", 0) or 0), f"surface {row.get('ch')}")
             if packed == 1 and resolved == 1:
+                why = {"web": "a teach", "LCD": "manual window control"}.get(
+                    surface, "a session")
                 return (f"STANDBY entered (climate control paused) via {surface}, "
-                        f"held for a teach until the admin session ends  [{by}]")
+                        f"held for {why} until that admin session ends  [{by}]")
             if packed == 1 and resolved == 0:
                 return (f"STANDBY left (climate control resumed) via {surface}: "
                         f"the admin session holding it ended  [{by}]")

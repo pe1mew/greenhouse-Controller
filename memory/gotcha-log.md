@@ -2,7 +2,7 @@
 
 Append-only. Newest at top. Format per entry: **Problem → Root cause → Fix → Where it lives.**
 
-When something weird happens, check here BEFORE debugging from scratch. **Start at the [index](#index--by-where-it-bites-you)** — it groups every entry by subsystem with symptom-first hooks, which is faster than scrolling 95 entries. **Adding an entry means adding its index line too**; the pair is checked by counting `^## 20` headings against `^- \*\*20` index lines. Entries that recur or affect multiple subsystems graduate up to a topic file or to [CLAUDE.md](../CLAUDE.md) hard constraints.
+When something weird happens, check here BEFORE debugging from scratch. **Start at the [index](#index--by-where-it-bites-you)** — it groups every entry by subsystem with symptom-first hooks, which is faster than scrolling 96 entries. **Adding an entry means adding its index line too**; the pair is checked by counting `^## 20` headings against `^- \*\*20` index lines. Entries that recur or affect multiple subsystems graduate up to a topic file or to [CLAUDE.md](../CLAUDE.md) hard constraints.
 
 Entries that are resolved **and can no longer recur** (code deleted, design changed, fixed both sides) retire to [gotcha-archive.md](gotcha-archive.md) — history only, never needed for triage. Everything still able to bite you is in this file. Being `[RESOLVED]` is *not* sufficient to retire: most resolved entries here stay because an active constraint still depends on them.
 
@@ -46,7 +46,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 
 ### Windows, climate & manual control (T2, T6, T8)
 - **2026-09-16** — the M3 teach commits from one end and never from the other (it drove one traverse; T6 finished the OPEN case by chance — a genuine success credited to the wrong actor)
-- **2026-09-12** — unit stuck in STANDBY forever; LCD login/logout will not clear it (gh#65 — NVS state, RAM-only release flag)
+- **2026-09-12** — unit stuck in STANDBY forever; LCD login/logout will not clear it (gh#65 — NVS state, RAM-only release flag) [RESOLVED 2.8.0: the menu takes a non-persisted hold]
 - **2026-09-12** — a config value you just wrote reads back as the OLD one (`POST /api/config` is async: Q4 -> T4 applies a loop later)
 - **2026-09-12** — a stored setting is silently never used, or is refused as out of range (the file called "single source of truth" was the newest and the wrongest statement of the bound)
 - **2026-09-11** — a mode-transition fix passes on hardware but the bug is still there (tested from the state the transition already leaves -- gh#52)
@@ -131,7 +131,8 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-09-16** — a setting is MISSING from the GUI entirely (two routes exceeded `max_uri_handlers` and never registered; the card depending on them was hidden rather than greyed, so the only symptom was an absence)
 
 ### Build, toolchain & shell
-- **2026-09-16** — a rebuild of the same tree has a different hash and different library sizes (PlatformIO relinks every run and orders our libraries differently; compare symbol sizes with `nm`, not hashes)
+- **2026-09-16** — a host test suite hangs instead of failing (the mock served the reply before the request and its clock never moved)
+- **2026-09-16** — a rebuild of the same tree has a different hash and different library sizes (CMake re-ran on every build and PlatformIO linked our libraries in a new order each time; fixed for one checkout — a fresh clone or a tag rebuild still differs)
 - **2026-09-15** — a packaged binary reports the wrong version on the unit after an OTA (build script parameterised half-way: right env BUILT, wrong env's binary COPIED; only the post-reboot verify caught it)
 - **2026-09-12** — a verification step reports FAILURE on a unit that is fine (the step never checked its own HTTP status)
 - **2026-09-12** — a "split on `;`" tool silently truncates its input (a semicolon inside a C comment)
@@ -164,6 +165,29 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
 
+
+## 2026-09-16 — the Modbus host tests HUNG instead of failing: the mock served a reply before the request, and its clock never moved
+
+**Problem.** `pio test -e native -d drivers/modBus` passed UT-MB-001 and 002, then never returned, on every `ropeSensor` commit since `4a61ad7` (`main` passed 12/12). Because it hung rather than failed, nobody noticed for four days.
+
+**Root cause.** Two mock properties combined:
+- **The reply was readable before the request.** `mock_uart_queue_response()` made the reply readable at once. The driver now drains the RX FIFO *before* it transmits (`4a61ad7`), so that drain threw the reply away.
+- **The clock never moved.** `mock_uart_reset()` froze the mock clock (`millis()` step 0), so `MODBUS_TIMEOUT_MS` could never pass, and the receive loop spun forever.
+
+**Fix, in the mock only; the driver is unchanged.**
+- **A queued reply arrives after the driver's next `write()`,** as a real slave's does.
+- **The mock clock advances 1 ms per call by default,** so a missing reply ends in a timeout.
+
+Result: 12/12 in under a second. Fail-first: with the reply never released, three tests FAIL in under a second instead of hanging.
+
+The same sweep ran every driver's host tests. DS1307_RTC, FG6485A, littleFS, nvs, s200 and sdCard pass. LCD1602_I2C, gpio and keyPad do not build, and i2c fails 5 of 9, **identically on `main`**: pre-existing, flagged as a separate task.
+
+**The generalisable part.**
+- **A mock must respect causality.** A reply that exists before its request is a test of nothing, and here it broke a test the moment the driver started behaving correctly.
+- **A frozen clock turns every "never" into a hang.** Give mocks a clock that moves, so a missing event fails, and fails fast.
+- **Run host tests under a timeout, always.** A hang reads as "still running", not as a failure.
+
+**Where it lives.** `drivers/modBus/test/test_modbus_rtu/mock_uart.cpp` / `.h` (`rx_armed`, the default clock step).
 
 ## 2026-09-16 — an OTA upload cut off by the network left the unit refusing every later OTA until someone pressed reset
 
@@ -200,21 +224,50 @@ The unit has no remote reboot path other than completing an OTA, which was exact
 
 **Where it lives.** `firmware/src/ota_manager/ota_manager.cpp` (`session_release()`, `claim_state()`), `firmware/src/web_server/web_server.cpp` (`ota_upload_recv()`, `OTA_UPLOAD_STALL_S`), `design/OTAimplementation.md` §8.11, `log/logparser.md` (`SYSTEM value_a = 32`), `bin/at_ota_abort.py`.
 
-## 2026-09-16 — a rebuild of the same tree is a DIFFERENT binary: PlatformIO relinks on every run and orders our libraries differently each time
+## 2026-09-16 — a rebuild of the same tree is a DIFFERENT binary: PlatformIO re-ran CMake on every build and linked our libraries in a new order each time [RESOLVED same day for rebuilds in one checkout; a rebuild from a tag or a fresh clone still differs]
 
 **Problem.** After two comment-only edits, the rebuilt bench binary was 400 bytes smaller than the one just tested on FDA4, and ~200 library functions (wpa_supplicant, newlib, lwip) had changed size. It looked as if the edits had changed code.
 
-**Root cause.** `pio run` relinks even when it compiles nothing, and passes the project's own libraries (`libkeyPad.a`, `libnvs.a`, `libi2c.a`, …) in a different order each time: two back-to-back runs with no change at all gave two orders and two hashes. The order moves our driver code around, and when that shifts the code after it, library functions change size too (Xtensa linker relaxation depends on call distances — the likely mechanism, not traced). No object file differed. The order comes from PlatformIO, not from our scripts.
+**Root cause (traced the same day).** No object file differed; the link order did. Two behaviours of PlatformIO's ESP-IDF builder (platform espressif32 6.12.0, `builder/frameworks/espidf.py`) combine:
 
-**How to tell.** Compare symbol tables (`xtensa-esp32s3-elf-nm -S -C`), not hashes or file sizes. Two links of the same tree give every project function the same size and move only addresses: the 15:26 and 15:42 builds agreed on the size of all 8 810 symbols, and the 127 that moved were all in our driver libraries.
+- `find_lib_deps()` orders the component libraries by the `dependencies` array of the ELF target in CMake's File API reply, which CMake fills from a set ordered by object **address** — so every CMake run can list the same libraries differently. It is not Python hashing: with `PYTHONHASHSEED=0`, three runs gave three orders and three hashes.
+- `is_cmake_reconfigure_required()` re-runs CMake on **every** build once `sdkconfig.defaults`, `sdkconfig.<env>` or a top-level `CMakeLists.txt` is newer than `CMakeCache.txt` — and CMake rewrites `CMakeCache.txt` only when its contents change. Deleting `sdkconfig.<env>` after a defaults edit (required: an existing per-env file overrides the defaults file) leaves the build directory like that until the next clean. The main checkout had been in that state since 15:03, when the per-env files were regenerated for gh#70's `CONFIG_UART_ISR_IN_IRAM`.
 
-**Consequences.**
+Each run therefore re-ran CMake, got a new order, relinked because SCons saw a changed link command, and moved the image. Library functions changed size as well, probably because Xtensa call relaxation depends on call distances (not traced). **A fresh build directory never shows it** — three runs, no CMake, no link, one hash — which is why it looked random.
 
-- **A rebuilt release cannot be hash-matched to the published one.** "Reproducible from the matching tag" (`build_release.ps1`) holds for the code, not for the bytes.
-- **The tested binary is the one to ship.** Push the package you tested, not a rebuild of it.
-- **A new hash after a rebuild proves nothing** about whether the code changed.
+**Fix.**
 
-**Where it lives.** PlatformIO's link step; `bin/build_release.ps1` packages whatever the last link produced.
+- `firmware/scripts/deterministic_link_order.py` — a PlatformIO post-script on `[env:lolin_s3]`, inherited by the bench and probe envs — sorts the library nodes into the order of CMake's own link line (`link.commandFragments`), which does not change between runs and is what `idf.py build` links. Only those nodes move. If the reply cannot be read, the build fails.
+- `CONFIG_APP_COMPILE_TIME_DATE=n` in `sdkconfig.defaults`. With the order fixed, a clean rebuild still differed, in exactly three places: `esp_app_desc.time`, the ELF SHA-256 embedded in the image, and the image digest.
+- `bin/build_release.ps1` refuses a package whose `esp_app_desc` still carries a time or date — the symptom of a per-env sdkconfig older than that line. **After pulling this, delete `firmware/sdkconfig.lolin_s3*` once.** The main checkout's files held no hand tuning: `lolin_s3` and `lolin_s3_bench` differed from a fresh regeneration only in that line and in one option of the newer littlefs (below), and `lolin_s3_mbprobe` only in `VFS_SELECT_IN_RAM`, which `UART_ISR_IN_IRAM` selects on the next build.
+
+**Verified — builds only, nothing flashed.** On a copy of `ropeSensor` at 24af104:
+
+- Unfixed, stale state: 3 runs → 3 link orders, 3 hashes, 42–71 s each (`PYTHONHASHSEED=0`: the same).
+- Fixed: `lolin_s3` built 7 times (fresh, 2 no-change, 3 stale, 1 after a clean) and `lolin_s3_bench` 9 times (after a clean, 6 no-change of which 3 stale, and an in-place comment edit in `window_pos.cpp` plus its revert). One hash per env. A link ran only in full builds, although CMake re-ran in every stale run; in the four runs where its dependency order was recorded, it came out different every time. For all 107 libraries, the map's link order matches CMake's link line.
+- Two clean bench builds 2.5 min apart: byte-identical, ELF included. `build_release.ps1` packaged the same bytes as `pio run`, and refused (exit 1) when the per-env sdkconfig had the time stamp turned back on.
+- A no-change build in the stale state now takes ~17 s (CMake still runs; nothing links).
+
+**How to tell.** Compare symbol tables (`xtensa-esp32s3-elf-nm -S -C`), not sizes. Between two images, bytes `0x30–0x4F` (version), `0x70–0x8F` (time, date), `0xB0–0xCF` (ELF SHA-256) and the last 33 bytes (checksum and digest) are metadata; any difference elsewhere is code or layout. The 15:26 and 15:42 builds that raised this agreed on the size of all 8 810 symbols; the 127 that moved were all in our driver libraries.
+
+**A comment edit that adds or removes lines still changes the image, but only in that metadata.** The DWARF line tables move, and the ELF hash with them. Seen the same evening on the gh#65 doc edits, which added 3 lines across `ui_display.cpp` and `data_manager.h`: 65 bytes differed from the image just tested on FDA4, all in `0xB0–0xCF` and the last 33. The in-place `window_pos.cpp` edit above kept every line number, which is why it kept the hash. **So prove "same code" by comparing outside those ranges, not by the hash.**
+
+**Still NOT reproducible — the old consequences partly stand.**
+
+- ~~**The image's version field depended on git state.**~~ **Fixed the same day (operator: use `FIRMWARE_VERSION`).** `esp_app_desc.version` was `git describe --dirty` as of the last CMake run. Every package checked carried the PARENT of its release commit plus `-dirty`, because `build_release.ps1` stamps `manifest.json` before the release commit exists:
+  - 2.6.0: `v2.4.1-20-g49b9b91-dirty`
+  - 2.7.0: `v2.6.0-5-gf5d4d9e-dirty`
+  - 2.7.1: `v2.7.0-17-g9755d0e-dirty`
+  - a bench build that same afternoon: `v2.7.0-77-g164d25d-dirty`
+
+  `firmware/scripts/project_version.py`, a pre-script, now hands each env's `FIRMWARE_VERSION` to IDF as `PROJECT_VER`. The images say `2.8.0` and `2.8.0-bench`, and `build_release.ps1` refuses a package whose field differs. It rejected that afternoon's bench image.
+
+  Verified on `lolin_s3_bench`: a no-change build, two builds with CMake forced to re-run (the per-env sdkconfig touched) and a build after a clean all gave the same hash, and nothing relinked except the clean build.
+- **The build directory is in the image, through the ELF.** The same tree built in a second directory had the same code and data, but a different embedded ELF SHA-256 and digest; the two ELFs are identical once debug info is stripped. Rebuild in the original path.
+- **A fresh clone builds different code.** `firmware/dependencies.lock` is gitignored and the manifest asks for `joltwallet/littlefs ^1.16.0`: the main checkout's lock (2026-05-18) pins 1.21.1, a fresh copy resolved 1.22.3. Tracking the lock would pin it.
+- So **the tested binary is still the one to ship**, and its ELF must be archived: neither can be regenerated elsewhere. A new hash after rebuilding an unchanged tree in the same checkout now means something changed.
+
+**Where it lives.** `firmware/scripts/deterministic_link_order.py` and `firmware/scripts/project_version.py`, `extra_scripts` in `firmware/platformio.ini`, the last section of `firmware/sdkconfig.defaults`, and the timestamp and app-version guards in `bin/build_release.ps1`. Upstream: `espidf.py` `find_lib_deps()` and `is_cmake_reconfigure_required()` in platform espressif32 6.12.0.
 
 ## 2026-09-16 — the RS485 direction line is released by the TASK, so anything that delays the task loses the fastest slave's reply — a flash write delays it by up to 665 ms
 
@@ -505,7 +558,7 @@ with heavy loss, weak signal with none, i.e. interference, not range.
 **Where it lives**: this entry; user-global memory
 `reference_fda4_wifi_ap.md`.
 
-## 2026-09-12 — LCD-set STANDBY survives a reboot but its auto-clear flag does not, pausing ventilation indefinitely (gh#65)
+## 2026-09-12 — LCD-set STANDBY survives a reboot but its auto-clear flag does not, pausing ventilation indefinitely (gh#65) [RESOLVED 2026-09-16, 2.8.0]
 
 **Problem**: FDA4 sat in STANDBY for over two hours. Three later LCD admin
 sessions opened and closed normally without clearing it, and logging out of the
@@ -530,8 +583,11 @@ ventilation paused indefinitely, reporting `mode: STANDBY` truthfully with no
 fault anywhere. Rule to keep: **a state that survives a reboot must not depend
 on RAM to be released.**
 
-**Where it lives**: gh#65; `firmware/src/ui_display/ui_display.cpp:301`/`:612`;
-`firmware/src/data_manager/data_manager.cpp:1435`/`:2177`.
+**Resolved 2026-09-16 (2.8.0).** The menu now takes a STANDBY *hold* (`dm_standby_hold(DM_STANDBY_HOLD_LCD, …)`), which is never written to NVS, so the state and its release both live in RAM and a reboot ends them together. The mechanism was built the same day for the web teach, which needed the same pause. Session end still drops the dwell debt and recalibrates. A web teach and the LCD menu can hold the pause together, and it ends only when both sessions have.
+
+**Verified on hardware the same day with `bin/at_lcd_standby.py`**, which needs a person at the keypad. It has four cases: L (logout: STANDBY off, windows recalibrate), E (an operator's own STANDBY outlives a menu session), C (a web teach and the menu hold the pause together) and R (a reboot ends the pause). All four pass on the fix. **Fail-first:** on the build before it (088e463), C and R FAIL. R is this entry's trap exactly: STANDBY came back after the boot. The SD log shows the difference directly. The old build's menu row is a plain "STANDBY entered via LCD" (`value_b` 0, persisted); the fixed build's says "held for manual window control" (`value_b` 1).
+
+**Where it lives**: gh#65; `firmware/src/ui_display/ui_display.cpp` (`session_close()`, the two menu-entry sites); `firmware/src/data_manager/data_manager.cpp` (`dm_standby_hold()` / `dm_standby_release()`).
 
 ## 2026-09-12 — a regex over source is not evidence of coverage: three false findings in one audit
 

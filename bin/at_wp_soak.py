@@ -53,6 +53,7 @@ Stdlib only. ASCII output only (Windows consoles here are cp1252).
 """
 
 import argparse
+import atexit
 import http.client
 import json
 import os
@@ -62,6 +63,9 @@ import time
 DEFAULT_HOST = "192.168.20.169"
 DEFAULT_PIN = "12345678"
 STATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".at_wp_soak.json")
+# How far two boot times may disagree and still be one boot: request latency
+# and PC-clock/uptime drift over a soak are seconds, a reboot is not.
+BOOT_SLACK_S = 60
 EG1_WIND_OVERRIDE = 1 << 0
 EG1_STANDBY = 1 << 7
 
@@ -101,6 +105,19 @@ class Unit(object):
         sc, _ = self._req("POST", "/api/login", {"role": "admin", "pin": pin})
         if sc != 200 or not self.cookie:
             sys.exit("login failed (HTTP %s)" % sc)
+        atexit.register(self.logout)
+
+    def logout(self):
+        """Give the session slot back. The unit holds FOUR, RAM-only, and an
+        open admin session defers ROTA (gh#41) and keeps a teach's STANDBY
+        hold alive, so a script must not leave one behind. Registered with
+        atexit at login, so every exit -- sys.exit() included -- releases it."""
+        if self.cookie:
+            try:
+                self._raw("POST", "/api/logout", {})
+            except Exception:                                  # noqa: BLE001
+                pass                       # best effort: the timeout still frees it
+            self.cookie = None
 
     def status(self):
         j = self._req("GET", "/api/status")[1]
@@ -192,9 +209,17 @@ def cmd_report(u, args):
         base = json.load(fh)
     now = snapshot(u)
 
-    if now["uptime_s"] < base["uptime_s"]:
-        print("NOTE: the unit REBOOTED during the soak (uptime went backwards).")
-        print("Counters reset at boot, so the deltas below are not meaningful.")
+    # Counters reset at boot, so a reboot voids the deltas. Uptime going
+    # backwards does not catch every reboot: a unit that rebooted early in the
+    # soak has passed the baseline's uptime again long before the report. Both
+    # snapshots date their boot (PC clock minus uptime), so compare those.
+    boot_base = base["t"] - base["uptime_s"]
+    boot_now = now["t"] - now["uptime_s"]
+    if now["uptime_s"] < base["uptime_s"] or abs(boot_now - boot_base) > BOOT_SLACK_S:
+        print("NOTE: the unit REBOOTED during the soak: it booted at %s, the baseline's"
+              % time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(boot_now)))
+        print("boot was at %s. Counters reset at boot, so deltas are not meaningful."
+              % time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(boot_base)))
         print("Restart the soak.")
         return 2
     if now["fw_ver"] != base["fw_ver"]:

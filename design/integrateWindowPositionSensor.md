@@ -970,7 +970,12 @@ Per CLAUDE.md, `log/logparser.py` **and** `model/campaign-summer-2026/plot_daily
 
 **Cadence:** at the **measurement interval while travelling** (100 rows per stroke, by construction — §3.1), and at the **normal 30 s cadence while idle**.
 
-> **The idle logging is deliberately temporary** (operator decision 2026-09-07): it exists to build trust in the implementation. It costs **~2880 rows/day, roughly +37 % of total log volume**, which shortens SD file rotation from ~1.8 days to ~1.3 and so increases daily upload count. Revisit once the traverse record is trusted — the resting state is already carried by ch 2's window bitmask, so idle sampling can be dropped or thinned without losing the terminal states.
+> **The idle logging was deliberately temporary** (operator decision 2026-09-07): it existed to build trust in the implementation. It cost **~2880 rows/day, roughly +37 % of total log volume**, which shortened SD file rotation from ~1.8 days to ~1.3 and so increased the daily upload count. Revisit once the traverse record is trusted — the resting state is already carried by ch 2's window bitmask, so idle sampling can be dropped or thinned without losing the terminal states.
+>
+> **Thinned 2026-09-16, once the trace was trusted.** T17 still READS every 30 s at rest (`IDLE_READ_MS`). That read had become load-bearing: the presence gate judges the sensor with it (AT-WP06), and end-sensor events, restarts, orphaned teaches and the teach's STANDBY release are all seen through it. What went is the ROW. At rest a ch 3 row is now written only for:
+> - the first read after a stroke (where the leaf settled);
+> - the first read after boot, and a change between fault and no fault;
+> - movement of at least `deadzone_m3` (5 mm minimum) without a stroke. That catches the motor box's hand switches and slip, which T2 cannot see.
 
 #### 3b. Events — channel 6
 
@@ -1875,7 +1880,7 @@ Show the opening percentage per §6.1, with the sensor fault surfaced alongside 
 >
 > **How it works.** Once its refusals have passed, a teach **holds** STANDBY (`dm_standby_hold()`) until two things are true: the admin session that started it has ended, and no teach is running. A session ends by logout, idle timeout, or eviction from the four-slot session table. The release works like the LCD session end: the dwell debt is dropped and the windows recalibrate with a CLOSE_ALL.
 >
-> **One deliberate difference from the LCD model: a hold is never written to NVS.** The LCD's menu STANDBY is persisted, but the flag that lets its session end clear it is not, so a reboot strands the unit in STANDBY (gh#65). A hold and its release both live in RAM, so a reboot ends both.
+> **One deliberate difference from the LCD model: a hold is never written to NVS.** The LCD's menu STANDBY was persisted, but the flag that lets its session end clear it was not, so a reboot stranded the unit in STANDBY (gh#65). A hold and its release both live in RAM, so a reboot ends both. **gh#65 was fixed the same day by moving the LCD menu onto the same hold** (`DM_STANDBY_HOLD_LCD`). The two can hold the pause together, and it ends only when both sessions have. Verified on hardware with `bin/at_lcd_standby.py` (fail-first against the build before the fix).
 >
 > **Other rules.**
 > - An operator's own STANDBY is left alone.

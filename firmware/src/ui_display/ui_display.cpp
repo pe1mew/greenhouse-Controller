@@ -280,13 +280,16 @@ static bool         s_pending_ap      = false; /**< # on WiFi status page pendin
  *     window_cmd_t.channel field on commit.
  *
  *   s_manual_set_standby_on_entry (rc.1.5.1+)
- *     True if entering the gh#29 manual-motor menu auto-set STANDBY
- *     because it wasn't already on. Used by go_status() to clear STANDBY
- *     (without recalibration, per the 2026-05-26 follow-up decision) on
- *     every exit path from the menu — explicit *=back, admin session
- *     timeout, or the IO0 reset paths. If STANDBY was already on when the
- *     menu was entered (admin had set it explicitly via Scherm 3 or web),
- *     the flag stays false and STANDBY survives the menu exit untouched.
+ *     True while this LCD admin session HOLDS STANDBY (DM_STANDBY_HOLD_LCD,
+ *     since 2026-09-16 / gh#65): entering the gh#29 manual-motor menu takes
+ *     the hold. session_close() -- logout, admin session timeout, or the IO0
+ *     reset paths -- releases it, which drops T2's dwell debt, clears STANDBY
+ *     and recalibrates once no other session still holds it. If an operator's
+ *     own STANDBY was already on when the menu was entered (Scherm 3 or web),
+ *     no hold is taken, the flag stays false, and that STANDBY survives the
+ *     session untouched. The flag is RAM-only, and so, since gh#65, is the
+ *     hold: a reboot ends both. (History: rc.1.5.1 cleared at menu exit in
+ *     go_status(); rc.1.5.2 moved the clear to session end.)
  *
  *     Rationale: rc.1.5.0 used a separate EG1_BIT_MANUAL_SESSION transient
  *     bit which cleared on a 10-second LCD idle. In physical testing the
@@ -608,21 +611,21 @@ static void session_close(bool timeout)
      * 2026-05-26 complaint stays fixed. What changed is that positions no
      * longer survive PAST the session: session-end returns the windows to a
      * known CLOSED baseline and T6 resumes from that. (Web/Scherm-3 STANDBY
-     * exits use the original `dm_set_standby()` and always did this.) */
+     * exits use the original `dm_set_standby()` and always did this.)
+     *
+     * 2026-09-16 (gh#65) — the menu's STANDBY is now a HOLD (data_manager.h,
+     * dm_standby_hold()). It used to be persisted to NVS while this flag,
+     * which authorises the clear, lived only in RAM: a reboot mid-session
+     * kept the STANDBY, lost the flag, and paused ventilation indefinitely,
+     * with no later session able to clear it. A hold is never persisted, so a
+     * reboot ends it with the session that justified it. The release below
+     * does what this block used to do by hand -- drop T2's dwell debt, clear
+     * STANDBY, recalibrate -- and only once no other session still holds the
+     * pause (a web teach can), so neither session ends the other's. */
     if (s_manual_set_standby_on_entry) {
-        ESP_LOGI(TAG, "[T8] auto-clearing menu-set STANDBY on session %s",
+        ESP_LOGI(TAG, "[T8] releasing the menu's STANDBY hold on session %s",
                  timeout ? "timeout" : "logout");
-
-        /* Drop the anti-thrash dwell debt BEFORE clearing STANDBY. A position
-         * the admin set by hand is a new baseline, not a T6 oscillation, so T6
-         * must not inherit a debt it did not incur. T2 applies this in its own
-         * context at the top of its next loop, ahead of the CMD_RECALIBRATE
-         * that dm_set_standby_ex() posts to Q1 below. */
-        if (task_t2 != NULL) {
-            xTaskNotify(task_t2, T2_NOTIFY_CLEAR_DWELL, eSetBits);
-        }
-
-        dm_set_standby_ex(false, LOG_BY_ADMIN, 1u /*=LCD*/, true /*recalibrate*/);
+        dm_standby_release(DM_STANDBY_HOLD_LCD, LOG_BY_ADMIN, 1u /*=LCD*/);
         s_manual_set_standby_on_entry = false;
     }
 }
@@ -1650,9 +1653,13 @@ static void handle_status(char key)
              *   - First entry, STANDBY on (set via Scherm-3/web independently)
              *                            → don't set, flag stays false
              * The flag persists across `*=back` navigation; only
-             * `session_close()` clears both flag and STANDBY together. */
-            if (!dm_get_standby()) {
-                dm_set_standby_ex(true, LOG_BY_ADMIN, 1u /*=LCD*/, false);
+             * `session_close()` clears both flag and STANDBY together.
+             * 2026-09-16 (gh#65) — taken as a HOLD, never persisted, so a
+             * reboot cannot strand it. dm_standby_hold() returns true for a
+             * hold already ours (re-entry) or another session's (a web teach:
+             * both then hold it), and false for an operator's own STANDBY,
+             * which this menu must never end -- the same three rows as above. */
+            if (dm_standby_hold(DM_STANDBY_HOLD_LCD, LOG_BY_ADMIN, 1u /*=LCD*/)) {
                 s_manual_set_standby_on_entry = true;
             }
             s_motor_pick_ch = 0;
@@ -1995,13 +2002,14 @@ static void handle_pin(char key)
                 s_dirty               = true;
             } else if (s_pending_motor) {
                 /* rc.1.5.0 / gh#29 — Resume pending Manual-motor menu.
-                 * rc.1.5.1 — auto-enter STANDBY (no recal on clear).
+                 * rc.1.5.1 — auto-enter STANDBY (its clear skipped the
+                 *            recalibration until 2026-09-10).
                  * rc.1.5.2 — flag-set preserves "true" across re-entries
                  * (see the # admin-session direct-entry path above for
                  * full rationale). */
                 s_pending_motor = false;
-                if (!dm_get_standby()) {
-                    dm_set_standby_ex(true, LOG_BY_ADMIN, 1u /*=LCD*/, false);
+                /* A hold, as on the direct-entry path above (gh#65). */
+                if (dm_standby_hold(DM_STANDBY_HOLD_LCD, LOG_BY_ADMIN, 1u /*=LCD*/)) {
                     s_manual_set_standby_on_entry = true;
                 }
                 s_motor_pick_ch = 0;
@@ -2091,8 +2099,9 @@ static void handle_motor_pick(char key)
              * remainder of the admin session (default 5 min from last
              * keypress), giving the admin's manual per-channel positions
              * a respect window during which T6 cannot override them.
-             * Session-end (timeout or explicit logout) finally clears
-             * STANDBY (no recal) and T6 resumes on its next tick. */
+             * Session-end (timeout or explicit logout) releases the menu's
+             * hold: STANDBY clears, the windows recalibrate, and T6 resumes
+             * from that closed baseline (see session_close()). */
             go_status();
             break;
         default:

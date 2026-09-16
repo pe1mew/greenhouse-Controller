@@ -132,8 +132,10 @@ function renderIdentity() {
 // when something is actually wrong rather than on a schedule.
 //
 // Only a commissioning build serves /api/diag/commission. On a release build
-// the whole Linear control group is therefore GREYED OUT with the reason shown
-// beside it -- not hidden. See `commSetAvailable()`.
+// the commissioning card (window size, calibration, teach) is therefore GREYED
+// OUT with the reason shown beside it -- not hidden. See `commSetAvailable()`.
+// The deadzone is an ordinary motor setting and sits outside the card, so it
+// stays usable on every build (2026-09-16).
 const CM_CAL_WHY = {
   no_device:      'the sensor is not answering.',
   no_window_size: 'no window size is set on the device — measure it and apply it above.',
@@ -244,7 +246,7 @@ function commRender(c) {
   }
 }
 
-// Why the Linear control group is unavailable, in the operator's terms.
+// Why the commissioning card is unavailable, in the operator's terms.
 // Reached with the HTTP status, because the statuses mean different things and
 // "it is not there" is the least useful of the possible answers.
 function commWhyUnavailable(status) {

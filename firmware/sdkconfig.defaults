@@ -178,3 +178,16 @@ CONFIG_HTTPD_WS_SUPPORT=y
 # drivers/modBus/src/modbus_rtu.cpp refuses to compile without it, so a stale
 # file fails the build instead of shipping a release without the fix.
 CONFIG_UART_ISR_IN_IRAM=y
+
+# ----------------------------------------------------------------------------
+# App image — no compile time/date (reproducible builds, 2026-09-16)
+# ----------------------------------------------------------------------------
+# By default esp_app_desc carries __TIME__/__DATE__ from the last compile of
+# esp_app_desc.c, so two clean builds of one tree differ in those bytes, in the
+# embedded ELF SHA-256 and in the image digest -- and nowhere else (measured).
+# Nothing reads the fields: the firmware reports FIRMWARE_VERSION, and the gh#39
+# coredump check compares the ELF SHA-256. IDF's help names this exact use.
+#
+# NOTE: an existing firmware/sdkconfig.<env> keeps its own value, whatever this
+# file says. Set the line there too (or delete the file to regenerate it).
+CONFIG_APP_COMPILE_TIME_DATE=n

@@ -64,6 +64,9 @@ size_t MockSerial::write(const uint8_t *buf, size_t len)
     for (size_t i = 0; i < len && echo_tail < BUF_SIZE; i++) {
         echo_buf[echo_tail++] = buf[i];
     }
+    /* The request is on the wire, so the slave's reply can now arrive
+     * (see queue_response()). */
+    rx_armed = true;
     return len;
 }
 
@@ -74,7 +77,7 @@ void MockSerial::flush(void)
 
 int MockSerial::available(void)
 {
-    return (echo_tail - echo_head) + (rx_tail - rx_head);
+    return (echo_tail - echo_head) + (rx_armed ? (rx_tail - rx_head) : 0);
 }
 
 int MockSerial::read(void)
@@ -84,7 +87,7 @@ int MockSerial::read(void)
         mock_log_event(MOCK_EVT_UART_READ);
         return (int)(uint8_t)echo_buf[echo_head++];
     }
-    if (rx_head >= rx_tail) {
+    if (!rx_armed || rx_head >= rx_tail) {
         return -1;
     }
     mock_log_event(MOCK_EVT_UART_READ);
@@ -96,6 +99,7 @@ void MockSerial::reset(void)
     memset(rx_buf, 0, sizeof(rx_buf));
     rx_head  = 0;
     rx_tail  = 0;
+    rx_armed = false;
     memset(echo_buf, 0, sizeof(echo_buf));
     echo_head = 0;
     echo_tail = 0;
@@ -108,6 +112,7 @@ void MockSerial::queue_response(const uint8_t *bytes, uint8_t len)
     for (uint8_t i = 0; i < len && rx_tail < BUF_SIZE; i++) {
         rx_buf[rx_tail++] = bytes[i];
     }
+    rx_armed = false;   /* it answers the NEXT request */
 }
 
 int MockSerial::get_transmitted(uint8_t *buf, int max_len) const
@@ -130,7 +135,9 @@ void mock_uart_reset(void)
     Serial1.reset();
     mock_event_count = 0;
     memset(mock_event_log, 0, sizeof(mock_event_log));
-    mock_set_millis(0, 0);
+    /* 1 ms per call, not 0: a reply that never arrives must end in a
+     * timeout, not in a receive loop that spins forever (mock_uart.h). */
+    mock_set_millis(0, 1);
 }
 
 void mock_uart_queue_response(const uint8_t *bytes, uint8_t len)

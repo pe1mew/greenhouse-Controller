@@ -203,8 +203,46 @@ if ($bin_latin1.IndexOf($VERSION) -lt 0) {
     exit 1
 }
 
+# ---------------------------------------------------------------------------
+# No compile time/date in the image (2026-09-16, reproducible builds).
+#
+# sdkconfig.defaults sets CONFIG_APP_COMPILE_TIME_DATE=n, but an existing
+# firmware\sdkconfig.<env> overrides the defaults file. A checkout whose per-env
+# file predates that line still stamps __TIME__/__DATE__ into esp_app_desc, and
+# a clean rebuild of the same tree no longer reproduces the package -- silently.
+# esp_app_desc starts at image offset 0x20 (magic word checked first, so a
+# moved struct fails here instead of reading as zeros); time and date fill
+# 0x70..0x8F.
+# ---------------------------------------------------------------------------
+if ([BitConverter]::ToUInt32($bin_bytes, 0x20) -ne [uint32]2882360370) {   # 0xABCD5432
+    Write-Error "No esp_app_desc magic at image offset 0x20 in $BIN_DST -- cannot check for a build timestamp."
+    exit 1
+}
+if ($bin_bytes[0x70..0x8F] | Where-Object { $_ -ne 0 }) {
+    Write-Error ("Packaged binary carries a compile time/date in esp_app_desc.`n" +
+                 "  firmware\sdkconfig.$Environment predates CONFIG_APP_COMPILE_TIME_DATE=n " +
+                 "in sdkconfig.defaults. Delete that file and run this script again.")
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
+# The image's own version field is FIRMWARE_VERSION (2026-09-16).
+#
+# firmware/scripts/project_version.py hands FIRMWARE_VERSION to IDF as
+# PROJECT_VER. Without it IDF writes `git describe --dirty`, which for a release
+# named the PARENT commit (the release commit does not exist yet when this
+# script runs). esp_app_desc.version is the 32 bytes at image offset 0x30.
+# ---------------------------------------------------------------------------
+$app_ver = [System.Text.Encoding]::ASCII.GetString($bin_bytes, 0x30, 32).TrimEnd([char]0)
+if ($app_ver -ne $VERSION) {
+    Write-Error ("Packaged binary's esp_app_desc.version is '$app_ver', not '$VERSION'.`n" +
+                 "  firmware\scripts\project_version.py did not run for env:$Environment " +
+                 "(is it in that env's extra_scripts?).")
+    exit 1
+}
+
 $bin_kb = [math]::Round((Get-Item $BIN_DST).Length / 1KB, 1)
-Write-Host "    -> $BIN_DST  ($bin_kb KB, version string verified)" -ForegroundColor Green
+Write-Host "    -> $BIN_DST  ($bin_kb KB, version string and app version verified, no build timestamp)" -ForegroundColor Green
 
 # rc.1.2.1 — Archive the matching ELF + linker map + partition table + bootloader
 # alongside the .bin. The ELF is REQUIRED to decode coredumps captured by the
@@ -216,8 +254,14 @@ Write-Host "    -> $BIN_DST  ($bin_kb KB, version string verified)" -ForegroundC
 # the rc.1.2 03:15 soak failure — see changelog [2.0.0-rc.1.2.1]).
 #
 # All four are gitignored alongside the .bin (bin/**/*.{bin,elf,zip}), so the
-# archive lives locally per checkout but never bloats the repo. The release
-# build is reproducible from the matching tag if needed.
+# archive lives locally per checkout but never bloats the repo. Keep them: they
+# cannot be regenerated. A rebuild is byte-identical only in a checkout at the
+# same path, from the same tree (memory/gotcha-log.md, 2026-09-16): the ELF,
+# whose SHA-256 the .bin embeds, records the directory it was built in. (The
+# image's version field no longer depends on git state: it is FIRMWARE_VERSION,
+# see the check above.) From a fresh clone not even the code is:
+# firmware/dependencies.lock is gitignored, so the managed littlefs resolves to
+# the newest ^1.16 release.
 $ELF_SRC = Join-Path $FIRMWARE_DIR ".pio\build\$Environment\firmware.elf"
 $MAP_SRC = Join-Path $FIRMWARE_DIR ".pio\build\$Environment\greenhouse_controller.map"
 $BL_SRC  = Join-Path $FIRMWARE_DIR ".pio\build\$Environment\bootloader.bin"

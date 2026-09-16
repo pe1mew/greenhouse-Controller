@@ -94,14 +94,17 @@ static const char *TAG = "T17";
 #define IDLE_TICK_MS          500u
 
 /**
- * Idle logging cadence (Phase 3, plan 3a).
+ * Idle READ cadence (Phase 3, plan 3a).
  *
- * **Deliberately temporary** (operator decision 2026-09-07): it exists to build
- * trust in the implementation and costs ~2880 rows/day, roughly +37 % of total
- * log volume. Phase 2 idled with zero bus cost at rest; this trades that for
- * visibility and should be removed once the trace is trusted.
+ * Phase 3 read the sensor at rest to LOG it, a deliberately temporary cost
+ * (operator decision 2026-09-07). The read has since become load-bearing: it is
+ * how the presence gate judges the sensor at rest (AT-WP06), and how end-sensor
+ * events, restarts, orphaned teaches and the teach's STANDBY release are seen
+ * while M3 is still. So the read stays. The ROW it wrote every time was the
+ * temporary part, and since 2026-09-16 it is written only when the reading says
+ * something (rest_row_due()).
  */
-#define IDLE_LOG_MS         30000u
+#define IDLE_READ_MS        30000u
 
 /** SENSOR_HR channel for position samples (0/1/2 taken; plan 3a). */
 #define LOG_CH_POSITION         3u
@@ -278,6 +281,11 @@ bool windowpos_task_derived(windowpos_derived_t *out)
  * 65535 sentinel would truncate to -1 in the int16 log field anyway; making it
  * explicit means the intent survives a reader who does not know that.
  */
+/* value_a of the last ch3 row written (-1 = fault); REST_ROW_NONE before the
+ * first. Only T17 writes rows, so no lock. */
+#define REST_ROW_NONE  INT32_MIN
+static int32_t s_logged_x10 = REST_ROW_NONE;
+
 static void log_position(const windowpos_reading_t *r)
 {
     log_event_t e = {};
@@ -289,6 +297,37 @@ static void log_position(const windowpos_reading_t *r)
     e.value_a    = r->sensor_fault ? (int16_t)-1 : (int16_t)r->opening_mm_x10;
     e.value_b    = r->sensor_fault ? (int16_t)0  : r->rate_mm_s_x10;
     log_post(&e);
+    s_logged_x10 = e.value_a;
+}
+
+/**
+ * @brief Should a reading taken at REST become a ch3 row?
+ *
+ * Until 2026-09-16 every idle read did: one row per IDLE_READ_MS, ~2880 a day,
+ * about +37 % of the whole log -- a deliberately temporary trade to build trust
+ * in the trace (plan §3a). The trace is trusted now, and the resting state is
+ * already in ch 2's window bitmask, so at rest a row is written only when it
+ * says something:
+ *  - the first read after a stroke: where the leaf actually settled;
+ *  - the first read after boot, and any change between fault and no fault;
+ *  - movement of at least the deadzone WITHOUT a stroke -- the motor box's
+ *    hand switches, or slip. T2 cannot see either, so this row is their only
+ *    record. Never less than REST_MOVE_MIN_X10: one ADC count is ~1.5 mm here,
+ *    and a 1 mm deadzone would log sampling jitter.
+ */
+#define REST_MOVE_MIN_X10  50u   /* 5 mm */
+static bool rest_row_due(const windowpos_reading_t *r, bool after_stroke,
+                         uint32_t deadzone_x10)
+{
+    const int32_t v = r->sensor_fault ? -1 : (int32_t)r->opening_mm_x10;
+    if (after_stroke || s_logged_x10 == REST_ROW_NONE) { return true; }
+    if ((v < 0) != (s_logged_x10 < 0))                 { return true; }
+    if (v < 0)                                         { return false; }
+    const uint32_t moved = (uint32_t)((v > s_logged_x10) ? (v - s_logged_x10)
+                                                         : (s_logged_x10 - v));
+    const uint32_t floor_x10 = (deadzone_x10 > REST_MOVE_MIN_X10) ? deadzone_x10
+                                                                 : REST_MOVE_MIN_X10;
+    return moved >= floor_x10;
 }
 
 /** @brief Emit one position event (ALARM, channel 6, param 244..247). */
@@ -694,8 +733,9 @@ void task_window_pos(void *pvParameters)
 
     uint16_t pushed_window_ms  = 0u;
     bool     was_travelling    = false;
-    uint32_t last_idle_log_ms  = 0u;
+    uint32_t last_idle_read_ms = 0u;
     bool     resample_soon     = false;   /* an orphan abort wants a prompt re-read */
+    bool     settle_row_due    = false;   /* a stroke just ended: log where the leaf settled */
 
     /* §12.4 rule 1 state, reset at every stroke boundary. Stroke-local rather
      * than static: the question is always "did THIS stroke move?", and carrying
@@ -771,12 +811,17 @@ void task_window_pos(void *pvParameters)
         }
 
         if (!m3_travelling()) {
+            if (was_travelling) {
+                /* The stroke just ended: read at once, and log where the leaf
+                 * settled (rest_row_due()). */
+                settle_row_due = true;
+                resample_soon  = true;
+            }
             was_travelling = false;
-            /* Phase 3: still sample at the idle cadence so the log shows the
-             * window sitting still, not a gap. Phase 2 idled with zero bus
-             * cost; this is the deliberate, temporary trade (see IDLE_LOG_MS). */
+            /* Keep reading at rest: the gate, the events, the orphan check and
+             * the teach's STANDBY release depend on it (IDLE_READ_MS). */
             bool idle_sample_due = resample_soon ||
-                (uint32_t)(now_ms() - last_idle_log_ms) >= IDLE_LOG_MS;
+                (uint32_t)(now_ms() - last_idle_read_ms) >= IDLE_READ_MS;
 #ifdef MODBUS_BENCH
             /* A running teach needs readings at rest as well: to see bit 5
              * appear before the first leg, to start each next leg when a
@@ -786,14 +831,17 @@ void task_window_pos(void *pvParameters)
             if (commission_wants_prompt_read()) { idle_sample_due = true; }
 #endif
             if (idle_sample_due) {
-                last_idle_log_ms = now_ms();
-                resample_soon    = false;
+                last_idle_read_ms = now_ms();
+                resample_soon     = false;
                 windowpos_reading_t ir;
                 const windowpos_status_t ist = windowpos_read(WINDOWPOS_DEFAULT_ADDR, &ir);
                 if (ist == WINDOWPOS_OK) {
                     check_restart(WINDOWPOS_DEFAULT_ADDR);
                     emit_events(&ir, WINDOWPOS_DEFAULT_ADDR);
-                    log_position(&ir);
+                    if (rest_row_due(&ir, settle_row_due, stroke_deadzone_x10)) {
+                        log_position(&ir);
+                    }
+                    settle_row_due = false;
                     resample_soon = check_orphan_teach(&ir, WINDOWPOS_DEFAULT_ADDR);
 #ifdef MODBUS_BENCH
                     commission_tick(&ir, now_ms());

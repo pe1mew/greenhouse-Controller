@@ -77,7 +77,10 @@ void mock_log_event(mock_event_t evt);
  * @brief Controllable replacement for Arduino millis().
  *
  * Returns the current mock time, then advances it by the configured step.
- * - step = 0  → time never advances (all RX bytes arrive "instantly")
+ * - step = 0  → time never advances. A receive loop waiting for bytes that
+ *   never come then spins forever instead of timing out, which is how a
+ *   broken test HUNG rather than failed (2026-09-16). mock_uart_reset()
+ *   therefore sets step = 1 ms, so a missing reply ends in a timeout.
  * - step = MODBUS_TIMEOUT_MS + 1 → triggers timeout after the first call
  *
  * @return Current mock time in milliseconds.
@@ -151,7 +154,13 @@ public:
     void reset(void);
 
     /**
-     * @brief Pre-load @p len bytes into the RX queue for the driver to read.
+     * @brief Pre-load @p len bytes as the slave's reply to the NEXT request.
+     *
+     * The bytes arrive after the driver's next write(), as a real slave's
+     * reply does: until then available() does not count them and read() does
+     * not return them. The driver drains the RX FIFO before it transmits
+     * (since 4a61ad7), so a reply that was readable before the request was
+     * thrown away by that drain, and every test from UT-MB-003 on hung.
      *
      * @param bytes Response bytes (as a Modbus slave would transmit them).
      * @param len   Number of bytes.
@@ -176,6 +185,7 @@ private:
     uint8_t  rx_buf[BUF_SIZE]; /**< Pre-queued RX bytes (slave response). */
     int      rx_head;          /**< Read index into rx_buf. */
     int      rx_tail;          /**< Write index into rx_buf (one past last byte). */
+    bool     rx_armed;         /**< rx_buf is readable: the request has been written. */
 
     uint8_t  echo_buf[BUF_SIZE]; /**< Half-duplex echo bytes injected by write(). */
     int      echo_head;          /**< Read index into echo_buf. */

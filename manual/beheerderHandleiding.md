@@ -225,7 +225,7 @@ Sinds 2.8.0 staan de instellingen **per motor** bij elkaar (M1, M2, M3) in plaat
 | **Time control** · *in gebruik* | Loopttijd en dwelltijden — dit is wat de ramen vandaag aanstuurt |
 | **Linear control** · *raamstandsensor* | Instellingen voor de raamstandsensor. **Deze sturen het raam nog niet aan**; ze horen bij de lineaire regeling die nog niet in gebruik is |
 
-De groep *Linear control* is alleen **bruikbaar** op een **commissioning-build** met de sensor gemonteerd. Op een gewone release-build staat hij er wel, maar **grijs**, met erbij waarom hij niet beschikbaar is. Dat is bewust: een instelling die simpelweg verdwijnt is niet te onderscheiden van een verkeerd tabblad of een storing.
+De **Dodezone** in de groep *Linear control* is een gewone instelling en werkt op elke build. Het blok **Commissioning** daaronder (raamgrootte, kalibratie-oordeel, teach) is alleen **bruikbaar** op een **commissioning-build** met de sensor gemonteerd. Op een gewone release-build staat dat blok er wel, maar **grijs**, met erbij waarom het niet beschikbaar is. Dat is bewust: een instelling die simpelweg verdwijnt is niet te onderscheiden van een verkeerd tabblad of een storing.
 
 ### M3 raamstandsensor — kalibratie (commissioning)
 
@@ -300,7 +300,11 @@ Niet periodiek. Alleen wanneer:
 
 #### Dodezone (mm)
 
-De kleinste afwijking waarvoor het raam nog bijgestuurd wordt. Te klein en het raam gaat op ruis heen en weer; nul zou het onafgebroken laten klapperen. **Dit veld is nog niet instelbaar**: er is nog geen regeling die het uitleest, en een knop die niets doet is misleidender dan een knop die er nog niet is. Hij wordt actief wanneer de lineaire regeling in gebruik komt.
+De kleinste afwijking waarvoor het raam nog bijgestuurd wordt. Te klein en het raam gaat op ruis heen en weer; nul zou het onafgebroken laten klapperen. Instelbaar in tab **Motors**, onder M3 → *Linear control*, op elke build (1–200 mm, standaard 20).
+
+De lineaire regeling waarvoor hij bedoeld is, is nog niet in gebruik. Twee dingen gebruiken hem wel al:
+- **de controle op een te vroeg stoppend raam**: een SLUIT-gang die binnen de dodezone van "dicht" eindigt zonder dat de eindsensor schakelt, wordt als storing gemeld;
+- **het logboek**: in rust schrijft de controller alleen een positieregel als het raam verder bewogen is dan de dodezone (minstens 5 mm). Zo zie je ook een raam dat zonder opdracht van de controller bewoog, bijvoorbeeld via de handschakelaars in de motorbox.
 
 ### Stapsgewijs ventileren
 
@@ -439,7 +443,7 @@ De kleuren van de badg geven de urgentie weer van de melding:
 | 🟡 | **Wind fault** | Twee opeenvolgende mislukte uitlezingen van de windsensor | Zie [§12.3](#123-sensor-fault--diagnose) |
 | 🟡 | **OTA active** | OTA-update loopt nu | Wacht tot voltooid; geen handeling vereist |
 | 🟡 | **Calibrating** | Window-Cal: ramen worden gesloten om positie vast te leggen | Wacht ~3 min; geen handeling vereist |
-| 🟡 | **Standby** | Klimaatregeling door operator gepauzeerd. Standby blijft actief tot je admin-sessie afloopt (5 min na laatste toetsdruk) of je expliciet uitlogt, daarna direct uit zonder recalibratie |
+| 🟡 | **Standby** | Automatische klimaatregeling gepauzeerd | Zelf aangezet via Scherm 3 of de web GUI: blijft aan tot je hem uitzet, ook na een herstart. Aangezet door het handmatige raammenu op de LCD ([§10.11](#1011-handmatige-raambediening-via-de-lcd-beheerder)) of door een teach: gaat vanzelf uit zodra die beheerderssessie eindigt (uitloggen, 5 min zonder toetsdruk, of een herstart). Bij het uitgaan sluiten de ramen één keer om te kalibreren |
 | 🟡 | **Net backoff** | Status-website onbereikbaar — Updates zij tijdelijk gestopt na herhaalde fouten | Controleer netwerk + URL; herstelt automatisch |
 | 🟡 | **Wind protect off** | Boer/Beheerder heeft windbeveiliging uitgezet | Bewust — controleer of dit zo bedoeld is; ramen worden niet meer dichtgestuurd bij wind |
 | 🔵 | **Humidity ctrl off** | Boer/Beheerder heeft de luchtvochtigheid-regeling uitgezet | Bewust — alleen temperatuur stuurt nu de ramen |
@@ -1040,7 +1044,7 @@ Deze re-kalibratie is een **bewust ontwerp**: tijdens Standby kan iedereen handm
 
 Standby is **NVS-backed** (opgeslagen in permanent geheugen op de microprocessor). Een stroomstoring tijdens een bewuste maintenance-pauze schakelt de controller dus **niet** stilletjes weer in op `Mode: AUTO` — de unit komt terug in `Mode: STANDBY` precies zoals jij hem hebt achtergelaten. Vergeet daarom niet om Standby weer uit te zetten zodra het werk klaar is.
 
-**Uitzondering:** de Stand-by die een teach van de raamstandsensor zet, wordt níét opgeslagen en vervalt bij een herstart (zie [M3 raamstandsensor — kalibratie](#m3-raamstandsensor--kalibratie-commissioning)). In het logboek herken je die aan `value_b` = 1 in de `MODE`-regel.
+**Uitzondering:** de Stand-by die een teach van de raamstandsensor zet (zie [M3 raamstandsensor — kalibratie](#m3-raamstandsensor--kalibratie-commissioning)) en de Stand-by van de handmatige raambediening via de LCD (zie [§10.11](#1011-handmatige-raambediening-via-de-lcd-beheerder)) worden níét opgeslagen en vervallen bij een herstart. In het logboek herken je ze aan `value_b` = 1 in de `MODE`-regel.
 
 In de logfile herken je een Standby-transitie als een `MODE` event:
 ```
@@ -1085,10 +1089,12 @@ Voor maintenance met handschoenen, een netwerkstoring, commissioning, een snel e
 - **De controller gaat automatisch in STANDBY-modus** zodra je het menu binnenkomt. T6 (Climate Control) blijft daardoor **gepauzeerd voor de volledige duur van je admin-sessie** — niet alleen terwijl je in het menu bent, maar ook ná `*=back` en totdat je sessie afloopt. Je handmatige raamposities worden niet stilletjes door T6 overschreven omdat de buitencondities veranderen
 - **De "respect-window" voor je manuele posities = je admin-sessie-timeout**. STANDBY blijft actief, en T6 blijft gepauzeerd, vanaf het moment dat je het menu binnenkomt tot het moment dat je sessie eindigt (5 minuten na je laatste toetsdruk, of expliciet uitloggen). Pressing `*=back` om uit het menu te gaan beëindigt de respect-window NIET — STANDBY blijft staan, Scherm 3 blijft `Mode: STANDBY` tonen
 - **Was STANDBY al actief** vóór je het menu binnenging (bijv. via Scherm 3 # of de web GUI), dan blijft STANDBY ook na sessie-einde gewoon actief — alleen STANDBY-modus die door het menu zelf is aangezet wordt bij sessie-einde auto-uitgezet
+- **Deze STANDBY wordt niet opgeslagen** (sinds 2.8.0, gh#65). Start de controller tijdens je sessie opnieuw op (stroomonderbreking, update), dan zijn je sessie en deze STANDBY allebei voorbij: na het opstarten regelt de controller weer automatisch. Vóór 2.8.0 bleef hij in dat geval onbeperkt in STANDBY staan
+- **Start een webbeheerder tegelijk een teach**, dan houden jullie de STANDBY allebei vast. Hij gaat pas uit als beide sessies voorbij zijn
 - **Dwell-timers worden bypassed** voor manual commands (`SRC_OPERATOR_MANUAL`). Een raam dat zojuist autonoom geopend werd, mag onmiddellijk handmatig dichtgaan zonder op de `dwell_open_s` te wachten. De anti-thrash protectie geldt alleen voor T6's autonome loop, niet voor jouw bewuste keuzes
 - **Elk commando wordt geaudit-logd** als `LOG_RELAY`-rij (T2 emit'eert die wanneer hij de relay daadwerkelijk activeert). De `source = SRC_OPERATOR_MANUAL` veld in het Q1-bericht draagt de admin-attributie door naar de T2 per-command logregel
 - **De motor-positie wordt persistent opgeslagen** in NVS zoals bij elk T2-commando — geen aparte "laatste handmatige positie"-key
-- **De STANDBY-entry en -exit verschijnen als `MODE`-rijen in het logbestand** met `initiator=ADMIN` en `channel=1` (LCD-surface) — de STANDBY-on rij verschijnt bij menu-binnenkomst, de STANDBY-off rij pas bij sessie-einde (timeout of expliciete logout). De hele sessie is achteraf herleidbaar
+- **De STANDBY-entry en -exit verschijnen als `MODE`-rijen in het logbestand** met `initiator=ADMIN`, `channel=1` (LCD-surface) en `value_b=1` (een vastgehouden STANDBY) — de STANDBY-on rij verschijnt bij menu-binnenkomst, de STANDBY-off rij pas bij sessie-einde (timeout of expliciete logout). De hele sessie is achteraf herleidbaar. Na een herstart midden in de sessie volgt er geen STANDBY-off rij: de opstartregel sluit de STANDBY dan af
 
 #### Veiligheids­gates blijven actief
 
@@ -1107,14 +1113,15 @@ Het manual-motor menu heeft géén korte idle-dismiss. STANDBY blijft actief tot
 | Actie | Effect |
 |---|---|
 | **`*=back`** vanuit motor-picker | LCD keert terug naar auto-rotatie status­schermen. **STANDBY blijft echter actief** voor de rest van je admin-sessie — Scherm 3 toont nog steeds `Mode: STANDBY`, T6 blijft gepauzeerd. Je kunt opnieuw `D` drukken naar Scherm 6 en met `#` weer het menu in, om verder handmatig te bedienen zonder dat T6 tussendoor commando's stuurt |
-| **Expliciet uitloggen** (hoofdmenu → 3:Access → 3:Logout) | Sessie sluit direct. Auto-gezette STANDBY wordt uitgezet (zonder recalibratie). T6 hervat op zijn volgende sensor-tick (~30 sec) vanuit de actuele per-kanaal positie |
-| **Sessie-timeout** (`cfg.session_timeout_min`, default 5 min vanaf laatste toetsdruk) | Identiek aan expliciet uitloggen: "Session timeout" melding, LCD naar auto-rotatie, auto-gezette STANDBY uit (zonder recalibratie), T6 hervat |
+| **Expliciet uitloggen** (hoofdmenu → 3:Access → 3:Logout) | Sessie sluit direct. Auto-gezette STANDBY gaat uit, alle ramen sluiten één keer om te kalibreren (tot ~3 min; scherm 3 toont `Mode: Window Cal.`) en T6 hervat vanuit die gesloten uitgangspositie |
+| **Sessie-timeout** (`cfg.session_timeout_min`, default 5 min vanaf laatste toetsdruk) | Identiek aan expliciet uitloggen: "Session timeout" melding, LCD naar auto-rotatie, auto-gezette STANDBY uit, kalibratie, T6 hervat |
+| **Herstart** (stroomonderbreking, update) | Sessie en auto-gezette STANDBY zijn allebei voorbij. De controller start op zoals altijd en regelt weer automatisch (sinds 2.8.0; zie hierboven) |
 
-**Het "respect-window" voor handmatige posities is dus de sessie-timeout**: vanaf het moment dat je de laatste toets indrukt heb je standaard 5 minuten waarin je manueel ingestelde raamposities behouden blijven. Geen toetsdruk binnen die 5 min ⇒ sessie loopt af ⇒ STANDBY uit ⇒ T6 maakt zijn volgende beslissing vanuit de actuele raamstand.
+**Het "respect-window" voor handmatige posities is dus de sessie-timeout**: vanaf het moment dat je de laatste toets indrukt heb je standaard 5 minuten waarin je manueel ingestelde raamposities behouden blijven. Geen toetsdruk binnen die 5 min ⇒ sessie loopt af ⇒ STANDBY uit ⇒ de ramen sluiten één keer ⇒ T6 hervat vanuit die gesloten stand.
 
-**Belangrijk — geen recalibratie op de auto-clear**: bij beide auto-clear-routes (logout + timeout) blijven de ramen precies staan waar je ze handmatig hebt geplaatst. Dit verschilt bewust van **Scherm 3 / web Standby-exit**, waar wél een CLOSE_ALL recalibratie volgt (~3 min). Bij gh#28 (Standby via Scherm 3 of web) is de pauze "los van een specifieke window-actie" en is een schone re-baseline gepast; bij gh#29 (Standby auto-gezet door het manual-motor menu) heb je net handmatig per-kanaal gepositioneerd, en die positie wíl je behouden.
+**Kalibratie bij sessie-einde** (sinds 2026-09-10): bij beide auto-clear-routes (logout + timeout) sluiten alle ramen één keer, net als bij een Standby-exit via Scherm 3 of web. Handmatig ingestelde raamposities blijven dus staan **zolang je sessie loopt**, niet daarna. Vroeger bleven ze na sessie-einde staan, en dan weigerden de dwell-timers T6's commando's soms tot 25 minuten lang: de controller stond op AUTOMATIC en deed niets. Wil je een raam langer in een handmatige stand houden, zet dan **Standby aan** via Scherm 3 of web: die blijft staan tot je hem zelf uitzet.
 
-Als je écht een schone re-baseline wilt na een uitgebreide manual-sessie, gebruik dan **Standby aan** via Scherm 3 of web → kort wachten → **Standby uit**; die Standby-exit recalibratie sluit alle ramen en geeft T6 een verse baseline. Was STANDBY al aan via Scherm 3 toen je het manual-menu binnenging, dan blijft hij ook na sessie-einde aan — alleen door-dit-menu-aangezette STANDBY wordt auto-gewist.
+Was STANDBY al aan via Scherm 3 of web toen je het manual-menu binnenging, dan blijft hij ook na sessie-einde aan, en sluiten de ramen niet: alleen door-dit-menu-aangezette STANDBY wordt auto-gewist.
 
 ---
 

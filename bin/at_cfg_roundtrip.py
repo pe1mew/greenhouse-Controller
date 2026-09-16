@@ -52,6 +52,7 @@ Exit 0 = every covered key round-trips to its own field. Stdlib only.
 """
 
 import argparse
+import atexit
 import http.client
 import json
 import os
@@ -142,6 +143,19 @@ class Unit(object):
         sc, _ = self._req("POST", "/api/login", {"role": "admin", "pin": pin})
         if sc != 200 or not self.cookie:
             sys.exit("login failed (HTTP %s) -- wrong PIN, or the unit is not up" % sc)
+        atexit.register(self.logout)
+
+    def logout(self):
+        """Give the session slot back. The unit holds FOUR, RAM-only, and an
+        open admin session defers ROTA (gh#41) and keeps a teach's STANDBY
+        hold alive, so a script must not leave one behind. Registered with
+        atexit at login, so every exit -- sys.exit() included -- releases it."""
+        if self.cookie:
+            try:
+                self._raw("POST", "/api/logout", {})
+            except Exception:                                  # noqa: BLE001
+                pass                       # best effort: the timeout still frees it
+            self.cookie = None
 
     def config(self):
         """One merged snapshot of every shadow field any endpoint will show.

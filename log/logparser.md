@@ -1,7 +1,7 @@
 # logparser — Greenhouse Controller Log Parser
 
 **File:** `log/logparser.py`
-**Document version:** 1.18 (matches firmware 2.8.0 + the `ropeSensor` window-sensor encodings; 1.17 added `MODE param 47` `value_b` = 1, a STANDBY held for a teach's admin session; 1.18 adds `SYSTEM value_a = 32`)
+**Document version:** 1.19 (matches firmware 2.8.0 + the `ropeSensor` window-sensor encodings; 1.17 added `MODE param 47` `value_b` = 1, a STANDBY held for a session; 1.18 added `SYSTEM value_a = 32`; 1.19: the LCD manual menu holds STANDBY too (gh#65), and `SENSOR_HR ch 3` rows at rest are written only on change)
 **Requires:** Python 3.10+, standard library only (no pip dependencies)
 
 **What's new in 1.18** (2026-09-16):
@@ -336,9 +336,17 @@ percentage beyond recovery, while millimetres stay recomputable.
 a closing window at 157 mm/s appears as 6.4 m/s — that mistake is what the
 signed decode was proven against on real hardware.
 
-**Cadence.** T17 polls only while a channel is travelling, at
-`travel_m3 / 150` ms, and otherwise emits one sample every 30 s so the log shows
-the window sitting still rather than a gap.
+**Cadence.** While M3 is travelling: one row per poll, every `travel_m3 / 150` ms.
+At rest T17 still reads every 30 s, but since firmware 2.8.0 (2026-09-16) it
+writes a row only when the reading says something:
+- the first read after a stroke (where the leaf settled);
+- the first read after boot;
+- a change between fault and no fault;
+- movement of at least `deadzone_m3` (5 mm minimum) without a stroke. That is
+  the motor box's hand switches, or slip, which T2 cannot see.
+
+Before 2.8.0 it wrote a row every 30 s at rest (~2880 a day, about +37 % of the
+log). **A gap between rows at rest now means the window did not move.**
 
 **Example output:**
 ```
@@ -416,8 +424,10 @@ channel transitions to a new state.
 > `param = 47` rows; for pre-2.6.0 logs they cannot.
 
 > **`value_b` = 1 is a session hold** (firmware 2.8.0, 2026-09-16). A web teach
-> pauses climate control by *holding* STANDBY until the admin session that
-> started it ends. A held entry is not stored in NVS, so a reboot ends the
+> (`ch` 0) and the LCD manual-motor menu (`ch` 1, gh#65) pause climate control
+> by *holding* STANDBY until the admin session that took the hold ends. Before
+> 2.8.0 the LCD menu's STANDBY was an ordinary persisted one (`value_b` 0), and
+> a reboot during the session left it on with nothing to clear it. A held entry is not stored in NVS, so a reboot ends the
 > hold. A held exit means that session ended: logout, idle timeout, or eviction
 > by a fifth login. If a hold was on when the unit rebooted, the log shows the
 > entry and **no** matching exit; the boot row that follows closes it.

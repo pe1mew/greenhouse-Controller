@@ -703,15 +703,15 @@ typedef struct {
  *   1. LCD Scherm 3 mode-toggle menu (Farmer or Admin PIN)
  *   2. Web GUI Climate-tab Normal/Standby toggle
  *   3. LCD Scherm 6 manual-motor menu entry (rc.1.5.1+) — auto-sets STANDBY
- *      on entry so T6 stays paused for as long as the admin is in the menu,
- *      regardless of how long that is.
+ *      on entry so T6 stays paused for as long as the admin session lasts.
+ *      Since 2026-09-16 (gh#65) this one is a HOLD, below, not dm_set_standby().
  *
  * Cleared by `dm_set_standby(false,...)` (full recalibration on exit) or
  * `dm_set_standby_ex(false, ..., false)` (no recalibration — used by the
  * rc.1.5.1+ manual-menu exit so the admin's positions are preserved).
  *
- * Also set by `dm_standby_hold()` (2026-09-16) — a web teach holds STANDBY
- * until its admin session ends. A hold is NOT persisted and is released by
+ * Also set by `dm_standby_hold()` (2026-09-16): a web teach, and the LCD
+ * manual-motor menu (gh#65), hold STANDBY until their admin session ends. A hold is NOT persisted and is released by
  * `dm_standby_release()`; see data_manager.h.
  *
  * T6 honours the bit as a "do nothing" gate. Persisted to NVS at

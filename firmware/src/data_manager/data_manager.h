@@ -480,17 +480,18 @@ void dm_set_standby(bool standby, log_initiator_t initiator, uint8_t channel);
  * @brief rc.1.5.1 — set/clear STANDBY with optional recalibration suppression.
  *
  * Identical to `dm_set_standby()` but lets the caller suppress the
- * CMD_RECALIBRATE post on STANDBY exit. Used by the gh#29 admin manual-motor
- * menu, which auto-sets STANDBY on entry and clears it on exit *without*
- * forcing the windows back to a fully-CLOSED baseline (the admin's manual
- * positions are deliberate — preserving them on menu exit matches
- * FR-MM07's "the controller takes its next decision from the actual current
- * state").
+ * CMD_RECALIBRATE post on STANDBY exit. It was added for the gh#29 admin
+ * manual-motor menu, which cleared its STANDBY at session end *without*
+ * recalibrating, to keep the admin's manual positions. **No caller suppresses
+ * it any more.** The menu has passed `true` since 2026-09-10 (0caff3f: the kept
+ * positions left T6 refused by dwell debt for up to 25 min), and since 2.8.0
+ * (gh#65) it does not call this at all: it takes a hold (dm_standby_hold()),
+ * whose release recalibrates. The remaining callers, `dm_set_standby()` and
+ * `dm_reload_all_cfg()`, pass `true`.
  *
  * Web/LCD-Scherm-3 STANDBY exits use `dm_set_standby()` (with
- * `recalibrate_on_clear=true`) so their semantics are unchanged: those
- * surfaces are explicit operator pauses and the operator expects a clean
- * recalibration baseline when they un-pause.
+ * `recalibrate_on_clear=true`): those surfaces are explicit operator pauses,
+ * and the operator expects a clean recalibration baseline when they un-pause.
  *
  * On entry (`standby=true`) the parameter is ignored — entries never
  * recalibrate (recalibration only makes sense on exit). On idempotent calls
@@ -535,6 +536,9 @@ bool dm_get_standby(void);
 
 /** Holder: a web teach (commission.cpp), until the admin session that started it ends. */
 #define DM_STANDBY_HOLD_TEACH  0x01u
+/** Holder: the LCD manual-motor menu (ui_display.cpp), until that LCD admin
+ *  session ends (gh#65: it used to be persisted, and a reboot stranded it). */
+#define DM_STANDBY_HOLD_LCD    0x02u
 
 /**
  * @brief Hold STANDBY for one operator session.
