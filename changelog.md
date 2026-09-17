@@ -6,6 +6,126 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.8.0] — 2026-09-17  (the M3 window-position sensor, observing only)
+
+Minor: a new task (T17), new log encodings, a new config key and new status payload keys.
+**Nothing acts on the measured position yet.** T2 still stops M3 on its timer and T6 still steps
+on temperature and humidity, so greenhouse behaviour is unchanged; a unit without an encoder runs
+the same timed control as before. Verification, upgrade notes and known limitations are in
+`bin/2.8.0/release-notes.md`.
+
+**Added.**
+
+- **Task T17 and the wire-encoder driver** (`firmware/src/window_pos/`, `drivers/windowPos/`, IDF
+  component `windowPos`). In every build, T17 (priority 4, 4 KB stack) reads the M3 encoder at
+  Modbus address 40: every `travel_m3`/150 while M3 travels (100 ms minimum), every 30 s at rest.
+- **A sensor-presence gate that selects the control law:** POSITION with a trusted sensor, TIMED
+  without one.
+  - Demotion is immediate; promotion waits for a stroke boundary.
+  - A shut gate re-probes every 30 s.
+  - A sensor reporting a BENCH firmware is refused for good.
+
+  Nothing consumes the mode yet.
+- **Two fault checks from contract §12.4, reporting only:**
+  - **Rule 1, "moving means moving":** the leaf must reach half its nominal speed within
+    min(5 s, `travel_m3`/2). Logged as `ALARM ch6 param 249`, counted as `stall_faults`. A stroke
+    toward the end the leaf already sits at is exempt while, on every sample, the end sensor stays
+    made and the position stays at that end (`at_end_exempt`).
+  - **Rule 2, "an early stop is a fault":** a CLOSE that reads ~0 in under half `travel_m3`, with
+    the end sensor never made. Logged as `param 250`, counted as `early_stops`.
+- **Log encodings**, all decoded by `log/logparser.py` (`logparser.md` 1.19):
+
+  | Row | Meaning |
+  |---|---|
+  | `SENSOR_HR ch3` | M3 position in 0.1 mm (−1 = fault), with the signed rate |
+  | `ALARM ch6` params 244–250 | device fault, teach events, status bits, sensor restart, control mode, rule 1, rule 2 |
+  | `LOG_SYSTEM value_a = 31` | hourly bus figures per slave: param 50 OK and 51 failed in the last hour, 52 the longest failure run since boot |
+  | `LOG_SYSTEM value_a = 32` | an OTA session ended without installing |
+  | `MODE param 47`, `value_b = 1` | a STANDBY held by a session |
+  | `ALARM ch4/5` `value_b` | the driver status when a T/RH or wind fault is raised |
+- **Config key `motor/deadzone_m3`** (1–200 mm, default 20, audit param 48). It sets rule 2's
+  "near zero", rule 1's end tolerance, and the movement that earns a position row at rest. It is
+  the first key added through the gh#64 descriptor table.
+- **Status payload** (`/api/status`, the WebSocket push and the remote status POST):
+  - `windows.M3_percent_x10`, `M3_mm_x10` and `M3_at_end_sensor`, omitted unless a trusted
+    reading exists;
+  - the mode flag `sensor_fault_position`;
+  - a top-level `bus` array per Modbus slave (`a`, `ok`, `err`, `busy`, `max`, since boot).
+- **Web GUI:**
+  - M3's opening on the Status page;
+  - OPENING/CLOSING on all three windows;
+  - a Modbus bus card;
+  - the Motors tab grouped per window, with M3's *Linear control* group and the deadzone setting.
+- **Bench builds only:**
+  - `GET /api/diag/windowpos`;
+  - `GET`/`POST /api/diag/commission` (window size, teach, abort), with a commissioning card;
+  - `reinit`, `reinit_status` and `traffic` actions on `/api/diag/modbus`.
+- **Acceptance scripts:**
+  - `at_wp07`, `at_wp09` (with a guided `--sequence`), `at_wp_ramp`, `at_wp_soak`, `at_wp_teach`,
+    `at_wp_teach_standby`, `at_lcd_standby`;
+  - `at_modbus_reinit`, `at_modbus_ota`, `at_ota_abort`.
+
+**Changed.**
+
+- **A teach and the LCD manual menu hold STANDBY until their admin session ends.**
+  - The hold is never saved, so a reboot ends it together with the session.
+  - Both can hold it at once.
+  - The last release drops T2's dwell debt and recalibrates.
+  - An operator's own STANDBY is never ended by a session.
+- **T17 writes a position row at rest only when the reading says something:**
+  - the first read after a stroke or a boot;
+  - a change between fault and no fault;
+  - movement of at least `deadzone_m3` (5 mm minimum).
+
+  It still reads every 30 s, because the gate and the teach release depend on that read.
+- **The Modbus inter-frame gap is 20 ms** (was 4 ms), paid before the bus lock is released. The
+  worst-case bus hold is about 235 ms (was about 215). The receive FIFO is drained on every exit.
+- **A busy bus is not a sensor failure.** The drivers return `*_ERR_BUSY`, and T5 forgives a busy
+  bus for up to 60 s per sensor.
+- **A control the operator cannot use is greyed out with the reason beside it**, never hidden.
+- **Admin routes answer 401 `session_expired`** for an unknown or expired session (was 403 `admin
+  only`). A farmer session still gets 403, and the GUI sends a lapsed session to the login dialog.
+- **A broken asset upload discards the verified firmware** instead of installing it alone. Upload
+  both again.
+- **Reproducible builds.**
+  - The app image's version field is `FIRMWARE_VERSION`.
+  - A rebuild of the same tree in the same checkout is byte-identical: fixed link order, no build
+    timestamp (`CONFIG_APP_COMPILE_TIME_DATE=n`).
+  - `CONFIG_UART_ISR_IN_IRAM=y` is required, and a build without it stops.
+- **`build_release.ps1 -Environment <env>`** packages any environment, and checks the binary's
+  version string, its app version field, and that it carries no timestamp.
+- **Manuals:** beheerder 1.21 and boer 1.18, both for firmware 2.8.0.
+- **Specifications:** FR-MM03, FR-MM07 and the TSDS describe the session hold. FR-MM07 now matches
+  the recalibrating session end the code has had since 2.4.5.
+
+**Fixed.**
+
+- **gh#65:** the LCD manual menu's STANDBY survived a reboot, but the flag that let the session end
+  clear it did not, so ventilation stayed paused indefinitely.
+- **gh#69:** a Modbus re-init under T17 traffic deleted the UART under a read, which caused two
+  boot panics on FDA4. A re-init now takes the bus lock.
+- **gh#70:** the task released the RS-485 direction line, and a flash write delayed that enough to
+  lose the encoder's reply. The UART now drives the line (RS-485 half-duplex, interrupt in IRAM).
+- **The 4 ms inter-frame gap let the S200 read two requests as one** and stay silent. The
+  operator saw that as a wind alarm on a calm day.
+- **A broken OTA upload wedged the unit:** every later upload was refused and ROTA skipped every
+  check until a reset. Every exit that does not install now releases the session, and a silent
+  uploader is dropped after 30 s (HTTP 408).
+- **On bench builds, 2 of 38 web routes failed to register** (a fixed limit of 36 handlers), which
+  hid the commissioning GUI. The limit now follows the route table, and the boot log reports
+  "N of M routes registered".
+- **Bench builds: a teach from a parked end never committed, and the commissioning card showed a
+  calibrated sensor as UNKNOWN after a reboot.** A teach now drives both end sensors from wherever
+  M3 is. In all builds, T17 aborts any teach the commissioning path does not own.
+- **The Modbus host tests hung** instead of failing. The mock now releases a reply only after the
+  request, and its clock moves.
+- **Tooling:**
+  - `build_release.ps1` packaged the release binary for a bench build;
+  - `at_wp_soak.py` missed a reboot early in a soak;
+  - four scripts left admin sessions open.
+
+---
+
 ## [2.7.1] — 2026-09-15  (gh#64 — one table, not seven)
 
 Patch: no user-visible feature, no new task, no new NVS key, and no payload-shape
