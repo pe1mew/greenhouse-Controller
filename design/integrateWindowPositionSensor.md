@@ -3,8 +3,8 @@
 | Field | Value |
 |---|---|
 | Document | Implementation plan |
-| Date | 2026-09-07, last revised **2026-09-13** |
-| Status | **Phases 0—3 COMPLETE and hardware-verified** (FDA4, 2026-09-10). **Phase 4 is SPLIT** (2026-09-13): the sensor-presence gate landed and is hardware-verified 2026-09-12, fault logging is done, and the control-side half — travel-complete, the two 12.4 rules, the operator surfaces — moved into the section 5.0 M3 slice. **Nothing consumes position yet, so the GATE before Phase 5 is still uncrossed and greenhouse behaviour is unchanged.** Phase 5 is **sequenced behind section 5.0**, no longer simply out of scope. Both prerequisites shipped (gh#49 in 2.4.1, gh#51 in 2.4.2—2.4.4). **Released in 2.8.0 and in `main` since 2026-09-17** (`ropeSensor` fast-forwarded): observe-only. T17, the presence gate and both §12.4 rules measure, log and report; soak #2 passed; nothing acts on position. **gh#73 is fixed in 2.9.0** by an installation setting, `motor/wpos_fitted_m3`, default not fitted (see *Fitted or not*). **gh#72 is fixed in 2.9.1**: each drive is judged, so a reversal is two, and the gate no longer flaps on a self-reported fault (see *Every drive judged*) |
+| Date | 2026-09-07, last revised **2026-09-17** |
+| Status | **Phases 0—3 COMPLETE and hardware-verified** (FDA4, 2026-09-10). **Phase 4 is SPLIT** (2026-09-13): the sensor-presence gate landed and is hardware-verified 2026-09-12, fault logging is done, and the control-side half — travel-complete, the two 12.4 rules, the operator surfaces — moved into the section 5.0 M3 slice. **Nothing consumes position yet, so the GATE before Phase 5 is still uncrossed and greenhouse behaviour is unchanged.** Phase 5 is **sequenced behind section 5.0**, no longer simply out of scope. Both prerequisites shipped (gh#49 in 2.4.1, gh#51 in 2.4.2—2.4.4). **Released in 2.8.0 and in `main` since 2026-09-17** (`ropeSensor` fast-forwarded): observe-only. T17, the presence gate and both §12.4 rules measure, log and report; soak #2 passed; nothing acts on position. **gh#73 is fixed in 2.9.0** by an installation setting, `motor/wpos_fitted_m3`, default not fitted (see *Fitted or not*). **gh#72 is fixed in 2.9.1**: each drive is judged, so a reversal is two, and the gate no longer flaps on a self-reported fault (see *Every drive judged*). **Phase 5 is scoped as of 2026-09-17 (§5b): two control modes, 2.10.0 confirms only, mode 2 is 2.11.0** |
 | Requirements | [`windowPositionSensorRequirements.MD`](windowPositionSensorRequirements.MD) — FR-WP01–22, and §12 evaluating this sensor |
 | Device contract | [`modbusInterfaceContractSpecification.md`](modbusInterfaceContractSpecification.md) v1.2 (normative source is the sensor project's `design/TDS.md`) |
 | Bus architecture | [`refactorSensorConfiguration.md`](refactorSensorConfiguration.md) — the end state this plan deliberately does *not* build |
@@ -1570,7 +1570,7 @@ Phases 0–4 add a sensor, logging and diagnostics. The greenhouse behaves exact
 
 The larger part of the effort, and the part the rig **cannot validate**.
 
-- **T2:** a target input to `CH_MOVING_OPEN`/`CH_MOVING_CLOSE` that de-energises at target, travel timer retained as ceiling. A partial position becomes a new persisted state — an NVS schema change, so a **minor** version bump.
+- **T2:** a target input to `CH_MOVING_OPEN`/`CH_MOVING_CLOSE` that de-energises at target, travel timer retained as ceiling. A partial position becomes a new persisted state — an NVS schema change, so a **minor** version bump. **Scheduled 2026-09-17 into 2.11.0, not 2.10.0: see §5b.**
 - **T6:** `VENT_STEP_TABLE` must express partial M3 apertures.
 - **`step_width = max(hyst_t / NUM_VENT_STEPS, 1)` is integer division and gets *worse* with more steps** — at 6 steps, `hyst_t = 5` gives width 0 → clamped to 1 → every step 1 °C. **The F8 arithmetic must be reworked before the step table is touched**, not after.
 
@@ -1588,7 +1588,7 @@ So there are now **two gates**, not one, and they are crossed in order:
 
 | | Gate | What it permits |
 |---|---|---|
-| 1 | the existing ▲ GATE below | M3 may be *positioned* using the sensor. The vent algorithm is untouched. |
+| 1 | the existing ▲ GATE below | M3 may be *positioned* using the sensor. The vent algorithm is untouched. **Narrowed for 2.10.0 to confirmation only — §5b.** |
 | 2 | this section 5.0 | the vent algorithm may change (section 5a: per-window setpoints, central algorithm, PID/fuzzy). |
 
 **What "full implementation" means concretely**, given phases 0—4 are built:
@@ -1989,6 +1989,119 @@ diagnosed as one before the operator corrected it.
 
 ---
 
+#### 5b. Decided 2026-09-17 — two control modes, the position path, and the 2.10.0 / 2.11.0 split
+
+Recorded from the operator on 2026-09-17, after the gh#72 work and a review of the summer
+campaign. It concretises §5a and **narrows gate 1 for 2.10.0**.
+
+**Two control modes, operator-visible.**
+
+| Mode | M1, M2 | M3 | Fallback |
+|---|---|---|---|
+| **1** (what `main` ships) | timed, 3 steps | timed, binary | — |
+| **2** | timed, **2 fixed steps** | **linear**, from the wire sensor | to mode 1 when the sensor fails |
+
+M3 therefore has two actuator modes — **binary** (timed full open/close) and **linear** (a target
+opening). M1 and M2 stay binary permanently: no sensor is planned for them, so their sibling
+actuators declare `digital` for good (§5a item 3).
+
+**Mode 1's "one degree per step" is arithmetic, not a constant.** `step_width =
+max(hyst_t / 3, 1)`, so it is 1 °C for `hyst_t` up to 5 and 2 °C from 6 — which is why F8 found
+only three distinct behaviours across the whole legal range. Mode 2's mapping must not inherit
+that integer division (see the rework note under Phase 5).
+
+**What each release contains.**
+
+| Release | Content |
+|---|---|
+| **2.10.0** | **Confirm only.** T2 keeps its timed drives and **drives on to the timer**. The sensor confirms each drive's end (done or failed) and checks `travel_m3` against the measured traverse (§3.5). On a sensor fault mid-drive the drive finishes on the timer and the fault is reported; position control stays off until a clean stroke is seen. **This supersedes gate 1's "de-energise at target, stop on bit 3" for 2.10.0.** |
+| **2.11.0** | **Mode 2.** T2 gains the target input, T6 the graded law and the fallback. Designed while 2.10.0 soaks. |
+
+##### The position path: one owner, one copy
+
+The operator's principle is a **single source of truth**, with no information outside the planned
+paths. Decided: **T4 exposes a pass-through accessor** that calls T17 and returns the reading with
+its age. The call graph is T2/T6 → T4 → T17, and **nothing is buffered**.
+
+**Why T4 must not hold its own copy of the position.** T4's loop waits on Q6 with a 1 s timeout, so
+a T4-held reading is up to ~1 s old *on top of* T17's own sample age — and for positioning that age
+is overshoot (age × leaf speed):
+
+| | From T17's own sample | With a buffered T4 hop |
+|---|---|---|
+| Production — 176 s traverse, 1.17 s poll | ≤ 0.67 % of stroke | ≤ 1.25 % |
+| Rig — 13 s traverse, 0.1 s poll | ≤ 0.9 % | ≤ 9 % |
+
+FR-WP04/FR-WP05 ask for 1 % resolution and ±1 % repeatability, so the hop alone spends the budget
+in production and exceeds it tenfold on the rig. The second copy is also this codebase's own
+recurring defect: gh#51 and gh#52 were both a cached duplicate of a value another task owned, and
+T2's private travel/dwell copy still needs `T2_NOTIFY_CFG_CHANGED` to stay honest.
+
+**What does travel through T4, because T4 owns it:** the desired mode, `wpos_fitted_m3`, travel and
+dwell, the deadband, and the fault state the surfaces display.
+
+##### Mode selection is two variables
+
+- **Desired mode** — a config key (T4, NVS, GUI and LCD), default mode 1.
+- **Effective mode** = desired mode 2 **and** M3's linear capability from T17 (fitted, gate open,
+  no active fault). Computed in one place.
+- **Every change logs with its own `param_id`.** `LOG_MODE_CHANGE` already has two emitters (T6's
+  vent step, and STANDBY as param 47) and all three consumers decode only the first — gh#54. A
+  third emitter needs its own id and a parser branch in the same change.
+- **Anti-flap:** demotion immediate, promotion only at a stroke boundary (§4a), plus a hold-down
+  before mode 2 resumes. The soak's `mode_changes <= 2` criterion exists because gate flapping was
+  real.
+- **The fallback leaves M3 at an end.** Mode 1 has no partial state, so a drop-out finishes the
+  drive on the timer and M3 is then driven to an end; until it arrives, its state is not "open".
+
+##### What the target costs in T2
+
+- **Q1 carries no target today.** Add a target field and a **separate action** rather than
+  overloading `CMD_OPEN`, so an old-style open can never read as "target 0 %". Five tasks post to
+  Q1 — enumerate them in the release notes, per the standing rule for a shared queue.
+- **A new terminal state.** Only CLOSED and OPEN are terminal and persisted, and the boot shortcut
+  needs all three CLOSED, so a partial M3 always forces a boot recalibration. `SENSOR_HR ch2`
+  already uses all four 2-bit codes per channel, so a fifth state needs a new encoding plus
+  `logparser.py` and `plot_daily.py` in the same change.
+- **Stop rule:** within the deadband of the target, travel timer as the ceiling. For the 0 % and
+  100 % targets 2.10.0's "drive on to the timer" still applies; a partial target must stop
+  mid-travel, so that rule cannot be universal in mode 2.
+- **Minimum move, and a minimum interval.** §3.6's floor 2 (the shortest pulse that actually moves
+  the leaf) is still unmeasured, and the deadband default is a fixed 20 mm rather than derived.
+  Measure floor 2 on the rig before linear control issues small moves, and give M3 a minimum
+  interval between moves (§5a's linear dwell). Continuous control otherwise replaces a 25-minute
+  dwell with motor chatter — count motor starts per hour in the soak.
+- **Safety unchanged (FR-WP18).** The wind close-all, the motor alarm and the boot sweep ignore
+  position and may interrupt a positioning move at any point.
+
+##### What T6 needs
+
+- **A mapping from demand to (M1/M2 step, M3 %)** — the control law itself, and §10's open
+  decision 9. A proportional map with a rate limit is the simplest candidate and is replayable
+  offline; a PID's integral term is the risk against an actuator that takes 176 s and reports late.
+- **Achieved, not demanded.** T6 remembers the step it *asked for*; with a linear M3 that
+  difference becomes visible, so it needs the done/failed result and the achieved position back —
+  the feedback half §5a records as missing.
+- **Wind direction.** The campaign measures M3's effect varying 30-100x by direction, and the
+  **2026-07-20 limit cycle ran under north (windward) wind**: 7 of its 8 M3 openings at 321-354°,
+  about 3 m/s (log analysis, 2026-09-17). Across the campaign, of 370 M3 openings **151 were north
+  (315-45°), 91 south-west (200-290°) and 128 in sectors the campaign never characterised**. One
+  fixed demand-to-aperture curve will therefore be wrong in one regime: keep the curve's parameters
+  in config, log the computed target next to the demand, and treat direction gating as a later step
+  (NS-9).
+
+##### Prerequisites before mode 2 may be trusted
+
+- **[gh#78](https://github.com/pe1mew/greenhouse-Controller/issues/78)** — rule 2's two flaws. The
+  detectors are the guard against a position that lies, so they come first.
+- **T17's missing fallbacks:** bit 4 (both end sensors, a wiring fault) does not shut the gate, and
+  the device's start-up bits are never read.
+- **AT-WP02** (ten moves to one target, spread within ±1 %) and **AT-WP03** (endpoints) — runnable
+  only once T2 can hold a partial target.
+- **5C88:** the sensor bought, fitted and taught
+  ([gh#77](https://github.com/pe1mew/greenhouse-Controller/issues/77)). Until then
+  `wpos_fitted_m3` = 0 keeps mode 2 unavailable there, which is the right default.
+
 ## 6. Operator-facing surfaces
 
 ### 6.1 The display rule
@@ -2147,7 +2260,9 @@ Note what production logging unlocks that the rig cannot: a **real** 171 s trave
 8. **The minimum-move deadband value** — floor 2 (the shortest pulse that actually
    moves the leaf) is unmeasured; see §3.6.
 9. **PID or fuzzy** for the central algorithm, and how a mixed
-   discrete/continuous plant is expressed to it. See §5a.
+   discrete/continuous plant is expressed to it. See §5a. **Narrowed 2026-09-17:** the plant is
+   expressed as M1/M2 at two fixed steps plus a linear M3 (§5b), and a proportional map with a rate
+   limit joins PID and fuzzy as a candidate. The law itself is still open.
 10. **Two M3 config keys, specified but NOT yet created** (noted 2026-09-13 when
     the operator looked for the deadband setting and found none). They are
     correctly absent today, and the reasons are worth keeping because
@@ -2187,3 +2302,27 @@ Note what production logging unlocks that the rig cannot: a **real** 171 s trave
     > lies, and the group heading carries the honesty instead of a disclaimer.
     > Wiring it is a clean follow-on once gh#64 lands — one key, six tables,
     > verified by `check_cfg_tables.py`.
+
+    > **STALE, corrected 2026-09-17.** Both premises have moved. **gh#64 landed
+    > 2026-09-14**, so a key is now *one row* in `firmware/config/cfg_desc.inc`,
+    > checked by `bin/check_cfg_desc.py` — not six hand-maintained tables. And the
+    > **deadband key now exists and is consumed**: `deadzone_m3_mm`
+    > (`cfg_desc.inc:97`, default `DEF_DEADZONE_M3_MM` = 20 mm), read by T17 as
+    > §12.4 rule 2's "~0" band and by rule 1's at-end exemption, with a live GUI
+    > control. Two things from the row above still hold: its default is a **fixed
+    > 20 mm rather than derived** from `travel_m3` as §3.6 requires, and **linear
+    > dwell** — the minimum interval between M3 moves — is still uncreated. Both
+    > belong to mode 2 (§5b).
+
+**Decided 2026-09-17 — see §5b:**
+
+11. ~~Two control modes, and what each does to which window?~~ **Mode 1** = today's
+    timed stepping of all three; **mode 2** = M1/M2 at two fixed steps with a linear
+    M3, falling back to mode 1 when the sensor fails. M3 has two actuator modes,
+    binary and linear; M1 and M2 stay binary.
+12. ~~How does the position reach T2 and T6?~~ Through a **T4 pass-through
+    accessor**: one owner (T17), one copy, T4 in the call graph but never buffering
+    the value. The measured reason is in §5b — a buffered hop costs the entire
+    1 % overshoot budget in production and ten times it on the rig.
+13. ~~What does 2.10.0 contain?~~ **Confirmation only**, with T2 still driving to the
+    timer. Mode 2 is **2.11.0**, designed while 2.10.0 soaks.

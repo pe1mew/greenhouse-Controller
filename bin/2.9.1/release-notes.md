@@ -146,6 +146,7 @@ All on 2344 in the dev rig, with the encoder connected, on bench builds of this 
   - **False alarm on a part-way close.** Position reads 0 for about 1.2 s (7 polls) before the closed end sensor makes, and the rule waits only 2. So a CLOSE that reaches ~0 in under half `travel_m3` without first passing an end sensor is reported as an early stop. On the rig that is a close from below about 58 % open, for example a wind override or LCD reversal while M3 is opening, or a recalibration of a partly open M3.
   - **Blind on a full close.** The open end sensor counts as confirmation, so a full close from OPEN is never judged by rule 2.
   - Neither was seen in a soak, because every close there started at the open end. The rule only logs and counts.
+- **A wind override that starts during a long recalibration can be lost** ([gh#79](https://github.com/pe1mew/greenhouse-Controller/issues/79)), and M1 and M2 can then open while it is active. Found by reading the code on 2026-09-17 and not reproduced. All releases have the same code, 2.3.1 included. To be fixed in 2.9.2.
 - **A drive shorter than rule 1's grace**, min(5 s, `travel_m3`/2), is not judged. That is unchanged, but a reversal now resets the grace, so reversing a CLOSE within 5 s leaves that CLOSE unjudged.
 - **The fault thresholds are validated on the rig only.** Unchanged.
 - **The at-end exemption's continuity break is not tested on hardware.** Unchanged. The new `stuck` injection makes that test possible; it is a small item.
