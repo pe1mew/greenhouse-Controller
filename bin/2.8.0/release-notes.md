@@ -254,10 +254,12 @@ against a build with the defect and failed there.
   After the fix it passed, with recovery 31 s after reconnection against a 30 s re-probe.
 - **AT-WP07:** with the encoder gone, the wind override still closed M3, on the timer, 18.4 s
   after the override rose.
-- **AT-WP09 (2026-09-15):**
-  - detection half: with the draw-wire detached, rule 1 fired (`param 249`, peak 0 against a
-    threshold of 576);
-  - healthy half: an LCD CLOSE traverse stayed silent, with a peak rate of about 1 750 against 576.
+- **AT-WP09 (2026-09-15, re-run 2026-09-17 on this code with `--sequence`):**
+  - detection half: with the draw-wire detached, rule 1 reported the stall on a CLOSE and on an
+    OPEN, 6 s in each time (`param 249`: peak 0.0 mm/s against 57.6 mm/s), and nothing was
+    exempted;
+  - healthy half: an OPEN and a CLOSE stayed silent (96 readings each, 1 500 mm of travel);
+  - the sensor was back at the open end within seconds of reattaching the wire.
 - **Soak #1 failed**, usefully: rule 1 false-tripped on a CLOSE of an already-closed M3. That was
   fixed with the at-end exemption. The next boot's CLOSE of the closed window was exempted after
   83 readings, with no stall.
@@ -380,10 +382,14 @@ included. A wiped unit boots with 43 keys at their descriptor defaults.
   direction's verdict. That includes a wind override closing a window that is opening.
 - **The fault thresholds are validated on the rig only**: a 13 s test window, not production's
   171 s rope flap. Production logging is the test for them.
-- **Rule 1's detection half was last run before the at-end exemption.** `at_wp09.py --sequence`
-  re-runs it, including a detached-wire CLOSE from OPEN (the case the exemption could hide), but
-  had not been run with the wire detached when these notes were written. A shorted wiper is covered
-  by argument, not by test, and so is an obstruction with a healthy sensor.
+- **The at-end exemption's continuity break is not tested on hardware.** AT-WP09 passed on this
+  code, but neither detached-wire stroke started with the exemption's conditions met:
+  - the detached wire held its last reading (1500 mm, the open end);
+  - with the wire off, the closed end sensor released at rest (contract §5.3).
+
+  So what keeps a shorted wiper judged, the end sensor dropping as the leaf leaves, is covered by
+  the code and a replay of logged strokes, not by a test. An obstruction with a healthy sensor is
+  not tested either.
 - **No DEGRADED threshold for the bus** (gh#66). The rig's addr 1 and addr 44 figures describe
   emulated slaves that are out of spec (gh#68).
 - **ROTA re-downloads both artefacts on every deferred apply**

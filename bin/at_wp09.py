@@ -42,12 +42,20 @@ this -- a headline counter that could not fail proved nothing over 7117 reads.
 THE SEQUENCE (--sequence): both halves, and the case the exemption could hide
 ---------------------------------------------------------------------------
 Rule 1 got an at-end exemption on 2026-09-16: a stroke toward the end the leaf
-already sits at is not judged. The only run of this test's detection half
-predates that change. The exemption is built not to hide a leaf that does not
-follow, but that was argued, not tested. With the draw-wire detached from an
-OPEN leaf, the reading sits at 0 while the open end sensor is made: exactly
-what a shorted wiper looks like at the start of a CLOSE. Only the end sensor
-dropping as the leaf leaves the open end keeps that stroke judged.
+already sits at is not judged. The exemption holds only while, on every sample
+of the grace window, the end sensor stays made AND the reading stays at the
+TARGET end. A leaf that does not follow must still be judged, and the case that
+needs care is a reading stuck at the target end while the leaf starts at the
+other end with its end sensor made (a shorted wiper reads 0 on an open window):
+there, only the end sensor dropping as the leaf leaves breaks the exemption.
+
+Whether a run exercises that "continuity break" depends on the rig, so each
+fault stroke REPORTS whether the exemption's start conditions held (end sensor
+made, reading at the target end), judged from the last reading before the
+stroke. On FDA4 on 2026-09-17 they did not: the detached wire held its last
+reading (1500 mm, the open end), and with the wire off the closed end sensor
+released at rest (contract 5.3: a sensor zone shorter than the overtravel).
+Both fault strokes still reported the stall, but neither tested the break.
 
 `--sequence` walks through it at the LCD manual menu (screen 6, `#`, `3`):
 
@@ -115,6 +123,27 @@ WORD = {PASS: "PASS", FAIL: "FAIL", INCONCLUSIVE: "INCONCLUSIVE"}
 # A leaf that moves more than this while the wire is supposed to be detached
 # means the wire was still on it (0.1 mm).
 MOVED_X10 = 500
+
+# The full opening (40004) in 0.1 mm, learned from any reading well away from
+# the closed end; used only to say whether a reading sat at the open end.
+_full_x10 = [None]
+# Start conditions of the last observed stroke: (end sensor made, reading at the
+# target end), or None when they could not be judged.
+LAST_START = [None]
+
+
+def learn_full(d):
+    pct = int(d.get("percent_x10", 0) or 0)
+    mm = d.get("opening_mm_x10")
+    if d.get("ok") and not d.get("sensor_fault") and isinstance(mm, int) and pct >= 500:
+        _full_x10[0] = mm * 1000 // pct
+
+
+def deadzone_x10_of(u):
+    sc, cfg = u._req("GET", "/api/config")
+    mm = cfg.get("deadzone_m3_mm") if isinstance(cfg, dict) else None
+    return int(mm) * 10 if isinstance(mm, int) and mm > 0 else 200
+
 
 LCD_MENU = [
     "On the LCD: press D until the screen shows M1 M2 M3 (screen 6), press #,",
@@ -240,7 +269,7 @@ def ask(lines):
 
 
 # ------------------------------------------------------------ one stroke
-def observe(u, healthy, timeout, prompt):
+def observe(u, healthy, timeout, prompt, deadzone_x10=200):
     """Watch one stroke that the operator commands, and judge it.
 
     The stroke is found in /api/status (M3 leaves OPEN/CLOSED) as well as in
@@ -249,10 +278,14 @@ def observe(u, healthy, timeout, prompt):
 
     Returns (code, reason).
     """
-    s0 = soak_of(u.diag())
+    d0 = u.diag()
+    s0 = soak_of(d0)
+    learn_full(d0)
+    rest = d0 if (d0.get("ok") and not d0.get("sensor_fault")) else None
     banner(prompt)
     t0 = time.time()
     moved_at = counted_at = fired_at = None
+    direction = None
     reasons = set()
     fault_readings = 0
     pos = []
@@ -263,6 +296,7 @@ def observe(u, healthy, timeout, prompt):
         now = time.time() - t0
         d = u.diag()
         s = soak_of(d)
+        learn_full(d)
         reasons.add(str(gate_of(d).get("reason_str", "?")))
         if d.get("ok"):
             if d.get("sensor_fault"):
@@ -270,8 +304,11 @@ def observe(u, healthy, timeout, prompt):
             elif isinstance(d.get("opening_mm_x10"), int):
                 pos.append(d["opening_mm_x10"])
         m3 = m3_of(u.status())
+        if moved_at is None and m3 in SETTLED and d.get("ok") and not d.get("sensor_fault"):
+            rest = d                                 # the last reading before the stroke
         if moved_at is None and m3 is not None and m3 not in SETTLED:
             moved_at = now
+            direction = m3
         if counted_at is None and delta(s, s0, "strokes") > 0:
             counted_at = now
         if fired_at is None and delta(s, s0, "stall_faults") > 0:
@@ -302,6 +339,21 @@ def observe(u, healthy, timeout, prompt):
         % (", ".join(sorted(reasons)), fault_readings,
            "%.1f mm" % (span / 10.0) if span is not None else "no valid reading"))
 
+    LAST_START[0] = None
+    target = {"MOVING_CLOSE": "CLOSED", "MOVING_OPEN": "OPEN"}.get(direction)
+    if rest is not None and target is not None:
+        mm = rest.get("opening_mm_x10")
+        bit3 = bool(rest.get("at_end_sensor"))
+        if not isinstance(mm, int):
+            at_target = False
+        elif target == "CLOSED":
+            at_target = mm <= deadzone_x10
+        else:
+            at_target = _full_x10[0] is not None and mm + deadzone_x10 >= _full_x10[0]
+        LAST_START[0] = (bit3, at_target)
+        say("before the stroke: end sensor %s, reading %.1f mm (%s the %s end)"
+            % ("made" if bit3 else "clear", mm / 10.0 if isinstance(mm, int) else -1,
+               "at" if at_target else "not at", target))
     if start is None:
         return INCONCLUSIVE, ("no stroke was observed -- nothing was tested. T2 must "
                               "actually energise M3; a stroke you did not cause is not "
@@ -324,8 +376,18 @@ def observe(u, healthy, timeout, prompt):
         return PASS, "a healthy stroke did NOT trip 12.4 rule 1"
 
     if fired_at is not None:
-        return PASS, ("the divergence was reported. Read the ALARM ch6 param 249 row "
-                      "off the SD log for the peak rate and threshold it recorded; "
+        if LAST_START[0] == (True, True):
+            note = ("The exemption's start conditions held, so the end sensor dropping is "
+                    "what kept this stroke judged: the continuity break was exercised.")
+        elif LAST_START[0] is None:
+            note = "Whether the exemption's start conditions held could not be judged."
+        else:
+            note = ("The exemption's start conditions did not hold (end sensor made: %s, "
+                    "reading at the target end: %s), so this stroke did NOT test the "
+                    "continuity break." % ("yes" if LAST_START[0][0] else "no",
+                                           "yes" if LAST_START[0][1] else "no"))
+        return PASS, ("the divergence was reported. " + note + " The ALARM ch6 param 249 "
+                      "row on the SD log carries the peak rate and threshold; "
                       "`logparser.py` decodes it")
     if k["at_end_exempt"] > 0:
         return FAIL, ("the at-end exemption SWALLOWED a real stall: the stroke counted as "
@@ -372,7 +434,7 @@ def single(args, u):
         prompt = ["Obstruct M3 (or detach the draw-wire from the leaf), then",
                   "command an M3 stroke now."]
     prompt.append("Waiting up to %d s." % args.timeout)
-    code, why = observe(u, args.healthy, args.timeout, prompt)
+    code, why = observe(u, args.healthy, args.timeout, prompt, deadzone_x10_of(u))
     print("\n%s: %s" % (WORD[code], why))
     return code
 
@@ -468,14 +530,18 @@ def sequence(args, u):
     say("the LCD menu holds STANDBY: automatic control is paused")
 
     results = []
+    continuity = []
+    dz = deadzone_x10_of(u)
 
     def stroke(label, healthy, key, end):
         verb = "Open" if key == "1" else "Close"
         print("\n[%s]" % label)
         code, why = observe(u, healthy, args.timeout,
-                            ["%s: press %s (%s) on the LCD." % (label, key, verb)])
+                            ["%s: press %s (%s) on the LCD." % (label, key, verb)], dz)
         print("  %s: %s -- %s" % (label, WORD[code], why))
         results.append((label, code))
+        if not healthy:
+            continuity.append(LAST_START[0] == (True, True))
         if not wait_m3(u, end, 60):
             say("M3 did not end %s" % end)
         return code
@@ -519,6 +585,9 @@ def sequence(args, u):
     say("STANDBY %s" % ("cleared: automatic control resumes"
                         if "standby" not in flags_of(u.status())
                         else "still on after 6 min -- log out on the LCD"))
+    if continuity and not any(continuity):
+        print("\nNOTE: no fault stroke started with the exemption's conditions met, so the")
+        print("continuity break (end sensor dropping as the leaf leaves) was not exercised.")
     return finish(u, results, s0)
 
 
