@@ -131,6 +131,10 @@ typedef enum {
  *       whereas switching *to* position control underneath a consumer that has
  *       already committed to a timed stroke is not. A caller therefore never
  *       sees the mode gain authority in the middle of a movement.
+ *       Since gh#72 the boundary must also be a real one: T17 promotes only a
+ *       stroke that it saw start from rest with the gate open, so a gate that
+ *       re-opens mid-stroke, or a first look at a stroke already running,
+ *       waits for the next stroke.
  */
 windowpos_ctrl_mode_t windowpos_task_ctrl_mode(windowpos_gate_reason_t *out_reason);
 
@@ -160,7 +164,11 @@ typedef struct {
     uint32_t err_busy;      /**< Bus lock not acquired -- lock contention with T5. */
     uint32_t err_comm;      /**< Timeout / CRC / exception. */
     uint32_t rejected_rate; /**< Samples dropped by the FR-WP20 plausibility check. */
-    uint32_t strokes;       /**< Strokes observed since boot. */
+    uint32_t strokes;       /**< Judged drives since boot: one per stroke, plus
+                             *   one per `redrives` (gh#72). Counted when
+                             *   the relay is seen energised, so a stroke
+                             *   observed only during a reversal gap counts
+                             *   once its drive starts. */
     uint32_t probe_fail;    /**< Consecutive-failure probes that closed the gate. */
     uint32_t mode_changes;  /**< TIMED/POSITION transitions since boot. */
     uint32_t gated_polls;   /**< Ticks with a stroke in progress in which the
@@ -185,6 +193,11 @@ typedef struct {
                              *   value 4). Expected only after a restart or a
                              *   sensor dropout mid-teach; a teach run or an
                              *   operator abort must never move it. */
+    uint32_t redrives;      /**< gh#72: drives after the first within one
+                             *   stroke -- a reversal (wind override, manual
+                             *   command, recalibration), or a pivot back in
+                             *   the reversal gap. Each is judged on its own
+                             *   and also counted in `strokes`. */
 } windowpos_counters_t;
 
 /** @brief Copy the soak counters. @param out Destination, must not be NULL. */
@@ -221,6 +234,39 @@ bool windowpos_task_derived(windowpos_derived_t *out);
  * @return milliseconds, already clamped to the device's 100..60000.
  */
 uint16_t windowpos_task_window_ms_for(uint16_t travel_s);
+
+#ifdef MODBUS_BENCH
+/**
+ * @brief Bench test hook (gh#72): what T17's own sensor reads should see.
+ *
+ * Bench builds only. A test uses it to create, at a moment of its choosing,
+ * sensor states that are hard to produce by hand: a sensor that vanishes
+ * mid-stroke, one that keeps reporting its own fault, and a reading that no
+ * longer follows the leaf (a shorted wiper). Only T17's reads are affected;
+ * the direct read in `GET /api/diag/windowpos` and the commissioning path still
+ * see the device as it is. RAM only, so a reboot clears it.
+ */
+typedef enum {
+    WPOS_INJECT_NONE   = 0, /**< Reads as they are. */
+    WPOS_INJECT_ABSENT = 1, /**< Every T17 read fails as a timeout; nothing is sent. */
+    WPOS_INJECT_FAULT  = 2, /**< Real reads, reported as the device's own fault (wiper open). */
+    WPOS_INJECT_STUCK  = 3, /**< Real reads, but the position frozen at the first
+                             *   one and the rate 0 -- a shorted wiper. The end
+                             *   sensors (bit 3) stay real. */
+} windowpos_inject_t;
+
+/**
+ * @brief Set the injection.
+ *
+ * Clearing it (NONE) also makes a shut gate probe at once, the way a sensor
+ * that came back would be found at the next probe -- so a test gets the
+ * re-open at a moment it chose, not up to 30 s later.
+ */
+void windowpos_task_inject(windowpos_inject_t how);
+
+/** @brief The injection in force. */
+windowpos_inject_t windowpos_task_injected(void);
+#endif
 
 /**
  * @brief T17 task entry point. Never returns.

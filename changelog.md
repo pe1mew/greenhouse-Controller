@@ -6,6 +6,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.9.1] — 2026-09-17  (every drive of M3 is judged; the sensor gate stops flapping)
+
+Patch: fixes [gh#72](https://github.com/pe1mew/greenhouse-Controller/issues/72) and the two
+gate-state defects folded into it. There is no new config key, log encoding or public payload key.
+Greenhouse behaviour is unchanged, because nothing acts on position yet. Verification, upgrade
+notes and known limitations are in `bin/2.9.1/release-notes.md`.
+
+**Fixed.**
+
+- **A reversal mid-stroke is judged in both directions** (gh#72).
+  - The §12.4 checks now judge each drive, each energisation of an M3 relay, where they used to
+    judge each stroke.
+  - T2 counts its energisations (new: `t2_get_drive()`), so T17 sees a new drive even across the
+    2 s reversal gap, which T2 reports as moving.
+  - Nothing is judged during the gap.
+  - `strokes` now counts judged drives, and a new bench counter `redrives` counts the second and
+    later drives of a stroke.
+- **A sensor that reports its own fault no longer makes the gate flap.** The 30 s re-probe also
+  reads the position and stays shut on a faulted reading. Before, it re-opened on the identity
+  alone, and the next idle read shut it again, logging two mode rows every ~30 s.
+- **A stroke no longer inherits a stale verdict.** A shut gate forgets the stroke in progress, so
+  a gate that re-opens during a later stroke judges it afresh from there. The mode is promoted
+  only for a stroke that T17 saw start from rest with the gate open.
+
+**Added (bench builds only).**
+
+- **`POST /api/diag/windowpos {"inject": ...}`**, a test hook. It makes T17's own reads see the
+  sensor absent, faulted or stuck (a shorted wiper), at a moment a test chooses. RAM only;
+  `GET` reports it as `gate.inject`.
+- **`-DWPOS_FAILFIRST_GH72`**, a fail-first build that restores the old behaviour. `GET` reports
+  it as `gate.failfirst_gh72`.
+- **`bin/at_wp_gh72.py`**, the acceptance test (stages `flap`, `stale` and `reversal`). It
+  failed first on the fail-first build and passed on this one, on 2344.
+
+**Changed.**
+
+- **The probe's position read also serves the orphan-teach check** when the gate opens.
+- **Docs:** `logparser.md` 1.21 (the rule rows come per drive), the plan's gh#72 section,
+  CLAUDE.md, and the architecture note.
+
+---
+
 ## [2.9.0] — 2026-09-17  (whether M3 has a position sensor is now a setting)
 
 Minor: a new config key, a new gate reason in the log, and a new `/api/config` field. Fixes

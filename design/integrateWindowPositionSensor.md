@@ -4,7 +4,7 @@
 |---|---|
 | Document | Implementation plan |
 | Date | 2026-09-07, last revised **2026-09-13** |
-| Status | **Phases 0—3 COMPLETE and hardware-verified** (FDA4, 2026-09-10). **Phase 4 is SPLIT** (2026-09-13): the sensor-presence gate landed and is hardware-verified 2026-09-12, fault logging is done, and the control-side half — travel-complete, the two 12.4 rules, the operator surfaces — moved into the section 5.0 M3 slice. **Nothing consumes position yet, so the GATE before Phase 5 is still uncrossed and greenhouse behaviour is unchanged.** Phase 5 is **sequenced behind section 5.0**, no longer simply out of scope. Both prerequisites shipped (gh#49 in 2.4.1, gh#51 in 2.4.2—2.4.4). **Released in 2.8.0 and in `main` since 2026-09-17** (`ropeSensor` fast-forwarded): observe-only. T17, the presence gate and both §12.4 rules measure, log and report; soak #2 passed; nothing acts on position. **gh#73 is fixed in 2.9.0** by an installation setting, `motor/wpos_fitted_m3`, default not fitted (see *Fitted or not*). Open before the control step: gh#72 (a reversal is not judged) |
+| Status | **Phases 0—3 COMPLETE and hardware-verified** (FDA4, 2026-09-10). **Phase 4 is SPLIT** (2026-09-13): the sensor-presence gate landed and is hardware-verified 2026-09-12, fault logging is done, and the control-side half — travel-complete, the two 12.4 rules, the operator surfaces — moved into the section 5.0 M3 slice. **Nothing consumes position yet, so the GATE before Phase 5 is still uncrossed and greenhouse behaviour is unchanged.** Phase 5 is **sequenced behind section 5.0**, no longer simply out of scope. Both prerequisites shipped (gh#49 in 2.4.1, gh#51 in 2.4.2—2.4.4). **Released in 2.8.0 and in `main` since 2026-09-17** (`ropeSensor` fast-forwarded): observe-only. T17, the presence gate and both §12.4 rules measure, log and report; soak #2 passed; nothing acts on position. **gh#73 is fixed in 2.9.0** by an installation setting, `motor/wpos_fitted_m3`, default not fitted (see *Fitted or not*). **gh#72 is fixed in 2.9.1**: each drive is judged, so a reversal is two, and the gate no longer flaps on a self-reported fault (see *Every drive judged*) |
 | Requirements | [`windowPositionSensorRequirements.MD`](windowPositionSensorRequirements.MD) — FR-WP01–22, and §12 evaluating this sensor |
 | Device contract | [`modbusInterfaceContractSpecification.md`](modbusInterfaceContractSpecification.md) v1.2 (normative source is the sensor project's `design/TDS.md`) |
 | Bus architecture | [`refactorSensorConfiguration.md`](refactorSensorConfiguration.md) — the end state this plan deliberately does *not* build |
@@ -1306,6 +1306,51 @@ on once. Requirement: FR-WP23 in the requirements study.
 | `log` (SD) | PASS. One `TIMED [not fitted]` row per boot, 7 s after the boot row; each switch, including one made through the web interface outside the test, logged its param-49 audit row and the mode rows within a second; no position rows while not fitted |
 | `unplug` | PASS (16:18). Fault flag 31 s after the first failed read, position gone with it, address 40 still listed; re-plugged, both back at the next re-probe. One SD mode row each way. An earlier attempt timed out with the encoder never unplugged |
 | hourly bus rows | PASS. At 14:50, with the setting on: addresses 1, 40 and 44. At 15:49, with it off: 1 and 44. T4's "hour" is 59 min here |
+
+#### Every drive judged, and a gate that no longer flaps (gh#72, 2.9.1)
+
+**Why.** Rules 1 and 2 must judge every movement before position may act on M3 (Phase 5). Three
+defects stood in the way:
+
+1. **A reversal was one stroke to T17.** T2 reports its 2 s reversal gap as moving, so rule 1 kept
+   the first direction's settled verdict and rule 2 kept its direction. A wind override closing
+   an opening window, the case that matters most, was never judged.
+2. **A self-reported device fault made the gate flap.** The 30 s re-probe read only the identity,
+   re-opened the gate, and the next idle read shut it again: two mode rows per cycle, a probe
+   failure per cycle, and promotions in between.
+3. **A stroke could inherit a stale verdict.** A shut gate kept the stroke it shut in, so a gate
+   that re-opened during a later stroke judged it with the old direction, start time and verdict.
+
+**Fix.**
+
+1. **Judge per drive.** T2 counts relay energisations (`t2_get_drive()`), and a new count starts a
+   fresh verdict, timed from the energised relay. Nothing is judged in the gap. `strokes` counts
+   judged drives, and `redrives` counts the extra ones.
+2. **The probe also reads the position** and stays shut on a faulted reading.
+3. **A shut gate forgets the stroke**, and promotion needs a stroke seen to start from rest with
+   the gate open (`rest_seen`).
+
+**Test hook, bench builds only.** `POST /api/diag/windowpos {"inject": ...}` makes T17's own reads
+see the sensor absent, faulted or stuck (a shorted wiper). A `-DWPOS_FAILFIRST_GH72` build restores
+the old behaviour. Both are reported by the GET, so a fail-first result cannot be mistaken for a
+real one. The `stuck` injection also makes the continuity-break test possible without handling the
+wire (a small item).
+
+**Verified on 2344, 2026-09-17** (`bin/at_wp_gh72.py`, fail-first first):
+
+| Stage | Fail-first build | 2.9.1 |
+|---|---|---|
+| `flap` (device fault at rest, 100 s) | FAIL: "ok" in 64 of 67 samples, `probe_fail` +3 | PASS: 0 of 75, `probe_fail` +1, re-opened on clearing |
+| `stale` (absent in a CLOSE, back mid-OPEN) | FAIL: `strokes` +0 | PASS: `strokes` +1, mode stayed timed |
+| `reversal` A (stuck, CLOSE reversed to OPEN) | FAIL: 1 stall | PASS: 2 stalls, `redrives` +1 |
+| `reversal` B (healthy) | no stall (expected) | PASS: no stall, `redrives` +1 |
+
+**Operator timing matters.** A "press Open when M3 is closed" instruction produced a reversal on
+the first run. T2 drives on for its 5 s margin after the leaf stops, and still reports the stroke
+until then. The stale stage now asks for the second key only after the controller reports CLOSED.
+
+**Not tested on hardware:** a reversal made by T3 itself, which takes the same T2 path, and a real
+device fault; the injection simulates the wiper-open reading.
 
 #### Rig finding — T17's stroke poll starves T5, and it looks like a wind alarm
 

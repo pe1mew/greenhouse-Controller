@@ -1,8 +1,17 @@
 # logparser — Greenhouse Controller Log Parser
 
 **File:** `log/logparser.py`
-**Document version:** 1.20 (matches firmware 2.9.0; 1.20 added `SETPT param 49`, `wpos_fitted_m3`, and gate reason `5`, not fitted (gh#73), and documents param 48; 1.17 added `MODE param 47` `value_b` = 1, a STANDBY held for a session; 1.18 added `SYSTEM value_a = 32`; 1.19: the LCD manual menu holds STANDBY too (gh#65), and `SENSOR_HR ch 3` rows at rest are written only on change)
+**Document version:** 1.21 (matches firmware 2.9.1; 1.21: the rule rows come per drive, gh#72; 1.20 added `SETPT param 49`, `wpos_fitted_m3`, and gate reason `5`, not fitted (gh#73), and documents param 48; 1.17 added `MODE param 47` `value_b` = 1, a STANDBY held for a session; 1.18 added `SYSTEM value_a = 32`; 1.19: the LCD manual menu holds STANDBY too (gh#65), and `SENSOR_HR ch 3` rows at rest are written only on change)
 **Requires:** Python 3.10+, standard library only (no pip dependencies)
+
+**What's new in 1.21** (matches firmware 2.9.1, gh#72) — no new encoding:
+- **`ALARM ch = 6` params 249 and 250 are judged per DRIVE**, not per stroke. A stroke with a
+  reversal (a wind override, a manual command, a recalibration) can carry two of them.
+- **A sensor that reports its own fault logs ONE `TIMED [sensor present but reporting a
+  fault]` row.** Before 2.9.1 the gate re-opened at every 30 s probe, so such a fault logged
+  `[sensor present and trusted]` and the fault row in turns, two rows a cycle.
+- **A `POSITION` row needs a stroke that started from rest with the gate open.** After a gate
+  re-opens mid-stroke, the promotion waits for the next stroke.
 
 **What's new in 1.20** (matches firmware 2.9.0, gh#73):
 - **`SETPT param 49` — `wpos_fitted_m3`**: whether a position sensor is fitted to M3,
@@ -736,7 +745,8 @@ this row a shorted wiper reads as a window that simply never leaves 0 %. The row
 is self-describing on purpose: both the peak rate and the threshold are logged,
 so a reader never has to re-derive nominal from `travel_m3` to judge it.
 
-One row per **stroke**, not per poll, and only after at least one *accepted*
+One row per **drive** (per stroke before 2.9.1; a reversal is two drives), not per poll, and
+only after at least one *accepted*
 sample — an encoder that goes absent mid-stroke is `WPOS_GATE_NO_SENSOR`, not a
 leaf that failed to follow, and the two must not be confused in the log.
 

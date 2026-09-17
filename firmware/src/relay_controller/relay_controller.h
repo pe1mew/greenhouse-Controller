@@ -112,6 +112,34 @@ void task_relay_controller(void *pvParameters);
 void t2_get_window_states(window_state_t out[3]);
 
 /**
+ * @brief What T2 is doing to one channel's relays right now (gh#72).
+ *
+ * t2_get_window_states() folds the 2 s reversal gap into MOVING, which is right
+ * for a display and wrong for a check that judges movement: during the gap no
+ * relay is energised, so the leaf is expected to stop.
+ */
+typedef enum {
+    T2_DRIVE_NONE  = 0, /**< No relay energised and no drive pending. */
+    T2_DRIVE_OPEN  = 1, /**< The OPEN relay is energised. */
+    T2_DRIVE_CLOSE = 2, /**< The CLOSE relay is energised. */
+    T2_DRIVE_GAP   = 3, /**< Reversal gap: both relays off, a drive follows. */
+} t2_drive_t;
+
+/**
+ * @brief The current drive of channel @p ch, and a counter of its drives.
+ *
+ * @param ch         0 = M1, 1 = M2, 2 = M3.
+ * @param out_epoch  May be NULL. Receives a counter that T2 increments every
+ *                   time it energises a relay on this channel: a stroke start,
+ *                   the end of a reversal gap, a CLOSE_ALL. A caller that
+ *                   remembers the value sees every new drive, including one
+ *                   whose start it did not observe.
+ * @return The drive; T2_DRIVE_NONE for an invalid channel.
+ * @note  Safe from any task: a portMUX read, like t2_get_window_states().
+ */
+t2_drive_t t2_get_drive(uint8_t ch, uint32_t *out_epoch);
+
+/**
  * @brief Pack the per-channel window states + safety EG1 bits into a 16-bit
  *        bitmask suitable for `LOG_SENSOR_HR,channel=2,value_a`.
  *

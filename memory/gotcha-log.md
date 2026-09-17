@@ -45,6 +45,7 @@ Hooks are the *symptom*, not the title — you rarely know the cause when you ar
 Entries stay in reverse-chronological order below; this index is the only grouped view.
 
 ### Windows, climate & manual control (T2, T6, T8)
+- **2026-09-17** — a test that tells the operator to press Open "when M3 is closed" gets a reversal instead (T2 drives 5 s past the leaf stopping)
 - **2026-09-16** — the M3 teach commits from one end and never from the other (it drove one traverse; T6 finished the OPEN case by chance — a genuine success credited to the wrong actor)
 - **2026-09-12** — unit stuck in STANDBY forever; LCD login/logout will not clear it (gh#65 — NVS state, RAM-only release flag) [RESOLVED 2.8.0: the menu takes a non-persisted hold]
 - **2026-09-12** — a config value you just wrote reads back as the OLD one (`POST /api/config` is async: Q4 -> T4 applies a loop later)
@@ -133,6 +134,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-09-16** — a setting is MISSING from the GUI entirely (two routes exceeded `max_uri_handlers` and never registered; the card depending on them was hidden rather than greyed, so the only symptom was an absence)
 
 ### Build, toolchain & shell
+- **2026-09-17** — internal compiler error in an untouched IDF file (transient; rerun), and a failed `build_release.ps1` leaves `manifest.json` stamped and the old package in place
 - **2026-09-16** — a host test suite hangs instead of failing (the mock served the reply before the request and its clock never moved)
 - **2026-09-16** — a rebuild of the same tree has a different hash and different library sizes (CMake re-ran on every build and PlatformIO linked our libraries in a new order each time; fixed for one checkout — a fresh clone or a tag rebuild still differs)
 - **2026-09-15** — a packaged binary reports the wrong version on the unit after an OTA (build script parameterised half-way: right env BUILT, wrong env's binary COPIED; only the post-reboot verify caught it)
@@ -167,6 +169,39 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
 
+
+## 2026-09-17 — "press Open when M3 is closed" reversed the stroke: T2 drives on for 5 s after the leaf stops
+
+**Problem.** The first `at_wp_gh72.py stale` run needed a CLOSE, a stop, then an OPEN. The operator
+was told to press Open "when M3 is CLOSED", did so when the leaf had visibly stopped, and the stage
+stalled. The OPEN had arrived 15 s into an 18 s drive, so it was a reversal and the controller
+never reported CLOSED.
+
+**Root cause.** T2 drives for `travel_m3` + 5 s (13 + 5 on the rig). The end switch stops the leaf
+at about 13 s, but T2 reports MOVING_CLOSE until its timer ends. So "the window is closed" (what a
+person sees) and "M3 is CLOSED" (what the controller reports) are 5 s apart.
+
+**Fix.** A harness that needs a stop between strokes asks for the next key only after the
+controller reports the end state, and says so in the prompt. It also stops as INCONCLUSIVE when it
+sees the reversal instead. It polls the public status (0.25 s), because the admin route is slower
+and a short CLOSED can be missed.
+
+**Where it lives.** `bin/at_wp_gh72.py`, stage `stale`.
+
+## 2026-09-17 — a bench build died with an internal compiler error in an untouched IDF file, and left the web manifest stamped
+
+**Problem.** `build_release.ps1 -Environment lolin_s3_bench` failed with
+`esp_lcd_panel_rgb.c: internal compiler error: Segmentation fault`, a file nobody had changed.
+Afterwards `firmware/data/manifest.json` still held the stamped version.
+
+**Root cause.** The compiler crash was a transient: the same build, rerun unchanged, passed. The
+stamp is by design. The script restores the placeholder in its Step 3.5, which does not run when an
+earlier step throws (see the script header and gh#9).
+
+**Fix.** Rerun before debugging an ICE in a file you did not touch. After any failed
+`build_release.ps1`, check `git status firmware/data/` before committing; a later successful run
+restores the placeholder. Also check that `bin/<version>/` holds the image you think it does: the
+failed run left the previous package there, which was the fail-first image here.
 
 ## 2026-09-17 — a unit running `X.Y.Z-bench` answers "up to date" when ROTA offers `X.Y.Z`
 

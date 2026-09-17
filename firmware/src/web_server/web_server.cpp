@@ -3325,6 +3325,26 @@ static const char *const k_reason[] = {
 _Static_assert(sizeof(k_reason) / sizeof(k_reason[0]) == (size_t)WPOS_GATE_NOT_FITTED + 1u,
                "k_reason[] must have one string per windowpos_gate_reason_t value, in order");
 
+/** gh#72 bench test hook: injection names, indexed by windowpos_inject_t.
+ *  Read by the GET (what is in force) and the POST (what to set). */
+static const char *const k_inject[] = { "none", "absent", "fault", "stuck" };
+_Static_assert(sizeof(k_inject) / sizeof(k_inject[0]) == (size_t)WPOS_INJECT_STUCK + 1u,
+               "k_inject[] must have one string per windowpos_inject_t value, in order");
+
+/** The injection in force, by name. */
+static const char *inject_str(void)
+{
+    const unsigned i = (unsigned)windowpos_task_injected();
+    return (i < sizeof(k_inject) / sizeof(k_inject[0])) ? k_inject[i] : "?";
+}
+
+/** "true" in a WPOS_FAILFIRST_GH72 build, so its results are never read as real. */
+#ifdef WPOS_FAILFIRST_GH72
+static const char k_failfirst_gh72[] = "true";
+#else
+static const char k_failfirst_gh72[] = "false";
+#endif
+
 /**
  * @brief Append the T17 soak counters to a JSON object already in @p buf.
  *
@@ -3348,13 +3368,15 @@ static void append_soak_json(char *buf, size_t cap)
              ",\"soak\":{\"reads_ok\":%lu,\"err_busy\":%lu,\"err_comm\":%lu,"
              "\"rejected_rate\":%lu,\"strokes\":%lu,\"probe_fail\":%lu,"
              "\"mode_changes\":%lu,\"gated_polls\":%lu,\"stall_faults\":%lu,"
-             "\"early_stops\":%lu,\"at_end_exempt\":%lu,\"orphan_aborts\":%lu}}",
+             "\"early_stops\":%lu,\"at_end_exempt\":%lu,\"orphan_aborts\":%lu,"
+             "\"redrives\":%lu}}",
              (unsigned long)cn.reads_ok, (unsigned long)cn.err_busy,
              (unsigned long)cn.err_comm, (unsigned long)cn.rejected_rate,
              (unsigned long)cn.strokes, (unsigned long)cn.probe_fail,
              (unsigned long)cn.mode_changes, (unsigned long)cn.gated_polls,
              (unsigned long)cn.stall_faults, (unsigned long)cn.early_stops,
-             (unsigned long)cn.at_end_exempt, (unsigned long)cn.orphan_aborts);
+             (unsigned long)cn.at_end_exempt, (unsigned long)cn.orphan_aborts,
+             (unsigned long)cn.redrives);
 }
 
 static void append_modbus_json(char *buf, size_t cap)
@@ -3433,11 +3455,12 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
         snprintf(body, sizeof(body),
                  "{\"ok\":false,\"err\":\"read_failed\",\"status\":%d,"
                  "\"gate\":{\"mode\":%d,\"mode_str\":\"%s\",\"reason\":%d,"
-                 "\"reason_str\":\"%s\"}}",
+                 "\"reason_str\":\"%s\",\"inject\":\"%s\",\"failfirst_gh72\":%s}}",
                  (int)st, (int)egm,
                  (egm == WPOS_CTRL_POSITION) ? "position" : "timed", (int)egr,
                  ((unsigned)egr < (sizeof(k_reason) / sizeof(k_reason[0])))
-                     ? k_reason[egr] : "?");
+                     ? k_reason[egr] : "?",
+                 inject_str(), k_failfirst_gh72);
         /* AT-WP05 arm A reads these with the encoder unplugged, so both blocks
          * MUST be on this path -- it is the only response that arm ever sees.
          * Same helpers as the success path, so the two cannot drift apart. */
@@ -3514,11 +3537,13 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
     if (used3 + 1u < sizeof(body)) {
         snprintf(body + used3 - 1u, sizeof(body) - used3 + 1u,
                  ",\"gate\":{\"mode\":%d,\"mode_str\":\"%s\","
-                 "\"reason\":%d,\"reason_str\":\"%s\"}}",
+                 "\"reason\":%d,\"reason_str\":\"%s\","
+                 "\"inject\":\"%s\",\"failfirst_gh72\":%s}}",
                  (int)gm, (gm == WPOS_CTRL_POSITION) ? "position" : "timed",
                  (int)gr,
                  ((unsigned)gr < (sizeof(k_reason) / sizeof(k_reason[0])))
-                     ? k_reason[gr] : "?");
+                     ? k_reason[gr] : "?",
+                 inject_str(), k_failfirst_gh72);
     }
 
     /* Soak counters last, so a truncation loses only these. */
@@ -3530,6 +3555,45 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
      * the contention it is here to measure. Read it AFTER the stroke. */
     append_modbus_json(body, sizeof(body));
     return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
+}
+
+/**
+ * POST /api/diag/windowpos — set the T17 test injection (admin, DEV BUILDS ONLY)
+ *
+ * Body: {"inject":"none"|"absent"|"fault"|"stuck"}. gh#72's acceptance test
+ * (bin/at_wp_gh72.py) uses it to make T17 see a sensor that vanishes, one that
+ * reports its own fault, and a reading stuck while the leaf moves -- each at a
+ * moment the test chooses. It changes only what T17 reads; the direct read of
+ * the GET above still shows the device as it is. RAM only.
+ */
+static esp_err_t diag_windowpos_post_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+    httpd_resp_set_type(req, "application/json");
+
+    char body[64] = {0};
+    int  rlen = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (rlen <= 0) {
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"empty_body\"}",
+                               HTTPD_RESP_USE_STRLEN);
+    }
+    body[rlen] = '\0';
+
+    char how[16] = {0};
+    if (!json_get_field(body, "inject", how, sizeof(how))) {
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"no_inject\"}",
+                               HTTPD_RESP_USE_STRLEN);
+    }
+    for (unsigned i = 0; i < sizeof(k_inject) / sizeof(k_inject[0]); i++) {
+        if (strcmp(how, k_inject[i]) == 0) {
+            windowpos_task_inject((windowpos_inject_t)i);
+            char out[64];
+            snprintf(out, sizeof(out), "{\"ok\":true,\"inject\":\"%s\"}", k_inject[i]);
+            return httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
+        }
+    }
+    return httpd_resp_send(req, "{\"ok\":false,\"error\":\"unknown_inject\"}",
+                           HTTPD_RESP_USE_STRLEN);
 }
 
 /**
@@ -3773,6 +3837,8 @@ static const httpd_uri_t s_uri_rota_check_post = {
 #ifdef MODBUS_BENCH
 static const httpd_uri_t s_uri_diag_windowpos = {
     .uri = "/api/diag/windowpos", .method = HTTP_GET, .handler = diag_windowpos_get_handler, .user_ctx = NULL };
+static const httpd_uri_t s_uri_diag_windowpos_post = {
+    .uri = "/api/diag/windowpos", .method = HTTP_POST, .handler = diag_windowpos_post_handler, .user_ctx = NULL };
 static const httpd_uri_t s_uri_diag_modbus = {
     .uri = "/api/diag/modbus", .method = HTTP_POST, .handler = diag_modbus_post_handler, .user_ctx = NULL };
 static const httpd_uri_t s_uri_diag_commission_get = {
@@ -3837,7 +3903,7 @@ void task_web_server(void *pvParameters)
         &s_uri_ws,
 #ifdef MODBUS_BENCH
         &s_uri_diag_modbus,
-        &s_uri_diag_windowpos,
+        &s_uri_diag_windowpos, &s_uri_diag_windowpos_post,
         &s_uri_diag_commission_get, &s_uri_diag_commission_post,
 #endif
     };

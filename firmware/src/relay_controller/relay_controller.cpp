@@ -163,6 +163,11 @@ static ch_t s_ch[NUM_CHANNELS];
 /** Spinlock protecting s_ch[].state for cross-task reads (e.g. T11 web status). */
 static portMUX_TYPE s_state_mux = portMUX_INITIALIZER_UNLOCKED;
 
+/** gh#72 — per-channel count of relay energisations, bumped by relay_ch_open()
+ *  and relay_ch_close(), which every drive goes through. Written by T2 only,
+ *  under s_state_mux so t2_get_drive() reads it with the state. */
+static uint32_t s_drive_epoch[NUM_CHANNELS];
+
 /* ============================================================
  * Motor alarm ISR state
  *
@@ -250,11 +255,20 @@ static inline void relay_ch_off(uint8_t ch)
     gpio_write(RELAY_CLOSE_PIN[ch], GPIO_LOW);
 }
 
+/** gh#72 — count a relay energisation on channel ch (see t2_get_drive()). */
+static inline void drive_epoch_bump(uint8_t ch)
+{
+    portENTER_CRITICAL(&s_state_mux);
+    s_drive_epoch[ch]++;
+    portEXIT_CRITICAL(&s_state_mux);
+}
+
 /** Energise the OPEN relay for channel ch (CLOSE relay cleared first). */
 static inline void relay_ch_open(uint8_t ch)
 {
     gpio_write(RELAY_CLOSE_PIN[ch], GPIO_LOW);   /* belt-and-suspenders */
     gpio_write(RELAY_OPEN_PIN[ch],  GPIO_HIGH);
+    drive_epoch_bump(ch);
 }
 
 /** Energise the CLOSE relay for channel ch (OPEN relay cleared first). */
@@ -262,6 +276,7 @@ static inline void relay_ch_close(uint8_t ch)
 {
     gpio_write(RELAY_OPEN_PIN[ch],  GPIO_LOW);   /* belt-and-suspenders */
     gpio_write(RELAY_CLOSE_PIN[ch], GPIO_HIGH);
+    drive_epoch_bump(ch);
 }
 
 /* ============================================================
@@ -957,6 +972,26 @@ void t2_get_window_states(window_state_t out[3])
         }
     }
     portEXIT_CRITICAL(&s_state_mux);
+}
+
+t2_drive_t t2_get_drive(uint8_t ch, uint32_t *out_epoch)
+{
+    if (ch >= NUM_CHANNELS) {
+        if (out_epoch != NULL) { *out_epoch = 0u; }
+        return T2_DRIVE_NONE;
+    }
+    t2_drive_t d;
+    portENTER_CRITICAL(&s_state_mux);
+    switch (s_ch[ch].state) {
+        case CH_MOVING_OPEN:  d = T2_DRIVE_OPEN;  break;
+        case CH_MOVING_CLOSE: d = T2_DRIVE_CLOSE; break;
+        case CH_GAP_TO_OPEN:
+        case CH_GAP_TO_CLOSE: d = T2_DRIVE_GAP;   break;
+        default:              d = T2_DRIVE_NONE;  break;
+    }
+    if (out_epoch != NULL) { *out_epoch = s_drive_epoch[ch]; }
+    portEXIT_CRITICAL(&s_state_mux);
+    return d;
 }
 
 /* ============================================================

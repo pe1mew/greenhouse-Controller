@@ -153,6 +153,89 @@ static uint32_t s_fitted_checked_ms = 0u;
 /** Longest T17 waits at start for T4 to load the configuration. */
 #define CFG_WAIT_MAX_MS     10000u
 
+/* ---- fail-first build for gh#72 ---------------------------------------------
+ * `-DWPOS_FAILFIRST_GH72` restores the three behaviours gh#72 changed, so its
+ * acceptance test (bin/at_wp_gh72.py) can be shown to FAIL first:
+ *  - one verdict per stroke, so the second drive of a reversal is not judged;
+ *  - the probe opens the gate on the identity alone, so a self-reported fault
+ *    makes the gate flap;
+ *  - a shut gate keeps the stroke, so a later stroke inherits it, and a stroke
+ *    may be promoted without a rest having been seen.
+ * GET /api/diag/windowpos reports it, so a fail-first result is never read as
+ * a real one. Bench builds only. */
+#if defined(WPOS_FAILFIRST_GH72) && !defined(MODBUS_BENCH)
+#error "WPOS_FAILFIRST_GH72 is a bench-only fail-first build"
+#endif
+
+/* ---- bench test hook (gh#72): see windowpos_task_inject() ----------------- */
+#ifdef MODBUS_BENCH
+static volatile uint8_t s_inject        = (uint8_t)WPOS_INJECT_NONE;
+static volatile bool    s_inject_probe  = false;   /* set when cleared: probe at once */
+static bool             s_stuck_valid   = false;   /* T17 only from here on */
+static uint16_t         s_stuck_mm_x10  = 0u;
+static uint16_t         s_stuck_pct_x10 = 0u;
+static uint16_t         s_stuck_avg_x10 = 0u;
+
+void windowpos_task_inject(windowpos_inject_t how)
+{
+    s_inject = (uint8_t)how;
+    if (how == WPOS_INJECT_NONE) { s_inject_probe = true; }
+    ESP_LOGW(TAG, "TEST INJECTION -> %u (0 none, 1 absent, 2 fault, 3 stuck)",
+             (unsigned)how);
+}
+
+windowpos_inject_t windowpos_task_injected(void)
+{
+    return (windowpos_inject_t)s_inject;
+}
+
+/** True once after the injection was cleared: a shut gate probes at once. */
+static bool inject_wants_probe(void)
+{
+    const bool want = s_inject_probe;
+    s_inject_probe = false;
+    return want;
+}
+
+/** T17's identify, through the injection. */
+static windowpos_status_t t17_ident(uint8_t addr, uint8_t *build, uint8_t *ver)
+{
+    if (s_inject == (uint8_t)WPOS_INJECT_ABSENT) { return WINDOWPOS_ERR_COMM; }
+    return windowpos_read_ident(addr, build, ver);
+}
+
+/** T17's position read, through the injection. */
+static windowpos_status_t t17_read(uint8_t addr, windowpos_reading_t *r)
+{
+    const uint8_t how = s_inject;
+    if (how != (uint8_t)WPOS_INJECT_STUCK) { s_stuck_valid = false; }
+    if (how == (uint8_t)WPOS_INJECT_ABSENT) { return WINDOWPOS_ERR_COMM; }
+    const windowpos_status_t st = windowpos_read(addr, r);
+    if (st != WINDOWPOS_OK) { return st; }
+    if (how == (uint8_t)WPOS_INJECT_FAULT) {
+        r->wiper_fault  = true;
+        r->sensor_fault = true;
+        r->status_bits  = (uint16_t)(r->status_bits | 0x0004u);   /* bit 2 */
+    } else if (how == (uint8_t)WPOS_INJECT_STUCK) {
+        if (!s_stuck_valid) {
+            s_stuck_valid   = true;
+            s_stuck_mm_x10  = r->opening_mm_x10;
+            s_stuck_pct_x10 = r->percent_x10;
+            s_stuck_avg_x10 = r->opening_avg_x10;
+        }
+        r->opening_mm_x10  = s_stuck_mm_x10;
+        r->percent_x10     = s_stuck_pct_x10;
+        r->opening_avg_x10 = s_stuck_avg_x10;
+        r->rate_mm_s_x10   = 0;
+    }
+    return st;
+}
+#else
+static inline bool inject_wants_probe(void) { return false; }
+#define t17_ident windowpos_read_ident
+#define t17_read  windowpos_read
+#endif
+
 /* Phase 3 event-edge tracking. Owned by the task, no locking needed. */
 static bool     s_ev_init        = false;
 static bool     s_ev_fault       = false;
@@ -491,14 +574,19 @@ static bool check_orphan_teach(const windowpos_reading_t *r, uint8_t addr)
  * @brief The gate has just opened: clear an orphan BEFORE anything judges the
  *        calibration, and wait briefly for the device to show it.
  *
- * A fresh read rather than waiting for the first idle sample, which is up to
- * 30 s away -- long enough for the commissioning card to report "teach still
- * armed" after every boot that follows an interrupted teach.
+ * Judged on the probe's own fresh reading rather than on the first idle
+ * sample, which is up to 30 s away -- long enough for the commissioning card
+ * to report "teach still armed" after every boot that follows an interrupted
+ * teach. (Until gh#72 the probe read only the identity, and this helper took a
+ * reading of its own.)
+ *
+ * @param addr   device address.
+ * @param first  the reading the probe just took.
  */
-static void clear_orphan_at_gate_open(uint8_t addr)
+static void clear_orphan_at_gate_open(uint8_t addr, const windowpos_reading_t *first)
 {
     windowpos_reading_t r;
-    if (windowpos_read(addr, &r) != WINDOWPOS_OK || !check_orphan_teach(&r, addr)) {
+    if (!check_orphan_teach(first, addr)) {
         return;
     }
     /* Bit 5 clears a moment after the write. Up to ~2 s, polled here rather
@@ -512,7 +600,7 @@ static void clear_orphan_at_gate_open(uint8_t addr)
     for (int i = 0; i < 8; i++) {
         esp_task_wdt_reset();
         vTaskDelay(pdMS_TO_TICKS(250));
-        if (windowpos_read(addr, &r) == WINDOWPOS_OK && !r.teach_armed) {
+        if (t17_read(addr, &r) == WINDOWPOS_OK && !r.teach_armed) {
             s_orphan_reported = false;
             break;
         }
@@ -576,17 +664,18 @@ static bool m3_travelling(void)
 }
 
 /**
- * @brief True while M3 is being driven in the CLOSE direction.
+ * @brief How T2 is driving M3 right now, and its drive counter (gh#72).
  *
- * §12.4 rule 2 applies to a CLOSE only: it is about a window claiming to have
- * reached the *closed* end. Read once at the stroke boundary and held for the
- * stroke, because T2 can finish the stroke while the rule is still deciding.
+ * The fault checks judge a DRIVE, not a stroke. Until gh#72 they latched the
+ * direction once per stroke, from m3_travelling()'s view, in which T2's 2 s
+ * reversal gap reads as moving. So a reversal was one stroke to T17: rule 1
+ * kept the first direction's settled verdict, and rule 2 kept its direction.
+ * T2 bumps the counter every time it energises a relay, so a new value is a
+ * new drive even if T17 never saw the gap between them.
  */
-static bool m3_closing(void)
+static t2_drive_t m3_drive(uint32_t *out_epoch)
 {
-    window_state_t st[3];
-    t2_get_window_states(st);
-    return (st[2] == WIN_MOVING_CLOSE);
+    return t2_get_drive(2u, out_epoch);      /* M3 is channel index 2 */
 }
 
 /**
@@ -655,7 +744,7 @@ static bool probe_sensor(void)
 
     uint8_t build = 0u, ver = 0u;
     const windowpos_status_t ist =
-        windowpos_read_ident(WINDOWPOS_DEFAULT_ADDR, &build, &ver);
+        t17_ident(WINDOWPOS_DEFAULT_ADDR, &build, &ver);
 
     if (ist == WINDOWPOS_ERR_BUSY) {
         /* No evidence either way. Leave the counter and the gate untouched. */
@@ -679,7 +768,34 @@ static bool probe_sensor(void)
         return false;
     }
 
-    s_probe_fail = 0u;
+    /* gh#72: identifying is not enough. A device that answers and reports its
+     * own fault (wiper open, or the 65535 sentinel) identifies fine, so a probe
+     * that stopped here re-opened the gate at every 30 s retry, and the next
+     * idle read shut it again: two mode rows per cycle, a probe failure counted
+     * each time, and any stroke starting in between promoted, for as long as
+     * the fault lasted. So read the position too, and stay shut on a faulted
+     * reading. */
+    windowpos_reading_t pr;
+    const windowpos_status_t rst = t17_read(WINDOWPOS_DEFAULT_ADDR, &pr);
+    if (rst == WINDOWPOS_ERR_BUSY) {
+        portENTER_CRITICAL(&s_mux);
+        s_cnt.err_busy++;
+        portEXIT_CRITICAL(&s_mux);
+        return s_gate_open;
+    }
+    if (rst != WINDOWPOS_OK) {
+        if (s_probe_fail < PROBE_FAIL_LIMIT) { s_probe_fail++; }
+        if (s_probe_fail >= PROBE_FAIL_LIMIT) { gate_close(WPOS_GATE_NO_SENSOR); }
+        return false;
+    }
+    s_probe_fail = 0u;                        /* it answers, so it is not absent */
+#ifndef WPOS_FAILFIRST_GH72
+    if (pr.sensor_fault) {
+        gate_close(WPOS_GATE_DEVICE_FAULT);   /* counts and logs only a transition */
+        return false;
+    }
+#endif
+
     if (!s_gate_open) {
         s_gate_open = true;
         ESP_LOGI(TAG, "sensor present: build 0x%02X fw v%u -- gate OPEN",
@@ -694,7 +810,7 @@ static bool probe_sensor(void)
          * the first stroke the honest state is TIMED-because-not-yet-promoted,
          * not TIMED-because-probing. */
         publish_mode(s_ctrl_mode, WPOS_GATE_OK);
-        clear_orphan_at_gate_open(WINDOWPOS_DEFAULT_ADDR);
+        clear_orphan_at_gate_open(WINDOWPOS_DEFAULT_ADDR, &pr);
 #ifdef MODBUS_BENCH
         /* Judge the sensor's calibration now that it is confirmed present.
          *
@@ -824,17 +940,32 @@ void task_window_pos(void *pvParameters)
     bool     resample_soon     = false;   /* an orphan abort wants a prompt re-read */
     bool     settle_row_due    = false;   /* a stroke just ended: log where the leaf settled */
 
-    /* §12.4 rule 1 state, reset at every stroke boundary. Stroke-local rather
-     * than static: the question is always "did THIS stroke move?", and carrying
-     * a verdict across strokes would let one stalled stroke silence the next. */
+    /* gh#72: the fault checks judge one DRIVE at a time, not one stroke. A
+     * stroke is M3 away from rest; a drive is one energisation of one relay,
+     * and a reversal puts two drives in one stroke. `seg_active` says a drive
+     * of the current stroke is being judged, `seg_epoch` which one (T2's drive
+     * counter, see m3_drive()). */
+    bool     seg_active        = false;
+    uint32_t seg_epoch         = 0u;
+
+    /* gh#72: the mode may be promoted only for a stroke that STARTED with the
+     * gate open, which T17 knows only if it saw M3 at rest with the gate open.
+     * A gate that re-opens mid-stroke now forgets that stroke (see the gate
+     * branch), and the stroke must not then pass for a fresh one. */
+    bool     rest_seen         = false;
+
+    /* §12.4 rule 1 state, reset at every drive (gh#72; every stroke before).
+     * Local rather than static: the question is always "did THIS drive move
+     * the leaf?", and carrying a verdict across drives would let one silence
+     * the next -- which is what a reversal did until gh#72. */
     uint32_t stroke_start_ms   = 0u;
     uint16_t stroke_peak_x10   = 0u;
     uint16_t stroke_samples    = 0u;
     bool     stall_reported    = false;
 
-    /* §12.4 rule 2 state, same stroke-local lifetime. `stroke_closing` and
-     * `stroke_deadzone_x10` are latched at the boundary: T2 may end the stroke
-     * while the rule is still confirming, and re-reading either mid-stroke
+    /* §12.4 rule 2 state, same lifetime. `stroke_closing` is latched when the
+     * drive starts and `stroke_deadzone_x10` when the stroke starts: T2 may
+     * end the stroke while the rule is still confirming, and re-reading either
      * would change the question being asked. */
     bool     stroke_closing      = false;
     bool     stroke_end_seen     = false;
@@ -865,6 +996,7 @@ void task_window_pos(void *pvParameters)
          * inheriting the state of a stroke it never saw begin. */
         if (!follow_fitted()) {
             was_travelling = false;
+            rest_seen      = false;
 #ifdef MODBUS_BENCH
             /* A teach running when the sensor was switched off ends as a
              * sensor failure, exactly as when the sensor goes away. */
@@ -899,8 +1031,23 @@ void task_window_pos(void *pvParameters)
                 portEXIT_CRITICAL(&s_mux);
             }
 
+            /* gh#72: forget the stroke. Its end is not seen while the gate is
+             * shut, so a gate re-opening during a LATER stroke used to carry
+             * the old stroke's direction, start time, settled verdict and peak
+             * into the new one, without a fresh derive or 40002 push either.
+             * Forgetting it makes a re-open mid-stroke start a fresh verdict
+             * from that moment; `rest_seen` keeps it from promoting the mode. */
+#ifndef WPOS_FAILFIRST_GH72
+            was_travelling = false;
+            rest_seen      = false;
+#endif
+
+            /* A bench test that clears its injection wants the re-open now,
+             * not at the next 30 s retry (windowpos_task_inject()). */
+            const bool probe_now = inject_wants_probe();
             if (!s_bench_latched &&
-                (uint32_t)(now_ms() - s_last_probe_ms) >= PROBE_RETRY_MS) {
+                (probe_now ||
+                 (uint32_t)(now_ms() - s_last_probe_ms) >= PROBE_RETRY_MS)) {
                 (void)probe_sensor();
             }
 #ifdef MODBUS_BENCH
@@ -921,6 +1068,7 @@ void task_window_pos(void *pvParameters)
                 resample_soon  = true;
             }
             was_travelling = false;
+            rest_seen      = true;      /* at rest, gate open: the next stroke may promote */
             /* Keep reading at rest: the gate, the events, the orphan check and
              * the teach's STANDBY release depend on it (IDLE_READ_MS). */
             bool idle_sample_due = resample_soon ||
@@ -937,7 +1085,7 @@ void task_window_pos(void *pvParameters)
                 last_idle_read_ms = now_ms();
                 resample_soon     = false;
                 windowpos_reading_t ir;
-                const windowpos_status_t ist = windowpos_read(WINDOWPOS_DEFAULT_ADDR, &ir);
+                const windowpos_status_t ist = t17_read(WINDOWPOS_DEFAULT_ADDR, &ir);
                 if (ist == WINDOWPOS_OK) {
                     check_restart(WINDOWPOS_DEFAULT_ADDR);
                     emit_events(&ir, WINDOWPOS_DEFAULT_ADDR);
@@ -993,27 +1141,24 @@ void task_window_pos(void *pvParameters)
         /* ---- stroke start: derive, log, push 40002 ---------------------- */
         if (!was_travelling) {
             was_travelling = true;
-
-            /* §12.4 rules 1 and 2: a fresh verdict for this stroke. */
-            stroke_start_ms  = now_ms();
-            stroke_peak_x10  = 0u;
-            stroke_samples   = 0u;
-            stall_reported   = false;
-            stroke_closing   = m3_closing();
-            stroke_end_seen  = false;
-            near_zero_run    = 0u;
-            early_reported   = false;
-            stroke_at_target = true;
+            /* The verdicts start with the stroke's first DRIVE, below: T17 may
+             * look first during a reversal gap, when nothing is energised. */
+            seg_active = false;
 
             /* Stroke boundary: the only place the mode is allowed to be
              * PROMOTED. See windowpos_task_ctrl_mode()'s note on the
-             * asymmetry -- demotion is immediate, promotion waits. */
-            if (s_gate_open && s_ctrl_mode != WPOS_CTRL_POSITION) {
+             * asymmetry -- demotion is immediate, promotion waits. And only
+             * for a stroke that started with the gate open (`rest_seen`,
+             * gh#72): a gate re-opening mid-stroke must not promote. */
+#ifdef WPOS_FAILFIRST_GH72
+            const bool may_promote = true;
+            (void)rest_seen;
+#else
+            const bool may_promote = rest_seen;
+#endif
+            if (s_gate_open && may_promote && s_ctrl_mode != WPOS_CTRL_POSITION) {
                 publish_mode(WPOS_CTRL_POSITION, WPOS_GATE_OK);
             }
-            portENTER_CRITICAL(&s_mux);
-            s_cnt.strokes++;
-            portEXIT_CRITICAL(&s_mux);
 
             cfg_shadow_t cfg;
             dm_cfg_snapshot(&cfg);
@@ -1066,12 +1211,60 @@ void task_window_pos(void *pvParameters)
             }
         }
 
+        /* ---- drive boundary: a fresh verdict per drive (gh#72) ------------
+         * T2 reverses M3 immediately for a wind override (T3), a manual LCD
+         * command and a recalibration, with a 2 s gap in which both relays are
+         * off. Each drive is judged on its own: a new drive counter value
+         * starts a new verdict, timed from the moment T17 first sees that
+         * relay energised, so the gap cannot read as a stall. During the gap
+         * nothing is judged and no evidence is gathered. */
+        uint32_t drive_epoch = 0u;
+        const t2_drive_t drive = m3_drive(&drive_epoch);
+        const bool driving = (drive == T2_DRIVE_OPEN || drive == T2_DRIVE_CLOSE);
+#ifdef WPOS_FAILFIRST_GH72
+        /* The pre-gh#72 behaviour: the first drive starts the only verdict of
+         * the stroke, and it is held through gaps and later drives. */
+        const bool new_drive = driving && !seg_active;
+#else
+        const bool new_drive = driving && (!seg_active || drive_epoch != seg_epoch);
+#endif
+        if (new_drive) {
+            const bool redrive = seg_active;   /* a second drive within one stroke */
+            seg_active       = true;
+            seg_epoch        = drive_epoch;
+            stroke_start_ms  = now_ms();
+            stroke_peak_x10  = 0u;
+            stroke_samples   = 0u;
+            stall_reported   = false;
+            stroke_closing   = (drive == T2_DRIVE_CLOSE);
+            stroke_end_seen  = false;
+            near_zero_run    = 0u;
+            early_reported   = false;
+            stroke_at_target = true;
+            /* `strokes` counts judged drives, so a soak's "judged strokes"
+             * (strokes - at_end_exempt) includes both halves of a reversal. */
+            portENTER_CRITICAL(&s_mux);
+            s_cnt.strokes++;
+            if (redrive) { s_cnt.redrives++; }
+            portEXIT_CRITICAL(&s_mux);
+            if (redrive) {
+                ESP_LOGI(TAG, "M3 driven again within the stroke, now %s -- "
+                              "judging this drive on its own",
+                         stroke_closing ? "CLOSE" : "OPEN");
+            }
+        }
+#ifdef WPOS_FAILFIRST_GH72
+        const bool judging = seg_active;
+#else
+        const bool judging = seg_active && driving;
+#endif
+
         /* ---- poll ------------------------------------------------------- */
         windowpos_derived_t d;
         (void)windowpos_task_derived(&d);
 
         windowpos_reading_t r;
-        const windowpos_status_t st = windowpos_read(WINDOWPOS_DEFAULT_ADDR, &r);
+        const windowpos_status_t st = t17_read(WINDOWPOS_DEFAULT_ADDR, &r);
         if (st == WINDOWPOS_OK) {
             /* FR-WP20: a rate beyond twice nominal is not a fast window, it is a
              * reading to distrust. Reject the sample rather than the sensor --
@@ -1098,15 +1291,20 @@ void task_window_pos(void *pvParameters)
                  * be counted as proof the leaf moved. The consequence is
                  * deliberate: a stroke whose every sample is implausible trips
                  * rule 1, because there is then no trustworthy evidence the
-                 * window moved -- which is exactly the state worth reporting. */
-                if ((uint32_t)mag > (uint32_t)stroke_peak_x10) {
+                 * window moved -- which is exactly the state worth reporting.
+                 *
+                 * gh#72: evidence only while a drive is being judged. A sample
+                 * from the reversal gap belongs to no drive -- the leaf is
+                 * coasting or stopped -- and counting it would let the old
+                 * direction's motion pass for the new one. */
+                if (judging && (uint32_t)mag > (uint32_t)stroke_peak_x10) {
                     stroke_peak_x10 = (uint16_t)clamp_u32((uint32_t)mag, 0u, 65535u);
                 }
-                if (stroke_samples < 0xFFFFu) { stroke_samples++; }
+                if (judging && stroke_samples < 0xFFFFu) { stroke_samples++; }
 
                 /* §12.4 rule 1 exemption evidence: is the leaf SITTING ON the
                  * end it is being driven toward? Cleared by the first sample
-                 * that is not, and never re-set within the stroke.
+                 * that is not, and never re-set within the drive.
                  *
                  * Both conditions, on EVERY sample of the grace window:
                  *
@@ -1132,7 +1330,7 @@ void task_window_pos(void *pvParameters)
                  * The TARGET end matters too: an OPEN stroke on a leaf sitting
                  * at the CLOSED end (the detached-wire case, 2026-09-15 22:36)
                  * fails the position test and is still judged. */
-                {
+                if (judging) {
                     const bool on_end = r.at_end_sensor && !r.both_end_sensors
                                         && !r.sensor_fault;
                     bool at_pos;
@@ -1152,7 +1350,9 @@ void task_window_pos(void *pvParameters)
                  * end-sensor loop is faulted and bit 3 must not be believed in
                  * either direction, so while it is set this rule has no basis
                  * to judge on and the run is reset rather than advanced. */
-                if (r.at_end_sensor || r.both_end_sensors) {
+                if (!judging) {
+                    /* gh#72: in a reversal gap; the next drive starts afresh. */
+                } else if (r.at_end_sensor || r.both_end_sensors) {
                     stroke_end_seen = true;
                     near_zero_run   = 0u;
                 } else if (stroke_closing && !r.sensor_fault &&
@@ -1218,8 +1418,9 @@ void task_window_pos(void *pvParameters)
          * to validate it -- that decision belongs with the T2 change that first
          * makes position drive the actuator.
          *
-         * One row per stroke: the latch is cleared only at a stroke boundary. A
-         * row per poll would bury the event, which is the gh#59 lesson.
+         * One row per drive: the latch is cleared only when a drive starts
+         * (gh#72; per stroke before, so a reversal was never judged). A row per
+         * poll would bury the event, which is the gh#59 lesson.
          *
          * `stroke_samples != 0` is load-bearing, not defensive. Without it an
          * encoder that goes ABSENT mid-stroke trips this rule: its reads fail,
@@ -1231,7 +1432,7 @@ void task_window_pos(void *pvParameters)
          * rest a fault attribution on. Requiring one accepted sample makes the
          * two faults discriminable by construction: no data is never read as
          * no movement. */
-        if (!stall_reported && d.nominal_rate_x10 != 0u && stroke_samples != 0u) {
+        if (judging && !stall_reported && d.nominal_rate_x10 != 0u && stroke_samples != 0u) {
             const uint32_t threshold = (uint32_t)d.nominal_rate_x10 / RULE1_RATE_DIVISOR;
             uint32_t grace = RULE1_GRACE_MS;
             if (d.travel_ms != 0u && (d.travel_ms / 2u) < grace) {
@@ -1289,7 +1490,7 @@ void task_window_pos(void *pvParameters)
          * consumes position yet, and T2 stops this stroke on its own timer
          * regardless. What it changes is that the log no longer records a
          * CLOSE that "succeeded" in a fifth of the time it physically takes. */
-        if (!early_reported && stroke_closing && !stroke_end_seen &&
+        if (judging && !early_reported && stroke_closing && !stroke_end_seen &&
             near_zero_run >= RULE2_CONFIRM_SAMPLES && d.travel_ms != 0u) {
             const uint32_t elapsed = (uint32_t)(now_ms() - stroke_start_ms);
             if (elapsed < (d.travel_ms / RULE2_EARLY_DIVISOR)) {
