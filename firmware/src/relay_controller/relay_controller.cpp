@@ -164,9 +164,11 @@ static ch_t s_ch[NUM_CHANNELS];
 static portMUX_TYPE s_state_mux = portMUX_INITIALIZER_UNLOCKED;
 
 /** gh#72 — per-channel count of relay energisations, bumped by relay_ch_open()
- *  and relay_ch_close(), which every drive goes through. Written by T2 only,
- *  under s_state_mux so t2_get_drive() reads it with the state. */
+ *  and relay_ch_close(), which every drive goes through, and the tick-based
+ *  millisecond time of the latest one. Written by T2 only, under s_state_mux
+ *  so t2_get_drive() reads all three together. */
 static uint32_t s_drive_epoch[NUM_CHANNELS];
+static uint32_t s_drive_start_ms[NUM_CHANNELS];
 
 /* ============================================================
  * Motor alarm ISR state
@@ -258,8 +260,10 @@ static inline void relay_ch_off(uint8_t ch)
 /** gh#72 — count a relay energisation on channel ch (see t2_get_drive()). */
 static inline void drive_epoch_bump(uint8_t ch)
 {
+    const uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
     portENTER_CRITICAL(&s_state_mux);
     s_drive_epoch[ch]++;
+    s_drive_start_ms[ch] = now;
     portEXIT_CRITICAL(&s_state_mux);
 }
 
@@ -974,10 +978,11 @@ void t2_get_window_states(window_state_t out[3])
     portEXIT_CRITICAL(&s_state_mux);
 }
 
-t2_drive_t t2_get_drive(uint8_t ch, uint32_t *out_epoch)
+t2_drive_t t2_get_drive(uint8_t ch, uint32_t *out_epoch, uint32_t *out_started_ms)
 {
     if (ch >= NUM_CHANNELS) {
-        if (out_epoch != NULL) { *out_epoch = 0u; }
+        if (out_epoch != NULL)      { *out_epoch = 0u; }
+        if (out_started_ms != NULL) { *out_started_ms = 0u; }
         return T2_DRIVE_NONE;
     }
     t2_drive_t d;
@@ -989,7 +994,8 @@ t2_drive_t t2_get_drive(uint8_t ch, uint32_t *out_epoch)
         case CH_GAP_TO_CLOSE: d = T2_DRIVE_GAP;   break;
         default:              d = T2_DRIVE_NONE;  break;
     }
-    if (out_epoch != NULL) { *out_epoch = s_drive_epoch[ch]; }
+    if (out_epoch != NULL)      { *out_epoch = s_drive_epoch[ch]; }
+    if (out_started_ms != NULL) { *out_started_ms = s_drive_start_ms[ch]; }
     portEXIT_CRITICAL(&s_state_mux);
     return d;
 }

@@ -1073,6 +1073,12 @@ which gate was active to within 30 s. See the 2026-09-10 gotcha entry.
      >
      > **Bit 4 (`both_end_sensors`) withholds judgement.** It means the end-sensor loop is faulted and bit 3 cannot be believed in either direction, so the rule resets rather than guessing. Two consecutive confirming samples (~1.3 % of any stroke, since the poll is travel/150) cover the race where position reads 0 one poll before the switch is made.
      >
+     > **Two of the assumptions above are wrong ([gh#78](https://github.com/pe1mew/greenhouse-Controller/issues/78), found 2026-09-17, to be fixed in Phase 5).**
+     > - **The ~0 reading and bit 3 do not arrive together.** On the rig, position reads 0 for about 1.2 s (7 polls) before the closed end sensor makes, in every close checked. So a part-way CLOSE that reaches ~0 in under half `travel_m3` trips the rule on its second ~0 sample, although it closes normally. Examples are a wind override or an LCD reversal while M3 is opening, and a recalibration of a partly open M3.
+     > - **Bit 3 at the OPEN end counts as "end seen".** A full CLOSE from OPEN starts on that sensor, so the rule is off for the whole drive and cannot catch a position that races to 0 on a full close.
+     >
+     > The soaks never showed either, because every close in them started at the open end.
+     >
      > **Known limitation, deliberate:** a genuinely closed window whose *end sensor* is faulty or unwired trips this rule. That is correct in the sense that something is wrong — either the position or the end sensor is lying — but the row names the position, so read it with the end-sensor wiring in mind before blaming the encoder.
 - **Never gate anything safety-related on position** (FR-WP18): wind override, motor-alarm handling and boot CLOSE_ALL stay time-based.
 
@@ -1344,6 +1350,36 @@ wire (a small item).
 | `stale` (absent in a CLOSE, back mid-OPEN) | FAIL: `strokes` +0 | PASS: `strokes` +1, mode stayed timed |
 | `reversal` A (stuck, CLOSE reversed to OPEN) | FAIL: 1 stall | PASS: 2 stalls, `redrives` +1 |
 | `reversal` B (healthy) | no stall (expected) | PASS: no stall, `redrives` +1 |
+
+**A fourth defect, found after the commit and fixed before publishing: a drive joined late.**
+After a power cycle with M3 OPEN, T2 recalibrates at boot, and T17 comes up about 6 s into that
+CLOSE. T17 timed the drive from its first look, so rule 2 reported *"claimed closed after 5 s
+of a 13 s traverse"* for a drive that had really run 12 s. The leaf reads ~0 about a second
+before the closed end sensor makes (§2a.6). T2 now also records the energise time
+(`t2_get_drive(ch, &epoch, &started_ms)`), and T17 times the drive from there.
+
+**A power cycle is not a fail-first test for this.** How late T17 joins at boot varies, and the
+old timing only trips when the join is late enough (about 5.5 s on the rig):
+
+| Boot | T17 joined after | Old timing |
+|---|---|---|
+| 17:44 | about 5.5 s | tripped |
+| 18:41, on the fail-first build | about 2.5 s | did not trip, so that run passed |
+
+The `latejoin` stage therefore makes the late join on purpose:
+1. The sensor is made absent at rest, and the gate shuts.
+2. The operator closes M3 from the LCD.
+3. The injection is cleared 7 s into the CLOSE, so the gate re-opens mid-drive.
+
+| Build | Gate re-opened | Leaf then at | Result |
+|---|---|---|---|
+| Fail-first | 8.1 s into the CLOSE | 441 mm | **FAIL**: `param 250` *"closed after 2 s of a 13 s traverse"* for an 11 s drive |
+| 2.9.1 | 7.8 s into the CLOSE | 510 mm | **PASS**: no early stop, no stall; ~0 came 11 s after T2's start |
+
+Both runs were on 2344, 2026-09-17.
+
+**The fix does not cure rule 2 for a part-way CLOSE.** See the correction under §12.4 rule 2
+above ([gh#78](https://github.com/pe1mew/greenhouse-Controller/issues/78), Phase 5).
 
 **Operator timing matters.** A "press Open when M3 is closed" instruction produced a reversal on
 the first run. T2 drives on for its 5 s margin after the leaf stops, and still reports the stroke

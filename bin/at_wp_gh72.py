@@ -4,7 +4,7 @@
 
 WHAT IT CHECKS
 --------------
-gh#72 changed three things in T17, and this test has one stage for each. Every
+gh#72 changed four things in T17, and this test has one stage for each. Every
 stage says PASS only on a normal bench build; on a build made with
 `-DWPOS_FAILFIRST_GH72`, which restores the old behaviour, the same stage must
 FAIL. Run it on both. `GET /api/diag/windowpos` reports which build it is
@@ -19,6 +19,14 @@ FAIL. Run it on both. `GET /api/diag/windowpos` reports which build it is
             drive (`strokes` +1), and the control mode must not be promoted in
             the middle of it. Before gh#72 a shut gate kept the CLOSE, so the
             OPEN was not counted at all.
+  latejoin  LCD strokes. A drive T17 joins late must be timed from T2's
+            start. Seen on 2344 (2026-09-17) after a power cycle with M3 OPEN:
+            T17 came up during T2's boot recalibration, timed the CLOSE from
+            its first look, and rule 2 reported a false early stop. How late
+            T17 joins at boot varies (5.5 s then, 2.5 s in a later try that
+            did not trip), so the stage makes the late join on purpose: the
+            sensor is made absent at rest, the CLOSE starts unseen, and the
+            gate re-opens 7 s into it. No early stop and no stall may follow.
   reversal  LCD strokes. A CLOSE reversed to OPEN is two drives, and each must
             be judged. With the reading stuck (a shorted wiper, simulated), both
             must report a stall (`stall_faults` +2); before gh#72 only the
@@ -42,6 +50,8 @@ test. The script says which key to press:
             (Open). Not when the leaf looks closed: T2 drives on for its 5 s
             margin and still reports the stroke, so an earlier press is a
             reversal, and the stage stops as INCONCLUSIVE.
+  latejoin  press 1 (Open) if M3 is not OPEN; wait about a minute while the
+            gate shuts; press 2 (Close) when told, then nothing more.
   reversal  M3 must start OPEN. Press 2 (Close), count slowly to eight, then
             press 1 (Open) -- twice, once with the fault and once without.
 The count matters: the CLOSE must run past rule 1's grace, min(5 s,
@@ -53,6 +63,7 @@ USAGE
     python bin/at_wp_gh72.py --host 192.168.20.160 flap
     python bin/at_wp_gh72.py --host 192.168.20.160 stale
     python bin/at_wp_gh72.py --host 192.168.20.160 reversal
+    python bin/at_wp_gh72.py --host 192.168.20.160 latejoin
 
 Exit 0 = PASS, 1 = FAIL, 2 = could not run or could not judge.
 Stdlib only, ASCII output.
@@ -75,6 +86,7 @@ PASS, FAIL, INCONCLUSIVE = 0, 1, 2
 WORD = {PASS: "PASS", FAIL: "FAIL", INCONCLUSIVE: "INCONCLUSIVE"}
 POLL_S = 0.25
 FLAP_WATCH_S = 100       # > three 30 s probe cycles
+REJOIN_AFTER_S = 7.0     # latejoin: well past the ~5.5 s the old timing needs to trip
 SETTLED = ("OPEN", "CLOSED")
 
 
@@ -376,7 +388,89 @@ def stage_reversal(rig):
                          "did not read as a stall", rig)
 
 
-STAGES = {"flap": stage_flap, "stale": stage_stale, "reversal": stage_reversal}
+
+# -------------------------------------------------------------- latejoin
+def stage_latejoin(rig):
+    """A drive T17 joins late is timed from T2's start (gh#72, 2026-09-17).
+
+    The field case is a power cycle with M3 OPEN: T2's boot recalibration is
+    already closing when T17 comes up. How late T17 joins depends on boot
+    timing (about 5.5 s at 17:44, about 2.5 s at 18:41 on 2344), and rule 2
+    only false-trips on the old timing when the join is late enough, so a
+    power cycle cannot be a fail-first test. This stage makes the late join
+    on purpose, through the same code: the gate is shut at rest, the CLOSE
+    starts unseen, and the gate re-opens REJOIN_AFTER_S into the drive.
+
+    The injection must go in at REST, after T17 has seen the OPEN end. Shut
+    mid-stroke instead, the fail-first build keeps the old stroke through the
+    shut gate, joins nothing, and the stage could not fail.
+    """
+    if not preflight(rig, need_lcd=True):
+        return INCONCLUSIVE
+    travel = rig.travel_s()
+    if travel < 12:
+        return verdict(INCONCLUSIVE, "travel_m3 is %d s; this stage needs >= 12 s so the "
+                                     "rejoin comes well before the leaf reaches 0" % travel, rig)
+    if m3_of(rig.status()) != "OPEN":
+        banner(["Press 1 (Open) on the LCD. Then wait for the next key: about a minute."])
+        m, _ = wait_m3(rig, lambda m: m == "OPEN", 120)
+        if m != "OPEN":
+            return verdict(INCONCLUSIVE, "M3 did not reach OPEN", rig)
+    time.sleep(2.0)                    # T17 sees the stroke end at rest
+    s0 = soak_of(rig.diag())
+    rig.inject("absent")
+    say("waiting for the gate to shut (two failed idle reads, 30 s apart)")
+    t0 = time.time()
+    while str(gate_of(rig.diag()).get("reason_str")) != "no_sensor":
+        if time.time() - t0 > 90:
+            return verdict(INCONCLUSIVE, "the gate did not shut within 90 s", rig)
+        time.sleep(1.0)
+    say("gate shut after %.0f s" % (time.time() - t0))
+
+    banner(["Press 2 (Close) on the LCD now. Then press nothing until the end."])
+    m, _ = wait_m3(rig, lambda m: m != "OPEN", 300)
+    if m != "MOVING_CLOSE":
+        return verdict(INCONCLUSIVE, "no CLOSE was seen (M3 %s)" % m, rig)
+    t_start = time.time()
+    time.sleep(REJOIN_AFTER_S)
+    rig.clear()                        # a shut gate probes at once
+    say("injection cleared %.1f s into the CLOSE" % (time.time() - t_start))
+    rejoined_s = None
+    rejoin_mm = None
+    while time.time() - t_start < travel + 10:
+        d = rig.diag()
+        if str(gate_of(d).get("reason_str")) == "ok":
+            m = m3_of(rig.status())
+            if m == "MOVING_CLOSE":
+                rejoined_s = time.time() - t_start
+                # The GET's own direct read: the device as it is, injection or not.
+                if isinstance(d.get("opening_mm_x10"), int):
+                    rejoin_mm = d["opening_mm_x10"] // 10
+            break
+        time.sleep(POLL_S)
+    m, _ = wait_m3(rig, lambda m: m in ("CLOSED", "MOVING_OPEN"), travel + 15)
+    if m != "CLOSED":
+        return verdict(INCONCLUSIVE, "the CLOSE did not end CLOSED (M3 %s)" % m, rig)
+    time.sleep(3.0)
+    s1 = soak_of(rig.diag())
+    early = delta(s1, s0, "early_stops")
+    stall = delta(s1, s0, "stall_faults")
+    judged = delta(s1, s0, "strokes")
+    say("gate re-opened %s; leaf then at %s mm; strokes +%d, early_stops +%d, "
+        "stall_faults +%d" % ("%.1f s into the CLOSE" % rejoined_s if rejoined_s is not None
+                              else "NOT during the CLOSE", rejoin_mm, judged, early, stall))
+    if rejoined_s is None:
+        return verdict(INCONCLUSIVE, "the gate did not re-open while M3 was closing", rig)
+    if judged < 1:
+        return verdict(INCONCLUSIVE, "T17 did not judge the drive it rejoined", rig)
+    if early > 0 or stall > 0:
+        return verdict(FAIL, "the rejoined CLOSE was reported as a fault (early_stops +%d, "
+                             "stall_faults +%d): it was timed from the rejoin, not from "
+                             "T2's start" % (early, stall), rig)
+    return verdict(PASS, "the rejoined CLOSE was timed from T2's start: no false fault", rig)
+
+STAGES = {"flap": stage_flap, "stale": stage_stale, "reversal": stage_reversal,
+          "latejoin": stage_latejoin}
 
 
 def main():

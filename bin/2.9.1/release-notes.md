@@ -38,20 +38,55 @@ A stroke's end is not seen while the gate is shut. So a gate that re-opened duri
 - **A shut gate forgets the stroke in progress.** A re-open mid-stroke starts a fresh verdict from that moment.
 - **The control mode is promoted only for a stroke that T17 saw start from rest with the gate open.** A re-open mid-stroke, or a first look at a stroke that is already running (a boot recalibration in progress when T17 starts), waits for the next stroke.
 
+### A drive that T17 joins late is timed from its real start
+
+Found on 2344 after 2.9.1 was committed, and fixed before it was published (operator,
+2026-09-17).
+
+T17 can join a drive that is already running:
+- **At boot**, T2's recalibration of a window that was not closed has already started by the
+  time T17 is up, about 6 s later.
+- **After a gate re-open**, T17 joins mid-drive.
+
+T17 timed a drive from its own first look, so rule 2's "~0 in under half the traverse" was
+judged on a truncated elapsed time. The leaf reads ~0 about a second before the closed end
+sensor makes (the closed-end headroom, plan §2a.6), and that gap then reads as an early stop.
+That is what happened after a power cycle with M3 open:
+- `param 250`, *"claimed closed after 5 s of a 13 s traverse"*;
+- the drive had really run 12 s.
+
+2.8.0 had the same timing; this was the first restart with M3 open under test.
+
+**Fix.** T2 now also records when it energised the relay (`t2_get_drive(ch, &epoch,
+&started_ms)`), and T17 times rule 1's grace and rule 2's elapsed time from that moment:
+- A drive joined after its grace gets rule 1's verdict on its first sample. The at-end
+  exemption still applies to what T17 sees.
+- A start older than the longest possible drive is not trusted; T17 then falls back to its
+  first look.
+- A join more than 1 s late is logged on the serial console.
+
+This fixes the late join for a full close. It does not stop rule 2 from false-tripping on a
+CLOSE that starts part-way open (see Known limitations, gh#78).
+
 ### Bench builds: a test hook and a fail-first build
 
 - **`POST /api/diag/windowpos {"inject": "none" | "absent" | "fault" | "stuck"}`.** At a moment a test chooses, it makes T17's own reads see the sensor absent (every read times out), faulted (wiper open), or stuck (the position frozen and the rate 0, the way a shorted wiper reads, with the end sensors real).
   - The direct read of the GET and the commissioning path still see the device as it is.
   - Clearing the injection makes a shut gate probe at once.
   - It is RAM only. The GET reports it as `gate.inject`.
-- **`-DWPOS_FAILFIRST_GH72`** restores the three old behaviours for a fail-first run. The GET reports it as `gate.failfirst_gh72`, and a release build refuses to compile with it.
-- **`bin/at_wp_gh72.py`** is this release's acceptance test, with the stages `flap`, `stale` and `reversal`.
+- **`-DWPOS_FAILFIRST_GH72`** restores the old behaviours for a fail-first run, including
+  the first-look timing. The GET reports it as `gate.failfirst_gh72`, and the source has an
+  `#error` for it outside bench builds.
+- **`bin/at_wp_gh72.py`** is this release's acceptance test, with the stages `flap`, `stale`,
+  `reversal` and `latejoin`.
 
 ## Who writes and who reads
 
-**The drive counter (`s_drive_epoch`):**
+**The drive counter and start time (`s_drive_epoch`, `s_drive_start_ms`):**
 - **Written** by T2 only, in `relay_ch_open()` and `relay_ch_close()` under `s_state_mux`. Every energisation goes through those two: `ch_start_open()`/`ch_start_close()`, the reversal-gap end in `ch_update()`, and `calib_close_all()`.
-- **Read** through `t2_get_drive()` by T17, at every travelling pass. No other caller.
+- **Read** through `t2_get_drive()` by T17, at every travelling pass. No other caller. Both
+  values are read under the same lock, and the start time is in the tick-based
+  milliseconds T17 also uses.
 
 **The injection (bench builds):**
 - **Written** by T11 (`POST /api/diag/windowpos`).
@@ -63,13 +98,13 @@ A stroke's end is not seen while the gate is shut. So a gate that re-opened duri
 
 |  | 2.9.0 | 2.9.1 | delta |
 |---|---|---|---|
-| app image | 1 392 336 | **1 392 880** | **+544 B** |
-| `.flash.text` | 937 746 | 938 210 | +464 B |
-| `.flash.rodata` | 309 884 | 309 964 | +80 B |
+| app image | 1 392 336 | **1 393 056** | **+720 B** |
+| `.flash.text` | 937 746 | 938 318 | +572 B |
+| `.flash.rodata` | 309 884 | 310 028 | +144 B |
 | `.iram0.text` | 120 535 | 120 535 | 0 |
-| `.dram0.bss` | 42 128 | 42 144 | +16 B |
+| `.dram0.bss` | 42 128 | 42 152 | +24 B |
 
-The bench image is 1 407 760 B (+1 488 B, including the test hook). The web assets are unchanged from 2.9.0 apart from the version stamp.
+The late-join fix accounts for 176 B of the image, in the release and the bench build alike. The bench image is 1 407 936 B, including the test hook. The web assets are unchanged from 2.9.0 apart from the version stamp.
 
 ## Verification
 
@@ -81,7 +116,17 @@ All on 2344 in the dev rig, with the encoder connected, on bench builds of this 
 | `stale`: sensor absent 1.5 s into a CLOSE, back 2 s into the next OPEN | **FAIL**: the OPEN was not counted (`strokes` +0) | **PASS**: the OPEN was counted as a fresh drive (`strokes` +1), and the mode stayed "timed" throughout |
 | `reversal` A: reading stuck, CLOSE reversed to OPEN | **FAIL**: 1 stall (reversed 7.1 s in) | **PASS**: 2 stalls, `redrives` +1 (reversed 9.3 s in) |
 | `reversal` B: healthy, same keys | pass, as expected: no stall | **PASS**: no stall, `redrives` +1 (reversed 8.7 s in) |
+| `latejoin`: sensor absent at rest, CLOSE from OPEN, gate re-opened 7 s into it | **FAIL**: `early_stops` +1, *"claimed closed after 2 s of a 13 s traverse"* for an 11 s drive (re-opened 8.1 s in, leaf at 441 mm) | **PASS**: no early stop, no stall, `strokes` +1 (re-opened 7.8 s in, leaf at 510 mm) |
 
+- **Which build each stage ran on.** `flap`, `stale` and `reversal` ran before the late-join fix
+  was added; `latejoin` ran on the final code, and so did the builds listed under Size. The fix
+  changes only when a drive's verdict starts: from T2's energise time instead of T17's first
+  look. For a drive T17 sees from its start, that is up to one idle tick (500 ms) earlier.
+- **A power cycle did not work as the fail-first test.** The first `latejoin` design
+  power-cycled the unit with M3 OPEN. On the fail-first build T17 then joined the boot
+  recalibration only about 2.5 s late (about 5.5 s at 17:44), so the old timing did not trip
+  and the run passed. The stage now makes the late join on purpose, through the gate re-open
+  code path.
 - **gh#73 still holds on this code** (`bin/at_wpos_fitted.py off`): the unit was switched off for 60 s, then on again. Address 40's count grew by 6. The limit is 6: a bench build's `commission_refresh()` adds 2 transactions when the gate opens, over the 4 a release build shows.
 - **Builds:** the release and bench builds compile. The source refuses the fail-first flag without `MODBUS_BENCH` (an `#error`), but no build tried it.
 - **Not tested on hardware:** a reversal made by T3's wind override itself (it uses the same T2 path as the LCD reversals tested here), and a real device fault (the injection simulates the wiper-open reading).
@@ -97,6 +142,10 @@ All on 2344 in the dev rig, with the encoder connected, on bench builds of this 
 
 ## Known limitations
 
+- **Rule 2 (early stop) is wrong in two cases** ([gh#78](https://github.com/pe1mew/greenhouse-Controller/issues/78), found on 2026-09-17 during these tests, to be fixed in 2.10.0).
+  - **False alarm on a part-way close.** Position reads 0 for about 1.2 s (7 polls) before the closed end sensor makes, and the rule waits only 2. So a CLOSE that reaches ~0 in under half `travel_m3` without first passing an end sensor is reported as an early stop. On the rig that is a close from below about 58 % open, for example a wind override or LCD reversal while M3 is opening, or a recalibration of a partly open M3.
+  - **Blind on a full close.** The open end sensor counts as confirmation, so a full close from OPEN is never judged by rule 2.
+  - Neither was seen in a soak, because every close there started at the open end. The rule only logs and counts.
 - **A drive shorter than rule 1's grace**, min(5 s, `travel_m3`/2), is not judged. That is unchanged, but a reversal now resets the grace, so reversing a CLOSE within 5 s leaves that CLOSE unjudged.
 - **The fault thresholds are validated on the rig only.** Unchanged.
 - **The at-end exemption's continuity break is not tested on hardware.** Unchanged. The new `stuck` injection makes that test possible; it is a small item.

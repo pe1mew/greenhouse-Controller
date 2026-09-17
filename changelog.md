@@ -29,6 +29,9 @@ notes and known limitations are in `bin/2.9.1/release-notes.md`.
 - **A stroke no longer inherits a stale verdict.** A shut gate forgets the stroke in progress, so
   a gate that re-opens during a later stroke judges it afresh from there. The mode is promoted
   only for a stroke that T17 saw start from rest with the gate open.
+- **A drive that T17 joins late is timed from its real start.** T2 also records when it energised
+  the relay. Before, rule 2 reported a false early stop on a boot recalibration of an open M3
+  (2344, 2026-09-17), because T17 timed the drive from its own first look, ~6 s after boot.
 
 **Added (bench builds only).**
 
@@ -37,8 +40,16 @@ notes and known limitations are in `bin/2.9.1/release-notes.md`.
   `GET` reports it as `gate.inject`.
 - **`-DWPOS_FAILFIRST_GH72`**, a fail-first build that restores the old behaviour. `GET` reports
   it as `gate.failfirst_gh72`.
-- **`bin/at_wp_gh72.py`**, the acceptance test (stages `flap`, `stale` and `reversal`). It
-  failed first on the fail-first build and passed on this one, on 2344.
+- **`bin/at_wp_gh72.py`**, the acceptance test (stages `flap`, `stale`, `reversal` and
+  `latejoin`). Each stage failed first on the fail-first build and passed on this one, on 2344.
+
+**Known limitation.**
+
+- **Rule 2 (early stop) still misjudges two cases**
+  ([gh#78](https://github.com/pe1mew/greenhouse-Controller/issues/78), to be fixed in 2.10.0):
+  - it false-trips on a CLOSE that starts part-way open and reaches ~0 in under half the
+    traverse, because position reads 0 for about 1.2 s before the closed end sensor makes;
+  - it never judges a full close, because it counts the open end sensor as confirmation.
 
 **Changed.**
 

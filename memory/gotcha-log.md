@@ -20,7 +20,7 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 - **[PATTERN] A number that fits the story is the one to check hardest.** Five instances, four of them on 2026-09-14. (1) A ROTA retrieval period was inferred as "~40 min" from the gap between **two** observations — that was the sampling interval, not the period; the operator's cron is 10 min. (2) A 5C88 fault count included the 2026-06-19 pre-commissioning wind artefact, which the gotcha log had **already** excluded — the log was not read before counting. (3) `4.19 h` from a progress line was read as `4.19 ms` of latency and felt confirmed because the vendor's contract says 4.08 ms; the two numbers have nothing to do with each other and we had never measured the encoder at all. (4) "The probe cannot see addr 40" — its **requests** had been decoding perfectly all along, visible the moment the discarded frames were logged. (5) "The window is too short" — the reply was corrupt, not clipped; fragments summed to *more* bytes than the frame contains, which a truncation cannot produce. Rules: (a) trace every number to the thing that produced it before using it — a unit that is not written down is not a measurement; (b) **corroboration between two numbers you did not independently source is not corroboration**; (c) when a mechanism is proposed, name the observation that would distinguish it from the alternatives and get that observation first — in (4) a four-line diagnostic settled in four minutes what two rounds of reasoning had not; (d) sibling of *"show the check can fail"* — the same discipline applied to evidence rather than to tests.
 
-- **[PATTERN] Show the check can fail before trusting a pass.** Three instances in two days: (1) a before/after motor-timing measurement landed on the same 24 s for opposite reasons (2026-09-10) — a third run at a different setting was the evidence; (2) AT-WP05's headline counter `err_busy` **cannot fail with two callers** (500 ms lock timeout vs ~215 ms hold) — 7117 clean reads proved nothing about contention (2026-09-11); (3) the gh#52 hardware test run from AUTOMATIC passed on code where the fix is inert (2026-09-11). Rules: (a) before reading a pass, name the input that would make the check fail and confirm the check sees it — the Modbus fail-first rule generalised; (b) a criterion that no plausible failure can trip is a *description*, not a test — say so in the results; (c) a fix to a transition is tested from the state the transition leaves. **Fourth instance, 2026-09-12, the inverse shape:** an A/B that *passed* proved nothing — the encoder was unplugged and M3 stroked **twice** with no wind alarm, read as evidence, when at the measured rate (~4 failures in 600 transactions) two strokes span one or two polls and the null hypothesis predicts zero events anyway. (d) before treating an A/B as evidence, **compute how many events the null hypothesis predicts in that sample size** — if it is under ~1, the run cannot discriminate and saying so is the result. **Fifth instance, 2026-09-16: the fail-first run found a flaw in the TEST.** A build that persists the teach's STANDBY hold was expected to fail "a reboot ends the hold", and passed. The test logged out right after the upload that reboots the unit, and the logout reached the unit before the reboot and released the hold itself, so every earlier pass had tested the logout, not the reboot. (e) **when a test drives a cleanup step (logout, abort, close) between its stimulus and its check, make sure the cleanup cannot produce the outcome being checked.**
+- **[PATTERN] Show the check can fail before trusting a pass.** Three instances in two days: (1) a before/after motor-timing measurement landed on the same 24 s for opposite reasons (2026-09-10) — a third run at a different setting was the evidence; (2) AT-WP05's headline counter `err_busy` **cannot fail with two callers** (500 ms lock timeout vs ~215 ms hold) — 7117 clean reads proved nothing about contention (2026-09-11); (3) the gh#52 hardware test run from AUTOMATIC passed on code where the fix is inert (2026-09-11). Rules: (a) before reading a pass, name the input that would make the check fail and confirm the check sees it — the Modbus fail-first rule generalised; (b) a criterion that no plausible failure can trip is a *description*, not a test — say so in the results; (c) a fix to a transition is tested from the state the transition leaves. **Fourth instance, 2026-09-12, the inverse shape:** an A/B that *passed* proved nothing — the encoder was unplugged and M3 stroked **twice** with no wind alarm, read as evidence, when at the measured rate (~4 failures in 600 transactions) two strokes span one or two polls and the null hypothesis predicts zero events anyway. (d) before treating an A/B as evidence, **compute how many events the null hypothesis predicts in that sample size** — if it is under ~1, the run cannot discriminate and saying so is the result. **Fifth instance, 2026-09-16: the fail-first run found a flaw in the TEST.** A build that persists the teach's STANDBY hold was expected to fail "a reboot ends the hold", and passed. The test logged out right after the upload that reboots the unit, and the logout reached the unit before the reboot and released the hold itself, so every earlier pass had tested the logout, not the reboot. (e) **when a test drives a cleanup step (logout, abort, close) between its stimulus and its check, make sure the cleanup cannot produce the outcome being checked.** **Sixth instance, 2026-09-17: the fail-first run PASSED because its trigger was not deterministic.** A power cycle was to reproduce a false rule-2 trip that needs T17 to join the boot recalibration at least ~5.5 s late; this boot it joined after ~2.5 s. (f) **a fail-first trigger must land in the failure window every time** — make it deterministic, and record where each run's trigger actually landed.
 
 - **[PATTERN] When a change gates a shared queue, table or key set, enumerate every producer and consumer with `grep` and put the list in the release notes — never reason about "the other callers".** 2026-09-11, 2.4.6: the gh#53 fix rejected any `/api/config` key without a `cfg_shadow_t` field. The verification enumerated the web GUI's 33 keys from `app.js`, then *reasoned* about the LCD and T10 (the code comment said "defence in depth for the LCD"). `grep -rn 'xQueueSend(Q4\|post_q4('` lists five producers; two of them post `wifi/ap_enable`, which has no shadow field on purpose because T10 polls NVS for it. The AP toggle — the recovery path for a unit that has lost its WiFi — was dead within minutes of the OTA, and the operator found it, not the tests. Rules: (a) the enumeration is a `grep` output pasted into the notes, not a sentence; (b) a key set defined as "the set of things X handles" is wrong whenever some consumer reads the store directly — ask *who reads NVS / the queue without going through X*; (c) the full 2.3.1→2.4.6 surface comparison (`design/releaseComparison_2.3.1_vs_2.4.6.md`) is the template — regenerate its §2 mechanically for the next production candidate.
 
@@ -45,6 +45,7 @@ Hooks are the *symptom*, not the title — you rarely know the cause when you ar
 Entries stay in reverse-chronological order below; this index is the only grouped view.
 
 ### Windows, climate & manual control (T2, T6, T8)
+- **2026-09-17** — a fail-first run passes when its trigger is a power cycle (how late T17 joins the boot recalibration varies, 2.5-5.5 s); also: position reads 0 for ~1.2 s before the closed end sensor makes (gh#78)
 - **2026-09-17** — a test that tells the operator to press Open "when M3 is closed" gets a reversal instead (T2 drives 5 s past the leaf stopping)
 - **2026-09-16** — the M3 teach commits from one end and never from the other (it drove one traverse; T6 finished the OPEN case by chance — a genuine success credited to the wrong actor)
 - **2026-09-12** — unit stuck in STANDBY forever; LCD login/logout will not clear it (gh#65 — NVS state, RAM-only release flag) [RESOLVED 2.8.0: the menu takes a non-persisted hold]
@@ -169,6 +170,41 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
 
+
+## 2026-09-17 — a fail-first run PASSED: its trigger was a power cycle, and how late T17 joins at boot varies
+
+**Problem.** The late-join fix (gh#72) was to be shown failing first by power-cycling 2344 with M3
+OPEN, repeating the 17:44 boot where rule 2 had false-tripped. On the fail-first build the run
+passed: no early stop.
+
+**Root cause.** The false trip needs T17 to join T2's boot recalibration at least about 5.5 s
+late: rule 2 compares the elapsed time at ~0 with half of `travel_m3`. The leaf position at T17's
+first reading gives the join time:
+
+| Boot | Leaf at T17's first reading | Join | Old timing |
+|---|---|---|---|
+| 17:44 | 792 mm | ~5.5 s | tripped |
+| 18:41 | 1188 mm | ~2.5 s | did not trip |
+
+Boot timing varies from one power cycle to the next, so the trigger was a coin toss.
+
+**Fix.** Make the late join happen through the other path that produces it:
+1. Shut the gate with the bench injection (`absent`) while M3 is at rest.
+2. Start the CLOSE.
+3. Clear the injection 7 s into the drive.
+
+The fail-first build then failed (early stop), and the fix passed. **The injection must go in at
+rest.** Shut mid-stroke, the fail-first build keeps the stroke through the shut gate, joins
+nothing, and cannot fail.
+
+**Also found while reading those rows.** Position reads 0 for about 1.2 s (7 polls) before the
+closed end sensor makes, not the one poll rule 2 assumes (gh#78).
+
+**Rule.** A fail-first trigger must be deterministic. If the failure needs a timing window, measure
+where each run's trigger landed in that window (here, the leaf position at the first reading)
+before reading a pass or a fail.
+
+**Where it lives.** `bin/at_wp_gh72.py`, stage `latejoin`; gh#78.
 
 ## 2026-09-17 — "press Open when M3 is closed" reversed the stroke: T2 drives on for 5 s after the leaf stops
 

@@ -14,6 +14,8 @@
 #include "../event_logger/event_logger.h"
 
 #include "modbus_rtu.h"
+#include "cfg_limits.h"     /* CFG_MAX_TRAVEL_S (gh#72 drive age bound) */
+#include "cfg_defaults.h"   /* MOTOR_TRAVEL_MARGIN_S_DEFAULT */
 #include <time.h>
 
 #include <esp_log.h>
@@ -153,14 +155,21 @@ static uint32_t s_fitted_checked_ms = 0u;
 /** Longest T17 waits at start for T4 to load the configuration. */
 #define CFG_WAIT_MAX_MS     10000u
 
+/** gh#72: the longest one drive can last -- the largest `travel_m3` plus T2's
+ *  fixed margin. A drive start older than this is not the drive in progress. */
+#define DRIVE_AGE_MAX_MS \
+    (((uint32_t)CFG_MAX_TRAVEL_S + (uint32_t)MOTOR_TRAVEL_MARGIN_S_DEFAULT) * 1000u)
+
 /* ---- fail-first build for gh#72 ---------------------------------------------
- * `-DWPOS_FAILFIRST_GH72` restores the three behaviours gh#72 changed, so its
+ * `-DWPOS_FAILFIRST_GH72` restores the four behaviours gh#72 changed, so its
  * acceptance test (bin/at_wp_gh72.py) can be shown to FAIL first:
  *  - one verdict per stroke, so the second drive of a reversal is not judged;
  *  - the probe opens the gate on the identity alone, so a self-reported fault
  *    makes the gate flap;
  *  - a shut gate keeps the stroke, so a later stroke inherits it, and a stroke
- *    may be promoted without a rest having been seen.
+ *    may be promoted without a rest having been seen;
+ *  - a drive is timed from T17's first look, so a drive joined late (a boot
+ *    recalibration) is judged on a truncated elapsed time.
  * GET /api/diag/windowpos reports it, so a fail-first result is never read as
  * a real one. Bench builds only. */
 #if defined(WPOS_FAILFIRST_GH72) && !defined(MODBUS_BENCH)
@@ -673,9 +682,9 @@ static bool m3_travelling(void)
  * T2 bumps the counter every time it energises a relay, so a new value is a
  * new drive even if T17 never saw the gap between them.
  */
-static t2_drive_t m3_drive(uint32_t *out_epoch)
+static t2_drive_t m3_drive(uint32_t *out_epoch, uint32_t *out_started_ms)
 {
-    return t2_get_drive(2u, out_epoch);      /* M3 is channel index 2 */
+    return t2_get_drive(2u, out_epoch, out_started_ms);   /* M3 is channel index 2 */
 }
 
 /**
@@ -1219,7 +1228,8 @@ void task_window_pos(void *pvParameters)
          * relay energised, so the gap cannot read as a stall. During the gap
          * nothing is judged and no evidence is gathered. */
         uint32_t drive_epoch = 0u;
-        const t2_drive_t drive = m3_drive(&drive_epoch);
+        uint32_t drive_started_ms = 0u;
+        const t2_drive_t drive = m3_drive(&drive_epoch, &drive_started_ms);
         const bool driving = (drive == T2_DRIVE_OPEN || drive == T2_DRIVE_CLOSE);
 #ifdef WPOS_FAILFIRST_GH72
         /* The pre-gh#72 behaviour: the first drive starts the only verdict of
@@ -1232,7 +1242,30 @@ void task_window_pos(void *pvParameters)
             const bool redrive = seg_active;   /* a second drive within one stroke */
             seg_active       = true;
             seg_epoch        = drive_epoch;
-            stroke_start_ms  = now_ms();
+            /* Time the drive from when T2 energised the relay, not from this
+             * first look (gh#72, 2026-09-17). T17 can join a drive late: at
+             * boot, T2's recalibration of a window that was not closed is
+             * already running, and a gate that re-opens joins mid-drive. From
+             * the first look, rule 2 judged "~0 in under half the traverse"
+             * on a truncated time and reported a false early stop at the
+             * closed end (2344, a power cycle with M3 open). A late join may
+             * reach rule 1's verdict on its first sample; that is right, the
+             * grace had passed. */
+            const uint32_t seen_ms = now_ms();
+            const uint32_t age_ms  = seen_ms - drive_started_ms;
+#ifdef WPOS_FAILFIRST_GH72
+            stroke_start_ms  = seen_ms;              /* the old timing */
+#else
+            /* Both values come from one locked read, so a start time from the
+             * future (a huge unsigned age) or older than any drive can last
+             * should not occur. If one does, it is not this drive's start:
+             * fall back to the first look rather than trust it. */
+            stroke_start_ms  = (age_ms <= DRIVE_AGE_MAX_MS) ? drive_started_ms : seen_ms;
+#endif
+            if (age_ms > 1000u) {
+                ESP_LOGI(TAG, "M3 drive joined %lu ms after T2 energised it",
+                         (unsigned long)age_ms);
+            }
             stroke_peak_x10  = 0u;
             stroke_samples   = 0u;
             stall_reported   = false;

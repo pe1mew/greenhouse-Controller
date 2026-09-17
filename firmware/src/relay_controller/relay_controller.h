@@ -126,18 +126,25 @@ typedef enum {
 } t2_drive_t;
 
 /**
- * @brief The current drive of channel @p ch, and a counter of its drives.
+ * @brief The current drive of channel @p ch, a counter of its drives, and when
+ *        the latest one started.
  *
- * @param ch         0 = M1, 1 = M2, 2 = M3.
- * @param out_epoch  May be NULL. Receives a counter that T2 increments every
- *                   time it energises a relay on this channel: a stroke start,
- *                   the end of a reversal gap, a CLOSE_ALL. A caller that
- *                   remembers the value sees every new drive, including one
- *                   whose start it did not observe.
+ * @param ch              0 = M1, 1 = M2, 2 = M3.
+ * @param out_epoch       May be NULL. Receives a counter that T2 increments
+ *                        every time it energises a relay on this channel: a
+ *                        stroke start, the end of a reversal gap, a CLOSE_ALL.
+ *                        A caller that remembers the value sees every new
+ *                        drive, including one whose start it did not observe.
+ * @param out_started_ms  May be NULL. Receives the time of that latest
+ *                        energisation, in the tick-based milliseconds
+ *                        `xTaskGetTickCount() * portTICK_PERIOD_MS`. A caller
+ *                        that joins a drive late -- after boot, or when its
+ *                        own view comes back mid-drive -- times it from here,
+ *                        not from its first look (gh#72, 2026-09-17).
  * @return The drive; T2_DRIVE_NONE for an invalid channel.
  * @note  Safe from any task: a portMUX read, like t2_get_window_states().
  */
-t2_drive_t t2_get_drive(uint8_t ch, uint32_t *out_epoch);
+t2_drive_t t2_get_drive(uint8_t ch, uint32_t *out_epoch, uint32_t *out_started_ms);
 
 /**
  * @brief Pack the per-channel window states + safety EG1 bits into a 16-bit
