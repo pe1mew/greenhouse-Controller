@@ -290,6 +290,7 @@ typedef enum {
      * initiator and channel. */
     LOG_PARAM_MODE_STANDBY   = 47,  /**< LOG_MODE_CHANGE emitter B (STANDBY enter/leave) */
     LOG_PARAM_DEADZONE_M3    = 48,  /**< M3 linear-control deadband (mm) */
+    LOG_PARAM_WPOS_FITTED_M3 = 49,  /**< gh#73: a position sensor is fitted to M3 (0/1) */
 
     /* ---- Modbus bus performance indicators (gh#66 Part 2) ----------------
      * Carried on **LOG_SYSTEM value_a = 31**, one row per slave per metric per
@@ -590,8 +591,12 @@ typedef struct {
      * WINDOW extremes while the motor drives on into the blind overlap
      * (plan 2a.5). Clamping would hide the overtravel that proves the window
      * reached its limit. */
+    bool     wpos_fitted;        /**< gh#73: `motor/wpos_fitted_m3` is set. Not
+                                  *   fitted: no reading, no fault, and the bus
+                                  *   array leaves address 40 out. */
     bool     wpos_have;          /**< A trusted reading exists. */
-    bool     wpos_fault;         /**< Sensor faulted, or the gate is shut. */
+    bool     wpos_fault;         /**< Fitted, and the sensor is absent, refused
+                                  *   or faulted. Never set when not fitted. */
     bool     wpos_at_end_sensor; /**< Device bit 3 -- authority for OPEN/CLOSED. */
     uint16_t wpos_percent_x10;   /**< Opening, 0.1 %. Unclamped. */
     uint16_t wpos_mm_x10;        /**< Opening, 0.1 mm. */

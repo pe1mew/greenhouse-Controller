@@ -104,6 +104,19 @@
  */
 #define DEF_DEADZONE_M3_MM      20
 
+/* gh#73 (2.9.0) — is a position sensor fitted to M3? 0 = no, 1 = yes.
+ *
+ * NOT FITTED by default, because that is what a unit in the field is: 5C88 has
+ * no encoder. Before this key T17 could not tell "not fitted" from "fitted and
+ * not answering", so a unit without one re-probed address 40 every 30 s for
+ * ever, and the Bus card and the hourly log rows showed that address as a
+ * failing sensor. With this default such a unit is silent at address 40 after
+ * a remote update, with no site visit. A unit that HAS a sensor (the dev rig's
+ * modules) is set to 1 once; from then on a sensor that stops answering is a
+ * FAULT, not an absence.
+ */
+#define DEF_WPOS_FITTED_M3       0
+
 /* ── System ─────────────────────────────────────────────────────────────── */
 #define DEF_POLL_INTERVAL_S      30   /**< 30 s poll: doubles smoothing-buffer depth at same time-window without the firmware-revisit overhead of finer rates */
 #define DEF_SESSION_TIMEOUT_MIN   5   /**< Idle session expiry (minutes) */

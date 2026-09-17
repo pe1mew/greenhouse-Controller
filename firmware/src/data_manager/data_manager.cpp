@@ -106,6 +106,7 @@ static const char K_DWELL_CLOSE_M1[]  = "dwell_close_m1";
 static const char K_DWELL_CLOSE_M2[]  = "dwell_close_m2";
 static const char K_DWELL_CLOSE_M3[]  = "dwell_close_m3";
 static const char K_DEADZONE_M3[]     = "deadzone_m3";
+static const char K_WPOS_FITTED_M3[]  = "wpos_fitted_m3";
 
 /* System namespace */
 static const char K_POLL_INTERVAL[]    = "poll_interval";
@@ -265,6 +266,10 @@ static const cfg_desc_t *cfg_desc_find(const char *ns, const char *key)
 
 /** @brief NVS-backed configuration shadow.  Protected by MX4. */
 static cfg_shadow_t   s_cfg;
+
+/** @brief True once T4 has loaded the shadow from NVS at boot (gh#73).
+ *  Set once and never cleared, so a lock-free read is safe. */
+static volatile bool  s_cfg_loaded = false;
 
 /**
  * @brief Write @p v into @p d's cfg_shadow_t field. Returns the previous value.
@@ -1326,9 +1331,17 @@ static void emit_bus_kpi(void)
         return;
     }
 
+    /* gh#73: no rows for the position sensor's address unless one is fitted.
+     * T17 does not talk to it then, so its rows would be a quiet "0 ok, 0
+     * failed" every hour for a device that is not there -- or, after a runtime
+     * switch-off, a frozen count. s_prev still takes the whole table below, so
+     * a later switch-on reports a correct delta. */
+    const bool wpos_fitted = dm_wpos_fitted_m3();
+
     for (unsigned i = 0; i < MODBUS_MAX_TRACKED_SLAVES; i++) {
         const uint8_t addr = now.slave[i].addr;
         if (addr == 0u) { continue; }
+        if (!wpos_fitted && addr == WINDOWPOS_DEFAULT_ADDR) { continue; }
 
         /* Match by ADDRESS, not by slot. Rows are claimed in first-seen order,
          * so a reboot -- or simply a different slave answering first -- can
@@ -1435,6 +1448,10 @@ void task_data_manager(void *pvParameters)
      * globals are constructed before any task starts) and before T6 enters
      * its main loop (it does — T4 runs `nvs_load_*` here in boot phase). */
     nvs_restore_standby_at_boot();
+    /* gh#73: T17 waits for this before it reads `wpos_fitted_m3`. T4 is
+     * created first, but it loads NVS here in its own task body, so without a
+     * signal T17 could read the zeroed shadow as "not fitted". */
+    s_cfg_loaded = true;
 
     /* Apply the stored TZ string so local-time functions are correct. */
     setenv("TZ", s_cfg.tz_str, 1);
@@ -1770,22 +1787,33 @@ void dm_status_snapshot(status_snapshot_t *out)
 
     /* 6.3 — M3 opening. Reported only when the presence gate says the reading
      * can be trusted, so a unit without a sensor omits the fields rather than
-     * publishing a plausible zero. The gate reason distinguishes "no sensor
-     * fitted" from "sensor present but faulted"; both leave wpos_have false,
-     * and only the second raises wpos_fault, because a unit that never had a
-     * sensor is not in a fault state. */
+     * publishing a plausible zero.
+     *
+     * gh#73: whether a sensor is FITTED is the operator's statement
+     * (`motor/wpos_fitted_m3`), not something the gate can infer. Before the
+     * setting, "no sensor answering" had to mean "none fitted", so it was not
+     * a fault, and a fitted sensor that stopped answering raised nothing
+     * either (seen on FDA4 2026-09-16: encoder unplugged, no flag). Now:
+     *  - not fitted: no reading, no fault, whatever T17 last held;
+     *  - fitted: a sensor that is absent, refused or faulted IS a fault.
+     *    Only PROBING (no verdict yet) and OK are not. */
     {
         windowpos_gate_reason_t why = WPOS_GATE_OK;
         (void)windowpos_task_ctrl_mode(&why);
-        windowpos_reading_t wr;
+        windowpos_reading_t wr = {};
         uint32_t wr_age = 0u;
-        const bool have = windowpos_task_snapshot(&wr, &wr_age);
+        const bool fitted = (cfg.wpos_fitted_m3 != 0);
+        const bool have   = fitted && windowpos_task_snapshot(&wr, &wr_age);
+        const bool gate_unusable = (why == WPOS_GATE_NO_SENSOR) ||
+                                   (why == WPOS_GATE_BENCH_BUILD) ||
+                                   (why == WPOS_GATE_DEVICE_FAULT) ||
+                                   (why == WPOS_GATE_NOT_FITTED);
 
-        out->wpos_have          = have && !wr.sensor_fault &&
-                                  (why != WPOS_GATE_NO_SENSOR) &&
-                                  (why != WPOS_GATE_BENCH_BUILD);
-        out->wpos_fault         = (why == WPOS_GATE_DEVICE_FAULT) ||
-                                  (have && wr.sensor_fault);
+        out->wpos_fitted        = fitted;
+        out->wpos_have          = have && !wr.sensor_fault && !gate_unusable;
+        out->wpos_fault         = fitted &&
+                                  ((gate_unusable && why != WPOS_GATE_NOT_FITTED) ||
+                                   (have && wr.sensor_fault));
         out->wpos_at_end_sensor = have && wr.at_end_sensor;
         out->wpos_percent_x10   = have ? wr.percent_x10 : 0u;
         out->wpos_mm_x10        = have ? wr.opening_mm_x10 : 0u;
@@ -1957,6 +1985,27 @@ int32_t dm_get_poll_interval_s(void)
         xSemaphoreGive(MX4);
     }
     return v;
+}
+
+bool dm_cfg_loaded(void)
+{
+    return s_cfg_loaded;
+}
+
+bool dm_wpos_fitted_m3(void)
+{
+    int16_t v;
+    if (xSemaphoreTake(MX4, pdMS_TO_TICKS(100u)) == pdTRUE) {
+        v = s_cfg.wpos_fitted_m3;
+        xSemaphoreGive(MX4);
+    } else {
+        /* Not the default on a timeout: T17 calls this every tick, and falling
+         * back to "not fitted" would switch a working sensor off because the
+         * lock was busy. One int16 is read in a single instruction, so the
+         * lock-free read cannot tear. */
+        v = s_cfg.wpos_fitted_m3;
+    }
+    return v != 0;
 }
 
 /**

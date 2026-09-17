@@ -4,7 +4,7 @@
 |---|---|
 | Document | Implementation plan |
 | Date | 2026-09-07, last revised **2026-09-13** |
-| Status | **Phases 0—3 COMPLETE and hardware-verified** (FDA4, 2026-09-10). **Phase 4 is SPLIT** (2026-09-13): the sensor-presence gate landed and is hardware-verified 2026-09-12, fault logging is done, and the control-side half — travel-complete, the two 12.4 rules, the operator surfaces — moved into the section 5.0 M3 slice. **Nothing consumes position yet, so the GATE before Phase 5 is still uncrossed and greenhouse behaviour is unchanged.** Phase 5 is **sequenced behind section 5.0**, no longer simply out of scope. Both prerequisites shipped (gh#49 in 2.4.1, gh#51 in 2.4.2—2.4.4). **Released in 2.8.0 and in `main` since 2026-09-17** (`ropeSensor` fast-forwarded): observe-only. T17, the presence gate and both §12.4 rules measure, log and report; soak #2 passed; nothing acts on position. Open before production: gh#73 (a unit without an encoder shows address 40 as failing); before the control step: gh#72 (a reversal is not judged) |
+| Status | **Phases 0—3 COMPLETE and hardware-verified** (FDA4, 2026-09-10). **Phase 4 is SPLIT** (2026-09-13): the sensor-presence gate landed and is hardware-verified 2026-09-12, fault logging is done, and the control-side half — travel-complete, the two 12.4 rules, the operator surfaces — moved into the section 5.0 M3 slice. **Nothing consumes position yet, so the GATE before Phase 5 is still uncrossed and greenhouse behaviour is unchanged.** Phase 5 is **sequenced behind section 5.0**, no longer simply out of scope. Both prerequisites shipped (gh#49 in 2.4.1, gh#51 in 2.4.2—2.4.4). **Released in 2.8.0 and in `main` since 2026-09-17** (`ropeSensor` fast-forwarded): observe-only. T17, the presence gate and both §12.4 rules measure, log and report; soak #2 passed; nothing acts on position. **gh#73 is fixed in 2.9.0** by an installation setting, `motor/wpos_fitted_m3`, default not fitted (see *Fitted or not*). Open before the control step: gh#72 (a reversal is not judged) |
 | Requirements | [`windowPositionSensorRequirements.MD`](windowPositionSensorRequirements.MD) — FR-WP01–22, and §12 evaluating this sensor |
 | Device contract | [`modbusInterfaceContractSpecification.md`](modbusInterfaceContractSpecification.md) v1.2 (normative source is the sensor project's `design/TDS.md`) |
 | Bus architecture | [`refactorSensorConfiguration.md`](refactorSensorConfiguration.md) — the end state this plan deliberately does *not* build |
@@ -1256,6 +1256,57 @@ only:** confirming that JSON needs another pull.
 
 **What 30 min can and cannot say.** It shows that the release build takes the path it should, and that the probes do not collide with T5 (0 `busy`), with gh#70's UART changes in place. It cannot resolve a change in T5's failure *rate*. The evidence for that is arm A: 18 h 33 m, 6 579 T5 reads, 0 failures, same probe traffic.
 
+#### Fitted or not: the installation setting (gh#73, 2.9.0)
+
+**Why.** The run above shows the cost on the path 5C88 takes. The gate cannot tell "no sensor
+fitted" from "a fitted sensor that stopped answering", so a unit without an encoder re-probes
+address 40 every 30 s for ever. Since 2.8.0's per-slave counters (gh#66), each failed probe also
+shows on the Bus card and in the hourly log as a failing slave. On 5C88 that would read as a broken
+sensor on a unit that has none. The other case was wrong too: in the run above the encoder was
+unplugged and no fault flag appeared, which FR-WP19 requires.
+
+**Decision (operator, 2026-09-17).** An installation setting, `motor/wpos_fitted_m3`, **default
+not fitted**, released on its own as 2.9.0; the T2-on-position step moves to 2.10.0. With that
+default, 5C88 takes the fix by ROTA with no site visit. The rig modules, FDA4 and 2344, are switched
+on once. Requirement: FR-WP23 in the requirements study.
+
+| | Not fitted (0, the default) | Fitted (1) |
+|---|---|---|
+| T17 on the bus | nothing at all | as before: gate, 30 s re-probe, stroke and idle reads |
+| Mode row (param 248) | `TIMED`, reason `5`: once at boot and at each switch-off | as before; a switch-on logs `TIMED [probing]`, then the verdict |
+| Status payload | no `M3_*` keys, no fault flag, no address 40 in `bus` | `M3_*` keys when trusted; `sensor_fault_position` when the sensor is absent, refused or faulted |
+| Hourly bus rows | none for address 40 | as before |
+| GUI | *Linear control* greyed below the setting, with the reason above it | as before |
+| Commissioning (bench) | refused with `not_fitted`, except abort | as before |
+
+**Details that matter.**
+- **A change is followed within one idle tick** (500 ms). T17 reads the setting at most that often,
+  through a single-field accessor that falls back to a lock-free read, not to the default, when the
+  lock is busy.
+- **A switch-on starts over:** no verdict, no failures counted, the bench-build latch cleared, and a
+  probe due at once.
+- **A switch-off forgets the last reading** and the event baseline. It does not count as a probe
+  failure, and it abandons a stroke in progress, so a later switch-on mid-stroke starts a fresh
+  verdict.
+- **T17 waits for T4 to load the configuration** (up to 10 s). T4 is created first but loads NVS in
+  its own task body; reading the zeroed shadow would log a not-fitted row on every fitted unit's
+  boot.
+- **"Fault" now means fitted and unusable.** The status snapshot raises `sensor_fault_position` for a
+  fitted sensor that is absent, refused (bench firmware) or faulted, and never for an unfitted one.
+  Before 2.9.0 an absent sensor raised nothing, which is why the run above saw no flag.
+
+**Verified on 2344, 2026-09-17, with the 2.9.0 release image and the encoder connected**
+(`bin/at_wpos_fitted.py`, stage by stage):
+
+| Stage | Result |
+|---|---|
+| `unfitted`, right after the update | PASS. The setting read 0; for 300 s no status reading showed address 40, a position or the flag |
+| `on`, at 331 s uptime | PASS. The sensor appeared 0.1 s after the read-back. Address 40 had **4** transactions since boot, the switch-on's own; a T17 still reading at rest would have had ~22 |
+| `off`, then on again | PASS. Gone 0.1 s after the read-back, absent for 300 s, and on switch-on the count had grown by **4** (~20 if T17 had kept reading) |
+| `log` (SD) | PASS. One `TIMED [not fitted]` row per boot, 7 s after the boot row; each switch, including one made through the web interface outside the test, logged its param-49 audit row and the mode rows within a second; no position rows while not fitted |
+| `unplug` | **Not run.** The first attempt timed out: the encoder was never unplugged in its 30 min |
+| hourly bus rows | PASS. At 14:50, with the setting on: addresses 1, 40 and 44. At 15:49, with it off: 1 and 44. T4's "hour" is 59 min here |
+
 #### Rig finding — T17's stroke poll starves T5, and it looks like a wind alarm
 
 The operator reported a **wind alarm persisting after a reset while the wind
@@ -1892,6 +1943,8 @@ Show the opening percentage per §6.1, with the sensor fault surfaced alongside 
 
 **Also hosts commissioning** (admin-only): set the window size, teach the sensor, and read the calibration verdict.
 
+> **2.9.0 (gh#73): *Linear control* starts with *Position sensor fitted*.** While it is No, everything below it (deadzone and commissioning) is greyed, and the reason sits above the greyed block rather than inside it. A dimmed parent dims its children whatever their own opacity says, so a reason inside the block cannot be shown at full strength. The commissioning card's own reason for a 404 now names the cause: on a release build, teaching needs a bench build; on a bench build (`fw_ver` ending in `-bench`), a route failed to register, which is a fault.
+
 > **Superseded 2026-09-13→14.** An earlier draft of this item timed the traverse and asked the operator to accept the measured seconds. That was built on a wrong premise about what the teach is for. **The teach maps the sensor's raw ADC onto a KNOWN distance** — the gap between the two end sensors, written to the device's `40004` — so a completed teach is self-consistent *by construction* and there is nothing in it for an admin to ratify. The screen publishes a **machine verdict** instead, and a re-teach happens when that verdict says so rather than on a schedule. See §6.3a.
 
 > **The commissioning surface stays inside `#ifdef MODBUS_BENCH` — accepted by the operator, 2026-09-14.** It sits beside the teach, which already lived there. The cost is explicit: commissioning a sensor on a production unit means flashing a build that also opens the arbitrary Modbus write route, so it is a deliberate, temporary state and the release build must be restored afterwards.
@@ -1953,6 +2006,8 @@ Production is **not** waiting for Phase 5. In parallel with firmware development
 2. Soak on FDA4 until the traverse record is trusted.
 3. 5C88's hardware installation completes independently.
 4. Production receives the firmware and **starts logging**.
+
+**Since 2.9.0 (gh#73) that last step needs one setting.** *Position sensor fitted* defaults to No, so a unit that takes the firmware by ROTA ignores address 40 until someone says otherwise. When 5C88's encoder is installed, set it to Yes on site (5C88 has no remote GUI path). The sensor also has to be taught, which needs a bench build.
 
 So the "absent field on production" concern is time-boxed, not permanent — but the dashboard must still handle absent for the interim, and for any unit that never gets a sensor.
 

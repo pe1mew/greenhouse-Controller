@@ -126,6 +126,10 @@ cfg: dict = {
     # mismatch is what app.js's now-removed fallback was really covering for.
     "dwell_open_s":        [300, 300, 1500],  # DEF_DWELL_OPEN_M{1,2,3}_S (1.16.31: per-motor split, M3=1500)
     "dwell_close_s":       [  0,   0,  600],  # DEF_DWELL_CLOSE_M{1,2,3}_S (1.16.31: per-motor split, M3=600)
+    # gh#73 (2.9.0): the operator's statement that M3 has a position sensor.
+    # DEF_WPOS_FITTED_M3 = 0, so the mock starts with the Linear control group
+    # greyed; set it to Yes in the GUI to see the rest.
+    "wpos_fitted_m3":       0,
     "poll_interval_s":     30,    # DEF_POLL_INTERVAL_S
     "session_timeout_min":  5,    # DEF_SESSION_TIMEOUT_MIN
     "ap_timeout_min":      30,    # DEF_AP_TIMEOUT_MIN
@@ -191,13 +195,20 @@ sd: dict = {"mounted": True, "size_mb": 7500, "free_mb": 7100}
 #   curl -X POST "http://localhost:5000/api/__mock/m3?fault=true"
 #   curl -X POST "http://localhost:5000/api/__mock/m3?fitted=false"
 #
-# `fitted=false` omits the M3_* keys entirely -- absent, not zero -- which is
-# how a unit with no sensor reports, and the GUI must render exactly as it did
-# before the sensor existed.
+# `fitted=false` makes the sensor NOT ANSWER: the M3_* keys are omitted --
+# absent, not zero. Since 2.9.0 (gh#73) what that means depends on the
+# operator's setting `wpos_fitted_m3` in `cfg`: with No, the unit simply has no
+# sensor and the GUI renders as it did before the sensor existed; with Yes, it
+# is a fitted sensor that stopped answering, which raises the fault badge.
 #
 # percent is NOT clamped: 113.7 is a correctly parked open window, because the
 # end sensors mark the WINDOW extremes and the motor drives on into the blind
 # overlap before its end switch stops it (plan 2a.5).
+def _wpos_fitted() -> bool:
+    """gh#73: the operator's setting, as the firmware's `motor/wpos_fitted_m3`."""
+    return cfg.get("wpos_fitted_m3", 0) != 0
+
+
 M3_POS = {
     "fitted":        True,
     "percent_x10":   452,     # 45.2 % -- mid-travel, so the rule is visible
@@ -291,6 +302,7 @@ NVS_MAP: dict[tuple, tuple] = {
     ("motor",   "dwell_close_m1"):  ("dwell_close_s",          0),
     ("motor",   "dwell_close_m2"):  ("dwell_close_s",          1),
     ("motor",   "dwell_close_m3"):  ("dwell_close_s",          2),
+    ("motor",   "wpos_fitted_m3"):  ("wpos_fitted_m3",         None),
     ("system",  "session_timeout"): ("session_timeout_min", None),
     ("system",  "ap_timeout"):      ("ap_timeout_min",      None),
     ("system",  "poll_interval"):   ("poll_interval_s",     None),
@@ -391,7 +403,9 @@ def _mode_flags() -> list[str]:
     # 6.3 — the position fault. Emitted FIRST, mirroring status_json.cpp, where
     # it is appended ahead of the EG1 loop. It deliberately has no EG1 bit:
     # EG1 is what T3 reads and FR-WP18 forbids safety depending on position.
-    if M3_POS.get("fault"):
+    # gh#73: only a FITTED sensor can be at fault, and a fitted one that does
+    # not answer is one.
+    if _wpos_fitted() and (M3_POS.get("fault") or not M3_POS.get("fitted")):
         out.append("sensor_fault_position")
     # a.6.35.4 — operator-disabled-feature flags
     if cfg.get("wind_prot_en", 1) == 0:
@@ -468,10 +482,13 @@ def _build_status() -> dict:
             # gh#66 -- per-slave Modbus indicators, since boot. Shaped like the
             # firmware's: a=address, ok, err, busy, max=longest consecutive-fail
             # run. Delete this key to exercise the no-bus path, where the card
-            # must hide entirely rather than render zeros.
-            {"a": 1,  "ok": 4821, "err": 2,   "busy": 0, "max": 1},
-            {"a": 40, "ok": 1190, "err": 0,   "busy": 3, "max": 0},
-            {"a": 44, "ok": 4823, "err": 0,   "busy": 0, "max": 0},
+            # must hide entirely rather than render zeros. gh#73: address 40
+            # is left out unless a position sensor is fitted.
+            row for row in (
+                {"a": 1,  "ok": 4821, "err": 2,   "busy": 0, "max": 1},
+                {"a": 40, "ok": 1190, "err": 0,   "busy": 3, "max": 0},
+                {"a": 44, "ok": 4823, "err": 0,   "busy": 0, "max": 0},
+            ) if row["a"] != 40 or _wpos_fitted()
         ],
         "windows": {
             "M1": "CLOSED",
@@ -483,7 +500,8 @@ def _build_status() -> dict:
                 "M3_percent_x10":   M3_POS["percent_x10"],
                 "M3_mm_x10":        int(M3_POS["percent_x10"] * 15000 / 1000),
                 "M3_at_end_sensor": M3_POS["at_end_sensor"],
-            } if M3_POS["fitted"] else {}),
+            } if (_wpos_fitted() and M3_POS["fitted"]
+                  and not M3_POS["fault"]) else {}),
         },
         # mode.flags now also carries the three operator-aware flags added in
         # a.6.35.4 (wind_protect_off, humidity_ctrl_off) and a.6.35.6
@@ -681,6 +699,7 @@ CONFIG_LIMITS: dict[str, list[int]] = {
     # 2.8.x: M3 linear-control deadband (mm). Not yet consumed by any control
     # law -- the GUI groups it under "Linear control", which says so.
     "deadzone_m3":    [ 1, 200],
+    "wpos_fitted_m3": [ 0, 1],     # gh#73 (2.9.0): is a position sensor fitted to M3
     "poll_interval":  [15, 120],   # 2.5.1 gh#57: FR-S03/FR-CF07, matches T5
     "session_timeout":[ 1, 1440],
     "ap_timeout":     [ 0, 1440],
@@ -1274,6 +1293,9 @@ def commission_post():
         return denied
     body = request.get_json(silent=True) or {}
     a = body.get("action", "")
+    # gh#73: as the firmware -- nothing but an abort without a fitted sensor.
+    if not _wpos_fitted() and a != "abort":
+        return {"ok": False, "error": "not_fitted"}
     if a == "teach":
         # M3 may start anywhere; only a teach already running is refused
         if COMM["state"] in ("arming", "traversing", "committing"):

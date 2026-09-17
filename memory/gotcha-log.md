@@ -84,6 +84,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-07-05** — M3 is the north **side wall**, not a roof panel; 8.1× is travel time, 10× is area
 
 ### OTA & ROTA releases
+- **2026-09-17** — publishing a release to ROTA does nothing on a module that runs a pushed build of the same version, `-bench` included (the version compare ignores the suffix)
 - **2026-09-16** — after one upload cut off by the network, the unit refuses every OTA and ROTA skips its checks until someone presses reset (the error exit released nothing)
 - **2026-09-12** — GUI unreachable, multi-second asset loads, "heap leak", failing downloads — all one interfered WiFi AP (paired ping test first)
 - **2026-09-12** — `rota_release.py release` warns "working tree has uncommitted changes" on a clean tree (it counts UNTRACKED files, including the manifest it just wrote)
@@ -104,6 +105,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-04-XX** — `{{ASSET_VERSION}}` shipped to a unit as a literal string (gh#9) [RESOLVED]
 
 ### Flash, partitions & boot
+- **2026-09-17** — a task reads a setting as 0 right after boot although NVS holds 1 (T4 loads NVS in its own task body; `dm_cfg_loaded()` says when it is done)
 - **2026-XX-XX** — OTA flips the firmware version but assets stay old (shared LittleFS basePath) [RESOLVED]
 - **2026-09-12** — a dev module will not answer and looks hung (it is the one not fitted -- the rig takes one module at a time)
 - **2026-09-10** — after an IO0 factory reset the unit cannot reach WiFi/ROTA/status and nobody knows the values (three secrets destroyed, none readable back)
@@ -165,6 +167,43 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
 
+
+## 2026-09-17 — a unit running `X.Y.Z-bench` answers "up to date" when ROTA offers `X.Y.Z`
+
+**Problem.** Planning the 2.9.0 test: push a 2.9.0 build to 2344 for the hardware checks, then
+publish 2.9.0 to the soak channel so 2344 pulls it by ROTA, as 2.8.0 did. That second step would
+do nothing.
+
+**Root cause.** T16 offers an update only when `semver_cmp(offered, FIRMWARE_VERSION) > 0`
+(`ota_client.cpp`), and `semver_cmp()` stops at the first `-`: *"ignore pre-release tail for
+now"*. So `2.9.0-bench` and `2.9.0` compare EQUAL, and a unit running either reports
+`up to date: offered 2.9.0`. The seq high-water mark does not help: it only rejects, it never
+triggers an offer.
+
+**Fix.** None in code; it is a planning trap. **To test a release by ROTA on a module that has had
+a pushed build of the same version, push the previous release back first.** A pushed build of the
+same version, bench or not, makes the ROTA step a no-op.
+
+**Where it lives.** `firmware/src/ota_client/ota_client.cpp`, `semver_cmp()`.
+
+## 2026-09-17 — a task created after T4 can still read the configuration as all zeros
+
+**Problem.** gh#73 made T17 decide from `motor/wpos_fitted_m3` whether to touch the bus at all.
+The default is 0, so a zero read means "not fitted". Reading it at T17's start could log a false
+`TIMED [not fitted]` row on a unit that IS fitted, and skip the boot probe.
+
+**Root cause.** `main.cpp` creates T4 before the tasks that read its shadow, which reads as "T4
+has loaded the configuration by then". It has not necessarily. T4 zeroes `s_cfg` and loads NVS
+**inside its own task body**, and `app_main` goes on creating tasks meanwhile. The order is
+likely, not guaranteed, and nothing signalled the end of the load. For most keys a zero is a
+plausible value, so a too-early read would not look wrong.
+
+**Fix.** `dm_cfg_loaded()`, a flag T4 sets right after its NVS loads (2.9.0). T17 waits for it,
+10 s at most. **Only T17 uses it.** Other tasks that read the shadow early in their start-up
+were not audited for the same race.
+
+**Where it lives.** `firmware/src/data_manager/data_manager.cpp` (`s_cfg_loaded`),
+`firmware/src/window_pos/window_pos_task.cpp` (the start-up wait).
 
 ## 2026-09-16 — the Modbus host tests HUNG instead of failing: the mock served a reply before the request, and its clock never moved
 

@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de beheerder
 
-**Versie:** 1.21
-**Datum:** 2026-09-16
-**Firmware:** 2.8.0
+**Versie:** 1.22
+**Datum:** 2026-09-17
+**Firmware:** 2.9.0
 
 ---
 
@@ -225,7 +225,25 @@ Sinds 2.8.0 staan de instellingen **per motor** bij elkaar (M1, M2, M3) in plaat
 | **Time control** · *in gebruik* | Loopttijd en dwelltijden — dit is wat de ramen vandaag aanstuurt |
 | **Linear control** · *raamstandsensor* | Instellingen voor de raamstandsensor. **Deze sturen het raam nog niet aan**; ze horen bij de lineaire regeling die nog niet in gebruik is |
 
-De **Dodezone** in de groep *Linear control* is een gewone instelling en werkt op elke build. Het blok **Commissioning** daaronder (raamgrootte, kalibratie-oordeel, teach) is alleen **bruikbaar** op een **commissioning-build** met de sensor gemonteerd. Op een gewone release-build staat dat blok er wel, maar **grijs**, met erbij waarom het niet beschikbaar is. Dat is bewust: een instelling die simpelweg verdwijnt is niet te onderscheiden van een verkeerd tabblad of een storing.
+De groep *Linear control* begint met **Position sensor fitted**: heeft M3 een raamstandsensor, ja of nee (sinds 2.9.0, zie hieronder). Staat die op **No**, dan is alles daaronder **grijs**, met erboven waarom.
+
+De **Dodezone** is verder een gewone instelling en werkt op elke build. Het blok **Commissioning** daaronder (raamgrootte, kalibratie-oordeel, teach) is alleen **bruikbaar** op een **commissioning-build** met de sensor gemonteerd. Op een gewone release-build staat dat blok er wel, maar **grijs**, met de reden erbij: leren kan alleen met een commissioning-build, en een sensor die al geleerd is houdt zijn kalibratie. Toont een commissioning-build (versie eindigt op `-bench`) het blok grijs, dan is bij het opstarten een route niet geregistreerd: **dat is een storing**, noteer de versie en meld het. Dat grijs-met-reden is bewust: een instelling die simpelweg verdwijnt is niet te onderscheiden van een verkeerd tabblad of een storing.
+
+### M3 raamstandsensor — gemonteerd of niet (sinds 2.9.0)
+
+Met **Position sensor fitted** (tab **Motors**, M3 → *Linear control*) vertel je de controller of M3 een raamstandsensor heeft: de trekdraadsensor op Modbus-adres 40. De standaard is **No**.
+
+| Instelling | Wat de controller doet |
+|---|---|
+| **No** | Spreekt adres 40 helemaal niet aan. Het kaartje *Modbus bus* en het logboek tonen geen regel voor adres 40, M3 toont geen openingspercentage, en er komt nooit een sensorstoring. Zo hoort een kas zonder sensor eruit te zien |
+| **Yes** | Leest de sensor. Reageert die niet (meer), dan is dat een **storing**: de badge *Window sensor fault* en een regel in het logboek, binnen ongeveer een minuut |
+
+In beide gevallen loopt M3 op zijn **looptijd**: de instelling verandert niets aan hoe het raam bewogen wordt.
+
+Vóór 2.9.0 kon de controller "geen sensor" niet onderscheiden van "sensor reageert niet". Een kas zonder sensor vroeg adres 40 elke 30 s tevergeefs, en het kaartje *Modbus bus* liet dat zien als een falende sensor. Een gemonteerde sensor die uitviel, gaf juist geen melding.
+
+> **Na een update naar 2.9.0 staat de instelling op No, ook bij een kas die wél een sensor heeft.** Zet hem daar **eenmalig** op **Yes**. Hetzelfde geldt na een reset op niveau 2 of 3 met de BOOT-knop (§18), want die zet alle instellingen terug. Wie een sensor monteert, zet de instelling daarbij op **Yes**. Hij staat in het logboek als *wpos_fitted_m3*.
+
 
 ### M3 raamstandsensor — kalibratie (commissioning)
 
@@ -300,7 +318,7 @@ Niet periodiek. Alleen wanneer:
 
 #### Dodezone (mm)
 
-De kleinste afwijking waarvoor het raam nog bijgestuurd wordt. Te klein en het raam gaat op ruis heen en weer; nul zou het onafgebroken laten klapperen. Instelbaar in tab **Motors**, onder M3 → *Linear control*, op elke build (1–200 mm, standaard 20).
+De kleinste afwijking waarvoor het raam nog bijgestuurd wordt. Te klein en het raam gaat op ruis heen en weer; nul zou het onafgebroken laten klapperen. Instelbaar in tab **Motors**, onder M3 → *Linear control*, op elke build (1–200 mm, standaard 20), zolang *Position sensor fitted* op **Yes** staat.
 
 De lineaire regeling waarvoor hij bedoeld is, is nog niet in gebruik. Twee dingen gebruiken hem wel al:
 - **de controle op een te vroeg stoppend raam**: een SLUIT-gang die binnen de dodezone van "dicht" eindigt zonder dat de eindsensor schakelt, wordt als storing gemeld;
@@ -2095,6 +2113,7 @@ Inhoudelijke wijzigingen aan de firmware staan beschreven in het bestand `change
 | 1.19 | 2026-05-26 | 2.0.0-rc.1.5.2 |
 | 1.20 | 2026-06-26 | 2.0.0 t/m 2.1.1 — T min dag/nacht gedocumenteerd (webinterface); SD-logbestand bestandsnaam eenheid-ID prefix (gh#30, 2.0.1); `avg_win_wind` naam en standaard gecorrigeerd; windgemiddelde onafhankelijk venster (gh#35, 2.1.0); standaard uitmiddelvenster gecorrigeerd naar 6 min; bugfix HTTP-statuscode in auditlog (gh#34, 2.1.1) |
 | 1.21 | 2026-09-16 | 2.2.0 t/m 2.8.0 — automatische internet-update (ROTA) in tab System, met figuur (2.2.0); wind-hysterese (gh#46, 2.3.0); reset-procedure met de BOOT-knop, vergeten beheerder-PIN en de coredump-melding (gh#56, 2.4.8); bereik sensor-leesfrequentie 15–120 s (gh#57, 2.5.1); `dwell_open_s` in plaats van `dwell_open_min` (gh#63, 2.7.0); tab Motors per raam gegroepeerd, dodezone en kalibratie (teach) van de M3-raamstandsensor met de foutmeldingen (2.8.0); de Stand-by van een teach en van de handmatige raambediening via de LCD wordt niet opgeslagen en eindigt met de sessie of een herstart (gh#65, 2.8.0); het sessie-einde van de LCD-raambediening sluit de ramen één keer (gedrag sinds 2.4.5, tekst nu gecorrigeerd); afgebroken OTA-upload (2.8.0); statusregel Standby gecorrigeerd |
+| 1.22 | 2026-09-17 | 2.9.0 — instelling *Position sensor fitted* voor de M3-raamstandsensor, standaard No; zonder sensor geen regel voor adres 40 meer en met sensor een storingsmelding als die niet reageert (gh#73); de reden bij het grijze Commissioning-blok noemt nu de echte oorzaak |
 
 ---
 

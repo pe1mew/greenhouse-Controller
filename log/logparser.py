@@ -127,6 +127,9 @@ _PARAM = {
     # rest of the 40s band; nothing consumes the value yet, but the change
     # is audited from the day the key exists.
     48: ("deadzone_m3",     "mm"),
+    # gh#73 (fw 2.9.0) - is a position sensor fitted to M3? 0 = no (the
+    # default), 1 = yes. Not fitted keeps T17 off the bus entirely.
+    49: ("wpos_fitted_m3",  ""),
 
     # ---- Modbus bus performance indicators (gh#66 Part 2, fw 2.8.0) -------
     # These are NOT config params. They ride on LOG_SYSTEM value_a = 31, where
@@ -426,6 +429,8 @@ def _decode_setpoint(row: dict) -> str:
                 return "enabled" if v else "disabled"
             if param_id == 39:   # ota_enable — boolean
                 return "enabled" if v else "disabled"
+            if param_id == 49:   # wpos_fitted_m3 — boolean (gh#73)
+                return "fitted" if v else "not fitted"
             if param_id == 33:   # status_expose — hex bitmask
                 return f"0x{v:02X}"
             return f"{v} {unit}".strip()
@@ -485,6 +490,10 @@ _WPOS_GATE_REASON = {
     2: "no sensor answering at addr 40",
     3: "BENCH build refused (contract 9, permanent)",
     4: "sensor present but reporting a fault",
+    # gh#73 (fw 2.9.0): motor/wpos_fitted_m3 = 0. T17 stays off the bus; this
+    # is configuration, not a fault. Logged once at boot on such a unit, and
+    # whenever the setting is switched off.
+    5: "no position sensor fitted (setting)",
 }
 
 _WPOS_STATUS_BITS = [

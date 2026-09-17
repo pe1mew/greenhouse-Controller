@@ -6,6 +6,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.9.0] — 2026-09-17  (whether M3 has a position sensor is now a setting)
+
+Minor: a new config key, a new gate reason in the log, and a new `/api/config` field. Fixes
+[gh#73](https://github.com/pe1mew/greenhouse-Controller/issues/73). Greenhouse behaviour is
+unchanged: M3 still runs on its travel time, with or without a sensor. Verification, upgrade notes
+and known limitations are in `bin/2.9.0/release-notes.md`.
+
+**Added.**
+
+- **Config key `motor/wpos_fitted_m3`**, "Position sensor fitted" (0/1, **default 0**, audit
+  param 49, admin only). One descriptor row.
+  - **Not fitted (0):** T17 sends nothing to Modbus address 40. The status payload has no `M3_*`
+    keys and no position fault, the `bus` array and the hourly bus rows leave address 40 out, and
+    commissioning refuses everything but an abort (`not_fitted`, bench builds).
+  - **Fitted (1):** as 2.8.0, except that a sensor that is absent, refused or faulted now raises
+    `sensor_fault_position`.
+  - A change takes effect within one idle tick (500 ms). A switch-on probes at once.
+- **Gate reason 5, not fitted**, in the `ALARM ch6 param 248` mode row: once at boot on an
+  unfitted unit, and at each switch-off (`logparser.md` 1.20).
+- **`GET /api/config` field `wpos_fitted_m3`**, and `[0, 1]` in `/api/config/limits`.
+- **Web GUI:** *Position sensor fitted* heads M3's *Linear control* group. While it is No,
+  everything below it is greyed, with the reason above the greyed block.
+- **`dm_cfg_loaded()`**: T4 says when it has loaded NVS. T17 waits for it (10 s at most) before
+  reading the setting.
+- **`bin/at_wpos_fitted.py`**: the acceptance test for this release, in stages.
+
+**Changed.**
+
+- **An absent sensor is a fault when one is fitted.** 2.8.0 raised nothing when the encoder was
+  unplugged (FDA4, 2026-09-16), because it could not tell that case from a unit with no sensor.
+- **The greyed commissioning card names the actual cause of a 404:** on a release build, teaching
+  needs a bench build; on a bench build, a route failed to register, which is a fault. It used to
+  name both.
+- **`logparser.py`** decodes param 49 and gate reason 5. `logparser.md` 1.20 also lists param 48,
+  which it had missed since 2.8.0.
+- **Docs:** the admin manual 1.22 and the farmer manual 1.19, FR-WP23 in the requirements study,
+  the TSDS motor NVS row, and the plan's *Fitted or not* section.
+
+---
+
 ## [2.8.0] — 2026-09-17  (the M3 window-position sensor, observing only)
 
 Minor: a new task (T17), new log encodings, a new config key and new status payload keys.

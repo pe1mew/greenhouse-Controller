@@ -63,6 +63,17 @@
  * mid-session recovers by itself. That is one failed transaction per 30 s,
  * which is exactly what the idle path already spent. The bench build is the one
  * permanent latch: it cannot change without reflashing the device.
+ *
+ * ## Fitted or not: the operator says (gh#73, 2.9.0)
+ *
+ * The gate cannot tell "no sensor fitted" from "a fitted sensor that stopped
+ * answering", so until 2.9.0 a unit without one probed address 40 every 30 s
+ * for ever, and its Bus card and hourly log showed a failing slave. The setting
+ * `motor/wpos_fitted_m3` (default 0) settles it. **Not fitted:** T17 sends
+ * nothing, publishes TIMED with @ref WPOS_GATE_NOT_FITTED, and forgets its last
+ * reading. **Fitted:** the gate works as above, and the status payload reports
+ * an absent sensor as a fault. A change is followed within one idle tick, and a
+ * switch to fitted probes at once.
  */
 
 #pragma once
@@ -102,6 +113,8 @@ typedef enum {
     WPOS_GATE_NO_SENSOR    = 2, /**< Ident/read failed PROBE_FAIL_LIMIT times running. */
     WPOS_GATE_BENCH_BUILD  = 3, /**< Contract 9 refusal. Latched; never re-probed. */
     WPOS_GATE_DEVICE_FAULT = 4, /**< Present and talking, but reporting a fault. */
+    WPOS_GATE_NOT_FITTED   = 5, /**< gh#73: `motor/wpos_fitted_m3` is 0. T17 does
+                                 *   not touch the bus at all; not a fault. */
 } windowpos_gate_reason_t;
 
 /**

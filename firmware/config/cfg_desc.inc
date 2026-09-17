@@ -95,6 +95,10 @@ static const cfg_desc_t CFG_DESC[] = {
      * audit id, kind, route and the published limits all read it. */
     { NVS_NS_MOTOR, K_DEADZONE_M3, CFG_KEY_SHADOW, 3u, CFG_F_PUB | CFG_P_Q4, LOG_PARAM_DEADZONE_M3,
       CFG_MIN_DEADZONE_MM, CFG_MAX_DEADZONE_MM, DEF_DEADZONE_M3_MM, CFG_SH(deadzone_m3_mm) },
+    /* gh#73 (2.9.0), also by hand: the operator's statement that M3 has a
+     * position sensor. A boolean, so literal bounds like rh_ctrl_en. */
+    { NVS_NS_MOTOR, K_WPOS_FITTED_M3, CFG_KEY_SHADOW, 3u, CFG_F_PUB | CFG_P_Q4, LOG_PARAM_WPOS_FITTED_M3,
+      0, 1, DEF_WPOS_FITTED_M3, CFG_SH(wpos_fitted_m3) },
     { NVS_NS_MOTOR, K_DWELL_OPEN_M1, CFG_KEY_SHADOW, 1u, CFG_F_PUB | CFG_P_Q4, LOG_PARAM_DWELL_OPEN,
       CFG_MIN_DWELL_OPEN_S, CFG_MAX_DWELL_OPEN_S, DEF_DWELL_OPEN_M1_S, CFG_SH(dwell_open_s[0]) },
     { NVS_NS_MOTOR, K_DWELL_OPEN_M2, CFG_KEY_SHADOW, 2u, CFG_F_PUB | CFG_P_Q4, LOG_PARAM_DWELL_OPEN,

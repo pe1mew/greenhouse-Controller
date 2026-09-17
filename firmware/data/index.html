@@ -366,8 +366,24 @@
     </div>
     <!-- 2026-09-16: the deadzone is an ordinary motor setting and works on every
          build, so it sits OUTSIDE the commissioning card, which a release build
-         greys out (it needs /api/diag/commission, a bench-only route). -->
+         greys out (it needs /api/diag/commission, a bench-only route).
+         gh#73 (2.9.0): "Position sensor fitted" comes first and is always
+         usable. Everything after it needs a fitted sensor, so #wpos-dep is
+         greyed while the setting is No. The reason sits ABOVE that block, not
+         inside it, because a dimmed parent dims its children whatever their own
+         opacity says. -->
     <h3>Linear control <span class="muted">· position sensor, not yet driving the window</span></h3>
+    <div class="row">
+      <label data-tip="Whether M3 has a window position sensor (the draw-wire encoder at Modbus address 40). No, the default, keeps the controller off that address entirely: nothing is asked, and the Bus card and the log show no entry for it. Yes makes the controller watch the sensor, and a sensor that then stops answering is reported as a Window sensor fault. Set it once to match the installation. It does not change how M3 is driven: M3 runs on its travel time either way.">Position sensor fitted</label>
+      <select id="cfg-wpos-fitted-m3">
+        <option value="1">Yes</option>
+        <option value="0">No</option>
+      </select>
+      <button onclick="postCfgSelect('motor','wpos_fitted_m3','cfg-wpos-fitted-m3')">Apply</button>
+      <span class="save-ok" id="fb-wpos-fitted-m3"></span>
+    </div>
+    <p id="wpos-unfitted-why" class="disabled-why"></p>
+    <div id="wpos-dep">
     <div class="slider-row">
       <label data-tip="Smallest position error worth energising M3 for, in millimetres. Too small and the window hunts on sampling noise; zero is the chattering case, which is why the minimum is 1 and not 0. The default of 20 mm covers the distance the leaf travels between position samples on both rigs (19.6 mm here, 10.0 mm in production) — but the other floor, the shortest pulse that actually moves the leaf, has not been measured yet, so 20 can only be too small, never too large. The linear control law that will use it is not in service yet. Already in use: the early-stop check (a CLOSE that ends within this distance of closed without reaching the end sensor is reported) and the log, which records movement of M3 at rest once it exceeds this distance (5 mm at least).">Deadzone (mm)</label>
       <input type="range"  id="cfg-deadzone-m3-sl" min="1" max="200" step="1">
@@ -399,6 +415,7 @@
       </div>
       <p id="cm-standby" class="muted"></p>
     </div>
+    </div><!-- #wpos-dep -->
   </div>
 
   <!-- System tab (admin only) -->

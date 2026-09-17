@@ -145,6 +145,14 @@ static uint32_t                s_probe_fail    = 0u;
 static uint32_t                s_last_probe_ms = 0u;
 static windowpos_ctrl_mode_t   s_ctrl_mode     = WPOS_CTRL_TIMED;
 
+/* ---- fitted or not (gh#73). Owned by the task, no locking needed. ---------- */
+static bool     s_fitted            = false;
+static bool     s_fitted_known      = false;   /* false until the first read */
+static uint32_t s_fitted_checked_ms = 0u;
+
+/** Longest T17 waits at start for T4 to load the configuration. */
+#define CFG_WAIT_MAX_MS     10000u
+
 /* Phase 3 event-edge tracking. Owned by the task, no locking needed. */
 static bool     s_ev_init        = false;
 static bool     s_ev_fault       = false;
@@ -713,6 +721,67 @@ static bool probe_sensor(void)
     return true;
 }
 
+/**
+ * @brief Follow `motor/wpos_fitted_m3`, acting on a change (gh#73).
+ *
+ * Read at most once per IDLE_TICK_MS, so a stroke polling at 100 ms does not
+ * take T4's lock ten times a second for a value an operator changes once.
+ *
+ * On any change, start over:
+ *  - **not fitted:** shut the gate WITHOUT counting a probe failure (nothing
+ *    failed), forget the last reading so nothing reports a position from a
+ *    sensor the operator says is not there, and publish TIMED / NOT_FITTED;
+ *  - **fitted:** no verdict and no failures yet, as at boot, and a probe due
+ *    at once. The bench-build latch is cleared too: switching the setting off
+ *    and on is how an operator asks for a fresh look, after swapping the
+ *    encoder for instance, and one identify read costs nothing.
+ *
+ * The event baseline and the rest-row memory are reset in both directions, so
+ * the first reading after a change is logged as a fresh start rather than as
+ * edges against a reading from before it.
+ *
+ * @return true if a sensor is fitted.
+ */
+static bool follow_fitted(void)
+{
+    const uint32_t now = now_ms();
+    if (s_fitted_known && (uint32_t)(now - s_fitted_checked_ms) < IDLE_TICK_MS) {
+        return s_fitted;
+    }
+    s_fitted_checked_ms = now;
+    const bool fitted = dm_wpos_fitted_m3();
+    if (s_fitted_known && fitted == s_fitted) {
+        return fitted;
+    }
+    s_fitted_known = true;
+    s_fitted       = fitted;
+
+    s_gate_open       = false;
+    s_probe_fail      = 0u;
+    s_bench_latched   = false;
+    s_ev_init         = false;
+    s_logged_x10      = REST_ROW_NONE;
+    s_orphan_reported = false;
+    portENTER_CRITICAL(&s_mux);
+    s_have_reading = false;
+    portEXIT_CRITICAL(&s_mux);
+
+    if (!fitted) {
+        ESP_LOGI(TAG, "no position sensor fitted (motor/wpos_fitted_m3 = 0) -- "
+                      "T17 stays off the bus");
+        publish_mode(WPOS_CTRL_TIMED, WPOS_GATE_NOT_FITTED);
+    } else {
+        ESP_LOGI(TAG, "position sensor fitted -- probing address %u",
+                 (unsigned)WINDOWPOS_DEFAULT_ADDR);
+        /* At boot this is no change (PROBING is the initial reason) and logs
+         * nothing. After a switch-on it logs one row, which is the record
+         * that the operator turned the sensor on. */
+        publish_mode(WPOS_CTRL_TIMED, WPOS_GATE_PROBING);
+        s_last_probe_ms = now - PROBE_RETRY_MS;   /* due on the next pass */
+    }
+    return fitted;
+}
+
 void task_window_pos(void *pvParameters)
 {
     (void)pvParameters;
@@ -720,15 +789,33 @@ void task_window_pos(void *pvParameters)
 
     ESP_LOGI(TAG, "T17 starting (window position, addr %u)", (unsigned)WINDOWPOS_DEFAULT_ADDR);
 
+    /* ---- fitted? (gh#73) ----------------------------------------------------
+     * The setting decides whether T17 touches the bus at all, so read it only
+     * once T4 has loaded it: before that the shadow is zeros, which reads as
+     * "not fitted" and would log a NOT_FITTED row on every fitted unit's boot.
+     * The wait is capped; past it T17 goes on with whatever the shadow holds,
+     * and a zero there keeps it off the bus, which is the safe side. */
+    for (uint32_t waited = 0u; !dm_cfg_loaded() && waited < CFG_WAIT_MAX_MS;
+         waited += 100u) {
+        esp_task_wdt_reset();
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    if (!dm_cfg_loaded()) {
+        ESP_LOGW(TAG, "configuration not loaded after %u ms -- going on without it",
+                 (unsigned)CFG_WAIT_MAX_MS);
+    }
+
     /* ---- presence gate: probe before trusting anything (contract 9) ------
      * Before Phase 4 these three branches logged and then fell through into the
      * loop regardless, so "T17 idle" did not idle and "REFUSING" did not
      * refuse. The probe now decides, and the loop below respects it. */
-    (void)probe_sensor();
-    if (!s_gate_open && s_gate_reason == WPOS_GATE_PROBING) {
-        /* One failure is not a verdict; PROBE_FAIL_LIMIT is 2. Say so rather
-         * than leaving the log implying the sensor was ruled absent. */
-        ESP_LOGW(TAG, "first probe failed -- retrying, no verdict yet");
+    if (follow_fitted()) {
+        (void)probe_sensor();
+        if (!s_gate_open && s_gate_reason == WPOS_GATE_PROBING) {
+            /* One failure is not a verdict; PROBE_FAIL_LIMIT is 2. Say so
+             * rather than leaving the log implying the sensor was ruled absent. */
+            ESP_LOGW(TAG, "first probe failed -- retrying, no verdict yet");
+        }
     }
 
     uint16_t pushed_window_ms  = 0u;
@@ -770,6 +857,22 @@ void task_window_pos(void *pvParameters)
 
     for (;;) {
         esp_task_wdt_reset();
+
+        /* ---- not fitted (gh#73): nothing on the bus, nothing to judge -----
+         * Above the gate, for the gate's own reason: every bus-touching path is
+         * below this point. Forgetting the stroke means a sensor switched on
+         * mid-stroke starts a fresh verdict when its gate opens, rather than
+         * inheriting the state of a stroke it never saw begin. */
+        if (!follow_fitted()) {
+            was_travelling = false;
+#ifdef MODBUS_BENCH
+            /* A teach running when the sensor was switched off ends as a
+             * sensor failure, exactly as when the sensor goes away. */
+            commission_tick(NULL, now_ms());
+#endif
+            vTaskDelay(pdMS_TO_TICKS(IDLE_TICK_MS));
+            continue;
+        }
 
         /* ---- the gate ---------------------------------------------------
          * Placed here, above every bus-touching path, rather than at each

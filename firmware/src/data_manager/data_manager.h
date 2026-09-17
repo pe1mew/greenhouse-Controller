@@ -143,6 +143,11 @@ typedef struct {
                                     *  M3 for, under linear control (mm).
                                     *  NOT YET CONSUMED — linear control does
                                     *  not drive the window (plan 3.6, 5.0). */
+    int16_t  wpos_fitted_m3;      /**< gh#73: 1 = a position sensor is fitted
+                                    *  to M3, 0 = not (the default). Not fitted:
+                                    *  T17 never touches address 40, and
+                                    *  nothing reports it. Fitted: a sensor
+                                    *  that does not answer is a fault. */
 
     /* ---- System (NVS_NS_SYSTEM = "system") ---- */
     int32_t  poll_interval_s;     /**< Sensor poll interval  (s, C20)       */
@@ -289,6 +294,25 @@ uint32_t dm_get_unix_time(void);
 /** @brief Return the configured sensor poll interval (seconds).
  *  Thread-safe (MX4, 100 ms timeout). */
 int32_t dm_get_poll_interval_s(void);
+
+/**
+ * @brief Has T4 finished loading the configuration from NVS at boot? (gh#73)
+ *
+ * T4 is created before the tasks that read its shadow, but it loads NVS in its
+ * own task body, so "created first" does not mean "loaded first". Until this
+ * returns true the shadow reads as zeros, which is a valid-looking value for
+ * most keys. Lock-free: the flag is set once and never cleared.
+ */
+bool dm_cfg_loaded(void);
+
+/**
+ * @brief Is a position sensor fitted to M3? (`motor/wpos_fitted_m3`, gh#73)
+ *
+ * Cheap enough to call every T17 tick. Thread-safe (MX4, 100 ms timeout). On a
+ * timeout it reads the field without the lock instead of returning the
+ * default, so a busy lock cannot switch a fitted sensor off.
+ */
+bool dm_wpos_fitted_m3(void);
 
 /**
  * @brief Fill an aggregated controller status snapshot.

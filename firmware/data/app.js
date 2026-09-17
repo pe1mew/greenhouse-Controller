@@ -246,13 +246,46 @@ function commRender(c) {
   }
 }
 
+// gh#73 — is a position sensor fitted to M3? From /api/config; null until it
+// has loaded, and on firmware that does not have the setting.
+let g_wpos_fitted = null;
+
+// Everything in Linear control after the "fitted" setting needs a sensor. Not
+// fitted: grey it, and give the reason ABOVE the greyed block -- a dimmed parent
+// dims its children, so a reason inside it cannot be shown at full strength.
+function applyWposFitted(v) {
+  g_wpos_fitted = (v === undefined || v === null) ? null : Number(v) !== 0;
+  const off = (g_wpos_fitted === false);
+  const dep = document.getElementById('wpos-dep');
+  if (dep) {
+    dep.classList.toggle('disabled-block', off);
+    dep.setAttribute('aria-disabled', off ? 'true' : 'false');
+  }
+  setText('wpos-unfitted-why', off
+    ? 'No position sensor fitted, so the settings below do not apply. If M3 has one, '
+      + 'set Position sensor fitted to Yes and apply.'
+    : '');
+  commPoll();
+}
+
 // Why the commissioning card is unavailable, in the operator's terms.
 // Reached with the HTTP status, because the statuses mean different things and
 // "it is not there" is the least useful of the possible answers.
 function commWhyUnavailable(status) {
   if (status === 404) {
-    return 'Not available on this firmware: /api/diag/commission is not served. '
-         + 'Commissioning lives in a bench build — or a route failed to register at boot.';
+    // Name the cause that applies (gh#73 follow-up, 2026-09-17). Only a bench
+    // build compiles the commissioning routes, and it reports fw_ver as
+    // "X.Y.Z-bench", so a 404 there is a fault, and anywhere else it is by design.
+    if (!g_fw_ver) {
+      return 'Not available: this firmware does not serve /api/diag/commission.';
+    }
+    if (/-bench$/.test(g_fw_ver)) {
+      return 'Not available, and this is a FAULT: this bench build (' + g_fw_ver + ') '
+           + 'should serve /api/diag/commission but does not, so a route failed to '
+           + 'register at boot. Note the version and report it.';
+    }
+    return 'Not available on release firmware (' + g_fw_ver + '): teaching the sensor '
+         + 'needs a bench build. A sensor that was taught keeps its calibration.';
   }
   if (status === 401) {
     return 'Not available: your session has ended — log in again.';
@@ -274,6 +307,15 @@ function commWhyUnavailable(status) {
 function commSetAvailable(status, c) {
   const card = document.getElementById('card-commission');
   if (!card) return;
+  if (g_wpos_fitted === false) {
+    // gh#73: the whole group is greyed by applyWposFitted() and its reason is
+    // given once, above it. Greying the card again would dim it twice over.
+    card.classList.remove('disabled-block');
+    card.setAttribute('aria-disabled', 'true');
+    setText('cm-unavailable', '');
+    if (status === 401) showLogin();
+    return;
+  }
   const live = !!(c && c.ok);
   card.classList.toggle('disabled-block', !live);
   card.setAttribute('aria-disabled', live ? 'false' : 'true');
@@ -833,6 +875,10 @@ function loadConfig() {
       setVal('cfg-dwell-close-m2',  dwc && dwc[1]);
       setVal('cfg-dwell-close-m3',  dwc && dwc[2]);
       setVal('cfg-deadzone-m3',     cfg.deadzone_m3_mm);
+      if (cfg.wpos_fitted_m3 !== undefined) {
+        setVal('cfg-wpos-fitted-m3', String(cfg.wpos_fitted_m3));
+      }
+      applyWposFitted(cfg.wpos_fitted_m3);
       setVal('cfg-session-timeout', cfg.session_timeout_min);
       g_session_timeout_ms = (cfg.session_timeout_min > 0 ? cfg.session_timeout_min : 5) * 60 * 1000;
       setVal('cfg-ap-timeout',     cfg.ap_timeout_min);
@@ -869,7 +915,12 @@ function postCfgSelect(ns, key, inputId) {
   if (!el) return;
   const value = parseInt(el.value, 10);
   post('/api/config', { ns, key, value })
-    .then(r => feedback('fb-' + inputId.replace('cfg-',''), r && r.ok));
+    .then(r => {
+      feedback('fb-' + inputId.replace('cfg-',''), r && r.ok);
+      // gh#73: grey or release the group only once the controller has taken
+      // the value, so a refused write does not leave the screen claiming it.
+      if (inputId === 'cfg-wpos-fitted-m3' && r && r.ok) applyWposFitted(value);
+    });
   if (inputId === 'cfg-rh-ctrl-en') applyRhCtrl();
 }
 

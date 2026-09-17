@@ -1235,6 +1235,8 @@ static esp_err_t config_get_handler(httpd_req_t *req)
          * Emitted so the key is not write-only: a stored value nothing can
          * read back cannot be verified, which is gh#67 for the led_* four. */
         "\"deadzone_m3_mm\":%d,"
+        /* gh#73: 1 = a position sensor is fitted to M3. */
+        "\"wpos_fitted_m3\":%d,"
         "\"poll_interval_s\":%ld,"
         "\"session_timeout_min\":%ld,"
         "\"ap_timeout_min\":%ld,"
@@ -1259,6 +1261,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
         (int)cfg.dwell_open_s[0],  (int)cfg.dwell_open_s[1],  (int)cfg.dwell_open_s[2],
         (int)cfg.dwell_close_s[0], (int)cfg.dwell_close_s[1], (int)cfg.dwell_close_s[2],
         (int)cfg.deadzone_m3_mm,
+        (int)cfg.wpos_fitted_m3,
         (long)cfg.poll_interval_s, (long)cfg.session_timeout_min,
         (long)cfg.ap_timeout_min,
         (long)cfg.lat_deg, (long)cfg.lat_frac,
@@ -3317,8 +3320,10 @@ static const httpd_uri_t s_uri_web_post = {
  *  the success and the failure path -- they drifted once already (the failure
  *  path emitted `reason` without `reason_str`). */
 static const char *const k_reason[] = {
-    "ok", "probing", "no_sensor", "bench_build", "device_fault"
+    "ok", "probing", "no_sensor", "bench_build", "device_fault", "not_fitted"
 };
+_Static_assert(sizeof(k_reason) / sizeof(k_reason[0]) == (size_t)WPOS_GATE_NOT_FITTED + 1u,
+               "k_reason[] must have one string per windowpos_gate_reason_t value, in order");
 
 /**
  * @brief Append the T17 soak counters to a JSON object already in @p buf.
@@ -3619,6 +3624,14 @@ static esp_err_t diag_commission_post_handler(httpd_req_t *req)
     char act[24] = {0};
     if (!json_get_field(body, "action", act, sizeof(act))) {
         return httpd_resp_send(req, "{\"ok\":false,\"error\":\"no_action\"}",
+                               HTTPD_RESP_USE_STRLEN);
+    }
+
+    /* gh#73: with no sensor fitted, nothing here may reach address 40. Abort
+     * stays allowed: it only ends a run, and a teach left armed on a real
+     * device is better disarmed than kept. */
+    if (!dm_wpos_fitted_m3() && strcmp(act, "abort") != 0) {
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"not_fitted\"}",
                                HTTPD_RESP_USE_STRLEN);
     }
 

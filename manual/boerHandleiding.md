@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de boer
 
-**Versie:** 1.18
-**Datum:** 2026-09-16
-**Firmware:** 2.8.0
+**Versie:** 1.19
+**Datum:** 2026-09-17
+**Firmware:** 2.9.0
 
 ---
 
@@ -580,9 +580,11 @@ Alle sensoren hangen aan **één paar draden** (de RS485-bus). Dit kaartje telt 
 
 **De kolom `Max` is de belangrijkste**, en niet `Err`. De kascontroller meldt pas een sensorstoring als er een paar berichten **achter elkaar** mislukken — een sensor kan dus maandenlang een enkele fout laten zien zonder ooit een storing te geven, terwijl een korte reeks fouten wél tot een storing (en bij de windsensor tot ramen dicht) leidt.
 
+Heeft jouw kas geen raamstandsensor, dan staat er geen regel voor **M3 · 40**; dat is zo bedoeld (sinds 2.9.0).
+
 Alle getallen tellen vanaf de laatste herstart en beginnen dus weer bij nul na een stroomuitval of update. Het verloop per uur bewaart de kascontroller in het logboek; daar kijkt de beheerder naar.
 
-> **Badge "Window sensor fault".** Reageert de raamstandsensor niet meer, dan verschijnt in de tegel *Alarms* een gele badge **Window sensor fault**, en valt M3 terug op de gewone tijdgestuurde bediening — `OPEN` / `CLOSED`, precies zoals een raam zónder sensor. **De ventilatie blijft gewoon werken.** Deze storing sluit geen ramen en legt de klimaatregeling niet stil, dus je hoeft niet in te grijpen — meld hem wel bij de beheerder. Op het LCD-scherm van de controller is deze melding **niet** zichtbaar, alleen in de webinterface.
+> **Badge "Window sensor fault".** Reageert de raamstandsensor niet meer (terwijl de beheerder hem als gemonteerd heeft ingesteld), dan verschijnt in de tegel *Alarms* een gele badge **Window sensor fault**, en valt M3 terug op de gewone tijdgestuurde bediening — `OPEN` / `CLOSED`, precies zoals een raam zónder sensor. **De ventilatie blijft gewoon werken.** Deze storing sluit geen ramen en legt de klimaatregeling niet stil, dus je hoeft niet in te grijpen — meld hem wel bij de beheerder. Op het LCD-scherm van de controller is deze melding **niet** zichtbaar, alleen in de webinterface.
 
 ### Wat zichtbaar na login?
 
@@ -1551,6 +1553,7 @@ Inhoudelijke wijzigingen aan de firmware staan beschreven in het bestand `change
 | 1.16 | 2026-06-26 | 2.0.0 t/m 2.1.1 — T min dag/nacht gedocumenteerd (webinterface); SD-logbestand bestandsnaam eenheid-ID prefix (gh#30, 2.0.1); windgemiddelde onafhankelijk venster (gh#35, 2.1.0); standaard uitmiddelvenster gecorrigeerd naar 6 min; bugfix HTTP-statuscode in auditlog (gh#34, 2.1.1) |
 | 1.17 | 2026-06-27 | 2.1.1 — figuurcaptions toegevoegd (Figuur 2 schematisch overzicht, Figuur 6 reset-knop); figuurcaptions hernummerd (Figuur 1–8); "Standby" → "Stand-by" consistent; "calibratie" → "kalibratie"; "in- en uitgaan"; "hoelang"; "foto's"/"smartphone" |
 | 1.18 | 2026-09-16 | 2.2.0 t/m 2.8.0 — de controller werkt zichzelf 's nachts bij en de melding *Update pending* (ROTA, 2.2.0); windinstellingen zijn voor de beheerder (2.3.0); unit-ID in de tabtitel van de browser (gh#50, 2.4.0); vergeten PIN via de BOOT-knop (gh#56, 2.4.8); hoever M3 open staat, bij een raamstandsensor (2.8.0); looprichting bij alle drie de ramen (2.8.0); kaartje *Modbus bus* (2.8.0); Stand-by die de beheerder zet tijdens een teach of tijdens handmatige raambediening via de LCD (2.8.0) |
+| 1.19 | 2026-09-17 | 2.9.0 — zonder raamstandsensor geen regel *M3 · 40* in het kaartje *Modbus bus*; de badge *Window sensor fault* alleen bij een sensor die als gemonteerd is ingesteld (gh#73) |
 
 ---
 

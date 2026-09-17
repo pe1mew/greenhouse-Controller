@@ -1,8 +1,20 @@
 # logparser — Greenhouse Controller Log Parser
 
 **File:** `log/logparser.py`
-**Document version:** 1.19 (matches firmware 2.8.0 + the `ropeSensor` window-sensor encodings; 1.17 added `MODE param 47` `value_b` = 1, a STANDBY held for a session; 1.18 added `SYSTEM value_a = 32`; 1.19: the LCD manual menu holds STANDBY too (gh#65), and `SENSOR_HR ch 3` rows at rest are written only on change)
+**Document version:** 1.20 (matches firmware 2.9.0; 1.20 added `SETPT param 49`, `wpos_fitted_m3`, and gate reason `5`, not fitted (gh#73), and documents param 48; 1.17 added `MODE param 47` `value_b` = 1, a STANDBY held for a session; 1.18 added `SYSTEM value_a = 32`; 1.19: the LCD manual menu holds STANDBY too (gh#65), and `SENSOR_HR ch 3` rows at rest are written only on change)
 **Requires:** Python 3.10+, standard library only (no pip dependencies)
+
+**What's new in 1.20** (matches firmware 2.9.0, gh#73):
+- **`SETPT param 49` — `wpos_fitted_m3`**: whether a position sensor is fitted to M3,
+  rendered `fitted` / `not fitted`. The default is **not fitted**.
+- **`ALARM ch = 6` param 248, `value_b = 5`: no position sensor fitted.** A unit set to
+  not fitted logs one `TIMED [no position sensor fitted (setting)]` at boot, and again
+  whenever the setting is switched off. T17 then sends nothing to address 40.
+- **`value_b = 1` (probing) can now appear in a row**, when the setting is switched on.
+- **`SYSTEM value_a = 31` rows for address 40 are absent** on a unit with no sensor
+  fitted.
+- **`SETPT param 48` (`deadzone_m3`) is now in the param table.** The parser has decoded
+  it since 2.8.0, but this document did not list it.
 
 **What's new in 1.18** (2026-09-16):
 - **`SYSTEM value_a = 32` — an OTA session ended WITHOUT installing anything.**
@@ -531,6 +543,8 @@ Configuration parameter changed.  Posted by:
 | 44 | ota_win_hi | h | numeric, old → new — apply-window end hour, local time (2.2.0) |
 | 45 | wind_hyst | m/s | numeric, old → new — wind-speed release dead band (2.3.0, gh#46). **The firmware has emitted this since 2.3.0; the parser only learned it in 2.4.2**, so rows in logs from 2.3.0-2.4.1 render as `param#45` |
 | 46 | travel | s (per channel) | numeric, old → new — motor full-travel time (2.4.2, gh#51). Never logged before 2.4.2, because until then it only took effect at reboot |
+| 48 | deadzone_m3 | mm | numeric, old → new — the M3 linear-control deadband (2.8.0). Stored and audited; the control law that will use it is not in service |
+| 49 | wpos_fitted_m3 | (fitted/not fitted) | boolean, old → new — whether a position sensor is fitted to M3 (2.9.0, gh#73). Not fitted keeps T17 off address 40 |
 
 **Sensitive-value policy (since 2.0.0-a.6.35.5).** Param IDs 23-30 cover
 admin-sensitive settings — PIN rotations, WiFi credentials, the
@@ -804,6 +818,7 @@ per poll. `value_b` carries the reason:
 | `2` | no sensor answering at address 40 |
 | `3` | bench build refused, contract 9 — **permanent**, never re-probed |
 | `4` | sensor present but reporting its own fault — specifically the **wiper-open** bit or the `65535` sentinel, not any status bit |
+| `5` | **no position sensor fitted**: the setting `wpos_fitted_m3` is 0 (2.9.0, gh#73). Configuration, not a fault; T17 sends nothing to address 40 |
 
 **TIMED is the fallback and the failure direction**, and it is what `main`
 ships, so a log full of `TIMED` rows is a unit behaving exactly as it always
@@ -812,18 +827,25 @@ stroke boundary**, so a `POSITION` row always sits at the start of a movement
 and never inside one.
 
 **A healthy boot logs exactly ONE row**, `TIMED [sensor present and trusted]`,
-which then becomes `POSITION` at the first stroke. `value_b = 1` (probing) is
-**structurally unloggable**: the publisher has three call sites and none can pass
-it — it is the initial value, visible only through `GET /api/diag/windowpos` in
-the sub-second window before the first probe returns. Verified on FDA4
+which then becomes `POSITION` at the first stroke. `value_b = 1` (probing) is the
+initial value, so a boot never logs it. **Since 2.9.0 it appears in one case:**
+the setting `wpos_fitted_m3` switched on, which logs `TIMED [probing]`, followed
+by the probe's verdict. Verified on FDA4
 2026-09-12: two OTA reboots produced one `TIMED [ok]` row each, and the stroke
 produced one `POSITION` row — three rows against 162 polls, which is what
 edge-triggered is supposed to look like.
 
-A unit with no sensor logs one `TIMED [no sensor answering]` about 30 s after
-boot — two consecutive failed probes, matching T5's convention — and then
-nothing further. **Not yet observed on hardware** (it needs the encoder's bus
-cable pulled); the healthy path above is measured.
+**A unit with no sensor, since 2.9.0 (gh#73):** with `wpos_fitted_m3` = 0, the
+default, it logs one `TIMED [no position sensor fitted (setting)]` at boot and
+then nothing further. T17 sends nothing to address 40.
+
+**A fitted sensor that does not answer** logs one `TIMED [no sensor answering]`
+about 30 s after boot (two consecutive failed probes, matching T5's convention),
+then nothing further while T17 re-probes every 30 s. Seen on FDA4 on 2026-09-16
+with 2.8.0 and the encoder unplugged: the row came 35 s after boot. That is also
+what 2.8.0 logs on a unit with no sensor, because it had no setting to tell the
+two apart. Since 2.9.0, a fitted sensor in this state also raises the
+`sensor_fault_position` flag in the status payload.
 
 **`param = 247` matters more than it looks.** The device restarting silently
 discards an armed teach, so a restart row sitting between an *armed* and an
@@ -907,6 +929,10 @@ matches the LOG_SYSTEM table in `firmware/src/event_logger/event_logger.h`:
 > no rate can be computed from that — `0 errors in 1080 transactions` is the datum
 > that establishes a per-installation baseline. **Param 52 is emitted only when
 > non-zero**, since zero is implied by a FAILED count of zero.
+>
+> **No rows for address 40 on a unit with no position sensor fitted** (2.9.0,
+> gh#73). Before 2.9.0 such a unit probed that address every 30 s, so its hourly
+> rows showed a slave that never answers.
 >
 > **Bus-busy is excluded from the FAILED count.** Losing the bus lock to another
 > task is contention, not a slave failure; folding the two together is what made

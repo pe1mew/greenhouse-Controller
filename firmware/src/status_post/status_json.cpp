@@ -20,6 +20,7 @@
 #include "status_post.h"   /* status_post_backoff_active() — gh#18 Phase 1 */
 #include "../system_id/system_id.h"  /* unit_id (gh#17, since 1.18.3) */
 #include "modbus_rtu.h"   /* gh#66 — per-slave bus KPIs (read unlocked, by design) */
+#include "window_pos.h"   /* gh#73 — WINDOWPOS_DEFAULT_ADDR, left out when not fitted */
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -380,6 +381,11 @@ size_t build_canonical_status_json(char *buf, size_t cap,
         bool any = false;
         for (unsigned i = 0; ok && i < MODBUS_MAX_TRACKED_SLAVES; i++) {
             if (mc.slave[i].addr == 0u) { continue; }
+            /* gh#73: a unit with no position sensor fitted has no row for its
+             * address. Without the setting, 2.8.0 showed address 40 on every
+             * such unit as a slave that never answers. A bench diagnostic can
+             * still talk to it; that is not the unit's bus. */
+            if (!s->wpos_fitted && mc.slave[i].addr == WINDOWPOS_DEFAULT_ADDR) { continue; }
             const unsigned long err = (unsigned long)mc.slave[i].timeout +
                                       mc.slave[i].crc + mc.slave[i].exception +
                                       mc.slave[i].framing + mc.slave[i].param;
