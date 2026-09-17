@@ -193,9 +193,17 @@ The bench image is 1 406 272 B (+976).
 
     T4's "hour" is 59 minutes here, because every sensor reading ends one of its 1 s waits
     early.
-- **Not run yet: the encoder unplugged with the setting on (`unplug`).** The first attempt
-  timed out after 30 min because the encoder was never unplugged (124 successful reads, 0
-  failed), so it produced no result.
+- **Encoder unplugged with the setting on (`unplug`): PASS.**
+  - The first failed read came 26 s after the prompt.
+  - At the second failed read, 31 s later, `sensor_fault_position` appeared, and the position
+    left the status at the same moment. Address 40 stayed on the Bus card, with 3 failures in
+    a row.
+  - Plugged back in, the flag cleared and the position returned at the next re-probe, 30 s
+    after the prompt.
+  - The SD log has one row for each change: `TIMED [no sensor answering at addr 40]` at
+    16:19:09 and `TIMED [sensor present and trusted]` at 16:19:40.
+  - An earlier attempt the same day timed out after 30 min without the encoder being
+    unplugged, so it produced no result.
 
 ## Upgrading
 

@@ -1304,7 +1304,7 @@ on once. Requirement: FR-WP23 in the requirements study.
 | `on`, at 331 s uptime | PASS. The sensor appeared 0.1 s after the read-back. Address 40 had **4** transactions since boot, the switch-on's own; a T17 still reading at rest would have had ~22 |
 | `off`, then on again | PASS. Gone 0.1 s after the read-back, absent for 300 s, and on switch-on the count had grown by **4** (~20 if T17 had kept reading) |
 | `log` (SD) | PASS. One `TIMED [not fitted]` row per boot, 7 s after the boot row; each switch, including one made through the web interface outside the test, logged its param-49 audit row and the mode rows within a second; no position rows while not fitted |
-| `unplug` | **Not run.** The first attempt timed out: the encoder was never unplugged in its 30 min |
+| `unplug` | PASS (16:18). Fault flag 31 s after the first failed read, position gone with it, address 40 still listed; re-plugged, both back at the next re-probe. One SD mode row each way. An earlier attempt timed out with the encoder never unplugged |
 | hourly bus rows | PASS. At 14:50, with the setting on: addresses 1, 40 and 44. At 15:49, with it off: 1 and 44. T4's "hour" is 59 min here |
 
 #### Rig finding — T17's stroke poll starves T5, and it looks like a wind alarm
