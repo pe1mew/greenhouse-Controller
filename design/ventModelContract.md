@@ -134,10 +134,23 @@ typedef struct {
 } vent_win_out_t;
 
 typedef struct {
+    /* The desired end state per window. NOT a sequence — the caller orders the
+     * commands (see §3, "Ordering"). */
     vent_win_out_t win[VENT_WINDOWS];
+
+    /* --- what the caller logs -------------------------------------------- */
     uint8_t  reason;                /* your code for "why", 0..255, logged verbatim */
-    int16_t  demand_t_x10;          /* your own temperature demand, logged */
-    int16_t  demand_rh_x10;         /* your own humidity demand, logged */
+
+    /* Mode 1's row, kept byte-identical: a stepped model reports the step it
+     * resolved and the per-source steps behind it. -1 = "no such notion",
+     * which is what a model without steps leaves them at. */
+    int8_t   step;                  /* 0..VENT_WINDOWS, or -1 */
+    int8_t   step_t;                /* temperature's own step, or -1 */
+    int8_t   step_rh;               /* humidity's own step, -1 = no demand */
+
+    /* Mode 2's row: a continuous demand in units the model documents. */
+    int16_t  demand_t_x10;
+    int16_t  demand_rh_x10;
 } vent_out_t;
 
 typedef struct { int32_t v[8]; } vent_state_t;   /* your memory. The caller owns it */
@@ -209,6 +222,50 @@ You therefore do **not** implement the deadband, the minimum interval, the clamp
 "is this window even capable" check. You may read `m3_deadzone_x10` and `m3_min_move_ms` to avoid
 asking for moves that will be dropped — a dropped move is not an error, but it is noise in the log.
 
+### Ordering, and why you must not sequence moves yourself
+
+**Your output is a desired end state, not a sequence.** The caller decides the order, and it is
+fixed:
+
+1. **Narrowing first:** every `CLOSE`, and every `TARGET` that reduces an aperture.
+2. **Then widening:** every `OPEN`, and every `TARGET` that increases one.
+
+The reason is transient safety: the total open area stays monotone-decreasing while a decision is
+being applied, so a cycle interrupted part-way — a wind override firing between two commands —
+never leaves the greenhouse more open than both the old and the new decision intended. Today's
+implementation documents the same rule at `reconcile_to_step()`.
+
+Two consequences for your model:
+
+- **At most one command per window per call**, and repeating the same output every call is the
+  intended style. The actuator treats a command for the direction it is already going as a no-op,
+  which is what makes a command lost to a dwell get re-issued once the dwell expires. Returning a
+  steady desired state is therefore correct and cheap; do not go edge-triggered.
+- **Do not use `HOLD` to mean "wait your turn".** If you want a window somewhere, say so on every
+  call until it is there. Sequencing across calls is the caller's and the actuator's business, and a
+  model that tries to choreograph it will fight the dwell timers and the reversal gap.
+
+### Logging: which fields end up in the SD log
+
+The caller writes the row, but the content comes from you, and the two modes use **different rows**
+because a second meaning on one row is a defect this project already paid for (gh#54: every standby
+row parsed as a ventilation decision for months).
+
+| Mode | Row | Content |
+|---|---|---|
+| 1 | `LOG_MODE_CHANGE`, `param_id` 0 — **unchanged** | `value_a` = your `step`; `value_b` packs `step_t` (high byte) and `step_rh` (low byte), each as an int8 with −1 allowed |
+| 2 | `LOG_MODE_CHANGE` with **its own `param_id`** | your `reason`, `demand_t_x10`, `demand_rh_x10`, and M3's commanded target |
+
+- **A stepped model must fill `step`, `step_t` and `step_rh`**, or the existing row changes shape
+  and `logparser.py`, `plot_daily.py` and `vent_step_replay.py` all misread history. That is the
+  one hard compatibility requirement on mode 1's model.
+- **A model with no step notion leaves all three at −1** and expresses itself through `reason` and
+  the demands.
+- The caller logs **on change**, not every call, so these fields must be a function of the current
+  decision — never a counter or an accumulator.
+- Mode 2's row, its `param_id` and the parser branch that decodes it are one change, shipped
+  together. Adding the row without the parser is the gh#54 mistake repeated.
+
 ---
 
 ## 4. Where the code lives
@@ -265,8 +322,9 @@ cd drivers/ventModel && pio test -e native      # host unit tests, no hardware
    - how often a commanded move was dropped by the deadband or deferred by the minimum interval.
 3. **The reference check, before anything else.** `stepped` behind this interface must reproduce
    the logged decisions at least as well as today's replay does: **96.8 % of 378 decisions**
-   (`campaignResults_summer2026.md` F8). Until that passes, a difference in `graded` cannot be
-   attributed to the law rather than to the refactor.
+   (`campaignResults_summer2026.md` F8). Its `step`, `step_t` and `step_rh` must also reproduce the
+   existing log row exactly, so history stays readable by the same parsers. Until both pass, a
+   difference in `graded` cannot be attributed to the law rather than to the refactor.
 4. **A soak on the dev rig** before production: at least 12 h, at least 10 judged strokes, all fault
    counters at 0, and the motor-start count per hour reported.
 5. **The thermal claim can only be proven on the production greenhouse over a summer.** The rig can
@@ -339,4 +397,6 @@ Read `campaignResults_summer2026.md` before choosing a law. The short version:
 6. The expected motor starts per day, against the stepped law's 3–8 M3 openings.
 7. Its `name`, its `version`, and the meaning of every `reason` code — they end up in the SD log and
    in the operator-facing status.
-8. The replay output from §5, on at least two contrasting weeks: one windward, one leeward.
+8. Whether it reports steps (`step`, `step_t`, `step_rh`, which keeps mode 1's log row) or uses the
+   mode 2 row, and in what unit its `demand_*` values are expressed.
+9. The replay output from §5, on at least two contrasting weeks: one windward, one leeward.
