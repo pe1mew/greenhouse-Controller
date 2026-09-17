@@ -10,7 +10,7 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ## Promoted patterns
 
-- **[PATTERN] Mutual exclusion is necessary and not sufficient on a shared bus, and a constant that has never been reached is untested.** 2026-09-12: the RS485 lock (gh#49) correctly serialised *access*, so the operator's framing was exactly right — *"the semaphore should only add jitter"*. What it does not provide is the **silence** the RTU protocol requires between frames, and `MODBUS_IFG_US` was set at the spec floor plus 9.7 % (3.84 character times vs a t3.5 minimum of 3.646 ms). **With one caller that guard had never executed once** — frames sat 30 s apart, so the wait was always skipped. T17 made frames adjacent for the first time in three years and the S200 began silently discarding requests it saw as a continuation of the previous frame, which presents as *zero bytes and a timeout*, never a CRC error. Rules: (a) when adding a second user to any shared resource, audit the constants that were **latent** under single use — a threshold never approached is a guess, not a tested value; (b) ask what the protocol requires **between** operations, not only during them; (c) leave a shared resource in the state the next user is entitled to assume — the IFG is now paid before `bus_unlock()`, and the RX FIFO drained on every exit, for the same reason; (d) *"a compliant slave must stay silent on a bad-CRC request"* means **a silent slave is evidence about the framing, not about the slave**. **Second instance, 2026-09-16: the lock covered transactions but not `modbus_init()`**, whose UART delete-and-reinstall had been logged as *"safe while T5 is the only caller"* — and T17 made it unsafe, panicking the board twice. (e) **a hazard recorded as "safe because X" must name X where X can change** — here, next to the second caller's spawn — or nobody comes back to it. **Third instance, same day (gh#70): the lock serialises transactions, but the DE/RE release INSIDE one is timed by the task**, and a flash write stalls the task by up to 665 ms, so the fastest slave (the encoder, ~5 ms) loses its reply. (f) **a timing that protects the wire must not depend on the scheduler** — hand it to the peripheral, or to an interrupt that runs in IRAM.
+- **[PATTERN] Mutual exclusion is necessary and not sufficient on a shared bus, and a constant that has never been reached is untested.** 2026-09-12: the RS485 lock (gh#49) correctly serialised *access*, so the operator's framing was exactly right — *"the semaphore should only add jitter"*. What it does not provide is the **silence** the RTU protocol requires between frames, and `MODBUS_IFG_US` was set at the spec floor plus 9.7 % (3.84 character times vs a t3.5 minimum of 3.646 ms). **With one caller that guard had never executed once** — frames sat 30 s apart, so the wait was always skipped. T17 made frames adjacent for the first time in three years and the S200 began silently discarding requests it saw as a continuation of the previous frame, which presents as *zero bytes and a timeout*, never a CRC error. Rules: (a) when adding a second user to any shared resource, audit the constants that were **latent** under single use — a threshold never approached is a guess, not a tested value; (b) ask what the protocol requires **between** operations, not only during them; (c) leave a shared resource in the state the next user is entitled to assume — the IFG is now paid before `bus_unlock()`, and the RX FIFO drained on every exit, for the same reason; (d) *"a compliant slave must stay silent on a bad-CRC request"* means **a silent slave is evidence about the framing, not about the slave**. **Second instance, 2026-09-16: the lock covered transactions but not `modbus_init()`**, whose UART delete-and-reinstall had been logged as *"safe while T5 is the only caller"* — and T17 made it unsafe, panicking the board twice. (e) **a hazard recorded as "safe because X" must name X where X can change** — here, next to the second caller's spawn — or nobody comes back to it. **Third instance, same day (gh#70): the lock serialises transactions, but the DE/RE release INSIDE one is timed by the task**, and a flash write stalls the task by up to 665 ms, so the fastest slave (the encoder, ~5 ms) loses its reply. (f) **a timing that protects the wire must not depend on the scheduler** — hand it to the peripheral, or to an interrupt that runs in IRAM. **Fourth instance, 2026-09-17 (gh#79), away from the bus: Q1's depth of 8** was sized for "peak load is several cmds" and is never approached while T2 drains it every 20 ms — but T2 blocks for up to 176 s in a recalibration, and T6 keeps posting, so the queue fills and a wind override's single unchecked send is dropped. (g) **a queue depth is a claim about the consumer's worst-case stall, not the producers' cadence** — size it against the longest time the consumer is not draining, and never let a safety command be fire-and-forget.
 
 - **[PATTERN] A grep is a claim about spelling; only running the code is evidence about behaviour.** Four instances: the real gh#51 Group B parser gap was found **by running the parser** after inspection had missed it (2026-09-10); then three false findings in a single audit (2026-09-12) — a mistyped symbol (`persist_state` for `persist_ch_state`) "proved" a function had no callers, a guessed variable name (`s_win_ws_last` for `s_win_w_last`) "proved" a config change was ignored, and a `va == N` regex "proved" a decoder missed six subtypes it handles. Rules: (a) to test a decoder, **feed it rows and read the output** — never enumerate its branches; (b) to test a call graph, grep the *exact* symbol, print the hit list, and sanity-check the count; (c) **a negative grep is the weakest evidence in the toolbox** — before reporting "X never happens", find the positive case you expect to exist and confirm the same grep finds *that* first (the fail-first rule, applied to searching); (d) sibling of the cross-reference pattern below — a link check and a grep both test the address, not the content; (e) **the same trap applies to filters over data, not just greps over source** — 2026-09-12, `$2=="MODE_CHANGE"` returned zero rows because the CSV type is `MODE`, and the zero was nearly reported as "no mode transitions were logged". Printing the distinct values of the field found 19. **When a filter returns nothing, print the domain of the field before believing it.**
 
@@ -45,6 +45,8 @@ Hooks are the *symptom*, not the title — you rarely know the cause when you ar
 Entries stay in reverse-chronological order below; this index is the only grouped view.
 
 ### Windows, climate & manual control (T2, T6, T8)
+- **2026-09-17** — a wind override can be LOST during a long recalibration (T6 is not paused, fills the 8-deep Q1, and T3's close-all is one unchecked non-blocking send) — gh#79
+- **2026-09-17** — a fault detector never fires in the common case and false-trips in the rare one (its corroborating bit is true at BOTH ends) — gh#78
 - **2026-09-17** — a fail-first run passes when its trigger is a power cycle (how late T17 joins the boot recalibration varies, 2.5-5.5 s); also: position reads 0 for ~1.2 s before the closed end sensor makes (gh#78)
 - **2026-09-17** — a test that tells the operator to press Open "when M3 is closed" gets a reversal instead (T2 drives 5 s past the leaf stopping)
 - **2026-09-16** — the M3 teach commits from one end and never from the other (it drove one traverse; T6 finished the OPEN case by chance — a genuine success credited to the wrong actor)
@@ -135,6 +137,9 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-09-16** — a setting is MISSING from the GUI entirely (two routes exceeded `max_uri_handlers` and never registered; the card depending on them was hidden rather than greyed, so the only symptom was an absence)
 
 ### Build, toolchain & shell
+- **2026-09-17** — a new library's host tests fail at link with an undefined reference to its own function (`pio test` does not build `src/` unless `test_build_src = yes`)
+- **2026-09-17** — a macro with a literal `
+` compiles in one build variant and breaks the other (a macro body is checked where it is USED, so the `#ifdef` branch that skips it never sees the error)
 - **2026-09-17** — internal compiler error in an untouched IDF file (transient; rerun), and a failed `build_release.ps1` leaves `manifest.json` stamped and the old package in place
 - **2026-09-16** — a host test suite hangs instead of failing (the mock served the reply before the request and its clock never moved)
 - **2026-09-16** — a rebuild of the same tree has a different hash and different library sizes (CMake re-ran on every build and PlatformIO linked our libraries in a new order each time; fixed for one checkout — a fresh clone or a tag rebuild still differs)
@@ -170,6 +175,89 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
 
+
+## 2026-09-17 — a macro with a literal `
+` compiled fine in one build configuration and broke the other
+
+**Problem.** The fail-first bench build compiled and linked. The very next build of the *same* tree,
+without the fail-first flag, died with `stray '' in program` on a line that had been there the whole
+time.
+
+**Root cause.** The macro was written with a literal `
+` where a line continuation belonged, and it
+is expanded **only in the `#else` branch** of the fail-first `#ifdef`. A macro body is checked when
+it is *used*, not where it is defined, so the fail-first build never saw the error.
+
+**Fix.** Repair the continuation, and **build every configuration the change can reach before
+trusting any of them.** A green build of one variant says nothing about the other; here the variant
+that compiled was the one that mattered least.
+
+**Where it lives.** `DRIVE_AGE_MAX_MS` in `firmware/src/window_pos/window_pos_task.cpp`, behind
+`WPOS_FAILFIRST_GH72`.
+
+## 2026-09-17 — `pio test` does not compile `src/`, so a new library failed to link
+
+**Problem.** A new host test suite failed at link with `undefined reference to vent_model_stepped()`
+although the function's source sat in `src/` of the same library.
+
+**Root cause.** PlatformIO's `test_build_src` defaults to **no**: `pio test` builds the test sources
+only. Every other driver library here routes its source through a test-local `include_lib.cpp` that
+`#include`s the driver `.cpp` — done so mock headers can be substituted for Arduino or ESP-IDF ones —
+so the setting had never come up in this repo.
+
+**Fix.** `test_build_src = yes` for a library that has nothing to mock, with a comment saying why it
+differs from the neighbours. Do not add an `include_lib.cpp` shim to a pure library just to match a
+pattern whose reason does not apply.
+
+**Where it lives.** `drivers/ventModel/platformio.ini`.
+
+## 2026-09-17 — a detector switched itself off because its corroborating signal was ambiguous (gh#78)
+
+**Problem.** §12.4 rule 2 ("a close that arrives too early is a fault") turned out to do the opposite
+of its intent: it **never judged a full close at all**, and it **false-tripped** on a close that
+started part-way open.
+
+**Root cause.** Two assumptions, both wrong:
+- The rule treats bit 3, "at an end sensor", as corroboration. Bit 3 is true at **either** end, so a
+  close that starts on the OPEN end sensor sets the corroborated flag on its first sample and the
+  rule is off for the rest of that drive.
+- It waits 2 samples for position ~0 to be confirmed by bit 3. Measured on the rig, position reads 0
+  for about **1.2 s, 7 polls**, before the closed end sensor makes, so the trip fires first.
+
+**Fix.** Filed as gh#78 for 2.10.0. The direction: count only an end-sensor make **after** the drive
+has left the end it started at, and give bit 3 time to make — or judge the claim when the drive ends.
+
+**Lesson.** When a rule corroborates a claim with a signal that is true in more than one situation,
+say **which occurrence counts**. "An end sensor" is not "the end sensor you are driving toward", and
+the difference disarmed the rule in the most common case for two releases.
+
+**Where it lives.** The rule 2 block in `firmware/src/window_pos/window_pos_task.cpp`; plan §12.4
+rule 2 carries the correction.
+
+## 2026-09-17 — a queue depth sized for normal cadence becomes a safety hole when the consumer blocks (gh#79)
+
+**Problem.** Reading the code for Phase 5 turned up a path where a **wind override can be lost**:
+after a long recalibration, M1 and M2 open again while the override is still active, and nothing
+closes them until the wind drops. Not reproduced on hardware yet.
+
+**Root cause.** Four facts, each harmless alone:
+- T2 blocks for up to 176 s in the recalibration sweep and does not drain Q1 while it does;
+- T6 is **not** paused during a calibration — its inhibit mask has no `EG1_BIT_CALIBRATING`, although
+  T2's own comment claims it does — so it keeps posting up to 3 commands per 30 s;
+- Q1 is 8 deep, sized when "peak load is several cmds" was the only case;
+- T3's `CLOSE_ALL` is a single non-blocking send with an **unchecked** result, posted only on the
+  safe-to-unsafe edge.
+
+**Fix.** Filed as gh#79, planned as 2.9.2 before Phase 5 coding, with a fail-first rig test
+(`travel_m3` temporarily 171 s, T6 wanting step 3, an LCD logout, then `v_max` lowered ~100 s in).
+
+**Lesson.** A queue depth is a statement about the **consumer's worst-case stall**, not about the
+producers' cadence — and a safety command must not be fire-and-forget. Whoever posts one should
+either block, retry while the condition holds, or have the consumer re-check the condition instead of
+trusting a queued message.
+
+**Where it lives.** `climate_control.cpp:500` (the mask), `relay_controller.cpp:652` (the sweep),
+`safety_monitor.cpp:273` (the send), `system_globals.cpp:103` (the depth).
 
 ## 2026-09-17 — a fail-first run PASSED: its trigger was a power cycle, and how late T17 joins at boot varies
 
@@ -225,6 +313,8 @@ and a short CLOSED can be missed.
 **Where it lives.** `bin/at_wp_gh72.py`, stage `stale`.
 
 ## 2026-09-17 — a bench build died with an internal compiler error in an untouched IDF file, and left the web manifest stamped
+
+**RECURRED the same day**, 17:55, in the same file (`esp_lcd_panel_rgb.c`), on the first build after a change to `PLATFORMIO_BUILD_FLAGS` forced a full rebuild. The retry passed again. Twice in one day makes it a rebuild-triggered flake, not a one-off: **rerun once before investigating**, and check `git status firmware/data/` afterwards.
 
 **Problem.** `build_release.ps1 -Environment lolin_s3_bench` failed with
 `esp_lcd_panel_rgb.c: internal compiler error: Segmentation fault`, a file nobody had changed.
