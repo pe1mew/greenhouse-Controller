@@ -279,6 +279,70 @@ row parsed as a ventilation decision for months).
 
 ---
 
+## 3a. Where the numbers come from
+
+Every climate setting is entered by the operator, in the web GUI or on the LCD. **The model never
+reads a setting** — it receives resolved values. The chain is:
+
+1. **The GUI (T11) or the LCD (T8)** posts the change onto the configuration queue.
+2. **T4** validates and clamps it against its single descriptor row in `firmware/config/cfg_desc.inc`,
+   writes NVS, updates the in-memory shadow under a mutex, and emits the audit row.
+3. **T6** takes a consistent copy of that shadow at the top of each cycle.
+4. **T6 resolves** it for you: day or night, the hysteresis floors, the unit conversions, and the
+   deadband in percent.
+
+### Which field comes from where
+
+| `vent_in_t` field | Source | What the caller already did |
+|---|---|---|
+| `t_max_c10` | `t_max_day` / `t_max_ngt` | picked one by `is_daytime`, converted whole °C to 0.1 °C |
+| `rh_max_pct`, `rh_min_pct` | `rh_max_day/ngt`, `rh_min_day/ngt` | picked one by `is_daytime` |
+| `hyst_t_c`, `hyst_rh_pct` | `hyst_t`, `hyst_rh` | floored at 1, so a law can divide by them |
+| `cr_priority` | `cr_priority` | — |
+| `rh_ctrl_en` | `rh_ctrl_en` | combined with `rh_valid`: either one false means humidity casts no vote |
+| `daytime` | `is_daytime` | **not a setting** — T4 computes it from the sun times and the site coordinates |
+| `t_avg_c10`, `t_avg_c`, `rh_avg_pct`, `wind_*_avg_*` | T5's reading, averaged | averaged over `avg_win_t`, `avg_win_rh`, `avg_win_wind` — **those settings are not passed to you**; you receive the result |
+| `t_valid`, `rh_valid`, `wind_valid` | the measurement snapshot and the sensor-fault flags | — |
+| `m3_deadzone_x10` | `deadzone_m3_mm` | converted from mm using M3's taught span, which is why you get a percentage |
+| `m3_min_move_ms` | the linear-dwell setting | **the key does not exist yet** (plan §10, decision 10); until it does, expect 0 |
+| `win[].state` | T2 | reversal gaps folded into the moving states |
+| `win[].cap`, `pos_x10`, `pos_age_ms` | T17, through T4's pass-through | capability already reflects fitted, gate open and fault-free |
+| `win[].last_target_x10`, `last_result`, `ms_since_move` | the caller's own record of what it commanded | — |
+| `now_ms`, `unix_time` | the caller | — |
+
+**Deliberately absent:** the heating setpoints (`t_min_*`, no heating in this installation) and every
+wind-safety setting (`v_max`, `wind_hyst`, `dir_excl_low`/`dir_excl_high`). Wind safety belongs to
+T3, which acts on its own and suspends the model; a direction-aware law gets the *measured* wind,
+never the safety thresholds.
+
+### Three consequences to design around
+
+- **A setting arrives whole, and late.** A GUI write is queued, so it reaches you on the first cycle
+  after T4 applies it — up to one poll interval, about 30 s. Because the caller copies the whole
+  shadow at once, you never see half of a multi-field change.
+- **Bounds are enforced before you.** The descriptor clamps on the write path, so ranges can be
+  trusted. Defend against division by zero anyway, as the stepped model does, so the model stays
+  correct when a test calls it directly.
+- **The operator can change a setting mid-run.** Nothing is latched for you: a threshold can move
+  between two calls. Keep your state in `vent_state_t` interpretable when it does.
+
+### Adding a tunable of your own
+
+A gain you invent is not free — it becomes an operator setting, and in this repo that has a fixed
+shape:
+
+1. **One row in `cfg_desc.inc`**, naming a `K_*` key, a shadow field, `CFG_MIN/MAX_*`, a `DEF_*`
+   default and a `LOG_PARAM_*` audit id. Verified by `bin/check_cfg_desc.py`, which the pre-commit
+   hook runs.
+2. **The caller passes it** into a new `vent_in_t` field — and the field is added to this contract.
+3. **The surfaces:** the GUI control, the LCD screen if it belongs there, `webUiMock`'s limits, and
+   `logparser.py`'s param table, so the audit row decodes.
+4. **A control the operator cannot use right now is greyed out with the reason beside it, never
+   hidden** — a mode 2 tunable in mode 1 is exactly that case.
+
+**Until the key exists, keep the value a constant in your own file.** A slider that changes nothing
+is this project's most-repeated defect: an affirmative signal for something that did not happen.
+
 ## 4. Where the code lives
 
 Yes — the model is confined to its own header and implementation files, in its own library, with no
