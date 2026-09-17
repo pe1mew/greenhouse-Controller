@@ -2167,6 +2167,49 @@ demands. Mode 2 needs the same treatment with the model compiled in — a host h
 `vent_in_t` rows and records `vent_out_t` — so a candidate law can be scored against real weather
 before it is shipped.
 
+##### The refactor: T6 stops carrying its own copy — in 2.11.0, with mode 2
+
+**Where it stands (2026-09-17).** The library exists: `drivers/ventModel/` holds the interface and
+`vent_model_stepped`, a faithful copy of T6's decision functions, with 21 host tests passing. **The
+firmware is untouched and still runs its inline copy.** So mode 1's law exists twice, on purpose and
+temporarily.
+
+**Operator decision, 2026-09-17: T6 switches over when the dual mode is introduced**, not before.
+The reasoning:
+
+- In 2.10.0 the switch would be a behaviour-neutral refactor of the control path, shipped in the
+  same release as the confirmation work, with **no consumer benefit** — two kinds of risk in one
+  release, one of which nobody asked for yet.
+- In 2.11.0 the boundary is **needed anyway**: something has to choose between two models at
+  runtime. The refactor pays for itself in the release that requires it.
+
+**The steps, in order:**
+
+1. **Wire the library into the build:** `firmware/components/ventModel/CMakeLists.txt` as a proxy
+   over `drivers/ventModel/src`, and one `REQUIRES` row in `firmware/src/CMakeLists.txt`. Deliberately
+   absent until now, because an IDF component is compiled into every build.
+2. **T6 gains the model table and the state:** it holds one `vent_state_t`, picks `stepped` or
+   `graded` from the effective mode (§5b), and resets the state at boot, on a mode change and at an
+   inhibit onset.
+3. **T6 fills `vent_in_t`:** the resolved setpoints (contract §3a), the measurements including the
+   whole-degree average, the window states from T2, and M3's capability and position through T4's
+   pass-through.
+4. **Delete the inline decision functions** from `climate_control.cpp` — `VENT_STEP_TABLE`,
+   `step_from_deviation()`, `vent_step_channels()`, `vent_step_required_t()`,
+   `vent_step_required_rh()`, `vent_resolve_conflict()`, and the want-open comparison inside
+   `reconcile_to_step()`. What stays is the plumbing: the inhibit mask, the snapshots, the model
+   call, the actuator limits, the command ordering, the queue, the logging and the state resets.
+5. **Keep mode 1's log row byte-identical** from the model's `step`, `step_t` and `step_rh`, and add
+   mode 2's row with its own `param_id` and its parser branch in the same change.
+
+**The gate before it merges:** the host tests, the replay reproducing at least 96.8 % of the 378
+logged decisions with the byte-identical row, and a rig soak. Only then is a difference in `graded`
+attributable to the new law rather than to the refactor.
+
+**Until then, two copies exist.** Change one, change the other, and re-run both the library's host
+tests and the replay. That duplication is the price of having a tested reference before the release
+that needs it, and step 4 is what ends it.
+
 ## 6. Operator-facing surfaces
 
 ### 6.1 The display rule
@@ -2391,6 +2434,12 @@ Note what production logging unlocks that the rig cannot: a **real** 171 s trave
     1 % overshoot budget in production and ten times it on the rig.
 13. ~~What does 2.10.0 contain?~~ **Confirmation only**, with T2 still driving to the
     timer. Mode 2 is **2.11.0**, designed while 2.10.0 soaks.
+15. ~~When does T6 stop carrying its own copy of the stepped law?~~ **Operator decision
+    2026-09-17: when the dual mode is introduced (2.11.0), not in 2.10.0.** The boundary is needed
+    anyway once two models must be chosen between, and doing it earlier would ship a
+    behaviour-neutral refactor of the control path with no consumer benefit. Until then mode 1's law
+    exists twice — live in T6, and as the tested reference in `drivers/ventModel/` — and both copies
+    move together. Steps and the acceptance gate are in §5c.
 14. ~~How is the control law kept replaceable?~~ **Operator requirement 2026-09-17:** mode 2's
     model shall be adaptable later in a simple way, so the law lives behind the **pure-function
     contract in §5c** — host-compilable, caller-owned state, T6 keeping the queue, the limits, the

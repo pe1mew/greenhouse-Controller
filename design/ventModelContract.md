@@ -4,7 +4,7 @@
 |---|---|
 | Document | Interface contract for the T6 ventilation control model |
 | Date | 2026-09-17 |
-| Status | **The interface and the mode 1 reference exist as a library; the firmware does not use them yet.** `drivers/ventModel/` holds `src/vent_model.h` and `src/vent_model_stepped.cpp` — a faithful copy of the 2.9.1 stepped law — with 21 host tests passing (`pio test -e native`). The firmware in `main` still runs its own inline copy in T6 and is untouched; the two are kept in step by hand until T6 is refactored onto this interface in **2.11.0** |
+| Status | **The interface and the mode 1 reference exist as a library; the firmware does not use them yet.** `drivers/ventModel/` holds `src/vent_model.h` and `src/vent_model_stepped.cpp` — a faithful copy of the 2.9.1 stepped law — with 21 host tests passing (`pio test -e native`). The firmware in `main` still runs its own inline copy in T6 and is untouched; the two are kept in step by hand until T6 is refactored onto this interface. **That switch happens in 2.11.0, with the dual mode** (operator, 2026-09-17), because that is the release where something must choose between two models — steps and acceptance gate in the plan's §5c |
 | Audience | Whoever writes or tunes a control model — a separate session, a separate agent, or a person. **This document is meant to be read on its own** |
 | Scope decisions | [`integrateWindowPositionSensor.md`](integrateWindowPositionSensor.md) §5b (the two control modes, the position path) and §5c (the rules around this contract) |
 | Requirements | [`functionalRequirementsSpecification.md`](functionalRequirementsSpecification.md), and [`windowPositionSensorRequirements.MD`](windowPositionSensorRequirements.MD) FR-WP04/05/17/18 |
