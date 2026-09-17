@@ -2079,6 +2079,8 @@ dwell, the deadband, and the fault state the surfaces display.
 - **A mapping from demand to (M1/M2 step, M3 %)** — the control law itself, and §10's open
   decision 9. A proportional map with a rate limit is the simplest candidate and is replayable
   offline; a PID's integral term is the risk against an actuator that takes 176 s and reports late.
+  **The law sits behind the model contract in §5c**, so choosing it is not a prerequisite for
+  building mode 2 — and replacing it later costs one file.
 - **Achieved, not demanded.** T6 remembers the step it *asked for*; with a linear M3 that
   difference becomes visible, so it needs the done/failed result and the achieved position back —
   the feedback half §5a records as missing.
@@ -2101,6 +2103,115 @@ dwell, the deadband, and the fault state the surfaces display.
 - **5C88:** the sensor bought, fitted and taught
   ([gh#77](https://github.com/pe1mew/greenhouse-Controller/issues/77)). Until then
   `wpos_fitted_m3` = 0 keeps mode 2 unavailable there, which is the right default.
+
+#### 5c. The T6 model boundary — a contract, so the control law can be replaced later
+
+**Operator requirement, 2026-09-17: it shall be possible to adapt mode 2's model later in a simple
+way.** The reason is in the campaign: nobody can yet say what the right law is. There is no
+measured aperture-to-airflow curve for a part-open M3, M3's effect varies 30-100x with wind
+direction, the plant model misses its accuracy targets and the closed-loop simulation has never
+been run. The first real evidence arrives over a production summer, so the law **will** be changed
+after it ships, probably more than once. That makes the boundary around it a requirement of its
+own, not a refinement.
+
+**The shape: the law is a pure function behind one interface, and T6 keeps everything else.**
+Mode 1's existing stepped logic and mode 2's graded law become **two implementations of the same
+interface**, so a third (PID, fuzzy, a direction-aware curve) is a new file plus one table row —
+never a change to T6's plumbing, to Q1, or to the log format.
+
+##### What the model may read, and what it must produce
+
+```c
+/* vent_model.h — HOST-COMPILABLE: no ESP-IDF headers, so the same source runs
+ * under `pio test -e native` and the offline replay. */
+#define VENT_MODEL_API 1
+#define VENT_WINDOWS   3            /* 0 = M1, 1 = M2, 2 = M3 */
+
+typedef enum { VENT_CAP_DIGITAL = 0, VENT_CAP_LINEAR = 1 } vent_cap_t;
+typedef enum { VENT_WIN_UNKNOWN = 0, VENT_WIN_CLOSED, VENT_WIN_MOVING_OPEN,
+               VENT_WIN_OPEN,   VENT_WIN_MOVING_CLOSE } vent_win_state_t;
+typedef enum { VENT_ACT_HOLD = 0, VENT_ACT_CLOSE, VENT_ACT_OPEN,
+               VENT_ACT_TARGET } vent_action_t;          /* TARGET: linear only */
+typedef enum { VENT_RES_NONE = 0, VENT_RES_DONE, VENT_RES_FAIL_TIMEOUT,
+               VENT_RES_FAIL_FAULT, VENT_RES_ABORTED } vent_result_t;
+
+typedef struct {                    /* one window, as it actually is */
+    vent_win_state_t state;         /* T2 */
+    vent_cap_t       cap;           /* T17 via T4 (§5b); M1/M2 always DIGITAL */
+    int16_t          pos_pct_x10;   /* 0..1000, -1 = unknown. M3 only */
+    uint32_t         pos_age_ms;    /* age of pos_pct_x10 */
+    int16_t          last_target_x10;  /* last commanded target, -1 = none */
+    vent_result_t    last_result;   /* outcome of that command */
+    uint32_t         ms_since_move; /* since the last drive ended */
+} vent_win_in_t;
+
+typedef struct {
+    uint32_t now_ms;                /* monotonic; wrap-safe differences only */
+    uint32_t unix_time;             /* for logging and day/night only */
+    bool     daytime;               /* T6 resolves it from the sun times */
+    int16_t  t_c10, t_avg_c10;      /* 0.1 °C */
+    uint8_t  rh_pct, rh_avg_pct;    /* whole % */
+    uint16_t wind_ms10, wind_avg_ms10;          /* 0.1 m/s */
+    uint16_t wind_dir_deg, wind_dir_avg_deg, wind_dir_var_deg;
+    bool     t_valid, rh_valid, wind_valid;
+    int16_t  t_max_c10;             /* day/night already chosen by T6 */
+    uint8_t  rh_max_pct, rh_min_pct;
+    uint8_t  hyst_t_c, hyst_rh_pct, cr_priority;
+    uint16_t m3_deadzone_x10;       /* deadzone_m3_mm converted to 0.1 % */
+    uint16_t m3_min_move_ms;        /* linear dwell: shortest interval between moves */
+    vent_win_in_t win[VENT_WINDOWS];
+} vent_in_t;
+
+typedef struct {
+    vent_action_t action;
+    int16_t       target_x10;       /* 0..1000, only with VENT_ACT_TARGET */
+} vent_win_out_t;
+
+typedef struct {
+    vent_win_out_t win[VENT_WINDOWS];
+    uint8_t  reason;                /* model-defined code, logged verbatim */
+    int16_t  demand_t_x10;          /* the model's own demand, logged */
+    int16_t  demand_rh_x10;
+} vent_out_t;
+
+typedef struct { int32_t v[8]; } vent_state_t;   /* the model's memory, owned by T6 */
+
+const char *vent_model_name(void);               /* logged and published */
+uint16_t    vent_model_version(void);
+void        vent_model_reset(vent_state_t *st);   /* boot, mode change, inhibit onset */
+void        vent_model_step(const vent_in_t *in, vent_state_t *st, vent_out_t *out);
+```
+
+##### The rules that make it swappable
+
+| Rule | Why |
+|---|---|
+| **The model is a pure function**: const input, its own state struct, an output struct. No queue, no NVS, no logging, no blocking, no clock of its own. | It can be replayed, unit-tested on the host and diffed against the law it replaces. |
+| **Its state lives in the caller.** T6 owns `vent_state_t` and resets it at boot, on a mode change and on an inhibit onset. | An integrator that survives a wind override would wind up invisibly; and a caller-owned state is snapshot-able for a replay. |
+| **No ESP-IDF headers, integer units only.** | Same source in the firmware, the host tests and the replay — the guard against "it behaved differently offline". |
+| **T6 resolves the day/night setpoints, the averaging and the validity flags** before the call. | The model never learns where a value came from, so the sensor layer can change under it. |
+| **T6 enforces the actuator limits after the call**: a `TARGET` for a digital window is a model error (logged, treated as `HOLD`); a target inside `m3_deadzone_x10` of the current position is dropped; one inside `m3_min_move_ms` of the last move is deferred; targets clamp to 0..1000. | The chattering and the impossible command are caught in one place, so every future model inherits the protection instead of reimplementing it. |
+| **T6 owns Q1 and the log row**, including the source tag and the model's `reason`, `demand_*` and the resulting target. | The SD log stays the record of *why* a window moved, which is what makes a law argued about after the fact — the standing rule that a decision changing behaviour leaves a row. |
+| **Safety is outside the boundary.** The wind close-all, the motor alarm, standby and the boot sweep are handled by T3 and T2; while any inhibit is set T6 does not call the model at all, and its last output is discarded. | FR-WP18, and a new model can never regress a safety path it cannot reach. |
+| **The active model's name and version are published and logged** at boot and on every mode change. | A log can be attributed to the law that produced it, which is the minimum for comparing two summers. |
+
+##### Two implementations at the boundary from day one
+
+| Model | Mode | Output shape |
+|---|---|---|
+| `stepped` | 1 | M1, M2, M3 each `OPEN`/`CLOSE`/`HOLD` — today's 3-step table, unchanged in behaviour |
+| `graded` | 2 | M1, M2 `OPEN`/`CLOSE`/`HOLD` at two fixed steps; M3 `TARGET` with a percentage (or `OPEN`/`CLOSE` while M3's capability is digital) |
+
+**Acceptance for the refactor itself:** `stepped`, compiled behind this interface, must reproduce
+the logged decisions of real SD data at least as well as today's replay does (96.8 % of 378
+decisions — [`campaignResults_summer2026.md`](../model/campaignResults_summer2026.md) F8). That is the fail-first check that the boundary changed
+nothing before the graded law is allowed anywhere near the greenhouse.
+
+**Replay is part of the deliverable, not a follow-up.** `model/vent_step_replay.py` already
+reconstructs T6's inputs from SD rows and refuses to project unless it first reproduces the logged
+demands. Mode 2 needs the same treatment with the model compiled in — a host harness that feeds
+`vent_in_t` rows and records `vent_out_t` — so a candidate law can be scored against real weather
+before it is shipped.
 
 ## 6. Operator-facing surfaces
 
@@ -2326,3 +2437,9 @@ Note what production logging unlocks that the rig cannot: a **real** 171 s trave
     1 % overshoot budget in production and ten times it on the rig.
 13. ~~What does 2.10.0 contain?~~ **Confirmation only**, with T2 still driving to the
     timer. Mode 2 is **2.11.0**, designed while 2.10.0 soaks.
+14. ~~How is the control law kept replaceable?~~ **Operator requirement 2026-09-17:** mode 2's
+    model shall be adaptable later in a simple way, so the law lives behind the **pure-function
+    contract in §5c** — host-compilable, caller-owned state, T6 keeping the queue, the limits, the
+    logging and the safety outside it. `stepped` (mode 1) and `graded` (mode 2) are the first two
+    implementations; the refactor is accepted only when `stepped` reproduces today's replay match
+    rate. **Which law `graded` uses is still open** (decision 9).
