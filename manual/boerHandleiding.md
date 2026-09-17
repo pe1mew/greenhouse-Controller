@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de boer
 
-**Versie:** 1.17
-**Datum:** 2026-06-27
-**Firmware:** 2.1.1
+**Versie:** 1.18
+**Datum:** 2026-09-16
+**Firmware:** 2.8.0
 
 ---
 
@@ -1550,6 +1550,7 @@ Inhoudelijke wijzigingen aan de firmware staan beschreven in het bestand `change
 | 1.15 | 2026-05-26 | 2.0.0-rc.1.5.1–rc.1.5.2 |
 | 1.16 | 2026-06-26 | 2.0.0 t/m 2.1.1 — T min dag/nacht gedocumenteerd (webinterface); SD-logbestand bestandsnaam eenheid-ID prefix (gh#30, 2.0.1); windgemiddelde onafhankelijk venster (gh#35, 2.1.0); standaard uitmiddelvenster gecorrigeerd naar 6 min; bugfix HTTP-statuscode in auditlog (gh#34, 2.1.1) |
 | 1.17 | 2026-06-27 | 2.1.1 — figuurcaptions toegevoegd (Figuur 2 schematisch overzicht, Figuur 6 reset-knop); figuurcaptions hernummerd (Figuur 1–8); "Standby" → "Stand-by" consistent; "calibratie" → "kalibratie"; "in- en uitgaan"; "hoelang"; "foto's"/"smartphone" |
+| 1.18 | 2026-09-16 | 2.2.0 t/m 2.8.0 — de controller werkt zichzelf 's nachts bij en de melding *Update pending* (ROTA, 2.2.0); windinstellingen zijn voor de beheerder (2.3.0); unit-ID in de tabtitel van de browser (gh#50, 2.4.0); vergeten PIN via de BOOT-knop (gh#56, 2.4.8); hoever M3 open staat, bij een raamstandsensor (2.8.0); looprichting bij alle drie de ramen (2.8.0); kaartje *Modbus bus* (2.8.0); Stand-by die de beheerder zet tijdens een teach of tijdens handmatige raambediening via de LCD (2.8.0) |
 
 ---
 

@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de beheerder
 
-**Versie:** 1.20
-**Datum:** 2026-06-26
-**Firmware:** 2.1.1
+**Versie:** 1.21
+**Datum:** 2026-09-16
+**Firmware:** 2.8.0
 
 ---
 
@@ -2094,6 +2094,7 @@ Inhoudelijke wijzigingen aan de firmware staan beschreven in het bestand `change
 | 1.18 | 2026-05-26 | 2.0.0-rc.1.5.1 |
 | 1.19 | 2026-05-26 | 2.0.0-rc.1.5.2 |
 | 1.20 | 2026-06-26 | 2.0.0 t/m 2.1.1 — T min dag/nacht gedocumenteerd (webinterface); SD-logbestand bestandsnaam eenheid-ID prefix (gh#30, 2.0.1); `avg_win_wind` naam en standaard gecorrigeerd; windgemiddelde onafhankelijk venster (gh#35, 2.1.0); standaard uitmiddelvenster gecorrigeerd naar 6 min; bugfix HTTP-statuscode in auditlog (gh#34, 2.1.1) |
+| 1.21 | 2026-09-16 | 2.2.0 t/m 2.8.0 — automatische internet-update (ROTA) in tab System, met figuur (2.2.0); wind-hysterese (gh#46, 2.3.0); reset-procedure met de BOOT-knop, vergeten beheerder-PIN en de coredump-melding (gh#56, 2.4.8); bereik sensor-leesfrequentie 15–120 s (gh#57, 2.5.1); `dwell_open_s` in plaats van `dwell_open_min` (gh#63, 2.7.0); tab Motors per raam gegroepeerd, dodezone en kalibratie (teach) van de M3-raamstandsensor met de foutmeldingen (2.8.0); de Stand-by van een teach en van de handmatige raambediening via de LCD wordt niet opgeslagen en eindigt met de sessie of een herstart (gh#65, 2.8.0); het sessie-einde van de LCD-raambediening sluit de ramen één keer (gedrag sinds 2.4.5, tekst nu gecorrigeerd); afgebroken OTA-upload (2.8.0); statusregel Standby gecorrigeerd |
 
 ---
 

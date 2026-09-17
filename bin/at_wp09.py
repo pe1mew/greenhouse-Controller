@@ -39,6 +39,47 @@ standing rule is "show the check can fail before trusting a pass"; for a
 detector the inverse matters just as much, and the AT-WP05 lesson was exactly
 this -- a headline counter that could not fail proved nothing over 7117 reads.
 
+THE SEQUENCE (--sequence): both halves, and the case the exemption could hide
+---------------------------------------------------------------------------
+Rule 1 got an at-end exemption on 2026-09-16: a stroke toward the end the leaf
+already sits at is not judged. The only run of this test's detection half
+predates that change. The exemption is built not to hide a leaf that does not
+follow, but that was argued, not tested. With the draw-wire detached from an
+OPEN leaf, the reading sits at 0 while the open end sensor is made: exactly
+what a shorted wiper looks like at the start of a CLOSE. Only the end sensor
+dropping as the leaf leaves the open end keeps that stroke judged.
+
+`--sequence` walks through it at the LCD manual menu (screen 6, `#`, `3`):
+
+  1. healthy CLOSE                 wire attached (skipped if M3 starts CLOSED)
+  2. healthy OPEN                  wire attached, M3 ends OPEN
+  3. detach the wire               ONLY with M3 OPEN and at rest
+  4. fault CLOSE                   the exemption case: rule 1 must report it
+  5. fault OPEN                    rule 1 must report it; M3 ends OPEN
+  6. reattach the wire             ONLY with M3 OPEN and at rest; the sensor
+                                   must come back
+  7. healthy CLOSE                 wire attached
+  8. log out on the LCD            the session end closes the windows once
+
+The wire may be detached and reattached only with the rig OPEN (operator,
+2026-09-17), so the script waits until `/api/status` shows M3 OPEN before it
+asks, and gets M3 back to OPEN first if a stroke did not end there.
+
+A fault stroke can also end INCONCLUSIVE instead of PASS or FAIL. That happens
+when the detached wire makes the device report its fault sentinel, which shuts
+the sensor gate before rule 1 gets to judge; that is the correct response to a
+faulting sensor, but it does not test rule 1. It also happens when the position
+moved during the stroke, which means the wire was still attached.
+
+**It adds two deliberate stall faults to the unit's counters**, so a soak
+running at the same time will report NOT CLEAN. Judge the soak first.
+
+**Safety.** The LCD session pauses automatic control, but the wind safety can
+still close the windows at any time (the rig's emulated wind sensor has done
+so). Touch the wire only when the script says M3 is at rest. If the LCD session
+times out (5 min without a key), the controller closes the windows: in the M3
+screen, `3` does nothing and keeps the session alive.
+
 USAGE
 -----
     # arm the observer, then cause an obstructed stroke when it says to
@@ -47,7 +88,10 @@ USAGE
     # the false-positive half: a normal, unobstructed stroke must NOT trip it
     python bin/at_wp09.py --host 192.168.20.169 --healthy
 
-Exit 0 = the criterion held, 1 = it did not, 2 = could not run the test.
+    # everything above in one guided run (needs a person at the rig)
+    python bin/at_wp09.py --host 192.168.20.169 --sequence
+
+Exit 0 = the criterion held, 1 = it did not, 2 = could not run or could not judge.
 Stdlib only. ASCII output only (Windows consoles here are cp1252).
 """
 
@@ -62,6 +106,26 @@ DEFAULT_HOST = "192.168.20.169"     # FDA4; pass --host for 2344 (.160)
 DEFAULT_PIN = "12345678"
 POLL_S = 1.0
 DIAG = "/api/diag/windowpos"
+# Rule 1 decides within min(5 s, travel_m3 / 2) of the stroke start. A stroke is
+# judged over at least this long, and until M3 reads OPEN or CLOSED again.
+JUDGE_S = 8.0
+SETTLED = ("OPEN", "CLOSED")
+PASS, FAIL, INCONCLUSIVE = 0, 1, 2
+WORD = {PASS: "PASS", FAIL: "FAIL", INCONCLUSIVE: "INCONCLUSIVE"}
+# A leaf that moves more than this while the wire is supposed to be detached
+# means the wire was still on it (0.1 mm).
+MOVED_X10 = 500
+
+LCD_MENU = [
+    "On the LCD: press D until the screen shows M1 M2 M3 (screen 6), press #,",
+    "type the 8-digit ADMIN PIN if it asks, press #, then press 3 (M3).",
+    "The LCD then shows '[M3] ...' with '1=Open 2=Cls *Bk'. Stay on that screen:",
+    "the script tells you which key to press for each stroke.",
+]
+LOG_OUT = [
+    "On the LCD, log out: press * twice (back to the status screens), then A",
+    "(main menu), then 3 (Access), then 3 (Logout).",
+]
 
 
 class Unit(object):
@@ -126,6 +190,10 @@ class Unit(object):
             sys.exit("%s returned HTTP %s -- is this a ropeSensor build?" % (DIAG, sc))
         return out
 
+    def status(self):
+        sc, out = self._req("GET", "/api/status")
+        return out if sc == 200 and isinstance(out, dict) else {}
+
 
 def soak_of(d):
     s = d.get("soak")
@@ -139,104 +207,362 @@ def gate_of(d):
     return g if isinstance(g, dict) else {}
 
 
+def m3_of(st):
+    return (st.get("windows") or {}).get("M3")
+
+
+def flags_of(st):
+    return (st.get("mode") or {}).get("flags") or []
+
+
+def delta(s, s0, key):
+    return int(s.get(key, 0) or 0) - int(s0.get(key, 0) or 0)
+
+
+def say(msg):
+    print("    %s  %s" % (time.strftime("%H:%M:%S"), msg))
+    sys.stdout.flush()
+
+
+def banner(lines):
+    print("")
+    print("  " + "=" * 72)
+    for ln in lines:
+        print("  >>> " + ln)
+    print("  " + "=" * 72)
+    sys.stdout.flush()
+
+
+def ask(lines):
+    """Show a prompt and wait for Enter. Raises EOFError without a terminal."""
+    banner(list(lines) + ["Then press Enter here."])
+    input("  ")
+
+
+# ------------------------------------------------------------ one stroke
+def observe(u, healthy, timeout, prompt):
+    """Watch one stroke that the operator commands, and judge it.
+
+    The stroke is found in /api/status (M3 leaves OPEN/CLOSED) as well as in
+    T17's `strokes` counter: with the sensor gate shut T17 does not count
+    strokes, and a fault stroke may run exactly like that.
+
+    Returns (code, reason).
+    """
+    s0 = soak_of(u.diag())
+    banner(prompt)
+    t0 = time.time()
+    moved_at = counted_at = fired_at = None
+    reasons = set()
+    fault_readings = 0
+    pos = []
+    s = s0
+    timed_out = True
+    while time.time() - t0 < timeout:
+        time.sleep(POLL_S)
+        now = time.time() - t0
+        d = u.diag()
+        s = soak_of(d)
+        reasons.add(str(gate_of(d).get("reason_str", "?")))
+        if d.get("ok"):
+            if d.get("sensor_fault"):
+                fault_readings += 1
+            elif isinstance(d.get("opening_mm_x10"), int):
+                pos.append(d["opening_mm_x10"])
+        m3 = m3_of(u.status())
+        if moved_at is None and m3 is not None and m3 not in SETTLED:
+            moved_at = now
+        if counted_at is None and delta(s, s0, "strokes") > 0:
+            counted_at = now
+        if fired_at is None and delta(s, s0, "stall_faults") > 0:
+            fired_at = now
+        start = moved_at if moved_at is not None else counted_at
+        if start is not None and now - start >= JUDGE_S and m3 in SETTLED:
+            timed_out = False
+            break
+
+    start = moved_at if moved_at is not None else counted_at
+    k = dict((key, delta(s, s0, key)) for key in (
+        "strokes", "reads_ok", "rejected_rate", "err_comm", "stall_faults",
+        "early_stops", "at_end_exempt", "gated_polls"))
+    span = (max(pos) - min(pos)) if pos else None
+    say("stroke seen: %s (T17 counted it: %s)%s"
+        % ("t+%.0f s" % start if start is not None else "no",
+           "yes" if counted_at is not None else "no",
+           "  -- still moving when the wait ran out" if timed_out and start is not None else ""))
+    say("stall reported: %s"
+        % ("%.0f s after the stroke started" % (fired_at - start)
+           if fired_at is not None and start is not None
+           else ("yes" if fired_at is not None else "no")))
+    say("reads +%d, rejected +%d, comm errors +%d, early stops +%d, "
+        "exempt at end +%d, gated polls +%d"
+        % (k["reads_ok"], k["rejected_rate"], k["err_comm"], k["early_stops"],
+           k["at_end_exempt"], k["gated_polls"]))
+    say("gate reasons seen: %s; fault readings: %d; position moved: %s"
+        % (", ".join(sorted(reasons)), fault_readings,
+           "%.1f mm" % (span / 10.0) if span is not None else "no valid reading"))
+
+    if start is None:
+        return INCONCLUSIVE, ("no stroke was observed -- nothing was tested. T2 must "
+                              "actually energise M3; a stroke you did not cause is not "
+                              "a null result")
+    judged = k["reads_ok"] >= 2 and k["gated_polls"] == 0 and reasons == {"ok"}
+
+    if healthy:
+        if fired_at is not None:
+            return FAIL, ("rule 1 tripped on an UNOBSTRUCTED stroke. This is a false "
+                          "positive. Before touching the threshold, check `travel_m3` "
+                          "against the wired window -- nominal derives from it, so a rig "
+                          "value left at the production 171 makes every real stroke look "
+                          "~13x too slow and would trip this every time")
+        if k["at_end_exempt"] > 0:
+            return INCONCLUSIVE, ("the stroke was exempt (the leaf was already at the end "
+                                  "it was driven toward), so rule 1 did not judge it")
+        if not judged:
+            return INCONCLUSIVE, ("rule 1 did not get to judge this stroke: the sensor "
+                                  "gate was not open throughout, or T17 took no readings")
+        return PASS, "a healthy stroke did NOT trip 12.4 rule 1"
+
+    if fired_at is not None:
+        return PASS, ("the divergence was reported. Read the ALARM ch6 param 249 row "
+                      "off the SD log for the peak rate and threshold it recorded; "
+                      "`logparser.py` decodes it")
+    if k["at_end_exempt"] > 0:
+        return FAIL, ("the at-end exemption SWALLOWED a real stall: the stroke counted as "
+                      "exempt although the leaf did not follow the motor")
+    if span is not None and span >= MOVED_X10:
+        return INCONCLUSIVE, ("the position followed the leaf (%.1f mm), so the wire was "
+                              "still attached: not a divergence" % (span / 10.0))
+    if not judged:
+        return INCONCLUSIVE, ("the sensor dropped out (gate: %s) before rule 1 could judge. "
+                              "That is the right response to a faulting sensor, but it does "
+                              "not test rule 1; command the stroke sooner after detaching"
+                              % ", ".join(sorted(reasons)))
+    return FAIL, ("the leaf did not follow and 12.4 rule 1 did NOT report it. Check, in "
+                  "this order: did `strokes` move? is `rejected_rate` climbing -- every "
+                  "sample implausible also means no accepted evidence of movement")
+
+
+# ------------------------------------------------------- single stroke
+def single(args, u):
+    st = u.status()
+    unit_id = (st.get("system") or {}).get("unit_id", "?")
+    d0 = u.diag()
+    s0 = soak_of(d0)
+    g0 = gate_of(d0)
+    if "stall_faults" not in s0:
+        sys.exit("this build has no `stall_faults` counter -- 12.4 rule 1 is not\n"
+                 "in it, so AT-WP09 has nothing to observe. Flash a build with it.")
+
+    print("AT-WP09 -- %s on %s" % (
+        "FALSE-POSITIVE half (healthy stroke)" if args.healthy
+        else "divergence half (obstructed stroke)", unit_id))
+    print("  gate now           : mode %s, reason %s"
+          % (g0.get("mode_str", "?"), g0.get("reason_str", "?")))
+    print("  strokes so far     : %s" % s0.get("strokes"))
+    print("  stall_faults so far: %s" % s0.get("stall_faults"))
+    # The published MODE may read timed while T17 polls (promotion waits for a
+    # stroke boundary); what stops T17 polling is a gate REASON other than ok.
+    if str(g0.get("reason_str", "")) != "ok":
+        print("\n  NOTE: the sensor gate is shut, so T17 cannot judge this stroke.")
+
+    if args.healthy:
+        prompt = ["Command a NORMAL, unobstructed M3 stroke now."]
+    else:
+        prompt = ["Obstruct M3 (or detach the draw-wire from the leaf), then",
+                  "command an M3 stroke now."]
+    prompt.append("Waiting up to %d s." % args.timeout)
+    code, why = observe(u, args.healthy, args.timeout, prompt)
+    print("\n%s: %s" % (WORD[code], why))
+    return code
+
+
+# ------------------------------------------------------------- sequence
+def wait_m3(u, want, limit_s):
+    end = time.time() + limit_s
+    while time.time() < end:
+        if m3_of(u.status()) == want:
+            return True
+        time.sleep(POLL_S)
+    return False
+
+
+def ensure_open(u):
+    """The wire may be handled only with M3 OPEN (operator, 2026-09-17)."""
+    for _ in range(3):
+        if m3_of(u.status()) == "OPEN":
+            time.sleep(2.0)                          # and at rest, not just arrived
+            return m3_of(u.status()) == "OPEN"
+        banner(["M3 is not OPEN, and the wire may only be handled with M3 OPEN.",
+                "Press 1 (Open) on the LCD and wait."])
+        wait_m3(u, "OPEN", 90)
+    return False
+
+
+def sensor_back(u, limit_s):
+    """After reattaching: the gate is open and the reading is near the open end."""
+    end = time.time() + limit_s
+    d = {}
+    while time.time() < end:
+        d = u.diag()
+        g = gate_of(d)
+        if (d.get("ok") and not d.get("sensor_fault")
+                and str(g.get("reason_str", "")) == "ok"
+                and int(d.get("percent_x10", 0) or 0) >= 900):
+            return True, d
+        time.sleep(2.0)
+    return False, d
+
+
+def sequence(args, u):
+    st = u.status()
+    sysb = st.get("system") or {}
+    d0 = u.diag()
+    s0 = soak_of(d0)
+    g0 = gate_of(d0)
+    print("AT-WP09 sequence -- %s  fw %s" % (sysb.get("unit_id", "?"), sysb.get("fw_ver", "?")))
+    if "stall_faults" not in s0 or "at_end_exempt" not in s0:
+        print("this build lacks the rule 1 counters or the at-end exemption -- not run")
+        return INCONCLUSIVE
+    fl = flags_of(st)
+    for bad in ("wind_override", "motor_alarm", "calibrating", "standby"):
+        if bad in fl:
+            print("the unit shows '%s' -- clear it first (STANDBY: switch to AUTOMATIC; "
+                  "the menu sets its own)" % bad)
+            return INCONCLUSIVE
+    if not d0.get("ok") or str(g0.get("reason_str", "")) != "ok":
+        print("the sensor is not answering cleanly (gate reason %s) -- fix that first"
+              % g0.get("reason_str", "?"))
+        return INCONCLUSIVE
+    sc, cfg = u._req("GET", "/api/config")
+    travel = ((cfg.get("travel_s") or [0, 0, 0])[2]) if isinstance(cfg, dict) else 0
+    print("travel_m3 %s s, gate %s/%s, M3 %s, counters: strokes %s, stall_faults %s, "
+          "at_end_exempt %s"
+          % (travel, g0.get("mode_str"), g0.get("reason_str"), m3_of(st),
+             s0.get("strokes"), s0.get("stall_faults"), s0.get("at_end_exempt")))
+    end = time.time() + 60
+    while time.time() < end and m3_of(u.status()) not in SETTLED:
+        time.sleep(POLL_S)
+    if m3_of(u.status()) not in SETTLED:
+        print("M3 is not at rest -- not run")
+        return INCONCLUSIVE
+    start_open = m3_of(u.status()) == "OPEN"
+
+    print("\nThe run: %s healthy OPEN, detach the wire (M3 OPEN), fault CLOSE, "
+          "fault OPEN, reattach (M3 OPEN), healthy CLOSE, log out."
+          % ("healthy CLOSE," if start_open else ""))
+    ask(["This adds two deliberate stall faults to the unit's counters: a soak",
+         "running now will report NOT CLEAN afterwards.",
+         "The wind safety can still close the windows at any time. Touch the",
+         "wire only when this script says M3 is OPEN and at rest.",
+         "If 4 minutes pass without a key, press 3 on the LCD: it does nothing",
+         "on the M3 screen and keeps the session (and the pause) alive."])
+
+    banner(LCD_MENU)
+    t0 = time.time()
+    while time.time() - t0 < 600 and "standby" not in flags_of(u.status()):
+        time.sleep(POLL_S)
+    if "standby" not in flags_of(u.status()):
+        print("the menu's STANDBY did not appear within 10 min -- not run")
+        return INCONCLUSIVE
+    say("the LCD menu holds STANDBY: automatic control is paused")
+
+    results = []
+
+    def stroke(label, healthy, key, end):
+        verb = "Open" if key == "1" else "Close"
+        print("\n[%s]" % label)
+        code, why = observe(u, healthy, args.timeout,
+                            ["%s: press %s (%s) on the LCD." % (label, key, verb)])
+        print("  %s: %s -- %s" % (label, WORD[code], why))
+        results.append((label, code))
+        if not wait_m3(u, end, 60):
+            say("M3 did not end %s" % end)
+        return code
+
+    if start_open:
+        stroke("1 healthy CLOSE", True, "2", "CLOSED")
+    stroke("2 healthy OPEN", True, "1", "OPEN")
+
+    if not ensure_open(u):
+        print("M3 could not be brought to OPEN, so the wire must not be touched -- stopping")
+        results.append(("3 detach", INCONCLUSIVE))
+        return finish(u, results, s0)
+    say("M3 is OPEN and at rest")
+    ask(["Detach the draw-wire from the leaf now.",
+         "Leave the LCD on the M3 screen."])
+    stroke("4 fault CLOSE (wire detached)", False, "2", "CLOSED")
+    stroke("5 fault OPEN (wire detached)", False, "1", "OPEN")
+
+    if not ensure_open(u):
+        print("M3 could not be brought to OPEN, so the wire must not be touched.")
+        print("Reattach it later, with M3 OPEN. Stopping.")
+        results.append(("6 reattach", INCONCLUSIVE))
+        return finish(u, results, s0)
+    say("M3 is OPEN and at rest")
+    ask(["Reattach the draw-wire to the leaf now."])
+    ok, d = sensor_back(u, 120)
+    say("sensor after reattaching: ok %s, fault %s, gate %s, position %.1f %%"
+        % (d.get("ok"), d.get("sensor_fault"), gate_of(d).get("reason_str"),
+           int(d.get("percent_x10", 0) or 0) / 10.0))
+    results.append(("6 sensor back at the open end", PASS if ok else FAIL))
+    if not ok:
+        print("  the sensor did not come back within 120 s -- check the wire before "
+              "the last stroke")
+
+    stroke("7 healthy CLOSE", True, "2", "CLOSED")
+
+    banner(LOG_OUT)
+    t0 = time.time()
+    while time.time() - t0 < 360 and "standby" in flags_of(u.status()):
+        time.sleep(POLL_S)
+    say("STANDBY %s" % ("cleared: automatic control resumes"
+                        if "standby" not in flags_of(u.status())
+                        else "still on after 6 min -- log out on the LCD"))
+    return finish(u, results, s0)
+
+
+def finish(u, results, s0):
+    time.sleep(20.0)                  # the logout's recalibration, if any
+    s = soak_of(u.diag())
+    print("\n--- counters over the whole run ---")
+    for key in ("strokes", "stall_faults", "early_stops", "at_end_exempt",
+                "rejected_rate", "err_comm", "gated_polls"):
+        print("  %-14s +%d" % (key, delta(s, s0, key)))
+    print("\n--- verdict ---")
+    for label, code in results:
+        print("  %-34s %s" % (label, WORD[code]))
+    if any(code == FAIL for _l, code in results):
+        print("RESULT: FAIL")
+        return FAIL
+    if any(code != PASS for _l, code in results):
+        print("RESULT: INCOMPLETE")
+        return INCONCLUSIVE
+    print("RESULT: PASS")
+    return PASS
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--host", default=DEFAULT_HOST)
     ap.add_argument("--pin", default=DEFAULT_PIN)
     ap.add_argument("--healthy", action="store_true",
                     help="false-positive half: an UNOBSTRUCTED stroke must not trip the rule")
+    ap.add_argument("--sequence", action="store_true",
+                    help="both halves in one guided run, including the exemption case")
     ap.add_argument("--timeout", type=int, default=300,
-                    help="seconds to wait for the stroke (default 300)")
+                    help="seconds to wait for each stroke (default 300)")
     args = ap.parse_args()
 
     u = Unit(args.host, args.pin)
-
-    # ---- identify the unit, and refuse if it cannot run the test -----------
-    sc, st = u._req("GET", "/api/status")
-    unit_id = "?"
-    if sc == 200 and isinstance(st, dict):
-        unit_id = (st.get("system") or {}).get("unit_id", "?")
-    d0 = u.diag()
-    s0 = soak_of(d0)
-    g0 = gate_of(d0)
-
-    if "stall_faults" not in s0:
-        sys.exit("this build has no `stall_faults` counter -- 12.4 rule 1 is not\n"
-                 "in it, so AT-WP09 has nothing to observe. Flash a build with it.")
-
-    mode = g0.get("mode_str", g0.get("mode", "?"))
-    print("AT-WP09 -- %s on %s" % (
-        "FALSE-POSITIVE half (healthy stroke)" if args.healthy
-        else "divergence half (obstructed stroke)", unit_id))
-    print("  gate mode now      : %s" % mode)
-    print("  strokes so far     : %s" % s0.get("strokes"))
-    print("  stall_faults so far: %s" % s0.get("stall_faults"))
-
-    # An arm where T17 never polls is not a test of anything -- the same trap
-    # arm B had ("an arm B where T17 never polls is arm A with the plug in").
-    if str(mode).lower().startswith("timed"):
-        print("\n  NOTE: the gate is TIMED, so T17 is not polling and cannot")
-        print("  judge this stroke. For the obstructed half that is expected if")
-        print("  you detached the wire -- the gate demotes on the missing sensor")
-        print("  BEFORE rule 1 can speak, and the correct result is then")
-        print("  WPOS_GATE_NO_SENSOR, not a stall. Obstruct the leaf or short the")
-        print("  wiper instead, leaving the sensor answering.")
-
-    if args.healthy:
-        print("\n  >>> Command a NORMAL, unobstructed M3 stroke now.")
-    else:
-        print("\n  >>> Obstruct M3 (or detach the draw-wire from the leaf), then")
-        print("  >>> command an M3 stroke now.")
-    print("  waiting up to %d s ...\n" % args.timeout)
-
-    t0 = time.time()
-    fired_at = None
-    strokes_seen = 0
-    while time.time() - t0 < args.timeout:
-        time.sleep(POLL_S)
-        s = soak_of(u.diag())
-        strokes_seen = int(s.get("strokes", 0)) - int(s0.get("strokes", 0))
-        d_stall = int(s.get("stall_faults", 0)) - int(s0.get("stall_faults", 0))
-        if d_stall > 0 and fired_at is None:
-            fired_at = time.time() - t0
-            print("  rule 1 fired at t+%.1f s (stall_faults +%d)" % (fired_at, d_stall))
-            if not args.healthy:
-                break
-        if strokes_seen > 0 and args.healthy and (time.time() - t0) > 30:
-            break
-
-    if strokes_seen == 0:
-        print("\nINCONCLUSIVE: no stroke was observed (`strokes` did not move).")
-        print("Nothing was tested. T2 must actually energise M3 for this test to")
-        print("mean anything -- a stroke you did not cause is not a null result.")
-        return 2
-
-    print("\n  strokes observed   : %d" % strokes_seen)
-
-    # ---- verdict ----------------------------------------------------------
-    if args.healthy:
-        if fired_at is None:
-            print("\nPASS: a healthy stroke did NOT trip 12.4 rule 1.")
-            print("That is the half that keeps the row believable.")
-            return 0
-        print("\nFAIL: rule 1 tripped on an UNOBSTRUCTED stroke (t+%.1f s)." % fired_at)
-        print("This is a false positive. Before touching the threshold, check")
-        print("`travel_m3` against the wired window -- nominal derives from it,")
-        print("so a rig value left at the production 171 makes every real stroke")
-        print("look ~13x too slow and would trip this every time.")
-        return 1
-
-    if fired_at is None:
-        print("\nFAIL: the leaf was obstructed and 12.4 rule 1 did NOT report it.")
-        print("Check, in this order: was the gate in POSITION (T17 polling at")
-        print("all)? did `strokes` move? is `rejected_rate` climbing -- every")
-        print("sample implausible also means no accepted evidence of movement.")
-        return 1
-
-    print("\nPASS: the divergence was reported (t+%.1f s)." % fired_at)
-    print("Read the ALARM ch6 param 249 row off the SD log for the peak rate")
-    print("and threshold it recorded; `logparser.py` decodes it.")
-    return 0
+    try:
+        return sequence(args, u) if args.sequence else single(args, u)
+    except EOFError:
+        print("\nthis needs an interactive terminal: it asks you to press Enter")
+        return INCONCLUSIVE
+    except KeyboardInterrupt:
+        print("\ninterrupted")
+        return INCONCLUSIVE
 
 
 if __name__ == "__main__":
