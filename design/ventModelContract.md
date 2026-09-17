@@ -4,7 +4,7 @@
 |---|---|
 | Document | Interface contract for the T6 ventilation control model |
 | Date | 2026-09-17 |
-| Status | **SPECIFICATION. Nothing in this document is implemented yet.** The firmware in `main` (2.9.1) has no model boundary: T6 contains the stepped logic inline. The boundary and the first two models land in **2.11.0** |
+| Status | **The interface and the mode 1 reference exist as a library; the firmware does not use them yet.** `drivers/ventModel/` holds `src/vent_model.h` and `src/vent_model_stepped.cpp` — a faithful copy of the 2.9.1 stepped law — with 21 host tests passing (`pio test -e native`). The firmware in `main` still runs its own inline copy in T6 and is untouched; the two are kept in step by hand until T6 is refactored onto this interface in **2.11.0** |
 | Audience | Whoever writes or tunes a control model — a separate session, a separate agent, or a person. **This document is meant to be read on its own** |
 | Scope decisions | [`integrateWindowPositionSensor.md`](integrateWindowPositionSensor.md) §5b (the two control modes, the position path) and §5c (the rules around this contract) |
 | Requirements | [`functionalRequirementsSpecification.md`](functionalRequirementsSpecification.md), and [`windowPositionSensorRequirements.MD`](windowPositionSensorRequirements.MD) FR-WP04/05/17/18 |
@@ -59,6 +59,8 @@ Normative. `drivers/ventModel/src/vent_model.h`:
 
 #define VENT_MODEL_API 1
 #define VENT_WINDOWS   3            /* index 0 = M1, 1 = M2, 2 = M3 */
+#define VENT_STEPS_MAX 3            /* steps run 0..3 (the firmware's NUM_VENT_STEPS) */
+#define VENT_STEP_NONE (-1)         /* "no demand from this source" / "no step notion" */
 
 typedef enum { VENT_CAP_DIGITAL = 0, VENT_CAP_LINEAR = 1 } vent_cap_t;
 
@@ -105,6 +107,12 @@ typedef struct {
 
     /* --- measurements ----------------------------------------------------- */
     int16_t  t_c10,  t_avg_c10;     /* air temperature, 0.1 °C */
+    int16_t  t_avg_c;               /* the same average in WHOLE °C, as the
+                                     * sensor layer rounded it. A law that
+                                     * compares whole degrees must use this and
+                                     * not divide t_avg_c10, or it rounds twice
+                                     * and disagrees with the firmware in a
+                                     * narrow band around each half degree */
     uint8_t  rh_pct, rh_avg_pct;    /* relative humidity, whole % */
     uint16_t wind_ms10, wind_avg_ms10;          /* wind speed, 0.1 m/s */
     uint16_t wind_dir_deg;          /* 0..359, meteorological */
@@ -119,6 +127,9 @@ typedef struct {
     uint8_t  hyst_rh_pct;
     uint8_t  cr_priority;           /* 0 = temperature first, 1 = humidity first,
                                      * 2 = the larger demand wins */
+    bool     rh_ctrl_en;            /* humidity control master switch. Off, or
+                                     * rh_valid false, means humidity casts no
+                                     * vote at all */
 
     /* --- actuator limits the caller will enforce anyway ------------------- */
     uint16_t m3_deadzone_x10;       /* smallest aperture change worth a move, 0.1 % */
@@ -144,7 +155,7 @@ typedef struct {
     /* Mode 1's row, kept byte-identical: a stepped model reports the step it
      * resolved and the per-source steps behind it. -1 = "no such notion",
      * which is what a model without steps leaves them at. */
-    int8_t   step;                  /* 0..VENT_WINDOWS, or -1 */
+    int8_t   step;                  /* 0..VENT_STEPS_MAX, or VENT_STEP_NONE */
     int8_t   step_t;                /* temperature's own step, or -1 */
     int8_t   step_rh;               /* humidity's own step, -1 = no demand */
 
@@ -275,16 +286,21 @@ firmware dependencies. It follows the pattern every driver in this repo already 
 host-testable library under `drivers/`, wrapped by a thin ESP-IDF component.
 
 ```
-drivers/ventModel/
+drivers/ventModel/                    EXISTS
   library.json
-  platformio.ini              [env:native] — unity tests, no hardware
-  src/vent_model.h            the interface in §2
-  src/vent_model_stepped.cpp  mode 1: today's step table
-  src/vent_model_graded.cpp   mode 2: the new law  ← your file
-  test/test_vent_model/       host unit tests
-firmware/components/ventModel/
-  CMakeLists.txt              idf_component_register over the sources above
+  platformio.ini                      [env:native] — unity tests, no hardware
+  set_compiler.py                     points at the MinGW toolchain, as the other drivers do
+  src/vent_model.h                    the interface in §2
+  src/vent_model_stepped.cpp          mode 1: today's step table, copied from T6
+  src/vent_model_graded.cpp           mode 2: the new law  ← your file, NOT YET WRITTEN
+  test/test_vent_model/               host unit tests: 21 passing
+firmware/components/ventModel/        NOT YET CREATED — the 2.11.0 wiring step
+  CMakeLists.txt                      idf_component_register over the sources above
 ```
+
+The component proxy and the `REQUIRES` entry in `firmware/src/CMakeLists.txt` are deliberately
+absent: an IDF component is compiled into every firmware build, and nothing in the firmware calls
+the model yet. Adding them belongs with the T6 refactor, not before it.
 
 The component needs **no** `REQUIRES` and no `-I firmware/config`: the model reads nothing but its
 input struct. That is what keeps it host-compilable, and it is the one rule that must not be bent —
