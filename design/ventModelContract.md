@@ -9,7 +9,7 @@
 | Audience | Whoever writes or tunes a control model — a separate session, a separate agent, or a person. **This document is meant to be read on its own** |
 | Scope decisions | [`integrateWindowPositionSensor.md`](integrateWindowPositionSensor.md) §5b (the two control modes, the position path) and §5c (the rules around this contract) |
 | Requirements | [`functionalRequirementsSpecification.md`](functionalRequirementsSpecification.md), and [`windowPositionSensorRequirements.MD`](windowPositionSensorRequirements.MD) FR-WP04/05/17/18 |
-| Evidence for tuning | [`../model/campaignResults_summer2026.md`](../model/campaignResults_summer2026.md), [`../model/thermalProfileCampaign.md`](../model/thermalProfileCampaign.md) §9.12, [`../model/closedloop/README.md`](../model/closedloop/README.md), SD logs in `../model/campaign-summer-2026/` — **§6 revised 2026-09-18** on correctly timed data |
+| Evidence for tuning | [`../model/campaignResults_summer2026.md`](../model/campaignResults_summer2026.md), [`../model/thermalProfileCampaign.md`](../model/thermalProfileCampaign.md) §9.12-9.13, [`../model/closedloop/README.md`](../model/closedloop/README.md), SD logs in `../model/campaign-summer-2026/` — **§6 revised 2026-09-18** on correctly timed data, and for the sensor delay and the north-wind effect (NS-10) |
 
 ---
 
@@ -432,13 +432,17 @@ LoRa database stamps in UTC), and its claims about M3 are withdrawn: "a factor o
 0.05 /h with south-west wind", "M3 barely ventilates". What holds on correctly timed data:
 
 - **M3 is the house's largest ventilator.** Every plant fitted on correctly timed data puts it at
-  4–8× one roof window, about two thirds or more of the window ventilation with everything open.
-  The absolute air-change rates are not pinned down; only this ranking is.
-- **How much the wind direction matters is open.** One fitted plant adds a direction term, about
-  2.7× more M3 ventilation with north wind. Another fits about as well without one. A crude check
-  finds west wind the one that ventilates the house least, and no advantage for north wind. §9
-  item 2 asks what your law does with wind direction; do not build it on a direction effect of a
-  particular size.
+  3–8× one roof window, 60 % or more of the window ventilation with everything open. The absolute
+  air-change rates are not pinned down; only this ranking is.
+- **In north wind the controller's reading drops about twice as far after M3 opens.** Across 236
+  openings in normal operation, the drop at 25 min is -3.0 °C with wind from 315–45° against -1.3
+  to -2.05 °C from other directions. It holds within a month, at matched wind speed and with the
+  doors shut.
+  - **Whether the whole house cools that much faster is open.** Indoor sensors at 1/4 and 3/4 of the
+    length barely show it, and long all-open periods show no north-wind advantage. A law reading
+    the controller's sensor may see a stronger effect of M3 in north wind than the house gets.
+  - **§9 item 2** asks what your law does with wind direction. Do not build it on a direction
+    effect of a particular size.
 - **There is no measurement of a part-open M3.** Every test was fully open or fully closed, so the
   aperture-to-airflow curve is unknown. Step 2 to step 3 multiplies the open area about sixfold,
   and in the fitted plants it raises the greenhouse air's heat loss to outside by 1.7–1.8×.
@@ -450,13 +454,17 @@ LoRa database stamps in UTC), and its claims about M3 are withdrawn: "a factor o
 - **There is a closed-loop simulator now, with one known shortfall.** `model/closedloop/` compiles
   `drivers/ventModel/` into a host library and runs a law through an emulated T5/T4/T6 chain
   against a fitted plant, on logged weather. Fed the logged sensor rows, `stepped` reproduces 97.1 %
-  of 381 logged temperature demands. Against the two adopted plants
-  (`model/campaign-summer-2026/plant2/plant2_summer2026_Ca2.9.json` and `…_dir.json`) it reproduces
-  5C88's M3 openings, its ~45 min cycle and its hours above 31 °C, on days the fit never saw.
-  **The plants under-predict the swing** (2.0–2.8 against 3.1–3.6 °C), which is exactly what a
-  linear law sets out to damp. So run a candidate against both plants, treat a verdict that differs
-  between them as unsettled, and treat a simulated reduction of the swing as a lead to confirm on
-  the greenhouse. The point-by-point accuracy targets (AC-9, AC-10) still fail.
+  of 381 logged temperature demands.
+  - **The adopted plants** are
+    `model/campaign-summer-2026/plant2/plant2_summer2026_Ca2.9_tau120_tau90_ev5_dir.json` and
+    `…_tau240_tau90_ev5_dir.json`. They model the sensor's delay and a north-wind term. Against
+    them `stepped` reproduces 5C88's M3 openings, its ~45 min cycle, its hours above 31 °C and its
+    swing on days without north wind, on days the fit never saw.
+  - **On north-wind days they under-state the swing** (3.0–3.2 against 3.9 °C), which is exactly
+    what a linear law sets out to damp.
+  - **So:** run a candidate against both plants, and treat a verdict that differs between them as
+    unsettled. Treat a simulated reduction of the swing, above all in north wind, as a lead to
+    confirm on the greenhouse. The point-by-point accuracy targets (AC-9, AC-10) still fail.
 - **Tuning the existing law is a bad trade, which is why linear control was proposed:** raising
   `hyst_t` cuts cycling by about 80 % but costs about 55 % of M3's open time, and an extra dead band
   on stepping down was rejected after it merely made each opening longer.
@@ -471,6 +479,7 @@ LoRa database stamps in UTC), and its claims about M3 are withdrawn: "a factor o
 | M3 leaf speed | ≈0.57 %/s production, ≈8.8 %/s rig | A target is reached slowly; commanding a new one mid-move is a reversal |
 | M1, M2 traverse | ≈26 s | — |
 | Position freshness | one sample per `travel/150`: ≈1.17 s production, 100 ms rig | Overshoot ≈ age × speed, ≈0.67 % production. The requirement is 1 %, so there is little room |
+| Temperature reading | follows the air 3.5–5.5 min late: after an M3 move the logged temperature barely changes for 3–4 min (2026-09-18, NS-10) | Do not read an unchanged temperature in the first minutes after a move as a move that did nothing; a law that answers faster than the reading does will overshoot |
 | Minimum move | **not yet measured** — the shortest pulse that actually moves the leaf | Until it is, do not rely on moves below a few percent |
 | Dwell today | M3 25 min after opening, 10 min after closing; M1, M2 5 min after opening, none after closing | Mode 2 replaces the open dwell with a minimum interval between moves; the caller enforces it |
 | Reversal | the actuator inserts a 2 s gap, then drives the other way | A reversal is two drives and two judged movements; frequent reversals are motor wear |

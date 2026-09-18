@@ -4,7 +4,7 @@
 |---|---|
 | Document | Thermal-Profile Campaign Plan |
 | Project | Greenhouse Ventilation Controller |
-| Status | **Revised 2026-09-18 on correctly timed data (§9.12).** The analysis of 2026-06-27 to 07-12 (§9.5–9.11) ran on LoRa outdoor and door data that were two hours late, because the database stamps in UTC. Those sections stay as the record, each with a banner saying what still holds. **Adopted now:** the two-node plants `campaign-summer-2026/plant2/plant2_summer2026_Ca2.9.json` (primary) and `plant2_summer2026_dir.json`, which reproduce 5C88's limit cycle in closed loop (`closedloop/`). The single-node `…_freem3.json` and its `ach_m3 ≤ 0.05 /h` are withdrawn. AC-9 and AC-10 still fail. **Results summary: [campaignResults_summer2026.md](campaignResults_summer2026.md)** — this document is the working audit trail. |
+| Status | **Revised 2026-09-18 on correctly timed data (§9.12).** The analysis of 2026-06-27 to 07-12 (§9.5–9.11) ran on LoRa outdoor and door data that were two hours late, because the database stamps in UTC. Those sections stay as the record, each with a banner saying what still holds. **Adopted now (after NS-10, §9.13):** the two-node plants `campaign-summer-2026/plant2/plant2_summer2026_Ca2.9_tau120_tau90_ev5_dir.json` (primary) and `…_tau240_tau90_ev5_dir.json`, with a sensor stage and a north-wind term. They reproduce 5C88's limit cycle in closed loop (`closedloop/`), and its swing except in north wind. The single-node `…_freem3.json` and its `ach_m3 ≤ 0.05 /h` are withdrawn. AC-9 and AC-10 still fail. **Results summary: [campaignResults_summer2026.md](campaignResults_summer2026.md)** — this document is the working audit trail. |
 | Approved | 10 min LoRaWAN interval (§6.3), 21-day duration (§8.3) — operator approval 2026-05-21 |
 | Primary purpose | Calibrate `model/simulation.py` so the operator can vet proposed controller settings (setpoints, dwell times, hysteresis, conflict-resolution priority) on the simulator before deploying them to the live greenhouse — preventing oscillation patterns from reaching production. *2026-09-18 (operator): the model's job is to verify control laws — the binary law 5C88 runs today and the linear M3 law to come. That work runs on the closed-loop simulator in `closedloop/`, not on `simulation.py`.* |
 | Related | `model/calibrate_plant.py`, `model/simulation.py`, `model/srcData/sql.md`, `design/technicalSoftwareDesignSpecification.md` §5.3, §5.10, §5.13 |
@@ -971,7 +971,7 @@ Two errors were found on 2026-09-18, and the campaign's conclusions were re-deri
   - Window openness is rebuilt from the RELAY rows' exact times, with M3's 176-s traverse.
   - Doors are forward-filled. Door 1 is assumed shut after its sensor's last report (2026-08-16 09:57).
 - **Plant.** `closedloop/plant2_kernel.c`: a fast air node, a slow structure/soil node and absolute humidity; its header gives the equations. In the adopted fits the structure node's time constant, Cs / (Gas + Gso), is 10–13 days.
-- **Fit.** `closedloop/refit.py` holds out every 4th calendar day and minimises the MSE of T_in plus the MSE of AH in g/m³. It uses seeded differential evolution, then an L-BFGS-B polish. Nine variants were fitted (objectives, a direction term, fixed air capacities). Two are adopted: `_Ca2.9` (primary) and `_dir`. Their parameters are in `campaignResults_summer2026.md` §1.
+- **Fit.** `closedloop/refit.py` holds out every 4th calendar day and minimises the MSE of T_in plus the MSE of AH in g/m³. It uses seeded differential evolution, then an L-BFGS-B polish. Nine variants were fitted (objectives, a direction term, fixed air capacities). Two were adopted then: `_Ca2.9` (primary) and `_dir`. NS-10 replaced them the same night (§9.13); the current parameters are in `campaignResults_summer2026.md` §1.
 - **Gates.** `closed_loop.py gate-plant` reproduces the old calibrator to 1.5e-13 °C. `gate-control` runs `drivers/ventModel`'s stepped law in an emulated T5/T4/T6 chain, which reproduces 97.1 % of 381 logged T-demands (the old replay: 96.8 % of 378).
 - **Results.** Held-out open-loop T RMSE is 1.72 °C (`_Ca2.9`), 1.58 (`_dir`) and 4.07 (the single node). In closed loop, 2026-06-05 → 09-16:
 
@@ -1045,14 +1045,84 @@ This replaces §9.8's ACH tables. The air node's heat loss to outside at each st
   - By wind speed it is flat: 1.44–1.65 °C from calm to 9 m/s.
   - By sector, at ≥ 1 m/s: E 1.32 (20 days), S 1.36 (18), N 1.51 (28), W 1.87 °C (26).
 
-  So nothing suggests that ventilation grows with wind speed, against §9.11's proposed `C_ww·v` form. And if direction matters, it is not the north-facing shape `_dir` assumes: west wind ventilates worst, and north wind shows no advantage. Each sector holds different days, weeks of the season and crop states, so these are leads, not measurements.
+  So nothing suggests that ventilation grows with wind speed, against §9.11's proposed `C_ww·v` form. And if direction matters, it is not the north-facing shape `_dir` assumes: west wind ventilates worst, and north wind shows no advantage. Each sector holds different days, weeks of the season and crop states, so these are leads, not measurements. *(Later the same night the response to each M3 opening showed the opposite: the controller's reading drops twice as far in north wind (§9.13.3). The two measures disagree, and why is open.)*
 - **What would settle it:** forced M3 tests with the doors shut, at matched or low sun, in north, west and south wind, and M3 opened on top of M1+M2, the way T6 uses it.
 
 #### 9.12.7 Consequences
 
-- **Adopted plants:** `campaign-summer-2026/plant2/plant2_summer2026_Ca2.9.json` (primary) and `plant2_summer2026_dir.json`. Verify a control law against both, and treat a verdict that differs between them as unsettled.
+- **Adopted plants:** `campaign-summer-2026/plant2/plant2_summer2026_Ca2.9.json` (primary) and `plant2_summer2026_dir.json`. Verify a control law against both, and treat a verdict that differs between them as unsettled. *(Replaced the same night by the NS-10 pair, §9.13.4.)*
 - **The NS items:** NS-7 is a closed-loop question now, NS-8 dissolves and NS-9 stays open (above). A new NS-10 tracks the one closed-loop property not yet reproduced: the swing, 2.0–2.8 against 3.1–3.6 °C.
 - **The older campaign scripts read the shifted inputs.** `m3_event_study.py` and `ns9_direction_stratified.py` read `calibration_input_*.csv`, and `m3_jul11_analysis.py` reads an outdoor export from a session scratchpad outside the repo. Rerun as they are, they reproduce the withdrawn numbers. `wind_rose_speed_count.py` uses only the SD wind columns and stands. Each now carries a header saying so and naming its replacement, and the first two were rerun: they reproduce §9.9's and §9.11's tables exactly.
+
+### 9.13 NS-10: the swing gap (2026-09-18, night)
+
+The two-node plants of §9.12 swung too little in closed loop: 2.0–2.7 °C against 3.1 logged (median of the per-day swings, 102 days). This section finds why. The tools: `closedloop/closed_loop.py reproduce`, which now ends with the swing split by wind and doors; `refit.py compare`, which now prints each plant's north/other contrast; and `campaign_figures.py` M3WIND. The results are summarised in [`closedloop/README.md`](closedloop/README.md) and `campaignResults_summer2026.md` F1-F2.
+
+#### 9.13.1 Where the gap was
+
+- **Per M3 cycle** (daytime openings with another within 180 min), `_Ca2.9` in closed loop against the log: peak 31.56 against 31.60 °C, trough 29.17 against 28.20, temperature at the opening 30.83 against 31.20. The shortfall is in the trough.
+- **By day:** the gap sat on days with the doors shut (logged 3.7, simulated 2.8 °C) and on north-wind days (3.9 against 2.8). Elsewhere the plant was right or swung more.
+- **By period:** the gap was the same before and after firmware 2.1.3, so the timestamp noise before 2.1.3 is not the cause.
+
+#### 9.13.2 The sensor answers late
+
+- **Open loop**, median change after daytime M3 commands at 2/4/6/8/10 min, with the same weather in model and log:
+
+| | Opens | Closes |
+|---|---|---|
+| Logged | +0.10 / -0.10 / -0.51 / -0.91 / -1.29 °C | -0.00 / +0.05 / +0.29 / +0.59 / +0.89 °C |
+| `_Ca2.9` | -0.27 / -0.95 / -1.46 / -1.80 / -1.97 °C | +0.19 / +0.64 / +1.08 / +1.47 / +1.67 °C |
+
+  The log barely moves for 3-4 min, in either direction. The firmware logs the raw reading, not T5's average (`data_manager.cpp`), so the delay is physical: the probe, the air between the north wall and the centre of the house, or both.
+- **In closed loop** the plant's instant answer let T6 step down during M3's travel: 45 mid-stroke reversals of M3, where the logged M3 stayed open through its dwell in 99 % of cycles.
+- **Modelled as a sensor stage** in `plant2_kernel.c`: two lags between the air node and the reading. A plant fitted before the stage existed passes through byte for byte.
+- **Sized from the responses, not fitted.**
+  - Filtering `_Ca2.9`'s output, with no refit, 120 s + 90 s matches the logged curves best. The misfit over 1-20 min, the RMS for openings plus that for closings, falls from 1.15 to 0.30 °C, and the held-out error from 1.71 to 1.67 °C.
+  - Against the refitted plant the best is 240 s + 90 s. Both are kept, as a bracket.
+  - A free lag cannot be fitted. A season-long fit drives the first lag to its 900-s bound, with an air node answering in about a minute and implausible gains: up to 6.8 W/lux of sun, and 6.6 air changes per hour through the shut house.
+- **Refitted around the fixed lags,** with the air node at 2.9 MJ/K, the plant keeps M3 strong: 7.3 /h, against 4.8 without the stage. In closed loop the cycle is 45 min against 46, and the reversals are gone. The swing rises to 3.2 °C with the 120/90 lags, but by over-swinging on days without north wind (2.9 against 2.2); the 240/90 lags give 2.7.
+
+#### 9.13.3 North wind doubles the drop in the controller's reading
+
+The logged drop 25 min after a daytime M3 opening (M3 on top of M1+M2, normal operation), by the wind over the half hour, at 1 m/s or more:
+
+| Wind | Openings | Drop at 25 min |
+|---|---|---|
+| North, 315-45° | 123 | -3.00 °C |
+| East, 45-135° | 38 | -1.30 °C |
+| South, 135-225° | 14 | -2.05 °C |
+| West, 225-315° | 61 | -1.70 °C |
+| Calm, below 1 m/s | 26 | -1.05 °C |
+
+- **Where the drop is deepest:** 315-345° gives -3.65 °C (n 60), 15-45° -2.8 °C, and 45-105° -1.3 °C.
+- **The contrast holds:** within July (-3.1 against -1.3 °C) and August (-3.1 against -1.9), at matched speed (1-2 m/s: -2.75 against -1.5; 2-3 m/s: -3.0 against -1.7), and with the doors shut (-3.4 against -1.85). Sun and the starting excess are alike across the groups.
+- **The indoor LoRa sensors barely show it.** At 30-40 min they fall -0.94 / -0.79 °C in north wind against -0.56 / -0.87 in other wind, at most 1.2×. The controller in the same openings falls 2.1× as far at 20-30 min. Their 10-min sampling and slower housing blur fast changes, which could hide part of a difference, but hardly a doubling.
+- **The fits:**
+  - A season-long free run leaves a direction term at zero with the new structure, seeded from the simpler model; unseeded, it converged worse than the simpler model.
+  - Weighting the half hour after each daytime M3 command ×6 finds it: M3 3.1 /h + 4.1 /h × cos for the primary.
+  - Fitting the lobe's centre (`--dir0`) leaves it at north.
+  - The fitted term carries only part of the contrast: -2.5 against -2.2 °C at 25 min, where the log shows -3.0 against -1.5.
+- **Found on the way:** the direction terms had been fed wind directions from before the vane was valid (2026-06-19 12:00). Those now reach the kernel as NaN, which adds nothing.
+
+#### 9.13.4 The adopted pair, and what remains
+
+The swing by condition, logged / simulated, all days:
+
+| | North wind | Other wind | Doors shut | A door open |
+|---|---|---|---|---|
+| **Logged** | **3.9 °C** | **2.2 °C** | **3.7 °C** | **2.4 °C** |
+| `_Ca2.9` | 2.8 | 2.6 | 2.8 | 2.6 |
+| `_Ca2.9_tau120_tau90` (sensor stage) | 3.4 | 2.9 | 3.3 | 3.0 |
+| **primary**, `_Ca2.9_tau120_tau90_ev5_dir` | 3.2 | 2.2 | 3.0 | 2.5 |
+| **second**, `_Ca2.9_tau240_tau90_ev5_dir` | 3.0 | 2.3 | 3.0 | 2.4 |
+
+- **The adopted pair** is right on days without north wind and 0.7-0.9 °C short on north-wind days.
+  - Held out, it scores 1.58 °C open loop and cycles on 17 of 17 days, with a 44-45 min cycle and 114-120 M3 openings against 103.
+  - Its response to M3 matches the log at every point: -0.2/-1.4/-2.0/-2.3 against -0.3/-1.3/-2.0/-2.3 °C.
+- **The hypothesis for the remainder:** part of the north-wind effect is local to the controller's sensor, in the path of the air M3 lets in, or in a layer of air the flush reaches first.
+  - A term at the sensor for that incoming air would test it in the model.
+  - The NS-9 forced tests, with a second probe beside the controller's, would settle it in the house.
+  - It matters for Phase 5: a law that closes M3 on the controller's reading may leave the rest of the house warmer in north wind.
 
 ### 9.4 Worked example — answering the "would dwell prevent the oscillation?" question
 
@@ -1154,7 +1224,7 @@ D-1 and the rotation-config change in §5.3 are the only items required *before*
 
 **D-4 and D-5 are the primary deliverables.** D-6 is independent and can ship later without affecting D-4/D-5.
 
-*Status 2026-09-18: D-4 is `campaign-summer-2026/plant2/plant2_summer2026_Ca2.9.json` (primary) and `plant2_summer2026_dir.json`. D-5's role is taken by `closedloop/README.md`, `refit.py`'s report and `campaignResults_summer2026.md`; `model/profile/` was never created. D-6 has not been built.*
+*Status 2026-09-18: D-4 is `campaign-summer-2026/plant2/plant2_summer2026_Ca2.9_tau120_tau90_ev5_dir.json` (primary) and `…_tau240_tau90_ev5_dir.json` (§9.13). D-5's role is taken by `closedloop/README.md`, `refit.py`'s report and `campaignResults_summer2026.md`; `model/profile/` was never created. D-6 has not been built.*
 
 ---
 
@@ -1175,8 +1245,8 @@ D-1 and the rotation-config change in §5.3 are the only items required *before*
 | NS-6 | M3 deliberate calibration test — 45–60 min M3-only open via LCD manual override | ✅ **COMPLETE** (2026-07-04) — two 60-min M3-only windows executed via LCD manual override (09:55–10:55 and 11:57–12:57 local). Doors open during much of both windows (Saturday farm activity) left one clean 17-min stretch + 103 valid `0b100` rows overall. Re-calibration with data extended to Jul 4 (val window Jun 19–25 unchanged): **`ach_m3` pins at any floor it is given — measured ≤ 0.05 /h, ≈ 0.3× ach_m1, refuting the 8.1× area-scaling estimate.** Adopted artifact: `plant_calibrated_constrained_summer2026_freem3.json` (val T RMSE 1.19 °C). Full analysis: §9.9. *(Revised 2026-07-12: the measured value is the leeward/SW-wind regime — see §9.10.)* *(2026-09-18: re-read on the correct clock, door 1 was open throughout both windows and the sun was 28–53 klux. The temperature excess held near +6 °C while AH fell to within 0.6–0.7 g/m³ of outside; "≤ 0.05 /h" is withdrawn, §9.12.4.)* |
 | NS-7 | Evaluate and implement independent M3 ventilation threshold (`t_thresh_m3`) in T6 | ⏸ **ON HOLD — premises withdrawn (2026-09-18, §9.12).** It was reframed twice: §9.9 found M3 ineffective, and §9.10 effective only windward. On the correct clock M3 is the largest ventilator, 3.7–8.1× a roof window in every two-node fit. Whether a separate M3 threshold helps is now a closed-loop question for the adopted plants, together with the step size that drives the limit cycle (F7). §9.8's reasons 4–5 (night-long −5 °C close hysteresis; non-orthogonal `hyst_t`) can still be pursued separately. |
 | NS-8 | Investigate why M3 (north-wall window, ~80 m²) is an ineffective ventilator | ✅ **DISSOLVED (2026-09-18, §9.12).** Its premise is withdrawn: on the correct clock M3 is not ineffective. The 2026-07-12 resolution ("wind direction decides": ~3–8 /h windward, ~0.05 /h leeward) rested on shifted data; only the Jul 11 humidity flush stands. The sensor-position question (c) is answered: the FG6485A is in the exact centre, and the swing is house-wide. |
-| NS-9 | Wind-direction-dependent `ach_m3` in the plant model | 🔶 **OPEN — step 1 withdrawn (2026-09-18, §9.12.6).** The per-segment fits used a single node on shifted inputs. `_dir` fits a direction term (M3 2.7× stronger with the wind straight onto its wall), but `_Ca2.9` fits about as well without one. A crude model-free check finds no effect of wind speed, and a different shape: with everything open, west wind ventilates worst and north wind shows no advantage. **Next:** forced M3 tests with the doors shut, at matched or low sun, in north, west and south wind, and M3 opened on top of M1+M2. Windward wind got rarer as the summer went on (59 % of windy samples in Jun–Jul, 9 % in Sep 1–17), and true leeward (135–225°) has never been tested. Step 3, a two-node plant, is done (NS-10). |
-| NS-10 | Closed-loop simulator, and a plant that reproduces 5C88's limit cycle | 🔶 **MOSTLY DONE (2026-09-18, §9.12.3).** `closedloop/` runs the firmware's own stepped law (`drivers/ventModel`) in an emulated T5/T4/T6 chain, gated against the old calibrator and against 5C88's logged decisions (97.1 %). Two-node plants fitted on correctly timed data reproduce the M3 openings, the cycle period and the time above 31 °C, held-out days included. **Remaining:** the swing, 2.0–2.8 against 3.1–3.6 °C. |
+| NS-9 | Wind-direction-dependent `ach_m3` in the plant model | 🔶 **OPEN — narrowed (2026-09-18, §9.12.6, §9.13.3).** Step 1's per-segment fits used a single node on shifted inputs and are withdrawn. **The controller's reading depends on the wind:** after a daytime M3 opening it drops -3.0 °C in 25 min with north wind against -1.3 to -2.05 °C with other winds (236 openings, normal operation), strongest at 315-345°. That holds within a month, at matched speed and with the doors shut. **Open: whether the whole house cools that much faster.** The indoor LoRa sensors show at most 1.2×, and long all-open periods show no north-wind advantage. The adopted plants carry a fitted north-wind term (2.3×) that covers part of it. **Next:** forced M3 tests with the doors shut, at matched or low sun, in north, west and south wind, M3 on top of M1+M2, with a second probe beside the controller's. Windward wind got rarer as the summer went on (59 % of windy samples in Jun–Jul, 9 % in Sep 1–17), and true leeward (135–225°) has never been tested. |
+| NS-10 | Closed-loop simulator, and a plant that reproduces 5C88's limit cycle | 🔶 **MOSTLY DONE, swing narrowed (2026-09-18, §9.12.3, §9.13).** `closedloop/` runs the firmware's own stepped law (`drivers/ventModel`) in an emulated T5/T4/T6 chain, gated against the old calibrator and against 5C88's logged decisions (97.1 %). The adopted plants carry the sensor's 3.5–5.5-min delay and a north-wind term. They reproduce the M3 openings, the cycle period, the time above 31 °C, the cycling days and the swing on days without north wind, held-out days included. **Remaining:** the swing on north-wind days, 3.0–3.2 against 3.9 °C. Next step: a term at the sensor for the incoming air that reaches it in north wind, tested against the indoor LoRa sensors. |
 
 Campaign data collection complete (Jun 4 – Jul 4, 2026; originally Jun 4–25, extended for the NS-6 M3 test and heatwave coverage). Log data in `model/campaign-summer-2026/` shows continuous `SENSOR_HR` collection from 2026-06-04. Monitoring continued, and the re-analysis (§9.12) uses the SD logs to 2026-09-17. Fill in dates at end of campaign:
 

@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Purpose | Verify control algorithms before they reach the greenhouse: the binary (stepped) law 5C88 runs today, and the linear M3 law (mode 2) once the new firmware and hardware can drive it |
-| Status | **2026-09-18, evening.** Both gates pass. **A two-node plant fitted on correctly timed data reproduces 5C88's limit cycle in closed loop.** Across 102 days, including held-out days, it gets the number of M3 openings, the cycle period, the time above 31 degC and the day-to-day pattern right. It does not reach the full swing (2.0-2.8 against 3.1 degC). The adopted single-node plant does not reproduce the cycle |
+| Status | **2026-09-18, night (NS-10).** Both gates pass. Two-node plants fitted on correctly timed data reproduce 5C88's limit cycle in closed loop. **The adopted pair now carries a sensor stage** (the controller's reading lags the air by 3.5-5.5 min) **and a north-wind term for M3.** Across 102 days, held-out days included, they get the M3 openings, the cycle period, the time above 31 degC, the days that cycle, and the swing on days without north wind right. **On north-wind days the swing is still short** (3.0-3.2 against 3.9 degC): the controller's reading drops about twice as far after M3 opens in north wind, and no fitted plant carries all of that. The single-node plant does not reproduce the cycle |
 | Branch | `modelWorkWireSensor` |
 | Inputs | Files in the repo only: 5C88's SD logs, the LoRa exports and the plant artifacts in `../campaign-summer-2026/`, and `drivers/ventModel/` |
 
@@ -12,12 +12,14 @@
 Everything below is on corrected data. **Two errors made every earlier summer-long result wrong**, and anyone reading older notes should know which ones.
 
 1. **The LoRa database is stamped in UTC; the SD logs are local time.** Every merge that joined them unconverted paired each indoor sample with the outdoor weather and door state of two hours later. That covers every `calibration_input_*.csv`, and so the whole summer-2026 calibration. Proven two ways, and converted since: see [`../lora_time.py`](../lora_time.py). `dataset.py` and `prepare_calibration_input.py` both convert now.
-   - **On correctly timed data the adopted single-node plant scores 4.07 degC** held out, against 2.24 on the shifted data it was fitted to.
+   - **On correctly timed data the single-node plant scores 4.04 degC** held out, against 2.24 on the shifted data it was fitted to.
    - **Campaign F3 reverses.** At the median daytime M3 opening the sun is still rising, so the drop after M3 opens is M3's own effect.
    - **The Jul 11 temperature flush does not hold,** while the humidity flush does. Errata are in `campaignResults_summer2026.md` and `thermalProfileCampaign.md` §7.3.
 2. **This simulator's own clock wrapped.** `_ms()` wrapped at 2^32 ms like the firmware's, but `firmware.Channel` compares times plainly where T2 compares them wrap-safely. At the first wrap, **2026-07-18 20:09**, every deadline set just before looked 49 days away, and M3 froze shut for the rest of every summer-long run. Fixed by keeping the clock unbounded; a fail-first check reproduces the deferral on the old clock. **The 102-day closed-loop figures before this fix were void after that date.** Runs that ended earlier, such as the first Jun 5 - Jul 11 reproduction, were not affected.
 
-Also masked: **2026-07-09 06:06-09:48**, where 5C88's DS1307 (gh#37) stamped a block of rows 68 minutes early (`dataset.BAD_SD_WINDOWS`).
+Also masked: **2026-07-09 06:06-09:48**, where 5C88's DS1307 (gh#37) stamped a block of rows 68 minutes early (`dataset.BAD_SD_WINDOWS`). The fits stored before that mask carry held-out figures 0.01-0.03 degC higher than the table below, which re-scores every artifact on today's dataset.
+
+A smaller third error, found during NS-10: **the direction term was fed wind directions from before the vane was valid** (2026-06-19 12:00), a windward boost on 14 % of those samples. Invalid directions now reach the kernel as NaN, which adds nothing. Plants without a direction term are unchanged byte for byte; `_dir` moves a little (below).
 
 ## What it is
 
@@ -25,7 +27,7 @@ Also masked: **2026-07-09 06:06-09:48**, where 5C88's DS1307 (gh#37) stamped a b
 |---|---|---|
 | Data | `logdata.py`, `dataset.py`, `../lora_time.py` | 5C88's SD logs, plus the raw LoRa exports (outdoor `lht65-20`, doors `lds01-5`/`-6`) converted from UTC, aligned per SD sample. Window positions come from the RELAY rows' exact times; outdoor data is interpolated between uplinks |
 | Plant, single node | `plant.py` | `calibrate_plant_dynamic.simulate()`, stepped 30 s at a time, with the adopted artifact `plant_calibrated_constrained_summer2026_freem3.json` |
-| Plant, two nodes | `plant2.py`, `plant2_kernel.c` | A fast air node and a slow structure/soil node, plus humidity, with optional M3 wind-direction term. One C loop serves both the fit (a whole summer in about 20 ms) and the closed loop (one step at a time), so the simulated plant is exactly the fitted one |
+| Plant, two nodes | `plant2.py`, `plant2_kernel.c` | A fast air node and a slow structure/soil node, plus humidity, an optional M3 wind-direction term, and an optional **sensor stage**: two lags between the air node and the reading that is logged and that the controller acts on. One C loop serves both the fit (a whole summer in about 20 ms) and the closed loop (one step at a time), so the simulated plant is exactly the fitted one |
 | Fit | `refit.py` | Fits the two-node plant, with every 4th day held out; reports the M3 response test; `compare` sets artifacts side by side |
 | Firmware chain | `firmware.py` | T5 `avg_push()`/`avg_get()` in float32 with `lroundf()`; T2's channel state machine (travel + 5 s, 2 s reversal gap, dwell deferring `SRC_T6` only, the gh#48 in-travel guard from 2.3.1); T6's caller (inhibit resets, day/night setpoints, narrowing before widening, a MODE row on change) |
 | Control law | `ventmodel.py`, `ventmodel_ffi.cpp` | `drivers/ventModel/` itself, compiled from the firmware's own sources into `build/ventmodel.dll` and called through ctypes, with every struct field checked by name on load |
@@ -39,15 +41,15 @@ The law is **not** re-implemented in Python. `simulation.py` carries its own por
 ```bash
 python model/closedloop/closed_loop.py gate-plant
 python model/closedloop/closed_loop.py gate-control
-python model/closedloop/closed_loop.py reproduce --start 2026-06-05 --end 2026-09-16 --plant2 model/campaign-summer-2026/plant2/plant2_summer2026_Ca2.9.json
-python model/closedloop/refit.py fit --fix Ca_MJ=2.9
+python model/closedloop/closed_loop.py reproduce --start 2026-06-05 --end 2026-09-16 --plant2 model/campaign-summer-2026/plant2/plant2_summer2026_Ca2.9_tau120_tau90_ev5_dir.json
+python model/closedloop/refit.py fit --fix Ca_MJ=2.9 --fix tau_s1=120 --fix tau_s2=90 --direction --event-weight 5
 python model/closedloop/refit.py compare model/campaign-summer-2026/plant2/*.json
 python model/closedloop/campaign_figures.py
 ```
 
 Needs Python 3.11 with numpy, scipy and matplotlib, and the Code::Blocks MinGW `g++` that `drivers/ventModel` already uses (or `VENTMODEL_CXX`). Both DLLs are rebuilt automatically when a source changes. `build/` holds only the DLLs, which `.gitignore` excludes. **A DLL loaded by a running process cannot be rebuilt on Windows**, so let a running fit finish before changing `plant2_kernel.c`, and build once before starting fits in parallel.
 
-`reproduce` without `--plant2` runs the single-node artifact. Other options: `--rh-from-log`, `--csv`, `--plot`; for the single node, `--openness position` and `--calibrator-hold`. `refit.py fit` options: `--direction`, `--door1 mask`, `--horizon-min N`, `--event-weight L`, `--fix NAME=VALUE`.
+`reproduce` without `--plant2` runs the single-node artifact. Other options: `--rh-from-log`, `--csv`, `--plot`; for the single node, `--openness position` and `--calibrator-hold`. `refit.py fit` options: `--direction`, `--dir0` (also fit where the direction lobe points), `--sensor` (fit the sensor lags; see NS-10 for why not), `--door1 mask`, `--horizon-min N`, `--event-weight L`, `--fix NAME=VALUE`, `--init ARTIFACT.json` (seed the search: the result can then only improve on that artifact). `compare` also prints each plant's drop 25 min after an M3 opening in north and in other wind, and `reproduce` ends with the swing split by wind and doors.
 
 ## The gates
 
@@ -100,22 +102,29 @@ The M3 response test is the median change of T in the 5-25 minutes after each da
 | Plant (`plant2/…`) | Held-out T RMSE | M3 opens, dT at 25 min | M3 closes, dT at 15 min | M3 openings | Day-by-day r | Days with cycling | Cycle | Hours >= 31 degC | Swing |
 |---|---|---|---|---|---|---|---|---|---|
 | **Logged** | | **-2.3** | **+1.5** | **406** | | **74** | **46 min** | **237** | **3.1 degC** |
-| Single node (adopted) | 4.07 | +0.5 | +0.2 | 184 | 0.52 | 13 | 113 min | 234 | 3.9 |
-| `plant2_summer2026` (free run) | 1.63 | -1.8 | +1.4 | 409 | 0.76 | 68 | 43 min | 228 | 2.0 |
-| `_dir` (M3 windward term) | **1.58** | -1.9 | +1.5 | 422 | 0.75 | 67 | 42 min | 220 | 2.0 |
-| `_Ca2.9` (air node = the air alone) | 1.72 | **-2.2** | +1.9 | 363 | **0.78** | 62 | 42 min | 252 | **2.7** |
-| `_Ca6` (air node 6 MJ/K) | 1.64 | -1.8 | +1.5 | 387 | 0.77 | 63 | 42 min | 223 | 2.0 |
-| `_ev5` (M3 responses weighted x6) | 1.70 | -1.8 | +1.4 | 437 | 0.76 | 70 | 43 min | 227 | 2.0 |
-| `_ev20` (weighted x21) | 1.82 | -1.8 | +1.3 | 434 | 0.77 | 68 | 44 min | 227 | 1.9 |
-| `_door1mask` | 1.70 | -1.8 | +1.4 | 384 | 0.76 | 67 | 43 min | 232 | 2.0 |
-| `_h30` (30-min predictions) | 1.91 | -1.4 | +1.0 | 385 | 0.78 | 64 | 49 min | 224 | 1.8 |
-| `_h60` (60-min predictions) | 1.85 | -1.3 | +0.9 | 354 | 0.79 | 63 | 46 min | 226 | 1.7 |
+| Single node | 4.04 | +0.5 | +0.2 | 184 | 0.52 | 13 | 113 min | 234 | 3.9 |
+| `plant2_summer2026` (free run) | 1.60 | -1.8 | +1.4 | 409 | 0.76 | 68 | 43 min | 228 | 2.0 |
+| `_dir` (M3 windward term) | 1.55 | -1.9 | +1.5 | 419 | 0.75 | 67 | 44 min | 221 | 2.0 |
+| `_Ca2.9` (air node = the air alone) | 1.71 | -2.2 | +1.9 | 363 | 0.78 | 62 | 42 min | 252 | 2.7 |
+| `_Ca6` (air node 6 MJ/K) | 1.61 | -1.8 | +1.5 | 387 | 0.77 | 63 | 42 min | 223 | 2.0 |
+| `_ev5` (M3 responses weighted x6) | 1.67 | -1.8 | +1.4 | 437 | 0.76 | 70 | 43 min | 227 | 2.0 |
+| `_ev20` (weighted x21) | 1.78 | -1.8 | +1.3 | 434 | 0.77 | 68 | 44 min | 227 | 1.9 |
+| `_door1mask` | 1.57 | -1.8 | +1.4 | 384 | 0.76 | 67 | 43 min | 232 | 2.0 |
+| `_h30` (30-min predictions) | 1.88 | -1.4 | +1.0 | 385 | 0.78 | 64 | 49 min | 224 | 1.8 |
+| `_h60` (60-min predictions) | 1.82 | -1.3 | +0.9 | 354 | 0.79 | 63 | 46 min | 226 | 1.7 |
+| `_Ca2.9_tau120_tau90` (sensor stage) | 1.67 | -2.7 | +2.4 | 426 | 0.76 | 67 | 45 min | 248 | 3.2 |
+| `_Ca2.9_tau240_tau90` | 1.66 | -2.3 | +2.0 | 390 | 0.77 | 65 | 45 min | 242 | 2.7 |
+| **`_Ca2.9_tau120_tau90_ev5_dir`** (adopted) | **1.58** | **-2.3** | +1.9 | **395** | **0.78** | 65 | **45 min** | **233** | 2.7 |
+| **`_Ca2.9_tau240_tau90_ev5_dir`** (adopted) | **1.58** | -2.2 | +1.8 | 389 | **0.78** | 63 | **46 min** | 236 | 2.7 |
+
+Held-out T RMSE is re-scored for every row on today's dataset, with door 1 assumed shut after 2026-08-16 (`_door1mask` was fitted masking it).
 
 **Held out**, where the fit never saw the day:
-- `_Ca2.9`: 101 M3 openings against 103 logged, 80 against 72 hours at or above 31 degC, cycling on 16 against 17 days, a 44 against 45 min cycle, a swing of 2.8 against 3.6 degC.
-- `_dir`: 128 openings, 72 against 72 hours at or above 31 degC.
+- `_Ca2.9_tau120_tau90_ev5_dir`: 120 M3 openings against 103 logged, 75 against 72 hours at or above 31 degC, cycling on 17 of 17 days, a 44 against 45 min cycle, a swing of 2.9 against 3.6 degC.
+- `_Ca2.9_tau240_tau90_ev5_dir`: 114 openings, 76 hours, cycling on 17 of 17 days, a 45 min cycle, a swing of 2.9.
+- `_Ca2.9`, for comparison: 101 openings, 80 hours, 16 days, a 44 min cycle, a swing of 2.8.
 
-**By period** (`_dir`), M3 openings logged / simulated: 239 / 264 before the gh#48 firmware, 87 / 90 with it, and 80 / 68 after door 1's sensor went silent. So the firmware change is modelled right, and the weakest stretch is the one where the door is assumed.
+**By period** (`_Ca2.9_tau120_tau90_ev5_dir`), M3 openings logged / simulated: 239 / 250 before the gh#48 firmware, 87 / 89 with it, and 80 / 56 after door 1's sensor went silent. So the firmware change is modelled right, and the weakest stretch is the one where the door is assumed.
 
 **What it shows:**
 - **The two-node plant, fitted on correctly timed data, reproduces how the binary law behaves:** how often M3 opens, the ~45-minute cycle, the time above the M3 threshold, and which days cycle.
@@ -125,17 +134,57 @@ The M3 response test is the median change of T in the 5-25 minutes after each da
 - **The windward term** (`_dir`: 9.5 /h + 16.3 /h x cos of the windward angle) says M3 ventilates about 2.7x more with wind straight onto its wall. That is the direction effect in the configuration M3 actually runs in, and far from the 30-100x once claimed for M3 alone.
 - **The free-run error alone cannot pick the dynamics.** Short-horizon objectives learn persistence (the 30-minute fit's 30-minute predictions: 0.75 against persistence's 0.96 degC) and give the weakest M3 response. The response test and the closed loop are what tell the variants apart.
 
+## The swing gap (NS-10)
+
+The plants swung too little: 2.0-2.8 degC against 3.1 logged. Three findings, in the order they were made (derivation: `thermalProfileCampaign.md` §9.13).
+
+**1. Where the gap is.** The plants' peaks were right; their troughs were about 1 degC too shallow. The gap sat on days with north wind and on days with the doors shut. It was the same before and after firmware 2.1.3, so the timestamp noise is not the cause.
+
+**2. The sensor answers late.** After an M3 command the logged temperature barely moves for 3-4 minutes, opening and closing alike, where an air node answers at once. A fit without that delay could only avoid the error in those first minutes by weakening M3 (4.8 /h), and a weak M3 cannot cool the house deeply enough in closed loop. It also let the controller step down early and reverse M3 mid-stroke: 45 reversals in the simulation, where the logged M3 stayed open through its dwell in 99 % of cycles.
+- **The sensor stage** in the kernel puts two lags between the air node and the reading. Two lags stand in for transport delay plus probe lag without a delay line.
+- **The lags are measured, not fitted.** Free, a season-long fit drives the first lag to its 900 s bound and makes the air node implausibly fast. So the lags are set from the logged responses: 120 s + 90 s, and 240 s + 90 s as the self-consistent bracket.
+- **With the lags in place** the cycle period is right (45-46 min against 46), the reversals are gone (7-9), and the held-out error falls (1.71 to 1.66-1.67 degC).
+
+**3. North wind doubles the drop in the controller's reading.** Split by the wind over the half hour, the logged drop 25 min after a daytime M3 opening is:
+
+| Wind | Openings | Drop at 25 min |
+|---|---|---|
+| North, 315-45 deg (peak at 315-345) | 123 | -3.0 degC |
+| East, 45-135 | 38 | -1.3 degC |
+| South, 135-225 | 14 | -2.05 degC |
+| West, 225-315 | 61 | -1.7 degC |
+| Calm, below 1 m/s | 26 | -1.05 degC |
+
+This is normal operation: M3 opened by T6 on top of M1+M2. The contrast holds within July (-3.1 against -1.3) and August (-3.1 against -1.9), at matched speeds (1-2 m/s: -2.75 against -1.5), and with the doors shut (-3.4 against -1.85). Plants without a direction term give north and other wind the same drop. The adopted plants' fitted term (M3 about 2.3x stronger with the wind on its wall) carries only part of it: -2.5 against -2.2 at 25 min, where the log shows -3.0 against -1.5.
+
+**How much it is the whole house is not settled.** The two indoor LoRa sensors, at 1/4 and 3/4 of the house's length, show at most a 1.2x contrast between north and other wind, against the controller's 2x. Their 10-min sampling and slower housing blur fast changes. A season-long fit also refuses a large house-wide direction term, which fits the long all-open periods, where north wind shows no advantage (`campaign_figures.py` NS9). Both point to part of the effect being local to the controller's sensor in the centre, in the path of the air M3 lets in with north wind. That is a hypothesis, and the NS-9 forced tests with a second probe beside the controller's would settle it.
+
+The swing, logged / simulated, by condition (`reproduce` prints this):
+
+| Plant | North wind | Other wind | Doors shut | A door open |
+|---|---|---|---|---|
+| **Logged** | **3.9** | **2.2** | **3.7** | **2.4** |
+| `_Ca2.9` | 2.8 | 2.6 | 2.8 | 2.6 |
+| `_dir` | 2.8 | 1.9 | 2.3 | 1.9 |
+| `_Ca2.9_tau120_tau90` | 3.4 | 2.9 | 3.3 | 3.0 |
+| `_Ca2.9_tau120_tau90_ev5_dir` | 3.2 | 2.2 | 3.0 | 2.5 |
+| `_Ca2.9_tau240_tau90_ev5_dir` | 3.0 | 2.3 | 3.0 | 2.4 |
+
+`_Ca2.9_tau120_tau90` reaches the season's median swing (3.2 degC), but by over-swinging on days without north wind. The adopted pair is right on those days and short only on north-wind days. So the remaining gap is the direction effect's unexplained part, not a general weakness of the plant.
+
+**Two fitting lessons.** With the air node at 2.9 MJ/K and the sensor stage in place, the direction term appears only when the objective weighs the half hour after each M3 command (`--event-weight`); a season-long free run leaves it at zero. Fitting the lobe's centre (`--dir0`) did not move it from north.
+
 ## Which plant to verify a law against
 
-- **`plant2_summer2026_Ca2.9.json` as the primary.** It is physically anchored (the air node is the air), responds to M3 by the logged amount, reproduces the held-out cycling closely, and has the largest swing.
-- **`plant2_summer2026_dir.json` as the second.** It has the best open-loop fit and carries wind direction, which a direction-aware law needs.
+- **`plant2_summer2026_Ca2.9_tau120_tau90_ev5_dir.json` as the primary.** It has the air node at the air's own capacity and the measured sensor delay. M3 ventilates 3.1 /h, plus 4.1 /h x cos with north wind. It gets the M3 response right (-0.2/-1.4/-2.0/-2.3 against -0.3/-1.3/-2.0/-2.3 degC at 5/10/15/25 min), has the best held-out fit (1.58 degC), and reproduces the cycle, the openings and the swing away from north wind.
+- **`plant2_summer2026_Ca2.9_tau240_tau90_ev5_dir.json` as the second.** It is the same model with the longer sensor delay (240 s + 90 s), which brackets that uncertainty.
 
-Verify a new law against both, and treat a verdict that differs between them as unsettled. **Do not use the single-node artifact for this.**
+Verify a new law against both, and treat a verdict that differs between them as unsettled. **On north-wind days both under-state the swing a law has to damp**, so treat what a law does on those days in simulation with caution. `_Ca2.9` and `_dir`, the earlier pair, stay as records. **Do not use the single-node artifact.**
 
 ## What is next
 
-1. **The swing gap** (2.0-2.8 against 3.1 degC). The sensor's own lag and the ~2-minute timestamp noise before 2.1.3 are candidates to test before any structural change. The indoor soil probes could become a measured input for the slow node.
-2. **The campaign documents are revised** (2026-09-18): `campaignResults_summer2026.md`, and `thermalProfileCampaign.md` §9.12 with banners on §9.5-9.11. NS-9 is open again: the fits disagree on the direction term, and a crude model-free check finds west wind, not south-west, the worst (§9.12.6).
+1. **NS-10's remainder: the north-wind swing** (3.0-3.2 against 3.9 degC). The next model step is a term at the sensor for the incoming air that reaches it with north wind, the local effect the LoRa comparison hints at. Test it against the LoRa sensors before adopting it.
+2. **NS-9's forced tests**, now with a sharper question: does the whole house cool about twice as fast in north wind, or mainly the spot where the controller's sensor hangs? A temporary second probe beside the controller's, and one at the south side, would answer it.
 3. **Linear M3 (mode 2)** still needs a part-open aperture curve, which only the new firmware and hardware can measure. Until then, vary it across a range (`plant.py`/`plant2.py` openness) and check the verdict holds across it.
 
 ## Known limits
