@@ -111,7 +111,7 @@ The optimised firmware was released as **v1.16.22** (the bug fix) and **v1.16.23
 | `simulation_manual.md` | Full user manual for `simulation.py`: input formats, output formats, parameter overview, plot explanation |
 | `calibrate_plant.py` | Fits the plant model (effective heat capacity, transpiration, infiltration, solar gain coefficient) against real LHT65 sensor logs. CLI: `python calibrate_plant.py [--plot]` |
 | `generate_inputs_from_live.py` | Generates the five scenario CSVs (`input_S1`..`S5`) by selecting 24-hour slices from real sensor logs |
-| `closedloop/` | **Closed-loop simulator for verifying control algorithms** (2026-09-18): the calibrated plant, the firmware's T5/T2/T6 chain, and the control law compiled from `drivers/ventModel/` itself. Gated against the calibrator and against 5C88's logged decisions; its first reproduction shows the plant is too slow to reproduce the limit cycle. See [`closedloop/README.md`](closedloop/README.md) |
+| `closedloop/` | **Closed-loop simulator for verifying control algorithms** (2026-09-18): the calibrated plant, the firmware's T5/T2/T6 chain, and the control law compiled from `drivers/ventModel/` itself; plus `refit.py`, which fits a two-node plant to the whole summer. Gated against the calibrator and against 5C88's logged decisions. The adopted plant reproduces 20 % of the logged M3 openings in closed loop, the two-node refit 48-57 %; neither reproduces the limit cycle. See [`closedloop/README.md`](closedloop/README.md) |
 | `vent_step_replay.py` | Replays T6's step decision from SD logs under candidate `hyst_t` / `avg_win_t`; refuses to project unless it reproduces >= 90 % of the logged T-demands |
 
 ### Settings files
@@ -169,7 +169,8 @@ Validated settings and scenario results that established the current firmware de
 | `plant_calibrated_*.json` | Other fit variants (binary, 7-param, staged, bounded-prior) for comparison |
 | `calibration_input_2026-06-04_2026-07-04.csv` | Merged calibration input (SD logs + outdoor + doors) |
 | `*.log` | Raw SD log files from 5C88 |
-| `lht65_20_*.csv`, `lds01_*.csv` | Outdoor sensor + door-sensor exports from the Wenumseveld MySQL DB |
+| `lht65_20_*.csv`, `lds01_*.csv` | Outdoor sensor + door-sensor exports from the Wenumseveld MySQL DB. The `..._2026-09-17.csv` set (fetched 2026-09-18) runs to 2026-09-17; door 1's sensor last reported on 2026-08-16 |
+| `plant2/` | Two-node plant fits by `closedloop/refit.py`, one JSON per objective; compared in [`closedloop/README.md`](closedloop/README.md) |
 | `plot_daily.py`, `plot_2026-*.png` | Daily T/RH/wind/window-state plots for every campaign day |
 | `m3_event_study.py` | Event study: what happens when M1/M2/M3 open (F3 robustness check) |
 | `calibration_constrained_summer2026*.png` | Fit-vs-measurement plots (bounded + free-m3 variants) |

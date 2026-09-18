@@ -179,22 +179,29 @@ def _sources():
     return sorted(LIB_SRC.glob("*.cpp")) + [FFI_SRC]
 
 
-def build(force=False):
-    """Compile the library and the shim into DLL_PATH when a source changed."""
-    deps = _sources() + sorted(LIB_SRC.glob("*.h"))
-    if not force and DLL_PATH.is_file():
-        built = DLL_PATH.stat().st_mtime
-        if all(p.stat().st_mtime <= built for p in deps):
-            return DLL_PATH
+def build_dll(out, sources, deps=(), include_dirs=(), force=False, cxx_std="c++17"):
+    """Compile sources into a shared library at out, when any of them changed.
 
-    BUILD_DIR.mkdir(exist_ok=True)
+    C++ and C sources both go through g++ (a .c file compiles as C++; the
+    kernels here are written to be valid as either). Shared with plant2.py.
+    """
+    out = Path(out)
+    watch = list(sources) + list(deps)
+    if not force and out.is_file():
+        built = out.stat().st_mtime
+        if all(Path(p).stat().st_mtime <= built for p in watch):
+            return out
+
+    out.parent.mkdir(exist_ok=True)
     cxx = _find_cxx()
-    cmd = [cxx, "-std=c++17", "-O2", "-Wall", "-Wextra", "-shared"]
+    cmd = [cxx, "-std=%s" % cxx_std, "-O2", "-Wall", "-Wextra", "-shared"]
     if os.name == "nt":
         cmd += ["-static", "-static-libgcc", "-static-libstdc++"]
     else:
         cmd += ["-fPIC"]
-    cmd += ["-I", str(LIB_SRC)] + [str(p) for p in _sources()] + ["-o", str(DLL_PATH)]
+    for inc in include_dirs:
+        cmd += ["-I", str(inc)]
+    cmd += [str(p) for p in sources] + ["-o", str(out)]
 
     # MinGW's driver finds cc1plus, as and ld through its own directory.
     env = dict(os.environ)
@@ -202,8 +209,14 @@ def build(force=False):
     res = subprocess.run(cmd, capture_output=True, text=True, env=env)
     if res.returncode != 0:
         raise RuntimeError("building %s failed:\n  %s\n%s"
-                           % (DLL_PATH.name, " ".join(cmd), res.stderr))
-    return DLL_PATH
+                           % (out.name, " ".join(cmd), res.stderr))
+    return out
+
+
+def build(force=False):
+    """Compile the library and the shim into DLL_PATH when a source changed."""
+    return build_dll(DLL_PATH, _sources(), deps=sorted(LIB_SRC.glob("*.h")),
+                     include_dirs=[LIB_SRC], force=force)
 
 
 # --------------------------------------------------------------------------

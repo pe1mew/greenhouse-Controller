@@ -53,11 +53,13 @@ for p in (HERE, MODEL_DIR):
         sys.path.insert(0, str(p))
 
 from firmware import (  # noqa: E402
-    SRC_T3, Actuator, Controller, RELAY_TO_CH, SensorLayer, lroundf,
+    GH48_ON_5C88, SRC_T3, Actuator, Controller, RELAY_TO_CH, SensorLayer, lroundf,
     profile_5c88, settings_5c88,
 )
-from logdata import CAL_INPUT, CAMPAIGN, load_outdoor, load_sd_logs  # noqa: E402
+from logdata import CAMPAIGN, load_sd_logs  # noqa: E402
 from plant import ADOPTED, Plant  # noqa: E402
+import plant2  # noqa: E402
+from plant2 import Plant2  # noqa: E402
 from ventmodel import VentModel  # noqa: E402
 
 # The published figures the gates must reproduce.
@@ -306,32 +308,39 @@ def _parse_local(s, end=False):
     return dt
 
 
-def run_closed_loop(data, weather, params, start, end, args):
-    """Close the loop from start to end. Returns a list of per-step records.
+def run_closed_loop(ds, lo, hi, plant_kind, params, args):
+    """Close the loop over the dataset's samples [lo, hi). Returns per-step records.
 
-    Warm-up (args.warmup_h before start): the logged world drives everything
+    Warm-up (args.warmup_h before lo): the logged world drives everything
     and the controller only listens, so T5's averages, T6's hysteresis state
-    and T2's dwell timers are what they were when the loop closes. At start
-    the plant takes the measured T and RH, and from then on the simulated
-    controller moves the simulated windows.
+    and T2's dwell timers are what they were when the loop closes. At lo the
+    plant takes the measured state -- for the two-node plant, the structure
+    node from an open-loop run over the logged history -- and from then on
+    the simulated controller moves the simulated windows.
 
-    Taken from the log rather than simulated, because the plant cannot change
-    them: the wind override (T3), T/RH sensor faults, boots, and LCD admin
-    sessions -- during which the operator moved the windows by hand, so the
-    windows follow the logged RELAY rows.
+    Taken from the log rather than simulated, because neither the plant nor
+    the controller can change them: the outdoor weather, the doors, the wind
+    and its override (T3), T/RH sensor faults, boots, and LCD admin sessions
+    -- during which the operator moved the windows by hand, so the windows
+    follow the logged RELAY rows.
     """
-    from calibrate_plant_dynamic import ah_from_rh
-
+    data = ds.log
+    start, end = ds.t[lo], ds.t[hi - 1]
     law = VentModel(args.model)
     s = settings_5c88(start)
     act = Actuator(s, profile_5c88(start))
     sensor = SensorLayer(s)
     ctl = Controller(law, s)
-    plant = Plant(params, hold_on_change=args.calibrator_hold)
+    if plant_kind == "two":
+        plant = Plant2(params)
+        Ts_open = plant2.run(params, ds)[1].copy()   # the structure's logged history
+    else:
+        plant = Plant(params, hold_on_change=args.calibrator_hold)
 
-    samples = [x for x in data.samples if start - timedelta(hours=args.warmup_h) <= x[0] <= end]
-    relay = [r for r in data.relay if samples[0][0] - timedelta(hours=1) <= r[0] <= end]
-    boots = [b for b in data.boots if samples[0][0] <= b <= end]
+    import bisect
+    warm = max(0, bisect.bisect_left(ds.t, start - timedelta(hours=args.warmup_h)))
+    relay = [r for r in data.relay if ds.t[warm] - timedelta(hours=1) <= r[0] <= end]
+    boots = [b for b in data.boots if ds.t[warm] <= b <= end]
     ri = bi = 0
 
     def apply_relay_until(t):
@@ -351,31 +360,35 @@ def run_closed_loop(data, weather, params, start, end, args):
         return hit
 
     # ---- warm-up: listen only --------------------------------------------
-    prev = samples[0][0] - STEP
-    for ts, t_c10, rh in samples:
-        if ts >= start:
-            break
+    prev = ds.t[warm] - STEP
+    for i in range(warm, lo):
+        ts = ds.t[i]
         apply_relay_until(ts)
         if boot_between(prev, ts):
             sensor = SensorLayer(ctl.s)
             ctl.reset()
         ctl.s = settings_5c88(ts)
-        meas = sensor.push_register(t_c10, rh * 10)
+        meas = sensor.push_register(int(round(ds.T_in[i] * 10)), int(ds.RH_in[i]) * 10)
         inhibited = data.override(ts) or data.tfault.contains(ts) or data.standby.contains(ts)
         ctl.cycle(_ms(ts), _unix(ts), data.is_day(ts), meas, inhibited, actuator=None)
         prev = ts
     apply_relay_until(start)
 
+    def init_plant(i):
+        if plant_kind == "two":
+            plant.reset(ds.T_in[i], ds.AH_in[i], Ts0=Ts_open[i])
+        else:
+            plant.reset(ds.T_in[i], ds.AH_in[i])
+
     # ---- closed loop -------------------------------------------------------
-    w0 = weather.at(start)
-    plant.reset(w0.T_in, float(ah_from_rh(w0.RH_in, w0.T_in)))
-    logged_T = {ts: (t_c10, rh) for ts, t_c10, rh in data.samples}
-    log_series = sorted(logged_T)
-    import bisect
+    init_plant(lo)
+    act.openness("mean", _ms(start))            # start the openness integral here
+    held_out_day0 = ds.t[0].date()
     prev_override = data.override(start)
     recs = []
-    t, prev = start, start - STEP
-    while t <= end:
+    prev = start - STEP
+    for i in range(lo, hi):
+        t = ds.t[i]
         now = _ms(t)
         act.set_profile(profile_5c88(t))
         ctl.s = settings_5c88(t)
@@ -391,11 +404,19 @@ def run_closed_loop(data, weather, params, start, end, args):
             while ri < len(relay) and relay[ri][0] <= t:
                 ri += 1                         # the simulation has them
 
-        w = weather.at(t)
-        T, RH = plant.step(act.openness(args.openness), w.T_out, w.RH_out, w.lux)
-        k = bisect.bisect_right(log_series, t) - 1
-        log_tc10, log_rh = logged_T[log_series[k]]
-        rh_c10 = log_rh * 10 if args.rh_from_log else lroundf(RH * 10)
+        if ds.restart[i] and i > lo:            # an SD gap: no weather to simulate through
+            init_plant(i)
+            act.openness("mean", now)
+        elif plant_kind == "two":
+            o = act.openness("mean", now)
+            T, RH = plant.step(o, ds.door1[i] + ds.door2[i], ds.wind_dir[i], ds.T_out[i],
+                               ds.AH_out[i], ds.lux[i], ds.dt[i])
+        else:
+            T, RH = plant.step(act.openness(args.openness, now), ds.T_out[i], ds.RH_out[i],
+                               ds.lux[i])
+        if ds.restart[i] and i > lo:
+            T, RH = ds.T_in[i], ds.RH_in[i]
+        rh_c10 = int(ds.RH_in[i]) * 10 if args.rh_from_log else lroundf(RH * 10)
         meas = sensor.push_register(lroundf(T * 10), rh_c10)
 
         override = data.override(t)
@@ -405,17 +426,18 @@ def run_closed_loop(data, weather, params, start, end, args):
         inhibited = override or data.tfault.contains(t) or standby
         d = ctl.cycle(now, _unix(t), data.is_day(t), meas, inhibited, actuator=act)
 
-        wnd = data.wind.at(t, (0, 0))
         recs.append({
-            "t": t, "T_sim": T, "RH_sim": RH, "T_log": log_tc10 / 10.0, "RH_log": log_rh,
-            "wind_ms": wnd[0] / 10.0, "wind_dir": wnd[1],
-            "T_out": w.T_out, "lux": w.lux, "door": w.door1 or w.door2,
-            "bm_sim": act.bitmask(), "bm_log": data.bitmask.at(t, 0) & 0x3F,
+            "t": t, "T_sim": T, "RH_sim": RH, "T_log": float(ds.T_in[i]),
+            "RH_log": float(ds.RH_in[i]), "wind_ms": float(ds.wind_ms[i]),
+            "wind_dir": float(ds.wind_dir[i]), "T_out": float(ds.T_out[i]),
+            "lux": float(ds.lux[i]), "door": bool(ds.door1[i] or ds.door2[i]),
+            "bm_sim": act.bitmask(), "bm_log": int(ds.bm[i]) & 0x3F,
             "pos_m3": act.ch[2].pos, "standby": standby, "override": override,
+            "held_out": (t.date() - held_out_day0).days % 4 == 3,
             "step": d.step if d else None, "step_t": d.step_t if d else None,
             "step_rh": d.step_rh if d else None,
         })
-        prev, t = t, t + STEP
+        prev = t
     return recs, act, ctl
 
 
@@ -462,46 +484,91 @@ def day_metrics(recs, key, t_m3):
     return out
 
 
-def reproduce(args):
-    start = _parse_local(args.start)
-    end = _parse_local(args.end, end=True) - STEP
-    data = load_sd_logs(str(CAMPAIGN / "*.log"))
-    weather = load_outdoor(args.weather)
-    if weather.ts[0] > start - timedelta(minutes=5) or weather.ts[-1] < end:
-        print("The outdoor data in %s covers %s .. %s only; a run to %s needs a fresh "
-              "export from the LoRa database first (fetch_lora_data.py + "
-              "prepare_calibration_input.py)." % (Path(args.weather).name, weather.ts[0],
-                                                   weather.ts[-1], end))
-        return 2
-    with open(args.artifact) as fh:
-        params = json.load(fh)
+def summarise(days):
+    """Totals and the limit cycle's character: all days, fitted days, held-out days."""
+    import numpy as np
 
-    recs, act, ctl = run_closed_loop(data, weather, params, start, end, args)
+    def block(label, sel):
+        if not sel:
+            return
+        lg = [d[2] for d in sel]
+        sm = [d[3] for d in sel]
+        o_l = np.array([x["M3_opens"] for x in lg], float)
+        o_s = np.array([x["M3_opens"] for x in sm], float)
+        r = np.corrcoef(o_l, o_s)[0, 1] if o_l.std() > 0 and o_s.std() > 0 else float("nan")
+
+        def med(xs, key):
+            v = [x[key] for x in xs if x[key] is not None]
+            return (statistics.median(v), len(v)) if v else (None, 0)
+        cl, ncl = med(lg, "cycle_min")
+        cs, ncs = med(sm, "cycle_min")
+        wl, _ = med(lg, "swing")
+        ws, _ = med(sm, "swing")
+
+        def f(x, fmt):
+            return fmt % x if x is not None else "-"
+        print("  %-14s %3d days | M3 openings %4d / %4d (day by day r = %.2f) | M3 open h %5.0f / %5.0f"
+              " | h>=M3 entry %5.0f / %5.0f | cycle %s / %s min on %d / %d days | swing %s / %s degC"
+              % (label, len(sel), o_l.sum(), o_s.sum(), r,
+                 sum(x["M3_open_h"] for x in lg), sum(x["M3_open_h"] for x in sm),
+                 sum(x["h_above"] for x in lg), sum(x["h_above"] for x in sm),
+                 f(cl, "%.0f"), f(cs, "%.0f"), ncl, ncs, f(wl, "%.1f"), f(ws, "%.1f")))
+
+    print("\n  summary, logged / simulated (cycle = median gap between M3 openings; swing = median"
+          " T range inside a gap):")
+    block("all days", days)
+    block("fitted days", [d for d in days if not d[1]])
+    block("held-out days", [d for d in days if d[1]])
+
+
+def reproduce(args):
+    import dataset as dsmod
+    start = _parse_local(args.start)
+    end = _parse_local(args.end, end=True)
+    ds = dsmod.build()
+    if start < ds.t[0] or end > ds.t[-1] + timedelta(minutes=5):
+        print("The dataset covers %s .. %s; fetch the outdoor and door data past that "
+              "first (fetch_lora_data.py)." % (ds.t[0], ds.t[-1]))
+        return 2
+    import bisect
+    lo, hi = bisect.bisect_left(ds.t, start), bisect.bisect_left(ds.t, end)
+
+    if args.plant2:
+        with open(args.plant2) as fh:
+            params = json.load(fh)["params"]
+        kind, plant_name = "two", Path(args.plant2).name
+    else:
+        with open(args.artifact) as fh:
+            params = json.load(fh)
+        kind, plant_name = "single", Path(args.artifact).name
+
+    recs, act, ctl = run_closed_loop(ds, lo, hi, kind, params, args)
     s = settings_5c88(start)
     t_m3 = s.t_max_day + 2 * max(1, s.hyst_t // 3) + 1     # vent_step_replay.m3_entry_temp()
 
-    print("=== reproduce: the binary law, closed over the calibrated plant ===")
-    print("  %s .. %s  |  law %s v%d  |  plant %s  |  openness=%s%s%s"
-          % (start, end, ctl.law.name, ctl.law.version, Path(args.artifact).name,
-             args.openness, "  |  RH from the log" if args.rh_from_log else "",
-             "  |  calibrator hold" if args.calibrator_hold else ""))
-    print("  firmware: %s" % ("gh#48 guard" if act.ch[0].profile.defer_in_travel
-                              else "pre-2.3.1 (T6 may reverse mid-stroke)"))
+    print("=== reproduce: the binary law, closed over the plant ===")
+    print("  %s .. %s  |  law %s v%d  |  plant %s (%s-node)%s%s"
+          % (ds.t[lo], ds.t[hi - 1], ctl.law.name, ctl.law.version, plant_name,
+             "two" if kind == "two" else "single",
+             "" if kind == "two" else "  |  openness=%s" % args.openness,
+             "  |  RH from the log" if args.rh_from_log else ""))
+    print("  firmware: the gh#48 guard from %s (2.3.1); T6 may reverse mid-stroke before"
+          % GH48_ON_5C88)
     print("  'h>=%d' = hours at or above the M3 entry temperature (t_avg_c %d with "
           "t_max %d, hyst_t %d)" % (t_m3, t_m3, s.t_max_day, s.hyst_t))
-    print()
     print("  'N%%' = share of the logged M3-open time with wind from 315-45 deg (M3's windward"
           " side; wind valid from 2026-06-19 12:00)")
+    print("  '*' = a day the two-node fit held out (every 4th day)")
     print()
-    hdr = ("date        door  standby  N%%  | M3 opens  | M3 open h   | M1 opens | T max       "
+    hdr = ("date         door  standby  N%%  | M3 opens  | M3 open h   | M1 opens | T max       "
            "| h>=%d      | T RMSE bias  | M3 cycle min | swing degC" % t_m3)
     print(hdr)
-    print("            %     min          | log  sim  | log   sim   | log sim  | log   sim   "
+    print("             %     min          | log  sim  | log   sim   | log sim  | log   sim   "
           "| log   sim  |              | log   sim    | log  sim")
-    tot = {"lo": 0, "so": 0, "lh": 0.0, "sh": 0.0}
     by_day = {}
     for r in recs:
         by_day.setdefault(r["t"].date(), []).append(r)
+    days = []
     for day, rs in sorted(by_day.items()):
         if len(rs) < 2000:          # partial day
             continue
@@ -517,21 +584,19 @@ def reproduce(args):
                                           if r["wind_dir"] >= 315 or r["wind_dir"] < 45)
                                / len(m3_open))
                     if m3_open and day >= WIND_VALID_FROM.date() else "  -")
+        held = rs[0]["held_out"]
+        days.append((day, held, lg, sm, rmse))
 
         def f(x, fmt="%5.0f"):
             return fmt % x if x is not None else "    -"
-        print("%s  %4.0f  %5.0f   %s  | %3d  %3d  | %5.1f %5.1f | %3d %3d  | %5.1f %5.1f | %4.1f  %4.1f | %4.2f %+5.2f | %s %s   | %s %s"
-              % (day, door, sb, windward, lg["M3_opens"], sm["M3_opens"], lg["M3_open_h"], sm["M3_open_h"],
+        print("%s%s  %4.0f  %5.0f   %s  | %3d  %3d  | %5.1f %5.1f | %3d %3d  | %5.1f %5.1f | %4.1f  %4.1f | %4.2f %+5.2f | %s %s   | %s %s"
+              % (day, "*" if held else " ", door, sb, windward, lg["M3_opens"], sm["M3_opens"],
+                 lg["M3_open_h"], sm["M3_open_h"],
                  lg["M1_opens"], sm["M1_opens"], lg["T_max"], sm["T_max"],
                  lg["h_above"], sm["h_above"], rmse, bias,
                  f(lg["cycle_min"]), f(sm["cycle_min"]),
                  f(lg["swing"], "%4.1f"), f(sm["swing"], "%4.1f")))
-        tot["lo"] += lg["M3_opens"]
-        tot["so"] += sm["M3_opens"]
-        tot["lh"] += lg["M3_open_h"]
-        tot["sh"] += sm["M3_open_h"]
-    print("\n  totals: M3 openings log %d / sim %d;  M3 open hours log %.1f / sim %.1f"
-          % (tot["lo"], tot["so"], tot["lh"], tot["sh"]))
+    summarise(days)
     for i, name in enumerate(("M1", "M2", "M3")):
         n = act.ch[i].n
         print("  sim %s: %d drives, %d reversals, %d dwell deferrals, %d in-travel deferrals"
@@ -622,12 +687,13 @@ def main(argv=None):
     p.add_argument("--end", required=True, help="local date (inclusive) or datetime")
     p.add_argument("--warmup-h", type=float, default=6.0)
     p.add_argument("--model", default="stepped")
-    p.add_argument("--artifact", default=str(ADOPTED))
-    p.add_argument("--weather", default=str(CAL_INPUT),
-                   help="merged calibration input with outdoor T/RH/lux and doors")
+    p.add_argument("--artifact", default=str(ADOPTED),
+                   help="the single-node plant (default: the adopted artifact)")
+    p.add_argument("--plant2", metavar="JSON",
+                   help="use this two-node plant (refit.py) instead of the single node")
     p.add_argument("--openness", choices=("state", "position"), default="state",
-                   help="state = the calibrator's convention (default); position = the "
-                        "leaf's travelled fraction")
+                   help="single node only: state = the calibrator's convention (default); "
+                        "position = the leaf's travelled fraction")
     p.add_argument("--rh-from-log", action="store_true",
                    help="feed the controller the LOGGED humidity, to separate the "
                         "temperature loop from the plant's weak humidity model")

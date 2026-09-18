@@ -236,21 +236,51 @@ class Channel:
         self.gap_deadline = 0
         self.dwell_deadline = 0
         self._t = None                 # time up to which pos is integrated
+        self._area = 0.0               # integral of pos since _area_t0 (pos x ms)
+        self._area_t0 = None
         self._defer_latched = False
         self.n = ChannelCounters()
 
     # ---- time ----------------------------------------------------------
     def _move_pos(self, t):
+        """Move the leaf to time t, integrating its position on the way
+        (the same arithmetic as dataset._openness(), so a replayed and a
+        simulated window present the plant with the same openness)."""
         if self._t is None:
             self._t = t
             return
         dt = t - self._t
-        if dt > 0:
-            if self.state == CH_MOVING_OPEN:
-                self.pos = min(1.0, self.pos + dt / self.traverse_ms)
-            elif self.state == CH_MOVING_CLOSE:
-                self.pos = max(0.0, self.pos - dt / self.traverse_ms)
+        if dt <= 0:
+            return
+        p0 = self.pos
+        rate = 1.0 / self.traverse_ms
+        if self.state == CH_MOVING_OPEN:
+            t_full = (1.0 - p0) / rate
+            if dt <= t_full:
+                self.pos = p0 + rate * dt
+                self._area += (p0 + self.pos) / 2.0 * dt
+            else:
+                self.pos = 1.0
+                self._area += (p0 + 1.0) / 2.0 * t_full + (dt - t_full)
+        elif self.state == CH_MOVING_CLOSE:
+            t_zero = p0 / rate
+            if dt <= t_zero:
+                self.pos = p0 - rate * dt
+                self._area += (p0 + self.pos) / 2.0 * dt
+            else:
+                self.pos = 0.0
+                self._area += p0 / 2.0 * t_zero
+        else:
+            self._area += p0 * dt
         self._t = t
+
+    def take_mean(self, now):
+        """Mean openness since the previous call: the plant's step into now."""
+        self.advance(now)
+        span = (now - self._area_t0) if self._area_t0 is not None else 0
+        mean = self._area / span if span > 0 else self.pos
+        self._area, self._area_t0 = 0.0, now
+        return mean
 
     def advance(self, now):
         """Run every timer that expires up to now, in order (ch_update())."""
@@ -365,16 +395,21 @@ class Actuator:
         s = self.public_states()
         return BITMASK_CODE[s[0]] | (BITMASK_CODE[s[1]] << 2) | (BITMASK_CODE[s[2]] << 4)
 
-    def openness(self, mode="state"):
+    def openness(self, mode="state", now=None):
         """Per-window openness for the plant.
 
         "state"    -- the calibrator's convention: 1 whenever the window is
                       not CLOSED, both moving states included. Use it with
-                      the calibrated parameters, which were fitted that way.
-        "position" -- the leaf's travelled fraction. What a linear law needs.
+                      the single-node artifact, which was fitted that way.
+        "position" -- the leaf's travelled fraction right now.
+        "mean"     -- the leaf's mean position since the previous "mean"
+                      call (needs now). What the two-node plant was fitted
+                      with, and what a linear law needs.
         """
         if mode == "state":
             return tuple(0.0 if c.public == VENT_WIN_CLOSED else 1.0 for c in self.ch)
+        if mode == "mean":
+            return tuple(c.take_mean(now) for c in self.ch)
         return tuple(c.pos for c in self.ch)
 
 
