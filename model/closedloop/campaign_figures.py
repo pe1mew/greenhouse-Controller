@@ -15,6 +15,8 @@ One section per finding (F*) or campaign step (NS9), plus the plants' ladder:
   F11     M3-only-open minutes under windward (315-45 deg) wind, by date
   F12     the indoor LoRa sensors against the controller's sensor
   NS9     all-open temperature excess per 10 klux, by wind speed and sector
+  M3WIND  the logged drop after M3 opens, by wind sector, bin, month, speed and
+          doors, and the indoor LoRa sensors against it (NS-9, NS-10)
   LADDER  the fitted plants' heat loss per ventilation step, and M3 against
           a roof window in every plant2 artifact (no dataset needed)
 
@@ -54,7 +56,7 @@ WINDY_MS = 1.0
 SECT8 = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
 SECT4 = (("N 315-45", 315, 45), ("E 45-135", 45, 135), ("S 135-225", 135, 225), ("W 225-315", 225, 315))
 SPEED_BINS = ((0, 0.5), (0.5, 1), (1, 1.5), (1.5, 2), (2, 3), (3, 9))
-ADOPTED = ("plant2_summer2026_Ca2.9.json", "plant2_summer2026_dir.json")
+ADOPTED = ("plant2_summer2026_Ca2.9_tau120_tau90_ev5_dir.json", "plant2_summer2026_Ca2.9_tau240_tau90_ev5_dir.json")
 LHT_INDOOR = {
     "LHT65-02 (1/4)": "lht65_02_2026-06-01_2026-09-17.csv",
     "LHT65-03 (3/4)": "lht65_03_2026-06-01_2026-09-17.csv",
@@ -319,6 +321,100 @@ def ns9_wind_speed(ds):
                   % (name, WINDY_MS, s.sum(), days, np.median(exc[s])))
 
 
+def m3_openings_by_wind(ds):
+    """Daytime M3 openings with the wind over the half hour around each one."""
+    out = []
+    for ts, ch, v in ds.log.relay:
+        if ch != 2 or RELAY_TO_CH.get(v) != CH_MOVING_OPEN or not (DAYTIME[0] <= ts.hour < DAYTIME[1]):
+            continue
+        i0 = index_at(ds, ts)
+        if i0 + 60 >= len(ds) or ds.stale[i0] or not ds.wind_valid[i0]:
+            continue
+        if np.any(np.diff(ds.t_s[i0:i0 + 60]) > 90):
+            continue
+        w = slice(max(i0 - 10, 0), i0 + 50)
+        a = np.deg2rad(ds.wind_dir[w])
+        d = (np.rad2deg(np.arctan2(np.sin(a).mean(), np.cos(a).mean())) + 360.0) % 360.0
+        out.append({"i": i0, "t": ts, "dir": d, "ms": float(np.median(ds.wind_ms[w])),
+                    "doors": bool(np.any(ds.door1[i0:i0 + 60] + ds.door2[i0:i0 + 60] > 0))})
+    return out
+
+
+def m3_wind(ds):
+    """How much the controller's reading drops after M3 opens, by the wind (NS-9, NS-10).
+
+    Logged only: the drop at 5/10/15/25 min after each daytime M3 opening, by
+    sector, 30-deg bin, month and speed; then the indoor LoRa sensors, which
+    tell a house-wide effect from one local to the controller's sensor.
+    """
+    k = np.array([10, 20, 30, 50])          # 5, 10, 15, 25 min
+    ev = m3_openings_by_wind(ds)
+
+    def show(label, sel):
+        if len(sel) < 6:
+            print("  %-26s n %3d" % (label, len(sel)))
+            return
+        r = np.median(np.array([ds.T_in[e["i"] + k] - ds.T_in[e["i"]] for e in sel]), axis=0)
+        print("  %-26s n %3d  %.1f m/s | %s" % (label, len(sel), np.median([e["ms"] for e in sel]),
+                                              " ".join("%+5.2f" % x for x in r)))
+
+    windy = [e for e in ev if e["ms"] >= WINDY_MS]
+    print("== M3WIND logged drop after a daytime M3 opening at 5/10/15/25 min (wind valid era)")
+    print("  by sector, >= %.0f m/s" % WINDY_MS)
+    for name, lo, hi in SECT4:
+        show(name, [e for e in windy if ((e["dir"] >= lo) | (e["dir"] < hi) if lo > hi
+                                         else (lo <= e["dir"] < hi))])
+    show("calm, < %.0f m/s" % WINDY_MS, [e for e in ev if e["ms"] < WINDY_MS])
+    print("  by 30-deg bin, >= %.0f m/s" % WINDY_MS)
+    for lo in range(-15, 345, 30):
+        show("%3d-%3d deg" % (lo % 360, (lo + 30) % 360), [e for e in windy if (e["dir"] - lo) % 360 < 30])
+    print("  north (315-45) against the rest, within a month and at a speed")
+    for m in (6, 7, 8, 9):
+        show("month %d, north" % m, [e for e in windy if e["t"].month == m and windward(e["dir"])])
+        show("month %d, other" % m, [e for e in windy if e["t"].month == m and not windward(e["dir"])])
+    for lo, hi in ((1, 2), (2, 3), (3, 9)):
+        show("%d-%d m/s, north" % (lo, hi), [e for e in windy if lo <= e["ms"] < hi and windward(e["dir"])])
+        show("%d-%d m/s, other" % (lo, hi), [e for e in windy if lo <= e["ms"] < hi and not windward(e["dir"])])
+    show("north, doors shut", [e for e in windy if windward(e["dir"]) and not e["doors"]])
+    show("other, doors shut", [e for e in windy if not windward(e["dir"]) and not e["doors"]])
+
+    sensors = {name: dataset._read_lora(dataset.CAMPAIGN / fn, ("airTemperature",))
+               for name, fn in LHT_INDOOR.items()}
+    bins = ((0, 10), (10, 20), (20, 30), (30, 40))
+
+    def fg_at(t):
+        x = (t - dataset.EPOCH).total_seconds()
+        i = int(np.searchsorted(ds.t_s, x))
+        return ds.T_in[i] if 0 < i < len(ds) and abs(ds.t_s[i] - x) <= 60 else None
+
+    print("  indoor LoRa sensors: change from the last reading before the opening, at 0-10/10-20/"
+          "20-30/30-40 min")
+    for grp, sel in (("north", [e for e in windy if windward(e["dir"])]),
+                     ("other", [e for e in windy if not windward(e["dir"])])):
+        for name, rows in sensors.items():
+            rt = [r[0] for r in rows]
+            acc = {b: ([], []) for b in bins}
+            n = 0
+            for e in sel:
+                j0 = int(np.searchsorted(rt, e["t"])) - 1
+                if j0 < 0 or (e["t"] - rt[j0]).total_seconds() > 700:
+                    continue
+                before = fg_at(rt[j0])
+                if before is None:
+                    continue
+                n += 1
+                for j in range(j0 + 1, min(j0 + 6, len(rows))):
+                    m = (rt[j] - e["t"]).total_seconds() / 60
+                    f = fg_at(rt[j])
+                    for b in bins:
+                        if b[0] <= m < b[1] and f is not None:
+                            acc[b][0].append(rows[j][1] - rows[j0][1])
+                            acc[b][1].append(f - before)
+            print("    %-5s %-15s n %3d  LoRa %s | controller %s"
+                  % (grp, name, n, " ".join("%+5.2f" % np.median(acc[b][0]) for b in bins),
+                     " ".join("%+5.2f" % np.median(acc[b][1]) for b in bins)))
+
+
 def ladder(_ds=None):
     """Heat loss to outside per ventilation step, from the fitted parameters alone.
 
@@ -360,6 +456,7 @@ SECTIONS = {
     "F11": f11_windward_minutes,
     "F12": f12_indoor_lora,
     "NS9": ns9_wind_speed,
+    "M3WIND": m3_wind,
     "LADDER": ladder,
 }
 NO_DATASET = {"LADDER"}

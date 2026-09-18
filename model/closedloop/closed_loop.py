@@ -419,7 +419,8 @@ def run_closed_loop(ds, lo, hi, plant_kind, params, args):
             act.openness("mean", now)
         elif plant_kind == "two":
             o = act.openness("mean", now)
-            T, RH = plant.step(o, ds.door1[i] + ds.door2[i], ds.wind_dir[i], ds.T_out[i],
+            wdir = ds.wind_dir[i] if ds.wind_valid[i] else float("nan")   # as plant2.Prepared
+            T, RH = plant.step(o, ds.door1[i] + ds.door2[i], wdir, ds.T_out[i],
                                ds.AH_out[i], ds.lux[i], ds.dt[i])
         else:
             T, RH = plant.step(act.openness(args.openness, now), ds.T_out[i], ds.RH_out[i],
@@ -531,6 +532,28 @@ def summarise(days):
     block("held-out days", [d for d in days if d[1]])
 
 
+def swing_split(days):
+    """The swing by wind and doors (NS-10): where a plant's limit cycle is too shallow.
+
+    North wind: at least half of the day's logged M3-open time had wind from
+    315-45 deg, M3's side. Doors: open for at least a fifth of the day.
+    """
+    def med(sel, i):
+        v = [d[i]["swing"] for d in sel if d[i]["swing"] is not None]
+        return (statistics.median(v), len(v)) if v else (None, 0)
+
+    print()
+    print("  swing by condition, logged / simulated (median of the per-day swings):")
+    for label, sel in (
+            ("north wind", [d for d in days if d[6] is not None and d[6] >= 50]),
+            ("other wind", [d for d in days if d[6] is not None and d[6] < 50]),
+            ("doors shut", [d for d in days if d[5] < 20]),
+            ("a door open", [d for d in days if d[5] >= 20])):
+        (wl, nl), (ws, ns) = med(sel, 2), med(sel, 3)
+        if nl and ns:
+            print("  %-12s %4.1f / %4.1f degC   (on %d / %d days)" % (label, wl, ws, nl, ns))
+
+
 def reproduce(args):
     import dataset as dsmod
     start = _parse_local(args.start)
@@ -590,12 +613,11 @@ def reproduce(args):
         door = 100.0 * sum(r["door"] for r in rs) / len(rs)
         sb = sum(r["standby"] for r in rs) * 0.5
         m3_open = [r for r in rs if _code(r["bm_log"], 2) != 0]
-        windward = ("%3.0f" % (100.0 * sum(1 for r in m3_open
-                                          if r["wind_dir"] >= 315 or r["wind_dir"] < 45)
-                               / len(m3_open))
-                    if m3_open and day >= WIND_VALID_FROM.date() else "  -")
+        n_pct = (100.0 * sum(1 for r in m3_open if r["wind_dir"] >= 315 or r["wind_dir"] < 45)
+                 / len(m3_open)) if m3_open and day >= WIND_VALID_FROM.date() else None
+        windward = "%3.0f" % n_pct if n_pct is not None else "  -"
         held = rs[0]["held_out"]
-        days.append((day, held, lg, sm, rmse))
+        days.append((day, held, lg, sm, rmse, door, n_pct))
 
         def f(x, fmt="%5.0f"):
             return fmt % x if x is not None else "    -"
@@ -607,6 +629,7 @@ def reproduce(args):
                  f(lg["cycle_min"]), f(sm["cycle_min"]),
                  f(lg["swing"], "%4.1f"), f(sm["swing"], "%4.1f")))
     summarise(days)
+    swing_split(days)
     for i, name in enumerate(("M1", "M2", "M3")):
         n = act.ch[i].n
         print("  sim %s: %d drives, %d reversals, %d dwell deferrals, %d in-travel deferrals"

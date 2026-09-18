@@ -17,11 +17,27 @@
  *   Q     = (ach_inf + ach) * V/3600                                    [m3/s]
  *   E     = e0 + e1*lux                                                 [kg/s]
  *   ach_m3(dir) = ach_m3 + m3_ww * max(0, cos(dir - m3_dir0))           m3_ww = 0: no direction
+ *                                                  (a NaN direction -- no valid vane -- adds nothing)
  *
  * o1..o3 are the windows' openness 0..1 over the step, doors the number of
  * open doors. UA0 is everything that leaks heat with the house shut (cover
  * conduction plus infiltration); ach_inf is the air-exchange part of it,
  * which only the humidity can tell apart. AH is capped at saturation at Ta.
+ *
+ * The sensor stage (NS-10, 2026-09-18). The controller's FG6485A hangs in
+ * the centre of the house, and its reading follows a change at the windows
+ * some minutes late: after an M3 command the logged temperature barely moves
+ * for 3-4 min, closing as well as opening, where an air node alone answers
+ * at once. Ta_out and AH_out are therefore what the SENSOR reads: the air
+ * node through two first-order lags in series,
+ *
+ *   tau_s1 dS1/dt = X - S1,   tau_s2 dS2/dt = S1 - S2,   reading = S2
+ *
+ * for X = Ta and X = AH alike (one probe). tau_s1 = tau_s2 = 0 passes the
+ * air node straight through -- every artifact fitted before the stage
+ * existed -- and the closed loop's controller reads the same S2.
+ * Two lags approximate the mix of transport delay and probe lag the logs
+ * show without a delay line, so the step-wise closed loop stays exact.
  *
  * Backward Euler over each step's own dt: stable for any time constant,
  * which a fit exploring small air capacities needs. Fitting and replay use
@@ -50,8 +66,15 @@ enum {
     P_ACH_M1, P_ACH_M2, P_ACH_M3, P_ACH_DOOR,
     P_KA, P_KS, P_V, P_ACH_INF, P_E0, P_E1,
     P_M3_WW, P_M3_DIR0,
+    P_TAU_S1, P_TAU_S2,          /* sensor stage, s; appended so older vectors stay valid */
     P_COUNT
 };
+
+/* One first-order lag over a step of h seconds; tau <= 0 passes x through. */
+static double lag(double s, double x, double tau, double h)
+{
+    return tau > 0.0 ? s + (1.0 - exp(-h / tau)) * (x - s) : x;
+}
 
 #define RHO_AIR 1.2
 #define CP_AIR  1005.0
@@ -72,9 +95,9 @@ static double ah_sat(double t)
 /**
  * @brief Run n steps.
  *
- * state[3] = {Ta, Ts, AH}, read at entry and written back at exit, so a
- * caller can advance one step at a time (the closed loop) or a whole summer
- * at once (the fit). restart[i]:
+ * state[7] = {Ta, Ts, AH, sensor T1, sensor T2, sensor AH1, sensor AH2}, read
+ * at entry and written back at exit, so a caller can advance one step at a
+ * time (the closed loop) or a whole summer at once (the fit). restart[i]:
  *   1  full restart: Ta and AH take the measurement, Ts the measured air
  *      temperature (the best guess there is); the step is not advanced --
  *      the calibrator's convention for a new segment. Used at data gaps.
@@ -83,6 +106,8 @@ static double ah_sat(double t)
  *      air state -- the short-horizon dynamics a controller acts on --
  *      instead of a season-long free run, which rewards a sluggish air node
  *      because it smooths over input transients it cannot time.
+ * Either restart also sets the sensor stage to the measurement.
+ * Ta_out and AH_out receive the sensor's reading (see the header).
  *
  * @return 0, or -1 on a parameter that makes the system meaningless.
  */
@@ -104,16 +129,25 @@ P2_EXPORT int p2_run(int n, const double *p,
         return -1;
     }
 
+    if (p[P_TAU_S1] < 0.0 || p[P_TAU_S2] < 0.0) {
+        return -1;
+    }
+
     double Ta = state[0], Ts = state[1], AH = state[2];
+    double sT1 = state[3], sT2 = state[4], sH1 = state[5], sH2 = state[6];
 
     for (int i = 0; i < n; i++) {
         if (restart != 0 && restart[i] == 1) {
             Ta = Ta_meas[i];
             Ts = Ta_meas[i];
             AH = AH_meas[i];
+            sT1 = sT2 = Ta;
+            sH1 = sH2 = AH;
         } else if (restart != 0 && restart[i] == 2) {
             Ta = Ta_meas[i];
             AH = AH_meas[i];
+            sT1 = sT2 = Ta;
+            sH1 = sH2 = AH;
         } else {
             const double h = dt[i];
             double ach_m3 = p[P_ACH_M3];
@@ -145,14 +179,23 @@ P2_EXPORT int p2_run(int n, const double *p,
             if (AH > sat) {
                 AH = sat;
             }
+
+            sT1 = lag(sT1, Ta, p[P_TAU_S1], h);
+            sT2 = lag(sT2, sT1, p[P_TAU_S2], h);
+            sH1 = lag(sH1, AH, p[P_TAU_S1], h);
+            sH2 = lag(sH2, sH1, p[P_TAU_S2], h);
         }
-        if (Ta_out) { Ta_out[i] = Ta; }
+        if (Ta_out) { Ta_out[i] = sT2; }
         if (Ts_out) { Ts_out[i] = Ts; }
-        if (AH_out) { AH_out[i] = AH; }
+        if (AH_out) { AH_out[i] = sH2; }
     }
 
     state[0] = Ta;
     state[1] = Ts;
     state[2] = AH;
+    state[3] = sT1;
+    state[4] = sT2;
+    state[5] = sH1;
+    state[6] = sH2;
     return 0;
 }

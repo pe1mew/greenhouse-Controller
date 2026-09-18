@@ -11,6 +11,10 @@ There is ONE implementation of the equations -- the C loop. The closed loop
 calls it with n = 1 and carries the state in Python, so the plant it
 simulates is exactly the plant that was fitted.
 
+What the kernel returns as T and AH is what the SENSOR reads: the air node
+through the sensor stage (tau_s1, tau_s2; NS-10). With both at 0 -- every
+artifact fitted before the stage existed -- that is the air node itself.
+
 Volume: V is a unit convention here, not a free parameter. Heat flows are
 in W/K and do not depend on it; the ach figures and E/V do. It is fixed at
 the adopted artifact's 2 400 m3 so the two models' ach numbers compare.
@@ -32,7 +36,9 @@ KERNEL_DLL = BUILD_DIR / "plant2.dll"
 
 # Mirrors the enum in plant2_kernel.c.
 PARAMS = ["Ca_MJ", "Cs_MJ", "Gas", "Gso", "UA0", "ach_m1", "ach_m2", "ach_m3",
-          "ach_door", "ka", "ks", "V", "ach_inf", "e0", "e1", "m3_ww", "m3_dir0"]
+          "ach_door", "ka", "ks", "V", "ach_inf", "e0", "e1", "m3_ww", "m3_dir0",
+          "tau_s1", "tau_s2"]
+N_STATE = 7   # Ta, Ts, AH, then the sensor stage: T1, T2, AH1, AH2
 V_FIXED = 2400.0
 
 # Fit bounds: wide, and physical where physics gives a limit. ka/ks in W per
@@ -53,6 +59,8 @@ BOUNDS = {
     "e0":       (0.0, 0.05),
     "e1":       (0.0, 2e-6),
     "m3_ww":    (0.0, 60.0),
+    "tau_s1":   (0.0, 900.0),
+    "tau_s2":   (0.0, 900.0),
 }
 
 _D = ctypes.POINTER(ctypes.c_double)
@@ -117,11 +125,13 @@ class Prepared:
         self.dt, self.To, self.AHo, self.lux = f(ds.dt), f(ds.T_out), f(ds.AH_out), f(ds.lux)
         self.o = [f(ds.o[:, k]) for k in range(3)]
         self.doors = f(ds.door1 + ds.door2 if doors is None else doors)
-        self.wdir = f(ds.wind_dir)
+        # No valid direction before the vane's commissioning: NaN, which the
+        # kernel's cos > 0 test reads as "no windward term".
+        self.wdir = f(np.where(ds.wind_valid, ds.wind_dir, np.nan))
         self.restart = np.ascontiguousarray(anchors(ds, horizon_s))
         self.Tm, self.AHm = f(ds.T_in), f(ds.AH_in)
         self.Ta, self.Ts, self.AH = np.empty(self.n), np.empty(self.n), np.empty(self.n)
-        self.state = np.zeros(3)
+        self.state = np.zeros(N_STATE)
         self.ptrs = [_ptr(x) for x in (self.dt, self.To, self.AHo, self.lux, self.o[0], self.o[1],
                                        self.o[2], self.doors, self.wdir)]
         self.tail = [self.restart.ctypes.data_as(_B), _ptr(self.Tm), _ptr(self.AHm),
@@ -137,7 +147,8 @@ def run(params, ds, doors=None, prep=None):
     """
     prep = prep or Prepared(ds, doors)
     p = vector(params) if isinstance(params, dict) else params
-    prep.state[:] = (prep.Tm[0], prep.Tm[0], prep.AHm[0])
+    prep.state[:] = (prep.Tm[0], prep.Tm[0], prep.AHm[0],
+                     prep.Tm[0], prep.Tm[0], prep.AHm[0], prep.AHm[0])
     rc = lib().p2_run(prep.n, _ptr(p), *prep.ptrs, *prep.tail)
     if rc != 0:
         raise ValueError("p2_run rejected the parameters")
@@ -150,7 +161,7 @@ class Plant2:
     def __init__(self, params):
         self.params = dict(params)
         self.p = vector(self.params)
-        self.state = np.zeros(3)
+        self.state = np.zeros(N_STATE)
         self._buf = {k: np.zeros(1) for k in ("dt", "To", "AHo", "lux", "o1", "o2", "o3",
                                                "doors", "wdir", "Ta", "Ts", "AH")}
 
@@ -160,7 +171,8 @@ class Plant2:
             return cls(json.load(fh)["params"])
 
     def reset(self, T0, AH0, Ts0=None):
-        self.state[:] = (T0, T0 if Ts0 is None else Ts0, AH0)
+        """From a measurement: the air node and the sensor stage both take it."""
+        self.state[:] = (T0, T0 if Ts0 is None else Ts0, AH0, T0, T0, AH0, AH0)
 
     def step(self, openness, doors, wind_dir, T_out, AH_out, lux, dt=30.0):
         b = self._buf
@@ -173,8 +185,12 @@ class Plant2:
                           _ptr(self.state), _ptr(b["Ta"]), _ptr(b["Ts"]), _ptr(b["AH"]))
         if rc != 0:
             raise ValueError("p2_run rejected the parameters")
-        T = float(self.state[0])
-        return T, float(rh_from_ah(self.state[2], T))
+        T = float(self.state[4])                        # what the sensor reads
+        return T, float(rh_from_ah(self.state[6], T))
+
+    @property
+    def T_air(self):
+        return float(self.state[0])
 
     @property
     def T_structure(self):

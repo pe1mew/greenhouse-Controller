@@ -1,7 +1,7 @@
 """
 refit.py -- fit the two-node plant to 5C88's summer, judged on days it never saw.
 
-    python model/closedloop/refit.py fit [--direction] [--door1 closed|mask] [--quick]
+    python model/closedloop/refit.py fit [--direction] [--sensor] [--door1 closed|mask] [--quick]
     python model/closedloop/refit.py show ARTIFACT.json
 
 What is fitted, and on what
@@ -69,6 +69,12 @@ FIT = [
     ("e1",       0.0,   2e-6,  False),
 ]
 DIRECTION = ("m3_ww", 0.0, 60.0, False)
+# Where M3's windward lobe points, deg (0 = north). NS-10: the logged M3 response
+# is strongest with wind from 315-345 deg, not from due north.
+DIRECTION_CENTRE = ("m3_dir0", -90.0, 90.0, False)
+# The sensor stage (plant2_kernel.c): two lags between the air node and the
+# reading, s. NS-10: the logged reading answers an M3 command 3-4 min late.
+SENSOR = [("tau_s1", 0.0, 900.0, False), ("tau_s2", 0.0, 900.0, False)]
 W_AH = 1.0            # 1 g/m3 of AH error weighs as much as 1 degC
 BURN_IN_S = 86400.0
 
@@ -202,7 +208,8 @@ def describe(params):
         % (ua_closed, plant2.cover_ua(params), params["ach_inf"]),
         "  windows         ach_m1 = ach_m2 %.2f /h, ach_m3 %.2f /h%s, a door %.2f /h"
         % (params["ach_m1"], params["ach_m3"],
-           (" + %.2f /h x cos(windward angle)" % params["m3_ww"]) if params.get("m3_ww") else "",
+           (" + %.2f /h x cos(wind from %.0f deg)" % (params["m3_ww"], params.get("m3_dir0", 0.0) % 360))
+           if params.get("m3_ww") else "",
            params["ach_door"]),
         "  all open        UA %.0f W/K" % ua_open,
         "  air time const  %.1f min shut, %.1f min all open (Ca / (UA + Gas))"
@@ -212,6 +219,9 @@ def describe(params):
         "  moisture        E = %.1f kg/h + %.1f kg/h per 10 klux"
         % (params["e0"] * 3600, params["e1"] * 1e4 * 3600),
     ]
+    if params.get("tau_s1") or params.get("tau_s2"):
+        lines.append("  sensor stage    lags of %.0f s and %.0f s between the air and the reading"
+                     % (params.get("tau_s1", 0.0), params.get("tau_s2", 0.0)))
     return "\n".join(lines)
 
 
@@ -231,7 +241,9 @@ def fit(args):
     for item in args.fix or []:
         name, _, value = item.partition("=")
         fixed[name] = float(value)
-    spec = [s for s in FIT + ([DIRECTION] if args.direction else []) if s[0] not in fixed]
+    spec = [s for s in FIT + ([DIRECTION] if args.direction else [])
+            + ([DIRECTION_CENTRE] if args.dir0 else [])
+            + (SENSOR if args.sensor else []) if s[0] not in fixed]
     if fixed:
         print("  fixed: %s" % ", ".join("%s = %g" % kv for kv in fixed.items()))
     prep = plant2.Prepared(ds, horizon_s=args.horizon_min * 60.0)
@@ -272,10 +284,21 @@ def fit(args):
         return v if np.isfinite(v) else 1e6
 
     bounds = space(spec)
+    x0 = None
+    if args.init:
+        # Seed the search with an artifact's solution (a parameter it lacks starts
+        # at its lower bound, e.g. m3_ww = 0): the result then cannot be worse
+        # than the artifact on this objective -- a nested model included.
+        with open(args.init) as fh:
+            seed_params = json.load(fh)["params"]
+        x0 = np.clip(encode({n: seed_params.get(n, lo) if not lg else max(seed_params.get(n, lo), lo)
+                             for n, lo, _, lg in spec}, spec),
+                     [b[0] for b in bounds], [b[1] for b in bounds])
+        print("  search seeded with %s (loss %.4f)" % (Path(args.init).name, loss(x0)))
     res = differential_evolution(loss, bounds, seed=42, popsize=(8 if args.quick else 15),
                                  maxiter=(40 if args.quick else 200), tol=1e-7,
                                  mutation=(0.5, 1.0), recombination=0.7, init="sobol",
-                                 polish=False, updating="deferred", workers=1)
+                                 polish=False, updating="deferred", workers=1, x0=x0)
     print("  differential evolution: loss %.4f after %d generations (%.0f s)"
           % (res.fun, res.nit, time.time() - t0))
     pol = minimize(loss, res.x, method="L-BFGS-B", bounds=bounds)
@@ -304,12 +327,14 @@ def fit(args):
     print("\n" + describe(full))
     report(result)
 
-    name = "plant2_summer2026%s%s%s%s%s.json" % (
+    name = "plant2_summer2026%s%s%s%s%s%s%s.json" % (
         "".join("_%s%g" % (k.split("_")[0], v) for k, v in fixed.items()),
         "_h%d" % args.horizon_min if args.horizon_min else "",
         "_ev%g" % args.event_weight if args.event_weight else "",
         "_dir" if args.direction else "",
-        "_door1mask" if args.door1 == "mask" else "")
+        "_dir0" if args.dir0 else "",
+        "_door1mask" if args.door1 == "mask" else "",
+        "_sens" if args.sensor else "")
     out = Path(args.out) if args.out else CAMPAIGN / "plant2" / name
     out.parent.mkdir(exist_ok=True)
     with open(out, "w") as fh:
@@ -321,7 +346,8 @@ def fit(args):
                          % (ds.t[0].date(), ds.t[-1].date())),
             "model": "plant2",
             "fitted": date.today().isoformat(),
-            "options": {"direction": args.direction, "door1": args.door1, "fixed": fixed,
+            "options": {"direction": args.direction, "dir0": args.dir0, "sensor": args.sensor,
+                        "door1": args.door1, "fixed": fixed,
                         "horizon_min": args.horizon_min, "event_weight": args.event_weight,
                         "w_ah": W_AH, "burn_in_s": BURN_IN_S},
             "params": {k: float(v) for k, v in full.items()},
@@ -361,22 +387,51 @@ def compare(args):
     """Several artifacts side by side: free-run scores and the M3 response."""
     ds = dataset.build()
     train, val = masks(ds, "closed")
-    rows = [("logged", None, m3_response(ds, ds.T_in))]
+    groups = m3_open_groups(ds)
+    rows = [("logged", None, m3_response(ds, ds.T_in), by_wind(ds.T_in, groups))]
     Ta1, AH1 = run_single_node(ds)
-    rows.append(("single node (adopted)", score(Ta1, AH1, ds, val), m3_response(ds, Ta1)))
+    rows.append(("single node (adopted)", score(Ta1, AH1, ds, val), m3_response(ds, Ta1),
+                 by_wind(Ta1, groups)))
     for path in args.artifacts:
         with open(path) as fh:
             p = json.load(fh)["params"]
         Ta, _, AH = (a.copy() for a in plant2.run(p, ds))
-        rows.append((Path(path).stem, score(Ta, AH, ds, val), m3_response(ds, Ta)))
-    print("  %-34s %-15s  %-26s %-26s" % ("", "held-out T RMSE", "M3 opens: dT 5/10/15/25",
-                                          "M3 closes: dT 5/10/15/25"))
-    for name, sc, r in rows:
-        print("  %-34s %-15s  %-26s %-26s"
+        rows.append((Path(path).stem, score(Ta, AH, ds, val), m3_response(ds, Ta),
+                     by_wind(Ta, groups)))
+    print("  %-40s %-15s  %-26s %-26s %s" % ("", "held-out T RMSE", "M3 opens: dT 5/10/15/25",
+                                              "M3 closes: dT 5/10/15/25",
+                                              "opens at 25 min: north / other wind"))
+    for name, sc, r, w in rows:
+        print("  %-40s %-15s  %-26s %-26s %+5.1f / %+5.1f"
               % (name, ("%.2f degC" % sc["T_rmse"]) if sc else "",
                  " ".join("%+5.1f" % x for x in r["opens"]),
-                 " ".join("%+5.1f" % x for x in r["closes"])))
+                 " ".join("%+5.1f" % x for x in r["closes"]), w[0], w[1]))
     return 0
+
+
+def m3_open_groups(ds):
+    """Daytime M3 openings in the wind-valid era at >= 1 m/s: (north 315-45, other)."""
+    from firmware import CH_MOVING_OPEN, RELAY_TO_CH
+    north, other = [], []
+    for ts, ch, v in ds.log.relay:
+        if ch != 2 or RELAY_TO_CH.get(v) != CH_MOVING_OPEN or not (8 <= ts.hour < 19):
+            continue
+        i0 = int(np.searchsorted(ds.t_s, (ts - dataset.EPOCH).total_seconds()))
+        if i0 + 60 >= len(ds) or ds.stale[i0] or not ds.wind_valid[i0] \
+                or np.any(np.diff(ds.t_s[i0:i0 + 60]) > 90):
+            continue
+        w = slice(max(i0 - 10, 0), i0 + 50)
+        if np.median(ds.wind_ms[w]) < 1.0:
+            continue
+        a = np.deg2rad(ds.wind_dir[w])
+        d = (np.rad2deg(np.arctan2(np.sin(a).mean(), np.cos(a).mean())) + 360.0) % 360.0
+        (north if d >= 315 or d < 45 else other).append(i0)
+    return north, other
+
+
+def by_wind(T, groups):
+    """Median drop 25 min after an M3 opening, north wind and other wind."""
+    return tuple(float(np.median(T[np.array(g) + 50] - T[np.array(g)])) for g in groups)
 
 
 def main(argv=None):
@@ -386,6 +441,10 @@ def main(argv=None):
     p = sub.add_parser("fit")
     p.add_argument("--direction", action="store_true",
                    help="add M3's windward term (m3_ww, north-facing wall)")
+    p.add_argument("--dir0", action="store_true",
+                   help="with --direction, also fit where the windward lobe points (m3_dir0)")
+    p.add_argument("--sensor", action="store_true",
+                   help="fit the sensor stage too (tau_s1, tau_s2): the reading lags the air")
     p.add_argument("--door1", choices=("closed", "mask"), default="closed")
     p.add_argument("--horizon-min", type=int, default=0,
                    help="score N-minute predictions (re-anchor the air node every N min); "
@@ -397,6 +456,9 @@ def main(argv=None):
                    help="re-anchor at every daytime M3 command and weigh the 30 min after "
                         "it (1 + L) times: fit the response the limit cycle is made of")
     p.add_argument("--quick", action="store_true", help="a small search, for testing")
+    p.add_argument("--init", metavar="ARTIFACT.json",
+                   help="seed the search with an artifact's parameters (a nested model's "
+                        "solution: the fit can then only improve on it)")
     p.add_argument("--out")
     p.set_defaults(fn=fit)
     p = sub.add_parser("show")
