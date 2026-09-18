@@ -1391,6 +1391,14 @@ the SD log for the whole window. All 12 strokes fell in the evening (19:05-23:35
 tested the rest path and the gate's stability rather than the detectors, and no late join occurred
 naturally. Detail in `bin/2.9.1/release-notes.md`.
 
+**Soak of 2.9.2-bench, PASSED 2026-09-18** (`bin/at_wp_soak.py`, 2344): 12.01 h, 18 judged
+strokes, every fault counter 0, no mode change, no reboot, and no rule 1 or rule 2 row in the SD
+log. 2.9.2 is gh#79's release and changes no sensor code, so this repeats the gate evidence on the
+next build. The strokes were made on purpose, by hand-set emulator temperatures and two LCD
+sessions, between 14:25 and 16:32. They include two manual reversals, a recalibration that started
+while M3 was still opening, and the at-end re-drive of another recalibration. Detail in
+`bin/2.9.2/release-notes.md`.
+
 **Not tested on hardware:** a reversal made by T3 itself, which takes the same T2 path, and a real
 device fault; the injection simulates the wiper-open reading.
 
