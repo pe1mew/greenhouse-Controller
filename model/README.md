@@ -111,6 +111,8 @@ The optimised firmware was released as **v1.16.22** (the bug fix) and **v1.16.23
 | `simulation_manual.md` | Full user manual for `simulation.py`: input formats, output formats, parameter overview, plot explanation |
 | `calibrate_plant.py` | Fits the plant model (effective heat capacity, transpiration, infiltration, solar gain coefficient) against real LHT65 sensor logs. CLI: `python calibrate_plant.py [--plot]` |
 | `generate_inputs_from_live.py` | Generates the five scenario CSVs (`input_S1`..`S5`) by selecting 24-hour slices from real sensor logs |
+| `closedloop/` | **Closed-loop simulator for verifying control algorithms** (2026-09-18): the calibrated plant, the firmware's T5/T2/T6 chain, and the control law compiled from `drivers/ventModel/` itself. Gated against the calibrator and against 5C88's logged decisions; its first reproduction shows the plant is too slow to reproduce the limit cycle. See [`closedloop/README.md`](closedloop/README.md) |
+| `vent_step_replay.py` | Replays T6's step decision from SD logs under candidate `hyst_t` / `avg_win_t`; refuses to project unless it reproduces >= 90 % of the logged T-demands |
 
 ### Settings files
 

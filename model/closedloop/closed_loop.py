@@ -1,0 +1,645 @@
+"""
+closed_loop.py -- the closed-loop greenhouse simulator: the calibrated plant,
+the firmware's control chain, and the control law from drivers/ventModel.
+
+    python model/closedloop/closed_loop.py gate-plant
+    python model/closedloop/closed_loop.py gate-control [LOG ...]
+    python model/closedloop/closed_loop.py reproduce --start 2026-06-20 --end 2026-07-11
+
+Why it exists
+-------------
+The plant model exists to verify control algorithms before they reach the
+greenhouse: the binary (stepped) law 5C88 runs today, and the linear M3 law
+(mode 2) once the new firmware and hardware can drive it. A simulator's
+verdict is only evidence if the simulator first reproduces what the real
+greenhouse did, so each layer has a gate, and the gates run in order:
+
+  gate-plant    The plant is the calibrator's. Stepping the adopted artifact
+                over the calibration input must reproduce
+                calibrate_plant_constrained.simulate_c6() to 1e-9, and with it
+                the published validation figures (T RMSE 1.19 degC on
+                Jun 19-25).
+  gate-control  The law and the firmware chain around it are the firmware's.
+                Fed the logged sensor readings, the stepped law behind
+                vent_model.h -- compiled from the firmware's own sources --
+                must reproduce the logged decisions at least as well as
+                vent_step_replay.py does: 96.8 % of 378 T-demands on the
+                Jul 13-29 logs (design/ventModelContract.md s.5 item 3).
+  reproduce     The loop closed: the simulated controller drives the
+                simulated plant through logged weather, and the outcome is
+                compared with what 5C88 did -- window openings, M3 time open,
+                temperatures, the limit cycle's period and swing. This is the
+                test the model has to pass before its verdict on a new law
+                means anything. It reports; the pass criterion is the
+                operator's to set once the first numbers are in.
+
+Nothing here talks to a unit: every input is a file already in the repo.
+ASCII-only output (Windows console is cp1252 -- see memory/gotcha-log.md).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import statistics
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+MODEL_DIR = HERE.parent
+for p in (HERE, MODEL_DIR):
+    if str(p) not in sys.path:
+        sys.path.insert(0, str(p))
+
+from firmware import (  # noqa: E402
+    SRC_T3, Actuator, Controller, RELAY_TO_CH, SensorLayer, lroundf,
+    profile_5c88, settings_5c88,
+)
+from logdata import CAL_INPUT, CAMPAIGN, load_outdoor, load_sd_logs  # noqa: E402
+from plant import ADOPTED, Plant  # noqa: E402
+from ventmodel import VentModel  # noqa: E402
+
+# The published figures the gates must reproduce.
+PUBLISHED_VAL_T_RMSE = 1.19        # campaignResults_summer2026.md s.1, artifact _comment
+REPLAY_BASELINE_PCT = 96.8         # campaignResults_summer2026.md F8, contract s.5 item 3
+REPLAY_BASELINE_N = 378
+DEFAULT_CONTROL_LOGS = str(CAMPAIGN / "2026-07-2*.log")
+PLANT_GATE_INPUT = CAMPAIGN / "calibration_input_2026-06-04_2026-07-04.csv"
+EPOCH = datetime(2026, 1, 1)
+
+
+def _ms(ts):
+    """The simulator's monotonic millisecond clock (wraps like T2's)."""
+    return int((ts - EPOCH).total_seconds() * 1000) & 0xFFFFFFFF
+
+
+def _unix(ts):
+    return int((ts - datetime(1970, 1, 1)).total_seconds())
+
+
+# ==========================================================================
+# gate-plant
+# ==========================================================================
+
+def gate_plant(args):
+    import numpy as np
+    from calibrate_plant_constrained import simulate_c6
+    from calibrate_plant_dynamic import (ah_from_rh, build_segments, ffill_bool,
+                                         load_calibration_input, resample_to_grid,
+                                         rmse_rh_stats, vent_mask_from_bitmask)
+
+    with open(args.artifact) as fh:
+        params = json.load(fh)
+    print("=== gate-plant: is the step-wise plant the calibrator's? ===")
+    print("  artifact : %s" % Path(args.artifact).name)
+    print("  input    : %s" % Path(args.input).name)
+
+    ts, T_in, RH_in, T_out, RH_out, lux, bm, valid = load_calibration_input(args.input)
+    (grid, gT_in, gRH_in, gT_out, gRH_out, glux, gbm_f), data_mask = \
+        resample_to_grid(ts, T_in, RH_in, T_out, RH_out, lux, bm.astype(float))
+    vm = vent_mask_from_bitmask(gbm_f.astype(np.int32))
+    seg_starts, seg_vent = build_segments(vm)
+
+    s1 = (params["k_solar_w_per_lux"], params["c_eff_mj_per_c"],
+          params["transpiration_kg_s"], params["ach_inf"], params["ach_m1"])
+    T_ref, RH_ref = simulate_c6(s1, params["ach_m3"], gT_out, gRH_out, glux,
+                                seg_starts, seg_vent)
+
+    def run(hold):
+        plant = Plant(params, hold_on_change=hold)
+        plant.reset(gT_out[0], float(ah_from_rh(gRH_out[0], gT_out[0])))
+        T = np.empty(len(grid))
+        RH = np.empty(len(grid))
+        for i in range(len(grid)):
+            o = (float(vm[i] & 1), float((vm[i] >> 1) & 1), float((vm[i] >> 2) & 1))
+            T[i], RH[i] = plant.step(o, gT_out[i], gRH_out[i], glux[i])
+        return T, RH
+
+    T_mine, RH_mine = run(hold=True)
+    dT = float(np.max(np.abs(T_mine - T_ref)))
+    dRH = float(np.max(np.abs(RH_mine - RH_ref)))
+    print("\n  equivalence over %d steps (hold_on_change=True):" % len(grid))
+    print("    max |T  - calibrator| = %.3g degC" % dT)
+    print("    max |RH - calibrator| = %.3g %%" % dRH)
+    eq_ok = dT < 1e-9 and dRH < 1e-9
+
+    def parse(s):
+        # calibrate_plant_constrained.py's own parse_utc(), so the validation
+        # mask is the one its published figures were computed on
+        return datetime.fromisoformat(s).replace(tzinfo=timezone.utc).timestamp()
+    in_val = (grid >= parse(args.val_start)) & (grid < parse(args.val_end))
+    val_mask = ffill_bool(ts, valid, grid) & data_mask & in_val
+    r = rmse_rh_stats(T_mine, RH_mine, gT_in, gRH_in, val_mask)
+    print("\n  validation week %s .. %s (%d valid rows):" % (args.val_start, args.val_end,
+                                                          int(val_mask.sum())))
+    print("    T RMSE %.2f degC (published %.2f)  95th %.2f  within +-1 %.1f %%  RH RMSE %.1f %%"
+          % (r[0], PUBLISHED_VAL_T_RMSE, r[2], r[4], r[1]))
+    pub_ok = abs(round(r[0], 2) - PUBLISHED_VAL_T_RMSE) < 1e-9
+
+    T_cl, RH_cl = run(hold=False)
+    r2 = rmse_rh_stats(T_cl, RH_cl, gT_in, gRH_in, val_mask)
+    print("\n  without the calibrator's hold (the closed loop's setting):")
+    print("    T RMSE %.2f degC  95th %.2f  within +-1 %.1f %%  RH RMSE %.1f %%"
+          % (r2[0], r2[2], r2[4], r2[1]))
+    print("    max |T difference| from the held version: %.3f degC"
+          % float(np.max(np.abs(T_cl - T_mine))))
+
+    ok = eq_ok and pub_ok
+    print("\n  %s" % ("PASS -- the plant is the calibrator's, and reproduces its published fit"
+                      if ok else "FAIL -- see the figures above"))
+    return 0 if ok else 1
+
+
+# ==========================================================================
+# gate-control
+# ==========================================================================
+
+def replay_decisions(data, law, settings_at=settings_5c88):
+    """Run T5 -> T4 -> T6 over the logged readings. Returns [(ts, Decision|None)].
+
+    Resets as the firmware does: a BOOT empties T5's averages and T6's steps;
+    an inhibit's onset resets T6's steps. Inhibits: the logged wind override,
+    T/RH sensor faults, and LCD admin sessions (STANDBY).
+    """
+    s = settings_at(data.samples[0][0])
+    sensor = SensorLayer(s)
+    ctl = Controller(law, s)
+    boots = list(data.boots)
+    bi = 0
+    out = []
+    for ts, t_c10, rh in data.samples:
+        booted = False
+        while bi < len(boots) and boots[bi] <= ts:
+            booted = True
+            bi += 1
+        s_now = settings_at(ts)
+        if s_now != ctl.s:
+            ctl.s = s_now
+        if booted:
+            sensor = SensorLayer(s_now)
+            ctl.reset()
+            ctl.prev_inhibited = False
+        meas = sensor.push_register(t_c10, rh * 10)
+        inhibited = data.override(ts) or data.tfault.contains(ts) or data.standby.contains(ts)
+        d = ctl.cycle(_ms(ts), _unix(ts), data.is_day(ts), meas, inhibited, actuator=None)
+        out.append((ts, d))
+    return out
+
+
+# A MODE row is stamped with dm_get_unix_time(), a cached clock that T4
+# refreshes only when it re-reads the RTC, about once a minute
+# (data_manager.cpp, read_rtc_and_seed_clock()). The row therefore belongs to
+# one of the samples in the minute AFTER its timestamp: measured against the
+# accurate RELAY clock over all 5C88 logs, 944 rows belong to the first
+# sample at or after the stamp and 792 to the one after that.
+MODE_CLOCK_WINDOW_S = 60
+
+
+def score_decisions(decisions, modes):
+    """Score the simulated decisions against the logged MODE rows.
+
+    Two pairings, reported side by side:
+      first  -- the row against the first cycle at or after its stamp: the
+                rule vent_step_replay.py uses, kept so the T-demand figure is
+                comparable with its 96.8 %;
+      window -- the row against every cycle in the minute after its stamp,
+                a hit if any of them made exactly that decision. This is the
+                resolution the log's clock actually has.
+    """
+    import bisect
+    ts_list = [t for t, _ in decisions]
+    r = {"n": 0, "inhibited": 0, "first_t": 0, "first_row": 0,
+         "window_t": 0, "window_row": 0, "misses": []}
+    win = timedelta(seconds=MODE_CLOCK_WINDOW_S)
+    for ts, step, step_t, step_rh in modes:
+        i = bisect.bisect_left(ts_list, ts)
+        if i >= len(ts_list):
+            continue
+        r["n"] += 1
+        logged = (step, step_t, step_rh)
+        d = decisions[i][1]
+        if d is None:
+            r["inhibited"] += 1
+        else:
+            r["first_t"] += d.step_t == step_t
+            r["first_row"] += (d.step, d.step_t, d.step_rh) == logged
+        cands = []
+        j = i
+        while j < len(ts_list) and ts_list[j] < ts + win:
+            if decisions[j][1] is not None:
+                cands.append(decisions[j][1])
+            j += 1
+        r["window_t"] += any(c.step_t == step_t for c in cands)
+        hit = any((c.step, c.step_t, c.step_rh) == logged for c in cands)
+        r["window_row"] += hit
+        if not hit:
+            r["misses"].append((ts, logged, [(c.step, c.step_t, c.step_rh) for c in cands]))
+    return r
+
+
+def gate_control(args):
+    logs = args.logs or [DEFAULT_CONTROL_LOGS]
+    data = load_sd_logs(logs)
+    law = VentModel(args.model)
+    print("=== gate-control: does the library law, in the firmware chain, make 5C88's decisions? ===")
+    print("  law      : %s v%d  (drivers/ventModel, via %s)" % (law.name, law.version,
+                                                                law.lib.path.name))
+    print("  logs     : %d files, %d readings, %d MODE rows, %d boots"
+          % (len(data.files), len(data.samples), len(data.modes), len(data.boots)))
+    print("  span     : %s .. %s" % (data.samples[0][0], data.samples[-1][0]))
+    s = settings_5c88(data.samples[-1][0])
+    print("  settings : t_max %d/%d hyst_t %d avg_win_t %d | rh_max %d/%d rh_min %d/%d "
+          "hyst_rh %d avg_win_rh %d cr_priority %d"
+          % (s.t_max_day, s.t_max_ngt, s.hyst_t, s.avg_win_t, s.rh_max_day, s.rh_max_ngt,
+             s.rh_min_day, s.rh_min_ngt, s.hyst_rh, s.avg_win_rh, s.cr_priority))
+
+    decisions = replay_decisions(data, law)
+    r = score_decisions(decisions, data.modes)
+    n = r["n"]
+    sim_rows = sum(1 for _, d in decisions if d is not None and d.logged)
+
+    def pct(k):
+        return 100.0 * r[k] / n if n else 0.0
+    t_pct = pct("first_t")
+
+    print("\n  logged MODE rows scored : %d  (%d fell in an inhibit)" % (n, r["inhibited"]))
+    print("  %-22s %8s %8s" % ("", "first", "window"))
+    print("  %-22s %7.1f%% %7.1f%%   <- vent_step_replay.py: %.1f %% of %d, first rule"
+          % ("T-demand reproduced", t_pct, pct("window_t"), REPLAY_BASELINE_PCT,
+             REPLAY_BASELINE_N))
+    print("  %-22s %7.1f%% %7.1f%%   (step, step_t and step_rh all equal)"
+          % ("whole row reproduced", pct("first_row"), pct("window_row")))
+    print("  MODE rows written       : %d simulated vs %d logged" % (sim_rows, len(data.modes)))
+    print("  (first = the cycle at or after the row's stamp; window = any cycle in the")
+    print("   %d s after it, the resolution of the clock MODE rows are stamped with)"
+          % MODE_CLOCK_WINDOW_S)
+    if args.show_misses:
+        print("\n  rows no cycle in their window reproduced (logged -> candidates):")
+        for ts, lg, cands in r["misses"][:args.show_misses]:
+            print("    %s  %s -> %s" % (ts, lg, cands if cands else "inhibited"))
+
+    is_default = not args.logs
+    ok = t_pct >= REPLAY_BASELINE_PCT if is_default else t_pct >= args.min_fit
+    print("\n  %s" % ("PASS" if ok else "FAIL"), end="")
+    if is_default:
+        print(" -- at least as good as vent_step_replay.py on the same logs"
+              if ok else " -- worse than vent_step_replay.py on the same logs")
+    else:
+        print(" (min %.1f %%)" % args.min_fit)
+    return 0 if ok else 1
+
+
+# ==========================================================================
+# reproduce
+# ==========================================================================
+
+STEP = timedelta(seconds=30)
+WIND_VALID_FROM = datetime(2026, 6, 19, 12, 0, 0)   # vane commissioning (thermalProfileCampaign.md s.9.11)
+
+
+def _parse_local(s, end=False):
+    """'2026-07-01' (a whole day) or '2026-07-01T12:00'."""
+    dt = datetime.fromisoformat(s)
+    if end and len(s) == 10:
+        dt += timedelta(days=1)
+    return dt
+
+
+def run_closed_loop(data, weather, params, start, end, args):
+    """Close the loop from start to end. Returns a list of per-step records.
+
+    Warm-up (args.warmup_h before start): the logged world drives everything
+    and the controller only listens, so T5's averages, T6's hysteresis state
+    and T2's dwell timers are what they were when the loop closes. At start
+    the plant takes the measured T and RH, and from then on the simulated
+    controller moves the simulated windows.
+
+    Taken from the log rather than simulated, because the plant cannot change
+    them: the wind override (T3), T/RH sensor faults, boots, and LCD admin
+    sessions -- during which the operator moved the windows by hand, so the
+    windows follow the logged RELAY rows.
+    """
+    from calibrate_plant_dynamic import ah_from_rh
+
+    law = VentModel(args.model)
+    s = settings_5c88(start)
+    act = Actuator(s, profile_5c88(start))
+    sensor = SensorLayer(s)
+    ctl = Controller(law, s)
+    plant = Plant(params, hold_on_change=args.calibrator_hold)
+
+    samples = [x for x in data.samples if start - timedelta(hours=args.warmup_h) <= x[0] <= end]
+    relay = [r for r in data.relay if samples[0][0] - timedelta(hours=1) <= r[0] <= end]
+    boots = [b for b in data.boots if samples[0][0] <= b <= end]
+    ri = bi = 0
+
+    def apply_relay_until(t):
+        nonlocal ri
+        while ri < len(relay) and relay[ri][0] <= t:
+            ts, ch, v = relay[ri]
+            if v in RELAY_TO_CH:
+                act.ch[ch].sync(RELAY_TO_CH[v], _ms(ts))
+            ri += 1
+
+    def boot_between(t0, t1):
+        nonlocal bi
+        hit = False
+        while bi < len(boots) and boots[bi] <= t1:
+            hit = hit or boots[bi] > t0
+            bi += 1
+        return hit
+
+    # ---- warm-up: listen only --------------------------------------------
+    prev = samples[0][0] - STEP
+    for ts, t_c10, rh in samples:
+        if ts >= start:
+            break
+        apply_relay_until(ts)
+        if boot_between(prev, ts):
+            sensor = SensorLayer(ctl.s)
+            ctl.reset()
+        ctl.s = settings_5c88(ts)
+        meas = sensor.push_register(t_c10, rh * 10)
+        inhibited = data.override(ts) or data.tfault.contains(ts) or data.standby.contains(ts)
+        ctl.cycle(_ms(ts), _unix(ts), data.is_day(ts), meas, inhibited, actuator=None)
+        prev = ts
+    apply_relay_until(start)
+
+    # ---- closed loop -------------------------------------------------------
+    w0 = weather.at(start)
+    plant.reset(w0.T_in, float(ah_from_rh(w0.RH_in, w0.T_in)))
+    logged_T = {ts: (t_c10, rh) for ts, t_c10, rh in data.samples}
+    log_series = sorted(logged_T)
+    import bisect
+    prev_override = data.override(start)
+    recs = []
+    t, prev = start, start - STEP
+    while t <= end:
+        now = _ms(t)
+        act.set_profile(profile_5c88(t))
+        ctl.s = settings_5c88(t)
+        act.advance(now)
+        if boot_between(prev, t):
+            sensor = SensorLayer(ctl.s)
+            ctl.reset()
+            act.close_all(now, SRC_T3)          # T2's boot CLOSE_ALL sweep
+        standby = data.standby.contains(t)
+        if standby:
+            apply_relay_until(t)                # the operator has the windows
+        else:
+            while ri < len(relay) and relay[ri][0] <= t:
+                ri += 1                         # the simulation has them
+
+        w = weather.at(t)
+        T, RH = plant.step(act.openness(args.openness), w.T_out, w.RH_out, w.lux)
+        k = bisect.bisect_right(log_series, t) - 1
+        log_tc10, log_rh = logged_T[log_series[k]]
+        rh_c10 = log_rh * 10 if args.rh_from_log else lroundf(RH * 10)
+        meas = sensor.push_register(lroundf(T * 10), rh_c10)
+
+        override = data.override(t)
+        if override and not prev_override:
+            act.close_all(now, SRC_T3)
+        prev_override = override
+        inhibited = override or data.tfault.contains(t) or standby
+        d = ctl.cycle(now, _unix(t), data.is_day(t), meas, inhibited, actuator=act)
+
+        wnd = data.wind.at(t, (0, 0))
+        recs.append({
+            "t": t, "T_sim": T, "RH_sim": RH, "T_log": log_tc10 / 10.0, "RH_log": log_rh,
+            "wind_ms": wnd[0] / 10.0, "wind_dir": wnd[1],
+            "T_out": w.T_out, "lux": w.lux, "door": w.door1 or w.door2,
+            "bm_sim": act.bitmask(), "bm_log": data.bitmask.at(t, 0) & 0x3F,
+            "pos_m3": act.ch[2].pos, "standby": standby, "override": override,
+            "step": d.step if d else None, "step_t": d.step_t if d else None,
+            "step_rh": d.step_rh if d else None,
+        })
+        prev, t = t, t + STEP
+    return recs, act, ctl
+
+
+def _code(bm, ch):
+    return (bm >> (2 * ch)) & 3
+
+
+def day_metrics(recs, key, t_m3):
+    """Window activity and temperature character of one run's records."""
+    out = {}
+    n = len(recs)
+    for ch, name in ((0, "M1"), (1, "M2"), (2, "M3")):
+        opens = 0
+        prev = _code(recs[0][key], ch)
+        open_ts = []
+        for r in recs[1:]:
+            c = _code(r[key], ch)
+            if prev == 0 and c in (1, 2):
+                opens += 1
+                open_ts.append(r["t"])
+            prev = c
+        out[name + "_opens"] = opens
+        out[name + "_open_h"] = sum(1 for r in recs if _code(r[key], ch) != 0) * STEP.total_seconds() / 3600
+        if ch == 2:
+            out["m3_open_ts"] = open_ts
+    Tk = "T_sim" if key == "bm_sim" else "T_log"
+    temps = [r[Tk] for r in recs]
+    out["T_max"] = max(temps)
+    out["T_mean"] = sum(temps) / n
+    out["h_above"] = sum(1 for x in temps if x >= t_m3) * STEP.total_seconds() / 3600
+    # limit-cycle character: the gaps between successive M3 openings, and the
+    # temperature swing inside each gap
+    gaps, swings = [], []
+    ots = out["m3_open_ts"]
+    for a, b in zip(ots, ots[1:]):
+        gap_min = (b - a).total_seconds() / 60
+        if gap_min <= 180:
+            gaps.append(gap_min)
+            seg = [r[Tk] for r in recs if a <= r["t"] < b]
+            if seg:
+                swings.append(max(seg) - min(seg))
+    out["cycle_min"] = statistics.median(gaps) if gaps else None
+    out["swing"] = statistics.median(swings) if swings else None
+    return out
+
+
+def reproduce(args):
+    start = _parse_local(args.start)
+    end = _parse_local(args.end, end=True) - STEP
+    data = load_sd_logs(str(CAMPAIGN / "*.log"))
+    weather = load_outdoor(args.weather)
+    if weather.ts[0] > start - timedelta(minutes=5) or weather.ts[-1] < end:
+        print("The outdoor data in %s covers %s .. %s only; a run to %s needs a fresh "
+              "export from the LoRa database first (fetch_lora_data.py + "
+              "prepare_calibration_input.py)." % (Path(args.weather).name, weather.ts[0],
+                                                   weather.ts[-1], end))
+        return 2
+    with open(args.artifact) as fh:
+        params = json.load(fh)
+
+    recs, act, ctl = run_closed_loop(data, weather, params, start, end, args)
+    s = settings_5c88(start)
+    t_m3 = s.t_max_day + 2 * max(1, s.hyst_t // 3) + 1     # vent_step_replay.m3_entry_temp()
+
+    print("=== reproduce: the binary law, closed over the calibrated plant ===")
+    print("  %s .. %s  |  law %s v%d  |  plant %s  |  openness=%s%s%s"
+          % (start, end, ctl.law.name, ctl.law.version, Path(args.artifact).name,
+             args.openness, "  |  RH from the log" if args.rh_from_log else "",
+             "  |  calibrator hold" if args.calibrator_hold else ""))
+    print("  firmware: %s" % ("gh#48 guard" if act.ch[0].profile.defer_in_travel
+                              else "pre-2.3.1 (T6 may reverse mid-stroke)"))
+    print("  'h>=%d' = hours at or above the M3 entry temperature (t_avg_c %d with "
+          "t_max %d, hyst_t %d)" % (t_m3, t_m3, s.t_max_day, s.hyst_t))
+    print()
+    print("  'N%%' = share of the logged M3-open time with wind from 315-45 deg (M3's windward"
+          " side; wind valid from 2026-06-19 12:00)")
+    print()
+    hdr = ("date        door  standby  N%%  | M3 opens  | M3 open h   | M1 opens | T max       "
+           "| h>=%d      | T RMSE bias  | M3 cycle min | swing degC" % t_m3)
+    print(hdr)
+    print("            %     min          | log  sim  | log   sim   | log sim  | log   sim   "
+          "| log   sim  |              | log   sim    | log  sim")
+    tot = {"lo": 0, "so": 0, "lh": 0.0, "sh": 0.0}
+    by_day = {}
+    for r in recs:
+        by_day.setdefault(r["t"].date(), []).append(r)
+    for day, rs in sorted(by_day.items()):
+        if len(rs) < 2000:          # partial day
+            continue
+        lg = day_metrics(rs, "bm_log", t_m3)
+        sm = day_metrics(rs, "bm_sim", t_m3)
+        err = [r["T_sim"] - r["T_log"] for r in rs]
+        rmse = (sum(e * e for e in err) / len(err)) ** 0.5
+        bias = sum(err) / len(err)
+        door = 100.0 * sum(r["door"] for r in rs) / len(rs)
+        sb = sum(r["standby"] for r in rs) * 0.5
+        m3_open = [r for r in rs if _code(r["bm_log"], 2) != 0]
+        windward = ("%3.0f" % (100.0 * sum(1 for r in m3_open
+                                          if r["wind_dir"] >= 315 or r["wind_dir"] < 45)
+                               / len(m3_open))
+                    if m3_open and day >= WIND_VALID_FROM.date() else "  -")
+
+        def f(x, fmt="%5.0f"):
+            return fmt % x if x is not None else "    -"
+        print("%s  %4.0f  %5.0f   %s  | %3d  %3d  | %5.1f %5.1f | %3d %3d  | %5.1f %5.1f | %4.1f  %4.1f | %4.2f %+5.2f | %s %s   | %s %s"
+              % (day, door, sb, windward, lg["M3_opens"], sm["M3_opens"], lg["M3_open_h"], sm["M3_open_h"],
+                 lg["M1_opens"], sm["M1_opens"], lg["T_max"], sm["T_max"],
+                 lg["h_above"], sm["h_above"], rmse, bias,
+                 f(lg["cycle_min"]), f(sm["cycle_min"]),
+                 f(lg["swing"], "%4.1f"), f(sm["swing"], "%4.1f")))
+        tot["lo"] += lg["M3_opens"]
+        tot["so"] += sm["M3_opens"]
+        tot["lh"] += lg["M3_open_h"]
+        tot["sh"] += sm["M3_open_h"]
+    print("\n  totals: M3 openings log %d / sim %d;  M3 open hours log %.1f / sim %.1f"
+          % (tot["lo"], tot["so"], tot["lh"], tot["sh"]))
+    for i, name in enumerate(("M1", "M2", "M3")):
+        n = act.ch[i].n
+        print("  sim %s: %d drives, %d reversals, %d dwell deferrals, %d in-travel deferrals"
+              % (name, n.starts, n.reversals, n.dwell_defers, n.travel_defers))
+
+    if args.csv:
+        import csv
+        with open(args.csv, "w", newline="") as fh:
+            wr = csv.DictWriter(fh, fieldnames=list(recs[0].keys()))
+            wr.writeheader()
+            wr.writerows(recs)
+        print("\n  wrote %s" % args.csv)
+    if args.plot:
+        plot_run(recs, args.plot, t_m3)
+        print("  wrote %s" % args.plot)
+    return 0
+
+
+def plot_run(recs, path, t_m3):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.dates as mdates
+    import matplotlib.pyplot as plt
+
+    t = [r["t"] for r in recs]
+    fig, ax = plt.subplots(3, 1, figsize=(15, 9), sharex=True,
+                           gridspec_kw={"height_ratios": [3, 1.6, 1]})
+    ax[0].plot(t, [r["T_log"] for r in recs], color="#1f77b4", lw=1.0, label="T_in logged")
+    ax[0].plot(t, [r["T_sim"] for r in recs], color="#d62728", lw=1.0, label="T_in simulated")
+    ax[0].plot(t, [r["T_out"] for r in recs], color="0.6", lw=0.8, label="T_out")
+    ax[0].axhline(t_m3, color="#ff7f0e", lw=0.8, ls="--", label="M3 entry (%d degC)" % t_m3)
+    ax[0].set_ylabel("degC")
+    ax[0].legend(loc="upper left", fontsize=8, ncol=4)
+    ax[0].grid(alpha=0.25)
+    for ch, name in enumerate(("M1", "M2", "M3")):
+        off = 2 - ch
+        ax[1].step(t, [off + 0.4 * (_code(r["bm_log"], ch) != 0) for r in recs], where="post",
+                   color="#1f77b4", lw=1.0, label="logged" if ch == 0 else None)
+        ax[1].step(t, [off + 0.45 * (_code(r["bm_sim"], ch) != 0) + 0.02 for r in recs],
+                   where="post", color="#d62728", lw=1.0, label="simulated" if ch == 0 else None)
+    ax[1].set_yticks([0.2, 1.2, 2.2])
+    ax[1].set_yticklabels(["M3", "M2", "M1"])
+    ax[1].legend(loc="upper left", fontsize=8, ncol=2)
+    ax[1].grid(alpha=0.25, axis="x")
+    ax[2].fill_between(t, 0, [r["lux"] / 1000 for r in recs], color="#e6a817", alpha=0.35,
+                       step="post")
+    door = [r["door"] for r in recs]
+    ax[2].fill_between(t, 0, 1, where=door, transform=ax[2].get_xaxis_transform(),
+                       color="#9467bd", alpha=0.15, label="a door open (not in the model)")
+    ax[2].set_ylabel("lux (k)")
+    ax[2].legend(loc="upper left", fontsize=8)
+    loc = mdates.AutoDateLocator()
+    ax[2].xaxis.set_major_locator(loc)
+    ax[2].xaxis.set_major_formatter(mdates.ConciseDateFormatter(loc))
+    fig.suptitle("Closed loop: the binary law over the calibrated plant, vs what 5C88 logged",
+                 fontsize=10)
+    fig.tight_layout()
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
+
+
+# ==========================================================================
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("gate-plant", help="the plant is the calibrator's")
+    p.add_argument("--artifact", default=str(ADOPTED))
+    p.add_argument("--input", default=str(PLANT_GATE_INPUT))
+    p.add_argument("--val-start", default="2026-06-18T22:00",
+                   help="as calibrate_plant_constrained.py --val-start takes it")
+    p.add_argument("--val-end", default="2026-06-25T22:00",
+                   help="as calibrate_plant_constrained.py --val-end takes it")
+    p.set_defaults(fn=gate_plant)
+
+    p = sub.add_parser("gate-control", help="the law + firmware chain make the logged decisions")
+    p.add_argument("logs", nargs="*", help="SD logs (default: the Jul 13-29 baseline set)")
+    p.add_argument("--model", default="stepped")
+    p.add_argument("--min-fit", type=float, default=90.0,
+                   help="pass mark for logs other than the baseline set")
+    p.add_argument("--show-misses", type=int, default=0, metavar="N")
+    p.set_defaults(fn=gate_control)
+
+    p = sub.add_parser("reproduce", help="close the loop over logged weather")
+    p.add_argument("--start", required=True, help="local date or datetime, e.g. 2026-06-20")
+    p.add_argument("--end", required=True, help="local date (inclusive) or datetime")
+    p.add_argument("--warmup-h", type=float, default=6.0)
+    p.add_argument("--model", default="stepped")
+    p.add_argument("--artifact", default=str(ADOPTED))
+    p.add_argument("--weather", default=str(CAL_INPUT),
+                   help="merged calibration input with outdoor T/RH/lux and doors")
+    p.add_argument("--openness", choices=("state", "position"), default="state",
+                   help="state = the calibrator's convention (default); position = the "
+                        "leaf's travelled fraction")
+    p.add_argument("--rh-from-log", action="store_true",
+                   help="feed the controller the LOGGED humidity, to separate the "
+                        "temperature loop from the plant's weak humidity model")
+    p.add_argument("--calibrator-hold", action="store_true",
+                   help="reproduce the calibrator's hold on every window change")
+    p.add_argument("--csv", help="write every step's record to this CSV")
+    p.add_argument("--plot", help="write a PNG of the run")
+    p.set_defaults(fn=reproduce)
+
+    args = ap.parse_args(argv)
+    return args.fn(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
