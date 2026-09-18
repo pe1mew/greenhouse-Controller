@@ -1385,6 +1385,12 @@ above ([gh#78](https://github.com/pe1mew/greenhouse-Controller/issues/78), Phase
 the first run. T2 drives on for its 5 s margin after the leaf stops, and still reports the stroke
 until then. The stale stage now asks for the second key only after the controller reports CLOSED.
 
+**Soak of the final 2.9.1-bench, PASSED 2026-09-18** (`bin/at_wp_soak.py`, 2344): 13.12 h, 12
+judged strokes, every fault counter 0, no mode change, no reboot, and no rule 1 or rule 2 row in
+the SD log for the whole window. All 12 strokes fell in the evening (19:05-23:35), so the night
+tested the rest path and the gate's stability rather than the detectors, and no late join occurred
+naturally. Detail in `bin/2.9.1/release-notes.md`.
+
 **Not tested on hardware:** a reversal made by T3 itself, which takes the same T2 path, and a real
 device fault; the injection simulates the wiper-open reading.
 

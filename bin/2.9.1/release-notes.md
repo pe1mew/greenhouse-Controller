@@ -127,6 +127,21 @@ All on 2344 in the dev rig, with the encoder connected, on bench builds of this 
   recalibration only about 2.5 s late (about 5.5 s at 17:44), so the old timing did not trip
   and the run passed. The stage now makes the late join on purpose, through the gate re-open
   code path.
+- **Overnight soak, PASSED** (`bin/at_wp_soak.py`, 2344, final `2.9.1-bench`, 2026-09-17 19:05:56
+  to 2026-09-18 08:12): **13.12 h, 12 judged strokes, `stall_faults`, `early_stops`,
+  `rejected_rate` and `err_comm` all 0, no mode change**, the gate in position mode throughout.
+  - **Continuous:** the unit booted at 18:57:57 and never again during the window.
+  - **The SD log agrees with the counters:** across both log files covering the window, no
+    `ALARM ch6` param 249 or 250 row, and no other alarm row at all (no sensor fault, wind
+    override or motor alarm). The two `LOG_SYSTEM` 25 rows are the sunset and sunrise day/night
+    flips.
+  - **The encoder's bus was clean:** 4 728 reads on address 40, no timeout, CRC or framing error.
+    Address 1 (the emulated T/RH) timed out 7 times in 1 572 reads, the known out-of-spec
+    emulator (gh#68); it raised no sensor-fault alarm.
+  - **What it did not exercise:** all 12 strokes fell between 19:05 and 23:35, and nothing moved
+    overnight, so the last 8.5 h tested the rest path and the gate's stability, not the
+    detectors. Nor did it produce a late join: no reboot and no gate re-open occurred, so that
+    path rests on the controlled `latejoin` test above.
 - **gh#73 still holds on this code** (`bin/at_wpos_fitted.py off`): the unit was switched off for 60 s, then on again. Address 40's count grew by 6. The limit is 6: a bench build's `commission_refresh()` adds 2 transactions when the gate opens, over the 4 a release build shows.
 - **Builds:** the release and bench builds compile. The source refuses the fail-first flag without `MODBUS_BENCH` (an `#error`), but no build tried it.
 - **Not tested on hardware:** a reversal made by T3's wind override itself (it uses the same T2 path as the LCD reversals tested here), and a real device fault (the injection simulates the wiper-open reading).
