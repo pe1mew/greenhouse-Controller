@@ -1,5 +1,16 @@
 """NS-9 step 1 — wind-direction-stratified per-segment ACH estimation.
 
+SUPERSEDED 2026-09-18. It fits a single-node plant to a calibration input whose
+outdoor columns are two hours late (the LoRa database stamps in UTC --
+model/lora_time.py), so it reproduces the WITHDRAWN per-segment ach_m3 values of
+thermalProfileCampaign.md §9.11 and is kept for that alone. The direction
+question on correctly timed data:
+
+    python model/closedloop/refit.py fit --direction          (the _dir plant)
+    python model/closedloop/campaign_figures.py --only NS9    (a model-free check)
+
+(thermalProfileCampaign.md §9.12.6).
+
 Method
 ------
 For every continuous window-state segment (>= MIN_SEG_MIN minutes) in the

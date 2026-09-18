@@ -1052,7 +1052,7 @@ This replaces §9.8's ACH tables. The air node's heat loss to outside at each st
 
 - **Adopted plants:** `campaign-summer-2026/plant2/plant2_summer2026_Ca2.9.json` (primary) and `plant2_summer2026_dir.json`. Verify a control law against both, and treat a verdict that differs between them as unsettled.
 - **The NS items:** NS-7 is a closed-loop question now, NS-8 dissolves and NS-9 stays open (above). A new NS-10 tracks the one closed-loop property not yet reproduced: the swing, 2.0–2.8 against 3.1–3.6 °C.
-- **The older campaign scripts read the shifted inputs.** `m3_event_study.py` and `ns9_direction_stratified.py` read `calibration_input_*.csv`, and `m3_jul11_analysis.py` reads an outdoor export from a session scratchpad outside the repo. Rerun as they are, they reproduce the withdrawn numbers. `wind_rose_speed_count.py` uses only the SD wind columns and stands.
+- **The older campaign scripts read the shifted inputs.** `m3_event_study.py` and `ns9_direction_stratified.py` read `calibration_input_*.csv`, and `m3_jul11_analysis.py` reads an outdoor export from a session scratchpad outside the repo. Rerun as they are, they reproduce the withdrawn numbers. `wind_rose_speed_count.py` uses only the SD wind columns and stands. Each now carries a header saying so and naming its replacement, and the first two were rerun: they reproduce §9.9's and §9.11's tables exactly.
 
 ### 9.4 Worked example — answering the "would dwell prevent the oscillation?" question
 

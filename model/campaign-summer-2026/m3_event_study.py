@@ -5,11 +5,21 @@ T_in / RH_in / lux / T_out slopes in the 15 min BEFORE vs the window AFTER
 (+3 min settle for motor travel, to +18 min). If M3 causes fast cooling, the
 post-open T slope should turn sharply negative RELATIVE TO the pre slope, and
 more so than for the M2 control events, after accounting for lux changes.
+
+SUPERSEDED 2026-09-18. The input's lux, T_out and door columns are two hours
+late (the LoRa database stamps in UTC -- model/lora_time.py), so this script
+reproduces the WITHDRAWN table of thermalProfileCampaign.md §9.9 ("a trigger
+artifact") and is kept for that alone. The event study on the correct clock:
+
+    python model/closedloop/campaign_figures.py --only F3
+
+(thermalProfileCampaign.md §9.12.4, campaignResults_summer2026.md F3).
 """
 import csv, math
 from datetime import datetime
+from pathlib import Path
 
-CSV = r"C:\Users\drasv\github\greenhouse-Controller\model\campaign-summer-2026\calibration_input_2026-06-04_2026-07-04.csv"
+CSV = Path(__file__).resolve().parent / "calibration_input_2026-06-04_2026-07-04.csv"
 
 rows = []
 with open(CSV) as f:

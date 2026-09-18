@@ -5,6 +5,16 @@ Per segment (all-closed controls + M3-only windows):
 - Best-fit ACH by simulating C_eff*dT/dt = k_solar*lux - P_transp - UA(ACH)*(T_in-T_out)
   over the segment from its measured starting T_in (grid scan on ACH).
 The all-closed segments calibrate the method (expect ~ach_inf=0.20/h).
+
+SUPERSEDED 2026-09-18, and not runnable from the repo: OUT below is an outdoor
+export in a session scratchpad, taken before the UTC correction (the LoRa
+database stamps in UTC -- model/lora_time.py), so the T_out and lux it used
+were two hours late. That is where §9.10's "T_in converged to T_out" came from.
+The Jul 11 windows on the correct clock:
+
+    python model/closedloop/campaign_figures.py --only F2
+
+(thermalProfileCampaign.md §9.12.4).
 """
 import csv, math
 from datetime import datetime

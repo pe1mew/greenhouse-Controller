@@ -5,6 +5,11 @@ Data: the seven M3-only segments >= 15 min in the wind-valid era
 (thermalProfileCampaign.md section 9.11). Compass convention: N up, clockwise.
 
 Output: m3_ach_polar.png (same directory).
+
+SUPERSEDED 2026-09-18: the plotted ach_m3 values are the WITHDRAWN single-node
+fits of thermalProfileCampaign.md §9.11 (outdoor data two hours late -- the LoRa
+database stamps in UTC). Kept to regenerate that figure only; §9.12.6 has the
+direction question on correctly timed data.
 """
 import math
 import matplotlib
