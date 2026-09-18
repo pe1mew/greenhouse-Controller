@@ -60,7 +60,7 @@ Nine variants were fitted: different objectives, a wind-direction term, and fixe
 
 **How firm these are.** The nine variants fit about equally well, yet their absolute values differ a lot: `ach_m3` ranges from 4.8 to 19.5 /h and `Ca` from 2.9 to 22 MJ/K. So the individual numbers are not identified. What holds in every variant is the ranking. **M3 ventilates about 4-8× as much as a roof window:** 3.8× in `_Ca2.9`, 8.1× in `_ev20`. In `_dir` it is 3.7× with the wind along or off its wall, and 10× with the wind straight onto it. The closed-loop behaviour below is the firm result.
 
-**Volume.** Every fit uses V = 2 400 m³, the first version's included; its text said 2 900 m³. Heat flows in W/K do not depend on the volume, but the ach figures scale with it.
+**Volume.** Every fit uses V = 2 400 m³, the first version's included; its text said 2 900 m³. 2 400 m³ is `design/technicalSpecification.md`'s figure, from the house's 40 × 16 m footprint, 3 m walls and 1.5 m roof rise. Heat flows in W/K do not depend on the volume, but the ach figures scale with it.
 
 ### Validation, open loop (held-out days, correctly timed data)
 
@@ -217,14 +217,14 @@ AC-9 and AC-10 compare every 30-s sample. A plant that is right about the loop b
 | Item | What | Why |
 |---|---|---|
 | ~~Audit trail~~ | ✅ Done 2026-09-18: `thermalProfileCampaign.md` §9.12 re-derives the findings and grades every earlier claim; §9.5-9.11 carry banners, Appendix A is updated (NS-10 added) | |
-| Old scripts and inputs | Regenerate `calibration_input_*.csv` with the corrected merge, under new names, keeping the old ones for traceability. Move `m3_event_study.py` and `ns9_direction_stratified.py` onto the new inputs, or retire them in favour of `closedloop/campaign_figures.py` | They read the shifted inputs, and `m3_event_study.py` reads them from the original checkout's path. Rerun as they are, they reproduce the withdrawn numbers |
+| ~~Old scripts and inputs~~ | ✅ Closed 2026-09-18. `m3_event_study.py`, `ns9_direction_stratified.py`, `m3_ach_polar.py` and `m3_jul11_analysis.py` carry a SUPERSEDED header naming their replacement. The first two were rerun and reproduce the withdrawn §9.9 and §9.11 tables exactly; `m3_event_study.py` now reads its input from this checkout. `wind_rose_speed_count.py` is marked unaffected, since it reads only SD columns. The old `calibration_input_*.csv` stay as the record (`gate-plant` reads one). No corrected merge is written, because nothing reads one: `closedloop/dataset.py` joins the raw data, and `prepare_calibration_input.py` builds one on demand | |
 | The swing (NS-10) | 2.0-2.8 against 3.1-3.6 °C. Candidates to test before any structural change: the sensor's own lag, the pre-2.1.3 timestamp noise, and the soil probes as a measured input | The one closed-loop property not yet reproduced |
 | NS-9 | Does direction matter, how much, and in what shape? `_dir` says 2.7× with north wind, `_Ca2.9` fits about as well without a term, and a crude check finds west wind worst (F2). Settle it with forced M3 tests **with the doors shut**, at matched or low sun, in north, west and south wind, and on top of M1+M2 as T6 uses M3 | Every forced test so far had door 1 open, and the two days differed in sun (F2) |
-| ~~NS-8~~ | ✅ Resolved 2026-07-12. **Qualified 2026-09-18:** M3 flushes the house in north wind, but the leeward "~nothing" is withdrawn (F2) | |
-| Door 1 | `lds01-5` last reported on 2026-08-16 at 09:57 local time (07:56 in the UTC export) | After that the door is assumed shut, and both plants fall short on M3 openings (F1) |
+| ~~NS-8~~ | ✅ Resolved 2026-07-12, **dissolved 2026-09-18**: its premise, that M3 is ineffective, is withdrawn. Jul 11's humidity flush stands (F2) | |
+| Door 1 | `lds01-5` last reported on 2026-08-16 at 09:57 local time (07:56 in the UTC export). Its last battery reading, 2.82 V, is above door 2's sensor, which still reports at 2.72 V, so a flat battery is not the obvious cause. **Needs a look on site** | After that the door is assumed shut, and both plants fall short on M3 openings (F1) |
 | Part-open M3 | The aperture-to-ventilation curve | Needs the new firmware and position hardware. Until then, vary it in the simulator |
-| Contract | `design/ventModelContract.md` §6 still quotes the withdrawn claims: "30–100", "0.05 /h ... south-west", "M3 also cycles when it barely ventilates", "the closed-loop simulation has never been run" | Change it on `main`, where Phase 5 works |
-| Volume | 2 400 m³ in the fits, 2 900 m³ in documents | Only matters for absolute ach |
+| ~~Contract~~ | ✅ Closed 2026-09-18 on this branch. `design/ventModelContract.md` §6 is rewritten on the corrected evidence, the volume reads 2 400 m³, and §9 item 9 no longer asks for a "leeward" week. `main`'s copy was identical, so the change reaches `main` at the next rebase | |
+| ~~Volume~~ | ✅ Closed 2026-09-18. 2 400 m³ is the design specification's figure (§1), and every fit uses it. The 2 900 m³ had no derivation; the contract now says 2 400, and only the superseded scripts still use 2 900 | |
 
 ## 5. Reproducibility
 

@@ -9,7 +9,7 @@
 | Audience | Whoever writes or tunes a control model — a separate session, a separate agent, or a person. **This document is meant to be read on its own** |
 | Scope decisions | [`integrateWindowPositionSensor.md`](integrateWindowPositionSensor.md) §5b (the two control modes, the position path) and §5c (the rules around this contract) |
 | Requirements | [`functionalRequirementsSpecification.md`](functionalRequirementsSpecification.md), and [`windowPositionSensorRequirements.MD`](windowPositionSensorRequirements.MD) FR-WP04/05/17/18 |
-| Evidence for tuning | [`../model/campaignResults_summer2026.md`](../model/campaignResults_summer2026.md), [`../model/thermalProfileCampaign.md`](../model/thermalProfileCampaign.md), SD logs in `../model/campaign-summer-2026/` |
+| Evidence for tuning | [`../model/campaignResults_summer2026.md`](../model/campaignResults_summer2026.md), [`../model/thermalProfileCampaign.md`](../model/thermalProfileCampaign.md) §9.12, [`../model/closedloop/README.md`](../model/closedloop/README.md), SD logs in `../model/campaign-summer-2026/` — **§6 revised 2026-09-18** on correctly timed data |
 
 ---
 
@@ -20,7 +20,7 @@ three greenhouse windows should do. You do not touch queues, hardware, storage, 
 You receive one input struct, you keep your own state in a struct the caller owns, and you fill one
 output struct.
 
-**The greenhouse.** One span at Herenboeren Willemshoeve (Soest), about 2 900 m³, with three
+**The greenhouse.** One span at Herenboeren Willemshoeve (Soest), 40 × 16 m and about 2 400 m³, with three
 ventilation openings:
 
 | Window | What it is | Actuation |
@@ -427,20 +427,36 @@ cd drivers/ventModel && pio test -e native      # host unit tests, no hardware
 
 Read `campaignResults_summer2026.md` before choosing a law. The short version:
 
-- **M3's effect depends on wind direction by a factor of 30–100.** About 0.05 /h air changes with
-  south-west wind (the wall is leeward), roughly 3–10 /h with north wind (windward). A single fixed
-  aperture-to-effect assumption will be wrong in one of the two regimes.
+*Revised 2026-09-18.* The first campaign analysis joined outdoor data that were two hours late (the
+LoRa database stamps in UTC), and its claims about M3 are withdrawn: "a factor of 30–100", "about
+0.05 /h with south-west wind", "M3 barely ventilates". What holds on correctly timed data:
+
+- **M3 is the house's largest ventilator.** Every plant fitted on correctly timed data puts it at
+  4–8× one roof window, about two thirds or more of the window ventilation with everything open.
+  The absolute air-change rates are not pinned down; only this ranking is.
+- **How much the wind direction matters is open.** One fitted plant adds a direction term, about
+  2.7× more M3 ventilation with north wind. Another fits about as well without one. A crude check
+  finds west wind the one that ventilates the house least, and no advantage for north wind. §9
+  item 2 asks what your law does with wind direction; do not build it on a direction effect of a
+  particular size.
 - **There is no measurement of a part-open M3.** Every test was fully open or fully closed, so the
-  aperture-to-airflow curve is unknown. Step 2 to step 3 multiplies the open area about sixfold.
+  aperture-to-airflow curve is unknown. Step 2 to step 3 multiplies the open area about sixfold,
+  and in the fitted plants it raises the greenhouse air's heat loss to outside by 1.7–1.8×.
 - **The limit cycle that motivates linear control:** about a 42 min period and a 4.9 °C swing on
   2026-07-20, with M3 opening 3–4 times a day. Its amplitude is roughly the cooling rate times the
-  25 min dwell. **That day was windward:** 7 of its 8 M3 openings came with wind from 321–354° at
-  about 3 m/s (log analysis, 2026-09-17).
-- **But M3 also cycles when it barely ventilates.** Of 370 M3 openings across the campaign, 151 came
-  with north wind, 91 with south-west wind, and 128 from sectors the campaign never characterised.
-- **The plant model is not a simulator you can trust yet.** Its temperature and humidity accuracy
-  targets both fail, and the closed-loop simulation has never been run. Tune against logged weather
-  and real behaviour, not against the model's predictions.
+  25 min dwell. 7 of that day's 8 M3 openings came with wind from 321–354° at about 3 m/s.
+- **M3 cycles in every wind.** Of 370 M3 openings across the campaign, 151 came with north wind
+  (315–45°), 91 with wind from 200–290°, and 128 from other directions.
+- **There is a closed-loop simulator now, with one known shortfall.** `model/closedloop/` compiles
+  `drivers/ventModel/` into a host library and runs a law through an emulated T5/T4/T6 chain
+  against a fitted plant, on logged weather. Fed the logged sensor rows, `stepped` reproduces 97.1 %
+  of 381 logged temperature demands. Against the two adopted plants
+  (`model/campaign-summer-2026/plant2/plant2_summer2026_Ca2.9.json` and `…_dir.json`) it reproduces
+  5C88's M3 openings, its ~45 min cycle and its hours above 31 °C, on days the fit never saw.
+  **The plants under-predict the swing** (2.0–2.8 against 3.1–3.6 °C), which is exactly what a
+  linear law sets out to damp. So run a candidate against both plants, treat a verdict that differs
+  between them as unsettled, and treat a simulated reduction of the swing as a lead to confirm on
+  the greenhouse. The point-by-point accuracy targets (AC-9, AC-10) still fail.
 - **Tuning the existing law is a bad trade, which is why linear control was proposed:** raising
   `hyst_t` cuts cycling by about 80 % but costs about 55 % of M3's open time, and an extra dead band
   on stepping down was rejected after it merely made each opening longer.
@@ -489,4 +505,5 @@ Read `campaignResults_summer2026.md` before choosing a law. The short version:
    in the operator-facing status.
 8. Whether it reports steps (`step`, `step_t`, `step_rh`, which keeps mode 1's log row) or uses the
    mode 2 row, and in what unit its `demand_*` values are expressed.
-9. The replay output from §5, on at least two contrasting weeks: one windward, one leeward.
+9. The replay output from §5, on at least two contrasting weeks: one with north wind (M3's side),
+   one with wind from another quarter.

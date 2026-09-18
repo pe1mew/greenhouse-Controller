@@ -6,6 +6,10 @@ own anemometer. One radial axis (mean speed, m/s); the number of samples per
 22.5-degree bin is encoded as a sequential ramp + labels on dominant bins.
 
 Output: wind_rose_speed_count.png (same directory).
+
+Unaffected by the 2026-09-18 UTC correction (model/lora_time.py): it reads only
+the controller's own wind columns from the calibration input, never the LoRa
+ones, so the figure stands.
 """
 import csv
 import math
