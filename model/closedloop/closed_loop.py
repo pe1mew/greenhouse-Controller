@@ -72,8 +72,18 @@ EPOCH = datetime(2026, 1, 1)
 
 
 def _ms(ts):
-    """The simulator's monotonic millisecond clock (wraps like T2's)."""
-    return int((ts - EPOCH).total_seconds() * 1000) & 0xFFFFFFFF
+    """The simulator's monotonic millisecond clock -- deliberately UNBOUNDED.
+
+    The firmware's clock wraps at 2^32 ms (49.7 days) and T2 compares
+    deadlines wrap-safely, (int32_t)(now - deadline). firmware.Channel
+    compares plain Python ints, so a wrapping clock here makes every deadline
+    set just before a wrap look 49 days away: T6 keeps asking and the
+    actuator keeps deferring. That happened on 2026-07-18 20:09 and silently
+    froze M3 shut for the rest of every summer-long run until it was found
+    (the 102-day tables before 2026-09-18 evening are void past that date).
+    Only the value handed to the law is wrapped (Controller.cycle).
+    """
+    return int((ts - EPOCH).total_seconds() * 1000)
 
 
 def _unix(ts):

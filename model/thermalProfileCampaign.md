@@ -274,7 +274,9 @@ Save as `model/srcData/outdoor-lht65-20_<CAMPAIGN_START>_to_<CAMPAIGN_END>.csv` 
 
 ### 7.3 Time alignment
 
-The outdoor sensor's `dateTime` and the controller's SD-log `timestamp` are both Europe/Amsterdam local time. No timezone normalisation needed at join time. The two streams differ in cadence (30 s indoor vs 600 s outdoor); the analysis script joins by **forward-fill** on the outdoor side: each indoor 30 s row is annotated with the most-recent prior outdoor reading.
+> **Erratum 2026-09-18: this was wrong, and it was the join this whole campaign used.** The LoRa database stamps its rows in **UTC**; only the SD log is local time. Joined unconverted, every indoor row got the outdoor reading (and door state) from two hours later. Evidence and the conversion: [`lora_time.py`](lora_time.py). `prepare_calibration_input.py` converts since then; every `calibration_input_*.csv` built before it, and every fit and analysis on them, carries the shift (see the erratum in [`campaignResults_summer2026.md`](campaignResults_summer2026.md)).
+
+~~The outdoor sensor's `dateTime` and the controller's SD-log `timestamp` are both Europe/Amsterdam local time. No timezone normalisation needed at join time.~~ The two streams differ in cadence (30 s indoor vs 600 s outdoor); the analysis script joins by **forward-fill** on the outdoor side: each indoor 30 s row is annotated with the most-recent prior outdoor reading.
 
 If `lumosity` is NULL for an outdoor row (sensor transient or LoRaWAN gap), the forward-fill carries the previous value with a `lux_stale_s` column tracking the staleness; rows older than 1 800 s (3 outdoor intervals) are excluded from the fit.
 

@@ -18,7 +18,11 @@ Options
     --output    Output CSV path  (default: <sensor>_<start>_<end>.csv)
     --list      List available sensors with their date ranges and exit
 
-All datetime values are in the database's local time (Europe/Amsterdam).
+All datetime values are UTC, as the database stores them -- --start and --end
+are compared against UTC too, and the output keeps UTC. The controller's SD
+logs are local time (Europe/Amsterdam), so convert before joining:
+lora_time.utc_to_local(). Until 2026-09-18 this docstring said local time,
+and the campaign merges built on that were two hours out (lora_time.py).
 
 Examples
 --------

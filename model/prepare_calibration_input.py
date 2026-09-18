@@ -8,6 +8,12 @@ calibrate_plant_dynamic.py.
 Row backbone: SENSOR_HR_0 timestamps (~30 s cadence from the SD log).
 Outdoor and door columns are forward-filled from the last known uplink.
 
+Clocks: the SD logs are local time, the LoRa exports are UTC (lora_time.py
+has the evidence). The LoRa stamps are converted to local time on read since
+2026-09-18. Every calibration_input_*.csv built before that date -- the
+summer-2026 calibration inputs included -- carries its outdoor and door
+columns two hours late.
+
 Columns in output CSV
 ---------------------
 timestamp        ISO 8601 local time (Europe/Amsterdam, naive)
@@ -58,6 +64,9 @@ import sys
 from pathlib import Path
 from datetime import datetime
 
+sys.path.insert(0, str(Path(__file__).parent))
+from lora_time import utc_to_local  # noqa: E402
+
 
 LUX_STALE_DEFAULT_S = 1800   # 3 outdoor intervals — matches §7.3 of campaign plan
 
@@ -67,9 +76,10 @@ def parse_log_ts(s):
 
 
 def parse_csv_dt(s):
+    """A LoRa export's dateTime (UTC) as naive local time, to match the SD logs."""
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
         try:
-            return datetime.strptime(s, fmt)
+            return utc_to_local(datetime.strptime(s, fmt))
         except ValueError:
             pass
     raise ValueError(f"Unrecognised datetime: {s!r}")
