@@ -6,6 +6,62 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.9.2] — 2026-09-18  (a wind override that starts during a recalibration is no longer lost)
+
+Patch: fixes [gh#79](https://github.com/pe1mew/greenhouse-Controller/issues/79). There is no new
+config key, log encoding or public payload key. Verification, upgrade notes and known limitations
+are in `bin/2.9.2/release-notes.md`.
+
+**Fixed.**
+
+- **T6 pauses while T2 recalibrates** (gh#79). `EG1_BIT_CALIBRATING` joins T6's inhibit mask.
+  - T2 reads Q1 only between its blocking CLOSE_ALL sweeps: at boot, on a STANDBY exit and after
+    a motor alarm clears. A sweep lasts up to 176 s in production.
+  - T6 kept deciding through a sweep and posted up to three commands per wake into the 8-deep
+    Q1. Once the queue was full, T3's CLOSE_ALL for a wind override that began mid-sweep was
+    dropped.
+  - T2's comment and the TSDS both said T6 holds while `CALIBRATING` is set. The code did not.
+- **T3 retries a CLOSE_ALL that Q1 refuses.** It was one non-blocking send with an unchecked
+  result, on the override's onset edge only. A refused send now stays pending and is retried on
+  every pass, at least every 2 s, until Q1 accepts it or the override ends. T3 still never waits
+  on Q1.
+- **T2 reads the clock for each command it drains.** It read it once per loop pass, so the
+  commands drained after a sweep were timed from before it:
+  - a dwell deadline set during the sweep looked up to 176 s away, so T6's stale OPENs were
+    deferred;
+  - a command that bypasses the dwell (a manual LCD Open, a teach leg) would have been given a
+    drive deadline already in the past. It would have stopped on the next 20 ms tick with the
+    window recorded OPEN: the under-travel failure. Inferred from the code, not observed.
+  - The motor-alarm path already re-read the clock after its own sweep.
+
+**Corrected: on 2.9.1 the predicted harm was masked on one of the three sweeps.** gh#79 predicted
+that M1 and M2 would open under the override after the sweep. The test used the STANDBY-exit
+sweep, and there they stayed closed: T2's stale clock deferred T6's stale OPENs by accident (three
+`LOG_SYSTEM 29` rows at the sweep's end, M1 and M2 +26 s, M3 +476 s). The boot sweep and the
+motor-alarm recovery read a fresh clock after the sweep, so there the stale OPENs would run and the
+prediction stands. That is inferred from the code, not observed. Fixing the clock alone would have
+unmasked the STANDBY-exit case too, so it ships together with the T6 pause. The correction posted
+on the issue claims the masking for every sweep; it holds only for the STANDBY exit.
+
+**Added.**
+
+- **`bin/at_gh79.py`**, the acceptance test. It makes T6 want all three windows open, lengthens
+  the sweep to 176 s (`travel_m3` 171), starts a recalibration and raises a wind override about
+  120 s into it. It then counts the deferral rows at the sweep's end. On 2344: **3 on 2.9.1
+  (FAIL), 0 on 2.9.2 (PASS)**. M1 and M2 stayed closed under the override in both runs.
+
+**Not tested on hardware.** T3's retry never ran: with T6 paused, Q1 no longer fills during a
+sweep. Nor did the under-travel case that the clock fix prevents, or the boot and motor-alarm
+sweeps: the test can start only the STANDBY-exit sweep.
+
+**Changed.**
+
+- **Comments and spec:** every place in `climate_control.cpp` and `.h` that lists T6's inhibits
+  (most named only two or three of the five), T3's note on a full Q1, T2's `CMD_RECALIBRATE` note,
+  and the TSDS's T6 mask and EG1 table.
+
+---
+
 ## [2.9.1] — 2026-09-17  (every drive of M3 is judged; the sensor gate stops flapping)
 
 Patch: fixes [gh#72](https://github.com/pe1mew/greenhouse-Controller/issues/72) and the two

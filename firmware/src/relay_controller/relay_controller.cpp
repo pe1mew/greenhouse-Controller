@@ -938,7 +938,10 @@ static void process_command(const window_cmd_t *cmd, uint32_t now_ms)
         /* rc.1.5.0 / gh#28 — STANDBY-exit recalibration. Posted by
          * dm_set_standby(false,...). Run the same synchronous CLOSE_ALL
          * sweep used at boot — sets EG1_BIT_CALIBRATING for the duration
-         * (so T6 stays gated and the LCD Scherm 3 shows "Window Cal."),
+         * (so T6 stays gated and the LCD Scherm 3 shows "Window Cal.";
+         * the gating claim was FALSE until 2.9.2 — T6's inhibit mask lacked
+         * the bit, kept posting into Q1 through the sweep, and a full Q1
+         * dropped T3's CLOSE_ALL: gh#79),
          * persists each channel as CLOSED on its travel-timer expiry,
          * and returns when the slowest motor has completed.
          *
@@ -1328,9 +1331,25 @@ void task_relay_controller(void *pvParameters)
             ch_update(ch, now_ms);
         }
 
-        /* ---- 4c. Drain Q1 (non-blocking; process all pending commands) ---- */
+        /* ---- 4c. Drain Q1 (non-blocking; process all pending commands) ----
+         * gh#79 (2.9.2): the clock is read per command, not once per pass.
+         * CMD_RECALIBRATE blocks for the whole CLOSE_ALL sweep (up to 176 s in
+         * production), and every command drained after it used to be timed
+         * from BEFORE the sweep:
+         *  - a dwell deadline set during the sweep looked up to 176 s away, so
+         *    T6's stale OPENs were deferred -- which masked gh#79's harm, by
+         *    accident;
+         *  - a dwell-BYPASSING command (a manual LCD Open, a teach leg) would
+         *    have had its drive deadline computed up to 176 s in the past, so
+         *    it expired on the next tick and the window was recorded OPEN after
+         *    a ~20 ms drive: the under-travel failure.
+         * The motor-alarm path above already refreshed after its own blocking
+         * sweep; this path did not. Safe to fix only because T6 now pauses
+         * during a sweep (climate_control.cpp) -- without that, a fresh clock
+         * would let those stale OPENs run. */
         window_cmd_t cmd;
         while (xQueueReceive(Q1, &cmd, 0) == pdTRUE) {
+            now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
             process_command(&cmd, now_ms);
         }
 

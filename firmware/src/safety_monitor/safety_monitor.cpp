@@ -15,8 +15,12 @@
  *     notifications merge safely; T3 always reads the latest data from T4.
  *
  *  2. Q1 posts use timeout 0 (non-blocking) per design — T3 must never block
- *     on the actuation queue.  Q1 has depth 8; a full queue would require
- *     >8 pending unprocessed commands, which should not occur in practice.
+ *     on the actuation queue.  Q1 has depth 8, and this note used to say a
+ *     full queue "should not occur in practice". It can (gh#79): T2 reads
+ *     Q1 only between its blocking CLOSE_ALL sweeps, up to 176 s in
+ *     production, and until 2.9.2 T6 kept posting through them. Since 2.9.2
+ *     T6 pauses during a sweep, and a CLOSE_ALL that Q1 refuses stays
+ *     pending here and is retried every pass until it is accepted.
  *
  *  3. Direction zone with dir_excl_low == dir_excl_high (zero width) is
  *     treated as disabled (returns false).  This means the direction check
@@ -135,6 +139,21 @@ static log_event_t make_wind_log(uint32_t ts, log_param_id_t subtype,
     return e;
 }
 
+/**
+ * @brief Offer the wind override's CMD_CLOSE_ALL to Q1, without waiting.
+ *
+ * gh#79 (2.9.2): the result is now the caller's business. Q1 is 8 deep and
+ * normally drained every 20 ms, but T2 reads it only between its blocking
+ * CLOSE_ALL sweeps (up to 176 s in production), so "full" is reachable.
+ *
+ * @return true if Q1 accepted the command; false if it was full.
+ */
+static bool post_close_all(void)
+{
+    const window_cmd_t close_cmd = { CMD_CLOSE_ALL, 0, SRC_T3 };
+    return xQueueSend(Q1, &close_cmd, 0) == pdTRUE;
+}
+
 /* -----------------------------------------------------------------------
  * T3 task
  * ----------------------------------------------------------------------- */
@@ -167,6 +186,16 @@ void task_safety_monitor(void *pvParameters)
 
     bool alarm_active = false;   /* mirrors EG1.WIND_OVERRIDE */
 
+    /* gh#79 (2.9.2): the override's CMD_CLOSE_ALL has not reached Q1 yet.
+     * The send is non-blocking by design — T3 must never wait on the
+     * actuation queue — and until 2.9.2 it was also fire-and-forget, posted
+     * once on the safe→unsafe edge with the result unchecked. A full Q1
+     * therefore dropped the one command that closes the greenhouse. Now a
+     * refused send stays pending and is retried on every pass, the 2 s WDT
+     * wakes included, until Q1 accepts it or the override ends. */
+    bool     close_pending = false;
+    uint32_t close_retries = 0u;
+
     /* Subscribe to the task WDT (1.17.29 / gh#13). T3 is safety-critical:
      * if it hangs, wind protection stops working — we want a WDT-reset to
      * notice. T4 only notifies on each sensor poll (interval 30–3600 s), so
@@ -182,7 +211,24 @@ void task_safety_monitor(void *pvParameters)
         /* Take the TN1 notification with a 2 s timeout. If no notification
          * arrived during the window the loop iterates again to kick the WDT.
          * When a notification DOES arrive, we fall through and evaluate. */
-        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2000)) == 0) {
+        const uint32_t notified = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2000));
+
+        /* gh#79: deliver a CLOSE_ALL that found Q1 full. Checked before the
+         * "no new data" continue on purpose, so a refused send is retried
+         * every 2 s rather than once per sensor reading. */
+        if (close_pending) {
+            if (!alarm_active) {
+                close_pending = false;          /* the override ended first */
+            } else if (post_close_all()) {
+                close_pending = false;
+                ESP_LOGW(TAG, "[T3] CMD_CLOSE_ALL accepted after %lu retr%s (gh#79)",
+                         (unsigned long)close_retries, close_retries == 1u ? "y" : "ies");
+            } else {
+                close_retries++;
+            }
+        }
+
+        if (notified == 0) {
             continue;
         }
 
@@ -200,7 +246,8 @@ void task_safety_monitor(void *pvParameters)
         if (!cfg.wind_prot_en) {
             if (alarm_active) {
                 /* Clear any active override now that wind protection is off */
-                alarm_active = false;
+                alarm_active  = false;
+                close_pending = false;
                 xEventGroupClearBits(EG1, EG1_BIT_WIND_OVERRIDE);
 
                 window_cmd_t cmd = { CMD_RESUME, 0, SRC_T3 };
@@ -268,9 +315,13 @@ void task_safety_monitor(void *pvParameters)
 
             /* Post CMD_CLOSE_ALL to T2 (non-blocking; T2 may discard if
              * MOTOR_ALARM is active, which is correct — relays are already
-             * de-energised in that case).                                   */
-            const window_cmd_t close_cmd = { CMD_CLOSE_ALL, 0, SRC_T3 };
-            xQueueSend(Q1, &close_cmd, 0);
+             * de-energised in that case). gh#79: a refused send is no longer
+             * lost — it stays pending and the loop head retries it. */
+            close_retries = 0u;
+            close_pending = !post_close_all();
+            if (close_pending) {
+                ESP_LOGW(TAG, "[T3] Q1 full — CMD_CLOSE_ALL pending, retrying every pass (gh#79)");
+            }
 
             /* Log alarm onset ------------------------------------------- */
             if (sensor_fault) {
@@ -311,7 +362,8 @@ void task_safety_monitor(void *pvParameters)
 
         } else if (!is_unsafe && alarm_active) {
             /* Transition: unsafe → safe ---------------------------------- */
-            alarm_active = false;
+            alarm_active  = false;
+            close_pending = false;              /* gh#79: nothing left to close for */
             xEventGroupClearBits(EG1, EG1_BIT_WIND_OVERRIDE);
 
             const window_cmd_t resume_cmd = { CMD_RESUME, 0, SRC_T3 };

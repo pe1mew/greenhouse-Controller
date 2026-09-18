@@ -45,7 +45,8 @@ Hooks are the *symptom*, not the title — you rarely know the cause when you ar
 Entries stay in reverse-chronological order below; this index is the only grouped view.
 
 ### Windows, climate & manual control (T2, T6, T8)
-- **2026-09-17** — a wind override can be LOST during a long recalibration (T6 is not paused, fills the 8-deep Q1, and T3's close-all is one unchecked non-blocking send) — gh#79
+- **2026-09-18** — a fail-first run PASSES on the old code because a second defect hides the first (T2's stale clock deferred the stale commands, on ONE of three paths) — gh#79
+- **2026-09-17** — a wind override can be LOST during a long recalibration (T6 is not paused, fills the 8-deep Q1, and T3's close-all is one unchecked non-blocking send) — gh#79 [RESOLVED 2.9.2: T6 pauses, T3 retries, T2 re-reads the clock]
 - **2026-09-17** — a fault detector never fires in the common case and false-trips in the rare one (its corroborating bit is true at BOTH ends) — gh#78
 - **2026-09-17** — a fail-first run passes when its trigger is a power cycle (how late T17 joins the boot recalibration varies, 2.5-5.5 s); also: position reads 0 for ~1.2 s before the closed end sensor makes (gh#78)
 - **2026-09-17** — a test that tells the operator to press Open "when M3 is closed" gets a reversal instead (T2 drives 5 s past the leaf stopping)
@@ -176,6 +177,39 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
 
 
+## 2026-09-18 — a fail-first run PASSED on the old code: a second defect hid the first, on one path of three (gh#79)
+
+**Problem.** The gh#79 fail-first test on 2.9.1 did not reproduce the predicted harm. It ran a
+176 s STANDBY-exit sweep, raised a wind override 122 s into it, and M1 and M2 stayed closed. The
+correction first posted on the issue generalised that into "does not happen on current firmware".
+
+**Root cause.** Two things.
+- **T2 read its clock once per loop pass.** `CMD_RECALIBRATE` runs the sweep *inside* the Q1 drain,
+  so T6's stale OPENs drained after it were timed from before the sweep. Every dwell deadline set
+  during the sweep therefore looked up to 176 s away, and the OPENs were deferred, by accident:
+  three `LOG_SYSTEM 29` rows at the sweep's end, M1/M2 +26 s (travel + margin), M3 +476 s (sweep +
+  close dwell).
+- **That masking exists only on the path the test used.** The boot sweep runs before the loop first
+  reads the clock, and the motor-alarm recovery re-reads it after its sweep. On those two paths the
+  stale OPENs run and the predicted harm stands. The first correction was written from the one path
+  tested, without reading the other two.
+
+**Fix.** 2.9.2: T6 pauses during a sweep, T3 retries its CLOSE_ALL, and T2 reads the clock per
+command. The clock fix alone would have unmasked the STANDBY-exit case, so it shipped only together
+with the pause. The fail-first criterion moved from the windows to the deferral rows at the sweep's
+end: 3 on 2.9.1, 0 on 2.9.2.
+
+**Lesson.** (a) When a fail-first passes, find out *why* before touching the test. Here one query on
+the SD log explained it, and the remaining-dwell figures (travel + margin, sweep + dwell) named the
+mechanism. (b) A latent defect can be protective by accident, so fixing it can unmask another. Order
+the fixes, and never ship the unmasking one alone. (c) A test exercises one path. Before a
+conclusion says "the firmware", find the sibling paths in the code and check that the mechanism
+holds there too.
+
+**Where it lives.** `relay_controller.cpp` step 4c (the Q1 drain, per-command clock since 2.9.2),
+`:954` (`CMD_RECALIBRATE` runs the sweep), `:1268` (the boot sweep, before the loop), `:1324` (the
+motor-alarm refresh); `bin/at_gh79.py`; release notes `bin/2.9.2/release-notes.md`.
+
 ## 2026-09-17 — a macro with a literal `
 ` compiled fine in one build configuration and broke the other
 
@@ -234,11 +268,12 @@ the difference disarmed the rule in the most common case for two releases.
 **Where it lives.** The rule 2 block in `firmware/src/window_pos/window_pos_task.cpp`; plan §12.4
 rule 2 carries the correction.
 
-## 2026-09-17 — a queue depth sized for normal cadence becomes a safety hole when the consumer blocks (gh#79)
+## 2026-09-17 — a queue depth sized for normal cadence becomes a safety hole when the consumer blocks (gh#79) [RESOLVED 2.9.2]
 
 **Problem.** Reading the code for Phase 5 turned up a path where a **wind override can be lost**:
 after a long recalibration, M1 and M2 open again while the override is still active, and nothing
-closes them until the wind drops. Not reproduced on hardware yet.
+closes them until the wind drops. Not reproduced on hardware: on the STANDBY-exit sweep a third
+defect masked it; the boot and motor-alarm sweeps are exposed (see 2026-09-18).
 
 **Root cause.** Four facts, each harmless alone:
 - T2 blocks for up to 176 s in the recalibration sweep and does not drain Q1 while it does;
@@ -248,16 +283,18 @@ closes them until the wind drops. Not reproduced on hardware yet.
 - T3's `CLOSE_ALL` is a single non-blocking send with an **unchecked** result, posted only on the
   safe-to-unsafe edge.
 
-**Fix.** Filed as gh#79, planned as 2.9.2 before Phase 5 coding, with a fail-first rig test
-(`travel_m3` temporarily 171 s, T6 wanting step 3, an LCD logout, then `v_max` lowered ~100 s in).
+**Fix.** 2.9.2 (gh#79): `EG1_BIT_CALIBRATING` joins T6's inhibit mask; T3 keeps a refused
+`CLOSE_ALL` pending and retries it every pass until Q1 takes it; T2 reads the clock per drained
+command. Fail-first by `bin/at_gh79.py`, which forces the sweep over the network (`travel_m3` 171,
+STANDBY then AUTOMATIC) and raises the override with the direction arc instead of `v_max`.
 
 **Lesson.** A queue depth is a statement about the **consumer's worst-case stall**, not about the
 producers' cadence — and a safety command must not be fire-and-forget. Whoever posts one should
 either block, retry while the condition holds, or have the consumer re-check the condition instead of
 trusting a queued message.
 
-**Where it lives.** `climate_control.cpp:500` (the mask), `relay_controller.cpp:652` (the sweep),
-`safety_monitor.cpp:273` (the send), `system_globals.cpp:103` (the depth).
+**Where it lives.** `climate_control.cpp:513` (the mask), `relay_controller.cpp:652` (the sweep),
+`safety_monitor.cpp:151` (`post_close_all()`, retried at `:219`), `system_globals.cpp:103` (the depth).
 
 ## 2026-09-17 — a fail-first run PASSED: its trigger was a power cycle, and how late T17 joins at boot varies
 

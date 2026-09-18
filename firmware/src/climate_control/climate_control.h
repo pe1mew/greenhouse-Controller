@@ -16,9 +16,9 @@
  *                                          ↓
  *                                          Q3 → T9 (Event Logger)
  *
- * EG1 also gates T6 evaluation: when WIND_OVERRIDE (T3-owned), MOTOR_ALARM
- * (T2-owned), or SENSOR_FAULT_T (T5-owned) is set, T6 produces no commands
- * — the active flag-owner is already in control of window position.
+ * EG1 also gates T6 evaluation: while WIND_OVERRIDE (T3), MOTOR_ALARM or
+ * CALIBRATING (T2), SENSOR_FAULT_T (T5) or STANDBY (the operator, via T4) is
+ * set, T6 produces no commands — the flag's owner controls window position.
  *
  * ## Graduated ventilation (FR-C09, FR-C10, Gap G)
  *
@@ -55,9 +55,9 @@
  *
  * ### State T6 must maintain
  * T6 keeps two task-local static integers (current_step_t, current_step_rh)
- * that track the step last commanded.  Both are reset to 0 on entry to
- * WIND_OVERRIDE or MOTOR_ALARM; T2's boot CLOSE_ALL ensures actual
- * window positions are known.
+ * that track the step last commanded.  Both are reset to 0 when any EG1
+ * inhibit begins (see the task's Inhibit behaviour); T2's boot CLOSE_ALL
+ * ensures actual window positions are known.
  *
  * ### Incremental command posting
  * T6 computes the delta between the current channel mask and the newly
@@ -107,9 +107,9 @@
  * Wakes on TN2 (ulTaskNotifyTake from T4 after every new Q6 reading).
  *
  * ### Per-wake sequence
- *  1. **EG1 gate** — skips evaluation while WIND_OVERRIDE, MOTOR_ALARM, or
- *     SENSOR_FAULT_T is set.  Resets current_step_t/rh to 0 on inhibit onset
- *     so re-evaluation starts from step 0 when the flag clears.
+ *  1. **EG1 gate** — skips evaluation while any inhibit is set (see Inhibit
+ *     behaviour below).  Resets current_step_t/rh to 0 on inhibit onset so
+ *     re-evaluation starts from step 0 when the flag clears.
  *  2. **Snapshot** — dm_cfg_snapshot() under MX4; dm_meas_snapshot() under MX2.
  *  3. **Setpoint selection** — selects t_max, rh_max, rh_min from is_daytime.
  *  4. **Step evaluation** — vent_step_required_t() and vent_step_required_rh().
@@ -123,9 +123,13 @@
  *  8. **State update** — current_step_t and current_step_rh updated.
  *
  * ### Inhibit behaviour
- * When EG1 WIND_OVERRIDE or MOTOR_ALARM is set, T6 posts nothing to Q1.
- * T3 and T2 respectively issue their own CLOSE_ALL commands.  T6 steps are
- * reset to 0 so that on clearance it re-opens gradually from scratch.
+ * While any of EG1 WIND_OVERRIDE, MOTOR_ALARM, SENSOR_FAULT_T, STANDBY or
+ * CALIBRATING is set, T6 posts nothing to Q1. T3 and T2 issue their own
+ * CLOSE_ALL for the override and the motor alarm respectively. CALIBRATING
+ * joined the list in 2.9.2 (gh#79): T2 reads Q1 only between its blocking
+ * sweeps, so what T6 posted during one piled up in the 8-deep queue. T6 steps
+ * are reset to 0 when an inhibit begins, so that on clearance it re-evaluates
+ * from scratch.
  *
  * @param pvParameters  Unused; pass NULL.
  * @note   T6 subscribes to the task watchdog (esp_task_wdt_add). The TN2

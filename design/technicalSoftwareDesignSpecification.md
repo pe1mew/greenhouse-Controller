@@ -381,8 +381,8 @@ T4 is the single source of truth for all runtime data and configuration. All tas
 - Evaluates temperature and humidity against the active setpoints with hysteresis bands.
 - Runs conflict resolution algorithm when T and RH demand opposing window actions.
 - Posts open/close actuation commands to T2 via command queue.
-- Checks operating mode from T4 before acting; **inhibited** by any of the EG1 bits in the "do nothing" mask. End-state mask (rc.1.5.1+): `MOTOR_ALARM | WIND_OVERRIDE | SENSOR_FAULT_T | STANDBY`. The first three are safety / data-validity gates; `STANDBY` is the operator-initiated pause (gh#28). The rc.1.5.0 transient `MANUAL_SESSION` bit (gh#29) was removed in rc.1.5.1 — the admin manual-motor LCD menu now holds STANDBY from menu entry until its admin session ends (a session hold since 2.8.0, never persisted, gh#65); the release recalibrates (since 2026-09-10, FR-MM07).
-- **Synchronization:** wakes on TN2 (from T4, new sensor data); acquires MX2 to read current T and RH; acquires MX4 to read setpoints and hysteresis; reads EG1 (MOTOR_ALARM, WIND_OVERRIDE, SENSOR_FAULT_T, SENSOR_FAULT_W, STANDBY) before issuing any command; posts to Q1 (actuation commands); posts to Q3 (log events).
+- Checks operating mode from T4 before acting; **inhibited** by any of the EG1 bits in the "do nothing" mask. End-state mask (2.9.2+): `MOTOR_ALARM | WIND_OVERRIDE | SENSOR_FAULT_T | STANDBY | CALIBRATING`. The first three are safety / data-validity gates; `STANDBY` is the operator-initiated pause (gh#28); `CALIBRATING` pauses T6 for T2's blocking CLOSE_ALL sweep, during which T2 does not read Q1 (added in 2.9.2, gh#79: §EG1 always said T6 holds while it is set, but the mask lacked it, so T6's commands piled up in the 8-deep Q1 and a full queue could drop T3's CLOSE_ALL). The rc.1.5.0 transient `MANUAL_SESSION` bit (gh#29) was removed in rc.1.5.1 — the admin manual-motor LCD menu now holds STANDBY from menu entry until its admin session ends (a session hold since 2.8.0, never persisted, gh#65); the release recalibrates (since 2026-09-10, FR-MM07).
+- **Synchronization:** wakes on TN2 (from T4, new sensor data); acquires MX2 to read current T and RH; acquires MX4 to read setpoints and hysteresis; reads EG1 (MOTOR_ALARM, WIND_OVERRIDE, SENSOR_FAULT_T, SENSOR_FAULT_W, STANDBY, CALIBRATING) before issuing any command; posts to Q1 (actuation commands); posts to Q3 (log events).
 
 ---
 
@@ -704,7 +704,7 @@ A single FreeRTOS event group (`xEventGroupCreate`) holds all system-wide boolea
 | 3   | SENSOR_FAULT_W     | T5     | T5         | T3, T8, T9, T11, T14   | Wind sensor fault active; T3 treats wind as worst-case   |
 | 4   | OTA_IN_PROGRESS    | T13    | T13        | T11                     | OTA update active; T11 defers LittleFS file requests     |
 | 5   | MOTOR_ALARM        | T2     | T2         | T3, T6, T8, T11, T14 (display/payload only) | RRK-3 motor emergency stop active; all relays de-energised; all window control suspended; highest priority override |
-| 6   | CALIBRATING        | T2     | T2         | T1, T8, T11, T14       | CLOSE_ALL boot calibration in progress; window positions transitioning from `UNKNOWN` to `CLOSED`; RGB LED shows Blue |
+| 6   | CALIBRATING        | T2     | T2         | T1, T6, T8, T11, T14   | CLOSE_ALL boot calibration in progress; window positions transitioning from `UNKNOWN` to `CLOSED`; RGB LED shows Blue |
 
 > **T3 and SENSOR_FAULT_W:** when the wind sensor fault flag is set, T3 shall treat the wind condition as exceeding all thresholds (safe-fail: close all windows) until the fault clears.
 

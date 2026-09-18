@@ -7,8 +7,9 @@
  *
  * T6 wakes on TN2 (task notification from T4 after each new Q6 reading).
  * On every wake it:
- *   1. Reads EG1 flags; skips evaluation if WIND_OVERRIDE, MOTOR_ALARM, or
- *      SENSOR_FAULT_T is set (window commands must not fight T3 or T2).
+ *   1. Reads EG1 flags; skips evaluation while WIND_OVERRIDE, MOTOR_ALARM,
+ *      SENSOR_FAULT_T, STANDBY or CALIBRATING is set (the reason for each is
+ *      at step 2 of the task loop).
  *   2. Snapshots cfg_shadow_t under MX4; snapshots sensor_reading_t under MX2.
  *   3. Selects the active T and RH setpoints from is_daytime.
  *   4. Evaluates vent_step_required_t() and vent_step_required_rh().
@@ -25,9 +26,9 @@
  *   current_step_t  — last step T6 commanded for temperature.
  *   current_step_rh — last step T6 commanded for humidity.
  *
- * Both are reset to 0 on transitions to WIND_OVERRIDE or MOTOR_ALARM so that
- * when the flag clears T6 starts fresh from step 0 (T2's boot CLOSE_ALL keeps
- * the actual window position known).
+ * Both are reset to 0 when any inhibit begins (see step 1) so that when it
+ * clears T6 starts fresh from step 0 (T2's boot CLOSE_ALL keeps the actual
+ * window position known).
  *
  * ## Q1 command encoding
  *
@@ -495,12 +496,25 @@ void task_climate_control(void *pvParameters)
          *                        used has been removed — it cleared too
          *                        quickly (10 s idle dismiss) and let T6
          *                        reopen windows the admin had just closed.
+         *      CALIBRATING     — gh#79 (2.9.2): T2 is in its blocking
+         *                        CLOSE_ALL sweep (boot, STANDBY exit,
+         *                        motor-alarm clearance) and reads Q1 only
+         *                        when it returns, up to 176 s in
+         *                        production. Posting meanwhile queued up to
+         *                        three commands per wake into the 8-deep Q1,
+         *                        where a full queue dropped T3's CLOSE_ALL.
+         *                        The stale OPENs reached T2 after the sweep,
+         *                        and only its stale clock (fixed in 2.9.2)
+         *                        deferred them, by accident. T2's
+         *                        CMD_RECALIBRATE comment always said T6 was
+         *                        gated here; until 2.9.2 it was not.
          * ---------------------------------------------------------------- */
         EventBits_t bits = xEventGroupGetBits(EG1);
         bool inhibited = (bits & (EG1_BIT_WIND_OVERRIDE |
                                   EG1_BIT_MOTOR_ALARM   |
                                   EG1_BIT_SENSOR_FAULT_T|
-                                  EG1_BIT_STANDBY)) != 0;
+                                  EG1_BIT_STANDBY       |
+                                  EG1_BIT_CALIBRATING)) != 0;
 
         if (inhibited) {
             if (!prev_inhibited) {
