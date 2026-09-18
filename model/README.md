@@ -111,7 +111,7 @@ The optimised firmware was released as **v1.16.22** (the bug fix) and **v1.16.23
 | `simulation_manual.md` | Full user manual for `simulation.py`: input formats, output formats, parameter overview, plot explanation |
 | `calibrate_plant.py` | Fits the plant model (effective heat capacity, transpiration, infiltration, solar gain coefficient) against real LHT65 sensor logs. CLI: `python calibrate_plant.py [--plot]` |
 | `generate_inputs_from_live.py` | Generates the five scenario CSVs (`input_S1`..`S5`) by selecting 24-hour slices from real sensor logs |
-| `closedloop/` | **Closed-loop simulator for verifying control algorithms** (2026-09-18): the calibrated plant, the firmware's T5/T2/T6 chain, and the control law compiled from `drivers/ventModel/` itself; plus `refit.py`, which fits a two-node plant to the whole summer. Gated against the calibrator and against 5C88's logged decisions. **Fitted on correctly timed data (the LoRa DB is UTC -- see [`lora_time.py`](lora_time.py)), the two-node plant reproduces the limit cycle in closed loop** (M3 openings, cycle period, time above 31 degC, held-out days included; the swing is still short). The adopted single-node plant does not. See [`closedloop/README.md`](closedloop/README.md) |
+| `closedloop/` | **Closed-loop simulator for verifying control algorithms** (2026-09-18): the calibrated plant, the firmware's T5/T2/T6 chain, and the control law compiled from `drivers/ventModel/` itself; plus `refit.py`, which fits a two-node plant to the whole summer, and `campaign_figures.py`, which recomputes the figures the campaign results quote. Gated against the calibrator and against 5C88's logged decisions. **Fitted on correctly timed data (the LoRa DB is UTC -- see [`lora_time.py`](lora_time.py)), the two-node plant reproduces the limit cycle in closed loop** (M3 openings, cycle period, time above 31 degC, held-out days included; the swing is still short). The adopted single-node plant does not. See [`closedloop/README.md`](closedloop/README.md) |
 | `vent_step_replay.py` | Replays T6's step decision from SD logs under candidate `hyst_t` / `avg_win_t`; refuses to project unless it reproduces >= 90 % of the logged T-demands |
 
 ### Settings files
@@ -143,8 +143,8 @@ Current validated results live in `campaign-defaultSettings/` — see Campaign a
 
 | File | Purpose |
 |---|---|
-| `campaignResults_summer2026.md` | **Results summary of the summer-2026 calibration campaign** — adopted parameters, key findings (incl. the M3 refutation), AC status, open items. Read this first. |
-| `thermalProfileCampaign.md` | Campaign plan + working audit trail (executed Jun 4 – Jul 4 2026); full derivations in §9.5–9.9 |
+| `campaignResults_summer2026.md` | **Results summary of the summer-2026 calibration campaign**, revised 2026-09-18 on correctly timed data — the adopted two-node plants, key findings, AC status, open items. Read this first. |
+| `thermalProfileCampaign.md` | Campaign plan + working audit trail (executed Jun 4 – Jul 4 2026); derivations in §9.5–9.11, on the two-hours-late LoRa data and **not yet revised** |
 | `logUpdatePlan.md` | Locked firmware design for LOG_SENSOR_HR and LOG_SUN event types — prerequisite for thermalProfileCampaign.md |
 
 ### Campaign archives
@@ -159,20 +159,20 @@ Validated settings and scenario results that established the current firmware de
 | `new_settings_calibrated.json` | Site-specific variant after plant calibration (kas2) |
 | `results_input_S*.csv` + `.png` | Scenario results that validated the optimised defaults |
 
-#### `campaign-summer-2026/` — summer 2026 thermal-profile campaign (Jun 4 – Jul 4)
+#### `campaign-summer-2026/` — summer 2026 thermal-profile campaign (Jun 4 – Sep 17)
 
-30 days of 30 s SD-log data from production unit 5C88 + LoRa outdoor/door sensors; produced the currently adopted plant model. Results: [`campaignResults_summer2026.md`](campaignResults_summer2026.md).
+30 s SD-log data from production unit 5C88 + LoRa outdoor/door sensors. The calibration proper ran Jun 4 – Jul 4; the adopted plants (`plant2/`) are fitted on the whole summer. Results: [`campaignResults_summer2026.md`](campaignResults_summer2026.md).
 
 | Path | Contents |
 |---|---|
-| `plant_calibrated_constrained_summer2026_freem3.json` | **Adopted plant model** (6-param, ach_m3 measured via NS-6 M3-only test) |
+| `plant_calibrated_constrained_summer2026_freem3.json` | The first version's single-node plant (6-param). **Superseded 2026-09-18:** fitted on inputs with the outdoor data two hours late |
 | `plant_calibrated_*.json` | Other fit variants (binary, 7-param, staged, bounded-prior) for comparison |
-| `calibration_input_2026-06-04_2026-07-04.csv` | Merged calibration input (SD logs + outdoor + doors) |
+| `calibration_input_2026-06-04_2026-07-04.csv` | Merged calibration input (SD logs + outdoor + doors). Built before 2026-09-18, so its outdoor and door columns are two hours late ([`lora_time.py`](lora_time.py)) |
 | `*.log` | Raw SD log files from 5C88 |
-| `lht65_20_*.csv`, `lds01_*.csv` | Outdoor sensor + door-sensor exports from the Wenumseveld MySQL DB. The `..._2026-09-17.csv` set (fetched 2026-09-18) runs to 2026-09-17; door 1's sensor last reported on 2026-08-16 |
-| `plant2/` | Two-node plant fits by `closedloop/refit.py`, one JSON per objective; compared in [`closedloop/README.md`](closedloop/README.md) |
+| `lht65_20_*.csv`, `lds01_*.csv`, `lht65_02_*.csv`, `lht65_03_*.csv` | Outdoor, door-sensor and indoor (`lht65-02`/`-03`) exports from the Wenumseveld MySQL DB, stamped in **UTC**. The `..._2026-09-17.csv` set (fetched 2026-09-18) runs to 2026-09-17; door 1's sensor last reported on 2026-08-16 |
+| `plant2/` | Two-node plant fits by `closedloop/refit.py`, one JSON per objective; compared in [`closedloop/README.md`](closedloop/README.md). **Adopted:** `plant2_summer2026_Ca2.9.json` (primary) and `plant2_summer2026_dir.json` |
 | `plot_daily.py`, `plot_2026-*.png` | Daily T/RH/wind/window-state plots for every campaign day |
-| `m3_event_study.py` | Event study: what happens when M1/M2/M3 open (F3 robustness check) |
+| `m3_event_study.py` | The first version's event study (F3). Reads the shifted calibration input, so it reproduces the withdrawn result; the corrected one is `closedloop/campaign_figures.py --only F3` |
 | `calibration_constrained_summer2026*.png` | Fit-vs-measurement plots (bounded + free-m3 variants) |
 
 #### `campaign-spring-2026/` — spring 2026 calibration and oscillation investigation

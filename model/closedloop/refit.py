@@ -20,7 +20,7 @@ halves span the whole season -- crop, sun angle, wind regimes. Loss: MSE of
 the air node against T_in, plus MSE of AH in g/m3 against AH_in, over
 samples with fresh outdoor data and outside the first day after each
 restart (the structure node starts from a guess). Door 1's state after its
-sensor's last report (2026-08-16 07:56, "closed") is an assumption:
+sensor's last report (2026-08-16 09:57 local, "closed") is an assumption:
 --door1 mask drops those samples instead of assuming the door stayed shut.
 
 Optimiser: differential evolution in a transformed space (log10 for the
@@ -125,8 +125,8 @@ def m3_response(ds, T):
     The sharpest test of a plant against the limit cycle: the logged T_in
     moves -0.3/-1.3/-2.0/-2.3 degC at 5/10/15/25 min after M3 starts to open,
     and a plant that cannot follow that cannot reproduce the cycle. Model and
-    log see the same lux and outdoor temperature, so M3's habit of opening
-    as the sun backs off (campaign F3) is in both sides of the comparison.
+    log see the same lux and outdoor temperature, so whatever the sun does
+    around an M3 command is on both sides of the comparison.
     Returns {"opens": [...], "closes": [...], "n_opens": n, "n_closes": n}.
     """
     from firmware import CH_MOVING_CLOSE, CH_MOVING_OPEN, RELAY_TO_CH

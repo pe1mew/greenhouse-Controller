@@ -17,8 +17,9 @@ Per sample (the SD's 30 s SENSOR_HR cadence):
                         transition times and the physical traverse (M1/M2
                         26 s, M3 176 s -- travel + the 5 s margin, CLAUDE.md)
   door1, door2          lds01-5 / lds01-6, forward-filled (event-driven sensors);
-  door1_known           false after lds01-5's last report (2026-08-16 07:56,
-                        "closed"), when "closed" is an assumption, not a reading
+  door1_known           false after lds01-5's last report (2026-08-16 09:57 local,
+                        07:56 in the UTC export, "closed"), when "closed" is an
+                        assumption, not a reading
   wind_ms, wind_dir     the S200, as logged (valid from 2026-06-19 12:00)
   restart               the gap before this sample exceeds MAX_SAMPLE_GAP_S,
                         so a simulation must restart from the measurement
