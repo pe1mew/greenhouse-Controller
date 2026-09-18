@@ -40,12 +40,23 @@ import numpy as np
 
 from firmware import CH_CLOSED, CH_MOVING_CLOSE, CH_MOVING_OPEN, CH_OPEN, RELAY_TO_CH
 from logdata import CAMPAIGN, load_sd_logs
-from plant import ah_from_rh
+from plant import ah_from_rh   # also puts model/ on sys.path
+from lora_time import utc_to_local  # noqa: E402
 
 EPOCH = datetime(2026, 1, 1)
 LHT = CAMPAIGN / "lht65_20_2026-06-04_2026-09-17.csv"
 DOOR1 = CAMPAIGN / "lds01_5_2026-06-01_2026-09-17.csv"
 DOOR2 = CAMPAIGN / "lds01_6_2026-06-01_2026-09-17.csv"
+
+# SD rows that cannot be trusted where they are, dropped before anything else.
+# 2026-07-09 06:06:19-09:48:57: 5C88's flaky DS1307 (gh#37, fixed in 2.1.3 on
+# 2026-07-11) stamped three blocks of 2026-07-10_054635.log 4 068 s early, so
+# sorted by time the morning interleaves two temperatures for 67 min and has a
+# 68-min hole after (memory: project_5c88_ds1307). Before 2.1.3 every stamp may
+# also be ~2 min off, with an hourly see-saw; that is below this model's reach.
+BAD_SD_WINDOWS = [
+    (datetime(2026, 7, 9, 6, 6, 19), datetime(2026, 7, 9, 9, 48, 58)),
+]
 
 MAX_OUTDOOR_GAP_S = 40 * 60     # 4 missed 10-min uplinks
 MAX_SAMPLE_GAP_S = 300          # restart a simulation across longer SD gaps
@@ -57,12 +68,21 @@ def _sec(dt):
     return (dt - EPOCH).total_seconds()
 
 
+# The LoRa database stamps rows in UTC, not local time -- see model/lora_time.py
+# for the evidence. Every merge that took them as local, the summer calibration
+# inputs included, pairs the indoor readings with outdoor data from two hours
+# later. Converted here on read.
+LORA_CLOCK_UTC = True
+
+
 def _read_lora(path, cols):
     out = []
     with open(path, newline="", encoding="utf-8") as fh:
         for r in csv.DictReader(fh):
             try:
                 t = datetime.strptime(r["dateTime"], "%Y-%m-%d %H:%M:%S")
+                if LORA_CLOCK_UTC:
+                    t = utc_to_local(t)
                 out.append((t,) + tuple(float(r[c]) for c in cols))
             except (ValueError, KeyError, TypeError):
                 continue
@@ -210,7 +230,8 @@ def build(start=None, end=None, log_glob=None, lht=LHT, door1=DOOR1, door2=DOOR2
     """Assemble the dataset for [start, end) (local datetimes; None = everything)."""
     data = data or load_sd_logs(log_glob or str(CAMPAIGN / "*.log"))
     samp = [s for s in data.samples
-            if (start is None or s[0] >= start) and (end is None or s[0] < end)]
+            if (start is None or s[0] >= start) and (end is None or s[0] < end)
+            and not any(a <= s[0] < b for a, b in BAD_SD_WINDOWS)]
     t = [s[0] for s in samp]
     t_s = np.array([_sec(x) for x in t])
     dt = np.diff(t_s, prepend=t_s[0] - 30.0)

@@ -9,6 +9,16 @@
 | Adopted artifact | [`campaign-summer-2026/plant_calibrated_constrained_summer2026_freem3.json`](campaign-summer-2026/plant_calibrated_constrained_summer2026_freem3.json) |
 | Data volume | 87 301 indoor samples (30 s cadence), 47 866 calibration-valid (54 %); outdoor T/RH/lux from LoRa lht65-20 (10 min); door exclusion from LDS01-5/6 |
 
+> **Erratum 2026-09-18: the outdoor and door data behind this document are two hours late.** The LoRa database stamps its rows in UTC, and every calibration input joined them to the local-time SD logs unconverted (evidence: [`lora_time.py`](lora_time.py); the join rule in [`thermalProfileCampaign.md`](thermalProfileCampaign.md) §7.3 is corrected). What that does to the findings below:
+>
+> - **§1's parameters are fitted to shifted inputs.** On correctly aligned data the adopted artifact scores T RMSE 4.07 degC on held-out days, and in closed loop cycles on 13 of the 74 days that 5C88 cycled. A two-node plant fitted on aligned data scores 1.58-1.72 degC and reproduces the limit cycle ([`closedloop/README.md`](closedloop/README.md)).
+> - **F3 reverses.** At the median daytime M3 opening, lux is rising (+4 187 lux/h before, +678 after), not falling. So the temperature drop after M3 opens is M3's own effect.
+> - **F2's temperature flush on 2026-07-11 does not hold:** T_in stayed 3-5 degC above the correctly timed T_out. **Its humidity flush does hold:** AH_in reached outdoor AH within about 0.5 g/m3.
+> - **Estimates built on shifted T_out or lux are suspect:** F4's capacity figure, the 0.05 /h value of `ach_m3`, and NS-9 step 1's per-segment ACH.
+> - **What stands:** everything taken from the SD logs alone (wind sectors, M3 openings, the limit cycle, F7-F9), and the door states during the forced tests (door 1 was open for hours either side).
+>
+> These are corrections of fact, not yet a revised analysis.
+
 ---
 
 ## 1. The calibrated model
