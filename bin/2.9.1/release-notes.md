@@ -151,7 +151,8 @@ All on 2344 in the dev rig, with the encoder connected, on bench builds of this 
 - **No partition change, no NVS migration, no configuration change.**
 - **In the SD log, a stroke with a reversal can now carry two rule rows** (`ALARM ch6 param 249/250`), one per drive. The encodings are unchanged, and `logparser.py` needs no change (`logparser.md` 1.21 says so).
 - **Soak figures:** `strokes` now counts judged drives, so a reversal adds 2.
-- **ROTA does not offer 2.9.1 to a unit that runs a pushed 2.9.1 build**, a bench build included: the version compare ignores the `-bench` suffix. 2344 runs `2.9.1-bench` now.
+- **On the ROTA soak channel since 2026-09-18, seq 51** ([v2.9.1](https://github.com/pe1mew/greenhouse-Controller/releases/tag/v2.9.1)). **2344 pulled it the same morning:** 2.9.0 was pushed back first, the server began offering 2.9.1 at 08:31, and the unit rebooted into it at 08:32:33. Verified after the reboot: `fw_ver` and `asset_version` both 2.9.1, `travel_m3` still 13, `wpos_fitted_m3` still 1, M3's position back in the status and address 40 reading without error. The first download attempt ended with `last_dl` = 1 (TLS/pin), as 2.9.0's first two did; the next succeeded.
+- **ROTA does not offer 2.9.1 to a unit that runs a pushed 2.9.1 build**, a bench build included: the version compare ignores the `-bench` suffix — which is why 2.9.0 went back on 2344 before the pull.
 - **Keep this release's ELF.**
 - **Production runs 2.3.1.** Regenerate the release comparison before promoting.
 
