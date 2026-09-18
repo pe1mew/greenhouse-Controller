@@ -30,6 +30,7 @@ Also masked: **2026-07-09 06:06-09:48**, where 5C88's DS1307 (gh#37) stamped a b
 | Firmware chain | `firmware.py` | T5 `avg_push()`/`avg_get()` in float32 with `lroundf()`; T2's channel state machine (travel + 5 s, 2 s reversal gap, dwell deferring `SRC_T6` only, the gh#48 in-travel guard from 2.3.1); T6's caller (inhibit resets, day/night setpoints, narrowing before widening, a MODE row on change) |
 | Control law | `ventmodel.py`, `ventmodel_ffi.cpp` | `drivers/ventModel/` itself, compiled from the firmware's own sources into `build/ventmodel.dll` and called through ctypes, with every struct field checked by name on load |
 | Command line | `closed_loop.py` | The gates and the closed-loop reproduction |
+| Campaign figures | `campaign_figures.py` | The figures `campaignResults_summer2026.md` quotes that come from neither `refit.py` nor `closed_loop.py`: the forced tests, the event study, the hottest days, wind, windward M3-only minutes, the indoor LoRa sensors |
 
 The law is **not** re-implemented in Python. `simulation.py` carries its own port of the stepped law, and a port drifts. The contract makes the library host-compilable so that one set of sources serves the firmware, the host tests and this simulator (`design/ventModelContract.md` §4). When `vent_model_graded.cpp` exists, it becomes available here by adding one row to `k_models` in the shim.
 
@@ -41,6 +42,7 @@ python model/closedloop/closed_loop.py gate-control
 python model/closedloop/closed_loop.py reproduce --start 2026-06-05 --end 2026-09-16 --plant2 model/campaign-summer-2026/plant2/plant2_summer2026_Ca2.9.json
 python model/closedloop/refit.py fit --fix Ca_MJ=2.9
 python model/closedloop/refit.py compare model/campaign-summer-2026/plant2/*.json
+python model/closedloop/campaign_figures.py
 ```
 
 Needs Python 3.11 with numpy, scipy and matplotlib, and the Code::Blocks MinGW `g++` that `drivers/ventModel` already uses (or `VENTMODEL_CXX`). Both DLLs are rebuilt automatically when a source changes. `build/` holds only the DLLs, which `.gitignore` excludes. **A DLL loaded by a running process cannot be rebuilt on Windows**, so let a running fit finish before changing `plant2_kernel.c`, and build once before starting fits in parallel.
@@ -80,12 +82,12 @@ Fetched 2026-09-18 into `../campaign-summer-2026/` with `fetch_lora_data.py` (re
 | `lht65_02_2026-06-01_2026-09-17.csv` | 15 145 | **Indoor**, mid-width at 1/4 of the length (operator, 2026-09-18). Air T/RH plus a soil probe |
 | `lht65_03_2026-06-01_2026-09-17.csv` | 14 631 | **Indoor**, mid-width at 3/4 of the length. Same channels |
 
-The dataset holds 297 122 samples, 2026-06-04 to 2026-09-17. Window positions rebuilt from RELAY rows disagree with the logged bitmask on at most 0.125 % of settled samples.
+The dataset holds 296 678 samples, 2026-06-04 to 2026-09-17, after the 2026-07-09 mask. Window positions rebuilt from RELAY rows disagree with the logged bitmask on at most 0.125 % of settled samples.
 
 **What the indoor LoRa sensors show.** They are placed on the centre line either side of the controller's FG6485A, which is in the exact centre of the house.
 - **By day** they agree with it (median +0.4 and 0.0 degC).
 - **At night** they read a steady 0.8-1.0 degC lower.
-- **They show the M3 swing too,** at about half its amplitude: -0.7 against -1.3 degC 20-30 min after M3 opens, and +0.6 against +1.3 degC after it closes. Part of that difference may be their slower housing and 10-minute sampling.
+- **They show the M3 swing too,** at about half its amplitude and about 10 minutes later. After M3 opens they fall by up to 0.7-0.8 degC, where the centre falls 1.3; after it closes they rise by 0.6 degC, where the centre rises 1.3. Part of that difference may be their slower housing and 10-minute sampling.
 
 The limit cycle is a house-wide phenomenon. The soil probes run near the outside temperature at midday and well above the air at night.
 
@@ -133,7 +135,7 @@ Verify a new law against both, and treat a verdict that differs between them as 
 ## What is next
 
 1. **The swing gap** (2.0-2.8 against 3.1 degC). The sensor's own lag and the ~2-minute timestamp noise before 2.1.3 are candidates to test before any structural change. The indoor soil probes could become a measured input for the slow node.
-2. **The campaign documents** carry errata now, but their findings still need revising on the corrected data: §1's parameters, F2-F4, and NS-9 step 1.
+2. **The campaign documents.** `campaignResults_summer2026.md` is revised on the corrected data (2026-09-18). `thermalProfileCampaign.md` §9.5-9.11 and Appendix A still carry the first version's derivations, and NS-9 step 1 has to be redone.
 3. **Linear M3 (mode 2)** still needs a part-open aperture curve, which only the new firmware and hardware can measure. Until then, vary it across a range (`plant.py`/`plant2.py` openness) and check the verdict holds across it.
 
 ## Known limits
