@@ -30,7 +30,7 @@ Also masked: **2026-07-09 06:06-09:48**, where 5C88's DS1307 (gh#37) stamped a b
 | Firmware chain | `firmware.py` | T5 `avg_push()`/`avg_get()` in float32 with `lroundf()`; T2's channel state machine (travel + 5 s, 2 s reversal gap, dwell deferring `SRC_T6` only, the gh#48 in-travel guard from 2.3.1); T6's caller (inhibit resets, day/night setpoints, narrowing before widening, a MODE row on change) |
 | Control law | `ventmodel.py`, `ventmodel_ffi.cpp` | `drivers/ventModel/` itself, compiled from the firmware's own sources into `build/ventmodel.dll` and called through ctypes, with every struct field checked by name on load |
 | Command line | `closed_loop.py` | The gates and the closed-loop reproduction |
-| Campaign figures | `campaign_figures.py` | The figures `campaignResults_summer2026.md` quotes that come from neither `refit.py` nor `closed_loop.py`: the forced tests, the event study, the hottest days, wind, windward M3-only minutes, the indoor LoRa sensors |
+| Campaign figures | `campaign_figures.py` | The figures `campaignResults_summer2026.md` and `thermalProfileCampaign.md` §9.12 quote that come from neither `refit.py` nor `closed_loop.py`: the forced tests, the event study, the hottest days, wind, windward M3-only minutes, the indoor LoRa sensors, a model-free wind check, and the plants' heat loss per ventilation step |
 
 The law is **not** re-implemented in Python. `simulation.py` carries its own port of the stepped law, and a port drifts. The contract makes the library host-compilable so that one set of sources serves the firmware, the host tests and this simulator (`design/ventModelContract.md` §4). When `vent_model_graded.cpp` exists, it becomes available here by adding one row to `k_models` in the shim.
 
@@ -135,7 +135,7 @@ Verify a new law against both, and treat a verdict that differs between them as 
 ## What is next
 
 1. **The swing gap** (2.0-2.8 against 3.1 degC). The sensor's own lag and the ~2-minute timestamp noise before 2.1.3 are candidates to test before any structural change. The indoor soil probes could become a measured input for the slow node.
-2. **The campaign documents.** `campaignResults_summer2026.md` is revised on the corrected data (2026-09-18). `thermalProfileCampaign.md` §9.5-9.11 and Appendix A still carry the first version's derivations, and NS-9 step 1 has to be redone.
+2. **The campaign documents are revised** (2026-09-18): `campaignResults_summer2026.md`, and `thermalProfileCampaign.md` §9.12 with banners on §9.5-9.11. NS-9 is open again: the fits disagree on the direction term, and a crude model-free check finds west wind, not south-west, the worst (§9.12.6).
 3. **Linear M3 (mode 2)** still needs a part-open aperture curve, which only the new firmware and hardware can measure. Until then, vary it across a range (`plant.py`/`plant2.py` openness) and check the verdict holds across it.
 
 ## Known limits

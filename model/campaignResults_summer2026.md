@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Document | Campaign results summary (conclusions only). Derivations: [closedloop/README.md](closedloop/README.md) for the revised model and its tests, and [thermalProfileCampaign.md](thermalProfileCampaign.md) §9.5-9.11 for the original analysis, which is **not yet revised** |
+| Document | Campaign results summary (conclusions only). Derivations: [thermalProfileCampaign.md](thermalProfileCampaign.md) §9.12, claim by claim, with the original analysis kept in §9.5-9.11 under banners; [closedloop/README.md](closedloop/README.md) for the revised model and its tests |
 | Revision | **2026-09-18: revised on correctly timed data** (§0). The first version (2026-07-04, extended 2026-08-31) was built on outdoor and door data that were two hours late |
 | Data | 5C88 SD logs 2026-06-04 → 2026-09-17: 58 files, 105 logged days, 296 678 samples at 30 s. Outdoor T/RH/lux from LoRa `lht65-20` (10 min) and doors from `lds01-5`/`-6`, both converted from UTC. Indoor LoRa `lht65-02`/`-03` are used for cross-checks |
 | Status | **A two-node plant reproduces the binary law's limit cycle in closed loop, on held-out days too.** It gets the number of M3 openings, the cycle period and the time above 31 °C right. The swing is still short (§1, F1). AC-9 and AC-10, which compare every sample, still fail (§3) |
@@ -118,6 +118,7 @@ How the columns are defined:
 - **Jul 11 flushed the humidity:** within 0.5 g/m³ of outside in 13-16 minutes, in every window. The temperature fell 3.3-4.3 °C but stayed 2.9-4.7 °C above outside.
 - **On Jul 4 the humidity dropped too**, to within 0.6-0.7 g/m³ at its lowest. The temperature did not drop.
 - **The two days differ in sun as well as in wind.** Jul 4 ran in 29-41 klux, while Jul 11's first two windows ran in 8-10 klux. Jul 11's one sunny window ended at +4.7 °C, against +2.9-3.0 for the overcast ones. So the first version's "direction alone decides" does not hold. Separating direction from sun needs a model fit, and the two adopted fits disagree about it (NS-9).
+- **A crude model-free check points elsewhere again.** With all three windows open, the doors shut and more than 20 klux, the house runs warmest per unit of sun in west wind (1.87 °C per 10 klux) and coolest in east wind (1.32), with north wind in between (1.51). The figure is flat across wind speeds (1.44-1.65). Different days sit in each sector, so this is a lead, not a measurement (`thermalProfileCampaign.md` §9.12.6).
 - **Withdrawn:** "≤ 0.05 /h leeward" and "T_in converged to T_out". Jul 11's humidity flush stands.
 
 **F3 — The drop when M3 opens is ventilation, not a trigger artifact** *(reversed 2026-09-18)*. Daytime window openings on the correct clock, median slopes 15 min before → 3-18 min after:
@@ -215,10 +216,10 @@ AC-9 and AC-10 compare every 30-s sample. A plant that is right about the loop b
 
 | Item | What | Why |
 |---|---|---|
-| Audit trail | Revise `thermalProfileCampaign.md` §9.5-9.11 and Appendix A on the corrected data | They still carry the first version's derivations |
+| ~~Audit trail~~ | ✅ Done 2026-09-18: `thermalProfileCampaign.md` §9.12 re-derives the findings and grades every earlier claim; §9.5-9.11 carry banners, Appendix A is updated (NS-10 added) | |
 | Old scripts and inputs | Regenerate `calibration_input_*.csv` with the corrected merge, under new names, keeping the old ones for traceability. Move `m3_event_study.py` and `ns9_direction_stratified.py` onto the new inputs, or retire them in favour of `closedloop/campaign_figures.py` | They read the shifted inputs, and `m3_event_study.py` reads them from the original checkout's path. Rerun as they are, they reproduce the withdrawn numbers |
-| The swing | 2.0-2.8 against 3.1-3.6 °C. Candidates to test before any structural change: the sensor's own lag, the pre-2.1.3 timestamp noise, and the soil probes as a measured input | The one closed-loop property not yet reproduced |
-| NS-9 | Does direction matter, and how much? `_dir` says 2.7× windward, while `_Ca2.9` fits about as well without it. Settle it with forced M3 tests **with the doors shut**, on overcast days in both wind regimes, and on top of M1+M2 as T6 uses M3 | Every forced test so far had door 1 open, and the two days differed in sun (F2) |
+| The swing (NS-10) | 2.0-2.8 against 3.1-3.6 °C. Candidates to test before any structural change: the sensor's own lag, the pre-2.1.3 timestamp noise, and the soil probes as a measured input | The one closed-loop property not yet reproduced |
+| NS-9 | Does direction matter, how much, and in what shape? `_dir` says 2.7× with north wind, `_Ca2.9` fits about as well without a term, and a crude check finds west wind worst (F2). Settle it with forced M3 tests **with the doors shut**, at matched or low sun, in north, west and south wind, and on top of M1+M2 as T6 uses M3 | Every forced test so far had door 1 open, and the two days differed in sun (F2) |
 | ~~NS-8~~ | ✅ Resolved 2026-07-12. **Qualified 2026-09-18:** M3 flushes the house in north wind, but the leeward "~nothing" is withdrawn (F2) | |
 | Door 1 | `lds01-5` last reported on 2026-08-16 at 09:57 local time (07:56 in the UTC export) | After that the door is assumed shut, and both plants fall short on M3 openings (F1) |
 | Part-open M3 | The aperture-to-ventilation curve | Needs the new firmware and position hardware. Until then, vary it in the simulator |
@@ -247,7 +248,7 @@ python model/closedloop/refit.py compare model/campaign-summer-2026/plant2/*.jso
 python model/closedloop/closed_loop.py reproduce --start 2026-06-05 --end 2026-09-16 \
     --plant2 model/campaign-summer-2026/plant2/plant2_summer2026_Ca2.9.json
 
-# 5. the figures behind F2-F5, F11 and F12
+# 5. the figures behind F2-F5, F11, F12 and thermalProfileCampaign.md §9.12
 python model/closedloop/campaign_figures.py
 
 # 6. controller-behaviour replay (F7-F9) -- validates before it projects
@@ -265,6 +266,7 @@ The first version's pipeline (`prepare_calibration_input.py`, then `calibrate_pl
 | The UTC evidence and the conversion | [`lora_time.py`](lora_time.py) |
 | Two-node plant, fits, M3 response test, closed-loop tests, the gates | [`closedloop/README.md`](closedloop/README.md) |
 | The figures behind F2-F5, F11, F12 | [`closedloop/campaign_figures.py`](closedloop/campaign_figures.py) |
-| First-version identification, the NS-6 procedure, the Jul 4 and Jul 11 tests (**on shifted data; to be revised**) | [`thermalProfileCampaign.md`](thermalProfileCampaign.md) §9.5-9.11 |
+| The revision, claim by claim: what stands, what is withdrawn, the re-read tests, the ladder, wind | [`thermalProfileCampaign.md`](thermalProfileCampaign.md) §9.12 |
+| First-version identification, the NS-6 procedure, the Jul 4 and Jul 11 tests (**on shifted data**, kept as the record under banners) | `thermalProfileCampaign.md` §9.5-9.11 |
 | Window strategy analysis (partially superseded) | `thermalProfileCampaign.md` §9.8 |
-| Step-by-step status NS-1 … NS-9 | `thermalProfileCampaign.md` Appendix A |
+| Step-by-step status NS-1 … NS-10 | `thermalProfileCampaign.md` Appendix A |

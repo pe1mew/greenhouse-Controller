@@ -144,7 +144,7 @@ Current validated results live in `campaign-defaultSettings/` — see Campaign a
 | File | Purpose |
 |---|---|
 | `campaignResults_summer2026.md` | **Results summary of the summer-2026 calibration campaign**, revised 2026-09-18 on correctly timed data — the adopted two-node plants, key findings, AC status, open items. Read this first. |
-| `thermalProfileCampaign.md` | Campaign plan + working audit trail (executed Jun 4 – Jul 4 2026); derivations in §9.5–9.11, on the two-hours-late LoRa data and **not yet revised** |
+| `thermalProfileCampaign.md` | Campaign plan + working audit trail (executed Jun 4 – Jul 4 2026). §9.5–9.11 are the original derivations, on the two-hours-late LoRa data, kept under banners; §9.12 revises them claim by claim (2026-09-18) |
 | `logUpdatePlan.md` | Locked firmware design for LOG_SENSOR_HR and LOG_SUN event types — prerequisite for thermalProfileCampaign.md |
 
 ### Campaign archives

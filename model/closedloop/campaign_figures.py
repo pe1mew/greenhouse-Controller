@@ -1,17 +1,22 @@
 """
-campaign_figures.py -- the figures in campaignResults_summer2026.md that come
-from neither refit.py nor closed_loop.py, recomputed on correctly timed data.
+campaign_figures.py -- the figures in campaignResults_summer2026.md and
+thermalProfileCampaign.md §9.12 that come from neither refit.py nor
+closed_loop.py, recomputed on correctly timed data.
 
     python model/closedloop/campaign_figures.py [--only F2 F3 ...]
 
-One section per finding:
+One section per finding (F*) or campaign step (NS9), plus the plants' ladder:
 
-  F2   the forced M3-only tests of 2026-07-04 and 2026-07-11
-  F3   slopes before and after daytime window openings (the event study)
-  F4   the hottest days: the house's state at the daily maximum
-  F5   wind directions over the wind-valid era
-  F11  M3-only-open minutes under windward (315-45 deg) wind, by date
-  F12  the indoor LoRa sensors against the controller's sensor
+  F2      the forced M3-only tests of 2026-07-04 and 2026-07-11, and the
+          all-closed re-heat between the Jul 11 windows
+  F3      slopes before and after daytime window openings (the event study)
+  F4      the hottest days: the house's state at the daily maximum
+  F5      wind directions over the wind-valid era, overall and by month
+  F11     M3-only-open minutes under windward (315-45 deg) wind, by date
+  F12     the indoor LoRa sensors against the controller's sensor
+  NS9     all-open temperature excess per 10 klux, by wind speed and sector
+  LADDER  the fitted plants' heat loss per ventilation step, and M3 against
+          a roof window in every plant2 artifact (no dataset needed)
 
 Everything is read through dataset.py, so the LoRa rows are converted from
 UTC (lora_time.py) and the 2026-07-09 morning is masked. F5 and F11 use the
@@ -24,6 +29,8 @@ ASCII-only output (Windows console is cp1252 -- see memory/gotcha-log.md).
 from __future__ import annotations
 
 import argparse
+import glob
+import json
 import sys
 from collections import Counter, defaultdict
 from datetime import date
@@ -38,12 +45,16 @@ for p in (HERE, HERE.parent):
 
 import dataset  # noqa: E402
 from firmware import CH_MOVING_CLOSE, CH_MOVING_OPEN, RELAY_TO_CH  # noqa: E402
+from plant import CP_AIR, RHO_AIR  # noqa: E402
 
 DAYTIME = (8, 19)                 # hours, as refit.m3_response
 FORCED_TEST_DAYS = (date(2026, 7, 4), date(2026, 7, 11))
 HOT_DAY_C = 34.0
 WINDY_MS = 1.0
 SECT8 = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+SECT4 = (("N 315-45", 315, 45), ("E 45-135", 45, 135), ("S 135-225", 135, 225), ("W 225-315", 225, 315))
+SPEED_BINS = ((0, 0.5), (0.5, 1), (1, 1.5), (1.5, 2), (2, 3), (3, 9))
+ADOPTED = ("plant2_summer2026_Ca2.9.json", "plant2_summer2026_dir.json")
 LHT_INDOOR = {
     "LHT65-02 (1/4)": "lht65_02_2026-06-01_2026-09-17.csv",
     "LHT65-03 (3/4)": "lht65_03_2026-06-01_2026-09-17.csv",
@@ -64,6 +75,20 @@ def index_at(ds, ts):
     return int(np.searchsorted(ds.t_s, (ts - dataset.EPOCH).total_seconds()))
 
 
+def runs(ds, idx, pred, min_s=600):
+    """[first, last] index pairs of the stretches of idx where pred(i) holds, min_s or longer."""
+    spans, cur = [], None
+    for i in idx:
+        if pred(i):
+            cur = [i, i] if cur is None else [cur[0], i]
+        elif cur is not None:
+            spans.append(cur)
+            cur = None
+    if cur is not None:
+        spans.append(cur)
+    return [(a, b) for a, b in spans if ds.t_s[b] - ds.t_s[a] >= min_s]
+
+
 def f2_forced_tests(ds):
     """Each M3-only opening of 10 min or more (M1, M2 closed by the bitmask) on the test days."""
     print("== F2  forced M3-only tests (excess = inside minus outside)")
@@ -72,20 +97,10 @@ def f2_forced_tests(ds):
         if t.date() in FORCED_TEST_DAYS:
             by_day[t.date()].append(i)
     for day in FORCED_TEST_DAYS:
-        spans, cur = [], None
-        for i in by_day[day]:
-            bm = ds.bm[i]
-            m3only = state(bm, 2) in (1, 2) and state(bm, 0) == 0 and state(bm, 1) == 0
-            if m3only:
-                cur = [i, i] if cur is None else [cur[0], i]
-            elif cur is not None:
-                spans.append(cur)
-                cur = None
-        if cur is not None:
-            spans.append(cur)
+        bms = ds.bm
+        spans = runs(ds, by_day[day], lambda i: state(bms[i], 2) in (1, 2)
+                     and state(bms[i], 0) == 0 and state(bms[i], 1) == 0)
         for a, b in spans:
-            if ds.t_s[b] - ds.t_s[a] < 600:
-                continue
             seg = np.arange(a, b + 1)
             pre = a - 1
             dT = ds.T_in[seg] - ds.T_out[seg]
@@ -100,14 +115,28 @@ def f2_forced_tests(ds):
             print("    AH excess before %+.1f  end %+.1f  min %+.1f g/m3; first <= 0.5 after %s min"
                   % (1000.0 * (ds.AH_in[pre] - ds.AH_out[pre]), dAH[-1], dAH.min(),
                      "-" if k is None else round((ds.t_s[a + k] - ds.t_s[a]) / 60)))
-            print("    wind %.0f deg (p10-p90 %.0f-%.0f), %.1f m/s (p10-p90 %.1f-%.1f); lux %.0f"
+            print("    wind %.0f deg (p10-p90 %.0f-%.0f), %.1f m/s (p10-p90 %.1f-%.1f);"
+                  " lux %.0f (%.0f-%.0f)"
                   % (np.median(ds.wind_dir[seg]), np.percentile(ds.wind_dir[seg], 10),
                      np.percentile(ds.wind_dir[seg], 90), np.median(ds.wind_ms[seg]),
                      np.percentile(ds.wind_ms[seg], 10), np.percentile(ds.wind_ms[seg], 90),
-                     np.median(ds.lux[seg])))
+                     np.median(ds.lux[seg]), ds.lux[seg].min(), ds.lux[seg].max()))
             print("    door 1 open %.0f %% (within 2 h either side %.0f %%), door 2 open %.0f %%"
                   % (100 * np.mean(ds.door1[seg] > 0), 100 * np.mean(ds.door1[lo:hi] > 0),
                      100 * np.mean(ds.door2[seg] > 0)))
+        if len(spans) < 2:
+            continue
+        # The all-closed stretches between the forced windows: how fast the
+        # house re-heats after a flush (thermalProfileCampaign.md §9.10 finding 3).
+        between = [i for i in by_day[day] if spans[0][1] < i < spans[-1][0]]
+        for a, b in runs(ds, between, lambda i: int(bms[i]) & 0x3F == 0):
+            seg = np.arange(a, b + 1)
+            print("  %s %s-%s all closed (%d min): T_in %.1f -> %.1f, %+.1f degC per 30 min;"
+                  " lux %.0f (%.0f-%.0f)"
+                  % (day, ds.t[a].strftime("%H:%M"), ds.t[b].strftime("%H:%M"),
+                     round((ds.t_s[b] - ds.t_s[a]) / 60), ds.T_in[a], ds.T_in[b],
+                     (ds.T_in[b] - ds.T_in[a]) / ((ds.t_s[b] - ds.t_s[a]) / 1800.0),
+                     np.median(ds.lux[seg]), ds.lux[seg].min(), ds.lux[seg].max()))
 
 
 def f3_event_study(ds):
@@ -185,6 +214,11 @@ def f5_wind(ds):
     print("  from 315-45 deg (M3's windward side): %.1f %%"
           % (100.0 * sum(windward(ds.wind_dir[i]) for i in sel) / len(sel)))
     print("  8 sectors: " + "  ".join("%s %.1f" % (k, 100.0 * c8[k] / len(sel)) for k in SECT8))
+    by_month = defaultdict(list)
+    for i in sel:
+        by_month[ds.t[i].strftime("%Y-%m")].append(windward(ds.wind_dir[i]))
+    print("  from 315-45 deg by month: " + "  ".join(
+        "%s %.0f %%" % (m, 100.0 * np.mean(v)) for m, v in sorted(by_month.items())))
 
 
 def f11_windward_minutes(ds):
@@ -256,6 +290,68 @@ def f12_indoor_lora(ds):
                      " ".join("%+5.1f" % np.median(acc[b][1]) for b in bins), len(acc[bins[1]][0])))
 
 
+def ns9_wind_speed(ds):
+    """Does ventilation grow with wind speed? A crude, model-free check.
+
+    With all three windows open, both doors shut and the sun above 20 klux,
+    (T_in - T_out) per 10 klux falls as ventilation rises. Transients and the
+    structure's stored heat blur it, so read trends, not levels.
+    """
+    open3 = np.all(ds.o > 0.99, axis=1)
+    hours = np.array([t.hour for t in ds.t])
+    m = (open3 & ~ds.stale & ds.wind_valid & (ds.door1 + ds.door2 == 0)
+         & (hours >= 10) & (hours < 16) & (ds.lux > 20000))
+    exc = np.full(len(ds), np.nan)
+    exc[m] = (ds.T_in[m] - ds.T_out[m]) / (ds.lux[m] / 1e4)
+    print("== NS9 all three open, doors shut, 10-16 h, > 20 klux: (T_in - T_out) per 10 klux,"
+          " median (n=%d)" % m.sum())
+    for lo, hi in SPEED_BINS:
+        s = m & (ds.wind_ms >= lo) & (ds.wind_ms < hi)
+        if s.sum() > 50:
+            print("  wind %.1f-%.1f m/s: n %5d  %.2f degC" % (lo, hi, s.sum(), np.median(exc[s])))
+    d = ds.wind_dir % 360
+    for name, lo, hi in SECT4:
+        sector = (d >= lo) | (d < hi) if lo > hi else (d >= lo) & (d < hi)
+        s = m & sector & (ds.wind_ms >= WINDY_MS)
+        days = len({ds.t[i].date() for i in np.flatnonzero(s)})
+        if s.sum() > 50:
+            print("  from %-9s at >= %.1f m/s: n %5d on %2d days  %.2f degC"
+                  % (name, WINDY_MS, s.sum(), days, np.median(exc[s])))
+
+
+def ladder(_ds=None):
+    """Heat loss to outside per ventilation step, from the fitted parameters alone.
+
+    UA(step) = UA0 + (sum of the open windows' ach) * V*rho*cp/3600 -- the air
+    node's loss to outside (cover, leaks, windows), without its coupling Gas
+    to the structure node. Step 1 = M1, 2 = M1+M2, 3 = all three.
+    """
+    print("== LADDER heat loss to outside per step, kW/K (and the factor over the step below)")
+    root = HERE.parent / "campaign-summer-2026" / "plant2"
+    for fn in ADOPTED:
+        p = json.load(open(root / fn))["params"]
+        vrc = p["V"] * RHO_AIR * CP_AIR / 3600.0
+        ua = [p["UA0"]]
+        for ach in (p["ach_m1"], p["ach_m2"], p["ach_m3"]):
+            ua.append(ua[-1] + ach * vrc)
+        row = "  ".join("%d: %.1f" % (k, u / 1000) + ("" if k == 0 else " (x%.2f)" % (u / ua[k - 1]))
+                        for k, u in enumerate(ua))
+        print("  %-30s %s" % (fn[len("plant2_summer2026"):-5] or "(free run)", row))
+        if p.get("m3_ww"):
+            full = ua[2] + (p["ach_m3"] + p["m3_ww"]) * vrc
+            print("  %-30s 3, wind straight onto M3's wall: %.1f (x%.2f)" % ("", full / 1000, full / ua[2]))
+    print("  M3 against one roof window, and M3's share of the window ventilation with all open:")
+    for f in sorted(glob.glob(str(root / "*.json"))):
+        p = json.load(open(f))["params"]
+        name = Path(f).stem[len("plant2_summer2026"):] or "(free run)"
+        m3 = p["ach_m3"]
+        print("  %-12s ach_m1 %5.2f  ach_m3 %5.2f /h  ratio %4.1f  share %3.0f %%"
+              % (name, p["ach_m1"], m3, m3 / p["ach_m1"], 100 * m3 / (m3 + p["ach_m1"] + p["ach_m2"]))
+              + ("" if not p.get("m3_ww") else "  (wind onto the wall: %.2f /h, ratio %.1f, share %.0f %%)"
+                 % (m3 + p["m3_ww"], (m3 + p["m3_ww"]) / p["ach_m1"],
+                    100 * (m3 + p["m3_ww"]) / (m3 + p["m3_ww"] + p["ach_m1"] + p["ach_m2"]))))
+
+
 SECTIONS = {
     "F2": f2_forced_tests,
     "F3": f3_event_study,
@@ -263,18 +359,23 @@ SECTIONS = {
     "F5": f5_wind,
     "F11": f11_windward_minutes,
     "F12": f12_indoor_lora,
+    "NS9": ns9_wind_speed,
+    "LADDER": ladder,
 }
+NO_DATASET = {"LADDER"}
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0].strip())
     ap.add_argument("--only", nargs="+", choices=sorted(SECTIONS), help="sections to print")
     args = ap.parse_args(argv)
-    ds = dataset.build()
-    print("dataset: %d samples, %s .. %s" % (len(ds), ds.t[0], ds.t[-1]))
-    for name, fn in SECTIONS.items():
-        if args.only is None or name in args.only:
-            fn(ds)
+    chosen = [n for n in SECTIONS if args.only is None or n in args.only]
+    ds = None
+    if any(n not in NO_DATASET for n in chosen):
+        ds = dataset.build()
+        print("dataset: %d samples, %s .. %s" % (len(ds), ds.t[0], ds.t[-1]))
+    for name in chosen:
+        SECTIONS[name](ds)
     return 0
 
 
