@@ -75,6 +75,8 @@ DIRECTION_CENTRE = ("m3_dir0", -90.0, 90.0, False)
 # The sensor stage (plant2_kernel.c): two lags between the air node and the
 # reading, s. NS-10: the logged reading answers an M3 command 3-4 min late.
 SENSOR = [("tau_s1", 0.0, 900.0, False), ("tau_s2", 0.0, 900.0, False)]
+# How much of M3's inflow reaches the probe in wind onto M3's wall (plant2_kernel.c).
+SENSOR_MIX = ("sens_mix", 0.0, 1.0, False)
 W_AH = 1.0            # 1 g/m3 of AH error weighs as much as 1 degC
 BURN_IN_S = 86400.0
 
@@ -222,6 +224,9 @@ def describe(params):
     if params.get("tau_s1") or params.get("tau_s2"):
         lines.append("  sensor stage    lags of %.0f s and %.0f s between the air and the reading"
                      % (params.get("tau_s1", 0.0), params.get("tau_s2", 0.0)))
+    if params.get("sens_mix"):
+        lines.append("  at the probe    %.0f %% outdoor air per unit of M3 openness x windward cosine"
+                     % (100 * params["sens_mix"]))
     return "\n".join(lines)
 
 
@@ -243,7 +248,8 @@ def fit(args):
         fixed[name] = float(value)
     spec = [s for s in FIT + ([DIRECTION] if args.direction else [])
             + ([DIRECTION_CENTRE] if args.dir0 else [])
-            + (SENSOR if args.sensor else []) if s[0] not in fixed]
+            + (SENSOR if args.sensor else [])
+            + ([SENSOR_MIX] if args.sensor_mix else []) if s[0] not in fixed]
     if fixed:
         print("  fixed: %s" % ", ".join("%s = %g" % kv for kv in fixed.items()))
     prep = plant2.Prepared(ds, horizon_s=args.horizon_min * 60.0)
@@ -327,14 +333,15 @@ def fit(args):
     print("\n" + describe(full))
     report(result)
 
-    name = "plant2_summer2026%s%s%s%s%s%s%s.json" % (
+    name = "plant2_summer2026%s%s%s%s%s%s%s%s.json" % (
         "".join("_%s%g" % (k.split("_")[0], v) for k, v in fixed.items()),
         "_h%d" % args.horizon_min if args.horizon_min else "",
         "_ev%g" % args.event_weight if args.event_weight else "",
         "_dir" if args.direction else "",
         "_dir0" if args.dir0 else "",
         "_door1mask" if args.door1 == "mask" else "",
-        "_sens" if args.sensor else "")
+        "_sens" if args.sensor else "",
+        "_mix" if args.sensor_mix else "")
     out = Path(args.out) if args.out else CAMPAIGN / "plant2" / name
     out.parent.mkdir(exist_ok=True)
     with open(out, "w") as fh:
@@ -347,6 +354,7 @@ def fit(args):
             "model": "plant2",
             "fitted": date.today().isoformat(),
             "options": {"direction": args.direction, "dir0": args.dir0, "sensor": args.sensor,
+                        "sensor_mix": args.sensor_mix,
                         "door1": args.door1, "fixed": fixed,
                         "horizon_min": args.horizon_min, "event_weight": args.event_weight,
                         "w_ah": W_AH, "burn_in_s": BURN_IN_S},
@@ -443,6 +451,8 @@ def main(argv=None):
                    help="add M3's windward term (m3_ww, north-facing wall)")
     p.add_argument("--dir0", action="store_true",
                    help="with --direction, also fit where the windward lobe points (m3_dir0)")
+    p.add_argument("--sensor-mix", action="store_true",
+                   help="fit how much of M3's inflow reaches the probe in windward wind (sens_mix)")
     p.add_argument("--sensor", action="store_true",
                    help="fit the sensor stage too (tau_s1, tau_s2): the reading lags the air")
     p.add_argument("--door1", choices=("closed", "mask"), default="closed")

@@ -49,7 +49,7 @@ python model/closedloop/campaign_figures.py
 
 Needs Python 3.11 with numpy, scipy and matplotlib, and the Code::Blocks MinGW `g++` that `drivers/ventModel` already uses (or `VENTMODEL_CXX`). Both DLLs are rebuilt automatically when a source changes. `build/` holds only the DLLs, which `.gitignore` excludes. **A DLL loaded by a running process cannot be rebuilt on Windows**, so let a running fit finish before changing `plant2_kernel.c`, and build once before starting fits in parallel.
 
-`reproduce` without `--plant2` runs the single-node artifact. Other options: `--rh-from-log`, `--csv`, `--plot`; for the single node, `--openness position` and `--calibrator-hold`. `refit.py fit` options: `--direction`, `--dir0` (also fit where the direction lobe points), `--sensor` (fit the sensor lags; see NS-10 for why not), `--door1 mask`, `--horizon-min N`, `--event-weight L`, `--fix NAME=VALUE`, `--init ARTIFACT.json` (seed the search: the result can then only improve on that artifact). `compare` also prints each plant's drop 25 min after an M3 opening in north and in other wind, and `reproduce` ends with the swing split by wind and doors.
+`reproduce` without `--plant2` runs the single-node artifact. Other options: `--rh-from-log`, `--csv`, `--plot`; for the single node, `--openness position` and `--calibrator-hold`. `refit.py fit` options: `--direction`, `--dir0` (also fit where the direction lobe points), `--sensor` (fit the sensor lags; see NS-10 for why not), `--sensor-mix` (outdoor air at the probe in north wind; tested, not adopted), `--door1 mask`, `--horizon-min N`, `--event-weight L`, `--fix NAME=VALUE`, `--init ARTIFACT.json` (seed the search: the result can then only improve on that artifact). `compare` also prints each plant's drop 25 min after an M3 opening in north and in other wind, and `reproduce` ends with the swing split by wind and doors.
 
 ## The gates
 
@@ -115,6 +115,7 @@ The M3 response test is the median change of T in the 5-25 minutes after each da
 | `_Ca2.9_tau120_tau90` (sensor stage) | 1.67 | -2.7 | +2.4 | 426 | 0.76 | 67 | 45 min | 248 | 3.2 |
 | `_Ca2.9_tau240_tau90` | 1.66 | -2.3 | +2.0 | 390 | 0.77 | 65 | 45 min | 242 | 2.7 |
 | **`_Ca2.9_tau120_tau90_ev5_dir`** (adopted) | **1.58** | **-2.3** | +1.9 | **395** | **0.78** | 65 | **45 min** | **233** | 2.7 |
+| `_Ca2.9_tau120_tau90_ev5_mix` (probe mix, not adopted) | 1.72 | -2.5 | +2.0 | 392 | 0.77 | 64 | 45 min | 229 | 2.6 |
 | **`_Ca2.9_tau240_tau90_ev5_dir`** (adopted) | **1.58** | -2.2 | +1.8 | 389 | **0.78** | 63 | **46 min** | 236 | 2.7 |
 
 Held-out T RMSE is re-scored for every row on today's dataset, with door 1 assumed shut after 2026-08-16 (`_door1mask` was fitted masking it).
@@ -159,6 +160,12 @@ This is normal operation: M3 opened by T6 on top of M1+M2. The contrast holds wi
 
 **How much it is the whole house is not settled.** The two indoor LoRa sensors, at 1/4 and 3/4 of the house's length, show at most a 1.2x contrast between north and other wind, against the controller's 2x. Their 10-min sampling and slower housing blur fast changes. A season-long fit also refuses a large house-wide direction term, which fits the long all-open periods, where north wind shows no advantage (`campaign_figures.py` NS9). Both point to part of the effect being local to the controller's sensor in the centre, in the path of the air M3 lets in with north wind. That is a hypothesis, and the NS-9 forced tests with a second probe beside the controller's would settle it.
 
+**The probe-mix form of it, tested (2026-09-19).** The kernel can mix outdoor air into what the probe reads, in proportion to M3's openness and the windward component (`sens_mix`), leaving the house's heat balance alone.
+- **Fitted alone** (no house-wide term), it takes 25 % and shapes the model the right way: the air node, the house, shows 0.85x between north and other wind, as the LoRa sensors do. But the reading reaches only 1.2x against the log's 2x, the held-out error is worse (1.72 against 1.58 degC), and the north-wind swing stays at 3.2 degC.
+- **Fitted beside the house-wide term,** it goes to 0 and returns the primary unchanged.
+
+So on the controller's reading the data prefer a house-wide effect, and no form tried reaches the logged contrast. The log itself shows the tension: within M3's 25-min open phase the north-wind drop stays about 1.8x the others', yet long all-open periods show no north advantage. Resolving that needs the field test, not another term.
+
 The swing, logged / simulated, by condition (`reproduce` prints this):
 
 | Plant | North wind | Other wind | Doors shut | A door open |
@@ -183,7 +190,7 @@ Verify a new law against both, and treat a verdict that differs between them as 
 
 ## What is next
 
-1. **NS-10's remainder: the north-wind swing** (3.0-3.2 against 3.9 degC). The next model step is a term at the sensor for the incoming air that reaches it with north wind, the local effect the LoRa comparison hints at. Test it against the LoRa sensors before adopting it.
+1. **NS-10's remainder: the north-wind swing** (3.0-3.2 against 3.9 degC). A probe-mix term was tried and did not close it (above). The next step is data, not a model term: NS-9's forced tests with a second probe.
 2. **NS-9's forced tests**, now with a sharper question: does the whole house cool about twice as fast in north wind, or mainly the spot where the controller's sensor hangs? A temporary second probe beside the controller's, and one at the south side, would answer it.
 3. **Linear M3 (mode 2)** still needs a part-open aperture curve, which only the new firmware and hardware can measure. Until then, vary it across a range (`plant.py`/`plant2.py` openness) and check the verdict holds across it.
 

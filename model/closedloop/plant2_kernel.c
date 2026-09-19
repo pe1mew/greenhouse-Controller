@@ -39,6 +39,20 @@
  * Two lags approximate the mix of transport delay and probe lag the logs
  * show without a delay line, so the step-wise closed loop stays exact.
  *
+ * What reaches the probe (NS-10, the north-wind remainder). With M3 open and
+ * wind onto its wall, the controller's reading drops about twice as far as
+ * with other wind, while indoor sensors elsewhere in the house barely show
+ * the difference: the probe may sit in the stream M3 lets in. So X can be a
+ * mix of house air and outdoor air,
+ *
+ *   X = Ta - m*(Ta - To),   m = sens_mix * o3 * max(0, cos(dir - m3_dir0))
+ *
+ * (AH alike), clipped to 0..1. sens_mix = 0 -- every earlier artifact --
+ * leaves X = Ta. The plant's heat balance is untouched: only the reading
+ * sees the stream. Tested 2026-09-19 (thermalProfileCampaign.md 9.13.5):
+ * fitted alone it takes 25 % but fits worse than a house-wide direction
+ * term, and fitted beside that term it goes to 0. No adopted plant uses it.
+ *
  * Backward Euler over each step's own dt: stable for any time constant,
  * which a fit exploring small air capacities needs. Fitting and replay use
  * the same discretisation, so the parameters are tied to it.
@@ -67,6 +81,7 @@ enum {
     P_KA, P_KS, P_V, P_ACH_INF, P_E0, P_E1,
     P_M3_WW, P_M3_DIR0,
     P_TAU_S1, P_TAU_S2,          /* sensor stage, s; appended so older vectors stay valid */
+    P_SENS_MIX,                  /* outdoor-air share at the probe per unit of M3 inflow */
     P_COUNT
 };
 
@@ -151,9 +166,11 @@ P2_EXPORT int p2_run(int n, const double *p,
         } else {
             const double h = dt[i];
             double ach_m3 = p[P_ACH_M3];
-            if (p[P_M3_WW] != 0.0 && wdir != 0) {
+            double cw = 0.0;             /* windward component, 0..1; NaN wind -> 0 */
+            if ((p[P_M3_WW] != 0.0 || p[P_SENS_MIX] != 0.0) && wdir != 0) {
                 const double c = cos((wdir[i] - p[P_M3_DIR0]) * DEG);
                 if (c > 0.0) {
+                    cw = c;
                     ach_m3 += p[P_M3_WW] * c;
                 }
             }
@@ -180,9 +197,18 @@ P2_EXPORT int p2_run(int n, const double *p,
                 AH = sat;
             }
 
-            sT1 = lag(sT1, Ta, p[P_TAU_S1], h);
+            double xT = Ta, xH = AH;     /* what reaches the probe */
+            if (p[P_SENS_MIX] > 0.0 && cw > 0.0) {
+                double m = p[P_SENS_MIX] * o3[i] * cw;
+                if (m > 1.0) {
+                    m = 1.0;
+                }
+                xT = Ta - m * (Ta - To[i]);
+                xH = AH - m * (AH - AHo[i]);
+            }
+            sT1 = lag(sT1, xT, p[P_TAU_S1], h);
             sT2 = lag(sT2, sT1, p[P_TAU_S2], h);
-            sH1 = lag(sH1, AH, p[P_TAU_S1], h);
+            sH1 = lag(sH1, xH, p[P_TAU_S1], h);
             sH2 = lag(sH2, sH1, p[P_TAU_S2], h);
         }
         if (Ta_out) { Ta_out[i] = sT2; }

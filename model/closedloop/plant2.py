@@ -37,7 +37,7 @@ KERNEL_DLL = BUILD_DIR / "plant2.dll"
 # Mirrors the enum in plant2_kernel.c.
 PARAMS = ["Ca_MJ", "Cs_MJ", "Gas", "Gso", "UA0", "ach_m1", "ach_m2", "ach_m3",
           "ach_door", "ka", "ks", "V", "ach_inf", "e0", "e1", "m3_ww", "m3_dir0",
-          "tau_s1", "tau_s2"]
+          "tau_s1", "tau_s2", "sens_mix"]
 N_STATE = 7   # Ta, Ts, AH, then the sensor stage: T1, T2, AH1, AH2
 V_FIXED = 2400.0
 
@@ -61,6 +61,7 @@ BOUNDS = {
     "m3_ww":    (0.0, 60.0),
     "tau_s1":   (0.0, 900.0),
     "tau_s2":   (0.0, 900.0),
+    "sens_mix": (0.0, 1.0),
 }
 
 _D = ctypes.POINTER(ctypes.c_double)
