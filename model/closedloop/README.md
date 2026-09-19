@@ -275,6 +275,7 @@ Verify a new law against both, and treat a verdict that differs between them as 
 1. **NS-10's remainder: the north-wind swing** (3.0-3.2 against 3.9 degC). A probe-mix term was tried and did not close it (above). The next step is data, not a model term: NS-9's forced tests with a second probe.
 2. **NS-9's forced tests**, now with a sharper question: does the whole house cool about twice as fast in north wind, or mainly the spot where the controller's sensor hangs? A temporary second probe beside the controller's, and one at the south side, would answer it.
 3. **Linear M3 (mode 2)** still needs a part-open aperture curve, which only the new firmware and hardware can measure. Until then, vary it across a range (`plant.py`/`plant2.py` openness) and check the verdict holds across it.
+4. **Outdoor T/RH and sun sensors on the controller:** the evidence and a plan are in [`design/sunAndOutdoorSensorsStudy.md`](../../design/sunAndOutdoorSensorsStudy.md). The next model step is to test, against both plants, a law that uses the outdoor temperature.
 
 ## Known limits
 

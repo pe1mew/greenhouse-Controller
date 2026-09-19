@@ -19,6 +19,10 @@ One section per finding (F*) or campaign step (NS9), plus the plants' ladder:
           doors, and the indoor LoRa sensors against it (NS-9, NS-10)
   LADDER  the fitted plants' heat loss per ventilation step, and M3 against
           a roof window in every plant2 artifact (no dataset needed)
+  SENSORS what an outdoor T/RH sensor and a sun sensor on the controller would
+          add: the humidity votes against the outdoor air, M3's cooling
+          against T_in - T_out, the day's swing against the weather
+          (design/sunAndOutdoorSensorsStudy.md)
 
 Everything is read through dataset.py, so the LoRa rows are converted from
 UTC (lora_time.py) and the 2026-07-09 morning is masked. F5 and F11 use the
@@ -448,6 +452,95 @@ def ladder(_ds=None):
                     100 * (m3 + p["m3_ww"]) / (m3 + p["m3_ww"] + p["ach_m1"] + p["ach_m2"]))))
 
 
+def sensors(ds):
+    """What an outdoor T/RH sensor and a sun sensor on the controller would add.
+
+    design/sunAndOutdoorSensorsStudy.md quotes these: the humidity votes
+    against the outdoor air, M3's cooling against the indoor-outdoor
+    difference, the day's swing against the weather, and how finely the LoRa
+    sensor resolves the sun.
+    """
+    import bisect
+    import csv
+    from datetime import datetime, timedelta
+    import closed_loop as cl
+    print("\n=== SENSORS: what outdoor T/RH and sun would tell the controller ===")
+    data, n = ds.log, len(ds)
+    mts = [m[0] for m in data.modes]
+    step = np.zeros(n, int)
+    st_t = np.zeros(n, int)
+    for i, t in enumerate(ds.t):
+        k = bisect.bisect_right(mts, t) - 1
+        if k >= 0:
+            step[i], st_t[i] = data.modes[k][1], data.modes[k][2]
+    valid = ~ds.stale & ~np.isnan(ds.AH_out) & ~np.isnan(ds.T_out)
+    h = np.median(np.diff(ds.t_s)) / 3600.0
+    wetter = ds.AH_out >= ds.AH_in
+    vent = valid & (step > 0)
+    raised = valid & (step > np.maximum(st_t, 0))
+    alone = vent & (st_t <= 0)
+    print("  Humidity, from the logged MODE rows: ventilating %.0f h; humidity raised the step above "
+          "temperature's %.0f h, of which the outside air was at least as moist %.0f h; humidity "
+          "alone %.0f h (%.0f h at least as moist)"
+          % (vent.sum() * h, raised.sum() * h, (raised & wetter).sum() * h, alone.sum() * h,
+             (alone & wetter).sum() * h))
+
+    rows = []
+    for ts, ch, v in data.relay:
+        if ch != 2 or RELAY_TO_CH.get(v) != CH_MOVING_OPEN or not (DAYTIME[0] <= ts.hour < DAYTIME[1]):
+            continue
+        i0 = index_at(ds, ts)
+        if i0 + 50 >= n or ds.stale[i0] or np.any(np.diff(ds.t_s[i0:i0 + 51]) > 90) \
+                or np.isnan(ds.T_out[i0]):
+            continue
+        rows.append((ds.T_in[i0] - ds.T_out[i0], ds.T_in[i0 + 50] - ds.T_in[i0]))
+    d = np.array(rows)
+    print("  M3's cooling: %d daytime openings; the drop 25 min later against T_in - T_out: r = %.2f"
+          % (len(d), np.corrcoef(d[:, 0], d[:, 1])[0, 1]))
+    for lo, hi in ((0, 4), (4, 7), (7, 10), (10, 30)):
+        s = d[(d[:, 0] >= lo) & (d[:, 0] < hi)]
+        if len(s):
+            print("    T_in - T_out %2d-%2d degC: %3d openings, median drop %+.1f degC"
+                  % (lo, hi, len(s), np.median(s[:, 1])))
+
+    # The day's logged swing, as closed_loop.py reproduce measures it
+    t_m3 = 28 + 2 * max(1, 5 // 3) + 1             # 5C88: t_max_day 28, hyst_t 5
+    first, last = datetime(2026, 6, 5), datetime(2026, 9, 17)
+    by_day = defaultdict(list)
+    for i, t in enumerate(ds.t):
+        if first <= t < last:
+            by_day[t.date()].append(i)
+    hour = np.array([t.hour for t in ds.t])
+    days = []
+    for day, idx in sorted(by_day.items()):
+        if len(idx) < 2000:
+            continue
+        recs = [{"t": ds.t[i], "bm_log": int(ds.bm[i]) & 0x3F, "T_log": float(ds.T_in[i])}
+                for i in idx]
+        sw = cl.day_metrics(recs, "bm_log", t_m3)["swing"]
+        m = np.zeros(n, bool)
+        m[idx] = True
+        m &= valid & (hour >= 10) & (hour < 18)
+        if sw is None or m.sum() < 100:
+            continue
+        lux = ds.lux[m]
+        days.append((sw, float(np.mean(ds.T_in[m] - ds.T_out[m])), float(np.mean(ds.T_out[m])),
+                     float(np.std(np.diff(lux)) / max(float(np.mean(lux)), 1.0))))
+    a = np.array(days)
+    print("  The day's swing: %d cycling days; against the daytime (10-18 h) mean T_in - T_out "
+          "r = %.2f, mean T_out r = %.2f, lux variability r = %.2f"
+          % (len(a), np.corrcoef(a[:, 0], a[:, 1])[0, 1], np.corrcoef(a[:, 0], a[:, 2])[0, 1],
+             np.corrcoef(a[:, 0], a[:, 3])[0, 1]))
+
+    with open(dataset.LHT, newline="") as fh:
+        stamps = [datetime.strptime(r["dateTime"], "%Y-%m-%d %H:%M:%S") for r in csv.DictReader(fh)]
+    gaps = np.diff([s.timestamp() for s in stamps]) / 60.0
+    day = valid & (hour >= DAYTIME[0]) & (hour < DAYTIME[1])
+    print("  The sun as the LoRa sensor sees it: daytime lux median %.0f, 90th percentile %.0f; "
+          "one reading every %.0f min (median)"
+          % (np.median(ds.lux[day]), np.percentile(ds.lux[day], 90), np.median(gaps)))
+
+
 SECTIONS = {
     "F2": f2_forced_tests,
     "F3": f3_event_study,
@@ -458,6 +551,7 @@ SECTIONS = {
     "NS9": ns9_wind_speed,
     "M3WIND": m3_wind,
     "LADDER": ladder,
+    "SENSORS": sensors,
 }
 NO_DATASET = {"LADDER"}
 
