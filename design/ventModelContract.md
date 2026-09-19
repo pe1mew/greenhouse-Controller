@@ -329,7 +329,9 @@ never the safety thresholds.
 table for every controller key, in the same places as the firmware: the fields above, T5's windows,
 T3, T2's travel and dwell, T4's site and the poll interval. It takes the values from 5C88's logged
 history, a unit's GET /api/config, or `--set KEY=VALUE` (`model/closedloop/settings.py`; `closed_loop.py
-settings` lists where each key acts).
+settings` lists where each key acts). With `--set wpos_fitted_m3=1` it also plays M3's side of mode 2:
+`cap`, `pos_x10` with its age, the last target and how it ended, the deadband, the minimum interval,
+and T2's stop rule (`model/closedloop/README.md`, "A linear M3").
 
 ### Three consequences to design around
 

@@ -26,10 +26,16 @@ controller sees what the real one saw and does what it did:
       that defer SRC_T6 only, and -- from 2.3.1 (gh#48) -- SRC_T6 reversals
       deferred while a stroke is in progress. Also tracks the physical
       position, which the binary law never reads but a linear law will.
+  LinearChannel -- M3 with its wire sensor (wpos_fitted_m3 = 1), as 2.11.0's
+      mode 2 is designed but not yet built (plan §5b): T17's readings with
+      their age, drives to a part-open target that stop within the deadband,
+      and T6's last target and how it ended. See the class.
   Controller -- T6's cycle (climate_control.cpp): an inhibit resets the
       law, setpoints are resolved for day or night, every narrowing command
       goes out before any widening one, and a MODE row is written whenever
-      the resolved step changes.
+      the resolved step changes. With a linear M3 it also enforces the
+      contract's limits on a target (§3): clamped to 0..1000, dropped within
+      the deadband of M3 at rest, deferred inside the minimum interval.
 
 Not modelled here: motor alarms and Q1 overflow. Sensor faults are taken
 from their logged ALARM rows: a T/RH fault inhibits T6, a wind fault makes
@@ -58,7 +64,8 @@ import numpy as np
 
 import settings as settings_mod
 from ventmodel import (BUILD_DIR, VENT_ACT_CLOSE, VENT_ACT_OPEN, VENT_ACT_TARGET,
-                       VENT_CAP_DIGITAL, VENT_RES_NONE, VENT_WIN_CLOSED,
+                       VENT_CAP_DIGITAL, VENT_CAP_LINEAR, VENT_RES_ABORTED, VENT_RES_DONE,
+                       VENT_RES_FAIL_TIMEOUT, VENT_RES_NONE, VENT_WIN_CLOSED,
                        VENT_WIN_MOVING_CLOSE, VENT_WIN_MOVING_OPEN, VENT_WIN_OPEN,
                        VENT_WIN_UNKNOWN, VentIn, build_dll)
 
@@ -114,6 +121,7 @@ class Settings:
     # no effect on control (settings.EFFECT says why)
     t_min_day:      int = 16
     t_min_ngt:      int = 14
+    # M3's wire sensor: 1 makes M3 linear (LinearChannel)
     deadzone_m3_mm: int = 20
     wpos_fitted_m3: bool = False
 
@@ -453,6 +461,11 @@ class ChannelCounters:
     reversals:    int = 0   # a moving channel turned round
     dwell_defers: int = 0   # SRC_T6 commands refused on dwell (one per episode)
     travel_defers: int = 0  # SRC_T6 reversals refused mid-stroke (gh#48)
+    # a linear M3 only (LinearChannel)
+    targets:      int = 0   # part-open targets that moved the leaf or its stop point
+    retargets:    int = 0   # a new stop point the way the leaf was already going
+    timeouts:     int = 0   # a part-open target the travel timer ran out on
+    aborts:       int = 0   # T6's drive taken over by T3 or the operator
 
 
 class Channel:
@@ -601,13 +614,286 @@ class Channel:
         return PUBLIC_STATE[self.state]
 
 
-class Actuator:
-    """T2: three channels, M1..M3 at index 0..2."""
+# --------------------------------------------------------------------------
+# M3 with its position sensor: mode 2's linear actuator (2.11.0, not yet built)
+# --------------------------------------------------------------------------
 
-    def __init__(self, settings, profile, traverse_s=(None, None, None)):
-        self.ch = [Channel(settings.travel_s[i], settings.dwell_open_s[i],
-                           settings.dwell_close_s[i], profile, traverse_s[i])
-                   for i in range(3)]
+CH_STOPPED = 7          # at rest part-open: the new terminal state plan §5b gives T2
+# vent_win_state_t has no "at rest, part-open", so the law sees OPEN, and pos_x10
+# says how far. SENSOR_HR ch2 has no code for it either (plan §5b); here it packs
+# as OPEN.
+PUBLIC_STATE[CH_STOPPED] = VENT_WIN_OPEN
+
+T17_POLL_DIVISOR = 150        # window_pos_task.cpp: poll = travel_m3 / 150 while M3 moves
+T17_MIN_MS, T17_MAX_WINDOW_MS, T17_MAX_POLL_MS = 100, 60000, 5000
+T17_IDLE_READ_MS = 30000      # IDLE_READ_MS: one reading every 30 s at rest
+SPAN_MM_PRODUCTION = 1500     # plan §2a.2: production's window, ~1.5 m of a 2 m sensor
+
+
+def t17_poll_ms(travel_s):
+    """T17's poll while M3 moves, as window_pos_task.cpp derive() computes it."""
+    raw = int(travel_s) * 1000 // T17_POLL_DIVISOR
+    window = min(max(raw * 2 // 3, T17_MIN_MS), T17_MAX_WINDOW_MS)
+    return max(min(max(raw, T17_MIN_MS), T17_MAX_POLL_MS), window)
+
+
+@dataclass(frozen=True)
+class LinearM3:
+    """M3 with its wire sensor fitted and trusted: wpos_fitted_m3 = 1.
+
+    span_mm     the taught span, which turns deadzone_m3_mm into the law's 0.1 %
+                (contract §3a). Production's is expected at ~1.5 m (plan §2a.2);
+                the rig's is 1500 mm.
+    min_move_s  the linear dwell: the least time between two M3 moves, which T6
+                enforces. Its key does not exist yet (plan §10, decision 10); the
+                specified default is 0, off.
+    mode2       the law is mode 2's. T2 then takes targets, and M3's open dwell
+                gives way to min_move_s (contract §7). In mode 1 a fitted sensor
+                changes nothing that acts: T2 drives M3 on its timer with its
+                dwell, and the stepped law ignores the position it is handed.
+    """
+    span_mm: int = SPAN_MM_PRODUCTION
+    min_move_s: int = 0
+    mode2: bool = True
+
+    def deadzone_x10(self, deadzone_mm):
+        """deadzone_m3_mm in the law's 0.1 % of the span."""
+        return lroundf(deadzone_mm * 1000.0 / self.span_mm)
+
+
+class LinearChannel(Channel):
+    """M3 with its position sensor, as plan §5b designs mode 2's actuator.
+
+    On top of Channel's timed drives, which it keeps as they are:
+      * T17's readings: one every travel/150 while M3 moves and every 30 s at
+        rest, in 0.1 % of the stroke. T6 and T2 see the latest and its age.
+      * A drive to a part-open target stops at the first reading within the
+        deadband of it, or past it, with the travel timer as the ceiling. The
+        leaf stops up to the deadband short of the target, or at most one
+        reading's travel past the edge of the band (0.67 % in production).
+        Targets 0 and 1000 drive on to the timer, as CLOSE and OPEN do.
+      * A new target the way the leaf is already going moves the stop point
+        without a new start. The other way is a reversal, which T6 may not
+        make mid-stroke from 2.3.1 (gh#48), as for OPEN and CLOSE; it is then
+        re-issued by T6 and made once the drive has ended.
+      * What the law's window inputs need: T6's last target, how it ended
+        (DONE, FAIL_TIMEOUT, or ABORTED when T3 or the operator took the
+        window), and when the last drive ended.
+
+    Simplified, beyond Channel: the reading is the leaf's travelled fraction,
+    where the sensor's 0..100 % runs from one end sensor to the other and the
+    leaf overtravels past the open one (plan §2a.4). The device's measurement
+    window and T2's reaction time are left out, and the sensor never fails, so
+    M3 never falls back to mode 1. Readings are taken without integrating the
+    leaf's position, so the plant sees exactly what it sees with Channel unless
+    a drive stops part-way.
+    """
+
+    MOVING = (CH_MOVING_OPEN, CH_MOVING_CLOSE)
+    UNDER_WAY = (CH_MOVING_OPEN, CH_GAP_TO_OPEN, CH_MOVING_CLOSE, CH_GAP_TO_CLOSE)
+
+    def __init__(self, travel_s, dwell_open_s, dwell_close_s, profile, traverse_s=None,
+                 cfg=None):
+        cfg = cfg or LinearM3()
+        super().__init__(travel_s, 0 if cfg.mode2 else dwell_open_s, dwell_close_s, profile,
+                         traverse_s)
+        self.cfg = cfg
+        self.poll_ms = t17_poll_ms(travel_s)
+        self.target = None        # the part-open stop point, 0.1 %; None = on to the timer
+        self.dz_x10 = 0           # the band the drive stops within
+        self.reading = 0          # T17's latest, 0.1 % of the stroke
+        self.read_t = None
+        self.next_read = None
+        self.last_target = -1     # T6's last command: its target, and how it ended
+        self.result = VENT_RES_NONE
+        self.t6_drive = False     # the drive under way is T6's
+        self.drive_end = None     # when the last drive ended
+
+    # ---- T17 ---------------------------------------------------------------
+    def _pos_at(self, t):
+        """The leaf at t, from the last integrated point, integrating nothing."""
+        if self._t is None or t <= self._t:
+            return self.pos
+        step = (t - self._t) / self.traverse_ms
+        if self.state == CH_MOVING_OPEN:
+            return min(1.0, self.pos + step)
+        if self.state == CH_MOVING_CLOSE:
+            return max(0.0, self.pos - step)
+        return self.pos
+
+    def _read(self, t):
+        self.reading = int(math.floor(self._pos_at(t) * 1000.0 + 0.5))
+        self.read_t = t
+        self.next_read = t + (self.poll_ms if self.state in self.MOVING else T17_IDLE_READ_MS)
+
+    def _reached(self):
+        if self.state == CH_MOVING_OPEN:
+            return self.reading >= self.target - self.dz_x10
+        return self.reading <= self.target + self.dz_x10
+
+    # ---- time --------------------------------------------------------------
+    def advance(self, now):
+        """Every reading and timer up to now, in time order; a reading first on a tie."""
+        if self.read_t is None:
+            if self._t is None:
+                self._move_pos(now)
+            self._read(now)
+        while True:
+            events = [(self.next_read, 0)]
+            if self.state in self.MOVING:
+                events.append((self.relay_deadline, 1))
+            elif self.state in (CH_GAP_TO_OPEN, CH_GAP_TO_CLOSE):
+                events.append((self.gap_deadline, 2))
+            t, kind = min(events)
+            if t > now:
+                break
+            if kind == 0:
+                self._read(t)
+                if self.target is not None and self.state in self.MOVING and self._reached():
+                    self._move_pos(t)
+                    self._end_drive(t, VENT_RES_DONE)
+            elif kind == 1:
+                self._move_pos(t)
+                self._end_drive(t, VENT_RES_DONE if self.target is None else VENT_RES_FAIL_TIMEOUT)
+            else:
+                self._move_pos(t)
+                self._start(CH_MOVING_OPEN if self.state == CH_GAP_TO_OPEN else CH_MOVING_CLOSE, t)
+        self._move_pos(now)
+
+    def _end_drive(self, t, result):
+        """The motor stops at t: at a reading within the band, or on the timer."""
+        if self.target is None:
+            # on to the timer: T2 believes the end it drove to, as Channel does
+            if self.state == CH_MOVING_OPEN:
+                self.state, self.pos = CH_OPEN, 1.0
+                self.dwell_deadline = t + self.dwell_open_ms
+            else:
+                self.state, self.pos = CH_CLOSED, 0.0
+                self.dwell_deadline = t + self.dwell_close_ms
+        else:
+            if result == VENT_RES_FAIL_TIMEOUT:
+                self.n.timeouts += 1
+            self.state = (CH_OPEN if self.pos >= 1.0 else
+                          CH_CLOSED if self.pos <= 0.0 else CH_STOPPED)
+            self.target = None
+        self._defer_latched = False
+        self.drive_end = t
+        if self.t6_drive:
+            self.result, self.t6_drive = result, False
+        self._read(t)             # T17 reads where the leaf stopped, then idles
+
+    def _start(self, state, now):
+        super()._start(state, now)
+        self._read(now)           # T17 reads as the stroke starts, then polls fast
+
+    # ---- commands ----------------------------------------------------------
+    def _note(self, r, source, target):
+        """T6's last command, or another source taking T6's drive away."""
+        if r not in ("start", "reversal", "pivot", "retarget"):
+            return
+        if source == SRC_T6:
+            self.last_target, self.result, self.t6_drive = target, VENT_RES_NONE, True
+        elif self.t6_drive:
+            self.result, self.t6_drive = VENT_RES_ABORTED, False
+            self.n.aborts += 1
+
+    def command(self, want_open, now, source):
+        """OPEN or CLOSE: on to the timer, as Channel. A drive already going that
+        way to a part-open target is extended to the end instead."""
+        self.advance(now)
+        heading = ((CH_MOVING_OPEN, CH_GAP_TO_OPEN) if want_open
+                   else (CH_MOVING_CLOSE, CH_GAP_TO_CLOSE))
+        if self.state in heading and self.target is not None:
+            self.target = None
+            self.n.retargets += 1
+            r = "retarget"
+        else:
+            r = Channel.command(self, want_open, now, source)
+            if r in ("start", "reversal", "pivot"):
+                self.target = None
+        self._note(r, source, 1000 if want_open else 0)
+        return r
+
+    def command_target(self, target, now, source, dz_x10):
+        """Drive to a target opening in 0.1 % (plan §5b's stop rule)."""
+        self.advance(now)
+        if target <= 0 or target >= 1000:
+            r = self.command(target >= 1000, now, source)        # the ends: on to the timer
+            if r in ("start", "reversal", "pivot", "retarget"):
+                self.n.targets += 1
+            return r
+        self.dz_x10 = dz_x10
+        want_open = target > self.reading
+        if self.state in self.UNDER_WAY:
+            if target == self.target:
+                r = "noop"          # the law repeats itself every call (contract §3)
+            elif (self.state in (CH_MOVING_OPEN, CH_GAP_TO_OPEN)) == want_open:
+                self.target = target
+                self.n.retargets += 1
+                r = "retarget"
+            else:
+                r = Channel.command(self, want_open, now, source)   # a reversal, or gh#48
+                if r in ("reversal", "pivot"):
+                    self.target = target
+        elif abs(target - self.reading) <= dz_x10:
+            r = "noop"
+        elif (source == SRC_T6 and now < self.dwell_deadline
+              and self.state == (CH_CLOSED if want_open else CH_OPEN)):
+            if not self._defer_latched:
+                self._defer_latched = True
+                self.n.dwell_defers += 1
+            r = "deferred-dwell"
+        else:
+            self.target = target
+            self._start(CH_MOVING_OPEN if want_open else CH_MOVING_CLOSE, now)
+            r = "start"
+        if r in ("start", "reversal", "pivot", "retarget"):
+            self.n.targets += 1
+        self._note(r, source, target)
+        return r
+
+    def sync(self, ch_state, now):
+        """A RELAY row: another hand moves the window (the warm-up, standby)."""
+        before = self.state
+        Channel.sync(self, ch_state, now)
+        if self.state == before:
+            return
+        self.target = None
+        if self.t6_drive:
+            self.result, self.t6_drive = VENT_RES_ABORTED, False
+            self.n.aborts += 1
+        if self.state not in self.UNDER_WAY:
+            self.drive_end = now
+            self._read(now)
+
+    def inputs(self, now):
+        """(cap, pos_x10, pos_age_ms, last_target_x10, last_result, ms_since_move)."""
+        self.advance(now)
+        if self.state in self.UNDER_WAY:
+            since = 0
+        elif self.drive_end is None:
+            since = 0xFFFFFFFF
+        else:
+            since = min(now - self.drive_end, 0xFFFFFFFF)
+        return (VENT_CAP_LINEAR, self.reading, min(now - self.read_t, 0xFFFFFFFF),
+                self.last_target, self.result, since)
+
+
+class Actuator:
+    """T2: three channels, M1..M3 at index 0..2. With m3_linear (a LinearM3),
+    M3 has its position sensor and takes targets (LinearChannel)."""
+
+    def __init__(self, settings, profile, traverse_s=(None, None, None), m3_linear=None):
+        self.m3_linear = m3_linear
+        self.ch = []
+        for i in range(3):
+            a = (settings.travel_s[i], settings.dwell_open_s[i], settings.dwell_close_s[i],
+                 profile, traverse_s[i])
+            self.ch.append(LinearChannel(*a, cfg=m3_linear) if i == 2 and m3_linear
+                           else Channel(*a))
+
+    def is_linear(self, i):
+        return isinstance(self.ch[i], LinearChannel)
 
     def set_profile(self, profile):
         for c in self.ch:
@@ -619,6 +905,9 @@ class Actuator:
 
     def command(self, i, want_open, now, source=SRC_T6):
         return self.ch[i].command(want_open, now, source)
+
+    def command_target(self, i, target, now, source=SRC_T6, dz_x10=0):
+        return self.ch[i].command_target(target, now, source, dz_x10)
 
     def close_all(self, now, source=SRC_T3):
         for i in range(3):
@@ -662,7 +951,10 @@ class Decision:
     reason: int
     closes: list = field(default_factory=list)
     opens: list = field(default_factory=list)
+    targets: list = field(default_factory=list)    # (window, 0.1 %), clamped
     model_errors: int = 0
+    dropped: int = 0         # targets within the deadband of a window at rest
+    deferred: int = 0        # targets inside the minimum interval after a move
     logged: bool = False     # the resolved step changed: T6 writes a MODE row
 
 
@@ -676,6 +968,8 @@ class Controller:
         self.prev_inhibited = False
         self.last_step = 0
         self.model_errors = 0
+        self.dropped = 0
+        self.deferred = 0
 
     def reset(self):
         """Boot, or an inhibit's onset: current_step_t/_rh back to 0."""
@@ -720,12 +1014,23 @@ class Controller:
         v.hyst_rh_pct = s.hyst_rh if s.hyst_rh > 0 else 1
         v.cr_priority = s.cr_priority
         v.rh_ctrl_en = s.rh_ctrl_en
-        v.m3_deadzone_x10 = 0          # deadzone_m3 reaches the law with mode 2 (settings.EFFECT)
-        v.m3_min_move_ms = 0           # the key does not exist yet (contract §3a)
+        # A linear M3 (wpos_fitted_m3, settings.EFFECT): the deadband in the law's
+        # 0.1 %, and the linear dwell, whose key does not exist yet (contract §3a).
+        # m3_min_move_ms is a uint16 in vent_model.h, so the law can be told at
+        # most 65.5 s; T6 enforces the whole interval.
+        lin = actuator.m3_linear if actuator is not None else None
+        dz = lin.deadzone_x10(s.deadzone_m3_mm) if lin else 0
+        min_move_ms = lin.min_move_s * 1000 if lin else 0
+        v.m3_deadzone_x10 = dz
+        v.m3_min_move_ms = min(min_move_ms, 0xFFFF)
         states = actuator.public_states() if actuator else [VENT_WIN_CLOSED] * 3
         for i in range(3):
             w = v.win[i]
             w.state = states[i]
+            if actuator is not None and actuator.is_linear(i):
+                (w.cap, w.pos_x10, w.pos_age_ms, w.last_target_x10, w.last_result,
+                 w.ms_since_move) = actuator.ch[i].inputs(now_ms)
+                continue
             w.cap = VENT_CAP_DIGITAL
             w.pos_x10 = -1
             w.pos_age_ms = 0
@@ -742,16 +1047,36 @@ class Controller:
             elif act == VENT_ACT_OPEN:
                 d.opens.append(i)
             elif act == VENT_ACT_TARGET:
-                # every window is DIGITAL here: a model error, treated as HOLD
-                d.model_errors += 1
-                self.model_errors += 1
+                if v.win[i].cap == VENT_CAP_LINEAR:
+                    d.targets.append((i, min(max(int(out.win[i].target_x10), 0), 1000)))
+                else:
+                    # a target for a DIGITAL window: a model error, treated as HOLD
+                    d.model_errors += 1
+                    self.model_errors += 1
 
         if actuator is not None:
-            # reconcile_to_step(): narrowing before widening
-            for i in d.closes:
-                actuator.command(i, False, now_ms, SRC_T6)
-            for i in d.opens:
-                actuator.command(i, True, now_ms, SRC_T6)
+            # A target moves a window at rest only by more than the deadband, and
+            # no sooner than the minimum interval after its last drive (contract §3)
+            narrow, widen = [(i, None) for i in d.closes], []
+            for i, tgt in d.targets:
+                w = v.win[i]
+                if w.state in (VENT_WIN_CLOSED, VENT_WIN_OPEN):
+                    if abs(tgt - w.pos_x10) <= dz:
+                        d.dropped += 1
+                        continue
+                    if w.ms_since_move < min_move_ms:
+                        d.deferred += 1
+                        continue
+                (narrow if tgt < w.pos_x10 else widen).append((i, tgt))
+            widen += [(i, None) for i in d.opens]
+            self.dropped += d.dropped
+            self.deferred += d.deferred
+            # reconcile_to_step(): every narrowing move before any widening one
+            for i, tgt in narrow + widen:
+                if tgt is None:
+                    actuator.command(i, i in d.opens, now_ms, SRC_T6)
+                else:
+                    actuator.command_target(i, tgt, now_ms, SRC_T6, dz)
 
         d.logged = d.step != self.last_step    # post_log_mode() on change
         self.last_step = d.step

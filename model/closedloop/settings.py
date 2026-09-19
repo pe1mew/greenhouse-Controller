@@ -15,6 +15,9 @@ does with it, in the same place (design/ventModelContract.md §3a):
   T5     an averaging window: the law receives only the average
   T3     wind safety: it closes every window and suspends the law
   T2     motor travel and dwell, enforced around the law
+  M3     M3's wire sensor: with wpos_fitted_m3 = 1, M3 is linear (firmware.
+         LinearChannel), and in mode 2 it takes targets, stopped and dropped
+         within deadzone_m3. Observe-only in the firmware through 2.10.0
   T4     the site's coordinates: sunrise, sunset, and so day or night
   poll   the poll interval: when T5 samples and T6 decides
   clock  tz_str: no effect on control, since T4 decides day and night in UTC;
@@ -125,10 +128,10 @@ EFFECT = {
     "t_min_day":    ("none", "T6 never reads it: a heating setpoint, and there is no "
                              "heating (contract §3a); LCD and GUI only"),
     "t_min_ngt":    ("none", "as t_min_day"),
-    "deadzone_m3":  ("none", "read by T17 only, observe-only through 2.10.0; it "
-                             "reaches the law as m3_deadzone_x10 with mode 2 (plan §5c)"),
-    "wpos_fitted_m3": ("none", "T17's presence gate, observe-only through 2.10.0; with "
-                               "mode 2 it sets win[2].cap and pos"),
+    "deadzone_m3":  ("M3", "with a linear M3: m3_deadzone_x10 (over --m3-span-mm); T6 "
+                           "drops a target this close to M3 at rest, T2 stops this close"),
+    "wpos_fitted_m3": ("M3", "1: M3 linear, the law gets cap, pos and age; with a law "
+                             "other than stepped, mode 2 (targets)"),
     "ap_enable":    ("none", "the WiFi access point"),
     "ap_timeout":   ("none", "the WiFi access point"),
     "session_timeout": ("none", "admin sessions are replayed from the log as they happened"),
@@ -526,7 +529,8 @@ def describe(sched, ts=None):
     v = sched.values_at(ts)
     dflt = defaults()
     out = ["  %-16s %8s %12s %8s  %-6s %s" % ("key", "value", "bounds", "default", "acts", "how")]
-    order = {"law": 0, "T5": 1, "T3": 2, "T2": 3, "T4": 4, "poll": 5, "clock": 6, "none": 7}
+    order = {"law": 0, "T5": 1, "T3": 2, "T2": 3, "M3": 4, "T4": 5, "poll": 6, "clock": 7,
+             "none": 8}
     names = sorted(EFFECT, key=lambda k: (order[EFFECT[k][0]], k))
     for k in names:
         where, how = EFFECT[k]

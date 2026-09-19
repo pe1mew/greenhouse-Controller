@@ -60,6 +60,7 @@ ASCII-only output (Windows console is cp1252 -- see memory/gotcha-log.md).
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import statistics
 import sys
@@ -73,8 +74,9 @@ for p in (HERE, MODEL_DIR):
         sys.path.insert(0, str(p))
 
 from firmware import (  # noqa: E402
-    GH48_ON_5C88, PROFILE_CURRENT, SRC_T3, Actuator, Controller, RELAY_TO_CH, SafetyMonitor,
-    SensorLayer, Settings, is_daytime, lroundf, profile_5c88, settings_5c88, sun_times_local,
+    GH48_ON_5C88, PROFILE_CURRENT, SPAN_MM_PRODUCTION, SRC_T3, Actuator, Controller, LinearM3,
+    RELAY_TO_CH, SafetyMonitor, SensorLayer, Settings, is_daytime, lroundf, profile_5c88,
+    settings_5c88, sun_times_local, t17_poll_ms,
 )
 from logdata import BIT_WIND_OVERRIDE, CAMPAIGN, load_sd_logs  # noqa: E402
 import settings as settings_mod  # noqa: E402
@@ -88,6 +90,9 @@ PUBLISHED_VAL_T_RMSE = 1.19        # campaignResults_summer2026.md s.1, artifact
 REPLAY_BASELINE_PCT = 96.8         # campaignResults_summer2026.md F8, contract s.5 item 3
 REPLAY_BASELINE_N = 378
 DEFAULT_CONTROL_LOGS = str(CAMPAIGN / "2026-07-2*.log")
+# T6 runs stepped in mode 1 and graded in mode 2 (plan §5c). Any law but
+# stepped is run as mode 2's when M3 has its sensor.
+MODE1_LAWS = ("stepped",)
 PLANT_GATE_INPUT = CAMPAIGN / "calibration_input_2026-06-04_2026-07-04.csv"
 EPOCH = datetime(2026, 1, 1)
 
@@ -119,8 +124,9 @@ LOG_POLL_S = 30        # the SD log's cadence: 5C88's poll_interval all summer
 
 LEGEND = ("law = handed to the control law, resolved for day or night | T5 = an averaging "
           "window, the law gets the average | T3 = wind safety | T2 = motor travel and dwell"
-          " | T4 = the site, so day or night | poll = when T5 samples and T6 decides | "
-          "clock = reads the log's stamps | none = no effect on what is simulated")
+          " | M3 = its wire sensor: a linear M3 | T4 = the site, so day or night | poll = when"
+          " T5 samples and T6 decides | clock = reads the log's stamps | none = no effect on "
+          "what is simulated")
 
 
 def add_settings_args(p):
@@ -593,8 +599,11 @@ def _parse_local(s, end=False):
     return dt
 
 
-def run_closed_loop(ds, lo, hi, plant_kind, params, args, sched=None):
+def run_closed_loop(ds, lo, hi, plant_kind, params, args, sched=None, law=None):
     """Close the loop over the dataset's samples [lo, hi). Returns per-step records.
+
+    law: a VentModel, by default args.model from drivers/ventModel. Anything
+    else with the same step()/reset() is a test double, not a law.
 
     Warm-up (args.warmup_h before lo): the logged world drives everything
     and the controller only listens, so T5's averages, T6's hysteresis state
@@ -621,6 +630,13 @@ def run_closed_loop(ds, lo, hi, plant_kind, params, args, sched=None):
     T/RH and wind sensor faults, boots, and LCD admin sessions -- during which
     the operator moved the windows by hand, so the windows follow the logged
     RELAY rows.
+
+    A linear M3: with wpos_fitted_m3 = 1 at the start, M3 has its wire sensor
+    (firmware.LinearChannel), and the law gets its capability, position and
+    age. With stepped that is mode 1 and nothing that acts changes; with any
+    other law it is mode 2, and M3 takes targets (see the README). It needs
+    the two-node plant, which takes M3's airflow as proportional to its
+    opening: unmeasured for a part-open M3 (plan §5c).
     """
     data = ds.log
     sched = sched or schedule_from_args(args)
@@ -629,9 +645,17 @@ def run_closed_loop(ds, lo, hi, plant_kind, params, args, sched=None):
     t3_sim = getattr(args, "t3", "sim") == "sim"
     day_sim = getattr(args, "daynight", "sim") == "sim"
     start, end = ds.t[lo], ds.t[hi - 1]
-    law = VentModel(args.model)
+    law = law or VentModel(args.model)
     s = sched.at(start)
-    act = Actuator(s, prof_at(start))
+    m3 = None
+    if s.wpos_fitted_m3:
+        if plant_kind != "two":
+            raise SystemExit("a linear M3 (wpos_fitted_m3 = 1) needs the two-node plant "
+                             "(--plant2): the single-node plant sees a window open or shut")
+        m3 = LinearM3(span_mm=getattr(args, "m3_span_mm", SPAN_MM_PRODUCTION),
+                      min_move_s=getattr(args, "m3_min_move_s", 0),
+                      mode2=law.name not in MODE1_LAWS)
+    act = Actuator(s, prof_at(start), m3_linear=m3)
     sensor = SensorLayer(s, prof_at(start))
     ctl = Controller(law, s)
     t3 = SafetyMonitor()
@@ -762,6 +786,8 @@ def run_closed_loop(ds, lo, hi, plant_kind, params, args, sched=None):
     # ---- closed loop -------------------------------------------------------
     init_plant(lo)
     act.openness("mean", _ms(start))            # start the openness integral here
+    act.n0 = [copy.copy(c.n) for c in act.ch]   # the counters as the loop closes
+    ctl.n0 = (ctl.dropped, ctl.deferred, ctl.model_errors)
     held_out_day0 = ds.t[0].date()
     poll = timedelta(seconds=s.poll_s)
     next_c, plant_t = start, start               # sub-stepping: next decision, plant clock
@@ -839,7 +865,7 @@ def run_closed_loop(ds, lo, hi, plant_kind, params, args, sched=None):
             d, override = decide(t, T, RH, i, standby)
             next_c += poll
 
-        recs.append({
+        rec = {
             "t": t, "T_sim": T, "RH_sim": RH, "T_log": float(ds.T_in[i]),
             "RH_log": float(ds.RH_in[i]), "wind_ms": float(ds.wind_ms[i]),
             "wind_dir": float(ds.wind_dir[i]), "T_out": float(ds.T_out[i]),
@@ -849,7 +875,11 @@ def run_closed_loop(ds, lo, hi, plant_kind, params, args, sched=None):
             "held_out": (t.date() - held_out_day0).days % 4 == 3,
             "step": d.step if d else None, "step_t": d.step_t if d else None,
             "step_rh": d.step_rh if d else None,
-        })
+        }
+        if m3:
+            rec.update({"o3_log": float(ds.o[i, 2]), "m3_x10": act.ch[2].reading,
+                        "m3_target": act.ch[2].last_target})
+        recs.append(rec)
         prev = t
     return recs, act, ctl
 
@@ -956,6 +986,30 @@ def swing_split(days):
             print("  %-12s %4.1f / %4.1f degC   (on %d / %d days)" % (label, wl, ws, nl, ns))
 
 
+def linear_summary(recs, act, ctl):
+    """A linear M3's run: what T6 did with the law's targets, and the motor's
+    work against the log's (contract §7: report starts per day)."""
+    n, n0 = act.ch[2].n, act.n0[2]
+    dropped, deferred, errors = (ctl.dropped - ctl.n0[0], ctl.deferred - ctl.n0[1],
+                                 ctl.model_errors - ctl.n0[2])
+    days = max((recs[-1]["t"] - recs[0]["t"]).total_seconds() / 86400.0, 1e-9)
+    codes = [_code(r["bm_log"], 2) for r in recs]
+    log_drives = sum(1 for a, b in zip(codes, codes[1:]) if b in (1, 3) and b != a)
+    pos = [r["pos_m3"] for r in recs]
+    # at rest part-open: packed as OPEN (code 2) with the leaf short of the end
+    part = sum(1 for r in recs if _code(r["bm_sim"], 2) == 2 and r["pos_m3"] < 0.995) / len(recs)
+    print("  sim M3, linear: %d targets moved it or its stop point (%d of them a stop point),"
+          " %d dropped in the deadband, %d deferred by the minimum interval, %d timeouts,"
+          " %d taken over by T3 or the operator, %d model errors"
+          % (n.targets - n0.targets, n.retargets - n0.retargets, dropped, deferred,
+             n.timeouts - n0.timeouts, n.aborts - n0.aborts, errors))
+    print("  M3 drives per day: logged %.1f, simulated %.1f  |  mean opening: logged %.1f %%,"
+          " simulated %.1f %%  |  simulated at rest part-open %.0f %% of the time"
+          % (log_drives / days, (n.starts - n0.starts) / days,
+             100.0 * sum(r["o3_log"] for r in recs) / len(recs),
+             100.0 * sum(pos) / len(pos), 100.0 * part))
+
+
 def reproduce(args):
     import dataset as dsmod
     start = _parse_local(args.start)
@@ -977,12 +1031,20 @@ def reproduce(args):
             params = json.load(fh)
         kind, plant_name = "single", Path(args.artifact).name
 
+    if args.m3_span_mm <= 0 or args.m3_min_move_s < 0:
+        raise SystemExit("--m3-span-mm must be above 0 and --m3-min-move-s not below 0")
     sched = schedule_from_args(args)
     recs, act, ctl = run_closed_loop(ds, lo, hi, kind, params, args, sched)
     s = sched.at(start)
-    t_m3 = entry_temp_c(VENT_STEPS_MAX, s.t_max_day, s.hyst_t, ctl.law.name)   # where M3 opens
+    # where the stepped law opens M3: the yardstick for any law, as the log's is
+    t_m3 = entry_temp_c(VENT_STEPS_MAX, s.t_max_day, s.hyst_t)
+    lin = act.m3_linear
 
-    print("=== reproduce: the binary law, closed over the plant ===")
+    if lin is None:
+        print("=== reproduce: the binary law, closed over the plant ===")
+    else:
+        print("=== reproduce: the law with a linear M3 (mode %d), closed over the plant ==="
+              % (2 if lin.mode2 else 1))
     print("  %s .. %s  |  law %s v%d  |  plant %s (%s-node)%s%s"
           % (ds.t[lo], ds.t[hi - 1], ctl.law.name, ctl.law.version, plant_name,
              "two" if kind == "two" else "single",
@@ -996,6 +1058,19 @@ def reproduce(args):
     if args.firmware == "5c88":
         print("  firmware: the gh#48 guard from %s (2.3.1); T6 may reverse mid-stroke before"
               % GH48_ON_5C88)
+    if lin is not None:
+        print("  M3: wire sensor fitted (wpos_fitted_m3 = 1), span %d mm, deadband %d mm = %.1f %%,"
+              " a reading every %d ms while it moves and every 30 s at rest"
+              % (lin.span_mm, s.deadzone_m3_mm, lin.deadzone_x10(s.deadzone_m3_mm) / 10.0,
+                 t17_poll_ms(s.travel_s[2])))
+        print("  M3: " + ("mode 2 -- T2 takes targets; the open dwell gives way to a minimum "
+                          "interval of %d s between moves" % lin.min_move_s if lin.mode2 else
+                          "mode 1 -- driven on its timer with its dwell, as without the sensor"))
+        if lin.min_move_s * 1000 > 0xFFFF:
+            print("  note: vent_in_t.m3_min_move_ms is a uint16, so the law is told 65.5 s;"
+                  " T6 enforces the whole %d s" % lin.min_move_s)
+        print("  the plant takes M3's airflow as proportional to its opening: unmeasured for a "
+              "part-open M3 (plan s.5c)")
     print("  'h>=%d' = hours at or above the M3 entry temperature (t_avg_c %d with "
           "t_max %d, hyst_t %d)" % (t_m3, t_m3, s.t_max_day, s.hyst_t))
     print("  'N%%' = share of the logged M3-open time with wind from 315-45 deg (M3's windward"
@@ -1052,6 +1127,8 @@ def reproduce(args):
         n = act.ch[i].n
         print("  sim %s: %d drives, %d reversals, %d dwell deferrals, %d in-travel deferrals"
               % (name, n.starts, n.reversals, n.dwell_defers, n.travel_defers))
+    if lin is not None:
+        linear_summary(recs, act, ctl)
 
     if args.csv:
         import csv
@@ -1082,10 +1159,15 @@ def plot_run(recs, path, t_m3):
     ax[0].set_ylabel("degC")
     ax[0].legend(loc="upper left", fontsize=8, ncol=4)
     ax[0].grid(alpha=0.25)
+    linear = "m3_x10" in recs[0]
     for ch, name in enumerate(("M1", "M2", "M3")):
         off = 2 - ch
         ax[1].step(t, [off + 0.4 * (_code(r["bm_log"], ch) != 0) for r in recs], where="post",
                    color="#1f77b4", lw=1.0, label="logged" if ch == 0 else None)
+        if ch == 2 and linear:      # a linear M3: its opening, not open or shut
+            ax[1].plot(t, [off + 0.45 * r["pos_m3"] + 0.02 for r in recs], color="#d62728",
+                       lw=1.0)
+            continue
         ax[1].step(t, [off + 0.45 * (_code(r["bm_sim"], ch) != 0) + 0.02 for r in recs],
                    where="post", color="#d62728", lw=1.0, label="simulated" if ch == 0 else None)
     ax[1].set_yticks([0.2, 1.2, 2.2])
@@ -1102,8 +1184,8 @@ def plot_run(recs, path, t_m3):
     loc = mdates.AutoDateLocator()
     ax[2].xaxis.set_major_locator(loc)
     ax[2].xaxis.set_major_formatter(mdates.ConciseDateFormatter(loc))
-    fig.suptitle("Closed loop: the binary law over the calibrated plant, vs what 5C88 logged",
-                 fontsize=10)
+    fig.suptitle("Closed loop: %s over the calibrated plant, vs what 5C88 logged"
+                 % ("the law with a linear M3" if linear else "the binary law"), fontsize=10)
     fig.tight_layout()
     fig.savefig(path, dpi=120)
     plt.close(fig)
@@ -1185,6 +1267,13 @@ def main(argv=None):
     p.add_argument("--firmware", choices=("5c88", "current"), default="5c88",
                    help="the firmware behaviour: 5C88's versions as it ran them (default), "
                         "or today's (gh#48 guard, gh#79 pause, wind_hyst, own wind window)")
+    p.add_argument("--m3-span-mm", type=int, default=SPAN_MM_PRODUCTION,
+                   help="a linear M3 (--set wpos_fitted_m3=1): its taught span, which turns "
+                        "deadzone_m3 into the law's percent (default %(default)s mm, "
+                        "production's ~1.5 m window)")
+    p.add_argument("--m3-min-move-s", type=int, default=0,
+                   help="a linear M3 in mode 2: the least time between two M3 moves, which "
+                        "T6 enforces (the linear dwell: no key yet, specified default 0)")
     add_settings_args(p)
     p.set_defaults(fn=reproduce)
 

@@ -30,14 +30,15 @@ A smaller third error, found during NS-10: **the direction term was fed wind dir
 | Plant, single node | `plant.py` | `calibrate_plant_dynamic.simulate()`, stepped 30 s at a time, with the adopted artifact `plant_calibrated_constrained_summer2026_freem3.json` |
 | Plant, two nodes | `plant2.py`, `plant2_kernel.c` | A fast air node and a slow structure/soil node, plus humidity, an optional M3 wind-direction term, and an optional **sensor stage**: two lags between the air node and the reading that is logged and that the controller acts on. One C loop serves both the fit (a whole summer in about 20 ms) and the closed loop (one step at a time), so the simulated plant is exactly the fitted one |
 | Fit | `refit.py` | Fits the two-node plant, with every 4th day held out; reports the M3 response test; `compare` sets artifacts side by side |
-| Firmware chain | `firmware.py`, `firmware_ffi.cpp` | T5's T, RH and wind averages (`avg_push()`/`avg_get()` and the unit-vector wind direction, in float32 with `lroundf()`); T3's wind safety, ported; T4's day and night from `sunrise.cpp` itself, compiled from `firmware/src`; T2's channel state machine (travel + 5 s, 2 s reversal gap, dwell deferring `SRC_T6` only, the gh#48 in-travel guard from 2.3.1); T6's caller (inhibit resets, day/night setpoints, narrowing before widening, a MODE row on change) |
+| Firmware chain | `firmware.py`, `firmware_ffi.cpp` | T5's T, RH and wind averages (`avg_push()`/`avg_get()` and the unit-vector wind direction, in float32 with `lroundf()`); T3's wind safety, ported; T4's day and night from `sunrise.cpp` itself, compiled from `firmware/src`; T2's channel state machine (travel + 5 s, 2 s reversal gap, dwell deferring `SRC_T6` only, the gh#48 in-travel guard from 2.3.1); T6's caller (inhibit resets, day/night setpoints, narrowing before widening, a MODE row on change). With M3's wire sensor, a linear M3 (`LinearChannel`; see "A linear M3") |
 | Settings | `settings.py` | Every controller setting: the 53 keys of `cfg_desc.inc` (read through the pre-commit checker's parser, so bounds and defaults are the firmware's) plus `tz_str`, where each one acts, 5C88's history from its SETPT audit rows, a unit's GET /api/config, and `--set` |
 | Control law | `ventmodel.py`, `ventmodel_ffi.cpp` | `drivers/ventModel/` itself, compiled from the firmware's own sources into `build/ventmodel.dll` and called through ctypes, with every struct field checked by name on load |
 | Command line | `closed_loop.py` | The gates and the closed-loop reproduction |
 | Quality report | `quality_report.py` | Every number and figure in [`modelQuality.md`](modelQuality.md): the closed loop for the adopted pair and the old single node, the plant alone on the held-out days, the M3 response, a two-day example; writes `images/*.png` |
+| Tests | `test_linear_m3.py` | The linear M3 against its design: the channel, T6's limits on a target, and the closed loop in modes 1 and 2 |
 | Campaign figures | `campaign_figures.py` | The figures `campaignResults_summer2026.md` and `thermalProfileCampaign.md` §9.12 quote that come from neither `refit.py` nor `closed_loop.py`: the forced tests, the event study, the hottest days, wind, windward M3-only minutes, the indoor LoRa sensors, a model-free wind check, and the plants' heat loss per ventilation step |
 
-The law is **not** re-implemented in Python. `simulation.py` carries its own port of the stepped law, and a port drifts. The contract makes the library host-compilable so that one set of sources serves the firmware, the host tests and this simulator (`design/ventModelContract.md` §4). `../vent_step_replay.py` loads it the same way since 2026-09-19, and the tools that need M3's entry temperature ask the law for it (`ventmodel.entry_temp_c()`) instead of restating the step formula. When `vent_model_graded.cpp` exists, it becomes available here by adding one row to `k_models` in the shim.
+The law is **not** re-implemented in Python. `simulation.py` carries its own port of the stepped law, and a port drifts. The contract makes the library host-compilable so that one set of sources serves the firmware, the host tests and this simulator (`design/ventModelContract.md` §4). `../vent_step_replay.py` loads it the same way since 2026-09-19, and the tools that need M3's entry temperature ask the law for it (`ventmodel.entry_temp_c()`) instead of restating the step formula. When `vent_model_graded.cpp` exists, it becomes available here by adding one row to `k_models` in the shim, and `--set wpos_fitted_m3=1` runs it on a linear M3 (see "A linear M3").
 
 ## Running it
 
@@ -51,6 +52,7 @@ python model/closedloop/closed_loop.py reproduce --start 2026-06-05 --end 2026-0
 python model/closedloop/refit.py fit --fix Ca_MJ=2.9 --fix tau_s1=120 --fix tau_s2=90 --direction --event-weight 5
 python model/closedloop/refit.py compare model/campaign-summer-2026/plant2/*.json
 python model/closedloop/campaign_figures.py
+python model/closedloop/test_linear_m3.py
 ```
 
 Needs Python 3.11 with numpy, scipy and matplotlib, and the Code::Blocks MinGW `g++` that `drivers/ventModel` already uses (or `VENTMODEL_CXX`). Both DLLs are rebuilt automatically when a source changes. `build/` holds only the DLLs, which `.gitignore` excludes. **A DLL loaded by a running process cannot be rebuilt on Windows**, so let a running fit finish before changing `plant2_kernel.c`, and build once before starting fits in parallel.
@@ -101,10 +103,11 @@ T5's wind averages and T3's state machine, at the settings in force and with 5C8
 | T5 | `avg_win_t`, `avg_win_rh`, `avg_win_wind` | the sliding averages, in samples = minutes x 60 / poll; a window that changes starts empty |
 | T3 | `v_max`, `wind_hyst`, `dir_excl_low/high`, `wind_prot_en` | T3's state machine, ported (`firmware.SafetyMonitor`): close every window, suspend the law |
 | T2 | `travel_m1..3`, `dwell_open_m1..3`, `dwell_close_m1..3` | the channel state machine |
+| M3 | `wpos_fitted_m3`, `deadzone_m3` | 1 gives M3 its wire sensor: a linear M3 (see "A linear M3"). `deadzone_m3` then becomes the law's `m3_deadzone_x10` over `--m3-span-mm`, T6's drop rule and T2's stop band |
 | T4 | `lat_deg/frac`, `lon_deg/frac` | `sunrise.cpp` itself, compiled from `firmware/src` |
 | poll | `poll_interval` | T5 samples and T6 decides every poll. At anything but 30 s it decides between the logged samples; the two-node plant is stepped to each decision, with the weather held from the covering sample |
 | clock | `tz_str` | no effect on control, since T4 decides day and night in UTC; used to read the log's local stamps |
-| none | `t_min_day/ngt`, `deadzone_m3`, `wpos_fitted_m3`, and 20 WiFi, LED, upload, OTA, session and status keys | accepted, each with its reason: T6 never reads `t_min` (no heating); `deadzone_m3` and `wpos_fitted_m3` act through T17 only, until mode 2 |
+| none | `t_min_day/ngt`, and 20 WiFi, LED, upload, OTA, session and status keys | accepted, each with its reason: T6 never reads `t_min` (no heating) |
 
 **Where the values come from, later wins:**
 1. the defaults;
@@ -153,6 +156,48 @@ python model/closedloop/closed_loop.py gate-control --sweep avg_win_rh=3..12
 | `t_min_day=30` | 76 | 89 | 47 (no effect, as classified) |
 
 **One trap, met on the way.** The wind stays the logged wind all through a run, so T5's float32 running sum has to carry the firmware's history since boot: an average that lands on x.5 can round either way. On 2026-07-19 at 12:35:54 six samples averaged 59.5 (0.1 m/s), `lroundf()` made that 60 = `v_max`, and T3 fired. A sum started six hours earlier gave 59 and missed it. A run therefore replays T5's wind from the last boot before it.
+
+## A linear M3 (mode 2)
+
+`--set wpos_fitted_m3=1` gives M3 its wire sensor, as 2.11.0's mode 2 is designed but not yet built (plan §5b; contract §3 and §7). It needs `--plant2`. Compare a mode 2 law against a stepped run with the same `--firmware current`.
+
+```bash
+python model/closedloop/closed_loop.py reproduce --start 2026-07-13 --end 2026-07-29 --plant2 PLANT.json --firmware current --set wpos_fitted_m3=1 --model graded
+python model/closedloop/test_linear_m3.py
+```
+
+`graded` is not written yet (plan decision 9). Until it is, only `stepped` runs, in mode 1.
+
+- **The mode follows the law**, as in T6's model table. With `stepped` it is mode 1, and a fitted sensor changes nothing that acts: over Jul 13-29 the run matches the binary one cell for cell. With any other law it is mode 2.
+- **What the law gets:**
+  - M3 as LINEAR, with T17's latest reading in 0.1 % and its age. T17 reads every travel/150 while M3 moves (1 140 ms in production) and every 30 s at rest.
+  - Its last target and how it ended: DONE, FAIL_TIMEOUT, or ABORTED when T3 or the operator took the window.
+  - The time since its last drive.
+  - `m3_deadzone_x10`: `deadzone_m3` over `--m3-span-mm` (default 1 500 mm, so 20 mm is 1.3 %).
+  - `m3_min_move_ms`: `--m3-min-move-s`, default 0. The linear dwell has no key yet.
+- **T6** clamps a target to 0..1000. It drops a target within the deadband of M3 at rest, and defers one inside the minimum interval after the last drive. It sends every narrowing move before any widening one. A target for a digital window is a model error.
+- **T2:**
+  - It drives to a part-open target until the first reading within the deadband. M3 stops up to the deadband short of the target, and at most one reading's travel (0.67 %) past the edge of the band.
+  - The travel timer is the ceiling.
+  - Targets 0 and 1000 drive on to the timer, as CLOSE and OPEN do.
+  - A new target the same way moves the stop point. The other way is a reversal, which T6 may not make mid-stroke (gh#48).
+  - In mode 2 the open dwell gives way to the minimum interval. The close dwell stays, as contract §7 words it.
+- **The report adds:**
+  - what became of the targets: moved, dropped, deferred, timed out, taken over;
+  - M3's drives per day against the log's; contract §7 asks for them, and the stepped law makes 3-8 M3 openings a day;
+  - M3's mean opening, logged and simulated;
+  - the share of time it rests part-open.
+
+**What it cannot tell yet:**
+- **How much air a part-open M3 lets through.** The plant takes M3's airflow as proportional to its opening, which is unmeasured (plan §5c). Every logged M3 was fully open or shut, apart from its travel. Treat a verdict that rests on part-open airflow as open until 5C88 can hold M3 part-open.
+- **The reading is the leaf's travelled fraction.** The real sensor's 0-100 % runs between the end sensors, and the leaf overtravels past the open one (plan §2a.4).
+- **The sensor never fails,** so M3 never falls back to mode 1.
+- **T2's reaction time and the sensor's measurement window are left out.**
+- **The test script's laws are Python test doubles,** which only exercise the caller.
+
+**Two gaps in the contract, found while building this:**
+- **No state for "at rest, part-open".** `vent_win_state_t` has none, although plan §5b gives T2 one. The simulator reports it as OPEN, with `pos_x10` saying how far.
+- **`vent_in_t.m3_min_move_ms` is a `uint16`,** so it holds at most 65.5 s, while the linear dwell replaces a 25-min dwell. The simulator enforces the whole interval and tells the law 65 535.
 
 ## Data
 
@@ -274,14 +319,14 @@ Verify a new law against both, and treat a verdict that differs between them as 
 
 1. **NS-10's remainder: the north-wind swing** (3.0-3.2 against 3.9 degC). A probe-mix term was tried and did not close it (above). The next step is data, not a model term: NS-9's forced tests with a second probe.
 2. **NS-9's forced tests**, now with a sharper question: does the whole house cool about twice as fast in north wind, or mainly the spot where the controller's sensor hangs? A temporary second probe beside the controller's, and one at the south side, would answer it.
-3. **Linear M3 (mode 2)** still needs a part-open aperture curve, which only the new firmware and hardware can measure. Until then, vary it across a range (`plant.py`/`plant2.py` openness) and check the verdict holds across it.
+3. **Linear M3 (mode 2).** The simulator can drive one now (see "A linear M3"). It still needs a mode 2 law and a part-open airflow curve; only the new firmware and hardware can measure the curve. Until then, vary the curve across a range and check that the verdict holds across it. The plant has no knob for that yet.
 4. **Outdoor T/RH and sun sensors on the controller:** the evidence and a plan are in [`design/sunAndOutdoorSensorsStudy.md`](../../design/sunAndOutdoorSensorsStudy.md). The next model step is to test, against both plants, a law that uses the outdoor temperature.
 
 ## Known limits
 
 - **T3 is simulated from the logged wind** (`gate-wind`), so a run on invented weather needs invented wind too.
 - **With a `poll_interval` other than 30 s**, the weather, the wind and the doors between two logged samples are held from the sample that covers them.
-- **`deadzone_m3` and `wpos_fitted_m3` have no effect.** The modelled firmware, up to 2.10.0, reads them only in T17, and the simulator's T2 cannot yet drive to a position (mode 2).
+- **A linear M3 emulates a design, not firmware.** T2's target path is 2.11.0 and not built. What a part-open M3 does to the air is an assumption (see "A linear M3").
 - **The simulated day/night switch can come up to a minute early**, because T4 recomputes it only once a minute.
 - Door 1 after 2026-08-16 is an assumption (above).
 - A boot inside the loop is simplified: T5 and T6 reset, and T2 closes all windows.
