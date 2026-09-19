@@ -81,7 +81,7 @@ import settings as settings_mod  # noqa: E402
 from plant import ADOPTED, Plant  # noqa: E402
 import plant2  # noqa: E402
 from plant2 import Plant2  # noqa: E402
-from ventmodel import VentModel  # noqa: E402
+from ventmodel import VENT_STEPS_MAX, VentModel, entry_temp_c  # noqa: E402
 
 # The published figures the gates must reproduce.
 PUBLISHED_VAL_T_RMSE = 1.19        # campaignResults_summer2026.md s.1, artifact _comment
@@ -980,7 +980,7 @@ def reproduce(args):
     sched = schedule_from_args(args)
     recs, act, ctl = run_closed_loop(ds, lo, hi, kind, params, args, sched)
     s = sched.at(start)
-    t_m3 = s.t_max_day + 2 * max(1, s.hyst_t // 3) + 1     # vent_step_replay.m3_entry_temp()
+    t_m3 = entry_temp_c(VENT_STEPS_MAX, s.t_max_day, s.hyst_t, ctl.law.name)   # where M3 opens
 
     print("=== reproduce: the binary law, closed over the plant ===")
     print("  %s .. %s  |  law %s v%d  |  plant %s (%s-node)%s%s"

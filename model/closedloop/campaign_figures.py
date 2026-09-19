@@ -52,6 +52,7 @@ for p in (HERE, HERE.parent):
 import dataset  # noqa: E402
 from firmware import CH_MOVING_CLOSE, CH_MOVING_OPEN, RELAY_TO_CH  # noqa: E402
 from plant import CP_AIR, RHO_AIR  # noqa: E402
+from ventmodel import VENT_STEPS_MAX, entry_temp_c  # noqa: E402
 
 DAYTIME = (8, 19)                 # hours, as refit.m3_response
 FORCED_TEST_DAYS = (date(2026, 7, 4), date(2026, 7, 11))
@@ -504,7 +505,7 @@ def sensors(ds):
                   % (lo, hi, len(s), np.median(s[:, 1])))
 
     # The day's logged swing, as closed_loop.py reproduce measures it
-    t_m3 = 28 + 2 * max(1, 5 // 3) + 1             # 5C88: t_max_day 28, hyst_t 5
+    t_m3 = entry_temp_c(VENT_STEPS_MAX, 28, 5)     # where M3 opens on 5C88: t_max_day 28, hyst_t 5
     first, last = datetime(2026, 6, 5), datetime(2026, 9, 17)
     by_day = defaultdict(list)
     for i, t in enumerate(ds.t):

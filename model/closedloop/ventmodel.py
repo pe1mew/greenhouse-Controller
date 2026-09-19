@@ -5,7 +5,9 @@ The closed-loop simulator has to test the law the firmware runs, not a Python
 copy of it: simulation.py carries its own port of the stepped law, and a port
 drifts. design/ventModelContract.md s.4 makes the library host-compilable by
 rule so that one set of sources serves the firmware, the host tests and the
-offline tools. This module is that last consumer.
+offline tools. This module is that last consumer: the closed loop and
+vent_step_replay.py both load the law through it, and entry_temp_c() answers
+"where does this step start?" by asking the law instead of recomputing it.
 
 Build
 -----
@@ -314,6 +316,32 @@ class VentModel:
         if rc != 0:
             raise RuntimeError("vm_step(%d) failed" % self.id)
         return self.out
+
+
+def entry_temp_c(step, t_max_c, hyst_t_c, name="stepped"):
+    """The lowest whole-degree average, at or above t_max_c, at which the law's
+    temperature demand reaches `step`: from rest (a fresh law), by day, with
+    humidity off.
+
+    Asked of the law, so no tool restates its arithmetic. For the stepped law
+    and step VENT_STEPS_MAX this is where M3 opens: 31 degC at 5C88's
+    t_max_day 28 and hyst_t 5.
+    """
+    if not 0 <= hyst_t_c <= 255:
+        raise ValueError("hyst_t %r does not fit vent_in_t.hyst_t_c" % (hyst_t_c,))
+    law = VentModel(name)
+    v = VentIn()
+    v.daytime = True
+    v.t_valid = True
+    v.t_max_c10 = t_max_c * 10
+    v.hyst_t_c = hyst_t_c
+    for t in range(t_max_c, t_max_c + 3 * 256):    # past any step hyst_t_c can set
+        law.reset()
+        v.t_avg_c = t
+        if law.step(v).step_t >= step:
+            return t
+    raise ValueError("the %s law never demands step %d at t_max %d degC, hyst_t %d"
+                     % (name, step, t_max_c, hyst_t_c))
 
 
 if __name__ == "__main__":
