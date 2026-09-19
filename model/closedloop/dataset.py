@@ -19,7 +19,11 @@ Per sample (the SD's 30 s SENSOR_HR cadence):
   door1, door2          lds01-5 / lds01-6, forward-filled (event-driven sensors);
   door1_known           false after lds01-5's last report (2026-08-16 09:57 local,
                         07:56 in the UTC export, "closed"), when "closed" is an
-                        assumption, not a reading
+                        assumption, not a reading. The sensor reports again
+                        since a battery change (2026-09-19 10:52 local), so an
+                        export past that date ends the rule's premise: mark
+                        08-16 to 09-19 unknown explicitly. A gap alone cannot
+                        tell: normal uplinks were up to 4 days apart
   wind_ms, wind_dir     the S200, as logged (valid from 2026-06-19 12:00)
   restart               the gap before this sample exceeds MAX_SAMPLE_GAP_S,
                         so a simulation must restart from the measurement

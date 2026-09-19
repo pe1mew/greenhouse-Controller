@@ -79,7 +79,7 @@ Fetched 2026-09-18 into `../campaign-summer-2026/` with `fetch_lora_data.py` (re
 | File | Rows | Note |
 |---|---|---|
 | `lht65_20_2026-06-04_2026-09-17.csv` | 14 670 | Outdoor. The longest gap is 11 h on 2026-08-27; samples whose bracketing uplinks are over 40 min apart are masked |
-| `lds01_5_2026-06-01_2026-09-17.csv` | 100 | Door 1. **Its sensor last reported on 2026-08-16 (closed)**; after that the door is assumed shut |
+| `lds01_5_2026-06-01_2026-09-17.csv` | 100 | Door 1. **Its sensor last reported on 2026-08-16 (closed)**; after that the door is assumed shut. It reports again since a battery change on 2026-09-19, but the gap stays |
 | `lds01_6_2026-06-01_2026-09-17.csv` | 1 081 | Door 2 |
 | `lht65_02_2026-06-01_2026-09-17.csv` | 15 145 | **Indoor**, mid-width at 1/4 of the length (operator, 2026-09-18). Air T/RH plus a soil probe |
 | `lht65_03_2026-06-01_2026-09-17.csv` | 14 631 | **Indoor**, mid-width at 3/4 of the length. Same channels |
