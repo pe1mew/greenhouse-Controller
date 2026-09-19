@@ -16,7 +16,11 @@ files overlap, so identical rows are de-duplicated.
   RELAY          ch = motor 1..3, value_a = ch_state_t (see firmware.RELAY_TO_CH)
   SUN            value_a = sunrise, value_b = sunset, minutes after local midnight
   SYSTEM         value_a 5 = BOOT
-  ALARM          ch 4 = T/RH sensor fault: value_a 1 onset, 0 clear
+  ALARM          ch 4 = T/RH sensor fault, ch 5 = wind sensor fault:
+                 value_a 1 onset, 0 clear
+  SETPT          one row per setting change: param = the key's audit id
+                 (LOG_PARAM_*, the channel picks the motor), value_a old,
+                 value_b new. settings.py turns them into the settings in force
   SESSION        initiator ADMIN: value_a 2 = start, 0 = end. On the firmware
                  5C88 ran, an LCD admin session is the manual-motor menu,
                  which holds STANDBY for its whole length
@@ -133,6 +137,8 @@ class LogData:
     tfault:   Intervals                 # T/RH sensor fault, inhibits T6
     standby:  Intervals                 # LCD admin sessions (manual-motor menu)
     files:    list = field(default_factory=list)
+    wfault:   Intervals = None          # wind sensor fault: T3 safe-fails, T5's wind averages stop
+    setpts:   list = field(default_factory=list)   # SETPT audit rows, see settings.py
 
     def is_day(self, ts):
         """T4's is_daytime from the logged SUN pair (nearest earlier date)."""
@@ -176,6 +182,7 @@ def load_sd_logs(paths):
 
     samples, wind, bmask, modes, relay = {}, [], [], [], []
     sun, boots, fault_edges, session_edges = {}, [], [], []
+    wfault_edges, setpts = [], []
     for (ts_s, typ, ini, ch, par, va, vb), seq in rows.items():
         try:
             ts = datetime.strptime(ts_s, TS_FMT)
@@ -202,8 +209,12 @@ def load_sd_logs(paths):
             boots.append(ts)
         elif typ == "ALARM" and ch == 4:
             fault_edges.append(((ts, seq), va))
+        elif typ == "ALARM" and ch == 5:
+            wfault_edges.append(((ts, seq), va))
         elif typ == "SESSION" and ini == "ADMIN":
             session_edges.append(((ts, seq), va))
+        elif typ == "SETPT":
+            setpts.append((ts, seq, ini, ch, par, va, vb))
 
     samp = sorted((ts, t, rh) for ts, (t, rh) in samples.items())
     end = samp[-1][0] + timedelta(seconds=1) if samp else datetime.max
@@ -218,4 +229,6 @@ def load_sd_logs(paths):
         tfault=_edges_to_intervals(fault_edges, {1}, {0}, end, min_len_s=30),
         standby=_edges_to_intervals(session_edges, {2}, {0}, end),
         files=files,
+        wfault=_edges_to_intervals(wfault_edges, {1}, {0}, end, min_len_s=30),
+        setpts=sorted(setpts, key=lambda r: (r[0], r[1])),
     )
