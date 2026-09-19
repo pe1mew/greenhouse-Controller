@@ -35,7 +35,8 @@ A smaller third error, found during NS-10: **the direction term was fed wind dir
 | Control law | `ventmodel.py`, `ventmodel_ffi.cpp` | `drivers/ventModel/` itself, compiled from the firmware's own sources into `build/ventmodel.dll` and called through ctypes, with every struct field checked by name on load |
 | Command line | `closed_loop.py` | The gates and the closed-loop reproduction |
 | Quality report | `quality_report.py` | Every number and figure in [`modelQuality.md`](modelQuality.md): the closed loop for the adopted pair and the old single node, the plant alone on the held-out days, the M3 response, a two-day example; writes `images/*.png` |
-| Tests | `test_linear_m3.py` | The linear M3 against its design: the channel, T6's limits on a target, and the closed loop in modes 1 and 2 |
+| Tests | `test_linear_m3.py` | The linear M3 against its design: the channel, T6's limits on a target, the airflow exponent, and the closed loop in modes 1 and 2 |
+| Law comparison | `law_compare.py` | A mode 2 law against the stepped law over the summer, on both adopted plants and across the airflow range: what the greenhouse would have felt and what the motors would have done. `--define NAME=VALUE` runs a variant of the law's constants without editing it. For `graded`, see [`gradedCandidate.md`](gradedCandidate.md) |
 | Campaign figures | `campaign_figures.py` | The figures `campaignResults_summer2026.md` and `thermalProfileCampaign.md` §9.12 quote that come from neither `refit.py` nor `closed_loop.py`: the forced tests, the event study, the hottest days, wind, windward M3-only minutes, the indoor LoRa sensors, a model-free wind check, and the plants' heat loss per ventilation step |
 
 The law is **not** re-implemented in Python. `simulation.py` carries its own port of the stepped law, and a port drifts. The contract makes the library host-compilable so that one set of sources serves the firmware, the host tests and this simulator (`design/ventModelContract.md` §4). `../vent_step_replay.py` loads it the same way since 2026-09-19, and the tools that need M3's entry temperature ask the law for it (`ventmodel.entry_temp_c()`) instead of restating the step formula. When `vent_model_graded.cpp` exists, it becomes available here by adding one row to `k_models` in the shim, and `--set wpos_fitted_m3=1` runs it on a linear M3 (see "A linear M3").
@@ -53,6 +54,7 @@ python model/closedloop/refit.py fit --fix Ca_MJ=2.9 --fix tau_s1=120 --fix tau_
 python model/closedloop/refit.py compare model/campaign-summer-2026/plant2/*.json
 python model/closedloop/campaign_figures.py
 python model/closedloop/test_linear_m3.py
+python model/closedloop/law_compare.py
 ```
 
 Needs Python 3.11 with numpy, scipy and matplotlib, and the Code::Blocks MinGW `g++` that `drivers/ventModel` already uses (or `VENTMODEL_CXX`). Both DLLs are rebuilt automatically when a source changes. `build/` holds only the DLLs, which `.gitignore` excludes. **A DLL loaded by a running process cannot be rebuilt on Windows**, so let a running fit finish before changing `plant2_kernel.c`, and build once before starting fits in parallel.
@@ -163,10 +165,14 @@ python model/closedloop/closed_loop.py gate-control --sweep avg_win_rh=3..12
 
 ```bash
 python model/closedloop/closed_loop.py reproduce --start 2026-07-13 --end 2026-07-29 --plant2 PLANT.json --firmware current --set wpos_fitted_m3=1 --model graded
+python model/closedloop/closed_loop.py reproduce ... --model graded --m3-airflow-exp 0.5
+python model/closedloop/law_compare.py
 python model/closedloop/test_linear_m3.py
 ```
 
-`graded` is not written yet (plan decision 9). Until it is, only `stepped` runs, in mode 1.
+`graded` is a first candidate for mode 2's law (plan decision 9 stays open): M1 and M2 as the stepped law, M3 proportional with a rate limit. It is in `drivers/ventModel/src/vent_model_graded.cpp`; its declaration and results are in [`gradedCandidate.md`](gradedCandidate.md).
+
+**How much air a part-open M3 lets through is unmeasured**, so `--m3-airflow-exp` sets it: M3's airflow as its opening to that power. 1 is the fitted plants' assumption (proportional); below 1 a part-open M3 lets through more air, above 1 less. The plant is handed the exact time-average over each step, and at 1 the arithmetic is unchanged. `law_compare.py` runs 0.5, 1 and 2 by default. A verdict should hold across them.
 
 - **The mode follows the law**, as in T6's model table. With `stepped` it is mode 1, and a fitted sensor changes nothing that acts: over Jul 13-29 the run matches the binary one cell for cell. With any other law it is mode 2.
 - **What the law gets:**
@@ -189,7 +195,7 @@ python model/closedloop/test_linear_m3.py
   - the share of time it rests part-open.
 
 **What it cannot tell yet:**
-- **How much air a part-open M3 lets through.** The plant takes M3's airflow as proportional to its opening, which is unmeasured (plan §5c). Every logged M3 was fully open or shut, apart from its travel. Treat a verdict that rests on part-open airflow as open until 5C88 can hold M3 part-open.
+- **How much air a part-open M3 lets through.** The plant takes M3's airflow as proportional to its opening, which is unmeasured (plan §5c). Every logged M3 was fully open or shut, apart from its travel. `--m3-airflow-exp` brackets it. Treat a verdict that changes across that range as open until 5C88 can hold M3 part-open.
 - **The reading is the leaf's travelled fraction.** The real sensor's 0-100 % runs between the end sensors, and the leaf overtravels past the open one (plan §2a.4).
 - **The sensor never fails,** so M3 never falls back to mode 1.
 - **T2's reaction time and the sensor's measurement window are left out.**
@@ -319,7 +325,7 @@ Verify a new law against both, and treat a verdict that differs between them as 
 
 1. **NS-10's remainder: the north-wind swing** (3.0-3.2 against 3.9 degC). A probe-mix term was tried and did not close it (above). The next step is data, not a model term: NS-9's forced tests with a second probe.
 2. **NS-9's forced tests**, now with a sharper question: does the whole house cool about twice as fast in north wind, or mainly the spot where the controller's sensor hangs? A temporary second probe beside the controller's, and one at the south side, would answer it.
-3. **Linear M3 (mode 2).** The simulator can drive one now (see "A linear M3"). It still needs a mode 2 law and a part-open airflow curve; only the new firmware and hardware can measure the curve. Until then, vary the curve across a range and check that the verdict holds across it. The plant has no knob for that yet.
+3. **Linear M3 (mode 2).** The simulator drives one, and `graded` is a first candidate law ([`gradedCandidate.md`](gradedCandidate.md)). The part-open airflow curve is still unmeasured; only the new firmware and hardware can measure it. Until then, `--m3-airflow-exp` varies it, and a verdict must hold across the range.
 4. **Outdoor T/RH and sun sensors on the controller:** the evidence and a plan are in [`design/sunAndOutdoorSensorsStudy.md`](../../design/sunAndOutdoorSensorsStudy.md). The next model step is to test, against both plants, a law that uses the outdoor temperature.
 
 ## Known limits

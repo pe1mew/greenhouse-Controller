@@ -215,4 +215,12 @@ typedef struct {
  */
 const vent_model_t *vent_model_stepped(void);
 
+/**
+ * @brief Mode 2 — a first CANDIDATE for the graded law (plan decision 9 is open).
+ *
+ * M1 and M2 as the stepped law's first two steps; M3 proportional to the
+ * temperature excess with a rate limit. See `vent_model_graded.cpp`.
+ */
+const vent_model_t *vent_model_graded(void);
+
 #endif /* VENT_MODEL_H */

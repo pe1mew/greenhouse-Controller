@@ -192,6 +192,23 @@ def layer_channel():
     check("mode 1: OPEN and CLOSE move it exactly as a binary M3", same and
           a.n.starts == b.n.starts and a.n.reversals == b.n.reversals)
 
+    # the airflow exponent: the plant is handed opening ** exp, integrated exactly
+    c = Channel(TRAVEL, DWELL_OPEN, DWELL_CLOSE, PROFILE_CURRENT)
+    c.flow_exp = 2.0
+    c.advance(T0)
+    c.take_mean(T0)
+    c.command(True, T0, SRC_T6)
+    stroke = c.take_mean(T0 + TRAVERSE_MS)          # the whole stroke, 0 -> 1
+    ch = m3()
+    ch.flow_exp = 2.0
+    ch.command_target(500, T0, SRC_T6, DZ)
+    run_until(ch, T0, lambda c: c.state == CH_STOPPED)
+    ch.take_mean(ch.drive_end + 1000)
+    held = ch.take_mean(ch.drive_end + 301_000)
+    check("airflow exponent 2: a stroke gives 1/3, a part-open leaf its opening squared",
+          abs(stroke - 1 / 3) < 1e-9 and abs(held - ch.pos ** 2) < 1e-12,
+          "stroke %.6f, held %.4f at %.4f" % (stroke, held, ch.pos))
+
 
 # ==========================================================================
 # 2. T6's side

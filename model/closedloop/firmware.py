@@ -462,6 +462,7 @@ class ChannelCounters:
     dwell_defers: int = 0   # SRC_T6 commands refused on dwell (one per episode)
     travel_defers: int = 0  # SRC_T6 reversals refused mid-stroke (gh#48)
     # a linear M3 only (LinearChannel)
+    run_ms:       int = 0   # relay-on time, stall against the end switch included
     targets:      int = 0   # part-open targets that moved the leaf or its stop point
     retargets:    int = 0   # a new stop point the way the leaf was already going
     timeouts:     int = 0   # a part-open target the travel timer ran out on
@@ -489,6 +490,11 @@ class Channel:
         self._area_t0 = None
         self._defer_latched = False
         self.n = ChannelCounters()
+        # The air a part-open leaf lets through, as its opening to this power:
+        # 1 = proportional, the fitted plants' assumption. Unmeasured for M3
+        # (plan §5c), so a sensitivity knob; any other value integrates
+        # pos ** flow_exp instead (_move_pos_flow).
+        self.flow_exp = 1.0
 
     # ---- time ----------------------------------------------------------
     def _move_pos(self, t):
@@ -501,8 +507,14 @@ class Channel:
         dt = t - self._t
         if dt <= 0:
             return
+        if self.state in (CH_MOVING_OPEN, CH_MOVING_CLOSE):
+            self.n.run_ms += dt
         p0 = self.pos
         rate = 1.0 / self.traverse_ms
+        if self.flow_exp != 1.0:
+            self._move_pos_flow(p0, dt, rate)
+            self._t = t
+            return
         if self.state == CH_MOVING_OPEN:
             t_full = (1.0 - p0) / rate
             if dt <= t_full:
@@ -523,11 +535,46 @@ class Channel:
             self._area += p0 * dt
         self._t = t
 
+    def _move_pos_flow(self, p0, dt, rate):
+        """_move_pos for flow_exp != 1: the leaf moves the same, and the area
+        integrates pos ** flow_exp, exactly, over each linear stretch."""
+        g = self.flow_exp
+
+        def seg(a, b, d):
+            a, b = max(a, 0.0), max(b, 0.0)
+            if d <= 0:
+                return 0.0
+            if b == a:
+                return a ** g * d
+            return d * (b ** (g + 1) - a ** (g + 1)) / ((g + 1) * (b - a))
+
+        if self.state == CH_MOVING_OPEN:
+            t_full = (1.0 - p0) / rate
+            if dt <= t_full:
+                self.pos = p0 + rate * dt
+                self._area += seg(p0, self.pos, dt)
+            else:
+                self.pos = 1.0
+                self._area += seg(p0, 1.0, t_full) + (dt - t_full)
+        elif self.state == CH_MOVING_CLOSE:
+            t_zero = p0 / rate
+            if dt <= t_zero:
+                self.pos = p0 - rate * dt
+                self._area += seg(p0, self.pos, dt)
+            else:
+                self.pos = 0.0
+                self._area += seg(p0, 0.0, t_zero)
+        else:
+            self._area += max(p0, 0.0) ** g * dt
+
     def take_mean(self, now):
         """Mean openness since the previous call: the plant's step into now."""
         self.advance(now)
         span = (now - self._area_t0) if self._area_t0 is not None else 0
-        mean = self._area / span if span > 0 else self.pos
+        if span > 0:
+            mean = self._area / span
+        else:
+            mean = self.pos if self.flow_exp == 1.0 else self.pos ** self.flow_exp
         self._area, self._area_t0 = 0.0, now
         return mean
 
@@ -883,7 +930,8 @@ class Actuator:
     """T2: three channels, M1..M3 at index 0..2. With m3_linear (a LinearM3),
     M3 has its position sensor and takes targets (LinearChannel)."""
 
-    def __init__(self, settings, profile, traverse_s=(None, None, None), m3_linear=None):
+    def __init__(self, settings, profile, traverse_s=(None, None, None), m3_linear=None,
+                 m3_flow_exp=1.0):
         self.m3_linear = m3_linear
         self.ch = []
         for i in range(3):
@@ -891,6 +939,7 @@ class Actuator:
                  profile, traverse_s[i])
             self.ch.append(LinearChannel(*a, cfg=m3_linear) if i == 2 and m3_linear
                            else Channel(*a))
+        self.ch[2].flow_exp = float(m3_flow_exp)
 
     def is_linear(self, i):
         return isinstance(self.ch[i], LinearChannel)

@@ -35,6 +35,7 @@ typedef const vent_model_t *(*vm_accessor_t)(void);
 /** Every law the library provides. Index = the id the Python side uses. */
 static const vm_accessor_t k_models[] = {
     vent_model_stepped,
+    vent_model_graded,
 };
 
 static const int k_model_count = (int)(sizeof(k_models) / sizeof(k_models[0]));
