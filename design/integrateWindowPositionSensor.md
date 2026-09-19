@@ -2028,7 +2028,7 @@ that integer division (see the rework note under Phase 5).
 
 | Release | Content |
 |---|---|
-| **2.10.0** | **Confirm only.** T2 keeps its timed drives and **drives on to the timer**. The sensor confirms each drive's end (done or failed) and checks `travel_m3` against the measured traverse (§3.5). On a sensor fault mid-drive the drive finishes on the timer and the fault is reported; position control stays off until a clean stroke is seen. **This supersedes gate 1's "de-energise at target, stop on bit 3" for 2.10.0.** |
+| **2.10.0** | **Confirm only.** T2 keeps its timed drives and **drives on to the timer**. The sensor confirms each drive's end (done or failed) and checks `travel_m3` against the measured traverse (§3.5). On a sensor fault mid-drive the drive finishes on the timer and the fault is reported; position control stays off until a clean stroke is seen. **This supersedes gate 1's "de-energise at target, stop on bit 3" for 2.10.0.** **Designed 2026-09-19: §5d.** |
 | **2.11.0** | **Mode 2.** T2 gains the target input, T6 the graded law and the fallback. Designed while 2.10.0 soaks. |
 
 ##### The position path: one owner, one copy
@@ -2223,6 +2223,105 @@ attributable to the new law rather than to the refactor.
 **Until then, two copies exist.** Change one, change the other, and re-run both the library's host
 tests and the replay. That duplication is the price of having a tested reference before the release
 that needs it, and step 4 is what ends it.
+
+#### 5d. 2.10.0, confirm only — designed 2026-09-19
+
+Decided by the operator on 2026-09-19. It turns §5b's 2.10.0 row into behaviour.
+
+**T2's timed control does not change.** It still drives on to its timer, and still believes OPEN or
+CLOSED afterwards. Everything below reports; nothing acts.
+
+##### The verdict: one per M3 drive
+
+T17 judges each M3 drive when T2 ends it, from what it saw during the drive:
+- `t2_get_drive()` gives the drive, its energisation counter and its start;
+- T2's window state afterwards says how the drive ended.
+
+| Verdict | Condition |
+|---|---|
+| **Confirmed** | The target end sensor (bit 3) made, with the position within `deadzone_m3` of that end, before the drive ended. This includes a drive toward the end M3 already sits at, such as the recalibration of a closed M3. |
+| **Not reached** | The drive ran its full timer and the target end was never confirmed: the leaf stopped short. The causes are a `travel_m3` that is too short, or a slow or binding mechanism. This is the failure that today leaves the log reading OPEN while M3 is a tenth open, for example a rig `travel_m3` in production. |
+| **Not judged** | The drive ended early, by a reversal (T2's gap) or a motor alarm. Or the sensor was absent or faulted during it: the drive then finishes on the timer and the fault is reported, as it is today. Or bit 4 (both end sensors) was set. |
+
+- **Confirmed needs both halves.** An end sensor without the position is gh#78's lesson: a bit 3 is
+  true at both ends. A position without the end sensor is what rule 2 exists to catch.
+- **Only the target end counts.** The sensor at the starting end stays made for about the first
+  1.8 s of every full drive (gh#78).
+- **The verdict is taken when the drive ends, never on the first ~0 sample.** On the rig the
+  position reads 0 for about 1.2 s before the closed end sensor makes (gh#78).
+
+##### What a verdict does
+
+- **Every M3 drive gets a log row:** `ALARM ch6` param **251** (`LOG_PARAM_WPOS_CONFIRM`). The
+  encoding is fixed together with the parser in the same change. Proposed:
+  - `value_a` = the verdict (1 confirmed, 2 not reached, 3 not judged), signed by direction (+ OPEN,
+    − CLOSE), as `LOG_SYSTEM 29` does;
+  - `value_b` = for a full traverse, the time from relay-on to the target end sensor, in 0.1 s; for
+    not reached, the position at the drive's end, in 0.1 %; for not judged, the reason code.
+- **Not reached raises a flag and a web badge:** `m3_not_confirmed`, "M3 not confirmed", cleared by
+  the next confirmed drive.
+  - The LCD is unchanged (§6.2).
+  - T2's state is untouched. The web GUI already shows the measured opening next to it (§6.3).
+- **The bench diag counts the three verdicts**, for soaks.
+
+##### The travel check: warn only
+
+- **Measured on every confirmed full traverse, per direction:** the time from relay-on to the target
+  end sensor making. A drive that started part-way is not a full traverse and is not measured.
+- **Bit 3 alone is enough** (§3.5: no working wiper is needed), so the check survives rejected
+  position samples.
+- **Two warnings, each logged and flagged, never acted on:**
+  - **`travel_m3` too short:** the end sensor made later than `travel_m3`, so only T2's fixed 5 s
+    margin still carries the drive. The next step down is *not reached*.
+  - **`travel_m3` much longer than needed:** the end sensor made within half of `travel_m3`. The
+    mechanism does not mind, because the end switch cuts the drive. But T17 derives its poll interval
+    and plausibility threshold from `travel_m3` (§3), and those go wrong. The usual cause is a
+    production value on a rig module, or a mistyped one.
+- **Edge-triggered:** one row when a warning starts and one when it clears, not one per drive. The
+  flag holds while the condition stands. `travel_m3` is never changed automatically.
+- **The rig's headroom is thin.** The end sensor makes about 12 s into a 13 s `travel_m3` (§2a.8:
+  10 s sensor to sensor, after the starting end releases), so the first warning has about 1 s of
+  headroom there. The acceptance run must show it stays silent on healthy strokes. Production's
+  figure is unmeasured until 5C88 has a sensor (gh#77).
+
+##### Also in 2.10.0
+
+- **gh#78, rule 2's two flaws.** Judge only the target end's sensor, and do not decide on the first
+  ~0 samples.
+- **Bit 4 shuts the gate.** Both end sensors active means the end-sensor loop is faulted, and bit 3
+  cannot be believed in either direction. The gate goes TIMED with a new reason, and drives are not
+  judged until it reopens.
+- **The device's start-up bits are read.** `0x01` means no measurement window has completed yet,
+  and `0x02` that the averaging is not yet filled. A reading that carries either is not used as
+  evidence, for the verdict or for the rules.
+
+##### Version, surfaces, manuals
+
+- **Minor, 2.10.0:** a new log param with its parser, new status flags (a payload change), a new
+  gate reason. The web GUI, the mock and the remote status site each learn the new flags.
+- **Manual passages due in 2.10.0:**
+  - the badge and the two travel warnings, in both manuals: what they mean, and what to check
+    (`travel_m3`, the rope, the mechanism);
+  - `beheerderHandleiding:101`, "geen positie-feedback": control stays time-based, but with a sensor
+    fitted the controller now confirms that M3 arrived.
+- **Not yet due:** `beheerderHandleiding` 1470, 1471 and 1503, and the boer manual's power-cycle
+  advice. They stay true in 2.10.0: T2's belief still comes from its own commands, and the CLOSE_ALL
+  still re-aligns it. They come due in 2.11.0, when position drives the actuator.
+- **The boer manual changes in the same changeset as the badge.**
+
+##### Acceptance tests (rig, fail-first where the old code can fail)
+
+| Test | How | Must show |
+|---|---|---|
+| Healthy | Full OPEN and CLOSE traverses, by T6 or the LCD | Confirmed both ways, traverse ~12 s logged, no warning, no badge |
+| Not reached | `travel_m3` 5, a 10 s drive against a ~12 s traverse | Not reached, the badge, the "too short" warning; the badge cleared by the next confirmed drive after `travel_m3` is restored to 13. **Fail-first:** 2.9.2 logs the same stroke as OPEN and reports nothing |
+| Much longer | `travel_m3` 171 on the rig | Confirmed, with the "much longer than needed" warning |
+| Sensor lost mid-drive | Bench inject `absent`, `fault`, `stuck` | Not judged; the drive finishes on the timer; the fault reported; the gate TIMED until a clean stroke |
+| Reversal | LCD OPEN, then CLOSE mid-travel | The first drive not judged, the second judged |
+| Already at the end | Recalibration of a closed M3 (an LCD logout) | Confirmed |
+| gh#78 | A part-way CLOSE (reversed at ~40 %), then a full CLOSE | No false early stop on the first; rule 2 judges the second |
+| Bit 4 | A new bench inject: both end sensors | The gate shuts with the new reason; the drive is not judged |
+| Soak | At least 12 h and 10 judged drives | Counters clean, no *not reached*, the verdict rows matching the counters |
 
 ## 6. Operator-facing surfaces
 
