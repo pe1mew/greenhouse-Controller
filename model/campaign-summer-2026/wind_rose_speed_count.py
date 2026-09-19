@@ -60,7 +60,7 @@ ax.set_theta_direction(-1)
 R_MAX = math.ceil(means.max() * 1.25 * 2) / 2
 ax.set_rlim(0, R_MAX)
 
-# context: M3 windward / leeward sector boundaries (visual continuity with m3_ach_polar)
+# context: M3 windward / leeward sector boundaries (visual continuity with m3_ach_polar, archived 2026-09-19)
 for b in (-45, 45, 135, 225):
     ax.plot([math.radians(b)] * 2, [0, R_MAX], color=GRID, lw=0.8, ls="--", zorder=1)
 ax.text(math.radians(0), R_MAX * 0.94, "windward for M3 (N wall)",

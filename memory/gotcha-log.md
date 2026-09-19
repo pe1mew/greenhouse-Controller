@@ -1646,7 +1646,7 @@ Verify: serial shows `littlefs_mount(A (lfs0)) returned 0 (OK)` + `/index.html e
 
 **Fix:** Constraint recorded in `thermalProfileCampaign.md` §9.11 and enforced in `ns9_direction_stratified.py` (`WIND_VALID_FROM`). Any new wind-based analysis script must filter `timestamp >= 2026-06-19T12:00`.
 
-**Where it lives:** `model/campaign-summer-2026/ns9_direction_stratified.py` (the reference filter); campaign doc §9.11; `model/campaign-summer-2026/plot_daily.py` — the day-plot wind-direction axis is gated on the same date, so pre-Jun-19 plots render **without** a direction scatter by design (added 2026-07-20; if you regenerate all plots, `git checkout --` the pre-Jun-19 PNGs).
+**Where it lives:** `model/closedloop/dataset.py` (`WIND_VALID_FROM`, `wind_valid`: the reference filter since the closed-loop work; `ns9_direction_stratified.py` held it first and is archived in `model/archive/` since 2026-09-19); campaign doc §9.11; `model/campaign-summer-2026/plot_daily.py` — the day-plot wind-direction axis is gated on the same date, so pre-Jun-19 plots render **without** a direction scatter by design (added 2026-07-20; if you regenerate all plots, `git checkout --` the pre-Jun-19 PNGs).
 
 ---
 

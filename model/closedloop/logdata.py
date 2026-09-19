@@ -1,6 +1,6 @@
 """
-logdata.py -- what the simulator reads from 5C88's SD logs and the merged
-calibration input.
+logdata.py -- what the simulator reads from 5C88's SD logs. The outdoor and
+door data are joined in dataset.py, from the raw LoRa exports.
 
 SD logs (raw CSV: timestamp,type,initiator,ch,param,value_a,value_b). The
 files overlap, so identical rows are de-duplicated.
@@ -43,7 +43,6 @@ from pathlib import Path
 
 MODEL_DIR = Path(__file__).resolve().parent.parent
 CAMPAIGN  = MODEL_DIR / "campaign-summer-2026"
-CAL_INPUT = CAMPAIGN / "calibration_input_2026-06-04_2026-07-12.csv"
 
 BIT_WIND_OVERRIDE = 1 << 12
 BIT_MOTOR_ALARM   = 1 << 13
@@ -220,39 +219,3 @@ def load_sd_logs(paths):
         standby=_edges_to_intervals(session_edges, {2}, {0}, end),
         files=files,
     )
-
-
-@dataclass
-class OutdoorRow:
-    T_out: float
-    RH_out: float
-    lux: float
-    lux_stale_s: float
-    door1: bool
-    door2: bool
-    valid: bool
-    T_in: float
-    RH_in: float
-
-
-def load_outdoor(path=CAL_INPUT):
-    """The merged calibration input (prepare_calibration_input.py) as a Series.
-
-    Only this file carries the outdoor T/RH/lux and the door state at the SD
-    cadence; it ends on 2026-07-12. Later days need a fresh export from the
-    LoRa database (fetch_lora_data.py) first.
-    """
-    pairs = []
-    with open(path, newline="", encoding="utf-8") as fh:
-        for r in csv.DictReader(fh):
-            try:
-                ts = datetime.strptime(r["timestamp"], TS_FMT)
-                pairs.append((ts, OutdoorRow(
-                    T_out=float(r["T_out_C"]), RH_out=float(r["RH_out_pct"]),
-                    lux=float(r["lux"]), lux_stale_s=float(r["lux_stale_s"] or 0),
-                    door1=r["door1_open"] == "1", door2=r["door2_open"] == "1",
-                    valid=r["calibration_valid"] == "1",
-                    T_in=float(r["T_in_C"]), RH_in=float(r["RH_in_pct"]))))
-            except (ValueError, KeyError, TypeError):
-                continue
-    return Series(pairs)
