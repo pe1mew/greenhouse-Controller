@@ -19,6 +19,26 @@ USAGE
     python model/vent_step_replay.py <log.csv> [<log.csv> ...] \
         [--t-max-day 28] [--t-max-ngt 20] [--hyst-t 5] [--avg-win-t 3]
 
+THE LAW IS THE LIBRARY'S, NOT A COPY
+------------------------------------
+Every decision is made by the stepped law in drivers/ventModel
+(src/vent_model_stepped.cpp), the library T6 moves onto in 2.11.0, loaded
+through closedloop/ventmodel.py as the closed-loop simulator loads it. This
+script restates none of the law's arithmetic, so a change to the law reaches
+the replay without an edit here. (Until 2026-09-19 it carried a Python port
+of step_from_deviation() and vent_resolve_conflict(); on the summer's logs
+the library reproduced the port's output exactly.) The first run compiles
+the library, with the compiler the closed loop uses (see ventmodel.py).
+
+The script supplies what T6's caller supplies: the averaged temperature, the
+day or night threshold, the settings -- and humidity's vote. That vote is
+not replayed but read from the log (the MODE row's step_rh, carried
+forward), because hyst_t and avg_win_t cannot change it and the log holds it
+exactly. It enters the law through the law's own humidity inputs, set so
+that its humidity branch casts the logged vote (the inputs for each vote are
+found by asking the law, and every call checks the vote came back), so the
+law's own resolver weighs it against temperature's.
+
 WHY A VALIDATION GATE
 ---------------------
 The replay is only evidence if it reproduces what the unit actually did. The
@@ -35,7 +55,11 @@ TWO CORRECTNESS TRAPS (both cost real debugging time; do not re-introduce)
    (~50% fit). Evaluate at every sample.
 2. `meas.t_avg_c` is the ROUNDED integer degC, not truncated. With hyst_t=5
    the step width is 5/3 = 1 degC, so a 1-degree rounding error is an entire
-   ventilation step (fit collapses from ~97% to ~59%).
+   ventilation step (fit collapses from ~97% to ~59%). The law takes the
+   average ready-rounded (vent_in_t.t_avg_c), so the rounding is this
+   script's job, as it is T5's in the firmware. It is approximate here:
+   float64 and Python's half-to-even round(), where T5 uses float32 and
+   lroundf(). closedloop/closed_loop.py gate-control emulates T5 exactly.
 
 STRUCTURAL NOTE
 ---------------
@@ -43,9 +67,11 @@ STRUCTURAL NOTE
 a smooth dial -- 3/4/5 all give width 1, 6/7/8 give width 2, 9/10/11 give
 width 3. Only the regime changes matter.
 
-Also note `hyst_t` only gates the step -> 0 transition (climate_control.cpp
-"close-hysteresis guard"); intermediate transitions such as 2<->3 (where M3
-lives) have no dead band. That asymmetry is what gh#47 (`vent_hyst`) targets.
+Also note `hyst_t` only gates the step -> 0 transition (the law's
+"close-hysteresis guard": step_from_deviation() in vent_model_stepped.cpp,
+a copy of climate_control.cpp's); intermediate transitions such as 2<->3
+(where M3 lives) have no dead band. That asymmetry is what gh#47
+(`vent_hyst`) targets.
 
 ASCII-only output (Windows console is cp1252 -- see memory/gotcha-log.md).
 """
@@ -53,51 +79,70 @@ ASCII-only output (Windows console is cp1252 -- see memory/gotcha-log.md).
 import argparse
 import csv
 import sys
-from collections import deque, defaultdict
+from collections import deque
 from datetime import datetime, timedelta
+from pathlib import Path
 
-NUM_VENT_STEPS = 3
-NEUTRAL = -1
+sys.path.insert(0, str(Path(__file__).resolve().parent / "closedloop"))
+from ventmodel import (VENT_STEP_NONE, VENT_STEPS_MAX, VentIn,  # noqa: E402
+                       VentModel, entry_temp_c)
+
+LAW = "stepped"            # mode 1's law in drivers/ventModel
 M3_TRAVEL_S = 171          # M3 full stroke; dwell below this = mid-stroke reversal
 SHORT_CYCLE_S = 900        # 15 min
 
 
 # --------------------------------------------------------------------------
-# Firmware ports (keep faithful to firmware/src/climate_control/climate_control.cpp)
+# The law: drivers/ventModel, loaded through closedloop/ventmodel.py
 # --------------------------------------------------------------------------
 
-def step_from_deviation(deviation, hyst, current_step):
-    """Port of climate_control.cpp step_from_deviation()."""
-    step_width = hyst // NUM_VENT_STEPS
-    if step_width < 1:
-        step_width = 1
-    raw_step = 0 if deviation <= 0 else (deviation + step_width - 1) // step_width
-    raw_step = max(0, min(raw_step, NUM_VENT_STEPS))
-    # close-hysteresis guard -- ONLY gates the step -> 0 transition
-    if current_step > 0 and raw_step == 0 and deviation > -hyst:
-        return 1
-    return raw_step
+# The humidity band that carries the logged votes into the law. Any band
+# works: rh_vote_inputs() asks the law which reading casts which vote.
+RH_MIN_PCT, RH_MAX_PCT, RH_HYST_PCT = 40, 60, 3
 
 
-def vent_resolve_conflict(step_t, step_rh, cr_priority=0):
-    """Port of climate_control.cpp vent_resolve_conflict()."""
-    if step_rh == NEUTRAL:
-        return step_t
-    if step_t > 0 and step_rh > 0:
-        return max(step_t, step_rh)
-    if step_t == step_rh:
-        return step_t
-    if cr_priority == 1:
-        return step_rh
-    if cr_priority == 2:
-        return max(step_t, step_rh)
-    return step_t
+def law_input(hyst_t, cr_priority):
+    """A vent_in_t with the settings in; simulate() fills the rest per sample.
+
+    The stepped law reads the whole-degree average, the threshold, hyst_t,
+    cr_priority and the humidity fields. Nothing else it is given matters to
+    it, so the clock, the raw readings, the wind and the windows stay zero.
+    """
+    v = VentIn()
+    v.t_valid = True
+    v.rh_valid = True
+    v.hyst_t_c = hyst_t
+    v.cr_priority = cr_priority
+    v.rh_min_pct = RH_MIN_PCT
+    v.rh_max_pct = RH_MAX_PCT
+    v.hyst_rh_pct = RH_HYST_PCT
+    return v
+
+
+def rh_vote_inputs():
+    """{vote: (rh_ctrl_en, rh_avg_pct)} that make the law's humidity branch
+    cast each vote: none (-1), close (0), or a step 1..3.
+
+    Found by asking a fresh law at every humidity reading, rather than by
+    restating its humidity rules here. The temperature settings do not matter.
+    """
+    law = VentModel(LAW)
+    v = law_input(hyst_t=5, cr_priority=0)
+    votes = {}
+    for en, rh in [(False, 0)] + [(True, r) for r in range(101)]:
+        law.reset()
+        v.rh_ctrl_en, v.rh_avg_pct = en, rh
+        votes.setdefault(int(law.step(v).step_rh), (en, rh))
+    missing = [s for s in range(VENT_STEP_NONE, VENT_STEPS_MAX + 1) if s not in votes]
+    if missing:
+        raise RuntimeError("the %s law cannot be made to cast humidity vote(s) %s, so the "
+                           "logged votes cannot be carried into it" % (LAW, missing))
+    return votes
 
 
 def m3_entry_temp(hyst_t, t_max_day):
     """Lowest t_avg_c at which the T branch demands step 3 (M3 in the mask)."""
-    sw = max(1, hyst_t // NUM_VENT_STEPS)
-    return t_max_day + 2 * sw + 1
+    return entry_temp_c(VENT_STEPS_MAX, t_max_day, hyst_t, LAW)
 
 
 # --------------------------------------------------------------------------
@@ -179,21 +224,23 @@ def is_day(dt, by_day, default=(355, 1299)):
 
 def simulate(temps, modes, by_day, hyst_t, t_max_day, t_max_ngt, avg_win_t,
              cr_priority=0):
-    """Evaluate the T branch at every sample, carrying state as the firmware
-    does; resolve against the logged RH demand (carried forward between MODE
-    rows, which are only written on change).
+    """Evaluate the law at every sample, carrying its state as T6 does, with
+    humidity's vote taken from the log (carried forward between MODE rows,
+    which are only written on change).
 
     Returns (resolved_timeline, fit_pairs) where fit_pairs is
     [(logged_t_demand, simulated_t_demand), ...] at each MODE row.
     """
+    votes = rh_vote_inputs()
+    law = VentModel(LAW)                  # fresh: T6's boot state
+    v = law_input(hyst_t, cr_priority)
     win = timedelta(minutes=avg_win_t)
     dq = deque()
     total = 0.0
-    cur_t = 0
     resolved = []
     fit_pairs = []
     mi = 0
-    rh_now = NEUTRAL
+    rh_now = VENT_STEP_NONE
 
     for dt, tc in temps:
         dq.append((dt, tc))
@@ -201,17 +248,27 @@ def simulate(temps, modes, by_day, hyst_t, t_max_day, t_max_ngt, avg_win_t,
         while dq and dt - dq[0][0] >= win:
             total -= dq.popleft()[1]
         # TRAP 2: firmware ROUNDS to integer degC
-        t_avg_c = int(round(total / len(dq)))
+        v.t_avg_c = int(round(total / len(dq)))
+        day = is_day(dt, by_day)
+        v.daytime = day
+        v.t_max_c10 = (t_max_day if day else t_max_ngt) * 10
 
-        t_max = t_max_day if is_day(dt, by_day) else t_max_ngt
-        cur_t = step_from_deviation(t_avg_c - t_max, hyst_t, cur_t)
-
+        first = mi
         while mi < len(modes) and modes[mi][0] <= dt:
             rh_now = modes[mi][3]
-            fit_pairs.append((modes[mi][2], cur_t))
             mi += 1
+        if rh_now not in votes:
+            raise RuntimeError("%s: the logged humidity vote %d is not one the law casts"
+                               % (modes[mi - 1][0], rh_now))
+        v.rh_ctrl_en, v.rh_avg_pct = votes[rh_now]
 
-        resolved.append((dt, vent_resolve_conflict(cur_t, rh_now, cr_priority)))
+        out = law.step(v)
+        if out.step_rh != rh_now:
+            raise RuntimeError("%s: the law cast humidity vote %d, the log %d"
+                               % (dt, out.step_rh, rh_now))
+        for k in range(first, mi):
+            fit_pairs.append((modes[k][2], out.step_t))
+        resolved.append((dt, out.step))
 
     return resolved, fit_pairs
 
@@ -257,6 +314,11 @@ def main(argv=None):
     ap.add_argument("--cr-priority", type=int, default=0)
     ap.add_argument("--min-fit", type=float, default=90.0)
     args = ap.parse_args(argv)
+    # The law takes these as bytes: a value out of range would wrap silently.
+    if not 1 <= args.hyst_t <= 255:
+        ap.error("--hyst-t must be 1..255")
+    if not 0 <= args.cr_priority <= 2:
+        ap.error("--cr-priority must be 0, 1 or 2")
 
     temps, modes, sun = load(args.logs)
     by_day = sun_lookup(sun)
@@ -264,12 +326,15 @@ def main(argv=None):
         print("No usable SENSOR_HR / MODE rows found. Are these raw SD CSV logs?")
         return 1
 
+    law = VentModel(LAW)
     span_days = max(1.0, (temps[-1][0] - temps[0][0]).total_seconds() / 86400.0)
     print("=== input ===")
     print("  %d temperature samples, %d MODE decisions" % (len(temps), len(modes)))
     print("  %s .. %s  (%.1f days)" % (temps[0][0], temps[-1][0], span_days))
     print("  configured: hyst_t=%d avg_win_t=%d t_max day/ngt=%d/%d"
           % (args.hyst_t, args.avg_win_t, args.t_max_day, args.t_max_ngt))
+    print("  law: %s v%d (drivers/ventModel, via %s)"
+          % (law.name, law.version, law.lib.path.name))
 
     # ---- observed severity (no model involved) --------------------------
     o, c, dw, tot = observed_m3(modes)

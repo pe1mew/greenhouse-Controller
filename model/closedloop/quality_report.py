@@ -44,6 +44,7 @@ import dataset  # noqa: E402
 import plant2  # noqa: E402
 import refit  # noqa: E402
 from plant import ADOPTED  # noqa: E402
+from ventmodel import VENT_STEPS_MAX, entry_temp_c  # noqa: E402
 
 IMAGES = HERE / "images"
 P2 = MODEL_DIR / "campaign-summer-2026" / "plant2"
@@ -111,7 +112,7 @@ def closed_loop(ds, kind, params, plant2_path=None):
     sched = cl.schedule_from_args(args)
     recs, _, _ = cl.run_closed_loop(ds, lo, hi, kind, params, args, sched)
     s = sched.at(START)
-    t_m3 = s.t_max_day + 2 * max(1, s.hyst_t // 3) + 1
+    t_m3 = entry_temp_c(VENT_STEPS_MAX, s.t_max_day, s.hyst_t, args.model)   # where M3 opens
     by_day = {}
     for r in recs:
         by_day.setdefault(r["t"].date(), []).append(r)

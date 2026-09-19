@@ -400,7 +400,9 @@ cd drivers/ventModel && pio test -e native      # host unit tests, no hardware
    `cr_priority`, invalid inputs, an unknown position, a linear window that reports `DIGITAL`, and a
    `FAIL_TIMEOUT` on the last command.
 2. **Replay against real weather.** `model/vent_step_replay.py` already reconstructs the decision
-   inputs from SD logs and refuses to project unless it first reproduces the logged demands. Mode 2
+   inputs from SD logs, runs `stepped` from this library on them (through
+   `model/closedloop/ventmodel.py` since 2026-09-19, replacing a Python port whose output it
+   reproduced exactly), and refuses to project unless it first reproduces the logged demands. Mode 2
    needs the model compiled into a host harness fed the same rows. Report, for each candidate:
    - M3 openings per day, and motor starts per day per window;
    - M3 open time;

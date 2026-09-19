@@ -37,7 +37,7 @@ A smaller third error, found during NS-10: **the direction term was fed wind dir
 | Quality report | `quality_report.py` | Every number and figure in [`modelQuality.md`](modelQuality.md): the closed loop for the adopted pair and the old single node, the plant alone on the held-out days, the M3 response, a two-day example; writes `images/*.png` |
 | Campaign figures | `campaign_figures.py` | The figures `campaignResults_summer2026.md` and `thermalProfileCampaign.md` §9.12 quote that come from neither `refit.py` nor `closed_loop.py`: the forced tests, the event study, the hottest days, wind, windward M3-only minutes, the indoor LoRa sensors, a model-free wind check, and the plants' heat loss per ventilation step |
 
-The law is **not** re-implemented in Python. `simulation.py` carries its own port of the stepped law, and a port drifts. The contract makes the library host-compilable so that one set of sources serves the firmware, the host tests and this simulator (`design/ventModelContract.md` §4). When `vent_model_graded.cpp` exists, it becomes available here by adding one row to `k_models` in the shim.
+The law is **not** re-implemented in Python. `simulation.py` carries its own port of the stepped law, and a port drifts. The contract makes the library host-compilable so that one set of sources serves the firmware, the host tests and this simulator (`design/ventModelContract.md` §4). `../vent_step_replay.py` loads it the same way since 2026-09-19, and the tools that need M3's entry temperature ask the law for it (`ventmodel.entry_temp_c()`) instead of restating the step formula. When `vent_model_graded.cpp` exists, it becomes available here by adding one row to `k_models` in the shim.
 
 ## Running it
 
