@@ -11,6 +11,16 @@ controller sees what the real one saw and does what it did:
       float32 history since boot says -- so the arithmetic is emulated, not
       approximated. (vent_step_replay.py uses float64 and Python's
       half-to-even round(); fine for its purpose, not for this one.)
+  SensorLayer -- T5's T, RH and wind averages over avg_win_t, avg_win_rh and
+      avg_win_wind, each window in samples (minutes * 60 / poll_interval);
+      the wind direction as a mean of unit vectors (dir_avg_*()). A context
+      whose window changes starts empty, as T5 does.
+  SafetyMonitor -- T3's wind safety (safety_monitor.cpp): set at the average
+      speed >= v_max, clear below v_max - wind_hyst (2.3.0+), the direction
+      exclusion arc, and a safe-fail on a wind sensor fault. It closes every
+      window (SRC_T3, past the dwell timers) and suspends T6.
+  is_daytime() -- T4's day and night: sunrise.cpp itself, compiled from
+      firmware/src (firmware_ffi.cpp), at the site's lat/lon, in UTC.
   Actuator -- T2's per-channel state machine (relay_controller.cpp):
       full-travel strokes of travel + 5 s, the 2 s reversal gap, dwell timers
       that defer SRC_T6 only, and -- from 2.3.1 (gh#48) -- SRC_T6 reversals
@@ -21,33 +31,39 @@ controller sees what the real one saw and does what it did:
       goes out before any widening one, and a MODE row is written whenever
       the resolved step changes.
 
-Not modelled here: T3's own wind logic (a reproduction takes the logged
-override bit, which is exact because the plant cannot change the wind),
-motor alarms, sensor faults other than as logged inhibits, and Q1 overflow.
+Not modelled here: motor alarms and Q1 overflow. Sensor faults are taken
+from their logged ALARM rows: a T/RH fault inhibits T6, a wind fault makes
+T3 safe-fail and stops T5's wind averages.
 
 Settings and firmware versions
 ------------------------------
-Settings5C88 and profile_5c88() hold what 5C88 actually ran in summer 2026,
-with the evidence for each value. Everything the SD audit rows show is taken
-from them; the rest are the firmware defaults, and the controller gate is
-what confirms them (the humidity settings in particular are unverified until
-the gate reproduces the logged humidity step as well as the temperature one).
+Settings carries every controller setting; settings.py maps the controller's
+keys onto it, says where each one acts, and clamps them as T4 does. What 5C88
+ran is settings.schedule_5c88(): its base with the evidence for each value,
+then its own SETPT audit rows. profile_5c88() holds the firmware behaviour
+that changed between the versions it ran.
 """
 
 from __future__ import annotations
 
+import calendar
+import ctypes
 import math
 from collections import deque
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 
-from ventmodel import (VENT_ACT_CLOSE, VENT_ACT_OPEN, VENT_ACT_TARGET,
+import settings as settings_mod
+from ventmodel import (BUILD_DIR, VENT_ACT_CLOSE, VENT_ACT_OPEN, VENT_ACT_TARGET,
                        VENT_CAP_DIGITAL, VENT_RES_NONE, VENT_WIN_CLOSED,
                        VENT_WIN_MOVING_CLOSE, VENT_WIN_MOVING_OPEN, VENT_WIN_OPEN,
-                       VENT_WIN_UNKNOWN, VentIn)
+                       VENT_WIN_UNKNOWN, VentIn, build_dll)
 
+HERE = Path(__file__).resolve().parent
+FW_SRC = HERE.parent.parent / "firmware" / "src"
 F32 = np.float32
 
 # --------------------------------------------------------------------------
@@ -57,7 +73,13 @@ F32 = np.float32
 
 @dataclass(frozen=True)
 class Settings:
-    """The climate settings T4 resolves for T6 and T5. Whole degC / whole %."""
+    """Every controller setting, in the simulator's units. Whole degC / whole %.
+
+    The defaults are cfg_defaults.h's; `closed_loop.py settings` checks that
+    they still are. Build one from the controller's keys with
+    settings.to_sim(), which also says where each field acts.
+    """
+    # T6's caller hands these to the law, resolved for day or night
     t_max_day:   int = 28
     t_max_ngt:   int = 20
     rh_max_day:  int = 75
@@ -68,33 +90,37 @@ class Settings:
     hyst_rh:     int = 12
     rh_ctrl_en:  bool = True
     cr_priority: int = 0
+    # T5
     avg_win_t:   int = 6
     avg_win_rh:  int = 10
     poll_s:      int = 30
+    # T2
     travel_s:      tuple = (21, 21, 171)
     dwell_open_s:  tuple = (300, 300, 1500)
     dwell_close_s: tuple = (0, 0, 600)
-
-
-# What 5C88 ran, summer 2026. Evidence per value:
-#   t_max_day/ngt 28/20, hyst_t 5, avg_win_t 3 -- vent_step_replay.py reproduces
-#       96.8 % of the logged T-demands with exactly these (campaign F8); avg_win_t
-#       3 is also recorded in memory/gotcha-log.md 2026-07-28 (it differs from
-#       2344's 6 and from the default 6).
-#   rh_min_day 50 -> 60 on 2026-06-11 10:47:02 -- SETPT audit row (param 5);
-#       rh_max_day 75 confirmed by the audit row beside it (param 6).
-#   rh_ctrl_en 1 -- the logged MODE rows carry humidity votes (step_rh 0..3).
-#   everything else -- cfg_defaults.h; no audit row changed it from 2026-06-04
-#       to 2026-09-17. UNVERIFIED until the control gate reproduces step_rh.
-SETTINGS_5C88 = Settings(avg_win_t=3, rh_min_day=60)
-RH_MIN_DAY_CHANGE_5C88 = datetime(2026, 6, 11, 10, 47, 2)
+    # T5's wind window and T3
+    avg_win_wind:  int = 6
+    v_max:         int = 6
+    wind_hyst:     int = 1
+    dir_excl_low:  int = 0
+    dir_excl_high: int = 0
+    wind_prot_en:  bool = True
+    # T4: the site, and the clock the log's stamps are in
+    lat_deg:  int = 52
+    lat_frac: int = 0
+    lon_deg:  int = 5
+    lon_frac: int = 0
+    tz_str:   str = "CET-1CEST,M3.5.0,M10.5.0/3"
+    # no effect on control (settings.EFFECT says why)
+    t_min_day:      int = 16
+    t_min_ngt:      int = 14
+    deadzone_m3_mm: int = 20
+    wpos_fitted_m3: bool = False
 
 
 def settings_5c88(ts):
-    """5C88's settings in force at local time ts."""
-    if ts < RH_MIN_DAY_CHANGE_5C88:
-        return replace(SETTINGS_5C88, rh_min_day=50)
-    return SETTINGS_5C88
+    """5C88's settings in force at local time ts: settings.schedule_5c88()."""
+    return settings_mod.schedule_5c88().at(ts)
 
 
 @dataclass(frozen=True)
@@ -102,16 +128,29 @@ class Profile:
     """Firmware behaviour that changed between the versions 5C88 ran."""
     defer_in_travel: bool          # gh#48, 2.3.1: T6 reversals wait for the stroke
     calibrating_inhibits_t6: bool  # gh#79, 2.9.2: T6 paused during the CLOSE_ALL sweep
+    wind_hyst: bool = True         # gh#46, 2.3.0: T3 clears below v_max - wind_hyst
+    own_wind_window: bool = True   # gh#35, 2.1.0: wind averages over avg_win_wind,
+                                   # not avg_win_t (sensor_poll.cpp, win_w = win_t before)
 
 
-# 5C88 committed 2.3.1 at this BOOT (ROTA apply, SD log 2026-07-29_183942.log)
-# and has run it since. Nothing before it had the gh#48 guard.
+# 5C88's firmware changes, each at the BOOT row that started it:
+#   2.1.x 2026-06-29 19:03:21 -- a push OTA (SYSTEM 14-16 rows just before).
+#         2.1.0 or later: at 19:07:03 the web GUI set avg_win_wind 6 -> 3, a key
+#         only 2.1.0 has, and 6 is its default. Before, wind used avg_win_t.
+#   2.1.3 2026-07-11 09:39:04 -- the OTA that ended the DS1307 clock (gh#37)
+#   2.3.0 2026-07-24 01:04:25 -- ROTA apply (SYSTEM 24 row at 01:04:21)
+#   2.3.1 2026-07-29 01:05:29 -- ROTA apply (SD log 2026-07-29_183942.log);
+#         it has run 2.3.1 since. Nothing before it had the gh#48 guard.
+OWN_WIND_WINDOW_ON_5C88 = datetime(2026, 6, 29, 19, 3, 21)
+WIND_HYST_ON_5C88 = datetime(2026, 7, 24, 1, 4, 25)
 GH48_ON_5C88 = datetime(2026, 7, 29, 1, 5, 29)
 PROFILE_CURRENT = Profile(defer_in_travel=True, calibrating_inhibits_t6=True)
 
 
 def profile_5c88(ts):
-    return Profile(defer_in_travel=ts >= GH48_ON_5C88, calibrating_inhibits_t6=False)
+    return Profile(defer_in_travel=ts >= GH48_ON_5C88, calibrating_inhibits_t6=False,
+                   wind_hyst=ts >= WIND_HYST_ON_5C88,
+                   own_wind_window=ts >= OWN_WIND_WINDOW_ON_5C88)
 
 
 # --------------------------------------------------------------------------
@@ -157,12 +196,99 @@ class SlidingMean:
         return F32(self.sum / F32(len(self.buf)))
 
 
-class SensorLayer:
-    """T5 for the T/RH sensor: raw sample in, sensor_reading_t fields out."""
+_DEG2RAD = F32(F32(math.pi) / F32(180.0))      # (float)M_PI / 180.0f
+_RAD2DEG = F32(F32(180.0) / F32(math.pi))      # 180.0f / (float)M_PI
 
-    def __init__(self, settings):
-        self.t = SlidingMean(calc_win(settings.avg_win_t, settings.poll_s))
-        self.rh = SlidingMean(calc_win(settings.avg_win_rh, settings.poll_s))
+
+def _atan2_deg(s, c):
+    """atan2f(s, c) * (180 / pi), folded into [0, 360) as T5 folds it."""
+    d = F32(F32(math.atan2(float(s), float(c))) * _RAD2DEG)
+    return F32(d + F32(360.0)) if d < F32(0.0) else d
+
+
+class DirMean:
+    """dir_avg_push()/dir_avg_get()/dir_avg_variation(): unit vectors in float32."""
+
+    def __init__(self, win):
+        self.win = int(win)
+        self.sin, self.cos = deque(), deque()
+        self.ss = self.sc = F32(0.0)
+
+    def push(self, deg):
+        rad = F32(F32(deg) * _DEG2RAD)
+        s, c = F32(math.sin(float(rad))), F32(math.cos(float(rad)))
+        if len(self.sin) >= self.win:
+            self.ss = F32(self.ss - self.sin.popleft())
+            self.sc = F32(self.sc - self.cos.popleft())
+        self.sin.append(s)
+        self.cos.append(c)
+        self.ss = F32(self.ss + s)
+        self.sc = F32(self.sc + c)
+
+    def mean(self):
+        return _atan2_deg(self.ss, self.sc) if self.sin else F32(0.0)
+
+    def variation(self):
+        """The narrowest arc holding every sample: 360 - the largest gap."""
+        if len(self.sin) < 2:
+            return F32(0.0)
+        a = sorted(_atan2_deg(s, c) for s, c in zip(self.sin, self.cos))
+        gap = F32(0.0)
+        for x, y in zip(a, a[1:]):
+            gap = max(gap, F32(y - x))
+        gap = max(gap, F32(F32(F32(360.0) - a[-1]) + a[0]))
+        v = F32(F32(360.0) - gap)
+        return F32(0.0) if v < 0 else (F32(359.0) if v >= 360 else v)
+
+
+class SensorLayer:
+    """T5: raw samples in, sensor_reading_t's fields out.
+
+    configure() is T5's step 2, on every poll: the windows follow the settings
+    in force, and a context whose window changed starts empty. Before 2.1.0
+    the wind window was the temperature window (profile.own_wind_window).
+    """
+
+    def __init__(self, settings, profile=None):
+        self._wins = None
+        self.configure(settings, profile or PROFILE_CURRENT)
+
+    def configure(self, s, profile=None):
+        if profile is not None:
+            self.profile = profile
+        win_t = calc_win(s.avg_win_t, s.poll_s)
+        win_w = calc_win(s.avg_win_wind, s.poll_s) if self.profile.own_wind_window else win_t
+        wins = (win_t, calc_win(s.avg_win_rh, s.poll_s), win_w)
+        old = self._wins or (None, None, None)
+        if wins[0] != old[0]:
+            self.t = SlidingMean(wins[0])
+        if wins[1] != old[1]:
+            self.rh = SlidingMean(wins[1])
+        if wins[2] != old[2]:
+            self.ws = SlidingMean(wins[2])
+            self.wd = DirMean(wins[2])
+        self._wins = wins
+
+    def push_wind(self, ws10, wdir, ok=True):
+        """One S200 reading as the log carries it (0.1 m/s, whole degrees).
+
+        ok False: a wind sensor fault. The averages do not advance and the raw
+        fields carry the last average, as T5 writes them.
+        """
+        if ok:
+            self.ws.push(F32(F32(ws10) / F32(10.0)))
+            self.wd.push(F32(wdir))
+            raw = (int(ws10), int(wdir))
+        else:
+            raw = (lroundf(F32(self.ws.mean() * F32(10.0))), lroundf(self.wd.mean()))
+        return {
+            "wind_ms10":        raw[0],
+            "wind_dir_deg":     raw[1],
+            "wind_avg_ms10":    lroundf(F32(self.ws.mean() * F32(10.0))),
+            "wind_dir_avg_deg": lroundf(self.wd.mean()),
+            "wind_dir_var_deg": lroundf(self.wd.variation()),
+            "wind_valid":       bool(ok),
+        }
 
     def push_register(self, t_c10, rh_c10):
         """One reading as the FG6485A registers carry it (0.1 degC, 0.1 %)."""
@@ -178,6 +304,116 @@ class SensorLayer:
             "t_avg_c10":  lroundf(F32(t_avg * F32(10.0))),
             "rh_avg_pct": clamp_u8(self.rh.mean()),
         }
+
+
+# --------------------------------------------------------------------------
+# T3 -- wind safety
+# --------------------------------------------------------------------------
+
+
+def dir_in_exclusion_zone(dir_deg, lo, hi):
+    """safety_monitor.cpp: [lo, hi] on the circle, wrapping when lo > hi;
+    a zero-width or negative arc is disabled."""
+    if lo < 0 or hi < 0 or lo == hi:
+        return False
+    return lo <= dir_deg <= hi if lo < hi else (dir_deg >= lo or dir_deg <= hi)
+
+
+class SafetyMonitor:
+    """task_safety_monitor()'s state machine, one evaluation per T5 sample.
+
+    T3 runs at priority 6 against T6's 5, and T4 wakes it first, so it
+    decides before T6 does on the same sample; the caller evaluates it first.
+    (On the dual core the two can overlap -- the firmware leaves that race.)
+    """
+
+    def __init__(self):
+        self.active = False
+
+    def reset(self):
+        """A boot: EG1 starts clear."""
+        self.active = False
+
+    def evaluate(self, meas, wind_fault, s, profile):
+        """-> "set" (CLOSE_ALL, T6 suspended), "clear" (RESUME) or None."""
+        if not s.wind_prot_en:
+            if self.active:
+                self.active = False
+                return "clear"
+            return None
+        speed_unsafe = dir_unsafe = False
+        if wind_fault:
+            speed_unsafe = True                  # FR-W04 safe-fail
+        else:
+            if s.v_max > 0:
+                eff = s.wind_hyst if (self.active and profile.wind_hyst) else 0
+                if eff >= s.v_max:
+                    eff = s.v_max - 1
+                speed_unsafe = meas["wind_avg_ms10"] >= (s.v_max - eff) * 10
+            dir_unsafe = dir_in_exclusion_zone(meas["wind_dir_avg_deg"],
+                                               s.dir_excl_low, s.dir_excl_high)
+        unsafe = speed_unsafe or dir_unsafe
+        if unsafe and not self.active:
+            self.active = True
+            return "set"
+        if not unsafe and self.active:
+            self.active = False
+            return "clear"
+        return None
+
+
+# --------------------------------------------------------------------------
+# T4 -- day and night (sunrise.cpp itself)
+# --------------------------------------------------------------------------
+
+_FW_LIB = None
+
+
+def _fw():
+    global _FW_LIB
+    if _FW_LIB is None:
+        src = FW_SRC / "data_manager"
+        path = build_dll(BUILD_DIR / "fwhost.dll",
+                         [src / "sunrise.cpp", HERE / "firmware_ffi.cpp"],
+                         deps=[src / "sunrise.h"], include_dirs=[src],
+                         cxx_std="gnu++17")             # MinGW hides M_PI under c++17
+        lib = ctypes.CDLL(str(path))
+        lib.fw_sunrise_calc.argtypes = [ctypes.c_int32, ctypes.c_float, ctypes.c_float,
+                                        ctypes.POINTER(ctypes.c_int32),
+                                        ctypes.POINTER(ctypes.c_int32)]
+        lib.fw_sunrise_calc.restype = ctypes.c_int
+        lib.fw_sunrise_is_daytime.argtypes = [ctypes.c_int32, ctypes.c_float, ctypes.c_float]
+        lib.fw_sunrise_is_daytime.restype = ctypes.c_int
+        _FW_LIB = lib
+    return _FW_LIB
+
+
+def site(s):
+    """The coordinates as update_sun_times() adds them, in float32."""
+    return (F32(F32(s.lat_deg) + F32(s.lat_frac) / F32(1000.0)),
+            F32(F32(s.lon_deg) + F32(s.lon_frac) / F32(1000.0)))
+
+
+def unix_of(ts_local, s):
+    """A local stamp from the log -> Unix time, by the unit's tz_str."""
+    return calendar.timegm(settings_mod.tz(s.tz_str).local_to_utc(ts_local).timetuple())
+
+
+def is_daytime(ts_local, s):
+    """T4's s_cfg.is_daytime at that moment. T4 recomputes it on each RTC read,
+    about once a minute, so the firmware's switch can lag this by up to a minute."""
+    lat, lon = site(s)
+    return bool(_fw().fw_sunrise_is_daytime(unix_of(ts_local, s), float(lat), float(lon)))
+
+
+def sun_times_local(ts_local, s):
+    """(sunrise, sunset) in local minutes after midnight, as T4 logs them (LOG_SUN)."""
+    lat, lon = site(s)
+    rise, sset = ctypes.c_int32(), ctypes.c_int32()
+    _fw().fw_sunrise_calc(unix_of(ts_local, s), float(lat), float(lon),
+                          ctypes.byref(rise), ctypes.byref(sset))
+    off = settings_mod.tz(s.tz_str).utcoffset(ts_local) // 60
+    return (rise.value + off + 14400) % 1440, (sset.value + off + 14400) % 1440
 
 
 # --------------------------------------------------------------------------
@@ -469,7 +705,14 @@ class Controller:
         v.rh_pct = meas["rh_pct"]
         v.rh_avg_pct = meas["rh_avg_pct"]
         v.t_valid = v.rh_valid = True
-        v.wind_valid = False           # the stepped law does not read wind
+        # The measured wind, when the caller has T5's wind fields (contract
+        # §3a); the stepped law does not read it.
+        v.wind_ms10 = meas.get("wind_ms10", 0)
+        v.wind_avg_ms10 = meas.get("wind_avg_ms10", 0)
+        v.wind_dir_deg = meas.get("wind_dir_deg", 0)
+        v.wind_dir_avg_deg = meas.get("wind_dir_avg_deg", 0)
+        v.wind_dir_var_deg = meas.get("wind_dir_var_deg", 0)
+        v.wind_valid = bool(meas.get("wind_valid", False))
         v.t_max_c10 = (s.t_max_day if daytime else s.t_max_ngt) * 10
         v.rh_max_pct = s.rh_max_day if daytime else s.rh_max_ngt
         v.rh_min_pct = s.rh_min_day if daytime else s.rh_min_ngt
@@ -477,8 +720,8 @@ class Controller:
         v.hyst_rh_pct = s.hyst_rh if s.hyst_rh > 0 else 1
         v.cr_priority = s.cr_priority
         v.rh_ctrl_en = s.rh_ctrl_en
-        v.m3_deadzone_x10 = 0
-        v.m3_min_move_ms = 0
+        v.m3_deadzone_x10 = 0          # deadzone_m3 reaches the law with mode 2 (settings.EFFECT)
+        v.m3_min_move_ms = 0           # the key does not exist yet (contract §3a)
         states = actuator.public_states() if actuator else [VENT_WIN_CLOSED] * 3
         for i in range(3):
             w = v.win[i]

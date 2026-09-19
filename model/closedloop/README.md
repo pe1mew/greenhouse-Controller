@@ -29,7 +29,8 @@ A smaller third error, found during NS-10: **the direction term was fed wind dir
 | Plant, single node | `plant.py` | `calibrate_plant_dynamic.simulate()`, stepped 30 s at a time, with the adopted artifact `plant_calibrated_constrained_summer2026_freem3.json` |
 | Plant, two nodes | `plant2.py`, `plant2_kernel.c` | A fast air node and a slow structure/soil node, plus humidity, an optional M3 wind-direction term, and an optional **sensor stage**: two lags between the air node and the reading that is logged and that the controller acts on. One C loop serves both the fit (a whole summer in about 20 ms) and the closed loop (one step at a time), so the simulated plant is exactly the fitted one |
 | Fit | `refit.py` | Fits the two-node plant, with every 4th day held out; reports the M3 response test; `compare` sets artifacts side by side |
-| Firmware chain | `firmware.py` | T5 `avg_push()`/`avg_get()` in float32 with `lroundf()`; T2's channel state machine (travel + 5 s, 2 s reversal gap, dwell deferring `SRC_T6` only, the gh#48 in-travel guard from 2.3.1); T6's caller (inhibit resets, day/night setpoints, narrowing before widening, a MODE row on change) |
+| Firmware chain | `firmware.py`, `firmware_ffi.cpp` | T5's T, RH and wind averages (`avg_push()`/`avg_get()` and the unit-vector wind direction, in float32 with `lroundf()`); T3's wind safety, ported; T4's day and night from `sunrise.cpp` itself, compiled from `firmware/src`; T2's channel state machine (travel + 5 s, 2 s reversal gap, dwell deferring `SRC_T6` only, the gh#48 in-travel guard from 2.3.1); T6's caller (inhibit resets, day/night setpoints, narrowing before widening, a MODE row on change) |
+| Settings | `settings.py` | Every controller setting: the 53 keys of `cfg_desc.inc` (read through the pre-commit checker's parser, so bounds and defaults are the firmware's) plus `tz_str`, where each one acts, 5C88's history from its SETPT audit rows, a unit's GET /api/config, and `--set` |
 | Control law | `ventmodel.py`, `ventmodel_ffi.cpp` | `drivers/ventModel/` itself, compiled from the firmware's own sources into `build/ventmodel.dll` and called through ctypes, with every struct field checked by name on load |
 | Command line | `closed_loop.py` | The gates and the closed-loop reproduction |
 | Campaign figures | `campaign_figures.py` | The figures `campaignResults_summer2026.md` and `thermalProfileCampaign.md` §9.12 quote that come from neither `refit.py` nor `closed_loop.py`: the forced tests, the event study, the hottest days, wind, windward M3-only minutes, the indoor LoRa sensors, a model-free wind check, and the plants' heat loss per ventilation step |
@@ -41,6 +42,9 @@ The law is **not** re-implemented in Python. `simulation.py` carries its own por
 ```bash
 python model/closedloop/closed_loop.py gate-plant
 python model/closedloop/closed_loop.py gate-control
+python model/closedloop/closed_loop.py gate-sun
+python model/closedloop/closed_loop.py gate-wind
+python model/closedloop/closed_loop.py settings
 python model/closedloop/closed_loop.py reproduce --start 2026-06-05 --end 2026-09-16 --plant2 model/campaign-summer-2026/plant2/plant2_summer2026_Ca2.9_tau120_tau90_ev5_dir.json
 python model/closedloop/refit.py fit --fix Ca_MJ=2.9 --fix tau_s1=120 --fix tau_s2=90 --direction --event-weight 5
 python model/closedloop/refit.py compare model/campaign-summer-2026/plant2/*.json
@@ -49,7 +53,7 @@ python model/closedloop/campaign_figures.py
 
 Needs Python 3.11 with numpy, scipy and matplotlib, and the Code::Blocks MinGW `g++` that `drivers/ventModel` already uses (or `VENTMODEL_CXX`). Both DLLs are rebuilt automatically when a source changes. `build/` holds only the DLLs, which `.gitignore` excludes. **A DLL loaded by a running process cannot be rebuilt on Windows**, so let a running fit finish before changing `plant2_kernel.c`, and build once before starting fits in parallel.
 
-`reproduce` without `--plant2` runs the single-node artifact. Other options: `--rh-from-log`, `--csv`, `--plot`; for the single node, `--openness position` and `--calibrator-hold`. `refit.py fit` options: `--direction`, `--dir0` (also fit where the direction lobe points), `--sensor` (fit the sensor lags; see NS-10 for why not), `--sensor-mix` (outdoor air at the probe in north wind; tested, not adopted), `--door1 mask`, `--horizon-min N`, `--event-weight L`, `--fix NAME=VALUE`, `--init ARTIFACT.json` (seed the search: the result can then only improve on that artifact). `compare` also prints each plant's drop 25 min after an M3 opening in north and in other wind, and `reproduce` ends with the swing split by wind and doors.
+`reproduce` without `--plant2` runs the single-node artifact. Other options: `--rh-from-log`, `--csv`, `--plot`; for the single node, `--openness position` and `--calibrator-hold`. The controller's settings: `--set KEY=VALUE` (repeatable) and `--config UNIT_CONFIG.json` on `reproduce`, the gates and `settings`, plus `--t3 sim|log`, `--daynight sim|log` and `--firmware 5c88|current` on `reproduce`, and `gate-control --sweep KEY=A..B` (see "Settings" below). `refit.py fit` options: `--direction`, `--dir0` (also fit where the direction lobe points), `--sensor` (fit the sensor lags; see NS-10 for why not), `--sensor-mix` (outdoor air at the probe in north wind; tested, not adopted), `--door1 mask`, `--horizon-min N`, `--event-weight L`, `--fix NAME=VALUE`, `--init ARTIFACT.json` (seed the search: the result can then only improve on that artifact). `compare` also prints each plant's drop 25 min after an M3 opening in north and in other wind, and `reproduce` ends with the swing split by wind and doors.
 
 ## The gates
 
@@ -61,16 +65,92 @@ Stepping the adopted artifact over `calibration_input_2026-06-04_2026-07-04.csv`
 
 Fed the logged sensor readings, the stepped law from the DLL, run through the emulated T5, T4 and T6:
 
-| Logs | MODE rows | T-demand (first / window) | Whole row (first / window) |
-|---|---|---|---|
-| Jul 13-29, the baseline set | 381 | **97.1 %** / 97.6 % | 88.7 % / 92.4 % |
-| All, Jun 4 - Sep 17 | 2 276 | - / 98.8 % | - / 92.0 % |
+| Logs | MODE rows | T-demand (first / window) | RH-demand (first / window) | Whole row (first / window) |
+|---|---|---|---|---|
+| Jul 13-29, the baseline set | 381 | **97.1 %** / 97.6 % | 90.8 % / 94.2 % | 88.7 % / 92.4 % |
+| All, Jun 4 - Sep 17 | 2 276 | 98.5 % / 98.8 % | 88.3 % / 92.9 % | 87.4 % / 92.0 % |
 
 The baseline is `vent_step_replay.py`'s **96.8 % of 378** on the same logs (contract §5 item 3). **PASS.**
 
 - "first" pairs a MODE row with the first cycle at or after its stamp, as the old replay does. "window" accepts any cycle in the minute after it. MODE rows are stamped with `dm_get_unix_time()`, a cache T4 refreshes about once a minute; against the RELAY clock, 944 rows belong to the first sample after the stamp and 792 to the second.
-- The humidity misses sit at step boundaries: the log keeps whole percent, and the firmware averages 0.1 %. The thresholds are confirmed by the logged decisions (60 / 75 % by day, 80 % at night, 4 % steps).
-- Settings, with their evidence, are in `firmware.py` (`SETTINGS_5C88`). The gh#48 guard arrived with the 2.3.1 BOOT on 2026-07-29 01:05:29.
+- The humidity misses sit at step boundaries: the log keeps whole percent, and the firmware averages 0.1 %. The thresholds are confirmed by the logged decisions (60 / 75 % by day, 80 % at night, 4 % steps). RH-demands reproduce 90.8 % / 94.2 % on the baseline set with `avg_win_rh` 10, and better with a shorter window (see "Settings").
+- The settings are 5C88's own history (see "Settings"). The gh#48 guard arrived with the 2.3.1 BOOT on 2026-07-29 01:05:29.
+
+### gate-sun: T4's day and night are the controller's
+
+`sunrise.cpp` itself, compiled from `firmware/src` through `firmware_ffi.cpp`, at the coordinates in force: **all 92 logged SUN rows reproduce to the minute** (2026-06-05 to 09-17), and the `tz_str` reader agrees with `lora_time.py`'s EU rule for every hour of 2026. **PASS.** T4 recomputes `is_daytime` on each RTC read, about once a minute, so the simulated switch can come up to a minute before the firmware's.
+
+### gate-wind: T3 makes 5C88's wind overrides
+
+T5's wind averages and T3's state machine, at the settings in force and with 5C88's firmware versions, over the logged wind and the logged wind-sensor faults: **all 8 logged overrides reproduce**, 7 to the sample and one 30 s early (a sensor fault whose ALARM row carries the minute-stale clock); the override state agrees on 99.9997 % of 297 122 samples. **PASS.** They include a fault safe-fail, protection switched off around the vane's commissioning, three short overrides without hysteresis (2.2.x, 2026-07-19) and one with it (2.3.1, 2026-08-22). The bit a SENSOR_HR row logs is T3's state after the previous sample, because T4 logs a sample before it wakes T3; the gate compares it so.
+
+## Settings: every controller setting, and where it acts
+
+**The controller decides on averages; the log holds the raw reading.** The SD log's T and RH (`SENSOR_HR` ch0) are the raw 30-s reading (`data_manager.cpp`: "raw values, not sliding avg"). T6 decides on T5's sliding averages: T over `avg_win_t`, RH over `avg_win_rh`, both configurable, with defaults of 6 and 10 min. So:
+- **the plant is fitted and scored against the raw reading.** Its sensor stage, the 3.5-5.5 min delay (NS-10), is physical, not the average;
+- **in the closed loop the plant's reading goes through the emulated T5** before the law sees it (`firmware.SensorLayer`), window by window, in float32;
+- **the swing, the cycle and the hours above the M3 entry are measured on the raw reading**, in the log and in the simulation alike.
+
+**Every controller setting can be applied.** `settings.py` reads the 53 keys of `firmware/config/cfg_desc.inc` (bounds, defaults, audit ids) through the pre-commit checker's parser, plus `tz_str`, and says where each one acts. A key it does not classify stops the simulator, so a new key cannot slip past it. `closed_loop.py settings` prints the table.
+
+| Acts in | Keys | How the simulator applies them |
+|---|---|---|
+| the law (T6's caller) | `t_max_day/ngt`, `rh_max_day/ngt`, `rh_min_day/ngt`, `hyst_t`, `hyst_rh`, `cr_priority`, `rh_ctrl_en` | resolved for day or night into `vent_in_t`, as contract §3a lists |
+| T5 | `avg_win_t`, `avg_win_rh`, `avg_win_wind` | the sliding averages, in samples = minutes x 60 / poll; a window that changes starts empty |
+| T3 | `v_max`, `wind_hyst`, `dir_excl_low/high`, `wind_prot_en` | T3's state machine, ported (`firmware.SafetyMonitor`): close every window, suspend the law |
+| T2 | `travel_m1..3`, `dwell_open_m1..3`, `dwell_close_m1..3` | the channel state machine |
+| T4 | `lat_deg/frac`, `lon_deg/frac` | `sunrise.cpp` itself, compiled from `firmware/src` |
+| poll | `poll_interval` | T5 samples and T6 decides every poll. At anything but 30 s it decides between the logged samples; the two-node plant is stepped to each decision, with the weather held from the covering sample |
+| clock | `tz_str` | no effect on control, since T4 decides day and night in UTC; used to read the log's local stamps |
+| none | `t_min_day/ngt`, `deadzone_m3`, `wpos_fitted_m3`, and 20 WiFi, LED, upload, OTA, session and status keys | accepted, each with its reason: T6 never reads `t_min` (no heating); `deadzone_m3` and `wpos_fitted_m3` act through T17 only, until mode 2 |
+
+**Where the values come from, later wins:**
+1. the defaults;
+2. the unit's history: for 5C88, a base with evidence, then its SETPT audit rows, so the settings in force follow the log;
+3. `--config`: a unit's GET /api/config JSON, instead of 1 and 2;
+4. `--set KEY=VALUE`, over everything.
+
+Every value is clamped to its descriptor bounds, as T4 does.
+
+```bash
+python model/closedloop/closed_loop.py settings
+python model/closedloop/closed_loop.py reproduce --start 2026-07-13 --end 2026-07-29 --plant2 PLANT.json --set avg_win_t=6 --set v_max=8
+python model/closedloop/closed_loop.py reproduce --start 2026-07-13 --end 2026-07-29 --plant2 PLANT.json --config UNIT_CONFIG.json
+python model/closedloop/closed_loop.py gate-control --sweep avg_win_rh=3..12
+```
+
+**What 5C88 ran** (`settings.BASE_5C88`, then its SETPT rows):
+- **`avg_win_t` 3, not the default 6.** 98.5 % of the summer's 2 276 T-demands reproduce with 3, and 64.6 % with 6 (`gate-control model/campaign-summer-2026/*.log --sweep avg_win_t=1..8`). 3 was the default before v1.16.23.
+- **`avg_win_rh`: 10 in the model, UNCONFIRMED.** The RH-demands reproduce 92.6-93.0 % with 5-7, and 88.3 % with 10 (the same command with `--sweep avg_win_rh=3..12`). 5 was the default before 1.16.31, and 5C88 kept its old T window, so it may have kept this one too. **Read it on the unit.**
+- **Day and night are computed for Amsterdam** (52.368 N, 4.904 E). Those are the coordinates T10's geolocation writes at every boot (SETPT rows). `gate-sun` reproduces all 92 SUN rows with them. The greenhouse is elsewhere, but sunrise differs by only a minute or two.
+- **Wind:**
+  - `v_max` 6: the wind ALARM rows carry it;
+  - `wind_hyst` 1, from 2.3.0 (2026-07-24);
+  - `wind_prot_en` off from 06-19 09:44 to 11:23, around the vane's commissioning;
+  - the wind window was T's (3 min) until the 2.1.x push OTA on 06-29 19:03. The web GUI set `avg_win_wind` 6 -> 3 four minutes later.
+- **`rh_min_day`** 50 -> 60 on 06-11 10:47.
+
+**The firmware changed under 5C88 during the summer.** `profile_5c88()` switches each behaviour at the BOOT that brought it: the own wind window (2.1.x, 06-29), `wind_hyst` (2.3.0, 07-24) and the gh#48 guard (2.3.1, 07-29). `--firmware current` runs today's instead.
+
+**Simulated T3 and day/night change nothing measurable in the reproduction.** Over the summer the simulated T3 makes the same 8 overrides as the log (99.9997 % of samples). Against `--t3 log --daynight log`, which reproduces the earlier tables byte for byte, three day rows move in the last digit, all on override days: T6 is now suspended on the sample where T3 fires, as in the firmware (T3 runs at priority 6, T6 at 5). No summary figure changes.
+
+**What a setting does in closed loop**, Jul 13-29 (15 days, the primary plant). Logged: 76 M3 openings, 75 h open, a 48-min cycle.
+
+| `--set` | M3 openings | M3 open h | cycle, min |
+|---|---|---|---|
+| none (5C88 as it ran) | 76 | 89 | 47 |
+| `avg_win_t=6` | 77 | 89 | 48 |
+| `t_max_day=26` | 92 | 109 | 43 |
+| `hyst_t=8` | 62 | 65 | 46 |
+| `v_max=3` | 143 | 77 | 30 |
+| `dwell_open_m3=300` | 100 | 76 | 28 |
+| `travel_m3=13` | 79 | 83 | 43 |
+| `lat_deg=60` | 70 | 80 | 47 |
+| `rh_ctrl_en=0` | 67 | 70 | 46 |
+| `poll_interval=120` | 81 | 87 | 45 |
+| `t_min_day=30` | 76 | 89 | 47 (no effect, as classified) |
+
+**One trap, met on the way.** The wind stays the logged wind all through a run, so T5's float32 running sum has to carry the firmware's history since boot: an average that lands on x.5 can round either way. On 2026-07-19 at 12:35:54 six samples averaged 59.5 (0.1 m/s), `lroundf()` made that 60 = `v_max`, and T3 fired. A sum started six hours earlier gave 59 and missed it. A run therefore replays T5's wind from the last boot before it.
 
 ## Data
 
@@ -196,7 +276,10 @@ Verify a new law against both, and treat a verdict that differs between them as 
 
 ## Known limits
 
-- T3 is not simulated: a reproduction takes the logged wind-override bit, which is exact because the plant cannot change the wind. A run on invented weather needs a T3 model.
+- **T3 is simulated from the logged wind** (`gate-wind`), so a run on invented weather needs invented wind too.
+- **With a `poll_interval` other than 30 s**, the weather, the wind and the doors between two logged samples are held from the sample that covers them.
+- **`deadzone_m3` and `wpos_fitted_m3` have no effect.** The modelled firmware, up to 2.10.0, reads them only in T17, and the simulator's T2 cannot yet drive to a position (mode 2).
+- **The simulated day/night switch can come up to a minute early**, because T4 recomputes it only once a minute.
 - Door 1 after 2026-08-16 is an assumption (above).
 - A boot inside the loop is simplified: T5 and T6 reset, and T2 closes all windows.
 - An SD gap longer than 5 minutes restarts the plant from the measurement.

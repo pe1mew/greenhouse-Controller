@@ -1144,6 +1144,29 @@ The swing by condition, logged / simulated, all days:
 - **The next step is data.** NS-9's forced tests, with a second probe beside the controller's and one elsewhere in the house, doors shut.
 - **The artifact is kept as the record:** `plant2_summer2026_Ca2.9_tau120_tau90_ev5_mix.json`. The kernel keeps the parameter, off by default.
 
+### 9.14 The controller's settings in the simulator (2026-09-19)
+
+**Raw reading, averaged decision.** The SD log's T and RH are the raw 30-s reading; T6 decides on T5's averages over `avg_win_t` and `avg_win_rh`. The fits of §9.12-9.13 compare raw with raw, which is why the sensor delay of §9.13.2 is physical. The closed loop feeds the plant's reading through the emulated T5, so the law sees an average, as the controller's does.
+
+**Every controller setting now applies in the simulator**, in the same place as in the firmware:
+- the law's inputs and T5's windows;
+- T3's wind safety, ported and gated against all 8 logged overrides;
+- T2's travel and dwell;
+- T4's day and night: `sunrise.cpp` itself, gated against all 92 SUN rows;
+- the poll interval.
+
+The details are in `closedloop/README.md`, "Settings". What 5C88 ran, from its own logs:
+
+| Setting | 5C88 | Evidence |
+|---|---|---|
+| `avg_win_t` | 3 (default 6) | 98.5 % of the summer's 2 276 T-demands reproduce with 3, 64.6 % with 6 |
+| `avg_win_rh` | 10 in the model, **unconfirmed** | the RH-demands reproduce 92.6-93.0 % with 5-7, 88.3 % with 10; 5 was the default before 1.16.31 |
+| site | 52.368 N, 4.904 E (Amsterdam) | T10's geolocation writes it at every boot (SETPT rows); all 92 SUN rows reproduce |
+| `v_max`, `wind_hyst` | 6 m/s; 1 m/s from 2.3.0 (07-24) | the wind ALARM rows; the 8 overrides |
+| wind window | `avg_win_t` until the 2.1.x push OTA of 06-29, then `avg_win_wind` 3 | the web write 6 -> 3 four minutes after that boot |
+
+**None of it moves a result above.** With T3 and day or night simulated, the reproduction differs from the logged-override run in the last digit of three day rows.
+
 ### 9.4 Worked example — answering the "would dwell prevent the oscillation?" question
 
 The §1.1 use case is best illustrated by the M2 oscillation observed at 2026-05-20 14:24 in the 18.9 h soak (M2 closed → 4 min later re-opened → 23 min later closed again, with the indoor T climbing from 29 °C back to 33 °C in between). The operator's question is: "would `dwell_close_m2 = 5 min` have prevented this?"

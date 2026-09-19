@@ -325,6 +325,12 @@ wind-safety setting (`v_max`, `wind_hyst`, `dir_excl_low`/`dir_excl_high`). Wind
 T3, which acts on its own and suspends the model; a direction-aware law gets the *measured* wind,
 never the safety thresholds.
 
+**Testing a law under any settings.** The closed-loop simulator plays the caller's side of this
+table for every controller key, in the same places as the firmware: the fields above, T5's windows,
+T3, T2's travel and dwell, T4's site and the poll interval. It takes the values from 5C88's logged
+history, a unit's GET /api/config, or `--set KEY=VALUE` (`model/closedloop/settings.py`; `closed_loop.py
+settings` lists where each key acts).
+
 ### Three consequences to design around
 
 - **A setting arrives whole, and late.** A GUI write is queued, so it reaches you on the first cycle
