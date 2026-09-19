@@ -283,7 +283,39 @@ static void test_a_satisfied_window_is_held(void)
     }
 }
 
+/* Interface 2: a part-open M3 is at neither end, so mode 1 sends it to the end
+ * it wants, both ways. Holding it would leave M3 part-open while the step says
+ * OPEN, the silent under-ventilation 2.10.0's verdicts exist to catch. */
+static void test_part_open_is_driven_to_the_wanted_end(void)
+{
+    vent_in_t in = base_in();
+    in.t_avg_c = 31;                        /* wants all open */
+    in.win[2].state   = VENT_WIN_PART_OPEN;
+    in.win[2].cap     = VENT_CAP_LINEAR;
+    in.win[2].pos_x10 = 400;
+    vent_out_t o = run(&in);
+    TEST_ASSERT_EQUAL_INT(VENT_ACT_OPEN, o.win[2].action);
+
+    M->reset(&S);
+    vent_in_t in2 = base_in();              /* wants all closed */
+    in2.win[2].state   = VENT_WIN_PART_OPEN;
+    in2.win[2].cap     = VENT_CAP_LINEAR;
+    in2.win[2].pos_x10 = 400;
+    vent_out_t o2 = run(&in2);
+    TEST_ASSERT_EQUAL_INT(VENT_ACT_CLOSE, o2.win[2].action);
+    TEST_ASSERT_EQUAL_INT(VENT_ACT_HOLD, o2.win[0].action);   /* already closed */
+}
+
 /* ------------------------------------------------------------- contract */
+
+/* Interface 2: the minimum interval stands in for dwells of 10 and 25 minutes.
+ * Interface 1 carried it in 16 bits, at most 65.5 s. */
+static void test_min_interval_holds_a_real_dwell(void)
+{
+    vent_in_t in = base_in();
+    in.m3_min_interval_ms = 25u * 60u * 1000u;
+    TEST_ASSERT_EQUAL_UINT32(1500000u, in.m3_min_interval_ms);
+}
 
 static void test_no_measurement_holds_everything(void)
 {
@@ -355,6 +387,8 @@ int main(int argc, char **argv)
     RUN_TEST(test_unknown_position_is_left_alone);
     RUN_TEST(test_moving_windows_are_commanded_toward_the_target);
     RUN_TEST(test_a_satisfied_window_is_held);
+    RUN_TEST(test_part_open_is_driven_to_the_wanted_end);
+    RUN_TEST(test_min_interval_holds_a_real_dwell);
     RUN_TEST(test_no_measurement_holds_everything);
     RUN_TEST(test_stepped_never_asks_for_a_target);
     RUN_TEST(test_log_fields_are_filled_for_mode_one);

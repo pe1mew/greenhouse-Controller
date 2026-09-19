@@ -2157,7 +2157,7 @@ mode 2's own row.
 | **Its state lives in the caller.** T6 owns `vent_state_t` and resets it at boot, on a mode change and on an inhibit onset. | An integrator that survives a wind override would wind up invisibly; and a caller-owned state is snapshot-able for a replay. |
 | **No ESP-IDF headers, integer units only.** | Same source in the firmware, the host tests and the replay — the guard against "it behaved differently offline". |
 | **T6 resolves the day/night setpoints, the averaging and the validity flags** before the call. | The model never learns where a value came from, so the sensor layer can change under it. |
-| **T6 enforces the actuator limits after the call**: a `TARGET` for a digital window is a model error (logged, treated as `HOLD`); a target inside `m3_deadzone_x10` of the current position is dropped; one inside `m3_min_move_ms` of the last move is deferred; targets clamp to 0..1000. | The chattering and the impossible command are caught in one place, so every future model inherits the protection instead of reimplementing it. |
+| **T6 enforces the actuator limits after the call**: a `TARGET` for a digital window is a model error (logged, treated as `HOLD`); a target inside `m3_deadzone_x10` of the current position is dropped; one sooner than `m3_min_interval_ms` after the last move is deferred; targets clamp to 0..1000. | The chattering and the impossible command are caught in one place, so every future model inherits the protection instead of reimplementing it. |
 | **T6 owns Q1 and the log row**, including the source tag and the model's `reason`, step and demand fields. Mode 1 keeps today's row byte-identical; **mode 2 gets its own `param_id`** and its parser branch in the same change. | The SD log stays the record of *why* a window moved — and a second meaning on one row is the gh#54 defect this project already paid for. |
 | **T6 orders the commands: every narrowing move before any widening one**, at most one per window per call. | The open area stays monotone-decreasing while a decision is applied, so a cycle interrupted by a wind override never leaves the greenhouse more open than either decision intended. It also means a model returns a steady desired state rather than choreographing moves against the dwell timers. |
 | **Safety is outside the boundary.** The wind close-all, the motor alarm, standby and the boot sweep are handled by T3 and T2; while any inhibit is set T6 does not call the model at all, and its last output is discarded. | FR-WP18, and a new model can never regress a safety path it cannot reach. |
@@ -2184,7 +2184,7 @@ before it is shipped.
 ##### The refactor: T6 stops carrying its own copy — in 2.11.0, with mode 2
 
 **Where it stands (2026-09-17).** The library exists: `drivers/ventModel/` holds the interface and
-`vent_model_stepped`, a faithful copy of T6's decision functions, with 21 host tests passing. **The
+`vent_model_stepped`, a faithful copy of T6's decision functions, with 23 host tests passing (interface 2 since 2026-09-19, see the contract's Revised line). **The
 firmware is untouched and still runs its inline copy.** So mode 1's law exists twice, on purpose and
 temporarily.
 

@@ -48,6 +48,15 @@
  * between two cycles, the recomputed "previous" step can shift, so a log row
  * may appear or be suppressed. **No command differs** — only the timing of a
  * log row, in a case that needs an operator to change a setting mid-run.
+ *
+ * ## One addition the firmware does not have yet
+ *
+ * `VENT_WIN_PART_OPEN` (interface 2). The firmware has no part-open state until
+ * T2 gains one in 2.11.0, so no firmware input maps to it and the equivalence
+ * above is untouched. A part-open window is at neither end, so mode 1 drives it
+ * to the end it wants, in both directions, and never HOLDs it: holding would
+ * leave M3 part-open while the step says OPEN. When T2 gains the state,
+ * `reconcile_to_step()` must do the same.
  */
 
 #include "vent_model.h"
@@ -307,9 +316,11 @@ static void stepped_step(const vent_in_t *in, vent_state_t *st, vent_out_t *out)
         const bool want_open = ((mask >> ch) & 1u) != 0;
         const vent_win_state_t a = in->win[ch].state;
 
-        if (!want_open && (a == VENT_WIN_OPEN || a == VENT_WIN_MOVING_OPEN)) {
+        /* PART_OPEN is at neither end, so it goes to whichever one is wanted. */
+        const bool part = (a == VENT_WIN_PART_OPEN);
+        if (!want_open && (a == VENT_WIN_OPEN || a == VENT_WIN_MOVING_OPEN || part)) {
             out->win[ch].action = VENT_ACT_CLOSE;
-        } else if (want_open && (a == VENT_WIN_CLOSED || a == VENT_WIN_MOVING_CLOSE)) {
+        } else if (want_open && (a == VENT_WIN_CLOSED || a == VENT_WIN_MOVING_CLOSE || part)) {
             out->win[ch].action = VENT_ACT_OPEN;
         } else {
             out->win[ch].action = VENT_ACT_HOLD;

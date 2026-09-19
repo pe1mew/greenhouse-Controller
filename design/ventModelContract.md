@@ -4,7 +4,8 @@
 |---|---|
 | Document | Interface contract for the T6 ventilation control model |
 | Date | 2026-09-17 |
-| Status | **The interface and the mode 1 reference exist as a library; the firmware does not use them yet.** `drivers/ventModel/` holds `src/vent_model.h` and `src/vent_model_stepped.cpp` — a faithful copy of the 2.9.1 stepped law — with 21 host tests passing (`pio test -e native`). The firmware in `main` still runs its own inline copy in T6 and is untouched; the two are kept in step by hand until T6 is refactored onto this interface. **That switch happens in 2.11.0, with the dual mode** (operator, 2026-09-17), because that is the release where something must choose between two models — steps and acceptance gate in the plan's §5c |
+| Revised | 2026-09-19: **interface 2**. Two gaps found by the model work while building its simulator against the header: the minimum interval between M3 moves was 16-bit milliseconds, at most 65.5 s, for a setting that stands in for 10 and 25 minute dwells (and against this document's own units table), and there was no state for a window at rest part-open. Now `uint32_t m3_min_interval_ms` and `VENT_WIN_PART_OPEN` |
+| Status | **The interface and the mode 1 reference exist as a library; the firmware does not use them yet.** `drivers/ventModel/` holds `src/vent_model.h` and `src/vent_model_stepped.cpp` — a faithful copy of the 2.9.1 stepped law — with 23 host tests passing (`pio test -e native`). The firmware in `main` still runs its own inline copy in T6 and is untouched; the two are kept in step by hand until T6 is refactored onto this interface. **That switch happens in 2.11.0, with the dual mode** (operator, 2026-09-17), because that is the release where something must choose between two models — steps and acceptance gate in the plan's §5c |
 | Audience | Whoever writes or tunes a control model — a separate session, a separate agent, or a person. **This document is meant to be read on its own** |
 | Scope decisions | [`integrateWindowPositionSensor.md`](integrateWindowPositionSensor.md) §5b (the two control modes, the position path) and §5c (the rules around this contract) |
 | Requirements | [`functionalRequirementsSpecification.md`](functionalRequirementsSpecification.md), and [`windowPositionSensorRequirements.MD`](windowPositionSensorRequirements.MD) FR-WP04/05/17/18 |
@@ -57,7 +58,7 @@ Normative. `drivers/ventModel/src/vent_model.h`:
 #include <stdbool.h>
 #include <stdint.h>
 
-#define VENT_MODEL_API 1
+#define VENT_MODEL_API 2            /* 2 since 2026-09-19: see Revised, above */
 #define VENT_WINDOWS   3            /* index 0 = M1, 1 = M2, 2 = M3 */
 #define VENT_STEPS_MAX 3            /* steps run 0..3 (the firmware's NUM_VENT_STEPS) */
 #define VENT_STEP_NONE (-1)         /* "no demand from this source" / "no step notion" */
@@ -70,6 +71,7 @@ typedef enum {
     VENT_WIN_MOVING_OPEN,
     VENT_WIN_OPEN,
     VENT_WIN_MOVING_CLOSE,
+    VENT_WIN_PART_OPEN,             /* at rest between the ends; LINEAR only, pos_x10 says where */
 } vent_win_state_t;
 
 typedef enum {
@@ -133,7 +135,8 @@ typedef struct {
 
     /* --- actuator limits the caller will enforce anyway ------------------- */
     uint16_t m3_deadzone_x10;       /* smallest aperture change worth a move, 0.1 % */
-    uint16_t m3_min_move_ms;        /* shortest interval between two M3 moves */
+    uint32_t m3_min_interval_ms;    /* shortest time from the end of one M3 drive to the
+                                     * start of the next (the linear dwell); 0 = none */
 
     /* --- the windows ------------------------------------------------------ */
     vent_win_in_t win[VENT_WINDOWS];
@@ -225,12 +228,19 @@ the same thing on both, and the sensor reports a percentage natively.
 |---|---|
 | `VENT_ACT_HOLD` | nothing is commanded for that window |
 | `VENT_ACT_OPEN` / `VENT_ACT_CLOSE` | a full timed traverse is commanded, exactly as today |
-| `VENT_ACT_TARGET` on a **LINEAR** window | clamped to 0..1000; dropped when within `m3_deadzone_x10` of the current position; deferred when within `m3_min_move_ms` of the last move; otherwise commanded, with the travel timer as the ceiling |
+| `VENT_ACT_TARGET` on a **LINEAR** window | clamped to 0..1000; dropped when within `m3_deadzone_x10` of the current position; deferred while `win[2].ms_since_move` is below `m3_min_interval_ms`; otherwise commanded, with the travel timer as the ceiling |
 | `VENT_ACT_TARGET` on a **DIGITAL** window | **a model error.** Logged as such and treated as `HOLD` |
 | `reason`, `demand_t_x10`, `demand_rh_x10` | written to the SD log with the decision, so it can be reconstructed afterwards |
 
+**A part-open window is at neither end.** `VENT_WIN_PART_OPEN` never satisfies `VENT_ACT_OPEN` or
+`VENT_ACT_CLOSE`, so the caller commands either one in full; a `TARGET` from it is an ordinary
+move. Only a LINEAR window can be part-open, and `pos_x10` says where. A model that wants an end
+must ask for it: the stepped law sends a part-open M3 to whichever end its step wants, never
+HOLDs it, because holding would leave M3 part-open while the step says OPEN. T2 gains the state
+in 2.11.0 (plan §5b), so until then no firmware caller reports it; the model work's simulator does.
+
 You therefore do **not** implement the deadband, the minimum interval, the clamping or the
-"is this window even capable" check. You may read `m3_deadzone_x10` and `m3_min_move_ms` to avoid
+"is this window even capable" check. You may read `m3_deadzone_x10` and `m3_min_interval_ms` to avoid
 asking for moves that will be dropped — a dropped move is not an error, but it is noise in the log.
 
 ### Ordering, and why you must not sequence moves yourself
@@ -304,7 +314,7 @@ reads a setting** — it receives resolved values. The chain is:
 | `t_avg_c10`, `t_avg_c`, `rh_avg_pct`, `wind_*_avg_*` | T5's reading, averaged | averaged over `avg_win_t`, `avg_win_rh`, `avg_win_wind` — **those settings are not passed to you**; you receive the result |
 | `t_valid`, `rh_valid`, `wind_valid` | the measurement snapshot and the sensor-fault flags | — |
 | `m3_deadzone_x10` | `deadzone_m3_mm` | converted from mm using M3's taught span, which is why you get a percentage |
-| `m3_min_move_ms` | the linear-dwell setting | **the key does not exist yet** (plan §10, decision 10); until it does, expect 0 |
+| `m3_min_interval_ms` | the linear-dwell setting, converted to ms | **the key does not exist yet** (plan §10, decision 10); until it does, expect 0. Not the *minimum move* of §7, which is the shortest pulse that moves the leaf |
 | `win[].state` | T2 | reversal gaps folded into the moving states |
 | `win[].cap`, `pos_x10`, `pos_age_ms` | T17, through T4's pass-through | capability already reflects fitted, gate open and fault-free |
 | `win[].last_target_x10`, `last_result`, `ms_since_move` | the caller's own record of what it commanded | — |

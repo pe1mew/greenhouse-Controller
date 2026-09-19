@@ -43,7 +43,7 @@ STAGES
               the wrong value
   lost        the sensor absent 3 s into an OPEN: the drive is not judged
               (sensor), and it still finishes on T2's timer
-  reversal    OPEN, then a recalibration ~5 s in: the OPEN is not judged
+  reversal    OPEN, then a recalibration 2 s in: the OPEN is not judged
               (interrupted), the close from part-way is confirmed, and rule 2
               stays silent (gh#78, part 1)
   atend       a recalibration of a closed M3: confirmed, already at the end

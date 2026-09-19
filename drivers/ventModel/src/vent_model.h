@@ -40,8 +40,12 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/** Interface revision. Bump only on an incompatible change. */
-#define VENT_MODEL_API  1
+/** Interface revision. Bump only on an incompatible change.
+ *  2 (2026-09-19): `m3_min_move_ms` (16-bit, at most 65.5 s) became
+ *  `m3_min_interval_ms` (32-bit), and `VENT_WIN_PART_OPEN` was added. Both
+ *  gaps were found by the model work, building a simulator against this
+ *  header. */
+#define VENT_MODEL_API  2
 
 /** Windows, in fixed order: index 0 = M1, 1 = M2, 2 = M3. */
 #define VENT_WINDOWS    3
@@ -62,13 +66,19 @@ typedef enum {
 } vent_cap_t;
 
 /** What the actuator believes a window is doing. Same order as the firmware's
- *  `window_state_t`. */
+ *  `window_state_t`, which has no part-open state yet: T2 gains one in 2.11.0
+ *  (plan §5b), and it must take VENT_WIN_PART_OPEN's value, appended after the
+ *  others so no existing value moves. */
 typedef enum {
     VENT_WIN_UNKNOWN = 0,      /**< position not established (before calibration) */
     VENT_WIN_CLOSED,
     VENT_WIN_MOVING_OPEN,
     VENT_WIN_OPEN,
     VENT_WIN_MOVING_CLOSE,
+    VENT_WIN_PART_OPEN,        /**< at rest between the ends. LINEAR windows
+                                *   only; pos_x10 says where. It is neither
+                                *   OPEN nor CLOSED: a model that wants either
+                                *   end must ask for it */
 } vent_win_state_t;
 
 /** What a model wants done with one window. A desired END STATE, not a step in
@@ -144,7 +154,13 @@ typedef struct {
 
     /* ---- actuator limits the caller enforces anyway -------------------- */
     uint16_t m3_deadzone_x10;    /**< smallest aperture change worth a move */
-    uint16_t m3_min_move_ms;     /**< shortest interval between two M3 moves */
+    uint32_t m3_min_interval_ms; /**< shortest time from the end of one M3
+                                  *   drive to the start of the next, the
+                                  *   linear dwell; compare win[2].ms_since_move.
+                                  *   0 = no limit. 32-bit because it stands in
+                                  *   for dwells of 10 and 25 minutes. Not the
+                                  *   "minimum move", which is the shortest
+                                  *   pulse that moves the leaf (contract §7) */
 
     /* ---- the windows --------------------------------------------------- */
     vent_win_in_t win[VENT_WINDOWS];
