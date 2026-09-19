@@ -10,6 +10,8 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ## Promoted patterns
 
+- **[PATTERN] Pushing the same unit repeatedly rate-limits its SNTP. After a run of pushes, a unit whose `ntp_synced` stays false is neither broken nor offline: count its reboots in the last hour before investigating anything.** Three instances (2026-07-13, 2026-09-12, 2026-09-19): each followed about six or more reboots in an hour, each recovered on the 300 s retries within 5-15 min, and each time the clock itself stayed right. Twice (2026-09-12, 2026-09-19) it was investigated from scratch before the entry was found, at end-of-day curation both times: once published wrongly on gh#55, once written into a release's notes and this log as "cause not established". The trigger now also sits in CLAUDE.md's OTA-pushing row, where the pushing happens. Entry: 2026-07-13.
+
 - **[PATTERN] Mutual exclusion is necessary and not sufficient on a shared bus, and a constant that has never been reached is untested.** 2026-09-12: the RS485 lock (gh#49) correctly serialised *access*, so the operator's framing was exactly right — *"the semaphore should only add jitter"*. What it does not provide is the **silence** the RTU protocol requires between frames, and `MODBUS_IFG_US` was set at the spec floor plus 9.7 % (3.84 character times vs a t3.5 minimum of 3.646 ms). **With one caller that guard had never executed once** — frames sat 30 s apart, so the wait was always skipped. T17 made frames adjacent for the first time in three years and the S200 began silently discarding requests it saw as a continuation of the previous frame, which presents as *zero bytes and a timeout*, never a CRC error. Rules: (a) when adding a second user to any shared resource, audit the constants that were **latent** under single use — a threshold never approached is a guess, not a tested value; (b) ask what the protocol requires **between** operations, not only during them; (c) leave a shared resource in the state the next user is entitled to assume — the IFG is now paid before `bus_unlock()`, and the RX FIFO drained on every exit, for the same reason; (d) *"a compliant slave must stay silent on a bad-CRC request"* means **a silent slave is evidence about the framing, not about the slave**. **Second instance, 2026-09-16: the lock covered transactions but not `modbus_init()`**, whose UART delete-and-reinstall had been logged as *"safe while T5 is the only caller"* — and T17 made it unsafe, panicking the board twice. (e) **a hazard recorded as "safe because X" must name X where X can change** — here, next to the second caller's spawn — or nobody comes back to it. **Third instance, same day (gh#70): the lock serialises transactions, but the DE/RE release INSIDE one is timed by the task**, and a flash write stalls the task by up to 665 ms, so the fastest slave (the encoder, ~5 ms) loses its reply. (f) **a timing that protects the wire must not depend on the scheduler** — hand it to the peripheral, or to an interrupt that runs in IRAM. **Fourth instance, 2026-09-17 (gh#79), away from the bus: Q1's depth of 8** was sized for "peak load is several cmds" and is never approached while T2 drains it every 20 ms — but T2 blocks for up to 176 s in a recalibration, and T6 keeps posting, so the queue fills and a wind override's single unchecked send is dropped. (g) **a queue depth is a claim about the consumer's worst-case stall, not the producers' cadence** — size it against the longest time the consumer is not draining, and never let a safety command be fire-and-forget.
 
 - **[PATTERN] A grep is a claim about spelling; only running the code is evidence about behaviour.** Four instances: the real gh#51 Group B parser gap was found **by running the parser** after inspection had missed it (2026-09-10); then three false findings in a single audit (2026-09-12) — a mistyped symbol (`persist_state` for `persist_ch_state`) "proved" a function had no callers, a guessed variable name (`s_win_ws_last` for `s_win_w_last`) "proved" a config change was ignored, and a `va == N` regex "proved" a decoder missed six subtypes it handles. Rules: (a) to test a decoder, **feed it rows and read the output** — never enumerate its branches; (b) to test a call graph, grep the *exact* symbol, print the hit list, and sanity-check the count; (c) **a negative grep is the weakest evidence in the toolbox** — before reporting "X never happens", find the positive case you expect to exist and confirm the same grep finds *that* first (the fail-first rule, applied to searching); (d) sibling of the cross-reference pattern below — a link check and a grep both test the address, not the content; (e) **the same trap applies to filters over data, not just greps over source** — 2026-09-12, `$2=="MODE_CHANGE"` returned zero rows because the CSV type is `MODE`, and the zero was nearly reported as "no mode transitions were logged". Printing the distinct values of the field found 19. **When a filter returns nothing, print the domain of the field before believing it.**
@@ -64,7 +66,8 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-07-31** — anti-thrash dwell was unguarded during travel (gh#48)
 
 ### Modbus bus, sensors & clock (T5, drivers)
-- **2026-09-19** — after an OTA push the unit's clock is HOURS wrong for ~5 min and the SD file cannot be found by its boot time (the boot SNTP failed, and T4 seeded a CORRECT clock from a DS1307 that was 5 h 42 min behind; gh#55)
+- **2026-09-19** — no bus-KPI rows (`LOG_SYSTEM 31`) for ~2 h after a boot: the first hourly call only takes the baseline; judge the bus from the diag counters until then
+- **2026-09-19** — after an OTA push the unit's clock is HOURS wrong for ~5 min and the SD file cannot be found by its boot time (the boot SNTP failed, the 2026-07-13 rate limit, and T4 seeded a CORRECT clock from a DS1307 that was 5 h 42 min behind; gh#55)
 - **2026-09-16** — a slave stops answering only while the flash is being written (OTA): the RS485 direction line was released by the task, and a flash write stalls the task up to 665 ms (gh#70, fixed: the UART drives DE/RE now)
 - **2026-09-16** — the board PANICs ~10 s after boot, twice, then runs fine (gh#69; T5's entry `modbus_init()` deleted the UART under a T17 read — a hazard logged 9 days earlier as "safe while T5 is the only caller"; coredump says LoadProhibited in `uart_get_buffered_data_len`)
 - **2026-09-15** — two slaves on one bus fail thousands of times more often than a third (the emulated slaves' replies never assert one differential rail — ~76 mV of noise margin, BER 4e-05; NOT a firmware or bus fault)
@@ -105,7 +108,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-07-14** — the quiet-gate/session-exemption test does nothing unless the night window is open
 - **2026-07-13** — ROTA server (VPS) registry and permission traps
 - **2026-07-13** — T16 crash-loops on the first live pull-install (8 KB stack, nested TLS) [RESOLVED]
-- **2026-07-13** — rapid OTA reboots rate-limit SNTP, so T16 skips its checks
+- **2026-07-13** — rapid OTA reboots rate-limit SNTP, so T16 skips its checks and `ntp_synced` stays false 5-15 min while the clock is right (recurred 2026-09-12 and 2026-09-19, both times investigated from scratch first)
 - **2026-06-20** — `ota_push.py` exits 1 at step [8] even though the OTA worked (PowerShell `2>&1`)
 - **2026-06-10** — a firmware-only push silently strands the asset partition (paired-commit invariant)
 - **2026-04-XX** — `{{ASSET_VERSION}}` shipped to a unit as a literal string (gh#9) [RESOLVED]
@@ -178,6 +181,21 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
 
 
+## 2026-09-19 — no Modbus bus-KPI rows for the first ~2 h after a boot: by design, not a dead bus
+
+**Problem.** Assessing 2.10.0's soak 63 min after boot, the SD log had no `LOG_SYSTEM 31` (bus KPI)
+rows at all, which reads as a bus or logging fault.
+
+**Root cause.** `emit_bus_kpi()` publishes DELTAS, and its first call only takes the baseline
+(`s_primed`), because the first interval after boot is partial. T4 calls it every `BUS_KPI_TICKS` =
+3 600 loop iterations, about 59 min. So the first row lands about two T4-hours after boot: 2.9.2's
+soak booted at 09:32 and logged its first row at 11:29; 2.10.0's booted at 11:14 and logged it at 13:11.
+
+**Fix.** None needed. Until the first row, judge the bus from the diag counters
+(`GET /api/diag/windowpos`: `reads_ok`, `err_comm`), which count from boot.
+
+**Where it lives.** `data_manager.cpp` `emit_bus_kpi()` (the `s_primed` branch) and `BUS_KPI_TICKS`.
+
 ## 2026-09-19 — after an OTA push the clock was hours wrong, and the SD file could not be found by its boot time (gh#55)
 
 **Problem.** 2.10.0's harness pushed a bench build to 2344, then could not find the SD log file
@@ -185,7 +203,10 @@ for the new boot: every name derived from the real boot time (10:16:47) was miss
 status read `ntp_synced: false` and `time_iso` 04:37 at 10:19, and T6 ran on night setpoints.
 
 **Root cause.** Three things in a row.
-- **The boot SNTP quick sync failed**, although `pool.ntp.org` answered from the same network.
+- **The boot SNTP quick sync failed**, although `pool.ntp.org` answered from the same network. *(Found at
+  curation: most likely the 2026-07-13 entry, rapid pushes rate-limit SNTP. This was the day's first push
+  (10:14, two reboots in half a minute), so it fits less well than the 11:14 recurrence below, which
+  followed three pushes in 57 min.)*
   The firmware then retries only every 5 min (`NTP_RETRY_INTERVAL_S`), and it synced at the first
   retry, 5 min after boot.
 - **T4 seeds the clock from the DS1307 whenever NTP is not synced**, even when the system clock is
@@ -214,9 +235,10 @@ fallback time source that overrides a valid running clock is worse than none.
 and so did the first two 5 min retries (`LOG_SYSTEM 2` value 0 at 11:14:41, 11:19:50, 11:24:51).
 The third retry synced at 11:29:47, 15 min after boot. The clock was right throughout this time,
 because the earlier sync had rewritten the DS1307. The network was up: T14's status posts went out
-over HTTPS every 2 min, and this PC reached `pool.ntp.org` in 11 of 12 queries. **Cause not
-established.** Nothing in 2.10.0 touches the network, and 2.9.2's boot the day before synced in
-3 s. **A trap when reading the raw CSV:** `LOG_SYSTEM 1` value 0 every 2 min is T14's status-post
+over HTTPS every 2 min, and this PC reached `pool.ntp.org` in 11 of 12 queries. **Cause: the
+2026-07-13 entry**, rapid pushes rate-limit SNTP: at least three pushes (six reboots) to 2344 in the hour before,
+and the same recovery on the 300 s retries. It was first recorded here as "not established", after an investigation
+from scratch; see that entry's second recurrence note. **A trap when reading the raw CSV:** `LOG_SYSTEM 1` value 0 every 2 min is T14's status-post
 *success* (initiator `WEB`), not a WiFi drop (initiator `SYS`). `logparser.py` tells the two apart
 by the initiator; a raw read does not.
 
@@ -1650,7 +1672,7 @@ Verify: serial shows `littlefs_mount(A (lfs0)) returned 0 (OK)` + `/index.html e
 
 ---
 
-## 2026-07-13 — Rapid OTA reboots rate-limit SNTP [RECURRED 2026-09-12] → T16 (ROTA) skips checks
+## 2026-07-13 — Rapid OTA reboots rate-limit SNTP [RECURRED 2026-09-12, 2026-09-19] → T16 (ROTA) skips checks
 
 **Problem:** During ROTA client testing on a dev unit (FDA4), T16's manifest check kept returning `result:"skipped", code:3` for many minutes, even though `/api/status` reported a correct wall-clock time. `system.ntp_synced` stayed `false`.
 
@@ -1661,6 +1683,8 @@ Verify: serial shows `littlefs_mount(A (lfs0)) returned 0 (OK)` + `/index.html e
 **RECURRED 2026-09-12 — and I did not read this entry first.** Eight OTA reboots across two modules in about five hours (2.4.8, 2.4.10, 2.5.0, a 2.5.0 rebuild, 2.5.1 and 2.6.0 on FDA4; then 2.6.0 and 2.7.0 on 2344) reproduced it exactly: `ntp_synced` stayed false for eight minutes after the 2.6.0 boots, with `LOG_SYSTEM value_a=2, value_b=0` (NTP timeout) rows on **both** boots, and it recovered on the 300 s retry as written above. Note this entry had already named the threshold — *"units don't reboot 8x/hour"* — and that is precisely what I did.
 
 **I investigated it from scratch instead**, concluded "FDA4 could not reach pool.ntp.org at that moment", and published that attribution as field evidence on gh#55 before finding this entry during end-of-session curation. The correction is posted there. `CLAUDE.md`'s pointer table says to read this log **before** debugging from scratch, for exactly this case: the symptom was "weird and unexpected", the answer was already written down, and the cost of not looking was a round of wasted investigation plus a wrong public claim.
+
+**RECURRED 2026-09-19 — the same miss, a second time.** At least three bench-image pushes to 2344 in about an hour (six reboots) for the 2.10.0 acceptance runs, and the boot SNTP failed on both boots of the last push and on the first two 5 min retries; it synced on the third, 15 min after boot. The clock stayed right throughout. I again investigated from scratch: a PC-side `pool.ntp.org` probe (11 of 12 answered, which proves nothing about the unit's own server), DNS, the heap, and an earlier guess at socket exhaustion by test polling. Then I wrote "cause not established" into the 2026-09-19 entry below and into `bin/2.10.0/release-notes.md`, and told the operator the likeliest cause was NTP loss on the network. All three were corrected at the end-of-day curation, which is again where this entry was found. The rule is now promoted (top of this file) and sits in CLAUDE.md's OTA-pushing row, where the pushing happens.
 
 ## 2026-07-08 — Clock hours wrong while `ntp_synced=true` — DS1307 outranked SNTP [RESOLVED — 2.1.3, gh#37]
 

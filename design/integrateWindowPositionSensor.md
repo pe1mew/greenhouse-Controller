@@ -2098,11 +2098,14 @@ dwell, the deadband, and the fault state the surfaces display.
 - **Achieved, not demanded.** T6 remembers the step it *asked for*; with a linear M3 that
   difference becomes visible, so it needs the done/failed result and the achieved position back —
   the feedback half §5a records as missing.
-- **Wind direction.** The campaign measures M3's effect varying 30-100x by direction, and the
+- **Wind direction.** *(Evidence revised 2026-09-18: the first analysis's "30-100x by direction"
+  came from outdoor data two hours late and is withdrawn; see the contract's §6.)* What holds is that
+  the controller's reading drops about twice as far after M3 opens in north wind, while whether the
+  whole house cools that much faster is open. The
   **2026-07-20 limit cycle ran under north (windward) wind**: 7 of its 8 M3 openings at 321-354°,
   about 3 m/s (log analysis, 2026-09-17). Across the campaign, of 370 M3 openings **151 were north
   (315-45°), 91 south-west (200-290°) and 128 in sectors the campaign never characterised**. One
-  fixed demand-to-aperture curve will therefore be wrong in one regime: keep the curve's parameters
+  fixed demand-to-aperture curve may therefore be wrong in one regime: keep the curve's parameters
   in config, log the computed target next to the demand, and treat direction gating as a later step
   (NS-9).
 
@@ -2124,7 +2127,9 @@ dwell, the deadband, and the fault state the surfaces display.
 way.** The reason is in the campaign: nobody can yet say what the right law is. There is no
 measured aperture-to-airflow curve for a part-open M3, M3's effect varies 30-100x with wind
 direction, the plant model misses its accuracy targets and the closed-loop simulation has never
-been run. The first real evidence arrives over a production summer, so the law **will** be changed
+been run. *(That was the evidence on 2026-09-17. Since then the 30-100x has been withdrawn and a
+closed-loop simulator exists, `model/closedloop/`; see the contract's §6. Neither weakens the
+requirement: the size of the direction effect is now open too.)* The first real evidence arrives over a production summer, so the law **will** be changed
 after it ships, probably more than once. That makes the boundary around it a requirement of its
 own, not a refinement.
 
@@ -2338,6 +2343,14 @@ T17 judges each M3 drive when T2 ends it, from what it saw during the drive:
 
 **A stuck wiper** (bench inject `stuck`) is left to rule 1: its row reports the stall,
 and because the position never arrives, the verdict is *not reached*.
+
+**Results, 2026-09-19 (2344, `bin/at_wp_confirm.py`).** Every stage of the table except the soak
+FAILED on the fail-first build (`-DWPOS_FAILFIRST_292`) and PASSED on 2.10.0-bench. The first normal
+run failed two stages. `long` was a firmware defect: the full-traverse start needed a position
+reading, which a wrong `travel_m3` rejects, so it is now judged on bit 3. `atend` was a harness
+defect: it left T6 wanting M3 open. The rig's traverse to the end sensor is 11.6-12.0 s OPEN and
+12.1-12.5 s CLOSE against `travel_m3` 13, so the "too short" warning has 0.5 s of headroom there.
+Detail in `bin/2.10.0/release-notes.md`.
 
 ## 6. Operator-facing surfaces
 
