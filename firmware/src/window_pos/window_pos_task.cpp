@@ -85,6 +85,34 @@ static const char *TAG = "T17";
 #define RULE2_EARLY_DIVISOR     2u
 #define RULE2_CONFIRM_SAMPLES   2u
 
+/**
+ * 2.10.0 (gh#78): how long a ~0 claim may wait for the CLOSED end sensor.
+ *
+ * On the rig the position reads 0 for about 1.2 s (7 polls) before the closed
+ * end sensor makes, in every close checked -- the closed-end headroom (plan
+ * §2a.6). RULE2_CONFIRM_SAMPLES assumed one poll, so a close that reached ~0 in
+ * under half the traverse without passing an end sensor was reported as an
+ * early stop although it closed normally. The gap is geometry, a fixed
+ * distance, so it scales with the traverse: 1.2 s is about 9 % of the rig's
+ * 13 s. A quarter of `travel_m3` leaves 2.7x headroom (3.25 s on the rig) and
+ * still catches a position that reaches 0 while the leaf is well open, which is
+ * what the rule exists for. Production's gap is unmeasured until it has a
+ * sensor.
+ */
+#define RULE2_GAP_DIVISOR       4u
+
+/**
+ * 2.10.0 (plan §5d): a drive counts as a FULL traverse, for the travel check,
+ * only if T17's first look at it came this soon after relay-on and found an end
+ * sensor made (bit 3), so the leaf started at an end. Later than that, where
+ * the leaf started is not known. max(2 polls, this). See drive_observe().
+ */
+#define FULL_START_MIN_MS    1500u
+
+/** 2.10.0: clear bit-3 readings in a row before the leaf counts as having left
+ *  its starting end (see drive_observe()). */
+#define LEAVE_READINGS          2u
+
 /** Device floor for `40002` (contract §4.2). Also the fastest useful poll. */
 #define DEVICE_MIN_WINDOW_MS  100u
 #define DEVICE_MAX_WINDOW_MS 60000u
@@ -176,6 +204,20 @@ static uint32_t s_fitted_checked_ms = 0u;
 #error "WPOS_FAILFIRST_GH72 is a bench-only fail-first build"
 #endif
 
+/* ---- fail-first build for 2.10.0 ---------------------------------------------
+ * `-DWPOS_FAILFIRST_292` restores 2.9.2's behaviour in everything 2.10.0's
+ * acceptance stages exercise, so each can be shown to FAIL first on the same
+ * build and with the same bench injections:
+ *  - no drive verdicts and no travel check (plan §5d);
+ *  - rule 2 as it was (gh#78): any end sensor corroborates, and a ~0 claim
+ *    is judged on its second sample;
+ *  - bit 4 (both end sensors) does not shut the gate;
+ *  - readings carrying the device's start-up bits count as evidence.
+ * GET /api/diag/windowpos reports it. Bench builds only. */
+#if defined(WPOS_FAILFIRST_292) && !defined(MODBUS_BENCH)
+#error "WPOS_FAILFIRST_292 is a bench-only fail-first build"
+#endif
+
 /* ---- bench test hook (gh#72): see windowpos_task_inject() ----------------- */
 #ifdef MODBUS_BENCH
 static volatile uint8_t s_inject        = (uint8_t)WPOS_INJECT_NONE;
@@ -189,8 +231,8 @@ void windowpos_task_inject(windowpos_inject_t how)
 {
     s_inject = (uint8_t)how;
     if (how == WPOS_INJECT_NONE) { s_inject_probe = true; }
-    ESP_LOGW(TAG, "TEST INJECTION -> %u (0 none, 1 absent, 2 fault, 3 stuck)",
-             (unsigned)how);
+    ESP_LOGW(TAG, "TEST INJECTION -> %u (0 none, 1 absent, 2 fault, 3 stuck, "
+                  "4 ends, 5 race)", (unsigned)how);
 }
 
 windowpos_inject_t windowpos_task_injected(void)
@@ -236,6 +278,13 @@ static windowpos_status_t t17_read(uint8_t addr, windowpos_reading_t *r)
         r->percent_x10     = s_stuck_pct_x10;
         r->opening_avg_x10 = s_stuck_avg_x10;
         r->rate_mm_s_x10   = 0;
+    } else if (how == (uint8_t)WPOS_INJECT_ENDS) {
+        r->both_end_sensors = true;
+        r->status_bits      = (uint16_t)(r->status_bits | 0x0010u);   /* bit 4 */
+    } else if (how == (uint8_t)WPOS_INJECT_RACE) {
+        r->opening_mm_x10  = 0u;
+        r->percent_x10     = 0u;
+        r->opening_avg_x10 = 0u;
     }
     return st;
 }
@@ -687,6 +736,279 @@ static t2_drive_t m3_drive(uint32_t *out_epoch, uint32_t *out_started_ms)
     return t2_get_drive(2u, out_epoch, out_started_ms);   /* M3 is channel index 2 */
 }
 
+/* ---- 2.10.0: the drive verdict and the travel check (plan §5d) -------------
+ * Reports only. T2 still drives on to its timer and believes OPEN or CLOSED
+ * afterwards; this says whether the leaf got there.
+ *
+ * A drive ends in one of four ways, and each is where its verdict is written:
+ *  - T2's timer ran out, and T2 rests in the drive's target state (the rest
+ *    branch of the loop): judged, confirmed or not reached;
+ *  - a reversal: T17 sees T2's gap, or a new drive counter value: not judged;
+ *  - T2 rests somewhere else, a motor alarm (WIN_UNKNOWN): not judged;
+ *  - the gate shuts, the sensor gone, faulted or reporting both end sensors:
+ *    not judged.
+ *
+ * `s_drv` is T17's own (no lock). `s_confirm` is read by other tasks through
+ * windowpos_task_confirm(), so it is written under s_mux. */
+typedef enum {
+    DRV_END_TIMER = 0,    /* T2 at rest in the target state */
+    DRV_END_INTERRUPTED,  /* a reversal, or a new drive */
+    DRV_END_NOT_TARGET,   /* T2 at rest elsewhere: a motor alarm */
+    DRV_END_SENSOR,       /* the gate shut: absent or faulted */
+    DRV_END_BOTH_ENDS,    /* the gate shut: bit 4 */
+} drive_end_t;
+
+/* LOG_PARAM_WPOS_CONFIRM value_a, signed by direction (see app_types.h). */
+#define VERDICT_CONFIRMED_FULL   1
+#define VERDICT_CONFIRMED        2
+#define VERDICT_NOT_REACHED      3
+#define VERDICT_NOT_JUDGED       4
+/* ...and value_b for VERDICT_NOT_JUDGED. */
+#define NOTJ_INTERRUPTED         1
+#define NOTJ_NOT_TARGET          2
+#define NOTJ_SENSOR              3
+#define NOTJ_BOTH_ENDS           4
+#define NOTJ_NO_READING          5
+
+typedef struct {
+    bool     active;        /* a drive is being judged, and has no verdict yet */
+    bool     closing;
+    uint32_t start_ms;      /* relay-on, from T2 (gh#72) */
+    uint32_t travel_ms;     /* `travel_m3` in force when the stroke started */
+    bool     first_done;    /* the full-traverse start test has been made */
+    bool     full_start;    /* bit 3 at the first look: began at an end, a full traverse */
+    bool     left_start;    /* bit 3 seen clear: the leaf left its starting end */
+    uint8_t  clear_run;     /* consecutive readings with bit 3 clear */
+    bool     made;          /* bit 3 made again after leaving -- the target end */
+    uint32_t made_ms;
+    bool     target_seen;   /* an accepted reading AT the target end, after leaving */
+    bool     have_pct;      /* at least one accepted, usable reading */
+    uint16_t last_pct_x10;  /* the opening at the last of them */
+} drive_state_t;
+
+static drive_state_t       s_drv;
+static windowpos_confirm_t s_confirm;
+
+void windowpos_task_confirm(windowpos_confirm_t *out)
+{
+    if (out == NULL) { return; }
+    portENTER_CRITICAL(&s_mux);
+    *out = s_confirm;
+    portEXIT_CRITICAL(&s_mux);
+}
+
+/** Start judging a drive. */
+static void drive_begin(bool closing, uint32_t start_ms, uint32_t travel_ms)
+{
+    s_drv           = {};
+    s_drv.active    = true;
+    s_drv.closing   = closing;
+    s_drv.start_ms  = start_ms;
+    s_drv.travel_ms = travel_ms;
+}
+
+/**
+ * @brief Evidence from one reading of the drive being judged.
+ *
+ * Two kinds, and they differ in what they may trust:
+ *  - **Bit 3 comes from the end sensors, not the wiper**, so it counts even on
+ *    a reading FR-WP20 rejected for its rate. That is what lets the travel
+ *    check survive rejected position samples (plan §3.5), and it matters: a
+ *    production `travel_m3` on the rig makes every moving sample implausible.
+ *  - **The position needs an accepted reading.**
+ *
+ * Only the target end counts (gh#78): the sensor at the starting end stays
+ * made for the first ~1.8 s of every full drive, so a make is the target end's
+ * only after bit 3 has been seen clear in this drive.
+ *
+ * Nothing is taken from a reading that is faulted or carries bit 4 (the gate
+ * shuts on both).
+ *
+ * **The device's start-up bits hold back the POSITION only** (plan §5d, made
+ * precise 2026-09-19). `0x01`, no measurement window completed since `40002`
+ * was written, means 30001 and 30012 are not yet from a whole window, so the
+ * position waits for it; it lasts one window. `0x02`, averaging not yet
+ * filled, concerns only the averaged 30002, which T17 never judges on, and
+ * lasts the whole averaging window (10 s): refusing readings on it made the
+ * first drive after a `travel_m3` change unmeasurable. Bit 3 comes from the
+ * end sensors, which neither bit touches.
+ *
+ * @param accepted     the reading passed FR-WP20.
+ * @param poll_ms      the derived poll, for the full-traverse start bound.
+ * @param full_x10     `40004`, the open end's position; 0 if unknown.
+ * @param deadzone_x10 `deadzone_m3`, 0.1 mm.
+ */
+static void drive_observe(const windowpos_reading_t *r, bool accepted, uint32_t now,
+                          uint32_t poll_ms, uint16_t full_x10, uint16_t deadzone_x10)
+{
+    if (!s_drv.active || r->sensor_fault || r->both_end_sensors) { return; }
+#ifdef WPOS_FAILFIRST_292
+    const bool pos_ok = accepted;
+#else
+    const bool pos_ok = accepted && (r->status_bits & WINDOWPOS_ST_STARTUP_WINDOW) == 0u;
+#endif
+    const bool bit3 = r->at_end_sensor;
+
+    if (!s_drv.first_done) {
+        /* A full traverse starts at an end, and where the leaf started is
+         * known only if T17 looked at once. Bit 3 at that first look says it
+         * sat at an end -- the opposite one, because a drive toward the end it
+         * already sits at never leaves it, and so never produces the make that
+         * is timed. Judged on bit 3 rather than the position: with a wrong
+         * `travel_m3` FR-WP20 rejects every moving sample, and the first
+         * accepted one can then come only at the far end. That is exactly the
+         * case the "much longer" warning exists for (the `long` stage of
+         * bin/at_wp_confirm.py, 2026-09-19, first failed on this). */
+        s_drv.first_done = true;
+        uint32_t bound = 2u * poll_ms;
+        if (bound < FULL_START_MIN_MS) { bound = FULL_START_MIN_MS; }
+        s_drv.full_start = bit3 && (uint32_t)(now - s_drv.start_ms) <= bound;
+    }
+
+    if (pos_ok) {
+        const uint32_t pos      = r->opening_mm_x10;
+        const bool     at_open  = (full_x10 != 0u) &&
+                                  (pos + (uint32_t)deadzone_x10 >= (uint32_t)full_x10);
+        const bool     at_closed = (pos <= (uint32_t)deadzone_x10);
+        const bool     at_target = s_drv.closing ? at_closed : at_open;
+
+        s_drv.have_pct     = true;
+        s_drv.last_pct_x10 = r->percent_x10;
+        if (bit3 && at_target && s_drv.left_start) { s_drv.target_seen = true; }
+    }
+
+    /* Left the starting end only after LEAVE_READINGS clear readings in a
+     * row, so a sensor chattering at the edge of its zone cannot make its
+     * own re-make pass for the target end's: the travel check would then
+     * measure a traverse of a few hundred milliseconds. Not seen on the rig
+     * (one release and one make per drive in the 2.9.2 soak's status rows);
+     * the guard costs one poll. */
+    if (!bit3) {
+        if (s_drv.clear_run < 0xFFu) { s_drv.clear_run++; }
+        if (s_drv.clear_run >= LEAVE_READINGS) { s_drv.left_start = true; }
+    } else {
+        s_drv.clear_run = 0u;
+        if (s_drv.left_start && !s_drv.made) {
+            s_drv.made    = true;
+            s_drv.made_ms = now;
+        }
+    }
+}
+
+/**
+ * @brief The travel check, on one confirmed full traverse (plan §5d, §3.5).
+ *
+ * Warns only, and edge-triggered: a row when a direction's state changes, and
+ * the flag held while it stands. Nothing here changes `travel_m3`.
+ *  - too short: the end sensor made later than `travel_m3`, so only T2's fixed
+ *    5 s margin still carries the drive; the next step down is "not reached";
+ *  - much longer: it made within half of `travel_m3`. The end switch cuts the
+ *    drive, so the mechanism does not mind, but every constant T17 derives
+ *    from `travel_m3` (plan §3) is then wrong -- a production value on a rig
+ *    module, or a mistyped one.
+ */
+#ifndef WPOS_FAILFIRST_292   /* the fail-first build has no travel check */
+static void travel_check(bool closing, uint32_t measured_ms, uint32_t travel_ms)
+{
+    const unsigned dir = closing ? 1u : 0u;
+    uint8_t state = 0u;
+    if (travel_ms != 0u) {
+        if (measured_ms > travel_ms)            { state = 1u; }
+        else if (measured_ms < travel_ms / 2u)  { state = 2u; }
+    }
+    portENTER_CRITICAL(&s_mux);
+    const uint8_t was = s_confirm.travel_state[dir];
+    s_confirm.travel_state[dir] = state;
+    s_confirm.traverse_ms[dir]  = measured_ms;
+    portEXIT_CRITICAL(&s_mux);
+    if (state == was) { return; }
+
+    const int32_t x10 = (int32_t)clamp_u32(measured_ms / 100u, 0u, 32767u);
+    log_wpos_event((uint8_t)LOG_PARAM_WPOS_TRAVEL,
+                   (int16_t)(state * 1000u + clamp_u32(travel_ms / 1000u, 0u, 999u)),
+                   (int16_t)(closing ? -x10 : x10));
+    if (state == 0u) {
+        ESP_LOGI(TAG, "travel check: M3 %s traverse %lu ms is within travel_m3 %lu ms again",
+                 closing ? "CLOSE" : "OPEN", (unsigned long)measured_ms,
+                 (unsigned long)travel_ms);
+    } else {
+        ESP_LOGW(TAG, "travel check: M3 %s traverse %lu ms against travel_m3 %lu ms -- %s",
+                 closing ? "CLOSE" : "OPEN", (unsigned long)measured_ms,
+                 (unsigned long)travel_ms,
+                 (state == 1u) ? "travel_m3 TOO SHORT, only the 5 s margin is left"
+                               : "travel_m3 much longer than needed");
+    }
+}
+#endif
+
+/**
+ * @brief Write the verdict for the drive being judged, and stop judging it.
+ *
+ * @param how        how the drive ended.
+ * @param at_target  rule 1's "began and stayed on its target end": a drive toward
+ *                   the end the leaf already sits at, such as the recalibration
+ *                   of a closed M3, is confirmed without ever leaving.
+ * @param samples    rule 1's accepted, usable readings of this drive.
+ */
+static void drive_finish(drive_end_t how, bool at_target, uint16_t samples)
+{
+    if (!s_drv.active) { return; }
+    s_drv.active = false;
+#ifdef WPOS_FAILFIRST_292
+    (void)how; (void)at_target; (void)samples;
+#else
+    int code = VERDICT_NOT_JUDGED;
+    int vb   = NOTJ_INTERRUPTED;
+    switch (how) {
+    case DRV_END_TIMER: {
+        const bool confirmed = (at_target && samples != 0u) || s_drv.target_seen;
+        if (confirmed) {
+            const bool full = s_drv.full_start && s_drv.made;
+            code = full ? VERDICT_CONFIRMED_FULL : VERDICT_CONFIRMED;
+            vb   = s_drv.made
+                   ? (int)clamp_u32((s_drv.made_ms - s_drv.start_ms) / 100u, 0u, 32767u)
+                   : 0;
+            if (full) {
+                travel_check(s_drv.closing, s_drv.made_ms - s_drv.start_ms, s_drv.travel_ms);
+            }
+        } else if (!s_drv.have_pct) {
+            vb = NOTJ_NO_READING;
+        } else {
+            code = VERDICT_NOT_REACHED;
+            vb   = (int)clamp_u32((uint32_t)s_drv.last_pct_x10, 0u, 32767u);
+        }
+        break;
+    }
+    case DRV_END_INTERRUPTED: vb = NOTJ_INTERRUPTED; break;
+    case DRV_END_NOT_TARGET:  vb = NOTJ_NOT_TARGET;  break;
+    case DRV_END_SENSOR:      vb = NOTJ_SENSOR;      break;
+    case DRV_END_BOTH_ENDS:   vb = NOTJ_BOTH_ENDS;   break;
+    }
+
+    portENTER_CRITICAL(&s_mux);
+    if (code == VERDICT_NOT_REACHED) {
+        s_cnt.not_reached++;
+        s_confirm.not_confirmed = true;
+    } else if (code == VERDICT_NOT_JUDGED) {
+        s_cnt.not_judged++;
+    } else {
+        s_cnt.confirmed++;
+        s_confirm.not_confirmed = false;
+    }
+    portEXIT_CRITICAL(&s_mux);
+
+    log_wpos_event((uint8_t)LOG_PARAM_WPOS_CONFIRM,
+                   (int16_t)(s_drv.closing ? -code : code), (int16_t)vb);
+    if (code == VERDICT_NOT_REACHED) {
+        ESP_LOGW(TAG, "M3 %s NOT REACHED: the drive ran its full timer and the leaf "
+                      "stopped at %d.%d %% -- travel_m3 too short, or the mechanism",
+                 s_drv.closing ? "CLOSE" : "OPEN", vb / 10, vb % 10);
+    } else {
+        ESP_LOGI(TAG, "M3 %s verdict %d (%d)", s_drv.closing ? "CLOSE" : "OPEN", code, vb);
+    }
+#endif
+}
+
 /**
  * @brief Publish the control mode, logging only on a transition.
  *
@@ -734,6 +1056,10 @@ static void gate_close(windowpos_gate_reason_t why)
         portEXIT_CRITICAL(&s_mux);
     }
     s_gate_open = false;
+    /* 2.10.0: a drive the gate shuts on cannot be judged. It finishes on T2's
+     * timer, as it always did, and the fault is reported by the mode row. */
+    drive_finish((why == WPOS_GATE_END_SENSORS) ? DRV_END_BOTH_ENDS : DRV_END_SENSOR,
+                 false, 0u);
     publish_mode(WPOS_CTRL_TIMED, why);
 }
 
@@ -801,6 +1127,14 @@ static bool probe_sensor(void)
 #ifndef WPOS_FAILFIRST_GH72
     if (pr.sensor_fault) {
         gate_close(WPOS_GATE_DEVICE_FAULT);   /* counts and logs only a transition */
+        return false;
+    }
+#endif
+#ifndef WPOS_FAILFIRST_292
+    /* 2.10.0: both end sensors active is an end-sensor wiring fault, and bit 3
+     * cannot be believed either way until it clears. */
+    if (pr.both_end_sensors) {
+        gate_close(WPOS_GATE_END_SENSORS);
         return false;
     }
 #endif
@@ -887,8 +1221,10 @@ static bool follow_fitted(void)
     s_ev_init         = false;
     s_logged_x10      = REST_ROW_NONE;
     s_orphan_reported = false;
+    s_drv.active      = false;   /* a drive in progress is not judged: no row */
     portENTER_CRITICAL(&s_mux);
     s_have_reading = false;
+    s_confirm      = {};         /* no sensor, no verdict flags */
     portEXIT_CRITICAL(&s_mux);
 
     if (!fitted) {
@@ -981,6 +1317,14 @@ void task_window_pos(void *pvParameters)
     uint16_t stroke_deadzone_x10 = 0u;
     uint8_t  near_zero_run       = 0u;
     bool     early_reported      = false;
+
+    /* 2.10.0 (gh#78): the ~0 claim and when it was made. Rule 2 now asks
+     * whether the CLOSED end sensor follows the claim within travel / 4
+     * (RULE2_GAP_DIVISOR), not whether any end sensor was seen, and not on the
+     * claim's second sample. `stroke_end_seen` survives for the fail-first
+     * build only. */
+    bool     zero_claimed        = false;
+    uint32_t zero_claim_ms       = 0u;
 
     /* §12.4 rule 1 exemption: a stroke driven toward the end the leaf is
      * ALREADY at cannot move -- the motor's end switch cuts the drive, by
@@ -1075,6 +1419,17 @@ void task_window_pos(void *pvParameters)
                  * settled (rest_row_due()). */
                 settle_row_due = true;
                 resample_soon  = true;
+                /* 2.10.0: the drive in progress ended here. At rest in its
+                 * target state means T2's timer ran out, so it is judged. At
+                 * rest anywhere else -- a motor alarm leaves M3 UNKNOWN -- it
+                 * cannot be. */
+                if (s_drv.active) {
+                    window_state_t wst[3];
+                    t2_get_window_states(wst);
+                    const window_state_t target = s_drv.closing ? WIN_CLOSED : WIN_OPEN;
+                    drive_finish((wst[2] == target) ? DRV_END_TIMER : DRV_END_NOT_TARGET,
+                                 stroke_at_target, stroke_samples);
+                }
             }
             was_travelling = false;
             rest_seen      = true;      /* at rest, gate open: the next stroke may promote */
@@ -1111,6 +1466,10 @@ void task_window_pos(void *pvParameters)
                     portEXIT_CRITICAL(&s_mux);
                     if (ir.sensor_fault) {
                         gate_close(WPOS_GATE_DEVICE_FAULT);
+#ifndef WPOS_FAILFIRST_292
+                    } else if (ir.both_end_sensors) {
+                        gate_close(WPOS_GATE_END_SENSORS);   /* 2.10.0 */
+#endif
                     } else {
                         s_probe_fail = 0u;
                     }
@@ -1153,6 +1512,9 @@ void task_window_pos(void *pvParameters)
             /* The verdicts start with the stroke's first DRIVE, below: T17 may
              * look first during a reversal gap, when nothing is energised. */
             seg_active = false;
+            /* 2.10.0: a drive still open here ended where T17 did not see it
+             * end, so it cannot be judged. */
+            drive_finish(DRV_END_INTERRUPTED, false, 0u);
 
             /* Stroke boundary: the only place the mode is allowed to be
              * PROMOTED. See windowpos_task_ctrl_mode()'s note on the
@@ -1227,6 +1589,9 @@ void task_window_pos(void *pvParameters)
          * starts a new verdict, timed from the moment T17 first sees that
          * relay energised, so the gap cannot read as a stall. During the gap
          * nothing is judged and no evidence is gathered. */
+        windowpos_derived_t d;
+        (void)windowpos_task_derived(&d);
+
         uint32_t drive_epoch = 0u;
         uint32_t drive_started_ms = 0u;
         const t2_drive_t drive = m3_drive(&drive_epoch, &drive_started_ms);
@@ -1238,6 +1603,13 @@ void task_window_pos(void *pvParameters)
 #else
         const bool new_drive = driving && (!seg_active || drive_epoch != seg_epoch);
 #endif
+        /* 2.10.0: a reversal ends the drive being judged, before it reached
+         * anything. T2's gap is the usual sign; a new counter value with no
+         * gap seen is the other (the recalibration takes a moving M3 over
+         * directly, as on 2344 at 15:58:20 on 2026-09-18). */
+        if (drive == T2_DRIVE_GAP || new_drive) {
+            drive_finish(DRV_END_INTERRUPTED, false, 0u);
+        }
         if (new_drive) {
             const bool redrive = seg_active;   /* a second drive within one stroke */
             seg_active       = true;
@@ -1274,6 +1646,10 @@ void task_window_pos(void *pvParameters)
             near_zero_run    = 0u;
             early_reported   = false;
             stroke_at_target = true;
+            zero_claimed     = false;
+            zero_claim_ms    = 0u;
+            /* 2.10.0: judged from T2's energise time, like the rules. */
+            drive_begin(stroke_closing, stroke_start_ms, d.travel_ms);
             /* `strokes` counts judged drives, so a soak's "judged strokes"
              * (strokes - at_end_exempt) includes both halves of a reversal. */
             portENTER_CRITICAL(&s_mux);
@@ -1293,12 +1669,25 @@ void task_window_pos(void *pvParameters)
 #endif
 
         /* ---- poll ------------------------------------------------------- */
-        windowpos_derived_t d;
-        (void)windowpos_task_derived(&d);
-
         windowpos_reading_t r;
         const windowpos_status_t st = t17_read(WINDOWPOS_DEFAULT_ADDR, &r);
         if (st == WINDOWPOS_OK) {
+            /* 2.10.0 (plan §5d): start-up bit 0x01 -- no measurement window
+             * completed since `40002` was written, which T17 does at the first
+             * stroke after a boot or a `travel_m3` change -- says the position
+             * and rate are not yet from a whole window. Such a reading is still
+             * logged and published, but its position and rate are evidence for
+             * nothing: not the rules, not the verdict. It lasts one window.
+             * 0x02 (averaging not filled) is not tested: it concerns only the
+             * averaged 30002, which nothing here judges on, and it lasts 10 s.
+             * See drive_observe(). */
+#ifdef WPOS_FAILFIRST_292
+            const bool meaningful = true;
+#else
+            const bool meaningful = (r.status_bits & WINDOWPOS_ST_STARTUP_WINDOW) == 0u;
+#endif
+            const bool evidence = judging && meaningful;
+
             /* FR-WP20: a rate beyond twice nominal is not a fast window, it is a
              * reading to distrust. Reject the sample rather than the sensor --
              * one implausible rate says nothing about the next one. */
@@ -1310,6 +1699,12 @@ void task_window_pos(void *pvParameters)
                 portEXIT_CRITICAL(&s_mux);
                 ESP_LOGW(TAG, "rate %ld beyond %ux nominal (%u) -- sample rejected",
                          (long)rate, (unsigned)RATE_LIMIT_MULT, (unsigned)d.rate_limit_x10);
+                /* 2.10.0: bit 3 still counts for the verdict -- it comes from
+                 * the end sensors, not the wiper (drive_observe()). */
+                if (judging) {
+                    drive_observe(&r, false, now_ms(), d.poll_ms,
+                                  stroke_full_x10, stroke_deadzone_x10);
+                }
 #ifdef MODBUS_BENCH
                 /* The teach runner still gets it. The rejection distrusts the
                  * POSITION; bits 3, 4 and 5 come from the end sensors and the
@@ -1329,11 +1724,12 @@ void task_window_pos(void *pvParameters)
                  * gh#72: evidence only while a drive is being judged. A sample
                  * from the reversal gap belongs to no drive -- the leaf is
                  * coasting or stopped -- and counting it would let the old
-                 * direction's motion pass for the new one. */
-                if (judging && (uint32_t)mag > (uint32_t)stroke_peak_x10) {
+                 * direction's motion pass for the new one. 2.10.0: nor from a
+                 * reading carrying the start-up bits (`evidence`). */
+                if (evidence && (uint32_t)mag > (uint32_t)stroke_peak_x10) {
                     stroke_peak_x10 = (uint16_t)clamp_u32((uint32_t)mag, 0u, 65535u);
                 }
-                if (judging && stroke_samples < 0xFFFFu) { stroke_samples++; }
+                if (evidence && stroke_samples < 0xFFFFu) { stroke_samples++; }
 
                 /* §12.4 rule 1 exemption evidence: is the leaf SITTING ON the
                  * end it is being driven toward? Cleared by the first sample
@@ -1363,7 +1759,7 @@ void task_window_pos(void *pvParameters)
                  * The TARGET end matters too: an OPEN stroke on a leaf sitting
                  * at the CLOSED end (the detached-wire case, 2026-09-15 22:36)
                  * fails the position test and is still judged. */
-                if (judging) {
+                if (evidence) {
                     const bool on_end = r.at_end_sensor && !r.both_end_sensors
                                         && !r.sensor_fault;
                     bool at_pos;
@@ -1379,10 +1775,8 @@ void task_window_pos(void *pvParameters)
                     }
                 }
 
-                /* §12.4 rule 2 evidence. `both_end_sensors` (bit 4) means the
-                 * end-sensor loop is faulted and bit 3 must not be believed in
-                 * either direction, so while it is set this rule has no basis
-                 * to judge on and the run is reset rather than advanced. */
+#ifdef WPOS_FAILFIRST_292
+                /* §12.4 rule 2 evidence, as it was until 2.10.0 (gh#78). */
                 if (!judging) {
                     /* gh#72: in a reversal gap; the next drive starts afresh. */
                 } else if (r.at_end_sensor || r.both_end_sensors) {
@@ -1393,6 +1787,33 @@ void task_window_pos(void *pvParameters)
                     if (near_zero_run < 0xFFu) { near_zero_run++; }
                 } else {
                     near_zero_run = 0u;
+                }
+#else
+                /* §12.4 rule 2 evidence, 2.10.0 (gh#78): only the ~0 CLAIM is
+                 * gathered here. What corroborates it is the closed end
+                 * sensor making after the leaf left its starting end, which
+                 * drive_observe() records; the judgement is below the poll.
+                 * Until 2.10.0 any bit 3 counted, so the open end sensor at the
+                 * start of a full close switched the rule off for the whole
+                 * drive, and a claim was judged on its second sample although
+                 * the position reads 0 for ~1.2 s before the closed end sensor
+                 * makes. */
+                if (evidence && stroke_closing && !r.sensor_fault && !r.both_end_sensors) {
+                    if (r.opening_mm_x10 <= stroke_deadzone_x10) {
+                        if (near_zero_run < 0xFFu) { near_zero_run++; }
+                        if (!zero_claimed && near_zero_run >= RULE2_CONFIRM_SAMPLES) {
+                            zero_claimed  = true;
+                            zero_claim_ms = now_ms();
+                        }
+                    } else {
+                        near_zero_run = 0u;
+                    }
+                }
+#endif
+                /* 2.10.0: the verdict's evidence (plan §5d). */
+                if (judging) {
+                    drive_observe(&r, true, now_ms(), d.poll_ms,
+                                  stroke_full_x10, stroke_deadzone_x10);
                 }
                 portENTER_CRITICAL(&s_mux);
                 s_last         = r;
@@ -1412,6 +1833,10 @@ void task_window_pos(void *pvParameters)
              * Distinct from absence, hence its own reason code. */
             if (r.sensor_fault) {
                 gate_close(WPOS_GATE_DEVICE_FAULT);
+#ifndef WPOS_FAILFIRST_292
+            } else if (r.both_end_sensors) {
+                gate_close(WPOS_GATE_END_SENSORS);   /* 2.10.0 */
+#endif
             } else {
                 s_probe_fail = 0u;
             }
@@ -1522,7 +1947,43 @@ void task_window_pos(void *pvParameters)
          * Reports and does not act, for the same reason as rule 1 -- nothing
          * consumes position yet, and T2 stops this stroke on its own timer
          * regardless. What it changes is that the log no longer records a
-         * CLOSE that "succeeded" in a fifth of the time it physically takes. */
+         * CLOSE that "succeeded" in a fifth of the time it physically takes.
+         *
+         * 2.10.0 (gh#78): the claim is judged on the GAP to the closed end
+         * sensor, not on its second sample, and only a make after the leaf
+         * left its starting end corroborates it. A drive that began and stayed
+         * on the closed end (rule 1's `stroke_at_target`, the recalibration of
+         * a closed M3) corroborates itself. The gap may be at most travel / 4
+         * (RULE2_GAP_DIVISOR). A claim still waiting when the drive ends is
+         * not judged here: T2 may simply have stopped in the closed-end
+         * headroom, where the position already reads 0 and the sensor has not
+         * made yet, and the verdict (not reached) says that honestly. */
+#ifndef WPOS_FAILFIRST_292
+        (void)stroke_end_seen;  /* the old rule 2's state, unused in this build */
+        if (judging && stroke_closing && !early_reported && zero_claimed &&
+            d.travel_ms != 0u) {
+            const bool corroborated = s_drv.made || (stroke_at_target && stroke_samples != 0u);
+            const uint32_t waited   = (uint32_t)(now_ms() - zero_claim_ms);
+            if (!corroborated && waited > (d.travel_ms / RULE2_GAP_DIVISOR)) {
+                early_reported = true;
+                const uint32_t at_s = (uint32_t)(zero_claim_ms - stroke_start_ms) / 1000u;
+                portENTER_CRITICAL(&s_mux);
+                s_cnt.early_stops++;
+                portEXIT_CRITICAL(&s_mux);
+                log_wpos_event((uint8_t)LOG_PARAM_WPOS_EARLY,
+                               (int16_t)clamp_u32(at_s, 0u, 32767u),
+                               (int16_t)clamp_u32(d.travel_ms / 1000u, 0u, 32767u));
+                ESP_LOGW(TAG,
+                         "12.4 rule 2: M3 CLOSE claimed <= %u (0.1mm) %lu s into a "
+                         "%lu s traverse, and the closed end sensor has not followed "
+                         "in %lu ms -- position not believed",
+                         (unsigned)stroke_deadzone_x10, (unsigned long)at_s,
+                         (unsigned long)(d.travel_ms / 1000u), (unsigned long)waited);
+            }
+        }
+#else
+        (void)zero_claimed;     /* 2.10.0's rule 2 state, unused in this build */
+        (void)zero_claim_ms;
         if (judging && !early_reported && stroke_closing && !stroke_end_seen &&
             near_zero_run >= RULE2_CONFIRM_SAMPLES && d.travel_ms != 0u) {
             const uint32_t elapsed = (uint32_t)(now_ms() - stroke_start_ms);
@@ -1543,6 +2004,7 @@ void task_window_pos(void *pvParameters)
                          (unsigned long)(d.travel_ms / 1000u));
             }
         }
+#endif
 
         vTaskDelay(pdMS_TO_TICKS(d.poll_ms ? d.poll_ms : IDLE_TICK_MS));
     }

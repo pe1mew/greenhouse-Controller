@@ -332,7 +332,7 @@ typedef enum {
     LOG_PARAM_ALARM_WIND_FAULT = 243, /**< wind SET, sensor-fault safe-fail: va=-1, vb=0 */
 
     /* Window position sensor events (Phase 3, integrateWindowPositionSensor.md 3b).
-     * Continues the wind band; 251..255 remain free and the band is nearly
+     * Continues the wind band; 253..255 remain free and the band is nearly
      * spent, so spend the rest deliberately. Carried on LOG_ALARM rows with
      * channel = 6 (4 = T/RH fault, 5 = wind fault are taken). */
     LOG_PARAM_WPOS_FAULT   = 244, /**< value_a: 1 = fault set, 0 = cleared */
@@ -364,16 +364,49 @@ typedef enum {
                                    *  failed — not per poll. */
     LOG_PARAM_WPOS_EARLY   = 250, /**< §12.4 rule 2 — "a stop that arrives too
                                    *  early is a fault, not a success".
-                                   *  A CLOSE whose position reached ~0 in far
-                                   *  less than `travel_m3` while bit 3 (an end
-                                   *  sensor) was never made. At the closed
-                                   *  switch the device reads 0 AND makes bit 3
-                                   *  (plan §2a), so zero without bit 3 is a
-                                   *  position claim nothing corroborates.
-                                   *  value_a: elapsed stroke time, seconds.
-                                   *  value_b: `travel_m3`, seconds — so the row
-                                   *  states its own basis for "too early".
-                                   *  One row per stroke. */
+                                   *  A CLOSE whose position claimed ~0 while
+                                   *  the CLOSED end sensor did not follow within
+                                   *  `travel_m3` / 4. Since 2.10.0 (gh#78) only
+                                   *  a make after the leaf left its starting end
+                                   *  corroborates -- the open end sensor at the
+                                   *  start of a full close no longer does --
+                                   *  and the claim is given that time to be
+                                   *  corroborated rather than two polls.
+                                   *  value_a: seconds from the drive's start to
+                                   *  the ~0 claim.
+                                   *  value_b: `travel_m3`, seconds.
+                                   *  One row per drive. */
+    LOG_PARAM_WPOS_CONFIRM = 251, /**< 2.10.0 (plan §5d) — the verdict on one M3
+                                   *  drive, written when the drive ends.
+                                   *  value_a: the verdict, signed by direction
+                                   *  (+ OPEN drive, - CLOSE drive):
+                                   *    1 confirmed, after a full traverse;
+                                   *    2 confirmed, from part-way or already at
+                                   *      the end;
+                                   *    3 not reached: the drive ran its full
+                                   *      timer and the target end was never
+                                   *      confirmed;
+                                   *    4 not judged.
+                                   *  value_b: for 1 and 2, relay-on to the
+                                   *  target end sensor, 0.1 s (0 = the leaf
+                                   *  never left that end); for 3, the opening at
+                                   *  the drive's end, 0.1 %; for 4, the reason:
+                                   *  1 interrupted (reversal or a new drive),
+                                   *  2 T2 did not end at the target (motor
+                                   *  alarm), 3 sensor lost or faulted, 4 both
+                                   *  end sensors (bit 4), 5 no usable reading.
+                                   *  One row per drive. */
+    LOG_PARAM_WPOS_TRAVEL  = 252, /**< 2.10.0 (plan §5d) — the travel check,
+                                   *  edge-triggered per direction.
+                                   *  value_a: state x 1000 + `travel_m3` (s),
+                                   *  state 0 = within band (warning cleared),
+                                   *  1 = `travel_m3` too short (the end sensor
+                                   *  made later than `travel_m3`), 2 = much
+                                   *  longer than needed (made within half).
+                                   *  value_b: the measured full traverse,
+                                   *  relay-on to the target end sensor, 0.1 s,
+                                   *  signed by direction (+ OPEN, - CLOSE).
+                                   *  Warns only: nothing changes `travel_m3`. */
 } log_param_id_t;
 
 /**
@@ -600,6 +633,12 @@ typedef struct {
     bool     wpos_at_end_sensor; /**< Device bit 3 -- authority for OPEN/CLOSED. */
     uint16_t wpos_percent_x10;   /**< Opening, 0.1 %. Unclamped. */
     uint16_t wpos_mm_x10;        /**< Opening, 0.1 mm. */
+    /* 2.10.0 (plan §5d): the drive verdicts and the travel check. Reports
+     * only -- T2's timed control is unchanged. Never set when not fitted. */
+    bool     wpos_not_confirmed; /**< The last judged M3 drive ended "not
+                                  *   reached"; cleared by a confirmed drive. */
+    bool     wpos_travel_short;  /**< A measured traverse exceeded `travel_m3`. */
+    bool     wpos_travel_long;   /**< A measured traverse was under half of it. */
 
     /* Mode + raw EG1 bits (for local-UI badges; harmless on the public dashboard) */
     op_mode_t mode;

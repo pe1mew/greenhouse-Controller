@@ -37,6 +37,10 @@ Over the soak window, with the sensor fitted and trusted:
   mode_changes   <= --max-mode-changes (default 2) -- the gate must SETTLE in
                         POSITION, not flap. Flapping means the data is a mix of
                         traced and untraced strokes
+  not_reached    == 0   2.10.0 (plan 5d): no drive ran its full timer without the
+                        target end being confirmed. Judged only when both the
+                        baseline and the unit have the counter; `confirmed` and
+                        `not_judged` are reported beside it
 
 USAGE
 -----
@@ -138,6 +142,9 @@ FIELDS = ("reads_ok", "err_comm", "err_busy", "rejected_rate", "strokes",
 # Reported, not judged, and absent from builds before 2026-09-16 -- so they are
 # read with a default and never make an older baseline unusable.
 INFO_FIELDS = ("orphan_aborts",)
+# 2.10.0 (plan 5d): the drive verdicts. Absent before 2.10.0, so read like
+# INFO_FIELDS -- but `not_reached` is JUDGED when both ends of the window have it.
+VERDICT_FIELDS = ("confirmed", "not_reached", "not_judged")
 
 
 def snapshot(u):
@@ -158,7 +165,7 @@ def snapshot(u):
         "eg1": int(sysb.get("eg1", 0) or 0),
         "gate": str((dg.get("gate") or {}).get("mode_str", "?")),
         "counters": dict((f, int(s.get(f, 0))) for f in FIELDS),
-        "info": dict((f, s.get(f)) for f in INFO_FIELDS),
+        "info": dict((f, s.get(f)) for f in INFO_FIELDS + VERDICT_FIELDS),
     }
 
 
@@ -258,6 +265,20 @@ def cmd_report(u, args):
         print("  orphan_aborts  : n/a     (not in this build or not in the baseline)")
     else:
         print("  orphan_aborts  : %d       (informational -- should be 0)" % (on - ob))
+    # 2.10.0: the drive verdicts. `not_reached` is judged; the other two tell
+    # how many drives the verdict looked at.
+    verdict = {}
+    for f in VERDICT_FIELDS:
+        vb_ = (base.get("info") or {}).get(f)
+        vn_ = (now.get("info") or {}).get(f)
+        verdict[f] = None if (vb_ is None or vn_ is None) else int(vn_) - int(vb_)
+    if verdict["not_reached"] is None:
+        print("  verdicts       : n/a     (not in this build or not in the baseline)")
+    else:
+        print("  not_reached    : %d       (need 0)" % verdict["not_reached"])
+        print("  confirmed      : %d       (informational)" % verdict["confirmed"])
+        print("  not_judged     : %d       (informational -- reversals, recalibrations"
+              " of a moving M3, sensor gaps)" % verdict["not_judged"])
 
     # Power first: a clean result on too small a sample is not a pass.
     #
@@ -296,6 +317,9 @@ def cmd_report(u, args):
     if d["mode_changes"] > args.max_mode_changes:
         fails.append("the gate flapped (mode_changes +%d): the period is a mix of "
                      "traced and untraced strokes" % d["mode_changes"])
+    if verdict["not_reached"]:
+        fails.append("a drive ran its full timer without reaching its end "
+                     "(not_reached +%d): travel_m3 or the mechanism" % verdict["not_reached"])
 
     if fails:
         print("\nNOT CLEAN:")

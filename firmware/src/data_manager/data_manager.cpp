@@ -1807,7 +1807,8 @@ void dm_status_snapshot(status_snapshot_t *out)
         const bool gate_unusable = (why == WPOS_GATE_NO_SENSOR) ||
                                    (why == WPOS_GATE_BENCH_BUILD) ||
                                    (why == WPOS_GATE_DEVICE_FAULT) ||
-                                   (why == WPOS_GATE_NOT_FITTED);
+                                   (why == WPOS_GATE_NOT_FITTED) ||
+                                   (why == WPOS_GATE_END_SENSORS);   /* 2.10.0, bit 4 */
 
         out->wpos_fitted        = fitted;
         out->wpos_have          = have && !wr.sensor_fault && !gate_unusable;
@@ -1817,6 +1818,16 @@ void dm_status_snapshot(status_snapshot_t *out)
         out->wpos_at_end_sensor = have && wr.at_end_sensor;
         out->wpos_percent_x10   = have ? wr.percent_x10 : 0u;
         out->wpos_mm_x10        = have ? wr.opening_mm_x10 : 0u;
+
+        /* 2.10.0 (plan §5d): the drive verdicts and the travel check. They
+         * report only; T2's timed control is unchanged. */
+        windowpos_confirm_t wc = {};
+        if (fitted) { windowpos_task_confirm(&wc); }
+        out->wpos_not_confirmed = fitted && wc.not_confirmed;
+        out->wpos_travel_short  = fitted && (wc.travel_state[0] == 1u ||
+                                             wc.travel_state[1] == 1u);
+        out->wpos_travel_long   = fitted && (wc.travel_state[0] == 2u ||
+                                             wc.travel_state[1] == 2u);
     }
 
     /* Mode is derived from EG1 in priority order. rc.1.5.0 (gh#28) inserts

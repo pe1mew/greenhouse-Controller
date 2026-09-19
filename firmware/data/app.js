@@ -567,6 +567,14 @@ function handleStatus(s) {
       // alarm — losing the sensor drops M3 to timed control, it does not
       // stop ventilation (FR-WP17).
       sensor_fault_position: '<span class="badge warn">Window sensor fault</span>',
+      // 2.10.0 (plan §5d) — M3's drive verdict and the travel check. Warn:
+      // reports only, T2's timed control is unchanged. "Not confirmed" means
+      // the last drive ran its full timer and the sensor never saw M3 reach
+      // the end; it clears at the next confirmed drive. The two travel badges
+      // compare travel_m3 with the traverse the sensor measured.
+      m3_not_confirmed:   '<span class="badge warn">M3 not confirmed</span>',
+      m3_travel_short:    '<span class="badge warn">M3 travel time too short</span>',
+      m3_travel_long:     '<span class="badge warn">M3 travel time too long</span>',
       ota_in_progress:    '<span class="badge warn">OTA active</span>',
       calibrating:        '<span class="badge warn">Calibrating</span>',
       // rc.1.5.1 - gh#28 follow-up. Operator pause is visible in the same

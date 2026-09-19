@@ -236,6 +236,21 @@ size_t build_canonical_status_json(char *buf, size_t cap,
                               first ? "" : ",");
             first = false;
         }
+        /* 2.10.0 (plan §5d): M3's drive verdict and the travel check, from the
+         * same snapshot and for the same reason -- no EG1 bit, because nothing
+         * safety-related may depend on position (FR-WP18). Report only. */
+        if (ok && s->wpos_not_confirmed) {
+            ok = ok && append(buf, cap, &pos, "%s\"m3_not_confirmed\"", first ? "" : ",");
+            first = false;
+        }
+        if (ok && s->wpos_travel_short) {
+            ok = ok && append(buf, cap, &pos, "%s\"m3_travel_short\"", first ? "" : ",");
+            first = false;
+        }
+        if (ok && s->wpos_travel_long) {
+            ok = ok && append(buf, cap, &pos, "%s\"m3_travel_long\"", first ? "" : ",");
+            first = false;
+        }
 
         for (size_t i = 0; ok && i < (sizeof(EG1_FLAGS) / sizeof(EG1_FLAGS[0])); i++) {
             if (s->eg1_bits & EG1_FLAGS[i].bit) {

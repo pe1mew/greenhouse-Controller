@@ -32,9 +32,13 @@
  *
  * It still changes no control directly. T2 stops on its timer; T6 steps on
  * temperature. This task observes, publishes a snapshot, and **publishes which
- * control law is admissible** (@ref windowpos_task_ctrl_mode). Acting on that
- * is Phase 4 (travel-complete) and Phase 5 (proportional); Phase 5 is out of
- * scope for this cycle.
+ * control law is admissible** (@ref windowpos_task_ctrl_mode).
+ *
+ * Since 2.10.0 (plan §5d, "confirm only") it also gives every M3 drive a
+ * **verdict** when T2 ends it -- confirmed, not reached, or not judged -- and
+ * checks `travel_m3` against the measured traverse (@ref windowpos_task_confirm).
+ * Both only report: a log row, a status flag, a web badge. Position drives the
+ * actuator only in 2.11.0 (mode 2).
  *
  * ## The sensor-presence gate (Phase 4)
  *
@@ -115,6 +119,9 @@ typedef enum {
     WPOS_GATE_DEVICE_FAULT = 4, /**< Present and talking, but reporting a fault. */
     WPOS_GATE_NOT_FITTED   = 5, /**< gh#73: `motor/wpos_fitted_m3` is 0. T17 does
                                  *   not touch the bus at all; not a fault. */
+    WPOS_GATE_END_SENSORS  = 6, /**< 2.10.0: both end sensors active (bit 4).
+                                 *   The end-sensor loop is faulted, so bit 3
+                                 *   cannot be believed either way. A fault. */
 } windowpos_gate_reason_t;
 
 /**
@@ -198,7 +205,37 @@ typedef struct {
                              *   command, recalibration), or a pivot back in
                              *   the reversal gap. Each is judged on its own
                              *   and also counted in `strokes`. */
+    uint32_t confirmed;     /**< 2.10.0: drives whose target end was confirmed
+                             *   (the end sensor made after leaving the start,
+                             *   and the position at that end). */
+    uint32_t not_reached;   /**< 2.10.0: drives that ran their full timer
+                             *   without the target end being confirmed. */
+    uint32_t not_judged;    /**< 2.10.0: drives ended early (reversal, motor
+                             *   alarm), under a lost or faulted sensor, or
+                             *   with no usable reading. */
 } windowpos_counters_t;
+
+/**
+ * @brief The drive verdicts and the travel check, for the operator surfaces.
+ *
+ * 2.10.0, plan §5d. **Reports only**: T2 still drives on to its timer and
+ * believes OPEN or CLOSED afterwards, whatever this says.
+ *
+ * Index 0 is OPEN, 1 is CLOSE: the traverse is measured per direction because
+ * the mechanism is not symmetric (plan §3.5 -- the motor lifts the flap against
+ * gravity one way and pays it out the other).
+ */
+typedef struct {
+    bool     not_confirmed;   /**< The last judged drive ended "not reached".
+                               *   Cleared by the next confirmed drive. */
+    uint8_t  travel_state[2]; /**< 0 within band (or not measured yet),
+                               *   1 `travel_m3` too short, 2 much longer. */
+    uint32_t traverse_ms[2];  /**< Last measured full traverse, relay-on to
+                               *   the target end sensor; 0 = none yet. */
+} windowpos_confirm_t;
+
+/** @brief Copy the verdict and travel-check state. @param out Must not be NULL. */
+void windowpos_task_confirm(windowpos_confirm_t *out);
 
 /** @brief Copy the soak counters. @param out Destination, must not be NULL. */
 void windowpos_task_counters(windowpos_counters_t *out);
@@ -253,6 +290,13 @@ typedef enum {
     WPOS_INJECT_STUCK  = 3, /**< Real reads, but the position frozen at the first
                              *   one and the rate 0 -- a shorted wiper. The end
                              *   sensors (bit 3) stay real. */
+    WPOS_INJECT_ENDS   = 4, /**< 2.10.0: real reads with both end sensors
+                             *   reported active (bit 4) -- an end-sensor
+                             *   wiring fault. */
+    WPOS_INJECT_RACE   = 5, /**< 2.10.0, gh#78: real reads, but the position
+                             *   reads 0 whatever the leaf does -- a position
+                             *   that races ahead to closed. The rate and the
+                             *   end sensors stay real. */
 } windowpos_inject_t;
 
 /**

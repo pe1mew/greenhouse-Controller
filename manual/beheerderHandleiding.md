@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de beheerder
 
-**Versie:** 1.22
-**Datum:** 2026-09-17
-**Firmware:** 2.9.0
+**Versie:** 1.23
+**Datum:** 2026-09-19
+**Firmware:** 2.10.0
 
 ---
 
@@ -98,7 +98,7 @@ De controller leest **elke poll-cyclus** (default 30 sec.) de sensoren uit via M
 - Geen verwarming of koeling aansturen
 - Geen klimaatschermen aansturen
 - Geen besproeiing of CO₂-dosering aansturen
-- Ramen die gedeeltelijk dicht gestuurd worden. Er is geen positie-feedback van motoren. De controller werkt op tijd-gestuurde commando's via de RRK-3
+- Ramen die gedeeltelijk dicht gestuurd worden. De controller stuurt op tijd, met commando's via de RRK-3; de motoren geven geen positie terug. Met een raamstandsensor op M3 controleert hij sinds 2.10.0 wél of M3 na elke beweging zijn eindstand haalde, en meldt hij het als dat niet zo is (zie *M3 raamstandsensor — controle na elke beweging*), maar ook M3 blijft hij op tijd sturen
 
 ---
 
@@ -243,6 +243,32 @@ In beide gevallen loopt M3 op zijn **looptijd**: de instelling verandert niets a
 Vóór 2.9.0 kon de controller "geen sensor" niet onderscheiden van "sensor reageert niet". Een kas zonder sensor vroeg adres 40 elke 30 s tevergeefs, en het kaartje *Modbus bus* liet dat zien als een falende sensor. Een gemonteerde sensor die uitviel, gaf juist geen melding.
 
 > **Na een update naar 2.9.0 staat de instelling op No, ook bij een kas die wél een sensor heeft.** Zet hem daar **eenmalig** op **Yes**. Hetzelfde geldt na een reset op niveau 2 of 3 met de BOOT-knop (§18), want die zet alle instellingen terug. Wie een sensor monteert, zet de instelling daarbij op **Yes**. Hij staat in het logboek als *wpos_fitted_m3*.
+
+### M3 raamstandsensor — controle na elke beweging (sinds 2.10.0)
+
+Met *Position sensor fitted* op **Yes** beoordeelt de controller elke beweging van M3 op het moment dat de motor stopt:
+
+| Oordeel | Wanneer | Wat je ziet |
+|---|---|---|
+| **Bevestigd** | De eindsensor aan de kant waar M3 heen ging schakelde, nadat het raam van de andere kant was weggelopen, en de gemeten stand klopte daarmee. Ook een beweging naar de stand waar M3 al stond (een kalibratie van een dicht raam) is bevestigd | Alleen een regel in het logboek |
+| **Niet bereikt** | De motor liep zijn volle looptijd, maar de sensor zag de eindstand niet | De badge *M3 not confirmed* in de tegel *Alarms*, tot de volgende bevestigde beweging, en een regel in het logboek met de stand waar het raam stopte |
+| **Niet beoordeeld** | De beweging werd afgebroken (een omkering, een kalibratie, een motoralarm), of de sensor viel weg of meldde een storing | Alleen een regel in het logboek |
+
+- **Alleen een melding.** De controller stuurt M3 nog steeds op zijn looptijd, en noteert daarna OPEN of CLOSED, ook als de sensor iets anders zag. De ventilatie werkt gewoon door.
+- **Bij *M3 not confirmed* controleer je twee dingen.**
+  - **De looptijd van M3** (tab **Motors**): is die korter dan de beweging werkelijk duurt, dan stopt de motor voordat het raam zijn eindstand haalt. Het ergste geval is de looptijd van de testopstelling (13 s) in de kas (171 s): M3 gaat dan maar een tiende open terwijl het logboek OPEN noteert. Deze controle is er juist om dat zichtbaar te maken.
+  - **Het mechaniek**: een raam dat zwaar loopt, of een draad die slipt.
+
+**De looptijdcontrole.** Bij elke **volledige** beweging, van eindstand tot eindstand, meet de controller per richting hoe lang het duurt tot de eindsensor schakelt, en vergelijkt dat met de ingestelde looptijd:
+
+| Badge | Betekent | Wat te doen |
+|---|---|---|
+| *M3 travel time too short* | De eindsensor schakelde later dan de looptijd: alleen de vaste marge van 5 s brengt het raam nog in zijn eindstand | Verhoog de looptijd tot boven de gemeten tijd; die staat in het logboek |
+| *M3 travel time too long* | De eindsensor schakelde al binnen de helft van de looptijd | Verlaag de looptijd. Voor het raam onschuldig, want de eindschakelaar stopt de motor, maar de controller rekent het meetritme van de sensor uit de looptijd, en dat klopt dan niet |
+
+- **De controller past de looptijd nooit zelf aan.** Een badge verdwijnt vanzelf bij de eerste volledige beweging die weer binnen de looptijd valt.
+- **Beide eindsensoren tegelijk actief** is een bedradingsfout. De sensor geldt dan als storing: de badge *Window sensor fault*, M3 op zijn looptijd, en bewegingen worden niet beoordeeld tot het verholpen is.
+- **In het logboek** staan het oordeel onder parameter 251 en de looptijdcontrole onder 252 (`ALARM`, kanaal 6); `log/logparser.md` beschrijft ze.
 
 
 ### M3 raamstandsensor — kalibratie (commissioning)
@@ -2114,6 +2140,7 @@ Inhoudelijke wijzigingen aan de firmware staan beschreven in het bestand `change
 | 1.20 | 2026-06-26 | 2.0.0 t/m 2.1.1 — T min dag/nacht gedocumenteerd (webinterface); SD-logbestand bestandsnaam eenheid-ID prefix (gh#30, 2.0.1); `avg_win_wind` naam en standaard gecorrigeerd; windgemiddelde onafhankelijk venster (gh#35, 2.1.0); standaard uitmiddelvenster gecorrigeerd naar 6 min; bugfix HTTP-statuscode in auditlog (gh#34, 2.1.1) |
 | 1.21 | 2026-09-16 | 2.2.0 t/m 2.8.0 — automatische internet-update (ROTA) in tab System, met figuur (2.2.0); wind-hysterese (gh#46, 2.3.0); reset-procedure met de BOOT-knop, vergeten beheerder-PIN en de coredump-melding (gh#56, 2.4.8); bereik sensor-leesfrequentie 15–120 s (gh#57, 2.5.1); `dwell_open_s` in plaats van `dwell_open_min` (gh#63, 2.7.0); tab Motors per raam gegroepeerd, dodezone en kalibratie (teach) van de M3-raamstandsensor met de foutmeldingen (2.8.0); de Stand-by van een teach en van de handmatige raambediening via de LCD wordt niet opgeslagen en eindigt met de sessie of een herstart (gh#65, 2.8.0); het sessie-einde van de LCD-raambediening sluit de ramen één keer (gedrag sinds 2.4.5, tekst nu gecorrigeerd); afgebroken OTA-upload (2.8.0); statusregel Standby gecorrigeerd |
 | 1.22 | 2026-09-17 | 2.9.0 — instelling *Position sensor fitted* voor de M3-raamstandsensor, standaard No; zonder sensor geen regel voor adres 40 meer en met sensor een storingsmelding als die niet reageert (gh#73); de reden bij het grijze Commissioning-blok noemt nu de echte oorzaak |
+| 1.23 | 2026-09-19 | 2.10.0 — met een raamstandsensor beoordeelt de controller elke beweging van M3 (bevestigd, niet bereikt, niet beoordeeld) en controleert hij de looptijd; badges *M3 not confirmed*, *M3 travel time too short* en *M3 travel time too long*; beide eindsensoren tegelijk actief geldt als sensorstoring |
 
 ---
 

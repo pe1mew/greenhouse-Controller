@@ -1,8 +1,24 @@
 # logparser — Greenhouse Controller Log Parser
 
 **File:** `log/logparser.py`
-**Document version:** 1.21 (matches firmware 2.9.1; 1.21: the rule rows come per drive, gh#72; 1.20 added `SETPT param 49`, `wpos_fitted_m3`, and gate reason `5`, not fitted (gh#73), and documents param 48; 1.17 added `MODE param 47` `value_b` = 1, a STANDBY held for a session; 1.18 added `SYSTEM value_a = 32`; 1.19: the LCD manual menu holds STANDBY too (gh#65), and `SENSOR_HR ch 3` rows at rest are written only on change)
+**Document version:** 1.22 (matches firmware 2.10.0; 1.22 added `ALARM ch 6` params 251 and 252, gate reason `6`, and rule 2's new basis, gh#78; 1.21: the rule rows come per drive, gh#72; 1.20 added `SETPT param 49`, `wpos_fitted_m3`, and gate reason `5`, not fitted (gh#73), and documents param 48; 1.17 added `MODE param 47` `value_b` = 1, a STANDBY held for a session; 1.18 added `SYSTEM value_a = 32`; 1.19: the LCD manual menu holds STANDBY too (gh#65), and `SENSOR_HR ch 3` rows at rest are written only on change)
 **Requires:** Python 3.10+, standard library only (no pip dependencies)
+
+**What's new in 1.22** (matches firmware 2.10.0, plan §5d and gh#78):
+- **`ALARM ch = 6` param 251: the verdict on every M3 drive**, written when the drive ends.
+  `value_a` is the verdict, signed by direction (`+` OPEN, `-` CLOSE): `1` confirmed after a
+  full traverse, `2` confirmed from part-way or already at the end, `3` **not reached**, `4`
+  not judged. `value_b` is the time from relay-on to the target end sensor (0.1 s) for 1 and
+  2, the opening at the drive's end (0.1 %) for 3, and the reason for 4. See below.
+- **`ALARM ch = 6` param 252: the travel check**, edge-triggered per direction. `value_a` =
+  state x 1000 + `travel_m3` (s), state `0` within band again, `1` too short, `2` much longer
+  than needed. `value_b` = the measured full traverse, 0.1 s, signed by direction.
+- **Gate reason `6`** in the param 248 row: both end sensors active (device bit 4), an
+  end-sensor wiring fault.
+- **Param 250 (rule 2) has a new basis, and the same encoding.** Since 2.10.0 it fires when the
+  closed end sensor has not followed a ~0 claim within `travel_m3` / 4, and only a make after
+  the leaf left its starting end corroborates. `value_a` is still the claim's time into the
+  drive, `value_b` still `travel_m3`.
 
 **What's new in 1.21** (matches firmware 2.9.1, gh#72) — no new encoding:
 - **`ALARM ch = 6` params 249 and 250 are judged per DRIVE**, not per stroke. A stroke with a
@@ -735,7 +751,9 @@ then names the event within that channel, from the reserved band **244—250**.
 | **247** | device restarted | new register-30008 uptime in seconds (masked to 15 bits) | 0 |
 | **248** | **M3 control mode changed** | `0` = TIMED (travel timer), `1` = POSITION (opening distance) | gate reason, below |
 | **249** | **M3 not following** (§12.4 rule 1) | peak `\|rate\|` observed during the grace window, 0.1 mm/s | the threshold it had to beat (half nominal), 0.1 mm/s |
-| **250** | **M3 CLOSE stopped early** (§12.4 rule 2) | elapsed stroke time, seconds | `travel_m3`, seconds |
+| **250** | **M3 CLOSE stopped early** (§12.4 rule 2) | seconds into the drive at which the position claimed ~0 | `travel_m3`, seconds |
+| **251** | **M3 drive verdict** (2.10.0) | the verdict, signed by direction: `1` confirmed after a full traverse, `2` confirmed, `3` NOT REACHED, `4` not judged | for 1 and 2, relay-on to the target end sensor, 0.1 s (`0` = never left that end); for 3, the opening at the drive's end, 0.1 %; for 4, the reason, below |
+| **252** | **M3 travel check** (2.10.0) | state x 1000 + `travel_m3` (s): state `0` within band again, `1` too short, `2` much longer than needed | the measured full traverse, 0.1 s, signed by direction (`+` OPEN, `-` CLOSE) |
 
 **`param = 249` is the only evidence of a shorted wiper.** That fault makes the
 device report a perfectly plausible **constant** position, so every status bit
@@ -752,10 +770,20 @@ leaf that failed to follow, and the two must not be confused in the log.
 
 **`param = 250` says the position claim was not corroborated, not that the
 window moved wrongly.** At the closed switch the device reads 0 **and** makes
-bit 3 (plan §2a), so the two arrive together; a CLOSE reporting ~0 with bit 3
-never made for the whole stroke is a claim with nothing behind it. Both numbers
-are logged so the row carries its own basis for "too early" and never has to be
-read against a config snapshot from some other time.
+bit 3 (plan §2a); a CLOSE reporting ~0 that the closed end sensor never
+follows is a claim with nothing behind it. Both numbers are logged so the row
+carries its own basis and never has to be read against a config snapshot from
+some other time.
+
+**Since 2.10.0 (gh#78) the basis changed, the encoding did not.** The position
+reads 0 for about 1.2 s before the closed end sensor makes (the closed-end
+headroom), so the claim now waits up to `travel_m3` / 4 for that sensor rather
+than two polls. And only a make **after the leaf left its starting end**
+counts: before 2.10.0 the open end sensor, made at the start of every full
+close, switched the rule off for the whole drive. A drive that began and
+stayed at the closed end corroborates itself. Rows from before 2.10.0 fired on
+the claim's second sample when no end sensor had been seen at all, which is
+why a close starting part-way could trip it.
 
 The bit-3 condition is what makes a legitimate part-way CLOSE safe: a window
 starting at 30 % genuinely reaches 0 at 30 % of travel, but it arrives at the
@@ -829,6 +857,46 @@ per poll. `value_b` carries the reason:
 | `3` | bench build refused, contract 9 — **permanent**, never re-probed |
 | `4` | sensor present but reporting its own fault — specifically the **wiper-open** bit or the `65535` sentinel, not any status bit |
 | `5` | **no position sensor fitted**: the setting `wpos_fitted_m3` is 0 (2.9.0, gh#73). Configuration, not a fault; T17 sends nothing to address 40 |
+| `6` | **both end sensors active** (device bit 4, 2.10.0): an end-sensor wiring fault, so bit 3 is believed in neither direction until it clears. A fault: it raises `sensor_fault_position` |
+
+**`param = 251` is the verdict on one M3 drive (2.10.0, plan §5d)**, written when
+the drive ends. It reports only: T2 still drives on to its timer and records
+OPEN or CLOSED, whatever this row says.
+
+- **Confirmed** (`1`, `2`) needs both halves: the target end sensor made after
+  the leaf left its starting end, and the position within `deadzone_m3` of that
+  end. A drive toward the end the leaf already sits at, such as the
+  recalibration of a closed M3, is confirmed with `value_b` = 0. `1` marks a full
+  traverse, which is what the travel check measures.
+- **NOT REACHED** (`3`) means the drive ran its full timer and the target end was
+  never confirmed: the leaf stopped short. The usual causes are a `travel_m3` too
+  short for the window (a rig value in production would give this on every
+  drive), or a slow or binding mechanism. It raises the `m3_not_confirmed` flag,
+  and the web badge *M3 not confirmed*, until the next confirmed drive.
+- **not judged** (`4`), `value_b`:
+
+| `value_b` | meaning |
+|---|---|
+| `1` | interrupted: a reversal, or a new drive before this one ended |
+| `2` | T2 did not end at the target: a motor alarm left M3 UNKNOWN |
+| `3` | the sensor was lost or reported a fault during the drive |
+| `4` | both end sensors active (bit 4) |
+| `5` | no usable reading during the drive |
+
+A reading carrying start-up bit `0x01` (no measurement window completed since
+T17 wrote `40002`, one window long) gives no position evidence for the verdict
+or the rules. Bit 3 still counts: it comes from the end sensors. `0x02`
+(averaging not filled) is ignored, because it concerns only the averaged
+register.
+
+**`param = 252` is the travel check (2.10.0)**, on confirmed full traverses only,
+per direction. It warns and never changes `travel_m3`. *Too short* means the
+end sensor made later than `travel_m3`, so only T2's fixed 5 s margin still
+carried the drive, and *not reached* is the next step. *Much longer than
+needed* means it made within half of `travel_m3`: harmless to the mechanism,
+but every rate T17 derives from `travel_m3` is then wrong. One row when a
+direction's state changes, including back to `0`; the flags `m3_travel_short`
+and `m3_travel_long` hold while the condition stands.
 
 **TIMED is the fallback and the failure direction**, and it is what `main`
 ships, so a log full of `TIMED` rows is a unit behaving exactly as it always

@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de boer
 
-**Versie:** 1.19
-**Datum:** 2026-09-17
-**Firmware:** 2.9.0
+**Versie:** 1.20
+**Datum:** 2026-09-19
+**Firmware:** 2.10.0
 
 ---
 
@@ -82,6 +82,8 @@ De kascontroller is een geautomatiseerd systeem dat het **klimaat in één kas**
 - Hij stuurt alleen **volledige** open- of sluit-commando's. Een raam gaat **OPEN** of **DICHT**; hij zet het niet op "30%". De controller varieert het ventilatie-oppervlak door verschillende ramen op verschillende momenten te openen.
 
   Is op **M3** een **raamstandsensor** gemonteerd, dan méét de controller wél hoever dat raam open staat, en toont hij dat als percentage in de webinterface (zie [§8](#8-gebruik-zonder-inloggen--informatiemenu)). Dat verandert alleen het **aflezen**, niet het **sturen**: ook M3 krijgt volledige open- en sluit-commando's. Zonder sensor verandert er niets en lees je gewoon `OPEN` of `CLOSED`.
+
+  Sinds versie 2.10.0 **controleert** de controller met die sensor ook of M3 na elke beweging zijn eindstand echt haalde. Lukte dat niet, dan zie je in de webinterface de badge *M3 not confirmed* (zie [§8](#8-gebruik-zonder-inloggen--informatiemenu)). Ook dat is alleen een melding: het sturen blijft hetzelfde.
 
 ---
 
@@ -585,6 +587,10 @@ Heeft jouw kas geen raamstandsensor, dan staat er geen regel voor **M3 · 40**; 
 Alle getallen tellen vanaf de laatste herstart en beginnen dus weer bij nul na een stroomuitval of update. Het verloop per uur bewaart de kascontroller in het logboek; daar kijkt de beheerder naar.
 
 > **Badge "Window sensor fault".** Reageert de raamstandsensor niet meer (terwijl de beheerder hem als gemonteerd heeft ingesteld), dan verschijnt in de tegel *Alarms* een gele badge **Window sensor fault**, en valt M3 terug op de gewone tijdgestuurde bediening — `OPEN` / `CLOSED`, precies zoals een raam zónder sensor. **De ventilatie blijft gewoon werken.** Deze storing sluit geen ramen en legt de klimaatregeling niet stil, dus je hoeft niet in te grijpen — meld hem wel bij de beheerder. Op het LCD-scherm van de controller is deze melding **niet** zichtbaar, alleen in de webinterface.
+
+> **Badge "M3 not confirmed"** (sinds 2.10.0, alleen met raamstandsensor). Na elke beweging van M3 kijkt de controller of de sensor het raam zijn eindstand zag halen. Liep de motor zijn volle tijd, maar kwam het raam er volgens de sensor niet, dan verschijnt in de tegel *Alarms* een gele badge **M3 not confirmed**. Hij verdwijnt vanzelf zodra een volgende beweging van M3 wél bevestigd is. **De ventilatie blijft werken**: de controller stuurt M3 gewoon verder op tijd. Zie je de badge vaker, meld het dan bij de beheerder: de ingestelde looptijd van M3 is waarschijnlijk te kort, of het raam loopt zwaar. Alleen in de webinterface, niet op het LCD.
+
+> **Badges "M3 travel time too short" en "M3 travel time too long"** (sinds 2.10.0, alleen met raamstandsensor). Bij elke volledige beweging meet de controller hoe lang M3 er werkelijk over doet, en vergelijkt dat met de looptijd die de beheerder heeft ingesteld. Past die niet, dan verschijnt een van deze gele badges. Het is een **instelling** voor de beheerder, geen storing waar jij iets aan hoeft te doen; meld het wel. *Too short* is de belangrijkste: het raam heeft dan bijna geen speling meer om zijn eindstand te halen. De badge verdwijnt vanzelf als de looptijd weer klopt. Alleen in de webinterface, niet op het LCD.
 
 ### Wat zichtbaar na login?
 
@@ -1554,6 +1560,7 @@ Inhoudelijke wijzigingen aan de firmware staan beschreven in het bestand `change
 | 1.17 | 2026-06-27 | 2.1.1 — figuurcaptions toegevoegd (Figuur 2 schematisch overzicht, Figuur 6 reset-knop); figuurcaptions hernummerd (Figuur 1–8); "Standby" → "Stand-by" consistent; "calibratie" → "kalibratie"; "in- en uitgaan"; "hoelang"; "foto's"/"smartphone" |
 | 1.18 | 2026-09-16 | 2.2.0 t/m 2.8.0 — de controller werkt zichzelf 's nachts bij en de melding *Update pending* (ROTA, 2.2.0); windinstellingen zijn voor de beheerder (2.3.0); unit-ID in de tabtitel van de browser (gh#50, 2.4.0); vergeten PIN via de BOOT-knop (gh#56, 2.4.8); hoever M3 open staat, bij een raamstandsensor (2.8.0); looprichting bij alle drie de ramen (2.8.0); kaartje *Modbus bus* (2.8.0); Stand-by die de beheerder zet tijdens een teach of tijdens handmatige raambediening via de LCD (2.8.0) |
 | 1.19 | 2026-09-17 | 2.9.0 — zonder raamstandsensor geen regel *M3 · 40* in het kaartje *Modbus bus*; de badge *Window sensor fault* alleen bij een sensor die als gemonteerd is ingesteld (gh#73) |
+| 1.20 | 2026-09-19 | 2.10.0 — met een raamstandsensor controleert de controller of M3 zijn eindstand haalt: de badges *M3 not confirmed*, *M3 travel time too short* en *M3 travel time too long* |
 
 ---
 

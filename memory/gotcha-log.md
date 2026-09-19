@@ -64,6 +64,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-07-31** — anti-thrash dwell was unguarded during travel (gh#48)
 
 ### Modbus bus, sensors & clock (T5, drivers)
+- **2026-09-19** — after an OTA push the unit's clock is HOURS wrong for ~5 min and the SD file cannot be found by its boot time (the boot SNTP failed, and T4 seeded a CORRECT clock from a DS1307 that was 5 h 42 min behind; gh#55)
 - **2026-09-16** — a slave stops answering only while the flash is being written (OTA): the RS485 direction line was released by the task, and a flash write stalls the task up to 665 ms (gh#70, fixed: the UART drives DE/RE now)
 - **2026-09-16** — the board PANICs ~10 s after boot, twice, then runs fine (gh#69; T5's entry `modbus_init()` deleted the UART under a T17 read — a hazard logged 9 days earlier as "safe while T5 is the only caller"; coredump says LoadProhibited in `uart_get_buffered_data_len`)
 - **2026-09-15** — two slaves on one bus fail thousands of times more often than a third (the emulated slaves' replies never assert one differential rail — ~76 mV of noise margin, BER 4e-05; NOT a firmware or bus fault)
@@ -176,6 +177,48 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
 
+
+## 2026-09-19 — after an OTA push the clock was hours wrong, and the SD file could not be found by its boot time (gh#55)
+
+**Problem.** 2.10.0's harness pushed a bench build to 2344, then could not find the SD log file
+for the new boot: every name derived from the real boot time (10:16:47) was missing. The unit's
+status read `ntp_synced: false` and `time_iso` 04:37 at 10:19, and T6 ran on night setpoints.
+
+**Root cause.** Three things in a row.
+- **The boot SNTP quick sync failed**, although `pool.ntp.org` answered from the same network.
+  The firmware then retries only every 5 min (`NTP_RETRY_INTERVAL_S`), and it synced at the first
+  retry, 5 min after boot.
+- **T4 seeds the clock from the DS1307 whenever NTP is not synced**, even when the system clock is
+  already right: the ESP32 keeps its time across a software reset, so the first rows after the
+  reboot were stamped 10:16:26, and then the seed moved the clock back to 04:35:21.
+- **The rig's DS1307 was 5 h 42 min behind.** The night before it was 21 s behind (commented on
+  gh#55), so it lost hours overnight. Nothing rewrites it except boot, the NTP-synced edge and the
+  24 h resync.
+
+The file was named from that clock: `2344_20260919043544.csv`. And an OTA push reboots **twice**
+(firmware, then assets), so there were two such files, 23 s apart.
+
+**Fix.** None in the firmware yet; this is gh#55's territory, held by the operator. For harnesses:
+- refuse to judge while `ntp_synced` is false, because rows written before the sync carry the
+  DS1307's time;
+- find the file by name from the PC's clock, then fall back to the listing, and accept an explicit
+  `--log-file` (`bin/at_wp_confirm.py`).
+
+**Lesson.** Before trusting a timestamp from the rig after a reboot, check `ntp_synced`. And a
+fallback time source that overrides a valid running clock is worse than none.
+
+**Where it lives.** `data_manager.cpp` `read_rtc_and_seed_clock()` (the pre-NTP seed),
+`network_manager.cpp` (`NTP_RETRY_INTERVAL_S`), `bin/at_wp_confirm.py` `rows_since()`.
+
+**Recurrence, same day, 11:14.** After the next push, both boots' SNTP quick syncs failed again,
+and so did the first two 5 min retries (`LOG_SYSTEM 2` value 0 at 11:14:41, 11:19:50, 11:24:51).
+The third retry synced at 11:29:47, 15 min after boot. The clock was right throughout this time,
+because the earlier sync had rewritten the DS1307. The network was up: T14's status posts went out
+over HTTPS every 2 min, and this PC reached `pool.ntp.org` in 11 of 12 queries. **Cause not
+established.** Nothing in 2.10.0 touches the network, and 2.9.2's boot the day before synced in
+3 s. **A trap when reading the raw CSV:** `LOG_SYSTEM 1` value 0 every 2 min is T14's status-post
+*success* (initiator `WEB`), not a WiFi drop (initiator `SYS`). `logparser.py` tells the two apart
+by the initiator; a raw read does not.
 
 ## 2026-09-18 — a fail-first run PASSED on the old code: a second defect hid the first, on one path of three (gh#79)
 

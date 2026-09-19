@@ -192,6 +192,9 @@ sd: dict = {"mounted": True, "size_mb": 7500, "free_mb": 7100}
 #   curl -X POST "http://localhost:5000/api/__mock/m3?percent=45.2"
 #   curl -X POST "http://localhost:5000/api/__mock/m3?percent=113.7&at_end=true"
 #   curl -X POST "http://localhost:5000/api/__mock/m3?state=MOVING_OPEN"
+#   curl -X POST "http://localhost:5000/api/__mock/m3?not_confirmed=true"
+#   curl -X POST "http://localhost:5000/api/__mock/m3?travel_short=true"
+#   curl -X POST "http://localhost:5000/api/__mock/m3?travel_long=true"
 #   curl -X POST "http://localhost:5000/api/__mock/m3?fault=true"
 #   curl -X POST "http://localhost:5000/api/__mock/m3?fitted=false"
 #
@@ -215,6 +218,10 @@ M3_POS = {
     "at_end_sensor": False,
     "state":         "OPEN",
     "fault":         False,
+    # 2.10.0 (plan §5d): the drive verdict and the travel check. Report only.
+    "not_confirmed": False,
+    "travel_short":  False,
+    "travel_long":   False,
 }
 
 # ---------------------------------------------------------------------------
@@ -407,6 +414,12 @@ def _mode_flags() -> list[str]:
     # not answer is one.
     if _wpos_fitted() and (M3_POS.get("fault") or not M3_POS.get("fitted")):
         out.append("sensor_fault_position")
+    # 2.10.0 (plan §5d) — M3's drive verdict and the travel check, right after
+    # the position fault, as in status_json.cpp. Only for a fitted sensor.
+    if _wpos_fitted():
+        for key in ("not_confirmed", "travel_short", "travel_long"):
+            if M3_POS.get(key):
+                out.append("m3_" + key)
     # a.6.35.4 — operator-disabled-feature flags
     if cfg.get("wind_prot_en", 1) == 0:
         out.append("wind_protect_off")
@@ -1350,6 +1363,9 @@ def m3_mock_set():
         M3_POS["fault"] = a["fault"].lower() in ("1", "true", "yes")
     if "state" in a:
         M3_POS["state"] = a["state"].upper()
+    for key in ("not_confirmed", "travel_short", "travel_long"):   # 2.10.0
+        if key in a:
+            M3_POS[key] = a[key].lower() in ("1", "true", "yes")
     print(f"[mock] /api/__mock/m3 -> {M3_POS}", file=sys.stderr)
     return {"ok": True, "m3": M3_POS}
 

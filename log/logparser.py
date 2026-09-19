@@ -494,7 +494,26 @@ _WPOS_GATE_REASON = {
     # is configuration, not a fault. Logged once at boot on such a unit, and
     # whenever the setting is switched off.
     5: "no position sensor fitted (setting)",
+    # fw 2.10.0: both end sensors active at once (device bit 4). An end-sensor
+    # wiring fault; bit 3 cannot be believed either way until it clears.
+    6: "BOTH end sensors active (bit 4) - end-sensor wiring fault",
 }
+
+# fw 2.10.0 (plan 5d): the verdict on one M3 drive, param 251. value_a is the
+# verdict signed by direction (+ OPEN, - CLOSE); value_b depends on it.
+_WPOS_VERDICT = {1: "CONFIRMED (full traverse)", 2: "CONFIRMED",
+                 3: "NOT REACHED", 4: "not judged"}
+_WPOS_NOT_JUDGED = {
+    1: "interrupted (reversal or a new drive)",
+    2: "T2 did not end at the target (motor alarm)",
+    3: "sensor lost or faulted during the drive",
+    4: "both end sensors active (bit 4)",
+    5: "no usable reading",
+}
+# ...and the travel check, param 252: value_a = state x 1000 + travel_m3 (s).
+_WPOS_TRAVEL = {0: "within travel_m3 again",
+                1: "travel_m3 TOO SHORT (only the 5 s margin carries the drive)",
+                2: "travel_m3 much LONGER than needed"}
 
 _WPOS_STATUS_BITS = [
     (0x0001, "startup:window"), (0x0002, "startup:avg"), (0x0004, "WIPER OPEN"),
@@ -522,13 +541,34 @@ def _decode_wpos_event(param: int, va: int, vb: int) -> str:
         why = _WPOS_GATE_REASON.get(vb, f"reason {vb}")
         return f"M3 CONTROL MODE -> {mode}  [{why}]"
     if param == 250:
-        # 12.4 rule 2. va = elapsed stroke seconds, vb = travel_m3 seconds, so
-        # the row carries its own basis for "too early" and never has to be
-        # read against a config snapshot from some other time.
+        # 12.4 rule 2. va = seconds into the drive at which the position
+        # claimed ~0, vb = travel_m3 seconds, so the row carries its own basis.
+        # Before fw 2.10.0 it fired on the claim's second sample when no end
+        # sensor had been seen at all; since 2.10.0 (gh#78) it fires when the
+        # CLOSED end sensor has not followed the claim within travel_m3 / 4.
         pct = (100.0 * va / vb) if vb else 0.0
-        return (f"M3 CLOSE STOPPED EARLY - claimed closed after {va} s of a "
-                f"{vb} s traverse ({pct:.0f} %), no end sensor to corroborate "
-                f"it (12.4 rule 2: position not believed)")
+        return (f"M3 CLOSE STOPPED EARLY - claimed closed {va} s into a "
+                f"{vb} s traverse ({pct:.0f} %), not corroborated by the closed "
+                f"end sensor (12.4 rule 2: position not believed)")
+    if param == 251:
+        d = "CLOSE" if va < 0 else "OPEN"
+        code = abs(va)
+        what = _WPOS_VERDICT.get(code, f"verdict {code}")
+        if code in (1, 2):
+            tail = (f", end sensor {vb / 10.0:.1f} s after relay-on" if vb
+                    else ", already at that end")
+        elif code == 3:
+            tail = f" - the drive ran its full timer, leaf stopped at {vb / 10.0:.1f} %"
+        elif code == 4:
+            tail = f" - {_WPOS_NOT_JUDGED.get(vb, f'reason {vb}')}"
+        else:
+            tail = f" (b={vb})"
+        return f"M3 {d} drive: {what}{tail}"
+    if param == 252:
+        d = "CLOSE" if vb < 0 else "OPEN"
+        state, travel_s = divmod(va, 1000)
+        return (f"M3 {d} TRAVEL CHECK: {_WPOS_TRAVEL.get(state, f'state {state}')} - "
+                f"measured {abs(vb) / 10.0:.1f} s against travel_m3 {travel_s} s")
     if param == 249:
         # 12.4 rule 1. va = peak |rate| seen during the grace window, vb = the
         # threshold it had to beat (half nominal). Both in 0.1 mm/s, and both

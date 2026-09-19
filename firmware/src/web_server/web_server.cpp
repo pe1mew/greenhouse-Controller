@@ -3320,15 +3320,17 @@ static const httpd_uri_t s_uri_web_post = {
  *  the success and the failure path -- they drifted once already (the failure
  *  path emitted `reason` without `reason_str`). */
 static const char *const k_reason[] = {
-    "ok", "probing", "no_sensor", "bench_build", "device_fault", "not_fitted"
+    "ok", "probing", "no_sensor", "bench_build", "device_fault", "not_fitted",
+    "end_sensors"
 };
-_Static_assert(sizeof(k_reason) / sizeof(k_reason[0]) == (size_t)WPOS_GATE_NOT_FITTED + 1u,
+_Static_assert(sizeof(k_reason) / sizeof(k_reason[0]) == (size_t)WPOS_GATE_END_SENSORS + 1u,
                "k_reason[] must have one string per windowpos_gate_reason_t value, in order");
 
 /** gh#72 bench test hook: injection names, indexed by windowpos_inject_t.
- *  Read by the GET (what is in force) and the POST (what to set). */
-static const char *const k_inject[] = { "none", "absent", "fault", "stuck" };
-_Static_assert(sizeof(k_inject) / sizeof(k_inject[0]) == (size_t)WPOS_INJECT_STUCK + 1u,
+ *  Read by the GET (what is in force) and the POST (what to set). 2.10.0 adds
+ *  "ends" (bit 4) and "race" (the position reads 0, gh#78). */
+static const char *const k_inject[] = { "none", "absent", "fault", "stuck", "ends", "race" };
+_Static_assert(sizeof(k_inject) / sizeof(k_inject[0]) == (size_t)WPOS_INJECT_RACE + 1u,
                "k_inject[] must have one string per windowpos_inject_t value, in order");
 
 /** The injection in force, by name. */
@@ -3343,6 +3345,13 @@ static const char *inject_str(void)
 static const char k_failfirst_gh72[] = "true";
 #else
 static const char k_failfirst_gh72[] = "false";
+#endif
+
+/** "true" in a WPOS_FAILFIRST_292 build (2.10.0's fail-first), for the same reason. */
+#ifdef WPOS_FAILFIRST_292
+static const char k_failfirst_292[] = "true";
+#else
+static const char k_failfirst_292[] = "false";
 #endif
 
 /**
@@ -3362,21 +3371,32 @@ static void append_soak_json(char *buf, size_t cap)
 {
     windowpos_counters_t cn;
     windowpos_task_counters(&cn);
+    windowpos_confirm_t cf;
+    windowpos_task_confirm(&cf);
     const size_t used = strlen(buf);
     if (used == 0u || used + 1u >= cap) { return; }
+    /* 2.10.0 (plan §5d): the three verdict counters, whether the last judged
+     * drive was not reached, and the travel check per direction (state 0 in
+     * band, 1 too short, 2 much longer; the last full traverse in ms). */
     snprintf(buf + used - 1u, cap - used + 1u,
              ",\"soak\":{\"reads_ok\":%lu,\"err_busy\":%lu,\"err_comm\":%lu,"
              "\"rejected_rate\":%lu,\"strokes\":%lu,\"probe_fail\":%lu,"
              "\"mode_changes\":%lu,\"gated_polls\":%lu,\"stall_faults\":%lu,"
              "\"early_stops\":%lu,\"at_end_exempt\":%lu,\"orphan_aborts\":%lu,"
-             "\"redrives\":%lu}}",
+             "\"redrives\":%lu,\"confirmed\":%lu,\"not_reached\":%lu,"
+             "\"not_judged\":%lu,\"not_confirmed\":%s,\"travel_state\":[%u,%u],"
+             "\"traverse_ms\":[%lu,%lu]}}",
              (unsigned long)cn.reads_ok, (unsigned long)cn.err_busy,
              (unsigned long)cn.err_comm, (unsigned long)cn.rejected_rate,
              (unsigned long)cn.strokes, (unsigned long)cn.probe_fail,
              (unsigned long)cn.mode_changes, (unsigned long)cn.gated_polls,
              (unsigned long)cn.stall_faults, (unsigned long)cn.early_stops,
              (unsigned long)cn.at_end_exempt, (unsigned long)cn.orphan_aborts,
-             (unsigned long)cn.redrives);
+             (unsigned long)cn.redrives, (unsigned long)cn.confirmed,
+             (unsigned long)cn.not_reached, (unsigned long)cn.not_judged,
+             cf.not_confirmed ? "true" : "false",
+             (unsigned)cf.travel_state[0], (unsigned)cf.travel_state[1],
+             (unsigned long)cf.traverse_ms[0], (unsigned long)cf.traverse_ms[1]);
 }
 
 static void append_modbus_json(char *buf, size_t cap)
@@ -3455,12 +3475,13 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
         snprintf(body, sizeof(body),
                  "{\"ok\":false,\"err\":\"read_failed\",\"status\":%d,"
                  "\"gate\":{\"mode\":%d,\"mode_str\":\"%s\",\"reason\":%d,"
-                 "\"reason_str\":\"%s\",\"inject\":\"%s\",\"failfirst_gh72\":%s}}",
+                 "\"reason_str\":\"%s\",\"inject\":\"%s\",\"failfirst_gh72\":%s,"
+                 "\"failfirst_292\":%s}}",
                  (int)st, (int)egm,
                  (egm == WPOS_CTRL_POSITION) ? "position" : "timed", (int)egr,
                  ((unsigned)egr < (sizeof(k_reason) / sizeof(k_reason[0])))
                      ? k_reason[egr] : "?",
-                 inject_str(), k_failfirst_gh72);
+                 inject_str(), k_failfirst_gh72, k_failfirst_292);
         /* AT-WP05 arm A reads these with the encoder unplugged, so both blocks
          * MUST be on this path -- it is the only response that arm ever sees.
          * Same helpers as the success path, so the two cannot drift apart. */
@@ -3538,12 +3559,12 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
         snprintf(body + used3 - 1u, sizeof(body) - used3 + 1u,
                  ",\"gate\":{\"mode\":%d,\"mode_str\":\"%s\","
                  "\"reason\":%d,\"reason_str\":\"%s\","
-                 "\"inject\":\"%s\",\"failfirst_gh72\":%s}}",
+                 "\"inject\":\"%s\",\"failfirst_gh72\":%s,\"failfirst_292\":%s}}",
                  (int)gm, (gm == WPOS_CTRL_POSITION) ? "position" : "timed",
                  (int)gr,
                  ((unsigned)gr < (sizeof(k_reason) / sizeof(k_reason[0])))
                      ? k_reason[gr] : "?",
-                 inject_str(), k_failfirst_gh72);
+                 inject_str(), k_failfirst_gh72, k_failfirst_292);
     }
 
     /* Soak counters last, so a truncation loses only these. */
@@ -3560,11 +3581,13 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
 /**
  * POST /api/diag/windowpos — set the T17 test injection (admin, DEV BUILDS ONLY)
  *
- * Body: {"inject":"none"|"absent"|"fault"|"stuck"}. gh#72's acceptance test
- * (bin/at_wp_gh72.py) uses it to make T17 see a sensor that vanishes, one that
- * reports its own fault, and a reading stuck while the leaf moves -- each at a
- * moment the test chooses. It changes only what T17 reads; the direct read of
- * the GET above still shows the device as it is. RAM only.
+ * Body: {"inject":"none"|"absent"|"fault"|"stuck"|"ends"|"race"}. gh#72's
+ * acceptance test (bin/at_wp_gh72.py) uses it to make T17 see a sensor that
+ * vanishes, one that reports its own fault, and a reading stuck while the leaf
+ * moves -- each at a moment the test chooses. 2.10.0 adds both end sensors
+ * active (bit 4) and a position that reads 0 whatever the leaf does (gh#78's
+ * race), for bin/at_wp_confirm.py. It changes only what T17 reads; the direct
+ * read of the GET above still shows the device as it is. RAM only.
  */
 static esp_err_t diag_windowpos_post_handler(httpd_req_t *req)
 {

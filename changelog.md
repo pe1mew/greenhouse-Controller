@@ -6,6 +6,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.10.0] — 2026-09-19  (every M3 drive gets a verdict, and `travel_m3` is checked against the traverse)
+
+Minor: new log params (251, 252), a new gate reason (6) and three new status flags. Plan §5d,
+"confirm only"; fixes [gh#78](https://github.com/pe1mew/greenhouse-Controller/issues/78).
+**Greenhouse behaviour is unchanged**: T2 still drives M3 on to its timer and records OPEN or
+CLOSED, whatever the sensor says. Everything new reports. Verification, upgrade notes and known
+limitations are in `bin/2.10.0/release-notes.md`.
+
+**Added.**
+
+- **A verdict on every M3 drive**, written by T17 when T2 ends the drive (`ALARM ch6` param 251).
+  - **Confirmed:** the target end sensor made after the leaf left its starting end, and the
+    position was at that end. This includes a drive toward the end the leaf already sits at.
+  - **Not reached:** the drive ran its full timer without that. It raises the status flag
+    `m3_not_confirmed` and the web badge *M3 not confirmed*, until the next confirmed drive.
+    This is the under-travel failure, for example a rig `travel_m3` in production, which until
+    now left the log reading OPEN with M3 a tenth open.
+  - **Not judged:** a reversal, a motor alarm, a lost or faulted sensor, or both end sensors.
+- **The travel check.** On every confirmed full traverse, per direction, it compares the time
+  from relay-on to the target end sensor with `travel_m3`, and warns only (`ALARM ch6` param 252,
+  edge-triggered). `m3_travel_short` means the sensor made later than `travel_m3`;
+  `m3_travel_long` means it made within half of it. Nothing changes `travel_m3`.
+- **Three web badges** for the three flags, and the mock learns them.
+- **Bench:**
+  - two injections, `ends` (both end sensors) and `race` (the position reads 0);
+  - the fail-first build `-DWPOS_FAILFIRST_292`;
+  - `bin/at_wp_confirm.py`, the acceptance test (nine stages).
+
+**Fixed.**
+
+- **Rule 2, the early-stop check** (gh#78).
+  - Only the CLOSED end sensor making after the leaf left its starting end corroborates a ~0
+    claim, and the claim waits up to `travel_m3` / 4 for it.
+  - Before, a close from part-way false-tripped, because the position reads 0 about 1.2 s
+    before the closed sensor makes.
+  - A full close was never judged, because the open end sensor counted as corroboration.
+- **Both end sensors active (bit 4) shut the gate**, with its own reason (6), and raise the
+  sensor fault flag.
+- **The device's start-up bit `0x01` is read.** A reading taken before a whole measurement
+  window has passed gives no position evidence.
+
+**Changed.**
+
+- **Docs:**
+  - `logparser.md` 1.22 and `logparser.py`;
+  - plan §5d, with its test table corrected;
+  - boer manual 1.20, beheerder manual 1.23;
+  - CLAUDE.md;
+  - `bin/at_wp_soak.py`, which now also judges `not_reached`.
+
+---
+
 ## [2.9.2] — 2026-09-18  (a wind override that starts during a recalibration is no longer lost)
 
 Patch: fixes [gh#79](https://github.com/pe1mew/greenhouse-Controller/issues/79). There is no new

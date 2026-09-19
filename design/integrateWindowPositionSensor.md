@@ -2258,6 +2258,12 @@ T17 judges each M3 drive when T2 ends it, from what it saw during the drive:
     − CLOSE), as `LOG_SYSTEM 29` does;
   - `value_b` = for a full traverse, the time from relay-on to the target end sensor, in 0.1 s; for
     not reached, the position at the drive's end, in 0.1 %; for not judged, the reason code.
+  - *As built in 2.10.0, which splits "confirmed" in two:* `value_a` 1 confirmed after a full
+    traverse, 2 confirmed from part-way or already at the end, 3 not reached, 4 not judged.
+    `value_b` for 1 and 2 is relay-on to the target end sensor (0.1 s; 0 when the leaf never left
+    that end); for 3, the opening (0.1 %); for 4, the reason (1 interrupted, 2 motor alarm,
+    3 sensor lost or faulted, 4 bit 4, 5 no usable reading). The travel check has its own param,
+    **252**. The reference is `app_types.h`, with `logparser.md` 1.22.
 - **Not reached raises a flag and a web badge:** `m3_not_confirmed`, "M3 not confirmed", cleared by
   the next confirmed drive.
   - The LCD is unchanged (§6.2).
@@ -2291,9 +2297,15 @@ T17 judges each M3 drive when T2 ends it, from what it saw during the drive:
 - **Bit 4 shuts the gate.** Both end sensors active means the end-sensor loop is faulted, and bit 3
   cannot be believed in either direction. The gate goes TIMED with a new reason, and drives are not
   judged until it reopens.
-- **The device's start-up bits are read.** `0x01` means no measurement window has completed yet,
-  and `0x02` that the averaging is not yet filled. A reading that carries either is not used as
-  evidence, for the verdict or for the rules.
+- **The device's start-up bits are read.** `0x01` means no measurement window has completed since
+  `40002` was written, so the position and rate of such a reading are not used as evidence, for
+  the verdict or for the rules. It lasts one window. Bit 3 comes from the end sensors and counts
+  regardless.
+  - *Made precise 2026-09-19, while testing:* this line first said a reading carrying `0x01` **or
+    `0x02`** was no evidence at all. `0x02` (averaging not yet filled) concerns only the averaged
+    register, which nothing here judges on, and it lasts the whole averaging window, 10 s. Refusing
+    readings on it would have made the first drive after every `travel_m3` change unmeasurable,
+    because T17 rewrites `40002` then.
 
 ##### Version, surfaces, manuals
 
@@ -2313,15 +2325,19 @@ T17 judges each M3 drive when T2 ends it, from what it saw during the drive:
 
 | Test | How | Must show |
 |---|---|---|
-| Healthy | Full OPEN and CLOSE traverses, by T6 or the LCD | Confirmed both ways, traverse ~12 s logged, no warning, no badge |
-| Not reached | `travel_m3` 5, a 10 s drive against a ~12 s traverse | Not reached, the badge, the "too short" warning; the badge cleared by the next confirmed drive after `travel_m3` is restored to 13. **Fail-first:** 2.9.2 logs the same stroke as OPEN and reports nothing |
-| Much longer | `travel_m3` 171 on the rig | Confirmed, with the "much longer than needed" warning |
-| Sensor lost mid-drive | Bench inject `absent`, `fault`, `stuck` | Not judged; the drive finishes on the timer; the fault reported; the gate TIMED until a clean stroke |
-| Reversal | LCD OPEN, then CLOSE mid-travel | The first drive not judged, the second judged |
-| Already at the end | Recalibration of a closed M3 (an LCD logout) | Confirmed |
-| gh#78 | A part-way CLOSE (reversed at ~40 %), then a full CLOSE | No false early stop on the first; rule 2 judges the second |
-| Bit 4 | A new bench inject: both end sensors | The gate shuts with the new reason; the drive is not judged |
+| Healthy | Full OPEN and CLOSE traverses | Confirmed both ways, traverse ~12 s logged, no warning, no badge |
+| Not reached | `travel_m3` 5, a 10 s drive against a ~12 s traverse | Not reached, and the badge, cleared by the next confirmed drive after `travel_m3` is restored to 13. **Fail-first:** 2.9.2 logs the same stroke as OPEN and reports nothing |
+| Too short | `travel_m3` 10, a 15 s drive that still reaches the end sensor at ~12 s | Confirmed, with the "too short" warning in both directions, cleared once 13 is back. *(Corrected 2026-09-19: this row first expected the warning from `travel_m3` 5, but that drive is not reached, and the travel check measures only confirmed traverses.)* |
+| Much longer | `travel_m3` 171 on the rig | Confirmed, with the "much longer than needed" warning. Rejected samples and a false rule-1 row are expected here, from the constants T17 derives from the wrong value |
+| Sensor lost mid-drive | Bench inject `absent` or `fault` | Not judged; the drive finishes on the timer; the fault reported; the gate TIMED until it re-opens |
+| Reversal | OPEN, then a recalibration mid-travel | The first drive not judged; the second, a close from part-way, confirmed |
+| Already at the end | Recalibration of a closed M3 | Confirmed |
+| gh#78 | The reversal's part-way CLOSE, then a full CLOSE with the position racing to 0 (a new bench inject) | No false early stop on the first; rule 2 trips on the second |
+| Bit 4 | A new bench inject mid-drive: both end sensors | The gate shuts with the new reason; the drive is not judged |
 | Soak | At least 12 h and 10 judged drives | Counters clean, no *not reached*, the verdict rows matching the counters |
+
+**A stuck wiper** (bench inject `stuck`) is left to rule 1: its row reports the stall,
+and because the position never arrives, the verdict is *not reached*.
 
 ## 6. Operator-facing surfaces
 
