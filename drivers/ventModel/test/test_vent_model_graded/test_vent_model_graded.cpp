@@ -84,10 +84,12 @@ static vent_out_t run(const vent_in_t *in)
     return out;
 }
 
-/** M3 at rest where it stopped, the drive done `ago_ms` ago. */
+/** M3 at rest where it stopped, the drive done `ago_ms` ago: shut, open, or
+ *  part-open between the ends (interface 2). */
 static void m3_at(vent_in_t *in, int pos, uint32_t ago_ms)
 {
-    in->win[2].state = (pos == 0) ? VENT_WIN_CLOSED : VENT_WIN_OPEN;
+    in->win[2].state = (pos <= 0) ? VENT_WIN_CLOSED
+                     : ((pos >= 1000) ? VENT_WIN_OPEN : VENT_WIN_PART_OPEN);
     in->win[2].pos_x10 = (int16_t)pos;
     in->win[2].last_result = VENT_RES_DONE;
     in->win[2].ms_since_move = ago_ms;

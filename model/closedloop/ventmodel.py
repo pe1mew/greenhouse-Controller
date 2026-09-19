@@ -65,7 +65,7 @@ _CXX_CANDIDATES = (
 # header: the layout check compares offsets in declaration order.
 # --------------------------------------------------------------------------
 
-VENT_MODEL_API = 1
+VENT_MODEL_API = 2
 VENT_WINDOWS   = 3
 VENT_STEPS_MAX = 3
 VENT_STEP_NONE = -1
@@ -73,7 +73,7 @@ VENT_STEP_NONE = -1
 VENT_CAP_DIGITAL, VENT_CAP_LINEAR = 0, 1
 
 (VENT_WIN_UNKNOWN, VENT_WIN_CLOSED, VENT_WIN_MOVING_OPEN,
- VENT_WIN_OPEN, VENT_WIN_MOVING_CLOSE) = range(5)
+ VENT_WIN_OPEN, VENT_WIN_MOVING_CLOSE, VENT_WIN_PART_OPEN) = range(6)
 
 VENT_ACT_HOLD, VENT_ACT_CLOSE, VENT_ACT_OPEN, VENT_ACT_TARGET = range(4)
 
@@ -119,7 +119,7 @@ class VentIn(ctypes.Structure):
         ("cr_priority",      c_uint8),
         ("rh_ctrl_en",       c_bool),
         ("m3_deadzone_x10",  c_uint16),
-        ("m3_min_move_ms",   c_uint16),
+        ("m3_min_interval_ms", c_uint32),
         ("win",              VentWinIn * VENT_WINDOWS),
     ]
 

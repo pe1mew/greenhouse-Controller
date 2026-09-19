@@ -105,7 +105,8 @@ def run(ds, lo, hi, plant, law, fitted, flow):
     args = Namespace(model=law, warmup_h=6.0, rh_from_log=False, calibrator_hold=False,
                      openness="state", t3="sim", daynight="sim", firmware="current",
                      config=None, set=["wpos_fitted_m3=1"] if fitted else None,
-                     plant2=str(plant), m3_span_mm=1500, m3_min_move_s=0, m3_airflow_exp=flow)
+                     plant2=str(plant), m3_span_mm=1500, m3_min_interval_s=0,
+                     m3_airflow_exp=flow)
     params = json.loads(Path(plant).read_text())["params"]
     recs, act, ctl = cl.run_closed_loop(ds, lo, hi, "two", params, args,
                                         cl.schedule_from_args(args))

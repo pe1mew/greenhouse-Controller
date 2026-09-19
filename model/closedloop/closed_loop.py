@@ -654,7 +654,7 @@ def run_closed_loop(ds, lo, hi, plant_kind, params, args, sched=None, law=None):
                          "two-node plant (--plant2): the single node sees a window open or shut")
     if s.wpos_fitted_m3:
         m3 = LinearM3(span_mm=getattr(args, "m3_span_mm", SPAN_MM_PRODUCTION),
-                      min_move_s=getattr(args, "m3_min_move_s", 0),
+                      min_interval_s=getattr(args, "m3_min_interval_s", 0),
                       mode2=law.name not in MODE1_LAWS)
     act = Actuator(s, prof_at(start), m3_linear=m3, m3_flow_exp=flow_exp)
     sensor = SensorLayer(s, prof_at(start))
@@ -1032,9 +1032,9 @@ def reproduce(args):
             params = json.load(fh)
         kind, plant_name = "single", Path(args.artifact).name
 
-    if args.m3_span_mm <= 0 or args.m3_min_move_s < 0 or args.m3_airflow_exp <= 0:
+    if args.m3_span_mm <= 0 or args.m3_min_interval_s < 0 or args.m3_airflow_exp <= 0:
         raise SystemExit("--m3-span-mm and --m3-airflow-exp must be above 0, and "
-                         "--m3-min-move-s not below 0")
+                         "--m3-min-interval-s not below 0")
     sched = schedule_from_args(args)
     recs, act, ctl = run_closed_loop(ds, lo, hi, kind, params, args, sched)
     s = sched.at(start)
@@ -1066,11 +1066,9 @@ def reproduce(args):
               % (lin.span_mm, s.deadzone_m3_mm, lin.deadzone_x10(s.deadzone_m3_mm) / 10.0,
                  t17_poll_ms(s.travel_s[2])))
         print("  M3: " + ("mode 2 -- T2 takes targets; the open dwell gives way to a minimum "
-                          "interval of %d s between moves" % lin.min_move_s if lin.mode2 else
-                          "mode 1 -- driven on its timer with its dwell, as without the sensor"))
-        if lin.min_move_s * 1000 > 0xFFFF:
-            print("  note: vent_in_t.m3_min_move_ms is a uint16, so the law is told 65.5 s;"
-                  " T6 enforces the whole %d s" % lin.min_move_s)
+                          "interval of %d s between drives" % lin.min_interval_s if lin.mode2
+                          else "mode 1 -- driven on its timer with its dwell, as without the "
+                          "sensor"))
     if lin is not None or args.m3_airflow_exp != 1.0:
         print("  the plant takes M3's airflow as %s: unmeasured for a part-open M3 (plan s.5c)"
               % ("proportional to its opening" if args.m3_airflow_exp == 1.0 else
@@ -1275,9 +1273,10 @@ def main(argv=None):
                    help="a linear M3 (--set wpos_fitted_m3=1): its taught span, which turns "
                         "deadzone_m3 into the law's percent (default %(default)s mm, "
                         "production's ~1.5 m window)")
-    p.add_argument("--m3-min-move-s", type=int, default=0,
-                   help="a linear M3 in mode 2: the least time between two M3 moves, which "
-                        "T6 enforces (the linear dwell: no key yet, specified default 0)")
+    p.add_argument("--m3-min-interval-s", type=int, default=0,
+                   help="a linear M3 in mode 2: the least time from the end of one M3 drive "
+                        "to the start of the next, which T6 enforces and the law gets as "
+                        "m3_min_interval_ms (the linear dwell: no key yet, specified default 0)")
     p.add_argument("--m3-airflow-exp", type=float, default=1.0,
                    help="two-node plant: M3's airflow as its opening to this power. 1 = "
                         "proportional, as fitted (default); below 1 more air early, above 1 "

@@ -39,7 +39,7 @@ from firmware import (  # noqa: E402
 )
 from ventmodel import (  # noqa: E402
     VENT_ACT_CLOSE, VENT_ACT_HOLD, VENT_ACT_OPEN, VENT_ACT_TARGET, VENT_CAP_LINEAR,
-    VENT_RES_ABORTED, VENT_RES_DONE, VENT_RES_NONE, VENT_WIN_OPEN, VentOut,
+    VENT_RES_ABORTED, VENT_RES_DONE, VENT_RES_NONE, VENT_WIN_PART_OPEN, VentOut,
 )
 
 T0 = 10_000_000                    # ms on the simulator's clock
@@ -102,7 +102,8 @@ def layer_channel():
     check("the stop lies within the band plus one reading's travel",
           500 - DZ <= ch.reading <= 500 - DZ + one_step, "%d in %d..%d"
           % (ch.reading, 500 - DZ, 500 - DZ + one_step))
-    check("at rest part-open: the law sees OPEN, DONE, the target", ch.public == VENT_WIN_OPEN
+    check("at rest part-open: the law sees PART_OPEN, DONE, the target",
+          ch.public == VENT_WIN_PART_OPEN
           and ch.result == VENT_RES_DONE and ch.last_target == 500)
     stop = ch.drive_end
     cap, pos, age, last, res, since = ch.inputs(stop + 20_000)
@@ -229,7 +230,7 @@ class DoubleLaw:
     def step(self, vin):
         self.seen = (vin.win[2].cap, vin.win[2].pos_x10, vin.win[2].pos_age_ms,
                      vin.win[2].last_target_x10, vin.win[2].last_result,
-                     vin.m3_deadzone_x10, vin.m3_min_move_ms)
+                     vin.m3_deadzone_x10, vin.m3_min_interval_ms)
         out = self.out
         out.step = out.step_t = out.step_rh = -1
         for i, (act, tgt) in enumerate(self.plan(vin)):
@@ -283,7 +284,7 @@ def layer_t6():
     # the minimum interval: 600 s after a drive ends, then the target goes out
     law = DoubleLaw(lambda v: [hold, hold, (VENT_ACT_TARGET, target[0])])
     target = [500]
-    act = Actuator(s, PROFILE_CURRENT, m3_linear=LinearM3(min_move_s=600))
+    act = Actuator(s, PROFILE_CURRENT, m3_linear=LinearM3(min_interval_s=600))
     act.advance(T0)
     ctl = Controller(law, s)
     t = T0
@@ -303,8 +304,8 @@ def layer_t6():
     check("the minimum interval defers a target, then lets it go",
           d1.deferred == 1 and d2.deferred == 0 and act.ch[2].target == 800,
           "deferred %d then %d" % (d1.deferred, d2.deferred))
-    check("the law sees its last target and how it ended; 600 s caps at the uint16 field",
-          law.seen[3] == 500 and law.seen[4] == VENT_RES_DONE and law.seen[6] == 0xFFFF,
+    check("the law sees its last target, how it ended, and the whole 600 s interval",
+          law.seen[3] == 500 and law.seen[4] == VENT_RES_DONE and law.seen[6] == 600_000,
           str(law.seen))
     check("while M3 moves the law sees no result yet",
           act.ch[2].inputs(t + 1000)[4] == VENT_RES_NONE)
@@ -363,7 +364,7 @@ def layer_loop():
                          calibrator_hold=False, openness="state", t3="sim", daynight="sim",
                          firmware="current", config=None, plant2=str(p2),
                          set=["wpos_fitted_m3=1"] if fitted else None,
-                         m3_span_mm=1500, m3_min_move_s=0)
+                         m3_span_mm=1500, m3_min_interval_s=0)
 
     keys = ("T_sim", "RH_sim", "bm_sim", "pos_m3", "step", "step_t", "step_rh", "override")
     runs = []

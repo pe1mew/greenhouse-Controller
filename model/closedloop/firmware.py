@@ -67,7 +67,7 @@ from ventmodel import (BUILD_DIR, VENT_ACT_CLOSE, VENT_ACT_OPEN, VENT_ACT_TARGET
                        VENT_CAP_DIGITAL, VENT_CAP_LINEAR, VENT_RES_ABORTED, VENT_RES_DONE,
                        VENT_RES_FAIL_TIMEOUT, VENT_RES_NONE, VENT_WIN_CLOSED,
                        VENT_WIN_MOVING_CLOSE, VENT_WIN_MOVING_OPEN, VENT_WIN_OPEN,
-                       VENT_WIN_UNKNOWN, VentIn, build_dll)
+                       VENT_WIN_PART_OPEN, VENT_WIN_UNKNOWN, VentIn, build_dll)
 
 HERE = Path(__file__).resolve().parent
 FW_SRC = HERE.parent.parent / "firmware" / "src"
@@ -666,10 +666,11 @@ class Channel:
 # --------------------------------------------------------------------------
 
 CH_STOPPED = 7          # at rest part-open: the new terminal state plan §5b gives T2
-# vent_win_state_t has no "at rest, part-open", so the law sees OPEN, and pos_x10
-# says how far. SENSOR_HR ch2 has no code for it either (plan §5b); here it packs
-# as OPEN.
-PUBLIC_STATE[CH_STOPPED] = VENT_WIN_OPEN
+# The law sees VENT_WIN_PART_OPEN (interface 2), and pos_x10 says how far.
+# SENSOR_HR ch2 has no code for it yet (plan §5b); the simulator's own bitmask
+# packs it as OPEN.
+PUBLIC_STATE[CH_STOPPED] = VENT_WIN_PART_OPEN
+BITMASK_CODE[VENT_WIN_PART_OPEN] = BITMASK_CODE[VENT_WIN_OPEN]
 
 T17_POLL_DIVISOR = 150        # window_pos_task.cpp: poll = travel_m3 / 150 while M3 moves
 T17_MIN_MS, T17_MAX_WINDOW_MS, T17_MAX_POLL_MS = 100, 60000, 5000
@@ -691,16 +692,17 @@ class LinearM3:
     span_mm     the taught span, which turns deadzone_m3_mm into the law's 0.1 %
                 (contract §3a). Production's is expected at ~1.5 m (plan §2a.2);
                 the rig's is 1500 mm.
-    min_move_s  the linear dwell: the least time between two M3 moves, which T6
-                enforces. Its key does not exist yet (plan §10, decision 10); the
-                specified default is 0, off.
+    min_interval_s  the linear dwell: the least time from the end of one M3
+                drive to the start of the next, which T6 enforces and the law
+                is told as m3_min_interval_ms. Its key does not exist yet (plan
+                §10, decision 10); the specified default is 0, off.
     mode2       the law is mode 2's. T2 then takes targets, and M3's open dwell
-                gives way to min_move_s (contract §7). In mode 1 a fitted sensor
-                changes nothing that acts: T2 drives M3 on its timer with its
-                dwell, and the stepped law ignores the position it is handed.
+                gives way to min_interval_s (contract §7). In mode 1 a fitted
+                sensor changes nothing that acts: T2 drives M3 on its timer with
+                its dwell, and the stepped law ignores the position it is handed.
     """
     span_mm: int = SPAN_MM_PRODUCTION
-    min_move_s: int = 0
+    min_interval_s: int = 0
     mode2: bool = True
 
     def deadzone_x10(self, deadzone_mm):
@@ -1064,14 +1066,12 @@ class Controller:
         v.cr_priority = s.cr_priority
         v.rh_ctrl_en = s.rh_ctrl_en
         # A linear M3 (wpos_fitted_m3, settings.EFFECT): the deadband in the law's
-        # 0.1 %, and the linear dwell, whose key does not exist yet (contract §3a).
-        # m3_min_move_ms is a uint16 in vent_model.h, so the law can be told at
-        # most 65.5 s; T6 enforces the whole interval.
+        # 0.1 %, and the linear dwell, whose key does not exist yet (contract §3a)
         lin = actuator.m3_linear if actuator is not None else None
         dz = lin.deadzone_x10(s.deadzone_m3_mm) if lin else 0
-        min_move_ms = lin.min_move_s * 1000 if lin else 0
+        min_interval_ms = lin.min_interval_s * 1000 if lin else 0
         v.m3_deadzone_x10 = dz
-        v.m3_min_move_ms = min(min_move_ms, 0xFFFF)
+        v.m3_min_interval_ms = min_interval_ms
         states = actuator.public_states() if actuator else [VENT_WIN_CLOSED] * 3
         for i in range(3):
             w = v.win[i]
@@ -1109,11 +1109,11 @@ class Controller:
             narrow, widen = [(i, None) for i in d.closes], []
             for i, tgt in d.targets:
                 w = v.win[i]
-                if w.state in (VENT_WIN_CLOSED, VENT_WIN_OPEN):
+                if w.state in (VENT_WIN_CLOSED, VENT_WIN_OPEN, VENT_WIN_PART_OPEN):
                     if abs(tgt - w.pos_x10) <= dz:
                         d.dropped += 1
                         continue
-                    if w.ms_since_move < min_move_ms:
+                    if w.ms_since_move < min_interval_ms:
                         d.deferred += 1
                         continue
                 (narrow if tgt < w.pos_x10 else widen).append((i, tgt))

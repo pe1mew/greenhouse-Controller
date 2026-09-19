@@ -138,7 +138,7 @@ static const vm_layout_entry_t k_layout[] = {
     VM_FIELD(vent_in_t, cr_priority),
     VM_FIELD(vent_in_t, rh_ctrl_en),
     VM_FIELD(vent_in_t, m3_deadzone_x10),
-    VM_FIELD(vent_in_t, m3_min_move_ms),
+    VM_FIELD(vent_in_t, m3_min_interval_ms),
     VM_FIELD(vent_in_t, win),
 
     VM_SIZE(vent_win_out_t),

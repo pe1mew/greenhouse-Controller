@@ -177,10 +177,11 @@ python model/closedloop/test_linear_m3.py
 - **The mode follows the law**, as in T6's model table. With `stepped` it is mode 1, and a fitted sensor changes nothing that acts: over Jul 13-29 the run matches the binary one cell for cell. With any other law it is mode 2.
 - **What the law gets:**
   - M3 as LINEAR, with T17's latest reading in 0.1 % and its age. T17 reads every travel/150 while M3 moves (1 140 ms in production) and every 30 s at rest.
+  - M3's state: `VENT_WIN_PART_OPEN` when it rests between the ends (interface 2).
   - Its last target and how it ended: DONE, FAIL_TIMEOUT, or ABORTED when T3 or the operator took the window.
   - The time since its last drive.
   - `m3_deadzone_x10`: `deadzone_m3` over `--m3-span-mm` (default 1 500 mm, so 20 mm is 1.3 %).
-  - `m3_min_move_ms`: `--m3-min-move-s`, default 0. The linear dwell has no key yet.
+  - `m3_min_interval_ms`: `--m3-min-interval-s`, default 0. The linear dwell has no key yet.
 - **T6** clamps a target to 0..1000. It drops a target within the deadband of M3 at rest, and defers one inside the minimum interval after the last drive. It sends every narrowing move before any widening one. A target for a digital window is a model error.
 - **T2:**
   - It drives to a part-open target until the first reading within the deadband. M3 stops up to the deadband short of the target, and at most one reading's travel (0.67 %) past the edge of the band.
@@ -201,9 +202,9 @@ python model/closedloop/test_linear_m3.py
 - **T2's reaction time and the sensor's measurement window are left out.**
 - **The test script's laws are Python test doubles,** which only exercise the caller.
 
-**Two gaps in the contract, found while building this:**
-- **No state for "at rest, part-open".** `vent_win_state_t` has none, although plan §5b gives T2 one. The simulator reports it as OPEN, with `pos_x10` saying how far.
-- **`vent_in_t.m3_min_move_ms` is a `uint16`,** so it holds at most 65.5 s, while the linear dwell replaces a 25-min dwell. The simulator enforces the whole interval and tells the law 65 535.
+**Two gaps in the contract, found while building this, closed by interface 2 (2026-09-19):**
+- **There was no state for "at rest, part-open".** Now there is: `VENT_WIN_PART_OPEN`, which the simulator reports for M3 at rest between the ends.
+- **The minimum interval was a `uint16`,** at most 65.5 s, where the linear dwell stands in for dwells of 10 and 25 minutes. It is now `m3_min_interval_ms`, 32-bit, and the law is told the whole interval.
 
 ## Data
 

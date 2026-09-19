@@ -36,12 +36,13 @@
  * public interface. Its memory lives in this model's state (slots 0..5); a
  * host test runs both in lockstep to catch the day it needs more.
  *
- * ## Written for API 1 and API 2
+ * ## Interface 2
  *
- * It reads neither the minimum-interval field (the caller enforces the
- * interval; its name and width change in API 2) nor any window state beyond
- * those API 1 has. M3's decisions come from pos_x10, and M1 and M2's come
- * from the stepped model.
+ * It does not read m3_min_interval_ms: the caller enforces the interval, and
+ * the hold time here is the law's own. M3 at rest part-open
+ * (VENT_WIN_PART_OPEN) is at rest like any other, and its decisions come from
+ * pos_x10. M1 and M2's come from the stepped model. Nothing here depends on
+ * what interface 2 changed, so it also compiles against interface 1.
  */
 
 #include "vent_model.h"
