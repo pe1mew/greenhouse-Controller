@@ -309,6 +309,7 @@ The first version's pipeline (`prepare_calibration_input.py`, then `calibrate_pl
 |---|---|
 | The UTC evidence and the conversion | [`lora_time.py`](lora_time.py) |
 | Two-node plant, fits, M3 response test, closed-loop tests, the gates | [`closedloop/README.md`](closedloop/README.md) |
+| How well the model reproduces 5C88, in numbers and figures | [`closedloop/modelQuality.md`](closedloop/modelQuality.md) |
 | The figures behind F2-F5, F11, F12 | [`closedloop/campaign_figures.py`](closedloop/campaign_figures.py) |
 | The revision, claim by claim: what stands, what is withdrawn, the re-read tests, the ladder, wind | [`thermalProfileCampaign.md`](thermalProfileCampaign.md) §9.12 |
 | The swing gap (NS-10): the sensor delay, the north-wind effect, the adopted pair | `thermalProfileCampaign.md` §9.13, [`closedloop/README.md`](closedloop/README.md) |
