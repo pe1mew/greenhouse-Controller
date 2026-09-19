@@ -165,15 +165,26 @@ Validated settings and scenario results that established the current firmware de
 
 | Path | Contents |
 |---|---|
-| `plant_calibrated_constrained_summer2026_freem3.json` | The first version's single-node plant (6-param). **Superseded 2026-09-18:** fitted on inputs with the outdoor data two hours late |
-| `plant_calibrated_*.json` | Other fit variants (binary, 7-param, staged, bounded-prior) for comparison |
-| `calibration_input_2026-06-04_2026-07-04.csv` | Merged calibration input (SD logs + outdoor + doors). Built before 2026-09-18, so its outdoor and door columns are two hours late ([`lora_time.py`](lora_time.py)) |
+| `plant_calibrated_constrained_summer2026_freem3.json` | The first version's single-node plant (6-param). **Superseded 2026-09-18:** fitted on inputs with the outdoor data two hours late. Kept because `closedloop/` reads it (`gate-plant`, the single-node comparison) |
+| `plant_calibrated_summer2026.json` | The first-pass binary fit (NS-4). The later June calibrators read it as their baseline |
+| `calibration_input_2026-06-04_2026-0*.csv` | Merged calibration inputs (SD logs + outdoor + doors), ending 06-25, 07-04 and 07-12. Built before 2026-09-18, so their outdoor and door columns are two hours late ([`lora_time.py`](lora_time.py)). Kept because they are read: 07-04 by `gate-plant`, 06-25 by the June calibrators, 07-12 by `wind_rose_speed_count.py` (SD columns only) |
 | `*.log` | Raw SD log files from 5C88 |
-| `lht65_20_*.csv`, `lds01_*.csv`, `lht65_02_*.csv`, `lht65_03_*.csv` | Outdoor, door-sensor and indoor (`lht65-02`/`-03`) exports from the Wenumseveld MySQL DB, stamped in **UTC**. The `..._2026-09-17.csv` set (fetched 2026-09-18) runs to 2026-09-17; door 1's sensor last reported on 2026-08-16 |
+| `archived_overlap/` | SD logs from a second, overlapping download chain, set aside under the one-chain-per-window rule (`memory/gotcha-log.md`). No loader reads them |
+| `lht65_20_*.csv`, `lds01_*.csv`, `lht65_02_*.csv`, `lht65_03_*.csv` | Outdoor, door-sensor and indoor (`lht65-02`/`-03`) exports from the Wenumseveld MySQL DB, stamped in **UTC**. Fetched 2026-09-18, they run to 2026-09-17 and contain every row of the earlier June/July exports, which are archived. Door 1's sensor last reported on 2026-08-16 |
 | `plant2/` | Two-node plant fits by `closedloop/refit.py`, one JSON per objective; compared in [`closedloop/README.md`](closedloop/README.md). **Adopted (NS-10, 2026-09-18):** `plant2_summer2026_Ca2.9_tau120_tau90_ev5_dir.json` (primary) and `plant2_summer2026_Ca2.9_tau240_tau90_ev5_dir.json`, with a sensor stage and a north-wind term; `_Ca2.9` and `_dir` stay as records |
 | `plot_daily.py`, `plot_2026-*.png` | Daily T/RH/wind/window-state plots for every campaign day |
-| `m3_event_study.py` | The first version's event study (F3). Reads the shifted calibration input, so it reproduces the withdrawn result; the corrected one is `closedloop/campaign_figures.py --only F3` |
-| `calibration_constrained_summer2026*.png` | Fit-vs-measurement plots (bounded + free-m3 variants) |
+| `wind_rose_speed_count.py`, `check_dupes.py` | Wind rose of the wind-valid era; overlap check for SD log chains |
+| Superseded scripts, fits and exports | Archived 2026-09-19; see `archive/` below |
+
+#### `archive/` — obsolete model material
+
+`obsolete-2026-09-19.zip` holds what the 2026-09-19 cleanup took out of `model/`:
+- the first version's campaign scripts (`m3_event_study.py`, `ns9_direction_stratified.py`, `m3_ach_polar.py`, `m3_jul11_analysis.py`);
+- the single-node fits that were not adopted, their plots, and `calibrate_plant_staged.py`;
+- `plot_lds_doors.py`;
+- the June/July LoRa exports, which the `_2026-09-17` exports contain in full.
+
+Nothing in the tree reads the zip. [`archive/README.md`](archive/README.md) lists every file with the reason, its replacement and its git blob id, and says how to restore one.
 
 #### `campaign-spring-2026/` — spring 2026 calibration and oscillation investigation
 
