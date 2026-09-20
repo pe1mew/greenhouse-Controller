@@ -342,7 +342,12 @@
       <span class="save-ok" id="fb-dwell-close-m2"></span>
     </div>
     <h3 style="color:var(--fg);font-size:1rem;margin-top:1.25rem">M3 — Zijwandbeluchting Noord</h3>
-    <h3>Time control <span class="muted">· in use now</span></h3>
+    <!-- 2.12.0: the suffix is no longer hard-coded. It said "in use now"
+         unconditionally, which is false the moment linear control is in force.
+         app.js sets both this and the Linear control one from the mode
+         actually in force, so the headings answer "which block is live?" where
+         an operator already looks. -->
+    <h3>Time control <span class="muted" id="m3-timed-suffix">· in use now</span></h3>
     <div class="slider-row">
       <label data-tip="Seconds the relay stays on to drive M3 (north wall) end to end. This is the motor&apos;s FULL RUN — it deliberately overdrives PAST both end sensors into the blind overlap before its end switches stop it, so this is always longer than the window size below. Default: 171 s. Set too short and the window stops before reaching its end.">Travel time (s)</label>
       <input type="range"  id="cfg-travel-m3-sl" step="1">
@@ -372,7 +377,7 @@
          greyed while the setting is No. The reason sits ABOVE that block, not
          inside it, because a dimmed parent dims its children whatever their own
          opacity says. -->
-    <h3>Linear control <span class="muted">· position sensor</span></h3>
+    <h3>Linear control <span class="muted" id="m3-linear-suffix">· position sensor</span></h3>
     <div class="row">
       <label data-tip="Whether M3 has a window position sensor (the draw-wire encoder at Modbus address 40). No, the default, keeps the controller off that address entirely: nothing is asked, and the Bus card and the log show no entry for it. Yes makes the controller watch the sensor, and a sensor that then stops answering is reported as a Window sensor fault. Set it once to match the installation. It does not change how M3 is driven: M3 runs on its travel time either way.">Position sensor fitted</label>
       <select id="cfg-wpos-fitted-m3">
@@ -404,9 +409,12 @@
       <button onclick="postCfgSelect('motor','ctrl_mode_m3','cfg-ctrl-mode-m3')">Apply</button>
       <span class="save-ok" id="fb-ctrl-mode-m3"></span>
     </div>
-    <p id="m3-mode-now" class="muted"></p>
+    <!-- Speaks only when what was asked for is not what is in force: a line
+         that restates the selector above it in the common case teaches the
+         operator to skip it, which is exactly when it would matter. -->
+    <p id="m3-mode-now" class="disabled-why"></p>
     <div class="slider-row">
-      <label data-tip="In Linear mode only: the least time from the end of one M3 move to the start of the next, in seconds. It REPLACES M3's open and close dwell while Linear is in force, because a law that positions continuously would otherwise be held back for 25 minutes after every move. Zero, the default, means no interval at all: M3 may move again as soon as the law asks, and only the law's own hold stands between that and motor chatter. Raise it once you have measured how often the law actually moves M3.">Minimum interval (s)</label>
+      <label data-tip="In Linear mode only: the least time from the end of one M3 move to the start of the next, in seconds. It REPLACES M3's open and close dwell while Linear is in force, because a law that positions continuously would otherwise be held back for 25 minutes after every move. The default is 600 s, ten minutes: with today's control law that changes nothing — it already waits at least that long between moves — but it is the floor that holds if the law is ever replaced by one that decides faster. Zero means no interval at all, which is right only for a deliberate test. Above 900 s linear control stops being worth it: the temperature swings as much as timed control does while M3 still runs more often.">Minimum interval (s)</label>
       <input type="range"  id="cfg-min-intv-m3-sl" min="0" max="1500" step="10">
       <input type="number" id="cfg-min-intv-m3"    min="0" max="1500" step="10" class="short">
       <button onclick="postCfg('motor','min_intv_m3','cfg-min-intv-m3','int')">Apply</button>

@@ -75,6 +75,30 @@ static const char *TAG = "T2";
 #define RELAY_GAP_MS      2000u   /**< Min gap between complementary relays (ms) */
 #define ALARM_DEBOUNCE_MS   75u   /**< GPIO42 pin-confirm window (ms) */
 #define LOOP_TICK_MS        20u   /**< Main loop tick interval (ms) */
+
+/* The fail-first flag is a BITMASK, not a switch (2026-09-20). Restoring all
+ * four defects at once proved only the first: with the start-age defect in
+ * place no target ever arms, so the grace, the overshoot guard and the disarm
+ * are never exercised and their stages pass vacuously. One bit each:
+ *   1  the START judges freshness by the STOP rule's 3 s limit
+ *   2  the stop rule has no grace for the first sample of a drive
+ *   4  the stop rule has no overshoot guard
+ *   8  a full-travel command does not disarm an armed target
+ * `-DWPOS_FAILFIRST_212` alone means all four; `=8` is the safety-relevant one
+ * on its own; `=14` leaves targets working so the other three can be seen. */
+#ifdef WPOS_FAILFIRST_212
+#  if WPOS_FAILFIRST_212 + 0 == 0
+#    define FF212 15u
+#  else
+#    define FF212 (WPOS_FAILFIRST_212 + 0u)
+#  endif
+#else
+#  define FF212 0u
+#endif
+#define FF212_AGE       (FF212 & 1u)
+#define FF212_GRACE     (FF212 & 2u)
+#define FF212_OVERSHOOT (FF212 & 4u)
+#define FF212_DISARM    (FF212 & 8u)
 #define CALIB_CHUNK_MS     400u   /**< WDT-friendly chunk size for blocking calib */
 #define ALARM_GUARD_MS    60000u  /**< Guard time after alarm clears before re-cal (ms) */
 #define ALARM_GUARD_CHUNK_MS 5000u /**< WDT-friendly chunk size for guard wait */
@@ -410,9 +434,7 @@ static void ch_start_close(uint8_t ch, uint32_t now_ms, cmd_source_t source)
      * here rather than in the caller means CLOSE_ALL, the boot sweep, the
      * alarm paths and the LCD menu all clear it without knowing it exists —
      * and a safety close can never be stopped short by a stale target. */
-#ifndef WPOS_FAILFIRST_212
-    c->target_active = false;
-#endif
+    if (!FF212_DISARM) { c->target_active = false; }
 
     switch (c->state) {
 
@@ -730,11 +752,7 @@ static bool ch_start_target(uint8_t ch, int16_t want_x10, uint32_t now_ms,
         ESP_LOGW(TAG, "CMD_TARGET refused: M3 position not trusted");
         return false;
     }
-#ifdef WPOS_FAILFIRST_212
-    if (m3.age_ms > TARGET_MAX_AGE_MS) {        /* the defect: the stop rule's limit */
-#else
-    if (m3.age_ms > TARGET_START_MAX_AGE_MS) {
-#endif
+    if (m3.age_ms > (FF212_AGE ? TARGET_MAX_AGE_MS : TARGET_START_MAX_AGE_MS)) {
         /* Older than T17's idle cadence: it is not polling, so there is no
          * position to steer by. T6 is level-triggered and will ask again. */
         ESP_LOGW(TAG, "CMD_TARGET refused: position %u ms old (idle cadence is %u ms)",
@@ -792,11 +810,10 @@ static bool ch_target_tick(uint8_t ch, uint32_t now_ms, bool opening)
         /* Not yet sampled since the drive began: expected, and not a fault.
          * See TARGET_FRESH_GRACE_MS -- a stale reading cannot stop the drive
          * early, so waiting costs nothing. */
-#ifndef WPOS_FAILFIRST_212
-        if ((uint32_t)(now_ms - c->target_start_ms) < TARGET_FRESH_GRACE_MS) {
+        if (!FF212_GRACE &&
+            (uint32_t)(now_ms - c->target_start_ms) < TARGET_FRESH_GRACE_MS) {
             return false;
         }
-#endif
         /* Past the grace, the position really has gone away. Fall back to the
          * travel timer: the drive finishes at an end, the state is a real
          * terminal one, and 2.10.0's verdict reports what happened. */
@@ -813,13 +830,10 @@ static bool ch_target_tick(uint8_t ch, uint32_t now_ms, bool opening)
     /* Arrived, or gone past. The second half matters: the leaf moves ~0.67 %
      * of the stroke between two samples, so a band narrower than that would be
      * stepped over and the drive would run on to the end. */
-#ifdef WPOS_FAILFIRST_212
-    const bool arrived = (pos >= want - band && pos <= want + band);
-#else
     const bool arrived = (pos >= want - band && pos <= want + band) ||
-                         ( opening && pos >= want) ||
-                         (!opening && pos <= want);
-#endif
+                         (!FF212_OVERSHOOT &&
+                          (( opening && pos >= want) ||
+                           (!opening && pos <= want)));
     if (!arrived) { return false; }
 
     relay_ch_off(ch);

@@ -367,9 +367,13 @@ Wat je verder moet weten:
 
 #### Minimale tussentijd (s)
 
-Alleen in lineaire besturing: de kortste tijd tussen het einde van één beweging van M3 en het begin van de volgende. Instelbaar in tab **Motors**, onder M3 → *Linear control* (0–1500 s, standaard **0**).
+Alleen in lineaire besturing: de kortste tijd tussen het einde van één beweging van M3 en het begin van de volgende. Instelbaar in tab **Motors**, onder M3 → *Linear control* (0–1500 s, standaard **600**).
 
-> **Deze instelling VERVANGT de open- en sluit-rusttijd van M3 zolang lineair actief is.** Dat is opzet: een regeling die voortdurend bijstuurt zou anders na elke beweging 25 minuten stilstaan. Maar let op wat de standaard betekent: **0 is geen tussentijd**. Zet je M3 op Lineair en laat je dit op 0 staan, dan mag de regeling M3 zo vaak bewegen als hij wil. Verhoog deze waarde zodra je weet hoe vaak de regeling M3 in de praktijk beweegt — het aantal motorstarts per dag staat in het logboek.
+> **Deze instelling VERVANGT de open- en sluit-rusttijd van M3 zolang lineair actief is.** Dat is opzet: een regeling die voortdurend bijstuurt zou anders na elke beweging 25 minuten stilstaan.
+
+De standaard van 600 s (tien minuten) verandert met de huidige regeling **niets**: die wacht zelf al minstens zo lang tussen twee bewegingen. Het is een ondergrens voor het geval de regeling ooit vervangen wordt door één die sneller beslist — zonder die ondergrens zou M3 dan veel vaker gaan lopen. Tien minuten is ook ongeveer de traagheid van de kas zelf: de gemeten temperatuur loopt 3,5 tot 5,5 minuten achter op de lucht.
+
+> **Zet deze waarde niet boven de 900 s.** Daarboven schommelt de temperatuur net zo veel als bij tijdgestuurde besturing, terwijl M3 nog steeds vaker loopt — lineaire besturing levert dan niets meer op. **0 betekent geen tussentijd** en is alleen bedoeld om bewust te testen wat de regeling in haar eentje doet.
 
 ### Stapsgewijs ventileren
 

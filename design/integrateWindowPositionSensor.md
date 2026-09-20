@@ -2139,16 +2139,24 @@ simulator runs the real library against nine days of 5C88's own weather (2026-07
 - **Read the columns relatively, not absolutely.** The simulated swing is systematically lower than
   the logged one on the same days (2.8 against 5.6 in the first row), so these numbers rank the
   settings; they do not predict a greenhouse.
-- **The firmware default stays 0**, because that is what the specification and the simulator both
-  assume and a silent divergence would make every offline figure describe a different unit. This
-  table is the evidence for changing it deliberately — and on a rig whose window traverses in 13 s
-  rather than 176 s, which is the other reason not to bake a number in yet.
+- **The firmware default became 600 s** on 2026-09-20, from the model session's fuller study
+  (`model/closedloop/linearDwell.md`), which ran a whole summer rather than nine days and — the
+  decisive part — ran `graded` **with its own hold removed**, standing in for a future law that
+  re-decides every 30 s. That is where the interval earns its keep: 42.5 M3 drives a day at 0
+  against 19.3 at 600.
+- **One correction to this table, from that session:** the difference between its figures and these
+  is the *period*, not the rig. `travel_m3` came from 5C88's settings, so the traverse here was
+  production's 176 s; `--m3-span-mm` only scales the 20 mm deadband. The ranking reproduces exactly.
 
-**The default is 0 because the specification says 0** (§10 decision 10) and the simulator assumes 0
-— a firmware that quietly chose otherwise would mean `gradedCandidate.md`'s figures no longer
-describe what a unit does. It is worth saying plainly what that means: **a unit switched to mode 2
-with the default has no dwell on M3 at all**, and only the law's own hold stands between it and
-motor chatter. The manual says so too.
+**The default is 600 s, decided 2026-09-20** by the model session (`model/closedloop/linearDwell.md`)
+after the plan had specified 0. Three reasons, in order of weight: it **costs nothing today**
+(`graded` already holds ten minutes, so 0, 300 and 600 give an identical summer — same swing, same
+21.6 drives a day, not one target deferred); it is **the floor that protects the next law**, because
+the interval is the caller's protection while a hold inside a law is the law's own, and `graded`
+with its hold removed gives 42.5 drives a day at 0 against 19.3 at 600; and **ten minutes is the
+loop's dead time**, not a round number — the reading lags the air 3.5-5.5 min and a 25 % move takes
+44 s in production. **Never above 900**, where mode 2 swings as much as mode 1 while still driving
+M3 twice as often. **0 remains right for a deliberate test.**
 
 **The surfaces.**
 
@@ -2169,6 +2177,36 @@ motor chatter. The manual says so too.
   all three fell through to `UNK`, which tells an operator standing at the panel that the position
   is not established — the opposite of the truth about a window that was measured and stopped where
   it was told. They render `PART` (and `PART OPEN` where there is room).
+
+**T6 is level-triggered, so a second commander always loses (2026-09-20).** The first rig runs of
+`at_wp_target.py` showed a 50 % target running the full traverse to OPEN, which read as the stop
+rule failing. It was not: the SD log shows `MOVING_OPEN` to `OPEN` over a full 18 s and **no MODE
+row at all**. T6 had not changed its step — it was *re-posting* the step it already had, as it does
+every cycle for any window whose actual state does not match its mask. A full-travel command
+disarms an armed target, deliberately, so that a safety close can never be stopped short; so T6 and
+the bench hook fought over M3 and T6 won.
+
+**The project already solved this once:** the LCD's manual-motor menu auto-sets STANDBY for exactly
+this reason (gh#29). The harness now does the same, and `supersede` provokes its recalibration by
+*leaving* standby, which is the full-travel command that stage is about. Worth stating in the
+design because it generalises: **in mode 2 the only thing that may command M3 is T6**, and anything
+else — a menu, a bench hook, a future API — must hold STANDBY or expect to be overridden within one
+T6 cycle.
+
+**An eighth key list, found by flashing it (2026-09-20).** Both new keys were enrolled exactly as
+gh#64 requires — one descriptor row each, clamped, stored, audited, published in
+`/api/config/limits`, mirrored in the mock, checked — and `GET /api/config` returned **`null`** for
+both, so the GUI's new controls populated with nothing. The config RESPONSE is a hand-written
+format string in `web_server.cpp`: a list of keys maintained beside a table that already knows
+them, which is the shape gh#64 deleted six times over and missed once.
+
+It cannot be generated from the descriptor (it carries arrays, strings and derived fields the table
+does not model), so it is **checked** instead: `check_cfg_desc.py` now fails when a key the
+descriptor publishes never appears in the response. Verified by deleting one key from the response
+and watching the checker name it. The rule immediately found **four pre-existing cases** — the
+`led_*` keys, which are stored and clamped but never readable, which is exactly
+[gh#67](https://github.com/pe1mew/greenhouse-Controller/issues/67). They are exempted by name with
+that issue cited, so the gap is visible rather than silent and the set empties when gh#67 is fixed.
 
 **Two defects that would have made mode 2 fail on the rig, found by reading the freshness rules
 back against T17's cadence:**
@@ -2316,7 +2354,28 @@ ordinal.
 same Q1 command T6 will post, so T2's real path is what runs. `bin/at_wp_target.py` drives six
 stages: `band`, `twice`, `ends`, `supersede`, `lost`, `refuse`. **Not yet run — 2344 is soaking.**
 
-*Fail-first, as every behavioural change here gets:* **`-DWPOS_FAILFIRST_212`** restores the four
+*The safety rule, demonstrated failing (2026-09-20):* with **only** the disarm defect in force
+(`=8`), a full-travel close commanded during a targeted drive **stopped M3 at 42.2 % instead of
+closing it** — a safety close that does not close. On the real build the same stage reaches the
+closed end. Getting there took two corrections worth keeping:
+
+- **`supersede` never tested the disarm.** It provokes a *recalibration*, and T2 runs that as a
+  synchronous blocking sweep that drives the relays directly, so an armed target never gets a tick
+  and cannot stop it. The stage passed on a build with the defect, which is the most misleading
+  possible result. The disarm lives on the ordinary `CMD_CLOSE` path — **the one T3's wind override
+  uses** — so `closeshort` commands a full close mid-drive and asserts the leaf reaches the end.
+- **The defects mask each other in layers.** With the overshoot defect also active (`=14`), the
+  close was not stopped short either: the clause that would have stopped it is the very one that
+  defect disables. Only `=8` shows the disarm.
+
+*Fail-first, as every behavioural change here gets, and it needed a correction on its first run:*
+**`-DWPOS_FAILFIRST_212` is a BITMASK, not a switch** (1 start age, 2 grace, 4 overshoot guard,
+8 disarm; bare = all four). Restoring all four at once on 2344 proved only the first: with the
+start-age defect in place **no target ever arms**, so the grace, the overshoot guard and the disarm
+are never exercised and their stages pass *vacuously* — `lost` and `supersede` both reported PASS
+on a build whose rules were the broken ones. A fail-first arm that passes for the wrong reason is
+worse than none, because it certifies the rule it never touched. With `=14` the targets work and
+the other three defects are visible. Bare, it restores the four
 defects the target rules fixed — the start judging freshness by the stop rule's 3 s limit, the stop
 rule without its grace, the stop rule without its overshoot guard, and a full-travel command that
 does **not** disarm an armed target. That last one is why the flag exists: on a fail-first build the

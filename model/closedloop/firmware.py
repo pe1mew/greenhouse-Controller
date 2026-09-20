@@ -127,7 +127,7 @@ class Settings:
     deadzone_m3_mm: int = 20
     wpos_fitted_m3: bool = False
     ctrl_mode_m3:   int = 0
-    min_intv_m3:    int = 0
+    min_intv_m3:    int = 600
 
 
 def settings_5c88(ts):

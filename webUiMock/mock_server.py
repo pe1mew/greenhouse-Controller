@@ -134,7 +134,7 @@ cfg: dict = {
     # The mock has no position sensor to make it effective, so this only
     # stores and publishes -- which is what the GUI needs to render it.
     "ctrl_mode_m3":         0,
-    "min_intv_m3":          0,    # 2.12.0: the linear dwell, s (0 = off)
+    "min_intv_m3":        600,    # 2.12.0: the linear dwell, s (default 600)
     # gh#76 (2026-09-20): the mock accepted motor/deadzone_m3 and dropped it, so
     # the GUI's deadzone field read empty and a change there did not survive a
     # reload. DEF_DEADZONE_M3_MM = 20.

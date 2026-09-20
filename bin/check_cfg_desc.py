@@ -369,6 +369,61 @@ FORM_ROUTES = (("web_post_handler", "CFG_P_WEB", "POST /api/web"),
                ("ota_config_post_handler", "CFG_P_OTA", "POST /api/ota/config"))
 
 
+def check_config_get(rows):
+    """Every published key must come back from GET /api/config.
+
+    Found the hard way on 2026-09-20: `ctrl_mode_m3` and `min_intv_m3` were
+    enrolled correctly -- clamped, stored, audited, published in
+    /api/config/limits -- and read back as `null`, because the config RESPONSE
+    is a hand-written format string and nobody had added them. The GUI's new
+    controls therefore populated with nothing.
+
+    This is the same shape as the six tables gh#64 deleted: a list of keys
+    maintained by hand beside a table that already knows them. The response
+    cannot easily be generated from the descriptor (it carries arrays, strings
+    and derived fields the table does not model), so instead it is CHECKED --
+    which is the cheaper half of the same property.
+
+    A key that is deliberately not readable must say so in the descriptor by
+    not carrying CFG_F_PUB; `led_*` are the precedent (gh#67)."""
+    src = strip_c_comments(read(WS_PATH))
+    published = {r["key"] for r in rows if r["published"]}
+
+    # The response spells array keys once with a suffix (travel_s, dwell_open_s)
+    # and scalars by their own name; both appear as "<name>": in the format
+    # string. Collect every JSON name the file emits.
+    emitted = set(re.findall(r'\\"([a-z0-9_]+)\\":', src))
+
+    # Array-valued groups: the descriptor has one row per channel (travel_m1..3)
+    # and the response one key for all three.
+    GROUPS = {
+        "travel_m1": "travel_s", "travel_m2": "travel_s", "travel_m3": "travel_s",
+        "dwell_open_m1": "dwell_open_s", "dwell_open_m2": "dwell_open_s",
+        "dwell_open_m3": "dwell_open_s",
+        "dwell_close_m1": "dwell_close_s", "dwell_close_m2": "dwell_close_s",
+        "dwell_close_m3": "dwell_close_s",
+        "deadzone_m3": "deadzone_m3_mm",
+        "poll_interval": "poll_interval_s",
+        "session_timeout": "session_timeout_min",
+        "ap_timeout": "ap_timeout_min",
+    }
+
+    # KNOWN AND OPEN: the four led_* keys are write-only -- stored, clamped and
+    # published in /api/config/limits, but absent from the config response, so
+    # a value written to them can never be read back or verified. That is
+    # gh#67, filed and open, not a drift introduced here. Listing them makes
+    # the gap visible and keeps the rule useful for every other key; when
+    # gh#67 is fixed this set empties and the rule tightens by itself.
+    GH67_WRITE_ONLY = {"led_day_brt", "led_nite_brt", "led_nite_from", "led_nite_to"}
+
+    for k in sorted(published):
+        name = GROUPS.get(k, k)
+        if name in emitted or k in GH67_WRITE_ONLY:
+            continue
+        err("GET /api/config never returns '%s' (as \"%s\"), but the "
+            "descriptor publishes it -- the GUI reads null" % (k, name))
+
+
 def check_form_routes(rows, macros):
     """Each form endpoint must write exactly the keys that declare its path.
 
@@ -485,6 +540,7 @@ def main():
     check_shadow(rows, fields)
     check_no_ladders()
     check_defaults(rows, default_values())
+    check_config_get(rows)
     check_form_routes(rows, macros)
 
     pub = dict(published_json(rows))

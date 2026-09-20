@@ -130,7 +130,16 @@ class Rig(object):
                                ("dwell_close_s", "motor", "dwell_close_m3")):
             cur = cfg.get(field)
             val = cur[2] if isinstance(cur, list) and len(cur) > 2 else cur
-            self.saved[(ns, key)] = val
+            if val == TEST_DWELL_S:
+                # A previous run left its own test value behind -- restoring it
+                # would make the cut permanent and silently change how the unit
+                # behaves afterwards. Refuse to record it, and say so: only the
+                # operator knows what it should be (2026-09-20, after a
+                # single-stage run restored M3's dwells to 5 s).
+                say("WARNING %s already reads %s s, the test value -- NOT recording it "
+                    "as the original. Set it yourself after this run." % (key, val))
+            else:
+                self.saved[(ns, key)] = val
             self.u.post_cfg(ns, key, TEST_DWELL_S)
         time.sleep(SETTLE_S)
         say("dwells cut to %d s (restored on exit)" % TEST_DWELL_S)
@@ -153,6 +162,60 @@ class Rig(object):
 
     def inject(self, how):
         return self.u._req("POST", "/api/diag/windowpos", {"inject": how})[1]
+
+    def standby(self, on):
+        """Hold T6 off M3 for the run.
+
+        T6 is LEVEL-TRIGGERED: every cycle it re-posts CMD_OPEN or CMD_CLOSE for
+        any window whose actual state does not match its current step -- and
+        writes no MODE row, because its step has not changed. A full-travel
+        command disarms an armed target (by design, so a safety close can never
+        be stopped short), so a bench target and a running T6 fight over M3 and
+        T6 wins. Seen twice on 2344, 2026-09-20: a 50 % target ran the full
+        traverse to OPEN because T6 still wanted M3 open from an earlier stage,
+        and the run read it as the stop rule failing.
+
+        STANDBY inhibits T6 and leaves T2's Q1 handling alone, so the bench hook
+        still drives M3 -- which is the isolation these stages need.
+        """
+        sc, _ = self.u._req("POST", "/api/mode",
+                            {"mode": "standby" if on else "automatic"})
+        time.sleep(SETTLE_S)
+        say("T6 %s" % ("held in STANDBY" if on else "released to automatic"))
+        return sc == 200
+
+    def wait_gate(self, limit_s=180):
+        """Wait until T17 publishes POSITION.
+
+        Between boot and M3's first completed stroke the gate is deliberately
+        TIMED -- "not yet promoted", not "probing" -- because position control
+        must not gain authority underneath a movement already committed to the
+        timer (window_pos_task.cpp). A target issued in that window is refused,
+        correctly, and a harness that does not wait for the promotion measures
+        its own timing rather than the rule under test. Found on 2344,
+        2026-09-20: the first stage ran 40 s after a push and failed for this
+        reason alone.
+
+        The stroke that promotes it is provoked here if none comes by itself.
+        """
+        end = time.time() + limit_s
+        provoked = False
+        while time.time() < end:
+            gate = (self.u.diag() or {}).get("gate") or {}
+            if gate.get("mode_str") == "position":
+                say("gate: position control available")
+                return True
+            if not provoked:
+                say("gate is %s (%s) -- driving M3 to promote it"
+                    % (gate.get("mode_str"), gate.get("reason_str")))
+                self.target(1000)
+                self.wait_rest()
+                self.target(0)
+                self.wait_rest()
+                provoked = True
+            time.sleep(1.0)
+        say("gate never reached position control")
+        return False
 
     # -- waiting ----------------------------------------------------------
     def wait_rest(self, limit_s=MOVE_LIMIT_S):
@@ -230,12 +293,15 @@ def stage_supersede(rig):
     rig.target(500)
     time.sleep(2.0)
     say("recalibrating mid-target (a plain CLOSE_ALL)")
-    rig.u._req("POST", "/api/mode", {"mode": "standby"})
-    time.sleep(1.0)
+    # The run holds STANDBY, so LEAVING it is what triggers T2's synchronous
+    # CLOSE_ALL -- the full-travel command this stage is about. Straight back
+    # afterwards, so the remaining stages keep T6 off M3.
     rig.u._req("POST", "/api/mode", {"mode": "automatic"})
     st = rig.wait_rest(180)
-    return check("CLOS" in st.upper(),
-                 "a full-travel close supersedes the target: %s" % st)
+    ok = check("CLOS" in st.upper(),
+               "a full-travel close supersedes the target: %s" % st)
+    rig.standby(True)
+    return ok
 
 
 def stage_lost(rig):
@@ -253,7 +319,17 @@ def stage_lost(rig):
 def stage_refuse(rig):
     rig.drive_to_end(False)
     rig.inject("absent")
-    time.sleep(2.0)
+    # T17 polls every 30 s while M3 rests, so an injected absence is not SEEN
+    # for up to that long -- the gate stays POSITION and a target is accepted,
+    # correctly, because nothing yet knows the sensor is gone. Wait for the
+    # gate to shut before asking, or this stage measures the poll cadence
+    # rather than the refusal (2026-09-20).
+    end = time.time() + 45
+    while time.time() < end:
+        if ((rig.u.diag() or {}).get("gate") or {}).get("mode_str") != "position":
+            break
+        time.sleep(1.0)
+    say("gate: %s" % (((rig.u.diag() or {}).get("gate") or {}).get("mode_str")))
     before = m3_state(rig.u.status())
     r = rig.target(500)
     time.sleep(3.0)
@@ -263,8 +339,39 @@ def stage_refuse(rig):
                  "refused with no sensor, M3 unmoved (%s, reply %s)" % (after, r))
 
 
+def stage_closeshort(rig):
+    """A full close DURING a targeted drive must reach the closed end.
+
+    This is the stage `supersede` was meant to be. A recalibration turned out
+    not to exercise the disarm at all: T2 runs it as a synchronous blocking
+    sweep that drives the relays directly, so an armed target never gets a tick
+    and cannot stop it. The disarm lives on the ORDINARY CMD_CLOSE path -- the
+    one T3's wind override uses -- so that is what has to be tested.
+
+    Commanding target 0 is exactly that path: T2 turns an end into a plain
+    full-travel close. With the target still armed (the fail-first defect), the
+    stop rule sees a closing drive already past its target and stops the leaf
+    part-way -- a safety close that does not close, which is the whole reason
+    the disarm exists.
+    """
+    rig.drive_to_end(False)
+    rig.target(500)
+    say("waiting for the leaf to leave the closed end")
+    time.sleep(4.0)
+    mid = m3_open_x10(rig.u.status())
+    say("mid-drive at %s" % ("%.1f %%" % (mid / 10.0) if mid is not None else "?"))
+    rig.target(0)                      # an ordinary full-travel close
+    st = rig.wait_rest()
+    pos = m3_open_x10(rig.u.status())
+    ok = check("CLOS" in st.upper() and "PART" not in st.upper(),
+               "the close reached the end: %s at %s"
+               % (st, "%.1f %%" % (pos / 10.0) if pos is not None else "?"))
+    return ok
+
+
 STAGES = {
     "band": stage_band,
+    "closeshort": stage_closeshort,
     "twice": stage_twice,
     "ends": stage_ends,
     "supersede": stage_supersede,
@@ -294,6 +401,10 @@ def main():
     results = {}
     try:
         rig.cut_dwells()
+        rig.standby(True)
+        if not rig.wait_gate():
+            sys.exit("T17 never published position control: nothing below can pass, "
+                     "and it would not be the target rules' fault")
         for n in names:
             print("\n== %s ==" % n)
             try:
@@ -303,8 +414,9 @@ def main():
                 results[n] = False
     finally:
         print("\nrestoring ...")
+        rig.drive_to_end(False)    # a known end before T6 takes M3 back
+        rig.standby(False)
         rig.restore()
-        rig.drive_to_end(False)
         rig.u.logout()
 
     print("\n== result ==")

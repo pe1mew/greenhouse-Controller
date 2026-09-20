@@ -2144,3 +2144,78 @@ directory*, with the tree restored to the release state, reproduced the publishe
 - Park work-in-progress by copying the files aside rather than reaching for git — reverting
   tracked files with `git checkout --` and copying them back is enough, and leaves no refs
   to clean up.
+
+## 2026-09-20 — a key can be enrolled correctly and still read back null
+
+**Problem:** `ctrl_mode_m3` and `min_intv_m3` were added exactly as gh#64 requires — one
+descriptor row each, so the clamp, the shadow write, the boot default, the audit id and
+`GET /api/config/limits` all followed, and `check_cfg_desc.py` passed. On the unit both
+read back as **`null`** from `GET /api/config`, so the GUI's new controls populated with
+nothing.
+
+**Root cause:** the config RESPONSE is a hand-written `snprintf` format string in
+`web_server.cpp` — an eighth key list, beside the seven gh#64 collapsed. Nothing pointed
+at it, and no check covered it.
+
+**Fix:** the two keys added to the response, and `check_cfg_desc.py` gained
+`check_config_get()`: every key the descriptor publishes must appear in the response.
+Proved by deleting one and watching the checker name it. It found four pre-existing cases
+(the `led_*` four, gh#67 — stored, clamped, never readable), exempted by name with the
+issue cited so the gap stays visible.
+
+**Rule:** *after enrolling a config key, read it back from the unit before believing the
+enrolment.* The descriptor makes a key correct everywhere it is consulted; it does not
+make every consumer consult it.
+
+**And a smaller one, twice in a day:** `git checkout -- <file>` discards uncommitted work
+**and** re-applies git's `autocrlf`, so a file that was LF in the working tree comes back
+CRLF. A patch matching LF then silently finds nothing. Detect the endings per file before
+matching, and never `git checkout --` a file that holds uncommitted work — copy it aside
+first (2026-09-20 gotcha above says the same about parking work).
+
+## 2026-09-20 — a bundled fail-first build can pass for the wrong reason
+
+**Problem:** `-DWPOS_FAILFIRST_212` restored all four defects that 2.12.0's target rules
+fixed. On the rig, two stages failed as intended — and `lost` and `supersede` **PASSED**
+on a build whose rules were the broken ones.
+
+**Root cause:** the first defect masked the rest. With the start-age defect in place no
+target is ever armed, so the grace, the overshoot guard and the disarm never run and their
+stages pass *vacuously*. The run looked like partial confirmation; it was no confirmation
+at all for those two rules.
+
+**Fix:** the flag became a BITMASK (1 age, 2 grace, 4 overshoot, 8 disarm; bare = all).
+`=14` leaves targets working so the other three are visible, and `=8` isolates the
+safety-relevant one.
+
+**Rule:** *a fail-first build must restore ONE defect at a time, or the earliest defect in
+the path decides the result.* When a fail-first arm passes, ask what it actually exercised
+before treating it as evidence — a pass there is a claim that the rule does not matter,
+and that claim needs to be true for the right reason.
+
+## 2026-09-20 — classification is not consumption (two of them in one day)
+
+**Problem, twice, in different tools.** A config key was enrolled exactly as gh#64 requires
+— one descriptor row, so the clamp, the shadow write, the boot default, the audit id and
+`/api/config/limits` all follow — and was still **inert** at the far end:
+
+- **Firmware:** `ctrl_mode_m3` and `min_intv_m3` read back as `null` from `GET /api/config`,
+  because that response is a hand-written format string. The GUI's new controls populated
+  with nothing.
+- **Simulator (model session, same day):** both keys were *classified* in
+  `closedloop/settings.py` — which is what its guard checks — but nothing consumed them, so
+  `--set min_intv_m3=900` ran silently at 0 and mode 2 came from the law's name rather than
+  from `ctrl_mode_m3`.
+
+**Root cause, shared:** the checks verify that a key is *declared* everywhere it must be
+declared. Neither checks that anything *acts* on it. `check_cfg_desc.py` cannot see the
+difference, and a classification table is exactly the kind of list that looks complete
+while doing nothing.
+
+**Fix:** `check_cfg_desc.py` gained `check_config_get()` (every published key must appear
+in the response; proved by deleting one and watching it fail). The simulator side was wired
+by the model session.
+
+**Rule:** *after adding a key, read it back from the consumer that is supposed to act on
+it, and change it to a value whose effect you can see.* "It is in the table" is a claim
+about the table.

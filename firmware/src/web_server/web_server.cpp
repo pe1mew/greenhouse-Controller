@@ -1237,6 +1237,11 @@ static esp_err_t config_get_handler(httpd_req_t *req)
         "\"deadzone_m3_mm\":%d,"
         /* gh#73: 1 = a position sensor is fitted to M3. */
         "\"wpos_fitted_m3\":%d,"
+        /* 2.12.0: the DESIRED control mode and the linear dwell. The mode
+         * actually in force is a STATUS field (windows.M3_ctrl_mode), not a
+         * setting -- it also depends on whether the position is trusted. */
+        "\"ctrl_mode_m3\":%d,"
+        "\"min_intv_m3\":%d,"
         "\"poll_interval_s\":%ld,"
         "\"session_timeout_min\":%ld,"
         "\"ap_timeout_min\":%ld,"
@@ -1262,6 +1267,8 @@ static esp_err_t config_get_handler(httpd_req_t *req)
         (int)cfg.dwell_close_s[0], (int)cfg.dwell_close_s[1], (int)cfg.dwell_close_s[2],
         (int)cfg.deadzone_m3_mm,
         (int)cfg.wpos_fitted_m3,
+        (int)cfg.ctrl_mode_m3,
+        (int)cfg.min_intv_m3,
         (long)cfg.poll_interval_s, (long)cfg.session_timeout_min,
         (long)cfg.ap_timeout_min,
         (long)cfg.lat_deg, (long)cfg.lat_frac,

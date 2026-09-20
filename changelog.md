@@ -24,7 +24,7 @@ plan §5b/§5c and `design/ventModelContract.md`. Detail in `bin/2.12.0/release-
   never read as "target 0 %". T2 drives M3 to the target and stops within the deadband; 0 % and
   100 % stay ordinary full-travel drives; a position lost mid-move finishes on the travel timer at
   an end.
-- **`motor/min_intv_m3`** (s, **default 0**) — the linear dwell. **In mode 2 it REPLACES M3's open
+- **`motor/min_intv_m3`** (s, **default 600**) — the linear dwell. **In mode 2 it REPLACES M3's open
   and close dwell**, and T2 and T6 enforce the one key from one place.
 - **`M3_ctrl_mode`** in the status payload (`"TIMED"` / `"LINEAR"`), and the web GUI shows which law
   is in force beside the setting that asks for it.

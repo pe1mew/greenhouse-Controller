@@ -491,23 +491,32 @@ function handleStatus(s) {
     }
   }
 
-  // 2.12.0: which control law M3 is actually under. The setting says what was
-  // ASKED for; this says what is in FORCE, and the two differ whenever the
-  // position cannot be trusted. Saying so beside the setting is the difference
-  // between "nothing happened" and "here is why nothing happened".
+  // 2.12.0: which control law M3 is actually under.
+  //
+  // The truth goes in the two GROUP HEADINGS, because that is where an operator
+  // looks to see which block of settings is live -- and because 'Time control
+  // - in use now' used to be hard-coded, so it asserted something false as soon
+  // as linear control took over. The sentence below the selector speaks only
+  // when what was asked for is NOT what is in force: restating the selector in
+  // the common case teaches people to skip the line, which is exactly when they
+  // would need to read it.
   if (s.windows && s.windows.M3_ctrl_mode) {
     const linear = (s.windows.M3_ctrl_mode === 'LINEAR');
     const sel    = document.getElementById('cfg-ctrl-mode-m3');
     const asked  = !!sel && sel.value === '1';
-    let msg = linear
-      ? 'In force now: Linear — M3 is driven to a measured position.'
-      : 'In force now: Timed — M3 runs on its travel time.';
-    if (asked && !linear) {
-      msg += ' Linear is set but not in force: it needs a fitted sensor that is'
-           + ' answering and has been taught. It resumes on its own once the'
-           + ' position is trusted again.';
-    }
-    setText('m3-mode-now', msg);
+
+    // In linear control the travel time still governs -- it is the ceiling of
+    // a targeted drive and the fallback when the position goes -- but both
+    // dwells are replaced by the minimum interval. "Travel time only" says
+    // that in three words; "not in use" would be wrong.
+    setText('m3-timed-suffix',  linear ? '· travel time only' : '· in use now');
+    setText('m3-linear-suffix', linear ? '· in use now' : '· position sensor');
+
+    setText('m3-mode-now', (asked && !linear)
+      ? 'Linear is set but NOT in force: M3 is running on its travel time. It'
+        + ' needs a position sensor that is fitted, answering and taught, and it'
+        + ' resumes by itself once the position is trusted again.'
+      : '');
   }
 
   // Mode + Alarms — the Alarms card aggregates every active concern. Mode

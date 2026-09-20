@@ -5,7 +5,7 @@
 | Document | Interface contract for the T6 ventilation control model |
 | Date | 2026-09-17 |
 | Revised | 2026-09-19: **interface 2**. Two gaps found by the model work while building its simulator against the header: the minimum interval between M3 moves was 16-bit milliseconds, at most 65.5 s, for a setting that stands in for 10 and 25 minute dwells (and against this document's own units table), and there was no state for a window at rest part-open. Now `uint32_t m3_min_interval_ms` and `VENT_WIN_PART_OPEN` |
-| Status | **In force since 2026-09-20: T6 calls the library, and mode 1's law exists only here.** `drivers/ventModel/` holds `src/vent_model.h` and `src/vent_model_stepped.cpp` — mode 1's law, 23 host tests — and `src/vent_model_graded.cpp`, a first candidate for mode 2, with 15 more ([`model/closedloop/gradedCandidate.md`](../model/closedloop/gradedCandidate.md)); `pio test -e native`. The firmware compiles both through `firmware/components/ventModel`, and T6's inline copy was deleted in 2.12.0 (plan §5c), so the hand-kept duplication that ran from 2026-09-17 is over. **Nothing selects `graded` yet**: the model is fixed to `stepped` until the effective mode exists (plan §5b). The refactor's evidence — the byte-identical row, 96.8 % of 378 on the replay, 97.1 % of 381 in the closed loop — is in §5c of the plan; **its rig soak is still outstanding** |
+| Status | **In force since 2026-09-20: T6 calls the library, and mode 1's law exists only here.** `drivers/ventModel/` holds `src/vent_model.h` and `src/vent_model_stepped.cpp` — mode 1's law, 23 host tests — and `src/vent_model_graded.cpp`, a first candidate for mode 2, with 15 more ([`model/closedloop/gradedCandidate.md`](../model/closedloop/gradedCandidate.md)); `pio test -e native`. The firmware compiles both through `firmware/components/ventModel`, and T6's inline copy was deleted in 2.12.0 (plan §5c), so the hand-kept duplication that ran from 2026-09-17 is over. **`graded` is selected whenever mode 2 is in force** (T6's model table, indexed by the effective mode), so enabling `motor/ctrl_mode_m3` also chooses that law — the operator allowed it for mode 2 TESTING on 2026-09-20, not as a shipped choice. The refactor's evidence: the byte-identical row, 96.8 % of 378 on the replay, 97.1 % of 381 in the closed loop (plan §5c), seven rig stages of the target path, the disarm rule demonstrated failing in isolation, and a 12 h mode-1 soak running from 2026-09-20 15:22. **Mode 2 has not been soaked** |
 | Audience | Whoever writes or tunes a control model — a separate session, a separate agent, or a person. **This document is meant to be read on its own** |
 | Scope decisions | [`integrateWindowPositionSensor.md`](integrateWindowPositionSensor.md) §5b (the two control modes, the position path) and §5c (the rules around this contract) |
 | Requirements | [`functionalRequirementsSpecification.md`](functionalRequirementsSpecification.md), and [`windowPositionSensorRequirements.MD`](windowPositionSensorRequirements.MD) FR-WP04/05/17/18 |
@@ -236,8 +236,9 @@ the same thing on both, and the sensor reports a percentage natively.
 `VENT_ACT_CLOSE`, so the caller commands either one in full; a `TARGET` from it is an ordinary
 move. Only a LINEAR window can be part-open, and `pos_x10` says where. A model that wants an end
 must ask for it: the stepped law sends a part-open M3 to whichever end its step wants, never
-HOLDs it, because holding would leave M3 part-open while the step says OPEN. T2 gains the state
-in 2.12.0 (plan §5b), so until then no firmware caller reports it; the model work's simulator does.
+HOLDs it, because holding would leave M3 part-open while the step says OPEN. T2 gained the state in 2.12.0 (`CH_PART_OPEN`, ordinal 7) and reports it: the two
+enums share their ordinals, pinned with `static_assert`s in `climate_control.cpp`, so a
+renumbering on either side fails the build rather than the greenhouse.
 
 You therefore do **not** implement the deadband, the minimum interval, the clamping or the
 "is this window even capable" check. You may read `m3_deadzone_x10` and `m3_min_interval_ms` to avoid
@@ -377,7 +378,7 @@ drivers/ventModel/                    EXISTS
   src/vent_model_graded.cpp           mode 2: a first candidate (model/closedloop/gradedCandidate.md)
   test/test_vent_model/               host unit tests, stepped: 23 passing
   test/test_vent_model_graded/        host unit tests, graded: 15 passing
-firmware/components/ventModel/        NOT YET CREATED — the 2.12.0 wiring step
+firmware/components/ventModel/        created in 2.12.0; no REQUIRES (the library sees no IDF)
   CMakeLists.txt                      idf_component_register over the sources above
 ```
 
@@ -415,8 +416,10 @@ cd drivers/ventModel && pio test -e native      # host unit tests, no hardware
 2. **Replay against real weather.** `model/vent_step_replay.py` already reconstructs the decision
    inputs from SD logs, runs `stepped` from this library on them (through
    `model/closedloop/ventmodel.py` since 2026-09-19, replacing a Python port whose output it
-   reproduced exactly), and refuses to project unless it first reproduces the logged demands. Mode 2
-   needs the model compiled into a host harness fed the same rows. Report, for each candidate:
+   reproduced exactly), and refuses to project unless it first reproduces the logged demands. **The mode 2 harness now exists**: `model/closedloop/closed_loop.py
+   reproduce --plant2 <fit> --model <name> --set wpos_fitted_m3=1 --set ctrl_mode_m3=1` runs the
+   compiled law against real weather with a linear M3, and prints exactly the list below. Report,
+   for each candidate:
    - M3 openings per day, and motor starts per day per window;
    - M3 open time;
    - the temperature the greenhouse would have seen, against the logged temperature;
@@ -424,8 +427,10 @@ cd drivers/ventModel && pio test -e native      # host unit tests, no hardware
 3. **The reference check, before anything else.** `stepped` behind this interface must reproduce
    the logged decisions at least as well as today's replay does: **96.8 % of 378 decisions**
    (`campaignResults_summer2026.md` F8). Its `step`, `step_t` and `step_rh` must also reproduce the
-   existing log row exactly, so history stays readable by the same parsers. Until both pass, a
-   difference in `graded` cannot be attributed to the law rather than to the refactor.
+   existing log row exactly, so history stays readable by the same parsers. **And
+   `closed_loop.py gate-control`**, which runs the same library inside an emulated T5/T4/T6 chain
+   rather than a reconstruction of it: **97.1 % of 381** as of 2026-09-20. Until all of these pass,
+   a difference in `graded` cannot be attributed to the law rather than to the refactor.
 4. **A soak on the dev rig** before production: at least 12 h, at least 10 judged strokes, all fault
    counters at 0, and the motor-start count per hour reported.
 5. **The thermal claim can only be proven on the production greenhouse over a summer.** The rig can
@@ -492,7 +497,7 @@ LoRa database stamps in UTC), and its claims about M3 are withdrawn: "a factor o
 | Position freshness | one sample per `travel/150`: ≈1.17 s production, 100 ms rig | Overshoot ≈ age × speed, ≈0.67 % production. The requirement is 1 %, so there is little room |
 | Temperature reading | follows the air 3.5–5.5 min late: after an M3 move the logged temperature barely changes for 3–4 min (2026-09-18, NS-10) | Do not read an unchanged temperature in the first minutes after a move as a move that did nothing; a law that answers faster than the reading does will overshoot |
 | Minimum move | **not yet measured** — the shortest pulse that actually moves the leaf | Until it is, do not rely on moves below a few percent |
-| Dwell today | M3 25 min after opening, 10 min after closing; M1, M2 5 min after opening, none after closing | Mode 2 replaces the open dwell with a minimum interval between moves; the caller enforces it |
+| Dwell today | M3 25 min after opening, 10 min after closing; M1, M2 5 min after opening, none after closing | **As built in 2.12.0, mode 2 replaces BOTH of M3's dwells** with `min_intv_m3`, the interval between any two moves — not the open dwell alone, because a continuous law narrows as often as it widens. T2 arms it (`ch_dwell_ms()`) and T6 refuses a target inside it, both from the one key, so the actuator's dwell and the caller's interval cannot drift apart. **Its default is 600 s** (2026-09-20): free under a law that already holds ten minutes, and the floor that protects against one that does not. 0 means no dwell on M3 at all and is a test setting; **never above 900**, where mode 2 stops paying for itself |
 | Reversal | the actuator inserts a 2 s gap, then drives the other way | A reversal is two drives and two judged movements; frequent reversals are motor wear |
 | End switches | cut the motor at each physical end, invisible to the firmware | Over-driving is harmless; a target of 0 or 1000 is safe |
 | Motor wear | no measured limit | Report starts per day. The stepped law produces 3–8 M3 openings a day; a continuous law must not multiply that |

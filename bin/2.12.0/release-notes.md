@@ -42,9 +42,15 @@ Three things the refactor had to preserve, and how each was shown:
 
 ### The linear dwell
 
-**`motor/min_intv_m3`** (seconds, 0–1500, **default 0**). In mode 2 it **replaces M3's open and close dwell** ([contract §7](../../design/ventModelContract.md)): `ch_dwell_ms()` in T2 arms M3's dwell from this key whenever linear control is in force, and T6 refuses a target inside the same interval. One key, two enforcers, one number. Leaving T2's 25-minute dwell in place would have made the interval irrelevant and mode 2 unable to move a window at all.
+**`motor/min_intv_m3`** (seconds, 0–1500, **default 600**). In mode 2 it **replaces M3's open and close dwell** ([contract §7](../../design/ventModelContract.md)): `ch_dwell_ms()` in T2 arms M3's dwell from this key whenever linear control is in force, and T6 refuses a target inside the same interval. One key, two enforcers, one number. Leaving T2's 25-minute dwell in place would have made the interval irrelevant and mode 2 unable to move a window at all.
 
-> **The default of 0 means no dwell on M3 at all in mode 2.** It is 0 because the specification says 0 (plan §10 decision 10) and the closed-loop simulator assumes 0 — a firmware that quietly chose otherwise would mean `model/closedloop/gradedCandidate.md`'s figures no longer describe what a unit does. Raise it once you have measured how often the law actually moves M3; the manual says so too.
+**The default is 600 s**, decided on 2026-09-20 from a simulated summer of 5C88's own weather (`model/closedloop/linearDwell.md`). The plan had specified 0; the evidence changed it:
+
+> - **It costs nothing today.** `graded` already holds ten minutes between moves, so 0, 300 and 600 give an identical summer — same swing, same 21.6 M3 drives a day, not one target deferred.
+> - **It is the floor that protects the next law.** The interval is the *caller's* protection; a hold inside a law is the law's own, and the contract exists because the law will be replaced. `graded` with its hold removed — a law re-deciding every 30 s — gives 42.5 M3 drives a day at 0, against mode 1's 7.7; at 600 it gives 19.3, with a better swing than mode 1. Shipping 0 means the protection exists only while the law happens to be well behaved.
+> - **Ten minutes is the loop's dead time**, not a round number: the reading lags the air 3.5–5.5 min, T5's averaging adds to it, and a 25 % move takes 44 s in production.
+>
+> **Never above 900**, where mode 2 swings as much as mode 1 while still driving M3 twice as often. **0 stays right for a deliberate test** — it is what the law alone does, and one setting away.
 
 ### Log encodings — all appended, all with their consumers
 

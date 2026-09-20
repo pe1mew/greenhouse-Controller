@@ -129,18 +129,37 @@
 #define DEF_CTRL_MODE_M3         0
 
 /**
- * @brief The linear dwell in seconds: 0 = off (2.12.0, contract §7).
+ * @brief The linear dwell in seconds (2.12.0, contract §7).
  *
- * Specified as 0 by plan §10 decision 10, and the simulator assumes 0, so the
- * firmware must not quietly choose something else: a mode-2 result reproduced
- * offline would then not be the result the unit produced. It matters only in
- * mode 2, where it REPLACES M3's open dwell — so a unit switched to mode 2
- * with this at 0 has no dwell on M3 at all, and the law's own hold is the only
- * thing between it and motor chatter. Measure before raising it: the minimum
- * MOVE (the shortest pulse that shifts the leaf) is still unmeasured, and the
- * two are different quantities.
+ * **600 s, decided 2026-09-20** from the closed-loop simulator over a summer of
+ * 5C88's own weather (`model/closedloop/linearDwell.md`). The plan had
+ * specified 0; the evidence changed it, for three reasons:
+ *
+ *  - **It costs nothing today.** `graded` already holds ten minutes between
+ *    moves, so 0, 300 and 600 produce an identical summer — same swing, same
+ *    21.6 M3 drives a day, not one target deferred. The key only bites above
+ *    the law's own hold.
+ *  - **It is the floor that protects the NEXT law.** The interval is the
+ *    CALLER's protection; a hold inside a law is the law's own, and the whole
+ *    point of the contract is that the law gets replaced. Run `graded` with
+ *    its hold removed — a law re-deciding every 30 s — and 0 gives 42.5 M3
+ *    drives a day against mode 1's 7.7; 600 gives 19.3, with the swing still
+ *    better than mode 1's. Shipping 0 means the protection exists only while
+ *    the law happens to be well behaved, and vanishes silently when one is not.
+ *  - **Ten minutes is the loop's dead time**, not a round number: the reading
+ *    lags the air 3.5-5.5 min, T5's averaging adds to that, and a 25 % move
+ *    takes 44 s in production.
+ *
+ * **Never above 900.** At 900 the swing is back to mode 1's while M3 still
+ * drives twice as often, so mode 2 has stopped paying for itself; 1200-1500 is
+ * worse than mode 1 on both counts. **0 stays right for a deliberate test** —
+ * it is what the law alone does.
+ *
+ * It matters only in mode 2, where it REPLACES BOTH of M3's dwells. The
+ * minimum MOVE (the shortest pulse that shifts the leaf) is a different
+ * quantity, still unmeasured, and no interval substitutes for it.
  */
-#define DEF_MIN_INTV_M3_S        0
+#define DEF_MIN_INTV_M3_S      600
 
 /* ── System ─────────────────────────────────────────────────────────────── */
 #define DEF_POLL_INTERVAL_S      30   /**< 30 s poll: doubles smoothing-buffer depth at same time-window without the firmware-revisit overhead of finer rates */

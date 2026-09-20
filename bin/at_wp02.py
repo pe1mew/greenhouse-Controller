@@ -76,12 +76,54 @@ class Rig(object):
                            ("dwell_close_s", "dwell_close_m3")):
             cur = cfg.get(field)
             val = cur[2] if isinstance(cur, list) and len(cur) > 2 else cur
-            self.saved[key] = val
+            if val == TEST_DWELL_S:
+                say("WARNING %s already reads %s s, the test value -- NOT recording it "
+                    "as the original. Set it yourself after this run." % (key, val))
+            else:
+                self.saved[key] = val
             self.u.post_cfg("motor", key, TEST_DWELL_S)
         self.saved["min_intv_m3"] = cfg.get("min_intv_m3")
         self.u.post_cfg("motor", "min_intv_m3", 0)
         time.sleep(SETTLE_S)
         say("dwells cut to %d s, minimum interval 0 (restored on exit)" % TEST_DWELL_S)
+
+    def standby(self, on):
+        """Hold T6 off M3.
+
+        T6 re-posts its current step every cycle for any window that does not
+        match it, and writes no MODE row while doing so; a full-travel command
+        disarms an armed target. Ten approaches to one target would otherwise
+        be ten races between this harness and the controller, and the loser is
+        always the harness (2026-09-20, see at_wp_target.py). STANDBY inhibits
+        T6 and leaves T2's Q1 handling alone.
+        """
+        sc, _ = self.u._req("POST", "/api/mode",
+                            {"mode": "standby" if on else "automatic"})
+        time.sleep(SETTLE_S)
+        say("T6 %s" % ("held in STANDBY" if on else "released to automatic"))
+        return sc == 200
+
+    def wait_gate(self, limit_s=180):
+        """Wait for T17 to publish POSITION.
+
+        Between boot and M3's first completed stroke the gate is deliberately
+        TIMED, and every target is refused until it promotes at a stroke
+        boundary. Provoke one if none comes.
+        """
+        end = time.time() + limit_s
+        provoked = False
+        while time.time() < end:
+            gate = (self.u.diag() or {}).get("gate") or {}
+            if gate.get("mode_str") == "position":
+                say("gate: position control available")
+                return True
+            if not provoked:
+                say("gate is %s -- driving M3 to promote it" % gate.get("mode_str"))
+                self.go(1000)
+                self.go(0)
+                provoked = True
+            time.sleep(1.0)
+        return False
 
     def restore(self):
         for key, val in self.saved.items():
@@ -231,6 +273,10 @@ def main():
     res = {}
     try:
         rig.cut_dwells()
+        rig.standby(True)
+        if not rig.wait_gate():
+            sys.exit("T17 never published position control: every approach below "
+                     "would be refused, and not by the rule under test")
         if a.only != "wp03":
             res["AT-WP02"] = test_wp02(rig, a.target, a.n)[0]
         if a.only != "wp02":
@@ -238,8 +284,9 @@ def main():
             res["AT-WP03"] = test_wp03(rig)
     finally:
         print("\nrestoring ...")
+        rig.go(0)                  # a known end before T6 takes M3 back
+        rig.standby(False)
         rig.restore()
-        rig.go(0)
         rig.u.logout()
 
     print("\n== result ==")
