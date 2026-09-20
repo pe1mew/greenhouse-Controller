@@ -4,7 +4,7 @@
 |---|---|
 | Document | Implementation plan |
 | Date | 2026-09-07, last revised **2026-09-17** |
-| Status | **Phases 0—3 COMPLETE and hardware-verified** (FDA4, 2026-09-10). **Phase 4 is SPLIT** (2026-09-13): the sensor-presence gate landed and is hardware-verified 2026-09-12, fault logging is done, and the control-side half — travel-complete, the two 12.4 rules, the operator surfaces — moved into the section 5.0 M3 slice. **Nothing consumes position yet, so the GATE before Phase 5 is still uncrossed and greenhouse behaviour is unchanged.** Phase 5 is **sequenced behind section 5.0**, no longer simply out of scope. Both prerequisites shipped (gh#49 in 2.4.1, gh#51 in 2.4.2—2.4.4). **Released in 2.8.0 and in `main` since 2026-09-17** (`ropeSensor` fast-forwarded): observe-only. T17, the presence gate and both §12.4 rules measure, log and report; soak #2 passed; nothing acts on position. **gh#73 is fixed in 2.9.0** by an installation setting, `motor/wpos_fitted_m3`, default not fitted (see *Fitted or not*). **gh#72 is fixed in 2.9.1**: each drive is judged, so a reversal is two, and the gate no longer flaps on a self-reported fault (see *Every drive judged*). **Phase 5 is scoped as of 2026-09-17 (§5b): two control modes, 2.10.0 confirms only, mode 2 is 2.11.0** |
+| Status | **Phases 0—3 COMPLETE and hardware-verified** (FDA4, 2026-09-10). **Phase 4 is SPLIT** (2026-09-13): the sensor-presence gate landed and is hardware-verified 2026-09-12, fault logging is done, and the control-side half — travel-complete, the two 12.4 rules, the operator surfaces — moved into the section 5.0 M3 slice. **Nothing consumes position yet, so the GATE before Phase 5 is still uncrossed and greenhouse behaviour is unchanged.** Phase 5 is **sequenced behind section 5.0**, no longer simply out of scope. Both prerequisites shipped (gh#49 in 2.4.1, gh#51 in 2.4.2—2.4.4). **Released in 2.8.0 and in `main` since 2026-09-17** (`ropeSensor` fast-forwarded): observe-only. T17, the presence gate and both §12.4 rules measure, log and report; soak #2 passed; nothing acts on position. **gh#73 is fixed in 2.9.0** by an installation setting, `motor/wpos_fitted_m3`, default not fitted (see *Fitted or not*). **gh#72 is fixed in 2.9.1**: each drive is judged, so a reversal is two, and the gate no longer flaps on a self-reported fault (see *Every drive judged*). **Phase 5 is scoped as of 2026-09-17 (§5b): two control modes, 2.10.0 confirms only, mode 2 is 2.12.0** |
 | Requirements | [`windowPositionSensorRequirements.MD`](windowPositionSensorRequirements.MD) — FR-WP01–22, and §12 evaluating this sensor |
 | Device contract | [`modbusInterfaceContractSpecification.md`](modbusInterfaceContractSpecification.md) v1.2 (normative source is the sensor project's `design/TDS.md`) |
 | Bus architecture | [`refactorSensorConfiguration.md`](refactorSensorConfiguration.md) — the end state this plan deliberately does *not* build |
@@ -1591,7 +1591,7 @@ Phases 0–4 add a sensor, logging and diagnostics. The greenhouse behaves exact
 
 The larger part of the effort, and the part the rig **cannot validate**.
 
-- **T2:** a target input to `CH_MOVING_OPEN`/`CH_MOVING_CLOSE` that de-energises at target, travel timer retained as ceiling. A partial position becomes a new persisted state — an NVS schema change, so a **minor** version bump. **Scheduled 2026-09-17 into 2.11.0, not 2.10.0: see §5b.**
+- **T2:** a target input to `CH_MOVING_OPEN`/`CH_MOVING_CLOSE` that de-energises at target, travel timer retained as ceiling. A partial position becomes a new persisted state — an NVS schema change, so a **minor** version bump. **Scheduled 2026-09-17 into 2.12.0, not 2.10.0: see §5b.**
 - **T6:** `VENT_STEP_TABLE` must express partial M3 apertures.
 - **`step_width = max(hyst_t / NUM_VENT_STEPS, 1)` is integer division and gets *worse* with more steps** — at 6 steps, `hyst_t = 5` gives width 0 → clamped to 1 → every step 1 °C. **The F8 arithmetic must be reworked before the step table is touched**, not after.
 
@@ -2010,7 +2010,7 @@ diagnosed as one before the operator corrected it.
 
 ---
 
-#### 5b. Decided 2026-09-17 — two control modes, the position path, and the 2.10.0 / 2.11.0 split
+#### 5b. Decided 2026-09-17 — two control modes, the position path, and the 2.10.0 / 2.12.0 split
 
 Recorded from the operator on 2026-09-17, after the gh#72 work and a review of the summer
 campaign. It concretises §5a and **narrows gate 1 for 2.10.0**.
@@ -2036,7 +2036,7 @@ that integer division (see the rework note under Phase 5).
 | Release | Content |
 |---|---|
 | **2.10.0** | **Confirm only.** T2 keeps its timed drives and **drives on to the timer**. The sensor confirms each drive's end (done or failed) and checks `travel_m3` against the measured traverse (§3.5). On a sensor fault mid-drive the drive finishes on the timer and the fault is reported; position control stays off until a clean stroke is seen. **This supersedes gate 1's "de-energise at target, stop on bit 3" for 2.10.0.** **Designed 2026-09-19: §5d.** |
-| **2.11.0** | **Mode 2.** T2 gains the target input, T6 the graded law and the fallback. Designed while 2.10.0 soaks. |
+| **2.12.0** | **Mode 2.** T2 gains the target input, T6 the graded law and the fallback. Designed while 2.10.0 soaks. *(Renumbered 2026-09-20, operator's choice: this row said **2.11.0** until gh#77 took that number — teaching the sensor on release firmware is a user-visible feature, so it bumped the minor. Mode 2's scope is unchanged.)* |
 
 ##### The position path: one owner, one copy
 
@@ -2193,7 +2193,7 @@ demands. Mode 2 needs the same treatment with the model compiled in — a host h
 `vent_in_t` rows and records `vent_out_t` — so a candidate law can be scored against real weather
 before it is shipped.
 
-##### The refactor: T6 stops carrying its own copy — in 2.11.0, with mode 2
+##### The refactor: T6 stops carrying its own copy — in 2.12.0, with mode 2
 
 **Where it stands (2026-09-17).** The library exists: `drivers/ventModel/` holds the interface and
 `vent_model_stepped`, a faithful copy of T6's decision functions, with 23 host tests passing (interface 2 since 2026-09-19, see the contract's Revised line). **The
@@ -2206,7 +2206,7 @@ The reasoning:
 - In 2.10.0 the switch would be a behaviour-neutral refactor of the control path, shipped in the
   same release as the confirmation work, with **no consumer benefit** — two kinds of risk in one
   release, one of which nobody asked for yet.
-- In 2.11.0 the boundary is **needed anyway**: something has to choose between two models at
+- In 2.12.0 the boundary is **needed anyway**: something has to choose between two models at
   runtime. The refactor pays for itself in the release that requires it.
 
 **The steps, in order:**
@@ -2330,7 +2330,7 @@ T17 judges each M3 drive when T2 ends it, from what it saw during the drive:
     fitted the controller now confirms that M3 arrived.
 - **Not yet due:** `beheerderHandleiding` 1470, 1471 and 1503, and the boer manual's power-cycle
   advice. They stay true in 2.10.0: T2's belief still comes from its own commands, and the CLOSE_ALL
-  still re-aligns it. They come due in 2.11.0, when position drives the actuator.
+  still re-aligns it. They come due in 2.12.0, when position drives the actuator.
 - **The boer manual changes in the same changeset as the badge.**
 
 ##### Acceptance tests (rig, fail-first where the old code can fail)
@@ -2396,11 +2396,11 @@ Show the opening percentage per §6.1, with the sensor fault surfaced alongside 
 
 **Also hosts commissioning** (admin-only): set the window size, teach the sensor, and read the calibration verdict.
 
-> **2.9.0 (gh#73): *Linear control* starts with *Position sensor fitted*.** While it is No, everything below it (deadzone and commissioning) is greyed, and the reason sits above the greyed block rather than inside it. A dimmed parent dims its children whatever their own opacity says, so a reason inside the block cannot be shown at full strength. The commissioning card's own reason for a 404 now names the cause: on a release build, teaching needs a bench build; on a bench build (`fw_ver` ending in `-bench`), a route failed to register, which is a fault.
+> **2.9.0 (gh#73): *Linear control* starts with *Position sensor fitted*.** While it is No, everything below it (deadzone and commissioning) is greyed, and the reason sits above the greyed block rather than inside it. A dimmed parent dims its children whatever their own opacity says, so a reason inside the block cannot be shown at full strength. The commissioning card's own reason for a 404 named the cause: on a release build, teaching needed a bench build; on a bench build, a route failed to register, which is a fault. **Since 2.11.0 (gh#77) every build serves the routes**, so a 404 is a fault on any firmware, and the reason text says so while naming the version, because older firmware answers 404 legitimately.
 
 > **Superseded 2026-09-13→14.** An earlier draft of this item timed the traverse and asked the operator to accept the measured seconds. That was built on a wrong premise about what the teach is for. **The teach maps the sensor's raw ADC onto a KNOWN distance** — the gap between the two end sensors, written to the device's `40004` — so a completed teach is self-consistent *by construction* and there is nothing in it for an admin to ratify. The screen publishes a **machine verdict** instead, and a re-teach happens when that verdict says so rather than on a schedule. See §6.3a.
 
-> **The commissioning surface stays inside `#ifdef MODBUS_BENCH` — accepted by the operator, 2026-09-14.** It sits beside the teach, which already lived there. The cost is explicit: commissioning a sensor on a production unit means flashing a build that also opens the arbitrary Modbus write route, so it is a deliberate, temporary state and the release build must be restored afterwards.
+> **~~The commissioning surface stays inside `#ifdef MODBUS_BENCH`~~ — SUPERSEDED 2026-09-20 ([gh#77](https://github.com/pe1mew/greenhouse-Controller/issues/77), firmware 2.11.0).** It is in **every** build now, admin-only: the routes, the teach runner and the calibration verdict. The 2026-09-14 decision accepted an explicit cost — commissioning a sensor on a production unit meant flashing a build that also opened the arbitrary Modbus write route, a deliberate temporary state with the release build restored afterwards — and 5C88's encoder would have had to be taught that way, on site. **What stays bench-only is the rest of the diagnostic surface:** `/api/diag/modbus` (arbitrary writes), `/api/diag/windowpos` (the direct sensor read and the soak counters) and `/api/diag/lcd`. Moving the teach meant moving T17's commissioning hooks with it — `commission_tick()` drives the teach from the same readings — which is why the routes alone would have given an armed teach that never progressed.
 
 > **A teach pauses automatic control — operator decision, 2026-09-16.** Until then T6 stayed in charge during a teach and could move M3 between two legs, which ends the run with `m3_busy` at best.
 >
@@ -2584,9 +2584,9 @@ Note what production logging unlocks that the rig cannot: a **real** 171 s trave
     the value. The measured reason is in §5b — a buffered hop costs the entire
     1 % overshoot budget in production and ten times it on the rig.
 13. ~~What does 2.10.0 contain?~~ **Confirmation only**, with T2 still driving to the
-    timer. Mode 2 is **2.11.0**, designed while 2.10.0 soaks.
+    timer. Mode 2 is **2.12.0**, designed while 2.10.0 soaks.
 15. ~~When does T6 stop carrying its own copy of the stepped law?~~ **Operator decision
-    2026-09-17: when the dual mode is introduced (2.11.0), not in 2.10.0.** The boundary is needed
+    2026-09-17: when the dual mode is introduced (2.12.0), not in 2.10.0.** The boundary is needed
     anyway once two models must be chosen between, and doing it earlier would ship a
     behaviour-neutral refactor of the control path with no consumer benefit. Until then mode 1's law
     exists twice — live in T6, and as the tested reference in `drivers/ventModel/` — and both copies

@@ -66,12 +66,13 @@
  * not on the teach. The "persist race" diagnosed the same day, and the
  * VERIFYING state added for it, were built on that misreading and are gone.
  *
- * Dev builds only, alongside the rest of the bench commissioning surface.
+ * gh#77 (2026-09-20): in every build. Teaching a sensor no longer requires
+ * flashing a bench image onto the unit. The arbitrary Modbus write route and
+ * the direct sensor read stay bench-only; these routes are admin-only and
+ * touch only the sensor's own registers.
  */
 #ifndef COMMISSION_H
 #define COMMISSION_H
-
-#ifdef MODBUS_BENCH
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -246,5 +247,4 @@ void commission_tick(const windowpos_reading_t *r, uint32_t now_ms);
 }
 #endif
 
-#endif /* MODBUS_BENCH */
 #endif /* COMMISSION_H */

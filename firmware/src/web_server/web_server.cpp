@@ -124,11 +124,11 @@
 #include "../ota_manager/ota_manager.h"   /* alpha.6.20 — ota_firmware_/assets_/get_* */
 #include "../status_post/status_post.h"   /* alpha.6.20 — status_post_last_str (web tab) */
 #include "../ota_client/ota_client.h"
+#include "../window_pos/commission.h"     /* gh#77 — teach + window size, admin-only, EVERY build */
+#include "window_pos.h"                     /* the driver: read for the commissioning verdict */
+#include "../window_pos/window_pos_task.h"  /* T17 snapshot + derived cfg */
 #ifdef MODBUS_BENCH
 #include "../diag/modbus_bench.h"   /* dev-only bench Modbus access */
-#include "window_pos.h"            /* Phase 1 driver, exercised by /api/diag/windowpos */
-#include "../window_pos/commission.h" /* §6.3 item 4 — traverse measurement + teach */
-#include "../window_pos/window_pos_task.h" /* Phase 2 — T17 snapshot + derived cfg */
 #endif     /* 2.2.0 (ROTA) — rota_cert_set/_is_custom for /api/ota/config */
 #include "../system_id/system_id.h"       /* 2.2.0 (ROTA) — system_mac_str: device id for /api/ota/check */
 #include "littlefs_storage.h"
@@ -870,11 +870,10 @@ static esp_err_t logout_handler(httpd_req_t *req)
     if (cookie_get_session(req, token)) {
         session_close(token);
         ESP_LOGI(TAG, "[T11] /api/logout session closed");
-#ifdef MODBUS_BENCH
         /* A teach holds STANDBY until its session ends: release it now rather
-         * than at T17's next reading (up to 30 s at rest). */
+         * than at T17's next reading (up to 30 s at rest). gh#65; in every
+         * build since gh#77. */
         commission_session_ended(token);
-#endif
     }
     cookie_clear_session(req);
     httpd_resp_set_type(req, "application/json");
@@ -3279,6 +3278,144 @@ static const httpd_uri_t s_uri_web_get = {
     .uri = "/api/web", .method = HTTP_GET, .handler = web_get_handler, .user_ctx = NULL };
 static const httpd_uri_t s_uri_web_post = {
     .uri = "/api/web", .method = HTTP_POST, .handler = web_post_handler, .user_ctx = NULL };
+/**
+ * GET /api/diag/commission — wire-sensor calibration + teach state (admin)
+ *
+ * Plan §6.3 item 4. **In every build since gh#77 (2026-09-20)**: commissioning a
+ * sensor no longer requires flashing a bench image onto the unit, which also
+ * opened the arbitrary Modbus write route. This surface touches only the
+ * sensor's own registers, through the windowPos driver, and stays admin-only.
+ *
+ * The teach maps the sensor's raw ADC onto a **known
+ * distance** — the gap between the two end sensors, written to `40004` — so a
+ * completed teach is self-consistent by construction. The admin is therefore
+ * not asked to assess it; this reports a machine verdict, and a re-teach happens
+ * when that verdict says so.
+ */
+static esp_err_t diag_commission_get_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+    httpd_resp_set_type(req, "application/json");
+
+    commission_status_t c;
+    commission_status(&c);
+
+    static const char *k_verdict[] = { "unknown", "valid", "invalid" };
+    /* Indexed by the enums in commission.h: order MUST match, and each table is
+     * checked against its enum's count so a missing string fails the build
+     * instead of reaching the operator as "?". The bounds below come from the
+     * tables for the same reason -- k_run's used to be a hardcoded 8, and the
+     * 2026-09-16 teach rework added five reasons. */
+    static const char *k_cal[] = { "none", "no_device", "no_window_size",
+                                   "not_taught", "span_narrow", "teach_armed",
+                                   "wiper_open", "implausible", "not_following" };
+    _Static_assert(sizeof(k_cal) / sizeof(k_cal[0]) == (size_t)CAL_ERR_COUNT_,
+                   "k_cal[] must have one string per cal_err_t value, in order");
+    static const char *k_state[] = { "idle", "arming", "traversing",
+                                     "committing", "done", "failed" };
+    _Static_assert(sizeof(k_state) / sizeof(k_state[0]) == (size_t)TEACH_STATE_COUNT_,
+                   "k_state[] must have one string per teach_state_t value, in order");
+    static const char *k_run[] = { "none", "m3_busy", "both_ends", "sensor",
+                                   "wind", "motor_alarm", "timeout", "device_write",
+                                   "no_start", "no_move", "end_missed", "refused",
+                                   "dropped" };
+    _Static_assert(sizeof(k_run) / sizeof(k_run[0]) == (size_t)TEACH_ERR_COUNT_,
+                   "k_run[] must have one string per teach_err_t value, in order");
+#define TABLE_STR(t, i) (((unsigned)(i) < sizeof(t) / sizeof((t)[0])) ? (t)[(i)] : "?")
+
+    char body[512];
+    snprintf(body, sizeof(body),
+             "{\"ok\":true,\"verdict\":\"%s\",\"cal_reason\":\"%s\","
+             "\"window_mm\":%u,\"taught_closed\":%u,\"taught_open\":%u,"
+             "\"span\":%u,\"span_pct\":%u,\"teach_armed\":%s,"
+             "\"state\":\"%s\",\"run_reason\":\"%s\",\"dir\":\"%s\","
+             "\"leg\":%u,\"legs_max\":%u,\"ends\":%u,\"standby_held\":%s}",
+             TABLE_STR(k_verdict, c.verdict),
+             TABLE_STR(k_cal, c.cal_reason),
+             (unsigned)c.window_mm, (unsigned)c.taught_closed,
+             (unsigned)c.taught_open, (unsigned)c.span, (unsigned)c.span_pct,
+             c.teach_armed ? "true" : "false",
+             TABLE_STR(k_state, c.state),
+             TABLE_STR(k_run, c.run_reason),
+             c.dir_is_open ? "open" : "close",
+             (unsigned)c.leg, (unsigned)COMMISSION_TEACH_MAX_LEGS,
+             (unsigned)c.ends_made,
+             c.standby_held ? "true" : "false");
+#undef TABLE_STR
+    return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
+}
+
+/**
+ * POST /api/diag/commission — drive commissioning (admin, DEV BUILDS ONLY)
+ *
+ * Body: {"action":"teach"|"abort"|"refresh"|"window"[,"mm":1500]}
+ *
+ * `teach` **moves the window**: it arms the device, and T17 then drives M3 to
+ * BOTH end sensors in turn -- two traverses, three if T2's idea of where M3 is
+ * was wrong. The device captures each end as its sensor makes, so a teach that
+ * does not reach both records nothing it can commit. M3 may start anywhere.
+ *
+ * `window` writes the end-sensor-to-end-sensor distance to `40004`. That is NOT
+ * the travel time: the motor overdrives past both end sensors into the blind
+ * overlap, so its run is always the longer of the two.
+ */
+static esp_err_t diag_commission_post_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+    httpd_resp_set_type(req, "application/json");
+
+    char body[128] = {0};
+    int  rlen = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (rlen <= 0) {
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"empty_body\"}",
+                               HTTPD_RESP_USE_STRLEN);
+    }
+    body[rlen] = '\0';
+
+    char act[24] = {0};
+    if (!json_get_field(body, "action", act, sizeof(act))) {
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"no_action\"}",
+                               HTTPD_RESP_USE_STRLEN);
+    }
+
+    /* gh#73: with no sensor fitted, nothing here may reach address 40. Abort
+     * stays allowed: it only ends a run, and a teach left armed on a real
+     * device is better disarmed than kept. */
+    if (!dm_wpos_fitted_m3() && strcmp(act, "abort") != 0) {
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"not_fitted\"}",
+                               HTTPD_RESP_USE_STRLEN);
+    }
+
+    bool ok = false;
+    if (strcmp(act, "teach") == 0) {
+        /* The teach holds STANDBY until THIS session ends (commission.h). */
+        char token[TOKEN_LEN + 1] = {0};
+        (void)cookie_get_session(req, token);   /* admin already validated above */
+        ok = commission_teach_start(token);
+    } else if (strcmp(act, "abort") == 0) {
+        commission_teach_abort(); ok = true;
+    } else if (strcmp(act, "refresh") == 0) {
+        commission_refresh(); ok = true;
+    } else if (strcmp(act, "window") == 0) {
+        char mm[12] = {0};
+        if (!json_get_field(body, "mm", mm, sizeof(mm))) {
+            return httpd_resp_send(req, "{\"ok\":false,\"error\":\"no_mm\"}",
+                                   HTTPD_RESP_USE_STRLEN);
+        }
+        ok = commission_set_window_mm((uint16_t)atoi(mm));
+    } else {
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"unknown_action\"}",
+                               HTTPD_RESP_USE_STRLEN);
+    }
+
+    commission_status_t c;
+    commission_status(&c);
+    char out[96];
+    snprintf(out, sizeof(out), "{\"ok\":%s,\"state\":%d,\"run_reason\":%d}",
+             ok ? "true" : "false", (int)c.state, (int)c.run_reason);
+    return httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
+}
+
 #ifdef MODBUS_BENCH
 /* ---------------------------------------------------------------------------
  * POST /api/diag/modbus — arbitrary Modbus transaction (admin, DEV BUILDS ONLY)
@@ -3670,139 +3807,6 @@ static esp_err_t diag_lcd_post_handler(httpd_req_t *req)
     return httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
 }
 
-/**
- * GET /api/diag/commission — wire-sensor calibration + teach state (admin, DEV ONLY)
- *
- * Plan §6.3 item 4. The teach maps the sensor's raw ADC onto a **known
- * distance** — the gap between the two end sensors, written to `40004` — so a
- * completed teach is self-consistent by construction. The admin is therefore
- * not asked to assess it; this reports a machine verdict, and a re-teach happens
- * when that verdict says so.
- */
-static esp_err_t diag_commission_get_handler(httpd_req_t *req)
-{
-    if (!admin_only_or_send_error(req)) return ESP_OK;
-    httpd_resp_set_type(req, "application/json");
-
-    commission_status_t c;
-    commission_status(&c);
-
-    static const char *k_verdict[] = { "unknown", "valid", "invalid" };
-    /* Indexed by the enums in commission.h: order MUST match, and each table is
-     * checked against its enum's count so a missing string fails the build
-     * instead of reaching the operator as "?". The bounds below come from the
-     * tables for the same reason -- k_run's used to be a hardcoded 8, and the
-     * 2026-09-16 teach rework added five reasons. */
-    static const char *k_cal[] = { "none", "no_device", "no_window_size",
-                                   "not_taught", "span_narrow", "teach_armed",
-                                   "wiper_open", "implausible", "not_following" };
-    _Static_assert(sizeof(k_cal) / sizeof(k_cal[0]) == (size_t)CAL_ERR_COUNT_,
-                   "k_cal[] must have one string per cal_err_t value, in order");
-    static const char *k_state[] = { "idle", "arming", "traversing",
-                                     "committing", "done", "failed" };
-    _Static_assert(sizeof(k_state) / sizeof(k_state[0]) == (size_t)TEACH_STATE_COUNT_,
-                   "k_state[] must have one string per teach_state_t value, in order");
-    static const char *k_run[] = { "none", "m3_busy", "both_ends", "sensor",
-                                   "wind", "motor_alarm", "timeout", "device_write",
-                                   "no_start", "no_move", "end_missed", "refused",
-                                   "dropped" };
-    _Static_assert(sizeof(k_run) / sizeof(k_run[0]) == (size_t)TEACH_ERR_COUNT_,
-                   "k_run[] must have one string per teach_err_t value, in order");
-#define TABLE_STR(t, i) (((unsigned)(i) < sizeof(t) / sizeof((t)[0])) ? (t)[(i)] : "?")
-
-    char body[512];
-    snprintf(body, sizeof(body),
-             "{\"ok\":true,\"verdict\":\"%s\",\"cal_reason\":\"%s\","
-             "\"window_mm\":%u,\"taught_closed\":%u,\"taught_open\":%u,"
-             "\"span\":%u,\"span_pct\":%u,\"teach_armed\":%s,"
-             "\"state\":\"%s\",\"run_reason\":\"%s\",\"dir\":\"%s\","
-             "\"leg\":%u,\"legs_max\":%u,\"ends\":%u,\"standby_held\":%s}",
-             TABLE_STR(k_verdict, c.verdict),
-             TABLE_STR(k_cal, c.cal_reason),
-             (unsigned)c.window_mm, (unsigned)c.taught_closed,
-             (unsigned)c.taught_open, (unsigned)c.span, (unsigned)c.span_pct,
-             c.teach_armed ? "true" : "false",
-             TABLE_STR(k_state, c.state),
-             TABLE_STR(k_run, c.run_reason),
-             c.dir_is_open ? "open" : "close",
-             (unsigned)c.leg, (unsigned)COMMISSION_TEACH_MAX_LEGS,
-             (unsigned)c.ends_made,
-             c.standby_held ? "true" : "false");
-#undef TABLE_STR
-    return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
-}
-
-/**
- * POST /api/diag/commission — drive commissioning (admin, DEV BUILDS ONLY)
- *
- * Body: {"action":"teach"|"abort"|"refresh"|"window"[,"mm":1500]}
- *
- * `teach` **moves the window**: it arms the device, and T17 then drives M3 to
- * BOTH end sensors in turn -- two traverses, three if T2's idea of where M3 is
- * was wrong. The device captures each end as its sensor makes, so a teach that
- * does not reach both records nothing it can commit. M3 may start anywhere.
- *
- * `window` writes the end-sensor-to-end-sensor distance to `40004`. That is NOT
- * the travel time: the motor overdrives past both end sensors into the blind
- * overlap, so its run is always the longer of the two.
- */
-static esp_err_t diag_commission_post_handler(httpd_req_t *req)
-{
-    if (!admin_only_or_send_error(req)) return ESP_OK;
-    httpd_resp_set_type(req, "application/json");
-
-    char body[128] = {0};
-    int  rlen = httpd_req_recv(req, body, sizeof(body) - 1);
-    if (rlen <= 0) {
-        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"empty_body\"}",
-                               HTTPD_RESP_USE_STRLEN);
-    }
-    body[rlen] = '\0';
-
-    char act[24] = {0};
-    if (!json_get_field(body, "action", act, sizeof(act))) {
-        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"no_action\"}",
-                               HTTPD_RESP_USE_STRLEN);
-    }
-
-    /* gh#73: with no sensor fitted, nothing here may reach address 40. Abort
-     * stays allowed: it only ends a run, and a teach left armed on a real
-     * device is better disarmed than kept. */
-    if (!dm_wpos_fitted_m3() && strcmp(act, "abort") != 0) {
-        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"not_fitted\"}",
-                               HTTPD_RESP_USE_STRLEN);
-    }
-
-    bool ok = false;
-    if (strcmp(act, "teach") == 0) {
-        /* The teach holds STANDBY until THIS session ends (commission.h). */
-        char token[TOKEN_LEN + 1] = {0};
-        (void)cookie_get_session(req, token);   /* admin already validated above */
-        ok = commission_teach_start(token);
-    } else if (strcmp(act, "abort") == 0) {
-        commission_teach_abort(); ok = true;
-    } else if (strcmp(act, "refresh") == 0) {
-        commission_refresh(); ok = true;
-    } else if (strcmp(act, "window") == 0) {
-        char mm[12] = {0};
-        if (!json_get_field(body, "mm", mm, sizeof(mm))) {
-            return httpd_resp_send(req, "{\"ok\":false,\"error\":\"no_mm\"}",
-                                   HTTPD_RESP_USE_STRLEN);
-        }
-        ok = commission_set_window_mm((uint16_t)atoi(mm));
-    } else {
-        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"unknown_action\"}",
-                               HTTPD_RESP_USE_STRLEN);
-    }
-
-    commission_status_t c;
-    commission_status(&c);
-    char out[96];
-    snprintf(out, sizeof(out), "{\"ok\":%s,\"state\":%d,\"run_reason\":%d}",
-             ok ? "true" : "false", (int)c.state, (int)c.run_reason);
-    return httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
-}
-
 static esp_err_t diag_modbus_post_handler(httpd_req_t *req)
 {
     if (!admin_only_or_send_error(req)) return ESP_OK;
@@ -3908,6 +3912,11 @@ static const httpd_uri_t s_uri_rota_check_get = {
 static const httpd_uri_t s_uri_rota_check_post = {
     .uri = "/api/ota/check", .method = HTTP_POST, .handler = rota_check_post_handler, .user_ctx = NULL };
 
+/* gh#77: commissioning is admin-only, and in every build. */
+static const httpd_uri_t s_uri_diag_commission_get = {
+    .uri = "/api/diag/commission", .method = HTTP_GET, .handler = diag_commission_get_handler, .user_ctx = NULL };
+static const httpd_uri_t s_uri_diag_commission_post = {
+    .uri = "/api/diag/commission", .method = HTTP_POST, .handler = diag_commission_post_handler, .user_ctx = NULL };
 #ifdef MODBUS_BENCH
 static const httpd_uri_t s_uri_diag_windowpos = {
     .uri = "/api/diag/windowpos", .method = HTTP_GET, .handler = diag_windowpos_get_handler, .user_ctx = NULL };
@@ -3917,10 +3926,6 @@ static const httpd_uri_t s_uri_diag_modbus = {
     .uri = "/api/diag/modbus", .method = HTTP_POST, .handler = diag_modbus_post_handler, .user_ctx = NULL };
 static const httpd_uri_t s_uri_diag_lcd = {
     .uri = "/api/diag/lcd", .method = HTTP_POST, .handler = diag_lcd_post_handler, .user_ctx = NULL };
-static const httpd_uri_t s_uri_diag_commission_get = {
-    .uri = "/api/diag/commission", .method = HTTP_GET, .handler = diag_commission_get_handler, .user_ctx = NULL };
-static const httpd_uri_t s_uri_diag_commission_post = {
-    .uri = "/api/diag/commission", .method = HTTP_POST, .handler = diag_commission_post_handler, .user_ctx = NULL };
 #endif
 
 /* alpha.6.21 — WebSocket route (Phase 6.16-η, final T11 route). */
@@ -3976,11 +3981,11 @@ void task_web_server(void *pvParameters)
         &s_uri_web_get, &s_uri_web_post,
         &s_uri_ota_cfg_get, &s_uri_ota_cfg_post,
         &s_uri_rota_check_get, &s_uri_rota_check_post,
+        &s_uri_diag_commission_get, &s_uri_diag_commission_post,
         &s_uri_ws,
 #ifdef MODBUS_BENCH
         &s_uri_diag_modbus,
         &s_uri_diag_windowpos, &s_uri_diag_windowpos_post,
-        &s_uri_diag_commission_get, &s_uri_diag_commission_post,
         &s_uri_diag_lcd,
 #endif
     };

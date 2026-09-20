@@ -22,7 +22,7 @@ USAGE
 THE LAW IS THE LIBRARY'S, NOT A COPY
 ------------------------------------
 Every decision is made by the stepped law in drivers/ventModel
-(src/vent_model_stepped.cpp), the library T6 moves onto in 2.11.0, loaded
+(src/vent_model_stepped.cpp), the library T6 moves onto in 2.12.0, loaded
 through closedloop/ventmodel.py as the closed-loop simulator loads it. This
 script restates none of the law's arithmetic, so a change to the law reaches
 the replay without an edit here. (Until 2026-09-19 it carried a Python port

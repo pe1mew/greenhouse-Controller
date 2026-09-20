@@ -273,19 +273,15 @@ function applyWposFitted(v) {
 // "it is not there" is the least useful of the possible answers.
 function commWhyUnavailable(status) {
   if (status === 404) {
-    // Name the cause that applies (gh#73 follow-up, 2026-09-17). Only a bench
-    // build compiles the commissioning routes, and it reports fw_ver as
-    // "X.Y.Z-bench", so a 404 there is a fault, and anywhere else it is by design.
-    if (!g_fw_ver) {
-      return 'Not available: this firmware does not serve /api/diag/commission.';
-    }
-    if (/-bench$/.test(g_fw_ver)) {
-      return 'Not available, and this is a FAULT: this bench build (' + g_fw_ver + ') '
-           + 'should serve /api/diag/commission but does not, so a route failed to '
-           + 'register at boot. Note the version and report it.';
-    }
-    return 'Not available on release firmware (' + g_fw_ver + '): teaching the sensor '
-         + 'needs a bench build. A sensor that was taught keeps its calibration.';
+    // gh#77 (2026-09-20): EVERY build serves these routes now, so a 404 is a
+    // fault on any firmware -- it used to be by design on a release build.
+    // Firmware older than that answers 404 on a release build legitimately,
+    // which is why the version is named rather than assumed.
+    return 'Not available, and this is a FAULT on this firmware (' + (g_fw_ver || 'unknown')
+         + '): commissioning should be served by every build since 2.11.0, so a route '
+         + 'failed to register at boot. Note the version and report it. On firmware '
+         + 'older than 2.11.0 this is expected: teaching needed a bench build then, and '
+         + 'a sensor that was taught keeps its calibration.';
   }
   if (status === 401) {
     return 'Not available: your session has ended — log in again.';

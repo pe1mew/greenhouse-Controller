@@ -19,7 +19,7 @@
  * | the want-open vs actual comparison in `step()` | `reconcile_to_step()`, `:401` |
  *
  * **The firmware is unaffected and still runs its own inline copy.** The two
- * are kept in step by hand until T6 is refactored onto this interface (2.11.0,
+ * are kept in step by hand until T6 is refactored onto this interface (2.12.0,
  * plan §5b/§5c). Change one, change the other, and re-run both this library's
  * host tests and the replay.
  *
@@ -52,7 +52,7 @@
  * ## One addition the firmware does not have yet
  *
  * `VENT_WIN_PART_OPEN` (interface 2). The firmware has no part-open state until
- * T2 gains one in 2.11.0, so no firmware input maps to it and the equivalence
+ * T2 gains one in 2.12.0, so no firmware input maps to it and the equivalence
  * above is untouched. A part-open window is at neither end, so mode 1 drives it
  * to the end it wants, in both directions, and never HOLDs it: holding would
  * leave M3 part-open while the step says OPEN. When T2 gains the state,

@@ -161,7 +161,7 @@ python model/closedloop/closed_loop.py gate-control --sweep avg_win_rh=3..12
 
 ## A linear M3 (mode 2)
 
-`--set wpos_fitted_m3=1` gives M3 its wire sensor, as 2.11.0's mode 2 is designed but not yet built (plan §5b; contract §3 and §7). It needs `--plant2`. Compare a mode 2 law against a stepped run with the same `--firmware current`.
+`--set wpos_fitted_m3=1` gives M3 its wire sensor, as 2.12.0's mode 2 is designed but not yet built (plan §5b; contract §3 and §7). It needs `--plant2`. Compare a mode 2 law against a stepped run with the same `--firmware current`.
 
 ```bash
 python model/closedloop/closed_loop.py reproduce --start 2026-07-13 --end 2026-07-29 --plant2 PLANT.json --firmware current --set wpos_fitted_m3=1 --model graded
@@ -333,7 +333,7 @@ Verify a new law against both, and treat a verdict that differs between them as 
 
 - **T3 is simulated from the logged wind** (`gate-wind`), so a run on invented weather needs invented wind too.
 - **With a `poll_interval` other than 30 s**, the weather, the wind and the doors between two logged samples are held from the sample that covers them.
-- **A linear M3 emulates a design, not firmware.** T2's target path is 2.11.0 and not built. What a part-open M3 does to the air is an assumption (see "A linear M3").
+- **A linear M3 emulates a design, not firmware.** T2's target path is 2.12.0 and not built. What a part-open M3 does to the air is an assumption (see "A linear M3").
 - **The simulated day/night switch can come up to a minute early**, because T4 recomputes it only once a minute.
 - Door 1 after 2026-08-16 is an assumption (above).
 - A boot inside the loop is simplified: T5 and T6 reset, and T2 closes all windows.

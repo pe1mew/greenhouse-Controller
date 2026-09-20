@@ -64,12 +64,16 @@ import logparser                                             # noqa: E402
 KEY = "wpos_fitted_m3"
 ADDR = 40
 FAULT_FLAG = "sensor_fault_position"
-# Transactions a switch-on costs before its first 30 s idle interval. On a
-# release build that is 4: the identify probe, the probe's position read (which
-# since 2.9.1 also serves the orphan check), the first idle read and its restart
-# check. A bench build adds 2 when the gate opens (commission_refresh() reads the
-# device config and a position), so 6 there -- measured on 2344, 2026-09-17.
-# Either is well below what idle reading adds: ~4 a minute.
+# Transactions a switch-on costs before its first 30 s idle interval: 6. Four
+# are the identify probe, the probe's position read (which since 2.9.1 also
+# serves the orphan check), the first idle read and its restart check. The other
+# two are commission_refresh() reading the device config and a position when the
+# gate opens -- measured on 2344, 2026-09-17.
+#
+# gh#77 (2026-09-20): those two used to be a BENCH-ONLY cost, and a release
+# build showed 4. Commissioning is compiled into every build now, so both builds
+# cost 6 and this limit no longer distinguishes them. Six is still well below
+# what idle reading adds: ~4 a minute.
 SWITCH_ON_TXN_MAX = 6
 
 FAILS = []

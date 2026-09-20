@@ -5,7 +5,7 @@
 | Document | Interface contract for the T6 ventilation control model |
 | Date | 2026-09-17 |
 | Revised | 2026-09-19: **interface 2**. Two gaps found by the model work while building its simulator against the header: the minimum interval between M3 moves was 16-bit milliseconds, at most 65.5 s, for a setting that stands in for 10 and 25 minute dwells (and against this document's own units table), and there was no state for a window at rest part-open. Now `uint32_t m3_min_interval_ms` and `VENT_WIN_PART_OPEN` |
-| Status | **The interface and the mode 1 reference exist as a library; the firmware does not use them yet.** `drivers/ventModel/` holds `src/vent_model.h` and `src/vent_model_stepped.cpp` — a faithful copy of the 2.9.1 stepped law — with 23 host tests passing (`pio test -e native`), and `src/vent_model_graded.cpp`, a first candidate for mode 2, with 15 more ([`model/closedloop/gradedCandidate.md`](../model/closedloop/gradedCandidate.md)). The firmware in `main` still runs its own inline copy in T6 and is untouched; the two are kept in step by hand until T6 is refactored onto this interface. **That switch happens in 2.11.0, with the dual mode** (operator, 2026-09-17), because that is the release where something must choose between two models — steps and acceptance gate in the plan's §5c |
+| Status | **The interface and the mode 1 reference exist as a library; the firmware does not use them yet.** `drivers/ventModel/` holds `src/vent_model.h` and `src/vent_model_stepped.cpp` — a faithful copy of the 2.9.1 stepped law — with 23 host tests passing (`pio test -e native`), and `src/vent_model_graded.cpp`, a first candidate for mode 2, with 15 more ([`model/closedloop/gradedCandidate.md`](../model/closedloop/gradedCandidate.md)). The firmware in `main` still runs its own inline copy in T6 and is untouched; the two are kept in step by hand until T6 is refactored onto this interface. **That switch happens in 2.12.0, with the dual mode** (operator, 2026-09-17), because that is the release where something must choose between two models — steps and acceptance gate in the plan's §5c |
 | Audience | Whoever writes or tunes a control model — a separate session, a separate agent, or a person. **This document is meant to be read on its own** |
 | Scope decisions | [`integrateWindowPositionSensor.md`](integrateWindowPositionSensor.md) §5b (the two control modes, the position path) and §5c (the rules around this contract) |
 | Requirements | [`functionalRequirementsSpecification.md`](functionalRequirementsSpecification.md), and [`windowPositionSensorRequirements.MD`](windowPositionSensorRequirements.MD) FR-WP04/05/17/18 |
@@ -237,7 +237,7 @@ the same thing on both, and the sensor reports a percentage natively.
 move. Only a LINEAR window can be part-open, and `pos_x10` says where. A model that wants an end
 must ask for it: the stepped law sends a part-open M3 to whichever end its step wants, never
 HOLDs it, because holding would leave M3 part-open while the step says OPEN. T2 gains the state
-in 2.11.0 (plan §5b), so until then no firmware caller reports it; the model work's simulator does.
+in 2.12.0 (plan §5b), so until then no firmware caller reports it; the model work's simulator does.
 
 You therefore do **not** implement the deadband, the minimum interval, the clamping or the
 "is this window even capable" check. You may read `m3_deadzone_x10` and `m3_min_interval_ms` to avoid
@@ -377,7 +377,7 @@ drivers/ventModel/                    EXISTS
   src/vent_model_graded.cpp           mode 2: a first candidate (model/closedloop/gradedCandidate.md)
   test/test_vent_model/               host unit tests, stepped: 23 passing
   test/test_vent_model_graded/        host unit tests, graded: 15 passing
-firmware/components/ventModel/        NOT YET CREATED — the 2.11.0 wiring step
+firmware/components/ventModel/        NOT YET CREATED — the 2.12.0 wiring step
   CMakeLists.txt                      idf_component_register over the sources above
 ```
 

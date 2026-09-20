@@ -54,7 +54,7 @@ idf_component_register(
         "diag/modbus_probe.cpp"                 # Modbus bus-lock concurrency probe — design/addModbusMutex.md §4.3b
         "diag/modbus_bench.cpp"                 # gh#49-era bench Modbus access for Phase 0 commissioning (MODBUS_BENCH)
         "window_pos/window_pos_task.cpp"        # T17 — window position task (Phase 2)
-        "window_pos/commission.cpp"             # §6.3 item 4 — traverse measurement + teach (MODBUS_BENCH; empty TU in release)
+        "window_pos/commission.cpp"             # §6.3 item 4 — traverse measurement + teach (gh#77: in EVERY build since 2.11.0)
         "watchdog/watchdog.cpp"                 # Phase 6.N.1 (2.0.0-alpha.6.22) — T1 minimal watchdog (TWDT subscriber + ota_mark_healthy at 30s); see file header for deferred features (NeoPixel + heap-integrity + stack-HWM)
     INCLUDE_DIRS
         "."

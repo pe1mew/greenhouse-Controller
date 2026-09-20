@@ -4,9 +4,7 @@
  */
 
 #include "window_pos_task.h"
-#ifdef MODBUS_BENCH
-#include "commission.h"   /* §6.3 item 4 — traverse measurement watches the same readings */
-#endif
+#include "commission.h"   /* §6.3 item 4 — the teach runs from these readings (gh#77: every build) */
 
 #include "../types/app_types.h"
 #include "../data_manager/data_manager.h"
@@ -612,9 +610,7 @@ static bool check_orphan_teach(const windowpos_reading_t *r, uint8_t addr)
         s_orphan_reported = false;
         return false;
     }
-#ifdef MODBUS_BENCH
     if (commission_owns_teach()) { return false; }   /* ours, and watched */
-#endif
     const windowpos_status_t ws = windowpos_teach(addr, false);
     if (!s_orphan_reported) {
         s_orphan_reported = true;
@@ -1154,7 +1150,6 @@ static bool probe_sensor(void)
          * not TIMED-because-probing. */
         publish_mode(s_ctrl_mode, WPOS_GATE_OK);
         clear_orphan_at_gate_open(WINDOWPOS_DEFAULT_ADDR, &pr);
-#ifdef MODBUS_BENCH
         /* Judge the sensor's calibration now that it is confirmed present.
          *
          * Before 2026-09-16 nothing did this at boot: commission_refresh() ran
@@ -1173,9 +1168,13 @@ static bool probe_sensor(void)
          * opening, on the task that already owns this device.
          *
          * After clear_orphan_at_gate_open(), above, so a teach left armed by a
-         * restart is judged as the abort left it, not as "still armed". */
+         * restart is judged as the abort left it, not as "still armed".
+         *
+         * gh#77 (2026-09-20): in every build. A release build used to leave the
+         * verdict at UNKNOWN for ever, which was invisible while the card was
+         * greyed and would have been the first thing an operator saw once it
+         * was not. It costs one holding-register read per gate opening. */
         commission_refresh();
-#endif
     }
     return true;
 }
@@ -1350,11 +1349,9 @@ void task_window_pos(void *pvParameters)
         if (!follow_fitted()) {
             was_travelling = false;
             rest_seen      = false;
-#ifdef MODBUS_BENCH
             /* A teach running when the sensor was switched off ends as a
              * sensor failure, exactly as when the sensor goes away. */
             commission_tick(NULL, now_ms());
-#endif
             vTaskDelay(pdMS_TO_TICKS(IDLE_TICK_MS));
             continue;
         }
@@ -1403,12 +1400,10 @@ void task_window_pos(void *pvParameters)
                  (uint32_t)(now_ms() - s_last_probe_ms) >= PROBE_RETRY_MS)) {
                 (void)probe_sensor();
             }
-#ifdef MODBUS_BENCH
             /* No readings reach the teach runner while the gate is shut, so a
              * teach running when the sensor went away would otherwise wait for
              * ever. NULL tells it there is no sensor; idle, it does nothing. */
             commission_tick(NULL, now_ms());
-#endif
             vTaskDelay(pdMS_TO_TICKS(IDLE_TICK_MS));
             continue;
         }
@@ -1437,14 +1432,12 @@ void task_window_pos(void *pvParameters)
              * the teach's STANDBY release depend on it (IDLE_READ_MS). */
             bool idle_sample_due = resample_soon ||
                 (uint32_t)(now_ms() - last_idle_read_ms) >= IDLE_READ_MS;
-#ifdef MODBUS_BENCH
             /* A running teach needs readings at rest as well: to see bit 5
              * appear before the first leg, to start each next leg when a
              * stroke ends, and to see bit 5 clear. The 30 s idle cadence would
              * stall it between legs, so sample every idle tick while it runs
              * (and for a few ticks after, see commission_wants_prompt_read). */
             if (commission_wants_prompt_read()) { idle_sample_due = true; }
-#endif
             if (idle_sample_due) {
                 last_idle_read_ms = now_ms();
                 resample_soon     = false;
@@ -1458,9 +1451,7 @@ void task_window_pos(void *pvParameters)
                     }
                     settle_row_due = false;
                     resample_soon = check_orphan_teach(&ir, WINDOWPOS_DEFAULT_ADDR);
-#ifdef MODBUS_BENCH
                     commission_tick(&ir, now_ms());
-#endif
                     portENTER_CRITICAL(&s_mux);
                     s_last = ir; s_last_ms = now_ms(); s_have_reading = true; s_cnt.reads_ok++;
                     portEXIT_CRITICAL(&s_mux);
@@ -1705,13 +1696,11 @@ void task_window_pos(void *pvParameters)
                     drive_observe(&r, false, now_ms(), d.poll_ms,
                                   stroke_full_x10, stroke_deadzone_x10);
                 }
-#ifdef MODBUS_BENCH
                 /* The teach runner still gets it. The rejection distrusts the
                  * POSITION; bits 3, 4 and 5 come from the end sensors and the
                  * teach state, not the wiper, and a leg whose every sample was
                  * rejected would otherwise hide its end-sensor make. */
                 commission_tick(&r, now_ms());
-#endif
             } else {
                 /* §12.4 rule 1 evidence, from ACCEPTED samples only. A sample
                  * the plausibility check rejected says nothing about movement
@@ -1824,9 +1813,7 @@ void task_window_pos(void *pvParameters)
                 emit_events(&r, WINDOWPOS_DEFAULT_ADDR);
                 log_position(&r);
                 (void)check_orphan_teach(&r, WINDOWPOS_DEFAULT_ADDR);
-#ifdef MODBUS_BENCH
                 commission_tick(&r, now_ms());
-#endif
             }
             /* Talking, but useless: the device says its own reading is bad, so
              * position cannot drive the window even though the sensor is there.

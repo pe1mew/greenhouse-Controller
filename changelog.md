@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.11.0] — 2026-09-20  (the position sensor can be taught on release firmware)
+
+Minor: a surface that existed only in bench builds is now in every build. No config key, no NVS change,
+no log-encoding change, nothing in the ventilation path. Implements
+[gh#77](https://github.com/pe1mew/greenhouse-Controller/issues/77). Detail in `bin/2.11.0/release-notes.md`.
+**2.10.1 was committed but never published, so its three fixes ship here.**
+
+**Changed.**
+
+- **Teaching the M3 position sensor no longer needs a bench image on the unit.** `GET`/`POST
+  /api/diag/commission` — window size, teach, abort, calibration verdict — are compiled into every
+  build and stay admin-only. When 5C88's encoder is fitted it can be taught on the firmware the unit
+  already runs, instead of flashing a build that also opens the arbitrary Modbus write route.
+  - **T17's commissioning hooks moved with the routes**, which the routes alone would not have done:
+    the teach runs from T17's readings, and the calibration verdict is judged when the sensor gate
+    opens. A release build used to report *verdict UNKNOWN, window size 0* whatever the sensor said.
+  - **Still bench-only:** `/api/diag/modbus`, `/api/diag/windowpos` and `/api/diag/lcd`.
+  - **Unchanged:** the refusal when no sensor is fitted (gh#73), and the teach's STANDBY hold until
+    the admin session ends (gh#65).
+- **A release build now spends two more Modbus transactions per sensor-gate opening**, the
+  calibration read. `bin/at_wpos_fitted.py`'s limit of 6 already allowed for them.
+- **Docs:** the GUI's 404 reason, beheerder manual 1.24, plan §6.3 (the 2026-09-14 bench-only
+  decision is superseded), and the FRS/TSDS text from gh#75 stays as it is — commissioning is a
+  surface, not a behaviour change.
+
+---
+
 ## [2.10.1] — 2026-09-20  (a stray LCD mode heals itself; two GUI-layer fixes)
 
 Patch: three bug fixes, no behaviour change to ventilation, no config or NVS change. Fixes

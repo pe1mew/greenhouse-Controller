@@ -1,9 +1,14 @@
 /**
  * @file commission.cpp
  * @brief Teach the wire sensor and judge the calibration — see commission.h.
+ *
+ * gh#77 (2026-09-20): compiled into EVERY build. It used to be bench-only, so
+ * commissioning a sensor on a production unit meant flashing a bench build,
+ * teaching, and restoring the release image -- with the arbitrary Modbus write
+ * route open in between. Nothing here needs that route: the teach and the
+ * window size are written through the windowPos driver like any other register
+ * access, and the routes that expose them stay admin-only.
  */
-
-#ifdef MODBUS_BENCH
 
 #include "commission.h"
 
@@ -733,4 +738,3 @@ void commission_tick(const windowpos_reading_t *r, uint32_t now_ms)
     }
 }
 
-#endif /* MODBUS_BENCH */

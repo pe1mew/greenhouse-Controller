@@ -38,7 +38,7 @@
  * **verdict** when T2 ends it -- confirmed, not reached, or not judged -- and
  * checks `travel_m3` against the measured traverse (@ref windowpos_task_confirm).
  * Both only report: a log row, a status flag, a web badge. Position drives the
- * actuator only in 2.11.0 (mode 2).
+ * actuator only in 2.12.0 (mode 2).
  *
  * ## The sensor-presence gate (Phase 4)
  *

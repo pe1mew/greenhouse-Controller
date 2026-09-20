@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de beheerder
 
-**Versie:** 1.23
-**Datum:** 2026-09-19
-**Firmware:** 2.10.0
+**Versie:** 1.24
+**Datum:** 2026-09-20
+**Firmware:** 2.11.0
 
 ---
 
@@ -227,7 +227,7 @@ Sinds 2.8.0 staan de instellingen **per motor** bij elkaar (M1, M2, M3) in plaat
 
 De groep *Linear control* begint met **Position sensor fitted**: heeft M3 een raamstandsensor, ja of nee (sinds 2.9.0, zie hieronder). Staat die op **No**, dan is alles daaronder **grijs**, met erboven waarom.
 
-De **Dodezone** is verder een gewone instelling en werkt op elke build. Het blok **Commissioning** daaronder (raamgrootte, kalibratie-oordeel, teach) is alleen **bruikbaar** op een **commissioning-build** met de sensor gemonteerd. Op een gewone release-build staat dat blok er wel, maar **grijs**, met de reden erbij: leren kan alleen met een commissioning-build, en een sensor die al geleerd is houdt zijn kalibratie. Toont een commissioning-build (versie eindigt op `-bench`) het blok grijs, dan is bij het opstarten een route niet geregistreerd: **dat is een storing**, noteer de versie en meld het. Dat grijs-met-reden is bewust: een instelling die simpelweg verdwijnt is niet te onderscheiden van een verkeerd tabblad of een storing.
+De **Dodezone** is verder een gewone instelling en werkt op elke build. Het blok **Commissioning** daaronder (raamgrootte, kalibratie-oordeel, teach) werkt **sinds 2.11.0 op elke build**, zolang de sensor als gemonteerd is ingesteld — je hoeft er dus geen speciale build meer voor op de controller te zetten. *(Tot 2.11.0 kon leren alleen met een commissioning-build; een sensor die toen geleerd is houdt zijn kalibratie, daar verandert niets aan.)* Staat het blok grijs terwijl de sensor gemonteerd is, dan is bij het opstarten een route niet geregistreerd: **dat is een storing**, noteer de versie en meld het. Dat grijs-met-reden is bewust: een instelling die simpelweg verdwijnt is niet te onderscheiden van een verkeerd tabblad of een storing.
 
 ### M3 raamstandsensor — gemonteerd of niet (sinds 2.9.0)
 
@@ -2141,6 +2141,7 @@ Inhoudelijke wijzigingen aan de firmware staan beschreven in het bestand `change
 | 1.21 | 2026-09-16 | 2.2.0 t/m 2.8.0 — automatische internet-update (ROTA) in tab System, met figuur (2.2.0); wind-hysterese (gh#46, 2.3.0); reset-procedure met de BOOT-knop, vergeten beheerder-PIN en de coredump-melding (gh#56, 2.4.8); bereik sensor-leesfrequentie 15–120 s (gh#57, 2.5.1); `dwell_open_s` in plaats van `dwell_open_min` (gh#63, 2.7.0); tab Motors per raam gegroepeerd, dodezone en kalibratie (teach) van de M3-raamstandsensor met de foutmeldingen (2.8.0); de Stand-by van een teach en van de handmatige raambediening via de LCD wordt niet opgeslagen en eindigt met de sessie of een herstart (gh#65, 2.8.0); het sessie-einde van de LCD-raambediening sluit de ramen één keer (gedrag sinds 2.4.5, tekst nu gecorrigeerd); afgebroken OTA-upload (2.8.0); statusregel Standby gecorrigeerd |
 | 1.22 | 2026-09-17 | 2.9.0 — instelling *Position sensor fitted* voor de M3-raamstandsensor, standaard No; zonder sensor geen regel voor adres 40 meer en met sensor een storingsmelding als die niet reageert (gh#73); de reden bij het grijze Commissioning-blok noemt nu de echte oorzaak |
 | 1.23 | 2026-09-19 | 2.10.0 — met een raamstandsensor beoordeelt de controller elke beweging van M3 (bevestigd, niet bereikt, niet beoordeeld) en controleert hij de looptijd; badges *M3 not confirmed*, *M3 travel time too short* en *M3 travel time too long*; beide eindsensoren tegelijk actief geldt als sensorstoring |
+| 1.24 | 2026-09-20 | 2.11.0 — de kalibratie (commissioning) van de raamstandsensor werkt op elke build, niet langer alleen op een commissioning-build (gh#77) |
 
 ---
 

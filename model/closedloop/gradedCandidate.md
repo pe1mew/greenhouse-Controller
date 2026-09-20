@@ -98,4 +98,4 @@ Each row is one run of `law_compare.py --plants primary --airflow 1 --define M3_
 - **How much air a part-open M3 lets through.** It is unmeasured (plan §5c), so the comparison is run at three curves; see the results for whether the verdict holds across them.
 - **North-wind days are the plants' weak spot.** The adopted plants under-state the logged swing on those days (3.0–3.2 against 3.9 °C, [`README.md`](README.md), "The swing gap"), which is where this candidate gains most. Treat that gain as a lead to confirm on the greenhouse (contract §6).
 - **The thermal claim needs the greenhouse** (contract §5 item 5). A rig soak can prove that apertures are reached; only a production summer can prove the limit cycle is damped.
-- **Nothing here is tested in firmware.** T2's target path is 2.11.0 and not built, and the simulator's M3 emulates its design (`README.md`, "A linear M3").
+- **Nothing here is tested in firmware.** T2's target path is 2.12.0 and not built, and the simulator's M3 emulates its design (`README.md`, "A linear M3").

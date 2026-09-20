@@ -29,7 +29,7 @@
  * built here so it can be tested on the host and serve as the reference for
  * `vent_model_graded` (mode 2). The firmware still runs its own inline copy;
  * the two are kept in step by hand until T6 is refactored onto this interface
- * (planned for 2.11.0 — plan §5b/§5c).
+ * (planned for 2.12.0 — plan §5b/§5c).
  *
  * @author  Greenhouse Controller project
  */
@@ -66,7 +66,7 @@ typedef enum {
 } vent_cap_t;
 
 /** What the actuator believes a window is doing. Same order as the firmware's
- *  `window_state_t`, which has no part-open state yet: T2 gains one in 2.11.0
+ *  `window_state_t`, which has no part-open state yet: T2 gains one in 2.12.0
  *  (plan §5b), and it must take VENT_WIN_PART_OPEN's value, appended after the
  *  others so no existing value moves. */
 typedef enum {

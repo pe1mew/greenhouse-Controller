@@ -3,7 +3,7 @@ test_linear_m3.py -- the linear M3 (firmware.LinearChannel) against its design.
 
     python model/closedloop/test_linear_m3.py [--quick]
 
-There is no firmware to compare with yet: T2's target path is 2.11.0 (plan
+There is no firmware to compare with yet: T2's target path is 2.12.0 (plan
 §5b). So these check the emulation against the contract (§3, §7) and the
 plan's stop rule, not against a log, in three layers:
 

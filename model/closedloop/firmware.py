@@ -26,7 +26,7 @@ controller sees what the real one saw and does what it did:
       that defer SRC_T6 only, and -- from 2.3.1 (gh#48) -- SRC_T6 reversals
       deferred while a stroke is in progress. Also tracks the physical
       position, which the binary law never reads but a linear law will.
-  LinearChannel -- M3 with its wire sensor (wpos_fitted_m3 = 1), as 2.11.0's
+  LinearChannel -- M3 with its wire sensor (wpos_fitted_m3 = 1), as 2.12.0's
       mode 2 is designed but not yet built (plan §5b): T17's readings with
       their age, drives to a part-open target that stop within the deadband,
       and T6's last target and how it ended. See the class.
@@ -662,7 +662,7 @@ class Channel:
 
 
 # --------------------------------------------------------------------------
-# M3 with its position sensor: mode 2's linear actuator (2.11.0, not yet built)
+# M3 with its position sensor: mode 2's linear actuator (2.12.0, not yet built)
 # --------------------------------------------------------------------------
 
 CH_STOPPED = 7          # at rest part-open: the new terminal state plan §5b gives T2
