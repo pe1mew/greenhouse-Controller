@@ -46,6 +46,7 @@
    - 5.13 Status Website POST (T14)
    - 5.14 Persistent Circuit Breaker (T14 internal — deferred)
    - 5.15 Bulkhead Policy and Status-POST Supervisor (T15 — dormant)
+   - 5.16 Window Position Sensing — M3 (T17)
 
 ---
 
@@ -246,6 +247,8 @@ The firmware is structured as a set of FreeRTOS tasks. Each logical function is 
 | T13 | OTA                    | Low (on demand)   | any  | Firmware and LittleFS update; manages dual-bank A/B rollback; firmware-only fallback timer for unpaired uploads; spawns a dedicated reboot worker task to host `esp_restart()` outside the FreeRTOS timer-service context (§5.9). |
 | T14 | Status website POST    | Low               | any  | Outbound HTTPS POST to the remote status server every `cfg.status_interval_s`; SD log upload at the configured daily slot and on T9 rotation (multi-file drain). Builds the canonical status JSON via the shared `build_canonical_status_json()` (§5.13). |
 | T15 | Status-POST supervisor | (deferred)        | any  | *(Dormant — see §5.15.)* Bulkhead supervisor for T14: heartbeat + cumulative-heap-drop monitor with respawn budget escalating to planned reboot. Source preserved on disk; excluded from the build. May be withdrawn pending soak outcome. |
+| T16 | ROTA client            | Low (scheduled)   | any  | Internet-pull OTA: checks the configured channel for a manifest on an interval with jitter, downloads and verifies both artefacts over TLS, and applies them inside the quiet window. Design and test specification in [`rota_tds.md`](rota_tds.md) and [`rotaImplementationPlan.md`](rotaImplementationPlan.md); mainline since 2.2.x. |
+| T17 | Window position (M3)   | Medium-low (4)    | any  | Reads the M3 draw-wire encoder over Modbus while M3 travels, publishes the opening and the control law it considers admissible, and reports the fault checks and per-drive verdicts of §5.16. Present only where `motor/wpos_fitted_m3` says a sensor is fitted. **Measures and reports; drives nothing.** |
 
 ### 4.3 Task Descriptions
 
@@ -604,6 +607,23 @@ T15 is **dormant in the end-state architecture**. The task slot is reserved and 
 
 The deferral rationale is documented in §5.15. The end-state expectation is that the ESP-IDF HTTPS client's keep-alive plus bounded mbedTLS buffers eliminate the per-cycle heap-drop pattern that originally motivated T15, making the supervisor unnecessary.
 
+
+#### T16 — ROTA Client (scheduled)
+
+Internet-pull OTA. T16 checks the configured channel for a manifest on an interval with jitter, downloads and verifies both artefacts over TLS, and applies them inside the operator's quiet window, deferring while an operator session, a wind override or an OTA upload is in progress. Its requirements, wire contract and test matrix are a document of their own: [`rota_tds.md`](rota_tds.md), with the build-out in [`rotaImplementationPlan.md`](rotaImplementationPlan.md). Mainline since 2.2.x; listed here because §4.2 is meant to be the whole task set.
+
+#### T17 — Window Position (M3)
+
+**Added to this document 2026-09-20 (gh#75); the task shipped in 2.8.0.** T17 owns the optional M3 draw-wire encoder and is the only task that reads it. It **measures and reports; it drives nothing** — every window command still comes from T6, T3 or an operator, through T2's timed control (FRS §5.3d, C3).
+
+- **Presence.** T17 runs only where `motor/wpos_fitted_m3` says a sensor is fitted (FR-WP23). Not fitted, it never addresses the bus and the sensor appears in no status field and no log row.
+- **Cadence.** It polls while M3 travels, at `travel_m3 / 150` (about 100 ms on the dev rig, 1.17 s in production), and every 30 s at rest. Polling only during travel is what keeps a second Modbus caller off the bus the rest of the time (§5.1's single-caller policy).
+- **The presence gate** decides whether the reading may be trusted, and publishes the control law that follows from it: POSITION with a trusted sensor, TIMED without one. Demotion is immediate; promotion happens only at a stroke boundary, so a law never changes under a moving window.
+- **Fault checks.** Two rules judge each drive: the leaf must move when the relay is energised, and a claim of "closed" must be corroborated by the closed end sensor. Since 2.10.0 each drive also gets a verdict — confirmed, not reached, not judged — and the configured travel time is checked against the measured traverse. All of it reports; none of it acts.
+- **Interfaces.** It posts rows to Q3 like every other task, publishes its snapshot under a spinlock for T4 and T11 to read, and reads T2's drive state through an accessor. It takes no mutex and sets no event-group bit: FR-WP18 requires that no safety path depend on it.
+
+Detail, including the register map and the phase plan, is in [`integrateWindowPositionSensor.md`](integrateWindowPositionSensor.md); the data and log surfaces are §5.16.
+
 ---
 
 ### 4.4 Core Assignment
@@ -731,6 +751,8 @@ A single FreeRTOS event group (`xEventGroupCreate`) holds all system-wide boolea
 | T13  | MX5             | Q3               | —                     | —                    | —                       | Sets/clears EG1.OTA_IN_PROGRESS |
 | T14  | MX2, MX3, MX4  | Q3               | —                     | —                    | —                       | Reads EG1 (all — for canonical status JSON) |
 | T15  | *(dormant)*     | —                | —                     | —                    | —                       | *(dormant)*              |
+| T16  | —               | Q3               | —                     | —                    | —                       | Reads EG1 (quiet gate: STANDBY, WIND_OVERRIDE, OTA_IN_PROGRESS) |
+| T17  | —               | Q3               | —                     | —                    | —                       | — (publishes its own snapshot under a spinlock; reads T2's drive state and the cfg shadow through accessors) |
 
 ---
 
@@ -1596,9 +1618,55 @@ Default `0x3F` exposes every object. Operators may narrow the payload on bandwid
 
 **Known structural limitation.** Hard faults *inside* ESP-IDF / mbedTLS / lwIP cannot be intercepted from the application layer on this single-chip architecture. The dormant bulkhead design, were it activated, would make such faults *bounded* (the breaker throttles the trigger rate; the supervisor ensures the recovery is a 2-second blip, not a 171-second outage). Eliminating the faults themselves would require hardware separation or a co-processor — explicitly out of scope.
 
+### 5.16 Window Position Sensing — M3 (T17)
+
+**Added 2026-09-20 (gh#75).** The subsystem shipped in 2.8.0 and the installation setting in 2.9.0. Requirements: FRS §5.3d, which adopts FR-WP01–23. Design: [`integrateWindowPositionSensor.md`](integrateWindowPositionSensor.md). **Measures and reports; drives nothing.**
+
+#### 5.16.1 Device and driver
+
+A draw-wire encoder on the M3 leaf, on the same RS485 bus as the climate sensors, at **Modbus address 40**. The host-testable driver is `drivers/windowPos/`, compiled into the firmware through `firmware/components/windowPos/`. One read returns the opening, the averaged opening, a signed rate, a status word and the state of **M3's own two end sensors**, which are wired to the encoder rather than to the controller. Position and rate come from a measurement window the controller writes (`40002`); the span comes from a teach against the known distance between the end sensors (`40004`).
+
+#### 5.16.2 Configuration (NVS, `motor` namespace)
+
+| Key | Meaning | Default |
+|---|---|---|
+| `wpos_fitted_m3` | Whether a sensor is fitted. **0 = not fitted**, and then T17 never addresses the bus, and no status field or log row mentions the sensor (FR-WP23). | 0 |
+| `deadzone_m3` | Smallest aperture change worth acting on, in mm. Used today as the "~0" band of the close check and rule 1's at-end exemption; it becomes the move deadband when position drives M3. | 20 |
+
+Both are ordinary descriptor rows in `firmware/config/cfg_desc.inc`, clamped, audited and published like any other key (§5.10).
+
+#### 5.16.3 Status payload
+
+Emitted by `build_canonical_status_json()`, so `GET /api/status`, the WebSocket push and T14's POST all carry the same fields, and **only when a sensor is fitted**:
+
+| Field | Meaning |
+|---|---|
+| `M3_percent_x10` | Opening, 0.1 %. Not clamped: the leaf rests beyond both ends, because the end sensors mark the window's extremes and the motor drives on into the overlap. |
+| `M3_mm_x10` | Opening, 0.1 mm. |
+| `M3_at_end_sensor` | The encoder's end-sensor bit: M3 sits on one of its two ends. |
+| `sensor_fault_position` | Flag — the sensor is fitted and not usable (absent, faulted, or both end sensors active at once). M3 falls back to timed control; ventilation continues (FR-WP17). |
+| `m3_not_confirmed` | Flag (2.10.0) — the last judged drive ran its full timer without the target end being confirmed. Cleared by the next confirmed drive. |
+| `m3_travel_short`, `m3_travel_long` | Flags (2.10.0) — the measured traverse disagrees with `travel_m3`: the end sensor made later than the configured time, or within half of it. |
+
+#### 5.16.4 Log encodings
+
+| Row | Contents |
+|---|---|
+| `SENSOR_HR` channel 3 | The position trace: opening in 0.1 mm (−1 = fault) with the signed rate. Written while M3 travels and once at rest. |
+| `ALARM` channel 6 | The sensor's own events, by `param_id`: 244 fault set/cleared, 245 teach, 246 device status bits, 247 calibration verdict, **248** control-mode change with its reason, **249** rule 1 (the leaf did not follow the relay), **250** rule 2 (a close claimed ~0 that the closed end sensor did not corroborate), **251** the per-drive verdict, **252** the travel check. |
+
+`log/logparser.py` decodes all of them; `logparser.md` is the reference for the encodings, and it and `firmware/src/types/app_types.h` must change together with any new `param_id` (§5.3's rule about a second emitter on one row).
+
+#### 5.16.5 What it does not do
+
+- **No safety path reads it** (FR-WP18): the wind override, the motor alarm and the boot CLOSE_ALL behave identically with the sensor fitted, absent or faulted.
+- **No actuation**: M3 is driven fully open or fully closed on T2's timer, exactly as M1 and M2 (FRS C3). Position reaching the control law is designed, not in force — it arrives as mode 2, behind [`ventModelContract.md`](ventModelContract.md).
+- **Commissioning (teach) is a bench-build surface only**, which is [gh#77](https://github.com/pe1mew/greenhouse-Controller/issues/77).
+
 ---
 
 For the live list of design and integration issues see `firmware/issues.md` and the GitHub issue tracker. This specification is the end-state design; resolved-and-ratified issues are reflected directly in the body of the document, and open issues are not duplicated here.
+
 
 ---
 

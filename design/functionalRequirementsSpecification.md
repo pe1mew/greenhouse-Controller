@@ -73,6 +73,8 @@ The controller reads internal climate conditions (temperature and humidity) and 
 
 The controller is operated locally via a 4×4 keyboard and a 16×2 LCD display. Optionally, it can be accessed over WiFi, and can publish status data to an MQTT broker.
 
+**Optionally, window M3 carries a position sensor** (a Modbus draw-wire encoder, firmware 2.8.0 onwards). Where it is fitted, the controller measures how far M3 actually stands open and reads M3's two end sensors, and it **reports** what it measures: the opening in the status payload and on the web GUI, a fault when the sensor stops answering, and since 2.10.0 a verdict on every M3 drive plus a check of the configured travel time against the measured traverse. **It does not yet drive M3 on position** — actuation remains the timed, binary control of §5.3, and the sensor is not fitted at all unless the installation setting says so (FR-WP23). See §5.3d.
+
 ### 2.1 Context Diagram
 
 ```
@@ -133,7 +135,9 @@ The greenhouse is rectangular (40 m × 16 m), oriented with the long axis east�
 
 ### 4.4 Motor Interface
 
-Windows are driven by a Hotraco RRK-3 relay box. The controller sends an OPEN or CLOSE pulse (24 V potential-free contact) per window. End-switches are wired to the RRK-3 directly and stop the motor automatically at the fully-open and fully-closed positions. **The controller receives no end-switch feedback and has no direct knowledge of the actual window position.**
+Windows are driven by a Hotraco RRK-3 relay box. The controller sends an OPEN or CLOSE pulse (24 V potential-free contact) per window. End-switches are wired to the RRK-3 directly and stop the motor automatically at the fully-open and fully-closed positions. **The controller receives no end-switch feedback from the RRK-3, and without a position sensor it has no direct knowledge of the actual window position** — M1 and M2 are always in that condition.
+
+**M3 is the exception where a position sensor is fitted** (§5.3d): a draw-wire encoder on the leaf, read over the same Modbus bus as the climate sensors, reports the opening and the state of M3's own two end sensors, which are wired to the encoder and not to the controller. This is a measurement path only. The drive path is unchanged: the controller still pulses the RRK-3 and still stops M3 on its timer.
 
 The relay command must remain active for the full travel time plus a margin; de-energising the relay before the end-switch fires stops the window motor immediately at its current position. The controller therefore only issues complete open or complete close commands — partial positioning is not supported.
 
@@ -227,6 +231,27 @@ Distinct from setpoint-driven automatic ventilation and from the safety-driven C
 | FR-MM05 | Safety gates **shall** retain authority over manual commands: Motor Alarm **shall** refuse all manual commands; CLOSE_ALL calibration in progress **shall** refuse all manual commands; Wind Safety override **shall** refuse manual OPEN (CLOSE is always accepted). Refusal **shall** be communicated to the Administrator on the LCD (non-silent). | Must |
 | FR-MM06 | Every manual command **shall** produce an audit-log entry recording the timestamp, the affected channel, the action (OPEN or CLOSE), and the operator role (Administrator) that issued the command. | Must |
 | FR-MM07 | When the Administrator's PIN session ends (5-minute timeout from last keypress, or explicit logout), the manual-menu-initiated Standby **shall** clear, the anti-thrash dwell debt left by the manual commands **shall** be dropped, and the controller **shall** run a CLOSE_ALL recalibration, like the Scherm 3 / web GUI Standby exits (FR-MD03). The admin's manual per-channel positions are respected for the whole session (FR-MM03), not beyond it. *(Since 2026-09-10, 0caff3f. rc.1.5.2 cleared Standby without recalibrating, to keep the manual positions past the session — locked decision 2026-05-26 follow-up "Respect window, T6 acts after the session timeout from admin at LCD." The respect window is kept; the recalibration is not skipped any more, because T6 then resumed against windows whose completed manual moves had armed the dwell timers, and had every command refused for up to 25 minutes while the mode read AUTOMATIC.)* | Must |
+
+### 5.3d Window Position Sensing — M3, optional (gh#75)
+
+**Added 2026-09-20.** Firmware 2.8.0 shipped the M3 position sensor and 2.9.0 the installation setting; this section states what is in force. The requirements themselves are **FR-WP01–FR-WP23 in [`windowPositionSensorRequirements.MD`](windowPositionSensorRequirements.MD)**, which is the authority for their wording. They are adopted here by reference rather than restated, so the two cannot drift; that document is a study in its origin, but its IDs are the ones the firmware, its tests and its harnesses cite.
+
+**What is in force today (2.10.x).** The sensor is a **measuring** subsystem. Nothing in the control path reads it.
+
+| ID | Requirement | MoSCoW |
+|----|-------------|--------|
+| FR-WPF01 | Where the installation setting says a position sensor is fitted (FR-WP23), the system **shall** measure M3's opening and report it: in the status payload, on the web GUI, and in the event log. | Must |
+| FR-WPF02 | The system **shall** report a fitted sensor that stops answering, or reports its own fault, on the same footing as the T/RH and wind sensor faults (FR-WP16, FR-WP19), and **shall** continue ventilating with M3 as a binary actuator (FR-WP17). | Must |
+| FR-WPF03 | Position **shall not** be a precondition of any safety path. The wind override, the motor-alarm handling and the boot CLOSE_ALL **shall** behave identically whether the sensor is fitted, absent or faulted (FR-WP18). | Must |
+| FR-WPF04 | The system **shall** reject implausible readings rather than act on them (FR-WP20), and **shall** report, per drive of M3, whether the leaf reached the end it was sent to, and whether the configured travel time matches the measured traverse. *(Firmware 2.10.0; both report only.)* | Should |
+| FR-WPF05 | With no sensor fitted the system **shall not** address it and **shall not** report it anywhere (FR-WP23), so that "not fitted" is never shown as a fault. | Must |
+| FR-WPF06 | Driving M3 to a commanded intermediate position **shall not** be attempted until it is specified and accepted as its own change. Until then M3 is driven fully open or fully closed, as C3 states. | Must |
+
+- **Where the design lives:** [`integrateWindowPositionSensor.md`](integrateWindowPositionSensor.md) — the task, the presence gate, the fault checks, the log encodings and the phase plan. The control law that would use position sits behind [`ventModelContract.md`](ventModelContract.md).
+- **What the operator sees** is in the two manuals: the opening as a percentage, the *Window sensor fault* badge, and (2.10.0) the *M3 not confirmed* and travel-time badges.
+- **Deliberately not adopted here:** the parts of FR-WP01–23 that constrain *sensor selection and procurement* (mounting, wire fatigue, supplier configurability). They govern the choice of device, not the behaviour of this system, and they stay in the requirements study.
+
+---
 
 ### 5.4 Automatic Climate Control
 
@@ -544,8 +569,8 @@ The RGB LED uses the following colour semantics, which differ from the discrete 
 | # | Constraint / Assumption |
 |---|------------------------|
 | C1 | The only actuators are the three motorised ventilation windows. There is no heating, cooling, humidification, or dehumidification equipment. |
-| C2 | The RRK-3 end-switches are not connected to the controller. The controller has no physical feedback of actual window position. All window states are estimated. |
-| C3 | The controller can only open or close windows completely. De-energising the relay stops the window immediately at whatever position it is in. Partial positioning is not supported because it would require precise timed stops to reach a predictable position, which is unreliable without position feedback. Only fully-open and fully-closed end positions are used. See FR-A07/FR-A08. |
+| C2 | The RRK-3 end-switches are not connected to the controller, so window states are estimated from the commands issued and the travel timers. **Amended 2026-09-20 (gh#75):** where the optional M3 position sensor is fitted this no longer holds for M3, which is measured — its opening and its own two end sensors are read over Modbus (§5.3d). M1 and M2 remain estimated, and M3's *state* as recorded by the controller is still the estimate until position drives the actuator. |
+| C3 | The controller can only open or close windows completely. De-energising the relay stops the window immediately at whatever position it is in. Partial positioning is not supported because it would require precise timed stops to reach a predictable position, which is unreliable without position feedback. Only fully-open and fully-closed end positions are used. See FR-A07/FR-A08. **Amended 2026-09-20 (gh#75):** this is the reason the M3 position sensor exists. It remains true as written through firmware 2.10.x — M3 is still driven fully open or fully closed — and the premise (no feedback) falls away for M3 once the sensor is fitted. Partial positioning of M3 is designed but not in force; it arrives as mode 2 (`design/integrateWindowPositionSensor.md` §5b). |
 | C4 | Opening windows helps only when outside conditions (T and/or RH) are more favourable than inside. The controller has no outside temperature or humidity sensor. This is a recognised limitation. |
 | C5 | The controller cannot actively raise temperature or humidity; it can only try to slow the rate of decrease by closing windows. |
 | C6 | WiFi, MQTT, and SD card functionality are optional; the controller must be fully functional as a standalone unit without any of these. |
