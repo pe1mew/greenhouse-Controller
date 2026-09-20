@@ -14,10 +14,29 @@ T6 will post. What is exercised is T2's real path, not a test-only shortcut.
 
 WHICH BUILD
 -----------
-A 2.12.0 bench build. The hook is bench-only, like every other /api/diag
-route. There is no fail-first flag here: the behaviour is new, so the
-pre-2.12.0 arm is "the route answers 404", which the run checks for you when
-you point it at an older build.
+A 2.12.0 bench build. The hook is bench-only, like every other /api/diag route.
+
+**Fail-first.** `-DWPOS_FAILFIRST_212` restores the four defects the target
+rules fixed, and every stage below must FAIL on that build before a pass on a
+normal one means anything:
+
+  band       the stop rule loses its overshoot guard, so a leaf that steps past
+             a narrow band runs on to the end
+  twice      as `band`
+  ends       unaffected (an end is an ordinary full-travel drive either way)
+  supersede  a full-travel command no longer disarms the target, so the
+             recalibration's close can be stopped short by it -- the one that
+             matters, and the reason this flag exists
+  lost       the stop rule loses its grace, so the drive is abandoned on its
+             first tick rather than after the sensor really goes
+  refuse     unaffected
+
+Plus, on a fail-first build, the START of a drive judges freshness by the stop
+rule's 3 s limit, and T17 reads only every 30 s at rest -- so most stages will
+not even get a move commanded. That is the defect, and it is why the run prints
+the build it is talking to before anything else.
+
+`GET /api/diag/windowpos` reports `gate.failfirst_212`.
 
 HOW -- everything over the network, no operator at the rig
 ----------------------------------------------------------
@@ -101,6 +120,8 @@ class Rig(object):
         st = self.u.status()
         self.unit_id = (st.get("system") or {}).get("unit_id", "?")
         self.fw = (st.get("system") or {}).get("fw_ver", "?")
+        gate = (self.u.diag() or {}).get("gate") or {}
+        self.failfirst = bool(gate.get("failfirst_212"))
 
     # -- settings ---------------------------------------------------------
     def cut_dwells(self):
@@ -261,6 +282,11 @@ def main():
 
     rig = Rig(a.host, a.pin)
     print("at_wp_target -- unit %s, fw %s" % (rig.unit_id, rig.fw))
+    if rig.failfirst:
+        print("  *** WPOS_FAILFIRST_212 build: the target rules are the OLD ones.")
+        print("  *** Stages band, twice, supersede and lost MUST fail here.")
+    else:
+        print("  normal build (failfirst_212 false)")
     if "bench" not in rig.fw:
         sys.exit("this needs a bench build: the target hook is bench-only")
 

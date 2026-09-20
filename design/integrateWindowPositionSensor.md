@@ -2116,6 +2116,34 @@ mode is linear, and T6 refuses a target inside the same interval. One key, two e
 number. Keeping T2's 25-minute dwell instead would have made the interval irrelevant and mode 2
 unable to move a window at all.
 
+###### What the interval is worth, simulated 2026-09-20
+
+Before the key existed there was no way to ask what it buys. Now there is: the closed-loop
+simulator runs the real library against nine days of 5C88's own weather (2026-07-19..29), with the
+`graded` candidate, `wpos_fitted_m3 = 1` and the rig's 1500 mm span.
+
+| `min_intv_m3` | M3 drives/day | swing °C | h ≥ 31 °C | M3 open h |
+|---|---|---|---|---|
+| **0** (the default) | **16.9** | 2.8 | 20 | 46 |
+| 300 s | 16.9 | 2.8 | 20 | 46 |
+| 900 s | 11.5 | 3.3 | 19 | 41 |
+| 1500 s | 8.5 | 4.4 | 20 | 42 |
+| *mode 1, as logged* | *6.3* | *5.6* | *18* | *35* |
+
+- **At the default, mode 2 costs 2.7× the motor starts** — which is exactly what the contract's
+  constraint table warns about ("a continuous law must not multiply" 3-8 openings a day), and it
+  matches `gradedCandidate.md`'s independent ~2.8× figure.
+- **300 s buys nothing**: the law's own hold already keeps moves further apart than that.
+- **900 s cuts starts by a third for about half a degree of swing**, and 1500 s brings them within
+  a third of today's while still halving the swing against mode 1.
+- **Read the columns relatively, not absolutely.** The simulated swing is systematically lower than
+  the logged one on the same days (2.8 against 5.6 in the first row), so these numbers rank the
+  settings; they do not predict a greenhouse.
+- **The firmware default stays 0**, because that is what the specification and the simulator both
+  assume and a silent divergence would make every offline figure describe a different unit. This
+  table is the evidence for changing it deliberately — and on a rig whose window traverses in 13 s
+  rather than 176 s, which is the other reason not to bake a number in yet.
+
 **The default is 0 because the specification says 0** (§10 decision 10) and the simulator assumes 0
 — a firmware that quietly chose otherwise would mean `gradedCandidate.md`'s figures no longer
 describe what a unit does. It is worth saying plainly what that means: **a unit switched to mode 2
@@ -2287,6 +2315,16 @@ ordinal.
 *Testable before mode 2 exists:* `POST /api/diag/windowpos {"target_x10":N}` (bench only) posts the
 same Q1 command T6 will post, so T2's real path is what runs. `bin/at_wp_target.py` drives six
 stages: `band`, `twice`, `ends`, `supersede`, `lost`, `refuse`. **Not yet run — 2344 is soaking.**
+
+*Fail-first, as every behavioural change here gets:* **`-DWPOS_FAILFIRST_212`** restores the four
+defects the target rules fixed — the start judging freshness by the stop rule's 3 s limit, the stop
+rule without its grace, the stop rule without its overshoot guard, and a full-travel command that
+does **not** disarm an armed target. That last one is why the flag exists: on a fail-first build the
+`supersede` stage should show a recalibration's close being stopped short by a stale target, which
+is a safety close going wrong, and it must be demonstrated failing before the fix is believed. The
+two bench images differ (`98a97aa3…` normal, `99b5f55b…` fail-first, 80 B smaller), the source
+refuses the flag outside a bench build, and `GET /api/diag/windowpos` reports `gate.failfirst_212`
+so a result can never be read against the wrong build.
 
 *Not in this step:* nothing selects a target (the effective mode is next), the minimum move (§3.6
 floor 2) is still unmeasured, the minimum interval is the law's `m3_min_interval_ms` and has no

@@ -3492,6 +3492,13 @@ static const char k_failfirst_292[] = "true";
 static const char k_failfirst_292[] = "false";
 #endif
 
+/** "true" in a WPOS_FAILFIRST_212 build (2.12.0's fail-first: the target rules). */
+#ifdef WPOS_FAILFIRST_212
+static const char k_failfirst_212[] = "true";
+#else
+static const char k_failfirst_212[] = "false";
+#endif
+
 /**
  * @brief Append the T17 soak counters to a JSON object already in @p buf.
  *
@@ -3614,12 +3621,12 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
                  "{\"ok\":false,\"err\":\"read_failed\",\"status\":%d,"
                  "\"gate\":{\"mode\":%d,\"mode_str\":\"%s\",\"reason\":%d,"
                  "\"reason_str\":\"%s\",\"inject\":\"%s\",\"failfirst_gh72\":%s,"
-                 "\"failfirst_292\":%s}}",
+                 "\"failfirst_292\":%s,\"failfirst_212\":%s}}",
                  (int)st, (int)egm,
                  (egm == WPOS_CTRL_POSITION) ? "position" : "timed", (int)egr,
                  ((unsigned)egr < (sizeof(k_reason) / sizeof(k_reason[0])))
                      ? k_reason[egr] : "?",
-                 inject_str(), k_failfirst_gh72, k_failfirst_292);
+                 inject_str(), k_failfirst_gh72, k_failfirst_292, k_failfirst_212);
         /* AT-WP05 arm A reads these with the encoder unplugged, so both blocks
          * MUST be on this path -- it is the only response that arm ever sees.
          * Same helpers as the success path, so the two cannot drift apart. */
@@ -3697,12 +3704,13 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
         snprintf(body + used3 - 1u, sizeof(body) - used3 + 1u,
                  ",\"gate\":{\"mode\":%d,\"mode_str\":\"%s\","
                  "\"reason\":%d,\"reason_str\":\"%s\","
-                 "\"inject\":\"%s\",\"failfirst_gh72\":%s,\"failfirst_292\":%s}}",
+                 "\"inject\":\"%s\",\"failfirst_gh72\":%s,\"failfirst_292\":%s,"
+                 "\"failfirst_212\":%s}}",
                  (int)gm, (gm == WPOS_CTRL_POSITION) ? "position" : "timed",
                  (int)gr,
                  ((unsigned)gr < (sizeof(k_reason) / sizeof(k_reason[0])))
                      ? k_reason[gr] : "?",
-                 inject_str(), k_failfirst_gh72, k_failfirst_292);
+                 inject_str(), k_failfirst_gh72, k_failfirst_292, k_failfirst_212);
     }
 
     /* Soak counters last, so a truncation loses only these. */

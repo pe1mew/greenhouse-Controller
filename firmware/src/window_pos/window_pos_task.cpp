@@ -216,6 +216,23 @@ static uint32_t s_fitted_checked_ms = 0u;
 #error "WPOS_FAILFIRST_292 is a bench-only fail-first build"
 #endif
 
+/* ---- fail-first build for 2.12.0 ---------------------------------------------
+ * `-DWPOS_FAILFIRST_212` restores what mode 2's target rules fixed, so
+ * `bin/at_wp_target.py` can be shown to FAIL first on each of them:
+ *  - the START of a drive judges freshness by the STOP rule's 3 s limit, so a
+ *    target from a resting window is refused as stale (T17 reads every 30 s at
+ *    rest, so this refuses essentially every first move);
+ *  - the stop rule has no grace, so the first tick of a drive reads the
+ *    pre-drive sample as "the position went away" and falls back to the timer;
+ *  - the stop rule has no overshoot guard, so a leaf that steps past a narrow
+ *    band in one sample runs on to the end;
+ *  - a full-travel command does NOT disarm an armed target, so a safety close
+ *    can be stopped short by a stale target -- the one that matters.
+ * GET /api/diag/windowpos reports it. Bench builds only. */
+#if defined(WPOS_FAILFIRST_212) && !defined(MODBUS_BENCH)
+#error "WPOS_FAILFIRST_212 is a bench-only fail-first build"
+#endif
+
 /* ---- bench test hook (gh#72): see windowpos_task_inject() ----------------- */
 #ifdef MODBUS_BENCH
 static volatile uint8_t s_inject        = (uint8_t)WPOS_INJECT_NONE;

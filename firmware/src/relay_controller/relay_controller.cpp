@@ -410,7 +410,9 @@ static void ch_start_close(uint8_t ch, uint32_t now_ms, cmd_source_t source)
      * here rather than in the caller means CLOSE_ALL, the boot sweep, the
      * alarm paths and the LCD menu all clear it without knowing it exists —
      * and a safety close can never be stopped short by a stale target. */
+#ifndef WPOS_FAILFIRST_212
     c->target_active = false;
+#endif
 
     switch (c->state) {
 
@@ -728,7 +730,11 @@ static bool ch_start_target(uint8_t ch, int16_t want_x10, uint32_t now_ms,
         ESP_LOGW(TAG, "CMD_TARGET refused: M3 position not trusted");
         return false;
     }
+#ifdef WPOS_FAILFIRST_212
+    if (m3.age_ms > TARGET_MAX_AGE_MS) {        /* the defect: the stop rule's limit */
+#else
     if (m3.age_ms > TARGET_START_MAX_AGE_MS) {
+#endif
         /* Older than T17's idle cadence: it is not polling, so there is no
          * position to steer by. T6 is level-triggered and will ask again. */
         ESP_LOGW(TAG, "CMD_TARGET refused: position %u ms old (idle cadence is %u ms)",
@@ -786,9 +792,11 @@ static bool ch_target_tick(uint8_t ch, uint32_t now_ms, bool opening)
         /* Not yet sampled since the drive began: expected, and not a fault.
          * See TARGET_FRESH_GRACE_MS -- a stale reading cannot stop the drive
          * early, so waiting costs nothing. */
+#ifndef WPOS_FAILFIRST_212
         if ((uint32_t)(now_ms - c->target_start_ms) < TARGET_FRESH_GRACE_MS) {
             return false;
         }
+#endif
         /* Past the grace, the position really has gone away. Fall back to the
          * travel timer: the drive finishes at an end, the state is a real
          * terminal one, and 2.10.0's verdict reports what happened. */
@@ -805,9 +813,13 @@ static bool ch_target_tick(uint8_t ch, uint32_t now_ms, bool opening)
     /* Arrived, or gone past. The second half matters: the leaf moves ~0.67 %
      * of the stroke between two samples, so a band narrower than that would be
      * stepped over and the drive would run on to the end. */
+#ifdef WPOS_FAILFIRST_212
+    const bool arrived = (pos >= want - band && pos <= want + band);
+#else
     const bool arrived = (pos >= want - band && pos <= want + band) ||
                          ( opening && pos >= want) ||
                          (!opening && pos <= want);
+#endif
     if (!arrived) { return false; }
 
     relay_ch_off(ch);
