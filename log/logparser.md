@@ -1,7 +1,9 @@
 # logparser — Greenhouse Controller Log Parser
 
 **File:** `log/logparser.py`
-**Document version:** 1.22 (matches firmware 2.10.0; 1.22 added `ALARM ch 6` params 251 and 252, gate reason `6`, and rule 2's new basis, gh#78; 1.21: the rule rows come per drive, gh#72; 1.20 added `SETPT param 49`, `wpos_fitted_m3`, and gate reason `5`, not fitted (gh#73), and documents param 48; 1.17 added `MODE param 47` `value_b` = 1, a STANDBY held for a session; 1.18 added `SYSTEM value_a = 32`; 1.19: the LCD manual menu holds STANDBY too (gh#65), and `SENSOR_HR ch 3` rows at rest are written only on change)
+**Document version:** 1.23 (matches firmware 2.12.0; 1.23 added mode 2: `RELAY value_a = 7`
+(`PART_OPEN`), the `SENSOR_HR ch 2` part-open qualifier bits and `value_b`, `MODE param 54`
+(the control law in force) and `SETPT params 53` and `55`; 1.22 added `ALARM ch 6` params 251 and 252, gate reason `6`, and rule 2's new basis, gh#78; 1.21: the rule rows come per drive, gh#72; 1.20 added `SETPT param 49`, `wpos_fitted_m3`, and gate reason `5`, not fitted (gh#73), and documents param 48; 1.17 added `MODE param 47` `value_b` = 1, a STANDBY held for a session; 1.18 added `SYSTEM value_a = 32`; 1.19: the LCD manual menu holds STANDBY too (gh#65), and `SENSOR_HR ch 3` rows at rest are written only on change)
 **Requires:** Python 3.10+, standard library only (no pip dependencies)
 
 **What's new in 1.22** (matches firmware 2.10.0, plan §5d and gh#78):
@@ -323,7 +325,7 @@ Periodic sensor snapshot posted by the Data Manager (T4) on every poll cycle. Re
 |--:|---|---|---|
 | 0 | Temperature + humidity | `t_c10` — temperature × 10 (0.1 °C precision) | `rh` — relative humidity, 0..100 % |
 | 1 | Wind | `wind_dms` — wind speed × 10 (deci-m/s) | `wind_dir_deg` — wind direction, 0..359 ° |
-| 2 | Window-state bitmask | 16-bit packed state + safety flags (see encoding below) | 0 (reserved) |
+| 2 | Window-state bitmask | 16-bit packed state + safety flags (see encoding below) | M3's opening, 0.1 % (**2.12.0**; `-1` = no trusted position; `0` on every row written before it, when the field was reserved) |
 
 The bitmask (ch=2, `value_a`) packs all three window-channel states + three EG1 safety flags:
 
@@ -331,7 +333,10 @@ The bitmask (ch=2, `value_a`) packs all three window-channel states + three EG1 
 bits  1..0  = M1 state    (0=CLOSED, 1=MOVING_OPEN, 2=OPEN, 3=MOVING_CLOSE)
 bits  3..2  = M2 state    (same encoding)
 bits  5..4  = M3 state    (same encoding)
-bits 11..6  = reserved (0)
+bits  6     = M1 part-open qualifier (2.12.0)
+bits  7     = M2 part-open qualifier (2.12.0)
+bits  8     = M3 part-open qualifier (2.12.0)
+bits 11..9  = reserved (0)
 bit  12     = EG1_BIT_WIND_OVERRIDE   ("WIND" flag in parser output)
 bit  13     = EG1_BIT_MOTOR_ALARM     ("ALARM" flag)
 bit  14     = EG1_BIT_CALIBRATING     ("CAL" flag)
@@ -339,6 +344,13 @@ bit  15     = reserved (0)
 ```
 
 T2 internally uses an extended state enum with GAP states for direction reversals; those collapse to the matching MOVING state in the public `window_state_t` returned by the bitmask packer. The ~2 s GAP intervals are not visible in the log.
+
+**The part-open qualifier (2.12.0).** A window resting at a commanded position is neither OPEN nor
+CLOSED, and all four 2-bit codes were already in use. Widening the state fields would have shifted
+M2's and M3's bits and silently re-decoded every archived row, so PART_OPEN is carried as the
+**OPEN code plus one qualifier bit** in what was reserved space. A reader that does not know the bit
+still reads "open", which is the truthful degradation; the parser renders `PART` instead. Only M3
+can set it today, because only M3 has a position sensor.
 
 **Example output:**
 ```
@@ -434,6 +446,7 @@ channel transitions to a new state.
 | 4 | MOVING_CLOSE | CLOSE relay energised; travel timer running |
 | 5 | GAP_TO_OPEN | 2 s gap before opening |
 | 6 | GAP_TO_CLOSE | 2 s gap before closing |
+| 7 | PART_OPEN | **2.12.0** — M3 at rest at a commanded position, between the ends. Terminal but deliberately **not persisted**: a part-open M3 forces the boot CLOSE_ALL rather than taking the "all three closed" shortcut. Only M3 can reach it, and only under linear control |
 
 **Example output:**
 ```
@@ -451,6 +464,7 @@ channel transitions to a new state.
 |---|---|---|
 | **0** | T6 `climate_control.cpp` | ventilation step decision — the table below |
 | **47** | T4 `dm_set_standby_ex()` | STANDBY enter/leave — `value_a` 1 = entered, 0 = left; `value_b` 0 = explicit, 1 = a session **hold** (below); `ch` = surface, 0 web / 1 LCD |
+| **54** | T6 `post_log_ctrl_mode()` | **2.12.0** — M3's control law actually **in force** changed: `value_a` 0 = timed, 1 = linear; `value_b` = why (0 the operator's setting, 1 no trusted position, 2 the position came back, 3 held down after a fall back); `ch` = 3. Written at boot as well as on every change, because which law a unit came up under is not inferable from silence. **Not** the operator's setting — that is `SETPT param 53` |
 
 > **Old logs cannot be separated.** Emitter B has existed since rc.1.5.0 (gh#28)
 > but carried `param = 0` until 2.6.0, so in any log written before 2.6.0 a
@@ -570,6 +584,8 @@ Configuration parameter changed.  Posted by:
 | 46 | travel | s (per channel) | numeric, old → new — motor full-travel time (2.4.2, gh#51). Never logged before 2.4.2, because until then it only took effect at reboot |
 | 48 | deadzone_m3 | mm | numeric, old → new — the M3 linear-control deadband (2.8.0). Stored and audited; the control law that will use it is not in service |
 | 49 | wpos_fitted_m3 | (fitted/not fitted) | boolean, old → new — whether a position sensor is fitted to M3 (2.9.0, gh#73). Not fitted keeps T17 off address 40 |
+| 53 | ctrl_mode_m3 | (timed/linear) | **2.12.0** — the DESIRED control mode for M3. What was actually in force is `MODE param 54`, which is a different row and may differ: linear also needs a trusted position |
+| 55 | min_intv_m3 | s | **2.12.0** — the linear dwell: the least time between M3 moves. Replaces `dwell_open_m3` and `dwell_close_m3` while linear control is in force; 0 = no interval |
 
 **Sensitive-value policy (since 2.0.0-a.6.35.5).** Param IDs 23-30 cover
 admin-sensitive settings — PIN rotations, WiFi credentials, the
@@ -882,6 +898,7 @@ OPEN or CLOSED, whatever this row says.
 | `3` | the sensor was lost or reported a fault during the drive |
 | `4` | both end sensors active (bit 4) |
 | `5` | no usable reading during the drive |
+| `6` | **2.12.0** — a targeted (mode 2) drive: M3 was sent to a commanded position, not to an end, so the end-sensor verdict does not apply. Not a fault |
 
 A reading carrying start-up bit `0x01` (no measurement window completed since
 T17 wrote `40002`, one window long) gives no position evidence for the verdict

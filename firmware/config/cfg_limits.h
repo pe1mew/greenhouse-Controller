@@ -90,6 +90,16 @@
 #define CFG_MIN_DEADZONE_MM     1
 #define CFG_MAX_DEADZONE_MM   200
 
+/* 2.12.0 — the linear dwell: the least time from the end of one M3 drive to
+ * the start of the next, in mode 2 (contract §7, "mode 2 replaces the open
+ * dwell with a minimum interval between moves"). 0 is off, and is the
+ * SPECIFIED default (plan §10 decision 10) — unlike the deadband, a zero here
+ * is a legitimate choice while the law's own hold governs. The maximum matches
+ * CFG_MAX_DWELL_OPEN_S: the interval REPLACES that dwell, so it must be able
+ * to express the same 25 minutes. */
+#define CFG_MIN_MIN_INTV_S      0
+#define CFG_MAX_MIN_INTV_S   1500
+
 /* ── System ───────────────────────────────────────────────────────────────── */
 /* 2.5.1 (gh#57 part 2) — was 30..300, which contradicted every other statement
  * of this range in the project and was the newest of them:

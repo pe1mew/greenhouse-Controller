@@ -136,6 +136,10 @@ _PARAM = {
     # the controller acted on is the EFFECTIVE mode, which is a MODE row with
     # param 54, not this one: this records only that an operator asked.
     53: ("ctrl_mode_m3",    ""),
+    # 2.12.0 - the linear dwell: the least time between two M3 moves. It
+    # REPLACES dwell_open_m3 and dwell_close_m3 while linear control is in
+    # force, so a log that shows this changing is showing M3's dwell change.
+    55: ("min_intv_m3",     "s"),
 
     # ---- Modbus bus performance indicators (gh#66 Part 2, fw 2.8.0) -------
     # These are NOT config params. They ride on LOG_SYSTEM value_a = 31, where
@@ -552,6 +556,10 @@ _WPOS_NOT_JUDGED = {
     3: "sensor lost or faulted during the drive",
     4: "both end sensors active (bit 4)",
     5: "no usable reading",
+    # 2.12.0 - a mode-2 drive to a commanded position. The verdict asks whether
+    # M3 reached the END it was sent to; this drive was not sent to one, so
+    # there is nothing to confirm. It is not a fault.
+    6: "a targeted drive: no end was asked for",
 }
 # ...and the travel check, param 252: value_a = state x 1000 + travel_m3 (s).
 _WPOS_TRAVEL = {0: "within travel_m3 again",

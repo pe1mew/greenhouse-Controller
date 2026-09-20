@@ -1085,6 +1085,11 @@ static void render_status(void)
                     case WIN_CLOSED:       return "CLOS";
                     case WIN_MOVING_OPEN:  return "MOV>";
                     case WIN_MOVING_CLOSE: return "MOV<";
+                    /* 2.12.0: M3 resting at a commanded position. Falling
+                     * through to "UNK " would tell the operator the position
+                     * is not established, which is the opposite of the truth
+                     * about a window that was measured and stopped there. */
+                    case WIN_PART_OPEN:    return "PART";
                     default:               return "UNK ";
                 }
             };
@@ -1447,6 +1452,7 @@ static void render_motor_pick(void)
             case WIN_CLOSED:       return "CLOS";
             case WIN_MOVING_OPEN:  return "MOV>";
             case WIN_MOVING_CLOSE: return "MOV<";
+            case WIN_PART_OPEN:    return "PART";   /* 2.12.0, see above */
             default:               return "UNK ";
         }
     };
@@ -1474,6 +1480,7 @@ static void render_motor_action(void)
             case WIN_CLOSED:       st = "CLOSED"; break;
             case WIN_MOVING_OPEN:  st = "MOV>";  break;
             case WIN_MOVING_CLOSE: st = "MOV<";  break;
+            case WIN_PART_OPEN:    st = "PART OPEN"; break;   /* 2.12.0 */
             default:               st = "UNK";   break;
         }
     }

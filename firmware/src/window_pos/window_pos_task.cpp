@@ -752,6 +752,11 @@ typedef enum {
     DRV_END_NOT_TARGET,   /* T2 at rest elsewhere: a motor alarm */
     DRV_END_SENSOR,       /* the gate shut: absent or faulted */
     DRV_END_BOTH_ENDS,    /* the gate shut: bit 4 */
+    DRV_END_PARTIAL,      /* 2.12.0: T2 stopped at a commanded position. The
+                           * verdict asks "did it reach the END it was sent
+                           * to", and this drive was not sent to one, so the
+                           * question does not apply. Without this it reported
+                           * NOT_TARGET, which means a motor alarm. */
 } drive_end_t;
 
 /* LOG_PARAM_WPOS_CONFIRM value_a, signed by direction (see app_types.h). */
@@ -765,6 +770,7 @@ typedef enum {
 #define NOTJ_SENSOR              3
 #define NOTJ_BOTH_ENDS           4
 #define NOTJ_NO_READING          5
+#define NOTJ_PARTIAL             6   /* 2.12.0: a targeted drive, no end expected */
 
 typedef struct {
     bool     active;        /* a drive is being judged, and has no verdict yet */
@@ -979,6 +985,7 @@ static void drive_finish(drive_end_t how, bool at_target, uint16_t samples)
     case DRV_END_NOT_TARGET:  vb = NOTJ_NOT_TARGET;  break;
     case DRV_END_SENSOR:      vb = NOTJ_SENSOR;      break;
     case DRV_END_BOTH_ENDS:   vb = NOTJ_BOTH_ENDS;   break;
+    case DRV_END_PARTIAL:     vb = NOTJ_PARTIAL;     break;
     }
 
     portENTER_CRITICAL(&s_mux);
@@ -1422,7 +1429,13 @@ void task_window_pos(void *pvParameters)
                     window_state_t wst[3];
                     t2_get_window_states(wst);
                     const window_state_t target = s_drv.closing ? WIN_CLOSED : WIN_OPEN;
-                    drive_finish((wst[2] == target) ? DRV_END_TIMER : DRV_END_NOT_TARGET,
+                    /* 2.12.0: a drive that ended part-open was a targeted one.
+                     * It is not "the wrong end", it is no end at all, and the
+                     * end-sensor verdict has nothing to say about it. */
+                    const drive_end_t how = (wst[2] == WIN_PART_OPEN) ? DRV_END_PARTIAL
+                                          : (wst[2] == target)        ? DRV_END_TIMER
+                                                                      : DRV_END_NOT_TARGET;
+                    drive_finish(how,
                                  stroke_at_target, stroke_samples);
                 }
             }

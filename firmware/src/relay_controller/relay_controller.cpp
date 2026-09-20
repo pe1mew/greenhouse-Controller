@@ -169,6 +169,8 @@ typedef struct {
     /* 2.12.0 (plan §5b) — the commanded target, armed only by CMD_TARGET and
      * only on M3. `target_active` is the single discriminator: every other
      * path leaves it false and behaves exactly as before. */
+    uint32_t   move_end_ms;        /**< millis() when the last drive ENDED, for
+                                    *   t2_ms_since_move(). 0 = none since boot. */
     bool       target_active;      /**< A target is being driven to right now. */
     int16_t    target_x10;         /**< Aperture 0..1000 = 0..100.0 %. */
     uint16_t   target_band_x10;    /**< Arrival band, 0.1 %, from `deadzone_m3_mm`. */
@@ -616,6 +618,31 @@ static void ch_start_open(uint8_t ch, uint32_t now_ms, cmd_source_t source)
  *  reverts to the travel timer, which is what a unit with no sensor does. */
 #define TARGET_MAX_AGE_MS  3000u
 
+/**
+ * @brief The dwell to arm after a drive on this channel ends, milliseconds.
+ *
+ * For M1 and M2, and for M3 in mode 1, this is the configured open or close
+ * dwell, exactly as before. **In mode 2 M3's dwell is the LINEAR INTERVAL**
+ * (`min_intv_m3`), because the contract says mode 2 replaces the open dwell
+ * with a minimum interval between moves (§7) -- and if T2 kept a 25-minute
+ * dwell, the interval T6 enforces would never be the binding constraint and
+ * mode 2 could not move a window at all.
+ *
+ * Deciding it HERE, from the same key T6 reads, is what keeps the caller's
+ * interval and the actuator's dwell from being two numbers that disagree.
+ */
+static uint32_t ch_dwell_ms(uint8_t ch, bool opening)
+{
+    const ch_t *c = &s_ch[ch];
+    if (ch == 2u && dm_m3_ctrl_mode(NULL)) {
+        cfg_shadow_t cfg;
+        dm_cfg_snapshot(&cfg);
+        const int32_t s = cfg.min_intv_m3;
+        return (s > 0) ? (uint32_t)s * 1000u : 0u;
+    }
+    return opening ? c->dwell_open_ms : c->dwell_close_ms;
+}
+
 /* The arrival band lives in T4 (dm_m3_deadband_x10()), because the control law
  * needs the same number to decide whether a move is worth making. It was here
  * first; T6 needing it too was the moment to move it, not to copy it. */
@@ -745,7 +772,8 @@ static bool ch_target_tick(uint8_t ch, uint32_t now_ms, bool opening)
     relay_ch_off(ch);
     c->target_active      = false;
     c->state              = CH_PART_OPEN;
-    c->dwell_deadline_ms  = now_ms + (opening ? c->dwell_open_ms : c->dwell_close_ms);
+    c->dwell_deadline_ms  = now_ms + ch_dwell_ms(ch, opening);
+    c->move_end_ms        = now_ms;
     c->dwell_defer_logged = false;
     /* Maps to NVS_STATE_UNKNOWN by design: a part-open M3 must force the boot
      * CLOSE_ALL instead of taking the "all three closed" shortcut. */
@@ -768,7 +796,13 @@ static void ch_update(uint8_t ch, uint32_t now_ms)
         if ((int32_t)(now_ms - c->relay_deadline_ms) >= 0) {
             relay_ch_off(ch);
             c->state = CH_OPEN;
-            c->dwell_deadline_ms = now_ms + c->dwell_open_ms;
+            c->dwell_deadline_ms = now_ms + ch_dwell_ms(ch, true);
+            c->move_end_ms = now_ms;
+            /* A target that ran to the end is over, whether it arrived or not.
+             * Leaving it armed would be harmless today -- only a moving
+             * channel is checked -- and exactly the kind of stale state that
+             * becomes a defect the next time someone adds a caller. */
+            c->target_active = false;
             c->dwell_defer_logged = false;
             persist_ch_state(ch, CH_OPEN);   /* gh#18 Phase 3 */
             log_relay_event((uint8_t)(ch + 1u), CH_OPEN);
@@ -781,7 +815,9 @@ static void ch_update(uint8_t ch, uint32_t now_ms)
         if ((int32_t)(now_ms - c->relay_deadline_ms) >= 0) {
             relay_ch_off(ch);
             c->state = CH_CLOSED;
-            c->dwell_deadline_ms = now_ms + c->dwell_close_ms;
+            c->dwell_deadline_ms = now_ms + ch_dwell_ms(ch, false);
+            c->move_end_ms = now_ms;
+            c->target_active = false;        /* see the OPEN branch above */
             c->dwell_defer_logged = false;
             persist_ch_state(ch, CH_CLOSED); /* gh#18 Phase 3 */
             log_relay_event((uint8_t)(ch + 1u), CH_CLOSED);
@@ -1167,6 +1203,18 @@ static void process_command(const window_cmd_t *cmd, uint32_t now_ms)
 /* ============================================================
  * Public state getter (T11 web dashboard)
  * ============================================================ */
+
+uint32_t t2_ms_since_move(uint8_t ch)
+{
+    if (ch >= NUM_CHANNELS) { return 0u; }
+    uint32_t end_ms;
+    portENTER_CRITICAL(&s_state_mux);
+    end_ms = s_ch[ch].move_end_ms;
+    portEXIT_CRITICAL(&s_state_mux);
+    if (end_ms == 0u) { return 0u; }        /* nothing has moved since boot */
+    const uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    return (uint32_t)(now_ms - end_ms);
+}
 
 void t2_get_window_states(window_state_t out[3])
 {

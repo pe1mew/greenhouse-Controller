@@ -212,6 +212,12 @@ size_t build_canonical_status_json(char *buf, size_t cap,
             window_state_str(s->win[0]),
             window_state_str(s->win[1]),
             window_state_str(s->win[2]));
+        /* 2.12.0: which law M3 is under. Always present when the windows block
+         * is, including on a unit with no sensor (where it reads "TIMED"),
+         * because "which law is driving my greenhouse" must not be a question
+         * whose answer is an absent field. */
+        ok = ok && append(buf, cap, &pos, ",\"M3_ctrl_mode\":\"%s\"",
+                          s->m3_mode_linear ? "LINEAR" : "TIMED");
         if (ok && s->wpos_have) {
             /* percent_x10 is NOT clamped -- see the snapshot field comment and
              * plan 2a.5. A correctly parked open window reads ~1137. */

@@ -233,6 +233,9 @@ static inline bool moving(window_state_t s)
     return (s == WIN_MOVING_OPEN || s == WIN_MOVING_CLOSE);
 }
 
+/** Post one CMD_TARGET and remember it as outstanding. */
+static void post_target(uint8_t ch, int16_t want_x10);
+
 /** M3's last commanded target, and how it ended: the feedback half of the
  *  contract (§3). T6 remembers what it ASKED for; the result is inferred from
  *  where M3 came to rest, because T2 reports a state and not an outcome.
@@ -242,15 +245,113 @@ static inline bool moving(window_state_t s)
 static int16_t       s_m3_last_target_x10 = -1;
 static vent_result_t s_m3_last_result     = VENT_RES_NONE;
 
+static void post_target(uint8_t ch, int16_t want_x10)
+{
+    post_q1_target(CMD_TARGET, (uint8_t)(ch + 1), want_x10);
+    s_m3_last_target_x10 = want_x10;
+    s_m3_last_result     = VENT_RES_NONE;      /* outstanding */
+    ESP_LOGI(TAG, "[T6] → CMD_TARGET ch=%u %d.%u %%",
+             (unsigned)(ch + 1), (int)(want_x10 / 10), (unsigned)(want_x10 % 10));
+}
+
+/** What this cycle will do with M3's target, decided before any command goes
+ *  out so the two passes below can order it by direction. */
+typedef struct {
+    bool    issue;      /**< a CMD_TARGET is to be posted */
+    bool    narrowing;  /**< it reduces the aperture, so it goes with the closes */
+    int16_t want_x10;   /**< clamped target */
+} target_plan_t;
+
+/**
+ * @brief Decide whether to issue the model's target for one window, and which
+ *        way it moves. Posts nothing.
+ *
+ * Every refusal is logged, because a command that vanishes is the gh#51 shape
+ * of defect: the law would keep asking and nothing would say why.
+ */
+static target_plan_t plan_target(const vent_out_t *out, const window_state_t *actual,
+                                 uint8_t ch, bool linear, uint16_t band_x10,
+                                 uint32_t min_interval_ms)
+{
+    target_plan_t p = { false, false, 0 };
+    if (out->win[ch].action != VENT_ACT_TARGET) { return p; }
+
+    /* A TARGET is legitimate for M3 alone, and only in mode 2. Anywhere else
+     * it is a model error: the caller enforces the actuator's limits
+     * (contract §3), so the refusal is loud rather than silent. */
+    if (ch != 2u || !linear) {
+        ESP_LOGE(TAG, "[T6] model asked for a TARGET on ch=%u %s — treated as HOLD",
+                 (unsigned)(ch + 1),
+                 (ch != 2u) ? "which is not linear" : "in timed mode");
+        return p;
+    }
+    if (band_x10 == 0u) {
+        ESP_LOGW(TAG, "[T6] TARGET dropped: M3's window size is unknown (teach it)");
+        return p;
+    }
+
+    int32_t want = out->win[ch].target_x10;
+    if (want < 0)    { want = 0; }
+    if (want > 1000) { want = 1000; }
+
+    dm_m3_pos_t m3;
+    if (!dm_m3_position(&m3)) {
+        /* Mode 2 needs a trusted position, so this should not happen -- but if
+         * it does, the direction is unknowable and T2 would refuse anyway. */
+        ESP_LOGW(TAG, "[T6] TARGET dropped: no trusted M3 position");
+        return p;
+    }
+
+    const int32_t pos = (int32_t)m3.percent_x10;
+    if (!moving(actual[ch])) {
+        const int32_t err = pos - want;
+        if (err >= -(int32_t)band_x10 && err <= (int32_t)band_x10) {
+            return p;                      /* inside the band: nothing to do */
+        }
+    }
+
+    /* The linear dwell, enforced by the caller (contract §7). T2 arms the same
+     * interval as its dwell, so this is not the only guard -- but a law is
+     * entitled to be refused here rather than have its command silently
+     * deferred inside the actuator, which is the gh#51 shape where T6
+     * inherited a debt it could not see. */
+    if (min_interval_ms > 0u) {
+        const uint32_t since = t2_ms_since_move(ch);
+        if (since > 0u && since < min_interval_ms) {
+            ESP_LOGD(TAG, "[T6] TARGET held: %u ms since M3 moved, interval %u ms",
+                     (unsigned)since, (unsigned)min_interval_ms);
+            return p;
+        }
+    }
+
+    p.issue     = true;
+    p.want_x10  = (int16_t)want;
+    p.narrowing = (want < pos);
+    return p;
+}
+
 static void apply_model_output(const vent_out_t *out, const window_state_t *actual,
-                               bool linear, uint16_t band_x10)
+                               bool linear, uint16_t band_x10,
+                               uint32_t min_interval_ms)
 {
     /* `actual` is the SAME snapshot the model was given. Reading T2 a second
      * time here would let a window change state between the decision and its
      * command, so a model that asked for a CLOSE could have it silently
      * dropped. The inline law read the states once for exactly this reason. */
 
-    /* Post CLOSE first (narrowing before widening is safer). */
+    /* Every target is decided BEFORE anything is posted, so each can ride the
+     * pass that matches its direction. Deciding inside a pass would mean
+     * reading M3's position twice, once per pass, and the two reads could
+     * disagree about which way the leaf needs to go. */
+    target_plan_t plan[3];
+    for (uint8_t ch = 0; ch < 3; ch++) {
+        plan[ch] = plan_target(out, actual, ch, linear, band_x10, min_interval_ms);
+    }
+
+    /* Pass 1 — every NARROWING move: the closes, and the targets that reduce
+     * the aperture. Narrowing before widening is the contract's rule (§3) and
+     * the safer order: a greenhouse that briefly vents too little is a
+     * greenhouse, one that briefly vents too much in wind is a repair. */
     for (uint8_t ch = 0; ch < 3; ch++) {
         const window_state_t a = actual[ch];
         const bool currently_open_or_opening = (a == WIN_OPEN || a == WIN_MOVING_OPEN);
@@ -259,7 +360,12 @@ static void apply_model_output(const vent_out_t *out, const window_state_t *actu
             ESP_LOGI(TAG, "[T6] → CMD_CLOSE ch=%u (step %d, actual=%d)",
                      (unsigned)(ch + 1), (int)out->step, (int)a);
         }
+        if (plan[ch].issue && plan[ch].narrowing) {
+            post_target(ch, plan[ch].want_x10);
+        }
     }
+
+    /* Pass 2 — every WIDENING move. */
     for (uint8_t ch = 0; ch < 3; ch++) {
         const window_state_t a = actual[ch];
         const bool currently_closed_or_closing = (a == WIN_CLOSED || a == WIN_MOVING_CLOSE);
@@ -268,54 +374,9 @@ static void apply_model_output(const vent_out_t *out, const window_state_t *actu
             ESP_LOGI(TAG, "[T6] → CMD_OPEN  ch=%u (step %d, actual=%d)",
                      (unsigned)(ch + 1), (int)out->step, (int)a);
         }
-    }
-    /* A TARGET is legitimate for M3 alone, and only in mode 2. Anywhere else
-     * it is a model error: the caller enforces the actuator's limits (contract
-     * §3), which is why the refusal is loud rather than silent.
-     *
-     * Ordering: a target that NARROWS the aperture belongs with the closes and
-     * a target that WIDENS it with the opens, so "every narrowing move before
-     * any widening one" still holds with three windows and one of them linear.
-     * Both passes are above; this is where the decision is made, once, because
-     * the direction depends on M3's position and not on the action. */
-    for (uint8_t ch = 0; ch < 3; ch++) {
-        if (out->win[ch].action != VENT_ACT_TARGET) { continue; }
-
-        if (ch != 2u || !linear) {
-            ESP_LOGE(TAG, "[T6] model asked for a TARGET on ch=%u %s — treated as HOLD",
-                     (unsigned)(ch + 1),
-                     (ch != 2u) ? "which is not linear" : "in timed mode");
-            continue;
+        if (plan[ch].issue && !plan[ch].narrowing) {
+            post_target(ch, plan[ch].want_x10);
         }
-
-        int32_t want = out->win[ch].target_x10;
-        if (want < 0)    { want = 0; }       /* the caller clamps (contract §3) */
-        if (want > 1000) { want = 1000; }
-
-        /* Drop a move smaller than the deadband. T2 would refuse it as
-         * "already there", but a law is entitled to be told no here rather
-         * than to have its command vanish -- and with band 0 (never taught)
-         * no target is issued at all. */
-        dm_m3_pos_t m3;
-        const bool have = dm_m3_position(&m3);
-        if (band_x10 == 0u) {
-            ESP_LOGW(TAG, "[T6] TARGET dropped: M3's window size is unknown (teach it)");
-            continue;
-        }
-        if (have && !moving(actual[ch])) {
-            const int32_t err = (int32_t)m3.percent_x10 - want;
-            if (err >= -(int32_t)band_x10 && err <= (int32_t)band_x10) {
-                continue;                     /* inside the band: nothing to do */
-            }
-        }
-
-        post_q1_target(CMD_TARGET, (uint8_t)(ch + 1), (int16_t)want);
-        s_m3_last_target_x10 = (int16_t)want;
-        s_m3_last_result     = VENT_RES_NONE;      /* outstanding */
-        ESP_LOGI(TAG, "[T6] → CMD_TARGET ch=%u %d.%u %% (at %d.%u %%)",
-                 (unsigned)(ch + 1), (int)(want / 10), (unsigned)(want % 10),
-                 have ? (int)(m3.percent_x10 / 10) : -1,
-                 have ? (unsigned)(m3.percent_x10 % 10) : 0u);
     }
 }
 
@@ -404,7 +465,12 @@ static void fill_model_input(vent_in_t *in, const cfg_shadow_t *cfg,
      * and a law that cannot convert it would otherwise invent a scale. 0 means
      * "unknown", which every law must treat as "make no small moves". */
     in->m3_deadzone_x10    = dm_m3_deadband_x10();   /* one conversion, in T4 */
-    in->m3_min_interval_ms = 0u;   /* no key yet: §5b's linear dwell */
+    /* The linear dwell (contract §7). It is the caller's to enforce -- see
+     * apply_model_output() -- and the law is told it so a law that can plan
+     * ahead may. In mode 2 this REPLACES M3's open dwell, and T2 arms the same
+     * number from the same key, so the two cannot drift apart. */
+    in->m3_min_interval_ms = (cfg->min_intv_m3 > 0)
+                           ? (uint32_t)cfg->min_intv_m3 * 1000u : 0u;
 
     /* The two enums share their ordinals by design (vent_model.h), and T2
      * gains a part-open state in this release, so pin the mapping here: a
@@ -448,6 +514,9 @@ static void fill_model_input(vent_in_t *in, const cfg_shadow_t *cfg,
     }
     in->win[2].last_target_x10 = s_m3_last_target_x10;
     in->win[2].last_result     = s_m3_last_result;
+    for (int ch = 0; ch < VENT_WINDOWS; ch++) {
+        in->win[ch].ms_since_move = t2_ms_since_move((uint8_t)ch);
+    }
 }
 
 /* -----------------------------------------------------------------------
@@ -664,7 +733,7 @@ void task_climate_control(void *pvParameters)
          * byte-identical to what this task wrote before the model moved out:
          * value_a = the resolved step, value_b = step_t << 8 | step_rh.
          * ---------------------------------------------------------------- */
-        apply_model_output(&out, actual, linear, band_x10);
+        apply_model_output(&out, actual, linear, band_x10, in.m3_min_interval_ms);
         if ((int)out.step != last_logged_step) {
             post_log_mode((int)out.step, (int)out.step_t, (int)out.step_rh);
             last_logged_step = (int)out.step;

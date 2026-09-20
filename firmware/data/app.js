@@ -491,6 +491,25 @@ function handleStatus(s) {
     }
   }
 
+  // 2.12.0: which control law M3 is actually under. The setting says what was
+  // ASKED for; this says what is in FORCE, and the two differ whenever the
+  // position cannot be trusted. Saying so beside the setting is the difference
+  // between "nothing happened" and "here is why nothing happened".
+  if (s.windows && s.windows.M3_ctrl_mode) {
+    const linear = (s.windows.M3_ctrl_mode === 'LINEAR');
+    const sel    = document.getElementById('cfg-ctrl-mode-m3');
+    const asked  = !!sel && sel.value === '1';
+    let msg = linear
+      ? 'In force now: Linear — M3 is driven to a measured position.'
+      : 'In force now: Timed — M3 runs on its travel time.';
+    if (asked && !linear) {
+      msg += ' Linear is set but not in force: it needs a fitted sensor that is'
+           + ' answering and has been taught. It resumes on its own once the'
+           + ' position is trusted again.';
+    }
+    setText('m3-mode-now', msg);
+  }
+
   // Mode + Alarms — the Alarms card aggregates every active concern. Mode
   // flags from the EG1 bitset come first; a version-mismatch (firmware
   // running against stale web-assets after an incomplete OTA) appends a
@@ -888,6 +907,10 @@ function loadConfig() {
       setVal('cfg-dwell-close-m2',  dwc && dwc[1]);
       setVal('cfg-dwell-close-m3',  dwc && dwc[2]);
       setVal('cfg-deadzone-m3',     cfg.deadzone_m3_mm);
+      setVal('cfg-min-intv-m3',     cfg.min_intv_m3);
+      if (cfg.ctrl_mode_m3 !== undefined) {
+        setVal('cfg-ctrl-mode-m3', String(cfg.ctrl_mode_m3));
+      }
       if (cfg.wpos_fitted_m3 !== undefined) {
         setVal('cfg-wpos-fitted-m3', String(cfg.wpos_fitted_m3));
       }
@@ -1649,7 +1672,7 @@ function linkSlider(numId) {
     'cfg-travel-m1', 'cfg-travel-m2', 'cfg-travel-m3',
     'cfg-dwell-open-m1', 'cfg-dwell-open-m2', 'cfg-dwell-open-m3',
     'cfg-dwell-close-m1', 'cfg-dwell-close-m2', 'cfg-dwell-close-m3',
-    'cfg-deadzone-m3',
+    'cfg-deadzone-m3', 'cfg-min-intv-m3',
     'cfg-session-timeout', 'cfg-ap-timeout', 'cfg-poll-interval',
   ].forEach(linkSlider);
 })();

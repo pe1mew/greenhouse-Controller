@@ -143,6 +143,9 @@ typedef struct {
                                     *  M3 for, under linear control (mm).
                                     *  NOT YET CONSUMED — linear control does
                                     *  not drive the window (plan 3.6, 5.0). */
+    int16_t  min_intv_m3;         /**< 2.12.0: the linear dwell, seconds. Mode 2
+                                   *   only, where it replaces M3's open dwell
+                                   *   (contract §7). 0 = off. */
     int16_t  ctrl_mode_m3;        /**< 2.12.0 (plan §5b): the DESIRED control mode
                                    *   for M3. 0 = timed (mode 1, today's
                                    *   behaviour), 1 = linear. Desired, not

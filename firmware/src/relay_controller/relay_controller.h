@@ -174,3 +174,15 @@ t2_drive_t t2_get_drive(uint8_t ch, uint32_t *out_epoch, uint32_t *out_started_m
  * @see    LOG_SENSOR_HR in `firmware/src/types/app_types.h`
  */
 int16_t t2_get_window_bitmask(void);
+
+/**
+ * @brief Milliseconds since this channel's last drive ENDED (2.12.0).
+ *
+ * The law's `ms_since_move`, and the number the linear dwell is measured
+ * against. 0 means "nothing has moved since boot", which a caller must read as
+ * "no constraint" rather than "it just moved" -- the alternative, a huge
+ * number, would be a lie of the same size.
+ *
+ * @param ch 0-based channel.
+ */
+uint32_t t2_ms_since_move(uint8_t ch);

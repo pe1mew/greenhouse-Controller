@@ -2106,6 +2106,65 @@ dwell, the deadband, and the fault state the surfaces display.
 - **Safety unchanged (FR-WP18).** The wind close-all, the motor alarm and the boot sweep ignore
   position and may interrupt a positioning move at any point.
 
+###### Built 2026-09-20 (2.12.0): the linear dwell, and the surfaces
+
+**`motor/min_intv_m3`** — the linear dwell, seconds, **default 0**, range 0-1500 (the same ceiling
+as the `dwell_open_m3` it replaces, so it can express the same 25 minutes). The contract says mode 2
+replaces the open dwell with a minimum interval and the caller enforces it (§7), so **both** happen
+and they cannot disagree: `ch_dwell_ms()` in T2 arms M3's dwell from this key whenever the effective
+mode is linear, and T6 refuses a target inside the same interval. One key, two enforcers, one
+number. Keeping T2's 25-minute dwell instead would have made the interval irrelevant and mode 2
+unable to move a window at all.
+
+**The default is 0 because the specification says 0** (§10 decision 10) and the simulator assumes 0
+— a firmware that quietly chose otherwise would mean `gradedCandidate.md`'s figures no longer
+describe what a unit does. It is worth saying plainly what that means: **a unit switched to mode 2
+with the default has no dwell on M3 at all**, and only the law's own hold stands between it and
+motor chatter. The manual says so too.
+
+**The surfaces.**
+
+- **Status payload:** `M3_ctrl_mode` (`"TIMED"` / `"LINEAR"`), present whenever the windows block
+  is, including on units with no sensor. "Which law is driving my greenhouse" must not be a question
+  whose answer is an absent field. Read through the same `dm_m3_ctrl_mode()` the control path reads,
+  never recomputed.
+- **Web GUI:** *M3 control* and *Minimum interval* join the Linear control group, inside `#wpos-dep`,
+  so both are greyed with the reason above them when no sensor is fitted — the standing rule. Below
+  the selector, a line says which law is **in force**, and when the operator has asked for Linear
+  and it is not in force, it says what is missing and that it will resume by itself. Verified in a
+  browser against the mock: all three cases render, and the two controls compute `opacity 0.4` /
+  `pointer-events: none` when unfitted while the reason stays at 1 / `auto`.
+- **LCD: no new SETTINGS, but it had to learn the new state.** Every other motor setting — travel,
+  both dwells, the deadband — is web-only by design (TSDS §5.10, FR-CF10/11), and mode 2's two
+  settings join that family: a 16x2 display and a numeric keypad are the wrong surface for a choice
+  whose consequence is "M3 may stop part-way". **Its three window-state renderers did need it**:
+  all three fell through to `UNK`, which tells an operator standing at the panel that the position
+  is not established — the opposite of the truth about a window that was measured and stopped where
+  it was told. They render `PART` (and `PART OPEN` where there is room).
+
+**Two more consumers found by sweeping for the state, not by testing:**
+
+- **T17's per-drive verdict** compared M3's resting state against `WIN_CLOSED`/`WIN_OPEN` and would
+  have logged every mode-2 drive as *not judged, reason 2 — T2 did not end at the target*, whose
+  parenthetical is "(motor alarm)". A targeted drive was not sent to an end, so the verdict has
+  nothing to say about it: **reason 6** says exactly that, and `logparser.py` and `logparser.md`
+  learn it here. Without this, a mode-2 soak would have reported zero judged strokes and a stream of
+  what read as motor alarms.
+- **Everything else that asks "is M3 moving?"** — the OTA gate, the teach's busy check, T17's own
+  travel test — tests for the two MOVING states, and a part-open window is at rest, so all three are
+  correct unchanged. Checked rather than assumed.
+- **Manuals:** `boerHandleiding` 1.22 (what changes for the farmer: M3 may stand part-open, the
+  safety does not change, a lost sensor falls back on its own) and `beheerderHandleiding` 1.25 (both
+  settings, what "in force" means, and the warning about the 0 default).
+- **FRS** §5.3d gains FR-WPF07-13 and supersedes FR-WPF06; **TSDS** §5.16.6 describes the two mode
+  variables, the pass-through, the actuator and the law; `logparser.md` is at 1.23.
+
+**Found by reading it back:** every target was posted in a third loop *after* both passes, so a
+narrowing target could follow a widening open — the exact ordering the contract forbids. Targets are
+now decided before anything is posted (`plan_target()`), and each rides the pass that matches its
+direction. The comment had claimed this all along, which is why the code was worth re-reading rather
+than trusting.
+
 ###### Built 2026-09-20 (2.12.0): the two mode variables, and T6 on a model table
 
 **Desired** is `motor/ctrl_mode_m3`, 0 timed / 1 linear, **default 0** — for the reason

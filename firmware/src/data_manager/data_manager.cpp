@@ -111,6 +111,7 @@ static const char K_DWELL_CLOSE_M3[]  = "dwell_close_m3";
 static const char K_DEADZONE_M3[]     = "deadzone_m3";
 static const char K_WPOS_FITTED_M3[]  = "wpos_fitted_m3";
 static const char K_CTRL_MODE_M3[]    = "ctrl_mode_m3";
+static const char K_MIN_INTV_M3[]     = "min_intv_m3";
 
 /* System namespace */
 static const char K_POLL_INTERVAL[]    = "poll_interval";
@@ -1967,6 +1968,14 @@ void dm_status_snapshot(status_snapshot_t *out)
                                              wc.travel_state[1] == 1u);
         out->wpos_travel_long   = fitted && (wc.travel_state[0] == 2u ||
                                              wc.travel_state[1] == 2u);
+
+        /* 2.12.0: the effective control mode. Read through the same one
+         * function the control path reads, never recomputed here — a status
+         * payload that disagreed with the law in force would be worse than no
+         * payload at all. */
+        m3_mode_reason_t mwhy = M3_MODE_BY_SETTING;
+        out->m3_mode_linear = dm_m3_ctrl_mode(&mwhy);
+        out->m3_mode_reason = (uint8_t)mwhy;
     }
 
     /* Mode is derived from EG1 in priority order. rc.1.5.0 (gh#28) inserts

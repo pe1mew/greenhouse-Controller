@@ -105,6 +105,9 @@ static const cfg_desc_t CFG_DESC[] = {
      * this key is only the operator's half of that. */
     { NVS_NS_MOTOR, K_CTRL_MODE_M3, CFG_KEY_SHADOW, 3u, CFG_F_PUB | CFG_P_Q4, LOG_PARAM_CTRL_MODE_M3,
       0, 1, DEF_CTRL_MODE_M3, CFG_SH(ctrl_mode_m3) },
+    /* 2.12.0: the linear dwell. Seconds, like the two dwells it replaces. */
+    { NVS_NS_MOTOR, K_MIN_INTV_M3, CFG_KEY_SHADOW, 3u, CFG_F_PUB | CFG_P_Q4, LOG_PARAM_MIN_INTV_M3,
+      CFG_MIN_MIN_INTV_S, CFG_MAX_MIN_INTV_S, DEF_MIN_INTV_M3_S, CFG_SH(min_intv_m3) },
     { NVS_NS_MOTOR, K_DWELL_OPEN_M1, CFG_KEY_SHADOW, 1u, CFG_F_PUB | CFG_P_Q4, LOG_PARAM_DWELL_OPEN,
       CFG_MIN_DWELL_OPEN_S, CFG_MAX_DWELL_OPEN_S, DEF_DWELL_OPEN_M1_S, CFG_SH(dwell_open_s[0]) },
     { NVS_NS_MOTOR, K_DWELL_OPEN_M2, CFG_KEY_SHADOW, 2u, CFG_F_PUB | CFG_P_Q4, LOG_PARAM_DWELL_OPEN,

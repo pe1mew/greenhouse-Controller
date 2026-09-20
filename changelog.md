@@ -6,6 +6,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.12.0] — 2026-09-20  (linear control of M3, behind an operator setting)
+
+Minor: **two control modes for M3**, and the control law moves out of T6 into a replaceable library.
+Two new config keys, three extended log encodings and one new status field. **Default behaviour is
+unchanged**: every unit ventilates exactly as before unless an operator switches M3 to linear
+control, and even then it falls back on its own whenever the position cannot be trusted. Design:
+plan §5b/§5c and `design/ventModelContract.md`. Detail in `bin/2.12.0/release-notes.md`.
+
+**Added.**
+
+- **Mode 2, linear control of M3.** `motor/ctrl_mode_m3` (0 timed, 1 linear, **default 0**) asks for
+  it; the mode actually **in force** also needs a position T17 trusts, and is computed in one place
+  (`dm_m3_ctrl_mode()`). Demotion is immediate; promotion waits for a stroke boundary and a 120 s
+  hold-down, so the control law cannot alternate minute by minute.
+- **`CMD_TARGET` on Q1**, with its own action and a `target_x10` field, so an old-style open can
+  never read as "target 0 %". T2 drives M3 to the target and stops within the deadband; 0 % and
+  100 % stay ordinary full-travel drives; a position lost mid-move finishes on the travel timer at
+  an end.
+- **`motor/min_intv_m3`** (s, **default 0**) — the linear dwell. **In mode 2 it REPLACES M3's open
+  and close dwell**, and T2 and T6 enforce the one key from one place.
+- **`M3_ctrl_mode`** in the status payload (`"TIMED"` / `"LINEAR"`), and the web GUI shows which law
+  is in force beside the setting that asks for it.
+- **`bin/at_wp_target.py`** (six stages for the target path) and **`bin/at_wp02.py`** (AT-WP02
+  repeatability and AT-WP03 endpoints, which have been the sensor's acceptance since the
+  requirements were written and could not run until T2 could hold a target).
+
+**Changed.**
+
+- **T6 no longer contains the control law.** `VENT_STEP_TABLE`, `step_from_deviation()`,
+  `vent_step_channels()`, `vent_step_required_t()`, `vent_step_required_rh()` and
+  `vent_resolve_conflict()` are deleted from `climate_control.cpp`, which calls `drivers/ventModel`
+  through a new IDF component instead. **Mode 1's law now exists once**, ending the deliberate
+  duplication that ran from 2026-09-17. What stays in T6: the inhibit mask, the snapshots, the
+  actuator limits, the command order, Q1, the log rows and the state resets.
+- **Log encodings, all appended:** `RELAY value_a = 7` (`PART_OPEN`); `SENSOR_HR ch 2` gains a
+  part-open qualifier bit per channel (6/7/8) and carries M3's opening in `value_b`, which was a
+  hard zero; `MODE_CHANGE param 54` is a **third** emitter, the control law in force. `SETPT params
+  53` and `55` audit the two new keys. `logparser.py`, `plot_daily.py`, `vent_step_replay.py` and
+  the closed-loop simulator all learn them here — a second meaning on one row is what gh#54 cost.
+- **A new window state, `PART_OPEN`**, terminal but deliberately **not persisted**: a part-open M3
+  forces the boot CLOSE_ALL rather than taking the "all three closed" shortcut.
+- **Docs:** FRS §5.3d gains FR-WPF07–13 (FR-WPF06 superseded), TSDS §5.16.6, `logparser.md` 1.23,
+  `boerHandleiding` 1.22, `beheerderHandleiding` 1.25.
+
+**Unchanged, deliberately.**
+
+- **Every safety path.** Wind override, motor alarm and the boot sweep ignore position and close M3
+  fully, exactly as before.
+- **M1 and M2**, and M3 on any unit whose operator has not asked for linear control — which is every
+  unit as delivered.
+- **The LCD**, which offers neither new setting: every other motor setting is web-only too.
+
+---
+
 ## [2.11.0] — 2026-09-20  (the position sensor can be taught on release firmware)
 
 Minor: a surface that existed only in bench builds is now in every build. No config key, no NVS change,

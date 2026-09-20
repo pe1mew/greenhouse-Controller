@@ -328,6 +328,7 @@ typedef enum {
 
     /* 2.12.0 (plan §5b) — M3's control mode. */
     LOG_PARAM_CTRL_MODE_M3   = 53,  /**< motor/ctrl_mode_m3 — old → new (0 timed, 1 linear) */
+    LOG_PARAM_MIN_INTV_M3    = 55,  /**< motor/min_intv_m3 — old → new (s, the linear dwell) */
     LOG_PARAM_MODE_EFFECTIVE = 54,  /**< LOG_MODE_CHANGE emitter C: the EFFECTIVE
                                      *   mode changed. value_a = 0 timed / 1
                                      *   linear; value_b = why it moved:
@@ -421,7 +422,10 @@ typedef enum {
                                    *  1 interrupted (reversal or a new drive),
                                    *  2 T2 did not end at the target (motor
                                    *  alarm), 3 sensor lost or faulted, 4 both
-                                   *  end sensors (bit 4), 5 no usable reading.
+                                   *  end sensors (bit 4), 5 no usable reading,
+                                   *  6 a targeted drive (2.12.0): it was sent
+                                   *  to a position, not to an end, so there
+                                   *  is no end to confirm.
                                    *  One row per drive. */
     LOG_PARAM_WPOS_TRAVEL  = 252, /**< 2.10.0 (plan §5d) — the travel check,
                                    *  edge-triggered per direction.
@@ -681,6 +685,12 @@ typedef struct {
                                   *   reached"; cleared by a confirmed drive. */
     bool     wpos_travel_short;  /**< A measured traverse exceeded `travel_m3`. */
     bool     wpos_travel_long;   /**< A measured traverse was under half of it. */
+    /* 2.12.0 (plan §5b): which control law M3 is actually under. The DESIRED
+     * mode is a config key; this is the EFFECTIVE one, which also needs a
+     * trusted position — so an operator who switched mode 2 on can see whether
+     * it is in force, which the setting alone never answers. */
+    bool     m3_mode_linear;     /**< Mode 2 (linear) is in force on M3. */
+    uint8_t  m3_mode_reason;     /**< m3_mode_reason_t, why it is what it is. */
 
     /* Mode + raw EG1 bits (for local-UI badges; harmless on the public dashboard) */
     op_mode_t mode;

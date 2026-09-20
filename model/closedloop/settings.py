@@ -136,6 +136,10 @@ EFFECT = {
                            "The firmware's effective mode is this AND a trusted "
                            "position (dm_m3_ctrl_mode()); the simulator has no "
                            "sensor to lose, so here it selects the law directly"),
+    "min_intv_m3": ("M3", "2.12.0: the linear dwell -- LinearChannel.min_interval_s, which "
+                          "in mode 2 REPLACES M3's open and close dwell (contract 7). "
+                          "The firmware enforces it twice, in T2's dwell and in T6 "
+                          "before it issues a target; the simulator does the same"),
     "ap_enable":    ("none", "the WiFi access point"),
     "ap_timeout":   ("none", "the WiFi access point"),
     "session_timeout": ("none", "admin sessions are replayed from the log as they happened"),

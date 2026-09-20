@@ -372,7 +372,7 @@
          greyed while the setting is No. The reason sits ABOVE that block, not
          inside it, because a dimmed parent dims its children whatever their own
          opacity says. -->
-    <h3>Linear control <span class="muted">· position sensor, not yet driving the window</span></h3>
+    <h3>Linear control <span class="muted">· position sensor</span></h3>
     <div class="row">
       <label data-tip="Whether M3 has a window position sensor (the draw-wire encoder at Modbus address 40). No, the default, keeps the controller off that address entirely: nothing is asked, and the Bus card and the log show no entry for it. Yes makes the controller watch the sensor, and a sensor that then stops answering is reported as a Window sensor fault. Set it once to match the installation. It does not change how M3 is driven: M3 runs on its travel time either way.">Position sensor fitted</label>
       <select id="cfg-wpos-fitted-m3">
@@ -390,6 +390,27 @@
       <input type="number" id="cfg-deadzone-m3"    min="1" max="200" step="1" class="short">
       <button onclick="postCfg('motor','deadzone_m3','cfg-deadzone-m3','int')">Apply</button>
       <span class="save-ok" id="fb-deadzone-m3"></span>
+    </div>
+    <!-- 2.12.0: mode 2. The DESIRED mode is this setting; whether it is in
+         FORCE also needs a trusted position, which is what #m3-mode-now says.
+         An operator who switches this on and sees "TIMED" beside it has the
+         answer to "why is nothing different?" without reading a log. -->
+    <div class="row">
+      <label data-tip="How M3 is driven. Timed, the default, runs M3 on its travel time exactly as M1 and M2: a command opens or closes it fully. Linear drives M3 to a measured position and stops there, which needs a fitted position sensor that has been taught. Switching to Linear does not take effect until the sensor is trusted; the line below says which one is actually in force at this moment. Linear also replaces M3's open and close dwell with the minimum interval below.">M3 control</label>
+      <select id="cfg-ctrl-mode-m3">
+        <option value="0">Timed (travel time)</option>
+        <option value="1">Linear (to position)</option>
+      </select>
+      <button onclick="postCfgSelect('motor','ctrl_mode_m3','cfg-ctrl-mode-m3')">Apply</button>
+      <span class="save-ok" id="fb-ctrl-mode-m3"></span>
+    </div>
+    <p id="m3-mode-now" class="muted"></p>
+    <div class="slider-row">
+      <label data-tip="In Linear mode only: the least time from the end of one M3 move to the start of the next, in seconds. It REPLACES M3's open and close dwell while Linear is in force, because a law that positions continuously would otherwise be held back for 25 minutes after every move. Zero, the default, means no interval at all: M3 may move again as soon as the law asks, and only the law's own hold stands between that and motor chatter. Raise it once you have measured how often the law actually moves M3.">Minimum interval (s)</label>
+      <input type="range"  id="cfg-min-intv-m3-sl" min="0" max="1500" step="10">
+      <input type="number" id="cfg-min-intv-m3"    min="0" max="1500" step="10" class="short">
+      <button onclick="postCfg('motor','min_intv_m3','cfg-min-intv-m3','int')">Apply</button>
+      <span class="save-ok" id="fb-min-intv-m3"></span>
     </div>
     <div id="card-commission">
       <h3>Commissioning <span class="muted">· teach the position sensor</span></h3>

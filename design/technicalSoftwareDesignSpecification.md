@@ -1348,7 +1348,7 @@ Motor full-travel time defaults (`MOTOR_M1_TRAVEL_S_DEFAULT 21`, `MOTOR_M2_TRAVE
 |-----------|-------------|------|-------------|
 | `climate` | `t_min_day`, `t_max_day`, `t_min_ngt`, `t_max_ngt`, `rh_min_day`, `rh_max_day`, `rh_min_ngt`, `rh_max_ngt`, `hyst_t`, `hyst_rh`, `rh_ctrl_en`, `cr_priority`, `avg_win_t`, `avg_win_rh` | `int16_t` / `uint8_t` | Day and night setpoints for temperature (°C) and humidity (%) (integers); hysteresis bands (integers); `rh_ctrl_en`: humidity control enable (0 = disabled, 1 = enabled, default 1); `cr_priority`: conflict resolution (0 = temperature first [default], 1 = humidity first, 2 = deviation-based); `avg_win_t` / `avg_win_rh`: sliding average window in minutes for T and RH (1–60, default 1) |
 | `wind` | `v_max`, `dir_excl_low`, `dir_excl_high`, `wind_prot_en` | `int16_t` / `uint8_t` | Wind speed threshold (m/s or Beaufort) and direction exclusion zone (degrees) (integers); `wind_prot_en`: wind protection enable flag (0 = disabled, 1 = enabled, default 1) |
-| `motor` | `travel_m1`, `travel_m2`, `travel_m3`, `dwell_open_m1`, `dwell_open_m2`, `dwell_open_m3`, `dwell_close_m1`, `dwell_close_m2`, `dwell_close_m3`, `deadzone_m3`, `wpos_fitted_m3` | `int16_t` | **Travel times** (`travel_mN`, seconds, range 5–300): how long T2 energises the relay to move a window from one end-stop to the other. Read by T2 from T4 (MX4); converted to ms for `vTaskDelay`. Defaults: M1=21, M2=21, M3=171 (`MOTOR_MN_TRAVEL_S_DEFAULT` in `firmware/config/cfg_defaults.h`). Bounds enforced by `cfg_clamp()` from `firmware/config/cfg_limits.h::CFG_{MIN,MAX}_TRAVEL_S`. Configurable by technician via web GUI (FR-CF05, admin level). **Dwell times** (`dwell_open_mN` / `dwell_close_mN`, minutes): minimum hold period T2 enforces after travel completes before accepting the next command on that channel. `dwell_open_mN`: min hold at `OPEN` before CLOSE accepted. `dwell_close_mN`: min hold at `CLOSED` before OPEN accepted. Dwell timer starts when the travel timer expires (FR-A09–FR-A12). Default: 0 (no hold enforced). Configurable by technician via web GUI only (FR-CF10, FR-CF11). **M3 position sensor** (T17, `design/integrateWindowPositionSensor.md`): `deadzone_m3` (mm, 1–200, default 20, 2.8.0) is the position deadband T17's fault checks and rest logging use; `wpos_fitted_m3` (0/1, default **0**, 2.9.0, gh#73) says whether M3 has a sensor. At 0, T17 never addresses Modbus slave 40, and the status `bus` array and the hourly bus rows leave that address out. At 1, an absent or faulted sensor raises the `sensor_fault_position` status flag. Both keys are declared in `firmware/config/cfg_desc.inc`; admin only. |
+| `motor` | `travel_m1`, `travel_m2`, `travel_m3`, `dwell_open_m1`, `dwell_open_m2`, `dwell_open_m3`, `dwell_close_m1`, `dwell_close_m2`, `dwell_close_m3`, `deadzone_m3`, `wpos_fitted_m3`, `ctrl_mode_m3`, `min_intv_m3` | `int16_t` | **Travel times** (`travel_mN`, seconds, range 5–300): how long T2 energises the relay to move a window from one end-stop to the other. Read by T2 from T4 (MX4); converted to ms for `vTaskDelay`. Defaults: M1=21, M2=21, M3=171 (`MOTOR_MN_TRAVEL_S_DEFAULT` in `firmware/config/cfg_defaults.h`). Bounds enforced by `cfg_clamp()` from `firmware/config/cfg_limits.h::CFG_{MIN,MAX}_TRAVEL_S`. Configurable by technician via web GUI (FR-CF05, admin level). **Dwell times** (`dwell_open_mN` / `dwell_close_mN`, minutes): minimum hold period T2 enforces after travel completes before accepting the next command on that channel. `dwell_open_mN`: min hold at `OPEN` before CLOSE accepted. `dwell_close_mN`: min hold at `CLOSED` before OPEN accepted. Dwell timer starts when the travel timer expires (FR-A09–FR-A12). Default: 0 (no hold enforced). Configurable by technician via web GUI only (FR-CF10, FR-CF11). **M3 position sensor** (T17, `design/integrateWindowPositionSensor.md`): `deadzone_m3` (mm, 1–200, default 20, 2.8.0) is the position deadband T17's fault checks and rest logging use; `wpos_fitted_m3` (0/1, default **0**, 2.9.0, gh#73) says whether M3 has a sensor. At 0, T17 never addresses Modbus slave 40, and the status `bus` array and the hourly bus rows leave that address out. At 1, an absent or faulted sensor raises the `sensor_fault_position` status flag. **Mode 2** (2.12.0): `ctrl_mode_m3` (0/1, default **0**) is the DESIRED control mode and `min_intv_m3` (s, 0-1500, default **0**) the linear dwell, which REPLACES `dwell_open_m3` and `dwell_close_m3` while linear control is in force. All four keys are declared in `firmware/config/cfg_desc.inc`; admin only. |
 | `access` | `pin_salt` (blob[16]), `pin_farmer_hash` (blob[32]), `pin_admin_hash` (blob[32]), `fail_cnt_f`, `fail_cnt_a`, `lockout_f`, `lockout_a`, `lockout_max`, `lockout_secs` | blob / int32 | `pin_salt`: 16-byte random salt, generated once at first boot. `pin_farmer_hash` / `pin_admin_hash`: SHA-256(salt \|\| pin_ascii) digest. `fail_cnt_f` / `fail_cnt_a`: per-role consecutive failure count. `lockout_f` / `lockout_a`: per-role lockout expiry as Unix timestamp (0 = not locked). `lockout_max`: threshold before lockout (default 5). `lockout_secs`: lockout duration (default 300 s). |
 | `wifi` | `ssid`, `psk_hash`, `ap_enable`, `ap_psk` | string / int32 | WiFi client and AP credentials. STA: `ssid` and `psk_hash` (salted SHA-256 of PSK). DHCP is the only IP-acquisition mode supported (static-IP keys are not defined). AP: `ap_enable` (int32, 0/1, **default 0** — admin must explicitly opt in) toggles soft-AP at runtime; AP SSID is auto-generated from the MAC address and not stored; `ap_psk` is stored as **plaintext** (WPA2 requires the raw key), default `"0123456789"`, configurable by admin via web interface. The AP auto-shutdown timer is stored in the `system` namespace as `ap_timeout` (see below), not here. |
 | `mqtt` | *(reserved — no keys defined in the end-state design)* | — | The `mqtt` namespace is reserved for a future Could-be MQTT integration (T12). It is not provisioned with keys and shall not be written by the current firmware. |
@@ -1620,7 +1620,9 @@ Default `0x3F` exposes every object. Operators may narrow the payload on bandwid
 
 ### 5.16 Window Position Sensing — M3 (T17)
 
-**Added 2026-09-20 (gh#75).** The subsystem shipped in 2.8.0 and the installation setting in 2.9.0. Requirements: FRS §5.3d, which adopts FR-WP01–23. Design: [`integrateWindowPositionSensor.md`](integrateWindowPositionSensor.md). **Measures and reports; drives nothing.**
+**Added 2026-09-20 (gh#75); mode 2 added 2026-09-20 (2.12.0).** The subsystem shipped in 2.8.0, the installation setting in 2.9.0, and linear control of M3 in 2.12.0. Requirements: FRS §5.3d (FR-WP01–23 and FR-WPF01–13). Design: [`integrateWindowPositionSensor.md`](integrateWindowPositionSensor.md).
+
+**T17 still measures and reports; it drives nothing.** What changed in 2.12.0 is that T6 may now *use* what T17 publishes: the control law and the actuator read the position through T4, and T17's own published verdict on whether the position may be trusted is one of the two variables that decide the mode.
 
 #### 5.16.1 Device and driver
 
@@ -1631,7 +1633,9 @@ A draw-wire encoder on the M3 leaf, on the same RS485 bus as the climate sensors
 | Key | Meaning | Default |
 |---|---|---|
 | `wpos_fitted_m3` | Whether a sensor is fitted. **0 = not fitted**, and then T17 never addresses the bus, and no status field or log row mentions the sensor (FR-WP23). | 0 |
-| `deadzone_m3` | Smallest aperture change worth acting on, in mm. Used today as the "~0" band of the close check and rule 1's at-end exemption; it becomes the move deadband when position drives M3. | 20 |
+| `deadzone_m3` | Smallest aperture change worth acting on, in mm. The "~0" band of the close check and rule 1's at-end exemption, **and since 2.12.0 the arrival band of a targeted drive and the smallest move the law may ask for**. | 20 |
+| `ctrl_mode_m3` | **2.12.0.** The DESIRED control mode: 0 timed, 1 linear. Not the mode in force — see §5.16.6. | 0 |
+| `min_intv_m3` | **2.12.0.** The linear dwell, in seconds: the least time from the end of one M3 drive to the start of the next. **It replaces M3's open and close dwell while linear control is in force** (`ventModelContract.md` §7), and 0 means no interval at all. | 0 |
 
 Both are ordinary descriptor rows in `firmware/config/cfg_desc.inc`, clamped, audited and published like any other key (§5.10).
 
@@ -1647,15 +1651,37 @@ Emitted by `build_canonical_status_json()`, so `GET /api/status`, the WebSocket 
 | `sensor_fault_position` | Flag — the sensor is fitted and not usable (absent, faulted, or both end sensors active at once). M3 falls back to timed control; ventilation continues (FR-WP17). |
 | `m3_not_confirmed` | Flag (2.10.0) — the last judged drive ran its full timer without the target end being confirmed. Cleared by the next confirmed drive. |
 | `m3_travel_short`, `m3_travel_long` | Flags (2.10.0) — the measured traverse disagrees with `travel_m3`: the end sensor made later than the configured time, or within half of it. |
+| `M3_ctrl_mode` | **2.12.0.** `"TIMED"` or `"LINEAR"`: the mode actually **in force**. Present whenever the windows block is, including on units with no sensor, because "which law is driving my greenhouse" must not be a question whose answer is an absent field. |
 
 #### 5.16.4 Log encodings
 
 | Row | Contents |
 |---|---|
 | `SENSOR_HR` channel 3 | The position trace: opening in 0.1 mm (−1 = fault) with the signed rate. Written while M3 travels and once at rest. |
-| `ALARM` channel 6 | The sensor's own events, by `param_id`: 244 fault set/cleared, 245 teach, 246 device status bits, 247 calibration verdict, **248** control-mode change with its reason, **249** rule 1 (the leaf did not follow the relay), **250** rule 2 (a close claimed ~0 that the closed end sensor did not corroborate), **251** the per-drive verdict, **252** the travel check. |
+| `ALARM` channel 6 | The sensor's own events, by `param_id`: 244 fault set/cleared, 245 teach, 246 device status bits, 247 calibration verdict, **248** T17's admissible-law change with its reason, **249** rule 1 (the leaf did not follow the relay), **250** rule 2 (a close claimed ~0 that the closed end sensor did not corroborate), **251** the per-drive verdict, **252** the travel check. |
+| `SENSOR_HR` channel 2 | **Extended in 2.12.0.** The window-state bitmask gains a *part-open* qualifier bit per channel (6, 7, 8) on top of the existing four 2-bit codes, which were all spoken for — widening the fields would have shifted M2's and M3's bits and re-decoded every archived row. `value_b`, a hard zero until now, carries M3's opening in 0.1 % (−1 = no trusted position). |
+| `RELAY` | **Extended in 2.12.0.** `value_a` gains ordinal **7**, `CH_PART_OPEN`: M3 at rest at a commanded target. |
+| `MODE_CHANGE` param **54** | **2.12.0 — a THIRD emitter on this row type.** The control mode actually in force changed: `value_a` 0 timed / 1 linear, `value_b` the reason (0 the setting, 1 no trusted position, 2 the position came back, 3 held down). Param 0 is still T6's vent step and param 47 is STANDBY; every consumer branches on `param_id`, which is what gh#54 cost. |
 
 `log/logparser.py` decodes all of them; `logparser.md` is the reference for the encodings, and it and `firmware/src/types/app_types.h` must change together with any new `param_id` (§5.3's rule about a second emitter on one row).
+
+#### 5.16.6 Mode 2 — linear control of M3 (2.12.0)
+
+**Two variables, and they are not the same thing.**
+
+| | Where it lives | What it means |
+|---|---|---|
+| **Desired** | `motor/ctrl_mode_m3` | What the operator asked for. Default timed, and a firmware update never changes it. |
+| **Effective** | `dm_m3_ctrl_mode()` in T4 | What is actually driving M3: the desired mode **and** a position T17 will stand behind **and** the anti-flap below. Computed in exactly one place — two places would eventually disagree, and the SD log would then record a decision under a mode that was not in force. |
+
+- **Demotion is immediate**; **promotion** waits for T17's stroke boundary and a 120 s hold-down. Turning linear control *off* takes effect at once, because that is a deliberate act.
+- **The fall back needs no special case.** Mode 1's law sees a part-open M3 as being at neither end and asks for whichever end its step wants, so M3 reaches an end by the ordinary path.
+
+**The position path.** `dm_m3_position()` is a **pass-through**: T2 and T6 call T4, T4 calls T17, and nothing is buffered on the way. A held copy would age by up to T4's own 1 s loop, and for positioning that age is overshoot — on the rig's 13 s traverse, about 9 % of the stroke against a 1 % requirement.
+
+**The actuator.** Q1 gains `CMD_TARGET` with a `target_x10` field (0..1000, 0.1 %), read for that action and no other: four of the five Q1 producers build commands with positional initialisers, where a trailing field is zero, and a zero read as a target means "close it". T2 refuses a target when the window has never been taught, when the position is not trusted, or when the reading is older than 3 s; a target at or within one band of an end becomes an ordinary full-travel drive; and a position lost mid-move leaves the drive to finish on the travel timer at an end. The new resting state `CH_PART_OPEN` is terminal but **not persisted**, so a part-open M3 forces the boot CLOSE_ALL rather than taking the "all three closed" shortcut.
+
+**The law.** T6 holds a two-entry model table indexed by the effective mode and resets the model's state on a change. The law itself is `drivers/ventModel` behind [`ventModelContract.md`](ventModelContract.md) — T6 owns the ordering (every narrowing move before any widening one, targets included), the clamping, the deadband drop, the minimum interval, Q1 and the log rows.
 
 #### 5.16.5 What it does not do
 

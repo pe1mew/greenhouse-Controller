@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de beheerder
 
-**Versie:** 1.24
+**Versie:** 1.25
 **Datum:** 2026-09-20
-**Firmware:** 2.11.0
+**Firmware:** 2.12.0
 
 ---
 
@@ -223,7 +223,7 @@ Sinds 2.8.0 staan de instellingen **per motor** bij elkaar (M1, M2, M3) in plaat
 | Groep | Wat het stuurt |
 |---|---|
 | **Time control** · *in gebruik* | Loopttijd en dwelltijden — dit is wat de ramen vandaag aanstuurt |
-| **Linear control** · *raamstandsensor* | Instellingen voor de raamstandsensor. **Deze sturen het raam nog niet aan**; ze horen bij de lineaire regeling die nog niet in gebruik is |
+| **Linear control** · *raamstandsensor* | Instellingen voor de raamstandsensor en voor de **lineaire besturing** van M3 (sinds 2.12.0) |
 
 De groep *Linear control* begint met **Position sensor fitted**: heeft M3 een raamstandsensor, ja of nee (sinds 2.9.0, zie hieronder). Staat die op **No**, dan is alles daaronder **grijs**, met erboven waarom.
 
@@ -346,9 +346,30 @@ Niet periodiek. Alleen wanneer:
 
 De kleinste afwijking waarvoor het raam nog bijgestuurd wordt. Te klein en het raam gaat op ruis heen en weer; nul zou het onafgebroken laten klapperen. Instelbaar in tab **Motors**, onder M3 → *Linear control*, op elke build (1–200 mm, standaard 20), zolang *Position sensor fitted* op **Yes** staat.
 
-De lineaire regeling waarvoor hij bedoeld is, is nog niet in gebruik. Twee dingen gebruiken hem wel al:
+Sinds 2.12.0 is dit **ook de aankomsttolerantie van de lineaire besturing**: M3 stopt zodra hij binnen deze afstand van de gevraagde stand is, en de regeling vraagt geen beweging aan die kleiner is dan deze afstand. Verder gebruiken twee dingen hem al langer:
 - **de controle op een te vroeg stoppend raam**: een SLUIT-gang die binnen de dodezone van "dicht" eindigt zonder dat de eindsensor schakelt, wordt als storing gemeld;
 - **het logboek**: in rust schrijft de controller alleen een positieregel als het raam verder bewogen is dan de dodezone (minstens 5 mm). Zo zie je ook een raam dat zonder opdracht van de controller bewoog, bijvoorbeeld via de handschakelaars in de motorbox.
+
+#### M3-besturing: Tijdgestuurd of Lineair (2.12.0)
+
+**Tijdgestuurd** (de standaard, en wat elke controller doet tenzij je het wijzigt): M3 wordt volledig geopend of gesloten op zijn looptijd, net als M1 en M2. Een gemonteerde sensor meet en meldt, maar stuurt niet.
+
+**Lineair**: M3 wordt naar een gemeten stand gereden en daar gestopt. Dit vraagt één instelling **én** een positie die de controller vertrouwt — sensor gemonteerd, antwoordend, ingeleerd en zonder storing.
+
+> **De instelling zegt wat je vraagt, niet wat er gebeurt.** Direct onder de keuze staat welke besturing op dit moment **werkelijk actief** is. Staat daar *Tijdgestuurd* terwijl je *Lineair* hebt gekozen, dan ontbreekt het vertrouwen in de positie; de tekst zegt wat er nodig is. Zodra dat in orde is, schakelt de controller vanzelf om — je hoeft niets opnieuw in te stellen.
+
+Wat je verder moet weten:
+
+- **Terugvallen gaat onmiddellijk, terugkomen niet.** Verliest de controller het vertrouwen in de positie, dan stuurt hij M3 direct weer op tijd. Terugschakelen naar lineair gebeurt pas na een afgeronde beweging én een wachttijd van twee minuten, zodat de besturing niet elke minuut wisselt.
+- **De veiligheid verandert niet.** Windbeveiliging, motoralarm en de sluitronde bij opstarten werken precies zoals altijd en sluiten M3 volledig.
+- **Na een terugval staat M3 mogelijk halfopen.** De tijdgestuurde regeling stuurt hem dan bij de eerstvolgende beslissing naar een eindstand — open of dicht, wat de regeling op dat moment vraagt.
+- **Elke wisseling staat in het logboek**, met de reden, en is terug te lezen met `logparser.py`.
+
+#### Minimale tussentijd (s)
+
+Alleen in lineaire besturing: de kortste tijd tussen het einde van één beweging van M3 en het begin van de volgende. Instelbaar in tab **Motors**, onder M3 → *Linear control* (0–1500 s, standaard **0**).
+
+> **Deze instelling VERVANGT de open- en sluit-rusttijd van M3 zolang lineair actief is.** Dat is opzet: een regeling die voortdurend bijstuurt zou anders na elke beweging 25 minuten stilstaan. Maar let op wat de standaard betekent: **0 is geen tussentijd**. Zet je M3 op Lineair en laat je dit op 0 staan, dan mag de regeling M3 zo vaak bewegen als hij wil. Verhoog deze waarde zodra je weet hoe vaak de regeling M3 in de praktijk beweegt — het aantal motorstarts per dag staat in het logboek.
 
 ### Stapsgewijs ventileren
 
@@ -2142,6 +2163,7 @@ Inhoudelijke wijzigingen aan de firmware staan beschreven in het bestand `change
 | 1.22 | 2026-09-17 | 2.9.0 — instelling *Position sensor fitted* voor de M3-raamstandsensor, standaard No; zonder sensor geen regel voor adres 40 meer en met sensor een storingsmelding als die niet reageert (gh#73); de reden bij het grijze Commissioning-blok noemt nu de echte oorzaak |
 | 1.23 | 2026-09-19 | 2.10.0 — met een raamstandsensor beoordeelt de controller elke beweging van M3 (bevestigd, niet bereikt, niet beoordeeld) en controleert hij de looptijd; badges *M3 not confirmed*, *M3 travel time too short* en *M3 travel time too long*; beide eindsensoren tegelijk actief geldt als sensorstoring |
 | 1.24 | 2026-09-20 | 2.11.0 — de kalibratie (commissioning) van de raamstandsensor werkt op elke build, niet langer alleen op een commissioning-build (gh#77) |
+| 1.25 | 2026-09-20 | 2.12.0 — **lineaire besturing van M3**: de instelling *M3-besturing* (Tijdgestuurd / Lineair), de *Minimale tussentijd* die in lineaire besturing de rusttijden van M3 vervangt, en de regel eronder die zegt welke besturing werkelijk actief is |
 
 ---
 

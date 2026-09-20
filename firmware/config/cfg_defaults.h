@@ -128,6 +128,20 @@
  */
 #define DEF_CTRL_MODE_M3         0
 
+/**
+ * @brief The linear dwell in seconds: 0 = off (2.12.0, contract §7).
+ *
+ * Specified as 0 by plan §10 decision 10, and the simulator assumes 0, so the
+ * firmware must not quietly choose something else: a mode-2 result reproduced
+ * offline would then not be the result the unit produced. It matters only in
+ * mode 2, where it REPLACES M3's open dwell — so a unit switched to mode 2
+ * with this at 0 has no dwell on M3 at all, and the law's own hold is the only
+ * thing between it and motor chatter. Measure before raising it: the minimum
+ * MOVE (the shortest pulse that shifts the leaf) is still unmeasured, and the
+ * two are different quantities.
+ */
+#define DEF_MIN_INTV_M3_S        0
+
 /* ── System ─────────────────────────────────────────────────────────────── */
 #define DEF_POLL_INTERVAL_S      30   /**< 30 s poll: doubles smoothing-buffer depth at same time-window without the firmware-revisit overhead of finer rates */
 #define DEF_SESSION_TIMEOUT_MIN   5   /**< Idle session expiry (minutes) */
