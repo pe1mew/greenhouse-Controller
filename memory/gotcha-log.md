@@ -93,6 +93,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-07-05** — M3 is the north **side wall**, not a roof panel; 8.1× is travel time, 10× is area
 
 ### OTA & ROTA releases
+- **2026-09-20** — a check forced ~2 min after publishing gets `dl` 2 (SHA/size): the server points the channel before it has fetched the artefacts; retry, and check the manifest against the local files before blaming the release
 - **2026-09-17** — publishing a release to ROTA does nothing on a module that runs a pushed build of the same version, `-bench` included (the version compare ignores the suffix)
 - **2026-09-16** — after one upload cut off by the network, the unit refuses every OTA and ROTA skips its checks until someone presses reset (the error exit released nothing)
 - **2026-09-12** — GUI unreachable, multi-second asset loads, "heap leak", failing downloads — all one interfered WiFi AP (paired ping test first)
@@ -181,6 +182,26 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
 
+
+## 2026-09-20 — a ROTA check forced minutes after publishing downloads a half-fetched artefact (`dl` 2)
+
+**Problem.** 2.11.0 was published to the soak channel at 11:38:57 and the forced check at 11:41:32 reported
+`update_available`, `offered 2.11.0`, and then **`dl` 2 — a SHA/size mismatch**. That code normally means the
+artefact does not match its manifest, which would be a release built or uploaded wrong.
+
+**Root cause.** Nothing was wrong with the release: the manifest's `fw_sha256`/`fw_size` and
+`assets_sha256`/`assets_size` match the local files byte for byte. The FOTA server points the channel as soon as
+it has the manifest, and was still fetching the artefacts from the GitHub release. The unit downloaded what was
+there and verified it, correctly, as short. **Earlier releases hid this by accident:** 2.9.2, 2.10.0 and others
+were first offered about 11 min after publishing, by which time the fetch had long finished.
+
+**Fix.** Retry. The very next check, one minute later, verified cleanly (`dl` 0) and applied. Before concluding a
+release is broken on a `dl` 2, **compare the manifest against the local artefacts** (`sha256sum bin/<ver>/*`)
+and force another check. Give the server a few minutes before the first forced check after `rota_release.py
+release`, or simply expect the first attempt to fail.
+
+**Where it lives.** `bin/rota_release.py` (publish), the FOTA server's retriever (separate repo),
+`LOG_SYSTEM value_a=23` sub-code 2 in `event_logger.h`, and `GET /api/ota/check`'s `dl` field.
 
 ## 2026-09-20 — a CSS rule that cannot work survived a year, because the intent was written down and never looked at
 

@@ -63,6 +63,11 @@ The bench image is 1 411 504 B, unchanged: it always carried this code.
 - **No partition change, no NVS migration, no configuration change.**
 - **The web assets change** (the 404 reason text), so firmware and assets go together as always.
 - **What an operator gains:** a sensor can be taught on the firmware the unit already runs. No bench image, and therefore no window during which the arbitrary Modbus write route is open on a production unit.
+- **On the ROTA soak channel since 2026-09-20, seq 54** ([v2.11.0](https://github.com/pe1mew/greenhouse-Controller/releases/tag/v2.11.0)). **2344 pulled it.**
+  - 2.10.0 was pushed back to 2344 first, because it was already running the 2.11.0 release image from a direct push.
+  - Published 11:38:57. The first forced check, at 11:39:31, was **skipped**: the clock had not re-synced after the push, and T16 will not sign a request on an untrusted clock (gotcha log, 2026-07-13).
+  - **The first download failed `dl` 2, a SHA/size mismatch, and the next one succeeded.** The published artefacts are not at fault: the manifest's hashes and sizes match the local files exactly. The check at 11:41:32 came about 2.5 min after publishing, where earlier releases took ~11 min to be offered, so the server had pointed the channel while still fetching the artefacts. A retry a minute later verified cleanly (`dl` 0). **Worth knowing before forcing checks immediately after a release.**
+  - The unit rebooted into it at about 11:42:40. **Verified after the reboot:** `fw_ver` and `asset_version` both 2.11.0, `travel_m3` 13, `wpos_fitted_m3` 1, `deadzone_m3_mm` 20, no flags — and `GET /api/diag/commission` on the **pulled** release build answers 200 with the calibration this release's teach wrote (valid, 1500 mm, span 863).
 - **Keep this release's ELF.**
 - **Production runs 2.3.1.** Regenerate the release comparison before promoting, and record the heap figures the way TC-09 now asks (plan row 5.8).
 
