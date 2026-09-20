@@ -84,6 +84,11 @@ idf_component_register(
                       #   plus the commissioning write surface; depends on modBus. The
                       #   polling task is Phase 2 and lives in firmware/src, because it
                       #   needs travel_m3, which the driver must not know about.
+        ventModel     # LIB-VM — T6's control law, behind design/ventModelContract.md.
+                      #   Wired in for 2.12.0 (plan §5c step 1), the release where
+                      #   something must choose between two models at runtime. The
+                      #   library sees no ESP-IDF and no project headers, so this
+                      #   component has no REQUIRES of its own.
         DS1307_RTC    # LIB-3 — migrated 2.0.0-alpha.2.9 (trivial cleanup, depends on i2c)
         littleFS      # LIB-9 — migrated 2.0.0-alpha.2.10 (LittleFS.h → esp_vfs_littlefs_*; managed component)
         sdCard        # LIB-8 — migrated 2.0.0-alpha.2.11 (SD.h → esp_vfs_fat_sdspi_*; FAT32 over SPI; LAST Phase-2 driver)

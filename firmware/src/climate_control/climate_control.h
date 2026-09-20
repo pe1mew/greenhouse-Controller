@@ -24,7 +24,8 @@
  *
  * Windows are opened in up to NUM_VENT_STEPS cumulative steps proportional
  * to the deviation of the measured value from the active setpoint.  The
- * channel assignment per step is a compile-time table in climate_control.cpp:
+ * channel assignment per step is a compile-time table in the law
+ * (drivers/ventModel/src/vent_model_stepped.cpp since 2.12.0):
  *
  *   Step 1 — M1 only
  *   Step 2 — M1 + M2
@@ -54,10 +55,13 @@
  * VENT_STEP_NEUTRAL (−1) meaning "no demand from this source."
  *
  * ### State T6 must maintain
- * T6 keeps two task-local static integers (current_step_t, current_step_rh)
- * that track the step last commanded.  Both are reset to 0 when any EG1
- * inhibit begins (see the task's Inhibit behaviour); T2's boot CLOSE_ALL
- * ensures actual window positions are known.
+ * T6 keeps one `vent_state_t` — the model's memory, owned by the caller
+ * (contract §2).  For `stepped` it holds the per-source steps this task used
+ * to keep in two task-local integers (current_step_t, current_step_rh).  It is
+ * reset when any EG1 inhibit begins (see the task's Inhibit behaviour), which
+ * reproduces those two integers going to 0; T2's boot CLOSE_ALL ensures actual
+ * window positions are known.  T6 also keeps `last_logged_step`, which is its
+ * own and not the model's: it keeps the SD row edge-triggered.
  *
  * ### Incremental command posting
  * T6 computes the delta between the current channel mask and the newly
@@ -108,19 +112,22 @@
  *
  * ### Per-wake sequence
  *  1. **EG1 gate** — skips evaluation while any inhibit is set (see Inhibit
- *     behaviour below).  Resets current_step_t/rh to 0 on inhibit onset so
+ *     behaviour below).  Resets the model's state on inhibit onset so
  *     re-evaluation starts from step 0 when the flag clears.
  *  2. **Snapshot** — dm_cfg_snapshot() under MX4; dm_meas_snapshot() under MX2.
  *  3. **Setpoint selection** — selects t_max, rh_max, rh_min from is_daytime.
- *  4. **Step evaluation** — vent_step_required_t() and vent_step_required_rh().
- *  5. **Conflict resolution** — vent_resolve_conflict() → resolved step.
- *  6. **Reconcile to step** — reconcile_to_step(): every T6 cycle, query
- *     T2 actual window states and post CMD_CLOSE / CMD_OPEN for any channel
- *     whose actual state does not yet match the desired bit in the step's
- *     channel mask.  Level-triggered, so commands lost to T2 dwell are
- *     retried until they take effect.  CLOSE first, then OPEN.
- *  7. **Logging** — LOG_MODE_CHANGE posted to Q3 only on step changes.
- *  8. **State update** — current_step_t and current_step_rh updated.
+ *  4. **The decision** — fill_model_input() fills a `vent_in_t` and the model
+ *     decides. Since 2.12.0 the law is `drivers/ventModel`, behind
+ *     design/ventModelContract.md, not code in this module: step evaluation
+ *     and conflict resolution moved there unchanged, and the formulas above
+ *     are what `vent_model_stepped` computes.
+ *  5. **Apply** — apply_model_output(): every T6 cycle, compare the model's
+ *     desired END STATE per window against the T2 states the model was given,
+ *     and post CMD_CLOSE / CMD_OPEN for any channel not already there.
+ *     Level-triggered, so commands lost to T2 dwell are retried until they
+ *     take effect.  Every CLOSE first, then the OPENs.
+ *  6. **Logging** — LOG_MODE_CHANGE posted to Q3 only on step changes.
+ *  7. **State update** — the model's `vent_state_t`, owned by this task.
  *
  * ### Inhibit behaviour
  * While any of EG1 WIND_OVERRIDE, MOTOR_ALARM, SENSOR_FAULT_T, STANDBY or

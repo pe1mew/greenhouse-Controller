@@ -35,7 +35,8 @@
 #define CFG_MAX_RH_MIN       90
 
 /* -- Conflict resolution (2.5.0, gh#57) ----------------------------------- */
-/* vent_resolve_conflict() (climate_control.cpp) implements exactly 0/1/2, and
+/* vent_resolve_conflict() (drivers/ventModel/src/vent_model_stepped.cpp since
+ * 2.12.0; climate_control.cpp before it) implements exactly 0/1/2, and
  * `case 0:` shares an arm with `default:` — so before 2.5.0 an out-of-range
  * cr_priority was stored verbatim and silently degraded to TEMP_FIRST.
  *   0 = CR_TEMP_FIRST   1 = CR_RH_FIRST   2 = CR_DEVIATION (higher step wins) */

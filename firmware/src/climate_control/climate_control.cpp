@@ -1,7 +1,8 @@
 /**
  * @file climate_control.cpp
- * @brief Graduated ventilation implementation — step table, evaluation
- *        functions, conflict resolution, and T6 Climate Control task (Phase 6).
+ * @brief The T6 Climate Control task: everything around the control law —
+ *        the inhibit mask, the snapshots, the model call, the commands to T2
+ *        and the SD log row. The law itself is `drivers/ventModel`.
  *
  * ## T6 task structure
  *
@@ -12,23 +13,22 @@
  *      at step 2 of the task loop).
  *   2. Snapshots cfg_shadow_t under MX4; snapshots sensor_reading_t under MX2.
  *   3. Selects the active T and RH setpoints from is_daytime.
- *   4. Evaluates vent_step_required_t() and vent_step_required_rh().
- *   5. Resolves the two steps with vent_resolve_conflict().
- *   6. Reconciles T2 actual window states to the resolved step's channel
- *      mask: per-channel CMD_CLOSE / CMD_OPEN posted to Q1 for any channel
- *      whose actual state does not already match. Level-triggered, run on
- *      every cycle so dwell-deferred commands are retried automatically.
- *   7. Logs a MODE_CHANGE event on every step change.
+ *   4. Fills `vent_in_t` and calls the control MODEL, which decides. Since
+ *      2.12.0 the law lives in `drivers/ventModel` behind
+ *      design/ventModelContract.md; this task owns everything around it.
+ *   5. Applies the model's answer: per-channel CMD_CLOSE / CMD_OPEN posted to
+ *      Q1 for any window whose actual state does not already match the end
+ *      state asked for, CLOSE before OPEN. Level-triggered, run on every cycle
+ *      so dwell-deferred commands are retried automatically.
+ *   6. Logs a MODE_CHANGE event when the resolved step changes.
  *
  * ## State variables
  *
- * Two task-local statics:
- *   current_step_t  — last step T6 commanded for temperature.
- *   current_step_rh — last step T6 commanded for humidity.
- *
- * Both are reset to 0 when any inhibit begins (see step 1) so that when it
- * clears T6 starts fresh from step 0 (T2's boot CLOSE_ALL keeps the actual
- * window position known).
+ * One task-local `vent_state_t` — the model's memory, owned by this task, which
+ * for `stepped` holds the per-source steps T6 used to keep in two ints. It is
+ * reset at boot and whenever an inhibit begins (see step 1), so that when the
+ * inhibit clears T6 starts fresh (T2's boot CLOSE_ALL keeps the actual window
+ * position known). `last_logged_step` keeps the SD row edge-triggered.
  *
  * ## Q1 command encoding
  *
@@ -37,11 +37,13 @@
  *   .action  = CMD_OPEN  / CMD_CLOSE / CMD_CLOSE_ALL
  *   .channel = 1/2/3 for per-channel commands; 0 for CMD_CLOSE_ALL
  *
- * Each cycle, T6 reconciles actual T2 state against the desired channel
- * mask: any channel whose actual state does not already match gets a
- * single CMD_OPEN or CMD_CLOSE; channels already in (or moving toward) the
- * desired state get nothing. Level-triggered design means dwell-deferred
- * commands are retried automatically until T2 accepts them.
+ * Each cycle, T6 reconciles actual T2 state against the END STATE the model
+ * asked for per window: any channel not already in (or moving toward) that
+ * state gets a single CMD_OPEN or CMD_CLOSE, every closing command before any
+ * opening one. Channels already satisfied get nothing. Level-triggered design
+ * means dwell-deferred commands are retried automatically until T2 accepts
+ * them. Who decides is the model's business; the ordering and the actuator's
+ * limits are this task's (contract §3).
  *
  * @author  Greenhouse Controller project
  */
@@ -59,6 +61,7 @@
 #include "../data_manager/data_manager.h"
 #include "../event_logger/event_logger.h"
 #include "../relay_controller/relay_controller.h"   /* t2_get_window_states */
+#include "vent_model.h"   /* the control law, behind design/ventModelContract.md */
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -67,234 +70,25 @@
 static const char *TAG = "T6_CLI";
 
 /* -----------------------------------------------------------------------
- * Compile-time step → channel-mask table (Gap G)
+ * The control law lives in drivers/ventModel — plan §5c, 2.12.0
  *
- * Index 0 is step 0 (all closed); indices 1..NUM_VENT_STEPS are the
- * cumulative channel masks added at each step.
+ * What used to sit here — VENT_STEP_TABLE, step_from_deviation(),
+ * vent_step_channels(), vent_step_required_t(), vent_step_required_rh() and
+ * vent_resolve_conflict() — is now `vent_model_stepped`, compiled from
+ * drivers/ventModel/src through the component proxy. It moved unchanged: the
+ * library was written as a faithful copy on 2026-09-17 and kept in step by hand
+ * until this release, precisely so this switch could be shown to change no
+ * decision (§5c's replay gate).
  *
- * Step 1 — M1 only
- * Step 2 — M1 + M2
- * Step 3 — M1 + M2 + M3
+ * What stays here is the caller's side of the contract: the EG1 inhibit mask,
+ * the snapshots, the model call, the actuator limits, the command ORDER
+ * (narrowing before widening), Q1, the log row and the state resets.
  *
- * The table is sized NUM_VENT_STEPS + 1 to include the step-0 entry.
+ * T6 holds exactly one `vent_state_t`. It is the model's memory — for
+ * `stepped`, the per-source steps this task used to keep in two ints — and the
+ * caller owns it: reset at boot, at an inhibit onset, and on a mode change once
+ * mode 2 exists.
  * ----------------------------------------------------------------------- */
-static const uint8_t VENT_STEP_TABLE[NUM_VENT_STEPS + 1] = {
-    0,                               /* step 0 — all closed               */
-    VENT_CH_M1,                      /* step 1 — M1 only                  */
-    VENT_CH_M1 | VENT_CH_M2,        /* step 2 — M1 + M2                  */
-    VENT_CH_M1 | VENT_CH_M2 | VENT_CH_M3, /* step 3 — M1 + M2 + M3      */
-};
-
-/* -----------------------------------------------------------------------
- * Internal helper: core graduation algorithm
- * ----------------------------------------------------------------------- */
-
-/**
- * @brief Compute the required ventilation step from a value's deviation
- *        above its setpoint.
- *
- * Shared by both the temperature and the humidity branches — both demand
- * graduated OPEN with the same integer-ceiling algorithm and the same
- * close-hysteresis guard. The function is purely arithmetic (no I/O, no
- * mutexes) and is safe to call from any context.
- *
- * Step selection:
- *   step_width = max(hyst / NUM_VENT_STEPS, 1)
- *   raw_step   = (deviation > 0) ? ceil(deviation / step_width) : 0
- *   clamped    = clamp(raw_step, 0, NUM_VENT_STEPS)
- *
- * Close-hysteresis guard:
- *   Once any step > 0 is active, do NOT step down to 0 until
- *   deviation <= −hyst  (i.e. value < setpoint_max − hyst). Step reductions
- *   within 1..NUM_VENT_STEPS are applied immediately.
- *
- * @param deviation    value − setpoint_max (may be negative).
- * @param hyst         Hysteresis band; floor-clamped to 1 internally to
- *                     avoid division by zero.
- * @param current_step Step currently commanded; used only for the
- *                     close-hysteresis guard.
- * @return Required step in 0..NUM_VENT_STEPS. 0 means "close"; values >0
- *         denote progressively wider opening per VENT_STEP_TABLE.
- * @note  Returns 1 (not 0) when current_step>0 and the close threshold has
- *        not yet been crossed — a deliberate "stay slightly open" rather
- *        than oscillate around the setpoint.
- */
-static int step_from_deviation(int deviation, int hyst, int current_step)
-{
-    /* Compute step width; floor to 1 to avoid division by zero. */
-    int step_width = hyst / NUM_VENT_STEPS;
-    if (step_width < 1) {
-        step_width = 1;
-    }
-
-    /* Raw required step: ceil(deviation / step_width).
-     * Use integer ceiling: for positive deviation only.
-     * For zero or negative deviation the required step is 0. */
-    int raw_step;
-    if (deviation <= 0) {
-        raw_step = 0;
-    } else {
-        /* Integer ceiling division for positive integers: (a + b - 1) / b */
-        raw_step = (deviation + step_width - 1) / step_width;
-    }
-
-    /* Clamp to valid range. */
-    if (raw_step > NUM_VENT_STEPS) {
-        raw_step = NUM_VENT_STEPS;
-    }
-    if (raw_step < 0) {
-        raw_step = 0;
-    }
-
-    /* Close-hysteresis guard:
-     * If currently at step > 0 and raw_step == 0, only allow the step-down
-     * when value has fallen below (setpoint_max − hyst), i.e. deviation <= −hyst. */
-    if (current_step > 0 && raw_step == 0) {
-        if (deviation > -hyst) {
-            /* Not yet below close threshold; hold at step 1 (minimum open). */
-            return 1;
-        }
-    }
-
-    return raw_step;
-}
-
-/* -----------------------------------------------------------------------
- * Internal helpers (only called within this translation unit)
- * ----------------------------------------------------------------------- */
-
-/**
- * @brief Map a step number (0..NUM_VENT_STEPS) to its channel bitmask.
- *
- * Bounds-checks step against the table; returns 0 (all closed) for
- * out-of-range inputs so a corrupt step value cannot drive arbitrary
- * channels.
- *
- * @param step  Step number; 0 = all closed, 1..NUM_VENT_STEPS = lookup.
- * @return      Bitmask combining VENT_CH_M1/M2/M3 bits, or 0.
- */
-static uint8_t vent_step_channels(int step)
-{
-    if (step < 0 || step > NUM_VENT_STEPS) {
-        return 0;
-    }
-    return VENT_STEP_TABLE[step];
-}
-
-/**
- * @brief Compute the temperature branch's required ventilation step.
- *
- * Thin wrapper over step_from_deviation(): deviation = t_avg − t_max,
- * hysteresis = hyst_t.
- *
- * @param t_avg        Sliding-average temperature (°C).
- * @param t_max        Active max-temperature setpoint (°C, day or night).
- * @param hyst_t       Temperature hysteresis band (°C, must be >0).
- * @param current_step Step currently commanded for temperature.
- * @return Required step 0..NUM_VENT_STEPS.
- */
-static int vent_step_required_t(int16_t t_avg, int16_t t_max, int16_t hyst_t,
-                                 int current_step)
-{
-    int deviation = (int)t_avg - (int)t_max;
-    return step_from_deviation(deviation, (int)hyst_t, current_step);
-}
-
-/**
- * @brief Compute the humidity branch's required ventilation step.
- *
- * Three branches:
- *   - rh_ctrl_en == false → VENT_STEP_NEUTRAL (RH abstains from voting).
- *   - rh_avg > rh_max     → graduated OPEN, same algorithm as temperature.
- *   - rh_avg < rh_min     → step 0 (full CLOSE; graduated closing not
- *                            implemented — Gap G design decision).
- *   - within band         → VENT_STEP_NEUTRAL.
- *
- * @param rh_avg        Sliding-average humidity (%RH).
- * @param rh_max        Active max-humidity setpoint (%RH).
- * @param rh_min        Active min-humidity setpoint (%RH).
- * @param hyst_rh       Humidity hysteresis band (%RH, must be >0).
- * @param rh_ctrl_en    Master enable for humidity control (cfg.rh_ctrl_en).
- * @param current_step  Step currently commanded for humidity.
- * @return VENT_STEP_NEUTRAL (no vote), 0 (close), or 1..NUM_VENT_STEPS.
- */
-static int vent_step_required_rh(int16_t rh_avg, int16_t rh_max, int16_t rh_min,
-                                  int16_t hyst_rh, bool rh_ctrl_en,
-                                  int current_step)
-{
-    if (!rh_ctrl_en) {
-        return VENT_STEP_NEUTRAL;
-    }
-
-    if (rh_avg > rh_max) {
-        /* Too humid — graduated OPEN using same algorithm as temperature. */
-        int deviation = (int)rh_avg - (int)rh_max;
-        return step_from_deviation(deviation, (int)hyst_rh, current_step);
-    }
-
-    if (rh_avg < rh_min) {
-        /* Too dry — demand full CLOSE (Gap G design decision).
-         * Graduated closing is NOT implemented; step 0 = full close to keep
-         * conflict resolution symmetric.  vent_resolve_conflict() treats
-         * step_rh == 0 as a genuine close demand from RH. */
-        return 0;
-    }
-
-    /* RH is within [RH_min, RH_max] — no demand from humidity side. */
-    return VENT_STEP_NEUTRAL;
-}
-
-/**
- * @brief Resolve temperature and humidity step demands to a single step.
- *
- * Four-rule decision tree:
- *   1. RH abstains (VENT_STEP_NEUTRAL) → return step_t.
- *   2. Both demand OPEN (step_t>0 AND step_rh>0) → take the higher step
- *      regardless of cr_priority (more ventilation satisfies both).
- *   3. No conflict (step_t == step_rh) → return either.
- *   4. Genuine conflict (one wants OPEN, the other CLOSE) → apply
- *      cr_priority: 0=T-first, 1=RH-first, 2=deviation-based (higher wins).
- *
- * @param step_t        Temperature branch step (0..NUM_VENT_STEPS).
- * @param step_rh       Humidity branch step (VENT_STEP_NEUTRAL,
- *                      0, or 1..NUM_VENT_STEPS).
- * @param cr_priority   cfg.cr_priority (0/1/2; see cfg_shadow_t).
- * @return Resolved step 0..NUM_VENT_STEPS.
- */
-static int vent_resolve_conflict(int step_t, int step_rh, uint8_t cr_priority)
-{
-    /* Rule 1: RH has no vote — return temperature step unchanged. */
-    if (step_rh == VENT_STEP_NEUTRAL) {
-        return step_t;
-    }
-
-    /* Rule 2: Both demand OPEN — more ventilation satisfies both.
-     * Take the higher step regardless of cr_priority. */
-    if (step_t > 0 && step_rh > 0) {
-        return (step_t > step_rh) ? step_t : step_rh;
-    }
-
-    /* Rule 3: No conflict — both agree on the same step. */
-    if (step_t == step_rh) {
-        return step_t;
-    }
-
-    /* Rule 4: Genuine conflict (one OPEN, one CLOSE=0). Apply cr_priority.
-     *   0 = CR_TEMP_FIRST  : temperature wins → return step_t
-     *   1 = CR_RH_FIRST    : humidity wins    → return step_rh (may be 0)
-     *   2 = CR_DEVIATION   : higher step wins (more ventilation) */
-    switch (cr_priority) {
-        case 0:  /* CR_TEMP_FIRST */
-        default:
-            return step_t;
-
-        case 1:  /* CR_RH_FIRST */
-            return step_rh;
-
-        case 2:  /* CR_DEVIATION — higher step = more open = safer choice */
-            return (step_t > step_rh) ? step_t : step_rh;
-    }
-}
 
 /* -----------------------------------------------------------------------
  * post_q1() — send one window_cmd_t to Q1 (non-blocking, warn on full)
@@ -309,7 +103,7 @@ static int vent_resolve_conflict(int step_t, int step_rh, uint8_t cr_priority)
  *
  * @param action   CMD_OPEN, CMD_CLOSE, or CMD_CLOSE_ALL (CLOSE_ALL is
  *                 reserved for safety events; T6 itself avoids it — see
- *                 reconcile_to_step()).
+ *                 apply_model_output()).
  * @param channel  1, 2, 3 for per-channel commands; 0 for CMD_CLOSE_ALL.
  * @warning Caller must keep channel in range [0..3]; T2 logs an error and
  *          drops out-of-range channels.
@@ -368,13 +162,14 @@ static void post_log_mode(int resolved_step, int step_t, int step_rh)
 }
 
 /* -----------------------------------------------------------------------
- * reconcile_to_step() — drive T2 channel states toward the desired step
+ * apply_model_output() — drive T2's channel states toward what the law wants
  * ----------------------------------------------------------------------- */
 
 /**
- * @brief Drive T2's per-channel state toward the channel mask for `step`.
+ * @brief Command T2 so each window reaches the end state the model asked for.
  *
- * Replaces the previous edge-triggered apply_step_delta(). Called every T6
+ * Was `reconcile_to_step()`, which computed the channel mask itself; the model
+ * now returns one desired END STATE per window and this applies them. Called every T6
  * cycle (level-triggered) so that commands lost to T2's post-open/close
  * dwell are re-issued automatically once dwell expires. The previous
  * delta-only design dropped any CMD_CLOSE that arrived while a window was
@@ -396,36 +191,116 @@ static void post_log_mode(int resolved_step, int step_t, int step_rh)
  * undesirable when temperature rebounds quickly. CMD_CLOSE_ALL is reserved
  * for safety events (wind override in T3, motor alarm in T2).
  *
- * @param step  Target step 0..NUM_VENT_STEPS; out-of-range maps to mask 0.
- * @see   t2_get_window_states(), vent_step_channels(), post_q1()
+ * @param out   The model's answer: one desired end state per window.
+ * @see   t2_get_window_states(), post_q1(), design/ventModelContract.md
  */
-static void reconcile_to_step(int step)
+static void apply_model_output(const vent_out_t *out, const window_state_t *actual)
 {
-    window_state_t actual[3];
-    t2_get_window_states(actual);
-
-    uint8_t desired = vent_step_channels(step);
+    /* `actual` is the SAME snapshot the model was given. Reading T2 a second
+     * time here would let a window change state between the decision and its
+     * command, so a model that asked for a CLOSE could have it silently
+     * dropped. The inline law read the states once for exactly this reason. */
 
     /* Post CLOSE first (narrowing before widening is safer). */
     for (uint8_t ch = 0; ch < 3; ch++) {
-        bool want_open = ((desired >> ch) & 1u) != 0;
-        window_state_t a = actual[ch];
-        bool currently_open_or_opening = (a == WIN_OPEN || a == WIN_MOVING_OPEN);
-        if (!want_open && currently_open_or_opening) {
+        const window_state_t a = actual[ch];
+        const bool currently_open_or_opening = (a == WIN_OPEN || a == WIN_MOVING_OPEN);
+        if (out->win[ch].action == VENT_ACT_CLOSE && currently_open_or_opening) {
             post_q1(CMD_CLOSE, (uint8_t)(ch + 1));
-            ESP_LOGI(TAG, "[T6] → CMD_CLOSE ch=%u (target step %d, actual=%d)",
-                     (unsigned)(ch + 1), step, (int)a);
+            ESP_LOGI(TAG, "[T6] → CMD_CLOSE ch=%u (step %d, actual=%d)",
+                     (unsigned)(ch + 1), (int)out->step, (int)a);
         }
     }
     for (uint8_t ch = 0; ch < 3; ch++) {
-        bool want_open = ((desired >> ch) & 1u) != 0;
-        window_state_t a = actual[ch];
-        bool currently_closed_or_closing = (a == WIN_CLOSED || a == WIN_MOVING_CLOSE);
-        if (want_open && currently_closed_or_closing) {
+        const window_state_t a = actual[ch];
+        const bool currently_closed_or_closing = (a == WIN_CLOSED || a == WIN_MOVING_CLOSE);
+        if (out->win[ch].action == VENT_ACT_OPEN && currently_closed_or_closing) {
             post_q1(CMD_OPEN, (uint8_t)(ch + 1));
-            ESP_LOGI(TAG, "[T6] → CMD_OPEN  ch=%u (target step %d, actual=%d)",
-                     (unsigned)(ch + 1), step, (int)a);
+            ESP_LOGI(TAG, "[T6] → CMD_OPEN  ch=%u (step %d, actual=%d)",
+                     (unsigned)(ch + 1), (int)out->step, (int)a);
         }
+    }
+    /* A TARGET for a digital window is a model error (contract §3). Mode 1
+     * never asks for one; the check is here because the contract says the
+     * caller enforces the actuator limits, and mode 2 will add the case where
+     * a TARGET is legitimate for M3 alone. */
+    for (uint8_t ch = 0; ch < 3; ch++) {
+        if (out->win[ch].action == VENT_ACT_TARGET) {
+            ESP_LOGE(TAG, "[T6] model asked for a TARGET on ch=%u, which this build "
+                          "cannot drive — treated as HOLD", (unsigned)(ch + 1));
+        }
+    }
+}
+
+/* -----------------------------------------------------------------------
+ * fill_model_input() — everything the law may read, and nothing else
+ * ----------------------------------------------------------------------- */
+
+/**
+ * @brief Build `vent_in_t` from the snapshots T6 already takes.
+ *
+ * The contract's §3a: the caller resolves day/night, floors the hysteresis so
+ * a law may divide by it, and combines `rh_ctrl_en` with the sensor's validity,
+ * so the model never learns where a value came from.
+ *
+ * Mode 1 reads only a part of this; the rest is filled because the struct is
+ * the interface, not this law's parameter list. `cap` is DIGITAL for all three
+ * windows in this release: M3 becomes LINEAR in mode 2, from T17's capability
+ * through T4's pass-through, and nothing else changes here.
+ */
+static void fill_model_input(vent_in_t *in, const cfg_shadow_t *cfg,
+                             const sensor_reading_t *meas,
+                             const window_state_t *actual)
+{
+    memset(in, 0, sizeof(*in));
+
+    in->now_ms    = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    in->unix_time = (uint32_t)dm_get_unix_time();
+    in->daytime   = cfg->is_daytime;
+
+    in->t_c10         = meas->temperature_c10;
+    in->t_avg_c10     = meas->t_avg_c10;
+    in->t_avg_c       = meas->t_avg_c;          /* rounded by the sensor layer */
+    in->rh_pct        = meas->humidity_pct;
+    in->rh_avg_pct    = meas->rh_avg_pct;
+    in->wind_ms10     = meas->wind_speed_ms10;
+    in->wind_avg_ms10 = meas->wind_speed_avg_ms10;
+    in->wind_dir_deg     = meas->wind_dir_deg;
+    in->wind_dir_avg_deg = meas->wind_dir_avg_deg;
+    in->wind_dir_var_deg = meas->wind_dir_variation_deg;
+
+    /* T6 is not called at all while SENSOR_FAULT_T is set (the inhibit mask
+     * above), so a reading that reaches here is valid. */
+    in->t_valid    = true;
+    in->rh_valid   = true;
+    in->wind_valid = true;
+
+    in->t_max_c10  = (int16_t)((cfg->is_daytime ? cfg->t_max_day  : cfg->t_max_ngt) * 10);
+    in->rh_max_pct = (uint8_t)(cfg->is_daytime ? cfg->rh_max_day : cfg->rh_max_ngt);
+    in->rh_min_pct = (uint8_t)(cfg->is_daytime ? cfg->rh_min_day : cfg->rh_min_ngt);
+    in->hyst_t_c   = (uint8_t)((cfg->hyst_t  > 0) ? cfg->hyst_t  : 1);
+    in->hyst_rh_pct= (uint8_t)((cfg->hyst_rh > 0) ? cfg->hyst_rh : 1);
+    in->cr_priority = (uint8_t)cfg->cr_priority;
+    in->rh_ctrl_en  = (cfg->rh_ctrl_en != 0);
+
+    in->m3_deadzone_x10    = 0u;   /* mode 2 */
+    in->m3_min_interval_ms = 0u;   /* mode 2, and its key does not exist yet */
+
+    /* The two enums share their ordinals by design (vent_model.h), and T2
+     * gains a part-open state in this release, so pin the mapping here: a
+     * renumbering on either side must fail the build, not the greenhouse. */
+    static_assert((int)WIN_UNKNOWN      == (int)VENT_WIN_UNKNOWN,      "window state 0");
+    static_assert((int)WIN_CLOSED       == (int)VENT_WIN_CLOSED,       "window state 1");
+    static_assert((int)WIN_MOVING_OPEN  == (int)VENT_WIN_MOVING_OPEN,  "window state 2");
+    static_assert((int)WIN_OPEN         == (int)VENT_WIN_OPEN,         "window state 3");
+    static_assert((int)WIN_MOVING_CLOSE == (int)VENT_WIN_MOVING_CLOSE, "window state 4");
+
+    for (int ch = 0; ch < VENT_WINDOWS; ch++) {
+        in->win[ch].state           = (vent_win_state_t)actual[ch];
+        in->win[ch].cap             = VENT_CAP_DIGITAL;
+        in->win[ch].pos_x10         = -1;
+        in->win[ch].last_target_x10 = -1;
+        in->win[ch].last_result     = VENT_RES_NONE;
     }
 }
 
@@ -443,8 +318,8 @@ static void reconcile_to_step(int step)
  *  - Reconciliation is level-triggered every wake (dwell-deferred T2
  *    commands are retried automatically). Mode-change logging stays
  *    edge-triggered so the SD log keeps one row per actual transition.
- *  - prev_inhibited tracks the EG1 inhibit edges so the inhibit-onset
- *    reset of current_step_t/rh happens exactly once.
+ *  - prev_inhibited tracks the EG1 inhibit edges so the inhibit-onset reset of
+ *    the model's state happens exactly once.
  *
  * @param pvParameters Unused; pass NULL.
  */
@@ -460,10 +335,29 @@ void task_climate_control(void *pvParameters)
 
     ESP_LOGI(TAG, "[T6] task alive");
 
-    /* Task-local state — tracks last commanded step from each source.
-     * Initialised to 0; T2's boot CLOSE_ALL ensures windows are CLOSED. */
-    int current_step_t  = 0;
-    int current_step_rh = 0;
+    /* The model and its memory. One model in this release -- `stepped`, mode 1
+     * -- and T6 owns the state it keeps between calls (contract §2). The reset
+     * at boot replaces the two step ints this task used to initialise here;
+     * T2's boot CLOSE_ALL still ensures the windows are CLOSED. */
+    const vent_model_t *model = vent_model_stepped();
+    vent_state_t vstate;
+    model->reset(&vstate);
+
+    /* The last step written to the SD log, so the row stays edge-triggered.
+     * It replaces recomputing the previous resolved step from the stored
+     * per-source steps: the model reports the step it resolved, and the caller
+     * logs on a change. The two differ only when cr_priority or rh_ctrl_en
+     * changes between cycles, where a row may appear or be suppressed -- no
+     * command differs (vent_model_stepped.cpp, "the one deliberate
+     * difference").
+     *
+     * It starts at 0, not VENT_STEP_NONE, and returns to 0 at an inhibit onset:
+     * the inline law began every run and every inhibit with current_step_t =
+     * current_step_rh = 0, so its recomputed previous step was 0. A -1 baseline
+     * would write an extra step-0 row at boot and after every wind override,
+     * STANDBY exit and T2 calibration sweep -- rows logparser.py and
+     * plot_daily.py read as ventilation decisions. */
+    int last_logged_step = 0;
 
     /* Track whether we were inhibited on the previous cycle so we can log
      * mode transitions (inhibit onset / inhibit clearance). */
@@ -518,10 +412,13 @@ void task_climate_control(void *pvParameters)
 
         if (inhibited) {
             if (!prev_inhibited) {
-                /* Transition into inhibited state — reset steps so T6
-                 * re-evaluates from scratch when inhibit clears. */
-                current_step_t  = 0;
-                current_step_rh = 0;
+                /* Transition into inhibited state — reset the model's memory
+                 * so T6 re-evaluates from scratch when the inhibit clears. An
+                 * integrator that survived an inhibit would wind up invisibly
+                 * (contract §2), and `stepped`'s close-guard would otherwise
+                 * hold a step the windows no longer have. */
+                model->reset(&vstate);
+                last_logged_step = 0;   /* the inline law's baseline; see above */
                 ESP_LOGI(TAG, "[T6] inhibited (EG1=0x%02lx) — evaluation suspended",
                          (unsigned long)bits);
             }
@@ -551,67 +448,45 @@ void task_climate_control(void *pvParameters)
         }
 
         /* ----------------------------------------------------------------
-         * 4. Select active setpoints (day vs. night).
+         * 4-6. Ask the law. Day/night selection, the hysteresis floor and the
+         *      validity flags are the caller's job (contract §3a) and live in
+         *      fill_model_input(); the decision itself is the model's.
          * ---------------------------------------------------------------- */
-        int16_t t_max  = cfg.is_daytime ? cfg.t_max_day  : cfg.t_max_ngt;
-        int16_t rh_max = cfg.is_daytime ? cfg.rh_max_day : cfg.rh_max_ngt;
-        int16_t rh_min = cfg.is_daytime ? cfg.rh_min_day : cfg.rh_min_ngt;
+        /* One snapshot of T2's window states, shared by the decision and the
+         * commands that follow it. */
+        window_state_t actual[3];
+        t2_get_window_states(actual);
 
-        /* Defensively ensure hysteresis values are positive; fall back to 1
-         * so step_from_deviation never divides by zero. */
-        int16_t hyst_t  = (cfg.hyst_t  > 0) ? cfg.hyst_t  : 1;
-        int16_t hyst_rh = (cfg.hyst_rh > 0) ? cfg.hyst_rh : 1;
-
-        bool rh_ctrl_en = (cfg.rh_ctrl_en != 0);
-
-        /* ----------------------------------------------------------------
-         * 5. Evaluate required steps.
-         * ---------------------------------------------------------------- */
-        int step_t  = vent_step_required_t(meas.t_avg_c, t_max, hyst_t,
-                                           current_step_t);
-        int step_rh = vent_step_required_rh(meas.rh_avg_pct, rh_max, rh_min,
-                                            hyst_rh, rh_ctrl_en,
-                                            current_step_rh);
-
-        /* ----------------------------------------------------------------
-         * 6. Resolve conflict → single resolved step.
-         * ---------------------------------------------------------------- */
-        int resolved = vent_resolve_conflict(step_t, step_rh,
-                                             (uint8_t)cfg.cr_priority);
+        vent_in_t  in;
+        vent_out_t out;
+        memset(&out, 0, sizeof(out));
+        fill_model_input(&in, &cfg, &meas, actual);
+        model->step(&in, &vstate, &out);
 
         ESP_LOGI(TAG,
-                 "[T6] T_avg=%d t_max=%d hyst=%d → step_t=%d | "
-                 "RH_avg=%u rh_max=%d rh_min=%d hyst=%d rh_en=%d → step_rh=%d | "
-                 "resolved=%d (was cur_t=%d cur_rh=%d)",
-                 (int)meas.t_avg_c, (int)t_max, (int)hyst_t, step_t,
-                 (unsigned)meas.rh_avg_pct, (int)rh_max, (int)rh_min,
-                 (int)hyst_rh, (int)rh_ctrl_en, step_rh,
-                 resolved, current_step_t, current_step_rh);
+                 "[T6] %s: T_avg=%d t_max=%d hyst=%u → step_t=%d | "
+                 "RH_avg=%u rh_max=%u rh_min=%u hyst=%u rh_en=%d → step_rh=%d | "
+                 "resolved=%d reason=%u (last logged %d)",
+                 model->name,
+                 (int)in.t_avg_c, (int)(in.t_max_c10 / 10), (unsigned)in.hyst_t_c,
+                 (int)out.step_t,
+                 (unsigned)in.rh_avg_pct, (unsigned)in.rh_max_pct, (unsigned)in.rh_min_pct,
+                 (unsigned)in.hyst_rh_pct, (int)in.rh_ctrl_en, (int)out.step_rh,
+                 (int)out.step, (unsigned)out.reason, last_logged_step);
 
         /* ----------------------------------------------------------------
-         * 7. Compute previous resolved step and apply incremental delta.
+         * 7. Apply, and log on a change.
+         *
+         * Level-triggered: every cycle, so commands lost to T2's dwell are
+         * retried until they land. The log row stays edge-triggered, and
+         * byte-identical to what this task wrote before the model moved out:
+         * value_a = the resolved step, value_b = step_t << 8 | step_rh.
          * ---------------------------------------------------------------- */
-        int prev_resolved = vent_resolve_conflict(current_step_t,
-                                                   (current_step_rh == 0 && !rh_ctrl_en)
-                                                       ? VENT_STEP_NEUTRAL
-                                                       : current_step_rh,
-                                                   (uint8_t)cfg.cr_priority);
-
-        /* Level-triggered: reconcile every cycle so dwell-deferred commands
-         * are retried until they land. Mode-change logging stays edge-
-         * triggered to preserve event-log semantics. */
-        reconcile_to_step(resolved);
-        if (resolved != prev_resolved) {
-            post_log_mode(resolved, step_t, step_rh);
+        apply_model_output(&out, actual);
+        if ((int)out.step != last_logged_step) {
+            post_log_mode((int)out.step, (int)out.step_t, (int)out.step_rh);
+            last_logged_step = (int)out.step;
         }
 
-        /* ----------------------------------------------------------------
-         * 8. Update state.
-         * ---------------------------------------------------------------- */
-        current_step_t  = step_t;
-        /* Preserve VENT_STEP_NEUTRAL semantics: if rh returned NEUTRAL,
-         * keep the rh step at NEUTRAL so future hysteresis is evaluated
-         * correctly from the NEUTRAL baseline. */
-        current_step_rh = step_rh;
     }
 }

@@ -1185,8 +1185,9 @@ extern "C" void app_main(void)
      *   4. Runs the graduated-ventilation step algorithm: step_t from
      *      T_avg/t_max/hyst_t; step_rh from RH_avg/rh_max/rh_min/hyst_rh
      *      (or VENT_STEP_NEUTRAL if rh_ctrl_en==0).
-     *   5. Resolves T vs RH conflict via vent_resolve_conflict()
-     *      (cr_priority from cfg).
+     *   5. Resolves T vs RH conflict by cr_priority. Steps 4 and 5 are the
+     *      control LAW, which since 2.12.0 is drivers/ventModel
+     *      (`vent_model_stepped`), not code in climate_control.cpp.
      *   6. Reconciles to step: queries t2_get_window_states(), posts
      *      CMD_OPEN/CMD_CLOSE for any channel whose actual state doesn't
      *      match the resolved step's channel mask. Level-triggered —

@@ -2115,3 +2115,32 @@ that case looks identical in a conflict marker.
 **Also:** during a rebase `--ours` is the branch being replayed **onto**, not the branch
 being replayed. That is the reverse of the merge intuition and worth saying out loud in any
 resolution instructions.
+
+## 2026-09-20 — a release build overwrites `bin/<version>/`, and the build DIRECTORY is part of the image
+
+**Problem:** with `platformio.ini` still at 2.11.0, a build of unrelated work-in-progress
+(the mode-2 T6 refactor) wrote straight into `bin/2.11.0/`, replacing the artefacts of a
+release that was already published to ROTA and already running on 2344. The `.bin` and
+`.zip` were recoverable from the GitHub release; the **ELF and map are not published
+anywhere** (`.gitignore` excludes `bin/**/*.elf` and `*.map`), so the only copy of the
+symbols for a live firmware was gone.
+
+**Then the obvious repair failed.** `git archive <release-commit>` into `C:\b2110` and a
+rebuild there produced `d9012ccb…` against the published `fd0db6a3…`. Nothing was wrong
+with the source: **the absolute build path is embedded in the image**, so an otherwise
+identical build from a different directory is a different binary. Rebuilding *in the repo
+directory*, with the tree restored to the release state, reproduced the published image
+**and** the assets zip byte for byte — which is what makes the regenerated ELF trustworthy.
+
+**Rules:**
+
+- **Bump `FIRMWARE_VERSION` before the first build of a new cycle, not before the release
+  build.** The version is the only thing that decides which `bin/<version>/` a build
+  overwrites, and a published directory is not protected.
+- **To regenerate a lost ELF: restore the tree to the release commit *in the repo
+  directory*, build, and verify the `.bin` SHA against the manifest before trusting the
+  ELF.** A matching SHA proves the symbols correspond; a different directory guarantees
+  they will not match.
+- Park work-in-progress by copying the files aside rather than reaching for git — reverting
+  tracked files with `git checkout --` and copying them back is enough, and leaves no refs
+  to clean up.

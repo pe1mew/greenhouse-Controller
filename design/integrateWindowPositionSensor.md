@@ -2195,10 +2195,36 @@ before it is shipped.
 
 ##### The refactor: T6 stops carrying its own copy — in 2.12.0, with mode 2
 
-**Where it stands (2026-09-17).** The library exists: `drivers/ventModel/` holds the interface and
-`vent_model_stepped`, a faithful copy of T6's decision functions, with 23 host tests passing (interface 2 since 2026-09-19, see the contract's Revised line). **The
-firmware is untouched and still runs its inline copy.** So mode 1's law exists twice, on purpose and
-temporarily.
+**Where it stands (2026-09-20). Steps 1, 3, 4 and 5 are DONE; step 2's model TABLE waits for the
+mode selection.** T6 calls `vent_model_stepped` through `firmware/components/ventModel`, holds one
+caller-owned `vent_state_t`, and the inline law is deleted: `VENT_STEP_TABLE`,
+`step_from_deviation()`, `vent_step_channels()`, `vent_step_required_t()`,
+`vent_step_required_rh()` and `vent_resolve_conflict()` are gone from `climate_control.cpp`, which
+went from 617 lines to 492 (334 removed, 209 added) and gained `fill_model_input()` and
+`apply_model_output()`. **Mode 1's law
+now exists once.** The model is fixed to `stepped` until the effective mode exists (§5b); `graded`
+is compiled in but nothing selects it.
+
+*What the refactor had to preserve, and how it was shown:*
+
+- **The log row.** `post_log_mode()` is byte-identical, and so is its trigger: the row is written
+  when the resolved step differs from the last step logged, and that comparison **starts at 0 and
+  returns to 0 at an inhibit onset**, because the inline law began every run and every inhibit with
+  `current_step_t = current_step_rh = 0`. A `VENT_STEP_NONE` (-1) baseline — the obvious reading of
+  the constant — would have added a step-0 row at boot and after every wind override, STANDBY exit
+  and T2 calibration sweep, rows `logparser.py` and `plot_daily.py` read as ventilation decisions.
+  The closed-loop simulator's emulated T6, written independently, uses the same 0 baseline
+  (`firmware.py`, `last_step`).
+- **One snapshot of T2's states**, taken in the loop and passed to both the model and the apply
+  step. Reading T2 again inside the apply would let a window change state between the decision and
+  its command, silently dropping it; the inline law read the states once for that reason.
+- **The window-state enums are pinned** with `static_assert`s, one per value. They share their
+  ordinals by design, and T2 gains `PART_OPEN` in this same release.
+- **Evidence:** 38/38 host tests; `vent_step_replay.py` **96.8 % of 378** logged decisions, the
+  baseline exactly, driving the library itself through `ventmodel.dll`; `closed_loop.py
+  gate-control` **97.1 % of 381** in the emulated T5/T4/T6 chain (PASS against its own baseline);
+  both images build. **The rig soak is outstanding** — 2344 is soaking 2.11.0 until 2026-09-20
+  23:49, and a refactor of the control path does not go to a rig mid-soak.
 
 **Operator decision, 2026-09-17: T6 switches over when the dual mode is introduced**, not before.
 The reasoning:
