@@ -121,6 +121,11 @@ All on 2344 in the dev rig, with the encoder connected, on bench builds, with `b
 - **No partition change, no NVS migration, no configuration change.**
 - **In the SD log:** a param 251 row per M3 drive, and a param 252 row when the travel check changes state. `logparser.md` 1.22 decodes them; `plot_daily.py` reads only the 240-243 band and needs no change.
 - **A unit without a sensor sees nothing new.**
+- **On the ROTA soak channel since 2026-09-20, seq 53** ([v2.10.0](https://github.com/pe1mew/greenhouse-Controller/releases/tag/v2.10.0)). **2344 pulled it on the first offer.**
+  - **2.9.2 was pushed back to 2344 first.** ROTA ignores the `-bench` suffix, so a unit running 2.10.0-bench counts as up to date against 2.10.0.
+  - Published at about 08:59; the server began offering it between 09:09:46 and 09:10:46, and the unit rebooted into it at 09:10:54. The download succeeded on the first attempt (`dl` 0) and the apply was not deferred, the checking session being exempt from the quiet gate.
+  - **Verified after the reboot:** `fw_ver` and `asset_version` both 2.10.0, `travel_m3` still 13, `wpos_fitted_m3` still 1, M3's position and end sensor in the status, no flags.
+  - **The release build judges drives as the bench build does.** A recalibration at 09:12:50 promoted the gate to position and wrote `ALARM ch6` param 251 `a=-2 b=0` — *confirmed, already at that end*. `GET /api/diag/windowpos` answers 404 there, as a bench-only route should.
 - **Keep this release's ELF.**
 - **Production runs 2.3.1.** Regenerate the release comparison before promoting, and settle gh#81 (the heap floor) first.
 
