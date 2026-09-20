@@ -35,6 +35,18 @@
 /** @brief Row 1 DDRAM base address offset. */
 #define ROW1_OFFSET  0x40u
 
+/**
+ * @brief Busy time to allow after Clear Display and Return Home, in ms.
+ *
+ * The AiP31068L takes **1.53 ms** for both (datasheet Table 3), and its serial
+ * interface cannot be read for the busy flag, so the wait is the only guard.
+ * `vTaskDelay(n)` guarantees only n-1 WHOLE ticks, so at this project's 1 kHz
+ * tick the old `lcd_delay_ms(2)` could be as short as 1 ms -- under the busy
+ * time. Three ticks guarantee 2 ms. Every other instruction this driver sends
+ * takes ~37 us, which the ~70 us I2C transaction already covers.
+ */
+#define LCD_BUSY_MS  3u
+
 /* ---------------------------------------------------------------------------
  * Portable millisecond delay (compiled away in the native/test build).
  * ESP-IDF migration (2.0.0-alpha.2.5): Arduino's delay() → vTaskDelay()
@@ -194,7 +206,7 @@ lcd_status_t lcd_init(void)
     r = aip_cmd(CMD_FUNC_SET);     if (r != LCD_OK) return r;  /* back to IS=0 */
     r = aip_cmd(CMD_DISP_ON);      if (r != LCD_OK) return r;  /* display on, cursor off */
     r = aip_cmd(CMD_CLEAR);        if (r != LCD_OK) return r;  /* clear display */
-    lcd_delay_ms(2);                                            /* clear busy time ≥1.52 ms */
+    lcd_delay_ms(LCD_BUSY_MS);                                  /* clear busy time 1.53 ms */
     r = aip_cmd(CMD_ENTRY_MODE);   if (r != LCD_OK) return r;  /* cursor increment, no shift */
 
     /* Probe and initialise the PCA9633DP2 RGB backlight if this is an
@@ -209,13 +221,70 @@ lcd_status_t lcd_init(void)
 lcd_status_t lcd_clear(void)
 {
     lcd_status_t r = aip_cmd(CMD_CLEAR);
-    lcd_delay_ms(2);  /* CMD_CLEAR busy time ≥1.52 ms */
+    lcd_delay_ms(LCD_BUSY_MS);
     return r;
 }
 
 lcd_status_t lcd_home(void)
 {
-    return aip_cmd(CMD_HOME);
+    lcd_status_t r = aip_cmd(CMD_HOME);
+    /* gh#80: this used to return without waiting at all. Return Home takes the
+     * same 1.53 ms as Clear, and the next instruction sent inside that window
+     * is the one the chip may drop or misread. */
+    lcd_delay_ms(LCD_BUSY_MS);
+    return r;
+}
+
+/**
+ * @brief Re-assert the controller's modes, so a stray one is not permanent.
+ *
+ * gh#80: on 2026-09-18 the display came up shifted one column to the right and
+ * stayed that way until the unit restarted. Only Clear Display, Return Home or
+ * an opposite shift clear the display-shift offset, and after boot this driver
+ * sends none of them -- so ONE corrupted command byte parks the display for the
+ * rest of the run. `0x1C`, the "shift display right" instruction, is a single
+ * bit away from `0x0C`, the Display On that T8 sends before every redraw.
+ *
+ * This sends the modes T8's redraw path never re-sends, in the same order as
+ * `lcd_init()`, and ends with Return Home:
+ *   - Function Set  -- undoes a stray bus-width or line-count change (`0x2C`);
+ *   - Display On    -- undoes display-off, cursor and blink (`0x08`, `0x0D`, `0x0E`);
+ *   - Entry Mode    -- undoes a decrementing cursor or auto-shift (`0x04`, `0x07`);
+ *   - Return Home   -- undoes the display shift itself (`0x18`, `0x1C`).
+ *
+ * It writes no DDRAM, so the caller's next `lcd_write_row()` is unaffected: it
+ * sets its own address. Costs four commands plus one busy wait, so a caller
+ * should do this periodically, not on every redraw.
+ *
+ * @return LCD_OK on success, or the first failing transfer's status.
+ */
+/**
+ * @brief Send one raw instruction byte. DIAGNOSTIC USE ONLY.
+ *
+ * The gh#80 hook: the defect it reproduces is a command byte the driver never
+ * sends -- a corrupted one -- latching a mode, so nothing in the normal API can
+ * stage it. A bench build's POST /api/diag/lcd uses this to send `0x1C` (shift
+ * display right) and watch whether the display heals.
+ *
+ * Production code must not call this: every instruction this display needs has
+ * a named function, and bytes sent here bypass the driver's own state.
+ *
+ * @param  cmd Instruction byte, sent with RS=0.
+ * @return @ref lcd_status_t.
+ */
+lcd_status_t lcd_send_cmd_raw(uint8_t cmd)
+{
+    return aip_cmd(cmd);
+}
+
+lcd_status_t lcd_reassert_modes(void)
+{
+    lcd_status_t r = aip_cmd(CMD_FUNC_SET);    if (r != LCD_OK) return r;
+    r = aip_cmd(CMD_DISP_ON);                  if (r != LCD_OK) return r;
+    r = aip_cmd(CMD_ENTRY_MODE);               if (r != LCD_OK) return r;
+    r = aip_cmd(CMD_HOME);
+    lcd_delay_ms(LCD_BUSY_MS);
+    return r;
 }
 
 lcd_status_t lcd_set_cursor(uint8_t row, uint8_t col)

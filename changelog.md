@@ -6,6 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.10.1] — 2026-09-20  (a stray LCD mode heals itself; two GUI-layer fixes)
+
+Patch: three bug fixes, no behaviour change to ventilation, no config or NVS change. Fixes
+[gh#80](https://github.com/pe1mew/greenhouse-Controller/issues/80),
+[gh#74](https://github.com/pe1mew/greenhouse-Controller/issues/74) and
+[gh#76](https://github.com/pe1mew/greenhouse-Controller/issues/76). Detail in
+`bin/2.10.1/release-notes.md`.
+
+**Fixed.**
+
+- **The LCD no longer stays shifted until a restart** (gh#80). One corrupted command byte could latch
+  a display mode that nothing undid: on 2026-09-18 2344's display sat shifted one column right for
+  hours. T8's redraw preamble now becomes a full re-assert of the controller's modes every 10 s
+  (Function Set, Display On, Entry Mode, Return Home), so a stray shift, a decrementing cursor or a
+  bad function set clears within one interval. Confirmed on hardware, both ways.
+- **The LCD driver waits the busy time it must** (gh#80, same class): `lcd_home()` waited not at all
+  and `lcd_clear()` could wait 1 ms against the chip's 1.53 ms. Both use one constant now, three
+  ticks, which guarantees 2 ms.
+- **A greyed block no longer dims its own reason** (gh#74). `opacity` applies to an element and its
+  descendants as one group, so the CSS rule that granted the reason full opacity inside a dimmed
+  block never did anything. The commissioning card's reason now sits above the greyed wrapper, as
+  the Linear control group's already did.
+- **The web GUI mock stores `deadzone_m3`** (gh#76), so the field is populated and a change survives
+  a reload. The mock also answers 400 to an unknown key now, as the firmware has since gh#53.
+
+**Added.**
+
+- **Bench only:** `POST /api/diag/lcd {"cmd":N}` sends one raw LCD instruction, the only way to
+  stage gh#80's fault, with `-DLCD_FAILFIRST_GH80` restoring the old behaviour for comparison, and
+  `bin/at_lcd_gh80.py` to drive the test.
+
+---
+
 ## [2.10.0] — 2026-09-19  (every M3 drive gets a verdict, and `travel_m3` is checked against the traverse)
 
 Minor: new log params (251, 252), a new gate reason (6) and three new status flags. Plan §5d,

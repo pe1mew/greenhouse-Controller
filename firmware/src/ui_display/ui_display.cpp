@@ -386,6 +386,18 @@ static const uint8_t BROWSE_BACK_GLYPH[8] = {
 
 static uint32_t s_bl_colour_last = LCD_BL_BLUE;  /* matches lcd_init() boot default */
 
+/** gh#80: how often lcd_flush() re-asserts the controller's modes instead of
+ *  sending the cheap Display On preamble. It bounds how long a stray latched
+ *  mode -- a display shift, a decrementing cursor -- can survive. 10 s is
+ *  short enough that an operator watching the screen sees it heal, and rare
+ *  enough that the 1.53 ms Home wait costs nothing on a ~1 Hz redraw. */
+#define LCD_REASSERT_MS  10000u
+static TickType_t s_lcd_reassert_tick = 0u;  /* 0 = never, so the first flush heals */
+
+#if defined(LCD_FAILFIRST_GH80) && !defined(MODBUS_BENCH)
+#error "LCD_FAILFIRST_GH80 is a bench-only fail-first build"
+#endif
+
 static uint32_t status_colour_for_bits(EventBits_t bits)
 {
     if (bits & (EG1_BIT_MOTOR_ALARM |
@@ -444,9 +456,29 @@ static bool lcd_flush(void)
          * by the ~70 µs I2C transaction overhead, so no extra delay is needed.
          * This absorbs the one-shot silent drop; the subsequent lcd_write_row
          * calls then always land correctly. */
-        lcd_status_t sp = lcd_display_on();
+        /* gh#80: every LCD_REASSERT_MS the preamble becomes a full re-assert of
+         * the controller's modes. A single corrupted command byte can latch a
+         * mode that nothing here ever undoes -- 0x1C, "shift display right", is
+         * one bit from this very 0x0C, and on 2026-09-18 it left 2344's display
+         * shifted one column for hours. Re-asserting bounds that to one
+         * interval instead of "until someone restarts the unit". It costs four
+         * commands and one 1.53 ms wait, so it is not done on every redraw. */
+        const TickType_t now_ticks = xTaskGetTickCount();
+#ifdef LCD_FAILFIRST_GH80
+        /* Bench-only: the behaviour before gh#80 -- the preamble and nothing
+         * else, so an injected 0x1C stays until the unit restarts. */
+        const bool heal = false;
+#else
+        const bool heal = (s_lcd_reassert_tick == 0u) ||
+                          ((TickType_t)(now_ticks - s_lcd_reassert_tick) >=
+                           pdMS_TO_TICKS(LCD_REASSERT_MS));
+#endif
+        lcd_status_t sp = heal ? lcd_reassert_modes() : lcd_display_on();
         if (sp != LCD_OK) {
-            ESP_LOGW(TAG, "lcd_display_on preamble failed: %d", (int)sp);
+            ESP_LOGW(TAG, "%s failed: %d",
+                     heal ? "lcd_reassert_modes" : "lcd_display_on preamble", (int)sp);
+        } else if (heal) {
+            s_lcd_reassert_tick = now_ticks;
         }
         lcd_status_t s0 = lcd_write_row(0, s_row0);
         lcd_status_t s1 = lcd_write_row(1, s_row1);

@@ -111,6 +111,7 @@
 #include "esp_partition.h"     /* a.6.35.6  — coredump partition read */
 #include "esp_timer.h"         /* a.6.35.6  — rate-limit timestamp */
 
+#include "lcd1602.h"          /* gh#80 bench hook: lcd_send_cmd_raw */
 #include "modbus_rtu.h"        /* modbus_get_counters -- bus tallies on the
                                  * bench diag endpoint. Declarations only;
                                  * harmless in a release build. */
@@ -3620,6 +3621,56 @@ static esp_err_t diag_windowpos_post_handler(httpd_req_t *req)
 }
 
 /**
+ * POST /api/diag/lcd — send one raw LCD instruction (admin, DEV BUILDS ONLY)
+ *
+ * gh#80's hook. The defect is a command byte the firmware never sends -- a
+ * corrupted one -- latching a display mode that nothing undoes, so no product
+ * API can stage it. `{"cmd":28}` sends 0x1C, "shift display right", which is
+ * the single bit flip from the 0x0C preamble that matches the reported photo.
+ *
+ * Fail-first: on a build without T8's periodic re-assert the display stays
+ * shifted until a restart; with it, the next re-assert (10 s) straightens it.
+ *
+ * Body: {"cmd":<0..255>}. Taken under MX1, like every other LCD write.
+ */
+static esp_err_t diag_lcd_post_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+    httpd_resp_set_type(req, "application/json");
+
+    char body[64] = {0};
+    int  rlen = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (rlen <= 0) {
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"empty_body\"}",
+                               HTTPD_RESP_USE_STRLEN);
+    }
+    body[rlen] = '\0';
+
+    char val[8] = {0};
+    if (!json_get_field(body, "cmd", val, sizeof(val))) {
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"no_cmd\"}",
+                               HTTPD_RESP_USE_STRLEN);
+    }
+    const int cmd = atoi(val);
+    if (cmd < 0 || cmd > 255) {
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"range\"}",
+                               HTTPD_RESP_USE_STRLEN);
+    }
+    lcd_status_t st = LCD_ERR_COMM;
+    if (xSemaphoreTake(MX1, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        st = lcd_send_cmd_raw((uint8_t)cmd);
+        xSemaphoreGive(MX1);
+    } else {
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"mx1_timeout\"}",
+                               HTTPD_RESP_USE_STRLEN);
+    }
+    char out[64];
+    snprintf(out, sizeof(out), "{\"ok\":%s,\"cmd\":%d,\"status\":%d}",
+             (st == LCD_OK) ? "true" : "false", cmd, (int)st);
+    return httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
+}
+
+/**
  * GET /api/diag/commission — wire-sensor calibration + teach state (admin, DEV ONLY)
  *
  * Plan §6.3 item 4. The teach maps the sensor's raw ADC onto a **known
@@ -3864,6 +3915,8 @@ static const httpd_uri_t s_uri_diag_windowpos_post = {
     .uri = "/api/diag/windowpos", .method = HTTP_POST, .handler = diag_windowpos_post_handler, .user_ctx = NULL };
 static const httpd_uri_t s_uri_diag_modbus = {
     .uri = "/api/diag/modbus", .method = HTTP_POST, .handler = diag_modbus_post_handler, .user_ctx = NULL };
+static const httpd_uri_t s_uri_diag_lcd = {
+    .uri = "/api/diag/lcd", .method = HTTP_POST, .handler = diag_lcd_post_handler, .user_ctx = NULL };
 static const httpd_uri_t s_uri_diag_commission_get = {
     .uri = "/api/diag/commission", .method = HTTP_GET, .handler = diag_commission_get_handler, .user_ctx = NULL };
 static const httpd_uri_t s_uri_diag_commission_post = {
@@ -3928,6 +3981,7 @@ void task_web_server(void *pvParameters)
         &s_uri_diag_modbus,
         &s_uri_diag_windowpos, &s_uri_diag_windowpos_post,
         &s_uri_diag_commission_get, &s_uri_diag_commission_post,
+        &s_uri_diag_lcd,
 #endif
     };
 #define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))

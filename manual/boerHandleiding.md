@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de boer
 
-**Versie:** 1.20
-**Datum:** 2026-09-19
-**Firmware:** 2.10.0
+**Versie:** 1.21
+**Datum:** 2026-09-20
+**Firmware:** 2.10.1
 
 ---
 
@@ -197,6 +197,8 @@ Het LCD-display toont alle statusinformatie in compacte tekstschermen. Wanneer e
 Met de toets `D` (STEP) kun je **versneld naar het volgende scherm stappen** — handig om snel een specifiek scherm te bereiken zonder te wachten tot de auto-rotatie er aan toe is.
 
 > **Let op**: elke andere toets (1, 2, 3, 4, A, B, C, *, # behalve in specifieke uitzonderingen op het Network- en Time-scherm) opent het hoofdmenu in plaats van naar het volgende statusscherm te gaan.
+
+> **Staat de tekst een kolom naar rechts verschoven?** Dan is er een storing op de verbinding naar het display geweest. **Sinds 2.10.1 zet de controller dat binnen 10 seconden zelf recht**; je hoeft niets te doen en er gaat niets verloren — de regeling van de kas loopt gewoon door, want het display toont alleen. Blijft het scherm langer dan een halve minuut verschoven staan, of gebeurt het vaker dan een enkele keer, meld het dan bij de beheerder: dan zit de storing in de bekabeling. Vóór 2.10.1 bleef zo'n verschoven scherm staan tot de controller opnieuw startte.
 
 #### Het mode-veld
 
@@ -1561,6 +1563,7 @@ Inhoudelijke wijzigingen aan de firmware staan beschreven in het bestand `change
 | 1.18 | 2026-09-16 | 2.2.0 t/m 2.8.0 — de controller werkt zichzelf 's nachts bij en de melding *Update pending* (ROTA, 2.2.0); windinstellingen zijn voor de beheerder (2.3.0); unit-ID in de tabtitel van de browser (gh#50, 2.4.0); vergeten PIN via de BOOT-knop (gh#56, 2.4.8); hoever M3 open staat, bij een raamstandsensor (2.8.0); looprichting bij alle drie de ramen (2.8.0); kaartje *Modbus bus* (2.8.0); Stand-by die de beheerder zet tijdens een teach of tijdens handmatige raambediening via de LCD (2.8.0) |
 | 1.19 | 2026-09-17 | 2.9.0 — zonder raamstandsensor geen regel *M3 · 40* in het kaartje *Modbus bus*; de badge *Window sensor fault* alleen bij een sensor die als gemonteerd is ingesteld (gh#73) |
 | 1.20 | 2026-09-19 | 2.10.0 — met een raamstandsensor controleert de controller of M3 zijn eindstand haalt: de badges *M3 not confirmed*, *M3 travel time too short* en *M3 travel time too long* |
+| 1.21 | 2026-09-20 | 2.10.1 — een verschoven LCD-scherm herstelt zichzelf binnen 10 seconden (gh#80) |
 
 ---
 

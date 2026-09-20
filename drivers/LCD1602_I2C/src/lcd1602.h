@@ -43,6 +43,7 @@
  *                                    Render text.
  *   - @ref lcd_create_char           Define a custom CGRAM glyph.
  *   - @ref lcd_display_on            Idempotent wake-after-idle.
+ *   - @ref lcd_reassert_modes        Undo a stray latched mode (gh#80).
  *   - @ref lcd_backlight_color / @ref lcd_backlight_lumination
  *                                    RGB colour and master brightness.
  *   - @ref lcd_set_contrast          Runtime contrast override.
@@ -156,11 +157,41 @@ lcd_status_t lcd_clear(void);
 /**
  * @brief Return the cursor to position (0, 0) without clearing the display.
  *
- * Sends HD44780 command 0x02.
+ * Sends HD44780 command 0x02, then waits its 1.53 ms busy time (gh#80: it used
+ * to return immediately, so the next instruction could land while the chip was
+ * still busy). Return Home also clears a display-shift offset.
  *
  * @return @ref lcd_status_t.
  */
 lcd_status_t lcd_home(void);
+
+/**
+ * @brief Re-assert Function Set, Display On, Entry Mode and Return Home.
+ *
+ * A mode a stray command byte latched is otherwise permanent: after init this
+ * driver never re-sends any of them, and only Clear, Home or an opposite shift
+ * undo a display shift. gh#80 saw exactly that -- the display shifted one
+ * column right and stayed shifted until the unit restarted.
+ *
+ * Writes no DDRAM and changes no content, so a caller may issue it between
+ * redraws. It costs four commands and one 1.53 ms wait, which is why T8 does it
+ * periodically rather than on every redraw.
+ *
+ * @return @ref lcd_status_t — LCD_OK, or the first failing transfer's status.
+ */
+lcd_status_t lcd_reassert_modes(void);
+
+/**
+ * @brief Send one raw instruction byte (RS=0). DIAGNOSTIC USE ONLY.
+ *
+ * Exists for gh#80's bench hook, which stages a stray mode -- the fault is a
+ * corrupted command byte, so no normal API call can reproduce it. Production
+ * code uses the named functions; this one bypasses the driver's own state.
+ *
+ * @param  cmd Instruction byte.
+ * @return @ref lcd_status_t.
+ */
+lcd_status_t lcd_send_cmd_raw(uint8_t cmd);
 
 /**
  * @brief Move the cursor to the given row and column.
