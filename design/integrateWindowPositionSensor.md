@@ -1391,6 +1391,13 @@ the SD log for the whole window. All 12 strokes fell in the evening (19:05-23:35
 tested the rest path and the gate's stability rather than the detectors, and no late join occurred
 naturally. Detail in `bin/2.9.1/release-notes.md`.
 
+**Soak of 2.10.0-bench, PASSED 2026-09-20** (`bin/at_wp_soak.py`, 2344): 21.09 h, 19 judged drives,
+every fault counter 0, one mode change (the promotion to position), no reboot, and no rule 1, rule 2 or
+travel-check row in the SD log. The 19 verdict rows match the counters exactly and all read *confirmed
+after a full traverse*. The drives were made by `bin/at_wp_strokes.py` -- 8 sessions 75 min apart, each
+steering T6 and restoring what it changed -- plus one T6 made on its own for the night humidity. Nothing
+moved after 20:44, so the night tested the rest path. Detail in `bin/2.10.0/release-notes.md`.
+
 **Soak of 2.9.2-bench, PASSED 2026-09-18** (`bin/at_wp_soak.py`, 2344): 12.01 h, 18 judged
 strokes, every fault counter 0, no mode change, no reboot, and no rule 1 or rule 2 row in the SD
 log. 2.9.2 is gh#79's release and changes no sensor code, so this repeats the gate evidence on the
@@ -2350,7 +2357,9 @@ run failed two stages. `long` was a firmware defect: the full-traverse start nee
 reading, which a wrong `travel_m3` rejects, so it is now judged on bit 3. `atend` was a harness
 defect: it left T6 wanting M3 open. The rig's traverse to the end sensor is 11.6-12.0 s OPEN and
 12.1-12.5 s CLOSE against `travel_m3` 13, so the "too short" warning has 0.5 s of headroom there.
-Detail in `bin/2.10.0/release-notes.md`.
+**The soak PASSED on 2026-09-20**: 21.09 h, 19 judged drives, every fault counter 0, one mode change (the
+promotion), no reboot, and 19 param 251 rows all reading *confirmed after a full traverse* with no 249, 250
+or 252 row beside them. Detail in `bin/2.10.0/release-notes.md`.
 
 ## 6. Operator-facing surfaces
 
