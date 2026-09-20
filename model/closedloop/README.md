@@ -36,6 +36,7 @@ A smaller third error, found during NS-10: **the direction term was fed wind dir
 | Command line | `closed_loop.py` | The gates and the closed-loop reproduction |
 | Quality report | `quality_report.py` | Every number and figure in [`modelQuality.md`](modelQuality.md): the closed loop for the adopted pair and the old single node, the plant alone on the held-out days, the M3 response, a two-day example; writes `images/*.png` |
 | Tests | `test_linear_m3.py` | The linear M3 against its design: the channel, T6's limits on a target, the airflow exponent, and the closed loop in modes 1 and 2 |
+| The linear dwell | [`linearDwell.md`](linearDwell.md) | What to ship as `min_intv_m3`'s default, and the evidence: 600 s |
 | Law comparison | `law_compare.py` | A mode 2 law against the stepped law over the summer, on both adopted plants and across the airflow range: what the greenhouse would have felt and what the motors would have done. `--define NAME=VALUE` runs a variant of the law's constants without editing it. For `graded`, see [`gradedCandidate.md`](gradedCandidate.md) |
 | Campaign figures | `campaign_figures.py` | The figures `campaignResults_summer2026.md` and `thermalProfileCampaign.md` §9.12 quote that come from neither `refit.py` nor `closed_loop.py`: the forced tests, the event study, the hottest days, wind, windward M3-only minutes, the indoor LoRa sensors, a model-free wind check, and the plants' heat loss per ventilation step |
 
@@ -105,7 +106,7 @@ T5's wind averages and T3's state machine, at the settings in force and with 5C8
 | T5 | `avg_win_t`, `avg_win_rh`, `avg_win_wind` | the sliding averages, in samples = minutes x 60 / poll; a window that changes starts empty |
 | T3 | `v_max`, `wind_hyst`, `dir_excl_low/high`, `wind_prot_en` | T3's state machine, ported (`firmware.SafetyMonitor`): close every window, suspend the law |
 | T2 | `travel_m1..3`, `dwell_open_m1..3`, `dwell_close_m1..3` | the channel state machine |
-| M3 | `wpos_fitted_m3`, `deadzone_m3` | 1 gives M3 its wire sensor: a linear M3 (see "A linear M3"). `deadzone_m3` then becomes the law's `m3_deadzone_x10` over `--m3-span-mm`, T6's drop rule and T2's stop band |
+| M3 | `wpos_fitted_m3`, `ctrl_mode_m3`, `deadzone_m3`, `min_intv_m3` | 1 gives M3 its wire sensor: a linear M3 (see "A linear M3"). `ctrl_mode_m3` asks for linear control, and with a trusted position that makes the effective mode 2, which picks the law. `deadzone_m3` becomes the law's `m3_deadzone_x10` over `--m3-span-mm`, T6's drop rule and T2's stop band. `min_intv_m3` is the linear dwell: T6 defers a target inside it, and in mode 2 it replaces both of M3's dwells |
 | T4 | `lat_deg/frac`, `lon_deg/frac` | `sunrise.cpp` itself, compiled from `firmware/src` |
 | poll | `poll_interval` | T5 samples and T6 decides every poll. At anything but 30 s it decides between the logged samples; the two-node plant is stepped to each decision, with the weather held from the covering sample |
 | clock | `tz_str` | no effect on control, since T4 decides day and night in UTC; used to read the log's local stamps |
@@ -161,27 +162,28 @@ python model/closedloop/closed_loop.py gate-control --sweep avg_win_rh=3..12
 
 ## A linear M3 (mode 2)
 
-`--set wpos_fitted_m3=1` gives M3 its wire sensor, as 2.12.0's mode 2 is designed but not yet built (plan §5b; contract §3 and §7). It needs `--plant2`. Compare a mode 2 law against a stepped run with the same `--firmware current`.
+**Mode 2 runs on the controller's own keys** (2.12.0): `wpos_fitted_m3 = 1` fits M3's wire sensor, and `ctrl_mode_m3 = 1` asks for linear control. It needs `--plant2`. Compare a mode 2 law against a stepped run with the same `--firmware current`.
 
 ```bash
-python model/closedloop/closed_loop.py reproduce --start 2026-07-13 --end 2026-07-29 --plant2 PLANT.json --firmware current --set wpos_fitted_m3=1 --model graded
-python model/closedloop/closed_loop.py reproduce ... --model graded --m3-airflow-exp 0.5
+python model/closedloop/closed_loop.py reproduce --start 2026-07-13 --end 2026-07-29 --plant2 PLANT.json --firmware current --model graded --set wpos_fitted_m3=1 --set ctrl_mode_m3=1
+python model/closedloop/closed_loop.py reproduce ... --set min_intv_m3=900 --m3-airflow-exp 0.5
 python model/closedloop/law_compare.py
+python model/closedloop/law_compare.py --plants primary --airflow 1 --set min_intv_m3=900
 python model/closedloop/test_linear_m3.py
 ```
 
-`graded` is a first candidate for mode 2's law (plan decision 9 stays open): M1 and M2 as the stepped law, M3 proportional with a rate limit. It is in `drivers/ventModel/src/vent_model_graded.cpp`; its declaration and results are in [`gradedCandidate.md`](gradedCandidate.md).
+`graded` is a first candidate for mode 2's law (plan decision 9 stays open): M1 and M2 as the stepped law, M3 proportional with a rate limit. It is in `drivers/ventModel/src/vent_model_graded.cpp`; its declaration and results are in [`gradedCandidate.md`](gradedCandidate.md). What to ship as the linear dwell, `min_intv_m3`, is in [`linearDwell.md`](linearDwell.md).
 
 **How much air a part-open M3 lets through is unmeasured**, so `--m3-airflow-exp` sets it: M3's airflow as its opening to that power. 1 is the fitted plants' assumption (proportional); below 1 a part-open M3 lets through more air, above 1 less. The plant is handed the exact time-average over each step, and at 1 the arithmetic is unchanged. `law_compare.py` runs 0.5, 1 and 2 by default. A verdict should hold across them.
 
-- **The mode follows the law**, as in T6's model table. With `stepped` it is mode 1, and a fitted sensor changes nothing that acts: over Jul 13-29 the run matches the binary one cell for cell. With any other law it is mode 2.
+- **The keys pick the mode, and the mode picks the law**, as T6's model table does. The effective mode is 2 when `ctrl_mode_m3 = 1` and M3's position is trusted; the simulator's sensor never fails, so a fitted one is trusted. In mode 1 it runs `stepped` whatever `--model` asks for, exactly as the firmware falls back, and says so in the header. A fitted sensor alone changes nothing that acts: over Jul 13-29 that run matches the binary one cell for cell.
 - **What the law gets:**
   - M3 as LINEAR, with T17's latest reading in 0.1 % and its age. T17 reads every travel/150 while M3 moves (1 140 ms in production) and every 30 s at rest.
   - M3's state: `VENT_WIN_PART_OPEN` when it rests between the ends (interface 2).
   - Its last target and how it ended: DONE, FAIL_TIMEOUT, or ABORTED when T3 or the operator took the window.
   - The time since its last drive.
   - `m3_deadzone_x10`: `deadzone_m3` over `--m3-span-mm` (default 1 500 mm, so 20 mm is 1.3 %).
-  - `m3_min_interval_ms`: `--m3-min-interval-s`, default 0. The linear dwell has no key yet.
+  - `m3_min_interval_ms`: the key `min_intv_m3`, seconds, default 0. In mode 2 it replaces **both** of M3's dwells, so 0 leaves M3 with no dwell at all and only the law's own spacing.
 - **T6** clamps a target to 0..1000. It drops a target within the deadband of M3 at rest, and defers one inside the minimum interval after the last drive. It sends every narrowing move before any widening one. A target for a digital window is a model error.
 - **T2:**
   - It drives to a part-open target until the first reading within the deadband. M3 stops up to the deadband short of the target, and at most one reading's travel (0.67 %) past the edge of the band.

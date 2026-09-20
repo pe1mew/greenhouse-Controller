@@ -121,9 +121,13 @@ class Settings:
     # no effect on control (settings.EFFECT says why)
     t_min_day:      int = 16
     t_min_ngt:      int = 14
-    # M3's wire sensor: 1 makes M3 linear (LinearChannel)
+    # M3's wire sensor and mode 2 (2.12.0): fitted makes M3 linear
+    # (LinearChannel), ctrl_mode_m3 is the operator's desired mode, and
+    # min_intv_m3 is the linear dwell T6 enforces before it issues a target
     deadzone_m3_mm: int = 20
     wpos_fitted_m3: bool = False
+    ctrl_mode_m3:   int = 0
+    min_intv_m3:    int = 0
 
 
 def settings_5c88(ts):

@@ -279,6 +279,7 @@ def to_sim(v):
         lon_frac=v["lon_frac"], tz_str=v["tz_str"],
         t_min_day=v["t_min_day"], t_min_ngt=v["t_min_ngt"],
         deadzone_m3_mm=v["deadzone_m3"], wpos_fitted_m3=bool(v["wpos_fitted_m3"]),
+        ctrl_mode_m3=v["ctrl_mode_m3"], min_intv_m3=v["min_intv_m3"],
     )
 
 

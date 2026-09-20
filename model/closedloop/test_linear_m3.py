@@ -359,12 +359,12 @@ def layer_loop():
     import json
     params = json.loads(p2.read_text())["params"]
 
-    def args(fitted):
+    def args(fitted, mode2=False):
+        sets = (["wpos_fitted_m3=1"] if fitted else []) + (["ctrl_mode_m3=1"] if mode2 else [])
         return Namespace(model="stepped", warmup_h=6.0, rh_from_log=False,
                          calibrator_hold=False, openness="state", t3="sim", daynight="sim",
                          firmware="current", config=None, plant2=str(p2),
-                         set=["wpos_fitted_m3=1"] if fitted else None,
-                         m3_span_mm=1500, m3_min_interval_s=0)
+                         set=sets or None, m3_span_mm=1500)
 
     keys = ("T_sim", "RH_sim", "bm_sim", "pos_m3", "step", "step_t", "step_rh", "override")
     runs = []
@@ -379,7 +379,7 @@ def layer_loop():
           and not runs[1][1].m3_linear.mode2, "%d samples" % len(runs[0][0]))
 
     law = DoubleLaw(ramp_law)
-    a = args(True)
+    a = args(True, mode2=True)
     recs, act, ctl = cl.run_closed_loop(ds, lo, hi, "two", params, a, cl.schedule_from_args(a),
                                         law=law)
     ch = act.ch[2]

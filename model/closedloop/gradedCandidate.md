@@ -36,7 +36,7 @@ In the simulator, over the summer, on both adopted plants:
 | M3 mean opening, % | 19.8 | 21.7 | 19.7 | 21.3 | 19.2 |
 | M1+M2 drives a day | 15.2 | 12.1 | 12.0 | 12.2 | 11.8 |
 
-T6 dropped or deferred no target: `graded` does not ask for a move within the deadband, and the minimum interval is 0.
+T6 dropped or deferred no target: `graded` does not ask for a move within the deadband, and the minimum interval is 0. What to ship as that interval, `min_intv_m3`, is in [`linearDwell.md`](linearDwell.md): 600 s, which costs this candidate nothing and bounds a law that spaces nothing.
 
 ### Across the airflow range
 

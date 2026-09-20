@@ -101,11 +101,13 @@ def variant_lib(defines):
     return vm.VentLib(out)
 
 
-def run(ds, lo, hi, plant, law, fitted, flow):
+def run(ds, lo, hi, plant, law, fitted, flow, sets=()):
+    """One closed loop. fitted: mode 2, the candidate with a linear M3, plus any
+    `sets` (KEY=VALUE, the candidate column only). Otherwise mode 1, stepped."""
+    keys = (["wpos_fitted_m3=1", "ctrl_mode_m3=1"] + list(sets)) if fitted else None
     args = Namespace(model=law, warmup_h=6.0, rh_from_log=False, calibrator_hold=False,
                      openness="state", t3="sim", daynight="sim", firmware="current",
-                     config=None, set=["wpos_fitted_m3=1"] if fitted else None,
-                     plant2=str(plant), m3_span_mm=1500, m3_min_interval_s=0,
+                     config=None, set=keys, plant2=str(plant), m3_span_mm=1500,
                      m3_airflow_exp=flow)
     params = json.loads(Path(plant).read_text())["params"]
     recs, act, ctl = cl.run_closed_loop(ds, lo, hi, "two", params, args,
@@ -206,6 +208,9 @@ def main(argv=None):
     ap.add_argument("--define", action="append", default=[], metavar="NAME=VALUE",
                     help="run a variant with this #define of the law's source replaced "
                          "(repeatable), e.g. M3_HOLD_MS=300000u; built in build/variants/")
+    ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                    help="a controller setting for the candidate column only (repeatable), "
+                         "e.g. min_intv_m3=900; the stepped column stays in mode 1")
     args = ap.parse_args(argv)
     flows = [float(x) for x in args.airflow.split(",")]
     plants = [(p, PLANTS[p]) for p in args.plants.split(",")]
@@ -226,12 +231,14 @@ def main(argv=None):
           % (ds.t[lo], ds.t[hi - 1], args.plants))
     if args.define:
         print("  a variant of the law: %s" % ", ".join(args.define))
+    if args.set:
+        print("  the candidate's settings: %s" % ", ".join(args.set))
     logged = None
     for flow in flows:
         cols, north = [], None
         for pname, plant in plants:
             for law, fitted in (("stepped", False), (args.law, True)):
-                recs, starts = run(ds, lo, hi, plant, law, fitted, flow)
+                recs, starts = run(ds, lo, hi, plant, law, fitted, flow, args.set)
                 if north is None:
                     north = north_days(full_days(recs))
                 if logged is None and fitted:
