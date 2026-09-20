@@ -383,10 +383,16 @@ setInterval(commPoll, 1000);
 // A travelling window shows its DIRECTION. The payload has always carried
 // MOVING_OPEN and MOVING_CLOSE separately and the LCD has always shown `MOV>` /
 // `MOV<`; this table was the only place collapsing them into one word.
+// PART_OPEN (2.12.0) is M3 resting at a commanded target. In practice the
+// branch below renders M3 as a percentage instead, because reaching that
+// state requires a trusted position -- these entries exist so a raw enum
+// name can never reach the operator if that ever stops being true.
 const WIN_LABELS = { OPEN: 'OPEN', CLOSED: 'CLOSED',
-                     MOVING_OPEN: 'OPENING', MOVING_CLOSE: 'CLOSING', UNKNOWN: '?' };
+                     MOVING_OPEN: 'OPENING', MOVING_CLOSE: 'CLOSING',
+                     PART_OPEN: 'PART OPEN', UNKNOWN: '?' };
 const WIN_CLASS  = { OPEN: 'win-open', CLOSED: 'win-closed',
-                     MOVING_OPEN: 'win-moving', MOVING_CLOSE: 'win-moving', UNKNOWN: 'win-unknown' };
+                     MOVING_OPEN: 'win-moving', MOVING_CLOSE: 'win-moving',
+                     PART_OPEN: 'win-open', UNKNOWN: 'win-unknown' };
 
 function handleStatus(s) {
   // Canonical nested shape — single contract for local UI + public dashboard.

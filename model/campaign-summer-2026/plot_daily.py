@@ -66,6 +66,10 @@ RELAY_STATE_NAME = {
     4: "MOVING_CLOSE",
     5: "GAP_TO_OPEN",     # transient (~2 s) — treat visually like MOVING_OPEN
     6: "GAP_TO_CLOSE",    # transient (~2 s) — treat visually like MOVING_CLOSE
+    7: "PART_OPEN",       # 2.12.0 — M3 at rest at a commanded target, between
+                          # the ends. SENSOR_HR ch2's value_b carries how far
+                          # open it was (0.1 %), which this script keeps as the
+                          # raw mask only.
 }
 RELAY_STATE_Y = {
     "UNKNOWN":      0.00,  # render as CLOSED-row baseline; rare in steady state
@@ -75,6 +79,7 @@ RELAY_STATE_Y = {
     "MOVING_CLOSE": 0.67,
     "GAP_TO_CLOSE": 0.67,
     "OPEN":         1.00,
+    "PART_OPEN":    0.85,  # 2.12.0 -- open, but at a target, not at the end
 }
 
 

@@ -46,6 +46,12 @@
 #include "cfg_defaults.h"   /* MOTOR_M*_TRAVEL_S_DEFAULT, MOTOR_TRAVEL_MARGIN_S_DEFAULT,
                              * DEF_DWELL_OPEN_M{1,2,3}_S, DEF_DWELL_CLOSE_M{1,2,3}_S */
 #include "cfg_limits.h"     /* CFG_MIN_TRAVEL_S, CFG_MAX_TRAVEL_S */
+#include "../data_manager/data_manager.h"   /* 2.12.0 — dm_m3_position(), the
+                                             * position pass-through, and the
+                                             * deadband from the cfg shadow */
+#include "../window_pos/commission.h"       /* 2.12.0 — the taught window size,
+                                             * which turns a mm deadband into a
+                                             * percentage one */
 
 /* alpha.6.9 — dropped <Arduino.h>. The single Arduino-specific call
  * was attachInterrupt(PIN_OPTO_INPUT, isr_motor_alarm, CHANGE) at the
@@ -144,6 +150,10 @@ typedef enum {
     CH_MOVING_CLOSE,    /**< CLOSE relay energised; travel timer running */
     CH_GAP_TO_OPEN,     /**< Both relays off; 2 s gap; will open next */
     CH_GAP_TO_CLOSE,    /**< Both relays off; 2 s gap; will close next */
+    CH_PART_OPEN,       /**< 2.12.0 — at rest at a commanded target, between the
+                         *   ends. M3 only. **APPENDED:** this ordinal goes into
+                         *   every LOG_RELAY row, so it must stay 7 and
+                         *   logparser.py must know it. */
 } ch_state_t;
 
 /** @brief Per-channel runtime context (FSM state + timer deadlines + per-motor timings). */
@@ -156,6 +166,13 @@ typedef struct {
     uint32_t   dwell_open_ms;      /**< Dwell after reaching OPEN (ms) */
     uint32_t   dwell_close_ms;     /**< Dwell after reaching CLOSED (ms) */
     bool       dwell_defer_logged; /**< One INFO line per deferral episode, not per cycle */
+
+    /* 2.12.0 (plan §5b) — the commanded target, armed only by CMD_TARGET and
+     * only on M3. `target_active` is the single discriminator: every other
+     * path leaves it false and behaves exactly as before. */
+    bool       target_active;      /**< A target is being driven to right now. */
+    int16_t    target_x10;         /**< Aperture 0..1000 = 0..100.0 %. */
+    uint16_t   target_band_x10;    /**< Arrival band, 0.1 %, from `deadzone_m3_mm`. */
 } ch_t;
 
 static ch_t s_ch[NUM_CHANNELS];
@@ -386,6 +403,12 @@ static void ch_start_close(uint8_t ch, uint32_t now_ms, cmd_source_t source)
 {
     ch_t *c = &s_ch[ch];
 
+    /* A full-travel command supersedes any armed target (2.12.0). Disarming
+     * here rather than in the caller means CLOSE_ALL, the boot sweep, the
+     * alarm paths and the LCD menu all clear it without knowing it exists —
+     * and a safety close can never be stopped short by a stale target. */
+    c->target_active = false;
+
     switch (c->state) {
 
     case CH_CLOSED:
@@ -431,6 +454,11 @@ static void ch_start_close(uint8_t ch, uint32_t now_ms, cmd_source_t source)
         return;
 
     case CH_OPEN:
+    case CH_PART_OPEN:
+        /* PART_OPEN (2.12.0) settles exactly like OPEN here: it IS open, just
+         * not fully, so the post-open dwell governs and a close is a real
+         * move. Sharing the arm is what keeps a target from inventing a
+         * second anti-thrash policy. */
         /* Check dwell timer; only SRC_T6 (autonomous climate control)
          * observes it. SRC_T3 (safety) and SRC_OPERATOR_MANUAL (deliberate
          * admin override via gh#29 LCD menu) both bypass — safety commands
@@ -494,6 +522,8 @@ static void ch_start_open(uint8_t ch, uint32_t now_ms, cmd_source_t source)
 {
     ch_t *c = &s_ch[ch];
 
+    c->target_active = false;      /* see ch_start_close() */
+
     switch (c->state) {
 
     case CH_OPEN:
@@ -519,6 +549,9 @@ static void ch_start_open(uint8_t ch, uint32_t now_ms, cmd_source_t source)
         return;
 
     case CH_CLOSED:
+    case CH_PART_OPEN:
+        /* PART_OPEN (2.12.0): not fully open, so a full OPEN is a real move
+         * and takes the same dwell policy as a closed window. */
         /* Dwell-timer policy mirrors ch_start_close(): only SRC_T6 (climate)
          * observes; SRC_T3 (safety) + SRC_OPERATOR_MANUAL (admin) bypass. */
         if (source == SRC_T6 &&
@@ -572,6 +605,184 @@ static void ch_start_open(uint8_t ch, uint32_t now_ms, cmd_source_t source)
  * when the travel timer expires, or energises the next-direction relay
  * when the reversal gap expires.
  */
+/* ============================================================
+ * Targeted drives (2.12.0, plan §5b) — M3 only
+ * ============================================================ */
+
+/** Oldest position sample a stop decision may be made on, milliseconds.
+ *
+ *  T17 polls at `travel_m3`/150 while M3 travels — 87 ms on the rig, 1.14 s in
+ *  production — so this is about 2.5 production samples and 30 rig ones. Past
+ *  it the position is a guess, and a guess must not stop a motor: the drive
+ *  reverts to the travel timer, which is what a unit with no sensor does. */
+#define TARGET_MAX_AGE_MS  3000u
+
+/**
+ * @brief Turn the `deadzone_m3_mm` setting into an arrival band in 0.1 %.
+ *
+ * The setting is millimetres because that is what the mechanism repeats to;
+ * the target and the position are percentages because that is what the control
+ * law speaks. The taught window size is the only thing relating them, so a unit
+ * that has never been taught cannot position — hence 0 here and a refusal in
+ * the caller, rather than an invented scale.
+ *
+ * @return the band in 0.1 %, at least 1; 0 when the window size is unknown.
+ */
+static uint16_t target_band_x10(void)
+{
+    commission_status_t cs;
+    commission_status(&cs);
+    if (cs.window_mm == 0u) { return 0u; }
+
+    cfg_shadow_t cfg;
+    dm_cfg_snapshot(&cfg);
+    const int32_t mm = cfg.deadzone_m3_mm;
+    if (mm <= 0) { return 1u; }
+
+    /* band[0.1 %] = deadzone[mm] / window[mm] x 1000 */
+    int32_t band = (mm * 1000) / (int32_t)cs.window_mm;
+    if (band < 1)   { band = 1; }
+    if (band > 500) { band = 500; }   /* half the travel is not a band any more */
+    return (uint16_t)band;
+}
+
+/**
+ * @brief Start a drive toward `want_x10` on M3, or refuse.
+ *
+ * Refuses — loudly, never silently — when the channel is not M3, the window has
+ * never been taught, the position is not trusted, or the reading is stale. A
+ * refusal leaves the channel exactly as it was: T6 is level-triggered and asks
+ * again, and until it succeeds M3 keeps the end state it had, which is what a
+ * unit with no sensor does anyway.
+ *
+ * **Targets at the ends are not targets.** 0 %, 100 % and anything within one
+ * band of them become an ordinary full-travel close or open, so they finish at
+ * an end switch with a persisted terminal state and 2.10.0 confirmation applies
+ * unchanged. Only a genuinely partial target arms the stop rule.
+ *
+ * @return true when a drive started or the leaf was already inside the band.
+ */
+static bool ch_start_target(uint8_t ch, int16_t want_x10, uint32_t now_ms,
+                            cmd_source_t source)
+{
+    if (ch != 2u) {
+        ESP_LOGW(TAG, "CMD_TARGET refused: ch%u is not M3", ch + 1u);
+        return false;
+    }
+
+    const uint16_t band = target_band_x10();
+    if (band == 0u) {
+        ESP_LOGW(TAG, "CMD_TARGET refused: window size unknown — teach M3 first");
+        return false;
+    }
+
+    int32_t want = want_x10;
+    if (want < 0)    { want = 0; }
+    if (want > 1000) { want = 1000; }
+
+    if (want <= (int32_t)band) {          /* an end is an end */
+        ch_start_close(ch, now_ms, source);
+        return true;
+    }
+    if (want >= 1000 - (int32_t)band) {
+        ch_start_open(ch, now_ms, source);
+        return true;
+    }
+
+    dm_m3_pos_t m3;
+    if (!dm_m3_position(&m3)) {
+        ESP_LOGW(TAG, "CMD_TARGET refused: M3 position not trusted");
+        return false;
+    }
+    if (m3.age_ms > TARGET_MAX_AGE_MS) {
+        /* At rest T17 stops polling, so a stale reading here is normal; the
+         * next poll is fresh and T6 asks again. */
+        ESP_LOGI(TAG, "CMD_TARGET deferred: position %u ms old", (unsigned)m3.age_ms);
+        return false;
+    }
+
+    const int32_t pos = (int32_t)m3.percent_x10;
+    if (pos >= want - (int32_t)band && pos <= want + (int32_t)band) {
+        ESP_LOGI(TAG, "CMD_TARGET %d.%u pct: already there (%d.%u pct)",
+                 (int)(want / 10), (unsigned)(want % 10),
+                 (int)(pos / 10), (unsigned)(pos % 10));
+        return true;
+    }
+
+    const bool open_dir = (want > pos);
+    ch_t *c = &s_ch[ch];
+    if (open_dir) { ch_start_open(ch, now_ms, source); }
+    else          { ch_start_close(ch, now_ms, source); }
+
+    /* Did it actually start? Both entry points defer SRC_T6 behind the dwell
+     * and the in-travel guard, and a deferred command must NOT leave a target
+     * armed: it would then apply to whatever stroke ran next, which is exactly
+     * the shape of gh#51. */
+    const bool started = open_dir
+        ? (c->state == CH_MOVING_OPEN  || c->state == CH_GAP_TO_OPEN)
+        : (c->state == CH_MOVING_CLOSE || c->state == CH_GAP_TO_CLOSE);
+    if (!started) { return false; }
+
+    c->target_active   = true;
+    c->target_x10      = (int16_t)want;
+    c->target_band_x10 = band;
+    ESP_LOGI(TAG, "CH%u: target %d.%u pct armed (from %d.%u, band %u.%u)",
+             ch + 1u, (int)(want / 10), (unsigned)(want % 10),
+             (int)(pos / 10), (unsigned)(pos % 10),
+             (unsigned)(band / 10), (unsigned)(band % 10));
+    return true;
+}
+
+/**
+ * @brief Stop a targeted drive once the leaf has arrived. Called every tick.
+ *
+ * @param opening  direction of the drive in progress.
+ * @return true when the drive was stopped here, so the caller must not also
+ *         run its travel-timer branch this tick.
+ */
+static bool ch_target_tick(uint8_t ch, uint32_t now_ms, bool opening)
+{
+    ch_t *c = &s_ch[ch];
+    if (!c->target_active) { return false; }
+
+    dm_m3_pos_t m3;
+    if (!dm_m3_position(&m3) || m3.age_ms > TARGET_MAX_AGE_MS) {
+        /* The position went away mid-drive. Fall back to the travel timer: the
+         * drive then finishes at an end, the state is a real terminal one, and
+         * 2.10.0 verdict reports what happened. */
+        c->target_active = false;
+        ESP_LOGW(TAG, "CH%u: position lost mid-target — finishing on the timer",
+                 ch + 1u);
+        return false;
+    }
+
+    const int32_t pos  = (int32_t)m3.percent_x10;
+    const int32_t want = (int32_t)c->target_x10;
+    const int32_t band = (int32_t)c->target_band_x10;
+
+    /* Arrived, or gone past. The second half matters: the leaf moves ~0.67 %
+     * of the stroke between two samples, so a band narrower than that would be
+     * stepped over and the drive would run on to the end. */
+    const bool arrived = (pos >= want - band && pos <= want + band) ||
+                         ( opening && pos >= want) ||
+                         (!opening && pos <= want);
+    if (!arrived) { return false; }
+
+    relay_ch_off(ch);
+    c->target_active      = false;
+    c->state              = CH_PART_OPEN;
+    c->dwell_deadline_ms  = now_ms + (opening ? c->dwell_open_ms : c->dwell_close_ms);
+    c->dwell_defer_logged = false;
+    /* Maps to NVS_STATE_UNKNOWN by design: a part-open M3 must force the boot
+     * CLOSE_ALL instead of taking the "all three closed" shortcut. */
+    persist_ch_state(ch, CH_PART_OPEN);
+    log_relay_event((uint8_t)(ch + 1u), CH_PART_OPEN);
+    ESP_LOGI(TAG, "CH%u: PART_OPEN at %d.%u pct (target %d.%u, %u ms old)",
+             ch + 1u, (int)(pos / 10), (unsigned)(pos % 10),
+             (int)(want / 10), (unsigned)(want % 10), (unsigned)m3.age_ms);
+    return true;
+}
+
 static void ch_update(uint8_t ch, uint32_t now_ms)
 {
     ch_t *c = &s_ch[ch];
@@ -579,6 +790,7 @@ static void ch_update(uint8_t ch, uint32_t now_ms)
     switch (c->state) {
 
     case CH_MOVING_OPEN:
+        if (ch_target_tick(ch, now_ms, true)) { break; }
         if ((int32_t)(now_ms - c->relay_deadline_ms) >= 0) {
             relay_ch_off(ch);
             c->state = CH_OPEN;
@@ -591,6 +803,7 @@ static void ch_update(uint8_t ch, uint32_t now_ms)
         break;
 
     case CH_MOVING_CLOSE:
+        if (ch_target_tick(ch, now_ms, false)) { break; }
         if ((int32_t)(now_ms - c->relay_deadline_ms) >= 0) {
             relay_ch_off(ch);
             c->state = CH_CLOSED;
@@ -928,6 +1141,23 @@ static void process_command(const window_cmd_t *cmd, uint32_t now_ms)
         }
         break;
 
+    case CMD_TARGET:
+        /* 2.12.0 (plan §5b) — M3 only, and refused rather than approximated
+         * when the position cannot be trusted. `target_x10` is read here and
+         * nowhere else, which is why it is its own action: the four other Q1
+         * producers build commands with positional initialisers and would
+         * leave a trailing field zero. */
+        if (cmd->channel >= 1u && cmd->channel <= NUM_CHANNELS) {
+            ESP_LOGI(TAG, "CMD_TARGET ch%u -> %d.%u pct from %s",
+                     cmd->channel, (int)(cmd->target_x10 / 10),
+                     (unsigned)(cmd->target_x10 % 10), src_name(cmd->source));
+            (void)ch_start_target((uint8_t)(cmd->channel - 1u), cmd->target_x10,
+                                  now_ms, cmd->source);
+        } else {
+            ESP_LOGW(TAG, "CMD_TARGET: invalid channel %u", cmd->channel);
+        }
+        break;
+
     case CMD_RESUME:
         /* T6 signals end of wind override — T2 has no action; T6 will
          * issue new OPEN commands as climate control dictates. */
@@ -975,6 +1205,7 @@ void t2_get_window_states(window_state_t out[3])
             case CH_GAP_TO_OPEN:   out[i] = WIN_MOVING_OPEN;  break;
             case CH_MOVING_CLOSE:
             case CH_GAP_TO_CLOSE:  out[i] = WIN_MOVING_CLOSE; break;
+            case CH_PART_OPEN:     out[i] = WIN_PART_OPEN;    break;
             default:               out[i] = WIN_UNKNOWN;      break;
         }
     }
@@ -1023,9 +1254,25 @@ static inline uint16_t win_state_to_bits(window_state_t s)
         case WIN_MOVING_OPEN:  return 1u;
         case WIN_OPEN:         return 2u;
         case WIN_MOVING_CLOSE: return 3u;
+        case WIN_PART_OPEN:    return 2u;   /* see win_state_part_open() */
         case WIN_UNKNOWN:
         default:               return 0u;
     }
+}
+
+/**
+ * @brief Does this state need the part-open qualifier bit? (2.12.0)
+ *
+ * The four 2-bit codes are all spoken for, and widening the fields would shift
+ * M2's and M3's bits and silently re-decode every archived row. So PART_OPEN
+ * rides the code for OPEN — which is what it is, an aperture above zero — plus
+ * one qualifier bit in the previously unused 6..8 range. A reader that does not
+ * know the bit still gets "M3 is open", which is the truthful degradation; one
+ * that does gets "open, at a target".
+ */
+static inline bool win_state_part_open(window_state_t s)
+{
+    return (s == WIN_PART_OPEN);
 }
 
 int16_t t2_get_window_bitmask(void)
@@ -1038,6 +1285,14 @@ int16_t t2_get_window_bitmask(void)
     uint16_t bitmask = win_state_to_bits(states[0])
                      | (win_state_to_bits(states[1]) << 2)
                      | (win_state_to_bits(states[2]) << 4);
+
+    /* 2.12.0 — the part-open qualifier, one bit per channel in what was free
+     * space (6..8). Bits 9..11 and 15 stay free. logparser.py and plot_daily.py
+     * learn these in the same change. */
+    for (int i = 0; i < 3; i++) {
+        if (win_state_part_open(states[i])) { bitmask |= (uint16_t)(1u << (6 + i)); }
+    }
+
     if (eg1 & EG1_BIT_WIND_OVERRIDE) { bitmask |= (1u << 12); }
     if (eg1 & EG1_BIT_MOTOR_ALARM)   { bitmask |= (1u << 13); }
     if (eg1 & EG1_BIT_CALIBRATING)   { bitmask |= (1u << 14); }

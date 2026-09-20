@@ -1204,10 +1204,22 @@ static void handle_sensor_reading(const sensor_reading_t *r)
     evt.value_b = (int16_t)r->wind_dir_deg;
     log_post(&evt);
 
-    /* Channel 2 — packed window-state bitmask (see logUpdatePlan §2.2). */
+    /* Channel 2 — packed window-state bitmask (see logUpdatePlan §2.2).
+     *
+     * 2.12.0: `value_b` was a hard zero and is now M3's opening in 0.1 %, or
+     * -1 when there is no trusted position. That answers "how far open was M3
+     * at this sample" on the row that already says what every window was doing,
+     * which is what a part-open state makes worth knowing — SENSOR_HR ch3
+     * carries the position only while M3 travels, because T17 stops polling at
+     * rest. Readers that ignored a zero here keep working; logparser.py and
+     * plot_daily.py learn it in this change. */
     evt.channel = 2u;
     evt.value_a = t2_get_window_bitmask();
-    evt.value_b = 0;
+    {
+        dm_m3_pos_t m3pos;
+        evt.value_b = dm_m3_position(&m3pos) ? (int16_t)m3pos.percent_x10
+                                             : (int16_t)-1;
+    }
     log_post(&evt);
 
     /* 4. Notify T3 (TN1 — new wind data) and T6 (TN2 — new sensor data). */

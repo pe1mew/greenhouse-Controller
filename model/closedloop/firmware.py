@@ -448,6 +448,7 @@ BITMASK_CODE = {VENT_WIN_CLOSED: 0, VENT_WIN_MOVING_OPEN: 1, VENT_WIN_OPEN: 2,
 # RELAY_STATE_NAME is the authoritative decoder)
 RELAY_TO_CH = {0: CH_UNKNOWN, 1: CH_CLOSED, 2: CH_MOVING_OPEN, 3: CH_OPEN,
                4: CH_MOVING_CLOSE, 5: CH_GAP_TO_OPEN, 6: CH_GAP_TO_CLOSE}
+# 7 is added below, where CH_STOPPED is defined.
 
 SRC_T6, SRC_T3, SRC_MANUAL = "T6", "T3", "MANUAL"
 MOTOR_TRAVEL_MARGIN_MS = 5000   # cfg_defaults.h MOTOR_TRAVEL_MARGIN_S_DEFAULT
@@ -665,11 +666,14 @@ class Channel:
 # M3 with its position sensor: mode 2's linear actuator (2.12.0, not yet built)
 # --------------------------------------------------------------------------
 
-CH_STOPPED = 7          # at rest part-open: the new terminal state plan §5b gives T2
+CH_STOPPED = 7          # at rest part-open: T2's CH_PART_OPEN, built in 2.12.0
 # The law sees VENT_WIN_PART_OPEN (interface 2), and pos_x10 says how far.
-# SENSOR_HR ch2 has no code for it yet (plan §5b); the simulator's own bitmask
-# packs it as OPEN.
+# SENSOR_HR ch2 carries it since 2.12.0 as the OPEN code plus a qualifier bit
+# (6, 7, 8 for M1..M3), with M3's opening in value_b; the four 2-bit codes were
+# all spoken for and widening them would have re-decoded every archived row.
+# The simulator's own bitmask still packs it as plain OPEN.
 PUBLIC_STATE[CH_STOPPED] = VENT_WIN_PART_OPEN
+RELAY_TO_CH[7] = CH_STOPPED     # 2.12.0: T2's CH_PART_OPEN, the same ordinal
 BITMASK_CODE[VENT_WIN_PART_OPEN] = BITMASK_CODE[VENT_WIN_OPEN]
 
 T17_POLL_DIVISOR = 150        # window_pos_task.cpp: poll = travel_m3 / 150 while M3 moves

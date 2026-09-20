@@ -33,6 +33,12 @@ const char *window_state_str(window_state_t s)
         case WIN_CLOSED:       return "CLOSED";
         case WIN_MOVING_OPEN:  return "MOVING_OPEN";
         case WIN_MOVING_CLOSE: return "MOVING_CLOSE";
+        /* 2.12.0: a new NAME in an existing field, so a consumer that knows
+         * only the four old ones sees something it does not recognise rather
+         * than something wrong. Falling through to "UNKNOWN" would have been
+         * far worse: UNKNOWN means "position not established", which is
+         * exactly what a window resting at a measured target is not. */
+        case WIN_PART_OPEN:    return "PART_OPEN";
         case WIN_UNKNOWN:      /* fall-through */
         default:               return "UNKNOWN";
     }

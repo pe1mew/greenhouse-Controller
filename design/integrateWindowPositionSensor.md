@@ -2106,6 +2106,55 @@ dwell, the deadband, and the fault state the surfaces display.
 - **Safety unchanged (FR-WP18).** The wind close-all, the motor alarm and the boot sweep ignore
   position and may interrupt a positioning move at any point.
 
+###### Built 2026-09-20 (2.12.0): T2 can hold a target
+
+`CMD_TARGET` on Q1, with `target_x10` (0..1000, 0.1 %) read for that action and no other.
+
+- **T2 arms a target only through `ch_start_target()`**, M3 only. It refuses, loudly, when the
+  window has never been taught, when the position is not trusted, or when the reading is older than
+  3 s (about 2.5 production samples). A refusal leaves the channel untouched: T6 is level-triggered
+  and asks again, and until it succeeds M3 behaves exactly as a unit with no sensor.
+- **0 %, 100 % and anything within one band of an end are not targets** — they become ordinary
+  full-travel drives, so they end at an end switch, persist a real terminal state and keep 2.10.0's
+  confirmation unchanged. Only a genuinely partial target arms the stop rule.
+- **The stop rule** (`ch_target_tick()`, every 20 ms tick) stops on arrival **or on passing the
+  target**. The second half is what makes a narrow band safe: the leaf moves ~0.67 % of the stroke
+  between two samples, so a band smaller than that would be stepped over and the drive would run to
+  the end.
+- **The band comes from `deadzone_m3_mm` and the taught `window_mm`** — millimetres because that is
+  what the mechanism repeats to, percent because that is what the law speaks, and the taught size is
+  the only thing relating them. 20 mm over the rig's 1500 mm window is 1.3 %.
+- **`CH_PART_OPEN` is terminal but not persisted.** `persist_ch_state()` already maps anything that
+  is not CLOSED or OPEN to UNKNOWN, so a part-open M3 forces the boot CLOSE_ALL instead of taking
+  the "all three closed" shortcut — the requirement above needed no new code, only not to add any.
+- **Every full-travel command disarms it**, in `ch_start_close()` and `ch_start_open()` themselves,
+  so CLOSE_ALL, the boot sweep, the alarm paths, the LCD menu and the teach all clear a target
+  without knowing it exists. **A safety close can never be stopped short by a stale target.**
+- **A position lost mid-drive falls back to the travel timer**: the drive finishes at an end, the
+  state is a real terminal one, and 2.10.0's verdict reports what happened.
+- **From PART_OPEN, a plain open or close is a real move** — it shares `CH_OPEN`'s arm in
+  `ch_start_close()` and `CH_CLOSED`'s in `ch_start_open()`, so the dwell policy is the existing one
+  rather than a second anti-thrash policy invented for targets.
+
+*The encodings, all appended and all in this change:* `ch_state_t` gains ordinal **7** (every
+`LOG_RELAY` row carries it); `window_state_t` gains `WIN_PART_OPEN`, whose ordinal the library's
+`VENT_WIN_PART_OPEN` already matched and whose mapping is pinned with `static_assert`s; `SENSOR_HR
+ch2` gains the qualifier bits **6/7/8** plus M3's opening in **`value_b`**, which was a hard zero;
+and `/api/status` gains the name `PART_OPEN` — falling through to `UNKNOWN` would have said
+"position not established", which is the opposite of the truth. Learned by `logparser.py`,
+`plot_daily.py` (both tables, including the plot level `RELAY_STATE_Y`, which is indexed and would
+have raised) and the simulator's `RELAY_TO_CH`, whose `CH_STOPPED = 7` had already reserved the
+ordinal.
+
+*Testable before mode 2 exists:* `POST /api/diag/windowpos {"target_x10":N}` (bench only) posts the
+same Q1 command T6 will post, so T2's real path is what runs. `bin/at_wp_target.py` drives six
+stages: `band`, `twice`, `ends`, `supersede`, `lost`, `refuse`. **Not yet run — 2344 is soaking.**
+
+*Not in this step:* nothing selects a target (the effective mode is next), the minimum move (§3.6
+floor 2) is still unmeasured, the minimum interval is the law's `m3_min_interval_ms` and has no
+config key yet, and `webUiMock/mock_server.py` has no part-open state. The GUI needed only a label:
+it already renders M3 by percentage whenever a position is present.
+
 ###### The two surveys that step needs, done 2026-09-20
 
 **Every Q1 producer, enumerated** (`grep -rn 'xQueueSend(Q1\|post_q1('`). Five, as the plan said —

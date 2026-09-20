@@ -130,6 +130,16 @@ typedef enum {
     WIN_MOVING_OPEN,    /**< Relay energised in OPEN direction; travel timer running */
     WIN_OPEN,           /**< Window fully open (travel timer expired) */
     WIN_MOVING_CLOSE,   /**< Relay energised in CLOSE direction; travel timer running */
+    WIN_PART_OPEN,      /**< 2.12.0 — at rest between the ends, at a commanded
+                         *   target. M3 only, and only with a trusted position.
+                         *   **APPENDED, never inserted:** the ordinal is shared
+                         *   by drivers/ventModel's `VENT_WIN_PART_OPEN` (pinned
+                         *   with static_asserts in climate_control.cpp) and it
+                         *   is neither OPEN nor CLOSED — a caller wanting an
+                         *   end must ask for it. It is deliberately NOT a
+                         *   persisted terminal state: `persist_ch_state()` maps
+                         *   it to UNKNOWN, so a part-open M3 forces the boot
+                         *   CLOSE_ALL instead of taking the shortcut. */
 } window_state_t;
 
 /** System operating mode (highest-priority active state wins). */
@@ -435,6 +445,18 @@ typedef enum {
                        *   duration). Posted by dm_set_standby(false, ...)
                        *   on STANDBY exit so windows return to a known
                        *   CLOSED baseline before T6 resumes. */
+    CMD_TARGET,       /**< 2.12.0 (plan §5b) — drive a channel to
+                       *   `target_x10` and stop there. M3 only, and only
+                       *   while its position is trusted.
+                       *
+                       *   **Its own action, deliberately, rather than a
+                       *   target field on CMD_OPEN.** Four of the five Q1
+                       *   producers build commands with positional
+                       *   initialisers (`{ CMD_CLOSE_ALL, 0, SRC_T3 }`), so
+                       *   a new trailing field is zero there — and a zero
+                       *   read as a target means "close it", which is the
+                       *   one mistake that must be impossible. `target_x10`
+                       *   is read ONLY for this action. */
 } cmd_action_t;
 
 /* ============================================================
@@ -443,9 +465,12 @@ typedef enum {
 
 /** Q1 — actuation command (T3/T6 → T2). */
 typedef struct {
-    cmd_action_t action;   /**< CMD_OPEN / CMD_CLOSE / CMD_CLOSE_ALL / CMD_RESUME */
+    cmd_action_t action;   /**< CMD_OPEN / CMD_CLOSE / CMD_CLOSE_ALL / CMD_RESUME / CMD_TARGET */
     uint8_t      channel;  /**< 0 = all channels; 1 = M1; 2 = M2; 3 = M3 */
     cmd_source_t source;   /**< SRC_T3 or SRC_T6 */
+    int16_t      target_x10; /**< CMD_TARGET only: aperture 0..1000 = 0..100.0 %.
+                              *   Meaningless for every other action, and never
+                              *   read for one — see CMD_TARGET. */
 } window_cmd_t;
 
 /** Q2 — keypad key event (T7 → T8). */

@@ -49,6 +49,7 @@ _CH_STATE = {
     4: "MOVING_CLOSE",
     5: "GAP_TO_OPEN",
     6: "GAP_TO_CLOSE",
+    7: "PART_OPEN",     # 2.12.0 -- M3 at rest at a commanded target
 }
 
 _VENT_STEP = {
@@ -222,6 +223,13 @@ _WIN_STATE_BITMASK = {
     3: "MOVING_CLOSE",
 }
 
+# 2.12.0 -- the part-open qualifier. All four 2-bit codes were already spoken
+# for, and widening the fields would have shifted M2's and M3's bits and
+# silently re-decoded every archived row, so PART_OPEN rides the OPEN code plus
+# one bit per channel in what was free space (6..8). A reader without this table
+# still reads "open", which is the truthful degradation.
+_WIN_PART_OPEN_BIT = (6, 7, 8)
+
 # Short 4-char rendering for the per-channel state shown on the LCD.
 _WIN_STATE_SHORT = {
     0: "CLOS",
@@ -275,12 +283,26 @@ def _decode_sensor_hr(row: dict) -> str:
         m1 = _WIN_STATE_SHORT.get((mask     ) & 0x3, "?   ")
         m2 = _WIN_STATE_SHORT.get((mask >> 2) & 0x3, "?   ")
         m3 = _WIN_STATE_SHORT.get((mask >> 4) & 0x3, "?   ")
+        # PART (2.12.0) replaces the OPEN rendering it qualifies, so a reader
+        # never sees "OPEN" for a window that is at 30 %.
+        for i, short in enumerate(("m1", "m2", "m3")):
+            if mask & (1 << _WIN_PART_OPEN_BIT[i]):
+                if i == 0:   m1 = "PART"
+                elif i == 1: m2 = "PART"
+                else:        m3 = "PART"
         flags = []
         if mask & (1 << 12): flags.append("WIND")
         if mask & (1 << 13): flags.append("ALARM")
         if mask & (1 << 14): flags.append("CAL")
         flag_str = f"  [{','.join(flags)}]" if flags else ""
-        return f"M1={m1}  M2={m2}  M3={m3}{flag_str}  (0x{mask:04X})"
+        # value_b: M3's opening in 0.1 % since 2.12.0, -1 = no trusted position,
+        # 0 on every row written before it (the field was a hard zero).
+        m3_open = ""
+        if b > 0:
+            m3_open = f"  M3={b / 10:.1f}%"
+        elif b < 0:
+            m3_open = "  M3=no position"
+        return f"M1={m1}  M2={m2}  M3={m3}{flag_str}{m3_open}  (0x{mask:04X})"
 
     return f"ch={ch} a={a} b={b}  (unknown SENSOR_HR sub-row)"
 

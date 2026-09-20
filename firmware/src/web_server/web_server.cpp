@@ -3719,7 +3719,8 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
 /**
  * POST /api/diag/windowpos — set the T17 test injection (admin, DEV BUILDS ONLY)
  *
- * Body: {"inject":"none"|"absent"|"fault"|"stuck"|"ends"|"race"}. gh#72's
+ * Body: {"inject":"none"|"absent"|"fault"|"stuck"|"ends"|"race"}, or
+ * {"target_x10":N} to drive M3 to N tenths of a percent (2.12.0). gh#72's
  * acceptance test (bin/at_wp_gh72.py) uses it to make T17 see a sensor that
  * vanishes, one that reports its own fault, and a reading stuck while the leaf
  * moves -- each at a moment the test chooses. 2.10.0 adds both end sensors
@@ -3739,6 +3740,36 @@ static esp_err_t diag_windowpos_post_handler(httpd_req_t *req)
                                HTTPD_RESP_USE_STRLEN);
     }
     body[rlen] = '\0';
+
+    /* 2.12.0 (plan §5b) -- {"target_x10":N} posts a CMD_TARGET for M3.
+     *
+     * T6 cannot issue one yet: the effective mode that would make M3 LINEAR is
+     * the next step, so without this hook the stop rule could only be tested by
+     * shipping mode 2 first. It goes through Q1 like any other command, so what
+     * is exercised is T2's real path -- the arming, the deadband, the overshoot
+     * guard, the PART_OPEN state and its log row -- not a test-only shortcut.
+     * SRC_OPERATOR_MANUAL, because an admin asked for it: the dwell does not
+     * defer it, exactly as the LCD manual menu and the teach behave. */
+    char tgt[8] = {0};
+    if (json_get_field(body, "target_x10", tgt, sizeof(tgt))) {
+        const long want = strtol(tgt, NULL, 10);
+        if (want < 0 || want > 1000) {
+            return httpd_resp_send(req, "{\"ok\":false,\"error\":\"target_range\"}",
+                                   HTTPD_RESP_USE_STRLEN);
+        }
+        window_cmd_t cmd = {};
+        cmd.action     = CMD_TARGET;
+        cmd.channel    = 3u;                  /* M3 */
+        cmd.source     = SRC_OPERATOR_MANUAL;
+        cmd.target_x10 = (int16_t)want;
+        const bool sent = (xQueueSend(Q1, &cmd, pdMS_TO_TICKS(100)) == pdTRUE);
+        char out[72];
+        snprintf(out, sizeof(out),
+                 "{\"ok\":%s,\"target_x10\":%ld%s}",
+                 sent ? "true" : "false", want,
+                 sent ? "" : ",\"error\":\"q1_full\"");
+        return httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
+    }
 
     char how[16] = {0};
     if (!json_get_field(body, "inject", how, sizeof(how))) {
