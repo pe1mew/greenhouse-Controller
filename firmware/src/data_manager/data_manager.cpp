@@ -1717,8 +1717,15 @@ void dm_meas_snapshot(sensor_reading_t *out, bool *valid_out)
 
 static bool     s_m3_mode_linear = false;
 static uint32_t s_m3_mode_down_ms = 0u;
+static uint8_t  s_m3_mode_reason  = (uint8_t)M3_MODE_BY_SETTING;
 
 bool dm_m3_ctrl_mode(m3_mode_reason_t *out_reason)
+{
+    if (out_reason != NULL) { *out_reason = (m3_mode_reason_t)s_m3_mode_reason; }
+    return s_m3_mode_linear;
+}
+
+bool dm_m3_ctrl_mode_eval(m3_mode_reason_t *out_reason)
 {
     m3_mode_reason_t why = M3_MODE_BY_SETTING;
     const uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
@@ -1751,6 +1758,7 @@ bool dm_m3_ctrl_mode(m3_mode_reason_t *out_reason)
         why = M3_MODE_RESUMED;
     }
 
+    s_m3_mode_reason = (uint8_t)why;
     if (out_reason != NULL) { *out_reason = why; }
     return s_m3_mode_linear;
 }

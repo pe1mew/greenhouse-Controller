@@ -2142,6 +2142,34 @@ motor chatter. The manual says so too.
   is not established — the opposite of the truth about a window that was measured and stopped where
   it was told. They render `PART` (and `PART OPEN` where there is room).
 
+**Two defects that would have made mode 2 fail on the rig, found by reading the freshness rules
+back against T17's cadence:**
+
+- **Every target from a resting window would have been refused as stale.** T17 stops polling at
+  rest and reads once every 30 s, and the start path applied the same 3 s limit the stop rule uses —
+  so a first move could essentially never be commanded. The two are different questions: while the
+  leaf moves an old reading is a *guess about where it is now*, but a resting window **has not
+  moved**, so a 30-second-old reading of it is exactly as true as a fresh one. Start now allows
+  45 s (the idle cadence plus margin); older than that means T17 is not polling at all, which is
+  worth refusing.
+- **The stop rule would then have abandoned the drive on its first tick.** For the first moment of
+  a drive the newest sample is still the one taken at rest, and that read as "the position went
+  away". A stale sample cannot cause a premature stop — it reports where the leaf was before it
+  moved, which is outside the band by construction — so the drive now waits out a 5 s grace before
+  treating staleness as a fault.
+
+**Two design defects found by reading it back, both about WHO decides:**
+
+- **A status poll could promote the control law.** `dm_m3_ctrl_mode()` ran the anti-flap state
+  machine in whatever task called it — T6 each cycle, T2 at a drive end, and the web server on
+  every status request. So a GUI left open changed when promotion happened, and reading the state
+  changed the state. Deciding and reading are now separate calls: `dm_m3_ctrl_mode_eval()` belongs
+  to **T6**, and everyone else reads the last decision.
+- **The decision sat behind the inhibit gate**, so during a wind override or a STANDBY — which can
+  last hours — the stored mode went stale, and T2 would arm M3's dwell from a mode that might no
+  longer be true. It is now decided on **every** T6 wake, before the gate: it commands nothing, and
+  the SD log records a change of control law when it happens rather than when ventilation resumes.
+
 **Two more consumers found by sweeping for the state, not by testing:**
 
 - **T17's per-drive verdict** compared M3's resting state against `WIN_CLOSED`/`WIN_OPEN` and would

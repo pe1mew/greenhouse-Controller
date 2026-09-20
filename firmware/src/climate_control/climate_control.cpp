@@ -560,7 +560,7 @@ void task_climate_control(void *pvParameters)
     const vent_model_t *const k_models[2] = { vent_model_stepped(),
                                               vent_model_graded() };
     m3_mode_reason_t mode_why = M3_MODE_BY_SETTING;
-    bool linear = dm_m3_ctrl_mode(&mode_why);
+    bool linear = dm_m3_ctrl_mode_eval(&mode_why);
     const vent_model_t *model = k_models[linear ? 1 : 0];
     /* -1 = "not logged yet", so the FIRST cycle writes the mode row whatever
      * the mode is. Which law a boot came up under is exactly the question a
@@ -629,6 +629,38 @@ void task_climate_control(void *pvParameters)
          *                        CMD_RECALIBRATE comment always said T6 was
          *                        gated here; until 2.9.2 it was not.
          * ---------------------------------------------------------------- */
+        /* ----------------------------------------------------------------
+         * 1b. The effective mode, decided on EVERY wake -- before the inhibit
+         *     gate below, not after it. T2 reads this decision when it arms
+         *     M3's dwell, and an inhibit can last hours: a wind override that
+         *     outlived a sensor failure would otherwise leave the stored mode
+         *     claiming linear control until ventilation resumed. Deciding here
+         *     costs nothing (it commands nothing) and means the SD log records
+         *     a change of control law when it happens rather than when T6 is
+         *     next allowed to act.
+         *
+         *     A change of law is a change of state: the model's memory belongs
+         *     to the law that wrote it, so it is reset rather than carried
+         *     across (contract §2). Mode 1 has no partial state, so a demotion
+         *     leaves M3 wherever it stopped -- and `stepped` then asks for
+         *     whichever END its step wants, because VENT_WIN_PART_OPEN is at
+         *     neither. Nothing special is needed to "drive it to an end": the
+         *     ordinary law does it.
+         * ---------------------------------------------------------------- */
+        const bool linear_now = dm_m3_ctrl_mode_eval(&mode_why);
+        if (linear_now != linear) {
+            linear = linear_now;
+            model  = k_models[linear ? 1 : 0];
+            model->reset(&vstate);
+            last_logged_step = 0;
+        }
+        if ((int)linear != logged_mode) {
+            logged_mode = (int)linear;
+            ESP_LOGW(TAG, "[T6] control law: %s (reason %d)",
+                     model->name, (int)mode_why);
+            post_log_ctrl_mode(linear, (int)mode_why);
+        }
+
         EventBits_t bits = xEventGroupGetBits(EG1);
         bool inhibited = (bits & (EG1_BIT_WIND_OVERRIDE |
                                   EG1_BIT_MOTOR_ALARM   |
@@ -671,29 +703,6 @@ void task_climate_control(void *pvParameters)
             /* No sensor data yet — wait for the first Q6 message. */
             ESP_LOGD(TAG, "[T6] no measurement yet — skipping");
             continue;
-        }
-
-        /* ----------------------------------------------------------------
-         * 3b. The effective mode. A change of law is a change of state: the
-         *     model's memory belongs to the law that wrote it, so it is reset
-         *     here rather than carried across (contract §2). Mode 1 has no
-         *     partial state, so a demotion leaves M3 wherever it stopped --
-         *     and `stepped` then asks for whichever END its step wants,
-         *     because VENT_WIN_PART_OPEN is at neither. Nothing special is
-         *     needed to "drive it to an end": the ordinary law does it.
-         * ---------------------------------------------------------------- */
-        const bool linear_now = dm_m3_ctrl_mode(&mode_why);
-        if (linear_now != linear) {
-            linear = linear_now;
-            model  = k_models[linear ? 1 : 0];
-            model->reset(&vstate);
-            last_logged_step = 0;
-        }
-        if ((int)linear != logged_mode) {
-            logged_mode = (int)linear;
-            ESP_LOGW(TAG, "[T6] control law: %s (reason %d)",
-                     model->name, (int)mode_why);
-            post_log_ctrl_mode(linear, (int)mode_why);
         }
 
         /* ----------------------------------------------------------------

@@ -371,12 +371,32 @@ typedef enum {
  *    end its step wants, so M3 reaches an end by the ordinary path rather than
  *    by a special case wired into the fallback.
  *
- * Call it freely: it takes no lock beyond the snapshot it already needs.
+ * **Reading the mode and DECIDING it are separate calls.** This one only
+ * reports the last decision, so it is safe from any task and cannot change
+ * what the greenhouse does. `dm_m3_ctrl_mode_eval()` is the one that decides,
+ * and **T6 owns it**: before the split, a web status poll ran the state
+ * machine, so a GUI left open could promote the control law and the moment of
+ * promotion depended on who happened to be watching.
+ *
+ * Before T6's first cycle this reads false (timed), which is the safe default
+ * and what the unit is doing anyway.
  *
  * @param out_reason  May be NULL. Why the answer is what it is.
  * @return true when mode 2 (linear) is in force.
  */
 bool dm_m3_ctrl_mode(m3_mode_reason_t *out_reason);
+
+/**
+ * @brief Decide the effective mode, applying the anti-flap. **T6 only.**
+ *
+ * Runs the transition rules described above and stores the result for
+ * dm_m3_ctrl_mode(). Called once per T6 cycle: the control task is the one
+ * whose timing should determine when the control law changes.
+ *
+ * @param out_reason  May be NULL.
+ * @return true when mode 2 (linear) is now in force.
+ */
+bool dm_m3_ctrl_mode_eval(m3_mode_reason_t *out_reason);
 
 /**
  * @brief M3's arrival band in 0.1 %, from `deadzone_m3_mm` and the taught window.

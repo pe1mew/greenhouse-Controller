@@ -1672,7 +1672,7 @@ Emitted by `build_canonical_status_json()`, so `GET /api/status`, the WebSocket 
 | | Where it lives | What it means |
 |---|---|---|
 | **Desired** | `motor/ctrl_mode_m3` | What the operator asked for. Default timed, and a firmware update never changes it. |
-| **Effective** | `dm_m3_ctrl_mode()` in T4 | What is actually driving M3: the desired mode **and** a position T17 will stand behind **and** the anti-flap below. Computed in exactly one place — two places would eventually disagree, and the SD log would then record a decision under a mode that was not in force. |
+| **Effective** | `dm_m3_ctrl_mode()` in T4 | What is actually driving M3: the desired mode **and** a position T17 will stand behind **and** the anti-flap below. Computed in exactly one place — two places would eventually disagree, and the SD log would then record a decision under a mode that was not in force. **Deciding and reading are separate calls:** `dm_m3_ctrl_mode_eval()` runs the transition rules and belongs to **T6**, once per wake and before the inhibit gate; `dm_m3_ctrl_mode()` reports the last decision and is what T2 and the status payload use. Otherwise a status poll would run the state machine, and how often someone watched would decide when the control law changed. |
 
 - **Demotion is immediate**; **promotion** waits for T17's stroke boundary and a 120 s hold-down. Turning linear control *off* takes effect at once, because that is a deliberate act.
 - **The fall back needs no special case.** Mode 1's law sees a part-open M3 as being at neither end and asks for whichever end its step wants, so M3 reaches an end by the ordinary path.

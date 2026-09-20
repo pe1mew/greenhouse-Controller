@@ -172,6 +172,8 @@ typedef struct {
     uint32_t   move_end_ms;        /**< millis() when the last drive ENDED, for
                                     *   t2_ms_since_move(). 0 = none since boot. */
     bool       target_active;      /**< A target is being driven to right now. */
+    uint32_t   target_start_ms;    /**< millis() when the target was armed, for
+                                    *   the freshness grace below. */
     int16_t    target_x10;         /**< Aperture 0..1000 = 0..100.0 %. */
     uint16_t   target_band_x10;    /**< Arrival band, 0.1 %, from `deadzone_m3_mm`. */
 } ch_t;
@@ -618,6 +620,37 @@ static void ch_start_open(uint8_t ch, uint32_t now_ms, cmd_source_t source)
  *  reverts to the travel timer, which is what a unit with no sensor does. */
 #define TARGET_MAX_AGE_MS  3000u
 
+/** Oldest position a drive may be STARTED on, milliseconds.
+ *
+ *  Deliberately far larger than TARGET_MAX_AGE_MS, because the two are
+ *  different questions. **While the leaf moves**, an old reading is a guess
+ *  about where it is now, and a guess must not stop a motor. **At rest**, T17
+ *  stops polling and reads once every `IDLE_READ_MS` (30 s) -- and a resting
+ *  window has not moved since, so a 30-second-old reading of it is exactly as
+ *  true as a fresh one.
+ *
+ *  Using the strict limit at the start was a real defect: every target issued
+ *  from a resting window would have been refused as stale, and mode 2 could
+ *  never have made its first move. 45 s is the idle cadence plus margin, so a
+ *  reading older than this means T17 is not polling at all -- which is a
+ *  refusal worth making. */
+#define TARGET_START_MAX_AGE_MS  45000u
+
+/** How long after arming a target a stale reading is EXPECTED, milliseconds.
+ *
+ *  T17 polls fast only while M3 travels, so for the first moment of a drive
+ *  the newest sample is still the one taken at rest -- up to 30 s old. Judging
+ *  "the position went away" on that would abandon every targeted drive on its
+ *  first tick and fall back to the timer, which is the opposite of what the
+ *  reading means: the leaf simply has not been sampled yet.
+ *
+ *  A stale sample cannot cause a premature STOP, because the position it
+ *  reports is where the leaf was before it moved, which is outside the band by
+ *  construction -- the drive would not have started otherwise. So waiting is
+ *  safe. 5 s covers production's ~1.14 s travelling cadence several times
+ *  over. */
+#define TARGET_FRESH_GRACE_MS  5000u
+
 /**
  * @brief The dwell to arm after a drive on this channel ends, milliseconds.
  *
@@ -695,10 +728,11 @@ static bool ch_start_target(uint8_t ch, int16_t want_x10, uint32_t now_ms,
         ESP_LOGW(TAG, "CMD_TARGET refused: M3 position not trusted");
         return false;
     }
-    if (m3.age_ms > TARGET_MAX_AGE_MS) {
-        /* At rest T17 stops polling, so a stale reading here is normal; the
-         * next poll is fresh and T6 asks again. */
-        ESP_LOGI(TAG, "CMD_TARGET deferred: position %u ms old", (unsigned)m3.age_ms);
+    if (m3.age_ms > TARGET_START_MAX_AGE_MS) {
+        /* Older than T17's idle cadence: it is not polling, so there is no
+         * position to steer by. T6 is level-triggered and will ask again. */
+        ESP_LOGW(TAG, "CMD_TARGET refused: position %u ms old (idle cadence is %u ms)",
+                 (unsigned)m3.age_ms, (unsigned)TARGET_START_MAX_AGE_MS);
         return false;
     }
 
@@ -724,9 +758,10 @@ static bool ch_start_target(uint8_t ch, int16_t want_x10, uint32_t now_ms,
         : (c->state == CH_MOVING_CLOSE || c->state == CH_GAP_TO_CLOSE);
     if (!started) { return false; }
 
-    c->target_active   = true;
-    c->target_x10      = (int16_t)want;
-    c->target_band_x10 = band;
+    c->target_active    = true;
+    c->target_start_ms  = now_ms;
+    c->target_x10       = (int16_t)want;
+    c->target_band_x10  = band;
     ESP_LOGI(TAG, "CH%u: target %d.%u pct armed (from %d.%u, band %u.%u)",
              ch + 1u, (int)(want / 10), (unsigned)(want % 10),
              (int)(pos / 10), (unsigned)(pos % 10),
@@ -748,9 +783,15 @@ static bool ch_target_tick(uint8_t ch, uint32_t now_ms, bool opening)
 
     dm_m3_pos_t m3;
     if (!dm_m3_position(&m3) || m3.age_ms > TARGET_MAX_AGE_MS) {
-        /* The position went away mid-drive. Fall back to the travel timer: the
-         * drive then finishes at an end, the state is a real terminal one, and
-         * 2.10.0 verdict reports what happened. */
+        /* Not yet sampled since the drive began: expected, and not a fault.
+         * See TARGET_FRESH_GRACE_MS -- a stale reading cannot stop the drive
+         * early, so waiting costs nothing. */
+        if ((uint32_t)(now_ms - c->target_start_ms) < TARGET_FRESH_GRACE_MS) {
+            return false;
+        }
+        /* Past the grace, the position really has gone away. Fall back to the
+         * travel timer: the drive finishes at an end, the state is a real
+         * terminal one, and 2.10.0's verdict reports what happened. */
         c->target_active = false;
         ESP_LOGW(TAG, "CH%u: position lost mid-target — finishing on the timer",
                  ch + 1u);
