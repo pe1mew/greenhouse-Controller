@@ -306,18 +306,21 @@ function commWhyUnavailable(status) {
 // the deadzone setting simply vanished.
 function commSetAvailable(status, c) {
   const card = document.getElementById('card-commission');
-  if (!card) return;
+  const body = document.getElementById('cm-body');
+  if (!card || !body) return;
   if (g_wpos_fitted === false) {
     // gh#73: the whole group is greyed by applyWposFitted() and its reason is
     // given once, above it. Greying the card again would dim it twice over.
-    card.classList.remove('disabled-block');
+    body.classList.remove('disabled-block');
     card.setAttribute('aria-disabled', 'true');
     setText('cm-unavailable', '');
     if (status === 401) showLogin();
     return;
   }
   const live = !!(c && c.ok);
-  card.classList.toggle('disabled-block', !live);
+  // gh#74: grey the BODY, so #cm-unavailable -- which sits above it -- keeps its
+  // own opacity. A child cannot be less dim than a dimmed parent.
+  body.classList.toggle('disabled-block', !live);
   card.setAttribute('aria-disabled', live ? 'false' : 'true');
   setText('cm-unavailable', live ? '' : commWhyUnavailable(status));
   if (live) commRender(c);

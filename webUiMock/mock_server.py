@@ -130,6 +130,10 @@ cfg: dict = {
     # DEF_WPOS_FITTED_M3 = 0, so the mock starts with the Linear control group
     # greyed; set it to Yes in the GUI to see the rest.
     "wpos_fitted_m3":       0,
+    # gh#76 (2026-09-20): the mock accepted motor/deadzone_m3 and dropped it, so
+    # the GUI's deadzone field read empty and a change there did not survive a
+    # reload. DEF_DEADZONE_M3_MM = 20.
+    "deadzone_m3_mm":      20,
     "poll_interval_s":     30,    # DEF_POLL_INTERVAL_S
     "session_timeout_min":  5,    # DEF_SESSION_TIMEOUT_MIN
     "ap_timeout_min":      30,    # DEF_AP_TIMEOUT_MIN
@@ -310,6 +314,7 @@ NVS_MAP: dict[tuple, tuple] = {
     ("motor",   "dwell_close_m2"):  ("dwell_close_s",          1),
     ("motor",   "dwell_close_m3"):  ("dwell_close_s",          2),
     ("motor",   "wpos_fitted_m3"):  ("wpos_fitted_m3",         None),
+    ("motor",   "deadzone_m3"):     ("deadzone_m3_mm",      None),   # gh#76
     ("system",  "session_timeout"): ("session_timeout_min", None),
     ("system",  "ap_timeout"):      ("ap_timeout_min",      None),
     ("system",  "poll_interval"):   ("poll_interval_s",     None),
@@ -773,8 +778,19 @@ def config_post():
             cfg[cfg_key] = value
         else:
             cfg[cfg_key][idx] = value
-    # Keys not in NVS_MAP are silently accepted (forward compatibility)
-    return {"ok": True}
+        return {"ok": True}
+
+    # gh#76 (2026-09-20): an unknown key is a 400 here too. The firmware has
+    # answered 400 since gh#53; the mock's "silently accepted for forward
+    # compatibility" is exactly what hid deadzone_m3 -- a key the GUI wrote, the
+    # mock acknowledged, and nothing stored.
+    #
+    # The write-only led_* keys are the one accepted-but-not-stored case, as on
+    # the unit: they are real keys with real bounds that no endpoint reads back,
+    # so CONFIG_LIMITS knows them and cfg does not.
+    if key in CONFIG_LIMITS:
+        return {"ok": True}
+    return {"ok": False, "err": "unknown key"}, 400
 
 
 @app.route("/api/wifi", methods=["POST"])

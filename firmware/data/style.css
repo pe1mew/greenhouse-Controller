@@ -278,7 +278,15 @@ body.is-admin  .farmer-hidden { display: flex; }
  *
  * So: dim it, make it inert, and say WHY in `.disabled-why` next to it.
  * `pointer-events: none` covers the whole subtree, so nothing inside is
- * clickable or draggable even though it is still readable. */
+ * clickable or draggable even though it is still readable.
+ *
+ * gh#74: the reason must sit OUTSIDE the element that carries
+ * `.disabled-block`, above it. `opacity` applies to an element and its
+ * descendants as one group, so a child can never be less dim than its
+ * parent -- a rule granting the reason `opacity: 1` inside the block looked
+ * right and did nothing for the year it existed. Both users follow the
+ * outside-it form now: `#wpos-unfitted-why` above `#wpos-dep`, and
+ * `#cm-unavailable` above `#cm-body`. */
 .disabled-block {
   opacity: 0.4;
   pointer-events: none;
@@ -287,13 +295,6 @@ body.is-admin  .farmer-hidden { display: flex; }
   color: var(--yellow);
   font-size: 0.85rem;
   margin: 0.25rem 0 0.5rem 0;
-}
-/* The reason must stay READABLE and SELECTABLE even though the block it
- * explains is inert -- it is the one thing the operator needs to act on or
- * quote, so it opts out of both the dimming and the pointer-events block. */
-.disabled-block .disabled-why {
-  opacity: 1;
-  pointer-events: auto;
 }
 
 /* ── OTA progress bar ────────────────────────────────────────────── */

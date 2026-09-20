@@ -139,6 +139,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-06-26** — a day shows ~2× the expected samples (two overlapping SD download chains)
 
 ### Web GUI & HTTP routes
+- **2026-09-20** — a greyed block dims the reason inside it: `opacity` has no per-child exemption, so the reason must sit outside the block (gh#74)
 - **2026-09-16** — a setting is MISSING from the GUI entirely (two routes exceeded `max_uri_handlers` and never registered; the card depending on them was hidden rather than greyed, so the only symptom was an absence)
 
 ### Build, toolchain & shell
@@ -180,6 +181,28 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
 
+
+## 2026-09-20 — a CSS rule that cannot work survived a year, because the intent was written down and never looked at
+
+**Problem.** `style.css` carried `.disabled-block .disabled-why { opacity: 1 }` with a comment saying the reason
+beside a greyed block "stays at full opacity", and CLAUDE.md's GUI rule said the same. It never did: on the
+commissioning card the reason was dimmed along with everything else (gh#74).
+
+**Root cause.** `opacity` applies to an element **and its descendants as one group**. A child cannot be less
+transparent than its dimmed parent, whatever it declares. The `pointer-events: auto` half of the same rule does
+work, which made the rule look effective. The rule was written, documented in two places, and quoted as a project
+standard, without anyone comparing it to the rendered page.
+
+**Fix.** The reason goes **outside** the element that gets `.disabled-block`, above it: `#wpos-unfitted-why` above
+`#wpos-dep` (which 2.9.0 already did, by accident of layout) and `#cm-unavailable` above the new `#cm-body`
+wrapper. The dead rule is deleted and both the CSS comment and CLAUDE.md now state why it cannot exist.
+
+**Lesson.** A rule that states an intent is not evidence of the intent. This one was verifiable in seconds --
+`getComputedStyle(el).opacity` on the element that was supposed to be exempt -- and the same class of check applies
+to any styling rule that claims an exception: measure the rendered value, do not read the stylesheet.
+
+**Where it lives.** `firmware/data/style.css` (`.disabled-block`), `firmware/data/index.html` (`#cm-body`),
+`firmware/data/app.js` `commSetAvailable()`, CLAUDE.md's Web GUI rule.
 
 ## 2026-09-19 — no Modbus bus-KPI rows for the first ~2 h after a boot: by design, not a dead bus
 

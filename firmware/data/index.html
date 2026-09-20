@@ -394,26 +394,31 @@
     <div id="card-commission">
       <h3>Commissioning <span class="muted">· teach the position sensor</span></h3>
       <p id="cm-unavailable" class="disabled-why"></p>
-      <div class="slider-row">
-        <label data-tip="Distance between the two END SENSORS, in millimetres — measure it with a tape. This is the known length the teach correlates the sensor&apos;s raw reading against, so it must be right before teaching. It is NOT the travel time above: the motor overdrives past both end sensors, so its run is always longer.">Window size (mm)</label>
-        <input type="range"  id="cfg-window-mm-sl" min="100" max="5000" step="1">
-        <input type="number" id="cfg-window-mm"    min="100" max="5000" step="1" class="short">
-        <button onclick="commWindow()">Apply</button>
-        <span class="save-ok" id="fb-window-mm"></span>
+      <!-- gh#74: the reason above stays OUTSIDE this wrapper. CSS opacity applies
+           to a whole subtree, so a reason inside the greyed element would be dimmed
+           with it. commSetAvailable() greys #cm-body, never the card. -->
+      <div id="cm-body">
+        <div class="slider-row">
+          <label data-tip="Distance between the two END SENSORS, in millimetres — measure it with a tape. This is the known length the teach correlates the sensor&apos;s raw reading against, so it must be right before teaching. It is NOT the travel time above: the motor overdrives past both end sensors, so its run is always longer.">Window size (mm)</label>
+          <input type="range"  id="cfg-window-mm-sl" min="100" max="5000" step="1">
+          <input type="number" id="cfg-window-mm"    min="100" max="5000" step="1" class="short">
+          <button onclick="commWindow()">Apply</button>
+          <span class="save-ok" id="fb-window-mm"></span>
+        </div>
+        <div class="slider-row">
+          <label data-tip="Whether the sensor&apos;s calibration is usable. The teach maps its raw reading onto the window size above, so a completed teach is self-consistent — you should not need to judge the numbers, only to re-teach when this says something is wrong. One blind spot: a shorted wiper reads the same as a genuinely closed window on this installation, so VALID does not exclude that fault.">Calibration</label>
+          <strong id="cm-verdict">—</strong>
+          <span id="cm-detail" class="muted"></span>
+        </div>
+        <div class="slider-row">
+          <label data-tip="Arms the sensor and drives M3 to BOTH end sensors, one after the other, to calibrate it. THE WINDOW WILL MOVE: two full traverses, three if the controller&apos;s idea of where M3 is turns out wrong. M3 may start anywhere — open, closed or part-way. The sensor records each end as its end sensor switches, so let it run until it says complete. Automatic climate control pauses (STANDBY) when the teach starts and resumes when you log out or your session times out, as with manual window control on the controller itself.">Teach</label>
+          <strong id="cm-state">—</strong>
+          <button onclick="commTeach()">Teach (moves M3)</button>
+          <button onclick="commAct('abort')">Abort</button>
+          <span class="save-ok" id="cm-hint"></span>
+        </div>
+        <p id="cm-standby" class="muted"></p>
       </div>
-      <div class="slider-row">
-        <label data-tip="Whether the sensor&apos;s calibration is usable. The teach maps its raw reading onto the window size above, so a completed teach is self-consistent — you should not need to judge the numbers, only to re-teach when this says something is wrong. One blind spot: a shorted wiper reads the same as a genuinely closed window on this installation, so VALID does not exclude that fault.">Calibration</label>
-        <strong id="cm-verdict">—</strong>
-        <span id="cm-detail" class="muted"></span>
-      </div>
-      <div class="slider-row">
-        <label data-tip="Arms the sensor and drives M3 to BOTH end sensors, one after the other, to calibrate it. THE WINDOW WILL MOVE: two full traverses, three if the controller&apos;s idea of where M3 is turns out wrong. M3 may start anywhere — open, closed or part-way. The sensor records each end as its end sensor switches, so let it run until it says complete. Automatic climate control pauses (STANDBY) when the teach starts and resumes when you log out or your session times out, as with manual window control on the controller itself.">Teach</label>
-        <strong id="cm-state">—</strong>
-        <button onclick="commTeach()">Teach (moves M3)</button>
-        <button onclick="commAct('abort')">Abort</button>
-        <span class="save-ok" id="cm-hint"></span>
-      </div>
-      <p id="cm-standby" class="muted"></p>
     </div>
     </div><!-- #wpos-dep -->
   </div>
