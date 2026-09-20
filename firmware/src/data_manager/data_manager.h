@@ -143,6 +143,12 @@ typedef struct {
                                     *  M3 for, under linear control (mm).
                                     *  NOT YET CONSUMED — linear control does
                                     *  not drive the window (plan 3.6, 5.0). */
+    int16_t  ctrl_mode_m3;        /**< 2.12.0 (plan §5b): the DESIRED control mode
+                                   *   for M3. 0 = timed (mode 1, today's
+                                   *   behaviour), 1 = linear. Desired, not
+                                   *   effective: the effective mode also needs
+                                   *   a trusted position, and drops back on its
+                                   *   own — dm_m3_ctrl_mode() computes it. */
     int16_t  wpos_fitted_m3;      /**< gh#73: 1 = a position sensor is fitted
                                     *  to M3, 0 = not (the default). Not fitted:
                                     *  T17 never touches address 40, and
@@ -329,6 +335,61 @@ typedef struct {
  * default, so a busy lock cannot switch a fitted sensor off.
  */
 bool dm_wpos_fitted_m3(void);
+
+/** Why the effective control mode is what it is. Logged as `value_b` on the
+ *  LOG_MODE_CHANGE row that carries LOG_PARAM_MODE_EFFECTIVE. Append only. */
+typedef enum {
+    M3_MODE_BY_SETTING  = 0,  /**< the operator's `ctrl_mode_m3` decided it */
+    M3_MODE_NO_POSITION = 1,  /**< demoted: the position cannot be trusted */
+    M3_MODE_RESUMED     = 2,  /**< promoted: position back, at a stroke boundary */
+    M3_MODE_HELD_DOWN   = 3,  /**< still timed: inside the hold-down after a demotion */
+} m3_mode_reason_t;
+
+/**
+ * @brief M3's EFFECTIVE control mode: 1 = linear (mode 2), 0 = timed (mode 1).
+ *
+ * Computed in ONE place, because two places would eventually disagree about
+ * which law was driving the window — and the SD log would then record a
+ * decision under a mode that was not in force.
+ *
+ * Effective = the operator's `ctrl_mode_m3` AND a position T17 will stand
+ * behind AND the anti-flap below. It is deliberately not "whatever the sensor
+ * says right now":
+ *
+ *  - **Demotion is immediate.** A law that keeps positioning on a reading it
+ *    cannot trust is worse than one that falls back to the timer.
+ *  - **Promotion waits for a stroke boundary**, which T17's own gate already
+ *    enforces, and then for a hold-down (`M3_MODE_HOLDDOWN_MS`). A sensor that
+ *    comes and goes would otherwise change the control law mid-greenhouse-day,
+ *    twice a minute; the soak's `mode_changes <= 2` criterion exists because
+ *    gate flapping was real.
+ *  - **Nothing here drives a motor.** When the mode drops while M3 sits
+ *    part-open, mode 1's law sees VENT_WIN_PART_OPEN and asks for whichever
+ *    end its step wants, so M3 reaches an end by the ordinary path rather than
+ *    by a special case wired into the fallback.
+ *
+ * Call it freely: it takes no lock beyond the snapshot it already needs.
+ *
+ * @param out_reason  May be NULL. Why the answer is what it is.
+ * @return true when mode 2 (linear) is in force.
+ */
+bool dm_m3_ctrl_mode(m3_mode_reason_t *out_reason);
+
+/**
+ * @brief M3's arrival band in 0.1 %, from `deadzone_m3_mm` and the taught window.
+ *
+ * The setting is millimetres because that is what the mechanism repeats to;
+ * the target, the position and the law all speak percent; the taught window
+ * size (`40004`, from commissioning) is the only thing relating them. One
+ * conversion, here, because T2 stops a drive with it and the control law
+ * decides whether a move is worth making with it — two conversions would
+ * eventually disagree, and the disagreement would look like a stuck window.
+ *
+ * @return the band in 0.1 %, at least 1; **0 when the window has never been
+ *         taught**, which callers must read as "positioning is not possible"
+ *         rather than "no deadband".
+ */
+uint16_t dm_m3_deadband_x10(void);
 
 /**
  * @brief M3's position, for the CONTROL path: a pass-through, never a copy.

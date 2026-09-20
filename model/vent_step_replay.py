@@ -177,7 +177,9 @@ def load(paths):
                         # so it could fail the gate for a healthy config, or
                         # shift a projection. Rows from firmware before 2.6.0
                         # carry param 0 and cannot be separated.
-                        if par == 47:
+                        # 2.12.0: param 54 is emitter C, M3's effective
+                        # control law. Same trap, same answer.
+                        if par in (47, 54):
                             continue
                         u = vb & 0xFFFF
                         st = (u >> 8) & 0xFF

@@ -36,6 +36,7 @@
 #include "littlefs_storage.h"
 #include "sd_storage.h"               /* 2.0.2 (gh#31) — SD state in status JSON */
 #include "../system_id/system_id.h"   /* unit_id at boot (gh#17, since 1.18.3) */
+#include "../window_pos/commission.h"      /* 2.12.0 — the taught window size */
 #include "../window_pos/window_pos_task.h" /* 6.3 — M3 opening for the status payload;
                                              * 2.12.0 — and dm_m3_position(), the
                                              * control path's pass-through */
@@ -109,6 +110,7 @@ static const char K_DWELL_CLOSE_M2[]  = "dwell_close_m2";
 static const char K_DWELL_CLOSE_M3[]  = "dwell_close_m3";
 static const char K_DEADZONE_M3[]     = "deadzone_m3";
 static const char K_WPOS_FITTED_M3[]  = "wpos_fitted_m3";
+static const char K_CTRL_MODE_M3[]    = "ctrl_mode_m3";
 
 /* System namespace */
 static const char K_POLL_INTERVAL[]    = "poll_interval";
@@ -1697,6 +1699,78 @@ void dm_meas_snapshot(sensor_reading_t *out, bool *valid_out)
  *    the 65535 sentinel. A caller checking one of those silently uses a
  *    6553.5 mm position, which is why the driver decodes both into one flag.
  * ----------------------------------------------------------------------- */
+/* -----------------------------------------------------------------------
+ * dm_m3_ctrl_mode() — the effective control mode (2.12.0, plan §5b)
+ *
+ * The state is two variables and they are only read here: the last answer,
+ * and when the last demotion happened. Both are written by whichever task
+ * asks first in a cycle; a torn read is impossible (one bool, one uint32) and
+ * a missed transition costs one call's delay, which is 30 s at worst.
+ * ----------------------------------------------------------------------- */
+
+/** Time mode 2 must be continuously available before it resumes. Long enough
+ *  that a sensor dropping out once does not change the control law for the
+ *  rest of the hour, short enough that a real recovery is picked up within a
+ *  couple of T6 cycles. */
+#define M3_MODE_HOLDDOWN_MS  (120u * 1000u)
+
+static bool     s_m3_mode_linear = false;
+static uint32_t s_m3_mode_down_ms = 0u;
+
+bool dm_m3_ctrl_mode(m3_mode_reason_t *out_reason)
+{
+    m3_mode_reason_t why = M3_MODE_BY_SETTING;
+    const uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+
+    cfg_shadow_t cfg;
+    dm_cfg_snapshot(&cfg);
+    const bool wanted = (cfg.ctrl_mode_m3 != 0);
+
+    dm_m3_pos_t pos;
+    const bool available = wanted && dm_m3_position(&pos) && pos.position_ctrl;
+
+    if (!wanted) {
+        /* The operator's answer needs no hold-down in either direction: it is
+         * a deliberate act, and turning mode 2 OFF must take effect at once. */
+        s_m3_mode_linear = false;
+        s_m3_mode_down_ms = 0u;
+        why = M3_MODE_BY_SETTING;
+    } else if (!available) {
+        if (s_m3_mode_linear) { s_m3_mode_down_ms = now_ms; }
+        s_m3_mode_linear = false;                 /* demotion is immediate */
+        why = M3_MODE_NO_POSITION;
+    } else if (s_m3_mode_linear) {
+        why = M3_MODE_BY_SETTING;                 /* already there, nothing moved */
+    } else if (s_m3_mode_down_ms != 0u &&
+               (uint32_t)(now_ms - s_m3_mode_down_ms) < M3_MODE_HOLDDOWN_MS) {
+        why = M3_MODE_HELD_DOWN;                  /* available, but too soon */
+    } else {
+        s_m3_mode_linear = true;
+        s_m3_mode_down_ms = 0u;
+        why = M3_MODE_RESUMED;
+    }
+
+    if (out_reason != NULL) { *out_reason = why; }
+    return s_m3_mode_linear;
+}
+
+uint16_t dm_m3_deadband_x10(void)
+{
+    commission_status_t cs;
+    commission_status(&cs);
+    if (cs.window_mm == 0u) { return 0u; }
+
+    cfg_shadow_t cfg;
+    dm_cfg_snapshot(&cfg);
+    if (cfg.deadzone_m3_mm <= 0) { return 1u; }
+
+    /* band[0.1 %] = deadzone[mm] / window[mm] x 1000 */
+    int32_t band = ((int32_t)cfg.deadzone_m3_mm * 1000) / (int32_t)cs.window_mm;
+    if (band < 1)   { band = 1; }
+    if (band > 500) { band = 500; }   /* half the travel is not a band any more */
+    return (uint16_t)band;
+}
+
 bool dm_m3_position(dm_m3_pos_t *out)
 {
     if (out == NULL) { return false; }

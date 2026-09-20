@@ -132,6 +132,11 @@ _PARAM = {
     # default), 1 = yes. Not fitted keeps T17 off the bus entirely.
     49: ("wpos_fitted_m3",  ""),
 
+    # 2.12.0 (plan 5b) - the DESIRED M3 control mode, 0 timed / 1 linear. What
+    # the controller acted on is the EFFECTIVE mode, which is a MODE row with
+    # param 54, not this one: this records only that an operator asked.
+    53: ("ctrl_mode_m3",    ""),
+
     # ---- Modbus bus performance indicators (gh#66 Part 2, fw 2.8.0) -------
     # These are NOT config params. They ride on LOG_SYSTEM value_a = 31, where
     # `channel` is the SLAVE ADDRESS and value_b is the INTERVAL DELTA for one
@@ -336,7 +341,7 @@ def _decode_relay(row: dict) -> str:
 
 def _decode_mode(row: dict) -> str:
     """
-    MODE (LOG_MODE_CHANGE) has TWO emitters, discriminated by `param`
+    MODE (LOG_MODE_CHANGE) has THREE emitters, discriminated by `param`
     since firmware 2.6.0 (gh#54):
 
     param = 0  -- emitter A, T6 climate_control.cpp post_log_mode():
@@ -353,6 +358,13 @@ def _decode_mode(row: dict) -> str:
                   session holding it ended
       ch      = surface hint, 0 = web, 1 = LCD
 
+    param = 54 -- emitter C, T6 climate_control.cpp post_log_ctrl_mode()
+                  (2.12.0): M3's EFFECTIVE control mode changed.
+      value_a = 0 timed (mode 1), 1 linear (mode 2)
+      value_b = why: 0 the operator's setting, 1 no trusted position,
+                2 the position came back, 3 held down after a demotion
+      ch      = 3, M3 being the only window with a mode
+
     Emitter B has existed since rc.1.5.0 (gh#28) but carried param = 0 until
     2.6.0, so every STANDBY transition was rendered as a ventilation decision
     that never happened -- including a fabricated "T-demand / RH-demand" read
@@ -363,6 +375,13 @@ def _decode_mode(row: dict) -> str:
         par      = int(row.get("param", 0) or 0)
         resolved = int(row["value_a"])
         packed   = int(row["value_b"])
+
+        if par == 54:
+            # 2.12.0 -- emitter C: M3's effective control mode.
+            why = {0: "the setting", 1: "no trusted position",
+                   2: "position back", 3: "held down"}.get(packed, f"reason {packed}")
+            law = "LINEAR (mode 2)" if resolved == 1 else "TIMED (mode 1)"
+            return f"M3 control law -> {law}  ({why})"
 
         if par == 47:
             initiator = row.get("initiator", "?").strip()
@@ -453,6 +472,8 @@ def _decode_setpoint(row: dict) -> str:
                 return "enabled" if v else "disabled"
             if param_id == 49:   # wpos_fitted_m3 — boolean (gh#73)
                 return "fitted" if v else "not fitted"
+            if param_id == 53:   # ctrl_mode_m3 — 2.12.0
+                return "linear (mode 2)" if v else "timed (mode 1)"
             if param_id == 33:   # status_expose — hex bitmask
                 return f"0x{v:02X}"
             return f"{v} {unit}".strip()

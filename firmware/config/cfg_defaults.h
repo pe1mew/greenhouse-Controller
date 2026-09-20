@@ -117,6 +117,17 @@
  */
 #define DEF_WPOS_FITTED_M3       0
 
+/**
+ * @brief Desired M3 control mode: 0 = timed, 1 = linear (2.12.0, plan §5b).
+ *
+ * Default 0, deliberately, and for the same reason DEF_WPOS_FITTED_M3 is 0: a
+ * unit that updates remotely must not change how it drives a greenhouse window
+ * because a new firmware arrived. Mode 2 is something an operator turns on,
+ * per unit, after the sensor is fitted and taught — and even then the
+ * EFFECTIVE mode falls back to timed whenever the position cannot be trusted.
+ */
+#define DEF_CTRL_MODE_M3         0
+
 /* ── System ─────────────────────────────────────────────────────────────── */
 #define DEF_POLL_INTERVAL_S      30   /**< 30 s poll: doubles smoothing-buffer depth at same time-window without the firmware-revisit overhead of finer rates */
 #define DEF_SESSION_TIMEOUT_MIN   5   /**< Idle session expiry (minutes) */

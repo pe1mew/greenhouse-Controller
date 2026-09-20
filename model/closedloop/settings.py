@@ -132,6 +132,10 @@ EFFECT = {
                            "drops a target this close to M3 at rest, T2 stops this close"),
     "wpos_fitted_m3": ("M3", "1: M3 linear, the law gets cap, pos and age; with a law "
                              "other than stepped, mode 2 (targets)"),
+    "ctrl_mode_m3": ("M3", "2.12.0: the operator's DESIRED mode, 0 timed / 1 linear. "
+                           "The firmware's effective mode is this AND a trusted "
+                           "position (dm_m3_ctrl_mode()); the simulator has no "
+                           "sensor to lose, so here it selects the law directly"),
     "ap_enable":    ("none", "the WiFi access point"),
     "ap_timeout":   ("none", "the WiFi access point"),
     "session_timeout": ("none", "admin sessions are replayed from the log as they happened"),

@@ -49,9 +49,8 @@
 #include "../data_manager/data_manager.h"   /* 2.12.0 — dm_m3_position(), the
                                              * position pass-through, and the
                                              * deadband from the cfg shadow */
-#include "../window_pos/commission.h"       /* 2.12.0 — the taught window size,
-                                             * which turns a mm deadband into a
-                                             * percentage one */
+/* commission.h is no longer needed here: the window size reaches T2 through
+ * T4's dm_m3_deadband_x10(). */
 
 /* alpha.6.9 — dropped <Arduino.h>. The single Arduino-specific call
  * was attachInterrupt(PIN_OPTO_INPUT, isr_motor_alarm, CHANGE) at the
@@ -617,34 +616,9 @@ static void ch_start_open(uint8_t ch, uint32_t now_ms, cmd_source_t source)
  *  reverts to the travel timer, which is what a unit with no sensor does. */
 #define TARGET_MAX_AGE_MS  3000u
 
-/**
- * @brief Turn the `deadzone_m3_mm` setting into an arrival band in 0.1 %.
- *
- * The setting is millimetres because that is what the mechanism repeats to;
- * the target and the position are percentages because that is what the control
- * law speaks. The taught window size is the only thing relating them, so a unit
- * that has never been taught cannot position — hence 0 here and a refusal in
- * the caller, rather than an invented scale.
- *
- * @return the band in 0.1 %, at least 1; 0 when the window size is unknown.
- */
-static uint16_t target_band_x10(void)
-{
-    commission_status_t cs;
-    commission_status(&cs);
-    if (cs.window_mm == 0u) { return 0u; }
-
-    cfg_shadow_t cfg;
-    dm_cfg_snapshot(&cfg);
-    const int32_t mm = cfg.deadzone_m3_mm;
-    if (mm <= 0) { return 1u; }
-
-    /* band[0.1 %] = deadzone[mm] / window[mm] x 1000 */
-    int32_t band = (mm * 1000) / (int32_t)cs.window_mm;
-    if (band < 1)   { band = 1; }
-    if (band > 500) { band = 500; }   /* half the travel is not a band any more */
-    return (uint16_t)band;
-}
+/* The arrival band lives in T4 (dm_m3_deadband_x10()), because the control law
+ * needs the same number to decide whether a move is worth making. It was here
+ * first; T6 needing it too was the moment to move it, not to copy it. */
 
 /**
  * @brief Start a drive toward `want_x10` on M3, or refuse.
@@ -670,7 +644,7 @@ static bool ch_start_target(uint8_t ch, int16_t want_x10, uint32_t now_ms,
         return false;
     }
 
-    const uint16_t band = target_band_x10();
+    const uint16_t band = dm_m3_deadband_x10();
     if (band == 0u) {
         ESP_LOGW(TAG, "CMD_TARGET refused: window size unknown — teach M3 first");
         return false;

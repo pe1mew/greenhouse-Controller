@@ -12,7 +12,8 @@ files overlap, so identical rows are de-duplicated.
                  1 MOVING_OPEN, 2 OPEN, 3 MOVING_CLOSE), bit 12 WIND_OVERRIDE,
                  bit 13 MOTOR_ALARM, bit 14 CALIBRATING
   MODE           value_a = resolved step, value_b = step_t << 8 | step_rh,
-                 both int8; param 47 is a STANDBY row (2.6.0+) and is skipped
+                 both int8; params 47 (STANDBY, 2.6.0+) and 54 (M3's control
+                 law, 2.12.0) are other emitters and are skipped
   RELAY          ch = motor 1..3, value_a = ch_state_t (see firmware.RELAY_TO_CH)
   SUN            value_a = sunrise, value_b = sunset, minutes after local midnight
   SYSTEM         value_a 5 = BOOT
@@ -196,7 +197,7 @@ def load_sd_logs(paths):
             elif ch == 2:
                 bmask.append((ts, va))
         elif typ == "MODE":
-            if par == 47:
+            if par in (47, 54):   # 47 STANDBY, 54 M3's control law (2.12.0)
                 continue
             u = vb & 0xFFFF
             modes.append((ts, va, _int8(u >> 8), _int8(u)))

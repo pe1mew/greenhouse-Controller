@@ -2106,6 +2106,57 @@ dwell, the deadband, and the fault state the surfaces display.
 - **Safety unchanged (FR-WP18).** The wind close-all, the motor alarm and the boot sweep ignore
   position and may interrupt a positioning move at any point.
 
+###### Built 2026-09-20 (2.12.0): the two mode variables, and T6 on a model table
+
+**Desired** is `motor/ctrl_mode_m3`, 0 timed / 1 linear, **default 0** — for the reason
+`wpos_fitted_m3` defaults to 0: a remote update must not change how a unit drives a greenhouse
+window. One descriptor row (gh#64), so the clamp, the shadow, the boot default, the audit id and
+the published limits all followed; `check_cfg_desc.py` caught the mock before the build did.
+
+**Effective** is `dm_m3_ctrl_mode()`, in T4, and nowhere else — two places would eventually
+disagree about which law drove a window, and the SD log would then record a decision under a mode
+that was not in force. It is the setting AND a position T17 will stand behind AND the anti-flap:
+
+- **demotion is immediate** — a law positioning on a reading it cannot trust is worse than one on a
+  timer;
+- **promotion waits** for T17's stroke boundary *and* a 120 s hold-down (`M3_MODE_HOLDDOWN_MS`),
+  because a sensor that comes and goes would otherwise change the control law twice a minute. The
+  soak's `mode_changes <= 2` criterion exists because gate flapping was real;
+- **turning mode 2 OFF is immediate in both directions**: a deliberate act needs no hold-down.
+
+**The fallback needed no code.** Mode 1's law sees `VENT_WIN_PART_OPEN`, which is at neither end,
+and asks for whichever end its step wants — so a demotion with M3 part-open drives it to an end by
+the ordinary path. That is the plan's "the fallback leaves M3 at an end", obtained by the library
+already being right rather than by a special case in the fallback.
+
+**T6 holds a two-entry model table** indexed by the effective mode (`§5c` step 2), resets
+`vent_state_t` on a change (the memory belongs to the law that wrote it) and logs the change as
+**`LOG_MODE_CHANGE` param 54** — a THIRD emitter on that type, so its own `param_id` and every
+consumer's branch land in the same change. `logparser.py` decodes it; `vent_step_replay.py`,
+`plot_daily.py` and `closedloop/logdata.py` skip it exactly as they skip 47. The desired-key audit
+row is param 53, which is a `SETPOINT` row and a different thing: it records that an operator
+asked, not what the controller acted on.
+
+**T6 issues targets**, in the contract's order: a target that narrows the aperture rides with the
+closes, one that widens it with the opens, so "every narrowing move before any widening one" still
+holds with one window linear. It clamps to 0..1000, drops a move inside the deadband, and refuses
+to issue anything when the window has never been taught. **`cap` is LINEAR only in mode 2**, so a
+law can never ask for a target that nothing can drive.
+
+**The feedback half** (`last_target_x10`, `last_result`) is T6's own inference: DONE inside the
+band, FAIL_TIMEOUT anywhere else, FAIL_FAULT with no position. T2 reports a state, not an outcome,
+and an inference is honest here — a drive that ends at an end when a partial target was asked for
+*is* a failure from the law's point of view, whatever stopped it. If that proves too coarse, the
+better design is a result from T2, not a cleverer guess in T6.
+
+**One conversion, moved rather than copied.** The mm→percent deadband was born in T2 this morning;
+T6 needing the same number moved it to `dm_m3_deadband_x10()` in T4. Two conversions would
+eventually disagree, and the disagreement would present as a window that will not stop.
+
+*Not in this step:* nothing has run on hardware — 2344 is soaking — the minimum interval still has
+no key (`m3_min_interval_ms` is passed as 0), the GUI and LCD have no control for the new setting,
+and `graded` remains a candidate rather than a chosen law.
+
 ###### Built 2026-09-20 (2.12.0): T2 can hold a target
 
 `CMD_TARGET` on Q1, with `target_x10` (0..1000, 0.1 %) read for that action and no other.

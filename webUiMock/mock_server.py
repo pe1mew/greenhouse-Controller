@@ -130,6 +130,10 @@ cfg: dict = {
     # DEF_WPOS_FITTED_M3 = 0, so the mock starts with the Linear control group
     # greyed; set it to Yes in the GUI to see the rest.
     "wpos_fitted_m3":       0,
+    # 2.12.0 (plan 5b): the DESIRED control mode for M3, 0 timed / 1 linear.
+    # The mock has no position sensor to make it effective, so this only
+    # stores and publishes -- which is what the GUI needs to render it.
+    "ctrl_mode_m3":         0,
     # gh#76 (2026-09-20): the mock accepted motor/deadzone_m3 and dropped it, so
     # the GUI's deadzone field read empty and a change there did not survive a
     # reload. DEF_DEADZONE_M3_MM = 20.
@@ -314,6 +318,7 @@ NVS_MAP: dict[tuple, tuple] = {
     ("motor",   "dwell_close_m2"):  ("dwell_close_s",          1),
     ("motor",   "dwell_close_m3"):  ("dwell_close_s",          2),
     ("motor",   "wpos_fitted_m3"):  ("wpos_fitted_m3",         None),
+    ("motor",   "ctrl_mode_m3"):    ("ctrl_mode_m3",        None),   # 2.12.0
     ("motor",   "deadzone_m3"):     ("deadzone_m3_mm",      None),   # gh#76
     ("system",  "session_timeout"): ("session_timeout_min", None),
     ("system",  "ap_timeout"):      ("ap_timeout_min",      None),
@@ -718,6 +723,7 @@ CONFIG_LIMITS: dict[str, list[int]] = {
     # law -- the GUI groups it under "Linear control", which says so.
     "deadzone_m3":    [ 1, 200],
     "wpos_fitted_m3": [ 0, 1],     # gh#73 (2.9.0): is a position sensor fitted to M3
+    "ctrl_mode_m3":   [ 0, 1],     # 2.12.0: desired control mode, 0 timed / 1 linear
     "poll_interval":  [15, 120],   # 2.5.1 gh#57: FR-S03/FR-CF07, matches T5
     "session_timeout":[ 1, 1440],
     "ap_timeout":     [ 0, 1440],

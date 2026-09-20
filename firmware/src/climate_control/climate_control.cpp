@@ -108,18 +108,25 @@ static const char *TAG = "T6_CLI";
  * @warning Caller must keep channel in range [0..3]; T2 logs an error and
  *          drops out-of-range channels.
  */
-static void post_q1(cmd_action_t action, uint8_t channel)
+static void post_q1_target(cmd_action_t action, uint8_t channel, int16_t target_x10)
 {
     window_cmd_t cmd;
     memset(&cmd, 0, sizeof(cmd));
-    cmd.action  = action;
-    cmd.channel = channel;
-    cmd.source  = SRC_T6;
+    cmd.action     = action;
+    cmd.channel    = channel;
+    cmd.source     = SRC_T6;
+    cmd.target_x10 = target_x10;
 
     if (xQueueSend(Q1, &cmd, 0) != pdTRUE) {
         ESP_LOGW(TAG, "[T6] Q1 full — command action=%d ch=%u dropped",
                  (int)action, (unsigned)channel);
     }
+}
+
+/** The end-state commands, which carry no target (see CMD_TARGET's comment). */
+static void post_q1(cmd_action_t action, uint8_t channel)
+{
+    post_q1_target(action, channel, 0);
 }
 
 /* -----------------------------------------------------------------------
@@ -143,6 +150,32 @@ static void post_q1(cmd_action_t action, uint8_t channel)
  * @param step_rh        Humidity branch raw demand (may be VENT_STEP_NEUTRAL).
  * @see   log_post()
  */
+/**
+ * @brief Emit the EFFECTIVE-mode row (LOG_MODE_CHANGE, param 54).
+ *
+ * LOG_MODE_CHANGE now has THREE emitters: T6's vent step (param 0), STANDBY
+ * (param 47, gh#54) and this one. gh#54 was exactly this shape -- a second
+ * emitter whose rows every consumer decoded as the first -- so this row gets
+ * its own param_id and its parser branch in the same change, and nothing
+ * about it can be inferred from the value shape.
+ *
+ * @param linear  the mode now in force: true = mode 2 (linear M3).
+ * @param why     m3_mode_reason_t, logged verbatim.
+ */
+static void post_log_ctrl_mode(bool linear, int why)
+{
+    log_event_t evt;
+    memset(&evt, 0, sizeof(evt));
+    evt.timestamp  = dm_get_unix_time();
+    evt.event_type = (uint8_t)LOG_MODE_CHANGE;
+    evt.initiator  = (uint8_t)LOG_BY_SYSTEM;
+    evt.channel    = 3u;                 /* M3: the only window with a mode */
+    evt.param_id   = (uint8_t)LOG_PARAM_MODE_EFFECTIVE;
+    evt.value_a    = (int16_t)(linear ? 1 : 0);
+    evt.value_b    = (int16_t)why;
+    log_post(&evt);
+}
+
 static void post_log_mode(int resolved_step, int step_t, int step_rh)
 {
     log_event_t evt;
@@ -194,7 +227,23 @@ static void post_log_mode(int resolved_step, int step_t, int step_rh)
  * @param out   The model's answer: one desired end state per window.
  * @see   t2_get_window_states(), post_q1(), design/ventModelContract.md
  */
-static void apply_model_output(const vent_out_t *out, const window_state_t *actual)
+/** Is this window in motion (including the 2 s reversal gap T2 inserts)? */
+static inline bool moving(window_state_t s)
+{
+    return (s == WIN_MOVING_OPEN || s == WIN_MOVING_CLOSE);
+}
+
+/** M3's last commanded target, and how it ended: the feedback half of the
+ *  contract (§3). T6 remembers what it ASKED for; the result is inferred from
+ *  where M3 came to rest, because T2 reports a state and not an outcome.
+ *  Inference, not measurement: a drive that ends at an end when a partial
+ *  target was asked for reads as FAIL_TIMEOUT, which is what it is from the
+ *  law's point of view, whatever stopped it. */
+static int16_t       s_m3_last_target_x10 = -1;
+static vent_result_t s_m3_last_result     = VENT_RES_NONE;
+
+static void apply_model_output(const vent_out_t *out, const window_state_t *actual,
+                               bool linear, uint16_t band_x10)
 {
     /* `actual` is the SAME snapshot the model was given. Reading T2 a second
      * time here would let a window change state between the decision and its
@@ -220,16 +269,82 @@ static void apply_model_output(const vent_out_t *out, const window_state_t *actu
                      (unsigned)(ch + 1), (int)out->step, (int)a);
         }
     }
-    /* A TARGET for a digital window is a model error (contract §3). Mode 1
-     * never asks for one; the check is here because the contract says the
-     * caller enforces the actuator limits, and mode 2 will add the case where
-     * a TARGET is legitimate for M3 alone. */
+    /* A TARGET is legitimate for M3 alone, and only in mode 2. Anywhere else
+     * it is a model error: the caller enforces the actuator's limits (contract
+     * §3), which is why the refusal is loud rather than silent.
+     *
+     * Ordering: a target that NARROWS the aperture belongs with the closes and
+     * a target that WIDENS it with the opens, so "every narrowing move before
+     * any widening one" still holds with three windows and one of them linear.
+     * Both passes are above; this is where the decision is made, once, because
+     * the direction depends on M3's position and not on the action. */
     for (uint8_t ch = 0; ch < 3; ch++) {
-        if (out->win[ch].action == VENT_ACT_TARGET) {
-            ESP_LOGE(TAG, "[T6] model asked for a TARGET on ch=%u, which this build "
-                          "cannot drive — treated as HOLD", (unsigned)(ch + 1));
+        if (out->win[ch].action != VENT_ACT_TARGET) { continue; }
+
+        if (ch != 2u || !linear) {
+            ESP_LOGE(TAG, "[T6] model asked for a TARGET on ch=%u %s — treated as HOLD",
+                     (unsigned)(ch + 1),
+                     (ch != 2u) ? "which is not linear" : "in timed mode");
+            continue;
         }
+
+        int32_t want = out->win[ch].target_x10;
+        if (want < 0)    { want = 0; }       /* the caller clamps (contract §3) */
+        if (want > 1000) { want = 1000; }
+
+        /* Drop a move smaller than the deadband. T2 would refuse it as
+         * "already there", but a law is entitled to be told no here rather
+         * than to have its command vanish -- and with band 0 (never taught)
+         * no target is issued at all. */
+        dm_m3_pos_t m3;
+        const bool have = dm_m3_position(&m3);
+        if (band_x10 == 0u) {
+            ESP_LOGW(TAG, "[T6] TARGET dropped: M3's window size is unknown (teach it)");
+            continue;
+        }
+        if (have && !moving(actual[ch])) {
+            const int32_t err = (int32_t)m3.percent_x10 - want;
+            if (err >= -(int32_t)band_x10 && err <= (int32_t)band_x10) {
+                continue;                     /* inside the band: nothing to do */
+            }
+        }
+
+        post_q1_target(CMD_TARGET, (uint8_t)(ch + 1), (int16_t)want);
+        s_m3_last_target_x10 = (int16_t)want;
+        s_m3_last_result     = VENT_RES_NONE;      /* outstanding */
+        ESP_LOGI(TAG, "[T6] → CMD_TARGET ch=%u %d.%u %% (at %d.%u %%)",
+                 (unsigned)(ch + 1), (int)(want / 10), (unsigned)(want % 10),
+                 have ? (int)(m3.percent_x10 / 10) : -1,
+                 have ? (unsigned)(m3.percent_x10 % 10) : 0u);
     }
+}
+
+/**
+ * @brief Judge an outstanding target once M3 has come to rest.
+ *
+ * DONE inside the band, FAIL_TIMEOUT anywhere else -- including at an end,
+ * which is where a drive lands when the position is lost mid-move. A law reads
+ * this to tell "it went where I asked" from "it did not", which is the whole
+ * point of the feedback half; it is not a diagnosis of why.
+ */
+static void judge_m3_target(const window_state_t *actual, uint16_t band_x10)
+{
+    if (s_m3_last_target_x10 < 0 || s_m3_last_result != VENT_RES_NONE) { return; }
+    if (moving(actual[2])) { return; }
+
+    dm_m3_pos_t m3;
+    if (!dm_m3_position(&m3)) {
+        s_m3_last_result = VENT_RES_FAIL_FAULT;
+        return;
+    }
+    const int32_t err = (int32_t)m3.percent_x10 - (int32_t)s_m3_last_target_x10;
+    const int32_t band = (band_x10 > 0u) ? (int32_t)band_x10 : 0;
+    s_m3_last_result = (err >= -band && err <= band) ? VENT_RES_DONE
+                                                     : VENT_RES_FAIL_TIMEOUT;
+    ESP_LOGI(TAG, "[T6] M3 target %d.%u %% ended at %d.%u %%: %s",
+             (int)(s_m3_last_target_x10 / 10), (unsigned)(s_m3_last_target_x10 % 10),
+             (int)(m3.percent_x10 / 10), (unsigned)(m3.percent_x10 % 10),
+             (s_m3_last_result == VENT_RES_DONE) ? "done" : "not reached");
 }
 
 /* -----------------------------------------------------------------------
@@ -250,7 +365,7 @@ static void apply_model_output(const vent_out_t *out, const window_state_t *actu
  */
 static void fill_model_input(vent_in_t *in, const cfg_shadow_t *cfg,
                              const sensor_reading_t *meas,
-                             const window_state_t *actual)
+                             const window_state_t *actual, bool linear)
 {
     memset(in, 0, sizeof(*in));
 
@@ -283,8 +398,13 @@ static void fill_model_input(vent_in_t *in, const cfg_shadow_t *cfg,
     in->cr_priority = (uint8_t)cfg->cr_priority;
     in->rh_ctrl_en  = (cfg->rh_ctrl_en != 0);
 
-    in->m3_deadzone_x10    = 0u;   /* mode 2 */
-    in->m3_min_interval_ms = 0u;   /* mode 2, and its key does not exist yet */
+    /* The law is told the deadband so it does not ask for a move T2 would
+     * refuse as "already there". It is a percentage here and millimetres in
+     * the setting; T2 converts it the same way, from the taught window size,
+     * and a law that cannot convert it would otherwise invent a scale. 0 means
+     * "unknown", which every law must treat as "make no small moves". */
+    in->m3_deadzone_x10    = dm_m3_deadband_x10();   /* one conversion, in T4 */
+    in->m3_min_interval_ms = 0u;   /* no key yet: §5b's linear dwell */
 
     /* The two enums share their ordinals by design (vent_model.h), and T2
      * gains a part-open state in this release, so pin the mapping here: a
@@ -306,14 +426,13 @@ static void fill_model_input(vent_in_t *in, const cfg_shadow_t *cfg,
 
     /* M3's position, read through T4's pass-through (plan §5b). Three notes:
      *
-     *  - **The capability stays DIGITAL.** A window is LINEAR only when
-     *    something can actually drive it to a target, and T2 has no target
-     *    path yet: a law told M3 is linear would ask for VENT_ACT_TARGET, which
-     *    apply_model_output() can only refuse. The effective mode flips this,
-     *    in the step that gives T2 the target.
-     *  - **The position is filled anyway**, so it is carried and soaked on the
-     *    real path before anything depends on it. `stepped` reads only the
-     *    window STATE, so this changes no decision today.
+     *  - **The capability is LINEAR only in mode 2.** It says what the
+     *    ACTUATOR may be asked for, and a target is drivable only when the
+     *    effective mode says so; in mode 1 a law told LINEAR would ask for a
+     *    VENT_ACT_TARGET that apply_model_output() could only refuse.
+     *  - **The position is filled in either mode**, so mode 1 carries and
+     *    soaks the real path before anything depends on it. `stepped` reads
+     *    only the window STATE, so this changes no decision there.
      *  - **`pos_age_ms` matters more than the position.** T17 stops polling
      *    while M3 rests, so a resting reading is minutes old by design; a law
      *    that positions must judge the age, never assume freshness. */
@@ -321,7 +440,14 @@ static void fill_model_input(vent_in_t *in, const cfg_shadow_t *cfg,
     if (dm_m3_position(&m3)) {
         in->win[2].pos_x10    = (int16_t)m3.percent_x10;
         in->win[2].pos_age_ms = m3.age_ms;
+        /* LINEAR only in mode 2. The capability says what the ACTUATOR can be
+         * asked for, and a target is only drivable when the effective mode
+         * says so -- a law told LINEAR in mode 1 would ask for a
+         * VENT_ACT_TARGET that apply_model_output() could only refuse. */
+        if (linear) { in->win[2].cap = VENT_CAP_LINEAR; }
     }
+    in->win[2].last_target_x10 = s_m3_last_target_x10;
+    in->win[2].last_result     = s_m3_last_result;
 }
 
 /* -----------------------------------------------------------------------
@@ -359,7 +485,18 @@ void task_climate_control(void *pvParameters)
      * -- and T6 owns the state it keeps between calls (contract §2). The reset
      * at boot replaces the two step ints this task used to initialise here;
      * T2's boot CLOSE_ALL still ensures the windows are CLOSED. */
-    const vent_model_t *model = vent_model_stepped();
+    /* The model table (plan §5c step 2). Two entries, indexed by the effective
+     * mode: 0 timed, 1 linear. Selecting by index rather than by `if` is what
+     * makes a third law a row here and nothing else. */
+    const vent_model_t *const k_models[2] = { vent_model_stepped(),
+                                              vent_model_graded() };
+    m3_mode_reason_t mode_why = M3_MODE_BY_SETTING;
+    bool linear = dm_m3_ctrl_mode(&mode_why);
+    const vent_model_t *model = k_models[linear ? 1 : 0];
+    /* -1 = "not logged yet", so the FIRST cycle writes the mode row whatever
+     * the mode is. Which law a boot came up under is exactly the question a
+     * reader of the log asks first, and it is not inferable from silence. */
+    int logged_mode = -1;
     vent_state_t vstate;
     model->reset(&vstate);
 
@@ -468,6 +605,29 @@ void task_climate_control(void *pvParameters)
         }
 
         /* ----------------------------------------------------------------
+         * 3b. The effective mode. A change of law is a change of state: the
+         *     model's memory belongs to the law that wrote it, so it is reset
+         *     here rather than carried across (contract §2). Mode 1 has no
+         *     partial state, so a demotion leaves M3 wherever it stopped --
+         *     and `stepped` then asks for whichever END its step wants,
+         *     because VENT_WIN_PART_OPEN is at neither. Nothing special is
+         *     needed to "drive it to an end": the ordinary law does it.
+         * ---------------------------------------------------------------- */
+        const bool linear_now = dm_m3_ctrl_mode(&mode_why);
+        if (linear_now != linear) {
+            linear = linear_now;
+            model  = k_models[linear ? 1 : 0];
+            model->reset(&vstate);
+            last_logged_step = 0;
+        }
+        if ((int)linear != logged_mode) {
+            logged_mode = (int)linear;
+            ESP_LOGW(TAG, "[T6] control law: %s (reason %d)",
+                     model->name, (int)mode_why);
+            post_log_ctrl_mode(linear, (int)mode_why);
+        }
+
+        /* ----------------------------------------------------------------
          * 4-6. Ask the law. Day/night selection, the hysteresis floor and the
          *      validity flags are the caller's job (contract §3a) and live in
          *      fill_model_input(); the decision itself is the model's.
@@ -480,7 +640,9 @@ void task_climate_control(void *pvParameters)
         vent_in_t  in;
         vent_out_t out;
         memset(&out, 0, sizeof(out));
-        fill_model_input(&in, &cfg, &meas, actual);
+        const uint16_t band_x10 = dm_m3_deadband_x10();
+        judge_m3_target(actual, band_x10);
+        fill_model_input(&in, &cfg, &meas, actual, linear);
         model->step(&in, &vstate, &out);
 
         ESP_LOGI(TAG,
@@ -502,7 +664,7 @@ void task_climate_control(void *pvParameters)
          * byte-identical to what this task wrote before the model moved out:
          * value_a = the resolved step, value_b = step_t << 8 | step_rh.
          * ---------------------------------------------------------------- */
-        apply_model_output(&out, actual);
+        apply_model_output(&out, actual, linear, band_x10);
         if ((int)out.step != last_logged_step) {
             post_log_mode((int)out.step, (int)out.step_t, (int)out.step_rh);
             last_logged_step = (int)out.step;

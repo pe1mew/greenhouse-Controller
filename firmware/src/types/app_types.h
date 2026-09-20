@@ -326,6 +326,23 @@ typedef enum {
     LOG_PARAM_BUS_FAIL       = 51,  /**< transactions failed this interval (BUSY excluded) */
     LOG_PARAM_BUS_MAXFAIL    = 52,  /**< longest consecutive-failure run; omitted when 0 */
 
+    /* 2.12.0 (plan §5b) — M3's control mode. */
+    LOG_PARAM_CTRL_MODE_M3   = 53,  /**< motor/ctrl_mode_m3 — old → new (0 timed, 1 linear) */
+    LOG_PARAM_MODE_EFFECTIVE = 54,  /**< LOG_MODE_CHANGE emitter C: the EFFECTIVE
+                                     *   mode changed. value_a = 0 timed / 1
+                                     *   linear; value_b = why it moved:
+                                     *     0 the operator's setting,
+                                     *     1 no trusted position (demotion),
+                                     *     2 the position came back and the
+                                     *       stroke boundary allowed it,
+                                     *     3 held down after a demotion.
+                                     *   LOG_MODE_CHANGE has three emitters
+                                     *   since this release — T6's vent step
+                                     *   (param 0), STANDBY (param 47, gh#54)
+                                     *   and this one. Every consumer must
+                                     *   branch on param_id; decoding by
+                                     *   value shape is what gh#54 was. */
+
     /* ── ALARM event-subtype discriminators (2.3.0, gh#45) ─────────────────
      * NOT config C-numbers. Reserved band 240..254, kept far above the
      * config space so the two can never collide. Stamped into `param` on

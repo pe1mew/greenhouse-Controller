@@ -168,7 +168,8 @@ def load_logs(temp_dir: Path):
                     # the plot, with value_b = 0 unpacked as two zero demands.
                     # Skip it. Rows from firmware before 2.6.0 carry param 0
                     # and remain indistinguishable.
-                    if par == 47:
+                    # 2.12.0 adds param 54 (emitter C, M3's control law).
+                    if par in (47, 54):
                         continue
                     # value_a = resolved_step
                     # value_b = packed: high byte = step_t (int8), low byte = step_rh (int8)
