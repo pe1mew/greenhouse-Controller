@@ -2044,6 +2044,17 @@ The operator's principle is a **single source of truth**, with no information ou
 paths. Decided: **T4 exposes a pass-through accessor** that calls T17 and returns the reading with
 its age. The call graph is T2/T6 → T4 → T17, and **nothing is buffered**.
 
+**Built 2026-09-20 (2.12.0):** `dm_m3_position(dm_m3_pos_t *)` in `data_manager.h`. It calls
+`dm_wpos_fitted_m3()`, `windowpos_task_ctrl_mode()` and `windowpos_task_snapshot()` on the caller's
+stack and keeps nothing: T4 has no position field. `trusted` requires all three of the operator's
+`wpos_fitted_m3`, T17's published POSITION law and the reading's own `sensor_fault` being clear;
+`age_ms` is the age of the SAMPLE, not of the call. T17 hands its reading out under a short
+spinlock, so the call is safe from T2's stroke loop and T6's decision. **T6 fills `pos_x10` and
+`pos_age_ms` from it already** — but keeps `cap` DIGITAL, because a window is LINEAR only once
+something can drive it to a target, and a law told otherwise would ask for a `VENT_ACT_TARGET` that
+`apply_model_output()` can only refuse. So the path is carried and soaked before anything depends
+on it, and `stepped` reads only the window state, so no decision changes.
+
 **Why T4 must not hold its own copy of the position.** T4's loop waits on Q6 with a 1 s timeout, so
 a T4-held reading is up to ~1 s old *on top of* T17's own sample age — and for positioning that age
 is overshoot (age × leaf speed):
@@ -2094,6 +2105,43 @@ dwell, the deadband, and the fault state the surfaces display.
   dwell with motor chatter — count motor starts per hour in the soak.
 - **Safety unchanged (FR-WP18).** The wind close-all, the motor alarm and the boot sweep ignore
   position and may interrupt a positioning move at any point.
+
+###### The two surveys that step needs, done 2026-09-20
+
+**Every Q1 producer, enumerated** (`grep -rn 'xQueueSend(Q1\|post_q1('`). Five, as the plan said —
+but **the web GUI is not one of them**, which is the opposite of Q4's shape and worth knowing
+before designing the target:
+
+| Task | File | What it posts | Source tag |
+|---|---|---|---|
+| **T6** climate | `climate_control.cpp` | `CMD_OPEN` / `CMD_CLOSE`, one channel | `SRC_T6` |
+| **T3** safety | `safety_monitor.cpp` | `CMD_CLOSE_ALL`, `CMD_RESUME` (×2) | `SRC_T3` |
+| **T8** LCD | `ui_display.cpp` | `CMD_OPEN` / `CMD_CLOSE` from the admin manual-motor menu | `SRC_OPERATOR_MANUAL` |
+| **T17** commissioning | `commission.cpp` | `CMD_OPEN` / `CMD_CLOSE` on ch 3, the teach's legs | `SRC_OPERATOR_MANUAL` |
+| **T4** data manager | `data_manager.cpp` | `CMD_RECALIBRATE` | `SRC_OPERATOR_MANUAL` |
+
+There is **no manual-window route in the web server at all**: manual motor control is the LCD menu
+and the commissioning teach. So a new target action reaches T2 from T6 alone at first, and the four
+other producers keep posting end-state commands — which is the argument for a separate action
+rather than an overloaded `CMD_OPEN`, restated from the producers rather than from principle.
+
+**`SENSOR_HR ch2` has room after all**, which changes this section's cost estimate. The mask
+(`t2_get_window_bitmask()`, decoded in `logparser.py`) is:
+
+| Bits | Meaning |
+|---|---|
+| 0-1, 2-3, 4-5 | M1, M2, M3 state — **all four 2-bit codes are used** (CLOSED, MOVING_OPEN, OPEN, MOVING_CLOSE) |
+| **6-11** | **free** |
+| 12, 13, 14 | WIND, ALARM, CAL |
+| **15** | **free** |
+| `value_b` | **0 — the whole word is free** |
+
+So a fifth state must not widen the 2-bit fields: that would shift M2's and M3's bits and silently
+re-decode every archived row. It can instead take **one spare bit per channel** (6-8, say, as a
+"part open" qualifier on an otherwise valid code), leaving the four existing codes where they are,
+and M3's actual position fits in the unused `value_b`. `logparser.py` and `plot_daily.py` still
+change in the same commit, but appending is possible without moving anything — which was the real
+worry.
 
 ##### What T6 needs
 

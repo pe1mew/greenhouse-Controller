@@ -299,8 +299,28 @@ static void fill_model_input(vent_in_t *in, const cfg_shadow_t *cfg,
         in->win[ch].state           = (vent_win_state_t)actual[ch];
         in->win[ch].cap             = VENT_CAP_DIGITAL;
         in->win[ch].pos_x10         = -1;
+        in->win[ch].pos_age_ms      = 0u;
         in->win[ch].last_target_x10 = -1;
         in->win[ch].last_result     = VENT_RES_NONE;
+    }
+
+    /* M3's position, read through T4's pass-through (plan §5b). Three notes:
+     *
+     *  - **The capability stays DIGITAL.** A window is LINEAR only when
+     *    something can actually drive it to a target, and T2 has no target
+     *    path yet: a law told M3 is linear would ask for VENT_ACT_TARGET, which
+     *    apply_model_output() can only refuse. The effective mode flips this,
+     *    in the step that gives T2 the target.
+     *  - **The position is filled anyway**, so it is carried and soaked on the
+     *    real path before anything depends on it. `stepped` reads only the
+     *    window STATE, so this changes no decision today.
+     *  - **`pos_age_ms` matters more than the position.** T17 stops polling
+     *    while M3 rests, so a resting reading is minutes old by design; a law
+     *    that positions must judge the age, never assume freshness. */
+    dm_m3_pos_t m3;
+    if (dm_m3_position(&m3)) {
+        in->win[2].pos_x10    = (int16_t)m3.percent_x10;
+        in->win[2].pos_age_ms = m3.age_ms;
     }
 }
 

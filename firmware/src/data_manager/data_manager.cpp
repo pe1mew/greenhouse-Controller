@@ -36,7 +36,9 @@
 #include "littlefs_storage.h"
 #include "sd_storage.h"               /* 2.0.2 (gh#31) — SD state in status JSON */
 #include "../system_id/system_id.h"   /* unit_id at boot (gh#17, since 1.18.3) */
-#include "../window_pos/window_pos_task.h" /* 6.3 — M3 opening for the status payload */
+#include "../window_pos/window_pos_task.h" /* 6.3 — M3 opening for the status payload;
+                                             * 2.12.0 — and dm_m3_position(), the
+                                             * control path's pass-through */
 #include "modbus_rtu.h"                    /* gh#66 — hourly per-slave bus KPIs */
 
 /* alpha.6.7 — dropped vestigial #include <Arduino.h> and <WiFi.h>.
@@ -1666,6 +1668,57 @@ void dm_meas_snapshot(sensor_reading_t *out, bool *valid_out)
  *         (s_asset_ver_loaded / s_asset_ver) — the manifest doesn't change
  *         at runtime, only across an OTA reboot.
  */
+/* -----------------------------------------------------------------------
+ * dm_m3_position() — T2/T6 → T4 → T17, with nothing kept in between
+ *
+ * Plan §5b. This is a pass-through by design, not an oversight: T4 must not
+ * hold the position, because a held copy ages by up to T4's own 1 s loop and
+ * that age is overshoot. Everything here is read straight from T17 on the
+ * calling task's stack.
+ *
+ * The three things that decide `trusted`, and why each is needed:
+ *  - the operator's `wpos_fitted_m3` (gh#73) — a gate that is merely quiet
+ *    cannot tell "no sensor fitted" from "the fitted one stopped answering";
+ *  - T17's published control law — POSITION only with a sensor it trusts, and
+ *    the gate already folds in absent, refused, faulted, bit 4 and BENCH;
+ *  - the reading's own `sensor_fault`, which is set by the wiper-open bit OR
+ *    the 65535 sentinel. A caller checking one of those silently uses a
+ *    6553.5 mm position, which is why the driver decodes both into one flag.
+ * ----------------------------------------------------------------------- */
+bool dm_m3_position(dm_m3_pos_t *out)
+{
+    if (out == NULL) { return false; }
+    memset(out, 0, sizeof(*out));
+
+    const bool fitted = dm_wpos_fitted_m3();
+
+    windowpos_gate_reason_t why = WPOS_GATE_OK;
+    const bool pos_ctrl = (windowpos_task_ctrl_mode(&why) == WPOS_CTRL_POSITION);
+    out->position_ctrl  = fitted && pos_ctrl;
+
+    windowpos_reading_t wr = {};
+    uint32_t age_ms = 0u;
+    if (!fitted || !windowpos_task_snapshot(&wr, &age_ms)) {
+        return false;                       /* out->trusted stays false */
+    }
+
+    out->at_end_sensor  = wr.at_end_sensor && !wr.both_end_sensors;
+    out->age_ms         = age_ms;
+    out->rate_mm_s_x10  = wr.rate_mm_s_x10;
+
+    if (!pos_ctrl || wr.sensor_fault) {
+        /* A reading exists but must not be used for position. The rate and the
+         * end sensor stay, because 2.10.0's verdicts read them through their
+         * own path and a caller may still want "is it moving". */
+        return false;
+    }
+
+    out->percent_x10 = wr.percent_x10;
+    out->mm_x10      = wr.opening_mm_x10;
+    out->trusted     = true;
+    return true;
+}
+
 void dm_status_snapshot(status_snapshot_t *out)
 {
     if (out == NULL) { return; }

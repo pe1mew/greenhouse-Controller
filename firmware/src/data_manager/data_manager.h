@@ -306,6 +306,22 @@ int32_t dm_get_poll_interval_s(void);
 bool dm_cfg_loaded(void);
 
 /**
+ * @brief M3's position as the control path reads it (see dm_m3_position()).
+ *
+ * A snapshot with its own age, not a running value. Every position field is
+ * meaningless unless `trusted`.
+ */
+typedef struct {
+    bool     trusted;        /**< Fitted, gate open, no sensor fault, a reading exists. */
+    bool     position_ctrl;  /**< T17's published law is POSITION, not TIMED. */
+    bool     at_end_sensor;  /**< Encoder bit 3 at this sample. Both ends report it. */
+    uint16_t percent_x10;    /**< 0..1000, 0.1 %. */
+    uint16_t mm_x10;         /**< Opening, 0.1 mm. */
+    int16_t  rate_mm_s_x10;  /**< Signed: + opening, − closing. */
+    uint32_t age_ms;         /**< Since the SAMPLE was taken. */
+} dm_m3_pos_t;
+
+/**
  * @brief Is a position sensor fitted to M3? (`motor/wpos_fitted_m3`, gh#73)
  *
  * Cheap enough to call every T17 tick. Thread-safe (MX4, 100 ms timeout). On a
@@ -313,6 +329,32 @@ bool dm_cfg_loaded(void);
  * default, so a busy lock cannot switch a fitted sensor off.
  */
 bool dm_wpos_fitted_m3(void);
+
+/**
+ * @brief M3's position, for the CONTROL path: a pass-through, never a copy.
+ *
+ * Plan §5b, "The position path: one owner, one copy". The call graph is
+ * T2/T6 → T4 → T17 and **nothing is buffered on the way**: T4 holds no copy of
+ * the position and adds no age of its own. A buffered hop would cost up to a
+ * further ~1 s of age (T4's loop waits on Q6 with a 1 s timeout), and age is
+ * overshoot — on the rig's 13 s traverse that hop alone is ~9 % of the stroke
+ * against FR-WP04/FR-WP05's 1 %. It is also this codebase's own recurring
+ * defect: gh#51 and gh#52 were each a cached duplicate of a value another task
+ * owned.
+ *
+ * Cheap and non-blocking: T17 hands the reading out under a short spinlock, so
+ * this is safe to call from T2's stroke loop and from T6's decision.
+ *
+ * `age_ms` is measured from the SAMPLE, not from this call, and T17 stops
+ * polling entirely while M3 is at rest — a resting window's reading is minutes
+ * old by design. A caller positioning a leaf must check the age; a caller
+ * asking "where did it end up" need not.
+ *
+ * @param out  Caller-allocated, zero-filled on entry. `trusted` false means
+ *             every position field is meaningless, not zero.
+ * @return     The value of `out->trusted`, so callers may branch on the call.
+ */
+bool dm_m3_position(dm_m3_pos_t *out);
 
 /**
  * @brief Fill an aggregated controller status snapshot.
