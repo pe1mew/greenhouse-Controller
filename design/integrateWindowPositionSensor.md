@@ -2586,6 +2586,42 @@ worry.
   slow mechanism. A lead right for the rig is therefore too large for 5C88 by some factor between
   1 and 13 that nobody has measured — so it must be derived per term or learned from each
   arrival, not written down as a constant.
+
+  **Fixed the same day — and the first run's numbers were wrong too.** They came from
+  `/api/status`, which carries T17's CACHED reading, and T17 read "at once" after a stroke:
+  after a targeted stop that is mid-coast, up to 1.0 % short of where the leaf comes to rest
+  (six probe stops read LIVE; the true directional offset was ±2 %, not ±0.75 %). Two changes:
+  - **T17 reads the resting position** one second plus one measurement window after every
+    stroke (`SETTLE_BASE_MS`), and publishes and logs THAT; before, the mid-coast value went to
+    the GUI, to T6 and into the settle row for 30 s. Fail-first bit 128.
+  - **T2 leads the overrun**: it cuts the relay on reaching an AIM, the target less the
+    expected overrun in the direction of travel, judged only on readings sampled after the
+    drive began. The overrun is **learned per direction** from every settled stop that ran at
+    speed (it does not depend on the lead used, so each stop measures the right lead directly),
+    from a default of 420 ms of travel scaled by `travel_m3`; RAM only; shown in the diag's `t2`
+    block. Fail-first bit 64.
+
+  `bin/at_wp02.py` now reads each resting position LIVE 2.5 s after the stop, and a `settle`
+  check requires the published position to match it then (≤ 0.3 %). **On 2344:**
+
+  | Build | AT-WP02 spread | hysteresis | settle (worst) | AT-WP03 |
+  |---|---|---|---|---|
+  | first run (cached reads, old rules) | 3.0 % *(not the truth)* | +1.5 % | — | PASS |
+  | fail-first bits 64 + 128 | **3.8 % FAIL** | +3.0 % | **0.9 % FAIL** | PASS |
+  | fixed | **1.8 % PASS** | −0.1 % | **0.2 % PASS** | PASS |
+
+  The fixed run learned **3.56 % opening, 2.66 % closing** (five stops each, from the 3.23 %
+  default): paying the flap out overruns more than lifting it, the asymmetry §3 of the
+  requirements predicted. 1.8 % includes that learning; **a second run with the leads learned (to
+  11 / 10 stops) gave 2.5 % — FAIL**, with mean −0.1 %, hysteresis −0.1 % and `settle` 0.1 %. The
+  directional offset is gone; what remains is **per-stop scatter, σ ≈ 0.55-0.75 %** over the two
+  runs, so ten stops span ~2-2.5 % and AT-WP02 passes or fails by chance on this rig. Part of it
+  is quantization (T17 samples every 100 ms, 0.77 % of the rig's 13 s stroke, a share that is
+  constant in % because T17's poll scales with `travel_m3`); the rest (~0.6 %) is timing and run-on
+  jitter, which — if it is time-based, as it should be — is ~13x smaller in % on 5C88's 176 s
+  window. **Not verified:** the requirements already name AT-WP02 on the real window as the test
+  that matters, and 5C88 has no sensor yet (gh#77). Extrapolating between T17's readings in T2
+  would reduce the timing share on the rig; it is not done.
 - **5C88:** the sensor bought, fitted and taught
   ([gh#77](https://github.com/pe1mew/greenhouse-Controller/issues/77)). Until then
   `wpos_fitted_m3` = 0 keeps mode 2 unavailable there, which is the right default.

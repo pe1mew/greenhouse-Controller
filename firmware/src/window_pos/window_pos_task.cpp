@@ -134,6 +134,22 @@ static const char *TAG = "T17";
  */
 #define IDLE_READ_MS        30000u
 
+/**
+ * How long after a stroke ends the position is read as where the leaf RESTS:
+ * this plus one measurement window (`40002`, derived from `travel_m3`), so the
+ * window the device reports over lies wholly after the leaf stopped.
+ *
+ * Until 2026-09-21 the read came AT ONCE, and for a targeted stop "at once" is
+ * mid-coast: on 2344 it landed up to 1.0 % of the stroke short of where the
+ * leaf came to rest, and that value was then published -- to the GUI, to T6's
+ * next decision, to T2 -- and logged as the settle row, for the 30 s until the
+ * next idle read. A full-travel stroke had always stopped at its switch several
+ * seconds before T2's timer ran out, which is why nobody saw it before targets.
+ * T2 learns its overrun lead from this read (relay_controller.cpp,
+ * LEAD_SETTLED_MS). Fail-first bit 128 restores the read at once.
+ */
+#define SETTLE_BASE_MS      1000u
+
 /** SENSOR_HR channel for position samples (0/1/2 taken; plan 3a). */
 #define LOG_CH_POSITION         3u
 /** LOG_ALARM channel for position events (4 = T/RH, 5 = wind; plan 3b). */
@@ -1316,6 +1332,8 @@ void task_window_pos(void *pvParameters)
     uint32_t last_idle_read_ms = 0u;
     bool     resample_soon     = false;   /* an orphan abort wants a prompt re-read */
     bool     settle_row_due    = false;   /* a stroke just ended: log where the leaf settled */
+    bool     settle_wait       = false;   /* ...once it has: the settle read is scheduled */
+    uint32_t settle_at_ms      = 0u;      /* ...for then (SETTLE_BASE_MS + one window) */
 
     /* gh#72: the fault checks judge one DRIVE at a time, not one stroke. A
      * stroke is M3 away from rest; a drive is one energisation of one relay,
@@ -1451,10 +1469,19 @@ void task_window_pos(void *pvParameters)
 
         if (!m3_travelling()) {
             if (was_travelling) {
-                /* The stroke just ended: read at once, and log where the leaf
-                 * settled (rest_row_due()). */
+                /* The stroke just ended: read where the leaf SETTLED, once it
+                 * has (SETTLE_BASE_MS plus one measurement window), publish
+                 * that, and log it (rest_row_due()). Not at once: after a
+                 * targeted stop the leaf is still coasting. */
                 settle_row_due = true;
-                resample_soon  = true;
+                if (FF212_SETTLE) {
+                    resample_soon = true;          /* the read at once, until 2026-09-21 */
+                } else {
+                    windowpos_derived_t sd;
+                    const uint32_t win = windowpos_task_derived(&sd) ? sd.window_ms : 0u;
+                    settle_wait  = true;
+                    settle_at_ms = now_ms() + SETTLE_BASE_MS + win;
+                }
                 /* 2.10.0: the drive in progress ended here. At rest in its
                  * target state means T2's timer ran out, so it is judged. At
                  * rest anywhere else -- a motor alarm leaves M3 UNKNOWN -- it
@@ -1477,7 +1504,9 @@ void task_window_pos(void *pvParameters)
             rest_seen      = true;      /* at rest, gate open: the next stroke may promote */
             /* Keep reading at rest: the gate, the events, the orphan check and
              * the teach's STANDBY release depend on it (IDLE_READ_MS). */
-            bool idle_sample_due = resample_soon ||
+            const bool settle_due = settle_wait &&
+                (int32_t)(now_ms() - settle_at_ms) >= 0;
+            bool idle_sample_due = resample_soon || settle_due ||
                 (uint32_t)(now_ms() - last_idle_read_ms) >= IDLE_READ_MS;
             /* A running teach needs readings at rest as well: to see bit 5
              * appear before the first leg, to start each next leg when a
@@ -1488,15 +1517,22 @@ void task_window_pos(void *pvParameters)
             if (idle_sample_due) {
                 last_idle_read_ms = now_ms();
                 resample_soon     = false;
+                /* A read before the settle time (an orphan re-read, a teach's
+                 * prompt read) sees the leaf still coasting: it is published
+                 * like any read, but it is not where the leaf came to rest.
+                 * The settle read itself gets one attempt; if it fails, the
+                 * next idle read is the settle row, as before. */
+                const bool early = settle_wait && !settle_due;
+                if (settle_due) { settle_wait = false; }
                 windowpos_reading_t ir;
                 const windowpos_status_t ist = t17_read(WINDOWPOS_DEFAULT_ADDR, &ir);
                 if (ist == WINDOWPOS_OK) {
                     check_restart(WINDOWPOS_DEFAULT_ADDR);
                     emit_events(&ir, WINDOWPOS_DEFAULT_ADDR);
-                    if (rest_row_due(&ir, settle_row_due, stroke_deadzone_x10)) {
+                    if (rest_row_due(&ir, settle_row_due && !early, stroke_deadzone_x10)) {
                         log_position(&ir);
                     }
-                    settle_row_due = false;
+                    if (!early) { settle_row_due = false; }
                     resample_soon = check_orphan_teach(&ir, WINDOWPOS_DEFAULT_ADDR);
                     commission_tick(&ir, now_ms());
                     portENTER_CRITICAL(&s_mux);

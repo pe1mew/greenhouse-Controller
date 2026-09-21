@@ -47,6 +47,7 @@ Hooks are the *symptom*, not the title — you rarely know the cause when you ar
 Entries stay in reverse-chronological order below; this index is the only grouped view.
 
 ### Windows, climate & manual control (T2, T6, T8)
+- **2026-09-21** — a positioning test (and the GUI, and T6) read M3's position from T17's CACHE, sampled mid-coast after a targeted stop and not refreshed for 30 s; the live resting position was up to 1 % further [RESOLVED 2.12.0: settle read; harnesses read live]
 - **2026-09-21** — after mode 2 leaves M3 part-open, mode 1 can neither close nor open it (T6's apply filter predates `PART_OPEN`: the law asked, T6 dropped it); no target stage could see it, all enter by the bench hook [RESOLVED 2.12.0]
 - **2026-09-21** — an acceptance harness aborts twice on a marginal link (it loses the REPLY of a command that landed); the second abort was blamed on a dwell before its traceback was read
 - **2026-09-20** — a stall fault on a drive that could not move: M3 part-open inside the closed band but off its switch (rule 1's at-end exemption predates `PART_OPEN`) [RESOLVED 2.12.0, 2026-09-21: judged at the grace expiry]
@@ -2394,3 +2395,28 @@ before any publish.
 
 **Rule:** *a version string is evidence of content only if every content change moves it.* A
 reused `-bench` suffix does not, so for a bench push compare the payload itself.
+
+## 2026-09-21 — a positioning test read the controller's own cached position, taken mid-coast
+
+**Problem:** AT-WP02's first run reported ten stops at 50 % landing at 48.4-51.4 % — a
+spread of 3.0 % and a directional hysteresis of 1.5 %. Plausible numbers, and they were the
+wrong ones: read LIVE after the leaf had come to rest, six stops landed at 47.6-52.3 %,
+a hysteresis of ~3.9 %. The whole first analysis ("the leaf coasts ~2 %") was built on them.
+
+**Root cause:** `/api/status` carries **T17's cached reading**, and T17 read "at once" when a
+stroke ended, then not again for 30 s (the idle cadence). That read was written for full-travel
+strokes, which stop at their end switch seconds before T2's timer runs out, so "at once" was
+already at rest. A **targeted** stop cuts the relay mid-travel and the leaf coasts ~0.3-0.4 s
+more: "at once" is mid-coast. The harness read the cache 1 s after the stop and got the
+mid-coast value — and so did the GUI, T6's next decision and T17's own "where the leaf
+settled" log row, for 30 s.
+
+**Fix:** T17 reads the resting position one second plus one measurement window after every
+stroke (`SETTLE_BASE_MS`; fail-first bit 128 restores the read at once). `bin/at_wp02.py`
+measures each resting position LIVE, 2.5 s after the stop, and checks separately that what the
+unit then publishes matches it (`settle`).
+
+**Rule:** *before judging a controller by a number it publishes, ask when that number was
+sampled.* A cache is a claim about the past. `GET /api/diag/windowpos` has both: its top-level
+fields are a live device read, its `t17` block is the cache (with `age_ms`) — measure with the
+first, and test the second against it.

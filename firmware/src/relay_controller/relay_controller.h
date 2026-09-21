@@ -186,3 +186,21 @@ int16_t t2_get_window_bitmask(void);
  * @param ch 0-based channel.
  */
 uint32_t t2_ms_since_move(uint8_t ch);
+
+/**
+ * @brief M3's overrun lead (2026-09-21): how far before a target T2 cuts the
+ *        relay, because the leaf comes to rest that far past the cut.
+ *
+ * Per direction, learned from every settled targeted stop that ran at speed,
+ * and starting from a default scaled by `travel_m3`. RAM only. Read by the
+ * diag route so a test can see what the stop rule is using.
+ */
+typedef struct {
+    int16_t  open_x100;      /**< Lead in force for an opening stop, 0.01 %. */
+    int16_t  close_x100;     /**< ...and for a closing one. */
+    int16_t  default_x100;   /**< The unlearned default for `travel_m3` now. */
+    uint16_t learned_open;   /**< Stops each has learned from; 0 = the default. */
+    uint16_t learned_close;
+} t2_m3_lead_t;
+
+void t2_get_m3_lead(t2_m3_lead_t *out);

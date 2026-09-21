@@ -56,6 +56,15 @@ Three things the refactor had to preserve, and how each was shown:
 
 A part-open stop can leave M3 at the closed end's **position** but short of its **switch**: the encoder reads 0 about 1.2 s of travel before the closed end sensor makes. T17's rule 1 excused a drive toward the end the leaf sits at only if the switch was made **and** the position was at that end on **every** sample from the first — so a CLOSE from there reported a stall that was not one (2344, 2026-09-20: `stall_faults` 1). With T6 now able to close a part-open M3, ordinary operation reaches that state, so it is fixed in this release: the position must never have **left** the target end's region, and the switch must be made **at the verdict**. A leaf stuck short of its switch, and a shorted wiper, are still reported (`bin/at_wp_rule1.py`, fail-first bit 32). Nothing acts on rule 1; it reports.
 
+### Targeted stops land on the target (FR-WP05)
+
+AT-WP02 found that the same commanded aperture did not give the same physical one: stops at 50 % rested ~2 % high when opening and ~2 % low when closing. Two causes, both fixed:
+
+- **T17 published a mid-coast position.** It read "at once" after a stroke, which after a targeted stop is while the leaf still coasts (up to 1 % short on the rig), and published that for 30 s — to the GUI, to T6 and into the "where it settled" log row. It now reads **one second plus one measurement window** after every stroke.
+- **T2 did not lead the overrun.** The leaf rests ~3 % of the stroke past where the relay is cut; T2 cut on *entering* the arrival band. It now cuts at an **aim**, the target less the expected overrun, **learned per direction** from every settled stop (it starts from a default scaled by `travel_m3`, and keeps it in RAM). The learned values are in `GET /api/diag/windowpos` (`t2`).
+
+A move shorter than the lead is cut on its first reading of the drive: the shortest move the mechanism can make, still unmeasured (Known limitations).
+
 ### Log encodings — all appended, all with their consumers
 
 | Encoding | Change |
@@ -105,7 +114,7 @@ The bench image is 1 417 456 B. Both control laws are compiled in: `stepped` dri
 | **`bin/at_wp_rule1.py`** — rule 1's exemption, four stages, fail-first | fail-first bit 32: `headroom` **FAILS** (`stall_faults` +1, this incident's signature), the other three pass; fixed build: **all four PASS** (the late switch excused; a leaf short of its switch and a shorted wiper still reported) — 2344, 2026-09-21 |
 | **`bin/at_wp_confirm.py`** — 2.10.0's nine stages, regression for the rule-1 change | **all nine PASS** on the fixed build (`atend`: excused, `at_end_exempt` +1, no stall; `race`: rule 2 still trips) — 2344, 2026-09-21 |
 | **`bin/at_wp_fallback.py`** — the fall back through T6, fail-first | unfixed build and fail-first bit 16: **both stages FAIL** (M3 stranded part-open for 200 s); fixed build: **both PASS** (closed after 49 s, opened after 47 s) — 2344, 2026-09-21 |
-| **`bin/at_wp02.py`** — AT-WP02 repeatability, AT-WP03 endpoints | **AT-WP02 FAIL**: ten moves to 50 % spread **3.0 %** against the 2.0 % of FR-WP05. Each direction is repeatable (1.0 % from below, 1.5 % from above); the failure is a **directional offset of +1.5 %** — T2 cuts the relay on entering the ±1.33 % band and the leaf coasts ~2 % further, so an opening lands ~0.8 % high and a closing ~0.7 % low. **AT-WP03 PASS**: 0.0 % and 100.0 % with the end sensors made, "nearly closed" (9.9 %, PART_OPEN, no end sensor) distinct — 2344, 2026-09-21 |
+| **`bin/at_wp02.py`** — AT-WP02 repeatability, AT-WP03 endpoints, `settle` | **Fixed build: all PASS** — AT-WP02 spread **1.8 %** (≤ 2.0), hysteresis −0.1 %; `settle` worst **0.2 %** (≤ 0.3); AT-WP03: both ends exact, "nearly closed" (8.2 %, PART_OPEN) distinct; leads learned 3.56 % opening, 2.66 % closing. **A second run with the leads learned: AT-WP02 2.5 % — FAIL** (mean −0.1 %, hysteresis −0.1 %, `settle` 0.1 %): the offset is gone, the remaining per-stop scatter (σ ≈ 0.55-0.75 %) makes AT-WP02 marginal on the rig's 13 s window; the requirements name AT-WP02 on the real window as the acceptance. **Fail-first** (bits 64 + 128): AT-WP02 **3.8 % FAIL**, `settle` **0.9 % FAIL**. The first run (spread 3.0 %) read T17's mid-coast cache and is superseded — 2344, 2026-09-21 |
 | **Soak ≥ 12 h with scripted strokes** | **to be re-run on the fixed build.** A 12.04 h run on 2344 (2026-09-20, 25 judged strokes, no reboot) used the image with the stranded-M3 defect, and recorded one `stall_faults` — the rule-1 exemption false positive, whose fix is designed but not made |
 
 ## Upgrading
@@ -117,6 +126,8 @@ The bench image is 1 417 456 B. Both control laws are compiled in: `stepped` dri
 - **Production runs 2.3.1.** Regenerate the release comparison before promoting, and record the heap as TC-09 now asks (steady-state free and largest block at a stated uptime, not `heap_min_kb`).
 
 ## Known limitations
+
+- **AT-WP02 is marginal on the rig.** With the lead, stops land centred on the target from both directions, but each stop still scatters by σ ≈ 0.55-0.75 % on the rig's fast 13 s window, so ten stops span ~2-2.5 % against the 2.0 % the test allows (one run passed at 1.8 %, one failed at 2.5 %). The timing share of that scatter should be ~13x smaller on 5C88's 176 s window; that is an estimate, and AT-WP02 on the real window, once 5C88 has its sensor (gh#77), is the acceptance.
 
 - **`graded` is a candidate, not a choice.** Mode 2 runs whichever law the table selects; the evidence for `graded` v1 is in `model/closedloop/gradedCandidate.md` and the decision is the operator's.
 - **The minimum MOVE is still unmeasured** (§3.6 floor 2: the shortest pulse that actually shifts the leaf). Until it is, small moves are bounded only by the deadband, which is a different quantity.

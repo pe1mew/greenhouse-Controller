@@ -61,6 +61,16 @@ plan §5b/§5c and `design/ventModelContract.md`. Detail in `bin/2.12.0/release-
   before release, and now reachable by T6 itself (the entry above). A leaf stuck short of its switch
   and a shorted wiper are still reported; `bin/at_wp_rule1.py` fails on the old rule (fail-first
   bit 32) and passes on the new one.
+- **A targeted stop lands on its target** (FR-WP05, found by AT-WP02's first run, fixed before
+  release). T2 cuts the relay at an aim, the target less the expected overrun, learned per
+  direction from every settled stop (default 420 ms of travel scaled by `travel_m3`; shown in the
+  diag's `t2` block); it cut on entering the band, and every stop rested ~2 % past the target.
+  **T17 reads where the leaf rests** one second plus one measurement window after a stroke; it
+  read at once, which after a targeted stop is mid-coast, and published that for 30 s.
+  `bin/at_wp02.py` now measures resting positions live and checks the published one against them
+  (`settle`). Fail-first bits 64 and 128: the directional offset went from +3.0 % to −0.1 % and
+  the published error from 0.9 % to 0.2 %. AT-WP02's spread was 1.8 % in one run and 2.5 % in the
+  next: what remains is per-stop scatter, marginal on the rig's 13 s window.
 - **Docs:** FRS §5.3d gains FR-WPF07–13 (FR-WPF06 superseded), TSDS §5.16.6, `logparser.md` 1.23,
   `boerHandleiding` 1.22, `beheerderHandleiding` 1.25.
 

@@ -128,6 +128,7 @@
 #include "window_pos.h"                     /* the driver: read for the commissioning verdict */
 #include "../window_pos/window_pos_task.h"  /* T17 snapshot + derived cfg */
 #include "../types/failfirst_212.h"           /* 2.12.0 fail-first mask, reported by the diag */
+#include "../relay_controller/relay_controller.h" /* t2_get_m3_lead: the overrun lead, in the diag */
 #ifdef MODBUS_BENCH
 #include "../diag/modbus_bench.h"   /* dev-only bench Modbus access */
 #endif     /* 2.2.0 (ROTA) — rota_cert_set/_is_custom for /api/ota/config */
@@ -3612,7 +3613,11 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
      * 2320 bytes of frame against -Wstack-usage=2200 (caught 2026-09-13); the
      * compiler does not overlap the two scopes. 1600 leaves room for the
      * per-slave rows (~65 bytes each, 3 slaves in service). */
-    char body[1600];
+    /* Static, not on the stack: the reply outgrew its 1600-byte stack buffer
+     * (1536 bytes on 2026-09-21, before the t2 block), and the httpd stack is
+     * 8 KB. esp_http_server serves requests one at a time from a single task,
+     * so one buffer cannot be shared by two requests at once. */
+    static char body[2048];
 
     windowpos_reading_t r;
     const windowpos_status_t st = windowpos_read(WINDOWPOS_DEFAULT_ADDR, &r);
@@ -3694,6 +3699,18 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
                  (unsigned)(have_d ? d.window_ms : 0u),
                  (unsigned)(have_d ? d.nominal_rate_x10 : 0u),
                  (unsigned)(have_d ? d.rate_limit_x10 : 0u));
+    }
+    /* T2's overrun lead for targeted stops (2026-09-21): what the stop rule is
+     * using right now, and how many settled stops taught it. */
+    t2_m3_lead_t ld;
+    t2_get_m3_lead(&ld);
+    const size_t used2 = strlen(body);
+    if (used2 + 1u < sizeof(body)) {
+        snprintf(body + used2 - 1u, sizeof(body) - used2 + 1u,
+                 ",\"t2\":{\"lead_open_x100\":%d,\"lead_close_x100\":%d,"
+                 "\"lead_default_x100\":%d,\"learned_open\":%u,\"learned_close\":%u}}",
+                 (int)ld.open_x100, (int)ld.close_x100, (int)ld.default_x100,
+                 (unsigned)ld.learned_open, (unsigned)ld.learned_close);
     }
     /* The sensor-presence gate: which control law M3 is under, and why.
      *

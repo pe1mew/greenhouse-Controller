@@ -388,7 +388,10 @@ signed decode was proven against on real hardware.
 **Cadence.** While M3 is travelling: one row per poll, every `travel_m3 / 150` ms.
 At rest T17 still reads every 30 s, but since firmware 2.8.0 (2026-09-16) it
 writes a row only when the reading says something:
-- the first read after a stroke (where the leaf settled);
+- the first read after a stroke (where the leaf settled). Since 2.12.0 it is
+  taken one second plus one measurement window after the stroke ends; before,
+  it came at once, which after a targeted stop was mid-coast (up to 1 % of the
+  stroke short on the rig);
 - the first read after boot;
 - a change between fault and no fault;
 - movement of at least `deadzone_m3` (5 mm minimum) without a stroke. That is

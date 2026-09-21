@@ -35,6 +35,20 @@ READING THE RESULT
   makes the requirement unmeasurable rather than met. On the rig 20 mm over a
   1500 mm window is 1.3 %.
 
+WHERE THE LEAF RESTS -- read live, after it has (2026-09-21)
+-----------------------------------------------------------
+The first run read /api/status, which carries T17's CACHED reading -- and T17
+read "at once" after a stroke, while a targeted stop was still coasting, then
+not again for 30 s. Its numbers were where the leaf was just after the cut:
+up to 1.0 % short of where it came to rest. Each resting position is now a
+LIVE device read (the diag route's top-level fields) RESTED_S after the stop.
+
+**settle** checks the other half: once the settle time has passed, the
+position the unit PUBLISHES must match the live one (within SETTLE_TOL_X10),
+on every approach. It fails on fail-first bit 128, which restores the read at
+once. The lead T2 cuts by (its `t2` block in the diag) is printed before and
+after, since it is learned from these very stops.
+
 Usage
   python bin/at_wp02.py --host 192.168.20.160                  # both tests
   python bin/at_wp02.py --host 192.168.20.160 --target 500 -n 10
@@ -54,6 +68,8 @@ DEFAULT_PIN = "12345678"
 TEST_DWELL_S = 5
 MOVE_LIMIT_S = 180
 SETTLE_S = 2.0
+RESTED_S = 2.5         # after a stop: T17's settle read comes ~1.1 s after it on the rig
+SETTLE_TOL_X10 = 3     # published vs live, once settled: 0.3 % (one count is ~0.1 %)
 
 
 def say(msg):
@@ -160,9 +176,24 @@ class Rig(object):
         return out if isinstance(out, dict) else {}
 
     def pos_x10(self):
+        """The position the unit PUBLISHES -- T17's latest reading."""
         w = (self.u.status() or {}).get("windows") or {}
         v = w.get("M3_percent_x10")
         return None if v is None else int(v)
+
+    def live_x10(self):
+        """A FRESH device read: the diag route's top-level fields bypass T17."""
+        d = self.u.diag() or {}
+        v = d.get("percent_x10")
+        return None if (v is None or not d.get("ok")) else int(v)
+
+    def lead(self):
+        """T2's overrun lead, (open, close) in 0.01 % and how many stops taught it."""
+        t2 = (self.u.diag() or {}).get("t2") or {}
+        if "lead_open_x100" not in t2:
+            return None
+        return (t2.get("lead_open_x100"), t2.get("lead_close_x100"),
+                t2.get("learned_open"), t2.get("learned_close"))
 
     def state(self):
         w = (self.u.status() or {}).get("windows") or {}
@@ -186,9 +217,16 @@ class Rig(object):
         return self.state()
 
     def go(self, x10):
+        """Drive to x10 and return where the leaf RESTS, read live."""
         self.target(x10)
         self.wait_rest()
-        return self.pos_x10()
+        time.sleep(RESTED_S)
+        return self.live_x10()
+
+    def go_measure(self, x10):
+        """...and also what the unit publishes by then: (live, published)."""
+        live = self.go(x10)
+        return live, self.pos_x10()
 
 
 def test_wp02(rig, target_x10, n):
@@ -198,17 +236,28 @@ def test_wp02(rig, target_x10, n):
         % (target_x10 / 10.0, n,
            ("%.2f %%" % band) if band is not None else "unknown"))
 
-    from_below, from_above = [], []
+    ld = rig.lead()
+    if ld is not None:
+        say("  T2 lead before: open %.2f %%, close %.2f %% (learned from %s / %s stops)"
+            % (ld[0] / 100.0, ld[1] / 100.0, ld[2], ld[3]))
+    from_below, from_above, pub_err = [], [], []
     for i in range(n):
         below = (i % 2 == 0)
         rig.go(0 if below else 1000)            # start from a known end
-        pos = rig.go(target_x10)
+        pos, pub = rig.go_measure(target_x10)
         if pos is None:
-            say("  approach %2d: no position published -- cannot judge" % (i + 1))
+            say("  approach %2d: no live position -- cannot judge" % (i + 1))
             return False, {}
         (from_below if below else from_above).append(pos)
-        say("  approach %2d from %-5s: %6.1f %%"
-            % (i + 1, "below" if below else "above", pos / 10.0))
+        if pub is not None:
+            pub_err.append(abs(pub - pos))
+        say("  approach %2d from %-5s: %6.1f %%   (published %s)"
+            % (i + 1, "below" if below else "above", pos / 10.0,
+               "%.1f %%" % (pub / 10.0) if pub is not None else "none"))
+    ld = rig.lead()
+    if ld is not None:
+        say("  T2 lead after : open %.2f %%, close %.2f %% (learned from %s / %s stops)"
+            % (ld[0] / 100.0, ld[1] / 100.0, ld[2], ld[3]))
 
     allp = from_below + from_above
     spread = (max(allp) - min(allp)) / 10.0
@@ -229,30 +278,35 @@ def test_wp02(rig, target_x10, n):
     if not ok and band is not None and band >= 2.0:
         print("\n  NOTE: the deadband alone is >= the requirement, so this run cannot")
         print("        demonstrate +/-1 %. Lower deadzone_m3 and repeat.")
-    return ok, {"spread": spread, "hysteresis": hyst, "mean": mean}
+    worst = max(pub_err) if pub_err else None
+    settle_ok = (worst is not None and len(pub_err) == len(allp)
+                 and worst <= SETTLE_TOL_X10)
+    print("  published    : worst %s from the live resting position (settle: <= %.1f %%)"
+          % ("%.1f %%" % (worst / 10.0) if worst is not None else "n/a",
+             SETTLE_TOL_X10 / 10.0))
+    return ok, {"spread": spread, "hysteresis": hyst, "mean": mean, "settle": settle_ok}
 
 
 def test_wp03(rig):
     """Endpoints: both ends agree with the mechanical end-stops."""
     say("AT-WP03: endpoints")
     ok = True
-    rig.go(0)
-    closed_pos, closed_end, closed_state = rig.pos_x10(), rig.at_end(), rig.state()
+    closed_pos = rig.go(0)
+    closed_end, closed_state = rig.at_end(), rig.state()
     say("  closed: %s, position %.1f %%, end sensor %s"
         % (closed_state, (closed_pos or 0) / 10.0, closed_end))
     ok &= bool(closed_end) and "CLOS" in closed_state.upper()
 
-    rig.go(1000)
-    open_pos, open_end, open_state = rig.pos_x10(), rig.at_end(), rig.state()
+    open_pos = rig.go(1000)
+    open_end, open_state = rig.at_end(), rig.state()
     say("  open  : %s, position %.1f %%, end sensor %s"
         % (open_state, (open_pos or 0) / 10.0, open_end))
     ok &= bool(open_end) and "OPEN" in open_state.upper()
 
     # "closed" must be distinguishable from "nearly closed" (FR-WP07).
     rig.go(0)
-    rig.target(80)                                    # 8 %, a small opening
-    rig.wait_rest()
-    near_pos, near_end, near_state = rig.pos_x10(), rig.at_end(), rig.state()
+    near_pos = rig.go(80)                             # 8 %, a small opening
+    near_end, near_state = rig.at_end(), rig.state()
     say("  near  : %s, position %.1f %%, end sensor %s"
         % (near_state, (near_pos or 0) / 10.0, near_end))
     distinct = (not near_end) and "CLOS" not in near_state.upper()
@@ -285,7 +339,9 @@ def main():
             sys.exit("T17 never published position control: every approach below "
                      "would be refused, and not by the rule under test")
         if a.only != "wp03":
-            res["AT-WP02"] = test_wp02(rig, a.target, a.n)[0]
+            ok02, info02 = test_wp02(rig, a.target, a.n)
+            res["AT-WP02"] = ok02
+            res["settle"] = bool(info02.get("settle"))
         if a.only != "wp02":
             print("")
             res["AT-WP03"] = test_wp03(rig)

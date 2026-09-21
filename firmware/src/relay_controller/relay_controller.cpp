@@ -180,6 +180,10 @@ typedef struct {
                                     *   the freshness grace below. */
     int16_t    target_x10;         /**< Aperture 0..1000 = 0..100.0 %. */
     uint16_t   target_band_x10;    /**< Arrival band, 0.1 %, from `deadzone_m3_mm`. */
+    int16_t    target_aim_x10;     /**< Where the relay is CUT: the target minus the
+                                    *   expected overrun, in the direction of travel
+                                    *   (m3_lead_x10(), 2026-09-21). */
+    int16_t    target_from_x10;    /**< Where the drive started, for the learning. */
 } ch_t;
 
 static ch_t s_ch[NUM_CHANNELS];
@@ -659,6 +663,155 @@ static void ch_start_open(uint8_t ch, uint32_t now_ms, cmd_source_t source)
  *  over. */
 #define TARGET_FRESH_GRACE_MS  5000u
 
+/* ---- the overrun lead (2026-09-21) -----------------------------------------
+ * A targeted stop does not stop where the relay is cut. The reading that trips
+ * the cut is up to one poll behind the leaf, the relay and the motor take time
+ * to let go, and the rope rig coasts: on 2344 the leaf came to rest ~3.2 % of
+ * the stroke past the point where the relay was cut (six stops, 2026-09-21,
+ * read LIVE once they had settled). Cutting on ENTERING the arrival band, as
+ * 2.12.0 first did, landed every opening ~2 % high and every closing ~2 % low,
+ * and AT-WP02 failed FR-WP05: the same commanded aperture must give the same
+ * physical one, within +/-1 %.
+ *
+ * So the relay is cut the expected overrun BEFORE the target, per direction --
+ * the flap is lifted against gravity to close and paid out to open, so the two
+ * need not coast alike -- and every settled stop teaches the estimate how far
+ * it really came. The overrun past the cut does not depend on the lead that
+ * was used, so each stop measures the right lead directly, and the learning
+ * cannot chase itself.
+ *
+ * Learned rather than written down, because it does not scale simply: part of
+ * it is sampling and measuring lag, which T17 derives from `travel_m3` and
+ * which is therefore roughly constant in % of stroke, and part is relay and
+ * motor run-on, which is constant in TIME. A constant right for the rig's 13 s
+ * window is wrong by an unmeasured factor for 5C88's 176 s one; a learned one
+ * is right on both after a few stops. RAM only: a reboot starts again from
+ * the default. Fail-first bit 64 restores the cut on entering the band. */
+
+/** The lead before any stop has been learned from, as milliseconds of travel:
+ *  3.2 % of the rig's 13 s stroke is ~420 ms. Scaled by `travel_m3`, so a slow
+ *  mechanism starts from a small lead and the learning takes it from there. */
+#define LEAD_DEFAULT_MS      420u
+/** The largest lead used or learned, 0.01 % -- 10 % of the stroke. A stop that
+ *  claims to have come further than this was moved by something else (the
+ *  motor box's hand switches, slip) and teaches nothing. */
+#define LEAD_MAX_X100        1000
+/** A reading taken at least this long after the cut is where the leaf RESTS.
+ *  T17 takes its settle read one second plus one measurement window after a
+ *  stroke ends (window_pos_task.cpp, SETTLE_BASE_MS), which always meets it. */
+#define LEAD_SETTLED_MS      1000u
+/** Give up waiting for the settled reading after this long. */
+#define LEAD_LEARN_MAX_MS    60000u
+
+typedef struct {
+    int16_t  lead_x100[2];  /**< 0 opening, 1 closing: the learned overrun, 0.01 %. */
+    uint16_t learned[2];    /**< Stops each estimate has learned from; 0 = default. */
+    bool     pending;       /**< A targeted stop is waiting for its settled reading. */
+    bool     pend_opening;
+    int16_t  pend_aim_x10;  /**< Where the relay was cut. */
+    uint32_t pend_cut_ms;
+    uint32_t pend_epoch;    /**< s_drive_epoch[2] at the cut: a new drive discards it. */
+} m3_lead_t;
+
+/** T2 writes it; t2_get_m3_lead() reads it under s_state_mux. */
+static m3_lead_t s_lead;
+
+/** The unlearned lead for M3's `travel_m3` in force, 0.01 %. */
+static int32_t m3_lead_default_x100(void)
+{
+    const uint32_t margin_ms = (uint32_t)MOTOR_TRAVEL_MARGIN_S_DEFAULT * 1000u;
+    const uint32_t t = s_ch[2].travel_ms;
+    const uint32_t travel_ms = (t > margin_ms + 1000u) ? (t - margin_ms) : 1000u;
+    const int32_t v = (int32_t)(((uint32_t)LEAD_DEFAULT_MS * 10000u) / travel_ms);
+    return (v > LEAD_MAX_X100) ? LEAD_MAX_X100 : v;
+}
+
+/** The lead in force for this direction, 0.01 %: learned, or the default. */
+static int32_t m3_lead_x100(bool opening)
+{
+    const int d = opening ? 0 : 1;
+    int32_t v;
+    portENTER_CRITICAL(&s_state_mux);
+    v = s_lead.learned[d] ? (int32_t)s_lead.lead_x100[d] : -1;
+    portEXIT_CRITICAL(&s_state_mux);
+    return (v < 0) ? m3_lead_default_x100() : v;
+}
+
+/** The same, rounded to the 0.1 % positions are compared in. */
+static int32_t m3_lead_x10(bool opening)
+{
+    return (m3_lead_x100(opening) + 5) / 10;
+}
+
+/**
+ * @brief Learn from a targeted stop once the leaf has come to rest. Every tick.
+ *
+ * The overrun is where the leaf RESTS relative to where the relay was cut, so
+ * it waits for a reading sampled LEAD_SETTLED_MS after the cut -- T17's settle
+ * read. A drive of any kind in between (a new target, a close-all, the LCD)
+ * changes the drive epoch and the stop teaches nothing.
+ */
+static void m3_lead_learn_tick(uint32_t now_ms)
+{
+    if (!s_lead.pending) { return; }
+
+    uint32_t epoch;
+    portENTER_CRITICAL(&s_state_mux);
+    epoch = s_drive_epoch[2];
+    portEXIT_CRITICAL(&s_state_mux);
+    if (s_ch[2].state != CH_PART_OPEN || epoch != s_lead.pend_epoch ||
+        (uint32_t)(now_ms - s_lead.pend_cut_ms) > LEAD_LEARN_MAX_MS) {
+        s_lead.pending = false;           /* moved again, or never settled */
+        return;
+    }
+
+    dm_m3_pos_t m3;
+    if (!dm_m3_position(&m3)) { return; }
+    const uint32_t sampled_ms = now_ms - m3.age_ms;
+    if ((int32_t)(sampled_ms - (s_lead.pend_cut_ms + LEAD_SETTLED_MS)) < 0) {
+        return;                           /* not a resting reading yet */
+    }
+    s_lead.pending = false;
+
+    const int32_t pos  = (int32_t)m3.percent_x10;
+    const int32_t aim  = (int32_t)s_lead.pend_aim_x10;
+    const int32_t over = (s_lead.pend_opening ? (pos - aim) : (aim - pos)) * 10;   /* 0.01 % */
+    const int32_t band = (int32_t)s_ch[2].target_band_x10 * 10;
+    if (over > LEAD_MAX_X100 || over < -band) {
+        ESP_LOGW(TAG, "CH3: lead not learned -- rested at %d.%u pct against a cut at "
+                      "%d.%u pct (moved by something else?)",
+                 (int)(pos / 10), (unsigned)(pos % 10), (int)(aim / 10), (unsigned)(aim % 10));
+        return;
+    }
+    const int32_t o    = (over < 0) ? 0 : over;
+    const int     d    = s_lead.pend_opening ? 0 : 1;
+    const int32_t prev = m3_lead_x100(s_lead.pend_opening);
+    /* Half-weight for the first two stops, so a default that is far off (a
+     * slow mechanism) is corrected at once; a quarter after that, for calm. */
+    const int32_t next = prev + (o - prev) / ((s_lead.learned[d] < 2u) ? 2 : 4);
+
+    portENTER_CRITICAL(&s_state_mux);
+    s_lead.lead_x100[d] = (int16_t)next;
+    if (s_lead.learned[d] < 0xFFFFu) { s_lead.learned[d]++; }
+    portEXIT_CRITICAL(&s_state_mux);
+    ESP_LOGI(TAG, "CH3: %s stop rested %ld.%02ld pct past the cut -> lead %ld.%02ld pct",
+             s_lead.pend_opening ? "opening" : "closing",
+             (long)(o / 100), (long)(o % 100), (long)(next / 100), (long)(next % 100));
+}
+
+void t2_get_m3_lead(t2_m3_lead_t *out)
+{
+    if (out == NULL) { return; }
+    const int32_t def = m3_lead_default_x100();
+    portENTER_CRITICAL(&s_state_mux);
+    out->open_x100     = (int16_t)(s_lead.learned[0] ? s_lead.lead_x100[0] : def);
+    out->close_x100    = (int16_t)(s_lead.learned[1] ? s_lead.lead_x100[1] : def);
+    out->learned_open  = s_lead.learned[0];
+    out->learned_close = s_lead.learned[1];
+    portEXIT_CRITICAL(&s_state_mux);
+    out->default_x100  = (int16_t)def;
+}
+
 /**
  * @brief The dwell to arm after a drive on this channel ends, milliseconds.
  *
@@ -766,14 +919,22 @@ static bool ch_start_target(uint8_t ch, int16_t want_x10, uint32_t now_ms,
         : (c->state == CH_MOVING_CLOSE || c->state == CH_GAP_TO_CLOSE);
     if (!started) { return false; }
 
+    /* Cut the expected overrun early, in the direction of travel. A move
+     * shorter than the lead puts the cut point behind the start: the drive is
+     * then cut on its first fresh reading, which is the shortest move this
+     * mechanism can make (the minimum move, plan §3.6, still unmeasured). */
+    const int32_t lead = FF212_LEAD ? 0 : m3_lead_x10(open_dir);
     c->target_active    = true;
     c->target_start_ms  = now_ms;
     c->target_x10       = (int16_t)want;
     c->target_band_x10  = band;
-    ESP_LOGI(TAG, "CH%u: target %d.%u pct armed (from %d.%u, band %u.%u)",
+    c->target_aim_x10   = (int16_t)(open_dir ? want - lead : want + lead);
+    c->target_from_x10  = (int16_t)pos;
+    ESP_LOGI(TAG, "CH%u: target %d.%u pct armed (from %d.%u, band %u.%u, lead %d.%u)",
              ch + 1u, (int)(want / 10), (unsigned)(want % 10),
              (int)(pos / 10), (unsigned)(pos % 10),
-             (unsigned)(band / 10), (unsigned)(band % 10));
+             (unsigned)(band / 10), (unsigned)(band % 10),
+             (int)(lead / 10), (unsigned)(lead % 10));
     return true;
 }
 
@@ -790,10 +951,18 @@ static bool ch_target_tick(uint8_t ch, uint32_t now_ms, bool opening)
     if (!c->target_active) { return false; }
 
     dm_m3_pos_t m3;
-    if (!dm_m3_position(&m3) || m3.age_ms > TARGET_MAX_AGE_MS) {
+    const bool have = dm_m3_position(&m3) && m3.age_ms <= TARGET_MAX_AGE_MS;
+    /* 2026-09-21: nor may a reading sampled BEFORE the drive began judge it.
+     * TARGET_FRESH_GRACE_MS argued that a pre-drive reading cannot stop a drive
+     * early because it lies outside the band by construction; with the lead,
+     * a short move's starting position can already be past the cut point, and
+     * the drive would be "arrived" on its first tick without the leaf moving. */
+    const bool fresh = have &&
+        (int32_t)((now_ms - m3.age_ms) - c->target_start_ms) >= 0;
+    if (!fresh) {
         /* Not yet sampled since the drive began: expected, and not a fault.
-         * See TARGET_FRESH_GRACE_MS -- a stale reading cannot stop the drive
-         * early, so waiting costs nothing. */
+         * See TARGET_FRESH_GRACE_MS -- waiting for the first reading of the
+         * drive costs nothing. */
         if (!FF212_GRACE &&
             (uint32_t)(now_ms - c->target_start_ms) < TARGET_FRESH_GRACE_MS) {
             return false;
@@ -810,14 +979,26 @@ static bool ch_target_tick(uint8_t ch, uint32_t now_ms, bool opening)
     const int32_t pos  = (int32_t)m3.percent_x10;
     const int32_t want = (int32_t)c->target_x10;
     const int32_t band = (int32_t)c->target_band_x10;
+    const int32_t aim  = (int32_t)c->target_aim_x10;
 
-    /* Arrived, or gone past. The second half matters: the leaf moves ~0.67 %
-     * of the stroke between two samples, so a band narrower than that would be
-     * stepped over and the drive would run on to the end. */
-    const bool arrived = (pos >= want - band && pos <= want + band) ||
-                         (!FF212_OVERSHOOT &&
-                          (( opening && pos >= want) ||
-                           (!opening && pos <= want)));
+    /* Cut on REACHING OR PASSING the aim: the target less the expected
+     * overrun (see the lead, above), so the leaf comes to rest ON the target.
+     * Passing counts because the leaf moves ~0.67 % of the stroke between two
+     * samples and would otherwise step over a narrow window and run to the
+     * end. Until 2026-09-21 the cut came on ENTERING the band around the
+     * target, and the overrun carried every stop ~2 % past it (fail-first bit
+     * 64 restores that rule; bit 4, the old missing guard, a two-sided window). */
+    bool arrived;
+    if (FF212_LEAD) {
+        arrived = (pos >= want - band && pos <= want + band) ||
+                  (!FF212_OVERSHOOT &&
+                   (( opening && pos >= want) ||
+                    (!opening && pos <= want)));
+    } else if (FF212_OVERSHOOT) {
+        arrived = (pos >= aim - band && pos <= aim + band);
+    } else {
+        arrived = opening ? (pos >= aim) : (pos <= aim);
+    }
     if (!arrived) { return false; }
 
     relay_ch_off(ch);
@@ -830,9 +1011,27 @@ static bool ch_target_tick(uint8_t ch, uint32_t now_ms, bool opening)
      * CLOSE_ALL instead of taking the "all three closed" shortcut. */
     persist_ch_state(ch, CH_PART_OPEN);
     log_relay_event((uint8_t)(ch + 1u), CH_PART_OPEN);
-    ESP_LOGI(TAG, "CH%u: PART_OPEN at %d.%u pct (target %d.%u, %u ms old)",
+    ESP_LOGI(TAG, "CH%u: PART_OPEN, cut at %d.%u pct (target %d.%u, aim %d.%u, %u ms old)",
              ch + 1u, (int)(pos / 10), (unsigned)(pos % 10),
-             (int)(want / 10), (unsigned)(want % 10), (unsigned)m3.age_ms);
+             (int)(want / 10), (unsigned)(want % 10),
+             (int)(aim / 10), (unsigned)(aim % 10), (unsigned)m3.age_ms);
+
+    /* Teach the lead from where this stop comes to rest -- but only a drive
+     * that ran at speed: one cut within its own lead of the start was still
+     * accelerating, and its overrun is not the one to lead by. */
+    if (!FF212_LEAD) {
+        const int32_t from = (int32_t)c->target_from_x10;
+        const int32_t run  = opening ? (aim - from) : (from - aim);
+        if (run >= m3_lead_x10(opening)) {
+            s_lead.pending      = true;
+            s_lead.pend_opening = opening;
+            s_lead.pend_aim_x10 = (int16_t)aim;
+            s_lead.pend_cut_ms  = now_ms;
+            portENTER_CRITICAL(&s_state_mux);
+            s_lead.pend_epoch   = s_drive_epoch[ch];
+            portEXIT_CRITICAL(&s_state_mux);
+        }
+    }
     return true;
 }
 
@@ -1658,6 +1857,8 @@ void task_relay_controller(void *pvParameters)
         for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
             ch_update(ch, now_ms);
         }
+        /* 2026-09-21: learn M3's overrun lead from a settled targeted stop. */
+        m3_lead_learn_tick(now_ms);
 
         /* ---- 4c. Drain Q1 (non-blocking; process all pending commands) ----
          * gh#79 (2.9.2): the clock is read per command, not once per pass.
