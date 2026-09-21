@@ -129,9 +129,9 @@ The bench image is 1 417 456 B. Both control laws are compiled in: `stepped` dri
 | **`bin/at_wp_target.py deferred`** — a deferred T6 reversal keeps the stroke's target, fail-first bit 256 | **PENDING** — rig |
 | **`bin/at_wp_target.py taken`** — the operator and a recalibration take M3, T6 does not | **PENDING** — rig |
 | **`bin/at_wp_fallback.py aborted`** — T6 tells the law ABORTED, fail-first bit 512 | **PENDING** — rig, ~12 min (`graded`'s own 10-minute hold) |
-| **`bin/at_wp_fallback.py sincemove`** — "never" is UINT32_MAX, the sweep is a drive and arms `min_intv_m3` in mode 2, fail-first bit 1024 | **PENDING** — rig |
+| **`bin/at_wp_fallback.py sincemove`** — "never" is UINT32_MAX, the sweep is a drive and arms `min_intv_m3` in mode 2, fail-first bit 1024 | **PENDING** — rig. *Seen in passing on 2344 at the soak's push (2026-09-21 17:51, fixed image):* after a boot that skipped its sweep, `ms_since_move_m3` read 4294967295 (UINT32_MAX) with `taken_m3` 0; a recalibration then counted as a take (0 → 1) and ended a move (`ms_since_move_m3` 8 322 ms when the 26 s sweep finished, M3's part having ended 8 s earlier). Not the stage: no fail-first, and the mode-2 dwell was not exercised |
 | Regression after the 2026-09-21 corrections: `at_wp_target.py` (the seven), `at_wp_confirm.py`, `at_wp_fallback.py close/open` | **PENDING** — rig |
-| **Soak ≥ 12 h with scripted strokes** | **to be re-run on the fixed build.** A 12.04 h run on 2344 (2026-09-20, 25 judged strokes, no reboot) used the image with the stranded-M3 defect, and recorded one `stall_faults` — the rule-1 exemption false positive, whose fix is designed but not made |
+| **Soak ≥ 12 h with scripted strokes** | **RUNNING since 2026-09-21 17:55 on 9c53be7** (bench image `de7d9228…` on 2344; 12 scripted sessions, one an hour, from Shuttle2; the report writes itself at ~06:05 on 2026-09-22 to `~/ghc-soak/soak_report_12h.txt`, and again after 48 h). Two earlier runs are superseded: 12.04 h on 2026-09-20, on the image with the stranded-M3 defect (one `stall_faults`, the rule-1 false positive, since fixed); and 2.06 h from 15:45 on 2026-09-21 on 045a39c (6 judged drives, all confirmed, every counter 0), aborted to take this release's last fixes |
 
 ## Upgrading
 
