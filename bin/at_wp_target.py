@@ -16,9 +16,17 @@ WHICH BUILD
 -----------
 A 2.12.0 bench build. The hook is bench-only, like every other /api/diag route.
 
-**Fail-first.** `-DWPOS_FAILFIRST_212` restores the four defects the target
-rules fixed, and every stage below must FAIL on that build before a pass on a
-normal one means anything:
+**Fail-first.** `-DWPOS_FAILFIRST_212=<mask>` restores the defects the target
+rules fixed, ONE BIT EACH (firmware/src/types/failfirst_212.h), and a stage must
+FAIL on its bit before a pass on a normal build means anything. **Set one bit per
+run**: the defects mask each other, and bit 1 keeps every target from arming, so
+with it set the stages behind it pass VACUOUSLY (2026-09-20). Shown failing so
+far: bit 1 -> band, twice (a bare flag, which GCC makes 1); bit 4 -> band, twice
+(under =14); bit 8 -> closeshort (stopped at 42.2 %). **Bit 2 (grace) has not been
+shown failing on its own** -- under =14 `lost` passed, and whether its stage is
+`lost` or `band` is not settled. Bit 16 is T6's and belongs to
+bin/at_wp_fallback.py. The per-stage notes below were written for the first,
+all-bits build and say what each rule protects:
 
   band       the stop rule loses its overshoot guard, so a leaf that steps past
              a narrow band runs on to the end
@@ -36,7 +44,8 @@ rule's 3 s limit, and T17 reads only every 30 s at rest -- so most stages will
 not even get a move commanded. That is the defect, and it is why the run prints
 the build it is talking to before anything else.
 
-`GET /api/diag/windowpos` reports `gate.failfirst_212`.
+`GET /api/diag/windowpos` reports `gate.failfirst_212`: the mask as a number
+since 2026-09-21 (0 on a normal build); older bench images say only true/false.
 
 HOW -- everything over the network, no operator at the rig
 ----------------------------------------------------------
@@ -121,7 +130,11 @@ class Rig(object):
         self.unit_id = (st.get("system") or {}).get("unit_id", "?")
         self.fw = (st.get("system") or {}).get("fw_ver", "?")
         gate = (self.u.diag() or {}).get("gate") or {}
-        self.failfirst = bool(gate.get("failfirst_212"))
+        ff = gate.get("failfirst_212")
+        self.failfirst = bool(ff)
+        # The mask, when the image reports one (a number since 2026-09-21);
+        # older bench images say only true/false, which names no bits.
+        self.ff_mask = ff if isinstance(ff, int) and not isinstance(ff, bool) else None
 
     # -- settings ---------------------------------------------------------
     def cut_dwells(self):
@@ -390,10 +403,13 @@ def main():
     rig = Rig(a.host, a.pin)
     print("at_wp_target -- unit %s, fw %s" % (rig.unit_id, rig.fw))
     if rig.failfirst:
-        print("  *** WPOS_FAILFIRST_212 build: the target rules are the OLD ones.")
-        print("  *** Stages band, twice, supersede and lost MUST fail here.")
+        print("  *** WPOS_FAILFIRST_212 build, mask %s: some target rules are the OLD ones."
+              % (rig.ff_mask if rig.ff_mask is not None
+                 else "not reported (an image from before 2026-09-21)"))
+        print("  *** Which stages must fail depends on the bits -- see the docstring.")
+        print("  *** One bit per run: bit 1 makes the stages behind it pass vacuously.")
     else:
-        print("  normal build (failfirst_212 false)")
+        print("  normal build (failfirst_212 0)")
     if "bench" not in rig.fw:
         sys.exit("this needs a bench build: the target hook is bench-only")
 

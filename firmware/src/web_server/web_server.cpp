@@ -127,6 +127,7 @@
 #include "../window_pos/commission.h"     /* gh#77 — teach + window size, admin-only, EVERY build */
 #include "window_pos.h"                     /* the driver: read for the commissioning verdict */
 #include "../window_pos/window_pos_task.h"  /* T17 snapshot + derived cfg */
+#include "../types/failfirst_212.h"           /* 2.12.0 fail-first mask, reported by the diag */
 #ifdef MODBUS_BENCH
 #include "../diag/modbus_bench.h"   /* dev-only bench Modbus access */
 #endif     /* 2.2.0 (ROTA) — rota_cert_set/_is_custom for /api/ota/config */
@@ -3499,12 +3500,12 @@ static const char k_failfirst_292[] = "true";
 static const char k_failfirst_292[] = "false";
 #endif
 
-/** "true" in a WPOS_FAILFIRST_212 build (2.12.0's fail-first: the target rules). */
-#ifdef WPOS_FAILFIRST_212
-static const char k_failfirst_212[] = "true";
-#else
-static const char k_failfirst_212[] = "false";
-#endif
+/** 2.12.0's fail-first MASK (failfirst_212.h): 0 in a normal build, otherwise the
+ *  bits restored. A NUMBER, not "true": the flag became a bitmask on 2026-09-20,
+ *  and each bit fails a different stage, so a build that reported only "true"
+ *  could not be told from any other -- which is the one thing this field is for.
+ *  Consumers that take it as a boolean (bin/at_wp_target.py) still work. */
+static const unsigned k_failfirst_212 = FF212;
 
 /**
  * @brief Append the T17 soak counters to a JSON object already in @p buf.
@@ -3628,7 +3629,7 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
                  "{\"ok\":false,\"err\":\"read_failed\",\"status\":%d,"
                  "\"gate\":{\"mode\":%d,\"mode_str\":\"%s\",\"reason\":%d,"
                  "\"reason_str\":\"%s\",\"inject\":\"%s\",\"failfirst_gh72\":%s,"
-                 "\"failfirst_292\":%s,\"failfirst_212\":%s}}",
+                 "\"failfirst_292\":%s,\"failfirst_212\":%u}}",
                  (int)st, (int)egm,
                  (egm == WPOS_CTRL_POSITION) ? "position" : "timed", (int)egr,
                  ((unsigned)egr < (sizeof(k_reason) / sizeof(k_reason[0])))
@@ -3712,7 +3713,7 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
                  ",\"gate\":{\"mode\":%d,\"mode_str\":\"%s\","
                  "\"reason\":%d,\"reason_str\":\"%s\","
                  "\"inject\":\"%s\",\"failfirst_gh72\":%s,\"failfirst_292\":%s,"
-                 "\"failfirst_212\":%s}}",
+                 "\"failfirst_212\":%u}}",
                  (int)gm, (gm == WPOS_CTRL_POSITION) ? "position" : "timed",
                  (int)gr,
                  ((unsigned)gr < (sizeof(k_reason) / sizeof(k_reason[0])))

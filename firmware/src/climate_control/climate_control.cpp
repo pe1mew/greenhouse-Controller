@@ -62,6 +62,7 @@
 #include "../event_logger/event_logger.h"
 #include "../relay_controller/relay_controller.h"   /* t2_get_window_states */
 #include "vent_model.h"   /* the control law, behind design/ventModelContract.md */
+#include "../types/failfirst_212.h"   /* bit 16: the stranded-M3 filter, fail-first */
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -354,7 +355,17 @@ static void apply_model_output(const vent_out_t *out, const window_state_t *actu
      * greenhouse, one that briefly vents too much in wind is a repair. */
     for (uint8_t ch = 0; ch < 3; ch++) {
         const window_state_t a = actual[ch];
-        const bool currently_open_or_opening = (a == WIN_OPEN || a == WIN_MOVING_OPEN);
+        /* PART_OPEN is eligible for a CLOSE: it IS open, just not fully -- the
+         * law's own test (vent_model_stepped.cpp) says so, and this filter
+         * must agree with it. It did not until 2026-09-21: copied from the
+         * inline reconcile_to_step(), written before PART_OPEN existed, it
+         * dropped the CLOSE the law asked for, so after mode 2 left M3
+         * part-open, mode 1 could neither close nor open it. That is the
+         * FALLBACK PATH: a sensor fault while part-open stranded M3 until a
+         * wind override or a recalibration moved it (2026-09-20 soak: 28 min,
+         * ended by a wind override). Fail-first: FF212 bit 16. */
+        const bool part = !FF212_STRANDED && (a == WIN_PART_OPEN);
+        const bool currently_open_or_opening = (a == WIN_OPEN || a == WIN_MOVING_OPEN || part);
         if (out->win[ch].action == VENT_ACT_CLOSE && currently_open_or_opening) {
             post_q1(CMD_CLOSE, (uint8_t)(ch + 1));
             ESP_LOGI(TAG, "[T6] → CMD_CLOSE ch=%u (step %d, actual=%d)",
@@ -368,7 +379,9 @@ static void apply_model_output(const vent_out_t *out, const window_state_t *actu
     /* Pass 2 — every WIDENING move. */
     for (uint8_t ch = 0; ch < 3; ch++) {
         const window_state_t a = actual[ch];
-        const bool currently_closed_or_closing = (a == WIN_CLOSED || a == WIN_MOVING_CLOSE);
+        /* ...and for an OPEN: it is not fully open. See pass 1. */
+        const bool part = !FF212_STRANDED && (a == WIN_PART_OPEN);
+        const bool currently_closed_or_closing = (a == WIN_CLOSED || a == WIN_MOVING_CLOSE || part);
         if (out->win[ch].action == VENT_ACT_OPEN && currently_closed_or_closing) {
             post_q1(CMD_OPEN, (uint8_t)(ch + 1));
             ESP_LOGI(TAG, "[T6] → CMD_OPEN  ch=%u (step %d, actual=%d)",

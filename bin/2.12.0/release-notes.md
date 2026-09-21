@@ -32,7 +32,7 @@ Three things the refactor had to preserve, and how each was shown:
 | **Effective** | `dm_m3_ctrl_mode()` in T4 | What is actually driving M3: the setting **and** a position T17 trusts **and** the anti-flap. Computed in exactly one place — two places would eventually disagree, and the SD log would record a decision under a mode that was not in force. |
 
 - **Demotion is immediate**; **promotion** waits for a stroke boundary and a 120 s hold-down. Turning linear control *off* takes effect at once, because that is a deliberate act.
-- **The fall back needed no code.** Mode 1's law sees a part-open M3 as being at neither end and asks for whichever end its step wants, so M3 reaches an end by the ordinary path.
+- **The fall back needed no code in the law — and one fix in T6, found by the soak.** Mode 1's law sees a part-open M3 as being at neither end and asks for whichever end its step wants. T6's apply filter, copied from the inline code that predates `PART_OPEN`, **dropped that request**: after mode 2 left M3 part-open, mode 1 could neither close nor open it. On 2026-09-20 it stayed stranded for 28 minutes until a wind override closed it. Fixed on 2026-09-21; `bin/at_wp_fallback.py` is the fail-first test.
 
 **The actuator.** Q1 gains `CMD_TARGET` with a `target_x10` field (0..1000, 0.1 %), read for that action and no other — four of the five Q1 producers build commands with positional initialisers, where a trailing field is zero, and **a zero read as a target means "close it"**. T2 refuses a target when the window has never been taught, when the position is not trusted, or when the reading is older than 3 s; a target at or within one deadband of an end becomes an ordinary full-travel drive; and a position lost mid-move leaves the drive to finish on the travel timer, at an end.
 
@@ -97,9 +97,10 @@ The bench image is 1 417 456 B. Both control laws are compiled in: `stepped` dri
 | Release and bench images build | yes |
 | Every new log encoding through the real parser | decoded |
 | GUI against the mock, in a browser | the three badge cases and the greying rule |
-| **`bin/at_wp_target.py`** — six stages on the rig | **not yet run** |
+| **`bin/at_wp_target.py`** — seven stages on the rig | **all seven PASS in one run** on the fixed build (band 50.9 %, twice 51.2 then 28.7 %, closeshort reached the end) — 2344, 2026-09-21 |
+| **`bin/at_wp_fallback.py`** — the fall back through T6, fail-first | unfixed build and fail-first bit 16: **both stages FAIL** (M3 stranded part-open for 200 s); fixed build: **both PASS** (closed after 49 s, opened after 47 s) — 2344, 2026-09-21 |
 | **`bin/at_wp02.py`** — AT-WP02 repeatability, AT-WP03 endpoints | **not yet run** |
-| **Soak ≥ 12 h with scripted strokes** | **not yet run** |
+| **Soak ≥ 12 h with scripted strokes** | **to be re-run on the fixed build.** A 12.04 h run on 2344 (2026-09-20, 25 judged strokes, no reboot) used the image with the stranded-M3 defect, and recorded one `stall_faults` — the rule-1 exemption false positive, whose fix is designed but not made |
 
 ## Upgrading
 

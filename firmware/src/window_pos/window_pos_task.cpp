@@ -228,10 +228,10 @@ static uint32_t s_fitted_checked_ms = 0u;
  *    band in one sample runs on to the end;
  *  - a full-travel command does NOT disarm an armed target, so a safety close
  *    can be stopped short by a stale target -- the one that matters.
- * GET /api/diag/windowpos reports it. Bench builds only. */
-#if defined(WPOS_FAILFIRST_212) && !defined(MODBUS_BENCH)
-#error "WPOS_FAILFIRST_212 is a bench-only fail-first build"
-#endif
+ * GET /api/diag/windowpos reports it. Bench builds only. **It is a BITMASK now,
+ * one bit per defect, and a fifth bit covers T6: firmware/src/types/
+ * failfirst_212.h is where the bits are defined and documented.** */
+#include "../types/failfirst_212.h"
 
 /* ---- bench test hook (gh#72): see windowpos_task_inject() ----------------- */
 #ifdef MODBUS_BENCH

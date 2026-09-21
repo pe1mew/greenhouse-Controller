@@ -63,6 +63,21 @@ MIN_SPAN_FRAC = 0.30     # of full travel; below this the leaf barely moved
 BACKSTEP_TOL_X10 = 20    # 2.0 mm of non-monotonic jitter tolerated
 
 
+# Seconds to wait for the unit's HTTP reply. 10 is plenty on a good link, but a
+# marginal one (-78 dBm and 15 % ping loss on 2344, 2026-09-21) answers a plain
+# GET in up to 7.5 s, and a harness that dies on a slow reply loses the run and
+# its observation window. Harnesses that need it raise this at import.
+HTTP_TIMEOUT_S = 10
+
+# A GET that times out or loses its connection is tried again, this many times.
+# A GET changes nothing, so a second attempt is always safe, and on a marginal
+# link one lost reply otherwise ends a run and its observation window (2344,
+# 2026-09-21: a connect timeout inside settle_cfg at -83 dBm). Writes are never
+# retried here -- a harness that wants that decides per call, knowing whether
+# the write is idempotent.
+GET_RETRIES = 2
+
+
 class Unit(object):
     def __init__(self, host, pin):
         self.host = host
@@ -71,7 +86,7 @@ class Unit(object):
         self._login(pin)
 
     def _raw(self, method, path, body=None):
-        c = http.client.HTTPConnection(self.host, 80, timeout=10)
+        c = http.client.HTTPConnection(self.host, 80, timeout=HTTP_TIMEOUT_S)
         hdr = {"Content-Type": "application/json"}
         if self.cookie:
             hdr["Cookie"] = self.cookie
@@ -90,7 +105,15 @@ class Unit(object):
             return sc, raw.decode("utf-8", "replace")
 
     def _req(self, method, path, body=None, _retry=True):
-        sc, out = self._raw(method, path, body)
+        tries = 1 + (GET_RETRIES if method == "GET" else 0)
+        for i in range(tries):
+            try:
+                sc, out = self._raw(method, path, body)
+                break
+            except (OSError, http.client.HTTPException):
+                if i + 1 >= tries:
+                    raise
+                time.sleep(2.0)
         if sc == 401 and _retry and path != "/api/login":
             self.cookie = None
             self._login(self.pin)

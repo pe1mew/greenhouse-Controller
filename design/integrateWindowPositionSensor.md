@@ -2106,6 +2106,53 @@ dwell, the deadband, and the fault state the surfaces display.
 - **Safety unchanged (FR-WP18).** The wind close-all, the motor alarm and the boot sweep ignore
   position and may interrupt a positioning move at any point.
 
+###### Rule 1 false-trips after a mode-2 drive (found 2026-09-20, NOT yet fixed)
+
+**The first mode-2 drive under T6 on the rig produced a rule-1 stall fault that is not a stall.**
+The soak on 2344 shows `stall_faults 1`, and the SD log says exactly what happened:
+
+| Time | Event |
+|---|---|
+| 15:39:09 | the operator sets `ctrl_mode_m3` = 1 in the GUI (`SETPT param 53`) |
+| 15:39:28 | M3 leaves the closed end; **bit 3 clears and does not return for 43 minutes** |
+| 15:39:31 | mode 2 stops M3 at 380 mm — `ALARM 251 a=4 b=6`, a targeted drive |
+| 15:49:36 | a second target leaves it at **27.8 mm**: part-open, just above the closed end switch |
+| 15:54:14 | the operator sets it back to 0; mode returns to TIMED at 15:54:27 |
+| 16:21:52 | **a wind override** (`ALARM 240`): the rig's emulated S200 reports 6.0 m/s against `v_max` 6.0 |
+| 16:22:25 | **T3's safety CLOSE_ALL** drives M3 — *corrected 2026-09-21: this row first said "M3's 25-minute open dwell expires and T6 commands the CLOSE the fallback intends". It was not T6, and the reason T6 never closed M3 in the 28 minutes before is its own defect — see "M3 stranded part-open" below* |
+| 16:22:31 | **rule 1 fires**: peak rate 0.0 mm/s against a 57.6 threshold |
+| 16:22:27 | bit 3 makes — **two seconds into the drive**, too late |
+| 16:22:44 | the drive ends *confirmed*, 1.5 s from relay-on to the end sensor |
+
+**Why the exemption missed it.** `stroke_at_target` starts true and is cleared by the first accepted
+sample that is not `on_end && at_pos`. Here the leaf had settled to 0.0 mm but was **not on the
+switch**, so the very first sample cleared it; the remaining travel was sub-millimetre, so the rate
+never rose; and by the time bit 3 made, the flag was already latched false.
+
+**This is new, and 2.12.0 caused it.** Before `CH_PART_OPEN` existed, M3 could only ever rest *on*
+a switch, so requiring bit 3 from the first sample was safe. A part-open stop inside the deadband
+of an end but off its switch is a state the 2.9.1 detector was never written for — and mode 2
+produces it routinely, because a target of "nearly closed" is a legitimate thing to ask for.
+
+**The fix, for its own change with its own fail-first:** keep the end-sensor requirement — it is
+what stops a genuinely stuck leaf at 5 mm being excused, and it is the continuity property the
+shorted-wiper case rests on — but judge it **at the grace expiry** rather than latching from the
+first sample: *never left the target region, and the target end sensor has made by now*. In this
+drive that is true (position 0.0 throughout, bit 3 made at 2 s); for a leaf stuck short of the
+switch it stays false, which is the case worth keeping.
+
+**Until then:** the soak's `stall_faults` criterion of 0 must be read with this exception, and the
+automated report will say FAIL. Accepted by the operator on 2026-09-20 on the evidence above.
+**And it is now easier to reach (2026-09-21):** the close here was T3's; T6 *could not* close a
+part-open M3 until the stranded-M3 fix below. With that fixed, T6's ordinary mode-1 CLOSE takes the
+same path whenever a target has left M3 just above the closed switch, so a soak on the fixed build
+will meet this false positive in normal operation. **Make this fix before that soak.** Every
+drive after 16:22 (16:42, 17:43, 18:43) shows a clean `0x00`→`0x08` transition and a confirmed
+verdict, so the mechanism is healthy.
+
+**Worth keeping for its own sake:** this was the first time mode 2 drove this rig under T6 rather
+than a bench hook, and it worked — two targets, both reached, both logged with reason 6.
+
 ###### Built 2026-09-20 (2.12.0): the linear dwell, and the surfaces
 
 **`motor/min_intv_m3`** — the linear dwell, seconds, **default 0**, range 0-1500 (the same ceiling
@@ -2277,10 +2324,46 @@ that was not in force. It is the setting AND a position T17 will stand behind AN
   soak's `mode_changes <= 2` criterion exists because gate flapping was real;
 - **turning mode 2 OFF is immediate in both directions**: a deliberate act needs no hold-down.
 
-**The fallback needed no code.** Mode 1's law sees `VENT_WIN_PART_OPEN`, which is at neither end,
-and asks for whichever end its step wants — so a demotion with M3 part-open drives it to an end by
-the ordinary path. That is the plan's "the fallback leaves M3 at an end", obtained by the library
-already being right rather than by a special case in the fallback.
+**The fallback needed no code in the LAW — and one fix in the caller, found by the soak.** Mode 1's
+law sees `VENT_WIN_PART_OPEN`, which is at neither end, and asks for whichever end its step wants.
+*This paragraph first ended "so a demotion with M3 part-open drives it to an end by the ordinary
+path". That was not true until 2026-09-21* — see the next section.
+
+###### M3 stranded part-open after a fall back (found 2026-09-20 soak, fixed 2026-09-21)
+
+**The law asked; T6 threw the request away.** `apply_model_output()` posted a CLOSE only for a
+window that was OPEN or MOVING_OPEN, and an OPEN only for one that was CLOSED or MOVING_CLOSE — a
+filter copied from the inline `reconcile_to_step()`, written before `PART_OPEN` existed. The law
+(`vent_model_stepped.cpp:320`) correctly treats a part-open window as eligible both ways; T6 then
+dropped the command. So **after mode 2 left M3 part-open, mode 1 could neither close nor open it**,
+until a wind override or a recalibration happened to move it.
+
+**The soak showed it and the first reading missed it.** For 28 minutes on 2026-09-20 (15:54 to
+16:22) the stroke harness steered T6 to close a part-open M3 and nothing moved; the close that
+finally came was **T3's wind override**, which the first account of the incident attributed to T6
+after a dwell. Session 1 of the stroke run "failed" for the same reason, and looked like harness
+trouble.
+
+**Why it matters: it is the fallback path.** A sensor fault while M3 is part-open demotes to mode 1
+at once — and then left M3 where it stopped. None of the seven target stages could see it, because
+they drive T2 through the bench hook and never go through T6's apply path.
+
+**Fix:** both filters include `WIN_PART_OPEN`, matching the law exactly. **Fail-first:**
+`bin/at_wp_fallback.py` holds T6 off with a long dwell, has the bench hook leave M3 part-open by a
+drive *toward* the end T6 wants (so T6 does not reverse it), and asserts that T6 then finishes the
+move. Run against the unfixed build it must fail; `-DWPOS_FAILFIRST_212=16` restores the old filter
+alone. **Result on 2344, 2026-09-21:**
+
+| Build | `close` | `open` |
+|---|---|---|
+| unfixed (`e5c2cc…`, the 2.12.0-bench the soak ran) | FAIL — still PART_OPEN after 200 s | FAIL — still PART_OPEN after 200 s |
+| fail-first, bit 16 only (`7ef4fd…`) | FAIL | FAIL |
+| fixed (`ab25e5…`) | **PASS** — closed after 49 s | **PASS** — opened after 47 s |
+
+49 s and 47 s are a T6 wake (up to 30 s) plus T2's full-travel drive of `travel_m3` + 5 s: from
+PART_OPEN a mode-1 move is an ordinary full stroke, over-driven onto the end switch like any
+other. It is the same lesson as the rule-1 entry above, in my own code: a new state, an old filter
+that assumed the list of states was complete.
 
 **T6 holds a two-entry model table** indexed by the effective mode (`§5c` step 2), resets
 `vent_state_t` on a change (the memory belongs to the law that wrote it) and logs the change as
@@ -2370,12 +2453,15 @@ closed end. Getting there took two corrections worth keeping:
 
 *Fail-first, as every behavioural change here gets, and it needed a correction on its first run:*
 **`-DWPOS_FAILFIRST_212` is a BITMASK, not a switch** (1 start age, 2 grace, 4 overshoot guard,
-8 disarm; bare = all four). Restoring all four at once on 2344 proved only the first: with the
+8 disarm; since 2026-09-21 also 16, T6's stranded-M3 filter — `firmware/src/types/failfirst_212.h`).
+**Pass a value:** GCC makes a bare flag 1, so a bare flag restores bit 1 alone. *This sentence
+first said "bare = all four", which was true of the switch the bitmask replaced and never of the
+bitmask.* Restoring all four at once on 2344 proved only the first: with the
 start-age defect in place **no target ever arms**, so the grace, the overshoot guard and the disarm
 are never exercised and their stages pass *vacuously* — `lost` and `supersede` both reported PASS
 on a build whose rules were the broken ones. A fail-first arm that passes for the wrong reason is
 worse than none, because it certifies the rule it never touched. With `=14` the targets work and
-the other three defects are visible. Bare, it restores the four
+the other three defects are visible. Together (`=15`) the four bits are the four
 defects the target rules fixed — the start judging freshness by the stop rule's 3 s limit, the stop
 rule without its grace, the stop rule without its overshoot guard, and a full-travel command that
 does **not** disarm an armed target. That last one is why the flag exists: on a fail-first build the
@@ -2383,7 +2469,9 @@ does **not** disarm an armed target. That last one is why the flag exists: on a 
 is a safety close going wrong, and it must be demonstrated failing before the fix is believed. The
 two bench images differ (`98a97aa3…` normal, `99b5f55b…` fail-first, 80 B smaller), the source
 refuses the flag outside a bench build, and `GET /api/diag/windowpos` reports `gate.failfirst_212`
-so a result can never be read against the wrong build.
+so a result can never be read against the wrong build — **as the mask itself since 2026-09-21**.
+Until then it said only `true`/`false`, which could not tell one bit's build from another's, and
+each bit fails a different stage.
 
 *Not in this step:* nothing selects a target (the effective mode is next), the minimum move (§3.6
 floor 2) is still unmeasured, the minimum interval is the law's `m3_min_interval_ms` and has no

@@ -300,7 +300,25 @@ def cmd_report(u, args):
             print("  not long enough: %.2f h against %.1f needed%s."
                   % (hours, args.hours,
                      " -- the stroke count is already there" if not short_strokes else ""))
-        if not short_strokes:
+        # An interim report must not say "nothing is wrong" while a fail
+        # criterion is ALREADY breached. It did: the fault check below runs
+        # only once the elapsed-time gate passes, so a run carrying a stall
+        # fault reported "all counters clean" for as long as it was short of
+        # 12 h -- which is exactly when someone reads an interim report and
+        # stops watching. Found on 2344, 2026-09-20, with `stall_faults 1`
+        # printed two lines above the claim that there were none.
+        hurt = [n for n in ("stall_faults", "early_stops", "rejected_rate",
+                            "err_comm") if d[n]]
+        if d["mode_changes"] > args.max_mode_changes:
+            hurt.append("mode_changes")
+        if verdict["not_reached"]:
+            hurt.append("not_reached")
+        if hurt:
+            print("\n  ALREADY FAILING on %s -- more hours cannot undo it."
+                  % ", ".join("%s +%d" % (n, d[n]) if n in d else n for n in hurt))
+            print("  Judge it now: either the cause is understood and discounted,")
+            print("  or the soak is restarted. Soaking on does not settle it.")
+        elif not short_strokes:
             print("\n  Nothing is wrong: %d judged strokes, all counters clean, gate %s."
                   % (judged, now["gate"]))
             print("  It needs %.2f more hours." % max(0.0, args.hours - hours))

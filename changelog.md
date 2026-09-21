@@ -28,9 +28,10 @@ plan §5b/§5c and `design/ventModelContract.md`. Detail in `bin/2.12.0/release-
   and close dwell**, and T2 and T6 enforce the one key from one place.
 - **`M3_ctrl_mode`** in the status payload (`"TIMED"` / `"LINEAR"`), and the web GUI shows which law
   is in force beside the setting that asks for it.
-- **`bin/at_wp_target.py`** (six stages for the target path) and **`bin/at_wp02.py`** (AT-WP02
-  repeatability and AT-WP03 endpoints, which have been the sensor's acceptance since the
-  requirements were written and could not run until T2 could hold a target).
+- **`bin/at_wp_target.py`** (seven stages for the target path), **`bin/at_wp_fallback.py`** (the
+  fall back through T6, below) and **`bin/at_wp02.py`** (AT-WP02 repeatability and AT-WP03
+  endpoints, which have been the sensor's acceptance since the requirements were written and could
+  not run until T2 could hold a target).
 
 **Changed.**
 
@@ -47,6 +48,11 @@ plan §5b/§5c and `design/ventModelContract.md`. Detail in `bin/2.12.0/release-
   the closed-loop simulator all learn them here — a second meaning on one row is what gh#54 cost.
 - **A new window state, `PART_OPEN`**, terminal but deliberately **not persisted**: a part-open M3
   forces the boot CLOSE_ALL rather than taking the "all three closed" shortcut.
+- **T6's apply filter accepts a part-open window for an OPEN and a CLOSE**, as the law always did.
+  Found by the soak, fixed before release: the filter predated `PART_OPEN` and **dropped the law's
+  request**, so after mode 2 left M3 part-open, mode 1 could neither close nor open it — the fall
+  back left M3 stranded until a wind override moved it (28 min on 2344, 2026-09-20).
+  `bin/at_wp_fallback.py` fails on the old filter (fail-first bit 16) and passes on the new one.
 - **Docs:** FRS §5.3d gains FR-WPF07–13 (FR-WPF06 superseded), TSDS §5.16.6, `logparser.md` 1.23,
   `boerHandleiding` 1.22, `beheerderHandleiding` 1.25.
 

@@ -20,7 +20,7 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 - **[PATTERN] When the instrument disagrees with the system, suspect the instrument — and read the system's own counters before theorising.** 2026-09-14: an M2k probe saw two Modbus slaves and never the third, and the first two explanations offered were both about the *rig* — the probe is not on that traffic, then the capture window truncates the reply. Both wrong. The whole time, `GET /api/diag/windowpos` was reporting **`crc 0`, `framing 0`** on 5 400+ reads of the missing slave: the bus was clean and the firmware's decoder was correct. The fault was a free-running software UART in a throwaway capture script. Rules: (a) before explaining why a measurement is missing, ask what the **system under test** says about the same event — error counters, success counts, audit rows; (b) a discrepancy between an instrument and a system is evidence about *one of them*, and the instrument is usually the newer, less-tested one; (c) an explanation that requires the production system to be subtly broken, when that system reports zero errors, needs much better evidence than one that blames the measuring kit.
 
-- **[PATTERN] A number that fits the story is the one to check hardest.** Five instances, four of them on 2026-09-14. (1) A ROTA retrieval period was inferred as "~40 min" from the gap between **two** observations — that was the sampling interval, not the period; the operator's cron is 10 min. (2) A 5C88 fault count included the 2026-06-19 pre-commissioning wind artefact, which the gotcha log had **already** excluded — the log was not read before counting. (3) `4.19 h` from a progress line was read as `4.19 ms` of latency and felt confirmed because the vendor's contract says 4.08 ms; the two numbers have nothing to do with each other and we had never measured the encoder at all. (4) "The probe cannot see addr 40" — its **requests** had been decoding perfectly all along, visible the moment the discarded frames were logged. (5) "The window is too short" — the reply was corrupt, not clipped; fragments summed to *more* bytes than the frame contains, which a truncation cannot produce. Rules: (a) trace every number to the thing that produced it before using it — a unit that is not written down is not a measurement; (b) **corroboration between two numbers you did not independently source is not corroboration**; (c) when a mechanism is proposed, name the observation that would distinguish it from the alternatives and get that observation first — in (4) a four-line diagnostic settled in four minutes what two rounds of reasoning had not; (d) sibling of *"show the check can fail"* — the same discipline applied to evidence rather than to tests.
+- **[PATTERN] A number that fits the story is the one to check hardest.** Seven instances, four of them on 2026-09-14. (1) A ROTA retrieval period was inferred as "~40 min" from the gap between **two** observations — that was the sampling interval, not the period; the operator's cron is 10 min. (2) A 5C88 fault count included the 2026-06-19 pre-commissioning wind artefact, which the gotcha log had **already** excluded — the log was not read before counting. (3) `4.19 h` from a progress line was read as `4.19 ms` of latency and felt confirmed because the vendor's contract says 4.08 ms; the two numbers have nothing to do with each other and we had never measured the encoder at all. (4) "The probe cannot see addr 40" — its **requests** had been decoding perfectly all along, visible the moment the discarded frames were logged. (5) "The window is too short" — the reply was corrupt, not clipped; fragments summed to *more* bytes than the frame contains, which a truncation cannot produce. (6) 2026-09-20: a **timestamp** fitted the story — M3 closed at 16:22 just when a 25-minute dwell was due to expire, so the close was written up as T6 doing what the fallback intends. It was T3's wind override (`ALARM 240` 33 s earlier, two rows up), and the wrong account hid a real defect for a night (see 2026-09-21, stranded M3). Same shape as 2026-09-16, where T6 finishing a teach's OPEN was credited to the teach: *attribute a move from the rows before it and the command's source, never from a clock that fits.* (7) 2026-09-21, half a minute after correcting (6) in the plan: an aborted harness run was blamed on the gh#51 dwell trap because M3 was still CLOSED at cleanup; the traceback, not yet read, said network timeout. *Read the traceback before naming the cause.* Rules: (a) trace every number to the thing that produced it before using it — a unit that is not written down is not a measurement; (b) **corroboration between two numbers you did not independently source is not corroboration**; (c) when a mechanism is proposed, name the observation that would distinguish it from the alternatives and get that observation first — in (4) a four-line diagnostic settled in four minutes what two rounds of reasoning had not; (d) sibling of *"show the check can fail"* — the same discipline applied to evidence rather than to tests.
 
 - **[PATTERN] Show the check can fail before trusting a pass.** Three instances in two days: (1) a before/after motor-timing measurement landed on the same 24 s for opposite reasons (2026-09-10) — a third run at a different setting was the evidence; (2) AT-WP05's headline counter `err_busy` **cannot fail with two callers** (500 ms lock timeout vs ~215 ms hold) — 7117 clean reads proved nothing about contention (2026-09-11); (3) the gh#52 hardware test run from AUTOMATIC passed on code where the fix is inert (2026-09-11). Rules: (a) before reading a pass, name the input that would make the check fail and confirm the check sees it — the Modbus fail-first rule generalised; (b) a criterion that no plausible failure can trip is a *description*, not a test — say so in the results; (c) a fix to a transition is tested from the state the transition leaves. **Fourth instance, 2026-09-12, the inverse shape:** an A/B that *passed* proved nothing — the encoder was unplugged and M3 stroked **twice** with no wind alarm, read as evidence, when at the measured rate (~4 failures in 600 transactions) two strokes span one or two polls and the null hypothesis predicts zero events anyway. (d) before treating an A/B as evidence, **compute how many events the null hypothesis predicts in that sample size** — if it is under ~1, the run cannot discriminate and saying so is the result. **Fifth instance, 2026-09-16: the fail-first run found a flaw in the TEST.** A build that persists the teach's STANDBY hold was expected to fail "a reboot ends the hold", and passed. The test logged out right after the upload that reboots the unit, and the logout reached the unit before the reboot and released the hold itself, so every earlier pass had tested the logout, not the reboot. (e) **when a test drives a cleanup step (logout, abort, close) between its stimulus and its check, make sure the cleanup cannot produce the outcome being checked.** **Sixth instance, 2026-09-17: the fail-first run PASSED because its trigger was not deterministic.** A power cycle was to reproduce a false rule-2 trip that needs T17 to join the boot recalibration at least ~5.5 s late; this boot it joined after ~2.5 s. (f) **a fail-first trigger must land in the failure window every time** — make it deterministic, and record where each run's trigger actually landed.
 
@@ -47,6 +47,11 @@ Hooks are the *symptom*, not the title — you rarely know the cause when you ar
 Entries stay in reverse-chronological order below; this index is the only grouped view.
 
 ### Windows, climate & manual control (T2, T6, T8)
+- **2026-09-21** — after mode 2 leaves M3 part-open, mode 1 can neither close nor open it (T6's apply filter predates `PART_OPEN`: the law asked, T6 dropped it); no target stage could see it, all enter by the bench hook [RESOLVED 2.12.0]
+- **2026-09-21** — an acceptance harness aborts twice on a marginal link (it loses the REPLY of a command that landed); the second abort was blamed on a dwell before its traceback was read
+- **2026-09-20** — a stall fault on a drive that could not move: M3 part-open inside the closed band but off its switch (rule 1's at-end exemption predates `PART_OPEN`)
+- **2026-09-20** — an interim soak report says "nothing is wrong" while a fail criterion is already breached [RESOLVED]
+- **2026-09-20** — a bundled fail-first build passes for the wrong reason (the first restored defect keeps the others from ever running) [RESOLVED: bitmask]
 - **2026-09-18** — a fail-first run PASSES on the old code because a second defect hides the first (T2's stale clock deferred the stale commands, on ONE of three paths) — gh#79
 - **2026-09-17** — a wind override can be LOST during a long recalibration (T6 is not paused, fills the 8-deep Q1, and T3's close-all is one unchecked non-blocking send) — gh#79 [RESOLVED 2.9.2: T6 pauses, T3 retries, T2 re-reads the clock]
 - **2026-09-17** — a fault detector never fires in the common case and false-trips in the rare one (its corroborating bit is true at BOTH ends) — gh#78
@@ -93,6 +98,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-07-05** — M3 is the north **side wall**, not a roof panel; 8.1× is travel time, 10× is area
 
 ### OTA & ROTA releases
+- **2026-09-21** — a bench push carries a GUI older than its firmware while `fw_ver` and `asset_version` match (every bench build of a version says `-bench`, so the pair check cannot see stale content)
 - **2026-09-20** — a check forced ~2 min after publishing gets `dl` 2 (SHA/size): the server points the channel before it has fetched the artefacts; retry, and check the manifest against the local files before blaming the release
 - **2026-09-17** — publishing a release to ROTA does nothing on a module that runs a pushed build of the same version, `-bench` included (the version compare ignores the suffix)
 - **2026-09-16** — after one upload cut off by the network, the unit refuses every OTA and ROTA skips its checks until someone presses reset (the error exit released nothing)
@@ -140,10 +146,13 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-06-26** — a day shows ~2× the expected samples (two overlapping SD download chains)
 
 ### Web GUI & HTTP routes
+- **2026-09-20** — a new config key reads back `null` from `GET /api/config` while every check passes (the response is an eighth, hand-written key list) [RESOLVED: `check_config_get()`]
+- **2026-09-20** — classification is not consumption: a key declared everywhere can still be acted on nowhere (firmware response and simulator, same day)
 - **2026-09-20** — a greyed block dims the reason inside it: `opacity` has no per-child exemption, so the reason must sit outside the block (gh#74)
 - **2026-09-16** — a setting is MISSING from the GUI entirely (two routes exceeded `max_uri_handlers` and never registered; the card depending on them was hidden rather than greyed, so the only symptom was an absence)
 
 ### Build, toolchain & shell
+- **2026-09-20** — a release build overwrites `bin/<version>/`, and a rebuild in another directory is not byte-identical (the build DIRECTORY is in the image)
 - **2026-09-17** — a new library's host tests fail at link with an undefined reference to its own function (`pio test` does not build `src/` unless `test_build_src = yes`)
 - **2026-09-17** — a macro with a literal `
 ` compiles in one build variant and breaks the other (a macro body is checked where it is USED, so the `#ifdef` branch that skips it never sees the error)
@@ -460,7 +469,7 @@ and a short CLOSED can be missed.
 
 ## 2026-09-17 — a bench build died with an internal compiler error in an untouched IDF file, and left the web manifest stamped
 
-**RECURRED the same day**, 17:55, in the same file (`esp_lcd_panel_rgb.c`), on the first build after a change to `PLATFORMIO_BUILD_FLAGS` forced a full rebuild. The retry passed again. Twice in one day makes it a rebuild-triggered flake, not a one-off: **rerun once before investigating**, and check `git status firmware/data/` afterwards.
+**RECURRED the same day**, 17:55, in the same file (`esp_lcd_panel_rgb.c`), on the first build after a change to `PLATFORMIO_BUILD_FLAGS` forced a full rebuild. The retry passed again. **RECURRED 2026-09-21**, same file, same function (`rgb_panel_draw_bitmap`, RTL pass `ira`), again on the first build after the flag changed — and **twice in a row**; the third attempt passed. 12 GB of RAM was free, so it is not memory pressure. Allow up to three attempts. Twice in one day makes it a rebuild-triggered flake, not a one-off: **rerun once before investigating**, and check `git status firmware/data/` afterwards.
 
 **Problem.** `build_release.ps1 -Environment lolin_s3_bench` failed with
 `esp_lcd_panel_rgb.c: internal compiler error: Segmentation fault`, a file nobody had changed.
@@ -2184,7 +2193,10 @@ target is ever armed, so the grace, the overshoot guard and the disarm never run
 stages pass *vacuously*. The run looked like partial confirmation; it was no confirmation
 at all for those two rules.
 
-**Fix:** the flag became a BITMASK (1 age, 2 grace, 4 overshoot, 8 disarm; bare = all).
+**Fix:** the flag became a BITMASK (1 age, 2 grace, 4 overshoot, 8 disarm; 16 since 2026-09-21, T6's
+stranded filter). *This line first said "bare = all": GCC makes a bare flag 1, so a bare flag
+restores bit 1 alone* — and until 2026-09-21 the diag reported only true/false, so one bit's
+build could not be told from another's; it now reports the mask.
 `=14` leaves targets working so the other three are visible, and `=8` isolates the
 safety-relevant one.
 
@@ -2219,3 +2231,159 @@ by the model session.
 **Rule:** *after adding a key, read it back from the consumer that is supposed to act on
 it, and change it to a value whose effect you can see.* "It is in the table" is a claim
 about the table.
+
+## 2026-09-20 — a new resting state made an old detector wrong
+
+**Problem:** 2.12.0's soak reported `stall_faults 1` on 2344. The drive was real, the
+fault was not: M3 had been left **part-open at 27.8 mm** by a mode-2 target, just above
+its closed end switch, and the end-sensor bit had been clear for 43 minutes. When a CLOSE
+finally came, the leaf had nowhere to go, the rate stayed 0.0 mm/s, and §12.4 rule 1 read
+that as "the leaf is not following the relay". *(Corrected 2026-09-21: this said "when T6
+later commanded the CLOSE". It was T3's wind override — T6 could not close a part-open M3
+at all, which is its own defect, see 2026-09-21 "the law asked for an end".)*
+
+**Consequence of fixing THAT defect (2026-09-21):** until then only T3 or a recalibration
+could close a part-open M3, so this false positive needed a wind override to show. With T6's
+filter fixed, an ordinary mode-1 CLOSE reaches it whenever a target has left M3 just above
+the closed switch — so **a soak on the fixed build will meet it in normal operation.** Make
+the rule-1 fix before that soak, or read its `stall_faults` with this exception again.
+
+**Root cause:** rule 1's at-end exemption needs `on_end && at_pos` on the FIRST accepted
+sample. That was safe for three years of firmware because M3 could only ever rest ON a
+switch. `CH_PART_OPEN` (2.12.0) created a resting state the detector was never written
+for — inside the deadband of an end but off its switch — and mode 2 produces it routinely,
+because "nearly closed" is a legitimate target.
+
+**Fix (designed, not yet made):** judge the exemption at the grace expiry rather than
+latching it from the first sample — *never left the target region, and the end sensor has
+made by now*. Keeps the continuity property the shorted-wiper case depends on.
+
+**Rule, and it is the general one:** *when you add a STATE, re-read every detector that
+reasons about the states that existed before it.* Rule 1 was correct, well tested and
+hardware-verified; it became wrong because the world gained a case. Grepping for the new
+enum finds the code that switches on it — it does not find the code that assumed the old
+set was complete. (Today the same sweep did catch three of these by reading: the LCD
+renderers, `status_json`'s `default:` and T17's per-drive verdict. This one was missed
+because rule 1 reasons about a SENSOR BIT, not about the state enum.)
+
+## 2026-09-20 — an interim soak report said "nothing is wrong" while it was already failing
+
+**Problem:** `at_wp_soak.py --report` at 7.3 h printed `stall_faults 1 (need 0)` in its
+counter block and, four lines later, **"Nothing is wrong: 17 judged strokes, all counters
+clean"**.
+
+**Root cause:** the fault check runs only after the elapsed-time gate passes. The
+INCONCLUSIVE branch printed an encouraging summary whenever the stroke count was met,
+without looking at the counters at all — so for the whole first 12 h of a soak, a run that
+had already breached a fail criterion read as green.
+
+**Why it matters more than it looks:** the interim report is what you read at the check-in
+and then stop watching. A soak that is already lost keeps burning the rig overnight.
+
+**Fix:** the branch now computes the fault list first and says **"ALREADY FAILING on
+stall_faults +1 -- more hours cannot undo it"**, with the two real options (understand and
+discount the cause, or restart). The green summary only prints when the counters really
+are clean.
+
+**Rule:** *a progress message must be computed from the same evidence as the verdict.* If a
+tool has a pass/fail rule, every intermediate summary it prints is a claim about that rule
+and has to be derived from it, not from whichever half was convenient at that point in the
+code.
+
+## 2026-09-21 — the law asked for an end and T6 threw the request away (a new state, an old filter: the second in two days)
+
+**Problem:** on 2026-09-20 the stroke harness steered T6 to close a part-open M3 on 2344 for
+28 minutes (15:54 to 16:22) and nothing moved. The close that finally came was **T3's wind
+override** — and it was first written up as T6 closing M3 after its dwell, which supported
+the plan's claim that "the fallback needed no code". The same harness session had failed
+earlier for the same reason and was read as harness trouble.
+
+**Root cause:** `apply_model_output()` posted a CLOSE only for a window that was OPEN or
+MOVING_OPEN, and an OPEN only for one that was CLOSED or MOVING_CLOSE — a filter carried
+over from the inline `reconcile_to_step()`, written before `WIN_PART_OPEN` existed. The law
+(`vent_model_stepped.cpp`) treats a part-open window as eligible both ways and asked
+correctly; T6 dropped the command. **That is the fallback path:** a sensor fault while M3
+is part-open demotes to mode 1 at once, and mode 1 then left M3 where it stopped, until a
+wind override or a recalibration happened to move it.
+
+**Why nothing caught it:** the law's host tests passed because the law was right. All
+seven target stages drive T2 through the bench hook (`SRC_OPERATOR_MANUAL`), a side door
+that never passes T6's apply filter. Only the soak came in by the front door.
+
+**Fix:** both filters include `WIN_PART_OPEN`; T2 already accepted an OPEN and a CLOSE from
+`CH_PART_OPEN`. **Fail-first:** `bin/at_wp_fallback.py` holds T6 off with a long dwell, has
+the hook leave M3 part-open by a drive *toward* the end T6 wants (so T6 cannot reverse it),
+then asserts T6 finishes the move. On 2344, 2026-09-21: the **unfixed build failed both stages**
+(M3 still PART_OPEN after 200 s, T6 wanting CLOSED, then OPEN); with **only bit 16** of
+`-DWPOS_FAILFIRST_212` restoring the old filter, both stages failed too — the flag reproduces the defect on its own; the **fixed build** passed both: T6 closed the part-open M3 after 49 s and opened it after 47 s.
+
+**Rule — a RECURRENCE of 2026-09-20 "a new resting state made an old detector wrong", one
+day later, same state, my own code:** *when you add a state, grep for its NEIGHBOURS, not for
+it.* `grep WIN_PART_OPEN` finds the code that already knows about it; `grep
+'WIN_MOVING_OPEN\|WIN_MOVING_CLOSE'` and `grep '== WIN_OPEN\|== WIN_CLOSED'` find every list
+that was complete before it existed. Done for this fix: every other list is a "moving?"
+test, which is right to exclude a window at rest, or already names `PART_OPEN`;
+`commission.cpp` closes a part-open M3 first, which its own comment prefers. **And a test
+that enters by a side door certifies the room, not the door.**
+
+## 2026-09-21 — an acceptance harness aborted twice on a marginal link, and I blamed the second on a dwell
+
+**Problem:** `at_wp_fallback.py` died on `TimeoutError` twice before it tested anything —
+once on the bench hook's reply (M3 went part-open anyway: the command landed, the reply was
+lost), once on a `GET /api/config` inside `rig.want()`.
+
+**Root cause:** the link, not the firmware. 2344 was at -78 dBm RSSI: **15 % ping loss to
+the unit against 0 % to the gateway** in the same paired run, round trips up to 820 ms. That
+is the 2026-09-12 rule (paired ping test before suspecting code) **recurring**, on the other
+module. A harness written against a strong link (10 s timeout, any exception fatal) broke on
+a weak one.
+
+**It got worse during the morning:** -83 dBm by 09:00, a *connect* timeout inside a config
+read, and a status read that failed mid-check — the stage judged the "?" it got as a state
+and came back INCONCLUSIVE with a message that read OPEN. **Fixes, all in the harness:**
+`at_wp_ramp.HTTP_TIMEOUT_S` (10 by default; `at_wp_fallback.py` sets 30); `GET_RETRIES` —
+an idempotent GET is tried three times, a write never blindly; the fallback test's POSTs
+tolerate a lost reply and judge by state; and its `state()` retries an unreadable status
+and each check judges and reports the SAME reading.
+
+**What the harness cannot fix: an upload.** Three OTA pushes of the fixed image then failed at
+83 %, 1 % and 22 % — "sender went silent; nothing installed", the unit's 30 s silence bound
+doing its job (no wedge, no reboot). **The operator moved the controller to a different AP**
+(network side; the controller did not even reboot): -53 to -59 dBm, 0 % loss, and the next
+push uploaded 1.4 MB in **7 s instead of 108 s**. When a rig module sits below about -75 dBm,
+ask for the move instead of retrying.
+
+**And a false alarm, caught:** uptime 406 s read as "2344 rebooted at 09:01, mid-test" —
+because I assumed the local time. The unit's own `time_iso` put the boot at 08:54:30: the
+OTA push. **Compute a boot time from the unit's clock and uptime, never from a guess of
+yours.**
+
+**And a misdiagnosis on the way:** I read the second abort as the gh#51 dwell trap (a dwell
+already running keeps its old length when the setting changes), because M3 was still CLOSED
+at cleanup — and added `fresh_start()` for it **before reading the traceback**, which showed
+the GET timeout. The hazard is real (`at_wp_confirm.py` documents it) and `fresh_start()`
+stays, but its docstring had to be corrected: it claimed the trap had held up that run. That
+is instance (7) of the "number that fits the story" PATTERN, and it happened thirty seconds
+after I had corrected instance (6) in the plan. **Rule: read the traceback before naming the
+cause.** An exception says exactly where it happened; a state at cleanup says only
+where things stopped.
+
+## 2026-09-21 — a bench push carried a GUI a day older than its firmware, and the version check agreed
+
+**Problem:** 2344's GUI still showed the old `min_intv_m3` tooltip ("Zero, the default") a day
+after the source said 600 s — while `/api/status` reported `fw_ver` 2.12.0-bench and
+`asset_version` 2.12.0-bench, a matching pair.
+
+**Root cause:** the bench asset zip was made by RESTAMPING `bin/2.12.0/web-assets-2.12.0.zip`, a
+build product from 15:15 that predated the last GUI commit. And the paired-version check cannot
+see it: every bench build of a version carries the same `-bench` string, so old assets and new
+ones report identically. The post-OTA rule ("read both `fw_ver` AND `asset_version`") proves the
+PAIR was installed, not that the content is current.
+
+**Fix:** the bench zip is now packaged straight from `firmware/data` (and checked byte-for-byte
+against it). Nothing in the repo changed: a release build zips `firmware/data` fresh, so this is
+a bench-push trap only — but `bin/2.12.0/`'s local artefacts are stale too and must be rebuilt
+before any publish.
+
+**Rule:** *a version string is evidence of content only if every content change moves it.* A
+reused `-bench` suffix does not, so for a bench push compare the payload itself.

@@ -76,29 +76,9 @@ static const char *TAG = "T2";
 #define ALARM_DEBOUNCE_MS   75u   /**< GPIO42 pin-confirm window (ms) */
 #define LOOP_TICK_MS        20u   /**< Main loop tick interval (ms) */
 
-/* The fail-first flag is a BITMASK, not a switch (2026-09-20). Restoring all
- * four defects at once proved only the first: with the start-age defect in
- * place no target ever arms, so the grace, the overshoot guard and the disarm
- * are never exercised and their stages pass vacuously. One bit each:
- *   1  the START judges freshness by the STOP rule's 3 s limit
- *   2  the stop rule has no grace for the first sample of a drive
- *   4  the stop rule has no overshoot guard
- *   8  a full-travel command does not disarm an armed target
- * `-DWPOS_FAILFIRST_212` alone means all four; `=8` is the safety-relevant one
- * on its own; `=14` leaves targets working so the other three can be seen. */
-#ifdef WPOS_FAILFIRST_212
-#  if WPOS_FAILFIRST_212 + 0 == 0
-#    define FF212 15u
-#  else
-#    define FF212 (WPOS_FAILFIRST_212 + 0u)
-#  endif
-#else
-#  define FF212 0u
-#endif
-#define FF212_AGE       (FF212 & 1u)
-#define FF212_GRACE     (FF212 & 2u)
-#define FF212_OVERSHOOT (FF212 & 4u)
-#define FF212_DISARM    (FF212 & 8u)
+/* 2.12.0's fail-first bits (one per defect) live in one header, shared with
+ * T6, which needs bit 16. See failfirst_212.h for what each restores. */
+#include "../types/failfirst_212.h"
 #define CALIB_CHUNK_MS     400u   /**< WDT-friendly chunk size for blocking calib */
 #define ALARM_GUARD_MS    60000u  /**< Guard time after alarm clears before re-cal (ms) */
 #define ALARM_GUARD_CHUNK_MS 5000u /**< WDT-friendly chunk size for guard wait */
@@ -482,10 +462,14 @@ static void ch_start_close(uint8_t ch, uint32_t now_ms, cmd_source_t source)
 
     case CH_OPEN:
     case CH_PART_OPEN:
-        /* PART_OPEN (2.12.0) settles exactly like OPEN here: it IS open, just
-         * not fully, so the post-open dwell governs and a close is a real
-         * move. Sharing the arm is what keeps a target from inventing a
-         * second anti-thrash policy. */
+        /* PART_OPEN (2.12.0) is handled exactly like OPEN here: it IS open,
+         * just not fully, so a close is a real move. The dwell that governs is
+         * the one armed when it came to rest -- for the direction of the drive
+         * that stopped there (ch_target_tick()), so a part-open reached by
+         * CLOSING carries the close dwell, not the open one. (This comment
+         * said "the post-open dwell governs" until 2026-09-21, which is true
+         * only of a part-open reached by opening.) Sharing the arm is what
+         * keeps a target from inventing a second anti-thrash policy. */
         /* Check dwell timer; only SRC_T6 (autonomous climate control)
          * observes it. SRC_T3 (safety) and SRC_OPERATOR_MANUAL (deliberate
          * admin override via gh#29 LCD menu) both bypass — safety commands
