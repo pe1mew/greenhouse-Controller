@@ -74,7 +74,8 @@ for p in (HERE, MODEL_DIR):
         sys.path.insert(0, str(p))
 
 from firmware import (  # noqa: E402
-    GH48_ON_5C88, PROFILE_CURRENT, SPAN_MM_PRODUCTION, SRC_T3, Actuator, Controller, LinearM3,
+    GH48_ON_5C88, LEAD_DEFAULT_MS, PROFILE_CURRENT, SPAN_MM_PRODUCTION, SRC_T3, Actuator,
+    Controller, LinearM3,
     RELAY_TO_CH, SafetyMonitor, SensorLayer, Settings, is_daytime, lroundf, profile_5c88,
     settings_5c88, sun_times_local, t17_poll_ms,
 )
@@ -660,7 +661,9 @@ def run_closed_loop(ds, lo, hi, plant_kind, params, args, sched=None, law=None):
     if s.wpos_fitted_m3:
         # min_intv_m3 and the travel and dwell times are read once, at the start
         m3 = LinearM3(span_mm=getattr(args, "m3_span_mm", SPAN_MM_PRODUCTION),
-                      min_interval_s=s.min_intv_m3, mode2=mode2)
+                      min_interval_s=s.min_intv_m3, mode2=mode2,
+                      coast_ms=getattr(args, "m3_coast_ms", LEAD_DEFAULT_MS),
+                      coast_sd_ms=getattr(args, "m3_coast_sd_ms", 0.0))
     act = Actuator(s, prof_at(start), m3_linear=m3, m3_flow_exp=flow_exp)
     sensor = SensorLayer(s, prof_at(start))
     ctl = Controller(law, s)
@@ -734,7 +737,7 @@ def run_closed_loop(ds, lo, hi, plant_kind, params, args, sched=None, law=None):
         s, p = sched.at(ts), prof_at(ts)
         if boot_between(prev, ts):
             sensor = SensorLayer(s, p)
-            ctl.reset()
+            ctl.boot()
             t3.reset()
         else:
             sensor.configure(s, p)
@@ -817,9 +820,9 @@ def run_closed_loop(ds, lo, hi, plant_kind, params, args, sched=None, law=None):
             act.advance(now)
             if booted:
                 sensor = SensorLayer(s, act.ch[0].profile)
-                ctl.reset()
+                ctl.boot()
                 t3.reset()
-                act.close_all(now, SRC_T3)      # T2's boot CLOSE_ALL sweep
+                act.boot(now)                   # T2's boot CLOSE_ALL sweep
             if standby:
                 apply_relay_until(t)            # the operator has the windows
 
@@ -884,7 +887,7 @@ def run_closed_loop(ds, lo, hi, plant_kind, params, args, sched=None, law=None):
         }
         if m3:
             rec.update({"o3_log": float(ds.o[i, 2]), "m3_x10": act.ch[2].reading,
-                        "m3_target": act.ch[2].last_target})
+                        "m3_target": ctl.m3_last_target})
         recs.append(rec)
         prev = t
     return recs, act, ctl
@@ -1006,9 +1009,19 @@ def linear_summary(recs, act, ctl):
     part = sum(1 for r in recs if _code(r["bm_sim"], 2) == 2 and r["pos_m3"] < 0.995) / len(recs)
     print("  sim M3, linear: %d targets moved it or its stop point (%d of them a stop point),"
           " %d dropped in the deadband, %d deferred by the minimum interval, %d timeouts,"
-          " %d taken over by T3 or the operator, %d model errors"
+          " %d taken over by T3 or the operator, %d lost to a deferred reversal,"
+          " %d model errors"
           % (n.targets - n0.targets, n.retargets - n0.retargets, dropped, deferred,
-             n.timeouts - n0.timeouts, n.aborts - n0.aborts, errors))
+             n.timeouts - n0.timeouts, n.aborts - n0.aborts, n.lost - n0.lost, errors))
+    ch = act.ch[2]
+    if ch.landings:
+        err = [abs(e) for e in ch.landings]
+        print("  M3 targeted stops: %d settled, rest within %.1f %% of the target on average"
+              " (worst %.1f %%)  |  lead opening %.2f %%, closing %.2f %% (learned from %d / %d"
+              " stops since the last reboot, %d rejected)"
+              % (len(err), sum(err) / len(err) / 10.0, max(err) / 10.0,
+                 ch.lead_pct(True), ch.lead_pct(False),
+                 ch.learned[0], ch.learned[1], n.lead_rejects - n0.lead_rejects))
     print("  M3 drives per day: logged %.1f, simulated %.1f  |  mean opening: logged %.1f %%,"
           " simulated %.1f %%  |  simulated at rest part-open %.0f %% of the time"
           % (log_drives / days, (n.starts - n0.starts) / days,
@@ -1039,6 +1052,8 @@ def reproduce(args):
 
     if args.m3_span_mm <= 0 or args.m3_airflow_exp <= 0:
         raise SystemExit("--m3-span-mm and --m3-airflow-exp must be above 0")
+    if args.m3_coast_ms < 0 or args.m3_coast_sd_ms < 0:
+        raise SystemExit("--m3-coast-ms and --m3-coast-sd-ms cannot be negative")
     sched = schedule_from_args(args)
     recs, act, ctl = run_closed_loop(ds, lo, hi, kind, params, args, sched)
     s = sched.at(start)
@@ -1070,7 +1085,9 @@ def reproduce(args):
               % (lin.span_mm, s.deadzone_m3_mm, lin.deadzone_x10(s.deadzone_m3_mm) / 10.0,
                  t17_poll_ms(s.travel_s[2])))
         print("  M3: " + ("mode 2 (ctrl_mode_m3 = 1) -- T2 takes targets; both of M3's dwells "
-                          "give way to min_intv_m3 = %d s between drives" % lin.min_interval_s
+                          "give way to min_intv_m3 = %d s between drives; a targeted stop is "
+                          "cut a learned lead early and the leaf runs on %d ms (sd %g ms)"
+                          % (lin.min_interval_s, lin.coast_ms, lin.coast_sd_ms)
                           if lin.mode2 else
                           "mode 1 (ctrl_mode_m3 = 0) -- driven on its timer with its dwell, as "
                           "without the sensor"))
@@ -1286,6 +1303,13 @@ def main(argv=None):
                    help="two-node plant: M3's airflow as its opening to this power. 1 = "
                         "proportional, as fitted (default); below 1 more air early, above 1 "
                         "less. Unmeasured for a part-open M3: a sensitivity check")
+    p.add_argument("--m3-coast-ms", type=int, default=LEAD_DEFAULT_MS,
+                   help="a linear M3 in mode 2: how far the leaf runs on past the reading "
+                        "that cuts a targeted stop, as ms of travel (default %(default)s, the "
+                        "rig's; production's is unmeasured). T2 learns it as its lead")
+    p.add_argument("--m3-coast-sd-ms", type=float, default=0.0,
+                   help="the scatter of that run-on, one standard deviation in ms "
+                        "(default 0: none; seeded, so a run repeats)")
     add_settings_args(p)
     p.set_defaults(fn=reproduce)
 

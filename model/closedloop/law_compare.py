@@ -79,8 +79,15 @@ def variant_lib(defines):
     import shutil
     import tempfile
     import ventmodel as vm
-    key = hashlib.sha1("\n".join(sorted(defines)).encode()).hexdigest()[:10]
-    out = vm.BUILD_DIR / "variants" / ("ventmodel_%s.dll" % key)
+    # Keyed on the sources as well as the defines, so an existing DLL is this
+    # very build and is reused: runs in parallel then share it, where rebuilding
+    # would fail on Windows while another process has it loaded.
+    h = hashlib.sha1("\n".join(sorted(defines)).encode())
+    for f in sorted(vm.LIB_SRC.glob("*")) + [vm.FFI_SRC]:
+        h.update(f.read_bytes())
+    out = vm.BUILD_DIR / "variants" / ("ventmodel_%s.dll" % h.hexdigest()[:10])
+    if out.exists():
+        return vm.VentLib(out)
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
         for f in vm.LIB_SRC.glob("*"):
