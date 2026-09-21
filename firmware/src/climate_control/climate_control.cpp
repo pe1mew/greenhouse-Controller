@@ -238,16 +238,37 @@ static inline bool moving(window_state_t s)
 static void post_target(uint8_t ch, int16_t want_x10);
 
 /** M3's last commanded target, and how it ended: the feedback half of the
- *  contract (§3). T6 remembers what it ASKED for; the result is inferred from
- *  where M3 came to rest, because T2 reports a state and not an outcome.
- *  Inference, not measurement: a drive that ends at an end when a partial
- *  target was asked for reads as FAIL_TIMEOUT, which is what it is from the
- *  law's point of view, whatever stopped it. */
+ *  contract (§3). T6 remembers what it ASKED for, and judges it once M3 is at
+ *  rest: ABORTED when the window was TAKEN in between -- T2's count of drives
+ *  the law did not command (a safety close, the operator, a recalibration, a
+ *  motor alarm) moved since the command went out -- and otherwise from where M3
+ *  came to rest: DONE inside the band, FAIL_TIMEOUT anywhere else. That last one
+ *  covers every "did not arrive": the travel timer ran out, the drive stopped
+ *  short, or the command was DEFERRED and never started (gh#48 defers T6's
+ *  reversal of a stroke under way; the stroke then stops at its own target).
+ *
+ *  Until 2026-09-21 ABORTED was never sent: a window taken by T3 or the
+ *  operator read as FAIL_TIMEOUT. Harmless for graded, which treats the two
+ *  alike, but not what the contract promised (the model session found it). */
 static int16_t       s_m3_last_target_x10 = -1;
 static vent_result_t s_m3_last_result     = VENT_RES_NONE;
+static uint32_t      s_m3_taken_at_post   = 0u;   /* t2_get_taken(M3) when it went out */
 
 static void post_target(uint8_t ch, int16_t want_x10)
 {
+    /* A REPEAT of the outstanding target is the same command, so it keeps the
+     * count it went out with. graded repeats its target on every wake while M3
+     * moves (contract §3, "Ordering"): re-reading the count on a repeat would
+     * fold a take that is still moving M3 at that wake into the baseline, and
+     * the judgement at rest would find nothing taken. Every production take
+     * also inhibits T6 while it acts (STANDBY for the LCD menu and a teach,
+     * CALIBRATING, the wind override, the motor alarm), so only the bench hook
+     * could show it -- but the judgement must not depend on that. */
+    const bool repeat = (s_m3_last_result == VENT_RES_NONE &&
+                         want_x10 == s_m3_last_target_x10);
+    if (!repeat) {
+        s_m3_taken_at_post = t2_get_taken(ch); /* before T2 can act on it */
+    }
     post_q1_target(CMD_TARGET, (uint8_t)(ch + 1), want_x10);
     s_m3_last_target_x10 = want_x10;
     s_m3_last_result     = VENT_RES_NONE;      /* outstanding */
@@ -317,8 +338,11 @@ static target_plan_t plan_target(const vent_out_t *out, const window_state_t *ac
      * deferred inside the actuator, which is the gh#51 shape where T6
      * inherited a debt it could not see. */
     if (min_interval_ms > 0u) {
+        /* UINT32_MAX = nothing has moved since boot, so it never holds. It was
+         * 0 until 2026-09-21 and skipped here as a special case, while a law
+         * was entitled to read 0 as "just moved" (fail-first bit 1024). */
         const uint32_t since = t2_ms_since_move(ch);
-        if (since > 0u && since < min_interval_ms) {
+        if ((!FF212_SINCE || since > 0u) && since < min_interval_ms) {
             ESP_LOGD(TAG, "[T6] TARGET held: %u ms since M3 moved, interval %u ms",
                      (unsigned)since, (unsigned)min_interval_ms);
             return p;
@@ -396,15 +420,25 @@ static void apply_model_output(const vent_out_t *out, const window_state_t *actu
 /**
  * @brief Judge an outstanding target once M3 has come to rest.
  *
- * DONE inside the band, FAIL_TIMEOUT anywhere else -- including at an end,
- * which is where a drive lands when the position is lost mid-move. A law reads
- * this to tell "it went where I asked" from "it did not", which is the whole
- * point of the feedback half; it is not a diagnosis of why.
+ * ABORTED when the window was taken since the command went out; otherwise DONE
+ * inside the band and FAIL_TIMEOUT anywhere else -- including at an end, which
+ * is where a drive lands when the position is lost mid-move. A law reads this
+ * to tell "it went where I asked" from "it did not" from "someone else took
+ * it", which is the whole point of the feedback half.
  */
 static void judge_m3_target(const window_state_t *actual, uint16_t band_x10)
 {
     if (s_m3_last_target_x10 < 0 || s_m3_last_result != VENT_RES_NONE) { return; }
     if (moving(actual[2])) { return; }
+
+    /* Taken first: whatever the position says, it is not the law's doing.
+     * Fail-first bit 512 restores the inference alone. */
+    if (!FF212_ABORTED && t2_get_taken(2) != s_m3_taken_at_post) {
+        s_m3_last_result = VENT_RES_ABORTED;
+        ESP_LOGI(TAG, "[T6] M3 target %d.%u %% ABORTED: the window was taken",
+                 (int)(s_m3_last_target_x10 / 10), (unsigned)(s_m3_last_target_x10 % 10));
+        return;
+    }
 
     dm_m3_pos_t m3;
     if (!dm_m3_position(&m3)) {
@@ -419,6 +453,14 @@ static void judge_m3_target(const window_state_t *actual, uint16_t band_x10)
              (int)(s_m3_last_target_x10 / 10), (unsigned)(s_m3_last_target_x10 % 10),
              (int)(m3.percent_x10 / 10), (unsigned)(m3.percent_x10 % 10),
              (s_m3_last_result == VENT_RES_DONE) ? "done" : "not reached");
+}
+
+void cc_get_m3_target(cc_m3_target_t *out)
+{
+    if (out == NULL) { return; }
+    out->last_target_x10 = s_m3_last_target_x10;
+    out->last_result     = (uint8_t)s_m3_last_result;
+    out->taken_at_post   = s_m3_taken_at_post;
 }
 
 /* -----------------------------------------------------------------------

@@ -280,6 +280,43 @@ static void test_fail_timeout_rebases_on_the_position(void)
     M3_TARGET(out, 550);
 }
 
+/* ABORTED is sent since 2026-09-21 (a window taken by safety, the operator or a
+ * recalibration), so it must rebase exactly as FAIL_TIMEOUT does: decide afresh
+ * from where M3 is, never re-send the target someone else overrode. */
+static void test_aborted_rebases_on_the_position(void)
+{
+    vent_in_t in = base_in();
+    set_t(&in, 310);                                /* 750 wanted */
+    in.win[2].state = VENT_WIN_OPEN;
+    in.win[2].pos_x10 = 300;
+    in.win[2].last_target_x10 = 600;
+    in.win[2].last_result = VENT_RES_ABORTED;
+    in.win[2].ms_since_move = 10000u;
+    vent_out_t out = run(&in);                      /* held: from 300, not re-sent 600 */
+    TEST_ASSERT_EQUAL_INT(VENT_ACT_HOLD, out.win[2].action);
+    TEST_ASSERT_TRUE(out.reason & 0x80u);
+    in.win[2].ms_since_move = 600001u;
+    out = run(&in);
+    M3_TARGET(out, 550);
+}
+
+/* The contract, 2026-09-21: ms_since_move UINT32_MAX = no drive since boot,
+ * which holds nothing; 0 = it just stopped, which holds. The caller sent 0 for
+ * "never" until then -- this law would have held M3 on it. */
+static void test_never_moved_is_long_ago_and_zero_is_just_now(void)
+{
+    vent_in_t in = base_in();
+    set_t(&in, 300);                                /* 250 wanted */
+    in.win[2].ms_since_move = 0xFFFFFFFFu;          /* never */
+    vent_out_t out = run(&in);
+    M3_TARGET(out, 250);
+
+    G->reset(&S);
+    in.win[2].ms_since_move = 0u;                   /* just stopped */
+    out = run(&in);
+    TEST_ASSERT_EQUAL_INT(VENT_ACT_HOLD, out.win[2].action);
+}
+
 /* ------------------------------------------------------ this candidate's rules */
 
 static void test_rate_limit_steps_to_fully_open(void)
@@ -400,6 +437,8 @@ int main(int argc, char **argv)
     RUN_TEST(test_unknown_or_stale_position_holds_m3);
     RUN_TEST(test_digital_m3_is_mode_one);
     RUN_TEST(test_fail_timeout_rebases_on_the_position);
+    RUN_TEST(test_aborted_rebases_on_the_position);
+    RUN_TEST(test_never_moved_is_long_ago_and_zero_is_just_now);
     RUN_TEST(test_rate_limit_steps_to_fully_open);
     RUN_TEST(test_small_correction_is_not_made);
     RUN_TEST(test_within_the_deadband_is_held);

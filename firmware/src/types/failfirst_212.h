@@ -29,11 +29,20 @@
  *  128  T17: the read after a stroke is taken AT ONCE, while the leaf still
  *       coasts, and published for 30 s as where it rests (bin/at_wp02.py's
  *       `settle` check)
+ *  256  T2: a T6 reversal that gh#48 DEFERS disarms the stroke's target first,
+ *       so the stroke under way runs on to the end switch (found by the model
+ *       session's simulator; bin/at_wp_target.py `deferred`)
+ *  512  T6: never reports VENT_RES_ABORTED -- a window taken by safety, the
+ *       operator or a recalibration reads as FAIL_TIMEOUT
+ *       (bin/at_wp_fallback.py `aborted`)
+ * 1024  T2/T6: "never moved" reads 0 (a law's "just moved"), and a
+ *       recalibration sets no move time and arms the close dwell whatever the
+ *       mode (bin/at_wp_fallback.py `sincemove`)
  *
  * **Pass a value.** GCC defines a bare `-DWPOS_FAILFIRST_212` as 1, so a bare
  * flag restores bit 1 ALONE. An earlier comment said a bare flag meant "all
- * four"; that was never true of the bitmask and was never exercised. All eight
- * is `=255`.
+ * four"; that was never true of the bitmask and was never exercised. All eleven
+ * is `=2047`.
  *
  * Bench builds only: the source refuses the flag otherwise, and
  * GET /api/diag/windowpos reports `gate.failfirst_212` so a result can never be
@@ -52,10 +61,10 @@
  * EMPTY definition (`-DWPOS_FAILFIRST_212=`) to all four bits; this header would
  * map it to 0 -- so refuse it, and refuse bits nobody has defined. */
 #  if (WPOS_FAILFIRST_212 + 0) == 0
-#    error "WPOS_FAILFIRST_212 is defined but restores nothing: pass a mask, =1..255"
+#    error "WPOS_FAILFIRST_212 is defined but restores nothing: pass a mask, =1..2047"
 #  endif
-#  if (WPOS_FAILFIRST_212 + 0) > 255
-#    error "WPOS_FAILFIRST_212 has bits above 128 that restore nothing: =1..255"
+#  if (WPOS_FAILFIRST_212 + 0) > 2047
+#    error "WPOS_FAILFIRST_212 has bits above 1024 that restore nothing: =1..2047"
 #  endif
 #else
 #  define FF212 0u
@@ -69,3 +78,6 @@
 #define FF212_R1_LATCH  (FF212 & 32u)
 #define FF212_LEAD      (FF212 & 64u)
 #define FF212_SETTLE    (FF212 & 128u)
+#define FF212_DEFER_DISARM (FF212 & 256u)
+#define FF212_ABORTED   (FF212 & 512u)
+#define FF212_SINCE     (FF212 & 1024u)

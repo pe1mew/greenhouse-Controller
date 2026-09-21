@@ -174,7 +174,8 @@ typedef struct {
      * only on M3. `target_active` is the single discriminator: every other
      * path leaves it false and behaves exactly as before. */
     uint32_t   move_end_ms;        /**< millis() when the last drive ENDED, for
-                                    *   t2_ms_since_move(). 0 = none since boot. */
+                                    *   t2_ms_since_move(). 0 = none since boot,
+                                    *   which that reports as UINT32_MAX. */
     bool       target_active;      /**< A target is being driven to right now. */
     uint32_t   target_start_ms;    /**< millis() when the target was armed, for
                                     *   the freshness grace below. */
@@ -197,6 +198,21 @@ static portMUX_TYPE s_state_mux = portMUX_INITIALIZER_UNLOCKED;
  *  so t2_get_drive() reads all three together. */
 static uint32_t s_drive_epoch[NUM_CHANNELS];
 static uint32_t s_drive_start_ms[NUM_CHANNELS];
+
+/** 2026-09-21 -- per channel, how many times the window was TAKEN: a drive the
+ *  climate law did not command (a safety close, the operator, a recalibration,
+ *  a motor alarm) started, or changed where the stroke under way ends. T6
+ *  compares it across one of its M3 targets to tell the law VENT_RES_ABORTED,
+ *  which the contract promises, instead of guessing FAIL_TIMEOUT from where the
+ *  window came to rest. Written by T2 only, under s_state_mux. */
+static uint32_t s_taken[NUM_CHANNELS];
+
+static void ch_note_taken(uint8_t ch)
+{
+    portENTER_CRITICAL(&s_state_mux);
+    s_taken[ch]++;
+    portEXIT_CRITICAL(&s_state_mux);
+}
 
 /* ============================================================
  * Motor alarm ISR state
@@ -414,11 +430,36 @@ static void ch_start_close(uint8_t ch, uint32_t now_ms, cmd_source_t source)
 {
     ch_t *c = &s_ch[ch];
 
+    /* TAKEN (2026-09-21): a command the climate law did not issue that CHANGES
+     * what this window does -- starts it, reverses it, or turns a targeted
+     * stroke into a full one. One that finds the window already where it sends
+     * it takes nothing. */
+    if (source != SRC_T6 &&
+        !(c->state == CH_CLOSED ||
+          ((c->state == CH_MOVING_CLOSE || c->state == CH_GAP_TO_CLOSE) &&
+           !c->target_active))) {
+        ch_note_taken(ch);
+    }
+
     /* A full-travel command supersedes any armed target (2.12.0). Disarming
-     * here rather than in the caller means CLOSE_ALL, the boot sweep, the
-     * alarm paths and the LCD menu all clear it without knowing it exists —
-     * and a safety close can never be stopped short by a stale target. */
-    if (!FF212_DISARM) { c->target_active = false; }
+     * here rather than in the caller means CLOSE_ALL and the LCD menu clear it
+     * without knowing it exists -- and a safety close can never be stopped
+     * short by a stale target. (The recalibration sweep and the motor alarm do
+     * not come through here; they clear it themselves.)
+     *
+     * EXCEPT the one command that does nothing now: T6's reversal of a stroke
+     * under way, which gh#48's in-travel guard below DEFERS. Until 2026-09-21 it
+     * took the target first and was deferred after, so the stroke lost its stop
+     * point and ran on to the end switch: M3 closing to 30 %, the law now
+     * asking for 70 %, and M3 closed fully, then sat out min_intv_m3. Found by
+     * the closed-loop simulator; graded repeats its target while M3 moves, so it
+     * never does this, but a law that corrects mid-stroke would. A deferred
+     * command must leave the stroke exactly as it found it: the stroke stops at
+     * its target, and T6 asks again. Fail-first bit 256 restores the disarm. */
+    const bool t6_deferred = (source == SRC_T6) && (c->state == CH_MOVING_OPEN);
+    if (!FF212_DISARM && (!t6_deferred || FF212_DEFER_DISARM)) {
+        c->target_active = false;
+    }
 
     switch (c->state) {
 
@@ -537,7 +578,17 @@ static void ch_start_open(uint8_t ch, uint32_t now_ms, cmd_source_t source)
 {
     ch_t *c = &s_ch[ch];
 
-    c->target_active = false;      /* see ch_start_close() */
+    /* Taken, and the target -- both exactly as in ch_start_close(). */
+    if (source != SRC_T6 &&
+        !(c->state == CH_OPEN ||
+          ((c->state == CH_MOVING_OPEN || c->state == CH_GAP_TO_OPEN) &&
+           !c->target_active))) {
+        ch_note_taken(ch);
+    }
+    const bool t6_deferred = (source == SRC_T6) && (c->state == CH_MOVING_CLOSE);
+    if (!t6_deferred || FF212_DEFER_DISARM) {
+        c->target_active = false;
+    }
 
     switch (c->state) {
 
@@ -1147,6 +1198,12 @@ static void calib_close_all(void)
     uint32_t max_deadline_ms = 0;
 
     for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
+        /* 2026-09-21: a recalibration TAKES every window -- T6's outstanding
+         * target, if any, becomes VENT_RES_ABORTED -- and no target survives
+         * it. It drives the relays directly, never through ch_start_close(),
+         * so until now an armed target outlived the sweep. */
+        ch_note_taken(ch);
+        s_ch[ch].target_active = false;
         /* gh#18 Phase 3: persist UNKNOWN BEFORE energising. */
         persist_ch_state(ch, CH_UNKNOWN);
         relay_ch_close(ch);
@@ -1189,7 +1246,15 @@ static void calib_close_all(void)
             if (!done[ch] && (int32_t)(now_ms - deadline_ms[ch]) >= 0) {
                 relay_ch_off(ch);
                 s_ch[ch].state             = CH_CLOSED;
-                s_ch[ch].dwell_deadline_ms = now_ms + s_ch[ch].dwell_close_ms;
+                /* 2026-09-21: the sweep is a drive like any other. It ends a
+                 * move (t2_ms_since_move(), the law's ms_since_move), and it
+                 * arms the dwell of the mode in force -- in mode 2 that is
+                 * min_intv_m3 for M3, not the close dwell (ch_dwell_ms()).
+                 * Until now it did neither: after a recalibration the law was
+                 * told M3 had not moved since boot. Fail-first bit 1024. */
+                s_ch[ch].dwell_deadline_ms = now_ms +
+                    (FF212_SINCE ? s_ch[ch].dwell_close_ms : ch_dwell_ms(ch, false));
+                if (!FF212_SINCE) { s_ch[ch].move_end_ms = now_ms; }
                 done[ch]                   = true;
                 persist_ch_state(ch, CH_CLOSED);   /* gh#18 Phase 3 */
                 log_relay_event((uint8_t)(ch + 1u), CH_CLOSED);
@@ -1227,8 +1292,18 @@ static void handle_alarm_onset(void)
     /* Immediately de-energise all 6 relays — highest priority action. */
     relay_all_off();
 
-    /* Mark all channels as position-unknown (RAM and NVS — gh#18 Phase 3). */
+    /* Mark all channels as position-unknown (RAM and NVS — gh#18 Phase 3).
+     * 2026-09-21: an alarm TAKES every window and clears any target; a drive
+     * it stops has ended (t2_ms_since_move()). */
+    const uint32_t alarm_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
     for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
+        const ch_state_t was = s_ch[ch].state;
+        if (!FF212_SINCE && (was == CH_MOVING_OPEN || was == CH_MOVING_CLOSE ||
+                             was == CH_GAP_TO_OPEN || was == CH_GAP_TO_CLOSE)) {
+            s_ch[ch].move_end_ms = alarm_ms;
+        }
+        ch_note_taken(ch);
+        s_ch[ch].target_active = false;
         s_ch[ch].state = CH_UNKNOWN;
         persist_ch_state(ch, CH_UNKNOWN);
     }
@@ -1461,9 +1536,22 @@ uint32_t t2_ms_since_move(uint8_t ch)
     portENTER_CRITICAL(&s_state_mux);
     end_ms = s_ch[ch].move_end_ms;
     portEXIT_CRITICAL(&s_state_mux);
-    if (end_ms == 0u) { return 0u; }        /* nothing has moved since boot */
+    /* Nothing has moved since boot: UINT32_MAX, "long ago" (2026-09-21). It
+     * was 0, which T6 read as "no constraint" and a law reads as "just moved"
+     * -- graded would have held M3 for M3_HOLD_MS. Fail-first bit 1024. */
+    if (end_ms == 0u) { return FF212_SINCE ? 0u : UINT32_MAX; }
     const uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
     return (uint32_t)(now_ms - end_ms);
+}
+
+uint32_t t2_get_taken(uint8_t ch)
+{
+    if (ch >= NUM_CHANNELS) { return 0u; }
+    uint32_t v;
+    portENTER_CRITICAL(&s_state_mux);
+    v = s_taken[ch];
+    portEXIT_CRITICAL(&s_state_mux);
+    return v;
 }
 
 void t2_get_window_states(window_state_t out[3])

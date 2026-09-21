@@ -2409,7 +2409,9 @@ law can never ask for a target that nothing can drive.
 band, FAIL_TIMEOUT anywhere else, FAIL_FAULT with no position. T2 reports a state, not an outcome,
 and an inference is honest here — a drive that ends at an end when a partial target was asked for
 *is* a failure from the law's point of view, whatever stopped it. If that proves too coarse, the
-better design is a result from T2, not a cleverer guess in T6.
+better design is a result from T2, not a cleverer guess in T6. *It proved too coarse for one case,
+and got exactly that on 2026-09-21: T2 counts the drives that TAKE the window, and T6 reports
+ABORTED from the count -- see "What the law is told" below.*
 
 **One conversion, moved rather than copied.** The mm→percent deadband was born in T2 this morning;
 T6 needing the same number moved it to `dm_m3_deadband_x10()` in T4. Two conversions would
@@ -2479,7 +2481,8 @@ closed end. Getting there took two corrections worth keeping:
 
 *Fail-first, as every behavioural change here gets, and it needed a correction on its first run:*
 **`-DWPOS_FAILFIRST_212` is a BITMASK, not a switch** (1 start age, 2 grace, 4 overshoot guard,
-8 disarm; since 2026-09-21 also 16, T6's stranded-M3 filter — `firmware/src/types/failfirst_212.h`).
+8 disarm; since 2026-09-21 also 16, T6's stranded-M3 filter, and 32/64/128; since 2026-09-21
+256/512/1024 -- `firmware/src/types/failfirst_212.h` is the list).
 **Pass a value:** GCC makes a bare flag 1, so a bare flag restores bit 1 alone. *This sentence
 first said "bare = all four", which was true of the switch the bitmask replaced and never of the
 bitmask.* Restoring all four at once on 2344 proved only the first: with the
@@ -2503,6 +2506,42 @@ each bit fails a different stage.
 floor 2) is still unmeasured, the minimum interval is the law's `m3_min_interval_ms` and has no
 config key yet, and `webUiMock/mock_server.py` has no part-open state. The GUI needed only a label:
 it already renders M3 by percentage whenever a position is present.
+
+###### What the law is told: three findings from the closed-loop simulator (fixed 2026-09-21)
+
+The model session replays 2.12.0 *as built* in `model/closedloop/` (045a39c's T2, T17 and T6), and
+found three places that did not do what the contract says. **None changes a decision `graded`
+makes**; each would have misled a law that took the contract at its word -- and the contract exists
+because the law will be replaced.
+
+1. **A deferred reversal lost the stroke's target.** `ch_start_open()` / `ch_start_close()`
+   disarmed an armed target first, and only then did gh#48's in-travel guard defer T6's reversal, so
+   the stroke under way lost its stop point and ran on to the end switch: M3 closing to 30 %, the
+   law now asking for 70 %, and M3 closed fully, then sat out `min_intv_m3`. `graded` repeats its
+   target while M3 moves and never does this (no case over 13-29 July); a law that corrects
+   mid-stroke would. **A deferred command must leave the stroke exactly as it found it.** The disarm
+   now skips T6's deferred reversal alone; every command that acts still disarms, so a safety close
+   is never stopped short. Fail-first bit 256, `bin/at_wp_target.py deferred`.
+2. **ABORTED was never sent.** T6 inferred every result from where M3 came to rest (the feedback
+   half, above), so a window taken by T3, the operator or a recalibration read as FAIL_TIMEOUT,
+   while `vent_model.h` documented ABORTED for exactly that case. This is the smallest "result from
+   T2": **T2 counts the takes** (`t2_get_taken()`: a command from anyone but T6 that starts M3,
+   reverses it or turns a targeted stroke into a full one; the sweep; a motor alarm), and T6 compares
+   the count at its command with the count at rest. A **repeat** of the outstanding target keeps its
+   count -- `graded` repeats on every wake while M3 moves, and re-reading would fold a take still
+   under way into the baseline. (Found while writing the harness, before any run: every production
+   take also inhibits T6, so only the bench hook could have shown it.) Fail-first bit 512,
+   `bin/at_wp_fallback.py aborted`.
+3. **`ms_since_move` = 0 meant two things.** T6 read it as "no drive since boot" and skipped the
+   interval; `graded` would read it as "just moved" and hold M3. Safe only because mode 2 starts at
+   a stroke whose end sets the time -- while the boot sweep set none, and armed the close dwell
+   rather than `min_intv_m3`. Now **UINT32_MAX = none since boot** (what the simulator already
+   used), the sweep and a motor alarm end a move, and the sweep arms `ch_dwell_ms()`. Fail-first bit
+   1024, `bin/at_wp_fallback.py sincemove`.
+
+The contract now says how `last_result` is judged and defines UINT32_MAX, and two `graded` host
+tests pin the law's side. **Hardware: pending** -- 2344 was soaking the previous image when these
+were made.
 
 ###### The two surveys that step needs, done 2026-09-20
 

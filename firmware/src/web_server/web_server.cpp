@@ -129,6 +129,7 @@
 #include "../window_pos/window_pos_task.h"  /* T17 snapshot + derived cfg */
 #include "../types/failfirst_212.h"           /* 2.12.0 fail-first mask, reported by the diag */
 #include "../relay_controller/relay_controller.h" /* t2_get_m3_lead: the overrun lead, in the diag */
+#include "../climate_control/climate_control.h"   /* cc_get_m3_target: the law's M3 feedback, in the diag */
 #ifdef MODBUS_BENCH
 #include "../diag/modbus_bench.h"   /* dev-only bench Modbus access */
 #endif     /* 2.2.0 (ROTA) — rota_cert_set/_is_custom for /api/ota/config */
@@ -3616,8 +3617,12 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
     /* Static, not on the stack: the reply outgrew its 1600-byte stack buffer
      * (1536 bytes on 2026-09-21, before the t2 block), and the httpd stack is
      * 8 KB. esp_http_server serves requests one at a time from a single task,
-     * so one buffer cannot be shared by two requests at once. */
-    static char body[2048];
+     * so one buffer cannot be shared by two requests at once.
+     * 3072 since 2026-09-21: the taken count and the t6 block bring a long
+     * soak's reply to ~1850 bytes, and a reply cut short is not a shorter reply
+     * but invalid JSON, which a harness reads as "no diag at all". Bench builds
+     * only (this whole handler is MODBUS_BENCH), so release RAM is unchanged. */
+    static char body[3072];
 
     windowpos_reading_t r;
     const windowpos_status_t st = windowpos_read(WINDOWPOS_DEFAULT_ADDR, &r);
@@ -3701,16 +3706,27 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
                  (unsigned)(have_d ? d.rate_limit_x10 : 0u));
     }
     /* T2's overrun lead for targeted stops (2026-09-21): what the stop rule is
-     * using right now, and how many settled stops taught it. */
+     * using right now, and how many settled stops taught it. 2026-09-21: also
+     * how often M3 was TAKEN and its time since the last drive (UINT32_MAX =
+     * none since boot), and T6's record of the law's last M3 target -- what the
+     * law is told as last_target_x10 / last_result (4 = ABORTED). */
     t2_m3_lead_t ld;
     t2_get_m3_lead(&ld);
+    cc_m3_target_t tr;
+    cc_get_m3_target(&tr);
     const size_t used2 = strlen(body);
     if (used2 + 1u < sizeof(body)) {
         snprintf(body + used2 - 1u, sizeof(body) - used2 + 1u,
                  ",\"t2\":{\"lead_open_x100\":%d,\"lead_close_x100\":%d,"
-                 "\"lead_default_x100\":%d,\"learned_open\":%u,\"learned_close\":%u}}",
+                 "\"lead_default_x100\":%d,\"learned_open\":%u,\"learned_close\":%u,"
+                 "\"taken_m3\":%lu,\"ms_since_move_m3\":%lu},"
+                 "\"t6\":{\"last_target_x10\":%d,\"last_result\":%u,"
+                 "\"taken_at_post\":%lu}}",
                  (int)ld.open_x100, (int)ld.close_x100, (int)ld.default_x100,
-                 (unsigned)ld.learned_open, (unsigned)ld.learned_close);
+                 (unsigned)ld.learned_open, (unsigned)ld.learned_close,
+                 (unsigned long)t2_get_taken(2), (unsigned long)t2_ms_since_move(2),
+                 (int)tr.last_target_x10, (unsigned)tr.last_result,
+                 (unsigned long)tr.taken_at_post);
     }
     /* The sensor-presence gate: which control law M3 is under, and why.
      *
@@ -3754,8 +3770,9 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
 /**
  * POST /api/diag/windowpos — set the T17 test injection (admin, DEV BUILDS ONLY)
  *
- * Body: {"inject":"none"|"absent"|"fault"|"stuck"|"ends"|"race"}, or
- * {"target_x10":N} to drive M3 to N tenths of a percent (2.12.0). gh#72's
+ * Body: {"inject":"none"|"absent"|"fault"|"stuck"|"ends"|"race"|"noend"|"short"},
+ * or {"target_x10":N} to drive M3 to N tenths of a percent (2.12.0), optionally
+ * with "source":"t6" to send it as T6 would (2026-09-21). gh#72's
  * acceptance test (bin/at_wp_gh72.py) uses it to make T17 see a sensor that
  * vanishes, one that reports its own fault, and a reading stuck while the leaf
  * moves -- each at a moment the test chooses. 2.10.0 adds both end sensors
@@ -3778,13 +3795,19 @@ static esp_err_t diag_windowpos_post_handler(httpd_req_t *req)
 
     /* 2.12.0 (plan §5b) -- {"target_x10":N} posts a CMD_TARGET for M3.
      *
-     * T6 cannot issue one yet: the effective mode that would make M3 LINEAR is
-     * the next step, so without this hook the stop rule could only be tested by
-     * shipping mode 2 first. It goes through Q1 like any other command, so what
-     * is exercised is T2's real path -- the arming, the deadband, the overshoot
-     * guard, the PART_OPEN state and its log row -- not a test-only shortcut.
-     * SRC_OPERATOR_MANUAL, because an admin asked for it: the dwell does not
-     * defer it, exactly as the LCD manual menu and the teach behave. */
+     * It was written before T6 could issue one, so the stop rule could be
+     * tested without mode 2; it stays because it puts a target on M3 at a
+     * moment the test chooses. It goes through Q1 like any other command, so
+     * what is exercised is T2's real path -- the arming, the deadband, the lead,
+     * the PART_OPEN state and its log row -- not a test-only shortcut.
+     * SRC_OPERATOR_MANUAL by default, because an admin asked for it: the dwell
+     * does not defer it, exactly as the LCD manual menu and the teach behave.
+     *
+     * 2026-09-21: "source":"t6" sends it as T6 would, so the dwell and gh#48's
+     * in-travel guard apply. That is the only way to make T6's reversal of a
+     * targeted stroke on demand (bin/at_wp_target.py `deferred`) -- graded
+     * repeats its target while M3 moves and never makes one. A T6 command is
+     * not counted as the window being taken (t2_get_taken()); any other is. */
     char tgt[8] = {0};
     if (json_get_field(body, "target_x10", tgt, sizeof(tgt))) {
         const long want = strtol(tgt, NULL, 10);
@@ -3792,16 +3815,19 @@ static esp_err_t diag_windowpos_post_handler(httpd_req_t *req)
             return httpd_resp_send(req, "{\"ok\":false,\"error\":\"target_range\"}",
                                    HTTPD_RESP_USE_STRLEN);
         }
+        char src[8] = {0};
+        const bool as_t6 = json_get_field(body, "source", src, sizeof(src)) &&
+                           strcmp(src, "t6") == 0;
         window_cmd_t cmd = {};
         cmd.action     = CMD_TARGET;
         cmd.channel    = 3u;                  /* M3 */
-        cmd.source     = SRC_OPERATOR_MANUAL;
+        cmd.source     = as_t6 ? SRC_T6 : SRC_OPERATOR_MANUAL;
         cmd.target_x10 = (int16_t)want;
         const bool sent = (xQueueSend(Q1, &cmd, pdMS_TO_TICKS(100)) == pdTRUE);
-        char out[72];
+        char out[96];
         snprintf(out, sizeof(out),
-                 "{\"ok\":%s,\"target_x10\":%ld%s}",
-                 sent ? "true" : "false", want,
+                 "{\"ok\":%s,\"target_x10\":%ld,\"source\":\"%s\"%s}",
+                 sent ? "true" : "false", want, as_t6 ? "t6" : "operator",
                  sent ? "" : ",\"error\":\"q1_full\"");
         return httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
     }

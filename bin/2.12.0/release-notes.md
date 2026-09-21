@@ -65,6 +65,16 @@ AT-WP02 found that the same commanded aperture did not give the same physical on
 
 A move shorter than the lead is cut on its first reading of the drive: the shortest move the mechanism can make, still unmeasured (Known limitations).
 
+### What the law is told: three corrections from the simulator (2026-09-21)
+
+The model session replays 2.12.0 as built in its closed-loop simulator (`model/closedloop/`), and found three places where T2 or T6 did not do what the contract says. **None changes a decision `graded` makes today**; each would mislead a law that took the contract at its word.
+
+- **A deferred reversal lost the stroke's target.** `ch_start_open()` / `ch_start_close()` disarmed an armed target *before* gh#48's in-travel guard deferred T6's reversal, so the stroke under way lost its stop point and ran on to the end switch: M3 closing to 30 %, the law now asking for 70 %, and M3 closed fully, then sat out `min_intv_m3`. `graded` repeats its target while M3 moves, so it never does this (the simulator found no case over 13-29 July); a law that corrects mid-stroke would. **A deferred command now leaves the stroke exactly as it found it**: the stroke stops at its own target, and T6 asks again. A command that is *not* deferred still disarms, so a safety close is never stopped short. Fail-first bit 256; `bin/at_wp_target.py deferred`.
+- **ABORTED was never sent.** T6 inferred every result from where M3 came to rest, so a window taken by a safety close, the operator or a recalibration read as FAIL_TIMEOUT, which `vent_model.h` reserved for "did not arrive". T2 now counts the drives the law did not command that change what M3 does (`t2_get_taken()`: a start, a reversal, a targeted stroke made full; the sweep; a motor alarm), and T6 reports **ABORTED** when that count moved between its command and the judgement, ahead of the position. A **repeat** of the outstanding target keeps the count it went out with, or a take still moving M3 at a T6 wake would be folded into the baseline and missed. `graded` rebases on either result, so no decision changes. Fail-first bit 512; `bin/at_wp_fallback.py aborted`.
+- **`ms_since_move` = 0 meant two things.** T6 read it as "no drive since boot" and skipped the interval; a law is entitled to read it as "just moved" and hold M3. "None since boot" is now **UINT32_MAX**, what the simulator already used. The recalibration sweep, which drove every window without ending a "move", **now ends one**, and it **arms the dwell of the mode in force**: `min_intv_m3` for M3 in mode 2, where it armed the close dwell. A motor alarm that stops a drive ends one too. Fail-first bit 1024; `bin/at_wp_fallback.py sincemove`.
+
+The contract ([`design/ventModelContract.md`](../../design/ventModelContract.md) and `vent_model.h`) now says **how `last_result` is judged** (ABORTED first, then FAIL_FAULT, then DONE inside the deadband, FAIL_TIMEOUT anywhere else, including a command that was deferred and never started) and **defines UINT32_MAX**. Two new host tests pin what `graded` does with each. The bench diag gains a `t2.taken_m3` / `t2.ms_since_move_m3` pair and a `t6` block (last target, result, the count at the post), and the target hook takes `"source":"t6"` so a harness can send a target the way T6 does, dwell and gh#48 included.
+
 ### Log encodings — all appended, all with their consumers
 
 | Encoding | Change |
@@ -95,7 +105,7 @@ A move shorter than the lead is cut on its first reading of the drive: the short
 | `.dram0.bss` | 42 312 | 42 360 | +48 B |
 | web assets | *(pending build)* | *(pending)* | |
 
-The bench image is 1 417 456 B. Both control laws are compiled in: `stepped` drives mode 1 and `graded` is present for mode 2, though **nothing selects `graded` yet** — the law for mode 2 is still a decision, not a choice (`model/closedloop/gradedCandidate.md`).
+The bench image is 1 417 456 B. Both control laws are compiled in: `stepped` drives mode 1 and **`graded` drives mode 2**, selected by T6's model table whenever linear control is in force. Which law mode 2 should run is still a decision, not a choice (`model/closedloop/gradedCandidate.md`). *(Until 2026-09-21 this paragraph said nothing selected `graded`; the table has selected it since plan §5c step 2.)* **These sizes predate the 2026-09-21 corrections; regenerate the table at the release build.**
 
 ## Verification
 
@@ -115,6 +125,12 @@ The bench image is 1 417 456 B. Both control laws are compiled in: `stepped` dri
 | **`bin/at_wp_confirm.py`** — 2.10.0's nine stages, regression for the rule-1 change | **all nine PASS** on the fixed build (`atend`: excused, `at_end_exempt` +1, no stall; `race`: rule 2 still trips) — 2344, 2026-09-21 |
 | **`bin/at_wp_fallback.py`** — the fall back through T6, fail-first | unfixed build and fail-first bit 16: **both stages FAIL** (M3 stranded part-open for 200 s); fixed build: **both PASS** (closed after 49 s, opened after 47 s) — 2344, 2026-09-21 |
 | **`bin/at_wp02.py`** — AT-WP02 repeatability, AT-WP03 endpoints, `settle` | **Fixed build: all PASS** — AT-WP02 spread **1.8 %** (≤ 2.0), hysteresis −0.1 %; `settle` worst **0.2 %** (≤ 0.3); AT-WP03: both ends exact, "nearly closed" (8.2 %, PART_OPEN) distinct; leads learned 3.56 % opening, 2.66 % closing. **A second run with the leads learned: AT-WP02 2.5 % — FAIL** (mean −0.1 %, hysteresis −0.1 %, `settle` 0.1 %): the offset is gone, the remaining per-stop scatter (σ ≈ 0.55-0.75 %) makes AT-WP02 marginal on the rig's 13 s window; the requirements name AT-WP02 on the real window as the acceptance. **Fail-first** (bits 64 + 128): AT-WP02 **3.8 % FAIL**, `settle` **0.9 % FAIL**. The first run (spread 3.0 %) read T17's mid-coast cache and is superseded — 2344, 2026-09-21 |
+| `drivers/ventModel` host suites after the 2026-09-21 contract change | **40/40 pass** (23 stepped, 17 graded), including two new `graded` tests: ABORTED rebases, and "never moved" (UINT32_MAX) is long ago while 0 is "just moved" |
+| **`bin/at_wp_target.py deferred`** — a deferred T6 reversal keeps the stroke's target, fail-first bit 256 | **PENDING** — rig |
+| **`bin/at_wp_target.py taken`** — the operator and a recalibration take M3, T6 does not | **PENDING** — rig |
+| **`bin/at_wp_fallback.py aborted`** — T6 tells the law ABORTED, fail-first bit 512 | **PENDING** — rig, ~12 min (`graded`'s own 10-minute hold) |
+| **`bin/at_wp_fallback.py sincemove`** — "never" is UINT32_MAX, the sweep is a drive and arms `min_intv_m3` in mode 2, fail-first bit 1024 | **PENDING** — rig |
+| Regression after the 2026-09-21 corrections: `at_wp_target.py` (the seven), `at_wp_confirm.py`, `at_wp_fallback.py close/open` | **PENDING** — rig |
 | **Soak ≥ 12 h with scripted strokes** | **to be re-run on the fixed build.** A 12.04 h run on 2344 (2026-09-20, 25 judged strokes, no reboot) used the image with the stranded-M3 defect, and recorded one `stall_faults` — the rule-1 exemption false positive, whose fix is designed but not made |
 
 ## Upgrading
@@ -131,5 +147,5 @@ The bench image is 1 417 456 B. Both control laws are compiled in: `stepped` dri
 
 - **`graded` is a candidate, not a choice.** Mode 2 runs whichever law the table selects; the evidence for `graded` v1 is in `model/closedloop/gradedCandidate.md` and the decision is the operator's.
 - **The minimum MOVE is still unmeasured** (§3.6 floor 2: the shortest pulse that actually shifts the leaf). Until it is, small moves are bounded only by the deadband, which is a different quantity.
-- **The feedback is inferred, not measured.** T6 judges its own target from where M3 came to rest, because T2 reports a state and not an outcome. A drive that ends at an end when a partial target was asked for reads as a failure, whatever stopped it.
+- **The feedback is partly inferred.** Whether a window was *taken* is counted by T2 and reported as ABORTED (2026-09-21). Everything else T6 still judges from where M3 came to rest, because T2 reports a state and not an outcome: a drive that ends at an end when a partial target was asked for reads as FAIL_TIMEOUT whatever stopped it, and so does a command that was deferred and never started.
 - **Mode 2 has never run on a greenhouse window**, only on the rig's 13 s test window. Production's traverse is 176 s, and everything about positioning scales with it.

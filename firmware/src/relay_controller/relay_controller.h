@@ -179,13 +179,28 @@ int16_t t2_get_window_bitmask(void);
  * @brief Milliseconds since this channel's last drive ENDED (2.12.0).
  *
  * The law's `ms_since_move`, and the number the linear dwell is measured
- * against. 0 means "nothing has moved since boot", which a caller must read as
- * "no constraint" rather than "it just moved" -- the alternative, a huge
- * number, would be a lie of the same size.
+ * against. **UINT32_MAX means "nothing has moved since boot"** -- long ago, no
+ * constraint -- as the contract defines it (2026-09-21). It was 0, which T6 read
+ * as "no constraint" and a law, reasonably, as "just moved": graded would have
+ * held M3. A recalibration sweep ends a drive like any other, and so does a
+ * motor alarm that stops one.
  *
  * @param ch 0-based channel.
  */
 uint32_t t2_ms_since_move(uint8_t ch);
+
+/**
+ * @brief How many times this window has been TAKEN since boot (2026-09-21).
+ *
+ * A drive the climate law did not command -- a safety close (T3), the operator
+ * (the LCD, a bench hook), a recalibration, a motor alarm -- that started, or
+ * that changed where the stroke under way ends. T6 reads it before and after
+ * one of its targets: a change means the law's command was ABORTED, which the
+ * contract's VENT_RES_ABORTED promises, rather than "not reached".
+ *
+ * @param ch 0-based channel.
+ */
+uint32_t t2_get_taken(uint8_t ch);
 
 /**
  * @brief M3's overrun lead (2026-09-21): how far before a target T2 cuts the

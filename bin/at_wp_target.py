@@ -24,7 +24,8 @@ with it set the stages behind it pass VACUOUSLY (2026-09-20). Shown failing so
 far: bit 1 -> band, twice (a bare flag, which GCC makes 1); bit 4 -> band, twice
 (under =14); bit 8 -> closeshort (stopped at 42.2 %). **Bit 2 (grace) has not been
 shown failing on its own** -- under =14 `lost` passed, and whether its stage is
-`lost` or `band` is not settled. Bit 16 is T6's and belongs to
+`lost` or `band` is not settled. Bit 256 -> deferred (the stroke runs on to
+OPEN), not yet run. Bits 16, 512 and 1024 are T6's and belong to
 bin/at_wp_fallback.py. The per-stage notes below were written for the first,
 all-bits build and say what each rule protects:
 
@@ -60,6 +61,16 @@ diag counters, and the SD log rows written during the stage.
 
 STAGES
 ------
+  deferred   (2026-09-21) T6 reverses a targeted stroke: from CLOSED a T6 target
+             of 70 %, and ~3 s in (at ~23 %) T6 asks for 10 %. gh#48 defers a
+             T6 reversal, so the stroke must stop at ITS target, 70 %. Until
+             2026-09-21 the deferral took the target first and M3 ran on to
+             fully OPEN (found by the model session's simulator; graded never
+             reverses mid-stroke). Fail-first bit 256. The T6 commands go
+             through the hook with "source":"t6", so the dwell and gh#48 apply
+  taken      (2026-09-21) T2 counts the window TAKEN -- by the operator (the
+             hook), by a recalibration -- and never by T6: the count T6 turns
+             into VENT_RES_ABORTED for the law (`t2.taken_m3` in the diag)
   band       target 50 %: M3 stops inside the band, the state is PART_OPEN,
              and the opening reported by /api/status agrees with the target
   twice      a second target 30 % from PART_OPEN: it closes to it and stops
@@ -257,6 +268,36 @@ def check(ok, msg):
     return ok
 
 
+def t2_block(rig):
+    return (rig.u.diag() or {}).get("t2") or {}
+
+
+def target_t6(rig, x10):
+    """A target sent as T6 would send it: the dwell and gh#48 apply."""
+    sc, out = rig.u._req("POST", "/api/diag/windowpos",
+                         {"target_x10": x10, "source": "t6"})
+    if isinstance(out, dict) and out.get("source") != "t6":
+        sys.exit("the target hook ignored \"source\":\"t6\" -- this needs a "
+                 "2.12.0 bench build from 2026-09-21 on")
+    return out if isinstance(out, dict) else {}
+
+
+def live_x10(rig):
+    """A FRESH device read (the diag route's top-level fields bypass T17)."""
+    d = rig.u.diag() or {}
+    v = d.get("percent_x10")
+    return None if (v is None or not d.get("ok")) else int(v)
+
+
+def wait_moving(rig, limit_s=10.0):
+    t0 = time.time()
+    while time.time() - t0 < limit_s:
+        if "MOVING" in m3_state(rig.u.status()).upper():
+            return True
+        time.sleep(0.2)
+    return False
+
+
 # --------------------------------------------------------------------------
 # stages
 # --------------------------------------------------------------------------
@@ -382,6 +423,68 @@ def stage_closeshort(rig):
     return ok
 
 
+def stage_deferred(rig):
+    """T6's deferred reversal leaves the stroke its own target (2026-09-21)."""
+    rig.drive_to_end(False)                       # CLOSED, by the operator
+    time.sleep(TEST_DWELL_S + 2.0)                # a T6 command waits out the dwell
+    t0 = t2_block(rig).get("taken_m3")
+    target_t6(rig, 700)
+    if not wait_moving(rig):
+        say("setup: T6's 70 % target never started (%s)" % m3_state(rig.u.status()))
+        return False
+    time.sleep(3.0)                               # ~23 % on the rig, opening
+    say("T6 now asks for 10 %: a reversal, which gh#48 defers")
+    target_t6(rig, 100)
+    st = rig.wait_rest()
+    time.sleep(2.5)                               # past T17's settle read
+    pos = live_x10(rig)
+    ok = check("PART" in st.upper(), "the stroke ended part-open (got %s)" % st)
+    ok &= check(pos is not None and abs(pos - 700) <= 60,
+                "it stopped at %s against its own 70.0 %% target" %
+                ("%.1f %%" % (pos / 10.0) if pos is not None else "no reading"))
+    t1 = t2_block(rig).get("taken_m3")
+    ok &= check(t1 == t0, "T6's commands took nothing (taken %s -> %s)" % (t0, t1))
+    return ok
+
+
+def stage_taken(rig):
+    """T2 counts the window taken by the operator and a recalibration, not by T6."""
+    rig.drive_to_end(False)
+    time.sleep(TEST_DWELL_S + 2.0)
+    t0 = t2_block(rig).get("taken_m3")
+    if t0 is None:
+        say("no t2.taken_m3 in the diag -- this needs a build from 2026-09-21 on")
+        return False
+    rig.target(500)                               # the operator, from CLOSED
+    rig.wait_rest()
+    t1 = t2_block(rig).get("taken_m3")
+    ok = check(t1 == t0 + 1, "an operator's target took the window once (%s -> %s)"
+               % (t0, t1))
+    time.sleep(TEST_DWELL_S + 2.0)
+    target_t6(rig, 200)                           # T6, from part-open
+    moved = wait_moving(rig)                      # else the next check is vacuous
+    rig.wait_rest()
+    t2 = t2_block(rig).get("taken_m3")
+    ok &= check(moved and t2 == t1, "T6's target moved M3 and took nothing "
+                "(%s -> %s, moved %s)" % (t1, t2, moved))
+    # A recalibration: leaving STANDBY. The run holds STANDBY, so take it back.
+    rig.standby(False)
+    t_end = time.time() + 240                     # the sweep lasts the slowest travel
+    seen = False
+    while time.time() < t_end:
+        flags = ((rig.u.status() or {}).get("mode") or {}).get("flags") or []
+        if "calibrating" in flags:
+            seen = True
+        elif seen:
+            break
+        time.sleep(0.5)
+    rig.standby(True)
+    t3 = t2_block(rig).get("taken_m3")
+    ok &= check(seen and t3 == t2 + 1,
+                "a recalibration took it once (%s -> %s, sweep seen %s)" % (t2, t3, seen))
+    return ok
+
+
 STAGES = {
     "band": stage_band,
     "closeshort": stage_closeshort,
@@ -390,6 +493,8 @@ STAGES = {
     "supersede": stage_supersede,
     "lost": stage_lost,
     "refuse": stage_refuse,
+    "deferred": stage_deferred,
+    "taken": stage_taken,
 }
 
 

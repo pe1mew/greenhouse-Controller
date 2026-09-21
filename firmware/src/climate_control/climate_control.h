@@ -149,3 +149,21 @@
  * @see    t2_get_window_states() — used for level-triggered reconciliation
  */
 void task_climate_control(void *pvParameters);
+
+/**
+ * @brief T6's record of M3's last target and how it ended (2026-09-21).
+ *
+ * What the law is told in `win[2].last_target_x10` / `last_result`, for the
+ * bench diag route. Read without a lock: the fields are written by T6 alone,
+ * each is atomic, and a reader between two of them sees at worst a new target
+ * with the previous result for one poll -- acceptable for a diagnostic.
+ */
+typedef struct {
+    int16_t  last_target_x10;   /**< -1 = none commanded since boot */
+    uint8_t  last_result;       /**< vent_result_t: 0 NONE (outstanding),
+                                 *   1 DONE, 2 FAIL_TIMEOUT, 3 FAIL_FAULT,
+                                 *   4 ABORTED */
+    uint32_t taken_at_post;     /**< t2_get_taken(M3) when it went out */
+} cc_m3_target_t;
+
+void cc_get_m3_target(cc_m3_target_t *out);

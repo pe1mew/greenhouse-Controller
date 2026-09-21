@@ -91,13 +91,22 @@ typedef enum {
     VENT_ACT_TARGET,           /**< drive to target_x10 — LINEAR windows only */
 } vent_action_t;
 
-/** How the caller's last command to a window ended. */
+/** How the caller's last command to a window ended, judged by the caller once
+ *  the window is at rest (contract §2, "last_result"). */
 typedef enum {
-    VENT_RES_NONE = 0,         /**< nothing commanded yet, or still moving */
-    VENT_RES_DONE,             /**< arrived, confirmed */
-    VENT_RES_FAIL_TIMEOUT,     /**< the travel timer ran out without arrival */
-    VENT_RES_FAIL_FAULT,       /**< the position source failed during the move */
-    VENT_RES_ABORTED,          /**< safety or the operator took the window */
+    VENT_RES_NONE = 0,         /**< nothing commanded yet, or not yet at rest */
+    VENT_RES_DONE,             /**< at rest within the deadband of the target */
+    VENT_RES_FAIL_TIMEOUT,     /**< at rest anywhere else: it did not arrive.
+                                *   The travel timer ran out, the drive stopped
+                                *   short, or the command was DEFERRED (a T6
+                                *   reversal of a stroke under way) and never
+                                *   started -- the stroke then ended at its own
+                                *   target */
+    VENT_RES_FAIL_FAULT,       /**< the position was not trusted at rest */
+    VENT_RES_ABORTED,          /**< a drive the caller did not command -- a safety
+                                *   close, the operator, a recalibration, a motor
+                                *   alarm -- took the window after the command.
+                                *   Takes precedence over the position */
 } vent_result_t;
 
 /** One window, as it actually is. */
@@ -109,7 +118,10 @@ typedef struct {
     uint32_t         pos_age_ms;       /**< age of pos_x10 at this call */
     int16_t          last_target_x10;  /**< last target commanded, -1 = none */
     vent_result_t    last_result;      /**< how that command ended */
-    uint32_t         ms_since_move;    /**< since this window's last drive ended */
+    uint32_t         ms_since_move;    /**< since this window's last drive ended
+                                        *   (a recalibration is a drive).
+                                        *   UINT32_MAX = none since boot: long
+                                        *   ago, not "just moved" */
 } vent_win_in_t;
 
 /** Everything a model may read. The caller fills it; the model treats it as
@@ -156,10 +168,12 @@ typedef struct {
     uint16_t m3_deadzone_x10;    /**< smallest aperture change worth a move */
     uint32_t m3_min_interval_ms; /**< shortest time from the end of one M3
                                   *   drive to the start of the next, the
-                                  *   linear dwell; compare win[2].ms_since_move.
-                                  *   0 = no limit. 32-bit because it stands in
-                                  *   for dwells of 10 and 25 minutes. Not the
-                                  *   "minimum move", which is the shortest
+                                  *   linear dwell; compare win[2].ms_since_move
+                                  *   (UINT32_MAX, none since boot, is never
+                                  *   below it). 0 = no limit. 32-bit because
+                                  *   it stands in for dwells of 10 and 25
+                                  *   minutes. Not the "minimum move", which
+                                  *   is the shortest
                                   *   pulse that moves the leaf (contract §7) */
 
     /* ---- the windows --------------------------------------------------- */

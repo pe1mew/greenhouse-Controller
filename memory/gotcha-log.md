@@ -2420,3 +2420,38 @@ unit then publishes matches it (`settle`).
 sampled.* A cache is a claim about the past. `GET /api/diag/windowpos` has both: its top-level
 fields are a live device read, its `t17` block is the cache (with `age_ms`) — measure with the
 first, and test the second against it.
+
+## 2026-09-21 — a deferred command had a side effect, and a feedback field had two meanings (found by the simulator, not the rig)
+
+**Problem:** the model session replayed 2.12.0 as built in its closed-loop simulator and found
+three defects no rig harness had shown. (1) T6's reversal of a stroke under way, which gh#48
+DEFERS, first disarmed that stroke's target, so the stroke ran on to the end switch. (2) T6 never
+reported ABORTED: a window taken by T3, the operator or a recalibration read as FAIL_TIMEOUT.
+(3) `ms_since_move` = 0 meant "never moved" to T6 and "just moved" to a law, and the
+recalibration sweep set no move time and armed the close dwell even in mode 2.
+
+**Root cause:** (1) is ordering: the disarm sat at the top of `ch_start_open()` /
+`ch_start_close()`, above the guard that decides whether the command acts at all, so a command
+that did nothing still changed something. (2) and (3) are contract fields filled by inference and
+by a sentinel that is also a legal value, which nothing consumed in a way that could tell:
+`graded` treats FAIL_TIMEOUT and ABORTED alike, and mode 2 always starts at a stroke whose end
+sets the time.
+
+**Why the rig could not find them:** `graded` never reverses mid-stroke ("repeat, never chase"),
+and every harness sent its targets through the operator hook, which REVERSES where T6 is
+deferred: none of T6's deferrals were ever exercised. (2) and (3) have no physical symptom under
+today's law. Only something that drives the contract as written, with another law in mind, sees
+them.
+
+**Fix:** (1) the disarm skips T6's deferred reversal alone (fail-first bit 256); (2) T2 counts the
+takes and T6 reports ABORTED (bit 512), and a repeat of the outstanding target keeps the count it
+went out with (caught while writing the harness: graded re-posts on every wake while M3 moves);
+(3) UINT32_MAX = none since boot, the sweep and a motor alarm end a move, and the sweep arms
+`ch_dwell_ms()` (bit 1024). The bench hook takes `"source":"t6"`, so a harness can send a
+command the way T6 does.
+
+**Rule:** *a deferred or refused command must leave no trace: put every side effect BELOW the
+guard that decides whether it acts.* *A sentinel must be impossible as a value*: 0 ms is a legal
+"since", UINT32_MAX is not. And *a harness that sends from the wrong source tests the wrong
+rules*: the operator hook bypasses the dwell and gh#48. That is 2026-09-21's side door again, seen
+from the other side.

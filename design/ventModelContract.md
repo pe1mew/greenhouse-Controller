@@ -82,11 +82,11 @@ typedef enum {
 } vent_action_t;
 
 typedef enum {
-    VENT_RES_NONE = 0,              /* nothing commanded yet, or still moving */
-    VENT_RES_DONE,                  /* arrived, confirmed */
-    VENT_RES_FAIL_TIMEOUT,          /* the travel timer ran out without arrival */
-    VENT_RES_FAIL_FAULT,            /* the position source failed during the move */
-    VENT_RES_ABORTED,               /* safety or the operator took the window */
+    VENT_RES_NONE = 0,              /* nothing commanded yet, or not yet at rest */
+    VENT_RES_DONE,                  /* at rest within the deadband of the target */
+    VENT_RES_FAIL_TIMEOUT,          /* at rest anywhere else: it did not arrive */
+    VENT_RES_FAIL_FAULT,            /* the position was not trusted at rest */
+    VENT_RES_ABORTED,               /* a drive the caller did not command took the window */
 } vent_result_t;
 
 typedef struct {
@@ -97,7 +97,8 @@ typedef struct {
     uint32_t         pos_age_ms;    /* age of pos_x10 at the moment of this call */
     int16_t          last_target_x10;  /* last target the caller commanded, -1 = none */
     vent_result_t    last_result;   /* how that command ended */
-    uint32_t         ms_since_move; /* since this window's last drive ended */
+    uint32_t         ms_since_move; /* since this window's last drive ended;
+                                     * UINT32_MAX = none since boot */
 } vent_win_in_t;
 
 typedef struct {
@@ -182,6 +183,22 @@ const vent_model_t *vent_model_graded(void);
 #endif /* VENT_MODEL_H */
 ```
 
+**How `last_result` is judged (2026-09-21).** The caller judges the last command once the window is
+at rest, in this order: **ABORTED** when a drive it did not command -- a safety close, the operator,
+a recalibration, a motor alarm -- took the window after the command went out (T2 counts these,
+`t2_get_taken()`); otherwise **FAIL_FAULT** when the position is not trusted; otherwise **DONE**
+inside the deadband of the target and **FAIL_TIMEOUT** anywhere else. FAIL_TIMEOUT therefore means
+"did not arrive", whatever the reason: the travel timer ran out, the drive stopped short, or the
+command was *deferred* and never started -- T2 defers T6's reversal of a stroke under way (gh#48),
+and that stroke then ends at its own target. *Until 2026-09-21 the caller never sent ABORTED: a taken
+window read as FAIL_TIMEOUT. The model session found it; `graded` treats the two alike, so no decision
+changed.*
+
+**`ms_since_move` = UINT32_MAX means no drive since boot** -- long ago, no constraint. It was 0,
+which the caller read as "no constraint" while a law is entitled to read it as "just moved"; the
+simulator already used UINT32_MAX. A recalibration sweep is a drive and sets it, as does a motor
+alarm that stops a drive under way.
+
 ### Units, once
 
 | Quantity | Unit | Type |
@@ -228,7 +245,7 @@ the same thing on both, and the sensor reports a percentage natively.
 |---|---|
 | `VENT_ACT_HOLD` | nothing is commanded for that window |
 | `VENT_ACT_OPEN` / `VENT_ACT_CLOSE` | a full timed traverse is commanded, exactly as today |
-| `VENT_ACT_TARGET` on a **LINEAR** window | clamped to 0..1000; dropped when within `m3_deadzone_x10` of the current position; deferred while `win[2].ms_since_move` is below `m3_min_interval_ms`; otherwise commanded, with the travel timer as the ceiling |
+| `VENT_ACT_TARGET` on a **LINEAR** window | clamped to 0..1000; dropped when within `m3_deadzone_x10` of the current position; deferred while `win[2].ms_since_move` is below `m3_min_interval_ms` (UINT32_MAX, no drive since boot, never is); otherwise commanded, with the travel timer as the ceiling. **A target that reverses a stroke under way is deferred by T2 (gh#48)**: the stroke keeps its own target and stops there, and the caller asks again (until 2026-09-21 the deferral took the stroke's target first, and the stroke ran on to the end switch) |
 | `VENT_ACT_TARGET` on a **DIGITAL** window | **a model error.** Logged as such and treated as `HOLD` |
 | `reason`, `demand_t_x10`, `demand_rh_x10` | written to the SD log with the decision, so it can be reconstructed afterwards |
 
@@ -315,10 +332,10 @@ reads a setting** — it receives resolved values. The chain is:
 | `t_avg_c10`, `t_avg_c`, `rh_avg_pct`, `wind_*_avg_*` | T5's reading, averaged | averaged over `avg_win_t`, `avg_win_rh`, `avg_win_wind` — **those settings are not passed to you**; you receive the result |
 | `t_valid`, `rh_valid`, `wind_valid` | the measurement snapshot and the sensor-fault flags | — |
 | `m3_deadzone_x10` | `deadzone_m3_mm` | converted from mm using M3's taught span, which is why you get a percentage |
-| `m3_min_interval_ms` | the linear-dwell setting, converted to ms | **the key does not exist yet** (plan §10, decision 10); until it does, expect 0. Not the *minimum move* of §7, which is the shortest pulse that moves the leaf |
+| `m3_min_interval_ms` | the linear-dwell setting, converted to ms | the key `motor/min_intv_m3`, seconds, since 2.12.0, **default 600** (`model/closedloop/linearDwell.md`); 0 = no limit, for a deliberate test. *This row said "the key does not exist yet; expect 0" until 2026-09-21.* Not the *minimum move* of §7, which is the shortest pulse that moves the leaf |
 | `win[].state` | T2 | reversal gaps folded into the moving states |
 | `win[].cap`, `pos_x10`, `pos_age_ms` | T17, through T4's pass-through | capability already reflects fitted, gate open and fault-free |
-| `win[].last_target_x10`, `last_result`, `ms_since_move` | the caller's own record of what it commanded | — |
+| `win[].last_target_x10`, `last_result`, `ms_since_move` | the caller's own record of what it commanded; `last_result` judged at rest as above (ABORTED from T2's taken count); `ms_since_move` from T2 | `ms_since_move` UINT32_MAX = no drive since boot |
 | `now_ms`, `unix_time` | the caller | — |
 
 **Deliberately absent:** the heating setpoints (`t_min_*`, no heating in this installation) and every

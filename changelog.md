@@ -71,6 +71,16 @@ plan §5b/§5c and `design/ventModelContract.md`. Detail in `bin/2.12.0/release-
   (`settle`). Fail-first bits 64 and 128: the directional offset went from +3.0 % to −0.1 % and
   the published error from 0.9 % to 0.2 %. AT-WP02's spread was 1.8 % in one run and 2.5 % in the
   next: what remains is per-stop scatter, marginal on the rig's 13 s window.
+- **What the law is told: three corrections from the model session's simulator** (2026-09-21;
+  none changes a decision `graded` makes today). **A deferred T6 reversal no longer takes the
+  stroke's target**: gh#48 defers it, and the stroke now stops at its own target instead of running
+  on to the end switch (fail-first bit 256, `at_wp_target.py deferred`). **T6 reports ABORTED** when
+  a drive the law did not command took M3 after its command, which T2 now counts
+  (`t2_get_taken()`); it reported FAIL_TIMEOUT (bit 512, `at_wp_fallback.py aborted`).
+  **`ms_since_move` = UINT32_MAX means no drive since boot**, where 0 meant both that and "just
+  moved"; the recalibration sweep and a motor alarm now end a move, and the sweep arms the dwell of
+  the mode in force, `min_intv_m3` for M3 in mode 2 (bit 1024, `at_wp_fallback.py sincemove`). The
+  contract now says how `last_result` is judged.
 - **Docs:** FRS §5.3d gains FR-WPF07–13 (FR-WPF06 superseded), TSDS §5.16.6, `logparser.md` 1.23,
   `boerHandleiding` 1.22, `beheerderHandleiding` 1.25.
 
