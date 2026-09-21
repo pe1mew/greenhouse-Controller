@@ -52,6 +52,10 @@ Three things the refactor had to preserve, and how each was shown:
 >
 > **Never above 900**, where mode 2 swings as much as mode 1 while still driving M3 twice as often. **0 stays right for a deliberate test** — it is what the law alone does, and one setting away.
 
+### Rule 1's at-end exemption, for a state this release created
+
+A part-open stop can leave M3 at the closed end's **position** but short of its **switch**: the encoder reads 0 about 1.2 s of travel before the closed end sensor makes. T17's rule 1 excused a drive toward the end the leaf sits at only if the switch was made **and** the position was at that end on **every** sample from the first — so a CLOSE from there reported a stall that was not one (2344, 2026-09-20: `stall_faults` 1). With T6 now able to close a part-open M3, ordinary operation reaches that state, so it is fixed in this release: the position must never have **left** the target end's region, and the switch must be made **at the verdict**. A leaf stuck short of its switch, and a shorted wiper, are still reported (`bin/at_wp_rule1.py`, fail-first bit 32). Nothing acts on rule 1; it reports.
+
 ### Log encodings — all appended, all with their consumers
 
 | Encoding | Change |
@@ -98,8 +102,10 @@ The bench image is 1 417 456 B. Both control laws are compiled in: `stepped` dri
 | Every new log encoding through the real parser | decoded |
 | GUI against the mock, in a browser | the three badge cases and the greying rule |
 | **`bin/at_wp_target.py`** — seven stages on the rig | **all seven PASS in one run** on the fixed build (band 50.9 %, twice 51.2 then 28.7 %, closeshort reached the end) — 2344, 2026-09-21 |
+| **`bin/at_wp_rule1.py`** — rule 1's exemption, four stages, fail-first | fail-first bit 32: `headroom` **FAILS** (`stall_faults` +1, this incident's signature), the other three pass; fixed build: **all four PASS** (the late switch excused; a leaf short of its switch and a shorted wiper still reported) — 2344, 2026-09-21 |
+| **`bin/at_wp_confirm.py`** — 2.10.0's nine stages, regression for the rule-1 change | **all nine PASS** on the fixed build (`atend`: excused, `at_end_exempt` +1, no stall; `race`: rule 2 still trips) — 2344, 2026-09-21 |
 | **`bin/at_wp_fallback.py`** — the fall back through T6, fail-first | unfixed build and fail-first bit 16: **both stages FAIL** (M3 stranded part-open for 200 s); fixed build: **both PASS** (closed after 49 s, opened after 47 s) — 2344, 2026-09-21 |
-| **`bin/at_wp02.py`** — AT-WP02 repeatability, AT-WP03 endpoints | **not yet run** |
+| **`bin/at_wp02.py`** — AT-WP02 repeatability, AT-WP03 endpoints | **AT-WP02 FAIL**: ten moves to 50 % spread **3.0 %** against the 2.0 % of FR-WP05. Each direction is repeatable (1.0 % from below, 1.5 % from above); the failure is a **directional offset of +1.5 %** — T2 cuts the relay on entering the ±1.33 % band and the leaf coasts ~2 % further, so an opening lands ~0.8 % high and a closing ~0.7 % low. **AT-WP03 PASS**: 0.0 % and 100.0 % with the end sensors made, "nearly closed" (9.9 %, PART_OPEN, no end sensor) distinct — 2344, 2026-09-21 |
 | **Soak ≥ 12 h with scripted strokes** | **to be re-run on the fixed build.** A 12.04 h run on 2344 (2026-09-20, 25 judged strokes, no reboot) used the image with the stranded-M3 defect, and recorded one `stall_faults` — the rule-1 exemption false positive, whose fix is designed but not made |
 
 ## Upgrading

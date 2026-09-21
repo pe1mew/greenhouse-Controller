@@ -49,7 +49,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 ### Windows, climate & manual control (T2, T6, T8)
 - **2026-09-21** — after mode 2 leaves M3 part-open, mode 1 can neither close nor open it (T6's apply filter predates `PART_OPEN`: the law asked, T6 dropped it); no target stage could see it, all enter by the bench hook [RESOLVED 2.12.0]
 - **2026-09-21** — an acceptance harness aborts twice on a marginal link (it loses the REPLY of a command that landed); the second abort was blamed on a dwell before its traceback was read
-- **2026-09-20** — a stall fault on a drive that could not move: M3 part-open inside the closed band but off its switch (rule 1's at-end exemption predates `PART_OPEN`)
+- **2026-09-20** — a stall fault on a drive that could not move: M3 part-open inside the closed band but off its switch (rule 1's at-end exemption predates `PART_OPEN`) [RESOLVED 2.12.0, 2026-09-21: judged at the grace expiry]
 - **2026-09-20** — an interim soak report says "nothing is wrong" while a fail criterion is already breached [RESOLVED]
 - **2026-09-20** — a bundled fail-first build passes for the wrong reason (the first restored defect keeps the others from ever running) [RESOLVED: bitmask]
 - **2026-09-18** — a fail-first run PASSES on the old code because a second defect hides the first (T2's stale clock deferred the stale commands, on ONE of three paths) — gh#79
@@ -469,7 +469,7 @@ and a short CLOSED can be missed.
 
 ## 2026-09-17 — a bench build died with an internal compiler error in an untouched IDF file, and left the web manifest stamped
 
-**RECURRED the same day**, 17:55, in the same file (`esp_lcd_panel_rgb.c`), on the first build after a change to `PLATFORMIO_BUILD_FLAGS` forced a full rebuild. The retry passed again. **RECURRED 2026-09-21**, same file, same function (`rgb_panel_draw_bitmap`, RTL pass `ira`), again on the first build after the flag changed — and **twice in a row**; the third attempt passed. 12 GB of RAM was free, so it is not memory pressure. Allow up to three attempts. Twice in one day makes it a rebuild-triggered flake, not a one-off: **rerun once before investigating**, and check `git status firmware/data/` afterwards.
+**RECURRED the same day**, 17:55, in the same file (`esp_lcd_panel_rgb.c`), on the first build after a change to `PLATFORMIO_BUILD_FLAGS` forced a full rebuild. The retry passed again. **RECURRED 2026-09-21**, same file, same function (`rgb_panel_draw_bitmap`, RTL pass `ira`), again on the first build after the flag changed — and **twice in a row**; the third attempt passed. Later that day **three in a row**, the fourth passing: seven ICEs in one day, every one at `rgb_panel_draw_bitmap`, line 681. 12 GB of RAM was free, so it is not memory pressure. Allow up to four attempts. **The durable fix is not to compile it:** the firmware never uses the RGB LCD driver (its LCD is I2C), so excluding the component removes the file the compiler dies on — filed as its own task, 2026-09-21. Twice in one day makes it a rebuild-triggered flake, not a one-off: **rerun once before investigating**, and check `git status firmware/data/` afterwards.
 
 **Problem.** `build_release.ps1 -Environment lolin_s3_bench` failed with
 `esp_lcd_panel_rgb.c: internal compiler error: Segmentation fault`, a file nobody had changed.
@@ -2232,7 +2232,7 @@ by the model session.
 it, and change it to a value whose effect you can see.* "It is in the table" is a claim
 about the table.
 
-## 2026-09-20 — a new resting state made an old detector wrong
+## 2026-09-20 — a new resting state made an old detector wrong [RESOLVED 2026-09-21, in 2.12.0]
 
 **Problem:** 2.12.0's soak reported `stall_faults 1` on 2344. The drive was real, the
 fault was not: M3 had been left **part-open at 27.8 mm** by a mode-2 target, just above
@@ -2254,9 +2254,16 @@ switch. `CH_PART_OPEN` (2.12.0) created a resting state the detector was never w
 for — inside the deadband of an end but off its switch — and mode 2 produces it routinely,
 because "nearly closed" is a legitimate target.
 
-**Fix (designed, not yet made):** judge the exemption at the grace expiry rather than
-latching it from the first sample — *never left the target region, and the end sensor has
-made by now*. Keeps the continuity property the shorted-wiper case depends on.
+**Fix (made 2026-09-21):** judge the exemption at the grace expiry rather than latching it
+from the first sample — *never left the target region, and the end sensor has made by now*
+(`stroke_left_target`, `stroke_on_end_now`; `stroke_at_target` keeps its meaning for the
+verdict and rule 2). **Fail-first on 2344** with `bin/at_wp_rule1.py` and two new bench
+injections (`noend`: bit 3 cleared; `short`: position and rate 0): with bit 32 restoring the
+latch, `headroom` FAILED with this incident's exact signature (`stall_faults` +1, verdict
+confirmed, no early stop); fixed, all four stages passed — and `noswitch` (a leaf that never
+meets its switch) and `short` (a shorted wiper closing from the open end) are still reported,
+so the relaxed rule hides neither fault the continuity was for. It still assumes the headroom
+is crossed within the grace (1.2-2 s against 5 s here); a slower mechanism needs re-checking.
 
 **Rule, and it is the general one:** *when you add a STATE, re-read every detector that
 reasons about the states that existed before it.* Rule 1 was correct, well tested and

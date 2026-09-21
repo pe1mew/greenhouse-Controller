@@ -29,7 +29,8 @@ plan §5b/§5c and `design/ventModelContract.md`. Detail in `bin/2.12.0/release-
 - **`M3_ctrl_mode`** in the status payload (`"TIMED"` / `"LINEAR"`), and the web GUI shows which law
   is in force beside the setting that asks for it.
 - **`bin/at_wp_target.py`** (seven stages for the target path), **`bin/at_wp_fallback.py`** (the
-  fall back through T6, below) and **`bin/at_wp02.py`** (AT-WP02 repeatability and AT-WP03
+  fall back through T6, below), **`bin/at_wp_rule1.py`** (rule 1's exemption, below; bench
+  injections `noend` and `short`) and **`bin/at_wp02.py`** (AT-WP02 repeatability and AT-WP03
   endpoints, which have been the sensor's acceptance since the requirements were written and could
   not run until T2 could hold a target).
 
@@ -53,6 +54,13 @@ plan §5b/§5c and `design/ventModelContract.md`. Detail in `bin/2.12.0/release-
   request**, so after mode 2 left M3 part-open, mode 1 could neither close nor open it — the fall
   back left M3 stranded until a wind override moved it (28 min on 2344, 2026-09-20).
   `bin/at_wp_fallback.py` fails on the old filter (fail-first bit 16) and passes on the new one.
+- **T17's rule 1 judges its at-end exemption at the grace expiry**: the position never left the
+  target end's region, and the end sensor is made by then. It needed both on every sample from the
+  first, and a part-open stop can leave M3 at the closed end's position short of its switch, so a
+  CLOSE from there reported a stall that was not one (2344, 2026-09-20). Found by the soak, fixed
+  before release, and now reachable by T6 itself (the entry above). A leaf stuck short of its switch
+  and a shorted wiper are still reported; `bin/at_wp_rule1.py` fails on the old rule (fail-first
+  bit 32) and passes on the new one.
 - **Docs:** FRS §5.3d gains FR-WPF07–13 (FR-WPF06 superseded), TSDS §5.16.6, `logparser.md` 1.23,
   `boerHandleiding` 1.22, `beheerderHandleiding` 1.25.
 

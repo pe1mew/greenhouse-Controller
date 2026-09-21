@@ -2106,7 +2106,7 @@ dwell, the deadband, and the fault state the surfaces display.
 - **Safety unchanged (FR-WP18).** The wind close-all, the motor alarm and the boot sweep ignore
   position and may interrupt a positioning move at any point.
 
-###### Rule 1 false-trips after a mode-2 drive (found 2026-09-20, NOT yet fixed)
+###### Rule 1 false-trips after a mode-2 drive (found 2026-09-20, fixed 2026-09-21)
 
 **The first mode-2 drive under T6 on the rig produced a rule-1 stall fault that is not a stall.**
 The soak on 2344 shows `stall_faults 1`, and the SD log says exactly what happened:
@@ -2134,19 +2134,45 @@ a switch, so requiring bit 3 from the first sample was safe. A part-open stop in
 of an end but off its switch is a state the 2.9.1 detector was never written for — and mode 2
 produces it routinely, because a target of "nearly closed" is a legitimate thing to ask for.
 
-**The fix, for its own change with its own fail-first:** keep the end-sensor requirement — it is
+**The fix, as designed here and made on 2026-09-21 with its own fail-first:** keep the end-sensor requirement — it is
 what stops a genuinely stuck leaf at 5 mm being excused, and it is the continuity property the
 shorted-wiper case rests on — but judge it **at the grace expiry** rather than latching from the
 first sample: *never left the target region, and the target end sensor has made by now*. In this
 drive that is true (position 0.0 throughout, bit 3 made at 2 s); for a leaf stuck short of the
 switch it stays false, which is the case worth keeping.
 
-**Until then:** the soak's `stall_faults` criterion of 0 must be read with this exception, and the
-automated report will say FAIL. Accepted by the operator on 2026-09-20 on the evidence above.
+**Made, 2026-09-21.** T17 keeps two pieces of evidence per drive instead of one flag:
+`stroke_left_target` (any sample off the target end's region, never cleared) and
+`stroke_on_end_now` (bit 3, trusted, on the latest sample); the exemption at the grace expiry is
+`!left && on_end_now`. `stroke_at_target` keeps its old meaning for the drive verdict and rule 2,
+which were right. Fail-first bit **32** restores the latch. `bin/at_wp_rule1.py` makes the state on
+demand with a new bench injection, `noend` (bit 3 cleared: the leaf at an end's position, short of
+its switch), and a second, `short` (position and rate 0 from any position: a shorted wiper):
+
+| Stage | What it is | bit 32 (old rule) | fixed |
+|---|---|---|---|
+| `closed` | a closed M3's recalibration (the 2026-09-16 case) | PASS — excused | PASS — excused |
+| `headroom` | bit 3 released 1.6-1.7 s into the recalibration: this incident | **FAIL** — `stall_faults` +1 | **PASS** — excused |
+| `noswitch` | bit 3 never made: a leaf stuck short of its switch | PASS — reported | PASS — reported |
+| `short` | a shorted wiper, CLOSE from the open end | PASS — reported | PASS — reported |
+
+2344, 2026-09-21. The fail-first `headroom` reproduces this incident's signature exactly: `stall_faults`
++1, the verdict confirmed, no early stop. `noswitch` and `short` show the relaxed rule hides neither
+fault the continuity was for.
+
+**What it still relies on**, like the rule it replaces: the headroom is crossed within the grace
+(1.2-2 s against 5 s on this rig), and the starting end's sensor releases within it (~1.8 s). On a
+slower mechanism both must be re-checked when a sensor is fitted; rule 2's `travel / 4` is the
+natural bound if the verdict ever has to wait longer.
+
+**Until then** (superseded by the fix): the soak's `stall_faults` criterion of 0 had to be read with
+this exception, and the automated report said FAIL. Accepted by the operator on 2026-09-20 on the
+evidence above.
 **And it is now easier to reach (2026-09-21):** the close here was T3's; T6 *could not* close a
 part-open M3 until the stranded-M3 fix below. With that fixed, T6's ordinary mode-1 CLOSE takes the
 same path whenever a target has left M3 just above the closed switch, so a soak on the fixed build
-will meet this false positive in normal operation. **Make this fix before that soak.** Every
+will meet this false positive in normal operation. **Make this fix before that soak** — done the
+same day, above. Every
 drive after 16:22 (16:42, 17:43, 18:43) shows a clean `0x00`→`0x08` transition and a confirmed
 verdict, so the mechanism is healthy.
 
@@ -2543,7 +2569,23 @@ worry.
 - **T17's missing fallbacks:** bit 4 (both end sensors, a wiring fault) does not shut the gate, and
   the device's start-up bits are never read.
 - **AT-WP02** (ten moves to one target, spread within ±1 %) and **AT-WP03** (endpoints) — runnable
-  only once T2 can hold a partial target.
+  only once T2 can hold a partial target. **Run 2026-09-21 on 2344 (`bin/at_wp02.py`): AT-WP03
+  PASS, AT-WP02 FAIL** — ten moves to 50 % landed at 48.4-51.4 %, a spread of 3.0 % against the
+  2.0 % of FR-WP05. It is not noise: from below 50.4-51.4 % (spread 1.0 %), from above 48.4-49.9 %
+  (1.5 %), **a directional offset of +1.5 %**. T2 cuts the relay when the position ENTERS the
+  arrival band (±1.33 % here) and the leaf coasts ~2 % (~30 mm, ~0.26 s at the rig's 115 mm/s)
+  before it stops, so each direction overshoots the target by the coast minus the band. The sensor
+  is not the cause (it reads both ends exactly); **the stop rule does not lead the coast**. FR-WP05
+  asks that the same commanded aperture give the same physical one, so mode 2 does not meet it
+  yet. The obvious fix is a direction-aware lead (cut the relay the expected coast before the
+  target), which is a decision about mode 2's stop rule. **How the coast scales is not
+  established:** part of it is sampling and measuring lag, and T17 derives both from `travel_m3`
+  (poll = travel/150, window = 2/3 of that; on the rig both sit at their 100 ms floor, ~0.77 % of
+  stroke each; on 5C88 1.14 s and 0.76 s, ~0.67 % and ~0.44 %), so that share is roughly constant
+  in % of stroke; the rest is relay and motor run-on, constant in TIME, which shrinks in % on a
+  slow mechanism. A lead right for the rig is therefore too large for 5C88 by some factor between
+  1 and 13 that nobody has measured — so it must be derived per term or learned from each
+  arrival, not written down as a constant.
 - **5C88:** the sensor bought, fitted and taught
   ([gh#77](https://github.com/pe1mew/greenhouse-Controller/issues/77)). Until then
   `wpos_fitted_m3` = 0 keeps mode 2 unavailable there, which is the right default.

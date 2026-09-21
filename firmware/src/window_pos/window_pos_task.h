@@ -297,6 +297,17 @@ typedef enum {
                              *   reads 0 whatever the leaf does -- a position
                              *   that races ahead to closed. The rate and the
                              *   end sensors stay real. */
+    WPOS_INJECT_NOEND  = 6, /**< 2.12.0: real reads with the end-sensor bit
+                             *   (bit 3) cleared -- a leaf at an end's POSITION
+                             *   that has not reached its switch, which is where
+                             *   a mode-2 target can leave M3 (rule 1's
+                             *   exemption, bin/at_wp_rule1.py). */
+    WPOS_INJECT_SHORT  = 7, /**< 2.12.0: real reads, but the position 0 and the
+                             *   rate 0 whatever the leaf does -- a wiper shorted
+                             *   to the closed end of its track. Unlike STUCK it
+                             *   reads 0 from ANY position, so a CLOSE from the
+                             *   open end starts "at its target". The end sensors
+                             *   stay real. */
 } windowpos_inject_t;
 
 /**

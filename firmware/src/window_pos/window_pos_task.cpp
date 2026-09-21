@@ -229,8 +229,9 @@ static uint32_t s_fitted_checked_ms = 0u;
  *  - a full-travel command does NOT disarm an armed target, so a safety close
  *    can be stopped short by a stale target -- the one that matters.
  * GET /api/diag/windowpos reports it. Bench builds only. **It is a BITMASK now,
- * one bit per defect, and a fifth bit covers T6: firmware/src/types/
- * failfirst_212.h is where the bits are defined and documented.** */
+ * one bit per defect -- bit 16 covers T6, and bit 32 this task's rule 1:
+ * firmware/src/types/failfirst_212.h is where the bits are defined and
+ * documented.** */
 #include "../types/failfirst_212.h"
 
 /* ---- bench test hook (gh#72): see windowpos_task_inject() ----------------- */
@@ -247,7 +248,7 @@ void windowpos_task_inject(windowpos_inject_t how)
     s_inject = (uint8_t)how;
     if (how == WPOS_INJECT_NONE) { s_inject_probe = true; }
     ESP_LOGW(TAG, "TEST INJECTION -> %u (0 none, 1 absent, 2 fault, 3 stuck, "
-                  "4 ends, 5 race)", (unsigned)how);
+                  "4 ends, 5 race, 6 noend, 7 short)", (unsigned)how);
 }
 
 windowpos_inject_t windowpos_task_injected(void)
@@ -300,6 +301,14 @@ static windowpos_status_t t17_read(uint8_t addr, windowpos_reading_t *r)
         r->opening_mm_x10  = 0u;
         r->percent_x10     = 0u;
         r->opening_avg_x10 = 0u;
+    } else if (how == (uint8_t)WPOS_INJECT_NOEND) {
+        r->at_end_sensor = false;
+        r->status_bits   = (uint16_t)(r->status_bits & ~WINDOWPOS_ST_END_SENSOR);
+    } else if (how == (uint8_t)WPOS_INJECT_SHORT) {
+        r->opening_mm_x10  = 0u;
+        r->percent_x10     = 0u;
+        r->opening_avg_x10 = 0u;
+        r->rate_mm_s_x10   = 0;
     }
     return st;
 }
@@ -1358,9 +1367,17 @@ void task_window_pos(void *pvParameters)
      *
      * `stroke_at_target` starts true and is cleared by the first accepted
      * sample that is NOT sitting on the target end. See its use for the
-     * reasoning; `stroke_full_x10` is `40004`, the open end's position. */
+     * reasoning; `stroke_full_x10` is `40004`, the open end's position.
+     *
+     * 2.12.0: rule 1 no longer uses `stroke_at_target` (the verdict and rule 2
+     * still do). It asks two separate things -- did the position ever leave
+     * the target end's region, and is the end sensor made NOW, at the grace
+     * expiry -- because a part-open stop can leave the leaf inside the region
+     * but short of its switch. See the evidence and the rule below. */
     uint16_t stroke_full_x10    = 0u;
     bool     stroke_at_target   = true;
+    bool     stroke_left_target = false;
+    bool     stroke_on_end_now  = false;
 
     for (;;) {
         esp_task_wdt_reset();
@@ -1667,6 +1684,8 @@ void task_window_pos(void *pvParameters)
             near_zero_run    = 0u;
             early_reported   = false;
             stroke_at_target = true;
+            stroke_left_target = false;
+            stroke_on_end_now  = false;
             zero_claimed     = false;
             zero_claim_ms    = 0u;
             /* 2.10.0: judged from T2's energise time, like the rules. */
@@ -1777,7 +1796,32 @@ void task_window_pos(void *pvParameters)
                  *
                  * The TARGET end matters too: an OPEN stroke on a leaf sitting
                  * at the CLOSED end (the detached-wire case, 2026-09-15 22:36)
-                 * fails the position test and is still judged. */
+                 * fails the position test and is still judged.
+                 *
+                 * 2.12.0 -- RULE 1 SPLITS THE TWO CONDITIONS, because requiring
+                 * BOTH on EVERY sample false-trips on a state 2.12.0 created:
+                 * a part-open stop inside the target end's region but short of
+                 * its switch. The position reads 0 there while bit 3 is still
+                 * clear (the encoder's zero comes ~1.2 s of travel before the
+                 * closed end sensor), so the first sample cleared the flag, the
+                 * last sub-millimetre of travel produced no rate, and the
+                 * switch made two seconds in -- too late (2344, 2026-09-20
+                 * 16:22, `stall_faults` 1). So rule 1 now keeps:
+                 *
+                 *  - POSITION CONTINUITY: `stroke_left_target`, set by any
+                 *    sample off the target end's region and never cleared; and
+                 *  - the END SENSOR AT THE VERDICT: `stroke_on_end_now`, bit 3
+                 *    (trusted) on the latest sample.
+                 *
+                 * The shorted wiper is still caught, by the same physical fact
+                 * as before: the grace ends by travel / 2 at the latest, so a
+                 * leaf driven from the OTHER end is mid-travel at the verdict
+                 * and has neither kept its starting switch (released ~1.8 s in
+                 * on this rig) nor reached its target one. A leaf stuck short
+                 * of its switch never makes bit 3 and is judged too. What this
+                 * relies on, like the rule it replaces, is that the headroom is
+                 * crossed within the grace (1.2-2 s against 5 s here); a slower
+                 * mechanism must be checked when a sensor is fitted to one. */
                 if (evidence) {
                     const bool on_end = r.at_end_sensor && !r.both_end_sensors
                                         && !r.sensor_fault;
@@ -1792,6 +1836,8 @@ void task_window_pos(void *pvParameters)
                     if (!(on_end && at_pos)) {
                         stroke_at_target = false;
                     }
+                    if (!at_pos) { stroke_left_target = true; }
+                    stroke_on_end_now = on_end;
                 }
 
 #ifdef WPOS_FAILFIRST_292
@@ -1913,12 +1959,19 @@ void task_window_pos(void *pvParameters)
             if (d.travel_ms != 0u && (d.travel_ms / 2u) < grace) {
                 grace = d.travel_ms / 2u;
             }
+            /* 2.12.0: the exemption is judged HERE, at the grace expiry --
+             * the position never left the target end's region, and the end
+             * sensor has made by now -- rather than latched from the first
+             * sample. Fail-first bit 32 restores the latch. */
+            const bool at_end_exempt = FF212_R1_LATCH
+                ? stroke_at_target
+                : (!stroke_left_target && stroke_on_end_now);
             if ((uint32_t)stroke_peak_x10 >= threshold) {
                 /* Moved. Settle the verdict for this stroke so the deadline
                  * cannot trip later in a long traverse that pauses. */
                 stall_reported = true;
             } else if ((uint32_t)(now_ms() - stroke_start_ms) >= grace &&
-                       stroke_at_target) {
+                       at_end_exempt) {
                 /* Driven toward the end it was already at, and it never left
                  * it: the end switch did its job and the leaf correctly did
                  * not move. Not a stall. Counted, so an exemption that fires
@@ -1929,8 +1982,8 @@ void task_window_pos(void *pvParameters)
                 portENTER_CRITICAL(&s_mux);
                 s_cnt.at_end_exempt++;
                 portEXIT_CRITICAL(&s_mux);
-                ESP_LOGI(TAG, "12.4 rule 1: M3 %s stroke began and stayed on its "
-                              "target end (bit 3 continuous) -- no movement expected, "
+                ESP_LOGI(TAG, "12.4 rule 1: M3 %s stroke stayed at its target end "
+                              "and its end sensor has made -- no movement expected, "
                               "not judged",
                          stroke_closing ? "CLOSE" : "OPEN");
             } else if ((uint32_t)(now_ms() - stroke_start_ms) >= grace) {

@@ -140,6 +140,13 @@ class Rig(object):
         d = self.u.diag() or {}
         win_mm = ((d.get("commission") or {}).get("window_mm")
                   or (d.get("cal") or {}).get("window_mm"))
+        if not win_mm:
+            # The taught window size is published by the commissioning route,
+            # not by /api/diag/windowpos -- the first run (2026-09-21) printed
+            # "deadband unknown" because only the latter was asked.
+            sc, c = self.u._req("GET", "/api/diag/commission")
+            if sc == 200 and isinstance(c, dict):
+                win_mm = c.get("window_mm")
         if not mm or not win_mm:
             return None
         return 100.0 * float(mm) / float(win_mm)

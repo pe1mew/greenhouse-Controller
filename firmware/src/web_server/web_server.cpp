@@ -3474,9 +3474,11 @@ _Static_assert(sizeof(k_reason) / sizeof(k_reason[0]) == (size_t)WPOS_GATE_END_S
 
 /** gh#72 bench test hook: injection names, indexed by windowpos_inject_t.
  *  Read by the GET (what is in force) and the POST (what to set). 2.10.0 adds
- *  "ends" (bit 4) and "race" (the position reads 0, gh#78). */
-static const char *const k_inject[] = { "none", "absent", "fault", "stuck", "ends", "race" };
-_Static_assert(sizeof(k_inject) / sizeof(k_inject[0]) == (size_t)WPOS_INJECT_RACE + 1u,
+ *  "ends" (bit 4) and "race" (the position reads 0, gh#78); 2.12.0 adds "noend"
+ *  (bit 3 cleared) and "short" (position and rate 0), for rule 1's exemption. */
+static const char *const k_inject[] = { "none", "absent", "fault", "stuck", "ends", "race",
+                                        "noend", "short" };
+_Static_assert(sizeof(k_inject) / sizeof(k_inject[0]) == (size_t)WPOS_INJECT_SHORT + 1u,
                "k_inject[] must have one string per windowpos_inject_t value, in order");
 
 /** The injection in force, by name. */
