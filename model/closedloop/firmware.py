@@ -24,19 +24,22 @@ controller sees what the real one saw and does what it did:
   Actuator -- T2's per-channel state machine (relay_controller.cpp):
       full-travel strokes of travel + 5 s, the 2 s reversal gap, dwell timers
       that defer SRC_T6 only, and -- from 2.3.1 (gh#48) -- SRC_T6 reversals
-      deferred while a stroke is in progress. Also tracks the physical
-      position, which the binary law never reads but a linear law will.
+      deferred while a stroke is in progress. The CLOSE_ALL sweep at a reboot
+      (unless every window was closed) and at STANDBY's end, with Q1 waiting
+      behind it; T2's count of takes. Also tracks the physical position,
+      which the binary law never reads but a linear law will.
   LinearChannel -- M3 with its wire sensor (wpos_fitted_m3 = 1), as 2.12.0
-      builds mode 2 (045a39c): T17's readings with their age, and T2's drives
-      to a part-open target, cut a learned lead before it so the leaf coasts
-      onto it. See the class.
+      builds mode 2 (045a39c, 9c53be7): T17's readings with their age, and
+      T2's drives to a part-open target, cut a learned lead before it so the
+      leaf coasts onto it. See the class.
   Controller -- T6's cycle (climate_control.cpp): an inhibit resets the
       law, setpoints are resolved for day or night, every narrowing command
       goes out before any widening one, and a MODE row is written whenever
       the resolved step changes. With a linear M3 it also enforces the
       contract's limits on a target (§3): clamped to 0..1000, dropped within
       the deadband of M3 at rest, held inside the minimum interval; and it
-      keeps T6's record of the last target, judged from where M3 rests.
+      keeps T6's record of the last target: ABORTED when T2 counted a take
+      since, else judged from where M3 rests.
 
 Not modelled here: motor alarms and Q1 overflow. Sensor faults are taken
 from their logged ALARM rows: a T/RH fault inhibits T6, a wind fault makes
@@ -57,7 +60,7 @@ import calendar
 import ctypes
 import math
 import random
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -66,7 +69,7 @@ import numpy as np
 
 import settings as settings_mod
 from ventmodel import (BUILD_DIR, VENT_ACT_CLOSE, VENT_ACT_OPEN, VENT_ACT_TARGET,
-                       VENT_CAP_DIGITAL, VENT_CAP_LINEAR, VENT_RES_DONE,
+                       VENT_CAP_DIGITAL, VENT_CAP_LINEAR, VENT_RES_ABORTED, VENT_RES_DONE,
                        VENT_RES_FAIL_TIMEOUT, VENT_RES_NONE, VENT_WIN_CLOSED,
                        VENT_WIN_MOVING_CLOSE, VENT_WIN_MOVING_OPEN, VENT_WIN_OPEN,
                        VENT_WIN_PART_OPEN, VENT_WIN_UNKNOWN, VentIn, build_dll)
@@ -145,6 +148,10 @@ class Profile:
     wind_hyst: bool = True         # gh#46, 2.3.0: T3 clears below v_max - wind_hyst
     own_wind_window: bool = True   # gh#35, 2.1.0: wind averages over avg_win_wind,
                                    # not avg_win_t (sensor_poll.cpp, win_w = win_t before)
+    standby_exit_sweeps: bool = True  # STANDBY's end posts CMD_RECALIBRATE (the sweep).
+                                   # 5C88 swept after none of its six exits: the log has
+                                   # no sweep there, as the gh#29 manual menu, which
+                                   # suppressed it until 2026-09-10, would leave
 
 
 # 5C88's firmware changes, each at the BOOT row that started it:
@@ -164,7 +171,8 @@ PROFILE_CURRENT = Profile(defer_in_travel=True, calibrating_inhibits_t6=True)
 def profile_5c88(ts):
     return Profile(defer_in_travel=ts >= GH48_ON_5C88, calibrating_inhibits_t6=False,
                    wind_hyst=ts >= WIND_HYST_ON_5C88,
-                   own_wind_window=ts >= OWN_WIND_WINDOW_ON_5C88)
+                   own_wind_window=ts >= OWN_WIND_WINDOW_ON_5C88,
+                   standby_exit_sweeps=False)
 
 
 # --------------------------------------------------------------------------
@@ -474,8 +482,10 @@ class ChannelCounters:
     retargets:    int = 0   # a new stop point the way the leaf was already going
     timeouts:     int = 0   # a part-open target the travel timer ran out on
     aborts:       int = 0   # T6's drive taken over by T3 or the operator
-    lost:         int = 0   # a target disarmed by a deferred reversal: ran on to the end
     lead_rejects: int = 0   # a settled stop too far from its cut to learn the lead from
+    # every channel
+    taken:        int = 0   # T2's takes (t2_get_taken()): drives the climate law did not
+                            # command -- T3, the operator, a sweep -- T6's ABORTED
 
 
 class Channel:
@@ -619,8 +629,25 @@ class Channel:
             self.n.open_starts += 1
 
     # ---- commands (ch_start_open() / ch_start_close()) -------------------
+    def _take(self, want_open, source, armed=False):
+        """T2's count of TAKES (t2_get_taken(), 9c53be7): a command the climate
+        law did not issue that starts the window, reverses it, or turns a
+        targeted stroke into a full one. One that finds the window already
+        where it sends it takes nothing."""
+        if source == SRC_T6:
+            return
+        end = CH_OPEN if want_open else CH_CLOSED
+        heading = ((CH_MOVING_OPEN, CH_GAP_TO_OPEN) if want_open
+                   else (CH_MOVING_CLOSE, CH_GAP_TO_CLOSE))
+        if not (self.state == end or (self.state in heading and not armed)):
+            self.n.taken += 1
+
     def command(self, want_open, now, source):
         self.advance(now)
+        self._take(want_open, source)
+        return self._act(want_open, now, source)
+
+    def _act(self, want_open, now, source):
         s = self.state
         same = (CH_OPEN, CH_MOVING_OPEN, CH_GAP_TO_OPEN) if want_open else \
                (CH_CLOSED, CH_MOVING_CLOSE, CH_GAP_TO_CLOSE)
@@ -648,9 +675,30 @@ class Channel:
         self._start(CH_MOVING_OPEN if want_open else CH_MOVING_CLOSE, now)
         return "start"
 
-    def sync(self, ch_state, now):
-        """Force the state a RELAY row reports, as T2 set it at that moment."""
+    def sweep(self, now):
+        """calib_close_all() for this window: taken, then driven closed for its
+        whole travel whatever it was doing, and a closed one stalls on its end
+        switch. The end arms the close dwell, which is ch_dwell_ms(), so
+        min_intv_m3 for M3 in mode 2, and ends a move (9c53be7). 5C88's builds
+        armed the close dwell too and ended no move, which the stepped law never
+        reads."""
         self.advance(now)
+        self.n.taken += 1
+        self._start(CH_MOVING_CLOSE, now)
+
+    def sync(self, ch_state, now):
+        """Force the state a RELAY row reports, as T2 set it at that moment.
+        Another hand has the window (the operator in STANDBY), so a change that
+        is not a drive running its course is a take."""
+        self.advance(now)
+        before = self._sync(ch_state, now)
+        natural = {CH_MOVING_OPEN: CH_OPEN, CH_MOVING_CLOSE: CH_CLOSED,
+                   CH_GAP_TO_OPEN: CH_MOVING_OPEN, CH_GAP_TO_CLOSE: CH_MOVING_CLOSE}
+        if self.state != before and self.state != natural.get(before):
+            self.n.taken += 1
+
+    def _sync(self, ch_state, now):
+        before = self.state
         if ch_state == CH_MOVING_OPEN and self.state != CH_MOVING_OPEN:
             self._start(CH_MOVING_OPEN, now)
         elif ch_state == CH_MOVING_CLOSE and self.state != CH_MOVING_CLOSE:
@@ -668,11 +716,12 @@ class Channel:
             self.gap_deadline = now + RELAY_GAP_MS
         elif ch_state == CH_UNKNOWN:
             self.state = CH_UNKNOWN
+        return before
 
     def ms_since_move(self, now):
         """t2_ms_since_move(): since the last drive ENDED, also while another
-        runs. The firmware says 0 for "none since boot"; a run here does not
-        start at a boot, so none yet reads as long ago."""
+        runs. None since boot is UINT32_MAX, long ago (9c53be7), and a run
+        that starts mid-summer reads as such until its first drive ends."""
         if self.drive_end is None:
             return 0xFFFFFFFF
         return min(max(now - self.drive_end, 0), 0xFFFFFFFF)
@@ -786,10 +835,14 @@ class LinearChannel(Channel):
         and a reversal while the leaf moves is deferred (gh#48). A part-open
         leaf takes the dwell it was armed with, either way. In mode 2 every
         dwell is min_intv_m3 (ch_dwell_ms()), armed at every end of a drive.
-      * ch_start_open()/ch_start_close() disarm a target on entry, before they
-        defer. So a deferred reversal leaves the drive under way WITHOUT its
-        target, and it runs on to the end (counted as `lost`); a full-travel
-        command the way the leaf already goes carries it on to the end.
+      * A command that acts disarms any target: a full-travel command the way
+        the leaf already goes carries it on to the end, and a safety close is
+        never stopped short. T6's reversal of a stroke under way does not act
+        (gh#48 defers it), so that stroke keeps its target and stops at it
+        (9c53be7; until then the deferral took the target, and the stroke ran
+        on to the end switch).
+      * T2 counts the TAKES (Channel._take(), sweep()): what T6 reads to tell
+        the law ABORTED.
 
     Simplified: the reading is the leaf's travelled fraction, where the sensor's
     0..100 % runs from one end sensor to the other and the leaf overtravels past
@@ -1016,24 +1069,38 @@ class LinearChannel(Channel):
             self.n.aborts += 1
 
     def command(self, want_open, now, source):
-        """OPEN or CLOSE: ch_start_open()/ch_start_close(), which disarm any
-        target first. A part-open leaf takes the dwell it was armed with."""
+        """OPEN or CLOSE: ch_start_open()/ch_start_close(). The take is counted
+        first, then any target disarmed -- except by T6's reversal of a stroke
+        under way, which gh#48 defers and which leaves the stroke exactly as it
+        found it (9c53be7). A part-open leaf takes the dwell it was armed with."""
         self.advance(now)
-        armed, self.target = self.target is not None, None
+        armed = self.target is not None
+        self._take(want_open, source, armed)
+        t6_deferred = (source == SRC_T6 and self.profile.defer_in_travel and
+                       self.state == (CH_MOVING_CLOSE if want_open else CH_MOVING_OPEN))
+        if not t6_deferred:
+            self.target = None
         if self.state == CH_STOPPED and source == SRC_T6 and now < self.dwell_deadline:
             if not self._defer_latched:
                 self._defer_latched = True
                 self.n.dwell_defers += 1
             r = "deferred-dwell"
         else:
-            r = Channel.command(self, want_open, now, source)
-        if armed and r == "deferred-travel":
-            self.n.lost += 1                # the drive under way runs on to its end
-        if armed and source != SRC_T6 and self.t6_drive:
+            r = self._act(want_open, now, source)
+        if armed and self.target is None and source != SRC_T6 and self.t6_drive:
             self.t6_drive = False           # T3 or the operator took T6's drive
             self.n.aborts += 1
         self._note(r, source)
         return r
+
+    def sweep(self, now):
+        """calib_close_all(): no target survives it, and it takes T6's drive."""
+        self.advance(now)
+        self.target = None
+        if self.t6_drive:
+            self.t6_drive = False
+            self.n.aborts += 1
+        Channel.sweep(self, now)
 
     def command_target(self, target, now, source, dz_x10):
         """A target in 0.1 %: ch_start_target(), 045a39c."""
@@ -1043,17 +1110,23 @@ class LinearChannel(Channel):
             return "refused"                # no taught span: no band to stop in
         want = min(max(int(target), 0), 1000)
         if want <= band or want >= 1000 - band:
-            r = self.command(want > band, now, source)      # an end is an end
-            if r in ("start", "reversal", "pivot"):
+            opening = want > band           # an end is an end: on to the timer
+            before, heading = self.target, self.state in self.HEADING[opening]
+            r = self.command(opening, now, source)
+            if r == "noop" and heading and before is not None:
+                r = "retarget"              # the stroke under way goes on to the end
+                self.n.retargets += 1
+                self._note(r, source)
+            if r in ("start", "reversal", "pivot", "retarget"):
                 self.n.targets += 1
             return r
         if want - band <= self.reading <= want + band:
             return "noop"                   # already there, whatever is under way
         open_dir = want > self.reading
         before, heading = self.target, self.state in self.HEADING[open_dir]
-        r = self.command(open_dir, now, source)             # disarms first
+        r = self.command(open_dir, now, source)             # disarms, unless deferred
         if self.state not in self.HEADING[open_dir]:
-            return r                        # deferred: nothing is armed
+            return r                        # deferred: the stroke keeps its own target
         if heading:
             r = "retarget" if want != before else "rearm"
             self._note(r, source)
@@ -1089,13 +1162,23 @@ class LinearChannel(Channel):
         return self.reading, min(now - self.read_t, 0xFFFFFFFF)
 
 
+Q1_DEPTH = 8                    # Q1, T2's command queue: 8 deep, a full one drops
+
+
 class Actuator:
     """T2: three channels, M1..M3 at index 0..2. With m3_linear (a LinearM3),
-    M3 has its position sensor and takes targets (LinearChannel)."""
+    M3 has its position sensor and takes targets (LinearChannel).
+
+    The CLOSE_ALL sweep (calib_close_all()) is T2's own, and blocking: while it
+    runs T2 reads no command. They wait in Q1 and go out in order when it
+    returns, up to Q1_DEPTH of them; more are dropped. From 2.9.2 (gh#79) T6
+    is inhibited meanwhile (the caller's job: sweeping()), so only T3's reach
+    the queue; before that, T6's queued too."""
 
     def __init__(self, settings, profile, traverse_s=(None, None, None), m3_linear=None,
                  m3_flow_exp=1.0):
         self.m3_linear = m3_linear
+        self.profile = profile
         self.ch = []
         for i in range(3):
             a = (settings.travel_s[i], settings.dwell_open_s[i], settings.dwell_close_s[i],
@@ -1103,35 +1186,95 @@ class Actuator:
             self.ch.append(LinearChannel(*a, cfg=m3_linear) if i == 2 and m3_linear
                            else Channel(*a))
         self.ch[2].flow_exp = float(m3_flow_exp)
+        self.busy_until = None          # a sweep runs until then
+        self.q1 = []                    # commands waiting for it
+        self.sweeps = 0
+        self.q1_dropped = 0
 
     def is_linear(self, i):
         return isinstance(self.ch[i], LinearChannel)
 
     def set_profile(self, profile):
+        self.profile = profile
         for c in self.ch:
             c.profile = profile
 
+    def sweeping(self, now):
+        return self.busy_until is not None and now < self.busy_until
+
     def advance(self, now):
+        if self.busy_until is not None and now >= self.busy_until:
+            # the sweep returns: T2 reads what waited in Q1, in order
+            t = self.busy_until
+            for c in self.ch:
+                c.advance(t)
+            self.busy_until = None
+            waiting, self.q1 = self.q1, []
+            for kind, i, arg, source, dz in waiting:
+                if kind == "all":
+                    for c in self.ch:
+                        c.command(False, t, source)
+                elif kind == "cmd":
+                    self.ch[i].command(arg, t, source)
+                else:
+                    self.ch[i].command_target(arg, t, source, dz)
         for c in self.ch:
             c.advance(now)
 
+    def _queue(self, item):
+        if len(self.q1) < Q1_DEPTH:
+            self.q1.append(item)
+            return "queued"
+        self.q1_dropped += 1
+        return "dropped"
+
     def command(self, i, want_open, now, source=SRC_T6):
+        self.advance(now)
+        if self.sweeping(now):
+            return self._queue(("cmd", i, want_open, source, 0))
         return self.ch[i].command(want_open, now, source)
 
     def command_target(self, i, target, now, source=SRC_T6, dz_x10=0):
+        self.advance(now)
+        if self.sweeping(now):
+            return self._queue(("target", i, target, source, dz_x10))
         return self.ch[i].command_target(target, now, source, dz_x10)
 
     def close_all(self, now, source=SRC_T3):
-        for i in range(3):
-            self.ch[i].command(False, now, source)
+        """CMD_CLOSE_ALL: one command, ch_start_close() on every window."""
+        self.advance(now)
+        if self.sweeping(now):
+            return self._queue(("all", None, None, source, 0))
+        for c in self.ch:
+            c.command(False, now, source)
+        return "done"
+
+    def sweep(self, now):
+        """calib_close_all(): every window driven closed at once, whatever it
+        was doing, each for its own travel; T2 is busy until the slowest ends.
+        At boot, unless every window was closed, and at STANDBY's end."""
+        self.advance(now)
+        for c in self.ch:
+            c.sweep(now)
+        self.busy_until = max(c.relay_deadline for c in self.ch)
+        self.sweeps += 1
 
     def boot(self, now):
-        """A reboot: T2's CLOSE_ALL sweep, and M3's lead starts again from its
-        default (RAM only)."""
+        """A reboot. RAM is gone: Q1, the dwell deadlines, the move ends and M3's
+        lead. T2 then reads each window's state from NVS: all three CLOSED is
+        gh#18's shortcut, and T6 may act at once. Anything else -- open, moving,
+        part-open, unknown -- runs the sweep."""
+        self.advance(now)
+        all_closed = all(c.state == CH_CLOSED for c in self.ch)
+        self.busy_until, self.q1 = None, []
         for c in self.ch:
+            c.dwell_deadline = 0
+            c.drive_end = None
+            c._defer_latched = False
             if isinstance(c, LinearChannel):
                 c.forget_lead()
-        self.close_all(now, SRC_T3)
+        if not all_closed:
+            self.sweep(now)
 
     def public_states(self):
         return [c.public for c in self.ch]
@@ -1191,11 +1334,12 @@ class Controller:
         self.dropped = 0
         self.deferred = 0
         # T6's own record of M3's last CMD_TARGET and how it ended, the feedback
-        # half of the contract (§3): set when a target is POSTED, and judged from
-        # where M3 comes to rest (judge_m3_target()), because T2 reports a state
-        # and not an outcome
+        # half of the contract (§3): set when a target is POSTED, with T2's take
+        # count then, and judged once M3 is at rest (judge_m3_target())
         self.m3_last_target = -1
         self.m3_last_result = VENT_RES_NONE
+        self.m3_taken_at_post = 0
+        self.results = Counter()        # every judgement, for the report
 
     def reset(self):
         """An inhibit's onset: the law's state back to its start."""
@@ -1206,17 +1350,35 @@ class Controller:
         """A reboot: the law's state, and T6's record of M3's last target."""
         self.reset()
         self.m3_last_target, self.m3_last_result = -1, VENT_RES_NONE
+        self.m3_taken_at_post = 0
+
+    def _post_m3(self, actuator, tgt, now_ms, dz):
+        """post_target(). A REPEAT of the outstanding target -- the same value,
+        still unjudged -- keeps the take count it went out with: graded repeats
+        its target on every wake while M3 moves, and re-reading the count then
+        would fold a take still under way into the baseline (9c53be7)."""
+        if not (self.m3_last_result == VENT_RES_NONE and tgt == self.m3_last_target):
+            self.m3_taken_at_post = actuator.ch[2].n.taken     # before T2 can act
+        actuator.command_target(2, tgt, now_ms, SRC_T6, dz)
+        self.m3_last_target, self.m3_last_result = tgt, VENT_RES_NONE
 
     def _judge_m3(self, ch, band):
-        """judge_m3_target(): once M3 is at rest, DONE within the band of the
-        last target and FAIL_TIMEOUT anywhere else -- at an end after T3 took
-        the window too, so the law is never told ABORTED."""
+        """judge_m3_target(), once M3 is at rest: ABORTED when the window was
+        taken since the post, whatever the position says; then DONE within the
+        band of the target, and FAIL_TIMEOUT anywhere else, a command deferred
+        and never started included. (FAIL_FAULT, an untrusted position, cannot
+        happen here: the simulator's sensor never fails.)"""
         if self.m3_last_target < 0 or self.m3_last_result != VENT_RES_NONE:
             return
         if ch.public in (VENT_WIN_MOVING_OPEN, VENT_WIN_MOVING_CLOSE):
             return
-        err = ch.reading - self.m3_last_target
-        self.m3_last_result = VENT_RES_DONE if -band <= err <= band else VENT_RES_FAIL_TIMEOUT
+        if ch.n.taken != self.m3_taken_at_post:
+            self.m3_last_result = VENT_RES_ABORTED
+        else:
+            err = ch.reading - self.m3_last_target
+            self.m3_last_result = (VENT_RES_DONE if -band <= err <= band
+                                   else VENT_RES_FAIL_TIMEOUT)
+        self.results[self.m3_last_result] += 1
 
     def cycle(self, now_ms, unix_time, daytime, meas, inhibited, actuator=None):
         """One T6 wake. Returns a Decision, or None while inhibited.
@@ -1312,8 +1474,9 @@ class Controller:
                 elif (w.state not in (VENT_WIN_MOVING_OPEN, VENT_WIN_MOVING_CLOSE)
                       and abs(tgt - w.pos_x10) <= dz):
                     d.dropped += 1                  # inside the band: nothing to do
-                elif min_interval_ms > 0 and 0 < w.ms_since_move < min_interval_ms:
-                    d.deferred += 1                 # the linear dwell (contract §7)
+                elif min_interval_ms > 0 and w.ms_since_move < min_interval_ms:
+                    d.deferred += 1                 # the linear dwell (contract §7);
+                    #                                 UINT32_MAX, none since boot, never holds
                 else:
                     plan[i] = (tgt, tgt < w.pos_x10)
             self.dropped += d.dropped
@@ -1331,8 +1494,7 @@ class Controller:
                     if not narrowing and i in d.opens and st in shut_or_closing:
                         actuator.command(i, True, now_ms, SRC_T6)
                     if i in plan and plan[i][1] == narrowing:
-                        actuator.command_target(i, plan[i][0], now_ms, SRC_T6, dz)
-                        self.m3_last_target, self.m3_last_result = plan[i][0], VENT_RES_NONE
+                        self._post_m3(actuator, plan[i][0], now_ms, dz)
 
         d.logged = d.step != self.last_step    # post_log_mode() on change
         self.last_step = d.step

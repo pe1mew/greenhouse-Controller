@@ -84,7 +84,10 @@ import settings as settings_mod  # noqa: E402
 from plant import ADOPTED, Plant  # noqa: E402
 import plant2  # noqa: E402
 from plant2 import Plant2  # noqa: E402
-from ventmodel import VENT_STEPS_MAX, VentModel, entry_temp_c  # noqa: E402
+from ventmodel import (  # noqa: E402
+    VENT_RES_ABORTED, VENT_RES_DONE, VENT_RES_FAIL_TIMEOUT, VENT_STEPS_MAX, VentModel,
+    entry_temp_c,
+)
 
 # The published figures the gates must reproduce.
 PUBLISHED_VAL_T_RMSE = 1.19        # campaignResults_summer2026.md s.1, artifact _comment
@@ -762,12 +765,16 @@ def run_closed_loop(ds, lo, hi, plant_kind, params, args, sched=None, law=None):
             plant.reset(ds.T_in[i], ds.AH_in[i])
 
     prev_override = data.override(start)
+    prev_standby = data.standby.contains(start)
 
     def decide(t, T, RH, i, standby):
         """One poll at time t: T5 samples, T3 then T6 decide (T3 runs first)."""
-        nonlocal prev_override
+        nonlocal prev_override, prev_standby
         now = _ms(t)
         s, p = ctl.s, act.ch[0].profile
+        if prev_standby and not standby and p.standby_exit_sweeps:
+            act.sweep(now)                      # STANDBY's end: CMD_RECALIBRATE
+        prev_standby = standby
         rh_c10 = int(ds.RH_in[i]) * 10 if args.rh_from_log else lroundf(RH * 10)
         meas = sensor.push_register(lroundf(T * 10), rh_c10)
         wmeas, wf = sample_wind(t)
@@ -781,7 +788,9 @@ def run_closed_loop(ds, lo, hi, plant_kind, params, args, sched=None, law=None):
             if override and not prev_override:
                 act.close_all(now, SRC_T3)
             prev_override = override
-        inhibited = override or data.tfault.contains(t) or standby
+        # gh#79 (2.9.2): T6 is paused while T2 sweeps; before, it posted into Q1
+        calibrating = p.calibrating_inhibits_t6 and act.sweeping(now)
+        inhibited = override or data.tfault.contains(t) or standby or calibrating
         return ctl.cycle(now, _unix(t), daytime(t, s), meas, inhibited, actuator=act), override
 
     def prepare(t):
@@ -1009,10 +1018,14 @@ def linear_summary(recs, act, ctl):
     part = sum(1 for r in recs if _code(r["bm_sim"], 2) == 2 and r["pos_m3"] < 0.995) / len(recs)
     print("  sim M3, linear: %d targets moved it or its stop point (%d of them a stop point),"
           " %d dropped in the deadband, %d deferred by the minimum interval, %d timeouts,"
-          " %d taken over by T3 or the operator, %d lost to a deferred reversal,"
-          " %d model errors"
+          " %d taken over by T3, the operator or a sweep, %d model errors"
           % (n.targets - n0.targets, n.retargets - n0.retargets, dropped, deferred,
-             n.timeouts - n0.timeouts, n.aborts - n0.aborts, n.lost - n0.lost, errors))
+             n.timeouts - n0.timeouts, n.aborts - n0.aborts, errors))
+    res = ctl.results
+    print("  T6 judged M3's targets: %d DONE, %d FAIL_TIMEOUT, %d ABORTED  |  M3 taken %d times"
+          " (T3, the operator, %d sweeps)"
+          % (res[VENT_RES_DONE], res[VENT_RES_FAIL_TIMEOUT], res[VENT_RES_ABORTED],
+             n.taken - n0.taken, act.sweeps))
     ch = act.ch[2]
     if ch.landings:
         err = [abs(e) for e in ch.landings]

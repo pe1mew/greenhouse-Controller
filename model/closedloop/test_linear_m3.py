@@ -3,24 +3,30 @@ test_linear_m3.py -- the linear M3 (firmware.LinearChannel) against the firmware
 
     python model/closedloop/test_linear_m3.py [--quick]
 
-The emulation follows 2.12.0 as built (045a39c): T2's ch_start_target(),
-ch_target_tick() and the overrun lead in relay_controller.cpp, T17's settle read
-in window_pos_task.cpp, and T6's plan_target(), apply_model_output() and
-judge_m3_target() in climate_control.cpp. There is no mode 2 log to compare with
-yet, so these check the emulation against those rules, in three layers:
+The emulation follows 2.12.0 as built (045a39c, 9c53be7): T2's
+ch_start_target(), ch_target_tick(), the overrun lead, the takes and
+calib_close_all() in relay_controller.cpp, T17's settle read in
+window_pos_task.cpp, and T6's plan_target(), apply_model_output(), post_target()
+and judge_m3_target() in climate_control.cpp. There is no mode 2 log to compare
+with yet, so these check the emulation against those rules, in four layers:
 
   1. the channel alone: the stop rule, the run-on and the settle read, the
      lead and its learning (on the rig's 13 s stroke, against a control with no
-     lead), a new stop point, a reversal refused mid-stroke (gh#48) and the
-     target it loses, T3 taking the window, targets at the ends and inside the
-     band, the mode 2 dwell, T17's readings and their age, and what the plant
-     is handed;
+     lead), a new stop point, a reversal refused mid-stroke (gh#48) with the
+     stroke keeping its target, T3 taking the window, targets at the ends and
+     inside the band, the mode 2 dwell, T17's readings and their age, and what
+     the plant is handed;
   2. T6's side, with a test-double law: a target for a digital window, mode 1
-     with a fitted sensor, the deadband, the minimum interval, the last target
-     and its result as T6 infers it, and every narrowing move first;
+     with a fitted sensor, the deadband, the minimum interval and UINT32_MAX,
+     the last target and its result (ABORTED on a take, the repeat rule against
+     a control without it, FAIL_TIMEOUT for a deferred target), and every
+     narrowing move first;
+  2b. the CLOSE_ALL sweep: the boot shortcut, the sweep with Q1 behind it, its
+     dwells and move ends, Q1's depth, and a sweep taking T6's target;
   3. the closed loop (skipped by --quick): with stepped a fitted sensor
      changes nothing (mode 1); with a test-double mode 2 law M3 rests
-     part-open and the plant is handed its opening.
+     part-open and the plant is handed its opening; and 5C88's 07-17 reboot,
+     whose sweep and queued opens the log shows.
 
 The test-double laws are Python on purpose. They exercise the caller and are
 not laws; laws come from drivers/ventModel.
@@ -40,14 +46,15 @@ for p in (HERE, HERE.parent):
         sys.path.insert(0, str(p))
 
 from firmware import (  # noqa: E402
-    CH_CLOSED, CH_MOVING_OPEN, CH_OPEN, CH_STOPPED, LEAD_DEFAULT_MS, PROFILE_CURRENT,
-    SRC_T3, SRC_T6, T17_IDLE_READ_MS, T17_IDLE_TICK_MS, T17_SETTLE_BASE_MS, Actuator,
-    Channel, Controller, LinearChannel, LinearM3, Settings, t17_poll_ms, t17_window_ms,
+    CH_CLOSED, CH_MOVING_CLOSE, CH_MOVING_OPEN, CH_OPEN, CH_STOPPED, LEAD_DEFAULT_MS,
+    PROFILE_CURRENT, Q1_DEPTH, SRC_T3, SRC_T6, T17_IDLE_READ_MS, T17_IDLE_TICK_MS,
+    T17_SETTLE_BASE_MS, Actuator, Channel, Controller, LinearChannel, LinearM3, Settings,
+    t17_poll_ms, t17_window_ms,
 )
 from ventmodel import (  # noqa: E402
     VENT_ACT_CLOSE, VENT_ACT_HOLD, VENT_ACT_OPEN, VENT_ACT_TARGET, VENT_CAP_DIGITAL,
-    VENT_CAP_LINEAR, VENT_RES_DONE, VENT_RES_FAIL_TIMEOUT, VENT_RES_NONE, VENT_WIN_PART_OPEN,
-    VentOut,
+    VENT_CAP_LINEAR, VENT_RES_ABORTED, VENT_RES_DONE, VENT_RES_FAIL_TIMEOUT, VENT_RES_NONE,
+    VENT_WIN_PART_OPEN, VentOut,
 )
 
 T0 = 10_000_000                    # ms on the simulator's clock
@@ -172,26 +179,33 @@ def layer_channel():
     check("a target within the band of the leaf is already there", r == "noop" and
           ch.n.starts == starts)
 
-    # the other way mid-stroke: refused for T6 from 2.3.1 (gh#48) -- and, as built,
-    # ch_start_close() disarms the target before it defers, so the drive runs on
+    # the other way mid-stroke: refused for T6 from 2.3.1 (gh#48), and the stroke
+    # keeps its target (9c53be7; until then the deferral disarmed it)
     t = ch.drive_end + 60_000
     ch.command_target(950, t, SRC_T6, DZ)
     t += 10_000
+    taken = ch.n.taken
     r = ch.command_target(300, t, SRC_T6, DZ)
     run_until(ch, t, lambda c: c.state not in (CH_MOVING_OPEN,))
-    check("a reversal mid-stroke is deferred for T6 (gh#48), and the target under way is"
-          " lost: the leaf runs on to OPEN (045a39c as built)",
-          r == "deferred-travel" and ch.n.travel_defers == 1 and ch.n.lost == 1 and
-          ch.state == CH_OPEN and ch.pos == 1.0, "%s, state %d" % (r, ch.state))
+    settle(ch)
+    check("a reversal mid-stroke is deferred for T6 (gh#48), and the stroke stops at its"
+          " own target", r == "deferred-travel" and ch.n.travel_defers == 1 and
+          ch.state == CH_STOPPED and abs(ch.reading - 950) <= DZ and ch.n.taken == taken,
+          "%s, state %d at %d" % (r, ch.state, ch.reading))
 
     # T3 takes a T6 drive: its full-travel close disarms the target and closes
     t = ch.drive_end + 60_000
     ch.command_target(300, t, SRC_T6, DZ)
     t += 20_000
+    taken = ch.n.taken
     r = ch.command(False, t, SRC_T3)
     run_until(ch, t, lambda c: c.state == CH_CLOSED)
-    check("T3's close takes a T6 drive to its target: closed on the timer", r == "noop" and
-          ch.n.aborts == 1 and ch.target is None and ch.pos == 0.0, "%s" % r)
+    check("T3's close takes a T6 drive to its target: closed on the timer, one take",
+          r == "noop" and ch.n.aborts == 1 and ch.target is None and ch.pos == 0.0 and
+          ch.n.taken == taken + 1, "%s, taken %d" % (r, ch.n.taken - taken))
+    r = ch.command(False, ch.drive_end + 1000, SRC_T3)
+    check("... and a close that finds it closed takes nothing", r == "noop" and
+          ch.n.taken == taken + 1)
 
     # the ends: a target within the band of an end is that end, on to the timer
     t = ch.drive_end + 1000
@@ -315,7 +329,7 @@ class DoubleLaw:
     def step(self, vin):
         self.seen = (vin.win[2].cap, vin.win[2].pos_x10, vin.win[2].pos_age_ms,
                      vin.win[2].last_target_x10, vin.win[2].last_result,
-                     vin.m3_deadzone_x10, vin.m3_min_interval_ms)
+                     vin.m3_deadzone_x10, vin.m3_min_interval_ms, vin.win[2].ms_since_move)
         out = self.out
         out.step = out.step_t = out.step_rh = -1
         for i, (act, tgt) in enumerate(self.plan(vin)):
@@ -389,7 +403,10 @@ def layer_t6():
     act = Actuator(s, PROFILE_CURRENT, m3_linear=LinearM3(min_interval_s=600))
     act.advance(T0)
     ctl = Controller(law, s)
-    ctl.cycle(T0, 0, True, MEAS, False, actuator=act)
+    d0 = ctl.cycle(T0, 0, True, MEAS, False, actuator=act)
+    check("no drive yet: ms_since_move is UINT32_MAX, long ago, and holds nothing",
+          law.seen[7] == 0xFFFFFFFF and d0.deferred == 0 and act.ch[2].n.starts == 1,
+          str(law.seen))
     cycle_until(ctl, act, T0, lambda: act.ch[2].state == CH_STOPPED)
     stop = act.ch[2].drive_end
     target[0] = 800
@@ -412,27 +429,71 @@ def layer_t6():
           ctl.m3_last_target == 800 and ctl.m3_last_result == VENT_RES_NONE and
           law.seen[4] == VENT_RES_NONE)
 
-    # T3 takes the window: T6 infers FAIL_TIMEOUT from where it rests, never ABORTED
-    first = [True]
+    # T3 takes the window: T2 counts a take, and T6 tells the law ABORTED (9c53be7)
+    class NoRepeatRule(Controller):
+        """The control: the count re-read on every post, a repeat included."""
+        def _post_m3(self, actuator, tgt, now_ms, dz):
+            self.m3_taken_at_post = actuator.ch[2].n.taken
+            actuator.command_target(2, tgt, now_ms, SRC_T6, dz)
+            self.m3_last_target, self.m3_last_result = tgt, VENT_RES_NONE
 
-    def once(v):
-        want = (VENT_ACT_TARGET, 700) if first[0] else hold
-        first[0] = False
-        return [hold, hold, want]
+    def taken_run(repeat, controller=Controller):
+        """T6's result at the first wake that finds M3 at rest after T3 took it."""
+        asked = [False]
 
-    law = DoubleLaw(once)
+        def plan(v):
+            want = hold if (asked[0] and not repeat) else (VENT_ACT_TARGET, 700)
+            asked[0] = True
+            return [hold, hold, want]
+
+        law = DoubleLaw(plan)
+        act = Actuator(s, PROFILE_CURRENT, m3_linear=LinearM3(min_interval_s=0))
+        act.advance(T0)
+        ctl = controller(law, s)
+        ctl.cycle(T0, 0, True, MEAS, False, actuator=act)
+        act.close_all(T0 + 20_000, SRC_T3)
+        t = T0 + 20_000
+        for _ in range(60):                 # T6 repeats its target while T3 closes M3
+            t += 30_000
+            act.advance(t)
+            at_rest = act.ch[2].state == CH_CLOSED
+            ctl.cycle(t, 0, True, MEAS, False, actuator=act)
+            if at_rest:
+                break
+        return law, act
+
+    law, act = taken_run(repeat=False)
+    check("T3 takes the target's drive: the law is told ABORTED once M3 rests",
+          law.seen[3] == 700 and law.seen[4] == VENT_RES_ABORTED and
+          act.ch[2].n.taken == 1 and act.ch[2].n.aborts == 1, str(law.seen))
+    law, act = taken_run(repeat=True)
+    law_c, _ = taken_run(repeat=True, controller=NoRepeatRule)
+    check("a repeat of the outstanding target keeps the take count it went out with: ABORTED,"
+          " where re-reading it would say FAIL_TIMEOUT",
+          law.seen[4] == VENT_RES_ABORTED and law_c.seen[4] == VENT_RES_FAIL_TIMEOUT,
+          "%d, control %d" % (law.seen[4], law_c.seen[4]))
+
+    # a reversal T2 defers never starts: the stroke ends at its own target, and the
+    # law is told FAIL_TIMEOUT (it did not arrive; nobody took the window)
+    wants = [300]
+    law = DoubleLaw(lambda v: [hold, hold, (VENT_ACT_TARGET, wants[0])])
     act = Actuator(s, PROFILE_CURRENT, m3_linear=LinearM3(min_interval_s=0))
-    act.advance(T0)
+    act.ch[2].sync(CH_OPEN, T0)
+    act.advance(T0 + 5000)
     ctl = Controller(law, s)
-    ctl.cycle(T0, 0, True, MEAS, False, actuator=act)
-    act.close_all(T0 + 20_000, SRC_T3)
-    t = cycle_until(ctl, act, T0 + 20_000, lambda: act.ch[2].state == CH_CLOSED)
-    t += 30_000
+    ctl.cycle(T0 + 5000, 0, True, MEAS, False, actuator=act)     # 1000 -> 300
+    wants[0] = 950
+    t = T0 + 35_000
     act.advance(t)
-    ctl.cycle(t, 0, True, MEAS, False, actuator=act)
-    check("T3 takes the target's drive: the law is told FAIL_TIMEOUT once M3 rests",
-          law.seen[3] == 700 and law.seen[4] == VENT_RES_FAIL_TIMEOUT and
-          act.ch[2].n.aborts == 1, str(law.seen))
+    ctl.cycle(t, 0, True, MEAS, False, actuator=act)              # 950 mid-stroke: deferred
+    law.plan = lambda v: [hold, hold, hold]
+    t = cycle_until(ctl, act, t, lambda: act.ch[2].state == CH_STOPPED)
+    act.advance(t + 30_000)
+    ctl.cycle(t + 30_000, 0, True, MEAS, False, actuator=act)
+    check("a target deferred mid-stroke never starts: M3 stops at 300, the law is told"
+          " FAIL_TIMEOUT", act.ch[2].n.travel_defers == 1 and
+          abs(act.ch[2].reading - 300) <= DZ and law.seen[3] == 950 and
+          law.seen[4] == VENT_RES_FAIL_TIMEOUT, "%s at %d" % (law.seen, act.ch[2].reading))
 
     # every narrowing move before any widening one, each pass in window order
     for m3_target, want in ((200, [(0, "close"), (2, 200), (1, "open")]),
@@ -450,6 +511,86 @@ def layer_t6():
         Controller(law, s).cycle(t, 0, True, MEAS, False, actuator=act)
         check("M3 to %d: the narrowing pass, then the widening one" % m3_target,
               act.calls == want, str(act.calls))
+
+
+def layer_sweep():
+    print("2b. T2's CLOSE_ALL sweep (calib_close_all()): boot and STANDBY's end")
+    s = Settings()
+
+    # boot with all three closed: gh#18's shortcut, and RAM is gone
+    act = Actuator(s, PROFILE_CURRENT, m3_linear=LinearM3(min_interval_s=300))
+    act.ch[2].sync(CH_OPEN, T0)
+    act.advance(T0 + 5000)
+    act.close_all(T0 + 5000, SRC_T3)
+    t = T0 + 5000 + TRAVERSE_MS + 1000                 # M3 closed, its dwell running
+    act.advance(t)
+    pre = (act.ch[2].dwell_deadline > t, act.ch[2].drive_end is not None)
+    act.boot(t)
+    check("boot with all three closed: gh#18's shortcut, no sweep; dwells and move ends"
+          " are forgotten", pre == (True, True) and act.sweeps == 0 and not act.sweeping(t)
+          and all(c.dwell_deadline == 0 and c.ms_since_move(t) == 0xFFFFFFFF for c in act.ch))
+
+    # boot with M1 open: the sweep, and Q1 behind it
+    act = Actuator(s, PROFILE_CURRENT, m3_linear=LinearM3(min_interval_s=300))
+    act.ch[0].sync(CH_OPEN, T0)
+    act.advance(T0 + 5000)
+    taken = [c.n.taken for c in act.ch]
+    t = T0 + 5000
+    act.boot(t)
+    end = act.busy_until
+    check("boot with M1 open: all three driven closed at once, each taken; T2 busy until the"
+          " slowest ends", act.sweeps == 1 and all(c.state == CH_MOVING_CLOSE for c in act.ch)
+          and end == t + max(c.travel_ms for c in act.ch)
+          and [c.n.taken for c in act.ch] == [x + 1 for x in taken])
+    r1 = act.command(0, True, t + 60_000, SRC_T6)
+    r2 = act.command_target(2, 500, t + 60_000, SRC_T6, DZ)
+    act.advance(end - 1)
+    before = (act.ch[0].state, act.ch[2].state)
+    act.advance(end)
+    check("commands wait in Q1 until the sweep returns: M1, with no close dwell, opens at once"
+          " (as 5C88 did after its 07-17 reboots); M3's target meets its fresh dwell",
+          r1 == r2 == "queued" and before == (CH_CLOSED, CH_MOVING_CLOSE) and
+          act.ch[0].state == CH_MOVING_OPEN and act.ch[2].state == CH_CLOSED and
+          act.ch[2].n.dwell_defers == 1, "%s %s, M1 %d M3 %d"
+          % (r1, r2, act.ch[0].state, act.ch[2].state))
+    check("each window's sweep end arms its close dwell and ends a move: mode 2's M3 takes"
+          " min_intv_m3", act.ch[2].drive_end == end and
+          act.ch[2].dwell_deadline == end + 300_000 and
+          act.ch[1].drive_end == t + act.ch[1].travel_ms)
+
+    act = Actuator(s, PROFILE_CURRENT)
+    act.ch[0].sync(CH_OPEN, T0)
+    act.advance(T0 + 5000)
+    act.sweep(T0 + 5000)
+    rs = [act.command(1, True, T0 + 6000 + k, SRC_T6) for k in range(Q1_DEPTH + 1)]
+    check("Q1 is %d deep: one more command waiting on the sweep is dropped" % Q1_DEPTH,
+          rs.count("queued") == Q1_DEPTH and rs == ["queued"] * Q1_DEPTH + ["dropped"] and
+          act.q1_dropped == 1)
+
+    # a sweep takes T6's drive: ABORTED
+    asked = [False]
+
+    def once(v):
+        want = (VENT_ACT_HOLD, 0) if asked[0] else (VENT_ACT_TARGET, 700)
+        asked[0] = True
+        return [(VENT_ACT_HOLD, 0), (VENT_ACT_HOLD, 0), want]
+
+    law = DoubleLaw(once)
+    act = Actuator(s, PROFILE_CURRENT, m3_linear=LinearM3(min_interval_s=0))
+    act.advance(T0)
+    ctl = Controller(law, s)
+    ctl.cycle(T0, 0, True, MEAS, False, actuator=act)
+    act.sweep(T0 + 20_000)
+    t = T0 + 20_000
+    for _ in range(20):
+        t += 30_000
+        act.advance(t)
+        at_rest = act.ch[2].state == CH_CLOSED and not act.sweeping(t)
+        ctl.cycle(t, 0, True, MEAS, False, actuator=act)
+        if at_rest:
+            break
+    check("a sweep takes T6's target: the law is told ABORTED",
+          law.seen[3] == 700 and law.seen[4] == VENT_RES_ABORTED, str(law.seen))
 
 
 # ==========================================================================
@@ -514,6 +655,22 @@ def layer_loop():
           at_rest_part > 0 and all(0.0 <= p <= 1.0 for p in pos) and dT > 0.1,
           "part-open %.0f %% of samples, %d targets, %d drives, T differs by up to %.1f degC"
           % (100 * part, ch.n.targets, ch.n.starts, dT))
+    # 5C88's reboot on 2026-07-17 12:24:25 (2.1.3): the log has the sweep, and M1/M2
+    # opening the moment it returned, on the commands T6 had queued behind it
+    lo2 = bisect.bisect_left(ds.t, datetime(2026, 7, 17, 6))
+    hi2 = bisect.bisect_left(ds.t, datetime(2026, 7, 17, 13))
+    a = args(False)
+    a.firmware = "5c88"
+    recs2, act2, _ = cl.run_closed_loop(ds, lo2, hi2, "two", params, a, cl.schedule_from_args(a))
+    codes = {r["t"]: tuple((r["bm_sim"] >> (2 * c)) & 3 for c in range(3)) for r in recs2}
+    logc = {r["t"]: tuple((r["bm_log"] >> (2 * c)) & 3 for c in range(3)) for r in recs2}
+    after = min(tt for tt in codes if tt >= datetime(2026, 7, 17, 12, 24, 25))
+    back = min(tt for tt in codes if tt >= datetime(2026, 7, 17, 12, 28))
+    check("5C88's 07-17 reboot: the sweep closes all three, and M1/M2 open when it returns,"
+          " as logged", codes[after] == (3, 3, 3) and codes[back][2] == 0 and
+          codes[back][:2] in ((1, 1), (2, 2)) and logc[back] == (2, 2, 0) and act2.sweeps == 2,
+          "%s at %s, %s at %s (log %s)" % (codes[after], after.time(), codes[back], back.time(),
+                                         logc[back]))
     check("... and its targeted stops settle within the band",
           ch.landings and all(abs(e) <= DZ for e in ch.landings),
           "%d stops, worst %d" % (len(ch.landings), max(abs(e) for e in ch.landings)
@@ -526,6 +683,7 @@ def main(argv=None):
     layer_channel()
     layer_rig()
     layer_t6()
+    layer_sweep()
     if not quick:
         layer_loop()
     print("\n%s" % ("PASS" if not FAILS else "FAIL: " + ", ".join(FAILS)))

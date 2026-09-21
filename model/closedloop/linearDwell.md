@@ -11,8 +11,8 @@
 
 **Ship 600 s.**
 
-1. **It costs nothing today.** `graded` already holds 10 minutes between moves, so 0, 300 and 600 give exactly the same summer: swing 2.0 °C, 21.7 M3 drives a day, 21.7 motor minutes, and not one deferred target. The key only begins to bite above the law's own hold.
-2. **It is the floor that protects whatever law runs next.** The interval is the caller's protection; a hold inside the law is the law's own, and the contract exists because the law will be replaced. Run `graded` with its hold removed — a law that re-decides every 30 s — and 0 gives **44.1 M3 drives a day and 30 motor minutes**, against mode 1's 7.7 and 22.5. At 600 that is back to 19.1 drives and 25.0 minutes, with a swing of 2.0 °C, still better than mode 1's 2.7. A default of 0 works only while the law happens to be well behaved, and fails silently when one is not.
+1. **It costs nothing today.** `graded` already holds 10 minutes between moves, so 0, 300 and 600 give exactly the same summer: swing 2.0 °C, 21.6 M3 drives a day, 21.9 motor minutes, and not one deferred target. The key only begins to bite above the law's own hold.
+2. **It is the floor that protects whatever law runs next.** The interval is the caller's protection; a hold inside the law is the law's own, and the contract exists because the law will be replaced. Run `graded` with its hold removed — a law that re-decides every 30 s — and 0 gives **44.0 M3 drives a day and 30 motor minutes**, against mode 1's 7.7 and 22.6. At 600 that is back to 19.0 drives and 25.1 minutes, with a swing of 2.0 °C, still better than mode 1's 2.7. A default of 0 works only while the law happens to be well behaved, and fails silently when one is not.
 3. **10 minutes is the loop's dead time, not a round number.** The controller's reading lags the air by 3.5–5.5 min (NS-10), T5's average adds to that, and a 25 % move takes 44 s in production. Below 10 minutes a law is answering something it cannot see yet.
 
 **Do not ship above 900 s.** At 900 the swing is 2.6 °C, within 0.1 of mode 1's 2.7, while M3 still drives twice as often (15.1 against 7.7): mode 2 has stopped paying for itself. At 1200 and 1500 it is worse than mode 1 (3.2 and 3.5 °C) and still makes more starts.
@@ -25,32 +25,37 @@ Primary plant, airflow proportional, the whole summer. `graded` as it ships (10-
 
 | `min_intv_m3` | Swing °C | North wind | Other wind | M3 drives a day | Motor minutes a day | Targets deferred a day |
 |---|---|---|---|---|---|---|
-| mode 1 (`stepped`) | 2.7 | 3.2 | 2.2 | 7.7 | 22.5 | — |
-| **0 / 300 / 600** | **2.0** | **1.8** | **2.0** | **21.7** | **21.7** | **0** |
-| 900 | 2.6 | 2.9 | 2.6 | 15.1 | 24.0 | 109 |
-| 1200 | 3.2 | 3.3 | 3.1 | 12.7 | 21.7 | 179 |
-| 1500 | 3.5 | 3.8 | 3.4 | 11.1 | 19.2 | 230 |
+| mode 1 (`stepped`) | 2.7 | 3.2 | 2.2 | 7.7 | 22.6 | — |
+| **0 / 300 / 600** | **2.0** | **1.8** | **2.2** | **21.6** | **21.9** | **0** |
+| 900 | 2.6 | 2.9 | 2.6 | 15.1 | 23.9 | 108 |
+| 1200 | 3.2 | 3.3 | 3.1 | 12.6 | 21.7 | 178 |
+| 1500 | 3.5 | 3.7 | 3.4 | 11.1 | 19.2 | 228 |
 
 The same law with `M3_HOLD_MS = 0`, which is what a law that does not space its own moves would do:
 
 | `min_intv_m3` | Swing °C | North wind | M3 drives a day | Motor minutes a day |
 |---|---|---|---|---|
-| 0 | 1.4 | 1.0 | **44.1** | 30.1 |
-| 300 | 1.6 | 1.3 | 26.5 | 27.6 |
-| **600** | **2.0** | **1.9** | **19.1** | **25.0** |
-| 900 | 2.6 | 2.9 | 15.0 | 23.7 |
+| 0 | 1.4 | 1.0 | **44.0** | 30.1 |
+| 300 | 1.6 | 1.3 | 26.6 | 27.7 |
+| **600** | **2.0** | **1.9** | **19.0** | **25.1** |
+| 900 | 2.6 | 2.9 | 15.0 | 23.6 |
 | 1200 | 3.2 | 3.2 | 12.7 | 21.7 |
-| 1500 | 3.4 | 3.7 | 11.1 | 19.2 |
+| 1500 | 3.4 | 3.7 | 11.1 | 19.3 |
 
 The pattern holds on the second plant and at another airflow curve: 0 and 600 are identical there too, and 900 is already within 0.1 °C of mode 1's swing, or past it.
 
 | Run | Swing, mode 1 | Swing at 0 and at 600 | Swing at 900 | M3 drives a day, mode 1 / 600 / 900 |
 |---|---|---|---|---|
-| primary, airflow 1 | 2.7 | 2.0 | 2.6 | 7.7 / 21.7 / 15.1 |
-| second, airflow 1 | 2.8 | 2.4 | 3.0 | 7.5 / 21.4 / 14.9 |
-| primary, airflow 2 | 2.8 | 2.2 | 2.9 | 7.7 / 22.2 / 15.3 |
+| primary, airflow 1 | 2.7 | 2.0 | 2.6 | 7.7 / 21.6 / 15.1 |
+| second, airflow 1 | 2.8 | 2.4 | 2.9 | 7.5 / 21.3 / 14.9 |
+| primary, airflow 2 | 2.8 | 2.3 | 2.8 | 7.7 / 22.1 / 15.3 |
 
-**Re-run 2026-09-21 against 2.12.0 as built (045a39c); the recommendation stands.** The simulator's T2 now stops a targeted drive the way 2.12.0 does (a learned lead, the leaf's run-on), and in mode 2 it arms `min_intv_m3` as both of M3's dwells. The earlier emulation still armed M3's 10-minute close dwell after every full close, so its 0 and 300 rows were not quite 0 and 300. Without that dwell, the law with no hold of its own makes 44.1 drives a day at 0, where it made 42.5. At 600 and above no swing moved by more than 0.1 °C; the north-wind column, a median over 25 days, moved by up to 0.3. [`gradedCandidate.md`](gradedCandidate.md) has the same re-run.
+**Re-run 2026-09-21 against 2.12.0 as built (045a39c, 9c53be7); the recommendation stands.** What changed in the emulation:
+- The simulator's T2 now stops a targeted drive the way 2.12.0 does: a learned lead, then the leaf's run-on.
+- In mode 2 it arms `min_intv_m3` as both of M3's dwells. The earlier emulation still armed M3's 10-minute close dwell after every full close, so its 0 and 300 rows were not quite 0 and 300. Without that dwell, the law with no hold of its own makes 44.0 drives a day at 0, where it made 42.5.
+- It also sweeps every window closed at a reboot and at STANDBY's end, with T6 paused meanwhile, as today's firmware does.
+
+At 600 and above no swing moved by more than 0.1 °C; the north-wind column, a median over 25 days, moved by up to 0.3. [`gradedCandidate.md`](gradedCandidate.md) has the same re-run.
 
 ## What this does not settle
 
