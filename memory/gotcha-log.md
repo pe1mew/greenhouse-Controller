@@ -2455,3 +2455,33 @@ guard that decides whether it acts.* *A sentinel must be impossible as a value*:
 "since", UINT32_MAX is not. And *a harness that sends from the wrong source tests the wrong
 rules*: the operator hook bypasses the dwell and gh#48. That is 2026-09-21's side door again, seen
 from the other side.
+
+## 2026-09-22 — three harness faults in one evening, all "the unit was not in the state the harness assumed"
+
+**Problem:** the fail-first arms for 9c53be7 ran on freshly pushed images, and two of the three
+said nothing about the rule they exist for: `aborted` and `sincemove` both reported "M3 never came
+under LINEAR control" and returned INCONCLUSIVE. Earlier the same evening, `at_wp_confirm.py`'s
+first stage failed its setup ("M3 did not reach OPEN within 420 s"), and a later run left 2344 in
+STANDBY, where T6 does nothing at all.
+
+**Root cause:** three different assumptions, none of them about the firmware.
+1. **A freshly pushed image has not stroked.** T17 promotes to POSITION control only at a stroke
+   boundary, so for the first stroke after a boot the gate is `timed` and mode 2 cannot engage.
+   Every earlier run of those stages happened on a unit that had been up for hours.
+2. **A cleanup that runs before the restore uses the TEST settings.** `at_wp_fallback.py` returns
+   M3 to an end with a recalibration in its `finally`, while the settings restore is an `atexit`
+   that runs later. In mode 2 that sweep armed `min_intv_m3` = 600 s, the stage's value, so the
+   next harness waited 420 s for a window that could not move for 600.
+3. **A cleanup that returns early skips the rest of the cleanup.** `to_an_end()` returned as soon
+   as M3 was CLOSED, without releasing STANDBY, so the unit sat inhibited after the run.
+
+**Fix:** `ensure_position()` strokes M3 once with the hook before either stage asks for mode 2 (a
+no-op on a unit that has been running); `to_an_end()` releases STANDBY even when it has nothing to
+move. The dwell one is documented in the 2.12.0 release notes rather than fixed: the harness would
+have to restore before it recalibrates, which is a change to the shared `Rig`.
+
+**Rule:** *a harness that runs right after a push is testing a different unit than one that runs
+after an hour — list what the previous run and the boot left behind (the gate not yet promoted, a
+dwell armed from test settings, STANDBY, a part-open window) and establish each one rather than
+assuming it.* And an INCONCLUSIVE arm proves nothing: the fail-first only counts when the stage
+reaches the rule and fails on it.

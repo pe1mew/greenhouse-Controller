@@ -173,6 +173,13 @@ def to_an_end(rig):
     climate law cannot move on a defective build. Leaving STANDBY recalibrates
     (a CLOSE_ALL sweep), which is harmless: M3 is already closed by then."""
     if state(rig) in ("CLOSED",):
+        # Still leave the unit AUTOMATIC: a stage that ended in STANDBY (the
+        # dwell check in `sincemove` does) would otherwise leave T6 inhibited
+        # for good, which on a rig looks exactly like a controller doing
+        # nothing. Found 2026-09-22, when a run left 2344 in STANDBY.
+        if "standby" in ((rig.status().get("mode") or {}).get("flags") or []):
+            say("M3 already CLOSED; releasing STANDBY")
+            set_mode(rig, False)
         return
     say("returning M3 to CLOSED (was %s)" % state(rig))
     set_mode(rig, True)
@@ -262,6 +269,32 @@ def sweep(rig):
         elif seen:
             return True
         time.sleep(0.5)
+    return False
+
+
+def ensure_position(rig, limit_s=180):
+    """A stroke, if that is what the gate is waiting for (2026-09-22).
+
+    T17 promotes to POSITION control only at a stroke boundary, so for the
+    first stroke after a boot the gate is `timed` and mode 2 can never engage:
+    both stages below then report that M3 never came under LINEAR control and
+    say nothing about the rule they exist for. Found by the fail-first run on
+    2026-09-22, where every arm runs on a freshly pushed image."""
+    if rig.gate().get("mode_str") == "position":
+        return True
+    say("gate is %s -- stroking M3 once to promote it" % rig.gate().get("mode_str"))
+    set_mode(rig, True)                       # the hook drives it, not T6
+    hook(rig, 1000)
+    wait_for(rig, ("OPEN",), HOOK_LIMIT_S)
+    hook(rig, 0)
+    wait_for(rig, ("CLOSED",), HOOK_LIMIT_S)
+    t0 = time.time()
+    while time.time() - t0 < limit_s:
+        if rig.gate().get("mode_str") == "position":
+            say("gate: position control available")
+            return True
+        time.sleep(2.0)
+    say("the gate never reached position control (%s)" % rig.gate().get("mode_str"))
     return False
 
 
@@ -355,6 +388,8 @@ def _aborted(rig):
     reserved for "did not arrive". graded treats the two alike, so no decision
     changed; a law that tells them apart would have been misinformed."""
     need_blocks(rig)
+    if not ensure_position(rig):              # a fresh boot has not stroked yet
+        return None
     if not ctrl_mode(rig, True, min_intv=0):  # no linear dwell: T6 acts at once
         return None
     rig.want(True)                            # the law wants M3 open
@@ -421,6 +456,9 @@ def _sincemove(rig):
     # T6 command waits.
     dwells(rig, SHORT_DWELL_S, SHORT_DWELL_S)
     set_mode(rig, True)
+    # After the "never" reading above, which a stroke would destroy.
+    if not ensure_position(rig):
+        return None
     if not ctrl_mode(rig, True, min_intv=MIN_INTV_TEST_S):
         return None
     hook(rig, 1000)                           # an operator drive, so "since" is not 0
