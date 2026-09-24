@@ -2,7 +2,7 @@
 
 Append-only. Newest at top. Format per entry: **Problem → Root cause → Fix → Where it lives.**
 
-When something weird happens, check here BEFORE debugging from scratch. **Start at the [index](#index--by-where-it-bites-you)** — it groups every entry by subsystem with symptom-first hooks, which is faster than scrolling 96 entries. **Adding an entry means adding its index line too**; the pair is checked by counting `^## 20` headings against `^- \*\*20` index lines. Entries that recur or affect multiple subsystems graduate up to a topic file or to [CLAUDE.md](../CLAUDE.md) hard constraints.
+When something weird happens, check here BEFORE debugging from scratch. **Start at the [index](#index--by-where-it-bites-you)** — it groups every entry by subsystem with symptom-first hooks, which is faster than scrolling 125 entries. **Adding an entry means adding its index line too**; the pair is checked by counting `^## 20` headings against `^- \*\*20` index lines (**expect one MORE index line than entries**: gh#48 is deliberately cross-listed in two groups; the 2026-09-24 curation found four entries with no index line at all, so run the count, don't assume). Entries that recur or affect multiple subsystems graduate up to a topic file or to [CLAUDE.md](../CLAUDE.md) hard constraints.
 
 Entries that are resolved **and can no longer recur** (code deleted, design changed, fixed both sides) retire to [gotcha-archive.md](gotcha-archive.md) — history only, never needed for triage. Everything still able to bite you is in this file. Being `[RESOLVED]` is *not* sufficient to retire: most resolved entries here stay because an active constraint still depends on them.
 
@@ -28,7 +28,9 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 - **[PATTERN] A rule written to *hit* a requirement exactly will fail it in practice. Check whether the derivation leaves margin, and test it on the fastest hardware you have.** Two instances in the window-sensor work, both found only because the rig runs ~13x faster than production and both affecting production identically once seen. (1) `poll = travel/100` was chosen so overshoot would meet FR-WP04's 1 % of stroke — but overshoot = poll x speed = (t/100) x (100/t) = **exactly 1.00 %, by construction, at every travel time**, leaving nothing for poll jitter, task scheduling or a Modbus retry. (2) `reject rate above 2x nominal` was measured at a **9 % margin** (peak 2100 vs threshold 2306) because nominal derives from `travel_m3`, which covers switch-to-limit while the position span is switch-to-switch — so 2x nominal was really ~1.5x real. Rules: (a) when a derived constant is defined so that it *equals* the limit, treat that as a defect, not a tight fit — budget it at 1/2 to 2/3; (b) **a fast rig is not a nuisance, it is the only place these show up** — a production-speed bench would have shipped both; (c) a plausibility check that false-trips **discards good data silently**, which is worse than not having the check.
 
-- **[PATTERN] This codebase has a recurring class of defect: an affirmative success signal for something that did not happen. Never accept a UI tick, an HTTP 200 or an LCD confirmation as evidence of effect.** Four instances, three of them found in a single session (2026-09-10): (1) **gh#51** -- the Motors tab showed a new travel time with a green tick while T2 kept running the old one until reboot, because `/api/config` reads T4's shadow and T2 caches its own copy; (2) **gh#51 Group C** -- the LCD showed "Settings Reset! / Defaults loaded" after an IO0 stage-2 erase while T4's shadow and T2's cache both still held pre-reset values; (3) **gh#53** -- `POST /api/config` with an unrecognised key returns `{"ok":true}`, writes junk to NVS and applies nothing; (4) the standing **paired-commit rule** exists for the same reason -- a firmware-only OTA reports success while stranding the asset partition, which is why both `fw_ver` AND `asset_version` must be read post-reboot; (5) **2.4.6's own release notes** asserted the LCD path was covered by "defence in depth" with no enumeration behind the sentence — the AP toggle was dead (2026-09-11); (6) the first **gh#52 hardware test** passed from AUTOMATIC, where old and new code are equally inert (2026-09-11). Rules: (a) a 200 from an async endpoint means *queued*, not *applied* -- find the endpoint that reports the outcome (`GET /api/ota/check`, not `POST`); (b) when a value is cached by a task, verify the **behaviour** it controls, not the field that reports it (measure the relay pulse, do not read `/api/config`); (c) when adding any new confirmation to a UI, ask what would have to be true for it to lie, and make the check assert that instead. **Seventh instance, 2026-09-16, and the purest yet because the signal was a LITERAL:** `ESP_LOGI(... "34 routes registered")` printed immediately after a loop in which two routes had just failed to register. The number was hardcoded, so it could not be wrong about anything except the truth. (d) **a status line that reports a COUNT must count** — if it can be a literal, it is an assertion, not a report. The same line now prints `reg_ok` of `ARRAY_LEN(uris)`. **Eighth instance, 2026-09-16, a new shape: the success signal was TRUE and belonged to someone else.** The SD log said `teach COMMITTED`, and it had — but the commit came from a T6 stroke 11 s after the teach ended, not from the teach, which could never commit on its own. (e) **before crediting an outcome to an action, read the timeline between them; if another actor touched the same thing in between, the credit is unproven.**
+- **[PATTERN] This codebase has a recurring class of defect: an affirmative success signal for something that did not happen. Never accept a UI tick, an HTTP 200 or an LCD confirmation as evidence of effect.** Four instances, three of them found in a single session (2026-09-10): (1) **gh#51** -- the Motors tab showed a new travel time with a green tick while T2 kept running the old one until reboot, because `/api/config` reads T4's shadow and T2 caches its own copy; (2) **gh#51 Group C** -- the LCD showed "Settings Reset! / Defaults loaded" after an IO0 stage-2 erase while T4's shadow and T2's cache both still held pre-reset values; (3) **gh#53** -- `POST /api/config` with an unrecognised key returns `{"ok":true}`, writes junk to NVS and applies nothing; (4) the standing **paired-commit rule** exists for the same reason -- a firmware-only OTA reports success while stranding the asset partition, which is why both `fw_ver` AND `asset_version` must be read post-reboot; (5) **2.4.6's own release notes** asserted the LCD path was covered by "defence in depth" with no enumeration behind the sentence — the AP toggle was dead (2026-09-11); (6) the first **gh#52 hardware test** passed from AUTOMATIC, where old and new code are equally inert (2026-09-11). Rules: (a) a 200 from an async endpoint means *queued*, not *applied* -- find the endpoint that reports the outcome (`GET /api/ota/check`, not `POST`); (b) when a value is cached by a task, verify the **behaviour** it controls, not the field that reports it (measure the relay pulse, do not read `/api/config`); (c) when adding any new confirmation to a UI, ask what would have to be true for it to lie, and make the check assert that instead. **Seventh instance, 2026-09-16, and the purest yet because the signal was a LITERAL:** `ESP_LOGI(... "34 routes registered")` printed immediately after a loop in which two routes had just failed to register. The number was hardcoded, so it could not be wrong about anything except the truth. (d) **a status line that reports a COUNT must count** — if it can be a literal, it is an assertion, not a report. The same line now prints `reg_ok` of `ARRAY_LEN(uris)`. **Eighth instance, 2026-09-16, a new shape: the success signal was TRUE and belonged to someone else.** The SD log said `teach COMMITTED`, and it had — but the commit came from a T6 stroke 11 s after the teach ended, not from the teach, which could never commit on its own. (e) **before crediting an outcome to an action, read the timeline between them; if another actor touched the same thing in between, the credit is unproven.** **Ninth instance, 2026-09-24, and the longest-running: `storage_sd_list_csv()` returns `STORAGE_OK` when the names did not fit**, so every caller's "that is all there is" was really "that is all that fitted". It shipped as gh#36 (2026-07-04), came back as gh#42 (2026-07-17) and again as gh#82 (2026-09-24) — **each time closed by enlarging the buffer, which moves the cliff and leaves the lie in place**, and the third time it had stopped retention entirely (113 files under a cap of 30) and hidden the active file from the GUI. (f) **an API that can return less than it was asked for must report that it did** — a count, a flag, a distinct status — because "fewer than I expected" and "that is all there is" are indistinguishable to every caller; (g) **when a defect recurs after a fix that resized something, the size was never the defect** — remove the interface that cannot tell the truth (2.12.2 replaced it with a callback iterator and deleted the list helpers).
+
+- **[PATTERN] The rig is shared, mutable state, and every harness inherits what the last one left. Establish preconditions; never restore to a value you merely sampled.** Four instances in four days. (1) 2026-09-21: an acceptance run aborted and the abort was blamed on the gh#51 dwell because M3 was still CLOSED at cleanup — the traceback said network timeout. (2) 2026-09-22, three in one evening: a freshly pushed image has not stroked, so T17's gate is still `timed` and mode 2 cannot engage (two fail-first arms returned INCONCLUSIVE and proved nothing); a cleanup path left the unit in STANDBY, where T6 does nothing; and a cleanup's recalibration ran *before* the restore and armed a 600 s `min_intv_m3` that the next harness then waited on. (3) 2026-09-24: `min_intv_m3` was found at **0** with every restore reporting success — one harness had sampled 0 as "the original" while another was mid-run, and faithfully put it back. (4) 2026-09-24: `at_wp_confirm.py` failed twice on things that were not its subject (a recalibration in progress; the rig being in mode 2, which the suite predates). Rules: (a) **a harness states its preconditions and establishes them** — gate promoted, not calibrating, not in STANDBY, the mode it needs, M3 at a known end — rather than assuming an hours-old unit; (b) **restore against the rig's specification, not against a sample**: `travel_m3` 13, `min_intv_m3` 600, `wpos_fitted_m3` 1, mode as the operator left it — a value that was faithfully restored can still be wrong; (c) **an INCONCLUSIVE arm is not a pass and not a fail** — the fail-first only counts when the stage reaches the rule; (d) after a run, check the settings the run touched *and* the ones the cleanup could have armed, and say which unit and which image the numbers came from.
 
 - **[PATTERN] The git index is a single shared, easily-misread resource — verify it, never narrate it.** Three incidents (2026-07-13 branch switch, 2026-07-20 `commit -a` sweep, 2026-07-23 false "staged" report): each time the index's real state diverged from what was said or assumed about it. Rules: (1) after staging, show `git status --short` / `git diff --cached --stat` and report THAT, never a claim from memory; (2) staging one stream protects nothing if the commit is `-a` — if anything tracked-modified is pending, either stage it all with a covering message or say explicitly what must not be committed; (3) an untracked file that a staged change links to must be called out by name, not left among the `??` noise; (4) before any branch switch, empty the index.
 
@@ -42,11 +44,15 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ## Index — by where it bites you
 
-93 entries is too many to scan. Find your subsystem, then **Ctrl+F the date** to jump.
+125 entries is too many to scan. Find your subsystem, then **Ctrl+F the date** to jump.
 Hooks are the *symptom*, not the title — you rarely know the cause when you arrive here.
 Entries stay in reverse-chronological order below; this index is the only grouped view.
 
 ### Windows, climate & manual control (T2, T6, T8)
+- **2026-09-24** — a mode-2 soak fails in 15 min with M3 correctly part-open: the harness waits for the `OPEN` STATE and `graded` commands an APERTURE (49 % at full demand), so the end never comes [RESOLVED: the open stroke counts a judged drive]
+- **2026-09-24** — mode 2 leaves the window a couple of centimetres open and never asks again: a targeted stop ends on a READING, and a position inside the arrival band satisfies both the caller and the law — but an END is made by a switch (gh#83) [RESOLVED 2.12.1]
+- **2026-09-22** — three harness faults in one evening, every one "the unit was not in the state the harness assumed": a freshly pushed image has not stroked (gate `timed`), a cleanup left STANDBY set, a cleanup's recalibration armed a 600 s dwell [RECURRED 2026-09-24]
+- **2026-09-21** — a command the anti-thrash dwell DEFERS still had a side effect (it disarmed the stroke's target), and `ms_since_move` read 0 for "never moved"; found by the simulator, not the rig [RESOLVED 2.12.0]
 - **2026-09-21** — a positioning test (and the GUI, and T6) read M3's position from T17's CACHE, sampled mid-coast after a targeted stop and not refreshed for 30 s; the live resting position was up to 1 % further [RESOLVED 2.12.0: settle read; harnesses read live]
 - **2026-09-21** — after mode 2 leaves M3 part-open, mode 1 can neither close nor open it (T6's apply filter predates `PART_OPEN`: the law asked, T6 dropped it); no target stage could see it, all enter by the bench hook [RESOLVED 2.12.0]
 - **2026-09-21** — an acceptance harness aborts twice on a marginal link (it loses the REPLY of a command that landed); the second abort was blamed on a dwell before its traceback was read
@@ -132,13 +138,14 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-05-14** — `ets_loader.c` crash loop after a full flash (qio vs dio header byte) [RESOLVED]
 
 ### SD logging & the log parser
+- **2026-09-24** — the log listing shows only OLD files, the active file cannot be downloaded, and retention has stopped deleting — one truncating scan behind all of it, and the same cut again one level up in the fix (gh#82; third instance of gh#36/gh#42) [RESOLVED 2.12.2]
 - **2026-09-13** — alarm rows land 30-55 s after their timestamp, out of order; also: a single failed read leaves NO trace, and SENSOR_HR keeps flowing through a fault
 - **2026-09-12** — `log_type_t` is not where you expect (it lives in `types/app_types.h`, NOT `event_logger.h`)
 - **2026-09-12** — an issue is filed against a documented table that is three entries stale (the EMITTERS are authoritative, not the comment -- gh#59 claimed 22 free when 22/23/24 had shipped)
 - **2026-08-25** — an SD log's FILENAME is its upload time, not its coverage window (silently parses the wrong period)
 - **2026-07-23** — a wind override at `speed == v_max` is mislabelled a "direction" event (gh#45) [RESOLVED, but pre-2.3.0 logs still misparse]
-- **2026-07-17** — log uploads stop dead once the card holds >~21 files (gh#42) [RESOLVED]
-- **2026-07-04** — `storage_sd_list_csv()` truncates silently on a full buffer (gh#36) [RESOLVED]
+- **2026-07-17** — log uploads stop dead once the card holds >~21 files (gh#42) [RESOLVED by a bigger buffer — RECURRED 2026-09-24 as gh#82; the API was the defect]
+- **2026-07-04** — `storage_sd_list_csv()` truncates silently on a full buffer (gh#36) [RESOLVED by a bigger buffer — RECURRED as gh#42 and gh#82; only 2.12.2 removed the API]
 - **2026-06-10** — `HEAD /api/log/download` always reports 45 B — **never** use it to check for gaps
 
 ### Model, campaign & plotting
@@ -993,6 +1000,18 @@ Two of the three were one sentence away from being filed as issues.
 **Root cause**: (1) `strings` is not functional here; (2) shell quoting of escaped quotes inside a quoted heredoc; (3) error-path body handling omitted.
 **Fix**: (1) `python -c "open(f,'rb').read().count(b'2.4.6')"`; (2) write the script with the Write tool, run it with Bash; (3) parse `e.read()` in the `HTTPError` branch — then the 400s showed `{"ok":false,"err":"unknown ns/key"}` as designed. Rule from the 2026-09-10 entry still stands: syntax-check the generator before running it.
 
+
+**[RECURRED 2026-09-24 — two more, both the shell acting on text or processes I did not
+mean.]** (4) **`\0` inside a heredoc collapses to a real NUL byte.** A Python edit script written
+as `python - <<'PY'` carried `'\0'` in a C string it was inserting; three NUL bytes went into
+`event_logger.cpp` and the file then looked fine in every editor and diff. Found by a byte count,
+repaired by rewriting the lines. *After any generated edit to a source file, check the bytes:
+`python -c "d=open(f,'rb').read(); print(d.count(b'\x00'))"` — a corruption that renders
+invisibly will survive review.* (5) **`pkill -f "sleep 172800"` matched its own ssh command line**
+and killed the shell running it (exit 255), so the kill reported failure while having done the job.
+*A `-f` pattern matches the process doing the matching* — exclude self (`pgrep -f pat | grep -v
+$$`), match on something the caller's own command line cannot contain, or read the pid from a file
+the job wrote.
 ## 2026-09-10 — a refused manual LCD command leaves NO trace, so "it got rejected" is unreconstructable
 
 **Problem:** Operator drove M3 from the LCD, saw a refusal, and later could not say which one. There
@@ -1796,6 +1815,8 @@ Verify: serial shows `littlefs_mount(A (lfs0)) returned 0 (OK)` + `/index.html e
 
 **Fix:** All SD capacity constants moved to `event_logger.h` as single source of truth with derived `SD_LIST_BUF_LEN` (871 B); every scan buffer and the web handler cap now derive from it. **Pattern: when a list/scan API cannot signal truncation, size its buffers from a shared derived constant — never a local literal.**
 
+**[RECURRENCE — and the lesson above was the wrong one.]** This same defect came back twice: as **gh#42** (2026-07-17, uploads stopped above ~21 files) and as **gh#82** (2026-09-24, the listing showed only old files and retention stopped deleting entirely). Each time it was "fixed" by making the buffer bigger, which only moves the cliff — from ~20 files, to ~30, to 30 again — and each time the fix was declared resolved. **Sizing the buffer was never the fix; the API that can return less than it was asked for and still say `STORAGE_OK` was the defect.** 2.12.2 removed it: `storage_sd_foreach_csv()` calls back once per file in constant memory, every caller aggregates during the pass, and the list-based helpers are deleted so no second path exists. See 2026-09-24.
+
 **Where it lives:** `firmware/src/event_logger/event_logger.h` (constants block); `drivers/sdCard/src/sd_storage.cpp:402` (the silently-truncating function, unchanged).
 
 ---
@@ -2486,6 +2507,18 @@ dwell armed from test settings, STANDBY, a part-open window) and establish each 
 assuming it.* And an INCONCLUSIVE arm proves nothing: the fail-first only counts when the stage
 reaches the rule and fails on it.
 
+**[RECURRED 2026-09-24, twice more, and the second one is a new shape.]** (1) `min_intv_m3` was
+found at **0** on 2344 during the gh#82 work. No harness failed to restore: one of them had read 0
+as "the original" because an *earlier* harness was mid-run when it started, and dutifully put 0
+back at the end. **A harness that memorises "the original" memorises whatever the previous harness
+left** -- so the restore is only as good as the state it sampled, and a value that is restored is
+not thereby correct. Check the rig's settings against what the RIG should hold (`travel_m3` 13,
+`min_intv_m3` 600, `wpos_fitted_m3` 1), not against what a run recorded. (2) `at_wp_confirm.py`
+failed twice for reasons that were not its subject: once a recalibration was still running, and
+once because the rig was **in mode 2** -- the suite predates mode 2 and its stages assume timed
+drives. It has to be run in mode 1 and the operator's mode restored afterwards, which the run now
+does explicitly.
+
 ## 2026-09-24 — mode 2 could not close a window: an arrival test by position cannot satisfy an END
 
 **Problem:** the first night mode 2 ran on the dev rig (2026-09-23/24), `graded` closed M3 in four
@@ -2549,3 +2582,54 @@ anything, because "fewer than I expected" and "that is all there is" look identi
 caller. *When you fix a silent truncation, check the layer above it for the same shape.* And
 *verify a listing against a different route*: the download said the file was there when the listing
 said it was not, which is what made the second cut visible in minutes rather than weeks.
+
+**Two more, from the same scan.** (1) **Retention that deletes one file per rotation cannot catch
+up with a backlog.** With the count fixed, the card held 113 files against a cap of 30 and each
+rotation deleted one while creating one, so it sat exactly where it was -- correct, and never
+converging. `SD_TRIM_PER_ROTATION` (5) trims towards the cap instead, re-scanning between deletes;
+113 -> 38 in 90 minutes on the rig. *A limit enforced at one unit per event is a limit only if the
+backlog is one unit.* (2) **T14's upload watermark compared FILENAMES**, and the names had just
+gained a per-unit prefix: a `FDA4_...` watermark is lexically above every `2344_...` name, so this
+unit would have uploaded nothing again, for ever, with no error. It compares the embedded
+TIMESTAMP now. *When a name gains a prefix, every comparison that treated the name as an ordering
+key silently changes meaning -- go and find them.*
+## 2026-09-24 — the first mode-2 soak failed in 15 minutes: the harness asked for an END, the law commands an APERTURE
+
+**Problem:** the 12-session soak of 2.12.2-bench started at 22:11 in mode 2 and session 1 failed at
+22:26 with *"M3 did not reach OPEN within 900 s (now PART_OPEN)"*. M3 was sitting at **49.0 %** and
+the firmware had done nothing wrong. Two failures in a row stop the run, so the soak would have
+ended by 23:26 having proved nothing.
+
+**Root cause:** `at_wp_strokes.py` makes a stroke by raising the temperature demand and waiting for
+M3's state to become `OPEN`. In mode 1 that is exactly what the stepped law does. **In mode 2
+`graded` commands an APERTURE proportional to demand** — the session's maximum demand (`t_max` at
+its minimum, `cr_priority` 2) settles around 49 % on this rig — so `OPEN` is a state the law had
+no reason to produce. The mode-2 stage tests never caught it because every one of them drives M3 to
+a *target*, through the bench hook or through T6; the soak is the only harness that asks for an end
+by demand alone. (The close side is sound: demand falls to nothing, the law asks for 0, and since
+2.12.1 a target inside the deadzone of an end IS that end, so M3 must make the closed switch —
+which is half of what this soak exists to show.)
+
+**Fix:** the open stroke is mode-aware. In LINEAR mode it waits for a **completed judged drive**
+(M3 moved, then stopped, and the `strokes` counter advanced) at whatever aperture the law chose;
+only the close still has to reach an end. A soak counts judged drives, which is what it always
+meant to count. The aborted run is kept as `strokes_aborted_2211.log`, the soak restarted at 22:32,
+and the 12 h report job was rescheduled to match the new start rather than firing 20 min early.
+
+**Rules:** *in mode 2, "the stroke finished" and "the window is open" are different claims* — a
+harness written when only the timed law existed asserts the second and means the first. And when a
+second control law lands behind the same commands, **re-read every test that asserts an actuator
+STATE**: the law decides where the actuator stops, and only the ends are shared vocabulary between
+the two laws. Fifth instance of the rig-state pattern above, and the first where the wrong
+assumption was about the CONTROL LAW rather than about what a previous run left behind.
+
+**And then I proved the pattern on myself, twice in ten minutes.** The restarted run revealed a
+second wrong limit -- `graded` closes in STEPS (49 % -> 25 % -> ... -> the end) about 600 s apart,
+so a close from half open is three drives and 900 s fails it too (1800 s now). I killed that run to
+patch the constant **while session 1 was inside its close**, so the harness's restore never ran, and
+it left `t_max_ngt` at 35 and M3's dwells at the 5 s test value. The next run started, read those
+as "the originals", and would have soaked the rig for 12 h on test settings and left them behind.
+*Never kill a harness mid-session* -- wait for the session to end, or restore by hand afterwards
+against the RIG's own values, which is what `scratchpad/restore_rig.py` now does (t_max_day 28,
+t_max_ngt 20, cr_priority 0, dwell_open_m3 1500, dwell_close_m3 300, travel_m3 13, min_intv_m3 600,
+ctrl_mode_m3 1, wpos_fitted_m3 1). Third restart, 22:40:53, with the right baseline.

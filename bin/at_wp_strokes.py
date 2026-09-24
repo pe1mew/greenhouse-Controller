@@ -16,8 +16,12 @@ on a fixed schedule instead, through the same levers as bin/at_wp_confirm.py:
     between sessions the unit runs on its own configuration -- and T6 may well
     move M3 itself, which the soak counts too.
 
-One session = M3 to CLOSED if it is not, then OPEN, then CLOSED: at least two
-judged drives. It judges nothing: at_wp_soak.py --report does, over the whole
+One session = M3 to CLOSED if it is not, then open, then CLOSED: at least two
+judged drives. **What "open" means depends on the control mode.** In mode 1 the
+law drives M3 to the OPEN end. In mode 2 it commands an APERTURE proportional to
+demand -- on this rig the session's maximum demand settles around 49 % -- so the
+open stroke is a completed judged DRIVE, wherever the law stops it, and only the
+close has to make an end sensor (which since 2.12.1 it must). It judges nothing: at_wp_soak.py --report does, over the whole
 window. A session is SKIPPED, not forced, when the unit is not in a state to
 stroke (wind override, motor alarm, calibrating, STANDBY, the sensor gate not
 ok, travel_m3 not the rig's 13). The run STOPS if a setting it steers differs
@@ -47,10 +51,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 from at_wp_confirm import (Rig, RIG_TRAVEL_S, flags, m3, say,   # noqa: E402
-                           DEFAULT_PIN)
+                           DEFAULT_PIN, MOVE_LIMIT_S, SETTLE_S)
 from at_wp_teach_standby import public_status                  # noqa: E402
 
 FIRST_CLOSE_LIMIT_S = 1800   # a 25 min open dwell may still be running
+LINEAR_MOVE_LIMIT_S = 1800   # mode 2: SEVERAL drives, ~600 s apart -- see below
 BLOCKING = ("wind_override", "motor_alarm", "calibrating", "standby")
 SHOWN = ("strokes", "confirmed", "not_reached", "not_judged", "stall_faults",
          "early_stops", "rejected_rate", "err_comm")
@@ -76,6 +81,53 @@ def _restore_current():
 
 
 atexit.register(_restore_current)
+
+
+def m3_pct(st):
+    """M3's opening in percent, from the public status."""
+    try:
+        return float((st.get("windows") or {}).get("M3_percent_x10", -1)) / 10.0
+    except (TypeError, ValueError):
+        return -1.0
+
+
+def linear_open(rig, limit_s):
+    """Mode 2's open stroke: a COMPLETED JUDGED DRIVE, not the OPEN state.
+
+    `graded` commands an APERTURE proportional to demand, so even this session's
+    maximum demand settles part-way -- 49.0 % on the rig -- and M3 has no reason
+    to reach the OPEN end at all. Session 1 of the 2026-09-24 soak waited 900 s
+    for a state the law was never going to produce and failed with M3 correctly
+    part-open. What a soak counts is JUDGED DRIVES, and a targeted drive is
+    judged like any other, so in mode 2 the stroke is done when the DRIVE is:
+    M3 moved and then stopped, and the drive counter advanced.
+
+    The close is unchanged in both modes: demand falls to nothing, the law asks
+    for 0, and since 2.12.1 a target inside the deadzone of an end IS that end,
+    so M3 must make the closed end sensor. That is half of what this soak exists
+    to show.
+    """
+    s0 = int(rig.soak().get("strokes") or 0)
+    rig.want(True)
+    say("waiting for T6 to drive M3 open (mode 2 targets an aperture, not an end)")
+    t0 = time.time()
+    seen_move = False
+    while time.time() - t0 < limit_s:
+        st = rig.status()
+        state = m3(st)
+        if state and state.startswith("MOVING"):
+            seen_move = True
+        elif seen_move:
+            now = int(rig.soak().get("strokes") or 0)
+            if now > s0:
+                took = time.time() - t0
+                say("M3 %s at %.1f %% after %.0f s (drives +%d)"
+                    % (state, m3_pct(st), took, now - s0))
+                time.sleep(SETTLE_S)
+                return took
+        time.sleep(2.0)
+    sys.exit("M3 made no completed drive within %d s (now %s at %.1f %%)"
+             % (limit_s, m3(rig.status()), m3_pct(rig.status())))
 
 
 def why_not(host):
@@ -123,12 +175,27 @@ def session(host, pin, n):
                 % (n, travel, RIG_TRAVEL_S))
             return None
         s0 = rig.soak()
-        say("session %d: M3 %s, gate %s" % (n, m3(rig.status()), g.get("mode_str")))
+        # Mode 2 strokes are slower by design, and not by one drive's worth.
+        # The law holds M3 for 10 min after its last drive (M3_HOLD_MS) and
+        # `min_intv_m3` -- 600 s on this rig -- replaces the dwells this session
+        # cut, which mode 2 ignores; and `graded` closes in STEPS (measured
+        # 2026-09-24: 49 % -> 25 % -> ... -> the end), so a close from half open
+        # is three drives about 600 s apart. 420 s fails a stroke that was
+        # always going to take longer, and so does 900 s; the limit follows the
+        # mode actually in force (2026-09-24).
+        linear = (rig.status().get("windows") or {}).get("M3_ctrl_mode") == "LINEAR"
+        limit = LINEAR_MOVE_LIMIT_S if linear else MOVE_LIMIT_S
+        say("session %d: M3 %s, gate %s, %s control (move limit %d s)"
+            % (n, m3(rig.status()), g.get("mode_str"),
+               "LINEAR" if linear else "timed", limit))
         rig.dwells_short()
         if m3(rig.status()) != "CLOSED":
-            rig.move(False, FIRST_CLOSE_LIMIT_S)
-        rig.move(True)
-        rig.move(False)
+            rig.move(False, max(FIRST_CLOSE_LIMIT_S, limit))
+        if linear:
+            linear_open(rig, limit)
+        else:
+            rig.move(True, limit)
+        rig.move(False, limit)
         s1 = rig.soak()
         say("session %d done: %s" % (n, ", ".join(
             "%s +%d" % (k, int(s1.get(k, 0) or 0) - int(s0.get(k, 0) or 0)) for k in SHOWN)))
