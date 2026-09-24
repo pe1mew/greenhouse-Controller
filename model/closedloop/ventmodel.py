@@ -311,6 +311,9 @@ class VentModel:
             raise RuntimeError("vm_reset(%d) failed" % self.id)
 
     def step(self, vin):
+        """One decision. The VentOut returned is THIS MODEL'S OWN buffer, reused
+        on every call: read what you need before calling step() again, or two
+        results compared side by side are the same object twice."""
         rc = self.lib.dll.vm_step(self.id, ctypes.byref(vin),
                                   ctypes.byref(self.state), ctypes.byref(self.out))
         if rc != 0:

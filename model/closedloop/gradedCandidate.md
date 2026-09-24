@@ -94,6 +94,80 @@ Reading it: M1 opens when the average first rounds to 29 and M2 at 30. M3 starts
 
 **Mode 1 on the same ramp opens M3 fully at 93:00 and shuts it at 233:30: two drives against ten,** with the same single M1 drive and two M2 drives. That is the trade this candidate makes — the ventilation follows the temperature instead of stepping to the end of its travel, and the motor pays for it. It is also why `min_intv_m3` exists as a floor under whatever law runs next ([`linearDwell.md`](linearDwell.md)).
 
+## What humidity does
+
+The humidity branch is the stepped law's, untouched, and `graded` adds one rule of its own for M3. Same settings as above, plus `rh_max` 75 %, `rh_min` 50 %, `hyst_rh` 12 and `cr_priority` 0 — and 80 % / 55 % at night.
+
+### The branch
+
+- **Above `rh_max`:** the same ladder as temperature, on `hyst_rh` — width 4 % RH here. So 76–79 % is step 1, 80–83 % step 2, 84 % and up step 3.
+- **Below `rh_min`:** step 0, a demand to **close**. Not an abstention.
+- **In between:** it abstains, and the temperature's step stands alone.
+
+**Humidity has no close guard.** Temperature holds its step until the average is a whole `hyst_t` below the setpoint; humidity drops its vote the moment the average is back at or below `rh_max`. `hyst_rh` sets the step width and nothing else — the guard in the shared helper is unreachable from this branch, because it only runs when the deviation is zero or less, and this branch has already returned by then.
+
+### Whose vote wins
+
+The two branches meet in the conflict rule: humidity abstaining leaves temperature's step; both wanting open takes the higher of the two; and a genuine disagreement goes to `cr_priority`. The FRS makes temperature the default (FR-CR02), and that is what 5C88 runs.
+
+| RH_avg, % | humidity's vote | resolved at 24 °C | resolved at 29 °C | M3's humidity demand |
+|---|---|---|---|---|
+| 72 | abstains | 0 | 1 | - |
+| 76 | step 1 | 0 | 1 | 0 % |
+| 80 | step 2 | 0 | 2 | 0 % |
+| 84 | step 3 | 0 | 3 | 100 % |
+| 88 | step 3 | 0 | 3 | 100 % |
+| 45 | step 0 | 0 | 1 | 0 % |
+
+**At `cr_priority` 0 humidity never opens a window on its own.** A cool house at 88 % RH stays shut: humidity votes step 3, temperature votes 0, and "one wants open, the other wants shut" is exactly the case priority decides — for temperature. Humidity only ever *raises* a step the temperature has already asked for, which is the middle rows of the 29 °C column: 82 % lifts step 1 to 2, 86 % lifts it to 3. The same reading decides the other way round too: a dry house (45 %) asking to close is overridden while the temperature wants open.
+
+That is the setting's meaning, not a defect — but it is worth knowing before enabling humidity control and expecting a damp, cool morning to vent:
+
+| RH_avg, % | humidity's vote | 0 temperature first | 1 humidity first | 2 the higher |
+|---|---|---|---|---|
+| 76 | step 1 | 0 | 1 | 1 |
+| 84 | step 3 | 0 | 3 | 3 |
+| 45 | step 0 | 0 | 0 | 0 |
+
+### M3 is all or nothing for humidity
+
+Humidity does not graduate M3. Its demand is **100 % at step 3 and 0 % below it**, and M3 takes whichever is larger, its temperature aperture or this. So between 76 % and 83 % RH humidity can open the roof windows while M3 stays exactly where the temperature put it.
+
+### A muggy afternoon
+
+The house one step above its setpoint at 29 °C, humidity climbing 1 % per 5 min from 70 %, holding at 88, and falling back:
+
+| Time, min:s | RH_avg, % | Step | What happens |
+|---|---|---|---|
+| 0:00 | 70 | 1 | M1 moving; M2 shut; M3 shut |
+| 0:30 | 70 | 1 | M1 open |
+| 50:00 | 80 | 2 | M2 moving |
+| 50:30 | 80 | 2 | M2 open |
+| 70:00 | 84 | 3 | T6 asks M3 for 25 %; M3 moving |
+| 71:00 | 84 | 3 | M3 part-open at 25 % |
+| 81:00 | 86 | 3 | T6 asks M3 for 50 %; M3 moving |
+| 82:00 | 86 | 3 | M3 part-open at 50 % |
+| 92:00 | 88 | 3 | T6 asks M3 for 75 %; M3 moving |
+| 93:00 | 88 | 3 | M3 part-open at 76 % |
+| 103:00 | 88 | 3 | T6 asks M3 for 100 %; M3 moving |
+| 106:00 | 88 | 3 | M3 open |
+| 150:30 | 83 | 2 | T6 asks M3 for 75 %; M3 moving |
+| 151:30 | 83 | 2 | M3 part-open at 75 % |
+| 161:30 | 81 | 2 | T6 asks M3 for 50 %; M3 moving |
+| 162:30 | 81 | 2 | M3 part-open at 50 % |
+| 170:30 | 79 | 1 | M2 moving |
+| 171:00 | 79 | 1 | M2 shut |
+| 172:30 | 79 | 1 | T6 asks M3 for 25 %; M3 moving |
+| 173:30 | 79 | 1 | M3 part-open at 24 % |
+| 183:30 | 77 | 1 | T6 asks M3 for 0 %; M3 moving |
+| 186:30 | 76 | 1 | M3 shut |
+
+**The rate limit applies to a humidity demand as well, and that is the thing to argue about.** At 70:00 humidity asks for M3 wide open. This law takes four moves and **36 minutes** to get there, because 25 % per move and the ten-minute hold know nothing about why the target moved. Mode 1 has M3 fully open at 73:00, three minutes after the same demand, and shut again at 153:30: two drives against eight.
+
+For a heat demand that patience is the point — the reading lags, so chasing it overshoots. For a humidity flush it may be the wrong instinct: the crop's risk is the wet air sitting there, and the fix is a known quantity, not a set point to converge on. **Whether a step-3 humidity demand should bypass the rate limit is an open question for this candidate** — it is a small change in `m3_linear()`, and the closed loop cannot answer it, because the plants were never fitted against a humidity event: the campaign's only forced humidity test, 2026-07-11, ran with door 1 open throughout (`thermalProfileCampaign.md`).
+
+Coming down it walks back the same way: the demand falls to 0 as soon as RH is below 84, and M3 unwinds in 25 % steps, 10 minutes apart, from 150:30 to 186:30. Humidity's own vote vanishes at 75 %, with no guard to hold it — so what keeps M1 open at the end is the temperature branch, as always.
+
 ## Results
 
 `law_compare.py` closes the loop over 2026-06-05 to 09-16 twice per plant: the stepped law with a binary M3, and `graded` with a linear one. Both use today's firmware and 5C88's settings. The swing is the campaign's measure, the median over days of the temperature range between successive M3 openings. The fluctuation is the daytime spread of the temperature around its own 60-min average. The script's docstring defines each row. North-wind days are those with most of the logged M3-open time in wind from 315–45°: 25 days, against 57 with other wind.
