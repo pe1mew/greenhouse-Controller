@@ -171,9 +171,27 @@ Dit voorkomt dat het klimaat binnen plotseling sterk verandert. ook draagt dit b
 
 **Conflict-prioriteit:**
 Soms vraagt de temperatuur om ramen open (te warm) en de vochtigheid om ramen dicht (te droog), of andersom. In dat geval volgt de controller je gekozen prioriteit:
-- **Temperature first** — temperatuur krijgt voorrang
+- **Temperature first** — temperatuur krijgt voorrang (standaardinstelling)
 - **Humidity first** — vochtigheid krijgt voorrang
-- **Auto** — de regeling kijkt naar welke afwijking het grootst is en geeft daaraan voorrang
+- **Auto** — de hoogste ventilatiestap van de twee wint
+
+Vragen ze allebei om ventileren, dan is er geen conflict: de controller neemt dan altijd de hoogste stap van de twee, wat je hier ook kiest.
+
+**Let op — wat "Temperature first" betekent voor de vochtregeling.**
+De temperatuur krijgt ook voorrang wanneer de temperatuur *niets* vraagt. Is het binnen koel genoeg, dan vraagt de temperatuurregeling om dichte ramen, en die wens wint. **Met de standaardinstelling opent de vochtregeling dus nooit uit zichzelf een raam** — ook niet bij 90 % op een klamme, koele ochtend.
+
+Wat de vochtregeling met deze instelling wél doet:
+- **Is het ook te warm,** dan mag vocht de ventilatie verder opvoeren. Waar de temperatuur alleen M1 zou openen, haalt hoge vochtigheid er M2 en zo nodig M3 bij.
+- **Is het te droog,** dan vraagt de vochtregeling om dichte ramen. Bij *Temperature first* wint de temperatuur: vraagt die om ventileren, dan blijven de ramen open.
+
+| Situatie | Temperature first (standaard) | Humidity first | Auto |
+|---|---|---|---|
+| Te warm, vocht in orde | ventileren | ventileren | ventileren |
+| Te warm én te vochtig | ventileren, vocht mag de stap verhogen | hetzelfde | hetzelfde |
+| Koel, te vochtig | **ramen blijven dicht** | ventileren | ventileren |
+| Te warm, te droog | ventileren | **ramen gaan dicht** | ventileren |
+
+Wil je dat een klamme maar koele kas tóch ventileert, kies dan *Humidity first* of *Auto* (zie §10.1 op de controller, of de tab Climate in de webinterface). Bedenk wel wat je inruilt: bij *Humidity first* sluit een te droge kas de ramen, ook als het te warm is. Bij *Auto* gebeurt dat niet, want daar wint bij tegengestelde wensen de hoogste stap — en "ramen dicht" is de laagste.
 
 **Windbeveiliging:**
 Bij te harde wind sluit de controller **alle ramen automatisch**, ongeacht wat het klimaat vraagt. Dit beschermt de motoren en de raamconstructie. De ramen gaan pas weer open wanneer de wind duidelijk onder de grens is gezakt (kleine veiligheidsmarge) — zo gaan ze bij aanhoudende wind rond de grenswaarde niet steeds open en dicht. De windgrenswaarden en de marge worden door de beheerder ingesteld.
@@ -776,9 +794,9 @@ Druk in het Climate-menu op `3` om de prioriteit aan te passen. Het bewerkscherm
 |:---:|---|
 | `0` | Temperatuur eerst — temperatuur krijgt voorrang |
 | `1` | luchtvochtigheid eerst — luchtvochtigheid krijgt voorrang |
-| `2` | Auto — de regeling kijkt naar welke afwijking het grootst is en kiest die |
+| `2` | Auto — de hoogste ventilatiestap van de twee wint |
 
-Voer 0, 1 of 2 in en bevestig met `#`.
+Voer 0, 1 of 2 in en bevestig met `#`. Wat elke keuze in de praktijk betekent — en waarom de vochtregeling met de standaardinstelling `0` nooit uit zichzelf een raam opent — staat in §4 onder *Conflict-prioriteit*.
 
 #### Wind-instellingen (hoofdmenu → 2 Wind)
 
