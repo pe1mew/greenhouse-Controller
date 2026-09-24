@@ -104,7 +104,7 @@ The humidity branch is the stepped law's, untouched, and `graded` adds one rule 
 - **Below `rh_min`:** step 0, a demand to **close**. Not an abstention.
 - **In between:** it abstains, and the temperature's step stands alone.
 
-**Humidity has no close guard.** Temperature holds its step until the average is a whole `hyst_t` below the setpoint; humidity drops its vote the moment the average is back at or below `rh_max`. `hyst_rh` sets the step width and nothing else — the guard in the shared helper is unreachable from this branch, because it only runs when the deviation is zero or less, and this branch has already returned by then.
+**Humidity has no close guard.** Temperature drops back to step 1 and holds there until the average is a whole `hyst_t` below the setpoint; humidity drops its vote the moment the average is back at or below `rh_max`. `hyst_rh` sets the step width and nothing else — the guard in the shared helper is unreachable from this branch, because it only runs when the deviation is zero or less, and this branch has already returned by then.
 
 ### Whose vote wins
 
