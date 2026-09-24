@@ -7,6 +7,7 @@ Layer-3 index for the greenhouse-Controller project. Auto-loaded by Claude Code 
 | Topic | File | When to read |
 |---|---|---|
 | Architecture (task graph + subsystem map + partitions) | [architecture.md](architecture.md) | Before touching any FreeRTOS task or subsystem |
+| Before You Start, long form | [before-you-start.md](before-you-start.md) | Before touching the audit log format, a config key, motor travel/dwell, the Modbus bus, the window sensor or SD logging — the full text CLAUDE.md's rows used to carry, moved 2026-09-24 |
 | Gotcha log | [gotcha-log.md](gotcha-log.md) | When something weird happens, before debugging from scratch |
 | Gotcha archive | [gotcha-archive.md](gotcha-archive.md) | Rarely — only when tracing the history of a fix that can no longer recur. Never for triage |
 

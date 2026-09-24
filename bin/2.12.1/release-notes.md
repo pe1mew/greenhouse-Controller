@@ -9,6 +9,8 @@ NVS change, no log-encoding change. **Mode 1 was never affected**, and mode 1 is
 
 > **Nothing in this release has run on a greenhouse.** Production (5C88) is on 2.3.1 and unaffected.
 
+> **2.12.1 was never built or published as its own image.** `firmware/platformio.ini` went straight from 2.12.0 to 2.12.2 in one commit, so the fix below ships **inside 2.12.2** — there is no 2.12.1 artefact, no manifest and no ROTA release, and no unit will ever report `2.12.1`. These notes stay because the fix is its own story and the changelog entry points here (operator decision, 2026-09-24).
+
 ## What changed
 
 ### A close to 0 % now reaches the closed end sensor (gh#83)

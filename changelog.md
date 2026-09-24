@@ -43,6 +43,9 @@ Patch: one defect, found the first night mode 2 ran on the dev rig
 log-encoding change, and **mode 1 — what every unit runs as delivered — was never affected**. Detail in
 `bin/2.12.1/release-notes.md`.
 
+**Shipped inside 2.12.2.** The version in `firmware/platformio.ini` went straight from 2.12.0 to
+2.12.2, so no 2.12.1 image was ever built or released; this section records the fix, and 2.12.2 carries it.
+
 **Fixed.**
 
 - **A close to 0 % now reaches the closed end sensor.** A targeted stop ends on a reading, so mode 2's last
