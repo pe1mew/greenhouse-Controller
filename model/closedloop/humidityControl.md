@@ -86,6 +86,8 @@ The temperature during the refused demand says how much of it a floor would catc
 | 20–23 | 279.3 | 2.56 |
 | 24 and up | 173.0 | 1.59 |
 
+**On the averaging windows.** The table above uses the config snapshot's `avg_win_t` 6 and `avg_win_rh` 10. `model/vent_step_replay.py` does not agree with the first: replayed against the same logs, a 3-minute temperature window reproduces **97.9 %** of 5C88's 2 268 logged T-demands and the snapshot's 6 minutes only **63.2 %**, so either the unit runs 3 or the snapshot postdates a change — worth reading off `GET /api/config` before acting on it. It does not move anything here: re-run at 3/5, the refused hours are 1200.2 against 1203.9, the raised steps 291.3 against 285.3, every headline within 2 %.
+
 A floor at `t_min` removes 166 h of 1204 — 14 %. In June–September that is nearly nothing, because the house is rarely cold. In November it is most of it. **The summer campaign is the wrong season to size a floor against**, and there is no winter data.
 
 ## What the settings can and cannot do
