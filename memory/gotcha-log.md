@@ -2485,3 +2485,67 @@ after an hour — list what the previous run and the boot left behind (the gate 
 dwell armed from test settings, STANDBY, a part-open window) and establish each one rather than
 assuming it.* And an INCONCLUSIVE arm proves nothing: the fail-first only counts when the stage
 reaches the rule and fails on it.
+
+## 2026-09-24 — mode 2 could not close a window: an arrival test by position cannot satisfy an END
+
+**Problem:** the first night mode 2 ran on the dev rig (2026-09-23/24), `graded` closed M3 in four
+targeted drives and the last one stopped at **20.8 mm — 1.3 % — with the closed end sensor never
+made**. Nothing moved M3 again all night. The operator switched to mode 1 at 08:27 and its timed
+close made the end sensor 1.6 s later: the leaf really had been a couple of centimetres short, and
+the window stood open while every log row said the law's intent was satisfied (gh#83).
+
+**Root cause:** a targeted stop ends on a READING. The arrival band is `deadzone_m3_mm / window_mm`
+= 20/1500 mm = 1.3 %, and once a stop landed inside it, **both** sides called it arrived: T6 on
+`|pos - want| <= band`, and the law on `off <= m3_deadzone_x10` ("the caller would drop it
+anyway"). Each test is right for an ordinary aperture and wrong for an end, which is made by a
+switch, not by a number. Mode 1 never had the problem: its close runs `travel_m3 + margin` into the
+end switch.
+
+**Why no test caught it:** every mode-2 test drove M3 to a PARTIAL target — the band, a second
+target, a reversal, a take — or used mode 1's end drives. Nothing ever asked mode 2 to close the
+window completely. The extremes of the new command were the one region left untested, and they are
+the region where "position" and "end" stop meaning the same thing.
+
+**Fix:** a target within the deadzone of an end IS that end -- snapped to 0 or 1000, commanded as
+the ordinary `CMD_CLOSE`/`CMD_OPEN` end drive, and judged arrived only in the terminal STATE, in the
+caller, in the law and in `last_result`. Fail-first bit 2048; `bin/at_wp_fallback.py endstop`; a
+host test that fails on the old law.
+
+**Rules:** *an end is a switch, not a number -- never let a position test stand in for it.* And when
+a feature adds a new WAY to command an actuator, test that command's EXTREMES before its middle: the
+partial targets all worked, and the one value an operator would call "shut" did not. Third, this was
+found by letting the thing run for a night in the mode nobody had run it in -- an overnight of
+ordinary operation is a test, and it found in one night what nine stage tests had not.
+
+## 2026-09-24 — a listing that drops names and still says OK, twice: theirs, then mine
+
+**Problem:** `/api/log/files` on 2344 showed 30 files, none newer than 2026-09-18, while the unit
+had been logging continuously and the card held far more. The file the unit was writing could not
+be listed or downloaded, which blocked an investigation (gh#82). Retention had also stopped: files
+from July were still there under a 30-file cap.
+
+**Root cause:** `storage_sd_list_csv()` fills the caller's buffer, **drops the names that do not
+fit, and returns `STORAGE_OK` anyway**. FAT lists roughly in creation order, so the names it drops
+are the NEWEST. Every decision T9 made came from such a list: the retention count saturated at
+exactly `SD_MAX_FILES` so `count > SD_MAX_FILES` was never true and nothing was ever deleted; the
+boot resume took the largest name from the same partial view; T14's upload enumerators too (gh#42
+had sized them to 30 names, which only moved the cliff from ~21 files to ~30).
+
+**And then I did it again, one level up.** With the collection fixed, the first rig read returned
+37 files and HTTP 200 — while a direct download of a name it had omitted returned 200 with a
+megabyte of content. The *response* buffer was still 1 024 bytes, so the handler stopped adding
+names when it filled: the same silent cut, in the code written to fix silent cuts. What exposed it
+was not the listing but a **cross-check against a different route**: asking for a file the list did
+not mention.
+
+**Fix:** a non-truncating iterator in the driver (`storage_sd_foreach_csv()`, one callback per
+file, constant memory); every caller aggregates during that pass; the list-based helpers deleted so
+no second path exists. The response buffer is sized from `LOG_FILES_MAX`, and the reply now carries
+`on_card`, the number of files the card actually holds, so a bounded list is visible as one instead
+of being inferred from its length.
+
+**Rules:** *an API that can return less than it was asked for must say so* — a count, a flag,
+anything, because "fewer than I expected" and "that is all there is" look identical to every
+caller. *When you fix a silent truncation, check the layer above it for the same shape.* And
+*verify a listing against a different route*: the download said the file was there when the listing
+said it was not, which is what made the second cut visible in minutes rather than weeks.

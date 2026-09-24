@@ -143,6 +143,17 @@ once with the hook before asking for mode 2 (`ensure_position()`); on a unit tha
 M3's dwell from the test settings — `min_intv_m3` 600 s in mode 2. The next harness then waited 420 s for a window that
 could not move for 600, and reported a setup failure. Re-run after the dwell expired: all nine stages passed.
 
+**On the ROTA soak channel as seq 55** (2026-09-23), and pulled by 2344 the same evening: `fw_ver` **2.12.0** and
+`asset_version` **2.12.0**, commissioning valid (window 1 500 mm, span 84 %), the bench diag route gone (404, as a release
+build should be), and the rig's settings untouched by the reflash. Two things are worth knowing for the next pull:
+
+- **A unit running `<version>-bench` is never offered `<version>`.** `semver_cmp()` ignores the pre-release tail, so
+2.12.0-bench compares EQUAL to 2.12.0 and the check answers "up to date" for ever. Put a plain release build on the unit
+first — 2.11.0 here — and the offer follows.
+- **An active web session defers the apply.** `quiet_gate()` refuses to commit while any session is open, so a watcher
+that polls with an admin login keeps the update pending indefinitely (it downloaded and verified, then sat on
+`rota_update_pending` until the polling stopped). Watch a pending apply through the PUBLIC `/api/status` only.
+
 ## Upgrading
 
 - **No partition change, no NVS migration.** Two new keys appear at their defaults, which reproduce today's behaviour exactly.

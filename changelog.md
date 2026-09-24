@@ -6,6 +6,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.12.2] — 2026-09-24  (the log listing shows the newest files, and retention runs again)
+
+Patch: one root cause with three symptoms, all in the logging path
+([gh#82](https://github.com/pe1mew/greenhouse-Controller/issues/82)). No config key, no NVS change, no
+log-encoding change, nothing in the ventilation path. Detail in `bin/2.12.2/release-notes.md`.
+
+**Fixed.**
+
+- **Every decision about log files now comes from a scan that cannot truncate.**
+  `storage_sd_list_csv()` drops the names that do not fit and returns `STORAGE_OK` anyway, and FAT lists
+  roughly in creation order, so the names dropped are the NEWEST. Past ~30 files the retention count
+  saturated at exactly `SD_MAX_FILES`, so `count > SD_MAX_FILES` was never true and **nothing was ever
+  deleted again**; `/api/log/files` returned the OLDEST 30 names, so the active file could not be seen or
+  downloaded; the boot resume took the largest name from the same partial view and could append today's
+  rows to a file named weeks ago; and T14's upload enumerators chose from it too (sizing them to 30 names
+  in gh#42 only moved the cliff from ~21 files to ~30). New driver call `storage_sd_foreach_csv()` — one
+  callback per file, constant memory — and every caller aggregates during the pass. The list-based
+  helpers are deleted, not left available.
+- **Ordering is unit first, then date-time** (operator decision), because one card can hold two modules'
+  histories on the dev rig. **Retention is per unit** — each unit keeps 30 of its own and deletes only its
+  own oldest — the **resume takes this unit's newest**, and the **listing is grouped and newest-first**.
+  FR-LG06 carries the clarification, the TSDS the detail.
+
+**Added.**
+
+- **`/api/log/files` reports the file being written**: `{"current": "<name>", "sd_files": [...]}`. The GUI
+  marks it "(current)" and selects it by default; the mock returns the same shape.
+- `storage_sd_foreach_csv()` in `drivers/sdCard`, with host tests: with 40 files on the card the iterator
+  sees all 40 while the old listing sees fewer and still reports success.
+
+## [2.12.1] — 2026-09-24  (mode 2 finishes a close)
+
+Patch: one defect, found the first night mode 2 ran on the dev rig
+([gh#83](https://github.com/pe1mew/greenhouse-Controller/issues/83)). No config key, no NVS change, no
+log-encoding change, and **mode 1 — what every unit runs as delivered — was never affected**. Detail in
+`bin/2.12.1/release-notes.md`.
+
+**Fixed.**
+
+- **A close to 0 % now reaches the closed end sensor.** A targeted stop ends on a reading, so mode 2's last
+  close came to rest 20.8 mm (1.3 %) short of the switch; T6 then read `|pos - want| <= band` as arrived and
+  `graded` read `off <= deadzone` as there, so neither asked again. M3 stood open all night with the log
+  satisfied, and only mode 1's timed close finished it (1.6 s). **A target within the deadzone of an end is now
+  that end:** snapped to 0 or 1000, commanded as the ordinary `CMD_CLOSE` / `CMD_OPEN` end drive that runs into
+  the end switch, and judged arrived only in the terminal STATE — by the caller, by the law, and in
+  `last_result`. It also gets a real end-drive verdict (`ALARM ch6 251 = ±1/±2`) instead of "no end was asked
+  for". The contract carries the rule; fail-first bit 2048 with `bin/at_wp_fallback.py endstop`.
+
+**Noted, not changed.**
+
+- A mode promotion inherits the dwell already running: an open under mode 1 arms the 1500 s open dwell, so the
+  first mode-2 move waits 25 min rather than `min_intv_m3`. That is gh#51's documented rule behaving as
+  specified, recorded because it surprised the operator.
+
 ## [2.12.0] — 2026-09-20  (linear control of M3, behind an operator setting)
 
 Minor: **two control modes for M3**, and the control law moves out of T6 into a replaceable library.

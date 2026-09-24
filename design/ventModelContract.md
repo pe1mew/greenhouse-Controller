@@ -183,6 +183,14 @@ const vent_model_t *vent_model_graded(void);
 #endif /* VENT_MODEL_H */
 ```
 
+**An end is reached by driving into it (gh#83, 2026-09-24).** A targeted stop ends on a *reading*, so it comes to
+rest anywhere inside the arrival band — and a leaf resting one deadzone short of the closed end sensor is an open
+window. On 2344 that was 20.8 mm, held all night, while the caller's `|pos - want| <= band` test called it arrived and
+the law's own deadzone check agreed. **Mode 2 could not close a window.** So a target at or within the deadzone of an
+end is commanded as an end drive, and both sides judge it by the state: the caller asks until the window reports
+CLOSED / OPEN, and a law must keep asking for 0 or 1000 while the window is `VENT_WIN_PART_OPEN`, whatever the
+position reads. `last_result` for such a command is DONE only in that terminal state.
+
 **How `last_result` is judged (2026-09-21).** The caller judges the last command once the window is
 at rest, in this order: **ABORTED** when a drive it did not command -- a safety close, the operator,
 a recalibration, a motor alarm -- took the window after the command went out (T2 counts these,
@@ -245,7 +253,7 @@ the same thing on both, and the sensor reports a percentage natively.
 |---|---|
 | `VENT_ACT_HOLD` | nothing is commanded for that window |
 | `VENT_ACT_OPEN` / `VENT_ACT_CLOSE` | a full timed traverse is commanded, exactly as today |
-| `VENT_ACT_TARGET` on a **LINEAR** window | clamped to 0..1000; dropped when within `m3_deadzone_x10` of the current position; deferred while `win[2].ms_since_move` is below `m3_min_interval_ms` (UINT32_MAX, no drive since boot, never is); otherwise commanded, with the travel timer as the ceiling. **A target that reverses a stroke under way is deferred by T2 (gh#48)**: the stroke keeps its own target and stops there, and the caller asks again (until 2026-09-21 the deferral took the stroke's target first, and the stroke ran on to the end switch) |
+| `VENT_ACT_TARGET` on a **LINEAR** window | **A target within `m3_deadzone_x10` of an end IS that end** (gh#83, 2026-09-24): it is snapped to 0 or 1000 and commanded as the ordinary end drive — the same `CMD_CLOSE` / `CMD_OPEN` mode 1 uses, which runs into the end switch on the travel timer — and **arrival at an end is the window's STATE, never its position**. Otherwise: clamped to 0..1000; dropped when within `m3_deadzone_x10` of the current position; deferred while `win[2].ms_since_move` is below `m3_min_interval_ms` (UINT32_MAX, no drive since boot, never is); otherwise commanded, with the travel timer as the ceiling. **A target that reverses a stroke under way is deferred by T2 (gh#48)**: the stroke keeps its own target and stops there, and the caller asks again (until 2026-09-21 the deferral took the stroke's target first, and the stroke ran on to the end switch) |
 | `VENT_ACT_TARGET` on a **DIGITAL** window | **a model error.** Logged as such and treated as `HOLD` |
 | `reason`, `demand_t_x10`, `demand_rh_x10` | written to the SD log with the decision, so it can be reconstructed afterwards |
 

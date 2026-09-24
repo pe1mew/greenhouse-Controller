@@ -52,6 +52,9 @@ storage_status_t mock_sd_read(const char *filename, uint32_t offset,
 uint32_t         mock_sd_file_size(const char *filename);
 uint64_t         mock_sd_free_bytes(void);
 void             mock_sd_list_csv(const char *ext, char *buf, size_t buf_len);
+void             mock_sd_foreach_csv(const char *ext,
+                                     void (*cb)(const char *name, void *ctx),
+                                     void *ctx);
 storage_status_t mock_sd_delete(const char *filename);
 
 #ifdef __cplusplus

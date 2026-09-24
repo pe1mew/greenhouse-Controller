@@ -110,6 +110,27 @@ uint64_t mock_sd_free_bytes(void)
     return g_free_bytes;
 }
 
+void mock_sd_foreach_csv(const char *ext,
+                         void (*cb)(const char *name, void *ctx),
+                         void *ctx)
+{
+    if (!ext || !cb) {
+        return;
+    }
+    const size_t ext_len = strlen(ext);
+    for (const auto &kv : g_files) {
+        const std::string &name = kv.first;
+        if (name.size() >= ext_len &&
+            name.compare(name.size() - ext_len, ext_len, ext) == 0) {
+            const char *display = name.c_str();
+            if (display[0] == '/') {
+                display++;
+            }
+            cb(display, ctx);
+        }
+    }
+}
+
 void mock_sd_list_csv(const char *ext, char *buf, size_t buf_len)
 {
     if (!ext || !buf || buf_len == 0) {

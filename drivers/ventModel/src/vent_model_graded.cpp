@@ -135,6 +135,20 @@ static vent_win_out_t m3_linear(const vent_in_t *in, vent_state_t *st, int want,
     }
 
     const int now_tgt = (int)st->v[ST_M3_TGT];
+    /* gh#83: an END is satisfied by the window being AT it, never by a reading
+     * inside the deadzone. A leaf resting 2 cm short of the closed end sensor
+     * is an open window, and holding there because the number looks close
+     * enough is how mode 2 spent a night with M3 ajar (2344, 2026-09-23/24).
+     * The caller drives an end target into the end switch; keep asking until
+     * it reports the window there. */
+    if (now_tgt == 0 || now_tgt == 1000) {
+        const bool there = (now_tgt == 0) ? (w->state == VENT_WIN_CLOSED)
+                                          : (w->state == VENT_WIN_OPEN);
+        if (there) { return o; }
+        o.action = VENT_ACT_TARGET;
+        o.target_x10 = (int16_t)now_tgt;
+        return o;
+    }
     const int off = (now_tgt > w->pos_x10) ? now_tgt - w->pos_x10 : w->pos_x10 - now_tgt;
     if (off <= (int)in->m3_deadzone_x10) {
         return o;                                   /* there: the caller would drop it */

@@ -1261,12 +1261,29 @@ function loadLogFiles() {
       if (!data) return;
       sel.innerHTML = '';
       if (data.sd_files && data.sd_files.length > 0) {
+        // gh#82: the list arrives newest first, this unit's files before any
+        // other module's, and `current` names the file being written right
+        // now. Saying which one is live answers the question that started
+        // gh#82 -- "which file is the unit writing to?" -- and selecting it
+        // means the obvious download is the one an operator almost always
+        // wants.
         data.sd_files.forEach(function (fname) {
           var o = document.createElement('option');
           o.value = 'sd:' + fname;
-          o.textContent = fname;
+          o.textContent = (fname === data.current) ? (fname + '  (current)') : fname;
+          if (fname === data.current) { o.selected = true; }
           sel.appendChild(o);
         });
+        // gh#82: the listing is bounded; say so rather than letting a short
+        // list look like the whole card.
+        if (data.on_card && data.on_card > data.sd_files.length) {
+          var more = document.createElement('option');
+          more.value = '';
+          more.disabled = true;
+          more.textContent = '— ' + (data.on_card - data.sd_files.length) +
+                             ' older file(s) on the card, not listed —';
+          sel.appendChild(more);
+        }
       } else {
         var none = document.createElement('option');
         none.value = '';

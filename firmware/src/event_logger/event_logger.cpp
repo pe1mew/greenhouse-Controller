@@ -324,95 +324,69 @@ static void make_ts_filename(char *buf, size_t len)
 }
 
 /**
- * @brief Scan the SD root and return a comma-separated list of matching
- *        timestamp-pattern CSV filenames (name only, no leading '/').
+ * @brief Is this log file one of OURS?
  *
- * @param list_buf  Destination buffer.
- * @param list_len  Size of @p list_buf.
- * @return true if the scan succeeded (even if no files were found).
+ * The name carries the unit id (`XXXX_YYYYMMDDHHMMSS.csv`), because the dev rig
+ * takes swappable modules and one card collects both of their histories. A
+ * LEGACY un-prefixed file (14 digits) counts as ours: it can only come from an
+ * era when one unit owned the card, and somebody has to be allowed to retire
+ * it.
  */
-static bool sd_scan(char *list_buf, size_t list_len)
+static bool name_is_mine(const char *name)
 {
-    list_buf[0] = '\0';
-    if (!s_sd_ok && !storage_sd_available()) return false;
+    char id[5] = {0};
+    system_unit_id_str(id, sizeof(id));
+    if (strlen(name) == 18u) { return true; }          /* legacy, un-prefixed */
+    return (strncmp(name, id, 4) == 0) && name[4] == '_';
+}
 
-    char raw[SD_LIST_BUF_LEN];
-    if (storage_sd_list_csv(".csv", raw, sizeof(raw)) != STORAGE_OK) return false;
+/** What one pass over the card found (gh#82). */
+typedef struct {
+    uint32_t total;                       /**< every timestamp-pattern file */
+    uint32_t mine;                        /**< ...that belongs to this unit */
+    char oldest_mine[SD_NAME_ONLY_LEN];   /**< "" when this unit has none */
+    char newest_mine[SD_NAME_ONLY_LEN];
+} log_scan_t;
 
-    /* Re-filter: keep only files matching the 14-digit timestamp pattern. */
-    size_t pos = 0;
-    const char *tok = raw;
-    while (*tok) {
-        const char *end = strchr(tok, ',');
-        size_t flen = end ? (size_t)(end - tok) : strlen(tok);
-        if (flen > 0 && flen < SD_NAME_ONLY_LEN) {
-            char name[SD_NAME_ONLY_LEN];
-            memcpy(name, tok, flen);
-            name[flen] = '\0';
-            if (is_ts_filename(name) && pos + flen + 2 < list_len) {
-                memcpy(list_buf + pos, name, flen);
-                pos += flen;
-                list_buf[pos++] = ',';
-                list_buf[pos]   = '\0';
-            }
-        }
-        if (!end) break;
-        tok = end + 1;
+static void log_scan_cb(const char *name, void *ctx)
+{
+    log_scan_t *sc = (log_scan_t *)ctx;
+    if (!is_ts_filename(name)) { return; }
+    sc->total++;
+    if (!name_is_mine(name)) { return; }
+    sc->mine++;
+    /* Within one unit's prefix a plain strcmp IS chronological order, because
+     * the rest of the name is a fixed-width timestamp. Across units it is not,
+     * which is why every comparison here is made among our own files only
+     * (the accepted rule: sort on unit, then on date-time). */
+    if (sc->oldest_mine[0] == '\0' || strcmp(name, sc->oldest_mine) < 0) {
+        snprintf(sc->oldest_mine, sizeof(sc->oldest_mine), "%s", name);
     }
-    return true;
+    if (sc->newest_mine[0] == '\0' || strcmp(name, sc->newest_mine) > 0) {
+        snprintf(sc->newest_mine, sizeof(sc->newest_mine), "%s", name);
+    }
 }
 
 /**
- * @brief Count the comma-separated entries in a scan list.
+ * @brief Count this unit's log files and find its oldest and newest, in one
+ *        pass that CANNOT truncate (gh#82).
  *
- * @param  list  Output of sd_scan(); empty string returns 0.
- * @return Number of comma-separated tokens.
- */
-static uint32_t scan_count(const char *list)
-{
-    uint32_t n = 0;
-    const char *tok = list;
-    while (*tok) {
-        const char *end = strchr(tok, ',');
-        size_t flen = end ? (size_t)(end - tok) : strlen(tok);
-        if (flen > 0) n++;
-        if (!end) break;
-        tok = end + 1;
-    }
-    return n;
-}
-
-/**
- * @brief Find the lexicographically smallest or largest name in a scan list.
+ * Every decision T9 makes about files -- how many there are, which to delete,
+ * which to resume -- used to come from a comma-separated list in a fixed
+ * buffer. `storage_sd_list_csv()` drops the names that do not fit and still
+ * returns STORAGE_OK, and the names it drops are the ones the directory lists
+ * last, which on FAT are roughly the newest. Past ~30 files that made the
+ * count saturate at exactly SD_MAX_FILES, so `count > SD_MAX_FILES` was never
+ * true and **retention silently stopped**; the boot resume, choosing the
+ * "largest" name from the same partial view, could append today's rows to a
+ * file named weeks ago (2344, 2026-09-24).
  *
- * @param list       Comma-separated list from sd_scan().
- * @param find_max   true = find newest (lex max); false = find oldest (lex min).
- * @param out        Destination for the found name (no leading '/').
- * @param out_len    Size of @p out.
- * @return true if a name was found; false if the list was empty.
+ * @return false if the card could not be scanned at all.
  */
-static bool scan_find(const char *list, bool find_max,
-                      char *out, size_t out_len)
+static bool log_scan(log_scan_t *out)
 {
-    out[0] = '\0';
-    const char *tok = list;
-    while (*tok) {
-        const char *end  = strchr(tok, ',');
-        size_t      flen = end ? (size_t)(end - tok) : strlen(tok);
-        if (flen > 0 && flen < out_len) {
-            char candidate[SD_NAME_ONLY_LEN];
-            memcpy(candidate, tok, flen);
-            candidate[flen] = '\0';
-            if (out[0] == '\0' ||
-                (find_max ? strcmp(candidate, out) > 0
-                          : strcmp(candidate, out) < 0)) {
-                memcpy(out, candidate, flen + 1);
-            }
-        }
-        if (!end) break;
-        tok = end + 1;
-    }
-    return out[0] != '\0';
+    memset(out, 0, sizeof(*out));
+    return storage_sd_foreach_csv(".csv", log_scan_cb, out) == STORAGE_OK;
 }
 
 /**
@@ -420,21 +394,18 @@ static bool scan_find(const char *list, bool find_max,
  *
  * Used by both check_free_space() (proactive reclaim) and write_to_sd()
  * (reactive reclaim on STORAGE_ERR_FULL). Skips non-timestamp files via the
- * is_ts_filename() filter inside sd_scan().
+ * is_ts_filename() filter inside log_scan(), and only this unit's files.
  *
  * @return true on successful deletion; false if no candidates were found
  *         or the underlying storage_sd_delete() call failed.
  */
 static bool delete_oldest(void)
 {
-    char list[SD_LIST_BUF_LEN];
-    if (!sd_scan(list, sizeof(list))) return false;
-
-    char oldest[SD_NAME_ONLY_LEN];
-    if (!scan_find(list, false, oldest, sizeof(oldest))) return false;
+    log_scan_t sc;
+    if (!log_scan(&sc) || sc.oldest_mine[0] == '\0') return false;
 
     char path[SD_FILENAME_LEN];
-    snprintf(path, sizeof(path), "/%s", oldest);
+    snprintf(path, sizeof(path), "/%s", sc.oldest_mine);
     bool ok = (storage_sd_delete(path) == STORAGE_OK);
     if (ok) ESP_LOGI(TAG, "[T9] Deleted oldest log file %s", path);
     return ok;
@@ -455,12 +426,12 @@ static void check_free_space(void)
 {
     if (storage_sd_free_bytes() >= SD_FREE_MIN_BYTES) return;
 
-    /* count-only vs SD_MIN_FILES (5): a truncated scan past ~21 files can't flip
-     * the >5 verdict, so 512 is adequate and keeps T9's rotate-path stack small.
-     * (The upload enumerators at :953/:1020 DO need SD_LIST_BUF_LEN — gh#42.) */
-    char list[512];
-    sd_scan(list, sizeof(list));
-    uint32_t count = scan_count(list);
+    /* gh#82: this unit's own file count, from a scan that cannot truncate. The
+     * retention floor is per unit, so a module never eats another module's
+     * history to make room for its own. */
+    log_scan_t sc;
+    (void)log_scan(&sc);
+    const uint32_t count = sc.mine;
 
     if (count > SD_MIN_FILES) {
         if (delete_oldest()) {
@@ -638,21 +609,31 @@ static void rotate_sd_file(void)
      * for normal CSV writes. The boot-time LOG_SYSTEM value_a=11 in T4
      * provides a fallback identification path. */
 
-    /* Enforce SD_MAX_FILES ceiling. */
-    char list[SD_LIST_BUF_LEN];
-    if (sd_scan(list, sizeof(list))) {
-        uint32_t count = scan_count(list);
-        if (count > SD_MAX_FILES) {
-            char oldest[SD_NAME_ONLY_LEN];
-            if (scan_find(list, false, oldest, sizeof(oldest))) {
-                char path[SD_FILENAME_LEN];
-                snprintf(path, sizeof(path), "/%s", oldest);
-                storage_sd_delete(path);
-                ESP_LOGI(TAG, "[T9] Rotated to %s, deleted %s", s_cur_filename, path);
-            }
-        } else {
-            ESP_LOGI(TAG, "[T9] Rotated to %s (%u files)", s_cur_filename, (unsigned)count);
+    /* Enforce the SD_MAX_FILES ceiling -- PER UNIT (gh#82). The count comes
+     * from a scan that cannot truncate; the old one saturated at exactly
+     * SD_MAX_FILES, so this test could never fire and nothing was ever
+     * deleted once the card passed the cap. */
+    log_scan_t sc;
+    if (log_scan(&sc)) {
+        uint32_t trimmed = 0u;
+        /* Trim back TO the cap, a few per rotation. Deleting exactly one while
+         * creating exactly one leaves a card that is ALREADY over the cap
+         * sitting there for ever -- and 2344's was, by weeks, because the count
+         * came from a truncated scan and the test could never fire (gh#82).
+         * Re-scan after each delete so the next "oldest" is the real one, and
+         * stop at SD_TRIM_PER_ROTATION so no rotation becomes an unlink storm. */
+        while (sc.mine > SD_MAX_FILES && trimmed < SD_TRIM_PER_ROTATION &&
+               sc.oldest_mine[0] != '\0') {
+            char path[SD_FILENAME_LEN];
+            snprintf(path, sizeof(path), "/%s", sc.oldest_mine);
+            if (storage_sd_delete(path) != STORAGE_OK) { break; }
+            trimmed++;
+            ESP_LOGI(TAG, "[T9] retention: deleted %s", path);
+            if (!log_scan(&sc)) { break; }
         }
+        ESP_LOGI(TAG, "[T9] Rotated to %s (%u of ours, %u on the card, %u trimmed)",
+                 s_cur_filename, (unsigned)sc.mine, (unsigned)sc.total,
+                 (unsigned)trimmed);
     }
 
     /* Proactive free-space check. */
@@ -690,10 +671,9 @@ static void write_to_sd(const log_event_t *evt)
 
     /* On full/IO error, attempt to reclaim space by deleting the oldest file. */
     if (rc == STORAGE_ERR_FULL || rc == STORAGE_ERR_IO) {
-        /* count-only vs SD_MIN_FILES (5): 512 is adequate (see gh#42); no need
-         * for SD_LIST_BUF_LEN on T9's rotate-path stack. */
-        char list[512];
-        if (sd_scan(list, sizeof(list)) && scan_count(list) > SD_MIN_FILES) {
+        /* gh#82: our own count, from the non-truncating scan. */
+        log_scan_t sc;
+        if (log_scan(&sc) && sc.mine > SD_MIN_FILES) {
             if (delete_oldest()) {
                 ESP_LOGW(TAG, "[T9] SD full: reclaimed space, retrying write");
                 rc = storage_sd_write_append(s_cur_filename, csv_line);
@@ -756,15 +736,16 @@ static void process_event(const log_event_t *evt)
  */
 static bool sd_open_active_file(void)
 {
-    char list[SD_LIST_BUF_LEN];
-    bool have_list = sd_scan(list, sizeof(list));
-
-    char newest[SD_NAME_ONLY_LEN] = { '\0' };
-    bool found = have_list && scan_find(list, true, newest, sizeof(newest));
+    /* gh#82: OUR newest file, from a scan that cannot truncate. Taking the
+     * largest name from a truncated list meant resuming into a file that was
+     * merely the newest of the ones that survived truncation -- or, on a card
+     * shared with the other module, into that module's file. */
+    log_scan_t sc;
+    bool found = log_scan(&sc) && sc.newest_mine[0] != '\0';
 
     if (found) {
         char path[SD_FILENAME_LEN];
-        snprintf(path, sizeof(path), "/%s", newest);
+        snprintf(path, sizeof(path), "/%s", sc.newest_mine);
         if (storage_sd_file_size(path) < SD_ROTATE_BYTES) {
             strncpy(s_cur_filename, path, sizeof(s_cur_filename) - 1);
             s_cur_filename[sizeof(s_cur_filename) - 1] = '\0';
@@ -795,6 +776,16 @@ static bool sd_open_active_file(void)
  * check (gh#14) guards against drivers that report mount success on an
  * effectively absent card.
  */
+bool event_logger_active_file(char *out, size_t cap)
+{
+    if (out == NULL || cap == 0u) { return false; }
+    out[0] = '\0';
+    if (!s_sd_ok || s_cur_filename[0] == '\0') { return false; }
+    const char *bare = (s_cur_filename[0] == '/') ? s_cur_filename + 1 : s_cur_filename;
+    snprintf(out, cap, "%s", bare);
+    return out[0] != '\0';
+}
+
 bool event_logger_sd_remount(void)
 {
     if (s_sd_ok) return true;
@@ -979,47 +970,77 @@ bool event_logger_force_rotate(uint32_t timeout_ms)
  * to @ref s_last_closed if the SD scan finds no candidate. Full contract in
  * event_logger.h.
  */
+/** One closed file of ours, chosen while scanning (gh#82). */
+typedef struct {
+    char        active[SD_NAME_ONLY_LEN];  /**< skip the file being written */
+    const char *after;                     /**< NULL, or "strictly greater than" */
+    bool        want_max;                  /**< true: newest; false: next after */
+    char        best[SD_NAME_ONLY_LEN];
+} pick_t;
+
+/** The 14-digit timestamp inside a log name, prefixed or legacy (gh#82). */
+static const char *name_ts(const char *name)
+{
+    return (strlen(name) == 23u && name[4] == '_') ? name + 5 : name;
+}
+
+static void pick_cb(const char *name, void *ctx)
+{
+    pick_t *p = (pick_t *)ctx;
+    if (!is_ts_filename(name) || !name_is_mine(name)) { return; }
+    if (p->active[0] != '\0' && strcmp(name, p->active) == 0) { return; }
+    /* The upload watermark is a point in TIME, not a name: compare the
+     * timestamps. T14 persists the last file it uploaded, and on the dev rig
+     * that can be the OTHER module's -- 2344 found `FDA4_20260916192045.csv`
+     * there on 2026-09-24, because the enumerator used to take the lexicographic
+     * maximum across every unit and `FDA4_` sorts above `2344_`. Comparing whole
+     * names would then find nothing pending for ever, since all of this unit's
+     * names sort below that one, and the backlog would never drain (gh#82). */
+    if (p->after != NULL && p->after[0] != 0 &&
+        strcmp(name_ts(name), name_ts(p->after)) <= 0) { return; }
+    if (p->best[0] == '\0') {
+        snprintf(p->best, sizeof(p->best), "%s", name);
+        return;
+    }
+    const int c = strcmp(name, p->best);
+    if ((p->want_max && c > 0) || (!p->want_max && c < 0)) {
+        snprintf(p->best, sizeof(p->best), "%s", name);
+    }
+}
+
+/** Fill @p p with the active file to exclude, and pick over the card. */
+static bool pick_closed(pick_t *p)
+{
+    p->best[0] = '\0';
+    p->active[0] = '\0';
+    if (s_sd_ok && s_cur_filename[0] != '\0') {
+        const char *bare = (s_cur_filename[0] == '/') ? s_cur_filename + 1 : s_cur_filename;
+        /* strncpy, not snprintf: the path buffer is longer than this field,
+         * and a bounded copy says so to the compiler as well as the reader. */
+        strncpy(p->active, bare, sizeof(p->active) - 1u);
+        p->active[sizeof(p->active) - 1u] = 0;
+    }
+    return storage_sd_foreach_csv(".csv", pick_cb, p) == STORAGE_OK;
+}
+
 bool event_logger_newest_closed(char *out, size_t cap)
 {
     if (out == NULL || cap == 0u) { return false; }
     out[0] = '\0';
 
-    /* Determine the active file's bare name (no leading '/') so we can skip
-     * it in the scan. If SD logging is inactive, no file is "active". */
-    char active_bare[SD_NAME_ONLY_LEN] = {};
-    if (s_sd_ok && s_cur_filename[0] != '\0') {
-        const char *bare = (s_cur_filename[0] == '/') ? s_cur_filename + 1 : s_cur_filename;
-        strncpy(active_bare, bare, sizeof(active_bare) - 1u);
-        active_bare[sizeof(active_bare) - 1u] = '\0';
-    }
-
-    /* Must fit all SD_MAX_FILES names: a 512-byte literal silently truncates the
-     * scan past ~21 files (gh#36 behaviour) and hides the newest closed file
-     * from T14's upload path (gh#42). Size from the shared constant. */
-    char list[SD_LIST_BUF_LEN];
-    if (!sd_scan(list, sizeof(list))) {
+    /* gh#82: our newest closed file, from a scan that cannot truncate. Sizing
+     * the old list to SD_MAX_FILES names (gh#42) only moved the cliff from ~21
+     * files to ~30: past the cap the newest names fell off again and the
+     * upload path stalled on a stale file. */
+    pick_t p;
+    p.after = NULL;
+    p.want_max = true;
+    if (!pick_closed(&p)) {
         /* SD unavailable — fall back to in-memory rotation record. */
         return event_logger_last_rotated(out, cap);
     }
-
-    /* Walk the scan list, lex-max excluding the active filename. */
-    const char *tok = list;
-    while (*tok) {
-        const char *end  = strchr(tok, ',');
-        size_t      flen = end ? (size_t)(end - tok) : strlen(tok);
-        if (flen > 0 && flen < cap) {
-            char candidate[SD_NAME_ONLY_LEN];
-            memcpy(candidate, tok, flen);
-            candidate[flen] = '\0';
-            if (active_bare[0] && strcmp(candidate, active_bare) == 0) {
-                /* skip the active file */
-            } else if (out[0] == '\0' || strcmp(candidate, out) > 0) {
-                strncpy(out, candidate, cap - 1u);
-                out[cap - 1u] = '\0';
-            }
-        }
-        if (!end) break;
-        tok = end + 1;
+    if (p.best[0] != '\0') {
+        snprintf(out, cap, "%s", p.best);
     }
 
     if (out[0] == '\0') {
@@ -1038,7 +1059,7 @@ bool event_logger_newest_closed(char *out, size_t cap)
  * successful upload, so a backlog of missed files (e.g. WiFi outage that
  * spanned a rotation) gets drained in chronological order on the next
  * trigger. Closed-file enumeration is identical to
- * event_logger_newest_closed() (same sd_scan() + active-file exclusion);
+ * event_logger_newest_closed() (same non-truncating scan + active-file exclusion);
  * only the selection predicate differs: smallest > after, vs lex-max.
  *
  * Unlike event_logger_newest_closed() this routine does *not* fall back to
@@ -1054,45 +1075,18 @@ bool event_logger_next_pending(const char *after, char *out, size_t cap)
     out[0] = '\0';
     if (after == NULL) { after = ""; }
 
-    /* Active file's bare name — exclude from results. If SD logging is
-     * inactive, no file is active. */
-    char active_bare[SD_NAME_ONLY_LEN] = {};
-    if (s_sd_ok && s_cur_filename[0] != '\0') {
-        const char *bare = (s_cur_filename[0] == '/') ? s_cur_filename + 1 : s_cur_filename;
-        strncpy(active_bare, bare, sizeof(active_bare) - 1u);
-        active_bare[sizeof(active_bare) - 1u] = '\0';
-    }
-
-    /* Must fit all SD_MAX_FILES names: a 512-byte literal silently truncates the
-     * scan past ~21 files and hides the newest pending file, stalling uploads
-     * once the card fills past ~21 CSVs (gh#42 — incomplete gh#36 fix). */
-    char list[SD_LIST_BUF_LEN];
-    if (!sd_scan(list, sizeof(list))) {
-        /* SD unavailable / scan failed — no enumeration possible. Unlike
-         * newest_closed we do NOT fall back to event_logger_last_rotated
-         * here, because the caller's intent is "walk all pending in order"
-         * and an in-memory fallback can't provide that. */
+    /* gh#82: the next one of ours after @p after, from a scan that cannot
+     * truncate. Unlike newest_closed this does NOT fall back to the in-memory
+     * record on SD failure: the caller's intent is "walk all pending in
+     * order", which an in-memory record cannot satisfy. */
+    pick_t p;
+    p.after = after;
+    p.want_max = false;
+    if (!pick_closed(&p)) {
         return false;
     }
-
-    /* Walk the comma-separated scan list, find smallest candidate > after. */
-    const char *tok = list;
-    while (*tok) {
-        const char *end  = strchr(tok, ',');
-        size_t      flen = end ? (size_t)(end - tok) : strlen(tok);
-        if (flen > 0 && flen < cap) {
-            char candidate[SD_NAME_ONLY_LEN];
-            memcpy(candidate, tok, flen);
-            candidate[flen] = '\0';
-            bool is_active   = (active_bare[0] && strcmp(candidate, active_bare) == 0);
-            bool is_eligible = !is_active && (strcmp(candidate, after) > 0);
-            if (is_eligible && (out[0] == '\0' || strcmp(candidate, out) < 0)) {
-                strncpy(out, candidate, cap - 1u);
-                out[cap - 1u] = '\0';
-            }
-        }
-        if (!end) break;
-        tok = end + 1;
+    if (p.best[0] != '\0') {
+        snprintf(out, cap, "%s", p.best);
     }
 
     return out[0] != '\0';

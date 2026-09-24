@@ -506,7 +506,7 @@ T11 runs the local web GUI and its REST API via `esp_http_server` (HTTP on port 
 | Data | `/api/status`, `/api/history` | public |
 | Config | `/api/config` (GET, POST), `/api/config/limits`, `/api/wifi`, `/api/pin`, `/api/web` | session-gated (farmer / admin per field) |
 | SD | `/api/sd/status`, `/api/sd/mount`, `/api/sd/unmount` | admin |
-| Log | `/api/log/files`, `/api/log/download` | session-gated |
+| Log | `/api/log/files`, `/api/log/download` | session-gated. `files` returns `{"current": "<active file>", "on_card": <n>, "sd_files": [...]}` — every file on the card up to a bounded newest-64, this unit's first, newest first (gh#82); `current` names the file being written so the GUI can mark it, and `on_card` says how many files the card holds so a bounded list is visible as one |
 | Coredump | `/api/coredump/status`, `/api/coredump/download`, `/api/coredump/erase` | admin (rate-limited; audit-logged) |
 | OTA | `/api/ota/status`, `/api/ota/firmware`, `/api/ota/assets` | admin |
 | WebSocket | `/ws` | public (payload identical to `/api/status`) |
@@ -975,7 +975,7 @@ In steady-state operation this produces one row per local day (the midnight roll
 - The `timestamp` field is an ISO 8601 **local-time** string (`YYYY-MM-DDTHH:MM:SS`), formatted via `localtime_r()` + `strftime("%Y-%m-%dT%H:%M:%S")`. Average line length: ~55 bytes. Estimated daily volume: ~483 KB (8 640 sensor sub-rows at 30 s default interval × 3 sub-rows per cycle + ~1 `SUN` row + ~150 discrete events).
 
 **SD card log file naming:**
-Files are named `YYYYMMDDHHMMSS.csv`, where:
+Files are named `<unit>_YYYYMMDDHHMMSS.csv` — a four-hex-digit unit id, an underscore, then:
 
 | Token | Meaning |
 |-------|---------|
@@ -986,27 +986,35 @@ Files are named `YYYYMMDDHHMMSS.csv`, where:
 | MM | 2-digit minute (00–59) |
 | SS | 2-digit second (00–59) |
 
-The timestamp encodes the moment the file was created (local time). Files are stored in the root directory of the SD card. Lexicographic sort of filenames yields chronological order, which is used by the startup scan and the web log retrieval interface. T9 applies an `is_ts_filename()` filter (exactly 14 decimal digits + `.csv`) so that old sequential-index files (`ghc_NNNN.csv`) from a previous firmware version are silently ignored and do not interfere with rotation or the file count.
+The timestamp encodes the moment the file was created (local time). Files are stored in the root directory of the SD card. `is_ts_filename()` accepts the prefixed form (4 hex + `_` + 14 digits + `.csv`) and the **legacy un-prefixed** form (14 digits + `.csv`), so old sequential-index files (`ghc_NNNN.csv`) are silently ignored and do not interfere with rotation or the file count.
+
+**Ordering: unit first, then date-time (accepted 2026-09-24, gh#82).** One card can hold the histories of more than one unit — the development rig takes swappable modules, and the card stays with the rig. The unit prefix therefore comes first in every comparison and lexicographic order is chronological **within one unit's files, not across them**. Consequences, all deliberate:
+
+- **Retention is per unit.** Each unit keeps up to `SD_MAX_FILES` of *its own* files and deletes only its own oldest. A module never evicts another module's history to make room for its own, and on a production card — one unit — this is indistinguishable from a per-card rule. A legacy un-prefixed file counts as the finder's own, since it can only come from an era when one unit owned the card.
+- **The startup resume takes this unit's newest file**, never the largest name on the card, which on a shared card would be the other module's.
+- **The web listing groups before it sorts**: this unit's files first, newest first, then any other module's, newest first (§5.11).
+
+**Every file decision comes from a scan that cannot truncate (gh#82).** `storage_sd_list_csv()` drops the names that do not fit the caller's buffer and still returns `STORAGE_OK`, and FAT lists roughly in creation order, so the names it drops are the **newest**. T9 therefore uses `storage_sd_foreach_csv()` — one callback per file, constant memory — and aggregates what it needs (count, oldest, newest, or a bounded newest-N). Before 2026-09-24 the count came from such a list and **saturated at exactly `SD_MAX_FILES`, so the `count > SD_MAX_FILES` test could never fire and retention silently stopped** once a card passed the cap; the resume and T14's upload enumerators chose from the same partial view.
 
 **SD card log rotation policy:**
 
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
 | Maximum file size | 1 024 KB (1 MB) | At ~483 KB/day typical rate, each file spans ~2 days. A power-loss event can corrupt only the currently open file; all closed files are intact. |
-| Files retained | 30 most recent | 30 × 1 MB = 30 MB maximum log footprint — comfortable against any reasonable SD card. Minimum guaranteed on-card history: ~63 days, well over the daily T14 upload's catch-up window. |
+| Files retained | 30 most recent **per unit** | 30 × 1 MB = 30 MB per unit — comfortable against any reasonable SD card, and on a production card (one unit) exactly the FR-LG06 figure. Minimum guaranteed on-card history: ~63 days, well over the daily T14 upload's catch-up window. A shared dev-rig card holds up to one such set per module. |
 | Minimum retention floor | 5 files | The free-space guard never deletes below this count. |
 | Low free-space threshold | 4 MB | If SD free space drops below 4 MB and the file count is above the floor, the oldest file is deleted to reclaim space. If already at the floor (5 files) and space is still below 4 MB, SD logging is suspended. SD logging resumes on the next successful mount command. |
 
 **Rotation procedure (triggered when current file reaches 1 MB):**
 1. Create a new file named with the current local timestamp (`YYYYMMDDHHMMSS.csv`).
 2. Write the CSV header row to the new file.
-3. If the total timestamp-file count now exceeds 30, delete the lexicographically oldest file.
+3. While **this unit's** file count exceeds 30, delete **this unit's** lexicographically oldest file — up to `SD_TRIM_PER_ROTATION` (5) per rotation, re-scanning between deletions. Trimming back TO the cap matters because deleting one file while creating one leaves a card that is already over the cap sitting there indefinitely; the per-rotation bound keeps one rotation from turning into a long unlink storm. The count and the choice both come from the non-truncating scan.
 4. Check free space (`storage_sd_free_bytes()`): if < 4 MB, invoke the free-space guard (delete oldest or suspend).
 
 **Write-failure reclaim:** if `storage_sd_write_append()` returns `STORAGE_ERR_FULL` or `STORAGE_ERR_IO`, T9 attempts a single oldest-file deletion and retries the write. If the retry also fails, T9 suspends event logging and surfaces the condition in `/api/sd/status`; subsequent `log_post()` calls drain Q3 without writing until the next successful mount.
 
 **Startup / resume behaviour:**
-On SD card mount, T9 calls `storage_sd_list_csv(".csv", ...)` and filters results through `is_ts_filename()` (14 decimal digits + `.csv`). The lexicographically largest matching filename is the most recent file. If its size is below `SD_ROTATE_BYTES` (1 MB), T9 resumes appending to it; otherwise a new timestamp file is created. If no matching files exist, a new file is created immediately.
+On SD card mount, T9 scans with `storage_sd_foreach_csv(".csv", ...)` and filters through `is_ts_filename()`. **This unit's** lexicographically largest matching filename is its most recent file. If its size is below `SD_ROTATE_BYTES` (1 MB), T9 resumes appending to it; otherwise a new timestamp file is created. If no matching files exist, a new file is created immediately.
 
 **Corruption resilience:**
 - Power loss during a write may leave the last partial CSV line incomplete; all preceding complete lines remain parseable.

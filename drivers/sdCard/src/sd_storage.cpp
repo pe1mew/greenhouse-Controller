@@ -464,6 +464,55 @@ storage_status_t storage_sd_list_csv(const char *ext, char *buf, size_t buf_len)
 /* ---------------------------------------------------------------------------
  * storage_sd_delete
  * --------------------------------------------------------------------------- */
+storage_status_t storage_sd_foreach_csv(const char *ext,
+                                        void (*cb)(const char *name, void *ctx),
+                                        void *ctx)
+{
+    if (!ext || !cb) {
+        return STORAGE_ERR_PARAM;
+    }
+    if (!g_mounted) {
+        return STORAGE_ERR_NO_CARD;
+    }
+
+#ifndef UNIT_TEST
+    DIR *d = opendir(SD_MOUNT_POINT);
+    if (d == NULL) {
+        return STORAGE_ERR_IO;
+    }
+    const size_t ext_len = strlen(ext);
+    struct dirent *entry;
+    while ((entry = readdir(d)) != NULL) {
+        const char *name = entry->d_name;
+        const size_t name_len = strlen(name);
+        if (name_len < ext_len) {
+            continue;
+        }
+        if (strcmp(name + name_len - ext_len, ext) != 0) {
+            continue;
+        }
+        if (entry->d_type == DT_DIR) {
+            continue;
+        }
+        if (entry->d_type == DT_UNKNOWN) {
+            char full[160];
+            if (build_vfs_path(name, full, sizeof(full))) {
+                struct stat st;
+                if (stat(full, &st) == 0 && S_ISDIR(st.st_mode)) {
+                    continue;
+                }
+            }
+        }
+        cb(name, ctx);
+    }
+    closedir(d);
+#else
+    mock_sd_foreach_csv(ext, cb, ctx);
+#endif
+
+    return STORAGE_OK;
+}
+
 storage_status_t storage_sd_delete(const char *filename)
 {
     if (!filename) {

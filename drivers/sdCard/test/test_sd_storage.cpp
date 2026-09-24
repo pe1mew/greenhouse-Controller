@@ -186,6 +186,79 @@ void test_read_truncates_and_null_terminates(void)
 /* ---------------------------------------------------------------------------
  * Main
  * --------------------------------------------------------------------------- */
+
+/* ---------------------------------------------------------------------------
+ * UT-SD-013 — foreach visits every match, where list_csv silently truncates
+ *
+ * gh#82: the listing drops the names that do not fit and still returns OK, so
+ * a caller that counts files, or picks the oldest or newest among them, is
+ * deciding from a partial view. 40 files is more than any sensible list buffer
+ * holds; the iterator must see all of them.
+ * ------------------------------------------------------------------------- */
+struct visit_ctx {
+    int count;
+    char first[32];
+    char last[32];
+};
+
+static void visit_cb(const char *name, void *ctx)
+{
+    struct visit_ctx *v = (struct visit_ctx *)ctx;
+    v->count++;
+    if (v->count == 1) {
+        snprintf(v->first, sizeof(v->first), "%s", name);
+    }
+    snprintf(v->last, sizeof(v->last), "%s", name);
+}
+
+static void test_foreach_sees_every_file_where_the_listing_truncates(void)
+{
+    mock_sd_reset();
+    TEST_ASSERT_EQUAL_INT(STORAGE_OK, storage_init());
+    for (int i = 0; i < 40; i++) {
+        char name[40];
+        snprintf(name, sizeof(name), "/2344_202609%02d000000.csv", i + 1);
+        TEST_ASSERT_EQUAL_INT(STORAGE_OK, storage_sd_write_append(name, "h\n"));
+    }
+
+    struct visit_ctx v = { 0, "", "" };
+    TEST_ASSERT_EQUAL_INT(STORAGE_OK, storage_sd_foreach_csv(".csv", visit_cb, &v));
+    TEST_ASSERT_EQUAL_INT(40, v.count);
+
+    /* The control: a buffer the size the event logger used holds far fewer,
+     * and says STORAGE_OK all the same. */
+    char small[871];
+    TEST_ASSERT_EQUAL_INT(STORAGE_OK, storage_sd_list_csv(".csv", small, sizeof(small)));
+    int listed = 0;
+    for (const char *p = small; *p; p++) {
+        if (*p == ',') listed++;
+    }
+    TEST_ASSERT_TRUE(listed < 40);
+}
+
+/* ---------------------------------------------------------------------------
+ * UT-SD-014 — foreach filters by extension, and refuses what it cannot do
+ * ------------------------------------------------------------------------- */
+static void test_foreach_filters_and_refuses(void)
+{
+    mock_sd_reset();
+    TEST_ASSERT_EQUAL_INT(STORAGE_OK, storage_init());
+    TEST_ASSERT_EQUAL_INT(STORAGE_OK, storage_sd_write_append("/2344_20260924000000.csv", "h\n"));
+    TEST_ASSERT_EQUAL_INT(STORAGE_OK, storage_sd_write_append("/notes.txt", "x\n"));
+
+    struct visit_ctx v = { 0, "", "" };
+    TEST_ASSERT_EQUAL_INT(STORAGE_OK, storage_sd_foreach_csv(".csv", visit_cb, &v));
+    TEST_ASSERT_EQUAL_INT(1, v.count);
+    TEST_ASSERT_EQUAL_STRING("2344_20260924000000.csv", v.first);
+
+    TEST_ASSERT_EQUAL_INT(STORAGE_ERR_PARAM, storage_sd_foreach_csv(".csv", NULL, &v));
+    TEST_ASSERT_EQUAL_INT(STORAGE_ERR_PARAM, storage_sd_foreach_csv(NULL, visit_cb, &v));
+
+    mock_sd_set_card_present(false);
+    storage_sd_unmount();
+    TEST_ASSERT_EQUAL_INT(STORAGE_ERR_NO_CARD, storage_sd_foreach_csv(".csv", visit_cb, &v));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -201,5 +274,7 @@ int main(void)
     RUN_TEST(test_delete_removes_file);
     RUN_TEST(test_delete_nonexistent);
     RUN_TEST(test_read_truncates_and_null_terminates);
+    RUN_TEST(test_foreach_sees_every_file_where_the_listing_truncates);
+    RUN_TEST(test_foreach_filters_and_refuses);
     return UNITY_END();
 }

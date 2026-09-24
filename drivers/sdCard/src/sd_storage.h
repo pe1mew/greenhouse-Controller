@@ -187,6 +187,33 @@ void storage_sd_unmount(void);
 storage_status_t storage_sd_list_csv(const char *ext, char *buf, size_t buf_len);
 
 /**
+ * @brief Visit every file with the given extension, one callback per name.
+ *
+ * The counterpart to @ref storage_sd_list_csv for callers that must not be
+ * truncated. That function drops the names that do not fit the caller's buffer
+ * and still returns STORAGE_OK, so anything that COUNTS files, or picks an
+ * extreme among them (the oldest to delete, the newest to resume), is deciding
+ * from a partial view of the card -- and the names it loses are the ones the
+ * directory lists last, which on FAT are roughly the newest (gh#82, 2026-09-24:
+ * a card with more than ~30 files hid its newest ones from the log listing, the
+ * retention count and the boot resume alike, so retention silently stopped).
+ *
+ * This visits every match in constant memory, so the caller can aggregate --
+ * count, oldest, newest, a bounded newest-N -- without a buffer to overflow.
+ *
+ * @param ext  Extension to match, e.g. ".csv". Not NULL.
+ * @param cb   Called once per matching file with the bare name (no leading
+ *             '/'), in directory order. Not NULL. Must not call back into this
+ *             driver.
+ * @param ctx  Passed through to @p cb unchanged; may be NULL.
+ * @return STORAGE_OK, STORAGE_ERR_PARAM (NULL @p ext or @p cb),
+ *         STORAGE_ERR_NO_CARD, STORAGE_ERR_IO.
+ */
+storage_status_t storage_sd_foreach_csv(const char *ext,
+                                        void (*cb)(const char *name, void *ctx),
+                                        void *ctx);
+
+/**
  * @brief Delete a file from the FAT32 volume.
  *
  * @param filename  Absolute path on the FAT32 volume.

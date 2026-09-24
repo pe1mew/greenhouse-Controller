@@ -40,6 +40,12 @@ STAGES
             takes it mid-drive, and T6 must tell the law ABORTED (4) -- not
             FAIL_TIMEOUT (2), which is all it ever said before. ~12 min: graded
             does not move M3 within 10 min of its last drive, a constant
+  endstop   (2026-09-24) gh#83: mode 2 must FINISH a close. M3 is left resting
+            INSIDE the deadzone -- a window ~2 cm ajar -- with the law wanting
+            it shut, and the closed end sensor must make. Until 2026-09-24 both
+            the law and T6 read "close enough" and stopped commanding, and 2344
+            stood 20.8 mm open all night. Fail-first bit 2048. ~12 min: the law
+            does not move M3 within 10 min of its last drive
   sincemove (2026-09-21) what the law and the linear dwell are told about M3's
             last drive: "none since boot" is UINT32_MAX, never 0 (a law reads 0
             as "just moved"); a recalibration sweep sets the time like any
@@ -91,6 +97,7 @@ SWEEP_LIMIT_S = 240       # a recalibration lasts the slowest channel's travel
 MIN_INTV_TEST_S = 600     # sincemove: the linear dwell (the default), > any sweep
 NEVER = 4294967295        # UINT32_MAX: "no drive since boot"
 RESULTS = {0: "NONE", 1: "DONE", 2: "FAIL_TIMEOUT", 3: "FAIL_FAULT", 4: "ABORTED"}
+AJAR_LIMIT_S = 1200       # endstop: the law's 10 min hold, a T6 wake, then the close
 
 
 # --------------------------------------------------------------------------
@@ -366,6 +373,101 @@ def stage_open(rig):
     return False
 
 
+def band_x10(rig):
+    """The arrival band the controller computes, in 0.1 %."""
+    cfg = rig.u.cfg() or {}
+    mm = cfg.get("deadzone_m3_mm")
+    sc, cm = rig.u._req("GET", "/api/diag/commission")
+    win = (cm or {}).get("window_mm") if isinstance(cm, dict) else None
+    if not mm or not win:
+        return None
+    return max(1, min(500, int(mm) * 1000 // int(win)))
+
+
+def live_pos(rig):
+    """A FRESH device read: the diag's top-level fields, not T17's cache."""
+    d = rig.diag()
+    return (d.get("percent_x10"), d.get("at_end_sensor")) if d.get("ok") else (None, None)
+
+
+def leave_it_ajar(rig, band, tries=6):
+    """Park M3 resting short of the closed end sensor, reading inside the band.
+
+    That is the state gh#83 is about, and it is how the rig got there: a
+    targeted stop ends on a reading, so a target just above the band comes to
+    rest around it, the switch unmade. The drive has to come from ABOVE -- from
+    the closed end the move is shorter than T2's overrun lead, so it is cut on
+    the first fresh reading and the leaf never leaves the switch (four such
+    tries on 2026-09-24 all read 0 with the end sensor still made).
+
+    A reading of 0 with the sensor RELEASED counts: the leaf is ajar by less
+    than the encoder's 0.1 %, which is the purest form of the defect -- the
+    caller sees `pos == want == 0` and calls it arrived while the window is
+    open. Where a stop lands is exactly what is not repeatable here, so it
+    takes a few tries.
+    """
+    for i in range(tries):
+        hook(rig, 100)                            # 10 % open: the drive that follows runs at speed
+        wait_for(rig, ("PART_OPEN", "OPEN"), HOOK_LIMIT_S)
+        hook(rig, band + 1)                       # the night's last drive, in miniature
+        wait_for(rig, ("PART_OPEN", "CLOSED"), HOOK_LIMIT_S)
+        time.sleep(3.0)                           # past T17's settle read
+        pos, at_end = live_pos(rig)
+        st = state(rig)
+        say("try %d: M3 %s at %s, end sensor %s (band %s)" % (i + 1, st, pos, at_end, band))
+        if st == "PART_OPEN" and pos is not None and pos <= band and not at_end:
+            return pos
+    return None
+
+
+def stage_endstop(rig):
+    """gh#83: mode 2 must finish a close -- the end sensor, not a number.
+
+    The night of 2026-09-23 ended with M3 resting 20.8 mm short of the closed
+    end sensor. T2's targeted stop ends on a reading; the law's deadzone check
+    and T6's arrival test then both read "close enough", and nothing commanded
+    M3 again. The window stood open with the log satisfied, and only switching
+    to mode 1 -- whose timed close runs into the end switch -- finished it.
+    """
+    need_blocks(rig)
+    if not ensure_position(rig):
+        return None
+    band = band_x10(rig)
+    if not band:
+        say("setup: the deadband is unknown (teach M3 first) -- inconclusive")
+        return None
+    if not ctrl_mode(rig, True, min_intv=0):      # the law's own hold is the wait
+        return None
+    # AUTOMATIC throughout, and STANDBY never touched once M3 is parked: LEAVING
+    # standby recalibrates, and that CLOSE_ALL sweep closes M3 by itself. The
+    # first run of this stage did exactly that and both arms passed -- a
+    # fail-first that passes for the wrong reason certifies nothing (2026-09-24).
+    # The law is kept off M3 while parking by wanting it OPEN, and by its own
+    # 10 min hold, which every park drive restarts.
+    rig.want(True)                                # the law wants M3 open: it will not close it
+    set_mode(rig, False)                          # any recalibration happens NOW, before parking
+    wait_for(rig, ("CLOSED", "OPEN", "PART_OPEN"), SWEEP_LIMIT_S)
+    pos = leave_it_ajar(rig, band)
+    if pos is None:
+        say("setup: could not leave M3 resting inside the band -- inconclusive")
+        return None
+    say("M3 is ajar at %s (band %s): end sensor released, so the window is open "
+        "however small the reading" % (pos, band))
+    rig.want(False)                               # now the law wants M3 shut
+    say("waiting for the law to finish the close (its hold is %d s)" % GRADED_HOLD_S)
+    st, secs = wait_for(rig, ("CLOSED",), AJAR_LIMIT_S)
+    time.sleep(3.0)
+    end_pos, at_end = live_pos(rig)
+    ok = (secs is not None) and bool(at_end)
+    say("%s  M3 %s after %s, live %s, end sensor %s"
+        % ("PASS" if ok else "FAIL", st,
+           ("%.0f s" % secs) if secs is not None else "never (%d s)" % AJAR_LIMIT_S,
+           end_pos, at_end))
+    if not ok:
+        say("      a close that stops on a reading leaves the window ajar: gh#83")
+    return ok
+
+
 def stage_aborted(rig):
     try:
         return _aborted(rig)
@@ -376,6 +478,13 @@ def stage_aborted(rig):
 def stage_sincemove(rig):
     try:
         return _sincemove(rig)
+    finally:
+        ctrl_mode(rig, False)
+
+
+def _endstop_wrapper(rig):
+    try:
+        return stage_endstop(rig)
     finally:
         ctrl_mode(rig, False)
 
@@ -506,7 +615,8 @@ def target_t6(rig, x10):
 
 
 STAGES = {"close": stage_close, "open": stage_open,
-          "aborted": stage_aborted, "sincemove": stage_sincemove}
+          "aborted": stage_aborted, "sincemove": stage_sincemove,
+          "endstop": _endstop_wrapper}
 
 
 def main():
@@ -524,7 +634,7 @@ def main():
     check_mode1(rig)
 
     # sincemove first: its "never moved" check needs M3 untouched since boot.
-    names = (["sincemove", "close", "open", "aborted"] if a.stage == "all"
+    names = (["sincemove", "close", "open", "aborted", "endstop"] if a.stage == "all"
              else [a.stage])
     results = {}
     try:

@@ -1912,52 +1912,116 @@ static esp_err_t sd_unmount_handler(httpd_req_t *req)
  * @note Auth requirement: Admin only.
  * @note Rate limit: none (capped at SD_MAX_FILES names in the response).
  */
+enum { LOG_FILES_MAX = 64, LOG_FNAME_MAX = SD_NAME_ONLY_LEN };
+
+/** The newest names found while scanning the card, for the log listing. */
+typedef struct {
+    char names[LOG_FILES_MAX][LOG_FNAME_MAX];
+    int  n;          /**< how many we kept */
+    int  seen;       /**< how many the card actually holds (gh#82) */
+    char id[5];
+} log_list_t;
+
+/** The 14-digit timestamp inside a log name, prefixed or legacy (gh#82). */
+static const char *log_name_ts(const char *name)
+{
+    return (strlen(name) == 23u && name[4] == '_') ? name + 5 : name;
+}
+
+/** Does @p a come BEFORE @p b in the operator's listing? Ours first, then
+ *  newest first within each group (gh#82, and the accepted sort: unit, then
+ *  date-time). */
+static bool log_name_before(const char *a, const char *b, const char *id)
+{
+    const bool a_mine = (strncmp(a, id, 4) == 0 && a[4] == '_');
+    const bool b_mine = (strncmp(b, id, 4) == 0 && b[4] == '_');
+    if (a_mine != b_mine) { return a_mine; }
+    const int c = strcmp(log_name_ts(a), log_name_ts(b));
+    if (c != 0) { return c > 0; }              /* newest first */
+    return strcmp(a, b) < 0;                   /* same stamp: stable by name */
+}
+
+/** Keep the newest LOG_FILES_MAX names while scanning, dropping the oldest
+ *  when full -- so a card holding more than the listing can show loses its
+ *  OLDEST names, never its newest (gh#82 was the other way round). */
+static void log_files_collect(const char *name, void *ctx)
+{
+    log_list_t *lc = (log_list_t *)ctx;
+    if (name == NULL || name[0] == 0 || strlen(name) >= LOG_FNAME_MAX) { return; }
+    lc->seen++;
+    if (lc->n < LOG_FILES_MAX) {
+        snprintf(lc->names[lc->n], LOG_FNAME_MAX, "%s", name);
+        lc->n++;
+        return;
+    }
+    int oldest = 0;
+    for (int i = 1; i < lc->n; i++) {
+        if (strcmp(log_name_ts(lc->names[i]), log_name_ts(lc->names[oldest])) < 0) {
+            oldest = i;
+        }
+    }
+    if (strcmp(log_name_ts(name), log_name_ts(lc->names[oldest])) > 0) {
+        snprintf(lc->names[oldest], LOG_FNAME_MAX, "%s", name);
+    }
+}
+
 static esp_err_t log_files_handler(httpd_req_t *req)
 {
     if (!admin_only_or_send_error(req)) return ESP_OK;
 
     /* List buffer for storage_sd_list_csv (comma-separated string). */
-    const size_t LIST_LEN = SD_LIST_BUF_LEN;
-    char *list_buf = (char *)heap_caps_malloc(LIST_LEN, MALLOC_CAP_INTERNAL);
-    if (list_buf == NULL) { httpd_resp_send_500(req); return ESP_FAIL; }
-    list_buf[0] = '\0';
+    /* gh#82 -- the listing used to keep the FIRST 30 names the directory gave
+     * it and sort them afterwards, and `storage_sd_list_csv()` drops whatever
+     * does not fit while still returning STORAGE_OK. FAT lists roughly in
+     * creation order, so the names dropped were the NEWEST: a card with more
+     * than 30 files showed the operator only old ones, and the file the unit
+     * was actually writing could not be found or downloaded at all (2344,
+     * 2026-09-24).
+     *
+     * Now: one pass that cannot truncate, keeping the newest LOG_FILES_MAX by
+     * timestamp, then sorted for the operator -- THIS unit's files first,
+     * newest first, then any other module's, newest first. The dev rig's two
+     * modules share a card, and retention is per unit, so both groups are
+     * legitimately present and either can be the one you want. */
+    log_list_t *lc = (log_list_t *)heap_caps_malloc(sizeof(log_list_t), MALLOC_CAP_INTERNAL);
+    if (lc == NULL) { httpd_resp_send_500(req); return ESP_FAIL; }
+    memset(lc, 0, sizeof(*lc));
+    system_unit_id_str(lc->id, sizeof(lc->id));
+
     if (storage_sd_available()) {
-        (void)storage_sd_list_csv(".csv", list_buf, LIST_LEN);
+        (void)storage_sd_foreach_csv(".csv", log_files_collect, lc);
     }
 
-    /* Tokenize → fixed-size name array. */
-    enum { LOG_FILES_MAX = (int)SD_MAX_FILES, LOG_FNAME_MAX = SD_NAME_ONLY_LEN };
-    char names[LOG_FILES_MAX][LOG_FNAME_MAX] = {};
-    int n_names = 0;
-    char *save = NULL;
-    char *tok = strtok_r(list_buf, ",", &save);
-    while (tok && n_names < LOG_FILES_MAX) {
-        while (*tok == ' ') tok++;
-        if (*tok) {
-            strncpy(names[n_names], tok, LOG_FNAME_MAX - 1);
-            names[n_names][LOG_FNAME_MAX - 1] = '\0';
-            n_names++;
-        }
-        tok = strtok_r(NULL, ",", &save);
-    }
-    /* Bubble sort — n ≤ 12, negligible. */
-    for (int i = 0; i < n_names - 1; i++) {
-        for (int j = 0; j < n_names - 1 - i; j++) {
-            if (strcmp(names[j], names[j + 1]) > 0) {
+    /* Sort for display: ours first, then newest first inside each group. */
+    for (int i = 0; i < lc->n - 1; i++) {
+        for (int j = 0; j < lc->n - 1 - i; j++) {
+            if (log_name_before(lc->names[j + 1], lc->names[j], lc->id)) {
                 char tmp[LOG_FNAME_MAX];
-                memcpy(tmp,           names[j],     LOG_FNAME_MAX);
-                memcpy(names[j],      names[j + 1], LOG_FNAME_MAX);
-                memcpy(names[j + 1],  tmp,          LOG_FNAME_MAX);
+                memcpy(tmp,               lc->names[j],     LOG_FNAME_MAX);
+                memcpy(lc->names[j],      lc->names[j + 1], LOG_FNAME_MAX);
+                memcpy(lc->names[j + 1],  tmp,              LOG_FNAME_MAX);
             }
         }
     }
+    char (*names)[LOG_FNAME_MAX] = lc->names;
+    const int n_names = lc->n;
 
     /* Build the JSON response. */
-    const size_t OUT_LEN = 1024u;
+    /* gh#82, second lesson, found while verifying the first: the COLLECTION
+     * stopped truncating but this buffer did not, so a card with 37 files
+     * returned 37 names and HTTP 200 while the rest went unmentioned -- the
+     * same silent cut one level up. Sized for LOG_FILES_MAX names now, and the
+     * reply says how many the card holds so any bound is visible rather than
+     * inferred from a short list. */
+    const size_t OUT_LEN = (size_t)LOG_FILES_MAX * (LOG_FNAME_MAX + 4u) + 96u;
     char *out = (char *)heap_caps_malloc(OUT_LEN, MALLOC_CAP_INTERNAL);
-    if (out == NULL) { heap_caps_free(list_buf); httpd_resp_send_500(req); return ESP_FAIL; }
+    if (out == NULL) { heap_caps_free(lc); httpd_resp_send_500(req); return ESP_FAIL; }
 
-    int pos = snprintf(out, OUT_LEN, "{\"sd_files\":[");
+    char active[SD_NAME_ONLY_LEN] = {};
+    (void)event_logger_active_file(active, sizeof(active));
+
+    int pos = snprintf(out, OUT_LEN, "{\"current\":\"%s\",\"on_card\":%d,\"sd_files\":[",
+                       active, lc->seen);
     for (int i = 0; i < n_names && (size_t)pos < OUT_LEN - 32u; i++) {
         int w = snprintf(out + pos, OUT_LEN - (size_t)pos,
                          "%s\"%s\"", (i > 0) ? "," : "", names[i]);
@@ -1969,7 +2033,7 @@ static esp_err_t log_files_handler(httpd_req_t *req)
 
     httpd_resp_set_type(req, "application/json");
     esp_err_t err = httpd_resp_send(req, out, (size_t)pos);
-    heap_caps_free(list_buf);
+    heap_caps_free(lc);
     heap_caps_free(out);
     return err;
 }

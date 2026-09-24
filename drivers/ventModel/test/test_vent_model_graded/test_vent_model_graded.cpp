@@ -359,6 +359,29 @@ static void test_within_the_deadband_is_held(void)
     M3_TARGET(out, 250);
 }
 
+/* gh#83 (2026-09-24): an END target is not satisfied by a reading inside the
+ * deadzone. A leaf at 1.3 % is a window ~2 cm ajar, and only the end switch
+ * closes it, so the law keeps asking for 0 until the caller reports CLOSED.
+ * Until this test the deadzone check held here, and mode 2 could not finish a
+ * close: 2344 sat at 20.8 mm all night on 2026-09-23. */
+static void test_an_end_target_holds_out_for_the_end(void)
+{
+    vent_in_t in = base_in();
+    set_t(&in, 300);                                /* warm: it opens M3 a little */
+    vent_out_t out = run(&in);
+    M3_TARGET(out, 250);
+    set_t(&in, 200);                                /* cold again: it wants M3 shut */
+    m3_at(&in, 13, LONG_AGO);                       /* at rest 1.3 %: inside the deadzone */
+    out = run(&in);
+    M3_TARGET(out, 0);                              /* the end, not "close enough" */
+    m3_at(&in, 13, LONG_AGO);                       /* still short: still asking */
+    out = run(&in);
+    M3_TARGET(out, 0);
+    m3_at(&in, 0, LONG_AGO);                        /* the end switch made it CLOSED */
+    out = run(&in);
+    TEST_ASSERT_EQUAL_INT(VENT_ACT_HOLD, out.win[2].action);
+}
+
 static void test_reset_takes_the_position_as_target(void)
 {
     vent_in_t in = base_in();
@@ -442,6 +465,7 @@ int main(int argc, char **argv)
     RUN_TEST(test_rate_limit_steps_to_fully_open);
     RUN_TEST(test_small_correction_is_not_made);
     RUN_TEST(test_within_the_deadband_is_held);
+    RUN_TEST(test_an_end_target_holds_out_for_the_end);
     RUN_TEST(test_reset_takes_the_position_as_target);
     RUN_TEST(test_m1_m2_and_steps_are_stepped_in_lockstep);
     RUN_TEST(test_identity);

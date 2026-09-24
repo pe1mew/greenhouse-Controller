@@ -248,14 +248,33 @@ _EVT_INIT  = ["SYS",    "FARMER",  "ADMIN", "MQTT",  "WEB"]
 # accepts `?src=nvs`. The _EVT_TYPE / _EVT_INIT tables above are kept for
 # documentation; they previously labelled NVS entry rows.
 
+MOCK_UNIT_ID = "2344"          # the module the mock pretends to be (gh#82)
+
+
 def _sd_log_files() -> list[str]:
-    """Return 3 synthetic SD log filenames using local-time timestamp format."""
+    """Synthetic SD log filenames, as the firmware now returns them (gh#82).
+
+    Prefixed with a unit id, NEWEST FIRST, this unit's files before the other
+    module's -- the dev rig's two modules share a card and retention is per
+    unit, so both groups are legitimately present. The last entry of our group
+    is the one `_sd_active_file()` calls current.
+    """
     now = time.time()
-    files = []
-    for hours_ago in (3, 2, 1):
+    mine = []
+    for hours_ago in (1, 2, 3):                      # newest first
         t = time.localtime(now - hours_ago * 3600)
-        files.append(time.strftime("%Y%m%d%H%M%S", t) + ".csv")
-    return files
+        mine.append(MOCK_UNIT_ID + "_" + time.strftime("%Y%m%d%H%M%S", t) + ".csv")
+    theirs = []
+    for days_ago in (2, 5):
+        t = time.localtime(now - days_ago * 86400)
+        theirs.append("FDA4_" + time.strftime("%Y%m%d%H%M%S", t) + ".csv")
+    return mine + theirs
+
+
+def _sd_active_file() -> str:
+    """The file the unit is writing right now: our newest (gh#82)."""
+    files = _sd_log_files()
+    return files[0] if files else ""
 
 def _sd_csv_content(filename: str) -> str:
     """Return synthetic CSV content for the given SD filename (ISO 8601 timestamps)."""
@@ -1005,7 +1024,14 @@ def log_files():
     if denied:
         return denied
     sd_files = _sd_log_files() if sd["mounted"] else []
-    return {"sd_files": sd_files}
+    # gh#82: `current` names the file being written, so the GUI can mark it.
+    return {
+        "sd_files": sd_files,
+        "current": _sd_active_file() if sd["mounted"] else "",
+        # gh#82: how many the card holds, so a bounded list is visible as such
+        # rather than inferred from a short one.
+        "on_card": len(sd_files),
+    }
 
 
 @app.route("/api/log/download", methods=["GET"])

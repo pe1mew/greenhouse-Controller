@@ -38,11 +38,16 @@
  * 1024  T2/T6: "never moved" reads 0 (a law's "just moved"), and a
  *       recalibration sets no move time and arms the close dwell whatever the
  *       mode (bin/at_wp_fallback.py `sincemove`)
+ * 2048  T6: an end target is judged by POSITION, so a close to 0 % that stops
+ *       inside the arrival band counts as arrived -- mode 2 never finishes a
+ *       close and leaves the window a deadzone ajar (gh#83, seen on 2344 the
+ *       night of 2026-09-23: 20.8 mm short, all night;
+ *       bin/at_wp_fallback.py `endstop`)
  *
  * **Pass a value.** GCC defines a bare `-DWPOS_FAILFIRST_212` as 1, so a bare
  * flag restores bit 1 ALONE. An earlier comment said a bare flag meant "all
- * four"; that was never true of the bitmask and was never exercised. All eleven
- * is `=2047`.
+ * four"; that was never true of the bitmask and was never exercised. All twelve
+ * is `=4095`.
  *
  * Bench builds only: the source refuses the flag otherwise, and
  * GET /api/diag/windowpos reports `gate.failfirst_212` so a result can never be
@@ -61,10 +66,10 @@
  * EMPTY definition (`-DWPOS_FAILFIRST_212=`) to all four bits; this header would
  * map it to 0 -- so refuse it, and refuse bits nobody has defined. */
 #  if (WPOS_FAILFIRST_212 + 0) == 0
-#    error "WPOS_FAILFIRST_212 is defined but restores nothing: pass a mask, =1..2047"
+#    error "WPOS_FAILFIRST_212 is defined but restores nothing: pass a mask, =1..4095"
 #  endif
-#  if (WPOS_FAILFIRST_212 + 0) > 2047
-#    error "WPOS_FAILFIRST_212 has bits above 1024 that restore nothing: =1..2047"
+#  if (WPOS_FAILFIRST_212 + 0) > 4095
+#    error "WPOS_FAILFIRST_212 has bits above 2048 that restore nothing: =1..4095"
 #  endif
 #else
 #  define FF212 0u
@@ -81,3 +86,4 @@
 #define FF212_DEFER_DISARM (FF212 & 256u)
 #define FF212_ABORTED   (FF212 & 512u)
 #define FF212_SINCE     (FF212 & 1024u)
+#define FF212_ENDTARGET (FF212 & 2048u)

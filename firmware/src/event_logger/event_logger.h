@@ -197,11 +197,36 @@
  * every buffer in event_logger.cpp and web_server.cpp adjusts automatically.
  * ----------------------------------------------------------------------- */
 
-/** @brief Rotate to a new SD log file when the current one reaches this size (1 MB). */
+/** @brief Rotate to a new SD log file when the current one reaches this size (1 MB).
+ *
+ * A BENCH build may shrink it with `-DSD_ROTATE_TEST_BYTES=<n>` so a rig crosses
+ * the retention cap in minutes instead of the weeks a 1 MB file takes to fill.
+ * That is how gh#82's retention fix was watched working on 2344; a release
+ * build refuses the flag, because a tiny rotation size on a real greenhouse
+ * would shred its own history. */
+#if defined(SD_ROTATE_TEST_BYTES) && !defined(MODBUS_BENCH)
+#error "SD_ROTATE_TEST_BYTES is a bench-only test override"
+#endif
+#ifdef SD_ROTATE_TEST_BYTES
+#define SD_ROTATE_BYTES    ((unsigned long)(SD_ROTATE_TEST_BYTES))
+#else
 #define SD_ROTATE_BYTES    (1024UL * 1024UL)
+#endif
 
-/** @brief Maximum number of log files retained on the SD card (oldest deleted on rotation). */
+/** @brief Maximum number of log files retained on the SD card, PER UNIT
+ *         (this unit's oldest deleted on rotation; gh#82). */
 #define SD_MAX_FILES       30u
+
+/** @brief How many files one rotation may delete while trimming back to the cap.
+ *
+ * A card that has been over the cap for weeks -- as 2344's was, because the
+ * count came from a truncated scan and the deletion could never fire -- must
+ * come back DOWN, not merely stop growing: deleting one file per rotation while
+ * creating one leaves the count wherever it was. Trimming a few at a time
+ * converges over a handful of rotations without giving T9 one long unlink
+ * storm, and without deleting dozens of files behind the operator's back in a
+ * single boot. */
+#define SD_TRIM_PER_ROTATION 5u
 
 /** @brief Minimum number of files to retain; never delete below this floor. */
 #define SD_MIN_FILES       5u
@@ -372,6 +397,20 @@ bool event_logger_next_pending(const char *after, char *out, size_t cap);
  * @return true if the card is now mounted and logging is active.
  * @return false if `storage_init()` failed or the header write failed.
  */
+/**
+ * @brief The bare name of the log file being written right now (gh#82).
+ *
+ * For the web log listing, which marks it so the operator can tell the active
+ * file from the rotated ones -- the question that started gh#82 was "which
+ * file is the unit writing to?", and nothing answered it.
+ *
+ * @param out  Receives the bare name (no leading '/'), or "" when SD logging
+ *             is suspended or no file is open.
+ * @param cap  Capacity of @p out; SD_NAME_ONLY_LEN is enough.
+ * @return true when a file is open and its name was copied.
+ */
+bool event_logger_active_file(char *out, size_t cap);
+
 bool event_logger_sd_remount(void);
 
 /**

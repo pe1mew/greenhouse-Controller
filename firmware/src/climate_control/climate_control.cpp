@@ -234,8 +234,9 @@ static inline bool moving(window_state_t s)
     return (s == WIN_MOVING_OPEN || s == WIN_MOVING_CLOSE);
 }
 
-/** Post one CMD_TARGET and remember it as outstanding. */
-static void post_target(uint8_t ch, int16_t want_x10);
+/** Post one M3 command and remember it as outstanding: a CMD_TARGET, or the
+ *  ordinary end drive when the target is an end (gh#83). */
+static void post_target(uint8_t ch, int16_t want_x10, bool to_end);
 
 /** M3's last commanded target, and how it ended: the feedback half of the
  *  contract (§3). T6 remembers what it ASKED for, and judges it once M3 is at
@@ -254,7 +255,7 @@ static int16_t       s_m3_last_target_x10 = -1;
 static vent_result_t s_m3_last_result     = VENT_RES_NONE;
 static uint32_t      s_m3_taken_at_post   = 0u;   /* t2_get_taken(M3) when it went out */
 
-static void post_target(uint8_t ch, int16_t want_x10)
+static void post_target(uint8_t ch, int16_t want_x10, bool to_end)
 {
     /* A REPEAT of the outstanding target is the same command, so it keeps the
      * count it went out with. graded repeats its target on every wake while M3
@@ -269,19 +270,31 @@ static void post_target(uint8_t ch, int16_t want_x10)
     if (!repeat) {
         s_m3_taken_at_post = t2_get_taken(ch); /* before T2 can act on it */
     }
-    post_q1_target(CMD_TARGET, (uint8_t)(ch + 1), want_x10);
+    if (to_end) {
+        /* gh#83: the ordinary end drive, exactly as mode 1 issues it, so it
+         * runs into the end switch on the travel timer, ends in a terminal
+         * state, and T17 judges it as an end drive (ALARM ch6 251 = +/-1,
+         * +/-2) instead of "no end was asked for". The law's record still
+         * holds the aperture it asked for. */
+        post_q1((want_x10 == 0) ? CMD_CLOSE : CMD_OPEN, (uint8_t)(ch + 1));
+    } else {
+        post_q1_target(CMD_TARGET, (uint8_t)(ch + 1), want_x10);
+    }
     s_m3_last_target_x10 = want_x10;
     s_m3_last_result     = VENT_RES_NONE;      /* outstanding */
-    ESP_LOGI(TAG, "[T6] → CMD_TARGET ch=%u %d.%u %%",
+    ESP_LOGI(TAG, "[T6] → %s ch=%u %d.%u %%",
+             to_end ? ((want_x10 == 0) ? "CMD_CLOSE (end)" : "CMD_OPEN (end)")
+                    : "CMD_TARGET",
              (unsigned)(ch + 1), (int)(want_x10 / 10), (unsigned)(want_x10 % 10));
 }
 
 /** What this cycle will do with M3's target, decided before any command goes
  *  out so the two passes below can order it by direction. */
 typedef struct {
-    bool    issue;      /**< a CMD_TARGET is to be posted */
+    bool    issue;      /**< a command is to be posted */
     bool    narrowing;  /**< it reduces the aperture, so it goes with the closes */
-    int16_t want_x10;   /**< clamped target */
+    int16_t want_x10;   /**< clamped target, snapped to an end by gh#83 */
+    bool    to_end;     /**< gh#83: post the END drive, not a target */
 } target_plan_t;
 
 /**
@@ -295,7 +308,7 @@ static target_plan_t plan_target(const vent_out_t *out, const window_state_t *ac
                                  uint8_t ch, bool linear, uint16_t band_x10,
                                  uint32_t min_interval_ms)
 {
-    target_plan_t p = { false, false, 0 };
+    target_plan_t p = { false, false, 0, false };
     if (out->win[ch].action != VENT_ACT_TARGET) { return p; }
 
     /* A TARGET is legitimate for M3 alone, and only in mode 2. Anywhere else
@@ -316,6 +329,23 @@ static target_plan_t plan_target(const vent_out_t *out, const window_state_t *ac
     if (want < 0)    { want = 0; }
     if (want > 1000) { want = 1000; }
 
+    /* gh#83 -- a target within the deadzone of an END *is* that end, and an end
+     * is reached by driving INTO it, never by stopping on a reading. T2's
+     * targeted stop ends on position, so mode 2's close to 0 % came to rest
+     * anywhere inside the band: on 2344 it stopped 20.8 mm short, the closed
+     * end sensor never made, and this function then read |pos - want| <= band
+     * and called it arrived. Nothing moved M3 for the rest of that night
+     * (2026-09-23/24) and the operator had to switch to mode 1, whose timed
+     * close finished it in 1.6 s. Mode 2 could not close a window.
+     *
+     * So the target snaps to the end and becomes the ordinary end drive, and
+     * "arrived" for it is the window's STATE -- CLOSED / OPEN, which only an
+     * end switch produces -- never its position. Fail-first bit 2048. */
+    const bool to_closed = !FF212_ENDTARGET && (want <= (int32_t)band_x10);
+    const bool to_open   = !FF212_ENDTARGET && (want >= 1000 - (int32_t)band_x10);
+    if (to_closed) { want = 0; }
+    if (to_open)   { want = 1000; }
+
     dm_m3_pos_t m3;
     if (!dm_m3_position(&m3)) {
         /* Mode 2 needs a trusted position, so this should not happen -- but if
@@ -325,7 +355,14 @@ static target_plan_t plan_target(const vent_out_t *out, const window_state_t *ac
     }
 
     const int32_t pos = (int32_t)m3.percent_x10;
-    if (!moving(actual[ch])) {
+    const window_state_t a = actual[ch];
+    if (to_closed || to_open) {
+        /* At the end only when T2 says so. PART_OPEN inside the band is
+         * exactly the case this rule exists for, so it is NOT arrival. */
+        if ((to_closed && a == WIN_CLOSED) || (to_open && a == WIN_OPEN)) {
+            return p;                      /* there, and the end sensor says so */
+        }
+    } else if (!moving(a)) {
         const int32_t err = pos - want;
         if (err >= -(int32_t)band_x10 && err <= (int32_t)band_x10) {
             return p;                      /* inside the band: nothing to do */
@@ -351,7 +388,11 @@ static target_plan_t plan_target(const vent_out_t *out, const window_state_t *ac
 
     p.issue     = true;
     p.want_x10  = (int16_t)want;
-    p.narrowing = (want < pos);
+    p.to_end    = (to_closed || to_open);
+    /* A close narrows whatever the reading says: with the leaf resting at 0.0 %
+     * but the end sensor open, `want < pos` would be false and the command
+     * would ride the widening pass, against the contract's ordering (§3). */
+    p.narrowing = p.to_end ? to_closed : (want < pos);
     return p;
 }
 
@@ -396,7 +437,7 @@ static void apply_model_output(const vent_out_t *out, const window_state_t *actu
                      (unsigned)(ch + 1), (int)out->step, (int)a);
         }
         if (plan[ch].issue && plan[ch].narrowing) {
-            post_target(ch, plan[ch].want_x10);
+            post_target(ch, plan[ch].want_x10, plan[ch].to_end);
         }
     }
 
@@ -412,7 +453,7 @@ static void apply_model_output(const vent_out_t *out, const window_state_t *actu
                      (unsigned)(ch + 1), (int)out->step, (int)a);
         }
         if (plan[ch].issue && !plan[ch].narrowing) {
-            post_target(ch, plan[ch].want_x10);
+            post_target(ch, plan[ch].want_x10, plan[ch].to_end);
         }
     }
 }
@@ -447,8 +488,19 @@ static void judge_m3_target(const window_state_t *actual, uint16_t band_x10)
     }
     const int32_t err = (int32_t)m3.percent_x10 - (int32_t)s_m3_last_target_x10;
     const int32_t band = (band_x10 > 0u) ? (int32_t)band_x10 : 0;
-    s_m3_last_result = (err >= -band && err <= band) ? VENT_RES_DONE
-                                                     : VENT_RES_FAIL_TIMEOUT;
+    bool done = (err >= -band && err <= band);
+    /* gh#83: an END is not reached by a position inside the band -- the end
+     * switch makes the state, and a drive that stopped short of it left the
+     * window open. Judging that DONE is how the law was told, all night, that
+     * a 2 cm gap was a closed window. */
+    if (!FF212_ENDTARGET && band > 0) {
+        if (s_m3_last_target_x10 <= (int16_t)band) {
+            done = (actual[2] == WIN_CLOSED);
+        } else if (s_m3_last_target_x10 >= (int16_t)(1000 - band)) {
+            done = (actual[2] == WIN_OPEN);
+        }
+    }
+    s_m3_last_result = done ? VENT_RES_DONE : VENT_RES_FAIL_TIMEOUT;
     ESP_LOGI(TAG, "[T6] M3 target %d.%u %% ended at %d.%u %%: %s",
              (int)(s_m3_last_target_x10 / 10), (unsigned)(s_m3_last_target_x10 % 10),
              (int)(m3.percent_x10 / 10), (unsigned)(m3.percent_x10 % 10),
