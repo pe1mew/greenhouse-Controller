@@ -13,13 +13,21 @@ Layout mirrors model/simulation.py's save_plot() four-panel design:
   Panel 4 — Window position per channel (M1/M2/M3) on a state ladder
             CLOSED → MOVING_OPEN → OPEN → MOVING_CLOSE
 
-Inputs:
-  - temp/*.csv — SD log files (header: timestamp,type,initiator,ch,param,value_a,value_b)
-  - temp/config.json — current controller config (for setpoint lines)
+Usage:
+  plot_daily.py [--dir CAMPAIGN_DIR] [YYYY-MM-DD]
 
-Outputs:
-  - temp/plot_YYYY-MM-DD.png  — one per UTC day with ≥ 30 sensor samples
-  - temp/plot_summary.txt     — per-day stats and a list of generated files
+  --dir     the campaign directory to read and write; the script's own by
+            default, so the summer campaign still runs as `python plot_daily.py`.
+            One script serves every campaign (campaign-fall-2026 and later).
+  YYYY-MM-DD  render that day alone, leaving the rest of the campaign as it is.
+
+Inputs (all in the campaign directory):
+  - *.log — SD log files (header: timestamp,type,initiator,ch,param,value_a,value_b)
+  - config.json — the controller config the plots take their setpoint lines from
+
+Outputs (in the same directory):
+  - plot_YYYY-MM-DD.png  — one per day with ≥ 30 sensor samples
+  - plot_summary.txt     — per-day stats and a list of generated files
 """
 
 from __future__ import annotations
@@ -665,11 +673,23 @@ def plot_day(date_key, events, cfg, out_path: Path, dawn_dusk):
 # ─── main ───────────────────────────────────────────────────────────────────
 
 def main():
+    # `--dir CAMPAIGN_DIR` plots another campaign with this one script; without
+    # it the script's own directory is the campaign, as it always was.
+    argv = sys.argv[1:]
     temp_dir = HERE
+    if argv and argv[0] == "--dir":
+        if len(argv) < 2:
+            print("[error] --dir needs a directory")
+            sys.exit(2)
+        temp_dir, argv = Path(argv[1]).resolve(), argv[2:]
+        if not temp_dir.is_dir():
+            print(f"[error] no such directory: {temp_dir}")
+            sys.exit(2)
+        print(f"[dir] {temp_dir}")
     try:
         cfg = json.load(open(temp_dir / "config.json"))
     except FileNotFoundError:
-        print("[error] temp/config.json not found; fetch it via /api/config first.")
+        print(f"[error] {temp_dir / 'config.json'} not found; fetch it via /api/config first.")
         sys.exit(2)
 
     events, files_seen = load_logs(temp_dir)
@@ -677,7 +697,7 @@ def main():
     # The day-union at the next step already handles HR-only datasets; this
     # guard previously rejected them despite the comment to the contrary.
     if not events["SENSOR"] and not events["SENSOR_HR_0"]:
-        print("[error] no SENSOR or SENSOR_HR rows found in temp/*.csv")
+        print(f"[error] no SENSOR or SENSOR_HR rows found in {temp_dir / '*.log'}")
         sys.exit(2)
 
     # Day buckets
@@ -691,17 +711,17 @@ def main():
     # (focused analysis, without re-rendering the whole campaign or clobbering
     # the full plot_summary.txt).
     single_day = None
-    if len(sys.argv) > 1:
+    if argv:
         try:
-            single_day = datetime.strptime(sys.argv[1], "%Y-%m-%d").date()
+            single_day = datetime.strptime(argv[0], "%Y-%m-%d").date()
         except ValueError:
-            print(f"[error] bad date '{sys.argv[1]}' — expected YYYY-MM-DD")
+            print(f"[error] bad date '{argv[0]}' — expected YYYY-MM-DD")
             sys.exit(2)
         days = [d for d in days if d == single_day]
         if not days:
-            print(f"[error] no sensor data for {sys.argv[1]}")
+            print(f"[error] no sensor data for {argv[0]}")
             sys.exit(2)
-        print(f"[filter] single-day mode: {sys.argv[1]}")
+        print(f"[filter] single-day mode: {argv[0]}")
 
     # Sunrise / sunset for night-shading.
     # Pulled live from temp/status.json (controller's /api/status snapshot) —
