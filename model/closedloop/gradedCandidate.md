@@ -5,15 +5,94 @@
 | Law | [`drivers/ventModel/src/vent_model_graded.cpp`](../../drivers/ventModel/src/vent_model_graded.cpp), `graded` v1, with 15 host tests (`pio test -e native`) |
 | Status | **A candidate, 2026-09-19.** Which law mode 2 runs is the plan's open decision 9 ([`integrateWindowPositionSensor.md`](../../design/integrateWindowPositionSensor.md) §10). This is the simplest candidate the plan names, a proportional map with a rate limit. Its constants are provisional |
 | Evidence | The closed-loop simulator only: 5C88's logged weather, 2026-06-05 to 09-16, on both adopted plants, with today's firmware (2.12.0's T2, T17 and T6 as built, 045a39c and 9c53be7; re-run 2026-09-21), across a range of M3 airflow curves. No rig run, no greenhouse run |
-| Regenerate | `python model/closedloop/law_compare.py` (about 10 minutes); the sweep with `--define`, below |
+| Regenerate | `python model/closedloop/law_compare.py` (about 10 minutes); the sweep with `--define`, below; the walkthrough with `graded_walkthrough.py` (seconds) |
 
 ## Short answer
 
 In the simulator, over the summer, on both adopted plants:
 - **North-wind days: the swing drops from 3.0–3.2 to 1.5–2.2 °C, at every airflow curve tried.** That is the robust result. It is also where the plants are weakest: they under-state the logged north-wind swing, 3.9 °C. So it is a lead to confirm on the greenhouse, not yet a finding.
 - **Other days: no clear change,** between −0.5 and +0.4 °C depending on the plant and the airflow curve.
-- **Heat: no gain.** Hours at or above 31 °C stay at 2.3–2.4 a day with proportional airflow. If a part-open M3 lets through less air (exponent 2), they rise to 2.6. At 31 °C M3 is half open, where the stepped law has it fully open.
+- **Heat: no gain.** Hours at or above 31 °C stay at 2.3–2.4 a day with proportional airflow. If a part-open M3 lets through less air (exponent 2), they rise to 2.6. Where the stepped law throws M3 wide — a reading of 30.5 °C, which the ladder reads as 31 — this law has it half open.
 - **The motor: about 2.8 times the starts, the same running time.** M3 makes about 22 drives a day against the stepped law's 7.7, yet runs 21.9 minutes a day against 22.6. The contract asks that a continuous law not multiply the starts. No setting tried meets that; see the sweep below. Whether starts or running time wear the motor is unmeasured (contract §7), so that is a decision to make.
+
+## How it behaves over time
+
+At 5C88's daytime settings — `t_max` 28 °C, `hyst_t` 5, `deadzone_m3` 20 mm, `min_intv_m3` 600 s. Both tables below are printed by `python model/closedloop/graded_walkthrough.py`, which drives this law through the emulated firmware, so they follow any change to either.
+
+**The law reads T5's average, never the sensor directly.** The step ladder compares that average **rounded to whole degrees**; M3's map uses it at 0.1 °C. A reading of 30.5 °C is therefore 31 to the ladder, and that is where the two halves meet.
+
+### M1 and M2: the stepped ladder, unchanged
+
+The step is `ceil(deviation / step_width)` capped at 3, where `deviation` is the rounded average less `t_max`, and `step_width` is `max(hyst_t / 3, 1)` — 1 °C at these settings.
+
+| T_avg, °C | as the ladder reads it | Step | M1 | M2 | M3's demand |
+|---|---|---|---|---|---|
+| 28.0 | 28 | 0 | hold | hold | 0 % |
+| 28.5 | 29 | 1 | open | hold | 0 % |
+| 29.0 | 29 | 1 | open | hold | 0 % |
+| 29.5 | 30 | 2 | open | open | 0 % |
+| 30.0 | 30 | 2 | open | open | 25 % |
+| 30.5 | 31 | 3 | open | open | 50 % |
+| 31.0 | 31 | 3 | open | open | 75 % |
+| 31.5 | 32 | 3 | open | open | 100 % |
+| 32.0 | 32 | 3 | open | open | 100 % |
+| 32.5 | 33 | 3 | open | open | 100 % |
+
+**Closing is not the mirror of opening.** Once any step is live, the law does not return to step 0 until the average is a whole `hyst_t` below `t_max` — 23 °C here. M2 shuts again at 29, but M1 stays open long after the greenhouse has cooled. That close guard is mode 1's, the conflation F8 quantified as a bad trade, and this candidate inherits it untouched.
+
+### M3: proportional, and gated behind step 2
+
+Aperture = (T_avg − `t_max` − 1.5 °C) ÷ 2.0 °C, clamped to 0–100 %: 50 % per °C, shut at 29.5, a quarter at 30.0, half at 30.5, fully open from 31.5. **Half open is exactly where mode 1 throws it wide**, because a reading of 30.5 rounds to 31, which is mode 1's step 3. Humidity that demands step 3 on its own opens M3 fully instead.
+
+The gate means M3 never leads: both roof windows are open before the 80 m² wall flap moves at all.
+
+Five things then slow it down — the law's three (§9 item 3 is the table of record) and the caller's two:
+
+- **at least 10 %,** or the correction is not worth a motor start;
+- **at most 25 % per move,** about 44 s of travel in production;
+- **no move within 10 minutes** of M3's last drive, which covers the loop's dead time;
+- **T6 drops a target** within the deadband (20 mm, 1.3 %) of where M3 rests;
+- **T6 holds a target** until `min_intv_m3` has passed since the last drive.
+
+T2 then cuts the relay a learned lead early, so the leaf coasts onto the target ([`README.md`](README.md), "A linear M3").
+
+### A morning, minute by minute
+
+A synthetic ramp: 27 °C, then 1 °C per 20 min to 32, eighty minutes there, and back down at the same rate. T6 wakes every 30 s, so every time below sits on that grid, and a window's two rows are its travel.
+
+| Time, min:s | T_avg, °C | Step | What happens |
+|---|---|---|---|
+| 0:00 | 27.0 | 0 | M1 shut; M2 shut; M3 shut |
+| 50:00 | 28.5 | 1 | M1 moving |
+| 50:30 | 28.5 | 1 | M1 open |
+| 70:00 | 29.5 | 2 | M2 moving |
+| 70:30 | 29.5 | 2 | M2 open |
+| 73:30 | 29.7 | 2 | T6 asks M3 for 10 %; M3 moving |
+| 74:00 | 29.7 | 2 | M3 part-open at 10 % |
+| 84:00 | 30.2 | 2 | T6 asks M3 for 35 %; M3 moving |
+| 85:00 | 30.2 | 2 | M3 part-open at 35 % |
+| 95:00 | 30.8 | 3 | T6 asks M3 for 60 %; M3 moving |
+| 96:00 | 30.8 | 3 | M3 part-open at 60 % |
+| 106:00 | 31.3 | 3 | T6 asks M3 for 85 %; M3 moving |
+| 107:00 | 31.4 | 3 | M3 part-open at 85 % |
+| 117:00 | 31.9 | 3 | T6 asks M3 for 100 %; M3 moving |
+| 120:00 | 32.0 | 3 | M3 open |
+| 213:30 | 31.3 | 3 | T6 asks M3 for 90 %; M3 moving |
+| 214:00 | 31.3 | 3 | M3 part-open at 90 % |
+| 224:00 | 30.8 | 3 | T6 asks M3 for 65 %; M3 moving |
+| 225:00 | 30.8 | 3 | M3 part-open at 65 % |
+| 235:00 | 30.2 | 2 | T6 asks M3 for 40 %; M3 moving |
+| 236:00 | 30.2 | 2 | M3 part-open at 40 % |
+| 246:00 | 29.7 | 2 | T6 asks M3 for 15 %; M3 moving |
+| 247:00 | 29.6 | 2 | M3 part-open at 15 % |
+| 250:30 | 29.5 | 1 | M2 moving |
+| 251:00 | 29.4 | 1 | M2 shut |
+| 257:00 | 29.1 | 1 | T6 asks M3 for 0 %; M3 moving |
+| 260:00 | 29.0 | 1 | M3 shut |
+
+Reading it: M1 opens when the average first rounds to 29 and M2 at 30. M3 starts three and a half minutes after M2, at 10 %, the first correction that clears the smallest move. From there it climbs in 25 % steps, one per ten minutes — the rate limit and the hold in series — and reaches the open end at 117 min. **It then stands still for an hour and a half**, because the demand is met and nothing asks it to move. Coming down it unwinds the same way, shuts when the step falls below 2, and M1 is still open at the end, waiting for 23 °C.
+
+**Mode 1 on the same ramp opens M3 fully at 93:00 and shuts it at 233:30: two drives against ten,** with the same single M1 drive and two M2 drives. That is the trade this candidate makes — the ventilation follows the temperature instead of stepping to the end of its travel, and the motor pays for it. It is also why `min_intv_m3` exists as a floor under whatever law runs next ([`linearDwell.md`](linearDwell.md)).
 
 ## Results
 
@@ -90,7 +169,7 @@ Each row is one run of `law_compare.py --plants primary --airflow 1 --set min_in
 
 ## The law, as the contract asks it declared (§9)
 
-1. **The law.** The stepped law is embedded and decides the step exactly as in mode 1: the same temperature and humidity branches, hysteresis, conflict rule and reason. **M1 and M2 follow its first two steps**, window for window. **M3 opens only from step 2.** Its aperture is proportional to the temperature excess above `t_max`: shut at +1.5 °C, fully open at +3.5 °C. It is half open where mode 1 would open it fully (+2.5 °C, 31 °C by day at 5C88's settings). Humidity that demands step 3 on its own opens M3 fully, as in mode 1. **It suits a slow actuator with a late reading because it does not chase.** M3 moves only for a correction of at least 10 %, by at most 25 % per move, and not within 10 min of its last drive. That covers the loop's dead time, how long the controller's reading takes to show what a move did: the sensor lags the air by 3.5–5.5 min (NS-10), T5 averages on top of that, and a 25 % move takes 44 s in production.
+1. **The law.** The stepped law is embedded and decides the step exactly as in mode 1: the same temperature and humidity branches, hysteresis, conflict rule and reason. **M1 and M2 follow its first two steps**, window for window. **M3 opens only from step 2.** Its aperture is proportional to the temperature excess above `t_max`: shut at +1.5 °C, fully open at +3.5 °C. It is half open where mode 1 would open it fully: a reading of +2.5 °C over `t_max`, which the ladder reads as its step 3 ("How it behaves over time"). Humidity that demands step 3 on its own opens M3 fully, as in mode 1. **It suits a slow actuator with a late reading because it does not chase.** M3 moves only for a correction of at least 10 %, by at most 25 % per move, and not within 10 min of its last drive. That covers the loop's dead time, how long the controller's reading takes to show what a move did: the sensor lags the air by 3.5–5.5 min (NS-10), T5 averages on top of that, and a 25 % move takes 44 s in production.
 2. **Wind:** not read. Nothing in it depends on direction, so an invalid wind reading changes nothing.
 3. **Tunables.** Constants in the file until they are keys (contract §3, "Adding a tunable of your own"):
 
