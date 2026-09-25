@@ -1642,7 +1642,7 @@ A draw-wire encoder on the M3 leaf, on the same RS485 bus as the climate sensors
 |---|---|---|
 | `wpos_fitted_m3` | Whether a sensor is fitted. **0 = not fitted**, and then T17 never addresses the bus, and no status field or log row mentions the sensor (FR-WP23). | 0 |
 | `deadzone_m3` | Smallest aperture change worth acting on, in mm. The "~0" band of the close check and rule 1's at-end exemption, **and since 2.12.0 the arrival band of a targeted drive and the smallest move the law may ask for**. | 20 |
-| `ctrl_mode_m3` | **2.12.0.** The DESIRED control mode: 0 timed, 1 linear. Not the mode in force — see §5.16.6. | 0 |
+| `ctrl_mode_m3` | **2.12.0; default 1 (linear) since 2.13.0** (operator decision 2026-09-25 — a default is read only when the key is absent from NVS, so it reaches a unit on a factory reset or a fresh flash, never through an OTA). The DESIRED control mode: 0 timed, 1 linear. Not the mode in force — see §5.16.6. | 0 |
 | `min_intv_m3` | **2.12.0.** The linear dwell, in seconds: the least time from the end of one M3 drive to the start of the next. **It replaces M3's open and close dwell while linear control is in force** (`ventModelContract.md` §7); 0 means no interval at all, and **never set it above 900** — there mode 2 swings as much as mode 1 while still driving M3 twice as often. | 600 |
 
 Both are ordinary descriptor rows in `firmware/config/cfg_desc.inc`, clamped, audited and published like any other key (§5.10).
@@ -1660,6 +1660,8 @@ Emitted by `build_canonical_status_json()`, so `GET /api/status`, the WebSocket 
 | `m3_not_confirmed` | Flag (2.10.0) — the last judged drive ran its full timer without the target end being confirmed. Cleared by the next confirmed drive. |
 | `m3_travel_short`, `m3_travel_long` | Flags (2.10.0) — the measured traverse disagrees with `travel_m3`: the end sensor made later than the configured time, or within half of it. |
 | `M3_ctrl_mode` | **2.12.0.** `"TIMED"` or `"LINEAR"`: the mode actually **in force**. Present whenever the windows block is, including on units with no sensor, because "which law is driving my greenhouse" must not be a question whose answer is an absent field. |
+| `M3_ctrl_reason` | **2.13.0 (gh#85).** Why `M3_ctrl_mode` is what it is: `"setting"` (the operator's `ctrl_mode_m3` decided it), `"no_position"` (asked for, but the position is not trusted), `"held_down"` (trusted again, inside the two-minute hold-down), `"resumed"` (just promoted). Always present with the block. |
+| `M3_pos_gate` | **2.13.0 (gh#85).** What T17 makes of the sensor: `"ok"`, `"probing"`, `"no_sensor"`, `"bench_build"`, `"device_fault"`, `"not_fitted"`, `"end_sensors"`. It **qualifies** `M3_ctrl_reason`, and the pair is what makes the states distinguishable: `no_position` + `ok` is not a fault at all — the sensor is fitted, answering and taught, and the mode is waiting for the stroke boundary that promotes it, since promotion happens only when a moving M3 stops. Before 2.13.0 the gate reason left the unit only through the bench-only `GET /api/diag/windowpos`, so a release build could not tell an operator which condition was unmet — or that none was. |
 
 #### 5.16.4 Log encodings
 

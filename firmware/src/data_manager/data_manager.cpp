@@ -1719,6 +1719,22 @@ static bool     s_m3_mode_linear = false;
 static uint32_t s_m3_mode_down_ms = 0u;
 static uint8_t  s_m3_mode_reason  = (uint8_t)M3_MODE_BY_SETTING;
 
+/** gh#85: names for m3_mode_reason_t, so the status payload can carry the
+ *  reason and the GUI can name the condition instead of listing three. */
+static const char *const k_m3_mode_reason[] = {
+    "setting", "no_position", "resumed", "held_down"
+};
+_Static_assert(sizeof(k_m3_mode_reason) / sizeof(k_m3_mode_reason[0]) ==
+                   (size_t)M3_MODE_HELD_DOWN + 1u,
+               "k_m3_mode_reason[] must have one string per m3_mode_reason_t");
+
+const char *dm_m3_mode_reason_name(m3_mode_reason_t why)
+{
+    const size_t i = (size_t)why;
+    if (i >= sizeof(k_m3_mode_reason) / sizeof(k_m3_mode_reason[0])) { return "unknown"; }
+    return k_m3_mode_reason[i];
+}
+
 bool dm_m3_ctrl_mode(m3_mode_reason_t *out_reason)
 {
     if (out_reason != NULL) { *out_reason = (m3_mode_reason_t)s_m3_mode_reason; }
@@ -1958,6 +1974,11 @@ void dm_status_snapshot(status_snapshot_t *out)
                                    (why == WPOS_GATE_NOT_FITTED) ||
                                    (why == WPOS_GATE_END_SENSORS);   /* 2.10.0, bit 4 */
 
+        /* gh#85: keep the gate reason instead of discarding it. It is what
+         * distinguishes "the sensor is silent" from "the sensor is fine and
+         * the mode is waiting for a stroke boundary", and only the
+         * bench-only diag route could tell them apart before. */
+        out->wpos_gate_reason   = (uint8_t)why;
         out->wpos_fitted        = fitted;
         out->wpos_have          = have && !wr.sensor_fault && !gate_unusable;
         out->wpos_fault         = fitted &&

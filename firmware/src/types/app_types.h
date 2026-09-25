@@ -691,6 +691,10 @@ typedef struct {
      * it is in force, which the setting alone never answers. */
     bool     m3_mode_linear;     /**< Mode 2 (linear) is in force on M3. */
     uint8_t  m3_mode_reason;     /**< m3_mode_reason_t, why it is what it is. */
+    uint8_t  wpos_gate_reason;   /**< gh#85: windowpos_gate_reason_t. Qualifies
+                                  *   `m3_mode_reason`: NO_POSITION with a gate
+                                  *   of OK means the sensor is trusted and the
+                                  *   mode is waiting for a stroke boundary. */
 
     /* Mode + raw EG1 bits (for local-UI badges; harmless on the public dashboard) */
     op_mode_t mode;

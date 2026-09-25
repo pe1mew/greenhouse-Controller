@@ -122,11 +122,21 @@
  *
  * Default 0, deliberately, and for the same reason DEF_WPOS_FITTED_M3 is 0: a
  * unit that updates remotely must not change how it drives a greenhouse window
- * because a new firmware arrived. Mode 2 is something an operator turns on,
- * per unit, after the sensor is fitted and taught — and even then the
- * EFFECTIVE mode falls back to timed whenever the position cannot be trusted.
+ * because a new firmware arrived — and it still cannot, because this default
+ * is only read when the key is ABSENT from NVS
+ * (`nvs_cfg_get_i32_or_default()`). An existing unit keeps whatever it was set
+ * to, through any number of OTAs; the default reaches a unit only on a
+ * factory reset or a fresh flash.
+ *
+ * **1 (linear) since 2.13.0 — operator decision, 2026-09-25.** Mode 2 is now
+ * what a new or reset unit starts in, rather than something to turn on
+ * afterwards. It is safe as a default precisely because it is self-limiting:
+ * the EFFECTIVE mode falls back to timed whenever the position cannot be
+ * trusted, and `wpos_fitted_m3` still defaults to 0, so a unit with no sensor
+ * fitted runs exactly as it always did — the setting simply has nothing to
+ * act on until a sensor is fitted and taught.
  */
-#define DEF_CTRL_MODE_M3         0
+#define DEF_CTRL_MODE_M3         1
 
 /**
  * @brief The linear dwell in seconds (2.12.0, contract §7).

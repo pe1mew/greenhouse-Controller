@@ -20,6 +20,8 @@
 #include "status_post.h"   /* status_post_backoff_active() — gh#18 Phase 1 */
 #include "../system_id/system_id.h"  /* unit_id (gh#17, since 1.18.3) */
 #include "modbus_rtu.h"   /* gh#66 — per-slave bus KPIs (read unlocked, by design) */
+#include "../window_pos/window_pos_task.h"  /* gh#85 — gate reason NAME (pure lookup) */
+#include "../data_manager/data_manager.h"   /* gh#85 — mode reason NAME (pure lookup) */
 #include "window_pos.h"   /* gh#73 — WINDOWPOS_DEFAULT_ADDR, left out when not fitted */
 
 #include <stdarg.h>
@@ -218,6 +220,19 @@ size_t build_canonical_status_json(char *buf, size_t cap,
          * whose answer is an absent field. */
         ok = ok && append(buf, cap, &pos, ",\"M3_ctrl_mode\":\"%s\"",
                           s->m3_mode_linear ? "LINEAR" : "TIMED");
+        /* gh#85: and WHY it is that. Two fields, because one does not answer
+         * it: `M3_ctrl_reason` says the mode was decided by the setting, by a
+         * lost position, by a hold-down or by a promotion, and `M3_pos_gate`
+         * says what T17 thinks of the sensor. The pair an operator needs is
+         * `no_position` + `ok`: the sensor is fitted, answering and taught,
+         * and the mode is waiting for the stroke boundary that promotes it.
+         * Always present with the block, like M3_ctrl_mode itself -- "why is
+         * my setting not in force" must not be a question whose answer is an
+         * absent field. */
+        ok = ok && append(buf, cap, &pos,
+            ",\"M3_ctrl_reason\":\"%s\",\"M3_pos_gate\":\"%s\"",
+            dm_m3_mode_reason_name((m3_mode_reason_t)s->m3_mode_reason),
+            windowpos_gate_reason_name((windowpos_gate_reason_t)s->wpos_gate_reason));
         if (ok && s->wpos_have) {
             /* percent_x10 is NOT clamped -- see the snapshot field comment and
              * plan 2a.5. A correctly parked open window reads ~1137. */

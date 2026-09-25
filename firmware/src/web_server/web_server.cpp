@@ -3528,15 +3528,10 @@ static esp_err_t diag_commission_post_handler(httpd_req_t *req)
  * arm A runs with the encoder unplugged, so the direct read CANNOT succeed and
  * the early return is the only response the test will ever see.
  */
-/** Gate reasons, indexed by windowpos_gate_reason_t. ONE table, read by both
- *  the success and the failure path -- they drifted once already (the failure
- *  path emitted `reason` without `reason_str`). */
-static const char *const k_reason[] = {
-    "ok", "probing", "no_sensor", "bench_build", "device_fault", "not_fitted",
-    "end_sensors"
-};
-_Static_assert(sizeof(k_reason) / sizeof(k_reason[0]) == (size_t)WPOS_GATE_END_SENSORS + 1u,
-               "k_reason[] must have one string per windowpos_gate_reason_t value, in order");
+/* Gate reason names now live with the enum, as windowpos_gate_reason_name()
+ * (gh#85). The copy that used to be here was inside this bench-only block, so
+ * a RELEASE build had no names and the GUI could not say why mode 2 was not in
+ * force. Both paths below call the one function. */
 
 /** gh#72 bench test hook: injection names, indexed by windowpos_inject_t.
  *  Read by the GET (what is in force) and the POST (what to set). 2.10.0 adds
@@ -3708,8 +3703,7 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
                  "\"failfirst_292\":%s,\"failfirst_212\":%u}}",
                  (int)st, (int)egm,
                  (egm == WPOS_CTRL_POSITION) ? "position" : "timed", (int)egr,
-                 ((unsigned)egr < (sizeof(k_reason) / sizeof(k_reason[0])))
-                     ? k_reason[egr] : "?",
+                 windowpos_gate_reason_name(egr),
                  inject_str(), k_failfirst_gh72, k_failfirst_292, k_failfirst_212);
         /* AT-WP05 arm A reads these with the encoder unplugged, so both blocks
          * MUST be on this path -- it is the only response that arm ever sees.
@@ -3815,8 +3809,7 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
                  "\"failfirst_212\":%u}}",
                  (int)gm, (gm == WPOS_CTRL_POSITION) ? "position" : "timed",
                  (int)gr,
-                 ((unsigned)gr < (sizeof(k_reason) / sizeof(k_reason[0])))
-                     ? k_reason[gr] : "?",
+                 windowpos_gate_reason_name(gr),
                  inject_str(), k_failfirst_gh72, k_failfirst_292, k_failfirst_212);
     }
 

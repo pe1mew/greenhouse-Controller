@@ -387,6 +387,15 @@ typedef enum {
 bool dm_m3_ctrl_mode(m3_mode_reason_t *out_reason);
 
 /**
+ * @brief Why the effective M3 control mode is what it is, as a short name
+ *        ("setting", "no_position", "resumed", "held_down"). gh#85.
+ *
+ * @param why  reason from dm_m3_ctrl_mode() / dm_m3_ctrl_mode_eval().
+ * @return a static string, never NULL; "unknown" out of range.
+ */
+const char *dm_m3_mode_reason_name(m3_mode_reason_t why);
+
+/**
  * @brief Decide the effective mode, applying the anti-flap. **T6 only.**
  *
  * Runs the transition rules described above and stores the result for

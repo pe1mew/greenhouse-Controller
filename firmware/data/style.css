@@ -297,6 +297,15 @@ body.is-admin  .farmer-hidden { display: flex; }
   margin: 0.25rem 0 0.5rem 0;
 }
 
+/* gh#85: the reason line is not always a warning. When the mode is merely
+   WAITING -- the sensor is fine and linear control starts on M3's next
+   stroke -- yellow contradicts the sentence it is colouring, and an operator
+   who has learned that yellow means "something to fix" has to read past it.
+   Same size and place, muted instead of alarming. */
+.disabled-why.why-ok {
+  color: var(--muted);
+}
+
 /* ── OTA progress bar ────────────────────────────────────────────── */
 .ota-progress-bar {
   width: 100%;

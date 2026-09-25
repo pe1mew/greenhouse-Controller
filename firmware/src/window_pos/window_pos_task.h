@@ -146,6 +146,20 @@ typedef enum {
 windowpos_ctrl_mode_t windowpos_task_ctrl_mode(windowpos_gate_reason_t *out_reason);
 
 /**
+ * @brief The gate reason as a short, stable name ("ok", "no_sensor", ...).
+ *
+ * gh#85. ONE table, in the module that owns the enum. The previous copy was
+ * `k_reason[]` inside the web server's `#ifdef MODBUS_BENCH` block, so a
+ * RELEASE build -- the build an operator runs -- had no names at all and the
+ * GUI could not say why mode 2 was not in force. A second hand-maintained
+ * copy of a field list is how gh#57 and gh#64 began, so there is one.
+ *
+ * @param why  gate reason.
+ * @return a static string, never NULL; "unknown" for an out-of-range value.
+ */
+const char *windowpos_gate_reason_name(windowpos_gate_reason_t why);
+
+/**
  * @brief Derived polling configuration, recomputed at the start of every stroke.
  *
  * Recomputing per stroke (rather than at boot) means a `travel_m3` change is

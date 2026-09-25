@@ -6,6 +6,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.13.0] — 2026-09-25  (linear control starts by itself, and the card says what is going on)
+
+Minor: a payload-shape change and the GUI that needed it
+([gh#85](https://github.com/pe1mew/greenhouse-Controller/issues/85)). No control-path change — no task, no config key, no NVS change, no log encoding, and nothing in the ventilation path.
+
+**Fixed.**
+
+- When mode 2 was set but not in force, the Motors card printed one sentence for every cause: *"it needs a position sensor that is fitted, answering and taught"*. On 2026-09-25 an operator read it on a rig where **all three were true** and went looking for a fault that did not exist. The real reason was that promotion to position control happens only at a **stroke boundary**, and M3 had not moved since the unit rebooted 90 minutes earlier.
+- The card now names the actual condition: sensor not fitted / not answering / reporting a fault / both end sensors made / still probing / bench build / inside the hold-down — or, when nothing is wrong, *"Linear is set and nothing is wrong ... it starts by itself the next time M3 moves."*
+
+**Fixed — the bigger one ([gh#86](https://github.com/pe1mew/greenhouse-Controller/issues/86)).**
+
+- **Mode 2 did not engage until M3 happened to move.** The control law was promoted only at a
+  **stroke boundary**, so a unit with the sensor fitted, answering and taught and Linear selected kept
+  running M3 on its travel time until something unrelated drove the window — 90 minutes and counting
+  on 2344 on 2026-09-25, because M1 alone was meeting demand. The operator's words: *"I want fully
+  functional software, not firmware where I have to move the window before it starts working."*
+- The law is now promoted **at rest** as well. The hazard the asymmetry was written for is position
+  control gaining authority *underneath a movement already committed to the timer*, and M3 standing
+  still is outside that hazard just as surely as a stroke that has ended. Nothing else relaxes:
+  promotion still cannot fire mid-stroke, demotion stays immediate, and the two-minute hold-down
+  after a demotion is unchanged.
+
+**Changed — two operator decisions (2026-09-25).**
+
+- **`graded` is the chosen law for mode 2**, not a candidate. It shipped in 2.12.0 with the choice
+  deliberately left open and the evidence in `model/closedloop/gradedCandidate.md`.
+- **A factory reset now starts in mode 2**: `DEF_CTRL_MODE_M3` is 1. A default is read only when the
+  key is absent from NVS, so this reaches a unit on a factory reset or a fresh flash and **never
+  through an OTA** — an existing unit keeps what it was set to. A unit with no sensor fitted behaves
+  exactly as before, since the effective mode falls back to timed.
+
+**Added.**
+
+- `windows.M3_ctrl_reason` and `windows.M3_pos_gate` in the status payload. Both reasons already existed inside the unit and neither left it: `m3_mode_reason` was in the status snapshot and never serialised, and T17's gate reason was read into a local and discarded, its only name table sitting inside a bench-only build.
+
+**Changed.**
+
+- The gate-reason names moved from the web server's `#ifdef MODBUS_BENCH` block to `windowpos_gate_reason_name()`, beside the enum they name, and the web server's copy is **deleted** rather than duplicated — two hand-maintained copies of one field list is how gh#57 and gh#64 began. `dm_m3_mode_reason_name()` does the same for the mode reason.
+
+---
+
 ## [2.12.2] — 2026-09-24  (the log listing shows the newest files, and retention runs again)
 
 Patch: one root cause with three symptoms, all in the logging path

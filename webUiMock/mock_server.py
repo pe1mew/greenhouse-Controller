@@ -216,6 +216,34 @@ sd: dict = {"mounted": True, "size_mb": 7500, "free_mb": 7100}
 # percent is NOT clamped: 113.7 is a correctly parked open window, because the
 # end sensors mark the WINDOW extremes and the motor drives on into the blind
 # overlap before its end switch stops it (plan 2a.5).
+# gh#85 -- the two reason fields of the windows block. Overridable through
+# POST /api/__mock/m3 so every branch of the GUI's message can be rendered:
+# the interesting one is gate "ok" with the mode still TIMED, which is not a
+# fault at all but "waiting for a stroke boundary", and which no rig will show
+# on demand.
+def _m3_gate():
+    """What T17 would say about the sensor."""
+    forced = M3_POS.get("gate")
+    if forced:
+        return forced
+    if not _wpos_fitted() or not M3_POS["fitted"]:
+        return "not_fitted"
+    if M3_POS["fault"]:
+        return "device_fault"
+    return "ok"
+
+
+def _m3_ctrl_reason():
+    """Why the effective mode is what it is."""
+    forced = M3_POS.get("ctrl_reason")
+    if forced:
+        return forced
+    if not cfg.get("ctrl_mode_m3", 0):
+        return "setting"
+    return "setting" if (_wpos_fitted() and M3_POS["fitted"]
+                         and not M3_POS["fault"]) else "no_position"
+
+
 def _wpos_fitted() -> bool:
     """gh#73: the operator's setting, as the firmware's `motor/wpos_fitted_m3`."""
     return cfg.get("wpos_fitted_m3", 0) != 0
@@ -231,6 +259,10 @@ M3_POS = {
     "not_confirmed": False,
     "travel_short":  False,
     "travel_long":   False,
+    # gh#85: None = "derive it from the state above"; a string forces it, so
+    # every branch of the GUI's message can be rendered without a rig.
+    "gate":          None,
+    "ctrl_reason":   None,
 }
 
 # ---------------------------------------------------------------------------
@@ -543,8 +575,22 @@ def _build_status() -> dict:
             # to lose, so it reports the setting once a sensor is "fitted" and
             # TIMED otherwise -- which is exactly the case the GUI's badge
             # exists to explain.
-            "M3_ctrl_mode": ("LINEAR" if (cfg.get("ctrl_mode_m3", 0) and _wpos_fitted())
+            # gh#85: a FORCED reason of "no_position" / "held_down" means the
+            # mode is not in force, so the mode field must follow it -- in the
+            # firmware these two can never disagree, and a mock that let them
+            # would render a state the unit cannot produce.
+            "M3_ctrl_mode": ("LINEAR" if (cfg.get("ctrl_mode_m3", 0) and _wpos_fitted()
+                                          and _m3_ctrl_reason() not in
+                                          ("no_position", "held_down"))
                              else "TIMED"),
+            # gh#85: WHY it is that. `M3_pos_gate` is what T17 thinks of the
+            # sensor, `M3_ctrl_reason` is why the effective mode is what it is.
+            # The mock has no sensor to lose, so by default it reports the
+            # honest pair for its own state -- and POST /api/__mock/m3 with
+            # {"gate": ..., "ctrl_reason": ...} forces any combination, which is
+            # the only way to see each message without a rig in that condition.
+            "M3_pos_gate":    _m3_gate(),
+            "M3_ctrl_reason": _m3_ctrl_reason(),
             # 6.3 -- these three keys are present ONLY when a sensor is fitted
             # and trusted; see M3_POS above and /api/__mock/m3.
             **({
@@ -1424,6 +1470,14 @@ def m3_mock_set():
     for key in ("not_confirmed", "travel_short", "travel_long"):   # 2.10.0
         if key in a:
             M3_POS[key] = a[key].lower() in ("1", "true", "yes")
+    # gh#85: force the two reason fields. An empty value clears the override and
+    # returns to what the mock's own state implies. `gate=ok` with
+    # ctrl_reason=no_position is the case worth looking at: nothing is wrong and
+    # the mode is waiting for a stroke boundary -- the one condition the old
+    # sentence never mentioned.
+    for key in ("gate", "ctrl_reason"):
+        if key in a:
+            M3_POS[key] = a[key].strip() or None
     print(f"[mock] /api/__mock/m3 -> {M3_POS}", file=sys.stderr)
     return {"ok": True, "m3": M3_POS}
 

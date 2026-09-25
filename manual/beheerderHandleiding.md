@@ -354,11 +354,15 @@ Sinds 2.12.0 is dit **ook de aankomsttolerantie van de lineaire besturing**: M3 
 
 #### M3-besturing: Tijdgestuurd of Lineair (2.12.0)
 
-**Tijdgestuurd** (de standaard, en wat elke controller doet tenzij je het wijzigt): M3 wordt volledig geopend of gesloten op zijn looptijd, net als M1 en M2. Een gemonteerde sensor meet en meldt, maar stuurt niet.
+**Tijdgestuurd**: M3 wordt volledig geopend of gesloten op zijn looptijd, net als M1 en M2. Een gemonteerde sensor meet en meldt, maar stuurt niet. Dit was tot 2.13.0 de fabrieksinstelling.
+
+> **Sinds 2.13.0 is *Lineair* de fabrieksinstelling** (besluit van de beheerder, 2026-09-25). Dat geldt alleen voor een **nieuwe of teruggezette** controller: een bestaande controller houdt bij een firmware-update gewoon wat er was ingesteld. En een controller zonder positiesensor blijft precies doen wat hij altijd deed — de instelling heeft dan niets om op te sturen, en de regeling valt vanzelf terug op tijdgestuurd.
 
 **Lineair**: M3 wordt naar een gemeten stand gereden en daar gestopt. Dit vraagt één instelling **én** een positie die de controller vertrouwt — sensor gemonteerd, antwoordend, ingeleerd en zonder storing.
 
-> **De instelling zegt wat je vraagt, niet wat er gebeurt.** Direct onder de keuze staat welke besturing op dit moment **werkelijk actief** is. Staat daar *Tijdgestuurd* terwijl je *Lineair* hebt gekozen, dan ontbreekt het vertrouwen in de positie; de tekst zegt wat er nodig is. Zodra dat in orde is, schakelt de controller vanzelf om — je hoeft niets opnieuw in te stellen.
+> **De instelling zegt wat je vraagt, niet wat er gebeurt.** Direct onder de keuze staat welke besturing op dit moment **werkelijk actief** is. Staat daar *Tijdgestuurd* terwijl je *Lineair* hebt gekozen, dan noemt de tekst **sinds 2.13.0 de precieze reden**: sensor niet gemonteerd, geeft geen antwoord, meldt zelf een storing, beide eindsensoren tegelijk actief, nog bezig met controleren, of de wachttijd van twee minuten na een terugval. Zodra dat in orde is, schakelt de controller vanzelf om — je hoeft niets opnieuw in te stellen.
+>
+> **Je hoeft nooit zelf een raam te bewegen om lineair te laten beginnen.** Tot 2.13.0 moest dat wel: de controller nam de lineaire besturing pas over aan het einde van een beweging, dus bleef hij tijdgestuurd tot M3 om een andere reden ging bewegen — op een milde dag urenlang. Sinds 2.13.0 schakelt hij ook **in rust** om, binnen ongeveer een halve minuut nadat de positie vertrouwd is. Staat er kort na een herstart nog *Tijdgestuurd*, dan is dat een moment, geen toestand.
 
 Wat je verder moet weten:
 

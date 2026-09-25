@@ -435,6 +435,23 @@ void windowpos_task_counters(windowpos_counters_t *out)
     portEXIT_CRITICAL(&s_mux);
 }
 
+/** gh#85: the one gate-reason name table. Moved here from the web server's
+ *  bench-only block so a release build can say why mode 2 is not in force. */
+static const char *const k_gate_reason[] = {
+    "ok", "probing", "no_sensor", "bench_build", "device_fault", "not_fitted",
+    "end_sensors"
+};
+_Static_assert(sizeof(k_gate_reason) / sizeof(k_gate_reason[0]) ==
+                   (size_t)WPOS_GATE_END_SENSORS + 1u,
+               "k_gate_reason[] must have one string per windowpos_gate_reason_t");
+
+const char *windowpos_gate_reason_name(windowpos_gate_reason_t why)
+{
+    const size_t i = (size_t)why;
+    if (i >= sizeof(k_gate_reason) / sizeof(k_gate_reason[0])) { return "unknown"; }
+    return k_gate_reason[i];
+}
+
 windowpos_ctrl_mode_t windowpos_task_ctrl_mode(windowpos_gate_reason_t *out_reason)
 {
     windowpos_ctrl_mode_t m;
@@ -1188,9 +1205,11 @@ static bool probe_sensor(void)
         s_gate_open = true;
         ESP_LOGI(TAG, "sensor present: build 0x%02X fw v%u -- gate OPEN",
                  (unsigned)build, (unsigned)ver);
-        /* Deliberately NOT promoting the mode here. Promotion waits for a stroke
-         * boundary so no consumer sees position control gain authority
-         * underneath a movement already committed to the timer.
+        /* Deliberately NOT promoting the mode here: the gate can open while M3
+         * is mid-stroke, and no consumer may see position control gain
+         * authority underneath a movement already committed to the timer.
+         * Promotion happens where that cannot be true -- at a stroke boundary,
+         * and since gh#86 also at rest, both in the poll loop below.
          *
          * The REASON is published now, though, keeping the mode as it is: the
          * sensor has been identified, so leaving the reason at
@@ -1502,6 +1521,27 @@ void task_window_pos(void *pvParameters)
             }
             was_travelling = false;
             rest_seen      = true;      /* at rest, gate open: the next stroke may promote */
+
+            /* gh#86 (2.13.0): promote HERE too, not only at a stroke
+             * boundary. The asymmetry exists so that position control never
+             * gains authority "underneath a movement already committed to the
+             * timer" -- and M3 standing still is outside that hazard just as
+             * surely as a stroke that has ended. Waiting for a boundary made
+             * the guard stricter than the thing it guards against, and the
+             * cost fell on the operator: mode 2 stayed inert until something
+             * unrelated happened to move the window, which on a mild day is
+             * hours (2026-09-25 on 2344: set at 15:00, still timed at 16:30,
+             * because M1 alone was meeting demand).
+             *
+             * Nothing else relaxes: this is the at-rest branch, so it cannot
+             * fire mid-stroke; demotion stays immediate; and the two-minute
+             * hold-down after a demotion still lives in
+             * dm_m3_ctrl_mode_eval(), so a flapping sensor cannot flip the
+             * law repeatedly. */
+            if (!FF212_STROKEONLY && s_gate_open &&
+                s_ctrl_mode != WPOS_CTRL_POSITION) {
+                publish_mode(WPOS_CTRL_POSITION, WPOS_GATE_OK);
+            }
             /* Keep reading at rest: the gate, the events, the orphan check and
              * the teach's STANDBY release depend on it (IDLE_READ_MS). */
             const bool settle_due = settle_wait &&

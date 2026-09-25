@@ -394,6 +394,69 @@ const WIN_CLASS  = { OPEN: 'win-open', CLOSED: 'win-closed',
                      MOVING_OPEN: 'win-moving', MOVING_CLOSE: 'win-moving',
                      PART_OPEN: 'win-open', UNKNOWN: 'win-unknown' };
 
+// gh#85: why linear control is set but not in force -- the ACTUAL condition,
+// not a list of three.
+//
+// The old sentence said "it needs a position sensor that is fitted, answering
+// and taught" whatever the cause, so on 2026-09-25 an operator read it on a rig
+// where all three were true and went looking for a fault that did not exist.
+// The unit knew all along: `M3_pos_gate` is what T17 thinks of the sensor and
+// `M3_ctrl_reason` is why the effective mode is what it is. Neither left the
+// unit before 2.13.0 -- the gate reason had names only inside a bench-only
+// build, which is not the build an operator runs.
+//
+// The last case is the one that cost an hour, and it is not a fault at all: the
+// sensor is trusted and the mode is waiting for a stroke boundary, because
+// promotion happens only when a moving M3 stops. Saying "nothing is wrong" in
+// so many words matters more than the other branches, which at least point at
+// something to go and check.
+// Returns { text, fine }. `fine` is true when the mode is merely WAITING --
+// nothing to go and check -- so the caller can render it as information
+// rather than as a warning. Severity comes from here, with the text, because
+// a second switch over the same gate values elsewhere would be the same
+// classification maintained twice (gh#57, gh#64).
+function m3LinearWhyNot(gate, reason) {
+  const head = 'Linear is set but NOT in force: ';
+  const bad  = function (t) { return { text: head + t, fine: false }; };
+  switch (gate) {
+    case 'not_fitted':
+      return bad('"Position sensor fitted" is set to No, so nothing is read.'
+           + ' Set it to Yes if the sensor is installed.');
+    case 'no_sensor':
+      return bad('the position sensor is not answering. Check the sensor on'
+           + ' the Modbus bus (address 40) and its wiring \u2014 it is re-probed'
+           + ' every 30 seconds and recovers by itself once it replies.');
+    case 'device_fault':
+      return bad('the position sensor answers but reports its own reading as'
+           + ' faulty, so the position is not trusted.');
+    case 'end_sensors':
+      return bad('both end sensors read as made, which cannot both be true,'
+           + ' so the position is not trusted. Check the end sensors.');
+    case 'bench_build':
+      return bad('this is a bench build, where position control is disabled'
+           + ' by design.');
+    case 'probing':
+      return { text: head + 'the position sensor is still being checked. This'
+           + ' clears within a minute of a restart.', fine: true };
+    default:
+      break;
+  }
+  if (reason === 'held_down') {
+    return { text: head + 'the position is trusted again and control resumes'
+         + ' after a short hold-down (about two minutes) that keeps the mode'
+         + ' from flapping.', fine: true };
+  }
+  // Since gh#86 the law is promoted at REST as well as at a stroke boundary,
+  // so this is a moment, not a state to sit in: either M3 is moving now and
+  // linear takes over when that stroke ends, or the next at-rest poll (30 s)
+  // picks it up. Nothing for the operator to do either way -- which is the
+  // whole point of saying so.
+  return { text: 'Linear is set and nothing is wrong: the position sensor is'
+       + ' fitted, answering and taught. Linear control takes over by itself'
+       + ' \u2014 within about half a minute once M3 is at rest, or at the end of'
+       + ' the stroke it is making now. You do not need to do anything.', fine: true };
+}
+
 function handleStatus(s) {
   // Canonical nested shape — single contract for local UI + public dashboard.
   // Field names match the dashboard's app.js (see design/technical-spec-statusWebsite.md
@@ -512,11 +575,16 @@ function handleStatus(s) {
     setText('m3-timed-suffix',  linear ? '· travel time only' : '· in use now');
     setText('m3-linear-suffix', linear ? '· in use now' : '· position sensor');
 
-    setText('m3-mode-now', (asked && !linear)
-      ? 'Linear is set but NOT in force: M3 is running on its travel time. It'
-        + ' needs a position sensor that is fitted, answering and taught, and it'
-        + ' resumes by itself once the position is trusted again.'
-      : '');
+    // gh#85: the same line carries two very different things -- "go and check
+    // the sensor" and "nothing is wrong, it starts on the next stroke". The
+    // warning yellow on the second one is a contradiction an operator has to
+    // read past, so severity follows the message.
+    const why = (asked && !linear)
+      ? m3LinearWhyNot(s.windows.M3_pos_gate, s.windows.M3_ctrl_reason)
+      : { text: '', fine: true };
+    setText('m3-mode-now', why.text);
+    const whyEl = document.getElementById('m3-mode-now');
+    if (whyEl) { whyEl.classList.toggle('why-ok', !!why.fine); }
   }
 
   // Mode + Alarms — the Alarms card aggregates every active concern. Mode

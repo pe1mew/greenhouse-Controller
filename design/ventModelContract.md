@@ -1,5 +1,10 @@
 # Ventilation control model — interface contract
 
+> **`graded` is the CHOSEN law for mode 2 as of 2026-09-25 (operator decision).** It was carried as
+> a candidate from 2.12.0, with the evidence in `model/closedloop/gradedCandidate.md` and the choice
+> deliberately left open; it is now the law mode 2 runs, not a proposal. Mode 1 remains `stepped`.
+> Anything below that still calls `graded` a candidate is stale wording, not an open question.
+
 | Field | Value |
 |---|---|
 | Document | Interface contract for the T6 ventilation control model |
@@ -400,7 +405,7 @@ drivers/ventModel/                    EXISTS
   set_compiler.py                     points at the MinGW toolchain, as the other drivers do
   src/vent_model.h                    the interface in §2
   src/vent_model_stepped.cpp          mode 1: today's step table, copied from T6
-  src/vent_model_graded.cpp           mode 2: a first candidate (model/closedloop/gradedCandidate.md)
+  src/vent_model_graded.cpp           mode 2: the chosen law since 2026-09-25 (model/closedloop/gradedCandidate.md)
   test/test_vent_model/               host unit tests, stepped: 23 passing
   test/test_vent_model_graded/        host unit tests, graded: 15 passing
 firmware/components/ventModel/        created in 2.12.0; no REQUIRES (the library sees no IDF)

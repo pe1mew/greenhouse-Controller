@@ -44,10 +44,15 @@
  *       night of 2026-09-23: 20.8 mm short, all night;
  *       bin/at_wp_fallback.py `endstop`)
  *
+ * 4096  T17: the control law is promoted ONLY at a stroke boundary, so mode 2
+ *       never engages until something else happens to move M3 -- an operator
+ *       who sets Linear and satisfies every precondition keeps timed control
+ *       indefinitely (gh#86; bin/at_wp_rest_promote.py)
+ *
  * **Pass a value.** GCC defines a bare `-DWPOS_FAILFIRST_212` as 1, so a bare
  * flag restores bit 1 ALONE. An earlier comment said a bare flag meant "all
- * four"; that was never true of the bitmask and was never exercised. All twelve
- * is `=4095`.
+ * four"; that was never true of the bitmask and was never exercised. All thirteen
+ * is `=8191`.
  *
  * Bench builds only: the source refuses the flag otherwise, and
  * GET /api/diag/windowpos reports `gate.failfirst_212` so a result can never be
@@ -66,10 +71,10 @@
  * EMPTY definition (`-DWPOS_FAILFIRST_212=`) to all four bits; this header would
  * map it to 0 -- so refuse it, and refuse bits nobody has defined. */
 #  if (WPOS_FAILFIRST_212 + 0) == 0
-#    error "WPOS_FAILFIRST_212 is defined but restores nothing: pass a mask, =1..4095"
+#    error "WPOS_FAILFIRST_212 is defined but restores nothing: pass a mask, =1..8191"
 #  endif
-#  if (WPOS_FAILFIRST_212 + 0) > 4095
-#    error "WPOS_FAILFIRST_212 has bits above 2048 that restore nothing: =1..4095"
+#  if (WPOS_FAILFIRST_212 + 0) > 8191
+#    error "WPOS_FAILFIRST_212 has bits above 4096 that restore nothing: =1..8191"
 #  endif
 #else
 #  define FF212 0u
@@ -87,3 +92,4 @@
 #define FF212_ABORTED   (FF212 & 512u)
 #define FF212_SINCE     (FF212 & 1024u)
 #define FF212_ENDTARGET (FF212 & 2048u)
+#define FF212_STROKEONLY (FF212 & 4096u)
