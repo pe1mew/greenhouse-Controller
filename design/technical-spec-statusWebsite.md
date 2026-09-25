@@ -4,12 +4,23 @@
 |---|---|
 | Document | Technical Specification |
 | Audience | Implementer of the website |
-| Companion | [functional-design.md](functional-design.md) — *what* the system does |
-| Version | 1.0 |
-| Date | 2026-05-19 |
-| Status | For implementation — covers firmware 2.0.0-a.6.35.x (matches the canonical-JSON contract emitted by `firmware/src/status_post/status_json.cpp`) |
+| Companion | `functional-design.md` — *what* the system does (kept with the website, not in this repository) |
+| Version | 2.0 |
+| Date | 2026-09-25 |
+| Status | For implementation — covers firmware **up to 2.14.0**. Every field below was read from the emitter, `firmware/src/status_post/status_json.cpp::build_canonical_status_json()`, and dated with `git log -S`; the last payload change is 2.13.0 (2.14.0 changes no payload field) |
 
 This document is the implementation brief. It describes file layout, configuration constants, endpoint code paths, storage recipes, frontend wiring, and verification steps. The functional rules it implements are defined in [functional-design.md](functional-design.md); read that first.
+
+**What changed in 2.0** (covers firmware 2.0.0 through 2.14.0 — 1.0 had stopped at 2.0.0-a.6.35.7, so this revision is three months of firmware):
+
+- **A new window state, `PART_OPEN` (2.12.0).** In linear control M3 can stop part-way. A site built on 1.0 draws it with the `UNKNOWN` grey (its colour table has no entry and falls back), so a working part-open window looks like a fault. §3.4 and §10 now define it. **This is the one change that affects what a 1.0 site shows.**
+- **Six new `mode.flags[]` strings**, which a 1.0 site silently drops (unknown flags are skipped by design): `standby`, `rota_update_pending`, `sensor_fault_position`, `m3_not_confirmed`, `m3_travel_short`, `m3_travel_long`. The public dashboard shows no badge today for STANDBY, a pending update or a position-sensor fault. §9.4 now lists all sixteen, with the same colours and labels as the controller's own GUI.
+- **M3's position and control law in `windows`**: `M3_percent_x10`, `M3_mm_x10`, `M3_at_end_sensor` (2.7.1, only when a position sensor is fitted and trusted), `M3_ctrl_mode` (2.12.0), `M3_ctrl_reason` and `M3_pos_gate` (2.13.0).
+- **`system` gained SD and heap fields**: `sd_mounted`, `sd_free_mb`, `sd_size_mb` (2.0.2), `heap_free_kb`, `heap_min_kb` (2.2.5), `heap_largest_kb` (2.2.10).
+- **A new top-level `bus` array** (2.8.0) of per-slave Modbus counters, gated by the `system` bit but **outside** the `system` object.
+- **§3.3 log upload corrected in three places.** Files have rotated at **1 MB since 2.1.2**, not 512 KB — and a rotated file overshoots by the last row (up to 1 048 618 bytes seen), so **the old advice of `GH_LOG_MAX_BYTES` = 1 MB would reject almost every file**. Both live sites accept them (checked 2026-09-25: all 34 files on the production site and 100 on the development site are ≥ 1 MB), so their limits are already higher; a new deployment following 1.0 would not be. Filenames carry the unit ID (`2344_YYYYMMDDHHMMSS.csv`), and since 2.12.2 a controller uploads only its own files, newest after the last one by timestamp.
+- **The field-stability guarantee is widened** to cover what bit 1.0: a new *value* of an existing field (`PART_OPEN`) is as much a change as a new field, so consumers must tolerate unknown values, not only unknown keys.
+- **New testable requirements** TR-49..TR-56 (§15.11).
 
 **What changed in 1.0** (covers firmware 2.0.0-a.6.32 through 2.0.0-a.6.35.7):
 
@@ -179,12 +190,12 @@ if (GH_DEBUG_RESPONSES) {
 
 The firmware sends CSV log files via a **streaming chunked POST** rather than loading the whole file into RAM and POSTing in one shot. Behaviour (firmware reference: `firmware/src/status_post/status_post.cpp::do_log_upload`):
 
-- URL: `<status_url>?action=log&file=<sd-filename>`. The `file` query parameter carries the original SD filename (e.g. `20260519031514.csv`) for the server's traceability. Server-side filename policy unchanged — the server still **discards** the client-supplied name and generates one from server time (TR-05). The `file` parameter is purely diagnostic, available via `$_GET['file']` if the server wants to log it.
+- URL: `<status_url>?action=log&file=<sd-filename>`. The `file` query parameter carries the original SD filename for the server's traceability. Since firmware 2.0.x (gh#30) it starts with the controller's 4-hex unit ID: `2344_20260519031514.csv` (`<unit_id>_<local creation time YYYYMMDDHHMMSS>.csv`). Server-side filename policy unchanged — the server still **discards** the client-supplied name and generates one from server time (TR-05). The `file` parameter is purely diagnostic, available via `$_GET['file']` if the server wants to log it.
 - Content-Type: `text/csv`. Body is the raw CSV bytes — same format as a `/api/log/download` from the controller.
 - Content-Length: announced up-front so the server can validate against `GH_LOG_MAX_BYTES` before reading the body (TR-06).
 - Streaming: the firmware calls `esp_http_client_open(client, file_size)` then writes the file in 4 KB chunks via `esp_http_client_write`. PHP's `file_get_contents('php://input')` reads the assembled body transparently, so no PHP-side change vs. a single-shot upload. The streaming pattern bounds the firmware's per-write mbedTLS heap demand regardless of total file size (gh#23 shape).
 - `sourceidentifier` header carries the shared secret (same header used by the status POST).
-- Multi-file drain (a.6.35.2): after the controller successfully uploads file *X*, it persists `cfg.log_last_up = X` in NVS. The next trigger (daily slot or rotation) walks every SD file lex-greater than the latch and uploads each in turn. The server may therefore receive **several uploads back-to-back** after a long network outage. Each upload is an independent POST; retention sweep runs on each success path.
+- Multi-file drain (a.6.35.2, corrected in 2.12.2): after the controller successfully uploads file *X*, it persists `cfg.log_last_up = X` in NVS. The next trigger (daily slot or rotation) uploads every **closed** file of **this controller** whose creation time is **later** than X's, oldest first. Two things changed in 2.12.2 (gh#82): the comparison is on the **timestamp** in the name, not the whole name — once names carry a unit prefix, `FDA4_…` sorts after every `2344_…` and a name comparison would stop the drain for good — and files of **another** controller on the same card (a development rig swaps modules) are never uploaded. The file the controller is still writing is never sent.
 
 PHP code:
 
@@ -224,7 +235,7 @@ if (GH_DEBUG_RESPONSES) {
 
 The retention sweep runs only on this success path. It is intentionally silent.
 
-**Sizing.** Real SD log files rotate at 512 KB (firmware constant `SD_ROTATE_BYTES` in `event_logger.cpp`). Setting `GH_LOG_MAX_BYTES` to **1 MB** gives a 2× safety margin. PHP defaults `post_max_size`/`upload_max_filesize` both need to be ≥ that value too; check `php.ini` or set them via `.htaccess`.
+**Sizing.** SD log files rotate at **1 MB** (firmware constant `SD_ROTATE_BYTES`, `event_logger.h`) — **since 2.1.2; before that 512 KB**, which is what 1.0 of this document said. A file is rotated after the write that crosses 1 MB, so **a rotated file is slightly over 1 MB**: 1 048 576 to 1 048 618 bytes on both live sites (2026-09-25). **Set `GH_LOG_MAX_BYTES` to 2 MB** (`2 * 1024 * 1024`), and PHP's `post_max_size` above it (e.g. `4M`). The 1 MB this document used to recommend rejects nearly every file: TR-06's check is `$len > GH_LOG_MAX_BYTES`, and a silent 204 means the controller cannot tell. A file closed early — by a reboot — is smaller.
 
 **Log file contents.** Since firmware 2.0.0-a.6.35.3 the CSV row timestamps inside the log are **local time** (matching the controller's TZ — typically CET/CEST). Pre-a.6.35.3 logs had UTC row timestamps inside while filenames were always local time. The server stores the file unchanged; any operator-side log-viewing tool should be aware of this transition. The repo's `log/logparser.py` script handles both transparently — column heading just changes from `Timestamp (UTC)` to `Timestamp (local)`.
 
@@ -243,6 +254,7 @@ The status payload arrives as a single nested JSON object. The exact shape is pr
   "mode":              {...},
   "sun":               {...},
   "system":            {...},
+  "bus":               [...],
   "update_interval_s": 120
 }
 ```
@@ -251,6 +263,7 @@ The status payload arrives as a single nested JSON object. The exact shape is pr
 |---|---|---|---|
 | `type` | string | yes | Always `"status"` — dispatcher tag for the WebSocket consumer; api.php may ignore. |
 | `update_interval_s` | int | yes | Controller's POST cadence (60..300 s). Drives the freshness-tile threshold; missing → spec § 11 falls back to `defaultIntervalS` and appends `"(assumed)"` to the caption. |
+| `bus` | array | only with the `system` bit **and** only when at least one Modbus slave has answered since boot | Per-slave bus counters (2.8.0). **Top-level, not inside `system`**, although the `system` bit gates it. See the `bus` subsection below. |
 | `climate` / `wind` / `windows` / `mode` / `sun` / `system` | object | conditional on `cfg.status_expose` bitmask | One bit per tile. Operator can hide individual tiles from the public dashboard by clearing the corresponding bit via the Web tab. When a tile object is absent the dashboard hides the matching `#tile-...` element per §9.2. |
 
 **`climate`** (bit 0 of `status_expose`):
@@ -269,6 +282,7 @@ The status payload arrives as a single nested JSON object. The exact shape is pr
 ```
 
 - `temp_c` / `temp_avg_c` are decimals with one fractional digit; the rest are integers.
+- **Firmware defect, fixed in 2.14.0 ([gh#88](https://github.com/pe1mew/greenhouse-Controller/issues/88)): up to 2.13.0 the sign is lost between −0.9 and −0.1 °C.** The value is printed as `t_c10 / 10` then `|t_c10| % 10`, and C division truncates towards zero, so −0.5 °C is sent as `0.5`. From −1.0 °C down the sign is correct. A site cannot repair this (the payload does not carry the raw value); read a small positive temperature on a frost night with that in mind when the unit runs 2.13.0 or older. From 2.14.0 the value is exact, `-0.5` included.
 - `rh_max_active` and `rh_min_active` are **omitted** when `rh_ctrl_enabled` is `false` (firmware passes `include_disabled_setpoints=false` for the T14 path). The dashboard should treat them as optional and not render the "RH max/min" rows when absent. `rh_ctrl_enabled` is always present so consumers know which mode is active.
 
 **`wind`** (bit 1):
@@ -289,10 +303,36 @@ The status payload arrives as a single nested JSON object. The exact shape is pr
 **`windows`** (bit 2):
 
 ```json
-"windows": { "M1": "CLOSED", "M2": "CLOSED", "M3": "OPEN" }
+"windows": {
+  "M1": "OPEN", "M2": "CLOSED", "M3": "PART_OPEN",
+  "M3_ctrl_mode":   "LINEAR",
+  "M3_ctrl_reason": "setting",
+  "M3_pos_gate":    "ok",
+  "M3_percent_x10":   252,
+  "M3_mm_x10":       3780,
+  "M3_at_end_sensor": false
+}
 ```
 
-Spec-shaped state strings (no `WIN_` prefix): `OPEN`, `CLOSED`, `MOVING_OPEN`, `MOVING_CLOSE`, `UNKNOWN`. The dashboard's windows-tile SVG (§10) maps these to fill colours.
+**State strings** (no `WIN_` prefix): `OPEN`, `CLOSED`, `MOVING_OPEN`, `MOVING_CLOSE`, `UNKNOWN`, and **`PART_OPEN`** (2.12.0). `PART_OPEN` occurs only on M3 and only in linear control: the window was driven to a measured position and stopped there. It is a normal operating state, not a fault — render it as such (§10). M1 and M2 are always fully open or closed.
+
+**M3 control law** — always present with the block, including on a controller without a position sensor:
+
+| Key | Since | Values | Meaning |
+|---|---|---|---|
+| `M3_ctrl_mode` | 2.12.0 | `TIMED`, `LINEAR` | The law **in force**, not the setting. `LINEAR` needs the setting *and* a trusted position. |
+| `M3_ctrl_reason` | 2.13.0 | `setting`, `no_position`, `held_down`, `resumed` | Why it is that: decided by the setting; the position is not trusted; trusted again but inside the two-minute hold-down after a demotion; just promoted back. |
+| `M3_pos_gate` | 2.13.0 | `ok`, `probing`, `no_sensor`, `device_fault`, `end_sensors`, `not_fitted`, `bench_build` | What the controller makes of the position sensor. It qualifies `M3_ctrl_reason`: `no_position` with `ok` is not a fault — the mode is simply about to be taken up. |
+
+A dashboard that shows only the law needs `M3_ctrl_mode`. The other two are for saying *why*, which is what an operator asks when the setting says linear and the tile says timed.
+
+**M3 position** — present **only** when a position sensor is fitted and trusted, and **absent** otherwise (absent, not zero: a consumer must be able to tell "no sensor" from "fully closed"):
+
+| Key | Since | Unit | Meaning |
+|---|---|---|---|
+| `M3_percent_x10` | 2.7.1 | 0.1 % | Opening. **Not clamped**: the leaf rests past both end sensors, so a parked open window reads about 1137 (113.7 %); a closed one read 0 on the development rig. Clamp to 0..1000 for display if you draw a bar. |
+| `M3_mm_x10` | 2.7.1 | 0.1 mm | Opening in millimetres. |
+| `M3_at_end_sensor` | 2.7.1 | bool | M3 is on one of its two end sensors. |
 
 **`mode`** (bit 3):
 
@@ -304,7 +344,7 @@ Spec-shaped state strings (no `WIN_` prefix): `OPEN`, `CLOSED`, `MOVING_OPEN`, `
 ```
 
 - `current` is the highest-priority active operating mode label. Priority: `MOTOR_ALARM` > `WIND_OVERRIDE` > `WINDOW_CAL` > `op_mode_t` (`AUTOMATIC` / `STANDBY`).
-- `flags` is an array of zero-or-more flag strings — each rendered as a coloured badge in the mode tile. See §9.4 for the full FLAG_CLASS table.
+- `flags` is an array of zero-or-more flag strings — each rendered as a coloured badge in the mode tile. **Sixteen exist as of 2.14.0**; §9.4 lists them with their colour and label. Firmware emission order: `sensor_fault_position`, `m3_not_confirmed`, `m3_travel_short`, `m3_travel_long`, then the event-group flags (`wind_override`, `sensor_fault_temp`, `sensor_fault_wind`, `ota_in_progress`, `motor_alarm`, `calibrating`, `standby`), then `net_backoff_active`, `wind_protect_off`, `humidity_ctrl_off`, `coredump_available`, `rota_update_pending`.
 
 **`sun`** (bit 4):
 
@@ -323,26 +363,49 @@ Spec-shaped state strings (no `WIN_` prefix): `OPEN`, `CLOSED`, `MOVING_OPEN`, `
 
 ```json
 "system": {
-  "unit_id":       "2344",
-  "wifi_ip":       "192.168.20.160",
-  "wifi_rssi_dbm": -67,
-  "ntp_synced":    true,
-  "fw_ver":        "2.0.0-a.6.35.7",
-  "asset_version": "2.0.0-a.6.35.7",
-  "uptime_s":      4530,
-  "ts_unix":       1779173792,
-  "time_iso":      "2026-05-19T08:56:32",
-  "eg1":           0
+  "unit_id":         "2344",
+  "wifi_ip":         "192.168.20.160",
+  "wifi_rssi_dbm":   -67,
+  "ntp_synced":      true,
+  "fw_ver":          "2.14.0",
+  "asset_version":   "2.14.0",
+  "uptime_s":        4530,
+  "ts_unix":         1790338019,
+  "time_iso":        "2026-09-25T19:48:03",
+  "eg1":             0,
+  "sd_mounted":      true,
+  "sd_free_mb":      29440,
+  "sd_size_mb":      30436,
+  "heap_free_kb":    66,
+  "heap_min_kb":     14,
+  "heap_largest_kb": 29
 }
 ```
 
-- `unit_id` is the 4-hex-char short ID derived from the last 2 bytes of the unit's WiFi-STA MAC (gh#17). Same value appears on the LCD info screen, in the boot row of every SD log file, in the AP SSID (`Greenhouse-XXXX`), and on the local-GUI footer. Treat as the unit's "name" for operator identification across surfaces.
+- `unit_id` is the 4-hex-char short ID derived from the last 2 bytes of the unit's WiFi-STA MAC (gh#17). Same value appears on the LCD info screen, in every SD log filename and its boot row, in the AP SSID (`Greenhouse-XXXX`), and on the local-GUI footer. Treat as the unit's "name" for operator identification across surfaces.
 - `fw_ver` and `asset_version` come from different sources; the local GUI shows a `MISMATCH` badge when they differ (incomplete OTA on the controller). Public dashboard may surface the same diagnostic.
 - `time_iso` is the controller's local-time clock at the moment the snapshot was built (UTC + the cfg TZ). The dashboard generally renders the server-side `received_at` + browser local clock for the freshness display; `time_iso` is informational.
 - `eg1` is the raw EG1 bitset. Public dashboards typically ignore it — the parsed flags are in `mode.flags[]` already.
+- `sd_mounted` / `sd_free_mb` / `sd_size_mb` (2.0.2, gh#31): the SD card's mount state and space, MB-rounded, so a remote observer can see an SD failure without asking the controller. `sd_mounted: false` also appears after an operator deliberately **unmounted** the card to swap it; it is not by itself an alarm.
+- `heap_free_kb` / `heap_min_kb` (2.2.5) and `heap_largest_kb` (2.2.10): internal RAM, current free, the lowest free since boot, and the largest contiguous free block. **Judge headroom by `heap_free_kb` and `heap_largest_kb` in steady state, not by `heap_min_kb`**: the minimum only ever falls — each TLS handshake of the status POST can push it one step lower — so it reports the worst moment since boot, not what is available now (gh#81).
 
-**Field stability guarantee.** Adding new fields to existing tiles is non-breaking (dashboard ignores unknowns). Adding new `mode.flags[]` strings is non-breaking (dashboard's FLAG_CLASS lookup omits unknowns silently — §9.4). Removing or renaming existing fields requires a coordinated controller + dashboard release.
+**`bus`** (with the `system` bit; **top-level**, next to `system`, not inside it; since 2.8.0):
 
+```json
+"bus": [
+  {"a": 1,  "ok": 1576, "err": 1, "busy": 0, "max": 1},
+  {"a": 40, "ok": 9699, "err": 0, "busy": 0, "max": 0},
+  {"a": 44, "ok": 3152, "err": 1, "busy": 0, "max": 1}
+]
+```
+
+- One entry per Modbus slave: `a` address, `ok` good transactions, `err` failed ones (timeouts, CRC, exceptions, framing and parameter errors together), `busy` attempts that found the bus in use by another task, `max` the longest run of consecutive failures.
+- **Totals since the controller booted**, not rates. Two samples and their `uptime_s` give a rate; a reboot resets them.
+- `busy` is **contention, not a slave failure** — keep it apart from `err` in anything you draw.
+- **Omitted entirely** until at least one slave has answered since boot (absent, not an array of zeros). Address 40, the M3 position sensor, is left out on a controller that has no position sensor fitted.
+- Addresses as installed: 1 is the temperature/humidity sensor, 40 the M3 position sensor, 44 the wind sensor.
+
+**Field stability guarantee.** Adding a field to an existing object is non-breaking: the dashboard ignores keys it does not know. **Adding a new *value* to an existing field is also a change, and consumers must tolerate it** — 1.0 of this document promised only the first, and `PART_OPEN` (2.12.0) showed the difference: a site that maps window states through a closed table fell back to its `UNKNOWN` colour for a working window. So: treat every string enumeration here (`windows.*` states, `mode.current`, `mode.flags[]`, `M3_ctrl_mode`, `M3_ctrl_reason`, `M3_pos_gate`) as **open** — render an unknown value neutrally and visibly (its raw text, in a neutral colour), never as a fault and never not at all. Adding new `mode.flags[]` strings stays non-breaking (§9.4 skips unknowns). Removing or renaming an existing field, or changing a field's unit, requires a coordinated controller + dashboard release.
 ---
 
 ## 4. Backend — browser read API (`view.php`)
@@ -638,34 +701,51 @@ Rendering uses a fixed flag-string → CSS-class lookup. Unknown flag strings ar
 // operator-disabled flags appended in build_canonical_status_json.
 const FLAG_CLASS = {
   // RED — alarm/fault. Operator attention required.
-  'wind_override':      'alarm',   // T3 safety_monitor — windows closed by wind safety
-  'motor_alarm':        'alarm',   // T2 relay_controller — emergency stop
+  'wind_override':         'alarm',  // T3 safety_monitor — windows closed by wind safety
+  'motor_alarm':           'alarm',  // T2 relay_controller — emergency stop
 
   // YELLOW — warn / transient.
-  'sensor_fault_temp':  'warn',    // T5 sensor_poll — T/RH sensor not responding
-  'sensor_fault_wind':  'warn',    // T5 sensor_poll — wind sensor not responding
-  'ota_in_progress':    'warn',    // T13 ota_manager — firmware/asset upload in flight
-  'calibrating':        'warn',    // T2 boot-time window-position calibration
-  'net_backoff_active': 'warn',    // T14 circuit breaker open after consecutive POST failures
-  'wind_protect_off':   'warn',    // operator set cfg.wind_prot_en = 0 — wind safety disabled
+  'sensor_fault_temp':     'warn',   // T5 sensor_poll — T/RH sensor not responding
+  'sensor_fault_wind':     'warn',   // T5 sensor_poll — wind sensor not responding
+  'sensor_fault_position': 'warn',   // 2.7.1 — M3 position sensor fitted but unusable; M3 falls back to timed
+  'm3_not_confirmed':      'warn',   // 2.10.0 — M3's last drive did not reach the end sensor it aimed for
+  'm3_travel_short':       'warn',   // 2.10.0 — measured traverse longer than the configured travel time
+  'm3_travel_long':        'warn',   // 2.10.0 — measured traverse under half the configured travel time
+  'ota_in_progress':       'warn',   // T13 ota_manager — firmware/asset upload in flight
+  'calibrating':           'warn',   // T2 boot-time window-position calibration
+  'standby':               'warn',   // operator paused the controller (mode.current is STANDBY too)
+  'net_backoff_active':    'warn',   // T14 circuit breaker open after consecutive POST failures
+  'wind_protect_off':      'warn',   // operator set cfg.wind_prot_en = 0 — wind safety disabled
 
   // BLUE — informational (operator-configured state, not a fault).
-  'humidity_ctrl_off':  'info',    // operator set cfg.rh_ctrl_en = 0 — RH-driven control off
-  'coredump_available': 'info',    // panic dump waiting in flash; admin can retrieve via local GUI
+  'humidity_ctrl_off':     'info',   // operator set cfg.rh_ctrl_en = 0 — RH-driven control off
+  'coredump_available':    'info',   // panic dump waiting in flash; admin can retrieve via local GUI
+  'rota_update_pending':   'info',   // 2.2.2 — an update is downloaded and waits for its apply window
 };
 
+// Labels are the controller's own (firmware/data/app.js), so an operator sees
+// the same words on the controller and on the dashboard.
 const FLAG_LABEL = {
-  'wind_override':      'WIND',
-  'motor_alarm':        'MOTOR ALARM',
-  'sensor_fault_temp':  'T/RH fault',
-  'sensor_fault_wind':  'Wind fault',
-  'ota_in_progress':    'OTA active',
-  'calibrating':        'Calibrating',
-  'net_backoff_active': 'Net backoff',
-  'wind_protect_off':   'Wind protect off',
-  'humidity_ctrl_off':  'Humidity ctrl off',
-  'coredump_available': 'Coredump available',
+  'wind_override':         'WIND',
+  'motor_alarm':           'MOTOR ALARM',
+  'sensor_fault_temp':     'T/RH fault',
+  'sensor_fault_wind':     'Wind fault',
+  'sensor_fault_position': 'Window sensor fault',
+  'm3_not_confirmed':      'M3 not confirmed',
+  'm3_travel_short':       'M3 travel time too short',
+  'm3_travel_long':        'M3 travel time too long',
+  'ota_in_progress':       'OTA active',
+  'calibrating':           'Calibrating',
+  'standby':               'Standby',
+  'net_backoff_active':    'Net backoff',
+  'wind_protect_off':      'Wind protect off',
+  'humidity_ctrl_off':     'Humidity ctrl off',
+  'coredump_available':    'Coredump available',
+  'rota_update_pending':   'Update pending',
 };
+
+// Note: `net_backoff_active` is defined but, as of 2.14.0, never emitted — the
+// breaker is not wired (gh#18 Phase 1 returns false). Keep the row.
 
 function renderModeBadges(flags) {
   const tile = document.getElementById('mode-badges');
@@ -748,18 +828,29 @@ JS update:
 const W = ['M1', 'M2', 'M3'];
 const COLOR = {
   OPEN:         'var(--blue-light)',
+  PART_OPEN:    'var(--blue-light)',   // 2.12.0 — a normal state, drawn as open (the label says how far)
   MOVING_OPEN:  'var(--yellow)',
   MOVING_CLOSE: 'var(--yellow)',
   CLOSED:       'var(--green-dark)',
   UNKNOWN:      'var(--grey-muted)',
 };
+// An unknown state (a value added after this site was built) is drawn in the
+// neutral grey WITH its raw text, per the stability guarantee in §3.4 —
+// never silently as UNKNOWN.
 function shortState(s) {
-  return ({ MOVING_OPEN: 'MOV OPEN', MOVING_CLOSE: 'MOV CLOSE' }[s]) || s || 'UNKNOWN';
+  return ({ MOVING_OPEN: 'MOV OPEN', MOVING_CLOSE: 'MOV CLOSE', PART_OPEN: 'PART' }[s]) || s || 'UNKNOWN';
+}
+// M3 carries its opening when a position sensor is fitted and trusted. The
+// value is not clamped (a parked open window reads ~113 %), so clamp for display.
+function m3Percent(windows) {
+  const p = windows && windows.M3_percent_x10;
+  if (typeof p !== 'number') return '';
+  return ' ' + Math.round(Math.max(0, Math.min(1000, p)) / 10) + '%';
 }
 // OPEN's light-blue background needs dark text for legibility; everything
 // else stays on the foreground colour.
 function textColorFor(state) {
-  return state === 'OPEN' ? '#000' : 'var(--fg)';
+  return (state === 'OPEN' || state === 'PART_OPEN') ? '#000' : 'var(--fg)';
 }
 function renderWindows(windows) {
   for (const id of W) {
@@ -769,7 +860,8 @@ function renderWindows(windows) {
     const title = document.getElementById('title-' + id.toLowerCase());
     rect.setAttribute('fill', COLOR[state] || COLOR.UNKNOWN);
     lbl.setAttribute('fill', textColorFor(state));
-    lbl.textContent = `${id} ${cfg.windowNames[id]} ${shortState(state)}`;
+    const pct = (id === 'M3') ? m3Percent(windows) : '';
+    lbl.textContent = `${id} ${cfg.windowNames[id]} ${shortState(state)}${pct}`;
     title.textContent = `${id} ${cfg.windowNames[id]}: ${state}`;
   }
 }
@@ -1042,6 +1134,19 @@ Each requirement is an implementation-level check that the spec is followed. IDs
 | TR-48 | Unknown flag strings (not in the `FLAG_CLASS` table) are silently dropped without console errors and without breaking the rendering of known siblings. This preserves forward compatibility when a controller upgrade emits a new flag the dashboard hasn't been updated for yet. | Forward-compat contract | Send `mode.flags = ["wind_override", "future_unknown_flag", "humidity_ctrl_off"]`; the rendered badge list is `[WIND, Humidity ctrl off]` with no console error. |
 
 ---
+
+### 15.11 Firmware 2.0 – 2.14 additions (contract 2.0)
+
+| ID | Requirement | How to verify |
+|---|---|---|
+| TR-49 | `api.php` accepts a log upload of **2 MB** (`GH_LOG_MAX_BYTES` ≥ 2 097 152, `post_max_size` above it). | POST a 1 048 618-byte body with a valid secret; expect 204 and the file stored. Repeat with 2 097 153 bytes; expect rejection. |
+| TR-50 | The windows tile draws `PART_OPEN` as an open state, not with the `UNKNOWN` fill. | Feed `{"windows":{"M3":"PART_OPEN"}}`; the M3 rectangle's fill is the OPEN colour. |
+| TR-51 | When `M3_percent_x10` is present, the M3 label shows the opening, clamped to 0–100 %. | Feed 252 → "25%"; feed 1137 → "100%"; omit the key → no percentage. |
+| TR-52 | An unknown window state is drawn neutrally **with its raw text**. | Feed `"M3":"SOMETHING_NEW"`; the label contains `SOMETHING_NEW` and the fill is the neutral grey. |
+| TR-53 | All sixteen `mode.flags[]` strings of §9.4 render as badges with the listed class and label. | Feed each flag alone; one badge each, class and text as in the table. |
+| TR-54 | `bus` is read from the **top level**, and its absence is not an error. | Feed a payload with and without `bus`; no exception either way; with it, one row per entry. |
+| TR-55 | The dashboard does not treat `heap_min_kb` as available memory. | Any heap indicator is driven by `heap_free_kb` / `heap_largest_kb`. |
+| TR-56 | The M3 control-law keys are optional to render but never break the tile. | Feed `windows` with and without `M3_ctrl_mode`, `M3_ctrl_reason`, `M3_pos_gate`; the tile renders both. |
 
 ## Appendix — Reference files
 
