@@ -2,7 +2,7 @@
 
 Append-only. Newest at top. Format per entry: **Problem → Root cause → Fix → Where it lives.**
 
-When something weird happens, check here BEFORE debugging from scratch. **Start at the [index](#index--by-where-it-bites-you)** — it groups every entry by subsystem with symptom-first hooks, which is faster than scrolling 125 entries. **Adding an entry means adding its index line too**; the pair is checked by counting `^## 20` headings against `^- \*\*20` index lines (**expect one MORE index line than entries**: gh#48 is deliberately cross-listed in two groups; the 2026-09-24 curation found four entries with no index line at all, so run the count, don't assume). Entries that recur or affect multiple subsystems graduate up to a topic file or to [CLAUDE.md](../CLAUDE.md) hard constraints.
+When something weird happens, check here BEFORE debugging from scratch. **Start at the [index](#index--by-where-it-bites-you)** — it groups every entry by subsystem with symptom-first hooks, which is faster than scrolling 126 entries. **Adding an entry means adding its index line too**; the pair is checked by counting `^## 20` headings against `^- \*\*20` index lines (**expect one MORE index line than entries**: gh#48 is deliberately cross-listed in two groups; the 2026-09-24 curation found four entries with no index line at all, so run the count, don't assume). Entries that recur or affect multiple subsystems graduate up to a topic file or to [CLAUDE.md](../CLAUDE.md) hard constraints.
 
 Entries that are resolved **and can no longer recur** (code deleted, design changed, fixed both sides) retire to [gotcha-archive.md](gotcha-archive.md) — history only, never needed for triage. Everything still able to bite you is in this file. Being `[RESOLVED]` is *not* sufficient to retire: most resolved entries here stay because an active constraint still depends on them.
 
@@ -44,7 +44,7 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ## Index — by where it bites you
 
-125 entries is too many to scan. Find your subsystem, then **Ctrl+F the date** to jump.
+126 entries is too many to scan. Find your subsystem, then **Ctrl+F the date** to jump.
 Hooks are the *symptom*, not the title — you rarely know the cause when you arrive here.
 Entries stay in reverse-chronological order below; this index is the only grouped view.
 
@@ -105,6 +105,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-07-05** — M3 is the north **side wall**, not a roof panel; 8.1× is travel time, 10× is area
 
 ### OTA & ROTA releases
+- **2026-09-25** — a release dies with HTTP 422 "tag_name is not a valid tag" / invalid `target_commitish`: the commit HEAD points at was never pushed, so GitHub cannot tag it (the script's separate "uncommitted changes" warning is the untracked-file false positive)
 - **2026-09-21** — a bench push carries a GUI older than its firmware while `fw_ver` and `asset_version` match (every bench build of a version says `-bench`, so the pair check cannot see stale content)
 - **2026-09-20** — a check forced ~2 min after publishing gets `dl` 2 (SHA/size): the server points the channel before it has fetched the artefacts; retry, and check the manifest against the local files before blaming the release
 - **2026-09-17** — publishing a release to ROTA does nothing on a module that runs a pushed build of the same version, `-bench` included (the version compare ignores the suffix)
@@ -2633,3 +2634,34 @@ as "the originals", and would have soaked the rig for 12 h on test settings and 
 against the RIG's own values, which is what `scratchpad/restore_rig.py` now does (t_max_day 28,
 t_max_ngt 20, cr_priority 0, dwell_open_m3 1500, dwell_close_m3 300, travel_m3 13, min_intv_m3 600,
 ctrl_mode_m3 1, wpos_fitted_m3 1). Third restart, 22:40:53, with the right baseline.
+## 2026-09-25 — `rota_release.py release` died with HTTP 422 "tag_name is not a valid tag", and the cause was an unpushed commit
+
+**Problem:** with the soak passed and the artefacts built, publishing 2.12.2 returned
+
+```
+ERROR: GitHub POST /releases -> HTTP 422 Unprocessable Entity:
+  {"code":"custom","field":"tag_name","message":"tag_name is not a valid tag"},
+  {"message":"Published releases must have a valid tag"},
+  {"code":"invalid","field":"target_commitish"}
+```
+
+Nothing about the tag name is wrong — `v2.12.2` is the same shape as the five releases before it.
+
+**Root cause:** the script tags **HEAD**, and HEAD was `ad9cd66`, which existed only locally;
+`origin/main` was one commit behind at `60b34dc`. **GitHub cannot create a tag on a commit it does
+not have**, and it reports that as an invalid `target_commitish` plus a confusing complaint about
+the tag name. The operator commits and pushes by hand here, so a session that has just staged work
+and had it committed is routinely one commit ahead of the remote.
+
+**Fix:** `git push origin main`, then re-run the release. It succeeded unchanged and **reused the
+already-allocated seq 56**, because the first attempt had written `bin/<ver>/manifest-<ver>.json`
+before the upload (the same write `--dry-run` performs). Nothing was left on GitHub by the failure:
+the releases API showed no `v2.12.2` tag, draft or release.
+
+**Rules:** *before any release, compare `git rev-parse HEAD` with `origin/main`* — `git log
+--oneline origin/main..HEAD` empty is the precondition, and it is not something the script checks.
+The script's own *"working tree has uncommitted changes"* warning is a **different** thing and is
+the documented false positive on untracked files (the artefacts it has just built); resolve it with
+`git status --short | grep -v '^??'` and do not let it mask the real precondition. And *a 422 about
+a field you did not set is usually about the object it points at* — here `target_commitish`, not
+the tag.
