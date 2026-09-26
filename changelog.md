@@ -54,6 +54,8 @@ values were unreadable and unaudited, which is the defect.
 
 ## [2.13.0] — 2026-09-25  (linear control starts by itself, and the card says what is going on)
 
+**Soaked and passed (2026-09-26, 12.36 h, 16 judged strokes, every fault counter 0) but not published on its own: it ships inside 2.14.0.** By the time it passed, 2.14.0 was committed on top of it, and a `v2.13.0` tag on the current commit would have pointed at unsoaked source.
+
 Minor: a payload-shape change and the GUI that needed it
 ([gh#85](https://github.com/pe1mew/greenhouse-Controller/issues/85)). No control-path change — no task, no config key, no NVS change, no log encoding, and nothing in the ventilation path.
 

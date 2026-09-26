@@ -90,6 +90,8 @@ server's copy is **deleted**, not duplicated: both the bench diag route and the 
 one function. `dm_m3_mode_reason_name()` does the same for the mode reason. Two hand-maintained copies
 of one field list is how gh#57 and gh#64 began.
 
+> **2.13.0 was not published on its own** (operator decision, 2026-09-26). It soaked and passed, but by then the 2.14.0 work had been committed on top of it, and the release script tags the current commit — so a `v2.13.0` tag would have pointed at unsoaked 2.14.0 source. **Everything in 2.13.0 ships inside 2.14.0.** No unit on the soak channel will ever report `2.13.0`; the channel goes from 2.12.2 to 2.14.0.
+
 ## Verification
 
 | Check | Status |
@@ -105,6 +107,7 @@ of one field list is how gh#57 and gh#64 began.
 | **gh#86 on the rig — fixed build** | **PASS** — 2344, `bin/at_wp_rest_promote.py`: after the push's reboot the mode was **LINEAR** with M3 **CLOSED at 0.0 % on its end sensor, never having moved** (`reason setting`, `gate ok`) |
 | **gh#86 fail-first — bit 4096** | **FAILS AS IT MUST** — a bench build with `-DWPOS_FAILFIRST_212=4096` (`FF212_STROKEONLY`, verified in force: the diag route reported `failfirst_212: 4096`) **stayed TIMED for the full 240 s** with M3 at rest, `reason no_position`, `gate ok` — the defect exactly as the operator met it |
 | The test is discriminating | **checked** — a boot sweep that MOVES M3 would promote the mode on the old code too, so the harness requires M3 to start CLOSED on its end sensor and reports INCONCLUSIVE if M3 moves during the window |
+| **Overnight soak on 2344, in mode 2** | **PASS** — 2026-09-25 17:43 to 2026-09-26 06:05: **12.36 h, 16 judged strokes**, `stall_faults` / `early_stops` / `rejected_rate` / `err_comm` / `not_reached` / `orphan_aborts` all 0, `mode_changes` 0, gate settled at `position`, **no reboot** (16.0 h uptime spans the window). Linear control was in force all night (`reason setting`, `gate ok`), so gh#86 held. The scripted stroke sessions stopped after 4 of 12 (8 strokes, all clean) because the operator changed `cr_priority` by hand at about 21:00, and the harness stops rather than restoring a value it did not record; T6 made the other 8 judged strokes by itself. Heap: free 67 KB, largest block 25 KB at 16 h; the floor stepped to 6 KB once, at 18:34, and never again |
 | Message severity | **PASS** — in a browser: "nothing is wrong" renders muted (`#999`, class `disabled-why why-ok`) while a real fault stays warning-orange (`#ff9800`). A line whose point is that nothing is wrong should not be coloured like an alarm |
 
 ## Upgrading
