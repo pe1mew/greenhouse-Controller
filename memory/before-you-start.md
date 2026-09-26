@@ -85,7 +85,7 @@ the consumer's produces a silent lie (stored 300, polled 120). Corrected in 2.5.
 diverges: FR-CF17/FR-S07 say 1-60 min, `cfg_limits.h` says 1-30; `webUiMock/mock_server.py`'s
 `CONFIG_LIMITS` must mirror them. **`POST /api/config` is asynchronous** — it enqueues on Q4 and T4
 applies it a loop later, so a read-back immediately after the POST returns the PREVIOUS value;
-settle or poll before asserting. Four of the keys (`led_*`) are write-only: no API exposes them, so
+settle or poll before asserting. [Since 2.14.0 the four `led_*` keys this sentence describes no longer exist — gh#67 retired them to constants in `watchdog.cpp`; kept as it read before the move.] Four of the keys (`led_*`) are write-only: no API exposes them, so
 a clamp on them cannot be verified over the network
 
 ## 3. Changing motor travel/dwell config, or anything T2 caches

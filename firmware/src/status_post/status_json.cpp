@@ -20,6 +20,7 @@
 #include "status_post.h"   /* status_post_backoff_active() — gh#18 Phase 1 */
 #include "../system_id/system_id.h"  /* unit_id (gh#17, since 1.18.3) */
 #include "modbus_rtu.h"   /* gh#66 — per-slave bus KPIs (read unlocked, by design) */
+#include "../types/fmt_tenths.h"             /* gh#88 — signed tenths keep their sign */
 #include "../window_pos/window_pos_task.h"  /* gh#85 — gate reason NAME (pure lookup) */
 #include "../data_manager/data_manager.h"   /* gh#85 — mode reason NAME (pure lookup) */
 #include "window_pos.h"   /* gh#73 — WINDOWPOS_DEFAULT_ADDR, left out when not fitted */
@@ -166,11 +167,14 @@ size_t build_canonical_status_json(char *buf, size_t cap,
      * recipient knows which mode is active. */
     if (ok && (expose_mask & STATUS_EXPOSE_CLIMATE)) {
         ok = ok && append(buf, cap, &pos,
-            ",\"climate\":{\"temp_c\":%d.%d,\"temp_avg_c\":%d.%d,"
+            /* gh#88: TENTHS_*, not `v / 10` + `|v| % 10`, which sent -0.5 C
+             * as 0.5 -- the sign lived only in a whole part that truncates
+             * to 0. See fmt_tenths.h. */
+            ",\"climate\":{\"temp_c\":" TENTHS_FMT ",\"temp_avg_c\":" TENTHS_FMT ","
             "\"rh_pct\":%u,\"rh_avg_pct\":%u,"
             "\"temp_max_active\":%d",
-            s->t_c10 / 10, (s->t_c10 < 0 ? -s->t_c10 : s->t_c10) % 10,
-            s->t_avg_c10 / 10, (s->t_avg_c10 < 0 ? -s->t_avg_c10 : s->t_avg_c10) % 10,
+            TENTHS_ARGS(s->t_c10),
+            TENTHS_ARGS(s->t_avg_c10),
             (unsigned)s->rh_pct, (unsigned)s->rh_avg_pct,
             (int)s->t_max_active);
 

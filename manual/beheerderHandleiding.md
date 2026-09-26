@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de beheerder
 
-**Versie:** 1.25
-**Datum:** 2026-09-20
-**Firmware:** 2.12.0
+**Versie:** 1.28
+**Datum:** 2026-09-25
+**Firmware:** 2.14.0
 
 ---
 
@@ -348,7 +348,7 @@ Niet periodiek. Alleen wanneer:
 
 De kleinste afwijking waarvoor het raam nog bijgestuurd wordt. Te klein en het raam gaat op ruis heen en weer; nul zou het onafgebroken laten klapperen. Instelbaar in tab **Motors**, onder M3 → *Linear control*, op elke build (1–200 mm, standaard 20), zolang *Position sensor fitted* op **Yes** staat.
 
-Sinds 2.12.0 is dit **ook de aankomsttolerantie van de lineaire besturing**: M3 stopt zodra hij binnen deze afstand van de gevraagde stand is, en de regeling vraagt geen beweging aan die kleiner is dan deze afstand. Verder gebruiken twee dingen hem al langer:
+Sinds 2.12.0 is dit **ook de aankomsttolerantie van de lineaire besturing**: M3 stopt zodra hij binnen deze afstand van de gevraagde stand is, en de regeling vraagt geen beweging aan die kleiner is dan deze afstand. **Behalve bij de eindstanden (sinds 2.12.2, gh#83):** ligt de gevraagde stand binnen deze afstand van helemaal dicht of helemaal open, dan rijdt de controller door tot de eindsensor schakelt. Een eindstand is een schakelaar, geen getal — daarvoor kon een "dicht" een dodezone op een kier blijven staan, een hele nacht lang. Verder gebruiken twee dingen hem al langer:
 - **de controle op een te vroeg stoppend raam**: een SLUIT-gang die binnen de dodezone van "dicht" eindigt zonder dat de eindsensor schakelt, wordt als storing gemeld;
 - **het logboek**: in rust schrijft de controller alleen een positieregel als het raam verder bewogen is dan de dodezone (minstens 5 mm). Zo zie je ook een raam dat zonder opdracht van de controller bewoog, bijvoorbeeld via de handschakelaars in de motorbox.
 
@@ -478,7 +478,7 @@ Zie [boer-handleiding §5.2](boerHandleiding.md#52-toetsenbord-4--4) voor het vo
 #### RGB-LED kleuren
 Zie [boer-handleiding §5.3](boerHandleiding.md#53-led-indicatoren). 
 
-> Nachtmodus voorkomt een felle LED in een verduisterde kas of woonruimte naast de kas.
+> Nachtmodus voorkomt een felle LED in een verduisterde kas of woonruimte naast de kas. De nachtstand loopt van 22:00 tot 06:00 en ligt vast; sinds 2.14.0 is hij niet meer in te stellen (gh#67).
 
 #### Heartbeat-LED
 groene LED Knippert 1× per seconde. **Knippert niet:**
@@ -945,14 +945,14 @@ De **Logout**-knop verschijnt op de Access-tab wanneer u ingelogd bent (Boer of 
 
 *Figuur 13: Log-tab — SD-kaart status en logbestand-download*
 
-De Log-tab biedt toegang tot het event-logbestand-systeem. De kascontroller schrijft alle relevante gebeurtenissen (sensor-readings, raam-bewegingen, mode-wisselingen, alarmen, configuratie-wijzigingen) naar de **SD-kaart** in CSV-formaat. De firmware roteert automatisch naar een nieuw bestand bij 512 KB en bewaart maximaal 10 bestanden.
+De Log-tab biedt toegang tot het event-logbestand-systeem. De kascontroller schrijft alle relevante gebeurtenissen (sensor-readings, raam-bewegingen, mode-wisselingen, alarmen, configuratie-wijzigingen) naar de **SD-kaart** in CSV-formaat. De firmware begint automatisch een nieuw bestand zodra het huidige **1 MB** groot is, en bewaart **30 bestanden per controller**: is die grens bereikt, dan verwijdert hij bij elke wissel de oudste, tot vijf tegelijk, tot hij weer op 30 zit. Bestanden van een andere controller op dezelfde kaart — een andere ID vooraan in de bestandsnaam — verwijdert hij nooit. *Tot en met 2.12.0 werkte dat opruimen niet: een kaart met meer dan 30 bestanden liep ongemerkt vol, en de lijst toonde alleen de oudste (gh#82).*
 
 #### Velden en knoppen
 
 | Element | Beschrijving |
 |---|---|
 | `SD card control` — **Mount** / **Unmount** | Handmatig mounten/unmounten van de SD-kaart |
-| `Log source` (keuzelijst) | Kies een SD-bestand om te downloaden; zonder SD-kaart toont de lijst `— no SD log files —` |
+| `Log source` (keuzelijst) | Kies een SD-bestand om te downloaden. **Nieuwste bovenaan**: eerst de bestanden van deze controller, daarna die van een andere. Het bestand waar de controller nu in schrijft, is gemarkeerd als *(current)* en al geselecteerd. Staan er meer dan 64 bestanden op de kaart, dan sluit de lijst af met een grijze regel *— N older file(s) on the card, not listed —*, zodat je ziet dat de lijst niet alles toont. Zonder SD-kaart toont de lijst `— no SD log files —` |
 | **Download CSV** | Download het gekozen SD-bestand als CSV |
 | Refresh-knop (↻) | Vernieuwt de lijst beschikbare SD-bestanden |
 
@@ -967,6 +967,7 @@ De Log-tab biedt toegang tot het event-logbestand-systeem. De kascontroller schr
 De firmware probeert de SD-kaart **automatisch te mounten**:
 - bij het opstarten (direct na boot, tijdens de event-logger-initialisatie)
 - daarna elke 60 seconden zolang er geen kaart gemount is
+- **behalve na Unmount**: heb je de kaart zelf met **Unmount** vrijgegeven, dan blijft hij vrijgegeven tot je op **Mount** klikt of de controller herstart. Zo kun je de kaart veilig verwisselen zonder dat de controller hem tussendoor weer in gebruik neemt (sinds 2.4.10, gh#61)
 
 Plaats een SD-kaart tijdens bedrijf en binnen één minuut wordt er automatisch een mount-poging gedaan — een power-cycle is niet nodig.
 
@@ -1074,13 +1075,13 @@ Endpoints met `https://` worden ondersteund maar **de controller controleert het
 
 #### Logbestand-upload — wat gaat er precies heen?
 
-De controller upload het **meest recent gesloten** CSV-logbestand op de SD-kaart (dus niet het bestand waar T9 op het moment van uploaden nog in schrijft). De bestandsnaam is van de vorm `<eenheid-ID>_YYYYMMDDHHMMSS.csv` (eenheid-ID + lokale aanmaaktijd), bijvoorbeeld `5C88_20260507143022.csv`, en is maximaal 512 KB groot — daarboven heeft T9 het al gerouteerd naar een nieuwer bestand.
+De controller upload het **meest recent gesloten** CSV-logbestand **van deze controller** op de SD-kaart (dus niet het bestand waar T9 op het moment van uploaden nog in schrijft). De bestandsnaam is van de vorm `<eenheid-ID>_YYYYMMDDHHMMSS.csv` (eenheid-ID + lokale aanmaaktijd), bijvoorbeeld `5C88_20260507143022.csv`, en is maximaal 1 MB groot — daarboven heeft T9 het al gerouteerd naar een nieuwer bestand.
 
 Twee triggers, beide aan te zetten of uit te zetten:
-- **On rotation**: zodra T9 een logbestand sluit (omdat het 512 KB heeft bereikt), wordt het vrijwel direct geüpload.
+- **On rotation**: zodra T9 een logbestand sluit (omdat het 1 MB heeft bereikt), wordt het vrijwel direct geüpload.
 - **Daily**: elke dag rond `Daily upload time` lokaal wordt het laatst-gesloten bestand opnieuw beoordeeld; staat het al onder `Last uploaded file`, dan wordt het overgeslagen — anders wordt het geüpload.
 
-Door deze dubbele aanpak met deduplicatie-op-bestandsnaam wordt hetzelfde bestand nooit twee keer geüpload, ook als de rotatie en de dagelijkse check op verschillende dagen vallen.
+Door deze dubbele aanpak, met deduplicatie op het **aanmaaktijdstip** in de bestandsnaam, wordt hetzelfde bestand nooit twee keer geüpload. Bestanden van een andere controller op dezelfde kaart worden niet geüpload (sinds 2.12.2, gh#82; daarvoor vergeleek de controller namen, en kon een bestand van een andere controller de upload voorgoed laten stilvallen), ook als de rotatie en de dagelijkse check op verschillende dagen vallen.
 
 ---
 
@@ -1630,11 +1631,11 @@ Voor de volledige tabel van parameter-ID's en de gebruikte sentinel-codering: zi
 
 Om te voorkomen dat de SD-kaart vol raakt:
 
-- **Per logbestand** wordt geroteerd na ~512 KB; daarna start de firmware een nieuw bestand met naam `<eenheid-ID>_YYYYMMDDHHMMSS.csv`
-- **Maximaal 10 logbestanden** worden bewaard; bij meer wordt het oudste bestand verwijderd
-- **Minimaal 3 bestanden** blijven altijd bewaard (vloer): zelfs bij weinig vrije ruimte wordt nooit onder dit aantal verwijderd
-- **Minimaal 2 MB vrije ruimte** vereist; daaronder probeert de firmware oudste bestanden te verwijderen om ruimte vrij te maken
-- Zit de controller op de bestands-vloer (3) **én** is er minder dan 2 MB vrij, dan wordt SD-logging tijdelijk **opgeschort**. Een `SYSTEM`-event met `value_a = -2` markeert dit moment in het log; events worden niet opgeslagen totdat er weer ruimte is
+- **Per logbestand** wordt geroteerd na 1 MB; daarna start de firmware een nieuw bestand met naam `<eenheid-ID>_YYYYMMDDHHMMSS.csv`
+- **Maximaal 30 logbestanden per controller** worden bewaard; bij meer verwijdert de firmware bij elke rotatie de oudste van deze controller, tot vijf tegelijk, tot hij weer op 30 zit. Bestanden van een andere controller op dezelfde kaart worden nooit verwijderd (sinds 2.12.2, gh#82)
+- **Minimaal 5 bestanden** blijven altijd bewaard (vloer): zelfs bij weinig vrije ruimte wordt nooit onder dit aantal verwijderd
+- **Minimaal 4 MB vrije ruimte** vereist; daaronder probeert de firmware oudste bestanden te verwijderen om ruimte vrij te maken
+- Zit de controller op de bestands-vloer (5) **én** is er minder dan 4 MB vrij, dan wordt SD-logging tijdelijk **opgeschort**. Een `SYSTEM`-event met `value_a = -2` markeert dit moment in het log; events worden niet opgeslagen totdat er weer ruimte is
 
 > **Praktijk**: bij gewone bedrijfsvoering is een 8 GB-kaart ruim voldoende voor jaren logging. Bij vermoeden van problemen: download alle bestanden, formatteer de kaart opnieuw, plaats hem terug.
 
@@ -1888,7 +1889,7 @@ Zie ook [boer-handleiding §18](boerHandleiding.md#18-reset-procedure-io0-knop-o
 7. ☐ Klimaat-setpoints instellen (boer of Beheerder namens boer)
 8. ☐ hysteresis, glijdend gemiddelde fijnafstemmen
 9. ☐ Wind v_max en eventueel uitsluitings-zone
-10. ☐ LED-helderheid dag/nacht ([§5.3](#53-led-indicatoren))
+10. ☐ Raamstandsensor op M3 (tab **Motors**, M3 → *Linear control*): zet *Position sensor fitted* op **Yes** — na de reset staat hij op No, en dan draait M3 tijdgestuurd. Controleer dat *Calibration* **VALID** toont; zo niet, voer een teach uit. *M3-besturing* staat na de reset op **Lineair** (fabrieksinstelling sinds 2.13.0)
 11. ☐ Beheerder-PIN wijzigen van fabrieksstandaard
 12. ☐ Farmer-PIN wijzigen / aan boer doorgegeven
 13. ☐ Test-cyclus: Mode: WIND afdwingen, Mode: ALARM afdwingen, herstel verifiëren
@@ -1948,8 +1949,6 @@ Referentietabel — alle default instellingen van de controller:
 | m3_dwell_open_s | 1500 | s |
 | m1_dwell_close_s, m2_dwell_close_s | 300 | s |
 | m3_dwell_close_s | 600 | s |
-| led_dag_brt | 200 | (0–255) |
-| led_nite_brt | 20 | (0–255) |
 | lat_deg | 52 | ° |
 | lon_deg | 5 | ° |
 | tz_str | `CET-1CEST,M3.5.0,M10.5.0/3` | POSIX |
@@ -2013,7 +2012,7 @@ Modbus RTU wordt verstuurd over **RS485**, een differentieel seriële bus:
 
 ### Bijlage F — Logbestand-formaat en `logparser` script
 
-De kascontroller schrijft gebeurtenissen naar de **SD-kaart** als CSV-bestanden. De bestandsnaam heeft het formaat `<eenheid-ID>_YYYYMMDDHHMMSS.csv` (eenheid-ID + lokale aanmaaktijd), bijvoorbeeld `5C88_20260507143022.csv`. De firmware roteert naar een nieuw bestand bij 512 KB en bewaart maximaal 10 bestanden.
+De kascontroller schrijft gebeurtenissen naar de **SD-kaart** als CSV-bestanden. De bestandsnaam heeft het formaat `<eenheid-ID>_YYYYMMDDHHMMSS.csv` (eenheid-ID + lokale aanmaaktijd), bijvoorbeeld `5C88_20260507143022.csv`. De firmware roteert naar een nieuw bestand bij 1 MB en bewaart 30 bestanden per controller (zie [§10.7](#107-log-tab-alleen-beheerder)).
 
 Download via webinterface tab **Log** (Beheerder-rol vereist).
 
@@ -2200,6 +2199,9 @@ Inhoudelijke wijzigingen aan de firmware staan beschreven in het bestand `change
 | 1.23 | 2026-09-19 | 2.10.0 — met een raamstandsensor beoordeelt de controller elke beweging van M3 (bevestigd, niet bereikt, niet beoordeeld) en controleert hij de looptijd; badges *M3 not confirmed*, *M3 travel time too short* en *M3 travel time too long*; beide eindsensoren tegelijk actief geldt als sensorstoring |
 | 1.24 | 2026-09-20 | 2.11.0 — de kalibratie (commissioning) van de raamstandsensor werkt op elke build, niet langer alleen op een commissioning-build (gh#77) |
 | 1.25 | 2026-09-20 | 2.12.0 — **lineaire besturing van M3**: de instelling *M3-besturing* (Tijdgestuurd / Lineair), de *Minimale tussentijd* die in lineaire besturing de rusttijden van M3 vervangt, en de regel eronder die zegt welke besturing werkelijk actief is |
+| 1.26 | 2026-09-24 | 2.12.2 — in lineaire besturing wordt een stand vlak bij een eindstand een volledige gang tot de eindsensor, zodat "dicht" echt dicht is (gh#83); tab **Log**: nieuwste bestanden bovenaan, het huidige bestand gemarkeerd, een melding als de kaart meer bestanden heeft dan de lijst toont, en de kaart houdt weer 30 bestanden per controller (gh#82). Ook: hoe de T-as en de RH-as worden gecombineerd; en de SD-cijfers gecorrigeerd in §10.7, de upload-sectie, *Vrije ruimte en bestandsrotatie* en Bijlage F — rotatie bij 1 MB, 30 bestanden per controller, vloer 5, minimaal 4 MB vrij (stond op 512 KB, 10, 3 en 2 MB) — plus de automatische mount die een Unmount respecteert |
+| 1.27 | 2026-09-25 | 2.13.0 — **Lineair is de fabrieksinstelling** (alleen voor een nieuwe of teruggezette controller); de lineaire besturing begint vanzelf, ook in rust (gh#86); de regel onder *M3-besturing* noemt de precieze reden als lineair niet actief is, in grijs als er niets mis is (gh#85) |
+| 1.28 | 2026-09-25 | 2.14.0 — de LED-helderheid en de nachtstand (22:00–06:00) liggen vast en zijn geen instelling meer (gh#67); checklist §18 punt 10: de raamstandsensor aanmelden in plaats van de LED instellen |
 
 ---
 

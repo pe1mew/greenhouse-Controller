@@ -184,11 +184,8 @@
 #define DEF_LON_DEG               5   /**< Netherlands default longitude */
 #define DEF_LON_FRAC              0
 
-/* ── LED brightness and night schedule ──────────────────────────────────── */
-#define DEF_LED_DAY_BRT         200   /**< Daytime brightness (0..255) */
-#define DEF_LED_NITE_BRT         20   /**< Night-time brightness (0..255) */
-#define DEF_LED_NITE_FROM        22   /**< Night-mode start (local hour, 0..23) */
-#define DEF_LED_NITE_TO           6   /**< Night-mode end   (local hour, 0..23) */
+/* LED brightness and night schedule: moved to watchdog.cpp as constants in
+ * 2.14.0 (gh#67). They are no longer the default OF any setting. */
 
 /* ── Timezone (POSIX TZ string) ─────────────────────────────────────────── */
 /* Overwritten at runtime by geolocation sync or web/Q4 update. */

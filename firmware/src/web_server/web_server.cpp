@@ -107,6 +107,7 @@
 
 #include "esp_mac.h"           /* alpha.6.18 — esp_read_mac for AP SSID */
 #include "esp_system.h"        /* alpha.6.18 — esp_restart() for /api/wifi apply */
+#include "../types/fmt_tenths.h"   /* gh#88 — signed tenths keep their sign */
 #include "esp_core_dump.h"     /* a.6.35.6  — /api/coredump endpoints */
 #include "esp_partition.h"     /* a.6.35.6  — coredump partition read */
 #include "esp_timer.h"         /* a.6.35.6  — rate-limit timestamp */
@@ -1089,16 +1090,16 @@ static esp_err_t history_handler(httpd_req_t *req)
          * "21.4" rather than the previous "21.0"-stuck output. */
         w = snprintf(body + pos, cap - pos,
             "%s{\"ts\":%lu,"
-              "\"temp_c\":%d.%d,\"temp_avg_c\":%d.%d,"
+              "\"temp_c\":" TENTHS_FMT ",\"temp_avg_c\":" TENTHS_FMT ","
               "\"rh_pct\":%u,\"rh_avg_pct\":%u,"
               "\"speed_ms\":%u.%u,\"speed_avg_ms\":%u.%u,"
               "\"direction_deg\":%u,\"direction_variation_deg\":%u}",
             (i > 0) ? "," : "",
             (unsigned long)e->timestamp,
-            e->temperature_c10 / 10,
-            (e->temperature_c10 < 0 ? -e->temperature_c10 : e->temperature_c10) % 10,
-            e->t_avg_c10 / 10,
-            (e->t_avg_c10 < 0 ? -e->t_avg_c10 : e->t_avg_c10) % 10,
+            /* gh#88: the same helper as the status payload -- this was a
+             * copy of its formula, and had its sign bug too. */
+            TENTHS_ARGS(e->temperature_c10),
+            TENTHS_ARGS(e->t_avg_c10),
             (unsigned)e->humidity_pct,
             (unsigned)e->rh_avg_pct,
             (unsigned)(e->wind_speed_ms10     / 10u),

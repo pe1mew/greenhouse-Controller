@@ -141,14 +141,10 @@
 #define CFG_MIN_COORD_FRAC    0   /* thousandths of a degree */
 #define CFG_MAX_COORD_FRAC  999
 
-/* -- Status LED (2.5.0, gh#57) --------------------------------------------- */
-/* 8-bit PWM duty. watchdog.cpp:123-125 already clamps defensively at the
- * consumer; this clamp keeps the STORED value honest so the GUI and the audit
- * log agree with what the LED actually does.
- * led_nite_from / led_nite_to are local hours and reuse CFG_MIN_HOUR/MAX_HOUR
- * (`to` is exclusive, so from=22,to=6 means 22:00-06:00). */
-#define CFG_MIN_LED_BRT       0
-#define CFG_MAX_LED_BRT     255
+/* -- Status LED: no bounds here since 2.14.0 (gh#67). Its brightness and night
+ * window are compile-time constants in watchdog.cpp, not config keys, so there
+ * is nothing to clamp. CFG_MIN_HOUR/MAX_HOUR remain: log_upload_h, ota_win_lo
+ * and ota_win_hi use them. */
 
 /* ── Status website reporting (T14) ──────────────────────────────────────── */
 #define CFG_MIN_STATUS_INTERVAL_S   60   /* spec floor; faster wastes bandwidth */

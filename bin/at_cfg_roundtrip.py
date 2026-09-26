@@ -40,8 +40,10 @@ offsets under test at all.
 
 Coverage is reported honestly, and in three parts: written-and-checked,
 read-only (boot-load covered by --expect-defaults), and not readable at all.
-Only the four led_* fall in the last group, because no endpoint reads them back
--- a pre-existing gap, not a gh#64 one.
+The last group is EMPTY since 2.14.0: the four led_* keys that filled it were
+retired (gh#67) rather than made readable, so every shadow field left is
+under test. The group stays, because it is derived from what the unit
+returns: a future key that cannot be read back will show up in it.
 
 Usage:
     python bin/at_cfg_roundtrip.py --host 192.168.20.x [--pin 12345678]

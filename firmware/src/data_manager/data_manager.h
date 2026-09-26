@@ -166,10 +166,6 @@ typedef struct {
     int32_t  lat_frac;            /**< Latitude milli-degrees (0–999, C21)   */
     int32_t  lon_deg;             /**< Longitude integer-degrees, East >0    */
     int32_t  lon_frac;            /**< Longitude milli-degrees (0–999, C21)  */
-    int32_t  led_day_brt;         /**< RGB LED day brightness  (0–255)       */
-    int32_t  led_nite_brt;        /**< RGB LED night brightness (0–255)      */
-    int32_t  led_nite_from;       /**< Night brightness start hour (0–23)    */
-    int32_t  led_nite_to;         /**< Night brightness end hour  (0–23)     */
     char     tz_str[64];          /**< POSIX TZ string (e.g. "CET-1CEST,...")*/
 
     /* ---- Status website / web-tab settings (NVS_NS_SYSTEM, T14) ---- */

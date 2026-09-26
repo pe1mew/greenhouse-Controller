@@ -49,7 +49,6 @@
 
 #include "led_strip.h"                    /* a.6.32 — managed component */
 #include "../ota_manager/ota_manager.h"   /* OTA_HEALTHY_MS, ota_mark_healthy */
-#include "../data_manager/data_manager.h" /* dm_cfg_snapshot for brightness */
 #include "../event_logger/event_logger.h" /* log_post + log_event_t */
 #include "../types/app_types.h"           /* EG1 + task_t1..task_t15 */
 #include "gpio_util.h"                    /* PIN_HB_LED toggle */
@@ -99,8 +98,24 @@ static void neopixel_init(void)
              (int)PIN_RGB_LED);
 }
 
+/* Status LED brightness and night window (FR-UI21).
+ *
+ * Compile-time constants since 2.14.0 (gh#67). Until then they were four NVS
+ * config keys that could be WRITTEN through POST /api/config and were
+ * advertised by /api/config/limits, but had no GUI control, no LCD menu, no
+ * read-back and no audit row -- a key you could set and never see. They were
+ * never tuned, so they are values, not settings. FR-CF14 (an administrator
+ * configures them) was withdrawn by the same decision.
+ *
+ * The values are the previous defaults, so a unit that never had them changed
+ * behaves exactly as before. */
+#define LED_DAY_BRT    200   /**< daytime brightness, 0..255 PWM duty */
+#define LED_NITE_BRT    20   /**< night brightness,   0..255 PWM duty */
+#define LED_NITE_FROM   22   /**< night starts, local hour (inclusive) */
+#define LED_NITE_TO      6   /**< night ends,   local hour (exclusive) */
+
 /** Compute the brightness scalar (0..255) for the current local hour. */
-static uint8_t neopixel_dim_for_now(const cfg_shadow_t *cfg)
+static uint8_t neopixel_dim_for_now(void)
 {
     /* Use localtime — tz is set via setenv("TZ", ...) by T10's geo sync
      * (defaults to CET if not yet geo-resolved). */
@@ -109,17 +124,19 @@ static uint8_t neopixel_dim_for_now(const cfg_shadow_t *cfg)
     localtime_r(&now, &t_now);
     int hour = t_now.tm_hour;
 
-    /* Night window: from led_nite_from inclusive to led_nite_to exclusive,
-     * wrapping across midnight. e.g. from=22, to=6 → night = [22..24) ∪ [0..6). */
-    const int from = (int)cfg->led_nite_from;
-    const int to   = (int)cfg->led_nite_to;
+    /* Night window: from LED_NITE_FROM inclusive to LED_NITE_TO exclusive,
+     * wrapping across midnight. from=22, to=6 → night = [22..24) ∪ [0..6).
+     * Kept general rather than hard-coding the wrap, so changing either
+     * constant cannot silently break the arithmetic. */
+    const int from = LED_NITE_FROM;
+    const int to   = LED_NITE_TO;
     bool is_night;
     if (from <= to) {
         is_night = (hour >= from && hour < to);
     } else {
         is_night = (hour >= from || hour < to);
     }
-    int32_t dim = is_night ? cfg->led_nite_brt : cfg->led_day_brt;
+    int32_t dim = is_night ? LED_NITE_BRT : LED_DAY_BRT;
     if (dim < 0)   dim = 0;
     if (dim > 255) dim = 255;
     return (uint8_t)dim;
@@ -146,9 +163,7 @@ static void neopixel_tick(void)
 {
     if (s_strip == NULL) return;
 
-    cfg_shadow_t cfg = {};
-    dm_cfg_snapshot(&cfg);
-    uint8_t dim = neopixel_dim_for_now(&cfg);
+    uint8_t dim = neopixel_dim_for_now();
 
     EventBits_t bits = (EG1 != NULL) ? xEventGroupGetBits(EG1) : 0;
     uint8_t r, g, b;

@@ -1252,7 +1252,7 @@ The MQTT integration page that was reserved in earlier specifications is not exp
   | **Wind** | Farmer (enable/disable only) / Admin (all) | Wind protection enable (`wind_prot_en`); v_max (Beaufort); direction exclusion zone centre and half-width (°); wind hysteresis timer (FR-CF09) |
   | **Motors** | Admin only | Motor travel times: M1, M2, M3 individually (seconds, range 5–300 s, factory defaults 21/21/171 s, FR-CF05); open-dwell time per window M1–M3 (minutes, FR-CF10); close-dwell time per window M1–M3 (minutes, FR-CF11) |
   | **Sensors** | Admin only | Sensor poll interval (15–120 s, factory default 30 s, FR-CF07); sliding average window for T and RH (1–60 min, FR-CF17) |
-  | **System** | Admin only | Session timeout (minutes); RGB LED day/night brightness and schedule (`led_day_brt`, `led_nite_brt`, `led_nite_from`, `led_nite_to`, FR-CF14); NTP timezone string; status-website URL; status interval; status secret (write-only); status expose bitmask; daily log-upload time (HHMM) |
+  | **System** | Admin only | Session timeout (minutes); NTP timezone string; status-website URL; status interval; status secret (write-only); status expose bitmask; daily log-upload time (HHMM) |
   | **Access** | Admin only | Change farmer PIN; change admin PIN; lockout threshold and duration |
 
   Each editable field shows its current value, the valid range, and the factory default. A **Restore defaults** button is available per sub-section (admin only); factory reset of all settings requires physical confirmation (admin only).
@@ -1361,7 +1361,7 @@ Motor full-travel time defaults (`MOTOR_M1_TRAVEL_S_DEFAULT 21`, `MOTOR_M2_TRAVE
 | `wifi` | `ssid`, `psk_hash`, `ap_enable`, `ap_psk` | string / int32 | WiFi client and AP credentials. STA: `ssid` and `psk_hash` (salted SHA-256 of PSK). DHCP is the only IP-acquisition mode supported (static-IP keys are not defined). AP: `ap_enable` (int32, 0/1, **default 0** — admin must explicitly opt in) toggles soft-AP at runtime; AP SSID is auto-generated from the MAC address and not stored; `ap_psk` is stored as **plaintext** (WPA2 requires the raw key), default `"0123456789"`, configurable by admin via web interface. The AP auto-shutdown timer is stored in the `system` namespace as `ap_timeout` (see below), not here. |
 | `mqtt` | *(reserved — no keys defined in the end-state design)* | — | The `mqtt` namespace is reserved for a future Could-be MQTT integration (T12). It is not provisioned with keys and shall not be written by the current firmware. |
 | `status` | `url`, `secret`, `interval_s`, `expose_mask`, `log_up_hhmm` | string / uint32 / uint8 / uint16 | Status website POST configuration (T14). `url` (string ≤127 chars): full HTTPS URL. `secret` (string ≤63 chars): shared secret transmitted in the `sourceidentifier` request header; masked in `/api/config` GET responses. `interval_s` (uint32, default 600, range 60–86400; `0` disables outbound POST). `expose_mask` (uint8): bitmask selecting which top-level objects of the canonical JSON are included in the POST (1=sensors, 2=modes, 4=alarms, 8=setpoints, 16=network, 32=sys; default 0x3F = all). `log_up_hhmm` (uint16, HH×100+MM, e.g. 0835; daily SD log-upload trigger time). |
-| `system` | `poll_interval`, `session_timeout`, `ap_timeout`, `lang`, `schema_ver`, `fw_version`, `led_day_brt`, `led_nite_brt`, `led_nite_from`, `led_nite_to`, `lat_deg`, `lat_frac`, `lon_deg`, `lon_frac`, `tz_str` | int32 / string / uint8 / int16 | System-wide configuration; `poll_interval` (int32, seconds, default 30, technician-settable 15–120 via web GUI); `session_timeout` (int32, minutes); `ap_timeout` (int32, minutes, default 30, range `[0, CFG_MAX_TIMEOUT_MIN]`; `0` = stay up indefinitely) — flat AP-uptime timer enforced by T10's `poll_ap()` (§5.6); `lat_deg` + `lat_frac` / `lon_deg` + `lon_frac`: geographic location stored as integer degree and fractional milli-degree parts (e.g. 52.0907°N stored as lat_deg=52, lat_frac=907) for sunrise/sunset calculation; populated manually via web GUI (FR-CF16) or automatically by `do_geo_sync()` (FR-DN06); `tz_str` (string[64]): POSIX TZ string e.g. `"CET-1CEST,M3.5.0,M10.5.0/3"`, factory default `"CET-1CEST,M3.5.0,M10.5.0/3"`, applied at boot via `setenv/tzset` and on each geolocation update (FR-DN07, FR-CF18); `schema_ver` (int32) tracks NVS layout version; `fw_version` (string `"MAJOR.MINOR.PATCH"`) overwritten on every boot; `led_day_brt` / `led_nite_brt` (uint8, 0–255, defaults 200/20); `led_nite_from` / `led_nite_to` (uint8, hour 0–23, defaults 22/6) |
+| `system` | `poll_interval`, `session_timeout`, `ap_timeout`, `lang`, `schema_ver`, `fw_version`, `lat_deg`, `lat_frac`, `lon_deg`, `lon_frac`, `tz_str` | int32 / string / uint8 / int16 | System-wide configuration; `poll_interval` (int32, seconds, default 30, technician-settable 15–120 via web GUI); `session_timeout` (int32, minutes); `ap_timeout` (int32, minutes, default 30, range `[0, CFG_MAX_TIMEOUT_MIN]`; `0` = stay up indefinitely) — flat AP-uptime timer enforced by T10's `poll_ap()` (§5.6); `lat_deg` + `lat_frac` / `lon_deg` + `lon_frac`: geographic location stored as integer degree and fractional milli-degree parts (e.g. 52.0907°N stored as lat_deg=52, lat_frac=907) for sunrise/sunset calculation; populated manually via web GUI (FR-CF16) or automatically by `do_geo_sync()` (FR-DN06); `tz_str` (string[64]): POSIX TZ string e.g. `"CET-1CEST,M3.5.0,M10.5.0/3"`, factory default `"CET-1CEST,M3.5.0,M10.5.0/3"`, applied at boot via `setenv/tzset` and on each geolocation update (FR-DN07, FR-CF18); `schema_ver` (int32) tracks NVS layout version; `fw_version` (string `"MAJOR.MINOR.PATCH"`) overwritten on every boot; `led_day_brt` / `led_nite_brt` (uint8, 0–255, defaults 200/20); `led_nite_from` / `led_nite_to` (uint8, hour 0–23, defaults 22/6) |
 
 **Default values:**
 - Applied on first boot (no NVS key present) or after factory reset.
@@ -1476,27 +1476,18 @@ else:
 
 `halt_flag` is set after 3 consecutive watchdog resets without completing the startup health check; it can also be set by any future mechanism that places the system in a fully halted state.
 
-**Day/night brightness dimming (Should — FR-UI21, FR-CF14):**
+**Day/night brightness dimming (Should — FR-UI21):**
 
 | Condition | Brightness applied |
 |-----------|-------------------|
-| Current local hour ∈ (`led_nite_from`, `led_nite_to`) — wrapping midnight | `led_nite_brt` (default 20 / 255) |
-| All other hours | `led_day_brt` (default 200 / 255) |
+| Local hour in [`LED_NITE_FROM`, `LED_NITE_TO`) = 22:00–06:00, wrapping midnight | `LED_NITE_BRT` = 20 / 255 |
+| All other hours | `LED_DAY_BRT` = 200 / 255 |
 
 - Brightness is applied to the currently active colour by scaling each of the 8-bit GRB components in T1's RMT encoder before the frame is transmitted.
-- T1 reads the four NVS settings (`led_day_brt`, `led_nite_brt`, `led_nite_from`, `led_nite_to`) from T4 via MX4; values are cached in T1 local variables and refreshed on each tick to pick up any runtime configuration change.
+- **Compile-time constants since 2.14.0** (gh#67), `#define`d in `watchdog.cpp` beside their only consumer. T1 takes no configuration snapshot for them.
 - Current local time is read from the ESP32 system clock (maintained by T4 after DS1307 read and NTP sync); no additional mutex is required for a `time()` / `localtime()` call on ESP32.
 
-**NVS keys (all in `system` namespace):**
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `led_day_brt` | `uint8_t` | 200 | RGB LED brightness during daytime (0–255) |
-| `led_nite_brt` | `uint8_t` | 20 | RGB LED brightness during night hours (0–255) |
-| `led_nite_from` | `uint8_t` | 22 | Night period start hour, local time (0–23) |
-| `led_nite_to` | `uint8_t` | 6 | Night period end hour, local time (0–23) |
-
-These four keys are part of the "Should" feature set (FR-UI21, FR-CF14); they default to sensible values on first boot and can be changed by the administrator via the keypad menu or web interface.
+> **Until 2.14.0 these were four NVS keys** (`led_day_brt`, `led_nite_brt`, `led_nite_from`, `led_nite_to`, in the `system` namespace). This section used to say they *"can be changed by the administrator via the keypad menu or web interface"* — **that was never true**: there was no keypad menu and no web control, only a raw `POST /api/config` that nothing documented and nothing could read back, and no audit row. Rather than make them readable, they were retired (operator decision 2026-09-25, gh#67) and FR-CF14 withdrawn. The values are the previous defaults, so an unchanged unit behaves exactly as before; a unit that stored others keeps four orphaned NVS entries that nothing reads, and reverts to the constants. A `POST /api/config` naming an `led_*` key is refused (400, gh#53).
 
 ---
 

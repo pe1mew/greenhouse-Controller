@@ -423,7 +423,7 @@ The RGB LED uses the following colour semantics, which differ from the discrete 
 | FR-UI19 | The RGB LED **shall** display red when a critical alarm is active that has caused the greenhouse controller to halt normal operation. | Must |
 | FR-UI20 | The RGB LED **shall** be lit internally and visible through the transparent enclosure cover without any opening, light pipe, or modification to the enclosure. | Must |
 | FR-UI21 | The RGB LED illumination intensity **should** be reduced during night-time hours to avoid unnecessary light disturbance in the greenhouse. | Should |
-| FR-CF14 | The administrator **should** be able to configure the night-time dimming schedule (start time and end time) and the night-time brightness level for the RGB status LED. | Should |
+| FR-CF14 | ~~The administrator **should** be able to configure the night-time dimming schedule (start time and end time) and the night-time brightness level for the RGB status LED.~~ **WITHDRAWN 2026-09-25** (operator decision, gh#67, firmware 2.14.0). The values are internal and were never tuned: they had no GUI control, no LCD menu, no read-back and no audit row, so the requirement was never actually met. They are fixed in firmware. FR-UI21 (dimming at night) is still met, by the fixed 22:00–06:00 window. | ~~Should~~ |
 
 ### 5.10 Configuration and Settings
 

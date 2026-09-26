@@ -542,6 +542,21 @@ def emit_c(rows):
 DESC_PATH = os.path.join(ROOT, "firmware", "config", "cfg_desc.inc")
 
 
+
+# Migrated keys REMOVED on purpose since the migration. Without this list a
+# retired key reads as DRIFT ("a migrated key has been removed") -- which is
+# correct for an accident and wrong for a decision. Each entry is a reviewable
+# act with its reason; the check below refuses an entry that is untrue.
+RETIRED = {
+    # gh#67 (2.14.0, operator 2026-09-25): the status LED's brightness and
+    # night window. Write-only since the Phase 0 scaffold -- no GUI, no LCD
+    # menu, no read-back, no audit row. Constants in watchdog.cpp now.
+    "K_LED_DAY_BRT":   "gh#67",
+    "K_LED_NITE_BRT":  "gh#67",
+    "K_LED_NITE_FROM": "gh#67",
+    "K_LED_NITE_TO":   "gh#67",
+}
+
 def emit_main(rows, write):
     """Write (or verify) firmware/config/cfg_desc.inc.
 
@@ -588,8 +603,27 @@ def emit_main(rows, write):
     derived, committed = rows_by_key(text), rows_by_key(have)
     changed = sorted(k for k in derived
                      if k in committed and derived[k] != committed[k])
-    dropped = sorted(k for k in derived if k not in committed)
+    # A migrated key that is gone is DRIFT unless it is declared retired
+    # (RETIRED, above). Declaring is the reviewable act; the guard stays a
+    # guard for every key that is not on that list.
+    retired = sorted(k for k in derived if k not in committed and k in RETIRED)
+    dropped = sorted(k for k in derived if k not in committed and k not in RETIRED)
     added = sorted(k for k in committed if k not in derived)
+
+    # A declaration that is not true is how an allow-list stops working, so
+    # both directions are checked: a 'retired' key still in the table, and a
+    # 'retired' key the frozen tables never had (a typo would hide a real
+    # removal behind a harmless-looking entry).
+    bad = sorted(k for k in RETIRED if k in committed)
+    ghost = sorted(k for k in RETIRED if k not in derived)
+    if bad or ghost:
+        for k in bad:
+            print("RETIRED lists %s, but it is still in %s -- delete the entry"
+                  " or the row." % (k, os.path.relpath(DESC_PATH, ROOT)))
+        for k in ghost:
+            print("RETIRED lists %s, which the frozen tables never had -- a typo?"
+                  % k)
+        return 1
 
     if changed or dropped:
         print("DRIFT: %s no longer reproduces the tables it was derived from."
@@ -606,10 +640,12 @@ def emit_main(rows, write):
               % len(added))
         return 1
 
-    print("%s reproduces all %d migrated rows%s"
-          % (os.path.relpath(DESC_PATH, ROOT), len(derived),
+    print("%s reproduces all %d migrated rows%s%s"
+          % (os.path.relpath(DESC_PATH, ROOT), len(derived) - len(retired),
              ("; %d key(s) added since the migration: %s"
-              % (len(added), ", ".join(added))) if added else ""))
+              % (len(added), ", ".join(added))) if added else "",
+             ("; %d retired on purpose: %s"
+              % (len(retired), ", ".join(retired))) if retired else ""))
     return 0
 
 

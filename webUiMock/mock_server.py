@@ -813,10 +813,6 @@ CONFIG_LIMITS: dict[str, list[int]] = {
     "lat_frac":       [ 0, 999],
     "lon_deg":        [-180, 180],
     "lon_frac":       [ 0, 999],
-    "led_day_brt":    [ 0, 255],
-    "led_nite_brt":   [ 0, 255],
-    "led_nite_from":  [ 0, 23],
-    "led_nite_to":    [ 0, 23],
 }
 
 

@@ -132,14 +132,10 @@ static const cfg_desc_t CFG_DESC[] = {
       CFG_MIN_LAT_DEG, CFG_MAX_LAT_DEG, DEF_LAT_DEG, CFG_SH(lat_deg) },
     { NVS_NS_SYSTEM, K_LAT_FRAC, CFG_KEY_SHADOW, 0u, CFG_F_PUB | CFG_F_SUN | CFG_P_Q4, LOG_PARAM_LAT_LON,
       CFG_MIN_COORD_FRAC, CFG_MAX_COORD_FRAC, DEF_LAT_FRAC, CFG_SH(lat_frac) },
-    { NVS_NS_SYSTEM, K_LED_DAY_BRT, CFG_KEY_SHADOW, 0u, CFG_F_PUB | CFG_P_Q4, LOG_PARAM_NONE,
-      CFG_MIN_LED_BRT, CFG_MAX_LED_BRT, DEF_LED_DAY_BRT, CFG_SH(led_day_brt) },
-    { NVS_NS_SYSTEM, K_LED_NITE_BRT, CFG_KEY_SHADOW, 0u, CFG_F_PUB | CFG_P_Q4, LOG_PARAM_NONE,
-      CFG_MIN_LED_BRT, CFG_MAX_LED_BRT, DEF_LED_NITE_BRT, CFG_SH(led_nite_brt) },
-    { NVS_NS_SYSTEM, K_LED_NITE_FROM, CFG_KEY_SHADOW, 0u, CFG_F_PUB | CFG_P_Q4, LOG_PARAM_NONE,
-      CFG_MIN_HOUR, CFG_MAX_HOUR, DEF_LED_NITE_FROM, CFG_SH(led_nite_from) },
-    { NVS_NS_SYSTEM, K_LED_NITE_TO, CFG_KEY_SHADOW, 0u, CFG_F_PUB | CFG_P_Q4, LOG_PARAM_NONE,
-      CFG_MIN_HOUR, CFG_MAX_HOUR, DEF_LED_NITE_TO, CFG_SH(led_nite_to) },
+    /* gh#67 (2.14.0): the four led_* keys that sat here were retired -- the
+     * status LED's brightness and night window are compile-time constants in
+     * watchdog.cpp, beside their only consumer. They had no GUI, no LCD menu,
+     * no read-back and no audit row since the Phase 0 scaffold. */
     { NVS_NS_SYSTEM, K_LOG_UPLOAD_H, CFG_KEY_SHADOW, 0u, CFG_P_Q4 | CFG_P_WEB, LOG_PARAM_LOG_UPLOAD_H,
       CFG_MIN_HOUR, CFG_MAX_HOUR, DEF_LOG_UPLOAD_H, CFG_SH(log_upload_h) },
     { NVS_NS_SYSTEM, K_LOG_UPLOAD_M, CFG_KEY_SHADOW, 0u, CFG_P_Q4 | CFG_P_WEB, LOG_PARAM_LOG_UPLOAD_M,

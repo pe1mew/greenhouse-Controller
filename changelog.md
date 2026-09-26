@@ -6,6 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.14.0] — 2026-09-25  (the status LED's settings become constants, and a frost reading keeps its sign)
+
+Minor, because four keys leave the configuration contract
+([gh#67](https://github.com/pe1mew/greenhouse-Controller/issues/67)). No control-path change, no log
+encoding change, and the status LED behaves exactly as before on every unit that kept the defaults.
+
+**Fixed.**
+
+- **Temperatures between −0.9 and −0.1 °C lost their minus sign**
+  ([gh#88](https://github.com/pe1mew/greenhouse-Controller/issues/88)): −0.5 °C went out as `0.5` in
+  the status payload (the public status site, the local GUI's tiles, the WebSocket push) and in the
+  sensor-history JSON. Both printed `v / 10` then `|v| % 10`, and C division truncates towards zero,
+  so the sign — carried only by the whole part — vanished when that part was 0. The history code
+  was a copy of the status builder's, which is how one defect came to live in two places. Both now
+  use one helper, `firmware/src/types/fmt_tenths.h`, which carries the sign separately. The LCD
+  (whole degrees, `%3d`) and `log/logparser.py` (true division) were never affected.
+
+**Removed.**
+
+- The four `led_*` config keys — `led_day_brt`, `led_nite_brt`, `led_nite_from`, `led_nite_to` —
+  are now compile-time constants beside their only consumer, T1's heartbeat LED
+  (`LED_DAY_BRT` 200, `LED_NITE_BRT` 20, night 22:00–06:00). Since the Phase 0 scaffold they could
+  be **written** through `POST /api/config` and were **advertised** by `/api/config/limits`, but had
+  no GUI control, no LCD menu, no read-back and no audit row: a setting you could change and never
+  see. The operator's question settled it — *they are only used internally, so why are they on the
+  external interface at all?*
+- **FR-CF14 withdrawn** (an administrator configures the LED's night schedule). It was never
+  actually met. FR-UI21 (dim at night) still is.
+
+**Changed.**
+
+- A `POST /api/config` naming an `led_*` key is now refused with **400** (gh#53's unknown-key
+  rejection) instead of being silently stored.
+- `bin/check_cfg_desc.py` loses its gh#67 exemption: a published key that `GET /api/config` never
+  returns is an error again, for every key. Its own comment had said the set would empty and the
+  rule tighten when gh#67 was fixed.
+- `bin/gen_cfg_desc.py` gains a declared `RETIRED` list, so a migrated key removed **on purpose**
+  no longer reads as drift — and it refuses an entry that is untrue in either direction (a retired
+  key still in the table, or one the frozen tables never had).
+
+**Not migrated.** A unit that ever stored non-default LED values keeps four orphaned NVS entries
+that nothing reads, and reverts to the constants. Nobody can say whether any unit has them: the
+values were unreadable and unaudited, which is the defect.
+
+---
+
 ## [2.13.0] — 2026-09-25  (linear control starts by itself, and the card says what is going on)
 
 Minor: a payload-shape change and the GUI that needed it

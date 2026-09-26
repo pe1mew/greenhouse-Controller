@@ -121,10 +121,6 @@ static const char K_LAT_DEG[]          = "lat_deg";
 static const char K_LAT_FRAC[]         = "lat_frac";
 static const char K_LON_DEG[]          = "lon_deg";
 static const char K_LON_FRAC[]         = "lon_frac";
-static const char K_LED_DAY_BRT[]      = "led_day_brt";
-static const char K_LED_NITE_BRT[]     = "led_nite_brt";
-static const char K_LED_NITE_FROM[]    = "led_nite_from";
-static const char K_LED_NITE_TO[]      = "led_nite_to";
 static const char K_TZ_STR[]           = "tz_str";
 
 /* Web-tab / status-website (system namespace; NVS key max 15 chars + NUL) */
@@ -1114,9 +1110,9 @@ static bool apply_config_update(const config_update_t *upd)
                                                    : (uint8_t)LOG_BY_SYSTEM;
             ev.channel    = channel;
             ev.param_id   = (uint8_t)pid;
-            /* Clamp old_val and clamped to int16 range for the log payload.
-             * Values that don't fit (e.g. led_day_brt up to 255) still log
-             * within int16 — the parser knows the unit per param_id. */
+            /* Truncate old_val and clamped to the int16 log payload. Every
+             * audited key's bounds fit in int16 today; the parser knows the
+             * unit per param_id. */
             ev.value_a    = (int16_t)old_val;
             ev.value_b    = (int16_t)clamped;
             log_post(&ev);

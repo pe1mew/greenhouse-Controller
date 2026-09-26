@@ -408,17 +408,15 @@ def check_config_get(rows):
         "ap_timeout": "ap_timeout_min",
     }
 
-    # KNOWN AND OPEN: the four led_* keys are write-only -- stored, clamped and
-    # published in /api/config/limits, but absent from the config response, so
-    # a value written to them can never be read back or verified. That is
-    # gh#67, filed and open, not a drift introduced here. Listing them makes
-    # the gap visible and keeps the rule useful for every other key; when
-    # gh#67 is fixed this set empties and the rule tightens by itself.
-    GH67_WRITE_ONLY = {"led_day_brt", "led_nite_brt", "led_nite_from", "led_nite_to"}
-
+    # No exemptions. Until 2.14.0 the four led_* keys were listed here as a
+    # known write-only gap (gh#67): published and writable, never returned.
+    # gh#67 was fixed by RETIRING them -- they are constants in watchdog.cpp
+    # now -- so the set emptied and the rule tightened by itself, as this
+    # comment said it would. A published key that GET /api/config never
+    # returns is an error again, for every key.
     for k in sorted(published):
         name = GROUPS.get(k, k)
-        if name in emitted or k in GH67_WRITE_ONLY:
+        if name in emitted:
             continue
         err("GET /api/config never returns '%s' (as \"%s\"), but the "
             "descriptor publishes it -- the GUI reads null" % (k, name))

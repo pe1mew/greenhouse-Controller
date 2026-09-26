@@ -721,8 +721,8 @@ TSDS reference: §5.12 | FRS: FR-UI16–FR-UI21, FR-CF14
 
 | ID | Level | Description | Steps | Expected result |
 |----|-------|-------------|-------|-----------------|
-| IT-RG-010 | IT | LED brightness reduced during configured night hours (FR-UI21, FR-CF14) | Set led_nite_from=22, led_nite_to=6, led_nite_brt=20; advance DUT time to 23:00 local | Observable brightness reduction; LED colour unchanged (still green/amber/red); brighter during day hours |
-| IT-RG-011 | IT | LED brightness returns to day level outside night window | Advance DUT time to 08:00 local; observe LED | LED brightness returns to led_day_brt level |
+| IT-RG-010 | IT | LED brightness reduced during the night hours (FR-UI21). The window is fixed at 22:00–06:00 and the levels at 20 / 200 since 2.14.0 (gh#67; FR-CF14 withdrawn) | Advance DUT time to 23:00 local | Observable brightness reduction; LED colour unchanged (still green/amber/red); brighter during day hours |
+| IT-RG-011 | IT | LED brightness returns to day level outside night window | Advance DUT time to 08:00 local; observe LED | LED brightness returns to the day level (`LED_DAY_BRT`, 200) |
 
 ---
 

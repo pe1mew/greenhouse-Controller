@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de boer
 
-**Versie:** 1.22
-**Datum:** 2026-09-20
-**Firmware:** 2.10.1
+**Versie:** 1.25
+**Datum:** 2026-09-25
+**Firmware:** 2.14.0
 
 ---
 
@@ -81,13 +81,13 @@ De kascontroller is een geautomatiseerd systeem dat het **klimaat in één kas**
 - Geen besproeiing of CO₂-dosering
 - Hij stuurt in principe alleen **volledige** open- of sluit-commando's. Een raam gaat **OPEN** of **DICHT**, en de controller varieert het ventilatie-oppervlak door verschillende ramen op verschillende momenten te openen.
 
-  **Eén uitzondering, en alleen als de beheerder die heeft aangezet:** staat op **M3** een raamstandsensor én heeft de beheerder *M3-besturing* op **Lineair** gezet, dan kan de controller M3 wél op een tussenstand zetten — bijvoorbeeld half open. Je ziet dat in de webinterface als een percentage in plaats van `OPEN` of `CLOSED`. M1 en M2 blijven altijd volledig open of dicht.
+  **Eén uitzondering: M3 met een raamstandsensor.** Staat op **M3** een raamstandsensor die de beheerder heeft aangemeld en ingeleerd, en staat *M3-besturing* op **Lineair**, dan kan de controller M3 wél op een tussenstand zetten — bijvoorbeeld half open. Je ziet dat in de webinterface als een percentage in plaats van `OPEN` of `CLOSED`. M1 en M2 blijven altijd volledig open of dicht. Sinds versie 2.13.0 is **Lineair de fabrieksinstelling** van een nieuwe of teruggezette controller; een controller die al in gebruik was, houdt bij een update gewoon wat de beheerder had ingesteld.
 
-  Is op **M3** een **raamstandsensor** gemonteerd, dan méét de controller wél hoever dat raam open staat, en toont hij dat als percentage in de webinterface (zie [§8](#8-gebruik-zonder-inloggen--informatiemenu)). Dat verandert alleen het **aflezen**, niet het **sturen**: ook M3 krijgt volledige open- en sluit-commando's. Zonder sensor verandert er niets en lees je gewoon `OPEN` of `CLOSED`.
+  Is op **M3** een **raamstandsensor** gemonteerd, dan méét de controller wél hoever dat raam open staat, en toont hij dat als percentage in de webinterface (zie [§8](#8-gebruik-zonder-inloggen--informatiemenu)). In **tijdgestuurde** besturing verandert dat alleen het **aflezen**, niet het **sturen**: ook M3 krijgt dan volledige open- en sluit-commando's. Zonder sensor verandert er niets en lees je gewoon `OPEN` of `CLOSED`.
 
   Sinds versie 2.10.0 **controleert** de controller met die sensor ook of M3 na elke beweging zijn eindstand echt haalde. Lukte dat niet, dan zie je in de webinterface de badge *M3 not confirmed* (zie [§8](#8-gebruik-zonder-inloggen--informatiemenu)). Ook dat is alleen een melding: het sturen blijft hetzelfde.
 
-  **Wat verandert er voor jou als de beheerder Lineair aanzet?** Alleen hoe M3 beweegt: het raam kan op een tussenstand blijven staan in plaats van helemaal open of helemaal dicht. Alles wat jij doet blijft gelijk — dezelfde instellingen, dezelfde knoppen, dezelfde veiligheid. **Bij te veel wind sluit de controller alle ramen volledig, ook M3, precies zoals altijd.** Valt de sensor uit, dan valt M3 vanzelf terug op de oude manier van sturen (volledig open of dicht op tijd) en gaat het ventileren gewoon door; de beheerder ziet in de webinterface welke van de twee op dat moment actief is.
+  **Wat verandert er voor jou in lineaire besturing?** Alleen hoe M3 beweegt: het raam kan op een tussenstand blijven staan in plaats van helemaal open of helemaal dicht. **Moet M3 dicht, dan gaat hij ook echt helemaal dicht**, tot de eindsensor — zo sinds versie 2.12.2; daarvoor kon hij een paar centimeter op een kier blijven staan. Alles wat jij doet blijft gelijk — dezelfde instellingen, dezelfde knoppen, dezelfde veiligheid. **Bij te veel wind sluit de controller alle ramen volledig, ook M3, precies zoals altijd.** Valt de sensor uit, dan valt M3 vanzelf terug op de oude manier van sturen (volledig open of dicht op tijd) en gaat het ventileren gewoon door; de beheerder ziet in de webinterface welke van de twee op dat moment actief is. Na een herstart begint de lineaire besturing vanzelf, binnen ongeveer een halve minuut — niemand hoeft daarvoor een raam te bewegen (sinds versie 2.13.0).
 
 ---
 
@@ -459,7 +459,7 @@ Een meerkleurige LED is zichtbaar door de deksel van de kast. De kleur geeft de 
 | **Oranje (amber)** | Waarschuwing — wind-override actief, sensor-fout, windbeveiliging staat uit, vochtregeling staat uit, of operator-Stand-by actief |
 | **Rood** | Kritiek alarm — motor-noodstop (`Mode: ALARM`); de motoren worden niet meer aangestuurd |
 
-De LED dimt 's nachts automatisch.
+De LED dimt 's nachts automatisch, van 22:00 tot 06:00. Die tijden liggen vast in de controller en zijn niet in te stellen.
 
 #### Heartbeat-LED
 
@@ -1587,6 +1587,9 @@ Inhoudelijke wijzigingen aan de firmware staan beschreven in het bestand `change
 | 1.20 | 2026-09-19 | 2.10.0 — met een raamstandsensor controleert de controller of M3 zijn eindstand haalt: de badges *M3 not confirmed*, *M3 travel time too short* en *M3 travel time too long* |
 | 1.21 | 2026-09-20 | 2.10.1 — een verschoven LCD-scherm herstelt zichzelf binnen 10 seconden (gh#80) |
 | 1.22 | 2026-09-20 | 2.12.0 — M3 kan op een tussenstand worden gezet als de beheerder *M3-besturing* op **Lineair** zet en er een raamstandsensor is. Standaard blijft alles zoals het was; de veiligheid verandert niet |
+| 1.23 | 2026-09-24 | 2.12.2 — in lineaire besturing gaat M3 bij "dicht" nu echt helemaal dicht, tot de eindsensor (gh#83). Ook: wat de conflict-prioriteit betekent voor de vochtregeling |
+| 1.24 | 2026-09-25 | 2.13.0 — **Lineair is de fabrieksinstelling** van een nieuwe of teruggezette controller; een controller in gebruik houdt zijn instelling. De lineaire besturing begint na een herstart vanzelf, zonder dat er een raam hoeft te bewegen (gh#86) |
+| 1.25 | 2026-09-25 | 2.14.0 — de LED dimt 's nachts van 22:00 tot 06:00; die tijden liggen vast (gh#67) |
 
 ---
 
