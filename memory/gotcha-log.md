@@ -161,6 +161,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-06-10** — `HEAD /api/log/download` always reports 45 B — **never** use it to check for gaps
 
 ### Model, campaign & plotting
+- **2026-09-27** — `plot_daily.py` crashes with `'list' object has no attribute 'get'` on a dev-rig log (its M3-sensor branches had never met a row: production logs carry none)
 - **2026-08-16** — `plot_daily.py` exits 143 under a 2-minute timeout but has already succeeded
 - **2026-07-05** — a matplotlib upgrade re-renders every campaign PNG with byte diffs
 - **2026-06-26** — a day shows ~2× the expected samples (two overlapping SD download chains)
@@ -212,6 +213,20 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
+
+## 2026-09-27 — `plot_daily.py` crashed on the first log that had M3-sensor rows in it
+
+**Problem:** plotting a log downloaded from 2344 stopped at `plot_daily.py:197` with `AttributeError: 'list' object has no attribute 'get'`. Every campaign plot so far had worked.
+
+**Root cause:** the loader reads rows with `csv.reader`, so a row is a **list**, and it parses `param` into `par` at line 145. Two branches added for the M3 wire sensor instead called `row.get("param")`, as if the row were a dict: `SENSOR_HR` ch 3 (line 161) and `ALARM` ch 6 (line 197). **Neither branch had ever run.** The campaigns plot 5C88's logs, and production has no sensor, so no production row reaches them. The first dev-rig log reached both.
+
+**Fix:** both lines now use `par`. Checked both ways:
+- the original crashes on the 2344 log, and the fixed tool plots it;
+- on a 5C88 log, the original and fixed tools render byte-identical PNGs for every day.
+
+A branch for data the campaign has never seen needs a test log that contains that data. This is the promoted pattern *a grep is a claim about spelling; only running the code is evidence about behaviour*.
+
+**Where it lives:** `model/campaign-summer-2026/plot_daily.py` (`load_logs()`). The tool plots any log directory with `--dir`, and it needs a `config.json` beside the logs for its setpoint lines.
 
 ## 2026-09-27 — an overnight watch started as a local background task died with the Claude Code session
 

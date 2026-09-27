@@ -158,7 +158,7 @@ def load_logs(temp_dir: Path):
                         # Position: value_a = 0.1 mm (-1 = sensor fault),
                         # value_b = SIGNED 0.1 mm/s, param = window 1/2/3.
                         try:
-                            win = int(row.get("param", 3) or 3)
+                            win = int(par or 3)
                         except ValueError:
                             win = 3
                         events["SENSOR_HR_3"].append((dt, win, va, vb))
@@ -194,7 +194,7 @@ def load_logs(temp_dir: Path):
                         # Window position events (plan 3b). Kept raw: the panel
                         # decides what to draw, the loader does not editorialise.
                         try:
-                            pa = int(row.get("param", 0) or 0)
+                            pa = int(par or 0)
                         except ValueError:
                             pa = 0
                         events["ALARM_WPOS"].append((dt, pa, va, vb))
