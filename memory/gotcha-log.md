@@ -1563,6 +1563,8 @@ If the pre-fix rate (7/152 ≈ 4.6 % of strokes) were unchanged, `P(0 in 66) = (
 
 **Where it lives:** sensor emulator at `192.168.20.226` (`/config/sensor`, `/api/data`); pattern used in the gh#48 test.
 
+**What the upstream writer is** (traced 2026-09-26): **Node-RED in Docker on Shuttle2** (project `Initial`, tab *Apps*) GETs 5C88's status from `https://rfsee.net/hbwv/data/status.json` every 60 s and POSTs its T, RH, wind speed and direction to `/api/data`. So **REST is the rig's normal state and means "follow production"**: soaks run on 5C88's real climate, and a test value needs Manual mode or a stopped feed. If 5C88 or rfsee.net goes quiet, the emulator serves the last value indefinitely.
+
 ---
 
 ## 2026-07-23 — `test/` is gitignored but 15 files inside it remain tracked (deliberate mixed state)

@@ -8,8 +8,9 @@
 `POST /api/config` or published by `GET /api/config/limits`. There is **no control-path change**, no
 log-encoding change, and the status LED behaves exactly as before on any unit that kept the defaults.
 
-> **Nothing in this release has run on hardware yet.** It was implemented while 2.13.0 was soaking on
-> the only rig, and the rig was left alone. See *Verification*.
+> **Verified on hardware and soaked** on 2344 (2.14.0-bench, 2026-09-26): gh#88 and gh#67 on the rig,
+> the regression suites, and a **12.25 h soak in mode 2 with every fault counter at 0**. The published
+> image is the release build of the same commit (`fac549e`). See *Verification*.
 
 ## What changed
 
@@ -85,7 +86,11 @@ withdrawn by the same decision. FR-UI21 (dim the LED at night) is still met.
 | Release and bench images build | **yes** — no errors, no unused warnings, no format warnings from the two gh#88 sites. RAM 19.9 % (−16 B: the four shadow fields), flash 67.3 % |
 | gh#88 host test — the REAL `fmt_tenths.h` | **PASS** — compiled with MinGW g++ 14.2, `-Wall -Wextra -Wformat=2 -Werror`, through a printf-checked wrapper shaped like `status_json.cpp`'s `append()`. Every value from −60.0 to +60.0 °C plus the int16/int32 extremes (1 214) prints exactly, checked by parsing the text back to tenths, and none prints `-0.0` |
 | gh#88 fail-first | **the old formula fails exactly where gh#88 says** — wrong on 9 values, all of them −0.9..−0.1, and on nothing else in range; −0.5 printed as `0.5` |
-| **On hardware** | **NOT YET** — the rig was running the 2.13.0 soak. To do: a sub-zero reading needs the emulated T/RH slave set between −0.9 and −0.1 °C (operator); without it, confirm only that positive temperatures still read right in `/api/status` and `/api/history`. And for gh#67: `GET /api/config/limits` no longer lists the four; `POST /api/config` with an `led_*` key returns 400; the LED still dims between 22:00 and 06:00; and `bin/at_cfg_roundtrip.py` reports an **empty** "not readable" group |
+| **gh#88 on hardware** | **PASS** — 2344, 2.14.0-bench, 2026-09-26, with the rig's emulated T/RH sensor set to −0.5 °C (http://sensor-emulator.local/). Read as **raw text**, since a parsed number would hide the defect: `/api/status` gave `"temp_c":-0.5`, then `"temp_avg_c":-0.5` once the average came down into the band, and the newest of 60 `/api/history` rows gave `temp_c=-0.5`. The old formula sends `0.5` at all three |
+| **gh#67 on hardware** | **PASS** — 2344, 2.14.0-bench: `/api/config/limits` publishes 40 keys and none of the four `led_*`; `POST /api/config` with `led_day_brt` or `led_nite_from` returns **400**; `GET /api/config` carries none. **AT-CFG64: 46 of 46 Q4-writable keys round-trip to their own field, and no key is unreadable** — before 2.14.0 the four `led_*` were the only fields the test could not reach |
+| Regressions on 2.14.0-bench | **PASS** — gh#86 (`at_wp_rest_promote.py`): Lineair 10 s after the boot, M3 never moved; the 2.10.0 confirm suite 9/9 in mode 1, then Lineair restored in 33 s; 9/9 rig settings |
+| **Soak on 2344, in mode 2** | **PASS** — 2026-09-26 10:55 to 23:10: **12.25 h, 28 judged strokes**, `stall_faults` / `early_stops` / `rejected_rate` / `err_comm` / `not_reached` all 0, `mode_changes` 0, `orphan_aborts` 0, gate settled at `position`, **no reboot** (13.46 h uptime spans the window). All 12 scripted stroke sessions ran, none skipped or failed: each opened M3 to 22–26 % under Lineair and closed it after mode 2's 600 s interval, the last two on the night setpoint. The 14 closes were confirmed; the 14 targeted openings are `not_judged` by design, since a drive to an aperture has no end to confirm. The rig's emulated T/RH and wind followed 5C88's own readings (emulator in REST, fed from the status site), so the soak ran on production's day and night climate. Heap: free 65 KB, largest block 20 KB at 13.5 h uptime (over the window: free 39–67 KB, largest 17–22 KB); the since-boot floor stepped 20 → 8 KB by 14:09 and did not move again |
+| **ROTA pull on 2344** | **PASS** — published as seq 57 at 23:12; the channel offered 2.14.0 to a forced device check at 23:21. Plain 2.12.2 was pushed at 23:24, and 2344 then pulled 2.14.0 by itself: the **apply committed at 01:03:36** on 2026-09-27 (its apply window is 01:00–23:00), after which `fw_ver` **and** `asset_version` both read **2.14.0** and every hourly check reads up to date. **The first three downloads failed** (23:24:40 SHA-256/size mismatch; 23:24:41 and 23:36:24 TLS/transport). The unit's own check at 00:34 then downloaded and verified both artefacts in 13 s, deferred the apply to the window, and at 01:03 downloaded again (gh#71) and applied. All 9 rig settings survived |
 
 ## Upgrading
 
