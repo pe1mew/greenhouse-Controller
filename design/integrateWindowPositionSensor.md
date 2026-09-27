@@ -3,12 +3,60 @@
 | Field | Value |
 |---|---|
 | Document | Implementation plan |
-| Date | 2026-09-07, last revised **2026-09-17** |
-| Status | **Phases 0—3 COMPLETE and hardware-verified** (FDA4, 2026-09-10). **Phase 4 is SPLIT** (2026-09-13): the sensor-presence gate landed and is hardware-verified 2026-09-12, fault logging is done, and the control-side half — travel-complete, the two 12.4 rules, the operator surfaces — moved into the section 5.0 M3 slice. **Nothing consumes position yet, so the GATE before Phase 5 is still uncrossed and greenhouse behaviour is unchanged.** Phase 5 is **sequenced behind section 5.0**, no longer simply out of scope. Both prerequisites shipped (gh#49 in 2.4.1, gh#51 in 2.4.2—2.4.4). **Released in 2.8.0 and in `main` since 2026-09-17** (`ropeSensor` fast-forwarded): observe-only. T17, the presence gate and both §12.4 rules measure, log and report; soak #2 passed; nothing acts on position. **gh#73 is fixed in 2.9.0** by an installation setting, `motor/wpos_fitted_m3`, default not fitted (see *Fitted or not*). **gh#72 is fixed in 2.9.1**: each drive is judged, so a reversal is two, and the gate no longer flaps on a self-reported fault (see *Every drive judged*). **Phase 5 is scoped as of 2026-09-17 (§5b): two control modes, 2.10.0 confirms only, mode 2 is 2.12.0** |
+| Date | 2026-09-07, last revised **2026-09-27** |
+| Status | **Phases 0–5 built** (as of 2.14.1, 2026-09-27). Phases 0–4 landed between 2026-09-10 and 2.10.0. **Phase 5 is mode 2, *Lineair*, built in 2.12.0** with the `graded` law, which the operator chose on 2026-09-25. It has been the factory default since 2.13.0. **Verified on the development rig only**: it has never run on a greenhouse window, and 5C88 still runs 2.3.1. **§0** lists what is done and what is open. The sections after it are kept as written, with dated notes where they have been overtaken. |
 | Requirements | [`windowPositionSensorRequirements.MD`](windowPositionSensorRequirements.MD) — FR-WP01–22, and §12 evaluating this sensor |
 | Device contract | [`modbusInterfaceContractSpecification.md`](modbusInterfaceContractSpecification.md) v1.2 (normative source is the sensor project's `design/TDS.md`) |
 | Bus architecture | [`refactorSensorConfiguration.md`](refactorSensorConfiguration.md) — the end state this plan deliberately does *not* build |
 | Prerequisites | Both **DONE**. (1) [`addModbusMutex.md`](addModbusMutex.md) — gh#49, shipped **2.4.1**: the bus lock is what makes §4's architecture possible. (2) [`fixMotorTimingRefresh.md`](fixMotorTimingRefresh.md) — gh#51, shipped **2.4.2—2.4.4**: motor config written at runtime now reaches T2 without a reboot, is audited in the SD log, and survives a factory reset honestly. §3.5 below depends on all three of those |
+
+---
+
+## 0. Status 2026-09-27 — what is built, and what is still open
+
+**Built, and verified on the development rig:**
+
+| Release | What it added |
+|---|---|
+| 2.8.0 | T17, the driver, the presence gate and fault logging. Observe only |
+| 2.9.0 | The installation setting `wpos_fitted_m3` (gh#73) |
+| 2.9.1 | Every drive judged; a gate that no longer flaps (gh#72) |
+| 2.10.0 | A verdict for every M3 drive (`ALARM ch6` param 251) and the travel check against the measured traverse (param 252; gh#78) |
+| 2.11.0 | Commissioning and the teach in every build, not only the bench build (gh#77) |
+| **2.12.0** | **Mode 2, *Lineair*:** T2 drives M3 to a measured target, and M3 falls back to mode 1 by itself. The law sits behind the §5c contract in `drivers/ventModel`, and T6's inline copy is deleted |
+| 2.12.1 | A close finishes on the end sensor (gh#83) |
+| **2.13.0** | Lineair engages at rest right after a boot (gh#86), and the Motors card says why when it cannot (gh#85). Lineair becomes the factory default, and `graded` the chosen law |
+| 2.14.0, 2.14.1 | No M3 change |
+
+The evidence for 2.12.0 is the acceptance suites (target 9/9, fallback 4/4, confirm 9/9), with a fail-first run
+for each fix. **Mode-2 soaks passed** on 2.12.2 (12.82 h, 28 judged strokes), 2.13.0 (12.36 h, 16) and
+2.14.0 (12.25 h, 28), all with every fault counter at 0. 2.14.1 was pulled by ROTA on 2026-09-27.
+
+**Still open:**
+
+1. **Never run on a greenhouse window.** Everything above ran on the rig's 13 s test window, while
+   production's M3 traverses in 176 s, and positioning scales with the traverse. FR-WP22 (torsional lag
+   across the span) and the rope-drum linearity can only be answered on 5C88 (§7).
+2. **The climate benefit is unproven.** Whether position control damps the ~42 min / ~4.9 °C limit cycle
+   can only be shown on 5C88 over a summer; the plant model gives a prediction (Phase 5).
+3. **The production path.** 5C88 runs 2.3.1 on `mainstream`, and this document does not record whether its
+   encoder is installed. After that, `wpos_fitted_m3` must be set on site, and promotion needs the release
+   comparison against 2.3.1 and an explicit instruction (§7).
+4. **Positioning scatter.** AT-WP02 is marginal on the rig: each stop scatters by σ ≈ 0.55–0.75 %, so ten
+   stops span ~2–2.5 % against the 2.0 % allowed. Reducing it (extrapolating between T17 readings) has not
+   been started.
+5. **The minimum move is unmeasured** (§3.6, floor 2). The deadband default is a fixed 20 mm, not derived
+   from `travel_m3` as §3.6 requires (decisions 8 and 10).
+6. **The feedback is partly inferred.** T2 reports a state, not an outcome. Only ABORTED is counted, and
+   T6 judges everything else from where M3 came to rest (2.12.0 known limitations).
+7. **gh#84 reaches mode 2.** `graded` embeds the stepped law's humidity branch and `cr_priority`
+   resolver, so under `cr_priority` 1 a dry house closes M3 too, against heat demand (decision 16).
+8. **Not yet soaked:** mode 2 with `min_intv_m3` = 0.
+9. **The bus DEGRADED threshold** per installation (gh#66; decision 7).
+10. **The draw-wire unit is IP50** against the ≥ IP65 requirement. This is the installer's to resolve (§1).
+11. **The beheerder manual is behind.** Line 101 says M3 is still steered by time, and line 1670 says the
+    controller has no position feedback (line numbers as of 2026-09-27). Both are wrong for a unit with a
+    fitted sensor in Lineair.
 
 ---
 
@@ -1051,6 +1099,8 @@ which gate was active to within 30 s. See the 2026-09-10 gotcha entry.
 > uncrossed** and greenhouse behaviour is unchanged — which is what Phase 4
 > promised.
 
+> **Overtaken 2026-09-27:** position has been consumed since **2.12.0**, where mode 2 drives M3 to a measured target. So the ▲ GATE is crossed. The table above records Phase 4 as of 2026-09-15; see §0 for the current state.
+
 > **Alarm *handling* is deferred to Phase 5** (operator decision 2026-09-07). This phase **detects and records; it does not act.** Control behaviour is unchanged, which is automatic here because nothing consumes position yet. **Resolved in §4a (2026-09-12); this paragraph is kept for context.** On sensor fault the controller falls back to **time-based open-loop control, treating M3 as a binary actuator** (FR-WP17). **It does NOT drive the window anywhere.** Demotion changes the *control law*, not the position: the leaf stays where it is and the *next* command runs on the timer. FR-WP17 is explicit that *"loss of the sensor shall not disable ventilation"*, and AT-WP06's criterion is *"falls back to time-based control; ventilation continues"*. Closing on sensor loss would be a control action taken because a **diagnostic** failed — the same pathology that makes a wind-sensor read error close the greenhouse, which is correct there only because wind is a *safety* input and position explicitly is not (FR-WP18). An earlier draft of this sentence said "fall-back to full open/close", which reads as *drive to an end* rather than *revert to binary control*, and was misread that way on 2026-09-13.
 
 - Detect and **log** the fault conditions (§3b), and surface them on the operator-facing surfaces (§6). Do not change any control decision on them.
@@ -1587,7 +1637,9 @@ Phases 0–4 add a sensor, logging and diagnostics. The greenhouse behaves exact
 
 ---
 
-### Phase 5 — proportional M3 control *(**SEQUENCED behind 5.0**, not started — was "out of scope, recorded not planned" until 2026-09-13)*
+### Phase 5 — proportional M3 control *(**BUILT as mode 2 in 2.12.0**; `graded` chosen 2026-09-25, the factory default since 2.13.0. Verified on the rig only. It was "out of scope, recorded not planned" until 2026-09-13, then sequenced behind 5.0)*
+
+> **Status 2026-09-27:** built as mode 2 (§5b), with the law behind the §5c contract. M3's aperture comes from the `graded` law rather than from an extended `VENT_STEP_TABLE`, and M1 and M2 keep the stepped law. The bullets below are the 2026-09-13 plan. The rig has shown the first of the two proofs: intermediate apertures are reached and centred on target, although the repeatability test AT-WP02 is marginal (§0). The second still needs 5C88.
 
 The larger part of the effort, and the part the rig **cannot validate**.
 
@@ -1641,6 +1693,8 @@ So there are now **two gates**, not one, and they are crossed in order:
   afterthought to it.
 
 ##### The manuals are a dependency of this slice
+
+> **2026-09-27:** the gate was crossed in 2.12.0, so these statements are now due. Two are still wrong in `beheerderHandleiding.md` (line numbers as of 2026-09-27): line 101 says M3 is still steered by time, and line 1670 says the controller has no position feedback. They are open; see §0.
 
 Both manuals rest, in seven places, on *the controller has no position
 feedback*. Six of them stay **correct until the ▲ GATE is crossed** and must
@@ -3018,6 +3072,8 @@ Add the opening to the `windows` object in `build_canonical_status_json`, gated 
 
 Production is **not** waiting for Phase 5. In parallel with firmware development on the FDA4 mock, 5C88's real M3 is being fitted with the wire sensor, end sensors and Modbus interface (operator, 2026-09-07).
 
+> **Status 2026-09-27:** steps 1 and 2 are done on the rig, through 2.14.1 and including Phase 5. 5C88 still runs **2.3.1** on `mainstream`, and whether its encoder is installed is not recorded in this document. Promotion needs the release comparison against 2.3.1 (`releaseComparison_2.3.1_vs_2.4.6.md` is the template) and an explicit instruction.
+
 1. Develop and verify phases 0–4 on the FDA4 mock.
 2. Soak on FDA4 until the traverse record is trusted.
 3. 5C88's hardware installation completes independently.
@@ -3054,7 +3110,7 @@ Note what production logging unlocks that the rig cannot: a **real** 171 s trave
 
 ## 10. Open decisions
 
-~~1. Is Phase 5 in scope for this cycle?~~ **Decided 2026-09-07: no.** Phases 0–4 stand alone and deliver position logging, mechanical fault detection and faster power-loss recovery without touching control.
+~~1. Is Phase 5 in scope for this cycle?~~ **Decided 2026-09-07: no.** Phases 0–4 stand alone and deliver position logging, mechanical fault detection and faster power-loss recovery without touching control. **Overtaken:** Phase 5 was sequenced in on 2026-09-13 (§5.0) and built as mode 2 in 2.12.0 (§5b).
 
 2. **Operator-facing surfaces** — LCD, web GUI, remote status site — settled, see §6.
    **Reconfirmed 2026-09-13:** LCD unchanged, and **LCD control uses full
@@ -3081,10 +3137,13 @@ Note what production logging unlocks that the rig cannot: a **real** 171 s trave
    decision, and gh#66 carries both.
 8. **The minimum-move deadband value** — floor 2 (the shortest pulse that actually
    moves the leaf) is unmeasured; see §3.6.
-9. **PID or fuzzy** for the central algorithm, and how a mixed
-   discrete/continuous plant is expressed to it. See §5a. **Narrowed 2026-09-17:** the plant is
-   expressed as M1/M2 at two fixed steps plus a linear M3 (§5b), and a proportional map with a rate
-   limit joins PID and fuzzy as a candidate. The law itself is still open.
+9. ~~**PID or fuzzy** for the central algorithm, and how a mixed
+   discrete/continuous plant is expressed to it.~~ **Decided 2026-09-25 (operator): `graded`.** It sets M3's
+   opening in proportion to demand, on top of the stepped law, which keeps M1 and M2
+   (`drivers/ventModel/src/vent_model_graded.cpp`; the evidence is in `model/closedloop/gradedCandidate.md`).
+   It has been the factory default since 2.13.0. *Narrowed 2026-09-17:* the plant is expressed as M1/M2 at
+   two fixed steps plus a linear M3 (§5b), and a proportional map with a rate limit joined PID and fuzzy
+   as candidates.
 10. **Two M3 config keys, specified but NOT yet created** (noted 2026-09-13 when
     the operator looked for the deadband setting and found none). They are
     correctly absent today, and the reasons are worth keeping because
@@ -3136,6 +3195,17 @@ Note what production logging unlocks that the rig cannot: a **real** 171 s trave
     > dwell** — the minimum interval between M3 moves — is still uncreated. Both
     > belong to mode 2 (§5b).
 
+    > **Update 2026-09-27:** the linear dwell exists as `min_intv_m3` since 2.12.0 (default 600 s;
+    > in mode 2 it replaces M3's open and close dwell). The deadband default is still the fixed
+    > 20 mm (`DEF_DEADZONE_M3_MM`), not derived from `travel_m3` as §3.6 requires. That part is
+    > still open.
+
+16. **gh#84 reaches mode 2** (added 2026-09-27). `graded` embeds the stepped law's humidity
+    branch and `cr_priority` resolver (`vent_model_graded.cpp`, *Why it embeds the stepped law*).
+    So under `cr_priority` 1, a dry house closes every window, M3 included, against any heat
+    demand. It has not happened in the field, because 5C88 and the rig both run 0. The fix
+    changes both laws.
+
 **Decided 2026-09-17 — see §5b:**
 
 11. ~~Two control modes, and what each does to which window?~~ **Mode 1** = today's
@@ -3159,4 +3229,4 @@ Note what production logging unlocks that the rig cannot: a **real** 171 s trave
     contract in §5c** — host-compilable, caller-owned state, T6 keeping the queue, the limits, the
     logging and the safety outside it. `stepped` (mode 1) and `graded` (mode 2) are the first two
     implementations; the refactor is accepted only when `stepped` reproduces today's replay match
-    rate. **Which law `graded` uses is still open** (decision 9).
+    rate. ~~Which law `graded` uses is still open~~: decided 2026-09-25, see decision 9.
