@@ -107,16 +107,16 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 ### OTA & ROTA releases
 - **2026-09-25** — a release dies with HTTP 422 "tag_name is not a valid tag" / invalid `target_commitish`: the commit HEAD points at was never pushed, so GitHub cannot tag it (the script's separate "uncommitted changes" warning is the untracked-file false positive)
 - **2026-09-21** — a bench push carries a GUI older than its firmware while `fw_ver` and `asset_version` match (every bench build of a version says `-bench`, so the pair check cannot see stale content)
-- **2026-09-20** — a check forced ~2 min after publishing gets `dl` 2 (SHA/size): the server points the channel before it has fetched the artefacts; retry, and check the manifest against the local files before blaming the release
+- **2026-09-20** — a check forced ~2 min after publishing gets `dl` 2 (SHA/size): the server points the channel before it has fetched the artefacts; retry, and check the manifest against the local files before blaming the release *(recurred 2026-09-26, followed by two `dl` 1; the unit's own next check succeeded)*
 - **2026-09-17** — publishing a release to ROTA does nothing on a module that runs a pushed build of the same version, `-bench` included (the version compare ignores the suffix)
 - **2026-09-16** — after one upload cut off by the network, the unit refuses every OTA and ROTA skips its checks until someone presses reset (the error exit released nothing)
 - **2026-09-12** — GUI unreachable, multi-second asset loads, "heap leak", failing downloads — all one interfered WiFi AP (paired ping test first)
 - **2026-09-12** — `rota_release.py release` warns "working tree has uncommitted changes" on a clean tree (it counts UNTRACKED files, including the manifest it just wrote)
-- **2026-09-12** — ROTA `dl` and `apply` status read -1 after a pull that clearly happened (the fields reset; the SD log is the authority)
+- **2026-09-12** — ROTA `dl` and `apply` status read -1 after a pull that clearly happened (the fields reset; the SD log is the authority) *(recurred 2026-09-26: a probe read a stale `dl` 1 mid-download)*
 - **2026-09-11** — no commit on `main` actually *is* the release you are looking for (the paperwork rode inside the next feature commit)
 - **2026-09-10** — `POST /api/ota/check` returns nothing useful (it only QUEUES; the result comes from `GET` on the same path)
 - **2026-09-07** — `rota_release --dry-run` writes the seq-ledger manifest despite claiming no changes
-- **2026-09-07** — the ROTA night window and check interval are on `/api/ota/config`, not `/api/config`; a wide window inverts gh#41 so a stray browser tab blocks updates
+- **2026-09-07** — the ROTA night window and check interval are on `/api/ota/config`, not `/api/config`; a wide window inverts gh#41 so a stray browser tab blocks updates *(recurred 2026-09-26; a 1–23 window is SHUT 23:00–01:00)*
 - **2026-09-07** — a few short USB bench sessions silently arm an OTA rollback (4 boots under 30 s)
 - **2026-07-23** — `rota_release release` looks like it hung; it aborted on an interactive prompt under null stdin
 - **2026-07-20** — an SD log cannot tell you which firmware wrote it; post-OTA proof needs `/api/status`
@@ -161,6 +161,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-09-16** — a setting is MISSING from the GUI entirely (two routes exceeded `max_uri_handlers` and never registered; the card depending on them was hidden rather than greyed, so the only symptom was an absence)
 
 ### Build, toolchain & shell
+- **2026-09-27** — an overnight watch dies with the Claude Code session (a local background task is not a daemon: run it on Shuttle2, or reconstruct from the unit's SD log)
 - **2026-09-20** — a release build overwrites `bin/<version>/`, and a rebuild in another directory is not byte-identical (the build DIRECTORY is in the image)
 - **2026-09-17** — a new library's host tests fail at link with an undefined reference to its own function (`pio test` does not build `src/` unless `test_build_src = yes`)
 - **2026-09-17** — a macro with a literal `
@@ -184,6 +185,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-05-XX** — PowerShell treats `pio` stderr warnings as fatal (`$ErrorActionPreference='Stop'`) [RESOLVED]
 
 ### Git, GitHub & scripted editing
+- **2026-09-26** — a commit builds on this PC and fails from a clean clone (a NEW file was never added; check for `??` in the build trees before any release)
 - **2026-09-12** — a failed fetch that looks like data: stale target file, a traceback in a cookie file, a zero-row filter, an underpowered A/B
 - **2026-09-12** — a grep or regex over source "proves" coverage that is not there (three false findings in one audit)
 - **2026-09-12** — a literal anchor stops matching while `git status` stays clean (`git checkout` rewrote LF to CRLF)
@@ -220,6 +222,14 @@ release`, or simply expect the first attempt to fail.
 
 **Where it lives.** `bin/rota_release.py` (publish), the FOTA server's retriever (separate repo),
 `LOG_SYSTEM value_a=23` sub-code 2 in `event_logger.h`, and `GET /api/ota/check`'s `dl` field.
+
+**Recurred 2026-09-26 (2.14.0), and this time the retries failed too.** 2.14.0 was published at 23:12, and a
+forced check was offered it by 23:21. After plain 2.12.2 was pushed, the first download ended `dl` 2 at 23:24:40.
+The next two ended **`dl` 1**: at 23:24:41, in the same second as its check, and at 23:36:24, 8 s after its check.
+The unit's own hourly check at 00:34 then verified both artefacts in 13 s. Sub-code 1 lumps together a TLS failure,
+a transport error, a non-200 answer and a failed receive-buffer allocation (`ota_client.cpp:461-465`), so the device
+cannot say which it was; the server's logs could. **Treat downloads in the first hour after a publish as unreliable,
+and judge a pull only after the unit's own next check.**
 
 ## 2026-09-20 — a CSS rule that cannot work survived a year, because the intent was written down and never looked at
 
@@ -1310,6 +1320,8 @@ That **inverts the gh#41 failure mode.** `rota_apply()` gates on `if (!in_night_
 
 **Where it lives:** `firmware/src/web_server/web_server.cpp:3023-3030` (routes); `firmware/src/ota_client/ota_client.cpp:511` `in_night_window`, `:536` `quiet_gate`, `:564` the gate expression.
 
+**Recurred 2026-09-26:** looking for 2344's window, I read `/api/config` first and again found nothing. 2344 has the same 1–23 window, and one consequence of it was not spelled out above: **23:00–01:00 is CLOSED**, because `in_night_window` is `h >= 1 && h < 23`. A pull verification started at 23:24 downloaded cleanly at 00:34, was deferred, and applied at 01:03:36. Read the window before promising a time.
+
 ---
 
 ## 2026-09-07 — every bench reset counts as a boot failure: four short USB sessions trigger an OTA rollback
@@ -2078,6 +2090,13 @@ on a tree where `git status --short` showed **zero** modified tracked files. Tak
 
 **Bonus, same run — gh#41 confirmed live.** The two earlier `24,1` rows (apply *deferred*) at 13:37 and 13:43 were caused by my own admin web session: the quiet gate treats any active session as "not quiet", and 2344's window is 1–23 so the clock was not the blocker. It committed only once I stayed logged out. **When watching a ROTA pull, poll the public `/api/status` only and do not log in** — and note each deferral re-downloads both artefacts.
 
+**Recurred 2026-09-26, the other way round.** A probe that gave up 184 s after forcing a check read `dl` 1, which may still have been the PREVIOUS attempt's result: a download in progress does not touch the field. The SD rows gave the whole timeline in one read:
+- three failed downloads: `23,2` at 23:24:40, then `23,1` at 23:24:41 and 23:36:24;
+- `23,0` with `24,1` at 00:34:15 (deferred by the window);
+- `23,0` then `24,0` at 01:03:23 and 01:03:36 (committed).
+
+The file being written is named by `current` in `GET /api/log/files`; fetch it with `GET /api/log/download?file=<name>`.
+
 ## 2026-09-12 — `git checkout` silently rewrote LF to CRLF, so a literal anchor stopped matching while `git status` stayed clean
 
 **Problem:** A test harness restored `data_manager.cpp` with `git checkout -- <file>`, then a later step matched a source line ending in `\n` and found **zero** occurrences. The line was plainly there (`grep -n` showed it). `git status` reported the tree clean, so nothing looked wrong.
@@ -2206,6 +2225,11 @@ make every consumer consult it.
 CRLF. A patch matching LF then silently finds nothing. Detect the endings per file before
 matching, and never `git checkout --` a file that holds uncommitted work — copy it aside
 first (2026-09-20 gotcha above says the same about parking work).
+
+**Update 2026-09-26 (2.14.0, gh#67 closed):** the four `led_*` keys this checker had to exempt
+are now compile-time constants and have left the configuration contract, so
+`check_cfg_desc.py` runs with **no exemptions**. AT-CFG64 on 2344 then read all 46 of 46
+Q4-writable keys back, with none unreadable. The rule above still stands.
 
 ## 2026-09-20 — a bundled fail-first build can pass for the wrong reason
 
@@ -2667,3 +2691,42 @@ the documented false positive on untracked files (the artefacts it has just buil
 `git status --short | grep -v '^??'` and do not let it mask the real precondition. And *a 422 about
 a field you did not set is usually about the object it points at* — here `target_commitish`, not
 the tag.
+
+## 2026-09-26 — a commit that leaves out a NEW file builds on this PC and fails from a clean clone
+
+**Problem:** 2.14.0 was committed as `27e6aa2` without its two new files,
+`firmware/src/types/fmt_tenths.h` and `bin/2.14.0/release-notes.md`. Every build on this PC
+still passed, because the files were on disk. But `status_json.cpp` and `web_server.cpp`
+include the header, so **a clean clone of `main` could not build**, and `rota_release.py
+release` would have tagged that commit as `v2.14.0`.
+
+**Root cause:** a new file stays untracked until it is added by name, so committing the
+modified files leaves it behind. This tree has about 40 untracked files that are kept out
+on purpose (`sdkconfig.*`, `design/*.docx`, `bin/2.2.13/` and more), so two more `??`
+lines in `git status` do not stand out.
+
+**Fix:** `fac549e` added both files before anything was published. **Before any release,
+`git status --short --untracked-files=all -- firmware/ drivers/ bin/<ver>/` must show no
+`??` other than the known `sdkconfig.*` files.** A hand-off's `git add` list names every
+NEW file explicitly, and `git show --stat HEAD` must list them after the commit. The
+definitive test is a build from a clean clone.
+
+**Where it lives:** `bin/rota_release.py` (it tags HEAD as it is), `bin/<ver>/`.
+
+## 2026-09-27 — an overnight watch started as a local background task died with the Claude Code session
+
+**Problem:** a pull verification was left running overnight as a local background task. It
+polled 2344's public status until 03:30. The session ended and the task went with it, after
+one sample, so the pull at 01:03 was never seen live.
+
+**Root cause:** a local background task belongs to the Claude Code process. When the session
+ends it is stopped, and on resume it is reported only as "did not finish before the previous
+session ended". The soak jobs on Shuttle2 survive because they run under init on another
+host (`nohup`, stdin from `/dev/null`, output to files).
+
+**Fix:** nothing was lost, because the unit keeps its own record: the SD log's ROTA rows
+gave the full timeline the next morning (see the 2026-09-12 `dl`/`apply` entry). **Anything
+that must be observed overnight runs on Shuttle2 like the soak jobs. Otherwise, plan to
+reconstruct it from the device's log on resume, and say that the live observation was lost.**
+
+**Where it lives:** `~/ghc-soak/` on Shuttle2 (the pattern), `/api/log/download` (the reconstruction).
