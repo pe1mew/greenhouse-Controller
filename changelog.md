@@ -8,14 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [2.14.1] — 2026-09-27  (dead code removed; the unit behaves exactly as 2.14.0)
 
-Patch, **not released**, with **no behaviour change**
+Patch, with **no behaviour change**, **published to the ROTA soak channel as seq 58** on 2026-09-27. The
+operator chose to publish it without a bench soak first
 ([gh#87](https://github.com/pe1mew/greenhouse-Controller/issues/87)). Five functions are removed. None of
 them was in the built image: the linker discarded them because nothing called them. Two pieces of live
 code that existed only to serve them go too, and neither had any observable effect:
 `rotate_sd_file()` copied the closed file's name into a buffer nothing read, and T9's loop checked a
 flag nothing ever set. The image is 256 bytes smaller (1 410 832 against 2.14.0's 1 411 088). The
-version moves so that a rebuild cannot overwrite the published `bin/2.14.0/` with different bytes. It
-ships with the next release and is soaked with it.
+version moves so that a rebuild cannot overwrite the published `bin/2.14.0/` with different bytes.
 
 **Removed.**
 
@@ -41,7 +41,9 @@ ships with the next release and is soaked with it.
   quiet gate calls (gh#41). That function's header documentation now stands on its own.
 
 **Verified:** the release, bench and Modbus-probe images build with no errors and no "unused" warnings.
-Neither the release nor the bench map names any of the five functions. **Not run on hardware.**
+Neither the release nor the bench map names any of the five functions. **On hardware:** 2344 pulled it
+from the soak channel on the first attempt (apply committed at 09:44:24). It reports `fw_ver` and
+`asset_version` 2.14.1, and all 9 rig settings are intact. It has not been soaked.
 
 ## [2.14.0] — 2026-09-25  (the status LED's settings become constants, and a frost reading keeps its sign)
 

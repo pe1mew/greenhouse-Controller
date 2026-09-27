@@ -1,17 +1,24 @@
-# Greenhouse Controller — Release Artefacts
+# Greenhouse Controller — Releases and Tools
 
-This directory holds the release build script and versioned release packages.
+This directory holds the release build script, the release and test tools, and one directory per
+version.
 
 ```
 bin/
-  README.md               <- this file
-  build_release.ps1       <- release builder script
-  1.15.0/
-    greenhouse-controller-1.15.0.bin
-    web-assets-1.15.0.zip
-  1.15.1/
-    greenhouse-controller-1.15.1.bin
-    web-assets-1.15.1.zip
+  README.md                <- this file
+  build_release.ps1        <- builds a release into bin/<version>/
+  ota_push.py              <- pushes firmware + web assets to a unit over the LAN
+  rota_release.py (+ .md)  <- publishes a release to the internet-pull OTA (ROTA) channels
+  gh_issue.py              <- minimal GitHub Issues client
+  check_cfg_desc.py        <- config-descriptor checker (the pre-commit hook runs it on config changes)
+  at_*.py                  <- acceptance harnesses for the development rig
+  2.14.1/
+    greenhouse-controller-2.14.1.bin    <- firmware image
+    web-assets-2.14.1.zip               <- web UI (STORE-only ZIP)
+    bootloader-2.14.1.bin, partitions-2.14.1.bin
+    firmware-2.14.1.elf, firmware-2.14.1.map
+    release-notes.md                    <- also the GitHub release text when published over ROTA
+    manifest-2.14.1.json                <- ROTA sequence-ledger entry, written when published
   ...
 ```
 
@@ -29,7 +36,9 @@ bin/
 
 ### One-time per clone — enable the repo's git hooks
 
-The repo ships a `.githooks/pre-commit` hook (tracked, version-controlled, no Python framework dependency) that prevents the gh#9 stamped-manifest regression: every release build overwrites `firmware/data/manifest.json` with a literal version, and without the hook that overwritten form has a habit of getting accidentally committed alongside other work. Enable it once after cloning:
+The repo ships a `.githooks/pre-commit` hook (tracked, no Python framework dependency). It blocks the gh#9
+stamped-manifest regression. On a commit that touches the configuration tables, it also runs
+`bin/check_cfg_desc.py`, so that a configuration key cannot drift out of its descriptor. Enable it once after cloning:
 
 ```powershell
 git config core.hooksPath .githooks
@@ -41,7 +50,7 @@ To check it's active:
 git config --get core.hooksPath        # should print  .githooks
 ```
 
-If the hook fires on commit, the fix is almost always:
+If the hook blocks a commit over `firmware/data/manifest.json`, the fix is almost always:
 
 ```powershell
 git restore --staged firmware/data/manifest.json   # un-stage the stamped form
@@ -52,18 +61,19 @@ then re-add whatever else you intended to commit. See gh#9 for the full context.
 
 ### Bump the version
 
-> **The build script does not increment the version automatically.**
-> You must edit the version manually before running it.
+> **The build script does not increment the version.** Edit it by hand before running it.
 
-Open `firmware/platformio.ini` and update `FIRMWARE_VERSION` in **both** build environments (`lolin_s3` and `test_t2_relay`):
+`firmware/platformio.ini` states `FIRMWARE_VERSION` in two environments:
 
-```ini
-build_flags =
-    ...
-    -DFIRMWARE_VERSION=\"1.15.2\"
-```
+| Environment | Value | Purpose |
+|---|---|---|
+| `lolin_s3` | `X.Y.Z` | the release build; the script reads this, the first match |
+| `lolin_s3_bench` | `X.Y.Z-bench` | the bench build, with development-only diagnostics (`MODBUS_BENCH`) |
 
-Make sure both occurrences are updated — the script reads only the first match and will build whichever version it finds.
+`lolin_s3_mbprobe` inherits `lolin_s3`'s flags. The `-bench` suffix is deliberate. ROTA's version
+comparison ignores the suffix, so a unit running `X.Y.Z-bench` is never offered `X.Y.Z`, and a pull
+test first needs an older plain build pushed. Feature releases bump the minor version and bug fixes
+the patch (see `CLAUDE.md`).
 
 ### Run the build script
 
@@ -73,143 +83,149 @@ From the **project root** (the directory that contains `firmware/`, `bin/`, etc.
 powershell -ExecutionPolicy Bypass -File .\bin\build_release.ps1
 ```
 
-Or from inside the `bin\` directory:
+The script:
 
-```powershell
-cd bin
-powershell -ExecutionPolicy Bypass -File .\build_release.ps1
-```
-
-The script will:
-
-1. Read `FIRMWARE_VERSION` from `firmware/platformio.ini` automatically.
-2. Compile the firmware (`pio run -e lolin_s3`) and copy `firmware.bin`.
-3. Build the LittleFS image (`pio run -e lolin_s3 -t buildfs`) to validate `data/`.
-4. Package `firmware/data/` into a **STORE-only ZIP** (no compression — required by the on-device extractor).
-5. Write both files to `bin\<version>\` with the version in the filename.
-
-Output on success:
-
-```
-bin\1.15.1\greenhouse-controller-1.15.1.bin   <- firmware binary
-bin\1.15.1\web-assets-1.15.1.zip              <- web UI assets (STORE ZIP)
-```
+0. Stamps the version into `firmware/data/manifest.json`.
+1. Builds `lolin_s3`, then copies the firmware image, bootloader, partition table, ELF and map into
+   `bin\<version>\`.
+2. Builds a filesystem image of `firmware/data/` as a completeness check. This is a check only and is
+   never flashed: `pio buildfs` produces a **SPIFFS** image in this project, while the firmware mounts
+   LittleFS.
+3. Packs `firmware/data/` into a **STORE-only ZIP** (no compression — required by the on-device
+   extractor).
+3.5. Restores the `manifest.json` placeholder (gh#9).
 
 > **Important:** Do not re-compress the web-assets ZIP with a standard tool.
 > The on-device OTA extractor only handles ZIP STORE (method 0).
 > DEFLATE entries (method 8) are rejected at flash time with a diagnostic error.
 
----
-
-## 2. Uploading firmware
-
-There are two upload paths depending on whether the device already has v1.14.0 or later running.
+Then add a `## [X.Y.Z]` section at the top of `changelog.md`, and write
+`bin\<version>\release-notes.md` in the previous release's structure. When the release is published
+over ROTA, that file becomes the GitHub release text.
 
 ---
 
-### Path A — OTA via web GUI (device running v1.14.0+)
+## 2. Putting a release on a unit
 
-This is the normal upgrade path for a device already in the field.
+**After any update, verify both `fw_ver` AND `asset_version` in `/api/status`.** Neither alone proves
+the update: a mismatch means the web-asset partition was left behind.
 
-**Step 1 — Open the web GUI**
+### Path A — web GUI (a unit on the network)
 
-Navigate to the device IP in a browser (shown on the LCD network page or in the serial monitor on boot).  Log in as **Admin**.
+1. Log in as **Admin** and open the **System** tab → OTA update section.
+2. Upload `bin\<version>\greenhouse-controller-<version>.bin`. When it is written, the status reads
+   *Firmware ready — please upload the web assets ZIP*. The unit waits for the assets; it does not
+   reboot yet.
+3. **Within 120 s**, upload `bin\<version>\web-assets-<version>.zip`. The unit writes it and reboots
+   once, into both. If more than 120 s pass, the firmware is committed on its own and the unit reboots
+   on the old web UI. Upload the assets again after that reboot.
+4. Reload the page and check both versions in the footer.
 
-**Step 2 — Go to the System tab → OTA update section**
+### Path B — scripted push over the LAN
 
-The OTA section is visible to Admin only.
-
-**Step 3 — Upload the firmware binary**
-
-1. Click **Choose File** next to *Firmware (.bin)*.
-2. Select `bin\<version>\greenhouse-controller-<version>.bin`.
-3. Click **Upload firmware**.
-4. The progress bar advances to 100%.  The device reboots automatically.
-5. Wait ~10 seconds, then reload the page.  The footer version number should show the new version.
-
-**Step 4 — Upload the web assets**
-
-After the firmware reboot the device is running the new firmware but still serving the old web UI from the previous LittleFS partition.  Upload the new assets to complete the upgrade.
-
-1. Log in again as Admin (session was cleared by the reboot).
-2. Go to System tab → OTA update section.
-3. Click **Choose File** next to *Web assets (.zip)*.
-4. Select `bin\<version>\web-assets-<version>.zip`.
-5. Click **Upload assets**.
-6. The status field changes to *assets\_write* then *assets\_end*.  The device reboots automatically (~5–10 seconds after the upload completes).
-7. Reload the page.  Both the footer version and the served files are now the new version.
-
-> **Order matters:** always flash firmware first, then web assets.
-> Flashing assets first onto the wrong firmware bank is a no-op at best.
-
----
-
-### Path B — Initial flash via USB (first-time or recovery)
-
-Use this path when the device has no firmware yet, the OTA system is not reachable, or you need to recover from a bad state.
-
-**Requirements:** USB-C cable connected to the LOLIN S3 native USB port, PlatformIO installed.
-
-#### Flash everything in one step
-
-```powershell
-cd firmware
-& "$env:USERPROFILE\.platformio\penv\Scripts\pio.exe" run -e lolin_s3 -t upload
+```bash
+python bin/ota_push.py bin/<version>/greenhouse-controller-<version>.bin --host <ip>
 ```
 
-Then flash the web assets to **lfs0** (0x420000) — `pio run -t uploadfs` always targets lfs1 and must not be used here:
+It finds the ZIP beside the image, logs in as admin, pushes both, and reads `fw_ver` and
+`asset_version` back from `/api/status`. **Check the target first.** The default host is
+`192.168.20.169` (the FDA4 module), so pass `--host` for any other unit, and read `unit_id` from
+`/api/status` before pushing.
 
-```powershell
-& "$env:USERPROFILE\.platformio\packages\tool-esptoolpy\esptool.py" `
-    --chip esp32s3 --port COM8 --baud 460800 `
-    write_flash 0x420000 .pio\build\lolin_s3\littlefs.bin
+### Path C — ROTA, the internet pull (no site visit)
+
+```bash
+python bin/rota_release.py release <version> --yes
 ```
 
-Replace `COM8` with the actual COM port (check Device Manager → Ports).
+This creates the GitHub Release from `bin/<version>/`. The release tags `HEAD`, so **push `HEAD`
+first**; an unpushed commit fails with HTTP 422. The FOTA server fetches new releases on a 10-minute
+schedule and points the **soak** channel at them. Units then pull on their own hourly check.
 
-#### Flash using pre-built artefacts
+- A unit applies an update only **inside its apply window** and **while no web session is open** (the
+  quiet gate), so close the GUI while waiting.
+- The first download in the minutes after publishing can fail, because the server points the channel
+  before it has finished fetching. The unit retries on its next check.
+- Promotion to the production (`mainstream`) channel is a separate, deliberate step:
+  `rota_release.py promote <version>`.
 
-If you have the release files but not the full build environment, flash with esptool directly:
+Full reference: [`rota_release.md`](rota_release.md).
+
+### Path D — first flash over USB (a new unit, or recovery)
+
+A new unit needs two things a normal update never does:
+- the **coredump partition** (`0x620000`) erased once, because IDF panics on every boot when it reads
+  garbage there;
+- the bootloader written with `--flash_mode dio`. The ROM needs dio in the header; the runtime
+  `qio` in `platformio.ini` stays, and mixing them boot-loops in `ets_loader.c`.
+
+The offsets and flash settings are the ones in the build's `flash_args`. Its file paths are IDF's,
+though, so name PlatformIO's copies directly. Build `lolin_s3`, then from
+`firmware\.pio\build\lolin_s3\`:
 
 ```powershell
-# Firmware (app0 at 0x20000)
-python -m esptool --chip esp32s3 --port COM8 --baud 460800 `
-    write_flash 0x20000 bin\1.15.1\greenhouse-controller-1.15.1.bin
-
-# Web assets (lfs0 at 0x420000)
-# The .zip cannot be flashed directly -- you need the raw littlefs.bin from the build artefacts.
-# Use Path A (OTA) or rebuild with pio run -t buildfs.
+python -m esptool --chip esp32s3 --port COM8 erase_flash
+python -m esptool --chip esp32s3 --port COM8 --baud 460800 write_flash --flash_mode dio --flash_freq 80m --flash_size 16MB `
+    0x0 bootloader.bin 0x8000 partitions.bin 0xe000 ota_data_initial.bin 0x20000 firmware.bin
 ```
 
-> The pre-built `.zip` is for OTA upload only.  Direct flash requires the raw
-> `littlefs.bin` produced by `pio run -t buildfs`, not the OTA ZIP.
+`erase_flash` clears the whole chip, the coredump partition included.
+
+Replace `COM8` with the actual port (Device Manager → Ports).
+
+**Web assets**, either way:
+
+- **Over the network (simplest):** once the unit is on WiFi, upload the ZIP (Path A or B).
+- **By cable:** build a **LittleFS** image with `mklittlefs`. Do not use `pio buildfs`, which makes
+  SPIFFS here, so the firmware would mount nothing.
+
+  ```bash
+  printf '{"asset_version":"X.Y.Z","checksum":""}' > firmware/data/manifest.json
+  ~/.platformio/packages/tool-mklittlefs/mklittlefs.exe -c firmware/data -b 4096 -p 256 -s 0x100000 lfs_assets.bin
+  python -m esptool --chip esp32s3 --port COM8 write_flash 0x420000 lfs_assets.bin
+  printf '{"asset_version":"{{ASSET_VERSION}}","checksum":""}' > firmware/data/manifest.json
+  ```
+
+  `mklittlefs` builds a perfectly valid image of an **empty** directory, so check that the image
+  contains the files before flashing it. On the serial console, success reads
+  `littlefs_mount(A (lfs0)) returned 0 (OK)` and `/index.html exists`.
+
+Leave the unit running for **more than 30 s** before unplugging it (see §3).
 
 ---
 
 ## 3. Rollback
 
-The firmware implements a **3-fail automatic rollback**:
+The firmware rolls back a bad update by itself:
 
-- On every boot the fail counter in NVS is incremented.
-- After 30 seconds of stable operation the counter is reset to 0.
-- If the counter reaches 3 (three consecutive failed boots) the device automatically reverts to the previous firmware bank and reboots.
+- Every boot increments a fail counter in NVS.
+- T1 resets the counter to 0 after **30 s** of uptime.
+- A boot that **starts** with the counter at 3 marks the running image invalid and boots the previous
+  firmware bank.
 
-If a bad firmware update leaves the device in a boot loop, do nothing — it will roll back on its own after the third attempt.  The web assets are not rolled back automatically; re-upload the matching version after recovery.
+So three boots that each die before 30 s make the fourth roll back. If an update leaves the unit in a
+boot loop, do nothing: it recovers on its own. The web assets are not rolled back; re-upload the
+matching version after recovery.
 
-To force recovery immediately, use Path B (USB flash) to write a known-good binary.
+**On the bench, every short USB session counts as a failed boot**, because unplugging after 15 s looks
+exactly like a crash. Let the board run past 30 s: the console then shows
+`[OTA] Boot marked healthy - fail counter reset to 0`.
+
+To force recovery immediately, flash a known-good image over USB (Path D).
 
 ---
 
 ## 4. Partition layout reference
 
-| Name    | Offset     | Size    | Contents |
-|---------|------------|---------|----------|
-| otadata | 0x0000E000 | 8 KB    | OTA bank selector (written by esptool on every flash) |
-| nvs     | 0x00010000 | 64 KB   | NVS configuration — survives firmware update |
-| app0    | 0x00020000 | 2 MB    | Firmware Bank A (default boot target) |
-| app1    | 0x00220000 | 2 MB    | Firmware Bank B (OTA target) |
-| lfs0    | 0x00420000 | 1 MB    | Web assets Bank A |
-| lfs1    | 0x00520000 | 1 MB    | Web assets Bank B |
+| Name     | Offset     | Size    | Contents |
+|----------|------------|---------|----------|
+| otadata  | 0x0000E000 | 8 KB    | OTA bank selector |
+| nvs      | 0x00010000 | 64 KB   | NVS configuration — survives firmware update |
+| app0     | 0x00020000 | 2 MB    | Firmware Bank A |
+| app1     | 0x00220000 | 2 MB    | Firmware Bank B |
+| lfs0     | 0x00420000 | 1 MB    | Web assets Bank A |
+| lfs1     | 0x00520000 | 1 MB    | Web assets Bank B |
+| coredump | 0x00620000 | 64 KB   | Crash dump — **erase once on a new unit** |
 
-Banks A and B are always switched together by the OTA manager.
-NVS is never erased by an OTA update.
+Banks A and B are always switched together by the OTA manager. NVS is never erased by an OTA update.
+The authority is [`firmware/partitions.csv`](../firmware/partitions.csv).

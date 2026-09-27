@@ -85,6 +85,8 @@ Targets firmware **2.0.0-a.6.35.x** — canonical nested status-JSON shape carri
 | `/api/coredump/download`     | GET    | admin   | Streams a placeholder dump of `size_bytes` bytes (recognisable ASCII so a hexdump immediately shows it's not a real ELF). `Content-Disposition: attachment; filename="coredump-<fw_ver>-<unix_ts>.bin"`. Rate-limited: 1 op / 10 s. Audit-log line printed to stderr |
 | `/api/coredump/erase`        | POST   | admin   | Wipes the mock COREDUMP_STATE. Idempotent (no dump → 200 OK with note). Rate-limited: 1 op / 10 s. Audit-log line to stderr |
 | `/api/__mock/coredump`       | POST   | **none** (dev-only) | Mock-only debug route: `?present=true&size=N&fw=VER` injects a fake coredump so the GUI badge + Diagnostics panel can be exercised without crashing the Python process. The real firmware has NO such backdoor — coredumps come only from the IDF panic handler |
+| `/api/__mock/m3`             | POST   | **none** (dev-only) | Mock-only debug route that drives M3's position sensor, so every branch of the Motors card can be rendered. Query parameters: `percent`, `at_end`, `state` (e.g. `MOVING_OPEN`), `fitted=false` (the sensor does not answer), `fault`, the verdict flags `not_confirmed` / `travel_short` / `travel_long`, and (gh#85) `gate` / `ctrl_reason`, which force the two reason fields; an empty value clears them |
+| `/api/__mock/commission`     | POST   | **none** (dev-only) | Mock-only debug route that forces the commissioning / teach state (`state`, `run_reason`, `leg`, `ends`, `teach_armed`, …) so every commissioning screen can be inspected without waiting |
 | `/api/ota/status`            | GET    | farmer+ | `{state, progress, error, bank, accepted}` |
 | `/api/ota/firmware`          | POST   | admin   | Streaming firmware `.bin` upload |
 | `/api/ota/assets`            | POST   | admin   | Streaming STORE-only ZIP upload of web assets |
@@ -94,7 +96,7 @@ Targets firmware **2.0.0-a.6.35.x** — canonical nested status-JSON shape carri
 
 * **Sensor readings** — temperature, relative humidity, and wind speed are
   generated with slow sine-wave variation so dashboard tiles update visibly.
-* **Window states** — always `CLOSED`; system mode always `AUTOMATIC`.
+* **Window states** — M1 and M2 always `CLOSED`; M3 follows the mock's position-sensor state, which `/api/__mock/m3` drives. System mode always `AUTOMATIC`.
 * **Operator-aware mode flags** (a.6.35.4 / a.6.35.6) — `mode.flags[]` is computed at request time from cfg state and the mock coredump simulation, mirroring `status_json.cpp::build_canonical_status_json`:
   * `wind_protect_off` whenever `cfg["wind_prot_en"] == 0` (toggle via Wind tab in the GUI or `POST /api/config {"ns":"wind","key":"wind_prot_en","value":0}`)
   * `humidity_ctrl_off` whenever `cfg["rh_ctrl_en"] == 0`

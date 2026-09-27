@@ -11,6 +11,7 @@ The controller automatically ventilates a greenhouse by opening and closing thre
 - Opens or closes the windows to hold temperature and humidity within target ranges, with **separate day and night targets** — day and night are worked out from the local sunrise and sunset.
 - When ventilation and humidity goals pull in opposite directions, a configurable priority decides which wins; humidity control can also be switched off entirely.
 - The three windows — two roof vents and one large side-wall vent — are controlled independently, each with its own timing so movements are smooth and not too frequent.
+- The large side-wall vent can carry a **position sensor**. With it fitted, the controller opens that vent **as far as the demand requires**, to a measured position, instead of all the way open or closed (**Lineair**, the factory default since 2.13.0). Whenever the position cannot be trusted, it falls back to timed control on its own.
 
 ### Wind safety
 - If average wind speed exceeds a set limit, or the wind comes from a direction marked as risky, the windows are forced closed to protect the greenhouse — overriding normal climate control.
@@ -21,6 +22,7 @@ The controller automatically ventilates a greenhouse by opening and closing thre
 
 ### Safety and reliability
 - Detects a window that fails to reach its commanded position and faults in the sensors, and raises an alarm.
+- With the position sensor fitted, every movement of the side-wall vent is checked: did it get where it was sent? The configured travel time is also compared against the measured one.
 - Ventilation and safety functions are kept isolated from the networking functions, so a network problem can never interfere with climate control.
 - The controller monitors its own health, restarts cleanly if it ever locks up, and keeps a diagnostic record of any crash for later analysis.
 
@@ -42,16 +44,19 @@ The controller automatically ventilates a greenhouse by opening and closing thre
 - Regularly reports its status to a remote dashboard for off-site monitoring, and uploads its log files there too.
 
 ### Automatic updates
-- The software and web interface can be updated two ways: by uploading an update through the web page, or by the unit fetching updates from a central server on its own and installing them overnight — no site visit needed. Updates are verified before installation, and the unit rolls back to the previous version if an update fails to start.
+- The software and web interface can be updated two ways: by uploading an update through the web page, or by the unit fetching updates from a central server on its own. It installs them inside a configurable apply window (02:00–04:00 by default) while nobody is logged in, with no site visit needed. Updates are verified before installation, and the unit rolls back to the previous version if an update fails to start.
 
 ## Features
 
 - Automatic climate control based on temperature and relative humidity setpoints (day / night)
-- Three-step graduated ventilation strategy (M1 → M1+M2 → M1+M2+M3) with hysteresis and sliding-average smoothing
+- Two ventilation laws behind one host-tested contract ([`design/ventModelContract.md`](design/ventModelContract.md), implemented in `drivers/ventModel`):
+  - **stepped**, the three-step strategy M1 → M1+M2 → M1+M2+M3, with hysteresis and sliding-average smoothing;
+  - **graded**, which drives M3 to a proportional opening when its position sensor is fitted.
+- Optional **M3 window-position sensor**: a wire encoder on the RS485 bus (Modbus address 40) that also reports M3's end-of-travel sensors. It provides position control with automatic fallback to timed control, a verdict on every drive, and a travel-time check
 - Wind safety override: all windows close automatically when wind speed exceeds a configurable threshold or wind direction lies in an excluded zone
 - Motor alarm handling: immediate stop on Hotraco RRK-3 alarm output, with 60 s guard + automatic CLOSE_ALL re-calibration on clearance
 - Three independent motorised window channels (M1 south roof, M2 north roof, M3 north wall)
-- Modbus RTU / RS485 sensors: Seeed SenseCAP S200 (wind speed + direction) and FG6485A (T/RH)
+- Modbus RTU / RS485 sensors: Seeed SenseCAP S200 (wind speed + direction), FG6485A (T/RH), and the optional M3 wire encoder
 - Local user interface: 4×4 membrane keypad and 16×2 LCD with RGB status backlight (blue = OK, red = critical)
 - PIN-based access control with two roles — Farmer (4-digit PIN) and Admin (8-digit PIN), salted-SHA-256 hashed
 - Battery-backed DS1307 RTC for accurate timestamping; NTP sync when WiFi is available
@@ -67,6 +72,7 @@ The controller automatically ventilates a greenhouse by opening and closing thre
 | Microcontroller | WEMOS LOLIN S3 (ESP32-S3, dual-core 240 MHz, 16 MB flash, 8 MB PSRAM) |
 | Wind sensor | Seeed SenseCAP S200 — ultrasonic, Modbus RS485, 0–60 m/s |
 | T/RH sensor | FG6485A — Modbus RS485, 9–36 VDC |
+| Window position sensor (optional, M3) | Wire encoder with a CH32V003 Modbus RS485 interface board (address 40, 24 V passive PoE); its own repository, `wire-encoder-modbus-interface` |
 | RS485 transceiver | MAX485 (TTL ↔ RS485 conversion) |
 | Motor relay box | Hotraco RRK-3 — three-channel, 24 V potential-free OPEN/CLOSE control + alarm output |
 | Display | LCD1602 I2C (AiP31068L bridge, address 0x3E), 16×2 characters with PCA9633 RGB backlight |
@@ -88,8 +94,9 @@ greenhouse-Controller/
 ├── contributing.md
 ├── code_of_conduct.md
 │
+├── .githooks/          ← pre-commit hook (enable once per clone: git config core.hooksPath .githooks)
 ├── firmware/           ← PlatformIO ESP32-S3 firmware
-├── drivers/            ← Stand-alone peripheral driver projects
+├── drivers/            ← Host-tested driver and control-law libraries
 ├── webUiMock/          ← Flask mock server for web GUI development
 ├── model/              ← Simulation, plant-model tuning, settings verification
 ├── log/                ← Logparser tool + example log files
@@ -100,6 +107,7 @@ greenhouse-Controller/
 ├── documentation/      ← Component datasheets, sensor & motor reference material
 ├── realisation/        ← Installation wiring guide
 ├── manual/             ← End-user manuals (boer + beheerder), Dutch, MD + PDF
+├── memory/             ← Project knowledge: architecture, gotcha log (read before debugging)
 ├── finance/            ← Project budget and receipts
 └── Archive/            ← Historical design iterations (read-only)
 ```
@@ -109,7 +117,7 @@ greenhouse-Controller/
 | Directory | Contents | Start here |
 |---|---|---|
 | **`firmware/`** | PlatformIO project for the ESP32-S3 controller. Source in `src/`, web-asset files (HTML / JS / CSS served from LittleFS) in `data/`, configuration headers in `config/`. Host-side unit tests live with their drivers in `drivers/<name>/test/` (see the row below), not under `firmware/`. Edit in VSCode with the PlatformIO extension. | [`firmware/platformio.ini`](firmware/platformio.ini), [`firmware/src/README.md`](firmware/src/README.md) |
-| **`drivers/`** | One PlatformIO project per peripheral driver (LCD1602_I2C, DS1307_RTC, FG6485A, modBus, sdCard, gpio, i2c, keyPad, littleFS, Lolin-S3, relay_sequence_test). Each is unit-tested on host before being integrated into the main firmware. | [`drivers/driverDevelopmentPlan.md`](drivers/driverDevelopmentPlan.md), per-driver READMEs in `drivers/<name>/` |
+| **`drivers/`** | One PlatformIO project per library: the peripheral drivers (DS1307_RTC, FG6485A, LCD1602_I2C, gpio, i2c, keyPad, littleFS, modBus, nvs, s200, sdCard, windowPos) and **ventModel**, the ventilation control law. Each has its own host-side unit tests (`pio test -e native`) and is compiled into the firmware through a thin `firmware/components/<name>/` proxy. `relay_sequence_test/` is the exception: a standalone bench sketch. | [`drivers/driverDevelopmentPlan.md`](drivers/driverDevelopmentPlan.md), per-driver READMEs in `drivers/<name>/` |
 | **`webUiMock/`** | Lightweight Flask development server that serves the web GUI from `firmware/data/` and emulates every REST + WebSocket endpoint of the real firmware. Iterate on HTML/CSS/JS without flashing the board. | [`webUiMock/README.md`](webUiMock/README.md) |
 | **`model/`** | Python software model of the controller (`simulation.py`) plus tools for plant-model calibration and settings verification. Used to tune parameters and validate firmware changes before deploying. Includes the May 2026 oscillation investigation. | [`model/README.md`](model/README.md) |
 | **`log/`** | The `logparser.py` script that converts controller log CSVs (NVS ring buffer or SD-card files) into human-readable text, plus an example raw log and parsed output. | [`log/README.md`](log/README.md), [`log/logparser.md`](log/logparser.md) |
@@ -120,6 +128,7 @@ greenhouse-Controller/
 | **`documentation/`** | Reference material from third parties and component vendors: sensor datasheets (`Sensors/`), motor docs (`Motors/`), ventilation system reference (`VentilationSystem/`), and Dutch agronomy literature on greenhouse climate. | [`documentation/Sensors/sensors.md`](documentation/Sensors/sensors.md), [`documentation/regelingOverwegingen.md`](documentation/regelingOverwegingen.md) |
 | **`realisation/`** | Field-installation guide: how to wire all external components (sensors, motor box, mains, network) to the PCB connectors. | [`realisation/installation.md`](realisation/installation.md) |
 | **`manual/`** | End-user manuals in **Dutch**, both as Markdown source and as printable PDF: a Farmer manual for daily use, and a Beheerder (Admin) manual for installation, configuration, maintenance and diagnosis. | [`manual/boerHandleiding.md`](manual/boerHandleiding.md), [`manual/beheerderHandleiding.md`](manual/beheerderHandleiding.md) |
+| **`memory/`** | Project knowledge kept beside the code: the FreeRTOS task graph and subsystem map (`architecture.md`), the long-form "before you start" notes, and the **gotcha log** — every surprise met so far, with root cause and fix, indexed by subsystem. Check it before debugging anything odd. | [`memory/MEMORY.md`](memory/MEMORY.md), [`memory/gotcha-log.md`](memory/gotcha-log.md) |
 | **`finance/`** | Project budget and receipts. Internal-use material; not relevant for using or building the controller. | – |
 | **`Archive/`** | Historical first-iteration design and simulation work, kept read-only as reference. | [`Archive/Iteration1/design.md`](Archive/Iteration1/design.md) |
 
@@ -133,7 +142,9 @@ The greenhouse has three motorised ventilation windows, each driven by one chann
 | M2 | North roof slope (Dakbeluchting Noord) | 21 s / 21 s | 8 m² |
 | M3 | North wall side window (Zijwandbeluchting) | 171 s / 171 s | 80 m² |
 
-The controller does not have window-position feedback; it tracks position internally based on issued OPEN/CLOSE commands and the configured travel times. After every power-cycle a CLOSE_ALL calibration runs automatically (~3 minutes) to re-establish a known position.
+M1 and M2 have no position feedback. The controller tracks their position from the OPEN/CLOSE commands it issued and the configured travel times. After every power-cycle a CLOSE_ALL calibration runs automatically (~3 minutes) to re-establish a known position.
+
+M3 can carry the optional position sensor (since 2.8.0). With it fitted and its reading trusted, M3 is driven to a measured opening: **Lineair**, available since 2.12.0 and the factory default since 2.13.0. Without it, M3 runs on its travel time like M1 and M2. The sensor's setup, calibration and checks are described in [`design/integrateWindowPositionSensor.md`](design/integrateWindowPositionSensor.md).
 
 ## End-User Documentation (Dutch)
 
@@ -160,6 +171,10 @@ PDFs are generated from the Markdown sources by [`manual/build_pdf.py`](manual/b
 | [Logparser manual](log/logparser.md) | CSV log format reference and `logparser.py` usage |
 | [Web UI Mock Server](webUiMock/README.md) | How to develop the web GUI without the device |
 | [Installation Wiring Guide](realisation/installation.md) | Field wiring of sensors, motor box, mains and network |
+| [Ventilation law contract](design/ventModelContract.md) | The interface every control law implements; the stepped and graded laws live in `drivers/ventModel` with host tests |
+| [Window position sensor](design/integrateWindowPositionSensor.md) | The M3 wire encoder: geometry, calibration, the presence gate, per-drive verdicts, and the two control modes |
+| [Status website contract](design/technical-spec-statusWebsite.md) | The status POST payload and the log upload the remote dashboard consumes (contract 2.0) |
+| [ROTA release tool](bin/rota_release.md) | Publishing a release to the internet-pull OTA channels |
 | [Remote OTA (ROTA) design](design/rota_tds.md) | Internet-pull OTA — server contract, mutual-auth security model, night-window apply (mainline since 2.2.x; the `rota` branch merged to `main` and closed 2026-07-17 — branch history is in the `[2.2.0]` section of [changelog.md](changelog.md)) |
 | [Changelog](changelog.md) | Per-version firmware change log |
 
@@ -174,7 +189,7 @@ PDFs are generated from the Markdown sources by [`manual/build_pdf.py`](manual/b
 ### Build and Flash
 
 ```bash
-git clone https://github.com/<your-org>/greenhouse-Controller.git
+git clone https://github.com/pe1mew/greenhouse-Controller.git
 cd greenhouse-Controller
 ```
 
@@ -182,7 +197,9 @@ cd greenhouse-Controller
 2. Connect the LOLIN S3 board via USB-C.
 3. Click **Upload** in the PlatformIO toolbar (or run `pio run -t upload` from `firmware/`).
 4. Open the **Serial Monitor** (115200 baud) to view startup diagnostics.
-5. To upload the web assets to LittleFS: PlatformIO → "Upload Filesystem Image" (or `pio run -t uploadfs`).
+5. For the web assets, do **not** use PlatformIO's "Upload Filesystem Image" (`pio run -t uploadfs`). In this project it builds a SPIFFS image and writes it to the wrong bank, and the firmware mounts LittleFS. Upload the web-assets ZIP over the network instead, or follow the cable procedure in [`bin/README.md`](bin/README.md) §2 Path D.
+
+> **A new unit needs a one-time first flash**: the coredump partition erased, and the bootloader written with `--flash_mode dio`. See [`bin/README.md`](bin/README.md) §2 Path D, then run the unit for more than 30 s before unplugging it.
 
 ### First-time configuration
 
