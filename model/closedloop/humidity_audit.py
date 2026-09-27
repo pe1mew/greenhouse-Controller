@@ -190,6 +190,109 @@ def run(patterns):
 
 
 # --------------------------------------------------------------------------
+# cr_priority 1, and what a shut house does to its own humidity
+# --------------------------------------------------------------------------
+
+def priority1(rows, w, days):
+    """How often cr_priority 1 would have shut a house the temperature wanted open.
+
+    The dry vote has no hysteresis either: the branch returns 0 below rh_min and
+    abstains at rh_min, so a reading hovering on the floor flips the whole house
+    between shut and venting. Counted at 5C88's floor and at the tomato row's.
+    """
+    print("")
+    print("-- cr_priority 1: the dry vote shuts a house the temperature wants open --")
+    for rh_min_day in (CFG["rh_min_day"], 60):
+        onsets, hours, prev = 0, 0.0, False
+        per_day = Counter()
+        for i, r in enumerate(rows):
+            rh_w, d_t, day = r[2], r[3], r[7]
+            rh_max = CFG["rh_max_day"] if day else CFG["rh_max_ngt"]
+            rh_min = rh_min_day if day else rh_min_day + 5
+            srh = rh_branch(rh_w, rh_max, rh_min, CFG["hyst_rh"], NONE)
+            shut = d_t > 0 and resolve(d_t, srh, 1) == 0
+            if shut:
+                hours += w[i]
+                if not prev:
+                    onsets += 1
+                    per_day[r[0].date()] += 1
+            prev = shut
+        busiest = per_day.most_common(1)
+        print("  rh_min %d/%d: %4d onsets, %5.2f a day, %6.1f h, mean episode %3.0f min, "
+              "busiest day %s (%d)"
+              % (rh_min_day, rh_min_day + 5, onsets, onsets / days, hours,
+                 60.0 * hours / max(onsets, 1), busiest[0][0] if busiest else "-",
+                 busiest[0][1] if busiest else 0))
+
+
+def shut_house(log):
+    """Does a warm, shut greenhouse get wetter or drier?
+
+    gh#84's worry is that a dry house, once shut, stays dry while it heats. A
+    shut house also traps transpiration. Non-overlapping daytime 20-minute
+    stretches in which the windows stayed all shut, or stayed at least one
+    open, starting on a sample at or above a temperature; T3 and CLOSE_ALL
+    stretches excluded, and any log gap over 2 minutes breaks a stretch.
+    """
+    from datetime import timedelta
+    import statistics
+
+    def code(bm, ch):
+        return (bm >> (2 * ch)) & 0x3
+
+    def ah(t, rh):
+        return _magnus(t, rh)[0]
+
+    win = timedelta(minutes=20)
+    s = log.samples
+    n = len(s)
+    out = {"shut": [], "open": []}
+    i = 0
+    while i < n:
+        ts0, t0, rh0 = s[i]
+        if not log.is_day(ts0):
+            i += 1
+            continue
+        j, states, ok = i, set(), True
+        while j < n and s[j][0] - ts0 < win:
+            if j > i and (s[j][0] - s[j - 1][0]) > timedelta(minutes=2):
+                ok = False
+                break
+            bm = log.bitmask.at(s[j][0], 0)
+            if bm & (logdata.BIT_WIND_OVERRIDE | logdata.BIT_CALIBRATING):
+                ok = False
+                break
+            states.add("shut" if all(code(bm, c) == 0 for c in range(3)) else "open")
+            j += 1
+        if not ok or j >= n or len(states) != 1:
+            i = max(j, i + 1)
+            continue
+        ts1, t1, rh1 = s[j]
+        T0, T1 = t0 / 10.0, t1 / 10.0
+        out[states.pop()].append((T0, rh0, T1 - T0, rh1 - rh0, ah(T1, rh1) - ah(T0, rh0)))
+        i = j
+
+    print("")
+    print("-- a warm house over 20 minutes, windows all shut against at least one open --")
+    print("  %-10s %-5s %5s %8s %8s %8s %11s %13s"
+          % ("start T", "", "n", "T0 med", "dT", "dRH", "RH rose", "dAH g/m3"))
+    for lo in (24, 26, 28):
+        for kind in ("shut", "open"):
+            v = [r for r in out[kind] if r[0] >= lo]
+            if not v:
+                print("  >= %2d C    %-5s %5d" % (lo, kind, 0))
+                continue
+            rose = sum(1 for r in v if r[3] > 0)
+            print("  >= %2d C    %-5s %5d %7.1fC %+7.2fC %+7.1f%% %5d (%2.0f%%) %+12.2f"
+                  % (lo, kind, len(v), statistics.median(r[0] for r in v),
+                     statistics.median(r[2] for r in v), statistics.median(r[3] for r in v),
+                     rose, 100.0 * rose / len(v), statistics.median(r[4] for r in v)))
+    gh84 = [r for r in out["shut"] if r[0] >= 26 and r[1] < 55]
+    print("  shut with T0 >= 26 C and RH0 < 55 %% -- gh#84's situation itself: %d stretches"
+          % len(gh84))
+
+
+# --------------------------------------------------------------------------
 # Would venting have dried the house? Needs the outdoor LoRa sensor.
 # --------------------------------------------------------------------------
 
@@ -425,6 +528,8 @@ def main(patterns, outdoor_csv=None):
     temperature_bands(rows, w, days)
     monthly(rows, w)
     guards(rows, w, days)
+    priority1(rows, w, days)
+    shut_house(log)
     if outdoor_csv and Path(outdoor_csv).exists():
         outdoor(rows, w, days, outdoor_csv)
 
