@@ -6,6 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.14.1] — 2026-09-27  (dead code removed; the unit behaves exactly as 2.14.0)
+
+Patch, **not released**, with **no behaviour change**
+([gh#87](https://github.com/pe1mew/greenhouse-Controller/issues/87)). Five functions are removed. None of
+them was in the built image: the linker discarded them because nothing called them. Two pieces of live
+code that existed only to serve them go too, and neither had any observable effect:
+`rotate_sd_file()` copied the closed file's name into a buffer nothing read, and T9's loop checked a
+flag nothing ever set. The image is 256 bytes smaller (1 410 832 against 2.14.0's 1 411 088). The
+version moves so that a rebuild cannot overwrite the published `bin/2.14.0/` with different bytes. It
+ships with the next release and is soaked with it.
+
+**Removed.**
+
+- **`pin_auth_reset_admin()`** was an admin-only PIN reset written for a recovery design that was never
+  built: TSDS §5.4's "key combination at power-on while a hardware jumper is fitted". Nothing ever called
+  it.
+  - The recovery that exists is the IO0 BOOT button, stage 1: hold 5–10 s and release. Both PINs go back
+    to their defaults, no PIN is needed, and it takes physical access (FR-AC08/FR-AC09; beheerder manual
+    §9 and §18).
+  - The comment in `pin_auth_set()` that offered the function as a second way out now names the BOOT
+    button, and TSDS §5.4 describes the procedure as built.
+  - The 2.4.10 entry below also names the function; that route never existed.
+- **`event_logger_last_rotated()`, `event_logger_newest_closed()` and `event_logger_force_rotate()`**, with
+  the state only they used:
+  - the rotated-file record `s_last_closed`;
+  - the force-rotate request flag and T9's handler for it, which could never fire.
+
+  T14 uploads through `upload_pending()`, which walks `event_logger_next_pending()`. The comments in
+  `status_post.{h,cpp}` that still described the old one-file-per-trigger path now describe that, and
+  test IT-EL-019's note is corrected. `LOG_SYSTEM value_a=6`, the force-rotate marker, is no longer
+  emitted. The code stays reserved, and `log/logparser.py` still decodes it for old logs.
+- **`web_any_active_session()`** was superseded by `web_any_active_session_except()`, which the ROTA
+  quiet gate calls (gh#41). That function's header documentation now stands on its own.
+
+**Verified:** the release, bench and Modbus-probe images build with no errors and no "unused" warnings.
+Neither the release nor the bench map names any of the five functions. **Not run on hardware.**
+
 ## [2.14.0] — 2026-09-25  (the status LED's settings become constants, and a frost reading keeps its sign)
 
 Minor, because four keys leave the configuration contract

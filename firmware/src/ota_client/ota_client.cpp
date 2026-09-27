@@ -33,7 +33,7 @@
 #include "nvs_config.h"
 #include "../ota_manager/ota_manager.h"        /* 3.8 apply — reuse the T13 push-OTA machinery */
 #include "../relay_controller/relay_controller.h" /* 3.8 quiet gate — t2_get_window_states */
-#include "../web_server/web_server.h"           /* 3.8 quiet gate — web_any_active_session */
+#include "../web_server/web_server.h"           /* 3.8 quiet gate — web_any_active_session_except (gh#41) */
 #include "../ui_display/ui_display.h"           /* 3.8 quiet gate — ui_pin_session_active */
 
 static const char *TAG = "T16_OTA";

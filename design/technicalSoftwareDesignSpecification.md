@@ -1080,9 +1080,10 @@ T9 calls `log_take_dropped_count()` (which atomically reads and resets `g_q3_dro
 - Lockout applies independently to farmer and administrator PIN entry.
 - Lockout events are logged to Q3.
 
-**Administrator password recovery:**
-- A recovery procedure shall be implemented that requires deliberate physical action (candidate: hold specific key combination at power-on while a hardware jumper is fitted) to prevent accidental activation.
-- The recovery procedure resets the administrator PIN to the factory default and logs the event.
+**Administrator password recovery (FR-AC08, FR-AC09):**
+- Recovery needs deliberate physical action and no prior authentication: the IO0 BOOT button on the processor board (the IO0 hardware recovery sequence under T8 — UI / Display). Held for 5–10 s and released (stage 1), it resets **both** PINs to their factory defaults and clears their lockouts; settings and WiFi are kept and the unit does not reboot. Longer holds reset all settings (stage 2) or all settings followed by a reboot (stage 3).
+- Every stage logs the event (`LOG_SYSTEM value_a=26`, `value_b` = stage, since 2.6.0).
+- The procedure this section first proposed (a key combination held at power-on while a hardware jumper is fitted, resetting the administrator PIN only) was never built. `pin_auth_reset_admin()`, written for it and never called, was removed in 2.14.1 (gh#87).
 
 **Role-based parameter visibility:**
 

@@ -373,10 +373,10 @@ pin_auth_result_t pin_auth_set(pin_role_t role, const char *new_pin)
      * containing any other character can be set through /api/pin and then
      * never typed at the panel. For the admin role that makes the LCD admin
      * login permanently impossible — and the LCD is the only surface for
-     * manual motor control (gh#29) and for the IO0 reset confirmations, so the
-     * recovery left is IO0 level 1 or pin_auth_reset_admin(), which is
-     * hardware-recovery-only by contract. Validated here rather than in the
-     * handler because this is the one choke point both surfaces share. */
+     * manual motor control (gh#29), so the only way back would be the IO0
+     * BOOT-button reset (stage 1 resets both PINs to their defaults, with no
+     * PIN needed: FR-AC08/FR-AC09). Validated here rather than in the handler
+     * because this is the one choke point both surfaces share. */
     for (const char *p = new_pin; *p != '\0'; ++p) {
         if (*p < '0' || *p > '9') return PIN_AUTH_ERR_PARAM;
     }
@@ -386,36 +386,6 @@ pin_auth_result_t pin_auth_set(pin_role_t role, const char *new_pin)
 
     if (nvs_cfg_set_blob(NVS_NS_ACCESS, hash_key(role), hash, PIN_HASH_LEN) != NVS_CFG_OK)
         return PIN_AUTH_ERR_NVS;
-
-    return PIN_AUTH_OK;
-}
-
-/**
- * @brief Reset the administrator PIN to the factory default. See pin_auth.h.
- *
- * Recovery path used after the hardware jumper procedure (TSDS §5.4).
- * Rewrites the admin hash with PIN_DEFAULT_ADMIN under the existing salt,
- * then clears both the admin failure counter and the admin lockout expiry.
- * Does not touch the farmer PIN, the salt, or the farmer counters.
- *
- * @return PIN_AUTH_OK on success, PIN_AUTH_ERR_NVS on NVS failure,
- *         PIN_AUTH_ERR_INIT if pin_auth_init() has not been called.
- * @warning Should only be reachable through the hardware recovery procedure;
- *          a software-only path would compromise the access model.
- */
-pin_auth_result_t pin_auth_reset_admin(void)
-{
-    if (!s_initialized) return PIN_AUTH_ERR_INIT;
-
-    uint8_t hash[PIN_HASH_LEN];
-    compute_hash(s_salt, PIN_DEFAULT_ADMIN, hash);
-
-    if (nvs_cfg_set_blob(NVS_NS_ACCESS, KEY_HASH_ADMIN, hash, PIN_HASH_LEN) != NVS_CFG_OK)
-        return PIN_AUTH_ERR_NVS;
-
-    /* Also clear any active lockout and failure counter for admin. */
-    nvs_cfg_set_i32(NVS_NS_ACCESS, KEY_FAIL_ADMIN,    0);
-    nvs_cfg_set_i32(NVS_NS_ACCESS, KEY_LOCKOUT_ADMIN, 0);
 
     return PIN_AUTH_OK;
 }

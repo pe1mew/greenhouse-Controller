@@ -54,8 +54,9 @@ extern "C" {
  * T14 sets a `xTaskNotifyWait`-style mask for this bit during its main-loop
  * cycle wait. When T9's `rotate_sd_file()` closes the active CSV and opens a
  * new one, it calls `xTaskNotify(task_t14, T14_NOTIFY_LOG_ROTATED, eSetBits)`.
- * T14 then reads the just-closed filename via `event_logger_last_rotated()`
- * and (subject to `cfg.log_upload_rot`) uploads it.
+ * T14 then (subject to `cfg.log_upload_rot`) runs `upload_pending()`, which
+ * uploads every closed file newer than its latch, oldest first, via
+ * `event_logger_next_pending()`.
  *
  * Since 2.0.0-a.6.35.
  */

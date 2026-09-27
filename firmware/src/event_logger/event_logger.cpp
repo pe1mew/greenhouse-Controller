@@ -138,24 +138,6 @@ static bool s_sd_released = false;
 /** @brief Active SD log filename including the leading '/' (e.g. "/20260507143022.csv"). */
 static char s_cur_filename[SD_FILENAME_LEN];
 
-/**
- * @brief Spinlock guarding @ref s_last_closed.
- *
- * Held only for the brief moment of copying a fixed-size filename buffer in
- * or out of static storage.
- */
-static portMUX_TYPE s_closed_mux = portMUX_INITIALIZER_UNLOCKED;
-
-/**
- * @brief Most recently *rotated-away* CSV filename (no leading '/').
- *
- * Empty until the first rotation of the boot. Read by T14's
- * upload-on-rotation path via event_logger_last_rotated(); written by
- * rotate_sd_file() under @ref s_closed_mux. Thread-safety: short critical
- * section copying a small fixed-size string.
- */
-static char s_last_closed[SD_NAME_ONLY_LEN] = {};
-
 /* -----------------------------------------------------------------------
  * Drop counter — tracks events lost due to Q3 overflow
  * ----------------------------------------------------------------------- */
@@ -170,21 +152,6 @@ static portMUX_TYPE      g_drop_mux   = portMUX_INITIALIZER_UNLOCKED;
  * path; read and cleared atomically by log_take_dropped_count().
  */
 static volatile uint32_t g_q3_dropped = 0;
-
-/* -----------------------------------------------------------------------
- * Force-rotate request (T14 → T9 hand-off, since 1.17.28)
- *
- * Set by event_logger_force_rotate(); polled by T9's main loop after each
- * drain pass. T9 calls rotate_sd_file() and clears the flag. T14 polls
- * back via event_logger_force_rotate() until the flag clears or its
- * timeout expires.
- * ----------------------------------------------------------------------- */
-
-/** @brief Spinlock guarding @ref s_force_rotate_req across T14/T9. */
-static portMUX_TYPE      s_rotate_mux = portMUX_INITIALIZER_UNLOCKED;
-
-/** @brief Force-rotate hand-off flag; raised by T14, cleared by T9 after rotate_sd_file(). */
-static volatile bool     s_force_rotate_req = false;
 
 /* -----------------------------------------------------------------------
  * log_post() — single entry point for all Q3 producers
@@ -538,8 +505,6 @@ static void build_csv_line(const log_event_t *evt, char *buf, size_t len)
  * @brief Advance to the next SD log file.
  *
  * Sequence:
- *  -# Captures the bare name of the soon-to-be-closed file in
- *     @ref s_last_closed (under @ref s_closed_mux) so T14 can find it.
  *  -# Generates a new timestamp filename via make_ts_filename().
  *  -# Writes the CSV header (CSV_HEADER) to the new file.
  *  -# Writes the unit-id preamble row (gh#17) — a LOG_SYSTEM value_a=11
@@ -556,23 +521,9 @@ static void build_csv_line(const log_event_t *evt, char *buf, size_t len)
  *       subsequent attempts.
  * @note NULL-safe with respect to @ref task_t14 — early-boot rotations
  *       before T14 is spawned skip the notification.
- * @see  event_logger_force_rotate
- * @see  event_logger_last_rotated
  */
 static void rotate_sd_file(void)
 {
-    /* Capture the soon-to-be-closed filename for T14 upload-on-rotation
-     * before make_ts_filename overwrites s_cur_filename. We strip the
-     * leading '/' so callers receive the bare name (matches the spec's
-     * URL-friendly path scheme used by storage_sd_list_csv). */
-    if (s_cur_filename[0] != '\0') {
-        const char *bare = (s_cur_filename[0] == '/') ? s_cur_filename + 1 : s_cur_filename;
-        portENTER_CRITICAL(&s_closed_mux);
-        strncpy(s_last_closed, bare, sizeof(s_last_closed) - 1u);
-        s_last_closed[sizeof(s_last_closed) - 1u] = '\0';
-        portEXIT_CRITICAL(&s_closed_mux);
-    }
-
     make_ts_filename(s_cur_filename, sizeof(s_cur_filename));
 
     storage_status_t rc = storage_sd_write_append(s_cur_filename, CSV_HEADER);
@@ -886,90 +837,9 @@ bool event_logger_post_sync(int16_t value_a, int16_t value_b,
 }
 
 /* =======================================================================
- * Public — rotation-tracking helpers (T14)
+ * Public — closed-file enumeration for T14's log upload (gh#82)
  * ======================================================================= */
 
-/**
- * @brief Return the most recently rotated-away CSV filename to T14.
- *
- * Reads @ref s_last_closed under @ref s_closed_mux. See event_logger.h.
- */
-bool event_logger_last_rotated(char *out, size_t cap)
-{
-    if (out == NULL || cap == 0u) { return false; }
-
-    portENTER_CRITICAL(&s_closed_mux);
-    strncpy(out, s_last_closed, cap - 1u);
-    out[cap - 1u] = '\0';
-    portEXIT_CRITICAL(&s_closed_mux);
-
-    return out[0] != '\0';
-}
-
-/**
- * @brief Force T9 to rotate the active SD log file (T14 daily-upload path).
- *
- * Raises @ref s_force_rotate_req under @ref s_rotate_mux, posts a synthetic
- * LOG_SYSTEM(value_a=6) marker via log_post() to (a) wake T9 from
- * `xQueueReceive(portMAX_DELAY)` and (b) leave a "why was this file closed?"
- * trail in the outgoing file, then polls every 100 ms until T9 clears the
- * flag or @p timeout_ms elapses.
- *
- * @note On timeout the request flag is intentionally left set — T9 will
- *       still rotate when it next gets CPU time; the caller simply did not
- *       observe completion in its budget.
- */
-bool event_logger_force_rotate(uint32_t timeout_ms)
-{
-    /* Refuse early if SD logging is currently inactive: rotation has no
-     * meaning without an active file, and we'd otherwise spin to timeout. */
-    if (!s_sd_ok) { return false; }
-
-    /* Raise the request flag. T9's drain loop checks this after each pass. */
-    portENTER_CRITICAL(&s_rotate_mux);
-    s_force_rotate_req = true;
-    portEXIT_CRITICAL(&s_rotate_mux);
-
-    /* Post a synthetic marker to Q3 to (a) wake T9 if it is blocked on
-     * receive, and (b) leave a visible "why was this file closed?" trail
-     * in the file that is about to be rotated away. The marker uses
-     * value_a=6 per the LOG_SYSTEM encoding table in event_logger.h. */
-    log_event_t marker = {};
-    marker.timestamp  = (uint32_t)time(NULL);
-    marker.event_type = (uint8_t)LOG_SYSTEM;
-    marker.initiator  = (uint8_t)LOG_BY_WEB;
-    marker.value_a    = 6;
-    marker.value_b    = 0;
-    log_post(&marker);
-
-    /* Poll for completion. Resolution = 100 ms; well under the typical
-     * 5 s timeout T14 passes for this call. */
-    const TickType_t start         = xTaskGetTickCount();
-    const TickType_t timeout_ticks = pdMS_TO_TICKS(timeout_ms);
-    for (;;) {
-        portENTER_CRITICAL(&s_rotate_mux);
-        bool still_pending = s_force_rotate_req;
-        portEXIT_CRITICAL(&s_rotate_mux);
-        if (!still_pending) { return true; }
-        if ((xTaskGetTickCount() - start) >= timeout_ticks) {
-            ESP_LOGW(TAG, "[T9] force-rotate timeout after %lu ms",
-                     (unsigned long)timeout_ms);
-            /* Leave the flag set — T9 will process when it gets a chance.
-             * The caller (T14) treats timeout as "no rotation observed in
-             * time" and falls back to whatever newest_closed currently is. */
-            return false;
-        }
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-}
-
-/**
- * @brief Return the lex-newest closed (non-active) CSV name on SD.
- *
- * Used by T14 daily-fallback when no rotation occurred this boot. Falls back
- * to @ref s_last_closed if the SD scan finds no candidate. Full contract in
- * event_logger.h.
- */
 /** One closed file of ours, chosen while scanning (gh#82). */
 typedef struct {
     char        active[SD_NAME_ONLY_LEN];  /**< skip the file being written */
@@ -1023,33 +893,6 @@ static bool pick_closed(pick_t *p)
     return storage_sd_foreach_csv(".csv", pick_cb, p) == STORAGE_OK;
 }
 
-bool event_logger_newest_closed(char *out, size_t cap)
-{
-    if (out == NULL || cap == 0u) { return false; }
-    out[0] = '\0';
-
-    /* gh#82: our newest closed file, from a scan that cannot truncate. Sizing
-     * the old list to SD_MAX_FILES names (gh#42) only moved the cliff from ~21
-     * files to ~30: past the cap the newest names fell off again and the
-     * upload path stalled on a stale file. */
-    pick_t p;
-    p.after = NULL;
-    p.want_max = true;
-    if (!pick_closed(&p)) {
-        /* SD unavailable — fall back to in-memory rotation record. */
-        return event_logger_last_rotated(out, cap);
-    }
-    if (p.best[0] != '\0') {
-        snprintf(out, cap, "%s", p.best);
-    }
-
-    if (out[0] == '\0') {
-        /* SD scan found nothing — try the in-memory record. */
-        return event_logger_last_rotated(out, cap);
-    }
-    return true;
-}
-
 /**
  * @brief Return the smallest closed CSV name strictly greater than @p after.
  *
@@ -1058,14 +901,10 @@ bool event_logger_newest_closed(char *out, size_t cap)
  * T14's upload_pending walks this in a loop, advancing `after` to each
  * successful upload, so a backlog of missed files (e.g. WiFi outage that
  * spanned a rotation) gets drained in chronological order on the next
- * trigger. Closed-file enumeration is identical to
- * event_logger_newest_closed() (same non-truncating scan + active-file exclusion);
- * only the selection predicate differs: smallest > after, vs lex-max.
- *
- * Unlike event_logger_newest_closed() this routine does *not* fall back to
- * the in-memory @ref s_last_closed record on SD failure, because the
- * caller's intent is "walk all pending in order" — and an in-memory
- * fallback cannot satisfy that.
+ * trigger. The scan cannot truncate and skips the file being written
+ * (pick_closed(), gh#82). There is no in-memory fallback on SD failure:
+ * the caller's intent is "walk all pending in order", which only the card
+ * can answer.
  *
  * @see event_logger.h for the full @param/@return contract.
  */
@@ -1076,9 +915,8 @@ bool event_logger_next_pending(const char *after, char *out, size_t cap)
     if (after == NULL) { after = ""; }
 
     /* gh#82: the next one of ours after @p after, from a scan that cannot
-     * truncate. Unlike newest_closed this does NOT fall back to the in-memory
-     * record on SD failure: the caller's intent is "walk all pending in
-     * order", which an in-memory record cannot satisfy. */
+     * truncate. There is no in-memory fallback on SD failure: the caller's
+     * intent is "walk all pending in order", which only the card can answer. */
     pick_t p;
     p.after = after;
     p.want_max = false;
@@ -1115,7 +953,6 @@ bool event_logger_next_pending(const char *after, char *out, size_t cap)
  *     - Read log_take_dropped_count(); if non-zero, synthesise a LOG_SYSTEM
  *       row reporting the drop count and post it directly to Q3 (not via
  *       log_post() — avoids re-entrant eviction; see header design notes).
- *     - Honour any pending @ref s_force_rotate_req from T14.
  *
  * @param  pvParameters  Unused; pass NULL.
  *
@@ -1207,22 +1044,6 @@ void task_event_logger(void *pvParameters)
             sys_evt.value_a    = (int16_t)(dropped > 32767u ? 32767 : (int16_t)dropped);
 
             xQueueSend(Q3, &sys_evt, 0);   /* direct — not via log_post() */
-        }
-
-        /* Honour an external force-rotate request (T14 daily-upload slot).
-         * The marker event posted by event_logger_force_rotate() is already
-         * in the file at this point — it was processed by the drain loop
-         * above — so rotating now produces a closed file whose last entry
-         * documents why it was closed. */
-        portENTER_CRITICAL(&s_rotate_mux);
-        bool need_rotate = s_force_rotate_req;
-        portEXIT_CRITICAL(&s_rotate_mux);
-        if (need_rotate && s_sd_ok) {
-            ESP_LOGI(TAG, "[T9] force-rotate requested");
-            rotate_sd_file();
-            portENTER_CRITICAL(&s_rotate_mux);
-            s_force_rotate_req = false;
-            portEXIT_CRITICAL(&s_rotate_mux);
         }
     }
 }

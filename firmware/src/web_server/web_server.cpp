@@ -257,12 +257,6 @@ bool web_any_active_session_except(const char *exempt_token)
     return active;
 }
 
-/* True if any web session is currently live (ROTA quiet gate, R-P02). */
-bool web_any_active_session(void)
-{
-    return web_any_active_session_except(NULL);
-}
-
 /* Session still valid? Unlike session_find_and_renew() this never slides the
  * expiry: the caller is a holder watching for the end, not the session itself. */
 bool web_session_is_live(const char *token)

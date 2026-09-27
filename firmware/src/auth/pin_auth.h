@@ -164,17 +164,6 @@ pin_auth_result_t pin_auth_verify(pin_role_t role, const char *pin,
 pin_auth_result_t pin_auth_set(pin_role_t role, const char *new_pin);
 
 /**
- * @brief Reset the administrator PIN to the factory default.
- *
- * Intended for the hardware recovery procedure (physical jumper + key combo
- * at power-on, TSDS §5.4). Rewrites the admin hash using the existing salt
- * and PIN_DEFAULT_ADMIN; does not disturb the farmer PIN or the salt.
- *
- * @return PIN_AUTH_OK or PIN_AUTH_ERR_NVS.
- */
-pin_auth_result_t pin_auth_reset_admin(void);
-
-/**
  * @brief Return the seconds remaining in the lockout period for a role.
  *
  * @param role  PIN_ROLE_FARMER or PIN_ROLE_ADMIN.

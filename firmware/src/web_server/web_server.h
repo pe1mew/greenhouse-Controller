@@ -42,21 +42,14 @@ void task_web_server(void *pvParameters);
 #define WEB_SESSION_TOKEN_LEN 16
 
 /**
- * @brief True if any web session is currently live (non-expired).
- *
- * Used by the ROTA quiet gate (R-P02) to defer an apply/reboot while an
- * operator is logged in over the web GUI. Fails safe: returns true if the
- * session mutex cannot be taken.
- */
-bool web_any_active_session(void);
-
-/**
  * @brief True if any web session OTHER THAN @p exempt_token is currently live.
  *
- * Same as web_any_active_session() but ignores the one session whose token
- * matches @p exempt_token (NULL/empty = ignore nothing). Lets the ROTA quiet
- * gate exempt the operator's own GUI-triggered update from its own session so
- * the apply is not deferred forever (gh#41); every other session still counts.
+ * Used by the ROTA quiet gate (R-P02) to defer an apply/reboot while an
+ * operator is logged in over the web GUI. Ignores the one session whose
+ * token matches @p exempt_token (NULL/empty = ignore nothing), so the
+ * operator's own GUI-triggered update is not deferred forever by their own
+ * login (gh#41); every other session still counts. Fails safe: returns true
+ * if the session mutex cannot be taken.
  */
 bool web_any_active_session_except(const char *exempt_token);
 

@@ -121,7 +121,7 @@
  *   3     | AP                  | 0 = stopped,      1 = started        | T10 network_manager.cpp
  *   4     | geolocation         | 1 = success                          | T10 network_manager.cpp
  *   5     | BOOT (since 1.17.27, T4-emitted since 1.17.31) | esp_reset_reason_t value (1–10) | task_data_manager() post-RTC-seed
- *   6     | force-rotate marker (since 1.17.28) | 0 = unused              | T14 → event_logger
+ *   6     | force-rotate marker (1.17.28 to 2.14.0; NOT emitted since 2.14.1, gh#87 -- reserved, never reuse) | 0 = unused | (removed)
  *   7     | HEAP internal free (since 1.17.29) | KB free in MALLOC_CAP_INTERNAL | T1 every 60 s
  *   8     | HEAP PSRAM free    (since 1.17.29) | KB free in MALLOC_CAP_SPIRAM   | T1 every 60 s
  *   9     | HEAP corruption    (since 1.17.29) | 0 = unused                       | T1 (heap_caps_check_integrity_all failure)
@@ -293,66 +293,8 @@ void log_post(const log_event_t *evt);
 uint32_t log_take_dropped_count(void);
 
 /* -----------------------------------------------------------------------
- * Rotation-tracking helpers (T14 upload-on-rotation + daily fallback)
+ * Closed-file enumeration (T14's log upload, gh#82)
  * ----------------------------------------------------------------------- */
-
-/**
- * @brief Return the filename of the most recently *rotated-away* CSV file.
- *
- * Set by T9 immediately before each rotation overwrites s_cur_filename.
- * Cheap: simply reads an in-memory string under a short critical section.
- * Returns the bare filename (no leading '/'), e.g. "20260507143022.csv".
- *
- * @param out  Destination buffer; always NUL-terminated on return.
- * @param cap  Capacity of @p out. SD_NAME_ONLY_LEN bytes is sufficient.
- * @return true if at least one rotation has occurred this boot, false otherwise.
- */
-bool event_logger_last_rotated(char *out, size_t cap);
-
-/**
- * @brief Force T9 to rotate the active SD log file.
- *
- * Sets an internal request flag that T9 polls after each drain pass.
- * T9 closes the current file (which becomes "closed" and detectable via
- * event_logger_newest_closed() and event_logger_last_rotated()) and
- * opens a new file with the current timestamp.
- *
- * Used by T14's daily-upload path to force a fresh nightly snapshot when
- * the active file has not yet reached the 512 KB rotation threshold.
- * Without this, controllers that emit events slowly (one SENSOR every
- * 30 s = ~1.5 KB/h ≈ 36 KB/day) would never accumulate enough to trigger
- * a natural rotation, and the daily upload slot would have nothing to send.
- *
- * Posts a synthetic LOG_SYSTEM event (value_a=6, "force-rotate marker")
- * to Q3 to wake T9 from its receive-block. The marker is written to the
- * outgoing CSV file as its last entry, documenting why the file was
- * closed.
- *
- * Blocks the caller for up to @p timeout_ms waiting for the rotation to
- * complete. Returns false on timeout or when SD logging is currently
- * inactive (no card mounted).
- *
- * Safe to call from any task context.
- *
- * @param timeout_ms Maximum wait, milliseconds (5000 is reasonable).
- * @return true if rotation completed; false on timeout / SD inactive.
- */
-bool event_logger_force_rotate(uint32_t timeout_ms);
-
-/**
- * @brief Return the lexicographically newest closed CSV file on SD.
- *
- * Scans the SD card for *.csv files and returns the newest name that is not
- * the currently active (open) file. Suitable for T14's daily-fallback path
- * when no rotation has happened since boot. Falls back to the most-recently
- * rotated file in memory when the SD scan finds no candidate.
- *
- * @param out  Destination buffer; always NUL-terminated on return.
- * @param cap  Capacity of @p out. SD_NAME_ONLY_LEN bytes is sufficient.
- * @return true if a closed file was found, false if none exists or SD is
- *         unavailable.
- */
-bool event_logger_newest_closed(char *out, size_t cap);
 
 /**
  * @brief Return the lexicographically *smallest* closed CSV file whose name

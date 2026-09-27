@@ -987,7 +987,7 @@ matches the LOG_SYSTEM table in `firmware/src/event_logger/event_logger.h`:
 | **3** | 1 | SYS | T10 net_manager | WiFi AP started |
 | **4** | 1 | SYS | T10 net_manager | Geolocation lookup success |
 | **5** | 1–10 | SYS | T4 data_manager | Boot reason from `esp_reset_reason()` (1.17.27+, T4 since 1.17.31) |
-| **6** | 0 | WEB | T14 → T9 | Force-rotate marker, last entry in rotated file (1.17.28+) |
+| **6** | 0 | WEB | T14 → T9 | Force-rotate marker, last entry in rotated file (1.17.28 to 2.14.0; not emitted since 2.14.1, gh#87 — kept for old logs, never reuse) |
 | **7** | KB | SYS | T1 watchdog | Heap internal free (KB; every 60 s, 1.17.29+) |
 | **8** | KB | SYS | T1 watchdog | Heap PSRAM free (KB; every 60 s, 1.17.29+) |
 | **9** | 0 | SYS | T1 watchdog | Heap CORRUPTION detected by `heap_caps_check_integrity_all` (1.17.29+) |

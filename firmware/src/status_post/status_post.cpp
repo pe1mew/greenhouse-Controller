@@ -25,13 +25,14 @@
  *      uses the same builder with `true` so it can dim the rows instead.
  *
  *   C. **SD CSV log upload**. Two triggers:
- *        - **Daily**: T14 main loop polls local clock; when minute and hour
- *          both equal `cfg.log_upload_h:cfg.log_upload_m` and we haven't yet
- *          uploaded today's most-recent closed file, fire `do_log_upload`.
+ *        - **Daily**: T14 main loop polls local clock; once in the minute
+ *          `cfg.log_upload_h:cfg.log_upload_m` it runs `upload_pending()`.
  *        - **On rotation**: T9 sets the `T14_NOTIFY_LOG_ROTATED` bit via
  *          xTaskNotify when it closes a CSV. T14 waits for it via
- *          xTaskNotifyWait at the bottom of each cycle (timeout = 1 s), reads
- *          `event_logger_last_rotated()`, and (subject to item E) uploads.
+ *          xTaskNotifyWait at the bottom of each cycle (timeout = 1 s) and
+ *          (subject to item E) runs `upload_pending()`.
+ *      `upload_pending()` uploads every closed file newer than the
+ *      `cfg.log_last_up` latch, oldest first, via `event_logger_next_pending()`.
  *      Upload uses streaming `esp_http_client_open(fsize)` + 4 KB-chunk loop
  *      via `storage_sd_read` → `esp_http_client_write`. 4 KB chunks bound the
  *      per-write mbedTLS heap demand (gh#23) regardless of total file size.
@@ -704,7 +705,8 @@ static bool do_log_upload(const char *filename, const cfg_shadow_t *cfg)
  *
  * Why this exists (was a real gap in a.6.35): the previous implementation
  * looked at exactly one file per trigger — `event_logger_last_rotated()`
- * for on-rotation and `event_logger_newest_closed()` for daily. If WiFi
+ * for on-rotation and `event_logger_newest_closed()` for daily (both since
+ * removed, gh#87). If WiFi
  * was down (or the status server returned 5xx) across a rotation, the
  * stranded middle file was unreachable: the rotation trigger's
  * s_last_closed got overwritten by the next rotation, and the daily
