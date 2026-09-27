@@ -87,7 +87,7 @@ Addresses are fixed DHCP reservations: **`FDA4` is always `192.168.20.169`** and
 
 | Path | Contents |
 |---|---|
-| `firmware/src/` | Production firmware source (~26 600 LOC, 54 files — 4 of them dev-only `diag/` sources compiled out of release builds) |
+| `firmware/src/` | Production firmware source (54 files — 4 of them dev-only `diag/` sources compiled out of release builds) |
 | `drivers/` | Host-testable libraries, each with its own `[env:native]` unity suite (`pio test -e native`) and a thin `firmware/components/<name>/` proxy that compiles it into the firmware: `modBus`, `windowPos`, `gpio`, `i2c`, `LCD1602_I2C`, `keyPad`, `nvs`, `littleFS`, `sdCard`, `DS1307_RTC`, `FG6485A`, `s200`, and **`ventModel`** (the T6 control law, wired in since 2.12.0). `relay_sequence_test/` is the exception: a standalone bench sketch, no native suite, no proxy |
 | `design/` | FRS, TSDS, implementation/migration plans, audit reports, `OTAimplementation.md` — the closest thing to ADRs |
 | `bin/<version>/` | Per-release archive: bin, zip, bootloader, partitions, elf, map, release-notes; `manifest-<version>.json` (ROTA seq ledger — tracked in git) |

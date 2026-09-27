@@ -10,6 +10,17 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ## Promoted patterns
 
+- **[PATTERN] Judge a ROTA pull from the unit's SD log, after the unit's own next check, with its apply window in hand. Never judge it from the `dl`/`apply` fields or from `/api/config`.** Three entries, each of which recurred on 2026-09-26 during the 2.14.0 pull:
+  1. `/api/ota/check`'s `dl` and `apply` describe only the latest cycle. They reset to −1, and a download that is still running does not touch them (2026-09-12). **Recurred:** a probe read a stale `dl` 1.
+  2. The first downloads after a publish fail (2026-09-20). A half-fetched artefact gives `dl` 2, and `dl` 1 lumps TLS, transport and non-200 together; the unit's own next check then succeeds. **Recurred:** one `dl` 2 and two `dl` 1 before 00:34 verified cleanly. 2.9.0 and 2.9.1 did the same.
+  3. ROTA's settings are on `/api/ota/config`, not `/api/config`, and a 1–23 window is SHUT from 23:00 to 01:00 (2026-09-07). **Recurred:** a verification started at 23:24 could not apply before 01:03.
+
+  **Rule:**
+  - Read `win_lo`/`win_hi` from `/api/ota/config` before promising a time.
+  - Force one check, then log out at once: any open session makes the quiet gate defer the apply.
+  - Read the SD log's `SYSTEM value_a` 22/23/24 rows (check / download / apply) with their timestamps. The file being written is `current` in `GET /api/log/files`.
+  - Let the unit's own hourly check run before calling a download failure real.
+
 - **[PATTERN] Pushing the same unit repeatedly rate-limits its SNTP. After a run of pushes, a unit whose `ntp_synced` stays false is neither broken nor offline: count its reboots in the last hour before investigating anything.** Three instances (2026-07-13, 2026-09-12, 2026-09-19): each followed about six or more reboots in an hour, each recovered on the 300 s retries within 5-15 min, and each time the clock itself stayed right. Twice (2026-09-12, 2026-09-19) it was investigated from scratch before the entry was found, at end-of-day curation both times: once published wrongly on gh#55, once written into a release's notes and this log as "cause not established". The trigger now also sits in CLAUDE.md's OTA-pushing row, where the pushing happens. Entry: 2026-07-13.
 
 - **[PATTERN] Mutual exclusion is necessary and not sufficient on a shared bus, and a constant that has never been reached is untested.** 2026-09-12: the RS485 lock (gh#49) correctly serialised *access*, so the operator's framing was exactly right — *"the semaphore should only add jitter"*. What it does not provide is the **silence** the RTU protocol requires between frames, and `MODBUS_IFG_US` was set at the spec floor plus 9.7 % (3.84 character times vs a t3.5 minimum of 3.646 ms). **With one caller that guard had never executed once** — frames sat 30 s apart, so the wait was always skipped. T17 made frames adjacent for the first time in three years and the S200 began silently discarding requests it saw as a continuation of the previous frame, which presents as *zero bytes and a timeout*, never a CRC error. Rules: (a) when adding a second user to any shared resource, audit the constants that were **latent** under single use — a threshold never approached is a guess, not a tested value; (b) ask what the protocol requires **between** operations, not only during them; (c) leave a shared resource in the state the next user is entitled to assume — the IFG is now paid before `bus_unlock()`, and the RX FIFO drained on every exit, for the same reason; (d) *"a compliant slave must stay silent on a bad-CRC request"* means **a silent slave is evidence about the framing, not about the slave**. **Second instance, 2026-09-16: the lock covered transactions but not `modbus_init()`**, whose UART delete-and-reinstall had been logged as *"safe while T5 is the only caller"* — and T17 made it unsafe, panicking the board twice. (e) **a hazard recorded as "safe because X" must name X where X can change** — here, next to the second caller's spawn — or nobody comes back to it. **Third instance, same day (gh#70): the lock serialises transactions, but the DE/RE release INSIDE one is timed by the task**, and a flash write stalls the task by up to 665 ms, so the fastest slave (the encoder, ~5 ms) loses its reply. (f) **a timing that protects the wire must not depend on the scheduler** — hand it to the peripheral, or to an interrupt that runs in IRAM. **Fourth instance, 2026-09-17 (gh#79), away from the bus: Q1's depth of 8** was sized for "peak load is several cmds" and is never approached while T2 drains it every 20 ms — but T2 blocks for up to 176 s in a recalibration, and T6 keeps posting, so the queue fills and a wind override's single unchecked send is dropped. (g) **a queue depth is a claim about the consumer's worst-case stall, not the producers' cadence** — size it against the longest time the consumer is not draining, and never let a safety command be fire-and-forget.
@@ -107,16 +118,16 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 ### OTA & ROTA releases
 - **2026-09-25** — a release dies with HTTP 422 "tag_name is not a valid tag" / invalid `target_commitish`: the commit HEAD points at was never pushed, so GitHub cannot tag it (the script's separate "uncommitted changes" warning is the untracked-file false positive)
 - **2026-09-21** — a bench push carries a GUI older than its firmware while `fw_ver` and `asset_version` match (every bench build of a version says `-bench`, so the pair check cannot see stale content)
-- **2026-09-20** — a check forced ~2 min after publishing gets `dl` 2 (SHA/size): the server points the channel before it has fetched the artefacts; retry, and check the manifest against the local files before blaming the release *(recurred 2026-09-26, followed by two `dl` 1; the unit's own next check succeeded)*
+- **2026-09-20** — a check forced ~2 min after publishing gets `dl` 2 (SHA/size): the server points the channel before it has fetched the artefacts; retry, and check the manifest against the local files before blaming the release *(recurred 2026-09-26, followed by two `dl` 1; the unit's own next check succeeded)* *(→ promoted to a pattern 2026-09-27)*
 - **2026-09-17** — publishing a release to ROTA does nothing on a module that runs a pushed build of the same version, `-bench` included (the version compare ignores the suffix)
 - **2026-09-16** — after one upload cut off by the network, the unit refuses every OTA and ROTA skips its checks until someone presses reset (the error exit released nothing)
 - **2026-09-12** — GUI unreachable, multi-second asset loads, "heap leak", failing downloads — all one interfered WiFi AP (paired ping test first)
 - **2026-09-12** — `rota_release.py release` warns "working tree has uncommitted changes" on a clean tree (it counts UNTRACKED files, including the manifest it just wrote)
-- **2026-09-12** — ROTA `dl` and `apply` status read -1 after a pull that clearly happened (the fields reset; the SD log is the authority) *(recurred 2026-09-26: a probe read a stale `dl` 1 mid-download)*
+- **2026-09-12** — ROTA `dl` and `apply` status read -1 after a pull that clearly happened (the fields reset; the SD log is the authority) *(recurred 2026-09-26: a probe read a stale `dl` 1 mid-download)* *(→ promoted to a pattern 2026-09-27)*
 - **2026-09-11** — no commit on `main` actually *is* the release you are looking for (the paperwork rode inside the next feature commit)
 - **2026-09-10** — `POST /api/ota/check` returns nothing useful (it only QUEUES; the result comes from `GET` on the same path)
 - **2026-09-07** — `rota_release --dry-run` writes the seq-ledger manifest despite claiming no changes
-- **2026-09-07** — the ROTA night window and check interval are on `/api/ota/config`, not `/api/config`; a wide window inverts gh#41 so a stray browser tab blocks updates *(recurred 2026-09-26; a 1–23 window is SHUT 23:00–01:00)*
+- **2026-09-07** — the ROTA night window and check interval are on `/api/ota/config`, not `/api/config`; a wide window inverts gh#41 so a stray browser tab blocks updates *(recurred 2026-09-26; a 1–23 window is SHUT 23:00–01:00)* *(→ promoted to a pattern 2026-09-27)*
 - **2026-09-07** — a few short USB bench sessions silently arm an OTA rollback (4 boots under 30 s)
 - **2026-07-23** — `rota_release release` looks like it hung; it aborted on an interactive prompt under null stdin
 - **2026-07-20** — an SD log cannot tell you which firmware wrote it; post-OTA proof needs `/api/status`
@@ -202,6 +213,392 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
 
+## 2026-09-27 — an overnight watch started as a local background task died with the Claude Code session
+
+**Problem:** a pull verification was left running overnight as a local background task. It
+polled 2344's public status until 03:30. The session ended and the task went with it, after
+one sample, so the pull at 01:03 was never seen live.
+
+**Root cause:** a local background task belongs to the Claude Code process. When the session
+ends it is stopped, and on resume it is reported only as "did not finish before the previous
+session ended". The soak jobs on Shuttle2 survive because they run under init on another
+host (`nohup`, stdin from `/dev/null`, output to files).
+
+**Fix:** nothing was lost, because the unit keeps its own record: the SD log's ROTA rows
+gave the full timeline the next morning (see the 2026-09-12 `dl`/`apply` entry). **Anything
+that must be observed overnight runs on Shuttle2 like the soak jobs. Otherwise, plan to
+reconstruct it from the device's log on resume, and say that the live observation was lost.**
+
+**Where it lives:** `~/ghc-soak/` on Shuttle2 (the pattern), `/api/log/download` (the reconstruction).
+
+## 2026-09-26 — a commit that leaves out a NEW file builds on this PC and fails from a clean clone
+
+**Problem:** 2.14.0 was committed as `27e6aa2` without its two new files,
+`firmware/src/types/fmt_tenths.h` and `bin/2.14.0/release-notes.md`. Every build on this PC
+still passed, because the files were on disk. But `status_json.cpp` and `web_server.cpp`
+include the header, so **a clean clone of `main` could not build**, and `rota_release.py
+release` would have tagged that commit as `v2.14.0`.
+
+**Root cause:** a new file stays untracked until it is added by name, so committing the
+modified files leaves it behind. This tree has about 40 untracked files that are kept out
+on purpose (`sdkconfig.*`, `design/*.docx`, `bin/2.2.13/` and more), so two more `??`
+lines in `git status` do not stand out.
+
+**Fix:** `fac549e` added both files before anything was published. **Before any release,
+`git status --short --untracked-files=all -- firmware/ drivers/ bin/<ver>/` must show no
+`??` other than the known `sdkconfig.*` files.** A hand-off's `git add` list names every
+NEW file explicitly, and `git show --stat HEAD` must list them after the commit. The
+definitive test is a build from a clean clone.
+
+**Where it lives:** `bin/rota_release.py` (it tags HEAD as it is), `bin/<ver>/`.
+
+## 2026-09-25 — `rota_release.py release` died with HTTP 422 "tag_name is not a valid tag", and the cause was an unpushed commit
+
+**Problem:** with the soak passed and the artefacts built, publishing 2.12.2 returned
+
+```
+ERROR: GitHub POST /releases -> HTTP 422 Unprocessable Entity:
+  {"code":"custom","field":"tag_name","message":"tag_name is not a valid tag"},
+  {"message":"Published releases must have a valid tag"},
+  {"code":"invalid","field":"target_commitish"}
+```
+
+Nothing about the tag name is wrong — `v2.12.2` is the same shape as the five releases before it.
+
+**Root cause:** the script tags **HEAD**, and HEAD was `ad9cd66`, which existed only locally;
+`origin/main` was one commit behind at `60b34dc`. **GitHub cannot create a tag on a commit it does
+not have**, and it reports that as an invalid `target_commitish` plus a confusing complaint about
+the tag name. The operator commits and pushes by hand here, so a session that has just staged work
+and had it committed is routinely one commit ahead of the remote.
+
+**Fix:** `git push origin main`, then re-run the release. It succeeded unchanged and **reused the
+already-allocated seq 56**, because the first attempt had written `bin/<ver>/manifest-<ver>.json`
+before the upload (the same write `--dry-run` performs). Nothing was left on GitHub by the failure:
+the releases API showed no `v2.12.2` tag, draft or release.
+
+**Rules:** *before any release, compare `git rev-parse HEAD` with `origin/main`* — `git log
+--oneline origin/main..HEAD` empty is the precondition, and it is not something the script checks.
+The script's own *"working tree has uncommitted changes"* warning is a **different** thing and is
+the documented false positive on untracked files (the artefacts it has just built); resolve it with
+`git status --short | grep -v '^??'` and do not let it mask the real precondition. And *a 422 about
+a field you did not set is usually about the object it points at* — here `target_commitish`, not
+the tag.
+
+## 2026-09-24 — the first mode-2 soak failed in 15 minutes: the harness asked for an END, the law commands an APERTURE
+
+**Problem:** the 12-session soak of 2.12.2-bench started at 22:11 in mode 2 and session 1 failed at
+22:26 with *"M3 did not reach OPEN within 900 s (now PART_OPEN)"*. M3 was sitting at **49.0 %** and
+the firmware had done nothing wrong. Two failures in a row stop the run, so the soak would have
+ended by 23:26 having proved nothing.
+
+**Root cause:** `at_wp_strokes.py` makes a stroke by raising the temperature demand and waiting for
+M3's state to become `OPEN`. In mode 1 that is exactly what the stepped law does. **In mode 2
+`graded` commands an APERTURE proportional to demand** — the session's maximum demand (`t_max` at
+its minimum, `cr_priority` 2) settles around 49 % on this rig — so `OPEN` is a state the law had
+no reason to produce. The mode-2 stage tests never caught it because every one of them drives M3 to
+a *target*, through the bench hook or through T6; the soak is the only harness that asks for an end
+by demand alone. (The close side is sound: demand falls to nothing, the law asks for 0, and since
+2.12.1 a target inside the deadzone of an end IS that end, so M3 must make the closed switch —
+which is half of what this soak exists to show.)
+
+**Fix:** the open stroke is mode-aware. In LINEAR mode it waits for a **completed judged drive**
+(M3 moved, then stopped, and the `strokes` counter advanced) at whatever aperture the law chose;
+only the close still has to reach an end. A soak counts judged drives, which is what it always
+meant to count. The aborted run is kept as `strokes_aborted_2211.log`, the soak restarted at 22:32,
+and the 12 h report job was rescheduled to match the new start rather than firing 20 min early.
+
+**Rules:** *in mode 2, "the stroke finished" and "the window is open" are different claims* — a
+harness written when only the timed law existed asserts the second and means the first. And when a
+second control law lands behind the same commands, **re-read every test that asserts an actuator
+STATE**: the law decides where the actuator stops, and only the ends are shared vocabulary between
+the two laws. Fifth instance of the rig-state pattern above, and the first where the wrong
+assumption was about the CONTROL LAW rather than about what a previous run left behind.
+
+**And then I proved the pattern on myself, twice in ten minutes.** The restarted run revealed a
+second wrong limit -- `graded` closes in STEPS (49 % -> 25 % -> ... -> the end) about 600 s apart,
+so a close from half open is three drives and 900 s fails it too (1800 s now). I killed that run to
+patch the constant **while session 1 was inside its close**, so the harness's restore never ran, and
+it left `t_max_ngt` at 35 and M3's dwells at the 5 s test value. The next run started, read those
+as "the originals", and would have soaked the rig for 12 h on test settings and left them behind.
+*Never kill a harness mid-session* -- wait for the session to end, or restore by hand afterwards
+against the RIG's own values, which is what `scratchpad/restore_rig.py` now does (t_max_day 28,
+t_max_ngt 20, cr_priority 0, dwell_open_m3 1500, dwell_close_m3 300, travel_m3 13, min_intv_m3 600,
+ctrl_mode_m3 1, wpos_fitted_m3 1). Third restart, 22:40:53, with the right baseline.
+
+## 2026-09-24 — a listing that drops names and still says OK, twice: theirs, then mine
+
+**Problem:** `/api/log/files` on 2344 showed 30 files, none newer than 2026-09-18, while the unit
+had been logging continuously and the card held far more. The file the unit was writing could not
+be listed or downloaded, which blocked an investigation (gh#82). Retention had also stopped: files
+from July were still there under a 30-file cap.
+
+**Root cause:** `storage_sd_list_csv()` fills the caller's buffer, **drops the names that do not
+fit, and returns `STORAGE_OK` anyway**. FAT lists roughly in creation order, so the names it drops
+are the NEWEST. Every decision T9 made came from such a list: the retention count saturated at
+exactly `SD_MAX_FILES` so `count > SD_MAX_FILES` was never true and nothing was ever deleted; the
+boot resume took the largest name from the same partial view; T14's upload enumerators too (gh#42
+had sized them to 30 names, which only moved the cliff from ~21 files to ~30).
+
+**And then I did it again, one level up.** With the collection fixed, the first rig read returned
+37 files and HTTP 200 — while a direct download of a name it had omitted returned 200 with a
+megabyte of content. The *response* buffer was still 1 024 bytes, so the handler stopped adding
+names when it filled: the same silent cut, in the code written to fix silent cuts. What exposed it
+was not the listing but a **cross-check against a different route**: asking for a file the list did
+not mention.
+
+**Fix:** a non-truncating iterator in the driver (`storage_sd_foreach_csv()`, one callback per
+file, constant memory); every caller aggregates during that pass; the list-based helpers deleted so
+no second path exists. The response buffer is sized from `LOG_FILES_MAX`, and the reply now carries
+`on_card`, the number of files the card actually holds, so a bounded list is visible as one instead
+of being inferred from its length.
+
+**Rules:** *an API that can return less than it was asked for must say so* — a count, a flag,
+anything, because "fewer than I expected" and "that is all there is" look identical to every
+caller. *When you fix a silent truncation, check the layer above it for the same shape.* And
+*verify a listing against a different route*: the download said the file was there when the listing
+said it was not, which is what made the second cut visible in minutes rather than weeks.
+
+**Two more, from the same scan.** (1) **Retention that deletes one file per rotation cannot catch
+up with a backlog.** With the count fixed, the card held 113 files against a cap of 30 and each
+rotation deleted one while creating one, so it sat exactly where it was -- correct, and never
+converging. `SD_TRIM_PER_ROTATION` (5) trims towards the cap instead, re-scanning between deletes;
+113 -> 38 in 90 minutes on the rig. *A limit enforced at one unit per event is a limit only if the
+backlog is one unit.* (2) **T14's upload watermark compared FILENAMES**, and the names had just
+gained a per-unit prefix: a `FDA4_...` watermark is lexically above every `2344_...` name, so this
+unit would have uploaded nothing again, for ever, with no error. It compares the embedded
+TIMESTAMP now. *When a name gains a prefix, every comparison that treated the name as an ordering
+key silently changes meaning -- go and find them.*
+
+## 2026-09-24 — mode 2 could not close a window: an arrival test by position cannot satisfy an END
+
+**Problem:** the first night mode 2 ran on the dev rig (2026-09-23/24), `graded` closed M3 in four
+targeted drives and the last one stopped at **20.8 mm — 1.3 % — with the closed end sensor never
+made**. Nothing moved M3 again all night. The operator switched to mode 1 at 08:27 and its timed
+close made the end sensor 1.6 s later: the leaf really had been a couple of centimetres short, and
+the window stood open while every log row said the law's intent was satisfied (gh#83).
+
+**Root cause:** a targeted stop ends on a READING. The arrival band is `deadzone_m3_mm / window_mm`
+= 20/1500 mm = 1.3 %, and once a stop landed inside it, **both** sides called it arrived: T6 on
+`|pos - want| <= band`, and the law on `off <= m3_deadzone_x10` ("the caller would drop it
+anyway"). Each test is right for an ordinary aperture and wrong for an end, which is made by a
+switch, not by a number. Mode 1 never had the problem: its close runs `travel_m3 + margin` into the
+end switch.
+
+**Why no test caught it:** every mode-2 test drove M3 to a PARTIAL target — the band, a second
+target, a reversal, a take — or used mode 1's end drives. Nothing ever asked mode 2 to close the
+window completely. The extremes of the new command were the one region left untested, and they are
+the region where "position" and "end" stop meaning the same thing.
+
+**Fix:** a target within the deadzone of an end IS that end -- snapped to 0 or 1000, commanded as
+the ordinary `CMD_CLOSE`/`CMD_OPEN` end drive, and judged arrived only in the terminal STATE, in the
+caller, in the law and in `last_result`. Fail-first bit 2048; `bin/at_wp_fallback.py endstop`; a
+host test that fails on the old law.
+
+**Rules:** *an end is a switch, not a number -- never let a position test stand in for it.* And when
+a feature adds a new WAY to command an actuator, test that command's EXTREMES before its middle: the
+partial targets all worked, and the one value an operator would call "shut" did not. Third, this was
+found by letting the thing run for a night in the mode nobody had run it in -- an overnight of
+ordinary operation is a test, and it found in one night what nine stage tests had not.
+
+## 2026-09-22 — three harness faults in one evening, all "the unit was not in the state the harness assumed"
+
+**Problem:** the fail-first arms for 9c53be7 ran on freshly pushed images, and two of the three
+said nothing about the rule they exist for: `aborted` and `sincemove` both reported "M3 never came
+under LINEAR control" and returned INCONCLUSIVE. Earlier the same evening, `at_wp_confirm.py`'s
+first stage failed its setup ("M3 did not reach OPEN within 420 s"), and a later run left 2344 in
+STANDBY, where T6 does nothing at all.
+
+**Root cause:** three different assumptions, none of them about the firmware.
+1. **A freshly pushed image has not stroked.** T17 promotes to POSITION control only at a stroke
+   boundary, so for the first stroke after a boot the gate is `timed` and mode 2 cannot engage.
+   Every earlier run of those stages happened on a unit that had been up for hours.
+2. **A cleanup that runs before the restore uses the TEST settings.** `at_wp_fallback.py` returns
+   M3 to an end with a recalibration in its `finally`, while the settings restore is an `atexit`
+   that runs later. In mode 2 that sweep armed `min_intv_m3` = 600 s, the stage's value, so the
+   next harness waited 420 s for a window that could not move for 600.
+3. **A cleanup that returns early skips the rest of the cleanup.** `to_an_end()` returned as soon
+   as M3 was CLOSED, without releasing STANDBY, so the unit sat inhibited after the run.
+
+**Fix:** `ensure_position()` strokes M3 once with the hook before either stage asks for mode 2 (a
+no-op on a unit that has been running); `to_an_end()` releases STANDBY even when it has nothing to
+move. The dwell one is documented in the 2.12.0 release notes rather than fixed: the harness would
+have to restore before it recalibrates, which is a change to the shared `Rig`.
+
+**Rule:** *a harness that runs right after a push is testing a different unit than one that runs
+after an hour — list what the previous run and the boot left behind (the gate not yet promoted, a
+dwell armed from test settings, STANDBY, a part-open window) and establish each one rather than
+assuming it.* And an INCONCLUSIVE arm proves nothing: the fail-first only counts when the stage
+reaches the rule and fails on it.
+
+**[RECURRED 2026-09-24, twice more, and the second one is a new shape.]** (1) `min_intv_m3` was
+found at **0** on 2344 during the gh#82 work. No harness failed to restore: one of them had read 0
+as "the original" because an *earlier* harness was mid-run when it started, and dutifully put 0
+back at the end. **A harness that memorises "the original" memorises whatever the previous harness
+left** -- so the restore is only as good as the state it sampled, and a value that is restored is
+not thereby correct. Check the rig's settings against what the RIG should hold (`travel_m3` 13,
+`min_intv_m3` 600, `wpos_fitted_m3` 1), not against what a run recorded. (2) `at_wp_confirm.py`
+failed twice for reasons that were not its subject: once a recalibration was still running, and
+once because the rig was **in mode 2** -- the suite predates mode 2 and its stages assume timed
+drives. It has to be run in mode 1 and the operator's mode restored afterwards, which the run now
+does explicitly.
+
+## 2026-09-21 — a deferred command had a side effect, and a feedback field had two meanings (found by the simulator, not the rig)
+
+**Problem:** the model session replayed 2.12.0 as built in its closed-loop simulator and found
+three defects no rig harness had shown. (1) T6's reversal of a stroke under way, which gh#48
+DEFERS, first disarmed that stroke's target, so the stroke ran on to the end switch. (2) T6 never
+reported ABORTED: a window taken by T3, the operator or a recalibration read as FAIL_TIMEOUT.
+(3) `ms_since_move` = 0 meant "never moved" to T6 and "just moved" to a law, and the
+recalibration sweep set no move time and armed the close dwell even in mode 2.
+
+**Root cause:** (1) is ordering: the disarm sat at the top of `ch_start_open()` /
+`ch_start_close()`, above the guard that decides whether the command acts at all, so a command
+that did nothing still changed something. (2) and (3) are contract fields filled by inference and
+by a sentinel that is also a legal value, which nothing consumed in a way that could tell:
+`graded` treats FAIL_TIMEOUT and ABORTED alike, and mode 2 always starts at a stroke whose end
+sets the time.
+
+**Why the rig could not find them:** `graded` never reverses mid-stroke ("repeat, never chase"),
+and every harness sent its targets through the operator hook, which REVERSES where T6 is
+deferred: none of T6's deferrals were ever exercised. (2) and (3) have no physical symptom under
+today's law. Only something that drives the contract as written, with another law in mind, sees
+them.
+
+**Fix:** (1) the disarm skips T6's deferred reversal alone (fail-first bit 256); (2) T2 counts the
+takes and T6 reports ABORTED (bit 512), and a repeat of the outstanding target keeps the count it
+went out with (caught while writing the harness: graded re-posts on every wake while M3 moves);
+(3) UINT32_MAX = none since boot, the sweep and a motor alarm end a move, and the sweep arms
+`ch_dwell_ms()` (bit 1024). The bench hook takes `"source":"t6"`, so a harness can send a
+command the way T6 does.
+
+**Rule:** *a deferred or refused command must leave no trace: put every side effect BELOW the
+guard that decides whether it acts.* *A sentinel must be impossible as a value*: 0 ms is a legal
+"since", UINT32_MAX is not. And *a harness that sends from the wrong source tests the wrong
+rules*: the operator hook bypasses the dwell and gh#48. That is 2026-09-21's side door again, seen
+from the other side.
+
+## 2026-09-21 — a positioning test read the controller's own cached position, taken mid-coast
+
+**Problem:** AT-WP02's first run reported ten stops at 50 % landing at 48.4-51.4 % — a
+spread of 3.0 % and a directional hysteresis of 1.5 %. Plausible numbers, and they were the
+wrong ones: read LIVE after the leaf had come to rest, six stops landed at 47.6-52.3 %,
+a hysteresis of ~3.9 %. The whole first analysis ("the leaf coasts ~2 %") was built on them.
+
+**Root cause:** `/api/status` carries **T17's cached reading**, and T17 read "at once" when a
+stroke ended, then not again for 30 s (the idle cadence). That read was written for full-travel
+strokes, which stop at their end switch seconds before T2's timer runs out, so "at once" was
+already at rest. A **targeted** stop cuts the relay mid-travel and the leaf coasts ~0.3-0.4 s
+more: "at once" is mid-coast. The harness read the cache 1 s after the stop and got the
+mid-coast value — and so did the GUI, T6's next decision and T17's own "where the leaf
+settled" log row, for 30 s.
+
+**Fix:** T17 reads the resting position one second plus one measurement window after every
+stroke (`SETTLE_BASE_MS`; fail-first bit 128 restores the read at once). `bin/at_wp02.py`
+measures each resting position LIVE, 2.5 s after the stop, and checks separately that what the
+unit then publishes matches it (`settle`).
+
+**Rule:** *before judging a controller by a number it publishes, ask when that number was
+sampled.* A cache is a claim about the past. `GET /api/diag/windowpos` has both: its top-level
+fields are a live device read, its `t17` block is the cache (with `age_ms`) — measure with the
+first, and test the second against it.
+
+## 2026-09-21 — a bench push carried a GUI a day older than its firmware, and the version check agreed
+
+**Problem:** 2344's GUI still showed the old `min_intv_m3` tooltip ("Zero, the default") a day
+after the source said 600 s — while `/api/status` reported `fw_ver` 2.12.0-bench and
+`asset_version` 2.12.0-bench, a matching pair.
+
+**Root cause:** the bench asset zip was made by RESTAMPING `bin/2.12.0/web-assets-2.12.0.zip`, a
+build product from 15:15 that predated the last GUI commit. And the paired-version check cannot
+see it: every bench build of a version carries the same `-bench` string, so old assets and new
+ones report identically. The post-OTA rule ("read both `fw_ver` AND `asset_version`") proves the
+PAIR was installed, not that the content is current.
+
+**Fix:** the bench zip is now packaged straight from `firmware/data` (and checked byte-for-byte
+against it). Nothing in the repo changed: a release build zips `firmware/data` fresh, so this is
+a bench-push trap only — but `bin/2.12.0/`'s local artefacts are stale too and must be rebuilt
+before any publish.
+
+**Rule:** *a version string is evidence of content only if every content change moves it.* A
+reused `-bench` suffix does not, so for a bench push compare the payload itself.
+
+## 2026-09-21 — an acceptance harness aborted twice on a marginal link, and I blamed the second on a dwell
+
+**Problem:** `at_wp_fallback.py` died on `TimeoutError` twice before it tested anything —
+once on the bench hook's reply (M3 went part-open anyway: the command landed, the reply was
+lost), once on a `GET /api/config` inside `rig.want()`.
+
+**Root cause:** the link, not the firmware. 2344 was at -78 dBm RSSI: **15 % ping loss to
+the unit against 0 % to the gateway** in the same paired run, round trips up to 820 ms. That
+is the 2026-09-12 rule (paired ping test before suspecting code) **recurring**, on the other
+module. A harness written against a strong link (10 s timeout, any exception fatal) broke on
+a weak one.
+
+**It got worse during the morning:** -83 dBm by 09:00, a *connect* timeout inside a config
+read, and a status read that failed mid-check — the stage judged the "?" it got as a state
+and came back INCONCLUSIVE with a message that read OPEN. **Fixes, all in the harness:**
+`at_wp_ramp.HTTP_TIMEOUT_S` (10 by default; `at_wp_fallback.py` sets 30); `GET_RETRIES` —
+an idempotent GET is tried three times, a write never blindly; the fallback test's POSTs
+tolerate a lost reply and judge by state; and its `state()` retries an unreadable status
+and each check judges and reports the SAME reading.
+
+**What the harness cannot fix: an upload.** Three OTA pushes of the fixed image then failed at
+83 %, 1 % and 22 % — "sender went silent; nothing installed", the unit's 30 s silence bound
+doing its job (no wedge, no reboot). **The operator moved the controller to a different AP**
+(network side; the controller did not even reboot): -53 to -59 dBm, 0 % loss, and the next
+push uploaded 1.4 MB in **7 s instead of 108 s**. When a rig module sits below about -75 dBm,
+ask for the move instead of retrying.
+
+**And a false alarm, caught:** uptime 406 s read as "2344 rebooted at 09:01, mid-test" —
+because I assumed the local time. The unit's own `time_iso` put the boot at 08:54:30: the
+OTA push. **Compute a boot time from the unit's clock and uptime, never from a guess of
+yours.**
+
+**And a misdiagnosis on the way:** I read the second abort as the gh#51 dwell trap (a dwell
+already running keeps its old length when the setting changes), because M3 was still CLOSED
+at cleanup — and added `fresh_start()` for it **before reading the traceback**, which showed
+the GET timeout. The hazard is real (`at_wp_confirm.py` documents it) and `fresh_start()`
+stays, but its docstring had to be corrected: it claimed the trap had held up that run. That
+is instance (7) of the "number that fits the story" PATTERN, and it happened thirty seconds
+after I had corrected instance (6) in the plan. **Rule: read the traceback before naming the
+cause.** An exception says exactly where it happened; a state at cleanup says only
+where things stopped.
+
+## 2026-09-21 — the law asked for an end and T6 threw the request away (a new state, an old filter: the second in two days)
+
+**Problem:** on 2026-09-20 the stroke harness steered T6 to close a part-open M3 on 2344 for
+28 minutes (15:54 to 16:22) and nothing moved. The close that finally came was **T3's wind
+override** — and it was first written up as T6 closing M3 after its dwell, which supported
+the plan's claim that "the fallback needed no code". The same harness session had failed
+earlier for the same reason and was read as harness trouble.
+
+**Root cause:** `apply_model_output()` posted a CLOSE only for a window that was OPEN or
+MOVING_OPEN, and an OPEN only for one that was CLOSED or MOVING_CLOSE — a filter carried
+over from the inline `reconcile_to_step()`, written before `WIN_PART_OPEN` existed. The law
+(`vent_model_stepped.cpp`) treats a part-open window as eligible both ways and asked
+correctly; T6 dropped the command. **That is the fallback path:** a sensor fault while M3
+is part-open demotes to mode 1 at once, and mode 1 then left M3 where it stopped, until a
+wind override or a recalibration happened to move it.
+
+**Why nothing caught it:** the law's host tests passed because the law was right. All
+seven target stages drive T2 through the bench hook (`SRC_OPERATOR_MANUAL`), a side door
+that never passes T6's apply filter. Only the soak came in by the front door.
+
+**Fix:** both filters include `WIN_PART_OPEN`; T2 already accepted an OPEN and a CLOSE from
+`CH_PART_OPEN`. **Fail-first:** `bin/at_wp_fallback.py` holds T6 off with a long dwell, has
+the hook leave M3 part-open by a drive *toward* the end T6 wants (so T6 cannot reverse it),
+then asserts T6 finishes the move. On 2344, 2026-09-21: the **unfixed build failed both stages**
+(M3 still PART_OPEN after 200 s, T6 wanting CLOSED, then OPEN); with **only bit 16** of
+`-DWPOS_FAILFIRST_212` restoring the old filter, both stages failed too — the flag reproduces the defect on its own; the **fixed build** passed both: T6 closed the part-open M3 after 49 s and opened it after 47 s.
+
+**Rule — a RECURRENCE of 2026-09-20 "a new resting state made an old detector wrong", one
+day later, same state, my own code:** *when you add a state, grep for its NEIGHBOURS, not for
+it.* `grep WIN_PART_OPEN` finds the code that already knows about it; `grep
+'WIN_MOVING_OPEN\|WIN_MOVING_CLOSE'` and `grep '== WIN_OPEN\|== WIN_CLOSED'` find every list
+that was complete before it existed. Done for this fix: every other list is a "moving?"
+test, which is right to exclude a window at rest, or already names `PART_OPEN`;
+`commission.cpp` closes a part-open M3 first, which its own comment prefers. **And a test
+that enters by a side door certifies the room, not the door.**
 
 ## 2026-09-20 — a ROTA check forced minutes after publishing downloads a half-fetched artefact (`dl` 2)
 
@@ -252,6 +649,183 @@ to any styling rule that claims an exception: measure the rendered value, do not
 
 **Where it lives.** `firmware/data/style.css` (`.disabled-block`), `firmware/data/index.html` (`#cm-body`),
 `firmware/data/app.js` `commSetAvailable()`, CLAUDE.md's Web GUI rule.
+
+## 2026-09-20 — an interim soak report said "nothing is wrong" while it was already failing
+
+**Problem:** `at_wp_soak.py --report` at 7.3 h printed `stall_faults 1 (need 0)` in its
+counter block and, four lines later, **"Nothing is wrong: 17 judged strokes, all counters
+clean"**.
+
+**Root cause:** the fault check runs only after the elapsed-time gate passes. The
+INCONCLUSIVE branch printed an encouraging summary whenever the stroke count was met,
+without looking at the counters at all — so for the whole first 12 h of a soak, a run that
+had already breached a fail criterion read as green.
+
+**Why it matters more than it looks:** the interim report is what you read at the check-in
+and then stop watching. A soak that is already lost keeps burning the rig overnight.
+
+**Fix:** the branch now computes the fault list first and says **"ALREADY FAILING on
+stall_faults +1 -- more hours cannot undo it"**, with the two real options (understand and
+discount the cause, or restart). The green summary only prints when the counters really
+are clean.
+
+**Rule:** *a progress message must be computed from the same evidence as the verdict.* If a
+tool has a pass/fail rule, every intermediate summary it prints is a claim about that rule
+and has to be derived from it, not from whichever half was convenient at that point in the
+code.
+
+## 2026-09-20 — a new resting state made an old detector wrong [RESOLVED 2026-09-21, in 2.12.0]
+
+**Problem:** 2.12.0's soak reported `stall_faults 1` on 2344. The drive was real, the
+fault was not: M3 had been left **part-open at 27.8 mm** by a mode-2 target, just above
+its closed end switch, and the end-sensor bit had been clear for 43 minutes. When a CLOSE
+finally came, the leaf had nowhere to go, the rate stayed 0.0 mm/s, and §12.4 rule 1 read
+that as "the leaf is not following the relay". *(Corrected 2026-09-21: this said "when T6
+later commanded the CLOSE". It was T3's wind override — T6 could not close a part-open M3
+at all, which is its own defect, see 2026-09-21 "the law asked for an end".)*
+
+**Consequence of fixing THAT defect (2026-09-21):** until then only T3 or a recalibration
+could close a part-open M3, so this false positive needed a wind override to show. With T6's
+filter fixed, an ordinary mode-1 CLOSE reaches it whenever a target has left M3 just above
+the closed switch — so **a soak on the fixed build will meet it in normal operation.** Make
+the rule-1 fix before that soak, or read its `stall_faults` with this exception again.
+
+**Root cause:** rule 1's at-end exemption needs `on_end && at_pos` on the FIRST accepted
+sample. That was safe for three years of firmware because M3 could only ever rest ON a
+switch. `CH_PART_OPEN` (2.12.0) created a resting state the detector was never written
+for — inside the deadband of an end but off its switch — and mode 2 produces it routinely,
+because "nearly closed" is a legitimate target.
+
+**Fix (made 2026-09-21):** judge the exemption at the grace expiry rather than latching it
+from the first sample — *never left the target region, and the end sensor has made by now*
+(`stroke_left_target`, `stroke_on_end_now`; `stroke_at_target` keeps its meaning for the
+verdict and rule 2). **Fail-first on 2344** with `bin/at_wp_rule1.py` and two new bench
+injections (`noend`: bit 3 cleared; `short`: position and rate 0): with bit 32 restoring the
+latch, `headroom` FAILED with this incident's exact signature (`stall_faults` +1, verdict
+confirmed, no early stop); fixed, all four stages passed — and `noswitch` (a leaf that never
+meets its switch) and `short` (a shorted wiper closing from the open end) are still reported,
+so the relaxed rule hides neither fault the continuity was for. It still assumes the headroom
+is crossed within the grace (1.2-2 s against 5 s here); a slower mechanism needs re-checking.
+
+**Rule, and it is the general one:** *when you add a STATE, re-read every detector that
+reasons about the states that existed before it.* Rule 1 was correct, well tested and
+hardware-verified; it became wrong because the world gained a case. Grepping for the new
+enum finds the code that switches on it — it does not find the code that assumed the old
+set was complete. (Today the same sweep did catch three of these by reading: the LCD
+renderers, `status_json`'s `default:` and T17's per-drive verdict. This one was missed
+because rule 1 reasons about a SENSOR BIT, not about the state enum.)
+
+## 2026-09-20 — classification is not consumption (two of them in one day)
+
+**Problem, twice, in different tools.** A config key was enrolled exactly as gh#64 requires
+— one descriptor row, so the clamp, the shadow write, the boot default, the audit id and
+`/api/config/limits` all follow — and was still **inert** at the far end:
+
+- **Firmware:** `ctrl_mode_m3` and `min_intv_m3` read back as `null` from `GET /api/config`,
+  because that response is a hand-written format string. The GUI's new controls populated
+  with nothing.
+- **Simulator (model session, same day):** both keys were *classified* in
+  `closedloop/settings.py` — which is what its guard checks — but nothing consumed them, so
+  `--set min_intv_m3=900` ran silently at 0 and mode 2 came from the law's name rather than
+  from `ctrl_mode_m3`.
+
+**Root cause, shared:** the checks verify that a key is *declared* everywhere it must be
+declared. Neither checks that anything *acts* on it. `check_cfg_desc.py` cannot see the
+difference, and a classification table is exactly the kind of list that looks complete
+while doing nothing.
+
+**Fix:** `check_cfg_desc.py` gained `check_config_get()` (every published key must appear
+in the response; proved by deleting one and watching it fail). The simulator side was wired
+by the model session.
+
+**Rule:** *after adding a key, read it back from the consumer that is supposed to act on
+it, and change it to a value whose effect you can see.* "It is in the table" is a claim
+about the table.
+
+## 2026-09-20 — a bundled fail-first build can pass for the wrong reason
+
+**Problem:** `-DWPOS_FAILFIRST_212` restored all four defects that 2.12.0's target rules
+fixed. On the rig, two stages failed as intended — and `lost` and `supersede` **PASSED**
+on a build whose rules were the broken ones.
+
+**Root cause:** the first defect masked the rest. With the start-age defect in place no
+target is ever armed, so the grace, the overshoot guard and the disarm never run and their
+stages pass *vacuously*. The run looked like partial confirmation; it was no confirmation
+at all for those two rules.
+
+**Fix:** the flag became a BITMASK (1 age, 2 grace, 4 overshoot, 8 disarm; 16 since 2026-09-21, T6's
+stranded filter). *This line first said "bare = all": GCC makes a bare flag 1, so a bare flag
+restores bit 1 alone* — and until 2026-09-21 the diag reported only true/false, so one bit's
+build could not be told from another's; it now reports the mask.
+`=14` leaves targets working so the other three are visible, and `=8` isolates the
+safety-relevant one.
+
+**Rule:** *a fail-first build must restore ONE defect at a time, or the earliest defect in
+the path decides the result.* When a fail-first arm passes, ask what it actually exercised
+before treating it as evidence — a pass there is a claim that the rule does not matter,
+and that claim needs to be true for the right reason.
+
+## 2026-09-20 — a key can be enrolled correctly and still read back null
+
+**Problem:** `ctrl_mode_m3` and `min_intv_m3` were added exactly as gh#64 requires — one
+descriptor row each, so the clamp, the shadow write, the boot default, the audit id and
+`GET /api/config/limits` all followed, and `check_cfg_desc.py` passed. On the unit both
+read back as **`null`** from `GET /api/config`, so the GUI's new controls populated with
+nothing.
+
+**Root cause:** the config RESPONSE is a hand-written `snprintf` format string in
+`web_server.cpp` — an eighth key list, beside the seven gh#64 collapsed. Nothing pointed
+at it, and no check covered it.
+
+**Fix:** the two keys added to the response, and `check_cfg_desc.py` gained
+`check_config_get()`: every key the descriptor publishes must appear in the response.
+Proved by deleting one and watching the checker name it. It found four pre-existing cases
+(the `led_*` four, gh#67 — stored, clamped, never readable), exempted by name with the
+issue cited so the gap stays visible.
+
+**Rule:** *after enrolling a config key, read it back from the unit before believing the
+enrolment.* The descriptor makes a key correct everywhere it is consulted; it does not
+make every consumer consult it.
+
+**And a smaller one, twice in a day:** `git checkout -- <file>` discards uncommitted work
+**and** re-applies git's `autocrlf`, so a file that was LF in the working tree comes back
+CRLF. A patch matching LF then silently finds nothing. Detect the endings per file before
+matching, and never `git checkout --` a file that holds uncommitted work — copy it aside
+first (2026-09-20 gotcha above says the same about parking work).
+
+**Update 2026-09-26 (2.14.0, gh#67 closed):** the four `led_*` keys this checker had to exempt
+are now compile-time constants and have left the configuration contract, so
+`check_cfg_desc.py` runs with **no exemptions**. AT-CFG64 on 2344 then read all 46 of 46
+Q4-writable keys back, with none unreadable. The rule above still stands.
+
+## 2026-09-20 — a release build overwrites `bin/<version>/`, and the build DIRECTORY is part of the image
+
+**Problem:** with `platformio.ini` still at 2.11.0, a build of unrelated work-in-progress
+(the mode-2 T6 refactor) wrote straight into `bin/2.11.0/`, replacing the artefacts of a
+release that was already published to ROTA and already running on 2344. The `.bin` and
+`.zip` were recoverable from the GitHub release; the **ELF and map are not published
+anywhere** (`.gitignore` excludes `bin/**/*.elf` and `*.map`), so the only copy of the
+symbols for a live firmware was gone.
+
+**Then the obvious repair failed.** `git archive <release-commit>` into `C:\b2110` and a
+rebuild there produced `d9012ccb…` against the published `fd0db6a3…`. Nothing was wrong
+with the source: **the absolute build path is embedded in the image**, so an otherwise
+identical build from a different directory is a different binary. Rebuilding *in the repo
+directory*, with the tree restored to the release state, reproduced the published image
+**and** the assets zip byte for byte — which is what makes the regenerated ELF trustworthy.
+
+**Rules:**
+
+- **Bump `FIRMWARE_VERSION` before the first build of a new cycle, not before the release
+  build.** The version is the only thing that decides which `bin/<version>/` a build
+  overwrites, and a published directory is not protected.
+- **To regenerate a lost ELF: restore the tree to the release commit *in the repo
+  directory*, build, and verify the `.bin` SHA against the manifest before trusting the
+  ELF.** A matching SHA proves the symbols correspond; a different directory guarantees
+  they will not match.
+- Park work-in-progress by copying the files aside rather than reaching for git — reverting
+  tracked files with `git checkout --` and copying them back is enough, and leaves no refs
+  to clean up.
 
 ## 2026-09-19 — no Modbus bus-KPI rows for the first ~2 h after a boot: by design, not a dead bus
 
@@ -975,6 +1549,205 @@ Two of the three were one sentence away from being filed as issues.
 
 **Fix**: Execute the thing. Thirteen synthetic CSV rows through `logparser.py` settled all four multi-emitter event types in one call — which is the same method that found the real gh#51 Group B gap on 2026-09-10, after inspection had missed it. For a call graph, grep the exact symbol, print the hit list, and check the count against expectation.
 
+## 2026-09-12 — test a rebase read-only before running it, and check containment before merging a doc conflict
+
+**Problem:** `ropeSensor` was 14 commits behind `main` with 11 files touched by both,
+including three that shared a log-encoding space. Going in blind risked a silent encoding
+collision (the gh#54 shape: two producers, one decoder).
+
+**What worked, and is reusable:**
+
+- **A read-only trial predicts the conflict surface exactly.** Per file,
+  `git diff $(git merge-base A B) B -- <f> | git apply --check -` reports clean or
+  conflict and **writes nothing** — no refs, no objects, no worktree change. It named 4
+  of 4 conflicts correctly and cleared every source file, which is what made it safe to
+  proceed. Far better than reasoning about hunk offsets, which I started to do and would
+  have got wrong.
+- **Check containment before hand-merging a doc conflict.** `main` already contained **all
+  34** of ropeSensor's added `gotcha-log.md` lines and **all 40** of its `changelog.md`
+  lines, because the same curation had been applied to both branches. My written plan said
+  "keep both sets", which would have duplicated 34 lines including a whole promoted
+  PATTERN. Comparing each added line against the other side's current content caught it.
+
+**Rule:** *before merging a doc conflict by hand, test whether one side already contains
+the other.* The interesting case is not "both changed it" but "one already has it", and
+that case looks identical in a conflict marker.
+
+**Also:** during a rebase `--ours` is the branch being replayed **onto**, not the branch
+being replayed. That is the reverse of the merge intuition and worth saying out loud in any
+resolution instructions.
+
+## 2026-09-12 — I read an environment variable out of MY shell and told the operator it applied to THEIRS
+
+**Problem:** Before a `git rebase --continue`, I checked whether an editor would open, saw
+`GIT_EDITOR=true`, and told the operator none would. Vim opened on their very next command
+and they were stuck in it mid-rebase.
+
+**Root cause:** `GIT_EDITOR=true` is set in the environment my Bash tool runs in. It is not
+set in the operator's interactive MINGW64 shell. Two different processes, two different
+environments, and I inferred one from the other. `git config core.editor` was genuinely
+unset, which is the part that transfers; the env var was not.
+
+**Fix / rule:** *my shell is not the operator's shell.* Anything environment-dependent
+(`$GIT_EDITOR`, `$EDITOR`, `$PATH`, the working directory, an active venv) must be checked
+where it will actually run, or stated as a conditional — "if an editor opens, save and
+close". Config that lives in files (`git config`, `.env`) does transfer; exported variables
+do not. The recovery is cheap once known: `export GIT_EDITOR=true` in their shell, or
+`:wq`.
+
+## 2026-09-12 — `git add` on an unmodified file stages nothing, so a hook that reads `--cached` correctly skips
+
+**Problem:** A test staged a key-table source file with `git add` and asserted the pre-commit hook would run the config-table check. It did not, and the assertion looked like a hook bug.
+
+**Root cause:** `git diff --cached --name-only` lists paths whose **index content differs from HEAD**. `git add` on a file identical to HEAD produces no such difference, so the path never appears and the hook's guard correctly decides the commit does not touch that file. The hook was right; the test was staging nothing.
+
+**Fix:** to exercise a path-guarded hook, stage an actual modification. In the harness this became "append a harmless trailing comment, stage, run the hook, restore".
+
+## 2026-09-12 — `git checkout` silently rewrote LF to CRLF, so a literal anchor stopped matching while `git status` stayed clean
+
+**Problem:** A test harness restored `data_manager.cpp` with `git checkout -- <file>`, then a later step matched a source line ending in `\n` and found **zero** occurrences. The line was plainly there (`grep -n` showed it). `git status` reported the tree clean, so nothing looked wrong.
+
+**Root cause:** `core.autocrlf` is active on this machine, and every `git status`/`git add` in this session had been warning about it (*"LF will be replaced by CRLF the next time Git touches it"*). A `git checkout` **is** git touching it: the file came back **CRLF** while the index and HEAD keep LF, so git compares them as identical and reports clean. The working file is now a different byte sequence from the one the previous script wrote.
+
+**Fix:** never hard-code the EOL in an anchor. Detect it from the file being edited and convert the pattern to match:
+
+```python
+raw = io.open(path, encoding="utf-8", newline="").read()
+e   = "\r\n" if "\r\n" in raw else "\n"
+line = "    some_source_line();" + e
+```
+
+The edit helper used throughout this session already did this for its own pattern strings; the harness that restored files did not, which is why only the harness broke.
+
+**Rule:** *a file's line endings can change under you without git reporting a modification. Any script that matches source text literally must derive the EOL from the file it is reading, not assume the one the file had last time.* Corollary: `git status` being clean does not mean the working bytes are unchanged.
+
+## 2026-09-12 — ROTA's `dl` and `apply` status fields reset to −1; the SD log is the authority
+
+**Problem:** After 2344 successfully pulled and committed 2.6.0, `GET /api/ota/check` reported `dl: -1` and `apply: -1`, which read as "download failed / apply failed" and produced two false FAILs in the acceptance harness. The pull had in fact succeeded — both `fw_ver` and `asset_version` read 2.6.0.
+
+**Root cause:** those fields describe the **most recent check cycle**, not the last successful install. Once a later check returns `up_to_date` there was no download and no apply in that cycle, so both go to the −1 "not applicable" sentinel. The successful outcomes had already scrolled out of the status object.
+
+**Fix:** verify a pull from the **audit rows**, which are permanent: `SYSTEM value_a=23` sub-code 0 is download/verify OK, `value_a=24` sub-code 0 is apply committed, and `value_a=5` is the boot that followed. On 2344 those read `23,0` then `24,0` at 13:48:15/13:48:27, then a boot with reason 3. The status endpoint is a snapshot; the log is the record.
+
+**Bonus, same run — gh#41 confirmed live.** The two earlier `24,1` rows (apply *deferred*) at 13:37 and 13:43 were caused by my own admin web session: the quiet gate treats any active session as "not quiet", and 2344's window is 1–23 so the clock was not the blocker. It committed only once I stayed logged out. **When watching a ROTA pull, poll the public `/api/status` only and do not log in** — and note each deferral re-downloads both artefacts.
+
+**Recurred 2026-09-26, the other way round.** A probe that gave up 184 s after forcing a check read `dl` 1, which may still have been the PREVIOUS attempt's result: a download in progress does not touch the field. The SD rows gave the whole timeline in one read:
+- three failed downloads: `23,2` at 23:24:40, then `23,1` at 23:24:41 and 23:36:24;
+- `23,0` with `24,1` at 00:34:15 (deferred by the window);
+- `23,0` then `24,0` at 01:03:23 and 01:03:36 (committed).
+
+The file being written is named by `current` in `GET /api/log/files`; fetch it with `GET /api/log/download?file=<name>`.
+
+## 2026-09-12 — a dev module that does not answer is the one not fitted, not a crashed one
+
+**Problem:** FDA4 stopped answering mid-session. It had been healthy minutes earlier (uptime 1511 s, `eg1 = 0`, heap steady), and `ping` returned "destination host unreachable" while another unit on the same subnet answered fine from the same host. I treated it as an incident and polled it for three minutes before the operator stopped me.
+
+**Root cause:** there are only **two hardware rigs**, production and development, and the dev rig takes a **swappable Lolin ESP32-S3 module**. `FDA4` and `2344` are modules, not separate units — they take turns in that one rig. FDA4 had been physically swapped out for 2344. Being unreachable was the correct state.
+
+**Fix / rule:** *before diagnosing a dev board as hung, establish which module is currently fitted.* Addresses settle it because they are fixed DHCP reservations: **FDA4 is always `192.168.20.169`, 2344 is always `192.168.20.160`**, so probing both and reading `unit_id` from the public `/api/status` identifies the fitted one in one step. Two corollaries: **`ota_push.py`'s default host is .169 (FDA4)**, so a push while 2344 is fitted goes nowhere; and **swapping modules ends any soak**, while the SD card stays with the rig, so a swap splices two firmwares into one log file. Full detail in user-global memory under the dev-rig entry.
+
+## 2026-09-12 — `rota_release.py release` warns "working tree has uncommitted changes" on UNTRACKED files
+
+**Problem:** The 2.6.0 publish printed
+
+```
+warning   : working tree has uncommitted changes; the release tags HEAD (a8226e7e),
+            which may not match these artefacts.
+```
+
+on a tree where `git status --short` showed **zero** modified tracked files. Taken at face value the warning says the published binary may not correspond to the tag, which for a release that field units pull is the one thing that must not be true.
+
+**Root cause:** the check is coarse — it looks at `git status` broadly, so untracked files trip it. Three were present: `bin/2.6.0/manifest-2.6.0.json`, which the release run itself had just authored, and `firmware/sdkconfig.lolin_s3_bench` / `firmware/sdkconfig.lolin_s3_mbprobe`, which belong to the bench and mbprobe environments and are not inputs to the `lolin_s3` release build. So the warning was a false positive, and it will fire on essentially every release, because the tool always writes a new untracked manifest before checking.
+
+**How it was settled, rather than assumed:** `git status --short | grep -v '^??'` showed no tracked modification, so every tracked input to the build matched the tagged commit. Then the release was verified independently against the public API: the tag dereferences to the committed HEAD, the release is neither draft nor prerelease, and the firmware and asset zip were **re-downloaded and hashed** equal to the local files (12/12).
+
+**Rules:** *don't dismiss this warning and don't trust it either — resolve it.* `git status --short | grep -v '^??'` answers the question the warning was trying to ask. And *after any outward-facing publish, verify the artefact from the outside*: a hash of the re-downloaded file proves both the upload and the tag, which no amount of local checking can.
+
+**Worth fixing in the tool:** the dirty check should consider tracked modifications only, and ideally run before it writes the manifest. Until then the warning carries no signal.
+
+## 2026-09-12 — three verification failures in one day, all of them the harness not waiting
+
+**Problem:** Across 2.5.1 and 2.6.0, five assertions failed against correct firmware:
+- a config read-back straight after `POST /api/config` returned the *previous* value (13 false FAILs), because the write goes through Q4 and T4 applies it a loop later;
+- a poll-cadence measurement taken 100 s after setting 15 s read `[..., 31, 76, 31, 15]`, because T5 reads the interval at the **top** of its loop and only then sleeps, so a change lands after the in-flight sleep drains — worst case one whole **old** interval;
+- `mode == AUTOMATIC` and `eg1 == 0` checked 12 s after leaving STANDBY, while the `CMD_RECALIBRATE` sweep that leaving STANDBY triggers was still running with `EG1_BIT_CALIBRATING` set.
+
+**Root cause:** every one is a queue or a state machine between the request and the observable, and in each case the HTTP 200 means *accepted*, not *in effect*.
+
+**Fix / rule:** *before asserting on an effect, name the mechanism that produces it and wait for that mechanism, not for a round number of seconds.* Q4 writes need a settle or a poll-until-stable; a cadence change needs one whole old period; leaving STANDBY needs the recalibration sweep to clear `eg1`. And make the expected transition observable — if the value you expect already equals the current value, move it to a different base first, or a broken implementation and a working one read identically.
+
+**Related:** the mirror-image failure, a harness reporting false PASSes because it did not JSON-parse `HTTPError` bodies (2026-09-11), and one reporting a false FAIL because it never status-checked its second fetch of the same resource (2026-09-12).
+
+## 2026-09-12 — the documented subtype table was three entries behind, and an issue was filed on its authority
+
+**Problem:** gh#59 asked for six new `LOG_SYSTEM` subtypes and stated *"Next free `LOG_SYSTEM` `value_a` subtypes are 22 and upward (the documented table in `event_logger.h` runs −1 and 0–21)"*. Implementing that verbatim would have given the six new events subtypes 22–27, silently colliding the first three with ROTA.
+
+**Root cause:** 22 = ROTA check, 23 = ROTA download/verify, 24 = ROTA apply have existed since firmware 2.2.0. They were never added to the table in `event_logger.h`, and they are invisible to the obvious grep because they go through a helper — `audit_row(22, sub)` inside `ota_client.cpp`, not `ev.value_a = 22`. `logparser.py` decoded them the whole time, so the parser was ahead of the firmware's own documentation.
+
+**Fix:** the occupied set was re-derived from the emitters plus the parser before anything was assigned; the new subtypes start at 25. `event_logger.h` now documents 22–30 and carries a note that the emitters are authoritative and this comment is not.
+
+**Rule (promoted):** *a "documented encoding table" in a header is a claim about the past. Before consuming a free slot in ANY enumerated space — log subtypes, param ids, NVS keys, bit positions — derive the occupied set from the emitters AND from every consumer, and remember that values passed through a helper function will not match a grep for the literal assignment.* Same shape as the 2026-09-11 lesson that an empty grep is evidence about the pattern, not the codebase.
+
+## 2026-09-12 — a poll-cadence change cannot be measured until the in-flight sleep drains
+
+**Problem:** After setting `poll_interval = 15`, a check waited 100 s and asserted the last four `SENSOR_HR` gaps were ~15 s. It failed: the gaps read `[..., 31, 76, 31, 15]`.
+
+**Root cause:** T5 reads the interval at the **top** of its loop and only then sleeps (`poll_s = dm_get_poll_interval_s()` at `:404`, `vTaskDelay` at `:408`). A change therefore takes effect after the currently in-flight sleep completes, so the worst-case latency is one whole **old** interval. The clamp tests immediately before had set 120 s twice, so a 120 s sleep was in flight and the measurement window straddled the transition. The firmware was correct; the 76 s and 120 s gaps are the old cadence draining.
+
+**Fix:** wait out a worst-case old interval *plus* several new cycles before measuring, then assert on the tail only. Re-run gave `[15, 15, 16, 15, 15, 16, 15, 15]`.
+
+**Also learned the same run:** a verification that sleeps more than `session_timeout` (default **5 min**) loses its cookie and starts getting `401 no_session` mid-script. Long-running harnesses need a 401 retry that re-logs in, not just an `HTTPError` body parse.
+
+## 2026-09-12 — a file named "single source of truth" was the newest and the wrongest statement of a bound
+
+**Problem:** gh#57 recorded `poll_interval` as a stand-off: FR-S03 and FR-CF07 (both "Must") say 15–120 s, `cfg_limits.h` says 30–300, so "either amend the FRS or change the code". Filed as a decision for the operator. It was not a stand-off at all.
+
+**Root cause:** the search stopped at the config layer. `sensor_poll.cpp` — the task that actually sets the cadence — defines `SP_POLL_MIN_S = 15` / `SP_POLL_MAX_S = 120` and clamps to them on every loop pass, four lines above the `vTaskDelay`. The TSDS states 15–120 in five places citing FR-CF07. The manual's own advice lines say 15–30 short / 60–120 long. `git log -S` on the constants shows `cfg_limits.h` was created whole in v1.16.25 (2026-05-07) while `SP_POLL_MIN_S = 15` already existed in that commit's parent. The header of `cfg_limits.h` claims to be the "single source of truth for all integer config parameter bounds", and that claim is exactly what made it look authoritative.
+
+**Consequence of believing it:** a stored 300 was accepted, reported back by `/api/config`, written to the audit log — and polled at 120. Worse, T5 sizes the averaging window from the **raw** shadow value (`poll_s_cfg`), not the clamped one, so a 6-minute window at a stored 300 became `(6*60)/300 = 1` sample: averaging silently gone, which is the noise rejection FR-S06 asks for.
+
+**Fix:** `cfg_limits.h` narrowed to 15/120 in 2.5.1, which also makes the clamped and raw variables identical over the whole legal range. Verified on FDA4: 15 s stored and the SD `SENSOR_HR` cadence measured at eight consecutive 15 s gaps, with no reboot.
+
+**Rule (promoted):** *a bound in a config/limits table is a claim, not the truth. Before trusting it, check the consuming task for its own clamp and the FRS/TSDS for the requirement — and when they disagree, `git log -S` the constants to see which one drifted. A config bound WIDER than the consumer's clamp is a silent lie, not a harmless slack.*
+
+## 2026-09-12 — a semicolon inside a C comment truncates any "split on `;`" tool
+
+**Problem:** The 2.5.0 pre-flight check that expands `LIMITS_JSON` and `json.loads` it failed with `Expecting property name ... char 624` — the JSON stopped dead after `"ap_timeout"`, exactly where a newly added comment block sat. Looked like the eleven new entries had not been added.
+
+**Root cause:** the checker did `split("static const char LIMITS_JSON[] =")[1].split(";", 1)[0]` to grab the initialiser, and only *then* stripped comments. The new comment contained the prose "...nothing for app.js; it is the documented contract" — so the split cut the body at that semicolon. The firmware was correct; the C compiler strips comments first.
+
+**Fix:** strip comments **before** splitting on any C token. The prose semicolon was also changed to a full stop, so the next naive tool does not trip on it either.
+
+**Rule:** *when parsing C from a script, remove comments as step one — anything you split on can legally appear inside one.*
+
+## 2026-09-12 — `log_type_t` is in `types/app_types.h`, not `event_logger.h`
+
+**Problem:** Went looking for the log event enum in `firmware/src/event_logger/event_logger.h` — where a prior session's notes said it lived — and `grep -n "log_type"` returned **nothing**, twice, on a 426-line file that plainly exists. Briefly suspected a broken grep or an encoding problem.
+
+**Root cause:** the enum is declared in `firmware/src/types/app_types.h` (section 3, with the other queue/message types); `event_logger.h` only documents the `LOG_SYSTEM` `value_a` subtypes. The note was wrong about the file.
+
+**Fix:** `grep -rn "LOG_MODE_CHANGE" --include=*.h firmware/` finds it in one step. This is the same lesson as the three false findings from bad greps on 2026-09-11: *an empty grep is evidence about the pattern, not about the codebase* — when a grep for something you are sure exists comes back empty, the search is wrong before the tree is.
+
+## 2026-09-12 — a verification step that does not check its own HTTP status can report a false FAILURE
+
+**Problem:** The gh#58 harness verified "a successful login adds no PIN_AUTH row" by downloading the SD log twice and comparing raw line counts. It reported `0 new rows` after five minutes — impossible, since sensor rows land every 30 s — and therefore a FAIL. The firmware was fine.
+
+**Root cause:** the second `GET /api/log/download` result was never status-checked. Any non-200 (or any body that was not the CSV) silently became "the file did not grow". This is the mirror image of the 2026-09-11 harness bug that reported five false PASSes by not JSON-parsing `HTTPError` bodies — same class, opposite sign.
+
+**Fix:** assert the shape of every response the assertion depends on, including the *second* fetch of the same resource. Then count the thing you actually care about (PIN_AUTH rows: 7 before, 7 after) rather than a proxy (total line count) that a broken fetch can fake. Re-run gave 7/7.
+
+**Rule (promoted):** *every fetch an assertion rests on needs its own status and shape check — a silently empty response is indistinguishable from "nothing happened".*
+
+## 2026-09-12 — `POST /api/config` is asynchronous, so a read-back right after the write returns the PREVIOUS value
+
+**Problem:** The 2.5.0 clamp verification harness POSTed an out-of-range value, immediately `GET /api/config`, and reported **13 FAILs out of 43** — every one of them showing the value from the *previous* write in the loop. The clamp was working correctly the whole time. Worse, the run left two keys (`t_max_day`, `cr_priority`) mid-flight because the "restore" step was itself read back too early and looked like it had not applied.
+
+**Root cause:** `/api/config` does not write NVS on the request thread. It validates, then enqueues onto **Q4**; T4 drains Q4 on a later loop pass and only then clamps, writes NVS and updates the shadow. The HTTP 200 means *accepted*, not *applied*. The lag is one T4 loop period, which is long enough to lose a race against a script but short enough to look like a flaky clamp.
+
+**Fix:** Never assert on a value read straight after a POST. Either settle (a few seconds) or poll until the stored value stops changing. And make the transition **observable**: if the original value already equals the bound you expect, move the key to a different in-range base first — otherwise a broken clamp and a working one produce identical read-backs.
+
+**Rule (promoted):** *when a write goes through a queue, the HTTP status tells you it was accepted, not that it took effect — prove the effect separately, and make sure the expected effect is distinguishable from no-op.*
+
 ## 2026-09-11 — a fix to a mode transition tested from the wrong starting state passes vacuously (gh#52)
 
 **Problem**: The first hardware test of gh#52 option (c) — "`dm_reload_all_cfg()` restores the operating mode" — was run from AUTOMATIC. It passed. It would have passed on the unfixed code too.
@@ -1023,6 +1796,7 @@ and killed the shell running it (exit 255), so the kill reported failure while h
 *A `-f` pattern matches the process doing the matching* — exclude self (`pgrep -f pat | grep -v
 $$`), match on something the caller's own command line cannot contain, or read the pid from a file
 the job wrote.
+
 ## 2026-09-10 — a refused manual LCD command leaves NO trace, so "it got rejected" is unreconstructable
 
 **Problem:** Operator drove M3 from the LCD, saw a refusal, and later could not say which one. There
@@ -1774,6 +2548,24 @@ Verify: serial shows `littlefs_mount(A (lfs0)) returned 0 (OK)` + `/index.html e
 
 **RECURRED 2026-09-19 — the same miss, a second time.** At least three bench-image pushes to 2344 in about an hour (six reboots) for the 2.10.0 acceptance runs, and the boot SNTP failed on both boots of the last push and on the first two 5 min retries; it synced on the third, 15 min after boot. The clock stayed right throughout. I again investigated from scratch: a PC-side `pool.ntp.org` probe (11 of 12 answered, which proves nothing about the unit's own server), DNS, the heap, and an earlier guess at socket exhaustion by test polling. Then I wrote "cause not established" into the 2026-09-19 entry below and into `bin/2.10.0/release-notes.md`, and told the operator the likeliest cause was NTP loss on the network. All three were corrected at the end-of-day curation, which is again where this entry was found. The rule is now promoted (top of this file) and sits in CLAUDE.md's OTA-pushing row, where the pushing happens.
 
+## 2026-07-13 — T16 (ROTA) 8 KB stack overflows on the download/apply path [RESOLVED — 2.2.1]
+
+**Problem:** First live pull-install put FDA4 into a **crash loop** (reboots at ~35 s uptime, stayed on the old version, GUI slow). Coredump: `A stack overflow in task T16-rota has been detected` (`esp-coredump ... info_corefile --core-format raw`).
+
+**Root cause:** T16 was created with an 8 KB stack — enough for the manifest *check* (one mbedTLS handshake + a `cert[2048]` on the stack), but the *download* path nests a **second** mbedTLS handshake (`rota_download_verify → rota_https_get`) inside `ota_check_once`'s still-live frame, with a `cert[2048]` buffer live in **both** `ota_check_once` and `rota_handle_update`. Two TLS contexts + two 2 KB PEM buffers blew past 8 KB. It only surfaced on a real artefact download (the earlier 204/200 check tests never entered this path).
+
+**Fix (2.2.1):** T16 stack 8 KB → **16 KB** (matches T13's OTA-work sizing, `firmware/src/main.cpp`), and both `cert[ROTA_CERT_MAX]` PEM buffers moved from stack to `malloc`/`free` (`ota_client.cpp`, −4 KB peak). **Lesson:** any task that runs `esp_http_client` over TLS needs ≥ ~12–16 KB; never stack-allocate the pinned-cert PEM. A stack that survives a small GET can still overflow on a large download that nests a second handshake.
+
+## [RESOLVED 2.2.14] 2026-07-13 — `/api/coredump/status` labels a stale dump with the RUNNING version, not the crashed one
+
+**Problem:** After FDA4 was updated to 2.2.2 (successfully, no crash), `/api/coredump/status` reported `{"present":true,"fw_ver":"2.2.2"}` — reading as "2.2.2 crashed." It hadn't. The dump was byte-identical (`cmp`) to the earlier 2.2.0 stack-overflow dump.
+
+**Root cause:** two independent things compound. (1) `coredump_status_handler` hardcodes `"fw_ver":"` `FIRMWARE_VERSION` `"` (web_server.cpp:1953) — the *compile-time running* version — and the download filename is `coredump-` `FIRMWARE_VERSION` `-<ts>.bin` (web_server.cpp:2029); neither reflects the version that actually produced the dump. (2) The coredump partition is **only erased on greenfield flash** (the first-flash rule), **not** on OTA push/pull — so a pre-update crash dump lingers and then gets stamped with each subsequent running version.
+
+**Fix / workaround:** Before believing a coredump matches the running version, verify: `cmp` against known prior dumps, or decode it (`esp-coredump ... --core-format raw <that-version's elf>`) and check the backtrace/task set. Erase a known-stale dump with `POST /api/coredump/erase`. **Improvements to consider:** erase the coredump partition as part of the OTA apply (T13 + T16/rota_apply) so a dump always matches the running image; and/or have the status endpoint report the version parsed from the dump's `esp_app_desc` instead of `FIRMWARE_VERSION`.
+
+**Resolved (2.2.14, gh#39):** Part 1 done — at boot the dump's ELF-SHA (`esp_core_dump_get_summary`) is compared to the running image's (`esp_app_get_elf_sha256`) and cached as `stale`. `/api/coredump/status` now reports `running_fw_ver` (not the misleading `fw_ver`) + `"stale":bool`; the download filename gains a `-stale` marker; the Log-tab GUI shows "from an EARLIER firmware (running X)." Part 2 (erase the coredump on OTA apply) was **deliberately NOT done** — the operator chose to preserve dumps across updates and rely on the `stale` flag, so no crash data is ever lost to an update.
+
 ## 2026-07-08 — Clock hours wrong while `ntp_synced=true` — DS1307 outranked SNTP [RESOLVED — 2.1.3, gh#37]
 
 **Problem:** 2344's clock read 09:31 at real 14:06 (4 h 35 m behind) with `ntp_synced=true`. SD log showed an hourly ±16 500 s see-saw: SNTP set the correct time at :40 past, something dragged it back within a minute.
@@ -1888,6 +2680,16 @@ Verify: serial shows `littlefs_mount(A (lfs0)) returned 0 (OK)` + `/index.html e
 
 **Fix:** Rebase the feature branch onto `origin/main`, then `git checkout main && git merge --ff-only dev/X && git push origin main`. Never `--force` to `main`. The recovery sequence is the one given above — it was previously said to live in `BRANCH_NOTES.md`, which never actually contained it; that file was deleted 2026-09-07.
 
+## 2026-05-14 — `ets_loader.c` crash loop after greenfield flash (qio vs dio) [RESOLVED]
+
+**Problem:** Full-chip flash succeeds; device boots into an infinite `ets_loader.c` error loop and won't run user code.
+
+**Root cause:** Bootloader header byte must be `dio` for the ESP32-S3 ROM. esptool's default header doesn't match the runtime `flash_mode = qio` setting.
+
+**Fix:** Pass `--flash_mode dio` to esptool for the full-chip flash; runtime `board_build.flash_mode = qio` in `firmware/platformio.ini` stays.
+
+**Where it lives:** Canonical statement in [`../CLAUDE.md`](../CLAUDE.md) "Releases & OTA" hard constraints. User-global personal copy at `~/.claude/projects/.../memory/feedback_full_flash_mode.md`.
+
 ## 2026-05-XX — `pio: command not found` in Git Bash / MINGW64
 
 **RECURRED 2026-09-12 — and it is not on PowerShell's PATH either.** Both shells
@@ -1906,16 +2708,6 @@ the build FAILS at the expected line, then remove it. Sibling of the
 
 **Fix:** Use the full path: `"$HOME/.platformio/penv/Scripts/platformio.exe" run -e lolin_s3`. Same trick for `python.exe` from that venv when scripts need the PIO-bundled Python.
 
-## 2026-05-14 — `ets_loader.c` crash loop after greenfield flash (qio vs dio) [RESOLVED]
-
-**Problem:** Full-chip flash succeeds; device boots into an infinite `ets_loader.c` error loop and won't run user code.
-
-**Root cause:** Bootloader header byte must be `dio` for the ESP32-S3 ROM. esptool's default header doesn't match the runtime `flash_mode = qio` setting.
-
-**Fix:** Pass `--flash_mode dio` to esptool for the full-chip flash; runtime `board_build.flash_mode = qio` in `firmware/platformio.ini` stays.
-
-**Where it lives:** Canonical statement in [`../CLAUDE.md`](../CLAUDE.md) "Releases & OTA" hard constraints. User-global personal copy at `~/.claude/projects/.../memory/feedback_full_flash_mode.md`.
-
 ## 2026-05-XX — Coredump partition garbage panic on first boot
 
 **Problem:** Newly-flashed unit logs `esp_core_dump_flash: Core dump flash config is corrupted! CRC=…` on every boot. (Unit 12F0 forensic capture 2026-05-14.)
@@ -1927,6 +2719,14 @@ the build FAILS at the expected line, then remove it. Sibling of the
 esptool.py --chip esp32s3 --port COMx erase_region 0x620000 0x10000
 ```
 Encoded in [firmware/partitions.csv](../firmware/partitions.csv) header comment. gh#21 / 1.19.0.
+
+## 2026-05-XX — PowerShell 5.1 with `$ErrorActionPreference='Stop'` treats `pio` stderr warnings as fatal [RESOLVED — rc.1.3]
+
+**Problem:** `bin/build_release.ps1` exits with a terminating error even when `pio` itself returned exit code 0 — because PIO emits `-Wmissing-field-initializers` warnings to stderr and PS treats those as terminating errors under `EAP=Stop`.
+
+**Root cause:** PowerShell 5.1's interaction between strict mode and native-tool stderr.
+
+**Fix:** Locally toggle `$ErrorActionPreference='Continue'` around the `& $PIO run` call; gate failure on `$LASTEXITCODE` alone. Landed in rc.1.3. See header comment block in [bin/build_release.ps1](../bin/build_release.ps1) Step 1.
 
 ## 2026-04-XX — `manifest.json` placeholder accidentally shipped as literal version (gh#9) [RESOLVED]
 
@@ -1943,790 +2743,3 @@ Encoded in [firmware/partitions.csv](../firmware/partitions.csv) header comment.
 **Root cause:** ESP-IDF's VFS treats basePath as the mount point; identical basePaths collide.
 
 **Fix:** Each partition gets its own basePath: `/lfsa` for `lfs0`, `/lfsb` for `lfs1`. The active-partition resolver picks via the running app bank. **Invariant + full mechanism now recorded in [architecture.md](architecture.md) "Partition table"** (moved there 2026-07-20 from user-global memory, so it is tracked in git and reachable by anyone).
-
-## 2026-05-XX — PowerShell 5.1 with `$ErrorActionPreference='Stop'` treats `pio` stderr warnings as fatal [RESOLVED — rc.1.3]
-
-**Problem:** `bin/build_release.ps1` exits with a terminating error even when `pio` itself returned exit code 0 — because PIO emits `-Wmissing-field-initializers` warnings to stderr and PS treats those as terminating errors under `EAP=Stop`.
-
-**Root cause:** PowerShell 5.1's interaction between strict mode and native-tool stderr.
-
-**Fix:** Locally toggle `$ErrorActionPreference='Continue'` around the `& $PIO run` call; gate failure on `$LASTEXITCODE` alone. Landed in rc.1.3. See header comment block in [bin/build_release.ps1](../bin/build_release.ps1) Step 1.
-
-## 2026-07-13 — T16 (ROTA) 8 KB stack overflows on the download/apply path [RESOLVED — 2.2.1]
-
-**Problem:** First live pull-install put FDA4 into a **crash loop** (reboots at ~35 s uptime, stayed on the old version, GUI slow). Coredump: `A stack overflow in task T16-rota has been detected` (`esp-coredump ... info_corefile --core-format raw`).
-
-**Root cause:** T16 was created with an 8 KB stack — enough for the manifest *check* (one mbedTLS handshake + a `cert[2048]` on the stack), but the *download* path nests a **second** mbedTLS handshake (`rota_download_verify → rota_https_get`) inside `ota_check_once`'s still-live frame, with a `cert[2048]` buffer live in **both** `ota_check_once` and `rota_handle_update`. Two TLS contexts + two 2 KB PEM buffers blew past 8 KB. It only surfaced on a real artefact download (the earlier 204/200 check tests never entered this path).
-
-**Fix (2.2.1):** T16 stack 8 KB → **16 KB** (matches T13's OTA-work sizing, `firmware/src/main.cpp`), and both `cert[ROTA_CERT_MAX]` PEM buffers moved from stack to `malloc`/`free` (`ota_client.cpp`, −4 KB peak). **Lesson:** any task that runs `esp_http_client` over TLS needs ≥ ~12–16 KB; never stack-allocate the pinned-cert PEM. A stack that survives a small GET can still overflow on a large download that nests a second handshake.
-
-## [RESOLVED 2.2.14] 2026-07-13 — `/api/coredump/status` labels a stale dump with the RUNNING version, not the crashed one
-
-**Problem:** After FDA4 was updated to 2.2.2 (successfully, no crash), `/api/coredump/status` reported `{"present":true,"fw_ver":"2.2.2"}` — reading as "2.2.2 crashed." It hadn't. The dump was byte-identical (`cmp`) to the earlier 2.2.0 stack-overflow dump.
-
-**Root cause:** two independent things compound. (1) `coredump_status_handler` hardcodes `"fw_ver":"` `FIRMWARE_VERSION` `"` (web_server.cpp:1953) — the *compile-time running* version — and the download filename is `coredump-` `FIRMWARE_VERSION` `-<ts>.bin` (web_server.cpp:2029); neither reflects the version that actually produced the dump. (2) The coredump partition is **only erased on greenfield flash** (the first-flash rule), **not** on OTA push/pull — so a pre-update crash dump lingers and then gets stamped with each subsequent running version.
-
-**Fix / workaround:** Before believing a coredump matches the running version, verify: `cmp` against known prior dumps, or decode it (`esp-coredump ... --core-format raw <that-version's elf>`) and check the backtrace/task set. Erase a known-stale dump with `POST /api/coredump/erase`. **Improvements to consider:** erase the coredump partition as part of the OTA apply (T13 + T16/rota_apply) so a dump always matches the running image; and/or have the status endpoint report the version parsed from the dump's `esp_app_desc` instead of `FIRMWARE_VERSION`.
-
-**Resolved (2.2.14, gh#39):** Part 1 done — at boot the dump's ELF-SHA (`esp_core_dump_get_summary`) is compared to the running image's (`esp_app_get_elf_sha256`) and cached as `stale`. `/api/coredump/status` now reports `running_fw_ver` (not the misleading `fw_ver`) + `"stale":bool`; the download filename gains a `-stale` marker; the Log-tab GUI shows "from an EARLIER firmware (running X)." Part 2 (erase the coredump on OTA apply) was **deliberately NOT done** — the operator chose to preserve dumps across updates and rely on the `stale` flag, so no crash data is ever lost to an update.
-
-## 2026-09-12 — `POST /api/config` is asynchronous, so a read-back right after the write returns the PREVIOUS value
-
-**Problem:** The 2.5.0 clamp verification harness POSTed an out-of-range value, immediately `GET /api/config`, and reported **13 FAILs out of 43** — every one of them showing the value from the *previous* write in the loop. The clamp was working correctly the whole time. Worse, the run left two keys (`t_max_day`, `cr_priority`) mid-flight because the "restore" step was itself read back too early and looked like it had not applied.
-
-**Root cause:** `/api/config` does not write NVS on the request thread. It validates, then enqueues onto **Q4**; T4 drains Q4 on a later loop pass and only then clamps, writes NVS and updates the shadow. The HTTP 200 means *accepted*, not *applied*. The lag is one T4 loop period, which is long enough to lose a race against a script but short enough to look like a flaky clamp.
-
-**Fix:** Never assert on a value read straight after a POST. Either settle (a few seconds) or poll until the stored value stops changing. And make the transition **observable**: if the original value already equals the bound you expect, move the key to a different in-range base first — otherwise a broken clamp and a working one produce identical read-backs.
-
-**Rule (promoted):** *when a write goes through a queue, the HTTP status tells you it was accepted, not that it took effect — prove the effect separately, and make sure the expected effect is distinguishable from no-op.*
-
-## 2026-09-12 — a verification step that does not check its own HTTP status can report a false FAILURE
-
-**Problem:** The gh#58 harness verified "a successful login adds no PIN_AUTH row" by downloading the SD log twice and comparing raw line counts. It reported `0 new rows` after five minutes — impossible, since sensor rows land every 30 s — and therefore a FAIL. The firmware was fine.
-
-**Root cause:** the second `GET /api/log/download` result was never status-checked. Any non-200 (or any body that was not the CSV) silently became "the file did not grow". This is the mirror image of the 2026-09-11 harness bug that reported five false PASSes by not JSON-parsing `HTTPError` bodies — same class, opposite sign.
-
-**Fix:** assert the shape of every response the assertion depends on, including the *second* fetch of the same resource. Then count the thing you actually care about (PIN_AUTH rows: 7 before, 7 after) rather than a proxy (total line count) that a broken fetch can fake. Re-run gave 7/7.
-
-**Rule (promoted):** *every fetch an assertion rests on needs its own status and shape check — a silently empty response is indistinguishable from "nothing happened".*
-
-## 2026-09-12 — `log_type_t` is in `types/app_types.h`, not `event_logger.h`
-
-**Problem:** Went looking for the log event enum in `firmware/src/event_logger/event_logger.h` — where a prior session's notes said it lived — and `grep -n "log_type"` returned **nothing**, twice, on a 426-line file that plainly exists. Briefly suspected a broken grep or an encoding problem.
-
-**Root cause:** the enum is declared in `firmware/src/types/app_types.h` (section 3, with the other queue/message types); `event_logger.h` only documents the `LOG_SYSTEM` `value_a` subtypes. The note was wrong about the file.
-
-**Fix:** `grep -rn "LOG_MODE_CHANGE" --include=*.h firmware/` finds it in one step. This is the same lesson as the three false findings from bad greps on 2026-09-11: *an empty grep is evidence about the pattern, not about the codebase* — when a grep for something you are sure exists comes back empty, the search is wrong before the tree is.
-
-## 2026-09-12 — a semicolon inside a C comment truncates any "split on `;`" tool
-
-**Problem:** The 2.5.0 pre-flight check that expands `LIMITS_JSON` and `json.loads` it failed with `Expecting property name ... char 624` — the JSON stopped dead after `"ap_timeout"`, exactly where a newly added comment block sat. Looked like the eleven new entries had not been added.
-
-**Root cause:** the checker did `split("static const char LIMITS_JSON[] =")[1].split(";", 1)[0]` to grab the initialiser, and only *then* stripped comments. The new comment contained the prose "...nothing for app.js; it is the documented contract" — so the split cut the body at that semicolon. The firmware was correct; the C compiler strips comments first.
-
-**Fix:** strip comments **before** splitting on any C token. The prose semicolon was also changed to a full stop, so the next naive tool does not trip on it either.
-
-**Rule:** *when parsing C from a script, remove comments as step one — anything you split on can legally appear inside one.*
-
-## 2026-09-12 — a file named "single source of truth" was the newest and the wrongest statement of a bound
-
-**Problem:** gh#57 recorded `poll_interval` as a stand-off: FR-S03 and FR-CF07 (both "Must") say 15–120 s, `cfg_limits.h` says 30–300, so "either amend the FRS or change the code". Filed as a decision for the operator. It was not a stand-off at all.
-
-**Root cause:** the search stopped at the config layer. `sensor_poll.cpp` — the task that actually sets the cadence — defines `SP_POLL_MIN_S = 15` / `SP_POLL_MAX_S = 120` and clamps to them on every loop pass, four lines above the `vTaskDelay`. The TSDS states 15–120 in five places citing FR-CF07. The manual's own advice lines say 15–30 short / 60–120 long. `git log -S` on the constants shows `cfg_limits.h` was created whole in v1.16.25 (2026-05-07) while `SP_POLL_MIN_S = 15` already existed in that commit's parent. The header of `cfg_limits.h` claims to be the "single source of truth for all integer config parameter bounds", and that claim is exactly what made it look authoritative.
-
-**Consequence of believing it:** a stored 300 was accepted, reported back by `/api/config`, written to the audit log — and polled at 120. Worse, T5 sizes the averaging window from the **raw** shadow value (`poll_s_cfg`), not the clamped one, so a 6-minute window at a stored 300 became `(6*60)/300 = 1` sample: averaging silently gone, which is the noise rejection FR-S06 asks for.
-
-**Fix:** `cfg_limits.h` narrowed to 15/120 in 2.5.1, which also makes the clamped and raw variables identical over the whole legal range. Verified on FDA4: 15 s stored and the SD `SENSOR_HR` cadence measured at eight consecutive 15 s gaps, with no reboot.
-
-**Rule (promoted):** *a bound in a config/limits table is a claim, not the truth. Before trusting it, check the consuming task for its own clamp and the FRS/TSDS for the requirement — and when they disagree, `git log -S` the constants to see which one drifted. A config bound WIDER than the consumer's clamp is a silent lie, not a harmless slack.*
-
-## 2026-09-12 — a poll-cadence change cannot be measured until the in-flight sleep drains
-
-**Problem:** After setting `poll_interval = 15`, a check waited 100 s and asserted the last four `SENSOR_HR` gaps were ~15 s. It failed: the gaps read `[..., 31, 76, 31, 15]`.
-
-**Root cause:** T5 reads the interval at the **top** of its loop and only then sleeps (`poll_s = dm_get_poll_interval_s()` at `:404`, `vTaskDelay` at `:408`). A change therefore takes effect after the currently in-flight sleep completes, so the worst-case latency is one whole **old** interval. The clamp tests immediately before had set 120 s twice, so a 120 s sleep was in flight and the measurement window straddled the transition. The firmware was correct; the 76 s and 120 s gaps are the old cadence draining.
-
-**Fix:** wait out a worst-case old interval *plus* several new cycles before measuring, then assert on the tail only. Re-run gave `[15, 15, 16, 15, 15, 16, 15, 15]`.
-
-**Also learned the same run:** a verification that sleeps more than `session_timeout` (default **5 min**) loses its cookie and starts getting `401 no_session` mid-script. Long-running harnesses need a 401 retry that re-logs in, not just an `HTTPError` body parse.
-
-## 2026-09-12 — the documented subtype table was three entries behind, and an issue was filed on its authority
-
-**Problem:** gh#59 asked for six new `LOG_SYSTEM` subtypes and stated *"Next free `LOG_SYSTEM` `value_a` subtypes are 22 and upward (the documented table in `event_logger.h` runs −1 and 0–21)"*. Implementing that verbatim would have given the six new events subtypes 22–27, silently colliding the first three with ROTA.
-
-**Root cause:** 22 = ROTA check, 23 = ROTA download/verify, 24 = ROTA apply have existed since firmware 2.2.0. They were never added to the table in `event_logger.h`, and they are invisible to the obvious grep because they go through a helper — `audit_row(22, sub)` inside `ota_client.cpp`, not `ev.value_a = 22`. `logparser.py` decoded them the whole time, so the parser was ahead of the firmware's own documentation.
-
-**Fix:** the occupied set was re-derived from the emitters plus the parser before anything was assigned; the new subtypes start at 25. `event_logger.h` now documents 22–30 and carries a note that the emitters are authoritative and this comment is not.
-
-**Rule (promoted):** *a "documented encoding table" in a header is a claim about the past. Before consuming a free slot in ANY enumerated space — log subtypes, param ids, NVS keys, bit positions — derive the occupied set from the emitters AND from every consumer, and remember that values passed through a helper function will not match a grep for the literal assignment.* Same shape as the 2026-09-11 lesson that an empty grep is evidence about the pattern, not the codebase.
-
-## 2026-09-12 — three verification failures in one day, all of them the harness not waiting
-
-**Problem:** Across 2.5.1 and 2.6.0, five assertions failed against correct firmware:
-- a config read-back straight after `POST /api/config` returned the *previous* value (13 false FAILs), because the write goes through Q4 and T4 applies it a loop later;
-- a poll-cadence measurement taken 100 s after setting 15 s read `[..., 31, 76, 31, 15]`, because T5 reads the interval at the **top** of its loop and only then sleeps, so a change lands after the in-flight sleep drains — worst case one whole **old** interval;
-- `mode == AUTOMATIC` and `eg1 == 0` checked 12 s after leaving STANDBY, while the `CMD_RECALIBRATE` sweep that leaving STANDBY triggers was still running with `EG1_BIT_CALIBRATING` set.
-
-**Root cause:** every one is a queue or a state machine between the request and the observable, and in each case the HTTP 200 means *accepted*, not *in effect*.
-
-**Fix / rule:** *before asserting on an effect, name the mechanism that produces it and wait for that mechanism, not for a round number of seconds.* Q4 writes need a settle or a poll-until-stable; a cadence change needs one whole old period; leaving STANDBY needs the recalibration sweep to clear `eg1`. And make the expected transition observable — if the value you expect already equals the current value, move it to a different base first, or a broken implementation and a working one read identically.
-
-**Related:** the mirror-image failure, a harness reporting false PASSes because it did not JSON-parse `HTTPError` bodies (2026-09-11), and one reporting a false FAIL because it never status-checked its second fetch of the same resource (2026-09-12).
-
-## 2026-09-12 — `rota_release.py release` warns "working tree has uncommitted changes" on UNTRACKED files
-
-**Problem:** The 2.6.0 publish printed
-
-```
-warning   : working tree has uncommitted changes; the release tags HEAD (a8226e7e),
-            which may not match these artefacts.
-```
-
-on a tree where `git status --short` showed **zero** modified tracked files. Taken at face value the warning says the published binary may not correspond to the tag, which for a release that field units pull is the one thing that must not be true.
-
-**Root cause:** the check is coarse — it looks at `git status` broadly, so untracked files trip it. Three were present: `bin/2.6.0/manifest-2.6.0.json`, which the release run itself had just authored, and `firmware/sdkconfig.lolin_s3_bench` / `firmware/sdkconfig.lolin_s3_mbprobe`, which belong to the bench and mbprobe environments and are not inputs to the `lolin_s3` release build. So the warning was a false positive, and it will fire on essentially every release, because the tool always writes a new untracked manifest before checking.
-
-**How it was settled, rather than assumed:** `git status --short | grep -v '^??'` showed no tracked modification, so every tracked input to the build matched the tagged commit. Then the release was verified independently against the public API: the tag dereferences to the committed HEAD, the release is neither draft nor prerelease, and the firmware and asset zip were **re-downloaded and hashed** equal to the local files (12/12).
-
-**Rules:** *don't dismiss this warning and don't trust it either — resolve it.* `git status --short | grep -v '^??'` answers the question the warning was trying to ask. And *after any outward-facing publish, verify the artefact from the outside*: a hash of the re-downloaded file proves both the upload and the tag, which no amount of local checking can.
-
-**Worth fixing in the tool:** the dirty check should consider tracked modifications only, and ideally run before it writes the manifest. Until then the warning carries no signal.
-
-## 2026-09-12 — a dev module that does not answer is the one not fitted, not a crashed one
-
-**Problem:** FDA4 stopped answering mid-session. It had been healthy minutes earlier (uptime 1511 s, `eg1 = 0`, heap steady), and `ping` returned "destination host unreachable" while another unit on the same subnet answered fine from the same host. I treated it as an incident and polled it for three minutes before the operator stopped me.
-
-**Root cause:** there are only **two hardware rigs**, production and development, and the dev rig takes a **swappable Lolin ESP32-S3 module**. `FDA4` and `2344` are modules, not separate units — they take turns in that one rig. FDA4 had been physically swapped out for 2344. Being unreachable was the correct state.
-
-**Fix / rule:** *before diagnosing a dev board as hung, establish which module is currently fitted.* Addresses settle it because they are fixed DHCP reservations: **FDA4 is always `192.168.20.169`, 2344 is always `192.168.20.160`**, so probing both and reading `unit_id` from the public `/api/status` identifies the fitted one in one step. Two corollaries: **`ota_push.py`'s default host is .169 (FDA4)**, so a push while 2344 is fitted goes nowhere; and **swapping modules ends any soak**, while the SD card stays with the rig, so a swap splices two firmwares into one log file. Full detail in user-global memory under the dev-rig entry.
-
-## 2026-09-12 — ROTA's `dl` and `apply` status fields reset to −1; the SD log is the authority
-
-**Problem:** After 2344 successfully pulled and committed 2.6.0, `GET /api/ota/check` reported `dl: -1` and `apply: -1`, which read as "download failed / apply failed" and produced two false FAILs in the acceptance harness. The pull had in fact succeeded — both `fw_ver` and `asset_version` read 2.6.0.
-
-**Root cause:** those fields describe the **most recent check cycle**, not the last successful install. Once a later check returns `up_to_date` there was no download and no apply in that cycle, so both go to the −1 "not applicable" sentinel. The successful outcomes had already scrolled out of the status object.
-
-**Fix:** verify a pull from the **audit rows**, which are permanent: `SYSTEM value_a=23` sub-code 0 is download/verify OK, `value_a=24` sub-code 0 is apply committed, and `value_a=5` is the boot that followed. On 2344 those read `23,0` then `24,0` at 13:48:15/13:48:27, then a boot with reason 3. The status endpoint is a snapshot; the log is the record.
-
-**Bonus, same run — gh#41 confirmed live.** The two earlier `24,1` rows (apply *deferred*) at 13:37 and 13:43 were caused by my own admin web session: the quiet gate treats any active session as "not quiet", and 2344's window is 1–23 so the clock was not the blocker. It committed only once I stayed logged out. **When watching a ROTA pull, poll the public `/api/status` only and do not log in** — and note each deferral re-downloads both artefacts.
-
-**Recurred 2026-09-26, the other way round.** A probe that gave up 184 s after forcing a check read `dl` 1, which may still have been the PREVIOUS attempt's result: a download in progress does not touch the field. The SD rows gave the whole timeline in one read:
-- three failed downloads: `23,2` at 23:24:40, then `23,1` at 23:24:41 and 23:36:24;
-- `23,0` with `24,1` at 00:34:15 (deferred by the window);
-- `23,0` then `24,0` at 01:03:23 and 01:03:36 (committed).
-
-The file being written is named by `current` in `GET /api/log/files`; fetch it with `GET /api/log/download?file=<name>`.
-
-## 2026-09-12 — `git checkout` silently rewrote LF to CRLF, so a literal anchor stopped matching while `git status` stayed clean
-
-**Problem:** A test harness restored `data_manager.cpp` with `git checkout -- <file>`, then a later step matched a source line ending in `\n` and found **zero** occurrences. The line was plainly there (`grep -n` showed it). `git status` reported the tree clean, so nothing looked wrong.
-
-**Root cause:** `core.autocrlf` is active on this machine, and every `git status`/`git add` in this session had been warning about it (*"LF will be replaced by CRLF the next time Git touches it"*). A `git checkout` **is** git touching it: the file came back **CRLF** while the index and HEAD keep LF, so git compares them as identical and reports clean. The working file is now a different byte sequence from the one the previous script wrote.
-
-**Fix:** never hard-code the EOL in an anchor. Detect it from the file being edited and convert the pattern to match:
-
-```python
-raw = io.open(path, encoding="utf-8", newline="").read()
-e   = "\r\n" if "\r\n" in raw else "\n"
-line = "    some_source_line();" + e
-```
-
-The edit helper used throughout this session already did this for its own pattern strings; the harness that restored files did not, which is why only the harness broke.
-
-**Rule:** *a file's line endings can change under you without git reporting a modification. Any script that matches source text literally must derive the EOL from the file it is reading, not assume the one the file had last time.* Corollary: `git status` being clean does not mean the working bytes are unchanged.
-
-## 2026-09-12 — `git add` on an unmodified file stages nothing, so a hook that reads `--cached` correctly skips
-
-**Problem:** A test staged a key-table source file with `git add` and asserted the pre-commit hook would run the config-table check. It did not, and the assertion looked like a hook bug.
-
-**Root cause:** `git diff --cached --name-only` lists paths whose **index content differs from HEAD**. `git add` on a file identical to HEAD produces no such difference, so the path never appears and the hook's guard correctly decides the commit does not touch that file. The hook was right; the test was staging nothing.
-
-**Fix:** to exercise a path-guarded hook, stage an actual modification. In the harness this became "append a harmless trailing comment, stage, run the hook, restore".
-
-## 2026-09-12 — I read an environment variable out of MY shell and told the operator it applied to THEIRS
-
-**Problem:** Before a `git rebase --continue`, I checked whether an editor would open, saw
-`GIT_EDITOR=true`, and told the operator none would. Vim opened on their very next command
-and they were stuck in it mid-rebase.
-
-**Root cause:** `GIT_EDITOR=true` is set in the environment my Bash tool runs in. It is not
-set in the operator's interactive MINGW64 shell. Two different processes, two different
-environments, and I inferred one from the other. `git config core.editor` was genuinely
-unset, which is the part that transfers; the env var was not.
-
-**Fix / rule:** *my shell is not the operator's shell.* Anything environment-dependent
-(`$GIT_EDITOR`, `$EDITOR`, `$PATH`, the working directory, an active venv) must be checked
-where it will actually run, or stated as a conditional — "if an editor opens, save and
-close". Config that lives in files (`git config`, `.env`) does transfer; exported variables
-do not. The recovery is cheap once known: `export GIT_EDITOR=true` in their shell, or
-`:wq`.
-
-## 2026-09-12 — test a rebase read-only before running it, and check containment before merging a doc conflict
-
-**Problem:** `ropeSensor` was 14 commits behind `main` with 11 files touched by both,
-including three that shared a log-encoding space. Going in blind risked a silent encoding
-collision (the gh#54 shape: two producers, one decoder).
-
-**What worked, and is reusable:**
-
-- **A read-only trial predicts the conflict surface exactly.** Per file,
-  `git diff $(git merge-base A B) B -- <f> | git apply --check -` reports clean or
-  conflict and **writes nothing** — no refs, no objects, no worktree change. It named 4
-  of 4 conflicts correctly and cleared every source file, which is what made it safe to
-  proceed. Far better than reasoning about hunk offsets, which I started to do and would
-  have got wrong.
-- **Check containment before hand-merging a doc conflict.** `main` already contained **all
-  34** of ropeSensor's added `gotcha-log.md` lines and **all 40** of its `changelog.md`
-  lines, because the same curation had been applied to both branches. My written plan said
-  "keep both sets", which would have duplicated 34 lines including a whole promoted
-  PATTERN. Comparing each added line against the other side's current content caught it.
-
-**Rule:** *before merging a doc conflict by hand, test whether one side already contains
-the other.* The interesting case is not "both changed it" but "one already has it", and
-that case looks identical in a conflict marker.
-
-**Also:** during a rebase `--ours` is the branch being replayed **onto**, not the branch
-being replayed. That is the reverse of the merge intuition and worth saying out loud in any
-resolution instructions.
-
-## 2026-09-20 — a release build overwrites `bin/<version>/`, and the build DIRECTORY is part of the image
-
-**Problem:** with `platformio.ini` still at 2.11.0, a build of unrelated work-in-progress
-(the mode-2 T6 refactor) wrote straight into `bin/2.11.0/`, replacing the artefacts of a
-release that was already published to ROTA and already running on 2344. The `.bin` and
-`.zip` were recoverable from the GitHub release; the **ELF and map are not published
-anywhere** (`.gitignore` excludes `bin/**/*.elf` and `*.map`), so the only copy of the
-symbols for a live firmware was gone.
-
-**Then the obvious repair failed.** `git archive <release-commit>` into `C:\b2110` and a
-rebuild there produced `d9012ccb…` against the published `fd0db6a3…`. Nothing was wrong
-with the source: **the absolute build path is embedded in the image**, so an otherwise
-identical build from a different directory is a different binary. Rebuilding *in the repo
-directory*, with the tree restored to the release state, reproduced the published image
-**and** the assets zip byte for byte — which is what makes the regenerated ELF trustworthy.
-
-**Rules:**
-
-- **Bump `FIRMWARE_VERSION` before the first build of a new cycle, not before the release
-  build.** The version is the only thing that decides which `bin/<version>/` a build
-  overwrites, and a published directory is not protected.
-- **To regenerate a lost ELF: restore the tree to the release commit *in the repo
-  directory*, build, and verify the `.bin` SHA against the manifest before trusting the
-  ELF.** A matching SHA proves the symbols correspond; a different directory guarantees
-  they will not match.
-- Park work-in-progress by copying the files aside rather than reaching for git — reverting
-  tracked files with `git checkout --` and copying them back is enough, and leaves no refs
-  to clean up.
-
-## 2026-09-20 — a key can be enrolled correctly and still read back null
-
-**Problem:** `ctrl_mode_m3` and `min_intv_m3` were added exactly as gh#64 requires — one
-descriptor row each, so the clamp, the shadow write, the boot default, the audit id and
-`GET /api/config/limits` all followed, and `check_cfg_desc.py` passed. On the unit both
-read back as **`null`** from `GET /api/config`, so the GUI's new controls populated with
-nothing.
-
-**Root cause:** the config RESPONSE is a hand-written `snprintf` format string in
-`web_server.cpp` — an eighth key list, beside the seven gh#64 collapsed. Nothing pointed
-at it, and no check covered it.
-
-**Fix:** the two keys added to the response, and `check_cfg_desc.py` gained
-`check_config_get()`: every key the descriptor publishes must appear in the response.
-Proved by deleting one and watching the checker name it. It found four pre-existing cases
-(the `led_*` four, gh#67 — stored, clamped, never readable), exempted by name with the
-issue cited so the gap stays visible.
-
-**Rule:** *after enrolling a config key, read it back from the unit before believing the
-enrolment.* The descriptor makes a key correct everywhere it is consulted; it does not
-make every consumer consult it.
-
-**And a smaller one, twice in a day:** `git checkout -- <file>` discards uncommitted work
-**and** re-applies git's `autocrlf`, so a file that was LF in the working tree comes back
-CRLF. A patch matching LF then silently finds nothing. Detect the endings per file before
-matching, and never `git checkout --` a file that holds uncommitted work — copy it aside
-first (2026-09-20 gotcha above says the same about parking work).
-
-**Update 2026-09-26 (2.14.0, gh#67 closed):** the four `led_*` keys this checker had to exempt
-are now compile-time constants and have left the configuration contract, so
-`check_cfg_desc.py` runs with **no exemptions**. AT-CFG64 on 2344 then read all 46 of 46
-Q4-writable keys back, with none unreadable. The rule above still stands.
-
-## 2026-09-20 — a bundled fail-first build can pass for the wrong reason
-
-**Problem:** `-DWPOS_FAILFIRST_212` restored all four defects that 2.12.0's target rules
-fixed. On the rig, two stages failed as intended — and `lost` and `supersede` **PASSED**
-on a build whose rules were the broken ones.
-
-**Root cause:** the first defect masked the rest. With the start-age defect in place no
-target is ever armed, so the grace, the overshoot guard and the disarm never run and their
-stages pass *vacuously*. The run looked like partial confirmation; it was no confirmation
-at all for those two rules.
-
-**Fix:** the flag became a BITMASK (1 age, 2 grace, 4 overshoot, 8 disarm; 16 since 2026-09-21, T6's
-stranded filter). *This line first said "bare = all": GCC makes a bare flag 1, so a bare flag
-restores bit 1 alone* — and until 2026-09-21 the diag reported only true/false, so one bit's
-build could not be told from another's; it now reports the mask.
-`=14` leaves targets working so the other three are visible, and `=8` isolates the
-safety-relevant one.
-
-**Rule:** *a fail-first build must restore ONE defect at a time, or the earliest defect in
-the path decides the result.* When a fail-first arm passes, ask what it actually exercised
-before treating it as evidence — a pass there is a claim that the rule does not matter,
-and that claim needs to be true for the right reason.
-
-## 2026-09-20 — classification is not consumption (two of them in one day)
-
-**Problem, twice, in different tools.** A config key was enrolled exactly as gh#64 requires
-— one descriptor row, so the clamp, the shadow write, the boot default, the audit id and
-`/api/config/limits` all follow — and was still **inert** at the far end:
-
-- **Firmware:** `ctrl_mode_m3` and `min_intv_m3` read back as `null` from `GET /api/config`,
-  because that response is a hand-written format string. The GUI's new controls populated
-  with nothing.
-- **Simulator (model session, same day):** both keys were *classified* in
-  `closedloop/settings.py` — which is what its guard checks — but nothing consumed them, so
-  `--set min_intv_m3=900` ran silently at 0 and mode 2 came from the law's name rather than
-  from `ctrl_mode_m3`.
-
-**Root cause, shared:** the checks verify that a key is *declared* everywhere it must be
-declared. Neither checks that anything *acts* on it. `check_cfg_desc.py` cannot see the
-difference, and a classification table is exactly the kind of list that looks complete
-while doing nothing.
-
-**Fix:** `check_cfg_desc.py` gained `check_config_get()` (every published key must appear
-in the response; proved by deleting one and watching it fail). The simulator side was wired
-by the model session.
-
-**Rule:** *after adding a key, read it back from the consumer that is supposed to act on
-it, and change it to a value whose effect you can see.* "It is in the table" is a claim
-about the table.
-
-## 2026-09-20 — a new resting state made an old detector wrong [RESOLVED 2026-09-21, in 2.12.0]
-
-**Problem:** 2.12.0's soak reported `stall_faults 1` on 2344. The drive was real, the
-fault was not: M3 had been left **part-open at 27.8 mm** by a mode-2 target, just above
-its closed end switch, and the end-sensor bit had been clear for 43 minutes. When a CLOSE
-finally came, the leaf had nowhere to go, the rate stayed 0.0 mm/s, and §12.4 rule 1 read
-that as "the leaf is not following the relay". *(Corrected 2026-09-21: this said "when T6
-later commanded the CLOSE". It was T3's wind override — T6 could not close a part-open M3
-at all, which is its own defect, see 2026-09-21 "the law asked for an end".)*
-
-**Consequence of fixing THAT defect (2026-09-21):** until then only T3 or a recalibration
-could close a part-open M3, so this false positive needed a wind override to show. With T6's
-filter fixed, an ordinary mode-1 CLOSE reaches it whenever a target has left M3 just above
-the closed switch — so **a soak on the fixed build will meet it in normal operation.** Make
-the rule-1 fix before that soak, or read its `stall_faults` with this exception again.
-
-**Root cause:** rule 1's at-end exemption needs `on_end && at_pos` on the FIRST accepted
-sample. That was safe for three years of firmware because M3 could only ever rest ON a
-switch. `CH_PART_OPEN` (2.12.0) created a resting state the detector was never written
-for — inside the deadband of an end but off its switch — and mode 2 produces it routinely,
-because "nearly closed" is a legitimate target.
-
-**Fix (made 2026-09-21):** judge the exemption at the grace expiry rather than latching it
-from the first sample — *never left the target region, and the end sensor has made by now*
-(`stroke_left_target`, `stroke_on_end_now`; `stroke_at_target` keeps its meaning for the
-verdict and rule 2). **Fail-first on 2344** with `bin/at_wp_rule1.py` and two new bench
-injections (`noend`: bit 3 cleared; `short`: position and rate 0): with bit 32 restoring the
-latch, `headroom` FAILED with this incident's exact signature (`stall_faults` +1, verdict
-confirmed, no early stop); fixed, all four stages passed — and `noswitch` (a leaf that never
-meets its switch) and `short` (a shorted wiper closing from the open end) are still reported,
-so the relaxed rule hides neither fault the continuity was for. It still assumes the headroom
-is crossed within the grace (1.2-2 s against 5 s here); a slower mechanism needs re-checking.
-
-**Rule, and it is the general one:** *when you add a STATE, re-read every detector that
-reasons about the states that existed before it.* Rule 1 was correct, well tested and
-hardware-verified; it became wrong because the world gained a case. Grepping for the new
-enum finds the code that switches on it — it does not find the code that assumed the old
-set was complete. (Today the same sweep did catch three of these by reading: the LCD
-renderers, `status_json`'s `default:` and T17's per-drive verdict. This one was missed
-because rule 1 reasons about a SENSOR BIT, not about the state enum.)
-
-## 2026-09-20 — an interim soak report said "nothing is wrong" while it was already failing
-
-**Problem:** `at_wp_soak.py --report` at 7.3 h printed `stall_faults 1 (need 0)` in its
-counter block and, four lines later, **"Nothing is wrong: 17 judged strokes, all counters
-clean"**.
-
-**Root cause:** the fault check runs only after the elapsed-time gate passes. The
-INCONCLUSIVE branch printed an encouraging summary whenever the stroke count was met,
-without looking at the counters at all — so for the whole first 12 h of a soak, a run that
-had already breached a fail criterion read as green.
-
-**Why it matters more than it looks:** the interim report is what you read at the check-in
-and then stop watching. A soak that is already lost keeps burning the rig overnight.
-
-**Fix:** the branch now computes the fault list first and says **"ALREADY FAILING on
-stall_faults +1 -- more hours cannot undo it"**, with the two real options (understand and
-discount the cause, or restart). The green summary only prints when the counters really
-are clean.
-
-**Rule:** *a progress message must be computed from the same evidence as the verdict.* If a
-tool has a pass/fail rule, every intermediate summary it prints is a claim about that rule
-and has to be derived from it, not from whichever half was convenient at that point in the
-code.
-
-## 2026-09-21 — the law asked for an end and T6 threw the request away (a new state, an old filter: the second in two days)
-
-**Problem:** on 2026-09-20 the stroke harness steered T6 to close a part-open M3 on 2344 for
-28 minutes (15:54 to 16:22) and nothing moved. The close that finally came was **T3's wind
-override** — and it was first written up as T6 closing M3 after its dwell, which supported
-the plan's claim that "the fallback needed no code". The same harness session had failed
-earlier for the same reason and was read as harness trouble.
-
-**Root cause:** `apply_model_output()` posted a CLOSE only for a window that was OPEN or
-MOVING_OPEN, and an OPEN only for one that was CLOSED or MOVING_CLOSE — a filter carried
-over from the inline `reconcile_to_step()`, written before `WIN_PART_OPEN` existed. The law
-(`vent_model_stepped.cpp`) treats a part-open window as eligible both ways and asked
-correctly; T6 dropped the command. **That is the fallback path:** a sensor fault while M3
-is part-open demotes to mode 1 at once, and mode 1 then left M3 where it stopped, until a
-wind override or a recalibration happened to move it.
-
-**Why nothing caught it:** the law's host tests passed because the law was right. All
-seven target stages drive T2 through the bench hook (`SRC_OPERATOR_MANUAL`), a side door
-that never passes T6's apply filter. Only the soak came in by the front door.
-
-**Fix:** both filters include `WIN_PART_OPEN`; T2 already accepted an OPEN and a CLOSE from
-`CH_PART_OPEN`. **Fail-first:** `bin/at_wp_fallback.py` holds T6 off with a long dwell, has
-the hook leave M3 part-open by a drive *toward* the end T6 wants (so T6 cannot reverse it),
-then asserts T6 finishes the move. On 2344, 2026-09-21: the **unfixed build failed both stages**
-(M3 still PART_OPEN after 200 s, T6 wanting CLOSED, then OPEN); with **only bit 16** of
-`-DWPOS_FAILFIRST_212` restoring the old filter, both stages failed too — the flag reproduces the defect on its own; the **fixed build** passed both: T6 closed the part-open M3 after 49 s and opened it after 47 s.
-
-**Rule — a RECURRENCE of 2026-09-20 "a new resting state made an old detector wrong", one
-day later, same state, my own code:** *when you add a state, grep for its NEIGHBOURS, not for
-it.* `grep WIN_PART_OPEN` finds the code that already knows about it; `grep
-'WIN_MOVING_OPEN\|WIN_MOVING_CLOSE'` and `grep '== WIN_OPEN\|== WIN_CLOSED'` find every list
-that was complete before it existed. Done for this fix: every other list is a "moving?"
-test, which is right to exclude a window at rest, or already names `PART_OPEN`;
-`commission.cpp` closes a part-open M3 first, which its own comment prefers. **And a test
-that enters by a side door certifies the room, not the door.**
-
-## 2026-09-21 — an acceptance harness aborted twice on a marginal link, and I blamed the second on a dwell
-
-**Problem:** `at_wp_fallback.py` died on `TimeoutError` twice before it tested anything —
-once on the bench hook's reply (M3 went part-open anyway: the command landed, the reply was
-lost), once on a `GET /api/config` inside `rig.want()`.
-
-**Root cause:** the link, not the firmware. 2344 was at -78 dBm RSSI: **15 % ping loss to
-the unit against 0 % to the gateway** in the same paired run, round trips up to 820 ms. That
-is the 2026-09-12 rule (paired ping test before suspecting code) **recurring**, on the other
-module. A harness written against a strong link (10 s timeout, any exception fatal) broke on
-a weak one.
-
-**It got worse during the morning:** -83 dBm by 09:00, a *connect* timeout inside a config
-read, and a status read that failed mid-check — the stage judged the "?" it got as a state
-and came back INCONCLUSIVE with a message that read OPEN. **Fixes, all in the harness:**
-`at_wp_ramp.HTTP_TIMEOUT_S` (10 by default; `at_wp_fallback.py` sets 30); `GET_RETRIES` —
-an idempotent GET is tried three times, a write never blindly; the fallback test's POSTs
-tolerate a lost reply and judge by state; and its `state()` retries an unreadable status
-and each check judges and reports the SAME reading.
-
-**What the harness cannot fix: an upload.** Three OTA pushes of the fixed image then failed at
-83 %, 1 % and 22 % — "sender went silent; nothing installed", the unit's 30 s silence bound
-doing its job (no wedge, no reboot). **The operator moved the controller to a different AP**
-(network side; the controller did not even reboot): -53 to -59 dBm, 0 % loss, and the next
-push uploaded 1.4 MB in **7 s instead of 108 s**. When a rig module sits below about -75 dBm,
-ask for the move instead of retrying.
-
-**And a false alarm, caught:** uptime 406 s read as "2344 rebooted at 09:01, mid-test" —
-because I assumed the local time. The unit's own `time_iso` put the boot at 08:54:30: the
-OTA push. **Compute a boot time from the unit's clock and uptime, never from a guess of
-yours.**
-
-**And a misdiagnosis on the way:** I read the second abort as the gh#51 dwell trap (a dwell
-already running keeps its old length when the setting changes), because M3 was still CLOSED
-at cleanup — and added `fresh_start()` for it **before reading the traceback**, which showed
-the GET timeout. The hazard is real (`at_wp_confirm.py` documents it) and `fresh_start()`
-stays, but its docstring had to be corrected: it claimed the trap had held up that run. That
-is instance (7) of the "number that fits the story" PATTERN, and it happened thirty seconds
-after I had corrected instance (6) in the plan. **Rule: read the traceback before naming the
-cause.** An exception says exactly where it happened; a state at cleanup says only
-where things stopped.
-
-## 2026-09-21 — a bench push carried a GUI a day older than its firmware, and the version check agreed
-
-**Problem:** 2344's GUI still showed the old `min_intv_m3` tooltip ("Zero, the default") a day
-after the source said 600 s — while `/api/status` reported `fw_ver` 2.12.0-bench and
-`asset_version` 2.12.0-bench, a matching pair.
-
-**Root cause:** the bench asset zip was made by RESTAMPING `bin/2.12.0/web-assets-2.12.0.zip`, a
-build product from 15:15 that predated the last GUI commit. And the paired-version check cannot
-see it: every bench build of a version carries the same `-bench` string, so old assets and new
-ones report identically. The post-OTA rule ("read both `fw_ver` AND `asset_version`") proves the
-PAIR was installed, not that the content is current.
-
-**Fix:** the bench zip is now packaged straight from `firmware/data` (and checked byte-for-byte
-against it). Nothing in the repo changed: a release build zips `firmware/data` fresh, so this is
-a bench-push trap only — but `bin/2.12.0/`'s local artefacts are stale too and must be rebuilt
-before any publish.
-
-**Rule:** *a version string is evidence of content only if every content change moves it.* A
-reused `-bench` suffix does not, so for a bench push compare the payload itself.
-
-## 2026-09-21 — a positioning test read the controller's own cached position, taken mid-coast
-
-**Problem:** AT-WP02's first run reported ten stops at 50 % landing at 48.4-51.4 % — a
-spread of 3.0 % and a directional hysteresis of 1.5 %. Plausible numbers, and they were the
-wrong ones: read LIVE after the leaf had come to rest, six stops landed at 47.6-52.3 %,
-a hysteresis of ~3.9 %. The whole first analysis ("the leaf coasts ~2 %") was built on them.
-
-**Root cause:** `/api/status` carries **T17's cached reading**, and T17 read "at once" when a
-stroke ended, then not again for 30 s (the idle cadence). That read was written for full-travel
-strokes, which stop at their end switch seconds before T2's timer runs out, so "at once" was
-already at rest. A **targeted** stop cuts the relay mid-travel and the leaf coasts ~0.3-0.4 s
-more: "at once" is mid-coast. The harness read the cache 1 s after the stop and got the
-mid-coast value — and so did the GUI, T6's next decision and T17's own "where the leaf
-settled" log row, for 30 s.
-
-**Fix:** T17 reads the resting position one second plus one measurement window after every
-stroke (`SETTLE_BASE_MS`; fail-first bit 128 restores the read at once). `bin/at_wp02.py`
-measures each resting position LIVE, 2.5 s after the stop, and checks separately that what the
-unit then publishes matches it (`settle`).
-
-**Rule:** *before judging a controller by a number it publishes, ask when that number was
-sampled.* A cache is a claim about the past. `GET /api/diag/windowpos` has both: its top-level
-fields are a live device read, its `t17` block is the cache (with `age_ms`) — measure with the
-first, and test the second against it.
-
-## 2026-09-21 — a deferred command had a side effect, and a feedback field had two meanings (found by the simulator, not the rig)
-
-**Problem:** the model session replayed 2.12.0 as built in its closed-loop simulator and found
-three defects no rig harness had shown. (1) T6's reversal of a stroke under way, which gh#48
-DEFERS, first disarmed that stroke's target, so the stroke ran on to the end switch. (2) T6 never
-reported ABORTED: a window taken by T3, the operator or a recalibration read as FAIL_TIMEOUT.
-(3) `ms_since_move` = 0 meant "never moved" to T6 and "just moved" to a law, and the
-recalibration sweep set no move time and armed the close dwell even in mode 2.
-
-**Root cause:** (1) is ordering: the disarm sat at the top of `ch_start_open()` /
-`ch_start_close()`, above the guard that decides whether the command acts at all, so a command
-that did nothing still changed something. (2) and (3) are contract fields filled by inference and
-by a sentinel that is also a legal value, which nothing consumed in a way that could tell:
-`graded` treats FAIL_TIMEOUT and ABORTED alike, and mode 2 always starts at a stroke whose end
-sets the time.
-
-**Why the rig could not find them:** `graded` never reverses mid-stroke ("repeat, never chase"),
-and every harness sent its targets through the operator hook, which REVERSES where T6 is
-deferred: none of T6's deferrals were ever exercised. (2) and (3) have no physical symptom under
-today's law. Only something that drives the contract as written, with another law in mind, sees
-them.
-
-**Fix:** (1) the disarm skips T6's deferred reversal alone (fail-first bit 256); (2) T2 counts the
-takes and T6 reports ABORTED (bit 512), and a repeat of the outstanding target keeps the count it
-went out with (caught while writing the harness: graded re-posts on every wake while M3 moves);
-(3) UINT32_MAX = none since boot, the sweep and a motor alarm end a move, and the sweep arms
-`ch_dwell_ms()` (bit 1024). The bench hook takes `"source":"t6"`, so a harness can send a
-command the way T6 does.
-
-**Rule:** *a deferred or refused command must leave no trace: put every side effect BELOW the
-guard that decides whether it acts.* *A sentinel must be impossible as a value*: 0 ms is a legal
-"since", UINT32_MAX is not. And *a harness that sends from the wrong source tests the wrong
-rules*: the operator hook bypasses the dwell and gh#48. That is 2026-09-21's side door again, seen
-from the other side.
-
-## 2026-09-22 — three harness faults in one evening, all "the unit was not in the state the harness assumed"
-
-**Problem:** the fail-first arms for 9c53be7 ran on freshly pushed images, and two of the three
-said nothing about the rule they exist for: `aborted` and `sincemove` both reported "M3 never came
-under LINEAR control" and returned INCONCLUSIVE. Earlier the same evening, `at_wp_confirm.py`'s
-first stage failed its setup ("M3 did not reach OPEN within 420 s"), and a later run left 2344 in
-STANDBY, where T6 does nothing at all.
-
-**Root cause:** three different assumptions, none of them about the firmware.
-1. **A freshly pushed image has not stroked.** T17 promotes to POSITION control only at a stroke
-   boundary, so for the first stroke after a boot the gate is `timed` and mode 2 cannot engage.
-   Every earlier run of those stages happened on a unit that had been up for hours.
-2. **A cleanup that runs before the restore uses the TEST settings.** `at_wp_fallback.py` returns
-   M3 to an end with a recalibration in its `finally`, while the settings restore is an `atexit`
-   that runs later. In mode 2 that sweep armed `min_intv_m3` = 600 s, the stage's value, so the
-   next harness waited 420 s for a window that could not move for 600.
-3. **A cleanup that returns early skips the rest of the cleanup.** `to_an_end()` returned as soon
-   as M3 was CLOSED, without releasing STANDBY, so the unit sat inhibited after the run.
-
-**Fix:** `ensure_position()` strokes M3 once with the hook before either stage asks for mode 2 (a
-no-op on a unit that has been running); `to_an_end()` releases STANDBY even when it has nothing to
-move. The dwell one is documented in the 2.12.0 release notes rather than fixed: the harness would
-have to restore before it recalibrates, which is a change to the shared `Rig`.
-
-**Rule:** *a harness that runs right after a push is testing a different unit than one that runs
-after an hour — list what the previous run and the boot left behind (the gate not yet promoted, a
-dwell armed from test settings, STANDBY, a part-open window) and establish each one rather than
-assuming it.* And an INCONCLUSIVE arm proves nothing: the fail-first only counts when the stage
-reaches the rule and fails on it.
-
-**[RECURRED 2026-09-24, twice more, and the second one is a new shape.]** (1) `min_intv_m3` was
-found at **0** on 2344 during the gh#82 work. No harness failed to restore: one of them had read 0
-as "the original" because an *earlier* harness was mid-run when it started, and dutifully put 0
-back at the end. **A harness that memorises "the original" memorises whatever the previous harness
-left** -- so the restore is only as good as the state it sampled, and a value that is restored is
-not thereby correct. Check the rig's settings against what the RIG should hold (`travel_m3` 13,
-`min_intv_m3` 600, `wpos_fitted_m3` 1), not against what a run recorded. (2) `at_wp_confirm.py`
-failed twice for reasons that were not its subject: once a recalibration was still running, and
-once because the rig was **in mode 2** -- the suite predates mode 2 and its stages assume timed
-drives. It has to be run in mode 1 and the operator's mode restored afterwards, which the run now
-does explicitly.
-
-## 2026-09-24 — mode 2 could not close a window: an arrival test by position cannot satisfy an END
-
-**Problem:** the first night mode 2 ran on the dev rig (2026-09-23/24), `graded` closed M3 in four
-targeted drives and the last one stopped at **20.8 mm — 1.3 % — with the closed end sensor never
-made**. Nothing moved M3 again all night. The operator switched to mode 1 at 08:27 and its timed
-close made the end sensor 1.6 s later: the leaf really had been a couple of centimetres short, and
-the window stood open while every log row said the law's intent was satisfied (gh#83).
-
-**Root cause:** a targeted stop ends on a READING. The arrival band is `deadzone_m3_mm / window_mm`
-= 20/1500 mm = 1.3 %, and once a stop landed inside it, **both** sides called it arrived: T6 on
-`|pos - want| <= band`, and the law on `off <= m3_deadzone_x10` ("the caller would drop it
-anyway"). Each test is right for an ordinary aperture and wrong for an end, which is made by a
-switch, not by a number. Mode 1 never had the problem: its close runs `travel_m3 + margin` into the
-end switch.
-
-**Why no test caught it:** every mode-2 test drove M3 to a PARTIAL target — the band, a second
-target, a reversal, a take — or used mode 1's end drives. Nothing ever asked mode 2 to close the
-window completely. The extremes of the new command were the one region left untested, and they are
-the region where "position" and "end" stop meaning the same thing.
-
-**Fix:** a target within the deadzone of an end IS that end -- snapped to 0 or 1000, commanded as
-the ordinary `CMD_CLOSE`/`CMD_OPEN` end drive, and judged arrived only in the terminal STATE, in the
-caller, in the law and in `last_result`. Fail-first bit 2048; `bin/at_wp_fallback.py endstop`; a
-host test that fails on the old law.
-
-**Rules:** *an end is a switch, not a number -- never let a position test stand in for it.* And when
-a feature adds a new WAY to command an actuator, test that command's EXTREMES before its middle: the
-partial targets all worked, and the one value an operator would call "shut" did not. Third, this was
-found by letting the thing run for a night in the mode nobody had run it in -- an overnight of
-ordinary operation is a test, and it found in one night what nine stage tests had not.
-
-## 2026-09-24 — a listing that drops names and still says OK, twice: theirs, then mine
-
-**Problem:** `/api/log/files` on 2344 showed 30 files, none newer than 2026-09-18, while the unit
-had been logging continuously and the card held far more. The file the unit was writing could not
-be listed or downloaded, which blocked an investigation (gh#82). Retention had also stopped: files
-from July were still there under a 30-file cap.
-
-**Root cause:** `storage_sd_list_csv()` fills the caller's buffer, **drops the names that do not
-fit, and returns `STORAGE_OK` anyway**. FAT lists roughly in creation order, so the names it drops
-are the NEWEST. Every decision T9 made came from such a list: the retention count saturated at
-exactly `SD_MAX_FILES` so `count > SD_MAX_FILES` was never true and nothing was ever deleted; the
-boot resume took the largest name from the same partial view; T14's upload enumerators too (gh#42
-had sized them to 30 names, which only moved the cliff from ~21 files to ~30).
-
-**And then I did it again, one level up.** With the collection fixed, the first rig read returned
-37 files and HTTP 200 — while a direct download of a name it had omitted returned 200 with a
-megabyte of content. The *response* buffer was still 1 024 bytes, so the handler stopped adding
-names when it filled: the same silent cut, in the code written to fix silent cuts. What exposed it
-was not the listing but a **cross-check against a different route**: asking for a file the list did
-not mention.
-
-**Fix:** a non-truncating iterator in the driver (`storage_sd_foreach_csv()`, one callback per
-file, constant memory); every caller aggregates during that pass; the list-based helpers deleted so
-no second path exists. The response buffer is sized from `LOG_FILES_MAX`, and the reply now carries
-`on_card`, the number of files the card actually holds, so a bounded list is visible as one instead
-of being inferred from its length.
-
-**Rules:** *an API that can return less than it was asked for must say so* — a count, a flag,
-anything, because "fewer than I expected" and "that is all there is" look identical to every
-caller. *When you fix a silent truncation, check the layer above it for the same shape.* And
-*verify a listing against a different route*: the download said the file was there when the listing
-said it was not, which is what made the second cut visible in minutes rather than weeks.
-
-**Two more, from the same scan.** (1) **Retention that deletes one file per rotation cannot catch
-up with a backlog.** With the count fixed, the card held 113 files against a cap of 30 and each
-rotation deleted one while creating one, so it sat exactly where it was -- correct, and never
-converging. `SD_TRIM_PER_ROTATION` (5) trims towards the cap instead, re-scanning between deletes;
-113 -> 38 in 90 minutes on the rig. *A limit enforced at one unit per event is a limit only if the
-backlog is one unit.* (2) **T14's upload watermark compared FILENAMES**, and the names had just
-gained a per-unit prefix: a `FDA4_...` watermark is lexically above every `2344_...` name, so this
-unit would have uploaded nothing again, for ever, with no error. It compares the embedded
-TIMESTAMP now. *When a name gains a prefix, every comparison that treated the name as an ordering
-key silently changes meaning -- go and find them.*
-## 2026-09-24 — the first mode-2 soak failed in 15 minutes: the harness asked for an END, the law commands an APERTURE
-
-**Problem:** the 12-session soak of 2.12.2-bench started at 22:11 in mode 2 and session 1 failed at
-22:26 with *"M3 did not reach OPEN within 900 s (now PART_OPEN)"*. M3 was sitting at **49.0 %** and
-the firmware had done nothing wrong. Two failures in a row stop the run, so the soak would have
-ended by 23:26 having proved nothing.
-
-**Root cause:** `at_wp_strokes.py` makes a stroke by raising the temperature demand and waiting for
-M3's state to become `OPEN`. In mode 1 that is exactly what the stepped law does. **In mode 2
-`graded` commands an APERTURE proportional to demand** — the session's maximum demand (`t_max` at
-its minimum, `cr_priority` 2) settles around 49 % on this rig — so `OPEN` is a state the law had
-no reason to produce. The mode-2 stage tests never caught it because every one of them drives M3 to
-a *target*, through the bench hook or through T6; the soak is the only harness that asks for an end
-by demand alone. (The close side is sound: demand falls to nothing, the law asks for 0, and since
-2.12.1 a target inside the deadzone of an end IS that end, so M3 must make the closed switch —
-which is half of what this soak exists to show.)
-
-**Fix:** the open stroke is mode-aware. In LINEAR mode it waits for a **completed judged drive**
-(M3 moved, then stopped, and the `strokes` counter advanced) at whatever aperture the law chose;
-only the close still has to reach an end. A soak counts judged drives, which is what it always
-meant to count. The aborted run is kept as `strokes_aborted_2211.log`, the soak restarted at 22:32,
-and the 12 h report job was rescheduled to match the new start rather than firing 20 min early.
-
-**Rules:** *in mode 2, "the stroke finished" and "the window is open" are different claims* — a
-harness written when only the timed law existed asserts the second and means the first. And when a
-second control law lands behind the same commands, **re-read every test that asserts an actuator
-STATE**: the law decides where the actuator stops, and only the ends are shared vocabulary between
-the two laws. Fifth instance of the rig-state pattern above, and the first where the wrong
-assumption was about the CONTROL LAW rather than about what a previous run left behind.
-
-**And then I proved the pattern on myself, twice in ten minutes.** The restarted run revealed a
-second wrong limit -- `graded` closes in STEPS (49 % -> 25 % -> ... -> the end) about 600 s apart,
-so a close from half open is three drives and 900 s fails it too (1800 s now). I killed that run to
-patch the constant **while session 1 was inside its close**, so the harness's restore never ran, and
-it left `t_max_ngt` at 35 and M3's dwells at the 5 s test value. The next run started, read those
-as "the originals", and would have soaked the rig for 12 h on test settings and left them behind.
-*Never kill a harness mid-session* -- wait for the session to end, or restore by hand afterwards
-against the RIG's own values, which is what `scratchpad/restore_rig.py` now does (t_max_day 28,
-t_max_ngt 20, cr_priority 0, dwell_open_m3 1500, dwell_close_m3 300, travel_m3 13, min_intv_m3 600,
-ctrl_mode_m3 1, wpos_fitted_m3 1). Third restart, 22:40:53, with the right baseline.
-## 2026-09-25 — `rota_release.py release` died with HTTP 422 "tag_name is not a valid tag", and the cause was an unpushed commit
-
-**Problem:** with the soak passed and the artefacts built, publishing 2.12.2 returned
-
-```
-ERROR: GitHub POST /releases -> HTTP 422 Unprocessable Entity:
-  {"code":"custom","field":"tag_name","message":"tag_name is not a valid tag"},
-  {"message":"Published releases must have a valid tag"},
-  {"code":"invalid","field":"target_commitish"}
-```
-
-Nothing about the tag name is wrong — `v2.12.2` is the same shape as the five releases before it.
-
-**Root cause:** the script tags **HEAD**, and HEAD was `ad9cd66`, which existed only locally;
-`origin/main` was one commit behind at `60b34dc`. **GitHub cannot create a tag on a commit it does
-not have**, and it reports that as an invalid `target_commitish` plus a confusing complaint about
-the tag name. The operator commits and pushes by hand here, so a session that has just staged work
-and had it committed is routinely one commit ahead of the remote.
-
-**Fix:** `git push origin main`, then re-run the release. It succeeded unchanged and **reused the
-already-allocated seq 56**, because the first attempt had written `bin/<ver>/manifest-<ver>.json`
-before the upload (the same write `--dry-run` performs). Nothing was left on GitHub by the failure:
-the releases API showed no `v2.12.2` tag, draft or release.
-
-**Rules:** *before any release, compare `git rev-parse HEAD` with `origin/main`* — `git log
---oneline origin/main..HEAD` empty is the precondition, and it is not something the script checks.
-The script's own *"working tree has uncommitted changes"* warning is a **different** thing and is
-the documented false positive on untracked files (the artefacts it has just built); resolve it with
-`git status --short | grep -v '^??'` and do not let it mask the real precondition. And *a 422 about
-a field you did not set is usually about the object it points at* — here `target_commitish`, not
-the tag.
-
-## 2026-09-26 — a commit that leaves out a NEW file builds on this PC and fails from a clean clone
-
-**Problem:** 2.14.0 was committed as `27e6aa2` without its two new files,
-`firmware/src/types/fmt_tenths.h` and `bin/2.14.0/release-notes.md`. Every build on this PC
-still passed, because the files were on disk. But `status_json.cpp` and `web_server.cpp`
-include the header, so **a clean clone of `main` could not build**, and `rota_release.py
-release` would have tagged that commit as `v2.14.0`.
-
-**Root cause:** a new file stays untracked until it is added by name, so committing the
-modified files leaves it behind. This tree has about 40 untracked files that are kept out
-on purpose (`sdkconfig.*`, `design/*.docx`, `bin/2.2.13/` and more), so two more `??`
-lines in `git status` do not stand out.
-
-**Fix:** `fac549e` added both files before anything was published. **Before any release,
-`git status --short --untracked-files=all -- firmware/ drivers/ bin/<ver>/` must show no
-`??` other than the known `sdkconfig.*` files.** A hand-off's `git add` list names every
-NEW file explicitly, and `git show --stat HEAD` must list them after the commit. The
-definitive test is a build from a clean clone.
-
-**Where it lives:** `bin/rota_release.py` (it tags HEAD as it is), `bin/<ver>/`.
-
-## 2026-09-27 — an overnight watch started as a local background task died with the Claude Code session
-
-**Problem:** a pull verification was left running overnight as a local background task. It
-polled 2344's public status until 03:30. The session ended and the task went with it, after
-one sample, so the pull at 01:03 was never seen live.
-
-**Root cause:** a local background task belongs to the Claude Code process. When the session
-ends it is stopped, and on resume it is reported only as "did not finish before the previous
-session ended". The soak jobs on Shuttle2 survive because they run under init on another
-host (`nohup`, stdin from `/dev/null`, output to files).
-
-**Fix:** nothing was lost, because the unit keeps its own record: the SD log's ROTA rows
-gave the full timeline the next morning (see the 2026-09-12 `dl`/`apply` entry). **Anything
-that must be observed overnight runs on Shuttle2 like the soak jobs. Otherwise, plan to
-reconstruct it from the device's log on resume, and say that the live observation was lost.**
-
-**Where it lives:** `~/ghc-soak/` on Shuttle2 (the pattern), `/api/log/download` (the reconstruction).
