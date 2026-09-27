@@ -174,7 +174,7 @@ python model/closedloop/law_compare.py --plants primary --airflow 1 --set min_in
 python model/closedloop/test_linear_m3.py
 ```
 
-`graded` is a first candidate for mode 2's law (plan decision 9 stays open): M1 and M2 as the stepped law, M3 proportional with a rate limit. It is in `drivers/ventModel/src/vent_model_graded.cpp`; its declaration and results are in [`gradedCandidate.md`](gradedCandidate.md). What to ship as the linear dwell, `min_intv_m3`, is in [`linearDwell.md`](linearDwell.md).
+`graded` is mode 2's law: the operator chose it on 2026-09-25 (plan decision 9), mode 2 has run it since 2.12.0, and mode 2 is the factory default since 2.13.0 — verified on the development rig only, never on a greenhouse window. M1 and M2 as the stepped law, M3 proportional with a rate limit. It is in `drivers/ventModel/src/vent_model_graded.cpp`; its declaration and results are in [`gradedCandidate.md`](gradedCandidate.md). What to ship as the linear dwell, `min_intv_m3`, is in [`linearDwell.md`](linearDwell.md).
 
 **How much air a part-open M3 lets through is unmeasured**, so `--m3-airflow-exp` sets it: M3's airflow as its opening to that power. 1 is the fitted plants' assumption (proportional); below 1 a part-open M3 lets through more air, above 1 less. The plant is handed the exact time-average over each step, and at 1 the arithmetic is unchanged. `law_compare.py` runs 0.5, 1 and 2 by default. A verdict should hold across them.
 
@@ -339,7 +339,7 @@ Verify a new law against both, and treat a verdict that differs between them as 
 
 1. **NS-10's remainder: the north-wind swing** (3.0-3.2 against 3.9 degC). A probe-mix term was tried and did not close it (above). The next step is data, not a model term: NS-9's forced tests with a second probe.
 2. **NS-9's forced tests**, now with a sharper question: does the whole house cool about twice as fast in north wind, or mainly the spot where the controller's sensor hangs? A temporary second probe beside the controller's, and one at the south side, would answer it.
-3. **Linear M3 (mode 2).** The simulator drives one, and `graded` is a first candidate law ([`gradedCandidate.md`](gradedCandidate.md)). The part-open airflow curve is still unmeasured; only the new firmware and hardware can measure it. Until then, `--m3-airflow-exp` varies it, and a verdict must hold across the range.
+3. **Linear M3 (mode 2).** The simulator drives one with `graded`, the law the operator chose on 2026-09-25 ([`gradedCandidate.md`](gradedCandidate.md)). What it predicts for the climate stays a prediction until mode 2 runs on a greenhouse window. The part-open airflow curve is still unmeasured; only the new firmware and hardware can measure it. Until then, `--m3-airflow-exp` varies it, and a verdict must hold across the range.
 4. **Outdoor T/RH and sun sensors on the controller:** the evidence and a plan are in [`design/sunAndOutdoorSensorsStudy.md`](../../design/sunAndOutdoorSensorsStudy.md). The next model step is to test, against both plants, a law that uses the outdoor temperature.
 
 ## Known limits

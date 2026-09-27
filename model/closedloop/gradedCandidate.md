@@ -1,10 +1,10 @@
-# `graded`: a first candidate for mode 2's law
+# `graded`: mode 2's law, and the evidence that chose it
 
 | Field | Value |
 |---|---|
-| Law | [`drivers/ventModel/src/vent_model_graded.cpp`](../../drivers/ventModel/src/vent_model_graded.cpp), `graded` v1, with 15 host tests (`pio test -e native`) |
-| Status | **A candidate, 2026-09-19.** Which law mode 2 runs is the plan's open decision 9 ([`integrateWindowPositionSensor.md`](../../design/integrateWindowPositionSensor.md) §10). This is the simplest candidate the plan names, a proportional map with a rate limit. Its constants are provisional |
-| Evidence | The closed-loop simulator only: 5C88's logged weather, 2026-06-05 to 09-16, on both adopted plants, with today's firmware (2.12.0's T2, T17 and T6 as built, 045a39c and 9c53be7; re-run 2026-09-21), across a range of M3 airflow curves. No rig run, no greenhouse run |
+| Law | [`drivers/ventModel/src/vent_model_graded.cpp`](../../drivers/ventModel/src/vent_model_graded.cpp), `graded` v1, with 18 host tests (`pio test -e native`). 2.12.1 (gh#83) added the end rule, and 3 of those tests, after the results below were computed: an end target, 0 % or 100 %, is met only by the window's state, never by a reading inside the deadzone. Re-checked 2026-09-27 with the rule compiled in, the walkthrough's 73 rows and the primary plant's summer column reproduce exactly. The simulator's T2, T17 and T6 are still 2.12.0's: 2.12.1's end drive and 2.13.0's engage-at-rest (gh#86) are not emulated |
+| Status | **Chosen by the operator on 2026-09-25** — decision 9 of [`integrateWindowPositionSensor.md`](../../design/integrateWindowPositionSensor.md) §10, which cites this document as its evidence. Mode 2 has run `graded` since 2.12.0, and mode 2 is the factory default since 2.13.0. **Verified on the development rig only:** mode 2 has never run on a greenhouse window and 5C88 still runs 2.3.1, so every climate figure below is still a simulator prediction (the plan's §0, open items 1 and 2). Written while `graded` was a candidate — the simplest one the plan named, a proportional map with a rate limit — and its evidence stands as written. Its constants are still provisional |
+| Evidence | The closed-loop simulator only: 5C88's logged weather, 2026-06-05 to 09-16, on both adopted plants, with the firmware as of 2.12.0 (its T2, T17 and T6 as built, 045a39c and 9c53be7; re-run 2026-09-21), across a range of M3 airflow curves. No greenhouse run. The rig soaks since (2.12.2, 2.13.0, 2.14.0, every fault counter at 0) test the firmware on a 13 s test window, not the climate; the plan's §0 records them |
 | Regenerate | `python model/closedloop/law_compare.py` (about 10 minutes); the sweep with `--define`, below; the walkthrough with `graded_walkthrough.py` (seconds) |
 
 ## Short answer
@@ -13,7 +13,7 @@ In the simulator, over the summer, on both adopted plants:
 - **North-wind days: the swing drops from 3.0–3.2 to 1.5–2.2 °C, at every airflow curve tried.** That is the robust result. It is also where the plants are weakest: they under-state the logged north-wind swing, 3.9 °C. So it is a lead to confirm on the greenhouse, not yet a finding.
 - **Other days: no clear change,** between −0.5 and +0.4 °C depending on the plant and the airflow curve.
 - **Heat: no gain.** Hours at or above 31 °C stay at 2.3–2.4 a day with proportional airflow. If a part-open M3 lets through less air (exponent 2), they rise to 2.6. Where the stepped law throws M3 wide — a reading of 30.5 °C, which the ladder reads as 31 — this law has it half open.
-- **The motor: about 2.8 times the starts, the same running time.** M3 makes about 22 drives a day against the stepped law's 7.7, yet runs 21.9 minutes a day against 22.6. The contract asks that a continuous law not multiply the starts. No setting tried meets that; see the sweep below. Whether starts or running time wear the motor is unmeasured (contract §7), so that is a decision to make.
+- **The motor: about 2.8 times the starts, the same running time.** M3 makes about 22 drives a day against the stepped law's 7.7, yet runs 21.9 minutes a day against 22.6. The contract asks that a continuous law not multiply the starts. No setting tried meets that; see the sweep below. Whether starts or running time wear the motor is still unmeasured (contract §7). The operator chose `graded` on 2026-09-25 with this result in the evidence.
 
 ## How it behaves over time
 
@@ -92,7 +92,7 @@ A synthetic ramp: 27 °C, then 1 °C per 20 min to 32, eighty minutes there, and
 
 Reading it: M1 opens when the average first rounds to 29 and M2 at 30. M3 starts three and a half minutes after M2, at 10 %, the first correction that clears the smallest move. From there it climbs in 25 % steps, one per ten minutes — the rate limit and the hold in series — and reaches the open end at 117 min. **It then stands still for an hour and a half**, because the demand is met and nothing asks it to move. Coming down it unwinds the same way, shuts when the step falls below 2, and M1 is still open at the end, waiting for 23 °C.
 
-**Mode 1 on the same ramp opens M3 fully at 93:00 and shuts it at 233:30: two drives against ten,** with the same single M1 drive and two M2 drives. That is the trade this candidate makes — the ventilation follows the temperature instead of stepping to the end of its travel, and the motor pays for it. It is also why `min_intv_m3` exists as a floor under whatever law runs next ([`linearDwell.md`](linearDwell.md)).
+**Mode 1 on the same ramp opens M3 fully at 93:00 and shuts it at 233:30: two drives against ten,** with the same single M1 drive and two M2 drives. That is the trade this law makes — the ventilation follows the temperature instead of stepping to the end of its travel, and the motor pays for it. It is also why `min_intv_m3` exists as a floor under whatever law runs next ([`linearDwell.md`](linearDwell.md)).
 
 ## What humidity does
 
@@ -129,6 +129,8 @@ That is the setting's meaning, not a defect — but it is worth knowing before e
 | 84 | step 3 | 0 | 3 | 3 |
 | 45 | step 0 | 0 | 0 | 0 |
 
+**At 29 °C the last row reads differently, and that is [gh#84](https://github.com/pe1mew/greenhouse-Controller/issues/84).** Under `cr_priority` 1 the dry house's step 0 beats the temperature's step 1, so every window closes — M3 included, because `graded` embeds the stepped law's resolver — while the temperature asks to vent. It has not happened in the field, since 5C88 and the rig both run 0; the plan carries it as decision 16, and the fix changes both laws. [`humidityControl.md`](humidityControl.md) counts the hours.
+
 ### M3 is all or nothing for humidity
 
 Humidity does not graduate M3. Its demand is **100 % at step 3 and 0 % below it**, and M3 takes whichever is larger, its temperature aperture or this. So between 76 % and 83 % RH humidity can open the roof windows while M3 stays exactly where the temperature put it.
@@ -164,13 +166,13 @@ The house one step above its setpoint at 29 °C, humidity climbing 1 % per 5 min
 
 **The rate limit applies to a humidity demand as well, and that is the thing to argue about.** At 70:00 humidity asks for M3 wide open. This law takes four moves and **36 minutes** to get there, because 25 % per move and the ten-minute hold know nothing about why the target moved. Mode 1 has M3 fully open at 73:00, three minutes after the same demand, and shut again at 153:30: two drives against eight.
 
-For a heat demand that patience is the point — the reading lags, so chasing it overshoots. For a humidity flush it may be the wrong instinct: the crop's risk is the wet air sitting there, and the fix is a known quantity, not a set point to converge on. **Whether a step-3 humidity demand should bypass the rate limit is an open question for this candidate** — it is a small change in `m3_linear()`, and the closed loop cannot answer it, because the plants were never fitted against a humidity event: the campaign's only forced humidity test, 2026-07-11, ran with door 1 open throughout (`thermalProfileCampaign.md`).
+For a heat demand that patience is the point — the reading lags, so chasing it overshoots. For a humidity flush it may be the wrong instinct: the crop's risk is the wet air sitting there, and the fix is a known quantity, not a set point to converge on. **Whether a step-3 humidity demand should bypass the rate limit is an open question for this law** — it is a small change in `m3_linear()`, and the closed loop cannot answer it, because the plants were never fitted against a humidity event: the campaign's only forced humidity test, 2026-07-11, ran with door 1 open throughout (`thermalProfileCampaign.md`).
 
 Coming down it walks back the same way: the demand falls to 0 as soon as RH is below 84, and M3 unwinds in 25 % steps, 10 minutes apart, from 150:30 to 186:30. Humidity's own vote vanishes at 75 %, with no guard to hold it — so what keeps M1 open at the end is the temperature branch, as always.
 
 ## Results
 
-`law_compare.py` closes the loop over 2026-06-05 to 09-16 twice per plant: the stepped law with a binary M3, and `graded` with a linear one. Both use today's firmware and 5C88's settings. The swing is the campaign's measure, the median over days of the temperature range between successive M3 openings. The fluctuation is the daytime spread of the temperature around its own 60-min average. The script's docstring defines each row. North-wind days are those with most of the logged M3-open time in wind from 315–45°: 25 days, against 57 with other wind.
+`law_compare.py` closes the loop over 2026-06-05 to 09-16 twice per plant: the stepped law with a binary M3, and `graded` with a linear one. Both use the emulated firmware, 2.12.0 as built, and 5C88's settings. The swing is the campaign's measure, the median over days of the temperature range between successive M3 openings. The fluctuation is the daytime spread of the temperature around its own 60-min average. The script's docstring defines each row. North-wind days are those with most of the logged M3-open time in wind from 315–45°: 25 days, against 57 with other wind.
 
 ### The summer, proportional airflow
 
@@ -267,6 +269,6 @@ Each row is one run of `law_compare.py --plants primary --airflow 1 --set min_in
 ## What this does not show
 
 - **How much air a part-open M3 lets through.** It is unmeasured (plan §5c), so the comparison is run at three curves; see the results for whether the verdict holds across them.
-- **North-wind days are the plants' weak spot.** The adopted plants under-state the logged swing on those days (3.0–3.2 against 3.9 °C, [`README.md`](README.md), "The swing gap"), which is where this candidate gains most. Treat that gain as a lead to confirm on the greenhouse (contract §6).
+- **North-wind days are the plants' weak spot.** The adopted plants under-state the logged swing on those days (3.0–3.2 against 3.9 °C, [`README.md`](README.md), "The swing gap"), which is where this law gains most. Treat that gain as a lead to confirm on the greenhouse (contract §6).
 - **The thermal claim needs the greenhouse** (contract §5 item 5). A rig soak can prove that apertures are reached; only a production summer can prove the limit cycle is damped.
 - **`graded` has not run on the rig or in the greenhouse.** It is in T6's model table for testing only. The simulator emulates 2.12.0's T2, T17 and T6 as built (045a39c, 9c53be7): the stop a learned lead early, the leaf's run-on, the settle read, one dwell in mode 2, T6's feedback including ABORTED, and the CLOSE_ALL sweep (`README.md`, "A linear M3"). The run-on is the rig's, 420 ms; production's is unmeasured, and T2 learns it whatever it is.
