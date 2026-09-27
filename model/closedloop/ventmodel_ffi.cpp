@@ -131,6 +131,7 @@ static const vm_layout_entry_t k_layout[] = {
     VM_FIELD(vent_in_t, rh_valid),
     VM_FIELD(vent_in_t, wind_valid),
     VM_FIELD(vent_in_t, t_max_c10),
+    VM_FIELD(vent_in_t, t_min_c10),
     VM_FIELD(vent_in_t, rh_max_pct),
     VM_FIELD(vent_in_t, rh_min_pct),
     VM_FIELD(vent_in_t, hyst_t_c),

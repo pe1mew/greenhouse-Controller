@@ -125,9 +125,9 @@ EFFECT = {
     "lon_frac":     ("T4", "longitude = lon_deg + lon_frac/1000"),
     "poll_interval": ("poll", "T5 samples and T6 decides every poll; each window "
                               "holds minutes*60/poll samples"),
-    "t_min_day":    ("none", "T6 never reads it: a heating setpoint, and there is no "
-                             "heating (contract §3a); LCD and GUI only"),
-    "t_min_ngt":    ("none", "as t_min_day"),
+    "t_min_day":    ("law", "t_min_c10 by day (interface 3, stepped v2, gh#84): the floor "
+                            "under a humidity-only opening, t_min + 2 C. Still no heating"),
+    "t_min_ngt":    ("law", "t_min_c10 by night, as t_min_day"),
     "deadzone_m3":  ("M3", "with a linear M3: m3_deadzone_x10 (over --m3-span-mm); T6 "
                            "drops a target this close to M3 at rest, T2 stops this close"),
     "wpos_fitted_m3": ("M3", "1: M3 linear, the law gets cap, pos and age; with a law "

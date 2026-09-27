@@ -6,6 +6,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.15.0] — 2026-09-27  (humidity venting gets a floor, dryness stops closing against heat, and the law in force is published)
+
+Minor: the control law changes behaviour, the SD log gains a row and the status payload a field
+([gh#84](https://github.com/pe1mew/greenhouse-Controller/issues/84)). **At `cr_priority` 0 — the
+default, and the setting of 5C88 and the rig — every window decision is the same as in 2.14.1.** Not
+yet run on hardware. Details and every number: `bin/2.15.0/release-notes.md`.
+
+**Changed — the law is `stepped` v2 and `graded` v2** (interface 3 of `design/ventModelContract.md`):
+
+- **Dryness never closes against heat**, under any priority. v1's priority 1 closed a hot, dry house.
+  As a consequence **`rh_min` changes no decision** under any priority. That is documented, not fixed.
+- **Humidity may open the house on its own only under priority 1 or 2, only from `t_min` + 2 °C, and
+  only M1.** A live opening holds down to `t_min` + 1 °C. `t_min` finally has a job: it had been a
+  heating setpoint with no heating.
+- **A close guard at `rh_max`:** a live humidity vote holds at 1 until the average is
+  max(`hyst_rh` / 3, 1) % below the ceiling. The humidity branch never had one.
+- **Priority 2 is priority 1.** `graded` changes no code: it embeds `stepped` and bumps with it.
+- `vent_in_t` gains `t_min_c10` (`VENT_MODEL_API` 3); T6 fills it, and the simulator's mirror follows.
+
+**Added.**
+
+- **`LOG_MODE_CHANGE` param 56:** the law in force by name and version, written with the param 54 row
+  at boot and on every change of the effective mode. `log/logparser.py` decodes it in the same change.
+  The three model tools that read vent steps now keep param 0 and skip every other MODE row, instead of
+  a list of known ones.
+- **`/api/status` `windows.law`**, e.g. `"graded v2"`, from T6's own law table.
+- **A digest test per law**: 20 000 pinned decisions and the version. A behaviour change without a
+  version bump now fails the build, which is what gh#83 got through.
+
+**Operator surfaces.**
+
+- The conflict priority is a choice of two, in the web GUI and on the LCD (`T/RH prio (0/1)`):
+  *Temperature first* and *Humidity may also open M1, above T min + 2 °C*. A stored 2 stays valid and
+  shows as the second.
+- **T min is settable again** in both places. The LCD's Day and Night browse lists have 4 setpoints.
+- The tooltips that promised a close for dryness are corrected.
+- Manuals: boer 1.26, beheerder 1.30.
+- Documents: FRS FR-C07, FR-C08, FR-CR03 and FR-CR04; TSDS §5 and §5.16; `logparser.md` 1.24; the
+  status-site specification 2.1.
+
+**Verified:**
+
+- host tests 49/49 (`stepped` 30, `graded` 19), and the new and changed ones fail on v1 (9 and 4);
+- the prototype's checks pass on the real law, 11/11;
+- `vent_step_replay.py` reports `stepped v2` and 97.9 % of 2 268;
+- `gate-control` passes. Its T-demand is identical to v1's; 5 RH-vote rows differ, each the close guard;
+- both firmware images build;
+- the GUI works on the mock server.
+
+**Not verified:** anything on a controller.
+
 ## [2.14.1] — 2026-09-27  (dead code removed; the unit behaves exactly as 2.14.0)
 
 Patch, with **no behaviour change**, **published to the ROTA soak channel as seq 58** on 2026-09-27. The

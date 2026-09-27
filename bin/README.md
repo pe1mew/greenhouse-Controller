@@ -12,13 +12,13 @@ bin/
   gh_issue.py              <- minimal GitHub Issues client
   check_cfg_desc.py        <- config-descriptor checker (the pre-commit hook runs it on config changes)
   at_*.py                  <- acceptance harnesses for the development rig
-  2.14.1/
-    greenhouse-controller-2.14.1.bin    <- firmware image
-    web-assets-2.14.1.zip               <- web UI (STORE-only ZIP)
-    bootloader-2.14.1.bin, partitions-2.14.1.bin
-    firmware-2.14.1.elf, firmware-2.14.1.map
+  2.15.0/
+    greenhouse-controller-2.15.0.bin    <- firmware image
+    web-assets-2.15.0.zip               <- web UI (STORE-only ZIP)
+    bootloader-2.15.0.bin, partitions-2.15.0.bin
+    firmware-2.15.0.elf, firmware-2.15.0.map
     release-notes.md                    <- also the GitHub release text when published over ROTA
-    manifest-2.14.1.json                <- ROTA sequence-ledger entry, written when published
+    manifest-2.15.0.json                <- ROTA sequence-ledger entry, written when published
   ...
 ```
 

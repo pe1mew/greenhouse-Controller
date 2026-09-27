@@ -49,8 +49,9 @@ for each fix. **Mode-2 soaks passed** on 2.12.2 (12.82 h, 28 judged strokes), 2.
    from `travel_m3` as §3.6 requires (decisions 8 and 10).
 6. **The feedback is partly inferred.** T2 reports a state, not an outcome. Only ABORTED is counted, and
    T6 judges everything else from where M3 came to rest (2.12.0 known limitations).
-7. **gh#84 reaches mode 2.** `graded` embeds the stepped law's humidity branch and `cr_priority`
-   resolver, so under `cr_priority` 1 a dry house closes M3 too, against heat demand (decision 16).
+7. ~~**gh#84 reaches mode 2.**~~ **Fixed in 2.15.0** as `stepped` v2 and `graded` v2: dryness never
+   closes against heat, so a dry house no longer closes M3 against heat demand under any
+   `cr_priority`; humidity alone opens M1 at most (decision 16).
 8. **Not yet soaked:** mode 2 with `min_intv_m3` = 0.
 9. **The bus DEGRADED threshold** per installation (gh#66; decision 7).
 10. **The draw-wire unit is IP50** against the ≥ IP65 requirement. This is the installer's to resolve (§1).
@@ -3204,7 +3205,8 @@ Note what production logging unlocks that the rig cannot: a **real** 171 s trave
     branch and `cr_priority` resolver (`vent_model_graded.cpp`, *Why it embeds the stepped law*).
     So under `cr_priority` 1, a dry house closes every window, M3 included, against any heat
     demand. It has not happened in the field, because 5C88 and the rig both run 0. The fix
-    changes both laws.
+    changes both laws. **Fixed in 2.15.0 (2026-09-27): `stepped` v2 and `graded` v2**
+    (`design/ventModelContract.md` §2).
 
 **Decided 2026-09-17 — see §5b:**
 

@@ -279,8 +279,8 @@ Distinct from setpoint-driven automatic ventilation and from the safety-driven C
 | FR-C04 | The farmer **shall** be able to set a maximum acceptable relative humidity for the daytime period (RH_max_day) and a separate maximum for the night-time period (RH_max_night). | Must |
 | FR-C05 | When the measured temperature exceeds the applicable T_max (day or night), the system **shall** open one or more windows to lower the temperature. | Must |
 | FR-C06 | When the measured relative humidity exceeds the applicable RH_max (day or night), the system **shall** open one or more windows to lower the humidity. | Must |
-| FR-C07 | When the measured temperature is below the applicable T_min (day or night), the system **shall** close windows to reduce heat loss. | Must |
-| FR-C08 | When the measured relative humidity is below the applicable RH_min (day or night), the system **shall** close windows to reduce moisture loss. | Must |
+| FR-C07 | When the measured temperature is below the applicable T_min (day or night), the system **shall** close windows to reduce heat loss. *(Since 2.15.0, gh#84, T_min is the floor under humidity venting: humidity may open a window on its own only from T_min + 2 °C, and an opening it made holds at most down to T_min + 1 °C (FR-CR03). A temperature opening ends at T_max − hysteresis, so FR-C07 holds whenever T_max − hysteresis ≥ T_min, as with the defaults. There is no heating (C1): below T_min the controller can only keep the windows shut.)* | Must |
+| FR-C08 | When the measured relative humidity is below the applicable RH_min (day or night), the system **shall** close windows to reduce moisture loss. *(**Not met, by decision**, since 2.15.0 (gh#84): dryness never closes a window the temperature opened, under any conflict priority, so RH_min changes no decision. It was already the case under the default priority; before 2.15.0, "RH takes priority" closed a hot house to keep moisture in. The setting is kept, and the humidity vote it produces is logged.)* | Must |
 | FR-C09 | The system **should** use a graduated ventilation strategy — opening additional windows as the deviation from setpoint increases — rather than opening all windows at once. | Should |
 | FR-C10 | The system **should** apply hysteresis to window open/close decisions to prevent rapid toggling (short-cycling). | Should |
 | FR-C11 | Temperature-based climate control **shall** always be active; it cannot be disabled. | Must |
@@ -323,12 +323,14 @@ The system operates with two climate setpoint profiles — daytime and night-tim
 
 When temperature and humidity call for opposing window actions (e.g. temperature too high calls for opening, but humidity is already too low), a conflict exists.
 
+*Since 2.15.0 (gh#84, the law `stepped` v2) dryness never closes against heat, under any setting, so the one conflict left is humidity wanting to open while the temperature asks for nothing. FR-CR03 decides that one.*
+
 | ID | Requirement | MoSCoW |
 |----|-------------|--------|
 | FR-CR01 | The system **shall** implement a defined conflict resolution strategy when temperature and humidity setpoints require opposing window actions. Conflict resolution is only active when humidity control is enabled (FR-C12). | Must |
 | FR-CR02 | The default conflict resolution strategy **shall** give priority to temperature-based control over humidity-based control. | Must |
-| FR-CR03 | The farmer **shall** be able to configure the conflict resolution priority (T takes priority / RH takes priority / deviation-based). | Should |
-| FR-CR04 | The system **shall** log or display a conflict event so the farmer is aware of the trade-off being made. | Should |
+| FR-CR03 | The farmer **shall** be able to choose between two conflict resolution priorities: **temperature first** — humidity never opens a window on its own, though while the temperature is venting a larger humidity demand opens further windows; and **humidity may also open M1** — in addition, when the house is too humid and the temperature asks for nothing, M1 (never M2 or M3) may open, but only while the temperature is at least T_min + 2 °C, and an opening already made holds down to T_min + 1 °C. *(2.15.0, gh#84: until then the three choices were T takes priority / RH takes priority / deviation-based. A stored "deviation-based" (2) is still accepted and behaves as the second choice.)* | Should |
+| FR-CR04 | The system **shall** log or display a conflict event so the farmer is aware of the trade-off being made. *(**Open.** No conflict event exists. The SD log's vent-step row carries the temperature's and the humidity's demand, so a conflict can be read afterwards; nothing flags it. gh#84 left this open.)* | Should |
 
 ### 5.7 Window State Tracking
 

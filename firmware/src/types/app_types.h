@@ -340,9 +340,22 @@ typedef enum {
                                      *   LOG_MODE_CHANGE has three emitters
                                      *   since this release — T6's vent step
                                      *   (param 0), STANDBY (param 47, gh#54)
-                                     *   and this one. Every consumer must
+                                     *   and this one (and a fourth since
+                                     *   2.15.0, param 56). Every consumer must
                                      *   branch on param_id; decoding by
                                      *   value shape is what gh#54 was. */
+
+    /* 2.15.0 (gh#84) — the control LAW in force, by name and version. */
+    LOG_PARAM_LAW            = 56,  /**< LOG_MODE_CHANGE emitter D, written with
+                                     *   emitter C: at boot and on every change
+                                     *   of the effective mode. value_a = which
+                                     *   law: 1 stepped, 2 graded, 0 a law this
+                                     *   list does not know (the console line
+                                     *   names it); value_b = its version (the
+                                     *   contract's `name vN`); ch = 0, the law
+                                     *   decides all three windows. The law ids
+                                     *   are keyed by NAME in climate_control.cpp
+                                     *   law_log_id(): append, never renumber. */
 
     /* ── ALARM event-subtype discriminators (2.3.0, gh#45) ─────────────────
      * NOT config C-numbers. Reserved band 240..254, kept far above the

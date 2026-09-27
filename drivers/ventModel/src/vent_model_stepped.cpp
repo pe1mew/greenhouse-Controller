@@ -2,36 +2,53 @@
  * @file vent_model_stepped.cpp
  * @brief Mode 1 — the stepped ventilation law, behind the model interface.
  *
- * ## Provenance: this is a COPY, not a rewrite
+ * ## Version 2 (gh#84, 2026-09-27): the humidity branch and the conflict rule
  *
- * Every decision function below is copied from the live firmware,
+ * v1 let a dry house close every window against any heat demand under
+ * `cr_priority` 1, and let humidity open the house at night under 1 and 2
+ * with nothing to stop it cooling the crop. Under 0 humidity could never open
+ * a window on its own. v2, prototyped in the simulator before this change
+ * (`model/closedloop/humidityControl.md`, "The package, prototyped"):
+ *
+ * 1. **Dryness never closes against heat.** If the temperature wants to open
+ *    and humidity votes 0 (below `rh_min`), the temperature's step wins under
+ *    every priority. As a consequence the "too dry" vote can no longer change
+ *    any decision, so `rh_min` is inert under every priority, as it already
+ *    was under 0.
+ * 2. **Humidity may open the house on its own** only under priority 1 or 2,
+ *    and only from `t_min` + STEPPED_FLOOR_MARGIN_C. An opening that is
+ *    already live holds down to STEPPED_FLOOR_HYST_C below that floor.
+ * 3. **Capped at M1:** humidity alone never reaches M2 or M3.
+ * 4. **A close guard at `rh_max`**: a live humidity vote holds at 1 until the
+ *    average is max(hyst_rh / 3, 1) under the ceiling. The branch had none.
+ * 5. **Priority 2 behaves exactly as priority 1.** Rule 1 removed the only
+ *    conflict in which they differed.
+ *
+ * At priority 0 v2 decides exactly as v1 (rule 1 returns what priority 0
+ * returned; humidity alone is still refused). The constants are the law's
+ * own, provisional until they are keys (contract §3, "Adding a tunable").
+ *
+ * ## Provenance
+ *
+ * v1 was extracted from the live firmware,
  * `firmware/src/climate_control/climate_control.cpp` at 2.9.1 (commit
- * aed852c), with the arithmetic untouched:
+ * aed852c), with the arithmetic untouched. **The line numbers below refer to
+ * that commit.** The file no longer holds these functions: 2.12.0 moved T6
+ * onto this library and deleted its inline copy, so this is the only copy.
  *
- * | here | there |
+ * | here | there, at aed852c |
  * |---|---|
  * | `VENT_STEP_TABLE`          | `:80`  |
  * | `step_from_deviation()`    | `:121` |
  * | `vent_step_channels()`     | `:175` |
  * | `vent_step_required_t()`   | `:195` |
- * | `vent_step_required_rh()`  | `:220` |
- * | `vent_resolve_conflict()`  | `:263` |
+ * | `vent_step_required_rh()`  | `:220` (v2 adds the close guard at `rh_max`) |
+ * | `vent_resolve_conflict()`  | `:263` (v2 replaces the priority switch) |
  * | the want-open vs actual comparison in `step()` | `reconcile_to_step()`, `:401` |
  *
- * **The firmware is unaffected and still runs its own inline copy.** The two
- * are kept in step by hand until T6 is refactored onto this interface (2.12.0,
- * plan §5b/§5c). Change one, change the other, and re-run both this library's
- * host tests and the replay.
- *
- * ## Why it exists before it is used
- *
- * 1. It is the reference implementation of the contract — the shape a new
- *    model copies.
- * 2. It is the equivalence baseline: when T6 does move onto this interface,
- *    this model must reproduce the logged decisions of real SD data at least as
- *    well as today's replay does (96.8 % of 378 decisions), and reproduce
- *    `LOG_MODE_CHANGE` param 0 byte for byte. A difference in mode 2 can then
- *    be attributed to the new law rather than to the refactor.
+ * The replay (`model/vent_step_replay.py`) scores this law against real SD
+ * logs, and must still reproduce 5C88's logged decisions: at priority 0 v2
+ * decides as v1 did.
  *
  * ## What it does not do
  *
@@ -39,24 +56,12 @@
  * is exactly what makes it mode 1. No safety, no queue, no logging, no clock —
  * see the contract.
  *
- * ## The one deliberate difference from the firmware
+ * ## Part-open windows (interface 2)
  *
- * The firmware recomputes the *previous* resolved step each cycle from its
- * stored per-source steps and logs when that differs (`climate_control.cpp:580`).
- * Here the model reports the step it resolved and the caller logs on change.
- * The two agree except in one case: when `cr_priority` or `rh_ctrl_en` changes
- * between two cycles, the recomputed "previous" step can shift, so a log row
- * may appear or be suppressed. **No command differs** — only the timing of a
- * log row, in a case that needs an operator to change a setting mid-run.
- *
- * ## One addition the firmware does not have yet
- *
- * `VENT_WIN_PART_OPEN` (interface 2). The firmware has no part-open state until
- * T2 gains one in 2.12.0, so no firmware input maps to it and the equivalence
- * above is untouched. A part-open window is at neither end, so mode 1 drives it
- * to the end it wants, in both directions, and never HOLDs it: holding would
- * leave M3 part-open while the step says OPEN. When T2 gains the state,
- * `reconcile_to_step()` must do the same.
+ * A window at rest part-open (`VENT_WIN_PART_OPEN`, M3 under mode 2) is at
+ * neither end, so this law drives it to the end it wants, in both directions,
+ * and never HOLDs it: holding would leave M3 part-open while the step says
+ * OPEN.
  */
 
 #include "vent_model.h"
@@ -91,19 +96,31 @@ static const uint8_t VENT_STEP_TABLE[VENT_STEPS_MAX + 1] = {
  * `current_step_rh = 0` (climate_control.cpp:464), so a reset() reproduces a
  * reboot exactly.
  * ------------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------------
+ * v2's constants (gh#84). The law's own, provisional until they are keys.
+ * ------------------------------------------------------------------------- */
+#define STEPPED_FLOOR_MARGIN_C  2   /* humidity may open alone from t_min + this */
+#define STEPPED_FLOOR_HYST_C    1   /* a live humidity-only opening holds this far
+                                     * below the floor, so the whole-degree
+                                     * average does not flicker M1 across it */
+#define STEPPED_RH_ALONE_CAP    1   /* a humidity-only opening: M1 at most */
+
 #define ST_STEP_T   0   /* last temperature step this model commanded  */
 #define ST_STEP_RH  1   /* last humidity step this model commanded     */
 #define ST_STEP      2  /* last resolved step, kept for the caller's log */
 
-/** Why the model decided what it did. Reported in `vent_out_t::reason` and
- *  written to the SD log, so these codes are part of the log's meaning: append
- *  only, never renumber. */
+/** Why the model decided what it did. Reported in `vent_out_t::reason`,
+ *  which T6 prints to the serial console. The SD log does not carry it: T6's
+ *  row holds only step, step_t and step_rh (contract §3, "Logging"). Append
+ *  only, never renumber, all the same: graded reports these in its low bits. */
 enum {
     STEPPED_REASON_NO_DATA   = 0,  /**< no valid temperature — nothing decided */
     STEPPED_REASON_T_ONLY    = 1,  /**< humidity cast no vote */
     STEPPED_REASON_BOTH_OPEN = 2,  /**< both wanted open; the higher step won */
     STEPPED_REASON_AGREE     = 3,  /**< both asked for the same step */
-    STEPPED_REASON_CONFLICT  = 4,  /**< one open, one closed; cr_priority decided */
+    STEPPED_REASON_CONFLICT  = 4,  /**< one open, one closed: v2's rules decided
+                                    *   (dryness yields to heat; humidity alone
+                                    *   opens under 1 or 2, floored and capped) */
 };
 
 /* ---------------------------------------------------------------------------
@@ -175,11 +192,13 @@ static int vent_step_required_t(int16_t t_avg, int16_t t_max, int16_t hyst_t,
 }
 
 /**
- * @brief Humidity branch. Copy of climate_control.cpp:220.
+ * @brief Humidity branch. Extracted from climate_control.cpp:220 at aed852c.
  *
  * Disabled → no vote. Above max → graduated open, same algorithm as
- * temperature. Below min → step 0, a genuine close demand (graduated closing
- * is deliberately not implemented). Within the band → no vote.
+ * temperature. v2: a live vote then holds at 1 until the average is
+ * max(hyst_rh / 3, 1) under max (rule 4, the close guard the branch never
+ * had). Below min → step 0, a close demand; since v2 it can change no
+ * decision (rule 1). Within the band → no vote.
  */
 static int vent_step_required_rh(int16_t rh_avg, int16_t rh_max, int16_t rh_min,
                                  int16_t hyst_rh, bool rh_ctrl_en,
@@ -194,6 +213,16 @@ static int vent_step_required_rh(int16_t rh_avg, int16_t rh_max, int16_t rh_min,
         return step_from_deviation(deviation, (int)hyst_rh, current_step);
     }
 
+    /* v2 rule 4: a live vote holds at step 1 until the average is the
+     * ladder's own step width below the ceiling. */
+    {
+        const int band = ((int)hyst_rh / VENT_STEPS_MAX < 1) ? 1
+                       : (int)hyst_rh / VENT_STEPS_MAX;
+        if (current_step > 0 && (int)rh_avg > (int)rh_max - band) {
+            return 1;
+        }
+    }
+
     if (rh_avg < rh_min) {
         return 0;
     }
@@ -202,15 +231,23 @@ static int vent_step_required_rh(int16_t rh_avg, int16_t rh_max, int16_t rh_min,
 }
 
 /**
- * @brief Resolve the two demands into one step. Copy of climate_control.cpp:263.
+ * @brief Resolve the two demands into one step. Extracted from
+ *        climate_control.cpp:263 at aed852c; v2 replaces the priority switch.
  *
  * 1. Humidity abstains → temperature's step.
  * 2. Both want open → the higher step, whatever `cr_priority` says.
  * 3. They agree → that step.
- * 4. Genuine conflict → `cr_priority`: 0 = temperature, 1 = humidity,
- *    2 = the higher step.
+ * 4. v2 rule 1: the temperature wants to open and humidity votes 0 (too dry)
+ *    → the temperature's step, under every priority.
+ * 5. What is left is humidity alone wanting to open: priority 0 → no (0);
+ *    priority 1 or 2 → min(step_rh, STEPPED_RH_ALONE_CAP) if `floor_ok`,
+ *    else 0.
+ *
+ * @param floor_ok  the temperature is at or above the humidity floor (see
+ *                  stepped_step()); only case 5 reads it.
  */
-static int vent_resolve_conflict(int step_t, int step_rh, uint8_t cr_priority)
+static int vent_resolve_conflict(int step_t, int step_rh, uint8_t cr_priority,
+                                 bool floor_ok)
 {
     if (step_rh == VENT_STEP_NONE) {
         return step_t;
@@ -224,26 +261,29 @@ static int vent_resolve_conflict(int step_t, int step_rh, uint8_t cr_priority)
         return step_t;
     }
 
-    switch (cr_priority) {
-        case 0:  /* temperature first */
-        default:
-            return step_t;
-
-        case 1:  /* humidity first */
-            return step_rh;
-
-        case 2:  /* the larger demand wins */
-            return (step_t > step_rh) ? step_t : step_rh;
+    /* v2 rule 1 (gh#84): dryness never closes against heat. */
+    if (step_t > 0 && step_rh == 0) {
+        return step_t;
     }
+
+    /* What is left: the temperature is idle and humidity wants to open. */
+    if (cr_priority != 1 && cr_priority != 2) {
+        return step_t;                              /* 0: temperature first */
+    }
+    /* Rules 2, 3 and 5: 1 and 2 alike -- above the floor, M1 at most. */
+    if (!floor_ok) {
+        return step_t;
+    }
+    return (step_rh < STEPPED_RH_ALONE_CAP) ? step_rh : STEPPED_RH_ALONE_CAP;
 }
 
 /**
  * @brief Classify which branch of vent_resolve_conflict() applied.
  *
- * Separate from the resolver on purpose: the resolver stays a byte-for-byte
- * copy of the firmware's, and the reason code is derived alongside it rather
- * than woven into it. Reading the same conditions twice costs nothing here and
- * keeps the copied function auditable against its original.
+ * Separate from the resolver on purpose, as it was when the resolver was a
+ * byte-for-byte copy of the firmware's: the reason is derived alongside the
+ * decision rather than woven into it. Both of v2's new cases (rule 1, and
+ * humidity alone) still classify as CONFLICT, one axis open and one closed.
  */
 static uint8_t resolve_reason(int step_t, int step_rh)
 {
@@ -304,7 +344,21 @@ static void stepped_step(const vent_in_t *in, vent_state_t *st, vent_out_t *out)
                                               hyst_rh, rh_en,
                                               (int)st->v[ST_STEP_RH]);
 
-    const int resolved = vent_resolve_conflict(step_t, step_rh, in->cr_priority);
+    /* v2 rule 2: humidity may open the house on its own only from t_min +
+     * STEPPED_FLOOR_MARGIN_C. The reading lags the air by minutes, T5
+     * averages on top, and an unheated house keeps cooling after M1 shuts, so
+     * stopping at t_min itself lets the house fall below it. An opening
+     * already live (the last decision opened on humidity alone) holds down to
+     * STEPPED_FLOOR_HYST_C below the floor. Both slots are zero after
+     * reset(), so no opening is live after a reset. t_min is a whole number
+     * of degrees, so the division is exact. */
+    const int  t_floor    = (int)(in->t_min_c10 / 10) + STEPPED_FLOOR_MARGIN_C;
+    const bool alone_live = st->v[ST_STEP] > 0 && st->v[ST_STEP_T] == 0;
+    const bool floor_ok   = (int)in->t_avg_c >= t_floor ||
+        (alone_live && (int)in->t_avg_c >= t_floor - STEPPED_FLOOR_HYST_C);
+
+    const int resolved = vent_resolve_conflict(step_t, step_rh, in->cr_priority,
+                                               floor_ok);
     const uint8_t mask = vent_step_channels(resolved);
 
     /* Desired end state per window. The caller orders the commands (every
@@ -344,7 +398,7 @@ static void stepped_step(const vent_in_t *in, vent_state_t *st, vent_out_t *out)
 
 static const vent_model_t s_stepped = {
     "stepped",
-    1,
+    2,          /* v2 (gh#84): the humidity branch and the conflict rule */
     stepped_reset,
     stepped_step,
 };

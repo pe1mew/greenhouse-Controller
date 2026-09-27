@@ -1,7 +1,8 @@
 # logparser — Greenhouse Controller Log Parser
 
 **File:** `log/logparser.py`
-**Document version:** 1.23 (matches firmware 2.12.0; 1.23 added mode 2: `RELAY value_a = 7`
+**Document version:** 1.24 (matches firmware 2.15.0; 1.24 added `MODE param 56`, the law in
+force by name and version, gh#84; 1.23 added mode 2: `RELAY value_a = 7`
 (`PART_OPEN`), the `SENSOR_HR ch 2` part-open qualifier bits and `value_b`, `MODE param 54`
 (the control law in force) and `SETPT params 53` and `55`; 1.22 added `ALARM ch 6` params 251 and 252, gate reason `6`, and rule 2's new basis, gh#78; 1.21: the rule rows come per drive, gh#72; 1.20 added `SETPT param 49`, `wpos_fitted_m3`, and gate reason `5`, not fitted (gh#73), and documents param 48; 1.17 added `MODE param 47` `value_b` = 1, a STANDBY held for a session; 1.18 added `SYSTEM value_a = 32`; 1.19: the LCD manual menu holds STANDBY too (gh#65), and `SENSOR_HR ch 3` rows at rest are written only on change)
 **Requires:** Python 3.10+, standard library only (no pip dependencies)
@@ -460,7 +461,7 @@ channel transitions to a new state.
 ---
 
 ### MODE
-**`MODE` has TWO emitters, discriminated by `param` since firmware 2.6.0
+**`MODE` has FOUR emitters, discriminated by `param` since firmware 2.6.0
 (gh#54).** Check `param` before reading `value_a` / `value_b`.
 
 | `param` | emitter | meaning |
@@ -468,6 +469,14 @@ channel transitions to a new state.
 | **0** | T6 `climate_control.cpp` | ventilation step decision — the table below |
 | **47** | T4 `dm_set_standby_ex()` | STANDBY enter/leave — `value_a` 1 = entered, 0 = left; `value_b` 0 = explicit, 1 = a session **hold** (below); `ch` = surface, 0 web / 1 LCD |
 | **54** | T6 `post_log_ctrl_mode()` | **2.12.0** — M3's control law actually **in force** changed: `value_a` 0 = timed, 1 = linear; `value_b` = why (0 the operator's setting, 1 no trusted position, 2 the position came back, 3 held down after a fall back); `ch` = 3. Written at boot as well as on every change, because which law a unit came up under is not inferable from silence. **Not** the operator's setting — that is `SETPT param 53` |
+| **56** | T6 `post_log_law()` | **2.15.0 (gh#84)** — the law in force by **name and version**, written with the param 54 row (at boot and on every change of the effective mode): `value_a` = which law, 1 `stepped`, 2 `graded`, 0 one the firmware's list did not know; `value_b` = its version; `ch` = 0. Rendered as `Control law in force: stepped v2`. A mode row says only timed or linear, and stepped v1 and v2 decide differently under `cr_priority` 1 and 2, so a log read against the law that wrote it needs this row. Logs from before 2.15.0 have none: 2.12.0 – 2.14.x ran `stepped` v1 and `graded` v1 |
+
+> **Reading vent steps: keep `param` 0, skip the rest.** Since 2.15.0 the three
+> model tools that read vent steps (`model/closedloop/logdata.py`,
+> `model/campaign-summer-2026/plot_daily.py`, `model/vent_step_replay.py`) keep
+> only `param = 0` rather than skipping a list of known emitters, so a new MODE
+> emitter cannot be read as a decision (gh#54's trap, met a third time by
+> param 56).
 
 > **Old logs cannot be separated.** Emitter B has existed since rc.1.5.0 (gh#28)
 > but carried `param = 0` until 2.6.0, so in any log written before 2.6.0 a
@@ -550,7 +559,7 @@ Configuration parameter changed.  Posted by:
 | 9 | hyst_t | °C | numeric, old → new |
 | 10 | hyst_rh | % | numeric, old → new |
 | 11 | rh_ctrl_en | (enabled/disabled) | boolean, old → new |
-| 12 | cr_priority | | numeric, old → new |
+| 12 | cr_priority | | numeric, old → new. Since 2.15.0 (stepped v2): 0 temperature first, 1 humidity may also open M1 (from t_min + 2 °C), 2 behaves as 1. Before: 0 temperature first, 1 humidity first, 2 the larger demand |
 | 13 | avg_win_t | min | numeric, old → new |
 | 14 | avg_win_rh | min | numeric, old → new |
 | 15 | v_max | m/s | numeric, old → new |

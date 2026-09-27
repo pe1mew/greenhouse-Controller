@@ -1,15 +1,23 @@
 /**
  * @file vent_model_graded.cpp
- * @brief Mode 2 — a first candidate for the graded law: M1 and M2 as mode 1,
- *        M3 proportional with a rate limit.
+ * @brief Mode 2 — the graded law: M1 and M2 as mode 1, M3 proportional with a
+ *        rate limit.
  *
- * ## Status: a CANDIDATE, not a decision
+ * ## Status: mode 2's law, chosen 2026-09-25
  *
- * Which law mode 2 runs is the plan's open decision 9. This is the simplest
- * candidate the plan names — "a proportional map with a rate limit" — written
- * so the closed-loop simulator (model/closedloop/) can score it against the
- * stepped law. Its constants are provisional: the contract (§3, "Adding a
- * tunable of your own") says to keep them in this file until they are keys.
+ * The operator chose it on 2026-09-25 (plan decision 9), after the closed-loop
+ * simulator (model/closedloop/, gradedCandidate.md) scored it against the
+ * stepped law; it has been the factory default since 2.13.0. It is "a
+ * proportional map with a rate limit", the simplest law the plan named. Its
+ * constants are provisional: the contract (§3, "Adding a tunable of your own")
+ * says to keep them in this file until they are keys.
+ *
+ * ## Version 2 (gh#84): no code change here
+ *
+ * It embeds the stepped law (below), so stepped v2's humidity rules are its
+ * rules too, and by the contract's rule a law that embeds another bumps with
+ * it (contract §2, "A law's name and version"). v1 also covered gh#83's change
+ * (2.12.1), which went without a bump.
  *
  * ## The law in one paragraph (contract §9 item 1)
  *
@@ -18,8 +26,9 @@
  * and M2 follow its first two steps, window for window. M3 opens only from
  * step 2 on. Its aperture is proportional to the temperature excess above
  * t_max: shut at +1.5 °C, fully open at +3.5 °C, so half open where mode 1
- * would open it fully. Humidity that demands step 3 on its own opens M3 fully,
- * as in mode 1. A slow actuator with a late reading must not be chased: M3
+ * would open it fully. Humidity at step 3 opens M3 fully only while the
+ * temperature is venting too: on its own, humidity opens M1 at most (stepped
+ * v2's cap, gh#84), so the resolved step stays under 2. A slow actuator with a late reading must not be chased: M3
  * is moved only for a correction of at least 10 %, by at most 25 % per move,
  * and not within 10 minutes of its last drive. That covers the loop's dead
  * time, how long the controller's reading takes to show what a move did: the
@@ -36,13 +45,13 @@
  * public interface. Its memory lives in this model's state (slots 0..5); a
  * host test runs both in lockstep to catch the day it needs more.
  *
- * ## Interface 2
+ * ## Interfaces 2 and 3
  *
  * It does not read m3_min_interval_ms: the caller enforces the interval, and
  * the hold time here is the law's own. M3 at rest part-open
  * (VENT_WIN_PART_OPEN) is at rest like any other, and its decisions come from
- * pos_x10. M1 and M2's come from the stepped model. Nothing here depends on
- * what interface 2 changed, so it also compiles against interface 1.
+ * pos_x10. M1 and M2's come from the stepped model. Interface 3's t_min_c10
+ * is read by the embedded stepped law (its humidity floor), not here.
  */
 
 #include "vent_model.h"
@@ -50,7 +59,7 @@
 #include <string.h>
 
 /* ---------------------------------------------------------------------------
- * The candidate's constants. Provisional: keys when mode 2 is adopted.
+ * The law's constants. Provisional until they are keys.
  * ------------------------------------------------------------------------- */
 #define M3_START_C10       15      /* M3 starts to open at t_max + 1.5 °C (0.1 °C) */
 #define M3_FULL_C10        35      /* and is fully open at t_max + 3.5 °C */
@@ -206,7 +215,7 @@ static void graded_step(const vent_in_t *in, vent_state_t *st, vent_out_t *out)
 
 static const vent_model_t s_graded = {
     "graded",
-    1,
+    2,          /* v2: embeds stepped v2 (gh#84), no change in this file */
     graded_reset,
     graded_step,
 };

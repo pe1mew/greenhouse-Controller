@@ -65,7 +65,7 @@ _CXX_CANDIDATES = (
 # header: the layout check compares offsets in declaration order.
 # --------------------------------------------------------------------------
 
-VENT_MODEL_API = 2
+VENT_MODEL_API = 3
 VENT_WINDOWS   = 3
 VENT_STEPS_MAX = 3
 VENT_STEP_NONE = -1
@@ -112,6 +112,7 @@ class VentIn(ctypes.Structure):
         ("rh_valid",         c_bool),
         ("wind_valid",       c_bool),
         ("t_max_c10",        c_int16),
+        ("t_min_c10",        c_int16),
         ("rh_max_pct",       c_uint8),
         ("rh_min_pct",       c_uint8),
         ("hyst_t_c",         c_uint8),

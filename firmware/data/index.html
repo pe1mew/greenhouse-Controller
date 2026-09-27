@@ -143,24 +143,25 @@
       <button onclick="postCfg('climate','t_max_day','cfg-t-max-day','int')">Apply</button>
       <span class="save-ok" id="fb-t-max-day"></span>
     </div>
-    <!-- HEATING CONTROL NOT IMPLEMENTED — preserved for future use
-    <div class="slider-row farmer-hidden">
-      <label data-tip="If the temperature falls below this value during the day, windows close to retain heat. Temperature control is always active and cannot be disabled.">T min day (°C)</label>
-      <input type="range"  id="cfg-t-min-day-sl" min="-20" max="60" step="1">
-      <input type="number" id="cfg-t-min-day"    min="-20" max="60" step="1" class="short">
+    <!-- 2.15.0 (gh#84): T min is the floor under humidity venting. It was
+         hidden while it had no role (the heating it was meant for was never
+         built). -->
+    <div class="slider-row farmer-hidden rh-dep">
+      <label data-tip="The floor under humidity venting. With T vs RH conflict priority set to 'Humidity may also open M1', humidity may open M1 on its own only while the temperature is at least T min + 2 °C; an opening already made holds down to T min + 1 °C. It never closes a window the temperature opened, and the controller cannot heat. Only active when Humidity control is set to Enabled.">T min day (°C)</label>
+      <input type="range"  id="cfg-t-min-day-sl" step="1">
+      <input type="number" id="cfg-t-min-day"    step="1" class="short">
       <button onclick="postCfg('climate','t_min_day','cfg-t-min-day','int')">Apply</button>
       <span class="save-ok" id="fb-t-min-day"></span>
     </div>
-    -->
     <div class="slider-row farmer-hidden rh-dep">
-      <label data-tip="If humidity rises above this value during the day, windows open to ventilate. Only active when Humidity control is set to Enabled.">RH max day (%)</label>
+      <label data-tip="Above this value the house counts as too humid during the day. Humidity then opens further windows while the temperature is venting, and with T vs RH conflict priority set to 'Humidity may also open M1' it may open M1 on its own (only above T min day + 2 °C). Only active when Humidity control is set to Enabled.">RH max day (%)</label>
       <input type="range"  id="cfg-rh-max-day-sl" step="1">
       <input type="number" id="cfg-rh-max-day"    step="1" class="short">
       <button onclick="postCfg('climate','rh_max_day','cfg-rh-max-day','int')">Apply</button>
       <span class="save-ok" id="fb-rh-max-day"></span>
     </div>
     <div class="slider-row farmer-hidden rh-dep">
-      <label data-tip="If humidity drops below this value during the day, windows close to retain moisture. Only active when Humidity control is set to Enabled.">RH min day (%)</label>
+      <label data-tip="Below this value the house counts as too dry during the day. Since firmware 2.15.0 that changes no window decision: dryness never closes a window the temperature opened. The setting is kept, and the humidity vote it produces is still logged.">RH min day (%)</label>
       <input type="range"  id="cfg-rh-min-day-sl" step="1">
       <input type="number" id="cfg-rh-min-day"    step="1" class="short">
       <button onclick="postCfg('climate','rh_min_day','cfg-rh-min-day','int')">Apply</button>
@@ -174,24 +175,22 @@
       <button onclick="postCfg('climate','t_max_ngt','cfg-t-max-ngt','int')">Apply</button>
       <span class="save-ok" id="fb-t-max-ngt"></span>
     </div>
-    <!-- HEATING CONTROL NOT IMPLEMENTED — preserved for future use
-    <div class="slider-row farmer-hidden">
-      <label data-tip="Lower temperature limit after sunset. Typically set lower than T min day to allow natural overnight cooling.">T min night (°C)</label>
-      <input type="range"  id="cfg-t-min-ngt-sl" min="-20" max="60" step="1">
-      <input type="number" id="cfg-t-min-ngt"    min="-20" max="60" step="1" class="short">
+    <div class="slider-row farmer-hidden rh-dep">
+      <label data-tip="The floor under humidity venting after sunset, as T min day: humidity may open M1 on its own only while the temperature is at least T min night + 2 °C, and only with T vs RH conflict priority set to 'Humidity may also open M1'. Only active when Humidity control is set to Enabled.">T min night (°C)</label>
+      <input type="range"  id="cfg-t-min-ngt-sl" step="1">
+      <input type="number" id="cfg-t-min-ngt"    step="1" class="short">
       <button onclick="postCfg('climate','t_min_ngt','cfg-t-min-ngt','int')">Apply</button>
       <span class="save-ok" id="fb-t-min-ngt"></span>
     </div>
-    -->
     <div class="slider-row farmer-hidden rh-dep">
-      <label data-tip="Upper humidity limit after sunset. Only active when Humidity control is enabled.">RH max night (%)</label>
+      <label data-tip="Upper humidity limit after sunset, as RH max day. Only active when Humidity control is enabled.">RH max night (%)</label>
       <input type="range"  id="cfg-rh-max-ngt-sl" step="1">
       <input type="number" id="cfg-rh-max-ngt"    step="1" class="short">
       <button onclick="postCfg('climate','rh_max_ngt','cfg-rh-max-ngt','int')">Apply</button>
       <span class="save-ok" id="fb-rh-max-ngt"></span>
     </div>
     <div class="slider-row farmer-hidden rh-dep">
-      <label data-tip="Lower humidity limit after sunset. Only active when Humidity control is enabled.">RH min night (%)</label>
+      <label data-tip="The dry limit after sunset, as RH min day: since firmware 2.15.0 it changes no window decision.">RH min night (%)</label>
       <input type="range"  id="cfg-rh-min-ngt-sl" step="1">
       <input type="number" id="cfg-rh-min-ngt"    step="1" class="short">
       <button onclick="postCfg('climate','rh_min_ngt','cfg-rh-min-ngt','int')">Apply</button>
@@ -208,11 +207,12 @@
       <span class="save-ok" id="fb-rh-ctrl-en"></span>
     </div>
     <div class="row farmer-hidden">
-      <label data-tip="When temperature wants windows OPEN and humidity wants them CLOSED (or vice versa), this rule decides which signal wins. Temperature first preserves the T-floor on cool humid nights; Humidity first prioritises drying; Largest deviation picks whichever signal is furthest from its setpoint.">T vs RH conflict priority</label>
+      <label data-tip="What humidity may do on its own. Temperature first: only the temperature starts ventilation; while it vents, a larger humidity demand opens further windows. Humidity may also open M1: the same, and when the house is too humid while the temperature asks for nothing, M1 opens (never M2 or M3), but only while the temperature is at least T min + 2 °C. Under both, dryness never closes a window the temperature opened.">T vs RH conflict priority</label>
+      <!-- 2.15.0 (gh#84): two choices. The controller still accepts 2, which
+           behaves exactly as 1, so app.js shows a stored 2 as the second. -->
       <select id="cfg-cr-priority">
         <option value="0">Temperature first</option>
-        <option value="1">Humidity first</option>
-        <option value="2">Largest deviation</option>
+        <option value="1">Humidity may also open M1, above T min + 2 °C</option>
       </select>
       <button onclick="postCfgSelect('climate','cr_priority','cfg-cr-priority')">Apply</button>
       <span class="save-ok" id="fb-cr-priority"></span>
@@ -225,7 +225,7 @@
       <span class="save-ok" id="fb-hyst-t"></span>
     </div>
     <div class="slider-row admin-only rh-dep">
-      <label data-tip="Dead-band around the humidity setpoints. Same principle as T hysteresis. A value of 5% means the window opened at RH max will not close until humidity drops 5% below RH max.">RH hysteresis (%)</label>
+      <label data-tip="Sets the humidity steps above RH max (each a third of this value wide) and how far humidity must fall before its opening ends: a humidity opening holds at M1 until humidity is a third of this value below RH max (at least 1 %). Example: RH max 75 % and 12 % hysteresis give steps at 76, 80 and 84 %, and the opening holds until 71 %.">RH hysteresis (%)</label>
       <input type="range"  id="cfg-hyst-rh-sl" step="1">
       <input type="number" id="cfg-hyst-rh"    step="1" class="short">
       <button onclick="postCfg('climate','hyst_rh','cfg-hyst-rh','int')">Apply</button>

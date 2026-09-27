@@ -23,6 +23,7 @@
 #include "../types/fmt_tenths.h"             /* gh#88 — signed tenths keep their sign */
 #include "../window_pos/window_pos_task.h"  /* gh#85 — gate reason NAME (pure lookup) */
 #include "../data_manager/data_manager.h"   /* gh#85 — mode reason NAME (pure lookup) */
+#include "../climate_control/climate_control.h"  /* gh#84 — the law's NAME (pure lookup) */
 #include "window_pos.h"   /* gh#73 — WINDOWPOS_DEFAULT_ADDR, left out when not fitted */
 
 #include <stdarg.h>
@@ -224,6 +225,16 @@ size_t build_canonical_status_json(char *buf, size_t cap,
          * whose answer is an absent field. */
         ok = ok && append(buf, cap, &pos, ",\"M3_ctrl_mode\":\"%s\"",
                           s->m3_mode_linear ? "LINEAR" : "TIMED");
+        /* 2.15.0 (gh#84): and the law that mode runs, by name and version
+         * ("stepped v2"). The mode alone does not say it: stepped v1 and v2
+         * decide differently under cr_priority 1 and 2. Looked up in T6's own
+         * table from the same effective mode, so it cannot name a law T6 is
+         * not running. Unprefixed: the law decides all three windows. */
+        {
+            char law[24];
+            (void)cc_law_str(s->m3_mode_linear, law, sizeof(law));
+            ok = ok && append(buf, cap, &pos, ",\"law\":\"%s\"", law);
+        }
         /* gh#85: and WHY it is that. Two fields, because one does not answer
          * it: `M3_ctrl_reason` says the mode was decided by the setting, by a
          * lost position, by a hold-down or by a promotion, and `M3_pos_gate`

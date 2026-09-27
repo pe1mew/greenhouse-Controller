@@ -35,22 +35,22 @@
 #pragma once
 
 /* ── Climate — temperature setpoints (°C) ───────────────────────────────── */
-#define DEF_T_MIN_DAY      16   /**< Day heating setpoint (informational; future heating) */
+#define DEF_T_MIN_DAY      16   /**< Day humidity floor (2.15.0, gh#84): humidity may open M1 on its own only from 16 + 2 °C, under cr_priority 1. No heating exists */
 #define DEF_T_MAX_DAY      28   /**< Day ventilation threshold: open above 28 °C */
-#define DEF_T_MIN_NGT      14   /**< Night heating setpoint (informational; future heating) */
+#define DEF_T_MIN_NGT      14   /**< Night humidity floor (2.15.0, gh#84): humidity may open M1 on its own only from 14 + 2 °C, under cr_priority 1. No heating exists */
 #define DEF_T_MAX_NGT      20   /**< Night ventilation threshold: open above 20 °C */
 
 /* ── Climate — humidity setpoints (%) ───────────────────────────────────── */
-#define DEF_RH_MIN_DAY     50   /**< Day RH floor: close windows below 50 % (avoid crop desiccation) */
+#define DEF_RH_MIN_DAY     50   /**< Day dry limit. Inert since stepped v2 (2.15.0, gh#84): dryness never closes against heat, so below it changes no decision */
 #define DEF_RH_MAX_DAY     75   /**< Day RH ceiling: open above 75 % (disease pressure threshold) */
-#define DEF_RH_MIN_NGT     55   /**< Night RH floor: close windows below 55 % */
+#define DEF_RH_MIN_NGT     55   /**< Night dry limit. Inert since stepped v2, as DEF_RH_MIN_DAY */
 #define DEF_RH_MAX_NGT     80   /**< Night RH ceiling: open above 80 % (condensation prevention) */
 
 /* ── Climate — control flags and tuning ─────────────────────────────────── */
 #define DEF_HYST_T          5   /**< T hysteresis: 5 °C dead band — wider band reduces window oscillation */
 #define DEF_HYST_RH        12   /**< RH hysteresis: 12 % dead band — suppresses small-signal step toggles on humid days */
 #define DEF_RH_CTRL_EN      1   /**< RH control enabled by default */
-#define DEF_CR_PRIORITY     0   /**< Conflict resolution: 0 = CR_TEMP_FIRST (preserves T-floor protection on cool humid nights) */
+#define DEF_CR_PRIORITY     0   /**< Humidity venting (stepped v2, 2.15.0, gh#84): 0 = temperature first, humidity never opens a window on its own; 1 = humidity may also open M1, only from t_min + 2 °C; 2 = the same as 1 (kept for stored values). Dryness never closes against heat under any */
 #define DEF_AVG_WIN_T       6   /**< 6-min T averaging window: ~12 samples @ 30 s poll — smooths short thermal spikes */
 #define DEF_AVG_WIN_RH     10   /**< 10-min RH averaging window: ~20 samples @ 30 s poll — extra smoothing for the M3 RH-driven scenarios */
 

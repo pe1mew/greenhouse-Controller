@@ -839,7 +839,7 @@ The J5 heater supply connection (HEATING_POS / HEATING_NEG) has been removed fro
 - **In-travel anti-thrash (gh#48, since 2.3.1):** because the dwell timer only arms on arrival, a window still in `MOVING_OPEN` / `MOVING_CLOSE` would otherwise carry no reversal protection at all. T2 therefore **defers** a reversing command from T6 (climate) until the stroke completes, at which point the normal dwell governs; the command is not lost, as T6 reconciles level-triggered every cycle. T3 (wind safety) and operator-manual commands are unaffected and still reverse mid-travel immediately. M3 was the exposed case: its 171 s stroke left a ~3 min unguarded window on every opening.
 
 **Climate setpoints and hysteresis:**
-- T_min_day / T_max_day and T_min_night / T_max_night: day and night temperature thresholds (configurable, farmer level). T6 selects the active pair based on `is_daytime` from T4. Stored and compared as integer °C. Always active; cannot be disabled.
+- T_min_day / T_max_day and T_min_night / T_max_night: day and night temperature thresholds (configurable, farmer level). T6 selects the active pair based on `is_daytime` from T4. Stored and compared as integer °C. Always active; cannot be disabled. T_max opens windows; T_min opens nothing (no heating, C1) and since 2.15.0 (gh#84) is the floor under humidity venting (below).
 - RH_min_day / RH_max_day and RH_min_night / RH_max_night: day and night humidity thresholds (configurable, farmer level). T6 selects the active pair based on `is_daytime`. Stored and compared as integer %. Only evaluated when the `rh_ctrl_en` flag is true.
 - All setpoints are integers; fractional sensor readings are rounded to the nearest integer before comparison.
 - Hysteresis band on each setpoint prevents rapid toggling near threshold. Hysteresis values are also integers.
@@ -868,28 +868,30 @@ required_step = clamp(raw_step, 0, NUM_VENT_STEPS)
 
 **Close-hysteresis guard:** once any step > 0 is active, T6 will NOT reduce to step 0 until the measured value falls below `setpoint_max − hyst`. Step reductions within the active range (e.g. 3 → 2 → 1) are applied immediately. This guard prevents oscillation near the setpoint.
 
-**Humidity-close demand (Gap G design decision):** when RH < RH_min (too dry), the required step is always 0 — graduated closing is **not** implemented. A step-0 close demand keeps conflict resolution symmetric: both T and RH demands are expressed as a step number (0 = close, 1–N = open at step N), with the sentinel `VENT_STEP_NEUTRAL` (−1) meaning "RH is in range — no demand from this source."
+**Humidity-close demand (Gap G design decision):** when RH < RH_min (too dry), the required step is always 0 — graduated closing is **not** implemented. A step-0 close demand keeps conflict resolution symmetric: both T and RH demands are expressed as a step number (0 = close, 1–N = open at step N), with the sentinel `VENT_STEP_NEUTRAL` (−1) meaning "RH is in range — no demand from this source." **Since 2.15.0 the close demand changes no decision** (rule 5 below), so RH_min is inert; the vote is still computed and logged.
 
-**Humidity-open demand:** when RH > RH_max (too humid), the same graduated step algorithm is applied using `hyst_rh` as the hysteresis band.
+**Humidity-open demand:** when RH > RH_max (too humid), the same graduated step algorithm is applied using `hyst_rh` as the hysteresis band. **Since 2.15.0 it has a close guard of its own:** the humidity branch is only evaluated above RH_max, so the close-hysteresis guard above never engaged for it; now a live humidity vote holds at step 1 until RH is `max(hyst_rh / NUM_VENT_STEPS, 1)` below RH_max.
 
 **Humidity disabled:** when `rh_ctrl_en` is false, `vent_step_required_rh()` always returns `VENT_STEP_NEUTRAL`; conflict resolution and RH evaluation are skipped entirely.
 
-The functions `vent_step_required_t()`, `vent_step_required_rh()`, and `vent_resolve_conflict()` are declared in `climate_control.h` and implemented in `climate_control.cpp`.
+The functions `vent_step_required_t()`, `vent_step_required_rh()`, and `vent_resolve_conflict()` are the control law's. Since 2.12.0 they live in `drivers/ventModel/src/vent_model_stepped.cpp`, behind `design/ventModelContract.md`; T6 calls the law and no longer holds a copy. The law in force is logged by name and version (`LOG_MODE_CHANGE` param 56) and published in `/api/status` as `windows.law` (2.15.0).
 
-**Conflict resolution (FR-CR01–FR-CR04):**
+**Conflict resolution (FR-CR01–FR-CR04)** — the law `stepped` **v2** since 2.15.0 (gh#84):
 
-Rules applied in order by `vent_resolve_conflict(step_t, step_rh, cr_priority)`:
+Rules applied in order by `vent_resolve_conflict(step_t, step_rh, cr_priority, floor_ok)`:
 
 1. **Wind safety override:** T3 issues CLOSE_ALL regardless of climate demand (independent of this algorithm) — unless wind protection is disabled (`wind_prot_en` = false).
 2. **RH neutral:** if `step_rh == VENT_STEP_NEUTRAL`, return `step_t` unchanged (RH has no vote).
 3. **Both demand OPEN** (`step_t > 0` and `step_rh > 0`): return the higher step regardless of `cr_priority` — more ventilation satisfies both demands.
 4. **No conflict** (`step_t == step_rh`): return as-is.
-5. **Genuine conflict** (one OPEN, one CLOSE=0) — apply `cr_priority`:
-   - `0 = CR_TEMP_FIRST` — temperature wins (return `step_t`).
-   - `1 = CR_RH_FIRST` — humidity wins (return `step_rh`, which may be 0).
-   - `2 = CR_DEVIATION` — higher step wins (return `max(step_t, step_rh)`).
+5. **Dryness never closes against heat** (`step_t > 0`, `step_rh == 0`): return `step_t`, under every `cr_priority`.
+6. **Humidity alone wants to open** (`step_t == 0`, `step_rh > 0`) — `cr_priority`:
+   - `0` (temperature first): return `step_t` (0) — humidity never opens a window on its own.
+   - `1` (humidity may also open M1) and `2` (the same): return `min(step_rh, 1)` — M1 at most — if `floor_ok`, else 0. `floor_ok` means T_avg ≥ T_min + 2 °C, or T_avg ≥ T_min + 1 °C while the last decision was already a humidity-only opening, so the floor has a 1 °C hysteresis.
 
-Conflict resolution is only active when `rh_ctrl_en` is true. The active conflict and the resolution applied are logged to Q3.
+The margins (2 °C, 1 °C) and the cap (step 1) are the law's constants, not settings. **At priority 0 every decision is the same as in v1.** *Until 2.15.0 (v1), rule 5 did not exist and rule 6 was the whole of `cr_priority`: `1 = CR_RH_FIRST` returned `step_rh` (so a dry house closed against heat, and humidity opened the house at night with no floor), `2 = CR_DEVIATION` returned `max(step_t, step_rh)`.*
+
+Conflict resolution is only active when `rh_ctrl_en` is true. No conflict event is logged (FR-CR04 is open): the vent-step row carries `step_t` and `step_rh`, from which a conflict can be read afterwards.
 
 **Motor alarm detection (FR-MA01–FR-MA08):**
 - T2 detects the RRK-3 alarm relay (GPIO42) using a deferred-ISR pattern: `IRAM_ATTR` ISR records first edge (volatile flag + FreeRTOS tick timestamp); T2 task loop polls the flag with a ≤10 ms resolution and confirms after 75 ms by reading the live pin state. **Not suppressed during MOVING states** — a motor hitting the emergency switch during a T2-commanded move is the primary alarm scenario.
@@ -1652,6 +1654,7 @@ Emitted by `build_canonical_status_json()`, so `GET /api/status`, the WebSocket 
 | `m3_not_confirmed` | Flag (2.10.0) — the last judged drive ran its full timer without the target end being confirmed. Cleared by the next confirmed drive. |
 | `m3_travel_short`, `m3_travel_long` | Flags (2.10.0) — the measured traverse disagrees with `travel_m3`: the end sensor made later than the configured time, or within half of it. |
 | `M3_ctrl_mode` | **2.12.0.** `"TIMED"` or `"LINEAR"`: the mode actually **in force**. Present whenever the windows block is, including on units with no sensor, because "which law is driving my greenhouse" must not be a question whose answer is an absent field. |
+| `law` | **2.15.0 (gh#84).** The control law that mode runs, by name and version: `"stepped v2"` or `"graded v2"`. Looked up in T6's own law table from the same effective mode (`cc_law_str()`), so it cannot name a law T6 is not running. Unprefixed, because the law decides all three windows. Always present with the block. |
 | `M3_ctrl_reason` | **2.13.0 (gh#85).** Why `M3_ctrl_mode` is what it is: `"setting"` (the operator's `ctrl_mode_m3` decided it), `"no_position"` (asked for, but the position is not trusted), `"held_down"` (trusted again, inside the two-minute hold-down), `"resumed"` (just promoted). Always present with the block. |
 | `M3_pos_gate` | **2.13.0 (gh#85).** What T17 makes of the sensor: `"ok"`, `"probing"`, `"no_sensor"`, `"bench_build"`, `"device_fault"`, `"not_fitted"`, `"end_sensors"`. It **qualifies** `M3_ctrl_reason`, and the pair is what makes the states distinguishable: `no_position` + `ok` is not a fault at all — the sensor is fitted, answering and taught, and the mode is waiting for the stroke boundary that promotes it, since promotion happens only when a moving M3 stops. Before 2.13.0 the gate reason left the unit only through the bench-only `GET /api/diag/windowpos`, so a release build could not tell an operator which condition was unmet — or that none was. |
 
@@ -1664,6 +1667,7 @@ Emitted by `build_canonical_status_json()`, so `GET /api/status`, the WebSocket 
 | `SENSOR_HR` channel 2 | **Extended in 2.12.0.** The window-state bitmask gains a *part-open* qualifier bit per channel (6, 7, 8) on top of the existing four 2-bit codes, which were all spoken for — widening the fields would have shifted M2's and M3's bits and re-decoded every archived row. `value_b`, a hard zero until now, carries M3's opening in 0.1 % (−1 = no trusted position). |
 | `RELAY` | **Extended in 2.12.0.** `value_a` gains ordinal **7**, `CH_PART_OPEN`: M3 at rest at a commanded target. |
 | `MODE_CHANGE` param **54** | **2.12.0 — a THIRD emitter on this row type.** The control mode actually in force changed: `value_a` 0 timed / 1 linear, `value_b` the reason (0 the setting, 1 no trusted position, 2 the position came back, 3 held down). Param 0 is still T6's vent step and param 47 is STANDBY; every consumer branches on `param_id`, which is what gh#54 cost. |
+| `MODE_CHANGE` param **56** | **2.15.0 (gh#84) — a FOURTH emitter.** The law in force, written with the param 54 row at boot and on every change of the effective mode: `value_a` which law (1 `stepped`, 2 `graded`, 0 unknown to the firmware's list, keyed by name in `law_log_id()`), `value_b` its version; channel 0. The three model tools that read vent steps keep param 0 and skip every other MODE row since this release, so a fifth emitter cannot surprise them. |
 
 `log/logparser.py` decodes all of them; `logparser.md` is the reference for the encodings, and it and `firmware/src/types/app_types.h` must change together with any new `param_id` (§5.3's rule about a second emitter on one row).
 

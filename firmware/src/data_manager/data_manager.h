@@ -97,9 +97,12 @@
 
 typedef struct {
     /* ---- Climate (NVS_NS_CLIMATE = "climate") ---- */
-    int16_t  t_min_day;      /**< Min temperature day setpoint   (°C, C1)  */
+    int16_t  t_min_day;      /**< Min temperature day setpoint   (°C, C1);
+                               *  since 2.15.0 the floor under humidity
+                               *  venting (T6 passes it to the law) */
     int16_t  t_max_day;      /**< Max temperature day setpoint   (°C, C2)  */
-    int16_t  t_min_ngt;      /**< Min temperature night setpoint (°C, C3)  */
+    int16_t  t_min_ngt;      /**< Min temperature night setpoint (°C, C3);
+                               *  the night floor, as t_min_day */
     int16_t  t_max_ngt;      /**< Max temperature night setpoint (°C, C4)  */
     int16_t  rh_min_day;     /**< Min humidity day setpoint      (%, C5)   */
     int16_t  rh_max_day;     /**< Max humidity day setpoint      (%, C6)   */
@@ -108,9 +111,10 @@ typedef struct {
     int16_t  hyst_t;         /**< Temperature hysteresis band    (°C, C9)  */
     int16_t  hyst_rh;        /**< Humidity hysteresis band       (%, C10)  */
     int16_t  rh_ctrl_en;     /**< Humidity control enable (0=off, 1=on, C11) */
-    int16_t  cr_priority;    /**< Conflict-resolution priority
-                               *  0 = T-first (default), 1 = RH-first,
-                               *  2 = deviation-based  (C12)               */
+    int16_t  cr_priority;    /**< Conflict-resolution priority (C12).
+                               *  Since stepped v2 (2.15.0): 0 = temperature
+                               *  first (default), 1 = humidity may also
+                               *  open M1 from t_min + 2 °C, 2 = as 1 */
     int16_t  avg_win_t;      /**< T sliding-average window (minutes, C13)  */
     int16_t  avg_win_rh;     /**< RH sliding-average window (minutes, C14) */
 

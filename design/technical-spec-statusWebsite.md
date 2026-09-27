@@ -5,11 +5,13 @@
 | Document | Technical Specification |
 | Audience | Implementer of the website |
 | Companion | `functional-design.md` — *what* the system does (kept with the website, not in this repository) |
-| Version | 2.0 |
-| Date | 2026-09-25 |
-| Status | For implementation — covers firmware **up to 2.14.0**. Every field below was read from the emitter, `firmware/src/status_post/status_json.cpp::build_canonical_status_json()`, and dated with `git log -S`; the last payload change is 2.13.0 (2.14.0 changes no payload field) |
+| Version | 2.1 |
+| Date | 2026-09-27 |
+| Status | For implementation — covers firmware **up to 2.15.0**. Every field below was read from the emitter, `firmware/src/status_post/status_json.cpp::build_canonical_status_json()`, and dated with `git log -S`; the last payload change is 2.15.0, one field added (`windows.law`) |
 
 This document is the implementation brief. It describes file layout, configuration constants, endpoint code paths, storage recipes, frontend wiring, and verification steps. The functional rules it implements are defined in [functional-design.md](functional-design.md); read that first.
+
+**What changed in 2.1** (firmware 2.15.0): **`windows.law`**, the control law in force by name and version (`"stepped v2"`, `"graded v2"`). An added key in an existing object, so a 2.0 site ignores it (§3.4, *Field stability guarantee*). Optional to render.
 
 **What changed in 2.0** (covers firmware 2.0.0 through 2.14.0 — 1.0 had stopped at 2.0.0-a.6.35.7, so this revision is three months of firmware):
 
@@ -306,6 +308,7 @@ The status payload arrives as a single nested JSON object. The exact shape is pr
 "windows": {
   "M1": "OPEN", "M2": "CLOSED", "M3": "PART_OPEN",
   "M3_ctrl_mode":   "LINEAR",
+  "law":            "graded v2",
   "M3_ctrl_reason": "setting",
   "M3_pos_gate":    "ok",
   "M3_percent_x10":   252,
@@ -325,6 +328,8 @@ The status payload arrives as a single nested JSON object. The exact shape is pr
 | `M3_pos_gate` | 2.13.0 | `ok`, `probing`, `no_sensor`, `device_fault`, `end_sensors`, `not_fitted`, `bench_build` | What the controller makes of the position sensor. It qualifies `M3_ctrl_reason`: `no_position` with `ok` is not a fault — the mode is simply about to be taken up. |
 
 A dashboard that shows only the law needs `M3_ctrl_mode`. The other two are for saying *why*, which is what an operator asks when the setting says linear and the tile says timed.
+
+**The control law by name and version** — `law`, since **2.15.0**, always present with the block: `"stepped v2"` (mode 1, `TIMED`) or `"graded v2"` (mode 2, `LINEAR`). `M3_ctrl_mode` says which mode is in force; `law` says which law that mode runs, and which *version* of it, which the mode cannot: `stepped` v1 and v2 decide differently when humidity is controlled. The controller looks it up in its own law table from the same effective mode, so the two never disagree. The format is `name vN`; render it verbatim. Treat it as an open string (a later firmware may name another law or version) and never parse the number as the firmware version — it is independent of it.
 
 **M3 position** — present **only** when a position sensor is fitted and trusted, and **absent** otherwise (absent, not zero: a consumer must be able to tell "no sensor" from "fully closed"):
 

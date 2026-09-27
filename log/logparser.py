@@ -59,6 +59,15 @@ _VENT_STEP = {
     3: "M1+M2+M3 open (ridge vent)",
 }
 
+# MODE param 56 (2.15.0, gh#84) value_a -> the law's name. The firmware keys
+# these by name in climate_control.cpp law_log_id(); append only, never
+# renumber. 0 = a law that list did not know.
+_LAW = {
+    0: "an unlisted law",
+    1: "stepped",
+    2: "graded",
+}
+
 # log_param_id_t (from app_types.h) — param → (name, unit)
 #
 # Sensitive fields (PIN, WiFi credentials, secrets) log a "changed" marker
@@ -345,7 +354,7 @@ def _decode_relay(row: dict) -> str:
 
 def _decode_mode(row: dict) -> str:
     """
-    MODE (LOG_MODE_CHANGE) has THREE emitters, discriminated by `param`
+    MODE (LOG_MODE_CHANGE) has FOUR emitters, discriminated by `param`
     since firmware 2.6.0 (gh#54):
 
     param = 0  -- emitter A, T6 climate_control.cpp post_log_mode():
@@ -369,6 +378,15 @@ def _decode_mode(row: dict) -> str:
                 2 the position came back, 3 held down after a demotion
       ch      = 3, M3 being the only window with a mode
 
+    param = 56 -- emitter D, T6 climate_control.cpp post_log_law() (2.15.0,
+                  gh#84): the control LAW in force, written with emitter C at
+                  boot and on every change of the effective mode.
+      value_a = which law: 1 stepped, 2 graded, 0 one the firmware's list did
+                not know (its console line names it). Keyed by name in
+                climate_control.cpp law_log_id(), append only: _LAW below
+      value_b = the law's version, so the row reads "stepped v2"
+      ch      = 0, the law decides all three windows
+
     Emitter B has existed since rc.1.5.0 (gh#28) but carried param = 0 until
     2.6.0, so every STANDBY transition was rendered as a ventilation decision
     that never happened -- including a fabricated "T-demand / RH-demand" read
@@ -386,6 +404,11 @@ def _decode_mode(row: dict) -> str:
                    2: "position back", 3: "held down"}.get(packed, f"reason {packed}")
             law = "LINEAR (mode 2)" if resolved == 1 else "TIMED (mode 1)"
             return f"M3 control law -> {law}  ({why})"
+
+        if par == 56:
+            # 2.15.0 (gh#84) -- emitter D: the law in force, name + version.
+            name = _LAW.get(resolved, f"law #{resolved}")
+            return f"Control law in force: {name} v{packed}"
 
         if par == 47:
             initiator = row.get("initiator", "?").strip()

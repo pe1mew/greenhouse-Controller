@@ -179,39 +179,45 @@ static void test_falling_ramp_with_hysteresis(void)
     TEST_ASSERT_EQUAL_INT(VENT_ACT_CLOSE, out.win[0].action);
 }
 
-static void test_humidity_alone_opens_m3_fully(void)
+/* CHANGED DELIBERATELY for v2 (gh#84), and renamed: this was
+ * test_humidity_alone_opens_m3_fully, which asserted that humidity at step 3
+ * on its own opens M1, M2 and M3 (priority 2). Humidity alone now opens M1 at
+ * most (stepped v2's cap), so the resolved step stays under 2 and M3 stays
+ * shut, under priority 1 and 2 alike. */
+static void test_humidity_alone_never_opens_m3(void)
 {
-    vent_in_t in = base_in();
-    in.rh_ctrl_en = true;
-    in.rh_avg_pct = 95;                             /* step 3 on humidity */
-    in.cr_priority = 2;
-    vent_out_t out = run(&in);
-    TEST_ASSERT_EQUAL_INT(3, out.step_rh);
-    TEST_ASSERT_EQUAL_INT(1000, out.demand_rh_x10);
-    TEST_ASSERT_EQUAL_INT(VENT_ACT_OPEN, out.win[0].action);
-    TEST_ASSERT_EQUAL_INT(VENT_ACT_OPEN, out.win[1].action);
-    M3_TARGET(out, 250);                            /* towards 1000, rate-limited */
+    for (int cr = 1; cr <= 2; cr++) {
+        setUp();
+        vent_in_t in = base_in();
+        in.rh_ctrl_en = true;
+        in.rh_avg_pct = 95;                         /* step 3 on humidity */
+        in.cr_priority = (uint8_t)cr;
+        vent_out_t out = run(&in);
+        TEST_ASSERT_EQUAL_INT(3, out.step_rh);      /* the vote is unchanged */
+        TEST_ASSERT_EQUAL_INT(1, out.step);         /* the decision is M1 */
+        TEST_ASSERT_EQUAL_INT(VENT_ACT_OPEN, out.win[0].action);
+        TEST_ASSERT_EQUAL_INT(VENT_ACT_HOLD, out.win[1].action);
+        TEST_ASSERT_EQUAL_INT(VENT_ACT_HOLD, out.win[2].action);
+    }
 }
 
-static void test_conflict_follows_cr_priority(void)
+/* CHANGED DELIBERATELY for v2 (gh#84), and renamed: this was
+ * test_conflict_follows_cr_priority, which asserted that priority 1 holds M3
+ * shut in a dry 31 °C house. Rule 1: dryness never closes against heat, so
+ * every priority vents, M3 aimed as the temperature wants. */
+static void test_dryness_never_closes_against_heat_m3_aimed(void)
 {
-    const int want[3] = { 250, -1, 250 };           /* -1: M3 stays shut */
     for (int cr = 0; cr < 3; cr++) {
         setUp();
         vent_in_t in = base_in();
         set_t(&in, 310);                            /* temperature: step 3 */
         in.rh_ctrl_en = true;
-        in.rh_avg_pct = 40;                         /* humidity: too dry, close */
+        in.rh_avg_pct = 40;                         /* humidity: too dry */
         in.cr_priority = (uint8_t)cr;
         vent_out_t out = run(&in);
         TEST_ASSERT_EQUAL_INT(0, out.step_rh);
-        if (want[cr] < 0) {
-            TEST_ASSERT_EQUAL_INT(0, out.step);
-            TEST_ASSERT_EQUAL_INT(VENT_ACT_HOLD, out.win[2].action);
-        } else {
-            TEST_ASSERT_EQUAL_INT(3, out.step);
-            M3_TARGET(out, want[cr]);
-        }
+        TEST_ASSERT_EQUAL_INT(3, out.step);
+        M3_TARGET(out, 250);                        /* towards 750, rate-limited */
     }
 }
 
@@ -398,11 +404,12 @@ static void test_reset_takes_the_position_as_target(void)
 
 /** M1 and M2 are the stepped law's, and so are the steps: in lockstep over a
  *  long pseudo-random run, which also shows the stepped model still keeps its
- *  memory within the slots this one carries for it. Today its decisions read
- *  slot 0 only (the temperature step): its humidity branch calls the close
- *  guard only above rh_max, where it never engages. Carrying none of its
- *  memory made 2 033 of 20 000 steps differ (2026-09-19); carrying slot 0 alone
- *  made none. */
+ *  memory within the slots this one carries for it (0..5). Since stepped v2
+ *  (gh#84) its decisions read slots 0, 1 and 2: the temperature step, the
+ *  humidity step (the close guard at rh_max) and the resolved step (the
+ *  humidity floor's hysteresis). Under v1 they read slot 0 only: carrying
+ *  none of its memory made 2 033 of 20 000 steps differ (2026-09-19). t_min
+ *  varies too, so the floor is crossed both ways. */
 static void test_m1_m2_and_steps_are_stepped_in_lockstep(void)
 {
     const vent_model_t *st = vent_model_stepped();
@@ -420,6 +427,7 @@ static void test_m1_m2_and_steps_are_stepped_in_lockstep(void)
         in.rh_avg_pct = (uint8_t)(30 + (r >> 12) % 70u);
         in.cr_priority = (uint8_t)((r >> 20) % 3u);
         in.hyst_t_c = (uint8_t)(2 + (r >> 24) % 8u);
+        in.t_min_c10 = (int16_t)(((r >> 5) % 25u) * 10u);
         in.t_valid = ((r >> 28) % 50u) != 0u;
         for (int i = 0; i < 2; i++) {
             in.win[i].state = states[(r >> (4 + 3 * i)) % 5u];
@@ -443,7 +451,60 @@ static void test_m1_m2_and_steps_are_stepped_in_lockstep(void)
 static void test_identity(void)
 {
     TEST_ASSERT_EQUAL_STRING("graded", G->name);
-    TEST_ASSERT_EQUAL_INT(1, G->version);
+    TEST_ASSERT_EQUAL_INT(2, G->version);           /* v2: embeds stepped v2 */
+}
+
+/** FNV-1a over one output: the fields a caller acts on or logs. */
+static uint32_t fnv_out(uint32_t h, const vent_out_t *o)
+{
+    const int32_t f[7] = { o->step, o->step_t, o->step_rh,
+                           o->win[0].action, o->win[1].action, o->win[2].action,
+                           o->win[2].target_x10 };
+    for (int k = 0; k < 7; k++) {
+        uint32_t v = (uint32_t)f[k];
+        for (int b = 0; b < 4; b++) {
+            h ^= (v >> (8 * b)) & 0xFFu;
+            h *= 16777619u;
+        }
+    }
+    return h;
+}
+
+/* A behaviour change without a version bump fails here (contract §2; gh#83
+ * changed this law without a bump and nothing noticed). A fixed
+ * pseudo-random run with memory carried and M3 linear, at rest part-open or
+ * moving. If this fails after a deliberate change to this law or to the
+ * stepped law it embeds: bump the version, then pin the new digest printed by
+ * the failure, both in the same change. */
+#define GRADED_VERSION_PINNED  2
+#define GRADED_DIGEST_PINNED   0x467316EDu
+
+static void test_decision_digest_pins_the_version(void)
+{
+    const vent_win_state_t states[4] = { VENT_WIN_CLOSED, VENT_WIN_PART_OPEN,
+                                         VENT_WIN_MOVING_OPEN, VENT_WIN_MOVING_CLOSE };
+    uint32_t r = 20260927u, h = 2166136261u;
+    for (int k = 0; k < 20000; k++) {
+        r = r * 1103515245u + 12345u;
+        vent_in_t in = base_in();
+        set_t(&in, 50 + (int)((r >> 8) % 360u));
+        in.rh_ctrl_en = ((r >> 3) & 7u) != 0u;
+        in.rh_avg_pct = (uint8_t)(20 + (r >> 12) % 80u);
+        in.cr_priority = (uint8_t)((r >> 20) % 3u);
+        in.daytime = ((r >> 23) & 1u) != 0u;
+        in.t_min_c10 = (int16_t)(((r >> 5) % 25u) * 10u);
+        in.win[2].pos_x10 = (int16_t)((r >> 16) % 1001u);
+        in.win[2].state = states[(r >> 26) % 4u];
+        in.win[2].last_result = (vent_result_t)((r >> 28) % 5u);
+        in.win[2].ms_since_move = ((r >> 30) & 1u) ? LONG_AGO : 1000u;
+        if ((r % 997u) == 0u) { setUp(); }
+        vent_out_t out = run(&in);
+        h = fnv_out(h, &out);
+    }
+    TEST_ASSERT_EQUAL_INT_MESSAGE(GRADED_VERSION_PINNED, G->version,
+                                  "the version the digest was pinned with");
+    TEST_ASSERT_EQUAL_HEX32_MESSAGE(GRADED_DIGEST_PINNED, h,
+                                    "decisions changed: bump the version, then pin this digest");
 }
 
 int main(int argc, char **argv)
@@ -454,8 +515,8 @@ int main(int argc, char **argv)
     RUN_TEST(test_below_threshold_closes_nothing);
     RUN_TEST(test_rising_ramp);
     RUN_TEST(test_falling_ramp_with_hysteresis);
-    RUN_TEST(test_humidity_alone_opens_m3_fully);
-    RUN_TEST(test_conflict_follows_cr_priority);
+    RUN_TEST(test_humidity_alone_never_opens_m3);
+    RUN_TEST(test_dryness_never_closes_against_heat_m3_aimed);
     RUN_TEST(test_invalid_temperature_holds_everything);
     RUN_TEST(test_unknown_or_stale_position_holds_m3);
     RUN_TEST(test_digital_m3_is_mode_one);
@@ -469,5 +530,6 @@ int main(int argc, char **argv)
     RUN_TEST(test_reset_takes_the_position_as_target);
     RUN_TEST(test_m1_m2_and_steps_are_stepped_in_lockstep);
     RUN_TEST(test_identity);
+    RUN_TEST(test_decision_digest_pins_the_version);
     return UNITY_END();
 }

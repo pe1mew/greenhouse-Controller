@@ -53,6 +53,9 @@
  * resolution symmetric: T and RH demands are both expressed as a step
  * number (0 = close, 1–N = open at step N) with the special sentinel
  * VENT_STEP_NEUTRAL (−1) meaning "no demand from this source."
+ * Since stepped v2 (2.15.0, gh#84) the close demand changes no decision:
+ * dryness never closes against heat, under any `cr_priority`, so `rh_min`
+ * is inert. The vote is still computed and logged (step_rh = 0).
  *
  * ### State T6 must maintain
  * T6 keeps one `vent_state_t` — the model's memory, owned by the caller
@@ -76,6 +79,7 @@
 #pragma once
 
 #include "../types/app_types.h"
+#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -84,9 +88,11 @@
  *        the acceptable range and neither open nor close is demanded.
  *
  * vent_resolve_conflict() treats this as "RH has no vote" — the temperature
- * step wins unconditionally. Distinguishing NEUTRAL from a genuine `step=0`
- * close demand is essential: a NEUTRAL RH should NOT veto temperature-driven
- * opening, but a genuine close demand should.
+ * step wins unconditionally. Until stepped v2 (2.15.0, gh#84) the difference
+ * from a genuine `step=0` close demand decided something: under
+ * `cr_priority` 1 that demand vetoed a temperature-driven opening. v2 took
+ * the veto away (dryness never closes against heat), so today the two differ
+ * only in the log's step_rh.
  */
 #define VENT_STEP_NEUTRAL  (-1)
 
@@ -115,18 +121,24 @@
  *     behaviour below).  Resets the model's state on inhibit onset so
  *     re-evaluation starts from step 0 when the flag clears.
  *  2. **Snapshot** — dm_cfg_snapshot() under MX4; dm_meas_snapshot() under MX2.
- *  3. **Setpoint selection** — selects t_max, rh_max, rh_min from is_daytime.
+ *  3. **Setpoint selection** — selects t_max, t_min, rh_max, rh_min from
+ *     is_daytime (t_min since 2.15.0: the floor under humidity venting).
  *  4. **The decision** — fill_model_input() fills a `vent_in_t` and the model
  *     decides. Since 2.12.0 the law is `drivers/ventModel`, behind
  *     design/ventModelContract.md, not code in this module: step evaluation
  *     and conflict resolution moved there unchanged, and the formulas above
- *     are what `vent_model_stepped` computes.
+ *     are what `vent_model_stepped` computes. Stepped v2 (2.15.0, gh#84)
+ *     changed the humidity branch and the conflict rule there; the law's
+ *     own file is the authority on both.
  *  5. **Apply** — apply_model_output(): every T6 cycle, compare the model's
  *     desired END STATE per window against the T2 states the model was given,
  *     and post CMD_CLOSE / CMD_OPEN for any channel not already there.
  *     Level-triggered, so commands lost to T2 dwell are retried until they
  *     take effect.  Every CLOSE first, then the OPENs.
- *  6. **Logging** — LOG_MODE_CHANGE posted to Q3 only on step changes.
+ *  6. **Logging** — LOG_MODE_CHANGE posted to Q3 only on step changes;
+ *     at boot and on every change of the effective mode, the mode row
+ *     (param 54) and the law row (param 56: the law's id and version,
+ *     2.15.0).
  *  7. **State update** — the model's `vent_state_t`, owned by this task.
  *
  * ### Inhibit behaviour
@@ -167,3 +179,15 @@ typedef struct {
 } cc_m3_target_t;
 
 void cc_get_m3_target(cc_m3_target_t *out);
+
+/**
+ * @brief The control law T6 runs under an effective mode, as "name vN"
+ *        ("stepped v2", "graded v2"; 2.15.0, gh#84).
+ *
+ * A pure lookup in the table T6 selects its law from, so a status payload
+ * cannot name a law T6 is not running. Safe from any task.
+ *
+ * @param linear  the EFFECTIVE mode (dm_m3_ctrl_mode()), never the setting.
+ * @return as snprintf(): the length the full string needs.
+ */
+int cc_law_str(bool linear, char *buf, size_t cap);

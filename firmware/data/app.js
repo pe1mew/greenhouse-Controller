@@ -946,11 +946,10 @@ function loadConfig() {
     .then(cfg => {
       if (!cfg) return;
       setVal('cfg-t-max-day',      cfg.t_max_day);
-      // HEATING CONTROL NOT IMPLEMENTED — preserved for future use
-      // setVal('cfg-t-min-day',   cfg.t_min_day);
+      // 2.15.0 (gh#84): t_min is the floor under humidity venting.
+      setVal('cfg-t-min-day',      cfg.t_min_day);
       setVal('cfg-t-max-ngt',      cfg.t_max_ngt);
-      // HEATING CONTROL NOT IMPLEMENTED — preserved for future use
-      // setVal('cfg-t-min-ngt',   cfg.t_min_ngt);
+      setVal('cfg-t-min-ngt',      cfg.t_min_ngt);
       setVal('cfg-rh-max-day',     cfg.rh_max_day);
       setVal('cfg-rh-min-day',     cfg.rh_min_day);
       setVal('cfg-rh-max-ngt',     cfg.rh_max_ngt);
@@ -960,7 +959,10 @@ function loadConfig() {
       setVal('cfg-avg-win-t',      cfg.avg_win_t);
       setVal('cfg-avg-win-rh',     cfg.avg_win_rh);
       setVal('cfg-rh-ctrl-en',     String(cfg.rh_ctrl_en));
-      setVal('cfg-cr-priority',    String(cfg.cr_priority));
+      // 2.15.0 (gh#84): two choices. A stored 2 behaves exactly as 1, and
+      // with no option of its own the select would show blank, so it shows
+      // as the choice it behaves as.
+      setVal('cfg-cr-priority',    String(cfg.cr_priority >= 1 ? 1 : 0));
       setVal('cfg-v-max',          cfg.v_max);
       setVal('cfg-dir-excl-low',   cfg.dir_excl_low);
       setVal('cfg-dir-excl-high',  cfg.dir_excl_high);
@@ -1755,9 +1757,9 @@ function linkSlider(numId) {
 
 (function linkAllSliders() {
   [
-    'cfg-t-max-day', /* 'cfg-t-min-day', HEATING CONTROL NOT IMPLEMENTED — preserved for future use */
+    'cfg-t-max-day', 'cfg-t-min-day',
     'cfg-rh-max-day', 'cfg-rh-min-day',
-    'cfg-t-max-ngt', /* 'cfg-t-min-ngt', HEATING CONTROL NOT IMPLEMENTED — preserved for future use */
+    'cfg-t-max-ngt', 'cfg-t-min-ngt',
     'cfg-rh-max-ngt', 'cfg-rh-min-ngt',
     'cfg-hyst-t', 'cfg-hyst-rh', 'cfg-avg-win-t', 'cfg-avg-win-rh',
     'cfg-v-max', 'cfg-dir-excl-low', 'cfg-dir-excl-high', 'cfg-avg-win-wind',

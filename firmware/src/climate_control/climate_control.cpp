@@ -66,6 +66,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <string.h>
 
 static const char *TAG = "T6_CLI";
@@ -90,6 +91,47 @@ static const char *TAG = "T6_CLI";
  * caller owns it: reset at boot, at an inhibit onset, and on a mode change once
  * mode 2 exists.
  * ----------------------------------------------------------------------- */
+
+/* -----------------------------------------------------------------------
+ * The law table (plan §5c step 2), indexed by the effective mode: 0 timed,
+ * 1 linear. Selecting by index rather than by `if` is what makes a third law
+ * a row here and nothing else. At file scope since 2.15.0 (gh#84), so the
+ * status payload names its law from the table T6 selects from (cc_law_str()).
+ * It holds the accessors, not the descriptors: constant initialisation, so no
+ * start-up ordering between this file and the library's.
+ * ----------------------------------------------------------------------- */
+typedef const vent_model_t *(*law_get_t)(void);
+static const law_get_t k_laws[2] = { vent_model_stepped, vent_model_graded };
+
+static const vent_model_t *law_for_mode(bool linear)
+{
+    return k_laws[linear ? 1 : 0]();
+}
+
+/**
+ * @brief The law's id in the SD log (LOG_MODE_CHANGE param 56, value_a).
+ *
+ * Keyed by NAME, never by the table's index: the row must say WHICH law, and a
+ * mode's row in k_laws can change its law. Append only, never renumber;
+ * log/logparser.py decodes the same list.
+ *
+ * @return 1 stepped, 2 graded, 0 a law this list does not know (the console
+ *         line names it).
+ */
+static int16_t law_log_id(const vent_model_t *m)
+{
+    static const char *const k_ids[] = { "stepped", "graded" };   /* ids 1, 2 */
+    for (size_t i = 0; i < sizeof(k_ids) / sizeof(k_ids[0]); i++) {
+        if (strcmp(m->name, k_ids[i]) == 0) { return (int16_t)(i + 1u); }
+    }
+    return 0;
+}
+
+int cc_law_str(bool linear, char *buf, size_t cap)
+{
+    const vent_model_t *m = law_for_mode(linear);
+    return snprintf(buf, cap, "%s v%u", m->name, (unsigned)m->version);
+}
 
 /* -----------------------------------------------------------------------
  * post_q1() — send one window_cmd_t to Q1 (non-blocking, warn on full)
@@ -135,30 +177,14 @@ static void post_q1(cmd_action_t action, uint8_t channel)
  * ----------------------------------------------------------------------- */
 
 /**
- * @brief Emit a LOG_MODE_CHANGE event to Q3 via log_post().
- *
- * Encodes both per-branch demands plus the resolved step into a single
- * log row so the SD-log parser can reconstruct the full decision context.
- *
- *   value_a = resolved step (0..NUM_VENT_STEPS)
- *   value_b = packed: high byte = step_t, low byte = step_rh
- *
- * Each per-branch step is clamped to int8 range before packing so an
- * out-of-range source value cannot corrupt the int16 encoding.
- *
- * @param resolved_step  Final step posted to T2 (0..NUM_VENT_STEPS).
- * @param step_t         Temperature branch raw demand.
- * @param step_rh        Humidity branch raw demand (may be VENT_STEP_NEUTRAL).
- * @see   log_post()
- */
-/**
  * @brief Emit the EFFECTIVE-mode row (LOG_MODE_CHANGE, param 54).
  *
- * LOG_MODE_CHANGE now has THREE emitters: T6's vent step (param 0), STANDBY
- * (param 47, gh#54) and this one. gh#54 was exactly this shape -- a second
- * emitter whose rows every consumer decoded as the first -- so this row gets
- * its own param_id and its parser branch in the same change, and nothing
- * about it can be inferred from the value shape.
+ * LOG_MODE_CHANGE now has FOUR emitters: T6's vent step (param 0), STANDBY
+ * (param 47, gh#54), this one, and the law row below (param 56, 2.15.0).
+ * gh#54 was exactly this shape -- a second emitter whose rows every consumer
+ * decoded as the first -- so this row gets its own param_id and its parser
+ * branch in the same change, and nothing about it can be inferred from the
+ * value shape.
  *
  * @param linear  the mode now in force: true = mode 2 (linear M3).
  * @param why     m3_mode_reason_t, logged verbatim.
@@ -177,6 +203,48 @@ static void post_log_ctrl_mode(bool linear, int why)
     log_post(&evt);
 }
 
+/**
+ * @brief Emit the law row (LOG_MODE_CHANGE, param 56; 2.15.0, gh#84).
+ *
+ * The law in force by name and version, written with the param 54 row: at
+ * boot and on every change of the effective mode. A mode row says only "timed"
+ * or "linear"; which law that meant depends on the firmware, and stepped v1
+ * and v2 decide differently under `cr_priority` 1 and 2. A log that must
+ * be read against the law that wrote it has to carry the law.
+ *
+ * @param m  the law T6 now runs.
+ */
+static void post_log_law(const vent_model_t *m)
+{
+    log_event_t evt;
+    memset(&evt, 0, sizeof(evt));
+    evt.timestamp  = dm_get_unix_time();
+    evt.event_type = (uint8_t)LOG_MODE_CHANGE;
+    evt.initiator  = (uint8_t)LOG_BY_SYSTEM;
+    evt.channel    = 0u;                 /* the law decides all three windows */
+    evt.param_id   = (uint8_t)LOG_PARAM_LAW;
+    evt.value_a    = law_log_id(m);
+    evt.value_b    = (int16_t)m->version;
+    log_post(&evt);
+}
+
+/**
+ * @brief Emit a LOG_MODE_CHANGE event to Q3 via log_post().
+ *
+ * Encodes both per-branch demands plus the resolved step into a single
+ * log row so the SD-log parser can reconstruct the full decision context.
+ *
+ *   value_a = resolved step (0..NUM_VENT_STEPS)
+ *   value_b = packed: high byte = step_t, low byte = step_rh
+ *
+ * Each per-branch step is clamped to int8 range before packing so an
+ * out-of-range source value cannot corrupt the int16 encoding.
+ *
+ * @param resolved_step  Final step posted to T2 (0..NUM_VENT_STEPS).
+ * @param step_t         Temperature branch raw demand.
+ * @param step_rh        Humidity branch raw demand (may be VENT_STEP_NEUTRAL).
+ * @see   log_post()
+ */
 static void post_log_mode(int resolved_step, int step_t, int step_rh)
 {
     log_event_t evt;
@@ -559,6 +627,10 @@ static void fill_model_input(vent_in_t *in, const cfg_shadow_t *cfg,
     in->wind_valid = true;
 
     in->t_max_c10  = (int16_t)((cfg->is_daytime ? cfg->t_max_day  : cfg->t_max_ngt) * 10);
+    /* Interface 3 (gh#84): the crop's minimum. The stepped law lets humidity
+     * open the house on its own only from t_min + 2 °C; until 2.15.0 nothing
+     * in the control path read t_min at all. */
+    in->t_min_c10  = (int16_t)((cfg->is_daytime ? cfg->t_min_day  : cfg->t_min_ngt) * 10);
     in->rh_max_pct = (uint8_t)(cfg->is_daytime ? cfg->rh_max_day : cfg->rh_max_ngt);
     in->rh_min_pct = (uint8_t)(cfg->is_daytime ? cfg->rh_min_day : cfg->rh_min_ngt);
     in->hyst_t_c   = (uint8_t)((cfg->hyst_t  > 0) ? cfg->hyst_t  : 1);
@@ -657,21 +729,18 @@ void task_climate_control(void *pvParameters)
 
     ESP_LOGI(TAG, "[T6] task alive");
 
-    /* The model and its memory. One model in this release -- `stepped`, mode 1
-     * -- and T6 owns the state it keeps between calls (contract §2). The reset
-     * at boot replaces the two step ints this task used to initialise here;
-     * T2's boot CLOSE_ALL still ensures the windows are CLOSED. */
-    /* The model table (plan §5c step 2). Two entries, indexed by the effective
-     * mode: 0 timed, 1 linear. Selecting by index rather than by `if` is what
-     * makes a third law a row here and nothing else. */
-    const vent_model_t *const k_models[2] = { vent_model_stepped(),
-                                              vent_model_graded() };
+    /* The model and its memory. The law comes from the table at the top of
+     * this file (k_laws, indexed by the effective mode), and T6 owns the state
+     * it keeps between calls (contract §2). The reset at boot replaces the two
+     * step ints this task used to initialise here; T2's boot CLOSE_ALL still
+     * ensures the windows are CLOSED. */
     m3_mode_reason_t mode_why = M3_MODE_BY_SETTING;
     bool linear = dm_m3_ctrl_mode_eval(&mode_why);
-    const vent_model_t *model = k_models[linear ? 1 : 0];
-    /* -1 = "not logged yet", so the FIRST cycle writes the mode row whatever
-     * the mode is. Which law a boot came up under is exactly the question a
-     * reader of the log asks first, and it is not inferable from silence. */
+    const vent_model_t *model = law_for_mode(linear);
+    /* -1 = "not logged yet", so the FIRST cycle writes the mode row and the
+     * law row whatever the mode is. Which law a boot came up under is exactly
+     * the question a reader of the log asks first, and it is not inferable
+     * from silence. */
     int logged_mode = -1;
     vent_state_t vstate;
     model->reset(&vstate);
@@ -757,15 +826,16 @@ void task_climate_control(void *pvParameters)
         const bool linear_now = dm_m3_ctrl_mode_eval(&mode_why);
         if (linear_now != linear) {
             linear = linear_now;
-            model  = k_models[linear ? 1 : 0];
+            model  = law_for_mode(linear);
             model->reset(&vstate);
             last_logged_step = 0;
         }
         if ((int)linear != logged_mode) {
             logged_mode = (int)linear;
-            ESP_LOGW(TAG, "[T6] control law: %s (reason %d)",
-                     model->name, (int)mode_why);
+            ESP_LOGW(TAG, "[T6] control law: %s v%u (reason %d)",
+                     model->name, (unsigned)model->version, (int)mode_why);
             post_log_ctrl_mode(linear, (int)mode_why);
+            post_log_law(model);
         }
 
         EventBits_t bits = xEventGroupGetBits(EG1);

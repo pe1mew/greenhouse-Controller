@@ -39,7 +39,11 @@
  * 2.12.0; climate_control.cpp before it) implements exactly 0/1/2, and
  * `case 0:` shares an arm with `default:` — so before 2.5.0 an out-of-range
  * cr_priority was stored verbatim and silently degraded to TEMP_FIRST.
- *   0 = CR_TEMP_FIRST   1 = CR_RH_FIRST   2 = CR_DEVIATION (higher step wins) */
+ * Until 2.15.0: 0 = temperature first, 1 = humidity first, 2 = the higher
+ * step wins. Stepped v2 (2.15.0, gh#84) made it two choices: 0 = temperature
+ * first, 1 = humidity may also open M1 (from t_min + 2 °C). 2 behaves exactly
+ * as 1 and stays accepted so a stored 2 remains valid; the GUI and the LCD
+ * offer 0 and 1 only. */
 #define CFG_MIN_CR_PRIORITY   0
 #define CFG_MAX_CR_PRIORITY   2
 

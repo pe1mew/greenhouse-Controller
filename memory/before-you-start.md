@@ -30,9 +30,12 @@ NVS blob. **`LOG_SYSTEM value_a` is occupied -2, -1 and 0..30 as of 2.6.0** — 
 `event_logger.h` was STALE at 0..21 until then, which is how gh#59 came to be filed claiming 22 was
 free when 22/23/24 had been ROTA since 2.2.0. **The emitters are authoritative, not the comment:
 `grep -rn 'value_a' --include=*.cpp firmware/src/` and read the helper call sites (ROTA's go through
-`audit_row()`) before claiming a subtype is free.** `LOG_MODE_CHANGE` now discriminates its two
-emitters by `param_id`: 0 = T6 vent step, **47 = `LOG_PARAM_MODE_STANDBY`** (gh#54); `plot_daily.py`
-and `vent_step_replay.py` must skip 47. `LOG_SENSOR` is **reserved**: no emitter since rc.1.4.0,
+`audit_row()`) before claiming a subtype is free.** `LOG_MODE_CHANGE` discriminates its emitters by
+`param_id` (four as of 2.15.0): 0 = T6 vent step, **47 = `LOG_PARAM_MODE_STANDBY`** (gh#54), 54 = the
+effective mode (2.12.0), **56 = the law in force, name and version** (gh#84). Since 2.15.0
+`logdata.py`, `plot_daily.py` and `vent_step_replay.py` keep param 0 and skip every other MODE row, so
+a new emitter needs no edit there; `logparser.py` still needs its branch. As of 2.15.0 the next free `param_id`
+after 56 is 57 (the enum in `types/app_types.h`, checked against every `param_id =` emitter). `LOG_SENSOR` is **reserved**: no emitter since rc.1.4.0,
 kept only so ordinal 0 still decodes old archives
 
 ## 2. Adding or changing a config key, or its bounds

@@ -24,12 +24,11 @@
  *
  * ## Status
  *
- * **Not yet wired into the firmware.** `vent_model_stepped` is a faithful copy
- * of the 2.9.1 stepped logic in `firmware/src/climate_control/climate_control.cpp`,
- * built here so it can be tested on the host and serve as the reference for
- * `vent_model_graded` (mode 2). The firmware still runs its own inline copy;
- * the two are kept in step by hand until T6 is refactored onto this interface
- * (planned for 2.12.0 — plan §5b/§5c).
+ * **In force since 2.12.0: T6 calls this library, and the laws exist only
+ * here.** `vent_model_stepped` is mode 1 (and the fallback whenever M3's
+ * position is not trusted); `vent_model_graded` is mode 2, the operator's
+ * choice since 2026-09-25. A change to a law's decisions bumps its version
+ * (contract §2, "A law's name and version").
  *
  * @author  Greenhouse Controller project
  */
@@ -44,8 +43,11 @@
  *  2 (2026-09-19): `m3_min_move_ms` (16-bit, at most 65.5 s) became
  *  `m3_min_interval_ms` (32-bit), and `VENT_WIN_PART_OPEN` was added. Both
  *  gaps were found by the model work, building a simulator against this
- *  header. */
-#define VENT_MODEL_API  2
+ *  header.
+ *  3 (2026-09-27, gh#84): `t_min_c10` added after `t_max_c10`, the crop's
+ *  minimum, which floors a humidity-only opening. A new field moves every
+ *  field after it, so a caller built against 2 no longer fits. */
+#define VENT_MODEL_API  3
 
 /** Windows, in fixed order: index 0 = M1, 1 = M2, 2 = M3. */
 #define VENT_WINDOWS    3
@@ -155,12 +157,19 @@ typedef struct {
 
     /* ---- setpoints and tuning, day/night already resolved -------------- */
     int16_t  t_max_c10;          /**< ventilation threshold, 0.1 °C */
+    int16_t  t_min_c10;          /**< the crop's minimum, 0.1 °C (interface 3).
+                                  *   The stepped law lets humidity open the
+                                  *   house on its own only from t_min + 2 °C
+                                  *   (gh#84); a model may ignore it */
     uint8_t  rh_max_pct;
     uint8_t  rh_min_pct;
     uint8_t  hyst_t_c;           /**< whole °C */
     uint8_t  hyst_rh_pct;        /**< whole % */
-    uint8_t  cr_priority;        /**< 0 = temperature first, 1 = humidity first,
-                                  *   2 = the larger demand wins */
+    uint8_t  cr_priority;        /**< 0 = temperature first: humidity never opens
+                                  *   the house on its own. 1 = humidity may also
+                                  *   open it, M1 at most, above t_min + 2 °C.
+                                  *   2 = the same as 1 (stepped v2, gh#84; it
+                                  *   was "the larger demand wins" in v1) */
     bool     rh_ctrl_en;         /**< humidity control master switch. False =
                                   *   humidity casts no vote at all */
 
@@ -224,13 +233,13 @@ typedef struct {
 /**
  * @brief Mode 1 — the stepped law: three equal steps above the threshold.
  *
- * A faithful copy of the 2.9.1 firmware logic. See `vent_model_stepped.cpp`
- * for the provenance of each function and the one deliberate difference.
+ * Extracted from the 2.9.1 firmware (v1); v2 (gh#84) changes the humidity
+ * branch and the conflict rule. See `vent_model_stepped.cpp`.
  */
 const vent_model_t *vent_model_stepped(void);
 
 /**
- * @brief Mode 2 — a first CANDIDATE for the graded law (plan decision 9 is open).
+ * @brief Mode 2 — the graded law, chosen by the operator on 2026-09-25.
  *
  * M1 and M2 as the stepped law's first two steps; M3 proportional to the
  * temperature excess with a rate limit. See `vent_model_graded.cpp`.

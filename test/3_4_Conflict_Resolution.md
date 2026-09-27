@@ -1,5 +1,20 @@
 # 3.4 Conflict Resolution — Automated Test
 
+> **STALE — do not trust a result from this script without updating it first** (noted 2026-09-27).
+> - **It pins the v1 law.** Since firmware 2.15.0 (gh#84, `stepped` v2) dryness never closes against
+>   heat and humidity alone opens M1 at most, above T_min + 2 °C. So UT-CC-030 (T=26, RH=35,
+>   priority 1) now opens M1, and UT-CC-031a (T=10, RH=80, priority 2) now stays closed: 10 °C is
+>   below the floor. UT-CC-020, -021, -022 and -031b keep their outcomes. `softwareTestPlan.md` §6.4
+>   has the restated cases.
+> - **It was already broken before that:** it iterates `status["windows"]` as a list, and the
+>   canonical status returns an object keyed `M1`/`M2`/`M3` (`status_json.cpp`), so
+>   `windows_all_closed()` can never be true. It also targets `192.168.20.150`, a unit not in the
+>   current inventory.
+> - **It pushes values into the sensor emulator**, which is fed by Node-RED for soaks: running it
+>   needs the operator's go.
+>
+> The law's rules are pinned by the host tests in `drivers/ventModel` (`pio test -e native`).
+
 ## Purpose
 
 Verifies the `vent_resolve_conflict()` logic (T6) for all test cases in

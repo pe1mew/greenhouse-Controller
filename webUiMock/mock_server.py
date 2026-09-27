@@ -583,6 +583,13 @@ def _build_status() -> dict:
                                           and _m3_ctrl_reason() not in
                                           ("no_position", "held_down"))
                              else "TIMED"),
+            # 2.15.0 (gh#84): the law that mode runs, by name and version. In
+            # the firmware it follows M3_ctrl_mode through T6's own table, so
+            # the mock derives it from the same condition.
+            "law": ("graded v2" if (cfg.get("ctrl_mode_m3", 0) and _wpos_fitted()
+                                    and _m3_ctrl_reason() not in
+                                    ("no_position", "held_down"))
+                    else "stepped v2"),
             # gh#85: WHY it is that. `M3_pos_gate` is what T17 thinks of the
             # sensor, `M3_ctrl_reason` is why the effective mode is what it is.
             # The mock has no sensor to lose, so by default it reports the

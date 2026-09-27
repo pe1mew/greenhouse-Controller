@@ -178,8 +178,11 @@ def load(paths):
                         # shift a projection. Rows from firmware before 2.6.0
                         # carry param 0 and cannot be separated.
                         # 2.12.0: param 54 is emitter C, M3's effective
-                        # control law. Same trap, same answer.
-                        if par in (47, 54):
+                        # control law, and 2.15.0 adds param 56, the law in
+                        # force. Same trap, same answer: only param 0 is a
+                        # vent step, and an allow-list cannot be surprised
+                        # by the next emitter.
+                        if par != 0:
                             continue
                         u = vb & 0xFFFF
                         st = (u >> 8) & 0xFF

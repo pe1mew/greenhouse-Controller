@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de boer
 
-**Versie:** 1.25
-**Datum:** 2026-09-25
-**Firmware:** 2.14.0
+**Versie:** 1.26
+**Datum:** 2026-09-27
+**Firmware:** 2.15.0
 
 ---
 
@@ -149,8 +149,9 @@ De controller probeert continu de temperatuur en luchtvochtigheid binnen de door
 **Setpoints (gewenste waarden):**
 Je stelt vier soorten grenswaarden in, apart voor **dag** en **nacht**:
 - Maximum temperatuur (boven deze waarde: ramen openen om af te koelen, onder deze waarde: ramen dicht houden om warmte vast te houden)
-- Maximum vochtigheid (boven deze waarde: ramen openen om vocht af te voeren)
-- Minimum vochtigheid (onder deze waarde: ramen dicht houden om vocht vast te houden)
+- Minimum temperatuur (**de ondergrens voor ventileren op vocht**: vocht opent pas een raam als het minstens *T-min + 2 °C* is — zie *Conflict-prioriteit* hieronder. De controller kan niet verwarmen: onder T-min kan hij alleen de ramen dicht houden)
+- Maximum vochtigheid (boven deze waarde is de kas te vochtig)
+- Minimum vochtigheid (onder deze waarde is de kas te droog. **Sinds firmware 2.15.0 verandert dat niets aan de ramen**: te droog sluit nooit een raam dat de temperatuur heeft geopend)
 
 **Dag/nacht-omschakeling:**
 Dit is automatisch op basis van zonsopkomst en zonsondergang. De geografische locatie wordt automatisch bepaald of door de beheerder ingesteld; de controller berekent zelf wanneer de zon op- en ondergaat.
@@ -169,29 +170,28 @@ De controller opent de ramen in stappen, afhankelijk van de gewenste afkoeling o
 
 Dit voorkomt dat het klimaat binnen plotseling sterk verandert. ook draagt dit bij aan een "rustig" gedrag van de ramen. 
 
-**Conflict-prioriteit:**
-Soms vraagt de temperatuur om ramen open (te warm) en de vochtigheid om ramen dicht (te droog), of andersom. In dat geval volgt de controller je gekozen prioriteit:
-- **Temperature first** — temperatuur krijgt voorrang (standaardinstelling)
-- **Humidity first** — vochtigheid krijgt voorrang
-- **Auto** — de hoogste ventilatiestap van de twee wint
+**Conflict-prioriteit** (firmware 2.15.0 en later):
+Temperatuur en vochtigheid vragen soms iets anders. Twee regels gelden altijd, wat je ook kiest:
+- **Te droog sluit nooit tegen de warmte in.** Vraagt de temperatuur om ventileren, dan blijven de ramen open, ook als de kas te droog is. Daardoor verandert *RH-min* op dit moment niets aan de ramen.
+- **Vragen ze allebei om ventileren**, dan neemt de controller de hoogste stap van de twee. Waar de temperatuur alleen M1 zou openen, haalt hoge vochtigheid er M2 en zo nodig M3 bij.
 
-Vragen ze allebei om ventileren, dan is er geen conflict: de controller neemt dan altijd de hoogste stap van de twee, wat je hier ook kiest.
+Wat je kiest, gaat over één geval: **de kas is te vochtig, maar de temperatuur vraagt niets.**
+- **Temperature first** (`0`, standaardinstelling) — dan opent vocht geen raam. **Met de standaardinstelling opent de vochtregeling dus nooit uit zichzelf een raam** — ook niet bij 90 % op een klamme, koele ochtend.
+- **Humidity may also open M1** (`1`) — dan mag vocht **M1** openen, nooit M2 of M3, en alleen als het in de kas minstens **T-min + 2 °C** is. Staat M1 al open voor vocht, dan blijft hij open tot het **T-min + 1 °C** is, zodat hij rond de grens niet steeds open en dicht gaat. Zo koelt vochtafvoer de kas niet onder T-min.
 
-**Let op — wat "Temperature first" betekent voor de vochtregeling.**
-De temperatuur krijgt ook voorrang wanneer de temperatuur *niets* vraagt. Is het binnen koel genoeg, dan vraagt de temperatuurregeling om dichte ramen, en die wens wint. **Met de standaardinstelling opent de vochtregeling dus nooit uit zichzelf een raam** — ook niet bij 90 % op een klamme, koele ochtend.
+| Situatie | Temperature first (standaard) | Humidity may also open M1 |
+|---|---|---|
+| Te warm, vocht in orde | ventileren | ventileren |
+| Te warm én te vochtig | ventileren, vocht mag de stap verhogen | hetzelfde |
+| Te warm, te droog | ventileren | ventileren |
+| Koel, te vochtig, minstens T-min + 2 °C | **ramen blijven dicht** | **alleen M1 gaat open** |
+| Koud (onder T-min + 2 °C), te vochtig | ramen blijven dicht | ramen blijven dicht — een M1 die al open stond voor vocht, sluit onder T-min + 1 °C |
 
-Wat de vochtregeling met deze instelling wél doet:
-- **Is het ook te warm,** dan mag vocht de ventilatie verder opvoeren. Waar de temperatuur alleen M1 zou openen, haalt hoge vochtigheid er M2 en zo nodig M3 bij.
-- **Is het te droog,** dan vraagt de vochtregeling om dichte ramen. Bij *Temperature first* wint de temperatuur: vraagt die om ventileren, dan blijven de ramen open.
+Een raam dat voor vocht openging, sluit pas als de vochtigheid een stukje onder RH-max is gezakt: een derde van de RH-hysterese, minstens 1 % (bij de standaard 12 % dus 4 %). Zo gaat het niet open en dicht rond RH-max.
 
-| Situatie | Temperature first (standaard) | Humidity first | Auto |
-|---|---|---|---|
-| Te warm, vocht in orde | ventileren | ventileren | ventileren |
-| Te warm én te vochtig | ventileren, vocht mag de stap verhogen | hetzelfde | hetzelfde |
-| Koel, te vochtig | **ramen blijven dicht** | ventileren | ventileren |
-| Te warm, te droog | ventileren | **ramen gaan dicht** | ventileren |
+Wil je dat een klamme maar koele kas tóch ventileert, kies dan *Humidity may also open M1* (zie §10.1 op de controller, of de tab Climate in de webinterface). Wat je inruilt: een open M1 kost warmte. Stel T-min daarom in op de laagste temperatuur die je gewas mag krijgen.
 
-Wil je dat een klamme maar koele kas tóch ventileert, kies dan *Humidity first* of *Auto* (zie §10.1 op de controller, of de tab Climate in de webinterface). Bedenk wel wat je inruilt: bij *Humidity first* sluit een te droge kas de ramen, ook als het te warm is. Bij *Auto* gebeurt dat niet, want daar wint bij tegengestelde wensen de hoogste stap — en "ramen dicht" is de laagste.
+*Vóór firmware 2.15.0 waren er drie keuzes: Temperature first, Humidity first (daarbij sloot een te droge kas de ramen, ook als het te warm was) en Auto. Stond jouw controller op `2` (Auto), dan werkt die nu precies als `1`, en de webinterface en de controller tonen hem ook zo.*
 
 **Windbeveiliging:**
 Bij te harde wind sluit de controller **alle ramen automatisch**, ongeacht wat het klimaat vraagt. Dit beschermt de motoren en de raamconstructie. De ramen gaan pas weer open wanneer de wind duidelijk onder de grens is gezakt (kleine veiligheidsmarge) — zo gaan ze bij aanhoudende wind rond de grenswaarde niet steeds open en dicht. De windgrenswaarden en de marge worden door de beheerder ingesteld.
@@ -516,8 +516,8 @@ De kascontroller kent twee gebruikersrollen, elk met een eigen PIN-code:
   - Bij eerste levering staat deze op fabrieksstandaard `1234`
   - **Wijzig deze direct na ingebruikname** — laat hem niet op de fabrieksstandaard staan. PIN-wijziging gaan alleen via de **webinterface** (Access-tab)en kan niet op de controller zelf.
 - **Mag op de kas controller (LCD-menu)**:
-  - Klimaat-setpoints instellen — T-max en RH-min/max voor dag en nacht
-  - Conflict-prioriteit kiezen (Temperatuur eerst / Luchtvochtigheid eerst / Automatisch)
+  - Klimaat-setpoints instellen — T-max, T-min en RH-min/max voor dag en nacht
+  - Conflict-prioriteit kiezen (Temperatuur eerst / Vocht mag ook M1 openen)
   - Windbeveiliging (wind protection) aan- of uitzetten en windgrens (Wnd-max) aanpassen — **deze actie wordt gelogd**
 - **Mag aanvullend in de webinterface**:
   - Vochtregeling (humidity control) aan- of uitzetten
@@ -721,8 +721,8 @@ Druk `1`:
    +----------------+
 ```
 
-- `1` — bewerk Day-setpoints (3 setpoints voor de dag)
-- `2` — bewerk Night-setpoints (3 setpoints voor de nacht)
+- `1` — bewerk Day-setpoints (4 setpoints voor de dag)
+- `2` — bewerk Night-setpoints (4 setpoints voor de nacht)
 - `3` — bewerk Conflict-prioriteit (T/RH-prio)
 - `*` — terug naar hoofdmenu
 
@@ -733,30 +733,32 @@ Na `1` (Day) of `2` (Night) verschijnt een bladerscherm:
 ```
    +----------------+
    |T-max day (C)   |
-   |25  1/3 ←A→B↩#^*|
+   |25  1/4 ←A→B↩#^*|
    +----------------+
 ```
 
 Rij 1 toont de naam van de huidige setpoint. Rij 2 toont:
 - de huidige waarde (hier `25`)
-- de positie in de groep (`1/3`)
+- de positie in de groep (`1/4`)
 - toetshints: `←A` (vorige), `→B` (volgende), `↩#` (bewerk), `^*` (terug)
 
 **Setpoints in de dag-groep (Day):**
 
 | Volgorde | Naam op LCD | Wat regelt het? | Bereik |
 |:---:|---|---|---|
-| 1/3 | `T-max day (C)` | Maximum dagtemperatuur — boven deze waarde gaan ramen open | 15–45 °C |
-| 2/3 | `RH-max day (%)` | Maximum dagvochtigheid — boven deze waarde gaan ramen open | 40–98 % |
-| 3/3 | `RH-min day (%)` | Minimum dagvochtigheid — onder deze waarde blijven ramen dicht | 20–90 % |
+| 1/4 | `T-max day (C)` | Maximum dagtemperatuur — boven deze waarde gaan ramen open | 15–45 °C |
+| 2/4 | `T-min day (C)` | Minimum dagtemperatuur — de ondergrens voor ventileren op vocht: vocht opent pas een raam vanaf T-min + 2 °C (sinds 2.15.0) | 5–40 °C |
+| 3/4 | `RH-max day (%)` | Maximum dagvochtigheid — boven deze waarde is de kas te vochtig | 40–98 % |
+| 4/4 | `RH-min day (%)` | Minimum dagvochtigheid — verandert sinds 2.15.0 niets aan de ramen | 20–90 % |
 
 **Setpoints in de Nacht-groep (Night):**
 
 | Volgorde | Naam op LCD | Wat regelt het? | Bereik |
 |:---:|---|---|---|
-| 1/3 | `T-max ngt (C)` | Maximum nachttemperatuur — boven deze waarde gaan ramen open | 10–35 °C |
-| 2/3 | `RH-max ngt (%)` | Maximum nachtvochtigheid — boven deze waarde gaan ramen open | 40–98 % |
-| 3/3 | `RH-min ngt (%)` | Minimum nachtvochtigheid — onder deze waarde blijven ramen dicht | 20–90 % |
+| 1/4 | `T-max ngt (C)` | Maximum nachttemperatuur — boven deze waarde gaan ramen open | 10–35 °C |
+| 2/4 | `T-min ngt (C)` | Minimum nachttemperatuur — de ondergrens voor ventileren op vocht 's nachts | 0–30 °C |
+| 3/4 | `RH-max ngt (%)` | Maximum nachtvochtigheid — boven deze waarde is de kas te vochtig | 40–98 % |
+| 4/4 | `RH-min ngt (%)` | Minimum nachtvochtigheid — verandert sinds 2.15.0 niets aan de ramen | 20–90 % |
 
 #### Stap 4 — Bewerk een setpoint
 
@@ -785,18 +787,17 @@ Druk in het Climate-menu op `3` om de prioriteit aan te passen. Het bewerkscherm
 
 ```
    +----------------+
-   |T/RH prio (0-2) |
+   |T/RH prio (0/1) |
    |_               |
    +----------------+
 ```
 
 | Waarde | Betekenis |
 |:---:|---|
-| `0` | Temperatuur eerst — temperatuur krijgt voorrang |
-| `1` | luchtvochtigheid eerst — luchtvochtigheid krijgt voorrang |
-| `2` | Auto — de hoogste ventilatiestap van de twee wint |
+| `0` | Temperatuur eerst — vocht opent nooit uit zichzelf een raam |
+| `1` | Vocht mag ook M1 openen — alleen M1, en alleen vanaf T-min + 2 °C |
 
-Voer 0, 1 of 2 in en bevestig met `#`. Wat elke keuze in de praktijk betekent — en waarom de vochtregeling met de standaardinstelling `0` nooit uit zichzelf een raam opent — staat in §4 onder *Conflict-prioriteit*.
+Voer 0 of 1 in en bevestig met `#`. Wat elke keuze in de praktijk betekent staat in §4 onder *Conflict-prioriteit*. Stond er nog een `2` (de oude keuze *Auto*), dan toont het scherm `1`, want zo werkt hij sinds 2.15.0; bevestig je zonder iets in te voeren, dan wordt het ook `1`.
 
 #### Wind-instellingen (hoofdmenu → 2 Wind)
 
@@ -836,14 +837,14 @@ Per setpoint (daaronder) heb je een schuifregelaar + nummerveld + **Apply**-knop
 | Veld op de webinterface | Betekenis |
 |---|---|
 | T max day | Maximum dagtemperatuur — boven deze waarde gaan ramen open |
-| T min day | Minimum dagtemperatuur — beneden deze waarde sluiten ramen om warmte vast te houden |
+| T min day | Minimum dagtemperatuur — de ondergrens voor ventileren op vocht: vocht opent pas een raam vanaf T min + 2 °C. Sinds 2.15.0 weer zichtbaar; grijs als de vochtregeling uit staat |
 | RH max day | Maximum dagvochtigheid |
-| RH min day | Minimum dagvochtigheid |
+| RH min day | Minimum dagvochtigheid — verandert sinds 2.15.0 niets aan de ramen |
 | T max night | Maximum nachttemperatuur |
-| T min night | Minimum nachttemperatuur — beneden deze waarde sluiten ramen |
+| T min night | Minimum nachttemperatuur — de ondergrens voor ventileren op vocht 's nachts |
 | RH max night | Maximum nachtvochtigheid |
-| RH min night | Minimum nachtvochtigheid |
-| **T vs RH conflict priority** | Keuzelijst met drie opties: *Temperature first* (default), *Humidity first*, *Largest deviation* — bepaalt welke regelactie voorrang krijgt als T en RH tegelijk om actie vragen |
+| RH min night | Minimum nachtvochtigheid — verandert sinds 2.15.0 niets aan de ramen |
+| **T vs RH conflict priority** | Keuzelijst met twee opties: *Temperature first* (default) en *Humidity may also open M1, above T min + 2 °C* — bepaalt of vocht uit zichzelf M1 mag openen als de temperatuur niets vraagt (§4) |
 
 Bij elk veld vind je een tooltip (mouse-over) met uitleg over wat het veld doet.
 
@@ -1285,7 +1286,7 @@ Direct na het terugschakelen naar automatisch:
 | **PIN vergeten (Admin)** | Fysieke reset-procedure op het microprocessorboard ([§18](#18-reset-procedure-io0-knop-op-microprocessorboard)) |
 | **Webinterface niet bereikbaar** | IP-adres juist gelezen op LCD? Apparaat op hetzelfde wifi-netwerk? Anders: bel beheerder |
 | **Ramen reageren niet** | Controleer mode-regel: bij `Mode: WIND` zit de wind-override aan; bij `Mode: ALARM` motor-alarm. Controleer ook of de schakelaars op de motorbox in de automatische stand staan (zie [§15](#15-handmatige-overname-via-de-motorbox)). Bel beheerder bij ALARM |
-| **Setpoint accepteert mijn waarde niet** | Controleer bereik: T-max day 15–45 °C, T-max ngt 10–35 °C, RH-max 40–98 %, RH-min 20–90 %. Waarden buiten bereik worden automatisch tot het minimum of maximum geknepen |
+| **Setpoint accepteert mijn waarde niet** | Controleer bereik: T-max day 15–45 °C, T-max ngt 10–35 °C, T-min day 5–40 °C, T-min ngt 0–30 °C, RH-max 40–98 %, RH-min 20–90 %. Waarden buiten bereik worden automatisch tot het minimum of maximum geknepen |
 | **Kalibratie duurt lang** | ~3 minuten is normaal (M3 zijwand-raam heeft ~176 sec. nodig); pas na die tijd actie ondernemen |
 | **Tijd / dag-nacht klopt niet meer** | Mogelijk RTC-batterij leeg; bel beheerder voor vervanging |
 | **`** SENSOR FAULT` blijft staan** | T/RH-sensor reageert niet; bel beheerder. Controleer zelf alleen of sensor zichtbaar beschadigd is |
@@ -1377,9 +1378,10 @@ Onderstaande termen verschijnen op het LCD-scherm. Ze zijn gegroepeerd per funct
 | `1:Farmer 2:Admin 3:Logout` | Access-menu |
 | `System settings` / `1=WiFi AP` | Systeem-menu (alleen Admin) |
 | `T-max day (C)` / `T-max ngt (C)` | Maximum temperatuur dag/nacht |
+| `T-min day (C)` / `T-min ngt (C)` | Minimum temperatuur dag/nacht (ondergrens voor ventileren op vocht) |
 | `RH-max day (%)` / `RH-max ngt (%)` | Maximum vochtigheid dag/nacht |
 | `RH-min day (%)` / `RH-min ngt (%)` | Minimum vochtigheid dag/nacht |
-| `T/RH prio (0-2)` | Conflict-prioriteit (0/1/2) |
+| `T/RH prio (0/1)` | Conflict-prioriteit (0 temperatuur eerst, 1 vocht mag ook M1 openen) |
 | `Wnd-max` / `Wnd-prot` | Wind-maximum / windbeveiliging aan/uit |
 
 **Login en bewerking:**
@@ -1520,10 +1522,10 @@ De tabel is geordend per gewas-familie zodat verwante gewassen bij elkaar staan:
 
 ### Wat de kolommen betekenen
 
-- **T dag min–max** / **T nacht min–max**: temperatuurband. **Min**imum is de waarde waaronder de controller de ramen sluit (`T_min`); **max** is de waarde waarboven de controller de ramen opent (`T_max`). Tussen min en max gebeurt er niets (regelhysteresis — zie [§4](#4-hoe-regelt-de-controller-het-klimaat)).
+- **T dag min–max** / **T nacht min–max**: temperatuurband. **Max** is de waarde waarboven de controller de ramen opent (`T_max`). **Min** (`T_min`) is sinds firmware 2.15.0 **de ondergrens voor ventileren op vocht**: met CR-prio **RH** opent vocht pas M1 vanaf T_min + 2 °C, en een M1 die voor vocht openging sluit onder T_min + 1 °C. Zo koelt vochtafvoer de kas niet onder het minimum van het gewas. Verwarmen kan de controller niet. Met CR-prio **T** doet T_min niets (zie [§4](#4-hoe-regelt-de-controller-het-klimaat)).
 - **RH dag min–max** / **RH nacht min–max**: vochtigheidsband, alleen actief wanneer **RH-regeling** aan staat.
 - **RH-regeling**: of de controller mag reageren op vochtigheid. **Aan** = vochtigheid stuurt mee in de raam-beslissing; **uit** = alleen temperatuur stuurt (handig voor gewassen waar vocht niet de beperkende factor is).
-- **CR-prio** (Conflict Resolution-prioriteit): wat doet de controller als T en RH tegelijk om tegengestelde acties vragen? **T** = temperatuur wint (gebruikelijk bij koel-seizoen-gewassen en warme zomers); **RH** = vochtigheid wint (gebruikelijk wanneer een gewas vochtigheids-gevoelig is — schimmelziektes, botrytis, meeldauw). Bedenk wat **T** in de praktijk doet: de temperatuur wint ook wanneer die om *dichte* ramen vraagt, dus met **T** opent de vochtregeling nooit uit zichzelf een raam. Voor de gewassen met **RH** in deze kolom is dat juist de bedoeling — zie [§4 Conflict-prioriteit](#4-hoe-regelt-de-controller-het-klimaat).
+- **CR-prio** (Conflict Resolution-prioriteit): mag vocht uit zichzelf een raam openen als de kas te vochtig is en de temperatuur niets vraagt? **T** = nee, *Temperature first* (`0`): met **T** opent de vochtregeling nooit uit zichzelf een raam (gebruikelijk bij koel-seizoen-gewassen en warme zomers). **RH** = ja, *Humidity may also open M1* (`1`): vocht mag M1 openen, alleen M1 en alleen vanaf T_min + 2 °C (gebruikelijk wanneer een gewas vochtigheids-gevoelig is — schimmelziektes, botrytis, meeldauw). **RH is sinds firmware 2.15.0 veilig bij warmte**: een te droge kas sluit de ramen niet meer als het te warm is, bij geen enkele keuze. Voor de gewassen met **RH** hoort T_min dus bij de keuze — zie [§4 Conflict-prioriteit](#4-hoe-regelt-de-controller-het-klimaat).
 - **Opmerkingen**: gewas-specifieke aandachtspunten waar de getallen alleen niet voldoende zijn.
 
 ### Windbeveiliging — geldt voor alle gewassen
@@ -1590,6 +1592,7 @@ Inhoudelijke wijzigingen aan de firmware staan beschreven in het bestand `change
 | 1.23 | 2026-09-24 | 2.12.2 — in lineaire besturing gaat M3 bij "dicht" nu echt helemaal dicht, tot de eindsensor (gh#83). Ook: wat de conflict-prioriteit betekent voor de vochtregeling |
 | 1.24 | 2026-09-25 | 2.13.0 — **Lineair is de fabrieksinstelling** van een nieuwe of teruggezette controller; een controller in gebruik houdt zijn instelling. De lineaire besturing begint na een herstart vanzelf, zonder dat er een raam hoeft te bewegen (gh#86) |
 | 1.25 | 2026-09-25 | 2.14.0 — de LED dimt 's nachts van 22:00 tot 06:00; die tijden liggen vast (gh#67) |
+| 1.26 | 2026-09-27 | 2.15.0 — de conflict-prioriteit is een keuze uit twee: *Temperature first* of *Humidity may also open M1*. Te droog sluit nooit meer een raam tegen de warmte in; vocht opent alleen M1, en alleen vanaf **T-min + 2 °C**. T-min is weer in te stellen, op de controller en in de webinterface; RH-min verandert niets meer aan de ramen (gh#84) |
 
 ---
 

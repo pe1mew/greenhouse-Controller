@@ -308,13 +308,20 @@ TSDS reference: §5.2 | FRS: FR-C01–FR-C12, FR-CR01–FR-CR04, FR-MA01–FR-MA
 
 ### 6.4 Conflict Resolution
 
+> **Since 2.15.0 (gh#84) the law is `stepped` v2**: dryness never closes against heat under any
+> `cr_priority`, and humidity alone opens M1 at most, only under priority 1 or 2 and only from
+> T_min + 2 °C. UT-CC-030 and UT-CC-031 below are restated for it. The law's own host tests
+> (`drivers/ventModel`, `pio test -e native`: 30 stepped, 19 graded) pin every rule; the rows here
+> are the device-level view. "Conflict logged" in UT-CC-020/021 is not met (FR-CR04 is open): the
+> vent-step row carries both demands, but no conflict event is raised.
+
 | ID | Level | Description | Steps | Expected result |
 |----|-------|-------------|-------|-----------------|
 | UT-CC-020 | UT | Temperature demands OPEN, humidity demands CLOSE → temperature wins (CR_TEMP_FIRST, default) | T = 26 °C (above T_max), RH = 60% (below RH_max); cr_priority = 0 | OPEN command issued; conflict logged to Q3 |
 | UT-CC-021 | UT | Temperature demands CLOSE, humidity demands OPEN → temperature priority gives CLOSE | T = 14 °C (below T_min), RH = 85% (above RH_max); cr_priority = 0 | CLOSE command issued; conflict logged |
 | UT-CC-022 | UT | No conflict when both demand same action | T = 26 °C (OPEN), RH = 85% (OPEN) | Single OPEN command; no conflict logged |
-| UT-CC-030 | UT | Conflict resolution CR_RH_FIRST (cr_priority = 1): humidity demand wins | T demands OPEN (T > T_max), RH demands CLOSE (RH < RH_min); cr_priority = 1 | CLOSE command issued (humidity wins) |
-| UT-CC-031 | UT | Conflict resolution CR_DEVIATION (cr_priority = 2): higher step wins | T demands OPEN at step 2; RH demands CLOSE (step 0); cr_priority = 2 | OPEN at step 2 issued (deviation-based: max(2, 0) = 2) |
+| UT-CC-030 | UT | Dryness never closes against heat (2.15.0; was "CR_RH_FIRST: humidity wins") | T demands OPEN (T > T_max), RH demands CLOSE (RH < RH_min); cr_priority = 0, 1 and 2 | The temperature's step is issued under every priority; no CLOSE for dryness |
+| UT-CC-031 | UT | Humidity may open M1 on its own, above the floor (2.15.0; was "CR_DEVIATION: higher step wins") | T below T_max − hyst_t (no T demand), RH far above RH_max (step 3); cr_priority = 1 and 2; T at T_min + 2 °C, then at T_min + 1 °C, then below | At T_min + 2: M1 only opens (never M2/M3). Falling to T_min + 1: M1 stays open. Below T_min + 1: M1 closes. With cr_priority = 0: nothing opens |
 
 ### 6.5 Humidity and Wind Feature Flags
 

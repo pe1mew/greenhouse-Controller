@@ -1412,6 +1412,7 @@ class Controller:
         v.wind_dir_var_deg = meas.get("wind_dir_var_deg", 0)
         v.wind_valid = bool(meas.get("wind_valid", False))
         v.t_max_c10 = (s.t_max_day if daytime else s.t_max_ngt) * 10
+        v.t_min_c10 = (s.t_min_day if daytime else s.t_min_ngt) * 10
         v.rh_max_pct = s.rh_max_day if daytime else s.rh_max_ngt
         v.rh_min_pct = s.rh_min_day if daytime else s.rh_min_ngt
         v.hyst_t_c = s.hyst_t if s.hyst_t > 0 else 1

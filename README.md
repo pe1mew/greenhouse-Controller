@@ -52,6 +52,7 @@ The controller automatically ventilates a greenhouse by opening and closing thre
 - Two ventilation laws behind one host-tested contract ([`design/ventModelContract.md`](design/ventModelContract.md), implemented in `drivers/ventModel`):
   - **stepped**, the three-step strategy M1 → M1+M2 → M1+M2+M3, with hysteresis and sliding-average smoothing;
   - **graded**, which drives M3 to a proportional opening when its position sensor is fitted.
+  - Both at **v2** since 2.15.0: humidity never closes a window against heat, and may open M1 on its own only above the crop's minimum temperature + 2 °C, if the operator allows it. The law in force, with its version, is in the SD log and in `/api/status` (`windows.law`).
 - Optional **M3 window-position sensor**: a wire encoder on the RS485 bus (Modbus address 40) that also reports M3's end-of-travel sensors. It provides position control with automatic fallback to timed control, a verdict on every drive, and a travel-time check
 - Wind safety override: all windows close automatically when wind speed exceeds a configurable threshold or wind direction lies in an excluded zone
 - Motor alarm handling: immediate stop on Hotraco RRK-3 alarm output, with 60 s guard + automatic CLOSE_ALL re-calibration on clearance
