@@ -1,0 +1,111 @@
+@startuml humidityPackage
+title The ventilation law with the gh#84 package\n(the prototype in model/closedloop/humidity_prototype.py: green is what the package adds or changes, blue is the shipped law)
+
+' One call of the law, as T6 makes it every poll. Green is what the package
+' adds or changes; blue is drivers/ventModel as shipped (2.14.1). Mode 2's law
+' (graded) embeds the stepped law, so everything down to "Windows" is shared
+' by both modes, and so is the package.
+
+skinparam shadowing false
+skinparam defaultFontName "Segoe UI"
+skinparam defaultFontSize 11
+skinparam wrapWidth 330
+skinparam ActivityBackgroundColor #E8F1FB
+skinparam ActivityBorderColor #2C5AA0
+skinparam ActivityDiamondBackgroundColor #FFFFFF
+skinparam ActivityDiamondBorderColor #2C5AA0
+skinparam ArrowColor #2C3E50
+skinparam PartitionBorderColor #7F8C8D
+skinparam NoteBackgroundColor #FEFDE8
+skinparam NoteBorderColor #C8B400
+skinparam LegendBackgroundColor #FFFFFF
+skinparam LegendBorderColor #7F8C8D
+
+start
+:T6 calls the law every poll (30 s):
+T_avg and RH_avg (T5's averages; T_avg in whole °C for the ladder),
+the day or night setpoints, and the windows' states;
+
+if (temperature reading valid?) then (no)
+  :hold every window
+  (reason NO_DATA);
+  stop
+else (yes)
+endif
+
+partition "Temperature branch (unchanged)" {
+  :step_t = ceil((T_avg − t_max) / max(hyst_t / 3, 1)), 0 to 3
+  close guard: once venting, hold step 1 until T_avg ≤ t_max − hyst_t;
+}
+
+partition "Humidity branch" {
+  if (humidity control on and RH valid?) then (no)
+    :step_rh = no vote;
+  elseif (RH_avg > rh_max?) then (yes)
+    :step_rh = ceil((RH_avg − rh_max) / max(hyst_rh / 3, 1)), 1 to 3;
+  elseif (last vote > 0 and RH_avg > rh_max − max(hyst_rh / 3, 1)?) then (yes)
+    :**close guard**
+    step_rh = 1, held until RH_avg ≤ rh_max − max(hyst_rh / 3, 1); <<#DCEEDC>>
+  elseif (RH_avg < rh_min?) then (yes)
+    :step_rh = 0, "too dry"
+    //under rule 1 this can no longer change any decision//;
+  else (no)
+    :step_rh = no vote;
+  endif
+}
+
+partition "Resolve the two votes" {
+  if (humidity has no vote?) then (yes)
+    :step = step_t;
+  elseif (both want to open (step_t > 0 and step_rh > 0)?) then (yes)
+    :step = the higher of the two
+    (humidity raises a step the temperature asked for);
+  elseif (step_t = step_rh?) then (yes)
+    :step = step_t;
+  elseif (too dry while the temperature wants to vent\n(step_t > 0 and step_rh = 0)?) then (yes)
+    :**rule 1, gh#84**
+    step = step_t: dryness never closes against heat,
+    under every priority; <<#DCEEDC>>
+  else (humidity alone wants to open)
+    if (cr_priority?) then (0)
+      :step = 0
+      (temperature first, unchanged);
+    else (1 or 2, which now mean the same)
+      if (floor: T_avg ≥ t_min + 2,\nor a humidity-only opening is live and T_avg ≥ t_min + 1?) then (yes)
+        :**floor and cap**
+        step = min(step_rh, 1): M1 only; <<#DCEEDC>>
+      else (no)
+        :**floor**
+        step = 0; <<#DCEEDC>>
+      endif
+    endif
+  endif
+}
+
+partition "Windows" {
+  :M1 open from step 1, M2 from step 2;
+  if (M3 linear, with a trusted position (mode 2, graded)?) then (no: mode 1)
+    :M3 open at step 3;
+  else (yes)
+    if (step ≥ 2?) then (yes)
+      :want = the larger of
+      the temperature aperture (0 % at t_max + 1.5 °C, 100 % at + 3.5 °C)
+      and humidity's demand (100 % at step_rh 3, else 0);
+    else (no)
+      :want = 0
+      (humidity on its own never reaches M3);
+    endif
+    :rate limit: move only for a 10 % correction or to an end,
+    at most 25 % per move, not within 10 minutes of the last drive;
+  endif
+}
+stop
+
+legend right
+  <back:#DCEEDC>  new in the package  </back>    <back:#E8F1FB>  the shipped law, unchanged  </back>
+  The package's constants are provisional: floor margin 2 °C,
+  the floor's hysteresis 1 °C, the cap at step 1.
+  The prototype compiles t_min in; the firmware adds it to vent_in_t.
+  Acceptance: humidityControl.md, "The package, prototyped".
+endlegend
+@enduml

@@ -211,6 +211,10 @@ All of it inside `drivers/ventModel`, behind [`ventModelContract.md`](../../desi
 
 `humidity_prototype.py` builds items 1–4 and 6 as a separate law: it copies `drivers/ventModel/src` into a temporary directory, patches the copy, compiles it, and hands the closed loop that law through `run_closed_loop()`'s `law=` argument. Nothing in `drivers/` changes. The patch is about 30 lines in `vent_model_stepped.cpp` (`humidity_prototype.py diff` prints it); `graded` is not patched at all — it calls the stepped law, so mode 2 inherits the package, which is what the embedding is for. Each patch must match its anchor exactly once, so a change upstream stops the script instead of prototyping against a different law. Two simplifications, both the firmware session's to do properly: `t_min` is a compile-time constant per build (`vent_in_t` has no field for it), and the margin and hysteresis below are constants in the law, like its `M3_*` ones.
 
+![The ventilation law with the gh#84 package: green is what the package adds or changes](humidityPackage.png)
+
+*The law with the package, one call as T6 makes it; source `humidityPackage.puml`, rendered with PlantUML 1.2026.6.*
+
 **The rules, fail-first.** Ten checks through the compiled prototype; the seven that describe new behaviour fail on the shipped law, the three that must not change pass on both:
 
 | check | prototype | shipped |
