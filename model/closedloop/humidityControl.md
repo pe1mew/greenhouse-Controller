@@ -209,13 +209,13 @@ All of it inside `drivers/ventModel`, behind [`ventModelContract.md`](../../desi
 
 ## The package, prototyped
 
-`humidity_prototype.py` builds items 1–4 and 6 as a separate law: it copies `drivers/ventModel/src` into a temporary directory, patches the copy, compiles it, and hands the closed loop that law through `run_closed_loop()`'s `law=` argument. Nothing in `drivers/` changes. The patch is about 30 lines in `vent_model_stepped.cpp` (`humidity_prototype.py diff` prints it); `graded` is not patched at all — it calls the stepped law, so mode 2 inherits the package, which is what the embedding is for. Each patch must match its anchor exactly once, so a change upstream stops the script instead of prototyping against a different law. Two simplifications, both the firmware session's to do properly: `t_min` is a compile-time constant per build (`vent_in_t` has no field for it), and the margin and hysteresis below are constants in the law, like its `M3_*` ones.
+`humidity_prototype.py` builds items 1–4 and 6 as a separate law: it copies `drivers/ventModel/src` into a temporary directory, patches the copy, compiles it, and hands the closed loop that law through `run_closed_loop()`'s `law=` argument. Nothing in `drivers/` changes. The patch is about 30 lines in `vent_model_stepped.cpp` (`humidity_prototype.py diff` prints it); `graded` is not patched at all — it calls the stepped law, so mode 2 inherits the package, which is what the embedding is for. Each patch must match its anchor exactly once, so a change upstream stops the script instead of prototyping against a different law. Two simplifications, both the firmware session's to do properly: `t_min` is a compile-time constant per build (`vent_in_t` has no field for it), and the margin and hysteresis below are constants in the law, like its `M3_*` ones. The prototype identifies itself as **`stepped` v2 and `graded` v2**: `stepped` changes, and `graded` embeds it, so both bump although `vent_model_graded.cpp` is untouched — the rule in [`ventModelContract.md`](../../design/ventModelContract.md) §2, *A law's name and version*.
 
 ![The ventilation law with the gh#84 package: green is what the package adds or changes](humidityPackage.png)
 
 *The law with the package, one call as T6 makes it; source `humidityPackage.puml`, rendered with PlantUML 1.2026.6.*
 
-**The rules, fail-first.** Ten checks through the compiled prototype; the seven that describe new behaviour fail on the shipped law, the three that must not change pass on both:
+**The rules, fail-first.** Eleven checks through the compiled prototype; the eight that describe new behaviour fail on the shipped law, the three that must not change pass on both:
 
 | check | prototype | shipped |
 |---|---|---|
@@ -229,6 +229,7 @@ All of it inside `drivers/ventModel`, behind [`ventModelContract.md`](../../desi
 | unchanged: priority 2 against a dry house at 30 °C | vents | vents |
 | unchanged: priority 0, humidity alone | shut | shut |
 | unchanged: humidity raising a live step, 29 °C and RH 84 | step 3 | step 3 |
+| versions: both laws bump, since `graded` embeds `stepped` | `stepped` v2, `graded` v2 | v1, v1 |
 
 **Where the floor must sit.** The first acceptance run put the floor at `t_min` itself and failed the night criterion. `humidity_prototype.py floor` (mode 2, 5C88's `t_min` 16/14, priority 1) against the shipped law at priority 0:
 
@@ -280,7 +281,8 @@ Under rule 1 the dry vote can no longer change any decision — against heat it 
 **For the firmware session.** The prototype is the specification, and its numbers are the target:
 - `vent_in_t` gains `t_min_c10` (interface 3); T6 passes the day or night value as it does `t_max_c10`; `ventmodel.py`'s mirror and the simulator follow, and `humidity_closedloop.py` then scores the real change.
 - The margin (2 °C) and the floor's hysteresis (1 °C) are law constants, provisional until they are keys.
-- The two host tests that pin today's behaviour change deliberately; new host tests cover rule 1, the floor and its hysteresis, the cap and the close guard. This document's ten checks are the obvious first set.
+- The two host tests that pin today's behaviour change deliberately; new host tests cover rule 1, the floor and its hysteresis, the cap and the close guard. This document's eleven checks are the obvious first set.
+- `stepped` and `graded` both go to v2 in the same change. Neither version is visible today — the name reaches only the serial console and the version nothing — so the change should also log the law in force by name and version and publish it in `/api/status` (contract §2; gh#84). `graded`'s v1 already covers two behaviours: gh#83 changed it in 2.12.1 without a bump.
 - The real change must reproduce the acceptance table above; `humidity_prototype.py loop` regenerates it.
 - FR-CR03 becomes two choices, FR-CR04 is still open, and the web GUI's label and tooltip, the `DEF_CR_PRIORITY` comment and both manuals change with it ([gh#84](https://github.com/pe1mew/greenhouse-Controller/issues/84), second comment). The crop tables can then recommend `RH` again.
 

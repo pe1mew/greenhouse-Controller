@@ -9,7 +9,7 @@
 |---|---|
 | Document | Interface contract for the T6 ventilation control model |
 | Date | 2026-09-17 |
-| Revised | 2026-09-19: **interface 2**. Two gaps found by the model work while building its simulator against the header: the minimum interval between M3 moves was 16-bit milliseconds, at most 65.5 s, for a setting that stands in for 10 and 25 minute dwells (and against this document's own units table), and there was no state for a window at rest part-open. Now `uint32_t m3_min_interval_ms` and `VENT_WIN_PART_OPEN` |
+| Revised | 2026-09-19: **interface 2**. Two gaps found by the model work while building its simulator against the header: the minimum interval between M3 moves was 16-bit milliseconds, at most 65.5 s, for a setting that stands in for 10 and 25 minute dwells (and against this document's own units table), and there was no state for a window at rest part-open. Now `uint32_t m3_min_interval_ms` and `VENT_WIN_PART_OPEN`. 2026-09-27: how a law's **version** is kept — the bump rules, and that a law embedding another bumps with it (§2, *A law's name and version*); the version is not yet in the SD log or the status (gh#84) |
 | Status | **In force since 2026-09-20: T6 calls the library, and mode 1's law exists only here.** `drivers/ventModel/` holds `src/vent_model.h` and `src/vent_model_stepped.cpp` — mode 1's law, 23 host tests — and `src/vent_model_graded.cpp`, a first candidate for mode 2, with 15 more ([`model/closedloop/gradedCandidate.md`](../model/closedloop/gradedCandidate.md)); `pio test -e native`. The firmware compiles both through `firmware/components/ventModel`, and T6's inline copy was deleted in 2.12.0 (plan §5c), so the hand-kept duplication that ran from 2026-09-17 is over. **`graded` is selected whenever mode 2 is in force** (T6's model table, indexed by the effective mode), so enabling `motor/ctrl_mode_m3` also chooses that law — the operator allowed it for mode 2 TESTING on 2026-09-20, not as a shipped choice. The refactor's evidence: the byte-identical row, 96.8 % of 378 on the replay, 97.1 % of 381 in the closed loop (plan §5c), seven rig stages of the target path, the disarm rule demonstrated failing in isolation, and a 12 h mode-1 soak running from 2026-09-20 15:22. **Mode 2 has not been soaked** |
 | Audience | Whoever writes or tunes a control model — a separate session, a separate agent, or a person. **This document is meant to be read on its own** |
 | Scope decisions | [`integrateWindowPositionSensor.md`](integrateWindowPositionSensor.md) §5b (the two control modes, the position path) and §5c (the rules around this contract) |
@@ -212,6 +212,26 @@ which the caller read as "no constraint" while a law is entitled to read it as "
 simulator already used UINT32_MAX. A recalibration sweep is a drive and sets it, as does a motor
 alarm that stops a drive under way.
 
+### A law's name and version
+
+*Added 2026-09-27.* The descriptor carries both, and they mean different things.
+
+- **The name identifies the law.** `stepped` and `graded` are two laws, chosen by the mode (§1), not two versions of one law. Mode 1 is not retired by mode 2: it is the fallback whenever M3's position is not trusted, and the law of every unit without a position sensor.
+- **The version counts the law's behaviour changes.** A plain integer, the law's own: bump it for any change to what the law decides, for any input. A refactor that changes no decision does not bump it — the host tests and §5's replay are how you show that no decision changed.
+- **A law that embeds another bumps when the embedded one changes.** `graded` calls `stepped` for the step, M1 and M2, the humidity branch and `cr_priority` (`vent_model_graded.cpp`, *Why it embeds the stepped law*), so a change to `stepped`'s decisions changes `graded`'s even when `vent_model_graded.cpp` is untouched. Both bump in the same change.
+- **Write it as `name vN`**: `stepped v1`, `graded v1`. It is independent of the firmware's version (2.14.1) and of the mode number, so never write it as 1.0 or 2.0 where an operator reads it — it would read as either.
+
+| Law | Version | In T6 since | Behaviour |
+|---|---|---|---|
+| `stepped` | v1 | 2.12.0 | the law as extracted from T6: the 2.9.1 firmware's decisions, identical in every decision function to 2.3.1's (5C88). Interface 2 added only a new input state (part-open), which the interface number covers; every other commit since changed comments |
+| `graded` | v1 | 2.12.0 (built), 2026-09-25 (chosen) | the first version — **and 2.12.1 changed it without a bump** (gh#83, `eca051d`: an end target is met by the window's state, not by a reading in the deadzone). So v1 covers two behaviours. Nothing records the version (below), so nothing is misattributed; the rule holds from the next change on |
+
+The fix prototyped for gh#84 (`model/closedloop/humidity_prototype.py`) changes `stepped`'s humidity branch and conflict rule, so it lands as **`stepped` v2 and `graded` v2**; the prototype already reports those numbers.
+
+**A missed bump is invisible**, as gh#83's was, until the version is published. The cheap guard is a host test per law that pins a digest of its decisions over a fixed sweep of inputs together with its version: a behaviour change without a bump then fails the build, and a bump without a behaviour change is questioned in review.
+
+**Not yet visible.** §9 item 7 says the name and version "end up in the SD log and in the operator-facing status". Today the name reaches only the serial console, and the version nothing at all; the effective-mode row (§3, *Logging*) implies which law, not which version. So no log can yet say which version of a law made a decision. Tracked in gh#84.
+
 ### Units, once
 
 | Quantity | Unit | Type |
@@ -317,6 +337,8 @@ row parsed as a ventilation decision for months).
   decision — never a counter or an accumulator.
 - Mode 2's row, its `param_id` and the parser branch that decodes it are one change, shipped
   together. Adding the row without the parser is the gh#54 mistake repeated.
+- **No row carries the law's name or version yet** (§2, *A law's name and version*; gh#84). When
+  one does, it is a new emitter with its own `param_id` and its parser branch, in the same change.
 
 ---
 
@@ -557,7 +579,8 @@ LoRa database stamps in UTC), and its claims about M3 are withdrawn: "a factor o
 5. What it does with an unknown or stale position, and with `FAIL_TIMEOUT` on its last command.
 6. The expected motor starts per day, against the stepped law's 3–8 M3 openings.
 7. Its `name`, its `version`, and the meaning of every `reason` code — they end up in the SD log and
-   in the operator-facing status.
+   in the operator-facing status (the version not yet: gh#84). Bump the version by §2's rules,
+   including when a law you embed changes.
 8. Whether it reports steps (`step`, `step_t`, `step_rh`, which keeps mode 1's log row) or uses the
    mode 2 row, and in what unit its `demand_*` values are expressed.
 9. The replay output from §5, on at least two contrasting weeks: one with north wind (M3's side),

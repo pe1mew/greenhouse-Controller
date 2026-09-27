@@ -53,6 +53,11 @@ T_MIN = (16, 14)                # 5C88's t_min, day and night
 TOMATO_T_MIN = (18, 16)         # the manual's tomato row
 MARGIN, HYST = 2, 1
 
+# The versions the prototype reports (design/ventModelContract.md, "A law's
+# name and version"): the package changes stepped's decisions, and graded
+# embeds stepped, so both bump although vent_model_graded.cpp is untouched.
+VERSIONS = {"stepped": 2, "graded": 2}
+
 
 def package(t_min):
     """The recommended package for a unit with this t_min (day, night)."""
@@ -144,17 +149,36 @@ def _patches(floor_day, floor_ngt, floor_hyst=0):
     ]
 
 
-def patched_source(floor_day, floor_ngt, floor_hyst=0):
-    """vent_model_stepped.cpp with the package applied, as text."""
-    text = (vm.LIB_SRC / "vent_model_stepped.cpp").read_text(encoding="utf-8")
-    for old, new in _patches(floor_day, floor_ngt, floor_hyst):
-        n = text.count(old)
-        if n != 1:
-            raise SystemExit("patch anchor found %d times in vent_model_stepped.cpp -- the "
-                             "law changed upstream; update the prototype first:\n%s"
-                             % (n, old.splitlines()[0]))
-        text = text.replace(old, new)
-    return text
+def _file_patches(floor_day, floor_ngt, floor_hyst=0):
+    """{source file: [(anchor, replacement), ...]} for every file the package touches."""
+    return {
+        "vent_model_stepped.cpp": _patches(floor_day, floor_ngt, floor_hyst) + [
+            ('    "stepped",\n    1,\n',
+             '    "stepped",\n    %d,     /* PROTOTYPE: the gh#84 package */\n'
+             % VERSIONS["stepped"]),
+        ],
+        "vent_model_graded.cpp": [
+            ('    "graded",\n    1,\n',
+             '    "graded",\n    %d,     /* PROTOTYPE: embeds stepped, so it inherits the package */\n'
+             % VERSIONS["graded"]),
+        ],
+    }
+
+
+def patched_sources(floor_day, floor_ngt, floor_hyst=0):
+    """{file name: text} for every file the package changes."""
+    out = {}
+    for name, patches in _file_patches(floor_day, floor_ngt, floor_hyst).items():
+        text = (vm.LIB_SRC / name).read_text(encoding="utf-8")
+        for old, new in patches:
+            n = text.count(old)
+            if n != 1:
+                raise SystemExit("patch anchor found %d times in %s -- the law changed "
+                                 "upstream; update the prototype first:\n%s"
+                                 % (n, name, old.splitlines()[0]))
+            text = text.replace(old, new)
+        out[name] = text
+    return out
 
 
 def build(floor_day, floor_ngt, floor_hyst=0):
@@ -166,10 +190,12 @@ def build(floor_day, floor_ngt, floor_hyst=0):
     prototype reuses its DLL -- Windows will not overwrite a loaded one."""
     import hashlib
     import tempfile
-    text = patched_source(floor_day, floor_ngt, floor_hyst)
-    h = hashlib.sha1(text.encode("utf-8"))
+    texts = patched_sources(floor_day, floor_ngt, floor_hyst)
+    h = hashlib.sha1()
+    for name in sorted(texts):
+        h.update(texts[name].encode("utf-8"))
     for f in sorted(vm.LIB_SRC.glob("*")) + [vm.FFI_SRC]:
-        if f.name != "vent_model_stepped.cpp":
+        if f.name not in texts:
             h.update(f.read_bytes())
     out = PROTO_DIR / ("ventmodel_proto_%s.dll" % h.hexdigest()[:10])
     if not out.exists():
@@ -178,7 +204,8 @@ def build(floor_day, floor_ngt, floor_hyst=0):
             for f in vm.LIB_SRC.iterdir():
                 if f.is_file():
                     shutil.copy2(f, d / f.name)
-            (d / "vent_model_stepped.cpp").write_text(text, encoding="utf-8")
+            for name, text in texts.items():
+                (d / name).write_text(text, encoding="utf-8")
             vm.build_dll(out, sorted(d.glob("*.cpp")) + [vm.FFI_SRC],
                          include_dirs=[d], force=True)
     return vm.VentLib(out)
@@ -187,11 +214,12 @@ def build(floor_day, floor_ngt, floor_hyst=0):
 def diff():
     """The package as a diff against the shipped law, for review."""
     import difflib
-    old = (vm.LIB_SRC / "vent_model_stepped.cpp").read_text(encoding="utf-8").splitlines(True)
-    new = patched_source(T_MIN[0] + MARGIN, T_MIN[1] + MARGIN, HYST).splitlines(True)
-    sys.stdout.writelines(difflib.unified_diff(
-        old, new, "drivers/ventModel/src/vent_model_stepped.cpp",
-        "prototype (t_min 16/14: floor 18/16, holding to 17/15)", n=2))
+    texts = patched_sources(T_MIN[0] + MARGIN, T_MIN[1] + MARGIN, HYST)
+    for name in sorted(texts, reverse=True):         # stepped first: that is the change
+        old = (vm.LIB_SRC / name).read_text(encoding="utf-8").splitlines(True)
+        sys.stdout.writelines(difflib.unified_diff(
+            old, texts[name].splitlines(True), "drivers/ventModel/src/" + name,
+            "prototype (t_min 16/14: floor 18/16, holding to 17/15)", n=2))
 
 
 # --------------------------------------------------------------------------
@@ -270,10 +298,18 @@ def rules():
               % ("ok" if ok_p else "FAIL", what, got_p, got_s,
                  "(fails on shipped: new)" if new_rule else "(unchanged)"))
         bad += 0 if ok_p else 1
+    pv = dict((n, v) for n, (_, v) in proto.models().items())
+    sv = dict((n, v) for n, (_, v) in shipped.models().items())
+    ok_v = pv == VERSIONS
+    print("  %-4s %-76s proto %-9s shipped %-9s %s"
+          % ("ok" if ok_v else "FAIL", "versions: stepped and graded both bump (graded embeds stepped)",
+             "v%d/v%d" % (pv["stepped"], pv["graded"]), "v%d/v%d" % (sv["stepped"], sv["graded"]),
+             "(fails on shipped: new)" if sv != VERSIONS else "(unchanged)"))
+    bad += 0 if ok_v else 1
     m3 = seq(proto, "graded", [vin(31, 40, 1, m3_linear=True)])[0]
     print("  graded M3 under gh#84 conditions: action %d target %d (TARGET 250: rate-limited towards open)"
           % (m3[1], m3[2]))
-    print("rule checks: %d of %d pass on the prototype" % (len(CHECKS) - bad, len(CHECKS)))
+    print("rule checks: %d of %d pass on the prototype" % (len(CHECKS) + 1 - bad, len(CHECKS) + 1))
     return bad
 
 

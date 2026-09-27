@@ -1,5 +1,5 @@
 @startuml humidityPackage
-title The ventilation law with the gh#84 package\n(the prototype in model/closedloop/humidity_prototype.py: green is what the package adds or changes, blue is the shipped law)
+title The ventilation law with the gh#84 package: stepped v2 and graded v2\n(the prototype in model/closedloop/humidity_prototype.py: green is what the package adds or changes, blue is stepped v1 and graded v1 as shipped)
 
 ' One call of the law, as T6 makes it every poll. Green is what the package
 ' adds or changes; blue is drivers/ventModel as shipped (2.14.1). Mode 2's law
