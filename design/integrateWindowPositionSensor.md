@@ -54,9 +54,9 @@ for each fix. **Mode-2 soaks passed** on 2.12.2 (12.82 h, 28 judged strokes), 2.
 8. **Not yet soaked:** mode 2 with `min_intv_m3` = 0.
 9. **The bus DEGRADED threshold** per installation (gh#66; decision 7).
 10. **The draw-wire unit is IP50** against the ≥ IP65 requirement. This is the installer's to resolve (§1).
-11. **The beheerder manual is behind.** Line 101 says M3 is still steered by time, and line 1670 says the
-    controller has no position feedback (line numbers as of 2026-09-27). Both are wrong for a unit with a
-    fitted sensor in Lineair.
+11. ~~**The beheerder manual is behind.**~~ **Resolved in beheerder 1.29 (2026-09-27).** Its passages on
+    position feedback and timed steering now name M3 with a sensor as the exception, and it records that a
+    part-open M3 is stored as `UNKNOWN`, so a restart calibrates. The boer manual already covered Lineair.
 
 ---
 
@@ -1694,7 +1694,7 @@ So there are now **two gates**, not one, and they are crossed in order:
 
 ##### The manuals are a dependency of this slice
 
-> **2026-09-27:** the gate was crossed in 2.12.0, so these statements are now due. Two are still wrong in `beheerderHandleiding.md` (line numbers as of 2026-09-27): line 101 says M3 is still steered by time, and line 1670 says the controller has no position feedback. They are open; see §0.
+> **2026-09-27:** the gate was crossed in 2.12.0, so these statements came due. They are **fixed in beheerder 1.29**, and the boer manual already covered Lineair (§0, item 11).
 
 Both manuals rest, in seven places, on *the controller has no position
 feedback*. Six of them stay **correct until the ▲ GATE is crossed** and must

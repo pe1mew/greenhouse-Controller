@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de beheerder
 
-**Versie:** 1.28
-**Datum:** 2026-09-25
-**Firmware:** 2.14.0
+**Versie:** 1.29
+**Datum:** 2026-09-27
+**Firmware:** 2.14.1
 
 ---
 
@@ -85,10 +85,11 @@ en stuurt op basis daarvan de Hotraco RRK-3 motorbox aan om de drie ramen te bed
 De controller leest **elke poll-cyclus** (default 30 sec.) de sensoren uit via Modbus RTU. De ruwe metingen worden door een **glijdend gemiddelde** gehaald om piekmetingen te dempen. Het gemiddelde wordt vergeleken met de actieve **dag- of nacht-setpoints** voor Temperatuur en Relatieve Luchtvochtigheid (dag/nacht omgeschakeld op basis van zonsopkomst en zonsondergang, berekend uit geografische locatie en datum). Bij overschrijding van een setpoint inclusief **hysteresis** wordt een ventilatie-stap omhoog (raam open) of omlaag (raam dicht) genomen. De drie ramen worden in drie stappen gebruikt: eerst M1, dan M1+M2, dan alle drie.
 
 ### Wat doet de controller wél
-- Klimaatregeling door **ventilatie** op basis van Temperatuur en Relatieve luchtvoctiheid binnen ingestelde grenzen
+- Klimaatregeling door **ventilatie** op basis van Temperatuur en Relatieve luchtvochtigheid binnen ingestelde grenzen
 - Automatische dag/nacht-omschakeling
 - hysteresis en glijdend gemiddelde tegen oscillaties
 - Drie-traps ventilatie-strategie (M1 → M1+M2 → M1+M2+M3)
+- Met een raamstandsensor op M3: **lineaire besturing** van M3 (sinds 2.12.0, de fabrieksinstelling sinds 2.13.0). M3 gaat dan naar een **gemeten tussenstand** die bij de vraag past, in plaats van helemaal open of dicht; M1 en M2 blijven trapsgewijs open en dicht gaan. Zie [M3-besturing: Tijdgestuurd of Lineair](#m3-besturing-tijdgestuurd-of-lineair-2120)
 - Veiligheidsmechanismen: wind-override (sterke wind), motor-alarm, sensor-fault detectie (problemen met het uitlezen van de sensors)
 - Automatische CLOSE_ALL kalibratie bij opstart wanneer ten minste één raam niet als CLOSED in het geheugen staat opgeslagen, en na motor-alarm-clearance
 - Permanente opslag in het geheugen (Non Volatile Memory - NVS) van alle setpoints en configuratie instellingen
@@ -98,7 +99,7 @@ De controller leest **elke poll-cyclus** (default 30 sec.) de sensoren uit via M
 - Geen verwarming of koeling aansturen
 - Geen klimaatschermen aansturen
 - Geen besproeiing of CO₂-dosering aansturen
-- Ramen die gedeeltelijk dicht gestuurd worden. De controller stuurt op tijd, met commando's via de RRK-3; de motoren geven geen positie terug. Met een raamstandsensor op M3 controleert hij sinds 2.10.0 wél of M3 na elke beweging zijn eindstand haalde, en meldt hij het als dat niet zo is (zie *M3 raamstandsensor — controle na elke beweging*), maar ook M3 blijft hij op tijd sturen
+- M1 en M2 gedeeltelijk open of dicht zetten. Die twee stuurt de controller op tijd, met commando's via de RRK-3, en hun motoren geven geen positie terug. **M3 is de uitzondering zodra er een raamstandsensor op zit:** in *Lineair* stuurt de controller M3 naar een gemeten tussenstand (zie [M3-besturing: Tijdgestuurd of Lineair](#m3-besturing-tijdgestuurd-of-lineair-2120)), en hij beoordeelt elke beweging van M3 (zie *M3 raamstandsensor — controle na elke beweging*). Zonder sensor, of in *Tijdgestuurd*, gaat ook M3 op tijd helemaal open of dicht
 
 ---
 
@@ -1663,12 +1664,12 @@ Bij élke opstart van de controller (power-cycle, druk op RESET-knop, geplande h
 - **Power-cycle midden op een warme dag** met M3 of M2 open → volledige kalibratie (~3 min). Identiek aan een geplande reboot of OTA op datzelfde moment.
 - **Fabrieksreset (BOOT-knop)** → permanente geheugen wordt gewist → alle drie posities default `UNKNOWN` → altijd volledige kalibratie.
 
-**Hoe weet de controller dit?** Bij elke transitie naar een eind-positie (CLOSED of OPEN) wodt de raampositie opgeslagen in het permanente geheugen. Vóór het aansturen van een van de relais wordt eerst `UNKNOWN` weggeschreven, zodat een stroomuitval midden in een beweging correct als "onbekend → kalibreren" wordt hersteld. 
+**Hoe weet de controller dit?** Bij elke transitie naar een eind-positie (CLOSED of OPEN) wordt de raampositie opgeslagen in het permanente geheugen. Vóór het aansturen van een van de relais wordt eerst `UNKNOWN` weggeschreven, zodat een stroomuitval midden in een beweging correct als "onbekend → kalibreren" wordt hersteld. Een M3 die in lineaire besturing op een tussenstand stopt, wordt bewust ook als `UNKNOWN` opgeslagen, zodat een herstart daarna altijd kalibreert. 
 
 **Waarom is dit belangrijk?**
 
-- De controller heeft **geen positie-feedback** van de motoren — hij volgt de raamposities intern bij op basis van de open/sluit-commando's die hij zelf heeft verstuurd. Tijdens een stroomuitval, een handmatige beweging op de RRK-3, of een motor-alarm gaat die interne aanname verloren of klopt niet meer met de werkelijkheid.
-- De CLOSE_ALL kalibratie is de **enige manier** om die interne aanname weer in lijn te brengen met de fysieke werkelijkheid wanneer dat verloren is gegaan.
+- Voor **M1 en M2**, en voor M3 zonder raamstandsensor, heeft de controller **geen positie-feedback** van de motoren — hij volgt de raamposities intern bij op basis van de open/sluit-commando's die hij zelf heeft verstuurd. Tijdens een stroomuitval, een handmatige beweging op de RRK-3, of een motor-alarm gaat die interne aanname verloren of klopt niet meer met de werkelijkheid. **Met een raamstandsensor meet de controller de stand van M3 zelf** (zie [M3-besturing: Tijdgestuurd of Lineair](#m3-besturing-tijdgestuurd-of-lineair-2120)).
+- Voor die ramen is de CLOSE_ALL kalibratie de **enige manier** om de interne aanname weer in lijn te brengen met de fysieke werkelijkheid wanneer dat verloren is gegaan. Loopt er een kalibratie, dan gaat ook M3 met sensor gewoon mee dicht.
 - **Duur van de kalibratie**: ~26 sec. voor M1 en M2 (gelijktijdig), ~176 sec. voor M3 — totaal dus ongeveer **3 minuten** voordat `Mode: AUTO` weer verschijnt.
 - **Een handmatige beweging op de RRK-3 wordt door de kascontroller niet gedetecteerd** (alleen het motor-alarm wordt gemeld via GPIO42). De controller blijft de raamposities bijhouden zoals hij die zelf gestuurd had en zal die nog naar NVS persisteren. Een power-cycle na handmatige overname kan dus de "skip"-conditie raken terwijl de fysieke ramen niet werkelijk dicht zijn. Volg daarom altijd de procedure in [§15 *Handmatige overname via de motorbox*](#15-handmatige-overname-via-de-motorbox).
 
@@ -1700,7 +1701,7 @@ Voor algemene uitleg en consequenties: zie [boer-handleiding §15](boerHandleidi
 3. **Indien werkzaamheden aan motor zelf** (bedrading, vervangen): zet bovendien de motor-zekering in de RRK-3 uit, of haal de stekker eruit
 4. Voer onderhoud uit
 5. Na onderhoud: **eerst zekering / stekker terug**, dan **schakelaars terug op automatisch**
-6. **Power-cycle de kascontroller** (zie [§14](#14-onderhoud--wat-de-beheerder-doet)) **met ten minste één raam fysiek open** om de CLOSE_ALL kalibratie af te dwingen — alleen zo weet de controller weer met zekerheid waar de ramen staan. Power-cyclen terwijl alle drie de ramen dicht staan trip mogelijk de NVS-skip (sinds 1.17.36, zie [§18](#18-reset-procedure-io0-knop-op-microprocessorboard)) waardoor de kalibratie wordt overgeslagen en de controller-aanname ongetest blijft
+6. **Power-cycle de kascontroller** (zie [§14](#14-onderhoud--wat-de-beheerder-doet)) **met ten minste één raam fysiek open** om de CLOSE_ALL kalibratie af te dwingen — alleen zo weet de controller weer met zekerheid waar de ramen staan. (M3 met een raamstandsensor meet zijn stand ook zonder deze stap; voor M1 en M2 is hij nodig.) Power-cyclen terwijl alle drie de ramen dicht staan trip mogelijk de NVS-skip (sinds 1.17.36, zie [§18](#18-reset-procedure-io0-knop-op-microprocessorboard)) waardoor de kalibratie wordt overgeslagen en de controller-aanname ongetest blijft
 
 > Zie [boer-handleiding §15 — De kascontroller weet niet dat hij is uitgeschakeld](boerHandleiding.md#de-kascontroller-weet-niet-dat-hij-is-uitgeschakeld) voor de gevolgen van handmatige stand zonder power-cycle achteraf.
 
@@ -2202,6 +2203,7 @@ Inhoudelijke wijzigingen aan de firmware staan beschreven in het bestand `change
 | 1.26 | 2026-09-24 | 2.12.2 — in lineaire besturing wordt een stand vlak bij een eindstand een volledige gang tot de eindsensor, zodat "dicht" echt dicht is (gh#83); tab **Log**: nieuwste bestanden bovenaan, het huidige bestand gemarkeerd, een melding als de kaart meer bestanden heeft dan de lijst toont, en de kaart houdt weer 30 bestanden per controller (gh#82). Ook: hoe de T-as en de RH-as worden gecombineerd; en de SD-cijfers gecorrigeerd in §10.7, de upload-sectie, *Vrije ruimte en bestandsrotatie* en Bijlage F — rotatie bij 1 MB, 30 bestanden per controller, vloer 5, minimaal 4 MB vrij (stond op 512 KB, 10, 3 en 2 MB) — plus de automatische mount die een Unmount respecteert |
 | 1.27 | 2026-09-25 | 2.13.0 — **Lineair is de fabrieksinstelling** (alleen voor een nieuwe of teruggezette controller); de lineaire besturing begint vanzelf, ook in rust (gh#86); de regel onder *M3-besturing* noemt de precieze reden als lineair niet actief is, in grijs als er niets mis is (gh#85) |
 | 1.28 | 2026-09-25 | 2.14.0 — de LED-helderheid en de nachtstand (22:00–06:00) liggen vast en zijn geen instelling meer (gh#67); checklist §18 punt 10: de raamstandsensor aanmelden in plaats van de LED instellen |
+| 1.29 | 2026-09-27 | 2.14.1 (alleen documentatie) — de passages die nog uitgingen van *geen positie-feedback* kloppen weer met lineaire besturing: in §1 staat wat M3 met raamstandsensor wél doet (een gemeten tussenstand), de controller meet de stand van M3 zelf, en een tussenstand wordt als `UNKNOWN` opgeslagen zodat een herstart kalibreert; typefouten *wodt* en *luchtvoctiheid* hersteld |
 
 ---
 
