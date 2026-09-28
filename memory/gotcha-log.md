@@ -12,7 +12,7 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 - **[PATTERN] Judge a ROTA pull from the unit's SD log, after the unit's own next check, with its apply window in hand. Never judge it from the `dl`/`apply` fields or from `/api/config`.** Three entries, each of which recurred on 2026-09-26 during the 2.14.0 pull:
   1. `/api/ota/check`'s `dl` and `apply` describe only the latest cycle. They reset to −1, and a download that is still running does not touch them (2026-09-12). **Recurred:** a probe read a stale `dl` 1.
-  2. The first downloads after a publish fail (2026-09-20). A half-fetched artefact gives `dl` 2, and `dl` 1 lumps TLS, transport and non-200 together; the unit's own next check then succeeds. **Recurred:** one `dl` 2 and two `dl` 1 before 00:34 verified cleanly. 2.9.0 and 2.9.1 did the same.
+  2. The first downloads after a publish fail (2026-09-20). A half-fetched artefact gives `dl` 2, and `dl` 1 lumps TLS, transport and non-200 together; the unit's own next check then succeeds. **Recurred:** one `dl` 2 and two `dl` 1 before 00:34 verified cleanly. 2.9.0 and 2.9.1 did the same. **Again 2026-09-28 (2.15.0):** the forced check 11 min after publishing ended `dl` 1 nine seconds later; the unit's own hourly check 57 min after that verified in 11 s and applied.
   3. ROTA's settings are on `/api/ota/config`, not `/api/config`, and a 1–23 window is SHUT from 23:00 to 01:00 (2026-09-07). **Recurred:** a verification started at 23:24 could not apply before 01:03.
 
   **Rule:**
