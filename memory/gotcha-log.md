@@ -173,7 +173,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-09-16** — a setting is MISSING from the GUI entirely (two routes exceeded `max_uri_handlers` and never registered; the card depending on them was hidden rather than greyed, so the only symptom was an absence)
 
 ### Build, toolchain & shell
-- **2026-09-27** — an overnight watch dies with the Claude Code session (a local background task is not a daemon: run it on Shuttle2, or reconstruct from the unit's SD log)
+- **2026-09-27** — an overnight watch dies with the Claude Code session (a local background task is not a daemon: run it on Shuttle2, or reconstruct from the unit's SD log). **Recurred 2026-09-28** as the wake-up for publish-on-pass, which cannot move to Shuttle2
 - **2026-09-20** — a release build overwrites `bin/<version>/`, and a rebuild in another directory is not byte-identical (the build DIRECTORY is in the image)
 - **2026-09-17** — a new library's host tests fail at link with an undefined reference to its own function (`pio test` does not build `src/` unless `test_build_src = yes`)
 - **2026-09-17** — a macro with a literal `
@@ -245,6 +245,13 @@ that must be observed overnight runs on Shuttle2 like the soak jobs. Otherwise, 
 reconstruct it from the device's log on resume, and say that the live observation was lost.**
 
 **Where it lives:** `~/ghc-soak/` on Shuttle2 (the pattern), `/api/log/download` (the reconstruction).
+
+**Recurred 2026-09-28, in the one form Shuttle2 cannot absorb.** The 2.15.0 soak ran on Shuttle2 and
+was unaffected (report 05:10, PASS). But the local watcher whose only job was to WAKE the agent for
+"publish on pass" died with the session, so the authorized publish waited about 14 h, until the
+operator asked "assess 2344" at 19:00. A wake-up cannot move to Shuttle2: it exists to re-invoke this
+process. **So an unattended follow-up step (publish, pull check) needs the session alive. Say so when
+agreeing to it, and on resume read the report first and carry the step out, as authorized.**
 
 ## 2026-09-26 — a commit that leaves out a NEW file builds on this PC and fails from a clean clone
 

@@ -15,9 +15,12 @@ again; the conflict priority is a choice of two).
 > for a while after humidity falls back under `rh_max` (the new close guard, rule 4), where 2.14.1
 > logged "no vote".
 
-> **Not tested on hardware.** No rig run and no soak yet. Host tests, the replay against 5C88's
-> logs, the closed-loop gate, both firmware builds and the web GUI on the mock server are below. **A
-> soak exercises the new rules only if the module runs `cr_priority` 1**, which is the operator's call.
+> **Verified on hardware and soaked** on 2344, the development rig's module: the release build first
+> (2026-09-27), then **a 12.25 h soak of 2.15.0-bench with `cr_priority` 1**, so that the new rules
+> acted, on 5C88's live climate. Every fault counter stayed at 0. All 42 decisions the SD log recorded
+> follow v2's rules: humidity opened **M1 only**, 9 times, and the night floor both held the house shut
+> and let it open where it should. The published image is the release build of the same commit
+> (`13bb604`). See *Verification*.
 
 ## What changed
 
@@ -127,7 +130,12 @@ could say which version decided (contract §2, gh#84).
 | `python bin/check_cfg_desc.py` | **PASS** — 51 keys, 40 published; no key or bound changed |
 | `log/logparser.py` | decodes param 56 as *Control law in force: stepped v2* / *graded v2*; an unknown id reads *law #n*; param 54 and 0 rows unchanged |
 | Web GUI on `webUiMock` | **PASS**. A stored `cr_priority` 2 shows as *Humidity may also open M1, above T min + 2 °C* (2 options). T min day/night load 16/14 with their sliders bounded 5–40 / 0–30 by `/api/config/limits`. The T min rows grey to 0.35 with humidity control off, and T max does not. The mock's `/api/status` carries `"law":"stepped v2"`. No script errors |
-| **On hardware** | **not yet.** Nothing in this release has run on a controller: not the law, not the MODE 56 row, not `windows.law`, not the LCD screens |
+| **Release build on 2344** | **PASS** — 2026-09-27 13:57, OTA push. After the reboot `fw_ver` **and** `asset_version` read 2.15.0. `windows.law` read `stepped v2` while M3 was still timed, then `graded v2` once Lineair engaged by itself (62 s). The SD log carries the new row, `MODE` param 56 = `graded v2`, beside param 54, and `logparser.py` decodes it. All 9 rig settings were unchanged, and the served `index.html` was byte-identical to the repo's. No `stepped v2` row was written at that boot: T6's first cycle came after the switch, so nothing was decided under stepped. Like every T6 `MODE` row, these are stamped with T4's cached clock, up to a minute early |
+| **The new priority control, on the unit** | The operator set `cr_priority` 0 → 1 from the web GUI's two-choice select (2026-09-27 16:46:28, `SETPT` param 12, initiator `WEB`) |
+| **Soak on 2344, `cr_priority` 1** | **PASS** — 2.15.0-bench (built from `13bb604`), 2026-09-27 16:55:59 to 2026-09-28 05:10:59: **12.25 h, 25 judged strokes** (12 confirmed closes, 13 openings not judged by design); `stall_faults`, `early_stops`, `rejected_rate`, `err_comm` and `not_reached` all 0; `mode_changes` 0; gate `position`; **no reboot** (uptime 26.1 h spans the window). All 12 scripted stroke sessions ran, none skipped or failed. Each steers `cr_priority` to 2 to open and 0 to close for a few minutes, then restores 1 |
+| **The law in the soak's SD log** | **CONFORMS** — every vent-step decision from the soak's start to 2026-09-28 19:00 was checked against v2's resolver, under the priority in force at that moment (taken from the `SETPT` rows): **42 decisions, none against the rules**. Humidity alone opened **M1 only, 9 times**, never M2 or M3. It was refused 11 times: 10 during the sessions' priority-0 phases and 1 by the floor. Seven openings overlap a per-minute watch of T5's averages, and all 7 were at or above the floor. **The night floor** (`t_min_ngt` 14 + 2 = 16 °C) held M1 shut from 22:07, at 15.2 °C, down through 14.3 °C. It opened on 15.5 °C averages (T5 rounds to 16), and an opening already made held down to a 15.1 °C average (rounded 15) and never below: the 1 °C hysteresis. Outside the sessions M1 stood open on humidity alone in 372 of the one-minute samples. By day (floor 18 °C) humidity opened M1 at 24.5 and 21.2 °C. **Not exercised:** *dryness never closes against heat*, since humidity stayed at 59–94 % and never fell below `rh_min`; and the `rh_max` close guard, since no opening saw humidity fall back through the ceiling |
+| **Heap through the soak** | 734 one-minute samples: free 34–68 KB, largest block 19–31 KB; in the last hour 62–67 KB free with a 26–31 KB largest block. The since-boot floor stepped 28 → 19 KB in the first 3 h and then stayed flat (2.14.0's soak: 8 KB) |
+| LCD screens (`T/RH prio (0/1)`, the 1/4 browse) | **not checked on hardware**: nobody was at the rig |
 
 ## Upgrading
 
