@@ -12,6 +12,8 @@ bin/
   gh_issue.py              <- minimal GitHub Issues client
   check_cfg_desc.py        <- config-descriptor checker (the pre-commit hook runs it on config changes)
   at_*.py                  <- acceptance harnesses for the development rig
+  law_watch.py             <- soak companion: T5's averages, the windows and the law, a line a minute
+  law_conformance.py       <- judges every logged vent-step decision against the law's rules
   2.15.0/
     greenhouse-controller-2.15.0.bin    <- firmware image
     web-assets-2.15.0.zip               <- web UI (STORE-only ZIP)
