@@ -28,6 +28,10 @@ inherits the package, which is the point of the embedding.
     python model/closedloop/humidity_prototype.py loop    acceptance runs, closed loop (~30 min)
     python model/closedloop/humidity_prototype.py floor   where the floor sits, and its hysteresis (~18 min)
     python model/closedloop/humidity_prototype.py diff    the package as a diff of the stepped law
+
+Since firmware 2.15.0 the package IS the library (stepped v2 / graded v2), so
+these patches no longer apply ("patch anchor found 0 times"). The acceptance
+table against the shipped law: humidity_acceptance.py.
 """
 import sys
 import json
