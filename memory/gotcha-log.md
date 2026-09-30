@@ -10,6 +10,7 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ## Promoted patterns
 
+- **[PATTERN] Nothing started from this session survives it, so decide at the outset where each unattended step runs.** Two instances (2026-09-27: an overnight pull-verification watch; 2026-09-28: the wake-up for an authorized "publish on pass", which left the publish 14 h late). A local background task, a Monitor or a wake-up belongs to the Claude Code process, and on resume it is reported only as "did not finish before the previous session ended". Rules: (1) anything that must be **observed** unattended runs on Shuttle2 under init, like the soak jobs (`nohup`, stdin from `/dev/null`, output to files); (2) a step that must be **done** by this session (publish, a pull check, closing an issue) cannot move there, so say when agreeing to it that it needs the session alive; (3) on resume, read the evidence first (the soak report, the unit's SD log), then carry out the step that was authorized, and say how late it is and why; (4) anything observed live and lost is reconstructed from the unit's own log, and the loss is stated. Entry: 2026-09-27.
 - **[PATTERN] Judge a ROTA pull from the unit's SD log, after the unit's own next check, with its apply window in hand. Never judge it from the `dl`/`apply` fields or from `/api/config`.** Three entries, each of which recurred on 2026-09-26 during the 2.14.0 pull:
   1. `/api/ota/check`'s `dl` and `apply` describe only the latest cycle. They reset to −1, and a download that is still running does not touch them (2026-09-12). **Recurred:** a probe read a stale `dl` 1.
   2. The first downloads after a publish fail (2026-09-20). A half-fetched artefact gives `dl` 2, and `dl` 1 lumps TLS, transport and non-200 together; the unit's own next check then succeeds. **Recurred:** one `dl` 2 and two `dl` 1 before 00:34 verified cleanly. 2.9.0 and 2.9.1 did the same. **Again 2026-09-28 (2.15.0):** the forced check 11 min after publishing ended `dl` 1 nine seconds later; the unit's own hourly check 57 min after that verified in 11 s and applied.
@@ -245,6 +246,8 @@ that must be observed overnight runs on Shuttle2 like the soak jobs. Otherwise, 
 reconstruct it from the device's log on resume, and say that the live observation was lost.**
 
 **Where it lives:** `~/ghc-soak/` on Shuttle2 (the pattern), `/api/log/download` (the reconstruction).
+
+**Promoted 2026-09-30** to the pattern at the top of this log (operator's decision).
 
 **Recurred 2026-09-28, in the one form Shuttle2 cannot absorb.** The 2.15.0 soak ran on Shuttle2 and
 was unaffected (report 05:10, PASS). But the local watcher whose only job was to WAKE the agent for
