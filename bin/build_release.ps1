@@ -259,9 +259,10 @@ Write-Host "    -> $BIN_DST  ($bin_kb KB, version string and app version verifie
 # same path, from the same tree (memory/gotcha-log.md, 2026-09-16): the ELF,
 # whose SHA-256 the .bin embeds, records the directory it was built in. (The
 # image's version field no longer depends on git state: it is FIRMWARE_VERSION,
-# see the check above.) From a fresh clone not even the code is:
-# firmware/dependencies.lock is gitignored, so the managed littlefs resolves to
-# the newest ^1.16 release.
+# see the check above.) From a fresh clone the code is the same since
+# 2026-09-30, when firmware/dependencies.lock became tracked: it pins the
+# managed littlefs and led_strip. While it was gitignored, a fresh clone
+# resolved the newest ^1.16 littlefs instead.
 $ELF_SRC = Join-Path $FIRMWARE_DIR ".pio\build\$Environment\firmware.elf"
 $MAP_SRC = Join-Path $FIRMWARE_DIR ".pio\build\$Environment\greenhouse_controller.map"
 $BL_SRC  = Join-Path $FIRMWARE_DIR ".pio\build\$Environment\bootloader.bin"

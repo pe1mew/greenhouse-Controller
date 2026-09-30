@@ -84,10 +84,12 @@ parsed_*.txt
 # Ignored: firmware/sdkconfig            (auto-generated, copy of defaults + diffs)
 # Ignored: firmware/sdkconfig.old        (auto-generated backup)
 # Ignored: firmware/sdkconfig.<env>      (auto-generated per-PlatformIO-environment)
+# Tracked: firmware/dependencies.lock   (since 2026-09-30: it pins the managed
+#          components, so a fresh clone builds the same code -- littlefs 1.21.1,
+#          led_strip 2.5.5; untracked, a fresh copy resolved littlefs 1.22.3)
 /firmware/build/
 /firmware/sdkconfig
 /firmware/sdkconfig.old
 /firmware/sdkconfig.lolin_s3
 /firmware/sdkconfig.test_t2_relay
 /firmware/managed_components/
-/firmware/dependencies.lock
