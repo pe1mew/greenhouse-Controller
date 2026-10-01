@@ -461,7 +461,8 @@ as "the original" because an *earlier* harness was mid-run when it started, and 
 back at the end. **A harness that memorises "the original" memorises whatever the previous harness
 left** -- so the restore is only as good as the state it sampled, and a value that is restored is
 not thereby correct. Check the rig's settings against what the RIG should hold (`travel_m3` 13,
-`min_intv_m3` 600, `wpos_fitted_m3` 1), not against what a run recorded. (2) `at_wp_confirm.py`
+`min_intv_m3` 600 then, **0 since 2026-10-01 by the operator's choice**, `wpos_fitted_m3` 1), not
+against what a run recorded. (2) `at_wp_confirm.py`
 failed twice for reasons that were not its subject: once a recalibration was still running, and
 once because the rig was **in mode 2** -- the suite predates mode 2 and its stages assume timed
 drives. It has to be run in mode 1 and the operator's mode restored afterwards, which the run now

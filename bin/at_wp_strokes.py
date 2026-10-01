@@ -177,10 +177,11 @@ def session(host, pin, n):
         s0 = rig.soak()
         # Mode 2 strokes are slower by design, and not by one drive's worth.
         # The law holds M3 for 10 min after its last drive (M3_HOLD_MS) and
-        # `min_intv_m3` -- 600 s on this rig -- replaces the dwells this session
-        # cut, which mode 2 ignores; and `graded` closes in STEPS (measured
-        # 2026-09-24: 49 % -> 25 % -> ... -> the end), so a close from half open
-        # is three drives about 600 s apart. 420 s fails a stroke that was
+        # `min_intv_m3` -- 600 s by default, 0 on this rig since 2026-10-01 --
+        # replaces the dwells this session cut, which mode 2 ignores; and
+        # `graded` closes in STEPS (measured 2026-09-24: 49 % -> 25 % -> ... ->
+        # the end), so a close from half open is three drives about 600 s
+        # apart. 420 s fails a stroke that was
         # always going to take longer, and so does 900 s; the limit follows the
         # mode actually in force (2026-09-24).
         linear = (rig.status().get("windows") or {}).get("M3_ctrl_mode") == "LINEAR"

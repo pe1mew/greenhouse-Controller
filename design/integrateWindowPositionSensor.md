@@ -29,8 +29,9 @@
 | 2.14.0, 2.14.1 | No M3 change |
 
 The evidence for 2.12.0 is the acceptance suites (target 9/9, fallback 4/4, confirm 9/9), with a fail-first run
-for each fix. **Mode-2 soaks passed** on 2.12.2 (12.82 h, 28 judged strokes), 2.13.0 (12.36 h, 16) and
-2.14.0 (12.25 h, 28), all with every fault counter at 0. 2.14.1 was pulled by ROTA on 2026-09-27.
+for each fix. **Mode-2 soaks passed** on 2.12.2 (12.82 h, 28 judged strokes), 2.13.0 (12.36 h, 16),
+2.14.0 (12.25 h, 28) and 2.15.0 twice (12.25 h, 25, with `cr_priority` 1; 12.25 h, 33, with
+`min_intv_m3` 0, item 8 below), all with every fault counter at 0. 2.14.1 was pulled by ROTA on 2026-09-27.
 
 **Still open:**
 
@@ -52,7 +53,15 @@ for each fix. **Mode-2 soaks passed** on 2.12.2 (12.82 h, 28 judged strokes), 2.
 7. ~~**gh#84 reaches mode 2.**~~ **Fixed in 2.15.0** as `stepped` v2 and `graded` v2: dryness never
    closes against heat, so a dry house no longer closes M3 against heat demand under any
    `cr_priority`; humidity alone opens M1 at most (decision 16).
-8. **Not yet soaked:** mode 2 with `min_intv_m3` = 0.
+8. ~~**Not yet soaked:** mode 2 with `min_intv_m3` = 0.~~ **Soaked 2026-09-30, PASS:** 2.15.0-bench on
+   2344, 12.25 h, 33 judged strokes (15 confirmed closes, 18 targeted moves not judged by design), every
+   fault counter 0, no reboot. With neither T2's dwell nor T6's interval in the way, **`graded`'s own
+   600 s hold did the spacing**: 33 M3 drives, 2.69 an hour, and none started sooner than 602 s after
+   the previous one ended (median 605 s; SD log `RELAY` ch 3, from a drive's end to the next start). An
+   interval of 600 s, measured like the hold from the end of the last move, would have deferred none
+   of them, so under `graded` 0 and 600 behave the same, as `model/closedloop/linearDwell.md`
+   predicted. **Not exercised:** T2's dwell after a sweep, since no sweep fell in the window. The rig
+   has held 0 since, by the operator's choice (2026-10-01).
 9. **The bus DEGRADED threshold** per installation (gh#66; decision 7).
 10. **The draw-wire unit is IP50** against the ≥ IP65 requirement. This is the installer's to resolve (§1).
 11. ~~**The beheerder manual is behind.**~~ **Resolved in beheerder 1.29 (2026-09-27).** Its passages on
@@ -2236,8 +2245,9 @@ than a bench hook, and it worked — two targets, both reached, both logged with
 
 ###### Built 2026-09-20 (2.12.0): the linear dwell, and the surfaces
 
-**`motor/min_intv_m3`** — the linear dwell, seconds, **default 0**, range 0-1500 (the same ceiling
-as the `dwell_open_m3` it replaces, so it can express the same 25 minutes). The contract says mode 2
+**`motor/min_intv_m3`** — the linear dwell, seconds, **default 0** as first built (**600 s** since
+the same day, below), range 0-1500 (the same ceiling as `dwell_open_m3`, the longer of the two
+dwells it replaces, so it can express the same 25 minutes). The contract says mode 2
 replaces the open dwell with a minimum interval and the caller enforces it (§7), so **both** happen
 and they cannot disagree: `ch_dwell_ms()` in T2 arms M3's dwell from this key whenever the effective
 mode is linear, and T6 refuses a target inside the same interval. One key, two enforcers, one
@@ -2252,7 +2262,7 @@ simulator runs the real library against nine days of 5C88's own weather (2026-07
 
 | `min_intv_m3` | M3 drives/day | swing °C | h ≥ 31 °C | M3 open h |
 |---|---|---|---|---|
-| **0** (the default) | **16.9** | 2.8 | 20 | 46 |
+| **0** (the default then) | **16.9** | 2.8 | 20 | 46 |
 | 300 s | 16.9 | 2.8 | 20 | 46 |
 | 900 s | 11.5 | 3.3 | 19 | 41 |
 | 1500 s | 8.5 | 4.4 | 20 | 42 |
@@ -2284,7 +2294,9 @@ the interval is the caller's protection while a hold inside a law is the law's o
 with its hold removed gives 42.5 drives a day at 0 against 19.3 at 600; and **ten minutes is the
 loop's dead time**, not a round number — the reading lags the air 3.5-5.5 min and a 25 % move takes
 44 s in production. **Never above 900**, where mode 2 swings as much as mode 1 while still driving
-M3 twice as often. **0 remains right for a deliberate test.**
+M3 twice as often. **0 remains right for a deliberate test.** The rig ran one on 2026-09-30, a
+12.25 h mode-2 soak at 0, and the first reason held on hardware: no M3 drive started within 600 s
+of the previous one's end, so 600 would have deferred nothing (§0, item 8).
 
 **The surfaces.**
 
