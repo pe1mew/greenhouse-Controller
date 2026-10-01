@@ -431,6 +431,16 @@ bool dm_m3_ctrl_mode_eval(m3_mode_reason_t *out_reason);
 uint16_t dm_m3_deadband_x10(void);
 
 /**
+ * @brief M3's taught window size in whole mm (`40004`, from commissioning);
+ *        0 when the window has never been taught.
+ *
+ * For a caller that converts the encoder's rate (mm/s) into the percent the
+ * target and the position speak: T2 projects a reading forward to the moment
+ * it decides (2026-10-01, plan §0 item 4).
+ */
+uint16_t dm_m3_window_mm(void);
+
+/**
  * @brief M3's position, for the CONTROL path: a pass-through, never a copy.
  *
  * Plan §5b, "The position path: one owner, one copy". The call graph is

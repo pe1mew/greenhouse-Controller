@@ -185,6 +185,13 @@ typedef struct {
                                     *   expected overrun, in the direction of travel
                                     *   (m3_lead_x10(), 2026-09-21). */
     int16_t    target_from_x10;    /**< Where the drive started, for the learning. */
+    /* 2026-10-01 (plan §0 item 4): projecting the reading to the moment of
+     * the cut -- see m3_ahead_x10(). Reset each time a target is armed. */
+    uint16_t   target_window_mm;   /**< The taught window, mm; 0 = do not project. */
+    bool       target_seen;        /**< A reading of this drive has been seen. */
+    uint32_t   target_seen_ms;     /**< That reading's sample time, on T2's clock. */
+    uint32_t   target_gap_ms;      /**< Between this drive's last two distinct
+                                    *   readings; 0 = fewer than two seen. */
 } ch_t;
 
 static ch_t s_ch[NUM_CHANNELS];
@@ -739,10 +746,13 @@ static void ch_start_open(uint8_t ch, uint32_t now_ms, cmd_source_t source)
  * is right on both after a few stops. RAM only: a reboot starts again from
  * the default. Fail-first bit 64 restores the cut on entering the band. */
 
-/** The lead before any stop has been learned from, as milliseconds of travel:
- *  3.2 % of the rig's 13 s stroke is ~420 ms. Scaled by `travel_m3`, so a slow
+/** The lead before any stop has been learned from, as milliseconds of travel.
+ *  Since T2 carries each reading forward to the cut (2026-10-01) the rig's
+ *  stops settle on a lead of ~1.7-2.1 % of its 13 s stroke, ~250 ms; before,
+ *  they overran ~3.2 %, ~420 ms, about 1 % of it being where the cut reading
+ *  happened to fall between readings. Scaled by `travel_m3`, so a slow
  *  mechanism starts from a small lead and the learning takes it from there. */
-#define LEAD_DEFAULT_MS      420u
+#define LEAD_DEFAULT_MS      250u
 /** The largest lead used or learned, 0.01 % -- 10 % of the stroke. A stop that
  *  claims to have come further than this was moved by something else (the
  *  motor box's hand switches, slip) and teaches nothing. */
@@ -918,15 +928,17 @@ static void cut_track(uint32_t start_ms, uint32_t now_ms, const dm_m3_pos_t *m3)
     s_cut_trk.mm  = m3->mm_x10;
 }
 
-/** At the cut: everything but the resting position, which comes later. */
+/** At the cut: everything but the resting position, which comes later.
+ *  `judged_x10` is the position T2 cut on: the reading carried forward. */
 static void cut_record(bool opening, uint32_t now_ms, const dm_m3_pos_t *m3,
-                       int32_t from, int32_t want, int32_t aim)
+                       int32_t from, int32_t want, int32_t aim, int32_t judged_x10)
 {
     t2_cut_rec_t r = {};
     r.opening    = opening ? 1u : 0u;
     r.from_x10   = (int16_t)from;
     r.want_x10   = (int16_t)want;
     r.aim_x10    = (int16_t)aim;
+    r.judged_x10 = (int16_t)judged_x10;
     r.cut_x10    = (int16_t)m3->percent_x10;
     r.cut_mm_x10 = m3->mm_x10;
     r.cut_rate   = m3->rate_mm_s_x10;
@@ -1114,12 +1126,52 @@ static bool ch_start_target(uint8_t ch, int16_t want_x10, uint32_t now_ms,
     c->target_band_x10  = band;
     c->target_aim_x10   = (int16_t)(open_dir ? want - lead : want + lead);
     c->target_from_x10  = (int16_t)pos;
+    c->target_window_mm = dm_m3_window_mm();
+    c->target_seen      = false;
+    c->target_gap_ms    = 0u;
     ESP_LOGI(TAG, "CH%u: target %d.%u pct armed (from %d.%u, band %u.%u, lead %d.%u)",
              ch + 1u, (int)(want / 10), (unsigned)(want % 10),
              (int)(pos / 10), (unsigned)(pos % 10),
              (unsigned)(band / 10), (unsigned)(band % 10),
              (int)(lead / 10), (unsigned)(lead % 10));
     return true;
+}
+
+/**
+ * @brief How far the leaf has moved since its reading was taken, 0.1 %, in
+ *        the direction of travel (2026-10-01, plan §0 item 4).
+ *
+ * T17 reads about every 180 ms on the rig (its poll is a sleep AFTER a ~75 ms
+ * read) and the encoder publishes once per 100 ms window, so the first reading
+ * past the aim lies anywhere from 0 to ~2 % past it. That was ~90 % of
+ * AT-WP02's scatter (step 1: sigma 0.53 % of 0.56). T2 ticks every 20 ms, so it
+ * can cut between readings if it carries the last one forward:
+ *  - at the ENCODER's rate, not a difference of two readings, which are one or
+ *    two device windows apart rather than one read interval (a two-reading
+ *    speed came out x0.56-1.43 of the device's own);
+ *  - only toward the target, and only once two readings of THIS drive have
+ *    been seen: the first may straddle the start, when the leaf is not yet at
+ *    speed;
+ *  - over at most two read intervals of this drive, so a T17 that has stopped
+ *    reading cannot carry a leaf that has stopped into its target
+ *    (TARGET_MAX_AGE_MS still accepts a reading 3 s old).
+ * What it cannot remove is the encoder's own staleness within its window,
+ * invisible to T17, and the run-on after the cut: the lead learns those.
+ * Fail-first bit 8192 cuts on the reading itself, as before.
+ */
+static int32_t m3_ahead_x10(const ch_t *c, const dm_m3_pos_t *m3, bool opening)
+{
+    if (FF212_NOEXTRAP || c->target_gap_ms == 0u || c->target_window_mm == 0u) {
+        return 0;
+    }
+    const int32_t rate = opening ? (int32_t)m3->rate_mm_s_x10 : -(int32_t)m3->rate_mm_s_x10;
+    if (rate <= 0) { return 0; }
+    uint32_t h = m3->age_ms;
+    const uint32_t cap = 2u * c->target_gap_ms;
+    if (h > cap) { h = cap; }
+    /* rate [0.1 mm/s] x h [ms] / window [mm] = travel in 0.1 % x (window x 10) */
+    const int64_t div = (int64_t)c->target_window_mm * 10;
+    return (int32_t)(((int64_t)rate * (int64_t)h + div / 2) / div);
 }
 
 /**
@@ -1163,18 +1215,34 @@ static bool ch_target_tick(uint8_t ch, uint32_t now_ms, bool opening)
     cut_track(c->target_start_ms, now_ms, &m3);
 #endif
 
+    /* The interval between this drive's readings bounds how far one may be
+     * carried forward (m3_ahead_x10()). A reading seen again on a later tick
+     * repeats its sample time to within a millisecond. */
+    const uint32_t sampled_ms = now_ms - m3.age_ms;
+    if (!c->target_seen) {
+        c->target_seen    = true;
+        c->target_seen_ms = sampled_ms;
+    } else if ((int32_t)(sampled_ms - c->target_seen_ms) >= 10) {
+        c->target_gap_ms  = sampled_ms - c->target_seen_ms;
+        c->target_seen_ms = sampled_ms;
+    }
+
     const int32_t pos  = (int32_t)m3.percent_x10;
     const int32_t want = (int32_t)c->target_x10;
     const int32_t band = (int32_t)c->target_band_x10;
     const int32_t aim  = (int32_t)c->target_aim_x10;
+    const int32_t ahead = m3_ahead_x10(c, &m3, opening);
+    const int32_t now_x10 = opening ? pos + ahead : pos - ahead;   /* where it is now */
 
     /* Cut on REACHING OR PASSING the aim: the target less the expected
      * overrun (see the lead, above), so the leaf comes to rest ON the target.
-     * Passing counts because the leaf moves ~0.67 % of the stroke between two
-     * samples and would otherwise step over a narrow window and run to the
-     * end. Until 2026-09-21 the cut came on ENTERING the band around the
-     * target, and the overrun carried every stop ~2 % past it (fail-first bit
-     * 64 restores that rule; bit 4, the old missing guard, a two-sided window). */
+     * Passing counts because the leaf moves ~2 % of the stroke on the rig
+     * between two readings and would otherwise step over a narrow window and
+     * run to the end. Until 2026-09-21 the cut came on ENTERING the band
+     * around the target, and the overrun carried every stop ~2 % past it
+     * (fail-first bit 64 restores that rule; bit 4, the old missing guard, a
+     * two-sided window). Since 2026-10-01 the position judged is the reading
+     * carried forward to this tick, not the reading (bit 8192 restores that). */
     bool arrived;
     if (FF212_LEAD) {
         arrived = (pos >= want - band && pos <= want + band) ||
@@ -1184,7 +1252,7 @@ static bool ch_target_tick(uint8_t ch, uint32_t now_ms, bool opening)
     } else if (FF212_OVERSHOOT) {
         arrived = (pos >= aim - band && pos <= aim + band);
     } else {
-        arrived = opening ? (pos >= aim) : (pos <= aim);
+        arrived = opening ? (now_x10 >= aim) : (now_x10 <= aim);
     }
     if (!arrived) { return false; }
 
@@ -1198,12 +1266,14 @@ static bool ch_target_tick(uint8_t ch, uint32_t now_ms, bool opening)
      * CLOSE_ALL instead of taking the "all three closed" shortcut. */
     persist_ch_state(ch, CH_PART_OPEN);
     log_relay_event((uint8_t)(ch + 1u), CH_PART_OPEN);
-    ESP_LOGI(TAG, "CH%u: PART_OPEN, cut at %d.%u pct (target %d.%u, aim %d.%u, %u ms old)",
-             ch + 1u, (int)(pos / 10), (unsigned)(pos % 10),
+    ESP_LOGI(TAG, "CH%u: PART_OPEN, cut at %d.%u pct (read %d.%u, %u ms old; "
+                  "target %d.%u, aim %d.%u)",
+             ch + 1u, (int)(now_x10 / 10), (unsigned)(now_x10 % 10),
+             (int)(pos / 10), (unsigned)(pos % 10), (unsigned)m3.age_ms,
              (int)(want / 10), (unsigned)(want % 10),
-             (int)(aim / 10), (unsigned)(aim % 10), (unsigned)m3.age_ms);
+             (int)(aim / 10), (unsigned)(aim % 10));
 #ifdef MODBUS_BENCH
-    cut_record(opening, now_ms, &m3, (int32_t)c->target_from_x10, want, aim);
+    cut_record(opening, now_ms, &m3, (int32_t)c->target_from_x10, want, aim, now_x10);
 #endif
 
     /* Teach the lead from where this stop comes to rest -- but only a drive

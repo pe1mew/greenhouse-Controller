@@ -22,13 +22,19 @@ EACH STOP, IN % OF STROKE (+ = further in the direction of travel)
                               encoder publishes every 100 ms, so this runs from
                               0 to about two windows' travel (~2 %)
   age      v x cut_age        how far the leaf moved between that sample and
-                              the moment T2 acted (T2 ticks every 20 ms)
+                              the moment T2 acted (T2 ticks every 20 ms); on a
+                              build that carries readings forward (2026-10-01
+                              on), T2's own figure: judged - cut
+  judged   judged - aim       where T2 judged the leaf against its aim, on such
+                              a build: never below 0, mostly within one 20 ms
+                              tick of travel; more when a fresher reading jumps
+                              the projection forward
   run-on   rest - cut - age   how far the leaf went after the relay was cut
   error    rest - want        = sample + age + run-on - lead
-v is the leaf's speed from the two samples before the cut (the device's own
-rate when there is no earlier sample). `rest` is the first reading sampled a
-second or more after the cut: T17's settle read, the one T2 learns its lead
-from.
+v is the device's own rate, which T2 carries readings forward at (two readings
+are one or two encoder windows apart, so their difference is a poor speed).
+`rest` is the first reading sampled a second or more after the cut: T17's
+settle read, the one T2 learns its lead from.
 
 THE PREDICTION
 Today's scatter is taken from the overrun past the aim (sample + age +
@@ -39,6 +45,14 @@ sample + age becomes ~uniform(0, v x 20 ms) and the run-on stays. So each
 direction's scatter with extrapolation is the run-on's sigma with that tick
 added in quadrature. Ten stops drawn from a normal distribution span about
 3.08 sigma on average; that is the figure to hold against AT-WP02's 2.0 %.
+
+**The prediction is optimistic, measured 2026-10-01** (predicted 0.23 %, got
+0.30 % over 30 stops). The encoder's value is up to one of its windows older
+than T17's read. Under the old rule the first reading past the aim is selected
+partly BY that staleness, so it sits in the sample term. Once readings are
+carried forward, it moves into the run-on. A split whose terms are selected by
+the same random quantity shares that quantity's variance between them.
+Removing one term does not remove the share it held.
 
 USAGE
   python bin/at_wp_cuts.py --host 192.168.20.160 --save cuts.json   # fetch, merge, report
@@ -107,18 +121,24 @@ def split(r):
     pct = lambda mm_x10: mm_x10 / w * 10.0          # 0.1 mm -> % of the window
     sgn = 1.0 if r["o"] else -1.0
     cut, rest = pct(r["cut_mm"]), pct(r["rest_mm"])
-    if r.get("prev", -1) >= 0 and r.get("prev_dt", 0) > 0:
-        v = sgn * (cut - pct(r["prev_mm"])) / float(r["prev_dt"])      # %/ms
+    # The device's own rate: readings are one or two encoder windows apart, not
+    # one read interval, so a two-reading speed is off by up to x0.56-1.43
+    # (step 1, 2026-10-01). It is also the rate T2 carries readings forward at.
+    v = sgn * (r["cut_rate"] / 10.0) / w * 100.0 / 1000.0             # %/ms
+    v_src = "device"
+    if v <= 0 and r.get("prev", -1) >= 0 and r.get("prev_dt", 0) > 0:
+        v = sgn * (cut - pct(r["prev_mm"])) / float(r["prev_dt"])
         v_src = "samples"
-    else:
-        v = sgn * (r["cut_rate"] / 10.0) / w * 100.0 / 1000.0
-        v_src = "device"
     aim, want = r["aim"] / 10.0, r["want"] / 10.0
+    carried = "judged" in r                       # a build that carries readings forward
     s = {
         "n": r["n"], "o": r["o"], "want": want, "v": v, "v_src": v_src,
         "dt": r.get("prev_dt", 0), "age_ms": r["cut_age"],
         "sample": sgn * (cut - aim),
-        "age": v * r["cut_age"],
+        # how far the leaf moved between the reading and the cut: T2's own
+        # figure where it carried the reading forward, else the device rate's
+        "age": (sgn * (r["judged"] - r["cut"]) / 10.0) if carried else v * r["cut_age"],
+        "judged": (sgn * (r["judged"] - r["aim"]) / 10.0) if carried else None,
         "lead": sgn * (want - aim),
         "error": sgn * (rest - want),
     }
@@ -168,12 +188,33 @@ def report(store, want=None):
     if worst_pct > 0.15:
         print("WARNING: percent and mm disagree by up to %.2f %% -- is window_mm right?" % worst_pct)
 
-    print("\n  n   dir    v %/s  dt ms  age ms   sample    age   run-on   lead    error")
+    print("\n  n   dir    v %/s  dt ms  age ms   sample    age   judged   run-on   lead    error")
     for x in rows:
-        print("%4d  %-5s %6.2f  %5d  %6d   %6.2f  %5.2f   %6.2f  %5.2f   %6.2f%s"
+        print("%4d  %-5s %6.2f  %5d  %6d   %6.2f  %5.2f   %6s   %6.2f  %5.2f   %6.2f%s"
               % (x["n"], "open" if x["o"] else "close", x["v"] * 1000.0, x["dt"],
-                 x["age_ms"], x["sample"], x["age"], x["runon"], x["lead"], x["error"],
-                 "" if x["v_src"] == "samples" else "  (v from the device)"))
+                 x["age_ms"], x["sample"], x["age"],
+                 "-" if x["judged"] is None else "%.2f" % x["judged"],
+                 x["runon"], x["lead"], x["error"],
+                 "" if x["v_src"] == "device" else "  (v from two readings)"))
+    judged = [x for x in rows if x["judged"] is not None]
+    if judged:
+        # T2 cuts on the first tick its carried-forward position reaches the
+        # aim, so judged - aim must lie in [0, one 20 ms tick of travel], plus
+        # 0.1 % of rounding. Anything else means the rule is not doing that.
+        # A NEW reading can still land further past the aim than a tick: the
+        # projection runs at the device's rate from T17's read time, and the
+        # encoder's value is up to one of its windows older than that, so a
+        # fresher reading jumps ahead. Negative would be a broken rule.
+        hi = [x["v"] * T2_TICK_MS + 0.15 for x in judged]
+        far = [x for x, h in zip(judged, hi) if x["judged"] > h]
+        neg = [x for x in judged if x["judged"] < -0.001]
+        print("\ncarried forward: %d of %d stops; judged - aim %.2f..%.2f %%; "
+              "past one tick: %d (n %s)%s"
+              % (sum(1 for x in judged if abs(x["age"]) > 1e-9), len(judged),
+                 min(x["judged"] for x in judged), max(x["judged"] for x in judged),
+                 len(far), ", ".join(str(x["n"]) for x in far) or "-",
+                 "" if not neg else "; BEFORE the aim (a broken rule): n "
+                 + ", ".join(str(x["n"]) for x in neg)))
 
     groups = {}
     for x in rows:
@@ -198,7 +239,10 @@ def report(store, want=None):
     run = pooled([[x["runon"] for x in g] for g in gl])
     tick = mean([x["v"] for x in rows]) * T2_TICK_MS / math.sqrt(12.0)
     err_ext = math.sqrt(run ** 2 + tick ** 2)
-    all_err = [x["error"] for x in rows]
+    # AT-WP02 compares RESTING POSITIONS, where a stop short of the target from
+    # below and one short of it from above lie on opposite sides; the signed
+    # errors above would put them on the same side. Back to positions.
+    all_pos = [x["want"] + (x["error"] if x["o"] else -x["error"]) for x in rows]
 
     print("\nsigma, about each direction's own mean (the lead takes the means away):")
     print("  error as measured             %.2f %%   (the lead still learns for a few stops"
@@ -209,8 +253,8 @@ def report(store, want=None):
     print("    of which run-on             %.2f %%   (what it cannot)" % run)
     print("  error with extrapolation      %.2f %%   ten stops span ~%.2f %%  (run-on + a 20 ms tick)"
           % (err_ext, RANGE_OF_TEN * err_ext))
-    print("  all stops about one mean      %.2f %%   (as AT-WP02 sees them, hysteresis included;"
-          " spread %.2f %%)" % (sd(all_err), max(all_err) - min(all_err)))
+    print("  resting positions, one mean   %.2f %%   (as AT-WP02 sees them: lead learning and"
+          " hysteresis included; spread %.2f %%)" % (sd(all_pos), max(all_pos) - min(all_pos)))
     print("\nrun-on against speed: r = %.2f;  against the sample's overshoot: r = %.2f"
           % (corr([x["runon"] for x in rows], [x["v"] for x in rows]),
              corr([x["runon"] for x in rows], [x["sample"] for x in rows])))

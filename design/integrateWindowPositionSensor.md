@@ -43,14 +43,22 @@ for each fix. **Mode-2 soaks passed** on 2.12.2 (12.82 h, 28 judged strokes), 2.
 3. **The production path.** 5C88 runs 2.3.1 on `mainstream`, and this document does not record whether its
    encoder is installed. After that, `wpos_fitted_m3` must be set on site, and promotion needs the release
    comparison against 2.3.1 and an explicit instruction (§7).
-4. **Positioning scatter.** AT-WP02 is marginal on the rig: each stop scatters by σ ≈ 0.55–0.75 %, so ten
-   stops span ~2–2.5 % against the 2.0 % allowed. **Measured 2026-10-01 (step 1, 20 stops; the bench stop
-   log and `bin/at_wp_cuts.py`): about 90 % of the variance is WHEN the cut sample was taken, not the
-   run-on.** T17 reads every ~180 ms on the rig, not every 100 ms, and the encoder publishes a new value
-   only every 100 ms (§5b, *Prerequisites before mode 2 may be trusted*). The sample T2 cuts on lands
-   σ 0.53 % past its aim; the leaf's run-on after the cut is σ 0.23 %. Extrapolating between readings
-   in T2 would take the expected ten-stop spread from ~1.7 % to ~0.7 %. Building it (step 2) is the
-   operator's call.
+4. **Positioning scatter: reduced on the rig 2026-10-01, NOT yet soaked.** AT-WP02 was marginal on the
+   rig: each stop scattered by σ ≈ 0.55–0.75 %, so ten stops spanned ~2–2.5 % against the 2.0 % allowed.
+   - **Step 1 measured why** (the bench stop log and `bin/at_wp_cuts.py`). T17 reads every ~180 ms on the
+     rig, not every 100 ms, and the encoder publishes a new value only every 100 ms. So the reading T2
+     cut on landed σ ~0.5 % past its aim, against σ ~0.2 % of run-on.
+   - **Step 2 carries each reading forward to the cut** at the encoder's own rate. Over 30 stops each,
+     the per-stop scatter at a settled lead fell from **σ 0.53 % to 0.30 %**: ten stops now span ~0.9 %
+     against ~1.6 %. AT-WP02 gave **0.8 % and 1.0 %**, the old rule 1.7–2.2 % on the same evening.
+     The default lead fell from 420 to 250 ms of travel to match, so the first stops after a boot land
+     too.
+   - **Less than step 1 predicted (~0.7 %):** the encoder's value is up to one 100 ms window older than
+     T17's read, and T2 cannot see by how much. That staleness was hidden in the old rule's sample term
+     and is now the largest residual.
+
+   Details: §5b, *Prerequisites before mode 2 may be trusted*. **Before a release, it needs a mode-2
+   soak.**
 5. **The minimum move is unmeasured** (§3.6, floor 2). The deadband default is a fixed 20 mm, not derived
    from `travel_m3` as §3.6 requires (decisions 8 and 10).
 6. **The feedback is partly inferred.** T2 reports a state, not an outcome. Only ABORTED is counted, and
@@ -2747,8 +2755,9 @@ worry.
 
   Pooled over both directions, sample + age is σ **0.53 %** and the run-on σ **0.23 %**. At a
   settled lead the total is σ 0.56 %, so ten stops span ~1.7 % on average; **with extrapolation it
-  would be ~0.23 % (~0.7 %)**. The run-on does not follow the speed (r 0.01) or the overshoot
-  (r 0.13).
+  would be ~0.23 % (~0.7 %)**. The run-on does not follow the overshoot (r 0.13). *Against the
+  speed it gave r 0.01, but that used a two-reading speed; with the device's rate it is r 0.32 (step
+  2, below).* *The prediction proved optimistic, for a reason step 2 explains.*
 
   **Why the sample term is so large:** the 100 ms quoted above is not when T17 reads.
   - **T17 reads every ~180 ms on the rig.** The 100 ms poll is a sleep AFTER each read, and the
@@ -2771,6 +2780,47 @@ worry.
   apart (sample σ ~0.2 %) and a window staleness of σ ~0.13 %. So the expected spread there is
   ~0.7 % without extrapolation and ~0.4 % with it. That is arithmetic, not a measurement: 5C88 has
   no sensor.
+
+  **Built 2026-10-01 (step 2): T2 carries each reading forward.** On every 20 ms tick of a targeted
+  drive, T2 moves the latest reading on by the encoder's rate (`30012`) times the reading's age, and
+  cuts when that position reaches the aim (`m3_ahead_x10()` in `relay_controller.cpp`).
+  - It does so only toward the target, only once two readings of the drive have been seen, and over
+    at most two of the drive's read intervals.
+  - The taught window converts mm/s to % (`dm_m3_window_mm()`, read once per drive).
+  - Fail-first bit 8192 restores the cut on the reading.
+
+  On 2344 (2.15.0-bench plus the change), each run 10 stops to 50 %:
+
+  | Build | AT-WP02 spread | sample + age σ | run-on σ | σ at a settled lead |
+  |---|---|---|---|---|
+  | step 1, old rule (2 runs) | 2.2 % FAIL, 2.0 % PASS | 0.52 % | 0.22 % | 0.56 % |
+  | fail-first 8192, old rule, same evening | 1.7 % PASS | 0.48 % | 0.12 % | 0.49 % |
+  | carried forward, 420 ms default (2 runs) | 2.4 % FAIL\*, 0.8 % PASS | 0.14 % | 0.31 % | 0.33 % |
+  | carried forward, 250 ms default, from a boot | **1.0 % PASS** | 0.05 % | 0.24 % | **0.24 %** |
+
+  \* The first run after a boot, while the lead fell from the 420 ms default (3.23 %) to where the
+  stops settle (~1.9 %): hysteresis −1.3 %. Hence the new default of 250 ms of travel, 1.92 % on the
+  rig. From a boot, the next run's hysteresis was 0.0 % and its mean error +0.1 %.
+
+  Pooled over 30 stops each, σ at a settled lead fell from 0.53 % to 0.30 %: ten stops now span
+  ~0.9 % against ~1.6 %. AT-WP03 and `settle` passed on every build. Every stop was judged 0–0.5 % past
+  its aim, 29 of 30 within one tick.
+
+  **Why less than predicted.** Step 1 predicted σ ~0.23 %, assuming the run-on would stay as it
+  measured. It did not: σ 0.12–0.22 % before, 0.24–0.31 % after.
+  - The encoder changes its value once per 100 ms window, so a reading is up to a window older than
+    T17's read, and T2 cannot see by how much: the register map has no counter or timestamp.
+  - Under the old rule the first reading past the aim is SELECTED partly by that staleness, so the
+    staleness sat in the sample term. Once readings are carried forward, it surfaces in the run-on.
+  - The tell: every carried-forward stop whose reading had advanced only 12–16 mm since the one
+    before (one window instead of two) overran by 0.4–0.7 % more than the rest.
+  - Removing it would need the window's phase, which the device does not expose; `40002`'s floor is
+    100 ms (contract §4.2).
+  - The rest of the run-on follows the speed (r 0.38–0.67 per run). A lead learned in milliseconds
+    of travel instead of % would take that part out: a possible later refinement.
+
+  `at_wp_cuts.py` now takes the speed from the device's rate. Step 1's split recomputed that way is
+  σ 0.52 % / 0.22 %, the same to the precision quoted.
 - **5C88:** the sensor bought, fitted and taught
   ([gh#77](https://github.com/pe1mew/greenhouse-Controller/issues/77)). Until then
   `wpos_fitted_m3` = 0 keeps mode 2 unavailable there, which is the right default.

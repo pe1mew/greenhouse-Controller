@@ -3678,12 +3678,12 @@ static esp_err_t diag_windowpos_cuts(httpd_req_t *req)
     for (uint16_t k = 0u; t2_get_cut(k, &r, NULL); k++) {
         snprintf(line, sizeof(line),
                  "%s{\"n\":%u,\"o\":%u,\"rested\":%u,\"from\":%d,\"want\":%d,"
-                 "\"aim\":%d,\"cut\":%d,\"cut_mm\":%u,\"cut_rate\":%d,\"cut_age\":%u,"
-                 "\"prev\":%d,\"prev_mm\":%u,\"prev_dt\":%u,"
+                 "\"aim\":%d,\"judged\":%d,\"cut\":%d,\"cut_mm\":%u,\"cut_rate\":%d,"
+                 "\"cut_age\":%u,\"prev\":%d,\"prev_mm\":%u,\"prev_dt\":%u,"
                  "\"rest\":%d,\"rest_mm\":%u,\"rest_dt\":%u}",
                  (k > 0u) ? "," : "", (unsigned)r.seq, (unsigned)r.opening,
                  (unsigned)r.rested, (int)r.from_x10, (int)r.want_x10, (int)r.aim_x10,
-                 (int)r.cut_x10, (unsigned)r.cut_mm_x10, (int)r.cut_rate,
+                 (int)r.judged_x10, (int)r.cut_x10, (unsigned)r.cut_mm_x10, (int)r.cut_rate,
                  (unsigned)r.cut_age_ms, (int)r.prev_x10, (unsigned)r.prev_mm_x10,
                  (unsigned)r.prev_dt_ms, (int)r.rest_x10, (unsigned)r.rest_mm_x10,
                  (unsigned)r.rest_dt_ms);

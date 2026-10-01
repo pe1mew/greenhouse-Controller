@@ -1792,6 +1792,13 @@ uint16_t dm_m3_deadband_x10(void)
     return (uint16_t)band;
 }
 
+uint16_t dm_m3_window_mm(void)
+{
+    commission_status_t cs;
+    commission_status(&cs);
+    return cs.window_mm;
+}
+
 bool dm_m3_position(dm_m3_pos_t *out)
 {
     if (out == NULL) { return false; }

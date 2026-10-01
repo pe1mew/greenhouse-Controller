@@ -236,6 +236,9 @@ typedef struct {
     int16_t  from_x10;     /**< Where the drive started. */
     int16_t  want_x10;     /**< The target. */
     int16_t  aim_x10;      /**< Where T2 meant to cut: the target less the lead. */
+    int16_t  judged_x10;   /**< Where T2 judged the leaf to be when it cut: the
+                            *   reading carried forward to that tick (2026-10-01;
+                            *   equal to cut_x10 when nothing was carried). */
     int16_t  cut_x10;      /**< The sample T2 cut on. */
     uint16_t cut_mm_x10;
     int16_t  cut_rate;     /**< That sample's rate as the device reports it, 0.1 mm/s. */
