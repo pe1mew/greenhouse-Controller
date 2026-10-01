@@ -863,6 +863,139 @@ void t2_get_m3_lead(t2_m3_lead_t *out)
     out->default_x100  = (int16_t)def;
 }
 
+#ifdef MODBUS_BENCH
+/* ---- Bench only: the stop log (2026-10-01) --------------------------------
+ *
+ * AT-WP02 scatters by sigma 0.55-0.75 % per stop on the rig. Extrapolating
+ * between T17's readings -- the plan's proposed cure -- can remove only the
+ * part that comes from WHEN the cut sample was taken: how far past the aim it
+ * landed, and how old it was when T2 acted. The leaf's run-on after the cut is
+ * out of its reach. Each record holds both halves of one stop, so the split is
+ * measured before anything is built (design/integrateWindowPositionSensor.md
+ * §0 item 4). GET /api/diag/windowpos?cuts reads it. RAM only. */
+#define CUT_LOG_N  32u
+
+static t2_cut_rec_t s_cut_log[CUT_LOG_N];   /**< Slot (seq - 1) % CUT_LOG_N. */
+static uint16_t     s_cut_seq;              /**< Stops recorded since boot. */
+
+/** The targeted drive being tracked: its last two distinct samples. T2 only. */
+static struct {
+    uint32_t start_ms;       /**< target_start_ms of the drive these belong to. */
+    bool     have, have_prev;
+    uint32_t t, t_prev;      /**< Sample times, on T2's clock. */
+    int16_t  x10, x10_prev;
+    uint16_t mm, mm_prev;
+} s_cut_trk;
+
+/** A recorded stop waiting for its resting reading. T2 only. */
+static struct {
+    bool     pending;
+    uint16_t slot;
+    uint32_t cut_ms;
+    uint32_t epoch;          /**< s_drive_epoch[2] at the cut: a new drive ends the wait. */
+} s_cut_pend;
+
+/** Every tick of a targeted drive with a fresh reading. T17 reads about every
+ *  180 ms on the rig and T2 ticks every 20 ms, so most ticks see the same
+ *  sample again; its time then repeats to within a millisecond. */
+static void cut_track(uint32_t start_ms, uint32_t now_ms, const dm_m3_pos_t *m3)
+{
+    const uint32_t t = now_ms - m3->age_ms;
+    if (!s_cut_trk.have || s_cut_trk.start_ms != start_ms) {
+        s_cut_trk.start_ms  = start_ms;
+        s_cut_trk.have      = true;
+        s_cut_trk.have_prev = false;
+    } else if ((int32_t)(t - s_cut_trk.t) < 10) {
+        return;                                   /* the same sample again */
+    } else {
+        s_cut_trk.have_prev = true;
+        s_cut_trk.t_prev    = s_cut_trk.t;
+        s_cut_trk.x10_prev  = s_cut_trk.x10;
+        s_cut_trk.mm_prev   = s_cut_trk.mm;
+    }
+    s_cut_trk.t   = t;
+    s_cut_trk.x10 = (int16_t)m3->percent_x10;
+    s_cut_trk.mm  = m3->mm_x10;
+}
+
+/** At the cut: everything but the resting position, which comes later. */
+static void cut_record(bool opening, uint32_t now_ms, const dm_m3_pos_t *m3,
+                       int32_t from, int32_t want, int32_t aim)
+{
+    t2_cut_rec_t r = {};
+    r.opening    = opening ? 1u : 0u;
+    r.from_x10   = (int16_t)from;
+    r.want_x10   = (int16_t)want;
+    r.aim_x10    = (int16_t)aim;
+    r.cut_x10    = (int16_t)m3->percent_x10;
+    r.cut_mm_x10 = m3->mm_x10;
+    r.cut_rate   = m3->rate_mm_s_x10;
+    r.cut_age_ms = (uint16_t)((m3->age_ms > 65535u) ? 65535u : m3->age_ms);
+    r.prev_x10   = -1;
+    if (s_cut_trk.have_prev) {                    /* cut_track() ran this tick */
+        r.prev_x10    = s_cut_trk.x10_prev;
+        r.prev_mm_x10 = s_cut_trk.mm_prev;
+        const uint32_t dt = s_cut_trk.t - s_cut_trk.t_prev;
+        r.prev_dt_ms  = (uint16_t)((dt > 65535u) ? 65535u : dt);
+    }
+    portENTER_CRITICAL(&s_state_mux);
+    r.seq = ++s_cut_seq;
+    const uint16_t slot = (uint16_t)((r.seq - 1u) % CUT_LOG_N);
+    s_cut_log[slot]     = r;
+    s_cut_pend.pending  = true;
+    s_cut_pend.slot     = slot;
+    s_cut_pend.cut_ms   = now_ms;
+    s_cut_pend.epoch    = s_drive_epoch[2];
+    portEXIT_CRITICAL(&s_state_mux);
+}
+
+/** Every tick: the resting reading, by the rule m3_lead_learn_tick() uses. */
+static void cut_rest_tick(uint32_t now_ms)
+{
+    if (!s_cut_pend.pending) { return; }
+
+    uint32_t epoch;
+    portENTER_CRITICAL(&s_state_mux);
+    epoch = s_drive_epoch[2];
+    portEXIT_CRITICAL(&s_state_mux);
+    if (s_ch[2].state != CH_PART_OPEN || epoch != s_cut_pend.epoch ||
+        (uint32_t)(now_ms - s_cut_pend.cut_ms) > LEAD_LEARN_MAX_MS) {
+        s_cut_pend.pending = false;               /* moved first: `rested` stays 0 */
+        return;
+    }
+    dm_m3_pos_t m3;
+    if (!dm_m3_position(&m3)) { return; }
+    const uint32_t sampled_ms = now_ms - m3.age_ms;
+    if ((int32_t)(sampled_ms - (s_cut_pend.cut_ms + LEAD_SETTLED_MS)) < 0) {
+        return;                                   /* not a resting reading yet */
+    }
+    s_cut_pend.pending = false;
+    const uint32_t dt = sampled_ms - s_cut_pend.cut_ms;
+    portENTER_CRITICAL(&s_state_mux);
+    t2_cut_rec_t *r = &s_cut_log[s_cut_pend.slot];
+    r->rest_x10    = (int16_t)m3.percent_x10;
+    r->rest_mm_x10 = m3.mm_x10;
+    r->rest_dt_ms  = (uint16_t)((dt > 65535u) ? 65535u : dt);
+    r->rested      = 1u;
+    portEXIT_CRITICAL(&s_state_mux);
+}
+
+bool t2_get_cut(uint16_t k, t2_cut_rec_t *out, uint16_t *out_seq)
+{
+    bool ok = false;
+    portENTER_CRITICAL(&s_state_mux);
+    const uint16_t seq  = s_cut_seq;
+    const uint16_t kept = (seq < CUT_LOG_N) ? seq : (uint16_t)CUT_LOG_N;
+    if (out != NULL && k < kept) {
+        *out = s_cut_log[(uint16_t)((uint16_t)(seq - kept + k) % CUT_LOG_N)];
+        ok = true;
+    }
+    portEXIT_CRITICAL(&s_state_mux);
+    if (out_seq != NULL) { *out_seq = seq; }
+    return ok;
+}
+#endif /* MODBUS_BENCH */
+
 /**
  * @brief The dwell to arm after a drive on this channel ends, milliseconds.
  *
@@ -1026,6 +1159,9 @@ static bool ch_target_tick(uint8_t ch, uint32_t now_ms, bool opening)
                  ch + 1u);
         return false;
     }
+#ifdef MODBUS_BENCH
+    cut_track(c->target_start_ms, now_ms, &m3);
+#endif
 
     const int32_t pos  = (int32_t)m3.percent_x10;
     const int32_t want = (int32_t)c->target_x10;
@@ -1066,6 +1202,9 @@ static bool ch_target_tick(uint8_t ch, uint32_t now_ms, bool opening)
              ch + 1u, (int)(pos / 10), (unsigned)(pos % 10),
              (int)(want / 10), (unsigned)(want % 10),
              (int)(aim / 10), (unsigned)(aim % 10), (unsigned)m3.age_ms);
+#ifdef MODBUS_BENCH
+    cut_record(opening, now_ms, &m3, (int32_t)c->target_from_x10, want, aim);
+#endif
 
     /* Teach the lead from where this stop comes to rest -- but only a drive
      * that ran at speed: one cut within its own lead of the start was still
@@ -1947,6 +2086,9 @@ void task_relay_controller(void *pvParameters)
         }
         /* 2026-09-21: learn M3's overrun lead from a settled targeted stop. */
         m3_lead_learn_tick(now_ms);
+#ifdef MODBUS_BENCH
+        cut_rest_tick(now_ms);              /* the bench stop log's resting reading */
+#endif
 
         /* ---- 4c. Drain Q1 (non-blocking; process all pending commands) ----
          * gh#79 (2.9.2): the clock is read per command, not once per pass.

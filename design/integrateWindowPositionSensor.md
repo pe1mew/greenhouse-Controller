@@ -44,8 +44,13 @@ for each fix. **Mode-2 soaks passed** on 2.12.2 (12.82 h, 28 judged strokes), 2.
    encoder is installed. After that, `wpos_fitted_m3` must be set on site, and promotion needs the release
    comparison against 2.3.1 and an explicit instruction (§7).
 4. **Positioning scatter.** AT-WP02 is marginal on the rig: each stop scatters by σ ≈ 0.55–0.75 %, so ten
-   stops span ~2–2.5 % against the 2.0 % allowed. Reducing it (extrapolating between T17 readings) has not
-   been started.
+   stops span ~2–2.5 % against the 2.0 % allowed. **Measured 2026-10-01 (step 1, 20 stops; the bench stop
+   log and `bin/at_wp_cuts.py`): about 90 % of the variance is WHEN the cut sample was taken, not the
+   run-on.** T17 reads every ~180 ms on the rig, not every 100 ms, and the encoder publishes a new value
+   only every 100 ms (§5b, *Prerequisites before mode 2 may be trusted*). The sample T2 cuts on lands
+   σ 0.53 % past its aim; the leaf's run-on after the cut is σ 0.23 %. Extrapolating between readings
+   in T2 would take the expected ten-stop spread from ~1.7 % to ~0.7 %. Building it (step 2) is the
+   operator's call.
 5. **The minimum move is unmeasured** (§3.6, floor 2). The deadband default is a fixed 20 mm, not derived
    from `travel_m3` as §3.6 requires (decisions 8 and 10).
 6. **The feedback is partly inferred.** T2 reports a state, not an outcome. Only ABORTED is counted, and
@@ -2728,6 +2733,44 @@ worry.
   window. **Not verified:** the requirements already name AT-WP02 on the real window as the test
   that matters, and 5C88 has no sensor yet (gh#77). Extrapolating between T17's readings in T2
   would reduce the timing share on the rig; it is not done.
+
+  **Measured 2026-10-01: the split is the other way round.** A bench-only log in T2 records every
+  targeted stop (`GET /api/diag/windowpos?cuts`), and `bin/at_wp_cuts.py` splits each one. Two
+  AT-WP02 runs on 2344 gave 20 stops to 50 % (2.15.0-bench plus the log; spreads 2.2 % FAIL and
+  2.0 % PASS, true to form). Each stop's overrun past its aim, in % of stroke:
+
+  | Part | mean, open / close | σ, open / close | Extrapolation removes it? |
+  |---|---|---|---|
+  | **sample**: how far past the aim the reading T2 cut on lay | 0.92 / 0.61 | 0.45 / 0.56 | yes |
+  | **age**: travel between that reading and T2's tick (every 20 ms) | 0.14 / 0.07 | 0.04 / 0.05 | yes |
+  | **run-on**: travel after the cut, including the encoder's own staleness | 1.91 / 1.63 | 0.24 / 0.22 | no |
+
+  Pooled over both directions, sample + age is σ **0.53 %** and the run-on σ **0.23 %**. At a
+  settled lead the total is σ 0.56 %, so ten stops span ~1.7 % on average; **with extrapolation it
+  would be ~0.23 % (~0.7 %)**. The run-on does not follow the speed (r 0.01) or the overshoot
+  (r 0.13).
+
+  **Why the sample term is so large:** the 100 ms quoted above is not when T17 reads.
+  - **T17 reads every ~180 ms on the rig.** The 100 ms poll is a sleep AFTER each read, and the
+    read itself (15 registers at 9600 baud) takes ~45 ms on the wire, plus ~25 ms of slave latency
+    and inter-frame silence (`MODBUS_IFG_US`).
+  - **The encoder publishes a new value once per 100 ms window** (`40002`, at its
+    `DEVICE_MIN_WINDOW_MS` floor), so two readings 180 ms apart are usually two windows of travel
+    apart (17 of 20 stops). The step between readings divided by whole 100 ms windows matches the
+    device's own rate (median ratio 1.00, range 0.78–1.15); divided by the read interval it does
+    not (1.14, 0.56–1.43). The staleness this implies, up to one window, is inferred, and sits in
+    the run-on row, so the prediction already pays for it.
+
+  **Design inputs for step 2:**
+  - Extrapolate with the DEVICE's rate, not a two-sample difference.
+  - Cap the horizon: a reading may legally be 3 s old (`TARGET_MAX_AGE_MS`), and 3 s at 10 %/s is
+    30 % of the stroke.
+  - Expect the learned leads to drop by ~0.6–1.0 %.
+
+  **In production** (`travel_m3` 171) the same arithmetic gives readings ~0.7 % of the stroke
+  apart (sample σ ~0.2 %) and a window staleness of σ ~0.13 %. So the expected spread there is
+  ~0.7 % without extrapolation and ~0.4 % with it. That is arithmetic, not a measurement: 5C88 has
+  no sensor.
 - **5C88:** the sensor bought, fitted and taught
   ([gh#77](https://github.com/pe1mew/greenhouse-Controller/issues/77)). Until then
   `wpos_fitted_m3` = 0 keeps mode 2 unavailable there, which is the right default.

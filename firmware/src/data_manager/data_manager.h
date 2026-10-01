@@ -145,8 +145,13 @@ typedef struct {
      * [3] array here would be two slots that can never mean anything. */
     int16_t  deadzone_m3_mm;      /**< Smallest position error worth energising
                                     *  M3 for, under linear control (mm).
-                                    *  NOT YET CONSUMED — linear control does
-                                    *  not drive the window (plan 3.6, 5.0). */
+                                    *  T17 uses it as its end band (rule 2's
+                                    *  "~0", the at-end checks, the verdict;
+                                    *  2.8.0 on); since 2.12.0 T4 turns it
+                                    *  into M3's arrival band for T2, T6 and
+                                    *  the law (dm_m3_deadband_x10()). Still a
+                                    *  fixed default, not derived from
+                                    *  travel_m3 (plan 3.6). */
     int16_t  min_intv_m3;         /**< 2.12.0: the linear dwell, seconds. Mode 2
                                    *   only, where it replaces BOTH of M3's
                                    *   dwells, open and close (ch_dwell_ms() in

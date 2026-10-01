@@ -61,6 +61,7 @@ Hooks are the *symptom*, not the title — you rarely know the cause when you ar
 Entries stay in reverse-chronological order below; this index is the only grouped view.
 
 ### Windows, climate & manual control (T2, T6, T8)
+- **2026-10-01** — M3's positioning scatter (AT-WP02) was put mostly on run-on and timing jitter; measured, ~90 % of it is WHEN the cut sample was taken: T17 reads every ~180 ms on the rig (its 100 ms `poll_ms` is a sleep AFTER a ~75 ms read), and the encoder publishes once per 100 ms window
 - **2026-09-24** — a mode-2 soak fails in 15 min with M3 correctly part-open: the harness waits for the `OPEN` STATE and `graded` commands an APERTURE (49 % at full demand), so the end never comes [RESOLVED: the open stroke counts a judged drive]
 - **2026-09-24** — mode 2 leaves the window a couple of centimetres open and never asks again: a targeted stop ends on a READING, and a position inside the arrival band satisfies both the caller and the law — but an END is made by a switch (gh#83) [RESOLVED 2.12.1]
 - **2026-09-22** — three harness faults in one evening, every one "the unit was not in the state the harness assumed": a freshly pushed image has not stroked (gate `timed`), a cleanup left STANDBY set, a cleanup's recalibration armed a 600 s dwell [RECURRED 2026-09-24]
@@ -214,6 +215,22 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
+
+## 2026-10-01 — M3's positioning scatter was put on the run-on; it was T17's read interval, 180 ms where 100 was assumed
+
+**Problem:** AT-WP02 passes or fails by chance on the rig, at σ 0.55–0.75 % per stop. The plan put ~0.2 % of that on sampling and ~0.6 % on timing and run-on jitter. Its sampling figure was "T17 samples every 100 ms, 0.77 % of the stroke". On that split, extrapolating between readings looked as though it could buy little.
+
+**Root cause:** two numbers were read from the configuration instead of measured.
+- **`poll_ms` is not T17's read interval.** It is a sleep AFTER each read. The read itself takes ~75 ms: 15 registers at 9600 baud, plus slave latency and `MODBUS_IFG_US`. So on the rig, where `poll_ms` is 100, T17 reads every ~180 ms.
+- **The encoder publishes a new value once per `40002` window**, 100 ms on the rig. So two readings 180 ms apart are usually 200 ms of travel apart, and a speed taken from two readings is off by ×0.56–1.43.
+
+A bench log of every targeted stop in T2 (20 stops) showed the split the other way round: σ 0.53 % from when the cut sample was taken, 0.23 % run-on.
+
+**Fix:** no firmware change yet; step 2 (extrapolation) is the operator's call. The record is in `design/integrateWindowPositionSensor.md` (§0 item 4, and §5b under *Prerequisites before mode 2 may be trusted*). The bench build keeps the stop log (`GET /api/diag/windowpos?cuts`, read by `bin/at_wp_cuts.py`). The same 100 ms assumption sits in the `POLL_DIVISOR` comment in `window_pos_task.cpp` ("overshoot = poll × speed = exactly 1.00 %"). It was reported, not changed.
+
+**Rule:** a period named in a task's config is a floor, not the period. Measure the interval between the samples a decision actually used before putting error anywhere else. And a sensor that averages over a window publishes values whose time is not the read time.
+
+**Where it lives:** `firmware/src/window_pos/window_pos_task.cpp` (`derive()`, and the loop's closing `vTaskDelay(d.poll_ms)`); `firmware/src/relay_controller/relay_controller.cpp` (`ch_target_tick()`, and the bench stop log after `t2_get_m3_lead()`).
 
 ## 2026-09-27 — `plot_daily.py` crashed on the first log that had M3-sensor rows in it
 

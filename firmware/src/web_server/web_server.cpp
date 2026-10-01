@@ -3509,6 +3509,9 @@ static esp_err_t diag_commission_post_handler(httpd_req_t *req)
  * registers, this one returns what the driver made of them, so the two can be
  * compared. A register-offset or sign-decode mistake shows up as a mismatch
  * rather than as a plausible-looking number.
+ *
+ * GET /api/diag/windowpos?cuts (2026-10-01) returns T2's log of targeted M3
+ * stops instead, with no bus read (diag_windowpos_cuts()).
  * --------------------------------------------------------------------------- */
 /**
  * @brief Append the Modbus bus tallies to a JSON object already in `buf`.
@@ -3659,10 +3662,48 @@ static void append_modbus_json(char *buf, size_t cap)
     }
 }
 
+/* GET /api/diag/windowpos?cuts (2026-10-01): T2's stop log, oldest first, for
+ * the AT-WP02 scatter study (bin/at_wp_cuts.py). Unlike the full reply it does
+ * no bus read, so it is safe at any time -- though a stop made while it is
+ * being read shifts the records under it, so read it after a run. Chunked: 32
+ * records do not fit beside the full reply in its buffer, and need not. */
+static esp_err_t diag_windowpos_cuts(httpd_req_t *req)
+{
+    char line[256];
+    uint16_t seq = 0u;
+    t2_cut_rec_t r;
+    (void)t2_get_cut(0u, &r, &seq);
+    snprintf(line, sizeof(line), "{\"seq\":%u,\"cuts\":[", (unsigned)seq);
+    if (httpd_resp_sendstr_chunk(req, line) != ESP_OK) { return ESP_FAIL; }
+    for (uint16_t k = 0u; t2_get_cut(k, &r, NULL); k++) {
+        snprintf(line, sizeof(line),
+                 "%s{\"n\":%u,\"o\":%u,\"rested\":%u,\"from\":%d,\"want\":%d,"
+                 "\"aim\":%d,\"cut\":%d,\"cut_mm\":%u,\"cut_rate\":%d,\"cut_age\":%u,"
+                 "\"prev\":%d,\"prev_mm\":%u,\"prev_dt\":%u,"
+                 "\"rest\":%d,\"rest_mm\":%u,\"rest_dt\":%u}",
+                 (k > 0u) ? "," : "", (unsigned)r.seq, (unsigned)r.opening,
+                 (unsigned)r.rested, (int)r.from_x10, (int)r.want_x10, (int)r.aim_x10,
+                 (int)r.cut_x10, (unsigned)r.cut_mm_x10, (int)r.cut_rate,
+                 (unsigned)r.cut_age_ms, (int)r.prev_x10, (unsigned)r.prev_mm_x10,
+                 (unsigned)r.prev_dt_ms, (int)r.rest_x10, (unsigned)r.rest_mm_x10,
+                 (unsigned)r.rest_dt_ms);
+        if (httpd_resp_sendstr_chunk(req, line) != ESP_OK) { return ESP_FAIL; }
+    }
+    if (httpd_resp_sendstr_chunk(req, "]}") != ESP_OK) { return ESP_FAIL; }
+    return httpd_resp_sendstr_chunk(req, NULL);
+}
+
 static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
 {
     if (!admin_only_or_send_error(req)) return ESP_OK;
     httpd_resp_set_type(req, "application/json");
+    {
+        char q[16];
+        if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
+            strcmp(q, "cuts") == 0) {
+            return diag_windowpos_cuts(req);
+        }
+    }
 
     /* ONE buffer for both paths. Giving the failure path its own array cost
      * 2320 bytes of frame against -Wstack-usage=2200 (caught 2026-09-13); the

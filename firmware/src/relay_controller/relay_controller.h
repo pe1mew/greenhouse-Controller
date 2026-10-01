@@ -219,3 +219,40 @@ typedef struct {
 } t2_m3_lead_t;
 
 void t2_get_m3_lead(t2_m3_lead_t *out);
+
+#ifdef MODBUS_BENCH
+/**
+ * @brief One targeted M3 stop as T2 saw it (bench only, 2026-10-01).
+ *
+ * For the AT-WP02 scatter study (design/integrateWindowPositionSensor.md §0
+ * item 4): where the sample T2 cut on landed against the aim, how old it was
+ * when T2 acted, the sample before it, and where the leaf came to rest.
+ * Positions in 0.1 % and 0.1 mm, times in ms. RAM only.
+ */
+typedef struct {
+    uint16_t seq;          /**< 1, 2, ... in order of the cuts since boot. */
+    uint8_t  opening;      /**< 1 = an opening stop, 0 = a closing one. */
+    uint8_t  rested;       /**< 1 = the resting reading came in; 0 = not yet, or M3 moved first. */
+    int16_t  from_x10;     /**< Where the drive started. */
+    int16_t  want_x10;     /**< The target. */
+    int16_t  aim_x10;      /**< Where T2 meant to cut: the target less the lead. */
+    int16_t  cut_x10;      /**< The sample T2 cut on. */
+    uint16_t cut_mm_x10;
+    int16_t  cut_rate;     /**< That sample's rate as the device reports it, 0.1 mm/s. */
+    uint16_t cut_age_ms;   /**< That sample's age when T2 cut. */
+    int16_t  prev_x10;     /**< The sample before it in the same drive; -1 = none. */
+    uint16_t prev_mm_x10;
+    uint16_t prev_dt_ms;   /**< The cut sample's time minus the previous one's; 0 = none. */
+    int16_t  rest_x10;     /**< The first reading sampled LEAD_SETTLED_MS or more after the cut. */
+    uint16_t rest_mm_x10;
+    uint16_t rest_dt_ms;   /**< That reading's sample time minus the cut. */
+} t2_cut_rec_t;
+
+/**
+ * @brief Copy the k-th kept stop record, oldest first (bench only).
+ * @param out_seq if not NULL, gets the number of stops recorded since boot.
+ * @return false when k is past the last kept record. Read it after a run: a
+ *         stop made while reading shifts the indices.
+ */
+bool t2_get_cut(uint16_t k, t2_cut_rec_t *out, uint16_t *out_seq);
+#endif
