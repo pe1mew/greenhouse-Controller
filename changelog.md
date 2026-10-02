@@ -6,7 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
-## [2.15.0] — 2026-09-27  (humidity venting gets a floor, dryness stops closing against heat, and the law in force is published)
+## [2.15.1] — 2026-10-02  (a targeted M3 stop judges where the leaf is now, not where it was last read)
+
+Patch. **One behaviour change, in mode 2 (Lineair) only:** T2 judges a targeted M3 stop on where the
+leaf is now, not on the last reading. No setting, key or payload changed. A unit in mode 1, or without a
+fitted and taught sensor, behaves exactly as 2.15.0. The change was **soaked** on the bench build of the
+same code. Publication to the ROTA soak channel is pending.
+
+**Changed.**
+
+- **A targeted stop judges where the leaf is NOW** (`m3_ahead_x10()` in `relay_controller.cpp`).
+  - **The finding:** T17 reads about every 180 ms on the rig, and the encoder publishes once per 100 ms
+    window. So the first reading past the aim lay anywhere up to ~2 % of the stroke past it. That was
+    ~90 % of AT-WP02's per-stop scatter (plan §0 item 4).
+  - **The rule:** on each 20 ms tick, T2 carries the latest reading forward by the encoder's own rate
+    times its age, and cuts when that position reaches the aim. Only toward the target, only once two
+    readings of the drive have been seen, and over at most two of the drive's read intervals, so a T17
+    that stopped reading cannot carry a stopped leaf into its target.
+  - **The window size** that converts mm/s to % comes from a new T4 accessor, `dm_m3_window_mm()`, read
+    once per drive.
+- **The default lead is 250 ms of travel** (it was 420 ms). The stops now settle on ~1.7–2.1 % of the
+  rig's stroke rather than ~3.2 %. With the old default, the first run after a boot landed 1.3 % apart by
+  direction. The lead is still learned per direction.
+- **Bench builds only (`MODBUS_BENCH`), not in the release image:**
+  - a log of targeted stops (`GET /api/diag/windowpos?cuts`, `bin/at_wp_cuts.py`);
+  - a relay pulse hook for the minimum-move measurement (`CMD_PULSE`, `POST /api/diag/windowpos
+    {"pulse_ms":N,"dir":...}`, `?pulses`, `bin/at_wp_minmove.py`);
+  - fail-first bit 8192, which restores the cut on the reading.
+- **Build:** `firmware/dependencies.lock` has been tracked since 2.15.0 was released, so a fresh clone
+  builds the same managed components (littlefs 1.21.1, led_strip 2.5.5).
+
+**Verified on the rig (2344), 10 stops to 50 % per run:**
+- **AT-WP02:** 0.8 % and 1.0 % with the change. The old rule gave 2.2 %, 2.0 % and 1.7 %.
+- **Per-stop σ at a settled lead,** pooled over 30 stops each: 0.53 % before, 0.30 % after.
+- **Soak PASS** (2026-10-01 22:16 to 2026-10-02 10:31): 12.25 h, 18 judged strokes, every fault counter
+  0, no reboot. Its 9 targeted stops were judged 0.0–0.3 % past their aims, never before them.
+
+Details: `bin/2.15.1/release-notes.md`.
 
 Minor: the control law changes behaviour, the SD log gains a row and the status payload a field
 ([gh#84](https://github.com/pe1mew/greenhouse-Controller/issues/84)). **At `cr_priority` 0 — the
