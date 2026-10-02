@@ -10,8 +10,8 @@ first reading past its aim. It now cuts when the leaf is past the aim. On the ri
 comes to rest by about 40 %. A unit in mode 1, or without a fitted and taught position sensor, never
 makes a targeted stop and behaves exactly as 2.15.0. No setting, key or payload changed.
 
-> **Soaked** on the bench build of the same code (12.25 h, PASS). Not yet published: the ROTA rows
-> below are filled in after the publish and the pull.
+> **Soaked** on the bench build of the same code (12.25 h, PASS). **Published to the ROTA soak channel
+> as seq 60** on 2026-10-02, and 2344 pulled it by itself (see *Verification*).
 
 ## What changed
 
@@ -56,8 +56,8 @@ makes a targeted stop and behaves exactly as 2.15.0. No setting, key or payload 
 | Less than predicted | step 1 predicted σ ~0.23 %. The encoder's value is up to one window older than T17's read, which T2 cannot see. Under the old rule that staleness hid in the sample term; carried forward, it shows as run-on |
 | **Soak** (bench build of `9bcc1c4`, 2026-10-01 22:16:52 to 2026-10-02 10:31:52) | **PASS**: 12.25 h, 18 judged strokes, every fault counter 0, `mode_changes` 0, gate `position`, no reboot. **In ordinary running:** 9 targeted stops to `graded`'s ~25 %, each judged 0.0–0.3 % past its aim and never before it, came to rest within σ 0.26 % of their targets. 19 vent decisions conform to v2. Heap: 40–67 KB free, largest block 20–31 KB, floor 19 KB from start to end |
 | Soaked code against this image | since `9bcc1c4` the release code changed only by `MODBUS_BENCH` blocks (the timing macros compile to nothing in a release build) and comments. Not the same bytes as anything soaked: the version string and line numbers differ |
-| **ROTA publish** | *pending* |
-| **ROTA pull on 2344** | *pending* |
+| **ROTA publish** | **verified**: GitHub Release `v2.15.1`, published 2026-10-02 14:14:50. Not a draft or prerelease, the tag is on `f2b5ed3`, both files downloaded back hash-identical, manifest seq 60. **The channel, verified from the device:** the first forced check, 14:25:01, was offered 2.15.1 |
+| **ROTA pull on 2344** | **PASS**, from 2.15.0-bench. The forced check's download failed a second later with sub-code 1 (TLS/pin), as the first downloads after 2.14.0 and 2.15.0 did. The unit's own hourly check found it again at 15:25:35, downloaded and verified it in 12 s, and committed the apply at 15:26:00. After the reboot, `fw_ver` **and** `asset_version` read **2.15.1**. The next check, 15:26:42, read up to date. M3 came up in Lineair (reason `setting`, gate `ok`, law `graded v2`), all 9 rig settings survived, and the heap read 71 KB free with a 31 KB largest block. The boot rows are stamped 15:25:18, before the apply, because the rig's DS1307 runs 47 s behind NTP (its own `SYSTEM 21` row, 15:16:14) |
 
 ## Upgrading
 

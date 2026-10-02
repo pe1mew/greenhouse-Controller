@@ -11,7 +11,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 Patch. **One behaviour change, in mode 2 (Lineair) only:** T2 judges a targeted M3 stop on where the
 leaf is now, not on the last reading. No setting, key or payload changed. A unit in mode 1, or without a
 fitted and taught sensor, behaves exactly as 2.15.0. The change was **soaked** on the bench build of the
-same code. Publication to the ROTA soak channel is pending.
+same code. **Published to the ROTA soak channel as seq 60** on 2026-10-02. 2344 pulled it by itself at
+15:26, on its own hourly check after a first download that failed (TLS/pin), as after the last two
+publishes.
 
 **Changed.**
 
