@@ -24,7 +24,11 @@ open stroke is a completed judged DRIVE, wherever the law stops it, and only the
 close has to make an end sensor (which since 2.12.1 it must). It judges nothing: at_wp_soak.py --report does, over the whole
 window. A session is SKIPPED, not forced, when the unit is not in a state to
 stroke (wind override, motor alarm, calibrating, STANDBY, the sensor gate not
-ok, travel_m3 not the rig's 13). The run STOPS if a setting it steers differs
+ok, travel_m3 not the rig's 13). It is also skipped when the greenhouse is too
+cold for even the lowest t_max to make a temperature demand: under v2 that
+leaves M3 nothing to open for (2026-10-02). This is checked before anything is
+steered, and again when an open wait runs out. A session that opened nothing
+because nothing asked it to has found no fault. The run STOPS if a setting it steers differs
 from its value at the first session: every session restores to what it read,
 so a failed restore or a change made by hand would otherwise be taken for the
 original.
@@ -43,6 +47,7 @@ t_max, cr_priority and M3's dwells by hand.
 
 import argparse
 import atexit
+import math
 import os
 import sys
 import time
@@ -130,6 +135,51 @@ def linear_open(rig, limit_s):
              % (limit_s, m3(rig.status()), m3_pct(rig.status())))
 
 
+def lround(x):
+    """C lroundf(): half away from zero, the way T5 rounds the average the law sees."""
+    return int(math.copysign(math.floor(abs(x) + 0.5), x))
+
+
+def no_heat_demand(st, tmax):
+    """Why T6 has no temperature demand against `tmax`, or None (2026-10-02).
+
+    The open lever is a LOW t_max. The law steps on T5's average rounded to a
+    whole degree, and a rounded average at or below t_max is no temperature
+    demand at all. That leaves humidity, and under v2 (gh#84) humidity alone
+    opens M1 at most, never M3. So the firmware MUST keep M3 closed, and a
+    session that cannot open it has found nothing wrong. The dawn of
+    2026-10-02 was exactly this: the greenhouse averaged 10.1-11.5 C against
+    the lowest t_max, 10 at night and 15 by day. Two sessions FAILED, and that
+    ended the run with three sessions still to go.
+    """
+    c = st.get("climate") or {}
+    t = c.get("temp_avg_c")
+    if t is None or tmax is None:
+        return None
+    seen = lround(float(t))
+    if seen <= int(tmax):
+        return ("the greenhouse averages %.1f C, which the law sees as %d, not above "
+                "t_max %s C" % (float(t), seen, tmax))
+    return None
+
+
+def too_cold_to_open(rig):
+    """Before steering: can even the lowest active t_max create a demand?"""
+    key = rig.tmax_key()
+    lo = rig.limits(key)[0]
+    why = no_heat_demand(rig.status(), lo)
+    return None if why is None else "%s (the lowest %s)" % (why, key)
+
+
+def no_demand_after_wait(rig):
+    """After an open wait ran out: was there a demand against the threshold in
+    force? It is read from the status, so a day/night switch that handed T6 an
+    unsteered t_max mid-wait counts too (07:45 on 2026-10-02)."""
+    st = rig.status()
+    why = no_heat_demand(st, (st.get("climate") or {}).get("temp_max_active"))
+    return None if why is None else "%s, the one in force" % why
+
+
 def why_not(host):
     """The reason the unit cannot be stroked now, or None."""
     st = public_status(host) or {}
@@ -174,6 +224,10 @@ def session(host, pin, n):
             say("session %d SKIPPED: travel_m3 is %d, not the rig's %d"
                 % (n, travel, RIG_TRAVEL_S))
             return None
+        cold = too_cold_to_open(rig)
+        if cold:
+            say("session %d SKIPPED: no heat demand possible, %s" % (n, cold))
+            return None
         s0 = rig.soak()
         # Mode 2 strokes are slower by design, and not by one drive's worth.
         # The law holds M3 for 10 min after its last drive (M3_HOLD_MS) and
@@ -192,10 +246,19 @@ def session(host, pin, n):
         rig.dwells_short()
         if m3(rig.status()) != "CLOSED":
             rig.move(False, max(FIRST_CLOSE_LIMIT_S, limit))
-        if linear:
-            linear_open(rig, limit)
-        else:
-            rig.move(True, limit)
+        try:
+            if linear:
+                linear_open(rig, limit)
+            else:
+                rig.move(True, limit)
+        except SystemExit as e:
+            # Only the OPEN is excused, and only when the law had nothing to
+            # open for: a close that does not happen is always a failure.
+            cold = no_demand_after_wait(rig)
+            if cold is None:
+                raise
+            say("session %d SKIPPED after the wait: no heat demand, %s (%s)" % (n, cold, e))
+            return None
         rig.move(False, limit)
         s1 = rig.soak()
         say("session %d done: %s" % (n, ", ".join(

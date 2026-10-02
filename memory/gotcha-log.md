@@ -61,6 +61,7 @@ Hooks are the *symptom*, not the title — you rarely know the cause when you ar
 Entries stay in reverse-chronological order below; this index is the only grouped view.
 
 ### Windows, climate & manual control (T2, T6, T8)
+- **2026-10-02** — a soak's stroke sessions FAIL at dawn and end the run: the greenhouse is colder than the lowest `t_max` the harness can set, so there is no heat demand, and under v2 humidity alone never opens M3 — the firmware was right [RESOLVED: the harness skips such a session]
 - **2026-10-01** — M3's positioning scatter (AT-WP02) was put mostly on run-on and timing jitter; measured, ~90 % of it is WHEN the cut sample was taken: T17 reads every ~180 ms on the rig (its 100 ms `poll_ms` is a sleep AFTER a ~75 ms read), and the encoder publishes once per 100 ms window
 - **2026-09-24** — a mode-2 soak fails in 15 min with M3 correctly part-open: the harness waits for the `OPEN` STATE and `graded` commands an APERTURE (49 % at full demand), so the end never comes [RESOLVED: the open stroke counts a judged drive]
 - **2026-09-24** — mode 2 leaves the window a couple of centimetres open and never asks again: a targeted stop ends on a READING, and a position inside the arrival band satisfies both the caller and the law — but an END is made by a switch (gh#83) [RESOLVED 2.12.1]
@@ -215,6 +216,22 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
+
+## 2026-10-02 — two stroke sessions FAILED at dawn and ended the soak's strokes; the firmware was right not to open
+
+**Problem:** the scatter-step-2 soak ran 9 of its 12 scripted sessions. Sessions 10 (07:16) and 11 (08:16) each waited 30 min for T6 to open M3 and were logged FAILED. After two failures in a row, `at_wp_strokes.py` stops, so session 12 never ran and the soak's last four hours had no strokes. The 12 h report still passed, because it judges counters, not the harness.
+
+**Root cause:** the harness opens M3 by setting the active `t_max` to its lowest value (10 °C at night, 15 °C by day) with `cr_priority` 2. That only works while the greenhouse is warmer than the floor. At dawn it averaged 10.1–11.5 °C, so T5's rounded average was at or below the floor, and there was no temperature demand. Humidity was 93 %, but under v2 (gh#84) humidity alone opens M1 at most, never M3. M3 opens only when the combined step reaches 2, which with high humidity needs just one degree of temperature demand: session 9 opened at 10.6 °C, which rounds to 11. The firmware did what v2 requires, and the harness called it a failure. It got worse at 07:45, when day began and the active threshold became `t_max_day`, which the harness had not steered (28 °C). Earlier soaks never met a 10 °C dawn. Under v1, humidity alone could open M3, which is presumably why nobody had needed this.
+
+**Fix:** `at_wp_strokes.py` now SKIPS a session the climate gives nothing to open for. Skips do not count toward "two in a row". Two checks:
+- **Before anything is steered:** is T5's rounded average at or below the lowest `t_max` for the active period? (`too_cold_to_open()`.)
+- **When an open wait runs out:** is it at or below the threshold IN FORCE? (`no_demand_after_wait()`.) This also catches the day/night switch.
+
+Only the open is excused. A close that does not happen is always a failure. The decision functions were tested offline on this morning's cases: sessions 10 and 11 skip, session 9 does not, the 07:45 switch skips, and both rounding boundaries behave. One live session on 2344 ran the warm path.
+
+**Rule:** a harness that steers a law must know when the law has no reason to move, or it reports the law's correct refusal as a fault. When a law changes what may open a window (v2 here), re-read every harness that relies on it opening one.
+
+**Where it lives:** `bin/at_wp_strokes.py` (`no_heat_demand()`, `session()`); the law's M3 rule in `drivers/ventModel/src/vent_model_graded.cpp` (`out->step >= 2`).
 
 ## 2026-10-01 — M3's positioning scatter was put on the run-on; it was T17's read interval, 180 ms where 100 was assumed
 

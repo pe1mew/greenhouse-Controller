@@ -30,8 +30,9 @@
 
 The evidence for 2.12.0 is the acceptance suites (target 9/9, fallback 4/4, confirm 9/9), with a fail-first run
 for each fix. **Mode-2 soaks passed** on 2.12.2 (12.82 h, 28 judged strokes), 2.13.0 (12.36 h, 16),
-2.14.0 (12.25 h, 28) and 2.15.0 twice (12.25 h, 25, with `cr_priority` 1; 12.25 h, 33, with
-`min_intv_m3` 0, item 8 below), all with every fault counter at 0. 2.14.1 was pulled by ROTA on 2026-09-27.
+2.14.0 (12.25 h, 28), 2.15.0 twice (12.25 h, 25, with `cr_priority` 1; 12.25 h, 33, with
+`min_intv_m3` 0, item 8 below) and `9bcc1c4`, scatter step 2 (12.25 h, 18, item 4), all with every
+fault counter at 0. 2.14.1 was pulled by ROTA on 2026-09-27.
 
 **Still open:**
 
@@ -43,7 +44,7 @@ for each fix. **Mode-2 soaks passed** on 2.12.2 (12.82 h, 28 judged strokes), 2.
 3. **The production path.** 5C88 runs 2.3.1 on `mainstream`, and this document does not record whether its
    encoder is installed. After that, `wpos_fitted_m3` must be set on site, and promotion needs the release
    comparison against 2.3.1 and an explicit instruction (§7).
-4. **Positioning scatter: reduced on the rig 2026-10-01, NOT yet soaked.** AT-WP02 was marginal on the
+4. **Positioning scatter: reduced on the rig 2026-10-01, soaked 2026-10-02 (PASS).** AT-WP02 was marginal on the
    rig: each stop scattered by σ ≈ 0.55–0.75 %, so ten stops spanned ~2–2.5 % against the 2.0 % allowed.
    - **Step 1 measured why** (the bench stop log and `bin/at_wp_cuts.py`). T17 reads every ~180 ms on the
      rig, not every 100 ms, and the encoder publishes a new value only every 100 ms. So the reading T2
@@ -57,8 +58,11 @@ for each fix. **Mode-2 soaks passed** on 2.12.2 (12.82 h, 28 judged strokes), 2.
      T17's read, and T2 cannot see by how much. That staleness was hidden in the old rule's sample term
      and is now the largest residual.
 
-   Details: §5b, *Prerequisites before mode 2 may be trusted*. **Before a release, it needs a mode-2
-   soak.**
+   - **Soaked 2026-10-02: PASS** (12.25 h, 18 judged strokes, every fault counter 0, no reboot). In
+     ordinary running, 9 targeted stops to the ~25 % `graded` asked for were each judged 0.0–0.3 % past
+     their aim, never before it, and came to rest within σ 0.26 % of their targets.
+
+   Details: §5b, *Prerequisites before mode 2 may be trusted*. Not released.
 5. **The minimum move is unmeasured** (§3.6, floor 2). The deadband default is a fixed 20 mm, not derived
    from `travel_m3` as §3.6 requires (decisions 8 and 10).
 6. **The feedback is partly inferred.** T2 reports a state, not an outcome. Only ABORTED is counted, and
@@ -2821,6 +2825,27 @@ worry.
 
   `at_wp_cuts.py` now takes the speed from the device's rate. Step 1's split recomputed that way is
   σ 0.52 % / 0.22 %, the same to the precision quoted.
+
+  **Soaked 2026-10-01 22:16:52 to 2026-10-02 10:31:52: PASS.** 2344 ran the image built from
+  `9bcc1c4` in mode 2 (`graded` v2), with `min_intv_m3` 0, `cr_priority` 1 and 5C88's climate:
+  - **The soak:** 12.25 h, 18 judged strokes (9 confirmed closes, and 9 targeted openings not judged
+    by design). Stall, early stop, rejected rate, comm and not-reached were all 0, as was
+    `mode_changes`. The gate stayed `position`, and there was no reboot.
+  - **The new stop rule in ordinary running:** 9 targeted stops, all openings from closed to
+    `graded`'s capped first move of ~25 %. Each was judged 0.0–0.3 % past its aim, never before it;
+    8 of 9 by a carried-forward reading. Resting error against the target: mean +0.19 %, σ 0.26 %,
+    spread 0.81 %. The soak had no closing targeted stop: `graded` closes from 25 % with an ordinary
+    end drive, so the closing direction rests on the bench runs above.
+  - **The law:** 19 vent-step decisions, every one conforming to v2. Humidity alone opened M1 twice,
+    both above the floor. *Dryness never closes against heat* did not come up on a cold, humid night.
+  - **Heap:** 40–67 KB free, largest block 20–31 KB, floor 19 KB from start to end.
+  - **The encoder:** 6 674 transactions, 0 errors.
+
+  **9 of the 12 scripted sessions ran.** At dawn the greenhouse averaged 10.1–11.5 °C, at or below the
+  lowest `t_max` the stroke harness can set (10 °C at night, 15 °C by day). That leaves no
+  temperature demand, and under v2 humidity alone never opens M3. So sessions 10 and 11 waited
+  30 min for an opening the firmware was right to refuse, and after two failures the harness
+  stopped; session 12 never ran. The harness now skips such a session (gotcha 2026-10-02).
 - **5C88:** the sensor bought, fitted and taught
   ([gh#77](https://github.com/pe1mew/greenhouse-Controller/issues/77)). Until then
   `wpos_fitted_m3` = 0 keeps mode 2 unavailable there, which is the right default.
