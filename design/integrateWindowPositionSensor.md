@@ -67,7 +67,9 @@ fault counter at 0. 2.14.1 was pulled by ROTA on 2026-09-27.
    20 ms pulses move the leaf ~1 mm. The shortest pulse that moved it every time was 30–35 ms (~2 mm,
    0.15 %), which is the encoder's resolution. The larger effect is the rope's 10–12 mm of slack on
    every reversal. The deadband default is still a fixed 20 mm, not derived from `travel_m3` as §3.6
-   requires: choosing it is open (decisions 8 and 10).
+   requires: choosing it is open (decisions 8 and 10). On 5C88 these figures will differ, and the
+   reversal loss probably sets the deadband there; §3.6, *What transfers to 5C88*, assesses each one
+   and how to measure it on site.
 6. **The feedback is partly inferred.** T2 reports a state, not an outcome. Only ABORTED is counted, and
    T6 judges everything else from where M3 came to rest (2.12.0 known limitations).
 7. ~~**gh#84 reaches mode 2.**~~ **Fixed in 2.15.0** as `stepped` v2 and `graded` v2: dryness never
@@ -183,6 +185,10 @@ until the end switch stops it.
 
 **The rig behaves exactly as the real window will. The only difference is speed.** So every
 constant 3 derives from `travel_m3` transfers; nothing thermal does (2).
+
+> *2026-10-02: true of the geometry, not of the mechanics.* Production also moves a heavier
+> flap through different relays (operator). The rig's rope slack, motor start and run-on do not
+> carry over; §3.6, *What transfers to 5C88*, says which way each is likely to move.
 
 The proportion difference matters in one place: production leaves far more unused sensor
 range, so its per-count resolution in millimetres will be **coarser** than the rig's for the
@@ -479,10 +485,44 @@ made 10 pulses per width and direction:
   smaller than the slack moves the drive and not the leaf.
 
 So on this rig floor 2 does not limit the deadband: floor 1 and the slack are both larger, and since
-2026-10-01 (step 2 of the scatter work, §0 item 4) a targeted stop lands within σ 0.30 %. Floor 2 is
-time-based, so on 5C88's 176 s stroke ~30 ms would be ~0.02 %. But 5C88's motor, contactor and rope
-are its own, and the slack above all must be measured there once its sensor is fitted. Choosing the
-deadband (decision 10) is still open.
+2026-10-01 (step 2 of the scatter work, §0 item 4) a targeted stop lands within σ 0.30 %. How much of
+this holds on 5C88 is below. Choosing the deadband (decision 10) is still open.
+
+**What transfers to 5C88: assessed 2026-10-02, not measured.** The operator expects large
+differences, because production moves a heavier flap through different relays. Those differences pull
+two ways, because production also moves 13.2× slower (0.585 %/s against 7.69 %/s):
+- **Effects measured in time shrink as a share of the stroke:** relay and contactor delays, the
+  motor's start, its coast. At production speed every millisecond moves the flap 13× less.
+- **Effects measured in distance do not shrink,** and mass and the 40 m span probably make them
+  larger: rope stretch and slack, the shaft winding up, the encoder's step.
+
+| measured on the rig | rig | expected on 5C88 | why |
+|---|---|---|---|
+| dead time before the leaf moves | 15–21 ms | longer: tens to hundreds of ms | contactors in the chain; a larger motor and gearbox; the shaft winds up before the flap moves |
+| shortest pulse that always moved the leaf | 30–35 ms (~2 mm) | hundreds of ms for a similar ~2–4 mm (0.15–0.3 %) | 13× slower. The encoder's step still sets the limit, and §2a.2's 2 m sensor makes that step coarser in mm |
+| slack lost on a reversal | 10–12 mm (0.7–0.8 %) | probably larger, and different in each direction | a heavier flap stretches the rope more; lifting and paying out load it differently (requirements §1.4 item 3); the 40 m shaft driven from one end winds up (§1.4 item 4, FR-WP22), and how much of that the sensor sees depends on where along the span it is mounted |
+| overrun after the cut | 1.7–2.1 % | small in %, and learned anyway | learned per direction within a few stops; the 250 ms default only shapes the first stops after a boot (0.15 % there) |
+| positioning scatter | σ 0.30 % since step 2 | probably set by the mechanics, not the timing | timing jitter is negligible at production speed; reversal slack, rope stretch under wind load and a drum that may spool in layers (§1.4 item 2) take its place. The ~0.7 % estimate in §5b counted the timing terms only |
+
+**What transfers fully:** the firmware's mechanisms (carrying readings forward, the learned lead,
+the guards, the per-drive verdicts), the constants derived from `travel_m3`, and the measurement
+method.
+
+**For decision 10:** on the rig, floor 2 does not limit the deadband. On 5C88 the reversal loss
+probably will: a reversing correction smaller than that loss turns the shaft without moving the flap
+at the sensor. So the deadband value waits for 5C88's figures. Today's 20 mm default (1.3 %) is
+likely above production's floor 2, but possibly below its reversal loss.
+
+**Measuring it there,** once 5C88's sensor is fitted and taught (gh#77):
+- AT-WP02 from both directions;
+- the pulse sweep, with longer pulses (~0.1–2 s);
+- the reversal loss;
+- FR-WP22's question of where along the span to measure.
+
+The stop log and the pulse hook are bench-only, and 5C88 takes release builds by ROTA only, with no
+push path. So either a bench build goes onto 5C88 on site, by cable or a local push, for the
+measurement, and the release goes back afterwards; or the pulse hook moves into the admin-only
+commissioning route, as gh#77 did for the teach. Which of the two is the operator's call.
 
 **The endpoints are exempt.** A setpoint of `0` or `100` terminates on **bit 3**
 and runs to the end sensor however small the remaining distance is (see 6.1 and the
@@ -2820,7 +2860,9 @@ worry.
   **In production** (`travel_m3` 171) the same arithmetic gives readings ~0.7 % of the stroke
   apart (sample σ ~0.2 %) and a window staleness of σ ~0.13 %. So the expected spread there is
   ~0.7 % without extrapolation and ~0.4 % with it. That is arithmetic, not a measurement: 5C88 has
-  no sensor.
+  no sensor. *It also counts only the timing terms. On 5C88 the mechanics (reversal slack, rope
+  stretch, the 40 m shaft) are likely to dominate instead: §3.6, What transfers to 5C88
+  (2026-10-02).*
 
   **Built 2026-10-01 (step 2): T2 carries each reading forward.** On every 20 ms tick of a targeted
   drive, T2 moves the latest reading on by the encoder's rate (`30012`) times the reading's age, and
