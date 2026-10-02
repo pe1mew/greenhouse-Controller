@@ -3511,7 +3511,9 @@ static esp_err_t diag_commission_post_handler(httpd_req_t *req)
  * rather than as a plausible-looking number.
  *
  * GET /api/diag/windowpos?cuts (2026-10-01) returns T2's log of targeted M3
- * stops instead, with no bus read (diag_windowpos_cuts()).
+ * stops instead, with no bus read (diag_windowpos_cuts()); ?pulses
+ * (2026-10-02) the log of bench pulses that POST {"pulse_ms":N,"dir":...}
+ * makes (diag_windowpos_pulses()).
  * --------------------------------------------------------------------------- */
 /**
  * @brief Append the Modbus bus tallies to a JSON object already in `buf`.
@@ -3693,15 +3695,36 @@ static esp_err_t diag_windowpos_cuts(httpd_req_t *req)
     return httpd_resp_sendstr_chunk(req, NULL);
 }
 
+/* GET /api/diag/windowpos?pulses (2026-10-02, plan §3.6 floor 2): T2's log of
+ * bench pulses, oldest first -- each one's real relay width. No bus read. */
+static esp_err_t diag_windowpos_pulses(httpd_req_t *req)
+{
+    char line[128];
+    uint16_t seq = 0u;
+    t2_pulse_rec_t r;
+    (void)t2_get_pulse(0u, &r, &seq);
+    snprintf(line, sizeof(line), "{\"seq\":%u,\"pulses\":[", (unsigned)seq);
+    if (httpd_resp_sendstr_chunk(req, line) != ESP_OK) { return ESP_FAIL; }
+    for (uint16_t k = 0u; t2_get_pulse(k, &r, NULL); k++) {
+        snprintf(line, sizeof(line),
+                 "%s{\"n\":%u,\"o\":%u,\"completed\":%u,\"req_ms\":%u,\"width_us\":%lu}",
+                 (k > 0u) ? "," : "", (unsigned)r.seq, (unsigned)r.opening,
+                 (unsigned)r.completed, (unsigned)r.req_ms, (unsigned long)r.width_us);
+        if (httpd_resp_sendstr_chunk(req, line) != ESP_OK) { return ESP_FAIL; }
+    }
+    if (httpd_resp_sendstr_chunk(req, "]}") != ESP_OK) { return ESP_FAIL; }
+    return httpd_resp_sendstr_chunk(req, NULL);
+}
+
 static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
 {
     if (!admin_only_or_send_error(req)) return ESP_OK;
     httpd_resp_set_type(req, "application/json");
     {
         char q[16];
-        if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
-            strcmp(q, "cuts") == 0) {
-            return diag_windowpos_cuts(req);
+        if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK) {
+            if (strcmp(q, "cuts") == 0)   { return diag_windowpos_cuts(req); }
+            if (strcmp(q, "pulses") == 0) { return diag_windowpos_pulses(req); }
         }
     }
 
@@ -3921,6 +3944,38 @@ static esp_err_t diag_windowpos_post_handler(httpd_req_t *req)
         snprintf(out, sizeof(out),
                  "{\"ok\":%s,\"target_x10\":%ld,\"source\":\"%s\"%s}",
                  sent ? "true" : "false", want, as_t6 ? "t6" : "operator",
+                 sent ? "" : ",\"error\":\"q1_full\"");
+        return httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
+    }
+
+    /* 2026-10-02 (plan §3.6 floor 2) -- {"pulse_ms":N,"dir":"open"|"close"}
+     * energises M3's relay for N ms and stops part-way (CMD_PULSE, T2's
+     * pulse_tick()), for the minimum-move measurement (bin/at_wp_minmove.py).
+     * Only in STANDBY, so T6 cannot move M3 in between; T2 also refuses it
+     * unless M3 is at rest. GET ?pulses reads back the real widths. */
+    char pms[8] = {0};
+    if (json_get_field(body, "pulse_ms", pms, sizeof(pms))) {
+        const long ms = strtol(pms, NULL, 10);
+        char dir[8] = {0};
+        const bool have_dir = json_get_field(body, "dir", dir, sizeof(dir));
+        const bool open_dir = have_dir && strcmp(dir, "open") == 0;
+        if (ms < 10 || ms > 2000 || !have_dir || (!open_dir && strcmp(dir, "close") != 0)) {
+            return httpd_resp_send(req, "{\"ok\":false,\"error\":\"pulse_range\"}",
+                                   HTTPD_RESP_USE_STRLEN);
+        }
+        if (!dm_get_standby()) {
+            return httpd_resp_send(req, "{\"ok\":false,\"error\":\"standby_required\"}",
+                                   HTTPD_RESP_USE_STRLEN);
+        }
+        window_cmd_t cmd = {};
+        cmd.action     = CMD_PULSE;
+        cmd.channel    = 3u;                  /* M3 */
+        cmd.source     = SRC_OPERATOR_MANUAL;
+        cmd.target_x10 = (int16_t)(open_dir ? ms : -ms);
+        const bool sent = (xQueueSend(Q1, &cmd, pdMS_TO_TICKS(100)) == pdTRUE);
+        char out[96];
+        snprintf(out, sizeof(out), "{\"ok\":%s,\"pulse_ms\":%ld,\"dir\":\"%s\"%s}",
+                 sent ? "true" : "false", ms, open_dir ? "open" : "close",
                  sent ? "" : ",\"error\":\"q1_full\"");
         return httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
     }

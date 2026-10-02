@@ -63,8 +63,11 @@ fault counter at 0. 2.14.1 was pulled by ROTA on 2026-09-27.
      their aim, never before it, and came to rest within σ 0.26 % of their targets.
 
    Details: §5b, *Prerequisites before mode 2 may be trusted*. Not released.
-5. **The minimum move is unmeasured** (§3.6, floor 2). The deadband default is a fixed 20 mm, not derived
-   from `travel_m3` as §3.6 requires (decisions 8 and 10).
+5. **The minimum move: measured on the rig 2026-10-02** (§3.6, floor 2). There is no sharp floor: even
+   20 ms pulses move the leaf ~1 mm. The shortest pulse that moved it every time was 30–35 ms (~2 mm,
+   0.15 %), which is the encoder's resolution. The larger effect is the rope's 10–12 mm of slack on
+   every reversal. The deadband default is still a fixed 20 mm, not derived from `travel_m3` as §3.6
+   requires: choosing it is open (decisions 8 and 10).
 6. **The feedback is partly inferred.** T2 reports a state, not an outcome. Only ABORTED is counted, and
    T6 judges everything else from where M3 came to rest (2.12.0 known limitations).
 7. ~~**gh#84 reaches mode 2.**~~ **Fixed in 2.15.0** as `stepped` v2 and `graded` v2: dryness never
@@ -446,6 +449,40 @@ contactor make/break time mean a short pulse may move nothing at all. **This
 term is not yet measured** — it is a rig experiment (command progressively
 shorter pulses, find where displacement stops tracking pulse width), and it
 should be done before a deadband value is fixed.
+
+**Measured 2026-10-02 on the rig (2344), and not what the paragraph above expected.** A bench hook
+pulses M3's relay for a set time: `POST /api/diag/windowpos {"pulse_ms":N,"dir":...}`, timed at the
+relay's own GPIO edges to within 1.5 ms. `bin/at_wp_minmove.py` reads the leaf live before and after
+each pulse, and starts each block with an uncounted 200 ms take-up pulse (see the slack, below). It
+made 10 pulses per width and direction:
+
+| pulse | opening: mm (% of the window) | closing: mm (%) |
+|---|---|---|
+| 120 ms | 12.7 (0.84) | 12.0 (0.80) |
+| 80 ms | 7.6 (0.51) | 7.3 (0.49) |
+| 50 ms | 4.2 (0.28) | 3.7 (0.24) |
+| 40 ms | 3.1 (0.21) | 2.3 (0.15) |
+| 30 ms | 2.3 (0.15): every pulse moved | 1.6 (0.10): 8 of 10 |
+| 20 ms | 1.0 (0.07): 6 of 10 | 0.9 (0.06): 5 of 10 |
+
+- **There is no sharp floor.** Displacement tracks width almost linearly down to 20 ms: 117 mm/s
+  opening and 122 mm/s closing, with a dead time of only 15 and 21 ms. Even a 20 ms pulse moves the
+  leaf about 1 mm.
+- **Floor 2, as defined here, is 30 ms opening (2.3 mm, 0.15 %) and 35 ms closing (2.1 mm, 0.14 %):**
+  the shortest pulse that moved the leaf every time. The encoder's 1.7 mm step sets that figure, not
+  the motor.
+- **The larger effect is the rope's slack, 10–12 mm on every reversal.** The first pulse after a
+  change of direction loses that much. A 200 ms pulse moves ~23 mm in the same direction and ~12 mm
+  after a reversal, and short pulses after a reversal move nothing until the slack is taken up. The
+  first sweep, without take-up pulses, measured that instead of floor 2. The encoder rides on the
+  leaf, so position control sees through the slack: it costs drive time. But a reversing correction
+  smaller than the slack moves the drive and not the leaf.
+
+So on this rig floor 2 does not limit the deadband: floor 1 and the slack are both larger, and since
+2026-10-01 (step 2 of the scatter work, §0 item 4) a targeted stop lands within σ 0.30 %. Floor 2 is
+time-based, so on 5C88's 176 s stroke ~30 ms would be ~0.02 %. But 5C88's motor, contactor and rope
+are its own, and the slack above all must be measured there once its sensor is fitted. Choosing the
+deadband (decision 10) is still open.
 
 **The endpoints are exempt.** A setpoint of `0` or `100` terminates on **bit 3**
 and runs to the end sensor however small the remaining distance is (see 6.1 and the
@@ -3267,7 +3304,9 @@ Note what production logging unlocks that the rig cannot: a **real** 171 s trave
    baseline is measured (§5.0). The FAULT threshold is a separate, safety
    decision, and gh#66 carries both.
 8. **The minimum-move deadband value** — floor 2 (the shortest pulse that actually
-   moves the leaf) is unmeasured; see §3.6.
+   moves the leaf) was measured on the rig 2026-10-02: ~2 mm at 30–35 ms, below
+   floor 1 and below the rope's 10–12 mm reversal slack (§3.6). The value itself
+   is still to be chosen.
 9. ~~**PID or fuzzy** for the central algorithm, and how a mixed
    discrete/continuous plant is expressed to it.~~ **Decided 2026-09-25 (operator): `graded`.** It sets M3's
    opening in proportion to demand, on top of the stepped law, which keeps M1 and M2

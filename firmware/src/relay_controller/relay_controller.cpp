@@ -192,6 +192,15 @@ typedef struct {
     uint32_t   target_seen_ms;     /**< That reading's sample time, on T2's clock. */
     uint32_t   target_gap_ms;      /**< Between this drive's last two distinct
                                     *   readings; 0 = fewer than two seen. */
+#ifdef MODBUS_BENCH
+    /* Bench CMD_PULSE (2026-10-02, plan §3.6 floor 2): the drive is cut when
+     * esp_timer reaches pulse_end_us, which counts from the relay's own on
+     * edge -- see pulse_tick(). */
+    bool       pulse_active;
+    bool       pulse_opening;
+    uint16_t   pulse_req_ms;
+    int64_t    pulse_end_us;
+#endif
 } ch_t;
 
 static ch_t s_ch[NUM_CHANNELS];
@@ -292,12 +301,26 @@ static void IRAM_ATTR isr_motor_alarm(void *arg)
  * Relay GPIO helpers
  * ============================================================ */
 
+#ifdef MODBUS_BENCH
+/* Bench: when each channel's relay was last switched on and off, stamped at
+ * the GPIO writes themselves, so a CMD_PULSE's width is the real one and not
+ * T2's view of it (plan §3.6 floor 2). */
+static int64_t s_relay_on_us[NUM_CHANNELS];
+static int64_t s_relay_off_us[NUM_CHANNELS];
+#define RELAY_STAMP_ON(ch)  (s_relay_on_us[(ch)] = esp_timer_get_time())
+#define RELAY_STAMP_OFF(ch) (s_relay_off_us[(ch)] = esp_timer_get_time())
+#else
+#define RELAY_STAMP_ON(ch)  ((void)0)
+#define RELAY_STAMP_OFF(ch) ((void)0)
+#endif
+
 /** De-energise all 6 relay outputs immediately. */
 static void relay_all_off(void)
 {
     for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
         gpio_write(RELAY_OPEN_PIN[ch],  GPIO_LOW);
         gpio_write(RELAY_CLOSE_PIN[ch], GPIO_LOW);
+        RELAY_STAMP_OFF(ch);
     }
 }
 
@@ -306,6 +329,7 @@ static inline void relay_ch_off(uint8_t ch)
 {
     gpio_write(RELAY_OPEN_PIN[ch],  GPIO_LOW);
     gpio_write(RELAY_CLOSE_PIN[ch], GPIO_LOW);
+    RELAY_STAMP_OFF(ch);
 }
 
 /** gh#72 — count a relay energisation on channel ch (see t2_get_drive()). */
@@ -323,6 +347,7 @@ static inline void relay_ch_open(uint8_t ch)
 {
     gpio_write(RELAY_CLOSE_PIN[ch], GPIO_LOW);   /* belt-and-suspenders */
     gpio_write(RELAY_OPEN_PIN[ch],  GPIO_HIGH);
+    RELAY_STAMP_ON(ch);
     drive_epoch_bump(ch);
 }
 
@@ -331,6 +356,7 @@ static inline void relay_ch_close(uint8_t ch)
 {
     gpio_write(RELAY_OPEN_PIN[ch],  GPIO_LOW);   /* belt-and-suspenders */
     gpio_write(RELAY_CLOSE_PIN[ch], GPIO_HIGH);
+    RELAY_STAMP_ON(ch);
     drive_epoch_bump(ch);
 }
 
@@ -1033,6 +1059,88 @@ static uint32_t ch_dwell_ms(uint8_t ch, bool opening)
     return opening ? c->dwell_open_ms : c->dwell_close_ms;
 }
 
+#ifdef MODBUS_BENCH
+/* ---- Bench only: CMD_PULSE (2026-10-02, plan §3.6 floor 2) ---------------
+ *
+ * "The shortest pulse that actually moves the leaf": static friction and
+ * contactor make/break time mean a short pulse may move nothing at all, and
+ * the minimum-move deadband must not be set below what the actuator can do.
+ * The plan's experiment is to command progressively shorter pulses and find
+ * where displacement stops tracking pulse width (bin/at_wp_minmove.py). The
+ * drive starts the ordinary way (ch_start_open/close, so it persists, logs and
+ * counts like any other) and is cut part-way when esp_timer reaches its
+ * deadline, which counts from the relay's own on edge; T2 shortens its loop
+ * delay to land within about a millisecond of it. The width logged is from
+ * the GPIO writes themselves. RAM only. */
+#define PULSE_LOG_N  32u
+
+static t2_pulse_rec_t s_pulse_log[PULSE_LOG_N];   /**< Slot (seq - 1) % PULSE_LOG_N. */
+static uint16_t       s_pulse_seq;                /**< Pulses recorded since boot. */
+
+static void pulse_log(uint8_t ch, bool opening, bool completed)
+{
+    t2_pulse_rec_t r = {};
+    r.opening   = opening ? 1u : 0u;
+    r.completed = completed ? 1u : 0u;
+    r.req_ms    = s_ch[ch].pulse_req_ms;
+    const int64_t w = s_relay_off_us[ch] - s_relay_on_us[ch];
+    r.width_us  = (w <= 0) ? 0u : ((w > (int64_t)UINT32_MAX) ? UINT32_MAX : (uint32_t)w);
+    portENTER_CRITICAL(&s_state_mux);
+    r.seq = ++s_pulse_seq;
+    s_pulse_log[(uint16_t)((r.seq - 1u) % PULSE_LOG_N)] = r;
+    portEXIT_CRITICAL(&s_state_mux);
+}
+
+/** From a moving channel's tick: cut a bench pulse that has reached its
+ *  deadline. True when it did, so the caller runs no other stop rule. */
+static bool pulse_tick(uint8_t ch, uint32_t now_ms, bool opening)
+{
+    ch_t *c = &s_ch[ch];
+    if (!c->pulse_active || esp_timer_get_time() < c->pulse_end_us) { return false; }
+
+    relay_ch_off(ch);
+    c->pulse_active       = false;
+    c->target_active      = false;
+    c->state              = CH_PART_OPEN;
+    c->dwell_deadline_ms  = now_ms + ch_dwell_ms(ch, opening);
+    c->move_end_ms        = now_ms;
+    c->dwell_defer_logged = false;
+    persist_ch_state(ch, CH_PART_OPEN);           /* maps to NVS UNKNOWN, as a targeted stop */
+    log_relay_event((uint8_t)(ch + 1u), CH_PART_OPEN);
+    pulse_log(ch, opening, true);
+    ESP_LOGI(TAG, "CH%u: PART_OPEN after a bench pulse of %u ms (relay on %ld us)",
+             ch + 1u, (unsigned)c->pulse_req_ms,
+             (long)(s_relay_off_us[ch] - s_relay_on_us[ch]));
+    return true;
+}
+
+/** Every loop: a pulse ended by anything else (a reversal, the motor alarm, a
+ *  close-all) is logged as not completed, and stops claiming the channel. */
+static void pulse_reap(uint8_t ch)
+{
+    ch_t *c = &s_ch[ch];
+    if (!c->pulse_active) { return; }
+    if (c->state == CH_MOVING_OPEN || c->state == CH_MOVING_CLOSE) { return; }
+    c->pulse_active = false;
+    pulse_log(ch, c->pulse_opening, false);
+}
+
+bool t2_get_pulse(uint16_t k, t2_pulse_rec_t *out, uint16_t *out_seq)
+{
+    bool ok = false;
+    portENTER_CRITICAL(&s_state_mux);
+    const uint16_t seq  = s_pulse_seq;
+    const uint16_t kept = (seq < PULSE_LOG_N) ? seq : (uint16_t)PULSE_LOG_N;
+    if (out != NULL && k < kept) {
+        *out = s_pulse_log[(uint16_t)((uint16_t)(seq - kept + k) % PULSE_LOG_N)];
+        ok = true;
+    }
+    portEXIT_CRITICAL(&s_state_mux);
+    if (out_seq != NULL) { *out_seq = seq; }
+    return ok;
+}
+#endif /* MODBUS_BENCH */
+
 /* The arrival band lives in T4 (dm_m3_deadband_x10()), because the control law
  * needs the same number to decide whether a move is worth making. It was here
  * first; T6 needing it too was the moment to move it, not to copy it. */
@@ -1302,6 +1410,9 @@ static void ch_update(uint8_t ch, uint32_t now_ms)
     switch (c->state) {
 
     case CH_MOVING_OPEN:
+#ifdef MODBUS_BENCH
+        if (pulse_tick(ch, now_ms, true)) { break; }
+#endif
         if (ch_target_tick(ch, now_ms, true)) { break; }
         if ((int32_t)(now_ms - c->relay_deadline_ms) >= 0) {
             relay_ch_off(ch);
@@ -1321,6 +1432,9 @@ static void ch_update(uint8_t ch, uint32_t now_ms)
         break;
 
     case CH_MOVING_CLOSE:
+#ifdef MODBUS_BENCH
+        if (pulse_tick(ch, now_ms, false)) { break; }
+#endif
         if (ch_target_tick(ch, now_ms, false)) { break; }
         if ((int32_t)(now_ms - c->relay_deadline_ms) >= 0) {
             relay_ch_off(ch);
@@ -1727,6 +1841,37 @@ static void process_command(const window_cmd_t *cmd, uint32_t now_ms)
                  src_name(cmd->source));
         calib_close_all();
         break;
+
+#ifdef MODBUS_BENCH
+    case CMD_PULSE: {
+        /* Bench only (plan §3.6 floor 2): see pulse_tick(). Only from rest, so
+         * a pulse never turns into a reversal and its width is its own. */
+        const bool    opening = (cmd->target_x10 > 0);
+        const int32_t ms = opening ? (int32_t)cmd->target_x10 : -(int32_t)cmd->target_x10;
+        if (cmd->channel != 3u || ms <= 0) {
+            ESP_LOGW(TAG, "CMD_PULSE refused: ch%u, %ld ms", cmd->channel, (long)ms);
+            break;
+        }
+        const uint8_t ch = 2u;
+        ch_t *c = &s_ch[ch];
+        if (c->state != CH_CLOSED && c->state != CH_OPEN && c->state != CH_PART_OPEN) {
+            ESP_LOGW(TAG, "CMD_PULSE refused: M3 is not at rest (state %d)", (int)c->state);
+            break;
+        }
+        if (opening) { ch_start_open(ch, now_ms, SRC_OPERATOR_MANUAL); }
+        else         { ch_start_close(ch, now_ms, SRC_OPERATOR_MANUAL); }
+        if (c->state != (opening ? CH_MOVING_OPEN : CH_MOVING_CLOSE)) {
+            ESP_LOGW(TAG, "CMD_PULSE: M3 did not start (already at that end?)");
+            break;
+        }
+        c->pulse_active  = true;
+        c->pulse_opening = opening;
+        c->pulse_req_ms  = (uint16_t)ms;
+        c->pulse_end_us  = s_relay_on_us[ch] + (int64_t)ms * 1000;
+        ESP_LOGI(TAG, "CMD_PULSE: M3 %s for %ld ms", opening ? "OPEN" : "CLOSE", (long)ms);
+        break;
+    }
+#endif
 
     default:
         ESP_LOGW(TAG, "Q1: unknown action %d", (int)cmd->action);
@@ -2158,6 +2303,7 @@ void task_relay_controller(void *pvParameters)
         m3_lead_learn_tick(now_ms);
 #ifdef MODBUS_BENCH
         cut_rest_tick(now_ms);              /* the bench stop log's resting reading */
+        pulse_reap(2u);                     /* a bench pulse ended by anything else */
 #endif
 
         /* ---- 4c. Drain Q1 (non-blocking; process all pending commands) ----
@@ -2182,6 +2328,19 @@ void task_relay_controller(void *pvParameters)
             process_command(&cmd, now_ms);
         }
 
+#ifdef MODBUS_BENCH
+        /* A bench pulse ends between two ticks: wake just after its deadline
+         * instead, so the cut lands within about a millisecond of it. Never
+         * longer than the ordinary tick. */
+        uint32_t wait_ms = LOOP_TICK_MS;
+        if (s_ch[2].pulse_active) {
+            const int64_t rem_us = s_ch[2].pulse_end_us - esp_timer_get_time();
+            const int64_t rem_ms = (rem_us <= 0) ? 0 : (rem_us + 999) / 1000;
+            if (rem_ms + 1 < (int64_t)LOOP_TICK_MS) { wait_ms = (uint32_t)rem_ms + 1u; }
+        }
+        vTaskDelay(pdMS_TO_TICKS(wait_ms));
+#else
         vTaskDelay(pdMS_TO_TICKS(LOOP_TICK_MS));
+#endif
     }
 }

@@ -258,4 +258,23 @@ typedef struct {
  *         stop made while reading shifts the indices.
  */
 bool t2_get_cut(uint16_t k, t2_cut_rec_t *out, uint16_t *out_seq);
+
+/**
+ * @brief One bench pulse on M3 (2026-10-02, plan §3.6 floor 2): how long its
+ *        relay was really energised, timed at the GPIO writes themselves.
+ */
+typedef struct {
+    uint16_t seq;          /**< 1, 2, ... in order since boot. */
+    uint8_t  opening;      /**< 1 = the OPEN relay, 0 = the CLOSE relay. */
+    uint8_t  completed;    /**< 1 = cut by its own deadline; 0 = ended by anything else. */
+    uint16_t req_ms;       /**< As commanded. */
+    uint32_t width_us;     /**< Relay on to relay off (esp_timer). */
+} t2_pulse_rec_t;
+
+/**
+ * @brief Copy the k-th kept pulse record, oldest first (bench only).
+ * @param out_seq if not NULL, gets the number of pulses recorded since boot.
+ * @return false when k is past the last kept record.
+ */
+bool t2_get_pulse(uint16_t k, t2_pulse_rec_t *out, uint16_t *out_seq);
 #endif

@@ -61,6 +61,7 @@ Hooks are the *symptom*, not the title — you rarely know the cause when you ar
 Entries stay in reverse-chronological order below; this index is the only grouped view.
 
 ### Windows, climate & manual control (T2, T6, T8)
+- **2026-10-02** — a pulse test reads 0 mm for every pulse, then the encoder reports NOT FOLLOWING (0x80), which looks like a detached draw wire: the wind safe-fail had closed M3, and the harness kept pulsing it against its end switch [RESOLVED: the harness checks before every pulse]
 - **2026-10-02** — a soak's stroke sessions FAIL at dawn and end the run: the greenhouse is colder than the lowest `t_max` the harness can set, so there is no heat demand, and under v2 humidity alone never opens M3 — the firmware was right [RESOLVED: the harness skips such a session]
 - **2026-10-01** — M3's positioning scatter (AT-WP02) was put mostly on run-on and timing jitter; measured, ~90 % of it is WHEN the cut sample was taken: T17 reads every ~180 ms on the rig (its 100 ms `poll_ms` is a sleep AFTER a ~75 ms read), and the encoder publishes once per 100 ms window
 - **2026-09-24** — a mode-2 soak fails in 15 min with M3 correctly part-open: the harness waits for the `OPEN` STATE and `graded` commands an APERTURE (49 % at full demand), so the end never comes [RESOLVED: the open stroke counts a judged drive]
@@ -217,6 +218,29 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
 
+## 2026-10-02 — the minimum-move test measured M3 pressed against its closed end for ten minutes, and it looked like a broken wire
+
+**Problem:** the second sweep of `bin/at_wp_minmove.py` read 0 mm for every pulse after 12:18, the 200 ms take-up pulses included. Just before that, one 80 ms pulse appeared to move the leaf 240 mm. Then the encoder raised status bit 7, NOT FOLLOWING, the signature of a loose draw wire (§2a.7 of the plan). The wire had been connected all along (operator).
+
+**Root cause:** at 12:18:04 one read of the EMULATED wind sensor failed. T5 raised a wind-sensor fault, and T3 safe-failed: the wind override set, and it closed every window. Both cleared within the second, but the close-all ran.
+- The 240 mm "move" was the leaf caught mid-sweep.
+- T2 refused the next pulses while the override held. It then took them again, with M3 closed on its end switch.
+- The harness knew none of this. At the end a pulse moves the leaf nothing, or only off its switch. So the position stayed 0 while the switches saw movement, which is exactly what bit 7 means ("switches saw movement, position did not").
+- The bit cleared by itself at 12:33, once M3 moved normally.
+
+The test's own traffic may have provoked the fault: hundreds of relay switchings, with a direct read every ~2.5 s. Since the 11:58 boot the bus counted 15 timeouts, all on the emulated slaves, and two sensor-fault alarms (T/RH 12:12, wind 12:18). The overnight soak ran at about one timeout an hour. The mechanism is not established.
+
+**Fix:** before every pulse the harness now checks:
+- the wind override, the motor alarm or a recalibration: wait, for up to 5 min;
+- M3 at an end sensor or within 10 % of an end: put it back at the start position, and repeat the take-up pulse;
+- the unit out of STANDBY: stop.
+
+A pulse that fails with nothing in its way also stops the run, and a pulse that did not complete carries no displacement. The re-run worked first time: it waited out a recalibration and moved M3 back to 50 % before measuring. A stub test had missed that `at_wp02.Rig` reads the status as `rig.u.status()`, and the first guarded run died on it. Test against a stub shaped like the real object.
+
+**Rule:** a harness that measures a mechanism must check, before every sample, that nothing else has moved it. A safety function may move it at any time, and the harness will not be told. And read a sensor's own fault bit against what the test just did before calling it a hardware fault.
+
+**Where it lives:** `bin/at_wp_minmove.py` (`held()`, `off_mid()`, `recover()`); the safe-fail is T3's (`safety_monitor.cpp`), and the hook is T2's bench `CMD_PULSE`.
+
 ## 2026-10-02 — two stroke sessions FAILED at dawn and ended the soak's strokes; the firmware was right not to open
 
 **Problem:** the scatter-step-2 soak ran 9 of its 12 scripted sessions. Sessions 10 (07:16) and 11 (08:16) each waited 30 min for T6 to open M3 and were logged FAILED. After two failures in a row, `at_wp_strokes.py` stops, so session 12 never ran and the soak's last four hours had no strokes. The 12 h report still passed, because it judges counters, not the harness.
@@ -237,7 +261,7 @@ Only the open is excused. A close that does not happen is always a failure. The 
 
 **Problem:** AT-WP02 passes or fails by chance on the rig, at σ 0.55–0.75 % per stop. The plan put ~0.2 % of that on sampling and ~0.6 % on timing and run-on jitter. Its sampling figure was "T17 samples every 100 ms, 0.77 % of the stroke". On that split, extrapolating between readings looked as though it could buy little.
 
-**Root cause:** two numbers were read from the configuration instead of measured.
+**Root cause:** two numbers were read from the configuration instead of measured. *Corrected 2026-10-02:* the read interval HAD been measured. §3.6's floor-1 table in the same plan gives 170 ms, from AT-WP05, with the reason ("`vTaskDelay` is relative"). The 2.12.0 analysis used 100 ms anyway. So the lesson is sharper than "measure it": look for the measurement already in the document before reasoning from the setting.
 - **`poll_ms` is not T17's read interval.** It is a sleep AFTER each read. The read itself takes ~75 ms: 15 registers at 9600 baud, plus slave latency and `MODBUS_IFG_US`. So on the rig, where `poll_ms` is 100, T17 reads every ~180 ms.
 - **The encoder publishes a new value once per `40002` window**, 100 ms on the rig. So two readings 180 ms apart are usually 200 ms of travel apart, and a speed taken from two readings is off by ×0.56–1.43.
 

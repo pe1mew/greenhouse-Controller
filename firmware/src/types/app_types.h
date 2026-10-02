@@ -491,6 +491,14 @@ typedef enum {
                        *   read as a target means "close it", which is the
                        *   one mistake that must be impossible. `target_x10`
                        *   is read ONLY for this action. */
+#ifdef MODBUS_BENCH
+    CMD_PULSE,        /**< Bench only (2026-10-02, plan §3.6 floor 2): energise
+                       *   M3 for |`target_x10`| ms, the OPEN relay when it is
+                       *   positive and the CLOSE relay when negative, then stop
+                       *   part-way. The minimum-move measurement
+                       *   (bin/at_wp_minmove.py). T2 refuses it unless M3 is
+                       *   at rest. */
+#endif
 } cmd_action_t;
 
 /* ============================================================
@@ -504,7 +512,8 @@ typedef struct {
     cmd_source_t source;   /**< SRC_T3 or SRC_T6 */
     int16_t      target_x10; /**< CMD_TARGET only: aperture 0..1000 = 0..100.0 %.
                               *   Meaningless for every other action, and never
-                              *   read for one — see CMD_TARGET. */
+                              *   read for one — see CMD_TARGET. (Bench builds:
+                              *   CMD_PULSE's signed length in ms.) */
 } window_cmd_t;
 
 /** Q2 — keypad key event (T7 → T8). */
