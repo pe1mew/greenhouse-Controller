@@ -352,6 +352,15 @@ static inline void drive_epoch_bump(uint8_t ch)
     s_drive_epoch[ch]++;
     s_drive_start_ms[ch] = now;
     portEXIT_CRITICAL(&s_state_mux);
+    /* Plan §5e, the T17 latency (2.16.0): every drive of M3 starts here, so
+     * wake T17 here. At rest it sleeps IDLE_TICK_MS between looks, so its first
+     * reading of a drive came up to 500 ms after the start -- and a short
+     * correction was already past its aim by then (the run's check corrections
+     * overshot by 18-47 mm on the rig, 2026-10-03). T17 waits for the moving
+     * state itself: c->state is set just after this. */
+    if (ch == 2u && task_t17 != NULL) {
+        (void)xTaskNotifyGive(task_t17);
+    }
 }
 
 /** Energise the OPEN relay for channel ch (CLOSE relay cleared first). */

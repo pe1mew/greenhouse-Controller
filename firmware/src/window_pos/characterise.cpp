@@ -912,9 +912,16 @@ void characterise_tick(uint32_t now)
     if (!FF216_GUARDS) {                 /* fail-first bit 1: the run carries on */
         if (eg & EG1_BIT_WIND_OVERRIDE)  { run_end(r, CHAR_ERR_WIND); return; }
         if (eg & EG1_BIT_MOTOR_ALARM)    { run_end(r, CHAR_ERR_MOTOR_ALARM); return; }
-        if (eg & EG1_BIT_CALIBRATING)    { run_end(r, CHAR_ERR_CALIBRATING); return; }
     }
+    /* The hold BEFORE the recalibration: leaving STANDBY releases the hold and
+     * starts a recalibration, so both are true at once, and the cause is the
+     * hold. Found once T2 woke T17 at every drive start (2.16.0): T17 then woke
+     * on the recalibration's first relay and saw CALIBRATING first, so an
+     * operator who chose AUTOMATIC was told "a window recalibration ran". A
+     * recalibration under a hold still held (an alarm's clearance, an LCD
+     * logout) still ends the run as `calibrating`. */
     if (!dm_get_standby())           { run_end(r, CHAR_ERR_HOLD_LOST); return; }
+    if (!FF216_GUARDS && (eg & EG1_BIT_CALIBRATING)) { run_end(r, CHAR_ERR_CALIBRATING); return; }
 
     uint32_t ep = 0u;
     const t2_drive_t drv = t2_get_drive(2u, &ep, NULL);

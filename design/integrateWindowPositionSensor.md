@@ -3788,7 +3788,86 @@ record keeps the phases completed.
      studying the measurement is the operator's decision**, recorded here, not taken.
    - **The cruise speed is bimodal in this rig**: ~139 or ~122 mm/s, in either direction, from one
      traverse each. It feeds b₀'s read-interval term (floor 1); in these runs the lead term set b₀.
+   - **Order after the operator's decision of 2026-10-03:** the T17 latency fix (below) comes first,
+     then the soak, so one soak covers both. Step 5's stages are re-run on the images that carry the
+     fix. The results above were taken before it.
+   - **The re-run on the final images** (2026-10-03 20:20–22:00; release sha256 `cf8e7c80…`, bench
+     `b3ded03f…`, fail-first 1 `d59b3c51…`, 2 `c19a15db…`, 4 `d0359914…`):
+
+     | Stage | Result |
+     |---|---|
+     | release: refusals, hold, abort (5 phases), reboot, source | ALL PASS. Hold ended `hold_lost` again only after the guard reorder below; the first image with the fix ended it `calibrating` |
+     | release: full | 111 starts; **band 30 mm in round 1** (worst landing 17.5 mm); AT-WP02 spread 0.70 %, hysteresis −0.04 %; 21 of 21 SD rows match. FAIL: reversal loss 7.6 / 16.1 mm against the plan's 7–15 mm (still the operator's decision) |
+     | bench: refusals | ALL PASS. The injected fault, once T17's gate shut on it (26 s), is refused `sensor` |
+     | bench: sensor, alarm, moved, rota | ALL PASS. M3 driven by the target hook ends the run `m3_busy`; the alarm stage now waits out T2's 60 s guard and its recalibration; the ROTA gate was shut in 616 of 616 probes during the run |
+     | fail-first 1 (guards removed) | FAILS, as it must: the run kept RUNNING through the sensor's fault and its absence, and ended `no_start` (T2 refuses commands under an alarm) instead of `motor_alarm` |
+     | fail-first 4 (the gate ignores a run) | FAILS, as it must: the gate was OPEN in 582 of 582 probes during the run |
+     | fail-first 2 (no phase 4b) | b₀ 29 mm taken unchecked. **It did not fail:** all eight 36 mm corrections landed within 29 mm (at most +18.3). Its premise was the T17 latency, which is gone. 4b now guards the residual outliers (one of eight 40 mm corrections at +33.9 mm earlier), not the latency it was built around. Its two missing SD rows (51, 52: the check that did not run) are this build's artefact |
+     | wind | not run all evening: the emulated wind stayed at 0.0–0.9 m/s, below `v_max`'s minimum |
+
+     **Not exercised on hardware:** "calibration not valid". The injected fault leaves the verdict
+     valid, and no bench hook makes it invalid short of un-teaching the sensor. It is covered by the
+     code path and by the mock's greyed state.
 6. **The documents and the release, 2.16.0.**
+
+##### The T17 first-read latency: fixed in 2.16.0, as a change of its own
+
+**Decided** by the operator on 2026-10-03, after step 3 measured the latency: approved as a separate
+change, made before the soak ("T17 fix first, then the soak").
+
+**The defect.** At rest, T17 slept `IDLE_TICK_MS` (500 ms) between looks at T2. A drive that T2
+started just after T17 went to sleep was first read up to 500 ms later. Every drive the
+characterisation run commands is sent from T17's own loop, just before that sleep, so it was read
+the full 500 ms late. At the rig's ~139 mm/s that is ~70 mm. A correction shorter than that was past
+its aim before T2 had a single reading of it, and T2 cut it on its first reading. The run's checks
+measured the result: corrections of 40–50 mm overshot by 18–47 mm, and the rig's band came out at
+40 mm because of it (step 3). T6's own targeted drives were read 0–500 ms late, at random. On 5C88,
+at ~8.5 mm/s, 500 ms is ~4 mm, so there the cost is small. On the rig it set the band.
+
+**The fix:**
+- `drive_epoch_bump()` in T2, through which every drive of M3 starts (`relay_ch_open()` /
+  `relay_ch_close()`, so targets, pulses, CLOSE_ALL and the wind close alike), notifies T17.
+- T17's at-rest sleep became `wait_at_rest()`: `ulTaskNotifyTake()` with the same 500 ms timeout.
+  - **A race, and its guard.** T2 energises the relay a moment *before* it publishes the moving
+    state (`c->state` is set just after `relay_ch_open()`), and T17 may run on the other core in
+    between. So after a wake-up T17 gives T2 up to `WAKE_STATE_WAIT_MS` (20 ms) to publish it.
+    Without that, T17 would read "at rest" and sleep another 500 ms: the defect again, by chance.
+  - The idle read cadence (`IDLE_READ_MS`, 30 s) is time-based, so an early wake reads nothing
+    extra.
+- Fail-first bit 8 (`failfirst_216.h`) restores the plain sleep.
+
+**Measured on 2344, 2026-10-03.** Two bench images of the same source: bit 8 (the old sleep, sha256
+`94a05596…`) and the fix (`bfa44a35…`). Each did a full characterisation run at a 3 s rest, then
+eight corrections of 1.25 × 32 mm from rest in STANDBY. The bench stop log (`?cuts`) was read
+after each:
+
+| | before (bit 8) | after (the fix) |
+|---|---|---|
+| short targeted stops (≤ 5 %) cut on their FIRST reading, full run | **24 of 24**, the leaf 2.7–4.4 % (41–66 mm) into its drive by then | **0 of 8** |
+| the same after the eight corrections | 29 of 30 | 0 of 14 |
+| short stops at rest, past their target (full run) | median 2.25 % (34 mm), max 3.6 % (54 mm) | median 0.25 % (3.8 mm), max 1.5 % (22.5 mm) |
+| the band check | b₀ 28 mm failed, then 35, passed at **44 mm** (3 rounds) | b₀ **33 mm passed in round 1**, worst landing 22.9 mm |
+| motor starts for the whole run | 133 | 111 |
+| AT-WP02 (±15 % approaches: long moves) | spread 0.90 %, landing 0.26 % | spread 0.90 %, landing 0.30 % |
+| eight corrections of 40 mm, landing | −27.0 … **+55.3 mm**; one outside 32 mm | −27.2 … **+33.9 mm**; one just outside 32 mm |
+
+- **The defect is gone:** no short stop is cut on its first reading any more, and the run's band
+  falls from 44 to 33 mm. Long moves never suffered from it, and AT-WP02 is unchanged.
+- **What remains is smaller and has another cause.** T2 carries a reading forward only once it has
+  seen two readings of the drive (TSDS, the stop rule). With the fix the first reading lands at the
+  start, and the second ~180 ms (~25 mm) later. So a 40 mm correction can still be cut late: one of
+  the eight external corrections landed 33.9 mm past its target.
+  - The run's own check passed 33 mm with its eight. The band is therefore near the edge on this
+    rig, and the soak's no-hunting criterion (`bin/at_wp_hunt.py`) is what tells whether that
+    matters in ordinary running.
+  - On 5C88, at ~8.5 mm/s, every one of these distances is 16 times smaller.
+- **A side effect, found by step 5's re-run and fixed with it.** Choosing AUTOMATIC mid-run releases
+  the hold and starts a recalibration, so two of the run's guards become true together. The run
+  checked `calibrating` before the hold. Before the fix, T17 woke at random and usually saw the hold
+  first. With the fix it wakes on the recalibration's first relay and saw `CALIBRATING` first, so the
+  card said "a window recalibration ran" where the cause was the operator's choice. The hold is now
+  checked first, after the wind and the motor alarm. A recalibration while the hold is still held
+  (an alarm's clearance, an LCD logout) still ends the run `calibrating`.
 
 ## 6. Operator-facing surfaces
 

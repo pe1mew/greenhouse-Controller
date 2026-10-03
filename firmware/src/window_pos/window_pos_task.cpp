@@ -119,8 +119,14 @@ static const char *TAG = "T17";
 /** Never poll slower than this while travelling, however long the stroke. */
 #define POLL_MAX_MS          5000u
 
-/** Sleep between checks for "is anything moving?" while idle. */
+/** Sleep between checks for "is anything moving?" while idle. Since 2.16.0 T2
+ *  cuts it short at every drive start of M3 (see wait_at_rest()). */
 #define IDLE_TICK_MS          500u
+
+/** After that wake-up, how long T17 waits for T2 to publish the moving state:
+ *  T2 energises the relay a moment BEFORE it sets c->state, and T17 may run on
+ *  the other core in between. */
+#define WAKE_STATE_WAIT_MS     20u
 
 /**
  * Idle READ cadence (Phase 3, plan 3a).
@@ -250,6 +256,7 @@ static uint32_t s_fitted_checked_ms = 0u;
  * firmware/src/types/failfirst_212.h is where the bits are defined and
  * documented.** */
 #include "../types/failfirst_212.h"
+#include "../types/failfirst_216.h"   /* bit 8: T17 sleeps through a drive start (wait_at_rest()) */
 
 /* ---- bench test hook (gh#72): see windowpos_task_inject() ----------------- */
 #ifdef MODBUS_BENCH
@@ -775,6 +782,34 @@ static bool m3_travelling(void)
     window_state_t st[3];
     t2_get_window_states(st);   /* M1 = st[0], M2 = st[1], M3 = st[2] */
     return (st[2] == WIN_MOVING_OPEN || st[2] == WIN_MOVING_CLOSE);
+}
+
+/**
+ * @brief T17's sleep at rest: until the next idle tick, or until M3 starts.
+ *
+ * Plan §5e, the T17 latency (2.16.0). A plain IDLE_TICK_MS sleep meant the
+ * first reading of a drive came up to 500 ms after its start, and for every
+ * drive the characterisation run commands (from this task's own loop, just
+ * before this sleep) it came the full 500 ms late. At the rig's ~139 mm/s that
+ * is ~70 mm: a short correction was past its aim before T2 saw a single
+ * reading of it, which is what set the rig's measured band at 40 mm (step 3).
+ *
+ * T2 notifies this task at every drive start of M3 (drive_epoch_bump()). It
+ * energises the relay a moment before it publishes the moving state, so after
+ * a wake-up give it WAKE_STATE_WAIT_MS to do so; the stroke branch then reads
+ * at once. Fail-first bit 8 (failfirst_216.h) restores the plain sleep.
+ */
+static void wait_at_rest(void)
+{
+    if (FF216_T17_SLEEP) {
+        vTaskDelay(pdMS_TO_TICKS(IDLE_TICK_MS));
+        return;
+    }
+    if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(IDLE_TICK_MS)) > 0u) {
+        for (uint32_t i = 0u; i < WAKE_STATE_WAIT_MS && !m3_travelling(); i++) {
+            vTaskDelay(pdMS_TO_TICKS(1u));
+        }
+    }
 }
 
 /**
@@ -1626,7 +1661,7 @@ void task_window_pos(void *pvParameters)
                     }
                 }
             }
-            vTaskDelay(pdMS_TO_TICKS(IDLE_TICK_MS));
+            wait_at_rest();
             continue;
         }
 
