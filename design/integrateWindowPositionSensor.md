@@ -3191,10 +3191,10 @@ defect: it left T6 wanting M3 open. The rig's traverse to the end sensor is 11.6
 promotion), no reboot, and 19 param 251 rows all reading *confirmed after a full traverse* with no 249, 250
 or 252 row beside them. Detail in `bin/2.10.0/release-notes.md`.
 
-#### 5e. Characterising M3 on the unit — decided 2026-10-03, not built
+#### 5e. Characterising M3 on the unit — decided and designed 2026-10-03, not built
 
-Decided by the operator on 2026-10-03. It answers the choice §3.6 left open: how to measure on 5C88
-what was measured on the rig. **Nothing below is built.**
+Decided by the operator on 2026-10-03, and designed the same day. It answers the choice §3.6 left
+open: how to measure on 5C88 what was measured on the rig. **Nothing below is built.**
 
 **Why.** §3.6 lists what to measure once 5C88's sensor is fitted and taught (gh#77): AT-WP02 from
 both directions, the pulse sweep and the reversal loss. Every tool for that is bench-only: the pulse
@@ -3224,26 +3224,287 @@ sensor fitted, not taught, a teach running, the wind override, or M3 moving.
 
 | Phase | What it does | Gives |
 |---|---|---|
-| 1. Speed | Two long targeted moves, one each way | The speed per direction. Every later width is derived from it as a share of the stroke, not a fixed time, so one run fits the rig (20–300 ms) and 5C88 (~0.25–4 s) |
-| 2. Reversal loss | Long pulses that alternate direction | The travel lost on each reversal, per direction (rig: 10–12 mm) |
-| 3. Minimum move | Each width preceded by a take-up pulse in its own direction. The width halves until a pulse stops registering, then refines | Dead time and floor 2, per direction (rig: 15–21 ms; 30–35 ms, ~2 mm) |
-| 4. Repeatability | AT-WP02: ten approaches to one target, alternately from below and above | Spread and hysteresis, against the ±1 % requirement |
+| 1. Speed | Puts M3 at 20 %, then two long targeted moves: 20 → 80 % and back | The speed per direction; T17's read interval during a stroke; T2's first lead learning |
+| 2. Reversal loss | 16 pulses of 3 % of the window, in pairs that alternate direction | The travel lost on each reversal, per direction (rig: 10–12 mm) |
+| 3. Minimum move | Per direction, blocks of 5 same-direction pulses, each block after a take-up pulse. The width halves from 1 % of the window until a block has a pulse that did not move, then two refining widths | Floor 2 and the dead time per direction (rig: 30–35 ms, ~2 mm; 15–21 ms); the noise at rest |
+| 4. Repeatability | **4a**, AT-WP02: ten approaches to 50 %, alternately from 35 % and 65 %. **4b**, the band check: eight corrections just larger than the candidate band | 4a: spread, hysteresis, landing error. 4b: the deadband (below) |
 
-- **It runs in T17, like the teach** (`commission_tick()` drives the teach from T17's readings, §6.3).
-  T17 owns the encoder, so it reads the leaf when the run needs it, with no HTTP round trip and no
-  extra bus traffic. Commands go on Q1 with `SRC_OPERATOR_MANUAL`, as the teach's legs do.
-- **Its size, estimated:** about 150 motor starts, so on 5C88 about 1–3 h, mostly set by the rest
-  between starts.
-- **It aborts, with the reason shown and logged,** on any of these:
-  - the wind override, or any other CLOSE_ALL;
-  - a motor alarm;
-  - any other source moving M3: the LCD, or T6 after an operator chooses AUTOMATIC, which ends the
-    hold (§6.3);
-  - a sensor fault, or a gate that is not `ok`;
-  - the Abort button.
-- **It never carries on with a window that something else has moved.** On 2026-10-02 the wind
-  safe-fail closed M3 in the middle of the rig's harness run, and the harness went on pulsing it
-  against its end switch (§3.6, gotcha 2026-10-02).
+- **Every step has the same cycle:**
+  1. wait until the rest has passed since the last drive ended;
+  2. command a `CMD_TARGET` or `CMD_PULSE` on Q1 with `SRC_OPERATOR_MANUAL`, as the teach's legs do;
+  3. T2 must show the drive within 3 s;
+  4. wait for the drive's end: for a target, at most twice T2's stroke time; for a pulse, its width plus 3 s;
+  5. wait for the settle, T17's own rule (`SETTLE_BASE_MS` plus one measurement window);
+  6. read the leaf twice and average.
+
+  Positions are T17's live readings, never its cached snapshot (CLAUDE.md: measure positions live).
+- **Widths are a share of the window at phase 1's speed** (w = d / v), so one run fits the rig (1 % =
+  15 mm ≈ 128 ms) and 5C88 (1 % ≈ 15 mm ≈ 1.8 s). Nothing shorter than 10 ms is commanded.
+- **The leaf stays between 10 % and 90 %.** The pulse phases alternate direction, so the drift cancels.
+  If a step would still leave that band, a targeted move to 50 % comes first and counts as a start.
+  Nothing is pulsed against an end (the 2026-10-02 lesson).
+- **Phase 1:**
+  - the speed is the median of the encoder's own rate (`30012`) over the readings in the middle 60 % of
+    each move;
+  - T17's read interval is the median gap between consecutive stroke readings.
+- **Phase 2:**
+  - an uncounted take-up pulse opening comes first, then C C O O, four times. The first pulse of each
+    pair follows a reversal, the second does not.
+  - The reversal loss per direction = the mean of the same-direction pulses minus the mean of those
+    after a reversal.
+  - 3 % of the window is about four times the rig's slack, so a reversing pulse always moves the leaf
+    once its slack is taken up.
+- **Phase 3 follows `bin/at_wp_minmove.py`'s rules:**
+  - the noise is σ of six readings at rest; a pulse "moved" when it moved more than max(3 × noise,
+    1 mm);
+  - floor 2 is the shortest width, in an unbroken run from the longest, at which all five pulses
+    moved;
+  - the dead time comes from a least-squares line, displacement = v × (w − dead time), through those
+    widths;
+  - the take-up pulse moves the reversal loss plus 0.5 % of the window, at phase 1's speed.
+
+  It opens first, from ~40 %, then a targeted move to ~60 % comes before the closing half. That is
+  about 30–50 pulses per direction.
+- **Phase 4a is `bin/at_wp02.py` with the decided ±15 % starts:**
+  - the error is e = the resting position − 50 %;
+  - the spread is max − min, and PASSES at ≤ 2.0 % (the ±1 % requirement);
+  - the hysteresis is the mean from below minus the mean from above;
+  - the landing error is e_rms = √(mean e²).
+- **Its size, estimated:** about 110–160 starts. Phase 1 takes 3, phase 2 17, phase 3 60–100, 4a 20,
+  and 4b 8 per round (usually one or two rounds, at most five), plus a few repositioning moves. Motor
+  running time is about 6 × `travel_m3`: ~17 min on 5C88, ~80 s on the rig. The duration ≈ starts ×
+  rest + running time, so about 1.5 h on 5C88 at the default 30 s rest.
+
+##### The deadband: how it is derived
+
+**What the band must guarantee.** A correction is made only when the error exceeds the band (T2's
+"already there" in `ch_start_target()`, and `graded`'s "there"). So **a correction that lands outside
+the band is answered by one in reverse, and M3 hunts.** The band must be wider than the landing error of
+the smallest correction the controller makes.
+
+**Why computing it is not enough (found while designing this, 2026-10-03; read from the code, not yet
+measured).**
+- A correction shorter than T2's lead has its aim behind its start, so it is cut on the **first**
+  reading of its drive (`ch_start_target()`: "the shortest move this mechanism can make").
+- At rest, T17 looks for a stroke only once per `IDLE_TICK_MS` (500 ms). Before the drive's first
+  reading is published, it also reads the device's configuration.
+- That reading therefore arrives roughly 0.1–0.6 s after the relay closes, and a short correction
+  drives for that long:
+  - on the rig, at 117 mm/s, that is ~10–70 mm;
+  - on 5C88, at 8.8 mm/s, ~1–5 mm.
+- A band computed from floors 1 and 2 alone (rig: ~22 mm) would let short corrections on the rig land
+  outside it. AT-WP02 does not show this, because its approaches are long.
+- Waking T17 when T2 starts M3 would shrink this latency. That is not part of this work.
+
+**The rule:**
+1. **The candidate b₀** is the largest of the following, in mm, rounded up:
+   - **floor 1:** T17's read interval × the faster direction's speed (§3.6 derived it from `travel_m3`;
+     here it is measured);
+   - **floor 2:** the larger direction's floor-2 displacement;
+   - **3 × e_rms** from phase 4a: where a stop cut on position lands;
+   - **the larger of T2's two learned leads** after phase 4a. A correction larger than its lead has its
+     aim ahead of its start, so it is cut on position, not on its first reading.
+2. **The check (phase 4b), at b = b₀.**
+   - While the run lasts, T2 uses b as its band, through a RAM override in T4 that the run's end
+     clears.
+   - From rest, it makes eight corrections of 1.25 × b, alternating same-direction and reversing
+     (S R S R S R S R, net zero), each read once it has settled.
+   - It passes when every landing is within b of its target.
+3. **If one lands outside**, b rises by 25 % and the check repeats, at most four times.
+4. **The measured deadband is the b that passed**, rounded up to whole mm, within the setting's 1–200 mm.
+   If no b passes, or b would exceed 200 mm, the run derives no band. Its outcome then says so with
+   the figures, and the band in force does not change.
+
+- **One band for both directions, not direction-aware.** Half of the check's corrections reverse, so if
+  the reversal slack spoils a landing, the check raises the band. Under position control the slack
+  costs drive time, not accuracy: T2 drives until the leaf itself reaches the aim, because the encoder
+  rides on the leaf.
+- **The reversal loss is reported, not used in the band.** It sets phase 3's take-up width, and it
+  belongs in the commissioning record, where rope wear will show.
+- **Expected values, estimated and not measured:**
+  - on the rig, the learned leads (1.7–2.1 %, ~25–32 mm) set b₀, so the band should come out at
+    ~30 mm, against today's 20 mm;
+  - on 5C88, probably 10–25 mm, set by floor 1, the lead or the landing scatter.
+
+##### The deadzone setting: what the operator controls
+
+- **A new key, `deadzone_src_m3`:** 0 = typed, 1 = measured, default 1. It lives in the motor
+  namespace, takes one row in `cfg_desc.inc`, and has audit id 57, `LOG_PARAM_DEADZONE_SRC_M3`.
+  - **A key of its own, not a reserved value of `deadzone_m3`.** Firmware that does not know the key
+    ignores it, so a rollback to 2.15.x keeps the typed band. Older firmware would clamp a reserved 0
+    to 1 mm, which is the chattering case.
+- **The band in force:**
+  - the measured one, when the source is *Measured* and a complete run has derived one;
+  - otherwise the typed `deadzone_m3` (20 mm by default).
+
+  So a unit that never ran keeps exactly today's behaviour, and the first complete run changes it at
+  once.
+- **Who follows the band in force:** T2's arrival band, T6's end snap (gh#83) and `graded`'s "there",
+  all through `dm_m3_deadband_x10()`.
+- **T17's three detection checks keep the typed value:** rule 2's early-stop band, the end tests
+  behind a drive's verdict, and the at-rest movement row.
+  - They judge the end sensors and drift, not positioning.
+  - Every soak since 2.8.0 validated them at the typed 20 mm.
+  - A commissioning run should not change what the log reports as a fault.
+- **On the card:**
+  - the deadzone row gets a *Measured / Typed* select next to the typed value;
+  - a line says what is in force: "32 mm, measured 2026-10-05", or "20 mm, typed (no measurement
+    yet)";
+  - the typed field is never greyed, because it is the fallback and T17's band in both modes. The
+    tooltip says so.
+
+##### Where it runs, and what it may do
+
+- **A new module, `window_pos/characterise.{h,cpp}`, in every build**, beside `commission.cpp`. T17
+  drives it, as it drives the teach:
+  - `characterise_tick(now_ms)` on every pass of T17's loop (every 500 ms at rest), with no bus read:
+    the rest timer, T2's state and the EG1 guards;
+  - `characterise_reading(&r, now_ms)` with every reading T17 takes, beside `commission_tick()`;
+  - `characterise_wants_prompt_read()`, true only from a command until its settle reads are taken.
+    It is false during the rest between starts, so a 1–3 h run does not hold the bus at two reads a
+    second.
+- **The hold is the teach's** (`DM_STANDBY_HOLD_TEACH`, owned by `commission.cpp`).
+  - A run takes it as a teach does, and `hold_check()` counts a running run as running.
+  - A teach refuses while a run is active, and a run refuses while a teach is. *Abort* ends whichever
+    is running.
+- **T2's pulse leaves bench-only:** `CMD_PULSE`, its esp_timer cut from the relay's own on edge, the
+  shortened loop delay and the 32-entry pulse log.
+  - In a release build only the run posts it. The HTTP pulse route and `?pulses` stay under
+    `MODBUS_BENCH`.
+  - The release verification checks the image for bench routes, as 2.15.1's did.
+- **T4 gains:**
+  - phase 4b's band override (`dm_m3_band_override()`, RAM);
+  - the source key;
+  - the measured band (`dm_m3_set_measured_band()`), set at boot from the record and by the run.
+- **ROTA's quiet gate waits for the run** (`quiet_gate()`, `ota_client.cpp`, gains
+  `commission_busy()`). Today the gate checks for M3 moving, the EG1 alarms and open sessions. So once
+  the admin has logged out, an update could apply between two steps of a run, and the reboot would end
+  it. The same gap exists for a teach.
+- **It works in either control mode.** T2 accepts a target whenever the position is trusted
+  (`dm_m3_position()`), and that depends on the sensor's gate, not on `ctrl_mode_m3`.
+
+##### Refusals and aborts
+
+| Reason | Refused at start | Ends a run |
+|---|---|---|
+| `not_fitted`; `not_taught` (calibration not VALID); `teach_running` | ✓ | |
+| `m3_busy`: M3 moving, or moved by anything but the run (the LCD, T3, T6) | ✓ | ✓ |
+| `sensor`: a fault, no answer, a gate that is not `ok`, a stale reading | ✓ | ✓ |
+| `both_ends`, `wind`, `motor_alarm`, `calibrating` | ✓ | ✓ |
+| `hold_lost`: STANDBY ended by an explicit mode choice | | ✓ |
+| `no_start`: T2 did not start a command within 3 s | | ✓ |
+| `timeout`: a drive outlasted its limit | | ✓ |
+| `end_reached`: an end sensor made during a pulse phase | | ✓ |
+| `no_move`: phase 3's longest width did not move the leaf | | ✓ |
+| `operator`: the Abort button | | ✓ |
+
+After an abort the run commands nothing more. A drive already started ends by its own rule, and the
+record keeps the phases completed.
+
+##### What is stored and logged
+
+- **One NVS record, written once at the end of every run, complete or aborted.** It is the versioned
+  blob `m3char` in the motor namespace, in two parts:
+  - **the last run:** when, the firmware, `travel_m3`, the window, the rest, the outcome, the phases
+    completed, and each phase's results per direction;
+  - **the measured band of the last complete run, with its date.** An aborted run replaces the first
+    part but not this one.
+
+  An IO0 reset at stage 2 or 3 erases the record with the motor settings: it belongs to the
+  installation, as they do. A reboot during a run loses that run. The hold is RAM-only, as gh#65
+  requires, and nothing is written until the end.
+- **SD log rows:** `ALARM` ch 6, **param 253** (`LOG_PARAM_WPOS_CHAR`), with value_a saying what the row
+  is and value_b giving the value. They are written at the end of each phase, about 25 per run:
+
+  | value_a | value_b |
+  |---|---|
+  | 1 / 2 | run started (the rest, s) / ended (0 complete, else the reason) |
+  | 10 / 11 | speed opening / closing, 0.1 mm/s |
+  | 12 | T17's read interval during a stroke, ms |
+  | 20 / 21 | reversal loss opening / closing, 0.1 mm |
+  | 30 / 31 | dead time opening / closing, ms |
+  | 32 / 33 | floor-2 width opening / closing, ms |
+  | 34 / 35 | floor-2 displacement opening / closing, 0.1 mm |
+  | 40 / 41 / 42 | AT-WP02 spread / hysteresis (signed) / e_rms, 0.01 % |
+  | 50 / 51 / 52 | b₀, mm / check rounds / worst landing in the last round, 0.1 mm |
+  | 60 / 61 | the derived band, mm (0 = none) / the band in force after the run, mm |
+
+  - It spends one of the ALARM band's last three params (`app_types.h`: 253–255 were free).
+  - The new key's config audit row is param 57.
+  - `logparser.py` learns both in the same change.
+
+##### The API and the GUI
+
+- **`POST /api/diag/commission`** gains `{"action":"characterise","rest_s":N}`, and `abort` ends a teach
+  or a run. It stays admin-only.
+- **`GET /api/diag/commission`** gains a `char` object:
+  - the state, the phase, the starts made and estimated, the time left and the reason;
+  - the inputs for the card's estimate (`starts_est`, `run_s_est`);
+  - the stored record.
+
+  It is sent in chunks, as `?cuts` is, so the handler's stack buffer does not grow. The card already
+  polls this route every second.
+- **The card**, inside `#cm-body` after the teach:
+  - the rest field (s, default **30**, 2–300) and the estimate ("about 150 starts and 1 h 35 min; M3
+    moves throughout; automatic control pauses");
+  - Start (moves M3), with a confirm dialog like the teach's, and Abort;
+  - the progress line, and the results table with its date and build.
+
+  When a run cannot start, the card is greyed with the reason above it (`#ch-unavailable` above
+  `#ch-body`, gh#74).
+- **The rest's default of 30 s** allows at most 120 starts an hour and gives ~1.5 h on 5C88. It is a
+  guess at a safe pace for an unknown motor, not a rating. On the rig the operator lowers it (3 s); on
+  site it should come from the motor's nameplate.
+- **The mock** (`webUiMock/mock_server.py`) learns the actions, the `char` object, the new key and its
+  limits.
+
+##### Choices made in this design, for the operator to confirm
+
+1. **Phase 4 gains the band check (4b), and b₀ includes T2's lead.** This goes beyond the four phases
+   as decided. It adds 8–40 starts (usually 8–16), and it is what makes the derived band safe against
+   the latency above.
+2. **T17's detection checks keep the typed value.**
+3. **A check that never passes derives no band**, and the band in force stays.
+4. **The rest's default is 30 s**, within 2–300 s.
+5. **ROTA's quiet gate waits for a teach or a run.** That also closes the same gap for the teach.
+6. **A run works in Timed mode too.**
+
+##### Files that change
+
+- `firmware/src/window_pos/characterise.{h,cpp}` (new); `commission.{h,cpp}` (the shared hold, mutual
+  exclusion, `commission_busy()`); `window_pos_task.cpp` (the three hooks)
+- `firmware/src/relay_controller/relay_controller.{h,cpp}` and `types/app_types.h` (`CMD_PULSE` in every
+  build; params 57 and 253)
+- `firmware/src/data_manager/data_manager.{h,cpp}`, `firmware/config/cfg_desc.inc`, `cfg_defaults.h`
+  (the source key, the band in force, the override, the measured band, the record)
+- `firmware/src/ota_client/ota_client.cpp` (the quiet gate)
+- `firmware/src/web_server/web_server.cpp`; `firmware/data/index.html`, `app.js`, `style.css` (the card,
+  the deadzone row, *M3 control* moved)
+- `drivers/m3Char/` (new): the analysis as a host-testable library with its native suite, and its
+  `firmware/components/m3Char` proxy, following `ventModel`
+- `webUiMock/mock_server.py`; `log/logparser.py` and `logparser.md`; `bin/at_wp_char.py` (new harness)
+- The FRS §5.3d, the TSDS §5.16 and its T17 section, and the beheerder manual (the commissioning chapter,
+  the deadzone, the table of M3 groups). The boer manual changes only if it says where STANDBY comes
+  from. Also `memory/before-you-start.md` §1 and §5, CLAUDE.md's M3 row, the changelog and
+  `bin/2.16.0/release-notes.md`
+
+##### Acceptance tests (rig, release build; fail-first on a bench build)
+
+| Test | How | Must show |
+|---|---|---|
+| Host | `pio test -e native` in `drivers/m3Char`, fed the archived raw data (Shuttle2 `~/ghc-soak/minmove_2026-10-02/` and `scatter_2026-10-01/`) | the harnesses' figures: floor 2 30/35 ms, dead time 15/21 ms, speed 117/122 mm/s, the AT-WP02 spreads and hysteresis |
+| Full run | `bin/at_wp_char.py` on a **release** build on 2344, rest 3 s | complete; speed within 5 % of §3.6; reversal loss 7–15 mm; floor 2 ≤ 50 ms; AT-WP02 ≤ 2.0 %; a band derived; the record survives a reboot; the log rows match the record |
+| Refusals | not fitted, calibration not valid, a teach running, M3 moving | refused with the reason; no hold taken; M3 never moves |
+| Operator abort | Abort once in each phase | no start after it; the record keeps the phases completed; the hold ends as the teach's does |
+| Moved by something else | the LCD's manual control during a run (a person at the rig); AUTOMATIC chosen during a run | `m3_busy` / `hold_lost`, and no start after it |
+| Safety | wind: `v_max` set below the emulated wind and restored (the emulator is left alone); the sensor's fault and absence by the existing bench injections; the motor alarm by a bench injection, added if none exists | ended with the reason; no start after it. **Fail-first:** a bench bit that disables the guards lets the run carry on, and the harness sees it |
+| Reboot | a power cycle during a run | after the boot: no run, no STANDBY, the previous record intact |
+| ROTA | an update offered while a run continues after logout | T16 applies only after the run ends. **Fail-first:** without `commission_busy()` it applies during the run |
+| Band source | Typed ↔ Measured; Measured with no record | T2's "target armed" line and the card show the band in force; with no record, the typed value |
+| Rollback | 2.15.1 pushed back, then 2.16.0 again | 2.15.1 runs on the typed band; 2.16.0 restores the measured one |
+| The latency, and the check | corrections just above the floors-only band (~22 mm) on the rig. **Fail-first:** a bench bit that skips 4b | this measures the latency claimed above. Without 4b, short corrections land outside the band; with it, none do |
+| GUI | the release build and the mock | greyed with the reason above; *M3 control* under the M3 heading; the estimate; the confirm dialog |
+| Soak | ≥ 12 h in mode 2 with the measured band in force | every counter 0; no targeted stop answered by an opposite correction to the same target; every decision conforms to `graded` v2 |
 
 ##### What follows from the decisions
 
@@ -3258,32 +3519,23 @@ sensor fitted, not taught, a teach running, the wind override, or M3 moving.
 - ***M3 control* leaves `#wpos-dep`**, so it is no longer greyed when no sensor is fitted. It stays
   usable, since Timed always works. `#m3-mode-now` moves with it and says when Linear is set but not
   in force (gh#85). The beheerder manual's table of the M3 groups changes with it.
-- **The release is a minor one (2.16.0):** a new admin capability and an NVS record.
+- **The release is a minor one (2.16.0):** a new admin capability, a new key and an NVS record.
 - **On 5C88 it needs two things:** the sensor fitted and taught (gh#77), and a promotion that carries
   this release. The promotion needs the release comparison against 2.3.1 and an explicit instruction
   (§7). On the rig it can be built and tested now: the run should reproduce §3.6's figures by itself,
   and those figures are its acceptance test.
 
-##### Still to design, before any code
+##### Build order
 
-- **The derivation rule.** §3.6 makes the deadband the larger of floor 1 (sampling, derived from
-  `travel_m3`) and floor 2. On 5C88 the reversal loss probably sets it, but only for a correction that
-  reverses direction. Whether the band becomes direction-aware is open.
-- **Which consumers follow the measured value.** Besides T2 and T6, T17 reads `deadzone_m3_mm`
-  directly. It uses it for checks that detect rather than control: rule 2's early-stop band, the end
-  tests behind a drive's verdict, and the at-rest movement row.
-- **How *Measured* is stored:** its own key, or a reserved value of `deadzone_m3` (0 is free, since the
-  minimum is 1). Either way it is one row in `cfg_desc.inc`.
-- **The NVS record:** what a result holds (per phase and direction, the date, the build), and whether
-  an IO0 reset erases it.
-- **The rest's default and bounds,** and the duration shown before Start. The production motor's
-  duty rating is not known here, so the default must be safe without it.
-- **The log rows:** appended codes with their own `param_id`, and the `logparser.py` branch in the same
-  change.
-- **The tests:**
-  - on a release build on the rig, because gh#77's trap was hooks compiled into bench builds only;
-  - each abort path, fail-first;
-  - then the derived deadband's own fail-first and soak.
+1. **The analysis first**, as `drivers/m3Char`, until its native suite reproduces the harnesses' figures
+   from the archived data.
+2. **T2:** the pulse in every build. **T4:** the key, the band in force, the override and the record.
+   **T16:** the gate.
+3. **`characterise.cpp` and T17's hooks**, and the shared hold in `commission.cpp`.
+4. **The route, the card, the mock and `logparser.py`.**
+5. **The rig:** the tests above on a release build, and the fail-firsts on a bench build. Then the soak,
+   with the measured band in force.
+6. **The documents and the release, 2.16.0.**
 
 ## 6. Operator-facing surfaces
 
@@ -3449,7 +3701,8 @@ Note what production logging unlocks that the rig cannot: a **real** 171 s trave
    floor 1 and below the rope's 10–12 mm reversal slack (§3.6). The value itself
    is still to be chosen. **Decided 2026-10-03:** measured on each unit by a run in the
    commissioning route, with a typed value as the override; 20 mm until a run has
-   completed (§5e). The derivation rule is still to be designed.
+   completed (§5e). The derivation rule was designed the same day (§5e, *The deadband: how it
+   is derived*); it is not built.
 9. ~~**PID or fuzzy** for the central algorithm, and how a mixed
    discrete/continuous plant is expressed to it.~~ **Decided 2026-09-25 (operator): `graded`.** It sets M3's
    opening in proportion to demand, on top of the stepped law, which keeps M1 and M2
