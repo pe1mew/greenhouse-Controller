@@ -3559,7 +3559,43 @@ record keeps the phases completed.
    - The `firmware/components/m3Char` proxy comes with its first consumer, in step 3. Until then
      nothing in the firmware compiles the library, as with `ventModel` before 2.12.0.
 2. **T2:** the pulse in every build. **T4:** the key, the band in force, the override and the record.
-   **T16:** the gate.
+   **T16:** the gate. **DONE 2026-10-03.**
+   - **T2:** `CMD_PULSE`, the relay-edge stamps, the pulse log, `pulse_tick()`/`pulse_reap()` and the
+     shortened loop delay are now in every build. Only the stop log (`?cuts`) stays bench-only. The
+     release image carries the pulse handling, and none of the bench routes or hooks.
+   - **T4:** `deadzone_src_m3` is one row in `cfg_desc.inc`: default 1, audit id 57, published,
+     `check_cfg_desc.py` PASS with 52 keys and 41 published. `dm_m3_deadzone()` returns the band in
+     force and its source (typed, measured, unmeasured, override), and `dm_m3_deadband_x10()` reads
+     it. The record is `m3char_record.h`: one versioned blob `m3char` in the motor namespace,
+     ignored whole if its version or size differs. `nvs_load_motor()` loads it, so the IO0 stage-2
+     reload clears it too. `dm_m3char_save()` and `dm_m3_band_override()` are what the run will
+     call.
+   - **T16:** `quiet_gate()` waits for `commission_busy()`, which is true while a teach is
+     starting or running. The run joins it in step 3.
+   - **Also:**
+     - `GET /api/diag/commission` reports `dz`: the band in force, its source, and the typed and
+       measured values.
+     - `/api/config` publishes the key, and the mock and `logparser.py` (param 57, "typed" /
+       "measured") learned it.
+     - A bench build has two test hooks, `{"meas_band_mm":N}` and `{"band_override_mm":N}`, until
+       the run exists.
+   - **On 2344, bench image sha256 `704e8d93…`, with `bin/at_wp_band.py` (new): ALL PASS.**
+     - The key round-trips 0 and 1, and its limits read 0–1.
+     - `dz` names typed, unmeasured, measured and override, with the right band each time.
+     - **T2 obeys the band in force:** a 2.0 % correction was "already there" under a 40 mm
+       measured band, and moved M3 under the typed 20 mm (50.3 → 51.9 %). A 2.7 % correction was
+       "already there" under a 60 mm override, and moved M3 once the override cleared
+       (51.9 → 49.5 %).
+     - A 100 ms pulse measured 100.48 ms at the relay.
+     - **A stored 40 mm band came back after a reboot,** then cleared.
+
+     The rig ended with every setting as found, `deadzone_src_m3` 1, and no measured band.
+   - **Not exercised on hardware:** the quiet gate's new condition. It needs an update pending
+     while a teach runs after logout, and a teach rewrites the calibration (the operator's call).
+     Step 5's ROTA test, with its fail-first, covers it once the run exists.
+   - **Side finding:** pushing the bench image, a refused asset upload (my zip used compressed
+     entries) left the asset-only retry failing with "inactive LittleFS remount after format
+     failed" until a reboot. Gotcha 2026-10-03; T13's path, not investigated.
 3. **`characterise.cpp` and T17's hooks**, and the shared hold in `commission.cpp`.
 4. **The route, the card, the mock and `logparser.py`.**
 5. **The rig:** the tests above on a release build, and the fail-firsts on a bench build. Then the soak,

@@ -35,6 +35,7 @@
 #include "../relay_controller/relay_controller.h" /* 3.8 quiet gate — t2_get_window_states */
 #include "../web_server/web_server.h"           /* 3.8 quiet gate — web_any_active_session_except (gh#41) */
 #include "../ui_display/ui_display.h"           /* 3.8 quiet gate — ui_pin_session_active */
+#include "../window_pos/commission.h"           /* plan §5e quiet gate — commission_busy */
 
 static const char *TAG = "T16_OTA";
 
@@ -544,6 +545,11 @@ static bool quiet_gate(void)
     if (b & (EG1_BIT_WIND_OVERRIDE | EG1_BIT_MOTOR_ALARM | EG1_BIT_CALIBRATING)) return false;
     if (web_any_active_session_except(s_exempt_token)) return false;  /* gh#41: exempt the triggering session */
     if (ui_pin_session_active())  return false;
+    /* Plan §5e: a teach (and, from step 3, a characterisation run) carries on
+     * after its admin logs out, holding STANDBY. Between two of its moves M3
+     * is at rest and no session is open, so every check above passes -- and
+     * the reboot that follows an apply would end the run. */
+    if (commission_busy())        return false;
     return true;
 }
 

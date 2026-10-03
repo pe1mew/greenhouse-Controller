@@ -324,6 +324,14 @@ bool commission_owns_teach(void)
     return v;
 }
 
+bool commission_busy(void)
+{
+    portENTER_CRITICAL(&s_mux);
+    const bool v = s_starting || teach_active(s_st.state);
+    portEXIT_CRITICAL(&s_mux);
+    return v;
+}
+
 bool commission_wants_prompt_read(void)
 {
     portENTER_CRITICAL(&s_mux);

@@ -112,6 +112,7 @@ static const char K_DEADZONE_M3[]     = "deadzone_m3";
 static const char K_WPOS_FITTED_M3[]  = "wpos_fitted_m3";
 static const char K_CTRL_MODE_M3[]    = "ctrl_mode_m3";
 static const char K_MIN_INTV_M3[]     = "min_intv_m3";
+static const char K_DEADZONE_SRC_M3[] = "deadzone_src_m3";   /* 15 chars: NVS's limit */
 
 /* System namespace */
 static const char K_POLL_INTERVAL[]    = "poll_interval";
@@ -740,6 +741,8 @@ static void nvs_load_wind(void)
  * support int16 arrays; the parallel-arrays pattern keeps the code
  * compact without sacrificing per-channel granularity.
  */
+static void m3char_band_load(void);   /* plan §5e, with dm_m3_deadband_x10() */
+
 static void nvs_load_motor(void)
 {
     /* The parallel ktr[]/kdo[]/kdc[] and def_tr[]/def_do[]/def_dc[] arrays are
@@ -747,6 +750,10 @@ static void nvs_load_motor(void)
      * on its own row, so M1/M2/M3 are three rows rather than three positions
      * that had to stay aligned across six arrays. */
     cfg_load_group(NVS_NS_MOTOR, false);
+    /* Plan §5e: the characterisation record lives in this namespace too, so
+     * it is read here -- at boot, and by every reload, which is what makes an
+     * IO0 reset that erased it also clear the measured band in force. */
+    m3char_band_load();
 }
 
 /** @brief Load NVS_NS_SYSTEM core keys (poll interval, location, TZ, LED) into s_cfg. */
@@ -1781,15 +1788,132 @@ uint16_t dm_m3_deadband_x10(void)
     commission_status(&cs);
     if (cs.window_mm == 0u) { return 0u; }
 
-    cfg_shadow_t cfg;
-    dm_cfg_snapshot(&cfg);
-    if (cfg.deadzone_m3_mm <= 0) { return 1u; }
+    /* Plan §5e: the band IN FORCE, typed or measured or a run's check band;
+     * until then this read `deadzone_m3_mm` directly. */
+    dm_m3_dz_t dz;
+    dm_m3_deadzone(&dz);
+    if (dz.mm == 0u) { return 1u; }
 
     /* band[0.1 %] = deadzone[mm] / window[mm] x 1000 */
-    int32_t band = ((int32_t)cfg.deadzone_m3_mm * 1000) / (int32_t)cs.window_mm;
+    int32_t band = ((int32_t)dz.mm * 1000) / (int32_t)cs.window_mm;
     if (band < 1)   { band = 1; }
     if (band > 500) { band = 500; }   /* half the travel is not a band any more */
     return (uint16_t)band;
+}
+
+/* ---- Plan §5e: the measured band, the check override, the record ----------
+ *
+ * The measured band is the last COMPLETE characterisation run's, from the
+ * record in NVS: loaded with the motor settings (boot, and every reload, so
+ * an IO0 reset that erases the record also clears it here) and replaced when
+ * a run saves a new record. The override is the run's own, for phase 4b.
+ * Both are read by T2, T6 and the web task, and written by T4 and T17, so
+ * they sit under a spinlock rather than MX4. */
+static portMUX_TYPE s_dz_mux = portMUX_INITIALIZER_UNLOCKED;
+static uint16_t     s_meas_band_mm;      /* 0 = no complete run */
+static uint32_t     s_meas_band_when;
+static uint16_t     s_band_override_mm;  /* 0 = none */
+
+void dm_m3_deadzone(dm_m3_dz_t *out)
+{
+    if (out == NULL) { return; }
+    cfg_shadow_t cfg;
+    dm_cfg_snapshot(&cfg);
+    const uint16_t typed = (cfg.deadzone_m3_mm > 0) ? (uint16_t)cfg.deadzone_m3_mm : 0u;
+
+    portENTER_CRITICAL(&s_dz_mux);
+    const uint16_t meas = s_meas_band_mm;
+    const uint32_t when = s_meas_band_when;
+    const uint16_t ov   = s_band_override_mm;
+    portEXIT_CRITICAL(&s_dz_mux);
+
+    out->typed_mm      = typed;
+    out->measured_mm   = meas;
+    out->measured_when = when;
+    if (ov != 0u) {
+        out->mm = ov;     out->source = M3_DZ_OVERRIDE;
+    } else if (cfg.deadzone_src_m3 != 0 && meas != 0u) {
+        out->mm = meas;   out->source = M3_DZ_MEASURED;
+    } else if (cfg.deadzone_src_m3 != 0) {
+        out->mm = typed;  out->source = M3_DZ_UNMEASURED;   /* until a run has measured one */
+    } else {
+        out->mm = typed;  out->source = M3_DZ_TYPED;
+    }
+}
+
+const char *dm_m3_dz_source_name(m3_dz_source_t s)
+{
+    switch (s) {
+    case M3_DZ_TYPED:      return "typed";
+    case M3_DZ_MEASURED:   return "measured";
+    case M3_DZ_UNMEASURED: return "unmeasured";
+    case M3_DZ_OVERRIDE:   return "override";
+    default:               return "unknown";
+    }
+}
+
+void dm_m3_band_override(uint16_t mm)
+{
+    portENTER_CRITICAL(&s_dz_mux);
+    const uint16_t was = s_band_override_mm;
+    s_band_override_mm = mm;
+    portEXIT_CRITICAL(&s_dz_mux);
+    if (mm == was) { return; }
+    if (mm != 0u) {
+        ESP_LOGW(TAG, "M3 band override: %u mm in force (a characterisation check)",
+                 (unsigned)mm);
+    } else {
+        ESP_LOGW(TAG, "M3 band override cleared (was %u mm)", (unsigned)was);
+    }
+}
+
+bool dm_m3char_load(m3char_rec_t *out)
+{
+    if (out == NULL) { return false; }
+    m3char_rec_t rec;
+    size_t len = sizeof(rec);
+    if (nvs_cfg_get_blob(NVS_NS_MOTOR, M3CHAR_REC_KEY, &rec, &len) != NVS_CFG_OK) {
+        return false;     /* none, or a larger (newer) record this build cannot read */
+    }
+    if (len != sizeof(rec) || rec.version != M3CHAR_REC_VERSION) {
+        ESP_LOGW(TAG, "m3char record ignored: version %u, %u bytes (this build reads "
+                      "version %u, %u bytes)", (unsigned)rec.version, (unsigned)len,
+                 (unsigned)M3CHAR_REC_VERSION, (unsigned)sizeof(rec));
+        return false;
+    }
+    *out = rec;
+    return true;
+}
+
+/** From nvs_load_motor(): take the measured band from the stored record. */
+static void m3char_band_load(void)
+{
+    m3char_rec_t rec;
+    const bool have = dm_m3char_load(&rec);
+    portENTER_CRITICAL(&s_dz_mux);
+    s_meas_band_mm   = have ? rec.meas_band_mm : 0u;
+    s_meas_band_when = have ? rec.meas_when : 0u;
+    portEXIT_CRITICAL(&s_dz_mux);
+    if (have && rec.meas_band_mm != 0u) {
+        ESP_LOGI(TAG, "M3 measured band %u mm (measured by %.16s)",
+                 (unsigned)rec.meas_band_mm, rec.meas_fw);
+    }
+}
+
+bool dm_m3char_save(const m3char_rec_t *rec)
+{
+    if (rec == NULL || rec->version != M3CHAR_REC_VERSION) { return false; }
+    if (nvs_cfg_set_blob(NVS_NS_MOTOR, M3CHAR_REC_KEY, rec, sizeof(*rec)) != NVS_CFG_OK) {
+        ESP_LOGE(TAG, "m3char record NOT saved: the measured band in force is unchanged");
+        return false;
+    }
+    portENTER_CRITICAL(&s_dz_mux);
+    s_meas_band_mm   = rec->meas_band_mm;
+    s_meas_band_when = rec->meas_when;
+    portEXIT_CRITICAL(&s_dz_mux);
+    ESP_LOGW(TAG, "m3char record saved: outcome %u, phases 0x%02x, measured band %u mm",
+             (unsigned)rec->outcome, (unsigned)rec->phases, (unsigned)rec->meas_band_mm);
+    return true;
 }
 
 uint16_t dm_m3_window_mm(void)

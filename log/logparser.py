@@ -149,6 +149,10 @@ _PARAM = {
     # REPLACES dwell_open_m3 and dwell_close_m3 while linear control is in
     # force, so a log that shows this changing is showing M3's dwell change.
     55: ("min_intv_m3",     "s"),
+    # Plan 5e - where M3's deadband comes from: 0 typed (deadzone_m3), 1
+    # measured by the characterisation run (the default; deadzone_m3 still
+    # applies until a run has measured one).
+    57: ("deadzone_src_m3", ""),
 
     # ---- Modbus bus performance indicators (gh#66 Part 2, fw 2.8.0) -------
     # These are NOT config params. They ride on LOG_SYSTEM value_a = 31, where
@@ -501,6 +505,8 @@ def _decode_setpoint(row: dict) -> str:
                 return "fitted" if v else "not fitted"
             if param_id == 53:   # ctrl_mode_m3 — 2.12.0
                 return "linear (mode 2)" if v else "timed (mode 1)"
+            if param_id == 57:   # deadzone_src_m3 — plan 5e
+                return "measured" if v else "typed"
             if param_id == 33:   # status_expose — hex bitmask
                 return f"0x{v:02X}"
             return f"{v} {unit}".strip()

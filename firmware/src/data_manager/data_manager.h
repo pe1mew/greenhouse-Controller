@@ -69,6 +69,7 @@
 #include <stdbool.h>
 #include <time.h>    /* time_t — used by dm_set_manual_time (alpha.6.7) */
 #include "../types/app_types.h"
+#include "m3char_record.h"   /* plan §5e — the characterisation record T4 keeps */
 
 /* ============================================================
  * T4 task notification bits
@@ -149,9 +150,16 @@ typedef struct {
                                     *  "~0", the at-end checks, the verdict;
                                     *  2.8.0 on); since 2.12.0 T4 turns it
                                     *  into M3's arrival band for T2, T6 and
-                                    *  the law (dm_m3_deadband_x10()). Still a
-                                    *  fixed default, not derived from
-                                    *  travel_m3 (plan 3.6). */
+                                    *  the law (dm_m3_deadband_x10()). Since
+                                    *  plan §5e it is the TYPED band: the one
+                                    *  in force unless `deadzone_src_m3` is
+                                    *  measured and a run has measured one.
+                                    *  T17's checks always use it. */
+    int16_t  deadzone_src_m3;     /**< Plan §5e: where M3's band comes from.
+                                    *  0 = `deadzone_m3`, as typed; 1 = the
+                                    *  characterisation run's measurement
+                                    *  (the default), with `deadzone_m3` in
+                                    *  force until a run has derived one. */
     int16_t  min_intv_m3;         /**< 2.12.0: the linear dwell, seconds. Mode 2
                                    *   only, where it replaces BOTH of M3's
                                    *   dwells, open and close (ch_dwell_ms() in
@@ -424,11 +432,72 @@ bool dm_m3_ctrl_mode_eval(m3_mode_reason_t *out_reason);
  * decides whether a move is worth making with it — two conversions would
  * eventually disagree, and the disagreement would look like a stuck window.
  *
+ * The millimetres are the band IN FORCE (dm_m3_deadzone()): the typed
+ * `deadzone_m3`, a measured band, or a characterisation run's check band.
+ *
  * @return the band in 0.1 %, at least 1; **0 when the window has never been
  *         taught**, which callers must read as "positioning is not possible"
  *         rather than "no deadband".
  */
 uint16_t dm_m3_deadband_x10(void);
+
+/** Where the band in force comes from (plan §5e). */
+typedef enum {
+    M3_DZ_TYPED = 0,    /**< `deadzone_src_m3` = typed: `deadzone_m3` */
+    M3_DZ_MEASURED,     /**< measured, and a complete run derived one */
+    M3_DZ_UNMEASURED,   /**< measured, but no complete run yet: `deadzone_m3` */
+    M3_DZ_OVERRIDE,     /**< a characterisation run is checking a band (phase 4b) */
+} m3_dz_source_t;
+
+typedef struct {
+    uint16_t       mm;              /**< the band in force */
+    m3_dz_source_t source;
+    uint16_t       typed_mm;        /**< `deadzone_m3` */
+    uint16_t       measured_mm;     /**< the last complete run's; 0 = none */
+    uint32_t       measured_when;   /**< its Unix time; 0 = none, or the clock was not set */
+} dm_m3_dz_t;
+
+/**
+ * @brief M3's band in force, in mm, and where it comes from (plan §5e).
+ *
+ * **Only positioning follows it:** T2's arrival band, T6's end snap (gh#83)
+ * and the law's "there", all through dm_m3_deadband_x10(). T17's detection
+ * checks (rule 2's band, the end tests behind a verdict, the at-rest
+ * movement row) read the typed `deadzone_m3` themselves, so a measurement
+ * never changes what the log reports as a fault.
+ */
+void dm_m3_deadzone(dm_m3_dz_t *out);
+
+/** @brief "typed", "measured", "unmeasured" or "override"; never NULL. */
+const char *dm_m3_dz_source_name(m3_dz_source_t s);
+
+/**
+ * @brief Put a band in force for a characterisation run's check (phase 4b).
+ *
+ * RAM only, so a reboot clears it; the run clears it when it ends, however it
+ * ends. While set it beats every other source, because the check must measure
+ * T2 at the band it is checking. Safe from any task.
+ *
+ * @param mm the band; 0 ends the override.
+ */
+void dm_m3_band_override(uint16_t mm);
+
+/**
+ * @brief Read the characterisation record (m3char_record.h).
+ * @return false when there is none, or one this build cannot read.
+ */
+bool dm_m3char_load(m3char_rec_t *out);
+
+/**
+ * @brief Store the characterisation record, and put its measured band in force.
+ *
+ * Writes NVS directly (one blob, a few hundred bytes, once per run), as
+ * pin_auth does for its blobs. The record's `meas_band_mm` becomes the
+ * measured band at once, as it would at the next boot.
+ *
+ * @return false if the write failed; the band in force is then unchanged.
+ */
+bool dm_m3char_save(const m3char_rec_t *rec);
 
 /**
  * @brief M3's taught window size in whole mm (`40004`, from commissioning);

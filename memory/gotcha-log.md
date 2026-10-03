@@ -120,6 +120,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-07-05** — M3 is the north **side wall**, not a roof panel; 8.1× is travel time, 10× is area
 
 ### OTA & ROTA releases
+- **2026-10-03** — a bench asset upload is refused as "compressed ZIP entry (method 8)", and `asset_version` then reads an OLDER bench set; an assets-only retry fails "inactive LittleFS remount after format failed" until a reboot (zip with stored entries; after a failed asset upload, re-push firmware and assets together)
 - **2026-09-25** — a release dies with HTTP 422 "tag_name is not a valid tag" / invalid `target_commitish`: the commit HEAD points at was never pushed, so GitHub cannot tag it (the script's separate "uncommitted changes" warning is the untracked-file false positive)
 - **2026-09-21** — a bench push carries a GUI older than its firmware while `fw_ver` and `asset_version` match (every bench build of a version says `-bench`, so the pair check cannot see stale content)
 - **2026-09-20** — a check forced ~2 min after publishing gets `dl` 2 (SHA/size): the server points the channel before it has fetched the artefacts; retry, and check the manifest against the local files before blaming the release *(recurred 2026-09-26, followed by two `dl` 1; the unit's own next check succeeded)* *(→ promoted to a pattern 2026-09-27)*
@@ -217,6 +218,19 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
+
+## 2026-10-03 — a bench asset upload failed twice: first for a compressed zip, then "inactive LittleFS remount after format failed" until a reboot
+
+**Problem:** pushing plan §5e step 2's bench image, `ota_push.py` committed the firmware, and then the unit refused the assets: "compressed ZIP entry (method 8) is not supported ... nothing installed". The status then read `asset_version 2.15.0-bench`: neither the 2.15.1 the unit had run nor the version just pushed. An assets-only upload of a stored zip was accepted (202) and failed inside the unit: "inactive LittleFS remount after format failed; nothing installed" (bank B).
+
+**Root cause:**
+- **The zip was mine.** I built it with Python's `ZIP_DEFLATED`. The unit's extractor takes stored entries only (method 0), as the error says; `build_release.ps1` and the earlier bench zips use them.
+- **`2.15.0-bench`** is the 2026-06-10 shape (a firmware-only push strands the assets), reached through a REFUSED asset upload rather than a missing one. The firmware push switched the app bank, and the asset partition that goes with that bank still held the bench assets of 2026-10-01/02.
+- **The remount failure is not established.** The assets-only upload came right after the refused one, with no reboot in between. The next full push (firmware, reboot, the same stored zip) extracted and verified first time, so the refused upload probably left the inactive LittleFS in a state only a reboot clears. Not investigated: it is T13's path, outside the step.
+
+**Fix:** build a bench asset zip with stored entries (`zipfile.ZIP_STORED`, or `zip -0`). After any failed asset upload, re-push firmware and assets together, not the assets alone.
+
+**Where it lives:** T13's extractor and its format-and-remount fallback (`ota_manager.cpp`, "inactive LFS mount failed — formatting first-time"); the push tool is `bin/ota_push.py`.
 
 ## 2026-10-02 — the minimum-move test measured M3 pressed against its closed end for ten minutes, and it looked like a broken wire
 

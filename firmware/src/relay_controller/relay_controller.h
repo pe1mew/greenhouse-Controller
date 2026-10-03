@@ -258,10 +258,15 @@ typedef struct {
  *         stop made while reading shifts the indices.
  */
 bool t2_get_cut(uint16_t k, t2_cut_rec_t *out, uint16_t *out_seq);
+#endif
 
 /**
- * @brief One bench pulse on M3 (2026-10-02, plan §3.6 floor 2): how long its
+ * @brief One CMD_PULSE on M3 (2026-10-02, plan §3.6 floor 2): how long its
  *        relay was really energised, timed at the GPIO writes themselves.
+ *
+ * In every build since plan §5e step 2: the characterisation run reads its
+ * pulses' real widths here, as `bin/at_wp_minmove.py` does through the bench
+ * route. RAM only.
  */
 typedef struct {
     uint16_t seq;          /**< 1, 2, ... in order since boot. */
@@ -272,9 +277,8 @@ typedef struct {
 } t2_pulse_rec_t;
 
 /**
- * @brief Copy the k-th kept pulse record, oldest first (bench only).
+ * @brief Copy the k-th kept pulse record, oldest first.
  * @param out_seq if not NULL, gets the number of pulses recorded since boot.
  * @return false when k is past the last kept record.
  */
 bool t2_get_pulse(uint16_t k, t2_pulse_rec_t *out, uint16_t *out_seq);
-#endif

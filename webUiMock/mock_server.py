@@ -139,6 +139,9 @@ cfg: dict = {
     # the GUI's deadzone field read empty and a change there did not survive a
     # reload. DEF_DEADZONE_M3_MM = 20.
     "deadzone_m3_mm":      20,
+    # Plan 5e: where M3's band comes from, 0 typed / 1 measured (default).
+    # The mock never measures, so measured falls back to deadzone_m3_mm.
+    "deadzone_src_m3":      1,
     "poll_interval_s":     30,    # DEF_POLL_INTERVAL_S
     "session_timeout_min":  5,    # DEF_SESSION_TIMEOUT_MIN
     "ap_timeout_min":      30,    # DEF_AP_TIMEOUT_MIN
@@ -373,6 +376,7 @@ NVS_MAP: dict[tuple, tuple] = {
     ("motor",   "ctrl_mode_m3"):    ("ctrl_mode_m3",        None),   # 2.12.0
     ("motor",   "min_intv_m3"):     ("min_intv_m3",         None),   # 2.12.0
     ("motor",   "deadzone_m3"):     ("deadzone_m3_mm",      None),   # gh#76
+    ("motor",   "deadzone_src_m3"): ("deadzone_src_m3",     None),   # plan 5e
     ("system",  "session_timeout"): ("session_timeout_min", None),
     ("system",  "ap_timeout"):      ("ap_timeout_min",      None),
     ("system",  "poll_interval"):   ("poll_interval_s",     None),
@@ -803,6 +807,7 @@ CONFIG_LIMITS: dict[str, list[int]] = {
     # 2.8.x: M3 linear-control deadband (mm). Not yet consumed by any control
     # law -- the GUI groups it under "Linear control", which says so.
     "deadzone_m3":    [ 1, 200],
+    "deadzone_src_m3": [ 0, 1],    # plan 5e: 0 typed / 1 measured
     "wpos_fitted_m3": [ 0, 1],     # gh#73 (2.9.0): is a position sensor fitted to M3
     "ctrl_mode_m3":   [ 0, 1],     # 2.12.0: desired control mode, 0 timed / 1 linear
     "min_intv_m3":    [ 0, 1500],  # 2.12.0: the linear dwell, s -- replaces M3's open dwell in mode 2

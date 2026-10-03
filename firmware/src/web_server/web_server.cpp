@@ -1233,6 +1233,10 @@ static esp_err_t config_get_handler(httpd_req_t *req)
          * Emitted so the key is not write-only: a stored value nothing can
          * read back cannot be verified, which is gh#67 for the led_* four. */
         "\"deadzone_m3_mm\":%d,"
+        /* Plan §5e: where the band in force comes from, 0 typed / 1
+         * measured. The band itself is a STATUS (the commissioning route's
+         * `dz`), because it also depends on whether a run has measured one. */
+        "\"deadzone_src_m3\":%d,"
         /* gh#73: 1 = a position sensor is fitted to M3. */
         "\"wpos_fitted_m3\":%d,"
         /* 2.12.0: the DESIRED control mode and the linear dwell. The mode
@@ -1264,6 +1268,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
         (int)cfg.dwell_open_s[0],  (int)cfg.dwell_open_s[1],  (int)cfg.dwell_open_s[2],
         (int)cfg.dwell_close_s[0], (int)cfg.dwell_close_s[1], (int)cfg.dwell_close_s[2],
         (int)cfg.deadzone_m3_mm,
+        (int)cfg.deadzone_src_m3,
         (int)cfg.wpos_fitted_m3,
         (int)cfg.ctrl_mode_m3,
         (int)cfg.min_intv_m3,
@@ -3392,13 +3397,21 @@ static esp_err_t diag_commission_get_handler(httpd_req_t *req)
                    "k_run[] must have one string per teach_err_t value, in order");
 #define TABLE_STR(t, i) (((unsigned)(i) < sizeof(t) / sizeof((t)[0])) ? (t)[(i)] : "?")
 
-    char body[512];
+    /* Plan §5e: M3's band in force, and where it comes from. A status, not a
+     * setting -- it depends on whether a characterisation run has measured
+     * one -- so it lives here, beside the calibration it is measured on. */
+    dm_m3_dz_t dz;
+    dm_m3_deadzone(&dz);
+
+    char body[768];
     snprintf(body, sizeof(body),
              "{\"ok\":true,\"verdict\":\"%s\",\"cal_reason\":\"%s\","
              "\"window_mm\":%u,\"taught_closed\":%u,\"taught_open\":%u,"
              "\"span\":%u,\"span_pct\":%u,\"teach_armed\":%s,"
              "\"state\":\"%s\",\"run_reason\":\"%s\",\"dir\":\"%s\","
-             "\"leg\":%u,\"legs_max\":%u,\"ends\":%u,\"standby_held\":%s}",
+             "\"leg\":%u,\"legs_max\":%u,\"ends\":%u,\"standby_held\":%s,"
+             "\"dz\":{\"mm\":%u,\"source\":\"%s\",\"typed_mm\":%u,"
+             "\"measured_mm\":%u,\"measured_when\":%lu}}",
              TABLE_STR(k_verdict, c.verdict),
              TABLE_STR(k_cal, c.cal_reason),
              (unsigned)c.window_mm, (unsigned)c.taught_closed,
@@ -3409,7 +3422,9 @@ static esp_err_t diag_commission_get_handler(httpd_req_t *req)
              c.dir_is_open ? "open" : "close",
              (unsigned)c.leg, (unsigned)COMMISSION_TEACH_MAX_LEGS,
              (unsigned)c.ends_made,
-             c.standby_held ? "true" : "false");
+             c.standby_held ? "true" : "false",
+             (unsigned)dz.mm, dm_m3_dz_source_name(dz.source), (unsigned)dz.typed_mm,
+             (unsigned)dz.measured_mm, (unsigned long)dz.measured_when);
 #undef TABLE_STR
     return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
 }
@@ -3977,6 +3992,48 @@ static esp_err_t diag_windowpos_post_handler(httpd_req_t *req)
         snprintf(out, sizeof(out), "{\"ok\":%s,\"pulse_ms\":%ld,\"dir\":\"%s\"%s}",
                  sent ? "true" : "false", ms, open_dir ? "open" : "close",
                  sent ? "" : ",\"error\":\"q1_full\"");
+        return httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
+    }
+
+    /* Plan §5e step 2 (2026-10-03) -- test hooks for T4's band in force, so it
+     * can be verified on the rig before the characterisation run exists to
+     * set it for real (step 3):
+     *  {"meas_band_mm":N}     stores a record whose measured band is N mm, as
+     *                         a complete run would (0 = none). It survives a
+     *                         reboot, and its outcome is M3CHAR_OUT_BENCH;
+     *  {"band_override_mm":N} puts N mm in force, as a run's check does (RAM;
+     *                         0 ends it).
+     * GET /api/diag/commission's `dz` shows the result. */
+    char mb[8] = {0};
+    if (json_get_field(body, "meas_band_mm", mb, sizeof(mb))) {
+        const long mm = strtol(mb, NULL, 10);
+        if (mm < 0 || mm > CFG_MAX_DEADZONE_MM) {
+            return httpd_resp_send(req, "{\"ok\":false,\"error\":\"band_range\"}",
+                                   HTTPD_RESP_USE_STRLEN);
+        }
+        m3char_rec_t rec = {};
+        rec.version      = M3CHAR_REC_VERSION;
+        rec.outcome      = M3CHAR_OUT_BENCH;
+        rec.when         = (uint32_t)time(NULL);
+        strncpy(rec.fw, FIRMWARE_VERSION, sizeof(rec.fw) - 1u);
+        rec.meas_band_mm = (uint16_t)mm;
+        rec.meas_when    = (mm != 0) ? rec.when : 0u;
+        strncpy(rec.meas_fw, FIRMWARE_VERSION, sizeof(rec.meas_fw) - 1u);
+        const bool ok = dm_m3char_save(&rec);
+        char out[64];
+        snprintf(out, sizeof(out), "{\"ok\":%s,\"meas_band_mm\":%ld}", ok ? "true" : "false", mm);
+        return httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
+    }
+    char bo[8] = {0};
+    if (json_get_field(body, "band_override_mm", bo, sizeof(bo))) {
+        const long mm = strtol(bo, NULL, 10);
+        if (mm < 0 || mm > CFG_MAX_DEADZONE_MM) {
+            return httpd_resp_send(req, "{\"ok\":false,\"error\":\"band_range\"}",
+                                   HTTPD_RESP_USE_STRLEN);
+        }
+        dm_m3_band_override((uint16_t)mm);
+        char out[64];
+        snprintf(out, sizeof(out), "{\"ok\":true,\"band_override_mm\":%ld}", mm);
         return httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
     }
 

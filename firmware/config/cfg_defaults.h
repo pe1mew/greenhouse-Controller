@@ -104,6 +104,22 @@
  */
 #define DEF_DEADZONE_M3_MM      20
 
+/**
+ * @brief Where M3's deadband comes from: 0 = `deadzone_m3` as typed,
+ *        1 = measured by the characterisation run (plan §5e, 2026-10-03).
+ *
+ * Default 1, the operator's decision: the measurement is the band, and a
+ * typed value is the override. It changes nothing on its own. Until a run
+ * has completed, measured falls back to `deadzone_m3`, so a unit that
+ * updates keeps today's 20 mm until someone characterises its window.
+ *
+ * A key of its own rather than a reserved 0 in `deadzone_m3`. Firmware that
+ * does not know this key ignores it, so a rollback keeps the typed band;
+ * firmware before §5e would clamp a reserved 0 to 1 mm, which is the
+ * chattering case.
+ */
+#define DEF_DEADZONE_SRC_M3      1
+
 /* gh#73 (2.9.0) — is a position sensor fitted to M3? 0 = no, 1 = yes.
  *
  * NOT FITTED by default, because that is what a unit in the field is: 5C88 has

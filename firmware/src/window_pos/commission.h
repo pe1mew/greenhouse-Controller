@@ -220,6 +220,17 @@ void commission_refresh(void);
 bool commission_owns_teach(void);
 
 /**
+ * @brief True while commissioning is moving M3 on its own: a teach is starting
+ *        or running (plan §5e step 2; the characterisation run joins it).
+ *
+ * ROTA's quiet gate waits for it (ota_client.cpp, quiet_gate()). The gate
+ * already waits for an open web session, but once the admin logs out a teach
+ * carries on by design (the hold waits for it), and an update applied between
+ * two of its legs would end it with a reboot. Safe from any task.
+ */
+bool commission_busy(void);
+
+/**
  * @brief True while a teach is running, and for a few readings after it ends.
  *
  * T17 samples at rest only every 30 s. A teach needs readings at rest too: to

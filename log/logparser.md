@@ -1,7 +1,7 @@
 # logparser — Greenhouse Controller Log Parser
 
 **File:** `log/logparser.py`
-**Document version:** 1.24 (matches firmware 2.15.0; 1.24 added `MODE param 56`, the law in
+**Document version:** 1.25 (unreleased, plan §5e; 1.25 added `SETPT param 57`, `deadzone_src_m3`; 1.24 matches firmware 2.15.0 and added `MODE param 56`, the law in
 force by name and version, gh#84; 1.23 added mode 2: `RELAY value_a = 7`
 (`PART_OPEN`), the `SENSOR_HR ch 2` part-open qualifier bits and `value_b`, `MODE param 54`
 (the control law in force) and `SETPT params 53` and `55`; 1.22 added `ALARM ch 6` params 251 and 252, gate reason `6`, and rule 2's new basis, gh#78; 1.21: the rule rows come per drive, gh#72; 1.20 added `SETPT param 49`, `wpos_fitted_m3`, and gate reason `5`, not fitted (gh#73), and documents param 48; 1.17 added `MODE param 47` `value_b` = 1, a STANDBY held for a session; 1.18 added `SYSTEM value_a = 32`; 1.19: the LCD manual menu holds STANDBY too (gh#65), and `SENSOR_HR ch 3` rows at rest are written only on change)
@@ -598,6 +598,7 @@ Configuration parameter changed.  Posted by:
 | 49 | wpos_fitted_m3 | (fitted/not fitted) | boolean, old → new — whether a position sensor is fitted to M3 (2.9.0, gh#73). Not fitted keeps T17 off address 40 |
 | 53 | ctrl_mode_m3 | (timed/linear) | **2.12.0** — the DESIRED control mode for M3. What was actually in force is `MODE param 54`, which is a different row and may differ: linear also needs a trusted position |
 | 55 | min_intv_m3 | s | **2.12.0** — the linear dwell: the least time between M3 moves. Replaces `dwell_open_m3` and `dwell_close_m3` while linear control is in force; 0 = no interval |
+| 57 | deadzone_src_m3 | (typed/measured) | **Plan §5e** — where M3's band in force comes from: `typed` is `deadzone_m3`; `measured` (the default) is the characterisation run's band, with `deadzone_m3` in force until a run has measured one. This row records the operator's choice only. The band in force is a status, not a setting |
 
 **Sensitive-value policy (since 2.0.0-a.6.35.5).** Param IDs 23-30 cover
 admin-sensitive settings — PIN rotations, WiFi credentials, the
