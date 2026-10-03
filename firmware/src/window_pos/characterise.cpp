@@ -38,6 +38,7 @@
 #include "../event_logger/event_logger.h"
 #include "../relay_controller/relay_controller.h"
 #include "../types/app_types.h"
+#include "../types/failfirst_216.h"   /* bench fail-first: bits 1 (guards) and 2 (no 4b) */
 
 #ifndef FIRMWARE_VERSION
 #  define FIRMWARE_VERSION "unstamped"
@@ -675,6 +676,13 @@ static void plan_band(run_t *r, uint32_t now)
                  (long)r->cand.floor2_x100, (long)r->cand.landing_x100, (long)r->cand.lead_x100);
         if (!ok) { run_end(r, CHAR_ERR_NO_BAND); return; }
         r->band_mm = r->cand.b0_mm;
+        if (FF216_NO4B) {
+            /* Fail-first bit 2: b0 unchecked becomes the band. */
+            r->band_found = r->band_mm;
+            r->phases_done |= M3CHAR_PH_BAND;
+            run_end(r, CHAR_ERR_NONE);
+            return;
+        }
         r->round = 1u; r->raises = 0u; r->chk_i = 0u;
         r->chk_d0 = r->last_open;
         dm_m3_band_override(r->band_mm);
@@ -901,9 +909,11 @@ void characterise_tick(uint32_t now)
     /* ---- guards that end any run -------------------------------------- */
     if (s_abort_req) { s_abort_req = false; run_end(r, CHAR_ERR_OPERATOR); return; }
     const EventBits_t eg = xEventGroupGetBits(EG1);
-    if (eg & EG1_BIT_WIND_OVERRIDE)  { run_end(r, CHAR_ERR_WIND); return; }
-    if (eg & EG1_BIT_MOTOR_ALARM)    { run_end(r, CHAR_ERR_MOTOR_ALARM); return; }
-    if (eg & EG1_BIT_CALIBRATING)    { run_end(r, CHAR_ERR_CALIBRATING); return; }
+    if (!FF216_GUARDS) {                 /* fail-first bit 1: the run carries on */
+        if (eg & EG1_BIT_WIND_OVERRIDE)  { run_end(r, CHAR_ERR_WIND); return; }
+        if (eg & EG1_BIT_MOTOR_ALARM)    { run_end(r, CHAR_ERR_MOTOR_ALARM); return; }
+        if (eg & EG1_BIT_CALIBRATING)    { run_end(r, CHAR_ERR_CALIBRATING); return; }
+    }
     if (!dm_get_standby())           { run_end(r, CHAR_ERR_HOLD_LOST); return; }
 
     uint32_t ep = 0u;
@@ -969,7 +979,8 @@ void characterise_tick(uint32_t now)
     case ST_READ: {
         if (moving || ep != r->epoch) { run_end(r, CHAR_ERR_M3_BUSY); return; }
         const uint32_t owed = (r->purpose == P_NOISE) ? CH_NOISE_READS : CH_READS;
-        if ((int32_t)(now - r->settle_at) > (int32_t)(CH_READ_GRACE_MS * (owed + 2u))) {
+        if (!FF216_GUARDS &&
+            (int32_t)(now - r->settle_at) > (int32_t)(CH_READ_GRACE_MS * (owed + 2u))) {
             run_end(r, CHAR_ERR_SENSOR);   /* the prompt readings stopped coming */
             return;
         }
@@ -983,8 +994,14 @@ void characterise_reading(const windowpos_reading_t *rd, uint32_t now)
 {
     run_t *r = s_run;
     if (r == NULL) { return; }
-    if (rd == NULL || rd->sensor_fault) { run_end(r, CHAR_ERR_SENSOR); return; }
-    if (rd->both_end_sensors)          { run_end(r, CHAR_ERR_BOTH_ENDS); return; }
+    if (FF216_GUARDS) {
+        /* Fail-first bit 1: no reading is no data, and a fault or both ends is
+         * ignored -- the run carries on, which is what the harness must see. */
+        if (rd == NULL) { return; }
+    } else {
+        if (rd == NULL || rd->sensor_fault) { run_end(r, CHAR_ERR_SENSOR); return; }
+        if (rd->both_end_sensors)          { run_end(r, CHAR_ERR_BOTH_ENDS); return; }
+    }
     if ((r->phase == CHAR_PHASE_REVERSAL || r->phase == CHAR_PHASE_MINMOVE) &&
         r->kind == K_PULSE && rd->at_end_sensor) {
         run_end(r, CHAR_ERR_END_REACHED);   /* never pulse against an end */

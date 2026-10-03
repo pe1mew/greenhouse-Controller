@@ -36,6 +36,7 @@
 #include "../web_server/web_server.h"           /* 3.8 quiet gate — web_any_active_session_except (gh#41) */
 #include "../ui_display/ui_display.h"           /* 3.8 quiet gate — ui_pin_session_active */
 #include "../window_pos/commission.h"           /* plan §5e quiet gate — commission_busy */
+#include "../types/failfirst_216.h"             /* bench fail-first bit 4: the gate ignores a run */
 
 static const char *TAG = "T16_OTA";
 
@@ -533,8 +534,9 @@ static uint32_t secs_to_window(int32_t lo, int32_t hi)
     return (uint32_t)delta + (esp_random() % 600u);   /* +0..10 min spread */
 }
 
-/** R-P02 quiet gate: true only when it is safe to flash + reboot. */
-static bool quiet_gate(void)
+/** R-P02 quiet gate: true only when it is safe to flash + reboot. @p exempt is
+ *  the one web session that may stay open (gh#41), or "" for none. */
+static bool quiet_gate_except(const char *exempt)
 {
     window_state_t w[3];
     t2_get_window_states(w);
@@ -543,15 +545,28 @@ static bool quiet_gate(void)
     }
     EventBits_t b = xEventGroupGetBits(EG1);
     if (b & (EG1_BIT_WIND_OVERRIDE | EG1_BIT_MOTOR_ALARM | EG1_BIT_CALIBRATING)) return false;
-    if (web_any_active_session_except(s_exempt_token)) return false;  /* gh#41: exempt the triggering session */
+    if (web_any_active_session_except(exempt)) return false;  /* gh#41: exempt the triggering session */
     if (ui_pin_session_active())  return false;
     /* Plan §5e: a teach (and, from step 3, a characterisation run) carries on
      * after its admin logs out, holding STANDBY. Between two of its moves M3
      * is at rest and no session is open, so every check above passes -- and
      * the reboot that follows an apply would end the run. */
-    if (commission_busy())        return false;
+    /* Fail-first bit 4 asks only about a teach, as before step 3. */
+    if (FF216_ROTA ? commission_teach_running() : commission_busy()) return false;
     return true;
 }
+
+static bool quiet_gate(void)
+{
+    return quiet_gate_except(s_exempt_token);
+}
+
+#ifdef MODBUS_BENCH
+bool ota_client_bench_quiet_gate(const char *exempt_token)
+{
+    return quiet_gate_except((exempt_token != NULL) ? exempt_token : "");
+}
+#endif
 
 /**
  * @brief Apply a downloaded+verified update under the night/quiet policy.

@@ -3732,7 +3732,62 @@ record keeps the phases completed.
      - reversal loss 9.9 / 11.9 mm. The asymmetry of step 3's two runs did not repeat;
      - floor 2 46 / 48 ms (3.5 / 4.2 mm), dead time 21 / 16 ms.
 5. **The rig:** the tests above on a release build, and the fail-firsts on a bench build. Then the soak,
-   with the measured band in force.
+   with the measured band in force. **STARTED 2026-10-03.**
+   - **What step 5 added:**
+     - **The version: 2.16.0 / 2.16.0-bench.** Step 4's images all reported `2.15.1-bench`, which
+       could not tell one from another (gotcha 2026-09-21, recurred). A release-env build of this source
+       must not report the real 2.15.1.
+     - **`firmware/src/types/failfirst_216.h`**, bench-only, one protection per bit:
+       - 1 removes the run's safety guards (the wind override, the motor alarm, a recalibration, a
+         sensor fault, both end sensors, readings that stop coming);
+       - 2 skips phase 4b, taking b₀ unchecked as the band;
+       - 4 makes ROTA's quiet gate ask only about a teach.
+
+       `GET /api/diag/windowpos` reports `gate.failfirst_216`.
+     - **A bench motor-alarm injection**, `POST /api/diag/windowpos {"motor_alarm":"on"|"off"}`. T2's
+       five reads of the alarm pin go through `alarm_pin_low()`, and the injection arrives as the
+       ISR's edge does. Onset and clearance (the 60 s guard, the recalibration) are therefore the real
+       ones. None existed, and the plan said to add one.
+     - **A bench probe of ROTA's apply gate**, `GET /api/diag/windowpos?rota_gate`. `quiet_gate()`
+       became `quiet_gate_except(token)`, which release builds call exactly as before. The probe asks
+       it with the calling session exempt, as gh#41 exempts the session that forced a check.
+     - **`bin/at_wp_char_accept.py`**, one stage per acceptance row.
+   - **Four rows could not run as written:**
+     - **The speed.** "Within 5 % of §3.6" compares two quantities. Phase 1 reads the cruise speed;
+       §3.6's 117 / 122 mm/s is the slope through 20–120 ms pulses (step 3). The reference is the
+       stop logs' full-speed rate, 122–148 mm/s.
+     - **The power cycle.** The firmware has no reboot route. The restart mid-run is an OTA push of
+       the same image: a software reset through T13, not a power cut. A power cut needs someone at
+       the rig.
+     - **ROTA end to end.** T16 applies only a manifest whose seq beats its stored high-water mark,
+       and 2344's is 60 (2.15.1). No re-offer of 2.15.1 can apply, whatever version the unit runs.
+       An end-to-end test therefore needs a new seq, which is a publish. Step 5 tests the gate itself
+       with the probe; the apply path can be watched when 2.16.0 is published. Also, a deferred apply
+       does not retry in minutes: `rota_apply()` sets its wait to the next opening of the window.
+     - **The LCD's manual control** needs a person at the rig. The bench target hook stands in as
+       "M3 driven by something else".
+   - **On the release build** (2344, sha256 `59c37ebf…`, `fw_ver` and `asset_version` 2.16.0, the
+     served GUI byte-identical to the source):
+
+     | Stage | Result |
+     |---|---|
+     | refusals | ALL PASS. Not fitted: `not_fitted` (the route's own refusal, gh#73). M3 moving (a recalibration): `m3_busy`. A teach running: `teach_running`, then the teach completed valid. Each time the run never started, no hold was taken and M3 did not move |
+     | hold | ALL PASS: AUTOMATIC chosen mid-run ends it `hold_lost`, with no start after it |
+     | source | ALL PASS: Typed puts the typed 20 mm in force, Measured the measured 40 mm (the card's `dz`) |
+     | abort | ALL PASS, 35 checks. Abort once in each phase: ended `operator`; the phases kept 0x00, 0x01, 0x03, 0x07, 0x0f; no band derived and the measured 40 mm carried; no start in the 20 s after; STANDBY held while the session lived and released at logout |
+     | full | complete, all five phases, 119 starts in ~8 min 40 s; cruise 139.0 / 122.0 mm/s; floor 2 41 / 46 ms; AT-WP02 spread 1.20 % PASS; b₀ 32 mm failed its check and **40 mm** passed (worst landing 36.9 mm); **every one of the 21 param-253 rows matches the record**. **One FAIL: reversal loss 10.9 / 15.2 mm against the plan's 7–15 mm** (below) |
+     | reboot | ALL PASS: restarted mid-run by an OTA push of the same image. After the boot: no run, no STANDBY (the boot recalibration), the previous record intact |
+     | rollback | ALL PASS: 2.15.1 runs with the new key and record in NVS, on the typed 20 mm, without the band in force or the run; 2.16.0 back finds the record and the band in force as it left them |
+     | wind | not run: the emulated wind averaged 0.9 m/s, below `v_max`'s minimum of 1, and the emulator is left alone |
+
+   - **The reversal loss: the plan's criterion fails, and the measurement scatters.** Four runs
+     read 5.6 / 14.1, 6.5 / 14.6, 9.9 / 11.9 and 10.9 / 15.2 mm (opening / closing): closing always
+     the larger, and both scattering by ~5 mm. The 7–15 mm came from the bench sweep (two samples per
+     width) before the run existed; step 3's 5.6 mm would have failed it too. The run uses four
+     samples per direction, and the band is not derived from this figure. **Restating the criterion or
+     studying the measurement is the operator's decision**, recorded here, not taken.
+   - **The cruise speed is bimodal in this rig**: ~139 or ~122 mm/s, in either direction, from one
+     traverse each. It feeds b₀'s read-interval term (floor 1); in these runs the lead term set b₀.
 6. **The documents and the release, 2.16.0.**
 
 ## 6. Operator-facing surfaces

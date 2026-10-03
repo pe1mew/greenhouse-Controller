@@ -258,6 +258,19 @@ typedef struct {
  *         stop made while reading shifts the indices.
  */
 bool t2_get_cut(uint16_t k, t2_cut_rec_t *out, uint16_t *out_seq);
+
+/**
+ * @brief Inject the RRK-3 motor alarm, or clear it (bench only, plan §5e step 5).
+ *
+ * Stands in for the alarm contact: T2 sees it at every place it reads the pin,
+ * and it arrives as an edge, so the onset (all relays off, every window
+ * UNKNOWN, EG1 MOTOR_ALARM) and the clearance (the 60 s guard, then a CLOSE_ALL
+ * recalibration) are the real ones. RAM only: a reboot clears it.
+ */
+void t2_bench_inject_motor_alarm(bool on);
+
+/** @brief Whether the bench motor alarm is injected. */
+bool t2_bench_motor_alarm_injected(void);
 #endif
 
 /**

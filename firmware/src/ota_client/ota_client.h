@@ -156,6 +156,20 @@ void task_ota_client(void *pvParameters);
  */
 void ota_client_request_check(const char *exempt_token);
 
+#ifdef MODBUS_BENCH
+/**
+ * @brief The apply quiet gate (R-P02) as T16 would judge it now, with
+ *        @p exempt_token's session exempt (bench only, plan §5e step 5).
+ *
+ * The ROTA test's probe: it needs a session to ask, and that session would
+ * close the gate by itself, so it is exempted exactly as gh#41 exempts the
+ * session that forced a check. An end-to-end test needs a NEW manifest seq
+ * (T16 refuses any seq at or below its high-water mark), so it waits for a
+ * real publish; this tests the gate's logic on the bench without one.
+ */
+bool ota_client_bench_quiet_gate(const char *exempt_token);
+#endif
+
 /* ── T16 observability (rota_tds.md §2.4, task 3.9) ────────────────────── */
 
 /**

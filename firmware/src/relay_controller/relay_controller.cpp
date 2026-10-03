@@ -239,6 +239,24 @@ static void ch_note_taken(uint8_t ch)
 static volatile bool       s_alarm_edge      = false;
 static volatile TickType_t s_alarm_edge_tick = 0;
 
+#ifdef MODBUS_BENCH
+/* Plan §5e step 5: the motor alarm, injected for a bench test. It stands in for
+ * the contact closing (GPIO42 LOW) and enters through the edge flag the ISR
+ * raises, so onset and clearance -- the 60 s guard, the recalibration -- run
+ * exactly as for the real contact. RAM only. See t2_bench_inject_motor_alarm(). */
+static volatile bool s_alarm_inject = false;
+#endif
+
+/** The RRK-3 alarm contact as T2 reads it: closed (GPIO LOW), or injected on a
+ *  bench build. Every site that used to read the pin reads this. */
+static inline bool alarm_pin_low(void)
+{
+#ifdef MODBUS_BENCH
+    if (s_alarm_inject) { return true; }
+#endif
+    return gpio_read(PIN_OPTO_INPUT) == GPIO_LOW;
+}
+
 /* rc.1.5.3 — ISR-level rate limit (microseconds between accepted edges).
  * Independent from the 75 ms task-level debounce — that one protects the
  * application's alarm state machine from a single mechanical bounce; this
@@ -1495,7 +1513,7 @@ static void calib_close_all(void)
      * asserted.  The boot-time check in task_relay_controller catches the
      * common case; this guard closes the narrow race between that check
      * and the first relay_ch_close() call. */
-    if (gpio_read(PIN_OPTO_INPUT) == GPIO_LOW) {
+    if (alarm_pin_low()) {
         s_alarm_edge = false;
         ESP_LOGW(TAG, "[T2] MOTOR_ALARM at calib_close_all entry — "
                       "calibration skipped; alarm takes priority");
@@ -1547,7 +1565,7 @@ static void calib_close_all(void)
         vTaskDelay(pdMS_TO_TICKS(CALIB_CHUNK_MS));
         uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
 
-        if (gpio_read(PIN_OPTO_INPUT) == GPIO_LOW) {
+        if (alarm_pin_low()) {
             /* Clear CALIBRATING before onset so status consumers see only
              * MOTOR_ALARM, not CALIBRATING|MOTOR_ALARM simultaneously. */
             xEventGroupClearBits(EG1, EG1_BIT_CALIBRATING);
@@ -1603,6 +1621,21 @@ static void calib_close_all(void)
  * and the main-loop debounce — every site that detects the alarm pin LOW
  * funnels through this single entry point (FR-MA01–FR-MA04).
  */
+#ifdef MODBUS_BENCH
+void t2_bench_inject_motor_alarm(bool on)
+{
+    s_alarm_inject    = on;
+    s_alarm_edge_tick = xTaskGetTickCount();
+    s_alarm_edge      = true;          /* as the ISR does: T2's loop debounces and acts */
+    ESP_LOGW(TAG, "TEST INJECTION: motor alarm %s", on ? "ON" : "OFF");
+}
+
+bool t2_bench_motor_alarm_injected(void)
+{
+    return s_alarm_inject;
+}
+#endif
+
 static void handle_alarm_onset(void)
 {
     /* Immediately de-energise all 6 relays — highest priority action. */
@@ -1686,7 +1719,7 @@ static void handle_alarm_clearance(void)
         /* Re-check pin on every chunk boundary so a re-assertion during
          * the guard is acted on within ALARM_GUARD_CHUNK_MS (5 s) rather
          * than after the full 60 s. */
-        if (gpio_read(PIN_OPTO_INPUT) == GPIO_LOW) {
+        if (alarm_pin_low()) {
             /* Consume the ISR edge flag so the main loop does not issue
              * a duplicate onset when it resumes after we return. */
             s_alarm_edge = false;
@@ -2179,7 +2212,7 @@ void task_relay_controller(void *pvParameters)
      *    an all-open recovery would still need to drive to closed before
      *    climate control acts, so the calibration would run anyway.
      * ------------------------------------------------------------------ */
-    if (gpio_read(PIN_OPTO_INPUT) == GPIO_LOW) {
+    if (alarm_pin_low()) {
         ESP_LOGW(TAG, "GPIO42 alarm pin already asserted at boot — "
                       "skipping CLOSE_ALL calibration (clear alarm to resume)");
         handle_alarm_onset();
@@ -2274,7 +2307,7 @@ void task_relay_controller(void *pvParameters)
                  * J10 (OPTO_INPUT / GND).  The opto-coupler output is active-
                  * low: contact closed (alarm active) → GPIO LOW;
                  * contact open (alarm cleared) → GPIO HIGH (INPUT_PULLUP). */
-                bool alarm_signal = (gpio_read(PIN_OPTO_INPUT) == GPIO_LOW);
+                bool alarm_signal = alarm_pin_low();
                 bool alarm_active = (xEventGroupGetBits(EG1) & EG1_BIT_MOTOR_ALARM) != 0;
 
                 if (alarm_signal && !alarm_active) {

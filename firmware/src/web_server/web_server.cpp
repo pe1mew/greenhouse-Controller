@@ -130,6 +130,7 @@
 #include "window_pos.h"                     /* the driver: read for the commissioning verdict */
 #include "../window_pos/window_pos_task.h"  /* T17 snapshot + derived cfg */
 #include "../types/failfirst_212.h"           /* 2.12.0 fail-first mask, reported by the diag */
+#include "../types/failfirst_216.h"           /* 2.16.0 fail-first mask (plan §5e step 5), likewise */
 #include "../relay_controller/relay_controller.h" /* t2_get_m3_lead: the overrun lead, in the diag */
 #include "../climate_control/climate_control.h"   /* cc_get_m3_target: the law's M3 feedback, in the diag */
 #ifdef MODBUS_BENCH
@@ -3664,6 +3665,10 @@ static const char k_failfirst_292[] = "false";
  *  Consumers that take it as a boolean (bin/at_wp_target.py) still work. */
 static const unsigned k_failfirst_212 = FF212;
 
+/** 2.16.0's fail-first MASK (failfirst_216.h, plan §5e step 5), reported the
+ *  same way and for the same reason. */
+static const unsigned k_failfirst_216 = FF216;
+
 /**
  * @brief Append the T17 soak counters to a JSON object already in @p buf.
  *
@@ -3810,6 +3815,28 @@ static esp_err_t diag_windowpos_pulses(httpd_req_t *req)
     return httpd_resp_sendstr_chunk(req, NULL);
 }
 
+/* GET /api/diag/windowpos?rota_gate (plan §5e step 5): ROTA's apply quiet gate
+ * as T16 would judge it now, with THIS session exempt (it would close the gate
+ * by itself), and the run and the teach beside it so a test can tell why. */
+static esp_err_t diag_windowpos_rota_gate(httpd_req_t *req)
+{
+    char token[TOKEN_LEN + 1] = {0};
+    (void)cookie_get_session(req, token);
+    const bool gate = ota_client_bench_quiet_gate(token);
+    window_state_t w[3];
+    t2_get_window_states(w);
+    char out[200];
+    snprintf(out, sizeof(out),
+             "{\"ok\":true,\"rota_gate\":%s,\"commission_busy\":%s,\"characterising\":%s,"
+             "\"teach_running\":%s,\"m3_moving\":%s,\"failfirst_216\":%u}",
+             gate ? "true" : "false", commission_busy() ? "true" : "false",
+             characterise_active() ? "true" : "false",
+             commission_teach_running() ? "true" : "false",
+             (w[2] == WIN_MOVING_OPEN || w[2] == WIN_MOVING_CLOSE) ? "true" : "false",
+             k_failfirst_216);
+    return httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
+}
+
 static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
 {
     if (!admin_only_or_send_error(req)) return ESP_OK;
@@ -3819,6 +3846,7 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
         if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK) {
             if (strcmp(q, "cuts") == 0)   { return diag_windowpos_cuts(req); }
             if (strcmp(q, "pulses") == 0) { return diag_windowpos_pulses(req); }
+            if (strcmp(q, "rota_gate") == 0) { return diag_windowpos_rota_gate(req); }
         }
     }
 
@@ -3853,11 +3881,12 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
                  "{\"ok\":false,\"err\":\"read_failed\",\"status\":%d,"
                  "\"gate\":{\"mode\":%d,\"mode_str\":\"%s\",\"reason\":%d,"
                  "\"reason_str\":\"%s\",\"inject\":\"%s\",\"failfirst_gh72\":%s,"
-                 "\"failfirst_292\":%s,\"failfirst_212\":%u}}",
+                 "\"failfirst_292\":%s,\"failfirst_212\":%u,\"failfirst_216\":%u}}",
                  (int)st, (int)egm,
                  (egm == WPOS_CTRL_POSITION) ? "position" : "timed", (int)egr,
                  windowpos_gate_reason_name(egr),
-                 inject_str(), k_failfirst_gh72, k_failfirst_292, k_failfirst_212);
+                 inject_str(), k_failfirst_gh72, k_failfirst_292, k_failfirst_212,
+                 k_failfirst_216);
         /* AT-WP05 arm A reads these with the encoder unplugged, so both blocks
          * MUST be on this path -- it is the only response that arm ever sees.
          * Same helpers as the success path, so the two cannot drift apart. */
@@ -3959,11 +3988,12 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
                  ",\"gate\":{\"mode\":%d,\"mode_str\":\"%s\","
                  "\"reason\":%d,\"reason_str\":\"%s\","
                  "\"inject\":\"%s\",\"failfirst_gh72\":%s,\"failfirst_292\":%s,"
-                 "\"failfirst_212\":%u}}",
+                 "\"failfirst_212\":%u,\"failfirst_216\":%u}}",
                  (int)gm, (gm == WPOS_CTRL_POSITION) ? "position" : "timed",
                  (int)gr,
                  windowpos_gate_reason_name(gr),
-                 inject_str(), k_failfirst_gh72, k_failfirst_292, k_failfirst_212);
+                 inject_str(), k_failfirst_gh72, k_failfirst_292, k_failfirst_212,
+                 k_failfirst_216);
     }
 
     /* Soak counters last, so a truncation loses only these. */
@@ -3989,6 +4019,10 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
  * active (bit 4) and a position that reads 0 whatever the leaf does (gh#78's
  * race), for bin/at_wp_confirm.py. It changes only what T17 reads; the direct
  * read of the GET above still shows the device as it is. RAM only.
+ *
+ * {"motor_alarm":"on"|"off"} (plan §5e step 5) is the one injection that is not
+ * T17's: it stands in for the RRK-3 alarm contact, in T2, for the
+ * characterisation run's safety test (bin/at_wp_char_accept.py).
  */
 static esp_err_t diag_windowpos_post_handler(httpd_req_t *req)
 {
@@ -4113,6 +4147,22 @@ static esp_err_t diag_windowpos_post_handler(httpd_req_t *req)
         dm_m3_band_override((uint16_t)mm);
         char out[64];
         snprintf(out, sizeof(out), "{\"ok\":true,\"band_override_mm\":%ld}", mm);
+        return httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
+    }
+
+    /* Plan §5e step 5: the motor alarm, for the run's safety test. Through T2's
+     * own alarm path (t2_bench_inject_motor_alarm()), so "off" brings the real
+     * clearance: the 60 s guard, then a recalibration that moves every window. */
+    char ma[8] = {0};
+    if (json_get_field(body, "motor_alarm", ma, sizeof(ma))) {
+        const bool on = (strcmp(ma, "on") == 0);
+        if (!on && strcmp(ma, "off") != 0) {
+            return httpd_resp_send(req, "{\"ok\":false,\"error\":\"motor_alarm_on_or_off\"}",
+                                   HTTPD_RESP_USE_STRLEN);
+        }
+        t2_bench_inject_motor_alarm(on);
+        char out[64];
+        snprintf(out, sizeof(out), "{\"ok\":true,\"motor_alarm\":\"%s\"}", on ? "on" : "off");
         return httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
     }
 

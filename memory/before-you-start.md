@@ -221,6 +221,14 @@ plus `"source":"t6"` to send it as T6 does: dwell and gh#48 apply), `at_wp_fallb
 back through T6; `aborted` and `sincemove` check what the law is told) and `at_wp_rule1.py` (rule
 1's exemption; injections `noend`, `short`) — fail-first via the bits in
 `firmware/src/types/failfirst_212.h`, **one bit per run, and pass a value** (a bare flag is 1).
+**2.16.0 (plan §5e, the characterisation run):** `at_wp_char.py` (one run, judged) and
+`at_wp_char_accept.py` (step 5's acceptance stages: `full`, `refusals`, `abort`, `hold`, `wind`,
+`sensor`, `alarm`, `moved`, `reboot`, `source`, `latency`, `rota`). Bench hooks: `{"motor_alarm":
+"on"|"off"}` (T2's alarm through its real path, onset to recalibration) and
+`GET /api/diag/windowpos?rota_gate` (ROTA's quiet gate with the asking session exempt: an end-to-end
+apply needs a NEW manifest seq, because T16 refuses any seq at or below its high-water mark).
+Fail-first via `firmware/src/types/failfirst_216.h` (1 guards, 2 no phase 4b, 4 the gate ignores a
+run). **There is no reboot route:** a restart mid-run is an OTA push of the same image.
 **Read before touching any of it:**
 [design/integrateWindowPositionSensor.md](../design/integrateWindowPositionSensor.md) **§2a** — the
 switch/limit/overlap geometry is not what the earlier drafts assumed, and the calibration and rig

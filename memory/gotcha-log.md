@@ -120,6 +120,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-07-05** — M3 is the north **side wall**, not a roof panel; 8.1× is travel time, 10× is area
 
 ### OTA & ROTA releases
+- **2026-10-03** — a ROTA test set up by running the unit on a lower version never applies: T16 refuses any manifest seq at or below the high-water mark it persisted at its last apply, so an end-to-end test needs a NEW publish; a gate deferral also waits for the next window opening, not 300 s
 - **2026-10-03** — a bench asset upload is refused as "compressed ZIP entry (method 8)", and `asset_version` then reads an OLDER bench set; an assets-only retry fails "inactive LittleFS remount after format failed" until a reboot (zip with stored entries; after a failed asset upload, re-push firmware and assets together)
 - **2026-09-25** — a release dies with HTTP 422 "tag_name is not a valid tag" / invalid `target_commitish`: the commit HEAD points at was never pushed, so GitHub cannot tag it (the script's separate "uncommitted changes" warning is the untracked-file false positive)
 - **2026-09-21** — a bench push carries a GUI older than its firmware while `fw_ver` and `asset_version` match (every bench build of a version says `-bench`, so the pair check cannot see stale content) *(recurred 2026-10-03 for the FIRMWARE: a rollback reads the same `-bench`; the bank flip in `/api/ota/status` is the proof)*
@@ -178,6 +179,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-09-16** — a setting is MISSING from the GUI entirely (two routes exceeded `max_uri_handlers` and never registered; the card depending on them was hidden rather than greyed, so the only symptom was an absence)
 
 ### Build, toolchain & shell
+- **2026-10-03** — stopping a background chain of rig scripts left its bash children and native python.exe processes running: the chain advanced to its next stage (which replaced the stored record) and started a push; kill by command line, shells first
 - **2026-09-27** — an overnight watch dies with the Claude Code session (a local background task is not a daemon: run it on Shuttle2, or reconstruct from the unit's SD log). **Recurred 2026-09-28** as the wake-up for publish-on-pass, which cannot move to Shuttle2
 - **2026-09-20** — a release build overwrites `bin/<version>/`, and a rebuild in another directory is not byte-identical (the build DIRECTORY is in the image)
 - **2026-09-17** — a new library's host tests fail at link with an undefined reference to its own function (`pio test` does not build `src/` unless `test_build_src = yes`)
@@ -218,6 +220,51 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
+
+## 2026-10-03 — stopping a background job did not stop it: the chain ran on, and a stage replaced the stored record
+
+**Problem:** a background job ran a chain of rig stages: a bash script calling bash scripts calling
+`python bin/at_wp_char_accept.py` and `bin/ota_push.py`. It was stopped with the session's task
+stop so the T17 fix could take the rig. Minutes later the rig was still busy. The orphaned latency
+stage kept correcting M3, its parent shell started the next stage (`source --bench`, which
+**replaces the stored record with a bench one**), and then began pushing the next image.
+
+**Root cause:** on this Windows machine the stop killed only the job's top process. The Git Bash
+`bash.exe` children and the native `python.exe` grandchildren are not in a process group it
+signals, so each carried on and the chain advanced as each child finished. Git Bash's `ps` does
+not even list the native processes.
+
+**Fix:** list them by command line and kill the SHELLS first (or the chain advances to the next
+stage), then the Python children:
+`Get-CimInstance Win32_Process | ? { $_.CommandLine -match 'chain_|at_wp_|ota_push' }`, then
+`Stop-Process -Id … -Force`. Let an `ota_push.py` already uploading finish rather than cut it
+mid-stream. Here the record was re-made by the next full run, and nothing else was harmed.
+
+**Rule:** *a stopped chain is stopped only when no process with its command line is left.*
+Check that before giving the rig to anything else.
+
+## 2026-10-03 — a ROTA test cannot re-offer a release the unit has already applied: T16 refuses its seq
+
+**Problem:** plan §5e step 5 wanted ROTA's quiet gate shown end to end: an update offered while a
+characterisation run carries on, applied only after the run. The obvious set-up runs the unit on a
+lower version, so that the soak channel's current 2.15.1 counts as an update. That set-up cannot
+work, whatever version the unit reports.
+
+**Root cause:** `rota_handle_update()` checks the manifest's **seq** against the high-water mark
+persisted at the last apply (`K_FW_HIWATER`, R-V01/V02, anti-downgrade), before any version compare.
+2344 applied 2.15.1 as seq 60, so seq 60 is refused as a replay for good. The mark lives in NVS
+and survives every push. Only an IO0 reset clears it, and that erases the rest of the unit's
+configuration too. Separately, a deferred apply does NOT retry in minutes: when the quiet gate
+fails inside the window, `rota_apply()` sets its wait to the next opening of the window (01:00
+here), not 300 s.
+
+**Fix:** none in the firmware, which is right. The test is split instead: a bench probe of the gate
+(`GET /api/diag/windowpos?rota_gate`, with the asking session exempt as gh#41's is) tests the
+gate's logic, with fail-first bit 4. The apply path is watched at the next real publish, when the
+new seq exists anyway.
+
+**Rule:** *an end-to-end ROTA test needs a seq the unit has never applied, so it is a publish.*
+Plan it around a release. Never plan it around a re-offer, and never around a version string.
 
 ## 2026-10-03 — a bench asset upload failed twice: first for a compressed zip, then "inactive LittleFS remount after format failed" until a reboot
 
