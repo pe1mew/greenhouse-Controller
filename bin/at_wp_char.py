@@ -10,7 +10,7 @@ what the rig is known to be (plan §3.6 and §0 item 4, measured with the bench
 harnesses on 2026-10-01/02):
 
   speed            117 / 122 mm/s opening / closing      within 10 %
-  reversal loss    10-12 mm (11.9 / 9.9 at 200 ms)       5-16 mm
+  reversal loss    10-12 mm (11.9 / 9.9 at 200 ms)       5-17 mm (plan §5e, restated 2026-10-03)
   floor 2          30 / 35 ms                            at most 60 ms, found both ways
   AT-WP02          0.8-1.0 % spread with step 2          PASS (spread <= 2.0 %)
   band             estimated ~30 mm (the lead)           derived, 10-80 mm
@@ -120,8 +120,8 @@ def judge(rec, abort_in_phase, meas_before):
           "cruise speed %.1f / %.1f mm/s (the stop logs' rate at full speed: 122-148)"
           % (so / 10.0, sc / 10.0))
     lo, lc = (rec.get("loss_x100") or [0, 0])
-    check(500 <= lo <= 1600 and 500 <= lc <= 1600,
-          "reversal loss %.1f / %.1f mm (rig ~10-12)" % (lo / 100.0, lc / 100.0))
+    check(500 <= lo <= 1700 and 500 <= lc <= 1700,       # plan 5e, restated 2026-10-03
+          "reversal loss %.1f / %.1f mm (5-17 mm)" % (lo / 100.0, lc / 100.0))
     fo, fc = (rec.get("floor2_ms") or [0, 0])
     check(0 < fo <= 60 and 0 < fc <= 60, "floor 2 %s / %s ms (rig 30 / 35)" % (fo, fc))
     wp = rec.get("wp02") or {}

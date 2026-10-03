@@ -352,8 +352,11 @@ def stage_full(rig, a):
           "cruise speed %.1f / %.1f mm/s (the stop logs' 122-148; §3.6's figure is a different "
           "quantity, see the docstring)" % (so / 10.0, sc_ / 10.0))
     lo, lc = rec.get("loss_x100") or [0, 0]
-    check(700 <= lo <= 1500 and 700 <= lc <= 1500,
-          "reversal loss %.1f / %.1f mm (the plan: 7-15 mm)" % (lo / 100.0, lc / 100.0))
+    # Restated by the operator on 2026-10-03 from 7-15 mm: nine runs read
+    # 5.4-10.9 opening and 11.9-16.1 closing (the rope; closing always the
+    # larger). It sanity-checks the measurement; the band is not derived from it.
+    check(500 <= lo <= 1700 and 500 <= lc <= 1700,
+          "reversal loss %.1f / %.1f mm (the plan: 5-17 mm)" % (lo / 100.0, lc / 100.0))
     fo, fc = rec.get("floor2_ms") or [0, 0]
     check(0 < fo <= 50 and 0 < fc <= 50, "floor 2 %s / %s ms (the plan: at most 50)" % (fo, fc))
     wp = rec.get("wp02") or {}

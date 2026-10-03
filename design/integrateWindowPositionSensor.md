@@ -3509,7 +3509,7 @@ record keeps the phases completed.
 | Test | How | Must show |
 |---|---|---|
 | Host | `pio test -e native` in `drivers/m3Char`, fed the archived raw data (Shuttle2 `~/ghc-soak/minmove_2026-10-02/` and `scatter_2026-10-01/`) | the harnesses' figures: floor 2 30/35 ms, dead time 15/21 ms, speed 117/122 mm/s, the AT-WP02 spreads and hysteresis |
-| Full run | `bin/at_wp_char.py` on a **release** build on 2344, rest 3 s | complete; speed within 5 % of §3.6; reversal loss 7–15 mm; floor 2 ≤ 50 ms; AT-WP02 ≤ 2.0 %; a band derived; the record survives a reboot; the log rows match the record |
+| Full run | `bin/at_wp_char.py` on a **release** build on 2344, rest 3 s | complete; speed within 5 % of §3.6; reversal loss 5–17 mm (restated 2026-10-03 from 7–15 mm, see step 5); floor 2 ≤ 50 ms; AT-WP02 ≤ 2.0 %; a band derived; the record survives a reboot; the log rows match the record |
 | Refusals | not fitted, calibration not valid, a teach running, M3 moving | refused with the reason; no hold taken; M3 never moves |
 | Operator abort | Abort once in each phase | no start after it; the record keeps the phases completed; the hold ends as the teach's does |
 | Moved by something else | the LCD's manual control during a run (a person at the rig); AUTOMATIC chosen during a run | `m3_busy` / `hold_lost`, and no start after it |
@@ -3784,8 +3784,14 @@ record keeps the phases completed.
      read 5.6 / 14.1, 6.5 / 14.6, 9.9 / 11.9 and 10.9 / 15.2 mm (opening / closing): closing always
      the larger, and both scattering by ~5 mm. The 7–15 mm came from the bench sweep (two samples per
      width) before the run existed; step 3's 5.6 mm would have failed it too. The run uses four
-     samples per direction, and the band is not derived from this figure. **Restating the criterion or
-     studying the measurement is the operator's decision**, recorded here, not taken.
+     samples per direction, and the band is not derived from this figure.
+     - **Restated by the operator, 2026-10-03: 5–17 mm.**
+     - By then nine runs had read 5.4–10.9 mm opening and 11.9–16.1 mm closing. 5–17 mm holds all of
+       them with a little room.
+     - The figure only sanity-checks the measurement (a broken one reads ~0 or tens of mm). Its
+       scatter, ~5 mm between runs at four samples per direction, and its asymmetry, closing always
+       the larger, are the rig's rope and are recorded as such.
+     - `bin/at_wp_char_accept.py` and `bin/at_wp_char.py` judge 5–17 mm.
    - **The cruise speed is bimodal in this rig**: ~139 or ~122 mm/s, in either direction, from one
      traverse each. It feeds b₀'s read-interval term (floor 1); in these runs the lead term set b₀.
    - **Order after the operator's decision of 2026-10-03:** the T17 latency fix (below) comes first,
@@ -3797,7 +3803,7 @@ record keeps the phases completed.
      | Stage | Result |
      |---|---|
      | release: refusals, hold, abort (5 phases), reboot, source | ALL PASS. Hold ended `hold_lost` again only after the guard reorder below; the first image with the fix ended it `calibrating` |
-     | release: full | 111 starts; **band 30 mm in round 1** (worst landing 17.5 mm); AT-WP02 spread 0.70 %, hysteresis −0.04 %; 21 of 21 SD rows match. FAIL: reversal loss 7.6 / 16.1 mm against the plan's 7–15 mm (still the operator's decision) |
+     | release: full | 111 starts; **band 30 mm in round 1** (worst landing 17.5 mm); AT-WP02 spread 0.70 %, hysteresis −0.04 %; 21 of 21 SD rows match. Reversal loss 7.6 / 16.1 mm: a FAIL against the plan's 7–15 mm as it then stood, inside the 5–17 mm it was restated to the same evening |
      | bench: refusals | ALL PASS. The injected fault, once T17's gate shut on it (26 s), is refused `sensor` |
      | bench: sensor, alarm, moved, rota | ALL PASS. M3 driven by the target hook ends the run `m3_busy`; the alarm stage now waits out T2's 60 s guard and its recalibration; the ROTA gate was shut in 616 of 616 probes during the run |
      | fail-first 1 (guards removed) | FAILS, as it must: the run kept RUNNING through the sensor's fault and its absence, and ended `no_start` (T2 refuses commands under an alarm) instead of `motor_alarm` |
