@@ -122,7 +122,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 ### OTA & ROTA releases
 - **2026-10-03** — a bench asset upload is refused as "compressed ZIP entry (method 8)", and `asset_version` then reads an OLDER bench set; an assets-only retry fails "inactive LittleFS remount after format failed" until a reboot (zip with stored entries; after a failed asset upload, re-push firmware and assets together)
 - **2026-09-25** — a release dies with HTTP 422 "tag_name is not a valid tag" / invalid `target_commitish`: the commit HEAD points at was never pushed, so GitHub cannot tag it (the script's separate "uncommitted changes" warning is the untracked-file false positive)
-- **2026-09-21** — a bench push carries a GUI older than its firmware while `fw_ver` and `asset_version` match (every bench build of a version says `-bench`, so the pair check cannot see stale content)
+- **2026-09-21** — a bench push carries a GUI older than its firmware while `fw_ver` and `asset_version` match (every bench build of a version says `-bench`, so the pair check cannot see stale content) *(recurred 2026-10-03 for the FIRMWARE: a rollback reads the same `-bench`; the bank flip in `/api/ota/status` is the proof)*
 - **2026-09-20** — a check forced ~2 min after publishing gets `dl` 2 (SHA/size): the server points the channel before it has fetched the artefacts; retry, and check the manifest against the local files before blaming the release *(recurred 2026-09-26, followed by two `dl` 1; the unit's own next check succeeded)* *(→ promoted to a pattern 2026-09-27)*
 - **2026-09-17** — publishing a release to ROTA does nothing on a module that runs a pushed build of the same version, `-bench` included (the version compare ignores the suffix)
 - **2026-09-16** — after one upload cut off by the network, the unit refuses every OTA and ROTA skips its checks until someone presses reset (the error exit released nothing)
@@ -619,6 +619,15 @@ before any publish.
 
 **Rule:** *a version string is evidence of content only if every content change moves it.* A
 reused `-bench` suffix does not, so for a bench push compare the payload itself.
+
+**Recurred 2026-10-03, on the FIRMWARE side.** Plan §5e's steps 2, 3 and 4 were all pushed to 2344
+as `2.15.1-bench`, so after step 4's push `fw_ver` could not tell the new image from a rollback to
+step 3's. A rollback leaves the same string, and nothing in `/api/status` carries a build hash. The
+served assets can be byte-compared (`GET /app.js` against `firmware/data`), but the image cannot.
+**What settles it is the BANK.** `ota_push.py` writes the inactive bank, so a push that took flips
+`/api/ota/status`'s `bank` (A ↔ B) and reads `accepted: true` after the ~35 s self-test. Read
+`bank` BEFORE the push too: on 10-03 the previous bank was not on record, and a second push was
+needed to see the flip (B → A).
 
 ## 2026-09-21 — an acceptance harness aborted twice on a marginal link, and I blamed the second on a dwell
 

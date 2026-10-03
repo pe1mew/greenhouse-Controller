@@ -342,6 +342,29 @@
       <span class="save-ok" id="fb-dwell-close-m2"></span>
     </div>
     <h3 style="color:var(--fg);font-size:1rem;margin-top:1.25rem">M3 — Zijwandbeluchting Noord</h3>
+    <!-- Plan §5e decision 7 (operator, 2026-10-03): M3 control comes FIRST,
+         directly under the heading, because it decides which of the two groups
+         below is in force. It sat inside Linear control, under the deadzone, until
+         then. Outside #wpos-dep it is no longer greyed when no sensor is fitted: it
+         stays usable (Timed always works), and #m3-mode-now says when Linear is set
+         but not in force, "not fitted" included. -->
+    <!-- 2.12.0: mode 2. The DESIRED mode is this setting; whether it is in
+         FORCE also needs a trusted position, which is what #m3-mode-now says.
+         An operator who switches this on and sees "TIMED" beside it has the
+         answer to "why is nothing different?" without reading a log. -->
+    <div class="row">
+      <label data-tip="How M3 is driven. Timed runs M3 on its travel time exactly as M1 and M2: a command opens or closes it fully. Linear, the factory default since 2.13.0, drives M3 to a measured position and stops there, which needs a fitted position sensor that has been taught. Switching to Linear does not take effect until the sensor is trusted; the line below says which one is actually in force at this moment. Linear also replaces M3's open and close dwell with the minimum interval below.">M3 control</label>
+      <select id="cfg-ctrl-mode-m3">
+        <option value="0">Timed (travel time)</option>
+        <option value="1">Linear (to position)</option>
+      </select>
+      <button onclick="postCfgSelect('motor','ctrl_mode_m3','cfg-ctrl-mode-m3')">Apply</button>
+      <span class="save-ok" id="fb-ctrl-mode-m3"></span>
+    </div>
+    <!-- Speaks only when what was asked for is not what is in force: a line
+         that restates the selector above it in the common case teaches the
+         operator to skip it, which is exactly when it would matter. -->
+    <p id="m3-mode-now" class="disabled-why"></p>
     <!-- 2.12.0: the suffix is no longer hard-coded. It said "in use now"
          unconditionally, which is false the moment linear control is in force.
          app.js sets both this and the Linear control one from the mode
@@ -390,29 +413,25 @@
     <p id="wpos-unfitted-why" class="disabled-why"></p>
     <div id="wpos-dep">
     <div class="slider-row">
-      <label data-tip="Smallest position error worth energising M3 for, in millimetres. Too small and the window hunts on sampling noise; zero is the chattering case, which is why the minimum is 1 and not 0. The default of 20 mm covers the distance the leaf travels between position samples on both rigs (19.6 mm here, 10.0 mm in production) — but the other floor, the shortest pulse that actually moves the leaf, has not been measured yet, so 20 can only be too small, never too large. The linear control law that will use it is not in service yet. Already in use: the early-stop check (a CLOSE that ends within this distance of closed without reaching the end sensor is reported) and the log, which records movement of M3 at rest once it exceeds this distance (5 mm at least).">Deadzone (mm)</label>
+      <label data-tip="The TYPED deadzone: the smallest position error worth energising M3 for, in millimetres. Which band is in force depends on Deadzone source below: Measured (the default) uses the band the characterisation run measured, once one has run to the end; until then, and always with Typed, it is this value. This value is also always the band of the sensor&apos;s own checks: a CLOSE that ends within it of closed without reaching the end sensor is reported, and the log records movement of M3 at rest once it exceeds it (5 mm at least). Too small and the window hunts on sampling noise; zero is the chattering case, which is why the minimum is 1.">Deadzone (mm)</label>
       <input type="range"  id="cfg-deadzone-m3-sl" min="1" max="200" step="1">
       <input type="number" id="cfg-deadzone-m3"    min="1" max="200" step="1" class="short">
       <button onclick="postCfg('motor','deadzone_m3','cfg-deadzone-m3','int')">Apply</button>
       <span class="save-ok" id="fb-deadzone-m3"></span>
     </div>
-    <!-- 2.12.0: mode 2. The DESIRED mode is this setting; whether it is in
-         FORCE also needs a trusted position, which is what #m3-mode-now says.
-         An operator who switches this on and sees "TIMED" beside it has the
-         answer to "why is nothing different?" without reading a log. -->
+    <!-- Plan §5e (2026-10-03): where the band in force comes from. A setting,
+         so it loads from /api/config; the band itself is a status (the
+         commissioning route's `dz`), shown in #dz-in-force under it. -->
     <div class="row">
-      <label data-tip="How M3 is driven. Timed, the default, runs M3 on its travel time exactly as M1 and M2: a command opens or closes it fully. Linear drives M3 to a measured position and stops there, which needs a fitted position sensor that has been taught. Switching to Linear does not take effect until the sensor is trusted; the line below says which one is actually in force at this moment. Linear also replaces M3's open and close dwell with the minimum interval below.">M3 control</label>
-      <select id="cfg-ctrl-mode-m3">
-        <option value="0">Timed (travel time)</option>
-        <option value="1">Linear (to position)</option>
+      <label data-tip="Where M3&apos;s deadzone comes from. Measured, the default, uses the band the characterisation run (Commissioning, below) derived from measuring this window, and falls back to the typed Deadzone until a run has completed. Typed always uses the Deadzone above, whatever was measured: the override, if a measurement ever looks wrong. The line below says which band is in force now.">Deadzone source</label>
+      <select id="cfg-deadzone-src-m3">
+        <option value="1">Measured (characterisation)</option>
+        <option value="0">Typed (the value above)</option>
       </select>
-      <button onclick="postCfgSelect('motor','ctrl_mode_m3','cfg-ctrl-mode-m3')">Apply</button>
-      <span class="save-ok" id="fb-ctrl-mode-m3"></span>
+      <button onclick="postCfgSelect('motor','deadzone_src_m3','cfg-deadzone-src-m3')">Apply</button>
+      <span class="save-ok" id="fb-deadzone-src-m3"></span>
     </div>
-    <!-- Speaks only when what was asked for is not what is in force: a line
-         that restates the selector above it in the common case teaches the
-         operator to skip it, which is exactly when it would matter. -->
-    <p id="m3-mode-now" class="disabled-why"></p>
+    <p id="dz-in-force" class="disabled-why why-ok"></p>
     <div class="slider-row">
       <label data-tip="In Linear mode only: the least time from the end of one M3 move to the start of the next, in seconds. It REPLACES M3's open and close dwell while Linear is in force, because a law that positions continuously would otherwise be held back for 25 minutes after every move. The default is 600 s, ten minutes: with today's control law that changes nothing — it already waits at least that long between moves — but it is the floor that holds if the law is ever replaced by one that decides faster. Zero means no interval at all, which is right only for a deliberate test. Above 900 s linear control stops being worth it: the temperature swings as much as timed control does while M3 still runs more often.">Minimum interval (s)</label>
       <input type="range"  id="cfg-min-intv-m3-sl" min="0" max="1500" step="10">
@@ -447,6 +466,30 @@
           <span class="save-ok" id="cm-hint"></span>
         </div>
         <p id="cm-standby" class="muted"></p>
+
+        <!-- Plan §5e (2026-10-03): the characterisation run. Like the teach it moves
+             M3 and holds STANDBY; unlike it, it takes 1-3 h on a production window,
+             so the card shows what it will cost before Start and where it is after.
+             gh#74: #ch-unavailable stays OUTSIDE #ch-start, which is what greys. -->
+        <h3>Characterise M3 <span class="muted">· measure the window, derive the deadzone</span></h3>
+        <p id="ch-unavailable" class="disabled-why"></p>
+        <div id="ch-start">
+          <div class="slider-row">
+            <label data-tip="How long the run waits between two motor starts, in seconds, so the motor is never worked harder than its rating allows. The run makes about 130 starts, so this sets most of its duration. 30 s, the default, allows at most 120 starts an hour. On a test rig a few seconds is enough; on a greenhouse window use the motor&apos;s nameplate rating.">Rest between starts (s)</label>
+            <input type="range"  id="ch-rest-sl" min="2" max="300" step="1">
+            <input type="number" id="ch-rest"    min="2" max="300" step="1" class="short">
+            <span class="muted" id="ch-estimate"></span>
+          </div>
+        </div>
+        <div class="slider-row">
+          <label data-tip="Measures how M3 actually moves and derives the deadzone from it. THE WINDOW MOVES throughout: two long moves for the speed, short pulses for the slack lost on a reversal and for the shortest move, ten approaches to 50 % (the AT-WP02 repeatability test), then corrections that check the deadzone. M3 stays between 10 % and 90 % and is never pulsed against an end. Automatic climate control pauses (STANDBY) from Start until the run has ended and you log out, as with a teach. Abort ends it at any time; what was measured until then is kept.">Characterisation</label>
+          <strong id="ch-state">—</strong>
+          <button id="ch-start-btn" onclick="charStart()">Start (moves M3)</button>
+          <button onclick="commAct('abort')">Abort</button>
+          <span class="save-ok" id="ch-hint"></span>
+        </div>
+        <p id="ch-progress" class="muted"></p>
+        <div id="ch-result" class="muted" style="font-size:.9em"></div>
       </div>
     </div>
     </div><!-- #wpos-dep -->

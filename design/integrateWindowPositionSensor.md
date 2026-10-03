@@ -3191,10 +3191,12 @@ defect: it left T6 wanting M3 open. The rig's traverse to the end sensor is 11.6
 promotion), no reboot, and 19 param 251 rows all reading *confirmed after a full traverse* with no 249, 250
 or 252 row beside them. Detail in `bin/2.10.0/release-notes.md`.
 
-#### 5e. Characterising M3 on the unit — decided and designed 2026-10-03, not built
+#### 5e. Characterising M3 on the unit — decided and designed 2026-10-03, built through step 4, not released
 
 Decided by the operator on 2026-10-03, and designed the same day. It answers the choice §3.6 left
-open: how to measure on 5C88 what was measured on the rig. **Nothing below is built.**
+open: how to measure on 5C88 what was measured on the rig. **Steps 1–4 of the build order below are
+built and have run on the rig in a bench image. Steps 5–6 have not: the tests on a release build, the
+soak, the documents and 2.16.0.**
 
 **Why.** §3.6 lists what to measure once 5C88's sensor is fitted and taught (gh#77): AT-WP02 from
 both directions, the pulse sweep and the reversal loss. Every tool for that is bench-only: the pulse
@@ -3639,8 +3641,8 @@ record keeps the phases completed.
        |---|---|---|
        | cruise speed | 139.0 / 138.0 mm/s | 122–148 mm/s at full-speed stops (step-1/2 stop logs) |
        | T17's read interval | 181 ms | ~180 ms |
-       | reversal loss (3 %, 324 ms pulses) | 5.6 / 14.1 mm (the aborted run: 6.5 / 14.5) | 10–12 mm at 200–300 ms |
-       | floor 2 | 41 / 41 ms (3.6 / 3.4 mm), threshold 2.3 mm | 30 / 35 ms, threshold 1.0 mm |
+       | reversal loss (3 %, 324 ms pulses) | 5.6 / 14.1 mm (the aborted run: 6.5 / 14.6) | 10–12 mm at 200–300 ms |
+       | floor 2 | 41 / 41 ms (3.6 / 3.5 mm), threshold 2.3 mm | 30 / 35 ms, threshold 1.0 mm |
        | dead time | 14 / 14 ms | 15 / 21 ms |
        | AT-WP02 (±15 % approaches) | spread 0.90 % PASS, hysteresis −0.28 %, landing error 0.34 % | 0.8–1.0 % with step 2 |
        | band | 32 mm failed, **40 mm** passed (worst landing 35.8 mm) | typed 20 mm |
@@ -3659,7 +3661,76 @@ record keeps the phases completed.
      rows.
    - **Left on the rig:** the measured 40 mm band is in force (`deadzone_src_m3` 1). This is the
      feature working as decided. Setting the source to typed brings 20 mm back.
-4. **The card and the mock.**
+4. **The card and the mock. DONE 2026-10-03.**
+   - **The GUI** (`index.html`, `app.js`, `style.css`):
+     - ***M3 control* sits directly under the M3 heading** (decision 7). Its tooltip still called
+       Timed the default, which has been wrong since 2.13.0; it now names Linear.
+     - **The deadzone:**
+       - The typed field's tooltip says it is the fallback, and the band of T17's checks.
+       - A *Deadzone source* row (Measured / Typed) follows it. It is a row of its own, not a second
+         control in the deadzone row, because every settings row carries one control and its Apply.
+       - A line under it says which band is in force and where it came from: measured (with the
+         run's date), typed, typed because no run has completed, or a band a run is checking now.
+         With the source on Typed it also names a stored measurement that goes unused.
+     - **The *Characterise M3* block**, in `#cm-body` after the teach:
+       - the rest (2–300 s, default 30) with its estimate;
+       - Start, whose confirm dialog states the duration, the starts and the STANDBY, and Abort;
+       - the state, the reason for an early end, and the progress line (phase, starts, time left);
+       - the last run's results: a table per direction, AT-WP02 and how the deadzone was derived.
+     - **Grey, never hide.** When a run cannot start, the rest field and Start are greyed, with the
+       reason above them in `#ch-unavailable` (gh#74). The reasons:
+       - a run already running;
+       - the sensor not taught, or a teach running;
+       - M3 moving, or the position not trusted;
+       - the wind override, the motor alarm or a recalibration.
+
+       Abort and the results are never greyed, which is why the design's `#ch-body` became
+       `#ch-start`. Firmware without the run (no `char` object) greys the block and says why.
+     - The STANDBY line names both procedures.
+   - **The mock learns the run:**
+     - the `char` object, and both actions with their refusals (`m3_busy`, `bad_rest`, `not_taught`,
+       `teach_running`);
+     - a run through the five phases in 40 s that ends with a record, and an Abort mid-run;
+     - the band in force, with the override during phase 5;
+     - `/api/__mock/char`, which sets a record (`none` / `rig`) or a state.
+   - **Rounding, found while checking the card against the log.** The firmware logged the 0.01 mm
+     values (the reversal loss, the floor-2 move) truncated to 0.1 mm. A record of 348 was logged
+     as 3.4 mm while the card showed 3.5.
+     - `characterise.cpp` now rounds half away from zero (`x100_to_x10()`).
+     - The card rounds the integer the same way, not with `toFixed()` on the binary double, which
+       shows 1445 as 14.4.
+     - Two figures in step 3's record were the truncated log values. They are corrected above:
+       3.4 → 3.5 mm and 14.5 → 14.6 mm.
+   - **Checked on the mock (localhost):**
+     - the layout at 1280 px and at 375 px, where the Motors tab fits (the page's sideways scroll at
+       375 px comes from older tooltips on the Status and Sensor-history cards, not from this work);
+     - the confirm text, the running state, the phase-5 override line, completion with results;
+     - the not-taught grey, the typed source's line and Abort mid-run;
+     - the unfitted state: the Linear group greyed, with *M3 control* outside it;
+     - **the rest's slider and field, driven as an operator would.** This check found the rest
+       missing from `linkSlider()`'s list: dragging the slider left the field, and so the value
+       Start sends, where it was. Fixed. Now a click on the slider sets the field and the estimate,
+       typing in the field moves the slider, and Start sends what the field says
+       (`"rest_s":120`).
+   - **On 2344, bench image sha256 `023a08ee…`:**
+     - Pushed three times: the image once more for the card's rounding, and again for the slider.
+       The firmware was the same each time. The last two pushes flipped the bank B → A → B, each
+       `accepted`, which is what shows the new image runs: every push is called `2.15.1-bench`.
+     - The unit serves `app.js`, `index.html` and `style.css` byte-identical to the source.
+     - **An Abort at phase 4's start** (rest 3 s, 84 starts in 6 min 8 s) passed `bin/at_wp_char.py`
+       in full.
+     - **The rounding, on hardware.** SD rows 20/21 and 34/35 read 99, 119, 35 and 42 for the
+       record's 986, 1188, 348 and 416. All four are rounded, and truncation would have changed every
+       one.
+     - **The card against the firmware's own JSON.** The `/api/diag/commission` replies captured in
+       each phase and at the end were rendered through the card's code. Each gave the right state,
+       progress line, results, and greyed Start with its reason.
+   - **This third run's figures, for step 5 to weigh:**
+     - opening cruise speed 122.0 mm/s, against 139.0 in both step-3 runs. Closing read 138.0 all
+       three times. Phase 1 takes one traverse per direction, so it cannot tell a slower rig from
+       scatter;
+     - reversal loss 9.9 / 11.9 mm. The asymmetry of step 3's two runs did not repeat;
+     - floor 2 46 / 48 ms (3.5 / 4.2 mm), dead time 21 / 16 ms.
 5. **The rig:** the tests above on a release build, and the fail-firsts on a bench build. Then the soak,
    with the measured band in force.
 6. **The documents and the release, 2.16.0.**

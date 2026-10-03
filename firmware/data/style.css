@@ -306,6 +306,13 @@ body.is-admin  .farmer-hidden { display: flex; }
   color: var(--muted);
 }
 
+/* Plan §5e: the characterisation's results, one row per figure, opening and
+   closing side by side. Numbers right-aligned so the two directions compare. */
+.ch-tbl { border-collapse: collapse; margin: 0.25rem 0 0.5rem 0; }
+.ch-tbl th, .ch-tbl td { padding: 0.1rem 0.75rem; text-align: right; white-space: nowrap; }
+.ch-tbl th { color: var(--muted); font-weight: normal; }
+.ch-tbl td:first-child { text-align: left; padding-left: 0; }
+
 /* ── OTA progress bar ────────────────────────────────────────────── */
 .ota-progress-bar {
   width: 100%;

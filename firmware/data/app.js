@@ -158,7 +158,8 @@ const CM_RUN_WHY = {
   no_move:      'M3 did not leave its end sensor in either direction — is the motor running?',
   end_missed:   'M3 stopped between the end sensors. Is the M3 travel time long enough to reach them?',
   refused:      'the sensor refused the result: both ends were reached but the readings were almost the same. Is the draw-wire attached?',
-  dropped:      'the sensor dropped the teach before both ends were reached — did it restart?'
+  dropped:      'the sensor dropped the teach before both ends were reached — did it restart?',
+  characterising: 'a characterisation run is moving M3. Wait for it to end, or abort it.'
 };
 const CM_STATE = {
   idle: '—', arming: 'arming…', traversing: 'M3 MOVING…',
@@ -177,6 +178,10 @@ let commWindowDirty = false;
 })();
 
 function commRender(c) {
+  // Plan §5e: the band in force (under the Deadzone setting) and the
+  // characterisation run, both from this same poll.
+  dzRender(c.dz);
+  charRender(c);
   // Verdict, reusing the window-state colours rather than inventing any.
   const v = document.getElementById('cm-verdict');
   if (v) {
@@ -212,7 +217,8 @@ function commRender(c) {
   // and the pause lasts until this admin session ends -- so say so for as long
   // as it lasts, including after the teach has finished.
   setText('cm-standby', c.standby_held
-    ? 'Automatic climate control is paused (STANDBY) because of the teach. It resumes '
+    ? 'Automatic climate control is paused (STANDBY) for commissioning (a teach or a '
+      + 'characterisation). It resumes '
       + 'when you log out or your session times out; all windows then close once to '
       + 'recalibrate.'
     : '');
@@ -377,6 +383,242 @@ function commTeach() {
   commAct('teach');
 }
 
+// ---- Plan §5e: the band in force, and the characterisation run --------------
+//
+// Both come from the commissioning route's poll (/api/diag/commission, every
+// second): `dz` is the band T2, T6 and the law position with, and where it came
+// from; `char` is the run in progress and the record of the last one.
+
+let g_m3_status  = null;   // windows{} from the last /api/status
+let g_mode_flags = [];     // mode.flags from the last /api/status
+let g_char_last  = null;   // the last `char` object, for Start's dialog
+
+const DZ_SOURCE = {
+  typed:      'typed',
+  measured:   'measured by the characterisation',
+  unmeasured: 'typed, because no characterisation has completed yet',
+  override:   'a characterisation is checking this band now'
+};
+
+function fmtWhen(unix) {
+  if (!unix) return '';
+  return new Date(unix * 1000).toLocaleString(undefined, {
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+function fmtDur(sec) {
+  const s = Math.max(0, Math.round(sec));
+  const h = Math.floor(s / 3600);
+  const m = Math.round((s - h * 3600) / 60);
+  return h ? (h + ' h ' + m + ' min') : (m + ' min');
+}
+
+function dzRender(dz) {
+  if (!dz) { setText('dz-in-force', ''); return; }
+  let t = 'In force: ' + dz.mm + ' mm, ' + (DZ_SOURCE[dz.source] || dz.source);
+  if (dz.source === 'measured' && dz.measured_when) t += ' on ' + fmtWhen(dz.measured_when);
+  if (dz.source === 'typed' && dz.measured_mm) {
+    t += '. A measured ' + dz.measured_mm + ' mm is stored but not used';
+  }
+  setText('dz-in-force', t + '.');
+}
+
+// What each reason means, in the operator's terms. The firmware refuses on its
+// own account too, and says why; the GUI only tells the operator BEFORE they
+// press, and greys Start rather than hiding it.
+const CH_WHY = {
+  none: '', operator: 'aborted by the operator.',
+  m3_busy: 'M3 moved, or was moving, by something other than the run.',
+  sensor: 'the position sensor faulted, stopped answering or was not trusted.',
+  both_ends: 'both end sensors read active.', wind: 'the wind override closed the windows.',
+  motor_alarm: 'the motor alarm fired.', calibrating: 'a window recalibration ran.',
+  hold_lost: 'STANDBY was ended by a mode choice.', no_start: 'a drive did not start.',
+  timeout: 'a drive did not end in time.',
+  end_reached: 'M3 reached an end sensor during a pulse phase.',
+  no_move: 'the first pulses did not move the leaf at all. Is the motor running?',
+  not_fitted: 'no position sensor is fitted.',
+  not_taught: 'the sensor is not taught: run a teach first.',
+  teach_running: 'a teach is running.', bad_rest: 'the rest must be 2-300 s.',
+  no_memory: 'the controller could not reserve memory for the run.',
+  no_band: 'no deadzone passed the check, so none was derived. The band in force did not change.'
+};
+const CH_PHASE = { 1: 'speed', 2: 'reversal loss', 3: 'minimum move', 4: 'AT-WP02',
+                   5: 'deadzone check' };
+const CH_TERM  = { 1: 'the read interval', 2: 'the shortest move', 3: 'the landing error',
+                   4: 'the lead' };
+
+let charRestDirty = false;
+(function watchRestEdits() {
+  ['ch-rest', 'ch-rest-sl'].forEach(function (id) {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('input', function () { charRestDirty = true; });
+  });
+})();
+
+function charRestValue(ch) {
+  const el = document.getElementById('ch-rest');
+  const v = el ? parseInt(el.value, 10) : NaN;
+  const lo = ch.rest_min_s || 2, hi = ch.rest_max_s || 300;
+  return (v >= lo && v <= hi) ? v : (ch.rest_default_s || 30);
+}
+
+function charDuration(ch, rest) {
+  return (ch.starts_est || 130) * Math.max(rest, 3) + (ch.run_s_est || 0);
+}
+
+// Why the run cannot start now; '' when it can.
+function charWhyNot(c) {
+  const ch = c.char || {};
+  if (ch.state === 'running') return 'A characterisation is running. Abort ends it.';
+  if (c.verdict !== 'valid') {
+    return 'Not available: the sensor is not taught (calibration ' + (c.verdict || 'unknown')
+         + '). Run a teach first.';
+  }
+  if (['arming', 'traversing', 'committing'].includes(c.state)) {
+    return 'Not available while a teach is running.';
+  }
+  const w = g_m3_status || {};
+  if (w.M3 === 'MOVING_OPEN' || w.M3 === 'MOVING_CLOSE') return 'Not available while M3 is moving.';
+  if (w.M3_pos_gate && w.M3_pos_gate !== 'ok') {
+    return 'Not available: the position is not trusted (' + w.M3_pos_gate + ').';
+  }
+  const f = g_mode_flags || [];
+  if (f.includes('wind_override')) return 'Not available during the wind override.';
+  if (f.includes('motor_alarm'))   return 'Not available while the motor alarm is active.';
+  if (f.includes('calibrating'))   return 'Not available while the windows recalibrate.';
+  return '';
+}
+
+// Grey, never hide: the rest field and Start. The reason sits ABOVE #ch-start
+// (gh#74), and Abort, in Start's row, stays usable.
+function charGrey(off) {
+  const box = document.getElementById('ch-start');
+  if (box) {
+    box.classList.toggle('disabled-block', off);
+    box.setAttribute('aria-disabled', off ? 'true' : 'false');
+  }
+  const btn = document.getElementById('ch-start-btn');
+  if (btn) btn.disabled = off;
+}
+
+function charRender(c) {
+  const ch = c.char;
+  if (!ch) {
+    // Firmware without the run: grey, never hide, and say why.
+    setText('ch-unavailable', 'Not available on this firmware (' + (g_fw_ver || 'unknown')
+          + '): the characterisation run is newer.');
+    charGrey(true);
+    return;
+  }
+  g_char_last = ch;
+  const rest = document.getElementById('ch-rest');
+  if (rest && !charRestDirty && !rest.value) setVal('ch-rest', ch.rest_default_s || 30);
+  const rv = charRestValue(ch);
+  setText('ch-estimate', 'about ' + (ch.starts_est || 130) + ' motor starts and '
+        + fmtDur(charDuration(ch, rv)) + ' at this rest');
+
+  const why = charWhyNot(c);
+  charGrey(!!why);
+  setText('ch-unavailable', why);
+
+  const refused = ch.state === 'failed' && !ch.starts;
+  setText('ch-state',
+    ch.state === 'running' ? 'RUNNING'
+    : ch.state === 'done' ? (ch.reason === 'no_band' ? 'complete, no deadzone derived' : 'complete')
+    : ch.state === 'failed' ? (refused ? 'refused' : 'ended early')
+    : '—');
+  setText('ch-hint', ch.state === 'failed' ? (CH_WHY[ch.reason] || ch.reason) : '');
+  setText('ch-progress', ch.state === 'running'
+    ? 'Phase ' + ch.phase + ' of 5, ' + (CH_PHASE[ch.phase] || '?')
+      + (ch.phase === 5 ? ' (round ' + ch.round + ', checking ' + ch.band_mm + ' mm)' : '')
+      + ': motor start ' + ch.starts + ' of about ' + ch.starts_est
+      + ', about ' + fmtDur(ch.eta_s) + ' left. M3 is moving.'
+    : '');
+  charResultRender(ch.rec);
+}
+
+function charResultRender(rec) {
+  const el = document.getElementById('ch-result');
+  if (!el) return;
+  if (!rec) { el.textContent = 'No characterisation recorded on this unit yet.'; return; }
+  if (rec.outcome === 'bench_hook') {
+    el.textContent = 'The stored record is a test entry from a bench build, not a run.';
+    return;
+  }
+  const done = rec.outcome === 'none' || rec.outcome === 'no_band';
+  const ph = rec.phases || 0;
+  const two = function (a, f) { return '<td>' + f(a[0]) + '</td><td>' + f(a[1]) + '</td>'; };
+  // 0.01 mm to 0.1 mm rounded half away from zero, on the integer, as the
+  // firmware rounds its log rows: (v / 100).toFixed(1) would round the binary
+  // double instead, and show 1445 as 14.4 where the log says 14.5.
+  const mm = function (v) {
+    return (Math.sign(v) * Math.round(Math.abs(v) / 10) / 10).toFixed(1) + ' mm';
+  };
+  const f2 = function (i) {
+    return rec.floor2_ms[i] ? rec.floor2_ms[i] + ' ms (' + mm(rec.floor2_x100[i]) + ')' : 'not found';
+  };
+  let h = '<p>Last run: ' + esc(fmtWhen(rec.when) || 'time unknown') + ', firmware '
+        + esc(rec.fw) + ', rest ' + rec.rest_s + ' s, ' + rec.starts + ' motor starts: '
+        + (done ? (rec.outcome === 'none' ? 'complete.' : 'complete, no deadzone derived.')
+                : 'ended early, ' + esc(CH_WHY[rec.outcome] || rec.outcome)) + '</p>';
+  if (ph & 0x07) {
+    h += '<table class="ch-tbl"><tr><th></th><th>opening</th><th>closing</th></tr>';
+    if (ph & 0x01) {
+      h += '<tr><td>Speed at full travel</td>'
+         + two(rec.speed_x10, function (v) { return (v / 10).toFixed(1) + ' mm/s'; }) + '</tr>';
+    }
+    if (ph & 0x02) {
+      h += '<tr><td>Lost on a reversal</td>' + two(rec.loss_x100, mm) + '</tr>';
+    }
+    if (ph & 0x04) {
+      h += '<tr><td>Shortest reliable pulse</td><td>' + f2(0) + '</td><td>' + f2(1) + '</td></tr>';
+      h += '<tr><td>Dead time</td>' + two(rec.dead_ms, function (v) { return v + ' ms'; }) + '</tr>';
+    }
+    h += '</table>';
+  }
+  if (ph & 0x08) {
+    const w = rec.wp02 || {};
+    h += '<p>AT-WP02, ten approaches to 50 %: spread ' + (w.spread_x100 / 100).toFixed(2) + ' % ('
+       + (w.pass ? 'PASS' : 'FAIL') + ', at most 2.0 %), hysteresis '
+       + (w.hyst_x100 >= 0 ? '+' : '') + (w.hyst_x100 / 100).toFixed(2) + ' %, landing error '
+       + (w.rms_x100 / 100).toFixed(2) + ' %.</p>';
+  }
+  if (rec.b0_mm) {
+    h += '<p>Deadzone: candidate ' + rec.b0_mm + ' mm (set by ' + (CH_TERM[rec.b0_term] || '?')
+       + '), checked in ' + rec.rounds + ' round' + (rec.rounds === 1 ? '' : 's')
+       + ', worst landing ' + (rec.worst_x10 / 10).toFixed(1) + ' mm: '
+       + (rec.band_mm ? '<strong>' + rec.band_mm + ' mm derived</strong>.' : 'none derived.')
+       + '</p>';
+  }
+  el.innerHTML = h;
+}
+
+// The characterisation moves the window for a long time: say so, with what it
+// will cost, before it moves.
+function charStart() {
+  const ch = g_char_last || {};
+  const rv = charRestValue(ch);
+  if (!confirm('This will MOVE M3 for about ' + fmtDur(charDuration(ch, rv)) + ': about '
+             + (ch.starts_est || 130) + ' motor starts, at least ' + rv + ' s apart. M3 stays '
+             + 'between 10 % and 90 %.\n\nAutomatic climate control pauses (STANDBY) from now '
+             + 'until the run has ended and you log out or your session times out.\n\nContinue?')) {
+    return;
+  }
+  fetch('/api/diag/commission', {
+    method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'characterise', rest_s: rv })
+  })
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      if (j && j.ok) { charRestDirty = false; return; }
+      setText('ch-hint', 'Not started: ' + (CH_WHY[j && j.char_reason]
+            || (j && (j.char_reason || j.error)) || 'no reply.'));
+    })
+    .then(commPoll)
+    .catch(commPoll);
+}
+
 setInterval(commPoll, 1000);
 
 // ── Status handler ───────────────────────────────────────────────────────────
@@ -519,6 +761,9 @@ function handleStatus(s) {
   //
   // The M3_* keys are ABSENT on a unit with no sensor — not zero — so the
   // `in` test below is what distinguishes "no sensor" from "fully closed".
+  // Plan §5e: kept for charWhyNot(), which greys the characterisation's Start.
+  g_m3_status  = s.windows || null;
+  g_mode_flags = (s.mode && Array.isArray(s.mode.flags)) ? s.mode.flags : [];
   if (s.windows) {
     const ids = ['M1', 'M2', 'M3'];
     for (let i = 0; i < 3; i++) {
@@ -989,6 +1234,9 @@ function loadConfig() {
       setVal('cfg-min-intv-m3',     cfg.min_intv_m3);
       if (cfg.ctrl_mode_m3 !== undefined) {
         setVal('cfg-ctrl-mode-m3', String(cfg.ctrl_mode_m3));
+      }
+      if (cfg.deadzone_src_m3 !== undefined) {
+        setVal('cfg-deadzone-src-m3', String(cfg.deadzone_src_m3));
       }
       if (cfg.wpos_fitted_m3 !== undefined) {
         setVal('cfg-wpos-fitted-m3', String(cfg.wpos_fitted_m3));
@@ -1770,6 +2018,7 @@ function linkSlider(numId) {
     'cfg-dwell-close-m1', 'cfg-dwell-close-m2', 'cfg-dwell-close-m3',
     'cfg-deadzone-m3', 'cfg-min-intv-m3',
     'cfg-session-timeout', 'cfg-ap-timeout', 'cfg-poll-interval',
+    'ch-rest',               // plan §5e: the run's rest, sent with Start, not a config key
   ].forEach(linkSlider);
 })();
 

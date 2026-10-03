@@ -1402,13 +1402,104 @@ def _comm_advance():
                     span=858, span_pct=84, ends=2)
 
 
+# Plan 5e: the characterisation run. The firmware drives M3 through five phases
+# for 1-3 h on a production window; here a timer walks the same states in ~40 s,
+# which is enough to see every GUI branch, and the record it leaves carries the
+# figures the rig's first real run measured (2026-10-03, 2344).
+#
+#   curl -X POST .../api/diag/commission -d '{"action":"characterise","rest_s":3}'
+#   curl -X POST "http://localhost:5000/api/__mock/char?state=failed&reason=wind"
+#   curl -X POST "http://localhost:5000/api/__mock/char?rec=none"
+CHAR = {"state": "idle", "reason": "none", "phase": 0, "round": 0, "band_mm": 0,
+        "rest_s": 0, "starts": 0, "elapsed_s": 0, "eta_s": 0, "_t0": 0.0}
+CHAR_REC = [None]      # the stored record, as GET reports it; None = no run yet
+_CHAR_PHASE_AT = (0.0, 6.0, 12.0, 24.0, 32.0)   # when each phase starts, s
+_CHAR_END_S = 40.0
+_CHAR_STARTS_EST = 130
+_CHAR_RIG_REC = {
+    "outcome": "none", "phases": 31, "travel_s": 13, "window_mm": 1500,
+    "speed_x10": [1390, 1380], "read_ms": 181, "loss_x100": [563, 1410],
+    "noise_x1000": 760, "floor2_ms": [41, 41], "floor2_x100": [364, 348], "dead_ms": [14, 14],
+    "wp02": {"err_x100": 20, "spread_x100": 90, "hyst_x100": -28, "rms_x100": 34, "pass": True},
+    "b0_mm": 32, "b0_term": 4, "rounds": 2, "worst_x10": 358, "band_mm": 40,
+}
+
+
+def _char_record(outcome, phases, starts):
+    """The record a run leaves: this run, and the last COMPLETE run's band."""
+    prev = CHAR_REC[0] or {}
+    rec = dict(_CHAR_RIG_REC) if outcome == "none" else {
+        "outcome": outcome, "phases": phases, "travel_s": 13, "window_mm": 1500,
+        "speed_x10": _CHAR_RIG_REC["speed_x10"] if phases & 1 else [0, 0],
+        "read_ms": 181 if phases & 1 else 0,
+        "loss_x100": _CHAR_RIG_REC["loss_x100"] if phases & 2 else [0, 0],
+        "noise_x1000": 0, "floor2_ms": [0, 0], "floor2_x100": [0, 0], "dead_ms": [0, 0],
+        "wp02": {"err_x100": 0, "spread_x100": 0, "hyst_x100": 0, "rms_x100": 0, "pass": False},
+        "b0_mm": 0, "b0_term": 0, "rounds": 0, "worst_x10": 0, "band_mm": 0}
+    now = int(time.time())
+    rec.update(when=now, fw=cfg.get("fw_ver", "mock"),
+               rest_s=CHAR["rest_s"], starts=starts)
+    if outcome == "none":
+        rec.update(meas_band_mm=rec["band_mm"], meas_when=now, meas_fw=rec["fw"])
+    else:
+        rec.update(meas_band_mm=prev.get("meas_band_mm", 0), meas_when=prev.get("meas_when", 0),
+                   meas_fw=prev.get("meas_fw", ""))
+    CHAR_REC[0] = rec
+
+
+def _char_advance():
+    """Walk a running characterisation along the clock, as _comm_advance a teach."""
+    if CHAR["state"] != "running":
+        return
+    t = time.time() - CHAR["_t0"]
+    if t >= _CHAR_END_S:
+        _char_record("none", 31, 119)
+        CHAR.update(state="done", reason="none", phase=5, round=0, band_mm=0, starts=119,
+                    eta_s=0)
+        COMM["standby_held"] = True        # held until logout, as on the unit
+        return
+    phase = sum(1 for p in _CHAR_PHASE_AT if t >= p)
+    starts = int(119 * t / _CHAR_END_S)
+    CHAR.update(phase=phase, starts=starts, elapsed_s=int(t),
+                eta_s=int((_CHAR_STARTS_EST - starts) * max(CHAR["rest_s"], 3)))
+    if phase == 5:
+        rnd = 1 if t < 36.0 else 2
+        CHAR.update(round=rnd, band_mm=32 if rnd == 1 else 40)
+
+
+def _dz():
+    """The band in force, as the firmware's dm_m3_deadzone()."""
+    typed = int(cfg.get("deadzone_m3_mm", 20))
+    meas = (CHAR_REC[0] or {}).get("meas_band_mm", 0)
+    when = (CHAR_REC[0] or {}).get("meas_when", 0)
+    if CHAR["state"] == "running" and CHAR.get("band_mm"):
+        mm, src = CHAR["band_mm"], "override"
+    elif cfg.get("deadzone_src_m3", 1) and meas:
+        mm, src = meas, "measured"
+    elif cfg.get("deadzone_src_m3", 1):
+        mm, src = typed, "unmeasured"
+    else:
+        mm, src = typed, "typed"
+    return {"mm": mm, "source": src, "typed_mm": typed, "measured_mm": meas,
+            "measured_when": when}
+
+
+def _char_json():
+    travel = (cfg.get("travel_s") or [0, 0, 171])[2]
+    return {**{k: v for k, v in CHAR.items() if not k.startswith("_")},
+            "starts_est": _CHAR_STARTS_EST, "run_s_est": 6 * travel,
+            "rest_default_s": 30, "rest_min_s": 2, "rest_max_s": 300, "rec": CHAR_REC[0]}
+
+
 @app.route("/api/diag/commission", methods=["GET"])
 def commission_get():
     denied = _admin_only()
     if denied:
         return denied
     _comm_advance()
-    return {"ok": True, **{k: v for k, v in COMM.items() if not k.startswith("_")}}
+    _char_advance()
+    return {"ok": True, **{k: v for k, v in COMM.items() if not k.startswith("_")},
+            "dz": _dz(), "char": _char_json()}
 
 
 @app.route("/api/diag/commission", methods=["POST"])
@@ -1432,7 +1523,33 @@ def commission_post():
                     leg=0, ends=0, _first_open=(m3 == "CLOSED"),
                     standby_held=True)   # released at logout, as on the unit
         _COMM_T0[0] = time.time()
+    elif a == "characterise":
+        # The firmware's refusals, in its order (characterise_start()).
+        rest = int(body.get("rest_s", 30))
+        why = None
+        if CHAR["state"] == "running":
+            why = "m3_busy"
+        elif rest < 2 or rest > 300:
+            why = "bad_rest"
+        elif COMM["verdict"] != "valid":
+            why = "not_taught"
+        elif COMM["state"] in ("arming", "traversing", "committing"):
+            why = "teach_running"
+        if why:
+            if why != "m3_busy":
+                CHAR.update(state="failed", reason=why, phase=0, starts=0)
+            return {"ok": False, "char_reason": why}
+        CHAR.update(state="running", reason="none", phase=1, round=0, band_mm=0,
+                    rest_s=rest, starts=0, elapsed_s=0, _t0=time.time())
+        COMM["standby_held"] = True
+        return {"ok": True, "char_reason": "none"}
     elif a == "abort":
+        # One commissioning procedure at a time: end that one.
+        if CHAR["state"] == "running":
+            done = sum(1 for p in _CHAR_PHASE_AT if time.time() - CHAR["_t0"] >= p) - 1
+            _char_record("operator", (1 << max(done, 0)) - 1, CHAR["starts"])
+            CHAR.update(state="failed", reason="operator", eta_s=0, round=0, band_mm=0)
+            return {"ok": True, "state": 0, "run_reason": 0}
         COMM.update(state="idle", run_reason="none", teach_armed=False,
                     leg=0, ends=0)
     elif a == "refresh":
@@ -1459,6 +1576,22 @@ def commission_mock_set():
         else:
             COMM[k] = v
     return {"ok": True, "commission": COMM}
+
+
+@app.route("/api/__mock/char", methods=["POST"])
+def char_mock_set():
+    """Force the characterisation's state, or clear its record (?rec=none)."""
+    for k, v in request.args.items():
+        if k == "rec":
+            if v == "none":
+                CHAR_REC[0] = None
+            elif v == "rig":
+                _char_record("none", 31, 119)
+        elif k in ("phase", "round", "band_mm", "starts", "rest_s", "eta_s"):
+            CHAR[k] = int(v)
+        elif k in ("state", "reason"):
+            CHAR[k] = v
+    return {"ok": True, "char": _char_json()}
 
 
 @app.route("/api/__mock/m3", methods=["POST"])

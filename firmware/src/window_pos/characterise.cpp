@@ -185,6 +185,14 @@ static run_t                *s_run;     /* T17 only, once published */
 
 /* ---- small helpers -------------------------------------------------------- */
 
+/* 0.01 mm -> 0.1 mm for a log row, ROUNDED half away from zero: the card
+ * shows the record's 0.01 mm value to one decimal, and a truncated row (3.48
+ * logged as 3.4) would disagree with it. */
+static int32_t x100_to_x10(int32_t v)
+{
+    return (v >= 0 ? v + 5 : v - 5) / 10;
+}
+
 static void char_log(int16_t what, int32_t value)
 {
     if (value > INT16_MAX) { value = INT16_MAX; }
@@ -517,8 +525,8 @@ static void plan_reversal(run_t *r, uint32_t now)
         r->rev_loss_x100[d] = ok ? rv.loss_x100 : 0;
     }
     r->phases_done |= M3CHAR_PH_REVERSAL;
-    char_log(LI_LOSS_OPEN, r->rev_loss_x100[0] / 10);
-    char_log(LI_LOSS_CLOSE, r->rev_loss_x100[1] / 10);
+    char_log(LI_LOSS_OPEN, x100_to_x10(r->rev_loss_x100[0]));
+    char_log(LI_LOSS_CLOSE, x100_to_x10(r->rev_loss_x100[1]));
     ESP_LOGW(TAG, "reversal loss %ld / %ld (0.01 mm) at %u / %u ms",
              (long)r->rev_loss_x100[0], (long)r->rev_loss_x100[1],
              (unsigned)r->rev_w[0], (unsigned)r->rev_w[1]);
@@ -610,8 +618,8 @@ static void plan_minmove(run_t *r, uint32_t now)
     char_log(LI_DEAD_CLOSE, r->dead_ms[1]);
     char_log(LI_F2_MS_OPEN, r->floor2_ms[0]);
     char_log(LI_F2_MS_CLOSE, r->floor2_ms[1]);
-    char_log(LI_F2_MM_OPEN, r->floor2_x100[0] / 10);
-    char_log(LI_F2_MM_CLOSE, r->floor2_x100[1] / 10);
+    char_log(LI_F2_MM_OPEN, x100_to_x10(r->floor2_x100[0]));
+    char_log(LI_F2_MM_CLOSE, x100_to_x10(r->floor2_x100[1]));
     ESP_LOGW(TAG, "floor 2 %u / %u ms (%ld / %ld x0.01 mm), dead %d / %d ms, %u pulses",
              (unsigned)r->floor2_ms[0], (unsigned)r->floor2_ms[1],
              (long)r->floor2_x100[0], (long)r->floor2_x100[1],
