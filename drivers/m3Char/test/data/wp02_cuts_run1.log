@@ -1,0 +1,43 @@
+at_wp02 -- unit 2344, fw 2.15.0-bench
+  18:39:12  dwells cut to 5 s, minimum interval 0 (restored on exit)
+  18:39:14  T6 held in STANDBY
+  18:39:15  gate: position control available
+  18:39:15  AT-WP02: target 50.0 %, 10 approaches, deadband 1.33 %
+  18:39:15    T2 lead before: open 3.23 %, close 3.23 % (learned from 0 / 0 stops)
+  18:42:29    approach  1 from below:   49.5 %   (published 49.5 %)
+  18:43:02    approach  2 from above:   51.6 %   (published 51.6 %)
+  18:43:35    approach  3 from below:   49.8 %   (published 50.0 %)
+  18:44:07    approach  4 from above:   50.2 %   (published 50.1 %)
+  18:44:40    approach  5 from below:   49.6 %   (published 49.6 %)
+  18:45:12    approach  6 from above:   49.4 %   (published 49.5 %)
+  18:45:46    approach  7 from below:   50.6 %   (published 50.6 %)
+  18:46:18    approach  8 from above:   50.3 %   (published 50.2 %)
+  18:46:51    approach  9 from below:   50.0 %   (published 49.8 %)
+  18:47:24    approach 10 from above:   51.1 %   (published 51.1 %)
+  18:47:24    T2 lead after : open 2.98 %, close 2.19 % (learned from 5 / 5 stops)
+
+  n            : 10 (5 from below, 5 from above)
+  mean         : 50.2 %  (target 50.0 %, error +0.2 %)
+  spread       : 2.2 %  (requirement: within +/-1 %, i.e. <= 2.0)
+  hysteresis   : -0.6 %  (from below minus from above)
+  deadband     : 1.33 %  -- a spread below this is not measurable
+  published    : worst 0.2 % from the live resting position (settle: <= 0.3 %)
+
+  18:47:24  AT-WP03: endpoints
+  18:47:47    closed: CLOSED, position 0.0 %, end sensor True
+  18:48:09    open  : OPEN, position 100.0 %, end sensor True
+  18:48:39    near  : PART_OPEN, position 8.5 %, end sensor False
+
+restoring ...
+  18:52:06  T6 released to automatic
+  18:52:06    restore dwell_open_m3    -> 1500   ok
+  18:52:06    restore dwell_close_m3   -> 300    ok
+  18:52:06    restore min_intv_m3      -> 0      ok
+
+== result ==
+  AT-WP02  FAIL
+  AT-WP03  PASS
+  settle   PASS
+
+FAILED: AT-WP02
+exit 1

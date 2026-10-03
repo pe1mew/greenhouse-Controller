@@ -1,0 +1,77 @@
+at_wp_minmove -- unit 2344, fw 2.15.0-bench
+  12:34:51  T6 held in STANDBY
+  12:34:51  gate: position control available
+  12:34:51  putting M3 at 50.0 % (window 1500.0 mm)
+  12:35:01  at rest: 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 mm
+  12:35:02  pass 1, 120 ms open: the unit shows 'calibrating'
+  12:35:06  M3 is at 0.0 %, too near an end -- putting it back at 50.0 %
+  12:35:46  pass 1, 120 ms: open 12.2, 10.4, 13.9, 12.2, 13.8 / close 10.5, 12.1, 12.2, 12.1, 12.2 mm
+  12:36:16  pass 1, 100 ms: open 8.7, 10.4, 10.4, 8.7, 10.4 / close 10.4, 10.4, 8.7, 8.7, 12.1 mm
+  12:36:46  pass 1,  80 ms: open 6.9, 6.9, 8.7, 8.7, 7.0 / close 8.7, 6.9, 7.0, 6.9, 7.0 mm
+  12:37:16  pass 1,  70 ms: open 6.9, 5.2, 8.7, 5.2, 8.7 / close 7.0, 6.9, 5.2, 7.0, 5.2 mm
+  12:37:45  pass 1,  60 ms: open 3.4, 7.0, 5.2, 5.2, 5.2 / close 5.3, 5.2, 3.4, 5.2, 3.5 mm
+  12:38:14  pass 1,  50 ms: open 5.2, 3.5, 5.2, 3.5, 3.4 / close 3.5, 3.5, 3.4, 5.2, 1.8 mm
+  12:38:43  pass 1,  45 ms: open 3.5, 3.5, 5.2, 3.5, 3.4 / close 3.5, 3.5, 3.4, 3.5, 1.7 mm
+  12:39:13  pass 1,  40 ms: open 3.4, 3.5, 3.5, 3.5, 1.7 / close 1.7, 3.5, 1.7, 1.7, 3.5 mm
+  12:39:41  pass 1,  35 ms: open 1.8, 1.7, 3.5, 3.5, 1.7 / close 1.7, 1.7, 3.5, 1.7, 1.8 mm
+  12:40:08  pass 1,  30 ms: open 1.7, 1.8, 3.4, 1.8, 1.7 / close 1.7, 1.7, 1.8, 1.7, 1.7 mm
+  12:40:36  pass 1,  25 ms: open 1.8, 1.7, 1.7, 1.8, 1.7 / close 0.0, 3.4, 0.0, 1.8, 1.7 mm
+  12:41:02  pass 1,  20 ms: open 0.0, 1.7, 1.7, 1.8, 0.0 / close 0.0, 1.7, 0.0, 1.8, 0.0 mm
+  12:41:33  pass 2, 120 ms: open 13.9, 10.4, 13.9, 13.9, 12.1 / close 12.2, 13.9, 10.4, 10.4, 13.9 mm
+  12:42:02  pass 2, 100 ms: open 10.4, 8.7, 12.1, 10.4, 10.4 / close 10.4, 10.4, 8.7, 8.7, 10.4 mm
+  12:42:32  pass 2,  80 ms: open 8.7, 7.0, 6.9, 8.7, 6.9 / close 7.0, 6.9, 7.0, 6.9, 8.7 mm
+  12:43:04  pass 2,  70 ms: open 5.3, 5.2, 6.9, 6.9, 7.0 / close 6.9, 5.2, 5.2, 7.0, 6.9 mm
+  12:43:33  pass 2,  60 ms: open 5.2, 3.5, 5.2, 6.9, 5.2 / close 3.4, 5.2, 3.5, 5.2, 5.2 mm
+  12:44:01  pass 2,  50 ms: open 3.5, 3.5, 3.4, 7.0, 3.4 / close 5.2, 1.7, 3.5, 5.2, 3.5 mm
+  12:44:30  pass 2,  45 ms: open 3.4, 3.5, 3.5, 3.4, 5.2 / close 3.5, 1.7, 3.5, 1.8, 5.2 mm
+  12:44:57  pass 2,  40 ms: open 3.5, 1.7, 3.5, 5.2, 1.7 / close 1.7, 1.7, 1.8, 3.5, 1.7 mm
+  12:45:25  pass 2,  35 ms: open 3.5, 1.7, 1.8, 3.4, 3.5 / close 1.8, 1.7, 3.5, 1.7, 1.8 mm
+  12:45:53  pass 2,  30 ms: open 1.7, 3.5, 1.7, 1.7, 3.5 / close 1.7, 0.0, 3.5, 1.7, 0.0 mm
+  12:46:21  pass 2,  25 ms: open 1.7, 1.8, 1.7, 1.7, 0.0 / close 1.7, 0.0, 1.7, 1.8, 0.0 mm
+  12:46:51  pass 2,  20 ms: open 1.8, 0.0, 1.7, 0.0, 1.7 / close 1.7, 0.0, 1.7, 0.0, 1.8 mm
+
+restoring ...
+  12:47:15  T6 released to automatic
+288 pulses written to minmove_1002d.csv
+
+noise at rest: sigma 0.00 mm over 6 reads; a pulse 'moved' when it moved more than 1.0 mm
+smallest non-zero displacement read: 1.7 mm (the encoder's step shows here)
+
+the first pulse after a reversal (rope slack taken up), against the same width in the same direction:
+  open   200 ms: after a reversal 12.01 mm (n 23), same direction 24.30 mm (n 1): -12.29 mm
+  close  200 ms: after a reversal 12.28 mm (n 24); no same-direction pulse of this width to set it against
+
+below, SAME-DIRECTION pulses only, take-up pulses left out:
+
+OPEN: req ms   real ms (mean)   n   disp mm mean / sigma / min   % of window   moved
+        120     120.5          10    12.67 /  1.43 /  10.40        0.84      10/10
+        100     100.6          10    10.06 /  1.08 /   8.70        0.67      10/10
+         80      80.4          10     7.64 /  0.91 /   6.90        0.51      10/10
+         70      71.5          10     6.60 /  1.37 /   5.20        0.44      10/10
+         60      60.5          10     5.20 /  1.17 /   3.40        0.35      10/10
+         50      51.6          10     4.16 /  1.23 /   3.40        0.28      10/10
+         45      46.5          10     3.81 /  0.73 /   3.40        0.25      10/10
+         40      40.5          10     3.12 /  1.11 /   1.70        0.21      10/10
+         35      36.5          10     2.61 /  0.92 /   1.70        0.17      10/10
+         30      31.5          10     2.25 /  0.84 /   1.70        0.15      10/10
+         25      26.4          10     1.56 /  0.55 /   0.00        0.10      9/10
+         20      20.5          10     1.04 /  0.90 /   0.00        0.07      6/10
+   fit over 100 pulses: 117.4 mm/s (7.83 %/s), dead time 15 ms
+   floor 2: 30 ms commanded (31.5 ms real) is the shortest width at which every pulse moved: 2.25 mm, 0.15 % of the window
+
+CLOSE: req ms   real ms (mean)   n   disp mm mean / sigma / min   % of window   moved
+        120     120.5          10    11.99 /  1.28 /  10.40        0.80      10/10
+        100     100.6          10     9.89 /  1.15 /   8.70        0.66      10/10
+         80      80.4          10     7.30 /  0.74 /   6.90        0.49      10/10
+         70      71.5          10     6.25 /  0.90 /   5.20        0.42      10/10
+         60      60.5          10     4.51 /  0.91 /   3.40        0.30      10/10
+         50      51.5          10     3.65 /  1.27 /   1.70        0.24      10/10
+         45      46.5          10     3.13 /  1.10 /   1.70        0.21      10/10
+         40      40.5          10     2.25 /  0.86 /   1.70        0.15      10/10
+         35      36.5          10     2.09 /  0.74 /   1.70        0.14      10/10
+         30      31.5          10     1.55 /  0.99 /   0.00        0.10      8/10
+         25      26.4          10     1.21 /  1.16 /   0.00        0.08      6/10
+         20      20.4          10     0.87 /  0.92 /   0.00        0.06      5/10
+   fit over 90 pulses: 122.0 mm/s (8.13 %/s), dead time 21 ms
+   floor 2: 35 ms commanded (36.5 ms real) is the shortest width at which every pulse moved: 2.09 mm, 0.14 % of the window
+exit 0

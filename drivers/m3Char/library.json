@@ -1,0 +1,9 @@
+{
+  "name": "m3_char",
+  "version": "0.1.0",
+  "description": "The arithmetic of M3's characterisation run (plan 5e): speed, reversal loss, floor 2 and dead time, AT-WP02, and the measured deadband. Pure functions, host-tested against the rig's archived raw data",
+  "keywords": "greenhouse, window, position, deadband",
+  "build": {
+    "srcDir": "src"
+  }
+}

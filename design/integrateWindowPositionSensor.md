@@ -3458,7 +3458,7 @@ record keeps the phases completed.
 - **The mock** (`webUiMock/mock_server.py`) learns the actions, the `char` object, the new key and its
   limits.
 
-##### Choices made in this design, for the operator to confirm
+##### Choices made in this design — all six confirmed by the operator, 2026-10-03
 
 1. **Phase 4 gains the band check (4b), and b₀ includes T2's lead.** This goes beyond the four phases
    as decided. It adds 8–40 starts (usually 8–16), and it is what makes the derived band safe against
@@ -3480,8 +3480,9 @@ record keeps the phases completed.
 - `firmware/src/ota_client/ota_client.cpp` (the quiet gate)
 - `firmware/src/web_server/web_server.cpp`; `firmware/data/index.html`, `app.js`, `style.css` (the card,
   the deadzone row, *M3 control* moved)
-- `drivers/m3Char/` (new): the analysis as a host-testable library with its native suite, and its
-  `firmware/components/m3Char` proxy, following `ventModel`
+- `drivers/m3Char/` (new, built 2026-10-03): the analysis as a host-testable library with its native
+  suite, the archived data, the fixture generator and the mutation check. Its
+  `firmware/components/m3Char` proxy follows `ventModel`'s and comes with step 3
 - `webUiMock/mock_server.py`; `log/logparser.py` and `logparser.md`; `bin/at_wp_char.py` (new harness)
 - The FRS §5.3d, the TSDS §5.16 and its T17 section, and the beheerder manual (the commissioning chapter,
   the deadzone, the table of M3 groups). The boer manual changes only if it says where STANDBY comes
@@ -3528,7 +3529,35 @@ record keeps the phases completed.
 ##### Build order
 
 1. **The analysis first**, as `drivers/m3Char`, until its native suite reproduces the harnesses' figures
-   from the archived data.
+   from the archived data. **DONE 2026-10-03.**
+   - The library is `src/m3_char.{h,cpp}`: the phases' arithmetic as pure functions, no I/O and no
+     allocation. A median is a selection over the caller's array, because T17's stack is no place for
+     a copy.
+   - The archived runs are in `test/data/` (README there): three minimum-move sweeps and six AT-WP02
+     runs, copied from Shuttle2. `tools/gen_fixtures.py` turns them into `fixtures.h`, whose expected
+     values are the figures the harnesses PRINTED, never recomputed ones.
+   - **`pio test -e native`: 16 of 16 pass.** The replays match every printed figure to its last digit,
+     within one unit of rounding:
+     - the noise and threshold of all three sweeps;
+     - every width row, both fits and floor 2 of each direction;
+     - all 25 reversal lines;
+     - the six AT-WP02 verdicts.
+
+     So the recorded run (1002d) gives §3.6's figures: 117.4 / 122.0 mm/s, dead time 15 / 21 ms,
+     floor 2 30 / 35 ms (2.25 / 2.09 mm). The invalid run 1002b gives "no floor 2, no fit", as the
+     harness printed. The first sweep's reversal loss at 200 ms is 11.9 mm opening and **9.9 mm**
+     closing, so §3.6's "10–12 mm" is a slight round-up.
+   - **The replays alone were not enough.** Breaking each rule in a copy of the library
+     (`tools/mutation_check.py`) first showed two rules that no archived run exercises:
+     - a displacement exactly on the threshold;
+     - a shorter width succeeding after a longer one failed.
+
+     Direct tests now cover both, plus a third for phase 1's middle-60 % rule. **All 12 broken copies
+     now fail the suite.**
+   - The library compiles warning-free under the firmware component's hardening flags (`-Werror`),
+     and the header also compiles as C99.
+   - The `firmware/components/m3Char` proxy comes with its first consumer, in step 3. Until then
+     nothing in the firmware compiles the library, as with `ventModel` before 2.12.0.
 2. **T2:** the pulse in every build. **T4:** the key, the band in force, the override and the record.
    **T16:** the gate.
 3. **`characterise.cpp` and T17's hooks**, and the shared hold in `commission.cpp`.
