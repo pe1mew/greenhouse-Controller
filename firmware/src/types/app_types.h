@@ -381,7 +381,7 @@ typedef enum {
     LOG_PARAM_ALARM_WIND_FAULT = 243, /**< wind SET, sensor-fault safe-fail: va=-1, vb=0 */
 
     /* Window position sensor events (Phase 3, integrateWindowPositionSensor.md 3b).
-     * Continues the wind band; 253..255 remain free and the band is nearly
+     * Continues the wind band; 253 is the characterisation run's (plan §5e), 254..255 remain free and the band is nearly
      * spent, so spend the rest deliberately. Carried on LOG_ALARM rows with
      * channel = 6 (4 = T/RH fault, 5 = wind fault are taken). */
     LOG_PARAM_WPOS_FAULT   = 244, /**< value_a: 1 = fault set, 0 = cleared */
@@ -459,6 +459,25 @@ typedef enum {
                                    *  relay-on to the target end sensor, 0.1 s,
                                    *  signed by direction (+ OPEN, - CLOSE).
                                    *  Warns only: nothing changes `travel_m3`. */
+    LOG_PARAM_WPOS_CHAR    = 253, /**< Plan §5e — the characterisation run
+                                   *  (window_pos/characterise.cpp). One row
+                                   *  per figure, written as each phase ends:
+                                   *  value_a = WHAT, value_b = the value.
+                                   *  1 started (rest s) / 2 ended (the reason,
+                                   *  char_err_t: 0 complete); 10/11 speed
+                                   *  open/close (0.1 mm/s), 12 T17's read
+                                   *  interval (ms); 20/21 reversal loss
+                                   *  open/close (0.1 mm); 30/31 dead time
+                                   *  (ms), 32/33 floor 2 (ms), 34/35 floor 2
+                                   *  displacement (0.1 mm); 40 AT-WP02
+                                   *  spread, 41 hysteresis (signed), 42
+                                   *  landing error (0.01 %); 50 the
+                                   *  candidate b0 (mm), 51 check rounds, 52
+                                   *  the last round's worst landing (0.1
+                                   *  mm); 60 the band derived (mm, 0 none),
+                                   *  61 the band in force after the run (mm).
+                                   *  Spends one of the band's last three
+                                   *  params; 254-255 remain. */
 } log_param_id_t;
 
 /**

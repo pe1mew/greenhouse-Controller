@@ -126,6 +126,7 @@
 #include "../status_post/status_post.h"   /* alpha.6.20 — status_post_last_str (web tab) */
 #include "../ota_client/ota_client.h"
 #include "../window_pos/commission.h"     /* gh#77 — teach + window size, admin-only, EVERY build */
+#include "../window_pos/characterise.h"   /* plan §5e — the characterisation run, same route */
 #include "window_pos.h"                     /* the driver: read for the commissioning verdict */
 #include "../window_pos/window_pos_task.h"  /* T17 snapshot + derived cfg */
 #include "../types/failfirst_212.h"           /* 2.12.0 fail-first mask, reported by the diag */
@@ -3392,7 +3393,7 @@ static esp_err_t diag_commission_get_handler(httpd_req_t *req)
     static const char *k_run[] = { "none", "m3_busy", "both_ends", "sensor",
                                    "wind", "motor_alarm", "timeout", "device_write",
                                    "no_start", "no_move", "end_missed", "refused",
-                                   "dropped" };
+                                   "dropped", "characterising" };
     _Static_assert(sizeof(k_run) / sizeof(k_run[0]) == (size_t)TEACH_ERR_COUNT_,
                    "k_run[] must have one string per teach_err_t value, in order");
 #define TABLE_STR(t, i) (((unsigned)(i) < sizeof(t) / sizeof((t)[0])) ? (t)[(i)] : "?")
@@ -3411,7 +3412,7 @@ static esp_err_t diag_commission_get_handler(httpd_req_t *req)
              "\"state\":\"%s\",\"run_reason\":\"%s\",\"dir\":\"%s\","
              "\"leg\":%u,\"legs_max\":%u,\"ends\":%u,\"standby_held\":%s,"
              "\"dz\":{\"mm\":%u,\"source\":\"%s\",\"typed_mm\":%u,"
-             "\"measured_mm\":%u,\"measured_when\":%lu}}",
+             "\"measured_mm\":%u,\"measured_when\":%lu}",
              TABLE_STR(k_verdict, c.verdict),
              TABLE_STR(k_cal, c.cal_reason),
              (unsigned)c.window_mm, (unsigned)c.taught_closed,
@@ -3425,14 +3426,75 @@ static esp_err_t diag_commission_get_handler(httpd_req_t *req)
              c.standby_held ? "true" : "false",
              (unsigned)dz.mm, dm_m3_dz_source_name(dz.source), (unsigned)dz.typed_mm,
              (unsigned)dz.measured_mm, (unsigned long)dz.measured_when);
+
+    /* Plan §5e: the characterisation run, in progress and as last recorded.
+     * The reply goes out in chunks, the way ?cuts does, so one stack buffer
+     * serves every part: the commissioning fields above (object still open),
+     * the run's status, then its record. */
+    static const char *k_cstate[] = { "idle", "running", "done", "failed" };
+    _Static_assert(sizeof(k_cstate) / sizeof(k_cstate[0]) == (size_t)CHAR_STATE_COUNT_,
+                   "k_cstate[] must have one string per char_state_t value, in order");
+    characterise_status_t cst;
+    characterise_status(&cst);
+    uint16_t est_starts = 0u;
+    uint32_t est_run_s = 0u;
+    characterise_estimate(&est_starts, &est_run_s);
+    httpd_resp_send_chunk(req, body, HTTPD_RESP_USE_STRLEN);
+
+    snprintf(body, sizeof(body),
+             ",\"char\":{\"state\":\"%s\",\"reason\":\"%s\",\"phase\":%u,\"round\":%u,"
+             "\"band_mm\":%u,\"rest_s\":%u,\"starts\":%u,\"starts_est\":%u,"
+             "\"run_s_est\":%lu,\"elapsed_s\":%lu,\"eta_s\":%lu,"
+             "\"rest_default_s\":%u,\"rest_min_s\":%u,\"rest_max_s\":%u,\"rec\":",
+             TABLE_STR(k_cstate, cst.state), characterise_err_name(cst.reason),
+             (unsigned)cst.phase, (unsigned)cst.round, (unsigned)cst.band_mm,
+             (unsigned)cst.rest_s, (unsigned)cst.starts, (unsigned)est_starts,
+             (unsigned long)est_run_s, (unsigned long)cst.elapsed_s, (unsigned long)cst.eta_s,
+             (unsigned)CHAR_REST_DEFAULT_S, (unsigned)CHAR_REST_MIN_S, (unsigned)CHAR_REST_MAX_S);
+    httpd_resp_send_chunk(req, body, HTTPD_RESP_USE_STRLEN);
+
+    m3char_rec_t rec;
+    if (dm_m3char_load(&rec)) {
+        const char *outcome = (rec.outcome == M3CHAR_OUT_BENCH)
+            ? "bench_hook" : characterise_err_name((char_err_t)rec.outcome);
+        snprintf(body, sizeof(body),
+                 "{\"outcome\":\"%s\",\"phases\":%u,\"when\":%lu,\"fw\":\"%.16s\","
+                 "\"travel_s\":%u,\"window_mm\":%u,\"rest_s\":%u,\"starts\":%u,"
+                 "\"speed_x10\":[%u,%u],\"read_ms\":%u,\"loss_x100\":[%ld,%ld],"
+                 "\"noise_x1000\":%lu,\"floor2_ms\":[%u,%u],\"floor2_x100\":[%ld,%ld],"
+                 "\"dead_ms\":[%d,%d],\"wp02\":{\"err_x100\":%d,\"spread_x100\":%d,"
+                 "\"hyst_x100\":%d,\"rms_x100\":%d,\"pass\":%s},\"b0_mm\":%u,"
+                 "\"b0_term\":%u,\"rounds\":%u,\"worst_x10\":%ld,\"band_mm\":%u,"
+                 "\"meas_band_mm\":%u,\"meas_when\":%lu,\"meas_fw\":\"%.16s\"}}}",
+                 outcome, (unsigned)rec.phases, (unsigned long)rec.when, rec.fw,
+                 (unsigned)rec.travel_s, (unsigned)rec.window_mm, (unsigned)rec.rest_s,
+                 (unsigned)rec.starts, (unsigned)rec.speed_x10[0], (unsigned)rec.speed_x10[1],
+                 (unsigned)rec.read_ms, (long)rec.rev_loss_x100[0], (long)rec.rev_loss_x100[1],
+                 (unsigned long)rec.noise_x1000, (unsigned)rec.floor2_ms[0],
+                 (unsigned)rec.floor2_ms[1], (long)rec.floor2_x100[0], (long)rec.floor2_x100[1],
+                 (int)rec.dead_ms[0], (int)rec.dead_ms[1], (int)rec.wp02_err_x100,
+                 (int)rec.wp02_spread_x100, (int)rec.wp02_hyst_x100, (int)rec.wp02_rms_x100,
+                 rec.wp02_pass ? "true" : "false", (unsigned)rec.b0_mm, (unsigned)rec.b0_term,
+                 (unsigned)rec.check_rounds, (long)rec.check_worst_x10, (unsigned)rec.band_mm,
+                 (unsigned)rec.meas_band_mm, (unsigned long)rec.meas_when, rec.meas_fw);
+    } else {
+        snprintf(body, sizeof(body), "null}}");
+    }
 #undef TABLE_STR
-    return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send_chunk(req, body, HTTPD_RESP_USE_STRLEN);
+    return httpd_resp_send_chunk(req, NULL, 0);
 }
 
 /**
- * POST /api/diag/commission — drive commissioning (admin, DEV BUILDS ONLY)
+ * POST /api/diag/commission — drive commissioning (admin, every build since gh#77)
  *
- * Body: {"action":"teach"|"abort"|"refresh"|"window"[,"mm":1500]}
+ * Body: {"action":"teach"|"characterise"|"abort"|"refresh"|"window"
+ *        [,"mm":1500][,"rest_s":30]}
+ *
+ * `characterise` (plan §5e) **moves the window for a long time**: the run drives
+ * M3 through its four phases, holding STANDBY as a teach does, with `rest_s`
+ * between motor starts (CHAR_REST_MIN_S..MAX_S, default 30). `abort` ends
+ * whichever is running, the run or a teach.
  *
  * `teach` **moves the window**: it arms the device, and T17 then drives M3 to
  * BOTH end sensors in turn -- two traverses, three if T2's idea of where M3 is
@@ -3476,8 +3538,25 @@ static esp_err_t diag_commission_post_handler(httpd_req_t *req)
         char token[TOKEN_LEN + 1] = {0};
         (void)cookie_get_session(req, token);   /* admin already validated above */
         ok = commission_teach_start(token);
+    } else if (strcmp(act, "characterise") == 0) {
+        /* Plan §5e: holds STANDBY until THIS session ends and the run is over. */
+        char rs[8] = {0};
+        long rest = (long)CHAR_REST_DEFAULT_S;
+        if (json_get_field(body, "rest_s", rs, sizeof(rs))) { rest = strtol(rs, NULL, 10); }
+        if (rest < 0 || rest > 65535) { rest = 0; }   /* refused below as bad_rest */
+        char token[TOKEN_LEN + 1] = {0};
+        (void)cookie_get_session(req, token);
+        char_err_t why = CHAR_ERR_NONE;
+        ok = characterise_start(token, (uint16_t)rest, &why);
+        char out[96];
+        snprintf(out, sizeof(out), "{\"ok\":%s,\"char_reason\":\"%s\"}",
+                 ok ? "true" : "false", characterise_err_name(why));
+        return httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
     } else if (strcmp(act, "abort") == 0) {
-        commission_teach_abort(); ok = true;
+        /* One commissioning procedure runs at a time; end that one. */
+        if (characterise_active()) { characterise_abort(); }
+        else                       { commission_teach_abort(); }
+        ok = true;
     } else if (strcmp(act, "refresh") == 0) {
         commission_refresh(); ok = true;
     } else if (strcmp(act, "window") == 0) {

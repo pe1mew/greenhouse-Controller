@@ -131,6 +131,7 @@ typedef enum {
     TEACH_ERR_END_MISSED,   /**< a stroke ended between the end sensors -- travel_m3 too short? */
     TEACH_ERR_REFUSED,      /**< both ends made but bit 5 stayed set: captures < 64 counts apart */
     TEACH_ERR_DROPPED,      /**< bit 5 cleared before both ends had made -- sensor restarted? */
+    TEACH_ERR_CHARACTERISING, /**< refused: a characterisation run is moving M3 (plan §5e) */
     TEACH_ERR_COUNT_        /**< not a reason: how many there are */
 } teach_err_t;
 
@@ -220,15 +221,29 @@ void commission_refresh(void);
 bool commission_owns_teach(void);
 
 /**
- * @brief True while commissioning is moving M3 on its own: a teach is starting
- *        or running (plan §5e step 2; the characterisation run joins it).
+ * @brief True while commissioning is moving M3 on its own: a teach, or a
+ *        characterisation run (plan §5e), is starting or running.
  *
  * ROTA's quiet gate waits for it (ota_client.cpp, quiet_gate()). The gate
  * already waits for an open web session, but once the admin logs out a teach
- * carries on by design (the hold waits for it), and an update applied between
- * two of its legs would end it with a reboot. Safe from any task.
+ * or a run carries on by design (the hold waits for it), and an update applied
+ * between two of its moves would end it with a reboot. Safe from any task.
  */
 bool commission_busy(void);
+
+/** @brief True while a TEACH is starting or running (not a run). Safe from any task. */
+bool commission_teach_running(void);
+
+/**
+ * @brief Take the commissioning STANDBY hold for a characterisation run.
+ *
+ * The teach's own hold, by the teach's rule: held until the run is over and
+ * @p owner_token's session has ended (characterise_active() counts as running
+ * for the release check). A STANDBY the operator set stays theirs.
+ *
+ * @return true when STANDBY is on afterwards, held or the operator's.
+ */
+bool commission_hold_for_run(const char *owner_token);
 
 /**
  * @brief True while a teach is running, and for a few readings after it ends.

@@ -5,6 +5,7 @@
 
 #include "window_pos_task.h"
 #include "commission.h"   /* §6.3 item 4 — the teach runs from these readings (gh#77: every build) */
+#include "characterise.h" /* plan §5e — the characterisation run, driven like the teach */
 
 #include "../types/app_types.h"
 #include "../data_manager/data_manager.h"
@@ -1418,6 +1419,10 @@ void task_window_pos(void *pvParameters)
 
     for (;;) {
         esp_task_wdt_reset();
+        /* Plan §5e: the characterisation run's rest timer and guards, on
+         * every pass whatever the gate or the fitted setting says -- it
+         * must notice a foreign move or an abort between readings too. */
+        characterise_tick(now_ms());
 
         /* ---- not fitted (gh#73): nothing on the bus, nothing to judge -----
          * Above the gate, for the gate's own reason: every bus-touching path is
@@ -1430,6 +1435,7 @@ void task_window_pos(void *pvParameters)
             /* A teach running when the sensor was switched off ends as a
              * sensor failure, exactly as when the sensor goes away. */
             commission_tick(NULL, now_ms());
+            characterise_reading(NULL, now_ms());
             vTaskDelay(pdMS_TO_TICKS(IDLE_TICK_MS));
             continue;
         }
@@ -1482,6 +1488,7 @@ void task_window_pos(void *pvParameters)
              * teach running when the sensor went away would otherwise wait for
              * ever. NULL tells it there is no sensor; idle, it does nothing. */
             commission_tick(NULL, now_ms());
+            characterise_reading(NULL, now_ms());
             vTaskDelay(pdMS_TO_TICKS(IDLE_TICK_MS));
             continue;
         }
@@ -1553,7 +1560,9 @@ void task_window_pos(void *pvParameters)
              * stroke ends, and to see bit 5 clear. The 30 s idle cadence would
              * stall it between legs, so sample every idle tick while it runs
              * (and for a few ticks after, see commission_wants_prompt_read). */
-            if (commission_wants_prompt_read()) { idle_sample_due = true; }
+            if (commission_wants_prompt_read() || characterise_wants_prompt_read()) {
+                idle_sample_due = true;
+            }
             if (idle_sample_due) {
                 last_idle_read_ms = now_ms();
                 resample_soon     = false;
@@ -1575,6 +1584,7 @@ void task_window_pos(void *pvParameters)
                     if (!early) { settle_row_due = false; }
                     resample_soon = check_orphan_teach(&ir, WINDOWPOS_DEFAULT_ADDR);
                     commission_tick(&ir, now_ms());
+                    characterise_reading(&ir, now_ms());
                     portENTER_CRITICAL(&s_mux);
                     s_last = ir; s_last_ms = now_ms(); s_have_reading = true; s_cnt.reads_ok++;
                     portEXIT_CRITICAL(&s_mux);
@@ -1826,6 +1836,7 @@ void task_window_pos(void *pvParameters)
                  * teach state, not the wiper, and a leg whose every sample was
                  * rejected would otherwise hide its end-sensor make. */
                 commission_tick(&r, now_ms());
+                characterise_reading(&r, now_ms());
             } else {
                 /* §12.4 rule 1 evidence, from ACCEPTED samples only. A sample
                  * the plausibility check rejected says nothing about movement
@@ -1966,6 +1977,7 @@ void task_window_pos(void *pvParameters)
                 log_position(&r);
                 (void)check_orphan_teach(&r, WINDOWPOS_DEFAULT_ADDR);
                 commission_tick(&r, now_ms());
+                characterise_reading(&r, now_ms());
             }
             /* Talking, but useless: the device says its own reading is bad, so
              * position cannot drive the window even though the sensor is there.

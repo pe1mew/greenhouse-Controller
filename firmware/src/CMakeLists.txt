@@ -55,6 +55,7 @@ idf_component_register(
         "diag/modbus_bench.cpp"                 # gh#49-era bench Modbus access for Phase 0 commissioning (MODBUS_BENCH)
         "window_pos/window_pos_task.cpp"        # T17 — window position task (Phase 2)
         "window_pos/commission.cpp"             # §6.3 item 4 — traverse measurement + teach (gh#77: in EVERY build since 2.11.0)
+        "window_pos/characterise.cpp"           # plan §5e — the characterisation run, driven by T17 like the teach (every build)
         "watchdog/watchdog.cpp"                 # Phase 6.N.1 (2.0.0-alpha.6.22) — T1 minimal watchdog (TWDT subscriber + ota_mark_healthy at 30s); see file header for deferred features (NeoPixel + heap-integrity + stack-HWM)
     INCLUDE_DIRS
         "."
@@ -89,6 +90,9 @@ idf_component_register(
                       #   something must choose between two models at runtime. The
                       #   library sees no ESP-IDF and no project headers, so this
                       #   component has no REQUIRES of its own.
+        m3Char        # LIB-M3C — the characterisation run's arithmetic (plan §5e), host-tested
+                      #   against the rig's archived runs. Like ventModel: no ESP-IDF, no
+                      #   project headers, no REQUIRES of its own.
         DS1307_RTC    # LIB-3 — migrated 2.0.0-alpha.2.9 (trivial cleanup, depends on i2c)
         littleFS      # LIB-9 — migrated 2.0.0-alpha.2.10 (LittleFS.h → esp_vfs_littlefs_*; managed component)
         sdCard        # LIB-8 — migrated 2.0.0-alpha.2.11 (SD.h → esp_vfs_fat_sdspi_*; FAT32 over SPI; LAST Phase-2 driver)

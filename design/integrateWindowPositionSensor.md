@@ -3321,10 +3321,23 @@ measured).**
   rides on the leaf.
 - **The reversal loss is reported, not used in the band.** It sets phase 3's take-up width, and it
   belongs in the commissioning record, where rope wear will show.
-- **Expected values, estimated and not measured:**
+- **Expected values, estimated before step 3:**
   - on the rig, the learned leads (1.7–2.1 %, ~25–32 mm) set b₀, so the band should come out at
     ~30 mm, against today's 20 mm;
   - on 5C88, probably 10–25 mm, set by floor 1, the lead or the landing scatter.
+- **Measured on the rig, 2026-10-03 (step 3):** b₀ came out at 32 mm, set by the lead as
+  estimated, but the check failed it and passed **40 mm** on the second round. The stop log shows
+  why, and it confirms the latency claim above:
+  - every check correction was cut on its drive's first reading, taken when the leaf was already
+    2.3–3.4 % past its start;
+  - so corrections of 40 mm overshot by 28–47 mm, and of 50 mm by 18–38 mm, each in its own
+    direction of travel;
+  - the run's 15 % positioning moves, cut on position, landed within 3–8 mm.
+
+  The run sends its commands from T17's own loop, just before T17's 500 ms idle sleep. So every
+  check correction meets close to the worst latency, whereas T6's corrections meet a random share
+  of it. Waking T17 when T2 starts M3 would remove most of it, and the band would follow (step 3's
+  record).
 
 ##### The deadzone setting: what the operator controls
 
@@ -3596,8 +3609,57 @@ record keeps the phases completed.
    - **Side finding:** pushing the bench image, a refused asset upload (my zip used compressed
      entries) left the asset-only retry failing with "inactive LittleFS remount after format
      failed" until a reboot. Gotcha 2026-10-03; T13's path, not investigated.
-3. **`characterise.cpp` and T17's hooks**, and the shared hold in `commission.cpp`.
-4. **The route, the card, the mock and `logparser.py`.**
+3. **`characterise.cpp` and T17's hooks**, and the shared hold in `commission.cpp`. **DONE
+   2026-10-03.** The route's actions and status, and `logparser.py`, came forward into this step.
+   A run cannot be tested without the route, and a new log row's parser branch belongs in the same
+   change as its emitter. Step 4 is now the card and the mock.
+   - **The run:** `window_pos/characterise.{h,cpp}` drives the step cycle and the five phases, as
+     designed, in T17.
+     - Its context comes from PSRAM at the start and is freed at the end.
+     - Every guard is checked on every pass of T17's loop.
+     - The `drivers/m3Char` arithmetic is wired in through its proxy, `firmware/components/m3Char`.
+   - **The hold:** `commission.cpp` shares the teach's hold through `hold_take()` and
+     `commission_hold_for_run()`.
+     - The release check counts a running run as running.
+     - A teach refuses while a run is active (`characterising`), and Abort ends whichever runs.
+     - ROTA's gate now waits for either.
+   - **The route:** `{"action":"characterise","rest_s":N}`; GET carries `char` (status,
+     estimate, the stored record), sent in chunks.
+   - **The log:** `ALARM` ch 6 param 253 rows, which `logparser.py` and `logparser.md` decode.
+   - **The images:** the release image links the run (1 430 768 B, 68 % of its 2 MB slot), and the
+     bench build is clean. The first bench build died on an internal compiler error in ESP-IDF's
+     LCD driver; the rebuild passed.
+   - **On 2344, bench image sha256 `a66f5af6…`, `bin/at_wp_char.py` (new):**
+     - **A full run at a 3 s rest: 119 starts in 8 min 42 s, all five phases, a band derived.**
+     - The hold behaved as the teach's: STANDBY from the start, still held after the run while the
+       session lived, released at logout.
+     - Its figures:
+
+       | | run | the rig's bench record |
+       |---|---|---|
+       | cruise speed | 139.0 / 138.0 mm/s | 122–148 mm/s at full-speed stops (step-1/2 stop logs) |
+       | T17's read interval | 181 ms | ~180 ms |
+       | reversal loss (3 %, 324 ms pulses) | 5.6 / 14.1 mm (the aborted run: 6.5 / 14.5) | 10–12 mm at 200–300 ms |
+       | floor 2 | 41 / 41 ms (3.6 / 3.4 mm), threshold 2.3 mm | 30 / 35 ms, threshold 1.0 mm |
+       | dead time | 14 / 14 ms | 15 / 21 ms |
+       | AT-WP02 (±15 % approaches) | spread 0.90 % PASS, hysteresis −0.28 %, landing error 0.34 % | 0.8–1.0 % with step 2 |
+       | band | 32 mm failed, **40 mm** passed (worst landing 35.8 mm) | typed 20 mm |
+
+   - **A speed check in the harness was wrong, not the run.** Phase 1 reads the CRUISE speed, the
+     encoder's own rate in the middle of a long move. §3.6's 117 / 122 mm/s is the slope through
+     pulses of 20–120 ms, which never reach cruise.
+   - **The reversal loss came out asymmetric twice**: ~6 mm opening, ~14 mm closing at 324 ms.
+     The first sweep measured 10–12 mm both ways at 200–300 ms, with only two samples per width.
+     Four samples per direction and kind is thin, but the asymmetry repeated. Not used in the band.
+   - **An aborted run (Abort at phase 3's start): ALL PASS.**
+     - It ended `operator` within 6 s, with phases 1–2 kept and no band.
+     - It carried the last complete run's 40 mm forward.
+     - The hold behaved as above.
+   - **The SD log:** both runs' param-253 rows are on the card and decode, as do step 2's param-57
+     rows.
+   - **Left on the rig:** the measured 40 mm band is in force (`deadzone_src_m3` 1). This is the
+     feature working as decided. Setting the source to typed brings 20 mm back.
+4. **The card and the mock.**
 5. **The rig:** the tests above on a release build, and the fail-firsts on a bench build. Then the soak,
    with the measured band in force.
 6. **The documents and the release, 2.16.0.**

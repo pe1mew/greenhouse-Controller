@@ -657,7 +657,64 @@ def _decode_wpos_event(param: int, va: int, vb: int) -> str:
                 f"{va / 10.0:.1f} mm/s < {vb / 10.0:.1f} mm/s required "
                 f"(12.4 rule 1: slipped/snapped wire, obstruction, or a "
                 f"shorted wiper reading a constant)")
+    if param == 253:
+        return _decode_wpos_char(va, vb)
     return f"wpos event param#{param} a={va} b={vb}"
+
+
+# Plan 5e: the characterisation run's reasons, char_err_t in
+# window_pos/characterise.h -- append only, as the firmware's enum.
+_CHAR_REASON = {
+    0: "complete", 1: "aborted by the operator", 2: "M3 moved by something else",
+    3: "sensor fault, no answer or too few readings", 4: "both end sensors active",
+    5: "wind override", 6: "motor alarm", 7: "recalibration", 8: "STANDBY ended",
+    9: "a drive did not start", 10: "a drive did not end in time",
+    11: "an end sensor made during a pulse phase", 12: "the first width did not move the leaf",
+    13: "refused: no sensor fitted", 14: "refused: not taught", 15: "refused: a teach is running",
+    16: "refused: rest out of bounds", 17: "refused: no memory",
+    18: "complete, but no band passed the check",
+}
+
+
+def _decode_wpos_char(va: int, vb: int) -> str:
+    """ALARM ch 6 param 253 (plan 5e): one figure of the characterisation run.
+    value_a says which, value_b is the value (see app_types.h)."""
+    o_c = lambda a: "opening" if a % 2 == 0 else "closing"  # noqa: E731 -- 10/11, 20/21, ...
+    if va == 1:
+        return f"M3 CHARACTERISATION started, rest {vb} s between motor starts"
+    if va == 2:
+        return f"M3 CHARACTERISATION ended: {_CHAR_REASON.get(vb, f'reason {vb}')}"
+    if va in (10, 11):
+        return f"  characterisation: speed {o_c(va)} {vb / 10.0:.1f} mm/s"
+    if va == 12:
+        return f"  characterisation: T17 reads every {vb} ms during a stroke"
+    if va in (20, 21):
+        return f"  characterisation: reversal loss {o_c(va)} {vb / 10.0:.1f} mm"
+    if va in (30, 31):
+        return f"  characterisation: dead time {o_c(va)} {vb} ms"
+    if va in (32, 33):
+        return (f"  characterisation: floor 2 {o_c(va)} {vb} ms" if vb
+                else f"  characterisation: floor 2 {o_c(va)} not found")
+    if va in (34, 35):
+        return f"  characterisation: floor 2 {o_c(va)} moves {vb / 10.0:.1f} mm"
+    if va == 40:
+        return f"  characterisation: AT-WP02 spread {vb / 100.0:.2f} %"
+    if va == 41:
+        return f"  characterisation: AT-WP02 hysteresis {vb / 100.0:+.2f} %"
+    if va == 42:
+        return f"  characterisation: AT-WP02 landing error {vb / 100.0:.2f} %"
+    if va == 50:
+        return f"  characterisation: candidate band {vb} mm"
+    if va == 51:
+        return f"  characterisation: band check, {vb} round(s)"
+    if va == 52:
+        return f"  characterisation: band check, worst landing {vb / 10.0:.1f} mm"
+    if va == 60:
+        return (f"  characterisation: band derived {vb} mm" if vb
+                else "  characterisation: no band derived")
+    if va == 61:
+        return f"  characterisation: band in force after the run {vb} mm"
+    return f"  characterisation: item {va} = {vb}"
 
 def _decode_alarm(row: dict) -> str:
     """

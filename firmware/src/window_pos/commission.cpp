@@ -25,6 +25,7 @@
 #include "../relay_controller/relay_controller.h"
 #include "../web_server/web_server.h"   /* web_session_is_live() -- the STANDBY hold */
 #include "window_pos_task.h"
+#include "characterise.h"   /* plan §5e: the run shares the teach's STANDBY hold */
 #include "../types/app_types.h"
 
 static const char *TAG = "COMMISSION";
@@ -202,8 +203,11 @@ static void hold_check(void)
 
     char tok[sizeof(s_hold_token)];
     bool ended, running;
+    /* Plan §5e: a characterisation run holds the same STANDBY, by the same
+     * rule. Asked outside s_mux: it takes its own lock. */
+    const bool run_active = characterise_active();
     portENTER_CRITICAL(&s_mux);
-    running = s_starting || teach_active(s_st.state);
+    running = s_starting || teach_active(s_st.state) || run_active;
     ended   = s_hold_ended;
     memcpy(tok, s_hold_token, sizeof(tok));
     portEXIT_CRITICAL(&s_mux);
@@ -213,7 +217,7 @@ static void hold_check(void)
         return;
     }
 
-    ESP_LOGW(TAG, "teach STANDBY released: its admin session %s",
+    ESP_LOGW(TAG, "commissioning STANDBY released: its admin session %s",
              ended ? "logged out" : "has ended (timeout, eviction or reboot)");
     dm_standby_release(DM_STANDBY_HOLD_TEACH, LOG_BY_WEB, 0u /*=web*/);
     hold_forget();
@@ -324,12 +328,46 @@ bool commission_owns_teach(void)
     return v;
 }
 
-bool commission_busy(void)
+bool commission_teach_running(void)
 {
     portENTER_CRITICAL(&s_mux);
     const bool v = s_starting || teach_active(s_st.state);
     portEXIT_CRITICAL(&s_mux);
     return v;
+}
+
+bool commission_busy(void)
+{
+    return commission_teach_running() || characterise_active();
+}
+
+/**
+ * @brief Take the commissioning STANDBY hold for @p owner_token's session.
+ *
+ * Shared by the teach and the characterisation run (plan §5e), so both pause
+ * automatic control by one rule. The caller holds the hold lock. A STANDBY
+ * the operator set is theirs: dm_standby_hold() leaves it alone, and so does
+ * the release.
+ */
+static void hold_take(const char *owner_token)
+{
+    if (dm_standby_hold(DM_STANDBY_HOLD_TEACH, LOG_BY_WEB, 0u /*=web*/)) {
+        const size_t n = (owner_token != NULL) ? strnlen(owner_token, WEB_SESSION_TOKEN_LEN) : 0u;
+        portENTER_CRITICAL(&s_mux);
+        memcpy(s_hold_token, (n != 0u) ? owner_token : "", n);
+        s_hold_token[n] = '\0';
+        s_hold_ended = (n == 0u);          /* no session to wait for: ends with the run */
+        portEXIT_CRITICAL(&s_mux);
+        ESP_LOGW(TAG, "automatic control paused (STANDBY held) until the admin session ends");
+    }
+}
+
+bool commission_hold_for_run(const char *owner_token)
+{
+    const bool locked = hold_lock();
+    hold_take(owner_token);
+    hold_unlock(locked);
+    return dm_get_standby();
 }
 
 bool commission_wants_prompt_read(void)
@@ -409,6 +447,9 @@ bool commission_teach_start(const char *owner_token)
      * and T17's cache can be many minutes old at rest. A read that fails --
      * including ERR_BUSY -- refuses rather than moving the window on
      * uncertain data; the operator can simply press again. */
+    /* Plan §5e: one commissioning procedure at a time. */
+    if (characterise_active()) { teach_fail(TEACH_ERR_CHARACTERISING); return false; }
+
     windowpos_reading_t r;
     if (windowpos_read(WINDOWPOS_DEFAULT_ADDR, &r) != WINDOWPOS_OK || r.sensor_fault) {
         teach_fail(TEACH_ERR_SENSOR);
@@ -433,15 +474,7 @@ bool commission_teach_start(const char *owner_token)
      * no release check can judge the hold in between: until then nothing says
      * a teach is running. */
     const bool hold_locked = hold_lock();
-    if (dm_standby_hold(DM_STANDBY_HOLD_TEACH, LOG_BY_WEB, 0u /*=web*/)) {
-        const size_t n = (owner_token != NULL) ? strnlen(owner_token, WEB_SESSION_TOKEN_LEN) : 0u;
-        portENTER_CRITICAL(&s_mux);
-        memcpy(s_hold_token, (n != 0u) ? owner_token : "", n);
-        s_hold_token[n] = '\0';
-        s_hold_ended = (n == 0u);          /* no session to wait for: ends with the teach */
-        portEXIT_CRITICAL(&s_mux);
-        ESP_LOGW(TAG, "automatic control paused (STANDBY held) until the admin session ends");
-    }
+    hold_take(owner_token);
 
     /* Contract §6.2 order: measurement window BEFORE arming. `30005` refreshes
      * once per window, so a stale capture is silent calibration error -- ~86

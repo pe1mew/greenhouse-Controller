@@ -1,7 +1,7 @@
 # logparser — Greenhouse Controller Log Parser
 
 **File:** `log/logparser.py`
-**Document version:** 1.25 (unreleased, plan §5e; 1.25 added `SETPT param 57`, `deadzone_src_m3`; 1.24 matches firmware 2.15.0 and added `MODE param 56`, the law in
+**Document version:** 1.25 (unreleased, plan §5e; 1.25 added `SETPT param 57`, `deadzone_src_m3`, and `ALARM ch 6` param 253, the characterisation run; 1.24 matches firmware 2.15.0 and added `MODE param 56`, the law in
 force by name and version, gh#84; 1.23 added mode 2: `RELAY value_a = 7`
 (`PART_OPEN`), the `SENSOR_HR ch 2` part-open qualifier bits and `value_b`, `MODE param 54`
 (the control law in force) and `SETPT params 53` and `55`; 1.22 added `ALARM ch 6` params 251 and 252, gate reason `6`, and rule 2's new basis, gh#78; 1.21: the rule rows come per drive, gh#72; 1.20 added `SETPT param 49`, `wpos_fitted_m3`, and gate reason `5`, not fitted (gh#73), and documents param 48; 1.17 added `MODE param 47` `value_b` = 1, a STANDBY held for a session; 1.18 added `SYSTEM value_a = 32`; 1.19: the LCD manual menu holds STANDBY too (gh#65), and `SENSOR_HR ch 3` rows at rest are written only on change)
@@ -783,6 +783,23 @@ then names the event within that channel, from the reserved band **244—250**.
 | **250** | **M3 CLOSE stopped early** (§12.4 rule 2) | seconds into the drive at which the position claimed ~0 | `travel_m3`, seconds |
 | **251** | **M3 drive verdict** (2.10.0) | the verdict, signed by direction: `1` confirmed after a full traverse, `2` confirmed, `3` NOT REACHED, `4` not judged | for 1 and 2, relay-on to the target end sensor, 0.1 s (`0` = never left that end); for 3, the opening at the drive's end, 0.1 %; for 4, the reason, below |
 | **252** | **M3 travel check** (2.10.0) | state x 1000 + `travel_m3` (s): state `0` within band again, `1` too short, `2` much longer than needed | the measured full traverse, 0.1 s, signed by direction (`+` OPEN, `-` CLOSE) |
+| **253** | **M3 characterisation** (plan §5e) | WHAT the row carries, below | its value |
+
+**`param = 253` is the characterisation run** (`window_pos/characterise.cpp`). There is one row
+per figure, written as each phase ends:
+
+| `value_a` | `value_b` |
+|---|---|
+| `1` / `2` | started: the rest between motor starts, s / ended: the reason (`0` complete, `18` complete with no band, others why it ended early; `char_err_t`) |
+| `10` / `11` | speed opening / closing, 0.1 mm/s |
+| `12` | T17's read interval during a stroke, ms |
+| `20` / `21` | reversal loss opening / closing, 0.1 mm |
+| `30` / `31` | dead time opening / closing, ms |
+| `32` / `33` | floor 2 opening / closing, ms (`0` = not found) |
+| `34` / `35` | floor 2's displacement opening / closing, 0.1 mm |
+| `40` / `41` / `42` | AT-WP02 spread / hysteresis (signed) / landing error, 0.01 % |
+| `50` / `51` / `52` | the candidate band, mm / check rounds / the last round's worst landing, 0.1 mm |
+| `60` / `61` | the band derived, mm (`0` = none) / the band in force after the run, mm |
 
 **`param = 249` is the only evidence of a shorted wiper.** That fault makes the
 device report a perfectly plausible **constant** position, so every status bit
