@@ -614,11 +614,11 @@ Internet-pull OTA. T16 checks the configured channel for a manifest on an interv
 
 #### T17 — Window Position (M3)
 
-**Added to this document 2026-09-20 (gh#75); the task shipped in 2.8.0.** T17 owns the optional M3 draw-wire encoder and is the only task that reads it. It **measures and reports; it drives nothing** — every window command still comes from T6, T3 or an operator, through T2's timed control (FRS §5.3d, C3).
+**Added to this document 2026-09-20 (gh#75); the task shipped in 2.8.0.** T17 owns the optional M3 draw-wire encoder and is the only task that reads it. **It measures and reports.** Since 2.12.0, T2 and T6 act on what it publishes in mode 2 (§5.16.6). Since 2.16.0 it also hosts the characterisation run, which commands M3 through Q1 like any other source (§5.16.7). Its own fault checks still only report (FRS §5.3d).
 
 - **Presence.** T17 runs only where `motor/wpos_fitted_m3` says a sensor is fitted (FR-WP23). Not fitted, it never addresses the bus and the sensor appears in no status field and no log row.
-- **Cadence.** It polls while M3 travels, at `travel_m3 / 150` (about 100 ms on the dev rig, 1.17 s in production), and every 30 s at rest. Polling only during travel is what keeps a second Modbus caller off the bus the rest of the time (§5.1's single-caller policy).
-- **The presence gate** decides whether the reading may be trusted, and publishes the control law that follows from it: POSITION with a trusted sensor, TIMED without one. Demotion is immediate; promotion happens only at a stroke boundary, so a law never changes under a moving window.
+- **Cadence.** While M3 travels it reads back to back. The encoder's measurement window is `travel_m3 / 150`, and a read and its sleep take about 180 ms on the dev rig and ~1.2 s in production. At rest it reads every 30 s. **Since 2.16.0 T2 wakes it the moment a drive of M3 starts** (§5.16.8). Before that it slept up to 500 ms past every start. Polling fast only during travel is what keeps a second Modbus caller off the bus the rest of the time (§5.1's single-caller policy).
+- **The presence gate** decides whether the reading may be trusted, and publishes the control law that follows from it: POSITION with a trusted sensor, TIMED without one. Demotion is immediate. Promotion happens at a stroke boundary and, since 2.13.0, at rest (gh#86), but never under a moving window.
 - **Fault checks.** Two rules judge each drive: the leaf must move when the relay is energised, and a claim of "closed" must be corroborated by the closed end sensor. Since 2.10.0 each drive also gets a verdict — confirmed, not reached, not judged — and the configured travel time is checked against the measured traverse. All of it reports; none of it acts.
 - **Interfaces.** It posts rows to Q3 like every other task, publishes its snapshot under a spinlock for T4 and T11 to read, and reads T2's drive state through an accessor. It takes no mutex and sets no event-group bit: FR-WP18 requires that no safety path depend on it.
 
@@ -1622,9 +1622,9 @@ Default `0x3F` exposes every object. Operators may narrow the payload on bandwid
 
 ### 5.16 Window Position Sensing — M3 (T17)
 
-**Added 2026-09-20 (gh#75); mode 2 added 2026-09-20 (2.12.0).** The subsystem shipped in 2.8.0, the installation setting in 2.9.0, and linear control of M3 in 2.12.0. Requirements: FRS §5.3d (FR-WP01–23 and FR-WPF01–13). Design: [`integrateWindowPositionSensor.md`](integrateWindowPositionSensor.md).
+**Added 2026-09-20 (gh#75); mode 2 added 2026-09-20 (2.12.0); the characterisation run added 2026-10-04 (2.16.0).** The subsystem shipped in 2.8.0, the installation setting in 2.9.0, linear control of M3 in 2.12.0, and the characterisation run and the measured deadband in 2.16.0. Requirements: FRS §5.3d (FR-WP01–23 and FR-WPF01–20). Design: [`integrateWindowPositionSensor.md`](integrateWindowPositionSensor.md) (§5e for the run).
 
-**T17 still measures and reports; it drives nothing.** What changed in 2.12.0 is that T6 may now *use* what T17 publishes: the control law and the actuator read the position through T4, and T17's own published verdict on whether the position may be trusted is one of the two variables that decide the mode.
+**What T17 is for.** It measures and reports. Since 2.12.0 T6 *uses* what it publishes: the control law and the actuator read the position through T4, and T17's verdict on whether the position may be trusted is one of the two variables that decide the mode. Since 2.16.0 it also runs the characterisation (§5.16.7).
 
 #### 5.16.1 Device and driver
 
@@ -1635,11 +1635,12 @@ A draw-wire encoder on the M3 leaf, on the same RS485 bus as the climate sensors
 | Key | Meaning | Default |
 |---|---|---|
 | `wpos_fitted_m3` | Whether a sensor is fitted. **0 = not fitted**, and then T17 never addresses the bus, and no status field or log row mentions the sensor (FR-WP23). | 0 |
-| `deadzone_m3` | Smallest aperture change worth acting on, in mm. The "~0" band of the close check and rule 1's at-end exemption, **and since 2.12.0 the arrival band of a targeted drive and the smallest move the law may ask for**. | 20 |
-| `ctrl_mode_m3` | **2.12.0; default 1 (linear) since 2.13.0** (operator decision 2026-09-25 — a default is read only when the key is absent from NVS, so it reaches a unit on a factory reset or a fresh flash, never through an OTA). The DESIRED control mode: 0 timed, 1 linear. Not the mode in force — see §5.16.6. | 0 |
+| `deadzone_m3` | Smallest aperture change worth acting on, in mm, **as typed** (since 2.16.0). It is the "~0" band of the close check and rule 1's at-end exemption. Since 2.12.0 it is also the arrival band of a targeted drive and the smallest move the law may ask for, **unless a measured band is in force** (`deadzone_src_m3`, §5.16.7). T17's own checks always use this typed value. | 20 |
+| `deadzone_src_m3` | **2.16.0.** Where the band in force comes from: **1 measured** (the characterisation run's band, the typed value until a complete run has derived one) or 0 typed. A key of its own, not a reserved value of `deadzone_m3`, so a rollback to 2.15.x ignores it and keeps the typed band. | 1 |
+| `ctrl_mode_m3` | **2.12.0; default 1 (linear) since 2.13.0** (operator decision 2026-09-25 — a default is read only when the key is absent from NVS, so it reaches a unit on a factory reset or a fresh flash, never through an OTA). The DESIRED control mode: 0 timed, 1 linear. Not the mode in force — see §5.16.6. | 1 |
 | `min_intv_m3` | **2.12.0.** The linear dwell, in seconds: the least time from the end of one M3 drive to the start of the next. **It replaces M3's open and close dwell while linear control is in force** (`ventModelContract.md` §7); 0 means no interval at all, and **never set it above 900** — there mode 2 swings as much as mode 1 while still driving M3 twice as often. | 600 |
 
-Both are ordinary descriptor rows in `firmware/config/cfg_desc.inc`, clamped, audited and published like any other key (§5.10).
+All are ordinary descriptor rows in `firmware/config/cfg_desc.inc`, clamped, audited and published like any other key (§5.10). The characterisation run's results are not keys: they are one versioned blob, `m3char`, in the same namespace (§5.16.7).
 
 #### 5.16.3 Status payload
 
@@ -1667,6 +1668,8 @@ Emitted by `build_canonical_status_json()`, so `GET /api/status`, the WebSocket 
 | `SENSOR_HR` channel 2 | **Extended in 2.12.0.** The window-state bitmask gains a *part-open* qualifier bit per channel (6, 7, 8) on top of the existing four 2-bit codes, which were all spoken for — widening the fields would have shifted M2's and M3's bits and re-decoded every archived row. `value_b`, a hard zero until now, carries M3's opening in 0.1 % (−1 = no trusted position). |
 | `RELAY` | **Extended in 2.12.0.** `value_a` gains ordinal **7**, `CH_PART_OPEN`: M3 at rest at a commanded target. |
 | `MODE_CHANGE` param **54** | **2.12.0 — a THIRD emitter on this row type.** The control mode actually in force changed: `value_a` 0 timed / 1 linear, `value_b` the reason (0 the setting, 1 no trusted position, 2 the position came back, 3 held down). Param 0 is still T6's vent step and param 47 is STANDBY; every consumer branches on `param_id`, which is what gh#54 cost. |
+| `ALARM` channel 6 param **253** | **2.16.0.** The characterisation run, one row per figure: `value_a` says which (1 start, 2 end with the reason; 10–12 speed and read interval; 20–21 reversal loss; 30–35 dead time and floor 2; 40–42 AT-WP02; 50–52 the band's candidate, rounds and worst landing; 60–61 the band derived and the band in force), `value_b` its value. Values in 0.01 mm are logged in 0.1 mm, **rounded** half away from zero. |
+| `SETPT` param **57** | **2.16.0.** `deadzone_src_m3` changed (0 typed / 1 measured). It records the operator's choice. The band in force is a status, in `GET /api/diag/commission`'s `dz`. |
 | `MODE_CHANGE` param **56** | **2.15.0 (gh#84) — a FOURTH emitter.** The law in force, written with the param 54 row at boot and on every change of the effective mode: `value_a` which law (1 `stepped`, 2 `graded`, 0 unknown to the firmware's list, keyed by name in `law_log_id()`), `value_b` its version; channel 0. The three model tools that read vent steps keep param 0 and skip every other MODE row since this release, so a fifth emitter cannot surprise them. |
 
 `log/logparser.py` decodes all of them; `logparser.md` is the reference for the encodings, and it and `firmware/src/types/app_types.h` must change together with any new `param_id` (§5.3's rule about a second emitter on one row).
@@ -1677,17 +1680,17 @@ Emitted by `build_canonical_status_json()`, so `GET /api/status`, the WebSocket 
 
 | | Where it lives | What it means |
 |---|---|---|
-| **Desired** | `motor/ctrl_mode_m3` | What the operator asked for. Default timed, and a firmware update never changes it. |
+| **Desired** | `motor/ctrl_mode_m3` | What the operator asked for. Default linear since 2.13.0, and a firmware update never changes it. |
 | **Effective** | `dm_m3_ctrl_mode()` in T4 | What is actually driving M3: the desired mode **and** a position T17 will stand behind **and** the anti-flap below. Computed in exactly one place — two places would eventually disagree, and the SD log would then record a decision under a mode that was not in force. **Deciding and reading are separate calls:** `dm_m3_ctrl_mode_eval()` runs the transition rules and belongs to **T6**, once per wake and before the inhibit gate; `dm_m3_ctrl_mode()` reports the last decision and is what T2 and the status payload use. Otherwise a status poll would run the state machine, and how often someone watched would decide when the control law changed. |
 
-- **Demotion is immediate**; **promotion** waits for T17's stroke boundary and a 120 s hold-down. Turning linear control *off* takes effect at once, because that is a deliberate act.
+- **Demotion is immediate**; **promotion** waits for a stroke boundary or, since 2.13.0, M3 at rest (gh#86), and a 120 s hold-down. Turning linear control *off* takes effect at once, because that is a deliberate act.
 - **The fall back needs no special case in the law**, which sees a part-open M3 as being at neither end and asks for whichever end its step wants. **T6's apply filter must agree with it**: a part-open window is eligible for a CLOSE *and* an OPEN. Until 2026-09-21 it was eligible for neither, and after a fall back M3 stayed stranded part-open (`bin/at_wp_fallback.py`, fail-first bit 16).
 
 **The position path.** `dm_m3_position()` is a **pass-through**: T2 and T6 call T4, T4 calls T17, and nothing is buffered on the way. A held copy would age by up to T4's own 1 s loop, and for positioning that age is overshoot — on the rig's 13 s traverse, about 9 % of the stroke against a 1 % requirement.
 
 **The actuator.** Q1 gains `CMD_TARGET` with a `target_x10` field (0..1000, 0.1 %), read for that action and no other: four of the five Q1 producers build commands with positional initialisers, where a trailing field is zero, and a zero read as a target means "close it". T2 refuses a target when the window has never been taught, when the position is not trusted, or when the reading is older than 3 s; a target at or within one band of an end becomes an ordinary full-travel drive; and a position lost mid-move leaves the drive to finish on the travel timer at an end. The new resting state `CH_PART_OPEN` is terminal but **not persisted**, so a part-open M3 forces the boot CLOSE_ALL rather than taking the "all three closed" shortcut.
 
-**The stop rule leads the overrun (2026-09-21).** A targeted stop does not stop where the relay is cut: the reading that trips the cut is up to one poll behind the leaf, the relay and motor take time to let go, and the mechanism coasts — on the rig ~3.2 % of the stroke. So T2 cuts the relay on reaching or passing an **aim**, the target less the expected overrun in the direction of travel, and judges only readings sampled after the drive began (with a lead, a short move's starting position can already be past the aim). The overrun is **learned per direction** from every settled stop that ran at speed — the overrun past the cut does not depend on the lead used, so each stop measures the right lead directly — starting from a default of 250 ms of travel scaled by `travel_m3` (420 ms until 2026-10-01, when carrying readings forward took ~1 % off the rig's overrun); RAM only. `GET /api/diag/windowpos` reports it in a `t2` block. **T17 reads the resting position one second plus one measurement window after every stroke** — not at once, which for a targeted stop is mid-coast (up to 1 % short on the rig) and was published for 30 s. A move shorter than the lead is cut on its first fresh reading, the shortest move the mechanism can make (the minimum move, plan §3.6, still unmeasured).
+**The stop rule leads the overrun (2026-09-21).** A targeted stop does not stop where the relay is cut: the reading that trips the cut is up to one poll behind the leaf, the relay and motor take time to let go, and the mechanism coasts — on the rig ~3.2 % of the stroke. So T2 cuts the relay on reaching or passing an **aim**, the target less the expected overrun in the direction of travel, and judges only readings sampled after the drive began (with a lead, a short move's starting position can already be past the aim). The overrun is **learned per direction** from every settled stop that ran at speed — the overrun past the cut does not depend on the lead used, so each stop measures the right lead directly — starting from a default of 250 ms of travel scaled by `travel_m3` (420 ms until 2026-10-01, when carrying readings forward took ~1 % off the rig's overrun); RAM only. `GET /api/diag/windowpos` reports it in a `t2` block. **T17 reads the resting position one second plus one measurement window after every stroke** — not at once, which for a targeted stop is mid-coast (up to 1 % short on the rig) and was published for 30 s. A move shorter than the lead is cut on its first fresh reading, the shortest move the mechanism can make. The minimum move was measured on 2026-10-02 (plan §3.6), and since 2.16.0 the characterisation run measures it on each unit (§5.16.7).
 
 **The stop rule judges the leaf where it is NOW (2026-10-01).** T17 reads about every 180 ms on the rig (its poll is a sleep after a ~75 ms read), and the encoder publishes a new value once per measurement window. So the first reading past the aim lies anywhere up to ~2 % of the stroke past it, and that was ~90 % of AT-WP02's per-stop scatter (plan §0 item 4). T2 ticks every 20 ms, so on each tick it carries the latest reading forward by the encoder's own rate times the reading's age, and cuts when that position reaches the aim (`m3_ahead_x10()`). It does so only toward the target, and only once two readings of the drive have been seen; the first may straddle the start. The age is capped at two of the drive's read intervals, so a T17 that has stopped reading cannot carry a stopped leaf into its target. The window size that converts mm/s to % is read once per drive (`dm_m3_window_mm()`). Fail-first bit 8192 restores the cut on the reading itself. Bench builds log every targeted stop (`GET /api/diag/windowpos?cuts`, read by `bin/at_wp_cuts.py`). Since 2026-10-02 they can also pulse M3's relay for a set time (`POST /api/diag/windowpos {"pulse_ms":N,"dir":"open"|"close"}`, STANDBY only, a bench `CMD_PULSE` on Q1). T2 cuts the pulse when the microsecond timer reaches its deadline, counted from the relay's own on edge, and `?pulses` returns each pulse's real width: the minimum-move measurement (`bin/at_wp_minmove.py`, plan §3.6 floor 2).
 
@@ -1695,11 +1698,49 @@ Emitted by `build_canonical_status_json()`, so `GET /api/status`, the WebSocket 
 
 **What the law is told back (2026-09-21).** T6 judges its last M3 target once M3 is at rest, in contract order: **ABORTED** when a drive the law did not command took the window after the command, which T2 counts in `t2_get_taken()` (a command from anyone but T6 that starts M3, reverses it or turns a targeted stroke into a full one, a recalibration sweep, a motor alarm); then FAIL_FAULT without a trusted position; then DONE inside the deadband, FAIL_TIMEOUT anywhere else. A **repeat** of the outstanding target keeps the count it went out with, so a take still moving M3 at a T6 wake is not folded into the baseline. `ms_since_move` comes from `t2_ms_since_move()`, which reports **UINT32_MAX** when nothing has moved since boot; the sweep and a motor alarm that stops a drive **end a move** like any other drive, and the sweep arms `ch_dwell_ms()` — `min_intv_m3` for M3 in mode 2 — rather than the close dwell. **A deferred command changes nothing:** T6's reversal of a stroke under way, which gh#48 defers, leaves that stroke's target armed, so the stroke stops at its own target rather than at the end switch. All three were found by the closed-loop simulator replaying this release as built (fail-first bits 256, 512, 1024).
 
+#### 5.16.7 The characterisation run (2.16.0)
+
+**What it is for.** A unit measures M3 itself, and derives the deadband from what it measured (plan §5e, FRS FR-WPF14–20). Until 2.16.0 the figures came from bench builds and harnesses on the rig. 5C88 takes release builds only, by ROTA.
+
+- **Where it runs.** In T17, through two hooks: `characterise_tick()` on every pass of its loop (the rest timer, T2's state and the guards) and `characterise_reading()` on every reading. Its context comes from PSRAM at the start and is freed at the end. The arithmetic is `drivers/m3Char`, host-tested against the rig's archived data, compiled in through `firmware/components/m3Char`.
+- **The step cycle.** Each motor start is: rest (the operator's 2–300 s, default 30), command through Q1 (`CMD_TARGET`, or `CMD_PULSE` for the pulse phases), the drive must start within 3 s and end in time, then settle (1 s plus one measurement window), then two fresh readings. M3 is kept between 10 % and 90 % of its window, and never pulsed against an end.
+- **The five phases:**
+  1. the cruise speed, from two long moves;
+  2. the loss on a reversal, from short pulses each way;
+  3. the shortest pulse that reliably moves the leaf, by halving with repeats;
+  4. AT-WP02, ten approaches to 50 % from ±15 %;
+  5. the band check: from the figures, a candidate b₀ (the largest of the read interval's travel, the shortest move, the landing error and T2's lead), then eight corrections of 1.25 × b, same and reverse directions. If one lands outside b, b rises by 25 %, at most four times. The band that passes is the measured band.
+- **The hold.** `commission.cpp` shares the teach's STANDBY hold (`hold_take()`, `commission_hold_for_run()`). A running run keeps it whatever its session does. The release, with its recalibration, waits until both the run and its session have ended. A teach refuses while a run is active, and the route's abort ends whichever is running.
+- **The guards end the run at once**, commanding nothing further, on:
+  - the operator's abort;
+  - the wind override or the motor alarm;
+  - the loss of its STANDBY hold, checked before a recalibration, since leaving STANDBY causes one;
+  - a recalibration;
+  - M3 moved by anything else (T2's drive epoch);
+  - a sensor fault, absence or a stalled reading;
+  - both end sensors made, or an end sensor reached while pulsing;
+  - a drive that does not start or does not end in time.
+
+  The refusals at start are the route's `not_fitted`, then a bad rest, `not_taught` (calibration not valid), `teach_running`, a fresh direct read that fails or reports a fault, both ends, M3 moving, wind, alarm, a recalibration, and a position the gate does not trust.
+- **The record.** One versioned blob, `m3char`, in the `motor` namespace (`data_manager/m3char_record.h`), saved at the end of every run that moved. It holds the last run's figures and the measured band of the last *complete* run, so an aborted run keeps that band. An IO0 stage-2 reset clears it.
+- **The band in force** is `dm_m3_deadzone()`: measured, typed, unmeasured (Measured asked for, no complete run yet: the typed value), or, during phase 5, the band being checked (`dm_m3_band_override()`). `dm_m3_deadband_x10()` serves it to T2's arrival band, T6's end snap and the law. T17's detection checks keep `deadzone_m3`.
+- **The route.** `POST /api/diag/commission {"action":"characterise","rest_s":N}` and `{"action":"abort"}`, admin-only. `GET /api/diag/commission` gains `dz` (the band in force and its source) and `char` (state, phase, starts made and estimated, time left, reason, and the stored record), sent in chunks.
+- **ROTA.** T16's quiet gate asks `commission_busy()`, which counts a run as well as a teach, so no update is applied in the middle of either (FR-WPF19).
+- **Bench builds only:** `failfirst_216.h` (bit 1 the guards, 2 phase 5's check, 4 the ROTA gate's question about a run, 8 the T17 wake of §5.16.8); a motor-alarm injection through T2's real path (`{"motor_alarm":"on"|"off"}`); and a probe of the ROTA gate with the asking session exempt (`GET /api/diag/windowpos?rota_gate`). An end-to-end ROTA test needs a new manifest seq, because T16 refuses any seq at or below its high-water mark. Harnesses: `bin/at_wp_char.py`, `bin/at_wp_char_accept.py` (one stage per acceptance row), `bin/at_wp_hunt.py` (a soak's no-hunting criterion).
+
+#### 5.16.8 T17 wakes at every drive start of M3 (2.16.0)
+
+At rest T17 slept `IDLE_TICK_MS` (500 ms) between looks at T2. A drive started just after it went to sleep was first read up to 500 ms later, and every drive the characterisation run commands was read the full 500 ms late, because it is sent from T17's own loop just before that sleep. At the rig's ~139 mm/s that is ~70 mm, so short corrections were cut on their first reading, already past their aim. On the rig they came to rest a median 34 mm past their target, and the run's band rose to 44 mm.
+
+- **T2:** `drive_epoch_bump()`, through which every drive of M3 starts (targets, pulses, CLOSE_ALL, the wind close), notifies T17 (`xTaskNotifyGive(task_t17)`).
+- **T17:** the at-rest sleep is `wait_at_rest()`, `ulTaskNotifyTake()` with the same 500 ms timeout. T2 energises the relay a moment before it publishes the moving state, and T17 may run on the other core in between. So after a wake-up T17 gives T2 up to 20 ms (`WAKE_STATE_WAIT_MS`) to publish it. The 30 s idle-read cadence is time-based, so an early wake reads nothing extra.
+- **Measured on 2344:** short stops cut on their first reading fell from 24 of 24 to 0, they came to rest a median 3.8 mm past target instead of 34, and the run's band fell from 44 to 30–33 mm. On 5C88, at ~8.5 mm/s, the old 500 ms was ~4 mm. Fail-first bit 8 restores the sleep.
+
 #### 5.16.5 What it does not do
 
 - **No safety path reads it** (FR-WP18): the wind override, the motor alarm and the boot CLOSE_ALL behave identically with the sensor fitted, absent or faulted.
-- **No actuation**: M3 is driven fully open or fully closed on T2's timer, exactly as M1 and M2 (FRS C3). Position reaching the control law is designed, not in force — it arrives as mode 2, behind [`ventModelContract.md`](ventModelContract.md).
-- **Commissioning (teach) is a bench-build surface only**, which is [gh#77](https://github.com/pe1mew/greenhouse-Controller/issues/77).
+- **No actuation of its own in normal running.** M3 is driven by T6's law through T2: fully open or closed on its timer in mode 1, to a target in mode 2 (§5.16.6). T17's fault checks report and never act. The characterisation run is the one exception: it commands M3 itself, only when an administrator starts it, and only under STANDBY (§5.16.7).
+- **Commissioning (the teach and the characterisation run) is in every build since 2.11.0** ([gh#77](https://github.com/pe1mew/greenhouse-Controller/issues/77)), admin-only.
 
 ---
 

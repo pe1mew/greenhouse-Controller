@@ -6,6 +6,120 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.16.0] — 2026-10-04  (M3 measures itself, and the deadband follows from what it measured)
+
+Minor: a new admin capability, a new config key and an NVS record (plan §5e,
+`design/integrateWindowPositionSensor.md`). **A unit changes behaviour only once an administrator runs a
+characterisation:** until a run has completed, the band in force is the typed `deadzone_m3`, exactly as
+in 2.15.1. **Soaked** on the bench build of the same code (12.25 h, PASS), and every acceptance row of
+plan §5e passed on this release image, byte-identical to the one tested.
+
+**Added: the characterisation run** (Motors → M3 → *Commissioning* → **Characterise M3**, admin-only).
+
+- **What it measures, on the unit itself**, in five phases:
+  1. the cruise speed;
+  2. the loss on a reversal;
+  3. the shortest pulse that reliably moves the leaf;
+  4. AT-WP02, ten approaches to 50 % from ±15 %;
+  5. the band check: a candidate deadband b₀ from those figures (the largest of the read interval's
+     travel, the shortest move, the landing error and T2's lead), then eight corrections of 1.25 × b.
+     If one comes to rest outside b, b rises by 25 %, at most four times. The band that passes is the
+     measured band.
+- **How it runs.** In T17 (`window_pos/characterise.cpp`); the arithmetic is `drivers/m3Char`,
+  host-tested against the rig's archived data.
+  - About 130 motor starts, with a rest between starts set on the card for each run (2–300 s,
+    default 30).
+  - M3 stays between 10 % and 90 % and is never pulsed against an end.
+- **STANDBY, the teach's way.** A run carries on after its session ends, and the hold is released, with
+  its recalibration, once both have ended.
+- **It ends at once**, commanding nothing further, on:
+  - the operator's abort;
+  - the wind override, the motor alarm or a recalibration;
+  - the loss of its hold;
+  - M3 moved by anything else;
+  - a sensor fault or absence, or both end sensors;
+  - a drive that does not start or end in time.
+- **The record** is one versioned NVS blob, `m3char`, in the `motor` namespace. It survives a reboot and
+  a rollback, and an aborted run keeps the last complete run's band.
+- **The log:** one `ALARM` channel 6 param **253** row per figure, which `log/logparser.py` decodes.
+- **The route:** `POST /api/diag/commission {"action":"characterise","rest_s":N}`; abort ends a teach
+  or a run; `GET` carries `dz` (the band in force) and `char` (the run and its record).
+- **ROTA's quiet gate waits for a run** as well as a teach (`commission_busy()`).
+
+**Added: the measured deadband.**
+
+- **`motor/deadzone_src_m3`** (new key, audit param **57**): 1 = measured (the default), 0 = typed.
+  Measured means the last complete run's band, and the typed `deadzone_m3` until there is one.
+- **Who follows the band in force:** T2's arrival band, T6's end snap and the law, through
+  `dm_m3_deadband_x10()`.
+- **T17's own detection checks keep the typed value**, as every soak since 2.8.0 validated them.
+- **A rollback to 2.15.x** ignores the key and the record and keeps the typed band. Verified both
+  ways on the rig.
+
+**Changed.**
+
+- **T2 wakes T17 at every drive start of M3** (`drive_epoch_bump()` → `wait_at_rest()`).
+  - **Why:** at rest T17 slept 500 ms between looks, so a drive was first read up to 500 ms after it
+    started, and every drive the run commands was read the full 500 ms late. On the rig, at
+    ~139 mm/s, short corrections were cut on that first reading, already past their aim. They came to
+    rest a median 34 mm past their target, and the run's band rose to 44 mm.
+  - **Now:** 0 of the short stops are cut on their first reading (24 of 24 before), they come to rest
+    a median 3.8 mm past their target, and the band is 30–33 mm.
+  - On 5C88, at ~8.5 mm/s, the old 500 ms was ~4 mm.
+- **The run checks its hold before a recalibration.** Choosing AUTOMATIC mid-run releases the hold and
+  starts a recalibration. Once T17 woke on that recalibration's first relay, the run reported
+  "a window recalibration ran" where the cause was the operator's choice.
+- **The GUI** (`index.html`, `app.js`, `style.css`):
+  - *M3 control* sits directly under the M3 heading, outside the Linear group, so it stays usable
+    without a sensor;
+  - the Deadzone source row, with a line saying which band is in force and where it came from;
+  - the *Characterise M3* block: the rest and its estimate, Start with a confirm dialog, Abort,
+    progress, results;
+  - when a run cannot start, it is greyed with the reason above it.
+- **T2's relay pulse (`CMD_PULSE`) is in every build**: the run uses it. The stop log stays bench-only.
+- **Values in 0.01 mm are logged rounded**, not truncated.
+- **Documents:**
+  - FRS §5.3d: FR-WPF14–20, and FR-WPF07's default corrected to linear (stale since 2.13.0);
+  - TSDS T17 and §5.16: new §5.16.7–8, and several stale statements corrected;
+  - the beheerder manual: the characterisation, the deadzone's source, the M3 groups;
+  - the boer manual: STANDBY can come from a characterisation and outlast the administrator's logout;
+  - `log/logparser.md` 1.25.
+
+**Bench builds only** (`MODBUS_BENCH`), none of it in this image:
+
+- `types/failfirst_216.h`: bit 1 the run's guards, 2 phase 5's check, 4 the ROTA gate's question about
+  a run, 8 T17's sleep;
+- a motor-alarm injection through T2's real path, `{"motor_alarm":"on"|"off"}`;
+- a probe of ROTA's apply gate, `GET /api/diag/windowpos?rota_gate`. An end-to-end ROTA test needs a
+  NEW manifest seq, because T16 refuses any seq at or below its high-water mark;
+- harnesses: `bin/at_wp_char.py`, `bin/at_wp_char_accept.py` (one stage per acceptance row) and
+  `bin/at_wp_hunt.py` (a soak's no-hunting criterion).
+
+**Verified on 2344** (plan §5e step 5):
+
+- **Release build:** refusals, hold, Abort in each of the five phases, a restart mid-run, the band
+  source, a rollback to 2.15.1 and back, the wind override, and a full run all PASS. The full run: band
+  30 mm in round 1, AT-WP02 spread 0.70 %, every one of 21 SD rows matching the record. The reversal
+  loss read 7.6 / 16.1 mm against the plan's 7–15 mm, which was restated to 5–17 mm the same evening.
+- **Bench build:** the sensor's fault and absence, the motor alarm, M3 driven by something else, and
+  the ROTA gate (0 of 616 probes open during a run) all PASS.
+- **Fail-firsts:** bit 1 fails every safety row and bit 4 opens the gate. Bit 2 no longer fails:
+  its premise was the latency the T17 fix removed.
+- **The soak** (bench build, 2026-10-03 22:13 → 2026-10-04 10:28): PASS.
+  - 12.25 h, 20 judged strokes, every counter 0;
+  - no stop answered by a correction back to its target;
+  - 21 of 21 law decisions conforming;
+  - the measured 30 mm band in force throughout, heap flat.
+
+**Known limitations:**
+
+- "Calibration not valid" was never exercised on hardware: no bench hook makes the verdict invalid.
+- The soak saw no short corrections: every targeted stop was a long opening.
+- On the fast rig 30 mm is near the edge: one of eight 40 mm corrections came to rest +33.9 mm from
+  its target.
+
+---
+
 ## [2.15.1] — 2026-10-02  (a targeted M3 stop judges where the leaf is now, not where it was last read)
 
 Patch. **One behaviour change, in mode 2 (Lineair) only:** T2 judges a targeted M3 stop on where the

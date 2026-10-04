@@ -236,10 +236,10 @@ Distinct from setpoint-driven automatic ventilation and from the safety-driven C
 
 **Added 2026-09-20.** Firmware 2.8.0 shipped the M3 position sensor and 2.9.0 the installation setting; this section states what is in force. The requirements themselves are **FR-WP01–FR-WP23 in [`windowPositionSensorRequirements.MD`](windowPositionSensorRequirements.MD)**, which is the authority for their wording. They are adopted here by reference rather than restated, so the two cannot drift; that document is a study in its origin, but its IDs are the ones the firmware, its tests and its harnesses cite.
 
-**What is in force today (2.12.0).** The sensor is a measuring subsystem **and, where the operator asks for it, a control input**. Two control modes exist for M3, and the default is the first:
+**What is in force today (2.16.0).** The sensor is a measuring subsystem **and, where the operator asks for it, a control input**. Two control modes exist for M3:
 
-- **Mode 1, timed** — today's behaviour, and what every unit does unless told otherwise. M3 is driven fully open or fully closed on its travel timer; a fitted sensor measures and reports, and nothing in the control path reads it.
-- **Mode 2, linear** — M3 is driven to a commanded opening and stopped there. It requires the operator's setting **and** a position the controller trusts; it falls back to mode 1 on its own whenever that trust is lost, and resumes on its own when it returns.
+- **Mode 1, timed:** M3 is driven fully open or fully closed on its travel timer. A fitted sensor measures and reports, and nothing in the control path reads it. Every unit runs this way when no trusted position is available.
+- **Mode 2, linear:** M3 is driven to a commanded opening and stopped there. It requires the operator's setting **and** a position the controller trusts. It falls back to mode 1 on its own whenever that trust is lost, and resumes on its own when it returns. **Since 2.13.0 it is the factory setting** (FR-WPF07).
 
 | ID | Requirement | MoSCoW |
 |----|-------------|--------|
@@ -254,7 +254,7 @@ Distinct from setpoint-driven automatic ventilation and from the safety-driven C
 
 | ID | Requirement | MoSCoW |
 |----|-------------|--------|
-| FR-WPF07 | The control mode for M3 **shall** be an operator setting, **shall** default to timed, and **shall not** change because a firmware update was applied. | Must |
+| FR-WPF07 | The control mode for M3 **shall** be an operator setting, **shall** default to linear, and **shall not** change because a firmware update was applied. *(Changed in 2.13.0 by the operator's decision of 2026-09-25: the default had been timed. A default reaches a unit only on a factory reset or a fresh flash, never through an OTA, and a unit without a trusted position still runs timed under FR-WPF08.)* | Must |
 | FR-WPF08 | Linear control **shall** take effect only while the controller has a position it trusts: the sensor fitted, answering, calibrated, and not reporting a fault. Where it does not, the system **shall** drive M3 on its travel timer exactly as in mode 1. | Must |
 | FR-WPF09 | The fall back to timed control **shall** be immediate, and the return to linear control **shall not** happen mid-drive nor within a hold-down period after a fall back, so that the control law cannot alternate from one minute to the next. | Must |
 | FR-WPF10 | The system **shall** record every change of the control mode actually in force, with its reason, in the event log, and **shall** report the mode in force on the web GUI and in the status payload — distinctly from the mode that was asked for. | Must |
@@ -264,7 +264,19 @@ Distinct from setpoint-driven automatic ventilation and from the safety-driven C
 
 - **Where the design lives:** [`integrateWindowPositionSensor.md`](integrateWindowPositionSensor.md) — the task, the presence gate, the fault checks, the log encodings, the two mode variables and the phase plan. **The control law itself is not here and not in the firmware's control task**: it sits behind [`ventModelContract.md`](ventModelContract.md) as a replaceable library, which is what lets a law be scored against real weather before it drives a greenhouse.
 - **What mode 2 does NOT change:** the safety paths (FR-WPF03), M1 and M2, the humidity and temperature laws for those two windows, and what M3 does when the operator has not asked for linear control — which is every unit as delivered.
-- **What the operator sees** is in the two manuals: the opening as a percentage, the *Window sensor fault* badge, and (2.10.0) the *M3 not confirmed* and travel-time badges.
+**The characterisation run and the measured deadband** *(firmware 2.16.0)*
+
+| ID | Requirement | MoSCoW |
+|----|-------------|--------|
+| FR-WPF14 | The system **shall** offer the administrator a characterisation run of M3. It measures, on the unit itself, M3's cruise speed, the loss on a reversal, the shortest pulse that reliably moves the leaf, and the AT-WP02 repeatability, and **shall** derive the deadband of FR-WPF11 from them. Before it adopts the derived value, it **shall** check that corrections of that size come to rest within it. | Should |
+| FR-WPF15 | The run **shall** hold automatic control in STANDBY as the teach does, **shall** carry on when its session ends, and **shall** release the hold, with a recalibration, only once both the run and its session have ended. | Must |
+| FR-WPF16 | The run **shall** end at once, commanding nothing further, on the operator's abort, the wind override, the motor alarm, a recalibration, the loss of its STANDBY hold, M3 moved by anything else, a sensor fault or absence, both end sensors active, an end sensor reached while pulsing, or a drive that does not start or does not end in time. It **shall** keep M3 between 10 % and 90 % of its window and **shall** wait an operator-set rest between motor starts. | Must |
+| FR-WPF17 | The deadband in force **shall** be the measured one when the operator's source setting says *Measured* (the default) and a complete run has derived one. Otherwise it **shall** be the operator's typed value. The sensor's own detection checks **shall** keep using the typed value. | Must |
+| FR-WPF18 | The run's results **shall** be kept in non-volatile storage. They **shall** survive a reboot and a rollback to a firmware without the run. A run that does not complete **shall** keep the band of the last run that did. | Must |
+| FR-WPF19 | A remote update (ROTA) **shall not** be applied while a characterisation run or a teach is in progress. | Must |
+| FR-WPF20 | Where the run cannot start, the web GUI **shall** show it greyed, with the reason, and **shall** show the band in force and where it came from. | Must |
+
+- **What the operator sees** is in the two manuals: the opening as a percentage, the *Window sensor fault* badge, (2.10.0) the *M3 not confirmed* and travel-time badges, and (2.16.0) the *Characterise M3* block and the deadzone's source on the Motors card. The farmer's manual says why STANDBY may come from the administrator.
 - **Deliberately not adopted here:** the parts of FR-WP01–23 that constrain *sensor selection and procurement* (mounting, wire fatigue, supplier configurability). They govern the choice of device, not the behaviour of this system, and they stay in the requirements study.
 
 ---

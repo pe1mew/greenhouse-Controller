@@ -3191,12 +3191,13 @@ defect: it left T6 wanting M3 open. The rig's traverse to the end sensor is 11.6
 promotion), no reboot, and 19 param 251 rows all reading *confirmed after a full traverse* with no 249, 250
 or 252 row beside them. Detail in `bin/2.10.0/release-notes.md`.
 
-#### 5e. Characterising M3 on the unit — decided and designed 2026-10-03, built through step 4, not released
+#### 5e. Characterising M3 on the unit — decided and designed 2026-10-03, built and tested, released as 2.16.0
 
 Decided by the operator on 2026-10-03, and designed the same day. It answers the choice §3.6 left
-open: how to measure on 5C88 what was measured on the rig. **Steps 1–4 of the build order below are
-built and have run on the rig in a bench image. Steps 5–6 have not: the tests on a release build, the
-soak, the documents and 2.16.0.**
+open: how to measure on 5C88 what was measured on the rig. **All six steps of the build order below are
+done: built, accepted on the rig (step 5, the soak passed), documented and packaged as 2.16.0
+(2026-10-04).** Its publish to ROTA's soak channel, and any promotion to 5C88, are separate
+instructions.
 
 **Why.** §3.6 lists what to measure once 5C88's sensor is fitted and taught (gh#77): AT-WP02 from
 both directions, the pulse sweep and the reversal loss. Every tool for that is bench-only: the pulse
@@ -3850,7 +3851,21 @@ record keeps the phases completed.
        every row it should: the sensor's fault, its absence, the motor alarm and the wind.
      - The S200 was back in REST at 11:12:49, and the emulator's page showed both slaves in REST with
        Node-RED's 5C88 feed arriving. 2344 is back on the release build.
-6. **The documents and the release, 2.16.0.**
+6. **The documents and the release, 2.16.0. DONE 2026-10-04** (publish to ROTA pending its own
+   instruction).
+   - **Documents:**
+     - FRS §5.3d: FR-WPF14–20 for the run and the measured band, and FR-WPF07's default corrected to
+       linear (stale since 2.13.0);
+     - TSDS: the T17 task and §5.16, with §5.16.7 (the run) and §5.16.8 (the T17 wake), and the stale
+       statements corrected ("drives nothing", the default, boundary-only promotion, the minimum move
+       "unmeasured", commissioning "bench-only");
+     - the beheerder manual: the M3 grouping, a *Karakteriseren van M3* section, the deadzone and its
+       source, the place of *M3 control*;
+     - the boer manual: STANDBY can come from a characterisation and outlast the logout;
+     - CLAUDE.md's M3 row, `memory/before-you-start.md` §1 and §5, and `log/logparser.md` 1.25.
+   - **The release:** `bin/build_release.ps1` built `bin/2.16.0/`. The image is byte-identical to the one
+     the release stages ran on (sha256 `cf8e7c80…`). The changelog and `bin/2.16.0/release-notes.md`
+     carry step 5's evidence.
 
 ##### The T17 first-read latency: fixed in 2.16.0, as a change of its own
 

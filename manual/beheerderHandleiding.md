@@ -225,16 +225,18 @@ Minimum tijd dat een raam in een stand moet blijven voordat de controller hem op
 
 ### Motors-tab: per raam gegroepeerd
 
-Sinds 2.8.0 staan de instellingen **per motor** bij elkaar (M1, M2, M3) in plaats van per soort instelling. Bij M3 staan ze bovendien in twee groepen:
+Sinds 2.8.0 staan de instellingen **per motor** bij elkaar (M1, M2, M3) in plaats van per soort instelling. Bij M3 staat **sinds 2.16.0 eerst *M3 control*** (tijdgestuurd of lineair, zie verderop), direct onder de kop *M3 — Zijwandbeluchting Noord*. Die keuze bepaalt welke van de twee groepen eronder in gebruik is:
 
 | Groep | Wat het stuurt |
 |---|---|
-| **Time control** · *in gebruik* | Loopttijd en dwelltijden — dit is wat de ramen vandaag aanstuurt |
-| **Linear control** · *raamstandsensor* | Instellingen voor de raamstandsensor en voor de **lineaire besturing** van M3 (sinds 2.12.0) |
+| **Time control** | Looptijd en dwelltijden: in gebruik zolang M3 tijdgestuurd wordt |
+| **Linear control** | De raamstandsensor en de **lineaire besturing** van M3 (sinds 2.12.0): in gebruik zolang M3 lineair wordt bestuurd |
 
-De groep *Linear control* begint met **Position sensor fitted**: heeft M3 een raamstandsensor, ja of nee (sinds 2.9.0, zie hieronder). Staat die op **No**, dan is alles daaronder **grijs**, met erboven waarom.
+Achter de groepsnaam staat welke van de twee **nu werkelijk** in gebruik is.
 
-De **Dodezone** is verder een gewone instelling en werkt op elke build. Het blok **Commissioning** daaronder (raamgrootte, kalibratie-oordeel, teach) werkt **sinds 2.11.0 op elke build**, zolang de sensor als gemonteerd is ingesteld — je hoeft er dus geen speciale build meer voor op de controller te zetten. *(Tot 2.11.0 kon leren alleen met een commissioning-build; een sensor die toen geleerd is houdt zijn kalibratie, daar verandert niets aan.)* Staat het blok grijs terwijl de sensor gemonteerd is, dan is bij het opstarten een route niet geregistreerd: **dat is een storing**, noteer de versie en meld het. Dat grijs-met-reden is bewust: een instelling die simpelweg verdwijnt is niet te onderscheiden van een verkeerd tabblad of een storing.
+De groep *Linear control* begint met **Position sensor fitted**: heeft M3 een raamstandsensor, ja of nee (sinds 2.9.0, zie hieronder). Staat die op **No**, dan is alles daaronder **grijs**, met erboven waarom. *M3 control* staat sinds 2.16.0 buiten die groep en blijft dus altijd bruikbaar: tijdgestuurd werkt altijd.
+
+De **Dodezone** en de **bron** ervan (sinds 2.16.0) zijn verder gewone instellingen en werken op elke build. Het blok **Commissioning** daaronder (raamgrootte, kalibratie-oordeel, teach en sinds 2.16.0 **Characterise M3**) werkt **sinds 2.11.0 op elke build**, zolang de sensor als gemonteerd is ingesteld — je hoeft er dus geen speciale build meer voor op de controller te zetten. *(Tot 2.11.0 kon leren alleen met een commissioning-build; een sensor die toen geleerd is houdt zijn kalibratie, daar verandert niets aan.)* Staat het blok grijs terwijl de sensor gemonteerd is, dan is bij het opstarten een route niet geregistreerd: **dat is een storing**, noteer de versie en meld het. Dat grijs-met-reden is bewust: een instelling die simpelweg verdwijnt is niet te onderscheiden van een verkeerd tabblad of een storing.
 
 ### M3 raamstandsensor — gemonteerd of niet (sinds 2.9.0)
 
@@ -245,7 +247,7 @@ Met **Position sensor fitted** (tab **Motors**, M3 → *Linear control*) vertel 
 | **No** | Spreekt adres 40 helemaal niet aan. Het kaartje *Modbus bus* en het logboek tonen geen regel voor adres 40, M3 toont geen openingspercentage, en er komt nooit een sensorstoring. Zo hoort een kas zonder sensor eruit te zien |
 | **Yes** | Leest de sensor. Reageert die niet (meer), dan is dat een **storing**: de badge *Window sensor fault* en een regel in het logboek, binnen ongeveer een minuut |
 
-In beide gevallen loopt M3 op zijn **looptijd**: de instelling verandert niets aan hoe het raam bewogen wordt.
+De instelling zelf verandert niets aan hoe het raam bewogen wordt; dat bepaalt *M3 control* (zie verderop). Met **No** loopt M3 altijd op zijn **looptijd**.
 
 Vóór 2.9.0 kon de controller "geen sensor" niet onderscheiden van "sensor reageert niet". Een kas zonder sensor vroeg adres 40 elke 30 s tevergeefs, en het kaartje *Modbus bus* liet dat zien als een falende sensor. Een gemonteerde sensor die uitviel, gaf juist geen melding.
 
@@ -349,15 +351,70 @@ Niet periodiek. Alleen wanneer:
 - er aan de raamstandsensor of de trekdraad is gewerkt;
 - de mechanica van M3 is aangepast, waardoor de afstand tussen de eindsensoren verandert — vul dan **eerst** de nieuwe raamgrootte in.
 
-#### Dodezone (mm)
+#### Karakteriseren van M3 (sinds 2.16.0)
 
-De kleinste afwijking waarvoor het raam nog bijgestuurd wordt. Te klein en het raam gaat op ruis heen en weer; nul zou het onafgebroken laten klapperen. Instelbaar in tab **Motors**, onder M3 → *Linear control*, op elke build (1–200 mm, standaard 20), zolang *Position sensor fitted* op **Yes** staat.
+**Wat het doet.** De controller meet zelf hoe M3 werkelijk beweegt, en leidt daaruit de **dodezone** af. Tot 2.16.0 kon dat alleen met een speciale build en meetscripts. Hij meet in vijf fasen:
 
-Sinds 2.12.0 is dit **ook de aankomsttolerantie van de lineaire besturing**: M3 stopt zodra hij binnen deze afstand van de gevraagde stand is, en de regeling vraagt geen beweging aan die kleiner is dan deze afstand. **Behalve bij de eindstanden (sinds 2.12.2, gh#83):** ligt de gevraagde stand binnen deze afstand van helemaal dicht of helemaal open, dan rijdt de controller door tot de eindsensor schakelt. Een eindstand is een schakelaar, geen getal — daarvoor kon een "dicht" een dodezone op een kier blijven staan, een hele nacht lang. Verder gebruiken twee dingen hem al langer:
+1. de snelheid, bij twee lange bewegingen;
+2. wat er bij het omkeren van richting verloren gaat (de speling);
+3. de kortste puls die het raam nog betrouwbaar beweegt;
+4. de herhaalbaarheid, tien keer naar 50 % (de AT-WP02-proef);
+5. de controle: uit de metingen volgt een voorstel voor de dodezone. De controller maakt daarna acht kleine correcties van iets meer dan die afstand. Komt er één buiten de dodezone tot stilstand, dan verhoogt hij de dodezone met een kwart en probeert opnieuw, hooguit vier keer.
+
+**Waar.** Tab **Motors**, M3 → *Commissioning* → **Characterise M3**. Alleen als beheerder, met *Position sensor fitted* op **Yes** en een kalibratie die **VALID** is.
+
+**Hoe lang.** Ongeveer 130 motorstarts. Tussen twee starts wacht de controller de **rust** die je per run instelt (2–300 s, standaard 30 s). Kies die naar het typeplaatje van de motor: 30 s geeft hooguit 120 starts per uur. Het scherm toont vooraf hoeveel starts en hoe lang dat wordt; op de kas met 30 s is dat **anderhalf tot drie uur**.
+
+> **De knop Start laat het raam lang bewegen.** M3 beweegt de hele run tussen 10 % en 90 % van zijn bereik en wordt nooit tegen een eindstand gepulst. Er volgt eerst een bevestigingsvraag, met de duur erin.
+
+> **Tijdens een karakterisering staat de automatische klimaatregeling stil**, net als bij de teach (Stand-by). **Eén verschil:** de run **gaat door als je uitlogt**. De Stand-by blijft dan staan tot de run klaar is én je sessie voorbij is. Daarna sluiten alle ramen één keer en regelt de controller weer automatisch. De boer ziet in die tijd `Mode: STANDBY`; zijn handleiding legt uit dat dit van de beheerder kan komen.
+
+**Afbreken.** *Abort* stopt de run binnen enkele seconden. Wat al gemeten was blijft bewaard, er wordt geen nieuwe dodezone afgeleid, en de laatst gemeten dodezone blijft in gebruik.
+
+**De run stopt ook zelf**, en noemt dan de reden:
+
+- de windbeveiliging, het motoralarm of een kalibratie;
+- iets of iemand anders beweegt M3;
+- de sensor valt weg of meldt een storing, of beide eindsensoren zijn tegelijk actief;
+- een gang start niet, of eindigt niet op tijd;
+- iemand kiest in de Mode-keuzelijst zelf *Normal*.
+
+**Kan hij niet starten,** dan is het startblok **grijs** en staat erboven waarom. Bijvoorbeeld: de sensor is niet ingeleerd, er loopt een teach, M3 beweegt, de positie wordt niet vertrouwd, er is windbeveiliging of een motoralarm.
+
+**De uitkomst** staat onder het blok:
+
+- een tabel per richting: snelheid, verlies bij omkeren, kortste betrouwbare puls en dode tijd;
+- de AT-WP02-uitkomst;
+- hoe de dodezone tot stand kwam.
+
+De controller bewaart haar; ze overleeft een herstart en een terugzetten naar oudere firmware. Met *Deadzone source* op *Measured* (de standaard) gebruikt de controller de gemeten dodezone meteen; zie *Dodezone* hieronder.
+
+**Wanneer.** Na de eerste teach, en opnieuw na een nieuwe teach of na werk aan de mechanica van M3. Niet periodiek.
+
+**In het logboek** staat elke uitkomst onder parameter 253 (`ALARM`, kanaal 6); `log/logparser.md` beschrijft ze.
+
+#### Dodezone (mm) en de bron ervan
+
+De kleinste afwijking waarvoor het raam nog bijgestuurd wordt. Te klein en het raam gaat op ruis heen en weer; nul zou het onafgebroken laten klapperen.
+
+**Sinds 2.16.0 zijn er twee waarden:**
+
+- **getypt:** de waarde in het veld *Deadzone (mm)* (1–200 mm, standaard 20);
+- **gemeten:** de dodezone die een karakterisering van M3 heeft afgeleid (zie hierboven).
+
+Met **Deadzone source** kies je welke in gebruik is: *Measured* (de standaard) of *Typed*. Zolang er nog geen volledige karakterisering is, geldt ook bij *Measured* de getypte waarde. Direct onder de keuze staat welke dodezone **nu werkelijk** in gebruik is en waar hij vandaan komt, bijvoorbeeld *"In force: 30 mm, measured by the characterisation on …"*. Kies *Typed* als een gemeten waarde je niet bevalt: dan geldt jouw waarde, wat er ook gemeten is.
+
+> **Het getypte veld wordt nooit grijs.** Het is de terugvaloptie. De sensor gebruikt het bovendien **altijd** voor zijn eigen controles (het te vroeg stoppende raam en het logboek, hieronder), welke bron er ook gekozen is.
+
+Beide staan in tab **Motors**, onder M3 → *Linear control*, op elke build, zolang *Position sensor fitted* op **Yes** staat.
+
+Sinds 2.12.0 is de dodezone in gebruik **ook de aankomsttolerantie van de lineaire besturing**: M3 stopt zodra hij binnen deze afstand van de gevraagde stand is, en de regeling vraagt geen beweging aan die kleiner is dan deze afstand. **Behalve bij de eindstanden (sinds 2.12.2, gh#83):** ligt de gevraagde stand binnen deze afstand van helemaal dicht of helemaal open, dan rijdt de controller door tot de eindsensor schakelt. Een eindstand is een schakelaar, geen getal — daarvoor kon een "dicht" een dodezone op een kier blijven staan, een hele nacht lang. Verder gebruiken twee dingen de **getypte** waarde al langer:
 - **de controle op een te vroeg stoppend raam**: een SLUIT-gang die binnen de dodezone van "dicht" eindigt zonder dat de eindsensor schakelt, wordt als storing gemeld;
 - **het logboek**: in rust schrijft de controller alleen een positieregel als het raam verder bewogen is dan de dodezone (minstens 5 mm). Zo zie je ook een raam dat zonder opdracht van de controller bewoog, bijvoorbeeld via de handschakelaars in de motorbox.
 
 #### M3-besturing: Tijdgestuurd of Lineair (2.12.0)
+
+*Sinds 2.16.0 staat deze keuze bovenaan bij M3, direct onder de kop, omdat hij bepaalt welke groep eronder in gebruik is.*
 
 **Tijdgestuurd**: M3 wordt volledig geopend of gesloten op zijn looptijd, net als M1 en M2. Een gemonteerde sensor meet en meldt, maar stuurt niet. Dit was tot 2.13.0 de fabrieksinstelling.
 
@@ -820,6 +877,8 @@ Hieronder staat een conversietabel van **Beaufort naar m/s**:
 | Travel time |  21 s | 21 s | 171 s | 5–300 s |
 | Dwell open | 300 s | 300 s | 1500 s | 0–1500 s |
 | Dwell close | 300 s | 300 s | 600 s | 0–1500 s |
+
+M3 heeft daarnaast *M3 control*, de groep *Linear control* en het blok *Commissioning*: zie [Motors-tab: per raam gegroepeerd](#motors-tab-per-raam-gegroepeerd) en de secties over de raamstandsensor van M3.
 
 > **Travel-time afstemming**: meet de werkelijke open- of sluit-tijd van een raam met een stopwatch. Stel die waarde in als *travel-time.* De firmware voegt zelf een veiligheidsmarge toe van 5 sec. De controller gebruikt deze waarde als time-out voor het OPEN/CLOSE-relais.
 >

@@ -35,7 +35,7 @@ free when 22/23/24 had been ROTA since 2.2.0. **The emitters are authoritative, 
 effective mode (2.12.0), **56 = the law in force, name and version** (gh#84). Since 2.15.0
 `logdata.py`, `plot_daily.py` and `vent_step_replay.py` keep param 0 and skip every other MODE row, so
 a new emitter needs no edit there; `logparser.py` still needs its branch. As of 2.15.0 the next free `param_id`
-after 56 was 57; **plan §5e step 2 (2026-10-03) took 57 for `deadzone_src_m3`, so the next free one is 58** (the enum in `types/app_types.h`, checked against every `param_id =` emitter). The ALARM band's 253 is earmarked for the characterisation run's rows (§5e, step 3), which leaves 254-255. `LOG_SENSOR` is **reserved**: no emitter since rc.1.4.0,
+after 56 was 57; **plan §5e step 2 (2026-10-03) took 57 for `deadzone_src_m3`, so the next free one is 58** (the enum in `types/app_types.h`, checked against every `param_id =` emitter). The ALARM band's 253 has carried the characterisation run's rows since 2.16.0 (§5e), which leaves 254-255. `LOG_SENSOR` is **reserved**: no emitter since rc.1.4.0,
 kept only so ordinal 0 still decodes old archives
 
 ## 2. Adding or changing a config key, or its bounds
@@ -223,12 +223,13 @@ back through T6; `aborted` and `sincemove` check what the law is told) and `at_w
 `firmware/src/types/failfirst_212.h`, **one bit per run, and pass a value** (a bare flag is 1).
 **2.16.0 (plan §5e, the characterisation run):** `at_wp_char.py` (one run, judged) and
 `at_wp_char_accept.py` (step 5's acceptance stages: `full`, `refusals`, `abort`, `hold`, `wind`,
-`sensor`, `alarm`, `moved`, `reboot`, `source`, `latency`, `rota`). Bench hooks: `{"motor_alarm":
+`sensor`, `alarm`, `moved`, `reboot`, `rollback`, `source`, `latency`, `rota`), and `at_wp_hunt.py` (a
+soak's "no targeted stop answered by a correction back to the same target", from the stop log). Bench hooks: `{"motor_alarm":
 "on"|"off"}` (T2's alarm through its real path, onset to recalibration) and
 `GET /api/diag/windowpos?rota_gate` (ROTA's quiet gate with the asking session exempt: an end-to-end
 apply needs a NEW manifest seq, because T16 refuses any seq at or below its high-water mark).
 Fail-first via `firmware/src/types/failfirst_216.h` (1 guards, 2 no phase 4b, 4 the gate ignores a
-run). **There is no reboot route:** a restart mid-run is an OTA push of the same image.
+run, 8 T17 sleeps through a drive start). **There is no reboot route:** a restart mid-run is an OTA push of the same image.
 **Read before touching any of it:**
 [design/integrateWindowPositionSensor.md](../design/integrateWindowPositionSensor.md) **§2a** — the
 switch/limit/overlap geometry is not what the earlier drafts assumed, and the calibration and rig

@@ -899,7 +899,9 @@ Dezelfde route, maar kies **Auto** (LCD: toets `1` op het menu, web: kies "Norma
 
 > **Stand-by blijft staan bij stroomuitval.** Heb je Stand-by aangezet en gaat tussendoor de stroom uit? Na opstarten staat de controller weer in `Mode: STANDBY` — zodat een korte stroomonderbreking je onderhoudswerk niet onbedoeld onderbreekt. Vergeet niet om Stand-by weer uit te zetten als je klaar bent met je werk!
 
-> **Stand-by kan ook van de beheerder komen.** Tijdens het kalibreren van de raamsensor van M3 (de "teach") en tijdens het handmatig bedienen van de ramen via het LCD-scherm zet de controller zichzelf in Stand-by. Die pauze verdwijnt vanzelf zodra de beheerder uitlogt of de sessie van de beheerder verloopt, en ook bij een herstart. Daarna sluiten de ramen één keer en regelt de controller weer automatisch. Zie je `Mode: STANDBY` terwijl jij niets hebt ingesteld, dan is dit waarschijnlijk de reden.
+> **Stand-by kan ook van de beheerder komen.** Tijdens het kalibreren van de raamsensor van M3 (de "teach"), tijdens het handmatig bedienen van de ramen via het LCD-scherm, en (sinds 2.16.0) tijdens het **karakteriseren van M3** zet de controller zichzelf in Stand-by. Die pauze verdwijnt vanzelf zodra de beheerder uitlogt of de sessie van de beheerder verloopt, en ook bij een herstart. Daarna sluiten de ramen één keer en regelt de controller weer automatisch. Zie je `Mode: STANDBY` terwijl jij niets hebt ingesteld, dan is dit waarschijnlijk de reden.
+>
+> **Een karakterisering duurt langer.** Dat is een meting waarbij M3 zo'n anderhalf tot drie uur heen en weer beweegt. Ze gaat door als de beheerder uitlogt, en de Stand-by blijft dan staan tot de meting klaar is. Beweegt M3 steeds een stukje terwijl de controller op Stand-by staat, dan is dat deze meting, geen storing.
 
 #### Visuele bevestiging dat Stand-by actief is
 

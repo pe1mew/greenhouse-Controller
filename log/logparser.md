@@ -1,7 +1,7 @@
 # logparser — Greenhouse Controller Log Parser
 
 **File:** `log/logparser.py`
-**Document version:** 1.25 (unreleased, plan §5e; 1.25 added `SETPT param 57`, `deadzone_src_m3`, and `ALARM ch 6` param 253, the characterisation run; 1.24 matches firmware 2.15.0 and added `MODE param 56`, the law in
+**Document version:** 1.25 (matches firmware 2.16.0, plan §5e; 1.25 added `SETPT param 57`, `deadzone_src_m3`, and `ALARM ch 6` param 253, the characterisation run; 1.24 matches firmware 2.15.0 and added `MODE param 56`, the law in
 force by name and version, gh#84; 1.23 added mode 2: `RELAY value_a = 7`
 (`PART_OPEN`), the `SENSOR_HR ch 2` part-open qualifier bits and `value_b`, `MODE param 54`
 (the control law in force) and `SETPT params 53` and `55`; 1.22 added `ALARM ch 6` params 251 and 252, gate reason `6`, and rule 2's new basis, gh#78; 1.21: the rule rows come per drive, gh#72; 1.20 added `SETPT param 49`, `wpos_fitted_m3`, and gate reason `5`, not fitted (gh#73), and documents param 48; 1.17 added `MODE param 47` `value_b` = 1, a STANDBY held for a session; 1.18 added `SYSTEM value_a = 32`; 1.19: the LCD manual menu holds STANDBY too (gh#65), and `SENSOR_HR ch 3` rows at rest are written only on change)
