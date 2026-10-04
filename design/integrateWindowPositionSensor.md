@@ -3732,8 +3732,8 @@ record keeps the phases completed.
      - reversal loss 9.9 / 11.9 mm. The asymmetry of step 3's two runs did not repeat;
      - floor 2 46 / 48 ms (3.5 / 4.2 mm), dead time 21 / 16 ms.
 5. **The rig:** the tests above on a release build, and the fail-firsts on a bench build. Then the soak,
-   with the measured band in force. **STARTED 2026-10-03; the soak PASSED 2026-10-04. The wind stage
-   is still to run.**
+   with the measured band in force. **DONE 2026-10-04: every row run, the soak PASSED, the wind stage
+   PASSED.**
    - **What step 5 added:**
      - **The version: 2.16.0 / 2.16.0-bench.** Step 4's images all reported `2.15.1-bench`, which
        could not tell one from another (gotcha 2026-09-21, recurred). A release-env build of this source
@@ -3810,7 +3810,7 @@ record keeps the phases completed.
      | fail-first 1 (guards removed) | FAILS, as it must: the run kept RUNNING through the sensor's fault and its absence, and ended `no_start` (T2 refuses commands under an alarm) instead of `motor_alarm` |
      | fail-first 4 (the gate ignores a run) | FAILS, as it must: the gate was OPEN in 582 of 582 probes during the run |
      | fail-first 2 (no phase 4b) | b₀ 29 mm taken unchecked. **It did not fail:** all eight 36 mm corrections landed within 29 mm (at most +18.3). Its premise was the T17 latency, which is gone. 4b now guards the residual outliers (one of eight 40 mm corrections at +33.9 mm earlier), not the latency it was built around. Its two missing SD rows (51, 52: the check that did not run) are this build's artefact |
-     | wind | not run all evening: the emulated wind stayed at 0.0–0.9 m/s, below `v_max`'s minimum |
+     | wind | not run that evening: the emulated wind stayed at 0.0–0.9 m/s, below `v_max`'s minimum. Run 2026-10-04 (below) |
 
      **Not exercised on hardware:** "calibration not valid". The injected fault leaves the verdict
      valid, and no bench hook makes it invalid short of un-teaching the sensor. It is covered by the
@@ -3837,9 +3837,19 @@ record keeps the phases completed.
        - **Rule 1** (dryness never closing against heat): no heat demand all night.
        - **The last two stroke sessions** (08:13, 09:13) were skipped by the harness's own rule: at
          11.6 and 14.2 °C no setpoint the law accepts makes it open. Ten sessions ran.
-   - **Still to run: the wind stage**, with the operator. The emulated wind has stayed at
-     0.0–0.9 m/s since step 5 began, below `v_max`'s minimum of 1 m/s. It needs a windy spell or the
-     operator's go to set the emulator for one test.
+   - **The wind stage, 2026-10-04, with the emulator set (operator: "set the emulator wind for the
+     test").**
+     - The emulator's S200 went from REST to Manual at a steady 3.0 m/s from 180° (11:04). 2344 read it
+       within 81 s. The release build was on the unit (`cf8e7c80…`).
+     - The stage then did what the table says: a run started, and in its phase 2 `v_max` dropped to
+       1 m/s, below that wind. 27 s later T3 raised the wind override, and the run ended **`wind`**,
+       with no start after it. `v_max` went back to 6, and the hold was released at logout: **ALL
+       PASS**.
+     - **Fail-first 1 (guards removed, `d59b3c51…`) FAILS, as it must.** The run did not stop for the
+       override. It ended only when T3's wind close drove M3 under it, as `m3_busy`. Bit 1 now fails
+       every row it should: the sensor's fault, its absence, the motor alarm and the wind.
+     - The S200 was back in REST at 11:12:49, and the emulator's page showed both slaves in REST with
+       Node-RED's 5C88 feed arriving. 2344 is back on the release build.
 6. **The documents and the release, 2.16.0.**
 
 ##### The T17 first-read latency: fixed in 2.16.0, as a change of its own
