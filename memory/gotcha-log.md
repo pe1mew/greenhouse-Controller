@@ -121,7 +121,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 
 ### OTA & ROTA releases
 - **2026-10-03** — a ROTA test set up by running the unit on a lower version never applies: T16 refuses any manifest seq at or below the high-water mark it persisted at its last apply, so an end-to-end test needs a NEW publish; a gate deferral also waits for the next window opening, not 300 s
-- **2026-10-03** — a bench asset upload is refused as "compressed ZIP entry (method 8)", and `asset_version` then reads an OLDER bench set; an assets-only retry fails "inactive LittleFS remount after format failed" until a reboot (zip with stored entries; after a failed asset upload, re-push firmware and assets together)
+- **2026-10-03** — a bench asset upload is refused as "compressed ZIP entry (method 8)", and `asset_version` then reads an OLDER bench set; an assets-only retry fails "inactive LittleFS remount after format failed" until a reboot (zip with stored entries; after a failed asset upload, re-push firmware and assets together) *(ROOT CAUSE 2026-10-04: IDF 5.5.0's VFS table refuses every mount once it has been full, free slots or not; T13's mount fills it, so after any T13 run that does not reboot, nothing mounts until a reboot, the SD card included)*
 - **2026-09-25** — a release dies with HTTP 422 "tag_name is not a valid tag" / invalid `target_commitish`: the commit HEAD points at was never pushed, so GitHub cannot tag it (the script's separate "uncommitted changes" warning is the untracked-file false positive)
 - **2026-09-21** — a bench push carries a GUI older than its firmware while `fw_ver` and `asset_version` match (every bench build of a version says `-bench`, so the pair check cannot see stale content) *(recurred 2026-10-03 for the FIRMWARE: a rollback reads the same `-bench`; the bank flip in `/api/ota/status` is the proof)*
 - **2026-09-20** — a check forced ~2 min after publishing gets `dl` 2 (SHA/size): the server points the channel before it has fetched the artefacts; retry, and check the manifest against the local files before blaming the release *(recurred 2026-09-26, followed by two `dl` 1; the unit's own next check succeeded)* *(→ promoted to a pattern 2026-09-27)*
@@ -273,11 +273,24 @@ Plan it around a release. Never plan it around a re-offer, and never around a ve
 **Root cause:**
 - **The zip was mine.** I built it with Python's `ZIP_DEFLATED`. The unit's extractor takes stored entries only (method 0), as the error says; `build_release.ps1` and the earlier bench zips use them.
 - **`2.15.0-bench`** is the 2026-06-10 shape (a firmware-only push strands the assets), reached through a REFUSED asset upload rather than a missing one. The firmware push switched the app bank, and the asset partition that goes with that bank still held the bench assets of 2026-10-01/02.
-- **The remount failure is not established.** The assets-only upload came right after the refused one, with no reboot in between. The next full push (firmware, reboot, the same stored zip) extracted and verified first time, so the refused upload probably left the inactive LittleFS in a state only a reboot clears. Not investigated: it is T13's path, outside the step.
+- **The remount failure: ESTABLISHED 2026-10-04, and it is not LittleFS.** It is **ESP-IDF 5.5.0's VFS table** (`components/vfs/vfs.c`, `esp_vfs_register_fs_common()`). That function refuses a registration with `ESP_ERR_NO_MEM` whenever `s_vfs_count >= CONFIG_VFS_MAX_COUNT` (8), and checks this BEFORE it looks for a free slot. `s_vfs_count` is a high-water mark that unregistering never lowers. So once the table has been full ONCE, nothing can be mounted again until a reboot, free slots or not.
+  - **How this firmware fills it.** A running unit holds 7 entries: the console (UART, its USB-JTAG secondary, `/dev/console`), `/dev/null`, lwIP sockets, the SD card and the active LittleFS. T13's mount of the inactive LittleFS takes the 8th. Its unmount frees the slot, but the count stays at 8.
+  - **Why it hides.** A successful T13 run always reboots, so the table empties before anything registers again. Only a T13 run that ENDS WITHOUT A REBOOT leaves the unit in this state: a refused zip, a write failure, a failed bank switch, by push or by ROTA.
+  - **Why the format "succeeded".** Formatting registers nothing, and `lfs_format()` rewrites only the superblock, in well under a second. The ~10 s erase in `ota_manager.cpp`'s comment is not this library's behaviour.
+  - **What it costs.** From then until a reboot:
+    - every asset upload fails;
+    - **the SD card cannot be remounted** after an unmount or a re-insertion, so SD logging stops;
+    - T13's format fallback **wipes the inactive LittleFS**, though it was intact. That partition holds the rollback bank's GUI.
+  - **The evidence, on 2344's 2.16.0 release build:**
+    - R1 (a deflated zip, refused) then R2 (the valid release zip, 14 s later) failed exactly as on 10-03, at steady state and with no firmware push involved;
+    - in that state, an SD unmount and remount failed (`mount failed`);
+    - after a reboot, the same remount worked;
+    - with the SD card unmounted first, so that T13 reuses its slot, the same R1/R2 PASSED: R2 extracted and rebooted.
+  - **Upstream.** `master` and `release/v5.5` call `esp_get_free_index()` first, and lower the counter (now `s_vfs_upper_bound`), so later 5.5 releases do not have the bug. `espressif32@6.12.0` bundles 5.5.0.
 
-**Fix:** build a bench asset zip with stored entries (`zipfile.ZIP_STORED`, or `zip -0`). After any failed asset upload, re-push firmware and assets together, not the assets alone.
+**Fix:** build a bench asset zip with stored entries (`zipfile.ZIP_STORED`, or `zip -0`). After any failed asset upload, re-push firmware and assets together, not the assets alone. That works because `ota_push.py` reboots between the two, which empties the table. **The permanent fix is open (2026-10-04):** `CONFIG_VFS_MAX_COUNT` of at least 9, so the count never reaches the limit; or an IDF with the upstream change. A second, separate defect is T13 formatting on ANY mount failure, a VFS refusal included. The driver turns every `esp_vfs_littlefs_register()` error into `LFS_ERR_MOUNT`, so T13 cannot tell a corrupt partition from a full table.
 
-**Where it lives:** T13's extractor and its format-and-remount fallback (`ota_manager.cpp`, "inactive LFS mount failed — formatting first-time"); the push tool is `bin/ota_push.py`.
+**Where it lives:** IDF's `components/vfs/vfs.c` (`esp_vfs_register_fs_common`); T13's extractor and its format-and-remount fallback (`ota_manager.cpp`, "inactive LFS mount failed — formatting first-time"); the driver's `littlefs_mount()` (`drivers/littleFS/src/littlefs_storage.cpp`); `firmware/sdkconfig.lolin_s3` (`CONFIG_VFS_MAX_COUNT=8`). The push tool is `bin/ota_push.py`.
 
 ## 2026-10-02 — the minimum-move test measured M3 pressed against its closed end for ten minutes, and it looked like a broken wire
 
