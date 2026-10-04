@@ -3732,7 +3732,8 @@ record keeps the phases completed.
      - reversal loss 9.9 / 11.9 mm. The asymmetry of step 3's two runs did not repeat;
      - floor 2 46 / 48 ms (3.5 / 4.2 mm), dead time 21 / 16 ms.
 5. **The rig:** the tests above on a release build, and the fail-firsts on a bench build. Then the soak,
-   with the measured band in force. **STARTED 2026-10-03.**
+   with the measured band in force. **STARTED 2026-10-03; the soak PASSED 2026-10-04. The wind stage
+   is still to run.**
    - **What step 5 added:**
      - **The version: 2.16.0 / 2.16.0-bench.** Step 4's images all reported `2.15.1-bench`, which
        could not tell one from another (gotcha 2026-09-21, recurred). A release-env build of this source
@@ -3814,6 +3815,31 @@ record keeps the phases completed.
      **Not exercised on hardware:** "calibration not valid". The injected fault leaves the verdict
      valid, and no bench hook makes it invalid short of un-teaching the sensor. It is covered by the
      code path and by the mock's greyed state.
+   - **The soak: PASSED, 2026-10-03 22:13 → 2026-10-04 10:28.**
+     - Set-up: 2344 on 2.16.0-bench `b3ded03f…` (the run, step 5's hooks and the T17 fix), mode 2
+       (`graded` v2), `min_intv_m3` 0, `cr_priority` 1, the emulator in REST on 5C88's live climate. The
+       **measured 30 mm band** was in force from a complete run on this image. The launcher was
+       `~/ghc-soak/soak_1003.sh` on Shuttle2.
+
+     | Criterion | Result |
+     |---|---|
+     | ≥ 12 h in mode 2 with the measured band in force | 12.25 h; the band 30 mm (measured) at the start and at the end, the record unchanged; no reboot (uptime 12.41 h) |
+     | every counter 0 | `at_wp_soak.py`: PASS. 20 judged strokes; stall faults, early stops, rejected rates, comm errors and not-reached drives all 0; no mode change; the gate in POSITION throughout |
+     | no targeted stop answered by an opposite correction to the same target | `at_wp_hunt.py`: 0 hunts. The soak's ten targeted stops came to rest −7.4 to +9.9 mm from their targets (band 30 mm) |
+     | every decision conforms to `graded` v2 | `law_conformance.py`: 21 decisions, all conform, including one humidity-only opening under `cr_priority` 1 whose temperature floor the law watch confirms |
+     | heap | flat: the floor stayed at 23 KB from the start (no drop recorded); `heap_soak.py` finds no slope (aggregate heap only, gh#24's caveat) |
+
+     - **What it did not show:**
+       - **Short corrections.** All ten targeted stops were the stroke sessions' long 0 → 25 %
+         openings. A cold, humid night (13.7 °C, 94 %) gave the law no reason for a short correction.
+         So it does not answer whether 30 mm is wide enough for corrections just above the band on
+         the fast rig (step 5's latency checks: one of eight 40 mm corrections at +33.9 mm).
+       - **Rule 1** (dryness never closing against heat): no heat demand all night.
+       - **The last two stroke sessions** (08:13, 09:13) were skipped by the harness's own rule: at
+         11.6 and 14.2 °C no setpoint the law accepts makes it open. Ten sessions ran.
+   - **Still to run: the wind stage**, with the operator. The emulated wind has stayed at
+     0.0–0.9 m/s since step 5 began, below `v_max`'s minimum of 1 m/s. It needs a windy spell or the
+     operator's go to set the emulator for one test.
 6. **The documents and the release, 2.16.0.**
 
 ##### The T17 first-read latency: fixed in 2.16.0, as a change of its own
