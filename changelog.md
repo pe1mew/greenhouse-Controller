@@ -12,7 +12,9 @@ Minor: a new admin capability, a new config key and an NVS record (plan §5e,
 `design/integrateWindowPositionSensor.md`). **A unit changes behaviour only once an administrator runs a
 characterisation:** until a run has completed, the band in force is the typed `deadzone_m3`, exactly as
 in 2.15.1. **Soaked** on the bench build of the same code (12.25 h, PASS), and every acceptance row of
-plan §5e passed on this release image, byte-identical to the one tested.
+plan §5e passed on this release image, byte-identical to the one tested. **Published to the ROTA soak
+channel as seq 61** on 2026-10-04. 2344 pulled it by itself at 12:56, on its own hourly check after a
+first download that failed on a half-fetched artefact (sub-code 2).
 
 **Added: the characterisation run** (Motors → M3 → *Commissioning* → **Characterise M3**, admin-only).
 

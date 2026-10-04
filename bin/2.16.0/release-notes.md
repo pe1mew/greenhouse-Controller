@@ -15,6 +15,7 @@ of up to 500 ms in. On the rig that took short corrections from a median 34 mm p
 
 > **Soaked** on the bench build of the same code (12.25 h, PASS). Every acceptance row of plan §5e passed
 > on 2344, and the release stages ran on **this image, byte for byte** (see *Verification*).
+> **Published to the ROTA soak channel as seq 61** on 2026-10-04, and 2344 pulled it by itself.
 
 ## What changed
 
@@ -86,6 +87,8 @@ of up to 500 ms in. On the rig that took short corrections from a median 34 mm p
 | Fail-firsts | bit 1 (guards removed) fails the sensor, alarm and wind rows; bit 4 opens the gate in 582 of 582 probes; bit 8 (T17's old sleep) cuts 24 of 24 short stops on their first reading. Bit 2 (no band check) no longer fails: its premise was the latency the T17 fix removed |
 | **Soak** (bench build `b3ded03f…`, 2026-10-03 22:13 → 2026-10-04 10:28) | **PASS**: 12.25 h, 20 judged strokes, every fault counter 0, no mode change, gate `position`, no reboot. No stop answered by a correction back to its target (`at_wp_hunt.py`; the soak's ten stops came to rest −7.4 to +9.9 mm from target). 21 of 21 law decisions conform (`law_conformance.py`). The measured 30 mm band was in force at the start and the end. Heap flat: floor 23 KB, no drop |
 | Soaked code against this image | the bench build is the same source with `MODBUS_BENCH` added, built the same day; this image is byte-identical to the release image that passed the release stages |
+| **ROTA publish** | **verified**: GitHub Release `v2.16.0`, published 2026-10-04 11:45:42. Not a draft or prerelease, marked latest, the tag is on `d6325fb`, all three files downloaded back hash-identical, manifest seq 61. **The channel, verified from the device:** a forced check at 11:59:01, 13 min after the publish, was offered 2.16.0 |
+| **ROTA pull on 2344** | **PASS**, from plain 2.15.1 (pushed at 11:42, so that a release could be offered). The forced check's download failed 2 s later with sub-code 2 (SHA-256/size mismatch: the server was still fetching the artefacts), although the admin session had logged out before it began. The unit's own hourly check found 2.16.0 again at 12:55:49, downloaded and verified it in 9 s, and committed the apply at 12:56:11. After the 12:56:16 boot, `fw_ver` **and** `asset_version` read **2.16.0**, bank B, accepted. The next check, 12:56:51, read up to date. M3 came up in Lineair 40 s after the boot (gate `ok`, law `graded v2`, with the matching `MODE` param 54 and 56 rows), all nine rig settings survived, and the band in force is still the measured 30 mm (`deadzone_src_m3` 1, from the run of 2026-10-03 22:11). Heap at 134 s: 69 KB free, 28 KB largest block |
 
 ## Upgrading
 
@@ -115,5 +118,7 @@ of up to 500 ms in. On the rig that took short corrections from a median 34 mm p
   short of un-teaching the sensor. It is covered by the code and the mock.
 - **The reversal loss scatters by ~5 mm between runs**, closing always the larger: the rig's rope. It is
   reported, and the band is not derived from it.
-- **ROTA's apply path was not watched end to end** before this publish. That needs a new manifest seq,
-  which this publish is.
+- **2.16.0's own ROTA apply has not run yet.** The pull was 2.15.1's client applying 2.16.0; what it
+  showed of 2.16.0 is the boot and the check after it. 2.16.0's apply gate, which now also waits for a
+  characterisation run, was shown shut by bench probes (616 of 616 during a run). Watching it hold off
+  a real apply needs the next release, pulled by a unit that runs 2.16.0.
