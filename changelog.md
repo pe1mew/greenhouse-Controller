@@ -6,6 +6,72 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.16.2] — 2026-10-04  (an SD unmount during a write no longer panics the unit, gh#90; the coredump's Erase says why it is greyed)
+
+Patch. Bug fixes only: no setting, key or payload change. In the GUI only the coredump row of the Log
+tab and the look of a disabled button change. Not soaked, not published.
+
+**Fixed (gh#90):**
+
+- **`POST /api/sd/unmount` while T9 was writing panicked the unit.**
+  - **Cause:** the unmount ran in the HTTP task and unregistered FAT at once. A T9 write already inside
+    FAT held FAT's per-volume lock, the unmount closed that lock, and newlib's `_lock_close()` asserted.
+    Decoded from the coredump, 2026-10-04.
+  - **Scope:** every build with the route, 2.3.1 included. The window is one write, a few ms. It hit at
+    15 s of uptime, when T9 writes most.
+  - **Now:** one recursive mutex in `drivers/sdCard` around every function that touches FAT, mount and
+    unmount included, and each checks the mount under it. An unmount waits for the operation in flight
+    (0.30–0.41 s in the test), and the next write returns `STORAGE_ERR_NO_CARD`.
+  - **No early return can leave the lock held:** each public function wraps a private `*_locked()`
+    body. The lock is a function-local static, created on first use, so there is no init order to get
+    wrong.
+  - **T9 takes that `STORAGE_ERR_NO_CARD` quietly** while the gh#61 latch says the release was
+    deliberate. So an unmount the operator asked for writes no `LOG_SYSTEM -1` row ("SD write failure")
+    after the next mount. Any other write failure is logged as before.
+
+**Fixed: the coredump's Erase button** (reported by the operator on 2026-10-04, shipped with gh#90):
+
+- **Erase looked pressable and did nothing.**
+  - It is greyed on purpose until a Download in the same session, but nothing said so.
+  - No button in the GUI had a disabled style, so a disabled button looked exactly like a live one.
+  - Straight after a Download the server refused Erase for 10 s (one `/api/coredump` action per 10 s),
+    so the first explanation the operator saw was an error.
+- **Now:**
+  - A line above the row says why Erase is greyed. After a Download it counts the server's 10 s down,
+    and if the server refuses an Erase all the same, the wait starts again.
+  - **Every disabled button is dimmed** (`button:disabled`: opacity 0.45, a not-allowed cursor). A
+    disabled button inside a greyed block is not dimmed a second time (gh#74).
+
+**Bench builds only** (`MODBUS_BENCH`), none of it in the release image:
+
+- `GET/POST /api/diag/sd`: a writer that keeps FAT busy with back-to-back appends through the driver,
+  and its state.
+- `SD_FAILFIRST_NOLOCK`: the lock compiled out. It refuses to build without `MODBUS_BENCH`.
+- `bin/at_sd_unmount.py`: stages `race` and `idle`.
+
+**Verified on 2344:**
+
+- **The fail-first build panicked in round 1 of `race`, in both runs.** The decoded coredump shows the
+  gh#90 path: the `_lock_close()` assert in `esp_vfs_fat_unregister_path()`, under `unmount_locked()`,
+  in the HTTP task.
+- **The fix passed every round:** five rounds of `race`, then `idle`, 17 verdicts. Each unmount
+  answered `ok` mid-write, with no reboot and no new coredump. The writer stopped on `no_card`, and
+  the card mounted again. SD logging went on: 533 rows during the tests, no SD-write-failure row.
+- **The release image** passed `idle`. It is byte-identical to the image that test ran on.
+- **Host:** `drivers/sdCard` 17 of 17 (UT-SD-015..017 new). Three mutations each fail all three new
+  tests: a wrapper that leaks the lock, foreach without it, and a double lock.
+- **The GUI, on the mock:** the reason shows before a Download, the countdown runs after one, Erase
+  enables when it ends, and the erase works. Disabled buttons dim.
+
+**Documents:**
+
+- **TSDS:** the driver lock (§5.3), the `/api/sd/unmount` row, and the Log tab's coredump and
+  disabled-button bullets.
+- **The beheerder manual:** the Erase row and the erase procedure, and the Unmount warning.
+- **Gotcha log:** the SD-unmount entry is resolved, and an entry for the Erase button is new.
+
+---
+
 ## [2.16.1] — 2026-10-04  (a failed asset upload no longer blocks every later mount, and T13 no longer wipes an intact partition; gh#89)
 
 Patch. Bug fixes only: no setting, key, payload or GUI change. A unit behaves as 2.16.0 until a T13 run

@@ -4507,6 +4507,152 @@ static esp_err_t diag_ota_post_handler(httpd_req_t *req)
     return httpd_resp_send(req, "{\"ok\":false,\"error\":\"unknown_action\"}",
                            HTTPD_RESP_USE_STRLEN);
 }
+
+/* ============================================================
+ * gh#90 — the SD driver's lock under load, for bin/at_sd_unmount.py (DEV BUILDS ONLY)
+ * ============================================================ */
+
+/* A writer that keeps FAT busy: back-to-back appends of `kb` KB through the
+ * driver, so an unmount almost always lands inside one. Before gh#90 that
+ * panicked the unit (FAT's lock closed while held); with the driver's lock the
+ * unmount waits for the append in flight, and the next append finds the card
+ * gone and the writer stops. */
+static const char *BENCH_STRESS_FILE = "/bench_stress.txt";
+static volatile bool     s_sd_stress_running = false;
+static volatile uint32_t s_sd_stress_writes  = 0;
+static volatile uint32_t s_sd_stress_kbytes  = 0;
+static volatile int      s_sd_stress_last_rc = 0;
+static const char       *s_sd_stress_stop    = "";
+static uint32_t          s_sd_stress_s       = 0;
+static uint32_t          s_sd_stress_kb      = 0;
+
+static const char *bench_storage_rc_name(int rc)
+{
+    switch (rc) {
+    case STORAGE_OK:            return "ok";
+    case STORAGE_ERR_NO_CARD:   return "no_card";
+    case STORAGE_ERR_MOUNT:     return "mount";
+    case STORAGE_ERR_IO:        return "io";
+    case STORAGE_ERR_NOT_FOUND: return "not_found";
+    case STORAGE_ERR_FULL:      return "full";
+    case STORAGE_ERR_PARAM:     return "param";
+    default:                    return "?";
+    }
+}
+
+static void sd_stress_task(void *pv)
+{
+    (void)pv;
+    const size_t len = (size_t)s_sd_stress_kb * 1024u;
+    char *line = (char *)heap_caps_malloc(len + 1u, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (line == NULL) {
+        s_sd_stress_stop = "no_memory";
+        s_sd_stress_running = false;
+        vTaskDelete(NULL);
+        return;
+    }
+    memset(line, 'x', len - 1u);
+    line[len - 1u] = '\n';
+    line[len] = '\0';
+    (void)storage_sd_delete(BENCH_STRESS_FILE);   /* start from nothing */
+    const int64_t end_us = esp_timer_get_time() + (int64_t)s_sd_stress_s * 1000000;
+    s_sd_stress_stop = "time";
+    while (esp_timer_get_time() < end_us) {
+        const storage_status_t rc = storage_sd_write_append(BENCH_STRESS_FILE, line);
+        s_sd_stress_last_rc = (int)rc;
+        if (rc != STORAGE_OK) {
+            s_sd_stress_stop = "error";
+            break;
+        }
+        s_sd_stress_writes = s_sd_stress_writes + 1u;
+        s_sd_stress_kbytes = s_sd_stress_kbytes + s_sd_stress_kb;
+    }
+    if (storage_sd_available()) {
+        (void)storage_sd_delete(BENCH_STRESS_FILE);
+    }
+    heap_caps_free(line);
+    s_sd_stress_running = false;
+    vTaskDelete(NULL);
+}
+
+/**
+ * GET /api/diag/sd — the SD driver under test (admin, DEV BUILDS ONLY, gh#90)
+ *
+ * `nolock` is true on the fail-first build (SD_FAILFIRST_NOLOCK), so a result
+ * can never be read against the wrong build; `stress` is the writer's state.
+ */
+static esp_err_t diag_sd_get_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+    httpd_resp_set_type(req, "application/json");
+#ifdef SD_FAILFIRST_NOLOCK
+    const bool nolock = true;
+#else
+    const bool nolock = false;
+#endif
+    char resp[256];
+    snprintf(resp, sizeof(resp),
+             "{\"ok\":true,\"nolock\":%s,\"mounted\":%s,\"stress\":{\"running\":%s,"
+             "\"writes\":%u,\"kbytes\":%u,\"last_rc\":\"%s\",\"stop\":\"%s\"}}",
+             nolock ? "true" : "false", storage_sd_available() ? "true" : "false",
+             s_sd_stress_running ? "true" : "false", (unsigned)s_sd_stress_writes,
+             (unsigned)s_sd_stress_kbytes, bench_storage_rc_name(s_sd_stress_last_rc),
+             s_sd_stress_stop);
+    return httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
+}
+
+/**
+ * POST /api/diag/sd — start the writer (admin, DEV BUILDS ONLY, gh#90)
+ *
+ * Body: {"stress_s":N,"kb":K}: append K KB (1-32) to /bench_stress.txt for N
+ * seconds (1-120), back to back; the file is deleted at the start and, if the
+ * card is still mounted, at the end.
+ */
+static esp_err_t diag_sd_post_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+    httpd_resp_set_type(req, "application/json");
+
+    char body[64] = {0};
+    int  rlen = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (rlen <= 0) {
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"empty_body\"}",
+                               HTTPD_RESP_USE_STRLEN);
+    }
+    body[rlen] = '\0';
+
+    char v[12] = {0};
+    if (!json_get_field(body, "stress_s", v, sizeof(v))) {
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"unknown_action\"}",
+                               HTTPD_RESP_USE_STRLEN);
+    }
+    const long secs = strtol(v, NULL, 10);
+    long kb = 16;
+    if (json_get_field(body, "kb", v, sizeof(v))) {
+        kb = strtol(v, NULL, 10);
+    }
+    if (secs < 1 || secs > 120 || kb < 1 || kb > 32) {
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"range\"}", HTTPD_RESP_USE_STRLEN);
+    }
+    if (s_sd_stress_running) {
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"busy\"}", HTTPD_RESP_USE_STRLEN);
+    }
+    if (!storage_sd_available()) {
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"no_card\"}", HTTPD_RESP_USE_STRLEN);
+    }
+    s_sd_stress_s = (uint32_t)secs;
+    s_sd_stress_kb = (uint32_t)kb;
+    s_sd_stress_writes = 0;
+    s_sd_stress_kbytes = 0;
+    s_sd_stress_last_rc = 0;
+    s_sd_stress_stop = "";
+    s_sd_stress_running = true;
+    if (xTaskCreate(sd_stress_task, "sd_stress", 6144, NULL, 3, NULL) != pdPASS) {
+        s_sd_stress_running = false;
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"task\"}", HTTPD_RESP_USE_STRLEN);
+    }
+    return httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
+}
 #endif /* MODBUS_BENCH */
 
 /* 2.2.0 (ROTA) — pull-OTA config (admin). */
@@ -4539,6 +4685,11 @@ static const httpd_uri_t s_uri_diag_ota = {
     .uri = "/api/diag/ota", .method = HTTP_GET, .handler = diag_ota_get_handler, .user_ctx = NULL };
 static const httpd_uri_t s_uri_diag_ota_post = {
     .uri = "/api/diag/ota", .method = HTTP_POST, .handler = diag_ota_post_handler, .user_ctx = NULL };
+/* gh#90 — the SD driver's lock under load. */
+static const httpd_uri_t s_uri_diag_sd = {
+    .uri = "/api/diag/sd", .method = HTTP_GET, .handler = diag_sd_get_handler, .user_ctx = NULL };
+static const httpd_uri_t s_uri_diag_sd_post = {
+    .uri = "/api/diag/sd", .method = HTTP_POST, .handler = diag_sd_post_handler, .user_ctx = NULL };
 #endif
 
 /* alpha.6.21 — WebSocket route (Phase 6.16-η, final T11 route). */
@@ -4601,6 +4752,7 @@ void task_web_server(void *pvParameters)
         &s_uri_diag_windowpos, &s_uri_diag_windowpos_post,
         &s_uri_diag_lcd,
         &s_uri_diag_ota, &s_uri_diag_ota_post,
+        &s_uri_diag_sd, &s_uri_diag_sd_post,
 #endif
     };
 #define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))

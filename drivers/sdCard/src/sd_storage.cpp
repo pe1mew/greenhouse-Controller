@@ -44,6 +44,8 @@
   #include <sys/stat.h>            /* stat() for existence/size */
   #include <dirent.h>              /* opendir/readdir/closedir */
   #include <errno.h>
+  #include "freertos/FreeRTOS.h"   /* gh#90: the driver's lock */
+  #include "freertos/semphr.h"
   /* Note: ESP-IDF newlib does NOT ship <sys/statvfs.h>. The IDF-native call
    * `esp_vfs_fat_info(base_path, &total, &free)` (declared in esp_vfs_fat.h
    * already included above) returns both numbers in one shot. It walks the
@@ -70,6 +72,63 @@
  * Module state
  * --------------------------------------------------------------------------- */
 static bool g_mounted = false;
+
+/* ---------------------------------------------------------------------------
+ * The driver's lock (gh#90)
+ *
+ * Every function that touches FAT, mount and unmount included, runs under one
+ * recursive mutex, and checks g_mounted under it. Before gh#90 the checks and
+ * the FAT calls were unguarded: POST /api/sd/unmount (the HTTP task) could
+ * unmount while T9 was inside a write, esp_vfs_fat_unregister_path() then
+ * closed FAT's per-volume lock while T9 held it, and newlib's _lock_close()
+ * asserted -- a panic and a reboot (2026-10-04, decoded from the coredump). Now
+ * an unmount waits for the operation in flight, and a call after it finds the
+ * card unmounted.
+ *
+ * storage_sd_foreach_csv() holds it across its callbacks, which must still not
+ * call back into this driver (none does: T9's retention deletes after its
+ * scan). The lock is recursive anyway, so a slip there costs a nested call,
+ * not a deadlock. Each public function is a wrapper around a private
+ * *_locked() body, so every early return releases the lock.
+ * storage_sd_available() reads a bool and takes no lock.
+ *
+ * SD_FAILFIRST_NOLOCK (bench builds only) compiles the lock out, so the gh#90
+ * acceptance test (bin/at_sd_unmount.py) can be shown to fail without it.
+ * --------------------------------------------------------------------------- */
+#if defined(SD_FAILFIRST_NOLOCK) && !defined(MODBUS_BENCH)
+#error "SD_FAILFIRST_NOLOCK is a bench-only fail-first build"
+#endif
+
+#ifndef UNIT_TEST
+static SemaphoreHandle_t sd_lock_handle(void)
+{
+    /* A function-local static: initialised once, thread-safely (C++11; this
+     * build keeps threadsafe statics), on first use from whichever task comes
+     * first, and from a static buffer, so it cannot fail. */
+    static StaticSemaphore_t buf;
+    static SemaphoreHandle_t h = xSemaphoreCreateRecursiveMutexStatic(&buf);
+    return h;
+}
+static void sd_lock(void)
+{
+#ifndef SD_FAILFIRST_NOLOCK
+    (void)xSemaphoreTakeRecursive(sd_lock_handle(), portMAX_DELAY);
+#endif
+}
+static void sd_unlock(void)
+{
+#ifndef SD_FAILFIRST_NOLOCK
+    (void)xSemaphoreGiveRecursive(sd_lock_handle());
+#endif
+}
+#else
+/* Native tests: count instead of lock, so they can check that every path,
+ * the error paths included, leaves it balanced. */
+static int g_lock_depth = 0;
+static void sd_lock(void)   { g_lock_depth++; }
+static void sd_unlock(void) { g_lock_depth--; }
+int storage_sd_test_lock_depth(void) { return g_lock_depth; }
+#endif
 
 /* ---------------------------------------------------------------------------
  * Internal helpers (target build only)
@@ -102,7 +161,7 @@ static bool build_vfs_path(const char *path, char *out, size_t out_len)
 /* ---------------------------------------------------------------------------
  * storage_init
  * --------------------------------------------------------------------------- */
-storage_status_t storage_init(void)
+static storage_status_t init_locked(void)
 {
     g_mounted = false;
 
@@ -197,6 +256,14 @@ storage_status_t storage_init(void)
     return STORAGE_OK;
 }
 
+storage_status_t storage_init(void)
+{
+    sd_lock();
+    const storage_status_t rc = init_locked();
+    sd_unlock();
+    return rc;
+}
+
 /* ---------------------------------------------------------------------------
  * storage_sd_available
  * --------------------------------------------------------------------------- */
@@ -208,7 +275,7 @@ bool storage_sd_available(void)
 /* ---------------------------------------------------------------------------
  * storage_sd_write_append
  * --------------------------------------------------------------------------- */
-storage_status_t storage_sd_write_append(const char *filename, const char *line)
+static storage_status_t write_append_locked(const char *filename, const char *line)
 {
     if (!filename || !line) {
         return STORAGE_ERR_PARAM;
@@ -245,11 +312,19 @@ storage_status_t storage_sd_write_append(const char *filename, const char *line)
     return STORAGE_OK;
 }
 
+storage_status_t storage_sd_write_append(const char *filename, const char *line)
+{
+    sd_lock();
+    const storage_status_t rc = write_append_locked(filename, line);
+    sd_unlock();
+    return rc;
+}
+
 /* ---------------------------------------------------------------------------
  * storage_sd_read
  * --------------------------------------------------------------------------- */
-storage_status_t storage_sd_read(const char *filename, uint32_t offset,
-                                 char *buf, size_t buf_len, size_t *bytes_read)
+static storage_status_t read_locked(const char *filename, uint32_t offset,
+                                    char *buf, size_t buf_len, size_t *bytes_read)
 {
     if (!filename || !buf || buf_len == 0 || !bytes_read) {
         return STORAGE_ERR_PARAM;
@@ -299,10 +374,19 @@ storage_status_t storage_sd_read(const char *filename, uint32_t offset,
     return STORAGE_OK;
 }
 
+storage_status_t storage_sd_read(const char *filename, uint32_t offset,
+                                 char *buf, size_t buf_len, size_t *bytes_read)
+{
+    sd_lock();
+    const storage_status_t rc = read_locked(filename, offset, buf, buf_len, bytes_read);
+    sd_unlock();
+    return rc;
+}
+
 /* ---------------------------------------------------------------------------
  * storage_sd_file_size
  * --------------------------------------------------------------------------- */
-uint32_t storage_sd_file_size(const char *filename)
+static uint32_t file_size_locked(const char *filename)
 {
     if (!filename || !g_mounted) {
         return 0;
@@ -323,10 +407,18 @@ uint32_t storage_sd_file_size(const char *filename)
 #endif
 }
 
+uint32_t storage_sd_file_size(const char *filename)
+{
+    sd_lock();
+    const uint32_t n = file_size_locked(filename);
+    sd_unlock();
+    return n;
+}
+
 /* ---------------------------------------------------------------------------
  * storage_sd_free_bytes
  * --------------------------------------------------------------------------- */
-uint64_t storage_sd_free_bytes(void)
+static uint64_t free_bytes_locked(void)
 {
     if (!g_mounted) {
         return 0;
@@ -344,10 +436,18 @@ uint64_t storage_sd_free_bytes(void)
 #endif
 }
 
+uint64_t storage_sd_free_bytes(void)
+{
+    sd_lock();
+    const uint64_t n = free_bytes_locked();
+    sd_unlock();
+    return n;
+}
+
 /* ---------------------------------------------------------------------------
  * storage_sd_total_bytes
  * --------------------------------------------------------------------------- */
-uint64_t storage_sd_total_bytes(void)
+static uint64_t total_bytes_locked(void)
 {
     if (!g_mounted) {
         return 0;
@@ -365,10 +465,18 @@ uint64_t storage_sd_total_bytes(void)
 #endif
 }
 
+uint64_t storage_sd_total_bytes(void)
+{
+    sd_lock();
+    const uint64_t n = total_bytes_locked();
+    sd_unlock();
+    return n;
+}
+
 /* ---------------------------------------------------------------------------
  * storage_sd_unmount
  * --------------------------------------------------------------------------- */
-void storage_sd_unmount(void)
+static void unmount_locked(void)
 {
     if (!g_mounted) {
         return;
@@ -392,6 +500,13 @@ void storage_sd_unmount(void)
 #endif
 }
 
+void storage_sd_unmount(void)
+{
+    sd_lock();
+    unmount_locked();
+    sd_unlock();
+}
+
 /* ---------------------------------------------------------------------------
  * storage_sd_list_csv
  *
@@ -399,7 +514,7 @@ void storage_sd_unmount(void)
  * requested extension into the output buffer separated by commas. Truncation
  * on a full buffer is silent (matches the arduino-era behaviour).
  * --------------------------------------------------------------------------- */
-storage_status_t storage_sd_list_csv(const char *ext, char *buf, size_t buf_len)
+static storage_status_t list_csv_locked(const char *ext, char *buf, size_t buf_len)
 {
     if (!ext || !buf || buf_len == 0) {
         return STORAGE_ERR_PARAM;
@@ -461,12 +576,20 @@ storage_status_t storage_sd_list_csv(const char *ext, char *buf, size_t buf_len)
     return STORAGE_OK;
 }
 
+storage_status_t storage_sd_list_csv(const char *ext, char *buf, size_t buf_len)
+{
+    sd_lock();
+    const storage_status_t rc = list_csv_locked(ext, buf, buf_len);
+    sd_unlock();
+    return rc;
+}
+
 /* ---------------------------------------------------------------------------
  * storage_sd_delete
  * --------------------------------------------------------------------------- */
-storage_status_t storage_sd_foreach_csv(const char *ext,
-                                        void (*cb)(const char *name, void *ctx),
-                                        void *ctx)
+static storage_status_t foreach_csv_locked(const char *ext,
+                                           void (*cb)(const char *name, void *ctx),
+                                           void *ctx)
 {
     if (!ext || !cb) {
         return STORAGE_ERR_PARAM;
@@ -513,7 +636,18 @@ storage_status_t storage_sd_foreach_csv(const char *ext,
     return STORAGE_OK;
 }
 
-storage_status_t storage_sd_delete(const char *filename)
+storage_status_t storage_sd_foreach_csv(const char *ext,
+                                        void (*cb)(const char *name, void *ctx),
+                                        void *ctx)
+{
+    /* The callback runs under the lock: the directory stays open across it. */
+    sd_lock();
+    const storage_status_t rc = foreach_csv_locked(ext, cb, ctx);
+    sd_unlock();
+    return rc;
+}
+
+static storage_status_t delete_locked(const char *filename)
 {
     if (!filename) {
         return STORAGE_ERR_PARAM;
@@ -539,4 +673,12 @@ storage_status_t storage_sd_delete(const char *filename)
 #endif
 
     return STORAGE_OK;
+}
+
+storage_status_t storage_sd_delete(const char *filename)
+{
+    sd_lock();
+    const storage_status_t rc = delete_locked(filename);
+    sd_unlock();
+    return rc;
 }

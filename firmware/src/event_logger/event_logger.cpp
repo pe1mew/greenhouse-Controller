@@ -633,6 +633,16 @@ static void write_to_sd(const log_event_t *evt)
     }
 
     if (rc != STORAGE_OK) {
+        /* gh#90: an operator's unmount can land between T9's s_sd_ok check
+         * and this write. Since the driver's lock it fails cleanly with
+         * NO_CARD instead of panicking; and with the gh#61 latch set it is a
+         * deliberate release, not a card failure -- no -1 row, which would
+         * otherwise be written after the next mount as a failure that never
+         * happened. */
+        if (rc == STORAGE_ERR_NO_CARD && s_sd_released) {
+            s_sd_ok = false;
+            return;
+        }
         ESP_LOGW(TAG, "[T9] SD write failed (%d) — NVS-only", (int)rc);
         s_sd_ok = false;
 

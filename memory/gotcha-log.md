@@ -157,7 +157,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-05-14** — `ets_loader.c` crash loop after a full flash (qio vs dio header byte) [RESOLVED]
 
 ### SD logging & the log parser
-- **2026-10-04** — `POST /api/sd/unmount` while T9 writes panics the unit: the unmount closes FAT's lock while T9 holds it (`_lock_close` assert); pre-existing, not fixed
+- **2026-10-04** — `POST /api/sd/unmount` while T9 writes panics the unit: the unmount closes FAT's lock while T9 holds it (`_lock_close` assert); pre-existing [RESOLVED 2.16.2, gh#90: one lock in the SD driver]
 - **2026-09-24** — the log listing shows only OLD files, the active file cannot be downloaded, and retention has stopped deleting — one truncating scan behind all of it, and the same cut again one level up in the fix (gh#82; third instance of gh#36/gh#42) [RESOLVED 2.12.2]
 - **2026-09-13** — alarm rows land 30-55 s after their timestamp, out of order; also: a single failed read leaves NO trace, and SENSOR_HR keeps flowing through a fault
 - **2026-09-12** — `log_type_t` is not where you expect (it lives in `types/app_types.h`, NOT `event_logger.h`)
@@ -175,6 +175,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-06-26** — a day shows ~2× the expected samples (two overlapping SD download chains)
 
 ### Web GUI & HTTP routes
+- **2026-10-04** — the coredump's Erase looked pressable and did nothing: no button in the GUI had a `:disabled` style, and nothing said why it was greyed (it unlocks only after a Download, and the server then refuses it for 10 s) [RESOLVED 2.16.2]
 - **2026-09-20** — a new config key reads back `null` from `GET /api/config` while every check passes (the response is an eighth, hand-written key list) [RESOLVED: `check_config_get()`]
 - **2026-09-20** — classification is not consumption: a key declared everywhere can still be acted on nowhere (firmware response and simulator, same day)
 - **2026-09-20** — a greyed block dims the reason inside it: `opacity` has no per-child exemption, so the reason must sit outside the block (gh#74)
@@ -224,6 +225,23 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
 
+## 2026-10-04 — the coredump's Erase button looked pressable and did nothing
+
+**Problem:** the operator could not erase the coredump from the GUI. The button looked like every other: no error, nothing said why it did nothing.
+
+**Root cause:** two things together.
+- **Erase is greyed on purpose** until a Download in the same session (`g_cd_downloaded_this_session`), and the server allows one `/api/coredump` action per 10 s, so an Erase straight after a Download answered 429. Neither was said anywhere.
+- **No button in the GUI had a `:disabled` style:** a disabled button kept opacity 1 and the pointer cursor, so "greyed" was invisible. That breaks the GUI's own rule (CLAUDE.md, Web GUI: dim it, make it inert, say why next to it) for every disabled button, not only this one.
+
+**Fix (2.16.2):**
+- `#cd-erase-why` above the row says why Erase is greyed, and counts the 10 s down after a Download;
+- `button:disabled` dims every disabled button, and a disabled button inside a `.disabled-block` keeps opacity 1, so it is not dimmed twice (gh#74);
+- the beheerder manual's coredump section says it.
+
+Verified on the mock (the browser test never types the admin PIN into the unit's own page).
+
+**Where it lives:** `firmware/data/app.js` (`cdEraseState`), `index.html` (`#cd-erase-why`), `style.css` (`button:disabled`).
+
 ## 2026-10-04 — `POST /api/sd/unmount` panicked the unit: the unmount closed FAT's lock while T9 was writing
 
 **Problem:** testing gh#89, an SD unmount about 15 s after a boot rebooted 2344. The unit stored a coredump: an assert, `xSemaphoreGetMutexHolder(h) == NULL` ("mutex should not be held"), in the HTTP task.
@@ -232,7 +250,15 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 
 **How likely:** the race window is one write, a few ms. A unit that has just booted writes the most, which is why the unmount at 15 s hit it. Three unmounts at steady state the same day did not. It is not a 2.16.1 change: every build with the unmount route has it. **The beheerder manual makes this unmount mandatory before the card is pulled.**
 
-**Fix:** none yet (reported 2026-10-04). Until there is one, unmount on a unit that has been up for a minute or more; a test harness waits for that (`bin/at_t13_vfs.py`, stage `vfs`). A fix would have T9 perform the unmount itself, or share a lock with it.
+**Fix (2.16.2, gh#90):** one recursive mutex in `drivers/sdCard`, around every function that touches FAT, mount and unmount included; each checks the mount under it. An unmount now waits for the operation in flight, and the next write returns `STORAGE_ERR_NO_CARD`, which T9 takes quietly while the gh#61 latch says the release was deliberate. Each public function wraps a private `*_locked()` body, so no early return can leave the lock held; the host suite checks the balance on every success and error path (three mutations caught).
+
+**Evidence:** `bin/at_sd_unmount.py`, stage `race`. A bench writer keeps FAT busy with back-to-back 16 KB appends through the driver, and the harness unmounts mid-write.
+- **The fail-first build** (`SD_FAILFIRST_NOLOCK`, the lock compiled out) panicked in round 1 with the same backtrace through `unmount_locked()`.
+- **The fix** passed five rounds: the unmount answered in 0.30–0.41 s (the wait for the write), with no reboot, no new coredump, the writer stopped on `no_card`, and the card mounted again.
+
+**Two traps in that test:**
+- **A panic can come during the unmount's own request.** Compare uptime against the value taken before it, not within the window after.
+- **Stop at the first reboot.** Four boots inside 30 s windows roll the image back (the boot-loop guard, entry below).
 
 **Where it lives:** `firmware/src/event_logger/event_logger.cpp` (`event_logger_sd_unmount`), `drivers/sdCard/src/sd_storage.cpp` (`storage_sd_unmount`).
 

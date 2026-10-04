@@ -34,11 +34,16 @@
  *   - @ref storage_sd_unmount         Graceful tear-down before card removal.
  *
  * ## Thread safety
- *   ESP-IDF VFS serialises POSIX-style file I/O internally.  This driver
- *   adds no extra locking; callers from multiple tasks are safe at the
- *   file-system level.  However, append patterns from concurrent tasks
- *   interleave at line boundaries — consumers needing strict ordering
- *   must serialise externally.
+ *   Every function that touches FAT -- mount and unmount included -- runs
+ *   under one recursive mutex in this driver, and checks the mount under it
+ *   (gh#90). An unmount therefore waits for the operation in flight, and a call
+ *   after it returns STORAGE_ERR_NO_CARD. Before gh#90 the driver added no
+ *   locking, and an unmount from the HTTP task while T9 was inside a write
+ *   closed FAT's own lock while T9 held it: a panic. storage_sd_available()
+ *   takes no lock. storage_sd_foreach_csv() holds the lock across its
+ *   callbacks, so keep them short. Appends from concurrent tasks still
+ *   interleave at line boundaries; consumers needing strict ordering must
+ *   serialise externally.
  *
  * @author Greenhouse Controller project
  * @version 0.1.0
@@ -221,3 +226,12 @@ storage_status_t storage_sd_foreach_csv(const char *ext,
  *         STORAGE_ERR_NOT_FOUND, STORAGE_ERR_IO.
  */
 storage_status_t storage_sd_delete(const char *filename);
+
+#ifdef UNIT_TEST
+/**
+ * @brief Native tests only: how deep the driver's lock is held right now
+ *        (gh#90). 0 between calls, 1 inside a storage_sd_foreach_csv()
+ *        callback. A function that leaves it non-zero would deadlock the unit.
+ */
+int storage_sd_test_lock_depth(void);
+#endif

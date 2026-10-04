@@ -1039,7 +1039,7 @@ De firmware probeert de SD-kaart **automatisch te mounten**:
 
 Plaats een SD-kaart tijdens bedrijf en binnen één minuut wordt er automatisch een mount-poging gedaan — een power-cycle is niet nodig.
 
-> **Verplicht voordat u een SD-kaart fysiek verwijdert**: klik **Unmount** in de Log-tab. Anders kunnen de laatste log-events verloren gaan of kan het bestandssysteem corrupt raken.
+> **Verplicht voordat u een SD-kaart fysiek verwijdert**: klik **Unmount** in de Log-tab. Anders kunnen de laatste log-events verloren gaan of kan het bestandssysteem corrupt raken. Sinds 2.16.2 wacht Unmount tot de schrijfactie die op dat moment loopt klaar is. Tot en met 2.16.1 kon een Unmount precies tijdens het schrijven de controller laten herstarten (gh#90).
 
 > **Logbestand-formaat**: het CSV-formaat (kolomnamen, event-types en parameter-ID's) en het meegeleverde Python-script `log/logparser.py` om ruwe logs naar leesbare tekst om te zetten, staan beschreven in [Bijlage F — Logbestand-formaat en `logparser` script](#bijlage-f--logbestand-formaat-en-logparser-script).
 
@@ -1051,7 +1051,7 @@ Onderaan de Log-tab staat de sectie **Diagnostics**. Deze toont of er een coredu
 |---|---|
 | `Coredump` statusregel | `Available — N bytes (N KB) • captured on fw ...` als er een coredump aanwezig is; anders `Not present` |
 | **Download** | Download de coredump als `.bin`-bestand voor offline analyse |
-| **Erase** | Wist de coredump-partitie; doe dit pas **nadat** het bestand is gedownload |
+| **Erase** | Wist de coredump-partitie; doe dit pas **nadat** het bestand is gedownload. Erase is **grijs tot je in dezelfde sessie op Download hebt geklikt**, en daarna nog 10 seconden: de controller staat één coredump-actie per 10 s toe. De regel boven de knoppen zegt waarom Erase grijs is en telt die 10 s af (sinds 2.16.2) |
 
 Een coredump wordt automatisch opgeslagen wanneer de firmware een **panic** heeft (ongeldige geheugen-toegang, task-watchdog-timeout). Bij het opstarten na een panic verschijnt op de Status-tab de blauwe badge **Coredump available** en staat in het SD-logbestand een `SYSTEM`-regel `Coredump from previous panic detected in flash`.
 
@@ -1650,7 +1650,7 @@ Dit is de informatie waarmee de leverancier of softwareontwikkelaar de oorzaak v
 
 Pas wanneer je het bestand veilig hebt en de offline analyse is gelukt:
 
-1. Tab **Log** → sectie **Diagnostics** → klik **Erase**
+1. Tab **Log** → sectie **Diagnostics** → klik **Erase**. Is Erase grijs, klik dan eerst **Download**, ook als je het bestand al hebt (bijvoorbeeld uit een eerdere sessie), en wacht de 10 seconden af die de regel boven de knoppen aftelt.
 2. Bevestig de waarschuwingsdialoog ("After erase, the dump is unrecoverable.")
 3. De badge **Coredump available** verdwijnt; de partitie is klaar voor het opvangen van de volgende panic
 

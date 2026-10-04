@@ -179,6 +179,18 @@ button:hover  { background: #1a5276; }
 button.danger { background: #7b1c1c; }
 button.danger:hover { background: #a02020; }
 
+/* gh#90 (2.16.2): a disabled button looked exactly like an enabled one --
+   opacity 1, the pointer cursor -- so the coredump's greyed Erase read as a
+   button that did nothing when pressed. The GUI's own rule (greyed, never
+   hidden: see .disabled-block below) is to dim it and make it inert; every
+   disabled button now is. Inside a .disabled-block the block is dimmed
+   already, and dimming the button again would multiply (gh#74). */
+button:disabled,
+button:disabled:hover        { background: var(--accent); opacity: 0.45; cursor: not-allowed; }
+button.danger:disabled,
+button.danger:disabled:hover { background: #7b1c1c; }
+.disabled-block button:disabled { opacity: 1; }
+
 /* ── Slider rows (label + range + number + button) ───────────────── */
 .slider-row {
   display: flex;

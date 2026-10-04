@@ -965,6 +965,7 @@ In steady-state operation this produces one row per local day (the midnight roll
 **Storage:**
 - **SD card (FAT32) is the sole event-log persistence target.** See log rotation policy below.
 - T9 checks SD card presence on startup and on each write cycle. If the card is absent, unmounted, or returns a write error, T9 suspends event logging (the call to `log_post()` still succeeds and the event is consumed from Q3, but no on-disk record is written) until the next successful mount. The card-absent condition is signalled on the LCD and in `/api/sd/status`.
+- **Every SD operation runs under one lock in the SD driver** (`drivers/sdCard`, gh#90, 2.16.2). That covers T9's writes, rotation and retention; the web routes (status, listing, download, mount, unmount); T15's upload reads; and the status snapshot's free-space query. Each checks the mount under the lock, so an unmount (`/api/sd/unmount`, from the HTTP task) waits for the operation in flight, and the next write returns `STORAGE_ERR_NO_CARD`. T9 takes that quietly while the gh#61 latch says the release was deliberate. Before 2.16.2 the unmount closed FAT's own lock under a T9 write in progress, and newlib's `_lock_close()` assert panicked the unit.
 - The NVS `log` namespace once reserved as an event-log ring-buffer fallback is **not used** in the end-state design and shall not be defined in the NVS layout (§5.10). Removing the fallback simplifies the persistence path, avoids the wear-levelling cost of high-frequency NVS writes, and aligns the design with operator practice of treating the SD card as a mandatory installation component.
 
 **SD card log file format:**
@@ -1229,7 +1230,7 @@ The full set of routes registered by T11 at `httpd_start()`:
 | POST | `/api/pin` | admin | Change farmer or admin PIN |
 | GET | `/api/sd/status` | any session | SD card mount state, free bytes, file count |
 | POST | `/api/sd/mount` | admin | Manual SD mount |
-| POST | `/api/sd/unmount` | admin | Manual SD unmount (graceful — `f_sync()` before unmount) |
+| POST | `/api/sd/unmount` | admin | Manual SD unmount (graceful — `f_sync()` before unmount); waits for an SD operation in flight (gh#90, 2.16.2) |
 | GET | `/api/log/files` | admin | Returns `{sd_files:[...]}` for the log-download dropdown |
 | GET | `/api/log/download` | admin | Streams a `.csv` log file to the browser; path-traversal guard rejects `/` and `..` |
 | POST | `/api/ota/firmware` | admin | Streams firmware image to T13's writer; multipart accumulator |
@@ -1264,6 +1265,8 @@ The MQTT integration page that was reserved in earlier specifications is not exp
   - **SD card controls:** mount and unmount the SD card.
   - **Log download:** a dropdown populated by `GET /api/log/files` (returns `{sd_files:[...]}`) lists each `.csv` file found on the SD card.
   - A **Download CSV** button triggers a browser file download via `GET /api/log/download?file=NAME` (filename preserved). Path-traversal guard on the server rejects any filename containing `/` or `..`. Returns HTTP 503 if SD is unmounted, 404 if file not found (FR-LG05).
+  - **Diagnostics — coredump:** **Download** and **Erase** (`/api/coredump/*`, one action per 10 s across both). Erase stays greyed until a Download in the same session, then counts the server's 10 s down. `#cd-erase-why` above the row says which (gh#90, 2.16.2). Before 2.16.2 it was greyed with no reason, and Erase straight after a Download answered 429.
+  - **Every disabled button is dimmed** (`button:disabled` in `style.css`, 2.16.2). Before that a disabled button looked exactly like a live one.
 
 - **OTA update** *(admin only)*: firmware binary upload and web-asset `.zip` upload (T13).
 

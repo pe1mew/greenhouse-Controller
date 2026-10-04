@@ -1,7 +1,7 @@
 /**
  * LIB-8 SD Card — unit tests (native build)
  *
- * Test IDs: UT-SD-001 … UT-SD-012
+ * Test IDs: UT-SD-001 … UT-SD-017
  *
  * Run with:
  *   export PATH="/c/Program Files/CodeBlocks/MinGW/bin:$PATH"
@@ -259,6 +259,90 @@ static void test_foreach_filters_and_refuses(void)
     TEST_ASSERT_EQUAL_INT(STORAGE_ERR_NO_CARD, storage_sd_foreach_csv(".csv", visit_cb, &v));
 }
 
+/* ---------------------------------------------------------------------------
+ * gh#90 — the driver's lock: every call leaves it balanced
+ *
+ * Every public function wraps a *_locked() body in the lock. A path that
+ * returned without releasing it would leave the lock held, and on the unit the
+ * next SD call from any other task -- T9's next row -- would block for ever.
+ * These walk every function through its success and its error paths.
+ * ------------------------------------------------------------------------- */
+#define DEPTH0() TEST_ASSERT_EQUAL_INT(0, storage_sd_test_lock_depth())
+
+/* UT-SD-015 — the success paths */
+static void test_lock_balanced_on_success(void)
+{
+    mock_sd_reset();
+    TEST_ASSERT_EQUAL_INT(STORAGE_OK, storage_init());                         DEPTH0();
+    TEST_ASSERT_EQUAL_INT(STORAGE_OK, storage_sd_write_append("/a.csv", "x\n")); DEPTH0();
+    char buf[32];
+    size_t n = 0;
+    TEST_ASSERT_EQUAL_INT(STORAGE_OK, storage_sd_read("/a.csv", 0, buf, sizeof(buf), &n)); DEPTH0();
+    TEST_ASSERT_TRUE(storage_sd_file_size("/a.csv") > 0);                      DEPTH0();
+    (void)storage_sd_free_bytes();                                             DEPTH0();
+    (void)storage_sd_total_bytes();                                            DEPTH0();
+    char list[64];
+    TEST_ASSERT_EQUAL_INT(STORAGE_OK, storage_sd_list_csv(".csv", list, sizeof(list))); DEPTH0();
+    struct visit_ctx v = { 0, "", "" };
+    TEST_ASSERT_EQUAL_INT(STORAGE_OK, storage_sd_foreach_csv(".csv", visit_cb, &v)); DEPTH0();
+    TEST_ASSERT_EQUAL_INT(1, v.count);
+    TEST_ASSERT_EQUAL_INT(STORAGE_OK, storage_sd_delete("/a.csv"));            DEPTH0();
+    storage_sd_unmount();                                                      DEPTH0();
+}
+
+/* UT-SD-016 — the error paths: no card, bad arguments, a missing file */
+static void test_lock_balanced_on_errors(void)
+{
+    mock_sd_reset();
+    storage_sd_unmount();                                                      DEPTH0();
+    mock_sd_set_card_present(false);
+    TEST_ASSERT_EQUAL_INT(STORAGE_ERR_NO_CARD, storage_init());                DEPTH0();
+    TEST_ASSERT_EQUAL_INT(STORAGE_ERR_NO_CARD, storage_sd_write_append("/a.csv", "x")); DEPTH0();
+    char buf[32];
+    size_t n = 0;
+    TEST_ASSERT_EQUAL_INT(STORAGE_ERR_NO_CARD, storage_sd_read("/a.csv", 0, buf, sizeof(buf), &n)); DEPTH0();
+    TEST_ASSERT_EQUAL_UINT32(0, storage_sd_file_size("/a.csv"));               DEPTH0();
+    TEST_ASSERT_TRUE(storage_sd_free_bytes() == 0);                            DEPTH0();
+    TEST_ASSERT_TRUE(storage_sd_total_bytes() == 0);                           DEPTH0();
+    char list[64];
+    TEST_ASSERT_EQUAL_INT(STORAGE_ERR_NO_CARD, storage_sd_list_csv(".csv", list, sizeof(list))); DEPTH0();
+    struct visit_ctx v = { 0, "", "" };
+    TEST_ASSERT_EQUAL_INT(STORAGE_ERR_NO_CARD, storage_sd_foreach_csv(".csv", visit_cb, &v)); DEPTH0();
+    TEST_ASSERT_EQUAL_INT(STORAGE_ERR_NO_CARD, storage_sd_delete("/a.csv"));   DEPTH0();
+    storage_sd_unmount();                                                      DEPTH0();
+
+    mock_sd_set_card_present(true);
+    TEST_ASSERT_EQUAL_INT(STORAGE_OK, storage_init());                         DEPTH0();
+    TEST_ASSERT_EQUAL_INT(STORAGE_ERR_PARAM, storage_sd_write_append(NULL, "x")); DEPTH0();
+    TEST_ASSERT_EQUAL_INT(STORAGE_ERR_PARAM, storage_sd_read(NULL, 0, buf, sizeof(buf), &n)); DEPTH0();
+    TEST_ASSERT_EQUAL_INT(STORAGE_ERR_NOT_FOUND, storage_sd_read("/missing.csv", 0, buf, sizeof(buf), &n)); DEPTH0();
+    TEST_ASSERT_EQUAL_UINT32(0, storage_sd_file_size(NULL));                   DEPTH0();
+    TEST_ASSERT_EQUAL_INT(STORAGE_ERR_PARAM, storage_sd_list_csv(NULL, list, sizeof(list))); DEPTH0();
+    TEST_ASSERT_EQUAL_INT(STORAGE_ERR_PARAM, storage_sd_foreach_csv(".csv", NULL, &v)); DEPTH0();
+    TEST_ASSERT_EQUAL_INT(STORAGE_ERR_PARAM, storage_sd_delete(NULL));         DEPTH0();
+    TEST_ASSERT_EQUAL_INT(STORAGE_ERR_NOT_FOUND, storage_sd_delete("/missing.csv")); DEPTH0();
+}
+
+/* UT-SD-017 — a foreach callback runs with the lock held, once */
+static int g_depth_in_cb = -1;
+static void depth_cb(const char *name, void *ctx)
+{
+    (void)name;
+    (void)ctx;
+    g_depth_in_cb = storage_sd_test_lock_depth();
+}
+
+static void test_foreach_callback_runs_under_the_lock(void)
+{
+    mock_sd_reset();
+    TEST_ASSERT_EQUAL_INT(STORAGE_OK, storage_init());
+    TEST_ASSERT_EQUAL_INT(STORAGE_OK, storage_sd_write_append("/a.csv", "x\n"));
+    g_depth_in_cb = -1;
+    TEST_ASSERT_EQUAL_INT(STORAGE_OK, storage_sd_foreach_csv(".csv", depth_cb, NULL));
+    TEST_ASSERT_EQUAL_INT(1, g_depth_in_cb);
+    DEPTH0();
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -276,5 +360,8 @@ int main(void)
     RUN_TEST(test_read_truncates_and_null_terminates);
     RUN_TEST(test_foreach_sees_every_file_where_the_listing_truncates);
     RUN_TEST(test_foreach_filters_and_refuses);
+    RUN_TEST(test_lock_balanced_on_success);
+    RUN_TEST(test_lock_balanced_on_errors);
+    RUN_TEST(test_foreach_callback_runs_under_the_lock);
     return UNITY_END();
 }

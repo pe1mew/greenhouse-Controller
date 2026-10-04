@@ -261,3 +261,19 @@ one delete per rotation never catches up), **and any bounded listing must report
 [design/technicalSoftwareDesignSpecification.md](../design/technicalSoftwareDesignSpecification.md)
 §5.3 (Event Log Manager: rotation, per-unit retention, the non-truncating scan, the listing
 contract)
+
+**Every SD operation goes through `drivers/sdCard`, under one recursive lock (gh#90, 2.16.2).**
+`POST /api/sd/unmount` runs in the HTTP task. Before 2.16.2 it unregistered FAT while a T9 write held
+FAT's per-volume lock, and newlib's `_lock_close()` assert panicked the unit (decoded from the
+coredumps, 2026-10-04). Now each public driver function wraps a private `*_locked()` body, and checks
+the mount under the lock. An unmount waits for the operation in flight, the next write gets
+`STORAGE_ERR_NO_CARD`, and T9 takes that quietly while `s_sd_released` is set. Three rules follow:
+- **A new SD caller goes through the driver.** Opening a file under the mount point directly bypasses
+  the lock and brings the panic back.
+- **A `storage_sd_foreach_csv()` callback stays short and never waits on another task.** The lock is
+  held across the callbacks. It is recursive, so a call back into the driver is safe, but a callback
+  that blocks on, say, a queue T9 must drain deadlocks against T9 waiting for the lock.
+- **`storage_sd_available()` stays lock-free:** it is a flag read, polled often.
+
+Acceptance: `bin/at_sd_unmount.py` (stage `race` on a bench build; the fail-first is
+`SD_FAILFIRST_NOLOCK`). Host: UT-SD-015..017 check the lock's balance on every path.

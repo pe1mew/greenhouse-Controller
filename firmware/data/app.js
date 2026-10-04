@@ -1660,6 +1660,34 @@ function downloadLog() {
 
 let g_cd_downloaded_this_session = false;
 
+// gh#90 (2.16.2): Erase was greyed until a Download, and said nothing about
+// why; straight after a Download the server then refused it for 10 s (one
+// /api/coredump action per COREDUMP_RATE_LIMIT_MS, web_server.cpp), so the
+// first explanation the operator saw was an error. #cd-erase-why above the row
+// now says why Erase cannot be pressed, and counts the 10 s down.
+const CD_RATE_S = 10;
+let g_cd_unlock_at = 0;        // Date.now() when the server will take an Erase
+let g_cd_countdown = null;     // the running countdown's timer, if any
+
+function cdEraseState() {
+  const be = document.getElementById('btn-cd-erase');
+  if (!be) return;
+  if (g_cd_countdown) { clearTimeout(g_cd_countdown); g_cd_countdown = null; }
+  const left = Math.ceil((g_cd_unlock_at - Date.now()) / 1000);
+  if (!g_cd_downloaded_this_session) {
+    be.disabled = true;
+    setText('cd-erase-why', 'Erase unlocks after Download, so that a dump is saved before it is erased.');
+  } else if (left > 0) {
+    be.disabled = true;
+    setText('cd-erase-why', 'Erase available in ' + left + ' s: the controller allows one coredump action per '
+                            + CD_RATE_S + ' s.');
+    g_cd_countdown = setTimeout(cdEraseState, 1000);
+  } else {
+    be.disabled = false;
+    setText('cd-erase-why', '');
+  }
+}
+
 function refreshCoredumpStatus() {
   if (g_role !== 'admin') return;
   fetch('/api/coredump/status', { credentials: 'same-origin' })
@@ -1683,12 +1711,15 @@ function refreshCoredumpStatus() {
           : (d.running_fw_ver ? ' • captured on fw ' + d.running_fw_ver : '');
         el.textContent = 'Available — ' + d.size_bytes + ' bytes (' + d.size_kb + ' KB)' + verTxt;
         bd.disabled = false;
-        be.disabled = !g_cd_downloaded_this_session;
+        cdEraseState();
       } else {
+        // The status line says there is nothing; both buttons grey with it.
         el.textContent = 'No coredump stored. Next panic will be captured automatically.';
         bd.disabled = true;
         be.disabled = true;
         g_cd_downloaded_this_session = false;
+        if (g_cd_countdown) { clearTimeout(g_cd_countdown); g_cd_countdown = null; }
+        setText('cd-erase-why', '');
       }
     })
     .catch(() => {
@@ -1708,10 +1739,11 @@ function downloadCoredump() {
   document.body.removeChild(a);
   // Unlock the Erase button until the next refresh wipes the latch. The
   // server side ALSO rate-limits (1 op per 10s) so a fast double-click
-  // can't accidentally trigger a download + erase together.
+  // can't accidentally trigger a download + erase together: Erase waits out
+  // those 10 s, with a countdown, instead of being refused (gh#90).
   g_cd_downloaded_this_session = true;
-  const be = document.getElementById('btn-cd-erase');
-  if (be) be.disabled = false;
+  g_cd_unlock_at = Date.now() + CD_RATE_S * 1000;
+  cdEraseState();
   feedback('fb-cd', true, 'Download started');
 }
 
@@ -1731,6 +1763,10 @@ function eraseCoredump() {
         refreshCoredumpStatus();
       } else {
         feedback('fb-cd', false, (d && d.err) || 'Erase failed');
+        // Refused for the rate limit after all (another tab, a clock skew):
+        // wait the 10 s out again rather than leave Erase pressable.
+        g_cd_unlock_at = Date.now() + CD_RATE_S * 1000;
+        cdEraseState();
       }
     })
     .catch(() => feedback('fb-cd', false, 'Network error'));
