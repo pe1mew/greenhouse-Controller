@@ -10,7 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 Patch. Bug fixes only: no setting, key, payload or GUI change. A unit behaves as 2.16.0 until a T13 run
 fails without rebooting, or a LittleFS mount is refused for something other than the partition's
-contents.
+contents. Not soaked (operator's decision). **Published to the ROTA soak channel as seq 62** on
+2026-10-04. 2344 pulled it from 2.16.0 at 18:20, the first apply by 2.16.0's own client: its quiet
+gate deferred the first attempt while a window moved, and a forced check applied it.
 
 **Fixed (gh#89):**
 

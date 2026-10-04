@@ -9,9 +9,9 @@ intact partition ([gh#89](https://github.com/pe1mew/greenhouse-Controller/issues
 until an asset upload fails without rebooting, or a LittleFS mount is refused for something other
 than the partition's contents.
 
-> **Not soaked.** The fix is in OTA's failure paths and a build setting, and every acceptance row
-> below ran on hardware, with a fail-first for each part. Whether to soak before publishing is the
-> operator's call.
+> **Not soaked** (the operator's decision). The fix is in OTA's failure paths and a build setting, and
+> every acceptance row below ran on hardware, with a fail-first for each part.
+> **Published to the ROTA soak channel as seq 62** on 2026-10-04, and 2344 pulled it by itself.
 
 ## What changed
 
@@ -53,6 +53,8 @@ than the partition's contents.
 | `corrupt` (inactive superblock erased) | **PASS:** reads `corrupt (ESP_FAIL)`; T13 formats it, extracts and reboots; it then holds the uploaded assets |
 | `boot` (active superblock erased, reboot) | **PASS:** the boot formats and mounts it (its test file present, no GUI), and an assets-only upload restores the GUI |
 | 2344 afterwards | 2.16.1-bench (fw and assets), bank A, accepted; both partitions hold the GUI; nine rig settings and the measured 30 mm band unchanged |
+| **ROTA publish** | **verified**: GitHub Release `v2.16.1`, published 2026-10-04 17:49:52. Not a draft or prerelease, marked latest, the tag on `01c3462`; all three files downloaded back hash-identical; manifest seq 62 |
+| **ROTA pull on 2344** | **PASS**, from the 2.16.0 release (pushed at 18:02), so **2.16.0's own client ran this apply, the first it has done.** Its first check, 18:02:58, downloaded and verified 2.16.1 in 10 s, 13 min after the publish. It then **deferred the apply on its quiet gate, because M1 was opening** (T6's first step after the boot calibration). The 300 s retry's download failed (sub-code 1, TLS/transport). A forced check at 18:20:10 downloaded and verified it, and the apply committed at 18:20:33. After the 18:20:39 boot, `fw_ver` **and** `asset_version` read **2.16.1**, bank A, accepted; the check at 18:21:14 read up to date. Lineair (`graded v2`), the nine rig settings and the measured 30 mm band are unchanged. Heap at 61 s: 68 KB free, 26 KB largest block |
 
 ## Upgrading
 
@@ -71,4 +73,5 @@ than the partition's contents.
 - **Rebooting a freshly pushed image too quickly rolls it back,** by design. The boot-loop guard counts
   every boot within 30 s (`OTA_HEALTHY_MS`) of the last, and on the fourth it boots the other bank. A
   push already makes two such boots. The TSDS and the beheerder manual now say so.
-- **ROTA's apply of 2.16.1 has not been watched,** because 2.16.1 is not published.
+- **2.16.1's own ROTA apply has not run yet.** The pull above ran 2.16.0's client, so watching 2.16.1's
+  needs the next release.

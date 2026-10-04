@@ -122,3 +122,7 @@ of up to 500 ms in. On the rig that took short corrections from a median 34 mm p
   showed of 2.16.0 is the boot and the check after it. 2.16.0's apply gate, which now also waits for a
   characterisation run, was shown shut by bench probes (616 of 616 during a run). Watching it hold off
   a real apply needs the next release, pulled by a unit that runs 2.16.0.
+  **Ran 2026-10-04, with 2.16.1 (seq 62):** 2.16.0's client checked, downloaded and verified 2.16.1.
+  Its quiet gate deferred the apply while M1 was opening, and a later check applied it (2.16.1's notes,
+  *ROTA pull on 2344*). The gate's hold-off for a characterisation run was not part of that: no run
+  was in progress.
