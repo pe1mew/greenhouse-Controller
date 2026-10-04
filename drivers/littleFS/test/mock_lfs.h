@@ -36,11 +36,25 @@ void mock_lfs_reset(void);
  */
 void mock_lfs_set_active_partition(lfs_partition_t p);
 
+/* The esp_err_t values the target driver sees (esp_err.h), for the mount
+ * stubs below (gh#89). */
+#define MOCK_ESP_FAIL               (-1)    /* lfs_mount refused the contents */
+#define MOCK_ESP_ERR_NO_MEM         0x101   /* no VFS slot, or no memory */
+#define MOCK_ESP_ERR_INVALID_STATE  0x103   /* the label in use */
+#define MOCK_ESP_ERR_NOT_FOUND      0x105   /* the label missing */
+
 /**
- * Simulate a mount failure for the specified partition.
- * Cleared by mock_lfs_reset().
+ * Simulate a mount failure for the specified partition: a refusal that is NOT
+ * about its contents (MOCK_ESP_ERR_NO_MEM). Cleared by mock_lfs_reset().
  */
 void mock_lfs_set_mount_fail(lfs_partition_t p, bool fail);
+
+/**
+ * Make the next mounts of @p p fail with @p esp_err (0 = they succeed) until
+ * it is changed, mock_lfs_reset() runs, or -- for MOCK_ESP_FAIL only -- the
+ * partition is formatted (gh#89).
+ */
+void mock_lfs_set_mount_err(lfs_partition_t p, int esp_err);
 
 /** Set the free-bytes value returned for the specified partition. Default: 512 KB. */
 void mock_lfs_set_free_bytes(lfs_partition_t p, uint64_t free_bytes);
@@ -48,7 +62,8 @@ void mock_lfs_set_free_bytes(lfs_partition_t p, uint64_t free_bytes);
 /* ---------------------------------------------------------------------------
  * Stubs called by littlefs_storage.cpp in UNIT_TEST builds
  * --------------------------------------------------------------------------- */
-bool             mock_lfs_begin(lfs_partition_t partition);
+int              mock_lfs_mount_err(lfs_partition_t partition);  /* 0 = mounts */
+void             mock_lfs_format(lfs_partition_t partition);
 void             mock_lfs_end(lfs_partition_t partition);
 lfs_status_t     mock_lfs_read(lfs_partition_t partition, const char *path,
                                 char *buf, size_t buf_len);

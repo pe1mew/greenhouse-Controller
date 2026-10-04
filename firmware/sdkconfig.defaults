@@ -180,6 +180,29 @@ CONFIG_HTTPD_WS_SUPPORT=y
 CONFIG_UART_ISR_IN_IRAM=y
 
 # ----------------------------------------------------------------------------
+# VFS — table size (gh#89, 2.16.1)
+# ----------------------------------------------------------------------------
+# ESP-IDF 5.5.0 refuses every registration once the VFS table has been full,
+# even after an entry is freed: esp_vfs_register_fs_common() returns
+# ESP_ERR_NO_MEM when s_vfs_count >= CONFIG_VFS_MAX_COUNT, and that count is a
+# high-water mark nothing lowers. This firmware holds up to 8 entries at once:
+# the console (UART, its USB-JTAG secondary, /dev/console), /dev/null, the lwIP
+# sockets, the SD card, the active LittleFS, and T13's mount of the inactive
+# one. At the default of 8, a T13 run that ended without a reboot (a refused
+# zip, a write failure) left NOTHING mountable until a reboot: the next asset
+# upload failed and the SD card could not be remounted (2026-10-03/04). Above
+# 8 the count never reaches the limit, so a freed entry is always reused.
+# 12 leaves room for four more; a few bytes of RAM. Upstream (master,
+# release/v5.5) searches for a free entry first, so a later IDF needs no
+# headroom for this.
+#
+# NOTE: an existing firmware/sdkconfig.<env> keeps its own value, whatever this
+# file says. Set the line there too (or delete the file to regenerate it).
+# firmware/src/ota_manager/ota_manager.cpp refuses to compile below 9, so a
+# stale file fails the build instead of shipping a release without the fix.
+CONFIG_VFS_MAX_COUNT=12
+
+# ----------------------------------------------------------------------------
 # App image — no compile time/date (reproducible builds, 2026-09-16)
 # ----------------------------------------------------------------------------
 # By default esp_app_desc carries __TIME__/__DATE__ from the last compile of

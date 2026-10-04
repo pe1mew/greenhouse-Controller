@@ -800,12 +800,22 @@ extern "C" void app_main(void)
                  (lfs_st == LFS_ERR_MOUNT)     ? "MOUNT" :
                  (lfs_st == LFS_ERR_NOT_FOUND) ? "NOT_FOUND" :
                  (lfs_st == LFS_ERR_IO)        ? "IO" :
-                 (lfs_st == LFS_ERR_FULL)      ? "FULL" : "?");
+                 (lfs_st == LFS_ERR_FULL)      ? "FULL" :
+                 (lfs_st == LFS_ERR_CORRUPT)   ? "CORRUPT" : "?");
 
         /* alpha.2.10.1 fallback: if the partition didn't mount, format it
          * and try again. The partition table reserves 1 MB at offset
-         * 0x420000; a fresh format gives us a clean LittleFS filesystem. */
-        if (lfs_st == LFS_ERR_MOUNT) {
+         * 0x420000; a fresh format gives us a clean LittleFS filesystem.
+         *
+         * gh#89: only when its CONTENTS were refused. A mount refused for
+         * anything else (no VFS slot, no memory) says nothing about the
+         * contents, and this partition holds the GUI this bank serves: leave
+         * it, and the next boot mounts it. */
+        if (lfs_st != LFS_OK && !littlefs_formatting_cures(lfs_st)) {
+            ESP_LOGE(TAG, "LFS mount refused (%s) — not formatting the active partition",
+                     esp_err_to_name((esp_err_t)littlefs_last_mount_err()));
+        }
+        if (littlefs_formatting_cures(lfs_st)) {
             ESP_LOGW(TAG, "LFS mount failed — partition is uninitialised or "
                           "carries arduino-era content; formatting now...");
             lfs_status_t fmt_st = littlefs_format(active);

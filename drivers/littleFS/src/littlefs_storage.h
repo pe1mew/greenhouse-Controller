@@ -55,10 +55,18 @@
 /** @brief Return codes for all @c littlefs_* functions. */
 typedef enum {
     LFS_OK = 0,         /**< Operation succeeded. */
-    LFS_ERR_MOUNT,      /**< Partition could not be mounted (label missing / corrupt). */
+    LFS_ERR_MOUNT,      /**< Not mounted, or the mount was refused for a reason
+                         *   OTHER than the partition's contents: no VFS slot, no
+                         *   memory, the label missing or in use (gh#89). The
+                         *   contents are unknown; formatting would not cure
+                         *   this, and would destroy them. */
     LFS_ERR_NOT_FOUND,  /**< File or path does not exist on the partition. */
     LFS_ERR_IO,         /**< Read / write error reported by the file system. */
-    LFS_ERR_FULL        /**< Partition has no free space remaining. */
+    LFS_ERR_FULL,       /**< Partition has no free space remaining. */
+    LFS_ERR_CORRUPT     /**< The mount was refused for the partition's CONTENTS:
+                         *   corrupt, unformatted or erased flash (gh#89). The
+                         *   one failure littlefs_format() cures. Appended, so
+                         *   the values above keep their numbers. */
 } lfs_status_t;
 
 /* ---------------------------------------------------------------------------
@@ -84,13 +92,42 @@ typedef enum {
  *
  * @param partition  Partition to mount (@ref LFS_PARTITION_A or
  *                   @ref LFS_PARTITION_B).
- * @return @ref LFS_OK on success, @ref LFS_ERR_MOUNT on failure (missing
- *         label, corrupted filesystem).
+ * @return @ref LFS_OK on success; @ref LFS_ERR_CORRUPT when the partition's
+ *         contents were refused (corrupt, unformatted, erased); @ref
+ *         LFS_ERR_MOUNT when the mount was refused for anything else (no VFS
+ *         slot, no memory, label missing or in use). Only the first is cured by
+ *         littlefs_format(): ask littlefs_formatting_cures() (gh#89).
  * @warning Each partition has its OWN mountpoint (@c /lfsa or @c /lfsb).
  *          Re-using one path for both partitions corrupts the VFS lookup.
  * @see    littlefs_mountpoint() — query the mount path.
+ * @see    littlefs_last_mount_err() — the esp_err_t behind a failed mount.
  */
 lfs_status_t littlefs_mount(lfs_partition_t partition);
+
+/**
+ * @brief Does formatting cure this mount result? (gh#89)
+ *
+ * True only for @ref LFS_ERR_CORRUPT. Every other failure says nothing about
+ * the partition's contents -- on 2026-10-03/04 it was a full VFS table -- and
+ * formatting would destroy an intact filesystem: on the inactive partition,
+ * the GUI of the rollback bank. Every caller that falls back to
+ * littlefs_format() (T13, the boot mount) asks this first.
+ *
+ * @param mount_result  What littlefs_mount() returned.
+ * @return true if littlefs_format() followed by a new mount can succeed.
+ */
+bool littlefs_formatting_cures(lfs_status_t mount_result);
+
+/**
+ * @brief The esp_err_t of the last mount attempt that failed, 0 once one has
+ *        succeeded since (gh#89).
+ *
+ * littlefs_mount() folds every esp_err_t into two statuses; this keeps the
+ * code for error text, which is the only way a failure in the field names its
+ * cause (nobody reads the serial console there). An int, so this header stays
+ * free of ESP-IDF includes for the host tests.
+ */
+int littlefs_last_mount_err(void);
 
 /**
  * @brief Unmount the specified partition.

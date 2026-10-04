@@ -58,6 +58,17 @@
 #include "../event_logger/event_logger.h"
 #include "nvs_config.h"
 #include "littlefs_storage.h"
+#include "../types/failfirst_2161.h"   /* gh#89 bench fail-first: the old format rule */
+#include "sdkconfig.h"
+
+/* gh#89 -- T13's mount of the inactive LittleFS is this firmware's 8th VFS
+ * entry, and IDF 5.5.0 refuses every registration once the table has been
+ * full. Above 8 that never happens (sdkconfig.defaults, "VFS -- table size").
+ * An existing firmware/sdkconfig.<env> keeps its own value whatever the
+ * defaults say, so a stale one fails here instead of shipping without it. */
+#if CONFIG_VFS_MAX_COUNT < 9
+#error "gh#89: CONFIG_VFS_MAX_COUNT must exceed 8 -- set it in firmware/sdkconfig.<env> as in sdkconfig.defaults"
+#endif
 
 static const char *TAG = "T13_OTA";
 
@@ -1043,23 +1054,33 @@ void task_ota_manager(void *pvParameters)
     littlefs_unmount(inactive_lfs);
 
     lfs_st = littlefs_mount(inactive_lfs);
+    if (lfs_st != LFS_OK && !(FF2161_FORMAT_ANY || littlefs_formatting_cures(lfs_st))) {
+        /* gh#89 — refused for something other than the partition's contents:
+         * no VFS slot, no memory, the label in use. A format cures none of
+         * these, and it would destroy an intact partition: the GUI of the
+         * rollback bank. Until 2.16.1 T13 formatted here, on 2026-10-03 and
+         * 10-04 because IDF 5.5.0's VFS table stays full once it has been full
+         * (CONFIG_VFS_MAX_COUNT, sdkconfig.defaults). Fail the session, and name
+         * the cause: in the field nobody reads the serial console. */
+        const char *why = esp_err_to_name((esp_err_t)littlefs_last_mount_err());
+        ESP_LOGE(TAG, "[T13] inactive LFS mount refused (%s) — not formatting it", why);
+        snprintf(fail, sizeof(fail), "inactive LittleFS mount refused (%s), not formatted", why);
+        goto t13_done;
+    }
     if (lfs_st != LFS_OK) {
         /* alpha.6.24 — first-time format fallback. On a fresh chip (or after
          * the lfs0/lfs1 partitions were wiped by `esptool erase_region`) the
-         * inactive partition contains random flash content; littlefs_mount
-         * rightly refuses with LFS_ERR_CORRUPT. Format and re-mount.
+         * inactive partition contains random flash content, and littlefs_mount
+         * rightly refuses it: LFS_ERR_CORRUPT, the one result that reaches here
+         * since gh#89. Format and re-mount.
          *
          * This path is benign on production hardware: the active partition
          * always contains a valid LittleFS image (we just booted from the
          * paired OTA bank), and the inactive partition is the one being
          * overwritten — formatting it loses nothing operationally.
          *
-         * Note: littlefs_format() calls esp_littlefs_format(), which under the
-         * hood does the same erase pass we shy away from above. The difference
-         * is that this is the genuine first-write path — we have no choice but
-         * to pay the ~10 s erase cost. T13 is a transient task (not WDT-
-         * subscribed via esp_task_wdt_add), so the long erase is safe here in
-         * a way it wouldn't be inside the steady-state asset-write loop. */
+         * esp_littlefs_format() does not erase the partition: lfs_format()
+         * rewrites the superblock, in well under a second (2026-10-04). */
         ESP_LOGW(TAG, "[T13] inactive LFS mount failed (%d) — formatting first-time",
                  (int)lfs_st);
         lfs_status_t fmt_st = littlefs_format(inactive_lfs);
@@ -1071,8 +1092,9 @@ void task_ota_manager(void *pvParameters)
         }
         lfs_st = littlefs_mount(inactive_lfs);
         if (lfs_st != LFS_OK) {
-            ESP_LOGE(TAG, "[T13] post-format remount failed: %d", (int)lfs_st);
-            snprintf(fail, sizeof(fail), "inactive LittleFS remount after format failed");
+            const char *why = esp_err_to_name((esp_err_t)littlefs_last_mount_err());
+            ESP_LOGE(TAG, "[T13] post-format remount failed: %d (%s)", (int)lfs_st, why);
+            snprintf(fail, sizeof(fail), "inactive LittleFS remount after format failed (%s)", why);
             goto t13_done;
         }
         ESP_LOGI(TAG, "[T13] inactive LFS formatted + mounted");

@@ -3611,7 +3611,8 @@ record keeps the phases completed.
      Step 5's ROTA test, with its fail-first, covers it once the run exists.
    - **Side finding:** pushing the bench image, a refused asset upload (my zip used compressed
      entries) left the asset-only retry failing with "inactive LittleFS remount after format
-     failed" until a reboot. Gotcha 2026-10-03; T13's path, not investigated.
+     failed" until a reboot. Gotcha 2026-10-03. **Investigated 2026-10-04: gh#89, ESP-IDF
+     5.5.0's VFS table (it refuses every mount once it has been full); fixed in 2.16.1.**
 3. **`characterise.cpp` and T17's hooks**, and the shared hold in `commission.cpp`. **DONE
    2026-10-03.** The route's actions and status, and `logparser.py`, came forward into this step.
    A run cannot be tested without the route, and a new log row's parser branch belongs in the same

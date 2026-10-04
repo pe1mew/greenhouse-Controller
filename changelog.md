@@ -6,6 +6,70 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.16.1] — 2026-10-04  (a failed asset upload no longer blocks every later mount, and T13 no longer wipes an intact partition; gh#89)
+
+Patch. Bug fixes only: no setting, key, payload or GUI change. A unit behaves as 2.16.0 until a T13 run
+fails without rebooting, or a LittleFS mount is refused for something other than the partition's
+contents.
+
+**Fixed (gh#89):**
+
+- **After a T13 run that ended without a reboot, nothing could be mounted until a reboot.**
+  - **Cause:** ESP-IDF 5.5.0 refuses every VFS registration once its table has been full, even with
+    entries freed (`esp_vfs_register_fs_common()` checks a count that unregistering never lowers).
+    T13's mount of the inactive LittleFS was this firmware's 8th entry of 8.
+  - **Effect:** after a refused zip, a write failure or a failed bank switch, by push or by ROTA, the
+    next asset upload failed (`inactive LittleFS remount after format failed`). The SD card also could
+    not be remounted after an unmount or a re-insertion, so SD logging stopped until a reboot.
+  - **Now:** `CONFIG_VFS_MAX_COUNT` is 12, in `sdkconfig.defaults` and the per-env sdkconfigs.
+    `ota_manager.cpp` refuses to compile below 9, so a stale per-env sdkconfig fails the build.
+    Upstream fixed the check on `master` and `release/v5.5`.
+- **T13 formatted an intact partition when its mount failed for any reason.** On the inactive
+  partition, that is the rollback bank's GUI.
+  - **The driver** (`drivers/littleFS`) reports a refusal of the partition's CONTENTS as the new
+    status `LFS_ERR_CORRUPT`, appended so the other values keep their numbers. It also keeps the
+    `esp_err_t` behind a failed mount (`littlefs_last_mount_err()`).
+  - **T13 and the boot mount** format only when `littlefs_formatting_cures()` says so. That keeps the
+    first-flash path, where erased flash reads as corrupt.
+  - **Any other refusal fails the session** with `inactive LittleFS mount refused (<esp_err>), not
+    formatted` and leaves the partition alone. The boot mount logs the cause and leaves the active
+    partition for the next boot. The post-format remount error now names its `esp_err_t` too.
+
+**Bench builds only** (`MODBUS_BENCH`), none of it in the release image:
+
+- `GET/POST /api/diag/ota`:
+  - the inactive partition's mount verdict and the assets it holds;
+  - filling the VFS table;
+  - erasing a partition's superblock;
+  - a reboot (no other route reboots the unit).
+- `types/failfirst_2161.h`: bit 1 restores the old rule, format on any mount failure.
+- `bin/at_t13_vfs.py`: stages `vfs`, `noformat`, `corrupt` and `boot`.
+
+**Verified on 2344:**
+
+- **Part 1:** stage `vfs` fails both verdicts on 2.16.0 (the SD remount, then the next upload) and
+  passes both on 2.16.1.
+- **Part 2, on the bench build:** `noformat` passes, and the fail-first build fails both its
+  verdicts, wiping the partition. `corrupt` and `boot` pass, so the first-flash path still formats.
+- **Host:** `drivers/littleFS` 18 of 18 (6 new); three mutations are each caught by two tests.
+- **The image:** the release image is byte-identical to the one the release stages ran on.
+
+**Found while testing, not fixed:**
+
+- `POST /api/sd/unmount` while T9 writes panics the unit. The unmount closes FAT's lock while T9 holds
+  it. It is pre-existing; gotcha 2026-10-04.
+- Rebooting a fresh image four times inside 30 s windows rolls it back, by design (`OTA_HEALTHY_MS`).
+  The TSDS and the beheerder manual now say so.
+
+**Documents:**
+
+- **TSDS:** the web-asset procedure's steps 4 and 8 corrected. T13 never formatted unconditionally,
+  and an assets-only update does not switch banks. The failsafe now explains its 30 s.
+- **The beheerder manual:** OTA troubleshooting and rollback.
+- **Also:** the driver plan's API listing, and plan §5e's note on 2026-10-03.
+
+---
+
 ## [2.16.0] — 2026-10-04  (M3 measures itself, and the deadband follows from what it measured)
 
 Minor: a new admin capability, a new config key and an NVS record (plan §5e,

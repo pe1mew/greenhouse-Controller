@@ -21,7 +21,8 @@
  * Internal state
  * --------------------------------------------------------------------------- */
 static std::map<std::string, std::vector<uint8_t>> g_files[2];
-static bool            g_mount_fail[2]  = {false, false};
+/* gh#89 -- the esp_err_t the mount returns, 0 = it mounts. */
+static int             g_mount_err[2]   = {0, 0};
 static uint64_t        g_free_bytes[2]  = {512ULL * 1024, 512ULL * 1024};
 static lfs_partition_t g_active         = LFS_PARTITION_A;
 
@@ -32,8 +33,8 @@ void mock_lfs_reset(void)
 {
     g_files[0].clear();
     g_files[1].clear();
-    g_mount_fail[0]  = false;
-    g_mount_fail[1]  = false;
+    g_mount_err[0]   = 0;
+    g_mount_err[1]   = 0;
     g_free_bytes[0]  = 512ULL * 1024;
     g_free_bytes[1]  = 512ULL * 1024;
     g_active         = LFS_PARTITION_A;
@@ -46,8 +47,26 @@ void mock_lfs_set_active_partition(lfs_partition_t p)
 
 void mock_lfs_set_mount_fail(lfs_partition_t p, bool fail)
 {
+    mock_lfs_set_mount_err(p, fail ? MOCK_ESP_ERR_NO_MEM : 0);
+}
+
+void mock_lfs_set_mount_err(lfs_partition_t p, int esp_err)
+{
     if (p == LFS_PARTITION_A || p == LFS_PARTITION_B) {
-        g_mount_fail[p] = fail;
+        g_mount_err[p] = esp_err;
+    }
+}
+
+void mock_lfs_format(lfs_partition_t p)
+{
+    if (p != LFS_PARTITION_A && p != LFS_PARTITION_B) {
+        return;
+    }
+    g_files[p].clear();
+    /* A format rewrites the contents: it cures a contents refusal and nothing
+     * else. A full VFS table or no memory refuses the next mount as before. */
+    if (g_mount_err[p] == MOCK_ESP_FAIL) {
+        g_mount_err[p] = 0;
     }
 }
 
@@ -61,12 +80,12 @@ void mock_lfs_set_free_bytes(lfs_partition_t p, uint64_t free_bytes)
 /* ---------------------------------------------------------------------------
  * Stubs
  * --------------------------------------------------------------------------- */
-bool mock_lfs_begin(lfs_partition_t p)
+int mock_lfs_mount_err(lfs_partition_t p)
 {
     if (p != LFS_PARTITION_A && p != LFS_PARTITION_B) {
-        return false;
+        return MOCK_ESP_ERR_NOT_FOUND;
     }
-    return !g_mount_fail[p];
+    return g_mount_err[p];
 }
 
 void mock_lfs_end(lfs_partition_t /*p*/) {}

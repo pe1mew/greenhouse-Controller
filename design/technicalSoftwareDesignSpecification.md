@@ -1302,6 +1302,7 @@ The MQTT integration page that was reserved in earlier specifications is not exp
 
 **Failsafe rollback:**
 - If the newly booted firmware fails to complete its startup health check 3 consecutive times, the previous bank is automatically restored as active and the system reboots into the known-good firmware.
+- A boot counts as failed unless `OTA_HEALTHY_MS` (30 s) of uptime pass before the next one (`ota_check_rollback()`), whatever caused the reboot. Deliberate reboots in quick succession therefore count too: a push already makes two, and on 2026-10-04 a test that rebooted twice more within those windows rolled a fresh bench image back to the release in the other bank.
 - Because LittleFS is coupled to the firmware bank, rolling back the firmware bank automatically restores the matching web assets. No separate web asset rollback is needed.
 - Rollback events are logged.
 
@@ -1309,7 +1310,8 @@ The MQTT integration page that was reserved in earlier specifications is not exp
 1. Administrator uploads a STORE-only `.zip` archive of HTML/CSS/JS/font/image files via the web interface (admin session required).
 2. T11's `/api/ota/assets` handler streams the request body chunk-by-chunk into T13's PSRAM accumulator via `ota_assets_accumulate(data, len, offset)`. The full archive is held in PSRAM only — never in flash — so an aborted or failed upload leaves the on-flash inactive partition untouched.
 3. T13 sets **EG1.OTA_IN_PROGRESS**.
-4. T13 formats the **inactive** LittleFS partition for a clean state, then mounts it. The active partition remains mounted by T11 and continues to serve requests uninterrupted — MX5 is not acquired during this phase.
+4. T13 mounts the **inactive** LittleFS partition (unmounting it first, should an earlier attempt have left it mounted). It does not format it: `littlefs_write()` truncates each file, so every asset is fully replaced. **Only a partition whose contents the library refuses** (corrupt, unformatted or erased flash: `LFS_ERR_CORRUPT`) is formatted and mounted again, the first-flash path. **Any other refusal fails the session and leaves the partition untouched** (`LFS_ERR_MOUNT`: no VFS slot, no memory, the label in use), naming the `esp_err_t` in the error text (gh#89, 2.16.1). Until 2.16.1 T13 formatted on any failure, and so wiped the intact GUI of the rollback bank. The active partition remains mounted by T11 and continues to serve requests uninterrupted — MX5 is not acquired during this phase.
+   - **T13's mount is this firmware's 8th VFS entry.** The other 7 are the console (UART, its USB-JTAG secondary, `/dev/console`), `/dev/null`, the lwIP sockets, the SD card and the active LittleFS. ESP-IDF 5.5.0 refuses every registration once its table has been full, even with entries freed, so at `CONFIG_VFS_MAX_COUNT=8` a T13 run that ended without a reboot left nothing mountable until a reboot: the next upload failed and the SD card could not be remounted. The count is 12 since 2.16.1 (`sdkconfig.defaults`), and `ota_manager.cpp` refuses to compile below 9.
 5. T13 walks the in-PSRAM ZIP central directory and extracts each entry directly to the inactive LittleFS partition. Because the archive is STORE-only (no deflate), each entry is a contiguous byte range that can be copied without an inflate pass.
 6. T13 writes `manifest.json` to the inactive partition as the **last step**, only after all files have been extracted and the partition flushed:
 
@@ -1321,7 +1323,7 @@ The MQTT integration page that was reserved in earlier specifications is not exp
    ```
 
 7. T13 unmounts the inactive LittleFS partition, frees the PSRAM buffer, and clears **EG1.OTA_IN_PROGRESS**.
-8. The inactive LittleFS is now ready. It is activated on the next firmware bank switch (step 3 of the firmware update procedure above), or immediately if only web assets are being updated (T13 switches the active bank pointer without a firmware image change).
+8. The inactive LittleFS is now ready. It is activated on the next firmware bank switch (step 3 of the firmware update procedure above). When only web assets were uploaded, T13 does not switch banks: it extracts the archive into the **active** partition as well and reboots on the same bank (since 1.17.3; a bank switch then could boot a stale image in the other bank).
 
 **Reboot and firmware-only fallback:**
 - The reboot that finalises an OTA cycle is performed by `reboot_worker_task` carved off the FreeRTOS timer-service task (see §4.3 T13). Calling `esp_restart()` from the timer callback directly would exceed the timer-service task's 2 KB stack because the WiFi-teardown chain inside `esp_restart()` consumes several KB.

@@ -66,6 +66,32 @@
  * --------------------------------------------------------------------------- */
 static bool g_mounted[2] = {false, false};
 
+/* gh#89 -- the esp_err_t of the last mount attempt that failed; 0 once one has
+ * succeeded since. Read by littlefs_last_mount_err() for error text. */
+static int g_last_mount_err = 0;
+
+/* gh#89 -- which mount failures a format cures.
+ *
+ * esp_littlefs 1.21.1 returns ESP_FAIL from esp_vfs_littlefs_register() only
+ * when lfs_mount() refused the partition's contents (corrupt, unformatted,
+ * erased). With format_if_mount_failed and grow_on_mount off, as below, every
+ * other failure has its own code: no VFS slot or no memory ESP_ERR_NO_MEM, the
+ * label in use or no free context ESP_ERR_INVALID_STATE, the label missing
+ * ESP_ERR_NOT_FOUND. Re-check this when the component is updated.
+ *
+ * Before gh#89 all of them were LFS_ERR_MOUNT, so T13 formatted an intact
+ * partition because the VFS table was full. */
+#define MOUNT_ERR_CONTENTS (-1)   /* ESP_FAIL */
+#ifndef UNIT_TEST
+static_assert(ESP_FAIL == MOUNT_ERR_CONTENTS, "esp_littlefs's contents error is ESP_FAIL");
+#endif
+
+static lfs_status_t mount_failed(int err)
+{
+    g_last_mount_err = err;
+    return (err == MOUNT_ERR_CONTENTS) ? LFS_ERR_CORRUPT : LFS_ERR_MOUNT;
+}
+
 /* ---------------------------------------------------------------------------
  * Internal helpers (target build only)
  * --------------------------------------------------------------------------- */
@@ -151,16 +177,31 @@ lfs_status_t littlefs_mount(lfs_partition_t partition)
         ESP_LOGW(TAG_LFS, "mount %s at %s failed: %s (0x%x)",
                  conf.partition_label, conf.base_path,
                  esp_err_to_name(err), (unsigned)err);
-        return LFS_ERR_MOUNT;
+        return mount_failed((int)err);
     }
 #else
-    if (!mock_lfs_begin(partition)) {
-        return LFS_ERR_MOUNT;
+    const int err = mock_lfs_mount_err(partition);
+    if (err != 0) {
+        return mount_failed(err);
     }
 #endif
 
     g_mounted[partition] = true;
+    g_last_mount_err = 0;
     return LFS_OK;
+}
+
+/* ---------------------------------------------------------------------------
+ * littlefs_formatting_cures / littlefs_last_mount_err (gh#89)
+ * --------------------------------------------------------------------------- */
+bool littlefs_formatting_cures(lfs_status_t mount_result)
+{
+    return mount_result == LFS_ERR_CORRUPT;
+}
+
+int littlefs_last_mount_err(void)
+{
+    return g_last_mount_err;
 }
 
 /* ---------------------------------------------------------------------------
@@ -357,6 +398,7 @@ lfs_status_t littlefs_format(lfs_partition_t partition)
     }
     return LFS_OK;
 #else
+    mock_lfs_format(partition);
     return LFS_OK;
 #endif
 }

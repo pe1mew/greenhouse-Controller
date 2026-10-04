@@ -1420,10 +1420,11 @@ LittleFS and the SD card are different hardware (internal flash controller vs. e
 ```cpp
 typedef enum {
     LFS_OK = 0,
-    LFS_ERR_MOUNT,
+    LFS_ERR_MOUNT,      // refused for anything but the contents (gh#89): do NOT format
     LFS_ERR_NOT_FOUND,
     LFS_ERR_IO,
-    LFS_ERR_FULL
+    LFS_ERR_FULL,
+    LFS_ERR_CORRUPT     // contents refused (corrupt, unformatted, erased): format cures it (gh#89)
 } lfs_status_t;
 
 typedef enum {
@@ -1431,10 +1432,18 @@ typedef enum {
     LFS_PARTITION_B = 1    // paired with firmware Bank B
 } lfs_partition_t;
 
-// Mount the specified LittleFS partition. Returns LFS_ERR_MOUNT on failure.
+// Mount the specified LittleFS partition. Returns LFS_ERR_CORRUPT when its
+// contents were refused, LFS_ERR_MOUNT for any other failure (gh#89).
 // T11 calls this once at boot with the active partition.
 // T13 calls this with the inactive partition before writing web assets.
 lfs_status_t littlefs_mount(lfs_partition_t partition);
+
+// gh#89: true only for LFS_ERR_CORRUPT. Every caller that falls back to
+// littlefs_format() asks this first.
+bool         littlefs_formatting_cures(lfs_status_t mount_result);
+
+// gh#89: the esp_err_t of the last failed mount (0 after a success), for error text.
+int          littlefs_last_mount_err(void);
 
 // Unmount the specified partition. T13 calls this after completing a web asset write.
 void         littlefs_unmount(lfs_partition_t partition);

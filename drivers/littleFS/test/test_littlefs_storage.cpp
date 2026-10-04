@@ -1,7 +1,7 @@
 /**
  * LIB-9 LittleFS — unit tests (native build)
  *
- * Test IDs: UT-LFS-001 … UT-LFS-012
+ * Test IDs: UT-LFS-001 … UT-LFS-018
  *
  * Run with:
  *   export PATH="/c/Program Files/CodeBlocks/MinGW/bin:$PATH"
@@ -15,6 +15,10 @@
 
 void setUp(void)
 {
+    /* The driver's mount flags outlive a test; without this a test would see a
+     * partition an earlier one left mounted, and its mount would be a no-op. */
+    littlefs_unmount(LFS_PARTITION_A);
+    littlefs_unmount(LFS_PARTITION_B);
     mock_lfs_reset();
 }
 
@@ -165,6 +169,86 @@ void test_unmount_and_remount(void)
 }
 
 /* ---------------------------------------------------------------------------
+ * gh#89 — which mount failures a format cures
+ *
+ * On 2026-10-03/04 T13 formatted an intact inactive partition because its
+ * mount was refused by a full VFS table, not for its contents. The driver now
+ * tells the two apart, and these pin the rule.
+ * --------------------------------------------------------------------------- */
+
+/* UT-LFS-013 — contents refused (esp_littlefs's ESP_FAIL) is LFS_ERR_CORRUPT */
+void test_mount_contents_refused_is_corrupt(void)
+{
+    mock_lfs_set_mount_err(LFS_PARTITION_A, MOCK_ESP_FAIL);
+    TEST_ASSERT_EQUAL_INT(LFS_ERR_CORRUPT, littlefs_mount(LFS_PARTITION_A));
+    TEST_ASSERT_EQUAL_INT(MOCK_ESP_FAIL, littlefs_last_mount_err());
+    TEST_ASSERT_TRUE(littlefs_formatting_cures(LFS_ERR_CORRUPT));
+}
+
+/* UT-LFS-014 — refused for anything else is LFS_ERR_MOUNT, which a format does
+ * not cure: no VFS slot or memory, the label in use, the label missing */
+void test_mount_refused_otherwise_is_mount(void)
+{
+    static const int errs[] = { MOCK_ESP_ERR_NO_MEM, MOCK_ESP_ERR_INVALID_STATE,
+                                MOCK_ESP_ERR_NOT_FOUND };
+    for (size_t i = 0; i < sizeof(errs) / sizeof(errs[0]); i++) {
+        mock_lfs_set_mount_err(LFS_PARTITION_B, errs[i]);
+        const lfs_status_t st = littlefs_mount(LFS_PARTITION_B);
+        TEST_ASSERT_EQUAL_INT(LFS_ERR_MOUNT, st);
+        TEST_ASSERT_EQUAL_INT(errs[i], littlefs_last_mount_err());
+        TEST_ASSERT_FALSE(littlefs_formatting_cures(st));
+    }
+}
+
+/* UT-LFS-015 — after a contents refusal, a format and a new mount give an
+ * empty, mounted partition and clear the error */
+void test_format_cures_corruption(void)
+{
+    TEST_ASSERT_EQUAL_INT(LFS_OK, littlefs_mount(LFS_PARTITION_A));
+    TEST_ASSERT_EQUAL_INT(LFS_OK, littlefs_write(LFS_PARTITION_A, "/index.html", "x", 1));
+    littlefs_unmount(LFS_PARTITION_A);
+
+    mock_lfs_set_mount_err(LFS_PARTITION_A, MOCK_ESP_FAIL);
+    TEST_ASSERT_EQUAL_INT(LFS_ERR_CORRUPT, littlefs_mount(LFS_PARTITION_A));
+    TEST_ASSERT_EQUAL_INT(LFS_OK, littlefs_format(LFS_PARTITION_A));
+    TEST_ASSERT_EQUAL_INT(LFS_OK, littlefs_mount(LFS_PARTITION_A));
+    TEST_ASSERT_FALSE(littlefs_exists(LFS_PARTITION_A, "/index.html"));
+    TEST_ASSERT_EQUAL_INT(0, littlefs_last_mount_err());
+}
+
+/* UT-LFS-016 — formatting cures LFS_ERR_CORRUPT and no other status */
+void test_formatting_cures_only_corrupt(void)
+{
+    for (int v = LFS_OK; v <= LFS_ERR_CORRUPT; v++) {
+        TEST_ASSERT_EQUAL_INT((v == LFS_ERR_CORRUPT) ? 1 : 0,
+                              littlefs_formatting_cures((lfs_status_t)v) ? 1 : 0);
+    }
+}
+
+/* UT-LFS-017 — a successful mount clears the last mount error */
+void test_success_clears_last_mount_err(void)
+{
+    mock_lfs_set_mount_err(LFS_PARTITION_A, MOCK_ESP_ERR_INVALID_STATE);
+    TEST_ASSERT_EQUAL_INT(LFS_ERR_MOUNT, littlefs_mount(LFS_PARTITION_A));
+    TEST_ASSERT_EQUAL_INT(MOCK_ESP_ERR_INVALID_STATE, littlefs_last_mount_err());
+    mock_lfs_set_mount_err(LFS_PARTITION_A, 0);
+    TEST_ASSERT_EQUAL_INT(LFS_OK, littlefs_mount(LFS_PARTITION_A));
+    TEST_ASSERT_EQUAL_INT(0, littlefs_last_mount_err());
+}
+
+/* UT-LFS-018 — the status numbers are stable: logs print them, and
+ * LFS_ERR_CORRUPT was appended */
+void test_status_numbers_stable(void)
+{
+    TEST_ASSERT_EQUAL_INT(0, LFS_OK);
+    TEST_ASSERT_EQUAL_INT(1, LFS_ERR_MOUNT);
+    TEST_ASSERT_EQUAL_INT(2, LFS_ERR_NOT_FOUND);
+    TEST_ASSERT_EQUAL_INT(3, LFS_ERR_IO);
+    TEST_ASSERT_EQUAL_INT(4, LFS_ERR_FULL);
+    TEST_ASSERT_EQUAL_INT(5, LFS_ERR_CORRUPT);
+}
+
+/* ---------------------------------------------------------------------------
  * Main
  * --------------------------------------------------------------------------- */
 int main(void)
@@ -182,5 +266,11 @@ int main(void)
     RUN_TEST(test_exists_false);
     RUN_TEST(test_active_partition);
     RUN_TEST(test_unmount_and_remount);
+    RUN_TEST(test_mount_contents_refused_is_corrupt);
+    RUN_TEST(test_mount_refused_otherwise_is_mount);
+    RUN_TEST(test_format_cures_corruption);
+    RUN_TEST(test_formatting_cures_only_corrupt);
+    RUN_TEST(test_success_clears_last_mount_err);
+    RUN_TEST(test_status_numbers_stable);
     return UNITY_END();
 }

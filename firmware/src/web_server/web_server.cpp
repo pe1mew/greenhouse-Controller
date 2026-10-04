@@ -131,10 +131,12 @@
 #include "../window_pos/window_pos_task.h"  /* T17 snapshot + derived cfg */
 #include "../types/failfirst_212.h"           /* 2.12.0 fail-first mask, reported by the diag */
 #include "../types/failfirst_216.h"           /* 2.16.0 fail-first mask (plan §5e step 5), likewise */
+#include "../types/failfirst_2161.h"          /* 2.16.1 fail-first mask (gh#89), reported by /api/diag/ota */
 #include "../relay_controller/relay_controller.h" /* t2_get_m3_lead: the overrun lead, in the diag */
 #include "../climate_control/climate_control.h"   /* cc_get_m3_target: the law's M3 feedback, in the diag */
 #ifdef MODBUS_BENCH
 #include "../diag/modbus_bench.h"   /* dev-only bench Modbus access */
+#include "esp_vfs.h"                /* gh#89: /api/diag/ota fills the VFS table */
 #endif     /* 2.2.0 (ROTA) — rota_cert_set/_is_custom for /api/ota/config */
 #include "../system_id/system_id.h"       /* 2.2.0 (ROTA) — system_mac_str: device id for /api/ota/check */
 #include "littlefs_storage.h"
@@ -4325,6 +4327,186 @@ static esp_err_t diag_modbus_post_handler(httpd_req_t *req)
     if (off > 0 && off < (int)sizeof(resp) - 3) snprintf(resp + off, sizeof(resp) - (size_t)off, "]}");
     return httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
 }
+
+/* ============================================================
+ * gh#89 — T13's LittleFS mounts, for bin/at_t13_vfs.py (DEV BUILDS ONLY)
+ * ============================================================ */
+
+/* Partition labels (partitions.csv; the driver keeps its copy private) and
+ * esp_littlefs's fixed block size (src/esp_littlefs.c). */
+static const char *bench_lfs_label(lfs_partition_t p)
+{
+    return (p == LFS_PARTITION_A) ? "lfs0" : "lfs1";
+}
+static const size_t BENCH_LFS_BLOCK = 4096u;
+
+/* The inactive partition is T13's while an asset session runs. */
+static bool bench_ota_quiet(void)
+{
+    const ota_state_t st = ota_get_state();
+    return st == OTA_STATE_IDLE || st == OTA_STATE_ERROR;
+}
+
+/* The asset_version in a partition's /manifest.json, "" when there is none. */
+static void bench_lfs_assets(lfs_partition_t p, char *out, size_t cap)
+{
+    char man[160] = {0};
+    out[0] = '\0';
+    if (littlefs_read(p, "/manifest.json", man, sizeof(man)) == LFS_OK) {
+        (void)json_get_field(man, "asset_version", out, cap);
+    }
+}
+
+/**
+ * GET /api/diag/ota — T13's LittleFS mounts (admin, DEV BUILDS ONLY, gh#89)
+ *
+ * Mounts the INACTIVE partition, reads which assets it holds and unmounts it
+ * again: what T13 does before it writes, without the writing. `mount` is
+ * littlefs_mount()'s verdict (ok / corrupt / refused) and `err` the esp_err_t
+ * behind it, so bin/at_t13_vfs.py can tell a partition T13 formatted (no
+ * assets left) from one it left alone. For the ACTIVE partition, `test_file`
+ * is the file the boot mount writes once it has mounted it, so after a boot
+ * that found the partition corrupt it shows that the boot formatted it.
+ * Skipped while an asset session runs.
+ */
+static esp_err_t diag_ota_get_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+    httpd_resp_set_type(req, "application/json");
+
+    const lfs_partition_t act = littlefs_active_partition();
+    const lfs_partition_t ina = (act == LFS_PARTITION_A) ? LFS_PARTITION_B : LFS_PARTITION_A;
+
+    char act_assets[40];
+    bench_lfs_assets(act, act_assets, sizeof(act_assets));
+    const bool act_index = littlefs_exists(act, "/index.html");
+    const bool act_test  = littlefs_exists(act, "/phase_2_10_test.txt");
+
+    const char *mount = "skipped";
+    const char *err   = "";
+    char ina_assets[40] = "";
+    bool ina_index = false;
+    if (bench_ota_quiet()) {
+        const lfs_status_t st = littlefs_mount(ina);
+        mount = (st == LFS_OK) ? "ok" : (st == LFS_ERR_CORRUPT) ? "corrupt" : "refused";
+        err   = esp_err_to_name((esp_err_t)littlefs_last_mount_err());
+        if (st == LFS_OK) {
+            bench_lfs_assets(ina, ina_assets, sizeof(ina_assets));
+            ina_index = littlefs_exists(ina, "/index.html");
+            littlefs_unmount(ina);
+        }
+    }
+
+    char resp[448];
+    snprintf(resp, sizeof(resp),
+             "{\"ok\":true,\"vfs_max\":%d,\"failfirst_2161\":%u,"
+             "\"active\":{\"part\":\"%c\",\"index\":%s,\"test_file\":%s,\"assets\":\"%s\"},"
+             "\"inactive\":{\"part\":\"%c\",\"mount\":\"%s\",\"err\":\"%s\","
+             "\"index\":%s,\"assets\":\"%s\"}}",
+             (int)CONFIG_VFS_MAX_COUNT, (unsigned)FF2161,
+             (act == LFS_PARTITION_A) ? 'A' : 'B', act_index ? "true" : "false",
+             act_test ? "true" : "false", act_assets,
+             (ina == LFS_PARTITION_A) ? 'A' : 'B', mount, err,
+             ina_index ? "true" : "false", ina_assets);
+    return httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
+}
+
+/* A VFS entry that serves nothing: what {"vfs_fill":true} registers. */
+static const esp_vfs_fs_ops_t s_bench_vfs_placeholder = {};
+
+/**
+ * POST /api/diag/ota — gh#89's test conditions (admin, DEV BUILDS ONLY)
+ *
+ *  {"vfs_fill":true}   registers placeholder VFS entries until IDF refuses one,
+ *                      so the next mount fails exactly as on 2026-10-03/04
+ *                      (ESP_ERR_NO_MEM). They stay: IDF 5.5.0 keeps the table
+ *                      full once it has been full, so only a reboot clears it.
+ *  {"erase_superblock":"inactive"}  erases the inactive LittleFS's first two
+ *                      blocks, both superblock copies, so its next mount is
+ *                      refused for its CONTENTS: what a fresh chip presents.
+ *  {"erase_superblock":"active"}    the same on the active partition, which
+ *                      is unmounted first, then a reboot: the boot mount's
+ *                      first-flash path.
+ *  {"reboot":true}     restarts the unit; no other route does.
+ */
+static esp_err_t diag_ota_post_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+    httpd_resp_set_type(req, "application/json");
+
+    char body[64] = {0};
+    int  rlen = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (rlen <= 0) {
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"empty_body\"}",
+                               HTTPD_RESP_USE_STRLEN);
+    }
+    body[rlen] = '\0';
+
+    char v[16] = {0};
+    if (json_get_field(body, "vfs_fill", v, sizeof(v))) {
+        static unsigned s_filled = 0;   /* names stay unique across calls */
+        esp_err_t e = ESP_OK;
+        unsigned  n = 0;
+        while (n < 16u) {
+            char path[16];
+            snprintf(path, sizeof(path), "/bfill%u", s_filled);
+            e = esp_vfs_register_fs(path, &s_bench_vfs_placeholder, ESP_VFS_FLAG_STATIC, NULL);
+            if (e != ESP_OK) break;
+            s_filled++;
+            n++;
+        }
+        char resp[96];
+        snprintf(resp, sizeof(resp), "{\"ok\":true,\"registered\":%u,\"stopped_by\":\"%s\"}",
+                 n, esp_err_to_name(e));
+        return httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
+    }
+
+    if (json_get_field(body, "erase_superblock", v, sizeof(v))) {
+        const bool active = (strcmp(v, "active") == 0);
+        if (!active && strcmp(v, "inactive") != 0) {
+            return httpd_resp_send(req, "{\"ok\":false,\"error\":\"bad_value\"}",
+                                   HTTPD_RESP_USE_STRLEN);
+        }
+        if (!bench_ota_quiet()) {
+            return httpd_resp_send(req, "{\"ok\":false,\"error\":\"ota_busy\"}",
+                                   HTTPD_RESP_USE_STRLEN);
+        }
+        const lfs_partition_t act = littlefs_active_partition();
+        const lfs_partition_t p   = active ? act
+                                  : ((act == LFS_PARTITION_A) ? LFS_PARTITION_B : LFS_PARTITION_A);
+        const esp_partition_t *part = esp_partition_find_first(
+            ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, bench_lfs_label(p));
+        if (part == NULL) {
+            return httpd_resp_send(req, "{\"ok\":false,\"error\":\"no_partition\"}",
+                                   HTTPD_RESP_USE_STRLEN);
+        }
+        if (active) {
+            littlefs_unmount(p);   /* T11 serves from it: nothing may write under the erase */
+        }
+        const esp_err_t e = esp_partition_erase_range(part, 0, 2u * BENCH_LFS_BLOCK);
+        char resp[112];
+        snprintf(resp, sizeof(resp),
+                 "{\"ok\":%s,\"erased\":\"%c\",\"err\":\"%s\",\"rebooting\":%s}",
+                 (e == ESP_OK) ? "true" : "false", (p == LFS_PARTITION_A) ? 'A' : 'B',
+                 esp_err_to_name(e), active ? "true" : "false");
+        (void)httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
+        if (active) {
+            vTaskDelay(pdMS_TO_TICKS(400));   /* let the reply leave */
+            esp_restart();
+        }
+        return ESP_OK;
+    }
+
+    if (json_get_field(body, "reboot", v, sizeof(v))) {
+        (void)httpd_resp_send(req, "{\"ok\":true,\"rebooting\":true}", HTTPD_RESP_USE_STRLEN);
+        vTaskDelay(pdMS_TO_TICKS(400));       /* let the reply leave */
+        esp_restart();
+        return ESP_OK;
+    }
+
+    return httpd_resp_send(req, "{\"ok\":false,\"error\":\"unknown_action\"}",
+                           HTTPD_RESP_USE_STRLEN);
+}
 #endif /* MODBUS_BENCH */
 
 /* 2.2.0 (ROTA) — pull-OTA config (admin). */
@@ -4352,6 +4534,11 @@ static const httpd_uri_t s_uri_diag_modbus = {
     .uri = "/api/diag/modbus", .method = HTTP_POST, .handler = diag_modbus_post_handler, .user_ctx = NULL };
 static const httpd_uri_t s_uri_diag_lcd = {
     .uri = "/api/diag/lcd", .method = HTTP_POST, .handler = diag_lcd_post_handler, .user_ctx = NULL };
+/* gh#89 — T13's LittleFS mounts and their test conditions. */
+static const httpd_uri_t s_uri_diag_ota = {
+    .uri = "/api/diag/ota", .method = HTTP_GET, .handler = diag_ota_get_handler, .user_ctx = NULL };
+static const httpd_uri_t s_uri_diag_ota_post = {
+    .uri = "/api/diag/ota", .method = HTTP_POST, .handler = diag_ota_post_handler, .user_ctx = NULL };
 #endif
 
 /* alpha.6.21 — WebSocket route (Phase 6.16-η, final T11 route). */
@@ -4413,6 +4600,7 @@ void task_web_server(void *pvParameters)
         &s_uri_diag_modbus,
         &s_uri_diag_windowpos, &s_uri_diag_windowpos_post,
         &s_uri_diag_lcd,
+        &s_uri_diag_ota, &s_uri_diag_ota_post,
 #endif
     };
 #define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))

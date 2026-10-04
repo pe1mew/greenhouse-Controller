@@ -120,8 +120,9 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-07-05** — M3 is the north **side wall**, not a roof panel; 8.1× is travel time, 10× is area
 
 ### OTA & ROTA releases
+- **2026-10-04** — a test that reboots a freshly pushed image a few times in quick succession comes back on the OTHER bank: T13's boot-loop guard counts every boot within 30 s of the last, and on the fourth marks the image invalid (let 40 s of uptime pass before each reboot)
 - **2026-10-03** — a ROTA test set up by running the unit on a lower version never applies: T16 refuses any manifest seq at or below the high-water mark it persisted at its last apply, so an end-to-end test needs a NEW publish; a gate deferral also waits for the next window opening, not 300 s
-- **2026-10-03** — a bench asset upload is refused as "compressed ZIP entry (method 8)", and `asset_version` then reads an OLDER bench set; an assets-only retry fails "inactive LittleFS remount after format failed" until a reboot (zip with stored entries; after a failed asset upload, re-push firmware and assets together) *(ROOT CAUSE 2026-10-04: IDF 5.5.0's VFS table refuses every mount once it has been full, free slots or not; T13's mount fills it, so after any T13 run that does not reboot, nothing mounts until a reboot, the SD card included)*
+- **2026-10-03** — a bench asset upload is refused as "compressed ZIP entry (method 8)", and `asset_version` then reads an OLDER bench set; an assets-only retry fails "inactive LittleFS remount after format failed" until a reboot (zip with stored entries; after a failed asset upload, re-push firmware and assets together) [RESOLVED 2.16.1, gh#89] *(ROOT CAUSE 2026-10-04: IDF 5.5.0's VFS table refuses every mount once it has been full, free slots or not; T13's mount fills it, so after any T13 run that does not reboot, nothing mounts until a reboot, the SD card included)*
 - **2026-09-25** — a release dies with HTTP 422 "tag_name is not a valid tag" / invalid `target_commitish`: the commit HEAD points at was never pushed, so GitHub cannot tag it (the script's separate "uncommitted changes" warning is the untracked-file false positive)
 - **2026-09-21** — a bench push carries a GUI older than its firmware while `fw_ver` and `asset_version` match (every bench build of a version says `-bench`, so the pair check cannot see stale content) *(recurred 2026-10-03 for the FIRMWARE: a rollback reads the same `-bench`; the bank flip in `/api/ota/status` is the proof)*
 - **2026-09-20** — a check forced ~2 min after publishing gets `dl` 2 (SHA/size): the server points the channel before it has fetched the artefacts; retry, and check the manifest against the local files before blaming the release *(recurred 2026-09-26, followed by two `dl` 1; the unit's own next check succeeded)* *(→ promoted to a pattern 2026-09-27)*
@@ -156,6 +157,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-05-14** — `ets_loader.c` crash loop after a full flash (qio vs dio header byte) [RESOLVED]
 
 ### SD logging & the log parser
+- **2026-10-04** — `POST /api/sd/unmount` while T9 writes panics the unit: the unmount closes FAT's lock while T9 holds it (`_lock_close` assert); pre-existing, not fixed
 - **2026-09-24** — the log listing shows only OLD files, the active file cannot be downloaded, and retention has stopped deleting — one truncating scan behind all of it, and the same cut again one level up in the fix (gh#82; third instance of gh#36/gh#42) [RESOLVED 2.12.2]
 - **2026-09-13** — alarm rows land 30-55 s after their timestamp, out of order; also: a single failed read leaves NO trace, and SENSOR_HR keeps flowing through a fault
 - **2026-09-12** — `log_type_t` is not where you expect (it lives in `types/app_types.h`, NOT `event_logger.h`)
@@ -179,6 +181,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-09-16** — a setting is MISSING from the GUI entirely (two routes exceeded `max_uri_handlers` and never registered; the card depending on them was hidden rather than greyed, so the only symptom was an absence)
 
 ### Build, toolchain & shell
+- **2026-10-04** — decoding a coredump on this PC: `esp_coredump` is not installed, and GDB (`xtensa-esp-elf-gdb-no-python` with `XTENSA_GNU_CONFIG`) loads the core but garbles every register; parse the IDF notes and walk the stack yourself
 - **2026-10-03** — stopping a background chain of rig scripts left its bash children and native python.exe processes running: the chain advanced to its next stage (which replaced the stored record) and started a push; kill by command line, shells first
 - **2026-09-27** — an overnight watch dies with the Claude Code session (a local background task is not a daemon: run it on Shuttle2, or reconstruct from the unit's SD log). **Recurred 2026-09-28** as the wake-up for publish-on-pass, which cannot move to Shuttle2
 - **2026-09-20** — a release build overwrites `bin/<version>/`, and a rebuild in another directory is not byte-identical (the build DIRECTORY is in the image)
@@ -220,6 +223,45 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
+
+## 2026-10-04 — `POST /api/sd/unmount` panicked the unit: the unmount closed FAT's lock while T9 was writing
+
+**Problem:** testing gh#89, an SD unmount about 15 s after a boot rebooted 2344. The unit stored a coredump: an assert, `xSemaphoreGetMutexHolder(h) == NULL` ("mutex should not be held"), in the HTTP task.
+
+**Root cause:** the decoded backtrace runs `sd_unmount_handler` → `event_logger_sd_unmount()` → `storage_sd_unmount()` → `esp_vfs_fat_sdcard_unmount()` → `esp_vfs_fat_unregister_path()` → `_lock_close()` → `abort()`. `event_logger_sd_unmount()` runs in the HTTP task. It clears `s_sd_ok` and unmounts at once, and nothing synchronises it with T9: `event_logger.cpp` has no mutex at all. A T9 write that is already past its `s_sd_ok` check still holds FAT's per-volume lock when the unmount closes that lock.
+
+**How likely:** the race window is one write, a few ms. A unit that has just booted writes the most, which is why the unmount at 15 s hit it. Three unmounts at steady state the same day did not. It is not a 2.16.1 change: every build with the unmount route has it. **The beheerder manual makes this unmount mandatory before the card is pulled.**
+
+**Fix:** none yet (reported 2026-10-04). Until there is one, unmount on a unit that has been up for a minute or more; a test harness waits for that (`bin/at_t13_vfs.py`, stage `vfs`). A fix would have T9 perform the unmount itself, or share a lock with it.
+
+**Where it lives:** `firmware/src/event_logger/event_logger.cpp` (`event_logger_sd_unmount`), `drivers/sdCard/src/sd_storage.cpp` (`storage_sd_unmount`).
+
+## 2026-10-04 — a test that reboots a fresh image a few times in quick succession comes back on the OTHER bank
+
+**Problem:** running gh#89's bench stages straight after pushing the bench image, the fourth stage's upload brought the unit back on `2.16.1`, the release in the other bank, instead of `2.16.1-bench`. The bench-only route was then gone, and the remaining stages failed for that reason alone.
+
+**Root cause:** T13's boot-loop guard, `ota_check_rollback()`. Every boot increments a fail counter in NVS (`OTA_FAIL_KEY`), and only `OTA_HEALTHY_MS` (30 s) of uptime resets it. A boot that finds the counter at 3 marks the running image invalid and boots the other bank. A push already makes two boots in quick succession (the firmware commit, then the assets); the stages added two more, each within 30 s of the last. The guard did exactly its job.
+
+**Fix:** let a unit run 40 s before anything that reboots it (`settle()` in `bin/at_t13_vfs.py`). `/api/ota/status`'s `accepted` turns true once the counter is reset. An image the guard marked invalid must be pushed again before it can run. The beheerder manual now tells operators to wait half a minute between updates.
+
+**Where it lives:** `firmware/src/ota_manager/ota_manager.cpp` (`ota_check_rollback`, `OTA_HEALTHY_MS` in `ota_manager.h`).
+
+## 2026-10-04 — decoding a coredump on this PC: no `esp_coredump`, and GDB garbles the registers
+
+**Problem:** the coredump of 2026-10-04 had to be decoded, and the usual tool was not there. `esp_coredump` is not installed in PlatformIO's IDF Python, and installing it means a download. `xtensa-esp32s3-elf-gdb.exe` printed nothing at all. `xtensa-esp-elf-gdb-no-python.exe`, with `XTENSA_GNU_CONFIG` pointed at `tool-xtensa-esp-elf-gdb/lib/xtensaconfig-esp32s3.so`, loaded the core and listed all 26 tasks, but every PC was nonsense (`0xc4703740`).
+
+**Root cause:** ESP-IDF writes each task's registers in its own `xtensa_elf_reg_dump_t` layout, which `esp_coredump` translates for GDB; GDB reading the core directly misplaces them.
+
+**Fix:** parse the core yourself (about 100 lines of Python):
+- `GET /api/coredump/download` returns the raw partition: a 24-byte header, then the ELF core.
+- Each task has a `CORE`/`NT_PRSTATUS` note: a 72-byte prstatus header (`pr_pid` at +24 is the task's TCB), then pc, ps, lbeg, lend, lcount, sar, windowstart, windowbase, 56 reserved words, then `ar[64]`. So pc is at +72, and a0/a1 at +328/+332.
+- The `ESP_EXTRA_INFO` note starts with the crashed task's TCB, then (register, value) pairs: EXCCAUSE, EXCVADDR, EPC1 and on.
+- Walk the stack as `esp_backtrace_get_next_frame()` does: pc = fix(next_pc) − 3, next_pc = [sp − 16], sp = [sp − 12]. Read memory from the core's `PT_LOAD` segments; fix sets bits 31–30 to `01`.
+- `toolchain-xtensa-esp-elf/bin/xtensa-esp32s3-elf-addr2line.exe -pfiaC -e firmware.elf <addrs>` names the frames.
+
+The ELF must be the pushed image's own: copy `.pio/build/<env>/firmware.elf` before the next build overwrites it.
+
+**Where it lives:** the coredump route in `web_server.cpp`; the IDF layout in `components/espcoredump/src/port/xtensa/core_dump_port.c`.
 
 ## 2026-10-03 — stopping a background job did not stop it: the chain ran on, and a stage replaced the stored record
 
@@ -288,7 +330,7 @@ Plan it around a release. Never plan it around a re-offer, and never around a ve
     - with the SD card unmounted first, so that T13 reuses its slot, the same R1/R2 PASSED: R2 extracted and rebooted.
   - **Upstream.** `master` and `release/v5.5` call `esp_get_free_index()` first, and lower the counter (now `s_vfs_upper_bound`), so later 5.5 releases do not have the bug. `espressif32@6.12.0` bundles 5.5.0.
 
-**Fix:** build a bench asset zip with stored entries (`zipfile.ZIP_STORED`, or `zip -0`). After any failed asset upload, re-push firmware and assets together, not the assets alone. That works because `ota_push.py` reboots between the two, which empties the table. **The permanent fix is open (2026-10-04):** `CONFIG_VFS_MAX_COUNT` of at least 9, so the count never reaches the limit; or an IDF with the upstream change. A second, separate defect is T13 formatting on ANY mount failure, a VFS refusal included. The driver turns every `esp_vfs_littlefs_register()` error into `LFS_ERR_MOUNT`, so T13 cannot tell a corrupt partition from a full table.
+**Fix:** build a bench asset zip with stored entries (`zipfile.ZIP_STORED`, or `zip -0`). After any failed asset upload, re-push firmware and assets together, not the assets alone. That works because `ota_push.py` reboots between the two, which empties the table. **Fixed in 2.16.1 (gh#89):** `CONFIG_VFS_MAX_COUNT` is 12, so the count never reaches the limit, and `ota_manager.cpp` refuses to compile below 9. Verified on 2344 with `bin/at_t13_vfs.py`: stage `vfs` fails on 2.16.0 and passes on 2.16.1. A second defect was T13 formatting on ANY mount failure, a VFS refusal included, because the driver turned every `esp_vfs_littlefs_register()` error into `LFS_ERR_MOUNT`. Since 2.16.1 the driver reports a refused CONTENTS as `LFS_ERR_CORRUPT`, and T13 and the boot mount format only that (stages `noformat`, `corrupt` and `boot`; the fail-first build `OTA_FAILFIRST_2161=1` wipes the partition).
 
 **Where it lives:** IDF's `components/vfs/vfs.c` (`esp_vfs_register_fs_common`); T13's extractor and its format-and-remount fallback (`ota_manager.cpp`, "inactive LFS mount failed — formatting first-time"); the driver's `littlefs_mount()` (`drivers/littleFS/src/littlefs_storage.cpp`); `firmware/sdkconfig.lolin_s3` (`CONFIG_VFS_MAX_COUNT=8`). The push tool is `bin/ota_push.py`.
 
