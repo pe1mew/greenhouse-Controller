@@ -24,7 +24,7 @@ Log tab and the look of a disabled button change.
     included, and each checks the mount under it. That covers:
     - T9's writes, rotation and retention;
     - the web routes (status, listing, download, mount, unmount);
-    - T15's upload reads;
+    - T14's log uploads;
     - the status snapshot's free-space query.
   - **The effect:** an unmount waits for the operation in flight, and the next write returns
     `STORAGE_ERR_NO_CARD`.

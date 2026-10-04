@@ -276,4 +276,7 @@ the mount under the lock. An unmount waits for the operation in flight, the next
 - **`storage_sd_available()` stays lock-free:** it is a flag read, polled often.
 
 Acceptance: `bin/at_sd_unmount.py` (stage `race` on a bench build; the fail-first is
-`SD_FAILFIRST_NOLOCK`). Host: UT-SD-015..017 check the lock's balance on every path.
+`SD_FAILFIRST_NOLOCK`). Host: UT-SD-015..017 check the lock's balance on every path. Soak:
+`bin/sd_soak.py` (`watch` a sample a minute, then `report`: no reboot, no coredump, the card mounted,
+T9's rows never more than 90 s apart, no SYSTEM -1 row, retention). T1's heap rows every 60 s are what
+make a gap measurable.
