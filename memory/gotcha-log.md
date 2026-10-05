@@ -10,6 +10,20 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ## Promoted patterns
 
+- **[PATTERN] A statement about the code is checked against the code before it is written down or relied on: who calls a function, what exists, what a header, a table or a comment promises.** Five instances:
+  1. `modbus_rtu.h` promised a UART mutex that the source never created (gh#49, 2026-09-05).
+  2. The `LOG_SYSTEM` subtype table in `event_logger.h` was three entries behind, and gh#59 was filed on its authority (2026-09-12).
+  3. `cfg_limits.h`, called the single source of truth, was the wrongest statement of a bound (gh#57, 2026-09-12).
+  4. A CSS comment claimed an exemption from `opacity` that cannot exist, and the rule did nothing for a year (gh#74, 2026-09-20).
+  5. On 2026-10-05, two at once: 2.16.2's docs named T15, which is dormant, as the log uploader (it is T14), and CLAUDE.md said `storage_sd_list_csv()` was DELETED while the driver keeps it and the boot probe calls it.
+
+  **Rules:**
+  - Before writing which task calls a function, or that something exists or no longer exists, grep its definition and every caller, and cite what was found.
+  - A header, table or comment that describes code is a claim about it. Read the code before relying on it, and fix whichever of the two is wrong.
+  - A grep settles existence and callers, never behaviour (the grep pattern below).
+
+  Entry: 2026-10-05. Promoted 2026-10-05 (operator's decision).
+
 - **[PATTERN] Nothing started from this session survives it, so decide at the outset where each unattended step runs.** Two instances (2026-09-27: an overnight pull-verification watch; 2026-09-28: the wake-up for an authorized "publish on pass", which left the publish 14 h late). A local background task, a Monitor or a wake-up belongs to the Claude Code process, and on resume it is reported only as "did not finish before the previous session ended". Rules: (1) anything that must be **observed** unattended runs on Shuttle2 under init, like the soak jobs (`nohup`, stdin from `/dev/null`, output to files); (2) a step that must be **done** by this session (publish, a pull check, closing an issue) cannot move there, so say when agreeing to it that it needs the session alive; (3) on resume, read the evidence first (the soak report, the unit's SD log), then carry out the step that was authorized, and say how late it is and why; (4) anything observed live and lost is reconstructed from the unit's own log, and the loss is stated. Entry: 2026-09-27. **Third instance, 2026-10-02, and a new shape:** the 2.15.1 pull watch was killed at 14:25 (exit 4) while the session went on. So it is not only the session ending that kills a local watcher. I then let the failure notice pass without a word, and the operator found 2.15.1 running before I reported it. The pull was reconstructed from the SD log (rule 4). Add: (5) a background job's failure notice is reported at once, never left unanswered. **Fourth instance, 2026-10-05: a CronCreate job is session-only too.** The 08:07 one-shot that was to judge the 2.16.2 soak and publish was gone after an app restart. The step waited until the operator's "assess2344" at 17:22, about 9 h late. Rules 2 and 3 held: the session dependence was stated when the job was agreed, and on resume the report was read first.
 - **[PATTERN] Judge a ROTA pull from the unit's SD log, after the unit's own next check, with its apply window in hand. Never judge it from the `dl`/`apply` fields or from `/api/config`.** Three entries, each of which recurred on 2026-09-26 during the 2.14.0 pull:
   1. `/api/ota/check`'s `dl` and `apply` describe only the latest cycle. They reset to −1, and a download that is still running does not touch them (2026-09-12). **Recurred:** a probe read a stale `dl` 1.
@@ -74,32 +88,32 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-09-20** — a stall fault on a drive that could not move: M3 part-open inside the closed band but off its switch (rule 1's at-end exemption predates `PART_OPEN`) [RESOLVED 2.12.0, 2026-09-21: judged at the grace expiry]
 - **2026-09-20** — an interim soak report says "nothing is wrong" while a fail criterion is already breached [RESOLVED]
 - **2026-09-20** — a bundled fail-first build passes for the wrong reason (the first restored defect keeps the others from ever running) [RESOLVED: bitmask]
-- **2026-09-18** — a fail-first run PASSES on the old code because a second defect hides the first (T2's stale clock deferred the stale commands, on ONE of three paths) — gh#79
+- **2026-09-18** — a fail-first run PASSES on the old code because a second defect hides the first (T2's stale clock deferred the stale commands, on ONE of three paths) — gh#79 [gh#79 RESOLVED 2.9.2; the lesson stands]
 - **2026-09-17** — a wind override can be LOST during a long recalibration (T6 is not paused, fills the 8-deep Q1, and T3's close-all is one unchecked non-blocking send) — gh#79 [RESOLVED 2.9.2: T6 pauses, T3 retries, T2 re-reads the clock]
-- **2026-09-17** — a fault detector never fires in the common case and false-trips in the rare one (its corroborating bit is true at BOTH ends) — gh#78
+- **2026-09-17** — a fault detector never fires in the common case and false-trips in the rare one (its corroborating bit is true at BOTH ends) — gh#78 [RESOLVED 2.10.0, gh#78]
 - **2026-09-17** — a fail-first run passes when its trigger is a power cycle (how late T17 joins the boot recalibration varies, 2.5-5.5 s); also: position reads 0 for ~1.2 s before the closed end sensor makes (gh#78)
 - **2026-09-17** — a test that tells the operator to press Open "when M3 is closed" gets a reversal instead (T2 drives 5 s past the leaf stopping)
 - **2026-09-16** — the M3 teach commits from one end and never from the other (it drove one traverse; T6 finished the OPEN case by chance — a genuine success credited to the wrong actor)
 - **2026-09-12** — unit stuck in STANDBY forever; LCD login/logout will not clear it (gh#65 — NVS state, RAM-only release flag) [RESOLVED 2.8.0: the menu takes a non-persisted hold]
 - **2026-09-12** — a config value you just wrote reads back as the OLD one (`POST /api/config` is async: Q4 -> T4 applies a loop later)
-- **2026-09-12** — a stored setting is silently never used, or is refused as out of range (the file called "single source of truth" was the newest and the wrongest statement of the bound)
+- **2026-09-12** — a stored setting is silently never used, or is refused as out of range (the file called "single source of truth" was the newest and the wrongest statement of the bound) [RESOLVED 2.5.1, gh#57; the rule stands]
 - **2026-09-11** — a mode-transition fix passes on hardware but the bug is still there (tested from the state the transition already leaves -- gh#52)
-- **2026-09-10** — windows sit where the admin left them, mode says AUTOMATIC, T6 does nothing for
+- **2026-09-10** — windows sit where the admin left them, mode says AUTOMATIC, T6 does nothing for [RESOLVED 2.4.5]
 - **2026-09-10** — an LCD command you gave was simply ignored and nothing anywhere says so (a refused manual command leaves no trace)
 - **2026-09-10** — a before/after measurement lands on the SAME number and looks like proof (it landed there for opposite reasons -- motor timing)
 - **2026-09-10** — `POST /api/config` returns `ok:true` and the setting does nothing (field names are NOT the NVS keys; the junk write persisted) [RESOLVED]
   up to 25 min (dwell debt from a manual move; T6 is fine, T2 is refusing it) **[RECURRENCE of a
   May-2026 issue whose fix was recorded only in a code comment]**
-- **2026-07-31** — anti-thrash dwell was unguarded during travel (gh#48)
+- **2026-07-31** — anti-thrash dwell was unguarded during travel (gh#48) [RESOLVED 2.3.1, gh#48]
 
 ### Modbus bus, sensors & clock (T5, drivers)
 - **2026-09-19** — no bus-KPI rows (`LOG_SYSTEM 31`) for ~2 h after a boot: the first hourly call only takes the baseline; judge the bus from the diag counters until then
 - **2026-09-19** — after an OTA push the unit's clock is HOURS wrong for ~5 min and the SD file cannot be found by its boot time (the boot SNTP failed, the 2026-07-13 rate limit, and T4 seeded a CORRECT clock from a DS1307 that was 5 h 42 min behind; gh#55)
-- **2026-09-16** — a slave stops answering only while the flash is being written (OTA): the RS485 direction line was released by the task, and a flash write stalls the task up to 665 ms (gh#70, fixed: the UART drives DE/RE now)
-- **2026-09-16** — the board PANICs ~10 s after boot, twice, then runs fine (gh#69; T5's entry `modbus_init()` deleted the UART under a T17 read — a hazard logged 9 days earlier as "safe while T5 is the only caller"; coredump says LoadProhibited in `uart_get_buffered_data_len`)
+- **2026-09-16** — a slave stops answering only while the flash is being written (OTA): the RS485 direction line was released by the task, and a flash write stalls the task up to 665 ms (gh#70, fixed: the UART drives DE/RE now) [RESOLVED 2.8.0, gh#70]
+- **2026-09-16** — the board PANICs ~10 s after boot, twice, then runs fine (gh#69; T5's entry `modbus_init()` deleted the UART under a T17 read — a hazard logged 9 days earlier as "safe while T5 is the only caller"; coredump says LoadProhibited in `uart_get_buffered_data_len`) [RESOLVED 2.8.0, gh#69]
 - **2026-09-15** — two slaves on one bus fail thousands of times more often than a third (the emulated slaves' replies never assert one differential rail — ~76 mV of noise margin, BER 4e-05; NOT a firmware or bus fault)
 - **2026-09-14** — a bus probe decodes two slaves and never the third, and the firmware is fine (software-UART decoder free-runs after an RS485 turnaround glitch; check `crc`/`framing` first)
-- **2026-09-12** — a sensor stops answering only once a SECOND task shares the bus (inter-frame gap was at the spec floor and had never been reached)
+- **2026-09-12** — a sensor stops answering only once a SECOND task shares the bus (inter-frame gap was at the spec floor and had never been reached) [RESOLVED: `MODBUS_IFG_US` 20 ms; the pattern stands]
 - **2026-09-12** — "sensor fault" with no reason recorded: three wrong root causes before instrumenting
 - **2026-09-12** — a poll-interval change appears not to take effect (the in-flight `vTaskDelay` has to drain first)
 - **2026-09-11** — a BOOT row stamped 1970 sits beside rows stamped 2026 (DS1307 seed failed, system clock survived the soft reset -- gh#55)
@@ -108,7 +122,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-09-07** — a task polling flat out panics the board after 5 s (driver never yields; TWDT idle check)
 - **2026-09-07** — every Modbus read times out early in boot, but T5 works fine later (bus dies during RTC/LittleFS/SD init)
 - **2026-09-07** — `pio run` on a driver env fails with `UART_SCLK_DEFAULT was not declared` [RESOLVED]
-- **2026-09-05** — the header promises a UART mutex the source never creates (gh#49)
+- **2026-09-05** — the header promises a UART mutex the source never creates (gh#49) [RESOLVED 2.4.1, gh#49]
 - **2026-08-26** — a ~59 s T/RH sensor fault that clears itself; plus one 100-min wind fault that is *not* a defect **[extended 2026-09-13: wind speed at every event, 8 genuine faults, 2 of 2 wind faults closed the greenhouse]**
 - **2026-07-28** — a hardware test "passes" but the emulator was still fed live data
 - **2026-07-13** — wind readings before 2026-06-19 12:00 are meaningless (vane not commissioned)
@@ -128,7 +142,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-09-21** — a bench push carries a GUI older than its firmware while `fw_ver` and `asset_version` match (every bench build of a version says `-bench`, so the pair check cannot see stale content) *(recurred 2026-10-03 for the FIRMWARE: a rollback reads the same `-bench`; the bank flip in `/api/ota/status` is the proof)*
 - **2026-09-20** — a check forced ~2 min after publishing gets `dl` 2 (SHA/size): the server points the channel before it has fetched the artefacts; retry, and check the manifest against the local files before blaming the release *(recurred 2026-09-26, followed by two `dl` 1; the unit's own next check succeeded)* *(→ promoted to a pattern 2026-09-27)*
 - **2026-09-17** — publishing a release to ROTA does nothing on a module that runs a pushed build of the same version, `-bench` included (the version compare ignores the suffix)
-- **2026-09-16** — after one upload cut off by the network, the unit refuses every OTA and ROTA skips its checks until someone presses reset (the error exit released nothing)
+- **2026-09-16** — after one upload cut off by the network, the unit refuses every OTA and ROTA skips its checks until someone presses reset (the error exit released nothing) [RESOLVED 2.8.0]
 - **2026-09-12** — GUI unreachable, multi-second asset loads, "heap leak", failing downloads — all one interfered WiFi AP (paired ping test first)
 - **2026-09-12** — `rota_release.py release` warns "working tree has uncommitted changes" on a clean tree (it counts UNTRACKED files, including the manifest it just wrote)
 - **2026-09-12** — ROTA `dl` and `apply` status read -1 after a pull that clearly happened (the fields reset; the SD log is the authority) *(recurred 2026-09-26: a probe read a stale `dl` 1 mid-download)* *(→ promoted to a pattern 2026-09-27)*
@@ -163,7 +177,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-09-24** — the log listing shows only OLD files, the active file cannot be downloaded, and retention has stopped deleting — one truncating scan behind all of it, and the same cut again one level up in the fix (gh#82; third instance of gh#36/gh#42) [RESOLVED 2.12.2]
 - **2026-09-13** — alarm rows land 30-55 s after their timestamp, out of order; also: a single failed read leaves NO trace, and SENSOR_HR keeps flowing through a fault
 - **2026-09-12** — `log_type_t` is not where you expect (it lives in `types/app_types.h`, NOT `event_logger.h`)
-- **2026-09-12** — an issue is filed against a documented table that is three entries stale (the EMITTERS are authoritative, not the comment -- gh#59 claimed 22 free when 22/23/24 had shipped)
+- **2026-09-12** — an issue is filed against a documented table that is three entries stale (the EMITTERS are authoritative, not the comment -- gh#59 claimed 22 free when 22/23/24 had shipped) [RESOLVED 2.6.0, gh#59; the rule stands]
 - **2026-08-25** — an SD log's FILENAME is its upload time, not its coverage window (silently parses the wrong period)
 - **2026-07-23** — a wind override at `speed == v_max` is mislabelled a "direction" event (gh#45) [RESOLVED, but pre-2.3.0 logs still misparse]
 - **2026-07-17** — log uploads stop dead once the card holds >~21 files (gh#42) [RESOLVED by a bigger buffer — RECURRED 2026-09-24 as gh#82; the API was the defect]
@@ -179,9 +193,9 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 ### Web GUI & HTTP routes
 - **2026-10-04** — the coredump's Erase looked pressable and did nothing: no button in the GUI had a `:disabled` style, and nothing said why it was greyed (it unlocks only after a Download, and the server then refuses it for 10 s) [RESOLVED 2.16.2]
 - **2026-09-20** — a new config key reads back `null` from `GET /api/config` while every check passes (the response is an eighth, hand-written key list) [RESOLVED: `check_config_get()`]
-- **2026-09-20** — classification is not consumption: a key declared everywhere can still be acted on nowhere (firmware response and simulator, same day)
-- **2026-09-20** — a greyed block dims the reason inside it: `opacity` has no per-child exemption, so the reason must sit outside the block (gh#74)
-- **2026-09-16** — a setting is MISSING from the GUI entirely (two routes exceeded `max_uri_handlers` and never registered; the card depending on them was hidden rather than greyed, so the only symptom was an absence)
+- **2026-09-20** — classification is not consumption: a key declared everywhere can still be acted on nowhere (firmware response and simulator, same day) [RESOLVED: `check_config_get()`, and the simulator wired; the rule stands]
+- **2026-09-20** — a greyed block dims the reason inside it: `opacity` has no per-child exemption, so the reason must sit outside the block (gh#74) [RESOLVED 2.10.1, gh#74; the rule stands]
+- **2026-09-16** — a setting is MISSING from the GUI entirely (two routes exceeded `max_uri_handlers` and never registered; the card depending on them was hidden rather than greyed, so the only symptom was an absence) [RESOLVED: the limit derives from the route table, failures are logged, and the card is greyed, never hidden]
 
 ### Build, toolchain & shell
 - **2026-10-04** — decoding a coredump on this PC: `esp_coredump` is not installed, and GDB (`xtensa-esp-elf-gdb-no-python` with `XTENSA_GNU_CONFIG`) loads the core but garbles every register; parse the IDF notes and walk the stack yourself
@@ -192,9 +206,9 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-09-17** — a macro with a literal `
 ` compiles in one build variant and breaks the other (a macro body is checked where it is USED, so the `#ifdef` branch that skips it never sees the error)
 - **2026-09-17** — internal compiler error in an untouched IDF file (transient; rerun), and a failed `build_release.ps1` leaves `manifest.json` stamped and the old package in place
-- **2026-09-16** — a host test suite hangs instead of failing (the mock served the reply before the request and its clock never moved)
-- **2026-09-16** — a rebuild of the same tree has a different hash and different library sizes (CMake re-ran on every build and PlatformIO linked our libraries in a new order each time; fixed for one checkout — a fresh clone or a tag rebuild still differs)
-- **2026-09-15** — a packaged binary reports the wrong version on the unit after an OTA (build script parameterised half-way: right env BUILT, wrong env's binary COPIED; only the post-reboot verify caught it)
+- **2026-09-16** — a host test suite hangs instead of failing (the mock served the reply before the request and its clock never moved) [RESOLVED: 12/12 in 0.8 s, re-run 2026-10-05]
+- **2026-09-16** — a rebuild of the same tree has a different hash and different library sizes (CMake re-ran on every build and PlatformIO linked our libraries in a new order each time; fixed for one checkout — a fresh clone or a tag rebuild still differs) [RESOLVED in one checkout; another directory: 2026-09-20]
+- **2026-09-15** — a packaged binary reports the wrong version on the unit after an OTA (build script parameterised half-way: right env BUILT, wrong env's binary COPIED; only the post-reboot verify caught it) [RESOLVED: `build_release.ps1` checks the version in the packaged image]
 - **2026-09-12** — a verification step reports FAILURE on a unit that is fine (the step never checked its own HTTP status)
 - **2026-09-12** — a "split on `;`" tool silently truncates its input (a semicolon inside a C comment)
 - **2026-09-12** — three verification failures in one day, all the same cause *(recurred 2026-10-05: a post-pull check at 26 s of uptime)* (the harness not waiting for the thing it was measuring)
@@ -235,7 +249,9 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 
 **Root cause:** a statement about the code (who calls what, what exists) was written without reading the code it describes. It is the same family as the gh#59 subtype table, the gh#49 header that promised a mutex and the gh#74 CSS rule.
 
-**Fix:** T15 → T14 corrected in `fc065b0`. The "DELETED" sentence corrected to what is true (curation, 2026-10-05). **Before writing which task calls a function, or that something no longer exists, grep the callers and the definition.** Whether to delete `storage_sd_list_csv()` and the boot probe's call is open, for the operator.
+**Fix:** T15 → T14 corrected in `fc065b0`. The "DELETED" sentence corrected to what is true (curation, 2026-10-05). **Before writing which task calls a function, or that something no longer exists, grep the callers and the definition.** The operator decided on 2026-10-05 to **keep** `storage_sd_list_csv()`, the boot probe's call and its comment as they are.
+
+**Promoted 2026-10-05** to the pattern at the top of this log (operator's decision).
 
 **Where it lives:** `firmware/src/status_post/status_post.cpp` (the uploader), `drivers/sdCard/src/sd_storage.h` (`storage_sd_list_csv`), `firmware/src/main.cpp` (the boot probe's call).
 
@@ -893,7 +909,7 @@ over a partial file. The admin session had logged out before the download began,
 during it. The unit's own hourly check at 12:55:49 verified both artefacts in 9 s and applied at 12:56:11.
 Thirteen minutes was enough for 2.14.1 and not here, so **no fixed wait after a publish is known to be safe.**
 
-## 2026-09-20 — a CSS rule that cannot work survived a year, because the intent was written down and never looked at
+## 2026-09-20 — a CSS rule that cannot work survived a year, because the intent was written down and never looked at [RESOLVED 2.10.1, gh#74; the rule stands]
 
 **Problem.** `style.css` carried `.disabled-block .disabled-why { opacity: 1 }` with a comment saying the reason
 beside a greyed block "stays at full opacity", and CLAUDE.md's GUI rule said the same. It never did: on the
@@ -980,7 +996,7 @@ set was complete. (Today the same sweep did catch three of these by reading: the
 renderers, `status_json`'s `default:` and T17's per-drive verdict. This one was missed
 because rule 1 reasons about a SENSOR BIT, not about the state enum.)
 
-## 2026-09-20 — classification is not consumption (two of them in one day)
+## 2026-09-20 — classification is not consumption (two of them in one day) [RESOLVED: `check_config_get()`, and the simulator wired; the rule stands]
 
 **Problem, twice, in different tools.** A config key was enrolled exactly as gh#64 requires
 — one descriptor row, so the clamp, the shadow write, the boot default, the audit id and
@@ -1153,7 +1169,7 @@ from scratch; see that entry's second recurrence note. **A trap when reading the
 *success* (initiator `WEB`), not a WiFi drop (initiator `SYS`). `logparser.py` tells the two apart
 by the initiator; a raw read does not.
 
-## 2026-09-18 — a fail-first run PASSED on the old code: a second defect hid the first, on one path of three (gh#79)
+## 2026-09-18 — a fail-first run PASSED on the old code: a second defect hid the first, on one path of three (gh#79) [gh#79 RESOLVED 2.9.2; the lesson stands]
 
 **Problem.** The gh#79 fail-first test on 2.9.1 did not reproduce the predicted harm. It ran a
 176 s STANDBY-exit sweep, raised a wind override 122 s into it, and M1 and M2 stayed closed. The
@@ -1221,7 +1237,7 @@ pattern whose reason does not apply.
 
 **Where it lives.** `drivers/ventModel/platformio.ini`.
 
-## 2026-09-17 — a detector switched itself off because its corroborating signal was ambiguous (gh#78)
+## 2026-09-17 — a detector switched itself off because its corroborating signal was ambiguous (gh#78) [RESOLVED 2.10.0, gh#78]
 
 **Problem.** §12.4 rule 2 ("a close that arrives too early is a fault") turned out to do the opposite
 of its intent: it **never judged a full close at all**, and it **false-tripped** on a close that
@@ -1379,7 +1395,7 @@ were not audited for the same race.
 **Where it lives.** `firmware/src/data_manager/data_manager.cpp` (`s_cfg_loaded`),
 `firmware/src/window_pos/window_pos_task.cpp` (the start-up wait).
 
-## 2026-09-16 — the Modbus host tests HUNG instead of failing: the mock served a reply before the request, and its clock never moved
+## 2026-09-16 — the Modbus host tests HUNG instead of failing: the mock served a reply before the request, and its clock never moved [RESOLVED: 12/12 in 0.8 s, re-run 2026-10-05]
 
 **Problem.** `pio test -e native -d drivers/modBus` passed UT-MB-001 and 002, then never returned, on every `ropeSensor` commit since `4a61ad7` (`main` passed 12/12). Because it hung rather than failed, nobody noticed for four days.
 
@@ -1402,7 +1418,7 @@ The same sweep ran every driver's host tests. DS1307_RTC, FG6485A, littleFS, nvs
 
 **Where it lives.** `drivers/modBus/test/test_modbus_rtu/mock_uart.cpp` / `.h` (`rx_armed`, the default clock step).
 
-## 2026-09-16 — an OTA upload cut off by the network left the unit refusing every later OTA until someone pressed reset
+## 2026-09-16 — an OTA upload cut off by the network left the unit refusing every later OTA until someone pressed reset [RESOLVED 2.8.0]
 
 **Problem.** During the teach tests a firmware upload to FDA4 was cut off at 60 % by a lossy WiFi link (15 % ping loss to the unit, 0 % to the gateway). From then on:
 - every upload was refused, and the client saw a connection reset;
@@ -1482,7 +1498,7 @@ Each run therefore re-ran CMake, got a new order, relinked because SCons saw a c
 
 **Where it lives.** `firmware/scripts/deterministic_link_order.py` and `firmware/scripts/project_version.py`, `extra_scripts` in `firmware/platformio.ini`, the last section of `firmware/sdkconfig.defaults`, and the timestamp and app-version guards in `bin/build_release.ps1`. Upstream: `espidf.py` `find_lib_deps()` and `is_cmake_reconfigure_required()` in platform espressif32 6.12.0.
 
-## 2026-09-16 — the RS485 direction line is released by the TASK, so anything that delays the task loses the fastest slave's reply — a flash write delays it by up to 665 ms
+## 2026-09-16 — the RS485 direction line is released by the TASK, so anything that delays the task loses the fastest slave's reply — a flash write delays it by up to 665 ms [RESOLVED 2.8.0, gh#70]
 
 **Problem.** On 4 of 12 OTA pushes, T17's gate closed ("no sensor answering at addr 40") during the web-asset extraction. No crash; the unit rebooted seconds later anyway, so it looked harmless.
 
@@ -1501,7 +1517,7 @@ Each run therefore re-ran CMake, got a new order, relinked because SCons saw a c
 
 **Where it lives.** `drivers/modBus/src/modbus_rtu.cpp` (`send_request()`, `modbus_init()`, `modbus_de_control()` and the build guard above it, the `listen_*` counters), `firmware/sdkconfig.defaults` (`CONFIG_UART_ISR_IN_IRAM`), `firmware/src/diag/modbus_bench.cpp` (`{"action":"traffic"}`), `bin/at_modbus_ota.py`, gh#70.
 
-## 2026-09-16 — a hazard written down as "safe today because T5 is the only caller" panicked the board once T17 became a second caller
+## 2026-09-16 — a hazard written down as "safe today because T5 is the only caller" panicked the board once T17 became a second caller [RESOLVED 2.8.0, gh#69]
 
 **Problem.** Straight after an OTA push FDA4 rebooted twice more on its own, `esp_reset_reason = 4 (PANIC)`, ~10 s after each boot, then ran normally. The coredump (`/api/coredump/download`) showed task **T17**, `LoadProhibited` at `0x14`, PC in `uart_get_buffered_data_len()`, called from T17's ordinary stroke poll.
 
@@ -1533,7 +1549,7 @@ Each run therefore re-ran CMake, got a new order, relinked because SCons saw a c
 
 **Where it lives.** `firmware/src/window_pos/commission.cpp` (leg runner, `commission_owns_teach()`), `firmware/src/window_pos/window_pos_task.cpp` (`check_orphan_teach()`, `clear_orphan_at_gate_open()`), `bin/at_wp_teach.py`, plan §"clean aperture data" row.
 
-## 2026-09-16 — two HTTP routes silently failed to register, and the GUI hid the evidence
+## 2026-09-16 — two HTTP routes silently failed to register, and the GUI hid the evidence [RESOLVED: the limit derives from the route table, failures are logged, and the card is greyed, never hidden]
 
 **Problem.** The operator asked where the M3 **deadzone** setting had gone. It was not in the Motors tab. The key existed, was published in `GET /api/config/limits`, had a slider wired to `postCfg('motor','deadzone_m3',...)`, and the firmware running on the rig was the bench build that is supposed to serve it.
 
@@ -1555,7 +1571,7 @@ Each run therefore re-ran CMake, got a new order, relinked because SCons saw a c
 
 **Where it lives.** `firmware/src/web_server/web_server.cpp` (route table + limit + failure count), `firmware/data/app.js` (`commSetAvailable()`), `firmware/data/style.css` (`.disabled-block`).
 
-## 2026-09-15 — a build script parameterised half-way: the right env was BUILT and the wrong env's binary was COPIED, and it reached hardware
+## 2026-09-15 — a build script parameterised half-way: the right env was BUILT and the wrong env's binary was COPIED, and it reached hardware [RESOLVED: `build_release.ps1` checks the version in the packaged image]
 
 **Problem.** `build_release.ps1` gained an `-Environment` parameter so the bench build could be packaged with the same verified pipeline (the ZIP must be STORE — `Compress-Archive` deflates by default and the on-device extractor rejects that at flash time). The two `pio run -e` calls were parameterised. **`$BIN_SRC` and four sibling paths were not** — they stayed hardcoded at `.pio\build\lolin_s3\`.
 
@@ -1645,7 +1661,7 @@ Requests to addr 40 decoded perfectly throughout (`28040000000fb7f7`, CRC ok) �
 
 ---
 
-## 2026-09-12 — a constant pinned to the spec floor was DEAD CODE with one bus caller, and became load-bearing the moment a second arrived
+## 2026-09-12 — a constant pinned to the spec floor was DEAD CODE with one bus caller, and became load-bearing the moment a second arrived [RESOLVED: `MODBUS_IFG_US` 20 ms; the pattern stands]
 
 **Problem**: After T17 joined the RS485 bus, the S200 wind sensor intermittently
 did not answer. T5 declared a sensor fault, T3 safe-failed on
@@ -1945,7 +1961,7 @@ on a tree where `git status --short` showed **zero** modified tracked files. Tak
 
 **Related:** the mirror-image failure, a harness reporting false PASSes because it did not JSON-parse `HTTPError` bodies (2026-09-11), and one reporting a false FAIL because it never status-checked its second fetch of the same resource (2026-09-12).
 
-## 2026-09-12 — the documented subtype table was three entries behind, and an issue was filed on its authority
+## 2026-09-12 — the documented subtype table was three entries behind, and an issue was filed on its authority [RESOLVED 2.6.0, gh#59; the rule stands]
 
 **Problem:** gh#59 asked for six new `LOG_SYSTEM` subtypes and stated *"Next free `LOG_SYSTEM` `value_a` subtypes are 22 and upward (the documented table in `event_logger.h` runs −1 and 0–21)"*. Implementing that verbatim would have given the six new events subtypes 22–27, silently colliding the first three with ROTA.
 
@@ -1965,7 +1981,7 @@ on a tree where `git status --short` showed **zero** modified tracked files. Tak
 
 **Also learned the same run:** a verification that sleeps more than `session_timeout` (default **5 min**) loses its cookie and starts getting `401 no_session` mid-script. Long-running harnesses need a 401 retry that re-logs in, not just an `HTTPError` body parse.
 
-## 2026-09-12 — a file named "single source of truth" was the newest and the wrongest statement of a bound
+## 2026-09-12 — a file named "single source of truth" was the newest and the wrongest statement of a bound [RESOLVED 2.5.1, gh#57; the rule stands]
 
 **Problem:** gh#57 recorded `poll_interval` as a stand-off: FR-S03 and FR-CF07 (both "Must") say 15–120 s, `cfg_limits.h` says 30–300, so "either amend the FRS or change the code". Filed as a decision for the operator. It was not a stand-off at all.
 
@@ -2458,7 +2474,7 @@ escaped quotes or regex as already broken.
 
 ---
 
-## 2026-09-05 — `modbus_rtu.h` promises a UART mutex that does not exist (gh#49)
+## 2026-09-05 — `modbus_rtu.h` promises a UART mutex that does not exist (gh#49) [RESOLVED 2.4.1, gh#49]
 
 **Problem:** the Modbus driver header says, twice (lines 35 and 100), that the driver "serialises wire access internally with a UART mutex" created in `modbus_init()`. Read that and you would happily let a second task — T2 stopping a window on a position reading, say — call `modbus_read_input_registers()` alongside T5.
 
