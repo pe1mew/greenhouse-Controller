@@ -9,7 +9,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [2.16.2] — 2026-10-04  (an SD unmount during a write no longer panics the unit, gh#90; the coredump's Erase says why it is greyed)
 
 Patch. Bug fixes only: no setting, key or payload change. In the GUI only the coredump row of the Log
-tab and the look of a disabled button change. Not soaked, not published.
+tab and the look of a disabled button change. **Soaked** on the release image (12.25 h, PASS) and
+**published to the ROTA soak channel as seq 63** on 2026-10-05. 2344 pulled it from 2.16.1 at 17:50,
+the first apply by 2.16.1's own client.
 
 **Fixed (gh#90):**
 
@@ -61,7 +63,17 @@ tab and the look of a disabled button change. Not soaked, not published.
 - **Host:** `drivers/sdCard` 17 of 17 (UT-SD-015..017 new). Three mutations each fail all three new
   tests: a wrapper that leaks the lock, foreach without it, and a double lock.
 - **The GUI, on the mock:** the reason shows before a Download, the countdown runs after one, Erase
-  enables when it ends, and the erase works. Disabled buttons dim.
+  enables when it ends, and the erase works. Disabled buttons dim. On the unit the operator then used
+  it: the log records a Download at 19:29:25 and the Erase at 19:29:37, after the countdown.
+- **The soak, 12.25 h on the release image** (`bin/sd_soak.py`, new):
+  - no reboot and no coredump, and the card mounted in all 735 samples;
+  - 7064 rows with no gap over 31 s, no SD-write-failure row, and retention held;
+  - the 1 MB rotation came at 04:53, and T14 uploaded the closed file while T9 kept writing;
+  - an unmount and a mount after it passed, and the rig settings were unchanged;
+  - extended to 21.7 h: still no gap over 31 s. All 14 law decisions in that time conform to graded v2.
+- **The ROTA pull:** 2344, put back on 2.16.1, pulled seq 63 at 17:50 on a forced check. Its boot check
+  had been skipped because the clock was not ready yet. `fw_ver` and `asset_version` read 2.16.2, the
+  image was accepted, and the rig settings and the measured band held.
 
 **Documents:**
 

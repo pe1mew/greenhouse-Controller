@@ -9,8 +9,9 @@ says why it is greyed
 **Patch. Bug fixes only: no setting, key or payload change.** In the GUI only the coredump row of the
 Log tab and the look of a disabled button change.
 
-> **Not soaked, not published.** The fix is in the SD driver's locking and the coredump row of the GUI.
-> Every acceptance row below ran on hardware, with a fail-first for the lock.
+> **Soaked** on the release image (12.25 h, PASS, 2026-10-04 to 10-05) and **published to the ROTA soak
+> channel as seq 63** on 2026-10-05; 2344 pulled it by ROTA. Every acceptance row below ran on hardware,
+> with a fail-first for the lock.
 
 ## What changed
 
@@ -68,6 +69,12 @@ Log tab and the look of a disabled button change.
 | SD logging after the tests | Went on: 533 rows logged during the tests, none of them an SD-write-failure (`LOG_SYSTEM -1`) row |
 | The GUI, on the mock (`webUiMock`, test PIN) | Before a Download: Erase greyed, with the reason above it. After a Download: the countdown runs from 10 s, then Erase enables, and the erase works. Disabled buttons dim |
 | 2344 afterwards | 2.16.2 release (`fw_ver` and `asset_version` read `2.16.2`), SD mounted. It holds the fail-first build's coredump, for trying the Erase button on the unit. At 536 s of uptime: 66 KB heap free, 29 KB largest block |
+| The Erase button on the unit | The operator's own use: the log records a coredump Download at 19:29:25 and the Erase at 19:29:37, after the countdown |
+| **Soak** (12.25 h, 2026-10-04 19:40 to 10-05 07:55, the release image; `bin/sd_soak.py`, run from Shuttle2) | **PASS, 0 FAIL.** No reboot (uptime 1 615 s → 45 655 s) and no coredump. The card was mounted in 735 of 735 samples. 7064 rows, largest gap 31 s, and no SYSTEM -1 row. Retention held at 30 of 2344's own files. The 1 MB rotation came at 04:53, and T14 uploaded the closed file while T9 kept writing. Afterwards an unmount and a mount passed (`idle`), and the rig settings were unchanged. Heap 69 → 70 KB free, 29 KB largest, from the first hour to the last. The floor stepped once, 5 → 4 KB, at 1 795 s of uptime |
+| Extended to 21.7 h (to 2026-10-05 17:24) | 5943 more rows, largest gap 31 s, no BOOT row and no -1 row |
+| Law (`bin/law_conformance.py`, 19:40 to 17:24) | **14 decisions, all conform** to graded v2, 4 of them rule 1. One decision was flagged to read by hand: at 20:39 M1 closed with the watch reading 14.5 °C. It is consistent with the law: T5 rounds with `lroundf`, and the average was falling through 14.5, so the hold at 15 °C ended |
+| **ROTA publish** | **verified:** GitHub Release `v2.16.2`, published 2026-10-05 15:25:34 UTC. Not a draft or prerelease, marked latest, the tag on `fc065b0`. All three files downloaded back hash-identical; manifest seq 63 |
+| **ROTA pull on 2344** | **PASS, from the 2.16.1 release** (pushed 17:28), so **2.16.1's own client ran this apply, the first it has done.** Its boot check at 17:29:30 was skipped because the clock was not ready. A forced check at 17:50:06 found the update. Download and verify passed at 17:50:20, the apply committed at 17:50:33, and the unit booted at 17:50:37. `fw_ver` **and** `asset_version` read **2.16.2**, bank B, accepted, and the next check read up to date. Lineair (`graded v2`), the nine rig settings and the measured 30 mm band are unchanged. Heap at 42 s: 70 KB free, 31 KB largest block |
 
 ## Upgrading
 
@@ -76,10 +83,9 @@ Log tab and the look of a disabled button change.
 
 ## Known limitations
 
-- **Not soaked, not published.**
 - **T9's quiet path is not forced by any test.** A T9 write that has passed its own mount check when
   the unmount lands now gets `STORAGE_ERR_NO_CARD` and logs nothing. That follows from the code
   (`event_logger_sd_unmount()` sets the latch before it unmounts), but the window is too narrow to
   hit on purpose. The `race` stage drives the bench writer, not T9.
-- **The GUI was checked on the mock, not on the unit.** The browser test never types the admin PIN
-  into the unit's own page.
+- **The GUI test ran on the mock.** The browser test never types the admin PIN into the unit's own
+  page. On the unit, the operator's own use is the evidence (the log rows above).

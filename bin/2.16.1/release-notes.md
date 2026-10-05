@@ -74,4 +74,5 @@ than the partition's contents.
   every boot within 30 s (`OTA_HEALTHY_MS`) of the last, and on the fourth it boots the other bank. A
   push already makes two such boots. The TSDS and the beheerder manual now say so.
 - **2.16.1's own ROTA apply has not run yet.** The pull above ran 2.16.0's client, so watching 2.16.1's
-  needs the next release.
+  needs the next release. **It ran on 2026-10-05:** 2344 on 2.16.1 pulled and applied 2.16.2 (seq 63);
+  see 2.16.2's notes.
