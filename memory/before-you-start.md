@@ -252,9 +252,10 @@ Do not add a retry path that ignores the latch. **Never decide anything from a l
 scan (gh#82, 2.12.2): `storage_sd_list_csv()` filled the caller's buffer, DROPPED the names that did
 not fit and returned `STORAGE_OK`, and FAT lists oldest-first, so retention saturated at the cap and
 deleted nothing (113 files against 30), the listing showed only old files, and the boot resume and
-both upload enumerators took their answer from the same partial view. It is DELETED.
-`storage_sd_foreach_csv()` (one callback per file, constant memory) is the only enumerator; every
-caller aggregates during that pass. Retention is PER UNIT** (`<unit>_YYYYMMDDHHMMSS.csv`, 30 of this
+both upload enumerators took their answer from the same partial view. Every decision now comes from
+`storage_sd_foreach_csv()` (one callback per file, constant memory); every caller aggregates during
+that pass. `storage_sd_list_csv()` itself was never deleted: only `main.cpp`'s boot probe still calls
+it, for a log line. Retention is PER UNIT** (`<unit>_YYYYMMDDHHMMSS.csv`, 30 of this
 unit's own, never the other module's, trimming `SD_TRIM_PER_ROTATION` back towards the cap because
 one delete per rotation never catches up), **and any bounded listing must report what it left out**
 (`on_card`) — see

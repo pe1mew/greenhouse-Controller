@@ -120,6 +120,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-07-05** — M3 is the north **side wall**, not a roof panel; 8.1× is travel time, 10× is area
 
 ### OTA & ROTA releases
+- **2026-10-05** — `rota_release.py status` stops with "no SSH target" (this PC has only the GitHub token; verify a publish from the GitHub API and the unit's forced check)
 - **2026-10-04** — a test that reboots a freshly pushed image a few times in quick succession comes back on the OTHER bank: T13's boot-loop guard counts every boot within 30 s of the last, and on the fourth marks the image invalid (let 40 s of uptime pass before each reboot)
 - **2026-10-03** — a ROTA test set up by running the unit on a lower version never applies: T16 refuses any manifest seq at or below the high-water mark it persisted at its last apply, so an end-to-end test needs a NEW publish; a gate deferral also waits for the next window opening, not 300 s
 - **2026-10-03** — a bench asset upload is refused as "compressed ZIP entry (method 8)", and `asset_version` then reads an OLDER bench set; an assets-only retry fails "inactive LittleFS remount after format failed" until a reboot (zip with stored entries; after a failed asset upload, re-push firmware and assets together) [RESOLVED 2.16.1, gh#89] *(ROOT CAUSE 2026-10-04: IDF 5.5.0's VFS table refuses every mount once it has been full, free slots or not; T13's mount fills it, so after any T13 run that does not reboot, nothing mounts until a reboot, the SD card included)*
@@ -157,6 +158,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-05-14** — `ets_loader.c` crash loop after a full flash (qio vs dio header byte) [RESOLVED]
 
 ### SD logging & the log parser
+- **2026-10-05** — two statements about who touches the SD card were wrong in the docs: T15 (dormant) named as the log uploader, which is T14; and `storage_sd_list_csv()` "DELETED" while the driver keeps it and `main.cpp`'s boot probe calls it (grep the callers before writing who calls what)
 - **2026-10-04** — `POST /api/sd/unmount` while T9 writes panics the unit: the unmount closes FAT's lock while T9 holds it (`_lock_close` assert); pre-existing [RESOLVED 2.16.2, gh#90: one lock in the SD driver]
 - **2026-09-24** — the log listing shows only OLD files, the active file cannot be downloaded, and retention has stopped deleting — one truncating scan behind all of it, and the same cut again one level up in the fix (gh#82; third instance of gh#36/gh#42) [RESOLVED 2.12.2]
 - **2026-09-13** — alarm rows land 30-55 s after their timestamp, out of order; also: a single failed read leaves NO trace, and SENSOR_HR keeps flowing through a fault
@@ -195,7 +197,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-09-15** — a packaged binary reports the wrong version on the unit after an OTA (build script parameterised half-way: right env BUILT, wrong env's binary COPIED; only the post-reboot verify caught it)
 - **2026-09-12** — a verification step reports FAILURE on a unit that is fine (the step never checked its own HTTP status)
 - **2026-09-12** — a "split on `;`" tool silently truncates its input (a semicolon inside a C comment)
-- **2026-09-12** — three verification failures in one day, all the same cause (the harness not waiting for the thing it was measuring)
+- **2026-09-12** — three verification failures in one day, all the same cause *(recurred 2026-10-05: a post-pull check at 26 s of uptime)* (the harness not waiting for the thing it was measuring)
 - **2026-09-12** — an environment variable you read does not apply where you claimed (it was YOUR shell, not the operator's)
 - **2026-09-11** — three tooling traps that each cost a turn (encoding, quoting, and a stale path)
 - **2026-09-10** — two concurrent `pio run` on the same env report a spurious FAILED
@@ -224,6 +226,28 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
+
+## 2026-10-05 — two statements about who touches the SD card were wrong in the docs, one of them mine
+
+**Problem:** both were written as facts and both were false.
+- **2.16.2's TSDS bullet and release notes named T15 as the task that uploads the SD logs.** T15 (`status_post_supervisor`) is dormant, excluded from the build. T14 (`status_post`) uploads them, through `storage_sd_file_size()` and `storage_sd_read()`. The name was written from memory, from the look of "status_post_supervisor".
+- **CLAUDE.md and before-you-start §6 said `storage_sd_list_csv()` "is DELETED"** (gh#82, 2.12.2). It never was. The driver still declares and defines it, and `main.cpp`'s boot probe still calls it, for a log line. What gh#82 did was move every DECISION to `storage_sd_foreach_csv()`: retention, the boot resume, both upload enumerators and the web listing.
+
+**Root cause:** a statement about the code (who calls what, what exists) was written without reading the code it describes. It is the same family as the gh#59 subtype table, the gh#49 header that promised a mutex and the gh#74 CSS rule.
+
+**Fix:** T15 → T14 corrected in `fc065b0`. The "DELETED" sentence corrected to what is true (curation, 2026-10-05). **Before writing which task calls a function, or that something no longer exists, grep the callers and the definition.** Whether to delete `storage_sd_list_csv()` and the boot probe's call is open, for the operator.
+
+**Where it lives:** `firmware/src/status_post/status_post.cpp` (the uploader), `drivers/sdCard/src/sd_storage.h` (`storage_sd_list_csv`), `firmware/src/main.cpp` (the boot probe's call).
+
+## 2026-10-05 — `rota_release.py status` stops at once with "no SSH target"
+
+**Problem:** `python bin/rota_release.py status` printed `ERROR: no SSH target` and did nothing.
+
+**Root cause:** `status` and `publish` read the FOTA server over SSH (`ROTA_SSH` in `bin/.rota_release.env`, an SSH alias for the VPS). This PC's env holds only the token for the GitHub path, which is all that `release` needs.
+
+**Fix:** none needed for a release. Verify a publish from outside instead: the GitHub API for the release (not a draft, latest, the tag's commit), the three assets downloaded back and hashed, and the manifest's `seq`. Then the unit's own forced check shows what the channel offers. Set `ROTA_SSH` only if the server's view is wanted.
+
+**Where it lives:** `bin/rota_release.py`, `bin/rota_release.md` (One-time setup, step 2).
 
 ## 2026-10-04 — the coredump's Erase button looked pressable and did nothing
 
@@ -1914,6 +1938,8 @@ on a tree where `git status --short` showed **zero** modified tracked files. Tak
 - `mode == AUTOMATIC` and `eg1 == 0` checked 12 s after leaving STANDBY, while the `CMD_RECALIBRATE` sweep that leaving STANDBY triggers was still running with `EG1_BIT_CALIBRATING` set.
 
 **Root cause:** every one is a queue or a state machine between the request and the observable, and in each case the HTTP 200 means *accepted*, not *in effect*.
+
+**Recurred 2026-10-05:** a post-pull check run 26 s after the ROTA reboot read `accepted` false and M3 TIMED under `stepped v2`. Both are the boot still settling: the image is accepted after `OTA_HEALTHY_MS` (30 s), and Lineair engages once the boot calibration ends. At 42 s every item passed. A post-boot state check waits for 60 s of uptime.
 
 **Fix / rule:** *before asserting on an effect, name the mechanism that produces it and wait for that mechanism, not for a round number of seconds.* Q4 writes need a settle or a poll-until-stable; a cadence change needs one whole old period; leaving STANDBY needs the recalibration sweep to clear `eg1`. And make the expected transition observable — if the value you expect already equals the current value, move it to a different base first, or a broken implementation and a working one read identically.
 
