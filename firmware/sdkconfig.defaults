@@ -239,3 +239,56 @@ CONFIG_APP_COMPILE_TIME_DATE=n
 # NOTE: an existing firmware/sdkconfig.<env> keeps its own value, whatever this
 # file says. Set the line there too (or delete the file to regenerate it).
 CONFIG_BOOTLOADER_COMPILE_TIME_DATE=n
+
+# ----------------------------------------------------------------------------
+# Reproducible build — the build DIRECTORY is no longer in the image (2026-10-10)
+# ----------------------------------------------------------------------------
+# The last gap of the 2026-09-16 work: the same tree built in another directory
+# produced the same code and data but a different image, because the ELF's debug
+# info carries absolute paths, the image embeds the ELF's SHA-256, and the digest
+# follows. So only the machine that built a release could reproduce its bytes,
+# and `bin/<version>/` had to be kept because it could not be regenerated.
+#
+# APP_REPRODUCIBLE_BUILD adds -fdebug-prefix-map for the IDF, the project, the
+# build directory, every component directory and the toolchain (IDF's
+# tools/cmake/prefix_map.cmake), and selects COMPILER_HIDE_PATHS_MACROS, which
+# was already on.
+#
+# IT IS NOT ENOUGH ON ITS OWN HERE. Our drivers live at <repo>/drivers/<name>/src,
+# outside the project directory, and a proxy component's COMPONENT_DIR is
+# firmware/components/<name>, so no IDF mapping covers the real sources: with the
+# option alone, 79 absolute paths of the checkout stayed in firmware.elf and the
+# images of two checkouts still differed in the embedded ELF SHA-256 and the
+# digest -- the gap this is meant to close. scripts/reproducible_paths.py adds the
+# missing map (<repo> -> /PROJECT) and together they do close it: the same commit
+# built in two directories gave byte-identical firmware.bin, firmware.elf AND
+# bootloader.bin (measured 2026-10-10 on 6a4a849).
+#
+# THE IMAGE DOES MOVE ONCE, and not only its debug info. With the option on, the
+# IDF sources' paths reach the compiler spelled with forward slashes, so the
+# __FILE__ strings baked into IDF's own asserts and ESP_LOG calls change with
+# them. Measured on one image: 810 bytes, of which 693 are a `\` becoming `/`
+# inside those strings and 117 belong to 108 .rodata pointers that shift as the
+# string table repacks. No code byte changes, the image keeps its size, and
+# nothing reads those strings but a human reading a panic. bootloader.bin changes
+# the same way (70 bytes). So the first release after this differs from a rebuild
+# of the previous one in exactly that, which is worth knowing when the release
+# comparison is read -- and the mechanism behind the spelling change was not
+# traced to its source in PlatformIO.
+#
+# It also makes CONFIG_APP_COMPILE_TIME_DATE and
+# CONFIG_BOOTLOADER_COMPILE_TIME_DATE invisible (both `depends on
+# !APP_REPRODUCIBLE_BUILD`), which forces them off -- the two lines above now
+# say what this one already implies. They are kept because they document the
+# intent and keep working if this line is ever removed.
+#
+# COST, and it is the reason this waited for a decision: a debugger needs the
+# map back. IDF generates it per build at
+# .pio/build/<env>/gdbinit/prefix_map (`set substitute-path /IDF_PROJECT ...`),
+# which build_release.ps1 does NOT archive. To decode a coredump against an
+# archived ELF, rebuild the release tree (now possible anywhere, which is the
+# point) and use that build's prefix_map, or add the substitutions by hand.
+#
+# NOTE: an existing firmware/sdkconfig.<env> keeps its own value, whatever this
+# file says. Set the line there too (or delete the file to regenerate it).
+CONFIG_APP_REPRODUCIBLE_BUILD=y
