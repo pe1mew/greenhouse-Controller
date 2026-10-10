@@ -121,6 +121,13 @@ Every `.cpp` file that contains Arduino API calls uses this guard so it compiles
 #endif
 ```
 
+> **2026-09-16 — after the ESP-IDF migration.** `pio test` defines `UNIT_TEST` itself, so a
+> `UNIT_TEST` branch that stubs the hardware out leaves the host test nothing to test. LIB-2
+> (`i2c/`) and LIB-4 (`LCD1602_I2C/`) therefore compile their ESP-IDF branch in the native
+> build (`test/include_lib.cpp` undefines `UNIT_TEST` for that one include), and LIB-1
+> (`gpio/`) has no switch at all. Their ESP-IDF headers are stand-ins under `test/mock_idf/`,
+> found first on the native include path, and the mocks behind them simulate the hardware.
+
 ### Run commands
 
 ```bash
@@ -169,22 +176,29 @@ void        gpio_set_rs485_direction(bool transmit); // true=TX (HIGH), false=RX
 
 ### Mock strategy (`test/mock_gpio.h`)
 
-A static array `uint8_t pin_state[48]` records the last written level per pin. Stubs for `pinMode`, `digitalWrite`, and `digitalRead` read and write this array. No Arduino headers are included.
+*Rewritten 2026-09-16; the Arduino-era mock no longer compiled against the ESP-IDF driver.*
+`gpio_util.cpp` is compiled unchanged against a stand-in for ESP-IDF's `driver/gpio.h`
+(`test/mock_idf/`, types copied from ESP-IDF 5.5.0 for the S3). `test/mock_gpio.cpp` answers
+`gpio_config()` / `gpio_set_level()` / `gpio_get_level()` from a per-pad model: output latch
+vs driven pad, input buffer (a pad without input enabled reads 0, which is why `GPIO_OUTPUT`
+must be `GPIO_MODE_INPUT_OUTPUT`), external drive, pulls, floating reads, contention, and
+ESP-IDF's rejection of pins the S3 lacks (22–25).
 
-### Unit tests (10)
+### Unit tests (11)
 
 | ID | Test case | Assertion |
 |----|-----------|-----------|
-| UT-GPIO-001 | `gpio_set_pin_mode` records mode | Mode stored in mock without error |
-| UT-GPIO-002 | `gpio_write` HIGH | `pin_state[pin] == HIGH` |
-| UT-GPIO-003 | `gpio_write` LOW | `pin_state[pin] == LOW` |
-| UT-GPIO-004 | `gpio_read` returns preset mock state | Return value matches preset |
-| UT-GPIO-005 | `gpio_toggle` HIGH → LOW | State flips to LOW |
-| UT-GPIO-006 | `gpio_toggle` LOW → HIGH | State flips to HIGH |
-| UT-GPIO-007 | `gpio_set_rs485_direction(true)` | `pin_state[PIN_RS485_DE_RE] == HIGH` |
-| UT-GPIO-008 | `gpio_set_rs485_direction(false)` | `pin_state[PIN_RS485_DE_RE] == LOW` |
-| UT-GPIO-009 | All 10 pin constants are unique values | No two constants share the same GPIO number |
-| UT-GPIO-010 | No defined pin falls in the reserved set | Reserved: {0, 19, 20, 26–37, 43, 44, 45, 46} |
+| UT-GPIO-001 | `gpio_set_pin_mode` configures the pad (output, input, input + pull-up) | One-pin mask, `GPIO_MODE_INPUT_OUTPUT` / `GPIO_MODE_INPUT`, pull-up only for `GPIO_INPUT_PULLUP`, no pull-down, no interrupt; an open pulled-up pin reads HIGH |
+| UT-GPIO-002 | `gpio_write` HIGH | Output pad carries HIGH |
+| UT-GPIO-003 | `gpio_write` LOW | A HIGH output pad goes LOW |
+| UT-GPIO-004 | `gpio_read` returns the externally driven level | Input pad follows the outside world; no floating read |
+| UT-GPIO-005 | `gpio_toggle` HIGH → LOW | Pad goes LOW (fails if outputs lose their input buffer) |
+| UT-GPIO-006 | `gpio_toggle` LOW → HIGH | Pad goes HIGH |
+| UT-GPIO-007 | `gpio_set_rs485_direction(true)` | `PIN_RS485_DE_RE` pad HIGH |
+| UT-GPIO-008 | `gpio_set_rs485_direction(false)` | `PIN_RS485_DE_RE` pad LOW |
+| UT-GPIO-009 | Every `pin_config.h` constant is unique | No two of the 26 constants share a GPIO number |
+| UT-GPIO-010 | No constant uses a reserved or missing GPIO | Reserved: {0, 19, 20, 22–25, 26–37, 43–46} |
+| UT-GPIO-011 | `gpio_rs485_init` idles in receive | DE/RE configured as output and LOW |
 
 ### Running the unit tests
 
@@ -216,26 +230,15 @@ export PATH="/c/Program Files/CodeBlocks/MinGW/bin:$PATH"
   necessary because PlatformIO 6 does not automatically compile a library's `src/`
   files when tests are run inside the library's own directory, and the `file://.`
   self-referencing `lib_deps` workaround triggers a Windows lock-file bug.
-- The mock (`test/mock_gpio.h` + `test/mock_gpio.cpp`) replaces the Arduino HAL
-  with an in-memory `pin_state[48]` / `pin_mode_arr[48]` array.  Call
-  `mock_gpio_reset()` from `setUp()` to guarantee test isolation.
+- The mock (`test/mock_gpio.h` + `test/mock_gpio.cpp`, behind
+  `test/mock_idf/driver/gpio.h`) simulates the ESP32-S3 pads; see "Mock strategy".
+  Call `mock_gpio_reset()` from `setUp()` to guarantee test isolation.
 
-**Expected output**
+**Expected output** (2026-09-16)
 
 ```
-test\test_gpio_util.cpp:182: test_set_pin_mode_output        [PASSED]
-test\test_gpio_util.cpp:183: test_set_pin_mode_input         [PASSED]
-test\test_gpio_util.cpp:184: test_set_pin_mode_input_pullup  [PASSED]
-test\test_gpio_util.cpp:187: test_gpio_write_high            [PASSED]
-test\test_gpio_util.cpp:190: test_gpio_write_low             [PASSED]
-test\test_gpio_util.cpp:193: test_gpio_read_returns_preset_state [PASSED]
-test\test_gpio_util.cpp:196: test_gpio_toggle_high_to_low    [PASSED]
-test\test_gpio_util.cpp:199: test_gpio_toggle_low_to_high    [PASSED]
-test\test_gpio_util.cpp:202: test_rs485_direction_transmit   [PASSED]
-test\test_gpio_util.cpp:205: test_rs485_direction_receive    [PASSED]
-test\test_gpio_util.cpp:208: test_pin_constants_are_unique   [PASSED]
-test\test_gpio_util.cpp:211: test_no_pin_in_reserved_set     [PASSED]
-12 succeeded
+test_set_pin_mode_output ... test_rs485_init_idles_in_receive   [PASSED] × 13
+13 test cases: 13 succeeded
 ```
 
 ### Hardware verification
@@ -429,22 +432,34 @@ void         i2c_unlock(void);
 
 `i2c_write` and `i2c_read` acquire the mutex internally for single transactions. `i2c_lock` / `i2c_unlock` are exposed for callers that need to hold the bus across multiple sequential operations without interleaving from another task.
 
-### Mock strategy (`test/mock_wire.h`)
+### Mock strategy (`test/mock_i2c_master.h`)
 
-Provides a fake `TwoWire` class and global `Wire` instance. An in-memory byte FIFO (`mock_rx_buf`) serves preloaded response data on `requestFrom`. Transmitted bytes are recorded in `mock_tx_buf` for assertion. A `mock_nack_next` flag causes the next `endTransmission()` call to return 2 (NACK) and then resets. A `mock_ack_addrs[]` list controls which addresses ACK during `i2c_scan()` — useful for UT-I2C-006. Call `mock_wire_reset()` in `setUp()`.
+*Rewritten 2026-09-16.* Since the ESP-IDF migration the driver's `UNIT_TEST` branch is stubs
+that return `I2C_OK` untouched, and the Arduino `Wire` mock was no longer reached — UT-I2C-002…006
+failed with "Was 0". The native build now compiles the driver's ESP-IDF branch against a stand-in
+`driver/i2c_master.h` (`test/mock_idf/`). `test/mock_i2c_master.cpp` returns what ESP-IDF 5.5.0's
+source returns: `i2c_master_probe` → `ESP_ERR_NOT_FOUND` on NACK, `ESP_ERR_TIMEOUT` on a held SCL;
+a synchronous transmit/receive → `ESP_ERR_INVALID_STATE` for a NACK **and** for a stall (the
+header's `@return` list does not say so); zero-length transmit → `ESP_ERR_INVALID_ARG`; a second
+`i2c_new_master_bus` on the port → `ESP_ERR_INVALID_STATE`. Devices are register-addressed, so a
+read only returns what the preceding write addressed. Every transaction is logged and every
+transient device handle tracked. Call `mock_i2c_reset()` in `setUp()`.
 
-### Unit tests (8)
+### Unit tests (11)
 
 | ID | Test case | Assertion |
 |----|-----------|-----------|
-| UT-I2C-001 | `i2c_init` returns `I2C_OK` | No error from mock |
-| UT-I2C-002 | `i2c_write` sends correct address and bytes | Mock log matches address + byte sequence |
-| UT-I2C-003 | `i2c_read` returns preloaded bytes | Returned bytes match FIFO content |
-| UT-I2C-004 | `i2c_write_read` performs write before read | Mock records write then read, correct address both times |
-| UT-I2C-005 | NACK flag set → `I2C_ERR_NACK` | Correct error code returned |
-| UT-I2C-006 | `i2c_scan` returns addresses where mock ACKs | Preload ACKs for 0x27 and 0x68; both found |
-| UT-I2C-007 | `i2c_write` zero-length data returns `I2C_OK` | No crash or error on empty write |
+| UT-I2C-001 | `i2c_init` creates the bus once | `I2C_OK`; port 0, `PIN_I2C_SDA`/`SCL`, internal pull-up; a repeat call does not re-acquire the port |
+| UT-I2C-002 | `i2c_write` sends correct address and bytes | One write transaction, bytes match; 7-bit device at `I2C_FREQ_HZ`; bounded timeout; handle released |
+| UT-I2C-003 | `i2c_read` returns the device's bytes | Bytes match; one read transaction; handle released |
+| UT-I2C-004 | `i2c_write_read` writes the register, then reads it | One repeated-start transaction; returns register 0 although the pointer started at 7 |
+| UT-I2C-005 | NACKed write → `I2C_ERR_NACK` | **Fails 2026-09-16: returns `I2C_ERR_BUS_BUSY`** — `to_status()` maps ESP-IDF 5.5's `ESP_ERR_INVALID_STATE` to BUS_BUSY (driver defect, reported, not fixed) |
+| UT-I2C-006 | `i2c_scan` returns the addresses that ACK | 0x3E and 0x68 found in order; 126 probes (1–126) |
+| UT-I2C-007 | Zero-length `i2c_write` is a probe | `I2C_OK`; one probe, no data, no `ESP_ERR_INVALID_ARG` |
 | UT-I2C-008 | `i2c_lock` / `i2c_unlock` round-trip | No deadlock; documents intent for FreeRTOS env |
+| UT-I2C-009 | Probing an absent device → `I2C_ERR_NACK` | Regression guard for the 2026-05-17 `ESP_ERR_NOT_FOUND` mapping |
+| UT-I2C-010 | Probe with SCL held → `I2C_ERR_TIMEOUT` | `ESP_ERR_TIMEOUT` mapped |
+| UT-I2C-011 | `i2c_scan` stops at `max_count` | No write past the buffer; nothing probed after it fills |
 
 ### Hardware verification
 
@@ -590,6 +605,11 @@ Run: `pio test -e native` — all 11 passed on 2026-04-10 (3.57 s, MinGW/native)
 ### Purpose
 Driver for the Waveshare LCD1602 I2C module (HD44780 LCD driven by PCF8574A I/O expander at address 0x3E). Used by T8 (UI / Display) to render status screens.
 
+> **Superseded (noted 2026-09-16).** The module turned out to carry an AiP31068L I2C bridge at 0x3E
+> (two-byte control/data protocol, no nibbles) and, on the RGB variant, a PCA9633 backlight driver
+> at 0x60; `lcd_backlight_on/off` became `lcd_backlight_color/lumination`. `src/lcd1602.h` is the
+> current API. The PCF8574 notes below are history; the mock strategy and unit tests are current.
+
 ### Dependency
 Requires LIB-2 (`i2c/`) to be board-tested.
 ```ini
@@ -632,26 +652,57 @@ Each byte written to the HD44780 requires two nibble transfers (high nibble firs
 
 `lcd_write_row` pads strings shorter than 16 chars with trailing spaces, and silently truncates strings longer than 16 chars.
 
-### Mock strategy
-Records all bytes sent to 0x3E in a transmission log. `mock_lcd_get_transmitted_bytes(buf, len)` returns the log. Tests decode the nibble-level PCF8574A byte sequence to verify the correct HD44780 commands were issued.
+### Mock strategy (`test/mock_i2c_bus.h`)
 
-### Unit tests (11)
+*Rewritten 2026-09-16; the PCF8574 tests no longer compiled.* The native build compiles the
+driver's ESP-IDF branch (in its `UNIT_TEST` branch every delay compiles away, and the delays are
+the protocol: the AiP31068L's serial interface cannot report busy). Its `vTaskDelay()` runs on a
+simulated clock (`test/mock_freertos.cpp`) that advances by the least FreeRTOS guarantees —
+`(n − 1)` ticks and an instant at `CONFIG_FREERTOS_HZ = 1000`. Its `i2c_write()` reaches
+`test/mock_i2c_bus.cpp`, built against the real `i2c_bus.h`, which adds I2C bit time and
+simulates both chips:
 
-Run: `pio test -e native` — all 11 passed on 2026-04-10 (1.79 s, MinGW/native).
+- **AiP31068L** (`documentation/Sensors/lcd1602/AIP31068L.pdf`): instruction set per Table 3,
+  DDRAM/CGRAM, address counter; each byte keeps the chip busy for its Table 3 execution time
+  (1.53 ms Clear Display / Return Home, 39 µs instructions, 43 µs data at fosc = 270 kHz), 40 ms
+  after power-on. A byte that arrives while busy is dropped and recorded.
+- **PCA9633**: registers 00h–0Ch with reset values, control-byte pointer and auto-increment.
+
+### Unit tests (23)
+
+Run 2026-09-16 (`pio test -e native`) against the driver as it then stood: 19 passed and four
+failed, each on a wait the driver did not make. 2.10.1 (gh#80) then added `LCD_BUSY_MS` after
+Clear Display and inside `lcd_home()`, which turns three of them green.
+
+Re-run 2026-10-10 against main: **22 pass**. UT-LCD-021 still fails, because `lcd_create_char()`
+still returns straight from its closing Return Home — the one caller that matters, since T8
+defines its two CGRAM glyphs back to back at boot (`ui_display.cpp`).
 
 | ID | Test case | Assertion | Result |
 |----|-----------|-----------|--------|
-| UT-LCD-001 | `lcd_init` sends HD44780 init sequence | 3 function-set nibbles + entry mode set in mock log | ✅ PASS |
-| UT-LCD-002 | `lcd_clear` sends command 0x01 | RS=0, data=0x01 decoded from log | ✅ PASS |
-| UT-LCD-003 | `lcd_set_cursor(0, 0)` → DDRAM address 0x80 | Set DDRAM address command = 0x80 | ✅ PASS |
-| UT-LCD-004 | `lcd_set_cursor(1, 0)` → DDRAM address 0xC0 | Row 1 base = 0x40; command = 0x80 \| 0x40 | ✅ PASS |
-| UT-LCD-005 | `lcd_set_cursor(0, 5)` → DDRAM address 0x85 | Column offset applied: 0x80 + 5 | ✅ PASS |
-| UT-LCD-006 | `lcd_print(0, 0, "Hi")` sends 'H' then 'i' as data | RS=1, correct nibble order | ✅ PASS |
-| UT-LCD-007 | `lcd_backlight_on` — bit 3 set in all subsequent bytes | Backlight bit present | ✅ PASS |
-| UT-LCD-008 | `lcd_backlight_off` — bit 3 cleared | Backlight bit absent | ✅ PASS |
-| UT-LCD-009 | `lcd_write_row` pads 3-char string to 16 data bytes | Exactly 16 data bytes in log | ✅ PASS |
-| UT-LCD-010 | `lcd_write_row` truncates 20-char string to 16 bytes | No more than 16 data bytes; no buffer overrun | ✅ PASS |
-| UT-LCD-011 | NACK on init → `LCD_ERR_NO_DEVICE` | Correct error code | ✅ PASS |
+| UT-LCD-001 | `lcd_init` sequence | Probe + 10 AiP31068L instructions, probe + 5 PCA9633 writes; display on, 2-line, blank; backlight blue | ✅ |
+| UT-LCD-002 | `lcd_clear` | Instruction 0x01; screen blank; AC = 0 | ✅ |
+| UT-LCD-003 | `lcd_set_cursor(0, 0)` | Instruction 0x80 | ✅ |
+| UT-LCD-004 | `lcd_set_cursor(1, 0)` | Instruction 0xC0 (row 1 at DDRAM 0x40) | ✅ |
+| UT-LCD-005 | `lcd_set_cursor(0, 5)` | Instruction 0x85 | ✅ |
+| UT-LCD-006 | `lcd_print(0, 0, "Hi")` | 0x80, then data `H`, `i` (control byte 0x40); row shows "Hi" | ✅ |
+| UT-LCD-007 | `lcd_backlight_color(r, g, b)` | One burst `82 b g r` to 0x60 (LED0 = blue); PWM0–2 set, PWM3 kept | ✅ |
+| UT-LCD-008 | `lcd_backlight_lumination` | `06 level`; colour kept | ✅ |
+| UT-LCD-009 | `lcd_write_row` pads to 16 | 0x80 + 16 data bytes; row shows the padded text | ✅ |
+| UT-LCD-010 | `lcd_write_row` truncates to 16 | 16 data bytes; nothing written past column 15 | ✅ |
+| UT-LCD-011 | No AiP31068L → `LCD_ERR_NO_DEVICE` | Only the probe goes out | ✅ |
+| UT-LCD-012 | Legacy module without PCA9633 | `lcd_init` OK; backlight calls are silent no-ops | ✅ |
+| UT-LCD-013 | `lcd_create_char` | CGRAM address, 8 data, Return Home; glyph stored; slot 8 refused with no traffic | ✅ |
+| UT-LCD-014 | `lcd_set_contrast` | `39 7x 5x 38`, clamped at 63 (bytes only — the datasheet lists no extended set) | ✅ |
+| UT-LCD-015 | `lcd_display_on` | Instruction 0x0C | ✅ |
+| UT-LCD-016 | `lcd_write_row(row, NULL)` | Row blanked | ✅ |
+| UT-LCD-017 | Controller gone mid-write | `LCD_ERR_NO_DEVICE`; nothing sent after the failure | ✅ |
+| UT-LCD-018 | Power-on reset waited out | First instruction ≥ 40 ms after power-on | ✅ |
+| UT-LCD-019 | `lcd_init` waits 1.53 ms after Clear Display | No byte lost | ✅ since 2.10.1 (was ✗: Entry Mode Set 1.07 ms after Clear) |
+| UT-LCD-020 | `lcd_clear` then `lcd_print` | No byte lost; text shown | ✅ since 2.10.1 (was ✗: 3 bytes lost) |
+| UT-LCD-021 | Two `lcd_create_char` calls back to back (T8 boot) | Both glyphs stored | ✗ second call lost entirely — gh#80 missed this call site |
+| UT-LCD-022 | `lcd_home` then `lcd_print_char` | No byte lost | ✅ since 2.10.1 (was ✗: 2 bytes lost) |
+| UT-LCD-023 | Ordinary writes | Every instruction/character outlasts its 39/43 µs | ✅ |
 
 ### Hardware verification
 
@@ -740,11 +791,15 @@ void keypad_test_reset_state(void);
 ```
 
 ### Mock strategy (`test/mock_keypad.h`)
-The mock faithfully simulates real membrane-keypad hardware. It maintains an internal pressed-key table (up to `MOCK_MAX_KEYS = 4` simultaneous presses) and implements `digitalRead` so that a column pin returns LOW only when the associated key's row is currently driven LOW by the driver — exactly as the physical matrix behaves.
+*Updated 2026-09-16: the driver now reaches the pins through LIB-1, so the mock implements
+`gpio_set_pin_mode()` / `gpio_write()` / `gpio_read()` against the real `gpio_util.h`
+(`-I ../gpio/src`) instead of the Arduino calls.*
 
-Control functions: `mock_keypad_set_key(row, col)` simulates a single press (clears previous state); `mock_keypad_add_key(row, col)` adds a key without clearing (multi-press / ghost-key testing); `mock_keypad_clear_keys()` releases all keys; `mock_keypad_reset()` resets all state. `pinMode` and `digitalWrite` record calls into observable arrays `pin_mode_arr[]` and `pin_state[]`. `mock_max_rows_low` tracks the peak number of row pins simultaneously at LOW during any scan — used by UT-KP-009 to verify strict one-at-a-time row driving.
+The mock simulates the membrane matrix electrically. It keeps a pressed-key table (up to `MOCK_MAX_KEYS = 4` simultaneous presses). A row drives its line only while it is configured as an output. A column reads LOW only while a pressed key joins it to a row really driven LOW; otherwise it reads HIGH only if its pull-up is on, and floats (counted in `mock_keypad_floating_reads`, read as LOW) if not. Two rows tied through one column at opposite levels are counted in `mock_keypad_row_contention`.
 
-### Unit tests (17)
+Control functions: `mock_keypad_set_key(row, col)` simulates a single press (clears previous state); `mock_keypad_add_key(row, col)` adds a key without clearing (multi-press / ghost-key testing); `mock_keypad_clear_keys()` releases all keys; `mock_keypad_reset()` resets all state. `mock_keypad_pin_mode()` and `mock_keypad_pin_latch()` report what the driver configured and wrote. `mock_max_rows_low` tracks the peak number of rows driven LOW at once — used by UT-KP-009 to verify strict one-at-a-time row driving.
+
+### Unit tests (18)
 
 | ID | Test case | Assertion |
 |----|-----------|-----------|
@@ -765,6 +820,7 @@ Control functions: `mock_keypad_set_key(row, col)` simulates a single press (cle
 | UT-KP-015 | `keypad_count_pressed()` returns 2 for two keys same row | Two columns in one row; returns 2 |
 | UT-KP-016 | `keypad_count_pressed()` returns 2 for two keys across rows | Keys in different rows; returns 2 |
 | UT-KP-017 | `keypad_count_pressed()` does not disturb debounce state | Interleaved with `keypad_scan()`; debounce still completes correctly |
+| UT-KP-018 | `keypad_init()` configures the matrix | Rows output, idle HIGH; columns input with pull-up; an idle scan reads no floating column |
 
 ### Hardware verification
 
@@ -2096,14 +2152,14 @@ For each driver, mark off both stages before declaring the driver done:
 
 | Driver | Directory | Wave | Unit test IDs | Host tests pass | Hardware test IDs | HW tests pass |
 |--------|-----------|------|---------------|-----------------|-------------------|---------------|
-| LIB-1 GPIO Utility | `gpio/` | 1 | UT-GPIO-001…011 | ✅ 2026-04-10 | HW-GPIO-001…011 | ✅ 2026-04-10 |
-| LIB-2 I2C Bus | `i2c/` | 1 | UT-I2C-001…008 | ✅ 2026-04-10 | HW-I2C-001…005 | ✅ 2026-04-10 |
-| LIB-5 Keypad Matrix | `keyPad/` | 1 | UT-KP-001…017 | ✅ 2026-04-10 | HW-KP-003…005 | ✅ 2026-04-10 |
+| LIB-1 GPIO Utility | `gpio/` | 1 | UT-GPIO-001…011 | ✅ 2026-09-16 (rebuilt for ESP-IDF) | HW-GPIO-001…011 | ✅ 2026-04-10 |
+| LIB-2 I2C Bus | `i2c/` | 1 | UT-I2C-001…011 | ⚠ 2026-09-16: 10/11, UT-I2C-005 fails (driver defect) | HW-I2C-001…005 | ✅ 2026-04-10 |
+| LIB-5 Keypad Matrix | `keyPad/` | 1 | UT-KP-001…018 | ✅ 2026-09-16 (rebuilt for LIB-1) | HW-KP-003…005 | ✅ 2026-04-10 |
 | LIB-7 NVS Configuration | `nvs/` | 1 | UT-NVS-001…025 | ✅ 2026-04-11 | HW-NVS-001…013 | ✅ 2026-04-11 |
 | LIB-8 SD Card | `sdCard/` | 1 | UT-SD-001…012 | ✅ 2026-04-11 | HW-SD-001…010 | ✅ 2026-04-11 |
 | LIB-9 LittleFS | `littleFS/` | 1 | UT-LFS-001…012 | ✅ 2026-04-11 | HW-LFS-001…009 | ✅ 2026-04-11 |
 | LIB-3 DS1307 RTC | `DS1307_RTC/` | 2 | UT-RTC-001…011 | ✅ 2026-04-10 | HW-RTC-001…005 | ✅ 2026-04-10 |
-| LIB-4 LCD1602 I2C | `LCD1602_I2C/` | 2 | UT-LCD-001…011 | ✅ 2026-04-10 | HW-LCD-001…008 | ✅ 2026-04-10 |
+| LIB-4 LCD1602 I2C | `LCD1602_I2C/` | 2 | UT-LCD-001…023 | ⚠ 2026-10-10: 22/23, UT-LCD-021 fails (`lcd_create_char` does not wait out Return Home) | HW-LCD-001…008 | ✅ 2026-04-10 |
 | LIB-6 Modbus RTU | `modBus/` | 2 | UT-MB-001…012 | ✅ 2026-04-10 | HW-MB-001…005 | ✅ 2026-04-10 |
 | LIB-10 FG6485A T/RH | `FG6485A/` | 3 | UT-FG-001…020 | ✅ 2026-04-13 | HW-FG-001…008 | ✅ 2026-04-13 |
 | LIB-11 S200 Wind | `s200/` | 3 | UT-S200-001…011 | ✅ 2026-04-26 | HW-S200-001…004 | ✅ 2026-04-26 |

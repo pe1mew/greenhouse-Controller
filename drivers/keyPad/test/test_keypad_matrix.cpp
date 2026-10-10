@@ -1,11 +1,16 @@
 /**
  * LIB-5 Keypad Matrix — unit tests (native build)
  *
- * Test IDs: UT-KP-001 … UT-KP-012
+ * Test IDs: UT-KP-001 … UT-KP-018
+ *
+ * keypad_matrix.cpp reaches the pins through gpio_util (LIB-1). The mock
+ * implements that API over an electrical model of the membrane matrix
+ * (mock_keypad.h): a column only goes LOW while a pressed key joins it to a
+ * row that is really configured as an output and driven LOW.
  *
  * Run with:
- *   export PATH="/c/Program Files/CodeBlocks/MinGW/bin:$PATH"
  *   ~/.platformio/penv/Scripts/pio.exe test -e native
+ * (set_compiler.py puts the Code::Blocks MinGW compiler on PATH.)
  */
 
 #include <unity.h>
@@ -105,9 +110,10 @@ void test_key_released_returns_no_key(void)
 /* -------------------------------------------------------------------------
  * UT-KP-009 — Only one row GPIO driven LOW at a time during scan
  *
- * mock_max_rows_low records the peak simultaneous-LOW count across all
- * digitalWrite calls. A correct driver drives exactly one row LOW at a time
- * and restores it HIGH before moving on, so the peak must be 1.
+ * mock_max_rows_low records the peak number of rows driven LOW at once,
+ * re-evaluated after every gpio_set_pin_mode and gpio_write call. A correct
+ * driver drives exactly one row LOW at a time and restores it HIGH before
+ * moving on, so the peak must be 1.
  * ------------------------------------------------------------------------- */
 void test_only_one_row_low_at_a_time(void)
 {
@@ -228,6 +234,33 @@ void test_count_pressed_does_not_disturb_debounce(void)
 }
 
 /* -------------------------------------------------------------------------
+ * UT-KP-018 — keypad_init sets the matrix up as pin_config.h describes
+ *
+ * Rows: outputs, idle HIGH. Columns: inputs with pull-up. Without the
+ * pull-ups an idle column floats, and a scan reads noise.
+ * ------------------------------------------------------------------------- */
+void test_init_configures_matrix(void)
+{
+    static const uint8_t rows[4] = {KP_ROW1, KP_ROW2, KP_ROW3, KP_ROW4};
+    static const uint8_t cols[4] = {KP_COL1, KP_COL2, KP_COL3, KP_COL4};
+
+    /* setUp() has already run keypad_init(). */
+    for (int i = 0; i < 4; i++) {
+        TEST_ASSERT_EQUAL_INT_MESSAGE(GPIO_OUTPUT, mock_keypad_pin_mode(rows[i]),
+                                      "row pin is not an output");
+        TEST_ASSERT_EQUAL_INT_MESSAGE(GPIO_HIGH, mock_keypad_pin_latch(rows[i]),
+                                      "row pin does not idle HIGH");
+        TEST_ASSERT_EQUAL_INT_MESSAGE(GPIO_INPUT_PULLUP, mock_keypad_pin_mode(cols[i]),
+                                      "column pin has no pull-up");
+    }
+
+    TEST_ASSERT_EQUAL_INT(KP_NO_KEY, keypad_scan());
+    TEST_ASSERT_EQUAL_INT(0, keypad_count_pressed());
+    TEST_ASSERT_EQUAL_INT(0, mock_keypad_floating_reads);
+    TEST_ASSERT_EQUAL_INT(0, mock_keypad_row_contention);
+}
+
+/* -------------------------------------------------------------------------
  * Test runner
  * ------------------------------------------------------------------------- */
 int main(void)
@@ -250,5 +283,6 @@ int main(void)
     RUN_TEST(test_count_pressed_two_same_row);
     RUN_TEST(test_count_pressed_two_across_rows);
     RUN_TEST(test_count_pressed_does_not_disturb_debounce);
+    RUN_TEST(test_init_configures_matrix);
     return UNITY_END();
 }
