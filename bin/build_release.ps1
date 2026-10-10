@@ -284,6 +284,41 @@ foreach ($pair in @(
         Write-Host "    -- (skipped: $src not found)" -ForegroundColor Yellow
     }
 }
+
+# ---------------------------------------------------------------------------
+# No compile time/date in the bootloader either (2026-10-10).
+#
+# The twin of the esp_app_desc check above, against the same staleness trap:
+# sdkconfig.defaults sets CONFIG_BOOTLOADER_COMPILE_TIME_DATE=n, but an
+# existing firmware\sdkconfig.<env> overrides the defaults file, and a per-env
+# file predating that line stamps __DATE__ " " __TIME__ into the bootloader --
+# so two full rebuilds of one tree archive different bootloader-<version>.bin
+# files, silently, and the one on disk stops matching the unit.
+#
+# esp_bootloader_desc starts at bootloader.bin offset 0x20 (magic byte 80, as
+# in esp_bootloader_desc.h, checked first so a moved struct fails here instead
+# of reading as zeros); date_time is the 24 bytes at 0x48.
+#
+# Checked only when the bootloader was archived: the loop above tolerates its
+# absence, and this keeps that behaviour rather than failing a release for a
+# reason the loop just waved through.
+# ---------------------------------------------------------------------------
+$BL_DST = Join-Path $OUT_DIR "bootloader-$VERSION.bin"
+if (Test-Path $BL_DST) {
+    $bl_bytes = [System.IO.File]::ReadAllBytes($BL_DST)
+    if ($bl_bytes.Length -lt 0x60 -or $bl_bytes[0x20] -ne 80) {
+        Write-Error "No esp_bootloader_desc magic at offset 0x20 in $BL_DST -- cannot check for a build timestamp."
+        exit 1
+    }
+    if ($bl_bytes[0x48..0x5F] | Where-Object { $_ -ne 0 }) {
+        $bl_stamp = [System.Text.Encoding]::ASCII.GetString($bl_bytes, 0x48, 24).TrimEnd([char]0)
+        Write-Error ("Packaged bootloader carries a compile time/date in esp_bootloader_desc ('$bl_stamp').`n" +
+                     "  firmware\sdkconfig.$Environment predates CONFIG_BOOTLOADER_COMPILE_TIME_DATE=n " +
+                     "in sdkconfig.defaults. Delete that file and run this script again.")
+        exit 1
+    }
+    Write-Host "    -> bootloader carries no build timestamp" -ForegroundColor Green
+}
 Write-Host ""
 
 # ---------------------------------------------------------------------------
