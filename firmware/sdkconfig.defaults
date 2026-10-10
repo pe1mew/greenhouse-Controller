@@ -214,3 +214,28 @@ CONFIG_VFS_MAX_COUNT=12
 # NOTE: an existing firmware/sdkconfig.<env> keeps its own value, whatever this
 # file says. Set the line there too (or delete the file to regenerate it).
 CONFIG_APP_COMPILE_TIME_DATE=n
+
+# ----------------------------------------------------------------------------
+# Bootloader image — no compile time/date (2026-10-10)
+# ----------------------------------------------------------------------------
+# The same thing one layer down, and the last gap the 2026-09-16 work left:
+# esp_bootloader_desc carries __DATE__ " " __TIME__, so two full rebuilds of one
+# tree produced different bootloader.bin files -- that string, the checksum and
+# the digest, and nowhere else (measured). The app's twin was turned off above
+# and this one was not, so every bin/<version>/bootloader.bin so far is
+# unreproducible for no reason.
+#
+# Nothing reads it: no firmware or script touches esp_bootloader_desc, and the
+# only consumer is the bootloader's own boot banner, whose "compile time" line
+# sits inside #ifdef CONFIG_BOOTLOADER_COMPILE_TIME_DATE (bootloader_init.c) and
+# is therefore not printed at all rather than printed empty. The ESP-IDF version
+# line above it stays. OTA never writes the bootloader, so this reaches a unit
+# only through a full flash.
+#
+# CONFIG_APP_REPRODUCIBLE_BUILD=y would force this option off as a side effect
+# AND strip the build directory out of the ELF (the other open gap), but it
+# changes the app image, so it is a separate decision -- not this line.
+#
+# NOTE: an existing firmware/sdkconfig.<env> keeps its own value, whatever this
+# file says. Set the line there too (or delete the file to regenerate it).
+CONFIG_BOOTLOADER_COMPILE_TIME_DATE=n
