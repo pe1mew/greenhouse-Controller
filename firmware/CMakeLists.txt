@@ -51,6 +51,21 @@ cmake_minimum_required(VERSION 3.16.0)
 #
 # Proxies are added one per migration sub-step (Phase 2.1 = gpio, ...).
 
+# Components kept out of the build (2026-09-21).
+#
+# IDF compiles every component it finds unless told otherwise, and PlatformIO
+# builds every library in CMake's code model, linked or not. esp_lcd is never
+# linked: our LCD is the I2C 1602 in drivers/LCD1602_I2C, and no component
+# REQUIRES esp_lcd. Compiling it anyway cost failed builds: GCC
+# (esp-14.2.0_20241119) segfaults now and then in rgb_panel_draw_bitmap
+# (rgb/esp_lcd_panel_rgb.c), a file only a full rebuild compiles
+# (memory/gotcha-log.md, 2026-09-17). Excluding it changes no byte of the
+# image. If a component ever REQUIRES esp_lcd, IDF builds it again despite
+# this list, without a warning, and the crash can come back with it.
+#
+# Must be set before project.cmake is included.
+set(EXCLUDE_COMPONENTS esp_lcd)
+
 # Pull in IDF's project.cmake glue. Works both under `pio run` and a
 # future `idf.py build`.
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
