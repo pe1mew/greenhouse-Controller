@@ -6,6 +6,71 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.17.0] — 2026-10-10  (the LCD's M3 keys: a tap drives M3 to the end, a hold moves it until the key is released; gh#93)
+
+Minor: a user-visible feature (FR-MM08). It changes only the LCD's manual-motor screen for M3, which is
+admin-only. No setting, key, NVS record, payload or log encoding changes. Verified on 2344 with a bench
+build and a fail-first; not soaked, not published.
+
+**Added (gh#93, the operator's request of 2026-10-10):**
+
+- **M3's Open (`1`) and Close (`2`) keys on the LCD are timed:**
+  - **a tap** (released within 1 s) drives M3 fully open or closed, starting at the release;
+  - **a 1–2 s press** moves nothing, and the LCD shows `Tap <1s: to end` / `Hold >2s: move`;
+  - **a hold of 2 s or more** moves M3 from the 2 s mark until the key is released, and stops it there,
+    part-open. The screen shows `Hold 2s to move`, then `Release to stop`.
+- **The timing is the operator's choice of three options:** nothing moves for the first 2 s, so a hold
+  can set any amount.
+- **A hold longer than a full traverse ends at the end,** by T2's travel timer; the release then changes
+  nothing.
+- **M1 and M2 are unchanged:** one press, a full stroke at once.
+- **The refusals stay as they were** (motor alarm, calibration, and wind for Open), now one shared check
+  for M1, M2 and M3.
+- **Releasing never stops a safety close:** T2 stops only a drive the operator owns (below).
+
+**How it works:**
+
+- **T7 posts a release event** (`key_event_t.released`, appended) when the key it was tracking goes up.
+  T8 hands it to nothing but the M3 hold. Releases, and the repeats of the press being timed, are routed
+  before any other key logic, so the message timer cannot swallow the release that ends a move.
+- **The timing is a pure library, `drivers/m3Hold`,** host-tested like `drivers/m3Char`. If a release is
+  lost, the press ends when its repeats stop (400 ms).
+- **T2 gets `CMD_STOP`** (appended to `cmd_action_t`): it cuts M3's relay where it is and rests in
+  `PART_OPEN`, logged as a RELAY row, as a pulse's ending. T17 records such a drive as not judged,
+  partial.
+  - **Ownership:** every drive records the source that last decided where it ends (`drive_src`), and any
+    T3 command takes it. A stop is refused unless the drive is the operator's own.
+- **The heartbeat task no longer drains Q2.** That drain was a bring-up leftover, and every 5 s it took
+  any key event T8 had not yet received.
+
+**Bench builds only** (`MODBUS_BENCH`), none of it in the release image:
+
+- `GET/POST /api/diag/key`: hold a key in T7 for a set time, and read T8's screen and the hold's latest
+  action;
+- `M3H_FAILFIRST_NOSTOP`: T2 ignores `CMD_STOP`;
+- `bin/at_lcd_m3_hold.py`: the acceptance, cases `tap`, `mid`, `hold`, `back`, `long` and `m1`.
+
+**Verified on 2344:**
+
+- **Host:** `drivers/m3Hold` 15 of 15. Seven mutations of the rule each fail at least one test.
+- **Rig, bench build, 25 of 25:**
+  - **Taps:** a tap of Open or Close gives a full stroke, OPEN and CLOSED.
+  - **1–2 s:** a 1.5 s press leaves M3 at 0.0 %, and the LCD says why.
+  - **Holds:** T8 started each move 2060–2061 ms into the press. M3 stopped part-open at 12.7 %, 22.8 %
+    and 51.6 %. The 5 s hold moved it 2.85 times as far as the 3 s hold.
+  - **Close hold:** a 4 s hold on Close brought it back to 34.3 %.
+  - **A hold past the traverse:** OPEN by the timer 20.7 s into a 21 s press, and the release changed
+    nothing.
+  - **M1:** it started 0.11 s after the press, as before.
+- **Fail-first:** `M3H_FAILFIRST_NOSTOP` fails `hold`. M3 ran on past the release to fully open.
+- **The release image** boots on 2344 with `fw_ver` and `asset_version` 2.17.0, on Lineair, the rig
+  settings unchanged, and no bench route.
+
+**Documents:** the FRS (FR-MM08, FR-MM06), the TSDS (T7, T8, `CMD_STOP`, the Q1 and Q2 tables), the
+beheerder manual 1.31 (§10.11), `memory/architecture.md`, the design `design/lcdM3HoldControl.md`.
+
+---
+
 ## [2.16.2] — 2026-10-04  (an SD unmount during a write no longer panics the unit, gh#90; the coredump's Erase says why it is greyed)
 
 Patch. Bug fixes only: no setting, key or payload change. In the GUI only the coredump row of the Log

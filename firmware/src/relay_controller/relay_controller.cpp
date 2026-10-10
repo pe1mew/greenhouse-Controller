@@ -79,6 +79,13 @@ static const char *TAG = "T2";
 /* 2.12.0's fail-first bits (one per defect) live in one header, shared with
  * T6, which needs bit 16. See failfirst_212.h for what each restores. */
 #include "../types/failfirst_212.h"
+
+/* gh#93 (2.17.0) fail-first: M3H_FAILFIRST_NOSTOP makes T2 ignore CMD_STOP, so
+ * bin/at_lcd_m3_hold.py can be shown to FAIL first: an LCD hold on M3 then runs
+ * on to the end instead of stopping where the key is let go. Bench builds only. */
+#if defined(M3H_FAILFIRST_NOSTOP) && !defined(MODBUS_BENCH)
+#error "M3H_FAILFIRST_NOSTOP is a bench-only fail-first build"
+#endif
 #define CALIB_CHUNK_MS     400u   /**< WDT-friendly chunk size for blocking calib */
 #define ALARM_GUARD_MS    60000u  /**< Guard time after alarm clears before re-cal (ms) */
 #define ALARM_GUARD_CHUNK_MS 5000u /**< WDT-friendly chunk size for guard wait */
@@ -169,6 +176,12 @@ typedef struct {
     uint32_t   dwell_open_ms;      /**< Dwell after reaching OPEN (ms) */
     uint32_t   dwell_close_ms;     /**< Dwell after reaching CLOSED (ms) */
     bool       dwell_defer_logged; /**< One INFO line per deferral episode, not per cycle */
+    cmd_source_t drive_src;        /**< gh#93 (2.17.0) -- the source that last decided where
+                                    *   the drive under way ends. Set by every start, reversal
+                                    *   and pivot, and TAKEN by any command from T3, even one
+                                    *   that finds the channel already moving its way. CMD_STOP
+                                    *   stops only the operator's drive, so letting go of an LCD
+                                    *   key can never stop a safety close. */
 
     /* 2.12.0 (plan §5b) — the commanded target, armed only by CMD_TARGET and
      * only on M3. `target_active` is the single discriminator: every other
@@ -515,6 +528,10 @@ static void ch_start_close(uint8_t ch, uint32_t now_ms, cmd_source_t source)
         c->target_active = false;
     }
 
+    /* gh#93: a safety command owns the drive from here on, even one that
+     * changes nothing because the window is already closing. */
+    if (source == SRC_T3) { c->drive_src = SRC_T3; }
+
     switch (c->state) {
 
     case CH_CLOSED:
@@ -549,6 +566,7 @@ static void ch_start_close(uint8_t ch, uint32_t now_ms, cmd_source_t source)
         relay_ch_off(ch);
         c->gap_deadline_ms = now_ms + RELAY_GAP_MS;
         c->state = CH_GAP_TO_CLOSE;
+        c->drive_src = source;
         ESP_LOGD(TAG, "CH%u: OPEN→GAP_TO_CLOSE (2 s reversal gap)", ch + 1u);
         return;
 
@@ -556,6 +574,7 @@ static void ch_start_close(uint8_t ch, uint32_t now_ms, cmd_source_t source)
         /* Change of mind while still in gap — pivot to close.
          * NVS already records UNKNOWN from the original GAP_TO_OPEN entry. */
         c->state = CH_GAP_TO_CLOSE;
+        c->drive_src = source;
         ESP_LOGD(TAG, "CH%u: GAP_TO_OPEN pivoted → GAP_TO_CLOSE", ch + 1u);
         return;
 
@@ -616,6 +635,7 @@ static void ch_start_close(uint8_t ch, uint32_t now_ms, cmd_source_t source)
     relay_ch_close(ch);
     c->relay_deadline_ms = now_ms + c->travel_ms;
     c->state = CH_MOVING_CLOSE;
+    c->drive_src = source;
     log_relay_event((uint8_t)(ch + 1u), CH_MOVING_CLOSE);
     ESP_LOGI(TAG, "CH%u: → MOVING_CLOSE  (travel %lu ms)", ch + 1u, (unsigned long)c->travel_ms);
 }
@@ -644,6 +664,9 @@ static void ch_start_open(uint8_t ch, uint32_t now_ms, cmd_source_t source)
         c->target_active = false;
     }
 
+    /* gh#93: as in ch_start_close(). */
+    if (source == SRC_T3) { c->drive_src = SRC_T3; }
+
     switch (c->state) {
 
     case CH_OPEN:
@@ -660,11 +683,13 @@ static void ch_start_open(uint8_t ch, uint32_t now_ms, cmd_source_t source)
         relay_ch_off(ch);
         c->gap_deadline_ms = now_ms + RELAY_GAP_MS;
         c->state = CH_GAP_TO_OPEN;
+        c->drive_src = source;
         ESP_LOGD(TAG, "CH%u: CLOSE→GAP_TO_OPEN (2 s reversal gap)", ch + 1u);
         return;
 
     case CH_GAP_TO_CLOSE:
         c->state = CH_GAP_TO_OPEN;
+        c->drive_src = source;
         ESP_LOGD(TAG, "CH%u: GAP_TO_CLOSE pivoted → GAP_TO_OPEN", ch + 1u);
         return;
 
@@ -710,6 +735,7 @@ static void ch_start_open(uint8_t ch, uint32_t now_ms, cmd_source_t source)
     relay_ch_open(ch);
     c->relay_deadline_ms = now_ms + c->travel_ms;
     c->state = CH_MOVING_OPEN;
+    c->drive_src = source;
     log_relay_event((uint8_t)(ch + 1u), CH_MOVING_OPEN);
     ESP_LOGI(TAG, "CH%u: → MOVING_OPEN  (travel %lu ms)", ch + 1u, (unsigned long)c->travel_ms);
 }
@@ -1761,6 +1787,63 @@ static inline const char *src_name(cmd_source_t s)
 }
 
 /**
+ * @brief gh#93 (2.17.0): stop a drive where it is -- the end of an LCD hold on M3.
+ *
+ * The operator holds Open or Close on the LCD's manual-motor screen and M3
+ * moves until the key is let go; T8 then posts CMD_STOP. The ending is a
+ * pulse's (pulse_tick()): the relay goes off, PART_OPEN, persisted as unknown,
+ * logged as a RELAY row, and the dwell armed for the direction it was moving.
+ * T17 judges such a drive "not judged: partial", as a targeted stop.
+ *
+ * Does nothing to a channel at rest: a hold longer than a traverse ends at
+ * the end by the travel timer, and the release then finds M3 there. Refused
+ * unless the drive is `source`'s own (drive_src), so a release cannot stop a
+ * safety close that T3 started, or joined, during the hold.
+ */
+static void ch_stop(uint8_t ch, uint32_t now_ms, cmd_source_t source)
+{
+    ch_t *c = &s_ch[ch];
+    bool opening;
+    switch (c->state) {
+    case CH_MOVING_OPEN:
+    case CH_GAP_TO_OPEN:
+        opening = true;
+        break;
+    case CH_MOVING_CLOSE:
+    case CH_GAP_TO_CLOSE:
+        opening = false;
+        break;
+    default:
+        ESP_LOGI(TAG, "CH%u: STOP from %s -- at rest, nothing to stop", ch + 1u, src_name(source));
+        return;
+    }
+    if (c->drive_src != source) {
+        ESP_LOGW(TAG, "CH%u: STOP from %s refused -- the drive is %s's",
+                 ch + 1u, src_name(source), src_name(c->drive_src));
+        return;
+    }
+#ifdef M3H_FAILFIRST_NOSTOP
+    ESP_LOGW(TAG, "CH%u: STOP ignored (fail-first build M3H_FAILFIRST_NOSTOP)", ch + 1u);
+    return;
+#endif
+    ch_note_taken(ch);                  /* where the stroke under way ends has changed */
+    relay_ch_off(ch);                   /* already off in a reversal gap */
+    if (c->pulse_active) {
+        c->pulse_active = false;
+        pulse_log(ch, c->pulse_opening, false);
+    }
+    c->target_active      = false;
+    c->state              = CH_PART_OPEN;
+    c->dwell_deadline_ms  = now_ms + ch_dwell_ms(ch, opening);
+    c->move_end_ms        = now_ms;
+    c->dwell_defer_logged = false;
+    persist_ch_state(ch, CH_PART_OPEN);           /* maps to NVS UNKNOWN, as a targeted stop */
+    log_relay_event((uint8_t)(ch + 1u), CH_PART_OPEN);
+    ESP_LOGI(TAG, "CH%u: STOP from %s -> PART_OPEN (was %s)",
+             ch + 1u, src_name(source), opening ? "opening" : "closing");
+}
+
+/**
  * @brief Dispatch a Q1 window_cmd_t to the per-channel FSM.
  *
  * Commands are discarded while EG1_BIT_MOTOR_ALARM is set (FR-MA03) — the
@@ -1906,6 +1989,16 @@ static void process_command(const window_cmd_t *cmd, uint32_t now_ms)
         ESP_LOGI(TAG, "CMD_PULSE: M3 %s for %ld ms", opening ? "OPEN" : "CLOSE", (long)ms);
         break;
     }
+
+    case CMD_STOP:
+        /* gh#93 (2.17.0): the end of an LCD hold on M3. See ch_stop(). M3 only:
+         * M1 and M2 have no part-open state. */
+        if (cmd->channel != 3u) {
+            ESP_LOGW(TAG, "CMD_STOP refused: ch%u (M3 only)", cmd->channel);
+            break;
+        }
+        ch_stop(2u, now_ms, cmd->source);
+        break;
 
     default:
         ESP_LOGW(TAG, "Q1: unknown action %d", (int)cmd->action);
@@ -2138,6 +2231,7 @@ void task_relay_controller(void *pvParameters)
         s_ch[ch].relay_deadline_ms = 0u;
         s_ch[ch].gap_deadline_ms   = 0u;
         s_ch[ch].dwell_deadline_ms = 0u;
+        s_ch[ch].drive_src         = SRC_T6;   /* gh#93: no drive of the operator's */
     }
 
     /* ------------------------------------------------------------------

@@ -1,8 +1,8 @@
 # Handleiding Kascontroller — voor de beheerder
 
-**Versie:** 1.30
-**Datum:** 2026-09-27
-**Firmware:** 2.15.0
+**Versie:** 1.31
+**Datum:** 2026-10-10
+**Firmware:** 2.17.0
 
 ---
 
@@ -1252,7 +1252,25 @@ Voor maintenance met handschoenen, een netwerkstoring, commissioning, een snel e
       +----------------+
    ```
    De kop `[Mx]` toont welk raam je geselecteerd hebt en wat zijn huidige toestand is. Druk `1` voor OPEN, `2` voor CLOSE, `*` voor terug naar de motor-picker
-6. Bevestiging `Mx opening / command sent` (of `Mx closing`); het commando wordt onmiddellijk aan T2 doorgegeven en de motor gaat lopen. Je blijft op het action-scherm — kies opnieuw een actie voor hetzelfde raam of druk `*` om een ander raam te kiezen
+6. **M1 en M2:** bevestiging `Mx opening / command sent` (of `Mx closing`); het commando wordt onmiddellijk aan T2 doorgegeven en de motor gaat lopen. **M3** reageert op hoe lang je de toets indrukt: zie [M3: tikken of vasthouden](#m3-tikken-of-vasthouden-sinds-2170). Je blijft op het action-scherm — kies opnieuw een actie voor hetzelfde raam of druk `*` om een ander raam te kiezen
+
+#### M3: tikken of vasthouden (sinds 2.17.0)
+
+Voor M3, het raam met de raamstandsensor, kijkt de controller **hoe lang** je `1` (Open) of `2` (Close) indrukt:
+
+| Je drukt | Wat M3 doet |
+|---|---|
+| **Kort tikken** (korter dan 1 s) | M3 gaat **helemaal open of dicht**. De motor start zodra je de toets loslaat |
+| **Tussen 1 en 2 s** | **Niets.** Het scherm meldt `Tap <1s: to end` / `Hold >2s: move`: kort tikken is helemaal, vasthouden is een stukje |
+| **Vasthouden** (2 s of langer) | De eerste 2 s gebeurt niets (onderste regel `Hold 2s to move`). Daarna beweegt M3 zolang je de toets vasthoudt (`Release to stop`), en stopt zodra je loslaat (`M3 stopped / where released`). Het raam staat dan deels open: `[M3] PART OPEN` |
+
+Zo zet je M3 precies zo ver open als je wilt: houd vast tot het raam de gewenste stand heeft, en laat los.
+
+- **M1 en M2 werken zoals altijd:** één druk zet het raam meteen helemaal open of dicht.
+- **Houd je langer vast dan het raam nodig heeft** om helemaal open of dicht te gaan, dan stopt M3 aan het eind, zoals bij een volledige slag. Loslaten verandert dan niets meer.
+- **De veiligheidsgates hieronder gelden ook hier.** Ook bij vasthouden weigert de controller bij een motoralarm, tijdens het kalibreren, en voor Open bij windbeveiliging. Wordt de windbeveiliging actief terwijl je vasthoudt, dan sluit die M3; loslaten stopt die sluiting **niet** (`WIND OVERRIDE / T3 closes M3`).
+- **In het logbestand** staat elke beweging als `RELAY`-rij. Vasthouden eindigt met een `PART_OPEN`-rij voor M3.
+- **De stand blijft staan voor de rest van je sessie.** Bij uitloggen of sessie-einde sluiten alle ramen om te kalibreren, zoals hieronder bij *Sessie-einde* staat.
 
 #### Wat gebeurt er onder de motorkap?
 
@@ -2277,6 +2295,7 @@ Inhoudelijke wijzigingen aan de firmware staan beschreven in het bestand `change
 | 1.28 | 2026-09-25 | 2.14.0 — de LED-helderheid en de nachtstand (22:00–06:00) liggen vast en zijn geen instelling meer (gh#67); checklist §18 punt 10: de raamstandsensor aanmelden in plaats van de LED instellen |
 | 1.29 | 2026-09-27 | 2.14.1 (alleen documentatie) — de passages die nog uitgingen van *geen positie-feedback* kloppen weer met lineaire besturing: in §1 staat wat M3 met raamstandsensor wél doet (een gemeten tussenstand), de controller meet de stand van M3 zelf, en een tussenstand wordt als `UNKNOWN` opgeslagen zodat een herstart kalibreert; typefouten *wodt* en *luchtvoctiheid* hersteld |
 | 1.30 | 2026-09-27 | 2.15.0 — de conflict-prioriteit is een keuze uit twee: *Temperature first* of *Humidity may also open M1* (een opgeslagen `2` werkt als `1`). Te droog sluit nooit meer tegen de warmte in, bij geen enkele keuze, dus RH-min verandert niets meer aan de ramen; vocht opent op eigen houtje alleen M1, en alleen vanaf **T-min + 2 °C**; de vochtstem heeft een sluit-hysterese bij RH-max. T-min is weer in te stellen, op de LCD en in de webinterface. De actieve regelwet staat met versie in `/api/status` (`windows.law`) en in het SD-log (`MODE` param 56) (gh#84) |
+| 1.31 | 2026-10-10 | 2.17.0 — op de LCD reageert **M3** op hoe lang je Open of Close indrukt: kort tikken is helemaal open of dicht, vasthouden (2 s of langer) beweegt M3 tot je loslaat (§10.11, gh#93). Deze versie dekt ook de toevoegingen van 2.16.0 tot en met 2.16.2, waarvoor het versienummer niet was opgehoogd: M3 karakteriseren, OTA-storingen en terugrollen, en in de Log-tab Unmount en het wissen van een coredump |
 
 ---
 

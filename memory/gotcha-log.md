@@ -75,6 +75,8 @@ Hooks are the *symptom*, not the title — you rarely know the cause when you ar
 Entries stay in reverse-chronological order below; this index is the only grouped view.
 
 ### Windows, climate & manual control (T2, T6, T8)
+- **2026-10-10** — a bring-up task still drained Q2 every 5 s and could take a key event from T8 (two consumers on one queue) [RESOLVED 2.17.0]
+- **2026-10-10** — a short M3 hold from CLOSED moves the leaf nothing: the rope takes up its slack first (measure holds from part-open)
 - **2026-10-02** — a pulse test reads 0 mm for every pulse, then the encoder reports NOT FOLLOWING (0x80), which looks like a detached draw wire: the wind safe-fail had closed M3, and the harness kept pulsing it against its end switch [RESOLVED: the harness checks before every pulse]
 - **2026-10-02** — a soak's stroke sessions FAIL at dawn and end the run: the greenhouse is colder than the lowest `t_max` the harness can set, so there is no heat demand, and under v2 humidity alone never opens M3 — the firmware was right [RESOLVED: the harness skips such a session]
 - **2026-10-01** — M3's positioning scatter (AT-WP02) was put mostly on run-on and timing jitter; measured, ~90 % of it is WHEN the cut sample was taken: T17 reads every ~180 ms on the rig (its 100 ms `poll_ms` is a sleep AFTER a ~75 ms read), and the encoder publishes once per 100 ms window
@@ -240,6 +242,26 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
+
+## 2026-10-10 — a bring-up task still took key events off Q2 every 5 s
+
+**Problem:** gh#93 stops M3 when the operator lets go of an LCD key, so T7's new release event has to reach T8. While designing it, the keypad queue Q2 turned out to have a second consumer: `heartbeat_task` in `main.cpp` drained it every 5 s and logged each event to serial.
+
+**Root cause:** the drain was the keypad's acceptance test in alpha.6.4, before T8 existed. T8 became Q2's consumer in Phase 7, and the drain stayed. With two consumers on one queue, whichever receives first gets the event. T8 almost always waits on Q2, so a key press lost this way was rare and never explained. A lost release, though, would let a hold run on until T8's 400 ms fail-safe.
+
+**Fix (2.17.0):** the drain is removed, and T8 is Q2's only consumer (the TSDS Q2 row says so). **When the real consumer of a queue arrives, remove the bring-up reader.**
+
+**Where it lives:** `firmware/src/main.cpp` (`heartbeat_task`), `firmware/src/ui_display/ui_display.cpp`.
+
+## 2026-10-10 — a short M3 hold from CLOSED moved the leaf nothing: the rope takes up its slack first
+
+**Problem:** the first acceptance run of gh#93 failed one verdict. A 3 s hold from CLOSED, about 1 s of drive, ended `PART_OPEN` at 0.0 %.
+
+**Root cause:** not the control. T8 started the move at the 2 s mark and T2 stopped it on the release. But on the rig, about the first second of a drive from the closed end takes up the rope's slack and the closed-end headroom, where the encoder still reads 0 (the 2026-10-02 minimum-move entry). From the same start, a 5 s hold reached 12.7 %, and from part-open a 3 s hold gave +10.1 points and a 5 s hold +28.8.
+
+**Fix:** the harness measures holds from part-open, and the first hold from CLOSED is not measured. **A short hold at the closed end may move the leaf nothing: that is the mechanism, not the control.**
+
+**Where it lives:** `bin/at_lcd_m3_hold.py` (case `hold`).
 
 ## 2026-10-05 — two statements about who touches the SD card were wrong in the docs, one of them mine
 

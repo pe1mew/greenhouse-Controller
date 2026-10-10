@@ -527,6 +527,13 @@ typedef enum {
                        *   characterisation run (plan §5e) in every build, and
                        *   the bench hook behind bin/at_wp_minmove.py in a
                        *   bench build. */
+    CMD_STOP,         /**< gh#93 (2.17.0): stop M3 where it is. The LCD's hold on
+                       *   M3 ends when the operator lets go of the key. M3 only.
+                       *   T2 stops only a drive the operator started
+                       *   (SRC_OPERATOR_MANUAL), so a release can never stop a
+                       *   safety close, and it does nothing to a window at rest.
+                       *   **APPENDED:** LOG_SYSTEM 27 logs an action by its
+                       *   ordinal. */
 } cmd_action_t;
 
 /* ============================================================
@@ -548,6 +555,11 @@ typedef struct {
 typedef struct {
     char key;       /**< ASCII character from keypad_scan(), or '\0' for no key */
     bool repeated;  /**< true if key-repeat generated this event */
+    bool released;  /**< gh#93 (2.17.0): true when `key` went UP (lifted, or
+                     *   replaced by another key); such an event is not a press.
+                     *   T8 hands it to nothing but the LCD's M3 hold. APPENDED,
+                     *   so a positional initialiser `{ key, repeated }` leaves
+                     *   it false. */
 } key_event_t;
 
 /**

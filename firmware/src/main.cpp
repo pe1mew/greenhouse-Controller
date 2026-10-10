@@ -272,7 +272,8 @@ static void log_boot_banner(void)
  *  - Sample current internal heap + largest contiguous block + PSRAM free.
  *  - Read a representative `cfg_shadow_t` snapshot (T4 dm_cfg_snapshot)
  *    to confirm NVS-recovered values are sane.
- *  - Drain Q2 of any pending key events posted by T7 (keypad_scan), log each.
+ *  - (Until 2.17.0 it also drained Q2, taking key events from T8, their only
+ *    consumer: gh#93.)
  *  - Read the DS1307 RTC (LIB-3) and log the wall-clock time.
  *  - Emit a single combined ESP_LOGI line with all of the above.
  *
@@ -348,26 +349,11 @@ static void heartbeat_task(void *arg)
          * during steady-state operation. The 5 s ESP_LOGI status print above
          * still fires for serial-side visibility. */
 
-        /* alpha.6.4 — drain Q2 of any key events produced by the T7
-         * keypad-scan task since the last heartbeat. The task posts
-         * `key_event_t { key, repeated }` on each edge-detected press
-         * (and on repeat after 500 ms hold). Q2 has capacity 8, so up
-         * to 8 events between 5 s ticks are captured. We pop them all
-         * non-blocking and log each one. If nothing's been pressed,
-         * this is a zero-cost no-op (xQueueReceive returns pdFALSE
-         * immediately on empty). */
-        {
-            key_event_t key_ev;
-            int q2_drained = 0;
-            while (xQueueReceive(Q2, &key_ev, 0) == pdTRUE) {
-                ESP_LOGI(TAG, "Q2 key event #%d: '%c' repeated=%d",
-                         q2_drained, key_ev.key, key_ev.repeated ? 1 : 0);
-                q2_drained++;
-            }
-            if (q2_drained > 0) {
-                ESP_LOGI(TAG, "Q2 drained %d event(s) this tick", q2_drained);
-            }
-        }
+        /* gh#93 (2.17.0): this loop no longer drains Q2. It did from alpha.6.4,
+         * when nothing else read the keypad; T8 has been Q2's consumer since
+         * Phase 7, and every 5 s the drain took any key event T8 had not yet
+         * received -- since 2.17.0 that includes the release that stops an LCD
+         * hold on M3. */
 
         /* alpha.6.8 — Removed the heartbeat's fg6485a_read_measurements()
          * and s200_read_measurements() polls. T5 (sensor_poll, activated
@@ -536,10 +522,10 @@ extern "C" void app_main(void)
 
     /* alpha.6.4 — spawn T7 keypad-scan task. The task scans the 4×4 membrane
      * matrix every 20 ms via LIB-5, debounces, generates key-repeat events
-     * on 500 ms hold, and posts key_event_t to Q2. The heartbeat task
-     * (below) drains Q2 each tick and surfaces presses to the serial log,
-     * giving tactile acceptance: physically press a key → see the event
-     * within 5 s.
+     * on 500 ms hold, and posts key_event_t to Q2 (since 2.17.0 a release
+     * too, gh#93). T8 is Q2's only consumer. Until 2.17.0 the heartbeat task
+     * below also drained Q2 every 5 s for a serial-log acceptance check, and
+     * took key events from T8 when it did.
      *
      * The task subscribes to the IDF TWDT internally (esp_task_wdt_add).
      * 20 ms scan period is well within the 5 s TWDT window.
@@ -561,8 +547,7 @@ extern "C" void app_main(void)
         if (rc != pdPASS) {
             ESP_LOGE(TAG, "alpha.6.4: xTaskCreate T7 failed (rc=%d)", (int)rc);
         } else {
-            ESP_LOGI(TAG, "alpha.6.4: T7 keypad_scan task spawned (handle=%p); "
-                          "press a key to see Q2 events drained in the heartbeat",
+            ESP_LOGI(TAG, "alpha.6.4: T7 keypad_scan task spawned (handle=%p)",
                      (void *)task_t7);
         }
     }

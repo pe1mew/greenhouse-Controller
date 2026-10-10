@@ -8,6 +8,9 @@
  *
  *   - New press  -> post `key_event_t{ key, repeated=false }` to Q2.
  *   - Hold > 500 ms -> post `key_event_t{ key, repeated=true }` every 100 ms.
+ *   - Release    -> post `key_event_t{ key, false, released=true }` when the
+ *     key goes up: lifted, or replaced by another key (gh#93, 2.17.0). The
+ *     LCD's M3 hold stops M3 when the operator lets go, so T8 must know when.
  *
  * Q2 capacity is 16 items.  On overflow the event is dropped; first-press
  * events emit a warning, repeat events emit a debug log only (T8 should
@@ -70,6 +73,51 @@ static const char *TAG = "T7_KPD";
 /** @brief Repeat interval, expressed in scan ticks (5 ticks @ 20 ms = 100 ms). */
 #define KP_REPEAT_TICKS  (KP_REPEAT_INTV_MS / KP_SCAN_MS)
 
+#ifdef MODBUS_BENCH
+/* gh#93 (2.17.0), bench builds only: a key "held" on the matrix for a given
+ * time, by GET/POST /api/diag/key, so the LCD's timing can be tested on the rig
+ * with nobody at the keypad. T7 reads it in place of the matrix, so the press,
+ * the repeats and the release all come from the code below, as from a finger. */
+static portMUX_TYPE s_bench_mux   = portMUX_INITIALIZER_UNLOCKED;
+static char         s_bench_key   = KP_NO_KEY;
+static uint32_t     s_bench_ticks = 0;      /**< Scan ticks the key stays down. */
+
+bool keypad_bench_hold(char key, uint32_t ms)
+{
+    if (key == KP_NO_KEY || ms == 0u) { return false; }
+    bool ok = false;
+    portENTER_CRITICAL(&s_bench_mux);
+    if (s_bench_ticks == 0u) {
+        s_bench_key   = key;
+        s_bench_ticks = (ms + KP_SCAN_MS - 1u) / KP_SCAN_MS;
+        ok = true;
+    }
+    portEXIT_CRITICAL(&s_bench_mux);
+    return ok;
+}
+
+bool keypad_bench_busy(void)
+{
+    portENTER_CRITICAL(&s_bench_mux);
+    const bool busy = (s_bench_ticks != 0u);
+    portEXIT_CRITICAL(&s_bench_mux);
+    return busy;
+}
+
+/** The matrix's key, or the bench's while one is held. */
+static char bench_key(char real)
+{
+    char k = real;
+    portENTER_CRITICAL(&s_bench_mux);
+    if (s_bench_ticks != 0u) {
+        k = s_bench_key;
+        s_bench_ticks--;
+    }
+    portEXIT_CRITICAL(&s_bench_mux);
+    return k;
+}
+#endif
+
 /* ============================================================
  * Task entry point
  * ============================================================ */
@@ -110,6 +158,19 @@ void task_keypad_scan(void *pvParameters)
     for (;;) {
         esp_task_wdt_reset();
         char key = keypad_scan();
+#ifdef MODBUS_BENCH
+        key = bench_key(key);
+#endif
+
+        /* gh#93 (2.17.0): the key being tracked went up -- lifted, or replaced
+         * by another key. T8 stops the LCD's M3 hold on this event; if it is
+         * lost, T8 notices the repeats stopping, 400 ms later. */
+        if (last_key != KP_NO_KEY && key != last_key) {
+            key_event_t rel = { last_key, false, true };
+            if (xQueueSend(Q2, &rel, 0) != pdTRUE) {
+                ESP_LOGW(TAG, "Q2 full -- release '%c' dropped", last_key);
+            }
+        }
 
         if (key == KP_NO_KEY) {
             /* No key — reset all repeat state */
@@ -123,7 +184,7 @@ void task_keypad_scan(void *pvParameters)
             hold_ticks   = 1;
             repeat_accum = 0;
 
-            key_event_t evt = { key, false };
+            key_event_t evt = { key, false, false };
             if (xQueueSend(Q2, &evt, 0) != pdTRUE) {
                 ESP_LOGW(TAG, "Q2 full — first-press '%c' dropped", key);
             }
@@ -135,7 +196,7 @@ void task_keypad_scan(void *pvParameters)
                 repeat_accum++;
                 if (repeat_accum >= KP_REPEAT_TICKS) {
                     repeat_accum = 0;
-                    key_event_t evt = { key, true };
+                    key_event_t evt = { key, true, false };
                     if (xQueueSend(Q2, &evt, 0) != pdTRUE) {
                         ESP_LOGD(TAG, "Q2 full — repeat '%c' dropped", key);
                     }

@@ -137,6 +137,8 @@
 #ifdef MODBUS_BENCH
 #include "../diag/modbus_bench.h"   /* dev-only bench Modbus access */
 #include "esp_vfs.h"                /* gh#89: /api/diag/ota fills the VFS table */
+#include "../keypad_scan/keypad_scan.h"  /* gh#93: keypad_bench_hold -- /api/diag/key */
+#include "../ui_display/ui_display.h"    /* gh#93: ui_bench_state -- /api/diag/key */
 #endif     /* 2.2.0 (ROTA) — rota_cert_set/_is_custom for /api/ota/config */
 #include "../system_id/system_id.h"       /* 2.2.0 (ROTA) — system_mac_str: device id for /api/ota/check */
 #include "littlefs_storage.h"
@@ -4653,6 +4655,99 @@ static esp_err_t diag_sd_post_handler(httpd_req_t *req)
     }
     return httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
 }
+
+/* LCD text for JSON: anything a string cannot hold as is (a CGRAM glyph, a
+ * quote, a backslash) becomes '?'. */
+static void bench_json_text(char *dst, const char *src, size_t n)
+{
+    size_t i = 0;
+    for (; i + 1 < n && src[i] != '\0'; i++) {
+        const unsigned char c = (unsigned char)src[i];
+        dst[i] = (c < 0x20 || c >= 0x7F || c == '"' || c == '\\') ? '?' : (char)c;
+    }
+    dst[i] = '\0';
+}
+
+/**
+ * GET /api/diag/key -- the LCD and the M3 hold (admin, DEV BUILDS ONLY, gh#93)
+ *
+ * `busy` while a key held by POST is still down. `screen`, `page`, `motor` and
+ * `session` let a harness walk the menus; `msg` and `suppress` say when T8 is
+ * discarding keys; `last` is the latest action of the M3 hold (1 full stroke,
+ * 2 move start, 3 move stop, 4 a 1-2 s press), with how long its press lasted.
+ * `nostop` is true on the fail-first build (M3H_FAILFIRST_NOSTOP).
+ */
+static esp_err_t diag_key_get_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+    httpd_resp_set_type(req, "application/json");
+#ifdef M3H_FAILFIRST_NOSTOP
+    const bool nostop = true;
+#else
+    const bool nostop = false;
+#endif
+    ui_bench_state_t u = {};
+    ui_bench_state(&u);
+    char r0[17], r1[17];
+    bench_json_text(r0, u.row0, sizeof(r0));
+    bench_json_text(r1, u.row1, sizeof(r1));
+    char resp[640];
+    snprintf(resp, sizeof(resp),
+             "{\"ok\":true,\"nostop\":%s,\"busy\":%s,\"screen\":\"%s\",\"state\":%d,"
+             "\"page\":%u,\"motor\":%u,\"session\":%u,\"msg\":%s,\"suppress\":%s,"
+             "\"hold\":{\"active\":%s,\"moving\":%s,\"opening\":%s},"
+             "\"last\":{\"seq\":%lu,\"action\":%u,\"opening\":%s,\"held_ms\":%lu,\"result\":%u,"
+             "\"move_at_ms\":%lu},"
+             "\"lcd\":[\"%s\",\"%s\"]}",
+             nostop ? "true" : "false", keypad_bench_busy() ? "true" : "false",
+             u.screen, u.state, (unsigned)u.status_page, (unsigned)u.motor,
+             (unsigned)u.session, u.msg ? "true" : "false", u.suppress ? "true" : "false",
+             u.hold_active ? "true" : "false", u.hold_moving ? "true" : "false",
+             u.hold_opening ? "true" : "false",
+             (unsigned long)u.last_seq, (unsigned)u.last_action,
+             u.last_opening ? "true" : "false", (unsigned long)u.last_held_ms,
+             (unsigned)u.last_result, (unsigned long)u.move_at_ms, r0, r1);
+    return httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
+}
+
+/**
+ * POST /api/diag/key -- hold a key (admin, DEV BUILDS ONLY, gh#93)
+ *
+ * Body: {"key":"1","ms":3000}: T7 reads that key from its matrix for `ms`
+ * (20-60000), so the press, the repeats and the release come from T7's own
+ * code, as from a finger. Refused as busy while an earlier key is still down.
+ */
+static esp_err_t diag_key_post_handler(httpd_req_t *req)
+{
+    if (!admin_only_or_send_error(req)) return ESP_OK;
+    httpd_resp_set_type(req, "application/json");
+
+    char body[64] = {0};
+    int  rlen = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (rlen <= 0) {
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"empty_body\"}",
+                               HTTPD_RESP_USE_STRLEN);
+    }
+    body[rlen] = '\0';
+
+    char k[4] = {0};
+    char v[12] = {0};
+    if (!json_get_field(body, "key", k, sizeof(k)) || !json_get_field(body, "ms", v, sizeof(v))) {
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"key_and_ms\"}",
+                               HTTPD_RESP_USE_STRLEN);
+    }
+    const long ms = strtol(v, NULL, 10);
+    const char key = k[0];
+    if (k[1] != '\0' || strchr("0123456789ABCD*#", key) == NULL || key == '\0' ||
+        ms < 20 || ms > 60000) {
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"range\"}", HTTPD_RESP_USE_STRLEN);
+    }
+    if (!keypad_bench_hold(key, (uint32_t)ms)) {
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"busy\"}", HTTPD_RESP_USE_STRLEN);
+    }
+    ESP_LOGI(TAG, "[bench] key '%c' held for %ld ms", key, ms);
+    return httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
+}
 #endif /* MODBUS_BENCH */
 
 /* 2.2.0 (ROTA) — pull-OTA config (admin). */
@@ -4690,6 +4785,11 @@ static const httpd_uri_t s_uri_diag_sd = {
     .uri = "/api/diag/sd", .method = HTTP_GET, .handler = diag_sd_get_handler, .user_ctx = NULL };
 static const httpd_uri_t s_uri_diag_sd_post = {
     .uri = "/api/diag/sd", .method = HTTP_POST, .handler = diag_sd_post_handler, .user_ctx = NULL };
+/* gh#93 -- the LCD's M3 hold, with nobody at the keypad. */
+static const httpd_uri_t s_uri_diag_key = {
+    .uri = "/api/diag/key", .method = HTTP_GET, .handler = diag_key_get_handler, .user_ctx = NULL };
+static const httpd_uri_t s_uri_diag_key_post = {
+    .uri = "/api/diag/key", .method = HTTP_POST, .handler = diag_key_post_handler, .user_ctx = NULL };
 #endif
 
 /* alpha.6.21 — WebSocket route (Phase 6.16-η, final T11 route). */
@@ -4753,6 +4853,7 @@ void task_web_server(void *pvParameters)
         &s_uri_diag_lcd,
         &s_uri_diag_ota, &s_uri_diag_ota_post,
         &s_uri_diag_sd, &s_uri_diag_sd_post,
+        &s_uri_diag_key, &s_uri_diag_key_post,
 #endif
     };
 #define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))

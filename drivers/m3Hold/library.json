@@ -1,0 +1,9 @@
+{
+  "name": "m3_hold",
+  "version": "0.1.0",
+  "description": "The LCD's tap-or-hold timing for M3's Open and Close keys (gh#93): a tap is a full stroke, a 1-2 s press nothing, a hold of 2 s or more a move until the release. Pure logic, host-tested",
+  "keywords": "greenhouse, window, lcd, keypad",
+  "build": {
+    "srcDir": "src"
+  }
+}

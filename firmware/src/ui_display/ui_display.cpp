@@ -81,6 +81,7 @@
 #include "lcd1602.h"
 #include "cfg_limits.h"
 #include "cfg_defaults.h"
+#include "m3_hold.h"       /* gh#93 (2.17.0) -- the LCD's tap-or-hold timing for M3 */
 
 static const char *TAG = "T8_UI";
 
@@ -305,6 +306,22 @@ static bool         s_pending_mode_toggle      = false;
 static bool         s_pending_motor            = false;
 static uint8_t      s_motor_pick_ch            = 0;
 static bool         s_manual_set_standby_on_entry = false;
+
+/* gh#93 (2.17.0): the LCD's M3 hold. On the M3 action screen a press of 1 (Open)
+ * or 2 (Close) is TIMED by drivers/m3Hold instead of acted on: a tap is a full
+ * stroke, a 1-2 s press nothing, and a hold of 2 s or more moves M3 until the
+ * key is released (T7 posts the release since 2.17.0). Releases, and the
+ * repeats of the press being timed, are routed here before any other key logic,
+ * so the transient-message timer can never swallow the release that ends a
+ * move. design/lcdM3HoldControl.md. */
+static m3_hold_t    s_m3_hold;
+/* The latest action of the hold, for the bench's GET /api/diag/key. */
+static uint32_t     s_m3_last_seq     = 0;
+static uint8_t      s_m3_last_action  = 0;      /**< m3h_action_t */
+static bool         s_m3_last_opening = false;
+static uint32_t     s_m3_last_held_ms = 0;
+static uint8_t      s_m3_last_result  = 0;      /**< 0 carried out, 1 refused, 2 Q1 full */
+static uint32_t     s_m3_last_move_at = 0;      /**< the latest move's start, ms into its press */
 static char         s_dt_buf[9]       = {0};   /**< Digit accumulator for date/time entry */
 static uint8_t      s_dt_len          = 0;     /**< Digits entered so far */
 static int          s_dt_saved_year   = 0;     /**< Year from date entry, passed to time entry */
@@ -1490,7 +1507,12 @@ static void render_motor_action(void)
     char r0[17], r1[17];
     snprintf(r0, sizeof(r0), "[M%u] %-10s",
              (unsigned)s_motor_pick_ch, st);
-    snprintf(r1, sizeof(r1), "1=Open 2=Cls *Bk");
+    /* gh#93: on M3 a press is timed; say what holding it will do. */
+    const char *hint = "1=Open 2=Cls *Bk";
+    if (s_motor_pick_ch == 3u && s_m3_hold.active) {
+        hint = s_m3_hold.moving ? "Release to stop" : "Hold 2s to move";
+    }
+    snprintf(r1, sizeof(r1), "%s", hint);
     lcd_set(r0, r1);
 }
 
@@ -2154,6 +2176,197 @@ static void handle_motor_pick(char key)
     }
 }
 
+/* ============================================================
+ * gh#93 (2.17.0) -- the LCD's M3 hold: tap to the end, hold to move
+ * ============================================================ */
+
+/** T8's clock in milliseconds, for drivers/m3Hold. Wraps; the library allows it. */
+static uint32_t ui_now_ms(void)
+{
+    return (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+}
+
+/** On the M3 action screen, the keys 1 and 2 are timed by the hold. */
+static bool m3_hold_screen(void)
+{
+    return s_state == UI_MOTOR_ACTION && s_motor_pick_ch == 3u;
+}
+
+/**
+ * @brief The safety gates of a manual window command, with the reason on the
+ *        LCD when one refuses (rc.1.5.0's locked design, shared since gh#93 so
+ *        that M1, M2 and M3's tap and hold all refuse alike).
+ *
+ *   - EG1.MOTOR_ALARM   blocks all commands.
+ *   - EG1.CALIBRATING   (boot CLOSE_ALL window or STANDBY-exit recalibration)
+ *                       blocks all commands until calibration completes.
+ *   - EG1.WIND_OVERRIDE blocks OPEN (CLOSE accepted -- closing is always safe).
+ */
+static bool manual_gate_ok(bool open_request)
+{
+    const EventBits_t bits = (EG1 != NULL) ? xEventGroupGetBits(EG1) : 0;
+    if (bits & EG1_BIT_MOTOR_ALARM) {
+        show_msg("MOTOR ALARM    ", "cmd refused    ", 1500);
+        return false;
+    }
+    if (bits & EG1_BIT_CALIBRATING) {
+        show_msg("Calibrating    ", "wait + retry   ", 1500);
+        return false;
+    }
+    if (open_request && (bits & EG1_BIT_WIND_OVERRIDE)) {
+        show_msg("WIND OVERRIDE  ", "OPEN refused   ", 1500);
+        return false;
+    }
+    return true;
+}
+
+/** Post one manual command to Q1 with SRC_OPERATOR_MANUAL. False, with a
+ *  message, when Q1 stays full for 100 ms. */
+static bool post_manual(cmd_action_t action, uint8_t ch)
+{
+    window_cmd_t cmd = {};
+    cmd.action  = action;
+    cmd.channel = ch;
+    cmd.source  = SRC_OPERATOR_MANUAL;
+    if (xQueueSend(Q1, &cmd, pdMS_TO_TICKS(100)) != pdTRUE) {
+        ESP_LOGW(TAG, "[T8] Q1 full -- manual cmd %d for M%u dropped", (int)action, (unsigned)ch);
+        show_msg("Queue full     ", "try again      ", 1200);
+        return false;
+    }
+    return true;
+}
+
+static void m3_note(m3h_out_t o, uint8_t result)
+{
+    s_m3_last_seq++;
+    s_m3_last_action  = (uint8_t)o.action;
+    s_m3_last_opening = o.opening;
+    s_m3_last_held_ms = o.held_ms;
+    s_m3_last_result  = result;
+}
+
+/** Carry out what the hold's timing returned (m3_hold.h). */
+static void m3_hold_do(m3h_out_t o)
+{
+    uint8_t result = 0u;
+    switch (o.action) {
+    case M3H_NOTHING:
+        return;
+
+    case M3H_FULL:
+        /* A tap: a full stroke, as M1 and M2 get on a press -- on the release. */
+        result = 1u;
+        if (manual_gate_ok(o.opening)) {
+            result = post_manual(o.opening ? CMD_OPEN : CMD_CLOSE, 3u) ? 0u : 2u;
+            if (result == 0u) {
+                ESP_LOGI(TAG, "[T8] M3 tap (%lu ms): full %s", (unsigned long)o.held_ms,
+                         o.opening ? "OPEN" : "CLOSE");
+                show_msg(o.opening ? "M3 opening     " : "M3 closing     ",
+                         "to the end     ", 1500);
+            }
+        }
+        break;
+
+    case M3H_MOVE_START:
+        /* The hold reached 2 s: M3 moves until the key is released. No message
+         * here -- a message would discard keys while the operator holds one. */
+        result = 1u;
+        if (manual_gate_ok(o.opening)) {
+            result = post_manual(o.opening ? CMD_OPEN : CMD_CLOSE, 3u) ? 0u : 2u;
+        }
+        if (result == 0u) {
+            s_m3_last_move_at = o.held_ms;
+            ESP_LOGI(TAG, "[T8] M3 hold: %s until released (%lu ms into the press)",
+                     o.opening ? "OPEN" : "CLOSE", (unsigned long)o.held_ms);
+        } else {
+            /* Refused: the release that ends this press must not send a stop. */
+            m3h_reset(&s_m3_hold);
+        }
+        break;
+
+    case M3H_MOVE_STOP: {
+        /* Let go. If the wind override came on during the hold, T3's close owns
+         * M3 now: T2 would refuse the stop (drive_src), so do not ask. */
+        const EventBits_t bits = (EG1 != NULL) ? xEventGroupGetBits(EG1) : 0;
+        if (bits & EG1_BIT_WIND_OVERRIDE) {
+            result = 1u;
+            show_msg("WIND OVERRIDE  ", "T3 closes M3   ", 1500);
+        } else {
+            result = post_manual(CMD_STOP, 3u) ? 0u : 2u;
+            if (result == 0u) {
+                ESP_LOGI(TAG, "[T8] M3 hold released after %lu ms: STOP", (unsigned long)o.held_ms);
+                show_msg("M3 stopped     ", "where released ", 1500);
+            }
+        }
+        break;
+    }
+
+    case M3H_MID:
+        /* 1 to 2 s: nothing moves, and the LCD says what would have. */
+        ESP_LOGI(TAG, "[T8] M3 press of %lu ms: neither a tap nor a hold", (unsigned long)o.held_ms);
+        show_msg("Tap <1s: to end ", "Hold >2s: move  ", 2000);
+        break;
+    }
+    m3_note(o, result);
+    s_dirty = true;
+}
+
+/**
+ * @brief Route a key event to the M3 hold, before any other key logic.
+ *
+ * A release is ALWAYS consumed: it is not a press anywhere. So is a repeat of
+ * the press being timed. Everything else is left to the normal dispatch, where
+ * a first press of 1 or 2 on the M3 screen starts the timing.
+ *
+ * @return true when the event was consumed.
+ */
+static bool m3_hold_route(const key_event_t *evt)
+{
+    if (evt->released) {
+        m3_hold_do(m3h_release(&s_m3_hold, evt->key, ui_now_ms()));
+        return true;
+    }
+    if (evt->repeated && s_m3_hold.active && evt->key == s_m3_hold.key) {
+        m3_hold_do(m3h_repeat(&s_m3_hold, evt->key, ui_now_ms()));
+        return true;
+    }
+    return false;
+}
+
+#ifdef MODBUS_BENCH
+void ui_bench_state(ui_bench_state_t *out)
+{
+    out->state        = (int)s_state;
+    out->status_page  = (uint8_t)(s_status_page % STATUS_PAGES);
+    out->motor        = s_motor_pick_ch;
+    out->session      = (uint8_t)s_session;
+    out->msg          = (s_msg_ticks_remaining > 0u);
+    out->suppress     = ((int32_t)(s_post_msg_suppress_until - xTaskGetTickCount()) > 0);
+    out->hold_active  = s_m3_hold.active;
+    out->hold_moving  = s_m3_hold.moving;
+    out->hold_opening = s_m3_hold.opening;
+    out->last_seq     = s_m3_last_seq;
+    out->last_action  = s_m3_last_action;
+    out->last_opening = s_m3_last_opening;
+    out->last_held_ms = s_m3_last_held_ms;
+    out->last_result  = s_m3_last_result;
+    out->move_at_ms   = s_m3_last_move_at;
+    memcpy(out->row0, s_row0, sizeof(out->row0));
+    memcpy(out->row1, s_row1, sizeof(out->row1));
+    const char *name = "other";
+    switch (s_state) {
+        case UI_STATUS:       name = "status";       break;
+        case UI_PIN_ENTRY:    name = "pin";          break;
+        case UI_MENU_ROOT:    name = "menu_root";    break;
+        case UI_MENU_ACCESS:  name = "menu_access";  break;
+        case UI_MOTOR_PICK:   name = "motor_pick";   break;
+        case UI_MOTOR_ACTION: name = "motor_action"; break;
+        default:                                     break;
+    }
+    snprintf(out->screen, sizeof(out->screen), "%s", name);
+}
+#endif
+
 /**
  * @brief rc.1.5.0 / gh#29 — handle keys in UI_MOTOR_ACTION.
  *
@@ -2190,33 +2403,16 @@ static void handle_motor_action(char key)
     if (key != '1' && key != '2') return;
     if (s_motor_pick_ch < 1u || s_motor_pick_ch > 3u) return;
 
-    const EventBits_t bits = (EG1 != NULL) ? xEventGroupGetBits(EG1) : 0;
     const bool open_request = (key == '1');
 
-    /* Safety-gate checks. Refuse silently with a transient message rather
-     * than committing a command that T2 would just discard. */
-    if (bits & EG1_BIT_MOTOR_ALARM) {
-        show_msg("MOTOR ALARM    ", "cmd refused    ", 1500);
-        return;
-    }
-    if (bits & EG1_BIT_CALIBRATING) {
-        show_msg("Calibrating    ", "wait + retry   ", 1500);
-        return;
-    }
-    if (open_request && (bits & EG1_BIT_WIND_OVERRIDE)) {
-        show_msg("WIND OVERRIDE  ", "OPEN refused   ", 1500);
+    /* Safety-gate checks (manual_gate_ok()). Refuse with a transient message
+     * rather than committing a command that T2 would just discard. */
+    if (!manual_gate_ok(open_request)) {
         return;
     }
 
     /* Build + post the command. */
-    window_cmd_t cmd = {};
-    cmd.action  = open_request ? CMD_OPEN : CMD_CLOSE;
-    cmd.channel = s_motor_pick_ch;
-    cmd.source  = SRC_OPERATOR_MANUAL;
-    if (xQueueSend(Q1, &cmd, pdMS_TO_TICKS(100)) != pdTRUE) {
-        ESP_LOGW(TAG, "[T8] Q1 full — manual cmd for M%u dropped",
-                 (unsigned)s_motor_pick_ch);
-        show_msg("Queue full     ", "try again      ", 1200);
+    if (!post_manual(open_request ? CMD_OPEN : CMD_CLOSE, s_motor_pick_ch)) {
         return;
     }
     ESP_LOGI(TAG, "[T8] Manual %s M%u (admin)",
@@ -2228,7 +2424,7 @@ static void handle_motor_action(char key)
         snprintf(msg1, sizeof(msg1), "command sent   ");
         show_msg(msg0, msg1, 1500);
     }
-    /* Stay in UI_MOTOR_ACTION — operator can hit `*` to pick another
+    /* Stay in UI_MOTOR_ACTION: the operator can hit `*` to pick another
      * motor, or wait for the menu-auto-return tick to dismiss the menu.
      * EG1_BIT_MANUAL_SESSION stays set until that exit. */
     s_dirty = true;
@@ -2491,8 +2687,15 @@ void task_ui_display(void *pvParameters)
         esp_task_wdt_reset();   /* WDT kick (1.17.29 / gh#13) */
 
         /* ── 1. Receive key event from T7 ── */
-        key_event_t evt = { '\0', false };  /* '\0' = no key (matches KP_NO_KEY) */
+        key_event_t evt = { '\0', false, false };  /* '\0' = no key (matches KP_NO_KEY) */
         bool got_key = (xQueueReceive(Q2, &evt, pdMS_TO_TICKS(UI_LOOP_MS)) == pdTRUE);
+
+        /* 1b. gh#93 (2.17.0): releases, and the repeats of a timed M3 press, go
+         * to the M3 hold FIRST -- before the message timer below can discard
+         * them. A release is never a press anywhere else. */
+        if (got_key && m3_hold_route(&evt)) {
+            got_key = false;
+        }
 
         /* ── 2. Poll Q5 for latest network status (non-blocking) ── */
         {
@@ -2589,7 +2792,10 @@ void task_ui_display(void *pvParameters)
                  * while the message was on screen, arm the repeat-suppressor,
                  * and mark dirty so the FSM state is rendered on this tick. */
                 key_event_t discard;
-                while (xQueueReceive(Q2, &discard, 0) == pdTRUE) {}
+                while (xQueueReceive(Q2, &discard, 0) == pdTRUE) {
+                    /* gh#93: a release is never discarded unheard. */
+                    (void)m3_hold_route(&discard);
+                }
                 s_suppress_repeats        = true;
                 s_post_msg_suppress_until = xTaskGetTickCount() +
                                             pdMS_TO_TICKS(POST_MSG_SUPPRESS_MS);
@@ -2662,7 +2868,41 @@ void task_ui_display(void *pvParameters)
                 /* rc.1.5.0 — gh#28 / gh#29 LCD flows */
                 case UI_MODE_TOGGLE:   handle_mode_toggle(evt.key);             break;
                 case UI_MOTOR_PICK:    handle_motor_pick(evt.key);              break;
-                case UI_MOTOR_ACTION:  handle_motor_action(evt.key);            break;
+                case UI_MOTOR_ACTION:
+                    if (m3_hold_screen() && (evt.key == '1' || evt.key == '2')) {
+                        /* gh#93: on M3 a press is timed, not acted on. A repeat
+                         * with no press being timed (its press fell inside a
+                         * message) starts nothing. */
+                        if (!evt.repeated) {
+                            m3_hold_do(m3h_press(&s_m3_hold, evt.key, evt.key == '1',
+                                                 ui_now_ms()));
+                            s_dirty = true;
+                        }
+                    } else {
+                        handle_motor_action(evt.key);
+                    }
+                    break;
+            }
+        }
+
+        /* 4b. gh#93: the M3 hold's clock -- the move's start at 2 s, and a press
+         * whose release was lost. Leaving the M3 screen ends the press: a move
+         * under way is stopped (a session timeout, an IO0 reset). While M3
+         * moves, the screen is redrawn twice a second, so it shows MOV. */
+        if (s_m3_hold.active) {
+            if (!m3_hold_screen()) {
+                if (s_m3_hold.moving) {
+                    (void)post_manual(CMD_STOP, 3u);
+                }
+                m3h_reset(&s_m3_hold);
+                s_dirty = true;
+            } else {
+                m3_hold_do(m3h_tick(&s_m3_hold, ui_now_ms()));
+                static uint8_t s_m3_redraw = 0;
+                if (s_m3_hold.moving && ++s_m3_redraw >= 5u) {
+                    s_m3_redraw = 0;
+                    s_dirty = true;
+                }
             }
         }
 
