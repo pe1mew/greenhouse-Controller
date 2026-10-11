@@ -73,7 +73,7 @@ pulled it from 2.16.2 at 12:03, on the fourth check: the three downloads before 
   - 22 vent-step decisions, all conform; 10 targeted stops, all inside the band; the config unchanged.
 - **The ROTA pull:** 2344 pulled seq 64 from 2.16.2 at 12:03 on a forced check. `fw_ver` and
   `asset_version` read 2.17.0, the image was accepted, and the rig settings and the measured band held.
-  The three checks before it ended `dl` 1 on the unit (gotcha log, 2026-10-11). The push of 2.16.2 that
+  The three checks before it ended `dl` 1 on the unit (gh#95). The push of 2.16.2 that
   set the pull up left its assets behind (gh#94).
 
 **Documents:** the FRS (FR-MM08, FR-MM06), the TSDS (T7, T8, `CMD_STOP`, the Q1 and Q2 tables), the

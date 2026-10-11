@@ -92,7 +92,7 @@ three fields.
 | Status POSTs (informational) | 15 of about 366 failed, against 4 of 366 in the 2.16.0 soak (which also drove strokes) and 0 of 274 in 2.16.2's soak, which drove nothing. The LCD sessions add HTTP traffic. Not a criterion; see gh#94 |
 | **ROTA publish** | **verified:** GitHub Release `v2.17.0`, published 2026-10-11 08:25:55 UTC. Not a draft or prerelease, marked latest, the tag on `d7bc3c3`. The SHA-256 GitHub reports for all three files matches the local ones (image `e7d85262…`, assets `b4b8f846…`, manifest `bafecbf6…`); manifest seq 64 |
 | **ROTA pull on 2344** | **PASS, from 2.16.2** (pushed 10:26), **on the fourth check.** A forced check at 12:03:03 found the update. Download and verify passed at 12:03:16, the apply committed at 12:03:30, and the unit booted at 12:03:35. `fw_ver` **and** `asset_version` read **2.17.0**, bank A, accepted, and the next check read up to date. AUTOMATIC, Lineair (`graded v2`), the gate ok, and the nine rig settings and the measured 30 mm band unchanged. Heap at 67 s: 65 KB free, 28 KB largest block |
-| ↳ the three checks before it | 10:47 (forced, 21 min after the publish), 11:48 (the unit's own hourly check) and 11:57 (forced) each ended **`dl` 1**, in the same second as the server logged the request. The server had the artefact on disk each time: `download.php` checks for it before it logs. At 11:57 the firmware verified and the assets failed. The link was good afterwards (−51 dBm, no ping loss). The cause is on the unit and not established. The leading suspect is internal RAM for TLS's 16 KB record buffers (gotcha log, 2026-10-11) |
+| ↳ the three checks before it | 10:47 (forced, 21 min after the publish), 11:48 (the unit's own hourly check) and 11:57 (forced) each ended **`dl` 1**, in the same second as the server logged the request. The server had the artefact on disk each time: `download.php` checks for it before it logs. At 11:57 the firmware verified and the assets failed. The link was good afterwards (−51 dBm, no ping loss). The cause is on the unit and not established. The leading suspect is internal RAM for TLS's 16 KB record buffers (gh#95) |
 | ↳ the push that set it up | 2.16.2 was pushed at 10:26 to give 2344 something to pull from. Its assets failed with `T13 task spawn failed`, so 2344 ran 2.16.2 with the 2.17.0-bench assets until the pull paired them. That is gh#94, a race in T13's spawn at the end of an asset upload; 2.17.0 does not touch T13 |
 
 ## Upgrading
@@ -105,8 +105,7 @@ three fields.
 
 - **A ROTA download can fail on the unit,** as three did before this pull. Nothing is written before both
   files verify, so T16 keeps the paired version it runs and tries again at its next check. On 5C88 a failed
-  download delays an update and leaves the unit as it was. The cause is not established (gotcha log,
-  2026-10-11).
+  download delays an update and leaves the unit as it was. The cause is not established (gh#95).
 - **The hold was tested with keys held by T7, not by a finger.** The bench route makes T7 read the key
   from its matrix scan, so every event downstream is T7's own. The physical keypad was not pressed.
 - **The safety-close rule was not exercised on the rig.** The rule is that a release never stops a T3
