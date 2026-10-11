@@ -9,8 +9,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [2.17.0] — 2026-10-10  (the LCD's M3 keys: a tap drives M3 to the end, a hold moves it until the key is released; gh#93)
 
 Minor: a user-visible feature (FR-MM08). It changes only the LCD's manual-motor screen for M3, which is
-admin-only. No setting, key, NVS record, payload or log encoding changes. Verified on 2344 with a bench
-build and a fail-first; not soaked, not published.
+admin-only. No setting, key, NVS record, payload or log encoding changes. **Soaked** on the bench build of
+the same code (12.25 h, PASS) and **published to the ROTA soak channel as seq 64** on 2026-10-11. 2344
+pulled it from 2.16.2 at 12:03, on the fourth check: the three downloads before it failed on the unit.
 
 **Added (gh#93, the operator's request of 2026-10-10):**
 
@@ -65,6 +66,15 @@ build and a fail-first; not soaked, not published.
 - **Fail-first:** `M3H_FAILFIRST_NOSTOP` fails `hold`. M3 ran on past the release to fully open.
 - **The release image** boots on 2344 with `fw_ver` and `asset_version` 2.17.0, on Lineair, the rig
   settings unchanged, and no bench route.
+- **The soak, 12.25 h on the bench build** (`5256009e`, a rebuild of this commit), run from Shuttle2:
+  - 80 judged strokes, every T17 counter 0, and no mode change;
+  - an LCD session every hour with the keys held by T7: 12 of 12 passed;
+  - no reboot and no coredump, the card mounted throughout, and 10 821 rows with no gap over 31 s;
+  - 22 vent-step decisions, all conform; 10 targeted stops, all inside the band; the config unchanged.
+- **The ROTA pull:** 2344 pulled seq 64 from 2.16.2 at 12:03 on a forced check. `fw_ver` and
+  `asset_version` read 2.17.0, the image was accepted, and the rig settings and the measured band held.
+  The three checks before it ended `dl` 1 on the unit (gotcha log, 2026-10-11). The push of 2.16.2 that
+  set the pull up left its assets behind (gh#94).
 
 **Documents:** the FRS (FR-MM08, FR-MM06), the TSDS (T7, T8, `CMD_STOP`, the Q1 and Q2 tables), the
 beheerder manual 1.31 (§10.11), `memory/architecture.md`, the design `design/lcdM3HoldControl.md`.

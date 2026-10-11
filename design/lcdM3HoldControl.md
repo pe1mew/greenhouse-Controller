@@ -1,7 +1,8 @@
 # LCD control of M3: tap to the end, hold to move (gh#93)
 
 **Status:** implemented in 2.17.0 and verified on 2344, 2026-10-10. Host 15 of 15; rig 25 of 25 on the bench build; the
-fail-first fails. Results: `bin/2.17.0/release-notes.md`. A minor version (a user-visible feature).
+fail-first fails. Soaked 12.25 h (PASS) and published as ROTA seq 64 on 2026-10-11. Results:
+`bin/2.17.0/release-notes.md`. A minor version (a user-visible feature).
 **Requirement:** [gh#93](https://github.com/pe1mew/greenhouse-Controller/issues/93), operator, 2026-10-10.
 
 ## 1. What the operator gets

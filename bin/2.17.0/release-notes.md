@@ -9,8 +9,9 @@ moves it until the key is released
 **Minor: a user-visible feature (FR-MM08).** It changes only the LCD's manual-motor screen for M3, which is
 admin-only. No setting, key, NVS record, status payload or log encoding changes.
 
-> **Not soaked, not published.** Every acceptance row below ran on 2344: on the bench build of the same
-> code, with keys held by T7 itself, and with a fail-first. The release image was pushed and booted.
+> **Soaked** on the bench build of the same code (12.25 h, PASS, 2026-10-10 to 10-11) and **published to the
+> ROTA soak channel as seq 64** on 2026-10-11; 2344 pulled it by ROTA. Every acceptance row below ran on 2344:
+> on the bench build, with keys held by T7 itself, and with a fail-first.
 
 ## What changed
 
@@ -86,6 +87,13 @@ three fields.
 | The first bench run | 18 of 19. The one failure was the harness: it measured a 3 s hold from CLOSED, where the rig's rope takes up its slack for about the first second of a drive, and M3 stopped PART_OPEN at 0.0 %. The case now sets M3 part-open first and compares the 3 s and 5 s holds |
 | **Fail-first**, `M3H_FAILFIRST_NOSTOP` (`babbe4e6…`) | **`hold` FAILS** (4 of 11 verdicts). T8's timing was right (moves 2060–2065 ms in, MOVE_STOP sent), but M3 ran on past the release: MOVING_OPEN at 48.3 % after the 5 s hold, then fully open |
 | **Release image on 2344** | Pushed: `fw_ver` and `asset_version` read **2.17.0**, bank B, accepted. AUTOMATIC, Lineair (`graded v2`), position gate ok. Heap at 76 s: 70 KB free, 26 KB largest block. The nine rig settings unchanged |
+| **Soak** (12.25 h, 2026-10-10 16:52 to 10-11 05:07, the bench build `5256009e…`, a rebuild of `d7bc3c3`; run from Shuttle2) | **PASS.** On the hour, a scripted M3 session (`bin/at_wp_strokes.py`): 80 judged strokes, every T17 counter 0 (stalls, early stops, rejected samples, comm errors, not reached), no mode change. At :30, an LCD session with the keys held by T7 (`at_lcd_m3_hold.py hold back`): **12 of 12 passed**, 12 verdicts each. `bin/sd_soak.py`, 0 FAIL: no reboot and no coredump, the card mounted in 735 of 735 samples, 10 821 rows with the largest gap 31 s, no SYSTEM -1 row, retention 30. Heap 64 → 65 KB free, 31 KB largest, from the first hour to the last; floor 10 KB |
+| Law and stops (the same window) | **22 vent-step decisions, all conform** (`bin/law_conformance.py`; graded v2 in force; rule 1 not exercised). 10 targeted stops, all inside the 30 mm band, none answered by an opposite correction. The config and the measured band were identical at the start and the end |
+| Status POSTs (informational) | 15 of about 366 failed, against 4 of 366 in the 2.16.0 soak (which also drove strokes) and 0 of 274 in 2.16.2's soak, which drove nothing. The LCD sessions add HTTP traffic. Not a criterion; see gh#94 |
+| **ROTA publish** | **verified:** GitHub Release `v2.17.0`, published 2026-10-11 08:25:55 UTC. Not a draft or prerelease, marked latest, the tag on `d7bc3c3`. The SHA-256 GitHub reports for all three files matches the local ones (image `e7d85262…`, assets `b4b8f846…`, manifest `bafecbf6…`); manifest seq 64 |
+| **ROTA pull on 2344** | **PASS, from 2.16.2** (pushed 10:26), **on the fourth check.** A forced check at 12:03:03 found the update. Download and verify passed at 12:03:16, the apply committed at 12:03:30, and the unit booted at 12:03:35. `fw_ver` **and** `asset_version` read **2.17.0**, bank A, accepted, and the next check read up to date. AUTOMATIC, Lineair (`graded v2`), the gate ok, and the nine rig settings and the measured 30 mm band unchanged. Heap at 67 s: 65 KB free, 28 KB largest block |
+| ↳ the three checks before it | 10:47 (forced, 21 min after the publish), 11:48 (the unit's own hourly check) and 11:57 (forced) each ended **`dl` 1**, in the same second as the server logged the request. The server had the artefact on disk each time: `download.php` checks for it before it logs. At 11:57 the firmware verified and the assets failed. The link was good afterwards (−51 dBm, no ping loss). The cause is on the unit and not established. The leading suspect is internal RAM for TLS's 16 KB record buffers (gotcha log, 2026-10-11) |
+| ↳ the push that set it up | 2.16.2 was pushed at 10:26 to give 2344 something to pull from. Its assets failed with `T13 task spawn failed`, so 2344 ran 2.16.2 with the 2.17.0-bench assets until the pull paired them. That is gh#94, a race in T13's spawn at the end of an asset upload; 2.17.0 does not touch T13 |
 
 ## Upgrading
 
@@ -95,7 +103,10 @@ three fields.
 
 ## Known limitations
 
-- **Not soaked, not published.**
+- **A ROTA download can fail on the unit,** as three did before this pull. Nothing is written before both
+  files verify, so T16 keeps the paired version it runs and tries again at its next check. On 5C88 a failed
+  download delays an update and leaves the unit as it was. The cause is not established (gotcha log,
+  2026-10-11).
 - **The hold was tested with keys held by T7, not by a finger.** The bench route makes T7 read the key
   from its matrix scan, so every event downstream is T7's own. The physical keypad was not pressed.
 - **The safety-close rule was not exercised on the rig.** The rule is that a release never stops a T3
