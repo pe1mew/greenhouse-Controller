@@ -75,6 +75,10 @@ pulled it from 2.16.2 at 12:03, on the fourth check: the three downloads before 
   `asset_version` read 2.17.0, the image was accepted, and the rig settings and the measured band held.
   The three checks before it ended `dl` 1 on the unit (gh#95). The push of 2.16.2 that
   set the pull up left its assets behind (gh#94).
+- **A mode 1 soak in production's configuration, 24.25 h** (2026-10-25/26, the release image, no
+  sensor, `cr_priority` 0, the law `stepped` v2, which had never run on hardware in mode 1): no
+  reboot, no gap over 31 s; 14 decisions, all conform; in each of 7 steered sessions all three
+  windows opened and closed again (`bin/law_steer.py`, new: the greenhouse was below `t_min`).
 
 **Documents:** the FRS (FR-MM08, FR-MM06), the TSDS (T7, T8, `CMD_STOP`, the Q1 and Q2 tables), the
 beheerder manual 1.31 (§10.11), `memory/architecture.md`, the design `design/lcdM3HoldControl.md`.
