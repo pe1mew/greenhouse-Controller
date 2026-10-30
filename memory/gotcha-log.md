@@ -109,6 +109,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-07-31** — anti-thrash dwell was unguarded during travel (gh#48) [RESOLVED 2.3.1, gh#48]
 
 ### Modbus bus, sensors & clock (T5, drivers)
+- **2026-10-30** — the whole bus fails about 60 % of reads, every slave together, while A–B reads a correct 60 Ω: remove a terminator first (5C88: the window sensor's 120 Ω). 20 kΩ bias into 60 Ω leaves about 5 mV idle; bisect with `bin/bus_watch.py`
 - **2026-09-19** — no bus-KPI rows (`LOG_SYSTEM 31`) for ~2 h after a boot: the first hourly call only takes the baseline; judge the bus from the diag counters until then
 - **2026-09-19** — after an OTA push the unit's clock is HOURS wrong for ~5 min and the SD file cannot be found by its boot time (the boot SNTP failed, the 2026-07-13 rate limit, and T4 seeded a CORRECT clock from a DS1307 that was 5 h 42 min behind; gh#55)
 - **2026-09-16** — a slave stops answering only while the flash is being written (OTA): the RS485 direction line was released by the task, and a flash write stalls the task up to 665 ms (gh#70, fixed: the UART drives DE/RE now) [RESOLVED 2.8.0, gh#70]
@@ -244,6 +245,30 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
+
+## 2026-10-30 — 5C88's whole bus failed about 60 % of its reads once the M3 leg was extended: a 120 Ω terminator on the window sensor was the difference
+
+**Problem:** with a new transceiver fitted and the leg extended to the M3 wire encoder, all three slaves failed together: address 1 41 % OK, 44 39 %, 40 47 %. A healthy S200 on another leg failed too. The failures came in shared bursts, and they were not steady (address 40 went from 149 OK to none). A second FG6485A behaved the same, which ruled out the sensor.
+
+**What each step showed** (with `bin/bus_watch.py`, on the release build, no login):
+
+| On the bus | Result |
+|---|---|
+| Everything, A–B 60 Ω | all three about 40 % |
+| Wind only | 100 % |
+| T/RH + window sensor | 0 % |
+| Window sensor only | works (about 95 %) |
+| Wind + window sensor | 100 % |
+| Everything, second FG6485A | 29–69 % |
+| **Everything, the 120 Ω on the window sensor removed** | **100 %: 29 of 29 reads in the first 160 s, no faults** |
+
+**Root cause: not established past that last row.** The fix is proven; the mechanism is not. 60 Ω looked correct, so termination was cleared too early. The leading explanation is bias: R19/R20 (20 kΩ) into 60 Ω leave only about 5 mV on the idle line, so the line is undefined, and an FG6485A's input network may be enough to tip it. Neither FG6485A datasheet says what its inputs contain, and nobody has measured it. The FG6485A has no documented terminator, so what remains on the bus after the removal is unknown: **measure A–B to record it.**
+
+**Fix:** remove the window sensor's 120 Ω on that site. **A correct 60 Ω does not prove a bus healthy.** At 9600 baud on these lengths, reflections do not matter, and a terminator costs idle bias: when a bus fails as a whole, try fewer terminators before anything else. If it recurs, the lasting cure is stronger bias at the controller (about 470 Ω from A to +3.3 V and from B to GND) in place of the 20 kΩ.
+
+**Also learned:** this was the first time 2.17.0's Modbus driver ran against a real FG6485A and S200 (gh#70, the 20 ms gap): both are clean, which closes the unknown in finding 6 of `design/releaseComparison_2.3.1_vs_2.17.0.md`. What killed the first transceiver is unknown. T5's ALARM rows carry only status 1 (COMM), so the SD log cannot separate timeouts from CRC errors; the bus counters and a bisect did the work.
+
+**Where it lives:** the window sensor board's terminator at the site; `design/technicalHardwareDesignSpecification.md` §4.3.4 (R19, R20, J8); `bin/bus_watch.py`.
 
 ## 2026-10-11 — ROTA downloads ended `dl` 1 in their first second, more than an hour after the publish: the server had the file every time (gh#95)
 
