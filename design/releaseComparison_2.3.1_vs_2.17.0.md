@@ -26,6 +26,8 @@ configuration** on 2344 (2026-10-25/26: no sensor, `cr_priority` 0, the law `ste
 decisions conform; `bin/2.17.0/release-notes.md`). That soak's T/RH and wind come from the **emulator**, not
 real sensors (finding 6).
 
+**Outcome (2026-10-30).** The operator put 2.17.0 on 5C88 by a push on site around 2026-10-28, not by ROTA, so `mainstream` still points at 2.3.1. A failed RS485 transceiver was replaced, and the bus then needed the window sensor's 120 Ω removed (gotcha log, 2026-10-30). With that, a real FG6485A and S200 run clean on 2.17.0's driver, which closes the unknown in finding 6. `travel_m3` stays 171 by the operator's decision. Heap at 78 min of uptime: 68 KB free, 24 KB largest, floor **5 KB**, below finding 7's expected 10-18 KB, though in line with 2.16.2's soak floor of 4-5 KB. Everything below is the comparison as written before the update.
+
 ---
 
 ## 1. Findings

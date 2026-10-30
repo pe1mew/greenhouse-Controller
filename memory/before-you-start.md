@@ -26,7 +26,7 @@ row parses as a ventilation decision (gh#54). A new emitter needs its own `param
 branch in the same change. **`log_type_t` has 10 members as of 2.5.0** (`types/app_types.h`, NOT
 `event_logger.h`): SENSOR, RELAY, MODE_CHANGE, SETPOINT, SESSION, ALARM, SYSTEM, SENSOR_HR, SUN,
 **PIN_AUTH** (gh#58). **Append, never insert** — the ordinal is stored in every archived CSV row and
-NVS blob. **`LOG_SYSTEM value_a` is occupied -2, -1 and 0..30 as of 2.6.0** — and the table in
+NVS blob. **`LOG_SYSTEM value_a` is occupied -2, -1 and 0..32 as of 2.8.0 (6 retired)** — and the table in
 `event_logger.h` was STALE at 0..21 until then, which is how gh#59 came to be filed claiming 22 was
 free when 22/23/24 had been ROTA since 2.2.0. **The emitters are authoritative, not the comment:
 `grep -rn 'value_a' --include=*.cpp firmware/src/` and read the helper call sites (ROTA's go through
