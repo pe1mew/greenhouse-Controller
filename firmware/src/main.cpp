@@ -1554,13 +1554,14 @@ extern "C" void app_main(void)
      * override. In phases 2-3 this task is a read-only observer, so it has no
      * claim on priority over control work.
      *
-     * 4 KB stack: no TLS, no large buffers — one 15-register Modbus read and a
-     * handful of u32s. */
+     * 5 KB stack (gh#97): 4 KB left 724 B after a full characterisation run
+     * (measured on 2344, 2026-10-30, `run_end()` and its NVS save the deepest
+     * path), under T1's 1 KB warning line. No TLS, no large buffers. */
     {
         BaseType_t rc = xTaskCreatePinnedToCore(
             task_window_pos,
             "T17-wpos",
-            4096,                  /* stack bytes (ESP-IDF) */
+            5120,                  /* stack bytes (ESP-IDF) */
             NULL,
             4,                     /* priority — below T2/T3 (6) and T4/T5/T6 (5) */
             &task_t17,

@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.17.1] — 2026-10-30  (the release comparison's follow-ups: T17's stack, the GUI poll, the ROTA mark, the overflow row)
+
+Patch. Bug fixes only: no setting, key or payload change. Not soaked, not published. Details and every number: `bin/2.17.1/release-notes.md`.
+
+**Fixed:**
+
+- **T17's stack, 4096 to 5120 B** (gh#97): a full characterisation run left 724 B. T1's sweep now covers T16 and T17, and bench builds report it on `GET /api/diag/windowpos?stacks`.
+- **The GUI's commissioning poll** (gh#98) runs only for an admin on the Motors tab of a unit with a sensor.
+- **The ROTA high-water mark** (gh#99) is written by T13 at the bank switch, not when T13 is spawned, so a failed install can be retried. **Not yet run on hardware.**
+- **Q3 overflow is `LOG_SYSTEM` 33** (gh#100), count in `value_b`. The parser also decodes −1, −2 and T10's 19 rows.
+- **A unit with no sensor shows information, not a warning, about Linear** (gh#101). `ctrl_mode_m3` stays 1 by default.
+- **An idle abort is refused on a unit with no sensor** (gh#102).
+- **Documentation drift** (gh#103), including the lost `[2.15.0]` heading below.
+
+---
+
 ## [2.17.0] — 2026-10-10  (the LCD's M3 keys: a tap drives M3 to the end, a hold moves it until the key is released; gh#93)
 
 Minor: a user-visible feature (FR-MM08). It changes only the LCD's manual-motor screen for M3, which is

@@ -16,12 +16,12 @@ READING IT
 T5 reads addr 1 and addr 44 every `poll_interval_s` (30 s), with one retry after
 a failure. A poll of addr 1 is one transaction and of addr 44 two, so a healthy
 minute is 2 ok for addr 1 and 4 ok for addr 44. T17 reads addr 40 only when
-`wpos_fitted_m3` is 1: every 30 s while it probes, every 30 s at rest once the
-gate is ok, much faster while M3 moves.
+`wpos_fitted_m3` is 1: about 4 ok a minute at rest, once a second or faster
+while M3 moves.
 
 A slave's `err` does not say why. Timeouts, CRC and framing errors are told
-apart in the SD log (T5's ALARM rows carry the driver status in value_b) and on
-a bench build's `GET /api/diag/windowpos`.
+apart only on a bench build's `GET /api/diag/windowpos`: T5's ALARM rows carry
+status 1 (COMM) for all of them.
 
 USAGE
 -----
