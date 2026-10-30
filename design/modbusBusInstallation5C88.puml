@@ -1,0 +1,65 @@
+@startuml modbusBusInstallation5C88
+' ============================================================
+' Greenhouse Ventilation Controller
+' UML deployment diagram: the Modbus RS485 bus as installed at
+' Herenboeren Willemshoeve (5C88)
+'
+' Layout, lengths and terminator positions: the operator,
+' 2026-10-30. Board details: hardware/ModBusRS485*CableJunction/pcb.
+' Controller details: design/technicalHardwareDesignSpecification.md 4.3.
+' PCB types follow from each box's connections.
+' ============================================================
+
+title Modbus RS485 bus as installed at Herenboeren Willemshoeve (5C88)\nUML deployment diagram, 2026-10-30
+
+left to right direction
+skinparam defaultTextAlignment left
+skinparam shadowing false
+skinparam ArrowFontSize 11
+skinparam ArrowColor #333333
+skinparam node {
+  BackgroundColor #FFFFFF
+  BorderColor #444444
+  FontSize 12
+}
+skinparam rectangle {
+  BackgroundColor #F0F4FF
+  BorderColor #5566AA
+}
+
+rectangle "Outdoors, 6 m mast" <<location>> as MAST {
+  node "**SenseCAP S200**\nwind sensor\nModbus addr **44**" <<device>> as S200
+  node "**Junction box 1**\nend PCB, SingleCableJunction\n**TERMINATOR 1: 120 Ω**\nR1 enabled by JP3" <<PCB>> as BOX1
+}
+
+rectangle "Controller position, greenhouse wall" <<location>> as CTRLPOS {
+  node "**Junction box 2**\nT PCB, DualCableJunction\nno terminator: JP9, JP10 open" <<PCB>> as BOX2
+  node "**Controller 5C88** (bus master)\nLOLIN S3, SIT65HVD08P\nSM712 TVS on A and B\nR19, R20: 20 kΩ idle bias\nR21: 120 Ω, **disabled** (J8 off)" <<device>> as CTRL
+}
+
+rectangle "T/RH position, greenhouse" <<location>> as THPOS {
+  node "**Junction box 3**\nT PCB, DualCableJunction\nno terminator: JP9, JP10 open" <<PCB>> as BOX3
+  node "**FG6485A**\ntemperature and humidity\nModbus addr **1**\n**TERMINATOR 2: 120 Ω**\nin the sensor" <<device>> as FG
+}
+
+rectangle "M3 window" <<location>> as M3POS {
+  node "**Wire encoder board**\nM3 window position sensor\nModbus addr **40**\nno stub, cable ends here\n120 Ω **disabled** 2026-10-30" <<device>> as ENC
+}
+
+S200 -- BOX1 : stub\n2 m
+BOX1 -- BOX2 : <<RS485>>\n10 m
+BOX2 -- CTRL : stub
+BOX2 -- BOX3 : <<RS485>>\n6 m
+BOX3 -- FG : stub\nabout 1 m
+BOX3 -- ENC : <<RS485>>\n6 m
+
+legend bottom
+  **Bus:** Modbus RTU, 9600 baud 8N1, RS485 half duplex. Slaves are addresses 1, 40 and 44. Trunk 22 m from box 1 to the window sensor, plus the stubs.
+  **Termination:** two 120 Ω, at box 1 and in the T/RH sensor, so A to B should read 60 Ω. The T/RH's sits mid-bus; the window sensor's end has none.
+  **Cable between junction PCBs:** RJ45 (215877-1). 24 V on pins 4, 5 and GND on pins 7, 8. A and B on pins 1, 2 or 3, 6, set by the pair selector.
+  **End PCB, SingleCableJunction:** one RJ45, one stub (J2). 120 Ω R1 enabled by JP3, which is CLOSED as made: terminated unless the trace is cut.
+  **T PCB, DualCableJunction:** two RJ45, two stubs, joined by JP7 and JP8 (closed as made). 120 Ω R1 and R2 enabled by JP9 and JP10, OPEN as made: not terminated.
+  **Bias:** R19, R20 at the controller only. 20 kΩ into 60 Ω leaves about 5 mV idle.
+endlegend
+
+@enduml

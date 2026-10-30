@@ -268,6 +268,8 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 
 **Also learned:** this was the first time 2.17.0's Modbus driver ran against a real FG6485A and S200 (gh#70, the 20 ms gap): both are clean, which closes the unknown in finding 6 of `design/releaseComparison_2.3.1_vs_2.17.0.md`. What killed the first transceiver is unknown. T5's ALARM rows carry only status 1 (COMM), so the SD log cannot separate timeouts from CRC errors; the bus counters and a bisect did the work.
 
+**Layout, from the operator the same day:** terminator 1 in junction box 1 (wind), terminator 2 in the T/RH sensor at box 3, the window sensor's 120 Ω disabled, J8 off on the controller: `design/modbusBusInstallation5C88.puml`. **That does not fit the 60 Ω above:** with the window sensor's 120 Ω still on, three terminators would read 40 Ω. One of the two is wrong, so the table's first row and "two terminators" stay open until A–B is measured. It should read 60 Ω today; 120 Ω would mean the T/RH's is not across A and B.
+
 **Where it lives:** the window sensor board's terminator at the site; `design/technicalHardwareDesignSpecification.md` §4.3.4 (R19, R20, J8); `bin/bus_watch.py`.
 
 ## 2026-10-11 — ROTA downloads ended `dl` 1 in their first second, more than an hour after the publish: the server had the file every time (gh#95)
