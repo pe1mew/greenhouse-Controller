@@ -927,7 +927,9 @@ def _decode_system(row: dict) -> str:
       T2    = relay_controller.cpp (boot-cal skipped)
 
     Subtypes:
-      a=-1, b=count                   Q3 drop-overflow (T9 synthetic)
+      a=-1, b=0                       SD write failure (T9; never a Q3 overflow, gh#100)
+      a=-2                            SD low space at the retention floor (T9)
+      a=33, b=count                   Q3 overflow (T9 synthetic, 2.17.1+)
       a=0,  b=0/1/2/3 (initiator=WEB) T14 outcome / diagnostic skip (a=0 = no HTTP response)
       a=HTTP 100-599, b=1 (initiator=WEB) T14 log upload HTTP error code (gh#34, 2.1.1+)
       a=1,  b=0/1                     STA (WiFi client) connected/disconnected
@@ -955,9 +957,15 @@ def _decode_system(row: dict) -> str:
         ch        = int(row.get("ch", 0) or 0)
 
         # ---------------------------------------------------------------
-        # Q3 drop overflow (T9 synthetic)
+        # T9's own rows (gh#100). -1 was never a Q3 overflow: before 2.17.1 the
+        # overflow row put its count in value_a, so one of 1-32 rows reads as
+        # the real subtype of that number, and cannot be told from it.
         # ---------------------------------------------------------------
         if va == -1:
+            return "SD write failed, logging suspended"
+        if va == -2:
+            return "SD low space at the retention floor, logging suspended"
+        if va == 33:
             return f"Q3 queue overflow: {vb} event(s) dropped"
 
         # ---------------------------------------------------------------
@@ -1240,7 +1248,7 @@ def _decode_system(row: dict) -> str:
             _ROTA_DL    = {0: "OK", 1: "TLS/pinned-cert failure",
                            2: "SHA-256/size mismatch",
                            3: "downgrade / seq rejected", 4: "min_version refusal"}
-            _ROTA_APPLY = {0: "committed — reboot scheduled",
+            _ROTA_APPLY = {0: "handed to T13 (SYSTEM 16 = installed, 17 = failed)",
                            1: "deferred (night-window / quiet gate)",
                            2: "apply failed"}
             if va == 22:
@@ -1295,6 +1303,12 @@ def _decode_system(row: dict) -> str:
         # those rows readable instead of falling through to the opaque
         # "System event: a=N b=M" generic.
         # ---------------------------------------------------------------
+        if va == 19 and initiator in ("SYS", "") and vb in (0, 1):
+            return "WiFi: DHCP renewed" if vb == 0 else "WiFi: STA reassociated"
+        if va >= 34 and vb == 0 and initiator in ("SYS", ""):
+            # A heartbeat always carried a free heap, so this is an old-form
+            # overflow row (gh#100), with the count in value_a.
+            return f"Q3 queue overflow: {va} event(s) dropped (pre-2.17.1 form)"
         if va >= 19 and initiator in ("SYS", ""):
             return (f"Legacy heartbeat (pre-a.6.35.3): "
                     f"uptime={va} s, free internal heap={vb} KB")

@@ -9,7 +9,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [2.17.0] — 2026-10-10  (the LCD's M3 keys: a tap drives M3 to the end, a hold moves it until the key is released; gh#93)
 
 Minor: a user-visible feature (FR-MM08). It changes only the LCD's manual-motor screen for M3, which is
-admin-only. No setting, key, NVS record, payload or log encoding changes. **Soaked** on the bench build of
+admin-only. Against 2.16.2 no setting, key, NVS record, payload key or log encoding changes. One existing
+value gains a case: `M3` can now read `PART_OPEN` under timed control, after an LCD hold. **Soaked** on the bench build of
 the same code (12.25 h, PASS) and **published to the ROTA soak channel as seq 64** on 2026-10-11. 2344
 pulled it from 2.16.2 at 12:03, on the fourth check: the three downloads before it failed on the unit.
 
@@ -384,6 +385,10 @@ publishes.
   0, no reboot. Its 9 targeted stops were judged 0.0–0.3 % past their aims, never before them.
 
 Details: `bin/2.15.1/release-notes.md`.
+
+---
+
+## [2.15.0] — 2026-09-27  (humidity venting gets a floor, dryness stops closing against heat, and the law in force is published)
 
 Minor: the control law changes behaviour, the SD log gains a row and the status payload a field
 ([gh#84](https://github.com/pe1mew/greenhouse-Controller/issues/84)). **At `cr_priority` 0 — the

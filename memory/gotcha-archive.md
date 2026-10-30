@@ -47,3 +47,48 @@ Retired 2026-07-20 (first pass): 3 of 32 entries. The other 10 resolved entries 
 **Fix:** Timer callback spawns a dedicated `reboot_worker_task` with a 4 KB stack; that task calls `esp_restart()`. `firmware/src/ota_manager/ota_manager.cpp` — `reboot_timer_cb` and `reboot_worker_task`. Landed in 2.0.0-rc.1.2.
 
 **Why it is cold:** the design changed — nothing calls `esp_restart()` from a timer callback any more. The general lesson (a task doing TLS or WiFi teardown needs ≥ 12–16 KB of stack) survives in the main log's T16 stack-overflow entry.
+
+## 2026-10-10 — a bring-up task still took key events off Q2 every 5 s
+
+**Problem:** gh#93 stops M3 when the operator lets go of an LCD key, so T7's new release event has to reach T8. While designing it, the keypad queue Q2 turned out to have a second consumer: `heartbeat_task` in `main.cpp` drained it every 5 s and logged each event to serial.
+
+**Root cause:** the drain was the keypad's acceptance test in alpha.6.4, before T8 existed. T8 became Q2's consumer in Phase 7, and the drain stayed. With two consumers on one queue, whichever receives first gets the event. T8 almost always waits on Q2, so a key press lost this way was rare and never explained. A lost release, though, would let a hold run on until T8's 400 ms fail-safe.
+
+**Fix (2.17.0):** the drain is removed, and T8 is Q2's only consumer (the TSDS Q2 row says so). **When the real consumer of a queue arrives, remove the bring-up reader.**
+
+**Where it lives:** `firmware/src/main.cpp` (`heartbeat_task`), `firmware/src/ui_display/ui_display.cpp`.
+
+**Why it is cold:** the code is gone. 2.17.0 removed the drain, and T8 is Q2's only consumer (`ui_display.cpp`). Retired 2026-10-30.
+
+## 2026-09-12 — LCD-set STANDBY survives a reboot but its auto-clear flag does not, pausing ventilation indefinitely (gh#65) [RESOLVED 2026-09-16, 2.8.0]
+
+**Problem**: FDA4 sat in STANDBY for over two hours. Three later LCD admin
+sessions opened and closed normally without clearing it, and logging out of the
+web GUI did nothing. The `MODE` log shows `STANDBY entered` via LCD at 18:11:16
+and **no matching exit**.
+
+**Root cause**: the state is persisted, the authorisation to clear it is not.
+`ui_display.cpp:301` holds `static bool s_manual_set_standby_on_entry` — RAM
+only, false on every boot — and `session_close()` clears STANDBY **only** if
+that flag is set. Meanwhile `data_manager.cpp:2177` writes the STANDBY to NVS
+and `:1435` restores it at boot. Any reboot between "menu sets STANDBY" and
+"session closes" keeps the state and loses the permission to release it, after
+which no future session can ever clear it. Surfaced because the unit had been
+OTA-flashed six times in sixteen minutes.
+
+**Fix**: filed as **gh#65**, not yet fixed. Only an *explicit* exit works, since
+that path calls `dm_set_standby()` unconditionally: the LCD Scherm-3 toggle, or
+`POST /api/mode {"mode":"automatic"}` (which posts `CMD_RECALIBRATE` and drives
+the channels). **On production this is worse than on the rig**: a power blip or
+a ROTA night-window update during an open admin session leaves 5C88 with
+ventilation paused indefinitely, reporting `mode: STANDBY` truthfully with no
+fault anywhere. Rule to keep: **a state that survives a reboot must not depend
+on RAM to be released.**
+
+**Resolved 2026-09-16 (2.8.0).** The menu now takes a STANDBY *hold* (`dm_standby_hold(DM_STANDBY_HOLD_LCD, …)`), which is never written to NVS, so the state and its release both live in RAM and a reboot ends them together. The mechanism was built the same day for the web teach, which needed the same pause. Session end still drops the dwell debt and recalibrates. A web teach and the LCD menu can hold the pause together, and it ends only when both sessions have.
+
+**Verified on hardware the same day with `bin/at_lcd_standby.py`**, which needs a person at the keypad. It has four cases: L (logout: STANDBY off, windows recalibrate), E (an operator's own STANDBY outlives a menu session), C (a web teach and the menu hold the pause together) and R (a reboot ends the pause). All four pass on the fix. **Fail-first:** on the build before it (088e463), C and R FAIL. R is this entry's trap exactly: STANDBY came back after the boot. The SD log shows the difference directly. The old build's menu row is a plain "STANDBY entered via LCD" (`value_b` 0, persisted); the fixed build's says "held for manual window control" (`value_b` 1).
+
+**Where it lives**: gh#65; `firmware/src/ui_display/ui_display.cpp` (`session_close()`, the two menu-entry sites); `firmware/src/data_manager/data_manager.cpp` (`dm_standby_hold()` / `dm_standby_release()`).
+
+**Why it is cold:** the design changed in 2.8.0: the menu takes a RAM-only hold, so state and release end together. One caveat: a 2.3.1 image still holds the defect, should a unit ever run one again. Retired 2026-10-30.

@@ -619,16 +619,26 @@ function charStart() {
     .catch(commPoll);
 }
 
-setInterval(commPoll, 1000);
+// gh#98: only for an admin looking at the Motors tab, on a unit with a sensor.
+// Everything this feeds is in that tab. It used to run for anyone on any tab,
+// and every call renewed the session, and an anonymous call that crossed a
+// login in flight came back 401 and logged the fresh login out of the page.
+// commPoll() itself stays unguarded: applyWposFitted, commAct and charStart
+// call it directly, and showTab() polls once on opening the tab.
+setInterval(function () {
+  if (g_role !== 'admin' || g_wpos_fitted === false || document.hidden) return;
+  const tab = document.getElementById('tab-motor');
+  if (tab && tab.classList.contains('active')) commPoll();
+}, 1000);
 
 // ── Status handler ───────────────────────────────────────────────────────────
 // A travelling window shows its DIRECTION. The payload has always carried
 // MOVING_OPEN and MOVING_CLOSE separately and the LCD has always shown `MOV>` /
 // `MOV<`; this table was the only place collapsing them into one word.
-// PART_OPEN (2.12.0) is M3 resting at a commanded target. In practice the
-// branch below renders M3 as a percentage instead, because reaching that
-// state requires a trusted position -- these entries exist so a raw enum
-// name can never reach the operator if that ever stops being true.
+// PART_OPEN (2.12.0) is M3 resting at a commanded target, or since 2.17.0
+// wherever an LCD hold left it. With a trusted position the branch below renders
+// M3 as a percentage instead; without one (a hold under timed control) this
+// entry is what the operator reads.
 const WIN_LABELS = { OPEN: 'OPEN', CLOSED: 'CLOSED',
                      MOVING_OPEN: 'OPENING', MOVING_CLOSE: 'CLOSING',
                      PART_OPEN: 'PART OPEN', UNKNOWN: '?' };
@@ -662,8 +672,11 @@ function m3LinearWhyNot(gate, reason) {
   const bad  = function (t) { return { text: head + t, fine: false }; };
   switch (gate) {
     case 'not_fitted':
-      return bad('"Position sensor fitted" is set to No, so nothing is read.'
-           + ' Set it to Yes if the sensor is installed.');
+      // gh#101: FR-WPF05, "not fitted" is never shown as a fault. Linear is the
+      // default on every unit, so this is the normal state of one with no sensor.
+      return { text: 'No position sensor is set as fitted, so M3 runs on its travel'
+           + ' time, as it should on a unit without one. If M3 has a sensor, set'
+           + ' "Position sensor fitted" to Yes.', fine: true };
     case 'no_sensor':
       return bad('the position sensor is not answering. Check the sensor on'
            + ' the Modbus bus (address 40) and its wiring \u2014 it is re-probed'
@@ -1151,9 +1164,9 @@ function doLogout() {
 //   1. Client-side idle logout: if the user has not interacted for
 //      g_session_timeout_ms, call doLogout() to invalidate the session
 //      on the server and return to the login form.
-//   2. Server-side validity probe: fetch /api/whoami (which does NOT slide
-//      the server-side expiry) to detect forced logout or device reboot
-//      while the user is still active.
+//   2. Server-side validity probe: fetch /api/whoami to detect forced logout
+//      or device reboot while the user is still active. It does slide the
+//      server-side expiry (web_server.cpp, whoami_handler).
 setInterval(function () {
   if (g_role === null) return;
   if (Date.now() - g_last_activity >= g_session_timeout_ms) {
@@ -1866,6 +1879,7 @@ function showTab(id) {
   });
   // Refresh log file list each time the Log tab is opened
   if (id === 'tab-log') { loadLogFiles(); refreshCoredumpStatus(); }
+  if (id === 'tab-motor' && g_role === 'admin') commPoll();
   // Refresh OTA status + ROTA config/last-check each time the System tab opens
   if (id === 'tab-system' && g_role === 'admin') { loadOtaStatus(); loadOtaConfig(); loadOtaCheck(); }
   // Refresh status-website settings + last-attempt indicators on the Web tab

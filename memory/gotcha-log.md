@@ -70,12 +70,11 @@ Entries that are resolved **and can no longer recur** (code deleted, design chan
 
 ## Index — by where it bites you
 
-126 entries is too many to scan. Find your subsystem, then **Ctrl+F the date** to jump.
+Well over a hundred entries is too many to scan. Find your subsystem, then **Ctrl+F the date** to jump.
 Hooks are the *symptom*, not the title — you rarely know the cause when you arrive here.
 Entries stay in reverse-chronological order below; this index is the only grouped view.
 
 ### Windows, climate & manual control (T2, T6, T8)
-- **2026-10-10** — a bring-up task still drained Q2 every 5 s and could take a key event from T8 (two consumers on one queue) [RESOLVED 2.17.0]
 - **2026-10-10** — a short M3 hold from CLOSED moves the leaf nothing: the rope takes up its slack first (measure holds from part-open)
 - **2026-10-02** — a pulse test reads 0 mm for every pulse, then the encoder reports NOT FOLLOWING (0x80), which looks like a detached draw wire: the wind safe-fail had closed M3, and the harness kept pulsing it against its end switch [RESOLVED: the harness checks before every pulse]
 - **2026-10-02** — a soak's stroke sessions FAIL at dawn and end the run: the greenhouse is colder than the lowest `t_max` the harness can set, so there is no heat demand, and under v2 humidity alone never opens M3 — the firmware was right [RESOLVED: the harness skips such a session]
@@ -96,7 +95,6 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-09-17** — a fail-first run passes when its trigger is a power cycle (how late T17 joins the boot recalibration varies, 2.5-5.5 s); also: position reads 0 for ~1.2 s before the closed end sensor makes (gh#78)
 - **2026-09-17** — a test that tells the operator to press Open "when M3 is closed" gets a reversal instead (T2 drives 5 s past the leaf stopping)
 - **2026-09-16** — the M3 teach commits from one end and never from the other (it drove one traverse; T6 finished the OPEN case by chance — a genuine success credited to the wrong actor)
-- **2026-09-12** — unit stuck in STANDBY forever; LCD login/logout will not clear it (gh#65 — NVS state, RAM-only release flag) [RESOLVED 2.8.0: the menu takes a non-persisted hold]
 - **2026-09-12** — a config value you just wrote reads back as the OLD one (`POST /api/config` is async: Q4 -> T4 applies a loop later)
 - **2026-09-12** — a stored setting is silently never used, or is refused as out of range (the file called "single source of truth" was the newest and the wrongest statement of the bound) [RESOLVED 2.5.1, gh#57; the rule stands]
 - **2026-09-11** — a mode-transition fix passes on hardware but the bug is still there (tested from the state the transition already leaves -- gh#52)
@@ -311,16 +309,6 @@ A fix would most likely be `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC` (TLS buffers in P
 
 **Where it lives:** `firmware/src/ota_manager/ota_manager.cpp` (`ota_assets_end()`), `bin/ota_push.py` steps [3]–[5], gh#94.
 
-## 2026-10-10 — a bring-up task still took key events off Q2 every 5 s
-
-**Problem:** gh#93 stops M3 when the operator lets go of an LCD key, so T7's new release event has to reach T8. While designing it, the keypad queue Q2 turned out to have a second consumer: `heartbeat_task` in `main.cpp` drained it every 5 s and logged each event to serial.
-
-**Root cause:** the drain was the keypad's acceptance test in alpha.6.4, before T8 existed. T8 became Q2's consumer in Phase 7, and the drain stayed. With two consumers on one queue, whichever receives first gets the event. T8 almost always waits on Q2, so a key press lost this way was rare and never explained. A lost release, though, would let a hold run on until T8's 400 ms fail-safe.
-
-**Fix (2.17.0):** the drain is removed, and T8 is Q2's only consumer (the TSDS Q2 row says so). **When the real consumer of a queue arrives, remove the bring-up reader.**
-
-**Where it lives:** `firmware/src/main.cpp` (`heartbeat_task`), `firmware/src/ui_display/ui_display.cpp`.
-
 ## 2026-10-10 — a short M3 hold from CLOSED moved the leaf nothing: the rope takes up its slack first
 
 **Problem:** the first acceptance run of gh#93 failed one verdict. A 3 s hold from CLOSED, about 1 s of drive, ended `PART_OPEN` at 0.0 %.
@@ -488,7 +476,7 @@ Plan it around a release. Never plan it around a re-offer, and never around a ve
 
 **Fix:** build a bench asset zip with stored entries (`zipfile.ZIP_STORED`, or `zip -0`). After any failed asset upload, re-push firmware and assets together, not the assets alone. That works because `ota_push.py` reboots between the two, which empties the table. **Fixed in 2.16.1 (gh#89):** `CONFIG_VFS_MAX_COUNT` is 12, so the count never reaches the limit, and `ota_manager.cpp` refuses to compile below 9. Verified on 2344 with `bin/at_t13_vfs.py`: stage `vfs` fails on 2.16.0 and passes on 2.16.1. A second defect was T13 formatting on ANY mount failure, a VFS refusal included, because the driver turned every `esp_vfs_littlefs_register()` error into `LFS_ERR_MOUNT`. Since 2.16.1 the driver reports a refused CONTENTS as `LFS_ERR_CORRUPT`, and T13 and the boot mount format only that (stages `noformat`, `corrupt` and `boot`; the fail-first build `OTA_FAILFIRST_2161=1` wipes the partition).
 
-**Where it lives:** IDF's `components/vfs/vfs.c` (`esp_vfs_register_fs_common`); T13's extractor and its format-and-remount fallback (`ota_manager.cpp`, "inactive LFS mount failed — formatting first-time"); the driver's `littlefs_mount()` (`drivers/littleFS/src/littlefs_storage.cpp`); `firmware/sdkconfig.lolin_s3` (`CONFIG_VFS_MAX_COUNT=8`). The push tool is `bin/ota_push.py`.
+**Where it lives:** IDF's `components/vfs/vfs.c` (`esp_vfs_register_fs_common`); T13's extractor and its format-and-remount fallback (`ota_manager.cpp`, "inactive LFS mount failed — formatting first-time"); the driver's `littlefs_mount()` (`drivers/littleFS/src/littlefs_storage.cpp`); `firmware/sdkconfig.lolin_s3` (`CONFIG_VFS_MAX_COUNT=8 (12 since 2.16.1)`). The push tool is `bin/ota_push.py`.
 
 ## 2026-10-02 — the minimum-move test measured M3 pressed against its closed end for ten minutes, and it looked like a broken wire
 
@@ -1193,7 +1181,7 @@ directory*, with the tree restored to the release state, reproduced the publishe
 - **To regenerate a lost ELF: restore the tree to the release commit *in the repo
   directory*, build, and verify the `.bin` SHA against the manifest before trusting the
   ELF.** A matching SHA proves the symbols correspond; a different directory guarantees
-  they will not match.
+  they will not match. *(No longer true: since 2026-10-10 a rebuild elsewhere is byte-identical, see that entry.)*
 - Park work-in-progress by copying the files aside rather than reaching for git — reverting
   tracked files with `git checkout --` and copying them back is enough, and leaves no refs
   to clean up.
@@ -1889,37 +1877,6 @@ with heavy loss, weak signal with none, i.e. interference, not range.
 **Where it lives**: this entry; user-global memory
 `reference_fda4_wifi_ap.md`.
 
-## 2026-09-12 — LCD-set STANDBY survives a reboot but its auto-clear flag does not, pausing ventilation indefinitely (gh#65) [RESOLVED 2026-09-16, 2.8.0]
-
-**Problem**: FDA4 sat in STANDBY for over two hours. Three later LCD admin
-sessions opened and closed normally without clearing it, and logging out of the
-web GUI did nothing. The `MODE` log shows `STANDBY entered` via LCD at 18:11:16
-and **no matching exit**.
-
-**Root cause**: the state is persisted, the authorisation to clear it is not.
-`ui_display.cpp:301` holds `static bool s_manual_set_standby_on_entry` — RAM
-only, false on every boot — and `session_close()` clears STANDBY **only** if
-that flag is set. Meanwhile `data_manager.cpp:2177` writes the STANDBY to NVS
-and `:1435` restores it at boot. Any reboot between "menu sets STANDBY" and
-"session closes" keeps the state and loses the permission to release it, after
-which no future session can ever clear it. Surfaced because the unit had been
-OTA-flashed six times in sixteen minutes.
-
-**Fix**: filed as **gh#65**, not yet fixed. Only an *explicit* exit works, since
-that path calls `dm_set_standby()` unconditionally: the LCD Scherm-3 toggle, or
-`POST /api/mode {"mode":"automatic"}` (which posts `CMD_RECALIBRATE` and drives
-the channels). **On production this is worse than on the rig**: a power blip or
-a ROTA night-window update during an open admin session leaves 5C88 with
-ventilation paused indefinitely, reporting `mode: STANDBY` truthfully with no
-fault anywhere. Rule to keep: **a state that survives a reboot must not depend
-on RAM to be released.**
-
-**Resolved 2026-09-16 (2.8.0).** The menu now takes a STANDBY *hold* (`dm_standby_hold(DM_STANDBY_HOLD_LCD, …)`), which is never written to NVS, so the state and its release both live in RAM and a reboot ends them together. The mechanism was built the same day for the web teach, which needed the same pause. Session end still drops the dwell debt and recalibrates. A web teach and the LCD menu can hold the pause together, and it ends only when both sessions have.
-
-**Verified on hardware the same day with `bin/at_lcd_standby.py`**, which needs a person at the keypad. It has four cases: L (logout: STANDBY off, windows recalibrate), E (an operator's own STANDBY outlives a menu session), C (a web teach and the menu hold the pause together) and R (a reboot ends the pause). All four pass on the fix. **Fail-first:** on the build before it (088e463), C and R FAIL. R is this entry's trap exactly: STANDBY came back after the boot. The SD log shows the difference directly. The old build's menu row is a plain "STANDBY entered via LCD" (`value_b` 0, persisted); the fixed build's says "held for manual window control" (`value_b` 1).
-
-**Where it lives**: gh#65; `firmware/src/ui_display/ui_display.cpp` (`session_close()`, the two menu-entry sites); `firmware/src/data_manager/data_manager.cpp` (`dm_standby_hold()` / `dm_standby_release()`).
-
 ## 2026-09-12 — a regex over source is not evidence of coverage: three false findings in one audit
 
 **Problem**: During the duplicated-state audit I reported three defects that do not exist.
@@ -2451,6 +2408,8 @@ cp /tmp/mine.cpp drivers/modBus/src/modbus_rtu.cpp
 ---
 
 ## 2026-09-07 — `rota_release.py --dry-run` is not side-effect free: it writes the release manifest
+
+> **Checked 2026-10-30:** `cmd_release` returns on `--dry-run` before its only manifest write (`bin/rota_release.py:592`, `:605`), so today's code does not do this. Whether it ever did is not established; `cmd_publish` was not checked. The rule below still stands.
 
 **Problem:** `--dry-run` is documented as *"print planned actions; make no changes"* and prints `[dry-run] would create GitHub release`. It nevertheless **writes `bin/<version>/manifest-<version>.json` to disk** — proven by running it twice on 2.4.0 and watching the file's `released_at` change (07:59:30Z, then 08:00:46Z).
 

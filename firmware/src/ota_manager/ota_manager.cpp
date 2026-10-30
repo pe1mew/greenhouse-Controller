@@ -98,6 +98,7 @@ static esp_ota_handle_t       s_ota_handle = 0;
  * half-written image, a ROTA image that was backed out, or — after an
  * esp_ota_begin() that failed before erasing — the previous release. */
 static const esp_partition_t *s_ota_part   = NULL;
+static int32_t s_commit_seq = 0;   /* gh#99: ROTA's seq, written by T13 at commit */
 static size_t                 s_fw_total   = 0;
 static size_t                 s_fw_written = 0;
 
@@ -789,6 +790,11 @@ bool ota_assets_abort(ota_end_reason_t why)
 
 bool ota_assets_end(void)
 {
+    return ota_assets_end_ex(0);
+}
+
+bool ota_assets_end_ex(int32_t seq)
+{
     /* Claimed here, not after the checks: from ASSETS_WRITING on, the buffer
      * is T13's and no other session can start. */
     if (!claim_state(OTA_ST(OTA_STATE_ASSETS_BUFFERING), OTA_STATE_ASSETS_WRITING, NULL)) {
@@ -802,6 +808,8 @@ bool ota_assets_end(void)
     }
 
     s_progress = 0;
+
+    s_commit_seq = seq;
 
     /* Spawn T13; it takes ownership of s_zip_buf + s_zip_total. */
     BaseType_t rc = xTaskCreatePinnedToCore(
@@ -1207,6 +1215,9 @@ t13_done:
             snprintf(fail, sizeof(fail),
                      "esp_ota_set_boot_partition: %s", esp_err_to_name(err));
             ok = false;
+        } else if (s_commit_seq > 0) {
+            /* R-V02, at commit time (gh#99): the install can no longer fail. */
+            (void)nvs_cfg_set_i32(NVS_NS_SYSTEM, OTA_NVS_KEY_FW_HIWATER, s_commit_seq);
         }
     }
     /* else: asset-only path — boot partition is intentionally left alone.

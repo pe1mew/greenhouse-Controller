@@ -122,8 +122,8 @@
 
 /* gh#73 (2.9.0) — is a position sensor fitted to M3? 0 = no, 1 = yes.
  *
- * NOT FITTED by default, because that is what a unit in the field is: 5C88 has
- * no encoder. Before this key T17 could not tell "not fitted" from "fitted and
+ * NOT FITTED by default, because a unit is delivered without one, and the
+ * setting is the installer's. Before this key T17 could not tell "not fitted" from "fitted and
  * not answering", so a unit without one re-probed address 40 every 30 s for
  * ever, and the Bus card and the hourly log rows showed that address as a
  * failing sensor. With this default such a unit is silent at address 40 after
@@ -141,8 +141,9 @@
  * because a new firmware arrived — and it still cannot, because this default
  * is only read when the key is ABSENT from NVS
  * (`nvs_cfg_get_i32_or_default()`). An existing unit keeps whatever it was set
- * to, through any number of OTAs; the default reaches a unit only on a
- * factory reset or a fresh flash.
+ * to, through any number of OTAs. The default reaches a unit on a factory
+ * reset, a fresh flash, or the first boot after an update from firmware older
+ * than the key, which stores it (gh#101).
  *
  * **1 (linear) since 2.13.0 — operator decision, 2026-09-25.** Mode 2 is now
  * what a new or reset unit starts in, rather than something to turn on

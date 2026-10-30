@@ -10,7 +10,7 @@
  *   4. NeoPixel day/night colour from EG1 priority           (a.6.32)
  *   5. 60 s LOG_SYSTEM heap rows (value_a=7,8,12)            (a.6.32)
  *   6. 30 s-offset heap-integrity check (value_a=9 on fail)  (a.6.32)
- *   7. 10-min stack-HWM serial log over T1..T15 handles      (a.6.32)
+ *   7. 10-min stack-HWM serial log over T1..T17 handles      (a.6.32)
  *
  * Tick cadence (500 ms): heap rows at tick % 120 == 0; heap integrity at
  * tick % 120 == 60; stack HWM at tick % 1200 == 0. Spreads the per-tick
@@ -234,31 +234,61 @@ static void heap_integrity_check(void)
     }
 }
 
+/** Every task handle the sweep reads. T13 has no global handle (it is spawned
+ *  on demand); T12 and T15 stay NULL. Pointers, because most handles are
+ *  still NULL when this table is initialised. */
+static const struct { const char *name; TaskHandle_t *handle; } k_stack_tasks[] = {
+    { "T1",  &task_t1  }, { "T2",  &task_t2  }, { "T3",  &task_t3  },
+    { "T4",  &task_t4  }, { "T5",  &task_t5  }, { "T6",  &task_t6  },
+    { "T7",  &task_t7  }, { "T8",  &task_t8  }, { "T9",  &task_t9  },
+    { "T10", &task_t10 }, { "T11", &task_t11 }, { "T12", &task_t12 },
+    { "T14", &task_t14 }, { "T15", &task_t15 }, { "T16", &task_t16 },
+    { "T17", &task_t17 },
+};
+
+/** Unused stack of table row @p i in bytes, or 0 for a task that does not exist. */
+static size_t stack_free_bytes(size_t i)
+{
+    TaskHandle_t h = *k_stack_tasks[i].handle;
+    if (h == NULL) { return 0u; }
+    return (size_t)uxTaskGetStackHighWaterMark(h) * sizeof(StackType_t);
+}
+
 /** Sweep stack high-water marks over all known task handles. Serial only —
  *  too noisy for SD CSV. LOGW promotes any task below 1 KB free for
  *  visibility in the warning stream. */
 static void stack_hwm_sweep(void)
 {
-    struct { const char *name; TaskHandle_t handle; } tasks[] = {
-        { "T1",  task_t1  }, { "T2",  task_t2  }, { "T3",  task_t3  },
-        { "T4",  task_t4  }, { "T5",  task_t5  }, { "T6",  task_t6  },
-        { "T7",  task_t7  }, { "T8",  task_t8  }, { "T9",  task_t9  },
-        { "T10", task_t10 }, { "T11", task_t11 }, { "T12", task_t12 },
-        { "T14", task_t14 }, { "T15", task_t15 },
-    };
-    for (size_t i = 0; i < sizeof(tasks)/sizeof(tasks[0]); i++) {
-        if (tasks[i].handle == NULL) continue;   /* T12, T13, T15 may be NULL */
-        UBaseType_t hwm_words = uxTaskGetStackHighWaterMark(tasks[i].handle);
-        size_t      hwm_bytes = (size_t)hwm_words * sizeof(StackType_t);
+    for (size_t i = 0; i < sizeof(k_stack_tasks)/sizeof(k_stack_tasks[0]); i++) {
+        size_t hwm_bytes = stack_free_bytes(i);
+        if (hwm_bytes == 0u) { continue; }
         if (hwm_bytes < 1024) {
-            ESP_LOGW(TAG, "stack low: %s hwm=%u B", tasks[i].name,
+            ESP_LOGW(TAG, "stack low: %s hwm=%u B", k_stack_tasks[i].name,
                      (unsigned)hwm_bytes);
         } else {
-            ESP_LOGI(TAG, "stack %-3s hwm=%u B", tasks[i].name,
+            ESP_LOGI(TAG, "stack %-3s hwm=%u B", k_stack_tasks[i].name,
                      (unsigned)hwm_bytes);
         }
     }
 }
+
+#ifdef MODBUS_BENCH
+size_t wd_stack_json(char *buf, size_t cap)
+{
+    size_t pos = 0u;
+    int    n   = snprintf(buf, cap, "{");
+    if (n > 0) { pos = (size_t)n; }
+    for (size_t i = 0; i < sizeof(k_stack_tasks)/sizeof(k_stack_tasks[0]) && pos < cap; i++) {
+        size_t b = stack_free_bytes(i);
+        if (b == 0u) { continue; }
+        n = snprintf(buf + pos, cap - pos, "%s\"%s\":%u", (pos > 1u) ? "," : "",
+                     k_stack_tasks[i].name, (unsigned)b);
+        if (n > 0) { pos += (size_t)n; }
+    }
+    if (pos + 2u <= cap) { buf[pos++] = '}'; buf[pos] = '\0'; }
+    return pos;
+}
+#endif
 
 /* ============================================================
  * Task entry
@@ -274,7 +304,7 @@ static void stack_hwm_sweep(void)
  *  4. Every 10 ticks (5 s): info-level uptime log.
  *  5. Every 120 ticks (60 s): three heap rows (value_a 7/8/12).
  *  6. Every 120 ticks at offset 60 (30 s after heap rows): integrity check.
- *  7. Every 1200 ticks (10 min): stack-HWM sweep over T1..T15.
+ *  7. Every 1200 ticks (10 min): stack-HWM sweep over T1..T17.
  *  8. After OTA_HEALTHY_TICKS: `ota_mark_healthy()` once.
  *
  * @param pvParameters Unused; pass NULL.

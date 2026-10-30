@@ -7,7 +7,7 @@
 | Companion | `functional-design.md` — *what* the system does (kept with the website, not in this repository) |
 | Version | 2.1 |
 | Date | 2026-09-27 |
-| Status | For implementation — covers firmware **up to 2.15.0**. Every field below was read from the emitter, `firmware/src/status_post/status_json.cpp::build_canonical_status_json()`, and dated with `git log -S`; the last payload change is 2.15.0, one field added (`windows.law`) |
+| Status | For implementation — covers firmware **up to 2.17.0**. Every field below was read from the emitter, `firmware/src/status_post/status_json.cpp::build_canonical_status_json()`, and dated with `git log -S`; the last payload change is 2.15.0, one field added (`windows.law`) |
 
 This document is the implementation brief. It describes file layout, configuration constants, endpoint code paths, storage recipes, frontend wiring, and verification steps. The functional rules it implements are defined in [functional-design.md](functional-design.md); read that first.
 
@@ -317,7 +317,7 @@ The status payload arrives as a single nested JSON object. The exact shape is pr
 }
 ```
 
-**State strings** (no `WIN_` prefix): `OPEN`, `CLOSED`, `MOVING_OPEN`, `MOVING_CLOSE`, `UNKNOWN`, and **`PART_OPEN`** (2.12.0). `PART_OPEN` occurs only on M3 and only in linear control: the window was driven to a measured position and stopped there. It is a normal operating state, not a fault — render it as such (§10). M1 and M2 are always fully open or closed.
+**State strings** (no `WIN_` prefix): `OPEN`, `CLOSED`, `MOVING_OPEN`, `MOVING_CLOSE`, `UNKNOWN`, and **`PART_OPEN`** (2.12.0). `PART_OPEN` occurs only on M3: in linear control, or since 2.17.0 after an LCD hold under timed control, when the position is unknown. In linear control: the window was driven to a measured position and stopped there. It is a normal operating state, not a fault — render it as such (§10). M1 and M2 are always fully open or closed.
 
 **M3 control law** — always present with the block, including on a controller without a position sensor:
 
@@ -1151,7 +1151,7 @@ Each requirement is an implementation-level check that the spec is followed. IDs
 | TR-53 | All sixteen `mode.flags[]` strings of §9.4 render as badges with the listed class and label. | Feed each flag alone; one badge each, class and text as in the table. |
 | TR-54 | `bus` is read from the **top level**, and its absence is not an error. | Feed a payload with and without `bus`; no exception either way; with it, one row per entry. |
 | TR-55 | The dashboard does not treat `heap_min_kb` as available memory. | Any heap indicator is driven by `heap_free_kb` / `heap_largest_kb`. |
-| TR-56 | The M3 control-law keys are optional to render but never break the tile. | Feed `windows` with and without `M3_ctrl_mode`, `M3_ctrl_reason`, `M3_pos_gate`; the tile renders both. |
+| TR-56 | The M3 control-law keys are optional to render but never break the tile. | Feed `windows` with and without `M3_ctrl_mode`, `law`, `M3_ctrl_reason`, `M3_pos_gate`; the tile renders both. |
 
 ## Appendix — Reference files
 

@@ -205,6 +205,14 @@ def stage_unfitted(a):
     check("address 40 is not in the bus array", bus_row(st) is None)
     check("M3 has no position keys", not has_pos(st))
     check("no %s flag" % FAULT_FLAG, FAULT_FLAG not in flags(st))
+    # gh#102: an idle abort put two timeouts on the bus, for a device that is not
+    # there. Only the abort of a run still going may pass the not-fitted gate.
+    u = Unit(a.host, a.pin)
+    try:
+        r = u._req("POST", "/api/diag/commission", {"action": "abort"})[1]
+    finally:
+        u.logout()
+    check("an idle abort is refused as not_fitted", isinstance(r, dict) and r.get("error") == "not_fitted")
     watch_quiet(a.host, a.watch, "unfitted")
 
 

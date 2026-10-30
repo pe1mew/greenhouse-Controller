@@ -255,7 +255,7 @@ Distinct from setpoint-driven automatic ventilation and from the safety-driven C
 
 | ID | Requirement | MoSCoW |
 |----|-------------|--------|
-| FR-WPF07 | The control mode for M3 **shall** be an operator setting, **shall** default to linear, and **shall not** change because a firmware update was applied. *(Changed in 2.13.0 by the operator's decision of 2026-09-25: the default had been timed. A default reaches a unit only on a factory reset or a fresh flash, never through an OTA, and a unit without a trusted position still runs timed under FR-WPF08.)* | Must |
+| FR-WPF07 | The control mode for M3 **shall** be an operator setting, **shall** default to linear, and **shall not** change because a firmware update was applied. *(Changed in 2.13.0 by the operator's decision of 2026-09-25: the default had been timed. A default reaches a unit on a factory reset, a fresh flash, or the first boot after an update from firmware older than the key; a stored value is never changed by an OTA. A unit without a trusted position still runs timed under FR-WPF08.)* | Must |
 | FR-WPF08 | Linear control **shall** take effect only while the controller has a position it trusts: the sensor fitted, answering, calibrated, and not reporting a fault. Where it does not, the system **shall** drive M3 on its travel timer exactly as in mode 1. | Must |
 | FR-WPF09 | The fall back to timed control **shall** be immediate, and the return to linear control **shall not** happen mid-drive nor within a hold-down period after a fall back, so that the control law cannot alternate from one minute to the next. | Must |
 | FR-WPF10 | The system **shall** record every change of the control mode actually in force, with its reason, in the event log, and **shall** report the mode in force on the web GUI and in the status payload — distinctly from the mode that was asked for. | Must |
@@ -264,7 +264,7 @@ Distinct from setpoint-driven automatic ventilation and from the safety-driven C
 | FR-WPF13 | Losing the position during a linear move **shall** leave the move to finish on the travel timer, at an end, and **shall** be reported — never left at an unknown place with the controller believing otherwise. | Must |
 
 - **Where the design lives:** [`integrateWindowPositionSensor.md`](integrateWindowPositionSensor.md) — the task, the presence gate, the fault checks, the log encodings, the two mode variables and the phase plan. **The control law itself is not here and not in the firmware's control task**: it sits behind [`ventModelContract.md`](ventModelContract.md) as a replaceable library, which is what lets a law be scored against real weather before it drives a greenhouse.
-- **What mode 2 does NOT change:** the safety paths (FR-WPF03), M1 and M2, the humidity and temperature laws for those two windows, and what M3 does when the operator has not asked for linear control — which is every unit as delivered.
+- **What mode 2 does NOT change:** the safety paths (FR-WPF03), M1 and M2, the humidity and temperature laws for those two windows, and what M3 does on a unit set to timed, or without a sensor.
 **The characterisation run and the measured deadband** *(firmware 2.16.0)*
 
 | ID | Requirement | MoSCoW |

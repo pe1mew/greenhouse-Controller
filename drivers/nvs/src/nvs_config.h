@@ -74,7 +74,7 @@
  * _or_default helpers write factory defaults for any new keys on first access.
  * --------------------------------------------------------------------------- */
 
-/** @brief Current schema version. Bump this whenever the NVS layout changes. */
+/** @brief Current schema version. Bump only for a change that makes stored data incompatible; adding or retiring a key is not one. */
 #ifndef NVS_SCHEMA_VERSION
   #define NVS_SCHEMA_VERSION  1
 #endif

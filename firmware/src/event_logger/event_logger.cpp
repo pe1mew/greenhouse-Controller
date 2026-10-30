@@ -23,8 +23,8 @@
  * Files are named `XXXX_YYYYMMDDHHMMSS.csv` where `XXXX` is the 4-hex
  * unit ID (gh#30, 2.0.1+) and the timestamp encodes the
  * moment the file was created (UTC).  Lexicographic sort = chronological
- * order.  At most SD_MAX_FILES (10) files are retained; the lexicographically
- * oldest is deleted when a rotation would exceed this limit.
+ * order.  At most SD_MAX_FILES (30) of this unit's files are retained; at each
+ * rotation the oldest go, up to SD_TRIM_PER_ROTATION (5) at a time.
  *
  * ### CSV line format
  * Header:  timestamp,type,initiator,ch,param,value_a,value_b
@@ -1051,7 +1051,10 @@ void task_event_logger(void *pvParameters)
             sys_evt.timestamp  = dm_get_unix_time();
             sys_evt.event_type = (uint8_t)LOG_SYSTEM;
             sys_evt.initiator  = (uint8_t)LOG_BY_SYSTEM;
-            sys_evt.value_a    = (int16_t)(dropped > 32767u ? 32767 : (int16_t)dropped);
+            /* gh#100: subtype 33. The count used to go in value_a, where it
+             * read as whichever subtype it happened to equal. */
+            sys_evt.value_a    = (int16_t)33;
+            sys_evt.value_b    = (int16_t)(dropped > 32767u ? 32767 : (int16_t)dropped);
 
             xQueueSend(Q3, &sys_evt, 0);   /* direct — not via log_post() */
         }

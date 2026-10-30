@@ -998,7 +998,10 @@ matches the LOG_SYSTEM table in `firmware/src/event_logger/event_logger.h`:
 
 | `value_a` | `value_b` | Initiator | Producer | Meaning |
 |---|---|---|---|---|
-| **−1** | drop count | SYS | T9 (synthetic) | Q3 queue overflow — N events dropped |
+| **−1** | 0 | SYS | T9 | SD write failed, logging suspended. Rarely reaches the card: T9 has already marked it gone (gh#100) |
+| **−2** | 0 | SYS | T9 | SD low space at the retention floor, logging suspended. Same |
+| **33** | drop count | SYS | T9 (synthetic) | Q3 queue overflow, N events dropped (2.17.1+). Before that the count went in `value_a`, so an old row reads as the subtype of that number; from 34 up the parser says so |
+| **19** | 0 / 1 | SYS | T10 | DHCP renewed / STA reassociated |
 | **0** | 0 | WEB | T14 status_post | Status POST failed (streak transition) |
 | **0** | 1 | WEB | T14 status_post | Log upload failed — pre-HTTP (connection/write/alloc error; no server response) |
 | **HTTP 100–599** | 1 | WEB | T14 status_post | Log upload rejected by server — `value_a` is the HTTP status code (e.g. 413); 2.1.1+ (gh#34) |

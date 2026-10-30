@@ -136,6 +136,7 @@
 #include "../climate_control/climate_control.h"   /* cc_get_m3_target: the law's M3 feedback, in the diag */
 #ifdef MODBUS_BENCH
 #include "../diag/modbus_bench.h"   /* dev-only bench Modbus access */
+#include "../watchdog/watchdog.h"   /* gh#97: wd_stack_json */
 #include "esp_vfs.h"                /* gh#89: /api/diag/ota fills the VFS table */
 #include "../keypad_scan/keypad_scan.h"  /* gh#93: keypad_bench_hold -- /api/diag/key */
 #include "../ui_display/ui_display.h"    /* gh#93: ui_bench_state -- /api/diag/key */
@@ -1321,7 +1322,7 @@ static esp_err_t config_limits_handler(httpd_req_t *req)
      * is fixed at link time (every bound is a compile-time constant), so the
      * build cost is paid on the first request and never again.
      *
-     * Sized with headroom over the ~850 bytes the current 40 keys produce.
+     * Sized with headroom over the ~875 bytes the current 41 keys produce.
      * A truncating snprintf would emit malformed JSON, so the loop stops and
      * the handler fails loudly instead — a 500 the operator can see beats a
      * silently short limits table that makes the GUI stop validating. */
@@ -3529,10 +3530,11 @@ static esp_err_t diag_commission_post_handler(httpd_req_t *req)
                                HTTPD_RESP_USE_STRLEN);
     }
 
-    /* gh#73: with no sensor fitted, nothing here may reach address 40. Abort
-     * stays allowed: it only ends a run, and a teach left armed on a real
-     * device is better disarmed than kept. */
-    if (!dm_wpos_fitted_m3() && strcmp(act, "abort") != 0) {
+    /* gh#73: with no sensor fitted, nothing here may reach address 40. The
+     * abort of a run still going stays allowed (gh#102): an idle one would put
+     * two timeouts on the bus and achieve nothing, because T17's first unfitted
+     * tick disarms a teach by itself. */
+    if (!dm_wpos_fitted_m3() && !(strcmp(act, "abort") == 0 && commission_busy())) {
         return httpd_resp_send(req, "{\"ok\":false,\"error\":\"not_fitted\"}",
                                HTTPD_RESP_USE_STRLEN);
     }
@@ -3851,6 +3853,13 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
             if (strcmp(q, "cuts") == 0)   { return diag_windowpos_cuts(req); }
             if (strcmp(q, "pulses") == 0) { return diag_windowpos_pulses(req); }
             if (strcmp(q, "rota_gate") == 0) { return diag_windowpos_rota_gate(req); }
+            if (strcmp(q, "stacks") == 0) {
+                /* gh#97: T1's sweep is serial-only, so without this a figure
+                 * needs USB. Unused stack per task, bytes. */
+                char out[256];
+                (void)wd_stack_json(out, sizeof(out));
+                return httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
+            }
         }
     }
 

@@ -1440,7 +1440,7 @@ on once. Requirement: FR-WP23 in the requirements study.
 | Status payload | no `M3_*` keys, no fault flag, no address 40 in `bus` | `M3_*` keys when trusted; `sensor_fault_position` when the sensor is absent, refused or faulted |
 | Hourly bus rows | none for address 40 | as before |
 | GUI | *Linear control* greyed below the setting, with the reason above it | as before |
-| Commissioning (bench) | refused with `not_fitted`, except abort | as before |
+| Commissioning | refused with `not_fitted`, except the abort of a run still going (gh#102) | as before |
 
 **Details that matter.**
 - **A change is followed within one idle tick** (500 ms). T17 reads the setting at most that often,

@@ -133,7 +133,7 @@ cfg: dict = {
     # 2.12.0 (plan 5b): the DESIRED control mode for M3, 0 timed / 1 linear.
     # The mock has no position sensor to make it effective, so this only
     # stores and publishes -- which is what the GUI needs to render it.
-    "ctrl_mode_m3":         0,
+    "ctrl_mode_m3":         1,
     "min_intv_m3":        600,    # 2.12.0: the linear dwell, s (default 600)
     # gh#76 (2026-09-20): the mock accepted motor/deadzone_m3 and dropped it, so
     # the GUI's deadzone field read empty and a change there did not survive a
@@ -1509,8 +1509,9 @@ def commission_post():
         return denied
     body = request.get_json(silent=True) or {}
     a = body.get("action", "")
-    # gh#73: as the firmware -- nothing but an abort without a fitted sensor.
-    if not _wpos_fitted() and a != "abort":
+    # gh#73, gh#102: as the firmware -- without a fitted sensor, nothing but the
+    # abort of a run that is still going.
+    if not _wpos_fitted() and not (a == "abort" and COMM["state"] in ("arming", "traversing", "committing")):
         return {"ok": False, "error": "not_fitted"}
     if a == "teach":
         # M3 may start anywhere; only a teach already running is refused

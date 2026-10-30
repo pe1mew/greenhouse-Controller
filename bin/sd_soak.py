@@ -20,8 +20,8 @@ WHAT IT JUDGES (report)
   4. T9's rows keep coming: no gap longer than --max-gap (90 s) between two
      rows in the window, the rows sorted first (some land out of order,
      gotcha 2026-09-13);
-  5. no SYSTEM -1 row: value_b 0 is an SD write failure, more is rows Q3
-     dropped;
+  5. no SYSTEM -1 row (an SD write failure, which rarely lands: T9 has already
+     marked the card gone) and no 33 row (rows Q3 dropped, 2.17.1+, gh#100);
   6. retention holds: at most 30 of this unit's own files on the card;
   7. the window lasted at least --hours (12).
   T14's log uploads are CHECK, not FAIL, when one failed: its failure row does
@@ -208,8 +208,8 @@ def report(a):
     boots = [r["timestamp"] for r in sysrows if r["value_a"] == "5"]
     if boots:
         judge("FAIL", "1b. a BOOT row in the window", ", ".join(boots[:3]))
-    neg = [(r["timestamp"], r["value_b"]) for r in sysrows if r["value_a"] == "-1"]
-    judge("PASS" if not neg else "FAIL", "5. no SYSTEM -1 row (SD write failure / Q3 drop)",
+    neg = [(r["timestamp"], r["value_a"], r["value_b"]) for r in sysrows if r["value_a"] in ("-1", "33")]
+    judge("PASS" if not neg else "FAIL", "5. no SYSTEM -1 or 33 row (SD write failure / Q3 drop)",
           "%s" % neg[:5] if neg else "none")
     if on_card is not None and on_card > len(names):
         judge("CHECK", "6. retention", "the listing left %d of %d files out" % (on_card - len(names), on_card))

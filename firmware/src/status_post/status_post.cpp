@@ -727,9 +727,9 @@ static int upload_pending(const cfg_shadow_t *cfg)
 
     int n_uploaded = 0;
     char next[24];
-    /* Safety cap: at most SD_MAX_FILES (=10) closed files exist, so 12
-     * iterations is well over any realistic backlog. Prevents an
-     * accidental infinite loop if dm_set_log_last_up silently failed. */
+    /* Safety cap, not a backlog limit: up to SD_MAX_FILES (30) closed files can be
+     * pending, a trigger uploads at most 12, and the next trigger resumes from the
+     * latch. Prevents an infinite loop if dm_set_log_last_up silently failed. */
     for (int i = 0; i < 12; i++) {
         if (!event_logger_next_pending(after, next, sizeof(next))) {
             break;   /* no more pending files */

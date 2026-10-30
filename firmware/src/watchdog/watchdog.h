@@ -74,6 +74,14 @@ extern "C" {
  */
 void task_watchdog(void *pvParameters);
 
+#ifdef MODBUS_BENCH
+#include <stddef.h>
+
+/** Bench builds (gh#97): unused stack per task as JSON, bytes, the sweep's list.
+ *  @return characters written. */
+size_t wd_stack_json(char *buf, size_t cap);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

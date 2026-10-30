@@ -149,7 +149,10 @@
  *  31     | **Modbus bus KPI, one slave, one metric, one hour** (since 2.8.0, gh#66) | `value_b` = the INTERVAL DELTA; `channel` = slave address; `param_id` = 50 ok / 51 fail / 52 max consecutive fails (see `log_param_id_t`) | T4 emit_bus_kpi()
  *  32     | **OTA session ended WITHOUT installing** (since 2.8.0, 2026-09-16) — every session that neither installs nor reboots closes with this row | `channel` = 1 firmware / 2 web assets; `value_b` = `ota_end_reason_t` << 8 \| progress % (0 backed out, not a failure · 1 connection lost · 2 sender silent · 3 setup failed · 4 write refused · 5 verify failed · 6 install failed) | T13 ota_manager session_release()
  * 100–599 | T14 log upload REJECTED with this HTTP status (since 2.1.1, gh#34) | 1 = log upload. `initiator` = WEB | T14 status_post.cpp
- *  -1     | Q3 drop-overflow    | dropped count                        | T9 (synthetic)
+ *  33     | **Q3 overflow** (since 2.17.1, gh#100) | rows dropped | T9 (synthetic). Before 2.17.1 the count went in `value_a`, `value_b` 0
+ *  -1     | SD write failure, logging suspended | 0                  | T9. Posted after `s_sd_ok` is cleared, so it rarely reaches the card
+ *  -2     | SD low space at the retention floor, logging suspended | 0 | T9. Same
+ *  19     | also, with initiator SYS: T10 DHCP renew (`value_b` 0), STA reassociate (`value_b` 1) | see left | T10
  *
  * **Subtypes 22–24 shipped in 2.2.0 and were absent from this table until
  * 2.6.0.** gh#59 was filed stating "next free is 22 and upward" on the

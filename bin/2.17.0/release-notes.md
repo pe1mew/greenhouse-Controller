@@ -7,7 +7,8 @@ moves it until the key is released
 ([gh#93](https://github.com/pe1mew/greenhouse-Controller/issues/93))
 
 **Minor: a user-visible feature (FR-MM08).** It changes only the LCD's manual-motor screen for M3, which is
-admin-only. No setting, key, NVS record, status payload or log encoding changes.
+admin-only. Against 2.16.2 no setting, key, NVS record, payload key or log encoding changes. One existing
+value gains a case: `M3` can now read `PART_OPEN` under timed control, after an LCD hold.
 
 > **Soaked** on the bench build of the same code (12.25 h, PASS, 2026-10-10 to 10-11) and **published to the
 > ROTA soak channel as seq 64** on 2026-10-11; 2344 pulled it by ROTA. Every acceptance row below ran on 2344:

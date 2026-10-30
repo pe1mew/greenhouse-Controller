@@ -358,6 +358,25 @@ bool ota_assets_abort(ota_end_reason_t why);
  */
 bool ota_assets_end(void);
 
+/** NVS key (`system`): the highest ROTA `seq` a unit has committed to. */
+#define OTA_NVS_KEY_FW_HIWATER "fw_hiwater"
+
+/**
+ * @brief ota_assets_end() for a ROTA install, which also carries its `seq`.
+ *
+ * T13 persists @p seq as the high-water mark at the moment of commit, right
+ * after the boot bank has switched (R-V02, gh#99). A T13 failure therefore
+ * leaves the mark unmoved and T16 free to retry the release. Writing it here
+ * and not in the new image is deliberate: T16 already refuses an offer not
+ * newer than the running version, so the seq check only matters after a
+ * rollback, and a mark written after the first healthy boot would have a
+ * crashing release re-offered at every check.
+ *
+ * @param seq The manifest's seq; 0 writes no mark (a push).
+ * @return As ota_assets_end().
+ */
+bool ota_assets_end_ex(int32_t seq);
+
 /* ─────────────────────────────────────────────────────────────────────────
  * Status accessors — called from T11 GET /api/ota/status
  * ───────────────────────────────────────────────────────────────────────── */

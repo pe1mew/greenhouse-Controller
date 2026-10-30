@@ -65,7 +65,7 @@ Requirement keywords **shall / should / may** follow RFC 2119/RFC 8174. Prioriti
 | ID | Requirement | Priority | Pass/Fail criterion |
 |------|---|---|---|
 | R-V01 | The client **shall** accept only a manifest whose version is strictly newer than the running `FIRMWARE_VERSION` (SemVer compare) **and** whose `seq` is strictly greater than the persisted high-water mark. | Must | Serving an equal or older version/seq produces a "rejected downgrade" audit row and no download. |
-| R-V02 | The accepted `seq` **shall** be persisted in NVS (`fw_hiwater`) at commit time, surviving reboot and power loss. | Must | Replay of a previously-installed manifest after reboot is rejected. |
+| R-V02 | The accepted `seq` **shall** be persisted in NVS (`fw_hiwater`) at commit time, surviving reboot and power loss. Commit time is T13's bank switch, not T13's spawn (gh#99): a failed install must leave the release retryable. | Must | Replay of a previously-installed manifest after reboot is rejected. |
 | R-V03 | The client **shall** honor the manifest `min_version` field: if the running firmware is older than `min_version`, the update is refused with a distinct audit code (manual intervention path). | Should | Manifest with `min_version` above running version → refusal row, no apply. |
 | R-V04 | After the post-update reboot the unit **shall** verify `fw_ver == asset_version` and report the result in the next status POST. | Must | Dashboard shows matching pair after every soak update. |
 

@@ -269,7 +269,7 @@ T1 is a full FreeRTOS task (not a software-timer callback). It is the system's l
 - 30 seconds offset from the heap-snapshot moment, performs a `heap_caps_check_integrity_all()` sweep and emits a corruption event if the integrity check fails.
 
 **Periodic instrumentation (every 10 minutes):**
-- Stack high-water-mark sweep across every known task handle; writes one row to Q3 per task that has crossed a low-stack threshold.
+- Stack high-water-mark sweep across every known task handle (T1..T17). **Serial log only, no Q3 row**: `ESP_LOGW` below 1 KB free. A bench build also reports it on `GET /api/diag/windowpos?stacks`.
 
 **OTA-healthy gating:**
 - After `OTA_HEALTHY_MS` of uninterrupted ticks following a fresh boot, calls `ota_mark_healthy()` to clear the boot-failure counter that drives the 3-fail rollback (§5.9). One NVS write per boot via a local boolean.
@@ -1416,9 +1416,9 @@ T4 checks the return of `nvs_cfg_init()`. If `NVS_CFG_ERR_MIGRATION` is returned
 - T1 is the sole task that runs `esp_task_wdt_reset()` at a high cadence (500 ms) and also drives the RGB LED state machine (§5.12).
 - T1 emits periodic instrumentation events to Q3:
   - Per-tick: nothing (silent).
-  - **Per 60 s:** `LOG_SYSTEM` with `value_a = uxTaskGetStackHighWaterMark()` for T1's own stack, and a free-heap sample (`heap_caps_get_free_size(MALLOC_CAP_INTERNAL)`).
-  - **Per 10 min:** a fuller heap snapshot (free + largest-free-block) plus a per-task high-water-mark dump for the long-running tasks.
-  - **OTA-healthy mark:** after `OTA_HEALTHY_MS` (default 60 s) of stable uptime in a freshly booted firmware bank, T1 calls `esp_ota_mark_app_valid_cancel_rollback()` so the OTA framework treats this boot as successful. This is the application-side participation in the rollback-on-three-failures policy (§5.9).
+  - **Per 60 s:** three `LOG_SYSTEM` heap rows (`value_a` 7, 8, 12).
+  - **Per 10 min:** the stack sweep, on the serial log only.
+  - **OTA-healthy mark:** after `OTA_HEALTHY_MS` (30 s) of stable uptime in a freshly booted firmware bank, T1 calls `esp_ota_mark_app_valid_cancel_rollback()` so the OTA framework treats this boot as successful. This is the application-side participation in the rollback-on-three-failures policy (§5.9).
 
 **Coredump capture:**
 - A dedicated 64 KB `coredump` partition (label `coredump`, subtype `coredump`) is included in the partition table (§5.9).
@@ -1642,7 +1642,7 @@ A draw-wire encoder on the M3 leaf, on the same RS485 bus as the climate sensors
 | `wpos_fitted_m3` | Whether a sensor is fitted. **0 = not fitted**, and then T17 never addresses the bus, and no status field or log row mentions the sensor (FR-WP23). | 0 |
 | `deadzone_m3` | Smallest aperture change worth acting on, in mm, **as typed** (since 2.16.0). It is the "~0" band of the close check and rule 1's at-end exemption. Since 2.12.0 it is also the arrival band of a targeted drive and the smallest move the law may ask for, **unless a measured band is in force** (`deadzone_src_m3`, §5.16.7). T17's own checks always use this typed value. | 20 |
 | `deadzone_src_m3` | **2.16.0.** Where the band in force comes from: **1 measured** (the characterisation run's band, the typed value until a complete run has derived one) or 0 typed. A key of its own, not a reserved value of `deadzone_m3`, so a rollback to 2.15.x ignores it and keeps the typed band. | 1 |
-| `ctrl_mode_m3` | **2.12.0; default 1 (linear) since 2.13.0** (operator decision 2026-09-25 — a default is read only when the key is absent from NVS, so it reaches a unit on a factory reset or a fresh flash, never through an OTA). The DESIRED control mode: 0 timed, 1 linear. Not the mode in force — see §5.16.6. | 1 |
+| `ctrl_mode_m3` | **2.12.0; default 1 (linear) since 2.13.0** (operator decision 2026-09-25 — a default is read only when the key is absent from NVS, which also stores it: a factory reset, a fresh flash, or the first boot after an update from firmware older than the key, never through an OTA). The DESIRED control mode: 0 timed, 1 linear. Not the mode in force — see §5.16.6. | 1 |
 | `min_intv_m3` | **2.12.0.** The linear dwell, in seconds: the least time from the end of one M3 drive to the start of the next. **It replaces M3's open and close dwell while linear control is in force** (`ventModelContract.md` §7); 0 means no interval at all, and **never set it above 900** — there mode 2 swings as much as mode 1 while still driving M3 twice as often. | 600 |
 
 All are ordinary descriptor rows in `firmware/config/cfg_desc.inc`, clamped, audited and published like any other key (§5.10). The characterisation run's results are not keys: they are one versioned blob, `m3char`, in the same namespace (§5.16.7).

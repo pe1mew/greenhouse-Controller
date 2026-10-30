@@ -53,7 +53,7 @@ static const char *TAG = "T16_OTA";
 /** NVS key (system ns) for the operator-uploaded pinned cert. ≤ 15 chars. */
 static const char K_OTA_CERT[] = "ota_cert";
 /** NVS key (system ns) for the accepted-release high-water `seq` (R-V02). */
-static const char K_FW_HIWATER[] = "fw_hiwater";
+static const char K_FW_HIWATER[] = OTA_NVS_KEY_FW_HIWATER;
 
 /** Wall-clock sanity floor — 2020-01-01 UTC. Below this, SNTP has not run. */
 #define ROTA_EPOCH_FLOOR 1577836800LL
@@ -626,7 +626,7 @@ static void rota_apply(const rota_manifest_t *m,
     ok = ota_firmware_end();
     if (ok) ok = ota_assets_begin(as_len);
     if (ok) ok = ota_assets_accumulate(assets, as_len, 0);
-    if (ok) ok = ota_assets_end();      /* spawns T13 → extract → bank switch → reboot */
+    if (ok) ok = ota_assets_end_ex(m->seq); /* spawns T13 → extract → bank switch, seq mark → reboot */
     free(assets); assets = NULL;
     if (!ok) {
         ESP_LOGE(TAG, "apply: commit/assets stage failed: %s", ota_get_error());
@@ -634,10 +634,11 @@ static void rota_apply(const rota_manifest_t *m,
         return;
     }
 
-    /* R-V02: persist the accepted seq high-water mark before the imminent
-     * reboot so a replay of this manifest after reboot is rejected. */
-    (void)nvs_cfg_set_i32(NVS_NS_SYSTEM, K_FW_HIWATER, m->seq);
-    ESP_LOGW(TAG, "ROTA apply committed: %s (seq %ld) — rebooting via T13",
+    /* R-V02: T13 persists the seq high-water mark at the bank switch (gh#99).
+     * Writing it here meant "T13 spawned", so a T13 failure refused this
+     * release for good. From here T13 may still fail: row 24/0 means handed
+     * over, and the next rows say how it ended (16 installed, 17 failed). */
+    ESP_LOGW(TAG, "ROTA apply handed to T13: %s (seq %ld)",
              m->version, (long)m->seq);
     s_update_pending = false;           /* applied — reboot into it imminently */
     audit_apply(0);

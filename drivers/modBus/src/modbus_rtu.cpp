@@ -169,7 +169,7 @@ static uint16_t modbus_crc16(const uint8_t *buf, uint8_t len)
  *
  * Modbus RTU requires at least 3.5 character-times of silence between
  * frames.  At 9600 baud, 8N1 (10 bits/char): 3.5 × (10/9600) × 1e6 = 3646 μs.
- * MODBUS_IFG_US = 4000 μs gives a comfortable margin above this floor.
+ * MODBUS_IFG_US is 20 000 μs, about 5.5 times this floor; the reason is below.
  *
  * s_frame_end_us records micros() at the moment the last bit of each frame
  * arrived or left the wire.  The IFG guard at the start of every transmission
@@ -177,7 +177,7 @@ static uint16_t modbus_crc16(const uint8_t *buf, uint8_t len)
  * timestamp, so the gap is enforced against the actual wire event regardless
  * of how long the caller takes between transactions.
  * --------------------------------------------------------------------------- */
-/* EXPERIMENT 2026-09-12, not a shipping value.
+/* 20 ms, shipping since 2.8.0. It began as the experiment of 2026-09-12.
  *
  * 4000u is the RTU t3.5 floor (3646 us at 9600 baud 8N1) plus 9.7 %. With a
  * single bus caller this constant was dead code -- frames sat 30 s apart, so
@@ -192,9 +192,9 @@ static uint16_t modbus_crc16(const uint8_t *buf, uint8_t len)
  * the requester zero bytes and a timeout, never a CRC error. That is exactly
  * what was measured: to_received = 0 of 29, crc = 0, busy = 0, lock_wait = 0.
  *
- * 20 ms (~19 character times) is deliberately oversized to settle the question
- * in one flash. If the timeouts stop, tune down to the smallest reliable value
- * and justify it; if they persist, inter-frame silence is not the cause. */
+ * 20 ms (~19 character times) was deliberately oversized to settle the question
+ * in one flash, and it did (changelog 2.8.0). It has not been tuned down. Do not
+ * raise it past 20 ms on rig evidence (gh#68). */
 #define MODBUS_IFG_US  20000u
 
 static uint32_t s_frame_end_us = 0u;
