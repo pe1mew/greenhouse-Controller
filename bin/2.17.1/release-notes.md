@@ -62,4 +62,3 @@ Found with grep on 2026-10-30.
 - **An old overflow row of 1–33 stays read as that subtype.** It cannot be told apart.
 - **The −1 and −2 rows still rarely reach the card:** T9 has marked it gone before they are drained (gh#100).
 - **A cookie's `Max-Age` is set only at login**, so a browser drops it at login + `session_timeout_min`, even for an active operator (noted in gh#98, not reproduced, not fixed).
-- **The sibling status-website repo's copy of the spec** still lacks `law` (gh#103).
