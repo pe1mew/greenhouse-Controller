@@ -7,7 +7,7 @@
 
 **Patch. Bug fixes only:** no setting, key, log row or payload change.
 
-> **Not soaked, not published.** Both changes ran on 2344 or the mock, as below. 2.17.1 is the soaked base and was never published.
+> **Not soaked, not published.** Both changes ran on 2344, as below. 2.17.1 is the soaked base and was never published.
 
 ## What changed
 
@@ -41,6 +41,7 @@ Found with grep on 2026-10-31.
 | `at_char_stop.py abort`, fixed | PASS: M3 rests PART_OPEN 0.5 s after the abort, at 35.7 % |
 | `at_char_stop.py absent`, fixed | PASS: M3 rests PART_OPEN 0.7 s after the injection, at 26.7 %. Unit back in AUTOMATIC, M3 closed, gate ok |
 | Card text on the mock | `no_device` gets the new text; `not_taught` and `span_narrow` keep theirs; a running run still takes priority. `#ch-hint` computes to the red token |
+| Card on 2344, sensor off the bus by hand | `verdict` unknown, `cal_reason` no_device. The operator read the new text, Start greyed with the reason above it, and the run's failure in red. With the sensor back the verdict returned to `valid` by itself. The bench injection cannot do this: it blocks T17's reads, and the calibration check reads the device directly |
 | `bin/check_cfg_desc.py` | 52 keys, 41 published, all agree |
 
 ## Upgrading
@@ -51,5 +52,5 @@ Found with grep on 2026-10-31.
 
 - **Not soaked, not published.**
 - **A wind override during a run was not forced.** That T2 will not stop a safety close rests on `ch_stop()`'s check, from gh#93.
-- **The new card text was checked on the mock.** On 5C88 the screenshot shows the firmware sends `no_device` in that state, but the text itself has not been seen on hardware.
-- **gh#98 and gh#99 from 2.17.1 are still open:** the logged-in check on the rig, and the publish test.
+- **Teach and the window size Apply stay live while the sensor does not answer**, above a line saying no teach is needed. By reading, not run: the firmware refuses the teach, so M3 does not move, but the operator meets the "will MOVE M3" confirm first and the refusal shows in green (`#cm-hint`). Recorded on gh#105.
+- **gh#99 from 2.17.1 is still open:** the publish test. gh#98 closed on 2026-10-31 after the logged-in check on 2344.

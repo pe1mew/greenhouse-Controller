@@ -47,7 +47,8 @@ Found with grep on 2026-10-30.
 | `bin/check_cfg_desc.py` | 52 keys, 41 published, all agree |
 | Bus at rest on 2344 | 3 min: addr 1, 40 and 44 all 100 % |
 | Q3 overflow forced on 2344 (gh#100) | Bench build `7800c769`, 64 rows into the 32-row queue by `GET /api/diag/windowpos?q3flood`. Row `33,31` on the card, 33 rows kept, so all 64 accounted for. The parser reads it, `sd_soak.py`'s check fails on it. The route is bench-only |
-| GUI poll on 2344, not logged in (gh#98) | 0 commissioning calls in 50 s, 0 in 8 s on Motors. **Logged in as admin: mock only** |
+| GUI poll on 2344, not logged in (gh#98) | 0 commissioning calls in 50 s, 0 in 8 s on Motors |
+| GUI poll on 2344, logged in as admin (gh#98) | On 2.17.2-bench, 2026-10-31, the same poll code: 8 calls, all 200. One on each opening of Motors, none on another tab, about one a second on Motors. Timings read off the browser's waterfall |
 
 ## Upgrading
 
@@ -61,4 +62,4 @@ Found with grep on 2026-10-30.
 - **The ROTA high-water change has not run on hardware.** Its fail-first offers a release with a DEFLATE zip, which needs a publish, and a crash-looping image for the regression. Until then it rests on reading the code. It takes effect only for updates applied *from* a fixed image.
 - **An old overflow row of 1–33 stays read as that subtype.** It cannot be told apart.
 - **The −1 and −2 rows still rarely reach the card:** T9 has marked it gone before they are drained (gh#100).
-- **A cookie's `Max-Age` is set only at login**, so a browser drops it at login + `session_timeout_min`, even for an active operator (noted in gh#98, not reproduced, not fixed).
+- **A cookie's `Max-Age` is set only at login**, so a browser drops it at login + `session_timeout_min`, even for an active operator (gh#106, not reproduced, not fixed).
