@@ -85,7 +85,7 @@ Every failure at rest had an FG6485A and the window sensor's 120 Ω on the bus t
 
 ## Production state
 
-At 13:34: M3 closed, gate ok, Lineair in force, AUTOMATIC. Any M3 drive can repeat this. It fails safe, because the false wind override closes the windows. Switching M3 to timed would not help, because the motor would still disturb the bus.
+At 13:34: M3 closed, gate ok, Lineair in force, AUTOMATIC. Any M3 drive can repeat this. **On 2026-10-31 the windows closed only because the wind sensor faulted too.** A target drive that loses the position finishes on the travel timer, at the end, by design, so without that fault M3 runs to full open, and then T6 decides on timed control (gh#104). Switching M3 to timed would not help, because the motor would still disturb the bus.
 
 ## Current wiring
 
@@ -124,8 +124,8 @@ python bin/bus_watch.py --host 192.168.1.104 --every 10
 
 7. **Then retry the characterisation** with `bus_watch.py` running beside it. Plan for 1.5 to 3 hours.
 
-## Parked while 2.17.1 is on hold
+## Filed from this analysis
 
-- A failed run sends no stop, so M3 carries on to its target. Here only the wind safe-fail ended the drive (`characterise.cpp` has no `CMD_STOP`).
-- The card says "not taught" when the calibration is only unreadable, which invites a pointless re-teach.
-- 2.17.1 open items: gh#98, gh#100, gh#103 item 7, gh#99.
+- **gh#104:** a run that ends early leaves M3 driving, and with the position lost it runs to the end. Here only the wind safe-fail ended the drives. The 20 % target of run 1 ran for 118 s.
+- **gh#105:** the card says "not taught" when the calibration is only unreadable, which invites a pointless re-teach.
+- 2.17.1 open items: gh#98 (admin half), gh#99 (needs a go).

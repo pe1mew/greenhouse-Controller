@@ -255,7 +255,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 
 **Not the cause:** firmware (the same run passed on 2344 with 123 starts, but the rig has no greenhouse motor); the calibration (the second run was ACCEPTED, and the start refuses anything but CAL_VALID); WiFi; real wind.
 
-**Also seen:** the card says "not taught" when the calibration is only unreadable, which invites a pointless re-teach. A failed run sends no stop: M3 carries on to its target (`characterise.cpp` has no CMD_STOP), and here only the wind safe-fail ended the drive.
+**Also seen:** the card says "not taught" when the calibration is only unreadable, which invites a pointless re-teach. A failed run sends no stop, and a target drive that loses the position finishes on T2's timer at the END (`relay_controller.cpp:1364`, by design), so the 20 % target of run 1 ran 118 s. Only the wind safe-fail ended it; nothing guarantees that fault. gh#104; the wording is gh#105.
 
 **Fix:** none yet. Fit the spare FG6485A (never on site, address set to 1) with the window sensor's 120 Ω on, which ends the bus at both physical ends, and test with `bin/bus_watch.py --every 10` while M3 runs. **A check of a bus at rest says nothing about a bus with the motor running: move the motor.**
 
