@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [2.17.1] — 2026-10-30  (the release comparison's follow-ups: T17's stack, the GUI poll, the ROTA mark, the overflow row)
 
-Patch. Bug fixes only: no setting, key or payload change. Not soaked, not published. Details and every number: `bin/2.17.1/release-notes.md`.
+Patch. Bug fixes only: no setting, key or payload change. Soaked on 2344 (bench build, 12.25 h, PASS), not published. Details and every number: `bin/2.17.1/release-notes.md`.
 
 **Fixed:**
 

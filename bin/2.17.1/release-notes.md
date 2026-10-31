@@ -7,7 +7,7 @@
 
 **Patch. Bug fixes only:** no setting, key or payload change. The log gains one `LOG_SYSTEM` subtype, 33, in place of an encoding that collided with the others.
 
-> **Not soaked, not published.** Everything except the ROTA change ran on 2344 (bench build of the same code). **The ROTA change has not run:** it needs a publish, so it needs the operator's go.
+> **Soaked on 2344 (bench build of the same code): PASS. Not published.** **The ROTA change has not run:** it needs a publish, so it needs the operator's go.
 
 ## What changed
 
@@ -39,7 +39,8 @@ Found with grep on 2026-10-30.
 | Release image | 1 435 152 B, sha256 `987097f24d239f98…`, version `2.17.1`. No bench routes. Assets `web-assets-2.17.1.zip`, 174 833 B, sha256 `eb51707d9ab21e1c…` |
 | Bench image on 2344 | `c911d5def866f20e…`. `fw_ver` and `asset_version` 2.17.1-bench |
 | **Stacks, full characterisation on 2344** (bench, before the T17 change) | 111 starts, 57 min, band 32 mm. Unused: **T17 724 of 4096**, T7 1072 of 3072, T6 3124 of 6144, T2 5876 of 8192, T8 4920 of 8192, T16 11564 of 16384. No reboot |
-| T17 at 5120 B | 2056 B free at idle. **Not yet re-measured after a full run**, expected about 1.7 KB free |
+| T17 at 5120 B | 2136 B free after the 12 h soak, **1752 B free after a full characterisation** (123 starts, 63 min). Others after that run: T7 1072 of 3072, T6 2888 of 6144, T2 5908, T8 4888, T16 11516 |
+| **Soak on 2344, bench build** | 12.25 h from 2026-10-30 16:33: 74 judged strokes, every counter 0, no reboot, no coredump, largest T9 gap 31 s, no SYSTEM -1 or 33 row. 12 of 12 LCD sessions. 7 of 12 stroke sessions ran; 5 skipped, too cold to open. 14 decisions conform, no hunt, config identical. Heap at 12 h: 64 KB free, 31 KB largest |
 | GUI on the mock | Anonymous 0 polls in 3.5 s; admin on another tab 0; admin on Motors with a sensor about 1 a second; no sensor, polling off. The not-fitted line renders as information. No script errors beyond the expected anonymous 401s |
 | gh#102 on 2344 | `at_wpos_fitted.py unfitted`: all checks PASS, including "an idle abort is refused". An abort on a fitted unit still works (mock). The rig's settings restored afterwards, gate ok. **No fail-first run:** that would have needed the old image |
 | Parser fixture | Eight rows decode as intended: −1, −2, 33, 19/0, 19/1, an old-form overflow of 40, a legacy heartbeat, and a WEB coredump 19 |
@@ -53,7 +54,8 @@ Found with grep on 2026-10-30.
 
 ## Known limitations
 
-- **Not soaked, not published.**
+- **Not published.** The soak ran on the bench build; the release image has only been booted.
+- **Two brief sensor faults in the soak, on the rig's EMULATED slaves.** Two failed polls in a row on addr 1 (23:33) and on addr 44 (02:33, which also raised wind override), each cleared in the same second. The three soaks before it had no such run. Addr 40, the real encoder, read 0 failures, and the bus code has only comment changes since 2.17.0, so the emulator is the likely source. That is not proven.
 - **The ROTA high-water change has not run on hardware.** Its fail-first offers a release with a DEFLATE zip, which needs a publish, and a crash-looping image for the regression. Until then it rests on reading the code. It takes effect only for updates applied *from* a fixed image.
 - **The Q3-overflow row was not forced.** Its parser branch is tested; the emitter's change is one line.
 - **An old overflow row of 1–33 stays read as that subtype.** It cannot be told apart.
