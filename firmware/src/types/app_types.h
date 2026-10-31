@@ -528,7 +528,9 @@ typedef enum {
                        *   the bench hook behind bin/at_wp_minmove.py in a
                        *   bench build. */
     CMD_STOP,         /**< gh#93 (2.17.0): stop M3 where it is. The LCD's hold on
-                       *   M3 ends when the operator lets go of the key. M3 only.
+                       *   M3 ends when the operator lets go of the key, and a
+                       *   characterisation that ends early stops its own drive
+                       *   (gh#104). M3 only.
                        *   T2 stops only a drive the operator started
                        *   (SRC_OPERATOR_MANUAL), so a release can never stop a
                        *   safety close, and it does nothing to a window at rest.

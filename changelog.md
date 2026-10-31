@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.17.2] — 2026-10-31  (a characterisation that ends early stops M3; the card's "not taught")
+
+Patch. Bug fixes only: no setting, key, log row or payload change. Not soaked, not published. Details and every number: `bin/2.17.2/release-notes.md`.
+
+**Fixed:**
+
+- **A run that ends early stops its own drive** (gh#104), which covers the Abort button. On 5C88 a 20 % target ran open for 118 s after the run ended, stopped only by a false wind override. `ch_stop()`'s ownership check keeps safety closes out of it.
+- **The card says the sensor is not answering, not that it is untaught** (gh#105), and the run's failure text is red.
+
+**Added:** `bin/at_char_stop.py`, the acceptance test for gh#104, bench builds only.
+
 ## [2.17.1] — 2026-10-30  (the release comparison's follow-ups: T17's stack, the GUI poll, the ROTA mark, the overflow row)
 
 Patch. Bug fixes only: no setting, key or payload change. Soaked on 2344 (bench build, 12.25 h, PASS), not published. Details and every number: `bin/2.17.1/release-notes.md`.

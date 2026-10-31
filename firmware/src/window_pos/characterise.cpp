@@ -293,6 +293,15 @@ static void run_end(run_t *r, char_err_t why)
 {
     dm_m3_band_override(0u);           /* however the run ends */
 
+    /* gh#104: the run's own drive ends with the run. Left alone it finishes,
+     * and with the position lost T2 finishes it on the timer, at the end: on
+     * 5C88 a target of 20 % ran open for 118 s. T2 refuses a drive that is not
+     * SRC_OPERATOR_MANUAL's, so this cannot stop a safety close; `m3_busy` is
+     * someone else's drive, an LCD hold possibly, so it is left alone. */
+    if ((r->step == ST_START || r->step == ST_DRIVE) && why != CHAR_ERR_M3_BUSY) {
+        (void)send_q1(CMD_STOP, 0);
+    }
+
     /* The record: this run, and the measured band of the last COMPLETE run --
      * this one if it derived a band, else the one stored before it. */
     m3char_rec_t prev;

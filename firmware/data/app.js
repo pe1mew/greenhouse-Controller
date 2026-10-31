@@ -470,6 +470,12 @@ function charDuration(ch, rest) {
 function charWhyNot(c) {
   const ch = c.char || {};
   if (ch.state === 'running') return 'A characterisation is running. Abort ends it.';
+  // gh#105: `unknown` means the sensor did not answer, not that it is untaught.
+  // A teach cannot cure that, and it moves M3 and rewrites a good calibration.
+  if (c.cal_reason === 'no_device') {
+    return 'Not available: the sensor is not answering, so its calibration cannot'
+         + ' be read. It needs no new teach.';
+  }
   if (c.verdict !== 'valid') {
     return 'Not available: the sensor is not taught (calibration ' + (c.verdict || 'unknown')
          + '). Run a teach first.';
