@@ -75,6 +75,7 @@ Hooks are the *symptom*, not the title — you rarely know the cause when you ar
 Entries stay in reverse-chronological order below; this index is the only grouped view.
 
 ### Windows, climate & manual control (T2, T6, T8)
+- **2026-10-31** — a race test passed on a build with the guard removed: the last status read said MOVING_OPEN and T2 had already stopped at its target (judge the case from the RELAY rows)
 - **2026-10-10** — a short M3 hold from CLOSED moves the leaf nothing: the rope takes up its slack first (measure holds from part-open)
 - **2026-10-02** — a pulse test reads 0 mm for every pulse, then the encoder reports NOT FOLLOWING (0x80), which looks like a detached draw wire: the wind safe-fail had closed M3, and the harness kept pulsing it against its end switch [RESOLVED: the harness checks before every pulse]
 - **2026-10-02** — a soak's stroke sessions FAIL at dawn and end the run: the greenhouse is colder than the lowest `t_max` the harness can set, so there is no heat demand, and under v2 humidity alone never opens M3 — the firmware was right [RESOLVED: the harness skips such a session]
@@ -244,6 +245,16 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
+
+## 2026-10-31 — a wind-override race test passed on a build with `ch_stop()`'s check removed: the override had landed as the drive ended [RESOLVED]
+
+**Problem:** `bin/at_char_wind.py` crosses T3's CMD_CLOSE_ALL with a run's CMD_STOP while M3 opens. Its first version passed on the real build, then passed on a build with the ownership check removed, where a stopped safety close should have left M3 part open.
+
+**Root cause:** the override landed in the same second the drive reached its own target. The last status read still said MOVING_OPEN, but T2 had already stopped, so nothing crossed: the log showed RELAY 7 (PART_OPEN), then 4 (MOVING_CLOSE) with no reversal gap. A status poll says where M3 was, not where it is now.
+
+**Fix:** the case counts only with M3 well short of its target, under 42 % on a drive that stops near 47 %. Then the guardless build FAILED: M3 sat PART_OPEN at about 35 % through 40 s of wind override. The real build, read from the log: RELAY 2 at 17:25:15, the run's end at 17:25:17, RELAY 4 at 17:25:19, with no 7 between. That is the 2 s gap and a refused stop.
+
+**Rule:** a race test that has not failed on a build without the guard proves nothing, and the first such build may show that the test, not the code, is what needs work. Read which case ran from the RELAY rows.
 
 ## 2026-10-31 — 5C88's characterisation ended twice at one motor start: address 40 stopped answering about 2 s after M3's relay closed [OPEN]
 

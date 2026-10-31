@@ -16,7 +16,7 @@ Patch. Bug fixes only: no setting, key, log row or payload change. Not soaked, n
 - **A teach's failure text is red** (gh#105).
 - **T17 re-judges a verdict of "no device" from its own readings**, at most every 20 s (gh#105). One lost config read left it standing with the gate open, which would have locked a healthy sensor out of a teach.
 
-**Added:** `bin/at_cal_rejudge.py` and the bench injection `noconf`, bench builds only. A row for UNKNOWN in `beheerderHandleiding.md`.
+**Added:** `bin/at_cal_rejudge.py` and the bench injection `noconf`, bench builds only. `bin/at_char_wind.py`, gh#104's wind override during a run. A row for UNKNOWN in `beheerderHandleiding.md`.
 
 ## [2.17.2] — 2026-10-31  (a characterisation that ends early stops M3; the card's "not taught")
 

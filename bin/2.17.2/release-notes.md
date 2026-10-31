@@ -51,6 +51,6 @@ Found with grep on 2026-10-31.
 ## Known limitations
 
 - **Not soaked, not published.**
-- **A wind override during a run was not forced.** That T2 will not stop a safety close rests on `ch_stop()`'s check, from gh#93.
+- **A wind override during a run was not forced in this release.** It was on 2.17.3, with `bin/at_char_wind.py`, on the same code: see those notes.
 - **Teach and the window size Apply stay live while the sensor does not answer**, above a line saying no teach is needed. By reading, not run: the firmware refuses the teach, so M3 does not move, but the operator meets the "will MOVE M3" confirm first and the refusal shows in green (`#cm-hint`). Recorded on gh#105.
 - **gh#99 from 2.17.1 is still open:** the publish test. gh#98 closed on 2026-10-31 after the logged-in check on 2344.

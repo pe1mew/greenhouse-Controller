@@ -41,6 +41,7 @@ Found with grep on 2026-10-31.
 | `at_cal_rejudge.py`, fixed | PASS: held no_device 40 s with the gate ok, then valid 29.0 s after the injection cleared, with no refresh sent. In the card test below, 20 s |
 | Card on 2344, operator's browser, `noconf` in force | The reason above the body, the window size row greyed with `unknown`, Teach and Start greyed, both Aborts live, the characterisation's own reason unchanged |
 | Card on the mock | Silent, back, not taught, teach failed, arming and 401: each as intended. Not taught keeps Teach and Apply live, and `not set`. A failed teach computes to the red token, arming to the green |
+| Wind override during a run (gh#104), `bin/at_char_wind.py` | Added after the commit, no firmware change. Emulated wind set to 3 m/s with the operator's go, then back to REST, `v_max` lowered as the run's second drive began. On 2.17.3-bench `56514b5b`, rebuilt byte-identical from `3559115`: override landed with M3 opening at 37.5 %, the run ended `wind`, M3 CLOSED 20.2 s later. The log has no PART_OPEN row between the drive and the close, so the stop was refused. **Fail-first**, a throwaway build with `ch_stop()`'s check removed: M3 sat PART_OPEN at about 35 % through 40 s of override |
 | `bin/check_cfg_desc.py` | 52 keys, 41 published, all agree |
 
 ## Upgrading
