@@ -10,7 +10,7 @@
 ' PCB types follow from each box's connections.
 ' ============================================================
 
-title Modbus RS485 bus as installed at Herenboeren Willemshoeve (5C88)\nUML deployment diagram, 2026-10-30
+title Modbus RS485 bus as installed at Herenboeren Willemshoeve (5C88)\nUML deployment diagram, 2026-10-31
 
 left to right direction
 skinparam defaultTextAlignment left
@@ -39,7 +39,7 @@ rectangle "Controller position, greenhouse wall" <<location>> as CTRLPOS {
 
 rectangle "T/RH position, greenhouse" <<location>> as THPOS {
   node "**Junction box 3**\nT PCB, DualCableJunction\nno terminator: JP9, JP10 open" <<PCB>> as BOX3
-  node "**FG6485A**\ntemperature and humidity\nModbus addr **1**\n**TERMINATOR 2: 120 Ω**\nin the sensor" <<device>> as FG
+  node "**FG6485A**\ntemperature and humidity\nModbus addr **1**\n**TERMINATOR 2: about 120 Ω**\nsensor side of the stub, measured\nnot in the spare FG6485A" <<device>> as FG
 }
 
 rectangle "M3 window" <<location>> as M3POS {
@@ -55,11 +55,12 @@ BOX3 -- ENC : <<RS485>>\n6 m
 
 legend bottom
   **Bus:** Modbus RTU, 9600 baud 8N1, RS485 half duplex. Slaves are addresses 1, 40 and 44. Trunk 22 m from box 1 to the window sensor, plus the stubs.
-  **Termination:** two 120 Ω, at box 1 and in the T/RH sensor, so A to B should read 60 Ω. The T/RH's sits mid-bus; the window sensor's end has none.
+  **Termination:** two 120 Ω, at box 1 and at the T/RH, which sits mid-bus. The window sensor's end has none.
+  **Measured 2026-10-31:** A to B reads 60 Ω with all sensors connected and 120 Ω with the FG6485A out. The spare FG6485A alone reads 150 kΩ. No FG6485A document mentions a resistor.
   **Cable between junction PCBs:** RJ45 (215877-1). 24 V on pins 4, 5 and GND on pins 7, 8. A and B on pins 1, 2 or 3, 6, set by the pair selector.
   **End PCB, SingleCableJunction:** one RJ45, one stub (J2). 120 Ω R1 enabled by JP3, which is CLOSED as made: terminated unless the trace is cut.
   **T PCB, DualCableJunction:** two RJ45, two stubs, joined by JP7 and JP8 (closed as made). 120 Ω R1 and R2 enabled by JP9 and JP10, OPEN as made: not terminated.
-  **Bias:** R19, R20 at the controller only. 20 kΩ into 60 Ω leaves about 5 mV idle.
+  **Bias:** 20 kΩ pairs at the controller (R19, R20) and, per its schematic, on the wire encoder board (R3, R2): about 10 mV idle at 60 Ω.
 endlegend
 
 @enduml

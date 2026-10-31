@@ -107,6 +107,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-07-31** — anti-thrash dwell was unguarded during travel (gh#48) [RESOLVED 2.3.1, gh#48]
 
 ### Modbus bus, sensors & clock (T5, drivers)
+- **2026-10-31** — 5C88's characterisation ended twice at one motor start: M3's motor knocks the bus out on the repaired wiring, which M3 had never run on. The calibration is intact, whatever the card says; do not re-teach
 - **2026-10-30** — the whole bus fails about 60 % of reads, every slave together, while A–B reads a correct 60 Ω: remove a terminator first (5C88: the window sensor's 120 Ω). 20 kΩ bias into 60 Ω leaves about 5 mV idle; bisect with `bin/bus_watch.py`
 - **2026-09-19** — no bus-KPI rows (`LOG_SYSTEM 31`) for ~2 h after a boot: the first hourly call only takes the baseline; judge the bus from the diag counters until then
 - **2026-09-19** — after an OTA push the unit's clock is HOURS wrong for ~5 min and the SD file cannot be found by its boot time (the boot SNTP failed, the 2026-07-13 rate limit, and T4 seeded a CORRECT clock from a DS1307 that was 5 h 42 min behind; gh#55)
@@ -244,6 +245,22 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
 
+## 2026-10-31 — 5C88's characterisation ended twice at one motor start: address 40 stopped answering about 2 s after M3's relay closed [OPEN]
+
+**Problem:** two runs (09:19:39, 09:30:31, rest 30 s, firmware 2.17.0) each ended with `char_err` 3, sensor, after one motor start. The card then read Calibration UNKNOWN and "Not available: the sensor is not taught".
+
+**What the log shows** (`SENSOR_HR ch 3`, `ALARM ch 6`, both runs alike): two good reads at 0 mm, relay + 0 and + 1 s, then none. Gate reason 2 (no sensor at address 40) at relay + 4 s, with the leaf still reading 0 mm when last seen. The wind sensor failed too: faults at 09:20:50, 09:21:49, 09:30:37, each raising a false wind override, in about 1 m/s of real wind. That override is what closed M3, 118 s and 41 s into the open. Reads returned during or just after the close. Encoder not restarted (no param 247, no start-up bit). Since boot `bus[]` reads addr 40 59 errors, run of 8; addr 44 10, run of 2; addr 1 9, run of 1.
+
+**Root cause: the motor, on wiring M3 had never run on. The mechanism is not proven.** The teach of 2026-10-30 ran BEFORE the bus fix, with the T/RH unplugged and the window sensor's 120 Ω on. After the fix (boot 11:48) M3 did not move until this run, so "100 % after the fix" was a bus at rest. Leading explanation: about 10 mV idle bias, the far end of the M3 leg unterminated and the second terminator mid-bus at the T/RH (measured 2026-10-31), so motor noise on that leg crosses the receivers' thresholds. Addr 40 was already failing at rest on the coldest, wettest hours (2, 3, 4 an hour, 04:23-06:20, RH 95 %; 0 in the other hours). The sparse polls (T5 30 s, T17's re-probe 30 s while the gate is shut) cannot say whether it follows direction, opening current or position.
+
+**Not the cause:** firmware (the same run passed on 2344 with 123 starts, but the rig has no greenhouse motor); the calibration (the second run was ACCEPTED, and the start refuses anything but CAL_VALID); WiFi; real wind.
+
+**Also seen:** the card says "not taught" when the calibration is only unreadable, which invites a pointless re-teach. A failed run sends no stop: M3 carries on to its target (`characterise.cpp` has no CMD_STOP), and here only the wind safe-fail ended the drive.
+
+**Fix:** none yet. Fit the spare FG6485A (never on site, address set to 1) with the window sensor's 120 Ω on, which ends the bus at both physical ends, and test with `bin/bus_watch.py --every 10` while M3 runs. **A check of a bus at rest says nothing about a bus with the motor running: move the motor.**
+
+**Where it lives:** `temp/unit-5c88/5C88_20261031003413.csv`; `design/modbusBusInstallation5C88.puml`.
+
 ## 2026-10-30 — 5C88's whole bus failed about 60 % of its reads once the M3 leg was extended: a 120 Ω terminator on the window sensor was the difference [RESOLVED, mechanism unproven]
 
 **Problem:** with a new transceiver fitted and the leg extended to the M3 wire encoder, all three slaves failed together: address 1 41 % OK, 44 39 %, 40 47 %. A healthy S200 on another leg failed too. The failures came in shared bursts, and they were not steady (address 40 went from 149 OK to none). A second FG6485A behaved the same, which ruled out the sensor.
@@ -268,7 +285,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 
 **Also learned:** this was the first time 2.17.0's Modbus driver ran against a real FG6485A and S200 (gh#70, the 20 ms gap): both are clean, which closes the unknown in finding 6 of `design/releaseComparison_2.3.1_vs_2.17.0.md`. What killed the first transceiver is unknown. T5's ALARM rows carry only status 1 (COMM), so the SD log cannot separate timeouts from CRC errors; the bus counters and a bisect did the work.
 
-**Layout, from the operator the same day:** terminator 1 in junction box 1 (wind), terminator 2 in the T/RH sensor at box 3, the window sensor's 120 Ω disabled, J8 off on the controller: `design/modbusBusInstallation5C88.puml`. **That does not fit the 60 Ω above:** with the window sensor's 120 Ω still on, three terminators would read 40 Ω. One of the two is wrong, so the table's first row and "two terminators" stay open until A–B is measured. It should read 60 Ω today; 120 Ω would mean the T/RH's is not across A and B.
+**Layout, from the operator the same day:** terminator 1 in junction box 1 (wind), terminator 2 in the T/RH sensor at box 3 (**measured 2026-10-31:** A–B 60 Ω with everything connected, 120 Ω with the FG6485A out, **but the spare FG6485A reads 150 kΩ**, so it is not a property of the model. None of the four items in `documentation/Sensors/T-RH_ FG6485A` mentions one), the window sensor's 120 Ω disabled, J8 off on the controller: `design/modbusBusInstallation5C88.puml`. **That does not fit the 60 Ω above:** with the window sensor's 120 Ω still on, three terminators would read 40 Ω. The spare was never on site, so the FG6485A removed on 2026-10-30 is unmeasured. If it reads high like the spare, the 60 Ω was right (box 1 plus the window sensor), and the bus failed about 40 % with a terminator at each physical end. If it reads about 120 Ω, the bus should have read 40 Ω and the reading stays unexplained. The pattern holds either way: every failure at rest had an FG6485A and the window sensor's 120 Ω on the bus together. **Correction to the 5 mV above:** the wire encoder board has its own 20 kΩ pair (R3, R2 in its schematic), so the idle bias is about 10 mV at 60 Ω while it is connected.
 
 **Where it lives:** the window sensor board's terminator at the site; `design/technicalHardwareDesignSpecification.md` §4.3.4 (R19, R20, J8); `bin/bus_watch.py`.
 
