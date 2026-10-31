@@ -46,6 +46,8 @@ Found with grep on 2026-10-30.
 | Parser fixture | Eight rows decode as intended: −1, −2, 33, 19/0, 19/1, an old-form overflow of 40, a legacy heartbeat, and a WEB coredump 19 |
 | `bin/check_cfg_desc.py` | 52 keys, 41 published, all agree |
 | Bus at rest on 2344 | 3 min: addr 1, 40 and 44 all 100 % |
+| Q3 overflow forced on 2344 (gh#100) | Bench build `7800c769`, 64 rows into the 32-row queue by `GET /api/diag/windowpos?q3flood`. Row `33,31` on the card, 33 rows kept, so all 64 accounted for. The parser reads it, `sd_soak.py`'s check fails on it. The route is bench-only |
+| GUI poll on 2344, not logged in (gh#98) | 0 commissioning calls in 50 s, 0 in 8 s on Motors. **Logged in as admin: mock only** |
 
 ## Upgrading
 
@@ -57,7 +59,6 @@ Found with grep on 2026-10-30.
 - **Not published.** The soak ran on the bench build; the release image has only been booted.
 - **Two brief sensor faults in the soak, on the rig's EMULATED slaves.** Two failed polls in a row on addr 1 (23:33) and on addr 44 (02:33, which also raised wind override), each cleared in the same second. The three soaks before it had no such run. Addr 40, the real encoder, read 0 failures, and the bus code has only comment changes since 2.17.0, so the emulator is the likely source. That is not proven.
 - **The ROTA high-water change has not run on hardware.** Its fail-first offers a release with a DEFLATE zip, which needs a publish, and a crash-looping image for the regression. Until then it rests on reading the code. It takes effect only for updates applied *from* a fixed image.
-- **The Q3-overflow row was not forced.** Its parser branch is tested; the emitter's change is one line.
 - **An old overflow row of 1–33 stays read as that subtype.** It cannot be told apart.
 - **The −1 and −2 rows still rarely reach the card:** T9 has marked it gone before they are drained (gh#100).
 - **A cookie's `Max-Age` is set only at login**, so a browser drops it at login + `session_timeout_min`, even for an active operator (noted in gh#98, not reproduced, not fixed).

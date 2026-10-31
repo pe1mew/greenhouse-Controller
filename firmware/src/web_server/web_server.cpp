@@ -3860,6 +3860,25 @@ static esp_err_t diag_windowpos_get_handler(httpd_req_t *req)
                 (void)wd_stack_json(out, sizeof(out));
                 return httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
             }
+            if (strcmp(q, "q3flood") == 0) {
+                /* gh#100: nothing on a healthy unit outruns T9, so a Q3 drop
+                 * (row 33) needs forcing. Q3 holds 32 and this does not block.
+                 * The rows are 99 / index, a code no build emits otherwise. */
+                static const int k_rows = 64;
+                for (int i = 0; i < k_rows; i++) {
+                    log_event_t e;
+                    memset(&e, 0, sizeof(e));
+                    e.timestamp  = (uint32_t)time(NULL);
+                    e.event_type = (uint8_t)LOG_SYSTEM;
+                    e.initiator  = (uint8_t)LOG_BY_SYSTEM;
+                    e.value_a    = 99;
+                    e.value_b    = (int16_t)i;
+                    log_post(&e);
+                }
+                char out[32];
+                snprintf(out, sizeof(out), "{\"posted\":%d}", k_rows);
+                return httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
+            }
         }
     }
 
