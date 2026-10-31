@@ -65,10 +65,19 @@ static const char *TAG = "COMMISSION";
 #define COMMIT_SETTLE_MS    5000u
 /** Prompt readings kept up after a run ends. See commission_wants_prompt_read(). */
 #define LINGER_READS        10u
+/** gh#105: how often T17 re-judges a verdict of "no device" while it has real
+ *  readings. Under IDLE_READ_MS, so at rest every reading does; it limits a
+ *  stroke, which reads every 100 ms. */
+#define REJUDGE_MS          20000u
+
+#if defined(WPOS_FAILFIRST_GH105) && !defined(MODBUS_BENCH)
+#error "WPOS_FAILFIRST_GH105 removes gh#105's re-judge: bench builds only"
+#endif
 
 static portMUX_TYPE        s_mux = portMUX_INITIALIZER_UNLOCKED;
 static commission_status_t s_st;
 static uint8_t             s_linger;       /* prompt reads still owed after a run */
+static uint32_t            s_rejudge_ms;   /* T17 only: the last re-judge of "no device" */
 /* Both keep T17's orphan check off a teach that is ours. s_starting spans
  * commission_teach_start()'s arm write, before TEACH_ARMING is published.
  * s_quiet spans our own DISARM: bit 5 stays set for a moment after the write
@@ -253,6 +262,14 @@ void commission_session_ended(const char *token)
  *               cached snapshot: its age is unbounded at rest, and a verdict
  *               judged on a stale bit 5 was the first bug this module had.
  */
+static windowpos_status_t read_config(windowpos_config_t *dev)
+{
+#ifdef MODBUS_BENCH
+    if (windowpos_task_injected() == WPOS_INJECT_NOCONF) { return WINDOWPOS_ERR_COMM; }
+#endif
+    return windowpos_read_config(WINDOWPOS_DEFAULT_ADDR, dev);
+}
+
 static void commission_refresh_with(const windowpos_reading_t *fresh)
 {
     windowpos_config_t dev;
@@ -262,7 +279,7 @@ static void commission_refresh_with(const windowpos_reading_t *fresh)
     uint8_t  pct = 0u;
     bool     armed = false;
 
-    if (windowpos_read_config(WINDOWPOS_DEFAULT_ADDR, &dev) != WINDOWPOS_OK) {
+    if (read_config(&dev) != WINDOWPOS_OK) {
         v = CAL_UNKNOWN;
         why = CAL_ERR_NO_DEVICE;
     } else {
@@ -632,9 +649,11 @@ void commission_tick(const windowpos_reading_t *r, uint32_t now_ms)
 {
     teach_state_t state;
     bool          cached_armed;
+    cal_err_t     cached_why;
     portENTER_CRITICAL(&s_mux);
     state        = s_st.state;
     cached_armed = s_st.teach_armed;
+    cached_why   = s_st.cal_reason;
     if (!teach_active(state) && s_linger != 0u) { s_linger--; }
     portEXIT_CRITICAL(&s_mux);
 
@@ -646,8 +665,19 @@ void commission_tick(const windowpos_reading_t *r, uint32_t now_ms)
          * in particular clears a moment AFTER a disarm. Re-judge whenever a
          * real reading disagrees, using THAT reading (T17 calls this before it
          * updates its snapshot on the idle path). Changes are rare, so so is
-         * the config read this costs. */
-        if (r != NULL && !r->sensor_fault && r->teach_armed != cached_armed) {
+         * the config read this costs.
+         *
+         * gh#105: a reading also disproves "no device". One config read lost on
+         * a bus that otherwise works leaves that verdict with the gate open, so
+         * no gate re-opening would ever correct it, and the card greys Teach,
+         * Apply and Start on it. */
+        bool stale = false;
+#ifndef WPOS_FAILFIRST_GH105
+        stale = (cached_why == CAL_ERR_NO_DEVICE)
+             && ((uint32_t)(now_ms - s_rejudge_ms) >= REJUDGE_MS);
+#endif
+        if (r != NULL && !r->sensor_fault && (r->teach_armed != cached_armed || stale)) {
+            if (stale) { s_rejudge_ms = now_ms; }
             commission_refresh_with(r);
         }
         return;

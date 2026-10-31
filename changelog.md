@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.17.3] — 2026-10-31  (Teach and the window size greyed while the sensor does not answer)
+
+Patch. Bug fixes only: no setting, key, log row or payload change. Not soaked, not published. Details and every number: `bin/2.17.3/release-notes.md`.
+
+**Fixed:**
+
+- **Teach and the window size Apply are greyed while the sensor does not answer** (gh#105), with the reason above them; Abort stays usable. The firmware refused both already, but only after the warning that M3 would move.
+- **A teach's failure text is red** (gh#105).
+- **T17 re-judges a verdict of "no device" from its own readings**, at most every 20 s (gh#105). One lost config read left it standing with the gate open, which would have locked a healthy sensor out of a teach.
+
+**Added:** `bin/at_cal_rejudge.py` and the bench injection `noconf`, bench builds only. A row for UNKNOWN in `beheerderHandleiding.md`.
+
 ## [2.17.2] — 2026-10-31  (a characterisation that ends early stops M3; the card's "not taught")
 
 Patch. Bug fixes only: no setting, key, log row or payload change. Not soaked, not published. Details and every number: `bin/2.17.2/release-notes.md`.

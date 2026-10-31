@@ -213,6 +213,22 @@ function commRender(c) {
     : c.state === 'traversing' ? (c.ends || 0) + ' of 2 end sensors reached — let it run.'
     : c.state === 'committing' ? 'both end sensors reached — the sensor is saving the result.'
     : '');
+  const hint = document.getElementById('cm-hint');
+  if (hint) hint.className = c.state === 'failed' ? 'save-err' : 'save-ok';
+  // gh#105: a sensor that does not answer can be neither sized nor taught. The
+  // firmware refuses both, but only after the warning that M3 will move. Grey
+  // these two and not #cm-body, so Abort stays usable; the reason is
+  // #cm-unavailable, above the body.
+  const silent = commSilent(c);
+  const wrow = document.getElementById('cm-window-row');
+  if (wrow) {
+    wrow.classList.toggle('disabled-block', silent);
+    wrow.setAttribute('aria-disabled', silent ? 'true' : 'false');
+  }
+  ['cm-window-btn', 'cm-teach-btn'].forEach(function (id) {
+    const b = document.getElementById(id);
+    if (b) b.disabled = silent;
+  });
   // A teach pauses automatic control, like manual window control on the LCD,
   // and the pause lasts until this admin session ends -- so say so for as long
   // as it lasts, including after the teach has finished.
@@ -246,7 +262,7 @@ function commRender(c) {
       // setting a size is exactly what the operator needs to do here, so the
       // control stays usable (`.dimmed` does not block pointer events).
       w.value = '';
-      w.placeholder = 'not set';
+      w.placeholder = silent ? 'unknown' : 'not set';
       if (row) row.classList.add('dimmed');
     }
   }
@@ -301,6 +317,11 @@ function commWhyUnavailable(status) {
   return 'Not available: /api/diag/commission returned HTTP ' + status + '.';
 }
 
+// gh#105: the calibration could not be read because the sensor did not answer.
+function commSilent(c) {
+  return c.cal_reason === 'no_device';
+}
+
 // GREY OUT, never hide. See style.css `.disabled-block`: an operator looking
 // for a setting that is not on screen cannot tell a build without the feature
 // from a wrong tab from a fault, and has nothing to quote. This group was
@@ -324,7 +345,10 @@ function commSetAvailable(status, c) {
   // own opacity. A child cannot be less dim than a dimmed parent.
   body.classList.toggle('disabled-block', !live);
   card.setAttribute('aria-disabled', live ? 'false' : 'true');
-  setText('cm-unavailable', live ? '' : commWhyUnavailable(status));
+  setText('cm-unavailable', !live ? commWhyUnavailable(status)
+    : commSilent(c) ? 'Not available: the sensor is not answering, so it cannot be sized or'
+                    + ' taught. Its calibration is read again when it answers.'
+    : '');
   if (live) commRender(c);
   // A 401 means the SESSION is gone, not just this card's access. Handle it the
   // way every other fetch in this file does, so the header stops claiming the

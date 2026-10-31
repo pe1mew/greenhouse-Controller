@@ -333,6 +333,7 @@ Naast *teach failed* staat de reden. Een mislukte teach laat de bestaande kalibr
 | Melding | Betekenis | Wat te doen |
 |---|---|---|
 | **VALID** | Alle controles in orde. Het scherm toont erbij wat er geleerd is, bijvoorbeeld *"taught 0…858 (84 % of range), window 1500 mm"* | Niets |
+| **UNKNOWN**, *the sensor is not answering* | De sensor antwoordt niet, dus de kalibratie is niet te lezen. Dat zegt niets over de kalibratie zelf. Raamgrootte, Teach en Characterise staan grijs (sinds 2.17.3), Abort blijft werken | **Niet opnieuw teachen.** De RS485-bus en de voeding van de sensor nakijken. Zodra de sensor weer antwoordt, wordt het oordeel vanzelf opnieuw bepaald (binnen ongeveer een halve minuut) |
 | geen raamgrootte | `40004` staat op nul — er is nooit geteacht | Raamgrootte invullen, dan teachen |
 | nooit geteacht | De twee vastgelegde waarden zijn gelijk | Teachen |
 | bereik te smal | De twee waarden liggen te dicht bij elkaar: de meetdraad heeft de beweging niet volledig gevolgd | Trekdraad controleren en opnieuw teachen |

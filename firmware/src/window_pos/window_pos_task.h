@@ -322,6 +322,11 @@ typedef enum {
                              *   reads 0 from ANY position, so a CLOSE from the
                              *   open end starts "at its target". The end sensors
                              *   stay real. */
+    WPOS_INJECT_NOCONF = 8, /**< 2.17.3, gh#105: T17's reads are real, and the
+                             *   calibration check's config read fails: a read
+                             *   lost on a bus that otherwise works, so the
+                             *   verdict says no_device with the gate still
+                             *   open (bin/at_cal_rejudge.py). */
 } windowpos_inject_t;
 
 /**
