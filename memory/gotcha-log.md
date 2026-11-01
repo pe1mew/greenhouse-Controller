@@ -137,6 +137,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-07-05** — M3 is the north **side wall**, not a roof panel; 8.1× is travel time, 10× is area
 
 ### OTA & ROTA releases
+- **2026-11-01** — a ROTA test release: the server will not re-stage a seq, `/releases/latest` ties on one commit, and an open admin session blocks the apply
 - **2026-10-11** — ROTA downloads end `dl` 1 in their first second, more than an hour after the publish, while the server logged each request with the artefact on disk: the cause is on the unit (suspect: TLS's 16 KB record buffers in internal RAM); let the next check run (gh#95)
 - **2026-10-11** — a push leaves `fw_ver` new and `asset_version` old, with `T13 task spawn failed`: the assets came during T14's first TLS handshake of the boot, and T13's 16 KB stack was not there (gh#94; post the assets again once the unit has settled)
 - **2026-10-05** — `rota_release.py status` stops with "no SSH target" (this PC has only the GitHub token; verify a publish from the GitHub API and the unit's forced check)
@@ -245,6 +246,20 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
+
+## 2026-11-01 — three things a ROTA test on `soak` has to allow for (gh#99)
+
+**Problem:** gh#99's test wanted a broken release, then the same seq with a good zip, then a crash-looping image, all from one commit.
+
+**Root cause:** three facts about the pipeline, all from reading it before the first publish:
+
+- `ota-store-update.sh` skips a version whose seq it already holds, so `release --force` with new bytes never reaches a device. "The same seq with a good zip" cannot be done without the VPS.
+- It reads GitHub's `/releases/latest`, which is judged by the commit date and the version. On one commit, and with a real 2.17.3 after test releases numbered above it, it might never have moved.
+- The server takes about 10 minutes to point `soak`, and an open admin session on the unit blocks the apply: a harness must log out at once after `POST /api/ota/check`.
+
+**Fix:** `rota_release.py` sets `make_latest` on a full release. The test ran the fixed image first on seq 65, then the old image on the same offer, which saved a seq, because a T13 failure on the fixed image leaves the mark alone.
+
+**Rule:** never leave a crash image on a channel: publish a good release over it in the same session. `abort()` in `app_main` also lets the linker drop the rest of the firmware (341 KB), which does not matter for this test. A panicking image leaves a coredump that fails the next soak's check 2: erase it.
 
 ## 2026-10-31 — a wind-override race test passed on a build with `ch_stop()`'s check removed: the override had landed as the drive ended [RESOLVED]
 

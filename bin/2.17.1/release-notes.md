@@ -59,7 +59,7 @@ Found with grep on 2026-10-30.
 
 - **Not published.** The soak ran on the bench build; the release image has only been booted.
 - **Two brief sensor faults in the soak, on the rig's EMULATED slaves.** Two failed polls in a row on addr 1 (23:33) and on addr 44 (02:33, which also raised wind override), each cleared in the same second. The three soaks before it had no such run. Addr 40, the real encoder, read 0 failures, and the bus code has only comment changes since 2.17.0, so the emulator is the likely source. That is not proven.
-- **The ROTA high-water change has not run on hardware.** Its fail-first offers a release with a DEFLATE zip, which needs a publish, and a crash-looping image for the regression. Until then it rests on reading the code. It takes effect only for updates applied *from* a fixed image.
+- **The ROTA high-water change was tested on hardware on 2026-11-01,** on 2.17.3, with fail-first on 2.17.0: see those notes. It takes effect only for updates applied *from* a fixed image.
 - **An old overflow row of 1–33 stays read as that subtype.** It cannot be told apart.
 - **The −1 and −2 rows still rarely reach the card:** T9 has marked it gone before they are drained (gh#100).
 - **A cookie's `Max-Age` is set only at login**, so a browser drops it at login + `session_timeout_min`, even for an active operator (gh#106, not reproduced, not fixed).

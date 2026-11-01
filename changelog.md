@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [2.17.3] — 2026-10-31  (Teach and the window size greyed while the sensor does not answer)
 
-Patch. Bug fixes only: no setting, key, log row or payload change. Soaked on 2344 (bench build, 12.25 h, PASS), not published. Details and every number: `bin/2.17.3/release-notes.md`.
+Patch. Bug fixes only: no setting, key, log row or payload change. Soaked on 2344 (bench build, 12.25 h, PASS), published to `soak` as seq 67. Details and every number: `bin/2.17.3/release-notes.md`.
 
 **Fixed:**
 
@@ -37,7 +37,7 @@ Patch. Bug fixes only: no setting, key or payload change. Soaked on 2344 (bench 
 
 - **T17's stack, 4096 to 5120 B** (gh#97): a full characterisation run left 724 B. T1's sweep now covers T16 and T17, and bench builds report it on `GET /api/diag/windowpos?stacks`.
 - **The GUI's commissioning poll** (gh#98) runs only for an admin on the Motors tab of a unit with a sensor.
-- **The ROTA high-water mark** (gh#99) is written by T13 at the bank switch, not when T13 is spawned, so a failed install can be retried. **Not yet run on hardware.**
+- **The ROTA high-water mark** (gh#99) is written by T13 at the bank switch, not when T13 is spawned, so a failed install can be retried. Tested on hardware on 2026-11-01, see 2.17.3.
 - **Q3 overflow is `LOG_SYSTEM` 33** (gh#100), count in `value_b`. The parser also decodes −1, −2 and T10's 19 rows.
 - **A unit with no sensor shows information, not a warning, about Linear** (gh#101). `ctrl_mode_m3` stays 1 by default.
 - **An idle abort is refused on a unit with no sensor** (gh#102).

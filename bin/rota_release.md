@@ -93,6 +93,11 @@ python bin/rota_release.py status                    # show both channels
 - `--yes` — skip the confirmation prompt (for scripting).
 - `--unit-type ghc1` — the unit type key (default `ghc1`).
 
+> **A full release is marked "latest" on GitHub** (`make_latest`), because the server's
+> retriever reads `/releases/latest`. **It never re-stages a seq it already holds**, so
+> `release --force` with new bytes on the same seq does not reach a device: a corrected
+> release needs a new seq.
+
 ## seq (anti-downgrade, R-V01/02)
 
 `seq` is a strictly-monotonic release counter; a device rejects any manifest

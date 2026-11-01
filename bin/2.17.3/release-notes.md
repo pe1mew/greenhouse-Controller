@@ -7,7 +7,7 @@
 
 **Patch. Bug fixes only:** no setting, key, log row or payload change.
 
-> **Soaked on 2344 (bench build, 12.25 h, PASS), not published.** This soak covers 2.17.2 as well: its own was stopped after one session.
+> **Soaked on 2344 (bench build, 12.25 h, PASS), published to `soak` as seq 67, tag `v2.17.3`, on 2026-11-01.** This soak covers 2.17.2 as well: its own was stopped after one session. `mainstream` is not touched.
 
 ## What changed
 
@@ -35,7 +35,7 @@ Found with grep on 2026-10-31.
 
 | Check | Result |
 |---|---|
-| Release image | 1 435 216 B, sha256 `40dabdd504d557c8…`, version `2.17.3`. Assets `web-assets-2.17.3.zip`, 176 331 B, sha256 `4bf669bd26585831…`. **Built, not run on hardware** |
+| Release image | 1 435 216 B, sha256 `40dabdd504d557c8…`, version `2.17.3`. Assets `web-assets-2.17.3.zip`, 176 331 B, sha256 `4bf669bd26585831…`. Pushed to 2344 on 2026-11-01, `fw_ver` and `asset_version` 2.17.3; it has run for under an hour in all, and only the bench build was soaked |
 | Bench image on 2344 | `56514b5b63e12936…`. `fw_ver` and `asset_version` 2.17.3-bench |
 | `at_cal_rejudge.py`, fail-first, bench image `b243e15c…` with `-DWPOS_FAILFIRST_GH105` | FAIL: still unknown / no_device 45 s after the injection cleared, valid only on a manual refresh |
 | `at_cal_rejudge.py`, fixed | PASS: held no_device 40 s with the gate ok, then valid 29.0 s after the injection cleared, with no refresh sent. In the card test below, 20 s |
@@ -64,14 +64,25 @@ Found with grep on 2026-10-31.
 | `at_char_stop.py` after it | Abort PASS, 0.4 s. Sensor lost PASS, 1.6 s |
 | `at_cal_rejudge.py` after it | PASS, valid 12.3 s after the injection cleared |
 
+## The ROTA high-water mark on hardware (gh#99, from 2.17.1)
+
+2344, 2026-11-01. Two deliberately bad releases on `soak`, marked as such in their notes, never on `mainstream`.
+
+| Seq | Release | Image | Result |
+|---|---|---|---|
+| 65 | `2.17.91-gh99`, DEFLATE zip | 2.17.3 | T13 refused it, no reboot. The next check downloaded and tried again |
+| 65 | the same offer | 2.17.0 | The same failure, then `dl` 3 at once: the defect, fail-first |
+| 66 | `2.17.92-gh99`, `abort()` 5 s into every boot | 2.17.3 | Installed, crashed, rolled back within 25 s, both versions 2.17.3. Every later check `dl` 3, no loop |
+
+The planned step "the same seq with a good zip" could not run: the server does not re-stage a seq it already holds.
+
 ## Upgrading
 
 - **Nothing to do.** No setting, key or NVS record changed.
 
 ## Known limitations
 
-- **Not published.** The release image has not run on hardware.
 - **`heap_min_kb` fell to 2 KB,** from 15, in two steps at 20:38 and 22:02, each between two 60 s samples, around web sessions. Earlier soaks ended at 4 to 25 KB. It is a low-water mark, not the steady figure (gh#81), and nothing failed, but the cause of these two steps was not found and nothing in this release is known to explain them.
 - **The re-judge in a stroke was not forced.** The test runs at rest. In a stroke it costs one more register read per 20 s, and only while the verdict says no device.
 - **A verdict of "no device" can be a read lost to a busy bus,** not a silent sensor: `read_config()` does not tell them apart. It now corrects itself within about 30 s, and the card greys for that long.
-- **gh#99 from 2.17.1 is still open:** the publish test. **gh#106**, the cookie's `Max-Age`, is not fixed.
+- **gh#106**, the cookie's `Max-Age`, is not fixed.

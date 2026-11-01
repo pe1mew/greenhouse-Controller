@@ -606,6 +606,11 @@ def cmd_release(args, cfg):
 
     payload = {"tag_name": tag, "name": tag, "body": body,
                "draft": bool(args.draft), "prerelease": bool(args.prerelease)}
+    if not args.prerelease and not args.draft:
+        # The retriever reads /releases/latest. GitHub would otherwise judge
+        # "latest" by the commit date and the version, so a release on the same
+        # commit as another, or lower than a test release, would never be seen.
+        payload["make_latest"] = "true"
     if rel is None:
         if head:
             payload["target_commitish"] = head

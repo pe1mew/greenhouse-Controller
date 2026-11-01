@@ -1,0 +1,14 @@
+{
+  "version": "2.17.92-gh99",
+  "seq": 66,
+  "unit_type": "ghc1",
+  "min_version": "2.1.0",
+  "key_id": "",
+  "fw_file": "greenhouse-controller-2.17.92-gh99.bin",
+  "fw_sha256": "d7cbe0417b1285a9ba98bf9aed09f4a46e1c9b12883813532018c3d80ac1be8a",
+  "fw_size": 340784,
+  "assets_file": "web-assets-2.17.92-gh99.zip",
+  "assets_sha256": "54d6af71d0cd3378fe1a2a853b5e332c3b3b1244833425206936498effbf3614",
+  "assets_size": 176337,
+  "released_at": "2026-11-01T08:35:04Z"
+}
