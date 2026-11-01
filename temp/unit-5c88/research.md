@@ -1,10 +1,42 @@
 # 5C88: M3 characterisation failed twice, 2026-10-31
 
-**Status:** diagnosed, mechanism not proven, no fix applied. Firmware 2.17.0 on 5C88. 2.17.1 work is on hold.
+**Status:** cause open, see the review below. No fix applied. Firmware 2.17.0 on 5C88.
 
 **Evidence:** `5C88_20261031003413.csv` (00:35 to 09:35), the screenshots in this folder, `/api/status` from rfsee.net at 13:34, and the session record of 2026-10-30. The log ends before the 10:14 hourly bus row, so the failures cannot be split per run.
 
-## Conclusion
+## Review, 2026-11-01: the first conclusion was too strong
+
+The operator disputed "M3's motor knocks out the Modbus bus". The log does not support it as written. **What caused the failures is open.** Below, what the data shows.
+
+**Corrections to what follows:**
+
+- **The wind fault's log times were wrong.** Alarm rows use a clock cached for up to 60 s. Placed by their order in the file, the failed wind polls are 09:21:35, 09:22:36 and 09:31:11. The table below is corrected.
+- **"The whole bus is affected" was wrong.** T/RH and wind read normally at most polls while address 40 was lost.
+- **"The motor" was never separated from anything else.** "M3 running" in the bisect and in both runs also means T17's reads, and a stroke-start write to the encoder.
+
+**What the data shows:**
+
+| Finding | Evidence |
+|---|---|
+| Wind failures happen with M3 moving | 3 failed polls of 10 with M3 moving, 0 of the other 1063 in this log |
+| It is not the packet count | From 13:34 on 2026-10-31 to 11:15 the next day, about 2 600 more polls: wind errors still 10, address 40 still 59. By the read counts M3 did not move in that time |
+| It is not a high packet rate on 5C88 | T17 polls at travel / 150: 1.14 s here, about 2 transactions a read. The rig polls at 100 ms, about 10x faster. Address 40 was lost after 2 to 4 reads |
+| The motor alone does not stop address 40 | 09:23:16 to 09:23:34: 15 reads with the leaf closing, none failed |
+| All three losses were on opening or on re-opening during opening | 09:19:43, 09:20:47, 09:30:36. Each came 2 to 4 s after T17 started reading a moving leaf. Not explained |
+| Real sensors fall silent on their own | Before any encoder, on 2.3.1 with one bus caller: six T/RH faults of about 59 s and two wind faults, none within 120 s of a relay (gotcha 2026-08-26) |
+| The sensors can look silent or garbled, and the log cannot say which | `s200_status_t` collapses timeout, CRC and exception into `S200_ERR_COMM`. **"Silent" is not proven** |
+| The rig cannot show any of this | Address 1 and 44 are emulated. Neither manual gives a reply time or a polling limit |
+| One bad poll closes the greenhouse | T5 retries once after 100 ms, then faults, and T3 safe-fails at once. Every wind fault since commissioning closed the windows, in wind of 0.6 to 1.6 m/s |
+
+**Next, in the order that separates most:**
+
+1. **Record the failure type.** Timeout with zero bytes, partial frame, CRC or exception, per address, in the log. Without this, "silent" stays a guess.
+2. **Rig, real sensor:** replace the emulated address 1 with the spare FG6485A, with the emulator's slave off, and run strokes at the rig's 10x rate. No motor. A spare S200 likewise, if there is one.
+3. **5C88 on site, motor without T17:** set `wpos_fitted_m3` to 0 so T17 leaves the bus, drive M3 from the LCD, and run `bus_watch.py --every 10`. This is the split never made.
+4. **5C88 on site, traffic without motor:** a laptop RS485 adapter in place of the controller, polling the real sensors. It also gives the first real reply times.
+5. **Decide what a brief sensor failure should do.** That is a safety decision, and it applies whatever the cause.
+
+## First conclusion, 2026-10-31 (superseded, see above)
 
 M3's motor knocks out the Modbus bus. The characterisation and the teach are not at fault, and the firmware stopped both runs correctly.
 
@@ -19,9 +51,9 @@ M3 had never run on the current wiring. The teach of 2026-10-30 ran before the b
 | Last good reads, both 0 mm | 09:19:39, 09:19:40 | 09:30:32, 09:30:33 |
 | Address 40 lost (gate reason 2) | 09:19:43 | 09:30:36 |
 | Run ended, `char_err` 3 (sensor), 1 motor start | 09:19:44 | 09:30:37 |
-| Wind sensor fault set, false wind override | 09:20:50 and 09:21:49 | 09:30:37 |
+| Wind sensor fault set, false wind override (corrected) | 09:21:35 and 09:22:36 | 09:31:11 |
 | M3 closing, because of that override | 09:21:37, after 118 s | 09:31:13, after 41 s |
-| Wind fault cleared for good | 09:22:48 | 09:31:36 |
+| Wind fault cleared for good (corrected) | 09:23:07 | 09:31:42 |
 | Address 40 answering again | 09:23:16 | 09:32:08 |
 | M3 closed, relay off | 09:24:33 | 09:34:09 |
 

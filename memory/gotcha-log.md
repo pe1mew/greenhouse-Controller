@@ -273,6 +273,9 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 
 ## 2026-10-31 — 5C88's characterisation ended twice at one motor start: address 40 stopped answering about 2 s after M3's relay closed [OPEN]
 
+**Reviewed 2026-11-01: the conclusion below that M3's motor knocks out the bus is withdrawn; the cause is open.** "M3 running" also means T17's reads, wind and T/RH read normally at most polls, and alarm rows carry a clock up to 60 s old, so read them by their order in the file. The current account is the review at the top of `temp/unit-5c88/research.md`.
+
+
 **Problem:** two runs (09:19:39, 09:30:31, rest 30 s, firmware 2.17.0) each ended with `char_err` 3, sensor, after one motor start. The card then read Calibration UNKNOWN and "Not available: the sensor is not taught".
 
 **What the log shows** (`SENSOR_HR ch 3`, `ALARM ch 6`, both runs alike): two good reads at 0 mm, relay + 0 and + 1 s, then none. Gate reason 2 (no sensor at address 40) at relay + 4 s, with the leaf still reading 0 mm when last seen. The wind sensor failed too: faults at 09:20:50, 09:21:49, 09:30:37, each raising a false wind override, in about 1 m/s of real wind. That override is what closed M3, 118 s and 41 s into the open. Reads returned during or just after the close. Encoder not restarted (no param 247, no start-up bit). Since boot `bus[]` reads addr 40 59 errors, run of 8; addr 44 10, run of 2; addr 1 9, run of 1.
