@@ -502,7 +502,7 @@ Een lijst van de meetwaarden over de afgelopen periode met de laatst gemeten waa
 
 ### Sessie
 
-Wanneer je bent ingelogd en 5 minuten lang geen actie onderneemt, word je automatisch uitgelogd. Je moet dan opnieuw je PIN invoeren om wijzigingen door te voeren.
+Wanneer je bent ingelogd en 5 minuten lang geen actie onderneemt, word je automatisch uitgelogd. Je moet dan opnieuw je PIN invoeren om wijzigingen door te voeren. Zolang je bezig blijft, blijf je ingelogd. Sluit je de browser, dan ben je ook uitgelogd.
 
 ---
 

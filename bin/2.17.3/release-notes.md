@@ -85,4 +85,4 @@ The planned step "the same seq with a good zip" could not run: the server does n
 - **`heap_min_kb` fell to 2 KB,** from 15, in two steps at 20:38 and 22:02, each between two 60 s samples, around web sessions. Earlier soaks ended at 4 to 25 KB. It is a low-water mark, not the steady figure (gh#81), and nothing failed, but the cause of these two steps was not found and nothing in this release is known to explain them.
 - **The re-judge in a stroke was not forced.** The test runs at rest. In a stroke it costs one more register read per 20 s, and only while the verdict says no device.
 - **A verdict of "no device" can be a read lost to a busy bus,** not a silent sensor: `read_config()` does not tell them apart. It now corrects itself within about 30 s, and the card greys for that long.
-- **gh#106**, the cookie's `Max-Age`, is not fixed.
+- **gh#106**, the cookie's `Max-Age`, is reproduced here and fixed in 2.17.4.

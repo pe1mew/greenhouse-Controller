@@ -62,4 +62,4 @@ Found with grep on 2026-10-30.
 - **The ROTA high-water change was tested on hardware on 2026-11-01,** on 2.17.3, with fail-first on 2.17.0: see those notes. It takes effect only for updates applied *from* a fixed image.
 - **An old overflow row of 1–33 stays read as that subtype.** It cannot be told apart.
 - **The −1 and −2 rows still rarely reach the card:** T9 has marked it gone before they are drained (gh#100).
-- **A cookie's `Max-Age` is set only at login**, so a browser drops it at login + `session_timeout_min`, even for an active operator (gh#106, not reproduced, not fixed).
+- **A cookie's `Max-Age` is set only at login**, so a browser drops it at login + `session_timeout_min`, even for an active operator (gh#106, reproduced on 2.17.3, fixed in 2.17.4).

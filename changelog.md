@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.17.4] — 2026-11-01  (the session cookie no longer expires under an active operator)
+
+Patch. Bug fix only: no setting, key, log row or payload change. Not soaked, not published. Details and every number: `bin/2.17.4/release-notes.md`.
+
+**Fixed:**
+
+- **The session cookie has no `Max-Age`** (gh#106). It was set at login only, so a browser dropped it at login + `session_timeout_min` however active the operator was, and the web GUI logged out every 5 minutes. The server's expiry and the page's idle logout are unchanged. Closing the browser now ends the login.
+
+**Added:** `bin/at_session_cookie.py`, which uses a real cookie jar.
+
 ## [2.17.3] — 2026-10-31  (Teach and the window size greyed while the sensor does not answer)
 
 Patch. Bug fixes only: no setting, key, log row or payload change. Soaked on 2344 (bench build, 12.25 h, PASS), published to `soak` as seq 67. Details and every number: `bin/2.17.3/release-notes.md`.

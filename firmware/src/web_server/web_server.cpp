@@ -427,7 +427,12 @@ static bool cookie_get_session(httpd_req_t *req, char out_token[TOKEN_LEN + 1])
 /**
  * @brief Set a session cookie in the response.
  *
- * `Set-Cookie: session=TOKEN; Path=/; HttpOnly; Max-Age=N`
+ * `Set-Cookie: session=TOKEN; Path=/; HttpOnly`
+ *
+ * gh#106: no `Max-Age`. It was set here, at login only, while the server slides
+ * its expiry on every request, so a browser dropped the cookie at login +
+ * `session_timeout_min` from under an active operator. The cookie now lasts the
+ * browser's session; the expiry that counts is the server's.
  *
  * **CRITICAL**: the caller must supply `hdr` — `httpd_resp_set_hdr` does
  * NOT copy the value; it stores a pointer that must remain valid until
@@ -441,12 +446,9 @@ static bool cookie_get_session(httpd_req_t *req, char out_token[TOKEN_LEN + 1])
  * @param hdr_cap Size of @p hdr in bytes (>= 96).
  */
 static void cookie_set_session(httpd_req_t *req, const char *token,
-                                int32_t max_age_s,
                                 char *hdr, size_t hdr_cap)
 {
-    snprintf(hdr, hdr_cap,
-             "session=%s; Path=/; HttpOnly; Max-Age=%ld",
-             token, (long)max_age_s);
+    snprintf(hdr, hdr_cap, "session=%s; Path=/; HttpOnly", token);
     httpd_resp_set_hdr(req, "Set-Cookie", hdr);
 }
 
@@ -830,7 +832,7 @@ static esp_err_t login_handler(httpd_req_t *req)
          * httpd_resp_set_hdr → httpd_resp_send sequence. Required by
          * the IDF httpd contract — the helper does NOT copy the value. */
         char hdr_buf[96];
-        cookie_set_session(req, token, timeout_s, hdr_buf, sizeof(hdr_buf));
+        cookie_set_session(req, token, hdr_buf, sizeof(hdr_buf));
         char resp[64];
         int n = snprintf(resp, sizeof(resp),
                          "{\"ok\":true,\"role\":\"%s\"}", role_str);
