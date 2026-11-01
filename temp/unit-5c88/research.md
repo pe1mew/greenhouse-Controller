@@ -28,13 +28,27 @@ The operator disputed "M3's motor knocks out the Modbus bus". The log does not s
 | The rig cannot show any of this | Address 1 and 44 are emulated. Neither manual gives a reply time or a polling limit |
 | One bad poll closes the greenhouse | T5 retries once after 100 ms, then faults, and T3 safe-fails at once. Every wind fault since commissioning closed the windows, in wind of 0.6 to 1.6 m/s |
 
+**Rig, 2026-11-01, 2.18.0-bench, with the failure type in the log and a real FG6485A on the bus for the first time:**
+
+| Run at T17's fastest polling | Spare FG6485A | Result | Encoder | Wind |
+|---|---|---|---|---|
+| 12:32 | On | **Ended `sensor` at 3 starts, a target overran to the OPEN end: 5C88's failure** | 3 silent of 176 | 2 silent of 4 |
+| 12:39 | Off | 55 starts, stopped by hand | 0 of 684 | 0 of 7 |
+| 12:45 | On | 28 starts, stopped by hand | 0 of 419 | 1 silent of 5 |
+
+- **Every failure on the rig is a silent slave, zero bytes.** So the failures this rig can make are not damaged replies. On 5C88 this is still not known: it needs 2.18.0.
+- **The failure needs no greenhouse motor.** It ran on the rig's small actuator.
+- **The FG6485A is a suspect, not a finding.** One failure in two runs with it, none in one without. The overnight soak with the spare on is the sample.
+- At rest with the spare on, nothing failed on the encoder in about 10 minutes.
+- The heating read was dropped, so 5C88's wind traffic halves with 2.18.0, and one failed request no longer loses a good reading.
+
 **Next, in the order that separates most:**
 
-1. **Record the failure type.** Timeout with zero bytes, partial frame, CRC or exception, per address, in the log. Without this, "silent" stays a guess.
-2. **Rig, real sensor:** replace the emulated address 1 with the spare FG6485A, with the emulator's slave off, and run strokes at the rig's 10x rate. No motor. A spare S200 likewise, if there is one.
+1. **Done: the failure type is in the log** (2.18.0).
+2. **Under way: the spare FG6485A on the rig.** No S200 spare exists.
 3. **5C88 on site, motor without T17:** set `wpos_fitted_m3` to 0 so T17 leaves the bus, drive M3 from the LCD, and run `bus_watch.py --every 10`. This is the split never made.
 4. **5C88 on site, traffic without motor:** a laptop RS485 adapter in place of the controller, polling the real sensors. It also gives the first real reply times.
-5. **Decide what a brief sensor failure should do.** That is a safety decision, and it applies whatever the cause.
+5. **Done: a wind fault needs the whole averaging window** (2.18.0, the operator's decision).
 
 ## First conclusion, 2026-10-31 (superseded, see above)
 

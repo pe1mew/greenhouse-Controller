@@ -7,9 +7,10 @@
  * word order (high word at the lower address).  The decode_int32() helper
  * reconstructs the signed 32-bit value; read functions then divide by 1000.0f.
  *
- * Two FC04 requests are issued per measurement call:
- *   1. Registers 0x0008–0x0013 (12 registers): wind direction + wind speed
- *   2. Registers 0x001C–0x001D (2 registers):  heating temperature
+ * One FC04 request per measurement call: registers 0x0008–0x0013, wind direction
+ * and speed. The heating temperature (0x001C) was a second request until 2.18.0.
+ * Nothing used it, and a failure of it threw away the wind reading already in
+ * hand and counted towards the wind fault that closes the greenhouse.
  *
  * Depends on LIB-6 (modbus_rtu) for all bus transactions.
  *
@@ -73,7 +74,7 @@ s200_status_t s200_read_measurements(uint8_t slave_addr, s200_measurement_t *out
         return S200_ERR_PARAM;
     }
 
-    /* --- FC04 read 1: wind direction and speed (0x0008–0x0013, 12 registers) ---
+    /* --- FC04: wind direction and speed (0x0008–0x0013, 12 registers) ---
      *   regs[0–1]   = min wind direction  (int32 × 1000, degrees)
      *   regs[2–3]   = max wind direction
      *   regs[4–5]   = avg wind direction
@@ -95,19 +96,6 @@ s200_status_t s200_read_measurements(uint8_t slave_addr, s200_measurement_t *out
     out->wind_speed_min_ms = decode_int32(&regs[6])  / 1000.0f;
     out->wind_speed_max_ms = decode_int32(&regs[8])  / 1000.0f;
     out->wind_speed_avg_ms = decode_int32(&regs[10]) / 1000.0f;
-
-    /* --- FC04 read 2: heating temperature (0x001C–0x001D, 2 registers) ---
-     *   hregs[0–1] = heating temperature (int32 × 1000, °C)
-     */
-    uint16_t hregs[2];
-    s = modbus_read_input_registers(slave_addr,
-                                     S200_REG_HEATING_TEMP,
-                                     2u, hregs);
-    if (s != MODBUS_OK) {
-        return map_status(s);
-    }
-
-    out->heating_temperature_c = decode_int32(&hregs[0]) / 1000.0f;
     return S200_OK;
 }
 

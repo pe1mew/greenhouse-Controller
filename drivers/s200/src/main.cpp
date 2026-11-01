@@ -213,7 +213,6 @@ void setup()
     Serial.print("  wind_speed_min        : "); Serial.print(meas.wind_speed_min_ms, 3);   Serial.println(" m/s");
     Serial.print("  wind_speed_max        : "); Serial.print(meas.wind_speed_max_ms, 3);   Serial.println(" m/s");
     Serial.print("  wind_speed_avg        : "); Serial.print(meas.wind_speed_avg_ms, 3);   Serial.println(" m/s");
-    Serial.print("  heating_temperature   : "); Serial.print(meas.heating_temperature_c, 3); Serial.println(" C");
     check("HW-S200-002", "s200_read_measurements returned S200_OK", st == S200_OK);
 
     /* -----------------------------------------------------------------
@@ -232,8 +231,6 @@ void setup()
               meas.wind_speed_max_ms >= 0.0f && meas.wind_speed_max_ms <= 60.0f);
         check("HW-S200-003f", "wind speed (avg) in 0–60 m/s",
               meas.wind_speed_avg_ms >= 0.0f && meas.wind_speed_avg_ms <= 60.0f);
-        check("HW-S200-003g", "heating temperature in -40..85 C",
-              meas.heating_temperature_c >= -40.0f && meas.heating_temperature_c <= 85.0f);
     } else {
         check("HW-S200-003", "skipped (read_measurements failed)", false);
     }

@@ -5,7 +5,7 @@
  * Thin driver over LIB-6 (modbus_rtu) for the Seeed SenseCAP ONE V2 S200
  * compact wind station mounted on the greenhouse roof.  Provides:
  *   - Measurement reads (FC04, wind direction 0x0008–0x000D, wind speed
- *     0x000E–0x0013, heating temperature 0x001C–0x001D)
+ *     0x000E–0x0013, the heating temperature at 0x001C is not read)
  *   - A FreeRTOS periodic polling task
  *
  * ## Hardware
@@ -22,7 +22,7 @@
  *   - Slave addr  : 44 (factory default, see @ref S200_DEFAULT_ADDR).
  *
  * ## API summary
- *   - @ref s200_read_measurements  Read all wind channels + heater temp.
+ *   - @ref s200_read_measurements  Read all wind channels.
  *   - @ref s200_task               FreeRTOS periodic-poll task.
  *
  * ## Thread safety
@@ -138,7 +138,7 @@ typedef enum {
 } s200_status_t;
 
 /**
- * @brief Wind measurements and heater status from the S200.
+ * @brief Wind measurements from the S200.
  */
 typedef struct {
     float wind_dir_min_deg;      /**< Minimum wind direction  (°, 0–360). */
@@ -147,7 +147,6 @@ typedef struct {
     float wind_speed_min_ms;     /**< Minimum wind speed      (m/s, 0–60). */
     float wind_speed_max_ms;     /**< Maximum wind speed      (m/s, 0–60). */
     float wind_speed_avg_ms;     /**< Average wind speed      (m/s, 0–60). */
-    float heating_temperature_c; /**< Internal heater temperature (°C, −40…85). */
 } s200_measurement_t;
 
 #ifndef NATIVE_TEST
@@ -196,13 +195,10 @@ typedef struct {
  * --------------------------------------------------------------------------- */
 
 /**
- * @brief Read all wind measurements and heating temperature.
+ * @brief Read all wind measurements.
  *
- * Issues two FC04 requests:
- *   1. Registers @ref S200_REG_WIND_DIR_MIN … 0x0013 (12 registers):
- *      wind direction and speed (min/max/avg).
- *   2. Registers @ref S200_REG_HEATING_TEMP … 0x001D (2 registers):
- *      internal heater temperature.
+ * Issues one FC04 request: registers @ref S200_REG_WIND_DIR_MIN … 0x0013
+ * (12 registers), wind direction and speed (min/max/avg).
  *
  * Raw int32 values (big-endian word order) are divided by 1000 before
  * storing in @p out.  Returns the first error encountered.

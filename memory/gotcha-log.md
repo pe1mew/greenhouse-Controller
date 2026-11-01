@@ -108,6 +108,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 - **2026-07-31** — anti-thrash dwell was unguarded during travel (gh#48) [RESOLVED 2.3.1, gh#48]
 
 ### Modbus bus, sensors & clock (T5, drivers)
+- **2026-11-01** — wind fails with a real change on the bus and every suspect turns out innocent: two changes at once twice, and one failing run is not a finding
 - **2026-10-31** — 5C88's characterisation ended twice at one motor start: M3's motor knocks the bus out on the repaired wiring, which M3 had never run on. The calibration is intact, whatever the card says; do not re-teach
 - **2026-10-30** — the whole bus fails about 60 % of reads, every slave together, while A–B reads a correct 60 Ω: remove a terminator first (5C88: the window sensor's 120 Ω). 20 kΩ bias into 60 Ω leaves about 5 mV idle; bisect with `bin/bus_watch.py`
 - **2026-09-19** — no bus-KPI rows (`LOG_SYSTEM 31`) for ~2 h after a boot: the first hourly call only takes the baseline; judge the bus from the diag counters until then
@@ -246,6 +247,21 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 
 ### Server side (VPS)
 - **2026-07-14** — logrotate: validate as root; group-writable `/var/log` needs `su`
+
+## 2026-11-01 — three wrong calls in one rig session on the Modbus failure, each from one run or two changes at once
+
+**Problem:** putting a spare FG6485A on the rig gave a run of confident statements, and I withdrew two within the hour.
+
+**What happened:**
+
+- Fitting the sensor and moving the emulator's T/RH to address 2 happened together. The emulated wind then failed every poll. I offered the FG6485A as "the real lead". With it unplugged the wind failed just the same: it was the emulator, and a restart did not cure it.
+- A characterisation with the spare on ended `sensor` at 3 starts, and one with it off ran clean. I said the FG6485A silences other slaves. The next run with it on reached 28 starts with the encoder clean.
+
+**Root cause:** a change of two things, and a sample of one each way, on a failure that is intermittent.
+
+**Fix:** the spare stays on for the overnight soak, which is the sample. `SYSTEM 34` rows say every failure on the rig is a silent slave.
+
+**Rule:** change one thing between runs. On an intermittent failure, one run each way decides nothing: say so before drawing the line, and repeat before reporting a cause.
 
 ## 2026-11-01 — three things a ROTA test on `soak` has to allow for (gh#99)
 

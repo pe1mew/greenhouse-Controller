@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [2.18.0] — 2026-11-01  (one failed wind poll no longer closes the greenhouse; bus failures logged by type)
+
+Minor: a new log row, and FR-W04 changed. No setting, key or payload change. Not soaked. Details and every number: `bin/2.18.0/release-notes.md`.
+
+**Changed:**
+
+- **A wind fault needs the sensor unread for its whole averaging window** (`avg_win_wind`, at least two polls). A dead wind sensor closes the windows up to that window later, 6 minutes by default. Before the first good read since boot one failed poll still counts.
+- **The S200 is read with one request.** The second fetched the heating temperature, which nothing used, and its failure threw the wind reading away. Address 44 now shows half the transactions.
+
+**Added:** `SYSTEM value_a = 34`, one row per failed bus transaction: status and bytes received, so a silent slave can be told from a damaged reply. `bin/at_wind_holdoff.py` and the bench injection `nowind`.
+
+**Fixed:** the sensor fault and wind override rows carried a clock up to 60 s old.
+
 ## [2.17.4] — 2026-11-01  (the session cookie no longer expires under an active operator)
 
 Patch. Bug fix only: no setting, key, log row or payload change. Not soaked, not published. Details and every number: `bin/2.17.4/release-notes.md`.
