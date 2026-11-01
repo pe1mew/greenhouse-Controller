@@ -39,6 +39,8 @@ The operator disputed "M3's motor knocks out the Modbus bus". The log does not s
 - **Every failure on the rig is a silent slave, zero bytes.** So the failures this rig can make are not damaged replies. On 5C88 this is still not known: it needs 2.18.0.
 - **The failure needs no greenhouse motor.** It ran on the rig's small actuator.
 - **The FG6485A is a suspect, not a finding.** One failure in two runs with it, none in one without. The overnight soak with the spare on is the sample.
+- **The emulator's own log, 13:21 to 13:26, across three failed polls:** one RX and one TX per poll, also on the polls where the controller recorded a silent first attempt. So that attempt's request was not accepted at all: the retry was the one answered. Its log drops nothing at this rate, but a frame with a bad CRC goes to its serial console only.
+- **Likely why, not proven: the emulator's frame gap is 20 ms (`RS485_FRAME_TIMEOUT_MS`) and the controller's inter-frame gap is 20 ms (`MODBUS_IFG_US`).** With no margin, a reply from another slave and the request after it can run together into one frame with a bad CRC, and the emulator then answers nothing. That needs a reply it did not send itself, so it fits the encoder's traffic and a real FG6485A. It does not explain why the second read failed with the spare off. **This concerns the emulator's wind, not the real encoder's silences,** and not a real S200, whose frame gap is unknown.
 - At rest with the spare on, nothing failed on the encoder in about 10 minutes.
 - The heating read was dropped, so 5C88's wind traffic halves with 2.18.0, and one failed request no longer loses a good reading.
 
