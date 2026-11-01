@@ -7,7 +7,7 @@
 
 **Patch. Bug fixes only:** no setting, key, log row or payload change.
 
-> **Not soaked, not published.** 2.17.2 was never soaked either: its soak was stopped after one session, so 2.17.1 is the last soaked build.
+> **Soaked on 2344 (bench build, 12.25 h, PASS), not published.** This soak covers 2.17.2 as well: its own was stopped after one session.
 
 ## What changed
 
@@ -44,13 +44,34 @@ Found with grep on 2026-10-31.
 | Wind override during a run (gh#104), `bin/at_char_wind.py` | Added after the commit, no firmware change. Emulated wind set to 3 m/s with the operator's go, then back to REST, `v_max` lowered as the run's second drive began. On 2.17.3-bench `56514b5b`, rebuilt byte-identical from `3559115`: override landed with M3 opening at 37.5 %, the run ended `wind`, M3 CLOSED 20.2 s later. The log has no PART_OPEN row between the drive and the close, so the stop was refused. **Fail-first**, a throwaway build with `ch_stop()`'s check removed: M3 sat PART_OPEN at about 35 % through 40 s of override |
 | `bin/check_cfg_desc.py` | 52 keys, 41 published, all agree |
 
+## Soak
+
+2344 on 2.17.3-bench `56514b5b`, 2026-10-31 17:31 to 2026-11-01 05:46, on 5C88's climate through the emulator.
+
+| Check | Result |
+|---|---|
+| `at_wp_soak.py` | PASS: 12.25 h, 84 strokes judged (2.17.1: 74), stalls, early stops, rejected samples, comm errors, not reached all 0. No mode change |
+| `sd_soak.py` | PASS: no reboot, no coredump, card mounted in all 735 samples, largest gap 31 s, no SYSTEM -1 or 33 row |
+| Stroke sessions | 12 of 12 ran, none skipped or failed |
+| LCD sessions | 12 of 12, 0 failed |
+| Law conformance | 24 decisions, all conform to v2. Rule 1 not exercised in this window |
+| Hunt | 17 targeted stops, none outside the 31 mm band, no opposite correction |
+| Settings | Identical at 12 h |
+| Bus, 14 h | Addr 40, the real encoder: 8538 ok, 0 errors. Addr 1 and 44, emulated: 5 and 1 failed polls, never two in a row, no sensor fault |
+| Heap | Steady 64 KB free, 29 KB largest block after 12.4 h, no slope. `heap_min_kb` 2, the lowest of any soak so far: see below |
+| Stacks | After a full characterisation: T17 1756 B free of 5120, T7 1072 B free of 3072 |
+| Characterisation after the report | Complete: 117 starts, 3613 s, band 33 mm (was 31) |
+| `at_char_stop.py` after it | Abort PASS, 0.4 s. Sensor lost PASS, 1.6 s |
+| `at_cal_rejudge.py` after it | PASS, valid 12.3 s after the injection cleared |
+
 ## Upgrading
 
 - **Nothing to do.** No setting, key or NVS record changed.
 
 ## Known limitations
 
-- **Not soaked, not published.**
+- **Not published.** The release image has not run on hardware.
+- **`heap_min_kb` fell to 2 KB,** from 15, in two steps at 20:38 and 22:02, each between two 60 s samples, around web sessions. Earlier soaks ended at 4 to 25 KB. It is a low-water mark, not the steady figure (gh#81), and nothing failed, but the cause of these two steps was not found and nothing in this release is known to explain them.
 - **The re-judge in a stroke was not forced.** The test runs at rest. In a stroke it costs one more register read per 20 s, and only while the verdict says no device.
 - **A verdict of "no device" can be a read lost to a busy bus,** not a silent sensor: `read_config()` does not tell them apart. It now corrects itself within about 30 s, and the card greys for that long.
 - **gh#99 from 2.17.1 is still open:** the publish test. **gh#106**, the cookie's `Max-Age`, is not fixed.

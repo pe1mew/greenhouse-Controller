@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [2.17.3] — 2026-10-31  (Teach and the window size greyed while the sensor does not answer)
 
-Patch. Bug fixes only: no setting, key, log row or payload change. Not soaked, not published. Details and every number: `bin/2.17.3/release-notes.md`.
+Patch. Bug fixes only: no setting, key, log row or payload change. Soaked on 2344 (bench build, 12.25 h, PASS), not published. Details and every number: `bin/2.17.3/release-notes.md`.
 
 **Fixed:**
 
