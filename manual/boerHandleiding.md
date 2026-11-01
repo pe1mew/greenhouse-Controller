@@ -604,7 +604,7 @@ Alle sensoren hangen aan **één paar draden** (de RS485-bus). Dit kaartje telt 
 
 **Waarvoor het kaartje echt bedoeld is:** uitzoeken **welke** sensor een probleem heeft. Staan de fouten bij één sensor en zijn de andere schoon, dan zit het probleem bij díé sensor of zijn bekabeling. Hebben ze allemaal fouten, dan is het de bus zelf. Dat onderscheid kon de beheerder vroeger niet maken zonder ter plaatse te meten.
 
-**De kolom `Max` is de belangrijkste**, en niet `Err`. De kascontroller meldt pas een sensorstoring als er een paar berichten **achter elkaar** mislukken — een sensor kan dus maandenlang een enkele fout laten zien zonder ooit een storing te geven, terwijl een korte reeks fouten wél tot een storing (en bij de windsensor tot ramen dicht) leidt.
+**De kolom `Max` is de belangrijkste**, en niet `Err`. De kascontroller meldt pas een sensorstoring als er een paar berichten **achter elkaar** mislukken — een sensor kan dus maandenlang een enkele fout laten zien zonder ooit een storing te geven, terwijl een korte reeks fouten wél tot een storing leidt. De windsensor is daarin ruimer: pas als die de hele middelingstijd niet is uitgelezen (standaard 6 minuten) is er een storing en gaan de ramen dicht.
 
 Heeft jouw kas geen raamstandsensor, dan staat er geen regel voor **M3 · 40**; dat is zo bedoeld (sinds 2.9.0).
 
@@ -1056,7 +1056,7 @@ Er is **geen extra wachttijd of hysteresis** — zodra de wind weer binnen de gr
 
 #### Bij een wind-sensor storing
 
-Als de wind-sensor geen geldige meting meer levert (twee opeenvolgende mislukte uitlezingen via Modbus), kiest de controller voor **veilig falen**: hij gedraagt zich alsof het hard waait, zet wind-override actief, sluit alle ramen, en houdt deze toestand vast totdat de sensor weer reageert.
+Als de wind-sensor de hele middelingstijd (standaard 6 minuten) geen geldige meting meer levert, kiest de controller voor **veilig falen**. Eén gemiste meting sluit de ramen dus niet meer (sinds 2.18.0); een kapotte sensor sluit ze wel, alleen tot die tijd later. Het veilig falen werkt zo: hij gedraagt zich alsof het hard waait, zet wind-override actief, sluit alle ramen, en houdt deze toestand vast totdat de sensor weer reageert.
 
 > **Bel de beheerder bij een wind-sensor storing.** Zolang de fout niet is verholpen, blijven de ramen dicht en kan de klimaatregeling niet werken.
 

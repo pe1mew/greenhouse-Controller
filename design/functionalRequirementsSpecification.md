@@ -166,7 +166,7 @@ The RRK-3 provides a single alarm output (potential-free contact) that closes wh
 | FR-W01 | The system **shall** read wind speed from the external wind meter. | Must |
 | FR-W02 | The system **shall** read wind direction from the external wind meter. | Must |
 | FR-W03 | The system **shall** detect and report a fault on the wind sensor. | Must |
-| FR-W04 | On a wind sensor fault, the system **shall** close all windows as a safe default. | Must |
+| FR-W04 | On a wind sensor fault, the system **shall** close all windows as a safe default. A fault **shall** mean the sensor has gone unread for the whole wind averaging window (`avg_win_wind`), and at least two polls, so that one failed poll does not close the greenhouse. Before the first good read since boot one failed poll is a fault: there is no average yet. (Operator's decision 2026-11-01: a dead sensor closes the windows up to that window later.) | Must |
 
 ### 5.3 Window Actuation
 

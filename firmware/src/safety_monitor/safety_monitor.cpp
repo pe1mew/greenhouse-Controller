@@ -56,6 +56,7 @@
  * arrive via app_types.h's transitive FreeRTOS includes. */
 #include <esp_log.h>
 #include <esp_task_wdt.h>   /* WDT subscription (1.17.29 / gh#13) */
+#include <time.h>
 
 #include "safety_monitor.h"
 #include "../types/app_types.h"
@@ -240,7 +241,9 @@ void task_safety_monitor(void *pvParameters)
         cfg_shadow_t cfg;
         dm_cfg_snapshot(&cfg);
 
-        uint32_t now = dm_get_unix_time();
+        /* The system clock: dm_get_unix_time() is up to 60 s old, and these
+         * rows are read against the sensor rows beside them. */
+        uint32_t now = (uint32_t)time(NULL);
 
         /* ---- Wind protection disabled ---------------------------------- */
         if (!cfg.wind_prot_en) {

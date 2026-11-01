@@ -608,7 +608,7 @@ De kleuren van de badg geven de urgentie weer van de melding:
 | 🔴 | **WIND** | Wind-override actief — alle ramen dicht door harde wind | Wachten tot windsnelheid zakt; controleer `v_max` als de override te snel/vaak triggert |
 | 🔴 | **MISMATCH** | Firmware-versie ≠ web-assets-versie (onvolledige OTA) | Harde browser-refresh; bij blijven: OTA opnieuw met beide pakketten |
 | 🟡 | **T/RH fault** | Twee opeenvolgende mislukte uitlezingen van de Temperatuur/Luchtvochtigheid-sensor | Zie [§12.3](#123-sensor-fault--diagnose) |
-| 🟡 | **Wind fault** | Twee opeenvolgende mislukte uitlezingen van de windsensor | Zie [§12.3](#123-sensor-fault--diagnose) |
+| 🟡 | **Wind fault** | De windsensor is de hele middelingstijd (`avg_win_wind`) niet uitgelezen (sinds 2.18.0). Eén mislukte uitlezing is geen storing meer. De ramen gaan dan dicht | Zie [§12.3](#123-sensor-fault--diagnose) |
 | 🟡 | **OTA active** | OTA-update loopt nu | Wacht tot voltooid; geen handeling vereist |
 | 🟡 | **Calibrating** | Window-Cal: ramen worden gesloten om positie vast te leggen | Wacht ~3 min; geen handeling vereist |
 | 🟡 | **Standby** | Automatische klimaatregeling gepauzeerd | Zelf aangezet via Scherm 3 of de web GUI: blijft aan tot je hem uitzet, ook na een herstart. Aangezet door het handmatige raammenu op de LCD ([§10.11](#1011-handmatige-raambediening-via-de-lcd-beheerder)) of door een teach: gaat vanzelf uit zodra die beheerderssessie eindigt (uitloggen, 5 min zonder toetsdruk, of een herstart). Bij het uitgaan sluiten de ramen één keer om te kalibreren |

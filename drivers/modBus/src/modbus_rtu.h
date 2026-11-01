@@ -366,6 +366,22 @@ typedef struct {
  */
 void modbus_get_counters(modbus_counters_t *out);
 
+/**
+ * @brief Called once for every transaction that went on the wire and failed.
+ *
+ * Says how it failed, because a count cannot: `rx_bytes` 0 with
+ * MODBUS_ERR_TIMEOUT is a slave that stayed silent, more than 0 a reply cut
+ * short, and MODBUS_ERR_CRC a whole reply that was damaged. Not called for
+ * MODBUS_ERR_BUSY or MODBUS_ERR_PARAM: nothing was sent.
+ *
+ * Runs on the caller's task with the bus lock held, so it must not block and
+ * must not touch the bus.
+ */
+typedef void (*modbus_fail_hook_t)(uint8_t addr, modbus_status_t status, uint8_t rx_bytes);
+
+/** @brief Set the hook; NULL removes it. Set it once, before the first caller. */
+void modbus_set_fail_hook(modbus_fail_hook_t hook);
+
 modbus_status_t modbus_write_multiple_registers(uint8_t         device_addr,
                                                  uint16_t        start_reg,
                                                  uint8_t         count,

@@ -1433,7 +1433,7 @@ T4 checks the return of `nvs_cfg_init()`. If `NVS_CFG_ERR_MIGRATION` is returned
 
 **Sensor fault handling:**
 - When EG1.SENSOR_FAULT_T is set: T6 inhibits climate control commands; the last known window state is maintained; LCD displays fault indication (FR-S05).
-- When EG1.SENSOR_FAULT_W is set: T3 treats wind as exceeding all thresholds (safe-fail: CLOSE_ALL) (FR-W04).
+- When EG1.SENSOR_FAULT_W is set: T3 treats wind as exceeding all thresholds (safe-fail: CLOSE_ALL) (FR-W04). T5 sets it only after the sensor has gone unread for the whole wind averaging window, in polls and at least two, or on the first failed poll before any good read since boot.
 - Faults clear automatically when T5 receives a valid reading.
 
 **Motor alarm handling (FR-MA01–FR-MA08):**

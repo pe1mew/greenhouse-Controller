@@ -1217,6 +1217,24 @@ def _decode_system(row: dict) -> str:
                         f"fault; T5 faults on consecutive failures, not on a rate)")
             return f"bus KPI  {who}: param {pid} = {vb}"
 
+        if va == 34:
+            # One failed bus transaction (2.18.0). ch = slave address, value_b
+            # packs modbus_status_t and the bytes received.
+            who = _MODBUS_SLAVES.get(ch, f"addr {ch}")
+            st, rx = (vb >> 8) & 0xFF, vb & 0xFF
+            if st == 1:
+                how = ("no reply at all" if rx == 0
+                       else f"reply cut off after {rx} byte(s)")
+            elif st == 2:
+                how = f"reply damaged (CRC), {rx} bytes"
+            elif st == 3:
+                how = "exception reply"
+            elif st == 4:
+                how = f"wrong reply (framing), {rx} bytes"
+            else:
+                how = f"status {st}, {rx} bytes"
+            return f"bus failure  {who}: {how}"
+
         if va == 32:
             # An OTA session ended WITHOUT installing anything (2026-09-16).
             # ch = which half (1 firmware, 2 web assets); value_b packs the

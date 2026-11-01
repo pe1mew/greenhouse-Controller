@@ -370,6 +370,14 @@ static modbus_slave_counters_t *slave_row(uint8_t addr)
  * diagnostic is read, several successful polls have usually overwritten the
  * failure that mattered.
  */
+static modbus_fail_hook_t s_fail_hook = NULL;
+static uint8_t            s_last_rx   = 0u;   /* bytes the last transaction received */
+
+void modbus_set_fail_hook(modbus_fail_hook_t hook)
+{
+    s_fail_hook = hook;
+}
+
 static modbus_status_t tally(modbus_status_t s, uint8_t addr)
 {
     s_cnt.last_status = (uint8_t)s;
@@ -414,6 +422,9 @@ static modbus_status_t tally(modbus_status_t s, uint8_t addr)
     if (s == MODBUS_ERR_TIMEOUT || s == MODBUS_ERR_CRC || s == MODBUS_ERR_FRAMING) {
         s_cnt.last_fail_listen_lat_us = s_last_listen_lat_us;
         if (s_last_listen_lat_us > LISTEN_LATE_US) { s_cnt.listen_late_failed++; }
+    }
+    if (s_fail_hook != NULL && s != MODBUS_ERR_BUSY && s != MODBUS_ERR_PARAM) {
+        s_fail_hook(addr, s, s_last_rx);
     }
     return s;
 }
@@ -765,6 +776,7 @@ static modbus_status_t modbus_transaction(uint8_t  device_addr,
              * was cut short. Different causes, different fixes. */
             s_cnt.last_to_received = received;
             s_cnt.last_to_expected = expected_len;
+            s_last_rx = received;
             /* Drain any late-arriving bytes before returning so the next
              * transaction starts with a clean buffer. */
             delayMicroseconds(2000);
@@ -780,6 +792,7 @@ static modbus_status_t modbus_transaction(uint8_t  device_addr,
     /* Record the wire timestamp as soon as the last response byte is in hand.
      * This is used by the IFG guard at the start of the next transaction. */
     s_frame_end_us = micros();
+    s_last_rx = received;
 
     /* Validate CRC over all bytes except the trailing two CRC bytes */
     uint16_t recv_crc = (uint16_t)resp[expected_len - 2]
@@ -897,6 +910,7 @@ static modbus_status_t write_multiple_locked(uint8_t         device_addr,
         if (millis() - start > MODBUS_TIMEOUT_MS) {
             s_cnt.last_to_received = received;
             s_cnt.last_to_expected = expected_len;
+            s_last_rx = received;
             delayMicroseconds(2000);
 #ifndef NATIVE_TEST
             while (uart1_available()) (void)uart1_read();
@@ -908,6 +922,7 @@ static modbus_status_t write_multiple_locked(uint8_t         device_addr,
         }
     }
     s_frame_end_us = micros();   /* last response bit received */
+    s_last_rx = received;
 
     /* Validate CRC */
     uint16_t recv_crc = (uint16_t)resp[expected_len - 2]

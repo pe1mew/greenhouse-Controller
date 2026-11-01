@@ -221,6 +221,87 @@ void test_flipped_crc_returns_crc_error(void)
 }
 
 /* =========================================================================
+ * UT-MB-013..016 — the failure hook says HOW a transaction failed
+ * ========================================================================= */
+static int             s_hook_calls;
+static uint8_t         s_hook_addr;
+static modbus_status_t s_hook_status;
+static uint8_t         s_hook_rx;
+
+static void hook_spy(uint8_t addr, modbus_status_t status, uint8_t rx_bytes)
+{
+    s_hook_calls++;
+    s_hook_addr   = addr;
+    s_hook_status = status;
+    s_hook_rx     = rx_bytes;
+}
+
+static void hook_arm(void)
+{
+    s_hook_calls = 0;
+    modbus_set_fail_hook(hook_spy);
+}
+
+void test_hook_silent_slave_reports_zero_bytes(void)
+{
+    hook_arm();
+    mock_set_millis(0, MODBUS_TIMEOUT_MS + 1);
+
+    uint16_t out[2] = {0};
+    (void)modbus_read_holding_registers(44, 0, 2, out);
+    modbus_set_fail_hook(NULL);
+
+    TEST_ASSERT_EQUAL_INT(1, s_hook_calls);
+    TEST_ASSERT_EQUAL_UINT8(44, s_hook_addr);
+    TEST_ASSERT_EQUAL_INT(MODBUS_ERR_TIMEOUT, s_hook_status);
+    TEST_ASSERT_EQUAL_UINT8(0, s_hook_rx);
+}
+
+void test_hook_cut_off_reply_reports_the_bytes_received(void)
+{
+    const uint8_t part[3] = {0x01, 0x03, 0x04};
+    mock_uart_queue_response(part, 3);
+    hook_arm();
+    mock_set_millis(0, MODBUS_TIMEOUT_MS + 1);
+
+    uint16_t out[2] = {0};
+    (void)modbus_read_holding_registers(1, 0, 2, out);
+    modbus_set_fail_hook(NULL);
+
+    TEST_ASSERT_EQUAL_INT(1, s_hook_calls);
+    TEST_ASSERT_EQUAL_INT(MODBUS_ERR_TIMEOUT, s_hook_status);
+    TEST_ASSERT_EQUAL_UINT8(3, s_hook_rx);
+}
+
+void test_hook_damaged_reply_reports_crc_and_length(void)
+{
+    uint8_t frame[9] = {0x01, 0x03, 0x04, 0x12, 0x34, 0x56, 0x78, 0x00, 0x00};
+    uint16_t crc = test_crc16(frame, 7);
+    frame[7] = (uint8_t)(crc & 0xFF) ^ 0xFF;
+    frame[8] = (uint8_t)(crc >> 8);
+    mock_uart_queue_response(frame, 9);
+    hook_arm();
+
+    uint16_t out[2] = {0};
+    (void)modbus_read_holding_registers(1, 0, 2, out);
+    modbus_set_fail_hook(NULL);
+
+    TEST_ASSERT_EQUAL_INT(1, s_hook_calls);
+    TEST_ASSERT_EQUAL_INT(MODBUS_ERR_CRC, s_hook_status);
+    TEST_ASSERT_EQUAL_UINT8(9, s_hook_rx);
+}
+
+void test_hook_not_called_when_nothing_was_sent(void)
+{
+    hook_arm();
+    uint16_t out[2] = {0};
+    (void)modbus_read_holding_registers(0, 0, 2, out);   /* PARAM */
+    modbus_set_fail_hook(NULL);
+
+    TEST_ASSERT_EQUAL_INT(0, s_hook_calls);
+}
+
+/* =========================================================================
  * UT-MB-008 — Exception response (FC | 0x80) → MODBUS_ERR_EXCEPTION
  *
  * Exception frame: [addr][fc|0x80][exc_code][crc_lo][crc_hi] (5 bytes)
@@ -339,6 +420,10 @@ int main(int argc, char **argv)
     /* UT-MB-010 */ RUN_TEST(test_de_re_low_before_uart_read);
     /* UT-MB-011 */ RUN_TEST(test_device_address_zero_returns_param_error);
     /* UT-MB-012 */ RUN_TEST(test_register_count_exceeds_maximum);
+    /* UT-MB-013 */ RUN_TEST(test_hook_silent_slave_reports_zero_bytes);
+    /* UT-MB-014 */ RUN_TEST(test_hook_cut_off_reply_reports_the_bytes_received);
+    /* UT-MB-015 */ RUN_TEST(test_hook_damaged_reply_reports_crc_and_length);
+    /* UT-MB-016 */ RUN_TEST(test_hook_not_called_when_nothing_was_sent);
 
     return UNITY_END();
 }

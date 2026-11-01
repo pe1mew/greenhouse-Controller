@@ -82,7 +82,7 @@ Fixed DHCP reservations: **`FDA4` is `192.168.20.169`**, **`2344` is `192.168.20
 4. Hand off staged changes for the user to commit
 5. OTA push to the **fitted dev module** (read `unit_id` first): `python bin/ota_push.py bin/X.Y.Z/greenhouse-controller-X.Y.Z.bin --host <ip>`
 6. Verify both `fw_ver` and `asset_version` from `/api/status`
-7. Soak ≥ overnight (or longer for high-risk changes)
+7. Soak ≥ overnight (or longer for high-risk changes). **Run soaks overnight by preference:** daytime hours stay free for tests on the rig, and a test stops a soak
 8. Production (5C88) only after soak passes: `python bin/rota_release.py promote <ver>` (needs the operator's instruction), and it applies in its own night window, or a push from its LAN on site
 
 ## Key directories

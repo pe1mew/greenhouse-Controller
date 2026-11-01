@@ -327,6 +327,9 @@ typedef enum {
                              *   lost on a bus that otherwise works, so the
                              *   verdict says no_device with the gate still
                              *   open (bin/at_cal_rejudge.py). */
+    WPOS_INJECT_NOWIND = 9, /**< 2.18.0: T5 treats every wind read as failed
+                             *   and puts nothing on the bus. T17's reads are
+                             *   real (bin/at_wind_holdoff.py). */
 } windowpos_inject_t;
 
 /**

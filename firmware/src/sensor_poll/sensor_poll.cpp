@@ -11,8 +11,15 @@
  *
  * ## Fault handling
  *  - Each sensor is read up to twice per cycle (one immediate retry).
- *  - On two consecutive failures: set EG1_BIT_SENSOR_FAULT_T (T/RH) or
- *    EG1_BIT_SENSOR_FAULT_W (wind); post LOG_ALARM to Q3; log at WARN.
+ *  - T/RH, on two consecutive failures: set EG1_BIT_SENSOR_FAULT_T; post
+ *    LOG_ALARM to Q3; log at WARN.
+ *  - Wind: the same with EG1_BIT_SENSOR_FAULT_W, but only once the sensor has
+ *    gone unread for its whole averaging window, and never on one poll. That
+ *    bit closes the greenhouse (T3), and every wind fault to 2026-10-31 did so
+ *    on one bad poll, in 0.6 to 1.6 m/s of wind. T3 acts on the average, so it
+ *    is already that slow to see wind rise; a dead sensor closes the windows up
+ *    to one window later (FR-W04). Until the first good read since boot there
+ *    is no average, so one bad poll counts.
  *  - Fault bits are edge-triggered: the LOG_ALARM is posted only once on
  *    onset and once on clearance, not on every failed poll.
  *  - On first successful read after a fault: clear the EG1 bit and post a
@@ -55,6 +62,12 @@
 #include "fg6485a.h"
 #include "s200.h"
 #include "modbus_rtu.h"
+#ifdef MODBUS_BENCH
+#include "../window_pos/window_pos_task.h"   /* WPOS_INJECT_NOWIND */
+#endif
+#if defined(WPOS_FAILFIRST_WINDPOLL) && !defined(MODBUS_BENCH)
+#error "WPOS_FAILFIRST_WINDPOLL restores the one-poll wind fault: bench builds only"
+#endif
 
 #include <math.h>
 #include <string.h>
@@ -392,6 +405,28 @@ static uint16_t calc_win(int32_t win_min, int32_t poll_s)
  * @param onset        true = fault triggered, false = fault cleared.
  */
 /**
+ * @brief One failed bus transaction, any caller's, as a SYSTEM 34 row.
+ *
+ * `value_b`: high byte the @ref modbus_status_t, low byte the bytes received.
+ * The driver's hook (T5 or T17, bus lock held): log_post() does not block. The
+ * rate is bounded by the callers: T5's two attempts per sensor per poll, and
+ * T17's gate, which shuts after two.
+ */
+static void post_bus_failure(uint8_t addr, modbus_status_t st, uint8_t rx_bytes)
+{
+    log_event_t evt;
+    memset(&evt, 0, sizeof(evt));
+    evt.timestamp  = (uint32_t)time(NULL);
+    evt.event_type = (uint8_t)LOG_SYSTEM;
+    evt.initiator  = (uint8_t)LOG_BY_SYSTEM;
+    evt.channel    = addr;
+    evt.param_id   = (uint8_t)LOG_PARAM_NONE;
+    evt.value_a    = 34;
+    evt.value_b    = (int16_t)(((uint16_t)st << 8) | rx_bytes);
+    log_post(&evt);
+}
+
+/**
  * @brief Post a sensor fault/clear row, recording WHY.
  *
  * `value_b` used to be hard-coded 0 with the comment "sensor faults are binary
@@ -405,7 +440,9 @@ static void post_sensor_alarm(uint8_t sensor_kind, bool onset, uint8_t reason)
 {
     log_event_t evt;
     memset(&evt, 0, sizeof(evt));
-    evt.timestamp  = dm_get_unix_time();
+    /* The system clock: dm_get_unix_time() is up to 60 s old, which put this
+     * row a poll or two before the reading it belongs to. */
+    evt.timestamp  = (uint32_t)time(NULL);
     evt.event_type = (uint8_t)LOG_ALARM;
     evt.initiator  = (uint8_t)LOG_BY_SYSTEM;
     evt.channel    = sensor_kind;             /* 4 = T/RH, 5 = wind */
@@ -466,6 +503,7 @@ void task_sensor_poll(void *pvParameters)
     /* ---- Initialise Modbus RTU driver (UART1, RS485 transceiver) ---- */
     ESP_LOGI(TAG, "[T5] calling modbus_init...");
     modbus_init();
+    modbus_set_fail_hook(post_bus_failure);
     ESP_LOGI(TAG, "[T5] Modbus RTU initialised (%d baud) — init complete", MODBUS_BAUD);
 
     /* ---- Explicitly zero averaging contexts (belt + braces) ---- */
@@ -482,6 +520,11 @@ void task_sensor_poll(void *pvParameters)
      * briefly and a jammed bus is still reported. */
     uint32_t t_busy_since = 0u;
     uint32_t w_busy_since = 0u;
+
+    /* Polls in a row the wind sensor went unread, and whether it has ever been
+     * read: see "Fault handling" above. */
+    uint16_t w_failed_polls = 0u;
+    bool     w_read_once    = false;
 
     uint32_t iter = 0u;
 
@@ -597,6 +640,12 @@ void task_sensor_poll(void *pvParameters)
             if (attempt > 0) {
                 vTaskDelay(pdMS_TO_TICKS(SP_RETRY_DELAY_MS));
             }
+#ifdef MODBUS_BENCH
+            if (windowpos_task_injected() == WPOS_INJECT_NOWIND) {
+                wst = S200_ERR_COMM;    /* bin/at_wind_holdoff.py */
+                continue;
+            }
+#endif
             wst = s200_read_measurements(S200_DEFAULT_ADDR, &wm);
         }
         const bool w_ok = (wst == S200_OK);
@@ -609,7 +658,9 @@ void task_sensor_poll(void *pvParameters)
                 ESP_LOGI(TAG, "[T5] Wind sensor fault cleared (ws=%.1f m/s wd=%.0f°)",
                          (double)wm.wind_speed_avg_ms, (double)wm.wind_dir_avg_deg);
             }
-            w_busy_since = 0u;
+            w_busy_since   = 0u;
+            w_failed_polls = 0u;
+            w_read_once    = true;
             avg_push(&s_avg_ws, wm.wind_speed_avg_ms, win_w);
             dir_avg_push(&s_avg_wd, wm.wind_dir_avg_deg, win_w);
         } else if (wst == S200_ERR_BUSY && !busy_deadline_passed(&w_busy_since)) {
@@ -622,14 +673,20 @@ void task_sensor_poll(void *pvParameters)
                      (unsigned long)(sp_now_ms() - w_busy_since),
                      (unsigned long)SP_BUSY_TOLERANCE_MS);
         } else {
-            if (!w_fault_active) {
+            if (w_failed_polls < 0xFFFFu) { w_failed_polls++; }
+#ifdef WPOS_FAILFIRST_WINDPOLL              /* bench: one poll, as before 2.18.0 */
+            const uint16_t need = 1u;
+#else
+            const uint16_t need = !w_read_once ? 1u : (win_w > 2u) ? win_w : 2u;
+#endif
+            if (!w_fault_active && w_failed_polls >= need) {
                 xEventGroupSetBits(EG1, EG1_BIT_SENSOR_FAULT_W);
                 w_fault_active = true;
                 post_sensor_alarm(/*sensor_kind=*/5u, /*onset=*/true, (uint8_t)wst);
                 ESP_LOGW(TAG, "[T5] Wind sensor FAULT — %s",
                          (wst == S200_ERR_BUSY)
                              ? "bus unavailable past the grace deadline"
-                             : "two consecutive read failures");
+                             : "unread for the whole averaging window");
             }
         }
 
