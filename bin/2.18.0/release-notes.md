@@ -6,7 +6,7 @@
 
 **Minor:** a new log row, and FR-W04 changed. No setting, key or payload change.
 
-> **Not soaked.** 2.17.4 was never soaked either: its soak was stopped after 70 minutes for this release, so tonight's soak covers both.
+> **Published to `soak` as seq 68, tag `v2.18.0` on `cddf504`, on 2026-11-01. Not soaked yet.** 2.17.4 was never soaked either: its soak was stopped after 70 minutes for this release, so tonight's soak covers both. `mainstream` is not touched.
 
 ## What changed
 
@@ -34,7 +34,8 @@ Found with grep on 2026-11-01.
 
 | Check | Result |
 |---|---|
-| Release image | 1 435 440 B, sha256 `25e6e8f0ccc966e4…`, version `2.18.0`. Assets `web-assets-2.18.0.zip`, 176 331 B, sha256 `b5dcb242ad534ba9…`. **Built, not run on hardware** |
+| Release image | 1 435 440 B, sha256 `25e6e8f0ccc966e4…`, version `2.18.0`. Assets `web-assets-2.18.0.zip`, 176 331 B, sha256 `b5dcb242ad534ba9…`. Pulled by 2344 over ROTA, see below |
+| ROTA pull on 2344 | Pushed first with a throwaway `2.17.5-rota`, this source under a lower number: every real older release still does the second wind read, which was timing out and would have held the unit in wind override, and that blocks an apply. Check 13:01:34 found 2.18.0, download OK 13:01:57, apply handed over 13:02:10, installed 13:02:13. `fw_ver` and `asset_version` 2.18.0, Lineair, rig settings intact, no coredump |
 | Bench image on 2344 | `a5f8381868ed2ce0…`. `fw_ver` and `asset_version` 2.18.0-bench |
 | Host tests | `modBus` 16 of 16, 4 new. `s200` 9 of 9, and UT-S200-011 now proves the one request |
 | Fail-first on 2344, one-poll rule compiled back in | FAIL: fault and override 2 s into the injection |
@@ -48,7 +49,7 @@ Not yet: see the top of this file.
 
 ## What the rig showed on the way
 
-- **With the T/RH on the emulator moved to address 2, the emulated wind stopped answering the second request**, every time, with the first request answered. It survived an emulator restart, and it did so with the real FG6485A both connected and disconnected, so the sensor was not the cause. **Why is not known.** With one request it no longer matters.
+- **From 12:05:51, when the emulator's T/RH moved to address 2 and the spare went on, the controller got no bytes back for the second request to address 44**, every poll, with the first request answered. It survived an emulator restart, and happened with the spare connected and disconnected. **The cause is not known, and the emulator is not shown to be it:** its code serves that register on the same path as the first request, and whether it saw the request or replied was not checked. The controller only records that nothing arrived. With one request it no longer arises.
 - **The wind hold-off met it by chance:** the fault came on the 6th failed poll, 155 s after the first.
 - **A real FG6485A on the rig, for the first time.** Characterisations at T17's fastest polling, with the emulator's T/RH on address 2:
 
@@ -67,6 +68,6 @@ Not yet: see the top of this file.
 
 ## Known limitations
 
-- **Not soaked.** The release image has not run on hardware.
+- **Not soaked.**
 - **A wind rise during a sensor outage is not seen until the fault closes the windows.** That is the decision above.
 - **`heap_min_kb` 2 KB in the 2.17.3 soak:** the cause was not found.

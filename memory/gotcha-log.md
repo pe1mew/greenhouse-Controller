@@ -254,7 +254,7 @@ Entries stay in reverse-chronological order below; this index is the only groupe
 
 **What happened:**
 
-- Fitting the sensor and moving the emulator's T/RH to address 2 happened together. The emulated wind then failed every poll. I offered the FG6485A as "the real lead". With it unplugged the wind failed just the same: it was the emulator, and a restart did not cure it.
+- Fitting the sensor and moving the emulator's T/RH to address 2 happened together. The emulated wind then failed every poll. I offered the FG6485A as "the real lead". With it unplugged the wind failed just the same, so it was not the sensor. I then called it the emulator and said so as fact; the operator disputed that, and rightly. Its code answers that register as it does the first, a restart changed nothing, and the controller only records that no bytes arrived. Cause unknown.
 - A characterisation with the spare on ended `sensor` at 3 starts, and one with it off ran clean. I said the FG6485A silences other slaves. The next run with it on reached 28 starts with the encoder clean.
 
 **Root cause:** a change of two things, and a sample of one each way, on a failure that is intermittent.
