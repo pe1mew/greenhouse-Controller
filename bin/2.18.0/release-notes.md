@@ -6,7 +6,7 @@
 
 **Minor:** a new log row, and FR-W04 changed. No setting, key or payload change.
 
-> **Published to `soak` as seq 68, tag `v2.18.0` on `cddf504`, on 2026-11-01. Not soaked yet.** 2.17.4 was never soaked either: its soak was stopped after 70 minutes for this release, so tonight's soak covers both. `mainstream` is not touched.
+> **Published to `soak` as seq 68, tag `v2.18.0` on `cddf504`, on 2026-11-01. The soak was NOT CLEAN on the bus, on a rig with a real FG6485A: see below. Not for `mainstream`.** 2.17.4 was never soaked alone: this soak covers it. `mainstream` is not touched.
 
 ## What changed
 
@@ -45,7 +45,33 @@ Found with grep on 2026-11-01.
 
 ## Soak
 
-Not yet: see the top of this file.
+2344 on 2.18.0-bench `a5f83818`, 2026-11-01 13:27 to 2026-11-02 01:42. **The rig differed from every earlier soak: a real spare FG6485A on address 1, the emulator's T/RH on address 2, wind still emulated.**
+
+**Result: NOT CLEAN on the bus counters.** The firmware's other checks passed. This is not a pass for production.
+
+| Check | Result |
+|---|---|
+| `at_wp_soak.py` | **NOT CLEAN:** 120 strokes judged, stalls and early stops 0, not reached 0, but `err_comm` +133, `rejected_rate` +10, `mode_changes` +4 (need ≤ 2). The last three are the encoder failing to answer |
+| `sd_soak.py` | PASS: no reboot, no coredump, card mounted, largest gap 31 s, no SYSTEM -1 or 33 row |
+| Sessions | 12 of 12 stroke sessions ran, 12 of 12 LCD sessions passed |
+| Law, hunt, settings | 41 decisions conform. 40 targeted stops, none outside the 33 mm band. Settings identical |
+| Wind faults | **None, and no wind override**, despite 304 failed wind requests: T5's retry answered each time |
+| Heap | Steady 64 KB free, 26 KB largest after 12.4 h, no slope. `heap_min_kb` 8 |
+| Stacks | After a full characterisation: T17 1752 B free of 5120, T7 1072 B free of 3072 |
+| Characterisation after the report | Complete: 117 starts, band 34 mm (was 33) |
+| `at_char_stop.py`, `at_cal_rejudge.py`, `at_session_cookie.py`, `at_wind_holdoff.py` | All PASS on the soaked unit. Wind fault at 180 s of a 180 s window |
+
+**The `SYSTEM 34` rows, in the 12.25 h window:**
+
+| Address | Failed requests | Type | At rest | Opening | Closing |
+|---|---|---:|---:|---:|---:|
+| 40, the real encoder | 157 | All silent | 28 | 5 | **124** |
+| 44, emulated wind | 304 | All silent | **280** | 12 | 12 |
+| 1, the real FG6485A | **0** | | | | |
+
+Over the whole run including the characterisation: address 40 181 failed of 9 910, address 44 375 of 2 024, address 1 0 of 1 664. Address 40 had 0 failures in the 2.17.1 and 2.17.3 soaks. 135 of the 157 came 3 s or more from a T5 poll, so they do not follow the FG6485A's own reads.
+
+**What this does not show:** which change did it. Against the 2.17.3 soak three things differ: the real FG6485A, the emulator's T/RH address, and the firmware. A control soak is needed.
 
 ## What the rig showed on the way
 
@@ -68,6 +94,6 @@ Not yet: see the top of this file.
 
 ## Known limitations
 
-- **Not soaked.**
+- **No clean soak yet.** See above.
 - **A wind rise during a sensor outage is not seen until the fault closes the windows.** That is the decision above.
 - **`heap_min_kb` 2 KB in the 2.17.3 soak:** the cause was not found.

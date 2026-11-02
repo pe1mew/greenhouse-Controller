@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [2.18.0] — 2026-11-01  (one failed wind poll no longer closes the greenhouse; bus failures logged by type)
 
-Minor: a new log row, and FR-W04 changed. No setting, key or payload change. Not soaked. Details and every number: `bin/2.18.0/release-notes.md`.
+Minor: a new log row, and FR-W04 changed. No setting, key or payload change. Published to `soak` as seq 68. Its soak on a rig with a real FG6485A was NOT CLEAN on the bus. Details and every number: `bin/2.18.0/release-notes.md`.
 
 **Changed:**
 
