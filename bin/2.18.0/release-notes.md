@@ -6,7 +6,7 @@
 
 **Minor:** a new log row, and FR-W04 changed. No setting, key or payload change.
 
-> **Published to `soak` as seq 68, tag `v2.18.0` on `cddf504`, on 2026-11-01. The soak was NOT CLEAN on the bus, on a rig with a real FG6485A: see below. Not for `mainstream`.** 2.17.4 was never soaked alone: this soak covers it. `mainstream` is not touched.
+> **Published to `soak` as seq 68, tag `v2.18.0` on `cddf504`, on 2026-11-01. Soaked clean on 2344 on 2026-11-02/03 (bench build, 12.25 h, PASS), after the rig's RS485 transceiver was replaced: the two earlier soaks ran on a bus with its A line shorted to ground, see below.** 2.17.4 was never soaked alone: this soak covers it. `mainstream` is not touched.
 
 ## What changed
 
@@ -45,9 +45,30 @@ Found with grep on 2026-11-01.
 
 ## Soak
 
-2344 on 2.18.0-bench `a5f83818`, 2026-11-01 13:27 to 2026-11-02 01:42. **The rig differed from every earlier soak: a real spare FG6485A on address 1, the emulator's T/RH on address 2, wind still emulated.**
+### The clean soak, 2026-11-02 21:38 to 2026-11-03 09:52
 
-**Result: NOT CLEAN on the bus counters.** The firmware's other checks passed. This is not a pass for production.
+2344 on 2.18.0-bench `a5f83818`, standard rig: both slaves emulated on 5C88's climate, spare off, both end sensors on, band 34 mm. The controller's SIT65HVD08P had been replaced about 40 minutes before (its A output had been shorted to 0 V since 2026-11-01 12:05, gh#108).
+
+| Check | Result |
+|---|---|
+| `at_wp_soak.py` | **PASS:** 12.25 h, 66 strokes judged, stalls, early stops, rejected samples, comm errors, not reached all 0, no mode change |
+| `sd_soak.py` | PASS: no reboot, no coredump, card mounted in all 735 samples, largest gap 31 s, no SYSTEM -1 or 33 row |
+| Stroke sessions | 3 of 12 ran, 9 skipped: the greenhouse was 7 to 10 °C, below the lowest `t_max`, so the law had nothing to open for. Not a fault |
+| LCD sessions | 12 of 12, 0 failed |
+| Law conformance, hunt, settings | 10 decisions, all conform. 9 targeted stops, none outside the band, no opposite correction. Settings identical |
+| Bus, 14 h | **Encoder 7 313 reads, 0 failures.** Emulated T/RH 3 of 1 671, wind 1 of 1 657, single requests, retry answered, no fault. `SYSTEM 34` rows: 2, both address 1, silent |
+| Heap | Steady 64 KB free, 31 KB largest after 12.4 h, no slope. `heap_min_kb` 20 |
+| Stacks | After a full characterisation: T17 1748 B free of 5120, T7 1072 B free of 3072 |
+| Characterisation after the report | Complete: 117 starts, 3613 s, band 35 mm (was 34) |
+| `at_char_stop.py`, `at_cal_rejudge.py`, `at_session_cookie.py`, `at_wind_holdoff.py` | All PASS on the soaked unit. Wind fault at 181 s of a 180 s window |
+
+So the firmware holds over 12 h on a sound bus, and the rig's bus is sound again: the 2.17.3 soak's figures are back.
+
+### The first soak, 2026-11-01 13:27 to 2026-11-02 01:42, not clean: the rig's transceiver was shorted
+
+2344 on 2.18.0-bench `a5f83818`. **The rig differed from every earlier soak: a real spare FG6485A on address 1, the emulator's T/RH on address 2, wind still emulated.**
+
+**Result: NOT CLEAN on the bus counters.** The firmware's other checks passed. The cause was found the next day: the controller's RS485 transceiver with A shorted to ground (gh#108), not the firmware, the sensor, or the rig's end sensors, which only tipped a single-ended bus over its margin.
 
 | Check | Result |
 |---|---|
@@ -71,7 +92,7 @@ Found with grep on 2026-11-01.
 
 Over the whole run including the characterisation: address 40 181 failed of 9 910, address 44 375 of 2 024, address 1 0 of 1 664. Address 40 had 0 failures in the 2.17.1 and 2.17.3 soaks. 135 of the 157 came 3 s or more from a T5 poll, so they do not follow the FG6485A's own reads.
 
-**What this does not show:** which change did it. Against the 2.17.3 soak three things differ: the real FG6485A, the emulator's T/RH address, and the firmware. A control soak is needed.
+A control soak on the standard rig on 2026-11-02 (08:36 to 17:24, stopped) failed the same way, which cleared the sensor and the emulator's address; the stroke tests that followed cleared the firmware (2.17.4 failed alike) and led to the transceiver. The record is `temp/unit-5c88/research.md`.
 
 ## What the rig showed on the way
 
@@ -94,6 +115,5 @@ Over the whole run including the characterisation: address 40 181 failed of 9 91
 
 ## Known limitations
 
-- **No clean soak yet.** See above.
 - **A wind rise during a sensor outage is not seen until the fault closes the windows.** That is the decision above.
 - **`heap_min_kb` 2 KB in the 2.17.3 soak:** the cause was not found.
